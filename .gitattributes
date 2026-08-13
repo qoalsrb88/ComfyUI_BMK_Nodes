@@ -1,0 +1,3 @@
+# 저장소에는 LF로 저장하고, 체크아웃 시 각 OS 관례에 맞춘다.
+# Windows/macOS/Linux 사용자가 섞여도 줄바꿈만 바뀐 가짜 diff가 생기지 않는다.
+* text=auto

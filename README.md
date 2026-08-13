@@ -33,7 +33,8 @@ cd ComfyUI/custom_nodes/ComfyUI_BMK_Nodes && git pull
 
 ## 요구사항
 
-- **ComfyUI** — 최근 버전 <!-- TODO: 실제로 테스트한 최소 버전을 적으세요 -->
+- **ComfyUI** — 최근 버전. 개발과 테스트는 항상 최신 ComfyUI에서 이루어집니다.
+  구버전에서의 동작은 확인하지 않으므로, 문제가 생기면 ComfyUI를 먼저 업데이트해 보세요.
 - **[ComfyUI-Impact-Pack](https://github.com/ltdrdata/ComfyUI-Impact-Pack)** —
   `SEGS` / `DETAILER_HOOK` 타입과 와일드카드 기능에 필요합니다. 아래 노드가
   Impact Pack 없이는 등록되지 않거나 동작하지 않습니다:
@@ -135,4 +136,5 @@ python tools/scrub_workflow.py --check examples/*.json
 
 ## 라이선스
 
-<!-- TODO: 라이선스를 정하고 LICENSE 파일을 추가하세요. 개인 배포에는 MIT가 무난합니다. -->
+[MIT](LICENSE). 자유롭게 쓰고 고치고 재배포하셔도 됩니다. 다만 위에 적었듯
+동작 보장이나 지원은 없습니다.
