@@ -205,6 +205,12 @@ for _module_name in _NODE_MODULES:
 #       BMKContextAnima용 확장. 출력 라벨을 공백으로 바꿔 노드 가로폭을
 #       절반 수준으로 축소하고, properties["bmk_ctx_schema"]에 스키마
 #       버전을 각인 (훗날 포트 재배열 마이그레이션 기준값).
+#   - bmk_group_zorder.js
+#       겹친 그룹의 그리기 순서(z-order)를 조정하는 프론트엔드 전용 패치.
+#       graph._groups 배열 순서가 곧 z-order이며, 히트 판정(getGroupOnPos)도
+#       같은 순서를 뒤에서부터 훑으므로 겹친 영역의 선택 대상까지 바뀐다.
+#       단축키 Ctrl+[ / Ctrl+] (+Shift 는 맨 뒤/맨 앞), 또는 그룹 빈 곳
+#       우클릭 → Edit Group 서브메뉴. 노드에는 영향 없음.
 # 새 JS 확장을 추가할 때는 ./js 폴더에 파일만 넣으면 됩니다.
 WEB_DIRECTORY = "./js"
 
