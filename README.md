@@ -88,6 +88,33 @@ ComfyUI/user/bmk_notes/
 BMK_NOTES_DIR=D:/sync/bmk_notes python main.py
 ```
 
+### 접근 제어
+
+노트 API(`/bmk/notes/tree`, `/bmk/notes/op`)는 **ComfyUI의 접근 제어를 그대로
+따릅니다.** 별도 인증은 없습니다. 기본 로컬 실행에서는 ComfyUI의 origin 검사가
+외부 사이트의 요청을 차단하지만, `--listen`으로 외부에 열어두면 그 네트워크에서
+접근 가능한 누구나 노트를 읽고 수정·삭제할 수 있습니다. 원격 접속을 쓴다면
+ComfyUI 자체를 신뢰할 수 있는 네트워크나 인증 프록시 뒤에 두세요.
+
+## 워크플로우를 공유하기 전에
+
+`BMKTabbedNotes` 노드는 노트 원문을 워크플로우에 저장하지 않지만, **선택 상태에
+카테고리 경로가 남습니다** — 마지막으로 보던 카테고리·탭 이름과, 접어둔 카테고리
+경로 전체 목록(`collapsed`)입니다. 카테고리 이름이 프로젝트명이면 그대로 노출됩니다.
+
+워크플로우 JSON을 커밋하거나 남에게 보내기 전에 스크럽하세요:
+
+```bash
+python tools/scrub_workflow.py --check examples/*.json
+```
+
+`--check`는 검사만 하고 남은 게 있으면 종료 코드 1을 반환합니다(pre-commit 훅에
+쓸 수 있습니다). 실제로 지우려면 `--in-place`를 붙이거나, 생략하면
+`*.scrubbed.json`이 따로 생깁니다. 중첩 subgraph와 API 포맷 모두 처리합니다.
+
+정보 손실은 없습니다 — 받는 쪽 머신엔 그 카테고리가 없어서 어차피 첫 탭으로
+폴백합니다.
+
 ## 라이선스
 
 [MIT](LICENSE). 자유롭게 쓰고 고치고 재배포하셔도 됩니다. 다만 위에 적었듯
