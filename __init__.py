@@ -74,6 +74,7 @@ _NODE_MODULES = (
     "bmk_flexible_tile_segs",
     "bmk_klein_reference_segs_hook",
     "bmk_load_image_crop",
+    "bmk_pid_tiled_upscale",
     "bmk_run_batch_grid",
     "bmk_run_cycle",
     "bmk_segs_core_mask",
