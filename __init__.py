@@ -68,6 +68,7 @@ NODE_DISPLAY_NAME_MAPPINGS: Dict[str, str] = {}
 # 각 모듈은 NODE_CLASS_MAPPINGS / NODE_DISPLAY_NAME_MAPPINGS 를 노출해야 함.
 _NODE_MODULES = (
     "bmk_anima_lllite_segs_hook",
+    "bmk_conditional_lora",
     "bmk_context_anima",
     "bmk_crop_stitch",
     "bmk_cyclic_seed",
