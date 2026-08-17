@@ -76,6 +76,7 @@ _NODE_MODULES = (
     "bmk_load_image_crop",
     "bmk_pid_tiled_upscale",
     "bmk_run_batch_grid",
+    "bmk_scale_to_target",
     "bmk_run_cycle",
     "bmk_segs_core_mask",
     "bmk_tabbed_notes",
