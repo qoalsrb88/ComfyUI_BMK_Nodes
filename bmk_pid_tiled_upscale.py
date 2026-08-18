@@ -23,6 +23,23 @@ PiD 체크포인트(`pid_*_1024_to_4096_*`)는 네이티브 4배 고정이며, �
    매 스텝 예측의 앙상블이 되어 비간섭성 그레인이 상쇄된다.
    1타일 + 컨텍스트 윈도우 = 코어 ContextWindows 방식과 동일한 동작.
 
+다만 위 관계는 **형태와 그레인**에만 해당한다. 색은 면적이 아니라 **축 길이**가
+지배한다. 학습 출력 변 길이(4096px)를 넘으면 하이라이트가 마젠타로 밀리는 색 회전이
+생기고, 초과량에 비례해 심해진다(1920×1080 소스, 보라색 편이 ×1000):
+
+    타일 출력 폭   패스 캔버스                      보라색 편이
+    4096          4.2 / 8.4 / 12.6 / 16.8MP        7.7 / 7.1 / 7.2 / 9.0
+    6144          8.7MP                            24.2
+    8192          8.4MP                            31.6
+
+폭을 4096 에 고정하면 패스 면적을 4배로 늘려도 시드 변동폭(±1.1) 안에서 움직이지
+않고, 반대로 패스 면적을 고정한 채 폭만 2배로 늘리면 4.6배가 된다. 컨텍스트 윈도우는
+높이만 자르므로 이 현상을 막지 못하며, `model_shift` 를 8 까지 올려도 33% 밖에 깎지
+못한다. 그래서 자동 격자는 면적 예산과 **별개로** PiD 입력의 각 축을
+`pid_input_size` 이하로 강제한다(v2.3). 손상은 크로마에만 생기고 루마 디테일은
+멀쩡하므로, 후단 BMK Wavelet Tone Restore 가 약 75% 를 걷어내지만 입력 오차 자체가
+커지면 남는 25% 도 같이 커져 따라잡지 못한다.
+
 타일 기하
 ---------
     core_w × core_h  : 실제로 결과에 반영되는 영역 (자동 결정, 소스 종횡비 유지)
@@ -57,6 +74,28 @@ PiD 체크포인트(`pid_*_1024_to_4096_*`)는 네이티브 4배 고정이며, �
 
 버전 이력
 ---------
+v2.3 (2026-08)
+- 자동 격자에 **축별 하드 상한** 추가: PiD 입력의 각 축(core + 2×context_pixel)이
+  `pid_input_size` 를 넘지 못한다. 면적 예산(`tile_tolerance`)은 그 안에서만
+  작동한다. 학습 변 길이를 넘긴 축에서 하이라이트가 마젠타로 밀리는 색 회전이
+  생기는데(위 표), 면적 예산만으로는 이 축을 통제하지 못했다.
+  - 기존 동작과의 차이: 같은 소스에서 타일 수가 늘어난다. 1280×960 은 1타일 →
+    2×2, 3840×2160 은 3×3 → 4×3. 1920×1080 + context_pixel 0 처럼 이미 상한
+    안이던 조합은 그대로다.
+  - `context_pixel` 이 켜지면 링이 양쪽에서 예산을 먹어 코어가
+    `pid_input_size − 2×context_pixel` 로 줄기 때문에 타일이 더 잘게 쪼개진다.
+- `pid_input_size` 가 1024 를 넘으면 경고. 릴리즈된 PiD 체크포인트는 모두
+  1024_to_4096 이라 그 위는 학습 범위 밖이다. `tile_shape=square` 는 비교 테스트
+  전용이므로 차단하지 않고 경고만 남긴다.
+- `color_match` 기본값 `mean` → `mean_std`. 실측 결과 `mean` 은 사실상 무동작이다
+  (`off` 와의 평균 절대차 0.012/255, 최대 2레벨). PiD 는 타일 **평균**은 잘
+  보존하고 **std** 만 부풀리므로 평균 보정만으로는 할 일이 없다. `mean_std` 는
+  백클립 −93%, 흑클립 −90%, 타일 심 불연속 −65% 를 대가로 루마 고주파를 8.6%
+  낮춘다(= 소스 통계로 되돌리는 의도된 동작).
+- `model_shift` 기본값은 0.0 유지. 두 소스 3시드 실측에서 최종 출력 기준 이득이
+  보라색 −11% 뿐이라 시드 변동폭 안이고, 기본값 변경 근거였던 클리핑 개선이
+  재현되지 않았다. 툴팁 수치를 실측값으로 교체했다.
+
 v2.2 (2026-08)
 - BMK PiD Loader 에 `encode_vae` 위젯 추가. PiD 모델과 인코딩 VAE 는 latent 계열로
   이미 묶여 있으므로(qwenimage PiD ↔ qwen VAE) 같이 두는 편이 배선이 짧다.
@@ -127,6 +166,10 @@ _PID_SCALE = 4
 
 # 자동 격자에서 허용하는 타일 종횡비 편차(소스 대비 로그 비율). 0.5 ≈ 1.65배까지.
 _ASPECT_DEV_MAX = 0.5
+
+# 릴리즈된 PiD 체크포인트의 학습 입력 변 길이(1024_to_4096). 타일 출력 축이
+# 이 값의 4배를 넘으면 색 회전이 생긴다 — 모듈 docstring 의 실측표 참조.
+_PID_TRAINED_SIZE = 1024
 
 _DEFAULT_PID_MODEL = "pid_1.5_qwenimage_1024_to_4096_4step_bf16.safetensors"
 _DEFAULT_CLIP = "gemma_2_2b_it_elm_bf16.safetensors"
@@ -390,6 +433,15 @@ def _auto_grid(src_w, src_h, size_ref, context, overlap, unit, tolerance,
     된다. 그 core 에 컨텍스트를 더한 값이 실제 PiD 입력 크기다. 조건을 만족하는
     조합 중 **타일 수가 가장 적고 → 종횡비 편차가 가장 작은** 것을 고른다.
 
+    제약은 두 종류이고 성격이 다르다.
+
+    - **축별 상한(하드)**: PiD 입력의 각 축이 `size_ref` 를 넘을 수 없다. 학습 변
+      길이를 넘긴 축에서 색 회전이 발생하며(모듈 docstring 표 참조), 면적이 작아도
+      축이 길면 그대로 나타난다. 컨텍스트 윈도우로도 `model_shift` 로도 막히지
+      않으므로 애초에 그 조건을 만들지 않는 것이 유일한 대책이다.
+    - **면적 예산(소프트)**: 축 상한 안에서 타일을 얼마나 크게 가져갈지를 정한다.
+      형태 응집력과 그레인에 영향을 준다.
+
     면적 예산의 기준은 컨텍스트 윈도우 사용 여부에 따라 달라진다.
 
     - budget_core=False (창 off): 타일을 통째로 한 번에 그리므로 **PiD 입력 면적**
@@ -423,11 +475,15 @@ def _auto_grid(src_w, src_h, size_ref, context, overlap, unit, tolerance,
             if core_h - overlap < unit:   # stride 가 unit 미만이 되는 조합 배제
                 continue
             in_h = core_h + 2 * context
+            if in_h > size_ref:       # 축별 하드 상한 — 면적 예산과 별개
+                continue
             for nx in range(1, max_n + 1):
                 core_w = _align_up((src_w + (nx - 1) * overlap) / nx, unit)
                 if core_w - overlap < unit:
                     continue
                 in_w = core_w + 2 * context
+                if in_w > size_ref:
+                    continue
                 area = (core_w * core_h) if budget_core else (in_w * in_h)
                 if area > area_max:
                     continue
@@ -450,10 +506,11 @@ def _auto_grid(src_w, src_h, size_ref, context, overlap, unit, tolerance,
 
     if best is None:
         raise ValueError(
-            f"{_TAG_UPSCALE} 타일 격자를 찾지 못했습니다. context_pixel({context}) 이 "
-            f"pid_input_size({size_ref}) 대비 과대하거나 tile_tolerance({tolerance}) 가 "
-            "너무 낮습니다. context_pixel 을 줄이거나, context_windows 를 켜거나, "
-            "pid_input_size 를 키우세요.")
+            f"{_TAG_UPSCALE} 타일 격자를 찾지 못했습니다. PiD 입력의 각 축은 "
+            f"core + 2×context_pixel ≤ pid_input_size({size_ref}) 를 만족해야 하는데, "
+            f"context_pixel({context}) 이 그 절반 이상이면 어떤 격자도 통과하지 "
+            f"못합니다. context_pixel 을 줄이세요. 축 상한을 통과하는 조합이 있는데도 "
+            f"실패했다면 tile_tolerance({tolerance}) 가 너무 낮은 경우입니다.")
     return best[1], best[2], best[3], best[4]
 
 
@@ -635,16 +692,19 @@ class BMKPiDTiledUpscale:
                                "따릅니다. 채널 수가 맞지 않으면 실행 시점에 막습니다."}),
                 "pid_input_size": ("INT", {
                     "default": 1024, "min": 256, "max": 4096, "step": 16,
-                    "tooltip": "타일 크기의 '면적 기준값'(변 길이가 아님). 타일 하나의 PiD "
-                               "입력 면적이 이 값의 제곱 근처가 되도록 격자를 자동 계산하며, "
-                               "타일 종횡비는 소스를 따라갑니다. 체크포인트 학습 크기와 "
-                               "맞추세요(1024_to_4096 → 1024)."}),
+                    "tooltip": "두 가지로 동시에 쓰입니다. (1) 축별 하드 상한 — PiD 입력의 "
+                               "각 축(core + 2×context_pixel)이 이 값을 넘지 못합니다. "
+                               "넘기면 하이라이트가 마젠타로 밀리는 색 회전이 생깁니다. "
+                               "(2) 면적 기준값 — 그 상한 안에서 타일 하나의 면적이 이 값의 "
+                               "제곱 근처가 되도록 격자를 정하며, 타일 종횡비는 소스를 "
+                               "따라갑니다. 체크포인트 학습 크기와 맞추세요"
+                               "(1024_to_4096 → 1024). 올리면 경고가 뜹니다."}),
                 "tile_tolerance": ("FLOAT", {
                     "default": 1.3, "min": 1.0, "max": 3.0, "step": 0.05,
-                    "tooltip": "기준 면적의 몇 배까지는 쪼개지 않을지. 1.3 이면 1280×960 "
-                               "(=1.17×1024²) 이 1타일로 처리됩니다. 예산 기준은 "
-                               "context_windows 가 켜져 있으면 코어 면적, 꺼져 있으면 "
-                               "PiD 입력 면적(코어+컨텍스트)입니다. "
+                    "tooltip": "기준 '면적'의 몇 배까지는 쪼개지 않을지. 축별 상한은 이 값과 "
+                               "무관하게 항상 적용되므로, 올려도 타일 축이 학습 크기를 넘지는 "
+                               "않습니다. 예산 기준은 context_windows 가 켜져 있으면 코어 "
+                               "면적, 꺼져 있으면 PiD 입력 면적(코어+컨텍스트)입니다. "
                                "tile_shape=square 에서는 무시됩니다."}),
                 "context_pixel": ("INT", {
                     "default": 128, "min": 0, "max": 1024, "step": 16,
@@ -686,31 +746,39 @@ class BMKPiDTiledUpscale:
                     "default": "same",
                     "tooltip": "same: 모든 타일이 같은 시드(타일 간 일관성 우수, 권장)."}),
                 "color_match": (["mean", "mean_std", "off"], {
-                    "default": "mean",
+                    "default": "mean_std",
                     "tooltip": "타일 출력을 자기 소스 타일의 색 통계로 되돌립니다. "
-                               "mean: 색 편이만 보정(디테일 대비 보존). "
-                               "mean_std: 채도 폭주까지 억제. 1타일이면 효과가 거의 없습니다."}),
+                               "mean_std[기본]: 평균+표준편차 매칭. 실측 백클립 -93%, "
+                               "흑클립 -90%, 타일 심 불연속 -65%. 대가로 루마 고주파가 "
+                               "8.6% 낮아지는데, 이는 소스 통계로 되돌리는 의도된 동작입니다. "
+                               "mean: 평균만 보정 — PiD 는 타일 평균을 이미 잘 보존하므로 "
+                               "실측상 off 와 거의 같습니다(평균 절대차 0.012/255). "
+                               "1타일이면 전역 보정이 되어 효과가 줄어듭니다."}),
                 "color_match_strength": ("FLOAT", {
                     "default": 1.0, "min": 0.0, "max": 1.0, "step": 0.05}),
                 "model_shift": ("FLOAT", {
                     "default": 0.0, "min": 0.0, "max": 10.0, "step": 0.1,
-                    "tooltip": "ModelSamplingSD3 shift. 0 = 미적용(AIO 와 동일). "
-                               "올리면 과한 샤픈/헤일로가 완화되는 대신 디테일이 약간 "
-                               "줄어듭니다. 4096² 실측: 0→3 에서 고주파 평균 -10%, "
-                               "백/흑 클리핑 -46%/-66%. 3→8 에서는 평균은 -1.4% 뿐인데 "
-                               "극단 오버슈트(p99.9)만 -14% 추가로 깎입니다. "
-                               "권장 탐색 구간 2~8, 클리핑 최소는 3 부근."}),
+                    "tooltip": "ModelSamplingSD3 shift. 0[기본] = 미적용(AIO 와 동일 "
+                               "기준선). 2소스 3시드 실측(0→3): 최종 출력의 색 편이 "
+                               "-11%, 루마 고주파 -0.4%. 최종 출력 기준 이득이 시드 "
+                               "변동폭 안이라 기본값은 0 으로 둡니다. 다만 노드 출력 "
+                               "자체(후단 톤 보정 전)는 색 편이 -32~49%, 타일이 많은 "
+                               "구성에서는 심 불연속도 눈에 띄게 줄어드므로, 후단 없이 "
+                               "쓰거나 타일 수가 많으면 3 이 유리합니다. 8 까지 올리면 "
+                               "디테일이 5~6% 줄어듭니다. 권장 탐색 구간 2~8."}),
                 "accum_dtype": (["fp32", "fp16"], {
                     "default": "fp32",
                     "tooltip": "CPU 누적 캔버스 dtype. 초대형 입력에서 RAM 이 빠듯하면 fp16."}),
                 "tile_shape": (["auto", "square"], {
                     "default": "auto",
-                    "tooltip": "auto: 소스 종횡비를 유지하며 면적 예산에 맞는 격자를 자동 "
-                               "계산합니다(권장). square: v1 방식 재현 — pid_input_size 를 "
-                               "'PiD 입력 한 변'으로 보고 정사각 타일을 강제합니다 "
-                               "(core = pid_input_size − 2×context_pixel). 이때 "
-                               "tile_tolerance·종횡비 제약·면적/패스 상한이 전부 무시되므로 "
-                               "비교 테스트용으로만 쓰세요."}),
+                    "tooltip": "auto: 소스 종횡비를 유지하며 축별 상한과 면적 예산에 맞는 "
+                               "격자를 자동 계산합니다(권장). square: v1 방식 재현 — "
+                               "pid_input_size 를 'PiD 입력 한 변'으로 보고 정사각 타일을 "
+                               "강제합니다 (core = pid_input_size − 2×context_pixel). 이때 "
+                               "tile_tolerance·종횡비 제약·면적/패스 상한과 축별 상한이 전부 "
+                               "무시되므로 비교 테스트용으로만 쓰세요. 다만 pid_input_size 를 "
+                               "1024 로 두면 타일이 정확히 학습 크기에 고정되어 축 초과가 "
+                               "구조적으로 일어나지 않습니다."}),
             },
             "optional": {
                 "latent": ("LATENT", {
@@ -782,6 +850,16 @@ class BMKPiDTiledUpscale:
         ctx_px = max(0, (int(context_pixel) // unit) * unit)
         ov = max(0, (int(core_overlap) // unit) * unit)
 
+        # size_ref 는 축별 하드 상한이기도 하다. 릴리즈된 PiD 체크포인트는 모두
+        # 1024_to_4096 이라 그 위로 올리면 학습 범위 밖에서 색 회전이 생긴다.
+        if size_ref > _PID_TRAINED_SIZE:
+            logger.warning(
+                "%s pid_input_size(%d) 가 체크포인트 학습 크기(%d) 를 넘습니다. "
+                "타일 출력 축이 %dpx 를 넘으면 하이라이트가 마젠타로 밀리는 색 회전이 "
+                "생기며, 컨텍스트 윈도우나 model_shift 로는 막히지 않습니다.",
+                _TAG_UPSCALE, size_ref, _PID_TRAINED_SIZE,
+                _PID_TRAINED_SIZE * _PID_SCALE)
+
         # ── 입력 정규화: latent 우선, 없으면 image → 타일별 인코딩 ──
         use_latent = latent is not None
         if use_latent:
@@ -838,15 +916,23 @@ class BMKPiDTiledUpscale:
 
             # 타일이 하나뿐이면 컨텍스트 링은 전부 가상 패딩(미러)이라 실제 컨텍스트가
             # 아니다. 연산만 늘리므로(1280×960 기준 +52%) 자동으로 떨군다.
+            #
+            # v2.3: 축 상한이 생기면서 "ctx 를 붙이면 여러 타일, 떼면 한 타일" 인
+            # 구간이 생겼다(1024² + ctx 128 → 코어 상한이 768 이라 2×2). 이때도
+            # 링은 어차피 전부 패딩이므로 떼는 쪽이 무조건 낫다 — 그래서 격자가
+            # 이미 1×1 인지가 아니라, ctx 를 떼면 1×1 이 되는지로 판정한다.
             # square 모드에서는 v1 거동을 그대로 두기 위해 적용하지 않는다.
-            if nx * ny == 1 and ctx_px > 0:
-                logger.info("%s 단일 타일이라 context_pixel %d → 0 (컨텍스트 링이 전부 "
-                            "가상 패딩이므로 순수 오버헤드)", _TAG_UPSCALE, ctx_px)
-                ctx_px = 0
-                nx, ny, core_w, core_h = _auto_grid(
-                    src_w, src_h, size_ref, ctx_px, ov, unit, tile_tolerance,
+            if ctx_px > 0:
+                bare = _auto_grid(
+                    src_w, src_h, size_ref, 0, ov, unit, tile_tolerance,
                     budget_core=bool(context_windows),
                     pass_height=int(context_length) if context_windows else None)
+                if bare[0] * bare[1] == 1:
+                    logger.info("%s 단일 타일이라 context_pixel %d → 0 (컨텍스트 링이 "
+                                "전부 가상 패딩이므로 순수 오버헤드)",
+                                _TAG_UPSCALE, ctx_px)
+                    ctx_px = 0
+                    nx, ny, core_w, core_h = bare
         stride_x = core_w - ov
         stride_y = core_h - ov
         xs = _axis_starts(src_w, core_w, stride_x)
