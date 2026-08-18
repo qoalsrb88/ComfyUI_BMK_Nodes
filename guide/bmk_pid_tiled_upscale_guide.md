@@ -315,6 +315,14 @@ v1 에는 없던 조합이라 순수 재현은 아니지만, "정사각 타일 +
   PiD 입력 기준(코어+컨텍스트)으로 바뀌어 훨씬 빡빡해집니다.
 - **`타일 격자를 찾지 못했습니다` 에러** — `context_pixel` 이 `pid_input_size` 의
   절반 이상이면 어떤 격자도 축 상한을 통과하지 못합니다. `context_pixel` 을 줄이세요.
+- **`mat1 and mat2 shapes cannot be multiplied` 에러** — 코어 `context_windows.py`
+  는 조건 텐서의 축 크기가 캔버스와 같으면 그것도 시간축으로 보고 잘라 버립니다.
+  타일 출력 높이가 텍스트 임베딩 차원(Gemma 2 2B = 2304)과 같아지면 터집니다.
+  v2.3 의 `auto` 모드는 코어 높이를 16px 비켜 자동으로 회피하므로 로그에
+  "조건 텐서 축 크기와 같아 코어 높이를 옮깁니다"만 뜨고 넘어갑니다.
+  `tile_shape=square` 에서는 v1 거동 보존을 위해 경고만 남기므로, 경고가 보이면
+  `pid_input_size` 나 `context_pixel` 을 16 단위로 조정하거나 `context_windows` 를
+  끄세요.
 - **타일 하나조차 OOM** — `context_windows` 를 켜거나 `pid_input_size` 를 낮추세요.
   노드가 1회 자동 재시도합니다.
 - **결과 색이 완전히 다름** — `latent_format` 과 인코딩 VAE 불일치. 콘솔 로그 확인.

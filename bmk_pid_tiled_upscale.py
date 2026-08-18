@@ -95,6 +95,16 @@ v2.3 (2026-08)
 - `model_shift` 기본값은 0.0 유지. 두 소스 3시드 실측에서 최종 출력 기준 이득이
   보라색 −11% 뿐이라 시드 변동폭 안이고, 기본값 변경 근거였던 클리핑 개선이
   재현되지 않았다. 툴팁 수치를 실측값으로 교체했다.
+- **컨텍스트 윈도우 축 충돌 회피.** 코어의 `comfy/context_windows.py` 는 조건
+  텐서의 `dim` 축 크기가 캔버스와 같으면 그것도 시간축으로 보고 잘라 버린다
+  (`cond.size(dim) == x_in.size(dim)` 판정). 우리는 dim=2 = 높이 축을 쓰므로 타일
+  출력 높이가 텍스트 임베딩 차원(Gemma 2 2B 는 2304)과 같아지면 조건의 특성축이
+  `context_length` 로 잘려 `mat1 and mat2 shapes cannot be multiplied` 가 난다.
+  1920×1080 + `core_overlap=64` 가 정확히 그 조합이었다(코어 992×576 → 출력
+  3968×**2304**). v2.2 에서도 동일하게 재현되는 기존 결함이며, 축 상한과는 무관하다.
+  이제 격자 확정 후 조건 텐서의 축 크기와 대조해 코어 높이를 unit 만큼 비켜 준다.
+  축 상한에 여유가 있으면 **키우는 쪽**을 먼저 써서 타일 수가 늘지 않는다.
+  `tile_shape=square` 는 v1 거동 보존을 위해 기하를 바꾸지 않고 경고만 남긴다.
 
 v2.2 (2026-08)
 - BMK PiD Loader 에 `encode_vae` 위젯 추가. PiD 모델과 인코딩 VAE 는 latent 계열로
@@ -332,6 +342,33 @@ def _apply_model_shift(model, shift):
                        _TAG_UPSCALE)
         return model
     return ModelSamplingSD3().patch(model, float(shift))[0]
+
+
+def _cond_axis_sizes(cond_list, dim=2):
+    """조건 리스트에 들어 있는 텐서들의 `dim` 축 크기 집합.
+
+    코어 컨텍스트 윈도우가 "이 축은 시간축"이라고 오판할 수 있는 후보들이다.
+    조건 형식은 [[tensor, {키: 값}], ...] 이고 값에도 텐서가 올 수 있다.
+    """
+    sizes = set()
+    if not cond_list:
+        return sizes
+
+    def scan(v):
+        t = getattr(v, "cond", v)  # CONDRegular 등 래퍼 대응
+        if torch.is_tensor(t) and t.ndim > dim:
+            sizes.add(int(t.shape[dim]))
+
+    for entry in cond_list:
+        try:
+            scan(entry[0])
+            extra = entry[1] if len(entry) > 1 else None
+            if isinstance(extra, dict):
+                for v in extra.values():
+                    scan(v)
+        except (TypeError, IndexError):  # 예상 밖 형식이면 조용히 건너뛴다
+            continue
+    return sizes
 
 
 def _apply_context_windows(model, length, overlap, fuse):
@@ -933,6 +970,49 @@ class BMKPiDTiledUpscale:
                                 _TAG_UPSCALE, ctx_px)
                     ctx_px = 0
                     nx, ny, core_w, core_h = bare
+
+        # ── 컨텍스트 윈도우 축 충돌 회피 ──
+        # 코어 컨텍스트 윈도우는 조건 텐서의 dim 축 크기가 캔버스와 "우연히 같으면"
+        # 그것도 시간축이라고 보고 잘라 버린다(comfy/context_windows.py 의
+        # `cond.size(dim) == x_in.size(dim)` 판정). 우리는 dim=2 = 높이 축을 쓰므로,
+        # 타일 출력 높이가 텍스트 임베딩 차원(Gemma 2 2B 는 2304)과 같아지면 조건의
+        # 특성축이 context_length 로 잘려 mat1/mat2 shape 에러가 난다.
+        # 코어 높이를 unit 만큼 줄여 충돌만 비켜 간다(출력 높이가 4×unit 만큼 이동).
+        if context_windows and not square:
+            collide = _cond_axis_sizes(pid_ctx.get("positive")) | \
+                      _cond_axis_sizes(pid_ctx.get("negative"))
+            for _ in range(8):
+                out_h_try = (core_h + 2 * ctx_px) * _PID_SCALE
+                if out_h_try not in collide:
+                    break
+                # 코어를 키우는 쪽은 타일 수가 늘지 않으므로 축 상한에 여유가 있으면
+                # 그쪽을 먼저 쓴다. 여유가 없을 때만 줄인다(타일이 한 줄 늘 수 있음).
+                if core_h + unit + 2 * ctx_px <= size_ref:
+                    new_h = core_h + unit
+                elif core_h - unit - ov >= unit:
+                    new_h = core_h - unit
+                else:
+                    logger.warning(
+                        "%s 타일 출력 높이 %d 가 조건 텐서 축과 충돌하는데 코어를 더 "
+                        "옮길 수 없습니다. core_overlap 이나 context_length 를 "
+                        "조정하세요.", _TAG_UPSCALE, out_h_try)
+                    break
+                logger.info(
+                    "%s 타일 출력 높이 %d 가 조건 텐서 축 크기와 같아 코어 높이를 "
+                    "%d → %d 로 옮깁니다(컨텍스트 윈도우 슬라이싱 충돌 회피).",
+                    _TAG_UPSCALE, out_h_try, core_h, new_h)
+                core_h = new_h
+        elif context_windows and square:
+            # square 는 v1 거동 보존이 목적이라 기하를 건드리지 않는다. 대신 알린다.
+            out_h_try = (core_h + 2 * ctx_px) * _PID_SCALE
+            if out_h_try in (_cond_axis_sizes(pid_ctx.get("positive")) |
+                             _cond_axis_sizes(pid_ctx.get("negative"))):
+                logger.warning(
+                    "%s tile_shape=square 의 타일 출력 높이 %d 가 조건 텐서 축 크기와 "
+                    "같습니다. 코어 컨텍스트 윈도우가 조건까지 잘라 shape 에러가 납니다. "
+                    "pid_input_size 나 context_pixel 을 16 단위로 조정하거나 "
+                    "context_windows 를 끄세요.", _TAG_UPSCALE, out_h_try)
+
         stride_x = core_w - ov
         stride_y = core_h - ov
         xs = _axis_starts(src_w, core_w, stride_x)
