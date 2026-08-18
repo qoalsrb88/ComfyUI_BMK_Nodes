@@ -962,7 +962,8 @@ class BMKPiDTiledUpscale:
                         try:
                             out_tile = self._sample_tile(
                                 pid_ctx, model, sampler, sigmas, tile_lat, fmt_cls,
-                                degrade_sigma, tile_seed, out_h, out_w)
+                                degrade_sigma, tile_seed, out_h, out_w,
+                                latent_format)
                         except mm.OOM_EXCEPTION as exc:
                             raise RuntimeError(
                                 f"{_TAG_UPSCALE} 타일 하나({tile_w}x{tile_h} → "
