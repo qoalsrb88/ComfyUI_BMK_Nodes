@@ -18,9 +18,17 @@
 danbooru 태그를 자체 표기로 바꿔 쓴 것들(``character image`` → ``tachi-e``
 등)을 원래 표기로 되돌린다.
 
-문법 변환(``가중치::내용::`` → ``(내용:가중치)``)은 하지 않는다. 단일 책임 —
-그건 prompt_converter.py 가 정본이며, 이 노드 뒤에 체이닝한다.
+가중치 문법 변환(``0.5::toned::`` → ``(toned:0.75)``)도 마지막 단계로 함께
+수행한다. 다만 변환 로직을 재구현하지는 않는다 — prompt_converter.py 의
+공개 API(BMKPromptSyntaxConverter.convert)를 그대로 호출하므로 문법 변환의
+정본은 여전히 하나다. weight_syntax 를 ``NovelAI (keep as-is)`` 로 두면
+기존처럼 정리만 하고 변환은 뒤쪽 Prompt Converter 에 맡길 수 있다.
 
+    BMK Prompt From Image ─ positive
+        └→ BMK NAI To Anima  (weight_syntax = Anima)
+            └→ (Anima 품질 프롬프트를 앞에 concat) → CLIPTextEncode
+
+    # weight_syntax = NovelAI (keep as-is) 로 두면 예전 배선도 그대로 유효
     BMK Prompt From Image ─ positive
         └→ BMK NAI To Anima
             └→ Prompt Converter (NovelAI → ComfyUI)
@@ -54,9 +62,17 @@ danbooru 태그를 자체 표기로 바꿔 쓴 것들(``character image`` → ``
     1:1이 아니다. ``:|`` 로 고정한다.
 - extra_remove_tags : 위 목록으로 안 잡히는 태그를 직접 지정(콤마/줄바꿈 구분).
   가중치 래퍼를 벗긴 내용과 대소문자·언더바 무시하고 정확히 비교한다.
+- weight_syntax : 정리가 끝난 뒤 가중치 표기를 무엇으로 낼지. 기본 "Anima".
+    Anima              : 0.5::toned:: → (toned:0.75)   (×weight_multiplier)
+    ComfyUI            : 0.5::toned:: → (toned:0.5)
+    NovelAI (keep as-is): 변환하지 않음 — 뒤에 Prompt Converter 를 직접 붙일 때.
+  모든 정리 단계 이후에 적용된다(앞 단계들은 NAI 문법을 전제로 동작하므로
+  순서를 바꿀 수 없다).
+- weight_multiplier / apply_artist_weight_multiplier : Anima 모드에서만 사용.
+  Prompt Converter 의 동명 옵션과 의미·기본값이 같다.
 - join_lines : True 면 전체를 ", " 한 줄로 접는다. 기본 False — 원본의 줄
-  단위 의미 그룹(인물/의상/배경 …)을 유지하는 편이 읽기 좋고, 뒤에 오는
-  Prompt Converter 도 줄 구조를 보존한다.
+  단위 의미 그룹(인물/의상/배경 …)을 유지하는 편이 읽기 좋고, 가중치 변환
+  단계도 줄 구조를 보존한다.
 
 출력
 ────
@@ -67,6 +83,8 @@ danbooru 태그를 자체 표기로 바꿔 쓴 것들(``character image`` → ``
 버전 이력
 ─────────
 v1 (2026-08) : 최초. prefix 절단 / 음수 블록 / 품질·메타 / 표기 역변환.
+v2 (2026-08) : weight_syntax 추가 — 가중치 문법 변환을 노드 안에서 끝낼 수
+               있게 함. 변환은 prompt_converter 에 위임(정본 유지).
 """
 
 from __future__ import annotations
@@ -77,6 +95,18 @@ from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 _TAG = "[ComfyUI_BMK_Nodes::NaiToAnima]"
+
+# 가중치 문법 변환은 prompt_converter 가 정본. 같은 패키지지만 import 실패가
+# 정리 기능까지 죽이지 않도록 격리하고, 실제로 변환을 요청할 때만 에러를 낸다.
+try:  # 패키지로 로드되는 정상 경로
+    from . import prompt_converter as _pc
+except ImportError:  # 단독 import (테스트 등)
+    try:
+        import prompt_converter as _pc  # type: ignore[no-redef]
+    except Exception:  # pragma: no cover
+        _pc = None  # type: ignore[assignment]
+except Exception:  # pragma: no cover
+    _pc = None  # type: ignore[assignment]
 
 
 # ─── 상수 테이블 ────────────────────────────────────────────────
@@ -163,6 +193,12 @@ _SYNTAX_RULES: Tuple[Tuple[re.Pattern, str], ...] = tuple(
     for src, dst in _SYNTAX_MAP
 )
 
+# 출력 가중치 표기
+WEIGHT_ANIMA = "Anima"
+WEIGHT_COMFYUI = "ComfyUI"
+WEIGHT_KEEP = "NovelAI (keep as-is)"
+WEIGHT_SYNTAX_MODES = [WEIGHT_ANIMA, WEIGHT_COMFYUI, WEIGHT_KEEP]
+
 
 # ─── 순수 로직 ──────────────────────────────────────────────────
 
@@ -230,6 +266,56 @@ def _restore_syntax(inner: str) -> str:
     return inner
 
 
+_converter_instance = None
+
+
+def _converter():
+    """prompt_converter 의 노드 인스턴스를 지연 생성해 재사용한다."""
+    global _converter_instance
+    if _converter_instance is None:
+        if _pc is None:
+            raise RuntimeError(
+                "prompt_converter 모듈을 불러오지 못해 가중치 문법을 변환할 수 "
+                "없습니다. weight_syntax 를 'NovelAI (keep as-is)' 로 두고 별도의 "
+                "Prompt Converter 노드를 체이닝하세요."
+            )
+        _converter_instance = _pc.BMKPromptSyntaxConverter()
+    return _converter_instance
+
+
+def _apply_weight_syntax(
+    text: str,
+    mode: str,
+    weight_multiplier: float,
+    apply_artist_weight_multiplier: bool,
+) -> str:
+    """NAI 가중치 표기를 ComfyUI / Anima 표기로 변환한다.
+
+    로직은 전부 prompt_converter 의 공개 API 에 위임한다 — 문법 변환의 정본을
+    한 곳에 유지하기 위함. 줄 구조는 변환기가 보존한다.
+    """
+    if mode == WEIGHT_KEEP or not text.strip():
+        return text
+
+    conv = _converter()
+    result = conv.convert(
+        text=text,
+        mode="NovelAI → ComfyUI",
+        weight_multiplier=weight_multiplier,
+        apply_artist_weight_multiplier=apply_artist_weight_multiplier,
+    )[0]
+
+    if mode == WEIGHT_ANIMA:
+        result = conv.convert(
+            text=result,
+            mode="ComfyUI → Anima",
+            weight_multiplier=weight_multiplier,
+            apply_artist_weight_multiplier=apply_artist_weight_multiplier,
+        )[0]
+
+    return result
+
+
 def convert(
     text: str,
     strip_prefix: bool = True,
@@ -239,6 +325,9 @@ def convert(
     drop_nai_style_meta: bool = True,
     restore_danbooru_syntax: bool = True,
     extra_remove_tags: str = "",
+    weight_syntax: str = WEIGHT_ANIMA,
+    weight_multiplier: float = 1.5,
+    apply_artist_weight_multiplier: bool = False,
     join_lines: bool = False,
 ) -> Tuple[str, Dict[str, List[str]]]:
     """NAI 프롬프트를 Anima용 본문으로 정리한다.
@@ -253,6 +342,7 @@ def convert(
         "style_meta": [],
         "extra": [],
         "syntax": [],
+        "weight": [],
         "notes": [],
     }
 
@@ -341,6 +431,21 @@ def convert(
         result = "\n".join(out_lines)
         result = re.sub(r"[ \t]*,[ \t]*\Z", "", result)
 
+    # 4) 가중치 문법 변환 — 반드시 마지막. 위 단계들은 NAI 문법을 전제로 한다.
+    if weight_syntax != WEIGHT_KEEP:
+        result = _apply_weight_syntax(
+            result,
+            mode=weight_syntax,
+            weight_multiplier=weight_multiplier,
+            apply_artist_weight_multiplier=apply_artist_weight_multiplier,
+        )
+        if weight_syntax == WEIGHT_ANIMA:
+            log["weight"].append(
+                f"NovelAI → Anima 표기 (가중치 ×{weight_multiplier:g})"
+            )
+        else:
+            log["weight"].append("NovelAI → ComfyUI 표기")
+
     return result, log
 
 
@@ -352,6 +457,7 @@ def _format_report(log: Dict[str, List[str]]) -> str:
         ("style_meta", "NAI 화풍 메타 제거"),
         ("extra", "추가 지정 태그 제거"),
         ("syntax", "danbooru 표기 복원"),
+        ("weight", "가중치 문법 변환"),
     )
     lines: List[str] = []
     for key, label in labels:
@@ -373,13 +479,15 @@ class BMKNaiToAnima:
     RETURN_TYPES = ("STRING", "STRING")
     RETURN_NAMES = ("text", "report")
     DESCRIPTION = (
-        "NovelAI V4/V5 프롬프트에서 Anima와 호환되지 않는 구간을 걷어냅니다. "
-        "앞쪽 화풍 prefix, 음수 가중치 블록, NAI 품질/화풍 메타 태그를 제거하고 "
-        "NAI 전용 표기(character image, peace sign …)를 danbooru 표기로 되돌립니다. "
-        "'가중치::내용::' 문법 변환은 하지 않으니 뒤에 Prompt Converter를 체이닝하세요."
+        "NovelAI V4/V5 프롬프트에서 Anima와 호환되지 않는 구간을 걷어내고 가중치 "
+        "문법까지 변환합니다. 앞쪽 화풍 prefix, 음수 가중치 블록, NAI 품질/화풍 메타 "
+        "태그를 제거하고, NAI 전용 표기(character image, peace sign …)를 danbooru "
+        "표기로 되돌린 뒤, 0.5::toned:: → (toned:0.75) 로 변환합니다. "
+        "weight_syntax 를 'NovelAI (keep as-is)' 로 두면 변환은 생략됩니다."
     )
     OUTPUT_TOOLTIPS = (
-        "정리된 프롬프트. NAI 가중치 문법은 그대로이므로 Prompt Converter로 넘기세요.",
+        "정리·변환이 끝난 프롬프트. weight_syntax 가 Anima 면 그대로 "
+        "CLIPTextEncode 에 물릴 수 있습니다.",
         "무엇을 얼마나 걷어냈는지 항목별 요약. 보험 절단이 돌았는지 여기서 확인합니다.",
     )
     SEARCH_ALIASES = [
@@ -389,10 +497,12 @@ class BMKNaiToAnima:
         "strip artist prefix",
         "strip quality tags",
         "danbooru tags",
+        "weight syntax",
         "tachi-e",
         "프롬프트 정리",
         "작가 프롬프트 제거",
         "품질 태그 제거",
+        "가중치 변환",
         "노벨ai",
         "아니마",
     ]
@@ -488,14 +598,53 @@ class BMKNaiToAnima:
                         ),
                     },
                 ),
+                "weight_syntax": (
+                    WEIGHT_SYNTAX_MODES,
+                    {
+                        "default": WEIGHT_ANIMA,
+                        "tooltip": (
+                            "정리가 끝난 뒤 가중치 표기를 무엇으로 낼지 정합니다.\n"
+                            "  Anima   : 0.5::toned:: → (toned:0.75)  (×배율)\n"
+                            "  ComfyUI : 0.5::toned:: → (toned:0.5)\n"
+                            "  NovelAI (keep as-is) : 변환하지 않음 — 뒤에 Prompt "
+                            "Converter 를 직접 붙일 때 사용합니다.\n"
+                            "변환 로직은 Prompt Converter 노드와 완전히 동일합니다."
+                        ),
+                    },
+                ),
+                "weight_multiplier": (
+                    "FLOAT",
+                    {
+                        "default": 1.5,
+                        "min": 0.1,
+                        "max": 5.0,
+                        "step": 0.05,
+                        "tooltip": (
+                            "Anima 모드에서만 사용하는 가중치 배율 (new = 원본 × 배율).\n"
+                            "명시적 가중치가 없는 태그는 건드리지 않습니다.\n"
+                            "ComfyUI / NovelAI 모드에서는 무시됩니다."
+                        ),
+                    },
+                ),
+                "apply_artist_weight_multiplier": (
+                    "BOOLEAN",
+                    {
+                        "default": False,
+                        "tooltip": (
+                            "켜면 (@naga u:0.5) 같은 단일 작가 가중치 그룹에도 배율을 "
+                            "적용합니다. 끄면 작가 가중치는 원본 그대로 보존됩니다.\n"
+                            "가중치가 없는 작가 태그는 이 설정과 무관하게 항상 그대로입니다."
+                        ),
+                    },
+                ),
                 "join_lines": (
                     "BOOLEAN",
                     {
                         "default": False,
                         "tooltip": (
                             "True면 전체를 ', ' 한 줄로 접습니다. 기본 False — 원본의 "
-                            "줄 단위 의미 그룹을 유지하며, 뒤의 Prompt Converter도 줄 "
-                            "구조를 보존합니다."
+                            "줄 단위 의미 그룹을 유지하며, 가중치 변환 단계도 줄 구조를 "
+                            "보존합니다."
                         ),
                     },
                 ),
@@ -526,6 +675,9 @@ class BMKNaiToAnima:
         strip_quality_tags: bool,
         drop_nai_style_meta: bool,
         restore_danbooru_syntax: bool,
+        weight_syntax: str,
+        weight_multiplier: float,
+        apply_artist_weight_multiplier: bool,
         join_lines: bool,
         extra_remove_tags: str = "",
     ):
@@ -538,6 +690,9 @@ class BMKNaiToAnima:
             drop_nai_style_meta=drop_nai_style_meta,
             restore_danbooru_syntax=restore_danbooru_syntax,
             extra_remove_tags=extra_remove_tags,
+            weight_syntax=weight_syntax,
+            weight_multiplier=weight_multiplier,
+            apply_artist_weight_multiplier=apply_artist_weight_multiplier,
             join_lines=join_lines,
         )
 
