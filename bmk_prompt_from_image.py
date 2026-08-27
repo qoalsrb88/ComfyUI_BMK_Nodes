@@ -2,41 +2,66 @@
 
 배경
 ────
-NovelAI 공식 사이트가 아닌 서드파티 웹 서비스(NAI API 래퍼)로 뽑은 PNG는, 자체
-포맷 tEXt 청크 하나에 생성 설정 전체를 JSON으로 밀어넣는 경우가 많다. 실제 샘플
-(청크 키 ``forge``, nai-diffusion-5-curated):
+생성 이미지에 프롬프트를 심는 방식은 서비스마다 다르다. 이 노드가 실제로 마주친
+것만 크게 세 갈래다.
 
-    {"width":832, "height":1216, "steps":28, ...,
-     "prompt":            "1girl, rabbit girl,\\nsolo, full body, ...",
-     "negative_prompt":   "1.4::worst quality, ... ::,\\nlowres, ...",
-     "image_workspace_state":{"settings":{
-         "prompt":"(동일)", "negative_prompt":"(동일)",
-         "positive_prompt_prefix":"", "positive_prompt_suffix":"", ...}},
-     "forge_version":1, "backend":"novelai"}
+1) **NovelAI 계열** — PNG tEXt 청크에 ``Description`` (positive 평문) 과
+   ``Comment`` (생성 설정 전체 JSON) 를 넣는다. V3는 ``Comment.uc`` 가 negative,
+   V4/V5는 ``Comment.v4_prompt.caption.base_caption`` / ``v4_negative_prompt`` 가
+   정본이고 다중 캐릭터 프롬프트는 ``char_captions[].char_caption`` 에 따로 들어간다::
+
+       Description: "1girl, rabbit girl, solo, ..."
+       Comment:     {"prompt":"...", "uc":"1.4::worst quality ::,\\nlowres, ...",
+                     "steps":28, "sampler":"k_euler_ancestral",
+                     "v4_prompt":{"caption":{"base_caption":"...",
+                                             "char_captions":[{"char_caption":"..."}]}},
+                     "v4_negative_prompt":{"caption":{"base_caption":"...",
+                                                      "char_captions":[]}},
+                     "request_type":"PromptGenerateRequest",
+                     "model_name":"NovelAI Diffusion V5", ...}
+       Software:    "NovelAI"
+       Source:      "NovelAI Diffusion V5 DB276663"
+
+2) **자체 래퍼(사내 API 등)** — NAI를 감싼 웹 서비스가 자기 이름의 tEXt 청크 하나에
+   생성 설정 전체를 JSON으로 밀어넣는다. 프롬프트가 청크 값 JSON *안쪽*에,
+   때로는 ``image_workspace_state.settings`` 처럼 한참 아래 중첩되어 있다::
+
+       <서비스명>: {"width":832, "height":1216, "steps":28,
+                    "prompt":"1girl, rabbit girl,\\nsolo, ...",
+                    "negative_prompt":"1.4::worst quality ::,\\nlowres, ...",
+                    "image_workspace_state":{"settings":{
+                        "prompt":"(동일)", "negative_prompt":"(동일)",
+                        "positive_prompt_prefix":"", "positive_prompt_suffix":""}},
+                    "backend":"novelai"}
+
+3) **A1111 계열** — ``parameters`` 청크 하나에 평문으로.
 
 기존 ``novelai_metadata.py`` (NAI Extract / NAI Extract Simple) 는 청크의
-**top-level 키만** 후보 목록으로 훑기 때문에, 위처럼 프롬프트가 청크 값 JSON
-*안쪽*에 들어있으면 positive/negative가 빈 문자열로 나온다. 이 노드는 그 지점을
-메운다 — 서비스별 키 이름을 하드코딩하지 않고, 중첩 JSON을 전부 펼친 뒤
-**경로(path) 기반**으로 positive/negative를 판정한다.
+**top-level 키만** 후보 목록으로 훑기 때문에 (2) 처럼 중첩된 경우 빈 문자열이
+나온다. 이 노드가 그 지점을 메운다.
 
 동작
 ────
 1. 상류 Load Image 계열 노드를 그래프에서 역추적해 원본 파일 경로를 찾는다
    (BMKLoadImageCrop 처럼 표준 LoadImage가 아니어도 image 위젯 문자열로 인식).
-2. PNG tEXt/iTXt 청크 + (JPEG/WebP인 경우) EXIF UserComment 를 모은다.
-3. 값이 JSON이면 재귀적으로 펼친다. 깊이·노드 수 상한이 있고, ComfyUI 자신의
-   ``prompt``/``workflow`` 그래프 청크는 오탐 방지를 위해 통째로 건너뛴다.
-4. leaf 키가 프롬프트 후보(prompt / positive / base_caption / uc / negative_prompt
-   …)면, **경로 전체에** negative 힌트가 있는지로 positive/negative를 가른다.
-   예) ``Comment.v4_negative_prompt.caption.base_caption`` → negative.
-5. 같은 후보가 여러 깊이에서 나오면 **얕은 쪽 우선**, 동률이면 긴 쪽.
-   → forge 포맷은 top-level ``prompt`` (깊이 2) 가
-     ``image_workspace_state.settings.prompt`` (깊이 4) 를 이긴다.
-6. 위 경로로 못 찾으면 A1111 ``parameters`` 평문 포맷을 마지막으로 시도한다.
+2. PNG tEXt/zTXt/iTXt 청크 + (JPEG/WebP인 경우) EXIF UserComment 를 모은다.
+   전부 비었고 알파 채널이 있으면 stealth pnginfo(알파 LSB 스테가노그래피)까지
+   마지막으로 훑는다.
+3. **포맷 인식기**를 순서대로 돌린다. 각 인식기는 자기 포맷의 키 경로를 알고 있어서
+   깊이 휴리스틱에 기대지 않는다.
 
-지원 확인된 포맷: forge(서드파티 NAI 래퍼), NovelAI 공식(Comment/Description,
-V3·V4 base_caption), A1111 parameters, 그리고 같은 모양의 임의 서비스 JSON.
+       NovelAI  →  자체 래퍼 JSON  →  A1111 parameters  →  범용 경로 탐색
+
+4. 위에서 아무도 못 잡으면 마지막으로 **범용 경로 탐색**을 돈다. 중첩 JSON을 전부
+   펼친 뒤 leaf 키가 프롬프트 후보(prompt / positive / base_caption / uc …)면
+   **경로 전체에** negative 힌트가 있는지로 positive/negative를 가른다.
+   예) ``Comment.v4_negative_prompt.caption.base_caption`` → negative.
+   같은 후보가 여러 깊이에서 나오면 얕은 쪽 우선, 동률이면 긴 쪽.
+   → 처음 보는 서비스 포맷도 이 단계에서 대개 걸린다.
+
+3단계가 4단계보다 앞서는 게 핵심이다. 깊이만 보는 4단계는 NovelAI 포맷에서
+``Description`` (깊이 1) 이 정본인 ``v4_prompt.caption.base_caption`` (깊이 4) 을
+이겨버리고, 캐릭터 프롬프트(``char_captions``)를 통째로 흘린다.
 
 주의 — 문법 호환성
 ──────────────────
@@ -56,23 +81,28 @@ V3·V4 base_caption), A1111 parameters, 그리고 같은 모양의 임의 서비
 - metadata_key : 특정 청크만 보고 싶을 때 키 이름 지정(빈 값이면 전체 자동 탐색).
 - apply_prefix_suffix : 선택된 프롬프트와 같은 depth에 positive_prompt_prefix /
   positive_prompt_suffix / trigger_words 가 비어있지 않게 들어있으면 앞뒤로 합침.
-  (샘플에서는 전부 빈 문자열이라 무동작. 서비스가 프리셋을 쓰는 경우 대비.)
+- include_char_captions : NAI V4/V5 다중 캐릭터 프롬프트(char_captions)를 base
+  뒤에 줄바꿈으로 이어붙임. 끄면 base_caption만.
 - join_lines : 줄바꿈을 ", " 로 접고 중복 콤마/공백을 정리. 기본 False —
   Prompt Converter 가 줄 단위 구조를 보존하므로 보통 그대로 두는 게 낫다.
 
 버전 이력
 ─────────
-v1 (2026-08) : 최초. 경로 기반 재귀 탐색 + forge/NAI/A1111 커버.
+v1 (2026-08) : 최초. 경로 기반 재귀 탐색 + 래퍼/NAI/A1111 커버.
+v2 (2026-08) : 포맷 인식 계층 도입(범용 탐색은 폴백으로 강등).
+               NAI V4/V5 char_captions 지원, stealth pnginfo 폴백,
+               이중 인코딩 JSON 해제, source 출력에 감지된 포맷 표기.
 """
 
 from __future__ import annotations
 
+import gzip
 import json
 import logging
 import re
 from collections import deque
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterator, List, NamedTuple, Optional, Sequence, Tuple
 
 from PIL import Image, UnidentifiedImageError
 
@@ -95,6 +125,7 @@ _POS_LEAF_KEYS = frozenset(
         "positive",
         "positive_prompt",
         "base_caption",
+        "char_caption",
         "caption",
         "description",
         "input",
@@ -127,6 +158,11 @@ _MAX_JSON_CHARS = 8 * 1024 * 1024
 # 파일 경로 역추적에서 image 파일명으로 인정할 확장자
 _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".avif", ".jxl")
 
+# 프롬프트 앞뒤로 합칠 프리셋 키(서비스가 프리셋을 쓰는 경우 대비)
+_PREFIX_KEYS = ("positive_prompt_prefix",)
+_SUFFIX_KEYS = ("positive_prompt_suffix",)
+_TRIGGER_KEYS = ("trigger_words",)
+
 
 # ─── 유틸 ───────────────────────────────────────────────────────
 
@@ -134,19 +170,58 @@ def _norm(key: Any) -> str:
     return str(key).strip().replace("-", "_").replace(" ", "_").lower()
 
 
-def _try_json(value: str) -> Optional[Any]:
-    """문자열이 JSON 객체/배열이면 파싱해서 반환, 아니면 None."""
+def _try_json(value: Any) -> Optional[Any]:
+    """문자열이 JSON 객체/배열이면 파싱해서 반환, 아니면 None.
+
+    값이 JSON으로 한 번 더 감싸인 경우(문자열을 통째로 json.dumps 한 서비스)가
+    있어서, 파싱 결과가 또 문자열이면 몇 번 더 벗겨본다.
+    """
     if not isinstance(value, str):
         return None
-    s = value.strip()
-    if len(s) > _MAX_JSON_CHARS:
+
+    current = value
+    for _ in range(3):
+        s = current.strip()
+        if len(s) > _MAX_JSON_CHARS:
+            return None
+        if not s:
+            return None
+        if s[0] in "{[":
+            try:
+                return json.loads(s)
+            except Exception:
+                return None
+        if s[0] == '"':  # 이중 인코딩 의심 — 한 겹 벗기고 재시도
+            try:
+                unwrapped = json.loads(s)
+            except Exception:
+                return None
+            if not isinstance(unwrapped, str):
+                return None
+            current = unwrapped
+            continue
         return None
-    if not s or s[0] not in "{[":
-        return None
-    try:
-        return json.loads(s)
-    except Exception:
-        return None
+    return None
+
+
+def _as_text(value: Any) -> str:
+    """프롬프트로 쓸 수 있는 문자열이면 strip해서, 아니면 빈 문자열."""
+    return value.strip() if isinstance(value, str) and value.strip() else ""
+
+
+def _dig(node: Any, *keys: str) -> Any:
+    """중첩 dict를 안전하게 파고든다. 중간에 JSON 문자열이 있으면 펼친다."""
+    for key in keys:
+        if isinstance(node, str):
+            node = _try_json(node)
+        if not isinstance(node, dict):
+            return None
+        node = node.get(key)
+    if isinstance(node, str):
+        parsed = _try_json(node)
+        if isinstance(parsed, (dict, list)):
+            return parsed
+    return node
 
 
 def _looks_like_comfy_graph(obj: Any) -> bool:
@@ -163,6 +238,178 @@ def _looks_like_comfy_graph(obj: Any) -> bool:
                 return True
     return False
 
+
+def _iter_scopes(root: Dict[str, Any]) -> Iterator[Tuple[str, Dict[str, Any]]]:
+    """top-level 청크 중 JSON 객체인 것만 (키, 파싱된 dict) 로 흘린다."""
+    for key, value in root.items():
+        if _norm(key) in _SKIP_CHUNK_KEYS:
+            continue
+        parsed = _try_json(value) if isinstance(value, str) else value
+        if isinstance(parsed, dict) and not _looks_like_comfy_graph(parsed):
+            yield str(key), parsed
+
+
+class _Found(NamedTuple):
+    """인식기 한 판의 결과."""
+
+    positive: str
+    negative: str
+    source: str
+    # positive_prompt_prefix / suffix / trigger_words 를 찾아볼 컨테이너
+    affix_scope: Optional[Dict[str, Any]] = None
+
+
+# ─── 인식기 1: NovelAI (공식 / API 패스스루) ────────────────────
+
+def _is_novelai(root: Dict[str, Any]) -> bool:
+    for key, value in root.items():
+        nk = _norm(key)
+        if nk in ("software", "source") and isinstance(value, str):
+            if "novelai" in value.lower():
+                return True
+
+    for _, scope in _iter_scopes(root):
+        if "v4_prompt" in scope or "v4_negative_prompt" in scope:
+            return True
+        if _as_text(scope.get("request_type")) == "PromptGenerateRequest":
+            return True
+        if "uc" in scope and any(k in scope for k in ("steps", "sampler", "seed", "noise_schedule")):
+            return True
+    return False
+
+
+def _caption_text(caption: Any, include_chars: bool) -> str:
+    """v4_prompt.caption / v4_negative_prompt.caption 을 한 덩어리 문자열로.
+
+    base_caption 뒤에 char_captions[].char_caption 을 줄바꿈으로 잇는다.
+    캐릭터-좌표(centers) 대응은 ComfyUI 쪽에 표현할 자리가 없어 버린다.
+    """
+    if not isinstance(caption, dict):
+        return ""
+
+    parts = [_as_text(caption.get("base_caption"))]
+
+    if include_chars:
+        chars = caption.get("char_captions")
+        if isinstance(chars, (list, tuple)):
+            for entry in chars[:64]:
+                if isinstance(entry, dict):
+                    parts.append(_as_text(entry.get("char_caption")))
+                elif isinstance(entry, str):
+                    parts.append(_as_text(entry))
+
+    return "\n".join(p for p in parts if p)
+
+
+def _extract_novelai(root: Dict[str, Any], include_chars: bool) -> Optional[_Found]:
+    if not _is_novelai(root):
+        return None
+
+    positive = negative = ""
+    pos_src = neg_src = ""
+
+    for chunk, scope in _iter_scopes(root):
+        if not positive:
+            text = _caption_text(_dig(scope, "v4_prompt", "caption"), include_chars)
+            if text:
+                positive, pos_src = text, f"{chunk}/v4_prompt/caption"
+            elif _as_text(scope.get("prompt")):
+                positive, pos_src = _as_text(scope["prompt"]), f"{chunk}/prompt"
+
+        if not negative:
+            text = _caption_text(_dig(scope, "v4_negative_prompt", "caption"), include_chars)
+            if text:
+                negative, neg_src = text, f"{chunk}/v4_negative_prompt/caption"
+            else:
+                for name in ("uc", "negative_prompt"):
+                    if _as_text(scope.get(name)):
+                        negative, neg_src = _as_text(scope[name]), f"{chunk}/{name}"
+                        break
+
+    # Comment 청크가 통째로 없는 구형 NAI PNG — Description 평문이 곧 positive.
+    if not positive:
+        for key, value in root.items():
+            if _norm(key) == "description" and _as_text(value):
+                positive, pos_src = _as_text(value), str(key)
+                break
+
+    if not positive and not negative:
+        return None
+
+    bits = [b for b in (f"+{pos_src}" if pos_src else "", f"-{neg_src}" if neg_src else "") if b]
+    return _Found(positive, negative, "novelai " + " ".join(bits))
+
+
+# ─── 인식기 2: 자체 래퍼 JSON ───────────────────────────────────
+
+_WRAPPER_NEG_KEYS = ("negative_prompt", "negativeprompt", "uc", "undesired_content")
+_WRAPPER_NESTED = (("image_workspace_state", "settings"), ("settings",), ("params",), ("parameters",))
+
+
+def _extract_wrapper(root: Dict[str, Any]) -> Optional[_Found]:
+    """청크 값 JSON 안에 prompt / negative_prompt 를 담는 래퍼 서비스 포맷.
+
+    top-level 을 먼저 보고, 비어 있을 때만 알려진 중첩 위치를 뒤진다
+    (중첩 쪽은 UI 상태 스냅샷이라 실제 생성값과 어긋나는 경우가 있다).
+    """
+    for chunk, scope in _iter_scopes(root):
+        containers: List[Tuple[str, Dict[str, Any]]] = [(chunk, scope)]
+        for path in _WRAPPER_NESTED:
+            nested = _dig(scope, *path)
+            if isinstance(nested, dict):
+                containers.append((chunk + "/" + "/".join(path), nested))
+
+        for label, container in containers:
+            positive = _as_text(container.get("prompt")) or _as_text(container.get("positive_prompt"))
+            negative = ""
+            neg_key = ""
+            for name in _WRAPPER_NEG_KEYS:
+                if _as_text(container.get(name)):
+                    negative, neg_key = _as_text(container[name]), name
+                    break
+
+            if positive and negative:
+                pos_key = "prompt" if _as_text(container.get("prompt")) else "positive_prompt"
+                return _Found(
+                    positive,
+                    negative,
+                    f"wrapper +{label}/{pos_key} -{label}/{neg_key}",
+                    container,
+                )
+    return None
+
+
+# ─── 인식기 3: A1111 평문 ───────────────────────────────────────
+
+_A1111_NEG = re.compile(r"\nNegative prompt:\s*", re.IGNORECASE)
+_A1111_TAIL = re.compile(r"\n(?:Steps|Sampler|CFG scale|Seed|Size|Model):", re.IGNORECASE)
+
+
+def _extract_a1111(root: Dict[str, Any]) -> Optional[_Found]:
+    for key, value in root.items():
+        if not isinstance(value, str):
+            continue
+        if _norm(key) != "parameters" and "Negative prompt:" not in value:
+            continue
+
+        neg_split = _A1111_NEG.split(value, maxsplit=1)
+        positive = neg_split[0]
+        negative = neg_split[1] if len(neg_split) > 1 else ""
+
+        tail = _A1111_TAIL.search(positive)
+        if tail and not negative:
+            positive = positive[: tail.start()]
+        tail = _A1111_TAIL.search(negative)
+        if tail:
+            negative = negative[: tail.start()]
+
+        positive, negative = positive.strip(), negative.strip()
+        if positive or negative:
+            return _Found(positive, negative, f"a1111 +{key}")
+    return None
+
+
+# ─── 인식기 4: 범용 경로 탐색(폴백) ─────────────────────────────
 
 def _classify(path: Sequence[str]) -> Optional[str]:
     """경로를 보고 'pos' / 'neg' / None 판정."""
@@ -224,8 +471,7 @@ def _collect_candidates(root: Dict[str, Any]) -> Tuple[List[tuple], List[tuple]]
         if not isinstance(value, str):
             continue
 
-        text = value.strip()
-        if not text:
+        if not value.strip():
             continue
 
         kind = _classify(path)
@@ -240,62 +486,44 @@ def _collect_candidates(root: Dict[str, Any]) -> Tuple[List[tuple], List[tuple]]
     return pos, neg
 
 
-def _sibling(root: Dict[str, Any], path: Sequence[str], name: str) -> str:
-    """선택된 프롬프트와 같은 부모 아래의 형제 키 값을 문자열로 가져온다."""
+def _container_at(root: Dict[str, Any], path: Sequence[str]) -> Optional[Dict[str, Any]]:
+    """선택된 프롬프트가 들어있던 부모 컨테이너를 되짚어 온다."""
     node: Any = root
     for seg in path[:-1]:
         if isinstance(node, str):
-            parsed = _try_json(node)
-            if parsed is None:
-                return ""
-            node = parsed
-        if isinstance(node, dict) and seg in node:
-            node = node[seg]
+            node = _try_json(node)
+        if isinstance(node, dict):
+            node = node.get(seg)
         elif isinstance(node, (list, tuple)):
             try:
                 node = node[int(seg)]
             except Exception:
-                return ""
+                return None
         else:
-            return ""
+            return None
 
     if isinstance(node, str):
-        parsed = _try_json(node)
-        node = parsed if parsed is not None else {}
-    if isinstance(node, dict):
-        val = node.get(name)
-        return val.strip() if isinstance(val, str) else ""
-    return ""
+        node = _try_json(node)
+    return node if isinstance(node, dict) else None
 
 
-# ─── A1111 폴백 ─────────────────────────────────────────────────
+def _extract_generic(root: Dict[str, Any]) -> Optional[_Found]:
+    pos_cands, neg_cands = _collect_candidates(root)
+    if not pos_cands and not neg_cands:
+        return None
 
-_A1111_NEG = re.compile(r"\nNegative prompt:\s*", re.IGNORECASE)
-_A1111_TAIL = re.compile(r"\n(?:Steps|Sampler|CFG scale|Seed|Size|Model):", re.IGNORECASE)
+    positive = pos_cands[0][2] if pos_cands else ""
+    negative = neg_cands[0][2] if neg_cands else ""
 
+    bits = []
+    affix: Optional[Dict[str, Any]] = None
+    if pos_cands:
+        bits.append("+" + "/".join(pos_cands[0][1]))
+        affix = _container_at(root, pos_cands[0][1])
+    if neg_cands:
+        bits.append("-" + "/".join(neg_cands[0][1]))
 
-def _parse_a1111(root: Dict[str, Any]) -> Optional[Tuple[str, str]]:
-    for key, value in root.items():
-        if not isinstance(value, str):
-            continue
-        if _norm(key) != "parameters" and "Negative prompt:" not in value:
-            continue
-
-        neg_split = _A1111_NEG.split(value, maxsplit=1)
-        positive = neg_split[0]
-        negative = neg_split[1] if len(neg_split) > 1 else ""
-
-        tail = _A1111_TAIL.search(positive)
-        if tail and not negative:
-            positive = positive[: tail.start()]
-        tail = _A1111_TAIL.search(negative)
-        if tail:
-            negative = negative[: tail.start()]
-
-        positive, negative = positive.strip(), negative.strip()
-        if positive or negative:
-            return positive, negative
-    return None
+    return _Found(positive, negative, "generic " + " ".join(bits), affix)
 
 
 # ─── 메타데이터 읽기 ────────────────────────────────────────────
@@ -312,8 +540,76 @@ def _decode_user_comment(raw: bytes) -> str:
     return raw.decode("utf-8", errors="replace").rstrip("\x00")
 
 
+_STEALTH_MAGICS = {
+    "stealth_pnginfo": False,
+    "stealth_pngcomp": True,
+    "stealth_rgbinfo": False,
+    "stealth_rgbcomp": True,
+}
+_STEALTH_MAGIC_BITS = 15 * 8  # 매직 문자열은 전부 15자
+_STEALTH_MAX_BYTES = 4 * 1024 * 1024
+
+
+def _read_stealth_pnginfo(img: "Image.Image") -> Optional[str]:
+    """알파 채널 LSB에 숨겨진 NovelAI stealth pnginfo 를 꺼낸다.
+
+    tEXt/EXIF 가 전부 털린 사본(리사이즈·재인코딩 등)에서도 프롬프트가 살아있는
+    경우가 있어 최후 폴백으로만 쓴다. 비트는 열 우선(column-major)으로 읽는다.
+    """
+    try:
+        import numpy as np
+    except Exception:
+        return None
+
+    if img.mode not in ("RGBA", "LA", "PA"):
+        return None
+
+    try:
+        arr = np.array(img.convert("RGBA"))
+        # (h, w, 4) → 알파만, 열 우선 순서로 펼치기
+        alpha = arr[:, :, 3]
+        bits = np.unpackbits((alpha & 1).astype(np.uint8).T.reshape(-1, 1), axis=1)[:, 7]
+    except Exception:
+        return None
+
+    if bits.size < _STEALTH_MAGIC_BITS + 32:
+        return None
+
+    def _bits_to_bytes(chunk) -> bytes:
+        usable = (chunk.size // 8) * 8
+        return np.packbits(chunk[:usable]).tobytes()
+
+    try:
+        magic = _bits_to_bytes(bits[:_STEALTH_MAGIC_BITS]).decode("ascii", errors="ignore")
+    except Exception:
+        return None
+    if magic not in _STEALTH_MAGICS:
+        return None
+    compressed = _STEALTH_MAGICS[magic]
+
+    length_bits = bits[_STEALTH_MAGIC_BITS:_STEALTH_MAGIC_BITS + 32]
+    payload_bits = int.from_bytes(_bits_to_bytes(length_bits), "big")
+    if payload_bits <= 0 or payload_bits > _STEALTH_MAX_BYTES * 8:
+        return None
+
+    start = _STEALTH_MAGIC_BITS + 32
+    end = start + payload_bits
+    if end > bits.size:
+        return None
+
+    payload = _bits_to_bytes(bits[start:end])
+    try:
+        if compressed:
+            payload = gzip.decompress(payload)
+        text = payload.decode("utf-8")
+    except Exception:
+        return None
+
+    return text if text.strip() else None
+
+
 def _read_metadata(path: Path) -> Dict[str, Any]:
-    """PNG tEXt/iTXt + EXIF UserComment/ImageDescription 을 평평한 dict로."""
+    """PNG tEXt/zTXt/iTXt + EXIF UserComment/ImageDescription 을 평평한 dict로."""
     out: Dict[str, Any] = {}
     try:
         with Image.open(path) as img:
@@ -345,6 +641,12 @@ def _read_metadata(path: Path) -> Dict[str, Any]:
                         out.setdefault("UserComment", uc)
             except Exception:
                 pass
+
+            if not out:
+                hidden = _read_stealth_pnginfo(img)
+                if hidden:
+                    out["stealth_pnginfo"] = hidden
+                    logger.info("%s stealth pnginfo 에서 메타데이터 복구", _TAG)
     except UnidentifiedImageError as exc:
         raise ValueError(f"읽을 수 없는 이미지 형식: {path}") from exc
 
@@ -463,6 +765,54 @@ def _join_lines(text: str) -> str:
     return joined.strip().strip(",").strip()
 
 
+def _first_text(container: Optional[Dict[str, Any]], names: Sequence[str]) -> str:
+    if not isinstance(container, dict):
+        return ""
+    for name in names:
+        text = _as_text(container.get(name))
+        if text:
+            return text
+    return ""
+
+
+def extract_prompts(
+    raw: Dict[str, Any],
+    include_char_captions: bool = True,
+    apply_prefix_suffix: bool = True,
+) -> Tuple[str, str, str]:
+    """메타데이터 dict → (positive, negative, source).
+
+    노드 밖에서도 부르기 좋게 순수 함수로 떼어놨다(테스트/디버깅용).
+    """
+    found: Optional[_Found] = None
+    for recognizer in (
+        lambda: _extract_novelai(raw, include_char_captions),
+        lambda: _extract_wrapper(raw),
+        lambda: _extract_a1111(raw),
+        lambda: _extract_generic(raw),
+    ):
+        found = recognizer()
+        if found and (found.positive or found.negative):
+            break
+        found = None
+
+    if found is None:
+        return "", "", ""
+
+    positive, negative, source = found.positive, found.negative, found.source
+
+    if apply_prefix_suffix:
+        prefix = _first_text(found.affix_scope, _PREFIX_KEYS)
+        suffix = _first_text(found.affix_scope, _SUFFIX_KEYS)
+        trigger = _first_text(found.affix_scope, _TRIGGER_KEYS)
+        parts = [p for p in (prefix, trigger, positive, suffix) if p]
+        if len(parts) > 1:
+            positive = ", ".join(parts)
+            source += " (prefix/suffix applied)"
+
+    return positive, negative, source
+
+
 # ─── 노드 ───────────────────────────────────────────────────────
 
 class BMKPromptFromImage:
@@ -471,8 +821,9 @@ class BMKPromptFromImage:
 
     DESCRIPTION = (
         "이미지에 박힌 생성 메타데이터에서 positive / negative 프롬프트만 뽑아냅니다. "
-        "청크 값 안쪽에 중첩된 JSON까지 재귀 탐색하므로, NovelAI 공식 포맷뿐 아니라 "
-        "서드파티 NAI 래퍼(forge 등)와 A1111 parameters 포맷도 처리합니다. "
+        "NovelAI 공식/API 포맷(V3의 uc, V4·V5의 v4_prompt·char_captions)을 먼저 정확히 인식하고, "
+        "자체 래퍼 서비스의 중첩 JSON과 A1111 parameters도 처리합니다. "
+        "처음 보는 포맷은 경로 기반 범용 탐색으로 폴백합니다. "
         "문법 변환은 하지 않습니다 — NAI의 '가중치::내용::' 표기는 Prompt Converter로 넘기세요."
     )
 
@@ -485,7 +836,6 @@ class BMKPromptFromImage:
         "exif",
         "novelai",
         "nai",
-        "forge",
         "a1111",
         "i2i",
     ]
@@ -496,7 +846,7 @@ class BMKPromptFromImage:
     OUTPUT_TOOLTIPS = (
         "추출된 positive 프롬프트 원문. NAI 문법이 그대로 남아 있으니 Prompt Converter를 거치세요.",
         "추출된 negative 프롬프트 원문.",
-        "어느 키 경로에서 뽑았는지 (예: forge/prompt). 비어 있으면 못 찾은 것.",
+        "감지된 포맷과 키 경로 (예: novelai +Comment/v4_prompt/caption). 비어 있으면 못 찾은 것.",
         "발견한 메타데이터 전체를 보기 좋게 정리한 JSON. 새 서비스 포맷 디버깅용.",
     )
 
@@ -514,7 +864,7 @@ class BMKPromptFromImage:
                     "STRING",
                     {
                         "default": "",
-                        "tooltip": "특정 청크만 탐색하려면 키 이름 지정 (예: forge, Comment). 비우면 전체 자동 탐색.",
+                        "tooltip": "특정 청크만 탐색하려면 키 이름 지정 (예: Comment, parameters). 비우면 전체 자동 탐색.",
                     },
                 ),
                 "apply_prefix_suffix": (
@@ -531,6 +881,13 @@ class BMKPromptFromImage:
                         "tooltip": "줄바꿈을 ', ' 로 접고 중복 콤마를 정리. 기본 off — Prompt Converter가 줄 구조를 보존합니다.",
                     },
                 ),
+                "include_char_captions": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "tooltip": "NAI V4/V5 다중 캐릭터 프롬프트(char_captions)를 base 뒤에 줄바꿈으로 이어붙입니다.",
+                    },
+                ),
             },
             "hidden": {
                 "prompt": "PROMPT",
@@ -540,20 +897,22 @@ class BMKPromptFromImage:
 
     @classmethod
     def IS_CHANGED(cls, image=None, metadata_key="", apply_prefix_suffix=True,
-                   join_lines=False, prompt=None, unique_id=None, **kwargs):
+                   join_lines=False, include_char_captions=True,
+                   prompt=None, unique_id=None, **kwargs):
         """파일 mtime/size 만 해시 — 안정값이라 캐시가 정상 동작한다.
 
         예외를 던지면 ComfyUI가 NaN 취급(always-dirty)하므로 절대 raise 하지 않는다.
         """
+        opts = f"{metadata_key}|{apply_prefix_suffix}|{join_lines}|{include_char_captions}"
         try:
             found = _find_upstream_image(prompt, unique_id)
             if not found:
-                return f"BMK_PFI_NOPATH|{metadata_key}|{apply_prefix_suffix}|{join_lines}"
+                return f"BMK_PFI_NOPATH|{opts}"
             path = _resolve_path(found)
             st = path.stat()
-            return f"{path}|{st.st_mtime_ns}|{st.st_size}|{metadata_key}|{apply_prefix_suffix}|{join_lines}"
+            return f"{path}|{st.st_mtime_ns}|{st.st_size}|{opts}"
         except Exception:
-            return f"BMK_PFI_STABLE_FALLBACK|{metadata_key}|{apply_prefix_suffix}|{join_lines}"
+            return f"BMK_PFI_STABLE_FALLBACK|{opts}"
 
     def extract(
         self,
@@ -561,6 +920,7 @@ class BMKPromptFromImage:
         metadata_key: str = "",
         apply_prefix_suffix: bool = True,
         join_lines: bool = False,
+        include_char_captions: bool = True,
         prompt: Optional[Dict[str, Any]] = None,
         unique_id: Optional[Any] = None,
     ) -> Tuple[str, str, str, str]:
@@ -588,37 +948,16 @@ class BMKPromptFromImage:
         else:
             scope = raw
 
-        pos_cands, neg_cands = _collect_candidates(scope)
-
-        positive = pos_cands[0][2] if pos_cands else ""
-        negative = neg_cands[0][2] if neg_cands else ""
-        source_bits: List[str] = []
-        if pos_cands:
-            source_bits.append("+" + "/".join(pos_cands[0][1]))
-        if neg_cands:
-            source_bits.append("-" + "/".join(neg_cands[0][1]))
-
-        if not positive and not negative:
-            a1111 = _parse_a1111(scope)
-            if a1111:
-                positive, negative = a1111
-                source_bits.append("a1111/parameters")
-
-        if apply_prefix_suffix and pos_cands:
-            ppath = pos_cands[0][1]
-            prefix = _sibling(scope, ppath, "positive_prompt_prefix")
-            suffix = _sibling(scope, ppath, "positive_prompt_suffix")
-            trigger = _sibling(scope, ppath, "trigger_words")
-            parts = [p for p in (prefix, trigger, positive, suffix) if p]
-            if len(parts) > 1:
-                positive = ", ".join(parts)
-                source_bits.append("prefix/suffix applied")
+        positive, negative, source = extract_prompts(
+            scope,
+            include_char_captions=include_char_captions,
+            apply_prefix_suffix=apply_prefix_suffix,
+        )
 
         if join_lines:
             positive = _join_lines(positive)
             negative = _join_lines(negative)
 
-        source = " ".join(source_bits)
         if not source:
             logger.warning(
                 "%s 프롬프트를 찾지 못했습니다. 청크 키: %s",
