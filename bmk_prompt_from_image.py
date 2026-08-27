@@ -76,6 +76,26 @@
 순으로 체이닝할 것. 이 노드는 의도적으로 변환을 하지 않는다(단일 책임 —
 문법 변환은 prompt_converter.py 가 정본).
 
+배치 처리
+─────────
+IMAGE 텐서에는 파일명이 실려오지 않는다. 그래서 이 노드는 1단계에서 **그래프를
+역추적해** 상류 로더의 파일명 위젯을 읽는다. 표준 Load Image 는 ``image`` 위젯에
+파일명이 박혀 있어 그냥 되지만, **폴더를 훑는 배치 로더**(Load Image Batch 류)는
+파일명 위젯 자체가 없고 폴더 경로만 들고 있어서 역추적이 빈손으로 끝난다.
+
+이럴 때는 로더가 별도로 뱉는 파일명 출력을 ``image_path`` 입력으로 넘긴다::
+
+    Load Image Batch ─┬─ image ────────→ BMK Prompt From Image ─→ positive
+                      └─ filename_text ─→   image_path            └→ negative
+
+폴더는 로더의 ``path`` 위젯을 자동으로 후보에 넣으므로 보통 따로 안 줘도 된다.
+안 잡히면 ``search_directory`` 에 직접 적는다. 확장자가 빠진 파일명
+(``filename_text_extension=false``)도 알아서 붙여가며 찾는다.
+
+큐를 여러 번 돌리는 방식(Run × N)이라 이미지마다 결과가 따로 나오고, Save Text 로
+장당 한 파일씩 떨어진다. 노드 자체가 폴더를 통째로 순회하지는 않는다 — 순회는
+로더 책임이다(단일 책임).
+
 옵션
 ────
 - metadata_key : 특정 청크만 보고 싶을 때 키 이름 지정(빈 값이면 전체 자동 탐색).
@@ -92,6 +112,8 @@ v1 (2026-08) : 최초. 경로 기반 재귀 탐색 + 래퍼/NAI/A1111 커버.
 v2 (2026-08) : 포맷 인식 계층 도입(범용 탐색은 폴백으로 강등).
                NAI V4/V5 char_captions 지원, stealth pnginfo 폴백,
                이중 인코딩 JSON 해제, source 출력에 감지된 포맷 표기.
+v3 (2026-08) : 배치 로더 대응. image_path / search_directory 입력 추가,
+               상류 폴더 위젯 자동 수집, 확장자 없는 파일명 보정.
 """
 
 from __future__ import annotations
@@ -157,6 +179,11 @@ _MAX_JSON_CHARS = 8 * 1024 * 1024
 
 # 파일 경로 역추적에서 image 파일명으로 인정할 확장자
 _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".avif", ".jxl")
+
+# 상류 노드에서 "이 위젯은 이미지 파일명이다" 로 인정할 입력 키
+_FILE_INPUT_KEYS = frozenset(
+    {"image", "image_path", "path", "filepath", "file_path", "filename", "file", "upload"}
+)
 
 # 프롬프트 앞뒤로 합칠 프리셋 키(서비스가 프리셋을 쓰는 경우 대비)
 _PREFIX_KEYS = ("positive_prompt_prefix",)
@@ -674,18 +701,42 @@ def _looks_like_image_name(value: str) -> bool:
     return any(ext in lower for ext in _IMAGE_EXTS)
 
 
-def _find_upstream_image(prompt: Optional[Dict[str, Any]], unique_id: Any) -> Optional[str]:
-    """내 image 입력에서 거슬러 올라가며 파일명 위젯을 가진 노드를 찾는다."""
+def _looks_like_directory(value: str) -> bool:
+    """위젯 문자열이 실재하는 폴더 경로인지. 프롬프트 본문 오탐을 길이로 막는다."""
+    if not value or len(value) > 260 or "\n" in value:
+        return False
+    if _looks_like_image_name(value):
+        return False
+    try:
+        return Path(value.strip().strip('"').strip("'")).is_dir()
+    except Exception:
+        return False
+
+
+def _clean(raw: Any) -> str:
+    return str(raw or "").strip().strip('"').strip("'") if raw is not None else ""
+
+
+def _scan_upstream(prompt: Optional[Dict[str, Any]], unique_id: Any) -> Tuple[List[str], List[str]]:
+    """내 image 입력에서 거슬러 올라가며 (파일명, 폴더) 후보를 모은다.
+
+    배치 로더(Load Image Batch 류)는 파일명 위젯이 아예 없고 폴더만 들고 있다.
+    파일명은 못 건져도 폴더는 건져서, image_path 로 받은 파일명을 그 안에서
+    찾을 수 있게 한다.
+    """
+    names: List[str] = []
+    dirs: List[str] = []
+
     if not isinstance(prompt, dict) or unique_id is None:
-        return None
+        return names, dirs
 
     me = _prompt_node(prompt, unique_id)
     if not me:
-        return None
+        return names, dirs
 
     start = _link_source((me.get("inputs") or {}).get("image"))
     if start is None:
-        return None
+        return names, dirs
 
     queue = deque([start])
     visited: set = set()
@@ -700,53 +751,92 @@ def _find_upstream_image(prompt: Optional[Dict[str, Any]], unique_id: Any) -> Op
             continue
         inputs = node.get("inputs") or {}
 
-        for key in ("image", "image_path", "path", "filepath", "file_path", "filename", "file", "upload"):
-            value = inputs.get(key)
-            if isinstance(value, str) and _looks_like_image_name(value):
-                return value
+        for key, value in inputs.items():
+            if not isinstance(value, str):
+                continue
+            if _norm(key) in _FILE_INPUT_KEYS and _looks_like_image_name(value):
+                if value not in names:
+                    names.append(value)
+            elif _looks_like_directory(value):
+                cleaned = _clean(value)
+                if cleaned not in dirs:
+                    dirs.append(cleaned)
 
         for value in inputs.values():
             nxt = _link_source(value)
             if nxt is not None and nxt not in visited:
                 queue.append(nxt)
 
-    return None
+    return names, dirs
 
 
-def _resolve_path(raw: str) -> Path:
-    raw = (raw or "").strip().strip('"').strip("'")
-    if not raw:
-        raise ValueError("이미지 경로가 비어 있습니다.")
+def _find_upstream_image(prompt: Optional[Dict[str, Any]], unique_id: Any) -> Optional[str]:
+    """상류 노드의 파일명 위젯 하나(있으면)."""
+    names, _ = _scan_upstream(prompt, unique_id)
+    return names[0] if names else None
 
-    candidates: List[Path] = []
+
+def _path_candidates(raw: str, extra_dirs: Sequence[str]) -> List[Path]:
     direct = Path(raw)
+    out: List[Path] = []
     if direct.is_absolute():
-        candidates.append(direct)
-    candidates.append(Path.cwd() / direct)
+        out.append(direct)
+
+    bases: List[Path] = []
+    for d in extra_dirs:
+        d = _clean(d)
+        if d:
+            bases.append(Path(d))
+    bases.append(Path.cwd())
 
     if folder_paths is not None:
         try:
             annotated = folder_paths.get_annotated_filepath(raw)
             if annotated:
-                candidates.append(Path(annotated))
+                out.append(Path(annotated))
         except Exception:
             pass
         for attr in ("input_directory", "output_directory", "temp_directory"):
             base = getattr(folder_paths, attr, None)
             if base:
-                candidates.append(Path(base) / direct)
-                candidates.append(Path(base) / direct.name)
+                bases.append(Path(base))
 
-    for cand in candidates:
-        try:
-            if cand.exists():
-                return cand.resolve()
-        except Exception:
-            continue
+    for base in bases:
+        out.append(base / direct)
+        if direct.name != str(direct):
+            out.append(base / direct.name)
+    return out
 
+
+def _resolve_path(raw: str, extra_dirs: Sequence[str] = ()) -> Path:
+    """파일명/부분 경로 + 후보 폴더들 → 실재하는 파일 경로.
+
+    확장자가 없으면(배치 로더의 filename_text_extension=false) 알려진 이미지
+    확장자를 하나씩 붙여가며 재시도한다.
+    """
+    raw = _clean(raw)
+    if not raw:
+        raise ValueError("이미지 경로가 비어 있습니다.")
+
+    variants = [raw]
+    if Path(raw).suffix.lower() not in _IMAGE_EXTS:
+        variants += [raw + ext for ext in _IMAGE_EXTS]
+
+    tried: List[Path] = []
+    for variant in variants:
+        for cand in _path_candidates(variant, extra_dirs):
+            tried.append(cand)
+            try:
+                if cand.is_file():
+                    return cand.resolve()
+            except Exception:
+                continue
+
+    shown = tried[:12]
+    more = f"\n  ... 외 {len(tried) - len(shown)}곳" if len(tried) > len(shown) else ""
     raise FileNotFoundError(
         "원본 이미지 파일을 찾지 못했습니다: " + raw + "\n탐색 경로:\n"
-        + "\n".join(f"  - {c}" for c in candidates)
+        + "\n".join(f"  - {c}" for c in shown) + more
     )
 
 
@@ -824,6 +914,7 @@ class BMKPromptFromImage:
         "NovelAI 공식/API 포맷(V3의 uc, V4·V5의 v4_prompt·char_captions)을 먼저 정확히 인식하고, "
         "자체 래퍼 서비스의 중첩 JSON과 A1111 parameters도 처리합니다. "
         "처음 보는 포맷은 경로 기반 범용 탐색으로 폴백합니다. "
+        "배치 로더를 쓸 때는 로더의 filename_text 를 image_path 입력에 연결하세요. "
         "문법 변환은 하지 않습니다 — NAI의 '가중치::내용::' 표기는 Prompt Converter로 넘기세요."
     )
 
@@ -888,6 +979,27 @@ class BMKPromptFromImage:
                         "tooltip": "NAI V4/V5 다중 캐릭터 프롬프트(char_captions)를 base 뒤에 줄바꿈으로 이어붙입니다.",
                     },
                 ),
+                "image_path": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "tooltip": (
+                            "배치용. 파일명 또는 전체 경로를 직접 지정합니다. "
+                            "Load Image Batch 처럼 파일명 위젯이 없는 로더는 그 노드의 filename_text 출력을 "
+                            "여기로 연결하세요. 비우면 그래프를 역추적합니다."
+                        ),
+                    },
+                ),
+                "search_directory": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "tooltip": (
+                            "image_path 가 파일명뿐일 때 찾아볼 폴더. "
+                            "비워도 상류 로더의 path 위젯을 자동으로 후보에 넣습니다."
+                        ),
+                    },
+                ),
             },
             "hidden": {
                 "prompt": "PROMPT",
@@ -896,23 +1008,36 @@ class BMKPromptFromImage:
         }
 
     @classmethod
+    def _locate(cls, prompt, unique_id, image_path="", search_directory="") -> Path:
+        """image_path(명시) 우선, 없으면 그래프 역추적. 폴더 후보는 둘 다 합친다."""
+        names, up_dirs = _scan_upstream(prompt, unique_id)
+        target = _clean(image_path) or (names[0] if names else "")
+        if not target:
+            raise FileNotFoundError(
+                "이미지 파일명을 찾지 못했습니다.\n"
+                "Load Image Batch 처럼 파일명 위젯이 없는 배치 로더는 텐서에 파일명이 실려오지 않습니다. "
+                "로더의 filename_text 출력을 이 노드의 image_path 입력으로 연결하세요."
+            )
+        extra_dirs = [d for d in ([_clean(search_directory)] + up_dirs) if d]
+        return _resolve_path(target, extra_dirs)
+
+    @classmethod
     def IS_CHANGED(cls, image=None, metadata_key="", apply_prefix_suffix=True,
                    join_lines=False, include_char_captions=True,
+                   image_path="", search_directory="",
                    prompt=None, unique_id=None, **kwargs):
         """파일 mtime/size 만 해시 — 안정값이라 캐시가 정상 동작한다.
 
         예외를 던지면 ComfyUI가 NaN 취급(always-dirty)하므로 절대 raise 하지 않는다.
         """
-        opts = f"{metadata_key}|{apply_prefix_suffix}|{join_lines}|{include_char_captions}"
+        opts = (f"{metadata_key}|{apply_prefix_suffix}|{join_lines}"
+                f"|{include_char_captions}|{image_path}|{search_directory}")
         try:
-            found = _find_upstream_image(prompt, unique_id)
-            if not found:
-                return f"BMK_PFI_NOPATH|{opts}"
-            path = _resolve_path(found)
+            path = cls._locate(prompt, unique_id, image_path, search_directory)
             st = path.stat()
             return f"{path}|{st.st_mtime_ns}|{st.st_size}|{opts}"
         except Exception:
-            return f"BMK_PFI_STABLE_FALLBACK|{opts}"
+            return f"BMK_PFI_UNRESOLVED|{opts}"
 
     def extract(
         self,
@@ -921,16 +1046,13 @@ class BMKPromptFromImage:
         apply_prefix_suffix: bool = True,
         join_lines: bool = False,
         include_char_captions: bool = True,
+        image_path: str = "",
+        search_directory: str = "",
         prompt: Optional[Dict[str, Any]] = None,
         unique_id: Optional[Any] = None,
     ) -> Tuple[str, str, str, str]:
         try:
-            found = _find_upstream_image(prompt, unique_id)
-            if not found:
-                raise FileNotFoundError(
-                    "상류에서 이미지 파일명을 찾지 못했습니다. Load Image 계열 노드에서 직접 연결하세요."
-                )
-            path = _resolve_path(found)
+            path = self._locate(prompt, unique_id, image_path, search_directory)
             raw = _read_metadata(path)
         except Exception as exc:
             logger.warning("%s 메타데이터 읽기 실패: %s", _TAG, exc)
