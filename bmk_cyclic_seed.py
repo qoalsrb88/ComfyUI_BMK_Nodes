@@ -19,6 +19,10 @@
 #     (그리드가 사이클 경계를 리셋해 준다). 그리드 없이 단독으로 run 연동
 #     cycle을 쓰면 인덱스가 리셋되지 않고 계속 증가한다 → 이 경우 수동 모드 사용.
 
+#       "한 쌍으로 써야 합니다(사이클 경계 리셋을 그리드가 담당). "
+#       "노드 하단 '🎲 New Fixed Random' 버튼으로 base_seed를 NovelAI 대역(uint32) "
+#       "난수로 새로 뽑을 수 있습니다(범위는 우클릭 메뉴에서 변경)."
+
 MAX_SEED = 0xFFFFFFFFFFFFFFFF
 
 MODE_CYCLE = "cycle"

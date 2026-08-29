@@ -217,6 +217,11 @@ for _module_name in _NODE_MODULES:
 #       같은 순서를 뒤에서부터 훑으므로 겹친 영역의 선택 대상까지 바뀐다.
 #       단축키 Ctrl+[ / Ctrl+] (+Shift 는 맨 뒤/맨 앞), 또는 그룹 빈 곳
 #       우클릭 → Edit Group 서브메뉴. 노드에는 영향 없음.
+#   - bmk_cyclic_seed.js
+#       BMKCyclicSeed / BMKRunBatchGrid용 확장. Run 컨트롤러의 batch count를
+#       두 노드의 batch_count 위젯에 큐 직전 동기화하고, cycle 모드에서
+#       control_after_generate를 fixed로 강제. base_seed 난수 버튼
+#       (New Fixed Random, 기본 NovelAI 32비트 대역) 제공.
 # 새 JS 확장을 추가할 때는 ./js 폴더에 파일만 넣으면 됩니다.
 WEB_DIRECTORY = "./js"
 
