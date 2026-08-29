@@ -75,6 +75,7 @@ _NODE_MODULES = (
     "bmk_flexible_tile_segs",
     "bmk_klein_reference_segs_hook",
     "bmk_load_image_crop",
+    "bmk_nai_autosave",
     "bmk_nai_to_anima",
     "bmk_pid_tiled_upscale",
     "bmk_prompt_from_image",
