@@ -1,22 +1,35 @@
-"""BMK NAI Autosave Name — NAIDGenerator 자동저장 PNG 의 파일명을 제어한다.
+"""BMK NAI Autosave Name — NAIDGenerator 자동저장 PNG 의 파일명과 메타데이터를 제어한다.
 
 배경:
 ComfyUI_NAIDGenerator (bedovyy) 의 GenerateNAID 는 NAI 응답 zip 에서 꺼낸
 원본 PNG 바이트를 그대로 output/NAI_autosave/NAI_autosave_#####_.png 에
 기록한다. 재인코딩을 하지 않으므로 NovelAI 메타데이터가 온전히 보존되지만,
-파일명 프리픽스가 소스에 문자열 리터럴로 박혀 있어 제어할 수 없다. 여러 장을
-뽑아 놓으면 탐색기에서 어떤 게 어떤 설정인지 구분이 안 된다.
+두 가지가 아쉽다.
 
-하류에 저장 노드를 붙이는 방식은 원리상 불가능하다. 원본 바이트는
-generate() 지역변수로만 존재하고, bytes_to_image() 로 IMAGE 텐서가 되는
-순간 PNG 텍스트 청크가 사라진다. 따라서 개입 지점은 generate() 실행
-시점뿐이며, 이 파일은 런타임 몽키패치로 그 지점에 끼어든다.
+  (a) 파일명 프리픽스가 소스에 문자열 리터럴로 박혀 있어 제어할 수 없다.
+      여러 장을 뽑아 놓으면 탐색기에서 어떤 게 어떤 설정인지 구분이 안 된다.
+  (b) ComfyUI 워크플로 메타데이터가 없다. 그래서 SaveImage 브랜치를 따로
+      두게 되는데, 그쪽은 반대로 NAI 메타데이터가 없다. 같은 그림이 서로
+      다른 정보를 가진 두 파일로 갈라진다.
+
+둘 다 하류 노드로는 해결할 수 없다. 원본 바이트는 generate() 지역변수로만
+존재하고, bytes_to_image() 로 IMAGE 텐서가 되는 순간 PNG 텍스트 청크가
+사라진다. 알파 채널에 심긴 NAI stealth pnginfo 도 마찬가지로 소실된다 —
+텐서 왕복이 uint8 → /255.0 → float32 → *255.0 → astype(uint8) 인데 마지막이
+반올림이 아니라 절삭이라, 부동소수점 오차가 아래로 떨어지는 순간 LSB 가
+뒤집히기 때문이다. 따라서 개입 지점은 generate() 실행 시점뿐이며, 이 파일은
+런타임 몽키패치로 그 지점에 끼어든다.
+
+(b) 가 가능한 이유는 두 메타데이터가 애초에 충돌하지 않기 때문이다. NAI 가
+쓰는 tEXt 키는 Software / Source / Comment / Title / Description 이고 ComfyUI
+는 prompt / workflow 다. 겹치는 키가 없고 PNG 스펙상 tEXt 청크 개수 제한도
+없다. 한 파일에 둘 다 넣는 것은 규격 위반이 아니라 정상이다.
 
 설계:
 1) 파라미터 전달은 위젯이 아니라 option 체인으로 한다.
    generate() 는 option dict 에서 자기가 아는 키만 읽고 나머지는 무시하므로,
    ModelOption 과 같은 형태의 노드가 option["bmk_autosave"] 를 실어 보내면
-   된다. GenerateNAID 의 INPUT_TYPES 를 건드리지 않으니 widgets_values 위치
+   된다. GenerateNAID 의 위젯 목록을 건드리지 않으니 widgets_values 위치
    배열이 그대로고, 기존 워크플로 마이그레이션이 없다. 노드를 꽂지 않으면
    패치가 설치조차 되지 않아 원본 동작 100% 다.
 
@@ -40,7 +53,29 @@ generate() 지역변수로만 존재하고, bytes_to_image() 로 IMAGE 텐서가
    물려받는다. 원본의 d.mkdir(exist_ok=True) 는 비재귀라 중첩 하위 폴더에서
    실패하므로, 프록시가 반환 직전에 parents=True 로 미리 만들어 둔다.
 
-4) 설치는 지연 실행한다.
+4) 워크플로 메타데이터는 PIL 재저장이 아니라 바이트 레벨 청크 삽입으로 넣는다.
+   PIL 로 열어 pnginfo 를 붙여 다시 쓰면 IDAT 을 재인코딩하고, NAI 의 원본
+   청크를 손으로 복사해 주지 않으면 날아가며, PIL 이 노출하지 않는 부가 청크도
+   잃는다. 무엇보다 알파 채널 stealth 데이터가 인코딩 경로를 한 번 더 타게 된다.
+   첫 IDAT 앞에 tEXt 청크를 끼워 넣기만 하면 픽셀 데이터는 1바이트도 건드리지
+   않는다. 이미 rename 을 하고 있던 _finalize() 에 합쳤으므로 파일 I/O 도
+   늘지 않는다.
+
+5) PROMPT / EXTRA_PNGINFO 는 이 노드가 아니라 GenerateNAID 에 hidden 으로 붙인다.
+   이 노드에 붙이면 캐시 때문에 어긋난다. 위젯 값이 그대로면 ComfyUI 가 결과를
+   캐시해 set_option 을 재실행하지 않으므로, seed 만 바꿔 재생성했을 때 직전
+   실행의 워크플로 JSON 이 박힌다. IS_CHANGED 로 강제 재실행하면 하류
+   GenerateNAID 까지 매번 더러워져 Anlas 가 나간다. GenerateNAID 에 붙이면
+   자기 실행 시점에 주입되고, 캐시되면 애초에 파일도 안 만들어지므로 불일치가
+   성립하지 않는다.
+
+   hidden 입력은 위젯이 아니라서 widgets_values 배열에 자리를 차지하지 않고,
+   노드에 렌더링되지 않으며, 캐시 시그니처에도 들어가지 않는다. 즉 1) 에서
+   위젯 추가를 피한 이유가 여기엔 해당하지 않는다. 프론트엔드가 이미 받아 둔
+   /object_info 에 없어도 무방하다 — hidden 은 실행 시점에 서버가
+   INPUT_TYPES() 를 다시 읽어 해석하기 때문이다.
+
+6) 설치는 지연 실행한다.
    custom_nodes 는 폴더명 알파벳 순으로 로드되어 ComfyUI_BMK_Nodes 가
    ComfyUI_NAIDGenerator 보다 먼저 import 된다. import 시점에는 대상이
    sys.modules 에 없으므로, 노드의 set_option() 이 처음 실행될 때 설치한다.
@@ -56,8 +91,11 @@ upstream 의존 가정 (기능이 조용히 꺼졌다면 여기부터 대조할 
   parameters, ...) 순서로 호출된다.
 - 자동저장 프리픽스 리터럴이 "NAI_autosave" 다.
 - 저장 파일명 포맷이 f"{filename}_{counter:05}_.png" 다.
-  (keep_counter=False 일 때 rename 대상 경로를 이 포맷으로 재구성한다.
-   재구성한 경로가 없으면 rename 을 건너뛰고 경고만 남긴다.)
+  (rename / 청크 삽입 대상 경로를 이 포맷으로 재구성한다. 재구성한 경로가
+   없으면 후처리를 건너뛰고 경고만 남긴다.)
+- GenerateNAID.INPUT_TYPES 가 hidden 에 prompt / extra_pnginfo 를 선언하지
+  않는다. 선언한다면 우리가 주입하지 않고, generate 호출 시에도 값을 읽기만
+  하고 인자에서 빼지 않는다 — upstream 이 직접 쓰려는 것이므로.
 설치 시 위 항목을 검사하고, 구조가 다르면 패치하지 않고 경고 로그만 남긴다.
 조용히 어긋나는 것보다 명시적으로 비활성화되는 편이 낫다.
 
@@ -69,6 +107,10 @@ upstream 의존 가정 (기능이 조용히 꺼졌다면 여기부터 대조할 
   체인 어디에 끼워도 값이 보존된다. 다만 Img2ImgOption 과 InpaintingOption 은
   option 입력이 없어 매번 새 dict 를 만드는 체인의 시작점이다. 이 노드는
   반드시 그 뒤에 두어야 한다.
+
+  embed_workflow 를 켜면 저장 파일 하나에 워크플로 + NAI tEXt 메타데이터 +
+  알파 stealth 데이터가 모두 들어간다. 지금의 SaveImage 출력보다 정보량이
+  많으므로 SaveImage 브랜치를 PreviewImage 로 바꿔도 된다.
 
 토큰 (모두 NAI 로 전송된 확정값 기준):
   %time          time_format 위젯의 strftime 포맷
@@ -87,14 +129,24 @@ upstream 의존 가정 (기능이 조용히 꺼졌다면 여기부터 대조할 
 제약:
 - director tools(base_augment) 는 별도 코드 경로이고 생성 파라미터가 없어
   이번 버전 범위 밖이다. 해당 경로의 자동저장은 원본 동작 그대로 남는다.
-- NAIDGenerator 는 GPL-3.0 이다. 이 파일은 런타임에 그 내부 구현에 결합하는
-  성격이므로 패키지 나머지(MIT)와 구분해 GPL-3.0 으로 둔다.
+- A1111 형식 parameters 청크는 일부러 넣지 않는다. 한 파일에 NAI Comment 와
+  A1111 parameters 가 동시에 있으면 bmk_prompt_from_image 의 포맷 인식 계층에서
+  감지 우선순위가 흔들린다. 필요해지면 별도 토글로 빼고, 감지기 쪽에서 NAI 가
+  이기도록 순서를 못박은 뒤에 추가할 것.
+- tEXt 청크는 latin-1 만 담을 수 있다. json.dumps 의 기본값(ensure_ascii=True)
+  을 유지해야 한글이 이스케이프되어 안전하게 들어간다. iTXt 로 넘어가면
+  프론트엔드가 읽어 줄지 보장할 수 없다.
 
 버전 이력:
 - v1 (2026-08): 최초. option 체인 기반 파라미터 전달, _post_image 후킹으로
       확정 파라미터 수집, 정의 모듈 한정 folder_paths 프록시, 지연 설치,
       구조 검증 후 실패 시 무패치 폴백, keep_counter=False 시 카운터 제거
       rename.
+- v2 (2026-08): ComfyUI 워크플로 메타데이터 동시 임베드. GenerateNAID 에
+      hidden PROMPT / EXTRA_PNGINFO 주입(위젯이 아니므로 워크플로 무해),
+      첫 IDAT 앞 tEXt 청크 바이트 삽입, 기존 키 중복 검사, _finalize 에
+      rename 과 통합(임시 파일 + os.replace). embed_workflow 토글 추가 —
+      기존 위젯 순서를 흔들지 않도록 required 끝에 append 했다.
 """
 
 from __future__ import annotations
@@ -103,11 +155,14 @@ import contextvars
 import copy
 import functools
 import inspect
+import json
 import logging
 import os
+import struct
 import time
+import zlib
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Iterator, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 _TAG = "[ComfyUI_BMK_Nodes::NAIAutosave]"
@@ -130,6 +185,12 @@ _DEFAULT_TIME_FORMAT = "%y%m%d-%H%M%S"
 
 # 슬래시는 하위 폴더 표현용이므로 보존한다.
 _FILENAME_FORBIDDEN = ("<", ">", ":", '"', "|", "?", "*", "\x00")
+
+# GenerateNAID 에 주입할 hidden 입력.
+_HIDDEN_INPUTS = {"prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO"}
+
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+_TEXT_CHUNK_TYPES = (b"tEXt", b"zTXt", b"iTXt")
 
 # 실행 중인 generate 호출에 대한 설정 슬롯. _post_image 후킹과 folder_paths
 # 프록시가 같은 스레드/컨텍스트에서 이 값을 공유한다.
@@ -220,6 +281,94 @@ def _resolve_save_dir(path: str, output_root: str) -> str:
     return os.path.abspath(os.path.join(output_root, path))
 
 
+# ─── PNG tEXt 청크 삽입 ───────────────────────────────────────────
+
+def _iter_chunks(png: bytes) -> Iterator[Tuple[int, int, bytes]]:
+    """(offset, length, chunk_type) 을 순회한다. 손상된 지점에서 멈춘다."""
+    offset = len(_PNG_SIGNATURE)
+    total = len(png)
+    while offset + 8 <= total:
+        length = struct.unpack(">I", png[offset:offset + 4])[0]
+        chunk_type = png[offset + 4:offset + 8]
+        end = offset + 12 + length  # length(4) + type(4) + data + crc(4)
+        if end > total:
+            return
+        yield offset, length, chunk_type
+        if chunk_type == b"IEND":
+            return
+        offset = end
+
+
+def _make_text_chunk(keyword: str, text: str) -> bytes:
+    """tEXt 청크 하나를 바이트로 만든다.
+
+    PNG 스펙상 keyword 는 1~79자 latin-1 이고, 본문과는 널 바이트로 구분한다.
+    """
+    payload = keyword.encode("latin-1") + b"\x00" + text.encode("latin-1")
+    crc = zlib.crc32(b"tEXt" + payload) & 0xFFFFFFFF
+    return struct.pack(">I", len(payload)) + b"tEXt" + payload + struct.pack(">I", crc)
+
+
+def _insert_text_chunks(png: bytes, entries: Dict[str, str]) -> bytes:
+    """첫 IDAT 앞에 tEXt 청크들을 끼워 넣는다. 픽셀 데이터는 건드리지 않는다.
+
+    이미 같은 키워드가 있으면 건너뛴다 — NAI 원본 청크를 덮어쓰지 않기 위해서,
+    그리고 재실행 시 중복 삽입을 막기 위해서.
+    """
+    if not png.startswith(_PNG_SIGNATURE):
+        raise ValueError("PNG 시그니처가 아닙니다")
+
+    existing: Set[str] = set()
+    idat_offset: Optional[int] = None
+
+    for offset, length, chunk_type in _iter_chunks(png):
+        if chunk_type in _TEXT_CHUNK_TYPES:
+            keyword, _, _ = png[offset + 8:offset + 8 + length].partition(b"\x00")
+            existing.add(keyword.decode("latin-1", "ignore"))
+        elif chunk_type == b"IDAT" and idat_offset is None:
+            idat_offset = offset
+
+    if idat_offset is None:
+        raise ValueError("IDAT 청크를 찾지 못했습니다")
+
+    blocks = []
+    for keyword, text in entries.items():
+        if keyword in existing:
+            logger.debug("%s '%s' 청크가 이미 있어 건너뜁니다.", _TAG, keyword)
+            continue
+        if not 1 <= len(keyword) <= 79:
+            logger.warning("%s 키워드 길이가 규격을 벗어납니다: %r", _TAG, keyword)
+            continue
+        try:
+            blocks.append(_make_text_chunk(keyword, text))
+        except UnicodeEncodeError:
+            # json.dumps 의 ensure_ascii=True 를 지켰다면 도달하지 않는다.
+            logger.warning(
+                "%s '%s' 를 latin-1 로 인코딩할 수 없어 건너뜁니다.", _TAG, keyword
+            )
+
+    if not blocks:
+        return png
+    return png[:idat_offset] + b"".join(blocks) + png[idat_offset:]
+
+
+def _collect_embed_entries(prompt: Any, extra_pnginfo: Any) -> Dict[str, str]:
+    """코어 SaveImage 와 같은 형태로 prompt / workflow 항목을 만든다."""
+    entries: Dict[str, str] = {}
+    if prompt is not None:
+        try:
+            entries["prompt"] = json.dumps(prompt)
+        except (TypeError, ValueError) as exc:
+            logger.warning("%s prompt 직렬화 실패: %s", _TAG, exc)
+    if isinstance(extra_pnginfo, dict):
+        for key, value in extra_pnginfo.items():
+            try:
+                entries[key] = json.dumps(value)
+            except (TypeError, ValueError) as exc:
+                logger.warning("%s '%s' 직렬화 실패: %s", _TAG, key, exc)
+    return entries
+
+
 # ─── folder_paths 프록시 ──────────────────────────────────────────
 
 class _FolderPathsProxy:
@@ -279,44 +428,75 @@ class _FolderPathsProxy:
             )
 
 
-# ─── 후처리 (카운터 제거) ─────────────────────────────────────────
+# ─── 후처리 (카운터 제거 + 워크플로 임베드) ───────────────────────
+
+def _unique_target(folder: Path, filename: str) -> Path:
+    """카운터를 뗀 이름을 고른다. 이미 있으면 _02 부터 번호를 붙인다."""
+    target = folder / f"{filename}.png"
+    index = 2
+    while target.exists() and index <= 9999:
+        target = folder / f"{filename}_{index:02d}.png"
+        index += 1
+    return target
+
 
 def _finalize(cfg: Dict[str, Any]) -> None:
-    """keep_counter=False 면 _00001_ 꼬리를 떼어낸다.
+    """저장된 파일에 워크플로 청크를 넣고 최종 이름으로 정리한다.
 
     원본의 f"{filename}_{counter:05}_.png" 는 리터럴이라 프리픽스만 바꿔서는
-    없앨 수 없다. 프록시가 반환한 값으로 경로를 재구성해 rename 한다.
+    카운터를 없앨 수 없다. 프록시가 반환한 값으로 경로를 재구성해 처리하고,
     재구성한 경로가 없으면 upstream 포맷이 바뀐 것이므로 건너뛴다.
     """
-    if cfg.get("keep_counter", False):
-        return
     saved = cfg.get("saved")
     if not saved:
         return
 
-    folder, filename, counter = saved
-    source = Path(folder) / f"{filename}_{counter:05}_.png"
+    folder_name, filename, counter = saved
+    folder = Path(folder_name)
+    source = folder / f"{filename}_{counter:05}_.png"
     if not source.exists():
         logger.warning(
-            "%s 저장 파일을 찾지 못해 카운터 제거를 건너뜁니다 (%s). "
+            "%s 저장 파일을 찾지 못해 후처리를 건너뜁니다 (%s). "
             "upstream 파일명 포맷이 바뀌었을 수 있습니다.",
             _TAG,
             source.name,
         )
         return
 
-    target = Path(folder) / f"{filename}.png"
-    index = 2
-    while target.exists():
-        target = Path(folder) / f"{filename}_{index:02d}.png"
-        index += 1
-        if index > 9999:
-            return
+    if cfg.get("keep_counter", False):
+        target = source
+    else:
+        target = _unique_target(folder, filename)
 
-    try:
-        source.rename(target)
-    except OSError as exc:
-        logger.warning("%s 이름 변경 실패 — 원본 파일명을 유지합니다: %s", _TAG, exc)
+    entries: Dict[str, str] = cfg.get("embed") or {}
+
+    if entries:
+        temp = folder / (target.name + ".bmk-tmp")
+        try:
+            patched = _insert_text_chunks(source.read_bytes(), entries)
+            temp.write_bytes(patched)
+            os.replace(temp, target)
+            if source != target and source.exists():
+                source.unlink()
+            return
+        except Exception as exc:
+            logger.warning(
+                "%s 워크플로 메타데이터 삽입에 실패했습니다 — "
+                "NAI 메타데이터만 담긴 원본을 유지합니다: %s",
+                _TAG,
+                exc,
+            )
+            try:
+                temp.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    # 청크 삽입을 안 했거나 실패한 경우 — 이름만 정리한다.
+    if target != source:
+        try:
+            source.rename(target)
+        except OSError as exc:
+            logger.warning("%s 이름 변경 실패 — 원본 파일명을 유지합니다: %s", _TAG, exc)
 
 
 # ─── 패치 설치 ────────────────────────────────────────────────────
@@ -325,18 +505,21 @@ def _validate(cls: Any) -> Optional[str]:
     """구조 가정을 검사한다. 문제가 있으면 사유 문자열을 반환."""
     generate = getattr(cls, "generate", None)
     post_image = getattr(cls, "_post_image", None)
+    input_types = getattr(cls, "INPUT_TYPES", None)
 
     if not callable(generate):
         return "GenerateNAID.generate 를 찾을 수 없습니다"
     if not callable(post_image):
         return "GenerateNAID._post_image 를 찾을 수 없습니다"
+    if not callable(input_types):
+        return "GenerateNAID.INPUT_TYPES 를 찾을 수 없습니다"
     if "folder_paths" not in getattr(generate, "__globals__", {}):
         return "generate 의 정의 모듈에 folder_paths 가 없습니다"
 
     try:
         signature = inspect.signature(post_image)
         expected = ("access_token", "prompt", "model", "action", "parameters")
-        actual = tuple(signature.parameters)[: len(expected)]
+        actual = tuple(signature.parameters)[:len(expected)]
         if actual != expected:
             return f"_post_image 인자 순서가 예상과 다릅니다: {actual}"
     except (TypeError, ValueError):
@@ -352,7 +535,7 @@ def _validate(cls: Any) -> Optional[str]:
         if "_{counter:05}_" not in source:
             logger.warning(
                 "%s 저장 파일명 포맷이 예상과 다릅니다. "
-                "카운터 제거가 동작하지 않을 수 있습니다.",
+                "카운터 제거와 워크플로 임베드가 동작하지 않을 수 있습니다.",
                 _TAG,
             )
     return None
@@ -397,9 +580,28 @@ def _install_patch() -> bool:
 
     original_generate = cls.generate
     original_post_image = cls._post_image
+    original_input_types = cls.INPUT_TYPES
     module_globals = original_generate.__globals__
 
-    def patched_post_image(access_token, prompt, model, action, parameters, *args, **kwargs):
+    # upstream 이 이미 선언한 hidden 은 건드리지 않는다. 우리가 주입한 것만
+    # generate 호출 전에 제거해야 원본 시그니처가 깨지지 않는다.
+    try:
+        base_hidden = set((original_input_types().get("hidden") or {}).keys())
+    except Exception:
+        base_hidden = set()
+    injected_keys = frozenset(k for k in _HIDDEN_INPUTS if k not in base_hidden)
+
+    def build_input_types() -> Dict[str, Any]:
+        spec = dict(original_input_types())
+        hidden = dict(spec.get("hidden") or {})
+        for key, kind in _HIDDEN_INPUTS.items():
+            hidden.setdefault(key, kind)
+        spec["hidden"] = hidden
+        return spec
+
+    def patched_post_image(
+        access_token, prompt, model, action, parameters, *args, **kwargs
+    ):
         # NAI 로 실제 전송되는 확정값. 자동저장 블록 직전에 호출되므로
         # 여기서 담아 두면 파일명이 PNG 메타데이터와 정의상 일치한다.
         cfg = _slot.get()
@@ -413,6 +615,14 @@ def _install_patch() -> bool:
 
     @functools.wraps(original_generate)
     def patched_generate(self, *args, **kwargs):
+        # 우리가 주입한 hidden 은 원본이 받지 못하므로 반드시 걷어낸다.
+        hidden_values: Dict[str, Any] = {}
+        for key in _HIDDEN_INPUTS:
+            if key in injected_keys:
+                hidden_values[key] = kwargs.pop(key, None)
+            else:
+                hidden_values[key] = kwargs.get(key)
+
         option = kwargs.get("option")
         source_cfg = option.get(_OPTION_KEY) if isinstance(option, dict) else None
 
@@ -427,6 +637,19 @@ def _install_patch() -> bool:
             logger.warning("%s time_format 이 올바르지 않아 기본값을 씁니다.", _TAG)
         cfg["saved"] = None
 
+        if cfg.get("embed_workflow", True):
+            cfg["embed"] = _collect_embed_entries(
+                hidden_values.get("prompt"), hidden_values.get("extra_pnginfo")
+            )
+            if not cfg["embed"]:
+                logger.warning(
+                    "%s 워크플로 정보를 받지 못해 임베드를 건너뜁니다. "
+                    "NAI 메타데이터는 정상 저장됩니다.",
+                    _TAG,
+                )
+        else:
+            cfg["embed"] = {}
+
         token = _slot.set(cfg)
         try:
             result = original_generate(self, *args, **kwargs)
@@ -439,18 +662,22 @@ def _install_patch() -> bool:
     patched_generate._bmk_patched = True  # type: ignore[attr-defined]
 
     module_globals["folder_paths"] = _FolderPathsProxy(module_globals["folder_paths"])
+    cls.INPUT_TYPES = classmethod(lambda _cls: build_input_types())
     cls._post_image = staticmethod(patched_post_image)
     cls.generate = patched_generate
 
     _installed = True
-    logger.info("%s GenerateNAID 자동저장 파일명 패치를 설치했습니다.", _TAG)
+    logger.info(
+        "%s GenerateNAID 패치를 설치했습니다 (파일명 제어 + 워크플로 임베드).",
+        _TAG,
+    )
     return True
 
 
 # ─── 노드 ────────────────────────────────────────────────────────
 
 class BMKNaiAutosaveName:
-    """NAID_OPTION 체인에 자동저장 파일명 설정을 실어 보낸다."""
+    """NAID_OPTION 체인에 자동저장 파일명 / 메타데이터 설정을 실어 보낸다."""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -510,6 +737,19 @@ class BMKNaiAutosaveName:
                         ),
                     },
                 ),
+                # ※ 위젯은 append-only — 중간에 끼우면 저장된 워크플로의
+                #   widgets_values 위치 배열이 어긋난다.
+                "embed_workflow": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "tooltip": (
+                            "ComfyUI 워크플로 메타데이터를 같은 파일에 추가로 "
+                            "심습니다. NAI 메타데이터와 알파 채널 데이터는 그대로 "
+                            "보존되므로 한 파일이 양쪽 모두와 호환됩니다."
+                        ),
+                    },
+                ),
             },
             "optional": {
                 "option": (
@@ -529,10 +769,11 @@ class BMKNaiAutosaveName:
     CATEGORY = "BMK/NovelAI"
     DESCRIPTION = (
         "ComfyUI_NAIDGenerator 가 NovelAI 메타데이터 보존용으로 자동 저장하는 "
-        "PNG 의 파일명을 Image Saver 방식 토큰 템플릿으로 제어합니다. "
-        "생성 파라미터는 NAI 로 실제 전송된 확정값을 쓰므로 파일명과 PNG "
-        "메타데이터가 항상 일치합니다. Img2ImgOption / InpaintingOption 은 "
-        "option 입력이 없는 체인 시작점이므로 이 노드를 그 뒤에 두세요."
+        "PNG 의 파일명을 Image Saver 방식 토큰 템플릿으로 제어하고, 같은 파일에 "
+        "ComfyUI 워크플로 메타데이터를 함께 심습니다. 생성 파라미터는 NAI 로 "
+        "실제 전송된 확정값을 쓰므로 파일명과 PNG 메타데이터가 항상 일치합니다. "
+        "Img2ImgOption / InpaintingOption 은 option 입력이 없는 체인 시작점이므로 "
+        "이 노드를 그 뒤에 두세요."
     )
     SEARCH_ALIASES = [
         "bmk",
@@ -543,10 +784,15 @@ class BMKNaiAutosaveName:
         "filename",
         "file name",
         "image saver",
+        "workflow",
+        "metadata",
+        "pnginfo",
         "자동저장",
         "파일명",
         "파일 이름",
         "저장 이름",
+        "워크플로우",
+        "메타데이터",
     ]
 
     def set_option(
@@ -556,6 +802,7 @@ class BMKNaiAutosaveName:
         time_format: str,
         keep_counter: bool,
         enabled: bool,
+        embed_workflow: bool = True,
         option: Optional[Dict[str, Any]] = None,
     ) -> Tuple[Dict[str, Any]]:
         # 지연 설치: BMK 패키지가 NAIDGenerator 보다 먼저 로드되므로 import
@@ -575,6 +822,7 @@ class BMKNaiAutosaveName:
             "time_format": time_format,
             "keep_counter": bool(keep_counter),
             "enabled": bool(enabled),
+            "embed_workflow": bool(embed_workflow),
         }
         return (option,)
 
