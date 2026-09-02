@@ -78,6 +78,7 @@ _NODE_MODULES = (
     "bmk_nai_autosave",
     "bmk_nai_resolution",
     "bmk_nai_to_anima",
+    "bmk_persistent_bridge",
     "bmk_pid_tiled_upscale",
     "bmk_prompt_from_image",
     "bmk_run_batch_grid",
@@ -223,6 +224,11 @@ for _module_name in _NODE_MODULES:
 #       두 노드의 batch_count 위젯에 큐 직전 동기화하고, cycle 모드에서
 #       control_after_generate를 fixed로 강제. base_seed 난수 버튼
 #       (New Fixed Random, 기본 NovelAI 32비트 대역) 제공.
+#   - bmk_persistent_bridge.js
+#       BMKPersistentBridge용 확장. 실행 결과의 저장본 목록을 node.properties에
+#       기록해 재로드/재시작 후에도 프리뷰를 복원하고, mode에 맞는 프리뷰
+#       (passthrough/saved → 저장본, custom → image 위젯 파일)를 표시. image
+#       위젯이 사용자·마스크 에디터에 의해 바뀌면 mode를 custom으로 자동 전환.
 # 새 JS 확장을 추가할 때는 ./js 폴더에 파일만 넣으면 됩니다.
 WEB_DIRECTORY = "./js"
 
