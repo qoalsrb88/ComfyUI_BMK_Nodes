@@ -87,6 +87,7 @@ _NODE_MODULES = (
     "bmk_segs_core_mask",
     "bmk_tabbed_notes",
     "bmk_tag_subtractor",
+    "bmk_text_viewer_tabs",
     "bmk_upscale_with_model_tiled",
     "bmk_wavelet_tone_restore",
     "bmk_wildcard_prompt",
@@ -229,6 +230,12 @@ for _module_name in _NODE_MODULES:
 #       기록해 재로드/재시작 후에도 프리뷰를 복원하고, mode에 맞는 프리뷰
 #       (passthrough/saved → 저장본, custom → image 위젯 파일)를 표시. image
 #       위젯이 사용자·마스크 에디터에 의해 바뀌면 mode를 custom으로 자동 전환.
+#   - bmk_text_viewer_tabs.js
+#       BMKTextViewerTabs용 확장. 여러 STRING 입력을 높이 고정 DOM 위젯 하나에
+#       탭으로 표시(라벨 = 소스 노드 제목). 입력 슬롯을 뷰어 왼쪽 열에 겹쳐 두어
+#       포트가 늘어도 노드가 길어지지 않음(widgets_start_y=0 + 투명 띠). 복사
+#       (현재/전체), 줄바꿈, 탭 배치(fit/wrap/scroll), 변경 표시, 마지막 결과를
+#       properties에 기억. 표시 텍스트는 widgets_values에 직렬화되지 않음.
 # 새 JS 확장을 추가할 때는 ./js 폴더에 파일만 넣으면 됩니다.
 WEB_DIRECTORY = "./js"
 
