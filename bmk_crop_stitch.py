@@ -21,6 +21,8 @@ Image Composite Masked 처럼 좌표를 수동 입력하거나 Inpaint Crop/Stit
   붙일 영역을 제한한다. 1=처리 결과, 0=원본 유지.
   단, 마스크가 전부 0(영역 미지정)이면 "마스크 없음"과 동일하게 크롭
   전체를 붙인다 — 포트를 연결만 해 두어도 결과가 사라지지 않는다.
+- use_mask: mask 입력 반영 토글. False 면 연결된 마스크를 무시하고 크롭
+  전체를 붙인다. 마스크를 지우거나 포트를 끊지 않고 A/B 비교가 가능하다.
 - crop_info 의 box 가 None(크롭 없음)이면 회전 좌표계 전체를 대상으로
   동작한다(역회전 + 전체 교체 — 회전만 쓴 파이프라인도 정상 왕복).
 
@@ -28,6 +30,13 @@ Image Composite Masked 처럼 좌표를 수동 입력하거나 Inpaint Crop/Stit
 ----
 - image: 재합성된 원본 크기 이미지 (배치 크기 = 처리된 이미지 배치)
 - mask:  실제로 붙은 영역의 블렌드 마스크(원본 좌표계) — 후속 합성용
+
+v5 (2026-09)
+------------
+- use_mask(BOOLEAN, 기본 True) 위젯 추가: False 면 mask 입력이 연결되어
+  있어도 무시하고 크롭 전체를 붙인다. 로더에서 만든 마스크를 지우거나
+  포트를 해제하지 않고도 마스크 반영/미반영을 토글로 전환할 수 있다.
+  위젯은 기존 위젯 뒤에 추가되어 저장된 워크플로우와 위치 호환된다.
 
 v4 (2026-09)
 ------------
@@ -103,6 +112,24 @@ class BMKCropStitch:
                     "INT",
                     {"default": 16, "min": 0, "max": 256},
                 ),
+                # v5: mask 입력 반영 토글. False 면 연결된 mask 를 무시하고
+                # 크롭 전체를 붙인다 (포트를 끊거나 마스크를 지울 필요 없음).
+                # 위젯 순서 끝에 추가 — 저장된 워크플로우의 widgets_values 와
+                # 위치 호환 유지.
+                "use_mask": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "label_on": "mask 반영",
+                        "label_off": "mask 미반영(전체 붙임)",
+                        "tooltip": (
+                            "True: mask 입력으로 붙일 영역을 제한합니다 "
+                            "(전부 0 인 마스크는 무시). "
+                            "False: mask 입력이 연결되어 있어도 무시하고 "
+                            "크롭 전체를 붙입니다."
+                        ),
+                    },
+                ),
             },
             "optional": {
                 "image_original": ("IMAGE",),
@@ -120,7 +147,7 @@ class BMKCropStitch:
         "BMK Load Image (Crop) 의 crop_info 를 받아, 처리된 크롭 이미지를 "
         "원본의 동일 위치에 크기·회전을 자동 정합하여 재합성합니다. "
         "가장자리 페더 블렌드와 마스크 제한을 지원하며(전부 0 인 마스크는 "
-        "무시하고 크롭 전체를 붙임), 채널 수(RGB/RGBA)가 "
+        "무시, use_mask 토글로 마스크 반영/미반영 전환), 채널 수(RGB/RGBA)가 "
         "달라도 원본 기준으로 자동 정합합니다. image_original "
         "입력으로 업스케일본 등 다른 해상도의 원본에도 비례 위치로 "
         "붙일 수 있습니다."
@@ -143,6 +170,7 @@ class BMKCropStitch:
         image_crop=None,
         mask=None,
         crop_info=None,
+        use_mask=True,
     ):
         if crop_info is None:
             raise ValueError(
@@ -233,6 +261,14 @@ class BMKCropStitch:
             patch = p.movedim(1, -1)
 
         # 옵션 마스크: 크롭 좌표계 → 역회전 → 목표 크기
+        # v5: use_mask=False 면 연결 여부와 무관하게 mask 를 무시한다.
+        if mask is not None and not use_mask:
+            logger.debug(
+                "%s use_mask=False — 연결된 mask 입력을 무시하고 크롭 전체를 "
+                "붙입니다.",
+                _TAG,
+            )
+            mask = None
         # v4: 전부 0 인 마스크(영역 미지정)는 "마스크 없음"으로 취급한다.
         # 로더의 mask 출력은 알파가 없는(또는 전부 불투명한) 이미지에서
         # 0 마스크이므로, 그대로 곱하면 결과 전체가 원본으로 되돌아가
