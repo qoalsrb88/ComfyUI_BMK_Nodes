@@ -24,15 +24,29 @@ Impact Pack 의 Preview Bridge 는 미리보기를 temp/ 에 쓰고 파일 매�
                입력 링크가 비어 있으면(상위 bypass/mute) 저장본으로 대체한다.
   saved        상위를 실행하지 않고 저장본만 내보낸다.
   custom       상위를 실행하지 않고 image 위젯의 파일(input 폴더/업로드/마스크
-               에디터 결과)을 내보낸다. 알파 채널이 있으면 MASK 로 변환.
+               에디터 결과)을 내보낸다. Load Image 규약: RGB + MASK(1 - alpha).
+
+mask 입력 (v2) — Join Image with Alpha 통합
+-------------------------------------------
+  passthrough 에서 mask 가 연결되면 코어 Join Image with Alpha 와 동일하게
+  alpha = 1 - mask 를 붙인 RGBA 이미지를 내보내고, PNG 도 RGBA 로 저장한다.
+  mask 출력은 이미지 크기로 리사이즈된 입력 마스크. 배치는 큰 쪽에 맞춰 반복.
+  mask 없이 4채널 이미지가 들어오면 그대로 통과시키고 mask 출력 = 1 - alpha.
+
+  saved 모드는 "이 노드가 마지막에 내보낸 것"을 재현하는 것이 목적이므로,
+  저장 PNG 에 알파가 있으면 RGBA 이미지 + (1 - alpha) 마스크를 그대로 돌려준다.
+  → passthrough 때와 같은 채널 수/마스크가 나와 하위 노드 입장에서 차이가 없다.
+  custom 모드만 Load Image 규약(RGB + MASK)을 따른다.
 
 slot (저장본 이름)
 ------------------
   * 프론트엔드 JS 가 노드 생성 시 `auto-xxxxxxxx` 를 자동으로 채운다(노드별 고유).
-    복사/붙이기로 같은 그래프 안에 auto 이름이 중복되면 새 노드 쪽을 재발급한다.
-  * 이름을 직접 적으면 그 이름으로 저장·로드한다 → 여러 노드/워크플로우가 하나의
-    저장본을 공유하거나, 저장본을 여러 개 구분해 둘 때 사용. (직접 적은 이름은
-    중복 검사에서 제외 — 공유가 의도일 수 있으므로.)
+  * 복사/붙이기·복제로 같은 워크플로우에 같은 이름이 생기면 새 노드 쪽을 자동으로
+    바꾼다: auto 이름은 재발급, 직접 적은 이름은 `이름_2`, `이름_3`… 접미.
+    한 번의 붙이기에 포함된 노드들은 같은 원본 이름 → 같은 새 이름으로 매핑되어
+    붙여넣은 묶음 안의 의도적 공유는 유지된다.
+  * 워크플로우 로드(재시작·undo 포함)에서는 이름을 건드리지 않으므로, 직접 같은
+    이름을 적어 여러 노드가 저장본을 공유하는 구성은 그대로 보존된다.
   * 비어 있으면(API 전용 사용 등) `node_<노드ID>` 를 쓴다.
   * 파일: input/bmk_bridge/<slot>_b<배치인덱스>.png
 
@@ -51,10 +65,15 @@ slot (저장본 이름)
 
 프론트엔드 (./js/bmk_persistent_bridge.js)
 -----------------------------------------
-  * slot 자동 발급 / 중복 재발급.
+  * slot 자동 발급 / 붙이기·복제 시 중복 방지.
   * 실행 결과 ui.bmk_bridge 의 저장본 목록을 node.properties 에 기록 → 재로드 후
     프리뷰 복원. mode 에 맞는 프리뷰 표시. custom 이 아닐 때 image 위젯 회색 처리.
   * image 위젯이 사용자/마스크 에디터에 의해 바뀌면 mode 를 custom 으로 자동 전환.
+
+v2 (2026-09)
+------------
+- mask 입력 추가 (Join Image with Alpha 통합). saved 모드는 알파를 보존해 재현.
+- 붙이기/복제 시 slot 중복 방지를 직접 적은 이름까지 확대 (프론트엔드).
 
 v1 (2026-09)
 ------------
@@ -167,19 +186,57 @@ def _ui_entry_for_widget(image_value: str) -> dict:
     return {"filename": filename, "subfolder": subfolder, "type": kind}
 
 
+# ─── 마스크/알파 유틸 ───────────────────────────────────────────
+
+
+def _repeat_to_batch(t: torch.Tensor, batch: int) -> torch.Tensor:
+    """코어 comfy.utils.repeat_to_batch_size 와 동일한 동작."""
+    if t.shape[0] == batch:
+        return t
+    if t.shape[0] > batch:
+        return t[:batch]
+    reps = (batch + t.shape[0] - 1) // t.shape[0]
+    return t.repeat((reps,) + (1,) * (t.ndim - 1))[:batch]
+
+
+def _resize_mask(mask: torch.Tensor, height: int, width: int) -> torch.Tensor:
+    """[B,h,w] 마스크를 [B,H,W] 로 bilinear 리사이즈 (코어 resize_mask 와 동일)."""
+    if mask.ndim == 2:
+        mask = mask.unsqueeze(0)
+    m = mask.reshape((-1, 1, mask.shape[-2], mask.shape[-1])).float()
+    m = torch.nn.functional.interpolate(m, size=(height, width), mode="bilinear")
+    return m.squeeze(1)
+
+
+def _join_with_alpha(images: torch.Tensor, mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """코어 Join Image with Alpha 와 동일: alpha = 1 - mask 를 붙인 RGBA 와,
+    이미지 크기로 맞춘 mask [B,H,W] 를 반환."""
+    height, width = int(images.shape[1]), int(images.shape[2])
+    mask_r = _resize_mask(mask.to(images.device), height, width).clamp(0.0, 1.0)
+    batch = max(int(images.shape[0]), int(mask_r.shape[0]))
+    images = _repeat_to_batch(images, batch)
+    mask_r = _repeat_to_batch(mask_r, batch).to(images.dtype)
+    alpha = 1.0 - mask_r
+    rgba = torch.cat((images[..., :3], alpha.unsqueeze(-1)), dim=-1)
+    return rgba, mask_r
+
+
+def _empty_mask(batch: int) -> torch.Tensor:
+    return torch.zeros((batch, 64, 64), dtype=torch.float32)
+
+
 # ─── 이미지 입출력 ─────────────────────────────────────────────
 
 
-def _load_files(paths: list[str]) -> tuple[torch.Tensor, torch.Tensor]:
-    """파일들을 [B,H,W,3] float32 텐서 + [B,H,W] 마스크로 로드 (LoadImage 규약).
+def _load_files(paths: list[str], keep_alpha: bool) -> tuple[torch.Tensor, torch.Tensor]:
+    """파일들을 [B,H,W,C] float32 텐서 + [B,H,W] 마스크로 로드.
 
-    알파 채널이 있으면 MASK = 1 - alpha, 없으면 64×64 영 마스크.
+    * keep_alpha=False (Load Image 규약): RGB, MASK = 1 - alpha (없으면 64×64 영).
+    * keep_alpha=True  (saved 재현):     알파가 있으면 RGBA 로 돌려주고 MASK = 1 - alpha.
     첫 프레임과 크기가 다른 프레임은 건너뛴다.
     """
-    images: list[torch.Tensor] = []
-    masks: list[torch.Tensor] = []
+    frames: list[Image.Image] = []
     size = None
-    any_alpha = False
 
     for path in paths:
         img = node_helpers.pillow(Image.open, path)
@@ -187,39 +244,44 @@ def _load_files(paths: list[str]) -> tuple[torch.Tensor, torch.Tensor]:
             frame = node_helpers.pillow(ImageOps.exif_transpose, frame)
             if frame.mode == "I":
                 frame = frame.point(lambda i: i * (1 / 255))
-            rgb = frame.convert("RGB")
             if size is None:
-                size = rgb.size
-            if rgb.size != size:
+                size = frame.size
+            if frame.size != size:
                 continue
-            images.append(
-                torch.from_numpy(np.asarray(rgb, dtype=np.float32) / 255.0)[None,]
-            )
-            if "A" in frame.getbands():
-                alpha = np.asarray(frame.getchannel("A"), dtype=np.float32) / 255.0
-                masks.append((1.0 - torch.from_numpy(alpha))[None,])
-                any_alpha = True
-            else:
-                masks.append(torch.zeros((1, 64, 64), dtype=torch.float32))
+            frames.append(frame.copy())
             if img.format == "MPO":  # LoadImage 와 동일: MPO 는 첫 프레임만
                 break
 
-    if not images:
+    if not frames:
         raise RuntimeError(f"{_TAG} 이미지를 읽을 수 없습니다: {paths}")
 
-    if any_alpha:
-        # 일부 프레임만 알파가 있으면 나머지를 실제 크기의 영 마스크로 맞춰 cat 가능하게
-        w, h = size
-        masks = [
-            m if m.shape[1:] == (h, w) else torch.zeros((1, h, w), dtype=torch.float32)
-            for m in masks
-        ]
+    any_alpha = any("A" in f.getbands() for f in frames)
+    w, h = size
+    images: list[torch.Tensor] = []
+    masks: list[torch.Tensor] = []
+
+    for frame in frames:
+        has_alpha = "A" in frame.getbands()
+        if keep_alpha and any_alpha:
+            rgba = np.asarray(frame.convert("RGBA"), dtype=np.float32) / 255.0
+            images.append(torch.from_numpy(rgba)[None,])
+        else:
+            rgb = np.asarray(frame.convert("RGB"), dtype=np.float32) / 255.0
+            images.append(torch.from_numpy(rgb)[None,])
+
+        if has_alpha:
+            alpha = np.asarray(frame.getchannel("A"), dtype=np.float32) / 255.0
+            masks.append((1.0 - torch.from_numpy(alpha))[None,])
+        elif any_alpha:
+            masks.append(torch.zeros((1, h, w), dtype=torch.float32))
+        else:
+            masks.append(torch.zeros((1, 64, 64), dtype=torch.float32))
 
     return torch.cat(images, dim=0), torch.cat(masks, dim=0)
 
 
 def _save_frames(images: torch.Tensor, base: str, prompt, extra_pnginfo, unique_id) -> list[str]:
-    """배치를 <base>_b<i>.png 로 저장. 이전 배치의 잔여 프레임은 삭제."""
+    """배치를 <base>_b<i>.png 로 저장(3채널 RGB / 4채널 RGBA). 이전 배치의 잔여 프레임은 삭제."""
     folder = _bridge_dir()
     os.makedirs(folder, exist_ok=True)
 
@@ -320,8 +382,8 @@ class BMKPersistentBridge:
                         "tooltip": (
                             "저장본 이름 (input/bmk_bridge/<slot>_b0.png).\n"
                             "자동 생성값(auto-…)을 그대로 두면 노드별로 고유하게 저장됩니다.\n"
-                            "이름을 직접 적으면 그 이름으로 저장/로드 → 여러 노드·워크플로우가 "
-                            "하나의 저장본을 공유하거나 저장본을 여러 개 구분할 수 있습니다."
+                            "복사/붙이기로 이름이 겹치면 새 노드 쪽이 자동으로 바뀝니다.\n"
+                            "여러 노드가 하나의 저장본을 공유하려면 같은 이름을 직접 입력하세요."
                         ),
                     },
                 ),
@@ -334,6 +396,17 @@ class BMKPersistentBridge:
                         "tooltip": (
                             "상위 프로세스 출력. passthrough 에서만 요청되며, "
                             "링크가 비어 있어도(상위 bypass) 실행됩니다."
+                        ),
+                    },
+                ),
+                "mask": (
+                    "MASK",
+                    {
+                        "lazy": True,
+                        "tooltip": (
+                            "선택. passthrough 에서 연결하면 Join Image with Alpha 처럼 "
+                            "alpha = 1 - mask 를 붙인 RGBA 이미지를 내보내고 저장합니다.\n"
+                            "mask 출력은 이미지 크기로 맞춘 입력 마스크입니다."
                         ),
                     },
                 ),
@@ -364,6 +437,7 @@ class BMKPersistentBridge:
         "중간 결과 이미지를 input/bmk_bridge/ 에 영구 저장하는 브릿지. "
         "상위가 bypass 되거나 캐시가 사라져도(재시작 포함) 저장본을 바로 하위로 "
         "넘길 수 있고, saved/custom 모드에서는 상위 프로세스를 실행하지 않습니다. "
+        "mask 를 연결하면 Join Image with Alpha 처럼 RGBA 로 합쳐 내보내고, "
         "custom 모드는 Load Image 처럼 파일/업로드/마스크 에디터 결과를 내보냅니다."
     )
     SEARCH_ALIASES = [
@@ -372,6 +446,7 @@ class BMKPersistentBridge:
         "checkpoint image",
         "resume",
         "skip upstream",
+        "join image with alpha",
         "브릿지",
         "중간 저장",
         "저장본",
@@ -381,15 +456,16 @@ class BMKPersistentBridge:
 
     # ── 지연 평가: passthrough 이고 링크가 있을 때만 상위 실행을 요청 ──
     def check_lazy_status(self, mode, **kwargs):
-        if mode == MODE_PASSTHROUGH and "images" in kwargs and kwargs["images"] is None:
-            return ["images"]
-        return []
+        if mode != MODE_PASSTHROUGH:
+            return []
+        return [name for name in ("images", "mask") if name in kwargs and kwargs[name] is None]
 
     def bridge(
         self,
         mode,
         slot,
         images=None,
+        mask=None,
         image=None,
         unique_id=None,
         prompt=None,
@@ -403,7 +479,7 @@ class BMKPersistentBridge:
             path = folder_paths.get_annotated_filepath(image)
             if not os.path.isfile(path):
                 raise FileNotFoundError(f"{_TAG} custom 모드: 파일이 없습니다: {image}")
-            out_image, out_mask = _load_files([path])
+            out_image, out_mask = _load_files([path], keep_alpha=False)
             ui_images = [_ui_entry_for_widget(image)]
             used = "custom"
 
@@ -420,14 +496,21 @@ class BMKPersistentBridge:
                     f"{_TAG} 입력이 비어 있어 저장본을 사용합니다: "
                     f"{base} ({len(frames)} frame)"
                 )
-            out_image, out_mask = _load_files(frames)
+            out_image, out_mask = _load_files(frames, keep_alpha=True)
             ui_images = [_ui_entry(p) for p in frames]
             used = "saved"
 
         else:
-            frames = _save_frames(images, base, prompt, extra_pnginfo, unique_id)
-            out_image = images
-            out_mask = torch.zeros((images.shape[0], 64, 64), dtype=torch.float32)
+            if mask is not None:
+                # Join Image with Alpha 통합: RGBA 로 합쳐 내보내고 저장
+                out_image, out_mask = _join_with_alpha(images, mask)
+            elif images.shape[-1] == 4:
+                out_image = images
+                out_mask = (1.0 - images[..., 3]).float()
+            else:
+                out_image = images
+                out_mask = _empty_mask(int(images.shape[0]))
+            frames = _save_frames(out_image, base, prompt, extra_pnginfo, unique_id)
             ui_images = [_ui_entry(p) for p in frames]
             used = "input"
 
@@ -435,6 +518,7 @@ class BMKPersistentBridge:
             "mode": mode,
             "used": used,
             "base": base,
+            "alpha": bool(out_image.shape[-1] == 4),
             "saved": [_ui_entry(p) for p in _frames_of(base)],
         }
         return {

@@ -2,8 +2,15 @@
 //
 // 역할
 //  1) slot(저장본 이름) 자동 발급: 노드 생성 시 `auto-xxxxxxxx` 를 채운다.
-//     같은 그래프 안에서 auto 이름이 중복되면(복사/붙이기) 나중에 추가된 노드 쪽을
-//     재발급한다. 사용자가 직접 적은 이름은 공유가 의도일 수 있어 건드리지 않는다.
+//     붙이기(Ctrl+V)·복제로 같은 워크플로우에 같은 이름이 생기면 새 노드 쪽을 바꾼다.
+//       auto 이름 → 재발급,  직접 적은 이름 → `이름_2`, `이름_3` … 접미.
+//     한 번의 붙이기에 포함된 노드들은 같은 원본 이름을 같은 새 이름으로 매핑해
+//     붙여넣은 묶음 안의 의도적 공유를 유지한다.
+//     워크플로우 로드(재시작·undo 포함)에서는 건드리지 않는다 → 직접 같은 이름을
+//     적어 공유하는 구성은 보존된다.
+//     구분 근거: 로드는 노드를 먼저 추가하고 id 를 보존한 채 configure 하지만,
+//     붙이기는 id=-1 로 추가한 뒤 configure 하고, 복제는 id 없이 configure 한 뒤
+//     추가한다. → onConfigure 의 info.id 와 node.id 비교로 "복사본" 을 판별.
 //  2) 실행 결과(ui.bmk_bridge[0].saved)의 저장본 파일 목록을 node.properties 에 기록.
 //     → 워크플로우 재로드/서버 재시작 후에도 노드 프리뷰에 저장본을 다시 표시한다.
 //  3) mode 에 맞는 프리뷰 표시.
@@ -71,26 +78,98 @@ function ensureAutoSlot(node) {
     if (!String(w.value ?? "").trim()) w.value = newAutoSlot();
 }
 
-// 같은 그래프의 다른 BMKPersistentBridge 가 같은 auto 이름을 쓰면 이 노드를 재발급
-function dedupeAutoSlot(node, graph) {
-    const w = getWidget(node, "slot");
-    if (!w || !graph?.nodes) return;
-    const mine = String(w.value ?? "");
-    if (!AUTO_SLOT_RE.test(mine)) return;
-    const clash = graph.nodes.some(
-        (n) =>
-            n !== node &&
-            (n.comfyClass ?? n.type) === NODE_NAME &&
-            String(getWidget(n, "slot")?.value ?? "") === mine
-    );
-    if (clash) {
-        w.value = newAutoSlot();
-        console.log(
-            `[BMK PersistentBridge] #${node.id} slot 중복(${mine}) → ${w.value} 재발급`
-        );
-        // 저장본 목록은 원본 노드의 것이므로 넘겨받지 않는다
-        if (node.properties) delete node.properties[PROP_SAVED];
+// 워크플로우 전체(루트 + 서브그래프)의 다른 브릿지 노드가 쓰는 slot 이름 집합
+function collectBridgeNodes(graph, out = [], depth = 0) {
+    if (!graph?.nodes || depth > 8) return out;
+    for (const n of graph.nodes) {
+        if ((n.comfyClass ?? n.type) === NODE_NAME) out.push(n);
+        if (n.isSubgraphNode?.() && n.subgraph) collectBridgeNodes(n.subgraph, out, depth + 1);
     }
+    return out;
+}
+
+function takenSlots(node) {
+    const root = app.rootGraph ?? node.graph?.rootGraph ?? node.graph;
+    const taken = new Set();
+    for (const n of collectBridgeNodes(root)) {
+        if (n === node) continue;
+        const v = String(getWidget(n, "slot")?.value ?? "").trim();
+        if (v) taken.add(v);
+    }
+    // 루트에서 닿지 않는 그래프(분리된 서브그래프 편집 중 등)면 현재 그래프도 포함
+    if (node.graph && node.graph !== root) {
+        for (const n of collectBridgeNodes(node.graph)) {
+            if (n === node) continue;
+            const v = String(getWidget(n, "slot")?.value ?? "").trim();
+            if (v) taken.add(v);
+        }
+    }
+    return taken;
+}
+
+// "이름" → "이름_2", "이름_3" … (이미 _N 접미가 있으면 그 다음 번호부터)
+function nextSuffixName(name, taken) {
+    const m = name.match(/^(.*?)_(\d+)$/);
+    let base = name;
+    let n = 2;
+    if (m) {
+        base = m[1];
+        n = parseInt(m[2], 10) + 1;
+    }
+    let candidate = `${base}_${n}`;
+    while (taken.has(candidate)) {
+        n += 1;
+        candidate = `${base}_${n}`;
+    }
+    return candidate;
+}
+
+// 한 번의 붙이기(동기 루프) 안에서 원본 이름 → 새 이름 매핑을 공유.
+// 마이크로태스크에서 비워지므로 다음 붙이기에는 영향이 없다.
+let pasteRenameMap = null;
+function currentPasteRenameMap() {
+    if (!pasteRenameMap) {
+        pasteRenameMap = new Map();
+        queueMicrotask(() => {
+            pasteRenameMap = null;
+        });
+    }
+    return pasteRenameMap;
+}
+
+// 복사본(붙이기/복제)의 slot 이 기존 노드와 겹치면 새 이름으로 바꾼다.
+function renameSlotForCopy(node) {
+    const w = getWidget(node, "slot");
+    if (!w) return;
+    const cur = String(w.value ?? "").trim();
+    if (!cur) {
+        w.value = newAutoSlot();
+        return;
+    }
+    const batch = currentPasteRenameMap();
+    if (batch.has(cur)) {
+        // 같은 붙이기 묶음에서 이미 바뀐 이름 → 같은 새 이름으로 (묶음 내 공유 유지)
+        w.value = batch.get(cur);
+        if (node.properties) delete node.properties[PROP_SAVED];
+        return;
+    }
+    const taken = takenSlots(node);
+    if (!taken.has(cur)) return; // 겹치지 않으면 그대로 (다른 워크플로우로 옮긴 경우 등)
+
+    const next = AUTO_SLOT_RE.test(cur) ? newAutoSlot() : nextSuffixName(cur, taken);
+    batch.set(cur, next);
+    w.value = next;
+    // 저장본 목록은 원본 노드의 것이므로 넘겨받지 않는다
+    if (node.properties) delete node.properties[PROP_SAVED];
+    console.log(`[BMK PersistentBridge] #${node.id} slot 중복(${cur}) → ${next}`);
+}
+
+// configure 에 넘어온 직렬화 정보로 "복사본" 인지 판별.
+//   로드: info.id === node.id (id 보존)   붙이기: info.id === -1   복제: info.id 없음
+function isCopyConfigure(node, info) {
+    if (!info || typeof info !== "object") return false;
+    if (info.id == null || info.id === -1) return true;
+    return String(info.id) !== String(node.id);
 }
 
 // ─── 프리뷰 ─────────────────────────────────────────────────────
@@ -333,8 +412,13 @@ app.registerExtension({
         };
 
         const onConfigure = nodeType.prototype.onConfigure;
-        nodeType.prototype.onConfigure = function () {
+        nodeType.prototype.onConfigure = function (info) {
             const r = onConfigure?.apply(this, arguments);
+            // 붙이기/복제로 들어온 복사본이면 slot 중복을 막는다 (로드는 건드리지 않음)
+            if (isCopyConfigure(this, info)) {
+                if (this.graph) renameSlotForCopy(this);
+                else this._bmkPendingCopyCheck = true; // 복제: 아직 그래프에 없음 → onAdded 에서
+            }
             // 저장본 로드로 위젯값이 복원된 뒤 기준값을 다시 잡고 프리뷰 적용
             const imgW = getWidget(this, "image");
             this._bmkLastImage = imgW?.value;
@@ -343,11 +427,14 @@ app.registerExtension({
             return r;
         };
 
-        // 그래프에 추가된 시점(configure 이후)에 auto slot 중복 검사
+        // 복제(clone) 경로: configure 뒤에 그래프에 추가되므로 여기서 중복 검사
         const onAdded = nodeType.prototype.onAdded;
-        nodeType.prototype.onAdded = function (graph) {
+        nodeType.prototype.onAdded = function () {
             const r = onAdded?.apply(this, arguments);
-            dedupeAutoSlot(this, graph ?? this.graph);
+            if (this._bmkPendingCopyCheck) {
+                this._bmkPendingCopyCheck = false;
+                renameSlotForCopy(this);
+            }
             return r;
         };
 
