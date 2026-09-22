@@ -54,7 +54,7 @@ Impact Pack 의존 import는 전부 `try/except`로 격리돼 있어서, 없어�
 | --- | --- |
 | Anima | `BMK Anima LLLite Per-SEGS Hook`, `BMK Context Anima` |
 | SEGS / Detailer | `BMK Flexible Tile SEGS`, `BMK SEGS Core Mask`, `BMK Klein Reference Latent Per-SEGS Hook`, `BMK Virtual Canvas Crop (Restore)` |
-| Image | `BMK Crop Stitch`, `BMK Load Image (Crop)`, `BMK Persistent Bridge (Image)`, `BMK Wavelet Tone Restore`, `BMK Upscale Image (using Model, Tiled)` |
+| Image | `BMK Crop Stitch`, `BMK Load Image (Crop)`, `BMK Persistent Bridge (Image)`, `BMK Wavelet Tone Restore`, `BMK Upscale Image (using Model, Tiled)`, `BMK Canvas Snap Prepare`, `BMK Canvas Snap Restore`, `BMK Canvas Plan From JSON` |
 | Text / Prompt | `BMK Tabbed Notes 📑`, `BMK Tag Subtractor`, `BMK Text Viewer (Tabs)`, `BMK Wildcard Prompt`, `Prompt Converter` |
 | Utils | `Cyclic Seed (Run Batch)`, `Run Batch Grid (WebUI style)`, `XY Plot` |
 | NovelAI | `NAI Extract`, `NAI Extract Simple` |

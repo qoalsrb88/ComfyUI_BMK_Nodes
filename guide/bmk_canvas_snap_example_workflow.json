@@ -1,0 +1,464 @@
+{
+  "id": "00000000-0000-0000-0000-000000000000",
+  "revision": 0,
+  "last_node_id": 6,
+  "last_link_id": 8,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "LoadImage",
+      "pos": [
+        0,
+        0
+      ],
+      "size": [
+        270,
+        102
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            1
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "canvas_test_546x764.png",
+        "image"
+      ],
+      "widgets_values_named": {
+        "image": "canvas_test_546x764.png",
+        "upload": "image"
+      }
+    },
+    {
+      "id": 2,
+      "type": "BMKCanvasSnapPrepare",
+      "pos": [
+        480,
+        0
+      ],
+      "size": [
+        370.20703125,
+        482
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 1
+        },
+        {
+          "name": "transparency_mask",
+          "shape": 7,
+          "type": "MASK",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "canvas_image",
+          "type": "IMAGE",
+          "links": [
+            2
+          ]
+        },
+        {
+          "name": "canvas_transparency_mask",
+          "type": "MASK",
+          "links": null
+        },
+        {
+          "name": "content_region_mask",
+          "type": "MASK",
+          "links": null
+        },
+        {
+          "name": "width",
+          "type": "INT",
+          "links": [
+            3
+          ]
+        },
+        {
+          "name": "height",
+          "type": "INT",
+          "links": [
+            4
+          ]
+        },
+        {
+          "name": "size_string",
+          "type": "STRING",
+          "links": null
+        },
+        {
+          "name": "canvas_plan",
+          "type": "BMK_CANVAS_PLAN",
+          "links": [
+            6
+          ]
+        },
+        {
+          "name": "plan_json",
+          "type": "STRING",
+          "links": null
+        },
+        {
+          "name": "report",
+          "type": "STRING",
+          "links": [
+            8
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "BMKCanvasSnapPrepare"
+      },
+      "widgets_values": [
+        "gpt-image-2.5 standard",
+        "white",
+        0,
+        false,
+        "bicubic",
+        true,
+        16,
+        480,
+        3840,
+        655360,
+        3686400,
+        3
+      ],
+      "widgets_values_named": {
+        "profile": "gpt-image-2.5 standard",
+        "padding_mode": "white",
+        "max_padding_px": 0,
+        "allow_downscale": false,
+        "resample": "bicubic",
+        "use_transparency_mask": true,
+        "snap": 16,
+        "min_edge": 480,
+        "max_edge": 3840,
+        "min_pixels": 655360,
+        "max_pixels": 3686400,
+        "max_aspect_ratio": 3
+      }
+    },
+    {
+      "id": 3,
+      "type": "OpenAIGPTImageNodeV2",
+      "pos": [
+        1100,
+        0
+      ],
+      "size": [
+        400,
+        344
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model.custom_width",
+          "type": "INT",
+          "widget": {
+            "name": "model.custom_width"
+          },
+          "link": 3
+        },
+        {
+          "name": "model.custom_height",
+          "type": "INT",
+          "widget": {
+            "name": "model.custom_height"
+          },
+          "link": 4
+        },
+        {
+          "name": "model.images.image_1",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 2
+        },
+        {
+          "name": "model.images.image_2",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "model.mask",
+          "shape": 7,
+          "type": "MASK",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            5
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "OpenAIGPTImageNodeV2"
+      },
+      "widgets_values": [
+        "캔버스 전체 크기와 원본 사각형의 위치·크기를 유지하고, 추가한 흰 여백은 그대로 둔다. 줌·재구도 금지. 요청한 편집만 수행: (여기에 편집 지시)",
+        "gpt-image-2.5-sunburst",
+        "Custom",
+        1024,
+        1024,
+        "auto",
+        "low",
+        1,
+        0,
+        "randomize"
+      ],
+      "widgets_values_named": {
+        "prompt": "캔버스 전체 크기와 원본 사각형의 위치·크기를 유지하고, 추가한 흰 여백은 그대로 둔다. 줌·재구도 금지. 요청한 편집만 수행: (여기에 편집 지시)",
+        "model": "gpt-image-2.5-sunburst",
+        "model.size": "Custom",
+        "model.custom_width": 1024,
+        "model.custom_height": 1024,
+        "model.background": "auto",
+        "model.quality": "low",
+        "n": 1,
+        "seed": 0,
+        "control_after_generate": "randomize"
+      },
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 4,
+      "type": "BMKCanvasSnapRestore",
+      "pos": [
+        1680,
+        0
+      ],
+      "size": [
+        324.3515625,
+        98
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 5
+        },
+        {
+          "name": "canvas_plan",
+          "type": "BMK_CANVAS_PLAN",
+          "link": 6
+        },
+        {
+          "name": "transparency_mask",
+          "shape": 7,
+          "type": "MASK",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "links": [
+            7
+          ]
+        },
+        {
+          "name": "transparency_mask",
+          "type": "MASK",
+          "links": null
+        },
+        {
+          "name": "report",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "BMKCanvasSnapRestore"
+      },
+      "widgets_values": [
+        "split_rgb_mask"
+      ],
+      "widgets_values_named": {
+        "rgba_output": "split_rgb_mask"
+      }
+    },
+    {
+      "id": 5,
+      "type": "SaveImage",
+      "pos": [
+        2140,
+        0
+      ],
+      "size": [
+        270,
+        58
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "properties": {},
+      "widgets_values": [
+        "gpt_canvas_snap"
+      ],
+      "widgets_values_named": {
+        "filename_prefix": "gpt_canvas_snap"
+      }
+    },
+    {
+      "id": 6,
+      "type": "PreviewAny",
+      "pos": [
+        480,
+        760
+      ],
+      "size": [
+        210,
+        122
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "source",
+          "type": "*",
+          "link": 8
+        }
+      ],
+      "outputs": [
+        {
+          "name": "STRING",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "PreviewAny"
+      },
+      "widgets_values": [],
+      "widgets_values_named": {}
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      2,
+      0,
+      "IMAGE"
+    ],
+    [
+      2,
+      2,
+      0,
+      3,
+      2,
+      "IMAGE"
+    ],
+    [
+      3,
+      2,
+      3,
+      3,
+      0,
+      "INT"
+    ],
+    [
+      4,
+      2,
+      4,
+      3,
+      1,
+      "INT"
+    ],
+    [
+      5,
+      3,
+      0,
+      4,
+      0,
+      "IMAGE"
+    ],
+    [
+      6,
+      2,
+      6,
+      4,
+      1,
+      "BMK_CANVAS_PLAN"
+    ],
+    [
+      7,
+      4,
+      0,
+      5,
+      0,
+      "IMAGE"
+    ],
+    [
+      8,
+      2,
+      8,
+      6,
+      0,
+      "STRING"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.06696428875533915,
+      "offset": [
+        923.3333333333335,
+        306.66666666666674
+      ]
+    },
+    "frontendVersion": "1.52.7"
+  },
+  "version": 0.4
+}
