@@ -382,6 +382,173 @@ for m in ("lanczos", "bilinear", "area"):
     check(tuple(o[0].shape) == (2, 2272, 1616, 4) and bool(torch.isfinite(o[0]).all()), f"resample {m}")
     check(bool((o[0][:, T_a + 700:T_a + 2200, :, 3] > 0.999).all()), f"resample {m} 불투명 영역 알파")
 
+# ─────────────────────────────────────────────────────────────────
+# 4. v1.1: 미세 스트레치(fit_mode=stretch) + edge_replicate 패딩
+# ─────────────────────────────────────────────────────────────────
+def brute_stretch(w, h, c, pct):
+    """모든 W×H 후보 중 왜곡 ≤ pct 인 것에서 우선순위 최상 (브루트포스 기준값)."""
+    bp = round(pct * 100)
+    best = None
+    S = c.snap
+    arm = c.aspect_milli
+    for W in range(S, c.max_edge + 1, S):
+        if W < c.min_edge:
+            continue
+        for H in range(S, c.max_edge + 1, S):
+            if H < c.min_edge:
+                continue
+            px = W * H
+            if px < c.min_pixels or px > c.max_pixels:
+                continue
+            if W * 1000 > arm * H or H * 1000 > arm * W:
+                continue
+            cand = mod._make_candidate(w, h, W, H)
+            if cand.stretch_ok(bp) and (best is None or mod._better(cand, best)):
+                best = cand
+    return best
+
+
+# 기하: 기본 1% 상한
+p = mod.compute_canvas_plan(546, 764, STD, fit_mode="stretch", max_stretch_percent=1.0)
+check(p["stretch_applied"] is True and p["fit_mode"] == "stretch" and p["fit_mode_requested"] == "stretch", "546x764 stretch 적용")
+check(tuple(p["canvas_size"]) == (1616, 2272) and tuple(p["content_size"]) == (1616, 2261), "stretch 캔버스/그림")
+check(p["padding_ltrb"] == [0, 0, 0, 0] and p["crop_xyxy"] == [0, 0, 1616, 2272], "stretch 여백0/크롭 전체")
+check(p["stretch_axis"] == "height" and abs(p["stretch_percent"] - 100 * (2272 / 2261 - 1)) < 1e-9, f"stretch 축/% {p['stretch_axis']} {p['stretch_percent']}")
+check(p["stretch_fallback_reason"] is None and p["padding_cap_applied"] is False, "stretch 적용 시 폴백 이유 없음")
+# 폴백: 비율 한계 밖
+p = mod.compute_canvas_plan(600, 3000, STD, fit_mode="stretch", max_stretch_percent=1.0)
+check(p["stretch_applied"] is False and p["fit_mode"] == "pad" and "폴백" in (p["stretch_fallback_reason"] or ""), "600x3000 stretch 폴백")
+check(tuple(p["canvas_size"]) == (1104, 3312) and p["padding_ltrb"] == [221, 0, 221, 0], "폴백 시 pad 기하 유지")
+# 낮은 상한 → 기본 규칙과 다른 후보
+p = mod.compute_canvas_plan(546, 764, STD, fit_mode="stretch", max_stretch_percent=0.3)
+b = brute_stretch(546, 764, STD, 0.3)
+check(b is not None and p["stretch_applied"] and p["canvas_size"] == [b.W, b.H] and p["stretch_percent"] <= 0.3 + 1e-9,
+      f"stretch 0.3% → {p['canvas_size']} vs brute {(b.W, b.H) if b else None}")
+check(p["primary_rule_canvas"] == [1616, 2272] and p["canvas_size"] != [1616, 2272], "0.3% 에서는 기본 규칙과 다른 캔버스")
+# pad 모드에서도 정보 필드
+p = mod.compute_canvas_plan(546, 764, STD)
+check(p["fit_mode"] == "pad" and p["stretch_applied"] is False and p["stretch_axis"] == "height" and p["fit_mode_requested"] == "pad", "pad 모드 stretch 정보 필드")
+# 상한 0% = 정확히 비율 일치하는 후보만
+p = mod.compute_canvas_plan(1920, 1080, STD, fit_mode="stretch", max_stretch_percent=0.0)
+check(p["stretch_applied"] and p["canvas_size"] == [2560, 1440] and p["stretch_percent"] == 0.0, "16:9 상한 0% → 2560x1440")
+expect_raises(lambda: mod.compute_canvas_plan(546, 764, STD, fit_mode="zoom"), "잘못된 fit_mode", contains="fit_mode")
+expect_raises(lambda: mod.compute_canvas_plan(546, 764, STD, fit_mode="stretch", max_stretch_percent=-1), "음수 상한", contains="max_stretch_percent")
+
+# 브루트포스 대조 (stretch)
+t0 = time.time()
+for i in range(25):
+    w = rng.randint(50, 4500)
+    h = rng.randint(50, 4500)
+    pct = rng.choice([0.2, 0.5, 1.0, 3.0])
+    b = brute_stretch(w, h, STD, pct)
+    try:
+        p = mod.compute_canvas_plan(w, h, STD, fit_mode="stretch", max_stretch_percent=pct)
+    except ValueError:
+        continue
+    if b is None:
+        check(p["stretch_applied"] is False, f"stretch brute: 후보 없음인데 적용됨 {w}x{h} {pct}%")
+    else:
+        check(p["stretch_applied"] and p["canvas_size"] == [b.W, b.H] and p["content_size"] == [b.Cw, b.Ch],
+              f"stretch brute mismatch {w}x{h} {pct}%: {p['canvas_size']} vs {(b.W, b.H)}")
+for i in range(8):
+    w = rng.randint(50, 3000)
+    h = rng.randint(50, 3000)
+    b = brute_stretch(w, h, C64, 1.0)
+    try:
+        p = mod.compute_canvas_plan(w, h, C64, fit_mode="stretch", max_stretch_percent=1.0)
+    except ValueError:
+        continue
+    check((b is None) == (not p["stretch_applied"]) and (b is None or p["canvas_size"] == [b.W, b.H]), f"stretch brute c64 {w}x{h}")
+print(f"stretch 브루트포스 대조 소요 {time.time() - t0:.1f}s")
+
+# validate_plan: stretch 계획 검증
+sp = mod.compute_canvas_plan(546, 764, STD, fit_mode="stretch", max_stretch_percent=1.0)
+g = mod.validate_plan(sp, "t")
+check(g["fit_mode"] == "stretch" and g["Cw"] == 1616 and g["Ch"] == 2261, "validate stretch plan")
+bad = dict(sp)
+bad["padding_ltrb"] = [0, 5, 0, 6]
+expect_raises(lambda: mod.validate_plan(bad, "t"), "stretch plan 여백≠0 거부", contains="여백은 전부 0")
+bad = dict(sp)
+bad["crop_xyxy"] = [0, 5, 1616, 2266]
+expect_raises(lambda: mod.validate_plan(bad, "t"), "stretch plan crop≠전체 거부", contains="캔버스 전체")
+bad = dict(sp)
+bad["content_size"] = [1616, 2300]
+expect_raises(lambda: mod.validate_plan(bad, "t"), "stretch plan 그림>캔버스 거부", contains="보다 큽니다")
+old = dict(mod.compute_canvas_plan(546, 764, STD))
+old.pop("fit_mode")
+old.pop("stretch_applied")
+check(mod.validate_plan(old, "t")["fit_mode"] == "pad", "fit_mode 없는 옛 plan → pad")
+bad = dict(sp)
+bad["fit_mode"] = "zoom"
+expect_raises(lambda: mod.validate_plan(bad, "t"), "알 수 없는 plan fit_mode 거부", contains="fit_mode")
+
+# 파이프라인: stretch white
+o = prep.prepare(image=src, **{**DEF, "fit_mode": "stretch"})
+canvas_s, tmask_s, cmask_s, Ws, Hs, _, plan_s, plan_json_s, report_s = o
+check(tuple(canvas_s.shape) == (1, 2272, 1616, 3) and (Ws, Hs) == (1616, 2272), "stretch canvas shape")
+check(float(cmask_s.min()) == 1.0 and float(tmask_s.max()) == 0.0, "stretch content_region 전부 1 / 투명도 0")
+check(bool((canvas_s[0, 0, 400:1200, 0] > 0.5).all()) and bool((canvas_s[0, 0, 400:1200, 1] < 0.5).all()), "stretch: 첫 행이 여백 아님(빨강)")
+check("맞춤: stretch" in report_s and "스트레치" in report_s.splitlines()[0], "stretch report")
+check(plan_s["fit_mode"] == "stretch" and repr(plan_s).find("fit stretch") > 0, "stretch plan repr")
+r_img_s, r_mask_s, r_rep_s = rest.restore(canvas_s, plan_s, "split_rgb_mask", "lanczos")
+check(tuple(r_img_s.shape) == (1, 2261, 1616, 3) and tuple(r_mask_s.shape) == (1, 2261, 1616), f"stretch restore shape {tuple(r_img_s.shape)}")
+check(bool((r_img_s[0, 0, 400:1200, 0] > 0.5).all()) and bool((r_img_s[0, -1, 400:1200, 1] > 0.5).all()), "stretch restore 첫/마지막 행 색")
+check("스트레치 복원" in r_rep_s and "1616x2272 → 1616x2261" in r_rep_s, "stretch restore report")
+for m in ("bicubic", "bilinear", "area", "nearest-exact"):
+    ri, _, _ = rest.restore(canvas_s, plan_s, "split_rgb_mask", m)
+    check(tuple(ri.shape) == (1, 2261, 1616, 3) and bool(torch.isfinite(ri).all()), f"stretch restore {m}")
+expect_raises(lambda: rest.restore(canvas_s, plan_s, "split_rgb_mask", "cubic"), "잘못된 stretch_resample", contains="stretch_resample")
+# JSON 왕복 (stretch)
+pb, _ = pj.load(plan_json_s)
+r2, _, _ = rest.restore(canvas_s, pb, "split_rgb_mask", "lanczos")
+check(torch.equal(r2, r_img_s), "stretch plan JSON 왕복")
+# 크기 불일치
+expect_raises(lambda: rest.restore(torch.zeros((1, 1536, 1024, 3)), plan_s, "split_rgb_mask", "lanczos"), "stretch 크기 불일치", contains="1024x1536")
+# stretch + transparent + mask, 배치 2
+o = prep.prepare(image=src2, transparency_mask=mask1, **{**DEF, "fit_mode": "stretch", "padding_mode": "transparent"})
+c4 = o[0]
+check(tuple(c4.shape) == (2, 2272, 1616, 4), "stretch transparent 4ch")
+check(bool((c4[:, :250, :, 3] == 0.0).all()) and bool((c4[:, 700:2200, :, 3] == 1.0).all()), "stretch alpha 보존")
+check(bool((o[1][:, :250] == 1.0).all()), "stretch 투명도 마스크")
+rk, rkm, _ = rest.restore(c4, o[6], "keep_rgba", "bicubic")
+check(tuple(rk.shape) == (2, 2261, 1616, 4) and torch.allclose(rk[..., 3], 1.0 - rkm, atol=1e-6), "stretch keep_rgba")
+check(bool((rkm[:, :240] == 1.0).all()) and bool((rkm[:, 700:2190] == 0.0).all()), "stretch restore 마스크")
+rs, rsm, _ = rest.restore(c4, o[6], "split_rgb_mask", "lanczos")
+check(tuple(rs.shape) == (2, 2261, 1616, 3) and bool((rs[:, :240] == 1.0).all()), "stretch split: 투명 영역 RGB 흰색")
+# max_padding_px 와 stretch 동시: stretch 적용 시 cap 무시 메모
+o = prep.prepare(image=src, **{**DEF, "fit_mode": "stretch", "max_padding_px": 2})
+check(o[6]["stretch_applied"] and any("max_padding_px" in n for n in o[6]["notes"]) and o[6]["padding_cap_applied"] is False, "stretch 시 cap 무시")
+# stretch 폴백 시 report 와 cap 적용 경로
+o = prep.prepare(image=make_marker_image(600, 3000), **{**DEF, "fit_mode": "stretch", "max_padding_px": 2})
+check(o[6]["stretch_applied"] is False and any("폴백" in n for n in o[6]["notes"]) and "폴백" in o[8], "stretch 폴백 report")
+check(o[6]["padding_ltrb"] == [221, 0, 221, 0] and o[6]["padding_cap_satisfiable"] is False, "폴백 후 cap 미충족 → 기본 규칙")
+
+# edge_replicate
+o = prep.prepare(image=src, **{**DEF, "padding_mode": "edge_replicate"})
+ce = o[0]
+T5 = o[6]["padding_ltrb"][1]
+check(tuple(ce.shape) == (1, 2272, 1616, 3) and o[6]["canvas_channels"] == 3 and T5 == 5, "edge_replicate shape")
+check(all(torch.equal(ce[0, r], ce[0, T5]) for r in range(T5)), "edge_replicate 위 여백 = 그림 첫 행")
+check(all(torch.equal(ce[0, r], ce[0, T5 + 2261 - 1]) for r in range(T5 + 2261, 2272)), "edge_replicate 아래 여백 = 그림 마지막 행")
+check(torch.equal(ce[0, T5:T5 + 2261], canvas[0, 5:2266]), "edge_replicate 그림 영역 == white 모드 그림 영역")
+check(float(o[1].sum()) == 0.0 and int(o[2].sum().item()) == 1616 * 2261, "edge_replicate 마스크")
+rE, _, _ = rest.restore(ce, o[6], "split_rgb_mask")
+check(torch.equal(rE, r_img), "edge_replicate restore == white restore")
+# 가로 여백 (764x546): 왼쪽 5 / 오른쪽 6, 모서리 포함
+o = prep.prepare(image=src_t, **{**DEF, "padding_mode": "edge_replicate"})
+ct = o[0]
+Lp = o[6]["padding_ltrb"][0]
+Cwt = o[6]["content_size"][0]
+check(Lp == 5 and all(torch.equal(ct[0, :, c], ct[0, :, Lp]) for c in range(Lp)), "edge_replicate 왼쪽 여백 = 그림 첫 열")
+check(all(torch.equal(ct[0, :, c], ct[0, :, Lp + Cwt - 1]) for c in range(Lp + Cwt, 2272)), "edge_replicate 오른쪽 여백 = 그림 마지막 열")
+# edge_replicate + 알파: 투명 → 흰색 합성 후 복제
+o = prep.prepare(image=src2, transparency_mask=mask1, **{**DEF, "padding_mode": "edge_replicate"})
+check(tuple(o[0].shape) == (2, 2272, 1616, 3) and bool((o[0][:, :T_a + 250] == 1.0).all()), "edge_replicate 알파 → 흰색 합성 + 위 여백 흰색")
+# edge_replicate + stretch → 여백 없음
+o = prep.prepare(image=src, **{**DEF, "padding_mode": "edge_replicate", "fit_mode": "stretch"})
+check(tuple(o[0].shape) == (1, 2272, 1616, 3) and o[6]["stretch_applied"] and torch.equal(o[0], canvas_s), "edge_replicate + stretch == white stretch")
+
+
 print()
 print(f"PASS {PASSES}  FAIL {len(FAILS)}")
 if FAILS:

@@ -54,7 +54,7 @@
       ],
       "size": [
         370.20703125,
-        482
+        530
       ],
       "flags": {},
       "order": 1,
@@ -144,7 +144,9 @@
         3840,
         655360,
         3686400,
-        3
+        3,
+        "pad",
+        1
       ],
       "widgets_values_named": {
         "profile": "gpt-image-2.5 standard",
@@ -158,7 +160,9 @@
         "max_edge": 3840,
         "min_pixels": 655360,
         "max_pixels": 3686400,
-        "max_aspect_ratio": 3
+        "max_aspect_ratio": 3,
+        "fit_mode": "pad",
+        "max_stretch_percent": 1
       }
     },
     {
@@ -259,7 +263,7 @@
       ],
       "size": [
         324.3515625,
-        98
+        122
       ],
       "flags": {},
       "order": 4,
@@ -305,10 +309,12 @@
         "Node name for S&R": "BMKCanvasSnapRestore"
       },
       "widgets_values": [
-        "split_rgb_mask"
+        "split_rgb_mask",
+        "lanczos"
       ],
       "widgets_values_named": {
-        "rgba_output": "split_rgb_mask"
+        "rgba_output": "split_rgb_mask",
+        "stretch_resample": "lanczos"
       }
     },
     {
@@ -352,7 +358,7 @@
       "type": "PreviewAny",
       "pos": [
         480,
-        760
+        800
       ],
       "size": [
         210,
@@ -452,10 +458,10 @@
   "config": {},
   "extra": {
     "ds": {
-      "scale": 0.06696428875533915,
+      "scale": 0.5643739233371794,
       "offset": [
-        923.3333333333335,
-        306.66666666666674
+        415,
+        465.25
       ]
     },
     "frontendVersion": "1.52.7"

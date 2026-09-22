@@ -48,13 +48,31 @@ Load Image ─IMAGE─▶ Prepare ─canvas_image──▶ OpenAI GPT Image 2.5 
 | 위젯 | 기본 | 의미 |
 |---|---|---|
 | profile | gpt-image-2.5 standard | standard ≤3,686,400px / experimental ≤8,294,400px / custom(아래 6개 위젯 사용) |
-| padding_mode | white | white·black = 3채널 불투명(알파는 그 색 위에 합성), transparent = 4채널 RGBA(여백 알파 0) |
-| max_padding_px | 0 | 0 = 끔. N>0 = 여백 총량 상한(위 규칙 4) |
+| padding_mode | white | white·black = 3채널 불투명(알파는 그 색 위에 합성), transparent = 4채널 RGBA(여백 알파 0), edge_replicate = 그림 가장자리 픽셀을 여백으로 늘려 채움(3채널, 알파는 흰색 위에 합성) |
+| max_padding_px | 0 | 0 = 끔. N>0 = 여백 총량 상한(위 규칙 4). stretch 가 적용되면 사용하지 않음 |
 | allow_downscale | False | 축소가 필요한 큰 원본을 허용. False 면 계산 크기를 보여주고 중단 |
 | resample | bicubic | bicubic / bilinear / lanczos(채널별 float) / area / nearest-exact |
 | use_transparency_mask | True | False 면 마스크 입력·이미지 알파를 무시하고 불투명 처리 |
 | snap … max_aspect_ratio | 16 / 480 / 3840 / 655,360 / 3,686,400 / 3.0 | **custom 프로파일에서만** 사용 |
+| fit_mode | pad | pad = 여백 추가. stretch = 아래 "미세 스트레치" |
+| max_stretch_percent | 1.0 | stretch 의 허용 왜곡 상한(%). 두 축 배율의 비 − 1 |
 | transparency_mask (선택) | – | 1=투명 / 0=불투명 (Load Image 의 MASK 와 같은 의미) |
+
+### 미세 스트레치 (fit_mode = stretch)
+
+여백 대신 원본을 캔버스 W×H 로 **직접** 리샘플해 흰 띠를 없애고, Restore 가 W×H → Cw×Ch 로 리사이즈해 원래 비율로 되돌립니다.
+왜곡이 `max_stretch_percent` 이하인 후보 중 배율 최대를 고르고, 만족하는 후보가 없으면 pad 로 폴백하고 report 의 `주의:` 에 이유를 적습니다.
+
+| 원본 | 상한 | 결과 |
+|---|---|---|
+| 546×764 | 1.0% | 1616×2272 로 늘림, 세로 +0.49%. Restore → 1616×2261 |
+| 1200×1800 | 1.0% | 1568×2336 로 늘림, 가로 +0.71% |
+| 600×3000 | 1.0% | 왜곡 66.8% → pad 폴백(1104×3312, 여백 221/0/221/0) |
+| 1920×1080 | 0% | 2560×1440, 왜곡 0 |
+
+- stretch 계획의 plan 은 `fit_mode: "stretch"`, 여백 0, `crop_xyxy` 는 캔버스 전체, `content_size` 는 Restore 목표 크기입니다. `fit_mode` 가 없는 옛 plan 은 pad 로 읽습니다.
+- `content_region_mask` 는 전부 1 이 되고 `max_padding_px` 는 사용하지 않습니다.
+- Restore 의 `stretch_resample`(기본 lanczos) 로 되돌리는 리사이즈 방법을 고릅니다. pad 계획에서는 쓰지 않습니다.
 
 다른 모델용 예: NovelAI 계열이면 custom + snap 64, max_pixels 1,048,576 처럼 지정합니다.
 custom 결과가 내장 GPT 노드의 Custom 제약(16배수·480~3840·비율≤3·655,360~8,294,400px)을 벗어나면 report 에 경고가 붙습니다.
@@ -63,9 +81,9 @@ custom 결과가 내장 GPT 노드의 Custom 제약(16배수·480~3840·비율�
 
 | 출력 | 의미 |
 |---|---|
-| canvas_image | 여백 포함 캔버스. white/black 3채널, transparent 4채널 |
+| canvas_image | 여백 포함 캔버스. white/black/edge_replicate 3채널, transparent 4채널 |
 | canvas_transparency_mask | 1=투명. **GPT 노드 `mask` 에 그대로 꽂으면 여백만 재생성됩니다** |
-| content_region_mask | 1=그림, 0=여백. GPT 노드 `mask`(1=편집 영역) 에 꽂으면 여백을 보호(이미지 1장일 때만) |
+| content_region_mask | 1=그림, 0=여백. GPT 노드 `mask`(1=편집 영역) 에 꽂으면 여백을 보호(이미지 1장일 때만). stretch 계획이면 전부 1 |
 | width / height / size_string | 생성 요청 크기 |
 | canvas_plan / plan_json | Restore 용 좌표 계약(텐서 없음) |
 | report | 한 줄 요약 + 상세 + `주의:` 경고 |
@@ -74,6 +92,7 @@ custom 결과가 내장 GPT 노드의 Custom 제약(16배수·480~3840·비율�
 
 - 입력 `image` 는 3채널·4채널 모두 받습니다. 내장 GPT 노드의 결과는 **항상 4채널 RGBA** 텐서입니다.
 - `rgba_output`: `split_rgb_mask`(기본) = RGB 3채널 + 투명도 MASK 분리, `keep_rgba` = 4채널 유지.
+- `stretch_resample`(기본 lanczos): 계획이 stretch 일 때 캔버스 → 그림 크기 리사이즈 방법. 알파가 있으면 premultiplied 로 함께 리사이즈합니다.
 - `transparency_mask` 입력을 연결하면 이미지 알파 채널보다 우선합니다. 원본 마스크를 결과 알파처럼 넣지 마세요.
 - 결과 크기가 `canvas_plan` 의 캔버스와 다르면 예상/실제 크기를 표시하고 **중단**합니다. 비례 보정을 하지 않습니다.
 

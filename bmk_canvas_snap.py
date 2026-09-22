@@ -9,7 +9,9 @@ GPT Image 2.5 편집 API 의 출력 크기에는 제약이 있다: 각 변 16의
     1) 원본 전체가 들어가는 캔버스 W×H 를 제약 안에서 고른다.
        우선순위: 공통 배율 s = min(W/w, H/h) 최대 → 같으면 캔버스 면적 최소 → W 작은 것 → H 작은 것.
     2) 원본을 Cw×Ch (= w·s, h·s 를 half-up 반올림) 로 리샘플해 캔버스 중앙에 두고 나머지는 여백.
+       (fit_mode=stretch 이면 여백 대신 원본을 W×H 로 직접 리샘플 — 아래 "미세 스트레치")
     3) 편집 결과가 돌아오면 기록한 좌표(crop_xyxy)로 여백만 잘라 Cw×Ch 로 돌려놓는다.
+       (stretch 계획이면 크롭 대신 W×H → Cw×Ch 리사이즈)
 
     예) 546×764 → 캔버스 1616×2272, 그림 1616×2261, 여백 위 5 / 아래 6px, 배율 808/273 ≈ 2.9597.
 
@@ -17,7 +19,7 @@ GPT Image 2.5 편집 API 의 출력 크기에는 제약이 있다: 각 변 16의
 ---------
 - BMK Canvas Snap Prepare   : 계산 + 리샘플 + 여백. width/height(INT) 를 내장 "OpenAI GPT Image 2.5"
                               노드의 size=Custom 상태에서 model.custom_width / model.custom_height 에 직접 연결.
-- BMK Canvas Snap Restore   : canvas_plan 좌표로 여백만 크롭. 결과 크기가 계획과 다르면 중단(자동 보정 없음).
+- BMK Canvas Snap Restore   : canvas_plan 좌표로 여백만 크롭(또는 스트레치 복원). 결과 크기가 계획과 다르면 중단.
 - BMK Canvas Plan From JSON : Prepare 의 plan_json 문자열을 canvas_plan 으로 복원(결과를 저장해 두고
                               다른 세션에서 크롭할 때).
 
@@ -28,6 +30,7 @@ GPT Image 2.5 편집 API 의 출력 크기에는 제약이 있다: 각 변 16의
                       프로파일이 custom 이 아니면 그 여섯 위젯은 무시된다.
 - padding_mode      : white / black 은 3채널 불투명 캔버스(알파는 해당 색 위에 합성).
                       transparent 는 4채널 RGBA 캔버스(여백 알파 0, 여백 RGB 는 흰색).
+                      edge_replicate 는 그림 가장자리 픽셀을 여백으로 늘려 채운 3채널 캔버스(알파는 흰색 위에 합성).
                       내장 GPT 노드는 4채널 텐서를 RGBA PNG 로 그대로 전송한다(3채널+MASK 로는 알파 미전송).
 - max_padding_px    : 0 이면 끔. N>0 이면 여백 총량(가로+세로) ≤ N px 인 후보 중 배율 최대를 고르고,
                       없으면 기본 규칙으로 폴백. 흰 띠가 적을수록 모델이 여백을 다시 그리거나 구도를
@@ -38,15 +41,22 @@ GPT Image 2.5 편집 API 의 출력 크기에는 제약이 있다: 각 변 16의
 - use_transparency_mask : False 면 transparency_mask 입력과 이미지 알파를 모두 무시하고 불투명 처리.
 - transparency_mask : 선택. 1=투명 / 0=불투명 (Load Image 의 MASK 와 같은 의미).
                       미연결이고 이미지가 4채널이면 그 알파를 사용한다.
+- fit_mode          : pad(기본) = 여백 추가. stretch = 캔버스 비율과의 왜곡이 max_stretch_percent 이하인 후보가
+                      있으면(배율 최대 우선) 여백 없이 원본을 그 캔버스 W×H 로 직접 리샘플한다(미세 스트레치).
+                      Restore 는 이 계획을 보고 W×H → Cw×Ch 로 리사이즈해 원래 비율로 되돌린다.
+                      상한을 만족하는 후보가 없으면 pad 로 폴백하고 report 에 이유를 적는다.
+- max_stretch_percent : stretch 의 허용 왜곡 상한(%). 기본 1.0. 546×764 는 0.49%, 1200×1800 은 0.71%,
+                      600×3000 은 66.8%(→ pad 폴백). 왜곡 = 두 축 배율 비 − 1.
 
 출력 (Prepare)
 --------------
-- canvas_image             : 여백 포함 캔버스. white/black 3채널, transparent 4채널.
+- canvas_image             : 여백 포함 캔버스. white/black/edge_replicate 3채널, transparent 4채널.
 - canvas_transparency_mask : 캔버스 투명도(1=투명). ※ GPT 노드 mask 에 그대로 꽂으면 여백만 재생성된다.
 - content_region_mask      : 1=그림 영역 / 0=여백. GPT 노드 mask(1=편집 영역) 에 연결하면 여백을 보호.
+                             stretch 계획에서는 전부 1.
 - width / height / size_string : 생성 요청 크기. 위젯 값 복사가 아니라 INT 링크로 넘길 것.
 - canvas_plan / plan_json  : Restore 용 좌표 계약(텐서 없음, JSON 직렬화 가능).
-- report                   : 한 줄 요약 + 상세(배율 분수, 오차, 여백, 예산 사용률, 경고).
+- report                   : 한 줄 요약 + 상세(배율 분수, 오차, 여백, 예산 사용률, 맞춤 방식, 경고).
 
 좌표·마스크 규약
 ----------------
@@ -55,6 +65,8 @@ GPT Image 2.5 편집 API 의 출력 크기에는 제약이 있다: 각 변 16의
 - 반올림은 양수 half-up: floor((2·x·n + d) / (2·d)). 파이썬 round() 의 ties-to-even 을 쓰지 않는다.
 - 배율은 정수 분수 n/d 로 비교·저장한다(부동소수점 동률 판정 금지). plan 에는 약분한 값을 넣는다.
 - 알파가 있는 리샘플은 RGB·A 를 premultiplied 로 함께 보간한 뒤 필요 시 unpremultiply 한다.
+- stretch 계획: padding_ltrb 는 전부 0, crop_xyxy 는 [0,0,W,H], content_size 는 Restore 의 목표 크기.
+  fit_mode 필드가 없는 옛 plan 은 pad 로 해석한다(schema_version 1 유지).
 
 내장 GPT Image 2.5 노드(ComfyUI 0.37.0, comfy_api_nodes/nodes_openai.py) 와 맞물리는 사실
 -----------------------------------------------------------------------------------------
@@ -64,6 +76,13 @@ GPT Image 2.5 편집 API 의 출력 크기에는 제약이 있다: 각 변 16의
 - 전송 전 입력을 총 4,194,304px(2048²) 이하로 축소한다. experimental 프로파일에서 그 이상 캔버스를
   만들면 축소 전송되고 출력만 요청 크기로 나온다(report 에 경고).
 - mask 입력은 1=재생성 영역. 결과 n 장은 첫 장 크기로 강제 스택되므로 Restore 의 엄격한 크기 검사가 유효.
+
+v1.1 (2026-09)
+--------------
+- fit_mode=stretch(미세 스트레치) + max_stretch_percent, padding_mode=edge_replicate 추가.
+  Restore 에 stretch_resample 위젯 추가(스트레치 계획이면 캔버스를 그림 크기로 리사이즈해 복원).
+  plan 에 fit_mode / stretch_applied / stretch_percent / stretch_axis 필드 추가(schema_version 1 유지).
+  새 위젯은 기존 위젯 뒤에 붙여 저장된 워크플로우의 widgets_values 와 위치 호환.
 
 v1 (2026-09)
 ------------
@@ -83,6 +102,7 @@ from typing import Any, Mapping
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from PIL import Image
 
 import comfy.utils
@@ -106,10 +126,14 @@ _PROFILE_NAMES = [_PROFILE_GPT25_STD, _PROFILE_GPT25_EXP, _PROFILE_CUSTOM]
 # 내장 OpenAI GPT Image 노드가 전송 전 입력 이미지를 축소하는 총화소 상한 (2048*2048).
 _API_NODE_INPUT_PIXEL_CAP = 2048 * 2048
 
-_PADDING_MODES = ["white", "black", "transparent"]
+_PADDING_MODES = ["white", "black", "transparent", "edge_replicate"]
+_FIT_MODES = ["pad", "stretch"]
 _RESAMPLE_METHODS = ["bicubic", "bilinear", "lanczos", "area", "nearest-exact"]
+_RESTORE_RESAMPLE_METHODS = ["lanczos", "bicubic", "bilinear", "area", "nearest-exact"]
 _RGBA_OUTPUT_MODES = ["split_rgb_mask", "keep_rgba"]
 _ALPHA_EPS = 1e-4
+
+_AXIS_KR = {"width": "가로", "height": "세로", "none": "없음"}
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -263,6 +287,28 @@ class _Candidate:
     def padding_total(self) -> int:
         return (self.W - self.Cw) + (self.H - self.Ch)
 
+    def stretch_terms(self) -> tuple[int, int]:
+        """(W·Ch, Cw·H). 두 축 배율 W/Cw 와 H/Ch 의 비교를 정수로 하기 위한 항."""
+        return self.W * self.Ch, self.Cw * self.H
+
+    def stretch_ok(self, percent_bp: int) -> bool:
+        """두 축 배율의 비가 1 + percent_bp/10000 이하인가 (bp = 0.01%)."""
+        if self.Cw < 1 or self.Ch < 1:
+            return False
+        a, b = self.stretch_terms()
+        return max(a, b) * 10000 <= min(a, b) * (10000 + percent_bp)
+
+    def stretch_info(self) -> tuple[float, str]:
+        """(왜곡 %, 더 늘어나는 축)."""
+        if self.Cw < 1 or self.Ch < 1:
+            return float("inf"), "none"
+        a, b = self.stretch_terms()
+        if a == b:
+            return 0.0, "none"
+        if a > b:  # W/Cw > H/Ch → 가로가 더 늘어남
+            return 100.0 * (a / b - 1.0), "width"
+        return 100.0 * (b / a - 1.0), "height"
+
 
 def _make_candidate(src_w: int, src_h: int, W: int, H: int) -> _Candidate:
     # s = min(W/w, H/h) 를 정수 분수로. W·h ≤ H·w 이면 가로가 제한 축.
@@ -291,28 +337,41 @@ def compute_canvas_plan(
     src_h: int,
     constraints: CanvasConstraints,
     max_padding_px: int = 0,
+    fit_mode: str = "pad",
+    max_stretch_percent: float = 0.0,
 ) -> dict[str, Any]:
     """원본 w×h 에 대한 캔버스·그림·여백·크롭 좌표를 계산한다 (텐서 없음, 정수 계산).
 
     후보 탐색은 W 마다 두 개의 H 만 본다. 고정 W 에서 H 가 커질수록 s 는 H·w ≥ W·h 가 되는
     지점까지 증가하고 그 뒤로는 W/w 로 고정되어 면적·여백만 늘어난다. 따라서 그 경계 바로
-    아래의 H(H_lo)와 바로 위의 H(H_hi)만이 '배율 최대 → 면적 최소' 와 '여백 상한' 두 목표
-    모두에서 다른 H 를 지배한다. 브루트포스(모든 W×H)와 결과가 같음을 테스트로 확인했다.
+    아래의 H(H_lo)와 바로 위의 H(H_hi)만이 '배율 최대 → 면적 최소', '여백 상한', '스트레치 상한'
+    세 목표 모두에서 다른 H 를 지배한다. 브루트포스(모든 W×H)와 결과가 같음을 테스트로 확인했다.
+
+    fit_mode="stretch" 이면 왜곡 ≤ max_stretch_percent 인 후보 중 우선순위 최상을 고르고 여백 없이
+    W×H 로 늘리는 계획을 만든다. 만족하는 후보가 없으면 pad 규칙으로 폴백한다.
     """
     src_w = int(src_w)
     src_h = int(src_h)
     if src_w < 1 or src_h < 1:
         raise ValueError(f"원본 크기가 잘못되었습니다: {src_w}x{src_h}")
     constraints.validate()
+    if fit_mode not in _FIT_MODES:
+        raise ValueError(f"지원하지 않는 fit_mode: {fit_mode!r}")
     c = constraints
     S = c.snap
     arm = c.aspect_milli
     cap = int(max_padding_px)
     if cap < 0:
         raise ValueError(f"max_padding_px 는 0 이상이어야 합니다: {cap}")
+    stretch_pct = float(max_stretch_percent)
+    if not (stretch_pct >= 0.0):
+        raise ValueError(f"max_stretch_percent 는 0 이상이어야 합니다: {max_stretch_percent}")
+    stretch_bp = int(round(stretch_pct * 100))
+    want_stretch = fit_mode == "stretch"
 
     best: _Candidate | None = None
     best_capped: _Candidate | None = None
+    best_stretch: _Candidate | None = None
 
     w_lo = _snap_up(max(S, c.min_edge), S)
     w_hi = _snap_down(c.max_edge, S)
@@ -342,12 +401,27 @@ def compute_canvas_plan(
             if cap > 0 and cand.padding_total <= cap:
                 if best_capped is None or _better(cand, best_capped):
                     best_capped = cand
+            if want_stretch and cand.stretch_ok(stretch_bp):
+                if best_stretch is None or _better(cand, best_stretch):
+                    best_stretch = cand
 
     if best is None:
         raise ValueError(f"제약을 만족하는 캔버스가 없습니다: {c.describe()}")
 
-    cap_applied = cap > 0 and best_capped is not None
-    chosen = best_capped if cap_applied else best
+    stretch_applied = want_stretch and best_stretch is not None
+    stretch_fallback_reason: str | None = None
+    if stretch_applied:
+        chosen = best_stretch
+        cap_applied = False
+    else:
+        if want_stretch:
+            pct, axis = best.stretch_info()
+            stretch_fallback_reason = (
+                f"스트레치 상한 {stretch_pct:g}% 를 만족하는 후보가 없어 pad 로 폴백"
+                f"(기본 규칙 {best.W}x{best.H} 의 왜곡 {pct:.2f}%, {_AXIS_KR.get(axis, axis)})"
+            )
+        cap_applied = cap > 0 and best_capped is not None
+        chosen = best_capped if cap_applied else best
 
     W, H, Cw, Ch = chosen.W, chosen.H, chosen.Cw, chosen.Ch
     if Cw < 1 or Ch < 1:
@@ -358,11 +432,17 @@ def compute_canvas_plan(
     g = math.gcd(chosen.n, chosen.d)
     n, d = chosen.n // g, chosen.d // g
     scale = n / d
+    chosen_stretch_pct, chosen_stretch_axis = chosen.stretch_info()
 
-    L = (W - Cw) // 2
-    T = (H - Ch) // 2
-    R = W - Cw - L
-    B = H - Ch - T
+    if stretch_applied:
+        L = T = R = B = 0
+        crop = [0, 0, W, H]
+    else:
+        L = (W - Cw) // 2
+        T = (H - Ch) // 2
+        R = W - Cw - L
+        B = H - Ch - T
+        crop = [L, T, L + Cw, T + Ch]
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -371,7 +451,7 @@ def compute_canvas_plan(
         "canvas_size": [W, H],
         "content_size": [Cw, Ch],
         "padding_ltrb": [L, T, R, B],
-        "crop_xyxy": [L, T, L + Cw, T + Ch],
+        "crop_xyxy": crop,
         "coordinate_convention": COORD_CONVENTION,
         "scale_numerator": n,
         "scale_denominator": d,
@@ -390,6 +470,13 @@ def compute_canvas_plan(
         "primary_rule_canvas": [best.W, best.H],
         "primary_rule_content": [best.Cw, best.Ch],
         "primary_rule_padding_px": best.padding_total,
+        "fit_mode": "stretch" if stretch_applied else "pad",
+        "fit_mode_requested": fit_mode,
+        "stretch_applied": stretch_applied,
+        "max_stretch_percent": stretch_pct,
+        "stretch_percent": chosen_stretch_pct,
+        "stretch_axis": chosen_stretch_axis,
+        "stretch_fallback_reason": stretch_fallback_reason,
         "geometry_only": True,
     }
 
@@ -407,7 +494,8 @@ class BMKCanvasPlan(dict):
             Cw, Ch = self["content_size"]
             return (
                 f"{PLAN_TYPE}({sw}x{sh} → canvas {W}x{H}, content {Cw}x{Ch}, "
-                f"crop {list(self['crop_xyxy'])}, padding {self.get('padding_mode', '?')})"
+                f"crop {list(self['crop_xyxy'])}, fit {self.get('fit_mode', 'pad')}, "
+                f"padding {self.get('padding_mode', '?')})"
             )
         except Exception:
             return f"{PLAN_TYPE}(invalid: {dict.__repr__(self)[:160]})"
@@ -428,8 +516,8 @@ def _as_int_list(value: Any, count: int, name: str, tag: str) -> list[int]:
     return out
 
 
-def validate_plan(plan: Any, tag: str) -> dict[str, int]:
-    """plan 의 스키마·좌표 규약·일관성을 검증하고 정수 기하값을 돌려준다."""
+def validate_plan(plan: Any, tag: str) -> dict[str, Any]:
+    """plan 의 스키마·좌표 규약·일관성을 검증하고 정수 기하값과 fit_mode 를 돌려준다."""
     if not isinstance(plan, Mapping):
         raise ValueError(
             f"{tag} canvas_plan 이 dict 형식이 아닙니다: {type(plan).__name__}. "
@@ -445,6 +533,10 @@ def validate_plan(plan: Any, tag: str) -> dict[str, int]:
             f"{tag} 지원하지 않는 좌표 규약: {plan.get('coordinate_convention')!r} "
             f"(지원: {COORD_CONVENTION})"
         )
+    fit_mode = plan.get("fit_mode", "pad")
+    if fit_mode not in _FIT_MODES:
+        raise ValueError(f"{tag} 지원하지 않는 plan fit_mode: {fit_mode!r} (지원: {_FIT_MODES})")
+
     W, H = _as_int_list(plan.get("canvas_size"), 2, "canvas_size", tag)
     Cw, Ch = _as_int_list(plan.get("content_size"), 2, "content_size", tag)
     L, T, R, B = _as_int_list(plan.get("padding_ltrb"), 4, "padding_ltrb", tag)
@@ -454,22 +546,36 @@ def validate_plan(plan: Any, tag: str) -> dict[str, int]:
         raise ValueError(f"{tag} plan 크기는 양의 정수여야 합니다: canvas {W}x{H}, content {Cw}x{Ch}")
     if min(L, T, R, B) < 0:
         raise ValueError(f"{tag} plan 여백은 0 이상이어야 합니다: {[L, T, R, B]}")
-    if L + Cw + R != W or T + Ch + B != H:
-        raise ValueError(
-            f"{tag} plan 여백과 크기가 맞지 않습니다: L+Cw+R={L + Cw + R} vs W={W}, "
-            f"T+Ch+B={T + Ch + B} vs H={H}"
-        )
-    if (x0, y0, x1, y1) != (L, T, L + Cw, T + Ch):
-        raise ValueError(
-            f"{tag} plan crop_xyxy {[x0, y0, x1, y1]} 가 여백/그림 크기에서 계산한 "
-            f"{[L, T, L + Cw, T + Ch]} 와 다릅니다"
-        )
-    if x1 > W or y1 > H:
-        raise ValueError(f"{tag} plan crop_xyxy {[x0, y0, x1, y1]} 가 캔버스 {W}x{H} 를 벗어납니다")
+
+    if fit_mode == "stretch":
+        if (L, T, R, B) != (0, 0, 0, 0):
+            raise ValueError(f"{tag} stretch 계획의 여백은 전부 0 이어야 합니다: {[L, T, R, B]}")
+        if (x0, y0, x1, y1) != (0, 0, W, H):
+            raise ValueError(
+                f"{tag} stretch 계획의 crop_xyxy 는 캔버스 전체 {[0, 0, W, H]} 여야 합니다: {[x0, y0, x1, y1]}"
+            )
+        if Cw > W or Ch > H:
+            raise ValueError(
+                f"{tag} stretch 계획의 그림 크기 {Cw}x{Ch} 가 캔버스 {W}x{H} 보다 큽니다"
+            )
+    else:
+        if L + Cw + R != W or T + Ch + B != H:
+            raise ValueError(
+                f"{tag} plan 여백과 크기가 맞지 않습니다: L+Cw+R={L + Cw + R} vs W={W}, "
+                f"T+Ch+B={T + Ch + B} vs H={H}"
+            )
+        if (x0, y0, x1, y1) != (L, T, L + Cw, T + Ch):
+            raise ValueError(
+                f"{tag} plan crop_xyxy {[x0, y0, x1, y1]} 가 여백/그림 크기에서 계산한 "
+                f"{[L, T, L + Cw, T + Ch]} 와 다릅니다"
+            )
+        if x1 > W or y1 > H:
+            raise ValueError(f"{tag} plan crop_xyxy {[x0, y0, x1, y1]} 가 캔버스 {W}x{H} 를 벗어납니다")
     return {
         "W": W, "H": H, "Cw": Cw, "Ch": Ch,
         "L": L, "T": T, "R": R, "B": B,
         "x0": x0, "y0": y0, "x1": x1, "y1": y1,
+        "fit_mode": fit_mode,
     }
 
 
@@ -553,6 +659,31 @@ def _snap_alpha(a: torch.Tensor) -> torch.Tensor:
     return a
 
 
+def _resample_rgb_alpha(
+    rgb: torch.Tensor,
+    alpha: torch.Tensor | None,
+    width: int,
+    height: int,
+    method: str,
+) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
+    """RGB [B,3,h,w] 와 알파 [B,h,w]|None 을 함께 리샘플한다.
+
+    반환: (알파 없으면 RGB, 있으면 premultiplied RGB) [B,3,H,W], 알파 [B,1,H,W]|None, straight RGB|None.
+    알파가 있으면 RGB×A 와 A 를 같은 변환으로 보간해 경계색 번짐을 줄이고, straight RGB 는
+    A>eps 인 곳만 unpremultiply 하고 나머지는 흰색으로 채운다.
+    """
+    if alpha is None:
+        return _resample_bchw(rgb, width, height, method).clamp(0.0, 1.0), None, None
+    a = alpha.unsqueeze(1).to(torch.float32)
+    stacked = torch.cat([rgb * a, a], dim=1)
+    r = _resample_bchw(stacked, width, height, method)
+    a_r = _snap_alpha(r[:, 3:4])
+    pm = torch.minimum(r[:, :3].clamp(0.0, 1.0), a_r)
+    straight = pm / a_r.clamp_min(_ALPHA_EPS)
+    straight = torch.where(a_r > _ALPHA_EPS, straight, torch.ones_like(straight)).clamp(0.0, 1.0)
+    return pm, a_r, straight
+
+
 _ALPHA_DESC = {
     "none": "없음(불투명 원본)",
     "disabled": "사용 안 함(불투명 처리)",
@@ -601,7 +732,7 @@ def _fmt_pct(v: float) -> str:
 # BMK Canvas Snap Prepare
 # ══════════════════════════════════════════════════════════════════════
 class BMKCanvasSnapPrepare:
-    """캔버스 계산 + 전체 리샘플 + 여백. width/height 는 GPT 노드의 custom 크기에 링크로 넘긴다."""
+    """캔버스 계산 + 전체 리샘플 + 여백(또는 미세 스트레치). width/height 는 GPT 노드의 custom 크기에 링크로 넘긴다."""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -619,12 +750,15 @@ class BMKCanvasSnapPrepare:
                     "default": "white",
                     "tooltip": "white/black: 3채널 불투명 캔버스(원본 알파는 그 색 위에 합성). "
                                "transparent: 4채널 RGBA 캔버스(여백 알파 0). 내장 GPT 노드는 "
-                               "4채널 텐서를 RGBA PNG 로 그대로 전송합니다."}),
+                               "4채널 텐서를 RGBA PNG 로 그대로 전송합니다. "
+                               "edge_replicate: 그림 가장자리 픽셀을 여백으로 늘려 채운 3채널 캔버스"
+                               "(원본 알파는 흰색 위에 합성)."}),
                 "max_padding_px": ("INT", {
                     "default": 0, "min": 0, "max": 4096,
                     "tooltip": "0 = 끔(배율 최대 규칙만). N>0 이면 여백 총량(가로+세로) ≤ N px 인 "
                                "후보 중 배율 최대를 고르고, 없으면 기본 규칙으로 폴백합니다. "
-                               "흰 띠가 적을수록 모델이 여백을 다시 그리거나 구도를 옮길 위험이 줄어듭니다."}),
+                               "흰 띠가 적을수록 모델이 여백을 다시 그리거나 구도를 옮길 위험이 줄어듭니다. "
+                               "fit_mode=stretch 가 적용되면 여백이 없어 사용하지 않습니다."}),
                 "allow_downscale": ("BOOLEAN", {
                     "default": False,
                     "label_on": "축소 허용",
@@ -659,6 +793,16 @@ class BMKCanvasSnapPrepare:
                     "default": 3.0, "min": 1.0, "max": 64.0, "step": 0.01,
                     "tooltip": "[custom 전용] 캔버스 장단비 상한. 3.0 = 1:3 ~ 3:1. "
                                "원본 비율은 제한하지 않으며 벗어나면 레터박스로 담습니다."}),
+                # v1.1 — 저장된 워크플로우와 widgets_values 위치 호환을 위해 뒤에 추가
+                "fit_mode": (_FIT_MODES, {
+                    "default": "pad",
+                    "tooltip": "pad: 여백을 추가합니다(기본). stretch: 왜곡이 max_stretch_percent 이하인 "
+                               "캔버스가 있으면 여백 없이 원본을 그 크기로 직접 늘리고(미세 스트레치), "
+                               "Restore 가 원래 비율로 되돌립니다. 만족하는 캔버스가 없으면 pad 로 폴백합니다."}),
+                "max_stretch_percent": ("FLOAT", {
+                    "default": 1.0, "min": 0.0, "max": 50.0, "step": 0.05,
+                    "tooltip": "fit_mode=stretch 의 허용 왜곡 상한(%). 두 축 배율의 비 − 1. "
+                               "546x764 는 0.49%, 1200x1800 은 0.71%. 1% 안쪽은 눈으로 구분되지 않습니다."}),
             },
             "optional": {
                 "transparency_mask": ("MASK", {
@@ -674,9 +818,9 @@ class BMKCanvasSnapPrepare:
         "width", "height", "size_string", "canvas_plan", "plan_json", "report",
     )
     OUTPUT_TOOLTIPS = (
-        "여백 포함 캔버스. white/black 3채널, transparent 4채널(RGBA). GPT 노드 image 입력에 연결.",
+        "여백 포함 캔버스. white/black/edge_replicate 3채널, transparent 4채널(RGBA). GPT 노드 image 입력에 연결.",
         "캔버스 투명도(1=투명, 0=불투명). GPT 노드 mask 에 그대로 꽂으면 여백만 재생성되니 주의.",
-        "1=그림 영역 / 0=여백. GPT 노드 mask(1=편집 영역) 에 연결하면 여백을 보호합니다(이미지 1장일 때만).",
+        "1=그림 영역 / 0=여백. GPT 노드 mask(1=편집 영역) 에 연결하면 여백을 보호합니다(이미지 1장일 때만). stretch 계획이면 전부 1.",
         "캔버스 너비. GPT 노드 size=Custom 의 custom_width 에 링크.",
         "캔버스 높이. GPT 노드 size=Custom 의 custom_height 에 링크.",
         "예: 1616x2272",
@@ -688,13 +832,14 @@ class BMKCanvasSnapPrepare:
     CATEGORY = "BMK/Image"
     DESCRIPTION = (
         "임의 해상도 원본을 잘라내지 않고, 배수·화소 예산·비율 제약 안에서 공통 배율이 최대가 되는 "
-        "캔버스를 골라 전체 리샘플 + 여백 추가합니다. width/height 를 GPT Image 2.5 노드의 Custom 크기에 "
-        "링크로 넘기고, canvas_plan 을 BMK Canvas Snap Restore 에 연결해 여백만 되돌립니다."
+        "캔버스를 골라 전체 리샘플 + 여백 추가(또는 1% 이내 미세 스트레치)합니다. width/height 를 "
+        "GPT Image 2.5 노드의 Custom 크기에 링크로 넘기고, canvas_plan 을 BMK Canvas Snap Restore 에 연결해 "
+        "여백만 되돌립니다."
     )
     SEARCH_ALIASES = [
         "canvas snap", "letterbox", "pad to multiple", "gpt image size", "pixel budget",
-        "aspect canvas", "snap 16", "캔버스 스냅", "여백 추가", "패딩", "16배수", "해상도 맞춤",
-        "화소 예산", "GPT 이미지 크기",
+        "aspect canvas", "snap 16", "stretch", "edge replicate", "캔버스 스냅", "여백 추가", "패딩",
+        "16배수", "해상도 맞춤", "화소 예산", "GPT 이미지 크기", "스트레치",
     ]
 
     def prepare(
@@ -712,6 +857,8 @@ class BMKCanvasSnapPrepare:
         min_pixels,
         max_pixels,
         max_aspect_ratio,
+        fit_mode="pad",
+        max_stretch_percent=1.0,
         transparency_mask=None,
     ):
         tag = _TAG_PREPARE
@@ -720,6 +867,8 @@ class BMKCanvasSnapPrepare:
             raise ValueError(f"{tag} 지원하지 않는 padding_mode: {padding_mode!r}")
         if resample not in _RESAMPLE_METHODS:
             raise ValueError(f"{tag} 지원하지 않는 resample: {resample!r}")
+        if fit_mode not in _FIT_MODES:
+            raise ValueError(f"{tag} 지원하지 않는 fit_mode: {fit_mode!r}")
 
         try:
             constraints = build_constraints(
@@ -733,7 +882,9 @@ class BMKCanvasSnapPrepare:
             notes.append("프리셋 프로파일: snap/min_edge/max_edge/min_pixels/max_pixels/max_aspect_ratio 위젯 값은 무시")
 
         try:
-            geo = compute_canvas_plan(src_w, src_h, constraints, int(max_padding_px))
+            geo = compute_canvas_plan(
+                src_w, src_h, constraints, int(max_padding_px), fit_mode, float(max_stretch_percent)
+            )
         except ValueError as exc:
             raise ValueError(f"{tag} {exc}") from exc
 
@@ -741,6 +892,7 @@ class BMKCanvasSnapPrepare:
         Cw, Ch = geo["content_size"]
         L, T, R, Bm = geo["padding_ltrb"]
         n, d = geo["scale_numerator"], geo["scale_denominator"]
+        stretch = bool(geo["stretch_applied"])
 
         if geo["downscaled"] and not bool(allow_downscale):
             raise ValueError(
@@ -751,10 +903,23 @@ class BMKCanvasSnapPrepare:
         if geo["downscaled"]:
             notes.append(f"축소 적용(allow_downscale): 배율 {n}/{d} ≈ {n / d:.4f}")
 
-        # ── 여백 상한 결과 메모 ──
+        # ── 스트레치 / 여백 상한 결과 메모 ──
+        if geo["stretch_fallback_reason"]:
+            notes.append(geo["stretch_fallback_reason"])
         cap = int(max_padding_px)
-        if cap > 0:
-            pW, pH = geo["primary_rule_canvas"]
+        pW, pH = geo["primary_rule_canvas"]
+        if stretch:
+            if cap > 0:
+                notes.append(f"스트레치가 적용되어 여백이 없으므로 max_padding_px={cap} 은 사용하지 않음")
+            if (pW, pH) != (W, H):
+                pCw, pCh = geo["primary_rule_content"]
+                loss = 100.0 * (1.0 - (Cw * Ch) / (pCw * pCh)) if pCw * pCh else 0.0
+                p_pct, p_axis = _Candidate(pW, pH, 1, 1, pCw, pCh).stretch_info()
+                notes.append(
+                    f"스트레치 상한 {float(max_stretch_percent):g}% 적용: 기본 규칙 {pW}x{pH}"
+                    f"(왜곡 {p_pct:.2f}%) 대신 선택, 그림 화소 손실 {loss:.2f}%"
+                )
+        elif cap > 0:
             if not geo["padding_cap_satisfiable"]:
                 notes.append(f"여백 상한 {cap}px 를 만족하는 후보가 없어 기본 규칙 {pW}x{pH} 로 선택")
             elif (pW, pH) != (W, H):
@@ -791,52 +956,48 @@ class BMKCanvasSnapPrepare:
         )
         notes.extend(alpha_notes)
 
-        # ── 리샘플 (전체 원본 → Cw×Ch) ──
+        # ── 리샘플 (전체 원본 → 그림 크기, stretch 면 캔버스 크기로 직접) ──
         dev = image.device
+        tw, th = (W, H) if stretch else (Cw, Ch)
         rgb = image[..., :3].movedim(-1, 1).to(torch.float32)  # [B,3,h,w]
-        if alpha is None:
-            content_rgb = _resample_bchw(rgb, Cw, Ch, resample).clamp(0.0, 1.0)
-            content_a = None
-        else:
-            a = alpha.unsqueeze(1).to(torch.float32)  # [B,1,h,w]
-            stacked = torch.cat([rgb * a, a], dim=1)  # premultiplied RGB + A
-            r = _resample_bchw(stacked, Cw, Ch, resample)
-            content_a = _snap_alpha(r[:, 3:4])
-            content_pm = torch.minimum(r[:, :3].clamp(0.0, 1.0), content_a)
+        content_rgb, content_a, content_straight = _resample_rgb_alpha(rgb, alpha, tw, th, resample)
+        # content_rgb: 알파 없으면 RGB, 있으면 premultiplied RGB
 
         # ── 합성 / 캔버스 ──
-        if padding_mode == "white":
+        if padding_mode in ("white", "edge_replicate"):
             channels = 3
             fill = 1.0
-            content = content_rgb if content_a is None else (content_pm + (1.0 - content_a)).clamp(0.0, 1.0)
+            content = content_rgb if content_a is None else (content_rgb + (1.0 - content_a)).clamp(0.0, 1.0)
         elif padding_mode == "black":
             channels = 3
             fill = 0.0
-            content = content_rgb if content_a is None else content_pm
+            content = content_rgb  # premultiplied = 검정 위 합성
         else:  # transparent
             channels = 4
             fill = 1.0  # 여백 RGB 는 흰색, 알파는 0
             if content_a is None:
                 content = content_rgb
-                content_alpha_out = torch.ones((B, 1, Ch, Cw), dtype=torch.float32, device=dev)
+                content_alpha_out = torch.ones((B, 1, th, tw), dtype=torch.float32, device=dev)
             else:
-                straight = content_pm / content_a.clamp_min(_ALPHA_EPS)
-                content = torch.where(content_a > _ALPHA_EPS, straight, torch.ones_like(straight)).clamp(0.0, 1.0)
+                content = content_straight
                 content_alpha_out = content_a
 
-        canvas = torch.full((B, H, W, channels), fill, dtype=torch.float32, device=dev)
-        if channels == 4:
-            canvas[..., 3] = 0.0
-        canvas[:, T:T + Ch, L:L + Cw, :3] = content.movedim(1, -1).to(dev)
-        if channels == 4:
-            canvas[:, T:T + Ch, L:L + Cw, 3] = content_alpha_out[:, 0].to(dev)
+        if padding_mode == "edge_replicate" and (L or T or R or Bm):
+            canvas = F.pad(content.to(dev), (L, R, T, Bm), mode="replicate").movedim(1, -1).contiguous()
+        else:
+            canvas = torch.full((B, H, W, channels), fill, dtype=torch.float32, device=dev)
+            if channels == 4:
+                canvas[..., 3] = 0.0
+            canvas[:, T:T + th, L:L + tw, :3] = content.movedim(1, -1).to(dev)
+            if channels == 4:
+                canvas[:, T:T + th, L:L + tw, 3] = content_alpha_out[:, 0].to(dev)
 
         if channels == 4:
             transparency_out = (1.0 - canvas[..., 3]).contiguous()
         else:
             transparency_out = torch.zeros((B, H, W), dtype=torch.float32, device=dev)
         content_region = torch.zeros((B, H, W), dtype=torch.float32, device=dev)
-        content_region[:, T:T + Ch, L:L + Cw] = 1.0
+        content_region[:, T:T + th, L:L + tw] = 1.0
 
         # ── plan / report ──
         plan = BMKCanvasPlan(geo)
@@ -887,7 +1048,10 @@ def _build_prepare_report(
     usage = 100.0 * plan["canvas_pixels"] / constraints.max_pixels
     pad_ratio = 100.0 * (1.0 - plan["content_pixels"] / plan["canvas_pixels"])
     cap = int(plan.get("max_padding_px", 0))
-    if cap == 0:
+    stretch = bool(plan.get("stretch_applied"))
+    if stretch:
+        cap_desc = "사용 안 함(스트레치 적용)" if cap > 0 else "사용 안 함"
+    elif cap == 0:
         cap_desc = "사용 안 함"
     elif plan.get("padding_cap_applied"):
         cap_desc = f"{cap}px 적용"
@@ -897,8 +1061,20 @@ def _build_prepare_report(
     if transparent_pct is not None:
         alpha_desc += f", 캔버스 투명 픽셀 {_fmt_pct(transparent_pct)}"
 
+    axis = _AXIS_KR.get(str(plan.get("stretch_axis")), str(plan.get("stretch_axis")))
+    pct = float(plan.get("stretch_percent", 0.0))
+    if stretch:
+        fit_desc = f"stretch {pct:+.2f}% ({axis}) | Restore 에서 {Cw}x{Ch} 로 리사이즈 복원"
+        head_fit = f"스트레치 {pct:+.2f}%"
+    else:
+        fit_desc = f"pad (여백 총 {(W - Cw) + (H - Ch)}px"
+        if plan.get("fit_mode_requested") == "stretch":
+            fit_desc += f", 스트레치 상한 {float(plan.get('max_stretch_percent', 0.0)):g}% 미충족 → 폴백"
+        fit_desc += ")"
+        head_fit = f"여백 L{L} T{T} R{R} B{B}"
+
     lines = [
-        f"{sw}x{sh} → 캔버스 {W}x{H} | 그림 {Cw}x{Ch} | 여백 L{L} T{T} R{R} B{B} | "
+        f"{sw}x{sh} → 캔버스 {W}x{H} | 그림 {Cw}x{Ch} | {head_fit} | "
         f"배율 x{scale:.4f} | 예산 {usage:.2f}%",
         f"프로파일: {constraints.describe()}",
         f"배율 분수 {n}/{d} | 종횡비 오차 {plan['signed_aspect_error_percent']:+.4f}% | "
@@ -907,6 +1083,7 @@ def _build_prepare_report(
         f"패딩 {plan['padding_mode']} ({plan['canvas_channels']}채널) | 리샘플 {plan['resample']} | "
         f"알파: {alpha_desc} | 배치 {plan['source_batch_size']} | "
         f"{'축소 적용' if plan['downscaled'] else '확대 또는 동일 배율'}",
+        f"맞춤: {fit_desc}",
         f"여백 상한: {cap_desc}",
         f"크롭 xyxy {list(plan['crop_xyxy'])} (끝 미포함) | GPT 노드: size=Custom, "
         f"custom_width←{W}, custom_height←{H}",
@@ -919,7 +1096,7 @@ def _build_prepare_report(
 # BMK Canvas Snap Restore
 # ══════════════════════════════════════════════════════════════════════
 class BMKCanvasSnapRestore:
-    """canvas_plan 의 좌표로 여백만 크롭. 크기가 계획과 다르면 자동 보정 없이 중단."""
+    """canvas_plan 의 좌표로 여백만 크롭(stretch 계획은 리사이즈 복원). 크기가 계획과 다르면 자동 보정 없이 중단."""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -935,6 +1112,11 @@ class BMKCanvasSnapRestore:
                     "default": "split_rgb_mask",
                     "tooltip": "결과가 4채널(RGBA)일 때: split_rgb_mask = RGB 3채널 + 투명도 MASK 로 분리, "
                                "keep_rgba = 4채널 그대로 내보내고 MASK 도 함께 출력."}),
+                # v1.1 — 뒤에 추가 (widgets_values 위치 호환)
+                "stretch_resample": (_RESTORE_RESAMPLE_METHODS, {
+                    "default": "lanczos",
+                    "tooltip": "계획이 stretch 일 때 캔버스 → 그림 크기 리사이즈에 쓰는 방법. "
+                               "pad 계획(크롭)에서는 사용하지 않습니다."}),
             },
             "optional": {
                 "transparency_mask": ("MASK", {
@@ -946,27 +1128,30 @@ class BMKCanvasSnapRestore:
     RETURN_TYPES = ("IMAGE", "MASK", "STRING")
     RETURN_NAMES = ("image", "transparency_mask", "report")
     OUTPUT_TOOLTIPS = (
-        "여백을 제거한 이미지(그림 크기 Cw×Ch). 16배수가 아닐 수 있으며 정상입니다.",
-        "같은 좌표로 자른 투명도(1=투명). 결과에 알파가 없으면 전부 0.",
-        "크기 검사 결과, 크롭 크기, 알파 상태.",
+        "여백을 제거한(또는 스트레치를 되돌린) 이미지(그림 크기 Cw×Ch). 16배수가 아닐 수 있으며 정상입니다.",
+        "같은 기하로 처리한 투명도(1=투명). 결과에 알파가 없으면 전부 0.",
+        "크기 검사 결과, 복원 방식, 알파 상태.",
     )
     FUNCTION = "restore"
     CATEGORY = "BMK/Image"
     DESCRIPTION = (
-        "BMK Canvas Snap Prepare 의 canvas_plan 좌표로 편집 결과에서 추가한 여백만 잘라냅니다. "
-        "결과 크기가 계획과 다르면 자동 보정 없이 중단하고, 4채널 결과는 알파를 투명도 MASK 로 분리합니다."
+        "BMK Canvas Snap Prepare 의 canvas_plan 으로 편집 결과에서 추가한 여백만 잘라내거나(pad), "
+        "미세 스트레치를 원래 비율로 되돌립니다(stretch). 결과 크기가 계획과 다르면 자동 보정 없이 "
+        "중단하고, 4채널 결과는 알파를 투명도 MASK 로 분리합니다."
     )
     SEARCH_ALIASES = [
-        "canvas restore", "remove padding", "crop padding", "unletterbox", "여백 제거",
-        "여백 복원", "패딩 제거", "캔버스 복원", "크롭 백",
+        "canvas restore", "remove padding", "crop padding", "unletterbox", "unstretch", "여백 제거",
+        "여백 복원", "패딩 제거", "캔버스 복원", "크롭 백", "스트레치 복원",
     ]
 
-    def restore(self, image, canvas_plan, rgba_output, transparency_mask=None):
+    def restore(self, image, canvas_plan, rgba_output, stretch_resample="lanczos", transparency_mask=None):
         tag = _TAG_RESTORE
         g = validate_plan(canvas_plan, tag)
         B, H, W, C = _check_image(image, tag)
         if rgba_output not in _RGBA_OUTPUT_MODES:
             raise ValueError(f"{tag} 지원하지 않는 rgba_output: {rgba_output!r}")
+        if stretch_resample not in _RESTORE_RESAMPLE_METHODS:
+            raise ValueError(f"{tag} 지원하지 않는 stretch_resample: {stretch_resample!r}")
 
         if (W, H) != (g["W"], g["H"]):
             sw, sh = canvas_plan.get("source_size", ["?", "?"])
@@ -998,36 +1183,59 @@ class BMKCanvasSnapRestore:
         else:
             alpha_source = "none"
 
-        x0, y0, x1, y1 = g["x0"], g["y0"], g["x1"], g["y1"]
-        cropped = image[:, y0:y1, x0:x1, :]
-        if C == 4 and rgba_output == "split_rgb_mask":
-            out = cropped[..., :3].contiguous()
-            out_desc = "RGB(알파 분리) + 마스크"
-        elif C == 4:
-            out = cropped.contiguous()
-            out_desc = "RGBA 유지 + 마스크"
+        Cw, Ch = g["Cw"], g["Ch"]
+        stretch = g["fit_mode"] == "stretch"
+        keep_rgba = C == 4 and rgba_output == "keep_rgba"
+
+        if stretch:
+            # 캔버스 전체(W×H) → 그림 크기(Cw×Ch) 리사이즈. 알파가 있으면 premultiplied 로 함께.
+            rgb = image[..., :3].movedim(-1, 1).to(torch.float32)
+            pm_or_rgb, a_r, straight = _resample_rgb_alpha(rgb, alpha, Cw, Ch, stretch_resample)
+            if a_r is None:
+                out_rgb = pm_or_rgb
+                alpha_c = None
+            else:
+                out_rgb = straight
+                alpha_c = a_r[:, 0]
+            out = out_rgb.movedim(1, -1)
+            if keep_rgba:
+                # C==4 인 입력은 알파가 항상 있으므로 alpha_c 는 None 이 아님. 방어적으로 불투명 처리.
+                a4 = alpha_c if alpha_c is not None else torch.ones((B, Ch, Cw), dtype=out.dtype, device=out.device)
+                out = torch.cat([out, a4.unsqueeze(-1)], dim=-1)
+            out = out.contiguous()
+            method_desc = f"스트레치 복원 {W}x{H} → {Cw}x{Ch} ({stretch_resample})"
         else:
-            out = cropped.contiguous()
+            x0, y0, x1, y1 = g["x0"], g["y0"], g["x1"], g["y1"]
+            cropped = image[:, y0:y1, x0:x1, :]
+            out = (cropped if keep_rgba else cropped[..., :3]).contiguous()
+            alpha_c = alpha[:, y0:y1, x0:x1] if alpha is not None else None
+            method_desc = f"크롭 {[x0, y0, x1, y1]} → {Cw}x{Ch}"
+
+        if keep_rgba:
+            out_desc = "RGBA 유지 + 마스크"
+        elif C == 4:
+            out_desc = "RGB(알파 분리) + 마스크"
+        else:
             out_desc = "RGB + 마스크"
 
-        if alpha is not None:
-            mask_out = (1.0 - alpha[:, y0:y1, x0:x1]).contiguous()
-            transparent_pct = float((alpha[:, y0:y1, x0:x1] < 0.999).float().mean().item() * 100.0)
-            alpha_desc = f"{_ALPHA_DESC.get(alpha_source, alpha_source)} (크롭 후 투명 픽셀 {_fmt_pct(transparent_pct)})"
+        if alpha_c is not None:
+            mask_out = (1.0 - alpha_c).contiguous()
+            transparent_pct = float((alpha_c < 0.999).float().mean().item() * 100.0)
+            alpha_desc = f"{_ALPHA_DESC.get(alpha_source, alpha_source)} (복원 후 투명 픽셀 {_fmt_pct(transparent_pct)})"
         else:
-            mask_out = torch.zeros((B, g["Ch"], g["Cw"]), dtype=torch.float32, device=image.device)
+            mask_out = torch.zeros((B, Ch, Cw), dtype=torch.float32, device=image.device)
             alpha_desc = "없음 → 불투명 마스크"
             if str(canvas_plan.get("padding_mode")) == "transparent":
                 notes.append("계획은 transparent 였지만 결과에 알파가 없어 투명도 보존을 확인할 수 없음")
 
         report_lines = [
-            f"결과 {W}x{H} = 계획 캔버스 일치 | 크롭 {[x0, y0, x1, y1]} → {g['Cw']}x{g['Ch']} | "
+            f"결과 {W}x{H} = 계획 캔버스 일치 | {method_desc} | "
             f"배치 {B} | 알파: {alpha_desc} | 출력 {out_desc}",
         ]
         src = canvas_plan.get("source_size")
         if src:
             report_lines.append(
-                f"계획: 원본 {src[0]}x{src[1]}, 패딩 {canvas_plan.get('padding_mode', '?')}, "
+                f"계획: 원본 {src[0]}x{src[1]}, 맞춤 {g['fit_mode']}, 패딩 {canvas_plan.get('padding_mode', '?')}, "
                 f"여백 L/T/R/B {list(canvas_plan.get('padding_ltrb', []))}"
             )
         report_lines.extend(f"주의: {note}" for note in notes)
