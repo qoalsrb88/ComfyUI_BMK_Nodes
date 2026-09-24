@@ -238,6 +238,12 @@ for _module_name in _NODE_MODULES:
 #       포트가 늘어도 노드가 길어지지 않음(widgets_start_y=0 + 투명 띠). 복사
 #       (현재/전체), 줄바꿈, 탭 배치(fit/wrap/scroll), 변경 표시, 마지막 결과를
 #       properties에 기억. 표시 텍스트는 widgets_values에 직렬화되지 않음.
+#   - bmk_quick_free.js
+#       모델 언로드 / 실행 캐시 비우기를 백엔드 /free 엔드포인트 직접 호출로
+#       되살리는 프론트엔드 전용 패치. 커맨드 2개를 등록해 Settings →
+#       Keybinding 에서 재지정 가능(기본 Alt+U / Alt+Shift+U)하고, 버튼은
+#       상단 툴바(.comfyui-menu-right)에 마운트하되 실패 시 플로팅으로 폴백.
+#       Vue 리렌더로 떨어지면 MutationObserver 가 재부착. 그래프 영향 없음.
 # 새 JS 확장을 추가할 때는 ./js 폴더에 파일만 넣으면 됩니다.
 WEB_DIRECTORY = "./js"
 
