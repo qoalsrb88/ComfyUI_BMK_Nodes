@@ -322,18 +322,6 @@ function collectGraphs() {
     return out;
 }
 
-function linkById(graph, id) {
-    if (!graph || id === null || id === undefined) return null;
-    if (typeof graph.getLink === "function") {
-        const l = graph.getLink(id);
-        if (l) return l;
-    }
-    const links = graph.links;
-    if (!links) return null;
-    if (typeof links.get === "function") return links.get(id) || null;
-    return links[id] || null;
-}
-
 /**
  * 내부 노드를 품고 있는 서브그래프 호스트 인스턴스를 찾는다.
  *
@@ -371,11 +359,11 @@ function hostOf(innerNode) {
  * 이름을 돌려준다. 내부 실노드에서 오는 진짜 데이터 링크면 null.
  */
 function promotedName(innerNode, inputName) {
-    const input = innerNode.inputs?.find((i) => i.name === inputName);
-    if (!input || input.link === null || input.link === undefined) return null;
+    const index = innerNode.findInputSlot(inputName);
+    if (index === -1 || !innerNode.isInputConnected(index)) return null;
 
     const graph = innerNode.graph;
-    const link = linkById(graph, input.link);
+    const link = innerNode.getInputLink(index);
     if (!link) return null;
 
     const originId = link.origin_id;
@@ -407,10 +395,10 @@ function makeContext(node, hostHint) {
  */
 function readInput(ctx, name) {
     const { node, host } = ctx;
-    const input = node.inputs?.find((i) => i.name === name);
+    const index = node.findInputSlot(name);
     const widget = widgetOf(node, name);
 
-    if (!input || input.link === null || input.link === undefined) {
+    if (index === -1 || !node.isInputConnected(index)) {
         return { value: widget ? widget.value : undefined, driven: false };
     }
 
@@ -421,8 +409,10 @@ function readInput(ctx, name) {
     }
     if (!host) return { value: undefined, driven: true };
 
-    const hostInput = host.inputs?.find((i) => i.name === outer);
-    if (hostInput && hostInput.link !== null && hostInput.link !== undefined) {
+    // 호스트는 연결 여부만 본다 — SubgraphNode.getInputLink 는 서브그래프 출력
+    // 쪽 내부 링크를 돌려주도록 재정의돼 있어 바깥 링크를 읽지 못한다.
+    const hostIndex = host.findInputSlot(outer);
+    if (hostIndex !== -1 && host.isInputConnected(hostIndex)) {
         // 호스트 바깥에서 주입되고 있다.
         return { value: undefined, driven: true };
     }
