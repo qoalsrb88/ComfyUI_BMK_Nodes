@@ -303,118 +303,127 @@ function readCropWidgets(node) {
 }
 
 function makePreviewWidget(node) {
-    const widget = {
+    // 로딩 상태는 위젯이 아니라 이 클로저에 둔다. 프론트엔드는 addCustomWidget
+    // 에서 위젯 객체를 BaseWidget 으로 흡수(프로토타입 교체)하고 value/options/
+    // hidden 을 내부 필드 _state 에 보관한다. 위젯에 자체 필드를 얹으면 그 이름과
+    // 겹칠 수 있다(1.53: _state 를 문자열로 덮어써 노드 그리기 전체가 멈춤).
+    const load = {
+        url: null,
+        img: null,
+        pending: null, // 로딩 중인 Image 강참조 (탈락/GC 방지)
+        status: "idle", // idle | loading | loaded | error
+        tries: 0,
+    };
+    let chips = [];
+
+    // 처음부터 다시 로드 (같은 파일명 재선택/업로드 완료 시에도 확실히 갱신)
+    function forceReload() {
+        load.url = null;
+        load.img = null;
+        load.pending = null;
+        load.tries = 0;
+        load.status = "idle";
+        node._bmkRotCache = null;
+        dirty();
+    }
+
+    function startLoad(url, bust) {
+        load.status = "loading";
+        const im = new Image();
+        load.pending = im;
+
+        im.onload = () => {
+            if (load.url !== url || load.pending !== im) return;
+            load.pending = null;
+            load.img = im;
+            load.status = "loaded";
+            load.tries = 0;
+            node._bmkRotCache = null;
+            growNodeForImage(node, {
+                w: im.naturalWidth,
+                h: im.naturalHeight,
+            });
+        };
+
+        im.onerror = () => {
+            if (load.url !== url || load.pending !== im) return;
+            load.pending = null;
+            // 업로드 직후 서버에 파일이 아직 준비되지 않은 일시적 404 등을
+            // 대비해 백오프 재시도한다 (재시도는 캐시 우회 파라미터 사용).
+            if (load.tries < 8) {
+                const delay = Math.min(300 * ++load.tries, 2000);
+                setTimeout(() => {
+                    if (
+                        load.url === url &&
+                        !load.pending &&
+                        load.status !== "loaded"
+                    ) {
+                        startLoad(url, true);
+                    }
+                }, delay);
+            } else {
+                load.status = "error";
+            }
+            dirty();
+        };
+
+        // 워치독: onload/onerror 가 장시간 오지 않는 고착 상태 → 강제 재시작
+        setTimeout(() => {
+            if (load.url === url && load.pending === im) {
+                im.src = "";
+                load.pending = null;
+                if (load.tries < 8) {
+                    load.tries += 1;
+                    startLoad(url, true);
+                } else {
+                    load.status = "error";
+                    dirty();
+                }
+            }
+        }, 15000);
+
+        im.src = bust
+            ? url + (url.includes("?") ? "&" : "?") + "r=" + Date.now()
+            : url;
+    }
+
+    function ensureImage() {
+        const url = imageURL(getWidgetValue(node, "image", ""));
+        if (url !== load.url) {
+            load.url = url;
+            load.img = null;
+            load.pending = null;
+            load.tries = 0;
+            load.status = "idle";
+            node._bmkRotCache = null;
+        }
+        if (url && load.status === "idle") {
+            startLoad(url, false);
+        }
+    }
+
+    // 현재 모드에서 표시할 소스의 (w, h)
+    function displayDims() {
+        const img = load.img;
+        if (!img) return null;
+        const c = readCropWidgets(node);
+        if (previewMode(node) === "original") {
+            return { w: img.naturalWidth, h: img.naturalHeight };
+        }
+        const rw = c.rotation % 180 === 0 ? img.naturalWidth : img.naturalHeight;
+        const rh = c.rotation % 180 === 0 ? img.naturalHeight : img.naturalWidth;
+        const box = clampCropBox(rw, rh, c.x, c.y, c.w, c.h);
+        return box ? { w: box.w, h: box.h } : { w: rw, h: rh };
+    }
+
+    return {
         type: "BMK_PREVIEW",
         name: "bmk_preview",
-        // serializeValue 를 두면 프론트엔드가 "직렬화 대상"으로 판단해
-        // options.serialize:false 가 무시된다. 옵션만 남긴다.
+        // serialize:false → 워크플로(widgets_values), options.serialize:false →
+        // API 프롬프트에서 제외. 코어 프리뷰 위젯과 같은 방식.
+        serialize: false,
         options: { serialize: false },
-        _url: null,
-        _img: null,
-        _pending: null, // 로딩 중인 Image 강참조 (탈락/GC 방지)
-        _state: "idle", // idle | loading | loaded | error
-        _tries: 0,
-        _chips: [],
-
-        // 처음부터 다시 로드 (같은 파일명 재선택/업로드 완료 시에도 확실히 갱신)
-        forceReload() {
-            this._url = null;
-            this._img = null;
-            this._pending = null;
-            this._tries = 0;
-            this._state = "idle";
-            node._bmkRotCache = null;
-            dirty();
-        },
-
-        _startLoad(url, bust) {
-            this._state = "loading";
-            const im = new Image();
-            this._pending = im;
-
-            im.onload = () => {
-                if (this._url !== url || this._pending !== im) return;
-                this._pending = null;
-                this._img = im;
-                this._state = "loaded";
-                this._tries = 0;
-                node._bmkRotCache = null;
-                growNodeForImage(node, {
-                    w: im.naturalWidth,
-                    h: im.naturalHeight,
-                });
-            };
-
-            im.onerror = () => {
-                if (this._url !== url || this._pending !== im) return;
-                this._pending = null;
-                // 업로드 직후 서버에 파일이 아직 준비되지 않은 일시적 404 등을
-                // 대비해 백오프 재시도한다 (재시도는 캐시 우회 파라미터 사용).
-                if (this._tries < 8) {
-                    const delay = Math.min(300 * ++this._tries, 2000);
-                    setTimeout(() => {
-                        if (
-                            this._url === url &&
-                            !this._pending &&
-                            this._state !== "loaded"
-                        ) {
-                            this._startLoad(url, true);
-                        }
-                    }, delay);
-                } else {
-                    this._state = "error";
-                }
-                dirty();
-            };
-
-            // 워치독: onload/onerror 가 장시간 오지 않는 고착 상태 → 강제 재시작
-            setTimeout(() => {
-                if (this._url === url && this._pending === im) {
-                    im.src = "";
-                    this._pending = null;
-                    if (this._tries < 8) {
-                        this._tries += 1;
-                        this._startLoad(url, true);
-                    } else {
-                        this._state = "error";
-                        dirty();
-                    }
-                }
-            }, 15000);
-
-            im.src = bust
-                ? url + (url.includes("?") ? "&" : "?") + "r=" + Date.now()
-                : url;
-        },
-
-        _ensureImage() {
-            const url = imageURL(getWidgetValue(node, "image", ""));
-            if (url !== this._url) {
-                this._url = url;
-                this._img = null;
-                this._pending = null;
-                this._tries = 0;
-                this._state = "idle";
-                node._bmkRotCache = null;
-            }
-            if (url && this._state === "idle") {
-                this._startLoad(url, false);
-            }
-        },
-
-        // 현재 모드에서 표시할 소스의 (w, h)
-        _displayDims() {
-            const img = this._img;
-            if (!img) return null;
-            const c = readCropWidgets(node);
-            if (previewMode(node) === "original") {
-                return { w: img.naturalWidth, h: img.naturalHeight };
-            }
-            const rw = c.rotation % 180 === 0 ? img.naturalWidth : img.naturalHeight;
-            const rh = c.rotation % 180 === 0 ? img.naturalHeight : img.naturalWidth;
-            const box = clampCropBox(rw, rh, c.x, c.y, c.w, c.h);
-            return box ? { w: box.w, h: box.h } : { w: rw, h: rh };
-        },
+        forceReload,
 
         computeSize(width) {
             const w = width ?? node.size?.[0] ?? 220;
@@ -424,7 +433,7 @@ function makePreviewWidget(node) {
         },
 
         draw(ctx, node, width, y) {
-            this._ensureImage();
+            ensureImage();
             const c = readCropWidgets(node);
             const mode = previewMode(node);
             const left = PV_MARGIN;
@@ -434,7 +443,7 @@ function makePreviewWidget(node) {
             ctx.save();
             ctx.font = "11px sans-serif";
             ctx.textBaseline = "middle";
-            this._chips = [];
+            chips = [];
             let cx = left;
             for (const [label, m] of [
                 ["원본", "original"],
@@ -450,7 +459,7 @@ function makePreviewWidget(node) {
                 ctx.fill();
                 ctx.fillStyle = active ? "#102030" : "#cccccc";
                 ctx.fillText(label, rect.x + 9, rect.y + rect.h / 2 + 0.5);
-                this._chips.push(rect);
+                chips.push(rect);
                 cx += cw + 6;
             }
 
@@ -462,8 +471,8 @@ function makePreviewWidget(node) {
                 PV_MIN_IMG_H,
                 (node.size?.[1] ?? 0) - areaY - PV_CAPTION_H - 6
             );
-            const d = this._displayDims();
-            const img = this._img;
+            const d = displayDims();
+            const img = load.img;
 
             if (!img || !d) {
                 ctx.fillStyle = "rgba(255,255,255,0.06)";
@@ -471,9 +480,9 @@ function makePreviewWidget(node) {
                 ctx.fillStyle = "rgba(255,255,255,0.4)";
                 ctx.font = "11px sans-serif";
                 const msg =
-                    this._state === "error"
+                    load.status === "error"
                         ? "이미지 로드 실패 — 클릭하여 재시도"
-                        : this._url
+                        : load.url
                           ? "이미지 로딩 중…"
                           : "이미지 없음";
                 ctx.fillText(msg, left + 8, areaY + 30);
@@ -561,7 +570,7 @@ function makePreviewWidget(node) {
         mouse(event, pos, node) {
             const t = event?.type ?? "";
             if (t !== "pointerdown" && t !== "mousedown") return false;
-            for (const chip of this._chips) {
+            for (const chip of chips) {
                 if (
                     pos[0] >= chip.x &&
                     pos[0] <= chip.x + chip.w &&
@@ -574,14 +583,13 @@ function makePreviewWidget(node) {
                 }
             }
             // 미로드 상태에서 프리뷰 영역 클릭 → 처음부터 강제 재시도
-            if (this._url && this._state !== "loaded") {
-                this.forceReload();
+            if (load.url && load.status !== "loaded") {
+                forceReload();
                 return true;
             }
             return false;
         },
     };
-    return widget;
 }
 
 // ─── 크롭 에디터 다이얼로그 (2-1 ~ 2-3) ─────────────────────────
@@ -777,6 +785,9 @@ class BMKCropEditor {
         // ── 캔버스 ──
         this.canvas = document.createElement("canvas");
         Object.assign(this.canvas.style, {
+            // 세로 flex 의 기본 stretch 를 끈다 — 패널이 안내 문구 폭만큼 넓으면
+            // 캔버스가 비율째 늘어나 화면을 넘치고 핸들 판정(hitTest)도 어긋난다.
+            alignSelf: "center",
             borderRadius: "4px",
             cursor: "crosshair",
             touchAction: "none",
@@ -1265,8 +1276,9 @@ app.registerExtension({
         nodeType.prototype.onNodeCreated = function () {
             origOnNodeCreated?.apply(this, arguments);
 
-            // serialize:false — 버튼이 widgets_values 슬롯을 차지하지 않게 한다.
-            this.addWidget(
+            // 버튼은 값이 없다 — options.serialize 로 프롬프트에서, serialize 로
+            // 워크플로(widgets_values / widgets_values_named)에서 뺀다.
+            const editorBtn = this.addWidget(
                 "button",
                 "✂ Crop Editor",
                 null,
@@ -1275,7 +1287,7 @@ app.registerExtension({
                 },
                 { serialize: false }
             );
-            this.addWidget(
+            const resetBtn = this.addWidget(
                 "button",
                 "⟲ Reset Crop",
                 null,
@@ -1284,10 +1296,11 @@ app.registerExtension({
                 },
                 { serialize: false }
             );
+            editorBtn.serialize = false;
+            resetBtn.serialize = false;
 
-            const preview = makePreviewWidget(this);
-            if (this.addCustomWidget) this.addCustomWidget(preview);
-            else this.widgets.push(preview);
+            // 프론트엔드가 흡수한 실제 위젯(노드 widgets 에 들어간 객체)을 쓴다.
+            const preview = this.addCustomWidget(makePreviewWidget(this));
 
             // 업로드 완료·동일 파일 재선택 등 콤보 콜백이 불릴 때마다
             // 프리뷰를 처음부터 다시 로드한다 (값이 같아도 갱신 보장).
@@ -1312,6 +1325,7 @@ app.registerExtension({
         //                crop_height, upload]
         //   (Python 이 image 에 image_upload:true 를 주면 프론트엔드가
         //    upload 위젯을 맨 뒤에 붙이므로 이 순서가 기준이 된다)
+        //   widgets_values_named 는 프론트엔드가 위젯 이름으로 따로 기록한다.
         // 로드: 위치·길이에 의존하지 않고 값을 이름으로 다시 주입한다.
         //   v1  (8): [image, rot, x, y, w, h, upload, editor]
         //   v2 (10): [image, upload, btn, btn, rot, x, y, w, h, preview]
@@ -1365,6 +1379,10 @@ app.registerExtension({
                 assign(this, "image", picked.image);
                 PARAM_NAMES.forEach((n, i) => assign(this, n, picked.nums[i]));
             }
+            // 위치 기반 복원은 upload 버튼에 숫자를 넣는다. 그 값이
+            // widgets_values_named 로 저장되지 않게 코어 값으로 되돌린다.
+            const upload = findUploadWidget(this);
+            if (upload) upload.value = "image";
             arrangeWidgets(this); // 값 주입 후 시각적 순서 재확정
             return r;
         };
