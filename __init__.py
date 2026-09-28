@@ -249,6 +249,12 @@ for _module_name in _NODE_MODULES:
 #       버그(Comfy-Org/ComfyUI_frontend#12443) 우회 패치. 패널(WidgetLegacy)이
 #       위젯에 쓴 width 를 그 draw 호출 동안에만 유지하고 곧바로 되돌린다.
 #       BMK 외 노드(LoraManager 등)에도 적용. 상위 수정(PR #15331) 반영 시 삭제.
+#   - topbar_overflow_patch.js
+#       창 폭이 좁을 때 상단 바 확장 버튼이 서브그래프 탐색 영역(보기 모드 토글 +
+#       뒤로가기 + 브레드크럼)을 0px 로 밀어내는 프론트엔드 1.53 레이아웃 우회 패치.
+#       탐색 영역에 최소 폭을 예약하고, 넘치는 레거시 버튼 그룹(app.menu.element 직계)을
+#       오른쪽부터 ⋯ 트레이로 옮긴다(DOM 그대로 이동, 공간이 생기면 원위치). 그래도
+#       넘치면 액션바를 두 번째 줄로 내린다. 상위 수정 시 삭제.
 # 새 JS 확장을 추가할 때는 ./js 폴더에 파일만 넣으면 됩니다.
 WEB_DIRECTORY = "./js"
 
