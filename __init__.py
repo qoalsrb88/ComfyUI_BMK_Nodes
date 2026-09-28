@@ -244,6 +244,11 @@ for _module_name in _NODE_MODULES:
 #       Keybinding 에서 재지정 가능(기본 Alt+U / Alt+Shift+U)하고, 버튼은
 #       상단 툴바(.comfyui-menu-right)에 마운트하되 실패 시 플로팅으로 폴백.
 #       Vue 리렌더로 떨어지면 MutationObserver 가 재부착. 그래프 영향 없음.
+#   - legacy_widget_width_patch.js
+#       속성 패널을 연 뒤 커스텀/DOM 위젯 폭이 패널 폭에 고정되는 프론트엔드
+#       버그(Comfy-Org/ComfyUI_frontend#12443) 우회 패치. 패널(WidgetLegacy)이
+#       위젯에 쓴 width 를 그 draw 호출 동안에만 유지하고 곧바로 되돌린다.
+#       BMK 외 노드(LoraManager 등)에도 적용. 상위 수정(PR #15331) 반영 시 삭제.
 # 새 JS 확장을 추가할 때는 ./js 폴더에 파일만 넣으면 됩니다.
 WEB_DIRECTORY = "./js"
 
