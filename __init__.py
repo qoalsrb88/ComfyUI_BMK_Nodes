@@ -79,6 +79,7 @@ _NODE_MODULES = (
     "bmk_nai_autosave",
     "bmk_nai_resolution",
     "bmk_nai_to_anima",
+    "bmk_openai_input_files",
     "bmk_persistent_bridge",
     "bmk_pid_tiled_upscale",
     "bmk_prompt_from_image",
