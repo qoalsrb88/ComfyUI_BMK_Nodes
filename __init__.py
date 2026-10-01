@@ -236,7 +236,9 @@ for _module_name in _NODE_MODULES:
 #       BMKPersistentBridgeString 도 같은 파일에서 처리: 저장본(.txt) 읽기 전용
 #       미리보기(서버 파일 우선, 없으면 properties 사본), "저장본 → 편집칸" 버튼,
 #       custom_text 입력 시 custom 자동 전환, 탐색 모드(passthrough 유지) 토글,
-#       미리보기/편집칸 높이 비율 드래그 조절.
+#       미리보기/편집칸 높이 비율 드래그 조절, "편집칸 → 저장본(확정)" 버튼.
+#       두 노드 공통: graphToPrompt 결과에서 bypass 된 상위의 입력을 빼 mute 와 같게
+#       처리(상위 bypass = 고정) → 그룹 토글만으로 단계 제어. 노드별로 끌 수 있음.
 #   - bmk_text_viewer_tabs.js
 #       BMKTextViewerTabs용 확장. 여러 STRING 입력을 높이 고정 DOM 위젯 하나에
 #       탭으로 표시(라벨 = 소스 노드 제목). 입력 슬롯을 뷰어 왼쪽 열에 겹쳐 두어

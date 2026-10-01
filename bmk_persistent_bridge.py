@@ -22,6 +22,8 @@ Impact Pack 의 Preview Bridge 는 미리보기를 temp/ 에 쓰고 파일 매�
 -----------
   passthrough  입력 이미지를 그대로 내보내면서 저장본을 갱신한다(기본).
                입력 링크가 비어 있으면(상위 bypass/mute) 저장본으로 대체한다.
+               저장본도 없으면(아직 한 번도 생성하지 않은 단계) 오류 대신 하류만
+               조용히 건너뛴다(ExecutionBlocker).
   saved        상위를 실행하지 않고 저장본만 내보낸다.
   custom       상위를 실행하지 않고 image 위젯의 파일(input 폴더/업로드/마스크
                에디터 결과)을 내보낸다. Load Image 규약: RGB + MASK(1 - alpha).
@@ -97,12 +99,36 @@ String 버전 — BMK Persistent Bridge (String)  (v3)
     custom_text 입력·복사 버튼이 mode 를 바꾸지 않아 편집칸을 후보 메모장으로 쓸 수 있다.
     mode 를 직접 바꾸면 꺼진다. 상태는 node.properties 에만 있어 프롬프트·캐시와 무관.
   * 미리보기 하단 손잡이로 미리보기 : custom_text 높이 비율 조절(더블클릭 = 50%).
+  * "편집칸 → 저장본(확정)" 버튼: custom_text 를 저장본 파일에 쓴다(POST
+    /bmk/bridge/save_text, 파일명은 slot 규칙으로 다시 정리). custom 모드 없이도 고친
+    텍스트가 고정 단계에서 재생된다. 편집칸 내용은 그대로 남는다.
 
-  주의: 상위 노드를 bypass 하면 프론트엔드가 그 노드의 STRING 입력을 그대로 흘려보낼
-  수 있다(링크로 연결된 경우). passthrough 라면 그 문자열이 저장본을 덮어쓰므로,
-  상위를 끄고 싶을 때는 bypass 대신 saved 모드를 쓸 것. 또 상위 출력에 Show Text 같은
-  출력 노드가 붙어 있으면 그 노드가 상위를 필요로 하므로 saved 모드에서도 상위가 돈다
-  → 보기용 노드는 브릿지 뒤에 연결할 것.
+  주의: 상위 출력에 Show Text 같은 출력 노드가 붙어 있으면 그 노드가 상위를 필요로
+  하므로 saved 모드에서도 상위가 돈다 → 보기용 노드는 브릿지 뒤에 연결할 것.
+
+단계 제어 — 상위 bypass = 고정 (v4)
+------------------------------------
+  여러 브릿지를 단계(A-00, A-01 …)로 이어 쓸 때, 브릿지는 전부 passthrough 로 두고
+  각 단계의 API 그룹을 켜고 끄는 것만으로 "탐색 중 / 고정"을 정한다.
+    상위가 켜져 있음  → 매번 새로 생성해 통과 + 저장본 갱신 (탐색)
+    상위가 꺼져 있음  → 저장본 재생 (고정)
+  rgthree Fast Groups Bypasser 의 toggleRestriction 을 "max one" 으로 두면 켜진
+  그룹 하나가 곧 현재 단계라서, 단계 이동이 토글 한 번이 된다.
+
+  * mute 는 프론트엔드가 링크를 지워 원래도 저장본으로 대체됐지만, bypass 는 그 노드의
+    같은 타입 입력(지시 프롬프트, 캐릭터 이미지 등)을 브릿지로 흘려보내 passthrough 가
+    그 값으로 저장본을 덮어썼다. JS 가 graphToPrompt 결과에서, 브릿지 입력의 실제 출처
+    노드(Reroute·Get 같은 가상 노드는 따라 올라감)가 bypass 상태면 그 입력을 빼서
+    mute 와 같게 만든다. 상위를 bypass 해서 그 입력을 그대로 받던 구 동작이 필요하면
+    노드 우클릭 메뉴에서 노드별로 끌 수 있다(properties.bmk_bridge_bypass_through).
+  * 한 번도 생성하지 않은 단계는 저장본이 없으므로 위 passthrough 규칙대로 하류만
+    건너뛴다 → 첫 탐색 때 뒤 단계를 꺼 둬도 실행이 오류로 멈추지 않는다.
+
+v4 (2026-10)
+------------
+- 상위 bypass 를 mute 와 같게 처리(프론트엔드) → 그룹 토글만으로 단계 제어.
+- passthrough 에서 입력·저장본이 모두 없으면 오류 대신 하류를 조용히 건너뜀.
+- String: "편집칸 → 저장본(확정)" 버튼과 로컬 저장 라우트.
 
 v3 (2026-10)
 ------------
@@ -135,6 +161,7 @@ from PIL.PngImagePlugin import PngInfo
 
 import folder_paths
 import node_helpers
+from comfy_execution.graph_utils import ExecutionBlocker
 
 try:
     from comfy.cli_args import args as _comfy_args
@@ -391,6 +418,13 @@ def _write_text(path: str, text: str) -> None:
     os.replace(tmp, path)
 
 
+def _blocked_result(base: str, ui: dict) -> dict:
+    """passthrough 인데 입력도 저장본도 없음(아직 한 번도 생성하지 않은 단계).
+    오류로 실행 전체를 멈추는 대신 이 브릿지의 하류만 조용히 건너뛴다."""
+    logger.info(f"{_TAG} 입력과 저장본이 모두 없어 하류를 건너뜁니다: {base}")
+    return {"ui": ui, "result": ExecutionBlocker(None)}
+
+
 def _saved_text_entry(path: str) -> dict | None:
     if not os.path.isfile(path):
         return None
@@ -400,6 +434,41 @@ def _saved_text_entry(path: str) -> dict | None:
         "text": _read_text(path),
         "mtime": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(mtime)),
     }
+
+
+# ─── HTTP API (String 버전 "편집칸 → 저장본" 확정 버튼) ─────────────
+
+
+def _register_routes() -> None:
+    try:
+        from aiohttp import web
+        from server import PromptServer
+    except Exception:
+        return  # 서버 환경이 아님
+
+    server = getattr(PromptServer, "instance", None)
+    if server is None or getattr(server, "_bmk_bridge_routes_registered", False):
+        return
+    server._bmk_bridge_routes_registered = True
+
+    @server.routes.post("/bmk/bridge/save_text")
+    async def bmk_bridge_save_text(request):
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"error": "잘못된 요청 본문"}, status=400)
+        base = payload.get("base") if isinstance(payload, dict) else None
+        text = payload.get("text") if isinstance(payload, dict) else None
+        if not isinstance(base, str) or not base.strip() or not isinstance(text, str):
+            return web.json_response({"error": "base 와 text 가 필요합니다"}, status=400)
+        # slot 규칙으로 다시 정리 → 경로 구분자·점이 남지 않아 bmk_bridge 폴더 밖으로 못 나간다
+        base = _sanitize(base.strip())
+        path = _text_path(base)
+        _write_text(path, text)
+        return web.json_response({"base": base, "saved": _saved_text_entry(path)})
+
+
+_register_routes()
 
 
 # ─── 노드 ─────────────────────────────────────────────────────
@@ -559,6 +628,10 @@ class BMKPersistentBridge:
 
         elif mode == MODE_SAVED or images is None:
             frames = _frames_of(base)
+            if not frames and mode == MODE_PASSTHROUGH:
+                return _blocked_result(base, {"images": [], "bmk_bridge": [
+                    {"mode": mode, "used": "blocked", "base": base, "alpha": False, "saved": []}
+                ]})
             if not frames:
                 raise RuntimeError(
                     f"{_TAG} 저장본이 없습니다 (slot='{base}'). "
@@ -726,6 +799,10 @@ class BMKPersistentBridgeString:
             used = "custom"
 
         elif mode == MODE_SAVED or text is None:
+            if not os.path.isfile(path) and mode == MODE_PASSTHROUGH:
+                return _blocked_result(base, {"bmk_bridge_text": [
+                    {"mode": mode, "used": "blocked", "base": base, "saved": None}
+                ]})
             if not os.path.isfile(path):
                 raise RuntimeError(
                     f"{_TAG} 저장본이 없습니다 (slot='{base}'). "

@@ -2,7 +2,8 @@
 //
 // slot 자동 발급·복사본 중복 방지(아래 1)는 두 노드 공통이며, 중복 검사는 같은 종류의
 // 노드끼리만 한다(이미지 <slot>_b0.png 와 텍스트 <slot>.txt 는 충돌하지 않음).
-// String 전용 동작은 파일 아래쪽 "String 버전" 절 참고.
+// String 전용 동작은 파일 아래쪽 "String 버전" 절, 상위 bypass 를 mute 처럼 다루는
+// 단계 제어는 "상위 bypass = 고정" 절 참고.
 //
 // 역할 (Image)
 //  1) slot(저장본 이름) 자동 발급: 노드 생성 시 `auto-xxxxxxxx` 를 채운다.
@@ -424,11 +425,14 @@ function setupNode(node) {
 //     프론트는 DOM 위젯에 최소 높이를 먼저 주고 남는 공간을 최대 높이까지 균등 분배하므로,
 //     두 위젯의 최대 높이를 비율대로 주면 정확히 그 비율로 나뉜다. 비율은 properties 에 저장.
 //     (Vue 노드 모드는 이 배치 경로를 쓰지 않아 비율이 적용되지 않는다)
-//  위젯 순서는 mode, 탐색 모드, slot, 미리보기, 버튼, custom_text. 추가 위젯은 모두 직렬화되지
-//  않으므로 widgets_values 의 순서(mode, slot, custom_text)는 그대로다.
+//  7) "편집칸 → 저장본(확정)" 버튼: custom_text 를 서버 라우트로 저장본 파일에 쓴다. 상위 그룹을
+//     끄면(고정) 고친 텍스트가 재생되므로 custom 모드로 바꿨다 되돌리는 조작이 필요 없다.
+//  위젯 순서는 mode, 탐색 모드, slot, 미리보기, 버튼 2개, custom_text. 추가 위젯은 모두
+//  직렬화되지 않으므로 widgets_values 의 순서(mode, slot, custom_text)는 그대로다.
 
 const TEXT_PREVIEW_WIDGET = "bmk_saved_text";
 const TEXT_COPY_WIDGET = "bmk_copy_saved";
+const TEXT_COMMIT_WIDGET = "bmk_commit_custom";
 const TEXT_EXPLORE_WIDGET = "bmk_explore";
 const PROP_EXPLORE = "bmk_bridge_explore";
 const PROP_SPLIT = "bmk_bridge_split"; // 미리보기 / (미리보기 + custom_text) 높이 비율
@@ -683,8 +687,7 @@ function notifyText(severity, detail) {
     else console.warn(`[BMK PersistentBridge] ${detail}`);
 }
 
-async function confirmOverwrite() {
-    const message = "custom_text 에 있는 내용을 저장본으로 덮어씁니다.";
+async function confirmDialog(message) {
     const dialog = app.extensionManager?.dialog;
     if (dialog?.confirm) return (await dialog.confirm({ title: TEXT_TITLE, message })) === true;
     return window.confirm(message);
@@ -709,12 +712,50 @@ async function copySavedToCustom(node) {
     const textW = getWidget(node, "custom_text");
     if (!textW) return;
     const cur = String(textW.value ?? "");
-    if (cur.trim() && cur !== saved.text && !(await confirmOverwrite())) return;
+    if (cur.trim() && cur !== saved.text && !(await confirmDialog("custom_text 에 있는 내용을 저장본으로 덮어씁니다."))) return;
     textW.value = saved.text;
     if (isExploring(node)) renderTextView(node); // 후보만 옮겨 두고 passthrough 유지
     else switchTextToCustom(node, "저장본 → 편집칸");
     // 클릭 직후의 변경 감지는 이미 지나갔으므로(파일을 읽느라 비동기) undo 기록을 직접 남긴다
     saveWorkflowState();
+}
+
+// custom_text 를 저장본 파일에 쓴다 → custom 모드 없이도 고정 단계에서 고친 텍스트가 재생된다
+async function commitCustomToSaved(node) {
+    const textW = getWidget(node, "custom_text");
+    if (!textW) return;
+    const text = String(textW.value ?? "");
+    if (!text.trim() && !(await confirmDialog("편집칸이 비어 있습니다. 빈 텍스트로 저장본을 확정할까요?"))) return;
+    let data;
+    try {
+        const res = await api.fetchApi("/bmk/bridge/save_text", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ base: textBaseOf(node), text }),
+        });
+        if (res.status === 404) throw new Error("서버를 재시작해야 이 버튼이 동작합니다");
+        data = await res.json().catch(() => null);
+        if (!res.ok || !data) throw new Error(data?.error ?? `HTTP ${res.status}`);
+    } catch (e) {
+        notifyText("error", `저장본 확정 실패: ${e.message ?? e}`);
+        return;
+    }
+    const entry = { base: data.base, ...data.saved };
+    const view = textViews.get(node);
+    if (view) {
+        view.req++; // 진행 중인 서버 읽기 결과가 이 값을 덮지 않게
+        view.file = entry;
+    }
+    node.properties[PROP_SAVED_TEXT] = entry;
+    renderTextView(node);
+    saveWorkflowState();
+    const live = getWidget(node, "mode")?.value === MODE_PASSTHROUGH && upstreamState(node, "text") === "live";
+    notifyText(
+        live ? "warn" : "success",
+        live
+            ? "저장본을 확정했습니다. 이 단계의 API 그룹을 끄면(다음 단계로 이동) 확정본이 고정됩니다. 켜 둔 채 큐를 돌리면 새 결과로 바뀝니다."
+            : "저장본을 편집칸 내용으로 확정했습니다."
+    );
 }
 
 function chainCallback(widget, fn) {
@@ -751,6 +792,12 @@ function setupTextNode(node) {
     copyBtn.label = "⇩ 저장본 → 편집칸";
     copyBtn.serialize = false;
 
+    const commitBtn = node.addWidget("button", TEXT_COMMIT_WIDGET, null, () => commitCustomToSaved(node), {
+        serialize: false,
+    });
+    commitBtn.label = "⇧ 편집칸 → 저장본 (확정)";
+    commitBtn.serialize = false;
+
     const exploreW = node.addWidget("toggle", TEXT_EXPLORE_WIDGET, false, (v) => setExplore(node, !!v), {
         serialize: false,
         on: "켜짐",
@@ -762,7 +809,7 @@ function setupTextNode(node) {
     const textW = getWidget(node, "custom_text");
     if (textW?.options) textW.options.getMaxHeight = () => editorMaxHeight(node);
 
-    const ordered = ["mode", TEXT_EXPLORE_WIDGET, "slot", TEXT_PREVIEW_WIDGET, TEXT_COPY_WIDGET, "custom_text"]
+    const ordered = ["mode", TEXT_EXPLORE_WIDGET, "slot", TEXT_PREVIEW_WIDGET, TEXT_COPY_WIDGET, TEXT_COMMIT_WIDGET, "custom_text"]
         .map((name) => getWidget(node, name))
         .filter(Boolean);
     node.widgets = [...ordered, ...node.widgets.filter((w) => !ordered.includes(w))];
@@ -782,8 +829,83 @@ function setupTextNode(node) {
     });
 
     const sz = node.computeSize?.() ?? node.size;
-    node.setSize([Math.max(sz[0], node.size[0]), Math.max(sz[1], node.size[1], 360)]);
+    node.setSize([Math.max(sz[0], node.size[0]), Math.max(sz[1], node.size[1], 390)]);
     renderTextView(node);
+}
+
+// ─── 상위 bypass = 고정 (두 노드 공통) ───────────────────────────
+//
+// mute 된 상위는 프론트엔드가 링크를 지워 브릿지가 저장본으로 대체되지만, bypass 된 상위는
+// 그 노드의 같은 타입 입력(지시 프롬프트, 캐릭터 이미지 등)이 브릿지로 흘러와 passthrough 가
+// 그 값으로 저장본을 덮어쓴다. graphToPrompt 결과에서 그런 입력을 빼 mute 와 같게 만든다
+// → 브릿지는 passthrough 로 두고 상위 그룹을 켜고 끄는 것만으로 탐색/고정을 정할 수 있다.
+// 상위를 bypass 해서 그 입력을 그대로 받던 구 동작은 노드 우클릭 메뉴에서 노드별로 고른다.
+
+const MODE_MUTE = 2;
+const MODE_BYPASS = 4;
+const PROP_BYPASS_THROUGH = "bmk_bridge_bypass_through"; // true = 구 동작
+const BRIDGE_INPUTS = { [NODE_NAME]: ["images", "mask"], [TEXT_NODE_NAME]: ["text"] };
+
+// 입력 링크의 실제 출처 노드. Reroute·Get 같은 가상 노드는 따라 올라간다.
+// 서브그래프 입력처럼 그래프 안에서 출처를 찾을 수 없으면 null.
+function inputSourceNode(node, slot) {
+    let link = node.getInputLink(slot);
+    let src = link && node.graph.getNodeById(link.origin_id);
+    for (let depth = 0; src?.isVirtualNode && depth < 16; depth++) {
+        link = src.getInputLink?.(link.origin_slot);
+        src = link && src.graph?.getNodeById(link.origin_id);
+    }
+    return src && !src.isVirtualNode ? src : null;
+}
+
+// "live": 상위가 켜져 있어 입력이 들어옴 · "frozen": 상위가 꺼져 저장본 재생 · "none": 연결 없음
+function upstreamState(node, inputName) {
+    const slot = node.findInputSlot(inputName);
+    if (!node.graph || slot < 0 || !node.isInputConnected(slot)) return "none";
+    const src = inputSourceNode(node, slot);
+    if (src?.mode === MODE_MUTE) return "frozen";
+    if (src?.mode === MODE_BYPASS && !node.properties?.[PROP_BYPASS_THROUGH]) return "frozen";
+    return "live";
+}
+
+// 루트 + 서브그래프의 브릿지를 실행 ID("호스트:…:노드")와 함께 순회
+function forEachBridge(graph, prefix, fn, depth = 0) {
+    if (!graph?.nodes || depth > 8) return;
+    for (const n of graph.nodes) {
+        const execId = prefix ? `${prefix}:${n.id}` : String(n.id);
+        const type = nodeTypeOf(n);
+        if (BRIDGE_INPUTS[type]) fn(n, execId, type);
+        if (n.isSubgraphNode?.() && n.subgraph) forEachBridge(n.subgraph, execId, fn, depth + 1);
+    }
+}
+
+function freezeBypassedInputs(output) {
+    if (!output) return;
+    forEachBridge(app.rootGraph ?? app.graph, "", (node, execId, type) => {
+        const inputs = output[execId]?.inputs;
+        if (!inputs) return; // 브릿지 자신이 꺼져 있음
+        for (const name of BRIDGE_INPUTS[type]) {
+            if (name in inputs && upstreamState(node, name) === "frozen") delete inputs[name];
+        }
+    });
+}
+
+function installBypassMenu(nodeType) {
+    const getExtraMenuOptions = nodeType.prototype.getExtraMenuOptions;
+    nodeType.prototype.getExtraMenuOptions = function (canvas, options) {
+        const r = getExtraMenuOptions?.apply(this, arguments);
+        const through = !!this.properties?.[PROP_BYPASS_THROUGH];
+        options.push(null, {
+            content: `${through ? "" : "✓ "}상위 bypass = 고정 (저장본 사용)`,
+            callback: () => {
+                this.properties ??= {};
+                if (through) delete this.properties[PROP_BYPASS_THROUGH];
+                else this.properties[PROP_BYPASS_THROUGH] = true;
+                saveWorkflowState();
+            },
+        });
+        return r;
+    };
 }
 
 // ─── 확장 등록 ─────────────────────────────────────────────────
@@ -909,8 +1031,18 @@ function registerTextBridge(nodeType) {
 app.registerExtension({
     name: "BMK.PersistentBridge",
 
+    setup() {
+        const graphToPrompt = app.graphToPrompt;
+        app.graphToPrompt = async function (...args) {
+            const result = await graphToPrompt.apply(this, args);
+            freezeBypassedInputs(result?.output);
+            return result;
+        };
+    },
+
     beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData.name === NODE_NAME) registerImageBridge(nodeType);
         else if (nodeData.name === TEXT_NODE_NAME) registerTextBridge(nodeType);
+        if (BRIDGE_INPUTS[nodeData.name]) installBypassMenu(nodeType);
     },
 });
