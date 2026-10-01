@@ -1,6 +1,10 @@
-// bmk_persistent_bridge.js — BMKPersistentBridge 짝 JS 확장
+// bmk_persistent_bridge.js — BMKPersistentBridge / BMKPersistentBridgeString 짝 JS 확장
 //
-// 역할
+// slot 자동 발급·복사본 중복 방지(아래 1)는 두 노드 공통이며, 중복 검사는 같은 종류의
+// 노드끼리만 한다(이미지 <slot>_b0.png 와 텍스트 <slot>.txt 는 충돌하지 않음).
+// String 전용 동작은 파일 아래쪽 "String 버전" 절 참고.
+//
+// 역할 (Image)
 //  1) slot(저장본 이름) 자동 발급: 노드 생성 시 `auto-xxxxxxxx` 를 채운다.
 //     붙이기(Ctrl+V)·복제로 같은 워크플로우에 같은 이름이 생기면 새 노드 쪽을 바꾼다.
 //       auto 이름 → 재발급,  직접 적은 이름 → `이름_2`, `이름_3` … 접미.
@@ -34,7 +38,12 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
 const NODE_NAME = "BMKPersistentBridge";
+const TEXT_NODE_NAME = "BMKPersistentBridgeString";
 const PROP_SAVED = "bmk_bridge_saved";
+const PROP_SAVED_TEXT = "bmk_bridge_saved_text"; // { base, text, mtime } — 워크플로우에 실리는 사본
+// 복사본으로 slot 이 바뀌면 원본 노드의 저장본 정보는 넘겨받지 않는다
+const SAVED_PROP_OF = { [NODE_NAME]: PROP_SAVED, [TEXT_NODE_NAME]: PROP_SAVED_TEXT };
+const MODE_PASSTHROUGH = "passthrough";
 const MODE_CUSTOM = "custom";
 const PREVIEW_PROMPT_ID = "bmk-bridge-preview";
 const AUTO_SLOT_RE = /^auto-[0-9a-f]{8}$/;
@@ -78,27 +87,32 @@ function ensureAutoSlot(node) {
     if (!String(w.value ?? "").trim()) w.value = newAutoSlot();
 }
 
-// 워크플로우 전체(루트 + 서브그래프)의 다른 브릿지 노드가 쓰는 slot 이름 집합
-function collectBridgeNodes(graph, out = [], depth = 0) {
+function nodeTypeOf(node) {
+    return node.comfyClass ?? node.type;
+}
+
+// 워크플로우 전체(루트 + 서브그래프)에서 같은 종류의 다른 브릿지 노드가 쓰는 slot 이름 집합
+function collectBridgeNodes(graph, type, out = [], depth = 0) {
     if (!graph?.nodes || depth > 8) return out;
     for (const n of graph.nodes) {
-        if ((n.comfyClass ?? n.type) === NODE_NAME) out.push(n);
-        if (n.isSubgraphNode?.() && n.subgraph) collectBridgeNodes(n.subgraph, out, depth + 1);
+        if (nodeTypeOf(n) === type) out.push(n);
+        if (n.isSubgraphNode?.() && n.subgraph) collectBridgeNodes(n.subgraph, type, out, depth + 1);
     }
     return out;
 }
 
 function takenSlots(node) {
+    const type = nodeTypeOf(node);
     const root = app.rootGraph ?? node.graph?.rootGraph ?? node.graph;
     const taken = new Set();
-    for (const n of collectBridgeNodes(root)) {
+    for (const n of collectBridgeNodes(root, type)) {
         if (n === node) continue;
         const v = String(getWidget(n, "slot")?.value ?? "").trim();
         if (v) taken.add(v);
     }
     // 루트에서 닿지 않는 그래프(분리된 서브그래프 편집 중 등)면 현재 그래프도 포함
     if (node.graph && node.graph !== root) {
-        for (const n of collectBridgeNodes(node.graph)) {
+        for (const n of collectBridgeNodes(node.graph, type)) {
             if (n === node) continue;
             const v = String(getWidget(n, "slot")?.value ?? "").trim();
             if (v) taken.add(v);
@@ -137,7 +151,7 @@ function currentPasteRenameMap() {
     return pasteRenameMap;
 }
 
-// 복사본(붙이기/복제)의 slot 이 기존 노드와 겹치면 새 이름으로 바꾼다.
+// 복사본(붙이기/복제)의 slot 이 같은 종류의 기존 노드와 겹치면 새 이름으로 바꾼다.
 function renameSlotForCopy(node) {
     const w = getWidget(node, "slot");
     if (!w) return;
@@ -146,21 +160,23 @@ function renameSlotForCopy(node) {
         w.value = newAutoSlot();
         return;
     }
+    const type = nodeTypeOf(node);
+    const batchKey = `${type}\u0000${cur}`;
     const batch = currentPasteRenameMap();
-    if (batch.has(cur)) {
+    if (batch.has(batchKey)) {
         // 같은 붙이기 묶음에서 이미 바뀐 이름 → 같은 새 이름으로 (묶음 내 공유 유지)
-        w.value = batch.get(cur);
-        if (node.properties) delete node.properties[PROP_SAVED];
+        w.value = batch.get(batchKey);
+        if (node.properties) delete node.properties[SAVED_PROP_OF[type]];
         return;
     }
     const taken = takenSlots(node);
     if (!taken.has(cur)) return; // 겹치지 않으면 그대로 (다른 워크플로우로 옮긴 경우 등)
 
     const next = AUTO_SLOT_RE.test(cur) ? newAutoSlot() : nextSuffixName(cur, taken);
-    batch.set(cur, next);
+    batch.set(batchKey, next);
     w.value = next;
-    // 저장본 목록은 원본 노드의 것이므로 넘겨받지 않는다
-    if (node.properties) delete node.properties[PROP_SAVED];
+    // 저장본 정보는 원본 노드의 것이므로 넘겨받지 않는다
+    if (node.properties) delete node.properties[SAVED_PROP_OF[type]];
     console.log(`[BMK PersistentBridge] #${node.id} slot 중복(${cur}) → ${next}`);
 }
 
@@ -387,78 +403,514 @@ function setupNode(node) {
     schedulePreview(node);
 }
 
+// ─── String 버전 ────────────────────────────────────────────────
+//
+//  1) 저장본 미리보기(읽기 전용 DOM 위젯, 직렬화 안 함). 로드·slot 변경 시 서버 파일
+//     (/view → input/bmk_bridge/<slot>.txt)을 직접 읽어 표시하고, 파일이 없으면
+//     node.properties 의 사본(마지막 실행 결과, 워크플로우와 함께 저장됨)을 "사본"으로 표시.
+//     로드 때 읽은 내용은 properties 에 쓰지 않는다(열기만 해도 수정됨 표시가 뜨지 않게).
+//  2) "저장본 → 편집칸" 버튼: 서버 파일(없으면 사본)을 custom_text 로 복사하고 mode=custom.
+//     custom_text 에 다른 내용이 있으면 덮어쓰기 전에 확인한다.
+//  3) custom_text 가 바뀌면 mode 를 custom 으로 자동 전환. 프론트 1.53 의 DOM 위젯은 사용자
+//     입력뿐 아니라 코드 대입(widget.value = …)에서도 callback 을 부른다. 복원(configure:
+//     로드·undo·붙이기) 중 대입은 _bmkConfiguring 으로 거르고, 그 밖의 대입(버튼, 서브그래프
+//     승격 위젯 편집, Vue 노드 모드 입력)은 그 텍스트를 쓰겠다는 의도로 보고 전환한다.
+//  4) 쓰이지 않는 쪽을 흐리게 표시: custom 이면 미리보기, 아니면 custom_text(포커스 중엔 선명).
+//  5) 탐색 모드 토글: 결과를 여러 번 뽑아 보는 동안 passthrough 를 유지한다. 켜져 있으면
+//     custom_text 입력·"저장본 → 편집칸" 복사가 mode 를 바꾸지 않는다(편집칸 = 후보 메모장).
+//     켜면 mode 를 passthrough 로 맞추고, 사용자가 mode 를 직접 바꾸면 꺼진다
+//     (켜짐 ⇔ passthrough 고정). 상태는 properties 에만 둔다 → 프롬프트·캐시와 무관.
+//  6) 미리보기 하단 손잡이를 끌어 미리보기 : custom_text 높이 비율 조절(더블클릭 = 50%).
+//     프론트는 DOM 위젯에 최소 높이를 먼저 주고 남는 공간을 최대 높이까지 균등 분배하므로,
+//     두 위젯의 최대 높이를 비율대로 주면 정확히 그 비율로 나뉜다. 비율은 properties 에 저장.
+//     (Vue 노드 모드는 이 배치 경로를 쓰지 않아 비율이 적용되지 않는다)
+//  위젯 순서는 mode, 탐색 모드, slot, 미리보기, 버튼, custom_text. 추가 위젯은 모두 직렬화되지
+//  않으므로 widgets_values 의 순서(mode, slot, custom_text)는 그대로다.
+
+const TEXT_PREVIEW_WIDGET = "bmk_saved_text";
+const TEXT_COPY_WIDGET = "bmk_copy_saved";
+const TEXT_EXPLORE_WIDGET = "bmk_explore";
+const PROP_EXPLORE = "bmk_bridge_explore";
+const PROP_SPLIT = "bmk_bridge_split"; // 미리보기 / (미리보기 + custom_text) 높이 비율
+const SPLIT_DEFAULT = 0.5;
+const PREVIEW_MIN_HEIGHT = 48;
+const EDITOR_MIN_HEIGHT = 50; // 코어 멀티라인 위젯의 computeLayoutSize 기본 최소 높이
+const TEXT_TITLE = "BMK Persistent Bridge (String)";
+const TEXT_SLOT_REFRESH_MS = 300;
+
+const TEXT_STYLE = `
+.bmk-pbt-root{height:100%;display:flex;flex-direction:column;box-sizing:border-box;background:var(--comfy-input-bg,#222);color:var(--input-text,#ddd);border:1px solid var(--border-color,#4e4e4e);border-radius:6px;overflow:hidden}
+.bmk-pbt-root.dim{opacity:.5}
+.bmk-pbt-head{flex:0 0 auto;display:flex;gap:8px;justify-content:space-between;padding:2px 6px;border-bottom:1px solid var(--border-color,#4e4e4e);color:var(--descrip-text,#999);font-size:11px;white-space:nowrap;user-select:none}
+.bmk-pbt-head span{overflow:hidden;text-overflow:ellipsis}
+.bmk-pbt-head .copy{color:#e0a83a}
+.bmk-pbt-body{flex:1 1 auto;min-height:0;overflow:auto;padding:3px 4px;font-size:var(--comfy-textarea-font-size,10px);white-space:pre-wrap;overflow-wrap:break-word;user-select:text;cursor:text}
+.bmk-pbt-body.empty{color:var(--descrip-text,#999);font-style:italic}
+.bmk-pbt-grip{flex:0 0 8px;display:flex;align-items:center;justify-content:center;border-top:1px solid var(--border-color,#4e4e4e);cursor:row-resize;touch-action:none}
+.bmk-pbt-grip::after{content:"";width:32px;height:2px;border-radius:1px;background:var(--descrip-text,#999);opacity:.45}
+.bmk-pbt-grip:hover::after,.bmk-pbt-grip.dragging::after{opacity:1}
+.comfy-multiline-input.bmk-pbt-idle:not(:focus){opacity:.55}
+`;
+
+const textViews = new WeakMap(); // node → 미리보기 DOM + 마지막으로 읽은 서버 파일 상태
+
+function injectTextStyle() {
+    if (document.getElementById("bmk-pbt-style")) return;
+    const el = document.createElement("style");
+    el.id = "bmk-pbt-style";
+    el.textContent = TEXT_STYLE;
+    document.head.appendChild(el);
+}
+
+// 파이썬 _sanitize / _resolve_base 와 같은 규칙 (\w = 유니코드 문자·숫자·_)
+function sanitizeSlot(value) {
+    return String(value).replace(/[^\p{L}\p{N}_-]+/gu, "_").replace(/^_+|_+$/g, "") || "x";
+}
+
+function textBaseOf(node) {
+    const slot = String(getWidget(node, "slot")?.value ?? "").trim();
+    return slot ? sanitizeSlot(slot) : `node_${sanitizeSlot(executionIdOf(node))}`;
+}
+
+function formatMtime(httpDate) {
+    const d = httpDate ? new Date(httpDate) : null;
+    if (!d || isNaN(d)) return "";
+    const p = (n) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+// → { base, text, mtime } | { base, missing: true }
+async function fetchSavedTextFile(base) {
+    const q = new URLSearchParams({ filename: `${base}.txt`, subfolder: "bmk_bridge", type: "input", t: String(Date.now()) });
+    const res = await api.fetchApi(`/view?${q}`);
+    if (res.status === 404) return { base, missing: true };
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return { base, text: await res.text(), mtime: formatMtime(res.headers.get("Last-Modified")) };
+}
+
+function createTextView() {
+    const root = document.createElement("div");
+    root.className = "bmk-pbt-root";
+    const head = document.createElement("div");
+    head.className = "bmk-pbt-head";
+    const name = document.createElement("span");
+    const status = document.createElement("span");
+    head.append(name, status);
+    const body = document.createElement("div");
+    body.className = "bmk-pbt-body";
+    const grip = document.createElement("div");
+    grip.className = "bmk-pbt-grip";
+    grip.title = "드래그: 미리보기 / custom_text 높이 비율 · 더블클릭: 50%";
+    root.append(head, body, grip);
+
+    // 본문 위 휠 = 텍스트 스크롤. 스크롤할 게 없거나 Ctrl 이면 캔버스 줌으로 넘긴다.
+    root.addEventListener(
+        "wheel",
+        (e) => {
+            if (e.ctrlKey || body.scrollHeight <= body.clientHeight) {
+                e.preventDefault();
+                e.stopPropagation();
+                app.canvas?.processMouseWheel?.(e);
+                return;
+            }
+            e.stopPropagation();
+        },
+        { passive: false }
+    );
+    return { root, name, status, body, grip, file: undefined, req: 0, slotTimer: 0 };
+}
+
+// 표시·복사에 쓸 저장본: 서버 파일 → 없으면 properties 사본
+function savedTextOf(node) {
+    const base = textBaseOf(node);
+    const view = textViews.get(node);
+    const file = view?.file?.base === base ? view.file : null;
+    if (file && !file.missing) return { text: file.text, mtime: file.mtime, source: "file" };
+    const copy = node.properties?.[PROP_SAVED_TEXT];
+    if (copy?.base === base && typeof copy.text === "string") {
+        return { text: copy.text, mtime: copy.mtime, source: file?.missing ? "copy-missing" : "copy" };
+    }
+    return null;
+}
+
+function renderTextView(node) {
+    const view = textViews.get(node);
+    if (!view) return;
+    const saved = savedTextOf(node);
+    const custom = getWidget(node, "mode")?.value === MODE_CUSTOM;
+
+    let status = "저장본 없음";
+    if (saved) {
+        const parts = [`${Array.from(saved.text).length}자`];
+        if (saved.mtime) parts.push(saved.mtime);
+        if (saved.source === "copy-missing") parts.unshift("서버에 파일 없음 · 워크플로우 사본");
+        else if (saved.source === "copy") parts.unshift("워크플로우 사본");
+        status = parts.join(" · ");
+    }
+    view.name.textContent = `${textBaseOf(node)}.txt`;
+    view.status.textContent = status;
+    view.status.className = saved && saved.source !== "file" ? "copy" : "";
+    view.body.textContent = saved
+        ? saved.text || "(빈 텍스트)"
+        : "passthrough 로 상위를 한 번 실행하면 저장본이 여기에 표시됩니다.";
+    view.body.classList.toggle("empty", !saved?.text);
+    view.root.classList.toggle("dim", custom);
+
+    getWidget(node, "custom_text")?.element?.classList.toggle("bmk-pbt-idle", !custom);
+    const exploreW = getWidget(node, TEXT_EXPLORE_WIDGET);
+    if (exploreW) exploreW.value = isExploring(node);
+    node.graph?.setDirtyCanvas(true, false);
+}
+
+// ─── 탐색 모드 ───
+
+function isExploring(node) {
+    return !!node.properties?.[PROP_EXPLORE] && getWidget(node, "mode")?.value === MODE_PASSTHROUGH;
+}
+
+function setExplore(node, on) {
+    if (on) {
+        node.properties[PROP_EXPLORE] = true;
+        const modeW = getWidget(node, "mode");
+        if (modeW && modeW.value !== MODE_PASSTHROUGH) modeW.value = MODE_PASSTHROUGH;
+    } else {
+        delete node.properties[PROP_EXPLORE];
+    }
+    renderTextView(node);
+}
+
+// ─── 미리보기 / custom_text 높이 비율 ───
+
+function splitOf(node) {
+    const r = Number(node.properties?.[PROP_SPLIT]);
+    return r > 0 && r < 1 ? r : SPLIT_DEFAULT;
+}
+
+// 미리보기 + custom_text 가 나눠 쓰는 높이. 고정 위젯·여백 몫은 직전 배치 결과(y, computedHeight)로
+// 구하고 본문 높이는 현재 값을 써서, 노드 크기를 바꾸는 중에도 한 프레임 늦지 않게 한다.
+// 프론트의 _arrangeWidgets 와 같은 기준: computeSize 가 없고 computeLayoutSize 가 있으면 가변 위젯.
+function sharedTextHeight(node) {
+    const layout = node.getLayoutWidgets?.() ?? node.widgets ?? [];
+    if (!layout.length || layout[0].y == null) return null;
+    let fixed = layout[0].y;
+    for (const w of layout) {
+        if (!w.computeSize && w.computeLayoutSize) continue;
+        if (w.computedHeight == null) return null;
+        fixed += w.computedHeight;
+    }
+    const h = node.bodyHeight - fixed;
+    return h > 0 ? h : null;
+}
+
+function previewMaxHeight(node) {
+    const h = sharedTextHeight(node);
+    if (h == null) return undefined;
+    return Math.max(PREVIEW_MIN_HEIGHT, Math.min(Math.round(h * splitOf(node)), h - EDITOR_MIN_HEIGHT));
+}
+
+function editorMaxHeight(node) {
+    const h = sharedTextHeight(node);
+    const top = previewMaxHeight(node);
+    return h == null || top == null ? undefined : Math.max(EDITOR_MIN_HEIGHT, h - top);
+}
+
+function saveWorkflowState() {
+    app.extensionManager?.workflow?.activeWorkflow?.changeTracker?.checkState?.();
+}
+
+function attachSplitter(node, view) {
+    const grip = view.grip;
+    grip.addEventListener("pointerdown", (e) => {
+        if (e.button !== 0) return;
+        const h = sharedTextHeight(node);
+        if (!h) return;
+        e.preventDefault();
+        e.stopPropagation();
+        grip.classList.add("dragging");
+        const startY = e.clientY;
+        const startTop = previewMaxHeight(node);
+        const scale = app.canvas?.ds?.scale || 1; // DOM 위젯은 캔버스 배율로 그려진다
+
+        const minRatio = PREVIEW_MIN_HEIGHT / h;
+        const maxRatio = Math.max(minRatio, (h - EDITOR_MIN_HEIGHT) / h);
+        const onMove = (ev) => {
+            const ratio = (startTop + (ev.clientY - startY) / scale) / h;
+            node.properties[PROP_SPLIT] = Math.round(Math.min(maxRatio, Math.max(minRatio, ratio)) * 1000) / 1000;
+            const top = Math.round(splitOf(node) * 100);
+            view.status.textContent = `미리보기 ${top}% · custom_text ${100 - top}%`;
+            node.setDirtyCanvas(true, true);
+        };
+        // 손잡이 밖으로 끌고 나가도 이어지도록 window 에서 받는다
+        const onEnd = () => {
+            window.removeEventListener("pointermove", onMove);
+            window.removeEventListener("pointerup", onEnd);
+            window.removeEventListener("pointercancel", onEnd);
+            grip.classList.remove("dragging");
+            renderTextView(node);
+            saveWorkflowState();
+        };
+        window.addEventListener("pointermove", onMove);
+        window.addEventListener("pointerup", onEnd);
+        window.addEventListener("pointercancel", onEnd);
+    });
+    grip.addEventListener("dblclick", (e) => {
+        e.stopPropagation();
+        delete node.properties[PROP_SPLIT];
+        node.setDirtyCanvas(true, true);
+        saveWorkflowState();
+    });
+}
+
+async function refreshTextFromServer(node) {
+    const view = textViews.get(node);
+    if (!view) return;
+    const req = ++view.req;
+    let file;
+    try {
+        file = await fetchSavedTextFile(textBaseOf(node));
+    } catch (e) {
+        console.warn("[BMK PersistentBridge] 텍스트 저장본 읽기 실패:", e);
+        return;
+    }
+    if (req !== view.req) return; // 그 사이 slot 이 또 바뀜
+    view.file = file;
+    renderTextView(node);
+}
+
+function notifyText(severity, detail) {
+    const toast = app.extensionManager?.toast;
+    if (toast?.add) toast.add({ severity, summary: TEXT_TITLE, detail, life: 4000 });
+    else console.warn(`[BMK PersistentBridge] ${detail}`);
+}
+
+async function confirmOverwrite() {
+    const message = "custom_text 에 있는 내용을 저장본으로 덮어씁니다.";
+    const dialog = app.extensionManager?.dialog;
+    if (dialog?.confirm) return (await dialog.confirm({ title: TEXT_TITLE, message })) === true;
+    return window.confirm(message);
+}
+
+function switchTextToCustom(node, reason) {
+    const modeW = getWidget(node, "mode");
+    if (modeW && modeW.value !== MODE_CUSTOM) {
+        modeW.value = MODE_CUSTOM;
+        console.log(`[BMK PersistentBridge] #${node.id} mode → custom (${reason})`);
+    }
+    renderTextView(node);
+}
+
+async function copySavedToCustom(node) {
+    await refreshTextFromServer(node);
+    const saved = savedTextOf(node);
+    if (!saved) {
+        notifyText("warn", "복사할 저장본이 없습니다. passthrough 로 상위를 한 번 실행하세요.");
+        return;
+    }
+    const textW = getWidget(node, "custom_text");
+    if (!textW) return;
+    const cur = String(textW.value ?? "");
+    if (cur.trim() && cur !== saved.text && !(await confirmOverwrite())) return;
+    textW.value = saved.text;
+    if (isExploring(node)) renderTextView(node); // 후보만 옮겨 두고 passthrough 유지
+    else switchTextToCustom(node, "저장본 → 편집칸");
+    // 클릭 직후의 변경 감지는 이미 지나갔으므로(파일을 읽느라 비동기) undo 기록을 직접 남긴다
+    saveWorkflowState();
+}
+
+function chainCallback(widget, fn) {
+    if (!widget) return;
+    const orig = widget.callback;
+    widget.callback = function (...args) {
+        const r = orig?.apply(this, args);
+        fn(...args);
+        return r;
+    };
+}
+
+function setupTextNode(node) {
+    injectTextStyle();
+    node.properties ??= {};
+    ensureAutoSlot(node);
+
+    const view = createTextView();
+    textViews.set(node, view);
+    const preview = node.addDOMWidget(TEXT_PREVIEW_WIDGET, "BMK_SAVED_TEXT", view.root, {
+        serialize: false,
+        hideOnZoom: true,
+        getMinHeight: () => PREVIEW_MIN_HEIGHT,
+        getMaxHeight: () => previewMaxHeight(node),
+        getValue: () => "",
+        setValue: () => {},
+    });
+    preview.serialize = false;
+    attachSplitter(node, view);
+
+    const copyBtn = node.addWidget("button", TEXT_COPY_WIDGET, null, () => copySavedToCustom(node), {
+        serialize: false,
+    });
+    copyBtn.label = "⇩ 저장본 → 편집칸";
+    copyBtn.serialize = false;
+
+    const exploreW = node.addWidget("toggle", TEXT_EXPLORE_WIDGET, false, (v) => setExplore(node, !!v), {
+        serialize: false,
+        on: "켜짐",
+        off: "꺼짐",
+    });
+    exploreW.label = "탐색 모드 · passthrough 유지";
+    exploreW.serialize = false;
+
+    const textW = getWidget(node, "custom_text");
+    if (textW?.options) textW.options.getMaxHeight = () => editorMaxHeight(node);
+
+    const ordered = ["mode", TEXT_EXPLORE_WIDGET, "slot", TEXT_PREVIEW_WIDGET, TEXT_COPY_WIDGET, "custom_text"]
+        .map((name) => getWidget(node, name))
+        .filter(Boolean);
+    node.widgets = [...ordered, ...node.widgets.filter((w) => !ordered.includes(w))];
+
+    chainCallback(getWidget(node, "mode"), (value) => {
+        // 사용자가 mode 를 직접 바꾸면 탐색 모드 해제 (켜짐 ⇔ passthrough 고정)
+        if (value !== MODE_PASSTHROUGH && node.properties[PROP_EXPLORE]) setExplore(node, false);
+        else renderTextView(node);
+    });
+    chainCallback(getWidget(node, "slot"), () => {
+        renderTextView(node);
+        clearTimeout(view.slotTimer);
+        view.slotTimer = setTimeout(() => refreshTextFromServer(node), TEXT_SLOT_REFRESH_MS);
+    });
+    chainCallback(textW, () => {
+        if (!node._bmkConfiguring && !isExploring(node)) switchTextToCustom(node, "custom_text 입력");
+    });
+
+    const sz = node.computeSize?.() ?? node.size;
+    node.setSize([Math.max(sz[0], node.size[0]), Math.max(sz[1], node.size[1], 360)]);
+    renderTextView(node);
+}
+
+// ─── 확장 등록 ─────────────────────────────────────────────────
+
+// 두 노드 공통: 복원 중 플래그, 복제(clone) 경로의 slot 중복 검사
+function installSlotHooks(nodeType) {
+    // 저장본 복원 중의 위젯 대입은 사용자 행동으로 취급하지 않도록 플래그
+    const configure = nodeType.prototype.configure;
+    nodeType.prototype.configure = function () {
+        this._bmkConfiguring = true;
+        try {
+            return configure?.apply(this, arguments);
+        } finally {
+            this._bmkConfiguring = false;
+        }
+    };
+
+    // 복제(clone) 경로: configure 뒤에 그래프에 추가되므로 여기서 중복 검사
+    const onAdded = nodeType.prototype.onAdded;
+    nodeType.prototype.onAdded = function () {
+        const r = onAdded?.apply(this, arguments);
+        if (this._bmkPendingCopyCheck) {
+            this._bmkPendingCopyCheck = false;
+            renameSlotForCopy(this);
+        }
+        return r;
+    };
+}
+
+// 붙이기/복제로 들어온 복사본이면 slot 중복을 막는다 (로드는 건드리지 않음)
+function checkCopyOnConfigure(node, info) {
+    if (!isCopyConfigure(node, info)) return;
+    if (node.graph) renameSlotForCopy(node);
+    else node._bmkPendingCopyCheck = true; // 복제: 아직 그래프에 없음 → onAdded 에서
+}
+
+function registerImageBridge(nodeType) {
+    installSlotHooks(nodeType);
+
+    const onNodeCreated = nodeType.prototype.onNodeCreated;
+    nodeType.prototype.onNodeCreated = function () {
+        const r = onNodeCreated?.apply(this, arguments);
+        setupNode(this);
+        return r;
+    };
+
+    const onConfigure = nodeType.prototype.onConfigure;
+    nodeType.prototype.onConfigure = function (info) {
+        const r = onConfigure?.apply(this, arguments);
+        checkCopyOnConfigure(this, info);
+        // 저장본 로드로 위젯값이 복원된 뒤 기준값을 다시 잡고 프리뷰 적용
+        const imgW = getWidget(this, "image");
+        this._bmkLastImage = imgW?.value;
+        ensureComboValue(imgW, imgW?.value); // 누락 미디어 검사 대비
+        schedulePreview(this);
+        return r;
+    };
+
+    const onExecuted = nodeType.prototype.onExecuted;
+    nodeType.prototype.onExecuted = function (message) {
+        const r = onExecuted?.apply(this, arguments);
+        const info = message?.bmk_bridge?.[0];
+        if (info) {
+            this.properties ??= {};
+            if (Array.isArray(info.saved) && info.saved.length) {
+                this.properties[PROP_SAVED] = info.saved;
+            } else {
+                delete this.properties[PROP_SAVED];
+            }
+            refreshWidgetState(this);
+        }
+        return r;
+    };
+
+    const onDrawBackground = nodeType.prototype.onDrawBackground;
+    nodeType.prototype.onDrawBackground = function () {
+        const r = onDrawBackground?.apply(this, arguments);
+        pollImageWidget(this);
+        return r;
+    };
+}
+
+function registerTextBridge(nodeType) {
+    installSlotHooks(nodeType);
+
+    const onNodeCreated = nodeType.prototype.onNodeCreated;
+    nodeType.prototype.onNodeCreated = function () {
+        const r = onNodeCreated?.apply(this, arguments);
+        setupTextNode(this);
+        return r;
+    };
+
+    const onConfigure = nodeType.prototype.onConfigure;
+    nodeType.prototype.onConfigure = function (info) {
+        const r = onConfigure?.apply(this, arguments);
+        checkCopyOnConfigure(this, info);
+        if (this.properties?.[PROP_EXPLORE] && !isExploring(this)) delete this.properties[PROP_EXPLORE];
+        renderTextView(this);
+        // 복제는 onAdded 에서 slot 이 바뀌므로 현재 작업이 끝난 뒤에 서버 파일을 읽는다
+        setTimeout(() => refreshTextFromServer(this), 0);
+        return r;
+    };
+
+    const onExecuted = nodeType.prototype.onExecuted;
+    nodeType.prototype.onExecuted = function (message) {
+        const r = onExecuted?.apply(this, arguments);
+        const info = message?.bmk_bridge_text?.[0];
+        const view = textViews.get(this);
+        if (info && view) {
+            this.properties ??= {};
+            if (info.saved) {
+                view.file = { base: info.base, ...info.saved };
+                this.properties[PROP_SAVED_TEXT] = { base: info.base, ...info.saved };
+            } else {
+                view.file = { base: info.base, missing: true };
+            }
+            renderTextView(this);
+        }
+        return r;
+    };
+}
+
 app.registerExtension({
     name: "BMK.PersistentBridge",
 
     beforeRegisterNodeDef(nodeType, nodeData) {
-        if (nodeData.name !== NODE_NAME) return;
-
-        const onNodeCreated = nodeType.prototype.onNodeCreated;
-        nodeType.prototype.onNodeCreated = function () {
-            const r = onNodeCreated?.apply(this, arguments);
-            setupNode(this);
-            return r;
-        };
-
-        // 저장본 복원 중의 위젯 대입은 사용자 행동으로 취급하지 않도록 플래그
-        const configure = nodeType.prototype.configure;
-        nodeType.prototype.configure = function () {
-            this._bmkConfiguring = true;
-            try {
-                return configure?.apply(this, arguments);
-            } finally {
-                this._bmkConfiguring = false;
-            }
-        };
-
-        const onConfigure = nodeType.prototype.onConfigure;
-        nodeType.prototype.onConfigure = function (info) {
-            const r = onConfigure?.apply(this, arguments);
-            // 붙이기/복제로 들어온 복사본이면 slot 중복을 막는다 (로드는 건드리지 않음)
-            if (isCopyConfigure(this, info)) {
-                if (this.graph) renameSlotForCopy(this);
-                else this._bmkPendingCopyCheck = true; // 복제: 아직 그래프에 없음 → onAdded 에서
-            }
-            // 저장본 로드로 위젯값이 복원된 뒤 기준값을 다시 잡고 프리뷰 적용
-            const imgW = getWidget(this, "image");
-            this._bmkLastImage = imgW?.value;
-            ensureComboValue(imgW, imgW?.value); // 누락 미디어 검사 대비
-            schedulePreview(this);
-            return r;
-        };
-
-        // 복제(clone) 경로: configure 뒤에 그래프에 추가되므로 여기서 중복 검사
-        const onAdded = nodeType.prototype.onAdded;
-        nodeType.prototype.onAdded = function () {
-            const r = onAdded?.apply(this, arguments);
-            if (this._bmkPendingCopyCheck) {
-                this._bmkPendingCopyCheck = false;
-                renameSlotForCopy(this);
-            }
-            return r;
-        };
-
-        const onExecuted = nodeType.prototype.onExecuted;
-        nodeType.prototype.onExecuted = function (message) {
-            const r = onExecuted?.apply(this, arguments);
-            const info = message?.bmk_bridge?.[0];
-            if (info) {
-                this.properties ??= {};
-                if (Array.isArray(info.saved) && info.saved.length) {
-                    this.properties[PROP_SAVED] = info.saved;
-                } else {
-                    delete this.properties[PROP_SAVED];
-                }
-                refreshWidgetState(this);
-            }
-            return r;
-        };
-
-        const onDrawBackground = nodeType.prototype.onDrawBackground;
-        nodeType.prototype.onDrawBackground = function () {
-            const r = onDrawBackground?.apply(this, arguments);
-            pollImageWidget(this);
-            return r;
-        };
+        if (nodeData.name === NODE_NAME) registerImageBridge(nodeType);
+        else if (nodeData.name === TEXT_NODE_NAME) registerTextBridge(nodeType);
     },
 });

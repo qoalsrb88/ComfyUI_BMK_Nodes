@@ -1,7 +1,7 @@
-"""BMK Persistent Bridge (Image)
-중간 결과 이미지를 input/bmk_bridge/ 에 영구 저장하고, 캐시가 사라진 뒤에도
+"""BMK Persistent Bridge (Image / String)
+중간 결과(이미지·텍스트)를 input/bmk_bridge/ 에 영구 저장하고, 캐시가 사라진 뒤에도
 (재시작·Free memory·상위 bypass) 상위 프로세스를 다시 돌리지 않고 저장본을
-하위 프로세스에 바로 투입할 수 있는 브릿지 노드.
+하위 프로세스에 바로 투입할 수 있는 브릿지 노드. String 버전은 아래 "String 버전" 참고.
 
 배경
 ----
@@ -41,6 +41,8 @@ mask 입력 (v2) — Join Image with Alpha 통합
 slot (저장본 이름)
 ------------------
   * 프론트엔드 JS 가 노드 생성 시 `auto-xxxxxxxx` 를 자동으로 채운다(노드별 고유).
+    이미지/String 노드는 확장자가 달라 같은 이름을 써도 충돌하지 않으며, 중복 검사도
+    같은 종류의 노드끼리만 한다.
   * 복사/붙이기·복제로 같은 워크플로우에 같은 이름이 생기면 새 노드 쪽을 자동으로
     바꾼다: auto 이름은 재발급, 직접 적은 이름은 `이름_2`, `이름_3`… 접미.
     한 번의 붙이기에 포함된 노드들은 같은 원본 이름 → 같은 새 이름으로 매핑되어
@@ -70,6 +72,42 @@ slot (저장본 이름)
     프리뷰 복원. mode 에 맞는 프리뷰 표시. custom 이 아닐 때 image 위젯 회색 처리.
   * image 위젯이 사용자/마스크 에디터에 의해 바뀌면 mode 를 custom 으로 자동 전환.
 
+String 버전 — BMK Persistent Bridge (String)  (v3)
+--------------------------------------------------
+  LLM/API 프롬프트 생성 노드처럼 다시 돌리기 비싼 텍스트 결과를 보존한다.
+  모드·slot·lazy 입력·IS_CHANGED 규칙은 이미지 버전과 같고, 차이는 아래뿐이다.
+
+  * 저장: input/bmk_bridge/<slot>.txt (UTF-8, 줄바꿈 변환 없음). 외부 편집기로 고쳐도
+    (이름, mtime, size) 지문이 바뀌어 saved 모드가 다시 읽는다. BOM 은 읽을 때 무시.
+  * passthrough 에서 내용이 저장본과 같으면 파일을 다시 쓰지 않는다
+    → 같은 slot 을 saved 로 쓰는 다른 노드의 캐시가 흔들리지 않는다.
+  * custom: custom_text 위젯 값을 내보낸다(빈 문자열 허용). 위젯 값이 곧 프롬프트
+    입력이라 IS_CHANGED 는 상수.
+  * 실행 결과가 입력 위젯에 다시 써지지 않는다(저장본 표시는 ui 로만) → 텍스트를
+    잡은 다음 실행에서 하류 캐시가 무효화되지 않는다.
+  * 리스트 입력은 항목마다 실행되어 마지막 항목이 저장본에 남는다(단일 문자열 기준).
+
+  프론트엔드(같은 JS 파일):
+  * 저장본 미리보기(읽기 전용). 로드 시 /view 로 서버 파일을 직접 읽고, 파일이 없으면
+    node.properties 에 남긴 사본(워크플로우와 함께 저장됨)을 "사본"으로 표시한다.
+  * "저장본 → 편집칸" 버튼: 저장본(없으면 사본)을 custom_text 로 복사하고 mode=custom.
+    custom_text 에 이미 다른 내용이 있으면 덮어쓰기 전에 확인한다.
+  * custom_text 에 직접 입력하면 mode 를 custom 으로 자동 전환.
+  * 탐색 모드 토글: 결과를 여러 번 뽑아 보는 동안 passthrough 를 유지한다. 켜져 있으면
+    custom_text 입력·복사 버튼이 mode 를 바꾸지 않아 편집칸을 후보 메모장으로 쓸 수 있다.
+    mode 를 직접 바꾸면 꺼진다. 상태는 node.properties 에만 있어 프롬프트·캐시와 무관.
+  * 미리보기 하단 손잡이로 미리보기 : custom_text 높이 비율 조절(더블클릭 = 50%).
+
+  주의: 상위 노드를 bypass 하면 프론트엔드가 그 노드의 STRING 입력을 그대로 흘려보낼
+  수 있다(링크로 연결된 경우). passthrough 라면 그 문자열이 저장본을 덮어쓰므로,
+  상위를 끄고 싶을 때는 bypass 대신 saved 모드를 쓸 것. 또 상위 출력에 Show Text 같은
+  출력 노드가 붙어 있으면 그 노드가 상위를 필요로 하므로 saved 모드에서도 상위가 돈다
+  → 보기용 노드는 브릿지 뒤에 연결할 것.
+
+v3 (2026-10)
+------------
+- BMK Persistent Bridge (String) 추가.
+
 v2 (2026-09)
 ------------
 - mask 입력 추가 (Join Image with Alpha 통합). saved 모드는 알파를 보존해 재현.
@@ -85,6 +123,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -328,6 +367,41 @@ def _save_frames(images: torch.Tensor, base: str, prompt, extra_pnginfo, unique_
     return saved
 
 
+# ─── 텍스트 입출력 (String 버전) ────────────────────────────────
+
+
+def _text_path(base: str) -> str:
+    return os.path.join(_bridge_dir(), f"{base}.txt")
+
+
+def _read_text(path: str) -> str:
+    # newline="": 저장한 줄바꿈을 그대로 재현.  utf-8-sig: 외부 편집기가 붙인 BOM 무시.
+    with open(path, "r", encoding="utf-8-sig", newline="") as f:
+        return f.read()
+
+
+def _write_text(path: str, text: str) -> None:
+    """원자적 저장. 내용이 같으면 쓰지 않아 mtime(= saved 쪽 지문)을 유지한다."""
+    if os.path.isfile(path) and _read_text(path) == text:
+        return
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8", newline="") as f:
+        f.write(text)
+    os.replace(tmp, path)
+
+
+def _saved_text_entry(path: str) -> dict | None:
+    if not os.path.isfile(path):
+        return None
+    # 올림: 프론트가 /view 의 Last-Modified(aiohttp 가 초 단위 올림)로 같은 값을 표시한다
+    mtime = math.ceil(os.path.getmtime(path))
+    return {
+        "text": _read_text(path),
+        "mtime": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(mtime)),
+    }
+
+
 # ─── 노드 ─────────────────────────────────────────────────────
 
 
@@ -552,10 +626,148 @@ class BMKPersistentBridge:
         return True
 
 
+class BMKPersistentBridgeString:
+    """영구 저장 브릿지 (텍스트): 저장본/입력/편집 텍스트 중 하나를 골라 내보낸다."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "mode": (
+                    MODES,
+                    {
+                        "default": MODE_PASSTHROUGH,
+                        "tooltip": (
+                            "passthrough: 입력을 통과시키며 저장본 갱신 "
+                            "(입력이 비어 있으면 저장본 사용)\n"
+                            "saved: 상위를 실행하지 않고 저장본 사용\n"
+                            "custom: 상위를 실행하지 않고 custom_text 사용"
+                        ),
+                    },
+                ),
+                "slot": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "tooltip": (
+                            "저장본 이름 (input/bmk_bridge/<slot>.txt).\n"
+                            "자동 생성값(auto-…)을 그대로 두면 노드별로 고유하게 저장됩니다.\n"
+                            "복사/붙이기로 이름이 겹치면 새 노드 쪽이 자동으로 바뀝니다.\n"
+                            "여러 노드(다른 워크플로우 포함)가 저장본을 공유하려면 같은 이름을 직접 입력하세요."
+                        ),
+                    },
+                ),
+            },
+            "optional": {
+                "text": (
+                    "STRING",
+                    {
+                        "lazy": True,
+                        "forceInput": True,
+                        "tooltip": (
+                            "상위 프로세스 출력. passthrough 에서만 요청되며, "
+                            "링크가 비어 있어도(상위 mute/삭제) 실행됩니다."
+                        ),
+                    },
+                ),
+                "custom_text": (
+                    "STRING",
+                    {
+                        "multiline": True,
+                        "default": "",
+                        "tooltip": (
+                            "custom 모드에서 내보낼 텍스트. 입력하면 mode 가 custom 으로 바뀝니다.\n"
+                            "'저장본 → 편집칸' 버튼으로 저장본을 가져와 고칠 수 있습니다."
+                        ),
+                    },
+                ),
+            },
+            "hidden": {
+                "unique_id": "UNIQUE_ID",
+            },
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("text",)
+    FUNCTION = "bridge"
+    OUTPUT_NODE = True
+    CATEGORY = "BMK/Text"
+    DESCRIPTION = (
+        "중간 결과 텍스트(LLM/API 프롬프트 등)를 input/bmk_bridge/<slot>.txt 에 영구 저장하는 "
+        "브릿지. saved/custom 모드에서는 상위 프로세스를 실행하지 않고 저장본이나 직접 고친 "
+        "텍스트를 하위로 넘기며, 재시작이나 캐시 비우기 뒤에도 그대로 이어서 쓸 수 있습니다."
+    )
+    SEARCH_ALIASES = [
+        "persistent bridge",
+        "catch edit text",
+        "catch and edit text",
+        "text checkpoint",
+        "llm output",
+        "skip upstream",
+        "resume",
+        "브릿지",
+        "텍스트 저장본",
+        "프롬프트 보존",
+        "중간 저장",
+        "이어서 실행",
+    ]
+
+    def check_lazy_status(self, mode, **kwargs):
+        if mode != MODE_PASSTHROUGH:
+            return []
+        return ["text"] if "text" in kwargs and kwargs["text"] is None else []
+
+    def bridge(self, mode, slot, text=None, custom_text="", unique_id=None):
+        base = _resolve_base(slot, unique_id)
+        path = _text_path(base)
+
+        if mode == MODE_CUSTOM:
+            out = custom_text
+            used = "custom"
+
+        elif mode == MODE_SAVED or text is None:
+            if not os.path.isfile(path):
+                raise RuntimeError(
+                    f"{_TAG} 저장본이 없습니다 (slot='{base}'). "
+                    "mode=passthrough 로 상위 프로세스를 한 번 실행해 저장본을 만들거나, "
+                    "노드 미리보기에 사본이 있으면 '저장본 → 편집칸' 후 custom 모드로 쓰세요."
+                )
+            if mode == MODE_PASSTHROUGH:
+                logger.info(f"{_TAG} 입력이 비어 있어 텍스트 저장본을 사용합니다: {base}")
+            out = _read_text(path)
+            used = "saved"
+
+        else:
+            out = text
+            _write_text(path, out)
+            used = "input"
+
+        info = {
+            "mode": mode,
+            "used": used,
+            "base": base,
+            "saved": _saved_text_entry(path),
+        }
+        return {
+            "ui": {"bmk_bridge_text": [info]},
+            "result": (out,),
+        }
+
+    @classmethod
+    def IS_CHANGED(cls, mode, slot, unique_id=None, **kwargs):
+        # custom_text 는 프롬프트 입력이라 이미 캐시 키에 들어 있다.
+        if mode == MODE_CUSTOM or (mode == MODE_PASSTHROUGH and "text" in kwargs):
+            return ""
+        path = _text_path(_resolve_base(slot, unique_id))
+        return _fingerprint([path] if os.path.isfile(path) else [])
+
+
 NODE_CLASS_MAPPINGS = {
     "BMKPersistentBridge": BMKPersistentBridge,
+    "BMKPersistentBridgeString": BMKPersistentBridgeString,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "BMKPersistentBridge": "BMK Persistent Bridge (Image)",
+    "BMKPersistentBridgeString": "BMK Persistent Bridge (String)",
 }

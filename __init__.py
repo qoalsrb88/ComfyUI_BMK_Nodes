@@ -233,6 +233,10 @@ for _module_name in _NODE_MODULES:
 #       (passthrough/saved → 저장본, custom → image 위젯 파일)를 표시. image
 #       위젯이 사용자·마스크 에디터에 의해 바뀌면 mode를 custom으로 자동 전환.
 #       slot 자동 발급(auto-…) 및 붙이기·복제 시 중복 이름 자동 변경.
+#       BMKPersistentBridgeString 도 같은 파일에서 처리: 저장본(.txt) 읽기 전용
+#       미리보기(서버 파일 우선, 없으면 properties 사본), "저장본 → 편집칸" 버튼,
+#       custom_text 입력 시 custom 자동 전환, 탐색 모드(passthrough 유지) 토글,
+#       미리보기/편집칸 높이 비율 드래그 조절.
 #   - bmk_text_viewer_tabs.js
 #       BMKTextViewerTabs용 확장. 여러 STRING 입력을 높이 고정 DOM 위젯 하나에
 #       탭으로 표시(라벨 = 소스 노드 제목). 입력 슬롯을 뷰어 왼쪽 열에 겹쳐 두어
