@@ -85,6 +85,7 @@ _NODE_MODULES = (
     "bmk_prompt_from_image",
     "bmk_run_batch_grid",
     "bmk_run_cycle",
+    "bmk_sam3_mask_layers",
     "bmk_scale_to_target",
     "bmk_segs_core_mask",
     "bmk_tabbed_notes",
@@ -262,6 +263,11 @@ for _module_name in _NODE_MODULES:
 #       탐색 영역에 최소 폭을 예약하고, 넘치는 레거시 버튼 그룹(app.menu.element 직계)을
 #       오른쪽부터 ⋯ 트레이로 옮긴다(DOM 그대로 이동, 공간이 생기면 원위치). 그래도
 #       넘치면 액션바를 두 번째 줄로 내린다. 상위 수정 시 삭제.
+#   - bmk_sam3_mask_layers.js
+#       BMKSAM3MaskLayers용 확장. layers 입력(BMK_SAM3_LAYERS)을 행 편집기 DOM
+#       위젯으로 그린다(± 전환, prompt, threshold/grow/blur 숫자 칸, on 토글, 드래그
+#       순서 변경, 행 추가/삭제). 값은 JSON 문자열 하나로 직렬화된다. 실행 후 행별
+#       감지 개수를 표시하고, 기본 이미지 프리뷰에서 레이어 장을 보면 그 행을 강조.
 # 새 JS 확장을 추가할 때는 ./js 폴더에 파일만 넣으면 됩니다.
 WEB_DIRECTORY = "./js"
 
