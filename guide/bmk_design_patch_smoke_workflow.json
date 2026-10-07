@@ -1,0 +1,1363 @@
+{
+  "id": "20823ebd-b0b6-4002-bec5-d98304df4d1c",
+  "revision": 0,
+  "last_node_id": 17,
+  "last_link_id": 15,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "BMKDesignPatchProject",
+      "pos": [
+        40,
+        120
+      ],
+      "size": [
+        272.8560546875,
+        102
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "project",
+          "name": "project",
+          "type": "STRING",
+          "widget": {
+            "name": "project"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "base_dir",
+          "name": "base_dir",
+          "type": "STRING",
+          "widget": {
+            "name": "base_dir"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "project",
+          "name": "project",
+          "type": "BMK_DP_PROJECT",
+          "links": [
+            1
+          ]
+        },
+        {
+          "localized_name": "summary",
+          "name": "summary",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "title": "Project (m2_smoke)",
+      "properties": {
+        "Node name for S&R": "BMKDesignPatchProject"
+      },
+      "widgets_values": [
+        "m2_smoke",
+        ""
+      ],
+      "widgets_values_named": {
+        "project": "m2_smoke",
+        "base_dir": ""
+      }
+    },
+    {
+      "id": 2,
+      "type": "BMKDesignPatchImportPSD",
+      "pos": [
+        380,
+        120
+      ],
+      "size": [
+        301.3755859375,
+        242
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "project",
+          "name": "project",
+          "type": "BMK_DP_PROJECT",
+          "link": 1
+        },
+        {
+          "localized_name": "psd_path",
+          "name": "psd_path",
+          "type": "STRING",
+          "widget": {
+            "name": "psd_path"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "crop_group",
+          "name": "crop_group",
+          "type": "STRING",
+          "widget": {
+            "name": "crop_group"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "clean_plate_layer",
+          "name": "clean_plate_layer",
+          "type": "STRING",
+          "widget": {
+            "name": "clean_plate_layer"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "base_layer",
+          "name": "base_layer",
+          "type": "STRING",
+          "widget": {
+            "name": "base_layer"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "crop_pixels_group",
+          "name": "crop_pixels_group",
+          "type": "STRING",
+          "widget": {
+            "name": "crop_pixels_group"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "refs_dir",
+          "name": "refs_dir",
+          "type": "STRING",
+          "widget": {
+            "name": "refs_dir"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "glossary_path",
+          "name": "glossary_path",
+          "type": "STRING",
+          "widget": {
+            "name": "glossary_path"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "project",
+          "name": "project",
+          "type": "BMK_DP_PROJECT",
+          "links": [
+            2
+          ]
+        },
+        {
+          "localized_name": "overview",
+          "name": "overview",
+          "type": "IMAGE",
+          "links": [
+            8
+          ]
+        },
+        {
+          "localized_name": "report",
+          "name": "report",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "BMKDesignPatchImportPSD"
+      },
+      "widgets_values": [
+        "H:\\BmkNodeDesign\\MultiLayerCropEdit\\03.크롭영역+크롭이미지.psd",
+        "auto",
+        "auto",
+        "auto",
+        "auto",
+        "H:\\BmkNodeDesign\\MultiLayerCropEdit\\00.크롭레퍼런스",
+        ""
+      ],
+      "widgets_values_named": {
+        "psd_path": "H:\\BmkNodeDesign\\MultiLayerCropEdit\\03.크롭영역+크롭이미지.psd",
+        "crop_group": "auto",
+        "clean_plate_layer": "auto",
+        "base_layer": "auto",
+        "crop_pixels_group": "auto",
+        "refs_dir": "H:\\BmkNodeDesign\\MultiLayerCropEdit\\00.크롭레퍼런스",
+        "glossary_path": ""
+      }
+    },
+    {
+      "id": 3,
+      "type": "BMKDesignPatchPrepare",
+      "pos": [
+        760,
+        120
+      ],
+      "size": [
+        278.26328125,
+        242
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "project",
+          "name": "project",
+          "type": "BMK_DP_PROJECT",
+          "link": 2
+        },
+        {
+          "localized_name": "model",
+          "name": "model",
+          "type": "COMBO",
+          "widget": {
+            "name": "model"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "quality",
+          "name": "quality",
+          "type": "COMBO",
+          "widget": {
+            "name": "quality"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "size_rule",
+          "name": "size_rule",
+          "type": "COMBO",
+          "widget": {
+            "name": "size_rule"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "variants",
+          "name": "variants",
+          "type": "STRING",
+          "widget": {
+            "name": "variants"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "n",
+          "name": "n",
+          "type": "INT",
+          "widget": {
+            "name": "n"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "ref_style",
+          "name": "ref_style",
+          "type": "COMBO",
+          "widget": {
+            "name": "ref_style"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "calls_per_cell",
+          "name": "calls_per_cell",
+          "type": "INT",
+          "widget": {
+            "name": "calls_per_cell"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "project",
+          "name": "project",
+          "type": "BMK_DP_PROJECT",
+          "links": [
+            3
+          ]
+        },
+        {
+          "localized_name": "job_sheet",
+          "name": "job_sheet",
+          "type": "IMAGE",
+          "links": null
+        },
+        {
+          "localized_name": "report",
+          "name": "report",
+          "type": "STRING",
+          "links": [
+            9
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "BMKDesignPatchPrepare"
+      },
+      "widgets_values": [
+        "gpt-image-2.5-sunburst",
+        "low",
+        "user_k",
+        "V1",
+        1,
+        "at",
+        1
+      ],
+      "widgets_values_named": {
+        "model": "gpt-image-2.5-sunburst",
+        "quality": "low",
+        "size_rule": "user_k",
+        "variants": "V1",
+        "n": 1,
+        "ref_style": "at",
+        "calls_per_cell": 1
+      }
+    },
+    {
+      "id": 4,
+      "type": "PreviewImage",
+      "pos": [
+        380,
+        470
+      ],
+      "size": [
+        320,
+        360
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "이미지",
+          "name": "images",
+          "type": "IMAGE",
+          "link": 8
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "images",
+          "name": "images",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "title": "Import overview",
+      "properties": {
+        "Node name for S&R": "PreviewImage"
+      }
+    },
+    {
+      "id": 5,
+      "type": "PreviewAny",
+      "pos": [
+        760,
+        470
+      ],
+      "size": [
+        360,
+        360
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "소스",
+          "name": "source",
+          "type": "*",
+          "link": 9
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "문자열",
+          "name": "STRING",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "title": "Prepare report",
+      "properties": {
+        "Node name for S&R": "PreviewAny"
+      },
+      "widgets_values": [],
+      "widgets_values_named": {}
+    },
+    {
+      "id": 6,
+      "type": "BMKDesignPatchRun",
+      "pos": [
+        1220,
+        120
+      ],
+      "size": [
+        270,
+        314
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "project",
+          "name": "project",
+          "type": "BMK_DP_PROJECT",
+          "link": 3
+        },
+        {
+          "localized_name": "approve",
+          "name": "approve",
+          "type": "STRING",
+          "widget": {
+            "name": "approve"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "max_new_calls",
+          "name": "max_new_calls",
+          "type": "INT",
+          "widget": {
+            "name": "max_new_calls"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "concurrency",
+          "name": "concurrency",
+          "type": "INT",
+          "widget": {
+            "name": "concurrency"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "wave_minutes",
+          "name": "wave_minutes",
+          "type": "INT",
+          "widget": {
+            "name": "wave_minutes"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "retry_failed",
+          "name": "retry_failed",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "retry_failed"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "retry_orphans",
+          "name": "retry_orphans",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "retry_orphans"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "only",
+          "name": "only",
+          "type": "STRING",
+          "widget": {
+            "name": "only"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "project",
+          "name": "project",
+          "type": "BMK_DP_PROJECT",
+          "links": [
+            4
+          ]
+        },
+        {
+          "localized_name": "report",
+          "name": "report",
+          "type": "STRING",
+          "links": [
+            10
+          ]
+        },
+        {
+          "localized_name": "new_candidates",
+          "name": "new_candidates",
+          "type": "IMAGE",
+          "links": [
+            11
+          ]
+        }
+      ],
+      "title": "Run — 승인 버튼으로만 과금 (max 1건 · only 030)",
+      "properties": {
+        "Node name for S&R": "BMKDesignPatchRun",
+        "bmk_dp_auto_continue": false
+      },
+      "widgets_values": [
+        "",
+        1,
+        1,
+        25,
+        false,
+        false,
+        "030"
+      ],
+      "widgets_values_named": {
+        "approve": "",
+        "max_new_calls": 1,
+        "concurrency": 1,
+        "wave_minutes": 25,
+        "retry_failed": false,
+        "retry_orphans": false,
+        "only": "030"
+      }
+    },
+    {
+      "id": 7,
+      "type": "PreviewAny",
+      "pos": [
+        1220,
+        470
+      ],
+      "size": [
+        380,
+        360
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "소스",
+          "name": "source",
+          "type": "*",
+          "link": 10
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "문자열",
+          "name": "STRING",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "title": "Run report (드라이런/실행 결과)",
+      "properties": {
+        "Node name for S&R": "PreviewAny"
+      },
+      "widgets_values": [],
+      "widgets_values_named": {}
+    },
+    {
+      "id": 8,
+      "type": "PreviewImage",
+      "pos": [
+        1620,
+        120
+      ],
+      "size": [
+        300,
+        340
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "이미지",
+          "name": "images",
+          "type": "IMAGE",
+          "link": 11
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "images",
+          "name": "images",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "title": "new_candidates (도착한 결과)",
+      "properties": {
+        "Node name for S&R": "PreviewImage"
+      }
+    },
+    {
+      "id": 9,
+      "type": "BMKDesignPatchAnalyze",
+      "pos": [
+        2000,
+        120
+      ],
+      "size": [
+        279.1587890625,
+        266
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "project",
+          "name": "project",
+          "type": "BMK_DP_PROJECT",
+          "link": 4
+        },
+        {
+          "localized_name": "register",
+          "name": "register",
+          "type": "COMBO",
+          "widget": {
+            "name": "register"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "tone",
+          "name": "tone",
+          "type": "COMBO",
+          "widget": {
+            "name": "tone"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "tone_sigma",
+          "name": "tone_sigma",
+          "type": "INT",
+          "widget": {
+            "name": "tone_sigma"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "dE",
+          "name": "dE",
+          "type": "FLOAT",
+          "widget": {
+            "name": "dE"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "grow",
+          "name": "grow",
+          "type": "INT",
+          "widget": {
+            "name": "grow"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "feather_sigma",
+          "name": "feather_sigma",
+          "type": "FLOAT",
+          "widget": {
+            "name": "feather_sigma"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "roi_prior",
+          "name": "roi_prior",
+          "type": "COMBO",
+          "widget": {
+            "name": "roi_prior"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "only_picked",
+          "name": "only_picked",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "only_picked"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "project",
+          "name": "project",
+          "type": "BMK_DP_PROJECT",
+          "links": [
+            5
+          ]
+        },
+        {
+          "localized_name": "contact_sheet",
+          "name": "contact_sheet",
+          "type": "IMAGE",
+          "links": [
+            12
+          ]
+        },
+        {
+          "localized_name": "report",
+          "name": "report",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "BMKDesignPatchAnalyze"
+      },
+      "widgets_values": [
+        "guarded_affine",
+        "field",
+        16,
+        8,
+        9,
+        3.5,
+        "none",
+        false
+      ],
+      "widgets_values_named": {
+        "register": "guarded_affine",
+        "tone": "field",
+        "tone_sigma": 16,
+        "dE": 8,
+        "grow": 9,
+        "feather_sigma": 3.5,
+        "roi_prior": "none",
+        "only_picked": false
+      }
+    },
+    {
+      "id": 10,
+      "type": "BMKDesignPatchReview",
+      "pos": [
+        2340,
+        120
+      ],
+      "size": [
+        213.66953125,
+        78
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "project",
+          "name": "project",
+          "type": "BMK_DP_PROJECT",
+          "link": 5
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "project",
+          "name": "project",
+          "type": "BMK_DP_PROJECT",
+          "links": [
+            6
+          ]
+        },
+        {
+          "localized_name": "report",
+          "name": "report",
+          "type": "STRING",
+          "links": [
+            13
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "BMKDesignPatchReview"
+      },
+      "widgets_values": [],
+      "widgets_values_named": {}
+    },
+    {
+      "id": 11,
+      "type": "BMKDesignPatchCompose",
+      "pos": [
+        2640,
+        120
+      ],
+      "size": [
+        289.7544921875,
+        190
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "project",
+          "name": "project",
+          "type": "BMK_DP_PROJECT",
+          "link": 6
+        },
+        {
+          "localized_name": "mask_source",
+          "name": "mask_source",
+          "type": "COMBO",
+          "widget": {
+            "name": "mask_source"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "use_registration",
+          "name": "use_registration",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "use_registration"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "use_tone",
+          "name": "use_tone",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "use_tone"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "zorder",
+          "name": "zorder",
+          "type": "COMBO",
+          "widget": {
+            "name": "zorder"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "project",
+          "name": "project",
+          "type": "BMK_DP_PROJECT",
+          "links": [
+            7
+          ]
+        },
+        {
+          "localized_name": "image",
+          "name": "image",
+          "type": "IMAGE",
+          "links": [
+            14
+          ]
+        },
+        {
+          "localized_name": "mask",
+          "name": "mask",
+          "type": "MASK",
+          "links": null
+        },
+        {
+          "localized_name": "report",
+          "name": "report",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "BMKDesignPatchCompose"
+      },
+      "widgets_values": [
+        "hand_else_auto",
+        true,
+        true,
+        "auto_small_on_top"
+      ],
+      "widgets_values_named": {
+        "mask_source": "hand_else_auto",
+        "use_registration": true,
+        "use_tone": true,
+        "zorder": "auto_small_on_top"
+      }
+    },
+    {
+      "id": 12,
+      "type": "BMKDesignPatchExportPSD",
+      "pos": [
+        2980,
+        120
+      ],
+      "size": [
+        301.409765625,
+        202
+      ],
+      "flags": {},
+      "order": 14,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "project",
+          "name": "project",
+          "type": "BMK_DP_PROJECT",
+          "link": 7
+        },
+        {
+          "localized_name": "filename_prefix",
+          "name": "filename_prefix",
+          "type": "STRING",
+          "widget": {
+            "name": "filename_prefix"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "layer_mode",
+          "name": "layer_mode",
+          "type": "COMBO",
+          "widget": {
+            "name": "layer_mode"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "alternates",
+          "name": "alternates",
+          "type": "COMBO",
+          "widget": {
+            "name": "alternates"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "color",
+          "name": "color",
+          "type": "COMBO",
+          "widget": {
+            "name": "color"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "mask_source",
+          "name": "mask_source",
+          "type": "COMBO",
+          "widget": {
+            "name": "mask_source"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "include_base",
+          "name": "include_base",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "include_base"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "include_crop_outlines",
+          "name": "include_crop_outlines",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "include_crop_outlines"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "psd_path",
+          "name": "psd_path",
+          "type": "STRING",
+          "links": [
+            15
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "BMKDesignPatchExportPSD"
+      },
+      "widgets_values": [
+        "m2_smoke",
+        "smart_object",
+        "hidden_all",
+        "toned",
+        "hand_else_auto",
+        true,
+        true
+      ],
+      "widgets_values_named": {
+        "filename_prefix": "m2_smoke",
+        "layer_mode": "smart_object",
+        "alternates": "hidden_all",
+        "color": "toned",
+        "mask_source": "hand_else_auto",
+        "include_base": true,
+        "include_crop_outlines": true
+      }
+    },
+    {
+      "id": 13,
+      "type": "PreviewImage",
+      "pos": [
+        2000,
+        470
+      ],
+      "size": [
+        300,
+        380
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "이미지",
+          "name": "images",
+          "type": "IMAGE",
+          "link": 12
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "images",
+          "name": "images",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "title": "Analyze contact sheet",
+      "properties": {
+        "Node name for S&R": "PreviewImage"
+      }
+    },
+    {
+      "id": 14,
+      "type": "PreviewAny",
+      "pos": [
+        2340,
+        470
+      ],
+      "size": [
+        300,
+        360
+      ],
+      "flags": {},
+      "order": 13,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "소스",
+          "name": "source",
+          "type": "*",
+          "link": 13
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "문자열",
+          "name": "STRING",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "title": "Review report (보드 주소)",
+      "properties": {
+        "Node name for S&R": "PreviewAny"
+      },
+      "widgets_values": [],
+      "widgets_values_named": {}
+    },
+    {
+      "id": 15,
+      "type": "PreviewImage",
+      "pos": [
+        2660,
+        470
+      ],
+      "size": [
+        300,
+        380
+      ],
+      "flags": {},
+      "order": 15,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "이미지",
+          "name": "images",
+          "type": "IMAGE",
+          "link": 14
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "images",
+          "name": "images",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "title": "Compose 미리보기",
+      "properties": {
+        "Node name for S&R": "PreviewImage"
+      }
+    },
+    {
+      "id": 16,
+      "type": "PreviewAny",
+      "pos": [
+        2980,
+        470
+      ],
+      "size": [
+        320,
+        200
+      ],
+      "flags": {},
+      "order": 16,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "소스",
+          "name": "source",
+          "type": "*",
+          "link": 15
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "문자열",
+          "name": "STRING",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "title": "Export PSD 경로",
+      "properties": {
+        "Node name for S&R": "PreviewAny"
+      },
+      "widgets_values": [],
+      "widgets_values_named": {}
+    },
+    {
+      "id": 17,
+      "type": "MarkdownNote",
+      "pos": [
+        20,
+        -560
+      ],
+      "size": [
+        1160,
+        560
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "title": "스모크 테스트 절차",
+      "properties": {},
+      "widgets_values": [
+        "# Design Patch 유료 스모크 테스트 (1회 ≈ $0.03–0.05, 6–11 크레딧)\n\n**준비**: ComfyUI 재시작(새 노드 로드) → 이 워크플로 열기. `G:\\AI_output\\_Input\\bmk_design_patch\\_MOCK_API` 파일이 **없는지** 확인. comfy.org 로그인·크레딧 확인, 사용 내역 화면 열어 두기.\n\n1. **드라이런** — 그냥 큐 실행(approve 비움). Run report 첫 줄이 `Run [comfy.org(유료)] 드라이런(과금 없음): 승인 필요 1건` 인지 확인. `[MOCK]` 이 보이면 중단.\n2. **승인** — Run 노드의 `승인 후 실행 (1건 ≈ $0.03…)` 버튼 → 확인 창에서 1건·금액 확인. Run 만 실행(30–90초).\n3. **결과** — Run report `발사 1 · 완료 1 · 실패 0`, new_candidates 에 결과 1장, comfy.org 사용 내역 1건.\n   파일: `G:\\AI_output\\_Input\\bmk_design_patch\\m2_smoke\\cands\\<cell>\\` 에 `r0.req.json · r0.resp.json · r0_0.png · r0.done.json` (inflight 없음).\n4. **재과금 없음** — 전체 큐 한 번 더 → Run `할 일 없음(대기 호출 0)`, 사용 내역에 새 과금 없음.\n5. **보드** — Review 노드의 `Open Board` → 030 타깃에서 `Space`(★) → 전체 큐 → Export PSD 를 Photoshop 에서 열어 확인.\n6. (선택, +1건) 보드에서 `R` 두 번 → Run report `발사 1` (원장 approved_by: board).\n\n**알려 줄 것**: `r0.resp.json` 의 `data[0].url` 모양(`/proxy/…` 상대경로인지 서명된 절대 URL 인지), `credits` 값, 소요 시간, 결과 이미지 정상 여부, 오류 문구.\n\n안전장치: Run `max_new_calls=1 · concurrency=1 · only=030`. 문제가 생기면 Run 의 Drain 버튼 → report 를 그대로 보내 주세요."
+      ],
+      "widgets_values_named": {
+        "text": "# Design Patch 유료 스모크 테스트 (1회 ≈ $0.03–0.05, 6–11 크레딧)\n\n**준비**: ComfyUI 재시작(새 노드 로드) → 이 워크플로 열기. `G:\\AI_output\\_Input\\bmk_design_patch\\_MOCK_API` 파일이 **없는지** 확인. comfy.org 로그인·크레딧 확인, 사용 내역 화면 열어 두기.\n\n1. **드라이런** — 그냥 큐 실행(approve 비움). Run report 첫 줄이 `Run [comfy.org(유료)] 드라이런(과금 없음): 승인 필요 1건` 인지 확인. `[MOCK]` 이 보이면 중단.\n2. **승인** — Run 노드의 `승인 후 실행 (1건 ≈ $0.03…)` 버튼 → 확인 창에서 1건·금액 확인. Run 만 실행(30–90초).\n3. **결과** — Run report `발사 1 · 완료 1 · 실패 0`, new_candidates 에 결과 1장, comfy.org 사용 내역 1건.\n   파일: `G:\\AI_output\\_Input\\bmk_design_patch\\m2_smoke\\cands\\<cell>\\` 에 `r0.req.json · r0.resp.json · r0_0.png · r0.done.json` (inflight 없음).\n4. **재과금 없음** — 전체 큐 한 번 더 → Run `할 일 없음(대기 호출 0)`, 사용 내역에 새 과금 없음.\n5. **보드** — Review 노드의 `Open Board` → 030 타깃에서 `Space`(★) → 전체 큐 → Export PSD 를 Photoshop 에서 열어 확인.\n6. (선택, +1건) 보드에서 `R` 두 번 → Run report `발사 1` (원장 approved_by: board).\n\n**알려 줄 것**: `r0.resp.json` 의 `data[0].url` 모양(`/proxy/…` 상대경로인지 서명된 절대 URL 인지), `credits` 값, 소요 시간, 결과 이미지 정상 여부, 오류 문구.\n\n안전장치: Run `max_new_calls=1 · concurrency=1 · only=030`. 문제가 생기면 Run 의 Drain 버튼 → report 를 그대로 보내 주세요."
+      },
+      "color": "#432",
+      "bgcolor": "#653"
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      2,
+      0,
+      "BMK_DP_PROJECT"
+    ],
+    [
+      2,
+      2,
+      0,
+      3,
+      0,
+      "BMK_DP_PROJECT"
+    ],
+    [
+      3,
+      3,
+      0,
+      6,
+      0,
+      "BMK_DP_PROJECT"
+    ],
+    [
+      4,
+      6,
+      0,
+      9,
+      0,
+      "BMK_DP_PROJECT"
+    ],
+    [
+      5,
+      9,
+      0,
+      10,
+      0,
+      "BMK_DP_PROJECT"
+    ],
+    [
+      6,
+      10,
+      0,
+      11,
+      0,
+      "BMK_DP_PROJECT"
+    ],
+    [
+      7,
+      11,
+      0,
+      12,
+      0,
+      "BMK_DP_PROJECT"
+    ],
+    [
+      8,
+      2,
+      1,
+      4,
+      0,
+      "IMAGE"
+    ],
+    [
+      9,
+      3,
+      2,
+      5,
+      0,
+      "STRING"
+    ],
+    [
+      10,
+      6,
+      1,
+      7,
+      0,
+      "STRING"
+    ],
+    [
+      11,
+      6,
+      2,
+      8,
+      0,
+      "IMAGE"
+    ],
+    [
+      12,
+      9,
+      1,
+      13,
+      0,
+      "IMAGE"
+    ],
+    [
+      13,
+      10,
+      1,
+      14,
+      0,
+      "STRING"
+    ],
+    [
+      14,
+      11,
+      1,
+      15,
+      0,
+      "IMAGE"
+    ],
+    [
+      15,
+      12,
+      0,
+      16,
+      0,
+      "STRING"
+    ]
+  ],
+  "groups": [
+    {
+      "id": 1,
+      "title": "① 입력·준비 (무료) — 03 PSD 읽기 → 크롭 030 프롬프트 준비",
+      "bounding": [
+        20,
+        40,
+        1160,
+        820
+      ],
+      "color": "#3f789e",
+      "flags": {}
+    },
+    {
+      "id": 2,
+      "title": "② 유료 실행 — Run (승인 버튼을 눌러야만 과금, 최대 1건)",
+      "bounding": [
+        1200,
+        40,
+        740,
+        820
+      ],
+      "color": "#a1309b",
+      "flags": {}
+    },
+    {
+      "id": 3,
+      "title": "③ 검토·출력 (무료) — 분석 → 보드(★) → 합성 → PSD",
+      "bounding": [
+        1980,
+        40,
+        1340,
+        860
+      ],
+      "color": "#3f8f3f",
+      "flags": {}
+    }
+  ],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.494848741142422,
+      "offset": [
+        471.9016276041666,
+        591.2786621093749
+      ]
+    }
+  },
+  "version": 0.4
+}

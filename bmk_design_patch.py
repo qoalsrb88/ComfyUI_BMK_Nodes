@@ -1681,6 +1681,12 @@ class BMKDesignPatchExportPSD:
                 "include_crop_outlines": ("BOOLEAN", {"default": True,
                                                       "tooltip": "02.크롭영역 그룹(숨김)에 크롭 외곽선 픽셀 레이어를 넣음."}),
             },
+            # optional: 예전 워크플로·API 프롬프트(이 입력 없음)도 그대로 검증을 통과하고 기본값을 쓴다.
+            "optional": {
+                "skip_empty": ("BOOLEAN", {"default": True,
+                                           "tooltip": "넣을 후보가 하나도 없으면(pick 0, hidden_all 이면 후보 0) PSD 를 쓰지 않음 — "
+                                                      "Run 드라이런 직후의 전체 큐가 베이스만 든 빈 PSD(수십 MB)를 남기지 않게."}),
+            },
         }
 
     RETURN_TYPES = ("STRING",)
@@ -1697,7 +1703,7 @@ class BMKDesignPatchExportPSD:
     SEARCH_ALIASES = _ALIASES + ["export psd", "smart object", "psd 출력", "스마트 오브젝트", "레이어 출력"]
 
     def run(self, project, filename_prefix, layer_mode, alternates, color, mask_source, include_base,
-            include_crop_outlines):
+            include_crop_outlines, skip_empty=True):
         t0 = time.time()
         root, m = _open(project)
         before = _snapshot(m)
@@ -1718,6 +1724,11 @@ class BMKDesignPatchExportPSD:
                 "prefix": prefix}
         warns: list[str] = []
         inc = [c for c in m["candidates"] if (c.get("picked") or alternates == "hidden_all") and c["key"] not in m["rejects"]]
+        if not inc and skip_empty:  # 넣을 후보가 없으면 빈 PSD(베이스만, 수십 MB)를 쓰지 않는다 — Run 드라이런 직후의 전체 큐 등
+            _h, conflicts = _commit(root, m, before)
+            msg = "내보낼 후보 없음(pick 0" + ("" if alternates == "hidden_all" else " · 대안 미포함") + ") → PSD 를 쓰지 않음"
+            logger.info("%s Export: %s", _TAG, msg)
+            return {"ui": {"text": [msg] + conflicts}, "result": ("",)}
         entries: dict = {}
         if _needs_analysis(mask_source, use_reg, toned):
             entries, done, _hit, w2 = _ensure_analysis(root, m, inc, project.get("analyze"))

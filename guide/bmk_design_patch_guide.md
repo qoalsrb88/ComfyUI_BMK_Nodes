@@ -348,6 +348,8 @@ input 폴더 프로젝트는 `_roots.json` 에서 키를 되살리고, 다른 ba
    - ComfyUI 를 **재시작**합니다(Python 변경은 재시작해야 반영, JS 는 새로고침). 시작 로그에 `IMPORT FAILED` 가 없는지 확인.
    - `<input>/bmk_design_patch/_MOCK_API` 파일이 없고 환경변수 `BMK_DP_MOCK_API` 가 없는지 확인.
    - ComfyUI 에 comfy.org 로그인(또는 API 키) 상태이고 크레딧이 있는지 확인. comfy.org 사용 내역 화면을 열어 둡니다.
+   - 샘플 워크플로: `guide/bmk_design_patch_smoke_workflow.json` (아래 2의 그래프·위젯 값·안전장치 `max_new_calls=1`·`concurrency=1`·
+     `only=030` 과 절차 메모가 들어 있음. 03 PSD·레퍼런스 경로는 `H:\BmkNodeDesign\MultiLayerCropEdit` 기준이라 자료 위치가 다르면 고칠 것).
 2. **그래프**: Project(`m2_smoke`) → Import PSD(03 PSD, refs_dir) → Prepare(model `gpt-image-2.5-sunburst`, quality **low**,
    size_rule `user_k`, variants **`V1`**, n **1**, ref_style `at`, calls_per_cell **1**) → Run(**only `030`**, 나머지 기본) →
    Analyze → Review → Compose → Export PSD.
@@ -380,7 +382,10 @@ input 폴더 프로젝트는 `_roots.json` 에서 키를 되살리고, 다른 ba
   이번 폴더 후보 중, pick 이 하나도 없는 타깃의 첫 후보를 자동 선택합니다(수확 후보 — PS 에서 숨겨 거절한 것 — 는 건드리지 않음).
 - 정합은 05 사용자 보정과 다를 수 있습니다: 007-왼쪽은 사용자가 x −2px 만 고쳤고 자동은 회전 0.9° 까지 보정, 030 은 회전 −1.3° 를 더 넣습니다.
 - 매니페스트는 노드 실행 하나 안에서 읽고 → 고치고 → 3-way 병합으로 저장합니다. 두 ComfyUI 인스턴스에서 같은 프로젝트를 동시에 돌리지 마세요.
-- (M2) 실제 comfy.org 응답(자산 URL 의 모양·유효 시간, 크레딧 헤더 값, 403 본문)은 유료 스모크 테스트 전까지 확인하지 못했습니다.
+- (M2) 유료 스모크 테스트(2026-10-07, sunburst low 2048², 입력 1장, n 1) 실측: 1건 17초, 크레딧 4.65(원장 = comfy.org 활동 내역 일치),
+  usage 토큰(입력 545 · 출력 397) 기록. 응답은 `storage.googleapis.com` 의 **서명된 절대 URL** 이고 유효 기간은 약 24시간이라,
+  다운로드만 다시 하는 복구(`r*.resp.json`)는 24시간 안에만 됩니다. 401/402/403 본문은 아직 실제로 받아 보지 않았습니다.
+- Export 의 `skip_empty`(기본 켬): 넣을 후보가 하나도 없으면 PSD 를 쓰지 않습니다(드라이런 직후 전체 큐가 빈 PSD 를 남기던 문제).
   Run 은 ComfyUI 0.39 의 `comfy_api_nodes`(sync_op·다운로드·크레딧 기억)에 결합해 있어 ComfyUI 업데이트 뒤에는 테스트의
   C2(내장 노드와 요청 동등성)·C4(오류 매핑)를 다시 돌려 확인하세요.
 - (M2) 보드 썸네일 캐시(`derived/thumbs/`)는 자동으로 지우지 않습니다(지워도 다시 만듦).

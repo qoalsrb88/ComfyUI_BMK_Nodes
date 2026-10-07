@@ -2282,8 +2282,9 @@ def analysis_regression(psd05):
 # ═════════════════════════════════════════════════════════════════
 # N, Q, R8, R9. 노드 통합 (03 PSD 가져오기 → 05 PSD 수확 → 분석 → 합성 → SO PSD)
 # ═════════════════════════════════════════════════════════════════
-def _run_export(dp, h, *args):
-    r = dp.BMKDesignPatchExportPSD().run(h, *args)
+def _run_export(dp, h, *args, skip_empty=False):
+    # M1 테스트(경로 충돌·work_rect 자르기 등)는 후보 없는 프로젝트도 PSD 를 써야 하므로 기본 False(노드 기본값은 True).
+    r = dp.BMKDesignPatchExportPSD().run(h, *args, skip_empty=skip_empty)
     return r["result"][0], r["ui"]["text"]
 
 
@@ -2325,8 +2326,11 @@ def node_integration(psd05, crops03):
         if nid != "BMKDesignPatchProject":
             check(req["project"][0] == "BMK_DP_PROJECT" and list(req)[0] == "project", f"{nid} 첫 입력 project")
         hidden = list(cls.INPUT_TYPES().get("hidden") or {})
-        check(list(req) + hidden == list(inspect.signature(getattr(cls, cls.FUNCTION)).parameters)[1:],
-              f"{nid} 입력 이름(+hidden) = 함수 인자")
+        optional = list(cls.INPUT_TYPES().get("optional") or {})
+        sig = inspect.signature(getattr(cls, cls.FUNCTION)).parameters
+        check(list(req) + optional + hidden == list(sig)[1:]
+              and all(sig[o].default is not inspect.Parameter.empty for o in optional),
+              f"{nid} 입력 이름(+optional 기본값 있음 +hidden) = 함수 인자")
     outs = [k for k, v in dp.NODE_CLASS_MAPPINGS.items() if getattr(v, "OUTPUT_NODE", False) is True]
     check(outs == ["BMKDesignPatchRun", "BMKDesignPatchReview", "BMKDesignPatchExportPSD"], f"OUTPUT_NODE {outs}")
     rt = {k: v.RETURN_TYPES for k, v in dp.NODE_CLASS_MAPPINGS.items()}
@@ -6506,6 +6510,13 @@ def m2_node_unit():
               "Run 이 보드 레지스트리에 등록(Review 전에도 Drain 키가 유효)")
         check("드라이런" in rep_d and "approve 가 비어 있음" in rep_d and ph in rep_d and "MOCK" in rep_d, "드라이런 보고")
         check(tuple(grid_d.shape) == (1, 1, 1, 3) and hd["rev"] == rev0 == rev(root), "드라이런: 1x1 격자, 매니페스트 불변")
+        ex_in = dp.BMKDesignPatchExportPSD.INPUT_TYPES()
+        check("skip_empty" not in ex_in["required"] and ex_in["optional"]["skip_empty"][1]["default"] is True,
+              "Export skip_empty 는 optional(기본 True) — 예전 워크플로·API 프롬프트 호환")
+        p_e, ui_e = _run_export(dp, hd, "m2empty", "pixel", "hidden_all", "raw", "auto", True, True, skip_empty=True)
+        out_e = Path(folder_paths.get_output_directory()) / "design_patch"
+        check(p_e == "" and "내보낼 후보 없음" in ui_e[0] and not (out_e.is_dir() and any(out_e.rglob("m2empty*"))),
+              "후보 0(드라이런 직후) → Export 가 빈 PSD 를 쓰지 않음(스모크 테스트에서 72.9MB 빈 PSD 가 생기던 문제)")
         (_h, rep_w, _g), e = run_node(h, "0" * 12)
         check(_ledger_reqs(root) == 0 and "≠" in rep_w and e["pending_hash"] == ph, "틀린 approve → 과금 0, 이유 보고")
         (ha, rep_a, grid_a), e = run_node(h, f" {ph} ")
@@ -6831,6 +6842,8 @@ def m2_chain():
     b0 = (ui0.get("6") or {}).get("bmk_dp_board", [{}])[0]
     key = b0.get("root_key")
     check(key == e0.get("root_key") == st.root_key(root) and st.resolve_board_root(key) == root, "Review·Run 의 root_key 일치")
+    check(st.load_manifest(root)["exports"] == [] and "내보낼 후보 없음" in (ui0.get("8") or {}).get("text", [""])[0],
+          "c0: 후보 0 → Export 가 빈 PSD 를 쓰지 않음")
 
     section("M2-C2 큐 1: approve = 해시 → 3 호출(mock) → Analyze · Review · Compose · Export")
     ex1, ui1 = q(prompt(H), "c1")
@@ -6840,7 +6853,7 @@ def m2_chain():
     check(_ledger_reqs(root) == 3 and len(rc) == 3 and e1["pending"] == 0 and e1["approved_now"] is True
           and set("45678") <= set(ex1), f"c1: 3 호출, 후보 3 {e1}")
     check(all(c["key"] in m["analysis"] for c in rc), "c1: Analyze 가 새 후보를 분석")
-    check(len(m["exports"]) == 2 and len(layers(m["exports"][-1])) == 3, "c1: Export 에 run 후보 3 (숨김 대안)")
+    check(len(m["exports"]) == 1 and len(layers(m["exports"][-1])) == 3, "c1: Export 에 run 후보 3 (숨김 대안)")
     rev1 = m["rev"]
 
     section("M2-C3 큐 2·3: 같은 승인으로 다시 → 0 호출, 그다음 큐는 아무것도 실행하지 않음")
