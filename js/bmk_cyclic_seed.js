@@ -143,9 +143,10 @@ app.registerExtension({
 
     setup() {
         // 구/신 프론트엔드 모두 Run 버튼(및 Ctrl+Enter)이
-        // app.queuePrompt(number, batchCount)를 거치므로 여기를 후킹
+        // app.queuePrompt(number, batchCount)를 거치므로 여기를 후킹.
+        // 세 번째 인자({queueNodeIds, intent})는 "선택한 출력 노드만 실행"이 쓰므로 그대로 넘긴다.
         const origQueuePrompt = app.queuePrompt.bind(app);
-        app.queuePrompt = async function (number, batchCount = 1) {
+        app.queuePrompt = async function (number, batchCount = 1, ...rest) {
             try {
                 if (typeof batchCount === "number" && batchCount >= 1) {
                     // Cyclic Seed: cycle 모드일 때만 싱크 + control 고정
@@ -169,7 +170,7 @@ app.registerExtension({
             } catch (e) {
                 console.warn("[BMK.RunBatch] batch count sync failed:", e);
             }
-            return origQueuePrompt(number, batchCount);
+            return origQueuePrompt(number, batchCount, ...rest);
         };
     },
 
