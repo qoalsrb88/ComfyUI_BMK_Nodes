@@ -15,6 +15,7 @@
      이어서 배경 / 옵션 설명 / 버전 이력(v2, v3 …)을 한국어로 서술.
    - NODE_CLASS_MAPPINGS / NODE_DISPLAY_NAME_MAPPINGS 는 파일 맨 아래.
    - 완성 후 이 파일의 _NODE_MODULES 에 모듈명 추가(알파벳 순).
+   - 노드 없는 보조 모듈 bmk_<기능>_<역할>.py 는 그 기능의 노드 모듈이 import 하며 _NODE_MODULES 에 넣지 않음.
 
 2. 노드 클래스 속성
    - 클래스명(=노드 ID, 매핑 키):  BMK<PascalCase>        예) BMKTabbedNotes
@@ -73,6 +74,7 @@ _NODE_MODULES = (
     "bmk_context_anima",
     "bmk_crop_stitch",
     "bmk_cyclic_seed",
+    "bmk_design_patch",
     "bmk_flexible_tile_segs",
     "bmk_klein_reference_segs_hook",
     "bmk_load_image_crop",
