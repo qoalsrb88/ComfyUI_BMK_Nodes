@@ -32,6 +32,12 @@ torch / comfy / folder_paths 를 import 하지 않는다(numpy·PIL + 표준 라
 - gpt_output_size / gpt_image_custom_size_ok GPT 출력 크기 규칙(user_k / int_k_2560)
 - cell_key                                   유료 호출 셀 캐시 키(n 제외)
 - 보조: resolve_path, write_json_atomic, file_fingerprint, load_spec_override
+M2 (명세 M2_SPEC.md §1)
+- manifest_lock / update_manifest            root 별 RLock, 잠금 안에서 최신본 로드 → 수정 → 바뀌었으면 저장
+- merge_manifest / commit_merge              3-way 병합(컬렉션은 id 단위) / 노드 _commit 대체(잠금 + 병합 저장)
+- root_key / register_root / known_roots / resolve_board_root / load_root_registry
+                                             보드 URL 용 루트 레지스트리(키 = sha1(정규화 경로)[:12], 임의 경로 금지)
+- estimate_usd                               내장 GPT Image 노드 price_badge 표 복제 + Custom 크기 근사
 
 규칙 메모
 ---------
@@ -43,15 +49,26 @@ torch / comfy / folder_paths 를 import 하지 않는다(numpy·PIL + 표준 라
   같은 이름이 두 번 나오면 같은 ID 가 되므로 assign_crop_ids 로 -2, -3 접미를 붙인다(017 사례).
 - 매니페스트 저장 시 numpy 스칼라/배열·튜플·Path 는 JSON 기본형으로 바꾸고, NaN/inf 는 null 로 쓴다
   (나중에 브라우저 JSON.parse 로도 읽히도록).
+- 동시 쓰기(M2): 보드 라우트·Run·노드가 같은 매니페스트를 쓴다. 쓰기는 모두 manifest_lock 안에서 디스크 최신본을
+  다시 읽고 고친다(update_manifest / commit_merge). load_manifest / save_manifest 도 파일을 여는 동안 같은 잠금을
+  잡는다 — Windows 는 누가 열고 있는 파일로 os.replace 를 못 하므로(WinError 5), 잠금 없이 읽기가 잦으면 저장이
+  재시도 끝에 실패한다(실측: 읽기 스레드 4개 폴링 중 쓰기 13회 중 10회 실패 → 잠금 후 0회).
+  잠금은 프로세스 안에서만 유효하다 — ComfyUI 프로세스 하나가 프로젝트 폴더를 쓴다고 가정하며 파일 잠금은 하지 않는다
+  (두 ComfyUI 가 같은 폴더를 쓰면 보호되지 않음).
+- M2 최상위 키(calls, rerolls, rejects, approvals)와 jobs[].reps(기본 1)는 디스크에서 읽을 때 채운다.
+  new_manifest 는 M1 고정 키 집합 그대로다(처음 저장한 뒤 다시 읽으면 항상 있음).
 
 버전 이력
 ---------
+v2 (2026-10)
+- M2: 매니페스트 트랜잭션(잠금·3-way 병합), M2 키 기본값, 루트 레지스트리, 가격표(estimate_usd).
 v1 (2026-10)
 - M1 최초 구현. 명세 §1 검증표(user_k 13행 + 정사각 4행) 전부 일치, 결과는 항상 gpt_image_custom_size_ok.
 """
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import hashlib
 import io
@@ -60,11 +77,12 @@ import logging
 import math
 import os
 import re
+import threading
 import time
 import unicodedata
 import uuid
 from fractions import Fraction
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 import numpy as np
 from PIL import Image
@@ -276,17 +294,24 @@ def _skeleton(project: str) -> dict:
 
 
 def new_manifest(project: str) -> dict:
-    """빈 매니페스트(모든 고정 키 포함, rev 0)."""
+    """빈 매니페스트(M1 고정 키, rev 0). M2 키는 load_manifest 가 채운다."""
     return _skeleton(_check_project_name(project))
 
 
+# M2 최상위 키 → 기본값 생성자 (load 시 없거나 null 이면 채움)
+#   calls     [{call_id, cell_key, rep, status, backend, n, started, finished, elapsed_s, credits, urls, slots, error, approved_by}]
+#   rerolls   {cell_key: 추가 호출 수}   rejects {cand_key: true}   approvals {pending_hash: {"time", "count"}}
+_M2_KEYS = {"calls": list, "rerolls": dict, "rejects": dict, "approvals": dict}
+
+
 def load_manifest(root: str) -> dict:
-    """root/design_patch.json 을 읽는다. 없으면 new_manifest(폴더 이름). 빠진 고정 키는 기본값으로 채우고
-    알 수 없는 추가 키는 그대로 둔다(저장 시 보존)."""
+    """root/design_patch.json 을 읽는다. 없으면 new_manifest(폴더 이름). 빠진 고정 키·M2 키·jobs[].reps(1)는
+    기본값으로 채우고 알 수 없는 추가 키는 그대로 둔다(저장 시 보존)."""
     path = os.path.join(root, MANIFEST_NAME)
     if not os.path.isfile(path):
         return new_manifest(os.path.basename(os.path.normpath(root)))
-    m = _read_json(path, "매니페스트")
+    with manifest_lock(root):  # Windows 는 열려 있는 파일로 os.replace 를 못 한다 → 같은 프로세스의 저장과 겹치지 않게
+        m = _read_json(path, "매니페스트")
     if not isinstance(m, dict):
         raise ValueError(f"매니페스트 최상위가 객체가 아닙니다: {path}")
     schema = m.get("schema")
@@ -297,6 +322,12 @@ def load_manifest(root: str) -> dict:
     for key, default in skel.items():
         if key not in m or (m[key] is None and isinstance(default, (list, dict))):
             m[key] = default
+    for key, factory in _M2_KEYS.items():
+        if m.get(key) is None:
+            m[key] = factory()
+    for job in m["jobs"]:
+        if isinstance(job, dict) and job.get("reps") is None:
+            job["reps"] = 1
     if isinstance(m.get("source"), dict):
         for key, default in skel["source"].items():
             m["source"].setdefault(key, default)
@@ -310,7 +341,8 @@ def load_manifest(root: str) -> dict:
 
 
 def save_manifest(root: str, m: dict) -> int:
-    """rev += 1 후 원자 저장(tmp → os.replace). 새 rev 를 반환하고 m["rev"] 도 갱신한다(실패 시 되돌림)."""
+    """rev += 1 후 원자 저장(tmp → os.replace). 새 rev 를 반환하고 m["rev"] 도 갱신한다(실패 시 되돌림).
+    m 을 그대로 덮어쓴다 — 다른 쓰기와 겹칠 수 있는 곳은 update_manifest / commit_merge 를 쓸 것."""
     if not isinstance(m, dict) or m.get("schema") != SCHEMA:
         raise ValueError(f"매니페스트가 아니거나 schema 가 {SCHEMA!r} 가 아닙니다.")
     old = m.get("rev", 0)
@@ -320,7 +352,8 @@ def save_manifest(root: str, m: dict) -> int:
         raise ValueError(f"매니페스트 rev 가 정수가 아닙니다: {old!r}") from e
     m["rev"] = new_rev
     try:
-        write_json_atomic(os.path.join(root, MANIFEST_NAME), m)
+        with manifest_lock(root):
+            write_json_atomic(os.path.join(root, MANIFEST_NAME), m)
     except BaseException:
         m["rev"] = old
         raise
@@ -860,3 +893,412 @@ def cell_key(
     }
     blob = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(blob).hexdigest()[:24]
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 매니페스트 트랜잭션 (M2)
+# ══════════════════════════════════════════════════════════════════════
+_MANIFEST_LOCKS: dict[str, threading.RLock] = {}
+_MANIFEST_LOCKS_GUARD = threading.Lock()
+
+# 둘 다 바뀐 최상위 키 중 항목 단위로 합치는 컬렉션: 목록(항목 id 필드) / dict(키) / analysis(후보 → params_hash)
+_MERGE_ID_LISTS = {
+    "crops": ("id",),
+    "candidates": ("key",),
+    "jobs": ("cell_key",),
+    "exports": ("rev", "psd"),
+    "calls": ("call_id",),
+}
+_MERGE_KEYED_DICTS = ("picks", "rejects", "rerolls", "approvals")
+_MISSING = object()
+
+
+def _root_id(root: str) -> str:
+    """같은 폴더면 같은 문자열(절대 경로 + Windows 대소문자·구분자 정규화) — 잠금·레지스트리 키의 입력."""
+    if not isinstance(root, str) or not root.strip():
+        raise ValueError(f"프로젝트 폴더 경로가 비어 있습니다: {root!r}")
+    return os.path.normcase(os.path.abspath(root.strip()))
+
+
+@contextlib.contextmanager
+def manifest_lock(root: str):
+    """root 별 프로세스 전역 RLock(같은 스레드는 다시 잡을 수 있음). 파일 잠금은 하지 않는다 —
+    ComfyUI 프로세스 하나만 프로젝트 폴더를 쓴다고 가정한다(모듈 docstring '동시 쓰기')."""
+    rid = _root_id(root)
+    with _MANIFEST_LOCKS_GUARD:
+        lock = _MANIFEST_LOCKS.get(rid)
+        if lock is None:
+            lock = _MANIFEST_LOCKS[rid] = threading.RLock()
+    with lock:
+        yield
+
+
+def _load_existing(root: str) -> dict:
+    if not os.path.isfile(os.path.join(root, MANIFEST_NAME)):
+        raise ValueError(f"매니페스트가 없습니다: {root} (BMK Design Patch Project 를 먼저 실행하세요)")
+    return load_manifest(root)
+
+
+def update_manifest(root: str, mutate: Callable[[dict], Any]) -> tuple[Any, int]:
+    """잠금 → 디스크 최신본 로드 → mutate(m) → 바뀐 것이 있으면 저장(rev + 1). (mutate 반환값, rev) 를 돌려준다.
+    mutate 는 잠금을 쥔 채 도는 짧은 동기 함수여야 한다(await·네트워크·무거운 계산 금지 — 미리 해 두고 결과만 넣을 것).
+    mutate 안에서 update_manifest / commit_merge 를 다시 부르지 말 것(잠금은 재진입되지만 바깥 저장이 안쪽 변경을 덮는다).
+    mutate 가 예외를 내면 저장하지 않고 그대로 올린다. mutate 가 rev 를 바꿔도 무시한다.
+    매니페스트 파일이 없으면 ValueError(새 프로젝트를 만들지 않는다)."""
+    with manifest_lock(root):
+        m = _load_existing(root)
+        rev = m["rev"]
+        before = _jsonable(m)
+        result = mutate(m)
+        m["rev"] = rev
+        if _jsonable(m) != before:
+            rev = save_manifest(root, m)
+    return result, rev
+
+
+def _merge3(b: Any, o: Any, t: Any) -> tuple[Any, bool]:
+    """값 하나의 3-way → (결과, 충돌). 없는 값 = _MISSING(결과가 _MISSING 이면 삭제). 충돌이면 ours."""
+    if o == b:
+        return t, False
+    if t == b or o == t:
+        return o, False
+    return o, True
+
+
+def _ordered_keys(*dicts: Any) -> list:
+    keys: dict = {}
+    for d in dicts:
+        if isinstance(d, dict):
+            keys.update(dict.fromkeys(d))
+    return list(keys)
+
+
+def _index_items(seq: Any, fields: tuple[str, ...]) -> dict | None:
+    """목록 → {id 튜플: 항목}. 없음/null = 빈 목록. 목록이 아니거나, 항목이 dict 가 아니거나, id 필드가 없거나
+    스칼라가 아니거나, id 가 겹치면 None(그 컬렉션은 항목 단위로 합칠 수 없음)."""
+    if seq is _MISSING or seq is None:
+        return {}
+    if not isinstance(seq, list):
+        return None
+    out: dict = {}
+    for it in seq:
+        if not isinstance(it, dict) or any(f not in it for f in fields):
+            return None
+        key = tuple(it[f] for f in fields)
+        if not all(v is None or isinstance(v, (str, int, float)) for v in key) or key in out:
+            return None
+        out[key] = it
+    return out
+
+
+def _merge_items(name: str, b: Any, o: Any, t: Any, conflicts: list[str]) -> Any:
+    """id 목록의 항목 단위 3-way. 순서 = ours 순서, 그 뒤에 theirs 에만 있는 항목(theirs 순서)."""
+    fields = _MERGE_ID_LISTS[name]
+    bi, oi, ti = (_index_items(x, fields) for x in (b, o, t))
+    if bi is None or oi is None or ti is None:
+        conflicts.append(name)
+        return o
+    out = []
+    for key in _ordered_keys(oi, ti):
+        v, c = _merge3(bi.get(key, _MISSING), oi.get(key, _MISSING), ti.get(key, _MISSING))
+        if c:
+            conflicts.append(f"{name}/{'|'.join(str(x) for x in key)}")
+        if v is not _MISSING:
+            out.append(v)
+    return out
+
+
+def _merge_keyed(name: str, b: Any, o: Any, t: Any, conflicts: list[str]) -> Any:
+    """dict 의 키 단위 3-way(없음/null = 빈 dict). 키 순서 = ours, 그 뒤에 theirs 에만 있는 키."""
+    bd, od, td = ({} if x is _MISSING or x is None else x for x in (b, o, t))
+    if not (isinstance(bd, dict) and isinstance(od, dict) and isinstance(td, dict)):
+        conflicts.append(name)
+        return o
+    out = {}
+    for key in _ordered_keys(od, td):
+        v, c = _merge3(bd.get(key, _MISSING), od.get(key, _MISSING), td.get(key, _MISSING))
+        if c:
+            conflicts.append(f"{name}/{key}")
+        if v is not _MISSING:
+            out[key] = v
+    return out
+
+
+def _merge_analysis(b: Any, o: Any, t: Any, conflicts: list[str]) -> Any:
+    """analysis = {후보 key: {params_hash: entry}} — (후보, params_hash) 단위 3-way.
+    후보 값이 dict 가 아니면(옛 형식) 후보 단위로. 합친 뒤 빈 후보는 ours·theirs 둘 다 가진 경우만 남긴다."""
+    bd, od, td = ({} if x is _MISSING or x is None else x for x in (b, o, t))
+    if not (isinstance(bd, dict) and isinstance(od, dict) and isinstance(td, dict)):
+        conflicts.append("analysis")
+        return o
+    out = {}
+    for cand in _ordered_keys(od, td):
+        cb, co, ct = (d.get(cand, _MISSING) for d in (bd, od, td))
+        if all(x is _MISSING or isinstance(x, dict) for x in (cb, co, ct)):
+            sub = _merge_keyed(f"analysis/{cand}", cb, co, ct, conflicts)
+            if sub or (co is not _MISSING and ct is not _MISSING):
+                out[cand] = sub
+            continue
+        v, c = _merge3(cb, co, ct)
+        if c:
+            conflicts.append(f"analysis/{cand}")
+        if v is not _MISSING:
+            out[cand] = v
+    return out
+
+
+def merge_manifest(base: dict, ours: dict, theirs: dict) -> tuple[dict, list[str]]:
+    """3-way 병합 → (merged, conflicts). base = ours 를 만들기 시작한 시점의 매니페스트, theirs = 디스크 최신본.
+
+    최상위 키마다: ours == base → theirs, theirs == base → ours, 둘이 같게 바뀜 → 그 값.
+    둘 다 다르게 바뀌었으면 컬렉션은 항목 단위로 같은 규칙을 적용하고(crops.id, candidates.key, jobs.cell_key,
+    exports.(rev, psd), calls.call_id / picks·rejects·rerolls·approvals 의 키 / analysis 의 (후보, params_hash)),
+    그 밖의 키나 같은 항목이 양쪽에서 다르게 바뀐 경우는 ours 를 쓰고 conflicts 에 경로를 적는다
+    (예: "source", "candidates/h_abc", "picks/002_1a2b3c/A", "analysis/h_abc/9f8e"). 삭제도 변경으로 본다.
+    항목 단위로 합칠 수 없는 컬렉션(id 없음·중복 등)은 통째로 ours + 충돌.
+    목록 순서 = ours 순서 뒤에 theirs 에만 새로 생긴 항목. rev 는 병합하지 않는다: merged['rev'] = theirs['rev']
+    (commit_merge 가 저장하며 +1). 입력은 바꾸지 않고, 결과는 입력과 공유하지 않는 JSON 기본형이다."""
+    for what, d in (("base", base), ("ours", ours), ("theirs", theirs)):
+        if not isinstance(d, dict):
+            raise ValueError(f"merge_manifest: {what} 가 매니페스트(dict)가 아닙니다: {type(d).__name__}")
+    b, o, t = _jsonable(base), _jsonable(ours), _jsonable(theirs)
+    conflicts: list[str] = []
+    merged: dict = {}
+    for key in _ordered_keys(o, t, b):
+        if key == "rev":
+            merged["rev"] = t.get("rev", 0)
+            continue
+        bv, ov, tv = (d.get(key, _MISSING) for d in (b, o, t))
+        v, c = _merge3(bv, ov, tv)
+        if c:
+            if key in _MERGE_ID_LISTS:
+                v = _merge_items(key, bv, ov, tv, conflicts)
+            elif key in _MERGE_KEYED_DICTS:
+                v = _merge_keyed(key, bv, ov, tv, conflicts)
+            elif key == "analysis":
+                v = _merge_analysis(bv, ov, tv, conflicts)
+            else:
+                conflicts.append(key)
+        if v is not _MISSING:
+            merged[key] = v
+    return merged, conflicts
+
+
+def commit_merge(root: str, before_snapshot: dict | str, ours: dict) -> tuple[dict, int, list[str]]:
+    """노드 저장(M1 _commit 대체): 잠금 → 디스크 최신본(theirs) → merge_manifest(before_snapshot, ours, theirs) → 저장.
+    before_snapshot = 노드가 매니페스트를 연 직후의 상태(dict, 또는 M1 _snapshot 이 만든 JSON 문자열).
+    반환 (merged, rev, conflicts): merged = 디스크에 있는 내용(rev 포함). 합친 결과가 디스크와 같으면(ours 가 바꾼 것이
+    없거나 이미 반영됨) 저장하지 않고 디스크 rev 를 그대로 돌려준다 — 같은 입력의 재실행은 rev 를 올리지 않는다.
+    ours·before_snapshot 은 바꾸지 않는다(ours['rev'] 가 필요하면 반환 rev 를 쓸 것). 매니페스트가 없으면 ValueError."""
+    base = json.loads(before_snapshot) if isinstance(before_snapshot, str) else before_snapshot
+    with manifest_lock(root):
+        theirs = _load_existing(root)
+        merged, conflicts = merge_manifest(base, ours, theirs)
+        rev = theirs["rev"]
+        if merged != theirs:
+            rev = save_manifest(root, merged)
+    if conflicts:
+        logger.warning(f"{_TAG} 매니페스트 병합 충돌 {len(conflicts)}건(이 노드의 값 사용): {', '.join(conflicts[:8])}"
+                       + (" …" if len(conflicts) > 8 else ""))
+    return merged, rev, conflicts
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 루트 레지스트리 (M2) — 보드 URL 은 경로 대신 키만 싣는다
+# ══════════════════════════════════════════════════════════════════════
+ROOTS_FILE = "_roots.json"
+_ROOTS_SCHEMA = "bmk.design_patch.roots/1"
+_ROOT_KEY_RE = re.compile(r"[0-9a-f]{12}")
+_ROOTS: dict[str, dict] = {}
+_ROOTS_LOCK = threading.Lock()
+
+
+def root_key(root: str) -> str:
+    """레지스트리 키 = sha1(정규화한 절대 경로)[:12] (소문자 hex). 같은 폴더를 다르게 적어도(대소문자·구분자) 같은 키."""
+    return hashlib.sha1(_root_id(root).encode("utf-8")).hexdigest()[:12]
+
+
+def _registry_entries(projects_dir: str) -> dict[str, dict]:
+    """<projects_dir>/_roots.json 의 유효 항목 {key: {"root","project","time"}}. root 는 파일 값이 아니라
+    projects_dir/<project> 로 다시 만든다(파일을 고쳐도 이 폴더 밖을 가리킬 수 없음). 이름 검증·키 일치·매니페스트 존재를
+    모두 통과한 항목만. 파일이 없거나 깨졌으면 {}(경고)."""
+    path = os.path.join(projects_dir, ROOTS_FILE)
+    if not os.path.isfile(path):
+        return {}
+    try:
+        data = _read_json(path, "루트 레지스트리")
+    except ValueError as e:
+        logger.warning(f"{_TAG} {e} → 무시")
+        return {}
+    rows = data.get("roots") if isinstance(data, dict) else None
+    out: dict[str, dict] = {}
+    for key, e in rows.items() if isinstance(rows, dict) else ():
+        if not isinstance(e, dict):
+            continue
+        try:
+            name = _check_project_name(e.get("project"))
+        except ValueError:
+            continue
+        root = os.path.join(projects_dir, name)
+        if key == root_key(root) and os.path.isfile(os.path.join(root, MANIFEST_NAME)):
+            out[key] = {"root": root, "project": name, "time": str(e.get("time") or "")}
+    return out
+
+
+def register_root(root: str) -> str:
+    """프로젝트 폴더를 보드에 노출하고 키를 돌려준다(Review 노드). <base_dir>/bmk_design_patch/_roots.json 에도 원자 저장해
+    재시작 뒤 load_root_registry 로 되살린다. root 는 project_root() 모양(…/bmk_design_patch/<project>)이고
+    매니페스트가 있어야 한다(아니면 ValueError)."""
+    if not isinstance(root, str) or not root.strip():
+        raise ValueError(f"프로젝트 폴더 경로가 비어 있습니다: {root!r}")
+    root = os.path.abspath(root.strip())
+    projects_dir, name = os.path.split(root)
+    if os.path.normcase(os.path.basename(projects_dir)) != os.path.normcase(PROJECTS_DIRNAME):
+        raise ValueError(f"Design Patch 프로젝트 폴더(…/{PROJECTS_DIRNAME}/<project>)가 아닙니다: {root}")
+    if _check_project_name(name) != name:
+        raise ValueError(f"프로젝트 폴더 이름이 잘못되었습니다: {name!r}")
+    if not os.path.isfile(os.path.join(root, MANIFEST_NAME)):
+        raise ValueError(f"매니페스트가 없는 폴더는 등록할 수 없습니다: {root}")
+    key = root_key(root)
+    with _ROOTS_LOCK:
+        entries = _registry_entries(projects_dir)
+        entries[key] = {"root": root, "project": name, "time": time.strftime("%Y-%m-%d %H:%M:%S")}
+        write_json_atomic(os.path.join(projects_dir, ROOTS_FILE), {
+            "schema": _ROOTS_SCHEMA,
+            "roots": {k: {"project": e["project"], "time": e["time"]} for k, e in entries.items()},
+        })
+        _ROOTS.update(entries)
+    return key
+
+
+def load_root_registry(base_dir: str) -> int:
+    """<base_dir>/bmk_design_patch/_roots.json 의 유효 항목을 메모리 레지스트리에 넣고 개수를 돌려준다(없으면 0).
+    재시작 뒤 보드 링크 복구용 — 보드 라우트 등록 때 ComfyUI input 디렉터리로 한 번 부른다.
+    다른 base_dir 의 프로젝트는 그 Review 노드가 다시 실행될 때 등록된다."""
+    if not isinstance(base_dir, str) or not base_dir.strip():
+        raise ValueError("base_dir 가 비어 있습니다.")
+    entries = _registry_entries(os.path.join(os.path.abspath(base_dir.strip()), PROJECTS_DIRNAME))
+    with _ROOTS_LOCK:
+        _ROOTS.update(entries)
+    return len(entries)
+
+
+def known_roots() -> list[dict]:
+    """등록된 프로젝트 [{"key","root","project","time"}], 최근 등록 순. 매니페스트가 사라진 프로젝트는 뺀다."""
+    with _ROOTS_LOCK:
+        rows = [dict(e, key=k) for k, e in _ROOTS.items()]
+    rows = [r for r in rows if os.path.isfile(os.path.join(r["root"], MANIFEST_NAME))]
+    rows.sort(key=lambda r: r["time"], reverse=True)
+    return rows
+
+
+def resolve_board_root(param: Any) -> str | None:
+    """보드 요청의 root 파라미터 → 프로젝트 폴더. 레지스트리 키(소문자 hex 12자)만 받는다:
+    경로·형식이 다른 값·모르는 키·매니페스트가 사라진 프로젝트는 None(임의 경로를 열 수 없게)."""
+    if not isinstance(param, str) or not _ROOT_KEY_RE.fullmatch(param):
+        return None
+    with _ROOTS_LOCK:
+        e = _ROOTS.get(param)
+    if e is None or not os.path.isfile(os.path.join(e["root"], MANIFEST_NAME)):
+        return None
+    return e["root"]
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 가격표 (M2) — comfy_api_nodes/nodes_openai.py OpenAIGPTImageNodeV2.price_badge 복제 (ComfyUI v0.39)
+# 표가 바뀌면 tools 의 가격 테스트가 원본 식을 파싱해 비교하므로 실패한다 → 여기도 고칠 것.
+# ══════════════════════════════════════════════════════════════════════
+_PRICE_RANGES_25 = {
+    "low": (0.0023, 0.0283),
+    "medium": (0.0056, 0.0636),
+    "high": (0.0222, 0.2544),
+    "xhigh": (0.0388, 0.4523),
+    "max": (0.0887, 1.0175),
+}
+_PRICE_RANGES = {  # 모델 → 품질 → (lo, hi): 프리셋이 아닌 크기(auto·Custom)일 때 badge 가 보여 주는 범위
+    "gpt-image-1": {"low": (0.011, 0.02), "medium": (0.042, 0.07), "high": (0.167, 0.25)},
+    "gpt-image-1.5": {"low": (0.009, 0.02), "medium": (0.034, 0.062), "high": (0.133, 0.22)},
+    "gpt-image-2": {"low": (0.0019, 0.0237), "medium": (0.0186, 0.2135), "high": (0.0744, 0.8539)},
+    "gpt-image-2.5-flare": _PRICE_RANGES_25,
+    "gpt-image-2.5-sunburst": _PRICE_RANGES_25,
+}
+_PRICE_PRESETS = {  # 가족 → 품질 → "WxH" → 1장 가격
+    "gpt-image-2": {
+        "low": {"1024x1024": 0.0071, "1024x1536": 0.0057, "1536x1024": 0.0057, "2048x2048": 0.0143, "2048x1152": 0.0057, "1152x2048": 0.0057, "3840x2160": 0.0134, "2160x3840": 0.0134},
+        "medium": {"1024x1024": 0.0632, "1024x1536": 0.0494, "1536x1024": 0.0494, "2048x2048": 0.1284, "2048x1152": 0.0509, "1152x2048": 0.0509, "3840x2160": 0.1201, "2160x3840": 0.1201},
+        "high": {"1024x1024": 0.2529, "1024x1536": 0.1976, "1536x1024": 0.1976, "2048x2048": 0.5138, "2048x1152": 0.2034, "1152x2048": 0.2034, "3840x2160": 0.4803, "2160x3840": 0.4803},
+    },
+    "gpt-image-2.5": {
+        "low": {"1024x1024": 0.0084, "1024x1536": 0.0068, "1536x1024": 0.0068, "2048x2048": 0.0170, "2048x1152": 0.0067, "1152x2048": 0.0067, "3840x2160": 0.0159, "2160x3840": 0.0159},
+        "medium": {"1024x1024": 0.0188, "1024x1536": 0.0147, "1536x1024": 0.0147, "2048x2048": 0.0383, "2048x1152": 0.0157, "1152x2048": 0.0157, "3840x2160": 0.0371, "2160x3840": 0.0371},
+        "high": {"1024x1024": 0.0753, "1024x1536": 0.0589, "1536x1024": 0.0589, "2048x2048": 0.1531, "2048x1152": 0.0606, "1152x2048": 0.0606, "3840x2160": 0.1431, "2160x3840": 0.1431},
+        "xhigh": {"1024x1024": 0.1339, "1024x1536": 0.1055, "1536x1024": 0.1055, "2048x2048": 0.2721, "2048x1152": 0.1077, "1152x2048": 0.1077, "3840x2160": 0.2544, "2160x3840": 0.2544},
+        "max": {"1024x1024": 0.3013, "1024x1536": 0.2354, "1536x1024": 0.2354, "2048x2048": 0.6123, "2048x1152": 0.2424, "1152x2048": 0.2424, "3840x2160": 0.5724, "2160x3840": 0.5724},
+    },
+}
+_PRICE_FAMILY = {"gpt-image-2.5-flare": "gpt-image-2.5", "gpt-image-2.5-sunburst": "gpt-image-2.5"}
+_PRICE_PER_INPUT_IMAGE = {  # 입력 이미지 1장당 (lo, hi)
+    "gpt-image-1": (0.0019, 0.0019),
+    "gpt-image-1.5": (0.0016, 0.0016),
+    "gpt-image-2": (0.0098, 0.0147),
+    "gpt-image-2.5-flare": (0.0117, 0.0176),
+    "gpt-image-2.5-sunburst": (0.0117, 0.0176),
+}
+
+
+def _price_curve(points: list[tuple[int, float]], px: int) -> float:
+    """(화소, 가격) 점들의 화소 선형 보간. 범위 밖은 끝점의 화소당 가격으로 비례."""
+    if px <= points[0][0]:
+        return points[0][1] * px / points[0][0]
+    for (x0, y0), (x1, y1) in zip(points, points[1:]):
+        if px <= x1:
+            return y0 + (y1 - y0) * (px - x0) / (x1 - x0)
+    return points[-1][1] * px / points[-1][0]
+
+
+def _custom_size_price(presets: dict, w: int, h: int, rng: tuple[float, float]) -> tuple[float, float]:
+    """프리셋이 아닌 크기의 1장 가격 근사 (lo, hi). 프리셋을 정사각 / 비정사각 두 갈래의 (화소, 가격) 곡선으로 나눠
+    보간한다(같은 화소면 정사각이 더 비쌈: 2.5 max 1024² 0.3013 > 1024x1536 0.2354). 정사각 크기는 (정사각, 정사각),
+    비정사각은 (두 곡선 중 싼 값, 비싼 값) — hi 는 보수적 상한. 둘 다 badge 의 Custom 범위 안으로 자른다."""
+    curves: dict[bool, dict[int, float]] = {True: {}, False: {}}
+    for size, price in presets.items():
+        pw, ph = (int(v) for v in size.split("x"))
+        pts = curves[pw == ph]
+        pts[pw * ph] = max(price, pts.get(pw * ph, 0.0))
+    sq = _price_curve(sorted(curves[True].items()), w * h)
+    if w == h:
+        lo = hi = sq
+    else:
+        ns = _price_curve(sorted(curves[False].items()), w * h)
+        lo, hi = min(sq, ns), max(sq, ns)
+    return min(max(lo, rng[0]), rng[1]), min(max(hi, rng[0]), rng[1])
+
+
+def estimate_usd(model: str, quality: str, size_wh: Any, n: int, n_input_images: int) -> tuple[float, float]:
+    """GPT Image edits 호출 1건의 예상 USD (lo, hi) — 내장 노드 price_badge 와 같은 식:
+        (출력 1장 가격 + 입력 이미지 수 × 입력 1장 가격) × n
+    출력 1장 가격: 크기가 그 모델 가족의 프리셋("2048x2048" 등)이면 표 값(lo = hi). 프리셋 표가 없는 모델
+    (gpt-image-1 / 1.5)은 badge 와 같이 품질 범위.
+    Custom 크기는 badge 가 넓은 범위(2.5 max: 0.0887–1.0175)만 보여 주므로 **근사**를 쓴다: 같은 품질의 프리셋을
+    정사각·비정사각 곡선으로 나눠 화소 수로 선형 보간(끝 밖은 화소 비례), 정사각은 lo = hi, 비정사각은 lo = 비정사각 곡선,
+    hi = 정사각 곡선(보수적). 결과는 badge 범위 안으로 자른다. 실제 청구액은 calls[].credits 를 볼 것.
+    size_wh = [W, H] / (W, H) / "WxH". 모르는 모델·품질이나 잘못된 n·입력 수는 ValueError. 값은 소수 6자리 반올림."""
+    ranges = _PRICE_RANGES.get(model)
+    if ranges is None:
+        raise ValueError(f"가격표에 없는 모델입니다: {model!r} (가능: {', '.join(_PRICE_RANGES)})")
+    rng = ranges.get(quality)
+    if rng is None:
+        raise ValueError(f"{model} 에 없는 품질입니다: {quality!r} (가능: {', '.join(ranges)})")
+    w, h = _norm_size(size_wh)
+    n = _pos_int(n, "n")
+    if isinstance(n_input_images, bool) or not isinstance(n_input_images, int) or n_input_images < 0:
+        raise ValueError(f"n_input_images 는 0 이상의 정수여야 합니다: {n_input_images!r}")
+    presets = _PRICE_PRESETS.get(_PRICE_FAMILY.get(model, model), {}).get(quality)
+    if presets is None:
+        out = rng
+    elif f"{w}x{h}" in presets:
+        out = (presets[f"{w}x{h}"],) * 2
+    else:
+        out = _custom_size_price(presets, w, h, rng)
+    per = _PRICE_PER_INPUT_IMAGE[model]
+    return (round((out[0] + n_input_images * per[0]) * n, 6), round((out[1] + n_input_images * per[1]) * n, 6))

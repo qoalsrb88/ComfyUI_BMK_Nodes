@@ -1,4 +1,4 @@
-"""BMK Design Patch — PSD 크롭 영역에 GPT 편집 후보를 준비·정합·톤 보정·마스크 합성해 풀해상도 Smart Object PSD 로 되돌리는 노드 묶음(M1).
+"""BMK Design Patch — PSD 크롭 영역에 GPT 편집 후보를 준비·실행·정합·톤 보정·마스크 합성해 풀해상도 Smart Object PSD 로 되돌리는 노드 묶음(M1·M2).
 
 배경
 ----
@@ -8,15 +8,24 @@
 Design Patch 는 그 사이의 반복 계산을 노드로 옮긴다. PSD 를 psd_tools 로 직접 읽고(PS 스크립트 불필요),
 프로젝트 폴더의 매니페스트 JSON 하나를 유일한 원본(원장)으로 삼는다. 모든 노드는
 "매니페스트 읽기 → 일 → 바뀐 것이 있을 때만 원자 저장 → 같은 핸들(rev 갱신) 출력" 의 멱등 노드다.
-M1 은 유료 GPT 호출 없이 기존 결과(PSD 수확·폴더)로 전체 흐름을 재현한다(Run 노드는 M2).
-명세: H:\\BmkNodeDesign\\MultiLayerCropEdit\\_proto\\M1_SPEC.md, 근거: _proto\\reports\\final.md.
+M1 은 유료 GPT 호출 없이 기존 결과(PSD 수확·폴더)로 전체 흐름을 재현한다. M2 는 Run(유료 호출)·Review(보드)를 더한다.
+명세: H:\\BmkNodeDesign\\MultiLayerCropEdit\\_proto\\M1_SPEC.md · M2_SPEC.md, 근거: _proto\\reports\\final.md.
 
 모듈 구성 (규약 §1 의 노드 없는 보조 모듈 bmk_design_patch_<역할>.py)
-- bmk_design_patch_store     매니페스트·원자 저장·ID·레이어명 파싱·용어집·레퍼런스 매칭·출력 크기·cell_key
+- bmk_design_patch_store     매니페스트·원자 저장·트랜잭션(3-way 병합)·루트 레지스트리·가격표·ID·레이어명 파싱·
+                             용어집·레퍼런스 매칭·출력 크기·cell_key
 - bmk_design_patch_psd       PSD 읽기(rect·베이스·크롭 소스·수확) / PSDWriter(픽셀·그룹·마스크·SO)
 - bmk_design_patch_analysis  배치·가드 정합·톤 보정장·ΔE 자동 마스크·게이트·z순서
 - bmk_design_patch_prompt    결정적 프롬프트 렌더러·변형·평탄화·매니페스트 → 스펙
-이 파일은 노드와 노드 경계 변환(텐서 ↔ numpy, MASK 의미 반전)만 담는다.
+- bmk_design_patch_runner    실행 계획·승인 해시·호출 원장·API 어댑터(comfy.org / mock)·wave·동시성·인터럽트·drain
+- bmk_design_patch_board     Review Board aiohttp 라우트(web_design_patch/ 페이지)·보드 썸네일
+이 파일은 노드와 노드 경계 변환(텐서 ↔ numpy, MASK 의미 반전), 보드 라우트 등록만 담는다.
+
+동시 쓰기 (M2)
+- 보드 라우트(aiohttp 스레드)와 비동기 Run 이 노드 실행 중에도 매니페스트를 고친다. 노드 저장(_commit)은
+  store.commit_merge(연 시점 스냅샷 ↔ 노드 결과 ↔ 디스크 최신본 3-way)로 하므로 그 사이의 pick·reject·재굴림·호출 결과를
+  덮지 않는다. 같은 항목을 양쪽이 다르게 바꾸면 노드 값으로 저장하고 보고서 끝에 "병합 충돌" 경고를 붙인다.
+- 잠금은 프로세스 안에서만 유효하다(ComfyUI 하나가 프로젝트 폴더를 쓴다고 가정).
 
 노드 (CATEGORY BMK/Image, 공용 핸들 BMK_DP_PROJECT = {"schema","root","project","rev"} + 가지 설정)
 ---------------------------------------------------------------------------------------------------
@@ -45,6 +54,14 @@ M1 은 유료 GPT 호출 없이 기존 결과(PSD 수확·폴더)로 전체 흐�
                  정합은 SO quad 에 affine 으로(비파괴), color=toned 면 톤 보정한 풀해상도 PNG 를 임베드.
                  이미 있는 파일은 덮어쓰지 않는다(<prefix>_r<rev>_2 …). 병합 프리뷰는 레이어와 같은 순서로 직접 합성.
                  정합·z순서는 상류 Compose 설정(핸들), 없으면 기본값.
+- Run (M2)     : jobs 를 comfy.org GPT Image(/proxy/openai/images/edits)로 실행(async, 출력 노드). 과금 대상 =
+                 보드 재굴림(사전 승인) + approve == 현재 pending_hash 일 때 나머지. 승인이 없으면 과금 없이 드라이런
+                 보고와 ui bmk_dp_run(해시·개수·예상 USD)만 낸다. 원장(cands/<cell_key>/)에 먼저 쓰고 결과는 도착하는 대로
+                 저장. wave(시간 상한)로 멈추면 bmk.dp.wave 이벤트 → JS 가 새 토큰으로 이어서 큐. 보드 Drain = 새 발사 중지.
+                 mock(BMK_DP_MOCK_API=1 또는 <base_dir>/bmk_design_patch/_MOCK_API)이면 과금 없는 가짜 결과.
+- Review (M2)  : 프로젝트를 보드 레지스트리에 등록하고 보드 썸네일을 미리 만든다(출력 노드). ui bmk_dp_board 로
+                 JS 의 Open Board 가 별도 창 Review Board(키보드 ★·slice·탈락·재굴림)를 연다.
+- Analyze / Compose / Export 는 보드의 탈락(rejects) 후보를 분석·합성·대안에서 뺀다.
 
 옵션 메모
 ---------
@@ -72,10 +89,15 @@ v1 (2026-10, M1)
   → SO PSD 출력 재열기 검사.
 - 리뷰 수정: 같은 이름 크롭은 위치/ID 로 짝지음, 가지 설정(analyze/compose)을 핸들로, 분석 해시에 분석 대상 여부·
   손 마스크 위치, export 덮어쓰기 금지·폴더 이름 출력, 병합 프리뷰 직접 합성(RLE), 원근 quad 근사, 링크 입력 IS_CHANGED.
+v2 (2026-10, M2)
+- Run(유료 호출·승인 게이트·원장·wave·drain·mock), Review(보드 등록·썸네일) 노드. 보드 라우트는 모듈 import 때 한 번 등록.
+- 모든 노드 저장을 store.commit_merge(3-way)로. Prepare 에 calls_per_cell(→ jobs[].reps, 위젯 맨 뒤)과 Run 과 같은
+  승인 해시·예상 비용 보고. Analyze/Compose/Export 는 rejects 제외.
 """
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import io
 import json
@@ -83,6 +105,7 @@ import logging
 import math
 import os
 import re
+import sys
 import time
 import unicodedata
 from functools import lru_cache
@@ -92,18 +115,23 @@ import numpy as np
 import torch
 from PIL import Image, ImageDraw, ImageFont
 
+import comfy.model_management
 import comfy.utils
 import folder_paths
 
 try:
     from . import bmk_design_patch_analysis as an
+    from . import bmk_design_patch_board as board
     from . import bmk_design_patch_prompt as dprompt
     from . import bmk_design_patch_psd as dpsd
+    from . import bmk_design_patch_runner as runner
     from . import bmk_design_patch_store as store
 except ImportError:  # 단독 실행/테스트
     import bmk_design_patch_analysis as an
+    import bmk_design_patch_board as board
     import bmk_design_patch_prompt as dprompt
     import bmk_design_patch_psd as dpsd
+    import bmk_design_patch_runner as runner
     import bmk_design_patch_store as store
 
 logger = logging.getLogger(__name__)
@@ -116,7 +144,7 @@ _ALIASES = ["multi layer crop edit", "design patch", "디자인 패치", "디자
             "크롭 수정", "레퍼런스 보정", "psd"]
 
 _MODELS = ["gpt-image-2.5-sunburst", "gpt-image-2.5-flare"]
-_QUALITIES = ["max", "xhigh", "high"]
+_QUALITIES = ["max", "xhigh", "high", "medium", "low"]  # gpt-image-2.5 가 받는 품질(medium·low 는 시험·저비용용)
 _REF_STYLES = ["at", "plain", "both"]
 _REGISTER_MODES = ["guarded_affine", "translation", "off"]
 _TONE_MODES = ["field", "global", "off"]
@@ -195,11 +223,14 @@ def _snapshot(m: dict) -> str:
     return json.dumps(m, sort_keys=True, ensure_ascii=False, default=_json_default)
 
 
-def _commit(root: str, m: dict, before: str, src: dict | None = None, **branch) -> dict:
-    """바뀐 것이 있을 때만 저장(rev += 1). 같은 입력의 재실행은 rev 를 올리지 않는다."""
-    if _snapshot(m) != before:
-        store.save_manifest(root, m)
-    return _handle(root, m, src, **branch)
+def _commit(root: str, m: dict, before: str, src: dict | None = None, **branch) -> tuple[dict, list[str]]:
+    """3-way 병합 저장(store.commit_merge): 이 노드가 연 뒤에 보드·Run 이 쓴 변경을 덮지 않는다. 합친 결과가 디스크와 같으면
+    저장하지 않는다(같은 입력의 재실행은 rev 그대로). m 은 저장된 내용(rev 포함)으로 바뀐다.
+    반환 (핸들, 병합 충돌 경고 — 보고서 끝에 붙인다)."""
+    merged, _rev, conflicts = store.commit_merge(root, before, m)
+    m.clear()
+    m.update(merged)
+    return _handle(root, m, src, **branch), [f"매니페스트 병합 충돌(이 노드의 값으로 저장): {c}" for c in conflicts]
 
 
 def _abs(root: str, rel: str) -> str:
@@ -616,11 +647,15 @@ def _target_label(crop: dict, tid: str) -> str:
 def _plan(root: str, m: dict, entries: dict, mask_source: str, use_registration: bool, zorder: str, alternates: bool,
           warns: list[str]) -> list[dict]:
     """[{crop, targets: [{tid, label, slices: [{cand, entry, quad, mask, msrc, area}], alts: [...]}]}] (아래 → 위).
-    entries = _ensure_analysis 가 돌려준 {key: 분석 항목}(분석이 필요 없는 설정이면 {})."""
+    entries = _ensure_analysis 가 돌려준 {key: 분석 항목}(분석이 필요 없는 설정이면 {}). 보드에서 탈락시킨 후보(rejects)는
+    pick 이든 대안이든 넣지 않는다."""
     crops = _crop_map(m)
+    rejects = m.get("rejects") or {}
     groups: dict[tuple[str, str], dict] = {}
     order_idx = {c["key"]: i for i, c in enumerate(m["candidates"])}
     for c in m["candidates"]:
+        if c["key"] in rejects:
+            continue
         crop = crops.get(c["crop_id"])
         if crop is None:
             warns.append(f"{c['key']}: 매니페스트에 크롭 {c['crop_id']} 가 없음(다시 가져온 PSD 에서 사라짐) → 제외")
@@ -738,8 +773,11 @@ def _summary(root: str, m: dict) -> str:
     n_pick = sum(1 for c in m["candidates"] if c.get("picked"))
     src = (m.get("source") or {}).get("psd") or "-"
     last = m["exports"][-1]["psd"] if m["exports"] else "-"
-    return (f"{m['project']} rev {m['rev']} | 크롭 {len(m['crops'])} · 후보 {len(m['candidates'])} (pick {n_pick}) · "
-            f"작업 {len(m['jobs'])} · 분석 {len(m['analysis'])} · export {len(m['exports'])}\n"
+    calls = m.get("calls") or []  # 새 프로젝트는 new_manifest(M1 키)라 M2 키가 없다
+    n_done = sum(1 for c in calls if c.get("status") == "done")
+    return (f"{m['project']} rev {m['rev']} | 크롭 {len(m['crops'])} · 후보 {len(m['candidates'])} (pick {n_pick}, "
+            f"탈락 {len(m.get('rejects') or {})}) · 작업 {len(m['jobs'])} · 호출 {n_done}/{len(calls)} · "
+            f"분석 {len(m['analysis'])} · export {len(m['exports'])}\n"
             f"폴더: {root}\nPSD: {src}\n마지막 export: {last}")
 
 
@@ -893,9 +931,9 @@ class BMKDesignPatchImportPSD:
             for c in m["crops"]:
                 c["refs_auto"] = store.match_refs(refs_dir, c["nnn"], part=c["part"]) if refs_dir and c["nnn"] else []
             m["source"].update(light)
-        handle = _commit(root, m, before, project)
+        handle, conflicts = _commit(root, m, before, project)
         base = _load_rgb(root, m["base"])
-        report = self._report(m, psd_path, info_line, time.time() - t0)
+        report = "\n".join([self._report(m, psd_path, info_line, time.time() - t0)] + [f"  - {w}" for w in conflicts])
         logger.info("%s %s", _TAG, report.splitlines()[0])
         return (handle, _to_image(_overview(base, m["crops"])), report)
 
@@ -1098,7 +1136,7 @@ class BMKDesignPatchCandidateIn:
         if source == "folder":
             self._autopick(m, {c["key"] for c in new}, warns)
         _sync_picks(m)
-        handle = _commit(root, m, before, project)
+        handle, conflicts = _commit(root, m, before, project)
         per: dict[str, list[int]] = {}
         for c in m["candidates"]:
             row = per.setdefault(c["crop_id"], [0, 0])
@@ -1110,7 +1148,7 @@ class BMKDesignPatchCandidateIn:
                  f"| rev {m['rev']} | {time.time() - t0:.1f}s"]
         for cid, (n, p) in per.items():
             lines.append(f"  {cid} {names.get(cid, '(크롭 없음)')}: 후보 {n}, pick {p}")
-        lines += [f"  - {w}" for w in warns]
+        lines += [f"  - {w}" for w in warns + conflicts]
         report = "\n".join(lines)
         logger.info("%s %s", _TAG, lines[0])
         return (handle, report)
@@ -1259,7 +1297,8 @@ class BMKDesignPatchPrepare:
             "required": {
                 "project": (PROJECT_TYPE, {"tooltip": "BMK Design Patch Project 출력(Import PSD 이후)."}),
                 "model": (_MODELS, {"default": _MODELS[0], "tooltip": "GPT Image 모델(cell_key 에 들어감)."}),
-                "quality": (_QUALITIES, {"default": "max", "tooltip": "품질(cell_key 에 들어감)."}),
+                "quality": (_QUALITIES, {"default": "max",
+                                         "tooltip": "품질(cell_key 에 들어감). low·medium 은 시험용(싸고 빠름, 결과 품질 낮음)."}),
                 "size_rule": (list(store.GPT_SIZE_RULES), {
                     "default": "user_k",
                     "tooltip": "출력 크기 규칙. user_k = 정사각 2048², 비정사각 k=max(2,1024/짧은변)(정수 아니면 정수 k). "
@@ -1270,21 +1309,25 @@ class BMKDesignPatchPrepare:
                 "ref_style": (_REF_STYLES, {"default": "at",
                                             "tooltip": "이미지 토큰. at = @image1, plain = Image 1, both = 범례에 둘 다. "
                                                        "specs/<crop_id>.json 의 ref_style 이 있으면 그것이 우선."}),
+                "calls_per_cell": ("INT", {"default": 1, "min": 1, "max": 8,
+                                           "tooltip": "작업(셀)마다 기본 호출 수(jobs[].reps). 호출마다 후보 n장. 늘린 만큼의 새 호출은 "
+                                                      "Run 에서 다시 승인해야 과금됩니다. 줄여도 받은 결과는 그대로."}),
             },
         }
 
     RETURN_TYPES = (PROJECT_TYPE, "IMAGE", "STRING")
     RETURN_NAMES = ("project", "job_sheet", "report")
-    OUTPUT_TOOLTIPS = ("갱신된 프로젝트 핸들.", "크롭별 입력 시트(평탄화 canvas + 레퍼런스).", "작업 요약·승인 해시·경고.")
+    OUTPUT_TOOLTIPS = ("갱신된 프로젝트 핸들.", "크롭별 입력 시트(평탄화 canvas + 레퍼런스).", "작업 요약·승인 해시·예상 비용·경고.")
     FUNCTION = "run"
     CATEGORY = _CATEGORY
     DESCRIPTION = (
         "무료 단계. 크롭마다 레이어명 골격·용어집·specs/<crop_id>.json 으로 스펙을 만들고, 투명 여백을 평탄화한 입력과 "
-        "결정적 프롬프트(변형별), GPT 출력 크기, cell_key 를 jobs 에 기록합니다. 유료 호출은 하지 않습니다(M2 Run)."
+        "결정적 프롬프트(변형별), GPT 출력 크기, cell_key 를 jobs 에 기록합니다. 유료 호출은 하지 않고, Run 이 쓸 "
+        "승인 해시(pending_hash)와 예상 비용을 보고합니다."
     )
     SEARCH_ALIASES = _ALIASES + ["prepare", "prompt", "gpt prompt", "프롬프트", "작업 준비", "평탄화"]
 
-    def run(self, project, model, quality, size_rule, variants, n, ref_style):
+    def run(self, project, model, quality, size_rule, variants, n, ref_style, calls_per_cell=1):
         t0 = time.time()
         root, m = _open(project)
         before = _snapshot(m)
@@ -1371,9 +1414,8 @@ class BMKDesignPatchPrepare:
                     n_new += 1
                 job.update({"cell_key": ck, "crop_id": crop["id"], "tid": ",".join(t["id"] for t in v["targets"]),
                             "variant": vname, "model": model, "quality": quality, "size": [W, H], "n": int(n),
-                            "background": _BACKGROUND, "prompt": v["prompt"], "inputs": roles,
-                            "template_version": dprompt.TEMPLATE_VERSION, "size_info": sinfo,
-                            "status": job.get("status", "pending")})
+                            "reps": int(calls_per_cell), "background": _BACKGROUND, "prompt": v["prompt"],
+                            "inputs": roles, "template_version": dprompt.TEMPLATE_VERSION, "size_info": sinfo})
                 crop_jobs.append(job)
             jobs += crop_jobs
             for wmsg in spec["warnings"] + [f"스펙 점검: {p}" for p in probs]:
@@ -1383,23 +1425,25 @@ class BMKDesignPatchPrepare:
                    _ascii(f"{len(crop_jobs)} jobs: {','.join(j['variant'] for j in crop_jobs)}  n{int(n)}  refs {len(ref_thumbs)}"
                           + (f"  fill {finfo['alpha_frac'] * 100:.0f}%" if finfo["method"] != "none" else ""))]
             tiles.append(_label_tile(cells, lab, (255, 140, 120) if (spec["warnings"] or probs) else (220, 220, 220)))
-        kept = [j for k, j in old_jobs.items() if j.get("results") and k not in {x["cell_key"] for x in jobs}]
-        m["jobs"] = _plain(jobs + kept)
-        handle = _commit(root, m, before, project)
-        pending = sorted(j["cell_key"] for j in jobs if j.get("status", "pending") == "pending")
-        approval = hashlib.sha256(",".join(pending).encode("ascii")).hexdigest()[:12]
-        lines = [f"Prepare: 작업 {len(jobs)} (신규 {n_new} · 기존 {len(jobs) - n_new}) · 예상 후보 {len(jobs) * int(n)}장 · "
-                 f"{model} {quality} {size_rule} · 템플릿 {dprompt.TEMPLATE_VERSION} | 승인 해시 {approval} | "
+        m["jobs"] = _plain(jobs)
+        handle, conflicts = _commit(root, m, before, project)
+        plan = runner.plan_calls(m, root)
+        mock = runner.mock_enabled(root)  # 해시는 백엔드에 묶인다 — Run 이 지금 쓸 백엔드와 같게
+        ap = runner.split_approval(plan, "", backend=runner.BACKEND_MOCK if mock else runner.BACKEND_COMFY_ORG)
+        lines = [f"Prepare: 작업 {len(jobs)} (신규 {n_new} · 기존 {len(jobs) - n_new}) · 셀당 호출 {int(calls_per_cell)} · "
+                 f"예상 후보 {len(jobs) * int(n) * int(calls_per_cell)}장 · {model} {quality} {size_rule} · "
+                 f"템플릿 {dprompt.TEMPLATE_VERSION} | 승인 해시 {ap['pending_hash'] or '-'}{' (MOCK)' if mock else ''} | "
                  f"rev {m['rev']} | {time.time() - t0:.1f}s",
-                 "유료 호출 없음(M1). 작업 목록은 매니페스트 jobs 에 있습니다."]
-        if kept:
-            lines.append(f"결과가 있는 이전 작업 {len(kept)}개 보존")
+                 "유료 호출 없음. Run 이 approve == pending_hash 일 때만 과금합니다"
+                 "(Run 의 retry_failed·retry_orphans·only 가 기본값이면 Run 드라이런의 해시와 같음)."]
+        lines += runner.format_plan(plan, ap).splitlines()
         if n_dup:
             lines.append(f"같은 요청이 되는 변형 {n_dup}개 건너뜀:")
             lines += dup_lines
         if warn_lines:
             lines.append(f"경고 {len(warn_lines)}:")
             lines += warn_lines
+        lines += [f"  - {w}" for w in conflicts]
         logger.info("%s %s", _TAG, lines[0])
         return (handle, _to_image(_grid(tiles, 2)), "\n".join(lines))
 
@@ -1461,10 +1505,12 @@ class BMKDesignPatchAnalyze:
                 raise ValueError(f"{_TAG} {nm} 는 {allowed} 중 하나여야 합니다: {v!r}")
         prm = {"register": register, "tone": tone, "tone_sigma": int(tone_sigma), "dE": float(dE), "grow": int(grow),
                "feather_sigma": float(feather_sigma), "roi_prior": roi_prior}
-        cands = [c for c in m["candidates"] if c.get("picked") or not only_picked]
+        rejects = m["rejects"]
+        cands = [c for c in m["candidates"] if (c.get("picked") or not only_picked) and c["key"] not in rejects]
+        n_rej = sum(1 for c in m["candidates"] if c["key"] in rejects)
         pbar = comfy.utils.ProgressBar(max(1, len(cands)))
         entries, done, hit, warns = _ensure_analysis(root, m, cands, prm, pbar=pbar)
-        handle = _commit(root, m, before, project, analyze=prm)
+        handle, conflicts = _commit(root, m, before, project, analyze=prm)
         crops = _crop_map(m)
         tiles, lines = [], []
         n_reg = n_fail = n_skip = 0
@@ -1486,10 +1532,11 @@ class BMKDesignPatchAnalyze:
                                                if r["applied"] else "")
                          + f" | mad {g['outside_mad']:.1f} | mask {e['mask_area'] / max(1, _area(crop)):.0%}"
                          + (f" | FAIL {','.join(g['fails'])}" if g["fails"] else ""))
-        head = (f"Analyze: 후보 {len(cands)} (계산 {done} · 캐시 {hit} · 생략 {n_skip}) | 정합 적용 {n_reg} | 게이트 실패 {n_fail} | "
+        head = (f"Analyze: 후보 {len(cands)} (계산 {done} · 캐시 {hit} · 생략 {n_skip}"
+                + (f" · 보드 탈락 {n_rej} 제외" if n_rej else "") + f") | 정합 적용 {n_reg} | 게이트 실패 {n_fail} | "
                 f"{register}/{tone} σ{int(tone_sigma)} dE {float(dE):g} grow {int(grow)} feather {float(feather_sigma):g} "
                 f"roi {roi_prior} | rev {m['rev']} | {time.time() - t0:.1f}s")
-        report = "\n".join([head] + lines + [f"  - {w}" for w in warns])
+        report = "\n".join([head] + lines + [f"  - {w}" for w in warns + conflicts])
         logger.info("%s %s", _TAG, head)
         return (handle, _to_image(_grid(tiles, 2 if len(tiles) > 4 else 1)), report)
 
@@ -1540,7 +1587,7 @@ class BMKDesignPatchCompose:
         if not m["base"]:
             raise ValueError(f"{_TAG} 베이스가 없습니다 - Import PSD 를 먼저 실행하세요")
         warns: list[str] = []
-        picks = [c for c in m["candidates"] if c.get("picked")]
+        picks = [c for c in m["candidates"] if c.get("picked") and c["key"] not in m["rejects"]]
         entries: dict = {}
         if _needs_analysis(mask_source, bool(use_registration), bool(use_tone)):
             entries, done, _hit, w2 = _ensure_analysis(root, m, picks, project.get("analyze"))
@@ -1566,12 +1613,12 @@ class BMKDesignPatchCompose:
             lines.append(f"  {p['crop']['id']} {t['tid']} {it['cand']['key']} mask {it['msrc']} "
                          f"quad ({q[0]:.1f},{q[1]:.1f})-({q[4]:.1f},{q[5]:.1f})" + (" toned" if toned else ""))
             pbar.update(1)
-        handle = _commit(root, m, before, project, compose=comp)
+        handle, conflicts = _commit(root, m, before, project, compose=comp)
         out = np.clip(np.rint(canvas), 0, 255).astype(np.uint8)
         head = (f"Compose: pick {len(items)} (크롭 {len(plan)}) · 마스크 {msrc_count} · 톤 적용 {n_toned} · "
                 f"정합 {'사용' if use_registration else '안 씀'} · z {zorder} | 패치 면적 {float((union > 0.5).mean()) * 100:.2f}% "
                 f"| rev {m['rev']} | {time.time() - t0:.1f}s")
-        report = "\n".join([head] + lines + [f"  - {w}" for w in warns])
+        report = "\n".join([head] + lines + [f"  - {w}" for w in warns + conflicts])
         logger.info("%s %s", _TAG, head)
         return (handle, _to_image(out), torch.from_numpy(1.0 - union)[None], report)
 
@@ -1594,6 +1641,8 @@ def _export_hash(m: dict, entries: dict, comp: dict, opts: dict) -> str:
                "crops": [[c["id"], c["name"], c["rect"], c["targets"]] for c in m["crops"]],
                "cands": m["candidates"], "compose": comp,
                "analysis": {k: e.get("params_hash") for k, e in entries.items()}}
+    if m["rejects"]:  # 탈락 후보는 PSD 에서 빠진다(없을 때는 키를 넣지 않아 M1 export 해시 그대로)
+        payload["rejects"] = sorted(m["rejects"])
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
 
 
@@ -1668,7 +1717,7 @@ class BMKDesignPatchExportPSD:
                 "include_base": bool(include_base), "include_crop_outlines": bool(include_crop_outlines),
                 "prefix": prefix}
         warns: list[str] = []
-        inc = [c for c in m["candidates"] if c.get("picked") or alternates == "hidden_all"]
+        inc = [c for c in m["candidates"] if (c.get("picked") or alternates == "hidden_all") and c["key"] not in m["rejects"]]
         entries: dict = {}
         if _needs_analysis(mask_source, use_reg, toned):
             entries, done, _hit, w2 = _ensure_analysis(root, m, inc, project.get("analyze"))
@@ -1678,9 +1727,9 @@ class BMKDesignPatchExportPSD:
         eh = _export_hash(m, entries, comp, opts)
         last = next((e for e in reversed(m["exports"]) if e.get("hash") == eh), None)
         if last and os.path.isfile(last["psd"]) and _sidecar_hash(last["psd"]) == eh:  # 다른 export 가 덮어쓴 파일은 재사용 안 함
-            handle = _commit(root, m, before)
+            _h, conflicts = _commit(root, m, before)
             logger.info("%s Export: 바뀐 것 없음 → 기존 파일 %s", _TAG, last["psd"])
-            return {"ui": {"text": [f"변경 없음: {last['psd']}"]}, "result": (last["psd"],)}
+            return {"ui": {"text": [f"변경 없음: {last['psd']}"] + conflicts}, "result": (last["psd"],)}
 
         rev = int(m["rev"])
         out_dir = _output_dir(os.path.basename(os.path.normpath(root)))  # 폴더 이름(복사한 매니페스트의 project 값 아님)
@@ -1773,7 +1822,8 @@ class BMKDesignPatchExportPSD:
                "layers": len(written), "problems": len(res["problems"]), "mask": mask_png.replace("\\", "/")}
         m["exports"].append(_plain(rec))
         store.write_json_atomic(snap, dict(m, export_layers=written))
-        handle = _commit(root, m, before)
+        _h, conflicts = _commit(root, m, before)
+        warns += conflicts
         head = (f"Export PSD: {psd_path} | 레이어 {len(written)} (pick {sum(w['visible'] for w in written)}) · "
                 f"그룹 마스크 {n_groups} · 톤 {n_toned} · {layer_mode} · {res['bytes'] / 1e6:.1f}MB · 검사 문제 {len(res['problems'])} "
                 f"| 정합 {'사용' if use_reg else '안 씀'} · z {zorder} | rev {m['rev']} | {time.time() - t0:.1f}s")
@@ -1799,12 +1849,253 @@ class BMKDesignPatchExportPSD:
 
 
 # ══════════════════════════════════════════════════════════════════════
+# 노드 8 — Run (유료, M2)
+# ══════════════════════════════════════════════════════════════════════
+def _server():
+    """실행 중인 ComfyUI 의 PromptServer. 단독 실행·테스트면 None(server 모듈을 새로 import 하지 않는다)."""
+    return getattr(getattr(sys.modules.get("server"), "PromptServer", None), "instance", None)
+
+
+def _board_key(root: str) -> str:
+    """보드·Drain 이 쓰는 레지스트리 키. 아직 등록되지 않았으면 등록한다(Review 없이 Run 만 돌린 세션에서도 Drain 이 되게)."""
+    key = store.root_key(root)
+    if store.resolve_board_root(key) is None:
+        key = store.register_root(root)
+    return key
+
+
+def _run_plan(root: str, approve: str, opts: dict, backend_name: str) -> tuple[dict, dict]:
+    """디스크 최신 매니페스트 + 원장으로 실행 계획과 승인 판정(runner.plan_calls / split_approval, 해시는 백엔드에 묶임)."""
+    plan = runner.plan_calls(store.load_manifest(root), root, **opts)
+    return plan, runner.split_approval(plan, approve, backend=backend_name)
+
+
+def _cand_grid(root: str, keys: list[str], limit: int = 48) -> torch.Tensor:
+    """이번 실행에 도착한 후보의 썸네일 격자(IMAGE). 없으면 1x1."""
+    by_key = {c["key"]: c for c in store.load_manifest(root)["candidates"]}
+    tiles = []
+    for k in keys[:limit]:
+        c = by_key.get(k)
+        if c is None:
+            continue
+        img = _decode(_read(_abs(root, c["file"])))
+        tiles.append(_label_tile([_fit(img, _THUMB)], [_ascii(f"{c['crop_id']} {c['tid']}"), _ascii(k)]))
+    if not tiles:
+        return torch.zeros((1, 1, 1, 3), dtype=torch.float32)
+    return _to_image(_grid(tiles, min(6, len(tiles))))
+
+
+class BMKDesignPatchRun:
+    """Prepare 의 jobs 를 comfy.org GPT Image(유료)로 실행한다. 승인 해시가 맞을 때만 과금하고, 결과는 원장에 먼저 저장한다."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "project": (PROJECT_TYPE, {"tooltip": "BMK Design Patch Project 출력(Prepare 이후)."}),
+                "approve": ("STRING", {
+                    "default": "",
+                    "tooltip": "드라이런 보고의 pending_hash. 지금 대기 중인 호출 목록의 해시와 같을 때만 과금합니다. 비우거나 "
+                               "다르면 과금 없이 드라이런(개수·예상 USD·해시)만 합니다. 노드의 '승인 후 실행' 버튼이 채웁니다."}),
+                "max_new_calls": ("INT", {"default": 64, "min": 1, "max": 1000,
+                                          "tooltip": "이번 실행에서 새로 과금할 호출 수 상한. 나머지는 대기로 남습니다."}),
+                "concurrency": ("INT", {"default": 4, "min": 1, "max": 8, "tooltip": "동시에 보내는 호출 수."}),
+                "wave_minutes": ("INT", {"default": 25, "min": 1, "max": 60,
+                                         "tooltip": "실행 시작 후 이 시간(분)이 지나면 새 호출을 멈춥니다(진행 중인 호출은 받음). "
+                                                    "로그인 토큰 만료 대비 — '자동 이어가기' 를 켜면 새 토큰으로 이어서 큐에 넣습니다."}),
+                "retry_failed": ("BOOLEAN", {"default": False,
+                                             "tooltip": "실패한 호출을 다시 호출합니다(과금, 새 승인 필요)."}),
+                "retry_orphans": ("BOOLEAN", {"default": False,
+                                              "tooltip": "결과 없이 끊긴 호출(orphaned, 과금됐을 수 있음)을 다시 호출합니다(과금, 새 승인 "
+                                                         "필요). 응답을 받아 둔 호출은 이것 없이도 다운로드만 다시 합니다."}),
+                "only": ("STRING", {"default": "",
+                                    "tooltip": "승인이 필요한 호출만 거르는 쉼표 필터: crop_id, NNN, cell_key 앞 6자 이상, call_id. "
+                                               "비우면 전부. 보드 재굴림·다운로드 복구는 항상 포함."}),
+            },
+            "hidden": {"auth_token": "AUTH_TOKEN_COMFY_ORG", "api_key": "API_KEY_COMFY_ORG",
+                       "usage_source": "COMFY_USAGE_SOURCE", "unique_id": "UNIQUE_ID"},
+        }
+
+    RETURN_TYPES = (PROJECT_TYPE, "STRING", "IMAGE")
+    RETURN_NAMES = ("project", "report", "new_candidates")
+    OUTPUT_TOOLTIPS = ("갱신된 프로젝트 핸들(새 후보·호출 기록).", "드라이런/실행 보고(호출별 결과·크레딧·orphaned 처리법).",
+                       "이번 실행에 도착한 후보 썸네일 격자(없으면 1x1).")
+    FUNCTION = "run"
+    OUTPUT_NODE = True
+    CATEGORY = _CATEGORY
+    DESCRIPTION = (
+        "유료 단계. Prepare 의 작업을 comfy.org GPT Image 로 실행합니다. approve 가 비어 있거나 지금 대기 목록의 해시와 다르면 "
+        "과금 없이 드라이런(개수·예상 USD·pending_hash)만 보고하고, 노드의 '승인 후 실행' 버튼으로 그 해시를 승인하면 과금합니다. "
+        "보드 재굴림은 사전 승인입니다. 결과는 원장(cands/<cell_key>/)에 먼저 저장하므로 끊겨도 다시 과금하지 않습니다."
+    )
+    SEARCH_ALIASES = _ALIASES + ["run", "gpt image", "api", "실행", "과금", "승인"]
+
+    async def run(self, project, approve, max_new_calls, concurrency, wave_minutes, retry_failed, retry_orphans, only,
+                  auth_token=None, api_key=None, usage_source=None, unique_id=None):
+        t0 = time.time()
+        root, _m = _open(project)
+        key = _board_key(root)
+        opts = {"retry_failed": bool(retry_failed), "retry_orphans": bool(retry_orphans), "only": str(only or "")}
+        approve = str(approve or "").strip()
+        rec = await asyncio.to_thread(runner.reconcile_ledger, root)
+        # 백엔드를 먼저 정한다: 승인 해시·실행·ui backend 를 한 백엔드가 정해야 MOCK 드라이런 해시가 유료 실행을 승인하지 않는다
+        backend = runner.make_backend(root, {"auth_token": auth_token, "api_key": api_key, "usage_source": usage_source,
+                                             "unique_id": unique_id})
+        plan, ap = await asyncio.to_thread(_run_plan, root, approve, opts, backend.name)
+        report = None
+        if ap["to_run"]:
+            report = await self._execute(root, ap["to_run"], backend, int(concurrency), wave_minutes, int(max_new_calls),
+                                         unique_id)
+            plan_after, ap_after = await asyncio.to_thread(_run_plan, root, "", opts, backend.name)
+        else:
+            plan_after, ap_after = plan, runner.split_approval(plan, "", backend=backend.name)
+        m = store.load_manifest(root)
+        if report is not None and report.stopped_reason == "wave" and report.remaining:
+            srv = _server()
+            if srv is not None:  # JS 가 이 프롬프트가 끝나면 새 해시로 이어서 큐에 넣는다(자동 이어가기)
+                srv.send_sync("bmk.dp.wave", {"node": unique_id, "root_key": key, "remaining": len(report.remaining)},
+                              srv.client_id)
+        new_keys = list(dict.fromkeys(rec["candidates"] + (report.new_candidates if report is not None else [])))
+        grid = await asyncio.to_thread(_cand_grid, root, new_keys)
+        text = self._report(ap, plan_after, ap_after, report, rec, backend, approve, bool(auth_token or api_key),
+                            int(concurrency), new_keys, m["rev"], time.time() - t0)
+        logger.info("%s %s", _TAG, text.splitlines()[0])
+        # continuation_hash = 이번 실행이 승인받고 남긴 호출의 해시. JS 자동 이어가기는 pending_hash 가 이것과 같을 때만
+        # 승인한다(개수가 아니라 집합 비교 — 승인하지 않은 호출이 섞이면 멈춤)
+        entry = {"pending_hash": ap_after["pending_hash"], "pending": len(ap_after["needs_approval"]),
+                 "est_usd": list(ap_after["est_usd"]), "approved_now": ap["approved_now"], "root_key": key,
+                 "backend": backend.name, "continuation_hash": report.continuation_hash if report is not None else ""}
+        return {"ui": {"bmk_dp_run": [entry], "text": [text]}, "result": (_handle(root, m, project), text, grid)}
+
+    @staticmethod
+    async def _execute(root, calls, backend, concurrency, wave_minutes, max_new_calls, unique_id):
+        """runner.run_calls + 진행 표시 + 보드 Drain(board 레지스트리). 취소는 InterruptProcessingException 으로 다시 올린다."""
+        pbar = comfy.utils.ProgressBar(len(calls))
+        srv = _server()
+
+        def progress(done, total, text):
+            if srv is not None and unique_id is not None:
+                srv.send_progress_text(text, unique_id)
+            pbar.update_absolute(done, total)  # Cancel 이면 InterruptProcessingException → runner 가 발사를 멈춤
+
+        try:
+            with board.run_active(root):
+                return await runner.run_calls(root, calls, backend, concurrency=concurrency, wave_minutes=wave_minutes,
+                                              max_new_calls=max_new_calls, progress_cb=progress,
+                                              drain_flag=lambda: board.drain_requested(root))
+        except (Exception, comfy.model_management.InterruptProcessingException) as e:  # IPE 는 BaseException
+            rep = getattr(e, "bmk_dp_report", None)
+            if rep is None:
+                raise
+            logger.warning("%s Run 취소 — 도착한 결과는 저장함: %s", _TAG, " | ".join(rep.text().splitlines()))
+            if isinstance(e, comfy.model_management.InterruptProcessingException):
+                raise
+            raise comfy.model_management.InterruptProcessingException() from e
+
+    @staticmethod
+    def _report(ap, plan_after, ap_after, report, rec, backend, approve, has_auth, concurrency, new_keys, rev,
+                sec) -> str:
+        mock = backend.name == runner.BACKEND_MOCK
+        be = "MOCK(과금 없음)" if mock else "comfy.org(유료)"
+        if report is not None:
+            state = f"실행: 발사 {report.launched} · 완료 {report.done} · 실패 {report.failed} · 남음 {len(report.remaining)}"
+        elif ap["needs_approval"]:
+            state = f"드라이런(과금 없음): 승인 필요 {len(ap['needs_approval'])}건"
+        else:
+            state = "할 일 없음(대기 호출 0)"
+        lines = [f"Run [{be}] {state} | 새 후보 {len(new_keys)} | rev {rev} | {sec:.1f}s"]
+        if report is not None:
+            lines += report.text().splitlines()
+        if ap["blocked"]:
+            why = ("approve 가 비어 있음" if not approve else
+                   f"approve {approve} ≠ 지금 pending_hash {ap['pending_hash']}(드라이런 이후 대기 목록·n 이 바뀜)")
+            lines.append(f"승인 안 된 {len(ap['blocked'])}건은 과금하지 않음 — {why}")
+        lines.append("현재 상태: " + runner.format_plan(plan_after, ap_after, concurrency=concurrency).replace("\n", "\n  "))
+        if ap_after["needs_approval"]:
+            lines.append(f"→ 승인: Run 노드의 '승인 후 실행' 버튼, 또는 approve 에 {ap_after['pending_hash']} 를 넣고 큐")
+            if not mock and not has_auth:
+                lines.append("주의: comfy.org 로그인(또는 API 키) 정보가 없습니다 — ComfyUI 에 로그인한 뒤 큐에 넣으세요")
+        if rec["candidates"]:
+            lines.append(f"원장 재조정: 매니페스트에 없던 결과 후보 {len(rec['candidates'])}개 등록")
+        lines += [f"  - {w}" for w in rec["warnings"]]
+        return "\n".join(lines)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 노드 9 — Review (M2)
+# ══════════════════════════════════════════════════════════════════════
+class BMKDesignPatchReview:
+    """프로젝트를 Review Board 에 등록하고 보드 썸네일을 미리 만든다(Open Board 버튼은 JS)."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "project": (PROJECT_TYPE, {"tooltip": "BMK Design Patch Project 출력(Run → Analyze 이후 권장)."}),
+            },
+        }
+
+    RETURN_TYPES = (PROJECT_TYPE, "STRING")
+    RETURN_NAMES = ("project", "report")
+    OUTPUT_TOOLTIPS = ("프로젝트 핸들(그대로).", "타깃별 후보·★·탈락·대기 호출 요약과 보드 주소.")
+    FUNCTION = "run"
+    OUTPUT_NODE = True
+    CATEGORY = _CATEGORY
+    DESCRIPTION = (
+        "Review Board(별도 창)를 엽니다. 실행하면 프로젝트를 보드에 등록하고 후보 썸네일을 미리 만든 뒤, 노드의 Open Board 버튼으로 "
+        "타깃별 모든 후보를 같은 초점으로 확대해 키보드로 ★·slice·탈락을 고르고 재굴림(+1 호출, 사전 승인)을 요청합니다. "
+        "보드의 큐 요청은 이 노드만 부분 실행합니다(Run 이 재굴림만 과금, Export 는 돌지 않음)."
+    )
+    SEARCH_ALIASES = _ALIASES + ["review", "board", "review board", "pick", "보드", "검토", "후보 선택"]
+
+    async def run(self, project):
+        t0 = time.time()
+        root, m = _open(project)
+        key = store.register_root(root)
+        prm = project.get("analyze") or dict(_ANALYZE_DEFAULTS)  # Compose 와 같은 분석 설정의 항목을 보드가 보여 준다
+        thumbs = await asyncio.to_thread(board.prebuild_thumbs, root, prm)
+        st = await asyncio.to_thread(board.build_state, root)
+        url = board.board_url(key)
+        c = st["counts"]
+        lines = [f"Review: 타깃 {c['targets']} · 후보 {c['candidates']} (탈락 {c['rejected']}) · ★ {c['picks']} · "
+                 f"대기 호출 {st['pending_calls']} (재굴림 사전 승인 {st['pending_preapproved']})"
+                 + (" · MOCK" if st["backend_mock"] else "")
+                 + f" | 썸네일 {thumbs['thumbs']} (새로 {thumbs['built']}) | rev {st['rev']} | {time.time() - t0:.1f}s",
+                 f"보드: {url}  (노드의 Open Board 버튼)"]
+        for t in st["targets"]:
+            ch = t["chips"]
+            lines.append(f"  {t['key']} {t['crop_name']}: 후보 {ch['n']} · ★ {ch['picked']} · 탈락 {ch['rejected']} · "
+                         f"게이트 실패 {ch['gate_fail']} · reframed {ch['reframed']}"
+                         + (f" · MOCK {ch['mock']}" if ch["mock"] else "")
+                         + (f" · 대기 {t['pending_calls']}" if t["pending_calls"] else ""))
+        if st["orphan_candidates"]:
+            lines.append(f"  - 크롭이 사라진 후보 {st['orphan_candidates']}개는 보드에 나오지 않음")
+        lines += [f"  - 썸네일 실패: {f}" for f in thumbs["failed"]]
+        report = "\n".join(lines)
+        logger.info("%s %s", _TAG, lines[0])
+        return {"ui": {"bmk_dp_board": [{"root_key": key, "url": url}], "text": [report]},
+                "result": (_handle(root, m, project), report)}
+
+
+def _register_board_routes() -> None:
+    """보드 라우트를 ComfyUI 서버에 한 번 등록한다(서버의 add_routes 전, 노드 모듈 import 때). 서버가 없으면(테스트) 건너뜀."""
+    srv = _server()
+    if srv is not None:
+        board.register_routes(srv.routes, base_dir=folder_paths.get_input_directory())
+
+
+_register_board_routes()
+
+
+# ══════════════════════════════════════════════════════════════════════
 NODE_CLASS_MAPPINGS = {
     "BMKDesignPatchProject": BMKDesignPatchProject,
     "BMKDesignPatchImportPSD": BMKDesignPatchImportPSD,
     "BMKDesignPatchCandidateIn": BMKDesignPatchCandidateIn,
     "BMKDesignPatchPrepare": BMKDesignPatchPrepare,
+    "BMKDesignPatchRun": BMKDesignPatchRun,
     "BMKDesignPatchAnalyze": BMKDesignPatchAnalyze,
+    "BMKDesignPatchReview": BMKDesignPatchReview,
     "BMKDesignPatchCompose": BMKDesignPatchCompose,
     "BMKDesignPatchExportPSD": BMKDesignPatchExportPSD,
 }
@@ -1814,7 +2105,9 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "BMKDesignPatchImportPSD": "BMK Design Patch Import PSD",
     "BMKDesignPatchCandidateIn": "BMK Design Patch Candidate In",
     "BMKDesignPatchPrepare": "BMK Design Patch Prepare",
+    "BMKDesignPatchRun": "BMK Design Patch Run",
     "BMKDesignPatchAnalyze": "BMK Design Patch Analyze",
+    "BMKDesignPatchReview": "BMK Design Patch Review",
     "BMKDesignPatchCompose": "BMK Design Patch Compose",
     "BMKDesignPatchExportPSD": "BMK Design Patch Export PSD",
 }

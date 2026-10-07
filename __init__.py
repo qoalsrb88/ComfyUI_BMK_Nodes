@@ -270,6 +270,11 @@ for _module_name in _NODE_MODULES:
 #       위젯으로 그린다(± 전환, prompt, threshold/grow/blur 숫자 칸, on 토글, 드래그
 #       순서 변경, 행 추가/삭제). 값은 JSON 문자열 하나로 직렬화된다. 실행 후 행별
 #       감지 개수를 표시하고, 기본 이미지 프리뷰에서 레이어 장을 보면 그 행을 강조.
+#   - bmk_design_patch.js
+#       BMKDesignPatchRun / BMKDesignPatchReview용 얇은 확장. Run: 드라이런 결과로 "승인 후 실행
+#       (N건 ≈ $X)" 버튼(approve = pending_hash → Run 만 부분 실행), Drain 버튼, wave 자동 이어가기 토글.
+#       Review: Open Board 버튼(별도 창 Review Board — web_design_patch/ 를 BMK route 로 서빙)과 보드의
+#       postMessage → Review 부분 실행 큐. 과금 판단은 서버(Run)만 한다.
 # 새 JS 확장을 추가할 때는 ./js 폴더에 파일만 넣으면 됩니다.
 WEB_DIRECTORY = "./js"
 
