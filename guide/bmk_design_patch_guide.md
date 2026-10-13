@@ -1,19 +1,22 @@
-# BMK Design Patch 가이드 (M1 · M2)
+# BMK Design Patch 가이드 (M1 · M2 · M3)
 
 캐릭터 일러스트에서 틀린 디자인(파츠)을 고칠 때 Photoshop 에서 하던 반복 작업을 노드로 옮긴 묶음입니다.
 PS 에서 **크롭 사각형과 클린플레이트만 그려 저장**하면, 노드가 PSD 를 직접 읽어 크롭·프롬프트를 만들고 GPT Image 를
 돌린 뒤(M2) 정합·톤 보정·마스크를 거쳐 후보를 **풀해상도 Smart Object** 로 넣은 PSD 를 다시 씁니다.
+크롭마다 사람이 쓰던 스펙(`specs/<crop_id>.json`)의 초안은 VLM 이 씁니다(M3 Spec Draft).
 
-- 모듈: `bmk_design_patch.py`(노드 9개) + 노드 없는 보조 모듈 `bmk_design_patch_store / _psd / _analysis / _prompt /
-  _runner / _board.py`, 보드 페이지 `web_design_patch/`, 짝 JS `js/bmk_design_patch.js`
-- 명세: `H:\BmkNodeDesign\MultiLayerCropEdit\_proto\M1_SPEC.md`, `M2_SPEC.md`, 근거 보고서: `_proto\reports\final.md`
+- 모듈: `bmk_design_patch.py`(노드 10개) + 노드 없는 보조 모듈 `bmk_design_patch_store / _psd / _analysis / _prompt /
+  _runner / _board / _vlm.py`, 보드 페이지 `web_design_patch/`, 짝 JS `js/bmk_design_patch.js`
+- 명세: `H:\BmkNodeDesign\MultiLayerCropEdit\_proto\M1_SPEC.md`, `M2_SPEC.md`, `M3_SPEC.md`, 근거 보고서: `_proto\reports\final.md`,
+  `_proto\design_m3\report_*.md`
 - 카테고리 `BMK/Image`, 노드 검색어: `design patch`, `디자인 패치`, `multi layer crop edit`
 
 ## 하는 일과 하지 않는 일
 
 | 한다 | 하지 않는다(다음 단계) |
 |---|---|
-| PSD 에서 크롭 rect·베이스·크롭 그룹 사전 편집 읽기 | VLM 스펙 초안·판정 |
+| PSD 에서 크롭 rect·베이스·크롭 그룹 사전 편집 읽기 | VLM 판정(후보 자동 채점·Judge) |
+| **VLM 스펙 초안(Spec Draft) — 크롭마다 `specs/<crop_id>.json` 초안, 승인 해시가 맞을 때만 호출, 사람 편집 보존** (M3) | 보드의 스펙 탭(필드별 수락·거절) |
 | 크롭별 결정적 프롬프트·입력 평탄화·출력 크기·cell_key 작업 목록 | 가이드 자동 재색, 자동 러프 페이스트 |
 | **GPT Image 유료 호출(Run) — 승인 해시가 맞을 때만, 결과는 원장에 먼저 저장** (M2) | PSD → 매니페스트 역동기화(pick·마스크 되돌리기) |
 | **Review Board — 타깃별 모든 후보 확대 비교, 키보드 ★·slice·탈락·재굴림** (M2) | 보드의 마스크 편집·순서 탭(v2) |
@@ -23,9 +26,9 @@ PS 에서 **크롭 사각형과 클린플레이트만 그려 저장**하면, 노
 ## 노드 체인
 
 ```
-Project ─▶ Import PSD ─▶ (Candidate In) ─▶ Prepare ─▶ Run ─▶ Analyze ─▶ Review ─▶ Compose ─▶ Export PSD
-            (03 PSD)      (수확·폴더,       (무료:      (유료,   (정합·톤·   (보드    (미리보기   (output/design_patch/
-                           선택)            jobs·해시)   승인제)  마스크)     등록)    + MASK)     <project>/…psd)
+Project ─▶ Import PSD ─▶ (Candidate In) ─▶ (Spec Draft) ─▶ Prepare ─▶ Run ─▶ Analyze ─▶ Review ─▶ Compose ─▶ Export PSD
+            (03 PSD)      (수확·폴더,       (VLM 스펙 초안,  (무료:      (유료,   (정합·톤·   (보드    (미리보기   (output/design_patch/
+                           선택)            승인제, M3)      jobs·해시)   승인제)  마스크)     등록)    + MASK)     <project>/…psd)
 ```
 
 | 노드 | 입력(위젯) | 출력 | 하는 일 |
@@ -33,6 +36,7 @@ Project ─▶ Import PSD ─▶ (Candidate In) ─▶ Prepare ─▶ Run ─▶
 | Project | project, base_dir(""=input 폴더) | project, summary | `<base_dir>/bmk_design_patch/<project>/` 를 열거나 만듦 |
 | Import PSD | psd_path, crop_group, clean_plate_layer, base_layer, crop_pixels_group, refs_dir, glossary_path | project, overview, report | 크롭 rect·베이스·크롭 소스 → `crops[]` |
 | Candidate In | source(psd_harvest/folder), path, group, mapping_json, visible_is_pick, keep_hand_masks | project, report | 후보 원본 bytes·배치·손 마스크 등록 |
+| **Spec Draft** (M3) | approve, vlm, effort, image_detail, write_mode, only, draft_round, concurrency, credit_cap, keep_loaded | project, report, sheet | VLM 으로 `specs/` 초안(출력 노드, 매니페스트 안 씀). 'VLM 초안 승인' 버튼(JS) |
 | Prepare | model, quality, size_rule, variants, n, ref_style, **calls_per_cell** | project, job_sheet, report | 스펙 → 평탄화 입력 → 프롬프트 → `jobs[]` + 승인 해시·예상 비용 (호출 없음) |
 | **Run** (M2) | approve, max_new_calls, concurrency, wave_minutes, retry_failed, retry_orphans, only | project, report, new_candidates | 유료 호출(출력 노드). 승인 버튼·Drain·자동 이어가기 버튼(JS) |
 | Analyze | register, tone, tone_sigma, dE, grow, feather_sigma, roi_prior, only_picked | project, contact_sheet, report | 정합·자동 마스크·톤 보정장·게이트 → `analysis[]` |
@@ -68,7 +72,7 @@ Project ─▶ Import PSD ─▶ (Candidate In) ─▶ Prepare ─▶ Run ─▶
 |---|---|
 | `002` | NNN — 레퍼런스 매칭 키(`00.크롭레퍼런스/002_…`) |
 | `토스트-머리장식_right` | 부위 이름 |
-| `\| A: …; B: …` | 타깃(고칠 대상) 목록. 영문이면 프롬프트 이름으로 그대로, 한글이면 용어집으로 번역 |
+| `\| A: …; B: …` | 타깃(고칠 대상) 목록. 영문이면 프롬프트 이름으로 그대로, 한글이면 용어집으로 번역. **Spec Draft 를 쓰면 한글 짧은 라벨(`\| A: 토스트; B: 빨간 핀`)로 충분**합니다 — 영문 이름은 VLM 이 짓습니다(용어집 불필요) |
 
 - `|` 가 없는 예전 이름(`002_토스트-머리장식_right`)은 타깃 A 하나(이름 = 부위)로 봅니다.
 - 관용: 전각 `｜；：`, 공백, 소문자 라벨(`a:`), `| A: … | B: …`, `…, B: …` 모두 같은 결과. 라벨 없는 조각은 남은 글자를 배정하고 경고합니다.
@@ -120,7 +124,9 @@ Project ─▶ Import PSD ─▶ (Candidate In) ─▶ Prepare ─▶ Run ─▶
   cands/h_<sha12>.png    후보 원본 bytes(수확 h_, 폴더 f_). 수정·자동 삭제하지 않음
   masks/<key>_hand_*.png 수확한 손 마스크
   derived/<key>_*        분석 산출(자동 마스크, 톤 보정장, 접촉시트 칸, 톤 보정 풀해상도 PNG) — 지워도 다시 만듦
-  specs/<crop_id>.json   사람이 고치는 스펙(선택)
+  specs/<crop_id>.json   사람이 고치는 스펙(선택, M3 Spec Draft 가 초안을 씀)
+  specs/_project.json    프로젝트 화풍 style_note(M3) / specs/_backup/  force 백업(하위 폴더라 지문에 안 보임)
+  vlm/                   Spec Draft 원장(호출 기록·원문), review.md, last_report.txt (M3, 지우지 않음)
   glossary.json          한→영 용어집(선택)
 ```
 
@@ -339,6 +345,342 @@ input 폴더 프로젝트는 `_roots.json` 에서 키를 되살리고, 다른 ba
   ★ 를 바꿀 거면 `visible_is_pick` 을 끄세요(Run 후보는 영향 없음).
 - 잠금은 한 ComfyUI 프로세스 안에서만 유효합니다. 같은 프로젝트 폴더를 두 ComfyUI 에서 동시에 쓰지 마세요.
 
+## M3 — Spec Draft (VLM 스펙 초안)
+
+크롭마다 VLM 이 `specs/<crop_id>.json` 초안을 씁니다. 입력은 크롭 캔버스(Prepare 와 같은 평탄화), `NNN_` 레퍼런스, 한국어 레이어
+라벨, 용어집입니다. Prepare 는 이 파일을 지금처럼 오버라이드로 읽으므로, 초안은 사람이 검토·수정하는 출발점입니다.
+지키는 세 가지: **사람이 고친 값은 조용히 덮지 않는다**, **돈은 승인 해시가 맞을 때만 쓴다**, **입력이 같으면 다시 큐에 넣어도 호출 0건**.
+
+- 위치: Import PSD 와 Prepare 사이. 매니페스트는 쓰지 않습니다(rev 그대로). 쓰는 곳은 `specs/` 와 `vlm/` 뿐입니다.
+- 호출: 크롭당 1회(단일 패스) + 화풍(style) 1회/프로젝트. 유료 재질문은 없습니다.
+- 타깃 목록은 매니페스트(레이어명) 그대로 고정입니다. VLM 이 목록 밖에서 찾은 틀린 요소는 **제안**(레이어명 제안)으로만 나옵니다.
+  레이어명을 그 제안대로 고치고 Import PSD 를 다시 돌리면 새 타깃이 생기고, fill 모드가 그 크롭을 "타깃 추가" 로 다시 초안합니다
+  (`|` 뒤를 고쳐도 crop_id·스펙 파일은 그대로).
+- 예제 워크플로: `guide/bmk_design_patch_draft_workflow.json`(Project → Import PSD → Spec Draft → Prepare → Run → 검토·출력).
+  스모크 예제와 달리 **전체 실행 설정**입니다(Prepare max·V1,V4·n4, Run 대기 전부) — 승인 버튼 라벨의 건수·금액을 확인하세요.
+
+| 위젯 | 기본 | 의미 |
+|---|---|---|
+| approve | "" | 드라이런 보고의 `pending_hash` 와 같을 때만 새 호출. 비우거나 다르면 새 호출 없이 드라이런(원장에 이미 받은 초안은 write_mode 대로 병합·쓰기 — force 는 바로 적용). 버튼이 채우고 큐 직후 비움. 값이 있으면 캐시와 무관하게 매번 실행 |
+| vlm | openai/gpt-6-sol | 백엔드·모델. 품질을 더 올릴 때 openai/gpt-6-astra(effort high). `openai/…` = comfy.org 유료(`_MOCK_API`·`BMK_DP_MOCK_API` 가 있으면 mock), `local_qwen/Qwen3-VL-8B-Instruct` = 무료(CUDA GPU, VRAM 19.5 GiB, ComfyUI 모델을 내림), `mock` = 시험 |
+| effort | xhigh | 추론 effort(openai 만, 키에 포함). gpt-5.5-pro 는 medium/high/xhigh 만 — 맞지 않으면 큐에 넣을 때 검증 오류(호출 없음) |
+| image_detail | high | openai 이미지 detail(키에 포함). `original` 이 거부되면(400, 과금 전) 보고서가 high 로 바꾸라고 안내 |
+| write_mode | fill | 아래 「쓰기 모드」 |
+| only | "" | 승인 대상 거르기: crop_id, NNN(`030`), `style`(화풍). 무료 복구·원장 캐시 병합에는 적용 안 함. force 는 필수 |
+| draft_round | 0 | 같은 입력으로 다시 초안을 받을 때 올림(키에 포함, seed 아님) |
+| concurrency | 4 | openai 동시 호출 수(1–8). local_qwen 은 항상 순차 |
+| credit_cap | 0 | 유료 호출 하나를 띄우기 직전 `이번 실행 실측(보고 안 된 것은 단위 최대) + 이 단위의 최대` 가 이 값을 넘으면 그 실행의 새 발사를 멈춤(나머지는 대기). 진행 중 단위들의 최대까지 더해야 넘치면 그것들이 끝날 때까지 기다렸다 다시 판정. **단위 하나의 최대보다 작으면 0건**. 0 = 상한 없음. 아래 「비용」 참고 |
+| keep_loaded | False | Qwen 을 실행 뒤에도 VRAM 에 남김(보고서에 상주 경고). 끄고 한 번 실행하면 vlm 이 무엇이든 남은 Qwen 을 내림 |
+
+출력: `project`(rev 그대로 + 가지 설정 `draft` = 대기 수·화풍 대기·해시 — 하류 Run 이 경고에 씀), `report`, `sheet`(크롭마다 캔버스 + 타깃 bbox
+A 빨강 · B 초록 · C 파랑 · D 주황 · 제안 회색 점선, 보여 준 레퍼런스 최대 4장 — 고른 것 초록 테두리).
+
+### 승인 흐름
+
+1. 워크플로를 큐에 넣으면 Draft 는 approve 가 비어 있어 **드라이런**만 합니다. 보고서 첫 줄 예:
+   `Spec Draft [OpenAI gpt-6-astra high · 유료] 드라이런: 승인 필요 6건(신규 5 · 타깃 추가 1) ≈ 1,080 크레딧(최대 3,030) | 캐시 14 · …`
+2. 노드 버튼 **"VLM 초안 승인 (N건 ≈ X 크레딧)"** → 확인 창(openai: 보통·최대 크레딧, orphan 재시도 포함 여부 / local_qwen:
+   "ComfyUI 모델을 VRAM 에서 내립니다" / mock: 확인 창 없음, `[MOCK]`) → approve = 해시 → **Draft 와 그 조상만 부분 실행**.
+   Prepare·Run 은 돌지 않습니다. 승인은 그 큐 하나에만 쓰입니다(제출 즉시 비움). approve 에 해시를 직접 넣고 일반 Queue 를 누르면
+   워크플로 전체가 함께 실행되고 approve 는 비워지지 않으니 버튼을 쓰세요.
+3. 전체 워크플로를 다시 큐에 넣으면 specs·원장(`vlm/`)의 변경으로 Project 지문이 바뀌어 Prepare 가 새 스펙을 읽습니다. Draft 는
+   이때 0 호출이고, 하류 노드는 한 번 다시 확인됩니다(디스크 캐시라 금방 끝남).
+
+- **승인 큐는 항상 실행됩니다.** approve 에 값이 있으면 ComfyUI 캐시를 쓰지 않습니다. 로그인하지 않은 채 승인했거나(0 호출,
+  "comfy.org 로그인 필요") VRAM 이 모자랐다면, 로그인·정리 뒤 같은 버튼을 다시 누르면 됩니다(해시가 그대로라 그대로 승인됨).
+- **유료 승인 버튼은 사람이 누릅니다.** 자동화·오케스트레이터는 계획(건수·예상 크레딧)을 보고하고 그래프를 준비할 뿐입니다.
+- 해시 = `백엔드 + "<crop_id>:<키>:a<시도>"` 목록. mock 드라이런의 해시로 유료 호출은 나가지 않습니다(백엔드가 해시에 들어감).
+- **한 큐에 승인 하나**: Draft 승인 큐·Run 승인 큐·자동 이어가기·보드 큐는 다른 유료 노드(Run·Draft)의 approve 를 비우고 넣습니다
+  (Run 부분 실행은 조상인 Draft 도 다시 실행하므로).
+- 과금됐을 수 있는 실패(orphan·실패·파싱 실패)는 시도 번호가 올라가 **새 승인**이 필요합니다. 과금 전 거부(사다리 밖 400, 401/402/403,
+  전송 전 로컬 실패)는 같은 시도로 다시 승인 목록에 오릅니다.
+- 승인 없이 하는 일은 셋뿐: 기록된 response id 의 GET 재폴링, 원장 원문 재파싱, 원장 캐시로 병합·쓰기.
+- 승인한 Draft 가 Run 부분 큐 안에서 스펙을 쓰면 그 큐의 Run 해시가 어긋나 Run 은 드라이런이 됩니다(의도된 동작).
+- 초안이 대기 중인데 Run 을 승인하려 하면 Run 보고서와 확인 창에 "스펙 초안 대기 N크롭 + 화풍" 경고가 붙습니다(초안 없는 프롬프트로 과금).
+  스펙 파일을 쓰지 못했으면(편집기·백신 잠금) Draft 보고서에 그 크롭이 `[실패] … 쓰지 않음(파일 잠김)` 으로, Run 보고서·확인 창에
+  "스펙 파일 N개에 초안·화풍 변경을 아직 못 씀" 경고가 붙습니다. 잠금을 풀고 다시 큐하면 Draft 가 원장으로 다시 씁니다
+  (0 호출, `vlm/write_pending.json` 표식이 남아 있는 동안 매 큐 재시도).
+- 로그인 정보가 없으면(openai) 보고서에 "comfy.org 로그인 필요" 가 나오고 0 호출입니다.
+
+**캐시 키**(같으면 다시 호출하지 않음) = 보낼 요청 그 자체: 버전, 백엔드, 모델, effort, detail, 프롬프트 지문, 사용자 텍스트(라벨·영문 이름·
+용어집 적중·매니페스트 사람 mode·`_hint`·숨긴 레퍼런스·패딩 변·크기), 이미지(역할·이름·원본 픽셀 sha·전송 크기), draft_round.
+스펙 내용(`_hint` 제외)·write_mode·only·동시성·상한은 키 밖이라, 노드가 쓴 스펙이 재호출을 부르지 않습니다.
+
+### 쓰기 모드와 사람 편집 보호
+
+| 모드 | 동작 |
+|---|---|
+| fill (기본) | 아래 「fill 이 다시 초안하는 경우」 만 초안을 받습니다. 키만 바뀐 크롭은 "갱신 가능" 으로 보고만(수락한 초안이 용어집·레퍼런스 변경만으로 조용히 바뀌지 않음) |
+| refresh | 키가 바뀐 크롭을 다시 초안하고, 손대지 않은 필드를 새 값으로 |
+| preview | refresh 처럼 계산·호출하되 쓰지 않고 diff 만 보고 |
+| force | `only` 필수. `specs/_backup/<crop_id>.<시각>.json` 에 백업한 뒤 노드가 소유한 필드를 전부 새 값으로(사람 값 포함). **초안 키마다 1회** |
+
+**fill 이 다시 초안하는 경우**(보고서·승인 목록의 사유)
+
+| 사유 | 언제 | 병합 |
+|---|---|---|
+| 신규 | 그 크롭에 초안이 없음 | 빈 필드를 채움 |
+| 타깃 추가 | 레이어명에 타깃(B, C …)을 더하고 Import PSD 를 다시 돌림 | 새 타깃만 채움, 기존 타깃은 그대로(`_review` 포함) |
+| 타깃 변경(A) | 초안 뒤 그 타깃의 **라벨이 바뀜**(레이어명 수정·순서 변경·지운 tid 재사용. 오타 수정도 해당) | 그 타깃만 refresh 규칙 — 손대지 않은 필드는 새 값, 사람이 고친 필드는 유지하고 새 값은 pending |
+| _hint 변경 | 스펙의 `_hint` 를 쓰거나 고침 | 그 크롭 전체를 refresh 규칙으로 |
+| mock 초안 교체 | mock 으로 쓴 초안이 있는데 지금은 실제 백엔드 | 그 크롭(화풍 포함)을 refresh 규칙으로 |
+
+- 모두 **유료 호출이라 승인이 필요**합니다(사유가 여럿이면 모두 표시). 라벨은 초안 때 `_draft.labels` 에 기록됩니다.
+- **force 는 키마다 1회**: force 가 한 번 적용되면 `_draft.forced_key` 에 그 키가 남고, write_mode 가 force 로 남아 있어도
+  같은 키로는 fill 처럼 동작합니다(그 뒤의 사람 편집·`_accepted` 를 되돌리지 않음, 새 백업 없음). 다시 force 하려면 `draft_round` 를
+  올리세요. **원장에 지금 키의 초안(done)이 이미 있으면 force 는 승인 없이 첫 큐에서 바로 적용됩니다**(백업 뒤 사람 값 교체, 0 호출).
+  초안이 없는 크롭만 승인 대기(그때까지는 fill)입니다. 적용 전에 바뀔 값을 보려면 force 대신 preview 로 diff 를 보세요(preview 는
+  refresh 규칙이라 사람 값은 유지로 표시됨 — force 는 그 유지 행까지 덮습니다).
+- **업그레이드 직후 한 번**: 이미 초안된 스펙은 다음 Draft 실행에서 한 번 다시 쓰입니다(정규화 dp-draft-norm/3, `_draft.normalizer`·
+  `_review` 갱신). 0 호출이고 파일 시각이 한 번 바뀌어 하류가 한 번 다시 확인됩니다. 그 뒤로는 같은 입력이면 바이트가 그대로입니다.
+  fill 에서는 노드가 전에 쓴 값(예: shape locked)이 그대로 남으니, 새 규칙을 값에도 적용하려면 preview 로 확인한 뒤 refresh 로 한 번
+  돌리세요(키가 같은 크롭은 원장으로 다시 쓰므로 0 호출).
+
+필드 단위 3-way 병합입니다. `_draft.written` 이 "노드가 지난번에 쓴 값" 이고, 파일 값과 비교해 사람 편집을 알아냅니다.
+
+- **고친 필드**(파일 ≠ 노드가 쓴 값): 유지. 새 초안 값은 `_draft.pending` 에 남습니다(보고서 `=`). force 만 덮음(백업, 키마다 1회).
+- **지운 필드**: 다시 채우지 않고 `_draft.deleted` 에 기록(보고서 `-`). force 만 다시 씀.
+- **손으로 쓴 스펙**(`_draft` 없음): 빈 필드만 채우고, 다른 값은 pending 으로.
+- **양보**(`↓`): 사람 출처가 생겨 노드가 소유권을 잃은 필드는, 노드가 쓴 그대로이면 지웁니다 — `name`(레이어명 영문·용어집 적중이
+  생김), `mode`·`refs`(매니페스트에 사람 값이 생김). 매니페스트 타깃의 refs 가 있거나 mode 가 ref_correct 가 아니면 초안은
+  mode·refs 를 쓰지 않고 `_draft.suggestions` 로만 냅니다(오버라이드가 매니페스트 값을 가리므로).
+- **사람이 고른 레퍼런스가 우선**: 스펙이나 매니페스트에 사람이 refs 를 넣으면, 초안은 mode 를 쓰지 않고(노드가 전에 쓴 mode 는
+  양보) 기본 ref_correct 로 그 refs 가 렌더됩니다. VLM 이 self_restore 를 원했으면 `suggestions.mode` 와 플래그
+  `self_restore_vs_human_refs` 로만 알려 줍니다. force 는 스펙의 사람 mode·refs 를 지우지 않고 초안 값으로 바꿉니다(매니페스트 값은 유지).
+  - VLM 은 스펙에만 적은 refs·6장 밖으로 밀린 refs 를 보지 못합니다(`human_ref_not_shown`). VLM 이 사람 refs 밖의 이미지를 골랐거나
+    아무것도 고르지 않았으면, 그 이미지를 보고 쓴 ref_object·ref_ignore·ref_view·detail·must_not 은 렌더하지 않고(`_review.unrendered`),
+    글자 정책 exact_ref 는 keep 으로 낮추며, 신뢰 낮음 + `refs_differ_from_human` 으로 알립니다. 이때 프롬프트는 기본 설명
+    ("its shape, colors, materials, and surface details")으로 나가니, 필요하면 detail 을 사람 refs 를 보고 직접 쓰세요.
+    초안을 받은 뒤 refs 를 고친 경우에도 다음 큐(fill)에서 그 타깃은 refresh 규칙으로 다시 병합되어, 노드가 전에 쓴 ref 필드·detail 이
+    지워집니다(사람이 고친 값은 유지). 사람이 mode 를 self_restore 로 정했으면 refs 가 렌더되지 않아 이 규칙은 적용되지 않습니다.
+- **제안 레이어명**은 기존 타깃 문구(한글 라벨 포함)를 그대로 두고 새 제안만 붙입니다. 그대로 붙여 넣어도 기존 타깃의 매니페스트
+  mode·refs 가 유지됩니다. 단, `|` 가 없는 레거시 레이어명에 붙이면 A 의 라벨이 바뀌어 "타깃 변경(A)" 가 뜹니다.
+- `"_hint": "버터는 하나뿐"`(한국어 가능) = 재초안 지시. 키에 들어가 fill 에서도 그 크롭만 다시 초안하고, 그 크롭은 refresh 규칙으로 병합.
+- `"_accepted": true` = 확정. force + only 외에는 건드리지 않습니다.
+- `_review`(타깃마다): confidence, 검토 메모, found, counts, 렌더되지 않아 스펙에 쓰지 않은 값(unrendered), 플래그(side_mismatch,
+  count_mismatch, text_contradiction, must_not_in_detail, self_restore_vs_human_refs, refs_differ_from_human,
+  human_ref_not_shown, ref_object_singular, add_but_visible,
+  truncated_output(잘린 출력 — 마지막 값을 버리고 신뢰 낮음) 등), bbox 출처, shape_suggestion. 크롭 플래그에는 preserve_dropped·
+  preserve_in_target 등. `_` 로 시작하는 키는 Prepare 가 조용히 무시합니다.
+- **shape 는 초안이 locked 를 쓰지 않습니다**(10/13). VLM 이 locked 를 내면 moderate 로 쓰고 `_review.shape_suggestion: "locked"` 로만
+  남깁니다. 모양(실루엣)이 정말 맞고 표면만 틀린 부품이면 사람이 스펙에 `"shape": "locked"` 를 쓰세요.
+- 렌더되지 않는 필드는 쓰지 않습니다(예: ref_correct·add 의 must_not, ref_correct 의 occluded_by). 쓰기 전에 실제
+  `spec_from_manifest → validate_spec → variants` 로 렌더를 점검하고, 내용이 같으면 파일을 다시 쓰지 않습니다(mtime 그대로 →
+  하류 재실행 없음). 렌더가 바뀐 크롭은 Prepare 에서 새 cell_key → Run 재승인이 필요합니다(보고서에 개수 표시).
+- 사람 값 때문에 렌더가 깨지는 크롭은 쓰지 않고 "사람 값 때문에 Prepare 가 이 크롭에서 멈춥니다" 로 보고합니다.
+- 쓰기는 잠금 안에서 파일을 다시 읽어 병합합니다. 편집기로 파일을 연 채 실행했다면 편집기의 "외부에서 바뀜" 경고를 따르세요.
+
+**화풍 `specs/_project.json`** = `{"style_note": "…", "_draft": {…}}`. 화풍 호출(베이스 작업영역 + 첫 3 크롭)이 한 번 쓰고, 크롭 스펙의
+`style_note` 로 퍼집니다(손대지 않은 크롭은 모든 모드에서 프로젝트 값을 따라감). 고치면 다음 실행에서 손대지 않은 크롭에 퍼지고(0 호출),
+지우면 그 크롭들에서도 지워지며(렌더러 기본 문구), `""` 로 두면 화풍 초안과 전파를 모두 끕니다. **Draft 가 그래프에 있어야** 퍼집니다
+(bypass 하면 전파가 멈춤 — 캐시 적중이면 0 호출이라 늘 두어도 됩니다).
+
+### 검토
+
+1. **report**: 나쁜 것부터 `[실패]` > `[신뢰 낮음]` > `[경고]` > `[정상]`. diff 기호 `+` 새로 씀, `~` 갱신, `=` 사람 값 유지,
+   `-` 사람이 지운 필드 존중, `↓` 양보. 타깃별 신뢰도·검토 메모, 제안 레이어명(그대로 붙여 넣을 수 있는 ASCII), 용어집 제안 JSON.
+2. **sheet**: bbox 와 고른 레퍼런스로 위치·좌우 혼동을 빠르게 봅니다.
+3. **`vlm/review.md`**: 크롭별 병합된 스펙의 V1 지시문 전문과 diff(specs 밖이라 지문에 영향 없음). `vlm/last_report.txt` = 마지막 보고서.
+
+고칠 때는 `specs/<crop_id>.json` 을 직접 편집합니다. 필드 옆 `_review` 를 근거로 보고, 다시 받고 싶으면 `_hint`, 확정하면 `_accepted: true`.
+
+### 원장과 복구
+
+```
+<project>/vlm/<crop_id>/<키>/a<n>.req.json       호출 전 본문(이미지는 vlm/img/<sha12>.png 경로) · 추정 · 전송 단계
+                            a<n>.inflight.json  POST 직전
+                            a<n>.created.json   POST 응답 즉시(response_id) — 이후 끊겨도 무료 재폴링
+                            a<n>.resp.json      폴링 완료(원문·usage·크레딧) / a<n>.done.json  JSON 추출 성공
+                            a<n>.failed.json    과금됐을 수 있는 실패 / a<n>.rejected.json  과금 전 거부
+<project>/vlm/_style/<키>/…                      화풍 호출
+<base_dir>/bmk_design_patch/_vlm_caps.json       모델별 구조화 출력 단계·background·detail 결과, 출력 토큰 보정 기록
+```
+
+| 남은 상태 | 다음 실행 |
+|---|---|
+| done | 호출 없이 정규화·병합만(캐시) |
+| created(폴링 중 끊김·401·마감 초과) | **무료 재폴링**(승인 불필요, only 무시) — 다시 큐에 넣기만 하면 됨 |
+| resp(추출 전 끊김) | 무료 재파싱 |
+| inflight(create 중 끊김 = orphan) | 다음 시도로 승인 목록에 "orphan 재시도(과금됐을 수 있음)" |
+| failed(incomplete·refusal·5xx·파싱 실패·폴링 GET 404 등) | 다음 시도로 "재시도(이전: …)" — 새 승인 |
+| rejected·req 만 | 같은 시도로 승인 목록에 |
+
+- 원장 파일은 노드가 지우지 않습니다. runner 원장(`cands/`)과 겹치지 않습니다.
+- **다시 큐 = 무료 재폴링**: 실행이 끝날 때 created 로 남은 단위가 있으면 `vlm/repoll_pending.json` 을 다시 씁니다. 이 파일과 원장은
+  Project 지문에 들어가므로, 다음 큐에서 Draft 가 (ComfyUI 캐시에 걸리지 않고) 다시 실행되어 승인 없이 GET 으로 결과를 받아 병합합니다.
+  로그인 전이거나 응답이 아직 끝나지 않았으면 큐마다 이 일이 되풀이됩니다(하류도 매번 다시 확인되지만 0 호출).
+- **재폴링 상한**: 처음 호출한 때부터 effort 별 폴링 마감(low·medium 15분, high 20분, xhigh 40분, max 90분)까지는 남은 시간만큼,
+  그 뒤에는 큐마다 60초만 기다립니다. 같은 상태에서 진척 없는 재폴링이 3번 이어지면 그 응답을 포기하고 failed(과금됐을 수 있음)로
+  끝내며, 다음 승인 목록에 "재시도" 로 올립니다. 로그인 오류(401 등)로 끝난 재폴링은 세지 않습니다. 폴링 GET 이 404 같은 4xx 를
+  받으면 그 자리에서 failed 입니다.
+- **유료 초안 중에는 Cancel 하지 마세요.** comfy.org 프록시가 `background` 를 받지 않아(실측) create 요청이 생성이 끝날 때까지
+  열려 있습니다(크롭당 30초–6.5분). 그 사이 취소하면 created 가 아니라 orphan(과금됐을 수 있음)이 되어, 다시 받으려면 새 승인과
+  재과금이 필요합니다. 폴링 중(created 뒤)의 취소만 무료로 이어 받습니다.
+- 구조화 출력은 strict json_schema(L2) → minItems/maxItems 없이(L1) → format 없이(L0) 순서로, 400 이면 같은 승인 안에서 한 단계씩
+  내려갑니다(과금 전 거부). 받아들여진 단계만 caps 에 남깁니다(사다리를 내려가다 다른 400 으로 거부되면 caps 그대로).
+  응답에 `schema_echo` 가 없으면 프록시가 format 을 버린 것으로 보고 caps 에 L0 을 기록합니다. 실측으로는 strict(L2)가 그대로
+  통과하고, `background:true` 만 400 `Unsupported parameter` 로 거부되어 빼고 다시 보냅니다(caps `background: false`).
+
+### 로컬 Qwen (local_qwen)
+
+- 모델 폴더: `ComfyUI/models/LLM/Qwen-VL/Qwen3-VL-8B-Instruct`(bf16 · sdpa, local_files_only — 내려받지 않음).
+- **VRAM 19.5 GiB** 가 필요합니다. 순서: 사전 검사(여유 + 내릴 수 있는 ComfyUI 모델 < 19.5 GiB 면 아무것도 내리지 않고 거절) →
+  ComfyUI 모델을 VRAM 에서 내림(`free_memory`) → 재검사 → 로드. 모자라면 "VRAM 부족: 필요 19.5GiB, 여유 X + 내릴 수 있는 Y" 로
+  보고하고 단위는 대기로 남습니다. CPU 오프로드·nf4 로 자동 전환하지 않습니다(품질 우선).
+- 내린 이미지 모델은 다음 이미지 작업 때 다시 로드됩니다. 다른 ComfyUI 프로세스(예: 8189 에서 시험할 때 8188)의 모델은 내릴 수
+  없고, Windows 는 OOM 대신 시스템 RAM 으로 넘쳐 둘 다 느려지므로 **시작 전에 nvidia-smi 로 여유 ≥ 20 GiB 를 확인**하세요.
+- 실행이 끝나면(0 호출이어도) 내립니다. `keep_loaded` 면 남기며, 이때는 ComfyUI 의 Unload 버튼으로 내려가지 않습니다(끄고 한 번 실행 —
+  vlm 을 openai·mock 으로 바꾼 뒤에도 내림). 켜 둔 채 다른 vlm 을 써도 Qwen 이 남아 있으면 보고서에 상주 경고가 붙습니다.
+- **CUDA GPU 전용**: ComfyUI 가 `--cpu` 등으로 GPU 를 쓰지 않으면 원장을 쓰기 전에 "local_qwen 은 CUDA GPU 가 필요합니다" 로 멈춥니다.
+- 로드·생성은 ComfyUI 실행 루프에서 차례로 합니다(다른 GPU 노드와 겹치지 않음). 그동안 큐의 다른 노드는 기다립니다.
+- 파싱 실패, 4096 토큰에서 잘림, 닫히지 않은 JSON 이면 같은 시도 안에서 오류 문구를 붙여 1회 다시 묻습니다(무료). 다시 물어도 잘리면
+  "실패" 로 남는데, greedy 라 같은 입력이면 다시 해도 같습니다 — `_hint` 로 줄이거나 openai 로 바꾸세요. 로컬 오류는 과금 없는 실패,
+  취소는 같은 시도로 다시 승인 목록에 오릅니다. 승인 해시는 local_qwen 에도 필요합니다(모델 언로드 때문).
+- 실측(2026-10-07, named 8 + 화풍): 9단위 생성 합 약 220초(단위 9–51초), 끝난 뒤 VRAM 해제. 품질은 아래 「실측 결과」.
+
+### 비용
+
+- 추정: `입력 = 3,000 + 사용자 텍스트 바이트/4 + Σ ceil(w/32)·ceil(h/32)` 토큰, `출력 = 원장 보정 중앙값(3건 이상) 또는 effort 기본값`,
+  최대 = effort 별 출력 한도(low 16k · medium 24k · high 32k · xhigh 64k · max 100k). 크레딧 = USD × 211.
+- 처음(보정 기록 없음) 추정 예: gpt-6-astra/high 1크롭 ≈ 165 크레딧, 최대 ≈ 500. 화풍 ≈ 99. sol/low ≈ 10, 최대 ≈ 50.
+- **실측**(2026-10-07, 8189):
+
+  | 호출 | 크레딧 | 시간 | 토큰 |
+  |---|---|---|---|
+  | gpt-6-sol/low 화풍 | 8.7 | 10–17초 | 입력 6.0k · 출력 0.2k |
+  | gpt-6-astra/high 크롭 8개 | 43.6–121.5(평균 82.3, 합 658) | 34–390초 | 출력 1.4k–6.2k(reasoning 0.9k–4.9k) |
+  | gpt-6-astra/high 화풍 | 49.2 | 20초 | 출력 0.6k |
+  | local_qwen 크롭 8 + 화풍 | 0 | 합 220초 | 출력 0.2k–0.9k |
+
+  실측은 처음 추정(보통)의 약 0.42–0.49배였습니다. 유료 done 이 3건 이상 쌓이면 추정이 원장 중앙값으로 보정되어(`_vlm_caps.json`)
+  astra/high 크롭의 보통 추정은 약 70 크레딧으로 내려갑니다. "최대"(출력 한도 32k 기준 ≈ 500)는 그대로입니다.
+- 크레딧은 comfy.org 의 `x-comfy-credits-used` 헤더(create 응답)에서 읽어 원장에 남깁니다.
+- `image_detail=original` 은 받아들여지지만 이 크기(베이스 긴 변 1536)에서는 입력 토큰이 high 와 같아서 기본은 high 입니다.
+- `incomplete`(출력 한도 소진)는 **과금된 실패**입니다. 보고서가 effort 를 낮추라고 안내합니다. 추론 토큰은 편차가 커서 "최대" 를 함께 봅니다.
+- **credit_cap 쓰는 법**: 유료 호출 하나를 띄우기 직전 `이번 실행 실측 + 이 단위의 최대` 가 cap 을 넘는지 봅니다.
+  - 넘으면 그 실행의 새 발사를 멈추고, 남은 단위는 다음 승인 목록에 남습니다. cap 이 단위 하나의 최대보다 작으면 **아무것도 보내지
+    않습니다**(astra/high ≈ 500, astra/xhigh ≈ 980, sol/xhigh ≈ 200, sol/low ≈ 50). 이때 보고서가 "credit_cap 을 N 이상으로 올린 뒤
+    같은 approve 로 다시 큐" 라고 알려 줍니다.
+  - 진행 중인 호출의 "최대"(예약)까지 더해야 넘칠 때는 멈추지 않고, 진행 중인 호출이 끝나 실측으로 바뀔 때까지 기다렸다가 다시
+    판정합니다. 그래서 동시 실행 수와 상관없이 **credit_cap ≈ 예상 지출(보통) × 1.6 + 단위 최대** 면 끝까지 돕니다.
+  - `실측 + 진행 중 예약 ≤ cap` 이 늘 지켜지므로 cap 은 지출의 확실한 상한입니다(각 호출이 자기 "최대" 를 넘지 않는 한).
+  - 크레딧이 보고되지 않은 호출은 0 이 아니라 최대로 셉니다(보고서 "크레딧 미보고 N건").
+- 누적은 평가 도구 `budget` 으로 확인합니다. 크레딧 보고가 없는 유료 시도는 보통 추정으로 따로 표시해 더합니다.
+- `ComfyUI/temp/api_logs` 에 요청 본문(base64 이미지 포함, 호출당 수 MB)이 그대로 남습니다(끌 수 없음). 디스크를 보고 직접 지우세요.
+- 아트 원본은 `store: true` 로 OpenAI 에 갑니다(내장 OpenAI 노드와 같은 경로).
+
+### 실측 결과와 백엔드 고르기 (2026-10-08 채점)
+
+평가 프로젝트 named 8사례(E1–E8)를 지금의 정규화로 다시 채점한 결과입니다(점수 식은 아래 평가 도구).
+
+| 백엔드 | 평균 S | 치명 게이트 통과 | 개수 틀림 | 위치(bbox) 적중 | 크레딧 |
+|---|---|---|---|---|---|
+| **gpt-6-sol / xhigh (기본)** | **85.1** | 7/8(E6 영수증 B 글자 정책 exact_ref) | E3·E7 | 100% | 219(크롭 8, ≈27/크롭) |
+| gpt-6-astra / high (품질 우선) | 84.2 | 8/8 | E3·E4·E7 | 100% | 658(크롭 8, ≈80/크롭) |
+| gpt-6-astra / xhigh | 89.1(같은 3사례 astra/high 89.5) | 3/3 | — | 100% | 470(크롭 3, ≈157/크롭) |
+| local_qwen(Qwen3-VL-8B) | 71.9 | 7/8(E6 영수증 글자 정책 위반) | E3·E6·E7 | 50% | 0 |
+| 레거시 1타깃(`|` 없음) astra/high | 62.7(2사례) | 2/2 | — | 50% | 138(크롭 2) |
+
+- **기본은 openai/gpt-6-sol · xhigh** 입니다(2026-10-13 결정). 평균 점수는 astra/high 와 같은 수준이고 비용은 1/3 입니다.
+  다만 E6 영수증에서 글자 정책을 `exact_ref`(레퍼런스 글자 복사)로 낸 일이 있으니 글자가 있는 부품은 `_review` 와 text 를 꼭 보세요.
+- **품질을 더 올릴 때는 openai/gpt-6-astra · high** 로 바꿉니다(치명 0, 크롭당 ≈ 80). xhigh 는 같은 사례에서 high 와 점수가 같고 비용만 2배라 권하지 않습니다.
+- 같은 입력을 다시 받아도(draft_round) 점수 차이는 1점 미만이었습니다. 레이어명에 타깃(`| A: …`)이 없으면 점수가 크게 떨어집니다(62.7).
+- **local_qwen 은 무료 1차 초안·연습용**입니다. 이름·detail 은 쓸 만하지만 bbox·개수·글자 정책이 약하니 `_review` 를 꼭 보세요.
+- 둘 다 **작은 부품의 개수**(단추·핀·고리)를 자주 틀립니다. 보고서의 count 플래그와 `_review.counts` 를 확인하고, 틀리면 detail 을 고치거나
+  `_hint`("단추는 둘") 로 다시 받으세요. (이 결과로 v2 "작은 타깃 확대 2-pass" 가 후속 과제 후보가 됐습니다.)
+- `image_detail` 은 high 로 두세요(original 은 이득 없음).
+- **Spec Draft 는 참고용입니다**(D5, 2026-10-13 GPT Image A/B). 같은 크롭을 GPT Image 로 돌려 맹검 비교하면 레이어명 + 용어집만 쓴
+  minimal 이 6크롭 중 5크롭에서 이겼습니다(쓸 수 있는 결과 minimal 16/21 · 초안 8/21 · 손으로 쓴 정답 스펙 0/11). 스펙 문장이 틀린
+  판단을 굳히면 GPT Image 가 레퍼런스보다 문장을 따릅니다. 초안을 Run 에 쓰기 전에 다음을 확인하세요(괄호 = 보고서 경고):
+  - `shape: locked` — 모양이 틀린 부품이면 결함이 그대로 남습니다. 초안은 이제 locked 를 쓰지 않으니 사람이 쓴 locked 만 보면 됩니다.
+  - `preserve` — 고쳐야 할 부분(예: 고리 안의 어두운 사각형)이 들어 있지 않은지(`preserve_in_target`). 들어 있으면 그 항목을 지우세요.
+  - `ref_object` — 타깃이 여러 개(한 쌍)인데 하나만 가리키지 않는지(`ref_object_singular`). "the upper red pen" 이면 아래 핀은 안 바뀝니다.
+  - `action: add` 와 location — 캔버스에 이미 있는 부품이면 `fix`(`add_but_visible`). 문장 위치가 틀리면 엉뚱한 자리에 그립니다.
+  - `detail` — 레퍼런스에 없는 부품(클립 등)을 적지 않았는지(경고 없음 — 직접 보세요).
+  - 10/13 전에 쓴 초안 파일은 fill 에서 그대로입니다. 새 규칙을 적용하려면 write_mode `preview` 로 diff 를 본 뒤 `refresh` 로 한 번
+    돌리세요(키가 같은 크롭은 원장으로 다시 쓰므로 0 호출, 키가 바뀐 크롭은 재초안 승인 목록에 오릅니다).
+
+### 평가 도구 `tools/eval_bmk_design_patch_vlm.py` (호출 0건)
+
+`_proto\vlm_eval\cases.json`(E1–E8)을 기준으로 원장 done 을 **지금의 정규화로 다시 돌려** 채점합니다.
+`S = 100·(0.35·게이트 + 0.25·키워드 + 0.15·개수 + 0.10·bbox + 0.15·형식)`, 치명 게이트(렌더 예외·CJK·텍스트 정책 위반)면 S ≤ 50.
+
+```
+eval_bmk_design_patch_vlm.py setup --named <root> --legacy <root>     평가 프로젝트 정리(크롭 거르기·03 PNG 캔버스·합성 레이어명)
+eval_bmk_design_patch_vlm.py validate                                  정답 스펙 채점(≥90 이어야 채점기 정상)
+eval_bmk_design_patch_vlm.py score --root <root> --select model=gpt-6-astra,effort=high,round=0 --tag iiia
+eval_bmk_design_patch_vlm.py compare iiia iiic                         사례 대응 표·평균 차·SE
+eval_bmk_design_patch_vlm.py determinism --root <root> --select backend=local_qwen [--rounds 0,1]
+                                                                       draft_round 0 과 1 의 정규화 결과를 크롭별로 비교(다르면 exit 1)
+eval_bmk_design_patch_vlm.py budget --roots <root> … [--stage 1355]    누적 크레딧·남은 예산·단계 게이트·credit_cap(옛 식 — 「비용」 참고)
+eval_bmk_design_patch_vlm.py ab-setup --from <named root> --draft-tag iiia
+eval_bmk_design_patch_vlm.py ab-sheet --roots <ab_minimal> <ab_draft> <ab_gold>
+eval_bmk_design_patch_vlm.py ab-tally                                  ab/scores.csv(사람 순위) → Borda·승수·쓸 수 없음·D5
+```
+
+### 실측 체크리스트 (8189, 총 10,000 크레딧 상한)
+
+공통 조건(단계마다):
+- [ ] 8189 만 씁니다(로컬 단계 `comfy-test-8189-gpu`, 유료 단계 `comfy-test-8189`). 8188 은 쓰지 않습니다.
+- [ ] 유료 단계: 사용자가 8189 프론트에서 comfy.org 에 로그인 → 보고서 첫 줄이 `[OpenAI … · 유료]` 이고 `BMK_DP_MOCK_API`·`_MOCK_API`
+      가 없음을 확인 → **사용자가** 승인 버튼을 누릅니다.
+- [ ] `budget --roots … --stage <단계 예상>` 으로 게이트 확인: **누적 실측 + 1.5 × 단계 예상 ≤ 9,700** 일 때만 시작. 넘으면 크롭 수를 줄이고,
+      그래도 넘으면 멈춥니다. 노드 `credit_cap` = min(1.6 × 단계 예상 + 단위 최대, 9,800 − 누적)(「비용」의 credit_cap 규칙).
+- [ ] 단계가 끝나면 실측 크레딧·결과를 보고합니다.
+
+진행(2026-10-08): 누적 유료 ≈ 725 크레딧. 실측·판정은 위 「비용」·「실측 결과와 백엔드 고르기」와 M3_SPEC §11.4. 남은 단계의 credit_cap 은
+ii-3 의 r ≈ 0.42 를 반영해 다시 계산한 값입니다(concurrency 4, iii-c 만 2).
+
+| [ ] | 단계 | 내용 | 호출 | 예상 크레딧 | credit_cap |
+|---|---|---|---|---|---|
+| [x] | 0 | mock E2E: 합성 프로젝트에서 Draft(드라이런 → 승인 → 쓰기 → 재큐 0 호출) → Prepare → Run(mock) → Review, JS 버튼·확인창 수동 확인 | 0 | 0 | — |
+| [~] | i | local_qwen: nvidia-smi 여유 ≥ 20 GiB 확인(필요하면 사용자가 8188 모델 Unload). named 8 + 화풍 1 + legacy 4, preview. draft_round=1 로 한 번 더(결정성 — `determinism`). `score` → **named 8 + 화풍만 함**(220초, S 71.9). legacy·round 1 남음 | 26(무료) | 0 | — |
+| [x] | ii-1 | 스모크: gpt-6-sol/low, detail high, `only=style`, named, preview → background 400 거부(빼고 재전송), strict 통과, credits 헤더는 create 에. 8.70 · 17초 | 1 | ≈10 | (당시 50 — 지금 규칙이면 단위 최대 53 이라 ≥ 70) |
+| [x] | ii-2 | 같은 호출을 detail original 로 → 받아들였지만 input_tokens 6,011 = high → D4 불충족, high 유지. 8.66 · 10초 | 1 | ≈15 | (당시 50) |
+| [x] | ii-3 | astra/high, `only=002_388984`(E1 named), fill → 70.49 · 76초 · reasoning 1,552, create 가 완료까지 열림. **r = 70.5/167 ≈ 0.42** | 1 | ≈180 | 600 |
+| [ ] | ii-4 | 복구 확인(재폴링 GET 과금). background 가 거부되어 정상 흐름에는 GET 이 없음 — 필요할 때만 | 0 | 0 | 0 |
+| [x] | iii-a | astra/high, named 나머지 7 + 화풍, fill → 크롭 8 합 658.2 + 화풍 49.2, S 84.2 · 치명 8/8 | 8 | ≈1,355 | (당시 2,200) |
+| [x] | iv-a | GPT Image A/B(quality high, V1, n4): {minimal, draft} × E1·E2·E4·E5·E6·E8 + gold(E1·E2·E5), Analyze 까지. `ab-sheet` 로 사용자 맹검 → 1,710, 크롭 승 minimal 5 · draft 1 → D5 참고용 | 15 | ≈2,500 | (Run, only) |
+| [~] | iii-b | astra/high, legacy 4, preview → 2건 137.8(나머지 2건은 당시 credit_cap 예약 규칙으로 보류), S 62.7 | 4 | ≈300 | 1,000 |
+| [~] | iii-c | astra/xhigh, named 다중 타깃 4, preview → 3건 469.6(1건 보류), S 89.1 = high 와 동점 → D1: high 유지 | 4 | ≈560 | 2,100 |
+| [x] | iii-d | sol/xhigh, named 8, preview → 218.7, S 85.1 · 치명 7/8 → D2: 기본을 sol/xhigh 로(사용자 결정) | 8 | ≈220 | 900 |
+| [ ] | iv-b | GPT Image quality max, n2: {minimal, draft} × E1·E5 | 4 | ≈1,180 | (Run) |
+| [x] | iii-e | astra/high, draft_round=1, E1·E5 → 189.4, S 91.2(round 0: 91.7) — 반복 분산 작음 | 2 | ≈150 | 1,100 |
+| | 합계(계획) | | | **≈8,170** → 실측 반영 남은 예상 ≈4,900 | 상한 10,000 |
+
+- 순서: i → ii → iii-a → iv-a → iii-b → iii-c → iii-d → iv-b → iii-e. ii-3 뒤 r 로 다시 정합니다: r ≤ 1.3 표대로 /
+  1.3 < r ≤ 2.0 iii-c 를 E1·E5 로 줄이고 iii-e 빼기 / r > 2.0 iii-c 빼기, iii-b 를 E1L·E5L 로, iv-b 빼기.
+- 판정(유료 실행 전 고정): **D1** iii-c 4사례 평균 S(xhigh) − S(high) ≥ 3 이고 iii-e 반복 최대 |ΔS| 보다 크거나, 치명 게이트 실패가
+  줄면 기본 effort 를 xhigh 로. **D2** 평균 S_sol ≥ S_astra(8사례)일 때만 sol 기본(비용은 기준 아님). **D3** iii-a 에서 개수 틀림이
+  E3–E7 중 2건 이상이거나 found 타깃 bbox 적중률 < 70% 면 v2 "작은 타깃 확대 2-pass". **D4** ii-2 가 original 전달을 확인하고 400 이
+  없으면 image_detail 기본 original(v1.1). **D5** draft 군이 Borda 로 6크롭 중 4 이상에서 minimal 을 이기고 "쓸 수 없음" 이
+  minimal 보다 많지 않으면 이 가이드에 "초안 기본 사용", 아니면 "참고용" + 원인 조사.
+- 합격선(iii-a): 치명 게이트 통과 ≥ 7/8, 평균 S ≥ 70.
+- 판정 결과(2026-10-08): 합격선 통과(8/8, 84.2). D3 충족(개수 틀림 E3·E4·E7) → v2 "작은 타깃 확대 2-pass" 후보. D4 불충족 → high 유지.
+  D1: xhigh 이득 없음 → high 유지. D2: 기본 sol/xhigh(10/13 사용자 결정). D5(10/13): 불충족 → Spec Draft 는 "참고용"
+  (위 「실측 결과와 백엔드 고르기」, 원인은 M3_SPEC §11.4).
+
+### 제한과 후속 과제
+
+- 단일 패스만 있습니다. bbox 는 시트·검토용이고 렌더·cell_key 에 쓰이지 않습니다. 작은 타깃의 개수·좌우·가짜 글자 오류는
+  counts·side·CJK 플래그와 `_review.note` 로 알려 줄 뿐 고치지 않습니다.
+- 렌더러 `dp-prompt/1` 의 한계는 그대로입니다(모든 cell_key 가 바뀌는 dp-prompt/2 에서 함께 고칠 것): 레퍼런스 둘 + ref_view different 의
+  `@image2 and @image3 shows`, style_note 마침표·대시, add·paste·self_restore 의 must_not 미렌더, ref_correct 의 occluded_by,
+  ref_correct 아래 relocate/replace(fix 로 렌더 — `action_renders_as_fix` 플래그), 공유 레퍼런스의 소유자별 ref_ignore, location 빈 값 기본문.
+- Prepare 는 깨진 스펙 JSON 을 크롭 단위로 건너뛰지 못합니다(Draft 는 그 크롭을 건너뛰고 보고).
+- 보드에는 스펙 탭이 없습니다(specs 를 보드가 읽지 않음). 용어집 제안 병합 도구, suggested_mode 에 따른 자동 페이스트·가이드,
+  bbox 를 SAM3·Analyze ROI 로 쓰기, Judge 노드, Qwen native 경로·nf4 비교는 후속입니다.
+- 사라진 크롭의 스펙 파일은 지우지 않고 보고만 합니다. 파일이 잠겨 못 쓴 크롭은 다음 실행에서 원장으로 다시 씁니다(0 호출).
+- comfy.org 프록시가 `background` 를 받지 않아 유료 초안은 create 하나가 끝까지 열려 있습니다(위 「원장과 복구」의 Cancel 주의).
+- credit_cap 은 단위 "최대" 로 예약해 보수적입니다(예약 때문에 넘치면 기다렸다 실측으로 다시 판정).
+- 탭을 바꾸거나 새로고침하면 Run·Spec Draft 버튼이 드라이런 보고를 잊고 "누르면 드라이런부터" 로 돌아갑니다. 그때 누르면 그 노드만
+  드라이런으로 다시 큐에 넣고(모든 approve 를 비우므로 과금 없음), 라벨이 바뀌면 다시 누르면 됩니다.
+- 정규화가 고치지 못하는 문장이 남을 수 있습니다(예: "on it" 같은 위치는 비워져 기본문, "X of <타깃>" 꼴 preserve 는 버려짐).
+  `vlm/review.md` 의 V1 전문과 보고서의 lint 플래그로 확인하세요.
+- 로그인하지 않은 채 created 가 남아 있으면 큐마다 Draft 와 하류가 다시 실행됩니다(0 호출). 로그인하면 이어 받습니다.
+- 비공개 API 결합: `sync_op_raw` 키워드·`client._get_remembered_credits_used`·runner 의 `_CallHidden`·`_request_error`·인터럽트 보조.
+  ComfyUI 업데이트 뒤에는 테스트의 M3-C1·C2 와 M2 C* 를 다시 돌리세요.
+
 ## 유료 스모크 테스트 (사용자가 직접, 1회 ≈ $0.03–0.05)
 
 처음 실제 호출은 **크롭 1개 · quality low · n 1 · 호출 1건**으로 확인합니다(예상: sunburst/flare low 2048² 입력 1장 $0.029–0.035,
@@ -396,9 +738,11 @@ input 폴더 프로젝트는 `_roots.json` 에서 키를 되살리고, 다른 ba
 python_embeded\python.exe -X utf8 -W ignore ComfyUI\custom_nodes\ComfyUI_BMK_Nodes\tools\test_bmk_design_patch.py [--quick]
 ```
 
-- `--quick`: 보조 모듈 단위 테스트(M1 + M2 store·runner(mock)·board, 약 35초). comfy 를 import 하지 않습니다.
-- 전체: 위 + runner 의 comfy 묶음(CPU, 가짜 sync_op) + 참조 폴더 `H:\BmkNodeDesign\MultiLayerCropEdit` 의 03/05 PSD 회귀 + M1 노드 통합
-  + M2 노드(합성 프로젝트, mock) + M2 체인(ComfyUI 로더·실행기로 Project → … → Export, mock, 서버 포트 없음).
+- `--quick`: 보조 모듈 단위 테스트(M1 + M2 store·runner(mock)·board + M3 vlm(V1–V24, mock·가짜 api·가짜 Qwen libs) + 평가 도구
+  자기 시험 E0–E4 + JS 시나리오, 약 55초). comfy 를 import 하지 않습니다.
+- 전체: 위 + runner·vlm 의 comfy 묶음(CPU, 가짜 sync_op / 내장 OpenAIChatNode 요청 모양) + 참조 폴더 `H:\BmkNodeDesign\MultiLayerCropEdit`
+  의 03/05 PSD 회귀 + M1 노드 통합 + M2 노드(합성 프로젝트, mock) + M3 Spec Draft 노드(N1–N15) + M2 체인(ComfyUI 로더·실행기로
+  Project → … → Export, mock, 서버 포트 없음). 2026-10-08: `--quick` PASS 2118, 전체 PASS 2777 · FAIL 0(약 4분).
   **유료 호출은 하지 않습니다**(mock 또는 테스트 안에서만 가짜로 바꾼 sync_op). 출력은 `_proto\m2_test_out\` 아래에만 씁니다.
 
 | 검사 | 내용 | 실측(2026-10-07) |
@@ -419,3 +763,6 @@ python_embeded\python.exe -X utf8 -W ignore ComfyUI\custom_nodes\ComfyUI_BMK_Nod
 | M2-B | 보드 라우트·경로 순회·pick/reject/reroll·썸네일 캐시·XSS | 전부 통과 |
 | M2-N | 노드(합성, mock): 드라이런 0 호출 → 승인 → 재실행 0, n 변경·재시도는 새 해시, wave 이벤트, 인터럽트, rejects, 병합 충돌 보고 | 전부 통과 |
 | M2-C | ComfyUI 실행기 체인(03, only 004·005·030): 드라이런 → 3 호출 → 0 호출 → 안정 → 보드 ★·탈락·재굴림 → Export | 통과. 실행 중 보드 쓰기 406회(Run 중 133, Analyze 중 112) 잃은 갱신 0·충돌 0 |
+| M3-V | vlm: 키 민감도·프롬프트 지문·스키마·openai 본문·정규화(N0–N15)·3-way 병합 표×4모드·렌더 왕복 8크롭·원장 7행·승인 해시·400 사다리·Qwen VRAM 검사·credit_cap(미보고 = 단위 최대) + 리뷰 회귀(force 1회·타깃 변경·mock 화풍·폴링 404·caps 실패·잘린 출력·린트·드라이런 뒤 타깃 추가) | V1–V24 |
+| M3-E | 평가 도구: 정답 스펙 validate, setup(합성 매니페스트), mock 원장 재정규화 채점 결정성, 토큰 단위 일치(E0), determinism·입력 바뀜·stale, ab-sheet 라벨 고정·Borda(E4) | E1 97.6 · E2 97.1 · E5 96.0 · E6 100.0 |
+| M3-N | Spec Draft 노드(mock): 드라이런 0 호출 → 승인 → 같은 위젯 0 호출(바이트·mtime·rev 불변), 사람 편집 보존, 인증 없음 0 호출, 인터럽트 → 무료 재폴링, Run 경고("N크롭 + 화풍"), 화풍 전파, local_qwen VramError·상주 언로드, force 1회(N11), fill 키 가드(N12), 실제 PromptExecutor 로 캐시·재폴링·재승인(N13), 타깃 추가 고정점(N14), 스펙 쓰기 실패 재시도·Run 경고(N15), VALIDATE_INPUTS·첫 await(N1), 얇은 bbox 시트(N2) | N1–N15 |

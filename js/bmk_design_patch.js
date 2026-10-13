@@ -1,11 +1,15 @@
-// bmk_design_patch.js — BMKDesignPatchRun / BMKDesignPatchReview 짝 JS 확장 (M2)
+// bmk_design_patch.js — BMKDesignPatchRun / BMKDesignPatchSpecDraft / BMKDesignPatchReview 짝 JS 확장 (M2·M3)
 //
-// 얇은 확장이다. 과금 판단(승인 해시 대조·원장·사전 승인)은 전부 서버의 Run 노드가 하고, 여기서는
+// 얇은 확장이다. 과금 판단(승인 해시 대조·원장·사전 승인)은 전부 서버의 Run·Spec Draft 노드가 하고, 여기서는
 // 버튼과 이벤트 중계만 한다. 과금이 걸린 큐잉은 이 탭의 app.queuePrompt 로만 한다(인증 토큰이 이 경로로만 붙는다).
 //
+// 유료 노드(Run·Spec Draft)끼리: 한 큐에는 승인 해시 하나만 나간다. 승인 큐·자동 이어가기·보드 큐는 큐에 넣기 전에
+// 다른 유료 노드의 approve 를 비운다(clearOtherApproves) — Run 의 부분 실행은 조상인 Draft 도 다시 실행하므로, Draft 에
+// 남은 승인이 함께 나가 그 초안 집합을 과금하지 않게.
+//
 // Run 노드
-//  - 실행 결과 ui.bmk_dp_run[0] = {pending_hash, pending, est_usd, approved_now, root_key, backend, continuation_hash} 로
-//    "승인 후 실행 (N건 ≈ $X)" 버튼 라벨을 갱신한다.
+//  - 실행 결과 ui.bmk_dp_run[0] = {pending_hash, pending, est_usd, approved_now, root_key, backend, continuation_hash,
+//    draft_pending, draft_style, draft_unwritten} 로 "승인 후 실행 (N건 ≈ $X)" 버튼 라벨을 갱신한다.
 //  - 승인 버튼: approve 위젯 = pending_hash → 이 노드만 부분 실행 queuePrompt(0, 1, {queueNodeIds}).
 //    승인은 그 프롬프트 하나에만 쓴다: 제출 직후(widget.afterQueued) 또는 제출 실패 때 approve 를 비운다 — 큐에서 지우거나
 //    취소해 쓰이지 않은 승인이 위젯에 남아 나중의 큐(보드 재굴림 등)가 그 집합 전체를 과금하지 않게.
@@ -16,12 +20,21 @@
 //    그 프롬프트가 성공으로 끝난 뒤 이어서 큐에 넣는다(큐마다 새 토큰). 새 대기 해시가 이번 wave 의 남은 승인분 해시
 //    (continuation_hash)와 같을 때만 그 해시를 승인하고, 다르면(승인하지 않은 호출이 섞임) 멈추고 알린다.
 //    승인할 것이 없으면 approve 없이 다시 넣어 사전 승인·다운로드 복구만 이어 간다(그 실행이 또 wave 면 다시 무장).
+//  - 확인 창: 핸들의 Spec Draft 초안 대기(entry.draft_pending > 0)가 있으면 경고 한 줄을 덧붙인다(크롭과 화풍을 따로 —
+//    draft_pending 은 화풍 단위 draft_style 0/1 을 포함). 받은 초안을 파일에 못 쓴 수(draft_unwritten)도 경고.
+//
+// Spec Draft 노드 (M3)
+//  - ui.bmk_dp_draft[0] = {pending_hash, pending, est_credits, est_seconds, orphan_retries, backend, root_key, …} 로
+//    "VLM 초안 승인 (N건 ≈ X 크레딧)" / "(로컬 N건 ≈ M분)" / "[MOCK]" 버튼 라벨을 갱신한다. 승인 버튼 하나뿐(Auto·Drain 없음).
+//  - 승인: Run 과 같은 1회용 규칙(approve = pending_hash → Draft 만 부분 실행, 제출 직후 비움). 확인 창: openai = 크레딧
+//    (orphan 재시도 포함 수), local_qwen = ComfyUI 모델을 VRAM 에서 내림, mock = 확인 창 없음.
 //
 // Review 노드
 //  - ui.bmk_dp_board[0].root_key 를 properties 에 기억한다(재로드 뒤에도 Open Board 가 동작).
 //  - Open Board: window.open("/bmk/design_patch/board/?root=<key>", "bmk_dp_board_<key>").
 //  - 보드 창의 postMessage {type:"bmk-dp-queue", rootKey}(같은 origin 만) → 그 프로젝트의 Review 노드만 부분 실행.
-//    보드 재굴림은 서버에서 사전 승인된 호출이라 Run 이 그 호출만 과금한다 — 큐에 넣기 전에 모든 Run 의 approve 를 비운다.
+//    보드 재굴림은 서버에서 사전 승인된 호출이라 Run 이 그 호출만 과금한다 — 큐에 넣기 전에 모든 유료 노드(Run·Draft)의
+//    approve 를 비운다.
 //    연타는 0.8초 단위로 한 번에 묶는다.
 //
 // 1.53 클래식 모드 주의: 위젯은 addWidget("button") 만, 위젯 배열 맨 뒤에 serialize=false 로 붙인다
@@ -32,7 +45,12 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
 const RUN_NODE = "BMKDesignPatchRun";
+const DRAFT_NODE = "BMKDesignPatchSpecDraft";
 const REVIEW_NODE = "BMKDesignPatchReview";
+const PAID_NODES = [RUN_NODE, DRAFT_NODE];
+const DRAFT_UI = "bmk_dp_draft"; // vlm.UI_KEY
+const DRAFT_LOCAL = "vlm_local_qwen"; // vlm.BACKEND_NAMES
+const DRAFT_MOCK = "vlm_mock";
 const PROP_AUTO = "bmk_dp_auto_continue";
 const PROP_ROOT = "bmk_dp_root_key";
 const W_APPROVE = "bmk_dp_approve";
@@ -47,7 +65,7 @@ const BOARD_QUEUE_DELAY_MS = 800;
 const MODE_NEVER = 2;
 const MODE_BYPASS = 4;
 
-const states = new WeakMap(); // Run 노드 → { entry, cont, prevRemaining, stalls, busy, drainedPrompt }
+const states = new WeakMap(); // Run·Draft 노드 → { entry, cont, prevRemaining, stalls, busy, drainedPrompt }
 const armed = new Set(); // 자동 이어가기 대기 중인 Run 노드
 const contQueued = new Set(); // 자동 이어가기로 큐에 넣었고 그 Run 이 아직 실행되지 않은 노드(Drain 안내용)
 const boardTimers = new Map(); // rootKey → 보드 큐 요청 묶음 타이머
@@ -151,7 +169,7 @@ function setRootKey(node, key) {
 function soleRootKey() {
     const keys = new Set();
     walkNodes((n) => {
-        const k = (classOf(n) === RUN_NODE || classOf(n) === REVIEW_NODE) && rootKeyOf(n);
+        const k = [RUN_NODE, DRAFT_NODE, REVIEW_NODE].includes(classOf(n)) && rootKeyOf(n);
         if (k) keys.add(k);
     });
     return keys.size === 1 ? [...keys][0] : null;
@@ -181,6 +199,15 @@ function clearApprove(node) {
     return true;
 }
 
+// except 를 뺀 모든 유료 노드(Run·Draft)의 approve 를 비운다. 한 큐에 승인 해시 하나 — Run 의 부분 실행은 조상인 Draft 도
+// 다시 실행하고, 보드 큐도 Review 의 조상(Run·Draft)을 실행하므로 남은 승인이 함께 나가 과금하지 않게
+function clearOtherApproves(except = null) {
+    let cleared = false;
+    for (const cls of PAID_NODES) for (const n of nodesOf(cls)) if (n !== except) cleared = clearApprove(n) || cleared;
+    if (cleared) checkState();
+    return cleared;
+}
+
 // 승인 한 번 = 프롬프트 하나. approve = hash 로 큐에 넣고, 그 프롬프트가 제출되면(afterQueued — 다른 큐 항목이 프롬프트를
 // 만들기 전) 또는 제출이 실패하면 비운다. 쓰이지 않은 승인이 위젯에 남아 나중의 큐가 그 집합을 과금하지 않게.
 async function queueApproved(node, hash, what) {
@@ -189,6 +216,7 @@ async function queueApproved(node, hash, what) {
         notify("warn", `${what}: 다른 큐 제출을 처리하는 중입니다. 잠시 뒤 승인 버튼을 다시 누르세요.`);
         return false;
     }
+    clearOtherApproves(node);
     const w = getWidget(node, "approve");
     const clear = () => {
         if (w.afterQueued === clear) delete w.afterQueued;
@@ -202,6 +230,19 @@ async function queueApproved(node, hash, what) {
         return await queueOnly([node], what);
     } finally {
         clear();
+    }
+}
+
+// 탭 전환·새로고침으로 노드가 다시 만들어지면 드라이런 보고(승인 해시)를 잃는다. 그때 승인 버튼은 이 노드만 드라이런으로
+// 다시 큐에 넣어 보고를 받는다. 모든 유료 노드의 approve 를 먼저 비우므로 이 큐는 과금하지 않는다.
+async function requeueDryRun(node, what) {
+    if (app.processingQueue) {
+        notify("warn", `${what}: 다른 큐 제출을 처리하는 중입니다. 잠시 뒤 다시 누르세요.`);
+        return;
+    }
+    clearOtherApproves();
+    if (await queueOnly([node], what)) {
+        notify("info", `${what}: 드라이런 보고를 받는 중입니다(호출·과금 없음). 버튼 라벨이 바뀌면 다시 누르세요.`);
     }
 }
 
@@ -225,7 +266,7 @@ function refreshRunLabels(node) {
     if (approve) {
         const n = countOf(e?.pending);
         const usd = formatUsd(e?.est_usd);
-        if (!e) approve.label = "승인 후 실행 (먼저 큐 실행 → 드라이런 보고)";
+        if (!e) approve.label = "승인 후 실행 (누르면 드라이런부터)";
         else if (n <= 0 || !e.pending_hash) approve.label = "승인할 호출 없음";
         else approve.label = `승인 후 실행 (${n}건${usd ? ` ≈ ${usd}` : ""})${e.backend === "mock" ? " [MOCK]" : ""}`;
     }
@@ -253,7 +294,7 @@ function approveBlocker(node) {
     if (!w) return "approve 위젯을 찾지 못했습니다.";
     const slot = node.findInputSlot?.("approve") ?? -1;
     if (slot >= 0 && node.isInputConnected?.(slot)) return "approve 가 링크로 연결되어 있어 버튼으로 승인할 수 없습니다.";
-    if (isOff(node)) return "Run 노드가 꺼져(mute/bypass) 있습니다.";
+    if (isOff(node)) return "노드가 꺼져(mute/bypass) 있습니다.";
     return null;
 }
 
@@ -262,7 +303,7 @@ async function approveAndRun(node) {
     if (s.busy) return;
     const e = s.entry;
     if (!e) {
-        notify("info", "먼저 워크플로를 큐에 넣어 드라이런 보고(승인 해시)를 받으세요. 드라이런은 과금하지 않습니다.");
+        await requeueDryRun(node, "Run");
         return;
     }
     const n = countOf(e.pending);
@@ -279,9 +320,20 @@ async function approveAndRun(node) {
     try {
         if (e.backend !== "mock") {
             const usd = formatUsd(e.est_usd);
+            // 서버 _draft_pending_text 와 같은 문구("22크롭 + 화풍")
+            const drafts = countOf(e.draft_pending);
+            const style = Math.min(drafts, countOf(e.draft_style));
+            const what = [drafts - style > 0 ? `${drafts - style}크롭` : "", style > 0 ? "화풍" : ""].filter(Boolean).join(" + ");
+            const unwritten = countOf(e.draft_unwritten);
             const msg =
                 `GPT Image 호출 ${n}건${usd ? `(예상 ${usd})` : ""}을 승인하고 과금합니다.\n` +
-                "드라이런 이후 대기 목록이 바뀌었으면 서버가 과금 없이 드라이런만 다시 합니다.";
+                "드라이런 이후 대기 목록이 바뀌었으면 서버가 과금 없이 드라이런만 다시 합니다." +
+                (drafts > 0
+                    ? `\n주의: 스펙 초안 대기 ${what}(Spec Draft 미승인) — 지금 승인하면 초안 없는 프롬프트로 과금합니다.`
+                    : "") +
+                (unwritten > 0
+                    ? `\n주의: 스펙 파일 ${unwritten}개에 초안·화풍 변경을 아직 못 씀(잠김) — 지금 승인하면 그 변경 없이 과금합니다.`
+                    : "");
             if (!(await confirmDialog(msg))) return;
         }
         disarm(node);
@@ -398,7 +450,8 @@ async function continueRun(node, cont) {
         queued = await queueApproved(node, hash, "자동 이어가기");
     } else {
         // 승인할 것이 없음 = 남은 것은 사전 승인(보드 재굴림)·다운로드 복구뿐 → approve 없이 다시 넣는다
-        if (clearApprove(node)) checkState();
+        // (이 Run 과 조상인 Draft 의 approve 를 모두 비운다)
+        clearOtherApproves();
         queued = await queueOnly([node], "자동 이어가기");
     }
     if (queued) contQueued.add(node);
@@ -450,6 +503,104 @@ function registerRun(nodeType) {
     };
 }
 
+// ─── Spec Draft 노드 (M3) ───────────────────────────────────────
+
+// est_credits = [보통, 최대] → 천 단위 쉼표 문자열(없으면 "")
+function creditsOf(e) {
+    const v = Array.isArray(e?.est_credits) ? e.est_credits : [e?.est_credits, e?.est_credits];
+    return [v[0], v[1]].map((x) => (x == null || !Number.isFinite(Number(x)) ? "" : Math.round(Number(x)).toLocaleString("en-US")));
+}
+
+function draftMinutes(e) {
+    return Math.max(1, Math.ceil(Number(e?.est_seconds ?? 0) / 60));
+}
+
+function refreshDraftLabel(node) {
+    const b = getWidget(node, W_APPROVE);
+    if (b) {
+        const e = stateOf(node).entry;
+        const n = countOf(e?.pending);
+        if (!e) b.label = "VLM 초안 승인 (누르면 드라이런부터)";
+        else if (n <= 0 || !e.pending_hash) b.label = "승인할 초안 없음";
+        else if (e.backend === DRAFT_MOCK) b.label = `VLM 초안 승인 (${n}건) [MOCK]`;
+        else if (e.backend === DRAFT_LOCAL) b.label = `VLM 초안 승인 (로컬 ${n}건 ≈ ${draftMinutes(e)}분)`;
+        else {
+            const [typ] = creditsOf(e);
+            b.label = `VLM 초안 승인 (${n}건${typ ? ` ≈ ${typ} 크레딧` : ""})`;
+        }
+    }
+    node.setDirtyCanvas?.(true, true);
+}
+
+// Draft 만 부분 실행(Prepare·Run 은 돌지 않음). openai 는 크레딧, local_qwen 은 ComfyUI 모델 언로드를 확인 창으로 알린다
+async function approveDraft(node) {
+    const s = stateOf(node);
+    if (s.busy) return;
+    const e = s.entry;
+    if (!e) {
+        await requeueDryRun(node, "Spec Draft");
+        return;
+    }
+    const n = countOf(e.pending);
+    if (n <= 0 || !e.pending_hash) {
+        notify("info", "승인할 초안이 없습니다.");
+        return;
+    }
+    const blocker = approveBlocker(node);
+    if (blocker) {
+        notify("error", blocker);
+        return;
+    }
+    s.busy = true;
+    try {
+        let msg = null;
+        if (e.backend === DRAFT_LOCAL) {
+            msg = `로컬 Qwen 으로 ${n}건(≈ ${draftMinutes(e)}분). ComfyUI 모델을 VRAM 에서 내립니다(과금 없음).`;
+        } else if (e.backend !== DRAFT_MOCK) {
+            const [typ, hi] = creditsOf(e);
+            const k = countOf(e.orphan_retries);
+            msg =
+                `VLM 초안 ${n}건(보통 ≈ ${typ || "?"}, 최대 ${hi || "?"} 크레딧)을 승인하고 과금합니다.` +
+                (k > 0 ? ` orphan 재시도 ${k}건 포함(과금됐을 수 있음).` : "") +
+                "\n드라이런 이후 대기 목록이 바뀌었으면 서버가 호출 없이 드라이런만 다시 합니다.";
+        }
+        if (msg && !(await confirmDialog(msg))) return;
+        await queueApproved(node, String(e.pending_hash), "Spec Draft");
+    } finally {
+        s.busy = false;
+    }
+}
+
+function registerDraft(nodeType) {
+    const onNodeCreated = nodeType.prototype.onNodeCreated;
+    nodeType.prototype.onNodeCreated = function () {
+        const r = onNodeCreated?.apply(this, arguments);
+        addButton(this, W_APPROVE, "", () => approveDraft(this));
+        refreshDraftLabel(this);
+        fitHeight(this);
+        return r;
+    };
+
+    const onConfigure = nodeType.prototype.onConfigure;
+    nodeType.prototype.onConfigure = function () {
+        const r = onConfigure?.apply(this, arguments);
+        refreshDraftLabel(this);
+        return r;
+    };
+
+    const onExecuted = nodeType.prototype.onExecuted;
+    nodeType.prototype.onExecuted = function (message) {
+        const r = onExecuted?.apply(this, arguments);
+        const e = uiEntry(message, DRAFT_UI);
+        if (e) {
+            stateOf(this).entry = e;
+            setRootKey(this, e.root_key);
+            refreshDraftLabel(this);
+        }
+        return r;
+    };
+}
+
 // ─── Review 노드 / 보드 ─────────────────────────────────────────
 
 function refreshReviewLabel(node) {
@@ -474,11 +625,9 @@ async function queueReview(key) {
         notify("warn", "보드 큐 요청: 지금 열린 워크플로에 이 프로젝트의 켜진 Review 노드가 없습니다(한 번 실행해야 연결됩니다).");
         return;
     }
-    // Review 의 상류인 Run 도 함께 실행된다. 보드 요청은 사전 승인된 재굴림만 과금해야 하므로 쓰이지 않은 승인 해시
-    // (직접 붙여 넣은 것 등)가 함께 나가지 않게 모든 Run 의 approve 를 비운다(이미 큐에 들어간 프롬프트는 그대로)
-    let cleared = false;
-    for (const n of nodesOf(RUN_NODE)) cleared = clearApprove(n) || cleared;
-    if (cleared) checkState();
+    // Review 의 상류인 Run·Draft 도 함께 실행된다. 보드 요청은 사전 승인된 재굴림만 과금해야 하므로 쓰이지 않은 승인 해시
+    // (직접 붙여 넣은 것 등)가 함께 나가지 않게 모든 유료 노드의 approve 를 비운다(이미 큐에 들어간 프롬프트는 그대로)
+    clearOtherApproves();
     if (await queueOnly(targets, "보드 요청")) notify("info", "보드 요청으로 Review 를 큐에 넣었습니다.", 3000);
 }
 
@@ -539,6 +688,7 @@ app.registerExtension({
 
     beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData.name === RUN_NODE) registerRun(nodeType);
+        else if (nodeData.name === DRAFT_NODE) registerDraft(nodeType);
         else if (nodeData.name === REVIEW_NODE) registerReview(nodeType);
     },
 });

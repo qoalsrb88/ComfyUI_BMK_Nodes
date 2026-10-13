@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-r"""Design Patch 통합 테스트 (M1_SPEC §6, M2_SPEC §6): 보조 모듈 단위 테스트 + 참조 데이터 회귀 + 노드 통합.
+r"""Design Patch 통합 테스트 (M1_SPEC §6, M2_SPEC §6, M3_SPEC §7): 보조 모듈 단위 테스트 + 참조 데이터 회귀 + 노드 통합.
 
 실행 (ComfyUI-Easy-Install 루트에서):
     python_embeded\python.exe -X utf8 -W ignore ComfyUI\custom_nodes\ComfyUI_BMK_Nodes\tools\test_bmk_design_patch.py [--quick]
@@ -11,10 +11,20 @@ r"""Design Patch 통합 테스트 (M1_SPEC §6, M2_SPEC §6): 보조 모듈 단�
   A  analysis: 배치, Lab, 정합 부호·가드·affine·exclude_mask, 색 맞춤, ΔE, 자동 마스크(합성 원), 톤 보정장, 게이트
   U  psd: quad 도우미, SO 캐시, PSDWriter 왕복(픽셀/그룹/마스크/SO/한글명/숨김/라벨, lnk2 꼬리 117B, 원시 검사 0)
   M2-S store 트랜잭션·병합·잠금·레지스트리·가격표 / M2-R runner(mock) / M2-B Review Board 라우트·썸네일
+  M3-V Spec Draft vlm(합성·mock·가짜 api·가짜 Qwen libs, M3_SPEC §7): import 순도·위젯·문맥·키·프롬프트·스키마·본문·JSON 추출·
+       정규화·렌더 왕복·3-way 병합·render_check·write_spec·원장·계획/승인·추정·백엔드 3종·credit_cap·레이어명·보고서
+       + 리뷰 회귀 V22–V24(V24 = 2차: 부정구·location 접두·린트·공유 범례·타깃 추가 고정점·재폴링 상한·credit_cap 안내)
+       + 평가 도구 대조 E0(떠 있는 수량사·금지어 경계·미보고 크레딧 추정 포함), 자기 시험 E1–E4(참조 폴더가 있을 때:
+       determinism·입력 바뀜·ab-setup 출처·ab-sheet 라벨 고정(루트 대소문자 무관)·ab-tally Borda 승)
 회귀·노드(--quick 이면 생략. comfy 는 CPU 로 import)
   M2-R C* runner ↔ comfy_api_nodes(내장 GPT 노드와 sync_op 인자 동등성 등, 가짜 sync_op — 유료 호출 없음)
+  M3-C vlm ↔ comfy_api_nodes(내장 OpenAIChatNode 요청 본문 모양, 모델별 effort 표)
   M2-N 노드(합성 프로젝트, mock): Prepare calls_per_cell·승인 해시, Run 드라이런/승인/재실행 0 호출/n 변경 재승인/wave
        이벤트·이어가기/인터럽트, Review, rejects 제외, _commit 병합·충돌 보고
+  M3-N Spec Draft 노드(합성, mock·가짜 api·가짜 Qwen): 정의, 드라이런→승인→0 호출, 사람 편집 보존, 인증 없음, 인터럽트·재폴링,
+       Run 경고, 화풍 전파, 사라진 크롭의 스펙 파일 보고, local_qwen 승인·VramError·키의 model_dir·남은 Qwen 언로드, 보드 라우트,
+       new_targets 복제, force 1회, fill 키 가드, 타깃 추가 뒤 같은 큐 바이트 고정(N14), 실제 execution.PromptExecutor
+       (RAM_PRESSURE·CLASSIC) 캐시 아래 재승인·재폴링·mock 끔
   참조 폴더 H:\BmkNodeDesign\MultiLayerCropEdit 가 있을 때:
   R1 03 rect 22/22 · R2 크롭 소스 ≥15/19 비트 일치 · R3 05 harvest · R4 SO 배치 MAE ≤0.25 · RW 풀캔버스 SO PSD · RX 템플릿 상수
   R5 정합 기대값 · R6 자동 마스크 IoU · R7 톤 홀드아웃 · G 게이트   (05 PSD 를 psd 모듈로 읽어 입력 구성)
@@ -34,6 +44,8 @@ import asyncio
 import base64
 import contextlib
 import copy
+import csv
+import dataclasses
 import hashlib
 import importlib
 import importlib.util
@@ -2308,10 +2320,11 @@ def node_integration(psd05, crops03):
     alone = importlib.util.module_from_spec(alone_spec)
     alone_spec.loader.exec_module(alone)
     check(alone.store is store and alone.dpsd is dpsd, "단독 실행: 절대 import 폴백(sys.path 의 보조 모듈)")
-    ids = ["BMKDesignPatchProject", "BMKDesignPatchImportPSD", "BMKDesignPatchCandidateIn", "BMKDesignPatchPrepare",
-           "BMKDesignPatchRun", "BMKDesignPatchAnalyze", "BMKDesignPatchReview", "BMKDesignPatchCompose",
-           "BMKDesignPatchExportPSD"]
-    check(list(dp.NODE_CLASS_MAPPINGS) == ids and list(dp.NODE_DISPLAY_NAME_MAPPINGS) == ids, "노드 9개 매핑(M2 Run·Review)")
+    ids = ["BMKDesignPatchProject", "BMKDesignPatchImportPSD", "BMKDesignPatchCandidateIn", "BMKDesignPatchSpecDraft",
+           "BMKDesignPatchPrepare", "BMKDesignPatchRun", "BMKDesignPatchAnalyze", "BMKDesignPatchReview",
+           "BMKDesignPatchCompose", "BMKDesignPatchExportPSD"]
+    check(list(dp.NODE_CLASS_MAPPINGS) == ids and list(dp.NODE_DISPLAY_NAME_MAPPINGS) == ids,
+          "노드 10개 매핑(M2 Run·Review, M3 Spec Draft = CandidateIn 다음)")
     spec_aliases = ["multi layer crop edit", "design patch", "디자인 패치", "디자인 수정", "파츠 보정", "크롭 수정", "psd"]
     for nid, cls in dp.NODE_CLASS_MAPPINGS.items():
         disp = dp.NODE_DISPLAY_NAME_MAPPINGS[nid]
@@ -2320,23 +2333,27 @@ def node_integration(psd05, crops03):
         check(isinstance(cls.DESCRIPTION, str) and len(cls.DESCRIPTION) > 20, f"{nid} DESCRIPTION")
         check(all(a in cls.SEARCH_ALIASES for a in spec_aliases) and not any("bmk" == a.lower() for a in cls.SEARCH_ALIASES),
               f"{nid} SEARCH_ALIASES")
-        has_ic = "IS_CHANGED" in cls.__dict__
-        check(has_ic == (nid in ids[:3]), f"{nid} IS_CHANGED 는 Project / ImportPSD / CandidateIn 에만 ({has_ic})")
+        has_ic = "IS_CHANGED" in cls.__dict__  # Spec Draft = approve 가 있으면 NaN(승인 큐는 1회용 — 리뷰 C11)
+        check(has_ic == (nid in ids[:3] or nid == "BMKDesignPatchSpecDraft"),
+              f"{nid} IS_CHANGED 는 Project / ImportPSD / CandidateIn / SpecDraft 에만 ({has_ic})")
         req = cls.INPUT_TYPES()["required"]
         if nid != "BMKDesignPatchProject":
             check(req["project"][0] == "BMK_DP_PROJECT" and list(req)[0] == "project", f"{nid} 첫 입력 project")
         hidden = list(cls.INPUT_TYPES().get("hidden") or {})
         optional = list(cls.INPUT_TYPES().get("optional") or {})
         sig = inspect.signature(getattr(cls, cls.FUNCTION)).parameters
-        check(list(req) + optional + hidden == list(sig)[1:]
+        named = [n for n, p in sig.items() if p.kind != p.VAR_KEYWORD]  # 유료 노드의 **_stale(옛 워크플로의 없는 입력)은 뺀다
+        check(list(req) + optional + hidden == named[1:]
               and all(sig[o].default is not inspect.Parameter.empty for o in optional),
               f"{nid} 입력 이름(+optional 기본값 있음 +hidden) = 함수 인자")
     outs = [k for k, v in dp.NODE_CLASS_MAPPINGS.items() if getattr(v, "OUTPUT_NODE", False) is True]
-    check(outs == ["BMKDesignPatchRun", "BMKDesignPatchReview", "BMKDesignPatchExportPSD"], f"OUTPUT_NODE {outs}")
+    check(outs == ["BMKDesignPatchSpecDraft", "BMKDesignPatchRun", "BMKDesignPatchReview", "BMKDesignPatchExportPSD"],
+          f"OUTPUT_NODE {outs}")
     rt = {k: v.RETURN_TYPES for k, v in dp.NODE_CLASS_MAPPINGS.items()}
     check(rt == {"BMKDesignPatchProject": ("BMK_DP_PROJECT", "STRING"),
                  "BMKDesignPatchImportPSD": ("BMK_DP_PROJECT", "IMAGE", "STRING"),
                  "BMKDesignPatchCandidateIn": ("BMK_DP_PROJECT", "STRING"),
+                 "BMKDesignPatchSpecDraft": ("BMK_DP_PROJECT", "STRING", "IMAGE"),
                  "BMKDesignPatchPrepare": ("BMK_DP_PROJECT", "IMAGE", "STRING"),
                  "BMKDesignPatchRun": ("BMK_DP_PROJECT", "STRING", "IMAGE"),
                  "BMKDesignPatchAnalyze": ("BMK_DP_PROJECT", "IMAGE", "STRING"),
@@ -2777,7 +2794,8 @@ def node_fixes(dp, NODES):
     vals = [dp.BMKDesignPatchProject.IS_CHANGED(project=None, base_dir=""),
             dp.BMKDesignPatchProject.IS_CHANGED(project="x", base_dir=None),
             dp.BMKDesignPatchImportPSD.IS_CHANGED(psd_path=None, refs_dir="", glossary_path=""),
-            dp.BMKDesignPatchCandidateIn.IS_CHANGED(source="psd_harvest", path=None)]
+            dp.BMKDesignPatchCandidateIn.IS_CHANGED(source="psd_harvest", path=None),
+            dp.BMKDesignPatchSpecDraft.IS_CHANGED(approve=None)]
     check(all(isinstance(v, float) and math.isnan(v) for v in vals), f"DP-INT-4 링크 입력 IS_CHANGED = NaN {vals}")
 
     section("N8b 같은 이름 크롭 (DP-1): 03 + '030_팔매듭 | B' 큰 rect (read_crop_rects 를 이 테스트 안에서만 감쌈)")
@@ -2870,6 +2888,16 @@ def node_fixes(dp, NODES):
     _e3, d3, h3, _w = dp._ensure_analysis(roots, ms, [c1])
     check(d0 + h0 == 1 and d1 == 1 and e1[c1["key"]].get("skipped") and d2 == 1 and d3 == 0 and h3 == 1,
           f"DP-4 quad 가 분석 대상 여부를 바꾸면 / 손 마스크 위치가 바뀌면 다시 분석, 원래 값은 캐시 ({d1},{d2},{d3})")
+    # 다중 타깃 Run 후보 키(r_<cell12>_<rep>_<slot>_<tid>)도 분석된다 — derived 접두가 store 한도 32자를 넘으면 안 됨(10/13 A/B 실측 결함)
+    long_keys = ["r_d55d4f38845d_0_0_A", "r_d55d4f38845d_0_0_B"]
+    pres = [dp._derived_prefix(k, "6f841fabcdef") for k in long_keys]
+    check(all(len(p_ + "toned_") <= 32 for p_ in pres) and pres[0] != pres[1]
+          and dp._derived_prefix("h_0123456789ab", "6f841f") == "h_0123456789ab_6f841f_",
+          f"_derived_prefix: 긴 키는 줄이되 구별, 짧은 키는 그대로 {pres}")
+    c1r = dict(c1, key=long_keys[0], hand_mask=None)
+    er, dr, _hr, _w = dp._ensure_analysis(roots, ms, [c1r])
+    check(dr == 1 and er[long_keys[0]].get("automask") and not er[long_keys[0]].get("skipped"),
+          f"긴 Run 후보 키도 분석 성공(자동 마스크·톤 저장) {dr}")
     # DP-INT-2: specs 가 가리키는 guide·하위 폴더 ref 가 바뀌면 Project IS_CHANGED 가 바뀜
     refs = FX / "refs"
     (refs / "bcut").mkdir(parents=True)
@@ -6095,6 +6123,2866 @@ def m2_board_unit():
 
 
 # ═════════════════════════════════════════════════════════════════
+# M3-V. Spec Draft VLM 모듈 단위 (M3_SPEC §7 vlm_unit) — 순수 함수·mock·가짜 api, 네트워크·comfy import 없음
+#   V1 import 순도  V2 위젯·only·side  V3 문맥  V4 키 민감도  V5 프롬프트·스키마  V6 openai_body  V7 extract_json
+#   V8 normalize  V9 렌더 왕복  V10 merge_spec  V11 render_check  V12 write_spec  V13 원장 상태표  V14 plan·approval
+#   V15 추정  V16 OpenAIVLM(가짜 api)  V17 MockVLM  V18 Qwen(가짜 mm·model·processor)  V19 credit_cap
+#   V20 paste_layer_name  V21 보고서  V22–V24 리뷰 회귀(1·2차)  E0 평가 도구 대조  E1–E4 평가 도구 자기 시험(참조 폴더가 있을 때)
+#   한 묶음의 예외는 실패로 기록하고 다음 묶음으로 간다(_guarded).
+# ═════════════════════════════════════════════════════════════════
+VLM_OUT = OUT_ROOT / "vlm"
+# prompt_fingerprint() 고정값. 프롬프트·스키마 문구를 바꾸면 DRAFT_VERSION 과 함께 의식적으로 갱신한다(FAIL 문구에 지금 값).
+VLM_PROMPT_FP = "68c2b3c360c1"
+_S8 = ("A side word in a crop or file name (right, left, 오른쪽, 왼쪽) means the viewer's side.",
+       "If a target line says its mode is fixed by the art lead, keep that mode and still fill every field.",
+       "An artist hint, if given, overrides your own reading; it may be written in Korean.")
+
+
+def _guarded(name, fn, *a, **kw):
+    """한 시험 묶음을 돌린다. 예외(미구현 포함)는 실패 하나로 기록하고 계속한다."""
+    try:
+        return fn(*a, **kw)
+    except Exception as e:  # noqa: BLE001 — 시험 하네스: 나머지 묶음을 막지 않게
+        tb = traceback.extract_tb(e.__traceback__)
+        where = f"{Path(tb[-1].filename).name}:{tb[-1].lineno}" if tb else "?"
+        check(False, f"{name}: 예외 {type(e).__name__}: {str(e)[:200]} @ {where}")
+        return None
+
+
+def _vlm_img(h, w, seed):
+    """빠른 합성 그림(큰 크롭용): 작은 난수 → BILINEAR 확대."""
+    rng = np.random.default_rng(seed)
+    small = rng.integers(0, 256, size=(max(2, h // 16), max(2, w // 16), 3), dtype=np.uint8)
+    return np.asarray(Image.fromarray(small).resize((w, h), Image.Resampling.BILINEAR))
+
+
+def _vlm_project(case, crops, *, refs=(), base_wh=(640, 480), glossary=None, mock=None):
+    """합성 프로젝트. crops = [(레이어명, (w, h), opt)] — opt: pad_left, target{tid: {...}}, refs_auto, spec(dict|str).
+    refs = [(파일명, (w, h))] 는 refs_dir 에 만든다(_t 는 알파 컷아웃). mock = _MOCK_API 내용(dict) 또는 None.
+    반환 (root, refs_dir, m)."""
+    import eval_bmk_design_patch_vlm as ev
+    base_dir = VLM_OUT / case
+    shutil.rmtree(base_dir, ignore_errors=True)
+    root = store.project_root(str(base_dir), "proj")
+    os.makedirs(root)
+    refs_dir = base_dir / "refs"
+    refs_dir.mkdir()
+    for i, (fn, (w, h)) in enumerate(refs):
+        rgb = _vlm_img(h, w, 100 + i)
+        if store.is_ref_cutout(fn):
+            a = np.zeros((h, w), np.uint8)
+            a[h // 8: h - h // 8, w // 8: w - w // 8] = 255
+            Image.fromarray(np.dstack([rgb, a])).save(refs_dir / fn)
+        else:
+            Image.fromarray(rgb).save(refs_dir / fn)
+    m = store.new_manifest("proj")
+    W, H = base_wh
+    m["canvas"], m["work_rect"] = [W, H], [0, 0, W, H]
+    m["base"] = store.save_png_ca(root, "inputs", _vlm_img(H, W, 7))
+    m["source"]["refs_dir"] = str(refs_dir)
+    for cid, (lname, (w, h), opt) in zip(store.assign_crop_ids([c[0] for c in crops]), crops):
+        p = store.parse_crop_layer_name(lname)
+        rgba = np.dstack([_vlm_img(h, w, 11 + len(m["crops"])), np.full((h, w), 255, np.uint8)])
+        if opt.get("pad_left"):
+            rgba[:, : w // 5, 3] = 0
+        targets = ev.new_targets(p, None)
+        for t in targets:
+            t.update((opt.get("target") or {}).get(t["tid"], {}))
+        refs_auto = store.match_refs(str(refs_dir), p["nnn"], part=p["part"]) if refs else []
+        m["crops"].append({"id": cid, "name": p["name"], "nnn": p["nnn"], "part": p["part"], "layer_name": lname,
+                           "rect": [0, 0, w, h], "rect_source": "vector", "source": store.save_png_ca(root, "inputs", rgba),
+                           "source_kind": "base_crop", "alpha_frac": round(float(np.mean(rgba[..., 3] < 255)), 6),
+                           "targets": targets, "refs_auto": opt.get("refs_auto", refs_auto), "warnings": []})
+        if "spec" in opt:
+            os.makedirs(os.path.join(root, "specs"), exist_ok=True)
+            sp = os.path.join(root, "specs", f"{cid}.json")
+            if isinstance(opt["spec"], str):
+                Path(sp).write_text(opt["spec"], encoding="utf-8")
+            else:
+                store.write_json_atomic(sp, opt["spec"])
+    store.save_manifest(root, m)
+    if glossary:
+        store.write_json_atomic(os.path.join(root, "glossary.json"), glossary)
+    if mock is not None:
+        (base_dir / "bmk_design_patch" / "_MOCK_API").write_text(json.dumps(mock), encoding="utf-8")
+    return root, str(refs_dir), store.load_manifest(root)
+
+
+_TOAST = "002_토스트-머리장식_right | A: 토스트; B: 빨간 헤어핀"
+_REFS002 = [("002_토스트-머리장식_right_t.png", (128, 128)), ("002_토스트-머리장식_left_t.png", (128, 128)),
+            ("002_토스트-머리장식_right.png", (512, 768)), ("002_토스트-머리장식_left.png", (300, 300)),
+            ("002_토스트-머리장식_left_t2.png", (128, 128)), ("002_토스트-머리장식_right_t2.png", (200, 160)),
+            ("002_토스트-머리장식.png", (256, 256))]
+
+
+def _vt(tid, **kw):
+    """VLM 크롭 출력의 타깃 하나(RP §8 스키마 모양, 기본 = 레퍼런스 2 로 고치는 fix)."""
+    d = {"id": tid, "name": "toast hair clip", "found": True, "canvas_now": "a round green filling", "counts": [],
+         "mode": "ref_correct", "suggested_mode": "none", "action": "fix", "ref_images": [2],
+         "ref_object": "the toast-shaped clip", "ref_ignore": "", "ref_view": "same",
+         "detail": "a slice of white bread; a golden crust rim", "must_not": ["the round green filling"], "defects": "",
+         "location": "", "occluded_by": "", "shape": "locked", "text": "none", "bbox": [256, 256, 768, 768],
+         "confidence": "high", "review_note": "버터 확인"}
+    d.update(kw)
+    return d
+
+
+def _vparsed(targets, *, preserve=None, echo=True, suggested=None):
+    p = {"observations": [{"image": "1", "shows": "a crop"}],
+         "preserve": ["the hair strands", "the eyelashes"] if preserve is None else preserve,
+         "targets": targets, "suggested_targets": suggested or []}
+    return {"schema_echo": "dp-draft-1", **p} if echo else p
+
+
+def _vprov(req, **kw):
+    """merge_spec / merge_project 에 넘기는 출처(§5.1 _draft 모양)."""
+    import bmk_design_patch_vlm as dvlm
+    d = {"version": dvlm.DRAFT_VERSION, "normalizer": dvlm.NORM_VERSION, "pass_plan": dvlm.PASS_PLAN,
+         "key": getattr(req, "key", "0" * 24), "attempt": 1, "backend": "vlm_openai", "model": "gpt-6-astra",
+         "effort": "high", "image_detail": "high", "prompt": "0" * 12, "drafted": "2026-10-07 12:00:00", "credits": 172,
+         "hint": "", "refs_shown": list(getattr(req, "shown_refs", []) or []), "round": 0,
+         "transport": {"schema_level": 2, "background": True, "schema_enforced": True}}
+    d.update(kw)
+    return d
+
+
+def _vflags(draft, tid=None):
+    """플래그 코드 집합(크롭 + 타깃). 플래그는 "코드: 설명" 형식일 수 있어 ':' 앞 코드도 넣는다."""
+    raw = list(draft.flags or [])
+    for t, rv in (draft.review or {}).items():
+        if tid is None or t == tid:
+            raw += list((rv or {}).get("flags") or [])
+    return set(raw) | {str(f).split(":", 1)[0].strip() for f in raw}
+
+
+def vlm_unit():
+    import bmk_design_patch_runner as runner
+    import bmk_design_patch_vlm as dvlm
+    import eval_bmk_design_patch_vlm as ev
+
+    VLM_OUT.mkdir(parents=True, exist_ok=True)
+    env_mock = os.environ.pop(runner.MOCK_ENV, None)  # 사용자 환경의 mock 스위치가 시험에 섞이지 않게
+
+    def key24(i):
+        return f"{i:024x}"
+
+    def mk_ctx(cid, *, spec=None, tids=("A",), hint="", spec_error=None):
+        canvas = dvlm.SentImage("canvas", cid, os.path.join(str(VLM_OUT), "none.png"), "0" * 16, (1024, 1024), None, False)
+        return dvlm.CropCtx(crop_id=cid, name=cid, part="part", nnn=cid.split("_")[0], side=None, layer_name=cid,
+                            canvas=canvas, canvas_orig_wh=(256, 256), pad_sides=[], refs=[], refs_hidden=[],
+                            targets=[dvlm.TargetIn(t, f"라벨{t}", "", None, None, (), False) for t in tids],
+                            gloss_hints=[], hint=hint, spec=spec, spec_error=spec_error, skip_reason=None)
+
+    def mk_req(cid, key, *, backend="mock", model="mock", effort=None, kind="crop", rnd=0, text="x", tids=("A",),
+               shown_refs=()):
+        schema = {"type": "object", "properties": {"targets": {"items": {"properties": {"id": {"enum": list(tids)}}}}}}
+        user = text + "\n" + "\n".join(f'- {t}: Korean label "라벨{t}"; English name: none, choose one' for t in tids)
+        return dvlm.Request(kind=kind, crop_id=cid, key=key, system="system", parts=[("text", user)], schema=schema,
+                            bbox_frame=("q1000",), shown_refs=list(shown_refs), user_text=user, backend=backend, model=model,
+                            effort=effort, image_detail="high" if backend == "openai" else None, draft_round=rnd)
+
+    def unit_of(cid, key, attempt=1, kind="crop", est=(0, 0)):
+        return dvlm.Unit(cid, key, attempt, kind, "new", ["신규"], True, est)
+
+    # ─────────────────────────────────────────────────────────────
+    def t_v1():
+        section("V1 import 순도(subprocess) · 모듈 머리 · 로깅 규약 · 이모지 없음")
+        code = ("import sys, json; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[2]); "
+                "import bmk_design_patch_vlm, eval_bmk_design_patch_vlm; "
+                "print(json.dumps(sorted(k for k in sys.modules if k in ('torch', 'transformers', 'folder_paths') "
+                "or k.startswith('comfy'))))")
+        r = subprocess.run([sys.executable, "-X", "utf8", "-c", code, str(PKG), str(_HERE.parent)], capture_output=True,
+                           text=True, encoding="utf-8", timeout=180)
+        bad = json.loads(r.stdout.strip().splitlines()[-1]) if r.returncode == 0 and r.stdout.strip() else None
+        check(bad == [], f"vlm·평가 도구 import 가 torch/transformers/comfy*/comfy_api_nodes/folder_paths 를 끌어오지 않음 "
+                         f"{bad} {r.stderr.strip()[-300:]}")
+        src = (PKG / "bmk_design_patch_vlm.py").read_text(encoding="utf-8")
+        check(src.startswith('"""BMK Design Patch VLM') and "from __future__ import annotations" in src, "vlm 모듈 머리")
+        check('_TAG = "[ComfyUI_BMK_Nodes::DesignPatch]"' in src and "logger = logging.getLogger(__name__)" in src, "로깅 규약")
+        check(not re.search(r"^\s*(import|from)\s+folder_paths\b", src, re.M), "folder_paths 를 import 하지 않음(모델 경로는 main 이 넘김)")
+        check(not re.search(r"^(import|from) (torch|transformers|comfy)", src, re.M), "torch·transformers·comfy 는 함수 안에서만 import")
+        for p in (PKG / "bmk_design_patch_vlm.py", _HERE.parent / "eval_bmk_design_patch_vlm.py"):
+            s = p.read_text(encoding="utf-8")
+            check(not any(ord(ch) >= 0x1F000 or ch == "\ufe0f" for ch in s), f"{p.name} 소스에 이모지 없음")
+        check(dvlm.store is store and dvlm.dprompt is P, "단독 실행: 절대 import 폴백(같은 store·prompt 모듈)")
+        check(dvlm.UI_KEY == "bmk_dp_draft" and dvlm.BRANCH_KEY == "draft" and dvlm.SCHEMA_ECHO == "dp-draft-1",
+              "공유 이름(§10): ui 키 bmk_dp_draft, 가지 키 draft, schema_echo dp-draft-1")
+
+    def t_v2():
+        section("V2 parse_vlm_choice · check_widgets(모델 × effort) · side_of · parse_only / only_match")
+        check([dvlm.parse_vlm_choice(c) for c in dvlm.VLM_CHOICES] == [
+            ("openai", "gpt-6-astra"), ("openai", "gpt-6-sol"), ("openai", "gpt-5.6-sol"), ("openai", "gpt-5.5-pro"),
+            ("local_qwen", "Qwen3-VL-8B-Instruct"), ("mock", "mock")], "vlm 콤보 → (family, model)")
+        check(dvlm.DEFAULT_VLM == "openai/gpt-6-sol" and dvlm.DEFAULT_VLM in dvlm.VLM_CHOICES and dvlm.DEFAULT_EFFORT == "xhigh"
+              and dvlm.DEFAULT_EFFORT in dvlm.MODEL_EFFORTS["gpt-6-sol"], "기본 vlm = openai/gpt-6-sol · effort xhigh(허용 조합)")
+        expect_raises(lambda: dvlm.parse_vlm_choice("openai/gpt-9"), "목록 밖 vlm → ValueError")
+        wrong = []
+        for model, effs in dvlm.MODEL_EFFORTS.items():
+            for e in dvlm.EFFORTS:
+                try:
+                    dvlm.check_widgets(f"openai/{model}", e, "high", "fill")
+                    got = True
+                except ValueError:
+                    got = False
+                if got != (e in effs):
+                    wrong.append((model, e))
+        check(not wrong, f"모델 × effort 허용표(nodes_openai 복제)대로 통과/거부 {wrong}")
+        expect_raises(lambda: dvlm.check_widgets("openai/gpt-5.5-pro", "low", "high", "fill"), "gpt-5.5-pro + low → ValueError",
+                      contains="gpt-5.5-pro")
+        dvlm.check_widgets("local_qwen/Qwen3-VL-8B-Instruct", "low", "original", "preview")  # effort·detail 은 openai 만
+        dvlm.check_widgets("mock", "max", "high", "force")
+        expect_raises(lambda: dvlm.check_widgets("mock", "high", "low", "fill"), "image_detail low → ValueError")
+        expect_raises(lambda: dvlm.check_widgets("mock", "high", "high", "merge"), "write_mode merge → ValueError")
+        expect_raises(lambda: dvlm.check_widgets("mock", "ultra", "high", "fill"), "effort ultra → ValueError")
+        cases = {"002_토스트-머리장식_right": "right", "007_머리장식-왼쪽-펜": "left", "010_손가락붕대-오른쪽.png": "right",
+                 "002_토스트-머리장식_left_t2.png": "left", "brighten_leftover": None, "007_left_right": None,
+                 "030_팔매듭": None, "": None, "Right_x.PNG": "right"}
+        got = {k: dvlm.side_of(k) for k in cases}
+        check(got == cases, f"side_of: 토큰 경계·보는 사람 기준 {got}")
+        toks = dvlm.parse_only(" 002_388984, 030  STYLE,030 ")
+        check(toks == ["002_388984", "030", "style"], f"parse_only 쉼표·공백 분리, 중복 제거, style 소문자 {toks}")
+        om = dvlm.only_match
+        check(om([], "002_388984") and om([], "_style"), "빈 only = 전부")
+        check(om(["002_388984"], "002_388984") and om(["030"], "030_d8449c") and not om(["031"], "030_d8449c")
+              and not om(["030"], "002_388984"), "only: crop_id 또는 NNN")
+        check(om(["style"], "_style") and not om(["030"], "_style") and not om(["style"], "030_d8449c"), "only: style 토큰은 화풍만")
+
+    # ─────────────────────────────────────────────────────────────
+    def toast_project(case="v3", **kw):
+        crops = [(_TOAST, (256, 256), {"pad_left": True}),
+                 ("005_큰크롭", (2048, 2048), {}),
+                 ("006_세로 | A: 세로 장식", (768, 1280), {"target": {"A": {"mode": "self_restore", "refs": ["006_x.png"]}}}),
+                 ("007_구버전", (256, 256), {"spec": '{"targets": [\n  {"id": "A",}\n'})]
+        crops += kw.pop("extra", [])
+        return _vlm_project(case, crops, refs=_REFS002, **kw)
+
+    def t_v3():
+        section("V3 build_crop_ctx: Prepare 와 같은 canvas sha · 전송 크기 · 같은 side 레퍼런스 먼저 · 숨김 · 패딩 변 · 깨진 스펙")
+        sz = [dvlm.sent_size((256, 256), "canvas", "openai"), dvlm.sent_size((768, 1280), "canvas", "openai"),
+              dvlm.sent_size((2048, 2048), "canvas", "openai"), dvlm.sent_size((128, 128), "ref", "openai"),
+              dvlm.sent_size((512, 768), "ref", "openai")]
+        check(sz == [(1024, 1024), (768, 1280), (1536, 1536), (384, 384), (512, 768)], f"sent_size 표(§1 Q3) {sz}")
+        q = [dvlm.sent_size(wh, role, "local_qwen") for wh, role in (((300, 500), "canvas"), ((200, 130), "ref"), ((2000, 900), "base"))]
+        check(all(w % 32 == 0 and h % 32 == 0 for w, h in q), f"local_qwen 은 양 변 32 배수 {q}")
+        root, refs_dir, m = toast_project(glossary={"토스트": "toast hair clip", "머리장식": "hair ornament", "없는말": "x"})
+        g = store.load_glossary(os.path.join(root, "glossary.json"))
+        memo = {}
+        t0 = time.time()
+        ctxs = [dvlm.build_crop_ctx(root, m, c, refs_dir=refs_dir, glossary=g, backend="openai", memo=memo) for c in m["crops"]]
+        t_first = time.time() - t0
+        c0, c5, c6, c7 = ctxs
+        with Image.open(store.resolve_path(root, m["crops"][0]["source"])) as im:
+            rgba = np.asarray(im.convert("RGBA"))
+        check(c0.canvas.src_sha == store.pixel_sha(P.flatten_canvas(rgba)[0]), "canvas src_sha == pixel_sha(flatten_canvas) (Prepare 와 같은 값)")
+        check(c0.canvas.role == "canvas" and c0.canvas.name == c0.crop_id and c0.canvas_orig_wh == (256, 256)
+              and tuple(c0.canvas.sent_wh) == (1024, 1024), f"256² → 1024² {c0.canvas.sent_wh}")
+        check(tuple(c5.canvas.sent_wh) == (1536, 1536) and tuple(c6.canvas.sent_wh) == (768, 1280), "2048² → 1536², 768×1280 그대로")
+        check(c0.pad_sides == ["left"] and c5.pad_sides == [], f"pad_sides(왼쪽 투명 띠) {c0.pad_sides}")
+        names = [r.name for r in c0.refs]
+        check(names == ["002_토스트-머리장식_right_t.png", "002_토스트-머리장식_right_t2.png", "002_토스트-머리장식_right.png",
+                        "002_토스트-머리장식.png", "002_토스트-머리장식_left_t.png", "002_토스트-머리장식_left_t2.png"]
+              and c0.refs_hidden == ["002_토스트-머리장식_left.png"], f"같은 side 먼저(안정 정렬), 6장 + 숨김 1 {names} {c0.refs_hidden}")
+        r_t = c0.refs[0]
+        check(r_t.role == "ref" and r_t.side == "right" and r_t.cutout and tuple(r_t.sent_wh) == (384, 384)
+              and tuple(c0.refs[2].sent_wh) == (512, 768) and c0.refs[3].side is None and c0.refs[4].side == "left",
+              "ref SentImage: side·cutout·전송 크기(128²→384², 512×768 그대로)")
+        with Image.open(os.path.join(refs_dir, r_t.name)) as im:
+            check(r_t.src_sha == store.pixel_sha(P.flatten_ref(im)), "ref src_sha == pixel_sha(flatten_ref #808080)")
+        check(c0.side == "right" and c0.nnn == "002" and c0.part == "토스트-머리장식_right" and c0.layer_name == _TOAST,
+              "크롭 side·nnn·part·layer_name")
+        ta, tb = c0.targets
+        check((ta.tid, ta.label, ta.gloss, ta.legacy, tb.label, tb.gloss) == ("A", "토스트", "toast hair clip", False, "빨간 헤어핀", None),
+              f"TargetIn 라벨·용어집 적중·legacy {ta} {tb}")
+        check(("토스트", "toast hair clip") in c0.gloss_hints and not any(k == "없는말" for k, _ in c0.gloss_hints)
+              and len(c0.gloss_hints) <= 10, f"gloss_hints(부위·라벨에 든 키만) {c0.gloss_hints}")
+        t6 = c6.targets[0]
+        check(t6.human_mode == "self_restore" and t6.human_refs == ("006_x.png",), "매니페스트 사람 mode·refs → human_mode/human_refs")
+        check(c7.targets[0].legacy and c7.spec is None and c7.spec_error and "행" in c7.spec_error,
+              f"깨진 스펙 JSON → spec_error(줄 번호) {c7.spec_error}")
+        check(c0.spec_error is None and c0.skip_reason is None and c0.hint == "", "정상 크롭: 오류 없음, _hint 빈 값")
+        check(c5.refs == [] and c5.refs_hidden == [], "NNN 레퍼런스 없음 → 0장")
+        cz = dvlm.build_crop_ctx(root, m, m["crops"][0], refs_dir="", glossary=g, backend="openai", memo={})
+        check(cz.refs == [], "refs_dir 비어 있음 → 레퍼런스 0장(예외 없음)")
+        t0 = time.time()
+        again = [dvlm.build_crop_ctx(root, m, c, refs_dir=refs_dir, glossary=g, backend="openai", memo=memo) for c in m["crops"]]
+        t_memo = time.time() - t0
+        check(memo and [a.canvas.src_sha for a in again] == [c.canvas.src_sha for c in ctxs] and t_memo < 2.0,
+              f"memo 적중: 같은 sha, {t_memo:.2f}s (처음 {t_first:.2f}s)")
+        note(f"V3 build_crop_ctx 4크롭 {t_first:.2f}s → memo {t_memo:.3f}s")
+        cq = dvlm.build_crop_ctx(root, m, m["crops"][1], refs_dir=refs_dir, glossary=g, backend="local_qwen", memo={})
+        check(all(v % 32 == 0 for v in cq.canvas.sent_wh), f"local_qwen canvas 32 배수 {cq.canvas.sent_wh}")
+        return root, refs_dir, m
+
+    def t_v4():
+        section("V4 키 민감도: 보낼 요청이 바뀌면 키가 바뀌고, 스펙 내용·write_mode·caps·NORM_VERSION 은 키 밖")
+        root, refs_dir, m = toast_project("v4")
+        cid = m["crops"][0]["id"]
+        spec_path = os.path.join(root, "specs", f"{cid}.json")
+
+        def key_of(mut=None, spec=None, glossary=None, fam="openai", **kw):
+            m2 = copy.deepcopy(m)
+            crop = m2["crops"][0]
+            if mut:
+                mut(crop)
+            if spec is None:
+                if os.path.exists(spec_path):
+                    os.remove(spec_path)
+            else:
+                os.makedirs(os.path.dirname(spec_path), exist_ok=True)
+                store.write_json_atomic(spec_path, spec)
+            ctx = dvlm.build_crop_ctx(root, m2, crop, refs_dir=refs_dir, glossary=glossary or {}, backend=fam, memo={})
+            a = dict(backend=fam, model="gpt-6-astra" if fam == "openai" else ("mock" if fam == "mock" else "Qwen3-VL-8B-Instruct"),
+                     effort="high", image_detail="high", draft_round=0)
+            a.update(kw)
+            return dvlm.build_request(ctx, **a).key
+
+        k0 = key_of()
+        check(re.fullmatch(r"[0-9a-f]{24}", k0) is not None and key_of() == k0, "키 = 24 hex, 같은 입력이면 같음")
+        other = store.save_png_ca(root, "inputs", np.dstack([_vlm_img(256, 256, 999), np.full((256, 256), 255, np.uint8)]))
+        changes = {
+            "canvas sha": key_of(lambda c: c.__setitem__("source", other)),
+            "ref 목록": key_of(lambda c: c.__setitem__("refs_auto", c["refs_auto"][:3])),
+            "ref 순서": key_of(lambda c: c.__setitem__("refs_auto", [c["refs_auto"][1], c["refs_auto"][0]] + c["refs_auto"][2:])),
+            "label": key_of(lambda c: c["targets"][0].__setitem__("label", "식빵")),
+            "name_en": key_of(lambda c: c["targets"][0].__setitem__("name_en", "toast clip")),
+            "용어집 적중": key_of(glossary={"빨간 헤어핀": "red hairpin bar"}),
+            "사람 mode": key_of(lambda c: c["targets"][0].__setitem__("mode", "self_restore")),
+            "사람 refs": key_of(lambda c: c["targets"][0].__setitem__("refs", ["002_토스트-머리장식_right.png"])),
+            "_hint": key_of(spec={"_hint": "버터 하나만"}),
+            "model": key_of(model="gpt-6-sol"),
+            "effort": key_of(effort="xhigh"),
+            "detail": key_of(image_detail="original"),
+            "round": key_of(draft_round=1),
+            "backend mock": key_of(fam="mock"),
+        }
+        orig_fp = dvlm.prompt_fingerprint
+        dvlm.prompt_fingerprint = lambda: "f" * 12  # 이 블록 안에서만(모듈 속성)
+        try:
+            changes["prompt_fingerprint"] = key_of()
+        finally:
+            dvlm.prompt_fingerprint = orig_fp
+        same_bad = [k for k, v in changes.items() if v == k0]
+        check(not same_bad, f"바뀌어야 하는 키가 그대로: {same_bad}")
+        stays = {
+            "스펙 내용(_hint 외)": key_of(spec={"targets": [{"id": "A", "detail": "human detail"}], "_hint": "",
+                                                 "_draft": {"key": "x"}, "_accepted": True}),
+        }
+        caps = os.path.join(os.path.dirname(root), dvlm.CAPS_FILE)
+        store.write_json_atomic(caps, {"openai": {"gpt-6-astra": {"schema_level": 0, "background": False}},
+                                       "usage": {"gpt-6-astra|high|crop": [1, 2, 3]}})
+        try:
+            stays["caps"] = key_of()
+        finally:
+            os.remove(caps)
+        orig_nv = dvlm.NORM_VERSION
+        dvlm.NORM_VERSION = "dp-draft-norm/999"
+        try:
+            stays["NORM_VERSION"] = key_of()
+        finally:
+            dvlm.NORM_VERSION = orig_nv
+        moved = [k for k, v in stays.items() if v != k0]
+        check(not moved, f"키 밖이어야 하는 것이 키를 바꿈: {moved}")
+        params = set(inspect.signature(dvlm.build_request).parameters)
+        check(params >= {"ctx", "backend", "model", "effort", "image_detail", "draft_round"}
+              and not params & {"write_mode", "mode", "only", "concurrency", "credit_cap", "keep_loaded"},
+              f"build_request 인자에 write_mode·only·concurrency·credit_cap·keep_loaded 없음(키 밖) {sorted(params)}")
+        kq = key_of(fam="local_qwen")
+        check(kq == key_of(fam="local_qwen", effort="low", image_detail="original") and kq != k0,
+              "local_qwen 키는 effort·detail 과 무관, openai 와 다름")
+        if os.path.exists(spec_path):
+            os.remove(spec_path)
+
+    # ─────────────────────────────────────────────────────────────
+    def t_v5():
+        section("V5 프롬프트(S1–S9, U1–U6)·지문 고정값·스키마(schema_echo, ID/REF enum, N=1, L1/L0)")
+        sp = dvlm.system_prompt("crop", "openai", ("px", 1024, 1024))
+        check("CANVAS ZOOM" not in sp and "style_note" not in sp, "S1·S4: CANVAS ZOOM·style_note 계약 없음")
+        must = ["Each reference label says whether the side word in its file name matches the crop's side.",
+                'A target marked "legacy" stands for the whole part named by the crop: draft its single most important wrong '
+                'element as that target, and put every other wrong element in suggested_targets.',
+                'If the canvas shows lettering on this object that the reference does not have, use "none" and name that '
+                'lettering in must_not.',
+                'Name a visible anchor in the canvas (for example "below the black cuff band").',
+                "Write a number in detail only if counts lists that part with the same reference count.", *_S8,
+                "[x1, y1, x2, y2] as integer pixel coordinates in Image 1, which is exactly 1024 x 1024 pixels (0,0 = top-left)"]
+        miss = [s[:50] for s in must if s not in sp]
+        check(not miss, f"S2·S3·S5–S9 문장(§4.1 원문) {miss}")
+        sq = dvlm.system_prompt("crop", "local_qwen", ("q1000",))
+        check("[x1, y1, x2, y2] as integers from 0 to 1000 relative to Image 1's width and height" in sq and "pixels (0,0" not in sq,
+              "S9 qwen: 0–1000 상대 좌표")
+        ss = dvlm.system_prompt("style", "openai", ("px", 1536, 1024))
+        check("style_note: 6-25 words" in ss and "Base colors of objects are not style." in ss, "화풍 시스템 프롬프트(§4.2)")
+        fp = dvlm.prompt_fingerprint()
+        check(re.fullmatch(r"[0-9a-f]{12}", fp) is not None and fp == dvlm.prompt_fingerprint(), f"prompt_fingerprint 12 hex 결정적 {fp}")
+        check(fp == VLM_PROMPT_FP, f"prompt_fingerprint 고정값: 지금 {fp} ≠ 기록 {VLM_PROMPT_FP} — 프롬프트를 바꿨으면 "
+                                   f"DRAFT_VERSION 과 테스트 VLM_PROMPT_FP 를 함께 갱신")
+        root, refs_dir, m = toast_project("v5", glossary={"토스트": "toast hair clip"},
+                                          extra=[("008_레거시 | A: 장식", (256, 256), {"target": {"A": {"mode": "paste_harmonize"}}})])
+        g = store.load_glossary(os.path.join(root, "glossary.json"))
+        ctx = dvlm.build_crop_ctx(root, m, m["crops"][0], refs_dir=refs_dir, glossary=g, backend="openai", memo={})
+        req = dvlm.build_request(ctx, backend="openai", model="gpt-6-astra", effort="high", image_detail="high", draft_round=0)
+        ut = req.user_text
+        check(ut.startswith('Crop: 002_토스트-머리장식_right   Part label (Korean): "토스트-머리장식_right"   '
+                            "Side (viewer's, from the name): right"), f"U1 첫 줄 {ut[:120]!r}")
+        check('- A: Korean label "토스트"; English name: "toast hair clip" (use exactly)' in ut
+              and '- B: Korean label "빨간 헤어핀"; English name: none, choose one' in ut, "U2 타깃 줄(용어집 적중·없음)")
+        check("Artist hint (may be Korean): none" in ut and "Artist notes" not in ut and "CANVAS ZOOM" not in ut, "U3·U5")
+        check('Image 2 - REFERENCE "002_토스트-머리장식_right_t.png" (clean cutout, on flat gray; same side as the crop).' in ut
+              and "OPPOSITE SIDE (left), may show the other piece" in ut and "no side in its name" in ut
+              and "sheet crop with surroundings" in ut, "U4 레퍼런스 라벨(컷아웃·같은/반대/없는 side)")
+        check("002_토스트-머리장식_left.png" in ut and "Fill this JSON skeleton" not in ut, "숨긴 레퍼런스 이름, openai 는 골격 없음")
+        check(ut.count("<image") == len([p for p in req.parts if p[0] == "image"]) == 7, "user_text 의 이미지 자리 = 이미지 수(캔버스+6)")
+        check(req.system == dvlm.system_prompt("crop", "openai", req.bbox_frame) and req.bbox_frame == ("px", 1024, 1024)
+              and req.kind == "crop" and req.crop_id == ctx.crop_id, "요청 system·bbox_frame(전송 캔버스 px)")
+        check(req.shown_refs == [r.name for r in ctx.refs], "shown_refs = 보여 준 레퍼런스 순서(Image k → shown_refs[k-2])")
+        cl = dvlm.build_crop_ctx(root, m, m["crops"][1], refs_dir=refs_dir, glossary=g, backend="openai", memo={})
+        rl = dvlm.build_request(cl, backend="openai", model="gpt-6-astra", effort="high", image_detail="high", draft_round=0)
+        check("; legacy: the whole part" in rl.user_text, "U2 레거시 표시")
+        cp = dvlm.build_crop_ctx(root, m, m["crops"][4], refs_dir=refs_dir, glossary=g, backend="openai", memo={})
+        rp = dvlm.build_request(cp, backend="openai", model="gpt-6-astra", effort="high", image_detail="high", draft_round=0)
+        check("; mode fixed by the art lead: paste_harmonize" in rp.user_text, "U2 사람 mode 고정")
+        store.write_json_atomic(os.path.join(root, "specs", f"{ctx.crop_id}.json"), {"_hint": "버터는 하나"})
+        ch = dvlm.build_crop_ctx(root, m, m["crops"][0], refs_dir=refs_dir, glossary=g, backend="openai", memo={})
+        rh = dvlm.build_request(ch, backend="openai", model="gpt-6-astra", effort="high", image_detail="high", draft_round=0)
+        check(ch.hint == "버터는 하나" and "Artist hint (may be Korean): 버터는 하나" in rh.user_text, "U3 _hint 를 사용자 텍스트로")
+        os.remove(os.path.join(root, "specs", f"{ctx.crop_id}.json"))
+        cq = dvlm.build_crop_ctx(root, m, m["crops"][0], refs_dir=refs_dir, glossary=g, backend="local_qwen", memo={})
+        rq = dvlm.build_request(cq, backend="local_qwen", model="Qwen3-VL-8B-Instruct", effort="high", image_detail="high",
+                                draft_round=0)
+        check("Fill this JSON skeleton:" in rq.user_text and '"<...>"' in rq.user_text and rq.bbox_frame == ("q1000",),
+              "U6 qwen 골격 + bbox 0–1000")
+        sch = req.schema
+        props = sch["properties"]
+        check(list(props)[0] == "schema_echo" and props["schema_echo"] == {"type": "string", "enum": ["dp-draft-1"]}
+              and "schema_echo" in sch["required"] and "schema_echo" not in sp, "schema_echo 첫 속성·필수·프롬프트 미언급")
+        check("style_note" not in props and "style_note" not in sch["required"] and sch.get("additionalProperties") is False,
+              "크롭 스키마에 style_note 없음, additionalProperties false")
+        tg = props["targets"]
+        ri = tg["items"]["properties"]["ref_images"]
+        check(tg["minItems"] == tg["maxItems"] == 2 and tg["items"]["properties"]["id"]["enum"] == ["A", "B"]
+              and ri["items"]["enum"] == [2, 3, 4, 5, 6, 7], f"ID enum·K·REF enum {ri}")
+        l1 = dvlm.schema_for_level(sch, 1)
+        dump2, dump1 = json.dumps(sch), json.dumps(l1)
+        check("minItems" not in dump1 and "maxItems" not in dump1 and dump1.count('"enum"') == dump2.count('"enum"')
+              and dvlm.schema_for_level(sch, 0) is None and dvlm.schema_for_level(sch, 2) == sch, "L1 = min/maxItems 전부 제거(enum 유지), L0 None")
+        c5 = dvlm.build_crop_ctx(root, m, m["crops"][1], refs_dir=refs_dir, glossary=g, backend="openai", memo={})
+        r5 = dvlm.build_request(c5, backend="openai", model="gpt-6-astra", effort="high", image_detail="high", draft_round=0)
+        ri5 = r5.schema["properties"]["targets"]["items"]["properties"]["ref_images"]
+        ri5b = dvlm.schema_for_level(r5.schema, 1)["properties"]["targets"]["items"]["properties"]["ref_images"]
+        check(ri5 == {"type": "array", "maxItems": 0, "items": {"type": "integer"}}
+              and ri5b == {"type": "array", "items": {"type": "integer"}}, f"N=1(레퍼런스 없음) ref_images {ri5} / {ri5b}")
+        sc = dvlm.build_style_ctx(root, m, backend="openai", memo={})
+        check(sc is not None and sc[0].role == "base" and max(sc[0].sent_wh) <= 1536 and [s.role for s in sc[1]] == ["crop"] * 3
+              and [s.name for s in sc[1]] == [c["id"] for c in m["crops"][:3]], "화풍 문맥: base(긴 변 ≤1536) + 매니페스트 순서 첫 3 크롭")
+        sr = dvlm.build_style_request(sc, backend="openai", model="gpt-6-astra", effort="high", image_detail="high", draft_round=0)
+        sp_ = sr.schema["properties"]
+        check(sr.kind == "style" and sr.crop_id == "_style" and set(sp_) == {"schema_echo", "observations", "style_note"}
+              and sp_["observations"]["maxItems"] == 5 and sr.schema.get("additionalProperties") is False
+              and "Image 1 - WHOLE ILLUSTRATION (" in sr.user_text and 'CROP "' in sr.user_text
+              and sr.user_text.rstrip().endswith("Write the JSON now."), "화풍 요청: 스키마·사용자 텍스트(§4.2)")
+        return root, refs_dir, m, ctx, req
+
+    def t_v6(ctx_req):
+        section("V6 openai_body: 라벨·이미지 교차, detail, effort 별 출력 한도, store/stream/truncation, text.format 단계, background, ledger_body")
+        if not ctx_req:
+            skip("V6: V5 문맥 없음")
+            return
+        _root, _refs, _m, ctx, req = ctx_req
+        n_img = len([p for p in req.parts if p[0] == "image"])
+        for eff in dvlm.EFFORTS:
+            b = dvlm.openai_body(req, model="gpt-6-astra", effort=eff, image_detail="high", level=2, background=True)
+            if b["max_output_tokens"] != dvlm.MAX_OUTPUT_TOKENS[eff] or b["reasoning"] != {"effort": eff}:
+                check(False, f"{eff}: max_output_tokens {b['max_output_tokens']} reasoning {b['reasoning']}")
+        b = dvlm.openai_body(req, model="gpt-6-astra", effort="high", image_detail="high", level=2, background=True)
+        check(b["model"] == "gpt-6-astra" and b["instructions"] == req.system and b["store"] is True and b["stream"] is False
+              and b["truncation"] == "disabled", "model·instructions·store·stream·truncation")
+        check(len(b["input"]) == 1 and b["input"][0]["role"] == "user", "input = user 메시지 하나")
+        content = b["input"][0]["content"]
+        types = [c["type"] for c in content]
+        imgs = [i for i, t in enumerate(types) if t == "input_image"]
+        check(len(imgs) == n_img and all(i > 0 and types[i - 1] == "input_text" for i in imgs) and types[0] == "input_text",
+              f"라벨(input_text) 다음 이미지 — 교차 {types[:6]}")
+        check(all(content[i]["detail"] == "high" and content[i]["image_url"].startswith("data:image/png;base64,") for i in imgs),
+              "input_image: detail high, PNG data URI")
+        first = Image.open(io.BytesIO(base64.b64decode(content[imgs[0]]["image_url"].split(",", 1)[1])))
+        check(first.size == tuple(ctx.canvas.sent_wh), f"캔버스 전송 크기 {first.size}")
+        fmt = b.get("text", {}).get("format", {})
+        check(fmt == {"type": "json_schema", "name": "design_patch_spec_draft", "strict": True, "schema": req.schema}
+              and b.get("background") is True, "L2: strict json_schema 전체, background True")
+        b1 = dvlm.openai_body(req, model="gpt-6-astra", effort="high", image_detail="original", level=1, background=False)
+        check(b1["text"]["format"]["schema"] == dvlm.schema_for_level(req.schema, 1) and "background" not in b1
+              and all(c.get("detail") == "original" for c in b1["input"][0]["content"] if c["type"] == "input_image"),
+              "L1 스키마·background 없음·detail original")
+        b0 = dvlm.openai_body(req, model="gpt-6-astra", effort="high", image_detail="high", level=0, background=False)
+        check("text" not in b0, "L0: text.format 없음")
+        lb = dvlm.ledger_body(b, req)
+        dump = json.dumps(lb, ensure_ascii=False)
+        imgs_l = [c for c in lb["input"][0]["content"] if isinstance(c, dict) and "img" in c]
+        check("base64" not in dump and len(imgs_l) == n_img and all(re.fullmatch(r"vlm/img/.+\.png", c["img"]) for c in imgs_l)
+              and all(c.get("detail") == "high" for c in imgs_l), f"ledger_body: base64 없음, vlm/img 경로 {imgs_l[:1]}")
+        check(lb["model"] == b["model"] and lb["max_output_tokens"] == b["max_output_tokens"], "ledger_body 는 나머지 그대로")
+
+    def t_v7():
+        section("V7 extract_json: 펜스·<think>·꼬리 쉼표·스마트 따옴표·True/None·// 주석·잘린 괄호·문자열 안 중괄호, 쓰레기 → ParseError")
+        ok = {
+            "fence": ('```json\n{"a": 1, "b": [1, 2]}\n```', {"a": 1, "b": [1, 2]}),
+            "think": ('<think>let me {think}</think>\n{"a": "x"}', {"a": "x"}),
+            "trailing": ('{"a": [1, 2,], "b": 3,}', {"a": [1, 2], "b": 3}),
+            "smart": ("{“a”: “hello”}", {"a": "hello"}),
+            "pylit": ('{"a": True, "b": None, "c": False}', {"a": True, "b": None, "c": False}),
+            "comment": ('{"a": 1, // note\n "b": 2}', {"a": 1, "b": 2}),
+            "truncated": ('{"a": [1, 2], "b": {"c": "d"', {"a": [1, 2], "b": {"c": "d"}}),
+            "brace_in_str": ('noise {"a": "x { y } z", "b": "}"} trailing', {"a": "x { y } z", "b": "}"}),
+        }
+        bad = []
+        for name, (txt, want) in ok.items():
+            try:
+                got, rep = dvlm.extract_json(txt)
+            except dvlm.ParseError as e:
+                bad.append(f"{name}: ParseError {e}")
+                continue
+            if got != want or not isinstance(rep, list):
+                bad.append(f"{name}: {got} {rep}")
+        check(not bad, f"관용 파서 {bad}")
+        check("truncated" in dvlm.extract_json(ok["truncated"][0])[1], "잘림 수리를 repairs 에 기록")
+        for junk in ("no json here", "", "[1, 2, 3]", "{{{{"):
+            expect_raises(lambda j=junk: dvlm.extract_json(j), f"쓰레기 입력 {junk!r} → ParseError", exc=dvlm.ParseError)
+
+    # ─────────────────────────────────────────────────────────────
+    def t_v13():
+        section("V13 원장 상태표 7행(§5.3) · runner 원장·plan_calls 불변")
+        base = VLM_OUT / "v13"
+        shutil.rmtree(base, ignore_errors=True)
+        root = store.project_root(str(base), "proj")
+        os.makedirs(root)
+        m = store.new_manifest("proj")
+        store.save_manifest(root, m)
+        before = runner.plan_calls(store.load_manifest(root), root)
+        led = dvlm.Ledger(root)
+        rows = {"001_aaaaaa": ["req", "done"], "002_bbbbbb": ["req", "inflight", "failed"],
+                "003_cccccc": ["req", "inflight", "rejected"], "004_dddddd": ["req", "inflight", "created", "resp"],
+                "005_eeeeee": ["req", "inflight", "created"], "006_ffffff": ["req", "inflight"], "007_gggggg": ["req"]}
+        ctxs, reqs = [], {}
+        for i, (cid, kinds) in enumerate(rows.items()):
+            k = key24(100 + i)
+            for kd in kinds:
+                rec = {"error": "HTTP 500", "maybe_billed": True} if kd == "failed" else \
+                    {"error": "HTTP 400 (과금 전)", "status": 400} if kd == "rejected" else \
+                    {"text": "{}", "parsed": {}, "credits": 3.5} if kd == "done" else \
+                    {"response_id": "resp_x", "status": "queued"} if kd == "created" else \
+                    {"status": "completed", "output_text": '{"a": 1}'} if kd == "resp" else {"x": 1}
+                led.write(cid, k, 1, kd, rec)
+            ctxs.append(mk_ctx(cid))
+            reqs[cid] = mk_req(cid, k)
+        st = {cid: led.state(cid, reqs[cid].key) for cid in rows}
+        check([(s["status"], s["attempt"], s["next_attempt"]) for s in st.values()] == [
+            ("done", 1, 1), ("failed", 1, 2), ("rejected", 1, 1), ("resp", 1, 1), ("created", 1, 1), ("inflight", 1, 2),
+            ("req", 1, 1)], f"Ledger.state {[(s['status'], s['next_attempt']) for s in st.values()]}")
+        check(st["001_aaaaaa"]["credits"] == 3.5 and st["002_bbbbbb"]["error"] == "HTTP 500", "state credits·error")
+        pl = dvlm.plan(root, ctxs, reqs, None, mode="fill", only=[])
+        u = {x.crop_id: x for x in pl["units"]}
+        fr = {x.crop_id: x for x in pl["free"]}
+        check(pl["cached"] == ["001_aaaaaa"], f"done → 캐시 {pl['cached']}")
+        check(u["002_bbbbbb"].state == "retry" and u["002_bbbbbb"].attempt == 2 and u["002_bbbbbb"].reasons[0].startswith("재시도(이전:"),
+              "failed → a2 재시도(승인 필요)")
+        check(u["003_cccccc"].state == "rejected" and u["003_cccccc"].attempt == 1, "rejected → 같은 시도 a1")
+        check(fr["004_dddddd"].state == "reparse" and not fr["004_dddddd"].billable and fr["005_eeeeee"].state == "repoll"
+              and fr["005_eeeeee"].billable is dvlm.REPOLL_BILLABLE, "resp → 무료 재파싱, created → 무료 재폴링")
+        check(u["006_ffffff"].state == "orphan" and u["006_ffffff"].attempt == 2
+              and u["006_ffffff"].reasons[0] == "orphan 재시도(과금됐을 수 있음)", "inflight → orphan a2")
+        check(u["007_gggggg"].state == "new" and u["007_gggggg"].attempt == 1, "req 만 → 같은 시도 a1(전송 전 크래시)")
+        check(set(u) == {"002_bbbbbb", "003_cccccc", "006_ffffff", "007_gggggg"} and all(x.billable for x in pl["units"]),
+              "과금 단위 = 재시도·거부·orphan·전송 전")
+        pl_only = dvlm.plan(root, ctxs, reqs, None, mode="fill", only=["007"])
+        check({x.crop_id for x in pl_only["free"]} == {"004_dddddd", "005_eeeeee"} and [x.crop_id for x in pl_only["units"]] == ["007_gggggg"],
+              "only 는 무료 단위(재폴링·재파싱)에 적용 안 함")
+        check(runner._ledger_cells(root) == [] and runner.plan_calls(store.load_manifest(root), root) == before,
+              "Draft 원장(vlm/)은 runner 원장(cands/)·plan_calls 를 바꾸지 않음")
+        led.write("008_hhhhhh", key24(9), 1, "req", {"x": 1})
+        Path(led.dir("008_hhhhhh", key24(9)), "a1.done.json").write_text("{broken", encoding="utf-8")
+        s8 = led.state("008_hhhhhh", key24(9))
+        check(s8["status"] == "failed" and s8["next_attempt"] == 2 and led.done("008_hhhhhh", key24(9)) is None,
+              "손상된 done → 과금된 실패로(다음 시도)")
+        expect_raises(lambda: led.dir("../x", key24(1)), "원장 crop_id 검증")
+        expect_raises(lambda: led.dir("001_aaaaaa", "ABC"), "원장 키 형식 검증")
+
+    def t_v14():
+        section("V14 plan / approval: 모드별 대기·사유, only, _hint, mock 교체, 화풍, 해시 결속·1회용, ASCII id")
+        base = VLM_OUT / "v14"
+        shutil.rmtree(base, ignore_errors=True)
+        root = store.project_root(str(base), "proj")
+        os.makedirs(os.path.join(root, "specs"))
+        K = {n: key24(200 + i) for i, n in enumerate(["new", "tadd", "hint", "mock", "keychg", "same", "acc", "style"])}
+
+        def drafted(key, **kw):
+            d = {"key": key, "backend": "vlm_openai", "hint": "", "written": {"crop": {}, "A": {}}, "round": 0}
+            d.update(kw)
+            return d
+
+        ctxs = [mk_ctx("001_aaaaaa"),
+                mk_ctx("002_bbbbbb", tids=("A", "B"), spec={"_draft": drafted(K["tadd"])}),
+                mk_ctx("003_cccccc", hint="버터 하나", spec={"_hint": "버터 하나", "_draft": drafted(K["hint"])}),
+                mk_ctx("004_dddddd", spec={"_draft": drafted("0" * 24, backend="vlm_mock")}),
+                mk_ctx("005_eeeeee", spec={"_draft": drafted("1" * 24)}),
+                mk_ctx("006_ffffff", spec={"_draft": drafted(K["same"])}),
+                mk_ctx("007_gggggg", spec={"_accepted": True, "_draft": drafted("2" * 24)})]
+        keys = [K["new"], K["tadd"], K["hint"], K["mock"], K["keychg"], K["same"], K["acc"]]
+        reqs = {c.crop_id: mk_req(c.crop_id, k, backend="openai", model="gpt-6-astra", effort="high",
+                                  tids=tuple(t.tid for t in c.targets)) for c, k in zip(ctxs, keys)}
+        sreq = mk_req("_style", K["style"], backend="openai", model="gpt-6-astra", effort="high", kind="style")
+        p = dvlm.plan(root, ctxs, reqs, sreq, mode="fill", only=[])
+        got = [(x.crop_id, x.reasons[0]) for x in p["units"]]
+        check(got == [("001_aaaaaa", "신규"), ("002_bbbbbb", "타깃 추가"), ("003_cccccc", "_hint 변경"),
+                      ("004_dddddd", "mock 초안 교체"), ("_style", "화풍 신규")], f"fill 대기·사유·화풍 맨 뒤 {got}")
+        check([c for c, _e in p["refresh_available"]] == ["005_eeeeee"] and p["accepted"] == ["007_gggggg"],
+              f"fill: 키만 바뀐 크롭은 갱신 가능으로 보고, _accepted 건너뜀 {p['refresh_available']} {p['accepted']}")
+        check(all(x.est[1] >= x.est[0] > 0 for x in p["units"]) and p["refresh_available"][0][1][0] > 0, "openai 단위 추정 크레딧")
+        pr = dvlm.plan(root, ctxs, reqs, sreq, mode="refresh", only=[])
+        pv = dvlm.plan(root, ctxs, reqs, sreq, mode="preview", only=[])
+        ids_r = [x.crop_id for x in pr["units"]]
+        check("005_eeeeee" in ids_r and "006_ffffff" not in ids_r and "007_gggggg" not in ids_r
+              and [x.crop_id for x in pv["units"]] == ids_r, f"refresh = preview: 키가 다르면 대기 {ids_r}")
+        check(next(x for x in pr["units"] if x.crop_id == "005_eeeeee").reasons[0] == "입력 바뀜", "refresh 사유 입력 바뀜")
+        reqs_r1 = dict(reqs, **{"005_eeeeee": mk_req("005_eeeeee", K["keychg"], backend="openai", model="gpt-6-astra",
+                                                     effort="high", rnd=1)})
+        pr1 = dvlm.plan(root, ctxs, reqs_r1, None, mode="refresh", only=[])
+        check(next(x for x in pr1["units"] if x.crop_id == "005_eeeeee").reasons[0] == "draft_round", "round 만 다르면 사유 draft_round")
+        pf0 = dvlm.plan(root, ctxs, reqs, sreq, mode="force", only=[])
+        check(pf0["units"] == [], "force + only 비어 있음 → 아무것도 안 함")
+        pf = dvlm.plan(root, ctxs, reqs, sreq, mode="force", only=["006_ffffff", "007"])
+        check([(x.crop_id, x.reasons[0]) for x in pf["units"]] == [("006_ffffff", "force 재초안"), ("007_gggggg", "force 재초안")],
+              f"force + only: 지정 크롭(_accepted 포함)만 {[(x.crop_id, x.reasons) for x in pf['units']]}")
+        po = dvlm.plan(root, ctxs, reqs, sreq, mode="fill", only=["001"])
+        check([x.crop_id for x in po["units"]] == ["001_aaaaaa"] and "002_bbbbbb" in po["filtered"] and "_style" in po["filtered"],
+              f"only 거르기(화풍은 style 토큰) {po['filtered']}")
+        ps = dvlm.plan(root, ctxs, reqs, sreq, mode="fill", only=["001", "style"])
+        check([x.crop_id for x in ps["units"]] == ["001_aaaaaa", "_style"], "only=…,style → 화풍 포함")
+        store.write_json_atomic(os.path.join(root, "specs", "_project.json"), {"style_note": "x"})
+        check(all(x.crop_id != "_style" for x in dvlm.plan(root, ctxs, reqs, sreq, mode="fill", only=[])["units"]),
+              "_project.json 에 style_note 있음 → 화풍 대기 아님")
+        store.write_json_atomic(os.path.join(root, "specs", "_project.json"), {"_draft": {"written": {"style_note": "old"}}})
+        check(all(x.crop_id != "_style" for x in dvlm.plan(root, ctxs, reqs, sreq, mode="fill", only=[])["units"]),
+              "사람이 지운 style_note → 다시 초안하지 않음")
+        os.remove(os.path.join(root, "specs", "_project.json"))
+        a_mock = dvlm.approval(p, "", backend_name="vlm_mock")
+        a_open = dvlm.approval(p, "", backend_name="vlm_openai")
+        ids = [dvlm.approval_id(x) for x in p["units"]]
+        check(a_mock["pending_hash"] != a_open["pending_hash"] and len(a_open["pending_hash"]) == 12
+              and a_open["pending_hash"] == runner.pending_hash(["backend:vlm_openai"] + ids), "해시 = runner.pending_hash(backend + id), 백엔드 결속")
+        check(all(i.isascii() for i in ids) and ids[0] == f"001_aaaaaa:{K['new']}:a1" and ids[-1] == f"_style:{K['style']}:a1",
+              f"approval_id ASCII '<crop_id>:<key>:a<n>' {ids[:1]}")
+        check(not a_open["approved_now"] and a_open["to_run"] == p["free"] and a_open["blocked"] == p["units"]
+              and a_open["est_credits"][1] >= a_open["est_credits"][0] > 0 and a_mock["est_credits"] == (0, 0),
+              "approve 비어 있음 → 과금 단위 0, 추정은 openai 만")
+        check(a_open["reasons"] == {"신규": 1, "타깃 추가": 1, "_hint 변경": 1, "mock 초안 교체": 1, "화풍 신규": 1}
+              and a_open["orphan_retries"] == 0, f"사유 집계 {a_open['reasons']}")
+        ok = dvlm.approval(p, f"  {a_open['pending_hash']} ", backend_name="vlm_openai")
+        check(ok["approved_now"] and ok["to_run"] == p["free"] + p["units"], "approve == 해시 → 대기 전부 실행")
+        check(not dvlm.approval(p, a_open["pending_hash"], backend_name="vlm_mock")["approved_now"], "openai 해시로 mock 승인 안 됨")
+        led = dvlm.Ledger(root)
+        led.write("001_aaaaaa", K["new"], 1, "req", {"x": 1})
+        led.write("001_aaaaaa", K["new"], 1, "inflight", {"x": 1})
+        led.write("001_aaaaaa", K["new"], 1, "failed", {"error": "HTTP 500", "maybe_billed": True})
+        p2 = dvlm.plan(root, ctxs, reqs, sreq, mode="fill", only=[])
+        a2 = dvlm.approval(p2, a_open["pending_hash"], backend_name="vlm_openai")
+        u1 = next(x for x in p2["units"] if x.crop_id == "001_aaaaaa")
+        check(u1.attempt == 2 and not a2["approved_now"] and not any(x.billable for x in a2["to_run"])
+              and a2["pending_hash"] != a_open["pending_hash"], "실패 뒤 옛 approve → 0 호출(시도 번호가 바뀌어 해시가 다름)")
+        check(dvlm.approval({"units": [], "free": []}, "", backend_name="vlm_mock")["pending_hash"] == "", "대기 없음 → 해시 ''")
+        sk = mk_ctx("009_iiiiii", spec_error="JSON 오류 3행 5열: x")
+        p3 = dvlm.plan(root, [sk], {"009_iiiiii": mk_req("009_iiiiii", key24(9))}, None, mode="fill", only=[])
+        check(p3["units"] == [] and p3["skipped"] and p3["skipped"][0][0] == "009_iiiiii", "스펙 JSON 오류 크롭은 건너뜀")
+
+    def t_v15():
+        section("V15 estimate_unit(공식·보정 중앙값·최대) · estimate_seconds")
+        req = mk_req("001_aaaaaa", key24(1), backend="openai", model="gpt-6-astra", effort="high", text="x" * 16000)
+        req.parts = [("text", "x" * 16000)]
+        req.user_text = "x" * 16000
+        typ, hi = dvlm.estimate_unit(req, model="gpt-6-astra", effort="high", calib={})
+        check((typ, hi) == (172, 504), f"astra/high 입력 7k + 출력 10k → 172, 최대 32k → 504 크레딧 ({typ}, {hi})")
+        img = dvlm.SentImage("canvas", "c", "x", "0", (1024, 1024), None, False)
+        req2 = mk_req("001_aaaaaa", key24(1), backend="openai", model="gpt-6-sol", effort="low", text="")
+        req2.parts = [("text", ""), ("image", img)]
+        req2.user_text = ""
+        in_tok = 3000 + 32 * 32
+        want = round((in_tok / 1000 * 0.00286 + 3000 / 1000 * 0.0143) * runner.CREDITS_PER_USD)
+        check(dvlm.estimate_unit(req2, model="gpt-6-sol", effort="low", calib={})[0] == want, f"이미지 토큰 ceil(w/32)·ceil(h/32) {want}")
+        cal = {"usage": {"gpt-6-sol|low|crop": [1000, 2000, 9000]}}
+        want_c = round((in_tok / 1000 * 0.00286 + 2000 / 1000 * 0.0143) * runner.CREDITS_PER_USD)
+        want_hi = round((in_tok / 1000 * 0.00286 + 16000 / 1000 * 0.0143) * runner.CREDITS_PER_USD)
+        got = dvlm.estimate_unit(req2, model="gpt-6-sol", effort="low", calib=cal)
+        check(got == (want_c, want_hi), f"보정 3건 → 중앙값 2000, 최대는 MAX_OUTPUT_TOKENS {got}")
+        cal2 = {"usage": {"gpt-6-sol|low|crop": [1000, 2000]}}
+        check(dvlm.estimate_unit(req2, model="gpt-6-sol", effort="low", calib=cal2)[0] == want, "보정 2건(< CALIB_MIN) → OUT_TYPICAL")
+        rs = mk_req("_style", key24(2), backend="openai", model="gpt-6-sol", effort="low", kind="style", text="")
+        rs.parts, rs.user_text = [("text", ""), ("image", img)], ""
+        want_s = round((in_tok / 1000 * 0.00286 + 1500 / 1000 * 0.0143) * runner.CREDITS_PER_USD)
+        check(dvlm.estimate_unit(rs, model="gpt-6-sol", effort="low", calib={})[0] == want_s, "화풍 출력 × STYLE_OUT_FACTOR")
+        us = [unit_of("001_aaaaaa", key24(i)) for i in range(5)]
+        es = dvlm.estimate_seconds
+        check((es(us, backend="vlm_openai", concurrency=4, effort="high"), es(us, backend="openai", concurrency=4, effort="xhigh"),
+               es(us, backend="openai", concurrency=4, effort="low"), es(us[:3], backend="local_qwen", concurrency=4),
+               es(us, backend="mock", concurrency=1), es([], backend="openai", concurrency=4, effort="high"))
+              == (300, 600, 180, 115, 0, 0), "openai ceil(n/동시)×effort 초, qwen 40+25n, mock 0")
+
+    def t_v17():
+        section("V17 MockVLM: 결정성·원장 경로·fail_plan 모든 동작 · vlm_mock_options · runner._mock_options 그대로")
+        base = VLM_OUT / "v17"
+        shutil.rmtree(base, ignore_errors=True)
+        root = store.project_root(str(base), "proj")
+        os.makedirs(root)
+        led = dvlm.Ledger(root)
+        cid = "001_aaaaaa"
+        req = mk_req(cid, key24(1), tids=("A", "B"), shown_refs=("001_r_t.png",))
+        r1 = asyncio.run(dvlm.MockVLM({}).call(unit_of(cid, key24(1)), req, led, model="mock"))
+        led2 = dvlm.Ledger(store.project_root(str(base), "proj2"))
+        r2 = asyncio.run(dvlm.MockVLM({}).call(unit_of(cid, key24(1)), req, led2, model="mock"))
+        parsed, _rep = dvlm.extract_json(r1.text)
+        tg = parsed["targets"]
+        check(r1.text == r2.text and parsed["schema_echo"] == "dp-draft-1" and [t["id"] for t in tg] == ["A", "B"]
+              and all(t["ref_images"] == [2] and t["mode"] == "ref_correct" and len(t["detail"].split(";")) == 2 for t in tg),
+              "결정적 출력: schema_echo, 스키마 id, 레퍼런스 있으면 ref_correct·[2], detail 2절")
+        check(tg[0]["name"] == "mock part A", f"이름 없음 → 'mock part <tid>' {tg[0]['name']}")
+        files = sorted(os.listdir(led.dir(cid, key24(1))))
+        check(files == ["a1.created.json", "a1.done.json", "a1.inflight.json", "a1.req.json", "a1.resp.json"]
+              and led.state(cid, key24(1))["status"] == "done", f"원장 경로 req → inflight → created → resp → done {files}")
+        req0 = mk_req("002_bbbbbb", key24(2))
+        p0, _ = dvlm.extract_json(asyncio.run(dvlm.MockVLM({}).call(unit_of("002_bbbbbb", key24(2)), req0, led)).text)
+        check(p0["targets"][0]["mode"] == "self_restore" and p0["targets"][0]["ref_images"] == [], "레퍼런스 없음 → self_restore")
+
+        def run_act(act, n=1):
+            caps = os.path.join(str(base / "bmk_design_patch"), dvlm.CAPS_FILE)
+            if os.path.exists(caps):
+                os.remove(caps)
+            c = f"{n:03d}_act000"
+            k = key24(500 + n)
+            be = dvlm.MockVLM({"fail_plan": {c: act if isinstance(act, list) else [act]}})
+            err = None
+            try:
+                asyncio.run(be.call(unit_of(c, k), mk_req(c, k), led))
+            except BaseException as e:  # noqa: BLE001 — 인터럽트(BaseException 계열 포함)도 받아 본다
+                err = e
+            return be, err, led.state(c, k), c, k
+
+        be, err, st, *_ = run_act("400format", 1)
+        check(err is None and len(be.calls) == 2 and be.calls[1]["level"] == be.calls[0]["level"] - 1 and st["status"] == "done"
+              and dvlm.caps_load(root).get("mock", {}).get("mock", {}).get("schema_level") == be.calls[1]["level"],
+              f"400format: 같은 시도 안에서 1단 하강 + caps {be.calls}")
+        be, err, st, *_ = run_act("400background", 2)
+        check(err is None and be.calls[1]["background"] is False and dvlm.caps_load(root)["mock"]["mock"]["background"] is False,
+              "400background: background 빼고 재전송 + caps")
+        for i, (act, status) in enumerate((("400", 400), ("401", 401)), 3):
+            be, err, st, *_ = run_act(act, i)
+            check(isinstance(err, runner.CallError) and err.status == status and not err.maybe_billed and st["status"] == "rejected"
+                  and st["next_attempt"] == 1, f"{act}: rejected(과금 전, 시도 유지)")
+        be, err, st, *_ = run_act("500create", 5)
+        check(isinstance(err, runner.CallError) and err.maybe_billed and st["status"] == "failed" and st["next_attempt"] == 2,
+              "500create: failed(maybe_billed) → 다음 시도")
+        for i, act in enumerate(("poll401", "poll_deadline"), 6):
+            be, err, st, c, k = run_act(act, i)
+            check(isinstance(err, runner.CallError) and err.phase == "poll" and st["status"] == "created", f"{act}: created 유지")
+            created = led.read(c, k, 1, "created")
+            be2 = dvlm.MockVLM({"fail_plan": {c: ["badjson"]}})
+            res = asyncio.run(be2.repoll(unit_of(c, k), created, led))
+            check(led.state(c, k)["status"] == "done" and res.response_id == created["response_id"] and not be2.calls,
+                  f"{act}: 다음 실행 무료 재폴링(전송 없음, fail_plan 소비 안 함)")
+        for i, act in enumerate(("incomplete", "refusal", "badjson"), 8):
+            be, err, st, c, k = run_act(act, i)
+            check(isinstance(err, runner.CallError) and err.maybe_billed and st["status"] == "failed" and st["next_attempt"] == 2
+                  and (act != "badjson" or err.phase == "parse"), f"{act}: 과금된 실패")
+        be, err, st, *_ = run_act("interrupt_poll", 11)
+        check(isinstance(err, runner._interrupt_types()) and st["status"] == "created", "interrupt_poll: 인터럽트 다시 던짐, created 유지")
+        be, err, st, *_ = run_act("interrupt_create", 12)
+        check(isinstance(err, runner._interrupt_types()) and st["status"] == "inflight" and st["next_attempt"] == 2,
+              "interrupt_create: inflight 만(orphan)")
+        be, err, st, *_ = run_act("crash_after_create", 13)
+        check(isinstance(err, RuntimeError) and st["status"] == "created", "crash_after_create: created 만 남김")
+        be, err, st, *_ = run_act(["400format", "500create"], 14)
+        check(isinstance(err, runner.CallError) and st["status"] == "failed" and len(be.calls) == 2
+              and "schema_level" not in dvlm.caps_load(root).get("mock", {}).get("mock", {}),
+              "400format 뒤 create 실패: caps 그대로(받아들여진 단계만 기록)")
+        mock_file = base / "bmk_design_patch" / "_MOCK_API"
+        mock_file.parent.mkdir(parents=True, exist_ok=True)
+        mock_file.write_text(json.dumps({"delay_s": 0.5, "response": "url", "fail_plan": {"*": {"error": 500}},
+                                         "vlm": {"delay_s": 0.01, "fail_plan": {"001_x": ["400"]}}}), encoding="utf-8")
+        check(dvlm.vlm_mock_options(root) == {"delay_s": 0.01, "fail_plan": {"001_x": ["400"]}}, "vlm_mock_options = _MOCK_API 의 vlm 키")
+        check(set(runner._mock_options(root)) == {"delay_s", "fail_plan", "response"}, "runner._mock_options 는 그대로(3키)")
+        mock_file.write_text("", encoding="utf-8")
+        check(dvlm.vlm_mock_options(root) == {} and runner.mock_enabled(root), "빈 _MOCK_API → mock 켜짐, vlm 옵션 {}")
+        check(isinstance(dvlm.make_vlm("mock", root, {}, model_dir="", keep_loaded=False), dvlm.MockVLM)
+              and isinstance(dvlm.make_vlm("openai", root, {}, model_dir="", keep_loaded=False), dvlm.OpenAIVLM)
+              and isinstance(dvlm.make_vlm("local_qwen", root, {}, model_dir="x", keep_loaded=False), dvlm.QwenVLM),
+              "make_vlm: family 그대로(openai→mock 전환은 호출자 몫)")
+        mock_file.unlink()
+
+    # ─────────────────────────────────────────────────────────────
+    def toast_ctx(case, *, fam="openai", glossary=None, mut=None):
+        root, refs_dir, m = _vlm_project(case, [(_TOAST, (256, 256), {})], refs=_REFS002)
+        crop = m["crops"][0]
+        if mut:
+            mut(crop)
+        ctx = dvlm.build_crop_ctx(root, m, crop, refs_dir=refs_dir, glossary=glossary or {}, backend=fam, memo={})
+        model = {"openai": "gpt-6-astra", "local_qwen": "Qwen3-VL-8B-Instruct", "mock": "mock"}[fam]
+        req = dvlm.build_request(ctx, backend=fam, model=model, effort="high", image_detail="high", draft_round=0)
+        return root, refs_dir, m, crop, ctx, req
+
+    def nz(ctx, req, targets, *, cur=None, glossary=None, **kw):
+        return dvlm.normalize(_vparsed(targets, **kw), ctx, req, constraints=dvlm.constraints_for(ctx, cur),
+                              glossary=glossary or {})
+
+    def tgt_ok(spec_t):
+        """쓰기 직전 불변식: 허용 키·NEVER_WRITE 없음·열거값·None/"" 없음(self_restore refs [] 예외)·리스트는 문자열 리스트."""
+        bad = []
+        allowed = set(P._TARGET_KEYS) | {"id", "name", "mode", "refs"}
+        for k, v in spec_t.items():
+            if not (k in allowed or k.startswith("_")) or k in dvlm.NEVER_WRITE:
+                bad.append(f"키 {k}")
+            if v is None or v == "":
+                bad.append(f"빈 값 {k}")
+            if isinstance(v, list) and k != "bbox" and not all(isinstance(x, str) for x in v):
+                bad.append(f"리스트 {k}")
+            if k == "refs" and v == [] and spec_t.get("mode") != "self_restore":
+                bad.append("refs [] 인데 self_restore 아님")
+        for k, allowed_v in (("mode", P.MODES), ("action", P.ACTIONS), ("shape", tuple(P.SHAPE)), ("text", tuple(P.TEXT)),
+                             ("ref_view", P.REF_VIEWS)):
+            if k in spec_t and spec_t[k] not in allowed_v:
+                bad.append(f"{k}={spec_t[k]!r}")
+        return bad
+
+    def t_v8():
+        section("V8 normalize: N0 렌더 행렬 · N1–N15 · RP §9 행 · 쓰기 직전 불변식")
+        root, refs_dir, m, crop, ctx, req = toast_ctx("v8")
+        R = {r.name: i + 2 for i, r in enumerate(ctx.refs)}
+        rt, rr, lt = "002_토스트-머리장식_right_t.png", "002_토스트-머리장식_right.png", "002_토스트-머리장식_left_t.png"
+        B = _vt("B", name="red hairpin bar", ref_object="the thin red bar", must_not=[], shape="moderate", bbox=[400, 700, 900, 880])
+        d = nz(ctx, req, [_vt("A", ref_images=[R[rt]]), B])
+        a = d.targets["A"]
+        check(a.get("name") == "toast hair clip" and a.get("mode") == "ref_correct" and a.get("action") == "fix"
+              and a.get("refs") == [rt] and a.get("must_not") == ["the round green filling"] and a.get("shape") == "moderate"
+              and a.get("detail") == "a slice of white bread; a golden crust rim" and a.get("ref_object") == "the toast-shaped clip",
+              f"fix 기본: 이름·mode·refs(basename)·must_not·shape·detail {a}")
+        check(d.review["A"].get("shape_suggestion") == "locked" and "shape_suggestion" not in d.review["B"]
+              and not any("shape" in f for f in _vflags(d)),
+              "N14 VLM 의 shape locked → moderate, _review.shape_suggestion(경고 아님 — locked 는 사람만)")
+        check(not any(k in a for k in ("location", "occluded_by", "defects", "ref_ignore")), "빈 문자열 필드는 키를 쓰지 않음(N10)")
+        check(a.get("bbox") == [0.25, 0.25, 0.75, 0.75] and d.review["A"].get("bbox_src") == "px", f"N11 px → 분율 {a.get('bbox')}")
+        check(d.review["A"].get("confidence") == "high" and d.review["A"].get("found") is True and "counts" in d.review["A"],
+              "_review: confidence·found·counts")
+        check(d.transport.get("schema_enforced") is True and d.crop.get("preserve") == ["the hair strands", "the eyelashes"],
+              "N12 schema_echo → schema_enforced, preserve")
+        allbad = tgt_ok(a) + tgt_ok(d.targets["B"])
+        # N0: add — must_not·shape·occluded_by 는 렌더 안 됨, location 은 'on ' 보정
+        d = nz(ctx, req, [_vt("A", found=False, action="add", location="the left edge of the clip", occluded_by="the hair strands"), B])
+        a, ra = d.targets["A"], d.review["A"]
+        check(a.get("action") == "add" and "must_not" not in a and "shape" not in a and "occluded_by" not in a
+              and "must_not" in (ra.get("unrendered") or {}) and a.get("location") == "on the left edge of the clip",
+              f"N0 ref_correct·add: must_not·occluded_by → unrendered, N6 'the …' → 'on the …' {a} {ra.get('unrendered')}")
+        allbad += tgt_ok(a)
+        d = nz(ctx, req, [_vt("A", found=False, action="add", location="left of the cuff"), B])
+        check(d.targets["A"].get("location") == "on the left of the cuff" and _vflags(d, "A"), "N6 전치사 없음 → 'on the …' + 플래그")
+        d = nz(ctx, req, [_vt("A", found=False, action="add", location="below the black cuff band"), B])
+        check(d.targets["A"].get("location") == "below the black cuff band", "N6 허용 전치사는 그대로")
+        d = nz(ctx, req, [_vt("A", found=False, action="fix"), B])
+        check(d.targets["A"].get("action") == "add", "found false + fix → action add(RP §9)")
+        d = nz(ctx, req, [_vt("A", location="on the clip"), B])
+        check("location" not in d.targets["A"], "fix 의 location 은 렌더 안 됨 → 쓰지 않음")
+        # self_restore
+        d = nz(ctx, req, [_vt("A", mode="self_restore", ref_images=[], defects="a smudged outline; a broken loop",
+                               ref_object="", detail="a slice; a rim"), B])
+        a = d.targets["A"]
+        check(a.get("mode") == "self_restore" and a.get("refs") == [] and a.get("defects") == "a smudged outline; a broken loop"
+              and not any(k in a for k in ("detail", "must_not", "ref_object", "ref_view", "shape")),
+              f"self_restore: refs [] 명시, defects 만 {a}")
+        allbad += tgt_ok(a)
+        # 사람 mode(매니페스트): sketch_guide 는 must_not·occluded_by 렌더, paste 는 occluded_by 만(스펙에 guide 가 있을 때 —
+        # guide 가 없으면 spec_from_manifest 처럼 ref_correct 로 렌더된다)
+        tA = ctx.targets[0]
+        for hm, want_mn, want_occ in (("sketch_guide", True, True), ("paste_harmonize", False, True)):
+            c2 = dataclasses.replace(ctx, spec={"guide": "guides/002_guide.png"},
+                                     targets=[dataclasses.replace(tA, human_mode=hm)] + list(ctx.targets[1:]))
+            d = nz(c2, req, [_vt("A", occluded_by="the hair strands", ref_view="different"), B])
+            a = d.targets["A"]
+            check("mode" not in a and d.suggestions.get("mode", {}).get("A") == "ref_correct"
+                  and ("must_not" in a) == want_mn and ("occluded_by" in a) == want_occ
+                  and ("ref_view" in a) == (hm == "sketch_guide") and "detail" in a,
+                  f"사람 mode {hm}: mode 는 쓰지 않고 제안으로, N0 행렬 {sorted(a)}")
+        c3 = dataclasses.replace(ctx, targets=[dataclasses.replace(tA, human_refs=(rr,))] + list(ctx.targets[1:]))
+        d = nz(c3, req, [_vt("A"), B])
+        check("refs" not in d.targets["A"] and d.suggestions.get("refs", {}).get("A") == [rt], "사람 refs(매니페스트) → refs 는 제안으로")
+        # N15(F8) 렌더되는 건 사람 refs — VLM 이 다른 이미지를 봤으면 그 이미지로 쓴 필드는 렌더하지 않는다
+        d = nz(c3, req, [_vt("A", text="exact_ref", ref_view="different"), B])
+        a, ra = d.targets["A"], d.review["A"]
+        check(not any(k in a for k in ("ref_object", "ref_ignore", "ref_view", "detail", "must_not")) and a.get("text") == "keep"
+              and {"ref_object", "detail", "must_not", "ref_view", "text"} <= set(ra.get("unrendered") or {})
+              and ra.get("confidence") == "low" and "refs_differ_from_human" in _vflags(d, "A")
+              and "human_ref_not_shown" not in _vflags(d, "A"),
+              f"N15 VLM 이 사람 refs 밖 이미지를 고름 → ref 필드·detail·must_not·exact_ref 는 unrendered, 신뢰 낮음 {sorted(a)} {ra.get('flags')}")
+        d = nz(c3, req, [_vt("A", ref_images=[R[rr]]), B])
+        check(d.targets["A"].get("detail") and "refs_differ_from_human" not in _vflags(d, "A")
+              and d.review["A"].get("confidence") == "high", "N15 VLM 이 사람 refs 와 같은 이미지를 고르면 그대로 렌더")
+        c5 = dataclasses.replace(ctx, targets=[dataclasses.replace(tA, human_refs=(rr.upper(), "sub/숨은.png"))]
+                                 + list(ctx.targets[1:]))
+        d = nz(c5, req, [_vt("A", ref_images=[R[rr]]), B])
+        check("human_ref_not_shown: 숨은.png" in d.review["A"]["flags"] and "refs_differ_from_human" not in _vflags(d, "A")
+              and d.targets["A"].get("detail"),
+              f"N15 대소문자만 다른 사람 ref 는 같은 이미지, 보내지 않은 사람 ref 는 human_ref_not_shown(경고만) {d.review['A']['flags']}")
+        c7 = dataclasses.replace(ctx, targets=[dataclasses.replace(tA, human_refs=(os.path.join(refs_dir, rr),))]
+                                 + list(ctx.targets[1:]))
+        d = nz(c7, req, [_vt("A", ref_images=[R[rr]]), B])
+        check(not ({"refs_differ_from_human", "human_ref_not_shown"} & _vflags(d, "A")) and d.targets["A"].get("detail"),
+              f"N15 절대 경로로 쓴 사람 ref 도 보낸 이미지와 같음 {d.review['A']['flags']}")
+        d = nz(c3, req, [_vt("A", mode="self_restore", ref_images=[], defects="a smudge", detail="a slice; a rim"), B])
+        check("refs_differ_from_human: none" in d.review["A"]["flags"] and "detail" not in d.targets["A"]
+              and d.review["A"]["unrendered"].get("detail") == "a slice; a rim",
+              "N15 VLM 이 아무것도 안 골랐는데 사람 refs 가 렌더됨 → detail 은 unrendered")
+        c8 = dataclasses.replace(ctx, targets=[dataclasses.replace(tA, human_mode="self_restore", human_refs=(rr,))]
+                                 + list(ctx.targets[1:]))
+        d = nz(c8, req, [_vt("A", mode="self_restore", ref_images=[], defects="a smudge"), B])
+        check("refs_differ_from_human" not in _vflags(d, "A") and d.review["A"].get("confidence") == "high",
+              f"N15 사람이 self_restore 로 정했으면 refs 가 렌더되지 않아 해당 없음(신뢰 그대로) {d.review['A']['flags']}")
+        d = nz(c3, req, [_vt("A", ref_object="the ribbon bow"), B], preserve=["the ribbon bow tails", "the eyelashes"])
+        check(d.crop.get("preserve") == ["the eyelashes"] and "preserve_dropped" in _vflags(d),
+              f"N8 머리 명사는 N15 로 렌더하지 않은 ref_object 도 본다(타깃을 지키라는 preserve 를 버림) {d.crop.get('preserve')}")
+        # N15 + fill: 초안 뒤 아트 리드가 refs 를 고치면(같은 키) 다시 병합할 때 그 타깃은 refresh 규칙 — 노드가 전에 쓴 ref 필드·detail 은
+        # 지우고 사람 refs 는 유지, 다시 병합 = 고정점
+        prov = _vprov(req)
+        s_a = dvlm.merge_spec(None, nz(ctx, req, [_vt("A"), B]), ctx, mode="fill", project_style=None, provenance=prov).spec
+        s_b = copy.deepcopy(s_a)
+        next(t for t in s_b["targets"] if t["id"] == "A")["refs"] = [rr]
+        d_b = nz(ctx, req, [_vt("A"), B], cur=s_b)
+        s_c = dvlm.merge_spec(s_b, d_b, ctx, mode="fill", project_style=None, provenance=prov).spec
+        a_c = next(t for t in s_c["targets"] if t["id"] == "A")
+        check(a_c.get("refs") == [rr] and not any(k in a_c for k in ("ref_object", "detail", "must_not"))
+              and a_c["_review"]["confidence"] == "low"
+              and not dvlm.merge_spec(s_c, d_b, ctx, mode="fill", project_style=None, provenance=prov).changed,
+              f"N15 fill: 노드가 전에 쓴 ref 필드·detail 지움, 사람 refs 유지, 다시 병합 = 고정점 {sorted(a_c)}")
+        # 다른 키(타깃 추가)의 초안이 이번엔 다른 이미지를 골랐어도, 이전 키에서 사람 ref 를 보고 쓴 기존 타깃 값은 그대로(fill)
+        cA3 = dataclasses.replace(c3, targets=[c3.targets[0]])
+        s_k1 = dvlm.merge_spec(None, nz(cA3, req, [_vt("A", ref_images=[R[rr]])]), cA3, mode="fill", project_style=None,
+                               provenance=_vprov(req, key="1" * 24)).spec
+        d_k2 = nz(c3, req, [_vt("A", detail="a different slice; a dark rim"), B], cur=s_k1)
+        s_k2 = dvlm.merge_spec(s_k1, d_k2, c3, mode="fill", project_style=None, provenance=_vprov(req, key="2" * 24)).spec
+        a1, a2 = (next(t for t in s["targets"] if t["id"] == "A") for s in (s_k1, s_k2))
+        check("refs_differ_from_human" in _vflags(d_k2, "A") and all(a2.get(k) == a1.get(k) for k in ("ref_object", "detail", "must_not"))
+              and a2.get("detail") and any(t["id"] == "B" for t in s_k2["targets"]),
+              "N15 + 타깃 추가(다른 키): 기존 타깃 A 의 값은 이전 키 그대로(refresh 로 바꾸지 않음), B 만 채움")
+        # 상대 경로 refs_dir(작업 폴더 기준): 보낸 이미지의 원본 경로를 절대 경로로 맞춰 절대 경로 사람 ref 와 비교
+        cwd = os.getcwd()
+        try:
+            os.chdir(os.path.dirname(refs_dir))
+            ctx_rel = dvlm.build_crop_ctx(root, m, crop, refs_dir=os.path.basename(refs_dir), glossary={}, backend="openai", memo={})
+            req_rel = dvlm.build_request(ctx_rel, backend="openai", model="gpt-6-astra", effort="high", image_detail="high",
+                                         draft_round=0)
+            r_rel = {r.name: i + 2 for i, r in enumerate(ctx_rel.refs)}
+            d = nz(ctx_rel, req_rel, [_vt("A", ref_images=[r_rel[rr]]), B],
+                   cur={"targets": [{"id": "A", "refs": [os.path.join(refs_dir, rr)]}]})
+        finally:
+            os.chdir(cwd)
+        check(not ({"refs_differ_from_human", "human_ref_not_shown"} & _vflags(d, "A")) and d.targets["A"].get("detail"),
+              f"N15 상대 경로 refs_dir + 절대 경로 사람 ref = 같은 이미지 {d.review['A']['flags']}")
+        d = nz(ctx, req, [_vt("A"), B], cur={"targets": [{"id": "A", "action": "relocate"}]})
+        check("action_renders_as_fix" in _vflags(d, "A"), "ref_correct 아래 사람 action relocate → action_renders_as_fix")
+        # N1 text
+        tx = {}
+        for val, extra in (("keep", {}), ("plausible", {}), ("exact_ref", {}), ("bogus", {}), ("", {}),
+                           ("keep", {"must_not": ["the white lettering on the barrel"]})):
+            d = nz(ctx, req, [_vt("A", text=val, **extra), B])
+            tx[(val, bool(extra))] = (d.targets["A"].get("text"), _vflags(d, "A"))
+        check(tx[("keep", False)][0] == "keep" and tx[("exact_ref", False)][0] == "exact_ref", "N1 keep·exact_ref 그대로")
+        check(tx[("plausible", False)][0] == "keep" and tx[("plausible", False)][1], "N1 plausible → keep + 플래그")
+        check(tx[("bogus", False)][0] is None and tx[("", False)][0] is None, "N1 모르는 값·빈 값 → 키 없음")
+        check(tx[("keep", True)][0] == "none" and "text_contradiction" in tx[("keep", True)][1], "N1 keep + must_not 글자 → none + text_contradiction")
+        d = nz(ctx, req, [_vt("A", mode="self_restore", ref_images=[], text="exact_ref", defects="a smudge"), B])
+        check(d.targets["A"].get("text") == "keep" and "exact_ref_without_ref" in _vflags(d, "A"), "N1 exact_ref + refs 없음 → keep + 플래그")
+        # N2 name 양보
+        for c4, why in ((toast_ctx("v8n", mut=lambda c: c["targets"][0].__setitem__("name_en", "toast clip"))[4], "name_en"),
+                        (toast_ctx("v8g", glossary={"토스트": "toast clip"})[4], "용어집 적중")):
+            d = nz(c4, req, [_vt("A"), B])
+            check("name" not in d.targets["A"] and d.review["A"].get("name_suggestion") == "toast hair clip"
+                  and d.targets["B"].get("name") == "red hairpin bar", f"N2 {why} → name 은 쓰지 않고 name_suggestion")
+        # N3 refs 매핑
+        d = nz(ctx, req, [_vt("A", ref_images=[1, R[rt], R[rt], 99, R[rr]]), B])
+        check(d.targets["A"].get("refs") == [rt, rr], f"N3 1·범위 밖·중복 거부, 최대 2 {d.targets['A'].get('refs')}")
+        d = nz(ctx, req, [_vt("A", ref_images=[R[rt], R[rr]], ref_view="different"), B])
+        check(d.targets["A"].get("refs") == [rt], "N3 ref_view different → 1장")
+        d = nz(ctx, req, [_vt("A", ref_images=[99]), B])
+        check(d.targets["A"].get("mode") == "self_restore" and d.targets["A"].get("refs") == [], "유효 refs 없는 ref_correct → self_restore")
+        d = nz(ctx, req, [_vt("A", mode="sketch_guide"), B])
+        check(d.targets["A"].get("mode") == "ref_correct" and d.review["A"].get("suggested_mode") == "sketch_guide",
+              "VLM 의 sketch_guide → ref_correct + suggested_mode")
+        # N4 side / N5 count / N7 detail
+        d = nz(ctx, req, [_vt("A", ref_images=[R[lt]]), B])
+        check("side_mismatch" in _vflags(d, "A") and d.review["A"].get("confidence") in ("medium", "low")
+              and d.targets["A"].get("refs") == [lt], "N4 반대 side 레퍼런스 → side_mismatch, 신뢰 ≤ medium, 자동으로 바꾸지 않음")
+        d = nz(ctx, req, [_vt("A", detail="a slice of bread; three square butter pats",
+                               counts=[{"part": "butter pat", "reference": 1, "canvas": 0}]), B])
+        check("count_mismatch" in _vflags(d, "A") and d.review["A"].get("confidence") == "low", "N5 detail 수 ≠ counts.reference → low")
+        d = nz(ctx, req, [_vt("A", detail="a slice of white bread with a crust"), B])
+        check("v4_equals_v1" in _vflags(d, "A"), "N7 한 절 → v4_equals_v1")
+        d = nz(ctx, req, [_vt("A", detail="a slice of bread; soft light on the crust"), B])
+        check("lighting_words" in _vflags(d, "A"), "N7 조명어 → lighting_words")
+        # N8 preserve / N9 공유 ref_ignore / N10 CJK·따옴표 / suggested_targets
+        d = nz(ctx, req, [_vt("A"), B], preserve=["the hair strands", "the toast clip edge", "the blurred background",
+                                                   "the eyelashes", "the hair strands"])
+        check(d.crop.get("preserve") == ["the hair strands", "the eyelashes"], f"N8 preserve 거르기·중복 제거 {d.crop.get('preserve')}")
+        d = nz(ctx, req, [_vt("A", ref_ignore="the white hair"), dict(B, ref_images=[R[rt]], ref_ignore="")])
+        ign = d.targets["A"].get("ref_ignore", "")
+        check(ign.startswith("everything except") and "the toast-shaped clip" in ign and "the thin red bar" in ign,
+              f"N9 공유 레퍼런스: 첫 소유자 ref_ignore = everything except A·B {ign!r}")
+        d = nz(ctx, req, [_vt("A", detail="a slice of 식빵 bread; a golden rim", must_not=['the "DVLIN" heading']), B])
+        a = d.targets["A"]
+        en = " ".join([str(a.get(k) or "") for k in ("name", "ref_object", "ref_ignore", "detail", "location", "occluded_by",
+                                                      "defects")] + list(a.get("must_not") or []))
+        check(not re.search(r"[가-힣]", en) and '"' not in en and "DVLIN" not in en
+              and any("cjk" in f.lower() for f in _vflags(d, "A")), f"N10 영문 필드의 CJK·따옴표 인용 제거 + 플래그 {en!r}")
+        sug = [{"name": f"extra part {i}", "reason": "wrong", "bbox": [100, 100, 300, 300]} for i in range(4)]
+        d = nz(ctx, req, [_vt("A"), B], suggested=sug)
+        st_ = d.suggestions.get("targets") or []
+        check(len(st_) == dvlm.MAX_SUGGESTED and st_[0].get("name") == "extra part 0", f"suggested_targets 최대 3 {st_[:1]}")
+        # N11 bbox
+        bx = {}
+        for name, box in (("flip", [768, 768, 256, 256]), ("zero", [0, 0, 0, 0]), ("over", [512, 512, 1060, 1060]),
+                          ("far", [512, 512, 5000, 5000]), ("full", [0, 0, 1024, 1024]), ("round", [100, 200, 333, 444])):
+            bx[name] = nz(ctx, req, [_vt("A", bbox=box), B]).targets["A"].get("bbox")
+        check(bx == {"flip": [0.25, 0.25, 0.75, 0.75], "zero": None, "over": [0.5, 0.5, 1.0, 1.0], "far": None, "full": None,
+                     "round": [0.0977, 0.1953, 0.3252, 0.4336]},
+              f"N11 뒤집힘·퇴화(0·전체)·조금 넘침은 자르기·크게 벗어남은 버림·소수 4자리 {bx}")
+        _r, _rd, _m, _c, cq, rq = toast_ctx("v8q", fam="local_qwen")
+        dq = nz(cq, rq, [_vt("A", bbox=[250, 250, 750, 750]), B])
+        dq2 = nz(cq, rq, [_vt("A", bbox=[0.1, 0.2, 0.3, 0.4]), B])
+        check(dq.targets["A"].get("bbox") == [0.25, 0.25, 0.75, 0.75] and dq.review["A"].get("bbox_src") == "q1000"
+              and dq2.targets["A"].get("bbox") == [0.1, 0.2, 0.3, 0.4], "N11 q1000 ÷1000, 최대 ≤1 이면 분율로")
+        d = nz(ctx, req, [_vt("A"), B], echo=False)
+        check(d.transport.get("schema_enforced") is not True, "N12 schema_echo 없음 → 강제 안 됨(caps level 0 근거)")
+        # 리뷰 반영(dp-draft-norm/2)
+        sr = _vt("A", mode="self_restore", ref_images=[], defects="a smudged outline", detail="", ref_object="")
+        for cc, cur, why in ((ctx, {"targets": [{"id": "A", "refs": [rt], "detail": "a slice; a crust"}]}, "스펙"), (c3, None, "매니페스트")):
+            d = nz(cc, req, [sr, B], cur=cur)
+            check("mode" not in d.targets["A"] and d.suggestions["mode"].get("A") == "self_restore"
+                  and "self_restore_vs_human_refs" in _vflags(d, "A"), f"N3 사람 refs({why}) + VLM self_restore → mode 쓰지 않고 제안")
+        d = nz(ctx, req, [_vt("A", ref_object="the 토스트 모양 클립", must_not=["the 글자"], ref_ignore="nothing to ignore",
+                               detail="the same clip as in Image 2; a golden rim"), B], preserve=["<...>", "the eyelashes"])
+        a = d.targets["A"]
+        check(not any(k in a for k in ("ref_object", "must_not", "ref_ignore")) and a.get("detail") == "the same clip; a golden rim"
+              and d.crop.get("preserve") == ["the eyelashes"], f"N10 지운 뒤 관사만·자리표시·부정구 → 키 없음, 매달린 전치사 제거 {a}")
+        d = nz(ctx, req, [_vt("A", name="<...>", mode="self_restore", ref_images=[], defects="<...>"), B])
+        check("name" not in d.targets["A"] and "defects" not in d.targets["A"] and "<" not in d.suggestions["layer_name"],
+              "Qwen 골격 '<...>' 는 빈 값(이름·defects·제안 레이어명)")
+        locs = {x: nz(ctx, req, [_vt("A", found=False, action="add", location=x, must_not=[]), B]).targets["A"].get("location")
+                for x in ("in the gap between the braids", "next to the black cuff", "on the 소매")}
+        check(locs == {"in the gap between the braids": "in the gap between the braids", "next to the black cuff": "next to the black cuff",
+                       "on the 소매": None}, f"N6 다른 전치사로 시작하면 그대로, 'on the' 만 남으면 키 없음 {locs}")
+        d = nz(ctx, req, [_vt("A", detail="a pink ribbon bow; a gold earring", must_not=["the pin", "the ring"]), B])
+        d2 = nz(ctx, req, [_vt("A", text="keep", must_not=["the rough texture smear"]), B])
+        check(d.targets["A"].get("must_not") == ["the pin", "the ring"] and d2.targets["A"].get("text") == "keep",
+              "must_not·N1 글자 판정은 단어 단위(pink·earring·texture 는 다른 단어)")
+        d = nz(ctx, req, [_vt("A", ref_images=[R[rt]], ref_object="", ref_ignore=""),
+                          dict(B, ref_images=[R[rt]], ref_object="the red pin", ref_ignore="the toast-shaped clip")])
+        check(d.targets["A"].get("ref_ignore") == "everything except the toast hair clip and the red pin",
+              f"N9 첫 소유자가 ref_object·ref_ignore 를 안 써도 everything except {d.targets['A'].get('ref_ignore')!r}")
+        d = nz(ctx, req, [_vt("A", ref_object="the clip on the left"), B],
+               preserve=["the left eyelashes", "the pink hair beneath the clips", "the edge of the clip"])
+        check(d.crop.get("preserve") == ["the left eyelashes", "the pink hair beneath the clips"],
+              f"N8 머리 명사 = 첫 전치사 앞 명사구(위치구 속 타깃은 버리지 않음) {d.crop.get('preserve')}")
+        # N14 A/B(10/13) 경고: preserve 가 타깃 안 · 여럿인 타깃에 단수 ref_object · 캔버스에 있다는 add
+        sr = _vt("A", mode="self_restore", ref_images=[], ref_object="", detail="", defects="indistinct cord boundaries",
+                 counts=[{"part": "visible cord loops", "reference": -1, "canvas": 2}])
+        d = nz(ctx, req, [sr, B], preserve=["the dark inset inside the lower-left loop", "the exposed skin behind the loops",
+                                             "the eyelashes in the lower-left corner", "the white sparkle in the thin red bar"])
+        pin = sorted(f for f in d.flags if f.startswith("preserve_in_target"))
+        check(len(d.crop.get("preserve") or []) == 4 and "shape_suggestion" not in d.review["A"]
+              and pin == ["preserve_in_target: the dark inset inside the lower-left loop (A)",
+                          "preserve_in_target: the white sparkle in the thin red bar (B)"],
+              f"N14 preserve 첫 전치사 in·inside 뒤가 타깃(counts 부위 포함) → 경고만(항목 유지), behind·위치어는 아님, "
+              f"self_restore 의 shape 는 렌더 안 돼 플래그 없음 {pin}")
+        d = nz(ctx, req, [sr, B], preserve=["the dark inset in the middle of the loop", "the dark notch cut into the loop",
+                                             "the dark inset inside the center loop", "the crack within the center of the knot"])
+        pin = [f for f in d.flags if f.startswith("preserve_in_target")]
+        check(len(pin) == 3, f"N14 타깃 안의 위치(in the middle of the loop·cut into·inside the center loop)는 경고 — "
+                             f"'within the center of the knot' 은 knot 이 이 타깃의 머리 명사가 아니라 아님 {pin}")
+        neg = []
+        for pres in (["the hair strands on the clip", "the hand in front of the clip", "the bangs in front of the toast clip",
+                      "the white sparkle on the red bar"],
+                     ["the hair strands tucked into the clip", "the hair held in the clip", "the fingers in back of the clip",
+                      "the skin in the shadow of the clip"],
+                     ["the hair in the middle of the clips", "the bangs within reach of the clip",
+                      "the strands in between the clip and the bar", "the hair caught in the clip"]):
+            d = nz(ctx, req, [_vt("A"), B], preserve=pres)
+            neg += [f for f in d.flags if f.startswith("preserve_in_target")]
+        check(not neg, f"N14 겹침·주변 표현(on·into·held in·in front/back/the shadow of·within reach)은 경고 없음(F33) — "
+                       f"'X on <타깃>' 표면 표시도 경고하지 않는 것은 의도(on 은 대개 겹침) {neg}")
+        sg = {}
+        for nm, ro in (("pair of toast clips", "the upper toast clip"), ("pair of toast clips", "the two toast clips"),
+                       ("toast hair clips", "the toast clips"), ("toast hair clip", "the toast-shaped clip"),
+                       ("pair of toast clips", "the clip between both braids")):
+            sg[(nm, ro)] = "ref_object_singular" in _vflags(nz(ctx, req, [_vt("A", name=nm, ref_object=ro), B]), "A")
+        check(list(sg.values()) == [True, False, False, False, True],
+              f"N14 이름이 여럿(pair·-s)인데 ref_object 가 단수 → ref_object_singular(전치사구 속 both 는 세지 않음) {sg}")
+        av = [_vflags(nz(ctx, req, [_vt("A", found=False, action="add", location="on the hair", counts=[
+            {"part": part, "reference": 1, "canvas": n}]), B]), "A") for part, n in (("toast clip", 1), ("toast clip", 0),
+                                                                                   ("butter pat", 1))]
+        check(["add_but_visible" in f for f in av] == [True, False, False],
+              "N14 add 인데 counts 가 같은 머리 명사 부품을 캔버스 1개 이상 → add_but_visible(다른 부품·0개는 아님)")
+        txt = json.dumps(_vparsed([_vt("A", detail="a slice of bread; a golden rim; one small square pat")]), ensure_ascii=False)
+        pj, reps = dvlm.extract_json(txt[:txt.index("one small sq") + 12])
+        d = dvlm.normalize(pj, ctx, req, constraints=dvlm.constraints_for(ctx, None), glossary={}, repairs=reps)
+        check("truncated_string" in reps and d.targets["A"].get("detail") == "a slice of bread; a golden rim"
+              and d.review["A"]["confidence"] == "low" and "truncated_output" in _vflags(d),
+              f"잘린 출력: 끊긴 마지막 절 버림 + confidence low + truncated_output {reps} {d.targets['A'].get('detail')!r}")
+        check(not allbad, f"쓰기 직전 불변식(허용 키·NEVER_WRITE·열거값·빈 값) {allbad}")
+
+    def t_v9():
+        section("V9 렌더 왕복: E1–E8 모양 합성 크롭 → normalize → merge → spec_from_manifest·validate·variants·린트")
+        crops = [(_TOAST, (256, 256), {}), ("003_펜이름표 | A: 펜; B: 이름표", (384, 384), {}),
+                 ("004_가슴팔각단추", (256, 256), {}), ("007_머리장식-왼쪽-펜", (256, 256), {}),
+                 ("010_손가락붕대-왼쪽 | A: 검지 테이프; B: 말린 손가락 테이프; C: 분홍 반창고", (384, 640), {}),
+                 ("016_영수증 | A: 집게; B: 영수증", (256, 512), {}), ("017_팔리본", (320, 384), {}), ("030_팔매듭", (256, 256), {})]
+        refs = _REFS002[:3] + [("003_펜이름표_t.png", (256, 256)), ("004_가슴팔각단추_t.png", (256, 256)),
+                               ("007_머리장식-왼쪽-펜.png", (276, 276)), ("007_머리장식-오른쪽.png", (256, 384)),
+                               ("010_손가락반창고.png", (256, 256)), ("010_손가락붕대-반창고.png", (216, 269)),
+                               ("016_영수증집게.png", (241, 251)), ("017_팔리본.png", (210, 247))]
+        root, refs_dir, m = _vlm_project("v9", crops, refs=refs)
+        add = dict(found=False, action="add", must_not=[], shape="moderate")
+        outs = [
+            [_vt("A", ref_images=[2, 3], ref_view="different", ref_ignore="the white hair"),
+             _vt("B", name="red hairpin bar", ref_object="the thin red bar", ref_images=[2], must_not=[])],
+            [_vt("A", name="red fountain pen", ref_object="the slim red pen", location="along the green outline", **add),
+             _vt("B", name="name tag", ref_object="the red-framed name tag", text="exact_ref", must_not=[])],
+            [_vt("A", name="pair of frog buttons", ref_object="the frog buttons", location="on the coat front",
+                 occluded_by="the dark coat", detail="a dark-brown pointed medallion; an orange petal flower; knotted cord loops", **add)],
+            [_vt("A", name="pair of red hair pins", ref_object="the red pins", text="none",
+                 must_not=["the white lettering on the upper pin"], detail="two slim plain red pins; a small gold cap")],
+            [_vt("A", name="index-finger tape wrap", ref_object="the white tape", location="around the raised index finger",
+                 detail="two bands of off-white cloth tape; frayed edges", **add),
+             _vt("B", name="curled-finger tape wraps", ref_object="the white tape", location="", detail="off-white tape; soft folds", **add),
+             _vt("C", name="pink adhesive bandage", ref_object="the pink bandage", ref_images=[3], location="",
+                 detail="a rounded pink strip; small white stars", **add)],
+            [_vt("A", name="pair of binder clips", ref_object="the binder clip", location="at the top edge of each stack",
+                 detail="two black binder clips; silver wire handles", **add),
+             _vt("B", name="stacked paper receipts", mode="self_restore", ref_images=[], ref_object="", text="keep",
+                 defects="the printed lines are smeared", detail="", must_not=[])],
+            [_vt("A", name="four-loop cord knot", ref_object="the cord bow", location="below the black cuff band",
+                 detail="four rounded cord loops; a central wrap", counts=[{"part": "loop", "reference": 4, "canvas": 0}], **add)],
+            [_vt("A", name="arm cord knot", mode="self_restore", ref_images=[], ref_object="", must_not=[],
+                 defects="a dark notch in the lower-left loop; a fused wrap", detail="")],
+        ]
+        bad = []
+        for crop, targets in zip(m["crops"], outs):
+            ctx = dvlm.build_crop_ctx(root, m, crop, refs_dir=refs_dir, glossary={}, backend="openai", memo={})
+            req = dvlm.build_request(ctx, backend="openai", model="gpt-6-astra", effort="high", image_detail="high", draft_round=0)
+            d = dvlm.normalize(_vparsed(targets), ctx, req, constraints=dvlm.constraints_for(ctx, None), glossary={})
+            mr = dvlm.merge_spec(None, d, ctx, mode="fill", project_style="thin dark line art, flat cel shading", provenance=_vprov(req))
+            ok, probs = ev.render_gate(crop, mr.spec, refs_dir, {})
+            s = P.spec_from_manifest(crop, None, refs_dir, {}, mr.spec)
+            v1 = P.variants(s)["V1_standard"]["prompt"]
+            inv = [x for t in mr.spec.get("targets") or [] for x in tgt_ok(t)]
+            styled = any(t["mode"] != "self_restore" for t in s["targets"])  # self_restore 만이면 Integration 에 화풍 문구 없음
+            if not ok or probs or P.validate_spec(s) or inv or ("thin dark line art" in v1) != styled:
+                bad.append(f"{crop['id']}: {probs[:3]} {inv[:3]}")
+        check(not bad, f"8 크롭 렌더 깨끗(validate [] · 모르는 키·기본 설명 0 · None / ' ,' / 'and @imageN shows' 없음) {bad}")
+
+    def t_v10():
+        section("V10 merge_spec: §5.2 표 × 4모드, 양보, _accepted, force 백업, preview, 모르는/중복 id, 수기 스펙, style_note")
+        root, refs_dir, m, crop, ctx, req = toast_ctx("v10")
+        B = _vt("B", name="red hairpin bar", ref_object="the thin red bar", must_not=[], shape="moderate")
+        d1 = nz(ctx, req, [_vt("A", detail="a slice of bread; a golden rim"), B])
+        d2 = nz(ctx, req, [_vt("A", detail="a slice of toast; a dark rim"), B])
+        D1, D2 = "a slice of bread; a golden rim", "a slice of toast; a dark rim"
+        prov = _vprov(req)
+
+        def mg(cur, d, mode, ps=None, c=ctx):
+            return dvlm.merge_spec(copy.deepcopy(cur), d, c, mode=mode, project_style=ps, provenance=prov)
+
+        def tA(spec):
+            return next((t for t in spec.get("targets") or [] if t.get("id") == "A"), {})
+
+        def kinds(r):
+            return {(x.path, x.kind) for x in r.rows}
+
+        r = mg(None, d1, "fill")
+        s1 = r.spec
+        check(r.changed and tA(s1).get("detail") == D1 and ("A.detail", "add") in kinds(r), "C=∅,B=∅ → add")
+        check(s1["_draft"]["written"]["A"]["detail"] == D1 and s1["_draft"]["key"] == req.key and list(s1)[-1] == "_draft"
+              and s1.get("_hint") == "" and s1.get("_accepted") is False and s1["_draft"]["written"]["crop"].get("preserve"),
+              "_draft.written = 노드가 쓴 값(B), _hint·_accepted 처음 한 번, _draft 맨 끝")
+        r = mg(s1, d1, "fill")
+        check(not r.changed, "결과를 다시 병합 → changed False")
+        res = {mode: mg(s1, d2, mode) for mode in dvlm.WRITE_MODES}
+        check(tA(res["fill"].spec or s1).get("detail") == D1 and not res["fill"].changed, "C==B, fill → 유지(수락한 초안이 조용히 바뀌지 않음)")
+        check(tA(res["refresh"].spec).get("detail") == D2 and ("A.detail", "update") in kinds(res["refresh"])
+              and res["refresh"].spec["_draft"]["written"]["A"]["detail"] == D2, "C==B, refresh → N, B := N")
+        check(res["preview"].spec is None and ("A.detail", "update") in kinds(res["preview"]), "preview: 계산·diff 만(spec None)")
+        check(tA(res["force"].spec).get("detail") == D2 and res["force"].backup, "force → N + 백업 표시")
+        h = copy.deepcopy(s1)
+        tA(h)["detail"] = "human detail"
+        for mode in ("fill", "refresh"):
+            r = mg(h, d2, mode)
+            sp = r.spec or h
+            check(tA(sp).get("detail") == "human detail" and "detail" in json.dumps(sp["_draft"].get("pending") or {})
+                  and sp["_draft"]["written"]["A"]["detail"] == D1 and ("A.detail", "keep_human") in kinds(r),
+                  f"사람 수정(C≠B) {mode} → 유지, pending 에 N, B 그대로")
+        r = mg(h, d2, "force")
+        check(tA(r.spec).get("detail") == D2 and r.backup and ("A.detail", "force") in kinds(r), "사람 수정 force → N + 백업")
+        h = copy.deepcopy(s1)
+        del tA(h)["detail"]
+        for mode in ("fill", "refresh"):
+            r = mg(h, d2, mode)
+            sp = r.spec or h
+            check("detail" not in tA(sp) and "A.detail" in (sp["_draft"].get("deleted") or []), f"사람 삭제 {mode} → 다시 쓰지 않음, deleted")
+        r = mg(h, d2, "force")
+        check(tA(r.spec).get("detail") == D2 and "A.detail" not in (r.spec["_draft"].get("deleted") or []), "사람 삭제 force → N, deleted 에서 뺌")
+        h = copy.deepcopy(s1)
+        tA(h)["detail"] = D2
+        r = mg(h, d2, "fill")
+        sp = r.spec or h
+        check(tA(sp).get("detail") == D2 and sp["_draft"]["written"]["A"]["detail"] == D2, "C==N(C≠B) → 유지, B := N")
+        hand = {"preserve": ["the hand-kept braid", "the lips"], "notes": "사람 메모",
+                "targets": [{"id": "A", "name": "hand name", "detail": "hand detail"}]}
+        r = mg(hand, d1, "fill")
+        a = tA(r.spec)
+        check(a.get("detail") == "hand detail" and a.get("name") == "hand name" and a.get("ref_object") == "the toast-shaped clip"
+              and r.spec.get("preserve") == hand["preserve"] and r.spec.get("notes") == "사람 메모"
+              and any(t.get("id") == "B" and t.get("detail") for t in r.spec["targets"])
+              and "detail" in json.dumps(r.spec["_draft"].get("pending") or {}), "수기 스펙(_draft 없음) → 빈 필드만 채움, 다른 값은 pending")
+        r = mg(hand, d1, "force")
+        check(tA(r.spec).get("detail") == D1 and r.backup and r.spec.get("notes") == "사람 메모", "수기 스펙 force → N + 백업(NEVER_WRITE 는 그대로)")
+        # 양보: name_en 이 생긴 뒤(노드가 쓴 그대로면) 모든 모드에서 name 삭제
+        cn = toast_ctx("v10n", mut=lambda c: c["targets"][0].__setitem__("name_en", "toast clip"))[4]
+        d3 = nz(cn, req, [_vt("A", detail=D1), B])
+        for mode in ("fill", "refresh", "force"):
+            r = mg(s1, d3, mode, c=cn)
+            check("name" not in tA(r.spec) and ("A.name", "yield") in kinds(r), f"양보 {mode}: name_en 생김 → C==B name 삭제")
+        cm = dataclasses.replace(ctx, targets=[dataclasses.replace(ctx.targets[0], human_mode="sketch_guide")] + list(ctx.targets[1:]))
+        r = mg(s1, nz(cm, req, [_vt("A", detail=D1), B]), "fill", c=cm)
+        check("mode" not in tA(r.spec) and ("A.mode", "yield") in kinds(r), "양보: 매니페스트 사람 mode → 노드가 쓴 mode 삭제")
+        acc = copy.deepcopy(s1)
+        acc["_accepted"] = True
+        r = mg(acc, d2, "refresh")
+        check(not r.changed and tA(r.spec or acc).get("detail") == D1, "_accepted: refresh 도 건드리지 않음")
+        r = mg(acc, d2, "force")
+        check(r.changed and tA(r.spec).get("detail") == D2, "_accepted: force(+only) 는 적용")
+        unk = copy.deepcopy(s1)
+        unk["targets"].append({"id": "Z", "detail": "zz"})
+        r = mg(unk, d2, "refresh")
+        check(any(t.get("id") == "Z" and t.get("detail") == "zz" for t in r.spec["targets"])
+              and any(x.kind == "unknown_target" for x in r.rows), "매니페스트에 없는 id 는 보존 + unknown_target")
+        dup = copy.deepcopy(s1)
+        dup["targets"].insert(1, dict(copy.deepcopy(tA(s1)), detail="dup detail"))
+        r = mg(dup, d2, "refresh")
+        sp = r.spec or dup
+        check([t.get("detail") for t in sp["targets"] if t.get("id") == "A"] == [D1, "dup detail"]
+              and any(x.kind == "dup_target" for x in r.rows), "같은 id 둘 → 그 타깃 병합 안 함 + dup_target")
+        # style_note: C==B 면 모든 모드에서 프로젝트 값을 따라감, None = 삭제, "" = 끔, 사람 값은 유지
+        r = mg(None, d1, "fill", ps="style one")
+        s2 = r.spec
+        check(s2.get("style_note") == "style one" and s2["_draft"]["written"]["crop"].get("style_note") == "style one", "style_note 물질화")
+        check(mg(s2, d1, "fill", ps="style two").spec.get("style_note") == "style two", "fill 에서도 C==B style_note → 새 프로젝트 값")
+        r = mg(s2, d1, "fill", ps=None)
+        check("style_note" not in (r.spec or s2), "프로젝트 값 삭제 → 손대지 않은 크롭에서도 삭제")
+        check("style_note" not in (mg(None, d1, "fill", ps="").spec or {}), "프로젝트 값 '' → 전파 끔")
+        hs = copy.deepcopy(s2)
+        hs["style_note"] = "human style"
+        r = mg(hs, d1, "fill", ps="style two")
+        check((r.spec or hs).get("style_note") == "human style", "사람이 고친 style_note 는 유지")
+        r = mg(s2, None, "fill", ps="style three")
+        check(r.spec.get("style_note") == "style three" and tA(r.spec).get("detail") == D1, "draft None = 화풍 전파만")
+        pj = dvlm.merge_project(None, "warm line art, soft cel shading", mode="fill", provenance=prov)
+        check(pj.spec.get("style_note") == "warm line art, soft cel shading" and list(pj.spec)[-1] == "_draft"
+              and pj.spec["_draft"]["written"].get("style_note") == "warm line art, soft cel shading", "merge_project: 화풍 초안")
+        hp = dict(copy.deepcopy(pj.spec), style_note="human project style")
+        r = dvlm.merge_project(hp, "new style", mode="fill", provenance=prov)
+        check((r.spec or hp).get("style_note") == "human project style", "merge_project: 사람 값 유지")
+        dp_ = copy.deepcopy(pj.spec)
+        del dp_["style_note"]
+        r = dvlm.merge_project(dp_, "new style", mode="fill", provenance=prov)
+        check("style_note" not in (r.spec or dp_), "merge_project: 사람이 지운 style_note 는 다시 쓰지 않음")
+
+    def t_v11():
+        section("V11 render_check: 노드 필드 예외 → 정해진 순서로 빼고 통과, 사람 필드 예외 → 쓰기 거부")
+        root, refs_dir, m, crop, ctx, req = toast_ctx("v11")
+        d = nz(ctx, req, [_vt("A"), _vt("B", name="red hairpin bar", must_not=[])])
+        spec = dvlm.merge_spec(None, d, ctx, mode="fill", project_style=None, provenance=_vprov(req)).spec
+        rc = dvlm.render_check(crop, spec, refs_dir=refs_dir, glossary={}, owned={"A.shape", "B.shape"})
+        check(rc.ok and not rc.dropped and isinstance(rc.v1, str) and "Correct the toast hair clip" in rc.v1, f"정상 스펙 통과 {rc.problems}")
+        bad = copy.deepcopy(spec)
+        bad["targets"][0]["shape"] = "bogus"
+        rc = dvlm.render_check(crop, bad, refs_dir=refs_dir, glossary={}, owned={"A.shape", "shape"})
+        check(rc.ok and any("shape" in x for x in rc.dropped) and rc.v1 and "bogus" not in rc.v1, f"노드 shape 예외 → 빼고 통과 {rc.dropped}")
+        rc = dvlm.render_check(crop, bad, refs_dir=refs_dir, glossary={}, owned=set())
+        check(not rc.ok and any("사람 값 때문에 Prepare 가 이 크롭에서 멈춥니다" in p for p in rc.problems), f"사람 shape 예외 → 거부 {rc.problems}")
+
+    def t_v12():
+        section("V12 write_spec: 같은 내용이면 안 씀(mtime 불변), 키 순서·_draft 맨 끝, force 백업, 잠금 안에서 다시 읽기")
+        root, refs_dir, m, crop, ctx, req = toast_ctx("v12")
+        cid = ctx.crop_id
+        path = os.path.join(root, "specs", f"{cid}.json")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        store.write_json_atomic(path, {"notes": "사람 메모", "preserve": ["the lips", "the braid"], "targets": [{"id": "A", "detail": "h"}]})
+        d1 = nz(ctx, req, [_vt("A"), _vt("B", name="red hairpin bar", must_not=[])])
+        d2 = nz(ctx, req, [_vt("A", detail="a slice of toast; a dark rim"), _vt("B", name="red hairpin bar", must_not=[])])
+        seen = []
+
+        def merger(d, mode):
+            def f(cur):
+                seen.append(copy.deepcopy(cur))
+                return dvlm.merge_spec(cur, d, ctx, mode=mode, project_style="style one", provenance=_vprov(req))
+            return f
+
+        r, bk = dvlm.write_spec(root, cid, merger(d1, "fill"))
+        on_disk = json.loads(Path(path).read_text(encoding="utf-8"))
+        check(r.changed and bk is None and list(on_disk)[:3] == ["notes", "preserve", "targets"] and list(on_disk)[-1] == "_draft",
+              f"기존 키 순서 유지, 새 키 뒤, _draft 맨 끝 {list(on_disk)}")
+        check(Path(path).read_text(encoding="utf-8").endswith("\n") and '\n "' in Path(path).read_text(encoding="utf-8"),
+              "write_json_atomic 형식(indent 1, 끝 줄바꿈)")
+        mt = os.stat(path).st_mtime_ns
+        time.sleep(0.02)
+        r, bk = dvlm.write_spec(root, cid, merger(d1, "fill"))
+        check(not r.changed and bk is None and os.stat(path).st_mtime_ns == mt, "같은 내용 → 다시 쓰지 않음(mtime 불변)")
+        r, bk = dvlm.write_spec(root, cid, merger(d2, "refresh"))
+        check(r.changed and bk is None and not os.path.isdir(os.path.join(root, "specs", "_backup")), "refresh 는 백업 없음")
+        cur = json.loads(Path(path).read_text(encoding="utf-8"))
+        next(t for t in cur["targets"] if t["id"] == "A")["detail"] = "editor detail"
+        store.write_json_atomic(path, cur)  # 가짜 편집기: 계획을 세운 뒤 쓰기 직전에 사람이 고침
+        r, bk = dvlm.write_spec(root, cid, merger(d1, "refresh"))
+        disk = json.loads(Path(path).read_text(encoding="utf-8"))
+        check(next(t for t in seen[-1]["targets"] if t["id"] == "A")["detail"] == "editor detail"
+              and next(t for t in disk["targets"] if t["id"] == "A")["detail"] == "editor detail",
+              "잠금 안에서 파일을 다시 읽어 병합 → 편집기 값 보존")
+        r, bk = dvlm.write_spec(root, cid, merger(d2, "force"))
+        bdir = os.path.join(root, "specs", "_backup")
+        files = os.listdir(bdir) if os.path.isdir(bdir) else []
+        check(r.changed and bk and len(files) == 1 and re.fullmatch(re.escape(cid) + r"\.\d{8}-\d{6}\.json", files[0])
+              and json.loads(Path(bdir, files[0]).read_text(encoding="utf-8"))["targets"][0]["detail"] == "editor detail",
+              f"force + 내용 다름 → specs/_backup/<crop_id>.<시각>.json {files} {bk}")
+        r, bk = dvlm.write_spec(root, cid, merger(d2, "force"))
+        check(not r.changed and bk is None and len(os.listdir(bdir)) == 1, "force 라도 같은 내용이면 백업·쓰기 없음")
+
+    # ─────────────────────────────────────────────────────────────
+    def t_v16():
+        section("V16 OpenAIVLM(가짜 _load_api): create→created→poll 순서, 크레딧 두 번, 400 사다리, 거부·실패·created 유지, 인터럽트")
+        root, refs_dir, m, crop, ctx, req = toast_ctx("v16")
+        cid = ctx.crop_id
+        text_ok = dvlm._mock_text(req)
+
+        class FakeNetErr(Exception):
+            pass
+
+        class FakeApi:
+            """sync_op_raw 대역. script = [(method, action)] — action: dict(응답) | (status, body)(HTTP 오류) | Exception."""
+
+            def __init__(self, script, credits=(1.5, 3.0)):
+                self.script = list(script)
+                self.t0 = time.monotonic()
+                self.calls = []
+                self.credits = list(credits)
+                self.created_seen_before_poll = None
+
+            def endpoint(self, path, method="GET", **_kw):
+                return types.SimpleNamespace(path=path, method=method)
+
+            async def sync_op_raw(self, cls, endpoint, **kw):
+                self.calls.append({"path": endpoint.path, "method": endpoint.method, "kw": kw,
+                                   "data": copy.deepcopy(kw.get("data"))})
+                if endpoint.method == "GET" and self.created_seen_before_poll is None:
+                    self.created_seen_before_poll = dvlm.Ledger(root).state(cid, req.key)["status"] == "created"
+                if time.monotonic() - self.t0 > 15:
+                    raise RuntimeError("가짜 api: 15초 초과 — POLL_INTERVAL_S·POLL_DEADLINE_S 를 모듈 전역으로 읽지 않음?")
+                method, act = self.script.pop(0)
+                assert method == endpoint.method, f"가짜 api 순서 어긋남: {method} vs {endpoint.method}"
+                if isinstance(act, BaseException) or (isinstance(act, type) and issubclass(act, BaseException)):
+                    raise act
+                if isinstance(act, tuple):
+                    status, body = act
+                    if kw.get("is_rate_limited"):
+                        kw["is_rate_limited"](status, body)
+                    raise Exception(self.friendly(status, body))
+                return act
+
+            def credits_used(self, cls):
+                return self.credits.pop(0) if self.credits else None
+
+            @staticmethod
+            def friendly(status, body):
+                return f"HTTP {status}: {json.dumps(body)}"
+
+            def ns(self):
+                return types.SimpleNamespace(sync_op_raw=self.sync_op_raw, ApiEndpoint=self.endpoint, credits_used=self.credits_used,
+                                             friendly_http_message=self.friendly, network_errors=(FakeNetErr,))
+
+        def done_resp(text, status="completed"):
+            return {"id": "resp_1", "status": status, "output_text": text,
+                    "output": [{"type": "message", "content": [{"type": "output_text", "text": text}]}],
+                    "usage": {"input_tokens": 3000, "output_tokens": 900, "output_tokens_details": {"reasoning_tokens": 600}}}
+
+        def run(script, *, key=None, attempt=1, credits=(1.5, 3.0)):
+            api = FakeApi(script, credits)
+            be = dvlm.OpenAIVLM({"auth_token": "fake-token-for-tests-not-real", "unique_id": "9"}, root=root)
+            be.api = api.ns()
+            be._load_api = lambda: api.ns()
+            r = dataclasses.replace(req, key=key) if key else req
+            err = None
+            res = None
+            try:
+                res = asyncio.run(be.call(unit_of(cid, r.key, attempt), r, dvlm.Ledger(root), model="gpt-6-astra", effort="high",
+                                          image_detail="high", progress=None))
+            except BaseException as e:  # noqa: BLE001
+                err = e
+            return api, res, err, dvlm.Ledger(root).state(cid, r.key), r.key
+
+        orig = (dvlm.POLL_INTERVAL_S, dict(dvlm.POLL_DEADLINE_S))
+        dvlm.POLL_INTERVAL_S = 0.01
+        caps = os.path.join(os.path.dirname(root), dvlm.CAPS_FILE)
+        try:
+            api, res, err, st, k = run([("POST", {"id": "resp_1", "status": "queued"}), ("GET", {"id": "resp_1", "status": "in_progress"}),
+                                        ("GET", done_resp(text_ok))])
+            post = api.calls[0]
+            check(err is None and st["status"] == "done" and api.created_seen_before_poll is True,
+                  f"create → created 기록 → 폴링 → done ({err})")
+            check(post["path"] == dvlm.RESPONSES_PATH and post["method"] == "POST" and post["kw"].get("max_retries") == 0
+                  and post["kw"].get("timeout", 0) >= 3600 and post["kw"].get("monitor_progress") is True
+                  and callable(post["kw"].get("is_rate_limited")), f"create 인자 max_retries 0·timeout ≥3600·monitor_progress {post['kw'].keys()}")
+            check(api.calls[1]["path"] == f"{dvlm.RESPONSES_PATH}/resp_1" and api.calls[1]["method"] == "GET",
+                  "폴링 GET /responses/<id>")
+            d = dvlm.Ledger(root).read(cid, k, 1, "done")
+            cr = dvlm.Ledger(root).read(cid, k, 1, "created")
+            rp = dvlm.Ledger(root).read(cid, k, 1, "resp")
+            check(cr["response_id"] == "resp_1" and cr.get("credits_create") == 1.5 and rp.get("credits_poll") == 3.0
+                  and d["credits"] == 3.0 and res.credits == 3.0 and d["parsed"]["schema_echo"] == "dp-draft-1",
+                  "크레딧 create 직후·마지막 폴링 뒤 두 번 읽기, credits = max")
+            check(post["data"]["text"]["format"]["strict"] is True and post["data"].get("background") is True,
+                  "첫 시도 L2 + background")
+            rq = dvlm.Ledger(root).read(cid, k, 1, "req")
+            check("base64" not in json.dumps(rq, ensure_ascii=False), "req 원장에 base64 없음")
+            fmt400 = (400, {"error": {"message": "Invalid schema for response_format 'design_patch_spec_draft': 'minItems' is not permitted"}})
+            if os.path.exists(caps):
+                os.remove(caps)
+            api, res, err, st, k = run([("POST", fmt400), ("POST", fmt400), ("POST", {"id": "resp_2", "status": "queued"}),
+                                        ("GET", done_resp(text_ok))], key=key24(16001))
+            posts = [c["data"] for c in api.calls if c["method"] == "POST"]
+            check(err is None and len(posts) == 3 and "minItems" in json.dumps(posts[0]) and "minItems" not in json.dumps(posts[1])
+                  and "text" in posts[1] and "text" not in posts[2] and st["status"] == "done" and st["attempt"] == 1,
+                  "400format: L2 → L1 → L0 같은 시도 안에서")
+            check(dvlm.caps_load(root).get("openai", {}).get("gpt-6-astra", {}).get("schema_level") == 0, "caps 에 schema_level 기록")
+            bg400 = (400, {"error": {"message": "Unknown parameter: 'background'."}})
+            os.remove(caps)
+            api, res, err, st, k = run([("POST", bg400), ("POST", {"id": "resp_3", "status": "queued"}), ("GET", done_resp(text_ok))],
+                                       key=key24(16002))
+            posts = [c["data"] for c in api.calls if c["method"] == "POST"]
+            check(err is None and posts[0].get("background") is True and "background" not in posts[1]
+                  and dvlm.caps_load(root)["openai"]["gpt-6-astra"].get("background") is False, "400background: 빼고 재전송 + caps")
+            api, res, err, st, k = run([("POST", (400, {"error": {"message": "Invalid image"}}))] * 3, key=key24(16003))
+            check(isinstance(err, runner.CallError) and err.status == 400 and st["status"] == "rejected" and st["next_attempt"] == 1,
+                  "사다리 밖 400 → rejected(시도 유지)")
+            if os.path.exists(caps):
+                os.remove(caps)
+            api, res, err, st, k = run([("POST", fmt400), ("POST", (400, {"error": {"message": "Invalid image"}}))],
+                                       key=key24(16005))
+            posts = [c["data"] for c in api.calls if c["method"] == "POST"]
+            check(isinstance(err, runner.CallError) and st["status"] == "rejected" and len(posts) == 2
+                  and "schema_level" not in dvlm.caps_load(root).get("openai", {}).get("gpt-6-astra", {}),
+                  "사다리 1단 하강 뒤 사다리 밖 400 → rejected, caps 그대로(받아들여진 단계만 기록)")
+            api, res, err, st, k = run([("POST", (401, {"error": "Unauthorized"}))] * 3, key=key24(16004))
+            check(isinstance(err, runner.CallError) and err.status == 401 and st["status"] == "rejected" and not err.maybe_billed,
+                  "401 → rejected(과금 전, 발사 중지는 run_units)")
+            for i, act in enumerate([(503, {"error": "busy"}), FakeNetErr("connection reset")]):
+                api, res, err, st, k = run([("POST", act)], key=key24(16010 + i))
+                check(isinstance(err, runner.CallError) and err.maybe_billed and st["status"] == "failed" and st["next_attempt"] == 2,
+                      f"create 단계 {'5xx' if i == 0 else '네트워크'} → failed(maybe_billed)")
+            for i, act in enumerate([(401, {"error": "token expired"}), (502, {"error": "bad gateway"}), FakeNetErr("timeout")]):
+                api, res, err, st, k = run([("POST", {"id": f"resp_p{i}", "status": "queued"}), ("GET", act)], key=key24(16020 + i))
+                check(isinstance(err, runner.CallError) and err.phase == "poll" and st["status"] == "created",
+                      f"폴링 중 오류({act if isinstance(act, tuple) else 'network'}) → created 유지(무료 재폴링)")
+            dvlm.POLL_DEADLINE_S["high"] = 0.05
+            api, res, err, st, k = run([("POST", {"id": "resp_dl", "status": "queued"})]
+                                       + [("GET", {"id": "resp_dl", "status": "in_progress"})] * 200, key=key24(16030))
+            check(isinstance(err, runner.CallError) and err.phase == "poll" and st["status"] == "created", "폴링 마감 초과 → created 유지")
+            dvlm.POLL_DEADLINE_S.update(orig[1])
+            for i, (status, body) in enumerate([("incomplete", done_resp("{\"a\":", "incomplete")), ("failed", {"id": "r", "status": "failed"}),
+                                                ("refusal", {"id": "r", "status": "completed", "output": [{"type": "message", "content": [
+                                                    {"type": "refusal", "refusal": "I can't help with that."}]}]})]):
+                api, res, err, st, k = run([("POST", {"id": "r", "status": "queued"}), ("GET", body)], key=key24(16040 + i))
+                check(isinstance(err, runner.CallError) and err.maybe_billed and st["status"] == "failed" and st["next_attempt"] == 2,
+                      f"서버 종료 상태 {status} → failed(maybe_billed)")
+            api, res, err, st, k = run([("POST", {"id": "r", "status": "queued"}), ("GET", done_resp("not json at all"))], key=key24(16050))
+            check(isinstance(err, runner.CallError) and err.phase == "parse" and st["status"] == "failed", "파싱 실패 → failed(parse), 재질문 없음")
+            check(len([c for c in api.calls if c["method"] == "POST"]) == 1, "OpenAI 는 유료 재질문 없음")
+            api, res, err, st, k = run([("POST", {"id": "r", "status": "queued"}), ("GET", runner._make_interrupt())], key=key24(16060))
+            check(isinstance(err, runner._interrupt_types()) and st["status"] == "created", "폴링 중 인터럽트 → 다시 던짐, created 유지")
+            api, res, err, st, k = run([("POST", runner._make_interrupt())], key=key24(16061))
+            check(isinstance(err, runner._interrupt_types()) and st["status"] == "inflight" and st["next_attempt"] == 2,
+                  "create 중 인터럽트 → inflight(orphan)")
+            # 무료 재폴링
+            k = key24(16020)
+            created = dvlm.Ledger(root).read(cid, k, 1, "created")
+            api = FakeApi([("GET", done_resp(text_ok))], credits=(0.0,))
+            be = dvlm.OpenAIVLM({"auth_token": "fake-token-for-tests-not-real"}, root=root)
+            be.api = api.ns()
+            be._load_api = lambda: api.ns()
+            res = asyncio.run(be.repoll(unit_of(cid, k, 1), created, dvlm.Ledger(root), effort="high", progress=None))
+            check(not [c for c in api.calls if c["method"] == "POST"] and dvlm.Ledger(root).state(cid, k)["status"] == "done",
+                  "repoll: GET 만(POST 0), done")
+        finally:
+            dvlm.POLL_INTERVAL_S = orig[0]
+            dvlm.POLL_DEADLINE_S.clear()
+            dvlm.POLL_DEADLINE_S.update(orig[1])
+
+    # ─────────────────────────────────────────────────────────────
+    def t_v18():
+        section("V18 Qwen(가짜 libs: mm·model·processor): 32 배수·generation_config·'{' 프리필·VRAM 사전 검사·재질문·언로드")
+        from unittest import mock as umock
+        root, refs_dir, m, crop, ctx, req = toast_ctx("v18", fam="local_qwen")
+        check(all(v % 32 == 0 for im in [p[1] for p in req.parts if p[0] == "image"] for v in im.sent_wh), "qwen 전송 이미지 32 배수")
+        good = dvlm._mock_text(req)
+        DEV = types.SimpleNamespace(type="cuda", index=0)
+        state = {"free": [4.0], "loaded": [], "texts": [], "freed": [], "loads": 0, "prompts": [], "gen": 0}
+
+        class FakeLoaded:
+            def __init__(self, gib):
+                self.device = DEV
+                self.gib = gib
+
+            def model_loaded_memory(self):
+                return int(self.gib * 2 ** 30)
+
+        def free_mem(dev=None, *a, **k):
+            v = state["free"].pop(0) if len(state["free"]) > 1 else state["free"][0]
+            return int(v * 2 ** 30)
+
+        mm = types.SimpleNamespace(
+            InterruptProcessingException=type("InterruptProcessingException", (Exception,), {}),
+            get_torch_device=lambda: DEV, get_free_memory=free_mem, current_loaded_models=state["loaded"],
+            free_memory=lambda need, dev, *a, **k: state["freed"].append(need), soft_empty_cache=lambda *a, **k: None,
+            processing_interrupted=lambda: False)
+
+        class FakeGenCfg:
+            do_sample, temperature, top_p, top_k = True, 0.7, 0.8, 20
+
+        class FakeModel:
+            device = "cuda:0"
+
+            def __init__(self):
+                self.generation_config = FakeGenCfg()
+
+            def eval(self):
+                return self
+
+            def generate(self, **kw):
+                state["gen"] += 1
+                state["gen_kw"] = kw
+                return umock.MagicMock()
+
+        class FakeModelCls:
+            @staticmethod
+            def from_pretrained(path, **kw):
+                state["loads"] += 1
+                state["load_kw"] = kw
+                return FakeModel()
+
+        class FakeBatch(dict):
+            def __getattr__(self, k):
+                try:
+                    return self[k]
+                except KeyError as exc:
+                    raise AttributeError(k) from exc
+
+            def to(self, *a, **k):
+                return self
+
+        class FakeProcessor:
+            def apply_chat_template(self, messages, **kw):
+                state["messages"] = messages
+                return "<|im_start|>assistant\n"
+
+            def __call__(self, *a, **kw):
+                t = kw.get("text") if "text" in kw else (a[0] if a else None)
+                state["prompts"].append(t[0] if isinstance(t, (list, tuple)) and t else t)
+                return FakeBatch(input_ids=umock.MagicMock(shape=(1, 100)), attention_mask=umock.MagicMock())
+
+            def batch_decode(self, *a, **kw):
+                return [state["texts"].pop(0)]
+
+        class FakeProcCls:
+            @staticmethod
+            def from_pretrained(path, **kw):
+                return FakeProcessor()
+
+        libs = types.SimpleNamespace(torch=umock.MagicMock(name="torch"), mm=mm, Model=FakeModelCls, Processor=FakeProcCls,
+                                     StoppingCriteria=type("StoppingCriteria", (), {}), StoppingCriteriaList=list)
+        model_dir = VLM_OUT / "v18" / "Qwen3-VL-8B-Instruct"
+        model_dir.mkdir(parents=True, exist_ok=True)
+        (model_dir / "config.json").write_text('{"model_type": "qwen3_vl"}', encoding="utf-8")
+        be = dvlm.QwenVLM(str(model_dir), keep_loaded=False)
+        be.libs = libs
+        led = dvlm.Ledger(root)
+        try:
+            state["loaded"][:] = [FakeLoaded(10.0)]
+            ok, free_g, unl_g = dvlm.QwenVLM.vram_check(mm=mm)
+            check(not ok and abs(free_g - 4.0) < 0.01 and abs(unl_g - 10.0) < 0.01, f"vram_check (ok, 여유, 내릴 수 있는) {ok, free_g, unl_g}")
+            err = None
+            try:
+                asyncio.run(be.call(unit_of(ctx.crop_id, req.key), req, led, progress=None))
+            except dvlm.VramError as exc:
+                err = exc
+            check(err is not None and "19.5" in str(err) and not state["freed"] and state["loads"] == 0
+                  and led.state(ctx.crop_id, req.key)["status"] == "none",
+                  f"사전 검사 부족(여유 4 + 내릴 수 있는 10 < 19.5) → free_memory 미호출·로드·원장 없음 {err}")
+            state.update(free=[8.0, 8.0, 12.0], freed=[], loads=0)
+            state["loaded"][:] = [FakeLoaded(16.0)]
+            err = None
+            try:
+                asyncio.run(be.call(unit_of(ctx.crop_id, req.key), req, led, progress=None))
+            except dvlm.VramError as exc:
+                err = exc
+            check(err is not None and state["freed"] and state["loads"] == 0, "free_memory 뒤에도 부족 → VramError, from_pretrained 미호출")
+            state.update(free=[30.0], freed=[], loads=0, prompts=[], gen=0,
+                         texts=["this is not json", good[1:] if good.startswith("{") else good])
+            state["loaded"][:] = []
+            res = asyncio.run(be.call(unit_of(ctx.crop_id, req.key), req, led, progress=None))
+            gc_ = (dvlm._QWEN.get("model") or types.SimpleNamespace(generation_config=None)).generation_config
+            check(state["loads"] == 1 and state["load_kw"].get("attn_implementation") == "sdpa"
+                  and state["load_kw"].get("local_files_only") is True, f"sdpa·local_files_only 로드 {state.get('load_kw')}")
+            check(gc_ is not None and gc_.do_sample is False and gc_.temperature is None and gc_.top_p is None and gc_.top_k is None,
+                  "generation_config: do_sample False, temperature/top_p/top_k None(greedy 함정)")
+            check(state["gen"] == 2 and state["prompts"] and all(isinstance(p, str) and p.endswith("{") for p in state["prompts"])
+                  and state["gen_kw"].get("do_sample") is False and state["gen_kw"].get("max_new_tokens") == dvlm.QWEN_MAX_NEW_TOKENS,
+                  f"'{{' 프리필·greedy, 파싱 실패 → 같은 시도 안에서 1회 재질문(generate {state['gen']})")
+            check(led.state(ctx.crop_id, req.key)["status"] == "done" and res.credits is None and dvlm._QWEN.get("model") is not None,
+                  "Qwen 결과 원장 done, 크레딧 없음, 실행 사이에는 캐시 유지")
+            be.unload()
+            check(dvlm._QWEN.get("model") is None, "unload → 모듈 캐시 비움(0 호출이어도 불러도 됨)")
+            be.unload()
+        finally:
+            dvlm._QWEN.update(key=None, model=None, processor=None)
+
+    def t_v19():
+        section("V19 credit_cap: 실측(미보고는 단위 최대) + 다음 단위 최대 > cap → 새 발사 중지, 남은 단위는 대기 "
+                "(진행 중 예약까지 더해 넘치면 대기 후 재판정)")
+        base = VLM_OUT / "v19"
+        shutil.rmtree(base, ignore_errors=True)
+        root = store.project_root(str(base), "proj")
+        os.makedirs(root)
+        reqs = {f"00{i}_aaaaaa": mk_req(f"00{i}_aaaaaa", key24(1900 + i), shown_refs=("r.png",)) for i in range(1, 6)}
+        units = [dvlm.Unit(c, r.key, 1, "crop", "new", ["신규"], True, (10, 40)) for c, r in reqs.items()]
+
+        class PaidMock(dvlm.MockVLM):  # 진행 중 추정(단위 최대)은 유료 백엔드만 센다 — 이름만 openai 인 mock
+            name = dvlm.BACKEND_NAMES["openai"]
+
+        be = PaidMock({"delay_s": 0.15, "credits": 30})
+        rep = asyncio.run(dvlm.run_units(root, units, reqs, be, model="mock", effort="high", image_detail="high", concurrency=4,
+                                         credit_cap=100, progress_cb=lambda *a, **k: None))
+        done = [c for c, r in reqs.items() if dvlm.Ledger(root).state(c, r.key)["status"] == "done"]
+        never = [c for c, r in reqs.items() if dvlm.Ledger(root).state(c, r.key)["status"] == "none"]
+        # 2건 예약(80) → 3번째는 기다림 → 실측 60 + 40 ≤ 100 이라 발사 → 실측 90 + 40 > 100 → 중지
+        check(rep.stopped_reason == "credit_cap" and rep.launched == 3 and len(be.calls) == 3
+              and len(never) == 2 and rep.done == len(done) and abs(rep.credits - 30 * rep.done) < 1e-6,
+              f"cap 100, 최대 40·실측 30/단위 → 3건 발사 뒤 중지, 나머지는 원장 없음(대기) {rep.launched} {rep.stopped_reason} {rep.credits}")
+        rootw = store.project_root(str(base), "projw")
+        os.makedirs(rootw)
+        be = PaidMock({"delay_s": 0.15, "credits": 10})
+        rep = asyncio.run(dvlm.run_units(rootw, units, reqs, be, model="mock", effort="high", image_detail="high", concurrency=4,
+                                         credit_cap=100, progress_cb=lambda *a, **k: None))
+        check(rep.stopped_reason == "none" and rep.launched == 5 and rep.done == 5 and abs(rep.credits - 50) < 1e-6,
+              f"진행 중 예약 때문에 넘칠 때는 멈추지 않고 기다렸다 실측으로 다시 판정 → 실측 10/단위면 5건 모두 {rep.launched} "
+              f"{rep.stopped_reason} {rep.credits}")
+        root1 = store.project_root(str(base), "proj1")
+        os.makedirs(root1)
+        rep = asyncio.run(dvlm.run_units(root1, units, reqs, dvlm.MockVLM({"delay_s": 0.05, "credits": 10}), model="mock",
+                                         effort="high", image_detail="high", concurrency=4, credit_cap=100,
+                                         progress_cb=lambda *a, **k: None))
+        check(rep.launched == 5 and rep.done == 5, "mock(과금 없음)은 진행 중 추정을 세지 않음 — 실측만으로는 cap 미만")
+        root2 = store.project_root(str(base), "proj2")
+        os.makedirs(root2)
+        be = dvlm.MockVLM({"delay_s": 0.01, "credits": 10})
+        rep = asyncio.run(dvlm.run_units(root2, units, reqs, be, model="mock", effort="high", image_detail="high", concurrency=4,
+                                         credit_cap=0, progress_cb=lambda *a, **k: None))
+        check(rep.launched == 5 and rep.done == 5 and rep.stopped_reason == "none", "credit_cap 0 = 제한 없음")
+        root3 = store.project_root(str(base), "proj3")
+        os.makedirs(root3)
+        be = dvlm.MockVLM({"delay_s": 0.01, "fail_plan": {"002_aaaaaa": ["401"]}})
+        rep = asyncio.run(dvlm.run_units(root3, units, reqs, be, model="mock", effort="high", image_detail="high", concurrency=1,
+                                         credit_cap=0, progress_cb=lambda *a, **k: None))
+        check(rep.stopped_reason == "auth" and rep.rejected == 1 and rep.launched == 2, f"401 → 새 발사 중지(auth) {rep}")
+        root4 = store.project_root(str(base), "proj4")
+        os.makedirs(root4)
+        be = dvlm.MockVLM({"delay_s": 0.01, "fail_plan": {"003_aaaaaa": ["interrupt_poll"]}})
+        err = None
+        try:
+            asyncio.run(dvlm.run_units(root4, units, reqs, be, model="mock", effort="high", image_detail="high", concurrency=1,
+                                       credit_cap=0, progress_cb=lambda *a, **k: None))
+        except BaseException as e:  # noqa: BLE001
+            err = e
+        sts = [dvlm.Ledger(root4).state(c, r.key)["status"] for c, r in reqs.items()]
+        check(isinstance(err, runner._interrupt_types()) and sts[:3] == ["done", "done", "created"] and sts[3:] == ["none", "none"],
+              f"인터럽트: 도착분 저장 후 다시 던짐, 새 발사 중지 {sts}")
+        led4 = dvlm.Ledger(root4)
+        c3 = "003_aaaaaa"
+        u3 = dvlm.Unit(c3, reqs[c3].key, 1, "crop", "repoll", ["복구(재폴링)"], False, (0, 0))
+        rep = asyncio.run(dvlm.run_units(root4, [u3], reqs, dvlm.MockVLM({}), model="mock", effort="high", image_detail="high",
+                                         concurrency=1, credit_cap=0, progress_cb=lambda *a, **k: None))
+        check(rep.repolled == 1 and led4.state(c3, reqs[c3].key)["status"] == "done", "repoll 단위 → backend.repoll(무료)")
+
+    def t_v20():
+        section("V20 paste_layer_name: 다시 파싱하면 타깃 수 일치, 기존 타깃 문구 그대로, 새 제안은 ASCII·'; : |' 제거, crop_id 불변")
+        root, refs_dir, m, crop, ctx, req = toast_ctx("v20")
+        d = nz(ctx, req, [_vt("A"), _vt("B", name="red hairpin bar", must_not=[])],
+               suggested=[{"name": "star; sticker: big|one", "reason": "missing", "bbox": [10, 10, 90, 90]}])
+        ln = dvlm.paste_layer_name(ctx, d)
+        p = store.parse_crop_layer_name(ln)
+        names = [t["text"] for t in p["targets"]]
+        # 기존 라벨을 바꾸면 재가져오기 때 매니페스트의 사람 mode·refs 가 초기화되고 "타깃 변경" 이 된다 → 문구 그대로
+        check(ln.startswith(crop["name"] + " | ") and len(p["targets"]) == 3 and names[:2] == ["토스트", "빨간 헤어핀"]
+              and names[2].isascii() and not any(ch in names[2] for ch in ";:|") and "star" in names[2]
+              and store.crop_id_for(ln) == ctx.crop_id, f"제안 레이어명 {ln!r} → {names}")
+        rl, _rd, ml = _vlm_project("v20l", [("030_팔매듭", (256, 256), {})])
+        cl = dvlm.build_crop_ctx(rl, ml, ml["crops"][0], refs_dir="", glossary={}, backend="openai", memo={})
+        rq = dvlm.build_request(cl, backend="openai", model="gpt-6-astra", effort="high", image_detail="high", draft_round=0)
+        dl = dvlm.normalize(_vparsed([_vt("A", name="arm cord knot", mode="self_restore", ref_images=[], defects="a notch")],
+                                     suggested=[{"name": "sleeve cloud pattern", "reason": "x", "bbox": [1, 1, 50, 50]}]),
+                            cl, rq, constraints=dvlm.constraints_for(cl, None), glossary={})
+        ll = dvlm.paste_layer_name(cl, dl)
+        check(ll == "030_팔매듭 | A: arm cord knot; B: sleeve cloud pattern" and store.crop_id_for(ll) == cl.crop_id,
+              f"레거시 크롭: A = 부위 이름 초안, B = 제안 {ll!r}")
+
+    def t_v21():
+        section("V21 format_report / review_markdown: 나쁜 것부터(실패 > 신뢰 낮음 > 경고 > 정상), 한국어, 이모지 없음, 승인 안내")
+        root, refs_dir, m = _vlm_project("v21", [("001_실패", (256, 256), {}), ("002_낮음", (256, 256), {}),
+                                                 ("003_경고_right", (256, 256), {}), ("004_정상", (256, 256), {})],
+                                         refs=[("002_낮음_t.png", (128, 128)), ("003_경고_right_t.png", (128, 128)),
+                                               ("003_경고_left_t.png", (128, 128)), ("004_정상_t.png", (128, 128))])
+        ctxs = [dvlm.build_crop_ctx(root, m, c, refs_dir=refs_dir, glossary={}, backend="openai", memo={}) for c in m["crops"]]
+        reqs = {c.crop_id: dvlm.build_request(c, backend="openai", model="gpt-6-astra", effort="high", image_detail="high",
+                                              draft_round=0) for c in ctxs}
+        led = dvlm.Ledger(root)
+        f_id = ctxs[0].crop_id
+        for kd, rec in (("req", {"x": 1}), ("inflight", {"x": 1}), ("created", {"response_id": "r"}),
+                        ("resp", {"status": "incomplete"}), ("failed", {"error": "OpenAI incomplete(출력 한도 소진)", "maybe_billed": True})):
+            led.write(f_id, reqs[f_id].key, 1, kd, rec)
+        drafts, merges, checks_ = {}, {}, {}
+        for c, conf, extra in ((ctxs[1], "low", {"counts": [{"part": "loop", "reference": 4, "canvas": 0}],
+                                                 "detail": "a knot; three loops; soft light on the cord",
+                                                 "must_not": ["the cord"]}),
+                               (ctxs[2], "high", {}), (ctxs[3], "high", {})):
+            r = reqs[c.crop_id]
+            refs = [2] if c.refs else []
+            t = _vt("A", name="cord knot", ref_images=[3] if c is ctxs[2] else refs, confidence=conf, **extra)
+            pres = ["the hair strands", "the dark inset inside the loop"] if conf == "low" else None
+            d = dvlm.normalize(_vparsed([t], preserve=pres), c, r, constraints=dvlm.constraints_for(c, None), glossary={})
+            drafts[c.crop_id] = d
+            mr = dvlm.merge_spec(None, d, c, mode="fill", project_style=None, provenance=_vprov(r))
+            merges[c.crop_id] = mr
+            crop = next(x for x in m["crops"] if x["id"] == c.crop_id)
+            checks_[c.crop_id] = dvlm.render_check(crop, mr.spec, refs_dir=refs_dir, glossary={}, owned=set())
+        ctxs[1] = dataclasses.replace(ctxs[1], warnings=["레퍼런스 파일 없음: 없는.png"])  # 신뢰 낮음 크롭의 ctx 경고·렌더 대체
+        checks_[ctxs[1].crop_id].flags.append("render_fallback: A.location 뺌(시험)")
+        p = dvlm.plan(root, ctxs, reqs, None, mode="fill", only=[])
+        ap = dvlm.approval(p, "", backend_name="vlm_openai")
+        header = {"family": "openai", "backend": "vlm_openai", "backend_name": "vlm_openai", "model": "gpt-6-astra", "effort": "high",
+                  "image_detail": "high", "mode": "fill", "write_mode": "fill", "only": [], "paid": True, "mock": False,
+                  "keep_loaded": False, "elapsed_s": 0.8, "seconds": 0.8, "root": root}
+        rep = dvlm.format_report(header=header, plan=p, approval=ap, run=None, merges=merges, checks=checks_, drafts=drafts, ctxs=ctxs)
+        first = rep.splitlines()[0]
+        check(first.startswith("Spec Draft [") and "유료" in first and "드라이런" in first, f"첫 줄: 백엔드·유료·드라이런 {first!r}")
+        check(ap["pending_hash"] in rep and any("승인" in ln and ap["pending_hash"] in ln for ln in rep.splitlines()),
+              "승인 안내 줄(해시 포함)")
+        pos = [rep.find(tag) for tag in ("[실패]", "[신뢰 낮음]", "[경고]", "[정상]")]
+        check(all(x >= 0 for x in pos) and pos == sorted(pos), f"심각도 순서 실패 > 신뢰 낮음 > 경고 > 정상 {pos}")
+        low = next((ln for ln in rep.splitlines() if ln.startswith("[신뢰 낮음]")), "")
+        check("preserve_in_target: the dark inset inside the loop (A)" in low and "A count_mismatch" in low
+              and "레퍼런스 파일 없음: 없는.png" in low and "render_fallback" in low,
+              f"[신뢰 낮음] 줄에도 크롭 플래그·타깃의 세 번째 플래그·ctx 경고·렌더 대체(F14) {low!r}")
+        check(re.search(r"[가-힣]", rep) and not any(ord(ch) >= 0x1F000 or ch == "\ufe0f" for ch in rep), "한국어, 이모지 없음")
+        md = dvlm.review_markdown(ctxs, merges, checks_, drafts)
+        v1 = checks_[ctxs[3].crop_id].v1 or ""
+        check(isinstance(md, str) and ctxs[3].crop_id in md and v1 and v1.splitlines()[0] in md
+              and not any(ord(ch) >= 0x1F000 for ch in md), "review.md: 크롭별 V1 전문·diff")
+        check("side_mismatch" in _vflags(drafts[ctxs[2].crop_id]), "준비: 003 은 반대 side 레퍼런스(경고)")
+
+    def t_v22():
+        section("V22 리뷰 반영: force 1회·force 제약, fill 사유 전부·타깃 변경, 화풍 mock 교체, 스텁 고정점, 폴링 404, "
+                "미보고 크레딧 cap, Qwen 잘림·로컬 실패·인터럽트·CUDA, 초안 없음 묶음, mock 기록")
+        root, refs_dir, m, crop, ctx, req = toast_ctx("v22")
+        prov = _vprov(req)
+        B = _vt("B", name="red hairpin bar", ref_object="the thin red bar", must_not=[])
+
+        def tg(s, tid="A"):
+            return next((t for t in (s or {}).get("targets") or [] if t.get("id") == tid), {})
+
+        def node(cur, mode, targets):  # main._merge_crop 순서: merge_mode → 제약(force 는 매니페스트만) → normalize → merge_spec
+            mode = dvlm.merge_mode(cur, mode, req.key)
+            d = dvlm.normalize(_vparsed(targets), ctx, req, glossary={},
+                               constraints=dvlm.constraints_for(ctx, None if mode == "force" else cur))
+            return dvlm.merge_spec(cur, d, ctx, mode=mode, project_style=None, provenance=prov)
+
+        s1 = node(None, "fill", [_vt("A"), B]).spec
+        h = copy.deepcopy(s1)
+        tg(h)["mode"], tg(h)["refs"] = "self_restore", [req.shown_refs[1]]
+        r = node(h, "force", [_vt("A", detail="a slice of toast; a dark rim"), B])
+        check(tg(r.spec).get("mode") == "ref_correct" and tg(r.spec).get("refs") == [req.shown_refs[0]] and r.backup
+              and tg(r.spec).get("detail") == "a slice of toast; a dark rim" and r.spec["_draft"].get("forced_key") == req.key,
+              f"C05 force: 스펙의 사람 mode·refs 를 지우지 않고 초안 값으로(+ forced_key) {tg(r.spec).get('mode')}")
+        h2 = copy.deepcopy(r.spec)
+        tg(h2)["detail"], h2["_accepted"] = "art lead detail", True
+        check(not node(h2, "force", [_vt("A"), B]).changed, "C06 같은 키로 다시 force → fill 규칙·_accepted 존중")
+        p = dvlm.plan(root, [dataclasses.replace(ctx, spec=h2)], {ctx.crop_id: req}, None, mode="force", only=[ctx.crop_id])
+        check(p["units"] == [] and p["accepted"] == [ctx.crop_id], "C06 plan: 이미 force 한 키는 다시 _accepted")
+        check(not dvlm.merge_spec(h, None, ctx, mode="force", project_style="x", provenance={}).backup, "C06 초안 없는 force = fill")
+        d0 = {"key": key24(1), "backend": "vlm_mock", "hint": "", "written": {"crop": {}, "A": {}},
+              "labels": {"A": {"label": "라벨A", "name_en": ""}}}
+        check(dvlm._fill_reasons(d0, mk_ctx("001_aaaaaa", tids=("A", "B")), "openai") == ["타깃 추가", "mock 초안 교체"],
+              "C07 fill 사유는 겹쳐도 전부(타깃 추가가 mock 교체를 가리지 않음)")
+        cr = dataclasses.replace(ctx, targets=[dataclasses.replace(ctx.targets[0], label="빨간 헤어핀")] + list(ctx.targets[1:]))
+        check(s1["_draft"]["labels"]["A"]["label"] == "토스트" and dvlm._fill_reasons(s1["_draft"], cr, "openai") == ["타깃 변경(A)"],
+              "C08 _draft.labels 와 지금 라벨이 다르면 타깃 변경(A)")
+        rr = dvlm.merge_spec(s1, nz(cr, req, [_vt("A", name="red pin", detail="a thin red pin; a round head"),
+                                              dict(B, detail="b new; b two")], cur=s1),
+                             cr, mode="fill", project_style=None, provenance=_vprov(req, key=key24(77)))
+        check(tg(rr.spec).get("detail") == "a thin red pin; a round head" and tg(rr.spec, "B").get("detail") == tg(s1, "B").get("detail")
+              and tg(rr.spec, "B").get("_review") == tg(s1, "B").get("_review"),
+              "C08 바뀐 타깃만 refresh 규칙, 값을 받지 않은 B 는 값·_review 유지(C07)")
+        hs = copy.deepcopy(s1)
+        tg(hs)["mode"], tg(hs)["refs"] = "self_restore", []
+        hs["_draft"]["written"]["A"].update(mode="self_restore", refs=[])
+        tg(hs)["refs"] = [req.shown_refs[0]]
+        check("mode" not in tg(dvlm.merge_spec(hs, None, ctx, mode="fill", project_style=None, provenance={}).spec),
+              "C10 노드가 쓴 self_restore 는 사람 refs 가 생기면 fill 에서도 양보")
+        z = dvlm.merge_spec(None, None, ctx, mode="fill", project_style="style one", provenance={})
+        check(z.changed and not dvlm.merge_spec(z.spec, None, ctx, mode="fill", project_style="style one", provenance={}).changed,
+              "C25 화풍 전파만 받은 _draft 는 한 번에 고정점")
+        pj = dvlm.merge_project(None, "flat mock style", mode="fill", provenance=_vprov(req, backend="vlm_mock", key=key24(5))).spec
+        r9 = dvlm.merge_project(pj, "soft painted style", mode="fill", provenance=_vprov(req, key=key24(6)))
+        check(r9.spec and r9.spec["style_note"] == "soft painted style", "C09 mock 화풍 → 실제 초안은 fill 에서도 refresh 규칙")
+        pj_path = os.path.join(root, "specs", "_project.json")
+        os.makedirs(os.path.dirname(pj_path), exist_ok=True)
+        sreq = mk_req("_style", key24(6), backend="openai", model="gpt-6-astra", effort="high", kind="style")
+        store.write_json_atomic(pj_path, pj)
+        check([(u.crop_id, u.reasons[0]) for u in dvlm.plan(root, [], {}, sreq, mode="fill", only=[])["units"]]
+              == [("_style", "mock 초안 교체")], "C09 plan: mock 화풍은 실제 백엔드에서 대기")
+        store.write_json_atomic(pj_path, dict(pj, _draft=dict(pj["_draft"], backend="vlm_openai")))
+        check([c for c, _e in dvlm.plan(root, [], {}, sreq, mode="fill", only=[])["refresh_available"]] == ["_style"],
+              "C09 fill: 키만 바뀐 화풍도 갱신 가능")
+        os.remove(pj_path)
+        # 원장·실행
+        base = VLM_OUT / "v22run"
+        shutil.rmtree(base, ignore_errors=True)
+        rc = store.project_root(str(base), "proj")
+        os.makedirs(rc)
+        reqs = {f"00{i}_aaaaaa": mk_req(f"00{i}_aaaaaa", key24(2200 + i)) for i in range(1, 6)}
+        units = [dvlm.Unit(c, q.key, 1, "crop", "new", ["신규"], True, (10, 40)) for c, q in reqs.items()]
+
+        class PaidNoCredits(dvlm.MockVLM):  # 크레딧 헤더가 없는 유료 백엔드
+            name = dvlm.BACKEND_NAMES["openai"]
+
+        rep = asyncio.run(dvlm.run_units(rc, units, reqs, PaidNoCredits({}), model="gpt-6-astra", effort="high",
+                                         image_detail="high", concurrency=1, credit_cap=100, progress_cb=None))
+        check(rep.stopped_reason == "credit_cap" and rep.launched == 2 and rep.unreported == 2 and rep.credits == 0,
+              f"C14 크레딧 미보고 단위는 단위 최대(40)로 cap — 100 이면 2건만 {rep.launched} {rep.unreported}")
+        check(dvlm.Ledger(rc).read(units[0].crop_id, units[0].key, 1, "req")["settings"]["model"] == "mock",
+              "O4 mock 원장 settings.model = mock(요청 model 이 gpt-6-astra 여도)")
+        led = dvlm.Ledger(rc)
+        k, u = key24(2299), dvlm.Unit("009_aaaaaa", key24(2299), 1, "crop", "repoll", [], False, (0, 0))
+        led.write(u.crop_id, k, 1, "req", {"settings": {"model": "gpt-6-sol", "effort": "low"}})
+        led.write(u.crop_id, k, 1, "created", {"response_id": "resp_gone", "status": "queued", "transport": {}})
+        be = dvlm.OpenAIVLM({}, root=rc)
+        be.api = types.SimpleNamespace(credits_used=lambda c: None, friendly_http_message=lambda s, b: f"HTTP {s}",
+                                       network_errors=(OSError,))
+
+        async def gone(cls, path, method, **kw):
+            return Exception("HTTP 404"), [(404, {"error": {"message": "not found"}})]
+
+        be._send = gone
+        with contextlib.suppress(runner.CallError):
+            asyncio.run(be.repoll(u, led.read(u.crop_id, k, 1, "created"), led, effort="low"))
+        s = led.state(u.crop_id, k)
+        check(s["status"] == "failed" and s["next_attempt"] == 2, f"C29 폴링 GET 404 → failed(과금됐을 수 있음, 승인 재시도) {s['status']}")
+        # Qwen(가짜 libs): 잘림 재질문, 로컬 실패·인터럽트, CUDA 아님, 같은 스레드, unload_cached
+        good = dvlm._mock_text(mk_req("001_aaaaaa", key24(1)))[1:]
+
+        class Tok:
+            def __init__(self, n, last):
+                self.shape, self.last = (1, n), last
+
+            def __getitem__(self, idx):
+                return self.last if idx == (0, -1) else self
+
+        def qwen(script, dev="cuda", exc=None):
+            st = {"gen": 0, "threads": [], "empty": 0, "kw": None}
+            IPE = type("IPE", (Exception,), {})
+            mm = types.SimpleNamespace(get_torch_device=lambda: types.SimpleNamespace(type=dev, index=0),
+                                       get_free_memory=lambda *a: 40 * 2 ** 30, current_loaded_models=[],
+                                       free_memory=lambda *a: None, soft_empty_cache=lambda: None,
+                                       processing_interrupted=lambda: False, InterruptProcessingException=IPE)
+
+            class Mdl:
+                device, generation_config = "cuda:0", types.SimpleNamespace(eos_token_id=[7])
+
+                def eval(self):
+                    return self
+
+                def generate(self, **kw):
+                    st["gen"] += 1
+                    st["threads"].append(threading.get_ident())
+                    if exc is not None:
+                        raise exc(IPE)
+                    n, last, st["text"] = script[st["gen"] - 1]
+                    return Tok(n, last)
+
+            class Batch(dict):
+                def to(self, *_):
+                    return self
+
+            class Proc:
+                def apply_chat_template(self, *a, **k):
+                    return "P"
+
+                def __call__(self, **kw):
+                    return Batch(input_ids=types.SimpleNamespace(shape=(1, 0)))
+
+                def batch_decode(self, *a, **k):
+                    return [st["text"]]
+
+            q = dvlm.QwenVLM(str(model_dir), keep_loaded=False)
+            q.libs = types.SimpleNamespace(
+                torch=types.SimpleNamespace(bfloat16="bf16", cuda=types.SimpleNamespace(
+                    empty_cache=lambda: st.__setitem__("empty", st["empty"] + 1))),
+                mm=mm, Model=types.SimpleNamespace(from_pretrained=lambda p, **kw: st.__setitem__("kw", kw) or Mdl()),
+                Processor=types.SimpleNamespace(from_pretrained=lambda p, **kw: Proc()), StoppingCriteria=object,
+                StoppingCriteriaList=list)
+            return q, st
+
+        model_dir = VLM_OUT / "v22" / "Qwen3-VL-8B-Instruct"
+        model_dir.mkdir(parents=True, exist_ok=True)
+        (model_dir / "config.json").write_text("{}", encoding="utf-8")
+        qreq = mk_req("001_aaaaaa", key24(0), backend="local_qwen", model="Qwen3-VL-8B-Instruct")
+        MAXT = dvlm.QWEN_MAX_NEW_TOKENS
+
+        def qcall(q, i):
+            dvlm._QWEN.update(key=None, model=None, processor=None)
+            qr = dataclasses.replace(qreq, key=key24(2300 + i))
+            try:
+                asyncio.run(q.call(unit_of(qr.crop_id, qr.key), qr, led))
+                err = None
+            except BaseException as e:  # noqa: BLE001
+                err = e
+            return err, led.state(qr.crop_id, qr.key), (led.read(qr.crop_id, qr.key, 1, "failed") or {})
+
+        try:
+            q, st = qwen([(MAXT, 5, good[:300]), (MAXT, 5, good[:300])])
+            err, s, f = qcall(q, 1)
+            check(st["gen"] == 2 and s["status"] == "failed" and f.get("phase") == "result" and f.get("maybe_billed") is False
+                  and st["kw"]["device_map"].type == "cuda", f"C18 max_new_tokens 에서 EOS 없이 잘림 → 재질문 1회 → 또 잘림 = failed(result) {s}")
+            q, st = qwen([(MAXT, 5, good[:300]), (200, 7, good)])
+            err, s, f = qcall(q, 2)
+            check(st["gen"] == 2 and s["status"] == "done" and set(st["threads"]) == {threading.get_ident()},
+                  "C16 잘림 → 재질문 성공 = done, C39 로드·생성은 호출 스레드에서 동기")
+            rp = led.read("001_aaaaaa", key24(2302), 1, "resp") or {}
+            check(rp.get("status") == "completed" and rp.get("first_output") == "{" + good[:300] and rp.get("reask"),
+                  "C40 재질문 전 첫 출력을 resp 에 남김(first_output·reask)")
+            q, st = qwen([], exc=lambda IPE: RuntimeError("CUDA out of memory"))
+            err, s, f = qcall(q, 3)
+            check(s["status"] == "failed" and f.get("maybe_billed") is False and "out of memory" in f.get("error", ""),
+                  f"C40 로컬 실패 → failed(과금 없음, 원인 기록), orphan 아님 {s['status']}")
+            q, st = qwen([], exc=lambda IPE: IPE())
+            err, s, f = qcall(q, 4)
+            check(s["status"] == "rejected" and s["next_attempt"] == 1 and type(err).__name__ == "IPE",
+                  f"C40 생성 중 인터럽트 → rejected(같은 시도), 다시 던짐 {s['status']}")
+            q, st = qwen([], dev="cpu")
+            err, s, f = qcall(q, 5)
+            check(isinstance(err, dvlm.VramError) and st["kw"] is None and s["status"] == "none", "C38 CUDA 가 아니면 로드 전 VramError")
+            q, st = qwen([(200, 7, good)])
+            qcall(q, 6)
+            dvlm.unload_cached(q.libs.torch)
+            check(dvlm._QWEN["model"] is None and st["empty"] == 1, "unload_cached: 인스턴스 없이 모듈 캐시를 내리고 empty_cache")
+        finally:
+            dvlm._QWEN.update(key=None, model=None, processor=None)
+        # 보고서: 초안이 아직 없는 크롭은 한 줄로
+        pl = dvlm.plan(root, [ctx], {ctx.crop_id: req}, None, mode="fill", only=[])
+        chk = dvlm.render_check(crop, {}, refs_dir=refs_dir, glossary={}, owned=set())
+        rep_t = dvlm.format_report(header={"backend": "vlm_openai"}, plan=pl, approval=dvlm.approval(pl, "", backend_name="vlm_openai"),
+                                   run=None, merges={}, checks={ctx.crop_id: chk}, drafts={}, ctxs=[ctx])
+        check("lint: CJK" in chk.flags and "[경고] 초안 없음 1크롭" in rep_t and "lint: CJK" not in rep_t,
+              "O2 초안 없는 크롭의 한글 라벨·기본 설명 경고는 한 줄로 묶음")
+
+    def t_v23():
+        section("V23 리뷰 회귀: fill 키 가드(C20), 타깃 추가 + mock·_hint(C07), created 뒤 caps 실패(C30·C31), 린트(C33), "
+                "must_not 플래그(C35), N8 위치구(O1), 지운 뒤 매달린 전치사(C17), 화풍 잘림(C16), 사람 refs 양보 refresh(C10)")
+        root, refs_dir, m, crop, ctx, req = toast_ctx("v23")
+        B = _vt("B", name="red hairpin bar", ref_object="the thin red bar", must_not=[])
+        k1, k2 = key24(2301), key24(2302)
+
+        def tg(s, tid="A"):
+            return next((t for t in (s or {}).get("targets") or [] if t.get("id") == tid), {})
+
+        def mg(cur, d, mode, c=ctx, **pv):
+            return dvlm.merge_spec(copy.deepcopy(cur), d, c, mode=mode, project_style=None, provenance=_vprov(req, **pv))
+
+        # C20 fill 키 가드: 다른 키의 초안은 fill 에서 적용하지 않음(새 필드도 _draft.key 도 그대로), refresh 는 적용
+        s1 = mg(None, nz(ctx, req, [_vt("A"), B]), "fill", key=k1).spec
+        D2 = "a slice of toast; a dark rim"
+        d2 = nz(ctx, req, [_vt("A", detail=D2, ref_ignore="the white hair"), B])
+        r = mg(s1, d2, "fill", key=k2)
+        check(not r.changed and r.spec is None and any("갱신 가능" in n for n in r.notes),
+              f"C20 fill + 다른 키 → changed False, '갱신 가능' {r.notes} {[(x.path, x.kind) for x in r.rows]}")
+        r = mg(s1, d2, "refresh", key=k2)
+        check(r.changed and tg(r.spec).get("detail") == D2 and tg(r.spec).get("ref_ignore") and "ref_ignore" not in tg(s1)
+              and r.spec["_draft"]["key"] == k2, "C20 refresh + 다른 키 → 적용, _draft.key 이동")
+        pj = dvlm.merge_project(None, "style one", mode="fill", provenance=_vprov(req, key=k1)).spec
+        r = dvlm.merge_project(pj, "style two", mode="fill", provenance=_vprov(req, key=k2))
+        r2 = dvlm.merge_project(pj, "style two", mode="refresh", provenance=_vprov(req, key=k2))
+        check(not r.changed and any("갱신 가능" in n for n in r.notes) and r2.spec["style_note"] == "style two"
+              and r2.spec["_draft"]["key"] == k2, "C20 merge_project: fill + 다른 키 → 그대로, refresh → 적용")
+        pf = dict(copy.deepcopy(pj), style_note="art lead style")
+        rf = dvlm.merge_project(pf, "style two", mode="force", provenance=_vprov(req, key=k2))
+        hf = dict(copy.deepcopy(rf.spec), style_note="art lead style, again")
+        rf2 = dvlm.merge_project(hf, "style two", mode="force", provenance=_vprov(req, key=k2))
+        check(rf.backup and rf.spec["style_note"] == "style two" and rf.spec["_draft"].get("forced_key") == k2
+              and (rf2.spec or hf)["style_note"] == "art lead style, again" and not rf2.backup,
+              "C06 merge_project force 도 키마다 1회(같은 키로 다시 오면 fill — 사람 화풍 유지, 백업 없음)")
+        # C07 타깃 추가가 mock 초안 교체·_hint 변경을 가리지 않음 — 기존 A 도 새 초안 값으로
+        cA = dataclasses.replace(ctx, targets=[ctx.targets[0]])
+        MOCK_D = "a simple mock part A outline; two flat base colors"
+        D_NEW = "a slice of white bread; a golden crust rim"
+        sm = mg(None, nz(cA, req, [_vt("A", detail=MOCK_D)]), "fill", c=cA, key=k1, backend="vlm_mock").spec
+        r = mg(sm, nz(ctx, req, [_vt("A", detail=D_NEW), B]), "fill", key=k2)
+        check(tg(r.spec).get("detail") == D_NEW and tg(r.spec, "B").get("detail") and r.spec["_draft"]["backend"] == "vlm_openai",
+              f"C07 mock 초안 + 타깃 추가 → A 도 refresh 규칙(mock 문구가 남지 않음) {tg(r.spec).get('detail')!r}")
+        sh = mg(None, nz(cA, req, [_vt("A", detail=MOCK_D)]), "fill", c=cA, key=k1).spec
+        cH = dataclasses.replace(ctx, hint="버터는 한 조각")
+        r = mg(sh, nz(cH, req, [_vt("A", detail=D_NEW), B]), "fill", c=cH, key=k2)
+        check(tg(r.spec).get("detail") == D_NEW and r.spec["_draft"]["hint"] == "버터는 한 조각",
+              f"C07 _hint 변경 + 타깃 추가 → A 에 새 힌트의 초안 적용 {tg(r.spec).get('detail')!r}")
+        # C10 노드가 쓴 self_restore 는 사람 refs 가 생기면 refresh 에서도 양보
+        hs = mg(None, nz(ctx, req, [_vt("A", mode="self_restore", ref_images=[], defects="a smudge", ref_object=""), B]),
+                "fill", key=k1).spec
+        tg(hs)["refs"] = [req.shown_refs[0]]
+        r = dvlm.merge_spec(hs, None, ctx, mode="refresh", project_style=None, provenance={})
+        check(tg(hs).get("mode") == "self_restore" and "mode" not in tg(r.spec or hs),
+              "C10 refresh: 노드가 쓴 self_restore → 사람 refs 앞에서 지움(ref_correct 로 렌더)")
+        # C30·C31 create 가 받아들여진 뒤 caps 쓰기가 실패해도 created(응답 id)를 먼저 남기고 계속
+        text_ok = dvlm._mock_text(req)
+        seq = [(400, {"error": {"message": "Invalid schema for response_format: 'minItems' is not permitted"}}),
+               {"id": "resp_caps", "status": "completed",
+                "output": [{"type": "message", "content": [{"type": "output_text", "text": text_ok}]}]}]
+
+        async def send(cls, path, method, **kw):
+            act = seq.pop(0)
+            if isinstance(act, tuple):
+                return Exception(f"HTTP {act[0]}: {json.dumps(act[1])}"), [act]
+            return act, []
+
+        be = dvlm.OpenAIVLM({"auth_token": "fake-token-for-tests-not-real"}, root=root)
+        be.api = types.SimpleNamespace(credits_used=lambda c: 1.0, network_errors=(OSError,),
+                                       friendly_http_message=lambda s, b: f"HTTP {s}: {json.dumps(b)}")
+        be._send = send
+        led = dvlm.Ledger(root)
+        orig_cu = dvlm.caps_update
+
+        def locked(*a, **k):
+            raise PermissionError("가짜: _vlm_caps.json 잠김(백신)")
+
+        dvlm.caps_update = locked
+        err = None
+        try:
+            asyncio.run(be.call(unit_of(ctx.crop_id, req.key), req, led, model="gpt-6-astra", effort="high", image_detail="high"))
+        except BaseException as e:  # noqa: BLE001
+            err = e
+        finally:
+            dvlm.caps_update = orig_cu
+        cr = led.read(ctx.crop_id, req.key, 1, "created") or {}
+        check(err is None and cr.get("response_id") == "resp_caps" and led.state(ctx.crop_id, req.key)["status"] == "done",
+              f"C30·C31 사다리 하강 뒤 caps 쓰기 PermissionError → created 먼저 기록, 경고만 하고 done ({err!r})")
+        # C33 render_check 린트: 골격 자리표시·빈 자리(사람이 쓴 값이어도 보고)
+        rt = req.shown_refs[0]
+        base_t = {"id": "A", "name": "toast hair clip", "refs": [rt], "detail": "a slice of bread; a golden rim"}
+        rc1 = dvlm.render_check(crop, {"targets": [dict(base_t, detail="<...>; a golden rim")]}, refs_dir=refs_dir,
+                                glossary={}, owned=set())
+        rc2 = dvlm.render_check(crop, {"targets": [dict(base_t, ref_object="the the", ref_ignore="nothing")]},
+                                refs_dir=refs_dir, glossary={}, owned=set())
+        rc3 = dvlm.render_check(crop, {"targets": [base_t]}, refs_dir=refs_dir, glossary={}, owned=set())
+        check("lint: '<...>'" in rc1.flags and "lint: 'the the' / 'the nothing'" in rc2.flags
+              and not any(f.startswith("lint: '<") or "the the" in f for f in rc3.flags),
+              f"C33 린트: '<...>' / 'the the'·'the nothing' (정상 스펙은 없음) {rc1.flags} {rc2.flags} {rc3.flags}")
+        # C35 must_not 이 detail 에 든 단어면 빼고 플래그(조용히 사라지지 않음)
+        d = nz(ctx, req, [_vt("A", detail="a thin red pin; a round crust", must_not=["the pin", "the round green filling"]), B])
+        check(d.targets["A"].get("must_not") == ["the round green filling"] and "must_not_in_detail" in _vflags(d, "A"),
+              f"C35 detail 의 단어와 같은 must_not → 빼고 must_not_in_detail 플래그 {_vflags(d, 'A')}")
+        # O1 실측: 타깃이 위치구(beneath/beside the ornaments) 안에만 있는 preserve 는 남긴다
+        d = nz(ctx, req, [_vt("A", ref_object="the toast-shaped ornament"), B],
+               preserve=["the pink hair beneath the ornaments", "the fine strand lines beside the ornaments",
+                         "the ornament edge", "the eyelashes"])
+        check(d.crop.get("preserve") == ["the pink hair beneath the ornaments", "the fine strand lines beside the ornaments",
+                                         "the eyelashes"],
+              f"O1 preserve: 자기 명사구에 타깃 머리가 있을 때만 버림 {d.crop.get('preserve')}")
+        # C17 Image N 을 지운 뒤 매달린 전치사(… in in @image2 방지)
+        d = nz(ctx, req, [_vt("A", ref_object="the clip in Image 2", ref_ignore="the 머리카락"), B])
+        check(d.targets["A"].get("ref_object") == "the clip" and "ref_ignore" not in d.targets["A"],
+              f"C17 ref_object 'the clip in Image 2' → 'the clip', 관사만 남은 값은 키 없음 {d.targets['A'].get('ref_object')!r}")
+        # C16 화풍 잘림: 끊긴 마지막 항목 버림 + style_truncated
+        sn, sf = dvlm.normalize_style({"style_note": "thin dark line art, flat cel shading, soft wa"}, ["truncated_string"])
+        check(sn == "thin dark line art, flat cel shading" and "style_truncated" in sf, f"C16 화풍 잘림 {sn!r} {sf}")
+
+    def t_v24():
+        section("V24 2차 리뷰 회귀: 부정구(R1), location 접두·린트(R2), 지운 머리 명사(R3), 공유 레퍼런스 범례(R4), 타깃 추가·변경 "
+                "뒤 _review 고정점(R5), 재폴링 마감·진척 없는 재폴링 상한(R9), credit_cap < 1건 최대 보고")
+        root, refs_dir, m, crop, ctx, req = toast_ctx("v24")
+        B = _vt("B", name="red hairpin bar", ref_object="the thin red bar", must_not=[])
+        k1, k2, k3 = key24(2401), key24(2402), key24(2403)
+
+        def tg(s, tid="A"):
+            return next((t for t in (s or {}).get("targets") or [] if t.get("id") == tid), {})
+
+        def mg(cur, d, mode, c=ctx, **pv):
+            return dvlm.merge_spec(copy.deepcopy(cur), d, c, mode=mode, project_style=None, provenance=_vprov(req, **pv))
+
+        def v1_of(spec, crop_=crop):
+            return P.variants(P.spec_from_manifest(crop_, None, refs_dir, {}, spec))["V1_standard"]["prompt"]
+
+        def add_b(**kw):
+            return _vt("B", **dict(dict(name="red hairpin bar", ref_object="the thin red bar", found=False, action="add",
+                                        must_not=[]), **kw))
+
+        # ── R1 부정구: defects·canvas_now 는 내용 그대로, must_not "no X" → "the X", 그 밖은 플래그 달고 버림(조용히 사라지지 않음)
+        d = nz(ctx, req, [_vt("A", mode="self_restore", ref_images=[], ref_object="", canvas_now="no clip, only hair",
+                              defects="no visible crust; not symmetric with the other side"),
+                          _vt("B", name="red hairpin bar", ref_object="the thin red bar",
+                              must_not=["no extra bows", "no other objects", "not symmetric"])],
+               preserve=["no changes to the face", "the eyelashes"])
+        check(d.targets["A"].get("defects") == "no visible crust; not symmetric with the other side"
+              and d.review["A"].get("canvas_now") == "no clip, only hair"
+              and not any("negation" in f for f in d.review["A"]["flags"]),
+              f"R1 defects·canvas_now 의 부정구는 내용 — 그대로, 플래그 없음 {d.targets['A'].get('defects')!r} "
+              f"{d.review['A'].get('canvas_now')!r}")
+        s_r1 = dvlm.merge_spec(None, d, ctx, mode="fill", project_style=None, provenance=_vprov(req)).spec
+        check("no visible crust" in v1_of(s_r1), "R1 self_restore 의 V1 에 'no visible crust' 가 렌더됨")
+        dropped = [f for f in d.review["B"]["flags"] if f.startswith("must_not_neg_dropped")]
+        check(d.targets["B"].get("must_not") == ["the extra bows"] and "must_not_neg_rewritten" in _vflags(d, "B")
+              and len(dropped) == 2, f"R1 must_not 'no extra bows' → 'the extra bows'(must_not_neg_rewritten), 'no other objects'·"
+                                     f"'not symmetric' 은 must_not_neg_dropped {d.targets['B'].get('must_not')} {d.review['B']['flags']}")
+        check(d.crop.get("preserve") == ["the eyelashes"] and "negation_dropped" in _vflags(d),
+              f"R1 preserve 의 부정구는 버리되 negation_dropped 플래그 {d.crop.get('preserve')} {d.flags}")
+        d = nz(ctx, req, [_vt("A", ref_ignore="nothing to ignore", occluded_by="none of it"),
+                          _vt("B", name="red hairpin bar", ref_object="the thin red bar", must_not=["no-entry sign", "no lettering"])])
+        check("ref_ignore" not in d.targets["A"] and not any("negation" in f for f in _vflags(d))
+              and d.targets["B"].get("must_not") == ["the no-entry sign", "the lettering"],
+              f"R1 ref_ignore·occluded_by 의 'nothing/none …' = 빈 값(플래그 없음), 'no-entry sign' 은 부정구가 아님, 'no lettering' → "
+              f"'the lettering' {_vflags(d, 'A')} {d.targets['B'].get('must_not')}")
+
+        # ── R2 location: 분사구·where·close/opposite 는 그대로, 한정사 앞 "on ", 명사구 "on the ", 기능어·조동사 시작은 버림
+        bad = []
+        for loc, want, code in (("tucked behind the ear", "tucked behind the ear", "location_kept"),
+                                ("pinned to the left braid", "pinned to the left braid", "location_kept"),
+                                ("where the old pin was", "where the old pin was", "location_kept"),
+                                ("close to the ear", "close to the ear", "location_kept"),
+                                ("opposite the bow", "opposite the bow", "location_kept"),
+                                ("centered", "centered", "location_kept"),
+                                ("left braid", "on the left braid", "location_prefixed"),
+                                ("its left side", "on its left side", "location_prefixed"),
+                                ("hanging earring", "on the hanging earring", "location_prefixed"),
+                                ("next to the ear", "next to the ear", None),
+                                ("of the sleeve", None, "location_dropped"), ("is on the ear", None, "location_dropped")):
+            d = nz(ctx, req, [_vt("A"), add_b(location=loc)])
+            codes = {f.split(":", 1)[0] for f in d.review["B"]["flags"] if f.startswith("location")}
+            if d.targets["B"].get("location") != want or codes != ({code} if code else set()):
+                bad.append((loc, d.targets["B"].get("location"), sorted(codes)))
+        check(not bad, f"R2 location 접두 규칙(location_kept / location_prefixed / location_dropped) {bad}")
+        d = nz(ctx, req, [_vt("A"), add_b(location="tucked behind the ear")])
+        sp = dvlm.merge_spec(None, d, ctx, mode="fill", project_style=None, provenance=_vprov(req)).spec
+        rc = dvlm.render_check(crop, sp, refs_dir=refs_dir, glossary={}, owned=set())
+        check("tucked behind the ear" in (rc.v1 or "") and "on the tucked" not in (rc.v1 or "")
+              and not any(f.startswith("lint: 'on the tucked") for f in rc.flags),
+              f"R2 add 타깃 V1: '… tucked behind the ear' 그대로('on the tucked' 없음), 린트 없음 {rc.flags}")
+        rt = req.shown_refs[0]
+        lint_bad = []
+        for loc, want in (("on the tucked behind the ear", True), ("on the where the old pin was", True),
+                          ("on the of the sleeve", True), ("on the close to the ear", True), ("on the pinned to the braid", True),
+                          ("on the opposite side of the bow", False), ("on the attached strap", False),
+                          ("on the earring on the left", False), ("on the left braid", False)):
+            t = {"id": "A", "name": "toast hair clip", "refs": [rt], "detail": "a slice of bread; a golden rim", "action": "add",
+                 "location": loc}
+            fl = dvlm.render_check(crop, {"targets": [t]}, refs_dir=refs_dir, glossary={}, owned=set()).flags
+            if any(f.startswith("lint: 'on the tucked") for f in fl) is not want:
+                lint_bad.append((loc, fl))
+        check(not lint_bad, f"R2 render_check 린트 'on the tucked/where/of …'(사람 값도 보고), 정상 위치구에는 조용함 {lint_bad}")
+
+        # ── R3 자리표시가 머리 명사였으면 값 전체를 비움, 앞 접속사 제거
+        d = nz(ctx, req, [_vt("A", ref_object="the <...> of the sleeve"), add_b(location="<...> of the sleeve")],
+               preserve=["<...> and the bow", "the eyelashes"])
+        check("ref_object" not in d.targets["A"] and "location" not in d.targets["B"]
+              and d.crop.get("preserve") == ["the bow", "the eyelashes"],
+              f"R3 'the <...> of the sleeve' → 키 없음, location '<...> of the sleeve' → 키 없음('on the of …' 아님), "
+              f"'<...> and the bow' → 'the bow' {d.targets['A'].get('ref_object')!r} {d.targets['B'].get('location')!r} "
+              f"{d.crop.get('preserve')}")
+
+        # ── R4 공유 레퍼런스: 렌더되는 소유자 모두에 같은 "everything except …" — 매니페스트 타깃 순서가 바뀌어도 범례가 같다
+        d = nz(ctx, req, [_vt("A", ref_ignore="the red pin and the hair"),
+                          _vt("B", name="red hairpin bar", ref_object="the thin red bar", ref_ignore="the toast clip", must_not=[])])
+        ri = {t: d.targets[t].get("ref_ignore") for t in ("A", "B")}
+        check(ri["A"] == ri["B"] and str(ri["A"]).startswith("everything except")
+              and all("shared_ref_ignore" in _vflags(d, t) for t in ("A", "B")), f"R4 두 소유자 모두 같은 ref_ignore {ri}")
+        s_r4 = dvlm.merge_spec(None, d, ctx, mode="fill", project_style=None, provenance=_vprov(req)).spec
+        crop_rev = copy.deepcopy(crop)
+        crop_rev["targets"] = list(reversed(crop_rev["targets"]))
+        ign = [re.findall(r"Ignore [^.]*\.", v1_of(s_r4, c)) for c in (crop, crop_rev)]
+        check(ign[0] == ign[1] and len(ign[0]) == 1 and ign[0][0].startswith("Ignore everything except"),
+              f"R4 범례의 Ignore 문장이 타깃 순서와 무관 {ign}")
+
+        # ── R5 fill + 타깃 추가: A 는 값·_review 를 그 키(K1)의 것으로 두고 _draft.target_keys 에 기록 → 같은 병합 = 고정점
+        cid = ctx.crop_id
+        sp_path = dvlm._spec_path(root, cid)
+        cA = dataclasses.replace(ctx, targets=[ctx.targets[0]])
+        s0 = mg(None, nz(cA, req, [_vt("A", review_note="OLD REVIEW")]), "fill", c=cA, key=k1).spec
+        check("target_keys" not in s0["_draft"], "R5 새 스펙: _draft.target_keys 없음(모든 타깃이 _draft.key 의 것)")
+        d2 = nz(ctx, req, [_vt("A", detail="a slice of toast; a dark rim", confidence="low", review_note="NEW REVIEW"),
+                           _vt("B", name="red hairpin bar", ref_object="the thin red bar", must_not=[], review_note="B NEW")],
+                cur=s0)
+        store.write_json_atomic(sp_path, s0)
+        r1, _err = dvlm.write_spec(root, cid, lambda cur: mg(cur, d2, "fill", key=k2))
+        s1 = json.loads(Path(sp_path).read_text(encoding="utf-8"))
+        check(r1.changed and tg(s1).get("detail") == tg(s0).get("detail") and tg(s1).get("_review", {}).get("note") == "OLD REVIEW"
+              and tg(s1, "B").get("_review", {}).get("note") == "B NEW" and s1["_draft"]["key"] == k2
+              and s1["_draft"].get("target_keys") == {"A": k1},
+              f"R5 fill + 타깃 추가: A 값·_review 그대로(K1), B 는 새 초안, target_keys {s1['_draft'].get('target_keys')}")
+        b1, mt1 = Path(sp_path).read_bytes(), os.stat(sp_path).st_mtime_ns
+        time.sleep(0.05)
+        rows = []
+        for _i in range(2):
+            r2, _err = dvlm.write_spec(root, cid, lambda cur: mg(cur, d2, "fill", key=k2))
+            rows.append((r2.changed, Path(sp_path).read_bytes() == b1, os.stat(sp_path).st_mtime_ns == mt1))
+        check(rows == [(False, True, True)] * 2, f"R5 같은 병합 2회 = 고정점(changed False, 바이트·mtime 그대로) {rows}")
+        check(dvlm._fill_reasons(s1["_draft"], ctx, "openai") == [], "R5 병합 뒤 fill 사유 없음(다시 초안하지 않음)")
+        # F9 새 타깃 B 에 사람이 쓴 항목이 이미 있어도 드라이런(draft None) 병합이 빈 written.B 를 만들지 않는다 → "타깃 추가" 유지
+        s0b = copy.deepcopy(s0)
+        s0b["targets"].append({"id": "B", "detail": "a red bar; hand written"})
+        rdry = mg(s0b, None, "fill", key=k2)
+        after = rdry.spec if rdry.spec is not None else s0b
+        check("B" not in after["_draft"]["written"] and "타깃 추가" in dvlm._fill_reasons(after["_draft"], ctx, "openai")
+              and not rdry.changed,
+              f"F9 드라이런 병합 뒤에도 '타깃 추가'(빈 written 슬롯 없음, 파일 그대로) {after['_draft']['written'].keys()}")
+        # F11 write_spec: 잠겨 못 쓰면 OSError(노드가 '못 씀' 표식 → 다음 큐 재시도), 그 force 의 백업은 지움(재시도마다 쌓이지 않게).
+        # 읽기까지 막은 잠금도 OSError — 깨진 파일(ValueError, '버그' 로 보고)과 구분
+        bdir = Path(root) / "specs" / dvlm.BACKUP_SUBDIR
+        n_bk = len(list(bdir.glob("*.json"))) if bdir.is_dir() else 0
+        os.chmod(sp_path, 0o444)
+        try:
+            expect_raises(lambda: dvlm.write_spec(root, cid, lambda cur: mg(cur, d2, "force", key=k2)),
+                          "F11 읽기 전용(잠김) 스펙의 force 쓰기 → OSError", exc=OSError)
+        finally:
+            os.chmod(sp_path, 0o666)
+        check((len(list(bdir.glob("*.json"))) if bdir.is_dir() else 0) == n_bk and Path(sp_path).read_bytes() == b1,
+              "F11 쓰지 못한 force 의 백업은 남기지 않고 파일도 그대로")
+        if os.name == "nt":
+            import ctypes
+            k32 = ctypes.windll.kernel32
+            k32.CreateFileW.restype = ctypes.c_void_p
+            k32.CloseHandle.argtypes = [ctypes.c_void_p]
+            hdl = k32.CreateFileW(str(sp_path), 0x80000000, 0, None, 3, 0x80, None)  # GENERIC_READ, 공유 0 = 남의 읽기 거부
+            try:
+                expect_raises(lambda: dvlm.write_spec(root, cid, lambda cur: mg(cur, d2, "fill", key=k2)),
+                              "F11 읽기까지 막은 잠금 → OSError(깨진 파일 ValueError 아님)", exc=OSError)
+            finally:
+                k32.CloseHandle(hdl)
+        r3 = mg(s1, d2, "refresh", key=k2)
+        check(tg(r3.spec).get("_review", {}).get("note") == "NEW REVIEW" and tg(r3.spec).get("detail") == "a slice of toast; a dark rim"
+              and "target_keys" not in r3.spec["_draft"] and not mg(r3.spec, d2, "refresh", key=k2).changed,
+              "R5 refresh: A 도 새 값·새 _review, target_keys 지움, 다시 refresh = 고정점")
+        cB = dataclasses.replace(ctx, targets=[ctx.targets[0], dataclasses.replace(ctx.targets[1], label="파란 리본")])
+        why = dvlm._fill_reasons(s1["_draft"], cB, "openai")
+        d4 = nz(cB, req, [_vt("A", detail="a third toast; a rim", review_note="THIRD REVIEW"),
+                          _vt("B", name="blue ribbon", ref_object="the blue ribbon", detail="a blue ribbon loop; a knot",
+                              must_not=[], review_note="B4")], cur=s1)
+        r4 = mg(s1, d4, "fill", c=cB, key=k3)
+        r4b = mg(r4.spec, d4, "fill", c=cB, key=k3)
+        check(any(w.startswith("타깃 변경(B)") for w in why) and tg(r4.spec).get("_review", {}).get("note") == "OLD REVIEW"
+              and tg(r4.spec, "B").get("_review", {}).get("note") == "B4" and r4.spec["_draft"].get("target_keys") == {"A": k1}
+              and not r4b.changed,
+              f"R5 타깃 변경(B): A 는 K1 의 _review 유지, B 만 새 초안, 같은 병합 다시 = changed False {why} "
+              f"{r4.spec['_draft'].get('target_keys')} {r4b.changed}")
+
+        # ── R9 재폴링: 마감 = created 부터 남은 effort 마감(지났으면 REPOLL_SHORT_S), 같은 비종료 상태로 마감까지 간 재폴링
+        #    3회 연속 → failed(poll, maybe_billed, retryable) → 다음 계획은 승인 필요한 재시도. 401·503·네트워크 오류 세션은 안 셈
+        root9, _rd9, _m9, _crop9, ctx9, req9 = toast_ctx("v24r9")
+        led = dvlm.Ledger(root9)
+        c9, kk = ctx9.crop_id, req9.key
+
+        class FakeNetErr(Exception):
+            pass
+
+        class FakeApi:
+            def __init__(self, act):
+                self.act, self.posts, self.gets = act, 0, 0
+
+            def endpoint(self, path, method="GET", **_kw):
+                return types.SimpleNamespace(path=path, method=method)
+
+            async def sync_op_raw(self, cls, endpoint, **kw):
+                if endpoint.method != "GET":
+                    self.posts += 1
+                    raise AssertionError("재폴링에서 POST")
+                self.gets += 1
+                a = self.act(self.gets)
+                if isinstance(a, BaseException):
+                    raise a
+                if isinstance(a, tuple):
+                    if kw.get("is_rate_limited"):
+                        kw["is_rate_limited"](a[0], a[1])
+                    raise Exception(f"HTTP {a[0]}: {json.dumps(a[1])}")
+                return a
+
+            def ns(self):
+                return types.SimpleNamespace(sync_op_raw=self.sync_op_raw, ApiEndpoint=self.endpoint, credits_used=lambda c: None,
+                                             friendly_http_message=lambda s, b: f"HTTP {s}: {json.dumps(b)}",
+                                             network_errors=(FakeNetErr,))
+
+        def backend(api):
+            be = dvlm.OpenAIVLM({"auth_token": "fake-token-for-tests-not-real"}, root=root9)
+            be.api = api.ns()
+            be._load_api = lambda: api.ns()
+            return be
+
+        u9 = dvlm.Unit(c9, kk, 1, "crop", "repoll", ["복구(재폴링)"], False, (0, 0))
+        old_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - 7200))
+        led.write(c9, kk, 1, "req", {"settings": {"model": "gpt-6-astra", "effort": "high", "backend": "vlm_openai"},
+                                     "est": [165, 497]})
+        led.write(c9, kk, 1, "inflight", {"transport": {}})
+        led.write(c9, kk, 1, "created", {"response_id": "resp_stuck", "status": "queued", "credits_create": None,
+                                         "transport": {"schema_level": 2, "background": True}, "at": old_at})
+        # 마감 계산(가짜 _poll 로 limit_s 만 본다 — 기다림 없음)
+        seen = []
+
+        async def spy(*a, **kw):
+            seen.append(kw.get("limit_s"))
+            raise runner.CallError("spy", status=None, phase="poll", retryable=True, maybe_billed=False)
+
+        full = dvlm.POLL_DEADLINE_S["high"]
+        for at in (old_at, time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - 100)), "깨진 시각"):
+            be = backend(FakeApi(lambda i: {"status": "in_progress"}))
+            be._poll = spy
+            with contextlib.suppress(runner.CallError):
+                asyncio.run(be.repoll(u9, dict(led.read(c9, kk, 1, "created"), at=at), led, effort="high"))
+        short = getattr(dvlm, "REPOLL_SHORT_S", None)
+        check(len(seen) == 3 and short is not None and seen[0] == short and seen[1] is not None
+              and full - 104 <= seen[1] <= full - 96 and seen[2] == full,
+              f"R9 재폴링 마감: created 가 2시간 전 → REPOLL_SHORT_S, 100초 전 → 남은 {full}-100초, at 깨짐 → 전체 {seen}")
+        orig = (dvlm.POLL_INTERVAL_S, dict(dvlm.POLL_DEADLINE_S), short)
+        dvlm.POLL_INTERVAL_S = 0.01
+        dvlm.POLL_DEADLINE_S["high"] = 3.0    # 옛 코드(마감 = 지금부터 전체)가 멈추지 않게 짧게 — 새 코드는 REPOLL_SHORT_S
+        dvlm.REPOLL_SHORT_S = 0.3
+        inprog = lambda i: {"id": "resp_stuck", "status": "in_progress"}  # noqa: E731
+
+        def session(act):
+            api = FakeApi(act)
+            t0 = time.monotonic()
+            err = None
+            try:
+                asyncio.run(backend(api).repoll(u9, led.read(c9, kk, 1, "created"), led, effort="high"))
+            except BaseException as e:  # noqa: BLE001
+                err = e
+            return err, time.monotonic() - t0, led.state(c9, kk), led.read(c9, kk, 1, "created") or {}, api
+
+        try:
+            err, dt, st9, cr, api = session(inprog)
+            check(isinstance(err, runner.CallError) and err.phase == "poll" and st9["status"] == "created" and dt < 2.0
+                  and api.posts == 0 and cr.get("poll_status") == "in_progress" and cr.get("poll_stalls") == 0
+                  and cr.get("at") == old_at and cr.get("response_id") == "resp_stuck",
+                  f"R9 마감 지난 created 의 재폴링 = 짧은 마감({dt:.2f}s), queued → in_progress 는 진척(0), created 의 id·at 유지 "
+                  f"{cr.get('poll_status')} {cr.get('poll_stalls')} {err}")
+            err, dt, st9, cr, api = session(inprog)
+            check(st9["status"] == "created" and cr.get("poll_stalls") == 1 and "1/" in str(err),
+                  f"R9 같은 상태로 마감 = 진척 없음 1 {cr.get('poll_stalls')} {err}")
+            for act, what in (((lambda i: (401, {"error": "Unauthorized"})), "401"), ((lambda i: (503, {"error": "busy"})), "503"),
+                              ((lambda i: FakeNetErr("connection reset")), "네트워크")):
+                err, dt, st9, cr, api = session(act)
+                check(isinstance(err, runner.CallError) and st9["status"] == "created" and cr.get("poll_stalls") == 1,
+                      f"R9 {what} 로 끝난 재폴링은 세지 않음(진척 없음 1 그대로, created 유지) {cr.get('poll_stalls')} {err}")
+            err, dt, st9, cr, api = session(inprog)
+            check(st9["status"] == "created" and cr.get("poll_stalls") == 2, f"R9 진척 없음 2 {cr.get('poll_stalls')}")
+            err, dt, st9, cr, api = session(inprog)
+            fl9 = led.read(c9, kk, 1, "failed") or {}
+            check(st9["status"] == "failed" and st9["next_attempt"] == 2 and isinstance(err, runner.CallError)
+                  and err.maybe_billed and fl9.get("phase") == "poll" and fl9.get("maybe_billed") is True
+                  and fl9.get("retryable") is True and (led.read(c9, kk, 1, "created") or {}).get("response_id") == "resp_stuck",
+                  f"R9 진척 없음 3회 → failed(poll, maybe_billed, retryable), created(응답 id) 는 남음 {st9} {fl9}")
+            pl = dvlm.plan(root9, [ctx9], {c9: req9}, None, mode="fill", only=[])
+            u = next((x for x in pl["units"] if x.crop_id == c9), None)
+            ap9 = dvlm.approval(pl, "", backend_name="vlm_openai")
+            check(u is not None and u.state == "retry" and u.attempt == 2 and u.billable and not pl["free"]
+                  and ap9["pending_hash"] and u in ap9["blocked"] and not ap9["to_run"],
+                  f"R9 다음 계획: 승인이 필요한 재시도 a2(무료 재폴링 아님) {u} {pl['free']}")
+            # create 직후 폴링(call)의 마감은 진척 없음으로 세지 않는다(poll_status 만 남김)
+            kc = key24(2490)
+            seq = iter([{"id": "resp_c", "status": "queued"}])
+            api = FakeApi(inprog)
+
+            async def first_post(cls, endpoint, **kw):
+                if endpoint.method == "POST":
+                    return next(seq)
+                return await FakeApi.sync_op_raw(api, cls, endpoint, **kw)
+
+            ns = api.ns()
+            ns.sync_op_raw = first_post
+            be = dvlm.OpenAIVLM({"auth_token": "fake-token-for-tests-not-real"}, root=root9)
+            be.api = ns
+            be._load_api = lambda: ns
+            dvlm.POLL_DEADLINE_S["high"] = 0.05
+            err = None
+            try:
+                asyncio.run(be.call(unit_of(c9, kc), dataclasses.replace(req9, key=kc), led, model="gpt-6-astra", effort="high",
+                                    image_detail="high"))
+            except BaseException as e:  # noqa: BLE001
+                err = e
+            crc = led.read(c9, kc, 1, "created") or {}
+            check(isinstance(err, runner.CallError) and err.phase == "poll" and led.state(c9, kc)["status"] == "created"
+                  and crc.get("response_id") == "resp_c" and crc.get("poll_status") == "in_progress" and crc.get("poll_stalls") == 0,
+                  f"R9 call() 의 폴링 마감: created 유지 + poll_status 기록, 진척 없음 0 {crc} {err}")
+        finally:
+            dvlm.POLL_INTERVAL_S = orig[0]
+            dvlm.POLL_DEADLINE_S.clear()
+            dvlm.POLL_DEADLINE_S.update(orig[1])
+            if orig[2] is not None:
+                dvlm.REPOLL_SHORT_S = orig[2]
+
+        # ── credit_cap 이 1건 최대 추정보다 작아 아무것도 발사하지 않았으면 그 값을 보고(RunReport.cap_need)
+        rootc, _rdc, _mc, _cropc, ctxc, reqc = toast_ctx("v24cap")
+
+        class NoLaunch:  # 발사되면 안 되는 유료 백엔드
+            name = dvlm.BACKEND_NAMES["openai"]
+
+            def has_auth(self):
+                return True
+
+            async def call(self, *a, **k):
+                raise AssertionError("credit_cap 아래인데 발사됨")
+
+        uc = dvlm.Unit(ctxc.crop_id, reqc.key, 1, "crop", "new", ["신규"], True, (12, 51))
+        rep = asyncio.run(dvlm.run_units(rootc, [uc], {ctxc.crop_id: reqc}, NoLaunch(), model="gpt-6-sol", effort="low",
+                                         image_detail="high", concurrency=4, credit_cap=50, progress_cb=None))
+        plc = dvlm.plan(rootc, [ctxc], {ctxc.crop_id: reqc}, None, mode="fill", only=[])
+        txt = dvlm.format_report(header={"backend": "vlm_openai", "model": "gpt-6-sol", "effort": "low", "credit_cap": 50},
+                                 plan=plc, approval=dvlm.approval(plc, "", backend_name="vlm_openai"), run=rep, merges={},
+                                 checks={}, drafts={}, ctxs=[ctxc])
+        line = next((ln for ln in txt.splitlines() if ln.startswith("중지")), "")
+        check(rep.launched == 0 and rep.stopped_reason == "credit_cap" and getattr(rep, "cap_need", None) == 51
+              and "크레딧 상한(credit_cap) 50 < 1건 최대 추정 51 → 발사 안 함" in line and "credit_cap 을 51 이상" in line
+              and dvlm.Ledger(rootc).state(ctxc.crop_id, reqc.key)["status"] == "none",
+              f"credit_cap 50 < 1건 최대 51: 0 발사, 올릴 값을 알려 줌 {line!r}")
+
+        class PaidMock(dvlm.MockVLM):
+            name = dvlm.BACKEND_NAMES["openai"]
+
+        reqs3 = {f"00{i}_bbbbbb": mk_req(f"00{i}_bbbbbb", key24(2480 + i), shown_refs=("r.png",)) for i in range(1, 4)}
+        units3 = [dvlm.Unit(c, r.key, 1, "crop", "new", ["신규"], True, (10, 40)) for c, r in reqs3.items()]
+        root3 = store.project_root(str(VLM_OUT / "v24cap"), "proj3")
+        shutil.rmtree(root3, ignore_errors=True)
+        os.makedirs(root3)
+        rep = asyncio.run(dvlm.run_units(root3, units3, reqs3, PaidMock({"delay_s": 0.01, "credits": 10}), model="mock",
+                                         effort="high", image_detail="high", concurrency=1, credit_cap=50,
+                                         progress_cb=lambda *a, **k: None))
+        check(rep.stopped_reason == "credit_cap" and rep.launched == 2 and getattr(rep, "cap_need", None) == 0,
+              f"지출 뒤 cap 에 닿은 중지는 cap_need 0(일반 '중지: credit_cap 도달' 문구) {rep.launched} {getattr(rep, 'cap_need', None)}")
+
+    def t_eval():
+        section("E1–E3 평가 도구 자기 시험: validate ≥90 · setup(합성 매니페스트) · mock 원장 score 결정성")
+        doc = ev.load_cases()
+        rows = ev.validate(doc)
+        check(len(rows) == 4 and all(r["S"] >= ev.PASS_S for r in rows), f"E1 정답 스펙 S ≥ 90 {[(r['id'], r['S']) for r in rows]}")
+        note("E1 validate " + ", ".join(f"{r['id']} {r['S']}" for r in rows))
+        case = next(c for c in doc["cases"] if c["id"] == "E2")
+        gold = json.loads((ev.EVAL_DIR / case["gold_spec"]).read_text(encoding="utf-8"))
+        crop = ev.case_crop(doc, case)
+        bad = copy.deepcopy(gold)
+        bad["targets"][1]["text"] = "none"
+        r_t = ev.score_spec(doc, case, bad, crop=crop, refs_dir=ev._refs_dir(doc))
+        bad = copy.deepcopy(gold)
+        bad["targets"][0]["detail"] = "빨간 펜; gold bands on the barrel"
+        r_c = ev.score_spec(doc, case, bad, crop=crop, refs_dir=ev._refs_dir(doc))
+        check(r_t["S"] <= 50 and r_t["fatal"] and r_c["S"] <= 50 and "CJK 없음" in r_c["fatal"],
+              f"치명 게이트(텍스트 정책·CJK) → S ≤ 50 ({r_t['S']}, {r_c['S']})")
+        # E2 setup: 합성 매니페스트(평가 크롭 8 + 그 밖 1) → named / legacy
+        base = VLM_OUT / "eval"
+        shutil.rmtree(base, ignore_errors=True)
+        roots = {}
+        for kind in ("named", "legacy"):
+            root = store.project_root(str(base), f"syn_{kind}")
+            os.makedirs(root)
+            m = store.new_manifest(f"syn_{kind}")
+            names = [c["crop_name"] for c in doc["cases"]] + ["001_바보털"]
+            m["source"]["refs_dir"] = ev._refs_dir(doc)
+            for cid, nm in zip(store.assign_crop_ids(names), names):
+                p = store.parse_crop_layer_name(nm)
+                m["crops"].append({"id": cid, "name": p["name"], "nnn": p["nnn"], "part": p["part"], "layer_name": nm,
+                                   "rect": [0, 0, 64, 64], "rect_source": "vector",
+                                   "source": store.save_png_ca(root, "inputs", _vlm_img(64, 64, len(m["crops"]))),
+                                   "source_kind": "base_crop", "alpha_frac": 0.0, "targets": ev.new_targets(p, None),
+                                   "refs_auto": store.match_refs(ev._refs_dir(doc), p["nnn"], part=p["part"]), "warnings": []})
+            store.save_manifest(root, m)
+            ev.setup_project(root, doc, kind)
+            roots[kind] = root
+        mn = store.load_manifest(roots["named"])
+        want = {c["crop_id"]: [t["label"] for t in c["targets"]] if "|" in c["layer_name"] else [c["crop_name"].split("_", 1)[1]]
+                for c in doc["cases"]}
+        got = {c["id"]: [t["label"] for t in c["targets"]] for c in mn["crops"]}
+        check(got == want, f"E2 named: 평가 크롭 8, 합성 레이어명 타깃 {got}")
+        e3 = next(c for c in doc["cases"] if c["id"] == "E3")
+        src3 = next(c for c in mn["crops"] if c["id"] == e3["crop_id"])["source"]
+        with Image.open(ev._ref_root(doc) / e3["canvas"]) as im:
+            check(store.pixel_sha(np.asarray(Image.open(store.resolve_path(roots["named"], src3)).convert("RGBA")))
+                  == store.pixel_sha(np.asarray(im.convert("RGBA"))), "E2 source = 03 PNG RGBA(E3 = 단추 지운 004)")
+        ml = store.load_manifest(roots["legacy"])
+        check(sorted(c["id"] for c in ml["crops"]) == sorted(c["crop_id"] for c in doc["cases"] if c["legacy"])
+              and all(len(c["targets"]) == 1 for c in ml["crops"]) and (ml["source"].get("glossary") or "") == "",
+              "E2 legacy: E1·E2·E5·E6 레거시 1타깃, 용어집 없음")
+        # E3 mock 원장 → score 두 번 → 같은 결과
+        root = roots["named"]
+        mn = store.load_manifest(root)
+        led = dvlm.Ledger(root)
+        be = dvlm.MockVLM({})
+        for c in mn["crops"]:
+            ctx = dvlm.build_crop_ctx(root, mn, c, refs_dir=mn["source"]["refs_dir"], glossary={}, backend="mock", memo={})
+            r = dvlm.build_request(ctx, backend="mock", model="mock", effort="high", image_detail="high", draft_round=0)
+            asyncio.run(be.call(dvlm.Unit(c["id"], r.key, 1, "crop", "new", ["신규"], True, (0, 0)), r, led, model="mock"))
+        s1 = ev.rescore(root, doc, {})
+        s2 = ev.rescore(root, doc, ev.parse_select("backend=mock,round=0"))
+        strip = lambda res: [{k: v for k, v in r.items()} for r in res["rows"]]  # noqa: E731
+        check(strip(s1) == strip(s2) and len(s1["rows"]) == 8 and all(r.get("S") is not None for r in s1["rows"])
+              and s1["kind"] == "named" and len(s1["used"]) == 8, f"E3 mock 원장 재정규화 채점: 결정적, 8사례 {s1['summary']}")
+        pj, pm = ev.write_scores(s1, "selftest_mock", VLM_OUT / "eval_scores")
+        check(pj.is_file() and pm.is_file() and "| E1 |" in pm.read_text(encoding="utf-8"), "scores/<tag>.json·.md")
+        c = ev.compare(s1, s2)
+        check(c["mean_diff"] == 0 and c["max_abs_diff"] == 0, "compare: 같은 결과의 차 0")
+        b = ev.budget([root], stage_est=100)
+        check(b["total"] == 0 and b["remaining"] == ev.BUDGET_TOTAL and b["gate_ok"] and b["credit_cap"] == 160, f"budget {b}")
+        note(f"E3 mock 채점 {s1['summary']}")
+        # 리뷰 회귀 C24 determinism(round 0 ↔ 1) · C21 입력이 바뀐 원장 · C22 ab-setup 출처 — 같은 named 프로젝트 + round 1 mock 원장
+        memo: dict = {}
+        for c in mn["crops"]:
+            ctx = dvlm.build_crop_ctx(root, mn, c, refs_dir=mn["source"]["refs_dir"], glossary={}, backend="mock", memo=memo)
+            r = dvlm.build_request(ctx, backend="mock", model="mock", effort="high", image_detail="high", draft_round=1)
+            asyncio.run(be.call(dvlm.Unit(c["id"], r.key, 1, "crop", "new", ["신규"], True, (0, 0)), r, led, model="mock"))
+        d = ev.determinism(root, doc, {})
+        check(d["summary"] == {"same": 8, "diff": 0, "missing": 0}, f"C24 determinism: mock round 0 ↔ 1 같음 8 {d['summary']}")
+        r1 = ev.latest_done(root, {"round": "1"})
+        cid2 = mn["crops"][0]["id"]
+        dpath = Path(led._path(cid2, r1[cid2]["key"], r1[cid2]["attempt"], "done"))
+        dorig = dpath.read_text(encoding="utf-8")
+        dd = json.loads(dorig)
+        dd["parsed"]["targets"][0]["detail"] = "a completely different detail; with two clauses"
+        dpath.write_text(json.dumps(dd, ensure_ascii=False), encoding="utf-8")
+        d2 = ev.determinism(root, doc, {})
+        row = next(x for x in d2["rows"] if x["crop_id"] == cid2)
+        check(row["status"] == "diff" and any(p.endswith(".detail") for p, _a, _b in row["diffs"]) and d2["summary"]["diff"] == 1,
+              f"C24 같은 S 여도 내용이 다르면 diff(필드 단위) {row['diffs'][:2]}")
+        dpath.write_text(dorig, encoding="utf-8")
+        expect_raises(lambda: ev.determinism(root, doc, {"round": "0"}), "C24 select 에 round 를 넣으면 ValueError")
+        multi = next(c for c in mn["crops"] if len(c.get("refs_auto") or []) >= 2)
+        r0 = ev.latest_done(root, {"round": "0"})
+        _c, req_a, d_a, st_a = ev.renormalize(root, mn, multi, r0[multi["id"]], glossary={}, memo=memo)
+
+        def flip(mm_):
+            for c in mm_["crops"]:
+                if c["id"] == multi["id"]:
+                    c["refs_auto"] = list(reversed(c["refs_auto"]))
+
+        store.update_manifest(root, flip)  # 레퍼런스 추가·Import 재실행으로 refs_auto 순서가 바뀐 것과 같음
+        mf = store.load_manifest(root)
+        crop_f = next(c for c in mf["crops"] if c["id"] == multi["id"])
+        _c, req_b, d_b, st_b = ev.renormalize(root, mf, crop_f, r0[multi["id"]], glossary={}, memo=memo)
+        check(st_a == "same" and st_b == "changed" and req_b.shown_refs == req_a.shown_refs
+              and {t: v.get("refs") for t, v in d_b.targets.items()} == {t: v.get("refs") for t, v in d_a.targets.items()},
+              f"C21 키가 바뀐 원장: 레퍼런스 번호는 원장 req 본문(보낸 순서)으로 되살림 ({st_a}, {st_b})")
+        s3 = ev.rescore(root, doc, ev.parse_select("round=0"))
+        row3 = next(x for x in s3["rows"] if x["crop_id"] == multi["id"])
+        md = "\n".join(ev._md_table(s3["rows"]))
+        check(row3.get("input_changed") and row3["id"] in s3["summary"]["input_changed"] and "[입력 바뀜]" in md,
+              f"C21 rescore: 입력 바뀜 표시(요약·표) {s3['summary']}")
+        rq_path = Path(led._path(multi["id"], r0[multi["id"]]["key"], r0[multi["id"]]["attempt"], "req"))
+        rq_orig = rq_path.read_text(encoding="utf-8")
+        rq_path.write_text(json.dumps({k: v for k, v in json.loads(rq_orig).items() if k != "body"}, ensure_ascii=False),
+                           encoding="utf-8")
+        s4 = ev.rescore(root, doc, ev.parse_select("round=0"))
+        row4 = next(x for x in s4["rows"] if x["crop_id"] == multi["id"])
+        check(row4.get("stale") and row4["S"] is None and row4["id"] in s4["summary"]["stale"]
+              and "stale" in "\n".join(ev._md_table(s4["rows"])), "C21 키 다름 + 원장 req 본문 없음 → stale(채점 안 함, 표에 표시)")
+        rq_path.write_text(rq_orig, encoding="utf-8")
+        store.update_manifest(root, flip)  # 원래 순서로
+        # 재정규화도 노드(_merge_crop)처럼 done 의 repairs 를 넘긴다 — 잘린 출력의 끊긴 마지막 절이 채점·ab_draft 에 들어가지 않게
+        c_t = mn["crops"][0]
+        txt = json.dumps(_vparsed([_vt("A", detail="a slice of bread; a golden rim; one small square pat")]), ensure_ascii=False)
+        pj_t, reps_t = dvlm.extract_json(txt[:txt.index("one small sq") + 12])
+        _c, _rq, d_t, _st = ev.renormalize(root, mn, c_t, dict(r0[c_t["id"]], parsed=pj_t, repairs=reps_t), glossary={}, memo=memo)
+        check(d_t.targets["A"].get("detail") == "a slice of bread; a golden rim" and "truncated_output" in _vflags(d_t),
+              f"평가 재정규화가 repairs 를 넘김(끊긴 절 버림·truncated_output) {d_t.targets['A'].get('detail')!r}")
+        s5 = ev.rescore(root, doc, ev.parse_select("round=0"))
+        ev.write_scores(s5, "c22_draft", VLM_OUT / "eval_scores")
+        res = ev.ab_setup(root, doc, "c22_draft", scores_dir=VLM_OUT / "eval_scores", replace=True)
+        provs = [json.loads(p.read_text(encoding="utf-8")).get("_draft") or {}
+                 for p in sorted((Path(res["draft"]) / "specs").glob("*.json")) if p.name != "_project.json"]
+        check(provs and all(p.get("backend") == "vlm_mock" and p.get("model") == "mock" and p.get("round") == 0
+                            and p.get("prompt") == dvlm.prompt_fingerprint() and "refs_shown" in p and "hint" in p for p in provs),
+              f"C22 ab-setup 의 _draft 출처: 원장 req settings(backend·model·round·prompt) + hint·refs_shown "
+              f"{ {k: (provs or [{}])[0].get(k) for k in ('backend', 'model', 'round', 'prompt')} }")
+
+    def t_eval_pure():
+        section("E0 평가 도구 대조(참조 폴더 불필요): 토큰 단위 키워드·금지어(C03), 개체당 수(C23)")
+        bad = []
+        for text, word, want in [
+                ("red hairpin", "pin", True), ("two hairpins", "pin", True), ("hair pins", "pin", True),
+                ("pinkish strip", "pin", False), ("pencil", "pen", False), ("open clasp", "pen", False),
+                ("earring", "ring", False), ("ring finger", "ring", True), ("tapered black pins", "red", False),
+                ("reddish tint", "red", True), ("pinned", "pin", True), ("taped", "tape", True), ("middle finger", "fingers", True),
+                ("name tag", "name tag", True), ("name", "name tag", False), ("gold-banded", "gold band", True),
+                ("nameplate", "plate", True), ("elbow", "bow", False), ("notches", "notch", True)]:
+            if ev._has_word(text, word) is not want:
+                bad.append((text, word, want))
+        check(not bad, f"C03 _has_word 토큰 단위(합성어 끝·굴절형 받음, 앞부분만 맞는 낱말 거부) {bad}")
+        check(ev._forbidden_hits("crossed pins", "cross") == 1 and ev._forbidden_hits("crosswise", "cross") == 0
+              and ev._forbidden_hits("no gold bands; gold band at the tip", "gold band") == 1,
+              "C03 금지어: 양쪽 경계(crosswise 아님), 부정 표현 제외")
+        E6 = {"nouns": ["clip", "clips"], "n": 2, "review": []}
+        E7 = {"nouns": ["loop", "loops"], "n": 4, "review": ["reference"]}
+        E4 = {"nouns": ["pin", "pins"], "n": 2, "review": ["canvas"]}
+        got = {lbl: ev.count_ok(chk, t, rv)[0] for lbl, chk, t, rv in [
+            ("each", E6, {"name": "pair of binder clips", "detail": "two black binder clips; one clip on each stack"}, {}),
+            ("per", E6, {"name": "binder clip", "detail": "two black binder clips; silver handles",
+                         "location": "at the top of each stack, one clip per stack"}, {}),
+            ("wrong", E6, {"name": "binder clip", "detail": "three black binder clips; silver handles"}, {}),
+            ("each_side", E7, {"name": "ribbon bow", "detail": "four loops; two loops on each side"}, {}),
+            ("hairpins", E4, {"name": "red hairpins", "detail": "two slim red hairpins; rounded tips"},
+             {"counts": [{"part": "hairpins", "reference": 2, "canvas": 2}]})]}
+        check(got == {"each": True, "per": True, "wrong": False, "each_side": True, "hairpins": True},
+              f"C23·C03 count_ok: 개체당 수(each/per)는 총수와 겨루지 않음, 합성어 명사·counts.part {got}")
+        # R10 명사 뒤 첫 each/per/every 가 다른 명사를 꾸밀 때만 개체당 수. 대상 명사에 떠 있는 수량사("two buttons each with
+        # a rim")는 총수로 센다 — 틀린 총수("three pins each …")가 review counts 로 가려지지 않는다
+        BT = {"nouns": ["button", "buttons"], "n": 2, "review": []}
+        LP = {"nouns": ["loop", "loops"], "n": 4, "review": []}
+        CL = {"nouns": ["clip", "clips"], "n": 2, "review": []}
+        PN = {"nouns": ["pin", "pins"], "n": 2, "review": ["canvas"]}
+        pins_rv = {"counts": [{"part": "pins", "canvas": 2}]}
+        bad = []
+        for chk, text, rv, want in [
+                (BT, "two round gold buttons each with a dark rim", {}, True),
+                (BT, "two round gold buttons, each with a dark rim", {}, True),
+                (LP, "four rounded loops each edged in gold", {}, True),
+                (LP, "four loops each one with a black outline", {}, True),
+                (LP, "four loops with a gold edge on each", {}, True),
+                (LP, "four loops; two loops on each side", {}, True),
+                (LP, "two loops on each side", {}, False),
+                (CL, "two black binder clips each gripping a stack of receipts", {}, True),
+                (CL, "two black binder clips with 2 holes per clip", {}, True),
+                (CL, "two black binder clips; one clip on each of the two stacks", {}, True),
+                (CL, "two binder clips per stack", {}, False),
+                (PN, "three slim red pins each with a round tip", pins_rv, False),
+                (PN, "three slim red pins, each with a round tip", pins_rv, False)]:
+            ok_, desc = ev.count_ok(chk, {"name": "", "detail": text}, rv)
+            if ok_ is not want:
+                bad.append((text, ok_, desc))
+        check(not bad, f"R10 떠 있는 수량사는 세고, 다른 명사를 꾸미는 each/per 만 개체당 수 {bad}")
+        sc_ = ev.selfcheck() if hasattr(ev, "selfcheck") else ["selfcheck 없음"]
+        check(sc_ == [], f"R10 평가 도구 대조 예문(selfcheck, validate 가 함께 돌림) 모두 기대대로 {sc_}")
+        # R11 금지어는 양쪽 경계(굴절형만) — 필수 키워드는 합성어 끝도 받음
+        got = {(t, w): (ev._has_word(t, w), ev._forbidden_hits(t, w)) for t, w in [
+            ("marigold flower", "gold"), ("rainbow stripes", "bow"), ("red hairpin", "pin"), ("goldfish", "gold"),
+            ("two bows", "bow"), ("crossed pins", "cross"), ("studded strap", "stud"), ("gold-studded", "stud")]}
+        want = {("marigold flower", "gold"): (True, 0), ("rainbow stripes", "bow"): (True, 0), ("red hairpin", "pin"): (True, 0),
+                ("goldfish", "gold"): (False, 0), ("two bows", "bow"): (True, 1), ("crossed pins", "cross"): (True, 1),
+                ("studded strap", "stud"): (True, 1), ("gold-studded", "stud"): (True, 1)}
+        check(got == want, f"R11 금지어 합성어 끝 아님(marigold ∌ gold, rainbow ∌ bow, hairpin ∌ pin), 굴절형은 셈 "
+                           f"{ {k: v for k, v in got.items() if v != want[k]} }")
+        # R13 크레딧 보고가 없는데 과금됐을 수 있는 openai 시도 → req est 보통값으로 추정(누적·게이트·credit_cap 에 들어감)
+        root = str(VLM_OUT / "e0_credits")
+        shutil.rmtree(root, ignore_errors=True)
+        os.makedirs(root)
+        led = dvlm.Ledger(root)
+        OA = {"backend": "vlm_openai", "model": "gpt-6-astra", "effort": "high"}
+        n_key = [0]
+
+        def att(kinds, settings=OA, est=(165, 497), attempt=1, key=None):
+            if key is None:
+                n_key[0] += 1
+                key = key24(28000 + n_key[0])
+            for kind, extra in kinds:
+                led.write("002_388984", key, attempt, kind, dict({"est": list(est), "settings": settings} if kind == "req" else {},
+                                                                 **extra))
+            return key
+
+        RQ, IF = ("req", {}), ("inflight", {})
+        att([RQ, IF, ("created", {"credits_create": 70.5}), ("resp", {"credits_poll": None}), ("done", {"credits": 70.5})])  # 보고
+        att([RQ, IF, ("created", {"credits_create": None}), ("resp", {"credits_poll": None}), ("done", {"credits": None})])  # 추정
+        att([RQ, IF])                                                                 # orphan → 추정
+        att([RQ, IF, ("rejected", {"error": "HTTP 400"})])                            # 과금 전 거부 → 0
+        att([RQ, IF, ("rejected", {"error": "401"}), RQ, IF])                         # 거부 뒤 재전송 orphan → 추정
+        att([RQ, IF, ("created", {"credits_create": None})])                          # created(재폴링 대기) → 추정
+        att([RQ, IF, ("failed", {"maybe_billed": True, "credits": None})])            # 5xx → 추정
+        att([RQ, IF, ("failed", {"maybe_billed": False, "credits": None})])           # → 0
+        att([RQ])                                                                     # 전송 전 → 0
+        att([RQ, IF, ("resp", {"credits_poll": None}), ("done", {"credits": None})],
+            settings={"backend": "vlm_local_qwen", "model": "Qwen3-VL-8B-Instruct"}, est=(25, 25))  # local_qwen(est = 초) → 0
+        att([RQ, IF, ("done", {"credits": None})], settings={"backend": "vlm_mock", "model": "mock"}, est=(0, 0))  # mock → 0
+        kb = att([RQ, IF, ("created", {"credits_create": None})])                     # 손상 done → 추정
+        Path(led._path("002_388984", kb, 1, "done")).write_text("{broken", encoding="utf-8")
+        k2 = att([RQ, IF, ("failed", {"maybe_billed": True, "credits": 30.0})])       # failed 가 보고 30
+        att([RQ, IF, ("created", {"credits_create": None})], key=k2, attempt=2)       # 그 a2 → 추정
+        v = ev.vlm_credits(root)
+        check(v == {"credits": 100.5, "est": 165.0 * 7, "attempts": 14, "est_attempts": 7},
+              f"R13 vlm_credits: 보고 100.5 + 미보고 과금 가능 7시도 × est 보통값 165(qwen·mock·거부·전송 전 제외) {v}")
+        b = ev.budget([root], stage_est=100)
+        b6 = ev.budget([root], stage_est=6000)
+        tot = round(100.5 + 1155, 2)
+        check(isinstance(b, dict) and b.get("total") == tot and b.get("est") == 1155 and b["remaining"] == round(ev.BUDGET_TOTAL - tot, 2)
+              and b["rows"][0].get("vlm_est_attempts") == 7 and b6["gate_ok"] is False
+              and b6["credit_cap"] == int(ev.CAP_LIMIT - tot),
+              f"R13 budget: 누적·남음·단계 게이트·credit_cap 에 추정 포함 {b.get('total')} {b.get('est')} {b6.get('gate_ok')} "
+              f"{b6.get('credit_cap')}")
+
+    def t_eval_ab():
+        section("E4 ab-sheet 라벨 고정·새 후보 덧붙임·거절·불일치 거부(C02) · ab-tally 크롭 승 = Borda(C04)")
+        base = VLM_OUT / "eval_ab"
+        shutil.rmtree(base, ignore_errors=True)
+        doc = ev.load_cases()
+        names = doc.get("ab_projects") or {g: f"ab_{g}" for g in ev.AB_GROUPS}
+        cids = ["002_388984", "003_aa1e8a"]
+        roots = {}
+        for g in ("minimal", "draft"):
+            root = store.project_root(str(base), names[g])
+            os.makedirs(root)
+            m = store.new_manifest(names[g])
+            src = store.save_png_ca(root, "inputs", np.full((64, 64, 3), 128, np.uint8))
+            m["crops"] = [{"id": cid, "name": "x", "nnn": cid[:3], "part": "x", "layer_name": "x", "rect": [0, 0, 64, 64],
+                           "source": src, "targets": [], "refs_auto": [], "warnings": []} for cid in cids]
+            m["candidates"] = [{"key": f"{g}_{cid}_{i}", "crop_id": cid, "tid": "A", "origin": "run",
+                                "file": store.save_png_ca(root, "inputs", np.full((64, 64, 3), 10 * i + 100 * (g == "draft")
+                                                                                  + int(cid[:3]), np.uint8))}
+                               for cid in cids for i in range(4)]
+            if g == "minimal":  # 다중 타깃 셀: 같은 결과 파일이 타깃마다 후보로 등록됨(r_…_A, r_…_B) → 시트에는 한 장
+                m["candidates"].append(dict(m["candidates"][0], key=m["candidates"][0]["key"] + "_B", tid="B"))
+            store.save_manifest(root, m)
+            roots[g] = root
+        out = base / "ab"
+        R = [roots["minimal"], roots["draft"]]
+        ev.ab_sheet(R, doc, out)
+        kp, sc = out / "key.json", out / "scores.csv"
+        k1 = json.loads(kp.read_text(encoding="utf-8"))["crops"]
+        check(all(len(k1[cid]) == 8 for cid in cids), f"ab-sheet: 같은 파일의 타깃별 후보는 한 장만 {[len(k1[c]) for c in cids]}")
+        with open(sc, newline="", encoding="utf-8") as f:
+            rows = list(csv.reader(f))
+        rank = {}
+        for cid in cids:  # 리뷰 시나리오: draft 1·6·7·8, minimal 2·3·4·5
+            dl = sorted(lb for lb in k1[cid] if k1[cid][lb]["group"] == "draft")
+            ml = sorted(lb for lb in k1[cid] if k1[cid][lb]["group"] == "minimal")
+            rank.update({(cid, lb): rk for lb, rk in zip(dl + ml, [1, 6, 7, 8, 2, 3, 4, 5])})
+        for r_ in rows[1:]:
+            r_[2] = str(rank.get((r_[0], r_[1]), ""))
+        with open(sc, "w", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerows(rows)
+        t1 = ev.ab_tally(sc, doc, with_de=False)
+        check(t1["wins"]["minimal"] == 2 and t1["wins"]["draft"] == 0 and t1["wins_best"]["draft"] == 2
+              and not t1["d5_default_use"], f"C04 크롭 승 = 군 Borda 합(minimal), 최고 한 장은 보조 wins_best {t1['wins']} {t1['wins_best']}")
+        # 한국어 엑셀 저장본: CP949, 쓸 수 없음 표시 ❌ 가 ? 로 바뀌어 rank·unusable 칸에 들어옴.
+        # cids[1] 은 draft 4장이 전부 쓸 수 없음 → draft Borda 0 으로 겨뤄 minimal 승(크롭 승에서 빠지지 않음)
+        rows_k = [list(r_) for r_ in rows]
+        lb8 = next(lb for (c_, lb), rk in rank.items() if c_ == cids[0] and rk == 8)
+        for r_ in rows_k[1:]:
+            if (r_[0], r_[1]) == (cids[0], lb8):
+                r_[2:5] = ["?", "?", "펜 소실"]
+            elif r_[0] == cids[1]:
+                r_[2:4] = ["", "?"] if k1[cids[1]][r_[1]]["group"] == "draft" else [str(rank[(r_[0], r_[1])] - 1), ""]
+        sk = out / "scores_cp949.csv"
+        with open(sk, "w", newline="", encoding="cp949") as f:
+            csv.writer(f).writerows(rows_k)
+        tk = ev.ab_tally(sk, doc, with_de=False)
+        p1 = tk["per_crop"][cids[1]]
+        check(tk["groups"]["draft"]["unusable"] == 5 and tk["groups"]["minimal"]["unusable"] == 0
+              and tk["per_crop"][cids[0]]["n"] == {"draft": 3, "minimal": 4}
+              and p1["borda"] == {"draft": 0, "minimal": 6} and p1.get("win") == "minimal" and not p1.get("uneven")
+              and tk["wins"] == {"draft": 0, "minimal": 2, "tie": 0} and tk["wins_best"] == {"draft": 1, "minimal": 1, "tie": 0},
+              f"ab-tally: CP949 scores.csv, ? 표시 = 쓸 수 없음(순위 없음), 전부 쓸 수 없는 군 = Borda 0 {tk['groups']} {p1} {tk['wins']}")
+        next(r_ for r_ in rows_k[1:] if not r_[3])[2] = "?"
+        with open(sk, "w", newline="", encoding="cp949") as f:
+            csv.writer(f).writerows(rows_k)
+        expect_raises(lambda: ev.ab_tally(sk, doc, with_de=False), "ab-tally: 쓸 수 없음 표시 없이 정수 아닌 rank → ValueError")
+        sk.unlink()
+        csv_before = sc.read_text(encoding="utf-8")
+        for g in ("minimal", "draft"):
+            def add(m, g=g):
+                m["candidates"] += [{"key": f"{g}_max{j}", "crop_id": cids[0], "tid": "A", "origin": "run",
+                                     "file": store.save_png_ca(roots[g], "inputs",
+                                                               np.full((64, 64, 3), 200 + j + 20 * (g == "draft"), np.uint8))}
+                                    for j in range(2)]
+            store.update_manifest(roots[g], add)
+        r2 = ev.ab_sheet(R, doc, out)
+        k2 = json.loads(kp.read_text(encoding="utf-8"))["crops"]
+        same = all(k2[c][lb]["key"] == k1[c][lb]["key"] and k2[c][lb]["group"] == k1[c][lb]["group"] for c in k1 for lb in k1[c])
+        newl = [lb for lb in k2[cids[0]] if lb not in k1[cids[0]]]
+        check(same and newl == ["I", "J", "K", "L"] and sc.read_text(encoding="utf-8").startswith(csv_before) and r2["new_rows"] == 4,
+              f"C02 후보가 늘어도 기존 라벨 그대로, 새 후보만 새 라벨, scores.csv 는 덧붙이기만 {newl} {r2}")
+        t2 = ev.ab_tally(sc, doc, with_de=False)
+        check(t2["wins"] == t1["wins"] and t2["per_crop"][cids[0]]["borda"] == t1["per_crop"][cids[0]]["borda"],
+              "C02 다시 만든 시트 뒤에도 채점 결과가 같은 후보에 붙음")
+        lb0 = next(lb for lb in k2[cids[1]] if k2[cids[1]][lb]["group"] == "minimal")
+        rej = k2[cids[1]][lb0]["key"]
+        store.update_manifest(roots["minimal"], lambda m: m.setdefault("rejects", {}).__setitem__(rej, True))
+        r4 = ev.ab_sheet(R, doc, out)
+        k4 = json.loads(kp.read_text(encoding="utf-8"))["crops"]
+        check(k4[cids[1]][lb0].get("gone") and r4["gone"] == 1 and all(k4[c][lb]["key"] == k2[c][lb]["key"] for c in k2 for lb in k2[c]),
+              "C02 거절된 후보 → gone(라벨 재사용 없음), 다른 라벨 그대로")
+        kp.rename(kp.with_name("key.bak"))
+        expect_raises(lambda: ev.ab_sheet(R, doc, out), "C02 scores.csv 는 있는데 key.json 없음 → ValueError(아무것도 안 씀)")
+        check(not kp.exists(), "C02 거부 때 key.json 을 새로 쓰지 않음")
+        kp.with_name("key.bak").rename(kp)
+        # R12 같은 폴더를 드라이브 문자·대소문자만 바꿔 다시 줘도 같은 후보(normcase) — 새 줄 0, 사라진 후보 늘지 않음, 라벨 그대로
+
+        def flip(p):
+            drv, rest = os.path.splitdrive(os.path.abspath(p))
+            return (drv.lower() if drv[:1].isupper() else drv.upper()) + rest.swapcase()
+
+        kb_ = json.loads(kp.read_text(encoding="utf-8"))
+        csv_b = sc.read_text(encoding="utf-8")
+        r5 = ev.ab_sheet([flip(r) for r in R], doc, out)
+        ka = json.loads(kp.read_text(encoding="utf-8"))
+        same = all(set(ka["crops"][c]) == set(kb_["crops"][c]) for c in kb_["crops"]) and all(
+            ka["crops"][c][lb]["key"] == kb_["crops"][c][lb]["key"]
+            and bool(ka["crops"][c][lb].get("gone")) == bool(kb_["crops"][c][lb].get("gone"))
+            for c in kb_["crops"] for lb in kb_["crops"][c])
+        check(same and r5["new_rows"] == 0 and r5["gone"] == r4["gone"] and sc.read_text(encoding="utf-8") == csv_b
+              and len(ka["roots"]) == len(kb_["roots"]) == 2,
+              f"R12 루트 대소문자만 바꿔 다시: 라벨·gone 그대로, 새 줄 0, roots 중복 없음 {r5} {len(ka['roots'])}")
+
+    # ─────────────────────────────────────────────────────────────
+    try:
+        _guarded("V1", t_v1)
+        _guarded("V2", t_v2)
+        _guarded("V3", t_v3)
+        _guarded("V4", t_v4)
+        ctx_req = _guarded("V5", t_v5)
+        _guarded("V6", t_v6, ctx_req)
+        _guarded("V7", t_v7)
+        _guarded("V8", t_v8)
+        _guarded("V9", t_v9)
+        _guarded("V10", t_v10)
+        _guarded("V11", t_v11)
+        _guarded("V12", t_v12)
+        _guarded("V13", t_v13)
+        _guarded("V14", t_v14)
+        _guarded("V15", t_v15)
+        _guarded("V16", t_v16)
+        _guarded("V17", t_v17)
+        _guarded("V18", t_v18)
+        _guarded("V19", t_v19)
+        _guarded("V20", t_v20)
+        _guarded("V21", t_v21)
+        _guarded("V22", t_v22)
+        _guarded("V23", t_v23)
+        _guarded("V24", t_v24)
+        _guarded("E0", t_eval_pure)
+        if HAVE_REF:
+            _guarded("E1-E3", t_eval)
+            _guarded("E4", t_eval_ab)
+        else:
+            skip("참조 폴더 없음 → 평가 도구 자기 시험(E1–E4) 생략")
+    finally:
+        if env_mock is not None:
+            os.environ[runner.MOCK_ENV] = env_mock
+
+
+# ═════════════════════════════════════════════════════════════════
 # M2-J. js/bmk_design_patch.js 시나리오 — node 로 실제 파일을 가짜 app/api 와 함께 돌린다(브라우저·서버 없음).
 #   import 두 줄만 globalThis.__bmk 로 바꾼다. queuePrompt 가짜는 프론트처럼 프롬프트(approve 값)를 만든 뒤 afterQueued 를 부른다.
 # ═════════════════════════════════════════════════════════════════
@@ -6114,14 +9002,14 @@ globalThis.window = {
 };
 
 async function setup(name) {
-    const env = { toasts: [], queued: [], confirms: 0, listeners: {}, nodes: [], processingQueue: false, failSubmit: false,
-                  drainRunning: true };
+    const env = { toasts: [], queued: [], confirms: 0, confirmMsgs: [], fetches: [], listeners: {}, nodes: [],
+                  processingQueue: false, failSubmit: false, drainRunning: true };
     windowListeners.message = [];
     const app = {
         get processingQueue() { return env.processingQueue; },
         extensionManager: {
             toast: { add: (t) => env.toasts.push(`${t.severity}: ${t.detail}`) },
-            dialog: { confirm: async () => { env.confirms++; return true; } },
+            dialog: { confirm: async (o) => { env.confirms++; env.confirmMsgs.push(String(o?.message ?? "")); return true; } },
         },
         rootGraph: { nodes: env.nodes },
         registerExtension(ext) { env.ext = ext; },
@@ -6140,7 +9028,10 @@ async function setup(name) {
     };
     const api = {
         addEventListener(evt, fn) { (env.listeners[evt] ??= []).push(fn); },
-        async fetchApi() { return { ok: true, status: 200, json: async () => ({ drain: env.drainRunning, running: env.drainRunning }) }; },
+        async fetchApi(path, opts) {
+            env.fetches.push({ path, body: opts?.body ?? null });
+            return { ok: true, status: 200, json: async () => ({ drain: env.drainRunning, running: env.drainRunning }) };
+        },
         fileURL: (p) => p,
     };
     globalThis.__bmk = { app, api };
@@ -6148,7 +9039,7 @@ async function setup(name) {
     env.ext.setup();
     env.emit = (evt, detail) => { for (const fn of env.listeners[evt] ?? []) fn({ detail }); };
     const types = {};
-    for (const cls of ["BMKDesignPatchRun", "BMKDesignPatchReview"]) {
+    for (const cls of ["BMKDesignPatchRun", "BMKDesignPatchReview", "BMKDesignPatchSpecDraft"]) {
         const T = function () {};
         env.ext.beforeRegisterNodeDef(T, { name: cls });
         types[cls] = T;
@@ -6169,13 +9060,14 @@ async function setup(name) {
             computeSize() { return [240, 120]; },
             setSize(s) { this.size = s; },
         });
-        if (cls === "BMKDesignPatchRun") n.widgets.push({ name: "approve", value: "" });
-        n.onNodeCreated();
+        if (cls === "BMKDesignPatchRun" || cls === "BMKDesignPatchSpecDraft") n.widgets.push({ name: "approve", value: "" });
+        n.onNodeCreated?.();
         env.nodes.push(n);
         return n;
     };
     env.click = (n, wname) => n.widgets.find((w) => w.name === wname).callback();
     env.approve = (n) => n.widgets.find((w) => w.name === "approve");
+    env.btn = (n) => n.widgets.find((w) => w.type === "button");
     env.label = (n) => n.widgets.find((w) => w.name === "bmk_dp_approve").label;
     env.exec = (n, e) => n.onExecuted({ bmk_dp_run: [e] });
     env.wave = (pid, remaining, e) => {  // 이 탭이 넣은 프롬프트 pid 가 wave 로 끝남
@@ -6291,12 +9183,128 @@ for (const [name, cont] of [["s3", ""], ["s3_old_server", undefined], ["s3_ok", 
     out.wsu2 = { w1, queuedCont, last: env.toasts.at(-1) };
 }
 
+// ─── M3 Spec Draft (J1–J6). 시나리오마다 예외를 결과로 돌려 다른 시나리오를 막지 않는다 ───
+const dentry = (o) => ({ est_credits: [0, 0], est_usd: [0, 0], est_seconds: 0, approved_now: false, root_key: ROOT_KEY,
+                         backend: "vlm_mock", model: "mock", effort: null, reasons: {}, orphan_retries: 0, refresh_available: 0, ...o });
+const dexec = (n, e) => n.onExecuted({ bmk_dp_draft: [e] });
+const qview = (env) => env.queued.map((q) => ({ ids: q.ids, d: q.approve["3"] ?? null, r: q.approve["4"] ?? null }));
+async function scenario(name, fn) {
+    try { out[name] = await fn(); } catch (e) { out[name] = { error: String(e?.stack ?? e).slice(0, 500) }; }
+}
+
+await scenario("j1", async () => {
+    const env = await setup("j1");
+    const draft = env.add("BMKDesignPatchSpecDraft", 3);
+    const run = env.add("BMKDesignPatchRun", 4);
+    const fresh = env.btn(draft)?.label ?? null;
+    env.approve(run).value = "RUNHASH00000";
+    dexec(draft, dentry({ pending_hash: "D1aaaaaaaaaa", pending: 2 }));
+    const label = env.btn(draft).label;
+    await env.btn(draft).callback();
+    const m = { queued: qview(env), after: env.approve(draft).value, runAfter: env.approve(run).value, confirms: env.confirms,
+                nbtn: draft.widgets.filter((w) => w.type === "button").length, label, fresh };
+    dexec(draft, dentry({ pending_hash: "D2bbbbbbbbbb", pending: 3, backend: "vlm_openai", model: "gpt-6-astra", effort: "high",
+                          est_credits: [510, 1500], est_usd: [2.42, 7.11], orphan_retries: 1 }));
+    const olabel = env.btn(draft).label;
+    await env.btn(draft).callback();
+    const o = { confirms: env.confirms, msg: env.confirmMsgs.at(-1) ?? "", last: env.queued.at(-1)?.approve["3"], ids: env.queued.at(-1)?.ids,
+                after: env.approve(draft).value, label: olabel };
+    dexec(draft, dentry({ pending_hash: "D3cccccccccc", pending: 3, backend: "vlm_local_qwen", model: "Qwen3-VL-8B-Instruct", est_seconds: 115 }));
+    await env.btn(draft).callback();
+    const l = { msg: env.confirmMsgs.at(-1) ?? "", last: env.queued.at(-1)?.approve["3"], after: env.approve(draft).value };
+    dexec(draft, dentry({ pending_hash: "", pending: 0 }));
+    return { m, o, l, none: env.btn(draft).label };
+});
+
+await scenario("j7", async () => {  // 탭 전환으로 보고를 잃은 노드: 버튼 = 그 노드만 드라이런(모든 approve 비움)
+    const env = await setup("j7");
+    const draft = env.add("BMKDesignPatchSpecDraft", 3);
+    const run = env.add("BMKDesignPatchRun", 4);
+    env.approve(draft).value = "STALEHASH000";
+    env.approve(run).value = "RUNHASH00000";
+    await env.btn(draft).callback();
+    const d = { queued: qview(env), toast: env.toasts.at(-1) ?? "", confirms: env.confirms };
+    env.approve(draft).value = "STALEHASH111";
+    await env.click(run, "bmk_dp_approve");
+    return { d, r: { queued: qview(env).slice(1), toast: env.toasts.at(-1) ?? "" } };
+});
+
+await scenario("j2", async () => {
+    const env = await setup("j2");
+    const draft = env.add("BMKDesignPatchSpecDraft", 3);
+    const run = env.add("BMKDesignPatchRun", 4);
+    env.approve(draft).value = "DRAFTHASH000";
+    env.exec(run, entry({ pending_hash: "R1aaaaaaaaaa", pending: 1 }));
+    await env.click(run, "bmk_dp_approve");
+    return { queued: qview(env), dAfter: env.approve(draft).value };
+});
+
+await scenario("j3", async () => {
+    const env = await setup("j3");
+    const draft = env.add("BMKDesignPatchSpecDraft", 3);
+    const run = env.add("BMKDesignPatchRun", 4);
+    const rev = env.add("BMKDesignPatchReview", 6);
+    rev.onExecuted({ bmk_dp_board: [{ root_key: ROOT_KEY, url: "/x" }] });
+    env.approve(draft).value = "DRAFTHASH000";
+    env.approve(run).value = "RUNHASH00000";
+    for (const fn of windowListeners.message) fn({ origin: window.location.origin, data: { type: "bmk-dp-queue", rootKey: ROOT_KEY } });
+    await sleep(950);
+    await flush();
+    return { queued: qview(env), dAfter: env.approve(draft).value };
+});
+
+await scenario("j4", async () => {
+    const env = await setup("j4");
+    const run = env.add("BMKDesignPatchRun", 4);  // env.wave 는 nodes[0](Run)에 결과를 준다
+    const draft = env.add("BMKDesignPatchSpecDraft", 3);
+    env.click(run, "bmk_dp_auto");
+    env.emit("execution_start", { prompt_id: "P1" });
+    env.approve(draft).value = "DRAFTHASH000";
+    env.wave("P1", 2, entry({ pending_hash: "C1aaaaaaaaaa", pending: 2, continuation_hash: "C1aaaaaaaaaa" }));
+    await flush();
+    return { queued: qview(env), dAfter: env.approve(draft).value };
+});
+
+await scenario("j5", async () => {
+    const env = await setup("j5");
+    const run = env.add("BMKDesignPatchRun", 4);
+    await env.click(run, "bmk_dp_drain");
+    const before = { fetches: env.fetches.length, toast: env.toasts.at(-1) ?? "" };
+    const draft = env.add("BMKDesignPatchSpecDraft", 3);
+    draft.properties.bmk_dp_root_key = ROOT_KEY;
+    await env.click(run, "bmk_dp_drain");
+    const fetched = env.fetches.map((f) => f.body);
+    const d2 = env.add("BMKDesignPatchSpecDraft", 5);
+    dexec(d2, dentry({ pending_hash: "", pending: 0 }));
+    return { before, fetched, execKey: d2.properties?.bmk_dp_root_key ?? null };
+});
+
+await scenario("j6", async () => {
+    const env = await setup("j6");
+    const run = env.add("BMKDesignPatchRun", 4);
+    env.exec(run, entry({ pending_hash: "R6aaaaaaaaaa", pending: 2, backend: "comfy_org", draft_pending: 3 }));
+    await env.click(run, "bmk_dp_approve");
+    const warn = env.confirmMsgs.at(-1) ?? "";
+    env.exec(run, entry({ pending_hash: "R6bbbbbbbbbb", pending: 2, backend: "comfy_org", draft_pending: 0 }));
+    await env.click(run, "bmk_dp_approve");
+    const plain = env.confirmMsgs.at(-1) ?? "";
+    env.exec(run, entry({ pending_hash: "R6cccccccccc", pending: 2, backend: "comfy_org", draft_pending: 23, draft_style: 1 }));
+    await env.click(run, "bmk_dp_approve");
+    const styled = env.confirmMsgs.at(-1) ?? "";
+    env.exec(run, entry({ pending_hash: "R6dddddddddd", pending: 2, backend: "comfy_org", draft_pending: 1, draft_style: 1 }));
+    await env.click(run, "bmk_dp_approve");
+    const styleOnly = env.confirmMsgs.at(-1) ?? "";
+    env.exec(run, entry({ pending_hash: "R6eeeeeeeeee", pending: 2, backend: "comfy_org", draft_pending: 0, draft_unwritten: 2 }));
+    await env.click(run, "bmk_dp_approve");
+    return { warn, plain, styled, styleOnly, unwritten: env.confirmMsgs.at(-1) ?? "", n: env.confirmMsgs.length };
+});
+
 console.log(JSON.stringify(out));
 """
 
 
 def m2_js_unit():
-    section("M2-J js/bmk_design_patch.js 시나리오 (node + 가짜 app/api): S3·S5·WSU-1·WSU-2·WSU-3·WSU-5")
+    section("M2-J js/bmk_design_patch.js 시나리오 (node + 가짜 app/api): S3·S5·WSU-1·WSU-2·WSU-3·WSU-5 · M3 J1–J6")
     node = shutil.which("node")
     if not node:
         skip("node 없음 → JS 시나리오 생략")
@@ -6333,11 +9341,55 @@ def m2_js_unit():
     check(c["queued"] == 1 and c["after"] == "" and c["warned"], f"WSU-3: 다른 제출 처리 중이면 승인 거절 {c}")
     check(d["confirms"] == 1 and d["last"] == "H2bbbbbbbbbb" and d["after"] == "", f"WSU-3: 유료는 확인 창 후 같은 규칙 {d}")
     w5 = res["wsu5"]
-    check("먼저 큐 실행" in w5["fresh"] and w5["done"] == "승인할 호출 없음" and "승인할 호출이 없습니다" in w5["toast"]
+    check("드라이런부터" in w5["fresh"] and w5["done"] == "승인할 호출 없음" and "승인할 호출이 없습니다" in w5["toast"]
           and w5["queued"] == 0, f"WSU-5: 실행 결과가 있고 승인할 것이 없으면 '승인할 호출 없음' {w5}")
     w2 = res["wsu2"]
     check(w2["w1"] == {"queued": 0, "told": True}, f"WSU-2: Drain 을 누른 실행은 wave 로 끝나도 이어가지 않음 {w2['w1']}")
     check(w2["queuedCont"] == 1 and "시작 전" in w2["last"], f"WSU-2: 이어가기 큐가 시작 전이면 Drain 이 큐에서 지우라고 안내 {w2['last']}")
+    # M3 Spec Draft (M3_SPEC §7 J1–J6)
+    j1 = res.get("j1") or {}
+    if "error" in j1:
+        check(False, f"J1 시나리오 예외: {j1['error']}")
+    else:
+        m_, o_, l_ = j1["m"], j1["o"], j1["l"]
+        check(m_["queued"] == [{"ids": ["3"], "d": "D1aaaaaaaaaa", "r": ""}] and m_["after"] == "" and m_["nbtn"] == 1,
+              f"J1: Draft 승인 버튼(하나)은 Draft 만 큐, 제출 뒤 approve 비움 {m_}")
+        check(m_["confirms"] == 0 and "[MOCK]" in (m_["label"] or "") and "드라이런부터" in (m_["fresh"] or ""),
+              f"J1: mock 은 확인창 없음, 라벨 [MOCK], 결과 전 '드라이런부터' {m_['label']} / {m_['fresh']}")
+        check(o_["confirms"] == 1 and "크레딧" in o_["msg"] and "orphan" in o_["msg"] and o_["last"] == "D2bbbbbbbbbb"
+              and o_["ids"] == ["3"] and o_["after"] == "", f"J1: openai 확인창(크레딧·orphan) 뒤 승인 {o_}")
+        check("내립니다" in l_["msg"] and l_["last"] == "D3cccccccccc" and l_["after"] == "", f"J1: local 확인창(모델을 내립니다) {l_['msg']!r}")
+        check("승인할 초안 없음" in (j1["none"] or ""), f"J1: 할 일 없으면 '승인할 초안 없음' {j1['none']!r}")
+        check(m_["runAfter"] == "", "J2: Draft 승인 큐가 Run 의 approve 를 비움(한 큐에 승인 하나)")
+    j7 = res.get("j7") or {}
+    j7d, j7r = j7.get("d") or {}, j7.get("r") or {}
+    check(j7d.get("queued") == [{"ids": ["3"], "d": "", "r": ""}] and j7d.get("confirms") == 0 and "드라이런" in j7d.get("toast", ""),
+          f"J7: 보고 없는 Draft 버튼은 approve 를 모두 비우고 Draft 만 드라이런 큐(확인창·과금 없음) {j7}")
+    check(j7r.get("queued") == [{"ids": ["4"], "d": "", "r": ""}] and "드라이런" in j7r.get("toast", ""),
+          f"J7: 보고 없는 Run 버튼도 같은 규칙 {j7r}")
+    j2 = res.get("j2") or {}
+    check(j2.get("queued") == [{"ids": ["4"], "d": "", "r": "R1aaaaaaaaaa"}] and j2.get("dAfter") == "",
+          f"J2: Run 승인 큐가 Draft 의 approve 를 비움 {j2}")
+    j3 = res.get("j3") or {}
+    check(j3.get("queued") == [{"ids": ["6"], "d": "", "r": ""}] and j3.get("dAfter") == "",
+          f"J3: 보드 큐(queueReview)가 Run·Draft 의 approve 를 모두 비움 {j3}")
+    j4 = res.get("j4") or {}
+    check(j4.get("queued") == [{"ids": ["4"], "d": "", "r": "C1aaaaaaaaaa"}] and j4.get("dAfter") == "",
+          f"J4: 자동 이어가기(continueRun)가 Draft 의 approve 를 비움 {j4}")
+    j5 = res.get("j5") or {}
+    fetched = [json.loads(b) for b in j5.get("fetched") or [] if b]
+    check((j5.get("before") or {}).get("fetches") == 0 and "프로젝트를 아직 모릅니다" in (j5.get("before") or {}).get("toast", "")
+          and fetched == [{"root": "abcdef012345"}] and j5.get("execKey") == "abcdef012345",
+          f"J5: soleRootKey 가 Draft 를 셈(Run 의 Drain 이 Draft 의 프로젝트 키로), Draft 실행 결과가 키를 기억 {j5}")
+    j6 = res.get("j6") or {}
+    check("초안" in (j6.get("warn") or "") and "초안" not in (j6.get("plain") or "") and j6.get("n") == 5,
+          f"J6: Run 확인창 — draft_pending > 0 이면 초안 대기 경고 줄 {j6}")
+    check("스펙 파일 2개에 초안·화풍 변경을 아직 못 씀" in (j6.get("unwritten") or "")
+          and "Spec Draft 미승인" not in (j6.get("unwritten") or ""),
+          f"F11 J6: draft_unwritten > 0 이면 미기록 경고(초안 대기와 따로) {j6.get('unwritten')!r}")
+    check("스펙 초안 대기 3크롭(" in (j6.get("warn") or "") and "스펙 초안 대기 22크롭 + 화풍(" in (j6.get("styled") or "")
+          and "스펙 초안 대기 화풍(" in (j6.get("styleOnly") or ""),
+          f"O3 J6: 확인창도 크롭과 화풍을 따로(서버 _draft_pending_text 와 같은 문구) {j6.get('styled')!r}")
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -6739,6 +9791,893 @@ def m2_node_unit():
 
 
 # ═════════════════════════════════════════════════════════════════
+# M3-C. vlm ↔ comfy_api_nodes (CPU import, 가짜 없음 — 요청 본문 모양만 대조, 네트워크 없음)
+#   C1 openai_body ↔ 내장 OpenAIChatNode 요청(OpenAICreateResponse)  C2 MODEL_EFFORTS ↔ SUPPORTED_REASONING_EFFORTS
+# ═════════════════════════════════════════════════════════════════
+def vlm_comfy():
+    _comfy_cpu()
+    import torch
+    import bmk_design_patch_vlm as dvlm
+    from comfy_api_nodes import nodes_openai
+    from comfy_api_nodes.apis.openai import InputImageContent, InputMessage, InputTextContent, OpenAICreateResponse
+
+    def t_c1():
+        section("M3-C1 openai_body ↔ 내장 OpenAIChatNode 요청: 공통 키 같은 값, input_image 모양, 우리만 가진 키")
+        root, refs_dir, m = _vlm_project("c1", [(_TOAST, (256, 256), {})], refs=_REFS002[:3])
+        ctx = dvlm.build_crop_ctx(root, m, m["crops"][0], refs_dir=refs_dir, glossary={}, backend="openai", memo={})
+        req = dvlm.build_request(ctx, backend="openai", model="gpt-6-astra", effort="high", image_detail="high", draft_round=0)
+        ours = dvlm.openai_body(req, model="gpt-6-astra", effort="high", image_detail="high", level=2, background=True)
+        content = ours["input"][0]["content"]
+        img = next(c for c in content if c["type"] == "input_image")
+        with Image.open(io.BytesIO(base64.b64decode(img["image_url"].split(",", 1)[1]))) as im:
+            t = torch.from_numpy(np.asarray(im.convert("RGB")).astype(np.float32) / 255.0)[None]
+        core = OpenAICreateResponse(input=[InputMessage(content=nodes_openai.OpenAIChatNode.create_input_message_contents(
+            "x", t), role="user")], store=True, stream=False, model="gpt-6-astra").model_dump(exclude_none=True)
+        core_img = next(c for c in core["input"][0]["content"] if c["type"] == "input_image")
+        common = (set(core) & set(ours)) - {"input"}
+        check(common >= {"model", "store", "stream"} and all(core[k] == ours[k] for k in common),
+              f"공통 키 같은 값 {sorted(common)}")
+        check(set(core_img) == set(img) and core_img["image_url"].startswith("data:image/png;base64,"),
+              f"input_image 모양(detail·image_url·type) {sorted(img)}")
+        rebuilt = InputMessage(content=[InputTextContent(**c) if c["type"] == "input_text" else InputImageContent(**c)
+                                        for c in content], role="user").model_dump(exclude_none=True)
+        check(rebuilt == ours["input"][0], "우리 input 메시지 = 내장 pydantic(InputMessage) 왕복 결과(필드 이름·모양 같음)")
+        extra = set(ours) - set(core)
+        check(extra == {"instructions", "reasoning", "max_output_tokens", "truncation", "text", "background"},
+              f"우리만 가진 키 {sorted(extra)}")
+
+    def t_c2():
+        section("M3-C2 MODEL_EFFORTS ↔ nodes_openai.SUPPORTED_REASONING_EFFORTS('none' 제외), 모델 id ∈ SupportedOpenAIModel")
+        ids = {m.value for m in nodes_openai.SupportedOpenAIModel}
+        sup = {str(getattr(k, "value", k)): v for k, v in nodes_openai.SUPPORTED_REASONING_EFFORTS.items()}
+        diff = {mdl: (effs, tuple(e for e in sup.get(mdl, ()) if e != "none")) for mdl, effs in dvlm.MODEL_EFFORTS.items()
+                if tuple(effs) != tuple(e for e in sup.get(mdl, ()) if e != "none")}
+        check(not diff, f"모델별 허용 effort 가 내장 노드와 같음 {diff}")
+        models = [dvlm.parse_vlm_choice(c)[1] for c in dvlm.VLM_CHOICES if c.startswith("openai/")]
+        check(set(models) <= ids and set(models) == set(dvlm.MODEL_EFFORTS) == set(dvlm.PRICE_PER_1K),
+              f"vlm 콤보의 openai 모델 id 가 SupportedOpenAIModel 에 있음 {models}")
+        check(nodes_openai.RESPONSES_ENDPOINT == dvlm.RESPONSES_PATH, "엔드포인트 경로 같음")
+
+    _guarded("M3-C1", t_c1)
+    _guarded("M3-C2", t_c2)
+
+
+# ═════════════════════════════════════════════════════════════════
+# M3-N. Spec Draft 노드 수준 (합성 프로젝트, mock·가짜 api·가짜 Qwen — 네트워크·GPU 없음)
+#   N1 정의·N0 목록  N2 mock 흐름(드라이런→승인→0 호출→Prepare→사람 편집 보존)  N3 openai 인증 없음
+#   N4 인터럽트·무료 재폴링  N5 Draft 대기 → Run 경고  N6 _project.json style_note 전파  N7 local_qwen 승인·VramError·
+#   남은 Qwen 언로드  N8 보드 라우트 10  N9 평가 도구 new_targets == main._new_targets  N10 사라진 크롭의 스펙
+#   N11 force 1회·사람 mode/refs  N12 fill 키 가드  N13 실제 PromptExecutor 캐시(RAM_PRESSURE·CLASSIC)
+# ═════════════════════════════════════════════════════════════════
+def vlm_node_unit():
+    dp = _dp_package()
+    import folder_paths  # noqa: E402  (ComfyUI 루트)
+    import comfy.model_management as mm
+    from aiohttp import web
+    import eval_bmk_design_patch_vlm as ev
+
+    st, rn, dv = dp.store, dp.runner, dp.dvlm  # 노드와 같은 모듈(_bmk_dp_pkg)
+    NODES3 = OUT_ROOT / "m3_nodes"
+    shutil.rmtree(NODES3, ignore_errors=True)
+    NODES3.mkdir(parents=True)
+    folder_paths.set_output_directory(str(NODES3 / "output"))
+    mock_file = NODES3 / "bmk_design_patch" / "_MOCK_API"
+    env_mock = os.environ.pop(rn.MOCK_ENV, None)
+    DR, PRE, RUN_ = dp.BMKDesignPatchSpecDraft(), dp.BMKDesignPatchPrepare(), dp.BMKDesignPatchRun()
+    base = texture(384, 512, 41)
+    rects = [("001_왼쪽", [32, 32, 160, 160]), ("002_가운데", [192, 64, 320, 192]), ("003_오른쪽", [352, 160, 480, 288])]
+
+    def set_mock(**vlm_opts):
+        mock_file.parent.mkdir(parents=True, exist_ok=True)
+        mock_file.write_text(json.dumps({"delay_s": 0.01, "vlm": dict({"delay_s": 0.01}, **vlm_opts)}), encoding="utf-8")
+
+    def project(name, rs=rects):
+        h, root = _fx_project(dp, NODES3, name, rs, base)
+        refs_dir = NODES3 / f"{name}_refs"
+        shutil.rmtree(refs_dir, ignore_errors=True)
+        refs_dir.mkdir()
+        for i, (lname, _r) in enumerate(rs):
+            p = st.parse_crop_layer_name(lname)
+            a = np.zeros((96, 96), np.uint8)
+            a[12:84, 12:84] = 255
+            Image.fromarray(np.dstack([_vlm_img(96, 96, 300 + i), a])).save(refs_dir / f"{p['nnn']}_{p['part']}_t.png")
+
+        def mut(m):
+            m["source"]["refs_dir"] = str(refs_dir)
+            for c in m["crops"]:
+                c["refs_auto"] = st.match_refs(str(refs_dir), c["nnn"], part=c["part"])
+
+        st.update_manifest(root, mut)
+        return dp._handle(root, st.load_manifest(root)), root
+
+    def draft_node(h, approve="", **kw):
+        args = dict(vlm="openai/gpt-6-astra", effort="high", image_detail="high", write_mode="fill", only="", draft_round=0,
+                    concurrency=4, credit_cap=0, keep_loaded=False)
+        args.update(kw)
+        out = asyncio.run(DR.run(h, approve, unique_id="88", **args))
+        check(out["ui"]["text"] == [out["result"][1]], "Draft ui text = report 출력")
+        return out["result"], out["ui"][dv.UI_KEY][0]
+
+    def run_node(h, approve="", **kw):
+        args = dict(max_new_calls=64, concurrency=4, wave_minutes=25, retry_failed=False, retry_orphans=False, only="")
+        args.update(kw)
+        out = asyncio.run(RUN_.run(h, approve, unique_id="77", **args))
+        return out["result"], out["ui"]["bmk_dp_run"][0]
+
+    def n_files(root, kind):
+        return len(list(Path(root, dv.LEDGER_DIR).glob(f"*/*/a*.{kind}.json")))
+
+    def specs_snap(root):
+        d = Path(root) / "specs"
+        return {p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in sorted(d.glob("*.json"))} if d.is_dir() else {}
+
+    def spec_of(root, cid):
+        return json.loads((Path(root) / "specs" / f"{cid}.json").read_text(encoding="utf-8"))
+
+    def key_dir(root, cid):
+        ds = [p for p in (Path(root) / dv.LEDGER_DIR / cid).iterdir() if p.is_dir()]
+        return ds[0].name if len(ds) == 1 else None
+
+    def t_n1():
+        section("M3-N1 Spec Draft 정의: 매핑 10(Draft = index 3)·OUTPUT_NODE·RETURN_TYPES·hidden·위젯 순서·공유 이름")
+        ids = ["BMKDesignPatchProject", "BMKDesignPatchImportPSD", "BMKDesignPatchCandidateIn", "BMKDesignPatchSpecDraft",
+               "BMKDesignPatchPrepare", "BMKDesignPatchRun", "BMKDesignPatchAnalyze", "BMKDesignPatchReview",
+               "BMKDesignPatchCompose", "BMKDesignPatchExportPSD"]
+        check(list(dp.NODE_CLASS_MAPPINGS) == ids and list(dp.NODE_DISPLAY_NAME_MAPPINGS) == ids
+              and dp.NODE_DISPLAY_NAME_MAPPINGS["BMKDesignPatchSpecDraft"] == "BMK Design Patch Spec Draft",
+              "노드 10개 매핑(CandidateIn 다음, Prepare 앞)")
+        outs = [k for k, v in dp.NODE_CLASS_MAPPINGS.items() if getattr(v, "OUTPUT_NODE", False) is True]
+        check(outs == ["BMKDesignPatchSpecDraft", "BMKDesignPatchRun", "BMKDesignPatchReview", "BMKDesignPatchExportPSD"],
+              f"OUTPUT_NODE {outs}")
+        D = dp.BMKDesignPatchSpecDraft
+        check(D.RETURN_TYPES == ("BMK_DP_PROJECT", "STRING", "IMAGE") and D.RETURN_NAMES == ("project", "report", "sheet")
+              and D.CATEGORY == "BMK/Image" and D.FUNCTION == "run", "RETURN_TYPES·RETURN_NAMES·CATEGORY")
+        it = D.INPUT_TYPES()
+        req = it["required"]
+        check(list(req) == ["project", "approve", "vlm", "effort", "image_detail", "write_mode", "only", "draft_round",
+                            "concurrency", "credit_cap", "keep_loaded"], f"위젯 순서 {list(req)}")
+        check(it["hidden"] == dp.BMKDesignPatchRun.INPUT_TYPES()["hidden"], "hidden = Run 과 같음(인증 토큰은 큐 extra_data)")
+        params = list(inspect.signature(D.run).parameters.values())[1:]
+        sig = [p.name for p in params if p.kind != p.VAR_KEYWORD]
+        check(sig == list(req) + list(it["hidden"]) and params[-1].kind == params[-1].VAR_KEYWORD,
+              f"입력 이름 = 함수 인자(+ **_stale: 옛 워크플로의 없는 입력이 바인딩에서 실패하지 않게) {sig}")
+        lim = {k: (req[k][1]["default"], req[k][1]["min"], req[k][1]["max"]) for k in ("draft_round", "concurrency", "credit_cap")}
+        check(lim == {"draft_round": (0, 0, 99), "concurrency": (4, 1, 8), "credit_cap": (0, 0, 100000)}, f"숫자 위젯 {lim}")
+        check(list(req["vlm"][0]) == list(dv.VLM_CHOICES) and req["vlm"][1]["default"] == "openai/gpt-6-sol"
+              and list(req["effort"][0]) == list(dv.EFFORTS) and req["effort"][1]["default"] == "xhigh"
+              and list(req["image_detail"][0]) == ["high", "original"] and req["image_detail"][1]["default"] == "high"
+              and list(req["write_mode"][0]) == list(dv.WRITE_MODES) and req["write_mode"][1]["default"] == "fill",
+              "콤보: vlm·effort·image_detail·write_mode(공유 상수, 기본값)")
+        check(req["approve"][0] == "STRING" and req["approve"][1]["default"] == "" and not req["approve"][1].get("multiline")
+              and req["only"][0] == "STRING" and req["only"][1]["default"] == ""
+              and req["keep_loaded"][0] == "BOOLEAN" and req["keep_loaded"][1]["default"] is False, "approve·only 한 줄, keep_loaded False")
+        check(inspect.iscoroutinefunction(D.run) and D.OUTPUT_NODE is True and not any("seed" in k for k in req),
+              "async, OUTPUT_NODE, seed 위젯 없음")
+        ic = [D.IS_CHANGED(approve="a7728a08fdde"), D.IS_CHANGED(approve=None), D.IS_CHANGED(approve=""),
+              D.IS_CHANGED(approve="  "), D.IS_CHANGED(approve="", vlm="mock", only="002")]
+        check(math.isnan(ic[0]) and math.isnan(ic[1]) and ic[2:] == ["", "", ""],
+              f"C11 IS_CHANGED: approve 있음·링크(None) → NaN(같은 해시를 다시 눌러도 실행), 빈 approve → 상수(다른 위젯 무관) {ic}")
+        # F1 위젯 조합 오류는 큐 단계(VALIDATE_INPUTS — 검증 오류에는 hidden 이 안 들어감). run 의 예외는 첫 await 뒤라 ComfyUI 가
+        # 대기 노드 경로로 보고한다 — 첫 방문에서 예외가 나면 hidden(comfy.org 토큰)까지 입력값이 execution_error 에 실린다
+        vi = [D.VALIDATE_INPUTS(vlm="openai/gpt-5.5-pro", effort="low"),
+              D.VALIDATE_INPUTS(vlm=dv.DEFAULT_VLM, effort=dv.DEFAULT_EFFORT),
+              D.VALIDATE_INPUTS(vlm=None, effort="low"), D.VALIDATE_INPUTS(vlm=None, effort="bogus"),
+              D.VALIDATE_INPUTS(vlm="openai/gpt-5-retired", effort=None)]
+        check(isinstance(vi[0], str) and "effort" in vi[0] and vi[1:3] == [True, True]
+              and isinstance(vi[3], str) and isinstance(vi[4], str)
+              and list(inspect.signature(D.VALIDATE_INPUTS).parameters) == ["vlm", "effort"],
+              f"F1 VALIDATE_INPUTS(vlm, effort): 모델이 받지 않는 effort → 오류, 한쪽이 링크(None)여도 다른 쪽 목록 검사, "
+              f"image_detail·write_mode 는 코어 콤보 검사에 맡김 {vi}")
+        import execution
+        secret = {"auth_token_comfy_org": "TOKEN-SECRET-1", "api_key_comfy_org": "KEY-SECRET-2"}
+        bad_handle = {"schema": st.SCHEMA, "root": str(NODES3 / "없는_프로젝트"), "project": "x", "rev": 0}
+        first = {}
+        for cls_, ins in ((D, dict(approve="", vlm="openai/gpt-5.5-pro", effort="low", image_detail="high", write_mode="fill",
+                                   only="", draft_round=0, concurrency=4, credit_cap=0, keep_loaded=False)),
+                          (dp.BMKDesignPatchRun, dict(approve="", max_new_calls=1, concurrency=1, wave_minutes=25,
+                                                      retry_failed=False, retry_orphans=False, only=""))):
+            async def visit(cls_=cls_, ins=ins):
+                idata, _miss, v3 = execution.get_input_data(dict(ins, project=["1", 0]), cls_, "7", None, None, secret)
+                idata["project"] = [bad_handle]
+                idata["seed"] = [7]  # 옛 워크플로가 링크해 온, 지금은 없는 입력 — 인자 바인딩에서 실패하면 첫 방문에서 예외
+                try:
+                    rv, _ui, _sub, pending = await execution.get_output_data("pid", "7", cls_(), idata, v3_data=v3)
+                except Exception as ex:
+                    leaked = "TOKEN-SECRET-1" in str([execution.format_value(x) for v in idata.values() for x in v])
+                    return f"raised {type(ex).__name__}", leaked
+                tasks = [r for r in rv if isinstance(r, asyncio.Task)]
+                await asyncio.gather(*tasks, return_exceptions=True)
+                return ("pending" if pending else "done"), all(isinstance(t.exception(), ValueError) for t in tasks)
+            first[cls_.__name__] = asyncio.run(visit())
+        check(first == {"BMKDesignPatchSpecDraft": ("pending", True), "BMKDesignPatchRun": ("pending", True)},
+              f"F1 run 의 예외(나쁜 핸들)는 첫 await 뒤 — 첫 방문은 대기, 오류는 그 뒤 task 에서(입력값 미기록) {first}")
+        check(all(a in D.SEARCH_ALIASES for a in ("spec draft", "vlm", "qwen", "openai", "스펙 초안", "초안", "자동 스펙")),
+              "SEARCH_ALIASES")
+        check(dp._BRANCH_KEYS == ("analyze", "compose", "draft") and dv.BRANCH_KEY == "draft", "_BRANCH_KEYS 에 draft")
+        check(dv.__name__ == "_bmk_dp_pkg.bmk_design_patch_vlm" and dv.store is dp.store and dv.runner is dp.runner,
+              "노드는 vlm 을 상대 import(같은 store·runner)")
+        js = (PKG / "js" / "bmk_design_patch.js").read_text(encoding="utf-8")
+        init = (PKG / "__init__.py").read_text(encoding="utf-8")
+        check('"BMKDesignPatchSpecDraft"' in js and f'"{dv.UI_KEY}"' in js and "BMKDesignPatchSpecDraft" in init,
+              "JS·__init__ 주석이 같은 이름(노드 id, ui 키)을 씀")
+        src = (PKG / "bmk_design_patch.py").read_text(encoding="utf-8")
+        check("bmk_design_patch_vlm" in src[:4000] and "Spec Draft" in src[:6000], "main docstring: 모듈 목록·노드 목록에 Spec Draft")
+
+    def t_n2():
+        section("M3-N2 mock 흐름: 드라이런 0 호출 → 해시 승인 → specs 씀 → 같은 위젯 0 호출(바이트·mtime·rev 불변) → Prepare → 사람 편집 보존")
+        set_mock()
+        h, root = project("m3n")
+        rev0 = st.load_manifest(root)["rev"]
+        (hd, rep_d, sheet_d), e = draft_node(h)
+        check(n_files(root, "req") == 0 and e["pending"] == 4 and re.fullmatch(r"[0-9a-f]{12}", e["pending_hash"] or "")
+              and e["approved_now"] is False and e["backend"] == "vlm_mock" and e["est_credits"] == [0, 0]
+              and e["root_key"] == st.root_key(root), f"드라이런: 0 호출, 크롭 3 + 화풍 1 대기, mock {e}")
+        check(set(e) >= {"pending_hash", "pending", "reasons", "orphan_retries", "est_credits", "est_usd", "est_seconds", "backend",
+                         "model", "effort", "approved_now", "root_key", "refresh_available"}, f"ui entry 키(§3.2) {sorted(e)}")
+        check(hd["rev"] == rev0 == st.load_manifest(root)["rev"] and hd.get("draft") == {"pending": 4, "pending_hash": e["pending_hash"],
+                                                                                          "refresh_available": 0, "pending_style": 1},
+              f"핸들: rev 그대로, 가지 draft(pending_style = 대기 중 화풍 단위, O3) {hd.get('draft')}")
+        check(rep_d.startswith("Spec Draft [") and "드라이런" in rep_d and e["pending_hash"] in rep_d, "드라이런 보고(해시 안내)")
+        check(sheet_d.ndim == 4 and sheet_d.shape[3] == 3 and not (Path(root) / "specs").is_dir(), "시트 IMAGE, 아직 specs 없음")
+        # F10 초안 없는 크롭은 시트가 스펙 bbox 를 그린다 — 사람이 쓴 1px 미만 bbox 에도 Pillow 예외로 노드가 실패하지 않음
+        h_thin, root_thin = project("m3n_thin")
+        cid_thin = st.load_manifest(root_thin)["crops"][0]["id"]
+        (Path(root_thin) / "specs").mkdir()
+        st.write_json_atomic(str(Path(root_thin) / "specs" / f"{cid_thin}.json"),
+                             {"targets": [{"id": "A", "bbox": [0.2, 0.3, 0.4, 0.3005]}]})
+        try:
+            sheet_thin = draft_node(h_thin)[0][2]
+        except ValueError as ex:
+            sheet_thin = ex
+        check(getattr(sheet_thin, "ndim", 0) == 4, f"F10 1px 미만 bbox 도 시트를 그림 {sheet_thin!r:.120}")
+        (h1, rep_a, _s), e1 = draft_node(h, e["pending_hash"])
+        snap = specs_snap(root)
+        crops = st.load_manifest(root)["crops"]
+        check(n_files(root, "inflight") == 4 and set(snap) == {f"{c['id']}.json" for c in crops} | {"_project.json"}
+              and e1["pending"] == 0 and e1["pending_hash"] == "" and e1["approved_now"] is True,
+              f"승인 → 4 호출, specs 3 + _project.json {sorted(snap)} {e1}")
+        s0 = spec_of(root, crops[0]["id"])
+        check(s0["targets"][0].get("detail") == "a simple mock part A outline; two flat base colors"
+              and s0.get("style_note") and s0["_draft"]["backend"] == "vlm_mock" and list(s0)[-1] == "_draft",
+              "스펙: 초안 detail·화풍 전파·_draft(맨 끝)")
+        check(s0["_draft"].get("transport") == {"schema_level": 2, "background": True, "schema_enforced": True},
+              f"_draft.transport = 원장 done 의 전송 단계(§5.1) {s0['_draft'].get('transport')}")
+        rq0 = dv.Ledger(root).read(crops[0]["id"], s0["_draft"]["key"], 1, "req") or {}
+        check(s0["_draft"].get("model") == "mock" and (rq0.get("settings") or {}).get("model") == "mock"
+              and e1["model"] == "mock", f"O4 _MOCK_API 로 mock 이 된 openai: _draft·원장 settings 의 model = mock "
+                                         f"({s0['_draft'].get('model')}, {(rq0.get('settings') or {}).get('model')})")
+        check((Path(root) / dv.LEDGER_DIR / "review.md").is_file() and (Path(root) / dv.LEDGER_DIR / "last_report.txt").is_file(),
+              "vlm/review.md · last_report.txt")
+        rev1 = st.load_manifest(root)["rev"]
+        (h2, rep_b, _s), e2 = draft_node(h, e["pending_hash"])
+        check(n_files(root, "inflight") == 4 and specs_snap(root) == snap and st.load_manifest(root)["rev"] == rev1 == rev0
+              and e2["pending"] == 0 and h2["rev"] == rev0, "같은 위젯으로 다시: 0 호출, specs 바이트·mtime 불변, rev 불변(매니페스트 안 씀)")
+        hp, _sh, prep = PRE.run(h2, MODEL25, "high", "user_k", "V1", 1, "at", 1)
+        jobs = st.load_manifest(root)["jobs"]
+        check("모르는 키" not in prep and "기본 설명" not in prep and len(jobs) == 3
+              and all("two flat base colors" in j["prompt"] for j in jobs) and all(s0["style_note"] in j["prompt"] for j in jobs),
+              "Prepare: 경고 없음, jobs 프롬프트에 초안 detail·화풍")
+        cid = crops[0]["id"]
+        sp = spec_of(root, cid)
+        sp["targets"][0]["detail"] = "a human detail; with care"
+        st.write_json_atomic(str(Path(root) / "specs" / f"{cid}.json"), sp)
+        (h3, rep_h, _s), e3 = draft_node(h)
+        sp2 = spec_of(root, cid)
+        check(n_files(root, "inflight") == 4 and sp2["targets"][0]["detail"] == "a human detail; with care"
+              and "detail" in json.dumps(sp2["_draft"].get("pending") or {}, ensure_ascii=False) and e3["pending"] == 0,
+              "사람이 고친 필드 → 유지, _draft.pending 에 초안 값(0 호출)")
+        return h, root
+
+    def t_n3():
+        section("M3-N3 openai(가짜 api) + 인증 없음: '로그인 필요' 보고, 0 호출")
+        mock_file.unlink(missing_ok=True)
+        h, root = project("m3a", rects[:1])
+        calls = []
+
+        def fake_load(self):
+            async def sync_op_raw(*a, **k):
+                calls.append(k)
+                raise AssertionError("인증 없이 호출됨")
+            return types.SimpleNamespace(sync_op_raw=sync_op_raw, ApiEndpoint=lambda **k: types.SimpleNamespace(**k),
+                                         credits_used=lambda c: None, friendly_http_message=None, network_errors=())
+
+        orig = dv.OpenAIVLM._load_api
+        dv.OpenAIVLM._load_api = fake_load  # 이 블록 안에서만(클래스 속성)
+        try:
+            check(not rn.mock_enabled(root), "_MOCK_API 없음 → 유료 백엔드")
+            (_h, rep, _s), e = draft_node(h)
+            (_h, rep2, _s), e2 = draft_node(h, e["pending_hash"])
+            check(e["backend"] == "vlm_openai" and e["pending"] == 2 and e["est_credits"][1] >= e["est_credits"][0] > 0
+                  and "유료" in rep.splitlines()[0], f"유료 드라이런: 추정 크레딧 {e}")
+            check(not calls and n_files(root, "req") == 0 and n_files(root, "inflight") == 0 and "로그인 필요" in rep2
+                  and e2["pending"] == 2, "승인 해시를 넣어도 인증 없으면 0 호출 + '로그인 필요'")
+        finally:
+            dv.OpenAIVLM._load_api = orig
+            set_mock()
+
+    def t_n4():
+        section("M3-N4 인터럽트: InterruptProcessingException 다시 던짐, created 보존 → 다음 실행 무료 재폴링")
+        h, root = project("m3i", rects[:2])
+        set_mock()
+        c0 = st.load_manifest(root)["crops"][0]["id"]
+        (_h, _r, _s), e = draft_node(h)
+        set_mock(fail_plan={c0: ["interrupt_poll"]})
+        mm.interrupt_current_processing(False)
+        try:
+            draft_node(h, e["pending_hash"], concurrency=1)
+            check(False, "인터럽트: 예외가 나지 않음")
+        except mm.InterruptProcessingException:
+            check(True, "InterruptProcessingException")
+        k0 = key_dir(root, c0)
+        st0 = dv.Ledger(root).state(c0, k0)["status"] if k0 else None
+        check(st0 == "created" and not (Path(root) / "specs" / f"{c0}.json").exists(), f"created 보존, 스펙 아직 없음 ({st0})")
+        n_inf = n_files(root, "inflight")
+        set_mock()
+        (_h, rep, _s), e2 = draft_node(h)
+        check(dv.Ledger(root).state(c0, k0)["status"] == "done" and n_files(root, "inflight") == n_inf
+              and (Path(root) / "specs" / f"{c0}.json").exists(), "승인 없이 다시: 무료 재폴링(새 전송 0) → done → 스펙")
+        (_h, rep3, _s), e3 = draft_node(h, e2["pending_hash"])
+        check(e3["pending"] == 0 and all((Path(root) / "specs" / f"{c['id']}.json").exists() for c in st.load_manifest(root)["crops"]),
+              f"남은 대기 승인 → 전부 완료 {e3}")
+
+    def t_n5():
+        section("M3-N5 Draft 대기가 있는 핸들 → Prepare → Run: '스펙 초안 대기' 경고, ui draft_pending")
+        set_mock()
+        h, root = project("m3w", rects[:2])
+        (hd, _r, _s), e = draft_node(h)
+        hp, _s, _prep = PRE.run(hd, MODEL25, "high", "user_k", "V1", 1, "at", 1)
+        check((hp.get("draft") or {}).get("pending") == e["pending"] == 3, f"Prepare 가 draft 가지 설정을 넘김 {hp.get('draft')}")
+        (_h, rep_r, _g), er = run_node(hp)
+        check("스펙 초안 대기" in rep_r and er.get("draft_pending") == 3, f"Run 보고서 경고 + ui draft_pending {er.get('draft_pending')}")
+        warn = next((ln for ln in rep_r.splitlines() if "스펙 초안 대기" in ln), "")
+        check("스펙 초안 대기 2크롭 + 화풍" in warn and "3크롭" not in warn and er.get("draft_style") == 1,
+              f"O3 크롭 2 + 화풍 1 → '2크롭 + 화풍'(화풍을 크롭으로 세지 않음), ui draft_style {warn!r} {er.get('draft_style')}")
+        (hd2, _r, _s), e2 = draft_node(h, e["pending_hash"])
+        hp2, _s, _prep = PRE.run(hd2, MODEL25, "high", "user_k", "V1", 1, "at", 1)
+        (_h, rep_r2, _g), er2 = run_node(hp2)
+        check("스펙 초안 대기" not in rep_r2 and not er2.get("draft_pending"), "초안이 끝나면 경고 없음")
+
+    def t_n6(n2):
+        section("M3-N6 _project.json style_note(사람 수정) → 손대지 않은 크롭 스펙 → Prepare V1 (0 호출)")
+        if not n2:
+            skip("N6: N2 프로젝트 없음")
+            return
+        h, root = n2
+        pj = Path(root) / "specs" / "_project.json"
+        d = json.loads(pj.read_text(encoding="utf-8"))
+        d["style_note"] = "ink-brown line art, flat cel shading, cool window light"
+        st.write_json_atomic(str(pj), d)
+        n_inf = n_files(root, "inflight")
+        (hd, rep, _s), e = draft_node(h)
+        crops = st.load_manifest(root)["crops"]
+        check(n_files(root, "inflight") == n_inf and all(spec_of(root, c["id"]).get("style_note") == d["style_note"] for c in crops),
+              "프로젝트 화풍 수정 → 모든 크롭 스펙에 전파(0 호출)")
+        PRE.run(hd, MODEL25, "high", "user_k", "V1", 1, "at", 1)
+        check(all(d["style_note"] in j["prompt"] for j in st.load_manifest(root)["jobs"]), "Prepare V1 프롬프트에 그 화풍")
+
+    def t_n10(n2):
+        section("M3-N10 크롭이 사라진 스펙 파일: 지우지 않고 보고만(§5.2), 0 호출")
+        if not n2:
+            skip("N10: N2 프로젝트 없음")
+            return
+        h, root = n2
+        orphan = Path(root) / "specs" / "099_0123ab.json"
+        st.write_json_atomic(str(orphan), {"targets": [{"id": "A", "detail": "old"}]})
+        before = orphan.read_bytes()
+        n_inf = n_files(root, "inflight")
+        (_h, rep, _s), e = draft_node(h)
+        line = next((ln for ln in rep.splitlines() if "099_0123ab.json" in ln), "")
+        check(line.startswith("[경고]") and "사라진" in line and orphan.read_bytes() == before
+              and n_files(root, "inflight") == n_inf and "_project.json" not in line, f"보고만, 파일 그대로 {line!r}")
+        orphan.unlink()
+
+    def backups(root, cid):
+        d = Path(root) / "specs" / "_backup"
+        return sorted(p.name for p in d.glob(f"{cid}.*.json")) if d.is_dir() else []
+
+    def t_n11():
+        section("M3-N11 force(only) 노드 경로: 스펙의 사람 mode·refs 를 지우지 않고 초안 값으로(C05), 키마다 1회 — 위젯이 force 로 "
+                "남은 채 다시 실행돼도 그 뒤 사람 편집·_accepted 유지(C06)")
+        set_mock()
+        h, root = project("m3f", rects[:2])
+        c0 = st.load_manifest(root)["crops"][0]["id"]
+        (_h, _r, _s), e = draft_node(h)
+        draft_node(h, e["pending_hash"])
+        path = Path(root) / "specs" / f"{c0}.json"
+        sp = spec_of(root, c0)
+        drafted = dict(sp["targets"][0])
+        check(drafted.get("mode") == "ref_correct" and drafted.get("refs") and drafted.get("detail"), f"준비: mock 초안 A {drafted}")
+        sp["targets"][0].update(mode="self_restore", refs=[])  # 아트 리드가 스펙에서 mode·refs 를 고침
+        st.write_json_atomic(str(path), sp)
+        n_inf = n_files(root, "inflight")
+        (_h, rep_f, _s), ef = draft_node(h, write_mode="force", only=c0)  # 같은 키 = 원장 캐시 병합(0 호출, 승인 불필요)
+        a = spec_of(root, c0)["targets"][0]
+        check(a.get("mode") == "ref_correct" and a.get("refs") == drafted["refs"] and a.get("detail") == drafted["detail"]
+              and a.get("must_not", []) == drafted.get("must_not", []) and len(backups(root, c0)) == 1
+              and n_files(root, "inflight") == n_inf,
+              f"C05 force: 사람 mode·refs → 초안 값(지우지 않음), detail 등 노드 필드도 남음, 백업 1, 0 호출 {a}")
+        check(spec_of(root, c0)["_draft"].get("forced_key") == spec_of(root, c0)["_draft"]["key"], "force 한 키를 _draft.forced_key 에 기록")
+        sp = spec_of(root, c0)
+        sp["targets"][0]["detail"] = "an art lead detail; kept after force"
+        sp["_accepted"] = True
+        st.write_json_atomic(str(path), sp)
+        snap = specs_snap(root)
+        (_h, rep_g, _s), eg = draft_node(h, write_mode="force", only=c0)  # 위젯은 force 그대로, specs 가 바뀌어 다시 실행됨
+        check(specs_snap(root) == snap and len(backups(root, c0)) == 1 and eg["pending"] == 0,
+              f"C06 같은 키로 다시 force → fill 규칙: 사람 편집·_accepted 그대로, 새 백업 없음 {backups(root, c0)}")
+        (_h, _r, _s), er = draft_node(h, write_mode="force", only=c0, draft_round=1)
+        check(er["pending"] == 1 and er["reasons"] == {"force 재초안": 1}, f"새 키(draft_round)는 다시 force 대기 {er['reasons']}")
+
+    def t_n12():
+        section("M3-N12 fill 의 키 가드(C20): fill → 다른 위젯 preview(원장에 다른 키 done) → 그 위젯으로 fill = '갱신 가능' 만(파일 "
+                "그대로) → refresh 면 적용(0 호출)")
+        set_mock()
+        h, root = project("m3g", rects[:2])
+        crops = [c["id"] for c in st.load_manifest(root)["crops"]]
+        (_h, _r, _s), e = draft_node(h)
+        draft_node(h, e["pending_hash"])
+        k0 = {c: spec_of(root, c)["_draft"]["key"] for c in crops}
+        snap = specs_snap(root)
+        (_h, _r, _s), ep = draft_node(h, write_mode="preview", draft_round=1)
+        (_h, rep_p, _s), ep2 = draft_node(h, ep["pending_hash"], write_mode="preview", draft_round=1)
+        check(ep["pending"] == 3 and ep2["approved_now"] and n_files(root, "done") == 6 and specs_snap(root) == snap,
+              f"preview 승인: 원장 done 3 추가(크롭 2 + 화풍), specs 그대로 {ep['pending']}")
+        n_inf = n_files(root, "inflight")
+        (_h, rep_f, _s), ef = draft_node(h, write_mode="fill", draft_round=1)
+        check(specs_snap(root) == snap and ef["pending"] == 0 and ef["refresh_available"] == 3 and "갱신 가능" in rep_f,
+              f"fill + 다른 키의 done: 적용하지 않음(바이트·mtime 그대로), 갱신 가능 3 {ef['refresh_available']}")
+        (_h, _r, _s), er = draft_node(h, write_mode="refresh", draft_round=1)
+        k1 = {c: spec_of(root, c)["_draft"]["key"] for c in crops}
+        check(all(k1[c] != k0[c] for c in crops) and er["pending"] == 0 and n_files(root, "inflight") == n_inf,
+              "refresh: 원장의 새 키 초안 적용(_draft.key 이동), 0 호출")
+
+    def t_n15():
+        section("M3-N15 스펙 쓰기 실패(F11): 잠긴 동안 큐마다 vlm/write_pending.json 을 다시 써 Project 지문이 바뀜 → 풀리면 원장으로 "
+                "다시 씀(0 호출)·표식 지움·지문 고정, Run 은 미기록 경고")
+        set_mock()
+        h, root = project("m3lock", rects[:2])
+        crops = [c["id"] for c in st.load_manifest(root)["crops"]]
+        mark = Path(root) / dv.LEDGER_DIR / dp._WRITE_MARK
+        (_h, _r, _s), e = draft_node(h)
+        orig = dv.write_spec
+
+        def locked(root_, cid, merge):
+            if cid in crops:
+                raise PermissionError(13, "잠김(시험)", cid)
+            return orig(root_, cid, merge)
+
+        dv.write_spec = locked
+        try:
+            (h1, rep1, _s), e1 = draft_node(h, e["pending_hash"])
+            fp_a = dp._project_fp(root)
+            n_inf = n_files(root, "inflight")
+            (h2, _r, _s), _e2 = draft_node(h)
+            fp_b = dp._project_fp(root)
+        finally:
+            dv.write_spec = orig
+        check(e1["approved_now"] and sorted(dp._unwritten_specs(root)) == sorted(crops) and h1["draft"].get("unwritten") == 2
+              and "스펙 파일을 쓰지 못함" in rep1 and not any((Path(root) / "specs" / f"{c}.json").exists() for c in crops)
+              and all(f"[실패] {c}" in rep1 for c in crops) and "쓰지 않음(파일 잠김)" in rep1,
+              f"잠김: 초안은 원장에, 스펙 없음, 표식·가지 unwritten 2, 보고서 [실패] {h1.get('draft')}")
+        check(fp_b != fp_a and n_files(root, "inflight") == n_inf and h2["draft"].get("unwritten") == 2,
+              "잠긴 채 다시 큐: 0 호출, 표식을 다시 써 지문이 바뀜(다음 큐도 재시도 — 캐시에 걸리지 않음)")
+        mk = (mark.read_bytes(), mark.stat().st_mtime_ns)
+        (h_pv, _r, _s), _epv = draft_node(h, write_mode="preview")
+        check((mark.read_bytes(), mark.stat().st_mtime_ns) == mk and h_pv["draft"].get("unwritten") == 2,
+              "preview 는 쓰지 않으므로 표식을 건드리지 않음(가지 unwritten 그대로)")
+        run_rep = run_node(h2)[0][1]
+        check("아직 못 씀" in run_rep, f"Run 보고서: 미기록 경고 {run_rep.splitlines()[:3]}")
+        (h3, _r, _s), _e3 = draft_node(h)
+        fp_c = dp._project_fp(root)
+        (_h4, _r, _s), _e4 = draft_node(h)
+        check(not mark.exists() and all((Path(root) / "specs" / f"{c}.json").is_file() for c in crops)
+              and "unwritten" not in h3["draft"] and n_files(root, "inflight") == n_inf and dp._project_fp(root) == fp_c != fp_b,
+              "잠금 해제 뒤 큐: 원장으로 스펙을 씀(0 호출), 표식 지움, 그 뒤 지문 고정")
+        # _project.json(화풍)만 잠김: 받은 화풍 초안을 못 씀 → 표식 ['_project'], 풀리면 씀
+        h5, root5 = project("m3lock_p", rects[:1])
+        mark5 = Path(root5) / dv.LEDGER_DIR / dp._WRITE_MARK
+        (_h, _r, _s), e5 = draft_node(h5)
+
+        def locked_p(root_, cid, merge):
+            if cid == dv.PROJECT_SPEC_ID:
+                raise PermissionError(13, "잠김(시험)", cid)
+            return orig(root_, cid, merge)
+
+        dv.write_spec = locked_p
+        try:
+            (h6, _r, _s), _e6 = draft_node(h5, e5["pending_hash"])
+            fp6 = dp._project_fp(root5)
+            (_h, _r, _s), _e7 = draft_node(h5)
+            fp7 = dp._project_fp(root5)
+        finally:
+            dv.write_spec = orig
+        check(dp._unwritten_specs(root5) == [dv.PROJECT_SPEC_ID] and h6["draft"].get("unwritten") == 1 and fp7 != fp6
+              and not (Path(root5) / "specs" / f"{dv.PROJECT_SPEC_ID}.json").exists(),
+              f"_project 잠김 → 표식 ['_project'], 가지 unwritten 1, 잠긴 채 큐마다 지문 바뀜 {dp._unwritten_specs(root5)}")
+        draft_node(h5)
+        check(not mark5.exists() and (Path(root5) / "specs" / f"{dv.PROJECT_SPEC_ID}.json").is_file(),
+              "_project 잠금 해제 뒤 큐: 화풍을 씀, 표식 지움")
+        # 이어 두기: 표식의 크롭이 이번 실행에서 건너뛰어지면(스펙 JSON 오류 = 요청 없음) 표식에 남김. 지금 매니페스트에 없는 id 는 세지 않음.
+        # _project.json 의 JSON 오류(잠김 아님)는 표식을 남기지 않는다(큐마다 다시 돌지 않게)
+        h8, root8 = project("m3lock_k", rects[:2])
+        crops8 = [c["id"] for c in st.load_manifest(root8)["crops"]]
+        mark8 = Path(root8) / dv.LEDGER_DIR / dp._WRITE_MARK
+        (_h, _r, _s), e8 = draft_node(h8)
+
+        def locked_crops(root_, cid, merge):
+            if cid != dv.PROJECT_SPEC_ID:
+                raise PermissionError(13, "잠김(시험)", cid)
+            return orig(root_, cid, merge)
+
+        dv.write_spec = locked_crops
+        try:
+            draft_node(h8, e8["pending_hash"])
+        finally:
+            dv.write_spec = orig
+        spec0 = Path(root8) / "specs" / f"{crops8[0]}.json"
+        spec0.write_text("{broken", encoding="utf-8")
+        draft_node(h8)
+        kept = dp._unwritten_specs(root8)
+        spec0.unlink()
+        st.write_json_atomic(str(mark8), {"at": 1, "specs": kept + ["999_zzzzzz"]})
+        (h10, _r, _s), _e10 = draft_node(h8, write_mode="preview")
+        n_live = h10["draft"].get("unwritten")
+        draft_node(h8)
+        check(kept == [crops8[0]] and n_live == 1 and not mark8.exists()
+              and all((Path(root8) / "specs" / f"{c}.json").is_file() for c in crops8),
+              f"건너뛴 크롭은 표식 유지 {kept}, 매니페스트에 없는 id 는 안 셈({n_live}), 다음 큐에 다 쓰고 표식 지움")
+        pj = Path(root8) / "specs" / f"{dv.PROJECT_SPEC_ID}.json"
+        good = pj.read_bytes()
+        pj.write_text("{broken", encoding="utf-8")
+        draft_node(h8)
+        fp_x = dp._project_fp(root8)
+        draft_node(h8)
+        broken_ok = not mark8.exists() and dp._project_fp(root8) == fp_x
+        pj.write_bytes(good)
+        check(broken_ok, "_project.json JSON 오류(잠김 아님)는 표식 없음 — 지문이 고정돼 큐마다 다시 돌지 않음")
+
+    def t_n14():
+        section("M3-N14 fill + 타깃 추가(R5) 노드 경로: 승인한 fill 뒤 같은 큐 3회 = 0 호출·스펙 바이트·mtime 그대로, 기존 타깃 A 는 "
+                "앞 초안의 _review 유지(_draft.target_keys)")
+        h, root = project("m3r5", [("001_left | A: toast clip", [32, 32, 160, 160])])
+        cid = st.load_manifest(root)["crops"][0]["id"]
+        path = Path(root) / "specs" / f"{cid}.json"
+        (_h, _r, _s), e = draft_node(h, vlm="mock")
+        draft_node(h, e["pending_hash"], vlm="mock")
+        sp = spec_of(root, cid)
+        k_old = sp["_draft"]["key"]
+        OLD = "OLD REVIEW FROM PREVIOUS DRAFT"
+        next(t for t in sp["targets"] if t["id"] == "A")["_review"]["note"] = OLD  # 실제 VLM 두 번처럼 앞 초안의 검토가 다름
+        st.write_json_atomic(str(path), sp)
+
+        def add_b(m):
+            c = m["crops"][0]
+            c["layer_name"] = "001_left | A: toast clip; B: red pin"
+            c["targets"] = dp._new_targets(st.parse_crop_layer_name(c["layer_name"]), c)
+
+        st.update_manifest(root, add_b)
+        (_h, _r, _s), e = draft_node(h, vlm="mock")
+        check(e["pending"] == 1 and "타깃 추가" in (e.get("reasons") or {}), f"준비: 타깃 추가 → 승인 대기 1 {e.get('reasons')}")
+        draft_node(h, e["pending_hash"], vlm="mock")
+        s1 = spec_of(root, cid)
+        check(next(t for t in s1["targets"] if t["id"] == "A")["_review"].get("note") == OLD
+              and any(t["id"] == "B" for t in s1["targets"]) and s1["_draft"]["key"] != k_old
+              and s1["_draft"].get("target_keys") == {"A": k_old},
+              f"승인한 fill: B 추가, A 는 앞 초안의 _review, _draft.target_keys {s1['_draft'].get('target_keys')}")
+        snap, n_inf = specs_snap(root), n_files(root, "inflight")
+        time.sleep(0.05)
+        rows = []
+        for _i in range(3):
+            (_h, _r, _s), e = draft_node(h, vlm="mock")
+            a = next(t for t in spec_of(root, cid)["targets"] if t["id"] == "A")
+            rows.append((e["pending"], specs_snap(root) == snap, a["_review"].get("note") == OLD))
+        check(rows == [(0, True, True)] * 3 and n_files(root, "inflight") == n_inf,
+              f"R5 같은 큐 3회: 대기 0·0 호출, 스펙 바이트·mtime 그대로(첫 재큐에 A 의 _review 를 바꿔 다시 쓰지 않음) {rows}")
+
+    def t_n13():
+        """C13: DR.run 직접 호출로는 못 보는 ComfyUI 출력 캐시 — 실제 execution.PromptExecutor 로 Project → Spec Draft 를 큐에
+        넣는다. RAM_PRESSURE(기본) 는 headroom 0 으로 옛 서명 항목을 지우지 않게(가장 오래 남기는 설정)."""
+        import execution
+        import nodes
+        section("M3-N13 실제 PromptExecutor(RAM_PRESSURE·CLASSIC) Project → Spec Draft: 같은 큐는 캐시, 인터럽트·폴링 마감·재폴링 "
+                "실패 뒤 approve 비운 큐 = 무료 재폴링(C12·C15), _MOCK_API 끔 = mock 초안 교체(C27), 인증 없이 승인 → 로그인 "
+                "뒤 같은 해시 = 실행(C11), VramError 뒤 같은 해시 = 실행(C11)")
+
+        class Srv:
+            def __init__(self):
+                self.client_id = None
+                self.last_node_id = None
+                self.last_prompt_id = None
+                self.log: list = []
+
+            def send_sync(self, event, data, sid=None):
+                self.log.append((event, data))
+
+            def queue_updated(self):
+                pass
+
+        class FlakyMock(dv.MockVLM):  # mock 의 repoll 은 늘 성공 — '재폴링이 또 실패' 를 흉내 낸다
+            repoll_fails = 0
+
+            async def repoll(self, unit, created, ledger, **kw):
+                if FlakyMock.repoll_fails > 0:
+                    FlakyMock.repoll_fails -= 1
+                    raise rn.CallError("가짜: 폴링 GET 502", status=502, phase="poll", retryable=True, maybe_billed=False)
+                return await super().repoll(unit, created, ledger, **kw)
+
+        class FakeQwen(dv.MockVLM):
+            name = dv.BACKEND_NAMES["local_qwen"]
+            raise_vram = True
+
+            async def call(self, unit, req, ledger, **kw):
+                if FakeQwen.raise_vram:
+                    raise dv.VramError("VRAM 부족(가짜): 필요 19.5GiB")
+                return await super().call(unit, req, ledger, **kw)
+
+            def unload(self):
+                pass
+
+        posts: list = []
+        cur: dict = {}
+
+        def fake_load(self):  # comfy.org 대역: create 가 바로 completed(폴링 없음). 네트워크 없음
+            async def sync_op_raw(cls, endpoint, **kw):
+                assert endpoint.method == "POST", endpoint
+                posts.append(cur["req"].crop_id)
+                text = dv._mock_text(cur["req"])
+                return {"id": f"resp_{len(posts)}", "status": "completed", "usage": {"input_tokens": 900, "output_tokens": 300},
+                        "output": [{"type": "message", "content": [{"type": "output_text", "text": text}]}]}
+            return types.SimpleNamespace(sync_op_raw=sync_op_raw, credits_used=lambda c: 2.0, friendly_http_message=None,
+                                         ApiEndpoint=lambda path, method="GET", **k: types.SimpleNamespace(path=path, method=method),
+                                         network_errors=())
+
+        orig_call, orig_load, orig_make = dv.OpenAIVLM.call, dv.OpenAIVLM._load_api, dv.make_vlm
+
+        async def spy_call(self, unit, req, ledger, **kw):  # concurrency 1 — 지금 요청을 fake_load 에 알려 준다
+            cur["req"] = req
+            return await orig_call(self, unit, req, ledger, **kw)
+
+        def make(family, root, hidden, **kw):
+            if family == "local_qwen":
+                return FakeQwen({})
+            if family == "mock":
+                return FlakyMock(dv.vlm_mock_options(root))
+            return orig_make(family, root, hidden, **kw)
+
+        saved = {k: nodes.NODE_CLASS_MAPPINGS.get(k) for k in dp.NODE_CLASS_MAPPINGS}
+        nodes.NODE_CLASS_MAPPINGS.update(dp.NODE_CLASS_MAPPINGS)
+        dv.OpenAIVLM.call, dv.OpenAIVLM._load_api, dv.make_vlm = spy_call, fake_load, make
+        try:
+            for ct_name in ("RAM_PRESSURE", "CLASSIC"):
+                B = NODES3 / f"exec_{ct_name.lower()}"
+                shutil.rmtree(B, ignore_errors=True)
+                mfile = B / "bmk_design_patch" / "_MOCK_API"
+
+                def mock_on(**vlm):
+                    mfile.parent.mkdir(parents=True, exist_ok=True)
+                    mfile.write_text(json.dumps({"delay_s": 0.01, "vlm": dict({"delay_s": 0.01}, **vlm)}), encoding="utf-8")
+
+                mock_on()
+                _h, root = _fx_project(dp, B, "pj", rects[:2], base)
+                c0, c1 = [c["id"] for c in st.load_manifest(root)["crops"]]
+                srv = Srv()
+                ex = execution.PromptExecutor(srv, cache_type=getattr(execution.CacheType, ct_name),
+                                              cache_args={"lru": 0, "ram": 0.0, "ram_inactive": 0.0})
+                nq = [0]
+
+                def q(approve="", auth=False, **kw):
+                    inp = dict(project=["1", 0], approve=approve, vlm="openai/gpt-6-astra", effort="high", image_detail="high",
+                               write_mode="fill", only="", draft_round=0, concurrency=1, credit_cap=0, keep_loaded=False)
+                    inp.update(kw)
+                    p = {"1": {"class_type": "BMKDesignPatchProject", "inputs": {"project": "pj", "base_dir": str(B)}},
+                         "2": {"class_type": "BMKDesignPatchSpecDraft", "inputs": inp}}
+                    extra = {"client_id": "m3n13"}
+                    if auth:
+                        extra["auth_token_comfy_org"] = "fake-token-for-tests-not-real"
+                    srv.log = []
+                    nq[0] += 1
+                    mm.interrupt_current_processing(False)
+                    ex.execute(copy.deepcopy(p), f"m3n13-{ct_name}-{nq[0]}", extra, ["2"])
+                    executed = [d["node"] for ev_, d in srv.log if ev_ == "executing" and d.get("node") is not None]
+                    out = (ex.history_result.get("outputs") or {}).get("2") or {} if ex.success else {}
+                    status = "ok" if ex.success else next((m_[0] for m_ in ex.status_messages if m_[0].startswith("execution_")
+                                                           and m_[0] not in ("execution_start", "execution_cached")), "?")
+                    return executed, (out.get(dv.UI_KEY) or [{}])[0], (out.get("text") or [""])[0], status
+
+                def led(cid):
+                    d = Path(root) / dv.LEDGER_DIR / cid
+                    return sorted(dv.Ledger(root).state(cid, k.name)["status"] for k in d.iterdir() if k.is_dir()) if d.is_dir() else []
+
+                T = ct_name
+                x, e, _t, s = q()
+                check(s == "ok" and "2" in x and e.get("pending") == 3 and e.get("backend") == "vlm_mock",
+                      f"{T} 드라이런 실행, 대기 3(크롭 2 + 화풍) {x} {e.get('pending')}")
+                x, e, _t, s = q()
+                check(x == [], f"{T} 같은 큐 = 캐시(실행 없음) {x}")
+                # (b1) 승인 실행이 폴링 중 인터럽트 → 스펙을 쓰기 전에 끊김 → approve 비운 큐 = 바로 앞 드라이런과 같은 서명
+                #      (fail_plan 은 create 에서만 소비 — 파일을 그대로 둬 mock 스위치 지문이 바뀌지 않게)
+                mock_on(fail_plan={c0: ["interrupt_poll"]})
+                x, e, _t, s = q()
+                x, e1, _t, s = q(e["pending_hash"])
+                check(s == "execution_interrupted" and led(c0) == ["created"] and not (Path(root) / "specs").is_dir(),
+                      f"{T} 승인 실행 인터럽트 → {c0} created, specs 아직 없음 ({s}, {led(c0)})")
+                x, e, t, s = q()
+                check(s == "ok" and "2" in x and led(c0) == ["done"] and (Path(root) / "specs" / f"{c0}.json").is_file()
+                      and e.get("pending") == 2, f"{T} C12 인터럽트 뒤 approve 비운 큐 → Draft 실행(무료 재폴링·병합) {x} {led(c0)}")
+                x, e, t, s = q(e["pending_hash"])
+                x, e, t, s = q()
+                x2, e2, _t, s = q()
+                check(x2 == [] and e2.get("pending") == 0 and led(c1) == ["done"], f"{T} 나머지 승인 뒤 안정: 같은 큐 캐시 {x} → {x2}")
+                # (b2) only 하나 + 폴링 마감 → created(스펙 그대로) → 재폴링이 또 실패(원장 그대로) → 표시 파일로 다음 큐도 실행
+                kw = dict(only=c1, draft_round=1, write_mode="refresh")
+                mock_on(fail_plan={c1: ["poll_deadline"]})
+                x, e, _t, s = q(**kw)
+                x, e1, _t, s = q(e["pending_hash"], **kw)
+                check(e["pending"] == 1 and led(c1) == ["created", "done"], f"{T} only={c1} 승인 → 폴링 마감 created {led(c1)}")
+                FlakyMock.repoll_fails = 1
+                x, e, t, s = q(**kw)
+                check("2" in x and led(c1) == ["created", "done"] and FlakyMock.repoll_fails == 0,
+                      f"{T} C15 approve 비운 큐 → Draft 실행·재폴링, 또 실패(원장 그대로) {x}")
+                x, e, t, s = q(**kw)
+                check("2" in x and led(c1) == ["done", "done"], f"{T} C15 재폴링 표시 파일 → 같은 큐도 다시 실행 → 성공 {x} {led(c1)}")
+                x, e, _t, s = q(**kw)
+                x2, e2, _t, s = q(**kw)
+                check(x2 == [], f"{T} 그 뒤 안정 {x2}")
+                # (c) _MOCK_API 끔 → 유료 백엔드(인증 없음): mock 초안 교체 대기(크롭 2 + 화풍)
+                x, e, _t, s = q()
+                x2, e2, _t, s = q()
+                mfile.unlink()
+                x, e, t, s = q()
+                check(x2 == [] and s == "ok" and "2" in x and e.get("backend") == "vlm_openai"
+                      and (e.get("reasons") or {}).get("mock 초안 교체") == 3 and e.get("pending") == 3,
+                      f"{T} C27 _MOCK_API 끔 → Draft 다시 실행, mock 초안 교체 {e.get('backend')} {e.get('reasons')}")
+                # (a) 인증 없이 승인 → 로그인 정보와 같은 해시로 다시
+                H = e["pending_hash"]
+                n_post = len(posts)
+                x, e, t, s = q(H)
+                check("2" in x and "로그인 필요" in t and len(posts) == n_post and e.get("pending_hash") == H,
+                      f"{T} 인증 없이 승인 → 0 호출, 로그인 필요, 해시 그대로")
+                x, e, t, s = q(H, auth=True)
+                check("2" in x and len(posts) == n_post + 3 and e.get("pending") == 0,
+                      f"{T} C11 로그인 뒤 같은 해시 → 실행(캐시 아님), 3 호출 {x} {len(posts) - n_post}")
+                x, e, _t, s = q()
+                x2, e2, _t, s = q()
+                check(x2 == [] and e2.get("backend") == "vlm_openai" and e2.get("pending") == 0, f"{T} 그 뒤 안정 {x2}")
+                # (a2) local_qwen VramError → 같은 해시를 다시 누름
+                kq = dict(vlm="local_qwen/Qwen3-VL-8B-Instruct", write_mode="refresh")
+                x, e, t, s = q(**kq)
+                Hq = e.get("pending_hash")
+                FakeQwen.raise_vram = True
+                x, e, t, s = q(Hq, **kq)
+                check(Hq and "VRAM" in t and e.get("pending_hash") == Hq, f"{T} VramError → 대기·해시 그대로")
+                FakeQwen.raise_vram = False
+                x, e, t, s = q(Hq, **kq)
+                check("2" in x and e.get("pending") == 0, f"{T} C11 VRAM 확보 뒤 같은 해시 → 실행 {x} {e.get('pending')}")
+        finally:
+            dv.OpenAIVLM.call, dv.OpenAIVLM._load_api, dv.make_vlm = orig_call, orig_load, orig_make
+            FlakyMock.repoll_fails = 0
+            for k, v in saved.items():
+                if v is None:
+                    nodes.NODE_CLASS_MAPPINGS.pop(k, None)
+                else:
+                    nodes.NODE_CLASS_MAPPINGS[k] = v
+            mm.interrupt_current_processing(False)
+
+    def t_n7():
+        section("M3-N7 local_qwen(가짜 백엔드 주입): 승인 필요, VramError 면 대기 유지·보고, finally 언로드")
+
+        class FakeQwen(dv.MockVLM):
+            name = dv.BACKEND_NAMES["local_qwen"]
+
+            def __init__(self):
+                super().__init__({})
+                self.unloads = 0
+                self.raise_vram = True
+
+            async def call(self, unit, req, ledger, **kw):
+                self.calls.append({"crop_id": unit.crop_id})
+                if self.raise_vram:
+                    raise dv.VramError("VRAM 부족: 필요 19.5GiB, 여유 3.0 GiB + 내릴 수 있는 ComfyUI 모델 0.0 GiB")
+                return await super().call(unit, req, ledger, **kw)
+
+            def unload(self):
+                self.unloads += 1
+
+        fake = FakeQwen()
+        orig = dv.make_vlm
+        dv.make_vlm = lambda family, *a, **k: fake if family == "local_qwen" else orig(family, *a, **k)
+        try:
+            set_mock()  # local_qwen 은 mock 스위치로 바뀌지 않는다
+            h, root = project("m3q", rects[:1])
+            (_h, rep, _s), e = draft_node(h, vlm="local_qwen/Qwen3-VL-8B-Instruct")
+            check(e["backend"] == "vlm_local_qwen" and e["pending"] == 2 and not fake.calls and fake.unloads >= 1
+                  and e["est_credits"] == [0, 0] and e["est_seconds"] > 0,
+                  f"드라이런: 승인 필요, 0 호출, keep_loaded False 면 finally 언로드 {e}")
+            (_h, rep2, _s), e2 = draft_node(h, e["pending_hash"], vlm="local_qwen/Qwen3-VL-8B-Instruct")
+            check(fake.calls and "VRAM" in rep2 and e2["pending"] == 2 and n_files(root, "done") == 0,
+                  f"VramError → 보고, 대기 유지(원장 done 없음) {e2['pending']}")
+            fake.raise_vram = False
+            # 위젯은 그대로(같은 해시) — 실제 ComfyUI 캐시에서도 실행되는지는 M3-N13(PromptExecutor)이 본다(리뷰 C13)
+            check(e2["pending_hash"] == e["pending_hash"], "VramError 뒤 해시 그대로(아무것도 쓰지 않음)")
+            (_h, rep3, _s), e3 = draft_node(h, e2["pending_hash"], vlm="local_qwen/Qwen3-VL-8B-Instruct")
+            check(e3["pending"] == 0 and n_files(root, "done") == 2 and "상주" not in rep3,
+                  "VRAM 이 되면 같은 해시로 다시 눌러 실행(keep_loaded 끔 → 상주 경고 없음)")
+            (_h, rep4, _s), _e4 = draft_node(h, vlm="local_qwen/Qwen3-VL-8B-Instruct", keep_loaded=True)
+            check(dv.QWEN_RESIDENT_WARNING in rep4, "keep_loaded 면 상주 경고")
+        finally:
+            dv.make_vlm = orig
+        # C19/C28: keep_loaded 로 남은 Qwen(모듈 캐시) — vlm 을 mock·openai 로 바꾼 뒤에도 경고·언로드
+        try:
+            for vlm_ in ("mock", "openai/gpt-6-astra"):
+                dv._QWEN.update(key=("x", "sdpa"), model=object(), processor=object())
+                (_h, rep_k, _s), _ek = draft_node(h, vlm=vlm_, keep_loaded=True)
+                kept = dv._QWEN["model"] is not None
+                (_h, rep_u, _s), _eu = draft_node(h, vlm=vlm_, keep_loaded=False)
+                check(kept and dv.QWEN_RESIDENT_WARNING in rep_k and dv._QWEN["model"] is None
+                      and dv.QWEN_RESIDENT_WARNING not in rep_u,
+                      f"C19 vlm={vlm_}: 남은 Qwen — keep_loaded 켜면 상주 경고·유지, 끄고 한 번 실행하면 내림")
+        finally:
+            dv._QWEN.update(key=None, model=None, processor=None)
+        qdir = NODES3 / "qwen_model"
+        qdir.mkdir(exist_ok=True)
+        m = st.load_manifest(root)
+        cfg = dict(family="local_qwen", model="Qwen3-VL-8B-Instruct", effort="high", image_detail="high", draft_round=0,
+                   mode="fill", only=[], concurrency=1)
+        keys = []
+        for body in ('{"v": 1}', '{"v": 2}'):
+            (qdir / "config.json").write_text(body, encoding="utf-8")
+            keys.append({k: r.key for k, r in dp._draft_plan(root, m, "", "vlm_local_qwen", model_dir=str(qdir), **cfg)[1].items()})
+        check(keys[0] and all(keys[0][k] != keys[1][k] for k in keys[0]),
+              "노드가 model_dir 을 넘김: local_qwen 키가 config.json(sha8)을 따라감(§2.3)")
+
+    def t_n8():
+        section("M3-N8 보드 라우트 수는 여전히 10")
+        fake = _FakeServer(web.RouteTableDef())
+        with _prompt_server(fake):
+            dp._register_board_routes()
+        check(len(fake.routes) == 10, f"보드 라우트 {len(fake.routes)}")
+
+    def t_n9():
+        section("M3-N9 평가 도구의 순수 복제 new_targets == main._new_targets (표본 레이어명 6)")
+        old_a = {"targets": [{"tid": "A", "label": "검지", "name_en": "index tape", "mode": "self_restore", "refs": ["r.png"]}]}
+        old_b = {"targets": [{"tid": "B", "label": "영수증", "name_en": "", "mode": "sketch_guide", "refs": []},
+                             {"tid": "A", "label": "다른 라벨", "name_en": "x", "mode": "self_restore", "refs": ["q.png"]}]}
+        samples = [("002_토스트-머리장식_right | A: toast hair clip; B: 빨간 헤어핀", None), ("002_토스트-머리장식_right", None),
+                   ("010_손가락붕대-왼쪽 | A: 검지; B: middle tape; C: 분홍 반창고", old_a), ("016_영수증 | A: 집게; B: 영수증", old_b),
+                   ("030_팔매듭 | clip ring; B: x", None), ("x_이름 | a: Alpha", {"targets": [{"tid": "A", "label": "Alpha",
+                                                                                         "name_en": "beta", "mode": "ref_correct",
+                                                                                         "refs": []}]})]
+        bad = []
+        for name, old in samples:
+            p = st.parse_crop_layer_name(name)
+            if ev.new_targets(p, old) != dp._new_targets(p, old):
+                bad.append(name)
+        check(not bad, f"new_targets 복제 일치 {bad}")
+
+    try:
+        _guarded("M3-N1", t_n1)
+        n2 = _guarded("M3-N2", t_n2)
+        _guarded("M3-N3", t_n3)
+        _guarded("M3-N4", t_n4)
+        _guarded("M3-N5", t_n5)
+        _guarded("M3-N6", t_n6, n2)
+        _guarded("M3-N10", t_n10, n2)
+        _guarded("M3-N11", t_n11)
+        _guarded("M3-N12", t_n12)
+        _guarded("M3-N14", t_n14)
+        _guarded("M3-N15", t_n15)
+        _guarded("M3-N7", t_n7)
+        _guarded("M3-N8", t_n8)
+        _guarded("M3-N9", t_n9)
+        _guarded("M3-N13", t_n13)
+    finally:
+        mm.interrupt_current_processing(False)
+        mock_file.unlink(missing_ok=True)
+        if env_mock is not None:
+            os.environ[rn.MOCK_ENV] = env_mock
+
+
+# ═════════════════════════════════════════════════════════════════
 # M2-C. 노드 체인 — 실제 로더 + execution.PromptExecutor (서버 포트 없음, mock), 실행 중 보드 쓰기 경합
 # ═════════════════════════════════════════════════════════════════
 def m2_chain():
@@ -7000,6 +10939,9 @@ if __name__ == "__main__":
     psd_unit()
     m2_runner_unit(with_comfy=not QUICK)  # R0(torch·comfy 없음) 먼저, C*(comfy 를 CPU 로 import)는 끝에
     m2_board_unit()
+    vlm_unit()  # M3: torch·comfy 를 import 하지 않음(V18 은 가짜 libs)
+    if not QUICK:
+        vlm_comfy()  # comfy_api_nodes 를 CPU 로 import
     m2_js_unit()
     print(f"\n단위 테스트 {time.time() - T0:.1f}s (PASS {PASSES} FAIL {len(FAILS)})")
     if QUICK:
@@ -7020,6 +10962,9 @@ if __name__ == "__main__":
         t_r = time.time()
         m2_node_unit()
         print(f"\nM2 노드 {time.time() - t_r:.1f}s")
+        t_r = time.time()
+        vlm_node_unit()
+        print(f"\nM3 노드 {time.time() - t_r:.1f}s")
         if HAVE_REF:
             t_r = time.time()
             m2_chain()
