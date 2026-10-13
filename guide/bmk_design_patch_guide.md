@@ -266,7 +266,8 @@ approve 위젯에 직접 해시를 붙여 넣어도 됩니다(이 경우 비워�
   실행 중이 아닐 때 누르면 아무것도 하지 않습니다(다음 Run 을 막지 않음). 자동 이어가기로 넣은 Run 이 아직 시작 전이면
   Drain 이 닿지 않으므로(알림이 뜸) 큐에서 그 항목을 지우세요.
 - **Cancel(인터럽트)** = 진행 중인 호출을 끊습니다. 이미 도착한 결과는 저장하지만 끊긴 호출은 **돈을 냈을 수 있는데 결과가 없습니다**
-  (orphaned). 비용을 아끼려면 Cancel 대신 Drain.
+  (orphaned). 비용을 아끼려면 Cancel 대신 Drain. 같은 큐의 다른 노드가 실패해 프롬프트가 먼저 끝나도 같은 결과입니다 — 콘솔에
+  "Run 실행이 취소됨 … orphaned N건" 경고가 남습니다(승인은 버튼 = Run 만 부분 실행으로).
 
 ### 원장과 orphaned · 실패 · 다운로드 복구
 
@@ -366,7 +367,7 @@ input 폴더 프로젝트는 `_roots.json` 에서 키를 되살리고, 다른 ba
 | effort | xhigh | 추론 effort(openai 만, 키에 포함). gpt-5.5-pro 는 medium/high/xhigh 만 — 맞지 않으면 큐에 넣을 때 검증 오류(호출 없음) |
 | image_detail | high | openai 이미지 detail(키에 포함). `original` 이 거부되면(400, 과금 전) 보고서가 high 로 바꾸라고 안내 |
 | write_mode | fill | 아래 「쓰기 모드」 |
-| only | "" | 승인 대상 거르기: crop_id, NNN(`030`), `style`(화풍). 무료 복구·원장 캐시 병합에는 적용 안 함. force 는 필수 |
+| only | "" | 승인 대상 거르기: crop_id, NNN(`030`), `style`(화풍). 무료 복구·원장 캐시 병합에는 적용 안 함. force 는 필수. 걸러진 초안 대기는 보고서 첫 줄 "only 로 보류 N" 과 Run 경고로 남음 |
 | draft_round | 0 | 같은 입력으로 다시 초안을 받을 때 올림(키에 포함, seed 아님) |
 | concurrency | 4 | openai 동시 호출 수(1–8). local_qwen 은 항상 순차 |
 | credit_cap | 0 | 유료 호출 하나를 띄우기 직전 `이번 실행 실측(보고 안 된 것은 단위 최대) + 이 단위의 최대` 가 이 값을 넘으면 그 실행의 새 발사를 멈춤(나머지는 대기). 진행 중 단위들의 최대까지 더해야 넘치면 그것들이 끝날 때까지 기다렸다 다시 판정. **단위 하나의 최대보다 작으면 0건**. 0 = 상한 없음. 아래 「비용」 참고 |
@@ -397,7 +398,9 @@ A 빨강 · B 초록 · C 파랑 · D 주황 · 제안 회색 점선, 보여 준
 - 승인 없이 하는 일은 셋뿐: 기록된 response id 의 GET 재폴링, 원장 원문 재파싱, 원장 캐시로 병합·쓰기.
 - 승인한 Draft 가 Run 부분 큐 안에서 스펙을 쓰면 그 큐의 Run 해시가 어긋나 Run 은 드라이런이 됩니다(의도된 동작).
 - 초안이 대기 중인데 Run 을 승인하려 하면 Run 보고서와 확인 창에 "스펙 초안 대기 N크롭 + 화풍" 경고가 붙습니다(초안 없는 프롬프트로 과금).
-  스펙 파일을 쓰지 못했으면(편집기·백신 잠금) Draft 보고서에 그 크롭이 `[실패] … 쓰지 않음(파일 잠김)` 으로, Run 보고서·확인 창에
+  `only` 로 일부만 초안했으면 나머지는 "only 로 보류된 초안 대기 N크롭 + 화풍" 으로 따로 경고합니다(only 를 비우면 승인 목록에 오름).
+  `vlm = mock` 으로 승인한 초안은 실제 스펙 파일에 자리표시 문구로 써집니다 — Run 이 유료면 "스펙 N개가 mock 초안" 경고가 붙고,
+  Draft 를 실제 vlm 으로 바꾸면 "mock 초안 교체" 로 다시 초안할 수 있습니다. 스펙 파일을 쓰지 못했으면(편집기·백신 잠금) Draft 보고서에 그 크롭이 `[실패] … 쓰지 않음(파일 잠김)` 으로, Run 보고서·확인 창에
   "스펙 파일 N개에 초안·화풍 변경을 아직 못 씀" 경고가 붙습니다. 잠금을 풀고 다시 큐하면 Draft 가 원장으로 다시 씁니다
   (0 호출, `vlm/write_pending.json` 표식이 남아 있는 동안 매 큐 재시도).
 - 로그인 정보가 없으면(openai) 보고서에 "comfy.org 로그인 필요" 가 나오고 0 호출입니다.
@@ -516,6 +519,8 @@ A 빨강 · B 초록 · C 파랑 · D 주황 · 제안 회색 점선, 보여 준
 - **유료 초안 중에는 Cancel 하지 마세요.** comfy.org 프록시가 `background` 를 받지 않아(실측) create 요청이 생성이 끝날 때까지
   열려 있습니다(크롭당 30초–6.5분). 그 사이 취소하면 created 가 아니라 orphan(과금됐을 수 있음)이 되어, 다시 받으려면 새 승인과
   재과금이 필요합니다. 폴링 중(created 뒤)의 취소만 무료로 이어 받습니다.
+  같은 큐의 다른 노드가 실패해도 프롬프트가 끝나며 진행 중인 초안이 취소됩니다 — 그래서 승인은 버튼(Draft 만 부분 실행)으로 하세요.
+  그렇게 끊긴 orphan 은 콘솔에 "Spec Draft 실행이 취소됨 … orphan N건" 경고로 남고 다음 드라이런의 "orphan 재시도" 에 오릅니다.
 - 구조화 출력은 strict json_schema(L2) → minItems/maxItems 없이(L1) → format 없이(L0) 순서로, 400 이면 같은 승인 안에서 한 단계씩
   내려갑니다(과금 전 거부). 받아들여진 단계만 caps 에 남깁니다(사다리를 내려가다 다른 400 으로 거부되면 caps 그대로).
   응답에 `schema_echo` 가 없으면 프록시가 format 을 버린 것으로 보고 caps 에 L0 을 기록합니다. 실측으로는 strict(L2)가 그대로
@@ -741,8 +746,8 @@ python_embeded\python.exe -X utf8 -W ignore ComfyUI\custom_nodes\ComfyUI_BMK_Nod
 - `--quick`: 보조 모듈 단위 테스트(M1 + M2 store·runner(mock)·board + M3 vlm(V1–V24, mock·가짜 api·가짜 Qwen libs) + 평가 도구
   자기 시험 E0–E4 + JS 시나리오, 약 55초). comfy 를 import 하지 않습니다.
 - 전체: 위 + runner·vlm 의 comfy 묶음(CPU, 가짜 sync_op / 내장 OpenAIChatNode 요청 모양) + 참조 폴더 `H:\BmkNodeDesign\MultiLayerCropEdit`
-  의 03/05 PSD 회귀 + M1 노드 통합 + M2 노드(합성 프로젝트, mock) + M3 Spec Draft 노드(N1–N15) + M2 체인(ComfyUI 로더·실행기로
-  Project → … → Export, mock, 서버 포트 없음). 2026-10-08: `--quick` PASS 2118, 전체 PASS 2777 · FAIL 0(약 4분).
+  의 03/05 PSD 회귀 + M1 노드 통합 + M2 노드(합성 프로젝트, mock) + M3 Spec Draft 노드(N1–N16) + M2 체인(ComfyUI 로더·실행기로
+  Project → … → Export, mock, 서버 포트 없음). 2026-10-13: `--quick` PASS 2187, 전체 PASS 2903 · FAIL 0(약 4분 20초).
   **유료 호출은 하지 않습니다**(mock 또는 테스트 안에서만 가짜로 바꾼 sync_op). 출력은 `_proto\m2_test_out\` 아래에만 씁니다.
 
 | 검사 | 내용 | 실측(2026-10-07) |
@@ -759,10 +764,10 @@ python_embeded\python.exe -X utf8 -W ignore ComfyUI\custom_nodes\ComfyUI_BMK_Nod
 | N8 | 리뷰 결함 회귀(같은 이름 크롭, 숨김 후보 자동 pick, export 덮어쓰기, 분석 해시·가지, 원근 SO, JPEG SO, 2GB, 워프 등) | 합성 프로젝트로 전부 통과 |
 | M2-S | 스레드 경합 4×100(pick vs 낡은 스냅샷 commit) / 폴링 중 저장 | 잃은 갱신 0·충돌 0 / 쓰기 610·읽기 889·실패 0 |
 | M2-S | 가격표 = 내장 노드 가격 배지 식(파싱 비교) | 1098/1098 일치 |
-| M2-R | runner(mock): 승인 해시·재큐잉 0·재굴림·동시성·500·401·인터럽트·크래시·다운로드 복구·wave·drain | 전부 통과, 내장 노드와 sync_op 인자 동일(C2) |
+| M2-R | runner(mock): 승인 해시·재큐잉 0·재굴림·동시성·500·401·인터럽트·작업 취소(orphaned 경고 로그)·크래시·다운로드 복구·wave·drain | 전부 통과, 내장 노드와 sync_op 인자 동일(C2) |
 | M2-B | 보드 라우트·경로 순회·pick/reject/reroll·썸네일 캐시·XSS | 전부 통과 |
 | M2-N | 노드(합성, mock): 드라이런 0 호출 → 승인 → 재실행 0, n 변경·재시도는 새 해시, wave 이벤트, 인터럽트, rejects, 병합 충돌 보고 | 전부 통과 |
 | M2-C | ComfyUI 실행기 체인(03, only 004·005·030): 드라이런 → 3 호출 → 0 호출 → 안정 → 보드 ★·탈락·재굴림 → Export | 통과. 실행 중 보드 쓰기 406회(Run 중 133, Analyze 중 112) 잃은 갱신 0·충돌 0 |
-| M3-V | vlm: 키 민감도·프롬프트 지문·스키마·openai 본문·정규화(N0–N15)·3-way 병합 표×4모드·렌더 왕복 8크롭·원장 7행·승인 해시·400 사다리·Qwen VRAM 검사·credit_cap(미보고 = 단위 최대) + 리뷰 회귀(force 1회·타깃 변경·mock 화풍·폴링 404·caps 실패·잘린 출력·린트·드라이런 뒤 타깃 추가) | V1–V24 |
+| M3-V | vlm: 키 민감도·프롬프트 지문·스키마·openai 본문·정규화(N0–N15)·3-way 병합 표×4모드·렌더 왕복 8크롭·원장 7행·승인 해시·400 사다리·Qwen VRAM 검사·credit_cap(미보고 = 단위 최대) + 리뷰 회귀(force 1회·타깃 변경·mock 화풍·폴링 404·caps 실패·잘린 출력·린트·드라이런 뒤 타깃 추가·force 의 only 보류·작업 취소 orphan 로그) | V1–V24 |
 | M3-E | 평가 도구: 정답 스펙 validate, setup(합성 매니페스트), mock 원장 재정규화 채점 결정성, 토큰 단위 일치(E0), determinism·입력 바뀜·stale, ab-sheet 라벨 고정·Borda(E4) | E1 97.6 · E2 97.1 · E5 96.0 · E6 100.0 |
-| M3-N | Spec Draft 노드(mock): 드라이런 0 호출 → 승인 → 같은 위젯 0 호출(바이트·mtime·rev 불변), 사람 편집 보존, 인증 없음 0 호출, 인터럽트 → 무료 재폴링, Run 경고("N크롭 + 화풍"), 화풍 전파, local_qwen VramError·상주 언로드, force 1회(N11), fill 키 가드(N12), 실제 PromptExecutor 로 캐시·재폴링·재승인(N13), 타깃 추가 고정점(N14), 스펙 쓰기 실패 재시도·Run 경고(N15), VALIDATE_INPUTS·첫 await(N1), 얇은 bbox 시트(N2) | N1–N15 |
+| M3-N | Spec Draft 노드(mock): 드라이런 0 호출 → 승인 → 같은 위젯 0 호출(바이트·mtime·rev 불변), 사람 편집 보존, 인증 없음 0 호출, 인터럽트 → 무료 재폴링, Run 경고("N크롭 + 화풍"), 화풍 전파, local_qwen VramError·상주 언로드, force 1회(N11), fill 키 가드(N12), 실제 PromptExecutor 로 캐시·재폴링·재승인(N13), 타깃 추가 고정점(N14), 스펙 쓰기 실패 재시도·Run 경고(N15), only 보류·mock 초안 스펙 Run 경고(N16), VALIDATE_INPUTS·첫 await(N1), 얇은 bbox 시트·개요(N2) | N1–N16 |

@@ -9,7 +9,8 @@
 //
 // Run 노드
 //  - 실행 결과 ui.bmk_dp_run[0] = {pending_hash, pending, est_usd, approved_now, root_key, backend, continuation_hash,
-//    draft_pending, draft_style, draft_unwritten} 로 "승인 후 실행 (N건 ≈ $X)" 버튼 라벨을 갱신한다.
+//    draft_pending, draft_style, draft_unwritten, draft_held, draft_held_style, draft_mock} 로 "승인 후 실행 (N건 ≈ $X)"
+//    버튼 라벨을 갱신한다.
 //  - 승인 버튼: approve 위젯 = pending_hash → 이 노드만 부분 실행 queuePrompt(0, 1, {queueNodeIds}).
 //    승인은 그 프롬프트 하나에만 쓴다: 제출 직후(widget.afterQueued) 또는 제출 실패 때 approve 를 비운다 — 큐에서 지우거나
 //    취소해 쓰이지 않은 승인이 위젯에 남아 나중의 큐(보드 재굴림 등)가 그 집합 전체를 과금하지 않게.
@@ -21,7 +22,8 @@
 //    (continuation_hash)와 같을 때만 그 해시를 승인하고, 다르면(승인하지 않은 호출이 섞임) 멈추고 알린다.
 //    승인할 것이 없으면 approve 없이 다시 넣어 사전 승인·다운로드 복구만 이어 간다(그 실행이 또 wave 면 다시 무장).
 //  - 확인 창: 핸들의 Spec Draft 초안 대기(entry.draft_pending > 0)가 있으면 경고 한 줄을 덧붙인다(크롭과 화풍을 따로 —
-//    draft_pending 은 화풍 단위 draft_style 0/1 을 포함). 받은 초안을 파일에 못 쓴 수(draft_unwritten)도 경고.
+//    draft_pending 은 화풍 단위 draft_style 0/1 을 포함). Draft 의 only 로 보류된 대기(draft_held, 같은 규칙),
+//    받은 초안을 파일에 못 쓴 수(draft_unwritten), mock 초안이 남은 스펙 수(draft_mock — 유료 Run 일 때만)도 경고.
 //
 // Spec Draft 노드 (M3)
 //  - ui.bmk_dp_draft[0] = {pending_hash, pending, est_credits, est_seconds, orphan_retries, backend, root_key, …} 로
@@ -321,18 +323,28 @@ async function approveAndRun(node) {
         if (e.backend !== "mock") {
             const usd = formatUsd(e.est_usd);
             // 서버 _draft_pending_text 와 같은 문구("22크롭 + 화풍")
+            const what = (total, styleUnits) => {
+                const style = Math.min(total, countOf(styleUnits));
+                return [total - style > 0 ? `${total - style}크롭` : "", style > 0 ? "화풍" : ""].filter(Boolean).join(" + ");
+            };
             const drafts = countOf(e.draft_pending);
-            const style = Math.min(drafts, countOf(e.draft_style));
-            const what = [drafts - style > 0 ? `${drafts - style}크롭` : "", style > 0 ? "화풍" : ""].filter(Boolean).join(" + ");
+            const held = countOf(e.draft_held);
             const unwritten = countOf(e.draft_unwritten);
+            const mockSpecs = countOf(e.draft_mock);
             const msg =
                 `GPT Image 호출 ${n}건${usd ? `(예상 ${usd})` : ""}을 승인하고 과금합니다.\n` +
                 "드라이런 이후 대기 목록이 바뀌었으면 서버가 과금 없이 드라이런만 다시 합니다." +
                 (drafts > 0
-                    ? `\n주의: 스펙 초안 대기 ${what}(Spec Draft 미승인) — 지금 승인하면 초안 없는 프롬프트로 과금합니다.`
+                    ? `\n주의: 스펙 초안 대기 ${what(drafts, e.draft_style)}(Spec Draft 미승인) — 지금 승인하면 초안 없는 프롬프트로 과금합니다.`
+                    : "") +
+                (held > 0
+                    ? `\n주의: Spec Draft 의 only 로 보류된 초안 대기 ${what(held, e.draft_held_style)} — 지금 승인하면 초안 없는 프롬프트로 과금합니다.`
                     : "") +
                 (unwritten > 0
                     ? `\n주의: 스펙 파일 ${unwritten}개에 초안·화풍 변경을 아직 못 씀(잠김) — 지금 승인하면 그 변경 없이 과금합니다.`
+                    : "") +
+                (mockSpecs > 0
+                    ? `\n주의: 스펙 ${mockSpecs}개가 mock 초안(자리표시 문구) — 지금 승인하면 그 문구로 과금합니다.`
                     : "");
             if (!(await confirmDialog(msg))) return;
         }

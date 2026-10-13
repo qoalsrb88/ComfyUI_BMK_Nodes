@@ -839,6 +839,17 @@ def _orphan_specs(root: str, crop_ids: set[str]) -> list[str]:
                   and os.path.isfile(os.path.join(d, n)))
 
 
+def mock_drafted(root: str, ctxs: list[CropCtx]) -> int:
+    """mock 이 쓴 초안이 남은 스펙 수(크롭 + _project.json 화풍). 실제 백엔드로 바꾸면 'mock 초안 교체' 대기가 되지만,
+    vlm=mock 그대로면 대기 0 이라 유료 Run 이 자리표시 문구로 과금하지 않게 노드가 따로 넘긴다."""
+    def is_mock(spec: dict | None) -> bool:
+        d = spec.get("_draft") if isinstance(spec, dict) else None
+        return isinstance(d, dict) and d.get("backend") == BACKEND_NAMES["mock"]
+
+    proj, _err = _load_spec(root, PROJECT_SPEC_ID)
+    return sum(1 for c in ctxs if is_mock(c.spec)) + int(is_mock(proj))
+
+
 def plan(root: str, ctxs: list[CropCtx], reqs: dict[str, Request], style_req: Request | None, *,
          mode: str, only: list[str]) -> dict:
     """대기 판정(§2.4). 반환:
@@ -848,7 +859,8 @@ def plan(root: str, ctxs: list[CropCtx], reqs: dict[str, Request], style_req: Re
       refresh_available [(crop_id, (typ, hi))]  fill 에서 키만 바뀐 크롭·화풍(STYLE_ID)(refresh 로 갱신 가능, done 이 있으면 (0, 0))
       skipped  [(crop_id, 사유)]  스펙 JSON 오류·평탄화 실패·요청 없음
       accepted [crop_id]  _accepted 로 건너뜀(force + only 제외 — 단 그 키로 이미 force 한 크롭은 다시 _accepted 존중)
-      filtered [crop_id]  only 로 걸러진 대기 / family, model, effort  요청 설정(approval·보고서용)
+      filtered [crop_id]  only 로 걸러진 대기(force 는 only 밖에서 fill 이면 대기였을 것) — 노드가 Run 에 보류 수로 넘김
+      family, model, effort  요청 설정(approval·보고서용)
       orphan_specs [파일명]  매니페스트에 크롭이 없는 specs/*.json(지우지 않고 보고만, §5.2)
     est: openai = estimate_unit(caps 보정), local_qwen = (초, 초), mock = (0, 0)."""
     if mode not in WRITE_MODES:
@@ -924,7 +936,9 @@ def plan(root: str, ctxs: list[CropCtx], reqs: dict[str, Request], style_req: Re
             visit(cid, req, None, accepted=True)
             continue
         reason, also = None, []
-        if mode == "force":
+        if mode == "force" and only and not only_match(only, cid):
+            reason = (_fill_reasons(d, ctx, req.backend) or [None])[0]  # fill 이면 대기였을 크롭 → filtered(보류 수 보고)
+        elif mode == "force":
             reason = "force 재초안" if forced else None
         else:
             reason, *also = _fill_reasons(d, ctx, req.backend) or [None]
@@ -950,7 +964,7 @@ def plan(root: str, ctxs: list[CropCtx], reqs: dict[str, Request], style_req: Re
             reason = None
             if proj.get("style_note") == "":  # 사람이 화풍 초안·전파를 끔
                 reason = None
-            elif mode == "force":
+            elif mode == "force" and ("style" in only or not only):  # only 밖의 화풍은 아래 fill 규칙 → filtered(보류 수)
                 reason = "force 재초안" if "style" in only and merge_mode(proj, mode, style_req.key) == "force" else None
             elif "style_note" not in proj:
                 reason = None if pw.get("style_note") not in (None, "") else "화풍 신규"  # 사람이 지운 기록이면 대기 아님
@@ -3868,7 +3882,16 @@ async def run_units(root: str, units: list[Unit], reqs: dict[str, Request], back
         return await backend.call(u, req, ledger, model=model, effort=effort, image_detail=image_detail, progress=p)
 
     sem = asyncio.Semaphore(1 if local else max(1, int(concurrency)))
-    results = await asyncio.gather(*(one(i, u) for i, u in enumerate(units, 1)), return_exceptions=True)
+    try:
+        results = await asyncio.gather(*(one(i, u) for i, u in enumerate(units, 1)), return_exceptions=True)
+    except asyncio.CancelledError:
+        # 같은 큐의 다른 노드가 실패해 프롬프트가 먼저 끝나면 ComfyUI 가 이 작업을 취소한다 — 아래 집계·보고서가 돌지 않으니
+        # 과금됐을 수 있는 orphan 만이라도 남긴다(Cancel 버튼은 이 경로가 아니라 인터럽트로 아래를 지남)
+        orphans = [u.crop_id for u in attempted if ledger.state(u.crop_id, u.key)["status"] == "inflight"]
+        logger.warning(f"{_TAG} Spec Draft 실행이 취소됨(같은 큐의 다른 노드 실패 등) — orphan {len(orphans)}건"
+                       + (f"({', '.join(orphans)}): 결과 없이 끊김(과금됐을 수 있음), 다음 드라이런의 'orphan 재시도'"
+                          if orphans else ""))
+        raise
     for u, r in zip(units, results):
         if isinstance(r, runner._interrupt_types()):
             interrupt(r)
@@ -4021,8 +4044,10 @@ def format_report(*, header: dict, plan: dict, approval: dict, run: RunReport | 
         state = "할 일 없음(대기 0)"
     ra = plan.get("refresh_available") or []
     ra_cost = sum(int(e[0]) for _c, e in ra) if fam == "openai" else 0
+    held = plan.get("filtered") or []
     lines = [f"Spec Draft [{label}] {state} | 캐시 {len(plan.get('cached') or [])} · 복구 {len(plan.get('free') or [])} · "
              f"갱신 가능 {len(ra)}" + (f"(refresh ≈ {ra_cost:,})" if ra and fam == "openai" else "")
+             + (f" · only 로 보류 {len(held)}" if held else "")
              + f" | {float(header.get('seconds') or 0):.1f}s"]
     if fam == "local_qwen" and header.get("keep_loaded"):
         lines.append(QWEN_RESIDENT_WARNING)

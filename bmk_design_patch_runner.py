@@ -1376,7 +1376,15 @@ async def run_calls(root: str, calls: list[dict], backend, *, concurrency: int =
             state.finished += 1
             _progress(progress_cb, state, total)
 
-        results = await asyncio.gather(*(one(e) for e in calls), return_exceptions=True)
+        try:
+            results = await asyncio.gather(*(one(e) for e in calls), return_exceptions=True)
+        except asyncio.CancelledError:
+            # 같은 큐의 다른 노드가 실패해 프롬프트가 먼저 끝나면 ComfyUI 가 이 작업을 취소한다 — 아래 집계·보고서가 돌지 않으니
+            # 과금됐을 수 있는 orphaned 만이라도 남긴다(Cancel 버튼은 이 경로가 아니라 인터럽트로 아래를 지남)
+            logger.warning(f"{_TAG} Run 실행이 취소됨(같은 큐의 다른 노드 실패 등) — orphaned {len(report.orphaned)}건"
+                           + (f"({', '.join(report.orphaned)}): 결과 없이 끊김(과금됐을 수 있음), 다시 하려면 retry_orphans"
+                              if report.orphaned else ""))
+            raise
         for e, r in zip(calls, results):
             if isinstance(r, _interrupt_types()):
                 state.interrupt(r)

@@ -109,8 +109,8 @@ v2 (2026-10, M2)
 v3 (2026-10, M3)
 - Spec Draft 노드(매핑은 Candidate In 다음·Prepare 앞, 출력 노드, async, Run 과 같은 hidden). 로직은 bmk_design_patch_vlm,
   이 파일은 §3.3 순서(문맥 → 계획·승인 → 실행 → 화풍·크롭 병합·쓰기 → 보고서·review.md·시트)와 시트 그리기만.
-- 핸들 가지 키 draft({pending, pending_hash, refresh_available, pending_style[, unwritten]}) → Run 보고서·ui 의 초안 대기
-  경고(draft_pending, draft_style, draft_unwritten).
+- 핸들 가지 키 draft({pending, pending_hash, refresh_available, pending_style[, unwritten][, held, held_style][, mock_specs]})
+  → Run 보고서·ui 의 초안 대기 경고(draft_pending, draft_style, draft_unwritten, draft_held, draft_held_style, draft_mock).
 - 리뷰 수정(M3): Draft IS_CHANGED(approve 가 있으면 NaN — 로그인·VRAM 복구 뒤 같은 해시 재승인이 캐시에 걸리지 않게),
   Project 지문에 VLM 원장·mock 스위치(Cancel·폴링 실패·401 뒤 재큐 = 무료 재폴링·병합, _MOCK_API 를 끄면 'mock 초안 교체'),
   created 가 남으면 vlm/repoll_pending.json 을 다시 써 다음 큐도 재폴링, keep_loaded 를 끄면 vlm 이 무엇이든 남은 Qwen 을
@@ -121,6 +121,10 @@ v3 (2026-10, M3)
   **_stale(옛 워크플로의 없는 입력) — 그 뒤 예외는 ComfyUI 가 hidden 토큰을 입력값으로 기록하지 않는 경로로 보고. 스펙 쓰기
   실패 → 보고서 [실패] + vlm/write_pending.json(지문이 바뀌어 다음 큐가 다시 씀, 못 한 크롭은 이어 둠), 가지 키
   draft.unwritten → Run 보고서·확인 창 경고(draft_unwritten). 시트는 1px 미만 bbox 도 그림.
+- 커밋 뒤 후속(리뷰 B 묶음 일부): 가지 키 draft.held·held_style(only 로 보류된 초안 대기 — force 는 only 밖에서 fill 이면
+  대기였을 것)·mock_specs(vlm=mock 으로 쓴 초안이 남은 스펙) → Run 보고서·확인 창 경고(mock 은 유료 Run 일 때만).
+  Spec Draft·Run 실행이 프롬프트 종료로 취소되면(같은 큐의 다른 노드 실패) orphan 을 경고 로그로 남김.
+  Import PSD 개요도 축소로 1px 보다 얇아진 사각형을 그림.
 """
 
 from __future__ import annotations
@@ -926,7 +930,8 @@ def _overview(base: np.ndarray, crops: list[dict], max_side: int = 1600) -> np.n
     for i, c in enumerate(crops):
         x0, y0, x1, y1 = (round(v * s) for v in c["rect"])
         col = (255, 150, 0) if c.get("alpha_frac", 0) > 0 else ((255, 60, 60) if c.get("warnings") else (40, 230, 90))
-        d.rectangle([x0, y0, x1 - 1, y1 - 1], outline=col, width=3)
+        # 축소하면 1px 보다 얇아지는 사각형도 그린다(Pillow 는 x1 < x0 · y1 < y0 이면 예외 — Import PSD 전체가 실패함)
+        d.rectangle([x0, y0, max(x0, x1 - 1), max(y0, y1 - 1)], outline=col, width=3)
         tag = f"{i + 1}:{c.get('nnn') or '?'}"
         tw = d.textlength(tag, font=font)
         d.rectangle([x0, y0, x0 + tw + 6, y0 + 19], fill=col)
@@ -2055,17 +2060,20 @@ class BMKDesignPatchRun:
         grid = await asyncio.to_thread(_cand_grid, root, new_keys)
         draft = (project or {}).get("draft") or {}  # 상류 Spec Draft 의 승인 대기(pending 은 화풍 단위 포함)
         draft_pending, draft_style = int(draft.get("pending") or 0), int(draft.get("pending_style") or 0)
+        draft_held, draft_held_style = int(draft.get("held") or 0), int(draft.get("held_style") or 0)
         draft_unwritten = int(draft.get("unwritten") or 0)
+        draft_mock = 0 if backend.name == runner.BACKEND_MOCK else int(draft.get("mock_specs") or 0)
         text = self._report(ap, plan_after, ap_after, report, rec, backend, approve, bool(auth_token or api_key),
                             int(concurrency), new_keys, m["rev"], time.time() - t0, draft_pending, draft_style,
-                            draft_unwritten)
+                            draft_unwritten, draft_held, draft_held_style, draft_mock)
         logger.info("%s %s", _TAG, text.splitlines()[0])
         # continuation_hash = 이번 실행이 승인받고 남긴 호출의 해시. JS 자동 이어가기는 pending_hash 가 이것과 같을 때만
         # 승인한다(개수가 아니라 집합 비교 — 승인하지 않은 호출이 섞이면 멈춤)
         entry = {"pending_hash": ap_after["pending_hash"], "pending": len(ap_after["needs_approval"]),
                  "est_usd": list(ap_after["est_usd"]), "approved_now": ap["approved_now"], "root_key": key,
                  "backend": backend.name, "continuation_hash": report.continuation_hash if report is not None else "",
-                 "draft_pending": draft_pending, "draft_style": draft_style, "draft_unwritten": draft_unwritten}
+                 "draft_pending": draft_pending, "draft_style": draft_style, "draft_unwritten": draft_unwritten,
+                 "draft_held": draft_held, "draft_held_style": draft_held_style, "draft_mock": draft_mock}
         return {"ui": {"bmk_dp_run": [entry], "text": [text]}, "result": (_handle(root, m, project), text, grid)}
 
     @staticmethod
@@ -2087,7 +2095,8 @@ class BMKDesignPatchRun:
 
     @staticmethod
     def _report(ap, plan_after, ap_after, report, rec, backend, approve, has_auth, concurrency, new_keys, rev,
-                sec, draft_pending=0, draft_style=0, draft_unwritten=0) -> str:
+                sec, draft_pending=0, draft_style=0, draft_unwritten=0, draft_held=0, draft_held_style=0,
+                draft_mock=0) -> str:
         mock = backend.name == runner.BACKEND_MOCK
         be = "MOCK(과금 없음)" if mock else "comfy.org(유료)"
         if report is not None:
@@ -2100,6 +2109,12 @@ class BMKDesignPatchRun:
         if draft_pending > 0:
             lines.append(f"주의: 스펙 초안 대기 {_draft_pending_text(draft_pending, draft_style)}(Spec Draft 미승인) — "
                          f"지금 Run 을 승인하면 초안 없는 프롬프트로 과금")
+        if draft_held > 0:
+            lines.append(f"주의: Spec Draft 의 only 로 보류된 초안 대기 {_draft_pending_text(draft_held, draft_held_style)} — "
+                         f"지금 Run 을 승인하면 초안 없는 프롬프트로 과금(only 를 비우면 승인 목록에 오름)")
+        if draft_mock > 0:
+            lines.append(f"주의: 스펙 {draft_mock}개가 mock 초안(자리표시 문구, Spec Draft vlm=mock) — 지금 승인하면 그 문구로 "
+                         f"과금. 실제 vlm 으로 바꾸면 'mock 초안 교체' 로 다시 초안할 수 있음")
         if draft_unwritten > 0:
             lines.append(f"주의: 스펙 파일 {draft_unwritten}개에 초안·화풍 변경을 아직 못 씀(편집기·백신 잠금) — 잠금을 풀고 "
                          f"다시 큐하면 Spec Draft 가 원장으로 다시 씀(0 호출). 지금 승인하면 그 변경 없이 과금")
@@ -2718,13 +2733,19 @@ class BMKDesignPatchSpecDraft:
                      "effort": shown_effort, "approved_now": ap["approved_now"], "root_key": key,
                      "refresh_available": len(pl_after["refresh_available"])}
             # pending_style = 대기 중 화풍 단위(0/1) — Run 경고가 크롭과 화풍을 따로 센다. unwritten = 스펙 파일에 아직 못 쓴
-            # 변경(잠김, vlm/<_WRITE_MARK>, 지금 매니페스트의 크롭·_project 만) — 초안 대기와 따로 Run 이 경고한다
+            # 변경(잠김, vlm/<_WRITE_MARK>, 지금 매니페스트의 크롭·_project 만) — 초안 대기와 따로 Run 이 경고한다.
+            # held = only 로 보류된 대기(승인 목록 밖이라 pending 에 없음), mock_specs = vlm=mock 으로 쓴 초안이 남은 스펙
+            # (실제 백엔드면 'mock 초안 교체' 대기라 pending 이 센다)
             live = {c["id"] for c in m["crops"]} | {dvlm.PROJECT_SPEC_ID}
             unwritten = sum(1 for s in await asyncio.to_thread(_unwritten_specs, root) if s in live)
+            held = pl_after["filtered"]
+            mock_specs = await asyncio.to_thread(dvlm.mock_drafted, root, ctxs) if family == "mock" else 0
             branch = {"pending": entry["pending"], "pending_hash": entry["pending_hash"],
                       "refresh_available": entry["refresh_available"],
                       "pending_style": sum(1 for u in pl_after["units"] if u.crop_id == dvlm.STYLE_ID),
-                      **({"unwritten": unwritten} if unwritten else {})}
+                      **({"unwritten": unwritten} if unwritten else {}),
+                      **({"held": len(held), "held_style": int(dvlm.STYLE_ID in held)} if held else {}),
+                      **({"mock_specs": mock_specs} if mock_specs else {})}
             return {"ui": {dvlm.UI_KEY: [entry], "text": [text]},
                     "result": (_handle(root, m, project, draft=branch), text, sheet)}
         finally:

@@ -4379,6 +4379,42 @@ def m2_runner_unit(with_comfy: bool):
         n_req = len(bed.requests)
         rd = run(root_d, sa(pd, sa(pd)["pending_hash"])["to_run"], bed)
         check(rd.recovered == 1 and rd.done == 2 and len(bed.requests) == n_req + 1, "복구(0 과금) + 남은 1 호출")
+        # R8d 같은 큐의 다른 노드가 실패해 프롬프트가 먼저 끝나면 ComfyUI(asyncio.run 종료)가 작업을 취소한다 — 집계·보고서는
+        # 못 돌지만 진행 중이던 orphaned 를 경고 로그로 남기고 취소는 그대로 올린다
+        root_c = make_project("r8_task_cancel", 2, n=1)
+        cc = jobs_of(root_c)
+        apc, _ = approved(root_c)
+        logs: list[str] = []
+
+        class _Grab(logging.Handler):
+            def emit(self, record):
+                logs.append(record.getMessage())
+
+        bec = runner.MockBackend(delay_s=4.0)
+
+        async def cancel_mid():
+            t = asyncio.create_task(runner.run_calls(root_c, apc["to_run"], bec, concurrency=2))
+            for _ in range(100):  # 두 요청이 나간 뒤에 취소(inflight 기록 뒤 전송 전에 취소되면 report.orphaned 에 없음 — 전송 전)
+                await asyncio.sleep(0.02)
+                if len(bec.requests) == 2:
+                    break
+            t.cancel()
+            try:
+                await t
+            except asyncio.CancelledError:
+                return "cancelled"
+            return "finished"
+
+        grab = _Grab()
+        logging.getLogger(runner.__name__).addHandler(grab)
+        try:
+            got = asyncio.run(cancel_mid())
+        finally:
+            logging.getLogger(runner.__name__).removeHandler(grab)
+        warn = [ln for ln in logs if "취소됨" in ln]
+        check(got == "cancelled" and len(warn) == 1 and "orphaned 2건" in warn[0] and all(f"{ck}_r0" in warn[0] for ck in cc)
+              and all("r0.inflight.json" in ledger_files(root_c, ck) for ck in cc),
+              f"G1 작업 취소: CancelledError 그대로, 진행 중 호출은 inflight, orphaned 경고 로그 1줄 {got} {warn}")
         # R9a orphaned(inflight 만): retry_orphans 일 때만 재호출
         ap, p = approved(root)
         be2 = runner.MockBackend()
@@ -6748,13 +6784,25 @@ def vlm_unit():
         pr1 = dvlm.plan(root, ctxs, reqs_r1, None, mode="refresh", only=[])
         check(next(x for x in pr1["units"] if x.crop_id == "005_eeeeee").reasons[0] == "draft_round", "round 만 다르면 사유 draft_round")
         pf0 = dvlm.plan(root, ctxs, reqs, sreq, mode="force", only=[])
-        check(pf0["units"] == [], "force + only 비어 있음 → 아무것도 안 함")
+        check(pf0["units"] == [] and pf0["filtered"] == [], "force + only 비어 있음 → 아무것도 안 함(보류도 없음)")
         pf = dvlm.plan(root, ctxs, reqs, sreq, mode="force", only=["006_ffffff", "007"])
         check([(x.crop_id, x.reasons[0]) for x in pf["units"]] == [("006_ffffff", "force 재초안"), ("007_gggggg", "force 재초안")],
               f"force + only: 지정 크롭(_accepted 포함)만 {[(x.crop_id, x.reasons) for x in pf['units']]}")
+        # F3 only 밖에서 fill 이면 대기였을 크롭·화풍은 force 에서도 filtered(Run 의 보류 경고) — 키만 바뀐 005 는 대기 아님
+        check(pf["filtered"] == ["001_aaaaaa", "002_bbbbbb", "003_cccccc", "004_dddddd", "_style"],
+              f"F3 force + only: only 밖의 초안 대기 → filtered {pf['filtered']}")
+        pfs = dvlm.plan(root, ctxs, reqs, sreq, mode="force", only=["style"])
+        check([x.crop_id for x in pfs["units"]] == ["_style"] and "_style" not in pfs["filtered"] and "001_aaaaaa" in pfs["filtered"],
+              f"F3 force + only=style: 화풍은 force 재초안, 크롭 대기는 filtered {pfs['filtered']}")
         po = dvlm.plan(root, ctxs, reqs, sreq, mode="fill", only=["001"])
         check([x.crop_id for x in po["units"]] == ["001_aaaaaa"] and "002_bbbbbb" in po["filtered"] and "_style" in po["filtered"],
               f"only 거르기(화풍은 style 토큰) {po['filtered']}")
+        head_o = dvlm.format_report(header={"backend": "vlm_openai"}, plan=po, approval=dvlm.approval(po, "", backend_name="vlm_openai"),
+                                    run=None, merges={}, checks={}, drafts={}, ctxs=[]).splitlines()[0]
+        head_a = dvlm.format_report(header={"backend": "vlm_openai"}, plan=p, approval=dvlm.approval(p, "", backend_name="vlm_openai"),
+                                    run=None, merges={}, checks={}, drafts={}, ctxs=[]).splitlines()[0]
+        check(f"only 로 보류 {len(po['filtered'])}" in head_o and "보류" not in head_a,
+              f"F3 보고서 첫 줄에 only 로 보류한 대기 수(없으면 생략) {head_o!r}")
         ps = dvlm.plan(root, ctxs, reqs, sreq, mode="fill", only=["001", "style"])
         check([x.crop_id for x in ps["units"]] == ["001_aaaaaa", "_style"], "only=…,style → 화풍 포함")
         store.write_json_atomic(os.path.join(root, "specs", "_project.json"), {"style_note": "x"})
@@ -7820,6 +7868,42 @@ def vlm_unit():
         rep = asyncio.run(dvlm.run_units(root4, [u3], reqs, dvlm.MockVLM({}), model="mock", effort="high", image_detail="high",
                                          concurrency=1, credit_cap=0, progress_cb=lambda *a, **k: None))
         check(rep.repolled == 1 and led4.state(c3, reqs[c3].key)["status"] == "done", "repoll 단위 → backend.repoll(무료)")
+        # G1 같은 큐의 다른 노드가 실패해 프롬프트가 먼저 끝나면 ComfyUI(asyncio.run 종료)가 작업을 취소한다 — 집계·보고서는
+        # 못 돌지만 create 중 끊긴 orphan 을 경고 로그로 남기고 취소는 그대로 올린다
+        root5 = store.project_root(str(base), "proj5")
+        os.makedirs(root5)
+        led5, two = dvlm.Ledger(root5), list(reqs)[:2]
+        logs: list[str] = []
+
+        class _Grab(logging.Handler):
+            def emit(self, record):
+                logs.append(record.getMessage())
+
+        async def cancel_mid():
+            t = asyncio.create_task(dvlm.run_units(root5, units[:2], reqs, dvlm.MockVLM({"delay_s": 4.0}), model="mock",
+                                                   effort="high", image_detail="high", concurrency=2, credit_cap=0,
+                                                   progress_cb=lambda *a, **k: None))
+            for _ in range(100):
+                await asyncio.sleep(0.02)
+                if all(led5.state(c, reqs[c].key)["status"] == "inflight" for c in two):
+                    break
+            t.cancel()
+            try:
+                await t
+            except asyncio.CancelledError:
+                return "cancelled"
+            return "finished"
+
+        grab = _Grab()
+        logging.getLogger(dvlm.__name__).addHandler(grab)
+        try:
+            got = asyncio.run(cancel_mid())
+        finally:
+            logging.getLogger(dvlm.__name__).removeHandler(grab)
+        warn = [ln for ln in logs if "취소됨" in ln]
+        check(got == "cancelled" and [led5.state(c, reqs[c].key)["status"] for c in two] == ["inflight", "inflight"]
+              and len(warn) == 1 and "orphan 2건" in warn[0] and all(c in warn[0] for c in two),
+              f"G1 작업 취소: CancelledError 그대로, create 중 단위는 inflight, orphan 경고 로그 1줄 {got} {warn}")
 
     def t_v20():
         section("V20 paste_layer_name: 다시 파싱하면 타깃 수 일치, 기존 타깃 문구 그대로, 새 제안은 ASCII·'; : |' 제거, crop_id 불변")
@@ -9296,7 +9380,13 @@ await scenario("j6", async () => {
     const styleOnly = env.confirmMsgs.at(-1) ?? "";
     env.exec(run, entry({ pending_hash: "R6eeeeeeeeee", pending: 2, backend: "comfy_org", draft_pending: 0, draft_unwritten: 2 }));
     await env.click(run, "bmk_dp_approve");
-    return { warn, plain, styled, styleOnly, unwritten: env.confirmMsgs.at(-1) ?? "", n: env.confirmMsgs.length };
+    const unwritten = env.confirmMsgs.at(-1) ?? "";
+    env.exec(run, entry({ pending_hash: "R6f0f0f0f0f0", pending: 2, backend: "comfy_org", draft_held: 3, draft_held_style: 1 }));
+    await env.click(run, "bmk_dp_approve");
+    const held = env.confirmMsgs.at(-1) ?? "";
+    env.exec(run, entry({ pending_hash: "R6f1f1f1f1f1", pending: 2, backend: "comfy_org", draft_mock: 2 }));
+    await env.click(run, "bmk_dp_approve");
+    return { warn, plain, styled, styleOnly, unwritten, held, mock: env.confirmMsgs.at(-1) ?? "", n: env.confirmMsgs.length };
 });
 
 console.log(JSON.stringify(out));
@@ -9382,8 +9472,11 @@ def m2_js_unit():
           and fetched == [{"root": "abcdef012345"}] and j5.get("execKey") == "abcdef012345",
           f"J5: soleRootKey 가 Draft 를 셈(Run 의 Drain 이 Draft 의 프로젝트 키로), Draft 실행 결과가 키를 기억 {j5}")
     j6 = res.get("j6") or {}
-    check("초안" in (j6.get("warn") or "") and "초안" not in (j6.get("plain") or "") and j6.get("n") == 5,
+    check("초안" in (j6.get("warn") or "") and "초안" not in (j6.get("plain") or "") and j6.get("n") == 7,
           f"J6: Run 확인창 — draft_pending > 0 이면 초안 대기 경고 줄 {j6}")
+    check("only 로 보류된 초안 대기 2크롭 + 화풍" in (j6.get("held") or "") and "Spec Draft 미승인" not in (j6.get("held") or "")
+          and "스펙 2개가 mock 초안" in (j6.get("mock") or "") and "초안 대기" not in (j6.get("mock") or ""),
+          f"F3·F2 J6: 보류 대기(크롭과 화풍 따로)·mock 초안 스펙 경고 {j6.get('held')!r} {j6.get('mock')!r}")
     check("스펙 파일 2개에 초안·화풍 변경을 아직 못 씀" in (j6.get("unwritten") or "")
           and "Spec Draft 미승인" not in (j6.get("unwritten") or ""),
           f"F11 J6: draft_unwritten > 0 이면 미기록 경고(초안 대기와 따로) {j6.get('unwritten')!r}")
@@ -9848,6 +9941,7 @@ def vlm_comfy():
 #   N4 인터럽트·무료 재폴링  N5 Draft 대기 → Run 경고  N6 _project.json style_note 전파  N7 local_qwen 승인·VramError·
 #   남은 Qwen 언로드  N8 보드 라우트 10  N9 평가 도구 new_targets == main._new_targets  N10 사라진 크롭의 스펙
 #   N11 force 1회·사람 mode/refs  N12 fill 키 가드  N13 실제 PromptExecutor 캐시(RAM_PRESSURE·CLASSIC)
+#   N16 only 보류·mock 초안 스펙 → Run 경고(리뷰 B F3·F2)
 # ═════════════════════════════════════════════════════════════════
 def vlm_node_unit():
     dp = _dp_package()
@@ -10030,6 +10124,12 @@ def vlm_node_unit():
         except ValueError as ex:
             sheet_thin = ex
         check(getattr(sheet_thin, "ndim", 0) == 4, f"F10 1px 미만 bbox 도 시트를 그림 {sheet_thin!r:.120}")
+        # 같은 원인 — Import PSD 개요는 긴 변 1600px 로 줄이므로 1px 크롭 사각형이 축소 뒤 x1 < x0 이 된다(4000px → 0.4배)
+        try:
+            ov = dp._overview(np.zeros((400, 4000, 3), np.uint8), [{"rect": [100, 100, 101, 101], "nnn": "001"}])
+        except ValueError as ex:
+            ov = ex
+        check(getattr(ov, "shape", None) == (160, 1600, 3), f"F10 개요: 축소로 1px 보다 얇아진 사각형도 그림 {ov!r:.120}")
         (h1, rep_a, _s), e1 = draft_node(h, e["pending_hash"])
         snap = specs_snap(root)
         crops = st.load_manifest(root)["crops"]
@@ -10136,6 +10236,47 @@ def vlm_node_unit():
         hp2, _s, _prep = PRE.run(hd2, MODEL25, "high", "user_k", "V1", 1, "at", 1)
         (_h, rep_r2, _g), er2 = run_node(hp2)
         check("스펙 초안 대기" not in rep_r2 and not er2.get("draft_pending"), "초안이 끝나면 경고 없음")
+
+    def t_n16():
+        section("M3-N16 리뷰 B: only 로 보류된 초안 대기(F3)·mock 초안이 남은 스펙(F2) → Run 보고서·ui 경고")
+        set_mock()
+        h, root = project("m3held", rects[:2])
+        c1 = st.load_manifest(root)["crops"][0]["id"]
+        (_hd, rep_d, _s), e = draft_node(h, only=c1)
+        (hd, rep_d2, _s), e2 = draft_node(h, e["pending_hash"], only=c1)
+        check(e["pending"] == 1 and e2["pending"] == 0 and "only 로 보류 2" in rep_d2.splitlines()[0]
+              and (hd.get("draft") or {}).get("held") == 2 and hd["draft"].get("held_style") == 1 and hd["draft"]["pending"] == 0,
+              f"F3 only 로 한 크롭만 초안 → 대기 0 이어도 나머지 크롭 + 화풍은 held {hd.get('draft')} | {rep_d2.splitlines()[0]}")
+        hp, _s, _prep = PRE.run(hd, MODEL25, "high", "user_k", "V1", 1, "at", 1)
+        (_h, rep_r, _g), er = run_node(hp)
+        warn = next((ln for ln in rep_r.splitlines() if "보류된 초안 대기" in ln), "")
+        check("1크롭 + 화풍" in warn and "스펙 초안 대기" not in rep_r and er.get("draft_held") == 2 and er.get("draft_held_style") == 1,
+              f"F3 Run 보고서: 보류 경고(크롭과 화풍 따로), 미승인 대기 경고는 없음 {warn!r} {er.get('draft_held')}")
+        (hd3, _r, _s), _e3 = draft_node(h)
+        check("held" not in (hd3.get("draft") or {}), f"F3 only 를 비우면 보류 없음(대기로) {hd3.get('draft')}")
+        # F2 실제 프로젝트(_MOCK_API 없음)에서 vlm=mock 으로 승인 → 스펙에 자리표시 초안. vlm=mock 그대로면 대기 0 이라 유료 Run 이 경고
+        mock_file.unlink(missing_ok=True)
+        try:
+            h, root = project("m3mockspec", rects[:2])
+            (_h, _r, _s), e = draft_node(h, vlm="mock")
+            (_h, _r, _s), _e = draft_node(h, e["pending_hash"], vlm="mock")
+            (hd, _r, _s), e2 = draft_node(h, vlm="mock")
+            check(e2["pending"] == 0 and (hd.get("draft") or {}).get("mock_specs") == 3,
+                  f"F2 mock 초안 크롭 2 + _project.json → mock_specs 3(대기 0) {hd.get('draft')}")
+            hp, _s, _prep = PRE.run(hd, MODEL25, "high", "user_k", "V1", 1, "at", 1)
+            (_h, rep_r, _g), er = run_node(hp)
+            check(er["backend"] != rn.BACKEND_MOCK and "mock 초안" in rep_r and er.get("draft_mock") == 3,
+                  f"F2 유료 Run 드라이런: mock 초안 경고 + ui draft_mock {er.get('draft_mock')}")
+            (hd_o, _r, _s), e_o = draft_node(h)
+            check(e_o["pending"] == 3 and "mock_specs" not in (hd_o.get("draft") or {}),
+                  f"F2 실제 vlm 으로 바꾸면 'mock 초안 교체' 대기가 세므로 mock_specs 없음 {hd_o.get('draft')}")
+            set_mock()
+            hp, _s, _prep = PRE.run(hd, MODEL25, "high", "user_k", "V1", 1, "at", 1)
+            (_h, rep_m, _g), er_m = run_node(hp)
+            check(er_m["backend"] == rn.BACKEND_MOCK and "mock 초안" not in rep_m and not er_m.get("draft_mock"),
+                  "F2 Run 도 mock(_MOCK_API)이면 경고 없음(과금 없음)")
+        finally:
+            set_mock()
 
     def t_n6(n2):
         section("M3-N6 _project.json style_note(사람 수정) → 손대지 않은 크롭 스펙 → Prepare V1 (0 호출)")
@@ -10666,6 +10807,7 @@ def vlm_node_unit():
         _guarded("M3-N12", t_n12)
         _guarded("M3-N14", t_n14)
         _guarded("M3-N15", t_n15)
+        _guarded("M3-N16", t_n16)
         _guarded("M3-N7", t_n7)
         _guarded("M3-N8", t_n8)
         _guarded("M3-N9", t_n9)
