@@ -64,6 +64,8 @@ Semaphore(concurrency) · 발사 직전마다 중지 조건(인터럽트·401·d
 ---------
 v1 (2026-10, M2)
 - 최초 구현: plan_calls / pending_hash / split_approval, 원장, ComfyOrgBackend / MockBackend, run_calls, reconcile_ledger.
+- 타깃만 채택(10/13, TARGETS_ONLY_SPEC §9.6): 결과 후보의 tid = 작업의 tid(크롭에서 빠진 타깃도 — 첫 타깃으로 옮기지 않음,
+  재조정 key 고정).
 """
 
 from __future__ import annotations
@@ -1141,13 +1143,15 @@ def _upsert_call(m: dict, rec: dict) -> None:
 
 
 def _add_candidates(m: dict, req: dict, done: dict, warns: list[str]) -> list[str]:
-    """done slot → candidates(타깃마다 1개, 이미 있으면 그대로 — picked 를 건드리지 않음). 새 key 목록."""
+    """done slot → candidates(작업의 타깃마다 1개, 이미 있으면 그대로 — picked 를 건드리지 않음). 새 key 목록.
+    tid 는 작업의 것 그대로(key 가 크롭의 지금 타깃과 무관해 재조정이 중복을 만들지 않음) — 크롭에서 빠진 타깃의 후보는
+    보드·Compose·Export 가 빼고, 그 타깃이 돌아오면 다시 붙는다. tid 없는 작업만 크롭의 첫 타깃으로."""
     crop = next((c for c in m.get("crops") or [] if c.get("id") == req.get("crop_id")), None)
     if crop is None:
         warns.append(f"{req.get('call_id')}: 크롭 {req.get('crop_id')} 이 매니페스트에 없어 후보로 등록하지 않음(원장에는 있음)")
         return []
     tids_crop = [t.get("tid") for t in crop.get("targets") or []]
-    tids = [t.strip() for t in str(req.get("tid") or "").split(",") if t.strip() in tids_crop] or tids_crop[:1]
+    tids = [t.strip() for t in str(req.get("tid") or "").split(",") if t.strip()] or tids_crop[:1]
     have = {c.get("key") for c in m.get("candidates") or [] if isinstance(c, dict)}
     ck, rep = req["cell_key"], int(req["rep"])
     new = []
@@ -1166,6 +1170,9 @@ def _add_candidates(m: dict, req: dict, done: dict, warns: list[str]) -> list[st
             })
             have.add(key)
             new.append(key)
+    if new and not set(tids) & set(tids_crop):  # 처음 등록할 때만(재조정마다 되풀이하지 않게)
+        warns.append(f"{req.get('call_id')}: 타깃 {', '.join(tids)} 이 크롭 {crop['id']} 에 없음 → 후보로 등록하되 "
+                     f"보드·Compose·Export 에서 제외(그 타깃이 돌아오면 다시 붙음)")
     return new
 
 

@@ -27,6 +27,7 @@ torch / comfy / folder_paths 를 import 하지 않는다(numpy·PIL + 표준 라
 - pixel_sha                                  디코드된 픽셀 다이제스트(save_png_ca 파일명·cell_key 입력용)
 - crop_id_for / assign_crop_ids              ASCII 크롭 ID (NNN_<blake2b 3바이트>)
 - parse_crop_layer_name                      "NNN_부위 | A: …; B: …" 레이어명 파싱(레거시 관용)
+- merge_layer_targets                        레이어명 파싱 + 스펙 _layer_targets(채택 타깃, origin "adopt") 병합
 - load_glossary / translate                  한→영 용어집
 - match_refs                                 레퍼런스 폴더에서 NNN_ 접두 이미지 매칭
 - gpt_output_size / gpt_image_custom_size_ok GPT 출력 크기 규칙(user_k / int_k_2560)
@@ -62,6 +63,7 @@ M2 (명세 M2_SPEC.md §1)
 ---------
 v2 (2026-10)
 - M2: 매니페스트 트랜잭션(잠금·3-way 병합), M2 키 기본값, 루트 레지스트리, 가격표(estimate_usd).
+- 타깃만 채택(10/13, TARGETS_ONLY_SPEC §9.5): merge_layer_targets — Import PSD·Prepare 가드가 같은 규칙을 쓴다.
 v1 (2026-10)
 - M1 최초 구현. 명세 §1 검증표(user_k 13행 + 정사각 4행) 전부 일치, 결과는 항상 gpt_image_custom_size_ok.
 """
@@ -576,6 +578,54 @@ def parse_crop_layer_name(name: str) -> dict:
         "targets": [{"tid": t, "text": x} for t, x in parsed],
         "warnings": warnings,
     }
+
+
+def merge_layer_targets(parsed: dict, text: Any) -> tuple[dict, list[str]]:
+    """parse_crop_layer_name 결과 + 스펙 _layer_targets(채택, 레이어명 '|' 뒤와 같은 문법) → (같은 모양, 경고).
+
+    "003_펜이름표" + "A: name badge; B: red pen"
+      → targets [{"tid": "A", "text": "name badge", "origin": "adopt"}, {"tid": "B", "text": "red pen", "origin": "adopt"}]
+    PSD 문구가 빈 타깃(레거시 A 포함)과 PSD 에 없는 tid 는 _layer_targets 문구 + "origin": "adopt". 둘 다 문구가 있으면 PSD 가
+    이긴다(다를 때만 경고). 순서 = PSD 타깃 → 새 tid(문자열 순서). 앞의 '<크롭 이름> |' 는 떼어 낸다(제안 레이어명을 통째로
+    붙여 넣은 경우). 빈 문구 항목은 무시 + 경고. text 가 None·빈 문자열이면 그대로.
+    라벨 없는 조각·같은 라벨 두 번(라벨이 A–Z 라 26개 초과도 여기에 걸림)·문자열 아님은 ValueError(PS 레이어명과 달리 글자를
+    대신 정하지 않는다).
+    """
+    out = {**parsed, "targets": [dict(t) for t in parsed["targets"]]}
+    if text is None:
+        return out, []
+    if not isinstance(text, str):
+        raise ValueError(f"_layer_targets 는 문자열이어야 합니다: {text!r}")
+    body = _nfc(text)
+    head = _PIPE_RE.split(body, maxsplit=1)
+    if len(head) == 2 and head[0].strip() == parsed["name"]:
+        body = head[1]
+    entries: list[tuple[str, str]] = []
+    for s in _TARGET_SPLIT_RE.split(body):
+        s = s.strip()
+        if not s:
+            continue
+        m = _TARGET_HEAD_RE.match(s)
+        if not m:
+            raise ValueError(f"_layer_targets 에 라벨 없는 조각이 있습니다('B: …' 처럼 적을 것): {s!r}")
+        entries.append((_upper_tid(m.group(1)), m.group(2).strip()))
+    used = [t for t, _ in entries]
+    dup = sorted({t for t in used if used.count(t) > 1})
+    if dup:
+        raise ValueError(f"_layer_targets 에 같은 타깃 라벨이 두 번 있습니다({', '.join(dup)}): {text!r}")
+    warnings: list[str] = []
+    by_tid = {t["tid"]: t for t in out["targets"]}
+    for tid, x in entries:
+        t = by_tid.get(tid)
+        if not x:
+            warnings.append(f"_layer_targets {tid}: 문구가 비어 무시")
+        elif t is None:
+            out["targets"].append({"tid": tid, "text": x, "origin": "adopt"})
+        elif not t["text"].strip():
+            t.update(text=x, origin="adopt")
+        elif t["text"].strip() != x:
+            warnings.append(f"_layer_targets {tid}: PSD 레이어명 문구 {t['text']!r} 가 이김({x!r} 무시)")
+    return out, warnings
 
 
 # ══════════════════════════════════════════════════════════════════════

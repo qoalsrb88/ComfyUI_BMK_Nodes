@@ -44,6 +44,9 @@ M3 는 Spec Draft(VLM 이 specs/<crop_id>.json 초안을 씀)를 더한다.
 - Import PSD   : 크롭 영역 그룹의 shape rect, 베이스(I2I_base + 클린플레이트), 크롭 이미지 그룹 합성을 읽어
                  crops[] 를 만든다. 레이어명 "NNN_부위 | A: …; B: …" 에서 타깃 골격, refs_dir 에서 NNN_ 레퍼런스.
                  PSD 지문·그룹 설정이 같으면 다시 읽지 않는다. overview = 번호 박스 오버뷰.
+                 타깃 = 레이어명 + specs/<crop_id>.json 의 _layer_targets(Spec Draft 채택, store.merge_layer_targets —
+                 PSD 문구가 있는 tid 는 PSD 우선, 채택 타깃에 origin "adopt"). 캐시 경로에서도 _layer_targets·채택 타깃이 있는
+                 크롭은 매 실행 다시 계산한다(스펙을 고치면 다음 큐에 반영). crop.layer_name 은 PSD 원본 그대로.
 - Candidate In : 후보 등록. psd_harvest = 최종 PSD 의 결과 그룹 SO(원본 bytes·quad·손 마스크·보임 여부),
                  folder = 폴더 이미지(파일명 앞부분 = 크롭 이름, quad = crop rect). 원본 bytes 는 cands/ 에
                  디코드 없이 저장(내용 주소). mapping_json 으로 크롭/타깃 지정·건너뛰기.
@@ -51,11 +54,16 @@ M3 는 Spec Draft(VLM 이 specs/<crop_id>.json 초안을 씀)를 더한다.
                  쓴다(크롭 캔버스 + NNN_ 레퍼런스 + 한국어 라벨 + 용어집 → JSON → 정규화 → 필드 단위 3-way 병합 → 렌더 점검).
                  화풍(style_note)은 프로젝트당 1회 → specs/_project.json. 승인은 Run 과 같은 1회용 해시(모든 백엔드),
                  원장은 vlm/<crop_id>/<key>/. 사람이 고친 값은 덮지 않고(fill 기본), 같은 입력이면 재큐 0 호출.
+                 apply = targets(기본, 타깃 영문 이름·bbox 만 — 나머지 노드 값은 양보, 화풍 요청 없음) | full(전부, 참고용).
+                 adopt = 채택할 크롭(1회용, JS 가 큐 직후 비움): 지난 실행까지 스펙에 저장된 제안 레이어명의 새 타깃을
+                 스펙 _layer_targets 에 씀 → 다음 큐의 Import PSD 가 타깃으로 더함(그 큐의 Prepare 는 채택 가드).
                  매니페스트는 쓰지 않는다(rev 그대로). 출력 노드(버튼 = 이 노드만 부분 실행).
                  IS_CHANGED = approve 가 있으면 NaN(승인 큐는 매번 실행), 없으면 상수 — 원장에만 남은 무료 복구(재폴링·
                  도착분 병합)는 Project 지문이 잡는다.
 - Prepare      : 무료. 크롭마다 스펙(specs/<crop_id>.json 오버라이드 + 용어집) → 평탄화한 입력 이미지 →
                  변형별 결정적 프롬프트 → GPT 출력 크기 → cell_key 로 jobs[] 를 만든다(호출은 M2 Run).
+                 채택 가드: 레이어명 + _layer_targets 로 Import 가 만들 타깃이 매니페스트와 다르면(같은 큐에서 Draft 가
+                 Import 뒤에 채택을 씀) 그 크롭은 jobs 를 만들지 않는다 → Run 해시가 바뀌어 드라이런.
 - Analyze      : 후보마다 배치(LANCZOS) → 가드 정합(손 마스크가 있으면 정합 제외 영역) → ΔE 자동 마스크 →
                  저주파 톤 보정장 → 게이트. 결과는 analysis[key][params_hash] (같은 설정이면 건너뜀, 후보마다 최근
                  설정 4개까지 보관하고 밀려난 항목의 derived 파일은 지움).
@@ -74,7 +82,8 @@ M3 는 Spec Draft(VLM 이 specs/<crop_id>.json 초안을 씀)를 더한다.
                  핸들의 draft 에 초안 대기가 있으면 보고서·ui(draft_pending)로 경고한다(초안 없는 프롬프트로 과금).
 - Review (M2)  : 프로젝트를 보드 레지스트리에 등록하고 보드 썸네일을 미리 만든다(출력 노드). ui bmk_dp_board 로
                  JS 의 Open Board 가 별도 창 Review Board(키보드 ★·slice·탈락·재굴림)를 연다.
-- Analyze / Compose / Export 는 보드의 탈락(rejects) 후보를 분석·합성·대안에서 뺀다.
+- Analyze / Compose / Export 는 보드의 탈락(rejects) 후보를 분석·합성·대안에서 뺀다. Compose / Export 는 크롭 타깃에
+  없는 tid 의 후보(레이어명·채택에서 지운 타깃)도 경고하고 뺀다(보드와 같게).
 
 옵션 메모
 ---------
@@ -89,6 +98,7 @@ M3 는 Spec Draft(VLM 이 specs/<crop_id>.json 초안을 씀)를 더한다.
 
 매니페스트 추가 키(명세 §1 스키마 밖, "추가 키 허용")
 - source.refs_dir / refs_fingerprint / glossary / glossary_fingerprint, crops[].layer_name / rect_source
+- crops[].targets[].origin ("adopt" = specs 의 _layer_targets 에서 온 타깃, 그 밖은 키 없음)
 - candidates[].hand_mask.bg, 분석 항목의 params / skipped / quad_reg / mask_area / thumb / tone.full
 - exports[].hash / options / compose / bytes / smart_objects / problems
 명세와 다른 모양: analysis 는 {key: {params_hash: 항목}}(명세는 {key: 항목}) — Analyze 가지가 여럿이어도 서로
@@ -125,6 +135,15 @@ v3 (2026-10, M3)
   대기였을 것)·mock_specs(vlm=mock 으로 쓴 초안이 남은 스펙) → Run 보고서·확인 창 경고(mock 은 유료 Run 일 때만).
   Spec Draft·Run 실행이 프롬프트 종료로 취소되면(같은 큐의 다른 노드 실패) orphan 을 경고 로그로 남김.
   Import PSD 개요도 축소로 1px 보다 얇아진 사각형을 그림.
+- 타깃만 채택(10/13, TARGETS_ONLY_SPEC §9): Import PSD 가 레이어명과 스펙 _layer_targets 를 먼저 합친 뒤 한 번만
+  _new_targets(old = 이번 실행 전 크롭, origin 이음) — 캐시 경로는 채택이 걸린 크롭만 다시 계산, 스펙 오류는 Import 를 막지
+  않음(캐시 = 지금 타깃 유지, 다시 가져오기 = 레이어명만), 채택 경고·빠진 채택 타깃의 후보·의미가 바뀐 타깃의 후보는 보고서
+  줄로만. Prepare 채택 가드(채택·채택 해제 어느 쪽이든), Compose/Export 는 크롭·tid 가 없는 후보를 분석·빈 PSD 판단 전에
+  뺌(_plan 과 같은 _in_crop).
+  Spec Draft 위젯 apply(targets 기본 | full)·adopt(keep_loaded 뒤, run 에도 기본값 — 첫 await 전 바인딩): targets 는 화풍 문맥·
+  요청 없음(_project.json 안 씀, 사람이 쓴 style_note 만 전파), plan·merge_spec·mock_drafted·review.md 에 apply, 채택은
+  adopt_select 로 고른 크롭만 merge_spec(adopt), 보고서 [타깃만]·[제안]·adopt 토큰 경고. 시트는 초안 없는 실행에서도 채택 타깃을
+  제안 bbox 로 그리고, targets 면 고른 레퍼런스 테두리 없음.
 """
 
 from __future__ import annotations
@@ -707,6 +726,12 @@ def _eff_quad(cand: dict, entry: dict | None, use_registration: bool) -> list[fl
     return [float(v) for v in cand["quad"]]
 
 
+def _in_crop(crop: dict | None, tid: str) -> bool:
+    """후보의 크롭·타깃(tid)이 지금 매니페스트에 있음(보드와 같은 규칙). _plan 은 경고하고 빼고, Compose·Export 는 분석·
+    빈 PSD 판단 전에 뺀다."""
+    return crop is not None and any(t["tid"] == tid for t in crop["targets"])
+
+
 def _target_label(crop: dict, tid: str) -> str:
     """레이어명의 타깃 조각: 라벨이 크롭 부위명과 같으면(레거시) tid, 아니면 라벨."""
     for t in crop.get("targets") or []:
@@ -721,7 +746,7 @@ def _plan(root: str, m: dict, entries: dict, mask_source: str, use_registration:
           warns: list[str]) -> list[dict]:
     """[{crop, targets: [{tid, label, slices: [{cand, entry, quad, mask, msrc, area}], alts: [...]}]}] (아래 → 위).
     entries = _ensure_analysis 가 돌려준 {key: 분석 항목}(분석이 필요 없는 설정이면 {}). 보드에서 탈락시킨 후보(rejects)는
-    pick 이든 대안이든 넣지 않는다."""
+    pick 이든 대안이든 넣지 않는다. 크롭이나 타깃(tid)이 매니페스트에서 사라진 후보도 경고하고 뺀다(보드와 같게)."""
     crops = _crop_map(m)
     rejects = m.get("rejects") or {}
     groups: dict[tuple[str, str], dict] = {}
@@ -730,8 +755,9 @@ def _plan(root: str, m: dict, entries: dict, mask_source: str, use_registration:
         if c["key"] in rejects:
             continue
         crop = crops.get(c["crop_id"])
-        if crop is None:
-            warns.append(f"{c['key']}: 매니페스트에 크롭 {c['crop_id']} 가 없음(다시 가져온 PSD 에서 사라짐) → 제외")
+        if not _in_crop(crop, c["tid"]):
+            warns.append(f"{c['key']}: 매니페스트에 크롭 {c['crop_id']} 가 없음(다시 가져온 PSD 에서 사라짐) → 제외" if crop is None
+                         else f"{c['key']}: 크롭 {crop['id']} 에 타깃 {c['tid']} 가 없음(레이어명·채택에서 빠짐) → 제외")
             continue
         if not c.get("picked") and not alternates:
             continue
@@ -904,7 +930,8 @@ class BMKDesignPatchProject:
 # 노드 2 — Import PSD
 # ══════════════════════════════════════════════════════════════════════
 def _new_targets(parsed: dict, old_crop: dict | None) -> list[dict]:
-    """레이어명 타깃 → 매니페스트 타깃. 영문(ASCII) 문구는 name_en, 한글 문구·레거시는 label(번역은 Prepare)."""
+    """레이어명 타깃 → 매니페스트 타깃. 영문(ASCII) 문구는 name_en, 한글 문구·레거시는 label(번역은 Prepare).
+    parsed 가 store.merge_layer_targets 를 거쳤으면 채택 타깃의 origin 을 그대로 옮긴다(채택 타깃에만 키가 있음)."""
     old = {t["tid"]: t for t in (old_crop or {}).get("targets") or []}
     out = []
     for t in parsed["targets"]:
@@ -917,7 +944,32 @@ def _new_targets(parsed: dict, old_crop: dict | None) -> list[dict]:
             for k in ("name_en", "mode", "refs"):
                 if o.get(k) and not (k == "name_en" and name_en):
                     tt[k] = o[k]
+        if t.get("origin"):
+            tt["origin"] = t["origin"]
         out.append(tt)
+    return out
+
+
+def _adopt_changes(m: dict, crop: dict, prev: list[dict]) -> list[str]:
+    """채택으로 바뀐 타깃에 이미 후보가 있으면 보고서 줄: 빠진 채택 타깃(보드·Compose·Export 에서 빠짐), 라벨이 바뀐 타깃
+    (레거시 A 의 '부위 전체' → 채택 이름, 채택 문구 수정 등 — 그 tid 의 기존 후보는 옛 의미로 만든 것), 새로 채택한 tid 에
+    이미 있는 후보(PS 에서 같은 글자를 썼다 지운 타깃의 결과가 붙음). prev = 이번 실행 전 타깃."""
+    new = {t["tid"]: t for t in crop["targets"]}
+    old = {t["tid"] for t in prev}
+    out = []
+    for t in prev + [n for n in crop["targets"] if n["tid"] not in old and n.get("origin") == "adopt"]:
+        n = new.get(t["tid"])
+        if t["tid"] not in old:
+            what = f"새로 채택한 타깃 {t['tid']}({t['label']}) 에 같은 글자의 옛 후보가 있음 — 보드에서 확인"
+        elif n is None and t.get("origin") == "adopt":
+            what = f"채택 타깃 {t['tid']}({t['label']}) 가 빠짐 → 보드·Compose·Export 에서 제외"
+        elif n is not None and n["label"] != t["label"] and "adopt" in (t.get("origin"), n.get("origin")):
+            what = f"타깃 {t['tid']} 의미 바뀜({t['label']} → {n['label']}) — 기존 후보 확인"
+        else:
+            continue
+        cands = [c for c in m["candidates"] if c["crop_id"] == crop["id"] and c["tid"] == t["tid"]]
+        if cands:
+            out.append(f"{what}: 후보 {len(cands)} · pick {sum(1 for c in cands if c.get('picked'))}")
     return out
 
 
@@ -971,7 +1023,8 @@ class BMKDesignPatchImportPSD:
     CATEGORY = _CATEGORY
     DESCRIPTION = (
         "PSD 를 psd_tools 로 직접 읽어 크롭 rect(shape 벡터), 베이스(I2I_base + 클린플레이트), 크롭 그룹 사전 편집을 합성한 "
-        "크롭 소스를 매니페스트에 기록합니다. 레이어명 'NNN_부위 | A: …; B: …' 로 타깃을, refs_dir 에서 레퍼런스를 매칭합니다."
+        "크롭 소스를 매니페스트에 기록합니다. 레이어명 'NNN_부위 | A: …; B: …' 로 타깃을, refs_dir 에서 레퍼런스를 매칭합니다. "
+        "specs/<crop_id>.json 의 _layer_targets(Spec Draft 채택)는 레이어명에 적은 것처럼 타깃에 더합니다(PSD 문구가 있으면 PSD 우선)."
     )
     SEARCH_ALIASES = _ALIASES + ["import psd", "crop rect", "psd 가져오기", "크롭 영역", "클린플레이트"]
 
@@ -980,6 +1033,7 @@ class BMKDesignPatchImportPSD:
         t0 = time.time()
         root, m = _open(project)
         before = _snapshot(m)
+        old = {c["id"]: c for c in m["crops"]}  # 이번 실행 전 크롭(_import 가 crops 를 바꾸기 전)
         psd_path = _strip_path(psd_path)
         refs_dir = _strip_path(refs_dir)
         glossary_path = _strip_path(glossary_path)
@@ -999,6 +1053,7 @@ class BMKDesignPatchImportPSD:
         info_line = "캐시 적중(PSD·그룹 설정 같음, 다시 읽지 않음)"
         if not cached:
             info_line = self._import(root, m, psd_path, heavy)
+        notes = self._targets(root, m, old, cached)
         light = {"refs_dir": refs_dir.replace("\\", "/"), "refs_fingerprint": _dir_fp(refs_dir),
                  "glossary": glossary_path.replace("\\", "/"), "glossary_fingerprint": _file_fp(glossary_path)}
         if not cached or any(src.get(k) != v for k, v in light.items()):
@@ -1007,7 +1062,7 @@ class BMKDesignPatchImportPSD:
             m["source"].update(light)
         handle, conflicts = _commit(root, m, before, project)
         base = _load_rgb(root, m["base"])
-        report = "\n".join([self._report(m, psd_path, info_line, time.time() - t0)] + [f"  - {w}" for w in conflicts])
+        report = "\n".join([self._report(m, psd_path, info_line, time.time() - t0, notes)] + [f"  - {w}" for w in conflicts])
         logger.info("%s %s", _TAG, report.splitlines()[0])
         return (handle, _to_image(_overview(base, m["crops"])), report)
 
@@ -1026,7 +1081,6 @@ class BMKDesignPatchImportPSD:
         srcs = dpsd.crop_sources(psd, named, base_rgb, heavy["crop_pixels_group"], work_rect=binfo["work_rect"])
         pbar.update(1)
         ids = store.assign_crop_ids([p["name"] for p in parsed])
-        old = {c["id"]: c for c in m["crops"]}
         rect_count: dict[tuple, int] = {}
         for r in rects:
             rect_count[tuple(r["rect"])] = rect_count.get(tuple(r["rect"]), 0) + 1
@@ -1047,7 +1101,7 @@ class BMKDesignPatchImportPSD:
                 "rect": [int(v) for v in r["rect"]], "rect_source": r["rect_source"],
                 "source": store.save_png_ca(root, "inputs", s["rgba"]), "source_kind": s["kind"],
                 "alpha_frac": round(float(s["alpha_frac"]), 6),
-                "targets": _new_targets(p, old.get(cid)), "refs_auto": [], "warnings": warns,
+                "targets": [], "refs_auto": [], "warnings": warns,  # targets 는 _targets(채택과 합쳐 한 번)
             })
             pbar.update(1)
         m["crops"] = _plain(crops)
@@ -1060,21 +1114,52 @@ class BMKDesignPatchImportPSD:
         return "\n".join([line] + [f"  - 베이스: {w}" for w in binfo["warnings"]])
 
     @staticmethod
-    def _report(m: dict, psd_path: str, info_line: str, sec: float) -> str:
+    def _targets(root: str, m: dict, old: dict, cached: bool) -> dict[str, list[str]]:
+        """크롭 타깃 = 레이어명 + specs/<crop_id>.json 의 _layer_targets(채택)를 먼저 합친 뒤 한 번만 _new_targets
+        (old = 이번 실행 전 크롭 — 다시 가져와도 채택 타깃의 사람 name_en·mode·refs 를 잇는다). 캐시 경로는 _layer_targets 가
+        있거나 채택 타깃이 있는 크롭만 다시 계산(그 밖은 손대지 않음 — rev·cell_key 불변). 스펙을 못 읽거나 문법 오류면 캐시
+        경로는 지금 타깃 유지, 다시 가져오기는 레이어명 타깃만 — Import 는 실패하지 않는다.
+        반환 {crop_id: 보고서 줄}. crop.warnings 에 넣지 않는다(매 실행 다시 계산 — 저장하면 rev 가 흔들림)."""
+        notes: dict[str, list[str]] = {}
+        for c in m["crops"]:
+            prev = (old.get(c["id"]) or {}).get("targets") or []  # 캐시 경로에서는 c 자신 — 바꾸기 전 목록을 잡아 둔다
+            p = store.parse_crop_layer_name(c["layer_name"])
+            try:
+                ov = store.load_spec_override(root, c["id"])
+                if cached and "_layer_targets" not in ov and not any(t.get("origin") == "adopt" for t in prev):
+                    continue
+                merged, msgs = store.merge_layer_targets(p, ov.get("_layer_targets"))
+            except ValueError as e:
+                if cached:
+                    notes[c["id"]] = [f"지금 타깃 유지 — {e}"]
+                    continue
+                merged, msgs = p, [f"레이어명 타깃만 — {e}"]
+            c["targets"] = _new_targets(merged, old.get(c["id"]))
+            msgs += _adopt_changes(m, c, prev)
+            if msgs:
+                notes[c["id"]] = msgs
+        return notes
+
+    @staticmethod
+    def _report(m: dict, psd_path: str, info_line: str, sec: float, notes: dict[str, list[str]]) -> str:
         n_warn = sum(1 for c in m["crops"] if c["warnings"])
+        n_note = sum(len(v) for v in notes.values())
         lines = [f"Import PSD: {os.path.basename(psd_path)} {m['canvas'][0]}x{m['canvas'][1]} | 크롭 {len(m['crops'])}"
-                 f" (경고 {n_warn}) | rev {m['rev']} | {sec:.1f}s", info_line]
+                 f" (경고 {n_warn}{f' · 채택 {n_note}' if n_note else ''}) | rev {m['rev']} | {sec:.1f}s", info_line]
         known = {c["id"] for c in m["crops"]}
         orphans = sorted({c["crop_id"] for c in m["candidates"] if c["crop_id"] not in known})
         if orphans:
             lines.append(f"주의: 매니페스트 후보가 가리키는 크롭이 PSD 에서 사라짐: {', '.join(orphans)}")
         for i, c in enumerate(m["crops"]):
             x0, y0, x1, y1 = c["rect"]
-            tg = "; ".join(f"{t['tid']}: {t['name_en'] or t['label']}" for t in c["targets"])
+            tg = "; ".join(f"{t['tid']}: {t['name_en'] or t['label']}" + (" (채택)" if t.get("origin") == "adopt" else "")
+                           for t in c["targets"])
             lines.append(f"{i + 1:2d}. {c['id']} {c['name']} {x1 - x0}x{y1 - y0} [{c['source_kind']}] "
                          f"refs {len(c['refs_auto'])} | {tg}")
             for wmsg in c["warnings"]:
                 lines.append(f"      - {wmsg}")
+            for wmsg in notes.get(c["id"], []):
+                lines.append(f"      - 채택: {wmsg}")
         return "\n".join(lines)
 
     @classmethod
@@ -1362,6 +1447,21 @@ def _glossary(root: str, m: dict) -> dict:
     return g
 
 
+def _adopt_stale(crop: dict, ov: dict) -> str:
+    """Prepare 가드: 레이어명 + 스펙 _layer_targets 로 Import 가 만들 타깃(tid, 라벨)이 매니페스트와 다르면 그 이유, 같으면 "".
+    Draft 는 Import 뒤에 채택을 쓰거나 지우므로(mock 채택 양보) 그 큐의 매니페스트는 옛 타깃이다 — 그 크롭의 jobs 를 만들지
+    않아 Run 해시가 바뀐다(드라이런, 옛 타깃 과금 없음). 문구는 채택·채택 해제 어느 쪽에도 맞게."""
+    p = store.parse_crop_layer_name(crop["layer_name"])
+    try:
+        merged, _w = store.merge_layer_targets(p, ov.get("_layer_targets"))
+    except ValueError as e:
+        return f"채택 확인 못 함 — {e}"
+    want = [(t["tid"], t["label"]) for t in _new_targets(merged, None)]
+    if want != [(t["tid"], t["label"]) for t in crop["targets"]]:
+        return "매니페스트 타깃이 레이어명 + _layer_targets 와 다름 — 다음 큐에서 Import PSD 가 반영"
+    return ""
+
+
 class BMKDesignPatchPrepare:
     """크롭마다 스펙 → 평탄화 입력 → 변형별 결정적 프롬프트 → cell_key 로 GPT 작업 목록(jobs)을 만든다(호출 없음)."""
 
@@ -1434,6 +1534,13 @@ class BMKDesignPatchPrepare:
             cpath = _abs(root, crel)
             sha_of[cpath], rel_of[cpath] = store.pixel_sha(canvas_rgb), crel
             spec["canvas"] = cpath
+            if "_layer_targets" in ov or any(t.get("origin") == "adopt" for t in crop["targets"]):
+                stale = _adopt_stale(crop, ov)
+                if stale:
+                    warn_lines.append(f"  {crop['id']} {crop['name']}: 작업 없음 - {stale}")
+                    tiles.append(_label_tile([_fit(canvas_rgb, _THUMB)], [_ascii(crop["id"]), "0 jobs: targets out of sync"],
+                                             (255, 140, 120)))
+                    continue
             for key in ("guide", "before_paste"):
                 if spec.get(key):
                     p = spec[key] if os.path.isabs(spec[key]) else os.path.join(root, spec[key])
@@ -1661,7 +1768,9 @@ class BMKDesignPatchCompose:
         if not m["base"]:
             raise ValueError(f"{_TAG} 베이스가 없습니다 - Import PSD 를 먼저 실행하세요")
         warns: list[str] = []
-        picks = [c for c in m["candidates"] if c.get("picked") and c["key"] not in m["rejects"]]
+        crops = _crop_map(m)
+        picks = [c for c in m["candidates"] if c.get("picked") and c["key"] not in m["rejects"]
+                 and _in_crop(crops.get(c["crop_id"]), c["tid"])]
         entries: dict = {}
         if _needs_analysis(mask_source, bool(use_registration), bool(use_tone)):
             entries, done, _hit, w2 = _ensure_analysis(root, m, picks, project.get("analyze"))
@@ -1797,10 +1906,13 @@ class BMKDesignPatchExportPSD:
                 "include_base": bool(include_base), "include_crop_outlines": bool(include_crop_outlines),
                 "prefix": prefix}
         warns: list[str] = []
-        inc = [c for c in m["candidates"] if (c.get("picked") or alternates == "hidden_all") and c["key"] not in m["rejects"]]
+        crops = _crop_map(m)
+        want = [c for c in m["candidates"] if (c.get("picked") or alternates == "hidden_all") and c["key"] not in m["rejects"]]
+        inc = [c for c in want if _in_crop(crops.get(c["crop_id"]), c["tid"])]
         if not inc and skip_empty:  # 넣을 후보가 없으면 빈 PSD(베이스만, 수십 MB)를 쓰지 않는다 — Run 드라이런 직후의 전체 큐 등
             _h, conflicts = _commit(root, m, before)
-            msg = "내보낼 후보 없음(pick 0" + ("" if alternates == "hidden_all" else " · 대안 미포함") + ") → PSD 를 쓰지 않음"
+            msg = ("내보낼 후보 없음(pick 0" + ("" if alternates == "hidden_all" else " · 대안 미포함")
+                   + (f" · 크롭·타깃이 빠진 후보 {len(want)} 제외" if want else "") + ") → PSD 를 쓰지 않음")
             logger.info("%s Export: %s", _TAG, msg)
             return {"ui": {"text": [msg] + conflicts}, "result": ("",)}
         entries: dict = {}
@@ -2225,10 +2337,12 @@ def _draft_pending_text(n: int, style: int) -> str:
 
 
 def _draft_plan(root: str, m: dict, approve: str, backend_name: str, *, family: str, model: str, effort: str,
-                image_detail: str, draft_round: int, mode: str, only: list[str], concurrency: int, model_dir: str):
+                image_detail: str, draft_round: int, mode: str, only: list[str], concurrency: int, model_dir: str,
+                apply_mode: str):
     """§3.3 3단계: 크롭마다 build_crop_ctx → build_request, 화풍 문맥·요청, plan → approval.
-    model_dir 은 local_qwen 키(config.json sha8·transformers 버전)용. 반환 (ctxs, reqs{crop_id | STYLE_ID: Request},
-    style_req, plan, approval)."""
+    model_dir 은 local_qwen 키(config.json sha8·transformers 버전)용. apply_mode="targets" 는 화풍 문맥·요청을 만들지 않는다
+    (style_req None → 대기·실행·_project.json 쓰기 모두 화풍 없음, TARGETS_ONLY_SPEC §9.3).
+    반환 (ctxs, reqs{crop_id | STYLE_ID: Request}, style_req, plan, approval)."""
     refs_dir = (m.get("source") or {}).get("refs_dir") or ""
     glossary = _glossary(root, m)
     if len(_DRAFT_MEMO) > _DRAFT_MEMO_MAX:
@@ -2241,11 +2355,11 @@ def _draft_plan(root: str, m: dict, approve: str, backend_name: str, *, family: 
         ctxs.append(ctx)
         if not (ctx.spec_error or ctx.skip_reason):  # 건너뛰는 크롭은 plan 이 skipped 로 보고
             reqs[ctx.crop_id] = dvlm.build_request(ctx, **cfg)
-    style_ctx = dvlm.build_style_ctx(root, m, backend=family, memo=_DRAFT_MEMO)
+    style_ctx = None if apply_mode == "targets" else dvlm.build_style_ctx(root, m, backend=family, memo=_DRAFT_MEMO)
     style_req = dvlm.build_style_request(style_ctx, **cfg) if style_ctx is not None else None
     if style_req is not None:
         reqs[dvlm.STYLE_ID] = style_req
-    pl = dvlm.plan(root, ctxs, reqs, style_req, mode=mode, only=only)
+    pl = dvlm.plan(root, ctxs, reqs, style_req, mode=mode, only=only, apply_mode=apply_mode)
     return ctxs, reqs, style_req, pl, dvlm.approval(pl, approve, backend_name=backend_name, concurrency=concurrency)
 
 
@@ -2297,18 +2411,20 @@ def _drop_paths(spec: dict, paths) -> None:
             o.pop(k, None)
 
 
-def _merge_crop(cur, mode: str, *, ctx, req, crop: dict, done, prov: dict, project_style, refs_dir: str, glossary: dict,
-                out: dict):
-    """크롭 하나(§3.3 5단계 b·c·e): 정규화(지금 파일의 사람 값이 제약) → 3-way 병합 → 렌더 점검(실패면 spec=None, 쓰지
-    않음) → 병합 전후 V1 비교. preview 는 refresh 로 병합한 결과를 점검·비교에만 쓴다. write_spec 이 잠금 안에서
+def _merge_crop(cur, mode: str, *, ctx, req, crop: dict, done, prov: dict, project_style, apply_mode: str, adopt: bool,
+                refs_dir: str, glossary: dict, out: dict):
+    """크롭 하나(§3.3 5단계 b·c·e): 정규화(지금 파일의 사람 값이 제약) → 3-way 병합 → 렌더 점검(실패면 spec·rows·merged
+    없음, 쓰지 않음 — 이번 채택은 "채택 안 함" 메모) → 병합 전후 V1 비교. preview 는 refresh 로 병합한 결과를 점검·비교에만 쓴다. write_spec 이 잠금 안에서
     부른다(cur = 다시 읽은 파일). out 에 draft·check 를 남긴다. force 는 키마다 1회(dvlm.merge_mode)이고, force 정규화는
-    스펙의 사람 mode·refs 를 제약으로 쓰지 않는다(매니페스트 값만 — 스펙 값은 force 가 새 값으로 바꾼다)."""
+    스펙의 사람 mode·refs 를 제약으로 쓰지 않는다(매니페스트 값만 — 스펙 값은 force 가 새 값으로 바꾼다).
+    adopt = adopt 위젯이 이 크롭을 고름 — 채택 값은 merge_spec 이 cur 에 이미 있던 제안에서 계산한다(preview 는 보고만)."""
     draft = None
     mode = dvlm.merge_mode(cur, mode, req.key if done is not None else None)
     if done is not None:
         draft = dvlm.normalize(done["parsed"], ctx, req, constraints=dvlm.constraints_for(ctx, None if mode == "force" else cur),
                                glossary=glossary, repairs=done.get("repairs"))
-    kw = {"project_style": project_style, "provenance": prov}
+    kw = {"project_style": project_style, "provenance": prov, "apply_mode": apply_mode, "adopt": adopt,
+          "backend": req.backend}
     res = dvlm.merge_spec(cur, draft, ctx, mode=mode, **kw)
     after = dvlm.merge_spec(cur, draft, ctx, mode="refresh", **kw).spec if mode == "preview" else res.spec
     eff = after if after is not None else (cur or {})
@@ -2316,8 +2432,10 @@ def _merge_crop(cur, mode: str, *, ctx, req, crop: dict, done, prov: dict, proje
     out["draft"], out["check"] = draft, chk
     if after is None:
         return res
-    if not chk.ok:
-        res.spec, res.changed = None, False
+    if not chk.ok:  # 보고서가 쓰지 않은 diff·채택을 세지 않게
+        if any(r.path == "crop._layer_targets" and r.kind == "add" for r in res.rows):
+            res.notes.append("채택 안 함 — 렌더 점검 실패(쓰지 않음)")
+        res.spec, res.changed, res.rows, res.merged = None, False, [], None
         res.notes.append("렌더 점검 실패 — 쓰지 않음")
         return res
     _drop_paths(after, chk.dropped)
@@ -2326,10 +2444,14 @@ def _merge_crop(cur, mode: str, *, ctx, req, crop: dict, done, prov: dict, proje
     return res
 
 
-def _draft_write(root: str, m: dict, ctxs: list, reqs: dict, style_req, *, mode: str, only: list[str]):
+def _draft_write(root: str, m: dict, ctxs: list, reqs: dict, style_req, *, mode: str, only: list[str], apply_mode: str,
+                 adopt: list[str]):
     """§3.3 5단계(순서가 중요): (a) 화풍 done → normalize_style → _project.json, 그다음 크롭마다 지금 키의 done(없으면
     화풍 전파만)을 _merge_crop → write_spec(preview 는 쓰지 않음). 반환 (merges, checks, drafts, 경고).
-    쓰지 못한 파일은 vlm/<_WRITE_MARK> 에 남겨(Project 지문이 바뀜) 다음 큐에서 원장으로 다시 쓴다(0 호출)."""
+    targets 는 style_req 가 None 이라 _project.json 을 쓰지 않고, 그 style_note 가 사람 값일 때만 크롭에 전파한다(§9.2) —
+    _project.json 을 읽지 못하면 full 과 같이 크롭 style_note 를 건드리지 않는다("").
+    adopt = 채택할 crop_id(dvlm.adopt_select). 쓰지 못한 파일은 vlm/<_WRITE_MARK> 에 남겨(Project 지문이 바뀜) 다음 큐에서
+    원장으로 다시 쓴다(0 호출)."""
     refs_dir = (m.get("source") or {}).get("refs_dir") or ""
     glossary = _glossary(root, m)
     ledger = dvlm.Ledger(root)
@@ -2374,6 +2496,11 @@ def _draft_write(root: str, m: dict, ctxs: list, reqs: dict, style_req, *, mode:
                 warns.append(f"{dvlm.PROJECT_SPEC_ID}.json 을 쓰지 못함(다음 큐에서 원장으로 다시 씀, 0 호출) — {e}")
         warns += [f"화풍 초안: {f}" for f in sflags]
     project_style = "" if proj is None else proj.get("style_note")  # None = 키 없음(손대지 않은 크롭에서도 지움)
+    if apply_mode == "targets" and proj is not None:  # 노드가 쓴 화풍(C == B)은 양보 — None 이면 merge_spec 이 크롭 style_note 를 지움
+        pd = proj.get("_draft") if isinstance(proj.get("_draft"), dict) else {}
+        pw = pd.get("written") if isinstance(pd.get("written"), dict) else {}
+        if not isinstance(project_style, str) or project_style == pw.get("style_note"):
+            project_style = None
 
     for ctx in ctxs:
         cid = ctx.crop_id
@@ -2384,7 +2511,7 @@ def _draft_write(root: str, m: dict, ctxs: list, reqs: dict, style_req, *, mode:
         prov = _draft_provenance(req, done, hint=ctx.hint, refs_shown=list(req.shown_refs)) if done is not None else {}
         out: dict = {}
         merge = partial(_merge_crop, ctx=ctx, req=req, crop=crop, done=done, prov=prov, project_style=project_style,
-                        refs_dir=refs_dir, glossary=glossary, out=out)
+                        apply_mode=apply_mode, adopt=cid in adopt, refs_dir=refs_dir, glossary=glossary, out=out)
         cmode = _merge_mode(mode, only, cid)
         try:
             if preview:
@@ -2482,10 +2609,13 @@ def _confidence(rv) -> str:
     return str(c)[:1] if c else "?"
 
 
-def _draft_sheet(root: str, m: dict, ctxs: list, reqs: dict, pl: dict, drafts: dict, checks: dict) -> torch.Tensor:
+def _draft_sheet(root: str, m: dict, ctxs: list, reqs: dict, pl: dict, drafts: dict, checks: dict,
+                 apply_mode: str) -> torch.Tensor:
     """크롭 하나 = 타일 하나: 캔버스 320px + 정규화 bbox(A 빨강 B 초록 C 파랑 D 주황, 제안 타깃 회색 점선) | 보여 준
-    레퍼런스 최대 4장 160px(고른 것 초록 테두리) + ASCII 두 줄(crop_id 상태 타깃별 신뢰도 / 플래그). 크롭이 없으면 1x1.
-    이번 실행의 Draft(원장 done 정규화)가 없는 크롭은 스펙 파일의 bbox·_review 를 그린다."""
+    레퍼런스 최대 4장 160px(고른 것 초록 테두리 — targets 는 Prepare 가 VLM 이 고른 레퍼런스를 쓰지 않아 생략) + ASCII 두 줄
+    (crop_id 상태 타깃별 신뢰도 / 플래그). 크롭이 없으면 1x1. 이번 실행의 Draft(원장 done 정규화)가 없는 크롭은 스펙 파일의
+    bbox·_review 를 그리고, 스펙에 bbox 가 없는 채택 타깃(origin adopt)은 _draft.suggestions 에서 tid·문구가 같은 제안의 bbox
+    (사람이 _layer_targets 문구를 바꾼 타깃은 그리지 않음)."""
     crops = _crop_map(m)
     ledger = dvlm.Ledger(root)
     pending = {u.crop_id: u.state for u in pl["units"]}
@@ -2510,6 +2640,11 @@ def _draft_sheet(root: str, m: dict, ctxs: list, reqs: dict, pl: dict, drafts: d
             review = {str(t.get("id")): t.get("_review") for t in ts}
             sugg, flags = [], []
             picked = {r for t in ts for r in t.get("refs") or [] if isinstance(r, str)}
+            sd = spec.get("_draft") if isinstance(spec.get("_draft"), dict) else {}
+            adopted = {t.tid: t.label for t in ctx.targets if t.origin == "adopt"}
+            for e in dvlm.suggestion_targets(sd.get("suggestions")):
+                if e["suggestion"] is not None and adopted.get(e["tid"]) == e["text"] and boxes.get(e["tid"]) is None:
+                    boxes[e["tid"]] = e["suggestion"].get("bbox")
         if chk is not None:
             flags += list(chk.flags) + [f"!{p}" for p in chk.problems]
         if cid in skipped:
@@ -2555,7 +2690,7 @@ def _draft_sheet(root: str, m: dict, ctxs: list, reqs: dict, pl: dict, drafts: d
                     rc = _fit(dprompt.flatten_ref(pim), _THUMB)
             except OSError:
                 continue
-            if im.name in picked:
+            if apply_mode != "targets" and im.name in picked:
                 ImageDraw.Draw(rc).rectangle([0, 0, _THUMB - 1, _THUMB - 1], outline=_PICK_COLOR, width=4)
             cells.append(rc)
         conf = " ".join(f"{tid}:{_confidence(rv)}" for tid, rv in review.items())
@@ -2617,6 +2752,20 @@ class BMKDesignPatchSpecDraft:
                 "keep_loaded": ("BOOLEAN", {"default": False,
                                             "tooltip": "local_qwen 을 실행 뒤에도 VRAM 에 남깁니다(ComfyUI 의 Unload 버튼으로는 "
                                                        "내려가지 않음 — 끄고 한 번 실행하면 vlm 이 무엇이든 내림)."}),
+                "apply": (list(dvlm.APPLY_MODES), {
+                    "default": dvlm.DEFAULT_APPLY,
+                    "tooltip": "스펙에 쓰는 범위. targets = 타깃 영문 이름(레거시 A 제외 — adopt 로)·bbox 만 쓰고 mode·refs·detail·"
+                               "preserve·style_note 등은 쓰지 않음(노드가 전에 쓴 값은 지움, 사람 값은 유지), 화풍 호출 없음 → "
+                               "렌더는 레이어명 + 용어집에 VLM 이름만 더함(용어집 없는 한글 라벨 타깃 — 보고서에서 확인). "
+                               "full = 모든 필드(참고용 — 가이드의 확인 목록을 볼 것). 캐시 키 밖이라 full → targets 는 0 호출, "
+                               "targets → full 은 같은 키 크롭 0 호출이지만 원장에 없는 화풍(화풍 신규)과 채택 등으로 타깃이 "
+                               "바뀐 크롭(타깃 추가)은 재초안 승인 대기."}),
+                "adopt": ("STRING", {
+                    "default": "",
+                    "tooltip": "채택할 크롭(쉼표: crop_id, NNN, all). 보고서 [제안] 에 보인 제안 타깃(PSD 레이어명에 문구가 없는 "
+                               "타깃)을 specs/<crop_id>.json 의 _layer_targets 에 씀(0 호출) → 다음 큐에서 Import PSD 가 타깃으로 "
+                               "더함. 이번 실행에 처음 받은 제안은 채택하지 않음(보고서를 먼저 봄). 큐 직후 비워지는 1회 명령이고, "
+                               "쓴 _layer_targets 는 남음(되돌리기 = 스펙에서 지움)."}),
             },
             "hidden": {"auth_token": "AUTH_TOKEN_COMFY_ORG", "api_key": "API_KEY_COMFY_ORG",
                        "usage_source": "COMFY_USAGE_SOURCE", "unique_id": "UNIQUE_ID"},
@@ -2625,14 +2774,19 @@ class BMKDesignPatchSpecDraft:
     RETURN_TYPES = (PROJECT_TYPE, "STRING", "IMAGE")
     RETURN_NAMES = ("project", "report", "sheet")
     OUTPUT_TOOLTIPS = ("프로젝트 핸들(rev 그대로 + 초안 대기 요약 draft — 하류 Run 이 경고).",
-                       "드라이런/실행 보고(나쁜 것부터: 실패 > 신뢰 낮음 > 경고 > 정상, diff·제안 레이어명·용어집 제안).",
-                       "크롭별 캔버스 + 타깃 bbox(A 빨강 B 초록 C 파랑 D 주황, 제안 회색 점선) + 레퍼런스(고른 것 초록 테두리).")
+                       "드라이런/실행 보고(나쁜 것부터: 실패 > 신뢰 낮음 > 경고 > [제안] > 정상, diff·채택 안내(adopt 에 넣을 값)·"
+                       "용어집 제안). apply=targets 면 첫 줄에 [타깃만].",
+                       "크롭별 캔버스 + 타깃 bbox(A 빨강 B 초록 C 파랑 D 주황, 제안 회색 점선, 채택 타깃은 그 제안의 bbox) + "
+                       "레퍼런스(고른 것 초록 테두리 — full 만).")
     FUNCTION = "run"
     OUTPUT_NODE = True
     CATEGORY = _CATEGORY
     DESCRIPTION = (
-        "크롭마다 VLM 으로 specs/<crop_id>.json 초안(타깃 이름·모드·레퍼런스·detail·must_not·preserve 등)을 씁니다. 입력은 크롭 "
-        "캔버스, NNN_ 레퍼런스, 한국어 레이어 라벨, 용어집이고 화풍(style_note)은 프로젝트당 1회 specs/_project.json 에 씁니다. "
+        "크롭마다 VLM 으로 specs/<crop_id>.json 초안을 씁니다. 입력은 크롭 캔버스, NNN_ 레퍼런스, 한국어 레이어 라벨, 용어집. "
+        "apply=targets(기본)는 타깃 영문 이름·bbox 만 써서 문장 필드 없이 렌더하고(용어집 없는 한글 라벨 타깃만 VLM 이름, 화풍 "
+        "호출 없음), full 은 모드·레퍼런스·"
+        "detail·must_not·preserve 와 화풍(specs/_project.json, 프로젝트당 1회)까지 씁니다(참고용). VLM 이 제안한 타깃은 adopt 에 "
+        "크롭을 적으면 스펙 _layer_targets 에 쓰고(0 호출) 다음 큐의 Import PSD 가 타깃으로 더합니다. "
         "approve 가 지금 대기 목록의 해시와 같을 때만 새로 호출하고(openai 유료, local_qwen 은 ComfyUI 모델을 내림), 아니면 "
         "새 호출 없이 드라이런을 보고합니다(원장에 이미 받은 초안은 write_mode 대로 병합·쓰기 — force 는 바로 적용). "
         "사람이 고친 값은 force 외에는 덮지 않고, 같은 입력이면 다시 큐에 넣어도 호출 0건입니다. "
@@ -2660,13 +2814,18 @@ class BMKDesignPatchSpecDraft:
         return True
 
     async def run(self, project, approve, vlm, effort, image_detail, write_mode, only, draft_round, concurrency,
-                  credit_cap, keep_loaded, auth_token=None, api_key=None, usage_source=None, unique_id=None, **_stale):
-        # **_stale: 옛 워크플로가 지금은 없는 입력을 링크해 와도 인자 바인딩(첫 await 전)에서 실패하지 않게(hidden 토큰 기록 방지)
+                  credit_cap, keep_loaded, apply=dvlm.DEFAULT_APPLY, adopt="", auth_token=None, api_key=None,
+                  usage_source=None, unique_id=None, **_stale):
+        # **_stale: 옛 워크플로가 지금은 없는 입력을 링크해 와도 인자 바인딩(첫 await 전)에서 실패하지 않게(hidden 토큰 기록 방지).
+        # apply·adopt 의 기본값도 같은 이유 — 검증을 거치지 않고 실행기에 들어온 프롬프트에 그 입력이 없을 때
         t0 = time.time()
         # 첫 줄부터 await: 이후 예외는 ComfyUI 의 대기 노드 경로로 보고되어 입력값(hidden 토큰)이 기록되지 않는다
         # (코어가 run 전에 입력 목록을 자르다 나는 예외는 남은 한계 — M3_SPEC §11.6 F1)
         root, m = await asyncio.to_thread(_open, project)
         dvlm.check_widgets(vlm, effort, image_detail, write_mode)
+        if apply not in dvlm.APPLY_MODES:
+            raise ValueError(f"{_TAG} apply 값이 잘못되었습니다: {apply!r} (선택지: {', '.join(dvlm.APPLY_MODES)})")
+        adopt_ids, adopt_notes = dvlm.adopt_select(adopt, [c["id"] for c in m["crops"]])
         family, model = dvlm.parse_vlm_choice(vlm)
         mock_forced = family == "openai" and runner.mock_enabled(root)
         if mock_forced:
@@ -2681,7 +2840,7 @@ class BMKDesignPatchSpecDraft:
                                                "unique_id": unique_id}, model_dir=model_dir, keep_loaded=bool(keep_loaded))
         cfg = {"family": family, "model": model, "effort": effort, "image_detail": image_detail,
                "draft_round": int(draft_round), "mode": write_mode, "only": tokens, "concurrency": int(concurrency),
-               "model_dir": model_dir}
+               "model_dir": model_dir, "apply_mode": apply}
         watch = []  # 네트워크 단위(재폴링·새 호출) — 끝난 뒤 created 로 남으면 재폴링 표시(_mark_repoll)
         try:
             ctxs, reqs, style_req, pl, ap = await asyncio.to_thread(_draft_plan, root, m, approve, backend.name, **cfg)
@@ -2696,7 +2855,8 @@ class BMKDesignPatchSpecDraft:
                                               image_detail=image_detail, concurrency=int(concurrency),
                                               credit_cap=int(credit_cap), unique_id=unique_id)
             merges, checks, drafts, warns = ({}, {}, {}, []) if idle else await asyncio.to_thread(
-                _draft_write, root, m, ctxs, reqs, style_req, mode=write_mode, only=tokens)
+                _draft_write, root, m, ctxs, reqs, style_req, mode=write_mode, only=tokens, apply_mode=apply,
+                adopt=adopt_ids)
             if to_run or (write_mode != "preview" and any(r.spec is not None for r in merges.values())):
                 # 원장·스펙 _draft 가 바뀜 → 지금 상태로 다시 계획(ui·보고서의 해시 = 다음 큐가 계산할 해시)
                 ctxs, reqs, style_req, pl_after, ap_after = await asyncio.to_thread(
@@ -2711,20 +2871,23 @@ class BMKDesignPatchSpecDraft:
                       "only": tokens, "approve": approve, "approved_now": ap["approved_now"],
                       "pending_hash_before": ap["pending_hash"], "blocked_before": len(ap["blocked"]),
                       "mock_forced": mock_forced, "draft_round": int(draft_round), "concurrency": int(concurrency),
-                      "credit_cap": int(credit_cap), "rev": m["rev"], "seconds": round(time.time() - t0, 1)}
+                      "credit_cap": int(credit_cap), "rev": m["rev"], "seconds": round(time.time() - t0, 1),
+                      "apply": apply}
             lines = dvlm.format_report(header=header, plan=pl_after, approval=ap_after, run=run_rep, merges=merges,
                                        checks=checks, drafts=drafts, ctxs=ctxs).splitlines()
             if keep_loaded and (family == "local_qwen" or _qwen_resident()):  # 다른 vlm 이어도 남아 있는 Qwen 은 알린다
                 lines.insert(1, dvlm.QWEN_RESIDENT_WARNING)
             if idle:
-                lines.append("force 는 only(crop_id·NNN·style)가 필요합니다 — 호출·쓰기 없이 보고만 함")
+                lines.append("force 는 only(crop_id·NNN·style)가 필요합니다 — 호출·쓰기 없이 보고만 함"
+                             + (" (adopt 도 쓰지 않음)" if adopt_ids else ""))
+            lines += adopt_notes
             if not has_auth and (pl_after["units"] or auth_held):
                 lines.append("주의: comfy.org 로그인 필요 — 로그인(또는 API 키) 정보가 없어 호출하지 않았습니다. "
                              "ComfyUI 에 로그인한 뒤 큐에 넣으세요")
             lines += [f"  - {w}" for w in warns]
             text = "\n".join(lines)
-            await asyncio.to_thread(_draft_files, root, dvlm.review_markdown(ctxs, merges, checks, drafts), text)
-            sheet = await asyncio.to_thread(_draft_sheet, root, m, ctxs, reqs, pl_after, drafts, checks)
+            await asyncio.to_thread(_draft_files, root, dvlm.review_markdown(ctxs, merges, checks, drafts, apply), text)
+            sheet = await asyncio.to_thread(_draft_sheet, root, m, ctxs, reqs, pl_after, drafts, checks, apply)
             logger.info("%s %s", _TAG, lines[0] if lines else "Spec Draft")
             entry = {"pending_hash": ap_after["pending_hash"], "pending": len(pl_after["units"]),
                      "reasons": ap_after["reasons"], "orphan_retries": ap_after["orphan_retries"],
@@ -2739,7 +2902,7 @@ class BMKDesignPatchSpecDraft:
             live = {c["id"] for c in m["crops"]} | {dvlm.PROJECT_SPEC_ID}
             unwritten = sum(1 for s in await asyncio.to_thread(_unwritten_specs, root) if s in live)
             held = pl_after["filtered"]
-            mock_specs = await asyncio.to_thread(dvlm.mock_drafted, root, ctxs) if family == "mock" else 0
+            mock_specs = await asyncio.to_thread(dvlm.mock_drafted, root, ctxs, apply) if family == "mock" else 0
             branch = {"pending": entry["pending"], "pending_hash": entry["pending_hash"],
                       "refresh_available": entry["refresh_available"],
                       "pending_style": sum(1 for u in pl_after["units"] if u.crop_id == dvlm.STYLE_ID),

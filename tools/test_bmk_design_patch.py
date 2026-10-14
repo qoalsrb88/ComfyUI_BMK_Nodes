@@ -5,7 +5,7 @@ r"""Design Patch 통합 테스트 (M1_SPEC §6, M2_SPEC §6, M3_SPEC §7): 보�
     python_embeded\python.exe -X utf8 -W ignore ComfyUI\custom_nodes\ComfyUI_BMK_Nodes\tools\test_bmk_design_patch.py [--quick]
 
 단위(합성 데이터, --quick 도 실행)
-  S  store: 프로젝트 이름, 매니페스트 원자 저장, 내용 주소 저장, crop_id, 레이어명 파싱, 용어집, 레퍼런스 매칭,
+  S  store: 프로젝트 이름, 매니페스트 원자 저장, 내용 주소 저장, crop_id, 레이어명 파싱, _layer_targets 병합(TO-S), 용어집, 레퍼런스 매칭,
      GPT 출력 크기(명세 검증표 + 전수/무작위), cell_key
   P  prompt: 렌더러 바이트 일치(rendered/*.txt), 시제품 대조, 변형, 평탄화, spec_from_manifest
   A  analysis: 배치, Lab, 정합 부호·가드·affine·exclude_mask, 색 맞춤, ΔE, 자동 마스크(합성 원), 톤 보정장, 게이트
@@ -14,17 +14,22 @@ r"""Design Patch 통합 테스트 (M1_SPEC §6, M2_SPEC §6, M3_SPEC §7): 보�
   M3-V Spec Draft vlm(합성·mock·가짜 api·가짜 Qwen libs, M3_SPEC §7): import 순도·위젯·문맥·키·프롬프트·스키마·본문·JSON 추출·
        정규화·렌더 왕복·3-way 병합·render_check·write_spec·원장·계획/승인·추정·백엔드 3종·credit_cap·레이어명·보고서
        + 리뷰 회귀 V22–V24(V24 = 2차: 부정구·location 접두·린트·공유 범례·타깃 추가 고정점·재폴링 상한·credit_cap 안내)
+       + V25 타깃만·채택(TO-V: apply=targets 양보 표·레거시 이름·왕복 고정점·대기 판정·adopt 토큰·채택 값·거절·지운 타깃·
+         제안 글자·3-way·sticky·mock 채택 양보·MockVLM suggest·보고서 [타깃만]/[제안](preview)/adopt 안내·플래그·review.md 참고)
        + 평가 도구 대조 E0(떠 있는 수량사·금지어 경계·미보고 크레딧 추정 포함), 자기 시험 E1–E4(참조 폴더가 있을 때:
        determinism·입력 바뀜·ab-setup 출처·ab-sheet 라벨 고정(루트 대소문자 무관)·ab-tally Borda 승)
 회귀·노드(--quick 이면 생략. comfy 는 CPU 로 import)
   M2-R C* runner ↔ comfy_api_nodes(내장 GPT 노드와 sync_op 인자 동등성 등, 가짜 sync_op — 유료 호출 없음)
   M3-C vlm ↔ comfy_api_nodes(내장 OpenAIChatNode 요청 본문 모양, 모델별 effort 표)
   M2-N 노드(합성 프로젝트, mock): Prepare calls_per_cell·승인 해시, Run 드라이런/승인/재실행 0 호출/n 변경 재승인/wave
-       이벤트·이어가기/인터럽트, Review, rejects 제외, _commit 병합·충돌 보고
+       이벤트·이어가기/인터럽트, Review, rejects 제외, _commit 병합·충돌 보고, 채택 _layer_targets(N10: Import 한 번 병합·
+       캐시 경로·스펙 오류·Prepare 가드(채택·해제)·Compose·Export 의 없는 타깃 후보 제외(분석·빈 PSD 판단 포함),
+       합성 PSD + 크롭 rect 대역)
   M3-N Spec Draft 노드(합성, mock·가짜 api·가짜 Qwen): 정의, 드라이런→승인→0 호출, 사람 편집 보존, 인증 없음, 인터럽트·재폴링,
        Run 경고, 화풍 전파, 사라진 크롭의 스펙 파일 보고, local_qwen 승인·VramError·키의 model_dir·남은 Qwen 언로드, 보드 라우트,
        new_targets 복제, force 1회, fill 키 가드, 타깃 추가 뒤 같은 큐 바이트 고정(N14), 실제 execution.PromptExecutor
-       (RAM_PRESSURE·CLASSIC) 캐시 아래 재승인·재폴링·mock 끔
+       (RAM_PRESSURE·CLASSIC) 캐시 아래 재승인·재폴링·mock 끔, apply=targets 흐름(N17), 채택 adopt → Import → Prepare 가드·
+       jobs·시트·Run 드라이런(N18·N19, TO-D) — JS 시나리오 J8 = adopt 1회용(--quick 에서도)
   참조 폴더 H:\BmkNodeDesign\MultiLayerCropEdit 가 있을 때:
   R1 03 rect 22/22 · R2 크롭 소스 ≥15/19 비트 일치 · R3 05 harvest · R4 SO 배치 MAE ≤0.25 · RW 풀캔버스 SO PSD · RX 템플릿 상수
   R5 정합 기대값 · R6 자동 마스크 IoU · R7 톤 홀드아웃 · G 게이트   (05 PSD 를 psd 모듈로 읽어 입력 구성)
@@ -459,6 +464,52 @@ def store_unit():
     expect_raises(lambda: P("002_x | A: one; A: two"), "중복 라벨 → ValueError", contains="두 번")
     expect_raises(lambda: P(""), "빈 레이어 이름")
     expect_raises(lambda: P("| A: x"), "크롭 부분 빈 이름")
+
+    # ─────────────────────────────────────────────────────────────────
+    # 5b. merge_layer_targets (TARGETS_ONLY_SPEC §9.5)
+    # ─────────────────────────────────────────────────────────────────
+    section("5b. merge_layer_targets: 스펙 _layer_targets(채택) + 레이어명 (TARGETS_ONLY §9.5)")
+    M = store.merge_layer_targets
+    legacy = P("003_펜이름표")
+    AB = [{"tid": "A", "text": "name badge", "origin": "adopt"}, {"tid": "B", "text": "red pen", "origin": "adopt"}]
+    r, w = M(legacy, "A: name badge; B: red pen")
+    check(r["targets"] == AB and w == [] and {k: r[k] for k in ("name", "nnn", "part", "warnings")}
+          == {k: legacy[k] for k in ("name", "nnn", "part", "warnings")}, f"TO-S1 레거시 A 빈 문구 → 채택 A·B {r}")
+    check(legacy["targets"] == [{"tid": "A", "text": ""}], "TO-S1 입력(parsed)은 바꾸지 않음")
+    for pasted in ("003_펜이름표 | A: name badge; B: red pen", "003_펜이름표｜A：name badge；B：red pen",
+                   "  003_펜이름표|A: name badge | B: red pen ;"):
+        check(M(legacy, pasted) == (r, []), f"TO-S2 앞의 '<크롭 이름> |' 는 떼어 냄 {pasted!r}")
+    expect_raises(lambda: M(legacy, "004_다른 | A: x"), "TO-S2 다른 크롭 이름 앞머리 = 라벨 없는 조각", contains="라벨 없는 조각")
+    expect_raises(lambda: M(legacy, "name badge; B: red pen"), "TO-S3 라벨 없는 조각 → ValueError", contains="라벨 없는 조각")
+    expect_raises(lambda: M(legacy, "003_펜이름표"), "TO-S3 크롭 이름만(채택 없음) = 라벨 없는 조각", contains="라벨 없는 조각")
+    expect_raises(lambda: M(legacy, "B: x; b: y"), "TO-S3 같은 라벨 두 번 → ValueError", contains="두 번")
+    expect_raises(lambda: M(legacy, "; ".join(f"{chr(65 + i % 26)}: t{i}" for i in range(27))),
+                  "TO-S3 27개 = 같은 라벨 두 번(A–Z 라 26개가 상한) → ValueError", contains="두 번 있습니다(A)")
+    for bad in (["A: x"], {"A": "x"}, 3, True):
+        expect_raises(lambda b=bad: M(legacy, b), f"TO-S3 문자열 아님 {bad!r} → ValueError", contains="문자열")
+    r, w = M(legacy, "A: ; B: red pen")
+    check(r["targets"] == [{"tid": "A", "text": ""}, AB[1]] and len(w) == 1 and "A" in w[0] and "비어" in w[0],
+          f"TO-S4 빈 문구 항목은 무시 + 경고(레거시 A 는 부위 전체 그대로) {r['targets']} {w}")
+    r, w = M(legacy, "B: red pen")
+    check(r["targets"] == [{"tid": "A", "text": ""}, AB[1]] and w == [], "TO-S4 A 없이 B 만 채택 = 레거시 A + 채택 B")
+    for lname in ("002_토스트 | A: ; B: pin", "002_토스트 |"):
+        q = P(lname)
+        r, w = M(q, "A: toast clip")
+        check(r["targets"][0] == {"tid": "A", "text": "toast clip", "origin": "adopt"} and r["targets"][1:] == q["targets"][1:]
+              and w == [] and r["warnings"] == q["warnings"], f"TO-S5 레거시가 아닌 빈 문구 타깃도 채택 문구 {lname!r} → {r['targets']}")
+    named = P("010_손 | A: 검지; B: tape")
+    r, w = M(named, "D: pink plaster; Ｃ：ring")
+    check(r["targets"] == named["targets"] + [{"tid": "D", "text": "pink plaster", "origin": "adopt"},
+                                              {"tid": "C", "text": "ring", "origin": "adopt"}] and w == [],
+          f"TO-S6 PSD 에 없는 tid = PSD 타깃 뒤에 문자열 순서로(전각 라벨) {r['targets']}")
+    r, w = M(named, "B: bandage, C: ratio 1:2 ring")
+    check(r["targets"] == named["targets"] + [{"tid": "C", "text": "ratio 1:2 ring", "origin": "adopt"}]
+          and len(w) == 1 and "'tape'" in w[0] and "이김" in w[0], f"TO-S7 둘 다 문구가 있고 다르면 PSD 우선 + 경고 {w}")
+    r, w = M(named, "A: 검지; B: tape")
+    check(r["targets"] == named["targets"] and w == [], "TO-S7 같은 문구면 PSD 그대로, 경고 없음(origin 없음)")
+    for empty in (None, "", "   ", " ; "):
+        r, w = M(named, empty)
+        check(r == named and w == [] and r["targets"] is not named["targets"], f"TO-S8 {empty!r} → 그대로(사본)")
 
     # ─────────────────────────────────────────────────────────────────
     # 6. 용어집
@@ -4675,6 +4726,26 @@ def m2_runner_unit(with_comfy: bool):
         c = next(c for c in m["candidates"] if c["key"] == f"r_{ck0[:12]}_0_0_B")
         check(c["tid"] == "B" and c["file"] == f"cands/{ck0}/r0_0.png" and c["origin_info"]["tids"] == ["A", "B"],
               "같은 파일을 타깃마다 후보로")
+        # 크롭에서 빠진 타깃(채택 해제 등): 후보 tid·key 는 작업의 것 — 재조정이 중복을 만들거나 남은 타깃으로 옮기지 않음
+        c1 = m["crops"][1]["id"]
+        keys = sorted(c["key"] for c in m["candidates"])
+        keys1 = [c["key"] for c in m["candidates"] if c["crop_id"] == c1]
+
+        def drop_targets(m):  # 크롭 0 은 B 를 잃고, 크롭 1 은 작업 타깃 A 대신 C 만
+            m["crops"][0]["targets"] = [t for t in m["crops"][0]["targets"] if t["tid"] != "B"]
+            m["crops"][1]["targets"][0]["tid"] = "C"
+
+        set_manifest(root, drop_targets)
+        r_same = runner.reconcile_ledger(root)
+        set_manifest(root, lambda m: m.update(candidates=[]))
+        r_new = runner.reconcile_ledger(root)
+        tid_of = {c["key"]: c["tid"] for c in store.load_manifest(root)["candidates"]}
+        check(r_same["candidates"] == [] and r_same["warnings"] == [] and sorted(tid_of) == keys
+              and {tid_of[k] for k in keys0} == {"A", "B"} and {tid_of[k] for k in keys1} == {"A"},
+              f"빠진 타깃: 후보 tid·key = 작업의 것(크롭 첫 타깃으로 옮기지 않음), 재조정 중복 없음 {r_same} {tid_of}")
+        check(len(r_new["warnings"]) == 1 and f"타깃 A 이 크롭 {c1} 에 없음" in r_new["warnings"][0]
+              and runner.reconcile_ledger(root)["warnings"] == [],
+              f"작업 타깃이 하나도 크롭에 없으면 등록할 때 한 번만 경고(보드·Compose·Export 가 뺌) {r_new['warnings']}")
         # 옛 셀(jobs 에서 사라짐)의 recoverable 은 계속 복구 대상
         root = make_project("r15_stale", 1, n=1)
         ck = jobs_of(root)[0]
@@ -6520,8 +6591,11 @@ def vlm_unit():
         check(not moved, f"키 밖이어야 하는 것이 키를 바꿈: {moved}")
         params = set(inspect.signature(dvlm.build_request).parameters)
         check(params >= {"ctx", "backend", "model", "effort", "image_detail", "draft_round"}
-              and not params & {"write_mode", "mode", "only", "concurrency", "credit_cap", "keep_loaded"},
-              f"build_request 인자에 write_mode·only·concurrency·credit_cap·keep_loaded 없음(키 밖) {sorted(params)}")
+              and not params & {"write_mode", "mode", "only", "concurrency", "credit_cap", "keep_loaded", "apply", "apply_mode",
+                                "adopt"},
+              f"build_request 인자에 write_mode·only·concurrency·credit_cap·keep_loaded·apply·adopt 없음(키 밖) {sorted(params)}")
+        check(list(inspect.signature(dvlm.check_widgets).parameters) == ["choice", "effort", "image_detail", "write_mode"],
+              "TO-V0 check_widgets 에 apply·adopt 없음(apply 를 바꿔도 키·위젯 검사 그대로)")
         kq = key_of(fam="local_qwen")
         check(kq == key_of(fam="local_qwen", effort="low", image_detail="original") and kq != k0,
               "local_qwen 키는 effort·detail 과 무관, openai 와 다름")
@@ -8663,6 +8737,383 @@ def vlm_unit():
         check(rep.stopped_reason == "credit_cap" and rep.launched == 2 and getattr(rep, "cap_need", None) == 0,
               f"지출 뒤 cap 에 닿은 중지는 cap_need 0(일반 '중지: credit_cap 도달' 문구) {rep.launched} {getattr(rep, 'cap_need', None)}")
 
+    def t_v25():
+        section("V25 타깃만(apply=targets)·채택(adopt, TARGETS_ONLY_SPEC §9): 양보 표·레거시 이름·왕복 고정점·대기 판정·adopt 토큰·"
+                "채택 값·거절·지운 타깃·제안 글자·3-way·sticky·mock 채택 양보·MockVLM suggest·보고서 [타깃만]/[제안](preview 포함)")
+        f_last = dataclasses.fields(dvlm.TargetIn)[-1]
+        check(dvlm.APPLY_MODES == ("targets", "full") and dvlm.DEFAULT_APPLY == "targets" and f_last.name == "origin"
+              and f_last.default is None, "TO-V1 APPLY_MODES·DEFAULT_APPLY, TargetIn 마지막 필드 origin(기본 None — 위치 인자 7개 그대로)")
+        root, refs_dir, m, crop, ctx, req = toast_ctx("v25")
+        B = _vt("B", name="red hairpin bar", ref_object="the thin red bar", must_not=[])
+        d = nz(ctx, req, [_vt("A"), B])
+        SENT = set(dvlm.OWNED_TARGET) - {"name", "bbox"}
+
+        def mg(cur, dd, mode="fill", c=ctx, apply_mode="targets", ps=None, pv=None, **kw):
+            return dvlm.merge_spec(copy.deepcopy(cur), dd, c, mode=mode, project_style=ps, apply_mode=apply_mode,
+                                   provenance=(pv or _vprov(req)) if dd is not None else {}, **kw)
+
+        def tg(s, tid="A"):
+            return next((t for t in (s or {}).get("targets") or [] if t.get("id") == tid), {})
+
+        def kinds(r):
+            return {(x.path, x.kind) for x in r.rows}
+
+        def tw(c, i, **kw):  # 타깃 i 만 바꾼 ctx
+            ts = list(c.targets)
+            ts[i] = dataclasses.replace(ts[i], **kw)
+            return dataclasses.replace(c, targets=ts)
+
+        def v1_of(spec):
+            return P.variants(P.spec_from_manifest(crop, None, refs_dir, {}, spec))["V1_standard"]["prompt"]
+
+        # ── 양보 표: 초안 유무 × project_style(None / "" / 사람 값) × 노드 값·사람 값. "" = _project.json 을 못 읽음 → 화풍은 그대로
+        s_full = mg(None, d, apply_mode="full", ps="style one").spec
+        check(s_full.get("preserve") and s_full.get("style_note") == "style one" and SENT & set(tg(s_full)),
+              "준비: full 스펙에 노드가 쓴 preserve·style_note·문장 필드")
+        h = copy.deepcopy(s_full)
+        tg(h)["detail"], h["preserve"], h["style_note"] = "human detail", ["the human braid"], "human crop style"
+        bad = []
+        for dd in (None, d):
+            for ps in (None, "", "human style"):
+                sp = mg(s_full, dd, ps=ps).spec or s_full
+                got = ({t["id"]: set(t) - {"id", "_review"} for t in sp["targets"]}, "preserve" in sp, sp.get("style_note"))
+                if got != ({"A": {"name", "bbox"}, "B": {"name", "bbox"}}, False, "style one" if ps == "" else ps):
+                    bad.append(("노드", dd is not None, ps, got))
+                sh = mg(h, dd, ps=ps).spec or h
+                got = (tg(sh).get("detail"), sh.get("preserve"), sh.get("style_note"))
+                if got != ("human detail", ["the human braid"], "human crop style"):
+                    bad.append(("사람", dd is not None, ps, got))
+        check(not bad, f"TO-V2 양보 표: 노드 값은 name·bbox 만 남고(초안·project_style 과 무관) 사람 값은 그대로, 사람 프로젝트 "
+                       f"화풍만 전파, project_style \"\"(읽지 못함)면 크롭 화풍을 건드리지 않음(full 과 같게) {bad}")
+        r = mg(s_full, None)
+        check({("A.detail", "yield"), ("crop.preserve", "yield"), ("crop.style_note", "yield")} <= kinds(r) and r.render_changed,
+              f"TO-V2 full → targets 는 초안 없이(0 호출) 노드 문장 필드를 지움(지역 함수 apply 와 이름 충돌 회귀) {sorted(kinds(r))[:6]}")
+        # ── 왕복: targets 다시 = 고정점, full 로 돌아가면 같은 키의 초안이 빈 필드를 다시 채움(0 호출)
+        s_t = mg(s_full, d).spec
+        s_f2 = mg(s_t, d, apply_mode="full", ps="style one").spec
+        check(not mg(s_t, d).changed and not mg(s_t, None).changed and s_f2 is not None and dvlm._eq(s_f2, s_full)
+              and not mg(s_f2, d, apply_mode="full", ps="style one").changed,
+              "TO-V3 targets ↔ full 왕복 고정점(targets 두 번 = 그대로, full 로 돌아가면 처음 full 스펙과 같음)")
+        names = [{"id": t["id"], "name": t["name"]} for t in s_t["targets"]]
+        check(v1_of(s_t) == v1_of({"targets": names}), "TO-V3 targets 스펙의 V1 = 이름만 적은 스펙의 V1(bbox·_review·_draft 는 렌더 밖)")
+
+        # ── 레거시 타깃 name: targets 는 쓰지 않고, full 에서 노드가 쓴 이름도 양보(채택으로만 들어감)
+        rl, _rdl, ml = _vlm_project("v25l", [("003_펜이름표", (256, 256), {})])
+        cropl = ml["crops"][0]
+        L = dvlm.build_crop_ctx(rl, ml, cropl, refs_dir="", glossary={}, backend="openai", memo={})
+        rql = dvlm.build_request(L, backend="openai", model="gpt-6-astra", effort="high", image_detail="high", draft_round=0)
+        pvl = _vprov(rql)
+        SUG = [{"name": "red pen", "reason": "the pen clipped to the badge", "bbox": [500, 100, 900, 700]}]
+
+        def vl(name, **kw):  # 레퍼런스 없는 크롭의 타깃 출력
+            return _vt("A", name=name, mode="self_restore", ref_images=[], ref_object="", defects="a smudge", **kw)
+
+        def nzl(c, rq_, targets, suggested=SUG):
+            return dvlm.normalize(_vparsed(targets, suggested=suggested), c, rq_, constraints=dvlm.constraints_for(c, None), glossary={})
+
+        dl = nzl(L, rql, [vl("name badge")])
+        sl_full = dvlm.merge_spec(None, dl, L, mode="fill", project_style=None, provenance=pvl).spec
+        rl_t = dvlm.merge_spec(sl_full, None, L, mode="fill", project_style=None, provenance={}, apply_mode="targets")
+        hl = copy.deepcopy(sl_full)
+        tg(hl)["name"] = "hand badge"
+        rl_h = dvlm.merge_spec(hl, None, L, mode="fill", project_style=None, provenance={}, apply_mode="targets")
+        r0 = dvlm.merge_spec(None, dl, L, mode="fill", project_style=None, provenance=pvl, apply_mode="targets")
+        check(L.targets[0].legacy and L.targets[0].origin is None and tg(sl_full).get("name") == "name badge"
+              and "name" not in tg(rl_t.spec) and ("A.name", "yield") in kinds(rl_t)
+              and tg(rl_h.spec or hl).get("name") == "hand badge" and "name" not in tg(r0.spec) and tg(r0.spec).get("bbox"),
+              "TO-V4 레거시 name: targets 는 쓰지 않음, full 이 쓴 노드 이름은 양보, 사람 이름은 유지(bbox 는 씀)")
+
+        # ── 대기 판정(plan): targets 는 "타깃 추가"·"타깃 변경" 을 이름 없는 타깃만으로(사유별), F3 도 같게
+        base = VLM_OUT / "v25p"
+        shutil.rmtree(base, ignore_errors=True)
+        rp = store.project_root(str(base), "proj")
+        os.makedirs(os.path.join(rp, "specs"))
+        K = key24(2500)
+
+        def dr(**kw):
+            x = {"key": K, "backend": "vlm_openai", "hint": "", "written": {"crop": {}, "A": {}}, "round": 0,
+                 "labels": {"A": {"label": "라벨A", "name_en": ""}}}
+            x.update(kw)
+            return x
+
+        cs = [tw(mk_ctx("001_aaaaaa", tids=("A", "B"), spec={"_draft": dr()}), 1, name_en="red pen"),
+              mk_ctx("002_bbbbbb", tids=("A", "B"), spec={"_draft": dr()}),
+              tw(mk_ctx("003_cccccc", spec={"_draft": dr(written={"crop": {}})}), 0, legacy=True),
+              mk_ctx("004_dddddd", hint="버터", spec={"_hint": "버터", "_draft": dr()}),
+              tw(mk_ctx("005_eeeeee", spec={"_draft": dr(labels={"A": {"label": "옛 라벨", "name_en": ""}})}), 0, name_en="toast clip"),
+              mk_ctx("006_ffffff", tids=("A", "B"), spec={"targets": [{"id": "B", "name": "hand name"}], "_draft": dr()}),
+              tw(mk_ctx("007_gggggg", tids=("A", "B"), spec={"_draft": dr(labels={"A": {"label": "옛 A"}, "B": {"label": "옛 B"}},
+                                                                         written={"crop": {}, "A": {}, "B": {}})}), 0, name_en="a pin")]
+        # 스펙 name 이 노드 값 그대로(C==B)면 이름 없음 → 라벨을 고친 타깃은 대기, 사람이 고친 name(C≠B)이면 대기 아님
+        for cid, nm in (("008_hhhhhh", "toast hair clip"), ("009_iiiiii", "hand clip")):
+            cs.append(mk_ctx(cid, spec={"targets": [{"id": "A", "name": nm}],
+                                        "_draft": dr(written={"crop": {}, "A": {"name": "toast hair clip"}},
+                                                     labels={"A": {"label": "토스트", "name_en": ""}})}))
+        rq = {c.crop_id: mk_req(c.crop_id, K, backend="openai", model="gpt-6-astra", effort="high",
+                                tids=tuple(t.tid for t in c.targets)) for c in cs}
+
+        def why(p):
+            return [(u.crop_id, u.reasons[0]) for u in p["units"]]
+
+        pt = dvlm.plan(rp, cs, rq, None, mode="fill", only=[], apply_mode="targets")
+        pf = dvlm.plan(rp, cs, rq, None, mode="fill", only=[])
+        check(why(pt) == [("002_bbbbbb", "타깃 추가"), ("003_cccccc", "타깃 추가"), ("004_dddddd", "_hint 변경"),
+                          ("007_gggggg", "타깃 변경(B)"), ("008_hhhhhh", "타깃 변경(A)")],
+              f"TO-V5 targets 대기: 이름 있는 추가(name_en·스펙 사람 name C≠B)·변경은 대기 아님, 한글 무명·노드 name(C==B)·"
+              f"레거시·_hint 는 대기 {why(pt)}")
+        check(why(pf) == [("001_aaaaaa", "타깃 추가"), ("002_bbbbbb", "타깃 추가"), ("003_cccccc", "타깃 추가"),
+                          ("004_dddddd", "_hint 변경"), ("005_eeeeee", "타깃 변경(A)"), ("006_ffffff", "타깃 추가"),
+                          ("007_gggggg", "타깃 변경(A, B)"), ("008_hhhhhh", "타깃 변경(A)"), ("009_iiiiii", "타깃 변경(A)")],
+              f"TO-V5 full(기본값) 대기는 그대로 {why(pf)}")
+        pft = dvlm.plan(rp, cs, rq, None, mode="force", only=["999"], apply_mode="targets")
+        check(pft["filtered"] == ["002_bbbbbb", "003_cccccc", "004_dddddd", "007_gggggg", "008_hhhhhh"],
+              f"TO-V5 F3 force + only 밖: targets 로 걸러진 사유는 보류(filtered)로 세지 않음 {pft['filtered']}")
+        # merge_spec 은 거르지 않는다: 이름 있는 타깃 추가 + 새 키의 done → 적용(갱신 가능 아님), 그 뒤 targets 대기 0·고정점
+        cA = dataclasses.replace(ctx, targets=[ctx.targets[0]])
+        k1, k2 = key24(2501), key24(2502)
+        s0 = mg(None, nz(cA, req, [_vt("A")]), c=cA, pv=_vprov(req, key=k1)).spec
+        cB = tw(ctx, 1, name_en="red hairpin bar")
+        dB = nz(cB, req, [_vt("A"), B])
+        rB = mg(s0, dB, c=cB, pv=_vprov(req, key=k2))
+        pB = dvlm.plan(root, [dataclasses.replace(cB, spec=rB.spec)], {cB.crop_id: dataclasses.replace(req, key=k2)}, None,
+                       mode="fill", only=[], apply_mode="targets")
+        check(tg(rB.spec, "B").get("bbox") and rB.spec["_draft"]["key"] == k2 and not any("갱신 가능" in n for n in rB.notes)
+              and pB["units"] == [] and not mg(rB.spec, dB, c=cB, pv=_vprov(req, key=k2)).changed,
+              f"TO-V6 merge_spec 은 대기 판정을 거르지 않음(지금 키의 done 적용은 공짜) → plan 대기 0, 같은 병합 = 고정점 {rB.notes}")
+        store.write_json_atomic(os.path.join(rp, "specs", "_project.json"), {"style_note": "x", "_draft": {"backend": "vlm_mock"}})
+        cm = [mk_ctx("008_hhhhhh", spec={"_draft": {"key": K, "backend": "vlm_mock"}})]
+        check(dvlm.mock_drafted(rp, cm) == 2 and dvlm.mock_drafted(rp, cm, apply_mode="targets") == 1,
+              "TO-V7 mock_drafted: targets 는 _project.json 을 세지 않음(Prepare 가 읽지 않음)")
+
+        # ── adopt 토큰
+        ids = ["003_aa1e8a", "007_c2c505", "007_d00d00", "010_b3a865"]
+        sel = dvlm.adopt_select
+        s_st = sel("all, style", ids)
+        s_mx = sel("style 999 003", ids)
+        check(sel("", ids) == ([], []) and sel("  ", ids) == ([], []) and sel("All", ids) == (ids, [])
+              and s_st[0] == ids and any("style" in n for n in s_st[1])
+              and sel(" 3, 010_b3a865 ,7 ", ids) == (ids, []) and s_mx[0] == ["003_aa1e8a"]
+              and any("style" in n for n in s_mx[1]) and any("999" in n for n in s_mx[1]),
+              f"TO-V8 adopt_select: 빈 값 = 없음(only 의 '빈 = 전부' 아님), all(대소문자 무관) = 전부, NNN·crop_id, style·안 맞는 토큰은 "
+              f"보고 {s_st} {s_mx}")
+        hint = dvlm.adopt_hint(["003_aa1e8a", "007_c2c505"], [mk_ctx(c) for c in ids])
+        check(hint == "→ 채택: adopt 에 003, 007_c2c505 (전부 = all)" and dvlm.adopt_hint([], []) == "",
+              f"TO-V8 adopt_hint: NNN 이 한 크롭만 가리키면 NNN, 아니면 crop_id {hint!r}")
+
+        # ── 채택 값: PSD 문구가 있는 tid·레거시의 한글 대체 문구·같은 문구(casefold) 제외, 제안 ↔ tid 는 레이어명 끝 j 개
+        ent = dvlm.suggestion_targets(dl.suggestions)
+        check(dl.suggestions["layer_name"] == "003_펜이름표 | A: name badge; B: red pen"
+              and [(e["tid"], e["text"], e["suggestion"] is not None) for e in ent] == [("A", "name badge", False), ("B", "red pen", True)]
+              and ent[1]["suggestion"]["reason"] == SUG[0]["reason"] and dvlm.adopt_value(dl.suggestions, L) == "A: name badge; B: red pen",
+              f"TO-V9 레거시: A 초안 이름 + 제안 B {ent}")
+        dn = nz(ctx, req, [_vt("A"), B], suggested=[{"name": "star sticker", "reason": "x", "bbox": [1, 1, 50, 50]}])
+        dk = nzl(L, rql, [vl("")])
+        dd_ = nzl(L, rql, [vl("red pen")], suggested=[{"name": "RED pen", "reason": "", "bbox": None}])
+        mp = dvlm.suggestion_targets({"layer_name": "001_x | A: a; B: b", "targets": [{"name": "b"}, {"name": "c"}]})
+        check(dvlm.adopt_value(dn.suggestions, ctx) == "C: star sticker"
+              and dk.suggestions["layer_name"] == "003_펜이름표 | A: 펜이름표; B: red pen" and dvlm.adopt_value(dk.suggestions, L) == "B: red pen"
+              and dvlm.adopt_value(dd_.suggestions, L) == "A: red pen"
+              and [(e["tid"], (e["suggestion"] or {}).get("name")) for e in mp] == [("A", None), ("B", "b")]
+              and dvlm.suggestion_targets({"layer_name": "001_x | A: a; A: b"}) == [] and dvlm.suggestion_targets(None) == [],
+              f"TO-V9 PSD 문구 있는 A·B 제외, 레거시 한글 대체 문구 제외, casefold 중복 제외, 빈 글자 모자람·깨진 레이어명 {mp}")
+        # ── 거절
+        spec_l = r0.spec
+        ac = dvlm.adopt_check
+        sm = copy.deepcopy(spec_l)
+        sm["_draft"]["backend"] = "vlm_mock"
+        c26 = mk_ctx("026_zzzzzz", tids=tuple(chr(c) for c in range(65, 91)),
+                     spec={"_draft": {"key": K, "labels": {chr(c): {"label": f"라벨{chr(c)}"} for c in range(65, 91)},
+                                      "suggestions": {"layer_name": "", "targets": []}}})
+        Lr = tw(L, 0, label="펜 이름표")
+        La = tw(L, 0, label="name badge", name_en="name badge", legacy=False, origin="adopt")
+        check(ac(spec_l, L, "openai") == ("A: name badge; B: red pen", "") and ac(None, L)[1].startswith("초안 없음")
+              and ac(dict(spec_l, _accepted=True), L)[1] == "_accepted" and "mock" in ac(sm, L, "openai")[1]
+              and ac(sm, L, "mock")[0] and ac(sm, L)[0] and "재초안 뒤 채택" in ac(spec_l, Lr)[1]
+              and ac(spec_l, La)[0] == "A: name badge; B: red pen" and "타깃 26개" in ac(c26.spec, c26)[1],
+              "TO-V10 adopt_check: 초안 없음·_accepted·mock 초안(실제 백엔드)·초안 뒤 비채택 라벨 바뀜·26 타깃 거절, 채택 타깃 라벨은 무관")
+        # ── 초안 뒤 PS 에서 지운 B: 저장된 제안 레이어명의 'B: 빨간 헤어핀' 을 채택 값·[제안] 안내로 되살리지 않음
+        cdel = dataclasses.replace(ctx, layer_name="002_토스트-머리장식_right | A: 토스트", targets=[ctx.targets[0]])
+        sn = mg(None, dn).spec  # 제안 star sticker 를 저장한 스펙(초안 때 A·B)
+        rep_del = [dvlm.format_report(header={"backend": "vlm_openai", "apply": "targets"}, plan={}, approval={}, run=None,
+                                      merges={}, checks={}, drafts={}, ctxs=[dataclasses.replace(cdel, spec=s)]) for s in (sn, s_t)]
+        check(dvlm.adopt_value(dn.suggestions, cdel) == "C: star sticker" and ac(sn, cdel, "openai") == ("C: star sticker", "")
+              and f'[제안] {ctx.crop_id} {ctx.name}: adopt 하면 _layer_targets = "C: star sticker"' in rep_del[0]
+              and "→ 채택: adopt 에 002 (전부 = all)" in rep_del[0] and "빨간 헤어핀" not in rep_del[0]
+              and ac(s_t, cdel, "openai") == ("", "채택할 제안 없음") and "[제안]" not in rep_del[1] and "→ 채택" not in rep_del[1],
+              f"TO-V16 초안 뒤 지운 타깃은 채택 값·[제안] 안내에 없음, 제안 없는 크롭은 지운 뒤에도 '채택할 제안 없음' {rep_del[0].splitlines()[-2:]}")
+        # ── 새 제안은 기록 없는 글자: 지운 B 의 스펙 항목(사람 detail 등)이나 _draft.labels 가 있으면 C
+        sug1 = [{"name": "star sticker", "reason": "x", "bbox": None}]
+        lns = [nz(dataclasses.replace(cdel, spec=s), req, [_vt("A")], suggested=sug1).suggestions["layer_name"]
+               for s in (None, {"targets": [{"id": "B", "detail": "a small gold bell"}]},
+                         {"_draft": {"labels": {"B": {"label": "빨간 헤어핀", "name_en": ""}}}})]
+        check(lns == ["002_토스트-머리장식_right | A: 토스트; B: star sticker"] + ["002_토스트-머리장식_right | A: 토스트; C: star sticker"] * 2,
+              f"TO-V17 paste_layer_name: 제안 tid 는 지금 타깃·스펙 targets·_draft.labels 에 없는 글자(지운 B 의 사람 값을 물려받지 않게) {lns}")
+
+        # ── merge_spec 채택: 새 제안은 다음 큐, fill 규칙(추가·유지·사람 값), sticky, 고정점, _draft.adopted
+        LT = "A: name badge; B: red pen"
+
+        def ml_(cur, dd, *, mode="fill", c=L, adopt=True, backend="openai"):
+            return dvlm.merge_spec(copy.deepcopy(cur), dd, c, mode=mode, project_style=None, provenance=pvl if dd is not None else {},
+                                   apply_mode="targets", adopt=adopt, backend=backend)
+
+        rn = ml_(None, dl)
+        r1 = ml_(r0.spec, dl)
+        r1n = ml_(r0.spec, None)
+        check("_layer_targets" not in rn.spec and any(n.startswith("채택 안 함 — 새 제안") for n in rn.notes),
+              f"TO-V11 이번 실행에 처음 받은 제안은 채택하지 않음(보고서로 먼저) {rn.notes}")
+        check(r1.spec.get("_layer_targets") == LT and ("crop._layer_targets", "add") in kinds(r1)
+              and r1.spec["_draft"]["written"]["crop"].get("_layer_targets") == LT
+              and r1.spec["_draft"].get("adopted") == {"key": rql.key, "backend": "vlm_openai"} and list(r1.spec)[-1] == "_draft"
+              and r1n.spec.get("_layer_targets") == LT and not r1.render_changed,
+              f"TO-V11 저장돼 있던 제안 채택: 없음 → 추가(B = 노드 값), _draft.adopted, 렌더 그대로 {r1.notes}")
+        sticky = [ml_(r1.spec, None, mode=md, adopt=False) for md in ("fill", "refresh", "force", "preview")]
+        check(not ml_(r1.spec, None).changed and not ml_(r1.spec, dl).changed and not any(x.changed for x in sticky),
+              "TO-V11 다시 채택 = 고정점, adopt 를 비워도(모든 write_mode) _layer_targets 그대로(sticky)")
+        hh = dict(copy.deepcopy(r1.spec), _layer_targets="A: capped red pen")
+        rh, rhf = ml_(hh, None), ml_(hh, dl, mode="force")
+        hd = copy.deepcopy(r1.spec)
+        del hd["_layer_targets"]
+        rd = ml_(hd, None)
+        check((rh.spec or hh)["_layer_targets"] == "A: capped red pen" and ("crop._layer_targets", "keep_human") in kinds(rh)
+              and (rh.spec or hh)["_draft"]["pending"].get("crop._layer_targets") == LT
+              and (rhf.spec or hh)["_layer_targets"] == "A: capped red pen"
+              and "_layer_targets" not in (rd.spec or hd) and ("crop._layer_targets", "keep_deleted") in kinds(rd)
+              and "crop._layer_targets" in (rd.spec or hd)["_draft"]["deleted"],
+              "TO-V11 사람이 고침 → keep_human(+pending, force 여도), 사람이 지움 → keep_deleted(다시 쓰지 않음)")
+        d3 = nzl(L, rql, [vl("name badge")], suggested=SUG + [{"name": "blue cap", "reason": "y", "bbox": None}])
+        s3 = copy.deepcopy(r1.spec)
+        s3["_draft"]["suggestions"] = copy.deepcopy(d3.suggestions)
+        check(not ml_(s3, None).changed and ac(s3, L, "openai")[0] == LT + "; C: blue cap",
+              "TO-V11 노드 값 그대로(C==B)면 재초안의 새 제안은 보고만(채택 값 유지)")
+        rr = ml_(r0.spec, None, c=Lr)
+        acc = dict(copy.deepcopy(r0.spec), _accepted=True)
+        ra_ = ml_(acc, None)
+        check(any("레이어명이 바뀜" in n for n in rr.notes) and "_layer_targets" not in (rr.spec or r0.spec)
+              and not ra_.changed and "채택 안 함 — _accepted" in ra_.notes,
+              f"TO-V11 거절은 '채택 안 함 — …' 메모(라벨 바뀜·_accepted) {rr.notes} {ra_.notes}")
+        # ── Import 뒤(매니페스트 origin adopt): 레거시 아님, targets 대기 0(갱신 가능), 다시 채택 = 고정점, 제안 레이어명 멱등
+        ml2 = copy.deepcopy(ml)
+        ml2["crops"][0]["targets"] = [
+            {"tid": "A", "label": "name badge", "name_en": "name badge", "mode": "ref_correct", "refs": [], "origin": "adopt"},
+            {"tid": "B", "label": "red pen", "name_en": "red pen", "mode": "ref_correct", "refs": [], "origin": "adopt"}]
+        L2 = dataclasses.replace(dvlm.build_crop_ctx(rl, ml2, ml2["crops"][0], refs_dir="", glossary={}, backend="openai", memo={}),
+                                 spec=r1.spec)
+        rq2 = dvlm.build_request(L2, backend="openai", model="gpt-6-astra", effort="high", image_detail="high", draft_round=0)
+        pt2 = dvlm.plan(rl, [L2], {L2.crop_id: rq2}, None, mode="fill", only=[], apply_mode="targets")
+        pf2 = dvlm.plan(rl, [L2], {L2.crop_id: rq2}, None, mode="fill", only=[])
+        check([(t.legacy, t.origin) for t in L2.targets] == [(False, "adopt"), (False, "adopt")]
+              and "legacy: the whole part" in rql.user_text and "legacy: the whole part" not in rq2.user_text
+              and pt2["units"] == [] and [c for c, _e in pt2["refresh_available"]] == [L2.crop_id]
+              and [u.reasons[0] for u in pf2["units"]] == ["타깃 추가"] and not ml_(r1.spec, None, c=L2).changed,
+              f"TO-V12 Import 뒤: 채택 타깃은 레거시 아님, targets 대기 0(갱신 가능만 — 크롭당 초안 1회), full 은 타깃 추가, "
+              f"다시 채택 = 고정점 {why(pf2)}")
+        d4 = nzl(L2, rq2, [vl("name tag"), _vt("B", name="pen", mode="self_restore", ref_images=[], ref_object="", defects="x")],
+                 suggested=[{"name": "green cap", "reason": "z", "bbox": None}])
+        L2k = tw(L2, 0, label="빨간 펜", name_en="")
+        d4k = nzl(L2k, rq2, [vl("name tag")], suggested=[])
+        check(d4.suggestions["layer_name"] == "003_펜이름표 | A: name badge; B: red pen; C: green cap"
+              and d4k.suggestions["layer_name"] == "003_펜이름표 | A: 빨간 펜; B: red pen"
+              and dvlm.adopt_value(d4k.suggestions, L2k) == "A: 빨간 펜; B: red pen",
+              f"TO-V12 paste_layer_name: 채택 타깃은 매니페스트 라벨이 지금 문구(한글로 고친 채택도) → 다시 채택해도 같은 값 "
+              f"{d4k.suggestions['layer_name']!r}")
+        # ── mock 초안 채택: vlm=mock 에서만, 실제 백엔드로 바꾸면 노드 값 그대로인 _layer_targets 양보
+        m0 = dvlm.merge_spec(None, dl, L, mode="fill", project_style=None, provenance=_vprov(rql, backend="vlm_mock", model="mock"),
+                             apply_mode="targets")
+        m1, m1o = ml_(m0.spec, None, backend="mock"), ml_(m0.spec, None, backend="openai")
+        check(m1.spec.get("_layer_targets") == LT and m1.spec["_draft"]["adopted"]["backend"] == "vlm_mock"
+              and any("mock 초안의 제안" in n for n in m1o.notes) and "_layer_targets" not in (m1o.spec or m0.spec),
+              "TO-V13 mock 초안의 제안은 vlm=mock 일 때만 채택(실제 백엔드면 거절)")
+        m2, m2m = ml_(m1.spec, None, adopt=False), ml_(m1.spec, None, adopt=False, backend="mock")
+        hm = dict(copy.deepcopy(m1.spec), _layer_targets="A: real name")
+        m2h = ml_(hm, None, adopt=False)
+        check(m2.spec is not None and "_layer_targets" not in m2.spec and "adopted" not in m2.spec["_draft"]
+              and "_layer_targets" not in m2.spec["_draft"]["written"]["crop"] and ("crop._layer_targets", "yield") in kinds(m2)
+              and any(n.startswith("채택 양보") for n in m2.notes) and not m2m.changed
+              and (m2h.spec or hm)["_layer_targets"] == "A: real name",
+              "TO-V13 실제 백엔드: mock 에서 채택한 노드 값 그대로인 _layer_targets 양보(adopt 무관), vlm=mock·사람이 고친 값은 그대로")
+
+        # ── MockVLM suggest 옵션(기본 출력 불변)
+        led = dvlm.Ledger(rp)
+        cid = "011_kkkkkk"
+        q0, q1 = mk_req(cid, key24(2510)), mk_req(cid, key24(2511))
+        t0 = asyncio.run(dvlm.MockVLM({}).call(unit_of(cid, q0.key), q0, led)).text
+        t1 = asyncio.run(dvlm.MockVLM({"suggest": {cid: ["red pen", "blue cap"], "012_x": "z"}}).call(unit_of(cid, q1.key), q1, led)).text
+        p1, _rep = dvlm.extract_json(t1)
+        check(t0 == dvlm._mock_text(q0) and json.loads(t0)["suggested_targets"] == []
+              and [s["name"] for s in p1["suggested_targets"]] == ["red pen", "blue cap"],
+              "TO-V14 MockVLM suggest {crop_id: [이름]} → suggested_targets(없으면 지금과 같은 출력)")
+
+        # ── 보고서: 첫 줄 [타깃만], targets 크롭 줄, [제안] 묶음(경고와 정상 사이)·adopt 안내, review.md 참고
+        Ls, cn = dataclasses.replace(L, spec=r0.spec), dataclasses.replace(ctx, spec=s_t)
+        merges = {L.crop_id: ml_(r0.spec, None, adopt=False), ctx.crop_id: mg(s_t, d)}
+        checks_ = {L.crop_id: dvlm.render_check(cropl, r0.spec, refs_dir="", glossary={}, owned=set()),
+                   ctx.crop_id: dvlm.render_check(crop, s_t, refs_dir=refs_dir, glossary={}, owned=set())}
+        drafts = {L.crop_id: dl, ctx.crop_id: d}
+        pl = dvlm.plan(rp, [Ls, cn], {L.crop_id: rql, ctx.crop_id: req}, None, mode="fill", only=[], apply_mode="targets")
+        ap = dvlm.approval(pl, "", backend_name="vlm_openai")
+        hdr = {"backend": "vlm_openai", "model": "gpt-6-astra", "effort": "high", "write_mode": "fill", "apply": "targets"}
+        rep = dvlm.format_report(header=hdr, plan=pl, approval=ap, run=None, merges=merges, checks=checks_, drafts=drafts,
+                                 ctxs=[Ls, cn])
+        lines = rep.splitlines()
+        si = [i for i, ln in enumerate(lines) if ln.startswith("[제안]")]
+        pos = [rep.find(t) for t in ("[경고]", "[제안]", "[정상]")]
+        check(lines[0].startswith("Spec Draft [OpenAI gpt-6-astra high · 유료] [타깃만] ")
+              and len(si) == 1 and L.crop_id in lines[si[0]] and f'adopt 하면 _layer_targets = "{LT}"' in lines[si[0]]
+              and lines[si[0] + 1].startswith("  B red pen — the pen clipped to the badge · bbox ")
+              and "→ 채택: adopt 에 003 (전부 = all)" in lines and all(x >= 0 for x in pos) and pos == sorted(pos),
+              f"TO-V15 보고서: 첫 줄 '[백엔드] [타깃만]', [제안] 줄(값·제안 이유·bbox)과 adopt 안내, 경고 < 제안 < 정상 {lines[:1]} "
+              f"{[lines[i] for i in si]}")
+        check("lint: CJK" in checks_[L.crop_id].flags and "A 영문 이름 없음 → adopt 또는 용어집" in rep and "lint: CJK" not in rep
+              and "warn: 기본 설명" not in rep and "v4_equals_v1" not in rep and f"{L.crop_id} {L.name} · A 펜이름표(이름 없음)" in rep,
+              "TO-V15 targets 크롭 줄: 기본 설명·v4_equals_v1 숨김, 레거시 CJK → 'A 영문 이름 없음 → adopt 또는 용어집', 신뢰도 대신 타깃 이름")
+        rep_f = dvlm.format_report(header=dict(hdr, apply=None), plan=pl, approval=ap, run=None, merges=merges, checks=checks_,
+                                   drafts=drafts, ctxs=[Ls, cn])
+        check("[타깃만]" not in rep_f and "제안 레이어명(PS 에 붙여 넣기): 003_펜이름표 | A: name badge; B: red pen" in rep_f
+              and "[제안]" in rep_f, "TO-V15 apply 없는 header(full) = [타깃만] 없음, [제안] 에 PS 레이어명도")
+        dlf = dataclasses.replace(dl, flags=["missing_target: B"],
+                                  review={"A": dict(dl.review["A"], flags=["ref_object_singular: the pens (target name badge)"])})
+        rep_g = [dvlm.format_report(header=hx, plan=pl, approval=ap, run=None, merges=merges, checks=checks_,
+                                    drafts={**drafts, L.crop_id: dlf}, ctxs=[Ls, cn]) for hx in (hdr, dict(hdr, apply=None))]
+        head_g = next((x for x in rep_g[0].splitlines() if x.startswith(f"[경고] {L.crop_id}")), "")
+        check("missing_target: B" in head_g and "ref_object_singular" not in rep_g[0] and "ref_object_singular" in rep_g[1],
+              f"TO-V15 targets 크롭 줄 플래그: 구조(missing_target)는 남고 문장 필드(ref_object_singular)는 숨김, full 은 보임 {head_g!r}")
+        rep_a = dvlm.format_report(header=hdr, plan=pl, approval=ap, run=None, merges={L.crop_id: r1}, checks=checks_,
+                                   drafts={}, ctxs=[Ls])
+        rep_2 = dvlm.format_report(header=hdr, plan=pt2, approval=dvlm.approval(pt2, "", backend_name="vlm_openai"), run=None,
+                                   merges={}, checks={}, drafts={}, ctxs=[L2])
+        check(f'채택함 _layer_targets = "{LT}" → 다음 큐에서 Import PSD 가 반영' in rep_a and "→ 채택: adopt 에" not in rep_a
+              and "제안 다시 받기 1" in rep_2.splitlines()[0] and any(x.startswith("제안 다시 받기(write_mode=refresh") for x in rep_2.splitlines()),
+              "TO-V15 이번 실행의 채택 결과 줄(안내 없음), targets 의 키만 바뀐 크롭 = '제안 다시 받기'")
+        # ── [제안] 의 채택 값·안내는 다음 큐의 adopt 가 읽을 파일 기준: preview 가 받은 새 제안은 '쓴 뒤 다시 adopt'(제안 줄은 보임)
+        dnew = nzl(L, rql, [vl("name tag")], suggested=[{"name": "blue cap", "reason": "the cap on the pen", "bbox": None}])
+        hpv = dict(hdr, write_mode="preview")
+        rep_pv = [dvlm.format_report(header=hpv, plan=pl, approval=ap, run=None, merges={L.crop_id: rs}, checks={}, drafts={}, ctxs=[c])
+                  for c, rs in ((Ls, ml_(r0.spec, dnew, mode="preview", adopt=False)), (L, ml_(None, dl, mode="preview", adopt=False)),
+                                (Ls, ml_(r0.spec, None, mode="preview")))]
+        sl_pv = [next((x for x in r_.splitlines() if x.startswith("[제안]")), "") for r_ in rep_pv]
+        check(L.spec is None and f'adopt 하면 _layer_targets = "{LT}"; 새 제안 "A: name tag; B: blue cap" — 쓴 뒤 다시 adopt' in sl_pv[0]
+              and "  B blue cap — the cap on the pen" in rep_pv[0] and "→ 채택: adopt 에 003 (전부 = all)" in rep_pv[0]
+              and sl_pv[1].endswith(f'새 제안 "{LT}" — 쓴 뒤 다시 adopt') and "→ 채택" not in rep_pv[1]
+              and f'채택 예정(preview — 쓰지 않음) _layer_targets = "{LT}" → 다음 큐에서 Import PSD 가 반영' in sl_pv[2],
+              f"TO-V18 preview: 채택 값·adopt 안내는 파일의 제안(파일에 초안 없으면 안내 없음), 새 제안은 '쓴 뒤 다시 adopt', "
+              f"preview 채택은 '채택 예정' {sl_pv}")
+        # 파일에 _layer_targets 가 이미 있으면(노드 값·사람 값) adopt 로는 안 바뀜 — '쓴 뒤 다시 adopt' 대신 유지·직접 고침 한 줄
+        hs = dict(copy.deepcopy(r1.spec), _layer_targets="A: name badge; B: red ballpoint")
+        sl_kept = []
+        for sp in (r1.spec, hs):
+            ck = dataclasses.replace(L, spec=sp)
+            r_ = dvlm.format_report(header=hpv, plan=pl, approval=ap, run=None, merges={L.crop_id: ml_(sp, dnew, mode="preview", c=ck, adopt=False)},
+                                    checks={}, drafts={}, ctxs=[ck])
+            sl_kept.append([x for x in r_.splitlines() if x.startswith("[제안]")])
+        check([len(x) for x in sl_kept] == [1, 1] and all("쓴 뒤 다시 adopt" not in x[0] for x in sl_kept)
+              and sl_kept[0][0].endswith('새 제안 "A: name tag; B: blue cap" — 노드가 쓴 _layer_targets 그대로(바꾸려면 스펙에서 직접 고침)')
+              and sl_kept[1][0].endswith('새 제안 "A: name tag; B: blue cap" — 사람이 고친 _layer_targets 유지'),
+              f"TO-V18 이미 채택(노드 값)·사람이 고친 크롭의 preview: 유지 문구 한 줄, '쓴 뒤 다시 adopt' 없음 {sl_kept}")
+        md_t = dvlm.review_markdown([Ls, cn], merges, checks_, drafts, apply_mode="targets")
+        md_f = dvlm.review_markdown([Ls, cn], merges, checks_, drafts)
+        check("참고(적용 안 함" in md_t and "- A.defects: a smudge" in md_t and "- A.name: name badge" in md_t
+              and "참고(적용 안 함" not in md_f, "TO-V15 review.md: targets 는 쓰지 않은 문장 필드·레거시 이름을 '참고(적용 안 함)' 로")
+
     def t_eval():
         section("E1–E3 평가 도구 자기 시험: validate ≥90 · setup(합성 매니페스트) · mock 원장 score 결정성")
         doc = ev.load_cases()
@@ -9055,6 +9506,7 @@ def vlm_unit():
         _guarded("V22", t_v22)
         _guarded("V23", t_v23)
         _guarded("V24", t_v24)
+        _guarded("V25", t_v25)
         _guarded("E0", t_eval_pure)
         if HAVE_REF:
             _guarded("E1-E3", t_eval)
@@ -9099,13 +9551,15 @@ async function setup(name) {
         registerExtension(ext) { env.ext = ext; },
         async queuePrompt(_num, _batch, opts) {
             if (env.processingQueue) return false;
-            const approve = {};
+            const approve = {}, adopt = {};
             for (const n of env.nodes) {
                 const w = n.widgets.find((x) => x.name === "approve");
                 if (w) approve[String(n.id)] = w.value;
+                const a = n.widgets.find((x) => x.name === "adopt");
+                if (a) adopt[String(n.id)] = a.value;
             }
             if (env.failSubmit) throw new Error("submit failed");
-            env.queued.push({ ids: opts.queueNodeIds, approve });
+            env.queued.push({ ids: opts.queueNodeIds, approve, adopt });
             for (const n of env.nodes) for (const w of n.widgets) w.afterQueued?.({ isPartialExecution: true });
             return true;
         },
@@ -9145,6 +9599,7 @@ async function setup(name) {
             setSize(s) { this.size = s; },
         });
         if (cls === "BMKDesignPatchRun" || cls === "BMKDesignPatchSpecDraft") n.widgets.push({ name: "approve", value: "" });
+        if (cls === "BMKDesignPatchSpecDraft") n.widgets.push({ name: "adopt", value: "" });
         n.onNodeCreated?.();
         env.nodes.push(n);
         return n;
@@ -9389,12 +9844,38 @@ await scenario("j6", async () => {
     return { warn, plain, styled, styleOnly, unwritten, held, mock: env.confirmMsgs.at(-1) ?? "", n: env.confirmMsgs.length };
 });
 
+await scenario("j8", async () => {  // adopt = 1회용: 큐에 실린 뒤 비움(전체 큐·승인 버튼), 꺼진 노드·제출 실패면 남김
+    const env = await setup("j8");
+    const draft = env.add("BMKDesignPatchSpecDraft", 3);
+    const adopt = draft.widgets.find((w) => w.name === "adopt");
+    const queue = async () => { try { await globalThis.__bmk.app.queuePrompt(0, 1, {}); } catch (e) { /* 제출 실패 */ } };
+    adopt.value = "003";
+    await queue();
+    const full = { sent: env.queued.at(-1)?.adopt["3"], after: adopt.value };
+    adopt.value = "7";
+    dexec(draft, dentry({ pending_hash: "D8aaaaaaaaaa", pending: 1 }));
+    await env.btn(draft).callback();
+    const q = env.queued.at(-1);
+    const button = { sent: q?.adopt["3"], approve: q?.approve["3"], ids: q?.ids, after: adopt.value, approveAfter: env.approve(draft).value };
+    adopt.value = "all";
+    draft.mode = 4;
+    await queue();
+    const bypassed = adopt.value;
+    draft.mode = 0;
+    env.failSubmit = true;
+    await queue();
+    env.failSubmit = false;
+    const failed = adopt.value;
+    await queue();
+    return { full, button, bypassed, failed, last: adopt.value, n: env.queued.length, hook: typeof adopt.afterQueued };
+});
+
 console.log(JSON.stringify(out));
 """
 
 
 def m2_js_unit():
-    section("M2-J js/bmk_design_patch.js 시나리오 (node + 가짜 app/api): S3·S5·WSU-1·WSU-2·WSU-3·WSU-5 · M3 J1–J6")
+    section("M2-J js/bmk_design_patch.js 시나리오 (node + 가짜 app/api): S3·S5·WSU-1·WSU-2·WSU-3·WSU-5 · M3 J1–J8")
     node = shutil.which("node")
     if not node:
         skip("node 없음 → JS 시나리오 생략")
@@ -9483,6 +9964,12 @@ def m2_js_unit():
     check("스펙 초안 대기 3크롭(" in (j6.get("warn") or "") and "스펙 초안 대기 22크롭 + 화풍(" in (j6.get("styled") or "")
           and "스펙 초안 대기 화풍(" in (j6.get("styleOnly") or ""),
           f"O3 J6: 확인창도 크롭과 화풍을 따로(서버 _draft_pending_text 와 같은 문구) {j6.get('styled')!r}")
+    j8 = res.get("j8") or {}
+    check(j8.get("full") == {"sent": "003", "after": ""}
+          and j8.get("button") == {"sent": "7", "approve": "D8aaaaaaaaaa", "ids": ["3"], "after": "", "approveAfter": ""}
+          and j8.get("bypassed") == "all" and j8.get("failed") == "all" and j8.get("last") == "" and j8.get("n") == 4
+          and j8.get("hook") == "function",
+          f"TO-J8 adopt 1회용: 전체 큐·승인 버튼 큐에 실린 뒤 비움(훅은 남음), 꺼진 노드·제출 실패면 그대로 {j8}")
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -9877,10 +10364,171 @@ def m2_node_unit():
         hn2, conf2 = dp._commit(root, mo2, dp._snapshot(mo2))
         check(conf2 == [] and hn2["rev"] == disk["rev"] == rev(root), "바뀐 것 없음 → 저장 안 함(rev 그대로)")
         st.update_manifest(root, lambda d: (d.update(canvas=orig[0], work_rect=orig[1]), d["rejects"].pop(k0[3], None)))
+
+        section("M2-N10 채택 _layer_targets(TARGETS_ONLY §9.5·9.6): Import PSD 한 번 병합·캐시 경로·스펙 오류, Prepare 가드, "
+                "Compose 는 없는 tid 후보 제외")
+        _m2_adopt(dp, NODES2, PRE, COM)
     finally:
         mock_file.unlink(missing_ok=True)
         if env_mock is not None:
             os.environ[rn.MOCK_ENV] = env_mock
+
+
+def _m2_adopt(dp, NODES2, PRE, COM):
+    """M2-N10 본문. 합성 PSD(I2I_base 픽셀 레이어)를 실제로 읽고 크롭 rect 만 바꿔 끼운다(N8b 처럼 이 안에서만)."""
+    st = dp.store
+    IMP, CIN = dp.BMKDesignPatchImportPSD(), dp.BMKDesignPatchCandidateIn()
+    base = texture(256, 384, 41)
+    psd_a = NODES2 / "adopt.psd"
+    wr = dpsd.PSDWriter((384, 256))
+    wr.add_pixel(None, "I2I_base", base, 0, 0)
+    wr.save(str(psd_a))
+    R3, R4 = [32, 32, 160, 160], [192, 64, 320, 192]
+    lay = [("003_펜이름표", R3), ("004_단추 | A: button", R4)]
+    c3, c4 = st.crop_id_for("003_펜이름표"), st.crop_id_for("004_단추")
+    h, _s = dp.BMKDesignPatchProject().open("m2adopt", str(NODES2))
+    root = h["root"]
+    GUARD = "매니페스트 타깃이 레이어명 + _layer_targets 와 다름 — 다음 큐에서 Import PSD 가 반영"
+
+    def imp(touch=False):
+        if touch:  # PSD 지문이 바뀌어 실제 다시 가져오기
+            t = os.stat(psd_a).st_mtime_ns + 1_000_000_000
+            os.utime(psd_a, ns=(t, t))
+        return IMP.run(h, str(psd_a), "auto", "auto", "auto", "auto", "", "")[2]
+
+    def spec(cid, obj):  # dict 또는 원문(깨진 JSON)
+        d = Path(root) / "specs"
+        d.mkdir(exist_ok=True)
+        (d / f"{cid}.json").write_text(obj if isinstance(obj, str) else json.dumps(obj, ensure_ascii=False), encoding="utf-8")
+
+    def crop(cid):
+        return next(c for c in st.load_manifest(root)["crops"] if c["id"] == cid)
+
+    def tg(cid):
+        return [(t["tid"], t["label"], t.get("origin")) for t in crop(cid)["targets"]]
+
+    def prep():
+        _h, sheet, rep = PRE.run(h, MODEL25, "high", "user_k", "V1", 1, "at", 1)
+        prep.sheet = sheet
+        return rep, {j["crop_id"]: j["tid"] for j in st.load_manifest(root)["jobs"]}
+
+    def rev():
+        return st.load_manifest(root)["rev"]
+
+    orig_rects = dp.dpsd.read_crop_rects
+    dp.dpsd.read_crop_rects = lambda psd, group="auto": [
+        {"name": n, "rect": list(r), "rect_source": "vector", "layer_index": i, "visible": True, "warnings": []}
+        for i, (n, r) in enumerate(lay)]
+    try:
+        rep = imp()
+        check("PSD 읽기" in rep and tg(c3) == [("A", "펜이름표", None)] and tg(c4) == [("A", "button", None)]
+              and not any("origin" in t for c in st.load_manifest(root)["crops"] for t in c["targets"]),
+              f"TO-I0 스펙 없음 = 지금과 같음(origin 키 없음) {tg(c3)} {tg(c4)}")
+        check(inspect.signature(IMP._report).parameters["notes"].default is inspect.Parameter.empty,
+              "Import _report 의 notes 는 필수(호출자가 늘 _targets 의 dict 를 넘김)")
+        fa, fb = NODES2 / "adopt_a", NODES2 / "adopt_b"
+        fa.mkdir(exist_ok=True)
+        fb.mkdir(exist_ok=True)
+        Image.fromarray(_fx_cand(base, R3)).save(fa / "003_펜이름표_gpt.png")
+        Image.fromarray(_fx_cand(base, R3, 3)).save(fb / "003_펜이름표_b.png")
+        CIN.run(h, "folder", str(fa), "", "", True, True)
+
+        spec(c3, {"_layer_targets": "A: name badge; B: red pen"})
+        rep_p, jobs = prep()
+        check(set(jobs) == {c4} and GUARD in rep_p and f"{c3} 003_펜이름표: 작업 없음" in rep_p,
+              f"TO-P1 Import 전(같은 큐의 Draft 채택): 매니페스트가 옛 타깃 → 그 크롭 jobs 없음 + 경고 {jobs}")
+        check(tuple(prep.sheet.shape[:3]) == (1, dp._THUMB + 38, 2 * (dp._THUMB + 8)),
+              f"TO-P1 시트: jobs 없는 크롭도 타일(0 jobs) {tuple(prep.sheet.shape)}")
+        r0 = rev()
+        rep = imp()
+        cr = crop(c3)
+        check("캐시 적중" in rep and tg(c3) == [("A", "name badge", "adopt"), ("B", "red pen", "adopt")] and rev() == r0 + 1
+              and [t["name_en"] for t in cr["targets"]] == ["name badge", "red pen"] and cr["layer_name"] == "003_펜이름표"
+              and tg(c4) == [("A", "button", None)], f"TO-I1 캐시 경로: 레거시 크롭 → A·B origin adopt, layer_name 은 PSD 원본 {tg(c3)}")
+        check("A: name badge (채택); B: red pen (채택)" in rep and "타깃 A 의미 바뀜(펜이름표 → name badge)" in rep
+              and "후보 1 · pick 1" in rep and "채택 1)" in rep.splitlines()[0] and not any("채택" in w for w in cr["warnings"]),
+              "TO-I1 보고서: 채택 표시·A 의미 바뀜(A 후보 있음)은 보고서 줄로만(crop.warnings 아님)")
+        rep = imp()
+        check("캐시 적중" in rep and rev() == r0 + 1 and "의미 바뀜" not in rep and "채택" not in rep.splitlines()[0],
+              "TO-I2 같은 스펙으로 다시 = rev 불변, 바뀜 보고는 한 번")
+        rep_p, jobs = prep()
+        check(jobs.get(c3) == "A,B" and GUARD not in rep_p, f"TO-P2 Import 뒤 = 채택 타깃으로 jobs {jobs}")
+
+        st.update_manifest(root, lambda d: next(c for c in d["crops"] if c["id"] == c3)["targets"][0].update(mode="self_restore"))
+        rep = imp(touch=True)
+        check("PSD 읽기" in rep and tg(c3) == [("A", "name badge", "adopt"), ("B", "red pen", "adopt")]
+              and crop(c3)["targets"][0]["mode"] == "self_restore",
+              "TO-I3 실제 다시 가져오기: 채택과 합친 뒤 한 번 → 채택 A 의 사람 mode 유지(old = 이번 실행 전 크롭)")
+
+        for bad, why in (({"_layer_targets": "name badge; B: red pen"}, "라벨 없는 조각"), ("{broken", "JSON")):
+            spec(c3, bad)
+            r0 = rev()
+            rep = imp()
+            check("캐시 적중" in rep and rev() == r0 and tg(c3) == [("A", "name badge", "adopt"), ("B", "red pen", "adopt")]
+                  and "채택: 지금 타깃 유지" in rep and why in rep, f"TO-I4 캐시 경로 스펙 오류({why}): 지금 타깃 유지 + 경고, rev 불변")
+        spec(c3, {"_layer_targets": "A: name badge; A: x"})
+        rep_p, jobs = prep()
+        check(c3 not in jobs and "채택 확인 못 함" in rep_p and "두 번" in rep_p, f"TO-P3 문법 오류 = 그 크롭 jobs 없음 + 경고 {jobs}")
+        spec(c3, "{broken")
+        rep = imp(touch=True)
+        check("PSD 읽기" in rep and tg(c3) == [("A", "펜이름표", None)] and "채택: 레이어명 타깃만" in rep,
+              "TO-I5 실제 다시 가져오기 + 깨진 스펙 = 레이어명 타깃만 + 경고(Import 는 실패하지 않음)")
+
+        spec(c3, {"_layer_targets": "003_펜이름표 | A: name badge; B: red pen"})
+        imp()
+        CIN.run(h, "folder", str(fb), "", json.dumps({"003_펜이름표_b.png": {"tid": "B"}}), True, True)
+        m = st.load_manifest(root)
+        kb = next(c["key"] for c in m["candidates"] if c["tid"] == "B")
+        check(tg(c3)[1] == ("B", "red pen", "adopt") and next(c for c in m["candidates"] if c["key"] == kb)["picked"],
+              "붙여 넣은 제안 레이어명(앞머리 포함)으로 다시 채택 + B 후보 pick")
+        rep_c = COM.run(h, "hand", False, False, "auto_small_on_top")[3]
+        check(rep_c.startswith("Compose: pick 2 ") and "타깃 B 가 없음" not in rep_c, "Compose: A·B pick 둘")
+        spec(c3, {"_layer_targets": "A: name badge"})
+        rep = imp()
+        check(tg(c3) == [("A", "name badge", "adopt")] and "채택 타깃 B(red pen) 가 빠짐" in rep and "후보 1 · pick 1" in rep,
+              "TO-I6 채택 타깃을 지움 → 매니페스트에서 빠지고 남은 후보·pick 을 보고")
+        rep_c = COM.run(h, "hand", False, False, "auto_small_on_top")[3]
+        check(rep_c.startswith("Compose: pick 1 ") and f"{kb}: 크롭 {c3} 에 타깃 B 가 없음" in rep_c and kb not in rep_c.split("\n  - ")[0],
+              "TO-C1 Compose(_plan): 크롭 타깃에 없는 tid 의 pick 은 빼고 경고(없는 크롭과 같게)")
+
+        ka = next(c["key"] for c in m["candidates"] if c["crop_id"] == c3 and c["tid"] == "A")
+        st.update_manifest(root, lambda d: next(c for c in d["candidates"] if c["key"] == ka).update(picked=False))
+        rep_c = COM.run(h, "auto", False, False, "auto_small_on_top")[3]
+        p_x, ui_x = _run_export(dp, h, "m2gone", "pixel", "none", "raw", "auto", True, True, skip_empty=True)
+        check(rep_c.startswith("Compose: pick 0 ") and f"{kb}: 크롭 {c3} 에 타깃 B 가 없음" in rep_c and "분석이 없던" not in rep_c
+              and p_x == "" and "크롭·타깃이 빠진 후보 1 제외" in ui_x[0] and kb not in st.load_manifest(root)["analysis"],
+              f"TO-C2 남은 pick 이 빠진 타깃 B 의 것뿐: Compose·Export 가 분석하지 않고 Export(skip_empty)는 빈 PSD 를 안 씀 {ui_x}")
+        st.update_manifest(root, lambda d: next(c for c in d["candidates"] if c["key"] == ka).update(picked=True))
+
+        spec(c3, {})
+        rep_p, jobs = prep()
+        check(c3 not in jobs and GUARD in rep_p, f"TO-P6 채택 해제(스펙 키를 지움)도 Import 전이면 같은 가드 문구 {jobs}")
+        r0 = rev()
+        rep = imp()
+        check(tg(c3) == [("A", "펜이름표", None)] and rev() == r0 + 1 and "타깃 A 의미 바뀜(name badge → 펜이름표)" in rep,
+              "TO-I7 _layer_targets 키를 지움 → 채택 타깃이 빠지고 레거시 A 로(매니페스트의 채택 타깃이 재계산을 부름)")
+        rep = imp()
+        check(rev() == r0 + 1 and "캐시 적중" in rep and "채택" not in rep, "TO-I7 그다음 Import 는 그 크롭을 손대지 않음(rev 불변)")
+        rep_p, jobs = prep()
+        check(jobs.get(c3) == "A" and GUARD not in rep_p, f"TO-P4 채택을 지운 뒤 Prepare = 레거시 A jobs, 가드 없음 {jobs}")
+        spec(c3, {"_layer_targets": "B: star sticker"})  # 지운 B 의 후보(kb, pick)가 남은 채 같은 글자를 새로 채택
+        rep = imp()
+        check(tg(c3) == [("A", "펜이름표", None), ("B", "star sticker", "adopt")]
+              and "새로 채택한 타깃 B(star sticker) 에 같은 글자의 옛 후보가 있음 — 보드에서 확인: 후보 1 · pick 1" in rep,
+              "TO-I9 새로 채택한 tid 에 같은 글자의 옛 후보가 있으면 Import 보고서가 알림")
+        spec(c3, {})
+        imp()
+
+        spec(c4, {"_layer_targets": "A: other; B: lace"})
+        rep = imp()
+        r0 = rev()
+        rep2 = imp()
+        check(tg(c4) == [("A", "button", None), ("B", "lace", "adopt")] and "'button' 가 이김" in rep and "'button' 가 이김" in rep2
+              and rev() == r0, f"TO-I8 PSD 문구가 이김(매 실행 경고, rev 불변) · PSD 에 없는 B 는 채택 {tg(c4)}")
+        rep_p, jobs = prep()
+        check(jobs.get(c4) == "A,B" and GUARD not in rep_p, f"TO-P5 PSD 가 이긴 채택도 가드 통과 {jobs}")
+    finally:
+        dp.dpsd.read_crop_rects = orig_rects
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -9941,7 +10589,7 @@ def vlm_comfy():
 #   N4 인터럽트·무료 재폴링  N5 Draft 대기 → Run 경고  N6 _project.json style_note 전파  N7 local_qwen 승인·VramError·
 #   남은 Qwen 언로드  N8 보드 라우트 10  N9 평가 도구 new_targets == main._new_targets  N10 사라진 크롭의 스펙
 #   N11 force 1회·사람 mode/refs  N12 fill 키 가드  N13 실제 PromptExecutor 캐시(RAM_PRESSURE·CLASSIC)
-#   N16 only 보류·mock 초안 스펙 → Run 경고(리뷰 B F3·F2)
+#   N16 only 보류·mock 초안 스펙 → Run 경고(리뷰 B F3·F2)  N17 apply=targets  N18·N19 채택(adopt) → Import → Prepare·Run
 # ═════════════════════════════════════════════════════════════════
 def vlm_node_unit():
     dp = _dp_package()
@@ -9984,9 +10632,9 @@ def vlm_node_unit():
         st.update_manifest(root, mut)
         return dp._handle(root, st.load_manifest(root)), root
 
-    def draft_node(h, approve="", **kw):
+    def draft_node(h, approve="", **kw):  # 기본 apply=full: N2–N16 은 M3 그대로(문장 필드·화풍)를 본다 — targets 는 N17–N19
         args = dict(vlm="openai/gpt-6-astra", effort="high", image_detail="high", write_mode="fill", only="", draft_round=0,
-                    concurrency=4, credit_cap=0, keep_loaded=False)
+                    concurrency=4, credit_cap=0, keep_loaded=False, apply="full", adopt="")
         args.update(kw)
         out = asyncio.run(DR.run(h, approve, unique_id="88", **args))
         check(out["ui"]["text"] == [out["result"][1]], "Draft ui text = report 출력")
@@ -10029,12 +10677,23 @@ def vlm_node_unit():
         it = D.INPUT_TYPES()
         req = it["required"]
         check(list(req) == ["project", "approve", "vlm", "effort", "image_detail", "write_mode", "only", "draft_round",
-                            "concurrency", "credit_cap", "keep_loaded"], f"위젯 순서 {list(req)}")
+                            "concurrency", "credit_cap", "keep_loaded", "apply", "adopt"], f"위젯 순서(apply·adopt 맨 뒤) {list(req)}")
         check(it["hidden"] == dp.BMKDesignPatchRun.INPUT_TYPES()["hidden"], "hidden = Run 과 같음(인증 토큰은 큐 extra_data)")
         params = list(inspect.signature(D.run).parameters.values())[1:]
         sig = [p.name for p in params if p.kind != p.VAR_KEYWORD]
         check(sig == list(req) + list(it["hidden"]) and params[-1].kind == params[-1].VAR_KEYWORD,
               f"입력 이름 = 함수 인자(+ **_stale: 옛 워크플로의 없는 입력이 바인딩에서 실패하지 않게) {sig}")
+        pd_ = {p.name: p.default for p in params}
+        check(list(req["apply"][0]) == list(dv.APPLY_MODES) == ["targets", "full"]
+              and req["apply"][1]["default"] == dv.DEFAULT_APPLY == "targets" == pd_["apply"]
+              and req["adopt"][0] == "STRING" and req["adopt"][1]["default"] == "" == pd_["adopt"]
+              and not req["adopt"][1].get("multiline") and all(req[k][1].get("tooltip") for k in ("apply", "adopt"))
+              and all(pd_[k] is inspect.Parameter.empty for k in list(req)[:11]),
+              "TO-D0 apply 콤보(targets 기본)·adopt 한 줄, run 기본값은 이 둘만(검증 없이 들어온 프롬프트도 바인딩), 툴팁")
+        wf = json.loads((PKG / "guide" / "bmk_design_patch_draft_workflow.json").read_text(encoding="utf-8"))
+        wv = [n["widgets_values"] for n in wf["nodes"] if n.get("type") == "BMKDesignPatchSpecDraft"]
+        check(wv and all(len(v) == len(req) - 1 and v[-2:] == ["targets", ""] for v in wv),
+              f"TO-D0 예제 draft 워크플로: Spec Draft widgets_values = 위젯 순서(project 링크 제외, 끝 apply·adopt) {wv}")
         lim = {k: (req[k][1]["default"], req[k][1]["min"], req[k][1]["max"]) for k in ("draft_round", "concurrency", "credit_cap")}
         check(lim == {"draft_round": (0, 0, 99), "concurrency": (4, 1, 8), "credit_cap": (0, 0, 100000)}, f"숫자 위젯 {lim}")
         check(list(req["vlm"][0]) == list(dv.VLM_CHOICES) and req["vlm"][1]["default"] == "openai/gpt-6-sol"
@@ -10066,10 +10725,11 @@ def vlm_node_unit():
         secret = {"auth_token_comfy_org": "TOKEN-SECRET-1", "api_key_comfy_org": "KEY-SECRET-2"}
         bad_handle = {"schema": st.SCHEMA, "root": str(NODES3 / "없는_프로젝트"), "project": "x", "rev": 0}
         first = {}
-        for cls_, ins in ((D, dict(approve="", vlm="openai/gpt-5.5-pro", effort="low", image_detail="high", write_mode="fill",
-                                   only="", draft_round=0, concurrency=4, credit_cap=0, keep_loaded=False)),
-                          (dp.BMKDesignPatchRun, dict(approve="", max_new_calls=1, concurrency=1, wave_minutes=25,
-                                                      retry_failed=False, retry_orphans=False, only=""))):
+        d_ins = dict(approve="", vlm="openai/gpt-5.5-pro", effort="low", image_detail="high", write_mode="fill", only="",
+                     draft_round=0, concurrency=4, credit_cap=0, keep_loaded=False, apply="full", adopt="")
+        for name, cls_, ins in (("Draft", D, d_ins), ("Draft apply=bogus", D, dict(d_ins, apply="bogus")),  # apply 검사도 await 뒤
+                                ("Run", dp.BMKDesignPatchRun, dict(approve="", max_new_calls=1, concurrency=1, wave_minutes=25,
+                                                                   retry_failed=False, retry_orphans=False, only=""))):
             async def visit(cls_=cls_, ins=ins):
                 idata, _miss, v3 = execution.get_input_data(dict(ins, project=["1", 0]), cls_, "7", None, None, secret)
                 idata["project"] = [bad_handle]
@@ -10082,9 +10742,9 @@ def vlm_node_unit():
                 tasks = [r for r in rv if isinstance(r, asyncio.Task)]
                 await asyncio.gather(*tasks, return_exceptions=True)
                 return ("pending" if pending else "done"), all(isinstance(t.exception(), ValueError) for t in tasks)
-            first[cls_.__name__] = asyncio.run(visit())
-        check(first == {"BMKDesignPatchSpecDraft": ("pending", True), "BMKDesignPatchRun": ("pending", True)},
-              f"F1 run 의 예외(나쁜 핸들)는 첫 await 뒤 — 첫 방문은 대기, 오류는 그 뒤 task 에서(입력값 미기록) {first}")
+            first[name] = asyncio.run(visit())
+        check(first == {"Draft": ("pending", True), "Draft apply=bogus": ("pending", True), "Run": ("pending", True)},
+              f"F1 run 의 예외(나쁜 핸들·apply 값)는 첫 await 뒤 — 첫 방문은 대기, 오류는 그 뒤 task 에서(입력값 미기록) {first}")
         check(all(a in D.SEARCH_ALIASES for a in ("spec draft", "vlm", "qwen", "openai", "스펙 초안", "초안", "자동 스펙")),
               "SEARCH_ALIASES")
         check(dp._BRANCH_KEYS == ("analyze", "compose", "draft") and dv.BRANCH_KEY == "draft", "_BRANCH_KEYS 에 draft")
@@ -10277,6 +10937,185 @@ def vlm_node_unit():
                   "F2 Run 도 mock(_MOCK_API)이면 경고 없음(과금 없음)")
         finally:
             set_mock()
+
+    def jobs_of(h, root):  # Prepare(V1, n 1) → {crop_id: (tid, prompt, cell_key)}
+        PRE.run(h, MODEL25, "high", "user_k", "V1", 1, "at", 1)
+        return {j["crop_id"]: (j["tid"], j["prompt"], j["cell_key"]) for j in st.load_manifest(root)["jobs"]}
+
+    def px(sheet, y, x):
+        return [round(float(v) * 255) for v in sheet[0, y, x]]
+
+    REF_PX = (4 + 1, 4 + dp._SHEET_CANVAS + 4 + 1)  # 시트 첫 타일의 첫 레퍼런스 칸 테두리 안(고른 것 = 초록)
+
+    def bare(spec):  # 스펙에서 이름·bbox·_ 키 밖에 남은 키("crop.<키>" / "<tid>.<키>")
+        return sorted([f"crop.{k}" for k in spec if k not in ("targets", "_hint", "_accepted", "_draft")]
+                      + [f"{t['id']}.{k}" for t in spec.get("targets") or [] for k in t if k not in ("id", "bbox", "_review")])
+
+    def t_n17():
+        section("M3-N17 apply=targets 노드 흐름(TARGETS_ONLY §9.2·9.3): 화풍 단위 없음 → 승인 → 스펙엔 bbox·_review·_draft 만"
+                "(레거시 이름도 안 씀) → Prepare = 초안 전과 바이트 일치 · full → targets 0 호출 양보(사람 값 유지) → 다시 full · "
+                "사람 화풍만 전파")
+        set_mock()
+        h, root = project("m3t", rects[:2])
+        crops = [c["id"] for c in st.load_manifest(root)["crops"]]
+        minimal = jobs_of(h, root)
+        expect_raises(lambda: draft_node(h, apply="bogus"), "TO-D1 apply 값 검사(run 안 — 첫 await 뒤)", contains="apply")
+        (hd, rep, _s), e = draft_node(h, apply="targets")
+        check(e["pending"] == 2 and hd["draft"] == {"pending": 2, "pending_hash": e["pending_hash"], "refresh_available": 0,
+                                                     "pending_style": 0}
+              and "[타깃만]" in rep.splitlines()[0] and not (Path(root) / dv.LEDGER_DIR / dv.STYLE_ID).exists(),
+              f"TO-D2 드라이런: 크롭 2 만 대기(화풍 문맥·단위 없음), 첫 줄 [타깃만] {hd['draft']} | {rep.splitlines()[0]}")
+        (_h, rep1, sh1), e1 = draft_node(h, e["pending_hash"], apply="targets")
+        specs = {c: spec_of(root, c) for c in crops}
+        left = {c: bare(s) for c, s in specs.items()}
+        check(n_files(root, "inflight") == 2 and set(specs_snap(root)) == {f"{c}.json" for c in crops} and e1["pending"] == 0
+              and left == {c: [] for c in crops} and all(s["targets"][0].get("bbox") for s in specs.values()),
+              f"TO-D3 승인 → 2 호출, _project.json 없음, 스펙 = bbox·_review·_draft 만(레거시 A 이름도 안 씀) {left}")
+        review = (Path(root) / dv.LEDGER_DIR / "review.md").read_text(encoding="utf-8")
+        check("A 영문 이름 없음 → adopt 또는 용어집" in rep1 and "기본 설명" not in rep1 and "→ 채택: adopt 에 001, 002 (전부 = all)" in rep1
+              and "참고(적용 안 함" in review,
+              "TO-D4 보고서: 레거시 CJK → 'A 영문 이름 없음', 기본 설명 숨김, [제안] adopt 안내 · review.md 참고(적용 안 함)")
+        check(px(sh1, *REF_PX) != list(dp._PICK_COLOR), f"TO-D5 targets 시트: 고른 레퍼런스 초록 테두리 없음 {px(sh1, *REF_PX)}")
+        check(jobs_of(h, root) == minimal, "TO-D6 Prepare: 프롬프트·cell_key 가 초안 전(레이어명만)과 바이트 일치")
+        snap = specs_snap(root)
+        (_h, _r, _s), e2 = draft_node(h, apply="targets")
+        check(specs_snap(root) == snap and n_files(root, "inflight") == 2 and e2["pending"] == 0,
+              "TO-D7 같은 위젯 재큐 = 0 호출, 스펙 바이트·mtime 그대로")
+
+        h, root = project("m3t_full", rects[:2])
+        c0, c1 = crops = [c["id"] for c in st.load_manifest(root)["crops"]]
+        minimal = jobs_of(h, root)
+        (_h, _r, _s), ef = draft_node(h)
+        (hf, _r, sh_f), _e = draft_node(h, ef["pending_hash"])
+        full1 = spec_of(root, c1)
+        check(ef["pending"] == 3 and full1.get("style_note") and full1["targets"][0].get("detail")
+              and full1["targets"][0].get("name") == "mock part A" and px(sh_f, *REF_PX) == list(dp._PICK_COLOR)
+              and hf["draft"].get("mock_specs") == 3,
+              f"준비(full): 크롭 2 + 화풍, 문장 필드·화풍·레거시 이름, 시트 고른 레퍼런스 초록 테두리, mock_specs 3 {hf['draft']}")
+        sp = spec_of(root, c0)
+        sp["targets"][0]["detail"] = "a human detail; kept in targets"
+        st.write_json_atomic(str(Path(root) / "specs" / f"{c0}.json"), sp)
+        pj = Path(root) / "specs" / f"{dv.PROJECT_SPEC_ID}.json"
+        pj_snap = (pj.read_bytes(), pj.stat().st_mtime_ns)
+        n_inf = n_files(root, "inflight")
+        (ht, rep_t, _s), et = draft_node(h, apply="targets")
+        left = {c: bare(spec_of(root, c)) for c in crops}
+        check(n_files(root, "inflight") == n_inf and et["pending"] == 0 and left == {c0: ["A.detail"], c1: []}
+              and spec_of(root, c0)["targets"][0]["detail"] == "a human detail; kept in targets"
+              and (pj.read_bytes(), pj.stat().st_mtime_ns) == pj_snap and re.search(r"↓ 양보 [1-9]", rep_t)
+              and ht["draft"].get("mock_specs") == 2,
+              f"TO-D8 full → targets: 0 호출로 노드 값 양보(레거시 이름·문장 필드·preserve·화풍), 사람 detail 유지, _project.json "
+              f"그대로, mock_specs 는 _project 빼고 2 {left} {ht['draft']}")
+        jt = jobs_of(h, root)
+        check(jt[c1] == minimal[c1] and "a human detail" in jt[c0][1] and jt[c0] != minimal[c0],
+              "TO-D8 Prepare: 손대지 않은 크롭은 초안 전과 바이트 일치, 사람 detail 은 렌더")
+        snap = specs_snap(root)
+        draft_node(h, apply="targets")
+        fixed = specs_snap(root) == snap
+        (_h, _r, _s), eb = draft_node(h)
+        back = spec_of(root, c1)
+        check(fixed and n_files(root, "inflight") == n_inf and eb["pending"] == 0
+              and back["targets"][0].get("detail") == full1["targets"][0]["detail"] and back.get("style_note") == full1["style_note"]
+              and back["targets"][0].get("name") == "mock part A",
+              "TO-D9 targets 재큐 = 고정점, 다시 full = 원장 초안으로 문장 필드·화풍·레거시 이름을 다시 채움(0 호출)")
+        d = json.loads(pj.read_text(encoding="utf-8"))
+        d["style_note"] = "ink-brown line art, flat cel shading"
+        st.write_json_atomic(str(pj), d)
+        pj_snap = (pj.read_bytes(), pj.stat().st_mtime_ns)
+        draft_node(h, apply="targets")
+        check(all(spec_of(root, c).get("style_note") == d["style_note"] for c in crops)
+              and (pj.read_bytes(), pj.stat().st_mtime_ns) == pj_snap and n_files(root, "inflight") == n_inf,
+              "TO-D10 targets: _project.json 의 사람 화풍은 크롭에 전파(원칙 3), _project.json 은 쓰지 않음")
+        pj.write_text("{broken", encoding="utf-8")
+        (_h, rep_b, _s), _e = draft_node(h, apply="targets")
+        check(all(spec_of(root, c).get("style_note") == d["style_note"] for c in crops)
+              and "_project.json 을 읽지 못해 화풍 초안·전파를 건너뜀" in rep_b and n_files(root, "inflight") == n_inf,
+              "TO-D10 targets: _project.json 을 읽지 못하면(JSON 오류·잠김) 전파한 화풍을 지우지 않음(full 과 같게, 경고 그대로)")
+
+    def t_n18():
+        section("M3-N18 채택(adopt, TARGETS_ONLY §9.4): 승인 큐에서 처음 받은 제안은 채택 안 함 → adopt 토큰 경고·빈 값 = 없음 → "
+                "다음 큐 adopt 로 _layer_targets(0 호출, 매니페스트 그대로)")
+        R3, R4 = [32, 32, 160, 160], [192, 64, 320, 192]
+        h, root = project("m3adopt", [("003_펜이름표", R3), ("004_단추 | A: button", R4)])
+        c3, c4 = [c["id"] for c in st.load_manifest(root)["crops"]]
+        psd = NODES3 / "m3adopt.psd"  # Import 는 캐시 경로만 탄다(PSD 지문·그룹 설정 = 매니페스트 source) — 파일은 읽지 않음
+        psd.write_bytes(b"8BPS")
+        st.update_manifest(root, lambda m: m["source"].update(
+            psd=str(psd).replace("\\", "/"), fingerprint=st.file_fingerprint(str(psd)), crop_group="auto",
+            clean_plate_layer="auto", base_layer="auto", crop_pixels_group="auto"))
+        set_mock(suggest={c3: ["red pen"]})
+        LT = "A: mock part A; B: red pen"
+
+        def targets_of(cid):
+            c = next(c for c in st.load_manifest(root)["crops"] if c["id"] == cid)
+            return [(t["tid"], t["label"], t.get("origin")) for t in c["targets"]]
+
+        (_h, _r, _s), e0 = draft_node(h, apply="targets")
+        (_h, rep1, _s), e1 = draft_node(h, e0["pending_hash"], apply="targets", adopt="003")
+        check(e0["pending"] == 2 and e1["approved_now"] and "_layer_targets" not in spec_of(root, c3)
+              and "채택 안 함 — 새 제안" in rep1 and f'[제안] {c3} 003_펜이름표: adopt 하면 _layer_targets = "{LT}"' in rep1
+              and "  B red pen — mock suggestion · bbox" in rep1 and "→ 채택: adopt 에 003 (전부 = all)" in rep1
+              and f"[제안] {c4}" not in rep1,
+              "TO-D11 승인 큐의 adopt=003: 방금 받은 제안은 채택하지 않고 [제안] 으로 먼저 보임(004 는 PSD 문구뿐 — 제안 없음)")
+        snap = specs_snap(root)
+        (_h, rep2, _s), _e = draft_node(h, apply="targets", adopt="9, Style")
+        (_h, rep3, _s), _e = draft_node(h, apply="targets")
+        check(specs_snap(root) == snap and "adopt: style 은 채택 대상이 아님(무시)" in rep2 and "adopt: 맞는 크롭 없음 — 9" in rep2
+              and "adopt:" not in rep3 and f'adopt 하면 _layer_targets = "{LT}"' in rep3,
+              "TO-D12 맞는 크롭 없는 토큰·style 은 보고만, adopt 빈 값 = 채택 없음(스펙 바이트·mtime 그대로, 안내는 계속)")
+        p3 = Path(root) / "specs" / f"{c3}.json"
+        raw = p3.read_bytes()
+        bad = json.loads(raw)
+        bad["targets"][0]["shape"] = "bogus"  # 사람 값 → 렌더 점검 실패
+        st.write_json_atomic(str(p3), bad)
+        snap_b = specs_snap(root)
+        (_h, rep_f, _s), _e = draft_node(h, apply="targets", adopt="003")
+        check(specs_snap(root) == snap_b and "채택함" not in rep_f and f"[실패] {c3}" in rep_f and "0파일 · + 0 ·" in rep_f
+              and f'[제안] {c3} 003_펜이름표: adopt 하면 _layer_targets = "{LT}"; 채택 안 함 — 렌더 점검 실패(쓰지 않음)' in rep_f
+              and "→ 채택: adopt 에 003 (전부 = all)" in rep_f,
+              "TO-D12 렌더 점검 실패(사람 shape) 크롭의 adopt: 쓰지 않음 → '채택함'·+ 수 없이 '채택 안 함', 고친 뒤 다시 adopt 안내")
+        p3.write_bytes(raw)
+        hp, _s, _p = PRE.run(h, MODEL25, "high", "user_k", "V1", 1, "at", 1)
+        h_old = run_node(hp)[1]["pending_hash"]  # 채택 전 타깃으로 만든 Run 승인 해시(2 호출)
+        rev0, n_inf = st.load_manifest(root)["rev"], n_files(root, "inflight")
+        (hd4, rep4, sh4), _e = draft_node(h, apply="targets", adopt="003")
+        s3 = spec_of(root, c3)
+        check(s3.get("_layer_targets") == LT and s3["_draft"].get("adopted") == {"key": s3["_draft"]["key"], "backend": "vlm_mock"}
+              and f'채택함 _layer_targets = "{LT}" → 다음 큐에서 Import PSD 가 반영' in rep4 and n_files(root, "inflight") == n_inf
+              and st.load_manifest(root)["rev"] == rev0 and "_layer_targets" not in spec_of(root, c4)
+              and targets_of(c3) == [("A", "펜이름표", None)],
+              f"TO-D13 다음 큐 adopt=003 → _layer_targets·_draft.adopted(0 호출), 매니페스트(rev·타깃)는 그대로 {s3.get('_layer_targets')!r}")
+
+        section("M3-N19 채택을 쓴 큐(Import 가 Draft 보다 먼저 돎): Prepare 가드 → 옛 승인 해시의 Run 은 드라이런 · 다음 큐 Import → "
+                "Draft 0 호출·시트에 채택 타깃 → Prepare 새 타깃 jobs · 다시 adopt = 멱등")
+        hp4, _s, rep_p = PRE.run(hd4, MODEL25, "high", "user_k", "V1", 1, "at", 1)
+        jobs = {j["crop_id"]: j["tid"] for j in st.load_manifest(root)["jobs"]}
+        (_h, _r, _g), er4 = run_node(hp4, h_old)
+        check(jobs == {c4: "A"} and "매니페스트 타깃이 레이어명 + _layer_targets 와 다름" in rep_p and not er4["approved_now"]
+              and er4["pending_hash"] != h_old and _ledger_reqs(root) == 0,
+              f"TO-D14 같은 큐: 가드가 003 jobs 를 빼 Run 해시가 바뀜 → 옛 해시 승인은 드라이런(과금 0) {jobs}")
+        refs = st.load_manifest(root)["source"]["refs_dir"]
+        rep_i = dp.BMKDesignPatchImportPSD().run(h, str(psd), "auto", "auto", "auto", "auto", refs, "")[2]
+        check("캐시 적중" in rep_i and targets_of(c3) == [("A", "mock part A", "adopt"), ("B", "red pen", "adopt")]
+              and targets_of(c4) == [("A", "button", None)], f"TO-D15 다음 큐 Import(캐시 경로) → 채택 타깃 A·B origin adopt {targets_of(c3)}")
+        snap = specs_snap(root)
+        (hd5, rep5, sh5), e5 = draft_node(h, apply="targets")
+        check(e5["pending"] == 0 and e5["refresh_available"] == 1 and "제안 다시 받기 1" in rep5.splitlines()[0]
+              and specs_snap(root) == snap,
+              f"TO-D16 Import 뒤 Draft: 채택 타깃은 이름이 있어 재초안 대기 없음(키만 바뀜 = 제안 다시 받기 1), 스펙 그대로 {e5['reasons']}")
+        fb = s3["_draft"]["suggestions"]["targets"][0]["bbox"]  # 크롭 128² → 캔버스 320 꽉 참: 제안 상자 위 변 가운데(3px 선 안)
+        y, x = 4 + int(fb[1] * 320) + 1, 4 + round((fb[0] + fb[2]) * 160)
+        check(px(sh5, y, x) == list(dp._BOX_COLORS["B"]) and px(sh4, y, x) != list(dp._BOX_COLORS["B"]),
+              f"TO-D17 시트: 초안 없는 실행에서 채택 타깃 B 를 _draft.suggestions 의 bbox 로 B 색(전에는 회색 제안) "
+              f"{px(sh5, y, x)} / {px(sh4, y, x)}")
+        hp6, _s, rep_p6 = PRE.run(hd5, MODEL25, "high", "user_k", "V1", 1, "at", 1)
+        jobs = {j["crop_id"]: (j["tid"], j["prompt"]) for j in st.load_manifest(root)["jobs"]}
+        check(jobs[c3][0] == "A,B" and "red pen" in jobs[c3][1] and "mock part A" in jobs[c3][1] and jobs[c4][0] == "A"
+              and "_layer_targets 와 다름" not in rep_p6 and run_node(hp6)[1]["pending"] == 2,
+              f"TO-D18 다음 큐 Prepare: 가드 통과, 채택 타깃 A·B 로 jobs, Run 드라이런 2 {jobs[c3][0]}")
+        (_h, rep7, _s), _e = draft_node(h, apply="targets", adopt="003")
+        check(specs_snap(root) == snap and "채택 안 함" not in rep7 and f"[제안] {c3}" not in rep7,
+              "TO-D19 Import 뒤 다시 adopt=003 = 같은 값(채택 타깃 라벨 = 지금 문구 → 멱등, 스펙 바이트 그대로)")
 
     def t_n6(n2):
         section("M3-N6 _project.json style_note(사람 수정) → 손대지 않은 크롭 스펙 → Prepare V1 (0 호출)")
@@ -10608,7 +11447,8 @@ def vlm_node_unit():
 
                 def q(approve="", auth=False, **kw):
                     inp = dict(project=["1", 0], approve=approve, vlm="openai/gpt-6-astra", effort="high", image_detail="high",
-                               write_mode="fill", only="", draft_round=0, concurrency=1, credit_cap=0, keep_loaded=False)
+                               write_mode="fill", only="", draft_round=0, concurrency=1, credit_cap=0, keep_loaded=False,
+                               apply="full", adopt="")
                     inp.update(kw)
                     p = {"1": {"class_type": "BMKDesignPatchProject", "inputs": {"project": "pj", "base_dir": str(B)}},
                          "2": {"class_type": "BMKDesignPatchSpecDraft", "inputs": inp}}
@@ -10763,7 +11603,7 @@ def vlm_node_unit():
         qdir.mkdir(exist_ok=True)
         m = st.load_manifest(root)
         cfg = dict(family="local_qwen", model="Qwen3-VL-8B-Instruct", effort="high", image_detail="high", draft_round=0,
-                   mode="fill", only=[], concurrency=1)
+                   mode="fill", only=[], concurrency=1, apply_mode="full")
         keys = []
         for body in ('{"v": 1}', '{"v": 2}'):
             (qdir / "config.json").write_text(body, encoding="utf-8")
@@ -10779,7 +11619,7 @@ def vlm_node_unit():
         check(len(fake.routes) == 10, f"보드 라우트 {len(fake.routes)}")
 
     def t_n9():
-        section("M3-N9 평가 도구의 순수 복제 new_targets == main._new_targets (표본 레이어명 6)")
+        section("M3-N9 평가 도구의 순수 복제 new_targets == main._new_targets (표본 레이어명 6 + 채택 origin 3)")
         old_a = {"targets": [{"tid": "A", "label": "검지", "name_en": "index tape", "mode": "self_restore", "refs": ["r.png"]}]}
         old_b = {"targets": [{"tid": "B", "label": "영수증", "name_en": "", "mode": "sketch_guide", "refs": []},
                              {"tid": "A", "label": "다른 라벨", "name_en": "x", "mode": "self_restore", "refs": ["q.png"]}]}
@@ -10788,12 +11628,25 @@ def vlm_node_unit():
                    ("030_팔매듭 | clip ring; B: x", None), ("x_이름 | a: Alpha", {"targets": [{"tid": "A", "label": "Alpha",
                                                                                          "name_en": "beta", "mode": "ref_correct",
                                                                                          "refs": []}]})]
+        old_c = {"targets": [{"tid": "A", "label": "name badge", "name_en": "name badge", "mode": "self_restore",
+                              "refs": ["r.png"], "origin": "adopt"}]}
+        adopts = [("003_펜이름표", "A: name badge; B: red pen", old_c), ("010_손가락붕대-왼쪽 | A: 검지", "B: 분홍 반창고", old_a),
+                  ("016_영수증 | A: 집게", "A: clip; C: receipt", None)]
         bad = []
         for name, old in samples:
             p = st.parse_crop_layer_name(name)
             if ev.new_targets(p, old) != dp._new_targets(p, old):
                 bad.append(name)
+        for name, lt, old in adopts:
+            p, _w = st.merge_layer_targets(st.parse_crop_layer_name(name), lt)
+            if ev.new_targets(p, old) != dp._new_targets(p, old):
+                bad.append(f"{name} + {lt}")
         check(not bad, f"new_targets 복제 일치 {bad}")
+        got = dp._new_targets(st.merge_layer_targets(st.parse_crop_layer_name("003_펜이름표"), "A: name badge; B: red pen")[0], old_c)
+        check([(t["tid"], t["label"], t["mode"], t.get("origin")) for t in got]
+              == [("A", "name badge", "self_restore", "adopt"), ("B", "red pen", "ref_correct", "adopt")]
+              and "origin" not in dp._new_targets(st.parse_crop_layer_name("016_영수증 | A: 집게"), None)[0],
+              f"TO-N9 origin 은 채택 타깃에만, 라벨이 같으면 사람 mode 유지 {got}")
 
     try:
         _guarded("M3-N1", t_n1)
@@ -10808,6 +11661,8 @@ def vlm_node_unit():
         _guarded("M3-N14", t_n14)
         _guarded("M3-N15", t_n15)
         _guarded("M3-N16", t_n16)
+        _guarded("M3-N17", t_n17)
+        _guarded("M3-N18", t_n18)
         _guarded("M3-N7", t_n7)
         _guarded("M3-N8", t_n8)
         _guarded("M3-N9", t_n9)

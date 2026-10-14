@@ -1149,7 +1149,7 @@
    "title": "예제 절차",
    "properties": {},
    "widgets_values": [
-    "# Design Patch + Spec Draft (M3) 예제\n\n**흐름**: Project → Import PSD → **Spec Draft**(VLM 이 specs/<crop_id>.json 초안 작성) → Prepare → Run → Analyze → Review → Compose → Export\n\n1. **드라이런** — 그냥 큐 실행. Spec Draft report 첫 줄에 백엔드·대기 건수·예상 크레딧이 나옵니다(호출 없음).\n2. **초안 승인** — Spec Draft 노드의 `VLM 초안 승인 (N건 ≈ X 크레딧)` 버튼 → 확인 창. Draft 만 실행됩니다(Prepare·Run 은 돌지 않음).\n   탭을 바꿔 라벨이 `누르면 드라이런부터` 로 돌아갔으면 한 번 눌러 드라이런을 받고 다시 누르세요.\n3. **검토** — sheet(타깃별 bbox·고른 레퍼런스)와 report(신뢰 낮음·경고·검토 메모·제안 레이어명)를 보고\n   `<project>/specs/<crop_id>.json` 을 편집합니다. 고친 값은 다음 실행에서도 보존됩니다(`_draft.pending` 에 새 초안 값).\n   확정하려면 `\"_accepted\": true`, 다시 받으려면 `\"_hint\": \"...\"`.\n4. **전체 큐** — Prepare 가 초안으로 새 프롬프트를 만들고, Run 드라이런이 새 승인 해시를 보여 줍니다 → Run 승인.\n\n**백엔드**: openai/gpt-6-sol + effort xhigh(기본, 크롭당 실측 약 27 크레딧) · gpt-6-astra + high(품질 우선, 약 80) · local_qwen(무료, VRAM 19.5GB, 품질 낮음) · mock(시험).\n**안전장치**: approve 1회용 · 같은 입력 재큐 0 호출 · `credit_cap`(0 = 상한 없음) · 유료 결과는 `vlm/` 원장에 보존.\n자세한 내용: guide/bmk_design_patch_guide.md 의 \"M3 — Spec Draft\" 장."
+    "# Design Patch + Spec Draft (M3) 예제\n\n**흐름**: Project → Import PSD → **Spec Draft**(VLM 이 specs/<crop_id>.json 초안 작성) → Prepare → Run → Analyze → Review → Compose → Export\n\n1. **드라이런** — 그냥 큐 실행. Spec Draft report 첫 줄에 백엔드·대기 건수·예상 크레딧이 나옵니다(호출 없음).\n2. **초안 승인** — Spec Draft 노드의 `VLM 초안 승인 (N건 ≈ X 크레딧)` 버튼 → 확인 창. Draft 만 실행됩니다(Prepare·Run 은 돌지 않음).\n   탭을 바꿔 라벨이 `누르면 드라이런부터` 로 돌아갔으면 한 번 눌러 드라이런을 받고 다시 누르세요.\n3. **검토** — sheet(타깃별 bbox)와 report 를 봅니다. `apply = targets`(기본)는 스펙에 타깃 영문 이름·bbox 만 씁니다(문장 필드 없음 — 용어집 없는 한글 라벨 타깃은 VLM 영문 이름이 렌더되니 report 에서 확인).\n   report `[제안]` 의 제안 타깃이 맞으면 `→ 채택:` 줄대로 `adopt` 에 크롭을 적고 큐(0 호출, adopt 는 큐 직후 비워짐) →\n   스펙 `_layer_targets` 에 써지고 다음 큐에서 Import PSD 가 타깃으로 더합니다. 틀린 이름은 `specs/<crop_id>.json` 의 `_layer_targets` 를 직접 고치세요.\n   문장 필드(detail·preserve·화풍 등)까지 쓰려면 `apply = full`(참고용 — 가이드의 확인 목록, 바꾸면 원장에 없는 화풍·타깃이 바뀐 크롭은 재초안 승인 대기). 확정 `\"_accepted\": true`, 다시 받기 `\"_hint\": \"...\"`.\n4. **전체 큐** — Prepare 가 초안으로 새 프롬프트를 만들고, Run 드라이런이 새 승인 해시를 보여 줍니다 → Run 승인.\n\n**백엔드**: openai/gpt-6-sol + effort xhigh(기본, 크롭당 실측 약 27 크레딧) · gpt-6-astra + high(품질 우선, 약 80) · local_qwen(무료, VRAM 19.5GB, 품질 낮음) · mock(시험).\n**안전장치**: approve 1회용 · 같은 입력 재큐 0 호출 · `credit_cap`(0 = 상한 없음) · 유료 결과는 `vlm/` 원장에 보존.\n자세한 내용: guide/bmk_design_patch_guide.md 의 \"M3 — Spec Draft\" 장."
    ],
    "color": "#432",
    "bgcolor": "#653"
@@ -1211,7 +1211,9 @@
     0,
     4,
     0,
-    false
+    false,
+    "targets",
+    ""
    ],
    "title": "Spec Draft"
   },

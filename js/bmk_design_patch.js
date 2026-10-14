@@ -30,6 +30,9 @@
 //    "VLM 초안 승인 (N건 ≈ X 크레딧)" / "(로컬 N건 ≈ M분)" / "[MOCK]" 버튼 라벨을 갱신한다. 승인 버튼 하나뿐(Auto·Drain 없음).
 //  - 승인: Run 과 같은 1회용 규칙(approve = pending_hash → Draft 만 부분 실행, 제출 직후 비움). 확인 창: openai = 크레딧
 //    (orphan 재시도 포함 수), local_qwen = ComfyUI 모델을 VRAM 에서 내림, mock = 확인 창 없음.
+//  - adopt(채택할 크롭)도 1회용 명령: 이 노드가 실린 큐가 제출되면(afterQueued — 전체 큐·부분 실행·승인 버튼) 비운다.
+//    남겨 두면 그 뒤 큐마다 새로 받은 제안까지 검토 없이 채택된다. 꺼진(mute/bypass) 노드·제출 실패면 쓰이지 않았으니 남긴다.
+//    서버가 쓴 _layer_targets 는 스펙에 그대로 남는다.
 //
 // Review 노드
 //  - ui.bmk_dp_board[0].root_key 를 properties 에 기억한다(재로드 뒤에도 Open Board 가 동작).
@@ -40,8 +43,9 @@
 //    연타는 0.8초 단위로 한 번에 묶는다.
 //
 // 1.53 클래식 모드 주의: 위젯은 addWidget("button") 만, 위젯 배열 맨 뒤에 serialize=false 로 붙인다
-// (widgets_values 위치 호환). 노드별 상태는 WeakMap 에 둔다. 위젯 객체에 얹는 것은 프론트가 부르는 afterQueued 훅
-// 하나뿐이고 승인 한 번 동안만 둔다. onExecuted 의 ui 값은 한 단계 평탄화된 리스트로 온다(message.bmk_dp_run = [{…}]).
+// (widgets_values 위치 호환). 노드별 상태는 WeakMap 에 둔다. 위젯 객체에 얹는 것은 프론트가 부르는 afterQueued 훅뿐이다
+// — approve 는 승인 한 번 동안만, Draft 의 adopt 는 늘. onExecuted 의 ui 값은 한 단계 평탄화된 리스트로 온다
+// (message.bmk_dp_run = [{…}]).
 
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
@@ -583,10 +587,23 @@ async function approveDraft(node) {
     }
 }
 
+// adopt 는 큐 하나에만 쓴다: 프론트가 프롬프트를 제출한 뒤 모든 노드의 위젯에 afterQueued 를 부른다(제출 실패면 부르지 않음)
+function armAdopt(node) {
+    const w = getWidget(node, "adopt");
+    if (!w) return;
+    w.afterQueued = () => {
+        if (isOff(node) || !w.value) return;
+        w.value = "";
+        checkState();
+        node.setDirtyCanvas?.(true, true);
+    };
+}
+
 function registerDraft(nodeType) {
     const onNodeCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function () {
         const r = onNodeCreated?.apply(this, arguments);
+        armAdopt(this);
         addButton(this, W_APPROVE, "", () => approveDraft(this));
         refreshDraftLabel(this);
         fitHeight(this);

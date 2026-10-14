@@ -34,9 +34,9 @@ Project ─▶ Import PSD ─▶ (Candidate In) ─▶ (Spec Draft) ─▶ Prepa
 | 노드 | 입력(위젯) | 출력 | 하는 일 |
 |---|---|---|---|
 | Project | project, base_dir(""=input 폴더) | project, summary | `<base_dir>/bmk_design_patch/<project>/` 를 열거나 만듦 |
-| Import PSD | psd_path, crop_group, clean_plate_layer, base_layer, crop_pixels_group, refs_dir, glossary_path | project, overview, report | 크롭 rect·베이스·크롭 소스 → `crops[]` |
+| Import PSD | psd_path, crop_group, clean_plate_layer, base_layer, crop_pixels_group, refs_dir, glossary_path | project, overview, report | 크롭 rect·베이스·크롭 소스 → `crops[]`. 타깃 = 레이어명 + `specs/<crop_id>.json` 의 `_layer_targets`(채택, 레이어명 문구 우선) |
 | Candidate In | source(psd_harvest/folder), path, group, mapping_json, visible_is_pick, keep_hand_masks | project, report | 후보 원본 bytes·배치·손 마스크 등록 |
-| **Spec Draft** (M3) | approve, vlm, effort, image_detail, write_mode, only, draft_round, concurrency, credit_cap, keep_loaded | project, report, sheet | VLM 으로 `specs/` 초안(출력 노드, 매니페스트 안 씀). 'VLM 초안 승인' 버튼(JS) |
+| **Spec Draft** (M3) | approve, vlm, effort, image_detail, write_mode, only, draft_round, concurrency, credit_cap, keep_loaded, apply, adopt | project, report, sheet | VLM 으로 `specs/` 초안(출력 노드, 매니페스트 안 씀). 기본 apply=targets 는 타깃 영문 이름·bbox 만, adopt 로 제안 타깃 채택. 'VLM 초안 승인' 버튼(JS) |
 | Prepare | model, quality, size_rule, variants, n, ref_style, **calls_per_cell** | project, job_sheet, report | 스펙 → 평탄화 입력 → 프롬프트 → `jobs[]` + 승인 해시·예상 비용 (호출 없음) |
 | **Run** (M2) | approve, max_new_calls, concurrency, wave_minutes, retry_failed, retry_orphans, only | project, report, new_candidates | 유료 호출(출력 노드). 승인 버튼·Drain·자동 이어가기 버튼(JS) |
 | Analyze | register, tone, tone_sigma, dE, grow, feather_sigma, roi_prior, only_picked | project, contact_sheet, report | 정합·자동 마스크·톤 보정장·게이트 → `analysis[]` |
@@ -72,9 +72,11 @@ Project ─▶ Import PSD ─▶ (Candidate In) ─▶ (Spec Draft) ─▶ Prepa
 |---|---|
 | `002` | NNN — 레퍼런스 매칭 키(`00.크롭레퍼런스/002_…`) |
 | `토스트-머리장식_right` | 부위 이름 |
-| `\| A: …; B: …` | 타깃(고칠 대상) 목록. 영문이면 프롬프트 이름으로 그대로, 한글이면 용어집으로 번역. **Spec Draft 를 쓰면 한글 짧은 라벨(`\| A: 토스트; B: 빨간 핀`)로 충분**합니다 — 영문 이름은 VLM 이 짓습니다(용어집 불필요) |
+| `\| A: …; B: …` | 타깃(고칠 대상) 목록. 영문이면 프롬프트 이름으로 그대로, 한글이면 용어집으로 번역. **Spec Draft 를 쓰면 한글 짧은 라벨(`\| A: 토스트; B: 빨간 핀`)로 충분**합니다 — 영문 이름은 VLM 이 짓습니다(용어집 불필요, apply=targets 도 같음) |
 
-- `|` 가 없는 예전 이름(`002_토스트-머리장식_right`)은 타깃 A 하나(이름 = 부위)로 봅니다.
+- `|` 가 없는 예전 이름(`002_토스트-머리장식_right`)은 타깃 A 하나(이름 = 부위)로 봅니다. 이 A 의 영문 이름과 VLM 이 찾은 새 타깃은
+  Spec Draft 의 **채택**(adopt → `specs/<crop_id>.json` 의 `_layer_targets`)으로만 들어갑니다 — Import PSD 가 그 문자열을 `|` 뒤에
+  적은 것처럼 읽으므로 PS 레이어명을 고치지 않아도 됩니다(「M3 — 타깃만 + 채택」).
 - 관용: 전각 `｜；：`, 공백, 소문자 라벨(`a:`), `| A: … | B: …`, `…, B: …` 모두 같은 결과. 라벨 없는 조각은 남은 글자를 배정하고 경고합니다.
 - 크롭 ID(`002_388984`)는 `|` 앞 이름의 해시라서 타깃 문구를 고쳐도 ID 와 `specs/<crop_id>.json` 이 유지됩니다.
 - 같은 rect 의 크롭이 둘 이상이면(예: 010 약지·새끼) 경고합니다. 한 크롭의 `| A: …; B: …` 로 합치는 것을 권합니다.
@@ -342,6 +344,9 @@ input 폴더 프로젝트는 `_roots.json` 에서 키를 되살리고, 다른 ba
   디스크 최신본)이라 그 사이의 ★·탈락·재굴림·호출 결과를 덮지 않습니다. 같은 항목을 양쪽이 다르게 바꾼 드문 경우는 노드 값으로
   저장하고 보고서 끝에 `매니페스트 병합 충돌(이 노드의 값으로 저장): …` 경고를 붙입니다.
 - 탈락한 후보는 Analyze(분석)·Compose(합성)·Export(숨김 대안 포함)에서 빠집니다. 탈락을 풀면 다음 Export 가 새 PSD 를 씁니다.
+- 레이어명이나 `_layer_targets` 에서 지운 타깃의 후보도 보드·Compose·Export 에서 빠집니다(Compose·Export 는 분석·skip_empty 판단 전에
+  빼고 경고, 지운 것이 채택 타깃이면 Import PSD 보고서에도 남은 후보·pick 수). 지운 뒤 도착한 Run 결과도 작업의 타깃 id 그대로 등록되어
+  같이 빠집니다(작업의 타깃이 모두 없으면 Run 보고서에 경고). 같은 글자를 다시 쓰면 옛 후보가 그 타깃에 다시 붙습니다.
 - Candidate In(psd_harvest)의 `visible_is_pick=True` 는 큐마다 수확 후보의 pick 을 PSD 보임 상태로 되돌립니다. 보드에서 **수확 후보**의
   ★ 를 바꿀 거면 `visible_is_pick` 을 끄세요(Run 후보는 영향 없음).
 - 잠금은 한 ComfyUI 프로세스 안에서만 유효합니다. 같은 프로젝트 폴더를 두 ComfyUI 에서 동시에 쓰지 마세요.
@@ -353,10 +358,15 @@ input 폴더 프로젝트는 `_roots.json` 에서 키를 되살리고, 다른 ba
 지키는 세 가지: **사람이 고친 값은 조용히 덮지 않는다**, **돈은 승인 해시가 맞을 때만 쓴다**, **입력이 같으면 다시 큐에 넣어도 호출 0건**.
 
 - 위치: Import PSD 와 Prepare 사이. 매니페스트는 쓰지 않습니다(rev 그대로). 쓰는 곳은 `specs/` 와 `vlm/` 뿐입니다.
-- 호출: 크롭당 1회(단일 패스) + 화풍(style) 1회/프로젝트. 유료 재질문은 없습니다.
-- 타깃 목록은 매니페스트(레이어명) 그대로 고정입니다. VLM 이 목록 밖에서 찾은 틀린 요소는 **제안**(레이어명 제안)으로만 나옵니다.
-  레이어명을 그 제안대로 고치고 Import PSD 를 다시 돌리면 새 타깃이 생기고, fill 모드가 그 크롭을 "타깃 추가" 로 다시 초안합니다
-  (`|` 뒤를 고쳐도 crop_id·스펙 파일은 그대로).
+- 호출: 크롭당 1회(단일 패스) + 화풍(style) 1회/프로젝트(apply=full 만). 유료 재질문은 없습니다.
+- **apply**: `targets`(기본)는 타깃 목록과 영문 이름만 스펙에 남기고(문장 필드 없음), `full` 은 문장 필드까지 씁니다(참고용 —
+  아래 「실측 결과와 백엔드 고르기」의 확인 목록). targets 렌더는 레거시 A·영문/용어집 이름이 있는 타깃이면 레이어명 + 용어집과 같고,
+  용어집 없는 한글 라벨 타깃은 VLM 영문 이름입니다(보고서에서 확인). 요청·캐시 키가 같아 full → targets 는 0 호출입니다.
+  targets → full 은 같은 키의 크롭이면 원장 초안으로 문장 필드를 다시 채우지만(0 호출), 원장에 화풍 초안이 없으면 "화풍 신규" 1회, 채택 등으로 타깃이
+  늘거나 바뀐 크롭은 "타깃 추가"·"타깃 변경" 재초안이 승인 대기(유료)로 올라옵니다.
+- 타깃 목록은 매니페스트(레이어명 + 채택한 `_layer_targets`)가 정합니다. VLM 이 목록 밖에서 찾은 틀린 요소는 **제안**으로만 나옵니다.
+  보고서 `[제안]` 을 보고 **adopt** 로 채택하거나(아래 「타깃만 + 채택」, PS 왕복 없음), 레이어명을 그 제안대로 고치고 Import PSD 를
+  다시 돌리면 새 타깃이 생깁니다(`|` 뒤를 고쳐도 crop_id·스펙 파일은 그대로). full 이면 fill 모드가 그 크롭을 "타깃 추가" 로 다시 초안합니다.
 - 예제 워크플로: `guide/bmk_design_patch_draft_workflow.json`(Project → Import PSD → Spec Draft → Prepare → Run → 검토·출력).
   스모크 예제와 달리 **전체 실행 설정**입니다(Prepare max·V1,V4·n4, Run 대기 전부) — 승인 버튼 라벨의 건수·금액을 확인하세요.
 
@@ -372,9 +382,11 @@ input 폴더 프로젝트는 `_roots.json` 에서 키를 되살리고, 다른 ba
 | concurrency | 4 | openai 동시 호출 수(1–8). local_qwen 은 항상 순차 |
 | credit_cap | 0 | 유료 호출 하나를 띄우기 직전 `이번 실행 실측(보고 안 된 것은 단위 최대) + 이 단위의 최대` 가 이 값을 넘으면 그 실행의 새 발사를 멈춤(나머지는 대기). 진행 중 단위들의 최대까지 더해야 넘치면 그것들이 끝날 때까지 기다렸다 다시 판정. **단위 하나의 최대보다 작으면 0건**. 0 = 상한 없음. 아래 「비용」 참고 |
 | keep_loaded | False | Qwen 을 실행 뒤에도 VRAM 에 남김(보고서에 상주 경고). 끄고 한 번 실행하면 vlm 이 무엇이든 남은 Qwen 을 내림 |
+| apply | targets | 스펙에 쓰는 범위. `targets` = 타깃 영문 이름(레거시 A 제외)·bbox 만, 나머지는 쓰지 않고 노드가 전에 쓴 값은 양보(지움) · 화풍 호출 없음. `full` = 모든 필드(참고용). 키 밖이라 full → targets 는 0 호출. targets → full 은 같은 키 크롭 0 호출 + 원장에 없는 화풍·타깃이 바뀐 크롭은 재초안 대기(유료) |
+| adopt | "" | 채택할 크롭: crop_id, NNN, `all`(쉼표). 보고서 `[제안]` 의 제안 타깃을 `_layer_targets` 에 씀(0 호출). **큐 직후 비워지는 1회 명령**(JS) — 쓴 `_layer_targets` 는 남음 |
 
 출력: `project`(rev 그대로 + 가지 설정 `draft` = 대기 수·화풍 대기·해시 — 하류 Run 이 경고에 씀), `report`, `sheet`(크롭마다 캔버스 + 타깃 bbox
-A 빨강 · B 초록 · C 파랑 · D 주황 · 제안 회색 점선, 보여 준 레퍼런스 최대 4장 — 고른 것 초록 테두리).
+A 빨강 · B 초록 · C 파랑 · D 주황 · 제안 회색 점선 · 채택한 타깃은 그 제안의 bbox, 보여 준 레퍼런스 최대 4장 — 고른 것 초록 테두리(full 만)).
 
 ### 승인 흐름
 
@@ -396,7 +408,8 @@ A 빨강 · B 초록 · C 파랑 · D 주황 · 제안 회색 점선, 보여 준
 - 과금됐을 수 있는 실패(orphan·실패·파싱 실패)는 시도 번호가 올라가 **새 승인**이 필요합니다. 과금 전 거부(사다리 밖 400, 401/402/403,
   전송 전 로컬 실패)는 같은 시도로 다시 승인 목록에 오릅니다.
 - 승인 없이 하는 일은 셋뿐: 기록된 response id 의 GET 재폴링, 원장 원문 재파싱, 원장 캐시로 병합·쓰기.
-- 승인한 Draft 가 Run 부분 큐 안에서 스펙을 쓰면 그 큐의 Run 해시가 어긋나 Run 은 드라이런이 됩니다(의도된 동작).
+- 승인한 Draft 가 Run 부분 큐 안에서 스펙을 쓰면 그 큐의 Run 해시가 어긋나 Run 은 드라이런이 됩니다(의도된 동작). 채택
+  (`_layer_targets`)만 쓴 큐도 같습니다 — Prepare 의 채택 가드가 그 크롭의 jobs 를 빼므로 옛 타깃으로 과금되지 않습니다.
 - 초안이 대기 중인데 Run 을 승인하려 하면 Run 보고서와 확인 창에 "스펙 초안 대기 N크롭 + 화풍" 경고가 붙습니다(초안 없는 프롬프트로 과금).
   `only` 로 일부만 초안했으면 나머지는 "only 로 보류된 초안 대기 N크롭 + 화풍" 으로 따로 경고합니다(only 를 비우면 승인 목록에 오름).
   `vlm = mock` 으로 승인한 초안은 실제 스펙 파일에 자리표시 문구로 써집니다 — Run 이 유료면 "스펙 N개가 mock 초안" 경고가 붙고,
@@ -407,7 +420,60 @@ A 빨강 · B 초록 · C 파랑 · D 주황 · 제안 회색 점선, 보여 준
 
 **캐시 키**(같으면 다시 호출하지 않음) = 보낼 요청 그 자체: 버전, 백엔드, 모델, effort, detail, 프롬프트 지문, 사용자 텍스트(라벨·영문 이름·
 용어집 적중·매니페스트 사람 mode·`_hint`·숨긴 레퍼런스·패딩 변·크기), 이미지(역할·이름·원본 픽셀 sha·전송 크기), draft_round.
-스펙 내용(`_hint` 제외)·write_mode·only·동시성·상한은 키 밖이라, 노드가 쓴 스펙이 재호출을 부르지 않습니다.
+스펙 내용(`_hint` 제외)·write_mode·only·apply·adopt·동시성·상한은 키 밖이라, 노드가 쓴 스펙이 재호출을 부르지 않습니다.
+채택한 `_layer_targets` 는 Import PSD 가 매니페스트 타깃으로 만든 뒤에야 라벨로 키에 들어갑니다.
+
+### 타깃만 + 채택 (apply · adopt)
+
+A/B 결론(아래 「실측 결과와 백엔드 고르기」 — 문장 필드가 결과를 깎음)에 맞춘 기본 사용법입니다. `apply = targets` 는 타깃 목록과
+영문 이름만 받고, 목록에 더할 타깃은 사람이 보고서를 보고 고릅니다(제안이 틀리는 경우가 있어 자동 채택하지 않음).
+
+- **targets 가 쓰는 것**: 타깃 `name`(레이어명 영문·용어집 이름이 있거나 레거시 A 면 쓰지 않음), `bbox`(시트용), `_review`·`_draft`.
+  mode·action·refs·ref_object·detail·must_not·shape·text·location 등과 크롭 preserve·style_note 는 쓰지 않고, 노드가 전에(full 로) 쓴 값은
+  초안 유무와 무관하게 매 실행 지웁니다(사람이 고친 값은 유지). 렌더에 더해지는 것은 이름뿐입니다 — 레거시 A·영문/용어집 이름이 있는
+  타깃은 레이어명 + 용어집만 쓴 것과 같고, 용어집 없는 한글 라벨 타깃은 VLM 영문 이름이 렌더됩니다. 이름도 범위를 좁힐 수 있으니
+  (한 쌍 → 위쪽 하나) 보고서 크롭 줄의 이름을 확인하세요. 채택하면 타깃이 늘어납니다.
+- **대기**: 화풍 단위가 없고(`_project.json` 을 쓰지 않음 — 사람이 쓴 style_note 만 크롭에 퍼짐), "타깃 추가"·"타깃 변경" 은 영문 이름이 없는
+  타깃 때문일 때만 대기입니다. 채택한 타깃은 이름이 있어 다시 초안하지 않습니다(크롭당 초안 1회). 채택으로 키가 바뀐 크롭은
+  "제안 다시 받기" 로 보고만 됩니다(write_mode=refresh 면 유료 재초안 — targets 에서는 이름·bbox·제안만 바뀜).
+- **보고서**: 첫 줄 `Spec Draft [백엔드] [타깃만] …`. 크롭 줄은 타깃 이름과 이름·bbox·구조 플래그만, `기본 설명`·`v4_equals_v1` 은
+  기대값이라 숨기고, 레거시는 `A 영문 이름 없음 → adopt 또는 용어집`. 쓰지 않은 문장 필드·신뢰도는 `vlm/review.md` 의
+  "참고(적용 안 함)". `[제안]` 묶음(경고와 정상 사이)에 크롭마다 채택할 값·제안 이유·bbox, 끝에 붙여 넣을 adopt 값이 나옵니다.
+
+흐름(레거시 크롭 `003_펜이름표` 하나 — 레이어명에 타깃 문구 없음):
+
+1. 큐 → Draft 드라이런(대기 1) → 'VLM 초안 승인' → 초안: A name badge, 제안 B red pen. 스펙에는 bbox·`_review`·`_draft` 만 써지고
+   (레거시 A 이름도 아직 안 씀), 보고서에 `[제안] 003_… adopt 하면 _layer_targets = "A: name badge; B: red pen"` 과
+   `→ 채택: adopt 에 003 (전부 = all)`.
+2. 보고서·시트를 보고 `adopt = 003` → 큐(0 호출) → `specs/003_….json` 에 `"_layer_targets": "A: name badge; B: red pen"`.
+   틀렸으면 이 문자열을 직접 고치거나(예: A 를 `capped red pen` 으로) `; B: …` 를 지웁니다(PS 레이어명과 같은 문법). 이 큐에서는
+   Import PSD 가 Draft 보다 먼저 돌았으므로 Prepare 는 그 크롭을 "매니페스트 타깃이 레이어명 + _layer_targets 와 다름" 으로 빼고(jobs 없음) Run 은 드라이런입니다.
+3. 다음 큐: specs 가 바뀌어 Import PSD 가 다시 돌고 매니페스트 타깃이 A name badge · B red pen(`origin: "adopt"`) → Draft 0 호출 →
+   Prepare 가 두 타깃으로 jobs → Run 드라이런 → 승인.
+
+- **이번 실행에 처음 받은 제안은 채택하지 않습니다**: 승인 큐에 adopt 가 있어도 그 초안의 제안은 보고서로 먼저 보이고
+  ("채택 안 함 — 새 제안 …"), 다시 adopt 해야 써집니다. 채택 원천은 이미 스펙에 저장돼 있던 `_draft.suggestions` 입니다.
+  그래서 `[제안]` 의 `adopt 하면 …` 값과 adopt 안내도 다음 큐가 읽을 스펙 파일 기준입니다. preview 처럼 쓰지 않은 실행의
+  새 제안은 `새 제안 "…" — 쓴 뒤 다시 adopt` 로만 보입니다(이미 `_layer_targets` 가 있는 크롭은 adopt 로 안 바뀌므로
+  `노드가 쓴 … 그대로`·`사람이 고친 … 유지` 로 보임).
+- **adopt 는 1회용**: JS 가 큐 직후 비웁니다(꺼진 노드·제출 실패면 남김). 남겨 두면 그 뒤 큐마다 새로 받은 제안(재초안·새 크롭,
+  `all`)까지 검토 없이 채택되기 때문입니다. 비워도 `_layer_targets` 는 스펙에 남습니다(sticky). 되돌리려면 스펙에서 그 키를 지우세요(다음 Import 가 레이어명 타깃으로 되돌림).
+  사람이 고치거나 지운 `_layer_targets` 는 다시 adopt 해도 덮지 않습니다(다시 채택하려면 문자열을 직접 씀).
+- 채택하는 값 = 제안 레이어명에서 **PSD 레이어명에 문구가 없는 타깃만**(명명 크롭 `| A: …; B: …` 에 제안이 하나면 `C: <제안>`).
+  초안 뒤 레이어명에서 지운 타깃은 다시 살리지 않습니다. 새 제안에는 초안 때 스펙 targets·`_draft.labels` 에 남은 지운 타깃의 글자를
+  주지 않습니다(옛 사람 값·후보가 붙지 않게). 초안 뒤 PS 에서 같은 글자 타깃을 썼다 지운 경우까지는 못 막으므로, 새로 채택한 글자에
+  이미 후보가 있으면 Import PSD 보고서가 `새로 채택한 타깃 X(…) 에 같은 글자의 옛 후보가 있음` 으로 알립니다.
+  문구는 name_en → 용어집 → 초안 이름 순이라 vlm·effort·용어집에 따라 다르고, **초안을 받을 때 정해져 저장됩니다**. 그 뒤 용어집·name_en 을
+  고쳐도 `[제안]` 문구(레거시 A 포함)는 그대로이니 채택 전에 그 문구를 확인하거나, 제안 다시 받기(write_mode=refresh) 뒤 채택하세요.
+  채택하지 않는 경우(보고서 `채택 안 함 — …`): 초안 없음, `_accepted`, 초안 뒤 레이어명이 바뀜(재초안 뒤 채택), mock 초안의 제안을 실제 vlm
+  으로 채택, 채택할 제안 없음(타깃 26개 포함), 렌더 점검 실패(쓰지 않음).
+  preview 는 "채택 예정" 으로 보고만, force 에 only 가 없으면(idle) 쓰지 않습니다. 어느 크롭과도 맞지 않는 adopt 토큰은 보고서에 알립니다.
+- `vlm = mock` 으로 받은 제안을 채택한 `_layer_targets` 는 실제 vlm 으로 바꾸면 노드가 지웁니다(자리표시 이름이 렌더로 새지 않게).
+- 채택 타깃을 나중에 지우면 그 타깃의 후보는 보드·Compose·Export 에서 빠지고 Import PSD 보고서에 남은 후보·pick 수가 나옵니다.
+  레거시 A 를 채택하면 A 의 뜻이 "부위 전체" 에서 채택 이름으로 바뀌므로, 이미 있는 A 후보는 보고서 안내를 보고 확인하세요.
+- `apply` 를 full → targets 로 바꾸면 노드가 쓴 문장 필드를 지울 뿐 0 호출입니다. targets → full 은 같은 키의 크롭이면 원장 초안으로
+  문장 필드를 채우지만(0 호출), targets 는 화풍을 받지 않으므로 원장에 화풍 초안이 없으면 첫 full 실행에 "화풍 신규"(프로젝트당 1회)가,
+  채택(또는 영문 이름을 적은 레이어명 수정)으로 타깃이 늘거나 바뀐 크롭은 "타깃 추가"·"타깃 변경" 재초안이 승인 대기(유료)로 올라옵니다.
 
 ### 쓰기 모드와 사람 편집 보호
 
@@ -431,7 +497,7 @@ A 빨강 · B 초록 · C 파랑 · D 주황 · 제안 회색 점선, 보여 준
 - 모두 **유료 호출이라 승인이 필요**합니다(사유가 여럿이면 모두 표시). 라벨은 초안 때 `_draft.labels` 에 기록됩니다.
 - **force 는 키마다 1회**: force 가 한 번 적용되면 `_draft.forced_key` 에 그 키가 남고, write_mode 가 force 로 남아 있어도
   같은 키로는 fill 처럼 동작합니다(그 뒤의 사람 편집·`_accepted` 를 되돌리지 않음, 새 백업 없음). 다시 force 하려면 `draft_round` 를
-  올리세요. **원장에 지금 키의 초안(done)이 이미 있으면 force 는 승인 없이 첫 큐에서 바로 적용됩니다**(백업 뒤 사람 값 교체, 0 호출).
+  올리세요. `forced_key` 는 apply 를 가리지 않습니다(targets 로 force 한 키는 full 로 바꿔도 이미 force 한 것으로 봄). **원장에 지금 키의 초안(done)이 이미 있으면 force 는 승인 없이 첫 큐에서 바로 적용됩니다**(백업 뒤 사람 값 교체, 0 호출).
   초안이 없는 크롭만 승인 대기(그때까지는 fill)입니다. 적용 전에 바뀔 값을 보려면 force 대신 preview 로 diff 를 보세요(preview 는
   refresh 규칙이라 사람 값은 유지로 표시됨 — force 는 그 유지 행까지 덮습니다).
 - **업그레이드 직후 한 번**: 이미 초안된 스펙은 다음 Draft 실행에서 한 번 다시 쓰입니다(정규화 dp-draft-norm/3, `_draft.normalizer`·
@@ -459,7 +525,8 @@ A 빨강 · B 초록 · C 파랑 · D 주황 · 제안 회색 점선, 보여 준
 - **제안 레이어명**은 기존 타깃 문구(한글 라벨 포함)를 그대로 두고 새 제안만 붙입니다. 그대로 붙여 넣어도 기존 타깃의 매니페스트
   mode·refs 가 유지됩니다. 단, `|` 가 없는 레거시 레이어명에 붙이면 A 의 라벨이 바뀌어 "타깃 변경(A)" 가 뜹니다.
 - `"_hint": "버터는 하나뿐"`(한국어 가능) = 재초안 지시. 키에 들어가 fill 에서도 그 크롭만 다시 초안하고, 그 크롭은 refresh 규칙으로 병합.
-- `"_accepted": true` = 확정. force + only 외에는 건드리지 않습니다.
+- `"_accepted": true` = 확정. force + only 외에는 건드리지 않습니다 — apply=targets 의 양보도 하지 않아 full 로 쓴 문장 필드가 남아
+  렌더되고, 채택은 force 여도 하지 않습니다.
 - `_review`(타깃마다): confidence, 검토 메모, found, counts, 렌더되지 않아 스펙에 쓰지 않은 값(unrendered), 플래그(side_mismatch,
   count_mismatch, text_contradiction, must_not_in_detail, self_restore_vs_human_refs, refs_differ_from_human,
   human_ref_not_shown, ref_object_singular, add_but_visible,
@@ -470,19 +537,23 @@ A 빨강 · B 초록 · C 파랑 · D 주황 · 제안 회색 점선, 보여 준
 - 렌더되지 않는 필드는 쓰지 않습니다(예: ref_correct·add 의 must_not, ref_correct 의 occluded_by). 쓰기 전에 실제
   `spec_from_manifest → validate_spec → variants` 로 렌더를 점검하고, 내용이 같으면 파일을 다시 쓰지 않습니다(mtime 그대로 →
   하류 재실행 없음). 렌더가 바뀐 크롭은 Prepare 에서 새 cell_key → Run 재승인이 필요합니다(보고서에 개수 표시).
-- 사람 값 때문에 렌더가 깨지는 크롭은 쓰지 않고 "사람 값 때문에 Prepare 가 이 크롭에서 멈춥니다" 로 보고합니다.
+- 사람 값 때문에 렌더가 깨지는 크롭은 쓰지 않고 "사람 값 때문에 Prepare 가 이 크롭에서 멈춥니다" 로 보고합니다(그 크롭의 diff 는
+  세지 않고, adopt 했으면 `채택 안 함 — 렌더 점검 실패(쓰지 않음)`).
 - 쓰기는 잠금 안에서 파일을 다시 읽어 병합합니다. 편집기로 파일을 연 채 실행했다면 편집기의 "외부에서 바뀜" 경고를 따르세요.
 
 **화풍 `specs/_project.json`** = `{"style_note": "…", "_draft": {…}}`. 화풍 호출(베이스 작업영역 + 첫 3 크롭)이 한 번 쓰고, 크롭 스펙의
 `style_note` 로 퍼집니다(손대지 않은 크롭은 모든 모드에서 프로젝트 값을 따라감). 고치면 다음 실행에서 손대지 않은 크롭에 퍼지고(0 호출),
 지우면 그 크롭들에서도 지워지며(렌더러 기본 문구), `""` 로 두면 화풍 초안과 전파를 모두 끕니다. **Draft 가 그래프에 있어야** 퍼집니다
-(bypass 하면 전파가 멈춤 — 캐시 적중이면 0 호출이라 늘 두어도 됩니다).
+(bypass 하면 전파가 멈춤 — 캐시 적중이면 0 호출이라 늘 두어도 됩니다). apply=targets 는 화풍을 호출·쓰지 않고, `_project.json` 의
+style_note 가 사람이 고친 값일 때만 크롭에 퍼뜨립니다(노드가 쓴 화풍은 크롭에서 지움). `_project.json` 을 읽지 못하면(JSON 오류·잠김)
+두 모드 모두 크롭 style_note 를 건드리지 않고 보고서에 경고합니다.
 
 ### 검토
 
-1. **report**: 나쁜 것부터 `[실패]` > `[신뢰 낮음]` > `[경고]` > `[정상]`. diff 기호 `+` 새로 씀, `~` 갱신, `=` 사람 값 유지,
-   `-` 사람이 지운 필드 존중, `↓` 양보. 타깃별 신뢰도·검토 메모, 제안 레이어명(그대로 붙여 넣을 수 있는 ASCII), 용어집 제안 JSON.
-2. **sheet**: bbox 와 고른 레퍼런스로 위치·좌우 혼동을 빠르게 봅니다.
+1. **report**: 나쁜 것부터 `[실패]` > `[신뢰 낮음]` > `[경고]` > `[제안]` > `[정상]`. diff 기호 `+` 새로 씀, `~` 갱신, `=` 사람 값 유지,
+   `-` 사람이 지운 필드 존중, `↓` 양보. 타깃별 신뢰도·검토 메모(full), `[제안]` 의 채택할 값·제안 이유·bbox·adopt 안내(full 은 PS 에
+   붙여 넣을 제안 레이어명도), 용어집 제안 JSON.
+2. **sheet**: bbox 와 고른 레퍼런스(full)로 위치·좌우 혼동을 빠르게 봅니다.
 3. **`vlm/review.md`**: 크롭별 병합된 스펙의 V1 지시문 전문과 diff(specs 밖이라 지문에 영향 없음). `vlm/last_report.txt` = 마지막 보고서.
 
 고칠 때는 `specs/<crop_id>.json` 을 직접 편집합니다. 필드 옆 `_review` 를 근거로 보고, 다시 받고 싶으면 `_hint`, 확정하면 `_accepted: true`.
@@ -596,7 +667,8 @@ A 빨강 · B 초록 · C 파랑 · D 주황 · 제안 회색 점선, 보여 준
 - `image_detail` 은 high 로 두세요(original 은 이득 없음).
 - **Spec Draft 는 참고용입니다**(D5, 2026-10-13 GPT Image A/B). 같은 크롭을 GPT Image 로 돌려 맹검 비교하면 레이어명 + 용어집만 쓴
   minimal 이 6크롭 중 5크롭에서 이겼습니다(쓸 수 있는 결과 minimal 16/21 · 초안 8/21 · 손으로 쓴 정답 스펙 0/11). 스펙 문장이 틀린
-  판단을 굳히면 GPT Image 가 레퍼런스보다 문장을 따릅니다. 초안을 Run 에 쓰기 전에 다음을 확인하세요(괄호 = 보고서 경고):
+  판단을 굳히면 GPT Image 가 레퍼런스보다 문장을 따릅니다. 그래서 기본 apply 는 `targets`(이름·타깃 목록만, 「타깃만 + 채택」)이고,
+  아래 확인 목록은 **apply = full 일 때만** 해당합니다(targets 는 이 필드를 쓰지 않음). full 초안을 Run 에 쓰기 전에 확인하세요(괄호 = 보고서 경고):
   - `shape: locked` — 모양이 틀린 부품이면 결함이 그대로 남습니다. 초안은 이제 locked 를 쓰지 않으니 사람이 쓴 locked 만 보면 됩니다.
   - `preserve` — 고쳐야 할 부분(예: 고리 안의 어두운 사각형)이 들어 있지 않은지(`preserve_in_target`). 들어 있으면 그 항목을 지우세요.
   - `ref_object` — 타깃이 여러 개(한 쌍)인데 하나만 가리키지 않는지(`ref_object_singular`). "the upper red pen" 이면 아래 핀은 안 바뀝니다.
@@ -743,11 +815,11 @@ ii-3 의 r ≈ 0.42 를 반영해 다시 계산한 값입니다(concurrency 4, i
 python_embeded\python.exe -X utf8 -W ignore ComfyUI\custom_nodes\ComfyUI_BMK_Nodes\tools\test_bmk_design_patch.py [--quick]
 ```
 
-- `--quick`: 보조 모듈 단위 테스트(M1 + M2 store·runner(mock)·board + M3 vlm(V1–V24, mock·가짜 api·가짜 Qwen libs) + 평가 도구
+- `--quick`: 보조 모듈 단위 테스트(M1 + M2 store·runner(mock)·board + M3 vlm(V1–V25, mock·가짜 api·가짜 Qwen libs) + 평가 도구
   자기 시험 E0–E4 + JS 시나리오, 약 55초). comfy 를 import 하지 않습니다.
 - 전체: 위 + runner·vlm 의 comfy 묶음(CPU, 가짜 sync_op / 내장 OpenAIChatNode 요청 모양) + 참조 폴더 `H:\BmkNodeDesign\MultiLayerCropEdit`
-  의 03/05 PSD 회귀 + M1 노드 통합 + M2 노드(합성 프로젝트, mock) + M3 Spec Draft 노드(N1–N16) + M2 체인(ComfyUI 로더·실행기로
-  Project → … → Export, mock, 서버 포트 없음). 2026-10-13: `--quick` PASS 2187, 전체 PASS 2903 · FAIL 0(약 4분 20초).
+  의 03/05 PSD 회귀 + M1 노드 통합 + M2 노드(합성 프로젝트, mock) + M3 Spec Draft 노드(N1–N19) + M2 체인(ComfyUI 로더·실행기로
+  Project → … → Export, mock, 서버 포트 없음). 2026-10-13(타깃만·채택 리뷰 수정 뒤): `--quick` PASS 2253, 전체 PASS 3037 · FAIL 0(약 4분 10초).
   **유료 호출은 하지 않습니다**(mock 또는 테스트 안에서만 가짜로 바꾼 sync_op). 출력은 `_proto\m2_test_out\` 아래에만 씁니다.
 
 | 검사 | 내용 | 실측(2026-10-07) |
@@ -764,10 +836,10 @@ python_embeded\python.exe -X utf8 -W ignore ComfyUI\custom_nodes\ComfyUI_BMK_Nod
 | N8 | 리뷰 결함 회귀(같은 이름 크롭, 숨김 후보 자동 pick, export 덮어쓰기, 분석 해시·가지, 원근 SO, JPEG SO, 2GB, 워프 등) | 합성 프로젝트로 전부 통과 |
 | M2-S | 스레드 경합 4×100(pick vs 낡은 스냅샷 commit) / 폴링 중 저장 | 잃은 갱신 0·충돌 0 / 쓰기 610·읽기 889·실패 0 |
 | M2-S | 가격표 = 내장 노드 가격 배지 식(파싱 비교) | 1098/1098 일치 |
-| M2-R | runner(mock): 승인 해시·재큐잉 0·재굴림·동시성·500·401·인터럽트·작업 취소(orphaned 경고 로그)·크래시·다운로드 복구·wave·drain | 전부 통과, 내장 노드와 sync_op 인자 동일(C2) |
+| M2-R | runner(mock): 승인 해시·재큐잉 0·재굴림·동시성·500·401·인터럽트·작업 취소(orphaned 경고 로그)·크래시·다운로드 복구·wave·drain·지운 타깃의 결과는 작업 tid 그대로(R15) | 전부 통과, 내장 노드와 sync_op 인자 동일(C2) |
 | M2-B | 보드 라우트·경로 순회·pick/reject/reroll·썸네일 캐시·XSS | 전부 통과 |
-| M2-N | 노드(합성, mock): 드라이런 0 호출 → 승인 → 재실행 0, n 변경·재시도는 새 해시, wave 이벤트, 인터럽트, rejects, 병합 충돌 보고 | 전부 통과 |
+| M2-N | 노드(합성, mock): 드라이런 0 호출 → 승인 → 재실행 0, n 변경·재시도는 새 해시, wave 이벤트, 인터럽트, rejects, 병합 충돌 보고, 채택 `_layer_targets`(Import 병합·캐시 경로 rev 불변·스펙 오류·Prepare 가드·Compose·Export 의 없는 타깃 제외(분석·skip_empty 전), N10) | 전부 통과 |
 | M2-C | ComfyUI 실행기 체인(03, only 004·005·030): 드라이런 → 3 호출 → 0 호출 → 안정 → 보드 ★·탈락·재굴림 → Export | 통과. 실행 중 보드 쓰기 406회(Run 중 133, Analyze 중 112) 잃은 갱신 0·충돌 0 |
-| M3-V | vlm: 키 민감도·프롬프트 지문·스키마·openai 본문·정규화(N0–N15)·3-way 병합 표×4모드·렌더 왕복 8크롭·원장 7행·승인 해시·400 사다리·Qwen VRAM 검사·credit_cap(미보고 = 단위 최대) + 리뷰 회귀(force 1회·타깃 변경·mock 화풍·폴링 404·caps 실패·잘린 출력·린트·드라이런 뒤 타깃 추가·force 의 only 보류·작업 취소 orphan 로그) | V1–V24 |
+| M3-V | vlm: 키 민감도·프롬프트 지문·스키마·openai 본문·정규화(N0–N15)·3-way 병합 표×4모드·렌더 왕복 8크롭·원장 7행·승인 해시·400 사다리·Qwen VRAM 검사·credit_cap(미보고 = 단위 최대) + 리뷰 회귀(force 1회·타깃 변경·mock 화풍·폴링 404·caps 실패·잘린 출력·린트·드라이런 뒤 타깃 추가·force 의 only 보류·작업 취소 orphan 로그) + 타깃만·채택(V25: 양보 표·왕복 고정점·대기 판정·adopt 토큰·채택 값·거절·sticky·mock 채택 양보·보고서 [타깃만]/[제안] + 리뷰 회귀: 지운 타깃 안 살림·지운 글자 건너뜀·채택 값은 쓴 파일 기준) | V1–V25 |
 | M3-E | 평가 도구: 정답 스펙 validate, setup(합성 매니페스트), mock 원장 재정규화 채점 결정성, 토큰 단위 일치(E0), determinism·입력 바뀜·stale, ab-sheet 라벨 고정·Borda(E4) | E1 97.6 · E2 97.1 · E5 96.0 · E6 100.0 |
-| M3-N | Spec Draft 노드(mock): 드라이런 0 호출 → 승인 → 같은 위젯 0 호출(바이트·mtime·rev 불변), 사람 편집 보존, 인증 없음 0 호출, 인터럽트 → 무료 재폴링, Run 경고("N크롭 + 화풍"), 화풍 전파, local_qwen VramError·상주 언로드, force 1회(N11), fill 키 가드(N12), 실제 PromptExecutor 로 캐시·재폴링·재승인(N13), 타깃 추가 고정점(N14), 스펙 쓰기 실패 재시도·Run 경고(N15), only 보류·mock 초안 스펙 Run 경고(N16), VALIDATE_INPUTS·첫 await(N1), 얇은 bbox 시트·개요(N2) | N1–N16 |
+| M3-N | Spec Draft 노드(mock): 드라이런 0 호출 → 승인 → 같은 위젯 0 호출(바이트·mtime·rev 불변), 사람 편집 보존, 인증 없음 0 호출, 인터럽트 → 무료 재폴링, Run 경고("N크롭 + 화풍"), 화풍 전파, local_qwen VramError·상주 언로드, force 1회(N11), fill 키 가드(N12), 실제 PromptExecutor 로 캐시·재폴링·재승인(N13), 타깃 추가 고정점(N14), 스펙 쓰기 실패 재시도·Run 경고(N15), only 보류·mock 초안 스펙 Run 경고(N16), VALIDATE_INPUTS·첫 await(N1), 얇은 bbox 시트·개요(N2), apply=targets 흐름(화풍 없음·렌더 = 초안 전과 같음·full → targets 양보, N17), 채택 흐름(새 제안은 다음 큐·adopt → Import → Prepare 가드·jobs·시트, N18), 채택 큐의 Run 은 드라이런(N19), JS adopt 1회용(J8) | N1–N19 |

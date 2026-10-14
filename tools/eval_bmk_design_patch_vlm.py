@@ -140,6 +140,8 @@ def new_targets(parsed: dict, old_crop: dict | None) -> list[dict]:
             for k in ("name_en", "mode", "refs"):
                 if o.get(k) and not (k == "name_en" and name_en):
                     tt[k] = o[k]
+        if t.get("origin"):
+            tt["origin"] = t["origin"]
         out.append(tt)
     return out
 
