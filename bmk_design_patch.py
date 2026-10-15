@@ -1485,7 +1485,8 @@ class BMKDesignPatchPrepare:
                                                        "specs/<crop_id>.json 의 ref_style 이 있으면 그것이 우선."}),
                 "calls_per_cell": ("INT", {"default": 1, "min": 1, "max": 8,
                                            "tooltip": "작업(셀)마다 기본 호출 수(jobs[].reps). 호출마다 후보 n장. 늘린 만큼의 새 호출은 "
-                                                      "Run 에서 다시 승인해야 과금됩니다. 줄여도 받은 결과는 그대로."}),
+                                                      "Run 에서 다시 승인해야 과금됩니다(보드 재굴림 결과도 이 수에 셈). "
+                                                      "줄여도 받은 결과는 그대로."}),
             },
         }
 

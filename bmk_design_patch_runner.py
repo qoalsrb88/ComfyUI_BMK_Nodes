@@ -10,7 +10,8 @@ Design Patch Run 노드(M2)는 Prepare 가 만든 jobs 를 comfy.org 프록시 `
 
 호출 단위와 원장
 ----------------
-- 호출 = (cell_key, rep), call_id = "<cell_key>_r<rep>" (rep 은 0부터). 셀 목표 호출 수 = jobs[].reps + rerolls[cell_key].
+- 호출 = (cell_key, rep), call_id = "<cell_key>_r<rep>" (rep 은 0부터).
+  셀 목표 호출 수 = max(jobs[].reps, 보드 승인이 아닌 호출 + rerolls[cell_key]) — 재굴림은 아직 안 돈 기본 호출을 먼저 대신한다.
 - 원장 폴더 <root>/cands/<cell_key>/ :
     r<rep>.req.json       요청 원문(모델·품질·크기·n·background·프롬프트·입력 파일/sha·템플릿·변형·백엔드·승인 출처·시도 이력)
     r<rep>.inflight.json  API 호출 **직전** 원자 기록(시작 시각, call_id, pid, 세션 id)
@@ -31,11 +32,13 @@ Design Patch Run 노드(M2)는 Prepare 가 만든 jobs 를 comfy.org 프록시 `
 ----
 - 과금 대상 = 보드 재굴림으로 사전 승인된 호출(preapproved) + (approve == pending_hash 이면 나머지 전부).
   pending_hash 는 **승인이 필요한** 호출(과금·비사전승인)만 해시한다 — 보드 재굴림이 생겨도 사용자 해시가 깨지지 않게.
+  단 승인 대기 중인 기본 호출을 재굴림이 대신하면 그 호출이 승인 목록에서 빠지므로 해시가 바뀐다(새 드라이런 필요).
   해시에 넣는 값은 "backend:<이름>" + approval_id(= call_id + n, 재시도면 + 시도 번호) 목록. n 은 cell_key 에 없으므로,
   approve 위젯에 남은 옛 해시가 n 을 바꾼 호출이나 다시 과금하는 재시도를 승인하지 않게 한다(새 드라이런 → 새 해시).
   백엔드를 넣는 이유: MOCK 드라이런의 해시가 _MOCK_API 를 지운 뒤의 유료 실행을 승인하지 않게.
 - 사전 승인 수 = rerolls[cell] − 원장에서 보드 승인으로 이미 쓴 rep 수(지금 req 또는 history 의 approved_by == "board" —
-  재시도로 req 가 바뀌어도 쓴 몫은 돌아오지 않는다). 빠진 rep 중 뒤쪽부터 배정(calls_per_cell 을 늘려 생긴 호출은 승인 필요).
+  재시도로 req 가 바뀌어도 쓴 몫은 돌아오지 않는다). 빠진 rep 중 뒤쪽부터 배정(calls_per_cell 을 늘려 생긴 호출은 승인 필요 —
+  보드 결과도 기본 호출 수에 들어가므로 늘린 값이 보드 아닌 호출 + 재굴림 수 이하면 새 호출은 없다).
 - 재시도(retry_failed / retry_orphans)는 항상 승인 필요. 다운로드 복구(recover)는 과금이 없어 승인 없이 실행.
 - approved_by: "hash:<h>" | "board" | "retry"(다운로드 복구).
 
@@ -66,6 +69,9 @@ v1 (2026-10, M2)
 - 최초 구현: plan_calls / pending_hash / split_approval, 원장, ComfyOrgBackend / MockBackend, run_calls, reconcile_ledger.
 - 타깃만 채택(10/13, TARGETS_ONLY_SPEC §9.6): 결과 후보의 tid = 작업의 tid(크롭에서 빠진 타깃도 — 첫 타깃으로 옮기지 않음,
   재조정 key 고정).
+- 재굴림이 안 돈 기본 호출을 대신(10/15): 셀 목표 reps + rerolls → max(reps, 보드 아닌 호출 + rerolls), 빈 rep 은 앞쪽부터.
+  한 번도 안 돈 셀(크롭 rect 를 옮겨 새 cell_key)에 보드 R 을 누르면 r1 이 돌고 r0 이 Run 승인 대기로 남아 같은 크롭을 두 번
+  과금했다. 옛 원장(r1 보드 done, r0 없음)도 이제 r0 을 대기로 잡지 않는다.
 """
 
 from __future__ import annotations
@@ -454,18 +460,22 @@ def plan_calls(m: dict, ledger_root: str, *, retry_failed: bool = False, retry_o
         extra = _nonneg_int(rerolls.get(ck, 0), 0)
         ledger = read_ledger(ledger_root, ck)
         states = {rep: _rep_state(files, _is_active(rid, call_id_for(ck, rep))) for rep, files in ledger.items()}
-        board_used = sum(1 for rep, f in ledger.items() if states[rep] != "none" and _board_spent(f))  # req 만 = 호출 전
+        used = sum(1 for s in states.values() if s != "none")  # req 만 = 호출 전
+        board_used = sum(1 for rep, f in ledger.items() if states[rep] != "none" and _board_spent(f))
         board_left = max(0, extra - board_used)
-        missing = [r for r in range(reps + extra) if states.get(r, "none") == "none"]
+        # 셀 목표 = max(reps, 보드 아닌 호출 + rerolls): 재굴림은 아직 안 돈 기본 호출을 먼저 대신한다 — 그 기본 호출이
+        # Run 승인 대기로 남아 같은 크롭을 두 번 만들지 않게(10/15). 빈 rep 은 번호 앞쪽부터 채운다.
+        want = max(0, max(reps, used - board_used + extra) - used)
+        missing = [r for r in range(len(states) + want) if states.get(r, "none") == "none"][:want]
         pre_set = set(missing[len(missing) - board_left:]) if board_left else set()
-        fresh_cell = all(s == "none" for s in states.values())
+        fresh_cell = used == 0
         new_cell_reason = None
         cell_pending = []
-        for rep in sorted(set(range(reps + extra)) | set(states)):
+        for rep in sorted(set(missing) | set(states)):
             files = ledger.get(rep, {})
             st = states.get(rep, "none")
             if st == "none":
-                if rep >= reps + extra:
+                if rep not in missing:
                     continue
                 pre = rep in pre_set
                 if pre:

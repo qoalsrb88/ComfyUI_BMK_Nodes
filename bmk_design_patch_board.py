@@ -315,7 +315,8 @@ def _runner():
 
 
 def _ledger_pending(root: str, m: dict) -> dict[str, int]:
-    """runner 가 없을 때의 계산: 셀 목표(reps + rerolls) − 이미 발사된 rep 수.
+    """runner 가 없을 때의 계산: 셀 목표(reps + rerolls) − 이미 발사된 rep 수. 보드 승인 여부를 보지 않으므로 재굴림이
+    안 돈 기본 호출을 대신한 셀은 runner(max(reps, 보드 아닌 호출 + rerolls))보다 많게 센다 — 상한 409 쪽으로만 틀림.
     발사됨 = 원장 r<rep>.inflight/done/failed.json 이 있거나 calls 요약의 status 가 inflight/done/failed/orphaned."""
     fired: dict[str, set] = {}
     for c in m.get("calls") or []:

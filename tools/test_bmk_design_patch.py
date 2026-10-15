@@ -4126,10 +4126,10 @@ def m2_runner_unit(with_comfy: bool):
         set_manifest(root, lambda m: m["rerolls"].update({cks[1]: 1}))
         p = plan(root, only="001")
         ap = sa(p)
-        check([(e["cell_key"], e["rep"], e["preapproved"]) for e in p["pending"]] == [(cks[0], 0, False), (cks[1], 1, True)]
+        check([(e["cell_key"], e["rep"], e["preapproved"]) for e in p["pending"]] == [(cks[0], 0, False), (cks[1], 0, True)]
               and [(e["cell_key"], e["approved_by"]) for e in ap["to_run"]] == [(cks[1], "board")]
-              and ap["pending_hash"] == h_only and p["filtered"] == 2,
-              "only 밖 셀의 보드 재굴림(사전 승인)은 그대로 실행, 승인 해시는 그대로")
+              and ap["pending_hash"] == h_only and p["filtered"] == 1,
+              "only 밖 셀의 보드 재굴림(사전 승인 — 안 돈 r0 을 대신)은 그대로 실행, 승인 해시는 그대로")
         be = runner.MockBackend(fail_plan={"*": {"download_fail": 1}})
         run(root, ap["to_run"], be)
         p = plan(root, only="001")
@@ -4251,15 +4251,21 @@ def m2_runner_unit(with_comfy: bool):
         keys = sorted(c["key"] for c in m["candidates"] if c["crop_id"] == m["crops"][0]["id"])
         check(len(keys) == 6 and f"r_{ck0[:12]}_1_3" in keys, f"후보 2 + 4 = 6 ({len(keys)})")
         check(plan(root)["pending"] == [], "재굴림 소진 → pending 0")
-        # calls_per_cell(reps) 1→2: 사용한 board 승인 1 → r2 는 승인 필요
+        # calls_per_cell(reps) 1→2: 보드 결과 r1 도 기본 호출 수에 셈 → 새 호출 없음. 1→3: 사용한 board 승인 1 → r2 는 승인 필요
         set_manifest(root, lambda m: m["jobs"][0].update(reps=2))
+        check(plan(root)["pending"] == [], "reps 1→2: 보드 재굴림 결과도 기본 호출 수에 셈 → 새 호출 없음")
+        set_manifest(root, lambda m: m["jobs"][0].update(reps=3))
         p = plan(root)
         e = p["pending"][0] if p["pending"] else {}
         check(len(p["pending"]) == 1 and e.get("call_id") == f"{ck0}_r2" and not e.get("preapproved")
               and "호출 수 증가" in e.get("reason", ""), f"reps 증가분은 승인 필요 {e.get('call_id')} {e.get('reason')}")
         check(sa(p, "")["to_run"] == [], "승인 없으면 과금 0")
-        # rerolls 2 로 올리면 1개만 사전 승인(남은 board 몫)
+        # rerolls 2 로 올리면 1개만 사전 승인(남은 board 몫) — 승인 대기 중인 기본 호출 r2 를 대신(대기 수 그대로)
         set_manifest(root, lambda m: m["rerolls"].update({ck0: 2}))
+        p = plan(root)
+        check([(x["rep"], x["preapproved"]) for x in p["pending"]] == [(2, True)],
+              f"재굴림이 승인 대기 기본 호출을 대신 {[(x['rep'], x['preapproved']) for x in p['pending']]}")
+        set_manifest(root, lambda m: m["jobs"][0].update(reps=4))
         p = plan(root)
         check([(x["rep"], x["preapproved"]) for x in p["pending"]] == [(2, False), (3, True)],
               f"남은 board 몫만 사전 승인(뒤쪽 rep) {[(x['rep'], x['preapproved']) for x in p['pending']]}")
@@ -5169,12 +5175,61 @@ def m2_runner_unit(with_comfy: bool):
             req1 = json.loads(Path(root, "cands", ck, "r1.req.json").read_text(encoding="utf-8"))
             check(req1["approved_by"].startswith("hash:") and req1["history"][-1]["req"]["approved_by"] == "board",
                   f"{mode}: 재시도 req 는 hash 승인, 보드 승인은 history 에 {req1['approved_by']}")
-            set_manifest(root, lambda m: m["jobs"][0].update(reps=2))  # calls_per_cell 1 → 2
+            set_manifest(root, lambda m: m["jobs"][0].update(reps=3))  # calls_per_cell 1 → 3 (r1 보드 결과도 셈 → 새 호출 r2 하나)
             p3 = plan(root)
             be3 = runner.MockBackend()
             rep3 = run(root, sa(p3)["to_run"], be3)
             check([(e["rep"], e["preapproved"]) for e in p3["pending"]] == [(2, False)] and not be3.requests
-                  and rep3.launched == 0, f"{mode}: reps 1→2 의 r2 는 승인 필요(보드 몫 1 은 이미 씀) — approve 없이 0 호출")
+                  and rep3.launched == 0, f"{mode}: reps 1→3 의 r2 는 승인 필요(보드 몫 1 은 이미 씀) — approve 없이 0 호출")
+
+
+    def t_reroll_fills_base():
+        # 10/15 261014_Test: 크롭 009 rect 이동 → 새 셀(reps 1, 미실행) → 보드 R → r1 실행 → 드라이런에 r0 이 남아
+        # "001 + 009" 승인 → 같은 새 크롭을 두 번 과금(268.68 × 2)
+        section("R3c 안 돈 기본 호출은 보드 재굴림이 대신 — Run 승인 대기로 남지 않음(같은 크롭 두 번 과금 방지)")
+        root = make_project("r3c_fill_base", 3, n=1)
+        c_done, c_new, c_rr = jobs_of(root)  # 이미 돈 셀 · 새 셀(승인 필요) · 새 셀 + 보드 재굴림
+        ap, _ = approved(root, only="001")
+        run(root, ap["to_run"], runner.MockBackend())
+        h_before = sa(plan(root))["pending_hash"]  # 재굴림 전 드라이런 = c_new r0 + c_rr r0
+        set_manifest(root, lambda m: m["rerolls"].update({c_rr: 1}))
+        p = plan(root)
+        ap = sa(p)
+        check([(e["cell_key"], e["rep"], e["preapproved"]) for e in p["pending"]] == [(c_new, 0, False), (c_rr, 0, True)],
+              f"재굴림 = 안 돈 r0 을 사전 승인(r1 을 덧붙이지 않음) {[(e['call_id'], e['preapproved']) for e in p['pending']]}")
+        check([e["cell_key"] for e in ap["needs_approval"]] == [c_new] and ap["pending_hash"] not in ("", h_before),
+              "승인 목록에서 재굴림 셀이 빠짐 → 재굴림 전 드라이런 해시와 다름")
+        stale = sa(p, h_before)
+        check(not stale["approved_now"] and [(e["cell_key"], e["approved_by"]) for e in stale["to_run"]] == [(c_rr, "board")],
+              "재굴림 전 해시로 승인하면 보드 호출만 — c_new 과금 0, c_rr r0 을 두 번 부르지 않음")
+        be = runner.MockBackend()
+        rep = run(root, sa(p, ap["pending_hash"])["to_run"], be)
+        check(rep.done == 2 and sorted(r["call_id"] for r in be.requests) == sorted([f"{c_new}_r0", f"{c_rr}_r0"]),
+              f"새 해시 승인 → 셀마다 1 호출 {[r['call_id'] for r in be.requests]}")
+        req = json.loads(Path(root, "cands", c_rr, "r0.req.json").read_text(encoding="utf-8"))
+        check(req["approved_by"] == "board" and ledger_files(root, c_rr)[:2] == ["r0.done.json", "r0.req.json"]
+              and not any(f.startswith("r1") for f in ledger_files(root, c_rr)), "재굴림 셀 원장 = r0(board) 하나")
+        p2 = plan(root)
+        check(p2["pending"] == [] and sa(p2)["pending_hash"] == "" and len(p2["done"]) == 3,
+              "다음 드라이런: 대기 0 · 승인할 것 없음(r0 이 다시 나오지 않음)")
+        # 고치기 전 원장(r1 = 보드 done, r0 없음 — 사용자 프로젝트 15:22 상태)도 r0 을 대기로 잡지 않는다
+        root = make_project("r3c_legacy", 2, n=1)
+        c_old, c_moved = jobs_of(root)
+        run(root, approved(root, only="001")[0]["to_run"], runner.MockBackend())
+        set_manifest(root, lambda m: m["rerolls"].update({c_moved: 1}))
+        e0 = sa(plan(root))["to_run"][0]
+        run(root, [dict(e0, rep=1, call_id=runner.call_id_for(c_moved, 1))], runner.MockBackend())
+        check(json.loads(Path(root, "cands", c_moved, "r1.req.json").read_text(encoding="utf-8"))["approved_by"] == "board"
+              and not Path(root, "cands", c_moved, "r0.req.json").exists(), "준비: 옛 배정 r1(board) 만 있음")
+        p = plan(root)
+        check(p["pending"] == [] and sa(p)["pending_hash"] == "", f"옛 원장: r0 대기 없음 {[e['call_id'] for e in p['pending']]}")
+        # 기본 호출 2(reps 2) 셀의 재굴림 1 → 하나는 보드, 하나는 여전히 승인 필요(합 2 — 3 이 아님)
+        root = make_project("r3c_reps2", 1, n=1, reps=2)
+        ck = jobs_of(root)[0]
+        set_manifest(root, lambda m: m["rerolls"].update({ck: 1}))
+        p = plan(root)
+        check([(e["rep"], e["preapproved"]) for e in p["pending"]] == [(0, False), (1, True)],
+              f"reps 2 + 재굴림 1 → 대기 2(보드 1 · 승인 1) {[(e['rep'], e['preapproved']) for e in p['pending']]}")
 
 
     def t_auth_retry():
@@ -5317,6 +5372,7 @@ def m2_runner_unit(with_comfy: bool):
     t_basic()
     t_rerolls_and_n()
     t_board_budget()
+    t_reroll_fills_base()
     t_concurrency_errors()
     t_auth_retry()
     t_interrupt_crash()
@@ -5781,7 +5837,9 @@ def m2_board_unit():
         st, d = await h.post("/bmk/design_patch/reroll", {"root": key, "cell_key": ck2, "count": 1})
         m = store.load_manifest(root)
         check(st == 200 and d["rerolls"] == 1 and m["rerolls"].get(ck2) == 1 and d["cell_key"] == ck2, f"cell_key +1 {st} {d}")
-        check(d["pending_calls"] == p0 + 1 and d["cell_pending"] == cp0[ck2] + 1, f"응답 pending +1 ({p0}→{d['pending_calls']})")
+        check(d["pending_calls"] == p0 and d["cell_pending"] == cp0[ck2] and d["pending_preapproved"] == 1,
+              f"안 돈 셀의 재굴림은 대기 r0 을 대신 → 대기 수 그대로, 사전 승인 1 ({p0}→{d['pending_calls']}, "
+              f"사전 승인 {d['pending_preapproved']})")
         st, d = await h.post("/bmk/design_patch/reroll", {"root": key, "crop_id": t["crop_id"], "tid": "A", "variant": "V2",
                                                           "count": 2})
         check(st == 200 and d["rerolls"] == 3 and d["cell_key"] == ck2, f"(crop_id, tid, variant) +2 → 3 {d}")
@@ -5791,9 +5849,9 @@ def m2_board_unit():
         check(st == 400 and "variant" in d.get("error", ""), f"A 는 작업 2개 → variant 필요 400 ({st})")
         st, s1 = await h.jget("/bmk/design_patch/state", root=key)
         cp1 = {c["cell_key"]: (c["rerolls"], c["pending"]) for c in s1["targets"][0]["cells"]}
-        check(cp1[ck2] == (3, cp0[ck2] + 3) and cp1[ck1] == (1, cp0[ck1] + 1) and s1["rerolls_total"] == 4,
-              f"state 셀 rerolls·pending {cp1}")
-        check(s1["targets"][1]["pending_calls"] == cp0[ck1] + 1, "다중 타깃 셀은 B 타깃 대기에도 보임")
+        check(cp1[ck2] == (3, 3) and cp1[ck1] == (1, cp0[ck1]) and s1["rerolls_total"] == 4,
+              f"state 셀 rerolls·pending(셀 목표 = max(reps 1, rerolls)) {cp1}")
+        check(s1["targets"][1]["pending_calls"] == cp1[ck1][1] == 1, "다중 타깃 셀은 B 타깃 대기에도 보임")
         errs = [({"root": key, "cell_key": "0" * 24, "count": 1}, 404), ({"root": key, "cell_key": ck2, "count": 0}, 400),
                 ({"root": key, "cell_key": ck2, "count": 5}, 400), ({"root": key, "cell_key": ck2, "count": True}, 400),
                 ({"root": key, "cell_key": ck2, "count": "1"}, 400), ({"root": key, "cell_key": "ZZ", "count": 1}, 400),
@@ -5806,15 +5864,16 @@ def m2_board_unit():
             await h.post("/bmk/design_patch/reroll", {"root": key, "cell_key": ck2, "count": 4})
         st, d = await h.post("/bmk/design_patch/reroll", {"root": key, "cell_key": ck2, "count": 4})
         m = store.load_manifest(root)
-        check(st == 409 and m["rerolls"][ck2] == 15, f"셀 대기 16 + 4 > 상한 16 → 409, 값 유지 ({st}, {m['rerolls'][ck2]})")
+        check(st == 409 and m["rerolls"][ck2] == 15, f"셀 대기 15 + 4 > 상한 16 → 409, 값 유지 ({st}, {m['rerolls'][ck2]})")
         pend, pre = board._pending(root, m)
-        check(pend == {ck2: 16, ck1: 2} and pre == 16, f"대기 16+2, 그중 재굴림 사전 승인 15+1 ({pend}, {pre})")
+        check(pend == {ck2: 15, ck1: 1} and pre == 16, f"대기 15+1, 모두 재굴림 사전 승인 ({pend}, {pre})")
         # 원장 파일·calls 요약이 발사로 셈해짐 (runner 쪽 계산 + 원장 대체 계산)
         ledger = Path(root) / "cands" / ck1
         ledger.mkdir(parents=True, exist_ok=True)
+        (ledger / "r0.req.json").write_text('{"approved_by": "board"}', encoding="utf-8")
         (ledger / "r0.done.json").write_text("{}", encoding="utf-8")
         pend, pre = board._pending(root, store.load_manifest(root))
-        check(pend[ck1] == 1, f"원장 r0.done → 셀 대기 2 → 1 ({pend[ck1]})")
+        check(pend.get(ck1, 0) == 0, f"원장 r0(board) done → 셀 대기 1 → 0 ({pend.get(ck1)})")
         (ledger / "r1.inflight.json").write_text("{}", encoding="utf-8")
         (ledger / "r2.req.json").write_text("{}", encoding="utf-8")
         lp = board._ledger_pending(root, store.load_manifest(root))
@@ -5827,14 +5886,15 @@ def m2_board_unit():
         # 상한은 누적 rerolls 가 아니라 아직 소화하지 않은 대기 호출: Run 이 소화하면(원장 done) 다시 재굴림 가능
         ledger2 = Path(root) / "cands" / ck2
         ledger2.mkdir(parents=True, exist_ok=True)
-        for r in range(12):
+        for r in range(12):  # 보드 재굴림 12개를 Run 이 소화
+            (ledger2 / f"r{r}.req.json").write_text('{"approved_by": "board"}', encoding="utf-8")
             (ledger2 / f"r{r}.done.json").write_text("{}", encoding="utf-8")
         m = store.load_manifest(root)
         m["calls"] = [c for c in m["calls"] if c.get("call_id") != f"{ck2}_r7"]
         store.update_manifest(root, lambda mm: mm.__setitem__("calls", m["calls"]))
         st, d = await h.post("/bmk/design_patch/reroll", {"root": key, "cell_key": ck2, "count": 4})
-        check(st == 200 and d["rerolls"] == 19 and d["cell_pending"] == 1 + 19 - 12,
-              f"원장 done 12개 소화 → 대기 4 → +4 허용, 누적 19 ({st}, {d.get('rerolls')}, 대기 {d.get('cell_pending')})")
+        check(st == 200 and d["rerolls"] == 19 and d["cell_pending"] == 19 - 12,
+              f"원장 done 12개 소화 → 대기 3 → +4 허용, 누적 19 ({st}, {d.get('rerolls')}, 대기 {d.get('cell_pending')})")
         shutil.rmtree(ledger2)
 
 
@@ -10254,17 +10314,18 @@ def m2_node_unit():
         ck0 = st.load_manifest(root)["jobs"][0]["cell_key"]
         bd.apply_reroll(root, 1, cell_key=ck0)
         (h, rep_r, _g), e = run_node(h, ph3)
-        check(_ledger_reqs(root) == 7 and "발사 1" in rep_r and "승인 안 된 3건" in rep_r and e["pending"] == 3,
-              "재굴림 1(사전 승인)만 과금, calls_per_cell 3 의 새 호출 3건은 승인 대기")
-        check(json.loads((Path(root) / "cands" / ck0 / "r3.req.json").read_text(encoding="utf-8"))["approved_by"] == "board",
-              "재굴림 호출 원장 approved_by = board(빠진 rep 중 뒤쪽)")
+        check(_ledger_reqs(root) == 7 and "발사 1" in rep_r and "승인 안 된 2건" in rep_r and e["pending"] == 2,
+              "재굴림 1(사전 승인)만 과금 — 셀0 의 대기 r2 를 대신, calls_per_cell 3 의 나머지 새 호출 2건은 승인 대기")
+        check(json.loads((Path(root) / "cands" / ck0 / "r2.req.json").read_text(encoding="utf-8"))["approved_by"] == "board"
+              and not (Path(root) / "cands" / ck0 / "r3.req.json").exists(),
+              "재굴림 호출 원장 = 셀0 r2(approved_by board), r3 없음 — 같은 셀을 두 번 부르지 않음")
 
         section("M2-N4 wave: 이벤트·남은 것의 새 해시·이어가기 (가짜 PromptServer, wave_minutes 를 초 단위로)")
-        set_mock(delay_s=0.3)
+        set_mock(delay_s=0.6)
         phw = e["pending_hash"]
         fake = _FakeServer(web.RouteTableDef())
-        with _prompt_server(fake):
-            (h, rep_wv, _g), e = run_node(h, phw, concurrency=1, wave_minutes=0.6 / 60)
+        with _prompt_server(fake):  # 승인 2건 · 동시 1 · 지연 0.6초 → 0.4초 wave 에서 첫 호출 뒤 멈춤
+            (h, rep_wv, _g), e = run_node(h, phw, concurrency=1, wave_minutes=0.4 / 60)
         ev = [(d, sid) for name, d, sid in fake.events if name == "bmk.dp.wave"]
         check(len(ev) == 1 and ev[0][0]["node"] == "77" and ev[0][0]["root_key"] == st.root_key(root)
               and ev[0][1] == "test-client" and 1 <= ev[0][0]["remaining"] <= 2 and ev[0][0]["remaining"] == e["pending"],
@@ -10276,7 +10337,7 @@ def m2_node_unit():
         n_left = e["pending"]
         set_mock(delay_s=0.02)
         (h, rep_c, _g), e = run_node(h, e["pending_hash"])
-        check(f"발사 {n_left}" in rep_c and e["pending"] == 0 and _ledger_reqs(root) == 10, "새 해시로 이어서 나머지")
+        check(f"발사 {n_left}" in rep_c and e["pending"] == 0 and _ledger_reqs(root) == 9, "새 해시로 이어서 나머지")
         # S3: 승인하지 않은 대기(calls_per_cell 1→2)가 있는데 보드 재굴림만 돈 wave → continuation_hash "" (JS 는 멈춤)
         h3, root3 = _fx_project(dp, NODES2, "m2s3", rects[:2], base)
         h3, _s, _r = PRE.run(h3, MODEL25, "high", "user_k", "V1", 1, "at", 1)
@@ -10290,9 +10351,10 @@ def m2_node_unit():
         with _prompt_server(fake):
             (h3, rep_s3, _g), e = run_node(h3, "", concurrency=1, wave_minutes=0.5 / 60)
         ev = [d for name, d, _sid in fake.events if name == "bmk.dp.wave"]
-        check(len(ev) == 1 and ev[0]["remaining"] == 2 == e["pending"] and e["pending_hash"] == h_unapproved
+        check(len(ev) == 1 and ev[0]["remaining"] == 2 and e["pending"] == 1 and e["pending_hash"] not in ("", h_unapproved)
               and e["continuation_hash"] == "" and e["approved_now"] is False and "발사 1" in rep_s3,
-              f"S3: 사전 승인만 돈 wave → 남은 2(사전 승인), ui pending 2 = 승인 안 한 해시, continuation_hash '' {ev} {e}")
+              f"S3: 사전 승인만 돈 wave → 남은 2(사전 승인), ui pending 1(재굴림이 셀0 의 대기 r1 을 대신해 해시도 바뀜), "
+              f"continuation_hash '' {ev} {e}")
         set_mock(delay_s=0.02)
 
         section("M2-N5 인터럽트 → InterruptProcessingException(도착분 저장, 진행 중 orphaned) · orphan 재호출은 새 승인")
