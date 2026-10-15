@@ -29,6 +29,8 @@ CPU·파일 작업은 asyncio.to_thread 로 돌려 aiohttp 루프를 막지 않�
 --------------------------------------------------------------------------------------------------------
 - 배치: Analyze 와 같은 방법 — 후보 원본 → 크롭 rect 크기로 LANCZOS(an.place) → 정합 행렬 적용(an.warp_affine)
   → 톤 보정장(있으면 an.apply_delta). 크롭과 IoU < 0.5 인 부분 패치는 quad 그대로 렌더해 크롭 소스 위에 얹는다.
+  크롭 rect 를 옮기기 전 Run·폴더 후보도 quad 로(분석이 있으면 Compose 처럼 정합 quad·톤, 자동 마스크는 항목의
+  rect 에서 크롭 창으로 옮김) — 노드 _gen_frame 과 같은 규칙.
   크롭 해상도(= 최종 PSD 에서 보이는 해상도) 결과를 placed_<서명>.png 로 캐시해 다른 kind 가 재사용한다.
 - 초점 박스(크롭 로컬): 그 타깃 후보들의 자동 마스크(>= 0.5) bbox 합집합을 변마다 10%(합 +20%) 넓힌 것,
   최소 크롭 짧은 변의 1/4. 분석이 없으면 크롭 전체. before 와 cand 는 같은 초점·같은 크기라 Q 깜빡임이 픽셀 정렬된다.
@@ -102,7 +104,7 @@ THUMB_KINDS = ("cand", "before", "ref", "delta", "context")
 THUMB_SIZES = (128, 192, 256, 384, 512, 768, 1024)
 GRID_SIZE = 256
 BIG_SIZE = 512
-_THUMB_VERSION = "dp-thumb/1"
+_THUMB_VERSION = "dp-thumb/2"  # 2: 옮기기 전 Run·폴더 후보는 quad 로(자기 quad 기준 정합·톤), 마스크는 항목 rect 에서
 _THUMB_DIR = "derived/thumbs"
 _FOCUS_PAD = 0.10          # 자동 마스크 bbox 합집합을 변마다 이만큼(합 +20%)
 _CONTEXT_SCALE = 1.5
@@ -222,23 +224,30 @@ def _rect_iou(a, b) -> float:
 
 
 def _analyzable(crop: dict, cand: dict) -> bool:
-    """크롭 전체를 덮는 후보(GPT 결과)만 크롭 rect 로 배치한다. 부분 패치 SO 는 quad 그대로(노드와 같은 규칙)."""
-    return _rect_iou(dpsd.quad_bbox(cand["quad"]), crop["rect"]) >= _MIN_CROP_IOU
+    """크롭 rect 로 배치하는 후보 = 노드가 지금 크롭 기준으로 분석하는 후보: 크롭 전체를 덮는 수확 후보, 제자리
+    Run·폴더 후보. 부분 패치 SO 와 rect 를 옮기기 전 Run·폴더 후보는 quad 그대로(노드 _gen_frame 과 같은 규칙)."""
+    bb = dpsd.quad_bbox(cand["quad"])
+    if cand.get("origin") in ("run", "folder"):
+        return bb == crop["rect"]
+    return _rect_iou(bb, crop["rect"]) >= _MIN_CROP_IOU
 
 
 def _entry_for(m: dict, key: str, pref: dict | None) -> dict | None:
-    """후보의 분석 항목: pref(분석 설정)와 params 가 같은 마지막 항목, 없으면 가장 최근 항목."""
+    """후보의 분석 항목: pref(분석 설정)와 params 가 같은 항목 중 seq 가 가장 큰(같으면 마지막) 것 = Analyze 가 그 설정으로
+    지금 쓰는 항목(bmk_design_patch._ensure_analysis 가 seq 를 맞춤), 없으면 가장 최근 항목. pref 를 모르면(재시작 뒤
+    Review 전) 가장 최근 항목의 설정으로 같은 규칙."""
     per = (m.get("analysis") or {}).get(key)
     if not isinstance(per, dict) or not per:
         return None
     if "params_hash" in per:  # dp-an/1 평평한 항목
         return per
     entries = [e for e in per.values() if isinstance(e, dict)]
-    if pref is not None:
-        same = [e for e in entries if e.get("params") == pref]
-        if same:
-            return same[-1]
-    return entries[-1] if entries else None
+    if not entries:
+        return None
+    if pref is None:
+        pref = entries[-1].get("params")
+    same = [e for e in entries if e.get("params") == pref]
+    return max(reversed(same), key=lambda e: e.get("seq", 0)) if same else entries[-1]
 
 
 def _usable(entry: dict | None) -> bool:
@@ -524,11 +533,24 @@ def _make_placed(root: str, crop: dict, cand: dict, entry: dict | None) -> tuple
             if tone.get("delta") and tone.get("size"):
                 G = an.apply_delta(G, _load_delta(root, tone))
         return np.ascontiguousarray(G[..., :3]), None
+    pix = _decode(path)
     quad = [float(v) for v in cand["quad"]]
+    if _usable(entry) and entry.get("rect") == dpsd.quad_bbox(cand["quad"]):
+        # 자기 quad 기준 분석(rect 를 옮기기 전 Run·폴더 후보): Compose 와 같은 정합 quad·톤(bmk_design_patch._cand_pixels).
+        # 크롭 기준 분석이 남은 수확 부분 패치(옮겨 다시 수확, Analyze 전)는 quad 그대로
+        applied = entry["reg"].get("applied")
+        if applied:
+            quad = [float(v) for v in entry["quad_reg"]]
+        tone = entry.get("tone") or {}
+        if tone.get("delta") and tone.get("size"):
+            delta = _load_delta(root, tone)
+            if applied:
+                delta = an.warp_affine(delta, entry["reg"]["matrix"], inverse=True)
+            pix = an.apply_delta(pix, delta, out_size=(pix.shape[1], pix.shape[0]))
     if dpsd.quad_kind(quad) == "perspective":  # Compose 와 같은 평행사변형 근사
         sw, sh = cand["src_size"]
         quad = an.quad_from_matrix(an.matrix_from_quad(quad, [0, 0, sw, sh]), [0, 0, sw, sh])
-    rgb, alpha, left, top = dpsd.render_so_cache(_decode(path), quad)
+    rgb, alpha, left, top = dpsd.render_so_cache(pix, quad)
     out = np.zeros((h, w, 3), np.uint8)
     cov = np.zeros((h, w), np.float32)
     a = np.ones(rgb.shape[:2], np.float32) if alpha is None else alpha.astype(np.float32) / 255.0
@@ -571,10 +593,11 @@ def _grow_to(box: list[int], minimum: int, w: int, h: int) -> list[int]:
 
 def focus_box(root: str, crop: dict, entries) -> list[int]:
     """타깃 초점 박스(크롭 로컬 [x0,y0,x1,y1]): 자동 마스크(>= 0.5) bbox 합집합을 변마다 10% 넓힘
-    (최소 크롭 짧은 변의 1/4). 쓸 수 있는 자동 마스크가 없으면 크롭 전체."""
+    (최소 크롭 짧은 변의 1/4). 쓸 수 있는 자동 마스크가 없으면 크롭 전체. rect 를 옮기기 전 후보의 마스크는 뺀다."""
     x0, y0, x1, y1 = crop["rect"]
     w, h = x1 - x0, y1 - y0
-    files = sorted({e["automask"] for e in entries if _usable(e) and e.get("automask")})
+    files = sorted({e["automask"] for e in entries if _usable(e) and e.get("automask")
+                    and (e.get("rect") or crop["rect"]) == crop["rect"]})
     if not files:
         return [0, 0, w, h]
     memo_key = (store.root_key(root), w, h, tuple(files))
@@ -628,14 +651,19 @@ def _focus_crop(img: np.ndarray, box: list[int]) -> np.ndarray:
     return img[y0:y1, x0:x1]
 
 
-def _automask_local(root: str, entry: dict | None, shape) -> np.ndarray | None:
+def _automask_local(root: str, entry: dict | None, crop: dict) -> np.ndarray | None:
+    """자동 마스크 → 크롭 로컬. 마스크는 분석 기준 rect(항목의 rect, 예전 항목은 크롭 rect)의 좌표 — rect 를 옮기기 전
+    Run·폴더 후보는 지금 크롭 창으로 옮겨 자른다. 크기가 그 rect 와 다르면(옮기기 전에 만든 예전 항목) None."""
     if not _usable(entry) or not entry.get("automask"):
         return None
     path = store.resolve_path(root, entry["automask"])
     if not os.path.isfile(path):
         return None
     a = _read_l(path)
-    return a.astype(np.float32) / 255.0 if a.shape == tuple(shape) else None
+    ax0, ay0, ax1, ay1 = entry.get("rect") or crop["rect"]
+    if a.shape != (ay1 - ay0, ax1 - ax0):
+        return None
+    return _mask_region({"arr": a, "left": ax0, "top": ay0, "bg": 0}, *crop["rect"])
 
 
 def _final_mask_local(root: str, crop: dict, cand: dict, entry: dict | None) -> np.ndarray | None:
@@ -645,8 +673,7 @@ def _final_mask_local(root: str, crop: dict, cand: dict, entry: dict | None) -> 
         arr = _read_l(_open_rel(root, hm["file"]))
         return _mask_region({"arr": arr, "left": int(hm["rect"][0]), "top": int(hm["rect"][1]),
                              "bg": int(hm.get("bg", 0))}, *crop["rect"])
-    x0, y0, x1, y1 = crop["rect"]
-    return _automask_local(root, entry, (y1 - y0, x1 - x0))
+    return _automask_local(root, entry, crop)
 
 
 def _render_cand(root, crop, placed, focus, size) -> bytes:
@@ -671,7 +698,7 @@ def _render_delta(root, crop, entry, placed, focus, size) -> bytes:
     dE = float(((entry or {}).get("params") or {}).get("dE") or 8.0)
     v = np.clip(d / (dE * _HEAT_DE_SPAN), 0.0, 1.0)
     heat = cv2.cvtColor(cv2.applyColorMap((v * 255.0 + 0.5).astype(np.uint8), cv2.COLORMAP_INFERNO), cv2.COLOR_BGR2RGB)
-    am = _automask_local(root, entry, d.shape)
+    am = _automask_local(root, entry, crop)
     if am is not None:
         fx0, fy0, fx1, fy1 = focus
         t = max(1, round(1.5 * max(fx1 - fx0, fy1 - fy0) / size))
@@ -852,7 +879,8 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
                     "rejected": bool(rejects.get(c["key"])),
                     "cell_key": ck, "call_id": call_id, "rep": rep, "variant": info.get("variant"),
                     "model": info.get("model"), "quality": info.get("quality"),
-                    "analysis": "ok" if _usable(e) else ("skipped" if e and e.get("skipped") else "none"),
+                    "analysis": "ok" if _usable(e) else ("nosrc" if e and e.get("no_source")
+                                                         else "skipped" if e and e.get("skipped") else "none"),
                     "gates": gates, "reg": reg, "reframed": bool(reg and reg.get("applied")),
                     "hand_mask": bool(c.get("hand_mask")),
                     "thumb_url": _turl(rk, "cand", c["key"], GRID_SIZE,

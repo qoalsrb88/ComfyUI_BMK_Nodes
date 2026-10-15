@@ -369,6 +369,7 @@ def approval_id(e: dict) -> str:
 def _job_view(job: dict) -> dict:
     v = {k: job.get(k) for k in _JOB_FIELDS}
     v["inputs"] = [{"role": i.get("role"), "file": i.get("file"), "sha": i.get("sha")}
+                   | ({"source": i["source"]} if i.get("source") else {})  # canvas 의 평탄화 전 크롭 소스(원장에 남김)
                    for i in (job.get("inputs") or []) if isinstance(i, dict)]
     return v
 

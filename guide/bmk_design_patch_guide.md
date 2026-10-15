@@ -169,7 +169,16 @@ Project ─▶ Import PSD ─▶ (Candidate In) ─▶ (Spec Draft) ─▶ Prepa
 | roi_prior | none | hand_bbox = 손 마스크 bbox+10% 밖은 자동 마스크 0 |
 
 - 게이트(하드 실패만): 마스크 밖 평균 차 > 16, 큰 차이 비율 > 0.4, 가장자리 검은 띠 ≥2px.
-- 크롭 rect 와 IoU < 0.5 인 부분 패치 SO 는 분석하지 않습니다(report 에 "분석 생략").
+- 크롭 rect 와 IoU < 0.5 인 부분 패치 SO(수확 후보)는 분석하지 않습니다(report 에 "분석 생략").
+- **Run·폴더 후보는 만들 때의 크롭 기준으로 분석합니다.** PS 에서 크롭 rect 를 옮기거나 줄인 뒤에도, 그 전에 받은 후보는 자기 quad(옛 rect)와
+  그때의 소스 — Run = 원장 `cands/<셀>/r<rep>.req.json` 의 canvas 입력에 Prepare 가 남긴 평탄화 전 크롭 소스(`source`.
+  이 기록이 없는 예전 원장은 GPT 가 받은 평탄화 canvas 로 분석하고 캔버스(base_crop 크롭은 ∩ 작업 영역) 밖 여백은 뺌), 폴더 = 등록 때의 크롭 소스
+  (`origin_info.crop_source`) — 로 자동 마스크를 만들고 옛 rect 자리에 합성합니다. report 줄 끝에 `옮기기 전 rect [...] 기준` 이 붙고,
+  분석 항목의 `rect` 가 마스크 좌표 기준입니다. 조금만 옮긴 경우(IoU ≥ 0.5)도 같습니다(새 rect 로 늘여 맞추지 않음).
+  제자리 후보의 분석은 그대로 캐시를 씁니다.
+- 그 소스 파일을 찾지 못하면(원장·`inputs/` 를 지웠거나 crop_source 가 없는 예전 폴더 후보) 분석하지 않고 **경고**합니다:
+  report 머리 `소스 없음 N` + 끝의 경고 줄(후보 키, pick 이면 ★), 보드 `마스크 없음` 배지·분석 줄, Review·Compose/Export 보고서.
+  손 마스크가 없으면 Compose/Export 가 SO 전체를 합성하므로, 보드에서 탈락시키거나 Export 한 PSD 에서 그 레이어 마스크를 직접 그리세요.
 - contact_sheet 칸: 크롭 소스 | 정렬·톤 보정 후보 | 자동 마스크(빨강) + 손 마스크 외곽(초록). 라벨은 ASCII(크롭 ID)만 씁니다.
 
 ### Compose
@@ -322,7 +331,8 @@ input 폴더 프로젝트는 `_roots.json` 에서 키를 되살리고, 다른 ba
 - 왼쪽: 타깃 목록(칩: 후보 수 · 게이트 실패 · ★ · reframed · MOCK · 대기 호출). 가운데 위: **Before | Reference | 현재 후보** 고정 비교,
   아래: 그 타깃의 **모든 후보**를 같은 초점(자동 마스크 bbox 합집합 +20%, 분석 없으면 크롭 전체)으로 확대한 격자.
 - 썸네일은 Analyze 와 같은 배치(크롭 rect 로 LANCZOS → 정합 → 톤 보정)라 Before 와 픽셀 정렬됩니다. 보드는 상류 Analyze 설정의
-  분석 항목을 씁니다(Review 가 그 설정을 알려 줌).
+  분석 항목을 씁니다(Review 가 그 설정을 알려 줌). 크롭 rect 를 옮기기 전 Run·폴더 후보는 자기 quad 자리(정합 quad·톤)에 그려 지금
+  크롭 창으로 자르고, 컨텍스트 뷰의 자동 마스크도 그 자리에서 옮겨 옵니다(Export 와 같은 모양).
 - 2초마다 바뀐 것만 다시 읽고(`since_rev`), 쓰기 직후 바로 갱신합니다. 이름·라벨은 텍스트로만 넣습니다(레이어명 XSS 안전).
 
 | 키 | 동작 |
@@ -850,7 +860,7 @@ python_embeded\python.exe -X utf8 -W ignore ComfyUI\custom_nodes\ComfyUI_BMK_Nod
 | M2-S | 가격표 = 내장 노드 가격 배지 식(파싱 비교) | 1098/1098 일치 |
 | M2-R | runner(mock): 승인 해시·재큐잉 0·재굴림(안 돈 기본 호출을 대신, R3c)·동시성·500·401·인터럽트·작업 취소(orphaned 경고 로그)·크래시·다운로드 복구·wave·drain·지운 타깃의 결과는 작업 tid 그대로(R15) | 전부 통과, 내장 노드와 sync_op 인자 동일(C2) |
 | M2-B | 보드 라우트·경로 순회·pick/reject/reroll·썸네일 캐시·XSS | 전부 통과 |
-| M2-N | 노드(합성, mock): 드라이런 0 호출 → 승인 → 재실행 0, n 변경·재시도는 새 해시, wave 이벤트, 인터럽트, rejects, 병합 충돌 보고, 채택 `_layer_targets`(Import 병합·캐시 경로 rev 불변·스펙 오류·Prepare 가드·Compose·Export 의 없는 타깃 제외(분석·skip_empty 전), N10) | 전부 통과 |
+| M2-N | 노드(합성, mock): 드라이런 0 호출 → 승인 → 재실행 0, n 변경·재시도는 새 해시, wave 이벤트, 인터럽트, rejects, 병합 충돌 보고, 채택 `_layer_targets`(Import 병합·캐시 경로 rev 불변·스펙 오류·Prepare 가드·Compose·Export 의 없는 타깃 제외(분석·skip_empty 전), N10), 크롭 rect 이동 뒤 옛 Run·폴더 후보 = 만들 때의 크롭 기준 분석(Compose·Export 마스크 = 휘장만, 이동 전과 같은 면적)·소스 없음 경고(Analyze·보드·Review·Compose)·수확 부분 패치는 생략 그대로(N11) | 전부 통과 |
 | M2-C | ComfyUI 실행기 체인(03, only 004·005·030): 드라이런 → 3 호출 → 0 호출 → 안정 → 보드 ★·탈락·재굴림 → Export | 통과. 실행 중 보드 쓰기 406회(Run 중 133, Analyze 중 112) 잃은 갱신 0·충돌 0 |
 | M3-V | vlm: 키 민감도·프롬프트 지문·스키마·openai 본문·정규화(N0–N15)·3-way 병합 표×4모드·렌더 왕복 8크롭·원장 7행·승인 해시·400 사다리·Qwen VRAM 검사·credit_cap(미보고 = 단위 최대) + 리뷰 회귀(force 1회·타깃 변경·mock 화풍·폴링 404·caps 실패·잘린 출력·린트·드라이런 뒤 타깃 추가·force 의 only 보류·작업 취소 orphan 로그) + 타깃만·채택(V25: 양보 표·왕복 고정점·대기 판정·adopt 토큰·채택 값·거절·sticky·mock 채택 양보·보고서 [타깃만]/[제안] + 리뷰 회귀: 지운 타깃 안 살림·지운 글자 건너뜀·채택 값은 쓴 파일 기준) | V1–V25 |
 | M3-E | 평가 도구: 정답 스펙 validate, setup(합성 매니페스트), mock 원장 재정규화 채점 결정성, 토큰 단위 일치(E0), determinism·입력 바뀜·stale, ab-sheet 라벨 고정·Borda(E4) | E1 97.6 · E2 97.1 · E5 96.0 · E6 100.0 |

@@ -24,7 +24,7 @@ r"""Design Patch 통합 테스트 (M1_SPEC §6, M2_SPEC §6, M3_SPEC §7): 보�
   M2-N 노드(합성 프로젝트, mock): Prepare calls_per_cell·승인 해시, Run 드라이런/승인/재실행 0 호출/n 변경 재승인/wave
        이벤트·이어가기/인터럽트, Review, rejects 제외, _commit 병합·충돌 보고, 채택 _layer_targets(N10: Import 한 번 병합·
        캐시 경로·스펙 오류·Prepare 가드(채택·해제)·Compose·Export 의 없는 타깃 후보 제외(분석·빈 PSD 판단 포함),
-       합성 PSD + 크롭 rect 대역)
+       합성 PSD + 크롭 rect 대역), 크롭 rect 이동 뒤 Run·폴더 후보 = 만들 때의 크롭 기준 분석·소스 없음 경고(N11)
   M3-N Spec Draft 노드(합성, mock·가짜 api·가짜 Qwen): 정의, 드라이런→승인→0 호출, 사람 편집 보존, 인증 없음, 인터럽트·재폴링,
        Run 경고, 화풍 전파, 사라진 크롭의 스펙 파일 보고, local_qwen 승인·VramError·키의 model_dir·남은 Qwen 언로드, 보드 라우트,
        new_targets 복제, force 1회, fill 키 가드, 타깃 추가 뒤 같은 큐 바이트 고정(N14), 실제 execution.PromptExecutor
@@ -10483,10 +10483,191 @@ def m2_node_unit():
         section("M2-N10 채택 _layer_targets(TARGETS_ONLY §9.5·9.6): Import PSD 한 번 병합·캐시 경로·스펙 오류, Prepare 가드, "
                 "Compose 는 없는 tid 후보 제외")
         _m2_adopt(dp, NODES2, PRE, COM)
+
+        section("M2-N11 크롭 rect 이동 뒤 Run·폴더 후보 = 만들 때의 크롭 기준 분석 (10/15 261014_Test 009 실측)")
+        _m2_moved_rect(dp, NODES2, PRE, ANA, COM, run_node, set_mock)
     finally:
         mock_file.unlink(missing_ok=True)
         if env_mock is not None:
             os.environ[rn.MOCK_ENV] = env_mock
+
+
+def _m2_moved_rect(dp, NODES2, PRE, ANA, COM, run_node, set_mock):
+    """M2-N11 본문. 실측: 896x1024 크롭에서 Run 후보를 받은 뒤 PS 에서 rect 를 384x384 로 줄여 옮기자(IoU < 0.5) 다음
+    Analyze 가 옛 Run 후보를 부분 패치로 생략 → Export 가 GPT 출력 전체를 사각형으로 합성(마스크 전부 흰색). 이제 Run·폴더
+    후보는 만들 때의 크롭(자기 quad + 원장 canvas 입력 / 등록 때 소스) 기준으로 분석하고, 소스가 없으면 경고한다."""
+    st, bd = dp.store, dp.board
+    prm = dict(dp._ANALYZE_DEFAULTS)
+    ana_args = [prm[k] for k in ("register", "tone", "tone_sigma", "dE", "grow", "feather_sigma", "roi_prior")] + [False]
+    base = texture(384, 384, 41)
+    R_old, R_new = [64, 64, 320, 320], [112, 160, 224, 272]  # 휘장(빨간 원, 캔버스 중심 166,218 r 51)만 남기게 줄임
+    h, root = _fx_project(dp, NODES2, "m2mv", [("009_휘장", R_old)], base)
+    set_mock(delay_s=0.0)
+    h, _s, _p = PRE.run(h, MODEL25, "high", "user_k", "V1", 1, "at", 1)
+    _r, e = run_node(h)
+    run_node(h, e["pending_hash"])
+    m = st.load_manifest(root)
+    rc = next(c for c in m["candidates"] if c["origin"] == "run")
+    # mock 출력은 전체 색상 회전이라 자동 마스크가 크롭 전체 — 휘장만 바꾼 GPT 결과로 바꿔 끼워 마스크 범위를 구별한다
+    Image.fromarray(_fx_cand(base, R_old)).save(st.resolve_path(root, rc["file"]))
+    fdir = NODES2 / "m2mv_folder"
+    shutil.rmtree(fdir, ignore_errors=True)
+    fdir.mkdir()
+    Image.fromarray(_fx_cand(base, R_old, scale=3)).save(fdir / "009_휘장_ps.png")
+    h, _rep = dp.BMKDesignPatchCandidateIn().run(h, "folder", str(fdir), "", "", True, True)
+    m = st.load_manifest(root)
+    fc = next(c for c in m["candidates"] if c["origin"] == "folder")
+    src_old = m["crops"][0]["source"]
+    req_path = Path(root) / "cands" / rc["origin_info"]["cell_key"] / f"r{rc['origin_info']['rep']}.req.json"
+    cin = next(i for i in json.loads(req_path.read_text(encoding="utf-8"))["inputs"] if i["role"] == "canvas")
+    check(fc["origin_info"].get("crop_source") == src_old and cin.get("source") == src_old and cin["file"] != src_old,
+          "만들 때의 크롭 소스 기록: 폴더 = origin_info.crop_source, Run = 원장 req 의 canvas 입력 source(평탄화 전 RGBA)")
+    h, _cs, _rep0 = ANA.run(h, *ana_args)
+    e0 = next(iter(st.load_manifest(root)["analysis"][rc["key"]].values()))
+    area0 = e0["mask_area"]
+    check(not e0.get("skipped") and e0["rect"] == R_old and 0 < area0 < 0.3 * 256 * 256,
+          f"이동 전: Run 후보 자동 마스크 = 휘장 둘레({area0:.0f}px / 크롭 {256 * 256})")
+
+    # PS 에서 rect 를 줄여 옮기고 Import PSD 를 다시 실행한 것과 같게(같은 크롭 ID, 새 rect·소스)
+    src_new = np.dstack([base[R_new[1]:R_new[3], R_new[0]:R_new[2]], np.full((112, 112), 255, np.uint8)])
+    st.update_manifest(root, lambda d: d["crops"][0].update(rect=list(R_new), source=st.save_png_ca(root, "inputs", src_new)))
+    h, _cs, rep1 = ANA.run(h, *ana_args)
+    m = st.load_manifest(root)
+    crop = m["crops"][0]
+    ents, done, _hit, _w = dp._ensure_analysis(root, m, [rc, fc])
+    er, ef = ents[rc["key"]], ents[fc["key"]]
+    fr = dp._gen_frame(root, m, crop, rc)
+    check(dpsd.quad_bbox(rc["quad"]) == R_old and dp._rect_iou(R_old, R_new) < dp._MIN_CROP_IOU
+          and fr == (R_old, src_old, None) and src_old != crop["source"] and dp._gen_frame(root, m, crop, fc) == fr,
+          f"이동 뒤 분석 기준 = 자기 quad + 만들 때의 크롭 소스(소스 알파 그대로) {fr}")
+    check(done == 0 and not er.get("skipped") and er["rect"] == R_old and abs(er["mask_area"] - area0) < 1
+          and not ef.get("skipped") and ef["rect"] == R_old and ef["automask"],
+          f"이동 뒤 Analyze: 옛 Run·폴더 후보를 생략하지 않고 만들 때의 크롭으로 분석(마스크 {er['mask_area']:.0f} = 이동 전 "
+          f"{area0:.0f}, 예전: '부분 패치(IoU < 0.5)' 생략)")
+    check("생략 0" in rep1 and "옮기기 전 rect [64, 64, 320, 320] 기준" in rep1 and "소스 없음" not in rep1,
+          "Analyze 보고: 옮기기 전 rect 기준 표시, 생략 0")
+    # rect 를 남기기 전(이 수정 전) 항목: 폴더 후보는 이동 뒤에도 해시가 같아 재사용 — rect 를 채워 지금 크롭 rect 에 붙지 않게
+    st.update_manifest(root, lambda d: [e.pop("rect", None) for e in d["analysis"][fc["key"]].values()])
+    h, _cs, rep1b = ANA.run(h, *ana_args)
+    ef_b = next(e for e in st.load_manifest(root)["analysis"][fc["key"]].values() if e["params"] == prm)
+    check("계산 0" in rep1b and ef_b.get("rect") == R_old and dp._auto_mask_dict(root, ef_b, crop)["left"] == R_old[0],
+          "rect 없는 예전 항목이 캐시로 재사용되면 rect(만들 때의 rect)를 채움 — 마스크가 옛 rect 자리에")
+
+    bd.apply_pick(root, crop["id"], rc["tid"], rc["key"], "set")
+    hc, _img, mk, rep_c = COM.run(h, "hand_else_auto", True, True, "auto_small_on_top")
+    patch = mk[0].numpy() < 0.5
+    check(patch[218, 166] and not patch[70, 70] and not patch[300, 300] and 0 < patch.sum() < 0.3 * 256 * 256
+          and "마스크 없이" not in rep_c,
+          f"Compose: 옛 Run 후보는 휘장 둘레만 합성({int(patch.sum())}px, 예전: 옛 rect 전체 {256 * 256}px)")
+    p_x, _u = _run_export(dp, hc, "m2mv", "pixel", "none", "toned", "hand_else_auto", True, False)
+    km = np.asarray(Image.open(os.path.splitext(p_x)[0] + "_mask.png")) > 127
+    check(km[218, 166] and not km[70, 70] and 0 < km.sum() < 0.3 * 256 * 256,
+          f"Export _mask.png 도 휘장 둘레만({int(km.sum())}px)")
+
+    # 보드: 같은 규칙(조금만 옮겨도 만들 때의 rect), 자동 마스크를 지금 크롭 창으로 옮긴 context, 썸네일
+    shifted = dict(crop, rect=[R_old[0] + 8, R_old[1], R_old[2] + 8, R_old[3]])
+    check(dp._gen_frame(root, m, shifted, rc)[0] == R_old and not bd._analyzable(shifted, rc)
+          and bd._analyzable(dict(crop, rect=R_old), rc)
+          and dp._gen_frame(root, m, dict(crop, rect=R_old), rc)[1:] == (crop["source"], None),
+          "조금만 옮겨도(IoU ≥ 0.5) 만들 때의 rect 기준 — 노드·보드 같은 규칙, 제자리면 지금 크롭 소스")
+    cb = {c["key"]: c for t in bd.build_state(root)["targets"] for c in t["candidates"]}
+    fm = bd._final_mask_local(root, crop, rc, er)
+    check(cb[rc["key"]]["analysis"] == "ok" and cb[fc["key"]]["analysis"] == "ok" and fm is not None
+          and fm.shape == (112, 112) and fm[218 - 160, 166 - 112] > 0.5 and fm[2, 2] < 0.5,
+          "보드: 분석 ok, context 마스크 = 항목 rect 의 자동 마스크를 지금 크롭 창으로")
+    for kind in ("cand", "delta", "context"):
+        bd.render_thumb(root, kind, rc["key"], bd.BIG_SIZE)
+    # 보드 quad 렌더는 자기 quad 기준 항목(rect = quad bbox)의 정합만 쓴다 — 크롭 기준 분석이 남은 수확 부분 패치(SO 를 줄여
+    # 다시 수확, Analyze 전)에 그 정합을 쓰면 엉뚱한 자리에 그림
+    fake = dict(er, reg=dict(er["reg"], applied=True), quad_reg=[float(v) + 40 for v in dpsd.quad_from_rect(R_old)])
+    hp = dict(rc, key="h_shrunk000000", origin="psd_harvest", quad=dpsd.quad_from_rect([150, 190, 190, 230]))
+    check(np.array_equal(bd._make_placed(root, crop, hp, dict(fake, rect=R_new))[0], bd._make_placed(root, crop, hp, None)[0])
+          and not np.array_equal(bd._make_placed(root, crop, rc, fake)[0], bd._make_placed(root, crop, rc, None)[0]),
+          "보드 quad 렌더: 자기 quad 기준 항목만 정합 quad 를 씀, 크롭 기준으로 남은 수확 부분 패치 항목은 무시")
+
+    # source 가 없는 예전 원장: 평탄화한 canvas(RGB) + 유효 영역(base_crop = 캔버스 ∩ work_rect, 그 밖 = 캔버스).
+    # 작업 영역 밖(평탄화로 채운 여백)만 다른 후보는 마스크 0
+    req_raw = req_path.read_bytes()
+    legacy = json.loads(req_raw)
+    for i in legacy["inputs"]:
+        i.pop("source", None)
+    st.write_json_atomic(str(req_path), legacy)
+    try:
+        fl = dp._gen_frame(root, m, crop, rc)
+        el = dp._ensure_analysis(root, json.loads(json.dumps(m)), [rc])[0][rc["key"]]
+        fw = dp._gen_frame(root, dict(m, work_rect=[0, 0, 384, 200]), crop, rc)
+        fg = dp._gen_frame(root, dict(m, work_rect=[0, 0, 384, 200]), dict(crop, source_kind="group_composite"), rc)
+        pad = np.asarray(Image.fromarray(base[64:320, 64:320]).resize((512, 512), Image.LANCZOS)).copy()
+        pad[2 * (210 - 64):] = (20, 200, 20)  # 캔버스 y ≥ 210(작업 영역 밖)만 바꿈
+        cw = dict(rc, key="r_padonly0000_0_0", file=st.save_png_ca(root, "derived", pad))
+        a_in = dp._analyze_one(root, crop, cw, prm, "a" * 16, fw)
+        a_all = dp._analyze_one(root, crop, cw, prm, "b" * 16, fw[:2] + (None,))
+    finally:
+        req_path.write_bytes(req_raw)
+    check(fl == (R_old, cin["file"], [0, 0, 384, 384]) and abs(el["mask_area"] - area0) < 1,
+          f"예전 원장(source 없음) = canvas + 유효 영역, 마스크는 소스로 한 것과 같음 {fl}")
+    check(fw[2] == [0, 0, 384, 200] and fg[2] == [0, 0, 384, 384] and a_in["mask_area"] < 50 and a_all["mask_area"] > 10000,
+          f"예전 원장: base_crop 크롭은 작업 영역 밖을 분석에서 뺌(마스크 {a_in['mask_area']:.0f}px, 빼지 않으면 "
+          f"{a_all['mask_area']:.0f}px), 그룹 합성 크롭은 캔버스만(밖에 있을 수 있는 내용을 버리지 않게)")
+
+    def current(c):  # 보드가 고르는 항목(_entry_for) = Analyze 가 지금 쓰는 항목(해시)인지
+        mm = st.load_manifest(root)
+        e = bd._entry_for(mm, c["key"], prm)
+        return e is not None and e["params_hash"] == dp._params_hash(c, dp._gen_frame(root, mm, mm["crops"][0], c), prm), e
+
+    # 평탄화 전 소스만 지워짐: Run 은 원장 canvas 로 대신 분석, 폴더 후보는 같은 소스라 소스 없음 — 보드도 그 항목
+    gone = [st.resolve_path(root, rel) for rel in (src_old, cin["file"])]
+    hs = dp._params_hash(rc, (R_old, src_old, None), prm)
+    os.replace(gone[0], gone[0] + ".bak")
+    try:
+        h, _cs, repA = ANA.run(h, *ana_args)
+        (okA, eA), (okFA, eFA) = current(rc), current(fc)
+        check(okA and okFA and not eA.get("skipped") and abs(eA["mask_area"] - area0) < 1 and eFA.get("no_source")
+              and "소스 없음 1" in repA, "평탄화 전 소스만 없음: Run = canvas 대체 분석(마스크 같음), 폴더 = 소스 없음, 보드도 지금 항목")
+        # canvas 도 지워짐 = 조용히 사각형 전체가 아니라 경고. 원래 항목의 derived 도 잃음 → 돌아오면 같은 해시를 다시 계산
+        os.replace(gone[1], gone[1] + ".bak")
+        os.remove(st.resolve_path(root, st.load_manifest(root)["analysis"][rc["key"]][hs]["thumb"]))
+        h, _cs, rep2 = ANA.run(h, *ana_args)
+        e2 = dp._ensure_analysis(root, st.load_manifest(root), [rc])[0][rc["key"]]
+        check(e2.get("no_source") and "자동 마스크 없음" in e2["skipped"] and "소스 없음 2" in rep2
+              and f"{rc['key']} ★: 크롭 rect 를 옮기기 전 후보인데 만들 때의 크롭 소스" in rep2,
+              "소스 없음: Analyze 보고서 머리·경고 줄(★ 표시)")
+        cb2 = {c["key"]: c for t in bd.build_state(root)["targets"] for c in t["candidates"]}
+        rep_rv = asyncio.run(dp.BMKDesignPatchReview().run(h))["result"][1]
+        check(cb2[rc["key"]]["analysis"] == "nosrc" and "자동 마스크 없음" in rep_rv and f"{rc['key']} ★" in rep_rv,
+              "소스 없음: 보드 state analysis = nosrc, Review 보고서 경고")
+        _hc, _img, _mk, rep_c2 = COM.run(h, "hand_else_auto", True, True, "auto_small_on_top")
+        check("만들 때의 크롭 소스를 찾지 못함" in rep_c2 and "마스크 없이(SO 전체 보임)" in rep_c2,
+              "소스 없음: Compose 경고에 이유")
+    finally:
+        for g in gone:
+            if os.path.exists(g + ".bak"):
+                os.replace(g + ".bak", g)
+    # pick(Run 후보)만 분석 = 그 항목 하나만 같은 내용으로 다시 계산 — 순서만 바뀐 것은 매니페스트 병합이 저장하지 않으니 seq 로
+    h, _cs, rep3 = ANA.run(h, *ana_args[:-1], True)
+    okR, eR = current(rc)
+    check("계산 1" in rep3 and "소스 없음" not in rep3 and okR and eR["params_hash"] == hs and eR.get("seq", 0) > 0,
+          "소스가 돌아오면 Run = 같은 해시 다시 계산(seq 로 '소스 없음'·canvas 대체 항목보다 앞, 디스크의 보드 선택도 지금 항목)")
+    h, _cs, rep3b = ANA.run(h, *ana_args)
+    okF, eF = current(fc)
+    cb3 = {c["key"]: c for t in bd.build_state(root)["targets"] for c in t["candidates"]}
+    m3 = st.load_manifest(root)
+    check("계산 0" in rep3b and okF and not eF.get("skipped") and eF.get("seq", 0) > 0
+          and cb3[rc["key"]]["analysis"] == "ok" and cb3[fc["key"]]["analysis"] == "ok"
+          and bd._entry_for(m3, fc["key"], None)["params_hash"] == eF["params_hash"]
+          and next(reversed(m3["analysis"][fc["key"]].values())).get("no_source"),
+          "폴더 = 캐시(seq 로 맨 뒤 '소스 없음' 항목보다 앞) — 보드도 ok(지금 항목, 설정을 모를 때도)")
+    rev3 = st.load_manifest(root)["rev"]
+    h, _cs, rep4 = ANA.run(h, *ana_args)
+    check("계산 0" in rep4 and st.load_manifest(root)["rev"] == rev3, "그대로 다시 Analyze = 0 계산·rev 불변(seq 는 한 번만 씀)")
+
+    m = st.load_manifest(root)
+    fc_old = dict(fc, origin_info={k: v for k, v in fc["origin_info"].items() if k != "crop_source"})
+    hv = dict(rc, key="h_moved0000000", origin="psd_harvest", origin_info={"layer": "옛 rect 의 SO"})
+    eo = dp._ensure_analysis(root, m, [fc_old, hv])[0]
+    check(eo[fc_old["key"]].get("no_source") and "부분 패치" in eo[hv["key"]].get("skipped", "")
+          and not eo[hv["key"]].get("no_source"),
+          "crop_source 없는 예전 폴더 후보 + rect 이동 = 소스 없음 경고, 수확 부분 패치는 그대로 생략")
 
 
 def _m2_adopt(dp, NODES2, PRE, COM):

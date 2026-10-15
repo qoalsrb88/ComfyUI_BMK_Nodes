@@ -92,6 +92,11 @@ M3 는 Spec Draft(VLM 이 specs/<crop_id>.json 초안을 씀)를 더한다.
   hand_else_auto = 손 마스크가 있으면 손, 없으면 auto. hand 인데 손 마스크가 없으면 마스크 없음(SO 전체 보임).
 - 크롭과 맞지 않는 부분 패치 SO(quad 와 crop rect IoU < 0.5, 예: 생성형 채우기, 손으로 옮긴 조각)는 분석하지
   않고 수확한 quad·마스크 그대로 쓴다.
+- Run·폴더 후보는 만들 때의 크롭 기준으로 분석한다(_gen_frame): PS 에서 크롭 rect 를 옮긴 뒤에도 자기 quad +
+  그때의 소스(Run = 원장 req 의 canvas 입력에 Prepare 가 남긴 평탄화 전 크롭 소스 — 예전 원장은 평탄화 canvas +
+  유효 영역, 폴더 = 등록 때의 크롭 소스)로 자동 마스크를 만들고, 항목의 rect 가 마스크 좌표 기준이 된다. 그 소스가 없으면
+  no_source 항목(마스크 없음)을 남기고 Analyze 보고서·보드가 경고한다. 같은 설정의 옛 기준 항목으로 돌아오면(소스가
+  돌아옴 등) 그 항목의 seq 를 올려 보드(_entry_for)도 Analyze 가 지금 쓰는 항목을 본다.
 - PS 에서 원근/왜곡(Distort) 변형한 SO 의 quad 는 Compose/Export 에서 가장 가까운 평행사변형으로 근사한다(경고).
 - Compose 의 mask 출력은 ComfyUI MASK 규약(LoadImage 알파 마스크와 같음): 1 = 패치 없음(투명), 0 = 패치 적용.
   JoinImageWithAlpha 에 넣으면 패치만 보이는 RGBA 가 된다. 패치 영역 = 1 이 필요하면 InvertMask.
@@ -99,7 +104,8 @@ M3 는 Spec Draft(VLM 이 specs/<crop_id>.json 초안을 씀)를 더한다.
 매니페스트 추가 키(명세 §1 스키마 밖, "추가 키 허용")
 - source.refs_dir / refs_fingerprint / glossary / glossary_fingerprint, crops[].layer_name / rect_source
 - crops[].targets[].origin ("adopt" = specs 의 _layer_targets 에서 온 타깃, 그 밖은 키 없음)
-- candidates[].hand_mask.bg, 분석 항목의 params / skipped / quad_reg / mask_area / thumb / tone.full
+- candidates[].hand_mask.bg / origin_info.crop_source(폴더), jobs[].inputs[].source(canvas), 분석 항목의 params /
+  skipped / no_source / rect / seq / quad_reg / mask_area / thumb / tone.full
 - exports[].hash / options / compose / bytes / smart_objects / problems
 명세와 다른 모양: analysis 는 {key: {params_hash: 항목}}(명세는 {key: 항목}) — Analyze 가지가 여럿이어도 서로
 밀어내지 않게. 핸들은 4키 + analyze / compose / draft(위).
@@ -144,6 +150,10 @@ v3 (2026-10, M3)
   요청 없음(_project.json 안 씀, 사람이 쓴 style_note 만 전파), plan·merge_spec·mock_drafted·review.md 에 apply, 채택은
   adopt_select 로 고른 크롭만 merge_spec(adopt), 보고서 [타깃만]·[제안]·adopt 토큰 경고. 시트는 초안 없는 실행에서도 채택 타깃을
   제안 bbox 로 그리고, targets 면 고른 레퍼런스 테두리 없음.
+- 크롭 rect 이동(10/15, 261014_Test 009 실측): 옮기기 전 Run 후보가 부분 패치로 분석 생략돼 Export 가 GPT 출력 전체를
+  사각형으로 합성하던 문제 — Run·폴더 후보는 만들 때의 크롭(_gen_frame) 기준 분석, 항목 rect, 소스 없음 경고.
+  jobs[].inputs 의 canvas 에 source(평탄화 전 크롭 소스, 원장 req 에도), 폴더 후보 origin_info.crop_source.
+  제자리 후보의 분석 해시는 그대로(다시 계산하지 않음).
 """
 
 from __future__ import annotations
@@ -536,20 +546,49 @@ def _crop_map(m: dict) -> dict:
     return {c["id"]: c for c in m["crops"]}
 
 
-def _analyzable(crop: dict, cand: dict) -> bool:
-    """크롭 전체를 덮는 후보(GPT 결과)만 분석한다. 부분 패치 SO 는 수확한 quad·마스크 그대로."""
-    return _rect_iou(dpsd.quad_bbox(cand["quad"]), crop["rect"]) >= _MIN_CROP_IOU
+def _analyzable(cand: dict, rect) -> bool:
+    """분석 기준 rect 전체를 덮는 후보(GPT 결과)만 분석한다. 부분 패치 SO 는 수확한 quad·마스크 그대로."""
+    return _rect_iou(dpsd.quad_bbox(cand["quad"]), rect) >= _MIN_CROP_IOU
+
+
+def _gen_frame(root: str, m: dict, crop: dict, cand: dict) -> tuple[list[int], str | None, list[int] | None]:
+    """분석 기준 (rect, 크롭 소스, 유효 영역). 수확 후보와 제자리 후보는 지금 크롭. Run·폴더 후보의 quad 가 지금 크롭
+    rect 와 다르면(PS 에서 rect 를 옮긴 뒤) 만들 때의 크롭 = 자기 quad + 그때의 소스(Run = 원장 req 의 canvas 입력에 남은
+    평탄화 전 크롭 소스, 폴더 = 등록 때의 크롭 소스). 그 소스 파일이 없으면 None(분석 안 함 — 보고서·보드가 경고).
+    유효 영역은 소스 알파를 쓰면 None. source 가 없는 예전 원장은 평탄화한 canvas(RGB)로 분석하고 유효 영역 = 캔버스
+    (base_crop 크롭이면 ∩ work_rect — Import 가 크롭 소스 알파를 만든 규칙) — 그 밖은 평탄화로 채운 여백."""
+    if cand.get("origin") not in ("run", "folder"):
+        return crop["rect"], crop["source"], None
+    rect = dpsd.quad_bbox(cand["quad"])
+    if rect == crop["rect"]:
+        return rect, crop["source"], None
+    info = cand.get("origin_info") or {}
+    if cand["origin"] == "folder":
+        src = info.get("crop_source")
+        return rect, (src if src and os.path.isfile(_abs(root, src)) else None), None
+    req = runner.read_ledger(root, info["cell_key"]).get(int(info["rep"]), {}).get("req") or {}
+    inp = next((i for i in req.get("inputs") or [] if i.get("role") == "canvas"), {})
+    if inp.get("source") and os.path.isfile(_abs(root, inp["source"])):
+        return rect, inp["source"], None
+    src = inp.get("file")
+    W, H = m["canvas"]
+    wx0, wy0, wx1, wy1 = (m.get("work_rect") or [0, 0, W, H]) if crop.get("source_kind") == "base_crop" else [0, 0, W, H]
+    return rect, (src if src and os.path.isfile(_abs(root, src)) else None), [max(0, wx0), max(0, wy0), min(W, wx1), min(H, wy1)]
 
 
 # ══════════════════════════════════════════════════════════════════════
 # 분석 (Analyze 노드와 Compose/Export 의 누락분 보충이 공유)
 # ══════════════════════════════════════════════════════════════════════
-def _params_hash(crop: dict, cand: dict, prm: dict) -> str:
-    """분석이 실제로 읽는 것: 후보·크롭 소스·rect, 분석 대상 여부(quad 가 크롭을 덮는지), 손 마스크(픽셀·위치·배경), 설정."""
+def _params_hash(cand: dict, frame: tuple, prm: dict) -> str:
+    """분석이 실제로 읽는 것: 후보·분석 기준(_gen_frame 의 소스·rect·유효 영역), 분석 대상 여부(quad 가 rect 를 덮는지),
+    손 마스크(픽셀·위치·배경), 설정."""
+    rect, src, valid = frame
     hm = cand.get("hand_mask") or {}
-    payload = {"v": _ANALYSIS_VERSION, "cand": cand["file"], "src": crop["source"], "rect": crop["rect"],
-               "analyzable": _analyzable(crop, cand),
+    payload = {"v": _ANALYSIS_VERSION, "cand": cand["file"], "src": src, "rect": rect,
+               "analyzable": _analyzable(cand, rect),
                "hand": [hm.get("file"), hm.get("rect"), int(hm.get("bg", 0))] if hm else None, "prm": prm}
+    if valid is not None:  # Run canvas 로 분석할 때만 — 지금 크롭 소스로 분석하는 항목의 해시는 그대로
+        payload["valid"] = valid
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
 
 
@@ -588,17 +627,29 @@ def _derived_prefix(key: str, ph: str) -> str:
     return f"{key}_{ph[:6]}_"
 
 
-def _analyze_one(root: str, crop: dict, cand: dict, prm: dict, ph: str) -> dict:
-    """후보 1개 분석 → analysis 항목(JSON 기본형). 산출 파일은 derived/<key>_<phash6>_* (내용 주소)."""
-    if not _analyzable(crop, cand):
-        return {"params_hash": ph, "params": dict(prm), "crop_id": crop["id"], "tid": cand["tid"],
-                "skipped": "quad 가 크롭과 맞지 않는 부분 패치(IoU < 0.5) - 수확한 quad·마스크 그대로 사용"}
-    x0, y0, x1, y1 = crop["rect"]
+def _analyze_one(root: str, crop: dict, cand: dict, prm: dict, ph: str, frame: tuple) -> dict:
+    """후보 1개 분석 → analysis 항목(JSON 기본형). frame = _gen_frame(자동 마스크·정합은 그 rect 의 로컬 좌표, 항목의
+    rect 로 남김). 산출 파일은 derived/<key>_<phash6>_* (내용 주소)."""
+    rect, src, valid = frame
+    head = {"params_hash": ph, "params": dict(prm), "crop_id": crop["id"], "tid": cand["tid"]}
+    if not _analyzable(cand, rect):
+        return dict(head, skipped="quad 가 크롭과 맞지 않는 부분 패치(IoU < 0.5) - 수확한 quad·마스크 그대로 사용")
+    x0, y0, x1, y1 = rect
     w, h = x1 - x0, y1 - y0
-    base = _load_rgba(root, crop["source"])
+    base = _load_rgba(root, src) if src else None
+    if base is None or base.shape[:2] != (h, w):
+        return dict(head, no_source=True,
+                    skipped=f"크롭 rect 를 옮기기 전 후보인데 만들 때의 크롭 소스({w}x{h} at {x0},{y0})를 찾지 못함 - "
+                            "자동 마스크 없음: 손 마스크가 없으면 Compose/Export 가 SO 전체를 합성")
+    if valid is not None:  # 평탄화로 채운 캔버스·작업 영역 밖은 Import 의 크롭 소스처럼 알파 0
+        base = base.copy()
+        base[..., 3] = 0
+        vx0, vy0, vx1, vy1 = max(valid[0], x0) - x0, max(valid[1], y0) - y0, min(valid[2], x1) - x0, min(valid[3], y1) - y0
+        if vx1 > vx0 and vy1 > vy0:
+            base[vy0:vy1, vx0:vx1, 3] = 255
     full = _decode(_read(_abs(root, cand["file"])))
     G = an.place(np.ascontiguousarray(full[..., :3]), (w, h))
-    hand = _hand_local(root, cand, crop["rect"])
+    hand = _hand_local(root, cand, rect)
     reg = an.register(base, G, mode=prm["register"], exclude_mask=hand)
     Ga = an.warp_affine(G, reg["matrix"]) if reg["applied"] else G
     roi = _hand_roi(hand) if prm["roi_prior"] == "hand_bbox" else None
@@ -631,9 +682,9 @@ def _analyze_one(root: str, crop: dict, cand: dict, prm: dict, ph: str) -> dict:
         edge = cv2.morphologyEx((hand >= 0.5).astype(np.uint8), cv2.MORPH_GRADIENT, np.ones((3, 3), np.uint8)) > 0
         ov[edge] = (40, 255, 80)
     cells = [_fit(base, _THUMB), _fit(Gt, _THUMB), _fit(np.clip(ov, 0, 255).astype(np.uint8), _THUMB)]
-    shift = an.quad_from_matrix(reg["matrix"], crop["rect"])
-    disp = max(abs(a - b) for a, b in zip(shift, dpsd.quad_from_rect(crop["rect"])))
-    lines = [_ascii(f"{crop['id']} {cand['tid']} {cand['key']}"),
+    shift = an.quad_from_matrix(reg["matrix"], rect)
+    disp = max(abs(a - b) for a, b in zip(shift, dpsd.quad_from_rect(rect)))
+    lines = [_ascii(f"{crop['id']} {cand['tid']} {cand['key']}" + ("" if rect == crop["rect"] else f" @{x0},{y0} {w}x{h}")),
              _ascii(f"reg {reg['kind']} {disp:.1f}px  s=({reg['sx']:.3f},{reg['sy']:.3f}) rot {reg['rot_deg']:+.2f}"),
              _ascii(f"mad {gates['outside_mad']:.1f} >24 {gates['outside_frac_gt24']:.2f} "
                     + ("FAIL " + ",".join(gates["fails"]) if gates["fails"] else "ok"))]
@@ -643,8 +694,7 @@ def _analyze_one(root: str, crop: dict, cand: dict, prm: dict, ph: str) -> dict:
     reg_out = {k: reg[k] for k in ("matrix", "applied", "kind", "dx", "dy", "sx", "sy", "rot_deg", "shear",
                                    "med_before", "med_after", "improve", "disp", "masked")}
     return _plain({
-        "params_hash": ph, "params": dict(prm), "crop_id": crop["id"], "tid": cand["tid"],
-        "reg": reg_out, "quad_reg": an.quad_from_matrix(reg["matrix"], crop["rect"]),
+        **head, "rect": rect, "reg": reg_out, "quad_reg": an.quad_from_matrix(reg["matrix"], rect),
         "tone": tone, "automask": am_rel, "components": am["components"][:16],
         "mask_area": round(float(am["mask"].sum()), 1), "gates": gates, "thumb": thumb_rel,
     })
@@ -682,17 +732,25 @@ def _ensure_analysis(root: str, m: dict, cands: list[dict], prm: dict | None = N
         if crop is None:
             warns.append(f"{c['key']}: 크롭 {c['crop_id']} 없음 → 분석 건너뜀")
         else:
-            ph = _params_hash(crop, c, use)
+            frame = _gen_frame(root, m, crop, c)
+            ph = _params_hash(c, frame, use)
             per = m["analysis"].get(c["key"])
             if not per or "params_hash" in per:  # 없음 / dp-an/1 의 평평한 항목(설정이 하나뿐이던 모양)
                 per = m["analysis"][c["key"]] = {}
             if _entry_valid(root, per.get(ph), ph):
                 hit += 1
+                if not per[ph].get("skipped"):
+                    per[ph].setdefault("rect", frame[0])  # rect 를 남기기 전 항목: 해시에 rect 가 있어 이 rect 에서 계산한 것
             else:
-                per[ph] = _analyze_one(root, crop, c, use, ph)
+                per[ph] = _analyze_one(root, crop, c, use, ph, frame)
                 done += 1
                 while len(per) > _ANALYSIS_KEEP:
                     _drop_derived(root, per.pop(next(iter(per))), per.values())
+            same = [o.get("seq", 0) for k, o in per.items() if k != ph and o.get("params") == use]
+            if same and per[ph].get("seq", 0) <= max(same):
+                # 같은 설정의 다른 기준 항목(소스 없음·canvas 대체·옛 손 마스크 등)이 있으면 지금 항목의 seq 를 가장 크게 —
+                # 보드(_entry_for)도 이 항목을 본다. 순서만 바뀐 것은 매니페스트 병합이 저장하지 않아 seq 로 남긴다
+                per[ph]["seq"] = max(o.get("seq", 0) for o in per.values()) + 1
             entries[c["key"]] = per[ph]
         if pbar is not None:
             pbar.update(1)
@@ -703,9 +761,11 @@ def _ensure_analysis(root: str, m: dict, cands: list[dict], prm: dict | None = N
 # 합성 계획 (Compose 와 Export 가 같은 순서·quad·마스크를 쓰도록 공유)
 # ══════════════════════════════════════════════════════════════════════
 def _auto_mask_dict(root: str, entry: dict | None, crop: dict) -> dict | None:
+    """자동 마스크는 분석 기준 rect(항목의 rect, 예전 항목은 크롭 rect)의 로컬 좌표."""
     if not entry or entry.get("skipped") or not entry.get("automask"):
         return None
-    return {"arr": _load_l(root, entry["automask"]), "left": crop["rect"][0], "top": crop["rect"][1], "bg": 0}
+    x0, y0 = (entry.get("rect") or crop["rect"])[:2]
+    return {"arr": _load_l(root, entry["automask"]), "left": x0, "top": y0, "bg": 0}
 
 
 def _final_mask(root: str, cand: dict, entry: dict | None, crop: dict, mask_source: str) -> tuple[dict | None, str]:
@@ -764,7 +824,9 @@ def _plan(root: str, m: dict, entries: dict, mask_source: str, use_registration:
         entry = entries.get(c["key"])
         mask, msrc = _final_mask(root, c, entry, crop, mask_source)
         if mask_source != "hand" and msrc == "none":
-            warns.append(f"{c['key']} ({crop['name']}): 손 마스크도 자동 마스크도 없음 → 마스크 없이(SO 전체 보임)")
+            warns.append(f"{c['key']} ({crop['name']}): 손 마스크도 자동 마스크도 없음"
+                         + (" (만들 때의 크롭 소스를 찾지 못함)" if (entry or {}).get("no_source") else "")
+                         + " → 마스크 없이(SO 전체 보임)")
         quad = _eff_quad(c, entry, use_registration)
         if dpsd.quad_kind(quad) == "perspective":  # PS Distort/Perspective — 쓰기·캐시 렌더는 affine 만
             sw, sh = c["src_size"]
@@ -1411,7 +1473,7 @@ class BMKDesignPatchCandidateIn:
             out.append({
                 "key": key, "crop_id": crop["id"], "tid": tid, "file": rel,
                 "src_size": [int(pix.shape[1]), int(pix.shape[0])], "origin": "folder",
-                "origin_info": {"folder": path, "filename": fn, "match": why},
+                "origin_info": {"folder": path, "filename": fn, "match": why, "crop_source": crop["source"]},
                 "quad": dpsd.quad_from_rect(crop["rect"]), "picked": False, "z": None, "hand_mask": None,
             })
         return out
@@ -1590,7 +1652,8 @@ class BMKDesignPatchPrepare:
                 for p in v["images"]:
                     role = ("canvas" if p == spec["canvas"] else "guide" if p == spec.get("guide")
                             else "before_paste" if p == spec.get("before_paste") else "ref")
-                    roles.append({"role": role, "file": rel_of[p], "sha": sha_of[p]})
+                    roles.append({"role": role, "file": rel_of[p], "sha": sha_of[p]}
+                                 | ({"source": crop["source"]} if role == "canvas" else {}))  # 평탄화 전 RGBA(Analyze _gen_frame)
                 job = dict(old_jobs.get(ck) or {})
                 if not job:
                     n_new += 1
@@ -1633,10 +1696,8 @@ class BMKDesignPatchPrepare:
 # ══════════════════════════════════════════════════════════════════════
 # 노드 5 — Analyze (무료)
 # ══════════════════════════════════════════════════════════════════════
-def _area(crop: dict) -> int:
-    if not crop:
-        return 1
-    x0, y0, x1, y1 = crop["rect"]
+def _area(rect) -> int:
+    x0, y0, x1, y1 = rect
     return (x1 - x0) * (y1 - y0)
 
 
@@ -1695,10 +1756,14 @@ class BMKDesignPatchAnalyze:
         handle, conflicts = _commit(root, m, before, project, analyze=prm)
         crops = _crop_map(m)
         tiles, lines = [], []
-        n_reg = n_fail = n_skip = 0
+        n_reg = n_fail = n_skip = n_nosrc = 0
         for c in cands:
             e = entries.get(c["key"])
             if e is None:
+                continue
+            if e.get("no_source"):
+                n_nosrc += 1
+                warns.append(f"{c['crop_id']} {c['tid']} {c['key']}{' ★' if c.get('picked') else ''}: {e['skipped']}")
                 continue
             if e.get("skipped"):
                 n_skip += 1
@@ -1708,13 +1773,16 @@ class BMKDesignPatchAnalyze:
             n_reg += r["applied"]
             n_fail += bool(g["fails"])
             tiles.append(Image.open(_abs(root, e["thumb"])).convert("RGB"))
-            crop = crops.get(c["crop_id"]) or {}
+            crop_rect = crops[c["crop_id"]]["rect"]
+            rect = e.get("rect") or crop_rect
             lines.append(f"  {c['crop_id']} {c['tid']} {c['key']} {'★' if c.get('picked') else ' '} "
                          f"reg {r['kind']}" + (f" (s {r['sx']:.3f},{r['sy']:.3f} rot {r['rot_deg']:+.2f} disp {r['disp']:.1f}px)"
                                                if r["applied"] else "")
-                         + f" | mad {g['outside_mad']:.1f} | mask {e['mask_area'] / max(1, _area(crop)):.0%}"
-                         + (f" | FAIL {','.join(g['fails'])}" if g["fails"] else ""))
+                         + f" | mad {g['outside_mad']:.1f} | mask {e['mask_area'] / max(1, _area(rect)):.0%}"
+                         + (f" | FAIL {','.join(g['fails'])}" if g["fails"] else "")
+                         + ("" if rect == crop_rect else f" | 옮기기 전 rect {rect} 기준(만들 때의 크롭)"))
         head = (f"Analyze: 후보 {len(cands)} (계산 {done} · 캐시 {hit} · 생략 {n_skip}"
+                + (f" · 소스 없음 {n_nosrc}" if n_nosrc else "")
                 + (f" · 보드 탈락 {n_rej} 제외" if n_rej else "") + f") | 정합 적용 {n_reg} | 게이트 실패 {n_fail} | "
                 f"{register}/{tone} σ{int(tone_sigma)} dE {float(dE):g} grow {int(grow)} feather {float(feather_sigma):g} "
                 f"roi {roi_prior} | rev {m['rev']} | {time.time() - t0:.1f}s")
@@ -2297,6 +2365,11 @@ class BMKDesignPatchReview:
                          + (f" · 대기 {t['pending_calls']}" if t["pending_calls"] else ""))
         if st["orphan_candidates"]:
             lines.append(f"  - 크롭이 사라진 후보 {st['orphan_candidates']}개는 보드에 나오지 않음")
+        nosrc = [f"{c['key']}{' ★' if c['picked'] else ''}" for t in st["targets"] for c in t["candidates"]
+                 if c["analysis"] == "nosrc" and not c["hand_mask"] and not c["rejected"]]
+        if nosrc:
+            lines.append("  - 자동 마스크 없음(크롭 rect 를 옮기기 전 후보인데 만들 때의 크롭 소스를 찾지 못함) → "
+                         f"Compose/Export 가 SO 전체를 합성: {', '.join(nosrc)}")
         lines += [f"  - 썸네일 실패: {f}" for f in thumbs["failed"]]
         report = "\n".join(lines)
         logger.info("%s %s", _TAG, lines[0])

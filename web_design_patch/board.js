@@ -438,6 +438,11 @@
     let an = "분석 없음 (Analyze 전)";
     let cls = "";
     if (c.analysis === "skipped") an = "분석 생략(부분 패치)";
+    if (c.analysis === "nosrc") {
+      an = "자동 마스크 없음 — 크롭 rect 를 옮기기 전 후보인데 만들 때의 크롭 소스를 찾지 못함"
+        + (c.hand_mask ? "" : " (Compose/Export 가 SO 전체를 합성)");
+      cls = "bad";
+    }
     if (c.gates) {
       const g = c.gates;
       const fails = g.fails.map((f) => GATE_NAMES[f] || f);
@@ -456,6 +461,7 @@
     if (c.picked) b.append(el("span", "badge b-star", c.slice_index === 1 ? "★" : `S${c.slice_index}`));
     if (c.mock) b.append(el("span", "badge b-mock", "MOCK"));
     if (c.gates && c.gates.fails.length) b.append(el("span", "badge b-bad", "게이트"));
+    if (c.analysis === "nosrc" && !c.hand_mask) b.append(el("span", "badge b-bad", "마스크 없음"));
     if (c.reframed) b.append(el("span", "badge b-reg", "reframed"));
     if (c.rejected) b.append(el("span", "badge b-rej", "탈락"));
     return b;
