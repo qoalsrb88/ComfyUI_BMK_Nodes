@@ -31,7 +31,8 @@
 //  - 승인: Run 과 같은 1회용 규칙(approve = pending_hash → Draft 만 부분 실행, 제출 직후 비움). 확인 창: openai = 크레딧
 //    (orphan 재시도 포함 수), local_qwen = ComfyUI 모델을 VRAM 에서 내림, mock = 확인 창 없음.
 //  - adopt(채택할 크롭)도 1회용 명령: 이 노드가 실린 큐가 제출되면(afterQueued — 전체 큐·부분 실행·승인 버튼) 비운다.
-//    남겨 두면 그 뒤 큐마다 새로 받은 제안까지 검토 없이 채택된다. 꺼진(mute/bypass) 노드·제출 실패면 쓰이지 않았으니 남긴다.
+//    남겨 두면 그 뒤 큐마다 새로 받은 제안까지 검토 없이 채택된다. 꺼진(mute/bypass) 노드·제출 실패·이 노드가 빠진 부분 실행
+//    (api.queuePrompt 를 감싸 대상 + 조상을 셈)이면 쓰이지 않았으니 남긴다.
 //    서버가 쓴 _layer_targets 는 스펙에 그대로 남는다.
 //
 // Review 노드
@@ -150,6 +151,15 @@ function execIdOf(node) {
     let id = null;
     walkNodes((n, execId) => n === node && ((id = execId), true));
     return id;
+}
+
+// 같은 서브그래프 정의를 쓰는 인스턴스가 여럿이면 노드 하나가 실행 ID 여럿("10:3", "20:3")을 갖는다
+function execIdsOf(node) {
+    const ids = [];
+    walkNodes((n, execId) => {
+        if (n === node) ids.push(execId);
+    });
+    return ids;
 }
 
 function nodesOf(cls) {
@@ -587,12 +597,42 @@ async function approveDraft(node) {
     }
 }
 
-// adopt 는 큐 하나에만 쓴다: 프론트가 프롬프트를 제출한 뒤 모든 노드의 위젯에 afterQueued 를 부른다(제출 실패면 부르지 않음)
+// 마지막 부분 실행이 실제로 돌리는 노드(실행 ID) — 서버처럼 partial_execution_targets 와 그 조상(입력 링크 [id, slot]).
+// 전체 실행이면 null. 프론트(1.53.10)는 제출이 성공하면 그래프의 모든 노드 위젯에 {isPartialExecution} 만 넘겨 afterQueued 를
+// 부르므로, 이 노드가 그 실행에 들었는지는 제출된 프롬프트에서 직접 센다.
+let partialRun = null;
+
+function partialRunIds(prompt, targets) {
+    const ids = new Set();
+    const stack = targets.map(String);
+    while (stack.length) {
+        const id = stack.pop();
+        if (ids.has(id) || !prompt[id]) continue;
+        ids.add(id);
+        for (const v of Object.values(prompt[id].inputs ?? {})) {
+            if (Array.isArray(v) && typeof v[0] === "string" && Number.isInteger(v[1])) stack.push(v[0]);
+        }
+    }
+    return ids;
+}
+
+function watchSubmits() {
+    const submit = api.queuePrompt;
+    api.queuePrompt = function (number, data, options) {
+        const targets = options?.partialExecutionTargets;
+        partialRun = targets?.length ? partialRunIds(data?.output ?? {}, targets) : null;
+        return submit.apply(this, arguments);
+    };
+}
+
+// adopt 는 큐 하나에만 쓴다: 프론트가 프롬프트를 제출한 뒤 모든 노드의 위젯에 afterQueued 를 부른다(제출 실패면 부르지 않음).
+// 이 노드가 빠진 부분 실행(다른 가지의 선택 출력 실행·다른 Draft 의 승인 버튼)은 쓰지 않았으니 남긴다.
 function armAdopt(node) {
     const w = getWidget(node, "adopt");
     if (!w) return;
-    w.afterQueued = () => {
+    w.afterQueued = (opts) => {
         if (isOff(node) || !w.value) return;
+        if (opts?.isPartialExecution && partialRun && !execIdsOf(node).some((id) => partialRun.has(id))) return;
         w.value = "";
         checkState();
         node.setDirtyCanvas?.(true, true);
@@ -713,6 +753,7 @@ app.registerExtension({
         api.addEventListener("execution_interrupted", (e) => onPromptEnd(e.detail, "취소되었습니다"));
         api.addEventListener("bmk.dp.wave", (e) => onWave(e.detail));
         window.addEventListener("message", onBoardMessage);
+        watchSubmits();
     },
 
     beforeRegisterNodeDef(nodeType, nodeData) {

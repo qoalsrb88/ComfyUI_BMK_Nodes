@@ -4149,7 +4149,8 @@ def _crop_status(ctx: CropCtx, plan: dict, merges: dict, checks: dict, drafts: d
                  apply_mode: str = "full") -> tuple[int, str, list[str]]:
     """(심각도 0 실패 · 1 신뢰 낮음 · 2 경고 · 3 정상 · 4 초안 없음, 머리 줄, 붙는 줄). 4 = 초안이 아직 한 번도 없고 경고가
     초안 전 렌더(_NO_DRAFT_FLAGS)뿐인 크롭 — 보고서가 크롭마다 경고하지 않고 한 줄로 묶는다.
-    apply_mode="targets": 렌더되는 초안 값이 이름뿐이라 머리 줄은 타깃 이름, 초안 플래그는 _targets_flag 만. 기본 설명·
+    apply_mode="targets": 렌더되는 초안 값이 이름뿐이라 머리 줄은 타깃 이름(정상 크롭도 `id: A 이름, B 이름` — [제안] 은
+    채택할 것이 있을 때만 나와 이름을 대신하지 못함), 초안 플래그는 _targets_flag 만. 기본 설명·
     v4_equals_v1 은 기대값이라 숨기고 레거시 lint: CJK 는 '영문 이름 없음 → adopt 또는 용어집'. 신뢰도·검토 메모·나머지
     플래그는 review.md(참고)."""
     targets_only = apply_mode == "targets"
@@ -4210,7 +4211,8 @@ def _crop_status(ctx: CropCtx, plan: dict, merges: dict, checks: dict, drafts: d
         return 1, line + tail, extra
     if flags:
         return 2, line + tail, extra
-    return 3, cid + (" (확정)" if cid in (plan.get("accepted") or []) else ""), []
+    names = ": " + ", ".join(confs) if targets_only and confs else ""
+    return 3, cid + (" (확정)" if cid in (plan.get("accepted") or []) else "") + names, []
 
 
 def _adopt_lines(ctxs: list[CropCtx], merges: dict, backend: str, *, preview: bool, targets_only: bool) -> list[str]:

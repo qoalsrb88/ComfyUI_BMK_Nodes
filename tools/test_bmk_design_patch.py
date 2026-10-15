@@ -29,7 +29,7 @@ r"""Design Patch 통합 테스트 (M1_SPEC §6, M2_SPEC §6, M3_SPEC §7): 보�
        Run 경고, 화풍 전파, 사라진 크롭의 스펙 파일 보고, local_qwen 승인·VramError·키의 model_dir·남은 Qwen 언로드, 보드 라우트,
        new_targets 복제, force 1회, fill 키 가드, 타깃 추가 뒤 같은 큐 바이트 고정(N14), 실제 execution.PromptExecutor
        (RAM_PRESSURE·CLASSIC) 캐시 아래 재승인·재폴링·mock 끔, apply=targets 흐름(N17), 채택 adopt → Import → Prepare 가드·
-       jobs·시트·Run 드라이런(N18·N19, TO-D) — JS 시나리오 J8 = adopt 1회용(--quick 에서도)
+       jobs·시트·Run 드라이런(N18·N19, TO-D) — JS 시나리오 J8 = adopt 1회용·J9 = 빠진 부분 실행은 남김(--quick 에서도)
   참조 폴더 H:\BmkNodeDesign\MultiLayerCropEdit 가 있을 때:
   R1 03 rect 22/22 · R2 크롭 소스 ≥15/19 비트 일치 · R3 05 harvest · R4 SO 배치 MAE ≤0.25 · RW 풀캔버스 SO PSD · RX 템플릿 상수
   R5 정합 기대값 · R6 자동 마스크 IoU · R7 톤 홀드아웃 · G 게이트   (05 PSD 를 psd 모듈로 읽어 입력 구성)
@@ -9066,8 +9066,14 @@ def vlm_unit():
         check("lint: CJK" in checks_[L.crop_id].flags and "A 영문 이름 없음 → adopt 또는 용어집" in rep and "lint: CJK" not in rep
               and "warn: 기본 설명" not in rep and "v4_equals_v1" not in rep and f"{L.crop_id} {L.name} · A 펜이름표(이름 없음)" in rep,
               "TO-V15 targets 크롭 줄: 기본 설명·v4_equals_v1 숨김, 레거시 CJK → 'A 영문 이름 없음 → adopt 또는 용어집', 신뢰도 대신 타깃 이름")
+        ok_line = next((ln for ln in lines if ln.startswith("[정상] ")), "")
+        want = f"[정상] {cn.crop_id}: " + ", ".join(f"{t['id']} {t['name']}" for t in s_t["targets"])
+        check(ok_line == want and not any(ln.startswith(("[제안] " + cn.crop_id)) for ln in lines),
+              f"TO-V15b targets 정상 크롭도 렌더될 타깃 이름([제안] 이 없는 크롭이라 다른 곳에 안 보임) {ok_line!r} ≠ {want!r}")
         rep_f = dvlm.format_report(header=dict(hdr, apply=None), plan=pl, approval=ap, run=None, merges=merges, checks=checks_,
                                    drafts=drafts, ctxs=[Ls, cn])
+        check(not any(ln.startswith(f"[정상] {cn.crop_id}:") for ln in rep_f.splitlines()),
+              "TO-V15b full 의 [정상] 은 지금처럼 id 만")
         check("[타깃만]" not in rep_f and "제안 레이어명(PS 에 붙여 넣기): 003_펜이름표 | A: name badge; B: red pen" in rep_f
               and "[제안]" in rep_f, "TO-V15 apply 없는 header(full) = [타깃만] 없음, [제안] 에 PS 레이어명도")
         dlf = dataclasses.replace(dl, flags=["missing_target: B"],
@@ -9538,8 +9544,8 @@ globalThis.window = {
 };
 
 async function setup(name) {
-    const env = { toasts: [], queued: [], confirms: 0, confirmMsgs: [], fetches: [], listeners: {}, nodes: [],
-                  processingQueue: false, failSubmit: false, drainRunning: true };
+    const env = { toasts: [], queued: [], confirms: 0, confirmMsgs: [], fetches: [], listeners: {}, nodes: [], links: {},
+                  submitted: [], processingQueue: false, failSubmit: false, drainRunning: true };
     windowListeners.message = [];
     const app = {
         get processingQueue() { return env.processingQueue; },
@@ -9551,21 +9557,29 @@ async function setup(name) {
         registerExtension(ext) { env.ext = ext; },
         async queuePrompt(_num, _batch, opts) {
             if (env.processingQueue) return false;
-            const approve = {}, adopt = {};
-            for (const n of env.nodes) {
+            const approve = {}, adopt = {}, output = {};
+            // 서브그래프 호스트(isSubgraphNode)는 안쪽 노드를 "호스트:노드" 로 펼친다 — 같은 정의의 인스턴스는 노드 객체를 공유
+            const flat = env.nodes.flatMap((n) => n.isSubgraphNode?.() ? n.subgraph.nodes.map((c) => [`${n.id}:${c.id}`, c]) : [[String(n.id), n]]);
+            for (const [id, n] of flat) {
                 const w = n.widgets.find((x) => x.name === "approve");
-                if (w) approve[String(n.id)] = w.value;
+                if (w) approve[id] = w.value;
                 const a = n.widgets.find((x) => x.name === "adopt");
-                if (a) adopt[String(n.id)] = a.value;
+                if (a) adopt[id] = a.value;
+                const inputs = Object.fromEntries((env.links[n.id] ?? []).map((s, i) => [`in${i}`, [String(s), 0]]));
+                output[id] = { class_type: n.comfyClass, inputs };
             }
             if (env.failSubmit) throw new Error("submit failed");
-            env.queued.push({ ids: opts.queueNodeIds, approve, adopt });
-            for (const n of env.nodes) for (const w of n.widgets) w.afterQueued?.({ isPartialExecution: true });
+            // 1.53.10 처럼: 전체 프롬프트 + partialExecutionTargets 로 api.queuePrompt, 성공하면 모든 노드에 afterQueued
+            const ids = opts.queueNodeIds;
+            await api.queuePrompt(_num, { output, workflow: {} }, { partialExecutionTargets: ids });
+            env.queued.push({ ids, approve, adopt });
+            for (const n of new Set(flat.map(([, n]) => n))) for (const w of n.widgets) w.afterQueued?.({ isPartialExecution: !!ids?.length });
             return true;
         },
     };
     const api = {
         addEventListener(evt, fn) { (env.listeners[evt] ??= []).push(fn); },
+        async queuePrompt(_num, _data, options) { env.submitted.push(options?.partialExecutionTargets ?? null); return { prompt_id: "P" }; },
         async fetchApi(path, opts) {
             env.fetches.push({ path, body: opts?.body ?? null });
             return { ok: true, status: 200, json: async () => ({ drain: env.drainRunning, running: env.drainRunning }) };
@@ -9870,12 +9884,45 @@ await scenario("j8", async () => {  // adopt = 1회용: 큐에 실린 뒤 비움
     return { full, button, bypassed, failed, last: adopt.value, n: env.queued.length, hook: typeof adopt.afterQueued };
 });
 
+await scenario("j9", async () => {  // 이 Draft 가 빠진 부분 실행은 adopt 를 남김(Codex 리뷰 ①), 조상으로 실리는 Run 부분 실행은 비움
+    const env = await setup("j9");
+    const draft = env.add("BMKDesignPatchSpecDraft", 3);
+    const other = env.add("BMKDesignPatchSpecDraft", 8);
+    env.add("BMKDesignPatchRun", 4);
+    env.add("BMKDesignPatchReview", 6);
+    env.links[4] = [3];
+    const adopt = draft.widgets.find((w) => w.name === "adopt");
+    const q = (ids) => globalThis.__bmk.app.queuePrompt(0, 1, { queueNodeIds: ids });
+    adopt.value = "003";
+    await q(["6"]);
+    const unrelated = adopt.value;
+    dexec(other, dentry({ pending_hash: "D9aaaaaaaaaa", pending: 1 }));
+    await env.btn(other).callback();
+    const otherApprove = adopt.value;
+    await q(["4"]);
+    const viaRun = adopt.value;
+    // 같은 서브그래프 정의의 두 인스턴스(10·20) 안 Draft: 실행 ID 가 둘 — 두 번째 인스턴스만 부분 실행해도 비움(Codex 리뷰 2차)
+    const senv = await setup("j9s");
+    const sd = senv.add("BMKDesignPatchSpecDraft", 3);
+    senv.nodes.splice(senv.nodes.indexOf(sd), 1);
+    const sub = { nodes: [sd] };
+    for (const id of [10, 20]) senv.nodes.push({ id, comfyClass: "Sub", mode: 0, widgets: [], isSubgraphNode: () => true, subgraph: sub });
+    senv.add("BMKDesignPatchReview", 6);
+    const sa = sd.widgets.find((w) => w.name === "adopt");
+    const sq = (ids) => globalThis.__bmk.app.queuePrompt(0, 1, { queueNodeIds: ids });
+    sa.value = "all";
+    await sq(["6"]);
+    const subOther = sa.value;
+    await sq(["20:3"]);
+    return { unrelated, otherApprove, viaRun, submitted: env.submitted, subOther, subSecond: sa.value };
+});
+
 console.log(JSON.stringify(out));
 """
 
 
 def m2_js_unit():
-    section("M2-J js/bmk_design_patch.js 시나리오 (node + 가짜 app/api): S3·S5·WSU-1·WSU-2·WSU-3·WSU-5 · M3 J1–J8")
+    section("M2-J js/bmk_design_patch.js 시나리오 (node + 가짜 app/api): S3·S5·WSU-1·WSU-2·WSU-3·WSU-5 · M3 J1–J9")
     node = shutil.which("node")
     if not node:
         skip("node 없음 → JS 시나리오 생략")
@@ -9970,6 +10017,12 @@ def m2_js_unit():
           and j8.get("bypassed") == "all" and j8.get("failed") == "all" and j8.get("last") == "" and j8.get("n") == 4
           and j8.get("hook") == "function",
           f"TO-J8 adopt 1회용: 전체 큐·승인 버튼 큐에 실린 뒤 비움(훅은 남음), 꺼진 노드·제출 실패면 그대로 {j8}")
+    j9 = res.get("j9") or {}
+    check(j9.get("unrelated") == "003" and j9.get("otherApprove") == "003" and j9.get("viaRun") == ""
+          and j9.get("submitted") == [["6"], ["8"], ["4"]],
+          f"TO-J9 adopt: 이 Draft 가 빠진 부분 실행(다른 가지·다른 Draft 의 승인 버튼)은 남기고, 조상으로 실리는 Run 부분 실행은 비움 {j9}")
+    check(j9.get("subOther") == "all" and j9.get("subSecond") == "",
+          f"TO-J9 공유 서브그래프: 두 번째 인스턴스(20:3)만 부분 실행해도 비움(실행 ID 전부 대조) {j9}")
 
 
 # ═════════════════════════════════════════════════════════════════
