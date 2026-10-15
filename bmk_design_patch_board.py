@@ -11,12 +11,18 @@ Run 이 만든 후보가 타깃마다 여러 장이 되면 노드 미리보기�
 
 라우트 (register_routes — 모든 root 파라미터 = store 레지스트리 키(소문자 hex 12자), 경로 금지)
 -------------------------------------------------------------------------------------------
-- GET  /bmk/design_patch/board/            board.html (web_design_patch/ 의 board.html·board.js·board.css 만)
+- GET  /bmk/design_patch/board/            board.html (web_design_patch/ 의 board.html·board.js·viewer.js·board.css 만)
 - GET  /bmk/design_patch/state?root=&since_rev=
        보드 요약(JSON). since_rev 가 지금 rev 와 같으면 {"unchanged": true, rev, running, drain}.
 - GET  /bmk/design_patch/thumb?root=&kind=&key=&size=[&v=]
        JPEG. kind = cand(후보 키) | before(crop_id/tid) | ref(crop_id/tid/번호) | delta(후보 키) | context(후보 키).
-       size ∈ 128·192·256·384·512·768·1024. v 가 서버의 캐시 키와 같으면 오래 캐시해도 된다고 응답한다.
+       size ∈ 128·192·256·384·512·768·1024, 또는 0 = 원해상도(cand·before 만).
+       v 가 서버의 캐시 키와 같으면 오래 캐시해도 된다고 응답한다.
+- GET  /bmk/design_patch/canvas?root=&kind=base|composite|region&v=[&crop=&key=]
+       캔버스 미리보기 JPEG(긴 변 CANVAS_PREVIEW). composite = 현재 ★ 합성 — v 가 지금 서명과 다르면 409(낡은 요청은 계산 안 함).
+       region = 크롭 rect 주변(변마다 64–256px)만 원해상도로 ★ 합성(crop= 크롭 ID). key= 후보면 "이 후보를 ★ 하면"(그 타깃의
+       ★ 를 이 후보로 바꾼 가정). v = state 의 region_url·pick_url.
+- GET  /bmk/design_patch/seams?root=&v=    ★ 합성의 이음매(JSON, composite 와 한 번에 계산·캐시). v 규칙은 composite 와 같음.
 - GET  /bmk/design_patch/file?root=&rel=   프로젝트 안 cands/·inputs/·derived/·masks/ 의 이미지 파일만.
 - POST /bmk/design_patch/pick    {root, crop_id, tid, key, mode: set|add|remove}
 - POST /bmk/design_patch/reject  {root, key, value: bool}
@@ -35,9 +41,21 @@ CPU·파일 작업은 asyncio.to_thread 로 돌려 aiohttp 루프를 막지 않�
 - 초점 박스(크롭 로컬): 그 타깃 후보들의 자동 마스크(>= 0.5) bbox 합집합을 변마다 10%(합 +20%) 넓힌 것,
   최소 크롭 짧은 변의 1/4. 분석이 없으면 크롭 전체. before 와 cand 는 같은 초점·같은 크기라 Q 깜빡임이 픽셀 정렬된다.
 - delta = 크롭 소스 대비 ΔE76(an.delta_e, blur 1.5) 히트맵(0 → 3·dE 를 inferno 로) + 자동 마스크 외곽(청록).
-- context = 베이스 위에 현재 마스크(손 마스크가 있으면 손, 없으면 자동 마스크 — Compose 기본 hand_else_auto)로
-  합성한 크롭 rect 1.5배 영역 + 크롭 외곽선(주황).
+- context = 베이스 위에 최종 마스크로 합성한 크롭 rect 1.5배 영역 + 크롭 외곽선(주황). 마스크·정합·톤은 마지막 export 의
+  Compose 설정(없으면 기본 hand_else_auto = 손 마스크가 있으면 손, 없으면 자동 마스크) — 바탕 ★ 합성과 같게.
+- 원해상도(size 0): 초점 자르기·축소 없이 크롭 해상도 그대로(JPEG q95) — Studio 캔버스 뷰어의 1:1·2:1 겹침(Before·M 원본)용.
 - 분석 항목 선택: prebuild_thumbs(analyze_params) 로 받은 설정과 params 가 같은 항목, 없으면 가장 최근 항목.
+
+★ 합성·이음매 (Studio 캔버스 뷰어, derived/thumbs/composite_<서명>.jpg + seams_<서명>.json)
+-------------------------------------------------------------------------------------------
+- Compose 노드 함수 그대로(_plan → _cand_pixels → _render → _paste, 풀해상도) → 긴 변 CANVAS_PREVIEW 로 축소. 뷰어 겹침(region)도
+  같은 계산을 크롭 주변 창에만(가정한 ★ 집합 = 그 타깃의 ★ 를 후보 하나로 바꿈 — 보드 Space 와 같음). 설정 = 마지막
+  export 의 compose(없으면 Compose 기본값), 분석 항목 = 썸네일과 같은 선택. 보드는 분석하지 않는다 — 분석 없는 ★ 은
+  Compose 가 분석 없이 하는 대로(손 마스크 아니면 마스크 없음) 합성하고 unanalyzed 로 알린다. 한 번에 하나만 계산한다.
+- 이음매: ★ 항목마다 크롭 rect 네 변(바깥 이웃이 캔버스 안인 변)에서 안쪽 2줄 실효 알파 최대 >= 0.5 인 곳 = 마스크가 경계에 닿아
+  잘림. 틈 2px 이하는 잇고 6px 이상 구간마다 새 불연속 |(합성 안 − 합성 밖) − (베이스 안 − 베이스 밖)|(경계 1px, RGB 평균)의
+  중앙값·90% — 원래 그림의 윤곽선이 경계에 걸린 것은 0 에 가깝다. p90 < _SEAM_MIN_DIFF 는 버리고, >= _SEAM_BAD 면 "bad",
+  아니면 "weak". (10/15 실전: 009 오른쪽 변 검은 띠 어긋남 p90 ≈ 99, 경계에서 베이스와 같은 패치 = 0)
 
 공개 함수 (Review 노드·Run 노드용)
 ---------------------------------
@@ -58,6 +76,11 @@ CPU·파일 작업은 asyncio.to_thread 로 돌려 aiohttp 루프를 막지 않�
 v1 (2026-10, M2)
 - 최초 구현: 라우트 8종(정적·state·thumb·file·pick·reject·reroll·drain), 썸네일 5종 + placed 중간 캐시,
   drain·run 레지스트리, pending 계산(runner.plan_calls 가 있으면 그것, 없으면 원장 파일 + calls 요약).
+v2 (2026-10-15, Studio S0 — _proto/STUDIO_S0_SPEC.md)
+- canvas(base·composite·region)·seams 라우트(★ 합성 미리보기·"이 후보를 ★ 하면" 원해상도 영역·이음매), 원해상도 썸네일
+  size 0, 정적 viewer.js. context 는 export 의 Compose 설정(mask_source·정합·톤)을 따른다.
+- state: crops(크롭별 크레딧·미상·호출·대기·중복 ★·옛 크롭 ★·region), canvas, cost, 후보 stale_rect·joint·full_url·pick_url,
+  타깃 before_full_url.
 """
 
 from __future__ import annotations
@@ -98,12 +121,21 @@ _TAG = "[ComfyUI_BMK_Nodes::DesignPatch]"
 
 API = "/bmk/design_patch"
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web_design_patch")
-_STATIC = {"board.html": "text/html", "board.js": "text/javascript", "board.css": "text/css"}
+_STATIC = {"board.html": "text/html", "board.js": "text/javascript", "viewer.js": "text/javascript",
+           "board.css": "text/css"}
 
 THUMB_KINDS = ("cand", "before", "ref", "delta", "context")
 THUMB_SIZES = (128, 192, 256, 384, 512, 768, 1024)
+FULL_SIZE = 0              # 썸네일 size 0 = 크롭 해상도 그대로(초점 자르기·축소 없음)
+_FULL_KINDS = ("cand", "before")
 GRID_SIZE = 256
 BIG_SIZE = 512
+CANVAS_PREVIEW = 2048      # 캔버스 미리보기(베이스·★ 합성) 긴 변
+_SEAM_GAP = 2              # 이음매 구간: 이만큼 이하 틈은 잇는다
+_SEAM_MIN_LEN = 6          # 이보다 짧은 닿음은 버린다
+_REGION_PAD_MIN, _REGION_PAD_MAX = 64, 256  # 뷰어 원해상도 ★ 합성 영역 = 크롭 rect + 변마다 이만큼
+_SEAM_MIN_DIFF = 8.0       # 새 불연속 p90 이 이보다 작으면 보이지 않는 닿음 — 버린다
+_SEAM_BAD = 32.0           # 새 불연속 p90 이 이 이상이면 "bad"
 _THUMB_VERSION = "dp-thumb/2"  # 2: 옮기기 전 Run·폴더 후보는 quad 로(자기 quad 기준 정합·톤), 마스크는 항목 rect 에서
 _THUMB_DIR = "derived/thumbs"
 _FOCUS_PAD = 0.10          # 자동 마스크 bbox 합집합을 변마다 이만큼(합 +20%)
@@ -127,6 +159,9 @@ _VARIANT_RE = re.compile(r"[A-Za-z0-9_\-]{1,48}")
 _LEDGER_RE = re.compile(r"r(\d+)\.(inflight|done|failed)\.json")
 
 _RENDER_SLOTS = threading.BoundedSemaphore(3)                 # 동시에 도는 썸네일 계산 수(라우트 + 미리 생성)
+_COMPOSE_LOCK = threading.Lock()                              # ★ 합성(풀해상도 float32 캔버스)은 한 번에 하나
+_COMPOSE_DEFAULTS = {"mask_source": "hand_else_auto", "use_registration": True, "use_tone": True,
+                     "zorder": "auto_small_on_top"}  # bmk_design_patch._COMPOSE_DEFAULTS 와 같음(노드 모듈은 torch 를 불러서 복사)
 _PATH_LOCKS = [threading.Lock() for _ in range(32)]           # 같은 캐시 파일을 두 번 만들지 않게(중첩 금지)
 _FOCUS_MEMO: dict[tuple, list[int]] = {}
 _FOCUS_LOCK = threading.Lock()
@@ -481,9 +516,9 @@ def _fit(img: np.ndarray, size: int) -> Image.Image:
     return pil.resize((max(1, round(pil.width * s)), max(1, round(pil.height * s))), Image.LANCZOS)
 
 
-def _jpeg(pil: Image.Image) -> bytes:
+def _jpeg(pil: Image.Image, quality: int = 90) -> bytes:
     buf = io.BytesIO()
-    pil.convert("RGB").save(buf, "JPEG", quality=90, subsampling=0)
+    pil.convert("RGB").save(buf, "JPEG", quality=quality, subsampling=0)
     return buf.getvalue()
 
 
@@ -508,9 +543,9 @@ def _cached(root: str, name: str, make: Callable, prepare: Callable | None = Non
 # ══════════════════════════════════════════════════════════════════════
 # 썸네일 — 배치·초점·kind 별 렌더
 # ══════════════════════════════════════════════════════════════════════
-def _placed_parts(crop: dict, cand: dict, entry: dict | None) -> list:
+def _placed_parts(crop: dict, cand: dict, entry: dict | None, reg: bool = True, tone: bool = True) -> list:
     return [cand["file"], [float(v) for v in cand["quad"]], cand.get("src_size"), crop["rect"],
-            entry.get("params_hash") if _usable(entry) else None]
+            entry.get("params_hash") if _usable(entry) else None, reg, tone]
 
 
 def _mask_parts(cand: dict, entry: dict | None) -> list:
@@ -519,19 +554,25 @@ def _mask_parts(cand: dict, entry: dict | None) -> list:
     return [hm.get("file"), hm.get("rect"), int(hm.get("bg", 0)) if hm else None, auto]
 
 
-def _make_placed(root: str, crop: dict, cand: dict, entry: dict | None) -> tuple[np.ndarray, np.ndarray | None]:
-    """크롭 로컬 (rgb HxWx3 uint8, cover HxW float32 | None). Analyze 의 배치·정합 + 톤 보정장, 부분 패치는 quad 렌더."""
+def _make_placed(root: str, crop: dict, cand: dict, entry: dict | None, reg: bool = True,
+                 tone: bool = True) -> tuple[np.ndarray, np.ndarray | None]:
+    """크롭 로컬 (rgb HxWx3 uint8, cover HxW float32 | None). Analyze 의 배치·정합 + 톤 보정장, 부분 패치는 quad 렌더.
+    reg·tone = Compose 의 use_registration·use_tone(context 가 export 설정을 따를 때 끔)."""
     x0, y0, x1, y1 = crop["rect"]
     w, h = x1 - x0, y1 - y0
     path = _open_rel(root, cand["file"])
     if _analyzable(crop, cand):
         G = an.place(_read_rgb(path), (w, h))
         if _usable(entry):
-            if entry["reg"].get("applied"):
+            applied = entry["reg"].get("applied")
+            if reg and applied:
                 G = an.warp_affine(G, entry["reg"]["matrix"])
-            tone = entry.get("tone") or {}
-            if tone.get("delta") and tone.get("size"):
-                G = an.apply_delta(G, _load_delta(root, tone))
+            t = entry.get("tone") or {}
+            if tone and t.get("delta") and t.get("size"):
+                delta = _load_delta(root, t)
+                if applied and not reg:  # 보정장은 정합된 좌표 — 정합을 안 쓰면 후보 좌표로 되돌림(Compose _cand_pixels 처럼)
+                    delta = an.warp_affine(delta, entry["reg"]["matrix"], inverse=True)
+                G = an.apply_delta(G, delta)
         return np.ascontiguousarray(G[..., :3]), None
     pix = _decode(path)
     quad = [float(v) for v in cand["quad"]]
@@ -539,11 +580,11 @@ def _make_placed(root: str, crop: dict, cand: dict, entry: dict | None) -> tuple
         # 자기 quad 기준 분석(rect 를 옮기기 전 Run·폴더 후보): Compose 와 같은 정합 quad·톤(bmk_design_patch._cand_pixels).
         # 크롭 기준 분석이 남은 수확 부분 패치(옮겨 다시 수확, Analyze 전)는 quad 그대로
         applied = entry["reg"].get("applied")
-        if applied:
+        if reg and applied:
             quad = [float(v) for v in entry["quad_reg"]]
-        tone = entry.get("tone") or {}
-        if tone.get("delta") and tone.get("size"):
-            delta = _load_delta(root, tone)
+        t = entry.get("tone") or {}
+        if tone and t.get("delta") and t.get("size"):
+            delta = _load_delta(root, t)
             if applied:
                 delta = an.warp_affine(delta, entry["reg"]["matrix"], inverse=True)
             pix = an.apply_delta(pix, delta, out_size=(pix.shape[1], pix.shape[0]))
@@ -562,12 +603,13 @@ def _make_placed(root: str, crop: dict, cand: dict, entry: dict | None) -> tuple
     return out, cov
 
 
-def _placed(root: str, crop: dict, cand: dict, entry: dict | None) -> tuple[np.ndarray, np.ndarray | None]:
+def _placed(root: str, crop: dict, cand: dict, entry: dict | None, reg: bool = True,
+            tone: bool = True) -> tuple[np.ndarray, np.ndarray | None]:
     """_make_placed 의 크롭 해상도 결과를 placed_<서명>.png(무손실)로 캐시해 다른 kind·크기가 재사용."""
-    name = f"placed_{_sig('placed', _placed_parts(crop, cand, entry))}.png"
+    name = f"placed_{_sig('placed', _placed_parts(crop, cand, entry, reg, tone))}.png"
 
     def make() -> bytes:
-        rgb, cov = _make_placed(root, crop, cand, entry)
+        rgb, cov = _make_placed(root, crop, cand, entry, reg, tone)
         arr = rgb if cov is None else np.dstack([rgb, np.clip(cov * 255.0 + 0.5, 0, 255).astype(np.uint8)])
         buf = io.BytesIO()
         Image.fromarray(arr).save(buf, "PNG", compress_level=1)
@@ -666,23 +708,36 @@ def _automask_local(root: str, entry: dict | None, crop: dict) -> np.ndarray | N
     return _mask_region({"arr": a, "left": ax0, "top": ay0, "bg": 0}, *crop["rect"])
 
 
-def _final_mask_local(root: str, crop: dict, cand: dict, entry: dict | None) -> np.ndarray | None:
-    """Compose 기본(hand_else_auto): 손 마스크가 있으면 손, 없으면 자동 마스크, 둘 다 없으면 None(전체 보임)."""
+def _final_mask_local(root: str, crop: dict, cand: dict, entry: dict | None,
+                      mask_source: str = "hand_else_auto") -> np.ndarray | None:
+    """Compose 의 최종 마스크(bmk_design_patch._final_mask 와 같은 규칙): hand = 손 마스크(없으면 None), hand_else_auto = 손 마스크가
+    있으면 손, auto·hand_else_auto = 자동 마스크, 자동 마스크가 없으면 손 마스크. None = 마스크 없음(전체 보임)."""
     hm = cand.get("hand_mask")
+    hand = None
     if hm:
         arr = _read_l(_open_rel(root, hm["file"]))
-        return _mask_region({"arr": arr, "left": int(hm["rect"][0]), "top": int(hm["rect"][1]),
+        hand = _mask_region({"arr": arr, "left": int(hm["rect"][0]), "top": int(hm["rect"][1]),
                              "bg": int(hm.get("bg", 0))}, *crop["rect"])
-    return _automask_local(root, entry, crop)
+    if mask_source == "hand" or (mask_source == "hand_else_auto" and hand is not None):
+        return hand
+    auto = _automask_local(root, entry, crop)
+    return auto if auto is not None else hand
+
+
+def _out(img: np.ndarray, focus, size: int) -> bytes:
+    """size 0 = 크롭 해상도 그대로(JPEG q95, 초점 무시), 아니면 초점 박스를 잘라 size 에 맞춤."""
+    if size == FULL_SIZE:
+        return _jpeg(Image.fromarray(np.ascontiguousarray(img)), quality=95)
+    return _jpeg(_fit(_focus_crop(img, focus), size))
 
 
 def _render_cand(root, crop, placed, focus, size) -> bytes:
     _src, img = _composited(root, crop, placed)
-    return _jpeg(_fit(_focus_crop(img, focus), size))
+    return _out(img, focus, size)
 
 
 def _render_before(root, crop, focus, size) -> bytes:
-    return _jpeg(_fit(_focus_crop(_over_gray(_source_local(root, crop)), focus), size))
+    return _out(_over_gray(_source_local(root, crop)), focus, size)
 
 
 def _render_ref(root, rel, size) -> bytes:
@@ -708,10 +763,15 @@ def _render_delta(root, crop, entry, placed, focus, size) -> bytes:
     return _jpeg(_fit(_focus_crop(heat, focus), size))
 
 
-def _render_context(root, m, crop, cand, entry, placed, size) -> bytes:
+def _canvas_wh(m: dict) -> tuple[int, int]:
     if not m.get("base") or not m.get("canvas"):
         raise _Reject(409, "베이스가 없습니다 — Import PSD 를 먼저 실행하세요")
     W, H = (int(v) for v in m["canvas"])
+    return W, H
+
+
+def _render_context(root, m, crop, cand, entry, placed, size) -> bytes:
+    W, H = _canvas_wh(m)
     x0, y0, x1, y1 = crop["rect"]
     w, h = x1 - x0, y1 - y0
     cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
@@ -722,7 +782,7 @@ def _render_context(root, m, crop, cand, entry, placed, size) -> bytes:
     base = _read_rgb(_open_rel(root, m["base"]))
     region = base[ry0:ry1, rx0:rx1].astype(np.float32)
     rgb, cov = placed
-    mask =_final_mask_local(root, crop, cand, entry)
+    mask = _final_mask_local(root, crop, cand, entry, _compose_settings(m)["mask_source"])
     eff = np.ones((h, w), np.float32) if cov is None else cov
     if mask is not None:
         eff = eff * mask
@@ -744,14 +804,25 @@ def _target_ctx(root: str, m: dict, crop: dict, tid: str, pref: dict | None) -> 
     return {"cands": cands, "entries": entries, "focus": focus_box(root, crop, entries.values())}
 
 
+def _view_flags(m: dict, kind: str) -> tuple[bool, bool]:
+    """배치의 (정합, 톤): context 는 베이스 위 합성이라 export 의 Compose 설정, 나머지는 Analyze 와 같게 둘 다 켬."""
+    if kind != "context":
+        return True, True
+    cs = _compose_settings(m)
+    return bool(cs["use_registration"]), bool(cs["use_tone"])
+
+
 def _cand_sig(kind: str, size: int, m: dict, crop: dict, cand: dict, entry: dict | None, focus: list[int]) -> str:
-    parts = _placed_parts(crop, cand, entry)
+    parts = _placed_parts(crop, cand, entry, *_view_flags(m, kind))
+    if size == FULL_SIZE:
+        focus = None
     if kind == "cand":
         return _sig("cand", size, parts, crop["source"], focus)
     if kind == "delta":
         dE = ((entry or {}).get("params") or {}).get("dE") if _usable(entry) else None
         return _sig("delta", size, parts, crop["source"], focus, _mask_parts(cand, entry)[3], dE)
-    return _sig("context", size, parts, _mask_parts(cand, entry), m.get("base"), m.get("canvas"))
+    ms = _compose_settings(m)["mask_source"]
+    return _sig("context", size, parts, _mask_parts(cand, entry), ms, m.get("base"), m.get("canvas"))
 
 
 def _thumb_job(root: str, m: dict, kind: str, key: str, size: int,
@@ -770,9 +841,10 @@ def _thumb_job(root: str, m: dict, kind: str, key: str, size: int,
         ctx = _target_ctx(root, m, crop, cand["tid"], pref)
         entry, focus = ctx["entries"][key], ctx["focus"]
         sig = _cand_sig(kind, size, m, crop, cand, entry, focus)
+        flags = _view_flags(m, kind)
 
         def prepare():
-            return _placed(root, crop, cand, entry)
+            return _placed(root, crop, cand, entry, *flags)
 
         if kind == "cand":
             return sig, lambda placed: _render_cand(root, crop, placed, focus, size), prepare
@@ -787,7 +859,7 @@ def _thumb_job(root: str, m: dict, kind: str, key: str, size: int,
     if crop is None or parts[1] not in [t.get("tid") for t in crop.get("targets") or []]:
         raise _Reject(404, f"타깃이 없습니다: {parts[0]}/{parts[1]}")
     if kind == "before":
-        focus = _target_ctx(root, m, crop, parts[1], pref)["focus"]
+        focus = None if size == FULL_SIZE else _target_ctx(root, m, crop, parts[1], pref)["focus"]
         return _sig("before", size, crop["source"], crop["rect"], focus), \
             lambda: _render_before(root, crop, focus, size), None
     refs = _target_refs(m, crop["id"], parts[1])
@@ -801,14 +873,268 @@ def render_thumb(root: str, kind: str, key: str, size: int = GRID_SIZE) -> tuple
     """썸네일 JPEG bytes 와 서명(캐시 키). derived/thumbs/<kind>_<서명>.jpg 가 있으면 그대로 읽는다."""
     if kind not in THUMB_KINDS:
         raise _Reject(400, f"kind 는 {', '.join(THUMB_KINDS)} 중 하나여야 합니다")
-    if size not in THUMB_SIZES:
-        raise _Reject(400, f"size 는 {', '.join(map(str, THUMB_SIZES))} 중 하나여야 합니다")
+    if size not in THUMB_SIZES and not (size == FULL_SIZE and kind in _FULL_KINDS):
+        raise _Reject(400, f"size 는 {', '.join(map(str, THUMB_SIZES))} 중 하나여야 합니다"
+                           f"({', '.join(_FULL_KINDS)} 는 원해상도 {FULL_SIZE} 도)")
     m = store.load_manifest(root)
     sig, make, prepare = _thumb_job(root, m, kind, key, size, _PREF.get(store.root_key(root)))
     try:
         return _cached(root, f"{kind}_{sig}.jpg", make, prepare), sig
     except (OSError, ValueError) as e:  # 깨진 이미지·크기 불일치 등 — 보드에는 4xx 로
         raise _Reject(422, f"썸네일을 만들 수 없습니다({kind} {key}): {e}") from e
+
+
+# ══════════════════════════════════════════════════════════════════════
+# ★ 합성 미리보기·이음매 (Studio 캔버스 뷰어)
+# ══════════════════════════════════════════════════════════════════════
+@functools.lru_cache(maxsize=1)
+def _node():
+    """bmk_design_patch(Compose 의 _plan·_cand_pixels·_render·_paste) — 노드 모듈이 이 모듈을 import 하므로 처음 쓸 때
+    읽는다. 합성 미리보기가 Compose 와 다른 계산을 하지 않게 노드 함수를 그대로 쓴다."""
+    try:
+        from . import bmk_design_patch as node
+    except ImportError:
+        import bmk_design_patch as node
+    return node
+
+
+def _preview_wh(w: int, h: int) -> tuple[int, int]:
+    s = min(1.0, CANVAS_PREVIEW / max(w, h))
+    return max(1, round(w * s)), max(1, round(h * s))
+
+
+def _preview(img: np.ndarray) -> np.ndarray:
+    h, w = img.shape[:2]
+    pw, ph = _preview_wh(w, h)
+    return img if (pw, ph) == (w, h) else cv2.resize(img, (pw, ph), interpolation=cv2.INTER_AREA)
+
+
+def _base_sig(m: dict) -> str:
+    return _sig("canvas_base", CANVAS_PREVIEW, m["base"], m["canvas"])
+
+
+def _compose_settings(m: dict) -> dict:
+    """★ 합성·context 가 쓰는 Compose 설정 = 마지막 export 의 compose(Export 와 같은 배치), 없으면 Compose 기본값."""
+    for e in reversed(m.get("exports") or []):
+        if isinstance(e, dict) and isinstance(e.get("compose"), dict):
+            return dict(_COMPOSE_DEFAULTS, **e["compose"])
+    return dict(_COMPOSE_DEFAULTS)
+
+
+def _composite_picks(m: dict, swap: tuple[str, str, str] | None = None) -> list[dict]:
+    """Compose 가 합성하는 후보: ★·탈락 아님·크롭과 타깃이 지금 매니페스트에 있음(노드 _in_crop 과 같은 규칙).
+    swap = (crop_id, tid, key): 그 타깃의 ★ 를 이 후보 하나로 바꾼 가정(보드 Space 와 같게 — ★ 하면 탈락도 풀림)."""
+    crops = {c.get("id"): c for c in m["crops"]}
+    rejects = m.get("rejects") or {}
+    out = []
+    for c in m["candidates"]:
+        if swap is not None and (c.get("crop_id"), c.get("tid")) == swap[:2]:
+            on = c["key"] == swap[2]
+        else:
+            on = c.get("picked") and c["key"] not in rejects
+        if on and c.get("crop_id") in crops                 and any(t.get("tid") == c.get("tid") for t in crops[c["crop_id"]].get("targets") or []):
+            out.append(c)
+    return out
+
+
+def _composite_sig(m: dict, pref: dict | None, swap: tuple[str, str, str] | None = None) -> str:
+    """★ 합성이 읽는 것: 설정·베이스·★ 후보(크롭·타깃 = Compose 의 묶음, 파일·quad·손 마스크·z·크롭 rect·분석 항목)."""
+    crops = {c.get("id"): c for c in m["crops"]}
+    parts = []
+    for c in _composite_picks(m, swap):
+        e = _entry_for(m, c["key"], pref)
+        parts.append([c["key"], c["crop_id"], c["tid"], c["file"], c["quad"], c.get("hand_mask"), c.get("z"),
+                      crops[c["crop_id"]]["rect"], e.get("params_hash") if e else None])
+    return _sig("composite", CANVAS_PREVIEW, m.get("base"), m.get("canvas"), _compose_settings(m), parts)
+
+
+def _runs(hit: np.ndarray) -> list[tuple[int, int]]:
+    """True 구간 [(시작, 끝)] — _SEAM_GAP 이하 틈은 잇고 _SEAM_MIN_LEN 보다 짧은 구간은 버린다."""
+    idx = np.flatnonzero(hit)
+    if not len(idx):
+        return []
+    cuts = np.flatnonzero(np.diff(idx) > _SEAM_GAP + 1)
+    starts = np.r_[idx[0], idx[cuts + 1]]
+    ends = np.r_[idx[cuts], idx[-1]] + 1
+    return [(int(a), int(b)) for a, b in zip(starts, ends) if b - a >= _SEAM_MIN_LEN]
+
+
+def _edge_touches(rect: list[int], eff: np.ndarray, left: int, top: int, W: int, H: int) -> list[tuple[str, int, int]]:
+    """[(변, 시작, 끝)] — rect(캔버스 안으로 자른 크롭 rect)의 변 중 바깥 이웃이 캔버스 안인 변에서, 안쪽 2줄 실효 알파
+    최대 >= 0.5 인 구간(변 좌표). 캔버스 밖으로 나간 크롭은 자른 변이 캔버스 가장자리라 그 변은 보지 않는다."""
+    x0, y0, x1, y1 = rect
+    ix0, iy0 = max(x0, left), max(y0, top)
+    ix1, iy1 = min(x1, left + eff.shape[1]), min(y1, top + eff.shape[0])
+    if ix1 <= ix0 or iy1 <= iy0:
+        return []
+    win = np.zeros((y1 - y0, x1 - x0), np.float32)
+    win[iy0 - y0:iy1 - y0, ix0 - x0:ix1 - x0] = eff[iy0 - top:iy1 - top, ix0 - left:ix1 - left]
+    sides = (("top", y0 > 0, win[:2].max(axis=0)), ("bottom", y1 < H, win[-2:].max(axis=0)),
+             ("left", x0 > 0, win[:, :2].max(axis=1)), ("right", x1 < W, win[:, -2:].max(axis=1)))
+    return [(side, a, b) for side, inside, line in sides if inside for a, b in _runs(line >= 0.5)]
+
+
+def _seam_segment(out: np.ndarray, base: np.ndarray, crop_id: str, rect: list[int], tid: str, key: str, side: str,
+                  a: int, b: int) -> dict:
+    """그 구간의 새 불연속(경계 1px 안·밖 차이가 베이스에서보다 얼마나 달라졌나, RGB 평균). rect = _edge_touches 와 같은
+    캔버스 안 rect. 좌표 = 경계선(px 모서리)."""
+    x0, y0, x1, y1 = rect
+    if side in ("top", "bottom"):
+        i, o, k = (y0, y0 - 1, y0) if side == "top" else (y1 - 1, y1, y1)
+        inner, outer = np.s_[i, x0 + a:x0 + b], np.s_[o, x0 + a:x0 + b]
+        line = [x0 + a, k, x0 + b, k]
+    else:
+        i, o, k = (x0, x0 - 1, x0) if side == "left" else (x1 - 1, x1, x1)
+        inner, outer = np.s_[y0 + a:y0 + b, i], np.s_[y0 + a:y0 + b, o]
+        line = [k, y0 + a, k, y0 + b]
+    f = np.float32
+    d = np.abs((out[inner].astype(f) - out[outer]) - (base[inner].astype(f) - base[outer])).mean(axis=1)
+    p90 = float(np.percentile(d, 90))
+    return {"crop_id": crop_id, "tid": tid, "key": key, "side": side, "x0": line[0], "y0": line[1], "x1": line[2],
+            "y1": line[3], "length": b - a, "diff_med": round(float(np.median(d)), 1), "diff_p90": round(p90, 1),
+            "severity": "bad" if p90 >= _SEAM_BAD else "weak"}
+
+
+def _compose_full(root: str, m: dict, pref: dict | None, swap: tuple[str, str, str] | None = None,
+                  box: list[int] | None = None) -> tuple[np.ndarray, dict]:
+    """Compose 노드와 같은 계산(_plan → _cand_pixels → _render → _paste)으로 ★ 합성 uint8 과 요약. 분석은 하지 않는다(보드가
+    고르는 기존 항목만). swap = _composite_picks 의 ★ 교체 가정, box = 그 창만 합성(뷰어 영역 — 이음매는 보지 않음)."""
+    node = _node()
+    cs = _compose_settings(m)
+    picks = _composite_picks(m, swap)
+    keys = {c["key"] for c in picks}
+    # _plan 은 매니페스트의 picked·rejects 를 읽는다 — 가정한 ★ 집합으로 바꾼 사본을 준다(swap 이 없으면 지금과 같음)
+    mv = dict(m, candidates=[dict(c, picked=c["key"] in keys) for c in m["candidates"]],
+              rejects={k: v for k, v in (m.get("rejects") or {}).items() if k not in keys})
+    entries = {c["key"]: e for c in picks if (e := _entry_for(m, c["key"], pref)) is not None}
+    warns: list[str] = []
+    plan = node._plan(root, mv, entries, cs["mask_source"], bool(cs["use_registration"]), cs["zorder"], False, warns)
+    base = node._load_rgb(root, m["base"])
+    H, W = base.shape[:2]
+    bx0, by0, bx1, by1 = box or [0, 0, W, H]
+    canvas = base[by0:by1, bx0:bx1].astype(np.float32)
+    union = np.zeros(canvas.shape[:2], np.float32)
+    touches = []
+    for p, t, it in node._slices_in_order(plan):
+        qx0, qy0, qx1, qy1 = dpsd.quad_bbox(it["quad"])
+        if qx1 < bx0 - 2 or qy1 < by0 - 2 or qx0 > bx1 + 2 or qy0 > by1 + 2:
+            continue  # 창 밖 패치는 읽지 않는다(겹치지 않으니 합성 결과 그대로)
+        pix, _toned = node._cand_pixels(root, it, bool(cs["use_tone"]))
+        rgb, _alpha, eff, left, top = node._render(pix, it["quad"], it["mask"])
+        node._paste(canvas, union, rgb, eff, left - bx0, top - by0)
+        x0, y0, x1, y1 = p["crop"]["rect"]
+        rect = [max(0, x0), max(0, y0), min(W, x1), min(H, y1)]
+        if box is None and rect[2] > rect[0] and rect[3] > rect[1]:
+            touches += [(p["crop"]["id"], rect, t["tid"], it["cand"]["key"], *s)
+                        for s in _edge_touches(rect, eff, left, top, W, H)]
+    out = np.clip(np.rint(canvas), 0, 255).astype(np.uint8)
+    segs = [s for s in (_seam_segment(out, base, *t) for t in touches) if s["diff_p90"] >= _SEAM_MIN_DIFF]
+    segs.sort(key=lambda s: (s["severity"] != "bad", -s["diff_p90"]))
+    return out, {"picks": len(picks), "unanalyzed": [c["key"] for c in picks if c["key"] not in entries],
+                 "warnings": warns, "settings": cs, "segments": segs}
+
+
+def _composite(root: str, m: dict, pref: dict | None, sig: str) -> tuple[bytes, dict]:
+    """composite_<sig>.jpg + seams_<sig>.json — 둘 다 있으면 읽고, 없으면 한 번 계산해 둘 다 쓴다(JSON 먼저)."""
+    jpg = _thumb_path(root, f"composite_{sig}.jpg")
+    js = _thumb_path(root, f"seams_{sig}.json")
+    data, raw = _read_bytes(jpg), _read_bytes(js)
+    if data is None or raw is None:
+        with _COMPOSE_LOCK:
+            data, raw = _read_bytes(jpg), _read_bytes(js)
+            if data is None or raw is None:
+                t0 = time.time()
+                with _RENDER_SLOTS:
+                    out, info = _compose_full(root, m, pref)
+                    data = _jpeg(Image.fromarray(_preview(out)))
+                info.update(sig=sig, seconds=round(time.time() - t0, 2))
+                raw = json.dumps(info, ensure_ascii=False).encode("utf-8")
+                store._atomic_write_bytes(js, raw)
+                store._atomic_write_bytes(jpg, data)
+    return data, json.loads(raw)
+
+
+def _region_rect(rect: list[int], W: int, H: int) -> list[int]:
+    """크롭 rect 를 변마다 긴 변의 1/4(64–256px) 넓혀 캔버스 안으로 — 뷰어가 경계 이음매를 양쪽 다 원해상도로 보게."""
+    x0, y0, x1, y1 = rect
+    pad = int(min(_REGION_PAD_MAX, max(_REGION_PAD_MIN, 0.25 * max(x1 - x0, y1 - y0))))
+    return [max(0, x0 - pad), max(0, y0 - pad), min(W, x1 + pad), min(H, y1 + pad)]
+
+
+def _region_sig(csig: str, box: list[int]) -> str:
+    return _sig("region", csig, box)
+
+
+def render_region(root: str, crop_id: str, key: str | None = None, v: str | None = None) -> tuple[bytes, str]:
+    """크롭 주변 영역(_region_rect)만 원해상도로 ★ 합성한 JPEG — 뷰어가 선택 크롭에 깐다. key 가 있으면 "이 후보를 ★ 하면"
+    (그 타깃의 ★ 를 이 후보 하나로 바꾼 가정, Compose 와 같은 순서·마스크 — 같은 크롭·겹친 크롭의 다른 ★ 도 그대로).
+    v 가 지금 서명(★·크롭 rect·가정)과 다르면 409."""
+    if not isinstance(crop_id, str) or not _CROP_ID_RE.fullmatch(crop_id):
+        raise _Reject(400, "crop 형식이 잘못되었습니다")
+    m = store.load_manifest(root)
+    W, H = _canvas_wh(m)
+    crop = _crop(m, crop_id)
+    if crop is None:
+        raise _Reject(404, f"크롭이 없습니다: {crop_id}")
+    box = _region_rect(crop["rect"], W, H)
+    if box[2] <= box[0] or box[3] <= box[1]:
+        raise _Reject(409, "크롭이 캔버스 밖에 있습니다")
+    swap = None
+    if key:
+        if not _KEY_RE.fullmatch(key):
+            raise _Reject(400, "후보 키 형식이 잘못되었습니다")
+        cand = _cand(m, key)
+        if cand is None or cand.get("crop_id") != crop_id:
+            raise _Reject(404, f"이 크롭의 후보가 아닙니다: {key}")
+        swap = (crop_id, cand["tid"], key)
+    pref = _PREF.get(store.root_key(root))
+    rsig = _region_sig(_composite_sig(m, pref, swap), box)
+    if v not in (None, "", rsig):
+        raise _Reject(409, "★ 나 크롭이 바뀌어 영역 서명이 달라졌습니다 — 새 상태로 다시 요청하세요")
+
+    def make() -> bytes:
+        return _jpeg(Image.fromarray(_compose_full(root, m, pref, swap, box)[0]), quality=95)
+
+    try:
+        return _cached(root, f"region_{rsig}.jpg", make), rsig
+    except (OSError, ValueError) as e:
+        raise _Reject(422, f"★ 합성 영역을 만들 수 없습니다: {e}") from e
+
+
+def _composite_for(root: str, v: str | None) -> tuple[bytes, dict, str]:
+    m = store.load_manifest(root)
+    _canvas_wh(m)
+    pref = _PREF.get(store.root_key(root))
+    sig = _composite_sig(m, pref)
+    if v not in (None, "", sig):
+        raise _Reject(409, "★ 가 바뀌어 합성 서명이 달라졌습니다 — 새 상태로 다시 요청하세요")
+    try:
+        data, info = _composite(root, m, pref, sig)
+    except (OSError, ValueError) as e:
+        raise _Reject(422, f"★ 합성을 만들 수 없습니다: {e}") from e
+    return data, info, sig
+
+
+def render_canvas(root: str, kind: str, v: str | None = None) -> tuple[bytes, str]:
+    """캔버스 미리보기 JPEG 와 서명. kind = base | composite(v 가 지금 서명과 다르면 409)."""
+    if kind == "composite":
+        data, _info, sig = _composite_for(root, v)
+        return data, sig
+    if kind != "base":
+        raise _Reject(400, "kind 는 base, composite, region(crop=[&key=]) 중 하나여야 합니다")
+    m = store.load_manifest(root)
+    _canvas_wh(m)
+    sig = _base_sig(m)
+    try:
+        return _cached(root, f"canvasbase_{sig}.jpg",
+                       lambda: _jpeg(Image.fromarray(_preview(_read_rgb(_open_rel(root, m["base"])))))), sig
+    except (OSError, ValueError) as e:
+        raise _Reject(422, f"베이스 미리보기를 만들 수 없습니다: {e}") from e
+
+
+def seams_state(root: str, v: str | None = None) -> dict:
+    """★ 합성의 이음매 요약(composite 와 같은 계산·캐시)."""
+    return _composite_for(root, v)[1]
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -852,9 +1178,12 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
     rerolls = m.get("rerolls") or {}
     pending, preapproved = _pending(root, m)
     crop_ids = {c.get("id") for c in m["crops"]}
+    by_file = {(c.get("crop_id"), c.get("file"), c.get("tid")): c["key"] for c in m["candidates"]}
+    wh = [int(v) for v in m["canvas"]] if m.get("base") and m.get("canvas") else None
     targets = []
     for crop in m["crops"]:
         x0, y0, x1, y1 = crop["rect"]
+        box = _region_rect(crop["rect"], *wh) if wh else None
         for t in crop.get("targets") or []:
             tid = t["tid"]
             tkey = f"{crop['id']}/{tid}"
@@ -870,6 +1199,11 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
                 ck, call_id, rep = _cell_of(c)
                 gates = _gates_out(e)
                 reg = _reg_out(e)
+                joint = None  # 다중 타깃 작업의 결과 = 같은 이미지가 타깃마다 후보로 등록됨 → ★ 는 첫 타깃에만
+                jt = [x for x in info.get("tids") or [] if isinstance(x, str)]
+                if len(jt) > 1:
+                    first = next((x["tid"] for x in crop.get("targets") or [] if x.get("tid") in jt), None)
+                    joint = {"tids": jt, "first": first, "first_key": by_file.get((crop["id"], c["file"], first))}
                 cands.append({
                     "key": c["key"], "n": n, "origin": c.get("origin"), "backend": info.get("backend"),
                     "mock": info.get("backend") == "mock", "src_size": c.get("src_size"),
@@ -883,6 +1217,8 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
                                                          else "skipped" if e and e.get("skipped") else "none"),
                     "gates": gates, "reg": reg, "reframed": bool(reg and reg.get("applied")),
                     "hand_mask": bool(c.get("hand_mask")),
+                    "stale_rect": c.get("origin") in ("run", "folder") and dpsd.quad_bbox(c["quad"]) != crop["rect"],
+                    "joint": joint,
                     "thumb_url": _turl(rk, "cand", c["key"], GRID_SIZE,
                                        _cand_sig("cand", GRID_SIZE, m, crop, c, e, focus)),
                     "big_url": _turl(rk, "cand", c["key"], BIG_SIZE, _cand_sig("cand", BIG_SIZE, m, crop, c, e, focus)),
@@ -890,6 +1226,11 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
                                        _cand_sig("delta", BIG_SIZE, m, crop, c, e, focus)),
                     "context_url": _turl(rk, "context", c["key"], BIG_SIZE,
                                          _cand_sig("context", BIG_SIZE, m, crop, c, e, focus)),
+                    "full_url": _turl(rk, "cand", c["key"], FULL_SIZE, _cand_sig("cand", FULL_SIZE, m, crop, c, e, focus)),
+                    # "이 후보를 ★ 하면": 그 타깃의 ★ 를 이 후보로 바꾼 가정의 원해상도 영역(뷰어 겹침)
+                    "pick_url": None if box is None else "canvas?" + urlencode(
+                        {"root": rk, "kind": "region", "crop": crop["id"], "key": c["key"],
+                         "v": _region_sig(_composite_sig(m, pref, (crop["id"], tid, c["key"])), box)}),
                     "file_url": _furl(rk, c["file"]),
                 })
             cells = []
@@ -908,6 +1249,8 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
                 "rect": crop["rect"], "size": [x1 - x0, y1 - y0], "focus_box": focus,
                 "before_url": _turl(rk, "before", tkey, BIG_SIZE,
                                     _sig("before", BIG_SIZE, crop["source"], crop["rect"], focus)),
+                "before_full_url": _turl(rk, "before", tkey, FULL_SIZE,
+                                         _sig("before", FULL_SIZE, crop["source"], crop["rect"], None)),
                 "refs": refs, "candidates": cands, "pick_keys": pick_keys, "cells": cells,
                 "pending_calls": sum(c["pending"] for c in cells),
                 "chips": {"n": len(cands), "live": len(live), "picked": len(pick_keys),
@@ -916,6 +1259,22 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
                           "mock": sum(1 for c in cands if c["mock"]), "rejected": len(cands) - len(live)},
                 "warnings": list(crop.get("warnings") or []),
             })
+    calls = [x for x in m.get("calls") or [] if isinstance(x, dict)]
+    crops = _crop_summaries(m, targets, calls)
+    canvas = None
+    if m.get("base") and m.get("canvas"):
+        W, H = (int(v) for v in m["canvas"])
+        csig = _composite_sig(m, pref)
+        canvas = {"size": [W, H], "preview": list(_preview_wh(W, H)), "composite_sig": csig,
+                  "picks": len(_composite_picks(m)),
+                  "base_url": "canvas?" + urlencode({"root": rk, "kind": "base", "v": _base_sig(m)}),
+                  "composite_url": "canvas?" + urlencode({"root": rk, "kind": "composite", "v": csig}),
+                  "seams_url": "seams?" + urlencode({"root": rk, "v": csig})}
+        for c in crops:  # 뷰어가 선택 크롭 아래에 까는 원해상도 ★ 합성 영역
+            box = _region_rect(c["rect"], W, H)
+            c["region"] = box
+            c["region_url"] = "canvas?" + urlencode({"root": rk, "kind": "region", "crop": c["id"],
+                                                     "v": _region_sig(csig, box)})
     return {
         "rev": m["rev"], "project": m.get("project"), "root_key": rk, "backend_mock": _mock_active(root),
         **flags, "time": time.strftime("%H:%M:%S"),
@@ -923,8 +1282,54 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
         "counts": {"targets": len(targets), "candidates": len(m["candidates"]), "rejected": len(rejects),
                    "picks": sum(len(t["pick_keys"]) for t in targets)},
         "orphan_candidates": sum(1 for c in m["candidates"] if c.get("crop_id") not in crop_ids),
+        "cost": _cost(calls),
+        "canvas": canvas,
+        "crops": crops,
         "targets": targets,
     }
+
+
+def _cost(calls: list[dict]) -> dict:
+    """원장 calls 의 크레딧 합(알려진 것만)·호출 수·완료 수·크레딧 미상 완료 수(크레딧 조회가 안 된 유료 호출 — 0 이 아님)."""
+    done = [x for x in calls if x.get("status") == "done"]
+    return {"credits": round(sum(float(x["credits"]) for x in calls if x.get("credits") is not None), 2),
+            "calls": len(calls), "done": len(done), "unknown": sum(1 for x in done if x.get("credits") is None)}
+
+
+def _crop_summaries(m: dict, targets: list[dict], calls: list[dict]) -> list[dict]:
+    """크롭별 요약(Studio 왼쪽 목록·캔버스 사각형). 대기 = 셀 중복 없이(다중 타깃 작업은 타깃마다 같은 셀),
+    중복 ★ = 공동 결과(다중 타깃 작업이 타깃마다 같은 이미지로 등록한 후보)를 앞 타깃에 이어 뒤 타깃에도 ★ — 같은 파일이라도
+    수확 후보(SO 를 마스크·위치만 바꿔 타깃마다 둔 것)는 다른 패치라 보지 않는다. 옛 크롭 ★ = rect 를 옮기기 전 후보의 ★."""
+    by_crop: dict[str, list[dict]] = {}
+    for t in targets:
+        by_crop.setdefault(t["crop_id"], []).append(t)
+    files = {c["key"]: c.get("file") for c in m["candidates"]}
+    out = []
+    for crop in m["crops"]:
+        ts = by_crop.get(crop["id"], [])
+        seen: dict[str, str] = {}
+        dup, stale = [], []
+        for t in ts:
+            joint = {c["key"] for c in t["candidates"] if c["joint"]}
+            stale_keys = {c["key"] for c in t["candidates"] if c["stale_rect"]}
+            for k in t["pick_keys"]:
+                f = files.get(k)
+                if k in joint and seen.setdefault(f, t["tid"]) != t["tid"]:
+                    dup.append({"key": k, "tid": t["tid"], "same_as": seen[f]})
+                if k in stale_keys:
+                    stale.append(k)
+        cost = _cost([x for x in calls if x.get("crop_id") == crop["id"]])
+        cells = {x["cell_key"]: x["pending"] for t in ts for x in t["cells"]}
+        warnings = list(crop.get("warnings") or [])
+        out.append({
+            "id": crop["id"], "name": crop.get("name"), "nnn": crop.get("nnn"), "rect": crop["rect"],
+            "tids": [t["tid"] for t in ts], "warnings": warnings,
+            "candidates": sum(len(t["candidates"]) for t in ts), "picked_targets": sum(1 for t in ts if t["pick_keys"]),
+            "pending": sum(cells.values()), "credits": cost["credits"], "credits_unknown": cost["unknown"],
+            "calls": cost["calls"], "calls_done": cost["done"],
+            "dup_picks": dup, "stale_picked": stale, "problems": len(warnings) + len(dup) + len(stale),
+        })
+    return out
 
 
 def prebuild_thumbs(root: str, analyze_params: dict | None = None, size: int = GRID_SIZE) -> dict:
@@ -1166,6 +1571,25 @@ async def thumb_handler(request: web.Request) -> web.StreamResponse:
                         headers={"Cache-Control": cache, "ETag": f'"{sig}"', "X-Content-Type-Options": "nosniff"})
 
 
+@_guard
+async def canvas_handler(request: web.Request) -> web.StreamResponse:
+    q = request.query
+    root = _root_param(q.get("root"))
+    if q.get("kind") == "region":
+        data, sig = await asyncio.to_thread(render_region, root, q.get("crop"), q.get("key"), q.get("v"))
+    else:
+        data, sig = await asyncio.to_thread(render_canvas, root, q.get("kind") or "", q.get("v"))
+    cache = "private, max-age=604800, immutable" if q.get("v") == sig else "no-cache"
+    return web.Response(body=data, content_type="image/jpeg",
+                        headers={"Cache-Control": cache, "ETag": f'"{sig}"', "X-Content-Type-Options": "nosniff"})
+
+
+@_guard
+async def seams_handler(request: web.Request) -> web.StreamResponse:
+    root = _root_param(request.query.get("root"))
+    return _json(await asyncio.to_thread(seams_state, root, request.query.get("v")))
+
+
 def _file_path(root: str, rel) -> str:
     if not isinstance(rel, str) or not 0 < len(rel) <= 300 or any(ch in rel for ch in "\\:\x00"):
         raise _Reject(400, "rel 형식이 잘못되었습니다")
@@ -1261,6 +1685,8 @@ _ROUTES = (
     ("GET", f"{API}/board/{{name}}", board_static),
     ("GET", f"{API}/state", state_handler),
     ("GET", f"{API}/thumb", thumb_handler),
+    ("GET", f"{API}/canvas", canvas_handler),
+    ("GET", f"{API}/seams", seams_handler),
     ("GET", f"{API}/file", file_handler),
     ("POST", f"{API}/pick", pick_handler),
     ("POST", f"{API}/reject", reject_handler),

@@ -5606,6 +5606,7 @@ def m2_board_unit():
         want = sorted({("GET", "/bmk/design_patch/board"), ("GET", "/bmk/design_patch/board/"),
                        ("GET", "/bmk/design_patch/board/{name}"), ("GET", "/bmk/design_patch/state"),
                        ("GET", "/bmk/design_patch/thumb"), ("GET", "/bmk/design_patch/file"),
+                       ("GET", "/bmk/design_patch/canvas"), ("GET", "/bmk/design_patch/seams"),
                        ("POST", "/bmk/design_patch/pick"), ("POST", "/bmk/design_patch/reject"),
                        ("POST", "/bmk/design_patch/reroll"), ("POST", "/bmk/design_patch/drain")})
         check(paths == want, f"라우트 목록 {paths}")
@@ -5697,6 +5698,14 @@ def m2_board_unit():
         check(hd["Content-Type"].startswith("application/json") and hd.get("Cache-Control") == "no-store", "state JSON·no-store")
         check(b"<img" in body and json.dumps(XSS_NAME, ensure_ascii=False).encode("utf-8") in body,
               "응답 본문은 JSON(ensure_ascii=False) 텍스트 — 따옴표만 JSON 이스케이프")
+        check({"stale_rect", "joint", "full_url", "pick_url"} <= set(tA["candidates"][0]) and "before_full_url" in tA,
+              "S0 후보·타깃 필드(원해상도 URL·옛 크롭·공동 결과)")
+        check([c["id"] for c in s["crops"]] == [tA["crop_id"]] and s["crops"][0]["tids"] == ["A", "B"]
+              and s["cost"] == {"credits": 0, "calls": 0, "done": 0, "unknown": 0} and s["canvas"]["size"] == [640, 480]
+              and s["canvas"]["preview"] == [640, 480] and s["canvas"]["picks"] == 0,
+              f"S0 최상위: crops·cost·canvas(작은 캔버스는 미리보기 = 원본 크기) {s['cost']} {s['canvas']['preview']}")
+        check(not any(c["stale_rect"] or c["joint"] for t in s["targets"] for c in t["candidates"]),
+              "폴더 후보 quad = rect → 옛 크롭 아님(수확 부분 패치는 대상 아님), origin_info.tids 없음 → 공동 아님")
         return s
 
 
@@ -6002,14 +6011,23 @@ def m2_board_unit():
         n_ok = 0
         for tt in s["targets"]:
             for cc in tt["candidates"]:
-                for u in (cc["thumb_url"], cc["delta_url"], cc["context_url"]):
+                for u in (cc["thumb_url"], cc["delta_url"], cc["context_url"], cc["full_url"]):
                     st, _, _ = await h.get("/bmk/design_patch/" + u.split("?")[0],
                                            **dict(p.split("=", 1) for p in u.split("?", 1)[1].split("&")))
                     n_ok += st == 200
                     if st != 200:
                         check(False, f"{label} {u} → {st}")
-        total = sum(len(tt["candidates"]) for tt in s["targets"]) * 3
-        check(n_ok == total, f"{label} 모든 후보 cand/delta/context 200 ({n_ok}/{total})")
+        total = sum(len(tt["candidates"]) for tt in s["targets"]) * 4
+        check(n_ok == total, f"{label} 모든 후보 cand/delta/context/원해상도 cand 200 ({n_ok}/{total})")
+        # S0 원해상도(size 0): 초점 자르기·축소 없이 크롭 해상도(뷰어의 Before·M 원본). "이 후보를 ★ 하면"은 canvas region(M2-N12)
+        cw, ch = t["size"]
+        for kind, k in (("cand", c["key"]), ("before", t["key"])):
+            st, hd, b = await h.get("/bmk/design_patch/thumb", root=key, kind=kind, key=k, size="0")
+            check(st == 200 and jpeg_size(b) == ("JPEG", (cw, ch)) and hd["Content-Type"] == "image/jpeg",
+                  f"{label} {kind} size 0 = 크롭 해상도 {jpeg_size(b)} ({cw}x{ch})")
+        for kind in ("delta", "context", "ref", "final"):
+            st, _, _ = await h.get("/bmk/design_patch/thumb", root=key, kind=kind, key=c["key"], size="0")
+            check(st == 400, f"{label} {kind} size 0 → 400 (원해상도는 cand·before 만)")
         # 오류
         errs = [({"kind": "nope", "key": c["key"], "size": "256"}, 400), ({"kind": "cand", "key": c["key"], "size": "300"}, 400),
                 ({"kind": "cand", "key": c["key"], "size": "abc"}, 400), ({"kind": "cand", "key": "../x", "size": "256"}, 400),
@@ -6090,28 +6108,42 @@ def m2_board_unit():
 
 
     def b12_static_js():
-        section("B12 board.js / html / css 정적 검사")
+        section("B12 board.js / viewer.js / html / css 정적 검사")
         js = (PKG / "web_design_patch" / "board.js").read_text(encoding="utf-8")
+        vjs = (PKG / "web_design_patch" / "viewer.js").read_text(encoding="utf-8")
         html = (PKG / "web_design_patch" / "board.html").read_text(encoding="utf-8")
         css = (PKG / "web_design_patch" / "board.css").read_text(encoding="utf-8")
-        code = re.sub(r"//[^\n]*", "", js)
-        for bad in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function", "setAttribute(\"on",
-                    "srcdoc", "javascript:"):
-            check(bad not in code, f"board.js 에 {bad} 없음")
-        check("textContent" in code and "replaceChildren" in code, "textContent / replaceChildren 사용")
-        for name, text in (("board.js", js), ("board.html", html), ("board.css", css)):
+        for name, text in (("board.js", js), ("viewer.js", vjs)):
+            code = re.sub(r"//[^\n]*", "", text)
+            for bad in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function",
+                        "setAttribute(\"on", "srcdoc", "javascript:"):
+                check(bad not in code, f"{name} 에 {bad} 없음")
+            check("textContent" in code and "replaceChildren" in code, f"{name} textContent / replaceChildren 사용")
+        # viewer.js 의 SVG 이름공간 URI 는 불러오는 주소가 아니다(createElementNS 인자)
+        for name, text in (("board.js", js), ("viewer.js", vjs.replace("http://www.w3.org/2000/svg", "")),
+                           ("board.html", html), ("board.css", css)):
             check(not re.search(r"https?://", text) and "@import" not in text and "cdn" not in text.lower(),
                   f"{name} 외부 URL·CDN 없음")
             check(not any(ord(ch) >= 0x1F000 or ch == "\ufe0f" for ch in text), f"{name} 이모지 없음")
-        check(not re.search(r"<script(?![^>]*\bsrc=\"board\.js\")", html) and "on" + "click=" not in html.lower(),
-              "html 에 인라인 스크립트·이벤트 속성 없음")
+        check(re.findall(r'<script src="([^"]+)" defer></script>', html) == ["viewer.js", "board.js"]
+              and not re.search(r"<script(?![^>]*\bsrc=\"(?:viewer|board)\.js\")", html) and "on" + "click=" not in html.lower(),
+              "html 에 인라인 스크립트·이벤트 속성 없음, viewer.js 가 board.js 보다 먼저")
         check('postMessage({ type: "bmk-dp-queue", rootKey: ROOT }, location.origin)' in js, "opener postMessage 형식(명세 §4.2)")
         check("POLL_MS = 2000" in js and "since_rev" in js, "2초 폴링 + since_rev")
         for code_name in ("ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "\"Space\"", "KeyX", "KeyQ", "KeyD", "KeyC", "KeyR",
-                          "Slash", "Escape"):
+                          "Slash", "Escape", "KeyB", "KeyO", "Digit0", "KeyF", "Digit1", "Digit2", "KeyS", "KeyM", "KeyN",
+                          "KeyV"):
             check(code_name in js, f"키 처리 {code_name}")
         check("e.repeat" in js, "키 반복 무시(Space/X/R)")
         check('lang="ko"' in html and "color-scheme: dark" in css, "한국어·다크 테마")
+        node = shutil.which("node")
+        if node:
+            for name in ("board.js", "viewer.js"):
+                r = subprocess.run([node, "--check", str(PKG / "web_design_patch" / name)], capture_output=True, text=True,
+                                   encoding="utf-8", timeout=60)
+                check(r.returncode == 0, f"node --check {name} {r.stderr.strip()[:200]}")
+        else:
+            skip("node 없음 → board.js·viewer.js 문법 검사 생략")
 
 
     async def b13_prebuild(root, label):
@@ -6181,6 +6213,64 @@ def m2_board_unit():
         req = make_mocked_request("GET", "/bmk/design_patch/board/", match_info={})
         r = await board.board_static(req)
         check(r.status == 200 and r.content_type == "text/html", "board_static 기본 = board.html")
+        req = make_mocked_request("GET", "/bmk/design_patch/board/viewer.js", match_info={"name": "viewer.js"})
+        r = await board.board_static(req)
+        check(r.status == 200 and r.content_type == "text/javascript", "board_static viewer.js(캔버스 뷰어)")
+
+
+    async def b18_canvas(h: Http, key):
+        section("B18 캔버스 미리보기(base) · 낡은 합성 서명 409 · 크롭 요약 (S0 — 합성 계산은 M2-N12, 노드 모듈 필요)")
+        st, s = await h.jget("/bmk/design_patch/state", root=key)
+        cv = s["canvas"]
+        q = dict(p.split("=", 1) for p in cv["base_url"].split("?", 1)[1].split("&"))
+        st, hd, b = await h.get("/bmk/design_patch/canvas", **q)
+        check(st == 200 and jpeg_size(b)[1] == tuple(cv["preview"]) and "immutable" in hd.get("Cache-Control", ""),
+              f"canvas base = 미리보기 크기 {jpeg_size(b)[1]}, v 일치 → immutable")
+        check(board._preview_wh(3072, 4096) == (1536, 2048) and board._preview_wh(640, 480) == (640, 480),
+              "미리보기 크기: 긴 변 2048 이하로만 줄임")
+        crop_id = s["crops"][0]["id"]
+        for path, extra in (("canvas", {"kind": "composite"}), ("seams", {}), ("canvas", {"kind": "region", "crop": crop_id})):
+            st, _, body = await h.get(f"/bmk/design_patch/{path}", root=key, v="0" * 16, **extra)
+            check(st == 409 and "★" in json.loads(body)["error"], f"{path} {extra} 낡은 v → 409(계산하지 않음)")
+        c0 = s["crops"][0]
+        check(c0["region"] == board._region_rect(c0["rect"], *cv["size"]) and "kind=region" in c0["region_url"],
+              f"크롭 요약에 원해상도 ★ 합성 영역(크롭 rect + 여유) {c0['rect']} → {c0['region']}")
+        check(board._region_rect([1000, 1000, 1384, 1384], 3072, 4096) == [904, 904, 1480, 1480]
+              and board._region_rect([0, 0, 2048, 2048], 3072, 4096) == [0, 0, 2304, 2304]
+              and board._region_rect([0, 0, 128, 128], 3072, 4096) == [0, 0, 192, 192],
+              "영역 여유 = 긴 변의 1/4, 64–256px, 캔버스 안")
+        for params, want in (({"kind": "nope"}, 400), ({"kind": "region", "crop": "../x"}, 400),
+                             ({"kind": "region", "crop": "zzz_000000"}, 404)):
+            st, _, _ = await h.get("/bmk/design_patch/canvas", root=key, **params)
+            check(st == want, f"canvas {params} → {st} (기대 {want})")
+        jt = {"tids": ["A", "B"], "first": "A"}
+        sums = board._crop_summaries(
+            {"crops": [{"id": "c1", "name": "001_x", "nnn": "001", "rect": [0, 0, 8, 8], "warnings": ["w"]},
+                       {"id": "c2", "name": "002_y", "nnn": "002", "rect": [0, 0, 8, 8], "warnings": []}],
+             "candidates": [{"key": "a", "file": "f1"}, {"key": "b", "file": "f1"}, {"key": "o", "file": "f2"},
+                            {"key": "ha", "file": "f3"}, {"key": "hb", "file": "f3"}]},
+            [{"crop_id": "c1", "tid": "A", "pick_keys": ["a"],
+              "candidates": [{"key": "a", "stale_rect": False, "joint": dict(jt, first_key="a")}],
+              "cells": [{"cell_key": "k1", "pending": 2}]},
+             {"crop_id": "c1", "tid": "B", "pick_keys": ["b", "o"],
+              "candidates": [{"key": "b", "stale_rect": False, "joint": dict(jt, first_key="a")},
+                             {"key": "o", "stale_rect": True, "joint": None}],
+              "cells": [{"cell_key": "k1", "pending": 2}, {"cell_key": "k2", "pending": 1}]},
+             {"crop_id": "c2", "tid": "A", "pick_keys": ["ha"], "candidates": [{"key": "ha", "stale_rect": False, "joint": None}],
+              "cells": []},
+             {"crop_id": "c2", "tid": "B", "pick_keys": ["hb"], "candidates": [{"key": "hb", "stale_rect": False, "joint": None}],
+              "cells": []}],
+            [{"crop_id": "c1", "credits": 12.5, "status": "done"}, {"crop_id": "c1", "credits": None, "status": "failed"},
+             {"crop_id": "c2", "credits": 99, "status": "done"}, {"crop_id": "c2", "credits": None, "status": "done"}])
+        c1, c2 = sums
+        check(c1["dup_picks"] == [{"key": "b", "tid": "B", "same_as": "A"}] and c1["stale_picked"] == ["o"]
+              and c1["pending"] == 3 and (c1["credits"], c1["calls"], c1["calls_done"]) == (12.5, 2, 1)
+              and c1["picked_targets"] == 2 and c1["problems"] == 3,
+              f"크롭 요약: 중복 ★(공동 결과를 뒤 타깃에도)·옛 크롭 ★·대기(셀 중복 없이)·크레딧(그 크롭 호출만) {c1}")
+        check(c1["credits_unknown"] == 0 and (c2["credits"], c2["credits_unknown"], c2["calls_done"]) == (99, 1, 2),
+              "크레딧 미상 = 크레딧 없이 완료된 호출(조회 실패한 유료 호출 — 0 으로 세지 않음, 실패 호출은 아님)")
+        check(c2["dup_picks"] == [],
+              "같은 파일이라도 공동 결과가 아닌 후보(수확 SO 를 타깃마다 다른 마스크로)는 중복 ★ 아님")
 
 
     def b16_focus_race(root):
@@ -6275,6 +6365,7 @@ def m2_board_unit():
             st, s = await h.jget("/bmk/design_patch/state", root=syn_key)
             await b10_thumbs(h, syn_key, syn, s, "syn")
             await b11_concurrency(h, syn_key, syn, s)
+            await b18_canvas(h, syn_key)
             if reg:
                 rs = await b15_real(h, reg_key, reg)
                 await b10_thumbs(h, reg_key, reg, rs, "reg")
@@ -10221,9 +10312,9 @@ def m2_node_unit():
             n1 = len(fake.routes)
             dp._register_board_routes()
         paths = {r.path for r in fake.routes}
-        check(n1 == 10 and len(fake.routes) == 10 and {"/bmk/design_patch/state", "/bmk/design_patch/drain",
-                                                       "/bmk/design_patch/board/"} <= paths,
-              f"보드 라우트 10개, 두 번 불러도 한 번 ({n1}, {len(fake.routes)})")
+        check(n1 == 12 and len(fake.routes) == 12 and {"/bmk/design_patch/state", "/bmk/design_patch/drain",
+                                                       "/bmk/design_patch/board/", "/bmk/design_patch/canvas"} <= paths,
+              f"보드 라우트 12개, 두 번 불러도 한 번 ({n1}, {len(fake.routes)})")
         check(dp._server() is None, "가짜 서버는 블록 밖에서 되돌림")
 
         section("M2-N1 Prepare calls_per_cell · Run 과 같은 승인 해시")
@@ -10486,6 +10577,9 @@ def m2_node_unit():
 
         section("M2-N11 크롭 rect 이동 뒤 Run·폴더 후보 = 만들 때의 크롭 기준 분석 (10/15 261014_Test 009 실측)")
         _m2_moved_rect(dp, NODES2, PRE, ANA, COM, run_node, set_mock)
+
+        section("M2-N12 Studio S0: 보드 ★ 합성 = Compose 노드 출력 · 이음매 · 캐시·낡은 서명")
+        _m2_studio(dp, NODES2, ANA, COM)
     finally:
         mock_file.unlink(missing_ok=True)
         if env_mock is not None:
@@ -10668,6 +10762,156 @@ def _m2_moved_rect(dp, NODES2, PRE, ANA, COM, run_node, set_mock):
     check(eo[fc_old["key"]].get("no_source") and "부분 패치" in eo[hv["key"]].get("skipped", "")
           and not eo[hv["key"]].get("no_source"),
           "crop_source 없는 예전 폴더 후보 + rect 이동 = 소스 없음 경고, 수확 부분 패치는 그대로 생략")
+
+
+def _m2_studio(dp, NODES2, ANA, COM):
+    """M2-N12 Studio S0(_proto/STUDIO_S0_SPEC.md): 보드 ★ 합성 = Compose 노드 출력(같은 함수·같은 분석 항목), 이음매는 마스크가
+    크롭 경계에 닿고 베이스에 없던 불연속이 생긴 곳만, 캐시·낡은 서명 409."""
+    st, bd = dp.store, dp.board
+    prm = dict(dp._ANALYZE_DEFAULTS)
+    ana_args = [prm[k] for k in ("register", "tone", "tone_sigma", "dE", "grow", "feather_sigma", "roi_prior")] + [False]
+    base = texture(320, 480, 53)
+    R1, R2 = [32, 32, 160, 160], [256, 64, 384, 192]
+    h, root = _fx_project(dp, NODES2, "m2studio", [("001_가운데", R1), ("002_오른쪽", R2)], base)
+    fdir = NODES2 / "m2studio_folder"
+    shutil.rmtree(fdir, ignore_errors=True)
+    fdir.mkdir()
+    Image.fromarray(_fx_cand(base, R1)).save(fdir / "001_가운데_a.png")
+    c2 = np.asarray(Image.fromarray(base[R2[1]:R2[3], R2[0]:R2[2]]).resize((256, 256), Image.LANCZOS)).copy()
+    c2[96:160, 128:] = (30, 200, 60)  # 크롭 오른쪽 변까지 이어지는 띠 → 자동 마스크가 오른쪽 변에서 잘림
+    Image.fromarray(c2).save(fdir / "002_오른쪽_a.png")
+    h, _rep = dp.BMKDesignPatchCandidateIn().run(h, "folder", str(fdir), "", "", True, True)
+    h, _cs, _rep = ANA.run(h, *ana_args)
+    m = st.load_manifest(root)
+    keys = {}
+    for c in m["candidates"]:
+        keys[c["crop_id"]] = c["key"]
+        bd.apply_pick(root, c["crop_id"], c["tid"], c["key"], "set")
+    check(len(keys) == 2, f"크롭마다 폴더 후보 1개 ★ {keys}")
+    _h, img, _mk, _rep = COM.run(h, "hand_else_auto", True, True, "auto_small_on_top")
+    m = st.load_manifest(root)
+    out, info = bd._compose_full(root, m, None)
+    node_img = np.clip(np.rint(img[0].numpy() * 255.0), 0, 255).astype(np.uint8)
+    check(out.shape == node_img.shape and np.array_equal(out, node_img) and info["picks"] == 2 and not info["unanalyzed"],
+          f"보드 ★ 합성 = Compose 노드 출력(픽셀 동일, 최대 차 {int(np.abs(out.astype(int) - node_img).max())})")
+    segs = info["segments"]
+    c2id = m["crops"][1]["id"]
+    check(len(segs) == 1 and segs[0]["crop_id"] == c2id and segs[0]["side"] == "right" and segs[0]["severity"] == "bad"
+          and segs[0]["x0"] == segs[0]["x1"] == R2[2] and R2[1] + 48 - 16 <= segs[0]["y0"] < segs[0]["y1"] <= R2[1] + 80 + 16,
+          f"이음매 = 002 오른쪽 변의 띠 구간 하나(001 은 크롭 안쪽만 바뀜) {segs}")
+    s = bd.build_state(root)
+    sig = s["canvas"]["composite_sig"]
+    data, sig2 = bd.render_canvas(root, "composite", sig)
+    with Image.open(io.BytesIO(data)) as im:
+        size = im.size
+    td = Path(root) / "derived" / "thumbs"
+    check(sig2 == sig and size == (480, 320) and (td / f"composite_{sig}.jpg").is_file() and (td / f"seams_{sig}.json").is_file()
+          and bd.seams_state(root, sig)["segments"] == segs, "composite 라우트 = 같은 계산, 캐시 2파일(JPEG·이음매 JSON)")
+    mt = (td / f"composite_{sig}.jpg").stat().st_mtime_ns
+    bd.render_canvas(root, "composite", sig)
+    check((td / f"composite_{sig}.jpg").stat().st_mtime_ns == mt, "두 번째 요청은 캐시 그대로")
+    # 원해상도 ★ 합성 영역(Codex S0 리뷰 2차 1): 선택 크롭 아래에 깔아 다른 ★ 가 final 겹침에 가려지지 않게
+    c2s = next(c for c in s["crops"] if c["id"] == c2id)
+    q_of = lambda u: dict(p.split("=", 1) for p in u.split("?", 1)[1].split("&"))  # noqa: E731
+    rv = q_of(c2s["region_url"])["v"]
+    box = c2s["region"]
+    rx0, ry0, rx1, ry1 = box
+    reg_arr = bd._compose_full(root, m, None, None, box)[0]
+    check(box == [192, 0, 448, 256] and np.array_equal(reg_arr, out[ry0:ry1, rx0:rx1]),
+          "region = 크롭 주변 창만 Compose 계산(128px 크롭 + 변마다 64, 캔버스 안) — 전체 합성의 그 창과 픽셀 동일")
+    rdata, rsig = bd.render_region(root, c2id, None, rv)
+    with Image.open(io.BytesIO(rdata)) as im:
+        reg = np.asarray(im.convert("RGB")).astype(np.float32)
+    check(rsig == rv and reg.shape == reg_arr.shape and float(np.abs(reg - reg_arr).mean()) < 2.0,
+          f"region 라우트 JPEG(q95) — 차 {np.abs(reg - reg_arr).mean():.2f}")
+    t2 = next(t for t in s["targets"] if t["crop_id"] == c2id)
+    cur = next(c for c in t2["candidates"] if c["key"] == keys[c2id])
+    check(q_of(cur["pick_url"])["v"] == rv,
+          "★ 인 후보의 '이 후보를 ★ 하면' = 지금 영역(같은 서명 — 겹쳐 두 번 섞지 않음, Codex S0 리뷰 3차 1)")
+    expect_raises(lambda: bd.render_region(root, c2id, keys[c2id], "0" * 16), "region 낡은 v → 409", exc=bd._Reject,
+                  contains="★")
+    expect_raises(lambda: bd.render_region(root, c2id, keys[m["crops"][0]["id"]]), "다른 크롭의 후보 → 404",
+                  exc=bd._Reject, contains="이 크롭의 후보가 아닙니다")
+    # 대안 후보: "이 후보를 ★ 하면" 영역 = 실제로 ★ 를 바꾼(Space) 뒤 Compose 출력의 그 창 — 같은 함수·순서·마스크
+    fdir2 = NODES2 / "m2studio_folder2"
+    shutil.rmtree(fdir2, ignore_errors=True)
+    fdir2.mkdir()
+    alt = c2.copy()
+    alt[64:192, 160:] = (200, 40, 160)
+    Image.fromarray(alt).save(fdir2 / "002_오른쪽_b.png")
+    h, _rep = dp.BMKDesignPatchCandidateIn().run(h, "folder", str(fdir2), "", "", True, True)
+    h, _cs, _rep = ANA.run(h, *ana_args)
+    m = st.load_manifest(root)
+    alt_key = next(c["key"] for c in m["candidates"] if c["crop_id"] == c2id and c["key"] != keys[c2id])
+    hyp = bd._compose_full(root, m, None, (c2id, "A", alt_key), box)[0]
+    pv = q_of(next(c for t in bd.build_state(root)["targets"] if t["crop_id"] == c2id
+                   for c in t["candidates"] if c["key"] == alt_key)["pick_url"])["v"]
+    bd.apply_pick(root, c2id, "A", alt_key, "set")
+    _h, img2, _mk, _rep = COM.run(h, "hand_else_auto", True, True, "auto_small_on_top")
+    node2 = np.clip(np.rint(img2[0].numpy() * 255.0), 0, 255).astype(np.uint8)
+    s_alt = bd.build_state(root)
+    check(np.array_equal(hyp, node2[ry0:ry1, rx0:rx1]) and not np.array_equal(hyp, reg_arr)
+          and next(c for c in s_alt["crops"] if c["id"] == c2id)["region_url"].endswith(pv),
+          "대안 후보의 '이 후보를 ★ 하면' = ★ 를 바꾼 뒤 Compose 출력의 그 창(픽셀 동일), 바꾼 뒤 region 서명 = 그때의 pick 서명")
+    bd.apply_pick(root, c2id, "A", keys[c2id], "set")
+    # 서명은 Compose 의 묶음(크롭·타깃)도 본다(Codex S0 리뷰 3차 3): 파일·quad 가 같아도 타깃이 바뀌면 순서가 달라질 수 있음
+    m = st.load_manifest(root)
+    mt = json.loads(json.dumps(m))
+    mt["crops"][1]["targets"].append(dict(mt["crops"][1]["targets"][0], tid="B"))
+    next(c for c in mt["candidates"] if c["key"] == keys[c2id])["tid"] = "B"
+    check(len(bd._composite_picks(mt)) == len(bd._composite_picks(m)) and bd._composite_sig(mt, None) != bd._composite_sig(m, None),
+          "★ 후보의 타깃만 바뀌어도 합성 서명이 바뀜")
+    bd.apply_pick(root, m["crops"][1]["id"], "A", keys[c2id], "remove")
+    s2 = bd.build_state(root)
+    check(s2["canvas"]["composite_sig"] != sig and s2["canvas"]["picks"] == 1
+          and bd.seams_state(root, s2["canvas"]["composite_sig"])["segments"] == [],
+          "★ 를 빼면 서명이 바뀌고 이음매도 사라짐")
+    expect_raises(lambda: bd.render_canvas(root, "composite", sig), "★ 변경 뒤 옛 서명 → 409", exc=bd._Reject, contains="★")
+    # Compose 설정 반영(Codex S0 리뷰 4): context 는 마지막 export 의 mask_source·정합·톤을 따른다(바탕 ★ 합성과 같게)
+    check(bd._COMPOSE_DEFAULTS == dp._COMPOSE_DEFAULTS, "보드의 Compose 기본값 = 노드 _COMPOSE_DEFAULTS")
+    m = st.load_manifest(root)
+    crop2 = m["crops"][1]
+    cand2 = next(c for c in m["candidates"] if c["key"] == keys[c2id])
+    e2 = bd._entry_for(m, cand2["key"], None)
+    am = bd._final_mask_local(root, crop2, cand2, e2, "auto")
+    check(am is not None and am.max() > 0.5 and bd._final_mask_local(root, crop2, cand2, e2, "hand") is None
+          and np.array_equal(bd._final_mask_local(root, crop2, cand2, e2), am),
+          "최종 마스크: hand(손 마스크 없음) → 마스크 없음, auto·hand_else_auto → 자동 마스크")
+    m_hand = dict(m, exports=[{"compose": {"mask_source": "hand", "use_registration": False}}])
+    check(bd._compose_settings(m_hand) == dict(dp._COMPOSE_DEFAULTS, mask_source="hand", use_registration=False)
+          and bd._view_flags(m_hand, "context") == (False, True) and bd._view_flags(m_hand, "cand") == (True, True)
+          and bd._cand_sig("context", 512, m_hand, crop2, cand2, e2, None) != bd._cand_sig("context", 512, m, crop2, cand2, e2, None)
+          and bd._cand_sig("cand", 0, m_hand, crop2, cand2, e2, None) == bd._cand_sig("cand", 0, m, crop2, cand2, e2, None)
+          and bd._composite_sig(m_hand, None) != bd._composite_sig(m, None),
+          "export 설정이 바뀌면 context·★ 합성 서명이 바뀜(cand·delta 는 Analyze 보기라 그대로)")
+    # 캔버스 밖으로 나간 크롭(Codex S0 리뷰 3): 이음매 샘플을 캔버스 안으로 잘라 합성이 실패하지 않음
+    r_out = [-16, 32, 160, 160]
+    st.update_manifest(root, lambda d: d["crops"][0].update(rect=list(r_out)))
+    _h, img, _mk, _rep = COM.run(h, "hand_else_auto", True, True, "auto_small_on_top")
+    m = st.load_manifest(root)
+    out, info = bd._compose_full(root, m, None)
+    node_img = np.clip(np.rint(img[0].numpy() * 255.0), 0, 255).astype(np.uint8)
+    check(np.array_equal(out, node_img) and all(0 <= s["x0"] <= 480 and 0 <= s["x1"] <= 480 for s in info["segments"])
+          and not any(s["crop_id"] == m["crops"][0]["id"] and s["side"] == "left" for s in info["segments"]),
+          f"크롭 rect 가 캔버스 왼쪽 밖([-16, …]): 합성 = Compose, 이음매 좌표는 캔버스 안·잘린 변(캔버스 가장자리)은 보지 않음 {info['segments']}")
+    st.update_manifest(root, lambda d: d["crops"][0].update(rect=list(R1)))
+    # 지표 단위: 원래 그림의 윤곽선이 경계에 걸리면 0, 패치가 윤곽을 옮기면 bad
+    img0 = np.zeros((40, 40, 3), np.uint8)
+    img0[:, 20:] = 200
+    moved = img0.copy()
+    moved[10:30, 17:20] = 200
+    s0 = bd._seam_segment(img0, img0, "c", [0, 0, 20, 40], "A", "k", "right", 0, 40)
+    s1 = bd._seam_segment(moved, img0, "c", [0, 0, 20, 40], "A", "k", "right", 0, 40)
+    check(s0["diff_p90"] == 0 and s1["severity"] == "bad" and (s1["x0"], s1["y0"], s1["x1"], s1["y1"]) == (20, 0, 20, 40),
+          f"새 불연속: 윤곽선이 경계에 걸려도 0, 패치가 윤곽을 옮기면 bad {s0['diff_p90']} {s1['diff_p90']}")
+    ones = np.ones((128, 128), np.float32)
+    check(bd._edge_touches([10, 10, 138, 138], ones, 10, 10, 200, 200)
+          == [("top", 0, 128), ("bottom", 0, 128), ("left", 0, 128), ("right", 0, 128)]
+          and bd._edge_touches([0, 0, 128, 128], ones, 0, 0, 200, 200) == [("bottom", 0, 128), ("right", 0, 128)],
+          "닿음: 바깥 이웃이 캔버스 밖인 변(캔버스 가장자리)은 이음매가 아님")
+    hit = np.zeros(40, bool)
+    hit[0:10] = hit[12:22] = hit[26:31] = True
+    check(bd._runs(hit) == [(0, 22)], f"구간: 2px 틈은 잇고 5px 짜리는 버림 {bd._runs(hit)}")
 
 
 def _m2_adopt(dp, NODES2, PRE, COM):
@@ -10883,7 +11127,7 @@ def vlm_comfy():
 # M3-N. Spec Draft 노드 수준 (합성 프로젝트, mock·가짜 api·가짜 Qwen — 네트워크·GPU 없음)
 #   N1 정의·N0 목록  N2 mock 흐름(드라이런→승인→0 호출→Prepare→사람 편집 보존)  N3 openai 인증 없음
 #   N4 인터럽트·무료 재폴링  N5 Draft 대기 → Run 경고  N6 _project.json style_note 전파  N7 local_qwen 승인·VramError·
-#   남은 Qwen 언로드  N8 보드 라우트 10  N9 평가 도구 new_targets == main._new_targets  N10 사라진 크롭의 스펙
+#   남은 Qwen 언로드  N8 보드 라우트 12  N9 평가 도구 new_targets == main._new_targets  N10 사라진 크롭의 스펙
 #   N11 force 1회·사람 mode/refs  N12 fill 키 가드  N13 실제 PromptExecutor 캐시(RAM_PRESSURE·CLASSIC)
 #   N16 only 보류·mock 초안 스펙 → Run 경고(리뷰 B F3·F2)  N17 apply=targets  N18·N19 채택(adopt) → Import → Prepare·Run
 # ═════════════════════════════════════════════════════════════════
@@ -11908,11 +12152,11 @@ def vlm_node_unit():
               "노드가 model_dir 을 넘김: local_qwen 키가 config.json(sha8)을 따라감(§2.3)")
 
     def t_n8():
-        section("M3-N8 보드 라우트 수는 여전히 10")
+        section("M3-N8 보드 라우트 수는 여전히 12 (M3 는 라우트를 더하지 않음, S0 의 canvas·seams 포함)")
         fake = _FakeServer(web.RouteTableDef())
         with _prompt_server(fake):
             dp._register_board_routes()
-        check(len(fake.routes) == 10, f"보드 라우트 {len(fake.routes)}")
+        check(len(fake.routes) == 12, f"보드 라우트 {len(fake.routes)}")
 
     def t_n9():
         section("M3-N9 평가 도구의 순수 복제 new_targets == main._new_targets (표본 레이어명 6 + 채택 origin 3)")

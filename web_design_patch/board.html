@@ -4,26 +4,30 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="same-origin">
-<title>Design Patch Review Board</title>
+<title>Design Patch Studio</title>
 <link rel="stylesheet" href="board.css">
+<script src="viewer.js" defer></script>
 <script src="board.js" defer></script>
 </head>
 <body>
 <header id="top">
-  <div class="brand">Design Patch <span class="dim">Review Board</span></div>
+  <div class="brand">Design Patch <span class="dim">Studio</span></div>
   <div id="proj" class="proj"></div>
   <div id="badges" class="badges"></div>
   <div class="spacer"></div>
   <div id="status" class="status"></div>
+  <button type="button" id="btn-viewer" tabindex="-1" title="캔버스 뷰어 보이기/숨기기 (V)">캔버스</button>
   <button type="button" id="btn-queue" tabindex="-1" title="ComfyUI 탭에 Review 노드 부분 실행을 요청합니다(재굴림 소화)">ComfyUI 큐</button>
   <button type="button" id="btn-drain" tabindex="-1" title="진행 중인 Run 이 새 호출 발사를 멈춥니다(진행 중인 호출은 끝까지 받아 저장)">Drain</button>
   <button type="button" id="btn-help" tabindex="-1" title="단축키 (?)">?</button>
 </header>
 
 <main id="app">
-  <aside id="targets" aria-label="타깃 목록">
+  <aside id="targets" aria-label="크롭·타깃 목록">
     <ol id="target-list"></ol>
   </aside>
+
+  <section id="viewer" aria-label="캔버스 뷰어"></section>
 
   <section id="center">
     <div id="compare">
@@ -70,20 +74,35 @@
       <tr><td><kbd>Space</kbd></td><td>★ 선택(그 타깃의 pick 을 이 후보 하나로 교체)</td></tr>
       <tr><td><kbd>Shift</kbd>+<kbd>Space</kbd></td><td>slice 추가 / 제거(여러 후보를 마스크로 나눠 함께 씀)</td></tr>
       <tr><td><kbd>X</kbd></td><td>탈락 토글(분석·내보내기에서 뺌, pick 에서도 빠짐)</td></tr>
-      <tr><td><kbd>Q</kbd> 누르는 동안</td><td>큰 화면을 Before 로(깜빡임 비교)</td></tr>
+      <tr><td><kbd>Q</kbd> 누르는 동안</td><td>Before 로(깜빡임 비교 — 오른쪽 큰 화면과 캔버스 겹침 모두)</td></tr>
       <tr><td><kbd>D</kbd></td><td>ΔE 히트맵 토글(청록 선 = 자동 마스크)</td></tr>
       <tr><td><kbd>C</kbd></td><td>컨텍스트 뷰 토글(베이스 위에 현재 마스크로 합성, 크롭 1.5배 영역)</td></tr>
       <tr><td><kbd>R</kbd> <kbd>R</kbd></td><td>재굴림 +1 호출(같은 셀, 유료·사전 승인) — 2.5초 안에 두 번 → ComfyUI 탭에 큐 요청</td></tr>
-      <tr><td><kbd>Esc</kbd></td><td>보기 모드 해제 / 도움말 닫기</td></tr>
+      <tr><td><kbd>Esc</kbd></td><td>보기 모드 해제(히트맵·컨텍스트·슬라이더·원본) / 도움말 닫기</td></tr>
       <tr><td><kbd>?</kbd></td><td>이 도움말</td></tr>
+    </table>
+    <h3>캔버스 뷰어</h3>
+    <table>
+      <tr><td>휠 · 드래그</td><td>확대·축소(커서 기준) · 이동. 크롭을 클릭하면 그 크롭 선택(같은 크롭을 다시 누르면 다음 타깃·겹친 크롭)</td></tr>
+      <tr><td><kbd>0</kbd> <kbd>F</kbd></td><td>캔버스 전체 맞춤 · 선택 크롭 맞춤</td></tr>
+      <tr><td><kbd>1</kbd> <kbd>2</kbd></td><td>원해상도 1:1 · 2:1 (크롭 초점 가운데) — 축소판으로 판정하지 않게</td></tr>
+      <tr><td><kbd>B</kbd></td><td>바탕: 현재 ★ 합성 / 베이스</td></tr>
+      <tr><td><kbd>S</kbd></td><td>전/후 슬라이더(마우스 위치로 가름, 왼쪽 = Before)</td></tr>
+      <tr><td><kbd>M</kbd></td><td>선택 후보를 마스크 없이(원본) / "이 후보를 ★ 하면"(마스크 적용)</td></tr>
+      <tr><td><kbd>N</kbd></td><td>다음 이음매(★ 합성에서 마스크가 크롭 경계에 닿아 잘린 곳)로 2:1 이동</td></tr>
+      <tr><td><kbd>O</kbd></td><td>크롭 사각형·이름 보이기/숨기기</td></tr>
+      <tr><td><kbd>V</kbd></td><td>캔버스 뷰어 숨기기(오른쪽이 예전 보드처럼 넓어짐)</td></tr>
     </table>
     <h3>알아 둘 것</h3>
     <ul>
       <li>보드는 선택만 기록합니다. 유료 호출은 ComfyUI 탭의 큐(Review 노드 부분 실행)로만 일어납니다.</li>
-      <li>이 창을 ComfyUI 의 Review 노드 <b>Open Board</b> 로 열어야 재굴림 큐 요청이 ComfyUI 탭으로 전달됩니다.</li>
+      <li>이 창을 ComfyUI 의 Review 노드 <b>Open Board</b> 로 열어야 재굴림 큐 요청이 ComfyUI 탭으로 전달됩니다(상단 "ComfyUI 탭 연결").</li>
       <li>ComfyUI 의 Cancel 은 진행 중인 유료 호출을 버립니다(돈을 내고 결과를 못 받음). 멈추려면 <b>Drain</b> 을 쓰세요.</li>
       <li>MOCK 배지 = 과금 없는 mock 백엔드 결과입니다.</li>
-      <li>썸네일은 크롭 해상도(최종 PSD 에서 보이는 크기)로 배치·정합·톤 보정한 모습을 초점 박스로 확대한 것입니다.</li>
+      <li>썸네일은 크롭 해상도(최종 PSD 에서 보이는 크기)로 배치·정합·톤 보정한 모습을 초점 박스로 확대한 것입니다. 판정은 캔버스의 1:1 로.</li>
+      <li>★ 합성은 Compose 와 같은 계산(마지막 Export 설정)입니다. 분석 없는 ★ 은 마스크 없이 합성됩니다 — Analyze 뒤에 다시 보세요.</li>
+      <li>여러 타깃을 한 번에 고친 결과(공동)는 첫 타깃(보통 A)에만 ★ 하세요. 같은 이미지를 여러 타깃에 ★ 하면 "중복 ★" 경고가 뜹니다.</li>
+      <li>"옛 크롭" = 크롭 사각형을 옮기기 전에 만든 후보입니다. ★ 하면 그때 크롭 크기 그대로 붙습니다.</li>
     </ul>
     <p class="dim">닫기: <kbd>Esc</kbd> 또는 <kbd>?</kbd></p>
   </div>

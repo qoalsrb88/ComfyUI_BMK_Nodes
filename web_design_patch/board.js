@@ -1,6 +1,7 @@
-// BMK Design Patch Review Board — vanilla JS, 빌드·외부 리소스 없음.
+// BMK Design Patch Studio(Review Board) — vanilla JS, 빌드·외부 리소스 없음.
 // 서버: bmk_design_patch_board.py (/bmk/design_patch/*). 모든 문자열(PSD 레이어명 등)은 textContent 로만 넣는다.
 // 보드는 매니페스트(★·slice·탈락·재굴림 의도)만 고친다. 유료 호출은 opener(ComfyUI 탭)가 Review 노드를 큐에 넣을 때만.
+// 캔버스 뷰어는 viewer.js(DPViewer) — 이 파일이 선택·키 입력을 넘긴다.
 "use strict";
 
 (() => {
@@ -10,6 +11,7 @@
   const POLL_HIDDEN_MS = 10000;
   const REROLL_CONFIRM_MS = 2500;
   const GATE_NAMES = { outside_mad: "마스크 밖 MAD", outside_frac_gt24: "마스크 밖 큰 차이", black_band: "검은 띠" };
+  const PREF_KEY = "bmk-dp-studio";
 
   let S = null; // 마지막 전체 상태
   let tKey = null; // 선택한 타깃 "crop_id/tid"
@@ -23,6 +25,10 @@
   let pollTimer = null;
   let rerollArm = null; // {cell, until}
   let toastTimer = null;
+  let viewer = null;
+  let slider = false;
+  let raw = false;
+  let seamsByCrop = new Map(); // crop_id → {n, bad}
 
   const $ = (id) => document.getElementById(id);
 
@@ -65,6 +71,28 @@
     if (!cell || !cell.est_usd) return "";
     const [lo, hi] = cell.est_usd;
     return lo === hi ? ` ≈ $${lo.toFixed(2)}` : ` ≈ $${lo.toFixed(2)}–${hi.toFixed(2)}`;
+  }
+
+  function credits(v, unknown = 0) {
+    // unknown = 크레딧 조회가 안 된 완료 호출 수(0 이 아님) — 그때 합은 하한
+    const s = `${Number(v || 0).toLocaleString("ko-KR", { maximumFractionDigits: 1 })} cr`;
+    return unknown ? `≥ ${s} (미상 ${unknown})` : s;
+  }
+
+  function loadPref() {
+    try {
+      return JSON.parse(localStorage.getItem(PREF_KEY) || "{}") || {};
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function savePref(p) {
+    try {
+      localStorage.setItem(PREF_KEY, JSON.stringify(Object.assign(loadPref(), p)));
+    } catch (e) {
+      // 저장소를 못 쓰면 이번 창에서만
+    }
   }
 
   // ── 서버 ────────────────────────────────────────────
@@ -111,7 +139,7 @@
       } else if (!d.unchanged) {
         S = d;
         reconcile();
-        renderAll();
+        renderAll(false);
       }
       setConn("");
     } catch (e) {
@@ -161,6 +189,10 @@
     return t ? t.candidates.find((c) => c.key === cKey) || null : null;
   }
 
+  function cropOf(t) {
+    return S && t ? S.crops.find((c) => c.id === t.crop_id) || null : null;
+  }
+
   function defaultCand(t) {
     if (!t || !t.candidates.length) return null;
     const first = t.pick_keys.length ? t.candidates.find((c) => c.key === t.pick_keys[0]) : null;
@@ -188,7 +220,7 @@
     cKey = defaultCand(curTarget());
     refIdx = 0;
     rerollArm = null;
-    renderAll();
+    renderAll(true);
   }
 
   function selectCand(key) {
@@ -198,6 +230,23 @@
     renderCompare();
     renderDetail();
     renderGrid();
+    syncViewer(false);
+  }
+
+  function pickCrop(cropId, tid, candKey) {
+    // 캔버스에서 크롭을 누름(tid 없음): 같은 크롭이면 다음 타깃, 아니면 첫 타깃. 이음매 이동은 tid·그 ★ 후보 키를 준다.
+    if (!S) return;
+    const ts = S.targets.filter((t) => t.crop_id === cropId);
+    if (!ts.length) return;
+    let t = tid ? ts.find((x) => x.tid === tid) : null;
+    if (!t) {
+      const i = ts.findIndex((x) => x.key === tKey);
+      t = ts[i >= 0 ? (i + 1) % ts.length : 0];
+    }
+    selectTarget(t.key);
+    if (candKey && candKey !== cKey && t.candidates.some((c) => c.key === candKey)) selectCand(candKey);
+    const li = document.querySelector("#target-list li.sel");
+    if (li) li.scrollIntoView({ block: "nearest" });
   }
 
   function moveTarget(d) {
@@ -232,7 +281,11 @@
     const t = curTarget();
     const c = curCand();
     if (!t || !c) return;
-    write("pick", { crop_id: t.crop_id, tid: t.tid, key: c.key, mode: "set" }, `★ c${pad(c.n)} — ${t.key}`);
+    const j = c.joint;
+    const warn = j && j.first && j.first !== t.tid
+      ? ` — 공동 결과(${j.tids.join("·")})는 보통 ${j.first} 에만 ★ (상세의 "${j.first} 에 ★")` : "";
+    write("pick", { crop_id: t.crop_id, tid: t.tid, key: c.key, mode: "set" },
+      `★ c${pad(c.n)} — ${t.key}${warn}${c.stale_rect ? " — 옛 크롭 후보(크롭 rect 를 옮기기 전)" : ""}`);
   }
 
   function toggleSlice() {
@@ -249,6 +302,26 @@
     if (!c) return;
     write("reject", { key: c.key, value: !c.rejected },
       (r) => (r.rejected ? `탈락 c${pad(c.n)}` + (r.unpicked ? " (pick 에서도 뺌)" : "") : `탈락 해제 c${pad(c.n)}`));
+  }
+
+  async function starOnFirst() {
+    // 공동 결과 후보를 첫 타깃에 ★ 하고, 지금 타깃에 같은 이미지가 ★ 이면 뺀다
+    const t = curTarget();
+    const c = curCand();
+    if (!t || !c || !c.joint || !c.joint.first_key) return;
+    const j = c.joint;
+    const r = await write("pick", { crop_id: t.crop_id, tid: j.first, key: j.first_key, mode: "set" },
+      `${j.first} 에 ★ — ${t.crop_name || t.crop_id}`);
+    if (r && c.picked) await write("pick", { crop_id: t.crop_id, tid: t.tid, key: c.key, mode: "remove" }, null);
+  }
+
+  async function clearDupPicks(crop) {
+    const dups = crop.dup_picks.slice();
+    let n = 0;
+    for (const d of dups) {
+      if (await write("pick", { crop_id: crop.id, tid: d.tid, key: d.key, mode: "remove" }, null)) n += 1;
+    }
+    toast(`중복 ★ ${n}/${dups.length} 정리 — ${crop.name || crop.id} (같은 이미지는 ${dups[0].same_as} 에만)`);
   }
 
   function rerollCell() {
@@ -282,6 +355,11 @@
     if (r) setTimeout(queueInComfy, 600);
   }
 
+  function comfyConnected() {
+    const op = window.opener;
+    return !!op && !op.closed;
+  }
+
   function queueInComfy() {
     const op = window.opener;
     if (op && !op.closed) {
@@ -309,6 +387,18 @@
     h.hidden = show === undefined ? !h.hidden : !show;
   }
 
+  function toggleViewer(show) {
+    const on = show === undefined ? document.body.classList.contains("no-viewer") : show;
+    document.body.classList.toggle("no-viewer", !on);
+    savePref({ viewer: on });
+  }
+
+  function setViewFlags(f) {
+    if ("slider" in f) slider = f.slider;
+    if ("raw" in f) raw = f.raw;
+    if (viewer) viewer.setFlags({ slider, raw, qHeld });
+  }
+
   // ── 그리기 ──────────────────────────────────────────
   function pad(n) {
     return String(n).padStart(2, "0");
@@ -327,8 +417,8 @@
 
   function renderHeader() {
     if (!S) return;
-    document.title = `${S.project} · Review Board`;
-    $("proj").textContent = `${S.project} · 타깃 ${S.counts.targets} · 후보 ${S.counts.candidates} · pick ${S.counts.picks}`;
+    document.title = `${S.project} · Design Patch Studio`;
+    $("proj").textContent = `${S.project} · 크롭 ${S.crops.length} · 타깃 ${S.counts.targets} · 후보 ${S.counts.candidates} · pick ${S.counts.picks}`;
     const b = $("badges");
     b.replaceChildren();
     if (S.backend_mock) b.append(el("span", "badge b-mock", "MOCK 백엔드 (과금 없음)"));
@@ -338,8 +428,18 @@
       const pre = S.pending_preapproved ? ` (재굴림 승인 ${S.pending_preapproved})` : "";
       b.append(el("span", "badge b-wait", `대기 호출 ${S.pending_calls}${pre}`));
     }
+    if (S.cost.calls) {
+      const cb = el("span", "badge", `Run ${credits(S.cost.credits, S.cost.unknown)} · 호출 ${S.cost.calls}`);
+      cb.title = `원장 calls 합계(완료 ${S.cost.done}) — Spec Draft 비용은 들어 있지 않음`;
+      b.append(cb);
+    }
     if (S.rerolls_total) b.append(el("span", "badge", `재굴림 누적 ${S.rerolls_total}`));
     if (S.orphan_candidates) b.append(el("span", "badge b-bad", `크롭 없는 후보 ${S.orphan_candidates}`));
+    const on = comfyConnected();
+    const cn = el("span", "badge " + (on ? "b-run" : "b-dim"), on ? "ComfyUI 탭 연결" : "ComfyUI 탭 없음");
+    cn.title = on ? "재굴림 큐 요청을 이 창을 연 ComfyUI 탭으로 보냅니다"
+      : "Review 노드의 Open Board 로 열지 않았거나 그 탭이 닫혔습니다 — 재굴림은 ComfyUI 탭에서 직접 큐에 넣어야 합니다";
+    b.append(cn);
     $("btn-drain").disabled = !S.running;
   }
 
@@ -348,26 +448,71 @@
     return `${t.crop_name || t.crop_id} · ${t.tid}` + (label ? ` ${label}` : "");
   }
 
+  function targetChips(ch, t) {
+    const k = t.chips;
+    ch.append(chip(`후보 ${k.n}`));
+    if (k.picked) ch.append(chip(`★ ${k.picked}`, "b-star"));
+    if (k.gate_fail) ch.append(chip(`게이트 ✕${k.gate_fail}`, "b-bad"));
+    if (k.reframed) ch.append(chip(`reframed ${k.reframed}`, "b-reg"));
+    if (k.mock) ch.append(chip(`MOCK ${k.mock}`, "b-mock"));
+    if (t.pending_calls) ch.append(chip(`대기 ${t.pending_calls}`, "b-wait"));
+    if (k.rejected) ch.append(chip(`탈락 ${k.rejected}`, "b-rej"));
+  }
+
+  function cropChips(ch, c) {
+    if (c.calls) ch.append(chip(credits(c.credits, c.credits_unknown), "b-cost"));
+    if (c.dup_picks.length) ch.append(chip(`중복 ★ ${c.dup_picks.length}`, "b-bad"));
+    if (c.stale_picked.length) ch.append(chip("옛 크롭 ★", "b-bad"));
+    const s = seamsByCrop.get(c.id);
+    if (s) ch.append(chip(`이음매 ${s.n}`, s.bad ? "b-bad" : "b-wait"));
+    if (c.warnings.length) {
+      const w = chip(`경고 ${c.warnings.length}`, "b-bad");
+      w.title = c.warnings.join("\n");
+      ch.append(w);
+    }
+  }
+
   function renderTargets() {
+    // 크롭마다 묶음: 타깃 하나면 한 줄(크롭 이름 + 타깃·크롭 칩), 여럿이면 크롭 머리 줄 + 타깃 줄
     const ol = $("target-list");
     ol.replaceChildren();
     if (!S) return;
+    const byCrop = new Map();
     for (const t of S.targets) {
-      const li = el("li", (t.key === tKey ? "sel " : "") + (t.candidates.length ? "" : "empty"));
-      li.append(el("div", "tname", targetTitle(t)));
-      if (t.name_en) li.append(el("div", "tsub", t.name_en));
-      const ch = el("div", "chips");
-      const k = t.chips;
-      ch.append(chip(`후보 ${k.n}`));
-      if (k.picked) ch.append(chip(`★ ${k.picked}`, "b-star"));
-      if (k.gate_fail) ch.append(chip(`게이트 ✕${k.gate_fail}`, "b-bad"));
-      if (k.reframed) ch.append(chip(`reframed ${k.reframed}`, "b-reg"));
-      if (k.mock) ch.append(chip(`MOCK ${k.mock}`, "b-mock"));
-      if (t.pending_calls) ch.append(chip(`대기 ${t.pending_calls}`, "b-wait"));
-      if (k.rejected) ch.append(chip(`탈락 ${k.rejected}`, "b-rej"));
-      li.append(ch);
-      li.addEventListener("click", () => selectTarget(t.key));
-      ol.append(li);
+      if (!byCrop.has(t.crop_id)) byCrop.set(t.crop_id, []);
+      byCrop.get(t.crop_id).push(t);
+    }
+    const cur = curTarget();
+    for (const c of S.crops) {
+      const ts = byCrop.get(c.id) || [];
+      if (ts.length > 1) {
+        const head = el("li", "crop" + (cur && cur.crop_id === c.id ? " cur" : ""));
+        head.append(el("div", "tname", c.name || c.id));
+        const ch = el("div", "chips");
+        if (c.pending) ch.append(chip(`대기 ${c.pending}`, "b-wait"));
+        cropChips(ch, c);
+        if (ch.childElementCount) head.append(ch);
+        head.addEventListener("click", () => selectTarget(ts[0].key));
+        ol.append(head);
+      }
+      for (const t of ts) {
+        const single = ts.length === 1;
+        const li = el("li", "tgt" + (single ? " single" : " sub") + (t.key === tKey ? " sel" : "")
+          + (t.candidates.length ? "" : " empty"));
+        if (single) {
+          li.append(el("div", "tname", targetTitle(t)));
+        } else {
+          const label = t.label && t.label !== t.part ? ` ${t.label}` : "";
+          li.append(el("div", "tname", `${t.tid}${label}`));
+        }
+        if (t.name_en && t.name_en !== t.label) li.append(el("div", "tsub", t.name_en));
+        const ch = el("div", "chips");
+        targetChips(ch, t);
+        if (single) cropChips(ch, c);
+        li.append(ch);
+        li.addEventListener("click", () => selectTarget(t.key));
+        ol.append(li);
+      }
     }
   }
 
@@ -400,7 +545,7 @@
     } else if (c) {
       url = c.big_url;
       caption = `후보 c${pad(c.n)}` + (c.picked ? (c.slice_index === 1 ? " ★" : ` slice ${c.slice_index}`) : "")
-        + (c.rejected ? " · 탈락" : "") + (c.mock ? " · MOCK" : "");
+        + (c.rejected ? " · 탈락" : "") + (c.mock ? " · MOCK" : "") + (c.stale_rect ? " · 옛 크롭" : "");
     }
     panel.className = "panel mode-" + mode;
     $("cand-caption").textContent = caption;
@@ -412,6 +557,18 @@
     const r = el("div", "row " + cls);
     r.append(el("span", "k", key), document.createTextNode(text));
     parent.append(r);
+    return r;
+  }
+
+  function rowButton(r, label, fn) {
+    const b = el("button", "inline", label);
+    b.type = "button";
+    b.tabIndex = -1;
+    b.addEventListener("click", (e) => {
+      e.currentTarget.blur();
+      fn();
+    });
+    r.append(b);
   }
 
   function renderDetail() {
@@ -423,11 +580,24 @@
       return;
     }
     const c = curCand();
+    const crop = cropOf(t);
     const [w, h] = t.size;
     row(d, "타깃", `${targetTitle(t)} · ${w}×${h}` + (t.name_en ? ` · ${t.name_en}` : "")
       + ` · 초점 [${t.focus_box.join(", ")}]`);
     const cells = t.cells.map((x) => `${x.variant || "?"} ${x.reps}+${x.rerolls}회 대기 ${x.pending}${usd(x)}`);
     row(d, "작업", cells.length ? cells.join(" | ") : "없음 (Prepare 전 — 재굴림 불가)", cells.length ? "" : "warn");
+    if (crop && crop.calls) {
+      row(d, "비용", `이 크롭 Run ${credits(crop.credits, crop.credits_unknown)} · 호출 ${crop.calls}(완료 ${crop.calls_done})`
+        + (crop.pending ? ` · 대기 ${crop.pending}` : ""));
+    }
+    if (crop && crop.dup_picks.length) {
+      const names = crop.dup_picks.map((x) => `${x.tid}(= ${x.same_as})`).join(", ");
+      const r = row(d, "주의", `같은 이미지가 여러 타깃에 ★: ${names} — 공동 결과는 첫 타깃 하나면 됩니다 `, "bad");
+      rowButton(r, "중복 ★ 정리", () => clearDupPicks(crop));
+    }
+    if (crop && crop.stale_picked.length) {
+      row(d, "주의", `★ 가 옛 크롭 후보(rect 를 옮기기 전): ${crop.stale_picked.join(", ")} — 새 크롭 후보를 ★ 하세요`, "bad");
+    }
     if (!c) {
       row(d, "후보", "없음");
       return;
@@ -435,6 +605,11 @@
     const src = [c.origin, c.backend, c.variant, c.rep !== null && c.rep !== undefined ? `r${c.rep}` : null]
       .filter((x) => x !== null && x !== undefined && x !== "").join(" · ");
     row(d, `c${pad(c.n)}`, `${c.label} · ${src}` + (c.src_size ? ` · ${c.src_size[0]}×${c.src_size[1]}` : ""));
+    if (c.joint && c.joint.first && c.joint.first !== t.tid) {
+      const r = row(d, "공동", `${c.joint.tids.join("·")} 를 한 번에 고친 결과 — ★ 는 ${c.joint.first} 에만 `, "warn");
+      if (c.joint.first_key) rowButton(r, `${c.joint.first} 에 ★`, starOnFirst);
+    }
+    if (c.stale_rect) row(d, "옛 크롭", "크롭 rect 를 옮기기 전에 만든 후보 — 지금 크롭과 위치·크기가 다름", "warn");
     let an = "분석 없음 (Analyze 전)";
     let cls = "";
     if (c.analysis === "skipped") an = "분석 생략(부분 패치)";
@@ -462,6 +637,7 @@
     if (c.mock) b.append(el("span", "badge b-mock", "MOCK"));
     if (c.gates && c.gates.fails.length) b.append(el("span", "badge b-bad", "게이트"));
     if (c.analysis === "nosrc" && !c.hand_mask) b.append(el("span", "badge b-bad", "마스크 없음"));
+    if (c.stale_rect) b.append(el("span", "badge b-bad", "옛 크롭"));
     if (c.reframed) b.append(el("span", "badge b-reg", "reframed"));
     if (c.rejected) b.append(el("span", "badge b-rej", "탈락"));
     return b;
@@ -503,12 +679,31 @@
     if (sel) sel.scrollIntoView({ block: "nearest" });
   }
 
-  function renderAll() {
+  function syncViewer(follow) {
+    if (!viewer) return;
+    const t = curTarget();
+    viewer.setSelection(t ? { crop: cropOf(t), target: t, cand: curCand() } : null, follow);
+  }
+
+  function onSeams(seams) {
+    seamsByCrop = new Map();
+    for (const s of (seams && seams.segments) || []) {
+      const v = seamsByCrop.get(s.crop_id) || { n: 0, bad: 0 };
+      v.n += 1;
+      v.bad += s.severity === "bad" ? 1 : 0;
+      seamsByCrop.set(s.crop_id, v);
+    }
+    renderTargets();
+  }
+
+  function renderAll(follow) {
     renderHeader();
     renderTargets();
     renderCompare();
     renderDetail();
     renderGrid();
+    if (viewer) viewer.setState(S);
+    syncViewer(follow);
     setConn("");
   }
 
@@ -544,6 +739,7 @@
         if (!qHeld) {
           qHeld = true;
           renderCompare();
+          setViewFlags({});
         }
         break;
       case "KeyD":
@@ -561,9 +757,40 @@
       case "KeyR":
         if (!e.repeat) reroll(false);
         break;
+      case "KeyB":
+        if (!e.repeat && viewer) viewer.setBg(viewer.flags().bg === "base" ? "composite" : "base");
+        break;
+      case "KeyO":
+        if (!e.repeat && viewer) viewer.toggleRects();
+        break;
+      case "Digit0":
+        if (viewer) viewer.fitCanvas();
+        break;
+      case "KeyF":
+        if (viewer) viewer.fitCrop();
+        break;
+      case "Digit1":
+        if (viewer) viewer.zoomTo(1);
+        break;
+      case "Digit2":
+        if (viewer) viewer.zoomTo(2);
+        break;
+      case "KeyS":
+        if (!e.repeat) setViewFlags({ slider: !slider });
+        break;
+      case "KeyM":
+        if (!e.repeat) setViewFlags({ raw: !raw });
+        break;
+      case "KeyN":
+        if (!e.repeat && viewer) viewer.nextSeam();
+        break;
+      case "KeyV":
+        if (!e.repeat) toggleViewer();
+        break;
       case "Escape":
         view = "cand";
         renderCompare();
+        setViewFlags({ slider: false, raw: false });
         break;
       default:
         return;
@@ -575,6 +802,7 @@
     if (e.code === "KeyQ" && qHeld) {
       qHeld = false;
       renderCompare();
+      setViewFlags({});
     }
   }
 
@@ -589,6 +817,7 @@
     on("btn-reroll", () => reroll(true));
     on("btn-queue", queueInComfy);
     on("btn-drain", drain);
+    on("btn-viewer", () => toggleViewer());
     on("btn-help", () => help());
     $("ref-frame").addEventListener("click", () => {
       const t = curTarget();
@@ -612,6 +841,8 @@
       fatal("root 파라미터가 없거나 잘못되었습니다 — ComfyUI 의 BMK Design Patch Review 노드에서 Open Board 로 여세요.");
       return;
     }
+    if (loadPref().viewer === false) document.body.classList.add("no-viewer");
+    viewer = window.DPViewer.create($("viewer"), { apiUrl, onPick: pickCrop, onSeams });
     wireButtons();
     document.addEventListener("keydown", onKeyDown);
     document.addEventListener("keyup", onKeyUp);
@@ -619,6 +850,7 @@
       if (qHeld) {
         qHeld = false;
         renderCompare();
+        setViewFlags({});
       }
     });
     document.addEventListener("visibilitychange", () => {

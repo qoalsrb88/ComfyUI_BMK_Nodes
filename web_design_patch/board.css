@@ -1,4 +1,4 @@
-/* BMK Design Patch Review Board — 다크 테마, 외부 리소스 없음 */
+/* BMK Design Patch Studio(Review Board) — 다크 테마, 외부 리소스 없음 */
 :root {
   --bg: #15171b;
   --panel: #1d2026;
@@ -42,6 +42,7 @@ button:hover { border-color: var(--accent); }
 button:disabled { opacity: .45; cursor: default; }
 
 .dim { color: var(--dim); font-weight: normal; }
+[hidden] { display: none !important; }
 .spacer { flex: 1; }
 
 /* ── 상단 바 ─────────────────────────────── */
@@ -79,12 +80,13 @@ button:disabled { opacity: .45; cursor: default; }
 .b-reg { background: #173d44; border-color: var(--reg); color: #c4f4fb; }
 .b-star { background: #45391a; border-color: var(--star); color: #ffe9a8; }
 .b-rej { background: #3b2326; border-color: #a04a52; color: #e6b0b5; }
+.b-cost, .b-dim { color: var(--dim); }
 
 /* ── 본문 ───────────────────────────────── */
 #app { flex: 1; display: flex; min-height: 0; }
 
 #targets {
-  width: 300px;
+  width: 280px;
   flex: none;
   overflow-y: auto;
   background: var(--panel);
@@ -100,11 +102,17 @@ button:disabled { opacity: .45; cursor: default; }
 #target-list li:hover { background: var(--panel2); }
 #target-list li.sel { background: #22314a; border-color: var(--accent); }
 #target-list li.empty .tname { color: var(--dim); }
+#target-list li.crop { margin-top: 6px; padding-bottom: 2px; border-top: 1px solid var(--line); border-radius: 0; }
+#target-list li.crop:first-child { margin-top: 0; border-top: 0; }
+#target-list li.crop.cur .tname { color: #fff; }
+#target-list li.tgt.sub { margin-left: 12px; padding: 4px 8px; }
+#target-list li.tgt.single + li.tgt.single { margin-top: 2px; }
 .tname { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tsub { color: var(--dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #target-list .chips { margin-top: 3px; }
 
-#center { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+#center { flex: none; width: clamp(480px, 40vw, 860px); min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+body.no-viewer #center { flex: 1; width: auto; }
 
 #compare {
   display: grid;
@@ -112,8 +120,9 @@ button:disabled { opacity: .45; cursor: default; }
   gap: 8px;
   padding: 8px;
   flex: none;
-  height: min(52vh, 560px);
+  height: min(38vh, 400px);
 }
+body.no-viewer #compare { height: min(52vh, 560px); }
 .panel {
   margin: 0;
   display: flex;
@@ -154,6 +163,8 @@ button:disabled { opacity: .45; cursor: default; }
 .detail .k { color: var(--dim); margin-right: 4px; }
 .detail .warn { color: var(--slice); }
 .detail .bad { color: var(--bad); }
+.detail .row.warn, .detail .row.bad { white-space: normal; }
+button.inline { margin-left: 6px; padding: 0 8px; font-size: 12px; line-height: 18px; }
 .actions { display: flex; gap: 6px; flex: none; }
 #btn-reroll { border-color: #7a6a2a; }
 
@@ -184,6 +195,60 @@ button:disabled { opacity: .45; cursor: default; }
 .tile.rejected .imgbox { opacity: .3; }
 .tile.sel { outline: 2px solid #fff; outline-offset: 1px; }
 
+/* ── 캔버스 뷰어 (viewer.js) ─────────────── */
+#viewer { flex: 1; min-width: 0; display: flex; flex-direction: column; background: #0b0c0f; border-right: 1px solid var(--line); }
+body.no-viewer #viewer { display: none; }
+.vbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 5px 8px; background: var(--panel); border-bottom: 1px solid var(--line); flex: none; }
+.vbar button { padding: 2px 9px; }
+.vbar button.on { border-color: var(--accent); color: #fff; }
+.vbar button.bad { border-color: var(--bad); color: #ffd0d0; }
+.vzoom { color: var(--dim); min-width: 46px; text-align: right; font-variant-numeric: tabular-nums; }
+.vhint { color: var(--reg); }
+.vmsg { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.vmsg.busy { color: var(--wait); }
+.vmsg.warn { color: var(--slice); }
+.vmsg.err { color: var(--bad); }
+.vport { position: relative; flex: 1; min-height: 0; overflow: hidden; cursor: grab; touch-action: none; user-select: none; }
+.vport.grab { cursor: grabbing; }
+.stage { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+.stage img { display: block; -webkit-user-drag: none; }
+.stage img.bg { position: absolute; left: 0; top: 0; }
+.stage .ov { position: absolute; overflow: hidden; }
+.stage .ov-crop { position: absolute; }
+.stage .ov img { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
+.stage.px .ov img { image-rendering: pixelated; }
+.ov.loading .ov-comp { opacity: .45; }
+.ov-split { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px solid #fff; mix-blend-mode: difference; pointer-events: none; }
+svg.marks { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+svg.marks .crop { fill: none; stroke: rgba(227, 230, 236, .5); stroke-width: 1.5px; vector-effect: non-scaling-stroke; }
+svg.marks .crop.star { stroke: var(--star); }
+svg.marks .crop.wait { stroke: var(--wait); }
+svg.marks .crop.bad { stroke: var(--bad); }
+svg.marks .crop.sel { stroke: var(--accent); stroke-width: 2.5px; }
+svg.marks .seam { stroke-width: 4px; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+svg.marks .seam.bad { stroke: #ff3b3b; }
+svg.marks .seam.weak { stroke: var(--slice); }
+svg.marks .seam.cur { stroke-width: 8px; }
+.labels { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.clabel {
+  position: absolute;
+  transform: translateY(-100%);
+  padding: 0 4px;
+  border-radius: 3px 3px 0 0;
+  background: rgba(21, 23, 27, .82);
+  color: var(--text);
+  font-size: 11px;
+  line-height: 15px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.clabel.sel { background: var(--accent); color: #06121f; }
+.clabel.star { color: var(--star); }
+.clabel.wait { color: var(--wait); }
+.clabel.bad { color: #ffb0b0; }
+.vempty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--dim); }
+
 /* ── 오버레이 / 알림 ─────────────────────── */
 .overlay {
   position: fixed;
@@ -194,7 +259,6 @@ button:disabled { opacity: .45; cursor: default; }
   justify-content: center;
   z-index: 10;
 }
-.overlay[hidden] { display: none; }
 .sheet {
   background: var(--panel);
   border: 1px solid var(--line);
