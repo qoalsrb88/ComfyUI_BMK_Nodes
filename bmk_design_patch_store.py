@@ -39,6 +39,13 @@ M2 (명세 M2_SPEC.md §1)
 - root_key / register_root / known_roots / resolve_board_root / load_root_registry
                                              보드 URL 용 루트 레지스트리(키 = sha1(정규화 경로)[:12], 임의 경로 금지)
 - estimate_usd                               내장 GPT Image 노드 price_badge 표 복제 + Custom 크기 근사
+S1 레이아웃 (명세 STUDIO_S1_SPEC.md §1.3·§3.6·§3.7)
+- load_layout / update_layout / validate_layout  <root>/layout.json 읽기·낙관적 동시성 쓰기(rev 단조 증가, 이력 50)·구조 검사
+- load_layout_version                        이력 판 layout_history/r<rev>.json 읽기(없거나 깨졌으면 None)
+- layout_from_manifest                       이관: 매니페스트 크롭 → layout + PSD 기준점(레이아웃 모드 결과면 PSD 스냅숏으로)
+- check_crop_name / check_target_text / check_layout_rect / layout_rect_problem   이름·대상 문구·사각형 규칙(서버 거절용)
+- layout_parsed / layout_layer_name / new_layout_id / layout_sig   Import 가 쓰는 크롭 정의(합성 레이어명·고정 ID·지문)
+- layout_geom_checks / psd_diff              편집기 검사 목록(L-·N-·P- 코드) / PSD 기준점 대 스냅숏 차이
 
 규칙 메모
 ---------
@@ -58,9 +65,14 @@ M2 (명세 M2_SPEC.md §1)
   (두 ComfyUI 가 같은 폴더를 쓰면 보호되지 않음).
 - M2 최상위 키(calls, rerolls, rejects, approvals)와 jobs[].reps(기본 1)는 디스크에서 읽을 때 채운다.
   new_manifest 는 M1 고정 키 집합 그대로다(처음 저장한 뒤 다시 읽으면 항상 있음).
+- layout.json(S1)은 3-way 병합을 하지 않는다: 쓰기는 update_layout 하나이고 요청 rev 가 지금 rev 일 때만 쓴다(LayoutConflict).
+  잠금은 매니페스트와 같은 manifest_lock 이다(레이아웃 쓰기는 짧고 드묾). 편집기 기하(스냅·핸들)는 서버에 없고
+  JS layout_geom.js 와 테스트 오라클이 tools/fixtures/layout_rules.json 공용 표로 맞춘다 — 여기 규칙(이름·문구·사각형·GPT 크기·검사)도 같은 표.
 
 버전 이력
 ---------
+v3 (2026-10)
+- S1 레이아웃: layout.json 스키마·이관·쓰기·이름/문구/사각형 규칙·검사 목록·psd_diff.
 v2 (2026-10)
 - M2: 매니페스트 트랜잭션(잠금·3-way 병합), M2 키 기본값, 루트 레지스트리, 가격표(estimate_usd).
 - 타깃만 채택(10/13, TARGETS_ONLY_SPEC §9.5): merge_layer_targets — Import PSD·Prepare 가드가 같은 규칙을 쓴다.
@@ -580,16 +592,18 @@ def parse_crop_layer_name(name: str) -> dict:
     }
 
 
-def merge_layer_targets(parsed: dict, text: Any) -> tuple[dict, list[str]]:
+def merge_layer_targets(parsed: dict, text: Any, *, crop_id: str | None = None, aliases: Iterable[str] = ()) -> tuple[dict, list[str]]:
     """parse_crop_layer_name 결과 + 스펙 _layer_targets(채택, 레이어명 '|' 뒤와 같은 문법) → (같은 모양, 경고).
 
     "003_펜이름표" + "A: name badge; B: red pen"
       → targets [{"tid": "A", "text": "name badge", "origin": "adopt"}, {"tid": "B", "text": "red pen", "origin": "adopt"}]
     PSD 문구가 빈 타깃(레거시 A 포함)과 PSD 에 없는 tid 는 _layer_targets 문구 + "origin": "adopt". 둘 다 문구가 있으면 PSD 가
     이긴다(다를 때만 경고). 순서 = PSD 타깃 → 새 tid(문자열 순서). 앞의 '<크롭 이름> |' 는 떼어 낸다(제안 레이어명을 통째로
-    붙여 넣은 경우). 빈 문구 항목은 무시 + 경고. text 가 None·빈 문자열이면 그대로.
-    라벨 없는 조각·같은 라벨 두 번(라벨이 A–Z 라 26개 초과도 여기에 걸림)·문자열 아님은 ValueError(PS 레이어명과 달리 글자를
-    대신 정하지 않는다).
+    붙여 넣은 경우) — 이름이 parsed name 이거나 aliases(옛 이름, 예: psd_name) 중 하나이거나, crop_id 의 '-k' 앞부분이
+    crop_id_for(이름) 일 때(D3: ID = 처음 이름 해시 — Studio 에서 이름을 바꾼 크롭의 스펙). 빈 문구 항목은 무시 + 경고.
+    text 가 None·빈 문자열이면 그대로.
+    라벨 없는 조각(다른 크롭 이름 앞머리 포함)·같은 라벨 두 번(라벨이 A–Z 라 26개 초과도 여기에 걸림)·문자열 아님은
+    ValueError(PS 레이어명과 달리 글자를 대신 정하지 않는다).
     """
     out = {**parsed, "targets": [dict(t) for t in parsed["targets"]]}
     if text is None:
@@ -598,7 +612,9 @@ def merge_layer_targets(parsed: dict, text: Any) -> tuple[dict, list[str]]:
         raise ValueError(f"_layer_targets 는 문자열이어야 합니다: {text!r}")
     body = _nfc(text)
     head = _PIPE_RE.split(body, maxsplit=1)
-    if len(head) == 2 and head[0].strip() == parsed["name"]:
+    name = head[0].strip()
+    if len(head) == 2 and name and (name == parsed["name"] or name in aliases
+                                    or (crop_id is not None and crop_id_for(name) == crop_id.split("-")[0])):
         body = head[1]
     entries: list[tuple[str, str]] = []
     for s in _TARGET_SPLIT_RE.split(body):
@@ -624,7 +640,7 @@ def merge_layer_targets(parsed: dict, text: Any) -> tuple[dict, list[str]]:
         elif not t["text"].strip():
             t.update(text=x, origin="adopt")
         elif t["text"].strip() != x:
-            warnings.append(f"_layer_targets {tid}: PSD 레이어명 문구 {t['text']!r} 가 이김({x!r} 무시)")
+            warnings.append(f"_layer_targets {tid}: 레이어명 문구 {t['text']!r} 가 이김({x!r} 무시)")
     return out, warnings
 
 
@@ -1352,3 +1368,518 @@ def estimate_usd(model: str, quality: str, size_wh: Any, n: int, n_input_images:
         out = _custom_size_price(presets, w, h, rng)
     per = _PRICE_PER_INPUT_IMAGE[model]
     return (round((out[0] + n_input_images * per[0]) * n, 6), round((out[1] + n_input_images * per[1]) * n, 6))
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 레이아웃 (S1) — <root>/layout.json: Studio 가 편집하는 크롭 사각형·이름·대상·ID 의 원천 (STUDIO_S1_SPEC §1)
+#   {"schema", "rev", "canvas": [W, H], "psd": {"path", "fingerprint", "crop_group", "at", "crops": [{name, layer_name, rect}]},
+#    "crops": [{"id", "name", "rect", "targets": [{"tid", "text", "box"}], "psd_name", "note"}]}
+# ══════════════════════════════════════════════════════════════════════
+LAYOUT_NAME = "layout.json"
+LAYOUT_SCHEMA = "bmk.design_patch.layout/1"
+LAYOUT_HISTORY_DIR = "layout_history"
+PSD_SNAPSHOT = os.path.join("derived", "psd_crops.json")  # Import PSD 가 레이아웃 모드에서 PSD 를 열 때 쓰는 shape 스냅숏(§2.3)
+_LAYOUT_HISTORY_KEEP = 50
+_LAYOUT_REV_MAX = "max_rev.json"  # layout_history 안 {"rev": 지금까지 쓴 가장 큰 rev} — 지금 판은 이력에 없어, 이력 파일로 되돌린 뒤에도 rev 를 다시 쓰지 않게
+_LAYOUT_SIZE_STEP = 128   # 편집기 크기 스냅(L-128)
+_LAYOUT_MAX_RATIO = 3
+_LAYOUT_SMALL = 384       # 짧은 변 정보 기준(L-small, "작은 장식도 384 정사각")
+_LAYOUT_COORD_MAX = 65536
+_LAYOUT_TEXT_MAX = 120
+_LAYOUT_NOTE_MAX = 500
+_LAYOUT_ID_RE = re.compile(r"[A-Za-z0-9_\-]{1,64}")
+_LAYOUT_TID_RE = re.compile(r"[A-Z]")
+_LAYOUT_HISTORY_RE = re.compile(r"r[0-9]+\.json")
+_NAME_HEAD_RE = re.compile(r"[0-9]{3}_")
+_NAME_SIDES = {"왼쪽": "left", "left": "left", "오른쪽": "right", "right": "right"}
+_NAME_PROBLEMS = {
+    "len": "이름은 5–64자여야 합니다",
+    "prefix": "이름은 세 자리 숫자와 '_' 로 시작해야 합니다(예: 009_모자)",
+    "char": "이름에는 글자·숫자·_·- 만 쓸 수 있습니다(공백·| ; : , / \\ < > \" ' ? * 금지)",
+}
+_TEXT_BANNED = _PIPE_CHARS + ";；  "
+_TEXT_PROBLEMS = {
+    "char": "대상 문구에 줄바꿈·제어 문자나 | ｜ │ ¦ ; ； 를 쓸 수 없습니다",
+    "len": f"대상 문구는 {_LAYOUT_TEXT_MAX}자 이하여야 합니다",
+    "roundtrip": "대상 문구가 레이어명 문법과 부딪힙니다(', B: …' 처럼 쉼표 뒤 대문자 라벨 꼴은 다른 대상으로 읽힘)",
+}
+
+
+class LayoutConflict(ValueError):
+    """layout.json rev 가 요청과 다름(다른 창에서 바뀜) — 보드가 409 로 돌려준다."""
+
+
+def _name_bad_char(name: str) -> str | None:
+    """'NNN_' 뒤에서 유니코드 L*·N* 범주나 _ - 가 아닌 첫 글자(없으면 None). 범주는 서버 unicodedata 판 기준이라
+    브라우저(더 새 유니코드)가 받는 글자를 거절할 수 있다 — 거절 메시지에 이 글자를 밝힌다."""
+    return next((c for c in name[4:] if c not in "_-" and unicodedata.category(c)[0] not in "LN"), None)
+
+
+def _name_problem(name: str) -> str | None:
+    """정규화한 이름의 규칙 위반 코드(이 순서로 첫 번째): "len"(5–64자, 코드 포인트) · "prefix"(^[0-9]{3}_) ·
+    "char"(그 뒤 글자가 유니코드 L*·N* 범주나 _ - 가 아님 — 공백·구분자·제어 문자는 모두 여기서 걸림). 맞으면 None."""
+    if not 5 <= len(name) <= 64:
+        return "len"
+    if not _NAME_HEAD_RE.match(name):
+        return "prefix"
+    if _name_bad_char(name) is not None:
+        return "char"
+    return None
+
+
+def _name_side(name: str) -> str | None:
+    """이름 끝 토큰('_' 뒤)이 왼쪽/left → "left", 오른쪽/right → "right"(보는 사람 기준, vlm.side_of 와 같은 뜻)."""
+    return _NAME_SIDES.get(name.rsplit("_", 1)[-1].casefold())
+
+
+def check_crop_name(name: Any, taken: Iterable[str] = ()) -> dict:
+    """새 이름·바꾼 이름 검사(§3.6, 이관된 이름은 검사 N-name 으로만 알림). NFC → 앞뒤 공백 제거(str.strip) →
+    길이 5–64 · '^[0-9]{3}_' · 나머지는 글자·숫자·_·- 만(위반 메시지 끝에 문제 글자 '(문제 글자: U+XXXX 「x」)').
+    taken = 레이아웃의 다른 크롭 이름들(NFC·casefold 로 같으면 오류).
+    반환 {"name": 정규화한 이름, "nnn", "part"(parse_crop_layer_name 과 같음 — 좌우 토큰 포함), "side": "left"|"right"|None}."""
+    if not isinstance(name, str):
+        raise ValueError(f"이름은 문자열이어야 합니다: {name!r}")
+    n = _nfc(name).strip()
+    problem = _name_problem(n)
+    if problem == "char":
+        c = _name_bad_char(n)
+        raise ValueError(f"{_NAME_PROBLEMS[problem]}: {n!r} (문제 글자: U+{ord(c):04X} 「{c}」)")
+    if problem:
+        raise ValueError(f"{_NAME_PROBLEMS[problem]}: {n!r}")
+    if any(_nfc(t).casefold() == n.casefold() for t in taken):
+        raise ValueError(f"같은 이름의 크롭이 이미 있습니다: {n!r}")
+    nnn, part = _split_nnn(n)
+    return {"name": n, "nnn": nnn, "part": part, "side": _name_side(n)}
+
+
+def _text_problem(text: str) -> str | None:
+    """정규화한 대상 문구의 위반 코드: "char"(제어 문자 Cc·U+2028/2029·| ｜ │ ¦ ; ；) · "len"(> 120) ·
+    "roundtrip"('X | A: <문구>' 를 다시 읽으면 다른 타깃이 됨). 맞으면 None."""
+    if any(c in _TEXT_BANNED or unicodedata.category(c) == "Cc" for c in text):
+        return "char"
+    if len(text) > _LAYOUT_TEXT_MAX:
+        return "len"
+    if parse_crop_layer_name(f"000_x | A: {text}")["targets"] != [{"tid": "A", "text": text}]:
+        return "roundtrip"
+    return None
+
+
+def check_target_text(text: Any) -> str:
+    """대상 문구 검사(§3.6): NFC → 앞뒤 공백 제거 → 위 규칙. 정규화한 문구를 돌려주고 위반은 ValueError. 빈 문구는 허용."""
+    if not isinstance(text, str):
+        raise ValueError(f"대상 문구는 문자열이어야 합니다: {text!r}")
+    t = _nfc(text).strip()
+    problem = _text_problem(t)
+    if problem:
+        raise ValueError(f"{_TEXT_PROBLEMS[problem]}: {t!r}")
+    return t
+
+
+def _rect_ints(rect: Any, what: str) -> list[int]:
+    """[x0, y0, x1, y1] = 정수 4개(bool 제외), |값| ≤ 65536, x1 > x0, y1 > y0 — 아니면 ValueError."""
+    if (not isinstance(rect, (list, tuple)) or len(rect) != 4
+            or any(isinstance(v, bool) or not isinstance(v, int) or abs(v) > _LAYOUT_COORD_MAX for v in rect)):
+        raise ValueError(f"{what} 는 정수 4개 [x0, y0, x1, y1] 이어야 합니다(|값| ≤ {_LAYOUT_COORD_MAX}): {rect!r}")
+    if rect[2] <= rect[0] or rect[3] <= rect[1]:
+        raise ValueError(f"{what} 의 폭·높이가 0 이하입니다: {list(rect)}")
+    return list(rect)
+
+
+def layout_rect_problem(rect: Any, canvas: Any) -> str | None:
+    """사각형 규칙(G5): 형식 오류는 ValueError, 캔버스 밖(0 미만·W/H 초과) = "outside", 긴 변 > 3 × 짧은 변 = "ratio"
+    (이 순서로 첫 번째), 맞으면 None. 이관된 값은 이 코드를 검사·경고로만 쓴다."""
+    x0, y0, x1, y1 = _rect_ints(rect, "rect")
+    if x0 < 0 or y0 < 0 or x1 > canvas[0] or y1 > canvas[1]:
+        return "outside"
+    if max(x1 - x0, y1 - y0) > _LAYOUT_MAX_RATIO * min(x1 - x0, y1 - y0):
+        return "ratio"
+    return None
+
+
+def check_layout_rect(rect: Any, canvas: Any) -> list[int]:
+    """서버 add/update 의 rect 검사: layout_rect_problem 이 무엇이든 내면 ValueError(한국어). 맞으면 [x0, y0, x1, y1]."""
+    problem = layout_rect_problem(rect, canvas)
+    if problem == "outside":
+        raise ValueError(f"사각형이 캔버스 {canvas[0]}x{canvas[1]} 밖으로 나갑니다: {list(rect)}")
+    if problem == "ratio":
+        raise ValueError(f"사각형의 긴 변이 짧은 변의 3배를 넘습니다: {rect[2] - rect[0]}x{rect[3] - rect[1]}")
+    return list(rect)
+
+
+def _legacy_targets(targets: list) -> bool:
+    """빈 목록 또는 빈 문구 A 하나 = 레거시(레이어명에 '|' 없음과 같음)."""
+    return not targets or (len(targets) == 1 and targets[0]["tid"] == "A" and targets[0]["text"] == "")
+
+
+def layout_layer_name(crop: dict) -> str:
+    """합성 레이어명: 레거시면 이름만, 아니면 "이름 | A: …; B: …"(빈 문구는 "B:"). Import 가 매니페스트 layer_name 으로 쓴다."""
+    if _legacy_targets(crop["targets"]):
+        return crop["name"]
+    return crop["name"] + " | " + "; ".join(f"{t['tid']}: {t['text']}" if t["text"] else f"{t['tid']}:"
+                                            for t in crop["targets"])
+
+
+def layout_parsed(crop: dict) -> dict:
+    """레이아웃 크롭 → parse_crop_layer_name 과 같은 모양(name·nnn·part·targets[tid·text]·warnings) = 합성 레이어명의 파싱 결과.
+    validate_layout 이 왕복을 보장하므로 targets 는 레이아웃의 tid·text 그대로다(레거시 = [{"tid": "A", "text": ""}])."""
+    return parse_crop_layer_name(layout_layer_name(crop))
+
+
+def new_layout_id(name: str, taken: Iterable[str]) -> str:
+    """새 크롭 ID(D3, 이관·add·PSD 새 shape 때만): crop_id_for(name), 이미 쓰는 ID 면 -2, -3 … 중 처음 비는 것.
+    이름을 바꿔도 ID 는 바꾸지 않는다(specs·vlm·후보·★ 가 이어짐)."""
+    base = crop_id_for(name)
+    used = set(taken)
+    cid, k = base, 1
+    while cid in used:
+        k += 1
+        cid = f"{base}-{k}"
+    return cid
+
+
+def layout_sig(lay: dict) -> str:
+    """Import 가 읽는 크롭 정의의 지문(sha256 앞 16자): 순서대로 id·name·rect·합성 레이어명(대상 문구)·psd_name(없으면 name).
+    box·note·psd 기준점·rev 는 넣지 않는다 — Import 캐시와 '반영됨' 표시용(매니페스트 source.layout.sig)."""
+    rows = [[c["id"], c["name"], list(c["rect"]), layout_layer_name(c), c.get("psd_name") or c["name"]] for c in lay["crops"]]
+    return hashlib.sha256(json.dumps(rows, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()[:16]
+
+
+def validate_layout(lay: Any) -> list[str]:
+    """layout.json 구조 검사. 구조 오류는 ValueError: schema·rev(0 이상 정수)·canvas([W, H] 양의 정수)·psd(crops: name·layer_name·rect)·
+    crops[](id 형식·유일, name = NFC·앞뒤 공백 없음·'|' 계열 없음, rect, targets ≤26(tid A–Z 유일·text 문자열·box null 또는 rect),
+    psd_name 문자열/null, note ≤500) 그리고 합성 레이어명을 다시 읽으면 같은 대상이 나와야 한다.
+    반환 = 경고(이관된 값이 편집기 규칙 밖인 것): 캔버스 밖·비 3:1 초과·이름 규칙·이름 중복(NFC·casefold)·대상 문구 규칙, 그리고
+    PSD 레이어명이 '|' 뒤가 비어 레거시(이름만)로 바뀐 크롭. 알 수 없는 키는 그대로 둔다(검사만 함)."""
+    if not isinstance(lay, dict):
+        raise ValueError(f"레이아웃 최상위가 객체가 아닙니다: {type(lay).__name__}")
+    if lay.get("schema") != LAYOUT_SCHEMA:
+        raise ValueError(f"레이아웃 schema 가 {LAYOUT_SCHEMA!r} 가 아닙니다: {lay.get('schema')!r}")
+    rev = lay.get("rev")
+    if isinstance(rev, bool) or not isinstance(rev, int) or rev < 0:
+        raise ValueError(f"레이아웃 rev 가 0 이상의 정수가 아닙니다: {rev!r}")
+    canvas = lay.get("canvas")
+    if (not isinstance(canvas, list) or len(canvas) != 2
+            or any(isinstance(v, bool) or not isinstance(v, int) or v <= 0 for v in canvas)):
+        raise ValueError(f"레이아웃 canvas 는 양의 정수 [W, H] 여야 합니다: {canvas!r}")
+    psd = lay.get("psd")
+    if not isinstance(psd, dict) or not isinstance(psd.get("crops"), list):
+        raise ValueError("레이아웃 psd 기준점(psd.crops 목록)이 없습니다.")
+    for p in psd["crops"]:
+        if not isinstance(p, dict) or not isinstance(p.get("name"), str) or not isinstance(p.get("layer_name"), str):
+            raise ValueError(f"psd 기준점 크롭 형식이 잘못되었습니다: {p!r}")
+        _rect_ints(p.get("rect"), f"psd 기준점 {p['name']} rect")
+    crops = lay.get("crops")
+    if not isinstance(crops, list):
+        raise ValueError("레이아웃 crops 가 목록이 아닙니다.")
+
+    warns: list[str] = []
+    ids: set[str] = set()
+    names: dict[str, str] = {}
+    for c in crops:
+        if not isinstance(c, dict):
+            raise ValueError(f"레이아웃 크롭이 객체가 아닙니다: {c!r}")
+        cid = c.get("id")
+        if not isinstance(cid, str) or not _LAYOUT_ID_RE.fullmatch(cid):
+            raise ValueError(f"크롭 id 형식이 잘못되었습니다([A-Za-z0-9_-] 1–64자): {cid!r}")
+        if cid in ids:
+            raise ValueError(f"크롭 id 가 겹칩니다: {cid}")
+        ids.add(cid)
+        name = c.get("name")
+        if not isinstance(name, str) or not name.strip() or _base_name(name) != name:
+            raise ValueError(f"크롭 {cid} 이름이 비었거나 NFC·앞뒤 공백·'|' 규칙에 어긋납니다: {name!r}")
+        rect = _rect_ints(c.get("rect"), f"크롭 {cid} rect")
+        targets = c.get("targets")
+        if not isinstance(targets, list) or len(targets) > 26:
+            raise ValueError(f"크롭 {cid} targets 는 26개 이하의 목록이어야 합니다.")
+        tids = []
+        for t in targets:
+            if (not isinstance(t, dict) or not isinstance(t.get("tid"), str) or not _LAYOUT_TID_RE.fullmatch(t["tid"])
+                    or not isinstance(t.get("text"), str)):
+                raise ValueError(f"크롭 {cid} 대상 형식이 잘못되었습니다(tid A–Z, text 문자열): {t!r}")
+            if t.get("box") is not None:
+                _rect_ints(t["box"], f"크롭 {cid} 대상 {t['tid']} box")
+            tids.append(t["tid"])
+        if len(set(tids)) != len(tids):
+            raise ValueError(f"크롭 {cid} 대상 tid 가 겹칩니다: {tids}")
+        if c.get("psd_name") is not None and not isinstance(c["psd_name"], str):
+            raise ValueError(f"크롭 {cid} psd_name 은 문자열이어야 합니다: {c['psd_name']!r}")
+        note = c.get("note", "")
+        if not isinstance(note, str) or len(note) > _LAYOUT_NOTE_MAX:
+            raise ValueError(f"크롭 {cid} note 는 {_LAYOUT_NOTE_MAX}자 이하 문자열이어야 합니다.")
+        want = [{"tid": t["tid"], "text": t["text"]} for t in targets] or [{"tid": "A", "text": ""}]
+        if layout_parsed(c)["targets"] != want:
+            raise ValueError(f"크롭 {cid} 대상 문구를 레이어명으로 합치면 다르게 읽힙니다: {layout_layer_name(c)!r}")
+
+        problem = layout_rect_problem(rect, canvas)
+        if problem:
+            warns.append(f"{name}: 사각형이 {'캔버스 밖' if problem == 'outside' else '비 3:1 초과'} {rect}")
+        problem = _name_problem(name)
+        if problem:
+            warns.append(f"{name}: {_NAME_PROBLEMS[problem]}")
+        key = name.casefold()
+        if key in names:
+            warns.append(f"{name}: 이름이 {names[key]} 와 겹침(NFC·대소문자 무시)")
+        names.setdefault(key, cid)
+        for t in targets:
+            problem = _text_problem(t["text"])
+            if problem:
+                warns.append(f"{name} {t['tid']}: {_TEXT_PROBLEMS[problem]}")
+    flipped = {p["name"]: p["layer_name"] for p in psd["crops"]
+               if _PIPE_RE.search(p["layer_name"]) and _legacy_targets(parse_crop_layer_name(p["layer_name"])["targets"])}
+    for c in crops:
+        layer = flipped.get(c.get("psd_name") or c["name"])
+        if layer is not None and _legacy_targets(c["targets"]):
+            warns.append(f"{c['name']}: PSD 레이어명 {layer!r} 은 '|' 뒤가 비어 레거시(이름만)로 다룸")
+    return warns
+
+
+def load_layout(root: str) -> dict | None:
+    """<root>/layout.json 을 읽어 validate_layout 을 통과한 dict 로 돌려준다. 없으면 None, 깨졌거나 구조 오류면 ValueError
+    (메시지에 layout_history 복구 안내). 매니페스트와 같은 잠금 안에서 읽는다(Windows os.replace 경합 — 규칙 메모 '동시 쓰기')."""
+    path = os.path.join(root, LAYOUT_NAME)
+    if not os.path.isfile(path):
+        return None
+    try:
+        with manifest_lock(root):
+            lay = _read_json(path, "레이아웃")
+        validate_layout(lay)
+    except ValueError as e:
+        raise ValueError(f"{e} — {LAYOUT_HISTORY_DIR}/r<rev>.json 을 {LAYOUT_NAME} 로 복사해 이전 판으로 되돌릴 수 있습니다") from e
+    return lay
+
+
+def load_layout_version(root: str, rev: Any) -> dict | None:
+    """이력 판 layout_history/r<rev>.json(실행 취소 되살리기 판정용 — rev 는 단조 증가라 r<n> 은 그 판 하나). validate_layout 을
+    통과하면 dict, 없거나 깨졌거나 구조 오류·rev 가 0 이상 정수가 아니면 None(예외 없음). 이력 정리와 같은 잠금 안에서 읽는다."""
+    if isinstance(rev, bool) or not isinstance(rev, int) or rev < 0:
+        return None
+    try:
+        with manifest_lock(root):
+            lay = _read_json(os.path.join(root, LAYOUT_HISTORY_DIR, f"r{rev}.json"), "레이아웃 이력")
+        validate_layout(lay)
+    except ValueError:
+        return None
+    return lay
+
+
+def _layout_history_revs(folder: str) -> list[int]:
+    """layout_history 의 r<n>.json 번호(오름차순, 폴더가 없으면 [])."""
+    if not os.path.isdir(folder):
+        return []
+    return sorted(int(fn[1:-5]) for fn in os.listdir(folder) if _LAYOUT_HISTORY_RE.fullmatch(fn))
+
+
+def _layout_rev_max(folder: str) -> int:
+    """지금까지 쓴 가장 큰 rev = max_rev.json 과 이력 r<n>.json 중 큰 값(둘 다 없으면 -1). max_rev.json 이 없거나 깨졌으면 이력만."""
+    revs = _layout_history_revs(folder)
+    try:
+        hw = _read_json(os.path.join(folder, _LAYOUT_REV_MAX), "레이아웃 rev 최댓값")["rev"]
+    except (ValueError, KeyError, TypeError):
+        hw = -1
+    return max(revs[-1] if revs else -1, hw if isinstance(hw, int) and not isinstance(hw, bool) else -1)
+
+
+def _keep_layout_history(root: str, prev: dict) -> int:
+    """이전 판을 layout_history/r<rev>.json 으로 남기고(이미 있으면 덮지 않음 — 그 파일에서 복구한 판) rev 가 큰 50개만 둔다.
+    오래된 이력을 지우지 못하면(열린 파일 등) 경고만 하고 저장은 계속한다. 반환 = 이력의 가장 큰 rev."""
+    folder = os.path.join(root, LAYOUT_HISTORY_DIR)
+    path = os.path.join(folder, f"r{prev['rev']}.json")
+    if not os.path.isfile(path):
+        write_json_atomic(path, prev)
+    revs = _layout_history_revs(folder)
+    for r in revs[:-_LAYOUT_HISTORY_KEEP]:
+        try:
+            os.remove(os.path.join(folder, f"r{r}.json"))
+        except OSError as e:
+            logger.warning(f"{_TAG} 레이아웃 이력 r{r}.json 을 지우지 못함(저장은 계속): {e}")
+    return revs[-1]
+
+
+def update_layout(root: str, mutate: Callable[[dict], Any], *, expect_rev: int | None, create: bool = False) -> tuple[Any, int]:
+    """레이아웃 쓰기(낙관적 동시성): manifest_lock → 디스크 최신본 → expect_rev 가 지금 rev 와 다르면 LayoutConflict(None = 보지 않음)
+    → mutate(lay)(제자리 수정) → validate_layout(구조 오류면 ValueError, 저장 안 함) → 바뀌었으면 이전 판을 이력으로 남기고
+    새 rev = 지금까지 쓴 가장 큰 rev(layout_history/max_rev.json·이력 r<n>) + 1 로 원자 저장. 반환 (mutate 반환값, rev).
+    mutate 가 예외를 내면 저장하지 않고, rev 를 바꿔도 무시한다. 파일이 없으면 LayoutConflict.
+    create=True: 파일이 이미 있으면 LayoutConflict, mutate 가 빈 dict 를 채우고 rev = 지금까지 쓴 가장 큰 rev + 1(처음이면 0)로
+    저장한다(expect_rev 는 보지 않음). 그래서 layout.json 을 치우거나 이력 파일 복사로 되돌려도 rev 는 프로젝트 폴더 안에서 다시
+    쓰이지 않는다(단조 증가 — 낡은 창의 expect_rev 가 우연히 맞아 되돌린 판을 덮지 않게, 편집기 rev 비교도 기댐). mutate 안에서 update_manifest·commit_merge 를 부르지 말 것(반대도 같음)."""
+    path = os.path.join(root, LAYOUT_NAME)
+    with manifest_lock(root):
+        if create:
+            if os.path.isfile(path):
+                raise LayoutConflict("레이아웃이 이미 있습니다 — 새로고침")
+            folder = os.path.join(root, LAYOUT_HISTORY_DIR)
+            rev = _layout_rev_max(folder) + 1
+            lay: dict = {}
+            result = mutate(lay)
+            lay["rev"] = rev
+            validate_layout(lay)
+            write_json_atomic(os.path.join(folder, _LAYOUT_REV_MAX), {"rev": rev})
+            write_json_atomic(path, lay)
+            return result, rev
+        lay = load_layout(root)
+        if lay is None:
+            raise LayoutConflict("레이아웃 파일이 없습니다 — 새로고침")
+        rev = lay["rev"]
+        if expect_rev is not None and expect_rev != rev:
+            raise LayoutConflict(f"레이아웃이 다른 창에서 바뀌었습니다(rev {expect_rev} → {rev}) — 새로고침")
+        before = _jsonable(lay)
+        result = mutate(lay)
+        lay["rev"] = rev
+        validate_layout(lay)
+        if _jsonable(lay) != before:
+            folder = os.path.join(root, LAYOUT_HISTORY_DIR)
+            rev = max(_keep_layout_history(root, before), _layout_rev_max(folder)) + 1
+            lay["rev"] = rev
+            write_json_atomic(os.path.join(folder, _LAYOUT_REV_MAX), {"rev": rev})  # 먼저 — 레이아웃 쓰기가 실패해도 번호만 건너뜀
+            write_json_atomic(path, lay)
+    return result, rev
+
+
+def layout_from_manifest(m: dict, snapshot: dict | None = None) -> dict:
+    """이관(D1 = Studio '레이아웃 편집 시작'): 매니페스트 크롭 → layout(rev 0). 크롭마다 id·name·rect 그대로, targets =
+    parse_crop_layer_name(layer_name) 의 tid·text(box null), psd_name = 매니페스트 psd_name(없으면 name — 이름을 바꾼 크롭도 사전
+    편집 자식을 계속 찾음), note "". 캔버스가 없으면(Import 전) ValueError.
+    PSD 기준점: PSD 모드 매니페스트면 source.psd·fingerprint·crop_group + 크롭들의 name·layer_name·rect(at = 지금).
+    레이아웃 모드 결과(source.layout 있음 — layout.json 을 치운 뒤 다시 시작)는 name·layer_name·rect 가 Studio 값이라
+    snapshot(derived/psd_crops.json — 호출자가 source 와 psd·fingerprint·crop_group·crop_pixels_group 이 같은지 확인한 것)의
+    psd·fingerprint·crop_group·at·크롭 name·layer_name·rect 로 만든다. 그때 snapshot 이 None 이면 ValueError.
+    레이어명 '|' 뒤가 빈 크롭은 레거시(이름만)로 바뀐다 → validate_layout 경고로 보고된다."""
+    if not m.get("canvas"):
+        raise ValueError("매니페스트에 캔버스가 없습니다 — Import PSD 를 먼저 실행하세요.")
+    src = m.get("source") or {}
+    crops = []
+    for c in m["crops"]:
+        targets = parse_crop_layer_name(c["layer_name"])["targets"]
+        crops.append({"id": c["id"], "name": c["name"], "rect": [int(v) for v in c["rect"]],
+                      "targets": [{"tid": t["tid"], "text": t["text"], "box": None} for t in targets],
+                      "psd_name": c.get("psd_name") or c["name"], "note": ""})
+    origin, at, shapes = src, time.strftime("%Y-%m-%d %H:%M:%S"), m["crops"]
+    if src.get("layout"):
+        if snapshot is None:
+            raise ValueError("매니페스트가 레이아웃 모드 결과(source.layout)라 PSD 기준점을 만들 수 없습니다 — layout.json 없이 "
+                             "Import PSD 를 한 번 실행해 PSD 크롭으로 다시 가져온 뒤 시작하세요")
+        origin, at, shapes = snapshot, snapshot.get("at"), snapshot["crops"]
+    return {
+        "schema": LAYOUT_SCHEMA, "rev": 0, "canvas": [int(v) for v in m["canvas"]],
+        "psd": {"path": origin.get("psd"), "fingerprint": origin.get("fingerprint"), "crop_group": origin.get("crop_group"), "at": at,
+                "crops": [{"name": c["name"], "layer_name": c["layer_name"], "rect": [int(v) for v in c["rect"]]} for c in shapes]},
+        "crops": crops,
+    }
+
+
+def _overlap(a: list[int], b: list[int]) -> tuple[int, int]:
+    """두 사각형(끝 배타)이 겹친 폭·높이(겹치지 않으면 0 이하)."""
+    return min(a[2], b[2]) - max(a[0], b[0]), min(a[3], b[3]) - max(a[1], b[1])
+
+
+def layout_geom_checks(lay: dict) -> dict[str, list[dict]]:
+    """검사 목록(§3.7 의 L-·N-·P- 코드) — 구조가 맞는 레이아웃(canvas·crops 만 읽음)에 대해 {crop_id: [check, …]}(모든 크롭, 없으면 []).
+    check = {"code", "level": "error"|"warn"|"info", "msg"} + 짝 검사(L-same·L-overlap·N-dup)는 "other"(상대 crop_id),
+    부품 상자 검사(P-*)는 "tid". 규칙(정수 식 — JS layout_geom.js 가 같은 (crop_id, code) 집합을 내야 함):
+      L-ratio error 긴 변 > 3 × 짧은 변 · L-outside warn 캔버스 밖 · L-128 info 폭이나 높이가 128 배수 아님 · L-small info 짧은 변 < 384
+      L-gptk info gpt_output_size(user_k) 의 W < 2w 또는 H < 2h · L-same warn rect 가 같음(상대마다) · L-overlap info 겹친 넓이 > 0(같은 rect 제외)
+      N-name error 이름 규칙 위반 · N-dup error NFC·casefold 이름이 같음(상대마다) · N-nnn info 앞자리 숫자(parse 의 nnn)가 같은 크롭이 있음
+      N-side info 이름 끝 _왼쪽/_left 인데 3(x0+x1) > 4W, _오른쪽/_right 인데 3(x0+x1) < 2W(가운데가 반대쪽 1/3)
+      P-out / P-edge / P-70 warn (상자가 있는 대상마다 하나, 이 순서로 첫 번째): 상자가 크롭 밖으로 나감 / 크롭 변까지 여백 m 이
+        m < 8 또는 50m < 변 방향 크기(왼·오른쪽 여백은 폭, 위·아래는 높이) / 20m < 3 × 변 방향 크기(70% 가이드 밖)."""
+    W, H = lay["canvas"]
+    crops = lay["crops"]
+    keys = [c["name"].casefold() for c in crops]
+    nnns = [_split_nnn(c["name"])[0] for c in crops]
+    out: dict[str, list[dict]] = {}
+    for i, c in enumerate(crops):
+        rows: list[dict] = []
+        x0, y0, x1, y1 = rect = c["rect"]
+        w, h = x1 - x0, y1 - y0
+        long_, short = max(w, h), min(w, h)
+        if long_ > _LAYOUT_MAX_RATIO * short:
+            rows.append({"code": "L-ratio", "level": "error", "msg": f"비 {long_ / short:.2f}:1 — 3:1 이하로 줄이세요"})
+        if x0 < 0 or y0 < 0 or x1 > W or y1 > H:
+            rows.append({"code": "L-outside", "level": "warn", "msg": f"캔버스 {W}×{H} 밖으로 나감"})
+        if w % _LAYOUT_SIZE_STEP or h % _LAYOUT_SIZE_STEP:
+            rows.append({"code": "L-128", "level": "info", "msg": f"크기 {w}×{h} 가 128 배수가 아님"})
+        if short < _LAYOUT_SMALL:
+            rows.append({"code": "L-small", "level": "info", "msg": f"짧은 변 {short} < {_LAYOUT_SMALL}"})
+        gw, gh, _info = gpt_output_size(w, h)
+        if gw < 2 * w or gh < 2 * h:
+            rows.append({"code": "L-gptk", "level": "info", "msg": f"GPT 배율 {min(gw / w, gh / h):.2f} < 2 ({gw}×{gh})"})
+        for j, o in enumerate(crops):
+            if j == i:
+                continue
+            if list(o["rect"]) == list(rect):
+                rows.append({"code": "L-same", "level": "warn", "msg": f"{o['name']} 와 사각형이 같음", "other": o["id"]})
+                continue
+            ow, oh = _overlap(rect, o["rect"])
+            if ow > 0 and oh > 0:
+                rows.append({"code": "L-overlap", "level": "info", "msg": f"겹침: {o['name']} ({ow}×{oh})", "other": o["id"]})
+        problem = _name_problem(c["name"])
+        if problem:
+            rows.append({"code": "N-name", "level": "error", "msg": _NAME_PROBLEMS[problem]})
+        for j, o in enumerate(crops):
+            if j != i and keys[j] == keys[i]:
+                rows.append({"code": "N-dup", "level": "error", "msg": f"이름 중복: {o['id']}", "other": o["id"]})
+        same_nnn = sum(1 for j, n in enumerate(nnns) if j != i and n and n == nnns[i])
+        if same_nnn:
+            rows.append({"code": "N-nnn", "level": "info", "msg": f"같은 번호 {same_nnn + 1}개 — 레퍼런스는 부위 이름으로 고름"})
+        side = _name_side(c["name"])
+        if side == "left" and 3 * (x0 + x1) > 4 * W:
+            rows.append({"code": "N-side", "level": "info", "msg": "이름은 왼쪽인데 크롭이 화면 오른쪽 1/3 에 있음(보는 사람 기준)"})
+        elif side == "right" and 3 * (x0 + x1) < 2 * W:
+            rows.append({"code": "N-side", "level": "info", "msg": "이름은 오른쪽인데 크롭이 화면 왼쪽 1/3 에 있음(보는 사람 기준)"})
+        for t in c["targets"]:
+            box = t.get("box")
+            if box is None:
+                continue
+            bx0, by0, bx1, by1 = box
+            if bx0 < x0 or by0 < y0 or bx1 > x1 or by1 > y1:
+                rows.append({"code": "P-out", "level": "warn", "msg": f"{t['tid']} 상자가 크롭 밖으로 나감", "tid": t["tid"]})
+                continue
+            margins = ((bx0 - x0, w), (x1 - bx1, w), (by0 - y0, h), (y1 - by1, h))
+            if any(m < 8 or 50 * m < size for m, size in margins):
+                rows.append({"code": "P-edge", "level": "warn", "msg": f"{t['tid']} 부품이 경계에 닿음", "tid": t["tid"]})
+            elif any(20 * m < 3 * size for m, size in margins):
+                rows.append({"code": "P-70", "level": "warn", "msg": f"{t['tid']} 상자가 70% 가이드 밖 — 크롭을 키우세요(여백 15%)",
+                             "tid": t["tid"]})
+        out[c["id"]] = rows
+    return out
+
+
+def psd_diff(baseline: dict, snapshot: dict) -> dict:
+    """PSD 기준점(layout.psd) 대 지금 PSD 스냅숏(derived/psd_crops.json)의 shape 차이(§2.3). 둘 다 {"crops": [{name, layer_name, rect}]}.
+    짝짓기 = 기본 이름(name)이 같은 것끼리, 같은 이름이 여럿이면 IoU 큰 쌍부터(같으면 기준점·스냅숏 순서) 탐욕.
+    반환 {"changed": [{"name", "fields": ["rect"|"layer_name", …], "from": {"layer_name", "rect"}, "to": {…}}],
+          "added": [{"name", "layer_name", "rect"}](스냅숏에만), "removed": [{…}](기준점에만)}.
+    순서: changed·removed = 기준점 순서, added = 스냅숏 순서. 빈 차이 = 세 목록 모두 []."""
+    old, new = baseline["crops"], snapshot["crops"]
+
+    def iou(a, b):
+        ow, oh = _overlap(a, b)
+        inter = max(ow, 0) * max(oh, 0)
+        return inter / ((a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter)
+
+    pairs: dict[int, int] = {}
+    for name in dict.fromkeys(c["name"] for c in old):
+        cands = sorted((-iou(old[i]["rect"], new[j]["rect"]), i, j)
+                       for i, c in enumerate(old) if c["name"] == name
+                       for j, s in enumerate(new) if s["name"] == name)
+        for _neg, i, j in cands:
+            if i not in pairs and j not in pairs.values():
+                pairs[i] = j
+
+    def shape(c):
+        return {"name": c["name"], "layer_name": c["layer_name"], "rect": list(c["rect"])}
+
+    changed, removed = [], []
+    for i, c in enumerate(old):
+        if i not in pairs:
+            removed.append(shape(c))
+            continue
+        s = new[pairs[i]]
+        fields = [f for f, a, b in (("rect", list(c["rect"]), list(s["rect"])), ("layer_name", c["layer_name"], s["layer_name"]))
+                  if a != b]
+        if fields:
+            changed.append({"name": c["name"], "fields": fields, "from": {"layer_name": c["layer_name"], "rect": list(c["rect"])},
+                            "to": {"layer_name": s["layer_name"], "rect": list(s["rect"])}})
+    paired = set(pairs.values())
+    return {"changed": changed, "added": [shape(s) for j, s in enumerate(new) if j not in paired], "removed": removed}

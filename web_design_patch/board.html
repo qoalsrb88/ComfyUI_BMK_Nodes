@@ -6,7 +6,9 @@
 <meta name="referrer" content="same-origin">
 <title>Design Patch Studio</title>
 <link rel="stylesheet" href="board.css">
+<script src="layout_geom.js" defer></script>
 <script src="viewer.js" defer></script>
+<script src="layout_edit.js" defer></script>
 <script src="board.js" defer></script>
 </head>
 <body>
@@ -14,8 +16,10 @@
   <div class="brand">Design Patch <span class="dim">Studio</span></div>
   <div id="proj" class="proj"></div>
   <div id="badges" class="badges"></div>
+  <div id="layout-head" class="lhead"></div>
   <div class="spacer"></div>
   <div id="status" class="status"></div>
+  <button type="button" id="btn-edit" tabindex="-1" disabled>편집</button>
   <button type="button" id="btn-viewer" tabindex="-1" title="캔버스 뷰어 보이기/숨기기 (V)">캔버스</button>
   <button type="button" id="btn-queue" tabindex="-1" title="ComfyUI 탭에 Review 노드 부분 실행을 요청합니다(재굴림 소화)">ComfyUI 큐</button>
   <button type="button" id="btn-drain" tabindex="-1" title="진행 중인 Run 이 새 호출 발사를 멈춥니다(진행 중인 호출은 끝까지 받아 저장)">Drain</button>
@@ -25,6 +29,7 @@
 <main id="app">
   <aside id="targets" aria-label="크롭·타깃 목록">
     <ol id="target-list"></ol>
+    <ol id="layout-list"></ol>
   </aside>
 
   <section id="viewer" aria-label="캔버스 뷰어"></section>
@@ -63,6 +68,8 @@
 
     <div id="grid" aria-label="후보 목록"></div>
   </section>
+
+  <section id="layout-panel" aria-label="레이아웃 속성"></section>
 </main>
 
 <div id="help" class="overlay" hidden>
@@ -93,6 +100,19 @@
       <tr><td><kbd>O</kbd></td><td>크롭 사각형·이름 보이기/숨기기</td></tr>
       <tr><td><kbd>V</kbd></td><td>캔버스 뷰어 숨기기(오른쪽이 예전 보드처럼 넓어짐)</td></tr>
     </table>
+    <h3>레이아웃 편집 (<kbd>E</kbd>)</h3>
+    <table>
+      <tr><td>빈 곳 끌기 · 몸통 끌기 · 핸들</td><td>새 크롭 · 이동 · 크기(모서리 4·변 4). 크기 128 배수·위치 16px 격자, 비 3:1 이하·캔버스 안</td></tr>
+      <tr><td><kbd>Ctrl</kbd> · <kbd>Shift</kbd> 누른 채</td><td>스냅 없음(1px) · 비율 유지</td></tr>
+      <tr><td><kbd>Space</kbd>+끌기 · 가운데 버튼</td><td>화면 이동(편집 모드의 왼쪽 끌기는 편집)</td></tr>
+      <tr><td><kbd>←</kbd><kbd>→</kbd><kbd>↑</kbd><kbd>↓</kbd></td><td>미세 이동 16px · <kbd>Shift</kbd> 128px · <kbd>Ctrl</kbd> 1px</td></tr>
+      <tr><td><kbd>Tab</kbd> · <kbd>Shift</kbd>+<kbd>Tab</kbd></td><td>다음 · 이전 크롭</td></tr>
+      <tr><td><kbd>P</kbd> · <kbd>Enter</kbd></td><td>부품 상자 그리기 · 제안 적용 / 새 크롭 만들기</td></tr>
+      <tr><td><kbd>Delete</kbd></td><td>크롭 지우기(확인 창 — 파일은 남음 · 되살리기는 Ctrl+Z · 이름을 바꾼 크롭은 같은 이름으로 다시 만들어도 새 ID)</td></tr>
+      <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd> · <kbd>Ctrl</kbd>+<kbd>Y</kbd></td><td>실행 취소 · 다시(이 창의 편집만 — 다른 창에서 바뀌면 기록을 비움)</td></tr>
+      <tr><td><kbd>Esc</kbd></td><td>끌기 취소 → 선택 해제 → 편집 모드 나가기</td></tr>
+    </table>
+    <p class="dim">편집 모드에서는 ★(Space)·탈락(X)·재굴림(R)이 꺼집니다. 편집은 layout.json 에만 쓰고, 다음 큐(반영(큐)·재굴림·ComfyUI 큐 모두)의 Import 에서 매니페스트에 반영합니다.</p>
     <h3>알아 둘 것</h3>
     <ul>
       <li>보드는 선택만 기록합니다. 유료 호출은 ComfyUI 탭의 큐(Review 노드 부분 실행)로만 일어납니다.</li>

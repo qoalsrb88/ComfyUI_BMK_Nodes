@@ -1,6 +1,8 @@
 // BMK Design Patch Studio — 캔버스 뷰어(전체 캔버스 이동·확대, 크롭 사각형, 선택 크롭 원해상도 겹침, 이음매).
 // board.js 가 DPViewer.create(host, opts) 로 만들고 상태·선택을 넘긴다. 좌표: 캔버스 px, 화면 = 캔버스 × z + (tx, ty).
 // 모든 문자열은 textContent 로만 넣는다. 서버 URL 은 opts.apiUrl(상대 경로) 로만 연다.
+// 편집기 훅(S1, layout_edit.js): setEditor(ed) — ed.pointerdown/move/up(ev) 이 왼쪽 버튼 입력을 먼저 받고 true 면 소비,
+// ed.draw(svg, z) 가 사각형·이름을 그린다(뷰어는 크롭 사각형·이름을 그리지 않음). 화면 이동 = Space 를 누른 채 끌기·가운데 버튼 끌기.
 "use strict";
 
 window.DPViewer = (() => {
@@ -92,6 +94,9 @@ window.DPViewer = (() => {
     let seamSig = null;
     let seamIdx = -1;
     let drag = null;
+    let editor = null; // 레이아웃 편집기(setEditor)
+    let edit = null; // 편집기가 잡은 pointerId
+    let space = false; // Space 를 누르고 있음(편집 모드 화면 이동)
     const loadTok = new WeakMap();
 
     // ── 이미지: 다 받은 뒤 바꿔 끼워 깜빡이지 않게 ──
@@ -134,6 +139,7 @@ window.DPViewer = (() => {
       stage.classList.toggle("px", z * dpr() >= 2);
       zoomLabel.textContent = `${Math.round(z * dpr() * 100)}%`;
       drawLabels();
+      if (editor) drawMarks(); // 핸들·이름 글자 크기는 화면 px 기준
     }
 
     function view() {
@@ -210,7 +216,7 @@ window.DPViewer = (() => {
       marks.setAttribute("viewBox", `0 0 ${W} ${H}`);
       marks.setAttribute("width", W);
       marks.setAttribute("height", H);
-      if (rectsOn) {
+      if (rectsOn && !editor) {
         for (const c of crops) {
           const [x0, y0, x1, y1] = c.rect;
           marks.append(svg("rect", { x: x0, y: y0, width: x1 - x0, height: y1 - y0, class: "crop " + cropClass(c) }));
@@ -220,11 +226,12 @@ window.DPViewer = (() => {
         const cls = `seam ${s.severity}` + (i === seamIdx ? " cur" : "");
         marks.append(svg("line", { x1: s.x0, y1: s.y0, x2: s.x1, y2: s.y1, class: cls }));
       }
+      if (editor) editor.draw(marks, z);
     }
 
     function drawLabels() {
       labels.replaceChildren();
-      if (!canvas || !rectsOn) return;
+      if (!canvas || !rectsOn || editor) return;
       for (const c of crops) {
         const [x0, y0, x1] = c.rect;
         const sw = (x1 - x0) * z;
@@ -409,6 +416,19 @@ window.DPViewer = (() => {
       return { raw, qHeld, slider, bg, rectsOn };
     }
 
+    function setEditor(ed) {
+      editor = ed;
+      edit = null;
+      port.classList.toggle("edit", !!ed);
+      port.style.cursor = "";
+      drawMarks();
+      drawLabels();
+    }
+
+    function setCursor(c) {
+      if (!space) port.style.cursor = c || "";
+    }
+
     // ── 입력 ──
     port.addEventListener("wheel", (e) => {
       if (!canvas) return;
@@ -426,12 +446,22 @@ window.DPViewer = (() => {
 
     port.addEventListener("pointerdown", (e) => {
       if (!canvas || e.button > 1) return;
+      if (e.button === 1) e.preventDefault(); // 가운데 버튼 = 화면 이동(자동 스크롤 막음)
+      if (editor && e.button === 0 && !space && editor.pointerdown(e)) {
+        edit = e.pointerId;
+        port.setPointerCapture(e.pointerId);
+        return;
+      }
       drag = { x: e.clientX, y: e.clientY, tx, ty, moved: false, id: e.pointerId };
       port.setPointerCapture(e.pointerId);
       port.classList.add("grab");
     });
 
     port.addEventListener("pointermove", (e) => {
+      if (edit === e.pointerId) {
+        editor.pointermove(e);
+        return;
+      }
       if (drag && drag.id === e.pointerId) {
         const dx = e.clientX - drag.x;
         const dy = e.clientY - drag.y;
@@ -443,6 +473,7 @@ window.DPViewer = (() => {
         apply();
         return;
       }
+      if (editor && editor.pointermove(e)) return; // 누르지 않고 움직임(핸들 커서 등)
       const r = selRect();
       if (slider && r) {
         const [cx] = toCanvas(e);
@@ -452,11 +483,16 @@ window.DPViewer = (() => {
     });
 
     function endDrag(e) {
+      if (edit === e.pointerId) {
+        edit = null;
+        editor.pointerup(e);
+        return;
+      }
       if (!drag || drag.id !== e.pointerId) return;
       const click = !drag.moved;
       drag = null;
       port.classList.remove("grab");
-      if (!click || !opts.onPick) return;
+      if (!click || !opts.onPick || editor) return;
       const [cx, cy] = toCanvas(e);
       const hits = crops.filter((c) => cx >= c.rect[0] && cx < c.rect[2] && cy >= c.rect[1] && cy < c.rect[3]);
       if (!hits.length) return;
@@ -467,10 +503,32 @@ window.DPViewer = (() => {
     }
     port.addEventListener("pointerup", endDrag);
     port.addEventListener("pointercancel", (e) => {
+      if (edit === e.pointerId) {
+        edit = null;
+        editor.cancel();
+      }
       if (drag && drag.id === e.pointerId) {
         drag = null;
         port.classList.remove("grab");
       }
+    });
+
+    // Space 를 누른 채 끌기 = 화면 이동(편집 모드에서 왼쪽 끌기는 편집). 입력칸에서 친 Space 는 보지 않는다.
+    document.addEventListener("keydown", (e) => {
+      if (e.code !== "Space" || space || e.target.closest("input, textarea, select")) return;
+      space = true;
+      port.classList.add("space");
+      port.style.cursor = "";
+    });
+    document.addEventListener("keyup", (e) => {
+      if (e.code === "Space") {
+        space = false;
+        port.classList.remove("space");
+      }
+    });
+    window.addEventListener("blur", () => {
+      space = false;
+      port.classList.remove("space");
     });
 
     new ResizeObserver(() => {
@@ -483,8 +541,8 @@ window.DPViewer = (() => {
     bRects.classList.add("on");
     drawSeamButton();
     return { setState, setSelection, setFlags, flags, setBg, toggleRects, fitCanvas, fitCrop, zoomTo, nextSeam,
-      seams: () => seams };
+      seams: () => seams, setEditor, setCursor, canvasPoint: toCanvas, scale: () => z, redraw: drawMarks };
   }
 
-  return { create };
+  return { create, svg };
 })();

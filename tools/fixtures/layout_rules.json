@@ -1,0 +1,5236 @@
+{
+ "schema": "bmk.design_patch.layout_rules/1",
+ "desc": "Design Patch Studio S1 레이아웃 편집기 공용 규칙 표(STUDIO_S1_SPEC §6.1 L4 · §6.4 J-L1). Python(tools/test_bmk_design_patch.py layout_store_unit: move·resize·new·suggest = 오라클 _layout_*, 나머지 = bmk_design_patch_store)과 JS(web_design_patch/layout_geom.js)가 모든 행에서 out 과 같은 값을 내야 한다. 행은 fn 으로 구분하고 note 는 설명일 뿐이다. 기대값을 고치려면 Python 쪽 규칙을 고치고 테스트가 보여 주는 계산값으로 표를 바꿀 것.",
+ "consts": {
+  "size": 128,
+  "pos": 16,
+  "ratio": 3,
+  "min": 128,
+  "guide": 0.7,
+  "small": 384,
+  "coord_max": 65536
+ },
+ "rnd": "rnd(v,q) = floor(v/q + 0.5)*q, ceilq(v,q) = ceil(v/q)*q, floorq(v,q) = floor(v/q)*q — 반올림은 이것만 쓴다(Python round·JS Math.round 금지). 좌표는 정수, rect = [x0,y0,x1,y1] 끝 배타, w = x1-x0, h = y1-y0.",
+ "place": "place(ax, ay, mx, my, w, h) — resize·new 공용: R = 3. max(w,h) > R*min(w,h) 이면 모서리(mx·my 둘 다 0 아님)는 긴 축 = down(R*짧은), 변 핸들은 끄는 축(mx≠0 이면 x)이 긴 축이면 그 축 = down(R*짧은), 짧은 축이면 그 축 = up(긴/R) (down = snap ? floorq(.,128) : floor — 단 snap 에서 floorq 가 0 이하이면(R*짧은 < 128, 16×48 같은 이관 크롭) 스냅 없는 floor, up = snap ? ceilq(.,128) : ceil). 사각형: mx<0 이면 [ax-w, ax] 아니면 [ax, ax+w] (y 도, my·h). 움직이는 변만 캔버스로 자름: mx>0 → x1 = min(x1, W), mx<0 → x0 = max(x0, 0) (y 도) — 줄어든 크기는 그대로(128 배수가 아니어도 됨). 그다음 다시 x1-x0 > R*(y1-y0) 이면 (mx<0 ? x0 = x1 - R*(y1-y0) : x1 = x0 + R*(y1-y0)), 아니고 y1-y0 > R*(x1-x0) 이면 (my<0 ? y0 = y1 - R*(x1-x0) : y1 = y0 + R*(x1-x0)).",
+ "fns": {
+  "move": {
+   "in": "{rect:[x0,y0,x1,y1], dx, dy, canvas:[W,H], snap}",
+   "out": "[x0,y0,x1,y1]",
+   "rule": "G1: q = snap ? 16 : 1. nx = min(max(rnd(x0+dx, q), 0), max(0, W-w)), ny 도 같게(h·H). 크기 불변. dx·dy 는 소수일 수 있음. 캔버스 밀기가 격자보다 우선(변에 붙인 값은 격자 밖이어도 됨)."
+  },
+  "resize": {
+   "in": "{rect, handle: n|s|e|w|ne|nw|se|sw, dx, dy, canvas, snap, keep}",
+   "out": "[x0,y0,x1,y1]",
+   "rule": "G2: mx = handle 에 e → +1, w → -1, 아니면 0. my = s → +1, n → -1, 아니면 0. 앵커 ax = mx<0 ? x1 : x0, ay = my<0 ? y1 : y0. w0 = x1-x0, h0 = y1-y0. 움직이는 축: w = size(w0 + mx*dx) (my 도), 안 움직이는 축은 w0(h0). size(v) = snap ? max(128, rnd(v,128)) : max(128, rnd(v,1)) (앵커를 넘어가면 v<0 → 128). keep 이고 모서리(mx·my 둘 다 0 아님)면: |w-w0|*h0 >= |h-h0|*w0 (같으면 x) 이면 h = size(w*h0/w0), 아니면 w = size(h*w0/h0) (곱 먼저 계산한 뒤 나눔). 그다음 place(ax, ay, mx, my, w, h)."
+  },
+  "new": {
+   "in": "{sx, sy, dx, dy, canvas, snap, keep}",
+   "out": "[x0,y0,x1,y1]",
+   "rule": "G3: q = snap ? 16 : 1. sx = min(max(rnd(sx, q), 0), W), sy 도. mx = dx >= 0 ? +1 : -1, my = dy >= 0 ? +1 : -1. w = size(mx*dx), h = size(my*dy). keep 이면 w = h = max(w, h). 그다음 끄는 쪽 캔버스 변까지 여유(mx>0 ? W-sx : sx, my 도 H·sy)가 128 미만인 축은 방향 반전(mx = -mx, 크기는 그대로 — 변에서 바깥으로 끌어도 폭 0 이 아님). 그다음 place(sx, sy, mx, my, w, h)."
+  },
+  "suggest": {
+   "in": "{boxes:[[x0,y0,x1,y1],…], canvas, snap}",
+   "out": "[x0,y0,x1,y1]",
+   "rule": "G4: U = 상자 합집합. 축마다 need = ceil(크기*10/7) (÷0.7 을 정수 식으로). w = max(128, snap ? ceilq(need,128) : need) (h 도). w > 3h 이면 h = up(w/3), 아니고 h > 3w 이면 w = up(h/3) (up = snap ? ceilq(.,128) : ceil). w = min(w, W), h = min(h, H). 그래서 w > 3h 이면 w = 3h, 아니고 h > 3w 이면 h = 3w (4096×1024 같은 넓은 캔버스 — 128 단위 없이). q = snap ? 16 : 1. x0 = rnd((ux0+ux1)/2 - w/2, q), y0 도(줄인 크기로 가운데). x0 = min(max(x0,0), W-w), y0 도."
+  },
+  "validate_rect": {
+   "in": "{rect: 아무 값, canvas}",
+   "out": "null | \"outside\" | \"ratio\" | \"error\"",
+   "rule": "G5: rect 가 길이 4 배열이고 값이 모두 정수(bool·소수 아님), |값| <= 65536, x1>x0, y1>y0 가 아니면 \"error\" (store 는 ValueError). 그다음 x0<0 또는 y0<0 또는 x1>W 또는 y1>H → \"outside\", max(w,h) > 3*min(w,h) → \"ratio\" (이 순서), 아니면 null. JSON 의 10.0 같은 수는 JS 에서 정수와 구분되지 않으므로 표에 넣지 않았다."
+  },
+  "gpt_size": {
+   "in": "{w, h}",
+   "out": "{size:[W,H], k, method}",
+   "rule": "G6: store.gpt_output_size(w, h, \"user_k\") — size 와 info.k(소수 6자리), method = square_preset|k|int_k|floor16|nearest (경로 확인용). 다섯 경로가 모두 표에 있다(nearest = 제약을 만족하는 16 배수 크기 전수 중 |log 종횡 오차|·|log 면적 비|를 소수 12자리로 반올림해 사전순 최소, 같으면 작은 W·H)."
+  },
+  "check_name": {
+   "in": "{name}",
+   "out": "{name, nnn, part, side} | {err: \"len\"|\"prefix\"|\"char\"}",
+   "rule": "이름 규칙 N: NFC → 앞뒤 공백 제거(Python str.strip = str.isspace 문자 — JS \\s 에서 \\uFEFF 를 빼고 \\x1c-\\x1f·\\x85 를 더한 것) → 길이 5–64(코드 포인트 — JS 는 [...s].length) 아니면 len → /^[0-9]{3}_/ 아니면 prefix → 5번째 글자부터 모두 /^[\\p{L}\\p{N}_-]$/u 가 아니면 char (이 순서로 첫 번째). 성공: name = 정규화한 이름, nnn = 앞 세 자리, part = name.slice(4) 에서 앞의 [_-] 를 뗀 것(parse_crop_layer_name 의 part, 좌우 토큰 포함), side = 마지막 '_' 뒤 토큰을 소문자로 바꿔 왼쪽|left → \"left\", 오른쪽|right → \"right\", 아니면 null. 레이아웃 안 유일성(NFC·casefold)은 name_dup 행(서버가 최종)."
+  },
+  "check_text": {
+   "in": "{text}",
+   "out": "{text} | {err: \"char\"|\"len\"|\"roundtrip\"}",
+   "rule": "대상 문구 규칙 T: NFC → 앞뒤 공백 제거(check_name 과 같은 strip) → \\p{Cc}·U+2028·U+2029·| ｜ │ ¦ ; ； 가 있으면 char → 길이 > 120(코드 포인트) 이면 len → '000_x | A: <문구>' 를 parse_crop_layer_name 으로 읽어 [{tid A, text 문구}] 가 아니면 roundtrip. 앞의 두 검사를 통과한 문구가 roundtrip 에 걸리는 경우는 쉼표 [,\\uFF0C\\u3001] 뒤에 (공백)*[A-Z](공백)*[:\\uFF1A] 가 오는 꼴뿐이다 — 여기서 공백 = Python 정규식 \\s(유니코드 공백, \\uFEFF 아님). 성공: text = 정규화한 문구(빈 문구 허용)."
+  },
+  "geom_checks": {
+   "in": "{layout:{canvas, crops:[{id, name, rect, targets:[{tid, text, box}], psd_name, note}]}}",
+   "out": "[[crop_id, code], …] (중복 없이 정렬 — 크롭마다 같은 코드가 여럿이어도 한 번)",
+   "rule": "G7: store.layout_geom_checks 의 docstring 규칙(정수 식). L-ratio max>3*min · L-outside · L-128 w%128||h%128 · L-small min<384 · L-gptk gpt_size 의 W<2w||H<2h · L-same rect 같음 · L-overlap 겹친 폭·높이>0(같은 rect 제외) · N-name 이름 규칙 위반 · N-dup NFC·casefold 같은 이름 · N-nnn 앞자리 숫자가 같은 다른 크롭 · N-side 좌우 토큰 left 인데 3(x0+x1)>4W, right 인데 3(x0+x1)<2W · 상자(box 있는 대상마다 하나, 이 순서로 첫 번째): P-out 상자가 크롭 밖, P-edge 크롭 변까지 여백 m 중 m<8 || 50m<그 방향 크기(왼·오른쪽 = 폭, 위·아래 = 높이), P-70 20m<3*그 방향 크기."
+  },
+  "name_dup": {
+   "in": "{a, b}",
+   "out": "true | false",
+   "rule": "이름 유일성 N-dup: NFC → Python str.casefold 가 같으면 중복. Python = store.check_crop_name(b, [a]) 가 '같은 이름' 오류를 내는지(layout_geom_checks 의 N-dup 과 다르면 표 불일치), JS = fold(a) === fold(b)(geomChecks 의 N-dup 과 다르면 불일치). toUpperCase·toLowerCase 왕복과 갈리는 글자(ı U+0131 · ẞ U+1E9E · ß)가 표에 있다."
+  }
+ },
+ "rows": [
+  {
+   "fn": "move",
+   "note": "스냅: 16px 격자",
+   "in": {
+    "rect": [
+     100,
+     100,
+     612,
+     612
+    ],
+    "dx": 7,
+    "dy": 9,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true
+   },
+   "out": [
+    112,
+    112,
+    624,
+    624
+   ]
+  },
+  {
+   "fn": "move",
+   "note": "스냅 끔(Ctrl): 1px",
+   "in": {
+    "rect": [
+     100,
+     100,
+     612,
+     612
+    ],
+    "dx": 7,
+    "dy": 9,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": false
+   },
+   "out": [
+    107,
+    109,
+    619,
+    621
+   ]
+  },
+  {
+   "fn": "move",
+   "note": "격자 반올림 위/아래",
+   "in": {
+    "rect": [
+     100,
+     100,
+     612,
+     612
+    ],
+    "dx": 8,
+    "dy": -8,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true
+   },
+   "out": [
+    112,
+    96,
+    624,
+    608
+   ]
+  },
+  {
+   "fn": "move",
+   "note": "소수 dx 23.5 → 격자",
+   "in": {
+    "rect": [
+     100,
+     100,
+     612,
+     612
+    ],
+    "dx": 23.5,
+    "dy": 0,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true
+   },
+   "out": [
+    128,
+    96,
+    640,
+    608
+   ]
+  },
+  {
+   "fn": "move",
+   "note": "009 이관 사각형(y 2947)을 놓기만 → 2944",
+   "in": {
+    "rect": [
+     2240,
+     2947,
+     2624,
+     3331
+    ],
+    "dx": 0,
+    "dy": 0,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true
+   },
+   "out": [
+    2240,
+    2944,
+    2624,
+    3328
+   ]
+  },
+  {
+   "fn": "move",
+   "note": "스냅 끔이면 이관 값 그대로",
+   "in": {
+    "rect": [
+     2240,
+     2947,
+     2624,
+     3331
+    ],
+    "dx": 0,
+    "dy": 0,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": false
+   },
+   "out": [
+    2240,
+    2947,
+    2624,
+    3331
+   ]
+  },
+  {
+   "fn": "move",
+   "note": "왼쪽 위 밖으로 → 0",
+   "in": {
+    "rect": [
+     0,
+     0,
+     512,
+     512
+    ],
+    "dx": -100,
+    "dy": -50,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true
+   },
+   "out": [
+    0,
+    0,
+    512,
+    512
+   ]
+  },
+  {
+   "fn": "move",
+   "note": "오른쪽 아래 밖으로 → 변에 붙임",
+   "in": {
+    "rect": [
+     2560,
+     3584,
+     3072,
+     4096
+    ],
+    "dx": 300,
+    "dy": 300,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true
+   },
+   "out": [
+    2560,
+    3584,
+    3072,
+    4096
+   ]
+  },
+  {
+   "fn": "move",
+   "note": "017 아래 변 붙임(캔버스 > 격자)",
+   "in": {
+    "rect": [
+     1536,
+     3200,
+     2560,
+     4096
+    ],
+    "dx": 5,
+    "dy": 13,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true
+   },
+   "out": [
+    1536,
+    3200,
+    2560,
+    4096
+   ]
+  },
+  {
+   "fn": "move",
+   "note": "소수 반올림 10.4·10.5",
+   "in": {
+    "rect": [
+     0,
+     0,
+     512,
+     512
+    ],
+    "dx": 10.4,
+    "dy": 10.5,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": false
+   },
+   "out": [
+    10,
+    11,
+    522,
+    523
+   ]
+  },
+  {
+   "fn": "move",
+   "note": "음수 .5 는 위로(floor(v+0.5))",
+   "in": {
+    "rect": [
+     100,
+     100,
+     228,
+     228
+    ],
+    "dx": -10.5,
+    "dy": -0.5,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": false
+   },
+   "out": [
+    90,
+    100,
+    218,
+    228
+   ]
+  },
+  {
+   "fn": "move",
+   "note": "캔버스보다 큰 사각형 → x0 0",
+   "in": {
+    "rect": [
+     0,
+     0,
+     1200,
+     800
+    ],
+    "dx": 50,
+    "dy": 50,
+    "canvas": [
+     1000,
+     700
+    ],
+    "snap": true
+   },
+   "out": [
+    0,
+    0,
+    1200,
+    800
+   ]
+  },
+  {
+   "fn": "move",
+   "note": "캔버스 밖 이관 값 → 안으로",
+   "in": {
+    "rect": [
+     990,
+     10,
+     1118,
+     138
+    ],
+    "dx": 0,
+    "dy": 0,
+    "canvas": [
+     1000,
+     700
+    ],
+    "snap": true
+   },
+   "out": [
+    872,
+    16,
+    1000,
+    144
+   ]
+  },
+  {
+   "fn": "resize",
+   "note": "se 스냅",
+   "in": {
+    "rect": [
+     512,
+     512,
+     1024,
+     1024
+    ],
+    "handle": "se",
+    "dx": 100,
+    "dy": 30,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true,
+    "keep": false
+   },
+   "out": [
+    512,
+    512,
+    1152,
+    1024
+   ]
+  },
+  {
+   "fn": "resize",
+   "note": "se 스냅 끔",
+   "in": {
+    "rect": [
+     512,
+     512,
+     1024,
+     1024
+    ],
+    "handle": "se",
+    "dx": 100,
+    "dy": 30,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": false,
+    "keep": false
+   },
+   "out": [
+    512,
+    512,
+    1124,
+    1054
+   ]
+  },
+  {
+   "fn": "resize",
+   "note": "nw 스냅(앵커 = 오른쪽 아래)",
+   "in": {
+    "rect": [
+     512,
+     512,
+     1024,
+     1024
+    ],
+    "handle": "nw",
+    "dx": -200,
+    "dy": -70,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true,
+    "keep": false
+   },
+   "out": [
+    256,
+    384,
+    1024,
+    1024
+   ]
+  },
+  {
+   "fn": "resize",
+   "note": "ne 스냅 .5 반올림",
+   "in": {
+    "rect": [
+     512,
+     512,
+     1024,
+     1024
+    ],
+    "handle": "ne",
+    "dx": 64,
+    "dy": -64,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true,
+    "keep": false
+   },
+   "out": [
+    512,
+    384,
+    1152,
+    1024
+   ]
+  },
+  {
+   "fn": "resize",
+   "note": "sw 스냅 끔",
+   "in": {
+    "rect": [
+     512,
+     512,
+     1024,
+     1024
+    ],
+    "handle": "sw",
+    "dx": -37,
+    "dy": 41,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": false,
+    "keep": false
+   },
+   "out": [
+    475,
+    512,
+    1024,
+    1065
+   ]
+  },
+  {
+   "fn": "resize",
+   "note": "e 비 3:1 정확히",
+   "in": {
+    "rect": [
+     512,
+     512,
+     1024,
+     1024
+    ],
+    "handle": "e",
+    "dx": 1000,
+    "dy": 0,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true,
+    "keep": false
+   },
+   "out": [
+    512,
+    512,
+    2048,
+    1024
+   ]
+  },
+  {
+   "fn": "resize",
+   "note": "e 비 초과 → 긴 축 = 3×짧은",
+   "in": {
+    "rect": [
+     512,
+     512,
+     1024,
+     1024
+    ],
+    "handle": "e",
+    "dx": 2000,
+    "dy": 0,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true,
+    "keep": false
+   },
+   "out": [
+    512,
+    512,
+    2048,
+    1024
+   ]
+  },
+  {
+   "fn": "resize",
+   "note": "w 스냅 끔",
+   "in": {
+    "rect": [
+     512,
+     512,
+     1024,
+     1024
+    ],
+    "handle": "w",
+    "dx": 50,
+    "dy": 0,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": false,
+    "keep": false
+   },
+   "out": [
+    562,
+    512,
+    1024,
+    1024
+   ]
+  },
+  {
+   "fn": "resize",
+   "note": "n 위로 캔버스 밖 → y0 0",
+   "in": {
+    "rect": [
+     512,
+     512,
+     1024,
+     1024
+    ],
+    "handle": "n",
+    "dx": 0,
+    "dy": -1000,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true,
+    "keep": false
+   },
+   "out": [
+    512,
+    0,
+    1024,
+    1024
+   ]
+  },
+  {
+   "fn": "resize",
+   "note": "s 줄이기 → 128 이면 비 4 → 짧은 축 = 긴/3 올림(256)",
+   "in": {
+    "rect": [
+     512,
+     512,
+     1024,
+     1024
+    ],
+    "handle": "s",
+    "dx": 0,
+    "dy": -450,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true,
+    "keep": false
+   },
+   "out": [
+    512,
+    512,
+    1024,
+    768
+   ]
+  },
+  {
+   "fn": "resize",
+   "note": "s 앵커를 넘어감 → 128 → 비 4 → ceil(512/3)",
+   "in": {
+    "rect": [
+     512,
+     512,
+     1024,
+     1024
+    ],
+    "handle": "s",
+    "dx": 0,
+    "dy": -900,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": false,
+    "keep": false
+   },
+   "out": [
+    512,
+    512,
+    1024,
+    683
+   ]
+  },
+  {
+   "fn": "resize",
+   "note": "e 짧은 축을 줄여 비 초과 → 긴/3 올림",
+   "in": {
+    "rect": [
+     0,
+     0,
+     384,
+     1152
+    ],
+    "handle": "e",
+    "dx": -200,
+    "dy": 0,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true,
+    "keep": false
+   },
+   "out": [
+    0,
+    0,
+    384,
+    1152
+   ]
+  },
+  {
+   "fn": "resize",
+   "note": "e 짧은 축(스냅 끔) → ceil(긴/3)",
+   "in": {
+    "rect": [
+     0,
+     0,
+     384,
+     1152
+    ],
+    "handle": "e",
+    "dx": -100,
+    "dy": 0,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": false,
+    "keep": false
+   },
+   "out": [
+    0,
+    0,
+    384,
+    1152
+   ]
+  },
+  {
+   "fn": "resize",
+   "note": "w 짧은 축(스냅 끔, 앵커 x1)",
+   "in": {
+    "rect": [
+     1000,
+     0,
+     1384,
+     1152
+    ],
+    "handle": "w",
+    "dx": 100,
+    "dy": 0,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": false,
+    "keep": false
+   },
+   "out": [
+    1000,
+    0,
+    1384,
+    1152
+   ]
+  },
+  {
+   "fn": "resize",
+   "note": "s 긴 축 늘림 → 3×짧은",
+   "in": {
+    "rect": [
+     0,
+     0,
+     256,
+     512
+    ],
+    "handle": "s",
+    "dx": 0,
+    "dy": 600,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true,
+    "keep": false
+   },
+   "out": [
+    0,
+    0,
+    256,
+    768
+   ]
+  },
+  {
+   "fn": "resize",
+   "note": "n 짧은 축 줄임 → 긴/3 올림(스냅)",
+   "in": {
+    "rect": [
+     0,
+     1000,
+     1152,
+     1384
+    ],
+    "handle": "n",
+    "dx": 0,
+    "dy": 200,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true,
+    "keep": false
+   },
+   "out": [
+    0,
+    1000,
+    1152,
+    1384
+   ]
+  },
+  {
+   "fn": "resize",
+   "note": "se Shift(x 기준)",
+   "in": {
+    "rect": [
+     512,
+     512,
+     1024,
+     768
+    ],
+    "handle": "se",
+    "dx": 300,
+    "dy": 10,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true,
+    "keep": true
+   },
+   "out": [
+    512,
+    512,
+    1280,
+    896
+   ]
+  },
+  {
+   "fn": "resize",
+   "note": "se Shift 스냅 끔(곱 먼저, .5 반올림)",
+   "in": {
+    "rect": [
+     512,
+     512,
+     1024,
+     768
+    ],
+    "handle": "se",
+    "dx": 101,
+    "dy": 0,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": false,
+    "keep": true
+   },
+   "out": [
+    512,
+    512,
+    1125,
+    819
+   ]
+  },
+  {
+   "fn": "resize",
+   "note": "nw Shift(y 기준)",
+   "in": {
+    "rect": [
+     512,
+     512,
+     1024,
+     1024
+    ],
+    "handle": "nw",
+    "dx": -10,
+    "dy": -300,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": false,
+    "keep": true
+   },
+   "out": [
+    212,
+    212,
+    1024,
+    1024
+   ]
+  },
+  {
+   "fn": "resize",
+   "note": "sw Shift 같은 변화 → x 기준",
+   "in": {
+    "rect": [
+     512,
+     512,
+     1024,
+     768
+    ],
+    "handle": "sw",
+    "dx": -128,
+    "dy": 64,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true,
+    "keep": true
+   },
+   "out": [
+    256,
+    512,
+    1024,
+    896
+   ]
+  },
+  {
+   "fn": "resize",
+   "note": "e Shift 는 변 핸들에서 무시",
+   "in": {
+    "rect": [
+     512,
+     512,
+     1024,
+     1024
+    ],
+    "handle": "e",
+    "dx": 200,
+    "dy": 0,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true,
+    "keep": true
+   },
+   "out": [
+    512,
+    512,
+    1280,
+    1024
+   ]
+  },
+  {
+   "fn": "resize",
+   "note": "se 캔버스 오른쪽 아래로 자름",
+   "in": {
+    "rect": [
+     2560,
+     3584,
+     2944,
+     3968
+    ],
+    "handle": "se",
+    "dx": 500,
+    "dy": 500,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true,
+    "keep": false
+   },
+   "out": [
+    2560,
+    3584,
+    3072,
+    4096
+   ]
+  },
+  {
+   "fn": "resize",
+   "note": "se 모서리 비 초과 → 긴 축 = 3×짧은",
+   "in": {
+    "rect": [
+     1000,
+     100,
+     1384,
+     228
+    ],
+    "handle": "se",
+    "dx": 500,
+    "dy": 0,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true,
+    "keep": false
+   },
+   "out": [
+    1000,
+    100,
+    1384,
+    228
+   ]
+  },
+  {
+   "fn": "resize",
+   "note": "se 캔버스로 자른 뒤 비 > 3 → 3×짧은",
+   "in": {
+    "rect": [
+     2900,
+     100,
+     3028,
+     484
+    ],
+    "handle": "se",
+    "dx": 500,
+    "dy": 600,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true,
+    "keep": false
+   },
+   "out": [
+    2900,
+    100,
+    3072,
+    616
+   ]
+  },
+  {
+   "fn": "resize",
+   "note": "nw 캔버스로 자른 뒤 비 > 3(앵커 쪽 고정)",
+   "in": {
+    "rect": [
+     44,
+     1000,
+     172,
+     1384
+    ],
+    "handle": "nw",
+    "dx": -500,
+    "dy": -600,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true,
+    "keep": false
+   },
+   "out": [
+    0,
+    868,
+    172,
+    1384
+   ]
+  },
+  {
+   "fn": "resize",
+   "note": "이관 사각형 크기만 스냅(위치 그대로)",
+   "in": {
+    "rect": [
+     2240,
+     2947,
+     2624,
+     3331
+    ],
+    "handle": "se",
+    "dx": 10,
+    "dy": 10,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true,
+    "keep": false
+   },
+   "out": [
+    2240,
+    2947,
+    2624,
+    3331
+   ]
+  },
+  {
+   "fn": "resize",
+   "note": "n 소수 dy",
+   "in": {
+    "rect": [
+     512,
+     512,
+     1024,
+     1024
+    ],
+    "handle": "n",
+    "dx": 0,
+    "dy": -10.5,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": false,
+    "keep": false
+   },
+   "out": [
+    512,
+    501,
+    1024,
+    1024
+   ]
+  },
+  {
+   "fn": "resize",
+   "note": "16×48 이관 크롭 s: 3×16 = 48 의 128 내림 0 → 1px 내림 48",
+   "in": {
+    "rect": [
+     3056,
+     1008,
+     3072,
+     1056
+    ],
+    "handle": "s",
+    "dx": 0,
+    "dy": 300,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true,
+    "keep": false
+   },
+   "out": [
+    3056,
+    1008,
+    3072,
+    1056
+   ]
+  },
+  {
+   "fn": "resize",
+   "note": "16×48 이관 크롭 n: 높이 48(0 아님)",
+   "in": {
+    "rect": [
+     3056,
+     1008,
+     3072,
+     1056
+    ],
+    "handle": "n",
+    "dx": 0,
+    "dy": -300,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true,
+    "keep": false
+   },
+   "out": [
+    3056,
+    1008,
+    3072,
+    1056
+   ]
+  },
+  {
+   "fn": "new",
+   "note": "오른쪽 아래로 끌기(스냅)",
+   "in": {
+    "sx": 100,
+    "sy": 100,
+    "dx": 300,
+    "dy": 200,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true,
+    "keep": false
+   },
+   "out": [
+    96,
+    96,
+    352,
+    352
+   ]
+  },
+  {
+   "fn": "new",
+   "note": "왼쪽 아래로 → 왼쪽 여유 96 < 128 → 오른쪽으로 반전",
+   "in": {
+    "sx": 100,
+    "sy": 100,
+    "dx": -300,
+    "dy": 200,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true,
+    "keep": false
+   },
+   "out": [
+    96,
+    96,
+    352,
+    352
+   ]
+  },
+  {
+   "fn": "new",
+   "note": "왼쪽 위로",
+   "in": {
+    "sx": 1000,
+    "sy": 1000,
+    "dx": -300,
+    "dy": -500,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true,
+    "keep": false
+   },
+   "out": [
+    752,
+    496,
+    1008,
+    1008
+   ]
+  },
+  {
+   "fn": "new",
+   "note": "오른쪽 위로(스냅 끔)",
+   "in": {
+    "sx": 1000,
+    "sy": 1000,
+    "dx": 300,
+    "dy": -500,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": false,
+    "keep": false
+   },
+   "out": [
+    1000,
+    500,
+    1300,
+    1000
+   ]
+  },
+  {
+   "fn": "new",
+   "note": "조금 끌기 → 128 정사각",
+   "in": {
+    "sx": 1000,
+    "sy": 1000,
+    "dx": 10,
+    "dy": 10,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true,
+    "keep": false
+   },
+   "out": [
+    1008,
+    1008,
+    1136,
+    1136
+   ]
+  },
+  {
+   "fn": "new",
+   "note": "끌기 0(스냅 끔) → 128",
+   "in": {
+    "sx": 1000,
+    "sy": 1000,
+    "dx": 0,
+    "dy": 0,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": false,
+    "keep": false
+   },
+   "out": [
+    1000,
+    1000,
+    1128,
+    1128
+   ]
+  },
+  {
+   "fn": "new",
+   "note": "가늘게 → 비 3:1 로",
+   "in": {
+    "sx": 1000,
+    "sy": 1000,
+    "dx": 600,
+    "dy": 100,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true,
+    "keep": false
+   },
+   "out": [
+    1008,
+    1008,
+    1392,
+    1136
+   ]
+  },
+  {
+   "fn": "new",
+   "note": "Shift → 큰 쪽 정사각",
+   "in": {
+    "sx": 1000,
+    "sy": 1000,
+    "dx": 600,
+    "dy": 100,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true,
+    "keep": true
+   },
+   "out": [
+    1008,
+    1008,
+    1648,
+    1648
+   ]
+  },
+  {
+   "fn": "new",
+   "note": "Shift 스냅 끔 소수",
+   "in": {
+    "sx": 500,
+    "sy": 500,
+    "dx": -120.4,
+    "dy": 300.6,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": false,
+    "keep": true
+   },
+   "out": [
+    199,
+    500,
+    500,
+    801
+   ]
+  },
+  {
+   "fn": "new",
+   "note": "시작점이 캔버스 밖 → 안으로",
+   "in": {
+    "sx": -50,
+    "sy": 5000,
+    "dx": 300,
+    "dy": -300,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true,
+    "keep": false
+   },
+   "out": [
+    0,
+    3840,
+    256,
+    4096
+   ]
+  },
+  {
+   "fn": "new",
+   "note": "오른쪽 여유 64 < 128 → 왼쪽으로 반전",
+   "in": {
+    "sx": 3000,
+    "sy": 100,
+    "dx": 500,
+    "dy": 500,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true,
+    "keep": false
+   },
+   "out": [
+    2496,
+    96,
+    3008,
+    608
+   ]
+  },
+  {
+   "fn": "new",
+   "note": "작은 캔버스 모서리(여유 104·92) → 두 축 반전",
+   "in": {
+    "sx": 900,
+    "sy": 600,
+    "dx": 300,
+    "dy": 300,
+    "canvas": [
+     1000,
+     700
+    ],
+    "snap": true,
+    "keep": false
+   },
+   "out": [
+    640,
+    352,
+    896,
+    608
+   ]
+  },
+  {
+   "fn": "new",
+   "note": "오른쪽 여유 176 ≥ 128 → 자름 + 비 다시",
+   "in": {
+    "sx": 2900,
+    "sy": 100,
+    "dx": 500,
+    "dy": 700,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true,
+    "keep": false
+   },
+   "out": [
+    2896,
+    96,
+    3072,
+    624
+   ]
+  },
+  {
+   "fn": "new",
+   "note": "오른쪽 변(3066 → 격자 3072)에서 바깥으로 → 왼쪽으로 반전",
+   "in": {
+    "sx": 3066,
+    "sy": 1000,
+    "dx": 234,
+    "dy": 400,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true,
+    "keep": false
+   },
+   "out": [
+    2816,
+    1008,
+    3072,
+    1392
+   ]
+  },
+  {
+   "fn": "new",
+   "note": "3066 스냅 끔(여유 6) → 반전",
+   "in": {
+    "sx": 3066,
+    "sy": 1000,
+    "dx": 234,
+    "dy": 400,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": false,
+    "keep": false
+   },
+   "out": [
+    2832,
+    1000,
+    3066,
+    1400
+   ]
+  },
+  {
+   "fn": "new",
+   "note": "x 3072 스냅 끔 → 반전",
+   "in": {
+    "sx": 3072,
+    "sy": 1000,
+    "dx": 200,
+    "dy": 300,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": false,
+    "keep": false
+   },
+   "out": [
+    2872,
+    1000,
+    3072,
+    1300
+   ]
+  },
+  {
+   "fn": "new",
+   "note": "x 3072 Shift → 반전·정사각",
+   "in": {
+    "sx": 3072,
+    "sy": 1000,
+    "dx": 300,
+    "dy": 100,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true,
+    "keep": true
+   },
+   "out": [
+    2816,
+    1008,
+    3072,
+    1264
+   ]
+  },
+  {
+   "fn": "new",
+   "note": "여유 16(3060 → 3056) → 반전(전에는 16×48)",
+   "in": {
+    "sx": 3060,
+    "sy": 1000,
+    "dx": 300,
+    "dy": 100,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true,
+    "keep": false
+   },
+   "out": [
+    2800,
+    1008,
+    3056,
+    1136
+   ]
+  },
+  {
+   "fn": "new",
+   "note": "아래 변(4090 → 4096)에서 바깥으로 → 위로 반전",
+   "in": {
+    "sx": 1500,
+    "sy": 4090,
+    "dx": -300,
+    "dy": 200,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true,
+    "keep": false
+   },
+   "out": [
+    1248,
+    3840,
+    1504,
+    4096
+   ]
+  },
+  {
+   "fn": "new",
+   "note": "아래 여유 96 스냅 끔 → 위로 반전",
+   "in": {
+    "sx": 1500,
+    "sy": 4000,
+    "dx": 300,
+    "dy": 150,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": false,
+    "keep": false
+   },
+   "out": [
+    1500,
+    3850,
+    1800,
+    4000
+   ]
+  },
+  {
+   "fn": "new",
+   "note": "y 4096 Shift → 위로 반전·정사각",
+   "in": {
+    "sx": 1500,
+    "sy": 4096,
+    "dx": 100,
+    "dy": 300,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true,
+    "keep": true
+   },
+   "out": [
+    1504,
+    3840,
+    1760,
+    4096
+   ]
+  },
+  {
+   "fn": "new",
+   "note": "오른쪽 아래 구석에서 바깥으로 → 두 축 반전",
+   "in": {
+    "sx": 3072,
+    "sy": 4096,
+    "dx": 300,
+    "dy": 300,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true,
+    "keep": false
+   },
+   "out": [
+    2816,
+    3840,
+    3072,
+    4096
+   ]
+  },
+  {
+   "fn": "new",
+   "note": "위 여유 48 → 아래로 반전",
+   "in": {
+    "sx": 1000,
+    "sy": 50,
+    "dx": 200,
+    "dy": -300,
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true,
+    "keep": false
+   },
+   "out": [
+    1008,
+    48,
+    1264,
+    304
+   ]
+  },
+  {
+   "fn": "suggest",
+   "note": "002 눈동자 상자",
+   "in": {
+    "boxes": [
+     [
+      1330,
+      470,
+      1480,
+      560
+     ]
+    ],
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true
+   },
+   "out": [
+    1280,
+    384,
+    1536,
+    640
+   ]
+  },
+  {
+   "fn": "suggest",
+   "note": "같은 상자 스냅 끔",
+   "in": {
+    "boxes": [
+     [
+      1330,
+      470,
+      1480,
+      560
+     ]
+    ],
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": false
+   },
+   "out": [
+    1298,
+    451,
+    1513,
+    580
+   ]
+  },
+  {
+   "fn": "suggest",
+   "note": "상자 둘 합집합(왼쪽 변으로 밀기)",
+   "in": {
+    "boxes": [
+     [
+      100,
+      100,
+      200,
+      200
+     ],
+     [
+      300,
+      150,
+      400,
+      260
+     ]
+    ],
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true
+   },
+   "out": [
+    0,
+    48,
+    512,
+    304
+   ]
+  },
+  {
+   "fn": "suggest",
+   "note": "넓은 상자 → 짧은 축 = 긴/3",
+   "in": {
+    "boxes": [
+     [
+      0,
+      1000,
+      2000,
+      1100
+     ]
+    ],
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true
+   },
+   "out": [
+    0,
+    544,
+    2944,
+    1568
+   ]
+  },
+  {
+   "fn": "suggest",
+   "note": "캔버스보다 큼 → 캔버스",
+   "in": {
+    "boxes": [
+     [
+      0,
+      0,
+      900,
+      650
+     ]
+    ],
+    "canvas": [
+     1000,
+     700
+    ],
+    "snap": true
+   },
+   "out": [
+    0,
+    0,
+    1000,
+    700
+   ]
+  },
+  {
+   "fn": "suggest",
+   "note": "캔버스 모서리 상자",
+   "in": {
+    "boxes": [
+     [
+      2900,
+      3900,
+      3050,
+      4080
+     ]
+    ],
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true
+   },
+   "out": [
+    2816,
+    3712,
+    3072,
+    4096
+   ]
+  },
+  {
+   "fn": "suggest",
+   "note": "아주 작은 상자 → 128",
+   "in": {
+    "boxes": [
+     [
+      10,
+      10,
+      20,
+      20
+     ]
+    ],
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true
+   },
+   "out": [
+    0,
+    0,
+    128,
+    128
+   ]
+  },
+  {
+   "fn": "suggest",
+   "note": "÷0.7 이 정수(140 → 200), 70 → 100 은 최소 128",
+   "in": {
+    "boxes": [
+     [
+      1000,
+      1000,
+      1070,
+      1140
+     ]
+    ],
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": false
+   },
+   "out": [
+    971,
+    970,
+    1099,
+    1170
+   ]
+  },
+  {
+   "fn": "suggest",
+   "note": "4096×1024 넓은 상자: 높이를 캔버스로 자른 뒤 비 4 → 폭 = 3×1024, 줄인 폭으로 가운데(합집합 500–3300 을 덮음)",
+   "in": {
+    "boxes": [
+     [
+      500,
+      400,
+      3300,
+      700
+     ]
+    ],
+    "canvas": [
+     4096,
+     1024
+    ],
+    "snap": true
+   },
+   "out": [
+    368,
+    0,
+    3440,
+    1024
+   ]
+  },
+  {
+   "fn": "suggest",
+   "note": "같은 상자 스냅 끔",
+   "in": {
+    "boxes": [
+     [
+      500,
+      400,
+      3300,
+      700
+     ]
+    ],
+    "canvas": [
+     4096,
+     1024
+    ],
+    "snap": false
+   },
+   "out": [
+    364,
+    0,
+    3436,
+    1024
+   ]
+  },
+  {
+   "fn": "validate_rect",
+   "note": "정상",
+   "in": {
+    "rect": [
+     0,
+     0,
+     512,
+     512
+    ],
+    "canvas": [
+     3072,
+     4096
+    ]
+   },
+   "out": null
+  },
+  {
+   "fn": "validate_rect",
+   "note": "이관 값(128 배수 아님)도 정상",
+   "in": {
+    "rect": [
+     2240,
+     2947,
+     2624,
+     3331
+    ],
+    "canvas": [
+     3072,
+     4096
+    ]
+   },
+   "out": null
+  },
+  {
+   "fn": "validate_rect",
+   "note": "x0 음수 → outside",
+   "in": {
+    "rect": [
+     -1,
+     0,
+     511,
+     512
+    ],
+    "canvas": [
+     3072,
+     4096
+    ]
+   },
+   "out": "outside"
+  },
+  {
+   "fn": "validate_rect",
+   "note": "x1 > W → outside",
+   "in": {
+    "rect": [
+     0,
+     0,
+     3073,
+     512
+    ],
+    "canvas": [
+     3072,
+     4096
+    ]
+   },
+   "out": "outside"
+  },
+  {
+   "fn": "validate_rect",
+   "note": "아래 변 붙임 = 정상",
+   "in": {
+    "rect": [
+     1536,
+     3200,
+     2560,
+     4096
+    ],
+    "canvas": [
+     3072,
+     4096
+    ]
+   },
+   "out": null
+  },
+  {
+   "fn": "validate_rect",
+   "note": "비 3.002 → ratio",
+   "in": {
+    "rect": [
+     0,
+     0,
+     1537,
+     512
+    ],
+    "canvas": [
+     3072,
+     4096
+    ]
+   },
+   "out": "ratio"
+  },
+  {
+   "fn": "validate_rect",
+   "note": "비 3 정확히 = 정상",
+   "in": {
+    "rect": [
+     0,
+     0,
+     1536,
+     512
+    ],
+    "canvas": [
+     3072,
+     4096
+    ]
+   },
+   "out": null
+  },
+  {
+   "fn": "validate_rect",
+   "note": "세로 비 초과",
+   "in": {
+    "rect": [
+     0,
+     0,
+     128,
+     385
+    ],
+    "canvas": [
+     3072,
+     4096
+    ]
+   },
+   "out": "ratio"
+  },
+  {
+   "fn": "validate_rect",
+   "note": "소수 → error",
+   "in": {
+    "rect": [
+     0,
+     0,
+     512,
+     512.5
+    ],
+    "canvas": [
+     3072,
+     4096
+    ]
+   },
+   "out": "error"
+  },
+  {
+   "fn": "validate_rect",
+   "note": "3개 → error",
+   "in": {
+    "rect": [
+     0,
+     0,
+     512
+    ],
+    "canvas": [
+     3072,
+     4096
+    ]
+   },
+   "out": "error"
+  },
+  {
+   "fn": "validate_rect",
+   "note": "폭 0 → error",
+   "in": {
+    "rect": [
+     0,
+     0,
+     0,
+     512
+    ],
+    "canvas": [
+     3072,
+     4096
+    ]
+   },
+   "out": "error"
+  },
+  {
+   "fn": "validate_rect",
+   "note": "뒤집힘 → error",
+   "in": {
+    "rect": [
+     10,
+     0,
+     5,
+     512
+    ],
+    "canvas": [
+     3072,
+     4096
+    ]
+   },
+   "out": "error"
+  },
+  {
+   "fn": "validate_rect",
+   "note": "65537 → error",
+   "in": {
+    "rect": [
+     0,
+     0,
+     65537,
+     512
+    ],
+    "canvas": [
+     3072,
+     4096
+    ]
+   },
+   "out": "error"
+  },
+  {
+   "fn": "validate_rect",
+   "note": "-65536 은 형식 정상 → outside",
+   "in": {
+    "rect": [
+     -65536,
+     0,
+     -65000,
+     512
+    ],
+    "canvas": [
+     3072,
+     4096
+    ]
+   },
+   "out": "outside"
+  },
+  {
+   "fn": "validate_rect",
+   "note": "bool → error",
+   "in": {
+    "rect": [
+     true,
+     0,
+     512,
+     512
+    ],
+    "canvas": [
+     3072,
+     4096
+    ]
+   },
+   "out": "error"
+  },
+  {
+   "fn": "validate_rect",
+   "note": "문자열 → error",
+   "in": {
+    "rect": "0,0,512,512",
+    "canvas": [
+     3072,
+     4096
+    ]
+   },
+   "out": "error"
+  },
+  {
+   "fn": "validate_rect",
+   "note": "밖 + 비 → outside 먼저",
+   "in": {
+    "rect": [
+     -100,
+     0,
+     500,
+     100
+    ],
+    "canvas": [
+     3072,
+     4096
+    ]
+   },
+   "out": "outside"
+  },
+  {
+   "fn": "validate_rect",
+   "note": "null → error",
+   "in": {
+    "rect": null,
+    "canvas": [
+     3072,
+     4096
+    ]
+   },
+   "out": "error"
+  },
+  {
+   "fn": "validate_rect",
+   "note": "작은 캔버스 꽉 참",
+   "in": {
+    "rect": [
+     0,
+     0,
+     1000,
+     700
+    ],
+    "canvas": [
+     1000,
+     700
+    ]
+   },
+   "out": null
+  },
+  {
+   "fn": "gpt_size",
+   "note": "",
+   "in": {
+    "w": 128,
+    "h": 128
+   },
+   "out": {
+    "size": [
+     2048,
+     2048
+    ],
+    "k": 16.0,
+    "method": "square_preset"
+   }
+  },
+  {
+   "fn": "gpt_size",
+   "note": "",
+   "in": {
+    "w": 384,
+    "h": 384
+   },
+   "out": {
+    "size": [
+     2048,
+     2048
+    ],
+    "k": 5.333333,
+    "method": "square_preset"
+   }
+  },
+  {
+   "fn": "gpt_size",
+   "note": "",
+   "in": {
+    "w": 1024,
+    "h": 1024
+   },
+   "out": {
+    "size": [
+     2048,
+     2048
+    ],
+    "k": 2.0,
+    "method": "square_preset"
+   }
+  },
+  {
+   "fn": "gpt_size",
+   "note": "",
+   "in": {
+    "w": 1025,
+    "h": 1025
+   },
+   "out": {
+    "size": [
+     2048,
+     2048
+    ],
+    "k": 1.998049,
+    "method": "square_preset"
+   }
+  },
+  {
+   "fn": "gpt_size",
+   "note": "",
+   "in": {
+    "w": 1152,
+    "h": 1152
+   },
+   "out": {
+    "size": [
+     2048,
+     2048
+    ],
+    "k": 1.777778,
+    "method": "square_preset"
+   }
+  },
+  {
+   "fn": "gpt_size",
+   "note": "",
+   "in": {
+    "w": 512,
+    "h": 384
+   },
+   "out": {
+    "size": [
+     1536,
+     1152
+    ],
+    "k": 3.0,
+    "method": "int_k"
+   }
+  },
+  {
+   "fn": "gpt_size",
+   "note": "",
+   "in": {
+    "w": 384,
+    "h": 512
+   },
+   "out": {
+    "size": [
+     1152,
+     1536
+    ],
+    "k": 3.0,
+    "method": "int_k"
+   }
+  },
+  {
+   "fn": "gpt_size",
+   "note": "",
+   "in": {
+    "w": 1024,
+    "h": 768
+   },
+   "out": {
+    "size": [
+     2048,
+     1536
+    ],
+    "k": 2.0,
+    "method": "k"
+   }
+  },
+  {
+   "fn": "gpt_size",
+   "note": "",
+   "in": {
+    "w": 768,
+    "h": 1280
+   },
+   "out": {
+    "size": [
+     1536,
+     2560
+    ],
+    "k": 2.0,
+    "method": "k"
+   }
+  },
+  {
+   "fn": "gpt_size",
+   "note": "",
+   "in": {
+    "w": 1280,
+    "h": 768
+   },
+   "out": {
+    "size": [
+     2560,
+     1536
+    ],
+    "k": 2.0,
+    "method": "k"
+   }
+  },
+  {
+   "fn": "gpt_size",
+   "note": "",
+   "in": {
+    "w": 640,
+    "h": 1280
+   },
+   "out": {
+    "size": [
+     1280,
+     2560
+    ],
+    "k": 2.0,
+    "method": "k"
+   }
+  },
+  {
+   "fn": "gpt_size",
+   "note": "",
+   "in": {
+    "w": 896,
+    "h": 640
+   },
+   "out": {
+    "size": [
+     1792,
+     1280
+    ],
+    "k": 2.0,
+    "method": "k"
+   }
+  },
+  {
+   "fn": "gpt_size",
+   "note": "",
+   "in": {
+    "w": 384,
+    "h": 1152
+   },
+   "out": {
+    "size": [
+     1024,
+     3072
+    ],
+    "k": 2.666667,
+    "method": "k"
+   }
+  },
+  {
+   "fn": "gpt_size",
+   "note": "",
+   "in": {
+    "w": 1152,
+    "h": 384
+   },
+   "out": {
+    "size": [
+     3072,
+     1024
+    ],
+    "k": 2.666667,
+    "method": "k"
+   }
+  },
+  {
+   "fn": "gpt_size",
+   "note": "",
+   "in": {
+    "w": 1280,
+    "h": 1920
+   },
+   "out": {
+    "size": [
+     1280,
+     1920
+    ],
+    "k": 1.0,
+    "method": "int_k"
+   }
+  },
+  {
+   "fn": "gpt_size",
+   "note": "",
+   "in": {
+    "w": 2000,
+    "h": 1000
+   },
+   "out": {
+    "size": [
+     3840,
+     1920
+    ],
+    "k": 2.0,
+    "method": "floor16"
+   }
+  },
+  {
+   "fn": "gpt_size",
+   "note": "",
+   "in": {
+    "w": 1000,
+    "h": 3000
+   },
+   "out": {
+    "size": [
+     1280,
+     3840
+    ],
+    "k": 2.0,
+    "method": "floor16"
+   }
+  },
+  {
+   "fn": "gpt_size",
+   "note": "",
+   "in": {
+    "w": 333,
+    "h": 777
+   },
+   "out": {
+    "size": [
+     1024,
+     2384
+    ],
+    "k": 3.075075,
+    "method": "floor16"
+   }
+  },
+  {
+   "fn": "gpt_size",
+   "note": "",
+   "in": {
+    "w": 2347,
+    "h": 1001
+   },
+   "out": {
+    "size": [
+     3840,
+     1632
+    ],
+    "k": 2.0,
+    "method": "floor16"
+   }
+  },
+  {
+   "fn": "gpt_size",
+   "note": "",
+   "in": {
+    "w": 3072,
+    "h": 4096
+   },
+   "out": {
+    "size": [
+     2480,
+     3312
+    ],
+    "k": 2.0,
+    "method": "floor16"
+   }
+  },
+  {
+   "fn": "gpt_size",
+   "note": "",
+   "in": {
+    "w": 1664,
+    "h": 384
+   },
+   "out": {
+    "size": [
+     3216,
+     1072
+    ],
+    "k": 2.666667,
+    "method": "nearest"
+   }
+  },
+  {
+   "fn": "gpt_size",
+   "note": "",
+   "in": {
+    "w": 128,
+    "h": 384
+   },
+   "out": {
+    "size": [
+     1024,
+     3072
+    ],
+    "k": 8.0,
+    "method": "k"
+   }
+  },
+  {
+   "fn": "gpt_size",
+   "note": "",
+   "in": {
+    "w": 500,
+    "h": 500
+   },
+   "out": {
+    "size": [
+     2048,
+     2048
+    ],
+    "k": 4.096,
+    "method": "square_preset"
+   }
+  },
+  {
+   "fn": "gpt_size",
+   "note": "",
+   "in": {
+    "w": 1536,
+    "h": 512
+   },
+   "out": {
+    "size": [
+     3072,
+     1024
+    ],
+    "k": 2.0,
+    "method": "k"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "정상",
+   "in": {
+    "name": "009_모자본체_휘장"
+   },
+   "out": {
+    "name": "009_모자본체_휘장",
+    "nnn": "009",
+    "part": "모자본체_휘장",
+    "side": null
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "_왼쪽",
+   "in": {
+    "name": "004_어깨장식_왼쪽"
+   },
+   "out": {
+    "name": "004_어깨장식_왼쪽",
+    "nnn": "004",
+    "part": "어깨장식_왼쪽",
+    "side": "left"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "_오른쪽",
+   "in": {
+    "name": "013_소매끝_오른쪽"
+   },
+   "out": {
+    "name": "013_소매끝_오른쪽",
+    "nnn": "013",
+    "part": "소매끝_오른쪽",
+    "side": "right"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "옛 _right",
+   "in": {
+    "name": "002_토스트-머리장식_right"
+   },
+   "out": {
+    "name": "002_토스트-머리장식_right",
+    "nnn": "002",
+    "part": "토스트-머리장식_right",
+    "side": "right"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "옛 _left",
+   "in": {
+    "name": "002_토스트-머리장식_left"
+   },
+   "out": {
+    "name": "002_토스트-머리장식_left",
+    "nnn": "002",
+    "part": "토스트-머리장식_left",
+    "side": "left"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "대문자 LEFT",
+   "in": {
+    "name": "002_x_LEFT"
+   },
+   "out": {
+    "name": "002_x_LEFT",
+    "nnn": "002",
+    "part": "x_LEFT",
+    "side": "left"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "Right",
+   "in": {
+    "name": "002_x_Right"
+   },
+   "out": {
+    "name": "002_x_Right",
+    "nnn": "002",
+    "part": "x_Right",
+    "side": "right"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "'-오른쪽' 은 좌우 토큰 아님",
+   "in": {
+    "name": "006_머리태슬-오른쪽"
+   },
+   "out": {
+    "name": "006_머리태슬-오른쪽",
+    "nnn": "006",
+    "part": "머리태슬-오른쪽",
+    "side": null
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "부위가 좌우뿐",
+   "in": {
+    "name": "009_왼쪽"
+   },
+   "out": {
+    "name": "009_왼쪽",
+    "nnn": "009",
+    "part": "왼쪽",
+    "side": "left"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "마지막 토큰만",
+   "in": {
+    "name": "009_x_왼쪽_오른쪽"
+   },
+   "out": {
+    "name": "009_x_왼쪽_오른쪽",
+    "nnn": "009",
+    "part": "x_왼쪽_오른쪽",
+    "side": "right"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "좌우가 끝이 아님",
+   "in": {
+    "name": "009_오른쪽_x"
+   },
+   "out": {
+    "name": "009_오른쪽_x",
+    "nnn": "009",
+    "part": "오른쪽_x",
+    "side": null
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "앞뒤 공백 제거",
+   "in": {
+    "name": "  009_모자  "
+   },
+   "out": {
+    "name": "009_모자",
+    "nnn": "009",
+    "part": "모자",
+    "side": null
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "전각 공백 제거",
+   "in": {
+    "name": "　009_모자"
+   },
+   "out": {
+    "name": "009_모자",
+    "nnn": "009",
+    "part": "모자",
+    "side": null
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "\\x1f 는 str.strip 이 지움",
+   "in": {
+    "name": "009_a\u001f"
+   },
+   "out": {
+    "name": "009_a",
+    "nnn": "009",
+    "part": "a",
+    "side": null
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "BOM 은 지우지 않음 → prefix",
+   "in": {
+    "name": "﻿009_a"
+   },
+   "out": {
+    "err": "prefix"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "NFD → NFC",
+   "in": {
+    "name": "009_모자본체"
+   },
+   "out": {
+    "name": "009_모자본체",
+    "nnn": "009",
+    "part": "모자본체",
+    "side": null
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "결합 악센트 → NFC 로 합쳐짐",
+   "in": {
+    "name": "001_café"
+   },
+   "out": {
+    "name": "001_café",
+    "nnn": "001",
+    "part": "café",
+    "side": null
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "합쳐지지 않는 결합 문자(Mn) → char",
+   "in": {
+    "name": "001_ạ̈"
+   },
+   "out": {
+    "err": "char"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "전각 숫자 번호 → prefix",
+   "in": {
+    "name": "００９_모자"
+   },
+   "out": {
+    "err": "prefix"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "부위의 전각 숫자(Nd) 허용",
+   "in": {
+    "name": "009_모자１２"
+   },
+   "out": {
+    "name": "009_모자１２",
+    "nnn": "009",
+    "part": "모자１２",
+    "side": null
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "한 자리 번호",
+   "in": {
+    "name": "9_모자본체"
+   },
+   "out": {
+    "err": "prefix"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "네 자리 번호",
+   "in": {
+    "name": "0009_모자"
+   },
+   "out": {
+    "err": "prefix"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "밑줄 없음",
+   "in": {
+    "name": "009모자"
+   },
+   "out": {
+    "err": "prefix"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "하이픈 구분",
+   "in": {
+    "name": "009-모자"
+   },
+   "out": {
+    "err": "prefix"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "숫자 없음",
+   "in": {
+    "name": "abc_def"
+   },
+   "out": {
+    "err": "prefix"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "빈 이름",
+   "in": {
+    "name": ""
+   },
+   "out": {
+    "err": "len"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "공백만",
+   "in": {
+    "name": "   "
+   },
+   "out": {
+    "err": "len"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "4자",
+   "in": {
+    "name": "009_"
+   },
+   "out": {
+    "err": "len"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "5자 경계",
+   "in": {
+    "name": "009_a"
+   },
+   "out": {
+    "name": "009_a",
+    "nnn": "009",
+    "part": "a",
+    "side": null
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "64자 경계",
+   "in": {
+    "name": "009_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "out": {
+    "name": "009_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "nnn": "009",
+    "part": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "side": null
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "65자",
+   "in": {
+    "name": "009_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "out": {
+    "err": "len"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "64 코드 포인트(BMP 밖)",
+   "in": {
+    "name": "009_𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀"
+   },
+   "out": {
+    "name": "009_𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀",
+    "nnn": "009",
+    "part": "𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀",
+    "side": null
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "65 코드 포인트(BMP 밖)",
+   "in": {
+    "name": "009_𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀"
+   },
+   "out": {
+    "err": "len"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "BMP 밖 한자",
+   "in": {
+    "name": "009_𠀀𠀀"
+   },
+   "out": {
+    "name": "009_𠀀𠀀",
+    "nnn": "009",
+    "part": "𠀀𠀀",
+    "side": null
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "자모(Lo)",
+   "in": {
+    "name": "009_ㄱ"
+   },
+   "out": {
+    "name": "009_ㄱ",
+    "nnn": "009",
+    "part": "ㄱ",
+    "side": null
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "로마 숫자 Ⅻ(Nl)",
+   "in": {
+    "name": "009_Ⅻ"
+   },
+   "out": {
+    "name": "009_Ⅻ",
+    "nnn": "009",
+    "part": "Ⅻ",
+    "side": null
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "위 첨자 ²(No)",
+   "in": {
+    "name": "009_²"
+   },
+   "out": {
+    "name": "009_²",
+    "nnn": "009",
+    "part": "²",
+    "side": null
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "전각 영문(Lu)",
+   "in": {
+    "name": "009_ＡＢＣ"
+   },
+   "out": {
+    "name": "009_ＡＢＣ",
+    "nnn": "009",
+    "part": "ＡＢＣ",
+    "side": null
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "밑줄 두 개",
+   "in": {
+    "name": "009__a"
+   },
+   "out": {
+    "name": "009__a",
+    "nnn": "009",
+    "part": "a",
+    "side": null
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "끝 하이픈",
+   "in": {
+    "name": "009_a-"
+   },
+   "out": {
+    "name": "009_a-",
+    "nnn": "009",
+    "part": "a-",
+    "side": null
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "하이픈 시작",
+   "in": {
+    "name": "009_-a"
+   },
+   "out": {
+    "name": "009_-a",
+    "nnn": "009",
+    "part": "a",
+    "side": null
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "숫자로 시작하는 부위",
+   "in": {
+    "name": "009_12abc"
+   },
+   "out": {
+    "name": "009_12abc",
+    "nnn": "009",
+    "part": "12abc",
+    "side": null
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "XSS 꼴",
+   "in": {
+    "name": "009_<img src=x onerror=alert(1)>"
+   },
+   "out": {
+    "err": "char"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "금지 ' '",
+   "in": {
+    "name": "009_a b"
+   },
+   "out": {
+    "err": "char"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "금지 '|'",
+   "in": {
+    "name": "009_a|b"
+   },
+   "out": {
+    "err": "char"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "금지 '｜'",
+   "in": {
+    "name": "009_a｜b"
+   },
+   "out": {
+    "err": "char"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "금지 '│'",
+   "in": {
+    "name": "009_a│b"
+   },
+   "out": {
+    "err": "char"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "금지 '¦'",
+   "in": {
+    "name": "009_a¦b"
+   },
+   "out": {
+    "err": "char"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "금지 ';'",
+   "in": {
+    "name": "009_a;b"
+   },
+   "out": {
+    "err": "char"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "금지 '；'",
+   "in": {
+    "name": "009_a；b"
+   },
+   "out": {
+    "err": "char"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "금지 ':'",
+   "in": {
+    "name": "009_a:b"
+   },
+   "out": {
+    "err": "char"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "금지 '：'",
+   "in": {
+    "name": "009_a：b"
+   },
+   "out": {
+    "err": "char"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "금지 ','",
+   "in": {
+    "name": "009_a,b"
+   },
+   "out": {
+    "err": "char"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "금지 '/'",
+   "in": {
+    "name": "009_a/b"
+   },
+   "out": {
+    "err": "char"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "금지 '\\\\'",
+   "in": {
+    "name": "009_a\\b"
+   },
+   "out": {
+    "err": "char"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "금지 '<'",
+   "in": {
+    "name": "009_a<b"
+   },
+   "out": {
+    "err": "char"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "금지 '>'",
+   "in": {
+    "name": "009_a>b"
+   },
+   "out": {
+    "err": "char"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "금지 '\"'",
+   "in": {
+    "name": "009_a\"b"
+   },
+   "out": {
+    "err": "char"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "금지 \"'\"",
+   "in": {
+    "name": "009_a'b"
+   },
+   "out": {
+    "err": "char"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "금지 '?'",
+   "in": {
+    "name": "009_a?b"
+   },
+   "out": {
+    "err": "char"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "금지 '*'",
+   "in": {
+    "name": "009_a*b"
+   },
+   "out": {
+    "err": "char"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "금지 '\\t'",
+   "in": {
+    "name": "009_a\tb"
+   },
+   "out": {
+    "err": "char"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "금지 '\\n'",
+   "in": {
+    "name": "009_a\nb"
+   },
+   "out": {
+    "err": "char"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "금지 '\\x00'",
+   "in": {
+    "name": "009_a\u0000b"
+   },
+   "out": {
+    "err": "char"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "금지 '\\x7f'",
+   "in": {
+    "name": "009_ab"
+   },
+   "out": {
+    "err": "char"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "금지 '\\xa0'",
+   "in": {
+    "name": "009_a b"
+   },
+   "out": {
+    "err": "char"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "금지 '\\u200b'",
+   "in": {
+    "name": "009_a​b"
+   },
+   "out": {
+    "err": "char"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "금지 '.'",
+   "in": {
+    "name": "009_a.b"
+   },
+   "out": {
+    "err": "char"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "금지 '·'",
+   "in": {
+    "name": "009_a·b"
+   },
+   "out": {
+    "err": "char"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "금지 '😀'",
+   "in": {
+    "name": "009_a😀b"
+   },
+   "out": {
+    "err": "char"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "금지 '\\u2028'",
+   "in": {
+    "name": "009_a b"
+   },
+   "out": {
+    "err": "char"
+   }
+  },
+  {
+   "fn": "check_name",
+   "note": "금지 '\\u3000'",
+   "in": {
+    "name": "009_a　b"
+   },
+   "out": {
+    "err": "char"
+   }
+  },
+  {
+   "fn": "check_text",
+   "note": "빈 문구 허용",
+   "in": {
+    "text": ""
+   },
+   "out": {
+    "text": ""
+   }
+  },
+  {
+   "fn": "check_text",
+   "note": "한글",
+   "in": {
+    "text": "눈동자"
+   },
+   "out": {
+    "text": "눈동자"
+   }
+  },
+  {
+   "fn": "check_text",
+   "note": "앞뒤 공백 제거",
+   "in": {
+    "text": "  gold cap emblem  "
+   },
+   "out": {
+    "text": "gold cap emblem"
+   }
+  },
+  {
+   "fn": "check_text",
+   "note": "120자",
+   "in": {
+    "text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "out": {
+    "text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   }
+  },
+  {
+   "fn": "check_text",
+   "note": "121자",
+   "in": {
+    "text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "out": {
+    "err": "len"
+   }
+  },
+  {
+   "fn": "check_text",
+   "note": "120 코드 포인트(BMP 밖)",
+   "in": {
+    "text": "𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀"
+   },
+   "out": {
+    "text": "𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀"
+   }
+  },
+  {
+   "fn": "check_text",
+   "note": "121 코드 포인트",
+   "in": {
+    "text": "𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀𠀀"
+   },
+   "out": {
+    "err": "len"
+   }
+  },
+  {
+   "fn": "check_text",
+   "note": "|",
+   "in": {
+    "text": "a|b"
+   },
+   "out": {
+    "err": "char"
+   }
+  },
+  {
+   "fn": "check_text",
+   "note": "｜",
+   "in": {
+    "text": "a｜b"
+   },
+   "out": {
+    "err": "char"
+   }
+  },
+  {
+   "fn": "check_text",
+   "note": "│",
+   "in": {
+    "text": "a│b"
+   },
+   "out": {
+    "err": "char"
+   }
+  },
+  {
+   "fn": "check_text",
+   "note": "¦",
+   "in": {
+    "text": "a¦b"
+   },
+   "out": {
+    "err": "char"
+   }
+  },
+  {
+   "fn": "check_text",
+   "note": ";",
+   "in": {
+    "text": "a;b"
+   },
+   "out": {
+    "err": "char"
+   }
+  },
+  {
+   "fn": "check_text",
+   "note": "；",
+   "in": {
+    "text": "a；b"
+   },
+   "out": {
+    "err": "char"
+   }
+  },
+  {
+   "fn": "check_text",
+   "note": "줄바꿈",
+   "in": {
+    "text": "a\nb"
+   },
+   "out": {
+    "err": "char"
+   }
+  },
+  {
+   "fn": "check_text",
+   "note": "CR",
+   "in": {
+    "text": "a\rb"
+   },
+   "out": {
+    "err": "char"
+   }
+  },
+  {
+   "fn": "check_text",
+   "note": "탭(Cc)",
+   "in": {
+    "text": "a\tb"
+   },
+   "out": {
+    "err": "char"
+   }
+  },
+  {
+   "fn": "check_text",
+   "note": "U+2028",
+   "in": {
+    "text": "a b"
+   },
+   "out": {
+    "err": "char"
+   }
+  },
+  {
+   "fn": "check_text",
+   "note": "NUL",
+   "in": {
+    "text": "a\u0000b"
+   },
+   "out": {
+    "err": "char"
+   }
+  },
+  {
+   "fn": "check_text",
+   "note": "', B:' 꼴",
+   "in": {
+    "text": "red, B: blue"
+   },
+   "out": {
+    "err": "roundtrip"
+   }
+  },
+  {
+   "fn": "check_text",
+   "note": "전각 '，B：'",
+   "in": {
+    "text": "red，B：blue"
+   },
+   "out": {
+    "err": "roundtrip"
+   }
+  },
+  {
+   "fn": "check_text",
+   "note": "'、 C:'",
+   "in": {
+    "text": "red、 C: x"
+   },
+   "out": {
+    "err": "roundtrip"
+   }
+  },
+  {
+   "fn": "check_text",
+   "note": "소문자 라벨은 괜찮음",
+   "in": {
+    "text": "red, b: blue"
+   },
+   "out": {
+    "text": "red, b: blue"
+   }
+  },
+  {
+   "fn": "check_text",
+   "note": "앞이 'B:' 면 괜찮음",
+   "in": {
+    "text": "B: blue"
+   },
+   "out": {
+    "text": "B: blue"
+   }
+  },
+  {
+   "fn": "check_text",
+   "note": "콜론",
+   "in": {
+    "text": "color: red"
+   },
+   "out": {
+    "text": "color: red"
+   }
+  },
+  {
+   "fn": "check_text",
+   "note": "쉼표 뒤 대문자 단어",
+   "in": {
+    "text": "red, Blue"
+   },
+   "out": {
+    "text": "red, Blue"
+   }
+  },
+  {
+   "fn": "check_text",
+   "note": "NFD → NFC",
+   "in": {
+    "text": "눈동자"
+   },
+   "out": {
+    "text": "눈동자"
+   }
+  },
+  {
+   "fn": "check_text",
+   "note": "전각 Ａ:",
+   "in": {
+    "text": "Ａ: x"
+   },
+   "out": {
+    "text": "Ａ: x"
+   }
+  },
+  {
+   "fn": "check_text",
+   "note": "쉼표 뒤 전각 Ａ:",
+   "in": {
+    "text": "x, Ａ: y"
+   },
+   "out": {
+    "text": "x, Ａ: y"
+   }
+  },
+  {
+   "fn": "check_text",
+   "note": "꺾쇠 허용(보드는 textContent)",
+   "in": {
+    "text": "<img src=x onerror=alert(1)>"
+   },
+   "out": {
+    "text": "<img src=x onerror=alert(1)>"
+   }
+  },
+  {
+   "fn": "check_text",
+   "note": "BOM 은 지우지 않음(Cf 허용)",
+   "in": {
+    "text": "﻿x"
+   },
+   "out": {
+    "text": "﻿x"
+   }
+  },
+  {
+   "fn": "check_text",
+   "note": "\\x1f 는 strip 이 지움",
+   "in": {
+    "text": "x\u001f"
+   },
+   "out": {
+    "text": "x"
+   }
+  },
+  {
+   "fn": "check_text",
+   "note": "숫자 쉼표",
+   "in": {
+    "text": "1, 2"
+   },
+   "out": {
+    "text": "1, 2"
+   }
+  },
+  {
+   "fn": "check_text",
+   "note": "공백 없는 ',B:c'",
+   "in": {
+    "text": "a ,B:c"
+   },
+   "out": {
+    "err": "roundtrip"
+   }
+  },
+  {
+   "fn": "check_text",
+   "note": "끝 ', Z:'",
+   "in": {
+    "text": "x, Z:"
+   },
+   "out": {
+    "err": "roundtrip"
+   }
+  },
+  {
+   "fn": "check_text",
+   "note": "\\uFEFF 는 정규식 \\s 가 아님",
+   "in": {
+    "text": "x,﻿B: y"
+   },
+   "out": {
+    "text": "x,﻿B: y"
+   }
+  },
+  {
+   "fn": "geom_checks",
+   "note": "코드 14개 모두(테스트 _layout_geom_sample)",
+   "in": {
+    "layout": {
+     "canvas": [
+      3072,
+      4096
+     ],
+     "crops": [
+      {
+       "id": "001_672bcc",
+       "name": "001_정상",
+       "rect": [
+        0,
+        0,
+        512,
+        512
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": null
+        }
+       ],
+       "psd_name": "001_정상",
+       "note": ""
+      },
+      {
+       "id": "002_c4a045",
+       "name": "002_긴비",
+       "rect": [
+        0,
+        3200,
+        1664,
+        3584
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": null
+        }
+       ],
+       "psd_name": "002_긴비",
+       "note": ""
+      },
+      {
+       "id": "003_efb357",
+       "name": "003_밖",
+       "rect": [
+        2816,
+        0,
+        3200,
+        384
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": null
+        }
+       ],
+       "psd_name": "003_밖",
+       "note": ""
+      },
+      {
+       "id": "004_bfb9b7",
+       "name": "004_어중간",
+       "rect": [
+        1024,
+        0,
+        1524,
+        500
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": null
+        }
+       ],
+       "psd_name": "004_어중간",
+       "note": ""
+      },
+      {
+       "id": "005_06470f",
+       "name": "005_작음",
+       "rect": [
+        2048,
+        3584,
+        2304,
+        3840
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": null
+        }
+       ],
+       "psd_name": "005_작음",
+       "note": ""
+      },
+      {
+       "id": "006_686123",
+       "name": "006_큼",
+       "rect": [
+        0,
+        2048,
+        2048,
+        3072
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": null
+        }
+       ],
+       "psd_name": "006_큼",
+       "note": ""
+      },
+      {
+       "id": "007_14d94f",
+       "name": "007_같음_가",
+       "rect": [
+        2560,
+        1024,
+        2944,
+        1408
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": null
+        }
+       ],
+       "psd_name": "007_같음_가",
+       "note": ""
+      },
+      {
+       "id": "008_3f0690",
+       "name": "008_같음_나",
+       "rect": [
+        2560,
+        1024,
+        2944,
+        1408
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": null
+        }
+       ],
+       "psd_name": "008_같음_나",
+       "note": ""
+      },
+      {
+       "id": "009_f1027f",
+       "name": "009_겹침",
+       "rect": [
+        1024,
+        512,
+        1536,
+        1024
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": null
+        }
+       ],
+       "psd_name": "009_겹침",
+       "note": ""
+      },
+      {
+       "id": "010_e078ba",
+       "name": "010_겹침",
+       "rect": [
+        1408,
+        896,
+        1920,
+        1408
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": null
+        }
+       ],
+       "psd_name": "010_겹침",
+       "note": ""
+      },
+      {
+       "id": "9_470629",
+       "name": "9_옛이름",
+       "rect": [
+        512,
+        3712,
+        1024,
+        4096
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": null
+        }
+       ],
+       "psd_name": "9_옛이름",
+       "note": ""
+      },
+      {
+       "id": "011_0ab317",
+       "name": "011_Ab",
+       "rect": [
+        2048,
+        2048,
+        2560,
+        2560
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": null
+        }
+       ],
+       "psd_name": "011_Ab",
+       "note": ""
+      },
+      {
+       "id": "011_73eb22",
+       "name": "011_aB",
+       "rect": [
+        2560,
+        2048,
+        3072,
+        2560
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": null
+        }
+       ],
+       "psd_name": "011_aB",
+       "note": ""
+      },
+      {
+       "id": "012_22407b",
+       "name": "012_가",
+       "rect": [
+        2048,
+        2560,
+        2560,
+        3072
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": null
+        }
+       ],
+       "psd_name": "012_가",
+       "note": ""
+      },
+      {
+       "id": "012_dc1d51",
+       "name": "012_나",
+       "rect": [
+        2560,
+        2560,
+        3072,
+        3072
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": null
+        }
+       ],
+       "psd_name": "012_나",
+       "note": ""
+      },
+      {
+       "id": "013_9a2a19",
+       "name": "013_장식_왼쪽",
+       "rect": [
+        2560,
+        3072,
+        3072,
+        3584
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": null
+        }
+       ],
+       "psd_name": "013_장식_왼쪽",
+       "note": ""
+      },
+      {
+       "id": "014_05eaf5",
+       "name": "014_상자",
+       "rect": [
+        1024,
+        1536,
+        2048,
+        2048
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": [
+          1030,
+          1600,
+          1500,
+          2000
+         ]
+        },
+        {
+         "tid": "B",
+         "text": "",
+         "box": [
+          1100,
+          1700,
+          1700,
+          1900
+         ]
+        },
+        {
+         "tid": "C",
+         "text": "",
+         "box": [
+          2000,
+          1700,
+          2100,
+          1800
+         ]
+        },
+        {
+         "tid": "D",
+         "text": "",
+         "box": [
+          1300,
+          1650,
+          1700,
+          1950
+         ]
+        }
+       ],
+       "psd_name": "014_상자",
+       "note": ""
+      }
+     ]
+    }
+   },
+   "out": [
+    [
+     "002_c4a045",
+     "L-gptk"
+    ],
+    [
+     "002_c4a045",
+     "L-ratio"
+    ],
+    [
+     "003_efb357",
+     "L-outside"
+    ],
+    [
+     "004_bfb9b7",
+     "L-128"
+    ],
+    [
+     "005_06470f",
+     "L-small"
+    ],
+    [
+     "006_686123",
+     "L-gptk"
+    ],
+    [
+     "007_14d94f",
+     "L-same"
+    ],
+    [
+     "008_3f0690",
+     "L-same"
+    ],
+    [
+     "009_f1027f",
+     "L-overlap"
+    ],
+    [
+     "010_e078ba",
+     "L-overlap"
+    ],
+    [
+     "011_0ab317",
+     "N-dup"
+    ],
+    [
+     "011_0ab317",
+     "N-nnn"
+    ],
+    [
+     "011_73eb22",
+     "N-dup"
+    ],
+    [
+     "011_73eb22",
+     "N-nnn"
+    ],
+    [
+     "012_22407b",
+     "N-nnn"
+    ],
+    [
+     "012_dc1d51",
+     "N-nnn"
+    ],
+    [
+     "013_9a2a19",
+     "N-side"
+    ],
+    [
+     "014_05eaf5",
+     "P-70"
+    ],
+    [
+     "014_05eaf5",
+     "P-edge"
+    ],
+    [
+     "014_05eaf5",
+     "P-out"
+    ],
+    [
+     "9_470629",
+     "N-name"
+    ]
+   ]
+  },
+  {
+   "fn": "geom_checks",
+   "note": "빈 레이아웃",
+   "in": {
+    "layout": {
+     "canvas": [
+      3072,
+      4096
+     ],
+     "crops": []
+    }
+   },
+   "out": []
+  },
+  {
+   "fn": "geom_checks",
+   "note": "문제없음",
+   "in": {
+    "layout": {
+     "canvas": [
+      3072,
+      4096
+     ],
+     "crops": [
+      {
+       "id": "001_672bcc",
+       "name": "001_정상",
+       "rect": [
+        0,
+        0,
+        512,
+        512
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": null
+        }
+       ],
+       "psd_name": "001_정상",
+       "note": ""
+      }
+     ]
+    }
+   },
+   "out": []
+  },
+  {
+   "fn": "geom_checks",
+   "note": "같은 rect → L-same(겹침 아님)",
+   "in": {
+    "layout": {
+     "canvas": [
+      3072,
+      4096
+     ],
+     "crops": [
+      {
+       "id": "001_53cf89",
+       "name": "001_가",
+       "rect": [
+        0,
+        0,
+        512,
+        512
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": null
+        }
+       ],
+       "psd_name": "001_가",
+       "note": ""
+      },
+      {
+       "id": "002_dd6bf2",
+       "name": "002_나",
+       "rect": [
+        0,
+        0,
+        512,
+        512
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": null
+        }
+       ],
+       "psd_name": "002_나",
+       "note": ""
+      }
+     ]
+    }
+   },
+   "out": [
+    [
+     "001_53cf89",
+     "L-same"
+    ],
+    [
+     "002_dd6bf2",
+     "L-same"
+    ]
+   ]
+  },
+  {
+   "fn": "geom_checks",
+   "note": "변이 닿기만 → 없음",
+   "in": {
+    "layout": {
+     "canvas": [
+      3072,
+      4096
+     ],
+     "crops": [
+      {
+       "id": "001_53cf89",
+       "name": "001_가",
+       "rect": [
+        0,
+        0,
+        512,
+        512
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": null
+        }
+       ],
+       "psd_name": "001_가",
+       "note": ""
+      },
+      {
+       "id": "002_dd6bf2",
+       "name": "002_나",
+       "rect": [
+        512,
+        0,
+        1024,
+        512
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": null
+        }
+       ],
+       "psd_name": "002_나",
+       "note": ""
+      }
+     ]
+    }
+   },
+   "out": []
+  },
+  {
+   "fn": "geom_checks",
+   "note": "1px 겹침 → L-overlap",
+   "in": {
+    "layout": {
+     "canvas": [
+      3072,
+      4096
+     ],
+     "crops": [
+      {
+       "id": "001_53cf89",
+       "name": "001_가",
+       "rect": [
+        0,
+        0,
+        512,
+        512
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": null
+        }
+       ],
+       "psd_name": "001_가",
+       "note": ""
+      },
+      {
+       "id": "002_dd6bf2",
+       "name": "002_나",
+       "rect": [
+        511,
+        511,
+        1023,
+        1023
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": null
+        }
+       ],
+       "psd_name": "002_나",
+       "note": ""
+      }
+     ]
+    }
+   },
+   "out": [
+    [
+     "001_53cf89",
+     "L-overlap"
+    ],
+    [
+     "002_dd6bf2",
+     "L-overlap"
+    ]
+   ]
+  },
+  {
+   "fn": "geom_checks",
+   "note": "정사각 1152 → L-gptk, 1024 → 없음",
+   "in": {
+    "layout": {
+     "canvas": [
+      3072,
+      4096
+     ],
+     "crops": [
+      {
+       "id": "001_53cf89",
+       "name": "001_가",
+       "rect": [
+        0,
+        0,
+        1152,
+        1152
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": null
+        }
+       ],
+       "psd_name": "001_가",
+       "note": ""
+      },
+      {
+       "id": "002_dd6bf2",
+       "name": "002_나",
+       "rect": [
+        0,
+        2048,
+        1024,
+        3072
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": null
+        }
+       ],
+       "psd_name": "002_나",
+       "note": ""
+      }
+     ]
+    }
+   },
+   "out": [
+    [
+     "001_53cf89",
+     "L-gptk"
+    ]
+   ]
+  },
+  {
+   "fn": "geom_checks",
+   "note": "큰 크롭(nearest 경로) → L-gptk",
+   "in": {
+    "layout": {
+     "canvas": [
+      3072,
+      4096
+     ],
+     "crops": [
+      {
+       "id": "001_53cf89",
+       "name": "001_가",
+       "rect": [
+        0,
+        0,
+        3072,
+        4096
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": null
+        }
+       ],
+       "psd_name": "001_가",
+       "note": ""
+      }
+     ]
+    }
+   },
+   "out": [
+    [
+     "001_53cf89",
+     "L-gptk"
+    ]
+   ]
+  },
+  {
+   "fn": "geom_checks",
+   "note": "비 초과 + 캔버스 밖 + 128 아님",
+   "in": {
+    "layout": {
+     "canvas": [
+      3072,
+      4096
+     ],
+     "crops": [
+      {
+       "id": "001_53cf89",
+       "name": "001_가",
+       "rect": [
+        -100,
+        0,
+        1500,
+        300
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": null
+        }
+       ],
+       "psd_name": "001_가",
+       "note": ""
+      }
+     ]
+    }
+   },
+   "out": [
+    [
+     "001_53cf89",
+     "L-128"
+    ],
+    [
+     "001_53cf89",
+     "L-gptk"
+    ],
+    [
+     "001_53cf89",
+     "L-outside"
+    ],
+    [
+     "001_53cf89",
+     "L-ratio"
+    ],
+    [
+     "001_53cf89",
+     "L-small"
+    ]
+   ]
+  },
+  {
+   "fn": "geom_checks",
+   "note": "좌우: 오른쪽 이름이 왼쪽 1/3 → N-side, 왼쪽 이름이 가운데 → 없음",
+   "in": {
+    "layout": {
+     "canvas": [
+      3072,
+      4096
+     ],
+     "crops": [
+      {
+       "id": "020_bfe5ed",
+       "name": "020_소매_오른쪽",
+       "rect": [
+        0,
+        0,
+        512,
+        512
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": null
+        }
+       ],
+       "psd_name": "020_소매_오른쪽",
+       "note": ""
+      },
+      {
+       "id": "021_a6c79a",
+       "name": "021_소매_왼쪽",
+       "rect": [
+        1280,
+        1024,
+        1792,
+        1536
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": null
+        }
+       ],
+       "psd_name": "021_소매_왼쪽",
+       "note": ""
+      },
+      {
+       "id": "022_27461b",
+       "name": "022_x_left",
+       "rect": [
+        2560,
+        2048,
+        3072,
+        2560
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": null
+        }
+       ],
+       "psd_name": "022_x_left",
+       "note": ""
+      },
+      {
+       "id": "023_652286",
+       "name": "023_x_right",
+       "rect": [
+        2560,
+        3072,
+        3072,
+        3584
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": null
+        }
+       ],
+       "psd_name": "023_x_right",
+       "note": ""
+      }
+     ]
+    }
+   },
+   "out": [
+    [
+     "020_bfe5ed",
+     "N-side"
+    ],
+    [
+     "022_27461b",
+     "N-side"
+    ]
+   ]
+  },
+  {
+   "fn": "geom_checks",
+   "note": "이름 중복 NFC·casefold → N-dup + N-nnn",
+   "in": {
+    "layout": {
+     "canvas": [
+      3072,
+      4096
+     ],
+     "crops": [
+      {
+       "id": "009_b9ab96",
+       "name": "009_Café",
+       "rect": [
+        0,
+        0,
+        512,
+        512
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": null
+        }
+       ],
+       "psd_name": "009_Café",
+       "note": ""
+      },
+      {
+       "id": "009_f82974",
+       "name": "009_CAFÉ",
+       "rect": [
+        1024,
+        0,
+        1536,
+        512
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": null
+        }
+       ],
+       "psd_name": "009_CAFÉ",
+       "note": ""
+      }
+     ]
+    }
+   },
+   "out": [
+    [
+     "009_b9ab96",
+     "N-dup"
+    ],
+    [
+     "009_b9ab96",
+     "N-nnn"
+    ],
+    [
+     "009_f82974",
+     "N-dup"
+    ],
+    [
+     "009_f82974",
+     "N-nnn"
+    ]
+   ]
+  },
+  {
+   "fn": "geom_checks",
+   "note": "같은 번호만 → N-nnn",
+   "in": {
+    "layout": {
+     "canvas": [
+      3072,
+      4096
+     ],
+     "crops": [
+      {
+       "id": "012_22407b",
+       "name": "012_가",
+       "rect": [
+        0,
+        0,
+        512,
+        512
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": null
+        }
+       ],
+       "psd_name": "012_가",
+       "note": ""
+      },
+      {
+       "id": "012_dc1d51",
+       "name": "012_나",
+       "rect": [
+        1024,
+        0,
+        1536,
+        512
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": null
+        }
+       ],
+       "psd_name": "012_나",
+       "note": ""
+      },
+      {
+       "id": "013_50ac95",
+       "name": "013_다",
+       "rect": [
+        2048,
+        0,
+        2560,
+        512
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": null
+        }
+       ],
+       "psd_name": "013_다",
+       "note": ""
+      }
+     ]
+    }
+   },
+   "out": [
+    [
+     "012_22407b",
+     "N-nnn"
+    ],
+    [
+     "012_dc1d51",
+     "N-nnn"
+    ]
+   ]
+  },
+  {
+   "fn": "geom_checks",
+   "note": "이관된 이름 규칙 위반 → N-name",
+   "in": {
+    "layout": {
+     "canvas": [
+      3072,
+      4096
+     ],
+     "crops": [
+      {
+       "id": "1_dcd81d",
+       "name": "1_x",
+       "rect": [
+        0,
+        0,
+        512,
+        512
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": null
+        }
+       ],
+       "psd_name": "1_x",
+       "note": ""
+      },
+      {
+       "id": "002_c8e6c1",
+       "name": "002_a b",
+       "rect": [
+        1024,
+        0,
+        1536,
+        512
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": null
+        }
+       ],
+       "psd_name": "002_a b",
+       "note": ""
+      }
+     ]
+    }
+   },
+   "out": [
+    [
+     "002_c8e6c1",
+     "N-name"
+    ],
+    [
+     "1_dcd81d",
+     "N-name"
+    ]
+   ]
+  },
+  {
+   "fn": "geom_checks",
+   "note": "상자 여백 경계(512): 10 → P-edge, 11 → P-70, 76 → P-70, 77 → 없음, 오른쪽 0 → P-edge, -1 → P-out",
+   "in": {
+    "layout": {
+     "canvas": [
+      3072,
+      4096
+     ],
+     "crops": [
+      {
+       "id": "030_688c2c",
+       "name": "030_가",
+       "rect": [
+        0,
+        0,
+        512,
+        512
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": [
+          10,
+          150,
+          300,
+          362
+         ]
+        }
+       ],
+       "psd_name": "030_가",
+       "note": ""
+      },
+      {
+       "id": "031_90fc21",
+       "name": "031_나",
+       "rect": [
+        512,
+        0,
+        1024,
+        512
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": [
+          523,
+          150,
+          812,
+          362
+         ]
+        }
+       ],
+       "psd_name": "031_나",
+       "note": ""
+      },
+      {
+       "id": "032_db3dda",
+       "name": "032_다",
+       "rect": [
+        1024,
+        0,
+        1536,
+        512
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": [
+          1100,
+          150,
+          1324,
+          362
+         ]
+        }
+       ],
+       "psd_name": "032_다",
+       "note": ""
+      },
+      {
+       "id": "033_e91b8e",
+       "name": "033_라",
+       "rect": [
+        1536,
+        0,
+        2048,
+        512
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": [
+          1613,
+          150,
+          1836,
+          362
+         ]
+        }
+       ],
+       "psd_name": "033_라",
+       "note": ""
+      },
+      {
+       "id": "034_f26c50",
+       "name": "034_마",
+       "rect": [
+        2048,
+        0,
+        2560,
+        512
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": [
+          2260,
+          150,
+          2560,
+          362
+         ]
+        }
+       ],
+       "psd_name": "034_마",
+       "note": ""
+      },
+      {
+       "id": "035_71e929",
+       "name": "035_바",
+       "rect": [
+        2560,
+        0,
+        3072,
+        512
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": [
+          2772,
+          150,
+          3073,
+          362
+         ]
+        }
+       ],
+       "psd_name": "035_바",
+       "note": ""
+      }
+     ]
+    }
+   },
+   "out": [
+    [
+     "030_688c2c",
+     "P-edge"
+    ],
+    [
+     "031_90fc21",
+     "P-70"
+    ],
+    [
+     "032_db3dda",
+     "P-70"
+    ],
+    [
+     "034_f26c50",
+     "P-edge"
+    ],
+    [
+     "035_71e929",
+     "P-out"
+    ]
+   ]
+  },
+  {
+   "fn": "geom_checks",
+   "note": "작은 크롭(128): 여백 7 → P-edge(8px), 8 → P-70",
+   "in": {
+    "layout": {
+     "canvas": [
+      3072,
+      4096
+     ],
+     "crops": [
+      {
+       "id": "036_e04257",
+       "name": "036_작음",
+       "rect": [
+        0,
+        1024,
+        128,
+        1152
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": [
+          7,
+          1060,
+          100,
+          1100
+         ]
+        }
+       ],
+       "psd_name": "036_작음",
+       "note": ""
+      },
+      {
+       "id": "037_518379",
+       "name": "037_작음",
+       "rect": [
+        512,
+        1024,
+        640,
+        1152
+       ],
+       "targets": [
+        {
+         "tid": "B",
+         "text": "",
+         "box": [
+          520,
+          1060,
+          600,
+          1100
+         ]
+        }
+       ],
+       "psd_name": "037_작음",
+       "note": ""
+      }
+     ]
+    }
+   },
+   "out": [
+    [
+     "036_e04257",
+     "L-small"
+    ],
+    [
+     "036_e04257",
+     "P-edge"
+    ],
+    [
+     "037_518379",
+     "L-small"
+    ],
+    [
+     "037_518379",
+     "P-70"
+    ]
+   ]
+  },
+  {
+   "fn": "name_dup",
+   "note": "ı(점 없는 i)는 casefold 해도 ı → 중복 아님",
+   "in": {
+    "a": "001_ı모자",
+    "b": "001_i모자"
+   },
+   "out": false
+  },
+  {
+   "fn": "name_dup",
+   "note": "ẞ(U+1E9E)는 casefold → ss",
+   "in": {
+    "a": "001_ẞ모자",
+    "b": "001_ss모자"
+   },
+   "out": true
+  },
+  {
+   "fn": "name_dup",
+   "note": "ß 와 ẞ 는 둘 다 ss",
+   "in": {
+    "a": "001_ß모자",
+    "b": "001_ẞ모자"
+   },
+   "out": true
+  },
+  {
+   "fn": "name_dup",
+   "note": "ß ↔ ss",
+   "in": {
+    "a": "001_ß모자",
+    "b": "001_ss모자"
+   },
+   "out": true
+  }
+ ]
+}

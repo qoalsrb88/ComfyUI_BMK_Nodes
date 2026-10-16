@@ -38,10 +38,11 @@
 // Review 노드
 //  - ui.bmk_dp_board[0].root_key 를 properties 에 기억한다(재로드 뒤에도 Open Board 가 동작).
 //  - Open Board: window.open("/bmk/design_patch/board/?root=<key>", "bmk_dp_board_<key>").
-//  - 보드 창의 postMessage {type:"bmk-dp-queue", rootKey}(같은 origin 만) → 그 프로젝트의 Review 노드만 부분 실행.
+//  - 보드 창의 postMessage {type:"bmk-dp-queue", rootKey, layout?}(같은 origin 만) → 그 프로젝트의 Review 노드만 부분 실행.
 //    보드 재굴림은 서버에서 사전 승인된 호출이라 Run 이 그 호출만 과금한다 — 큐에 넣기 전에 모든 유료 노드(Run·Draft)의
 //    approve 를 비운다.
-//    연타는 0.8초 단위로 한 번에 묶는다.
+//    layout = 편집기 "반영(큐)": Review 의 상류에 켜진 Import PSD 가 있을 때만 넣는다(부분 실행이 Import 를 다시 돌려야 반영됨).
+//    연타는 0.8초 단위로 한 번에 묶는다(그 안에 layout 요청이 있으면 묶음 전체가 layout).
 //
 // 1.53 클래식 모드 주의: 위젯은 addWidget("button") 만, 위젯 배열 맨 뒤에 serialize=false 로 붙인다
 // (widgets_values 위치 호환). 노드별 상태는 WeakMap 에 둔다. 위젯 객체에 얹는 것은 프론트가 부르는 afterQueued 훅뿐이다
@@ -54,6 +55,7 @@ import { api } from "../../scripts/api.js";
 const RUN_NODE = "BMKDesignPatchRun";
 const DRAFT_NODE = "BMKDesignPatchSpecDraft";
 const REVIEW_NODE = "BMKDesignPatchReview";
+const IMPORT_NODE = "BMKDesignPatchImportPSD";
 const PAID_NODES = [RUN_NODE, DRAFT_NODE];
 const DRAFT_UI = "bmk_dp_draft"; // vlm.UI_KEY
 const DRAFT_LOCAL = "vlm_local_qwen"; // vlm.BACKEND_NAMES
@@ -76,6 +78,7 @@ const states = new WeakMap(); // Run·Draft 노드 → { entry, cont, prevRemain
 const armed = new Set(); // 자동 이어가기 대기 중인 Run 노드
 const contQueued = new Set(); // 자동 이어가기로 큐에 넣었고 그 Run 이 아직 실행되지 않은 노드(Drain 안내용)
 const boardTimers = new Map(); // rootKey → 보드 큐 요청 묶음 타이머
+const boardLayout = new Set(); // 묶음 안에 레이아웃 반영 요청이 있는 rootKey
 // 이 탭이 큐에 넣어 지금 실행 중인 프롬프트. execution_start/success 는 큐에 넣은 탭에만 온다
 // (bmk.dp.wave 는 모든 탭에 방송되므로 이 값으로 남의 실행을 걸러 낸다).
 let runningPromptId = null;
@@ -688,11 +691,30 @@ function openBoard(node) {
     if (!win) notify("warn", "팝업이 차단되었습니다. 이 주소의 팝업을 허용하세요.");
 }
 
-async function queueReview(key) {
+// 레이아웃 반영은 부분 실행이 Import PSD 를 다시 돌릴 때만 된다 — 대상(Review)의 조상(입력 링크)에 Import 가 있는가.
+// 꺼진(mute) 노드는 프롬프트에 없고 bypass 된 노드는 graphToPrompt 가 건너 이으므로 조상에 남지 않는다.
+function importUpstream(prompt, targets) {
+    return [...partialRunIds(prompt, targets)].some((id) => prompt[id].class_type === IMPORT_NODE);
+}
+
+async function queueReview(key, layout) {
     const targets = nodesOf(REVIEW_NODE).filter((n) => rootKeyOf(n) === key && !isOff(n));
     if (!targets.length) {
         notify("warn", "보드 큐 요청: 지금 열린 워크플로에 이 프로젝트의 켜진 Review 노드가 없습니다(한 번 실행해야 연결됩니다).");
         return;
+    }
+    if (layout) {
+        let prompt;
+        try {
+            prompt = (await app.graphToPrompt()).output;
+        } catch (e) {
+            notify("error", `보드 요청 큐 실패: ${e?.message ?? e}`);
+            return;
+        }
+        if (!importUpstream(prompt, targets.map(execIdOf).filter(Boolean))) {
+            notify("warn", "레이아웃 반영은 Import PSD 가 Review 상류일 때만 됩니다 — ComfyUI 에서 Import 를 포함해 큐에 넣으세요");
+            return;
+        }
     }
     // Review 의 상류인 Run·Draft 도 함께 실행된다. 보드 요청은 사전 승인된 재굴림만 과금해야 하므로 쓰이지 않은 승인 해시
     // (직접 붙여 넣은 것 등)가 함께 나가지 않게 모든 유료 노드의 approve 를 비운다(이미 큐에 들어간 프롬프트는 그대로)
@@ -705,12 +727,13 @@ function onBoardMessage(ev) {
     const d = ev.data;
     if (d?.type !== "bmk-dp-queue" || typeof d.rootKey !== "string" || !ROOT_KEY_RE.test(d.rootKey)) return;
     const key = d.rootKey;
+    if (d.layout === true) boardLayout.add(key);
     clearTimeout(boardTimers.get(key));
     boardTimers.set(
         key,
         setTimeout(() => {
             boardTimers.delete(key);
-            queueReview(key);
+            queueReview(key, boardLayout.delete(key));
         }, BOARD_QUEUE_DELAY_MS)
     );
 }

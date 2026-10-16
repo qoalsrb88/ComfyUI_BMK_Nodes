@@ -1,7 +1,7 @@
 // BMK Design Patch Studio(Review Board) — vanilla JS, 빌드·외부 리소스 없음.
 // 서버: bmk_design_patch_board.py (/bmk/design_patch/*). 모든 문자열(PSD 레이어명 등)은 textContent 로만 넣는다.
 // 보드는 매니페스트(★·slice·탈락·재굴림 의도)만 고친다. 유료 호출은 opener(ComfyUI 탭)가 Review 노드를 큐에 넣을 때만.
-// 캔버스 뷰어는 viewer.js(DPViewer) — 이 파일이 선택·키 입력을 넘긴다.
+// 캔버스 뷰어는 viewer.js(DPViewer) — 이 파일이 선택·키 입력을 넘긴다. 레이아웃 편집 모드(E)는 layout_edit.js(DPLayoutEdit).
 "use strict";
 
 (() => {
@@ -12,6 +12,10 @@
   const REROLL_CONFIRM_MS = 2500;
   const GATE_NAMES = { outside_mad: "마스크 밖 MAD", outside_frac_gt24: "마스크 밖 큰 차이", black_band: "검은 띠" };
   const PREF_KEY = "bmk-dp-studio";
+  // 편집 모드에서 끄는 검토 키: ★(Space)·탈락(X)·재굴림(R, 유료)·타깃/후보 이동·비교 보기. Space 는 viewer.js 가 화면 이동에 쓴다
+  const EDIT_OFF = new Set(["Space", "KeyX", "KeyR", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "KeyQ", "KeyD", "KeyC",
+    "KeyS", "KeyM", "KeyV"]);
+  const LAYOUT_STATUS = { changed: "레이아웃 바뀜(미반영)", removed: "레이아웃에서 지움(미반영)" }; // state 크롭의 layout_status
 
   let S = null; // 마지막 전체 상태
   let tKey = null; // 선택한 타깃 "crop_id/tid"
@@ -29,6 +33,8 @@
   let slider = false;
   let raw = false;
   let seamsByCrop = new Map(); // crop_id → {n, bad}
+  let editor = null; // DPLayoutEdit — 옛 서버(ComfyUI 재시작 전)는 layout_*.js 를 주지 않아 null
+  let editing = false;
 
   const $ = (id) => document.getElementById(id);
 
@@ -135,12 +141,15 @@
       if (d.unchanged && S) {
         S.running = d.running;
         S.drain = d.drain;
+        // 레이아웃 쓰기는 매니페스트 rev 를 올리지 않는다 — layout_rev 가 바뀌면 크롭 layout_status 를 새로 받는다
+        if ("layout_rev" in d && d.layout_rev !== S.layout_rev) pollAgain = true;
         renderHeader();
       } else if (!d.unchanged) {
         S = d;
         reconcile();
         renderAll(false);
       }
+      if (editing && S) editor.stateChanged(S);
       setConn("");
     } catch (e) {
       setConn(e.message);
@@ -350,8 +359,15 @@
       }
     }
     rerollArm = null;
+    // 미반영 레이아웃 편집은 이 큐의 Import 가 함께 반영한다 — 이 크롭이 그중 하나면 셀이 바뀔 수 있고(다른 대상 문구만 바뀌면 그대로)
+    // 바뀌면 이 재굴림은 돌지 않는다
+    const pend = S.crops.filter((c) => LAYOUT_STATUS[c.layout_status]);
+    const mine = pend.some((c) => c.id === curTarget().crop_id);
+    if (mine && !window.confirm(`이 크롭은 레이아웃이 바뀌어(미반영) 이 큐에서 셀이 바뀌면 재굴림이 실행되지 않습니다. `
+      + `미반영 레이아웃 ${pend.length}건도 이 큐로 반영됩니다. 계속할까요?`)) return;
     const r = await write("reroll", { cell_key: cell.cell_key, count: 1 },
-      (x) => `재굴림 +1 → ${x.variant || ""} 셀 대기 ${x.cell_pending} · 전체 대기 ${x.pending_calls}`);
+      (x) => `재굴림 +1 → ${x.variant || ""} 셀 대기 ${x.cell_pending} · 전체 대기 ${x.pending_calls}`
+        + (pend.length && !mine ? ` · 미반영 레이아웃 ${pend.length}건 함께 반영` : ""));
     if (r) setTimeout(queueInComfy, 600);
   }
 
@@ -360,11 +376,12 @@
     return !!op && !op.closed;
   }
 
-  function queueInComfy() {
+  function queueInComfy(layout = false) {
+    // layout = 편집기 "반영(큐)" — ComfyUI 탭은 Review 상류에 Import PSD 가 있을 때만 큐에 넣는다(아니면 그 탭이 알림)
     const op = window.opener;
     if (op && !op.closed) {
       try {
-        op.postMessage({ type: "bmk-dp-queue", rootKey: ROOT }, location.origin);
+        op.postMessage({ type: "bmk-dp-queue", rootKey: ROOT, layout }, location.origin);
         toast("ComfyUI 탭에 큐 요청을 보냈습니다 (Review 노드 부분 실행)");
         return true;
       } catch (e) {
@@ -391,6 +408,27 @@
     const on = show === undefined ? document.body.classList.contains("no-viewer") : show;
     document.body.classList.toggle("no-viewer", !on);
     savePref({ viewer: on });
+  }
+
+  function layoutReady() {
+    // 서버가 S1 이전 버전이면 state 에 layout_rev 가 없다(라우트도 없음) — 편집 버튼을 끄고 재시작 안내
+    return !!editor && !!S && "layout_rev" in S;
+  }
+
+  function setEditing(on) {
+    if (on && !layoutReady()) {
+      toast("ComfyUI 를 재시작해야 레이아웃 편집을 쓸 수 있습니다(서버가 옛 버전)", "warn");
+      return;
+    }
+    editing = on;
+    document.body.classList.toggle("editing", on);
+    $("btn-edit").classList.toggle("on", on);
+    if (on) {
+      editor.enter(S);
+    } else {
+      editor.leave();
+      syncViewer(false);
+    }
   }
 
   function setViewFlags(f) {
@@ -441,6 +479,10 @@
       : "Review 노드의 Open Board 로 열지 않았거나 그 탭이 닫혔습니다 — 재굴림은 ComfyUI 탭에서 직접 큐에 넣어야 합니다";
     b.append(cn);
     $("btn-drain").disabled = !S.running;
+    const eb = $("btn-edit");
+    eb.disabled = !layoutReady();
+    eb.title = layoutReady() ? "레이아웃 편집 (E) — 크롭 사각형·이름·대상을 Studio 에서"
+      : "ComfyUI 를 재시작해야 레이아웃 편집을 쓸 수 있습니다(서버가 옛 버전)";
   }
 
   function targetTitle(t) {
@@ -460,6 +502,7 @@
   }
 
   function cropChips(ch, c) {
+    if (LAYOUT_STATUS[c.layout_status]) ch.append(chip(LAYOUT_STATUS[c.layout_status], "b-wait"));
     if (c.calls) ch.append(chip(credits(c.credits, c.credits_unknown), "b-cost"));
     if (c.dup_picks.length) ch.append(chip(`중복 ★ ${c.dup_picks.length}`, "b-bad"));
     if (c.stale_picked.length) ch.append(chip("옛 크롭 ★", "b-bad"));
@@ -680,7 +723,7 @@
   }
 
   function syncViewer(follow) {
-    if (!viewer) return;
+    if (!viewer || editing) return; // 편집 모드의 선택은 편집기가 뷰어에 넘긴다
     const t = curTarget();
     viewer.setSelection(t ? { crop: cropOf(t), target: t, cand: curCand() } : null, follow);
   }
@@ -708,9 +751,18 @@
   }
 
   // ── 입력 ────────────────────────────────────────────
+  function typing(t) {
+    return t instanceof Element && !!t.closest("input, textarea, select, [contenteditable]");
+  }
+
   function onKeyDown(e) {
-    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (typing(e.target)) return; // 입력칸(편집기 속성 패널) 포커스: 보드 단축키를 모두 무시 — Enter·Esc 는 입력칸이 처리
     const helpOpen = !$("help").hidden;
+    if (editing && !helpOpen && editor.onKey(e)) {
+      e.preventDefault();
+      return;
+    }
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
     const isHelpKey = (e.code === "Slash" && e.shiftKey) || e.key === "?";
     if (helpOpen) {
       if (e.code === "Escape" || isHelpKey) {
@@ -724,7 +776,14 @@
       e.preventDefault();
       return;
     }
+    if (editing && EDIT_OFF.has(e.code)) {
+      e.preventDefault();
+      return;
+    }
     switch (e.code) {
+      case "KeyE":
+        if (!e.repeat) setEditing(!editing);
+        break;
       case "ArrowUp": moveTarget(-1); break;
       case "ArrowDown": moveTarget(1); break;
       case "ArrowLeft": moveCand(-1); break;
@@ -819,6 +878,7 @@
     on("btn-drain", drain);
     on("btn-viewer", () => toggleViewer());
     on("btn-help", () => help());
+    on("btn-edit", () => setEditing(!editing));
     $("ref-frame").addEventListener("click", () => {
       const t = curTarget();
       if (t && t.refs.length > 1) {
@@ -843,6 +903,10 @@
     }
     if (loadPref().viewer === false) document.body.classList.add("no-viewer");
     viewer = window.DPViewer.create($("viewer"), { apiUrl, onPick: pickCrop, onSeams });
+    if (window.DPLayoutEdit) {
+      editor = window.DPLayoutEdit.create({ list: $("layout-list"), panel: $("layout-panel"), head: $("layout-head") },
+        { apiUrl, root: ROOT, viewer, toast, queue: queueInComfy, exit: () => setEditing(false) });
+    }
     wireButtons();
     document.addEventListener("keydown", onKeyDown);
     document.addEventListener("keyup", onKeyUp);

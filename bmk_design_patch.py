@@ -37,7 +37,7 @@ M3 는 Spec Draft(VLM 이 specs/<crop_id>.json 초안을 씀)를 더한다.
   서로의 결과를 덮어쓰지 않는다(명세 §5 의 핸들 4키에 더한 확장). Spec Draft 는 "draft"(초안 대기 요약)를 실어
   Prepare 를 지나 Run 까지 보낸다(Run 의 초안 대기 경고).
 - Project      : <base_dir>/bmk_design_patch/<project>/ 를 열거나 만든다. base_dir "" = ComfyUI input 폴더.
-                 IS_CHANGED = 매니페스트·specs/·glossary.json 과 specs 가 가리키는 파일(guide·before_paste·refs) 지문
+                 IS_CHANGED = 매니페스트·layout.json·specs/·glossary.json 과 specs 가 가리키는 파일(guide·before_paste·refs) 지문
                  + Spec Draft 원장(vlm/<crop_id>/<key>/a*.json 이름·크기, 재폴링 표시) + mock 스위치
                  → 다른 노드가 원장을 바꾸면 다음 큐에서 하류 전체가 다시 확인된다(각 노드는 디스크 캐시로 즉시 끝남).
                  매니페스트의 project 이름은 폴더 이름에 맞춘다(복사한 폴더).
@@ -47,6 +47,15 @@ M3 는 Spec Draft(VLM 이 specs/<crop_id>.json 초안을 씀)를 더한다.
                  타깃 = 레이어명 + specs/<crop_id>.json 의 _layer_targets(Spec Draft 채택, store.merge_layer_targets —
                  PSD 문구가 있는 tid 는 PSD 우선, 채택 타깃에 origin "adopt"). 캐시 경로에서도 _layer_targets·채택 타깃이 있는
                  크롭은 매 실행 다시 계산한다(스펙을 고치면 다음 큐에 반영). crop.layer_name 은 PSD 원본 그대로.
+                 레이아웃 모드(S1, 프로젝트 폴더에 layout.json — Studio '레이아웃 편집 시작'이 만든다): 크롭 rect·이름·대상·
+                 ID 의 원천은 layout.json(layer_name = 합성 레이어명, 대상 문구가 PSD 문구 자리), PSD 는 베이스·work_rect·사전
+                 편집 그룹(psd_name 으로 찾음)만. 소스는 바뀐 크롭만 다시 만들고, 사전 편집 자식이 아니면 PSD 를 열지 않는다.
+                 PSD 를 열 때마다 derived/psd_crops.json 스냅숏을 쓰고 PSD 사각형이 기준점과 달라지면 경고만 한다(크롭 영역
+                 그룹을 못 읽으면 경고 한 줄). 기준점이 이 PSD 가 아닌데 믿을 스냅숏이 없으면 바뀐 크롭이 없어도 한 번 연다.
+                 PSD 모드 Import 는 스냅숏을 지운다. 깨진 layout.json·캔버스 크기 다름은 오류. 빈 시작(D6): layout.json 없음 +
+                 crop_group=auto 인데 그룹이 없거나 shape 0 이면, 지울 크롭이 없거나(첫 Import) layout.json 을 치운 매니페스트일
+                 때만 크롭 0(베이스만) + 안내 — PSD 모드로 크롭이 있던 프로젝트는 오류(매니페스트 그대로).
+                 Candidate In·Prepare 는 크롭 0 이면 예외 대신 경고(Review 까지 돌게).
 - Candidate In : 후보 등록. psd_harvest = 최종 PSD 의 결과 그룹 SO(원본 bytes·quad·손 마스크·보임 여부),
                  folder = 폴더 이미지(파일명 앞부분 = 크롭 이름, quad = crop rect). 원본 bytes 는 cands/ 에
                  디코드 없이 저장(내용 주소). mapping_json 으로 크롭/타깃 지정·건너뛰기.
@@ -103,6 +112,8 @@ M3 는 Spec Draft(VLM 이 specs/<crop_id>.json 초안을 씀)를 더한다.
 
 매니페스트 추가 키(명세 §1 스키마 밖, "추가 키 허용")
 - source.refs_dir / refs_fingerprint / glossary / glossary_fingerprint, crops[].layer_name / rect_source
+- 레이아웃 모드(S1): source.layout = {rev, sig}(Import 가 이번에 읽은 layout.json 판 — 보드의 '미반영' 표시),
+  crops[].psd_name(사전 편집 그룹에서 찾은 이름), rect_source "layout"
 - crops[].targets[].origin ("adopt" = specs 의 _layer_targets 에서 온 타깃, 그 밖은 키 없음)
 - candidates[].hand_mask.bg / origin_info.crop_source(폴더), jobs[].inputs[].source(canvas), 분석 항목의 params /
   skipped / no_source / rect / seq / quad_reg / mask_area / thumb / tone.full
@@ -154,6 +165,11 @@ v3 (2026-10, M3)
   사각형으로 합성하던 문제 — Run·폴더 후보는 만들 때의 크롭(_gen_frame) 기준 분석, 항목 rect, 소스 없음 경고.
   jobs[].inputs 의 canvas 에 source(평탄화 전 크롭 소스, 원장 req 에도), 폴더 후보 origin_info.crop_source.
   제자리 후보의 분석 해시는 그대로(다시 계산하지 않음).
+v4 (2026-10, Studio S1 — STUDIO_S1_SPEC §2·D6)
+- Import PSD 레이아웃 모드(layout.json 이 크롭 원천, 바뀐 크롭만 소스 계산, PSD 안 여는 경로, 스냅숏·갈라짐 경고, 보고서
+  '레이아웃 rev N · 크롭 n · 바뀜 k(소스 다시 만듦 s, PSD 엶|안 엶)'). layout.json 이 없으면 지금 그대로(만들지 않음).
+  이관(Studio '레이아웃 편집 시작')만으로는 id·rect·source·targets·cell_key·Run 승인 해시·초안 키가 바뀌지 않는다.
+- Project 지문에 layout.json. 빈 시작(D6): Import 크롭 0, Candidate In·Prepare 경고.
 """
 
 from __future__ import annotations
@@ -377,8 +393,10 @@ def _vlm_fp(root: str):
 
 def _project_fp(root: str) -> str:
     """Project IS_CHANGED. mock 스위치(환경변수·_MOCK_API 파일)도 넣는다 — 켜고 끄면 Draft·Prepare·Run 이 다시 실행돼
-    백엔드에 묶인 승인 해시·'mock 초안 교체' 대기·Run 의 초안 대기 경고가 지금 백엔드를 따른다."""
+    백엔드에 묶인 승인 해시·'mock 초안 교체' 대기·Run 의 초안 대기 경고가 지금 백엔드를 따른다.
+    layout.json(Studio 레이아웃 편집, S1)도 넣는다 — Import 의 IS_CHANGED 는 루트를 모르므로(링크 입력) 하류 전체를 여기서 깨운다."""
     return "|".join(str(v) for v in (_file_fp(os.path.join(root, store.MANIFEST_NAME)),
+                                     _file_fp(os.path.join(root, store.LAYOUT_NAME)),
                                      _dir_fp(os.path.join(root, "specs")),
                                      _file_fp(os.path.join(root, "glossary.json")),
                                      _spec_files_fp(root),
@@ -991,6 +1009,13 @@ class BMKDesignPatchProject:
 # ══════════════════════════════════════════════════════════════════════
 # 노드 2 — Import PSD
 # ══════════════════════════════════════════════════════════════════════
+def _merge_adopted(crop: dict, parsed: dict, ov: dict) -> tuple[dict, list[str]]:
+    """store.merge_layer_targets(레이어명 파싱 + 스펙 _layer_targets). 크롭 ID·psd_name 을 넘겨 Studio 에서 이름을 바꾼 크롭의 스펙
+    앞머리 '<처음 이름> |' 도 뗀다. Import(_targets)·Prepare 가드(_adopt_stale)가 같은 규칙."""
+    return store.merge_layer_targets(parsed, ov.get("_layer_targets"), crop_id=crop["id"],
+                                     aliases=[crop["psd_name"]] if crop.get("psd_name") else [])
+
+
 def _new_targets(parsed: dict, old_crop: dict | None) -> list[dict]:
     """레이어명 타깃 → 매니페스트 타깃. 영문(ASCII) 문구는 name_en, 한글 문구·레거시는 label(번역은 Prepare).
     parsed 가 store.merge_layer_targets 를 거쳤으면 채택 타깃의 origin 을 그대로 옮긴다(채택 타깃에만 키가 있음)."""
@@ -1033,6 +1058,100 @@ def _adopt_changes(m: dict, crop: dict, prev: list[dict]) -> list[str]:
         if cands:
             out.append(f"{what}: 후보 {len(cands)} · pick {sum(1 for c in cands if c.get('picked'))}")
     return out
+
+
+_SAME_RECT = "다른 크롭과 rect 가 같음(타깃을 한 크롭의 '| A: …; B: …' 로 합치는 것을 권장)"
+_SAME_NAME = "같은 이름의 크롭이 여러 개(ID 에 -2.. 접미, 폴더 후보·mapping_json 은 ID 로 지정)"
+_LAYOUT_WARN = "레이아웃: "  # 레이아웃 모드에서 크롭 정의(layout.json)에서 나온 경고 머리 — 소스 경고와 가른다
+_SNAPSHOT_KEYS = ("psd", "fingerprint", "crop_group", "crop_pixels_group")  # 스냅숏을 믿는 조건 = 지금 Import 설정과 같음
+
+
+def _source_warnings(s: dict) -> list[str]:
+    """crop_sources 항목에서 나온 경고(합성 경고·캔버스 밖) + 투명 여백 안내."""
+    return list(s["warnings"]) + ([f"투명 여백 {s['alpha_frac'] * 100:.1f}% → Prepare 가 가장자리 복제로 평탄화"]
+                                  if s["alpha_frac"] > 0 else [])
+
+
+def _kept_source_warnings(old: dict) -> list[str]:
+    """소스를 다시 쓰는 크롭의 소스 경고 = 옛 경고에서 크롭 정의에서 나온 것(레이아웃 머리·같은 rect·같은 이름·레이어명 파싱)을
+    뺀 것. 이관 직후(PSD 모드 크롭)의 shape 읽기 경고는 남는다(그 rect 를 이관했으므로)."""
+    drop = {_SAME_RECT, _SAME_NAME, *store.parse_crop_layer_name(old["layer_name"])["warnings"]}
+    return [w for w in old["warnings"] if not w.startswith(_LAYOUT_WARN) and w not in drop]
+
+
+_CROP_GROUP_HINT = "PSD 의 02.크롭영역 그룹을 확인하거나, Studio 로만 쓰려면 먼저 레이아웃 편집 시작"
+_LATE_LAYOUT = ("주의: 이 Import 중 layout.json 이 생김 — 이관 기준점이 이 Import 전 매니페스트일 수 있음"
+                "(다음 큐에서 PSD 를 열어 갈라짐 확인)")
+
+
+def _auto_group(crop_group: str) -> bool:
+    return crop_group.strip().lower() in ("", "auto")
+
+
+def _psd_rects(psd, crop_group: str) -> list[dict]:
+    """dpsd.read_crop_rects. crop_group 이 auto 인데 크롭 영역 그룹이 없으면 [](shape 0 과 같음 — 빈 시작 판정은 _empty_start),
+    이름을 직접 적었는데 없으면 지금처럼 오류(오타 방지)."""
+    try:
+        return dpsd.read_crop_rects(psd, crop_group)
+    except ValueError:
+        if not _auto_group(crop_group) or dpsd.find_crop_group(psd) is not None:
+            raise
+        return []
+
+
+def _empty_start(root: str, m: dict, crop_group: str) -> str:
+    """PSD 모드 Import 의 크롭이 0(크롭 영역 그룹 없음·shape 0)일 때. 빈 시작(D6)은 crop_group auto 이고, 지울 크롭이 없거나
+    (첫 Import·빈 프로젝트) layout.json 을 치워 PSD 원천으로 돌아온 매니페스트(source.layout)일 때만 — 반환 = 보고서 줄(되돌림 안내,
+    없으면 ""). 그 밖(PSD 모드로 크롭이 있던 프로젝트, 이름을 적은 그룹이 빔)은 ValueError — 매니페스트는 그대로."""
+    if not _auto_group(crop_group):
+        raise ValueError(f"{_TAG} 크롭 영역 그룹 {crop_group!r} 에 shape 레이어가 없습니다 — {_CROP_GROUP_HINT}")
+    if m["source"].get("layout"):
+        revs = store._layout_history_revs(os.path.join(root, store.LAYOUT_HISTORY_DIR))
+        return (f"{store.LAYOUT_NAME} 가 없어 크롭 원천이 PSD 로 돌아옴(크롭 영역 그룹 없음·shape 0) — "
+                + (f"{store.LAYOUT_HISTORY_DIR}/r{revs[-1]}.json 을 {store.LAYOUT_NAME} 으로 복사하면 되돌림"
+                   "(이력은 쓰기 직전 판 — 마지막 편집 1회는 빠짐)" if revs
+                   else f"되돌릴 {store.LAYOUT_HISTORY_DIR} 없음"))
+    if m["crops"]:
+        raise ValueError(f"{_TAG} 크롭 영역 그룹을 찾을 수 없습니다(또는 shape 0) — 기존 크롭 {len(m['crops'])}개를 지우지 않으려고 "
+                         f"멈춥니다. {_CROP_GROUP_HINT}")
+    return ""
+
+
+def _base_lines(binfo: dict, work_rect: list[int], sec: float) -> list[str]:
+    return ([f"PSD 읽기 {sec:.1f}s · 베이스 {binfo['method']} ({binfo.get('base_layer')} + {binfo.get('clean_plate_layer')}) · "
+             f"work_rect {work_rect}"] + [f"  - 베이스: {w}" for w in binfo["warnings"]])
+
+
+def _write_psd_snapshot(root: str, heavy: dict, rects: list[dict], nodes: list[str]) -> dict:
+    """PSD 크롭 스냅숏 derived/psd_crops.json = {psd, fingerprint, crop_group, crop_pixels_group, at,
+    crops: [{name, layer_name, rect, rect_source}], pixel_nodes: [크롭 이미지 그룹 자식 이름]}. 갈라짐 경고·보드 'PSD 값 가져오기'·
+    PSD 를 열지 않는 소스 경로(pixel_nodes)의 원천."""
+    snap = {**{k: heavy[k] for k in _SNAPSHOT_KEYS}, "at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "crops": [{"name": store.parse_crop_layer_name(r["name"])["name"], "layer_name": r["name"],
+                       "rect": [int(v) for v in r["rect"]], "rect_source": r["rect_source"]} for r in rects],
+            "pixel_nodes": nodes}
+    store.write_json_atomic(os.path.join(root, store.PSD_SNAPSHOT), snap)
+    return snap
+
+
+def _read_psd_snapshot(root: str, heavy: dict) -> dict | None:
+    """스냅숏이 지금 Import 설정(PSD 경로·지문·crop_group·crop_pixels_group)으로 쓴 것이면 그 dict, 아니면(없음·깨짐 포함) None."""
+    try:
+        with open(os.path.join(root, store.PSD_SNAPSHOT), encoding="utf-8") as f:
+            snap = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return snap if all(snap.get(k) == heavy[k] for k in _SNAPSHOT_KEYS) else None
+
+
+def _psd_drift(lay: dict, snap: dict) -> str:
+    """PSD 기준점(layout.psd) 대 스냅숏의 shape 차이(store.psd_diff)를 보고서 한 줄로. 차이가 없으면 ""."""
+    d = store.psd_diff(lay["psd"], snap)
+    parts = [f"{c['name']} " + ", ".join(f"rect {c['from']['rect']}→{c['to']['rect']}" if f == "rect"
+                                          else f"레이어명 {c['from']['layer_name']!r}→{c['to']['layer_name']!r}"
+                                          for f in c["fields"]) for c in d["changed"]]
+    parts += [f"새 shape {c['name']}" for c in d["added"]] + [f"사라진 shape {c['name']}" for c in d["removed"]]
+    return ("주의: PSD 사각형이 이관 뒤 바뀜(반영 안 함 — Studio 의 'PSD 값 가져오기'로): " + " · ".join(parts)) if parts else ""
 
 
 def _overview(base: np.ndarray, crops: list[dict], max_side: int = 1600) -> np.ndarray:
@@ -1086,7 +1205,9 @@ class BMKDesignPatchImportPSD:
     DESCRIPTION = (
         "PSD 를 psd_tools 로 직접 읽어 크롭 rect(shape 벡터), 베이스(I2I_base + 클린플레이트), 크롭 그룹 사전 편집을 합성한 "
         "크롭 소스를 매니페스트에 기록합니다. 레이어명 'NNN_부위 | A: …; B: …' 로 타깃을, refs_dir 에서 레퍼런스를 매칭합니다. "
-        "specs/<crop_id>.json 의 _layer_targets(Spec Draft 채택)는 레이어명에 적은 것처럼 타깃에 더합니다(PSD 문구가 있으면 PSD 우선)."
+        "specs/<crop_id>.json 의 _layer_targets(Spec Draft 채택)는 레이어명에 적은 것처럼 타깃에 더합니다(PSD 문구가 있으면 PSD 우선). "
+        "프로젝트 폴더에 layout.json(Studio 레이아웃 편집)이 있으면 크롭 rect·이름·대상·ID 는 그것을 쓰고, PSD 는 베이스·사전 편집에만 "
+        "씁니다(PSD 사각형이 달라지면 경고만)."
     )
     SEARCH_ALIASES = _ALIASES + ["import psd", "crop rect", "psd 가져오기", "크롭 영역", "클린플레이트"]
 
@@ -1105,16 +1226,23 @@ class BMKDesignPatchImportPSD:
             raise ValueError(f"{_TAG} 레퍼런스 폴더가 없습니다: {refs_dir!r}")
         if glossary_path and not os.path.isfile(glossary_path):
             raise ValueError(f"{_TAG} 용어집 파일이 없습니다: {glossary_path!r}")
+        try:
+            lay = store.load_layout(root)  # 깨진 layout.json 은 오류(조용히 PSD 로 돌아가면 크롭 원천이 뒤집힘)
+        except ValueError as e:
+            raise ValueError(f"{_TAG} {e}") from e
         heavy = {"psd": psd_path.replace("\\", "/"), "fingerprint": store.file_fingerprint(psd_path),
                  "crop_group": crop_group, "clean_plate_layer": clean_plate_layer, "base_layer": base_layer,
                  "crop_pixels_group": crop_pixels_group}
         src = m["source"]
-        cached = (all(src.get(k) == v for k, v in heavy.items()) and m["base"] and m["crops"]
-                  and os.path.isfile(_abs(root, m["base"]))
-                  and all(os.path.isfile(_abs(root, c["source"])) for c in m["crops"]))
-        info_line = "캐시 적중(PSD·그룹 설정 같음, 다시 읽지 않음)"
-        if not cached:
-            info_line = self._import(root, m, psd_path, heavy)
+        if lay is None:  # 크롭 원천 = PSD shape. 레이아웃 모드였던 매니페스트(source.layout)는 다시 읽는다
+            cached = (all(src.get(k) == v for k, v in heavy.items()) and not src.get("layout") and m["base"]
+                      and os.path.isfile(_abs(root, m["base"]))
+                      and all(os.path.isfile(_abs(root, c["source"])) for c in m["crops"]))
+            info_line = "캐시 적중(PSD·그룹 설정 같음, 다시 읽지 않음)"
+            if not cached:
+                info_line = self._import(root, m, psd_path, heavy)
+        else:
+            info_line, cached = self._import_layout(root, m, psd_path, heavy, lay, old)
         notes = self._targets(root, m, old, cached)
         light = {"refs_dir": refs_dir.replace("\\", "/"), "refs_fingerprint": _dir_fp(refs_dir),
                  "glossary": glossary_path.replace("\\", "/"), "glossary_fingerprint": _file_fp(glossary_path)}
@@ -1122,9 +1250,11 @@ class BMKDesignPatchImportPSD:
             for c in m["crops"]:
                 c["refs_auto"] = store.match_refs(refs_dir, c["nnn"], part=c["part"]) if refs_dir and c["nnn"] else []
             m["source"].update(light)
+        late = lay is None and os.path.isfile(os.path.join(root, store.LAYOUT_NAME))  # PSD 모드 Import 중 보드 '편집 시작'
         handle, conflicts = _commit(root, m, before, project)
         base = _load_rgb(root, m["base"])
-        report = "\n".join([self._report(m, psd_path, info_line, time.time() - t0, notes)] + [f"  - {w}" for w in conflicts])
+        report = "\n".join([self._report(m, psd_path, info_line, time.time() - t0, notes)] + ([_LATE_LAYOUT] if late else [])
+                           + [f"  - {w}" for w in conflicts])
         logger.info("%s %s", _TAG, report.splitlines()[0])
         return (handle, _to_image(_overview(base, m["crops"])), report)
 
@@ -1132,9 +1262,8 @@ class BMKDesignPatchImportPSD:
     def _import(root: str, m: dict, psd_path: str, heavy: dict) -> str:
         t0 = time.time()
         psd = dpsd.open_psd(psd_path)
-        rects = dpsd.read_crop_rects(psd, heavy["crop_group"])
-        if not rects:
-            raise ValueError(f"{_TAG} 크롭 영역 그룹에 shape 레이어가 없습니다: {psd_path}")
+        rects = _psd_rects(psd, heavy["crop_group"])
+        empty_note = "" if rects else _empty_start(root, m, heavy["crop_group"])  # 빈 시작(D6): 크롭 0, 베이스만
         pbar = comfy.utils.ProgressBar(len(rects) + 2)
         base_rgb, binfo = dpsd.read_base(psd, heavy["clean_plate_layer"], heavy["base_layer"])
         pbar.update(1)
@@ -1151,13 +1280,11 @@ class BMKDesignPatchImportPSD:
             name_count[p["name"]] = name_count.get(p["name"], 0) + 1
         crops = []
         for cid, p, r, s in zip(ids, parsed, rects, srcs):
-            warns = list(r["warnings"]) + list(p["warnings"]) + list(s["warnings"])
-            if s["alpha_frac"] > 0:
-                warns.append(f"투명 여백 {s['alpha_frac'] * 100:.1f}% → Prepare 가 가장자리 복제로 평탄화")
+            warns = list(r["warnings"]) + list(p["warnings"]) + _source_warnings(s)
             if rect_count[tuple(r["rect"])] > 1:
-                warns.append("다른 크롭과 rect 가 같음(타깃을 한 크롭의 '| A: …; B: …' 로 합치는 것을 권장)")
+                warns.append(_SAME_RECT)
             if name_count[p["name"]] > 1:
-                warns.append("같은 이름의 크롭이 여러 개(ID 에 -2.. 접미, 폴더 후보·mapping_json 은 ID 로 지정)")
+                warns.append(_SAME_NAME)
             crops.append({
                 "id": cid, "name": p["name"], "nnn": p["nnn"], "part": p["part"], "layer_name": r["name"],
                 "rect": [int(v) for v in r["rect"]], "rect_source": r["rect_source"],
@@ -1170,10 +1297,131 @@ class BMKDesignPatchImportPSD:
         m["canvas"] = list(psd.size)
         m["work_rect"] = [int(v) for v in binfo["work_rect"]]
         m["source"].update(heavy)
+        m["source"].pop("layout", None)  # layout.json 을 치운 프로젝트: 크롭 원천이 PSD 로 돌아옴
         m["base"] = store.save_png_ca(root, "inputs", base_rgb)
-        line = (f"PSD 읽기 {time.time() - t0:.1f}s · 베이스 {binfo['method']} "
-                f"({binfo.get('base_layer')} + {binfo.get('clean_plate_layer')}) · work_rect {m['work_rect']}")
-        return "\n".join([line] + [f"  - 베이스: {w}" for w in binfo["warnings"]])
+        snap_path = os.path.join(root, store.PSD_SNAPSHOT)
+        if os.path.isfile(snap_path):  # 레이아웃 모드 때 쓴 스냅숏 — PSD 모드 결과와 맞지 않는 옛 기준을 남기지 않는다
+            os.remove(snap_path)
+        return "\n".join(_base_lines(binfo, m["work_rect"], time.time() - t0) + ([empty_note] if empty_note else []))
+
+    @staticmethod
+    def _import_layout(root: str, m: dict, psd_path: str, heavy: dict, lay: dict, old: dict) -> tuple[str, bool]:
+        """레이아웃 모드(layout.json 있음, S1 §2.2): 크롭의 rect·이름·대상·ID = layout.json(assign_crop_ids 를 부르지 않음),
+        PSD = 베이스·work_rect·사전 편집 그룹(찾는 이름 = psd_name, 없으면 name). 매니페스트 크롭에 psd_name(찾은 이름)을 남긴다.
+        소스는 바뀐 크롭(새 크롭·rect·psd_name·소스 파일 없음)만 다시 만든다: PSD 지문·무거운 설정이 같고 믿을 수 있는 스냅숏이
+        그 이름을 사전 편집 자식(pixel_nodes)으로 보지 않으면 PSD 를 열지 않고 매니페스트 베이스 PNG + work_rect 로
+        (dpsd.base_crop_sources — crop_sources 와 같은 바이트), 아니면 PSD 를 한 번 열어 바뀐 크롭 전부. PSD 지문·무거운 설정이
+        바뀌었으면 전부(베이스 포함). PSD 를 열면 스냅숏(derived/psd_crops.json)을 쓰고, 믿을 수 있는 스냅숏이 PSD 기준점
+        (layout.psd)과 다르면 경고 줄만 낸다(크롭은 레이아웃 그대로). 기준점의 경로·지문이 지금 PSD 와 다른데 믿을 스냅숏이 없으면
+        바뀐 크롭이 없어도 한 번 연다(갈라짐 확인). 크롭 영역 그룹을 못 읽으면 스냅숏을 쓰지 않고 경고 한 줄만.
+        사전 편집 자식 이름(psd_name)을 여러 크롭이 쓰면 그 크롭들에 경고. 매니페스트 source.layout = {rev, sig}(이번에 읽은 판).
+        반환 (보고서 둘째 줄부터, 캐시 적중 = 무거운 설정·source.layout.sig 같음·파일 있음 — _targets·refs 재계산 여부)."""
+        t0 = time.time()
+        src = m["source"]
+        sig = store.layout_sig(lay)
+        same_psd = (all(src.get(k) == v for k, v in heavy.items()) and bool(m["base"])
+                    and os.path.isfile(_abs(root, m["base"])))
+        rows = []  # (레이아웃 크롭, 파싱, 사전 편집에서 찾을 이름, 이번 실행 전 매니페스트 크롭, 소스를 그대로 씀)
+        for lc in lay["crops"]:
+            pname = lc.get("psd_name") or lc["name"]
+            o = old.get(lc["id"])
+            keep = (same_psd and o is not None and o["rect"] == lc["rect"] and o.get("psd_name", o["name"]) == pname
+                    and os.path.isfile(_abs(root, o["source"])))
+            rows.append((lc, store.layout_parsed(lc), pname, o, keep))
+        n_changed = len(old.keys() - {lc["id"] for lc in lay["crops"]}) + sum(
+            1 for lc, p, pname, o, _k in rows
+            if o is None or (o["name"], o["rect"], o.get("psd_name", o["name"])) != (p["name"], lc["rect"], pname)
+            or store.parse_crop_layer_name(o["layer_name"])["targets"] != p["targets"])
+        cached = (same_psd and (src.get("layout") or {}).get("sig") == sig and all(r[4] for r in rows)
+                  and [c["id"] for c in m["crops"]] == [lc["id"] for lc in lay["crops"]])
+        need = [] if cached else [r for r in rows if not r[4]]
+        snap = _read_psd_snapshot(root, heavy) if same_psd else None
+        pixel_nodes = snap["pixel_nodes"] if snap else []
+        # 이관 기준점이 이 PSD 가 아님(PSD 모드 Import 중 '편집 시작'·낡은 기준점)인데 믿을 스냅숏이 없음 → 한 번 열어 갈라짐을 본다
+        unseen = snap is None and (lay["psd"].get("path"), lay["psd"].get("fingerprint")) != (heavy["psd"], heavy["fingerprint"])
+        opened = not same_psd or unseen or (bool(need) and (snap is None or any(r[2] in pixel_nodes for r in need)))
+        psd = dpsd.open_psd(psd_path) if opened else None
+        canvas = list(psd.size) if opened else m["canvas"]
+        if lay["canvas"] != canvas:
+            raise ValueError(f"{_TAG} {store.LAYOUT_NAME} 캔버스 {lay['canvas'][0]}x{lay['canvas'][1]} 가 PSD {canvas[0]}x{canvas[1]} 와 "
+                             f"다릅니다 — 같은 캔버스의 PSD 를 고르거나 {store.LAYOUT_NAME} 를 치우세요(그러면 PSD 크롭으로 가져옴)")
+        drift = ""
+        if opened:
+            pbar = comfy.utils.ProgressBar(2)
+            if same_psd:  # 베이스는 그대로 — 사전 편집 자식인 바뀐 크롭·갈라짐 확인 때문에 연다
+                base_rgb, work_rect = _load_rgb(root, m["base"]), m["work_rect"]
+            else:
+                base_rgb, binfo = dpsd.read_base(psd, heavy["clean_plate_layer"], heavy["base_layer"])
+                work_rect = [int(v) for v in binfo["work_rect"]]
+                need = rows
+            pbar.update(1)
+            pixel_nodes = dpsd.crop_pixel_nodes(psd, heavy["crop_pixels_group"])
+            try:
+                snap = _write_psd_snapshot(root, heavy, _psd_rects(psd, heavy["crop_group"]), pixel_nodes)
+            except ValueError as e:  # 크롭 정의에 더는 쓰지 않는 그룹 — 갈라짐만 못 본다. 옛 스냅숏은 그대로(지문이 다르면 믿지 않음)
+                snap, drift = None, f"갈라짐 확인 못 함(크롭 영역 그룹): {e}"
+            srcs = dpsd.crop_sources(psd, [{"name": r[2], "rect": r[0]["rect"]} for r in need], base_rgb,
+                                     heavy["crop_pixels_group"], work_rect=work_rect)
+            pbar.update(1)
+            if same_psd:
+                psd_lines = [f"PSD 열기 {time.time() - t0:.1f}s("
+                             + ("이관 기준점과 다른 PSD 의 갈라짐 확인" if unseen else "바뀐 크롭의 사전 편집 합성")
+                             + " — 베이스는 다시 읽지 않음)"]
+            else:
+                m["canvas"], m["work_rect"] = canvas, work_rect
+                m["base"] = store.save_png_ca(root, "inputs", base_rgb)
+                src.update(heavy)
+                psd_lines = _base_lines(binfo, work_rect, time.time() - t0)
+        else:
+            srcs = dpsd.base_crop_sources(_load_rgb(root, m["base"]), [{"name": r[2], "rect": r[0]["rect"]} for r in need],
+                                          m["work_rect"]) if need else []
+            psd_lines = ["캐시 적중(PSD·그룹 설정·레이아웃 같음, 다시 읽지 않음)" if cached
+                         else "PSD 안 엶(지문·그룹 설정 같음" + (" — 바뀐 크롭은 베이스 PNG 에서 자름)" if need else ")")]
+        if not cached:
+            made = {r[0]["id"]: s for r, s in zip(need, srcs)}
+            rects = [tuple(lc["rect"]) for lc in lay["crops"]]
+            names = [p["name"].casefold() for _lc, p, *_r in rows]
+            by_pname: dict[str, list[str]] = {}
+            for _lc, p, pname, *_r in rows:
+                by_pname.setdefault(pname, []).append(p["name"])
+            crops = []
+            for lc, p, pname, o, _k in rows:
+                lw = list(p["warnings"])
+                if rects.count(tuple(lc["rect"])) > 1:
+                    lw.append("다른 크롭과 rect 가 같음(대상을 한 크롭에 합치는 것을 권장)")
+                if names.count(p["name"].casefold()) > 1:
+                    lw.append("같은 이름의 크롭이 여러 개(Studio 에서 이름을 바꾸세요)")
+                if len(by_pname[pname]) > 1 and pname in pixel_nodes:  # 이름 바꾼 크롭의 psd_name 과 같은 이름의 새 크롭 등
+                    lw.append(f"사전 편집 그룹 {pname} 을 크롭 {'·'.join(by_pname[pname])} 가 함께 씀")
+                s = made.get(lc["id"])
+                if s is None:
+                    source, kind, frac, sw = o["source"], o["source_kind"], o["alpha_frac"], _kept_source_warnings(o)
+                else:
+                    source, kind, frac = store.save_png_ca(root, "inputs", s["rgba"]), s["kind"], round(float(s["alpha_frac"]), 6)
+                    sw = _source_warnings(s)
+                crops.append({
+                    "id": lc["id"], "name": p["name"], "nnn": p["nnn"], "part": p["part"],
+                    "layer_name": store.layout_layer_name(lc), "psd_name": pname, "rect": list(lc["rect"]),
+                    "rect_source": "layout", "source": source, "source_kind": kind, "alpha_frac": frac,
+                    "targets": [], "refs_auto": [], "warnings": [_LAYOUT_WARN + w for w in lw] + sw,  # targets 는 _targets
+                })
+            m["crops"] = _plain(crops)
+        src["layout"] = {"rev": lay["rev"], "sig": sig}
+        lines = [f"레이아웃 rev {lay['rev']} · 크롭 {len(rows)} · 바뀜 {n_changed}"
+                 f"(소스 다시 만듦 {len(need)}, {'PSD 엶' if opened else 'PSD 안 엶'})"] + psd_lines
+        renamed = [lc for lc in lay["crops"] if lc["id"].split("-")[0] != store.crop_id_for(lc["name"])]
+        if renamed:
+            lines.append("ID 는 처음 이름 기준(이름을 바꿔도 유지): " + ", ".join(f"{lc['id']} = {lc['name']}" for lc in renamed))
+            by_file = sorted({lc["name"] for lc in renamed for c in m["candidates"]
+                              if c["crop_id"] == lc["id"] and c.get("origin") in ("folder", "psd_harvest")})
+            if by_file:  # 폴더·PSD 수확은 파일·그룹 이름 앞부분 = 크롭 이름으로 찾는다(STUDIO_S1_SPEC §5)
+                lines.append(f"주의: 이름을 바꾼 크롭에 폴더·PSD 수확 후보가 있음({', '.join(by_file)}) — 옛 이름 파일은 "
+                             "mapping_json 에 ID 로 지정")
+        if snap is not None:
+            drift = _psd_drift(lay, snap)
+        if drift:
+            lines.append(drift)
+        return "\n".join(lines), cached
 
     @staticmethod
     def _targets(root: str, m: dict, old: dict, cached: bool) -> dict[str, list[str]]:
@@ -1190,7 +1438,7 @@ class BMKDesignPatchImportPSD:
                 ov = store.load_spec_override(root, c["id"])
                 if cached and "_layer_targets" not in ov and not any(t.get("origin") == "adopt" for t in prev):
                     continue
-                merged, msgs = store.merge_layer_targets(p, ov.get("_layer_targets"))
+                merged, msgs = _merge_adopted(c, p, ov)
             except ValueError as e:
                 if cached:
                     notes[c["id"]] = [f"지금 타깃 유지 — {e}"]
@@ -1208,10 +1456,14 @@ class BMKDesignPatchImportPSD:
         n_note = sum(len(v) for v in notes.values())
         lines = [f"Import PSD: {os.path.basename(psd_path)} {m['canvas'][0]}x{m['canvas'][1]} | 크롭 {len(m['crops'])}"
                  f" (경고 {n_warn}{f' · 채택 {n_note}' if n_note else ''}) | rev {m['rev']} | {sec:.1f}s", info_line]
+        layout = bool(m["source"].get("layout"))
+        if not m["crops"]:
+            lines.append("크롭 없음 — Studio 레이아웃 편집에서 크롭을 그리세요" if layout
+                         else "크롭 없음(크롭 영역 그룹 없음) — Studio 에서 '레이아웃 편집 시작'")
         known = {c["id"] for c in m["crops"]}
         orphans = sorted({c["crop_id"] for c in m["candidates"] if c["crop_id"] not in known})
         if orphans:
-            lines.append(f"주의: 매니페스트 후보가 가리키는 크롭이 PSD 에서 사라짐: {', '.join(orphans)}")
+            lines.append(f"주의: 매니페스트 후보가 가리키는 크롭이 {'레이아웃에서' if layout else 'PSD 에서'} 사라짐: {', '.join(orphans)}")
         for i, c in enumerate(m["crops"]):
             x0, y0, x1, y1 = c["rect"]
             tg = "; ".join(f"{t['tid']}: {t['name_en'] or t['label']}" + (" (채택)" if t.get("origin") == "adopt" else "")
@@ -1324,8 +1576,12 @@ class BMKDesignPatchCandidateIn:
         t0 = time.time()
         root, m = _open(project)
         before = _snapshot(m)
-        if not m["crops"]:
+        if not m["base"]:
             raise ValueError(f"{_TAG} 크롭이 없습니다 - BMK Design Patch Import PSD 를 먼저 실행하세요")
+        if not m["crops"]:  # 빈 시작(D6): 예외 대신 경고 — Review 까지 돌아 Studio 키가 생기게
+            report = "Candidate In: 크롭 없음 — 등록하지 않음(Studio 레이아웃 편집에서 크롭을 그린 뒤 다시 큐)"
+            logger.info("%s %s", _TAG, report)
+            return (_handle(root, m, project), report)
         if source not in _SOURCES:
             raise ValueError(f"{_TAG} source 는 {_SOURCES} 중 하나여야 합니다: {source!r}")
         path = _strip_path(path)
@@ -1515,7 +1771,7 @@ def _adopt_stale(crop: dict, ov: dict) -> str:
     않아 Run 해시가 바뀐다(드라이런, 옛 타깃 과금 없음). 문구는 채택·채택 해제 어느 쪽에도 맞게."""
     p = store.parse_crop_layer_name(crop["layer_name"])
     try:
-        merged, _w = store.merge_layer_targets(p, ov.get("_layer_targets"))
+        merged, _w = _merge_adopted(crop, p, ov)
     except ValueError as e:
         return f"채택 확인 못 함 — {e}"
     want = [(t["tid"], t["label"]) for t in _new_targets(merged, None)]
@@ -1568,7 +1824,7 @@ class BMKDesignPatchPrepare:
         t0 = time.time()
         root, m = _open(project)
         before = _snapshot(m)
-        if not m["crops"]:
+        if not m["base"]:
             raise ValueError(f"{_TAG} 크롭이 없습니다 - BMK Design Patch Import PSD 를 먼저 실행하세요")
         if ref_style not in _REF_STYLES:
             raise ValueError(f"{_TAG} ref_style 은 {_REF_STYLES} 중 하나여야 합니다: {ref_style!r}")
@@ -1577,6 +1833,8 @@ class BMKDesignPatchPrepare:
         glossary = _glossary(root, m)
         old_jobs = {j["cell_key"]: j for j in m["jobs"]}
         jobs, tiles, warn_lines, dup_lines = [], [], [], []
+        if not m["crops"]:  # 빈 시작(D6): 예외 대신 경고
+            warn_lines.append("  크롭 없음 — 작업 없음(Studio 레이아웃 편집에서 크롭을 그린 뒤 다시 큐)")
         n_new = n_dup = 0
         pbar = comfy.utils.ProgressBar(len(m["crops"]))
         for crop in m["crops"]:

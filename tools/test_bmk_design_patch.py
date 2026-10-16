@@ -91,7 +91,9 @@ from psd_tools import PSDImage  # noqa: E402
 from psd_tools.constants import SheetColorType, Tag  # noqa: E402
 
 REF = Path(r"H:\BmkNodeDesign\MultiLayerCropEdit")
-OUT_ROOT = REF / "_proto" / "m2_test_out"
+# DP_TEST_OUT = 다른 출력 폴더(두 실행이 같은 폴더를 rmtree 하지 않게), --only=a,b = 그 묶음만(__main__ 의 이름)
+OUT_ROOT = Path(os.environ["DP_TEST_OUT"]) if os.environ.get("DP_TEST_OUT") else REF / "_proto" / "m2_test_out"
+ONLY = {s for a in sys.argv if a.startswith("--only=") for s in a[len("--only="):].split(",") if s}
 PSD03 = REF / "03.크롭영역+크롭이미지.psd"
 PSD05 = REF / "05.디자인보정 결과.psd"
 CROPS03_JSON = REF / "_proto" / "work_photoshop" / "crops_03.json"
@@ -5608,7 +5610,10 @@ def m2_board_unit():
                        ("GET", "/bmk/design_patch/thumb"), ("GET", "/bmk/design_patch/file"),
                        ("GET", "/bmk/design_patch/canvas"), ("GET", "/bmk/design_patch/seams"),
                        ("POST", "/bmk/design_patch/pick"), ("POST", "/bmk/design_patch/reject"),
-                       ("POST", "/bmk/design_patch/reroll"), ("POST", "/bmk/design_patch/drain")})
+                       ("POST", "/bmk/design_patch/reroll"), ("POST", "/bmk/design_patch/drain"),
+                       ("GET", "/bmk/design_patch/layout"), ("POST", "/bmk/design_patch/layout/start"),  # S1 §4(U3)
+                       ("POST", "/bmk/design_patch/layout/crop"), ("POST", "/bmk/design_patch/layout/psd"),
+                       ("GET", "/bmk/design_patch/layout/refs")})
         check(paths == want, f"라우트 목록 {paths}")
         # 재시작 흉내: 메모리 레지스트리에서 지움 → base_dir 로 다시 등록하면 _roots.json 에서 복구
         with store._ROOTS_LOCK:
@@ -5688,7 +5693,8 @@ def m2_board_unit():
         check(s2["backend_mock"] is True, "_MOCK_API 파일 → backend_mock")
         (BASE / "bmk_design_patch" / "_MOCK_API").unlink()
         st, u = await h.jget("/bmk/design_patch/state", root=key, since_rev=str(s["rev"]))
-        check(st == 200 and u == {"unchanged": True, "rev": s["rev"], "running": False, "drain": False}, f"since_rev 같음 → unchanged {u}")
+        check(st == 200 and u == {"unchanged": True, "rev": s["rev"], "running": False, "drain": False, "layout_rev": None},
+              f"since_rev 같음 → unchanged(레이아웃 없음 → layout_rev null, S1 §4.2) {u}")
         st, u = await h.jget("/bmk/design_patch/state", root=key, since_rev=str(s["rev"] - 1))
         check(st == 200 and "targets" in u, "since_rev 다름 → 전체")
         for bad in ("abc", "-1", "1.5", "9" * 20):
@@ -6125,10 +6131,12 @@ def m2_board_unit():
             check(not re.search(r"https?://", text) and "@import" not in text and "cdn" not in text.lower(),
                   f"{name} 외부 URL·CDN 없음")
             check(not any(ord(ch) >= 0x1F000 or ch == "\ufe0f" for ch in text), f"{name} 이모지 없음")
-        check(re.findall(r'<script src="([^"]+)" defer></script>', html) == ["viewer.js", "board.js"]
-              and not re.search(r"<script(?![^>]*\bsrc=\"(?:viewer|board)\.js\")", html) and "on" + "click=" not in html.lower(),
-              "html 에 인라인 스크립트·이벤트 속성 없음, viewer.js 가 board.js 보다 먼저")
-        check('postMessage({ type: "bmk-dp-queue", rootKey: ROOT }, location.origin)' in js, "opener postMessage 형식(명세 §4.2)")
+        check(re.findall(r'<script src="([^"]+)" defer></script>', html) == ["layout_geom.js", "viewer.js", "layout_edit.js", "board.js"]
+              and not re.search(r"<script(?![^>]*\bsrc=\"(?:layout_geom|viewer|layout_edit|board)\.js\")", html)
+              and "on" + "click=" not in html.lower(),
+              "html 에 인라인 스크립트·이벤트 속성 없음, layout_geom → viewer → layout_edit → board 순서")
+        check('postMessage({ type: "bmk-dp-queue", rootKey: ROOT, layout }, location.origin)' in js,
+              "opener postMessage 형식(명세 §4.2, layout = 편집기 반영(큐))")
         check("POLL_MS = 2000" in js and "since_rev" in js, "2초 폴링 + since_rev")
         for code_name in ("ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "\"Space\"", "KeyX", "KeyQ", "KeyD", "KeyC", "KeyR",
                           "Slash", "Escape", "KeyB", "KeyO", "Digit0", "KeyF", "Digit1", "Digit2", "KeyS", "KeyM", "KeyN",
@@ -10312,9 +10320,10 @@ def m2_node_unit():
             n1 = len(fake.routes)
             dp._register_board_routes()
         paths = {r.path for r in fake.routes}
-        check(n1 == 12 and len(fake.routes) == 12 and {"/bmk/design_patch/state", "/bmk/design_patch/drain",
-                                                       "/bmk/design_patch/board/", "/bmk/design_patch/canvas"} <= paths,
-              f"보드 라우트 12개, 두 번 불러도 한 번 ({n1}, {len(fake.routes)})")
+        check(n1 == 17 and len(fake.routes) == 17 and {"/bmk/design_patch/state", "/bmk/design_patch/drain",
+                                                       "/bmk/design_patch/board/", "/bmk/design_patch/canvas",
+                                                       "/bmk/design_patch/layout", "/bmk/design_patch/layout/refs"} <= paths,
+              f"보드 라우트 17개(S1 레이아웃 5 포함), 두 번 불러도 한 번 ({n1}, {len(fake.routes)})")
         check(dp._server() is None, "가짜 서버는 블록 밖에서 되돌림")
 
         section("M2-N1 Prepare calls_per_cell · Run 과 같은 승인 해시")
@@ -11127,7 +11136,7 @@ def vlm_comfy():
 # M3-N. Spec Draft 노드 수준 (합성 프로젝트, mock·가짜 api·가짜 Qwen — 네트워크·GPU 없음)
 #   N1 정의·N0 목록  N2 mock 흐름(드라이런→승인→0 호출→Prepare→사람 편집 보존)  N3 openai 인증 없음
 #   N4 인터럽트·무료 재폴링  N5 Draft 대기 → Run 경고  N6 _project.json style_note 전파  N7 local_qwen 승인·VramError·
-#   남은 Qwen 언로드  N8 보드 라우트 12  N9 평가 도구 new_targets == main._new_targets  N10 사라진 크롭의 스펙
+#   남은 Qwen 언로드  N8 보드 라우트 16  N9 평가 도구 new_targets == main._new_targets  N10 사라진 크롭의 스펙
 #   N11 force 1회·사람 mode/refs  N12 fill 키 가드  N13 실제 PromptExecutor 캐시(RAM_PRESSURE·CLASSIC)
 #   N16 only 보류·mock 초안 스펙 → Run 경고(리뷰 B F3·F2)  N17 apply=targets  N18·N19 채택(adopt) → Import → Prepare·Run
 # ═════════════════════════════════════════════════════════════════
@@ -12152,11 +12161,11 @@ def vlm_node_unit():
               "노드가 model_dir 을 넘김: local_qwen 키가 config.json(sha8)을 따라감(§2.3)")
 
     def t_n8():
-        section("M3-N8 보드 라우트 수는 여전히 12 (M3 는 라우트를 더하지 않음, S0 의 canvas·seams 포함)")
+        section("M3-N8 보드 라우트 수는 17 (M3 는 라우트를 더하지 않음, S0 의 canvas·seams·S1 레이아웃 5 포함)")
         fake = _FakeServer(web.RouteTableDef())
         with _prompt_server(fake):
             dp._register_board_routes()
-        check(len(fake.routes) == 12, f"보드 라우트 {len(fake.routes)}")
+        check(len(fake.routes) == 17, f"보드 라우트 {len(fake.routes)}")
 
     def t_n9():
         section("M3-N9 평가 도구의 순수 복제 new_targets == main._new_targets (표본 레이어명 6 + 채택 origin 3)")
@@ -12467,26 +12476,3566 @@ def m2_chain():
 
 
 # ═════════════════════════════════════════════════════════════════
+# S1 레이아웃 편집기 (STUDIO_S1_SPEC §6). 작업 단위마다 자기 함수 블록에만 쓴다(U1 store · U2 노드 · U3 보드 · U4 JS).
+# ── U1 도우미. _layout_move·_resize·_new·_suggest = 편집기 기하 G1–G4 의 Python 기준 구현(오라클) — 서버는 쓰지 않는다.
+#    tools/fixtures/layout_rules.json 의 move·resize·new·suggest 기대값을 이 함수들로 만들었고 layout_store_unit 이 다시 계산해
+#    맞춰 본다. JS layout_geom.js(U4)는 같은 표로 같은 결과를 내야 한다. 반올림은 _layout_rnd 하나(round·Math.round 금지),
+#    좌표는 정수, rect = [x0, y0, x1, y1] 끝 배타. 상수 _LAYOUT_G = 표의 consts.
+_LAYOUT_RULES = _HERE.parent / "fixtures" / "layout_rules.json"
+_LAYOUT_G = {"size": 128, "pos": 16, "ratio": 3, "min": 128, "guide": 0.7, "small": 384, "coord_max": 65536}
+_S0_261014 = Path(r"C:\Users\SHIFTUP\AppData\Local\Temp\claude\H--ComfyUI-Easy-Install\comfy8189\input\bmk_design_patch\s0_261014")
+
+
+def _layout_rnd(v, q):
+    """언어 차이 없는 반올림 floor(v / q + 0.5) * q."""
+    return math.floor(v / q + 0.5) * q
+
+
+def _layout_size(raw, snap):
+    """앵커에서 움직인 변까지의 거리 → 크기: 스냅 = max(128, 128 단위 반올림), 끔 = max(128, 1px 반올림)(앵커를 넘으면 128)."""
+    if snap:
+        return max(_LAYOUT_G["size"], _layout_rnd(raw, _LAYOUT_G["size"]))
+    return max(_LAYOUT_G["min"], _layout_rnd(raw, 1))
+
+
+def _layout_move(rect, dx, dy, canvas, snap):
+    """G1 이동: 왼쪽 위 + (dx, dy) → 16px 격자(스냅 끔 = 1px) → 캔버스 안으로 밀기(격자보다 우선, 캔버스보다 크면 0). 크기 불변."""
+    x0, y0, x1, y1 = rect
+    q = _LAYOUT_G["pos"] if snap else 1
+    nx = min(max(_layout_rnd(x0 + dx, q), 0), max(0, canvas[0] - (x1 - x0)))
+    ny = min(max(_layout_rnd(y0 + dy, q), 0), max(0, canvas[1] - (y1 - y0)))
+    return [nx, ny, nx + x1 - x0, ny + y1 - y0]
+
+
+def _layout_place(ax, ay, mx, my, w, h, canvas, snap):
+    """G2·G3 뒷부분. mx/my = +1(x1·y1 이 움직임)·-1(x0·y0)·0(그 축 고정, x0·y0 기준). 비 > 3 이면 모서리는 긴 축 = 3×짧은(내림),
+    변 핸들은 끄는 축이 길면 3×짧은(내림)·짧으면 긴/3(올림)(스냅이면 128 단위 — 내림이 0 이면 1px 내림: 16×48 같은 이관 크롭)
+    → 앵커에서 사각형 → 움직이는 변을 캔버스로 자름(줄어든 크기 그대로) → 다시 비 > 3 이면 긴 축 = 3×짧은(앵커 쪽 고정)."""
+    S, R = _LAYOUT_G["size"], _LAYOUT_G["ratio"]
+    down = (lambda v: math.floor(v / S) * S or math.floor(v)) if snap else math.floor
+    up = (lambda v: math.ceil(v / S) * S) if snap else math.ceil
+    if max(w, h) > R * min(w, h):
+        if mx and my:
+            if w > h:
+                w = down(R * h)
+            else:
+                h = down(R * w)
+        elif mx:
+            w = down(R * h) if w > h else up(h / R)
+        else:
+            h = down(R * w) if h > w else up(w / R)
+    x0, x1 = (ax - w, ax) if mx < 0 else (ax, ax + w)
+    y0, y1 = (ay - h, ay) if my < 0 else (ay, ay + h)
+    if mx > 0:
+        x1 = min(x1, canvas[0])
+    elif mx < 0:
+        x0 = max(x0, 0)
+    if my > 0:
+        y1 = min(y1, canvas[1])
+    elif my < 0:
+        y0 = max(y0, 0)
+    if x1 - x0 > R * (y1 - y0):
+        if mx < 0:
+            x0 = x1 - R * (y1 - y0)
+        else:
+            x1 = x0 + R * (y1 - y0)
+    elif y1 - y0 > R * (x1 - x0):
+        if my < 0:
+            y0 = y1 - R * (x1 - x0)
+        else:
+            y1 = y0 + R * (x1 - x0)
+    return [x0, y0, x1, y1]
+
+
+def _layout_resize(rect, handle, dx, dy, canvas, snap, keep):
+    """G2 핸들 8개(n s e w ne nw se sw): 반대쪽 변이 앵커. keep(Shift)은 모서리만 — 상대 변화가 큰 축(|w−w0|·h0 ≥ |h−h0|·w0 면 x)이
+    기준, 다른 축 = 기준 × 원래 비(곱 먼저: w·h0/w0)를 같은 크기 규칙으로."""
+    x0, y0, x1, y1 = rect
+    w0, h0 = x1 - x0, y1 - y0
+    mx = 1 if "e" in handle else -1 if "w" in handle else 0
+    my = 1 if "s" in handle else -1 if "n" in handle else 0
+    w = _layout_size(w0 + mx * dx, snap) if mx else w0
+    h = _layout_size(h0 + my * dy, snap) if my else h0
+    if keep and mx and my:
+        if abs(w - w0) * h0 >= abs(h - h0) * w0:
+            h = _layout_size(w * h0 / w0, snap)
+        else:
+            w = _layout_size(h * w0 / h0, snap)
+    return _layout_place(x1 if mx < 0 else x0, y1 if my < 0 else y0, mx, my, w, h, canvas, snap)
+
+
+def _layout_new(sx, sy, dx, dy, canvas, snap, keep):
+    """G3 새 크롭(빈 곳에서 끌기): 시작점 16px 격자(스냅 끔 = 1px) → 캔버스 안으로 → 끈 방향의 모서리(dx ≥ 0 → e, dy ≥ 0 → s)로
+    크기(keep = 큰 쪽으로 정사각) → 끄는 쪽 캔버스 변까지 여유가 128 미만인 축은 방향 반전(변에서 바깥으로 끌어도 폭 0 이 아님)
+    → _layout_place."""
+    q = _LAYOUT_G["pos"] if snap else 1
+    sx = min(max(_layout_rnd(sx, q), 0), canvas[0])
+    sy = min(max(_layout_rnd(sy, q), 0), canvas[1])
+    mx, my = (1 if dx >= 0 else -1), (1 if dy >= 0 else -1)
+    w, h = _layout_size(mx * dx, snap), _layout_size(my * dy, snap)
+    if keep:
+        w = h = max(w, h)
+    if (canvas[0] - sx if mx > 0 else sx) < _LAYOUT_G["size"]:
+        mx = -mx
+    if (canvas[1] - sy if my > 0 else sy) < _LAYOUT_G["size"]:
+        my = -my
+    return _layout_place(sx, sy, mx, my, w, h, canvas, snap)
+
+
+def _layout_suggest(boxes, canvas, snap):
+    """G4 상자에 맞춘 크롭 제안(§3.4): 합집합 축마다 need = ceil(크기 × 10 / 7)(÷ 0.7) → 스냅이면 128 단위 올림, 최소 128 → 비 > 3 이면
+    짧은 축 = 긴/3 올림(스냅이면 128 단위) → 캔버스보다 크면 그 축 = 캔버스 → 그래서 비 > 3 이면(4096×1024 같은 넓은 캔버스)
+    긴 축 = 3×짧은 → 합집합 가운데에 왼쪽 위를 16px 격자로(끔 = 1px — 줄인 크기로 가운데 유지) → 캔버스 안으로 밀기."""
+    S, R = _LAYOUT_G["size"], _LAYOUT_G["ratio"]
+    up = (lambda v: math.ceil(v / S) * S) if snap else math.ceil
+    ux0, uy0 = min(b[0] for b in boxes), min(b[1] for b in boxes)
+    ux1, uy1 = max(b[2] for b in boxes), max(b[3] for b in boxes)
+    w = max(_LAYOUT_G["min"], up(math.ceil((ux1 - ux0) * 10 / 7)))
+    h = max(_LAYOUT_G["min"], up(math.ceil((uy1 - uy0) * 10 / 7)))
+    if w > R * h:
+        h = up(w / R)
+    elif h > R * w:
+        w = up(h / R)
+    w, h = min(w, canvas[0]), min(h, canvas[1])
+    if w > R * h:
+        w = R * h
+    elif h > R * w:
+        h = R * w
+    q = _LAYOUT_G["pos"] if snap else 1
+    x0, y0 = _layout_rnd((ux0 + ux1) / 2 - w / 2, q), _layout_rnd((uy0 + uy1) / 2 - h / 2, q)
+    x0, y0 = min(max(x0, 0), canvas[0] - w), min(max(y0, 0), canvas[1] - h)
+    return [x0, y0, x0 + w, y0 + h]
+
+
+def _layout_rule_out(fn, a):
+    """공용 표 한 행의 기대값: move·resize·new·suggest = 오라클, 나머지 = store 함수(이름·문구 오류는 위반 코드,
+    name_dup = check_crop_name 의 같은 이름 오류와 layout_geom_checks N-dup 이 같을 때 그 값)."""
+    if fn == "move":
+        return _layout_move(a["rect"], a["dx"], a["dy"], a["canvas"], a["snap"])
+    if fn == "resize":
+        return _layout_resize(a["rect"], a["handle"], a["dx"], a["dy"], a["canvas"], a["snap"], a["keep"])
+    if fn == "new":
+        return _layout_new(a["sx"], a["sy"], a["dx"], a["dy"], a["canvas"], a["snap"], a["keep"])
+    if fn == "suggest":
+        return _layout_suggest(a["boxes"], a["canvas"], a["snap"])
+    if fn == "validate_rect":
+        try:
+            return store.layout_rect_problem(a["rect"], a["canvas"])
+        except ValueError:
+            return "error"
+    if fn == "gpt_size":
+        W, H, info = store.gpt_output_size(a["w"], a["h"])
+        return {"size": [W, H], "k": info["k"], "method": info["method"]}
+    if fn == "check_name":
+        try:
+            return store.check_crop_name(a["name"])
+        except ValueError:
+            return {"err": store._name_problem(unicodedata.normalize("NFC", a["name"]).strip())}
+    if fn == "check_text":
+        try:
+            return {"text": store.check_target_text(a["text"])}
+        except ValueError:
+            return {"err": store._text_problem(unicodedata.normalize("NFC", a["text"]).strip())}
+    if fn == "geom_checks":
+        return [list(p) for p in sorted({(cid, r["code"]) for cid, rows in store.layout_geom_checks(a["layout"]).items() for r in rows})]
+    if fn == "name_dup":
+        lay = {"canvas": [3072, 4096], "crops": [_layout_crop(a["a"], [0, 0, 512, 512], id="a"), _layout_crop(a["b"], [1024, 0, 1536, 512], id="b")]}
+        dup = any(r["code"] == "N-dup" for r in store.layout_geom_checks(lay)["b"])
+        try:
+            store.check_crop_name(a["b"], [a["a"]])
+            taken = False
+        except ValueError:
+            taken = True
+        return dup if dup == taken else "check_crop_name ≠ N-dup"
+    raise ValueError(f"표에 없는 fn: {fn!r}")
+
+
+def _layout_crop(name, rect, targets=None, **extra):
+    """합성 레이아웃 크롭: id = crop_id_for(name), 대상 기본 = 레거시 A 하나. extra 로 id 등 덮어쓰기."""
+    return {"id": store.crop_id_for(name), "name": name, "rect": list(rect),
+            "targets": targets if targets is not None else [{"tid": "A", "text": "", "box": None}],
+            "psd_name": name, "note": "", **extra}
+
+
+def _layout_doc(crops, canvas=(3072, 4096), psd_crops=()):
+    """구조가 맞는 layout.json dict(rev 0, PSD 기준점 = psd_crops [{name, layer_name, rect}])."""
+    return {"schema": store.LAYOUT_SCHEMA, "rev": 0, "canvas": list(canvas),
+            "psd": {"path": "G:/x/test_DP.psd", "fingerprint": [1, 2], "crop_group": "auto", "at": "2026-10-15 00:00:00",
+                    "crops": [dict(p) for p in psd_crops]},
+            "crops": [copy.deepcopy(c) for c in crops]}
+
+
+def _layout_mig_manifest(rows, canvas=(3072, 4096)):
+    """이관 입력용 합성 매니페스트: rows = [(layer_name, rect)] → crops(id = assign_crop_ids, name = parse 기본 이름)."""
+    m = store.new_manifest("layout_mig")
+    m["canvas"] = list(canvas)
+    m["source"].update(psd="G:/x/mig_DP.psd", fingerprint=[11, 22], crop_group="auto")
+    names = [store.parse_crop_layer_name(ln)["name"] for ln, _r in rows]
+    m["crops"] = [{"id": cid, "name": n, "layer_name": ln, "rect": list(r)}
+                  for cid, n, (ln, r) in zip(store.assign_crop_ids(names), names, rows)]
+    return m
+
+
+def _layout_geom_sample():
+    """§3.7 의 L·N·P 코드가 모두 한 번씩 나오는 합성 레이아웃(캔버스 3072×4096)과 기대 (이름, 코드) 집합."""
+    boxes = [{"tid": "A", "text": "", "box": [1030, 1600, 1500, 2000]},   # 왼쪽 여백 6 → P-edge
+             {"tid": "B", "text": "", "box": [1100, 1700, 1700, 1900]},   # 왼쪽 여백 76 < 15% → P-70
+             {"tid": "C", "text": "", "box": [2000, 1700, 2100, 1800]},   # 오른쪽으로 나감 → P-out
+             {"tid": "D", "text": "", "box": [1300, 1650, 1700, 1950]}]   # 가이드 안 → 없음
+    crops = [_layout_crop("001_정상", [0, 0, 512, 512]),
+             _layout_crop("002_긴비", [0, 3200, 1664, 3584]),   # 비 4.3 → L-ratio, GPT nearest 3216×1072 → L-gptk
+             _layout_crop("003_밖", [2816, 0, 3200, 384]),
+             _layout_crop("004_어중간", [1024, 0, 1524, 500]),
+             _layout_crop("005_작음", [2048, 3584, 2304, 3840]),
+             _layout_crop("006_큼", [0, 2048, 2048, 3072]),
+             _layout_crop("007_같음_가", [2560, 1024, 2944, 1408]),
+             _layout_crop("008_같음_나", [2560, 1024, 2944, 1408]),
+             _layout_crop("009_겹침", [1024, 512, 1536, 1024]),
+             _layout_crop("010_겹침", [1408, 896, 1920, 1408]),
+             _layout_crop("9_옛이름", [512, 3712, 1024, 4096]),
+             _layout_crop("011_Ab", [2048, 2048, 2560, 2560]),
+             _layout_crop("011_aB", [2560, 2048, 3072, 2560]),
+             _layout_crop("012_가", [2048, 2560, 2560, 3072]),
+             _layout_crop("012_나", [2560, 2560, 3072, 3072]),
+             _layout_crop("013_장식_왼쪽", [2560, 3072, 3072, 3584]),
+             _layout_crop("014_상자", [1024, 1536, 2048, 2048], boxes)]
+    want = {("002_긴비", "L-ratio"), ("002_긴비", "L-gptk"), ("003_밖", "L-outside"), ("004_어중간", "L-128"), ("005_작음", "L-small"),
+            ("006_큼", "L-gptk"), ("007_같음_가", "L-same"), ("008_같음_나", "L-same"), ("009_겹침", "L-overlap"),
+            ("010_겹침", "L-overlap"), ("9_옛이름", "N-name"), ("011_Ab", "N-dup"), ("011_aB", "N-dup"), ("011_Ab", "N-nnn"),
+            ("011_aB", "N-nnn"), ("012_가", "N-nnn"), ("012_나", "N-nnn"), ("013_장식_왼쪽", "N-side"), ("014_상자", "P-edge"),
+            ("014_상자", "P-70"), ("014_상자", "P-out")}
+    return _layout_doc(crops), want
+
+
+def layout_store_unit():
+    """S1-L store 레이아웃(U1): L1–L7. --quick 포함, torch·comfy 를 import 하지 않는다."""
+    section("S1-L store 레이아웃")
+    OUT = OUT_ROOT / "layout_store"
+    if OUT.exists():
+        shutil.rmtree(OUT)
+    OUT.mkdir(parents=True)
+    C = [3072, 4096]
+
+    # B0 순도: 실행 순서와 무관하게 store 소스의 import 를 본다
+    tree = ast.parse(Path(store.__file__).read_text(encoding="utf-8"))
+    mods = {a.name.split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
+    mods |= {n.module.split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module}
+    check(not mods & {"torch", "comfy", "comfy_api_nodes", "aiohttp", "folder_paths", "server"}, f"B0 store import 순도 {sorted(mods)}")
+    api = ["load_layout", "layout_from_manifest", "update_layout", "validate_layout", "check_crop_name", "check_target_text",
+           "check_layout_rect", "layout_rect_problem", "layout_parsed", "layout_layer_name", "new_layout_id", "layout_sig",
+           "layout_geom_checks", "psd_diff"]
+    check(all(callable(getattr(store, n, None)) for n in api) and store.LAYOUT_NAME == "layout.json"
+          and store.LAYOUT_SCHEMA == "bmk.design_patch.layout/1" and issubclass(store.LayoutConflict, ValueError), "S1 store API")
+
+    def l1_schema():
+        section("S1-L1 스키마 · validate_layout")
+        t002 = [{"tid": "A", "text": "눈동자", "box": [1330, 470, 1480, 560]}, {"tid": "B", "text": "눈썹", "box": None},
+                {"tid": "C", "text": "속눈썹", "box": None}]
+        good = _layout_doc([_layout_crop("009_모자본체_휘장", [2240, 2944, 2624, 3328]),
+                            _layout_crop("002_눈동자", [1216, 320, 1600, 704], t002, note="B·C 는 A 결과로 함께 고쳐짐")])
+        check(store.validate_layout(good) == [], "좋은 판: 경고 0")
+        check(store.validate_layout(_layout_doc([])) == [], "빈 crops 허용")
+        lean = copy.deepcopy(good)
+        for c in lean["crops"]:
+            del c["psd_name"], c["note"]
+        lean["crops"][0]["targets"] = []
+        check(store.validate_layout(lean) == [], "psd_name·note 없음·빈 targets(레거시) 허용")
+
+        def bad(label, fn, contains=None):
+            d = copy.deepcopy(good)
+            fn(d)
+            expect_raises(lambda: store.validate_layout(d), f"L1 구조 오류: {label}", contains=contains)
+
+        def c0(d):
+            return d["crops"][0]
+
+        def t0(d):
+            return d["crops"][1]["targets"][0]
+
+        expect_raises(lambda: store.validate_layout([good]), "L1 구조 오류: 최상위가 목록")
+        bad("schema 없음", lambda d: d.pop("schema"))
+        bad("schema 다름", lambda d: d.update(schema="bmk.design_patch.layout/2"))
+        bad("rev 음수", lambda d: d.update(rev=-1))
+        bad("rev 문자열", lambda d: d.update(rev="1"))
+        bad("rev bool", lambda d: d.update(rev=True))
+        bad("canvas 0", lambda d: d.update(canvas=[0, 4096]))
+        bad("canvas 원소 1개", lambda d: d.update(canvas=[3072]))
+        bad("canvas 없음", lambda d: d.pop("canvas"))
+        bad("psd 없음", lambda d: d.pop("psd"))
+        bad("psd.crops 없음", lambda d: d["psd"].pop("crops"))
+        bad("psd 기준점 rect 형식", lambda d: d["psd"]["crops"].append({"name": "001_a", "layer_name": "001_a", "rect": [0, 0, 9]}))
+        bad("crops 없음", lambda d: d.pop("crops"))
+        bad("크롭이 객체 아님", lambda d: d["crops"].append("009_x"))
+        bad("id 형식(공백)", lambda d: c0(d).update(id="009 x"))
+        bad("id 65자", lambda d: c0(d).update(id="a" * 65))
+        bad("id 중복", lambda d: d["crops"][1].update(id=c0(d)["id"]), contains="겹칩")
+        bad("name 없음", lambda d: c0(d).pop("name"))
+        bad("name 빈 문자열", lambda d: c0(d).update(name=""))
+        bad("name 앞 공백", lambda d: c0(d).update(name=" 009_a"))
+        bad("name 에 |", lambda d: c0(d).update(name="009_a | A: x"))
+        bad("name NFD", lambda d: c0(d).update(name=unicodedata.normalize("NFD", "009_모자")))
+        bad("rect 실수", lambda d: c0(d).update(rect=[0, 0, 512, 512.0]))
+        bad("rect 3개", lambda d: c0(d).update(rect=[0, 0, 512]))
+        bad("rect 폭 0", lambda d: c0(d).update(rect=[10, 0, 10, 512]))
+        bad("rect 65537", lambda d: c0(d).update(rect=[0, 0, 65537, 512]))
+        bad("rect bool", lambda d: c0(d).update(rect=[True, 0, 512, 512]))
+        bad("targets 없음", lambda d: c0(d).pop("targets"))
+        bad("targets 27개", lambda d: c0(d).update(targets=[{"tid": chr(65 + i % 26), "text": str(i)} for i in range(27)]))
+        bad("tid 소문자", lambda d: t0(d).update(tid="a"))
+        bad("tid 두 글자", lambda d: t0(d).update(tid="AA"))
+        bad("tid 중복", lambda d: d["crops"][1]["targets"][1].update(tid="A"), contains="겹칩")
+        bad("text 숫자", lambda d: t0(d).update(text=3))
+        bad("box 형식", lambda d: t0(d).update(box=[0, 0, 10]))
+        bad("box 폭 0", lambda d: t0(d).update(box=[5, 5, 5, 10]))
+        bad("psd_name 숫자", lambda d: c0(d).update(psd_name=9))
+        bad("note 501자", lambda d: c0(d).update(note="x" * 501))
+        bad("text ', D:' 꼴(합성 왕복 깨짐)", lambda d: t0(d).update(text="눈동자, D: 홍채"), contains="레이어명")
+        bad("text 앞뒤 공백(합성 왕복 깨짐)", lambda d: t0(d).update(text=" 눈동자"), contains="레이어명")
+        bad("text 에 ;(합성 왕복 깨짐)", lambda d: t0(d).update(text="눈동자; 홍채"), contains="레이어명")
+
+        mig = _layout_doc([_layout_crop("009_모자", [-64, 0, 448, 512]), _layout_crop("010_띠", [0, 1024, 1664, 1408]),
+                           _layout_crop("9_옛이름", [0, 2048, 512, 2560]), _layout_crop("011_Ab", [1024, 0, 1536, 512]),
+                           _layout_crop("011_aB", [1536, 0, 2048, 512]),
+                           _layout_crop("012_긴문구", [2048, 0, 2560, 512], [{"tid": "A", "text": "x" * 121, "box": None}])])
+        w = store.validate_layout(mig)
+        check(any(s.startswith("009_모자:") and "캔버스 밖" in s for s in w) and any(s.startswith("010_띠:") and "3:1" in s for s in w),
+              f"이관된 비정상 rect(캔버스 밖·비) → 경고 {w}")
+        check(any(s.startswith("9_옛이름:") for s in w), "이관된 이름 규칙 위반 → 경고")
+        check(any(s.startswith("011_aB:") and "겹침" in s for s in w), "이름 중복(NFC·casefold) → 경고(이관된 PS 이름 — 구조 오류 아님)")
+        check(any(s.startswith("012_긴문구 A:") for s in w), "대상 문구 121자 → 경고")
+        check(len(w) == 5, f"경고 5개 {w}")
+        unk = copy.deepcopy(good)
+        unk["x_top"] = {"a": 1}
+        unk["crops"][0]["x_crop"] = [1]
+        unk["crops"][1]["targets"][0]["x_t"] = "t"
+        unk["psd"]["x_psd"] = 2
+        snap = copy.deepcopy(unk)
+        check(store.validate_layout(unk) == [] and unk == snap, "알 수 없는 키: 오류 아님·건드리지 않음(보존은 L2 왕복)")
+
+    def l2_update():
+        section("S1-L2 update_layout · load_layout · 이력 · 잠금 경합")
+        root = str(OUT / "l2" / "p")
+        os.makedirs(root)
+        path = Path(root, store.LAYOUT_NAME)
+        hist = Path(root, store.LAYOUT_HISTORY_DIR)
+        check(store.load_layout(root) is None, "없는 layout.json → None")
+        expect_raises(lambda: store.update_layout(root, lambda d: None, expect_rev=0), "없는 레이아웃 갱신 → LayoutConflict",
+                      exc=store.LayoutConflict)
+        doc = _layout_doc([_layout_crop("009_모자", [0, 0, 512, 512]), _layout_crop("002_눈", [512, 0, 1024, 512])])
+        doc["rev"] = 5
+        res, rev = store.update_layout(root, lambda d: d.update(copy.deepcopy(doc)) or "made", expect_rev=None, create=True)
+        lay = store.load_layout(root)
+        check(res == "made" and rev == 0 and lay["rev"] == 0 and lay["crops"] == doc["crops"] and not list(hist.glob("r*.json"))
+              and json.loads((hist / "max_rev.json").read_text(encoding="utf-8")) == {"rev": 0},
+              "create: rev 0 저장(이력 판 없음, max_rev 0), mutate 반환값 전달")
+        expect_raises(lambda: store.update_layout(root, lambda d: d.update(doc), expect_rev=None, create=True),
+                      "create 두 번째 → LayoutConflict", exc=store.LayoutConflict)
+        expect_raises(lambda: store.update_layout(str(OUT / "l2" / "nope"), lambda d: d.update(rev=0), expect_rev=None, create=True),
+                      "create: mutate 결과가 구조 오류 → ValueError")
+        check(not Path(OUT / "l2" / "nope", store.LAYOUT_NAME).exists(), "create 실패 → 파일 없음")
+
+        res, rev = store.update_layout(root, lambda d: d["crops"][0].update(note="메모") or 7, expect_rev=0)
+        r0 = json.loads((hist / "r0.json").read_text(encoding="utf-8"))
+        check(res == 7 and rev == 1 and store.load_layout(root)["crops"][0]["note"] == "메모", "갱신 → rev 0 → 1")
+        check(r0["rev"] == 0 and r0["crops"][0]["note"] == "", "이력 layout_history/r0.json = 이전 판")
+        raw = path.read_bytes()
+        _r, rev = store.update_layout(root, lambda d: None, expect_rev=1)
+        check(rev == 1 and path.read_bytes() == raw and not (hist / "r1.json").exists(), "바뀐 것 없음 → 저장·이력 없음, rev 그대로")
+        _r, rev = store.update_layout(root, lambda d: d.update(rev=99), expect_rev=1)
+        check(rev == 1 and path.read_bytes() == raw, "mutate 가 rev 만 바꿈 → 무시(저장 없음)")
+        expect_raises(lambda: store.update_layout(root, lambda d: d["crops"].clear(), expect_rev=0), "낡은 rev → LayoutConflict",
+                      exc=store.LayoutConflict, contains="다른 창")
+        check(path.read_bytes() == raw, "LayoutConflict → 파일 그대로")
+
+        def boom(d):
+            d["crops"].clear()
+            raise RuntimeError("mutate 실패")
+
+        expect_raises(lambda: store.update_layout(root, boom, expect_rev=1), "mutate 예외 그대로", exc=RuntimeError)
+        expect_raises(lambda: store.update_layout(root, lambda d: d["crops"].append({"id": "bad id"}), expect_rev=1),
+                      "mutate 결과가 구조 오류 → ValueError")
+        check(path.read_bytes() == raw and len(store.load_layout(root)["crops"]) == 2, "예외·구조 오류 → 저장 안 함")
+
+        def add_unknown(d):
+            d["x_top"] = {"keep": 1}
+            d["crops"][0]["x_crop"] = "c"
+            d["crops"][0]["targets"][0]["x_t"] = [1]
+
+        store.update_layout(root, add_unknown, expect_rev=1)
+        _r, rev = store.update_layout(root, lambda d: d["crops"][1].update(note="둘째"), expect_rev=2)
+        lay = store.load_layout(root)
+        check(rev == 3 and lay["x_top"] == {"keep": 1} and lay["crops"][0]["x_crop"] == "c" and lay["crops"][0]["targets"][0]["x_t"] == [1],
+              "알 수 없는 키 보존(최상위·크롭·대상) — 다른 갱신 뒤에도")
+        for i in range(55):
+            store.update_layout(root, lambda d, i=i: d["crops"][0].update(note=f"n{i}"), expect_rev=rev + i)
+        revs = sorted(int(p.stem[1:]) for p in hist.glob("r*.json"))
+        lay = store.load_layout(root)
+        check(lay["rev"] == 58 and len(revs) == 50 and revs == list(range(8, 58)), f"이력 최근 50개만(r8–r57) {revs[:2]}…{revs[-2:]}")
+        check(not [p.name for p in Path(root).iterdir() if p.name.endswith(".tmp")] and not list(hist.glob("*.tmp")), "임시 파일 없음")
+        path.write_text("{ 깨진", encoding="utf-8")
+        expect_raises(lambda: store.load_layout(root), "깨진 layout.json → ValueError(이력 복구 안내)", contains=store.LAYOUT_HISTORY_DIR)
+        expect_raises(lambda: store.update_layout(root, lambda d: None, expect_rev=58), "깨진 파일에 쓰기 → ValueError(덮지 않음)")
+        check(path.read_text(encoding="utf-8") == "{ 깨진", "깨진 파일은 덮어쓰지 않음")
+        shutil.copyfile(hist / "r57.json", path)
+        check(store.load_layout(root)["rev"] == 57, "이력 파일 복사로 복구")
+        path.write_text(json.dumps(dict(doc, schema="other/1")), encoding="utf-8")
+        expect_raises(lambda: store.load_layout(root), "schema 다름 → ValueError", contains="schema")
+
+        # rev 단조 증가: layout.json 을 치우거나 이력 파일 복사로 되돌려도 rev 를 다시 쓰지 않음 → 새 이력이 정리로 지워지지 않고
+        # 가장 큰 번호 이력 = 최신 판(load_layout 오류 문구의 'r<rev>.json 복사' 안내가 맞음)
+        def bump(r, tag, n):
+            for i in range(n):
+                store.update_layout(r, lambda d, i=i: d["crops"][0].update(note=f"{tag}{i}"), expect_rev=None)
+
+        def hist_note(folder, r):
+            p = folder / f"r{r}.json"
+            return json.loads(p.read_text(encoding="utf-8"))["crops"][0]["note"] if p.exists() else None
+
+        ra = str(OUT / "l2" / "again")
+        os.makedirs(ra)
+        hist_a = Path(ra, store.LAYOUT_HISTORY_DIR)
+        store.update_layout(ra, lambda d: d.update(copy.deepcopy(doc)), expect_rev=None, create=True)
+        bump(ra, "a", 60)
+        Path(ra, store.LAYOUT_NAME).unlink()
+        _r, rev = store.update_layout(ra, lambda d: d.update(copy.deepcopy(doc)), expect_rev=None, create=True)
+        check(rev == 61 and store.load_layout(ra)["rev"] == 61,
+              f"(a) 60번 쓰고 layout.json 을 치운 뒤 create → rev 61(지금까지 쓴 최대 60 + 1 — 치운 판의 rev 60 을 다시 쓰지 않음) ({rev})")
+        bump(ra, "b", 12)
+        notes = {r: hist_note(hist_a, r) for r in range(61, 73)}
+        revs = sorted(int(p.stem[1:]) for p in hist_a.glob("r*.json"))
+        check(store.load_layout(ra)["rev"] == 73 and notes == {61: "", **{62 + i: f"b{i}" for i in range(11)}}
+              and revs == list(range(22, 60)) + list(range(61, 73)),
+              f"(a) 12번 더 → rev 73, 새 이력 r61–r72(새 판 내용)이 모두 남음 {revs[:2]}…{revs[-2:]} {notes}")
+        held = hist_a / "r22.json"
+        with open(held, "rb"):  # Windows: 열린 파일은 os.remove 가 PermissionError
+            _r, rev = store.update_layout(ra, lambda d: d["crops"][0].update(note="잠김"), expect_rev=73)
+        check(rev == 74 and store.load_layout(ra)["crops"][0]["note"] == "잠김" and held.exists() and (hist_a / "r73.json").exists(),
+              "이력 정리 os.remove 실패(열린 파일) → 경고만, 저장(rev 74) 계속·그 파일은 남음")
+
+        rb = str(OUT / "l2" / "restore")
+        os.makedirs(rb)
+        hist_b, path_b = Path(rb, store.LAYOUT_HISTORY_DIR), Path(rb, store.LAYOUT_NAME)
+        store.update_layout(rb, lambda d: d.update(copy.deepcopy(doc)), expect_rev=None, create=True)
+        bump(rb, "c", 4)
+        prev = store.load_layout(rb)
+        bump(rb, "d", 1)
+        check(prev["rev"] == 4 and store.load_layout_version(rb, 4) == prev, "load_layout_version: 쓰기 뒤 r<이전 rev> = 이전 판")
+        r2 = (hist_b / "r2.json").read_bytes()
+        hand = json.loads(r2)
+        hand["crops"][1]["note"] = "복구 뒤 손질"
+        path_b.write_text(json.dumps(hand, ensure_ascii=False), encoding="utf-8")  # r2.json 을 복사해 되돌린 뒤 손으로 고침(rev 2)
+        _r, rev = store.update_layout(rb, lambda d: d["crops"][0].update(note="복구 뒤 저장"), expect_rev=2)
+        lay = store.load_layout(rb)
+        check(rev == 6 and lay["rev"] == 6 and lay["crops"][1]["note"] == "복구 뒤 손질",
+              f"(b) 이력 r2 로 되돌린 판에 쓰기 → 새 rev = 지금까지 쓴 최대 5 + 1 = 6 — 되돌리기 전 판의 rev 5 를 다시 쓰지 않음(Codex: "
+              f"rev 5 를 들고 있던 낡은 창이 409 없이 덮어씀) ({rev})")
+        expect_raises(lambda: store.update_layout(rb, lambda d: d["crops"][0].update(note="낡은 창"), expect_rev=5),
+                      "(b) 되돌리기 전 rev 5 를 들고 있던 낡은 창의 쓰기 → LayoutConflict", exc=store.LayoutConflict)
+        (hist_b / "max_rev.json").write_text("{ 깨진", encoding="utf-8")
+        shutil.copyfile(hist_b / "r1.json", path_b)
+        _r, rev = store.update_layout(rb, lambda d: d["crops"][0].update(note="rev_max 깨짐"), expect_rev=1)
+        check(rev == 5, f"(b) max_rev.json 이 깨지면 이력만으로(이력 최대 4 + 1 — 지금 판이 이력에 없어 생기는 한계, 예외 없음) ({rev})")
+        check((hist_b / "r2.json").read_bytes() == r2 and store.load_layout_version(rb, 4) == prev,
+              "(b) 복구 원본 r2.json·최신 이력 r4.json 은 덮지 않음")
+        (hist_b / "r0.json").write_text("{ 깨진", encoding="utf-8")
+        (hist_b / "r3.json").write_text(json.dumps(dict(doc, schema="other/1")), encoding="utf-8")
+        check(store.load_layout_version(rb, 1) is not None
+              and all(store.load_layout_version(rb, r) is None for r in (0, 3, 99, -1, "1", 1.0, True, None)),
+              "load_layout_version: 깨짐·구조 오류·없는 rev·음수·정수 아님(bool 포함) → None(예외 없음)")
+
+        # 잠금 경합: 스레드 4 × 레이아웃 쓰기 25(낡은 rev 면 다시 읽고 재시도) + 매니페스트 쓰기 섞기 + 읽기 폴링
+        rr = store.project_root(str(OUT / "l2"), "race")
+        store.save_manifest(rr, store.new_manifest("race"))
+        store.update_layout(rr, lambda d: d.update(_layout_doc([])), expect_rev=None, create=True)
+        n_thr, n_ops = 4, 25
+        errors, conflicts = [], [0]
+        stop = threading.Event()
+        barrier = threading.Barrier(n_thr)
+
+        def writer(t):
+            try:
+                barrier.wait()
+                for i in range(n_ops):
+                    k = t * n_ops + i
+                    crop = _layout_crop(f"{100 + k:03d}_스레드{t}", [(k % 12) * 256, (k // 12) * 256, (k % 12) * 256 + 256, (k // 12) * 256 + 256])
+                    while True:
+                        cur = store.load_layout(rr)["rev"]
+                        try:
+                            store.update_layout(rr, lambda d, c=crop: d["crops"].append(c), expect_rev=cur)
+                            break
+                        except store.LayoutConflict:
+                            conflicts[0] += 1
+                    store.update_manifest(rr, lambda m, t=t, i=i: m["picks"].__setitem__(f"T{t}/{i}", [str(i)]))
+            except Exception as e:  # 스레드 오류는 모아서 보고
+                errors.append(f"T{t}: {type(e).__name__}: {e}")
+
+        def reader():
+            while not stop.is_set():
+                try:
+                    store.load_layout(rr)
+                    store.load_manifest(rr)
+                except Exception as e:  # 읽기 실패를 모아서 보고
+                    errors.append(f"read: {type(e).__name__}: {e}")
+
+        ths = [threading.Thread(target=writer, args=(t,)) for t in range(n_thr)]
+        rth = threading.Thread(target=reader)
+        rth.start()
+        for th in ths:
+            th.start()
+        for th in ths:
+            th.join()
+        stop.set()
+        rth.join()
+        lay, m = store.load_layout(rr), store.load_manifest(rr)
+        want_ids = {store.crop_id_for(f"{100 + k:03d}_스레드{k // n_ops}") for k in range(n_thr * n_ops)}
+        check(not errors, f"경합 중 오류 0 {errors[:2]}")
+        check(lay["rev"] == n_thr * n_ops and {c["id"] for c in lay["crops"]} == want_ids,
+              f"레이아웃 잃은 쓰기 0 (rev {lay['rev']}, 크롭 {len(lay['crops'])}/100)")
+        check(len(m["picks"]) == n_thr * n_ops, f"매니페스트 잃은 쓰기 0 ({len(m['picks'])}/100)")
+        check(len(list(Path(rr, store.LAYOUT_HISTORY_DIR).glob("r*.json"))) == 50, "경합 뒤 이력 50개")
+        note(f"S1-L2 경합 4×25: 레이아웃 rev {lay['rev']}, 낡은 rev 재시도 {conflicts[0]}회, 매니페스트 picks {len(m['picks'])}, 오류 0")
+
+    def l3_ids():
+        section("S1-L3 크롭 ID")
+        cid = store.crop_id_for("017_팔리본")
+        check(store.new_layout_id("017_팔리본", []) == cid, "new_layout_id = crop_id_for(name)")
+        check(store.new_layout_id("017_팔리본", [cid]) == cid + "-2" and store.new_layout_id("017_팔리본", {cid, cid + "-2"}) == cid + "-3",
+              "이미 쓰는 ID → -2, -3")
+        check(store.new_layout_id("017_팔리본", [cid + "-2"]) == cid, "처음 비는 것(기본 ID 가 비면 그것)")
+        check(store.new_layout_id(" 017_팔리본 | A: x", []) == cid, "ID 는 기본 이름 해시(문구·공백 무관 — crop_id_for 그대로)")
+        m = _layout_mig_manifest([("017_팔리본", [0, 0, 640, 768]), ("017_팔리본", [640, 0, 1280, 768]), ("001_바보털", [0, 1024, 512, 1408])])
+        lay = store.layout_from_manifest(m)
+        check([c["id"] for c in lay["crops"]] == store.assign_crop_ids(["017_팔리본", "017_팔리본", "001_바보털"]) == [cid, cid + "-2",
+              store.crop_id_for("001_바보털")], "이관 id = 매니페스트 id(assign_crop_ids, 017 중복 -2)")
+        check(any("017_팔리본" in s and "겹침" in s for s in store.validate_layout(lay)), "이관된 같은 이름 → 경고(구조 오류 아님)")
+        g = store.layout_geom_checks(lay)
+        check(any(r["code"] == "N-dup" and r["other"] == cid + "-2" for r in g[cid]), "이관된 같은 이름 → 검사 N-dup(상대 id)")
+        root = str(OUT / "l3")
+        os.makedirs(root)
+        store.update_layout(root, lambda d: d.update(lay), expect_rev=None, create=True)
+
+        def rename(d):
+            c = d["crops"][1]
+            c["name"] = store.check_crop_name("017_팔리본_왼쪽", [o["name"] for o in d["crops"] if o is not c])["name"]
+
+        expect_raises(lambda: store.check_crop_name("017_팔리본", [lay["crops"][0]["name"]]), "남은 같은 이름으로는 못 바꿈")
+        store.update_layout(root, rename, expect_rev=0)
+        after = store.load_layout(root)["crops"][1]
+        check(after["id"] == cid + "-2" and after["name"] == "017_팔리본_왼쪽" and after["psd_name"] == "017_팔리본",
+              "이름을 바꿔도 id·psd_name 유지(D3)")
+        check(store.validate_layout(store.load_layout(root)) == [], "이름을 바꿔 중복이 풀리면 경고 0")
+        # 이름을 바꾼 크롭의 스펙 _layer_targets 가 '<처음 이름> | …' 를 통째로 붙여 넣은 꼴이어도 채택(ID = 처음 이름 해시, D3)
+        M = store.merge_layer_targets
+        renamed = store.parse_crop_layer_name("001_가방")
+        adopt = [{"tid": "A", "text": "gold badge", "origin": "adopt"}]
+        old_id = store.crop_id_for("001_가")
+        for kw in ({"crop_id": old_id}, {"crop_id": old_id + "-2"}, {"aliases": ["001_가"]}):
+            r, w = M(renamed, "001_가 | A: gold badge", **kw)
+            check(r["targets"] == adopt and w == [], f"merge_layer_targets 옛 이름 접두를 뗌 {kw} → {r['targets']}")
+        expect_raises(lambda: M(renamed, "001_가 | A: gold badge"), "옛 이름 접두: crop_id·aliases 없으면 지금처럼 라벨 없는 조각",
+                      contains="라벨 없는 조각")
+        expect_raises(lambda: M(renamed, "004_다른 | A: x", crop_id=old_id, aliases=["001_가"]), "무관한 이름 접두는 여전히 오류",
+                      contains="라벨 없는 조각")
+
+    def l4_rules():
+        section("S1-L4 공용 표 tools/fixtures/layout_rules.json · 이름·문구·사각형·GPT·검사")
+        hand = [  # 오라클 손계산(표와 독립)
+            (_layout_move([2240, 2947, 2624, 3331], 0, 0, C, True), [2240, 2944, 2624, 3328], "009 이관 사각형을 놓기만 해도 16px 격자(§4.1 예)"),
+            (_layout_move([1536, 3200, 2560, 4096], 5, 13, C, True), [1536, 3200, 2560, 4096], "017 아래 변 붙임 = 캔버스가 격자보다 우선"),
+            (_layout_move([100, 100, 228, 228], -10.5, -0.5, C, False), [90, 100, 218, 228], "-x.5 는 위로(floor(v + 0.5))"),
+            (_layout_resize([512, 512, 1024, 1024], "e", 2000, 0, C, True, False), [512, 512, 2048, 1024], "변 핸들: 긴 축 = 3×짧은"),
+            (_layout_resize([0, 0, 384, 1152], "e", -200, 0, C, True, False), [0, 0, 384, 1152], "짧은 축을 줄여 비가 넘으면 긴/3 올림"),
+            (_layout_resize([512, 512, 1024, 768], "se", 300, 10, C, True, True), [512, 512, 1280, 896], "Shift 비율 유지(x 기준)"),
+            (_layout_resize([2900, 100, 3028, 484], "se", 500, 600, C, True, False), [2900, 100, 3072, 616], "캔버스로 자른 뒤 비 > 3 → 3×짧은"),
+            (_layout_new(2900, 100, 500, 700, C, True, False), [2896, 96, 3072, 624], "새 크롭: 오른쪽 변 자름(여유 176) + 비 다시"),
+            (_layout_new(3066, 1000, 234, 400, C, True, False), [2816, 1008, 3072, 1392], "새 크롭: 오른쪽 변에서 바깥으로 → 왼쪽으로 반전(폭 0 아님)"),
+            (_layout_new(3000, 100, 500, 500, C, True, False), [2496, 96, 3008, 608], "새 크롭: 여유 64 < 128 → 반전"),
+            (_layout_new(1500, 4090, -300, 200, C, True, False), [1248, 3840, 1504, 4096], "새 크롭: 아래 변에서 바깥으로 → 위로 반전"),
+            (_layout_new(-50, 5000, 300, -300, C, True, False), [0, 3840, 256, 4096], "캔버스 밖 시작점 → 안으로"),
+            (_layout_resize([3056, 1008, 3072, 1056], "s", 0, 300, C, True, False), [3056, 1008, 3072, 1056], "16×48 s: 3×16 의 128 내림 0 → 1px 내림 48"),
+            (_layout_resize([3056, 1008, 3072, 1056], "n", 0, -300, C, True, False), [3056, 1008, 3072, 1056], "16×48 n: 높이 48(0 아님)"),
+            (_layout_suggest([[1330, 470, 1480, 560]], C, True), [1280, 384, 1536, 640], "상자 150×90 ÷ 0.7 → 256×256"),
+            (_layout_suggest([[0, 1000, 2000, 1100]], C, True), [0, 544, 2944, 1568], "넓은 상자 → 짧은 축 = 긴/3 올림"),
+            (_layout_suggest([[500, 400, 3300, 700]], [4096, 1024], True), [368, 0, 3440, 1024],
+             "4096×1024 넓은 상자: 높이를 캔버스로 자른 뒤 비 4 → 폭 = 3×1024, 가운데 유지(합집합 500–3300 을 덮음)"),
+        ]
+        for got, exp, label in hand:
+            check(got == exp, f"오라클 손계산 {label}: {got} ≠ {exp}")
+        if not _LAYOUT_RULES.exists():
+            check(False, f"공용 표가 없음: {_LAYOUT_RULES}")
+            return
+        tab = json.loads(_LAYOUT_RULES.read_text(encoding="utf-8"))
+        check(tab.get("schema") == "bmk.design_patch.layout_rules/1" and tab.get("consts") == _LAYOUT_G, "표 schema·consts = 오라클 상수")
+        check((_LAYOUT_G["size"], _LAYOUT_G["ratio"], _LAYOUT_G["small"], _LAYOUT_G["coord_max"])
+              == (store._LAYOUT_SIZE_STEP, store._LAYOUT_MAX_RATIO, store._LAYOUT_SMALL, store._LAYOUT_COORD_MAX), "표 상수 = store 상수")
+        rows = tab["rows"]
+        cnt: dict[str, int] = {}
+        for r in rows:
+            cnt[r["fn"]] = cnt.get(r["fn"], 0) + 1
+        rect_fns = ("move", "resize", "new", "suggest", "validate_rect")
+        check(set(cnt) == set(tab["fns"]) and sum(cnt.get(f, 0) for f in rect_fns) >= 40 and all(cnt.get(f, 0) >= 5 for f in rect_fns)
+              and cnt.get("check_name", 0) >= 50 and cnt.get("check_text", 0) >= 20 and cnt.get("gpt_size", 0) >= 20
+              and cnt.get("geom_checks", 0) >= 10 and cnt.get("name_dup", 0) >= 3, f"행 수 {cnt}")
+        diff = [f"#{i} {r['fn']} {r.get('note', '')}: 표 {r['out']} ≠ 계산 {got}"
+                for i, r in enumerate(rows) for got in [_layout_rule_out(r["fn"], r["in"])] if got != r["out"]]
+        check(not diff, f"표 {len(rows)}행 = 오라클·store 계산 ({len(diff)}건 다름: {diff[:3]})")
+        handles = {r["in"]["handle"] for r in rows if r["fn"] == "resize"}
+        check(handles == {"n", "s", "e", "w", "ne", "nw", "se", "sw"}, f"resize 핸들 8개 {sorted(handles)}")
+        dirs = {(r["in"]["dx"] >= 0, r["in"]["dy"] >= 0) for r in rows if r["fn"] == "new"}
+        check(len(dirs) == 4, "new 4방향")
+        methods = {r["out"]["method"] for r in rows if r["fn"] == "gpt_size"}
+        check(methods == {"square_preset", "k", "int_k", "floor16", "nearest"}, f"gpt_size 경로 5가지 모두 {sorted(methods)}")
+        codes = {c for r in rows if r["fn"] == "geom_checks" for _cid, c in r["out"]}
+        check(codes == {"L-ratio", "L-outside", "L-128", "L-small", "L-gptk", "L-same", "L-overlap", "N-name", "N-dup", "N-nnn", "N-side",
+                        "P-edge", "P-70", "P-out"}, f"geom_checks 코드 14개 모두 {sorted(codes)}")
+        # 기하 결과의 성질(오라클이 규칙을 지키는지): 정수 · 크기 > 0 · 비 ≤ 3 · 캔버스 안(캔버스보다 큰 사각형 이동 제외) ·
+        # 스냅이고 캔버스 변에 닿지 않으면 resize·new 크기 = 128 배수, move 위치 = 16 배수
+        prop = []
+        for i, r in enumerate(rows):
+            if r["fn"] not in ("move", "resize", "new", "suggest"):
+                continue
+            x0, y0, x1, y1 = r["out"]
+            W, H = r["in"]["canvas"]
+            w, h = x1 - x0, y1 - y0
+            big = r["fn"] == "move" and (r["in"]["rect"][2] - r["in"]["rect"][0] > W or r["in"]["rect"][3] - r["in"]["rect"][1] > H)
+            edge = x0 == 0 or y0 == 0 or x1 == W or y1 == H
+            ok = all(type(v) is int for v in r["out"]) and w > 0 and h > 0 and max(w, h) <= 3 * min(w, h)
+            ok = ok and (big or store.layout_rect_problem(r["out"], [W, H]) is None)
+            if r["in"].get("snap") and not edge and r["fn"] in ("resize", "new"):
+                ok = ok and (r["fn"] == "resize" and r["in"]["handle"] in "ns" or w % 128 == 0) and (r["fn"] == "resize" and r["in"]["handle"] in "ew" or h % 128 == 0)
+            if r["in"].get("snap") and not edge and r["fn"] == "move":
+                ok = ok and x0 % 16 == 0 and y0 % 16 == 0
+            if not ok:
+                prop.append(f"#{i} {r['fn']} {r['out']}")
+        check(not prop, f"기하 결과 성질(정수·비·서버 layout_rect_problem 통과·스냅) 위반 {prop[:3]}")
+        # 이름: NFC/NFD·전각 숫자·금지 문자·좌우 토큰은 표 행으로, 여기서는 유일성(서버만)과 문구 합성 왕복
+        expect_raises(lambda: store.check_crop_name("009_모자", ["009_다른", "009_모자"]), "같은 이름 → 오류", contains="같은 이름")
+        expect_raises(lambda: store.check_crop_name("009_CAFÉ", [unicodedata.normalize("NFD", "009_café")]), "NFC·casefold 로 같은 이름 → 오류")
+        check(store.check_crop_name("009_모자", ["009_모자_왼쪽"])["name"] == "009_모자", "다른 이름이면 통과")
+        for bad_name, code in (("001_모자\U0002EBF0", "U+2EBF0"), ("001_모 자", "U+0020")):  # U+2EBF0 = 유니코드 15.1(서버 15.0 에선 Cn)
+            expect_raises(lambda b=bad_name: store.check_crop_name(b), f"글자 범주 거절 메시지에 문제 글자 {code}", contains=f"문제 글자: {code}")
+        expect_raises(lambda: store.check_crop_name(9), "이름이 문자열 아님")
+        expect_raises(lambda: store.check_target_text(None), "문구가 문자열 아님")
+        okt = [r["out"]["text"] for r in rows if r["fn"] == "check_text" and "text" in r["out"]]
+        rt = [t for t in okt if store.layout_parsed({"name": "005_왕복", "targets": [{"tid": "A", "text": "앞"}, {"tid": "C", "text": t},
+                                                                                     {"tid": "B", "text": ""}]})["targets"]
+              != [{"tid": "A", "text": "앞"}, {"tid": "C", "text": t}, {"tid": "B", "text": ""}]]
+        check(len(okt) >= 10 and not rt, f"통과한 문구 {len(okt)}개 모두 합성 레이어명 왕복(가운데·빈 문구 이웃) {rt[:2]}")
+        crop = {"name": "009_모자", "targets": [{"tid": "A", "text": "", "box": [1, 1, 2, 2]}]}
+        check(store.layout_layer_name(crop) == "009_모자" and store.layout_layer_name(dict(crop, targets=[])) == "009_모자",
+              "레거시 합성 = 이름만(빈 A 하나·빈 목록)")
+        check(store.layout_layer_name(dict(crop, targets=[{"tid": "B", "text": ""}])) == "009_모자 | B:"
+              and store.layout_layer_name(dict(crop, targets=[{"tid": "A", "text": "x"}, {"tid": "B", "text": ""}])) == "009_모자 | A: x; B:",
+              "비레거시 합성: 빈 문구는 'B:'")
+        p = store.layout_parsed({"name": "002_토스트-머리장식_right", "targets": [{"tid": "A", "text": "toast hair clip"}]})
+        check(p == store.parse_crop_layer_name("002_토스트-머리장식_right | A: toast hair clip"), "layout_parsed = parse_crop_layer_name 모양")
+        check(store.check_layout_rect([0, 0, 1536, 512], C) == [0, 0, 1536, 512], "check_layout_rect 통과 = 사각형")
+        expect_raises(lambda: store.check_layout_rect([0, 0, 1537, 512], C), "check_layout_rect 비 3:1 초과", contains="3배")
+        expect_raises(lambda: store.check_layout_rect([-1, 0, 511, 512], C), "check_layout_rect 캔버스 밖", contains="캔버스")
+        expect_raises(lambda: store.check_layout_rect([0, 0, 512.5, 512], C), "check_layout_rect 형식")
+        note(f"S1-L4 공용 표 {len(rows)}행 {cnt}")
+
+    def l5_checks():
+        section("S1-L5 검사 layout_geom_checks")
+        lay, want = _layout_geom_sample()
+        g = store.layout_geom_checks(lay)
+        by_name = {c["id"]: c["name"] for c in lay["crops"]}
+        got = {(by_name[cid], r["code"]) for cid, rows in g.items() for r in rows}
+        check(set(g) == set(by_name) and got == want, f"합성 레이아웃 (이름, 코드) 집합 — 빠짐 {sorted(want - got)} · 더 나옴 {sorted(got - want)}")
+        levels = {"L-ratio": "error", "L-outside": "warn", "L-128": "info", "L-small": "info", "L-gptk": "info", "L-same": "warn",
+                  "L-overlap": "info", "N-name": "error", "N-dup": "error", "N-nnn": "info", "N-side": "info", "P-edge": "warn",
+                  "P-70": "warn", "P-out": "warn"}
+        flat = [r for rows in g.values() for r in rows]
+        check(all(r["level"] == levels[r["code"]] and isinstance(r["msg"], str) and r["msg"] for r in flat), "단계·msg")
+        check(all(("other" in r) == (r["code"] in ("L-same", "L-overlap", "N-dup")) and ("tid" in r) == r["code"].startswith("P-")
+                  for r in flat), "짝 검사는 other, 상자 검사는 tid")
+        ov = next(r for r in g[store.crop_id_for("009_겹침")] if r["code"] == "L-overlap")
+        check(ov["other"] == store.crop_id_for("010_겹침") and "128×128" in ov["msg"], f"겹침: 상대 id·겹친 크기 {ov}")
+        check(g[store.crop_id_for("001_정상")] == [], "문제없는 크롭 = 빈 목록")
+        check(sorted(r["tid"] for r in g[store.crop_id_for("014_상자")]) == ["A", "B", "C"], "상자마다 한 코드(D 는 가이드 안)")
+        if not (_S0_261014 / store.MANIFEST_NAME).exists():
+            skip(f"실데이터 사본 없음({_S0_261014}) — S1-L5 실측·L7 사본 생략")
+            return
+        m = store.load_manifest(str(_S0_261014))
+        lay = store.layout_from_manifest(m)
+        g = store.layout_geom_checks(lay)
+        nn = {c["id"]: c["name"][:3] for c in lay["crops"]}
+        codes = [(nn[cid], r["code"]) for cid, rows in g.items() for r in rows]
+        pairs = {tuple(sorted((nn[cid], nn[r["other"]]))) for cid, rows in g.items() for r in rows if r["code"] == "L-overlap"}
+        check(len(lay["crops"]) == 18 and not [c for c in codes if c[1] in ("L-128", "L-small")], "실데이터 18크롭: L-128 0 · L-small 0")
+        check({("003", "006"), ("003", "011"), ("014", "015")} <= pairs, f"겹침 목록에 S0 이음매 겹친 쌍(006/003·003/011·014/015) {len(pairs)}쌍")
+        check({c for _n, c in codes} == {"L-overlap"}, f"실데이터: 겹침 밖의 검사 없음 {sorted({c for _n, c in codes})}")
+        note(f"S1-L5 실데이터 18크롭 검사: 겹침 {len(pairs)}쌍(정보), 그 밖 0")
+
+    def l6_psd_diff():
+        section("S1-L6 psd_diff")
+
+        def s(name, rect, layer=None):
+            return {"name": name, "layer_name": layer or name, "rect": rect}
+
+        base = {"crops": [s("009_모자", [2240, 2947, 2624, 3331]), s("002_눈", [0, 0, 384, 384], "002_눈 | A: 눈동자"),
+                          s("004_어깨_왼쪽", [0, 512, 512, 1024]), s("001_털", [512, 0, 1024, 384])]}
+        check(store.psd_diff(base, copy.deepcopy(base)) == {"changed": [], "added": [], "removed": []}, "같음 → 세 목록 모두 빈 것")
+        snap = {"crops": [s("002_눈", [0, 0, 384, 384], "002_눈 | A: 홍채"), s("009_모자", [2240, 2944, 2624, 3328]),
+                          s("001_털", [512, 0, 1024, 384]), s("019_새것", [100, 100, 228, 228])], "fingerprint": [3, 4]}
+        d = store.psd_diff(base, snap)
+        check([(c["name"], c["fields"]) for c in d["changed"]] == [("009_모자", ["rect"]), ("002_눈", ["layer_name"])],
+              f"바뀜 = 기준점 순서, rect·layer_name {d['changed']}")
+        check(d["changed"][0]["from"]["rect"] == [2240, 2947, 2624, 3331] and d["changed"][0]["to"]["rect"] == [2240, 2944, 2624, 3328]
+              and d["changed"][1]["to"]["layer_name"] == "002_눈 | A: 홍채", "바뀜 from·to")
+        check(d["added"] == [s("019_새것", [100, 100, 228, 228])] and d["removed"] == [s("004_어깨_왼쪽", [0, 512, 512, 1024])],
+              "추가(스냅숏에만)·사라짐(기준점에만)")
+        a, b = [0, 0, 512, 512], [1024, 0, 1536, 512]
+        dup = store.psd_diff({"crops": [s("017_리본", a), s("017_리본", b)]},
+                             {"crops": [s("017_리본", [1040, 16, 1552, 528]), s("017_리본", a)]})
+        check(dup["changed"] == [{"name": "017_리본", "fields": ["rect"], "from": {"layer_name": "017_리본", "rect": b},
+                                  "to": {"layer_name": "017_리본", "rect": [1040, 16, 1552, 528]}}] and not dup["added"] and not dup["removed"],
+              f"같은 이름 여럿: 순서가 바뀌어도 IoU 로 짝 {dup}")
+        far = store.psd_diff({"crops": [s("017_리본", a), s("017_리본", b)]},
+                             {"crops": [s("017_리본", [0, 2048, 512, 2560]), s("017_리본", [1024, 2048, 1536, 2560])]})
+        check([c["to"]["rect"][0] for c in far["changed"]] == [0, 1024], "같은 이름이 모두 멀리 옮겨짐(IoU 0) → 순서로 짝")
+        one = store.psd_diff({"crops": [s("017_리본", a), s("017_리본", b)]}, {"crops": [s("017_리본", b)]})
+        check(one == {"changed": [], "added": [], "removed": [s("017_리본", a)]}, "같은 이름 둘 중 하나 사라짐 → IoU 1 짝, 남은 것 사라짐")
+
+    def l7_migrate():
+        section("S1-L7 layout_from_manifest(이관)")
+        m = _layout_mig_manifest([("001_털", [0, 0, 512, 384]), ("002_x |", [512, 0, 896, 384]), ("003_y | A:", [896, 0, 1280, 384]),
+                                  ("004_z | A: 문구", [1280, 0, 1664, 384]), ("005_w | ; ;", [1664, 0, 2048, 384]),
+                                  ("006_v | 끈; B: 매듭", [2048, 0, 2432, 384])])
+        lay = store.layout_from_manifest(m)
+        check(lay["schema"] == store.LAYOUT_SCHEMA and lay["rev"] == 0 and lay["canvas"] == [3072, 4096]
+              and lay["psd"]["path"] == "G:/x/mig_DP.psd" and lay["psd"]["fingerprint"] == [11, 22] and lay["psd"]["crop_group"] == "auto"
+              and lay["psd"]["crops"] == [{"name": c["name"], "layer_name": c["layer_name"], "rect": c["rect"]} for c in m["crops"]],
+              "이관: schema·rev 0·canvas·PSD 기준점(source + 크롭 name·layer_name·rect)")
+        check(all(c["psd_name"] == c["name"] and c["note"] == "" and all(t["box"] is None for t in c["targets"]) for c in lay["crops"]),
+              "psd_name = name · note '' · box null")
+        check(all(store.layout_parsed(c)["targets"] == store.parse_crop_layer_name(mc["layer_name"])["targets"]
+                  for c, mc in zip(lay["crops"], m["crops"])), "layout_parsed 타깃 = parse(layer_name) 타깃(라벨 없는 조각·빈 꼬리 포함)")
+        w = store.validate_layout(lay)
+        flips = sorted(s.split(":")[0] for s in w if "레거시" in s)
+        check(flips == ["002_x", "003_y", "005_w"], f"'|' 뒤가 빈 레이어명 → validate 경고로 legacy 뒤집힘 보고 {w}")
+        check(store.layout_layer_name(lay["crops"][5]) == "006_v | A: 끈; B: 매듭", "라벨 없는 조각은 A 로 명시되어 합성")
+        fixed = copy.deepcopy(lay)
+        fixed["crops"][1]["targets"] = [{"tid": "A", "text": "새 문구", "box": None}]
+        check(not any(s.startswith("002_x") for s in store.validate_layout(fixed)), "문구를 넣으면 뒤집힘 경고가 사라짐")
+        expect_raises(lambda: store.layout_from_manifest(store.new_manifest("x")), "캔버스 없음(Import 전) → ValueError", contains="Import")
+        empty = store.layout_from_manifest(dict(m, crops=[]))
+        check(empty["crops"] == [] and empty["psd"]["crops"] == [] and store.validate_layout(empty) == [], "빈 시작(크롭 0) 이관")
+        sig = store.layout_sig(lay)
+        moved, boxed = copy.deepcopy(lay), copy.deepcopy(lay)
+        moved["crops"][0]["rect"] = [16, 0, 528, 384]
+        boxed["crops"][0]["targets"][0]["box"] = [10, 10, 100, 100]
+        boxed["crops"][0]["note"] = "메모"
+        boxed["psd"]["at"] = "later"
+        legacy = copy.deepcopy(lay)
+        legacy["crops"][0]["targets"] = []
+        nopsd = copy.deepcopy(lay)
+        nopsd["crops"][0]["psd_name"] = None
+        renamed = copy.deepcopy(lay)
+        renamed["crops"][0]["psd_name"] = "001_옛털"
+        check(len(sig) == 16 and store.layout_sig(copy.deepcopy(lay)) == sig and store.layout_sig(moved) != sig
+              and store.layout_sig(boxed) == sig and store.layout_sig(legacy) == sig and store.layout_sig(nopsd) == sig
+              and store.layout_sig(renamed) != sig, "layout_sig: rect·psd_name 에 반응, box·note·기준점·레거시 표기·psd_name 없음(=name)엔 불변")
+
+        # 레이아웃 모드 Import 결과(source.layout) 매니페스트에서 다시 시작(layout.json 을 치운 뒤): name·layer_name·rect 는 Studio 값
+        lm = _layout_mig_manifest([("001_털", [0, 0, 512, 384]), ("004_z | A: 문구", [1280, 0, 1664, 384])])
+        snap = {"psd": "G:/x/mig_DP.psd", "fingerprint": [11, 22], "crop_group": "auto", "crop_pixels_group": "auto",
+                "at": "2026-10-16 09:00:00", "pixel_nodes": ["004_z"],
+                "crops": [{"name": c["name"], "layer_name": c["layer_name"], "rect": list(c["rect"]), "rect_source": "vector"}
+                          for c in lm["crops"]]}
+        lm["source"]["layout"] = {"rev": 3, "sig": "0" * 16}
+        lm["crops"][0]["psd_name"] = "001_털"
+        lm["crops"][1].update(name="004_z_장식", psd_name="004_z", layer_name="004_z_장식 | A: 새 문구", rect=[1280, 0, 1664, 512])
+        relay = store.layout_from_manifest(lm, snap)
+        c4 = relay["crops"][1]
+        check([c["psd_name"] for c in relay["crops"]] == ["001_털", "004_z"] and c4["name"] == "004_z_장식" and c4["rect"] == [1280, 0, 1664, 512]
+              and store.layout_parsed(c4)["targets"] == [{"tid": "A", "text": "새 문구"}],
+              f"레이아웃 모드 매니페스트 → 크롭은 Studio 값, psd_name 유지(이름을 바꿔도 사전 편집 자식을 찾음) {c4}")
+        check(relay["psd"] == {"path": snap["psd"], "fingerprint": snap["fingerprint"], "crop_group": "auto", "at": snap["at"],
+                               "crops": [{k: s[k] for k in ("name", "layer_name", "rect")} for s in snap["crops"]]}
+              and store.psd_diff(relay["psd"], snap) == {"changed": [], "added": [], "removed": []} and store.validate_layout(relay) == [],
+              f"레이아웃 모드 매니페스트 → PSD 기준점 = 스냅숏(Studio 값 아님, 갈라짐 0) {relay['psd']['crops']}")
+        expect_raises(lambda: store.layout_from_manifest(lm), "레이아웃 모드 매니페스트 + 스냅숏 없음 → ValueError(Import 안내)",
+                      contains="Import PSD")
+        plain = json.loads(json.dumps(lay, ensure_ascii=False))
+        again = store.layout_from_manifest(m, snap)
+        again["psd"]["at"] = plain["psd"]["at"]
+        check(json.dumps(again, ensure_ascii=False) == json.dumps(plain, ensure_ascii=False),
+              "PSD 모드 매니페스트(source.layout 없음)는 스냅숏을 줘도 결과가 바이트 그대로(psd_name = name, 기준점 = 매니페스트)")
+        if not (_S0_261014 / store.MANIFEST_NAME).exists():
+            return
+        m = store.load_manifest(str(_S0_261014))
+        lay = store.layout_from_manifest(m)
+        same = all(c["id"] == mc["id"] and c["name"] == mc["name"] and c["rect"] == mc["rect"]
+                   and store.layout_parsed(c)["targets"] == store.parse_crop_layer_name(mc["layer_name"])["targets"]
+                   for c, mc in zip(lay["crops"], m["crops"]))
+        c002 = next(c for c in lay["crops"] if c["name"] == "002_눈동자")
+        check(len(lay["crops"]) == 18 and same, "실데이터 18크롭 이관: id·name·rect 그대로, layout_parsed 타깃 = parse(layer_name) 타깃")
+        check(store.layout_layer_name(c002) == "002_눈동자 | A: 눈동자; B: 눈썹; C: 속눈썹"
+              and next(c for c in m["crops"] if c["id"] == c002["id"])["layer_name"].endswith(";"),
+              "002: 끝 ';' 는 합성에서 빠짐(타깃은 같음)")
+        check(store.validate_layout(lay) == [] and lay["psd"]["path"] == m["source"]["psd"], "실데이터 이관: 경고 0, 기준점 = source.psd")
+
+    l1_schema()
+    l2_update()
+    l3_ids()
+    l4_rules()
+    l5_checks()
+    l6_psd_diff()
+    l7_migrate()
+
+
+# ── U3 도우미: 보드 레이아웃 라우트용 합성 프로젝트(캔버스 768×1024, 크롭 5). 001 레거시 + 채택 스펙·믿을 초안(mock 원장 꼴),
+#    002 문구 3개(레이어명 끝 ';')·다른 화면 초안(OpenAI 원장 꼴), 003 레퍼런스 없음·깨진 스펙, 004 '|' 뒤가 빈 레이어명,
+#    9_긴띠 이관된 비정상(옛 이름·비 6). 매니페스트 crops 에 없는 006_옛크롭 은 후보 1·스펙만 남은 고아(H-orphan).
+_LAYOUT_BOARD_ROWS = (("001_머리", [0, 0, 384, 384]), ("002_눈 | A: 눈동자; B: 눈썹; C: 속눈썹;", [384, 0, 768, 384]),
+                      ("003_손_왼쪽", [0, 384, 384, 768]), ("004_발 |", [384, 384, 768, 768]), ("9_긴띠", [0, 896, 768, 1024]))
+_LAYOUT_BOARD_ORPHAN = "006_옛크롭"
+
+
+def _layout_board_project(base_dir, name, *, base=True):
+    """위 합성 프로젝트를 base_dir 아래에 새로 만든다. refs_dir = base_dir/refs_<name>(001_머리_t·002_눈·002_눈썹).
+    001 job canvas sha = 001 초안 원장 req 의 canvas src_sha(믿음), 002 는 다름. 001 셀에 보드 사전 승인 재굴림 2.
+    base=False 면 베이스·캔버스·크롭 없음(Import 전)."""
+    root = store.project_root(str(base_dir), name)
+    shutil.rmtree(root, ignore_errors=True)
+    os.makedirs(root)
+    refs = Path(base_dir) / f"refs_{name}"
+    shutil.rmtree(refs, ignore_errors=True)
+    refs.mkdir(parents=True)
+    for fn in ("001_머리_t.png", "002_눈.png", "002_눈썹.png"):
+        (refs / fn).write_bytes(png_bytes(np.full((8, 8, 3), 128, np.uint8)))
+    m = store.new_manifest(name)
+    m["source"].update(psd="G:/x/syn_DP.psd", fingerprint=[1, 2], crop_group="auto", refs_dir=refs.as_posix())
+    if not base:
+        store.save_manifest(root, m)
+        return root
+    img = texture(1024, 768, 3)
+    m["canvas"], m["work_rect"] = [768, 1024], [0, 0, 768, 1024]
+    m["base"] = store.save_png_ca(root, "inputs", img)
+    parsed = [store.parse_crop_layer_name(ln) for ln, _r in _LAYOUT_BOARD_ROWS]
+    ids = store.assign_crop_ids([p["name"] for p in parsed])
+    for cid, p, (ln, (x0, y0, x1, y1)) in zip(ids, parsed, _LAYOUT_BOARD_ROWS):
+        m["crops"].append({"id": cid, "name": p["name"], "nnn": p["nnn"], "part": p["part"], "layer_name": ln,
+                           "rect": [x0, y0, x1, y1], "rect_source": "vector",
+                           "source": store.save_png_ca(root, "inputs", img[y0:y1, x0:x1]), "source_kind": "base_crop",
+                           "alpha_frac": 0.0, "refs_auto": [], "warnings": [],
+                           "targets": [{"tid": t["tid"], "label": t["text"] or p["part"], "name_en": t["text"],
+                                        "mode": "ref_correct", "refs": []} for t in p["targets"]]})
+    orphan = store.crop_id_for(_LAYOUT_BOARD_ORPHAN)
+    for i, cid in enumerate((ids[0], ids[0], orphan)):
+        rel = store.save_bytes_ca(root, "cands", png_bytes(texture(64, 64, 10 + i)), "png", prefix="f_")
+        m["candidates"].append({"key": Path(rel).stem, "crop_id": cid, "tid": "A", "file": rel, "src_size": [64, 64],
+                                "origin": "folder", "origin_info": {"folder": "syn", "filename": f"c{i}.png"},
+                                "quad": [0.0, 0.0, 384.0, 0.0, 384.0, 384.0, 0.0, 384.0], "picked": i == 0, "z": None,
+                                "hand_mask": None})
+    m["picks"] = {f"{ids[0]}/A": [m["candidates"][0]["key"]]}
+    for crop, sha in zip(m["crops"][:2], ("c001" * 6, "c002" * 6)):
+        ck = store.cell_key("gpt-image-2.5-sunburst", "max", [2048, 2048], "opaque", f"prompt {crop['id']}", [sha],
+                            "dp-prompt/1", "V1")
+        m["jobs"].append({"cell_key": ck, "crop_id": crop["id"], "tid": "A", "variant": "V1", "model": "gpt-image-2.5-sunburst",
+                          "quality": "max", "size": [2048, 2048], "n": 1, "reps": 1, "background": "opaque",
+                          "prompt": f"prompt {crop['id']}",
+                          "inputs": [{"role": "canvas", "file": crop["source"], "sha": sha, "source": crop["source"]}],
+                          "template_version": "dp-prompt/1"})
+    m["rerolls"] = {m["jobs"][0]["cell_key"]: 2}
+    store.save_manifest(root, m)
+    specs = Path(root) / "specs"
+    specs.mkdir()
+    k1, k2 = "a1" * 12, "b2" * 12
+    for cid, spec in ((ids[0], {"targets": [{"id": "A", "bbox": [0.25, 0.25, 0.75, 0.5]}],
+                                "_layer_targets": "A: hair band; C: ribbon", "_draft": {"key": k1, "attempt": 1}}),
+                      (ids[1], {"targets": [{"id": "A", "bbox": [0.1, 0.1, 0.5, 0.5]}], "_draft": {"key": k2, "attempt": 2}}),
+                      (orphan, {"_hint": ""})):
+        (specs / f"{cid}.json").write_text(json.dumps(spec, ensure_ascii=False), encoding="utf-8")
+    (specs / f"{ids[2]}.json").write_text("{", encoding="utf-8")  # 사람이 고치다 깨뜨린 스펙
+    store.write_json_atomic(os.path.join(root, "vlm", ids[0], k1, "a1.req.json"),
+                            {"kind": "crop", "body": {"model": "mock", "images": [["canvas", ids[0], "c001" * 6, 384, 384],
+                                                                                  ["ref", "001_머리_t.png", "r" * 24, 8, 8]]}})
+    store.write_json_atomic(os.path.join(root, "vlm", ids[1], k2, "a2.req.json"),
+                            {"kind": "crop", "body": {"model": "gpt-6-sol", "input": [{"role": "user", "content": [
+                                {"type": "input_text", "text": "x"},
+                                {"type": "input_image", "img": "vlm/img/x.png", "detail": "high", "role": "canvas",
+                                 "name": ids[1], "src_sha": "0ld" * 8, "sent_wh": [896, 1024]}]}]}})
+    return root
+
+
+def _layout_board_snap(root, crops, fingerprint, *, at="2026-10-16 10:00:00", pixel_nodes=(), sync=True):
+    """Import PSD 의 PSD 스냅숏 derived/psd_crops.json(STUDIO_S1_SPEC §2.3 형식)을 직접 쓴다. sync = 그 Import 처럼 매니페스트
+    source.fingerprint 도 맞춘다(보드는 source 와 PSD·지문·그룹 설정이 같은 스냅숏만 믿음), False = 다른 PSD 로 쓴 낡은 스냅숏."""
+    if sync:
+        store.update_manifest(root, lambda mm: mm["source"].__setitem__("fingerprint", list(fingerprint)))
+    src = store.load_manifest(root)["source"]
+    store.write_json_atomic(os.path.join(root, "derived", "psd_crops.json"),
+                            {"psd": src["psd"], "fingerprint": list(fingerprint), "crop_group": src["crop_group"],
+                             "crop_pixels_group": src["crop_pixels_group"], "at": at,
+                             "crops": [dict(c, rect_source="vector") for c in crops], "pixel_nodes": list(pixel_nodes)})
+
+
+def layout_board_unit():
+    """S1-B 보드 레이아웃 라우트(U3): B19–B23, B11·B12·B0 확장. --quick 포함, torch·comfy 를 import 하지 않는다."""
+    section("S1-B 보드 레이아웃 라우트")
+    import bmk_design_patch_board as board
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    OUT = OUT_ROOT / "layout_board"
+    BASE = OUT / "base"
+    shutil.rmtree(OUT, ignore_errors=True)
+    BASE.mkdir(parents=True)
+    API = "/bmk/design_patch"
+    XSS = '010_<img src=x onerror=alert(1)>'
+
+    class Http:
+        def __init__(self, client):
+            self.c = client
+
+        async def get(self, path, **params):
+            r = await self.c.get(path, params=params, allow_redirects=False)
+            return r.status, r.headers, await r.read()
+
+        async def jget(self, path, **params):
+            st, _hd, body = await self.get(path, **params)
+            return st, json.loads(body.decode("utf-8"))
+
+        async def post(self, path, payload, ctype="application/json"):
+            data = payload if isinstance(payload, (bytes, str)) else json.dumps(payload, ensure_ascii=False)
+            r = await self.c.post(path, data=data.encode("utf-8") if isinstance(data, str) else data,
+                                  headers={"Content-Type": ctype})
+            body = await r.read()
+            try:
+                return r.status, json.loads(body.decode("utf-8"))
+            except ValueError:
+                return r.status, body
+
+    def lay(root):
+        return store.load_layout(root)
+
+    def codes(row):
+        return {c["code"] for c in row["checks"]}
+
+    def rows(d):
+        return {c["id"]: c for c in d["crops"]}
+
+    async def crop_op(h, key, root, **body):
+        return await h.post(f"{API}/layout/crop", {"root": key, "rev": lay(root)["rev"], **body})
+
+    def b0_pure():
+        section("B0 레이아웃 코드 import 순도(새 프로세스에서 board import + 레이아웃 함수 실행 → torch·comfy 없음)")
+        root = _layout_board_project(BASE, "probe")
+        probe = OUT / "b0_probe.py"
+        probe.write_text(
+            "import json, sys\n"
+            "sys.path.insert(0, sys.argv[1])\n"
+            "import bmk_design_patch_board as board\n"
+            "root = sys.argv[2]\n"
+            "board.layout_start(root)\n"
+            "cid = board.layout_state(root)['crops'][0]['id']\n"
+            "board.layout_crop(root, 0, 'update', {'id': cid, 'note': 'probe'})\n"
+            "board.build_state(root)\n"
+            "bad = sorted(m for m in sys.modules if m.split('.')[0] in ('torch', 'comfy', 'comfy_api_nodes', 'folder_paths',\n"
+            "             'server', 'nodes', 'execution', 'bmk_design_patch'))\n"
+            "print(json.dumps({'bad': bad, 'rev': board.layout_state(root)['rev']}))\n", encoding="utf-8")
+        r = subprocess.run([sys.executable, "-X", "utf8", "-W", "ignore", str(probe), str(PKG), root], capture_output=True,
+                           text=True, encoding="utf-8", timeout=120)
+        out = json.loads(r.stdout.strip().splitlines()[-1]) if r.returncode == 0 and r.stdout.strip() else None
+        check(out is not None and out["bad"] == [] and out["rev"] == 1,
+              f"새 프로세스: 이관·상태·쓰기·state 뒤 torch·comfy·노드 모듈 없음 {out} {r.stderr.strip()[-300:]}")
+        tree = ast.parse((PKG / "bmk_design_patch_board.py").read_text(encoding="utf-8"))
+        fns = {n.name: n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        names = ("_layout_or_none", "_layout_status", "_refs_finder", "_refs_row", "_spec", "_adopted", "_draft_canvas_sha",
+                 "_bbox_ok", "_draft_boxes", "_read_snapshot", "_psd_checks", "_name_continues", "layout_state", "layout_start",
+                 "_targets_in", "_target_text", "_crop_in_layout", "_restore_point", "_opt_count", "layout_crop", "layout_psd",
+                 "layout_refs", "_rev", "layout_handler", "layout_refs_handler", "layout_start_handler", "layout_crop_handler",
+                 "layout_psd_handler")
+        check(all(n in fns and not any(isinstance(x, (ast.Import, ast.ImportFrom)) for x in ast.walk(fns[n])) for n in names),
+              f"레이아웃 함수 {len(names)}개에 지연 import 없음")
+
+    async def b20_start(h, key, root, nobase_key, nobase_root):
+        section("B20 POST /layout/start (이관·두 번째 409·베이스 없음 400)")
+        st, d = await h.jget(f"{API}/layout", root=key)
+        check(st == 200 and d["exists"] is False and d["editable"] is True and d["rev"] is None and d["error"] is None
+              and d["crops"] == [] and d["removed"] == [] and d["manifest_crops"] == 5 and d["canvas"] == [768, 1024]
+              and d["psd"] is None and d["psd_diff"] is None and d["start_blocked"] is None and d["applied"] is False,
+              f"레이아웃 없음 → exists false·editable·이관할 크롭 5·PSD 모드 매니페스트라 시작 막힘 없음 {d}")
+        st, d = await h.jget(f"{API}/layout", root=nobase_key)
+        check(st == 200 and d["exists"] is False and d["editable"] is False and d["canvas"] is None,
+              f"베이스 없음(Import 전) → editable false {d}")
+        st, d = await h.post(f"{API}/layout/start", {"root": nobase_key})
+        check(st == 400 and "베이스" in d["error"] and not (Path(nobase_root) / store.LAYOUT_NAME).exists(),
+              f"베이스 없음 start → 400, 파일 안 만듦 {st} {d}")
+        mrev = store.load_manifest(root)["rev"]
+        st, d = await h.post(f"{API}/layout/start", {"root": key})
+        L = lay(root)
+        m = store.load_manifest(root)
+        check(st == 200 and d["ok"] is True and d["rev"] == 0 and d["crops"] == 5 and L["rev"] == 0 and len(L["crops"]) == 5,
+              f"start → layout.json rev 0, 크롭 5 {st} {d}")
+        check([c["id"] for c in L["crops"]] == [c["id"] for c in m["crops"]]
+              and all(lc["rect"] == mc["rect"] and lc["psd_name"] == mc["name"] for lc, mc in zip(L["crops"], m["crops"])),
+              "이관: id·rect 그대로, psd_name = 그때 이름")
+        check(any("004_발" in w and "레거시" in w for w in d["warnings"]),
+              f"'|' 뒤가 빈 레이어명은 레거시로 바뀜 → 응답 warnings {d['warnings']}")
+        check(m["rev"] == mrev, "이관은 매니페스트를 쓰지 않음(rev 그대로)")
+        st, d = await h.post(f"{API}/layout/start", {"root": key})
+        check(st == 409 and "이미" in d["error"] and lay(root)["rev"] == 0, f"두 번째 start → 409, 그대로 {st} {d}")
+        st, d = await h.post(f"{API}/layout/start", {"root": "000000000000"})
+        check(st == 404, f"등록 안 된 root → 404 ({st})")
+
+    async def b19_get(h, key, root, ids):
+        section("B19 GET /layout (상태·레퍼런스·기록·채택·초안 상자·검사·since)")
+        st, d = await h.jget(f"{API}/layout", root=key)
+        check(st == 200 and d["exists"] is True and d["rev"] == 0 and d["editable"] is True and d["error"] is None,
+              f"레이아웃 있음 {st} {d.get('error')}")
+        check({"exists", "rev", "editable", "error", "canvas", "applied_rev", "applied", "start_blocked", "pending_rerolls",
+               "refs_dir", "psd", "psd_diff", "crops", "removed"} <= set(d), "최상위 필드(§4.1 + applied·start_blocked)")
+        row_keys = {"id", "name", "nnn", "part", "side", "rect", "targets", "psd_name", "note", "status", "changed", "manifest",
+                    "gpt", "refs", "history", "draft_boxes", "same_name_continues", "checks"}
+        check(all(row_keys <= set(c) for c in d["crops"]), "크롭 행 필드(§4.1)")
+        R = rows(d)
+        check([c["id"] for c in d["crops"]] == ids, "크롭 순서 = 레이아웃(= 매니페스트) 순서")
+        check(all(c["status"] == "same" and c["changed"] == [] for c in d["crops"]),
+              f"이관 직후 전부 same(002 레이어명 끝 ';' 는 차이 아님) {[(c['name'], c['status'], c['changed']) for c in d['crops']]}")
+        m = store.load_manifest(root)
+        check(d["applied_rev"] is None and d["pending_rerolls"] == board._pending(root, m)[1] and d["pending_rerolls"] >= 1,
+              f"applied_rev(매니페스트 source.layout 없음) null, 대기 재굴림(사전 승인) {d['pending_rerolls']}")
+        check(d["refs_dir"] is True and d["psd"] == {"path": "G:/x/syn_DP.psd", "at": lay(root)["psd"]["at"]}
+              and d["psd_diff"] is None and d["removed"] == [], "refs_dir·psd 기준점, 스냅숏 없음 → psd_diff null")
+        c1, c2, c3, c9 = R[ids[0]], R[ids[1]], R[ids[2]], R[ids[4]]
+        check((c1["nnn"], c1["part"], c1["side"], c3["side"]) == ("001", "머리", None, "left") and c1["note"] == ""
+              and c1["manifest"] == {"name": "001_머리", "rect": [0, 0, 384, 384]}, "nnn·part·side(_왼쪽)·manifest")
+        check(c1["gpt"] == {"size": [2048, 2048], "k": round(2048 / 384, 6)}
+              and c9["gpt"]["size"] == list(store.gpt_output_size(768, 128)[:2]), f"GPT 출력 크기 = store.gpt_output_size {c1['gpt']}")
+        check(c1["refs"] == {"n": 1, "first": "001_머리_t.png"} and c2["refs"] == {"n": 2, "first": "002_눈.png"}
+              and c3["refs"] == {"n": 0, "first": None}, f"레퍼런스(부위 순위) {c1['refs']} {c2['refs']} {c3['refs']}")
+        check("R-none" in codes(c3) and "R-none" not in codes(c1) and "R-none" in codes(c9), "R-none = refs_dir 에 NNN_ 파일 없음")
+        check(c1["history"] == {"candidates": 2, "picks": 1, "spec": True, "by_file": 2} and c3["history"]["spec"] is True
+              and R[ids[3]]["history"] == {"candidates": 0, "picks": 0, "spec": False, "by_file": 0},
+              f"기록(by_file = 폴더·PSD 수확 후보 — 이름을 바꾸면 옛 이름 파일이 안 맞음) {c1['history']}")
+        check([c["same_name_continues"] for c in d["crops"]] == [True, True, True, True, False] and d["applied"] is False,
+              "이관 직후 같은 이름으로 다시 만들면 이어짐(규칙 밖 이름 9_긴띠 는 아님), source.layout 없음 → applied false")
+        check(c1["targets"] == [{"tid": "A", "text": "", "box": None, "adopted": "hair band"}]
+              and c1["adopted_only"] == [{"tid": "C", "text": "ribbon"}],
+              f"채택 문구(스펙 _layer_targets) = 회색 칩, 레이아웃에 없는 채택 tid 는 adopted_only {c1['targets']} {c1['adopted_only']}")
+        check([(t["tid"], t["text"], t["adopted"]) for t in c2["targets"]] == [("A", "눈동자", None), ("B", "눈썹", None),
+                                                                               ("C", "속눈썹", None)], "문구 있는 대상")
+        check(c1["draft_boxes"] == {"trusted": True, "boxes": {"A": [96, 96, 288, 192]}, "n": 1},
+              f"mock 원장 canvas src_sha = jobs canvas sha → 상자 px = 매니페스트 rect + 비율 × 크기 {c1['draft_boxes']}")
+        check(c2["draft_boxes"] == {"trusted": False, "boxes": {}, "n": 1},
+              f"OpenAI 원장 src_sha ≠ jobs sha(다른 화면에서 만든 초안) → 믿지 않음 {c2['draft_boxes']}")
+        check(c3["draft_boxes"] == {"trusted": False, "boxes": {}, "n": 0} and c3["targets"][0]["adopted"] is None,
+              "깨진 스펙 → 편집기는 막지 않음(채택·초안 없음, 스펙 있음)")
+        check({"L-ratio", "N-name"} <= codes(c9) and not {"L-ratio", "N-name"} & codes(c1), "이관된 비정상 크롭의 검사(L-ratio·N-name)")
+        geom = store.layout_geom_checks(lay(root))
+        check(all(c["checks"][:len(geom[c["id"]])] == geom[c["id"]] for c in d["crops"]),
+              "검사 = store.layout_geom_checks 뒤에 보드 검사(R-none·D-psd·H-orphan)")
+        check(board._draft_canvas_sha(root, ids[0], {"key": "../../design_patch", "attempt": 1}) is None
+              and board._draft_canvas_sha(root, ids[0], {"key": "a1" * 12, "attempt": True}) is None
+              and board._draft_canvas_sha(root, ids[0], {"key": "a1" * 12, "attempt": 2}) is None,
+              "스펙의 초안 키·시도 번호는 형식을 본 뒤에만 경로로(없는 원장 = None)")
+
+        def set_sha(sha):
+            def mutate(mm):
+                mm["jobs"][0]["inputs"][0]["sha"] = sha
+            store.update_manifest(root, mutate)
+
+        set_sha("new" * 8)
+        st, d2 = await h.jget(f"{API}/layout", root=key)
+        check(rows(d2)[ids[0]]["draft_boxes"] == {"trusted": False, "boxes": {}, "n": 1},
+              "Prepare 가 캔버스를 다시 만들면(jobs canvas sha 바뀜) 초안 상자를 믿지 않음")
+        set_sha("c001" * 6)
+
+        def set_crop_source(src):
+            def mutate(mm):
+                mm["crops"][0]["source"] = src
+            store.update_manifest(root, mutate)
+
+        src0 = store.load_manifest(root)["crops"][0]["source"]
+        set_crop_source("inputs/moved000000.png")
+        st, d2 = await h.jget(f"{API}/layout", root=key)
+        check(rows(d2)[ids[0]]["draft_boxes"] == {"trusted": False, "boxes": {}, "n": 1},
+              "크롭을 옮긴 뒤 Import 만 돌고 Prepare 전(jobs 는 옛 캔버스·sha 같음, 크롭 source 바뀜) → 초안 상자를 믿지 않음(Codex)")
+        set_crop_source(src0)
+        st, d2 = await h.jget(f"{API}/layout", root=key)
+        check(rows(d2)[ids[0]]["draft_boxes"]["trusted"] is True, "크롭 source 를 되돌리면 다시 믿음")
+        st, u = await h.jget(f"{API}/layout", root=key, since="0")
+        check(st == 200 and u == {"unchanged": True, "rev": 0}, f"since = 지금 rev → unchanged {u}")
+        st, u = await h.jget(f"{API}/layout", root=key, since="3")
+        check(st == 200 and "crops" in u, "since 다름 → 전체")
+        for bad in ("abc", "-1", "1.5", "9" * 20):
+            st, u = await h.jget(f"{API}/layout", root=key, since=bad)
+            check(st == 400, f"since={bad} → 400 ({st})")
+        st, hd, body = await h.get(f"{API}/layout", root=key)
+        check(hd["Content-Type"].startswith("application/json") and hd.get("Cache-Control") == "no-store"
+              and "001_머리".encode("utf-8") in body, "JSON·no-store·한글 그대로(ensure_ascii False)")
+        st, u = await h.jget(f"{API}/layout", root="000000000000")
+        check(st == 404, "등록 안 된 root → 404")
+        t0 = time.perf_counter()
+        await h.jget(f"{API}/layout", root=key)
+        note(f"S1-B GET /layout(합성 5크롭) {(time.perf_counter() - t0) * 1000:.0f}ms")
+
+    async def b21_crop(h, key, root, ids):
+        section("B21 POST /layout/crop (add·update·delete·검증 표·바꾼 필드만 검증)")
+        rev = lay(root)["rev"]
+        mrev = store.load_manifest(root)["rev"]
+        st, d = await crop_op(h, key, root, op="update", id=ids[0], rect=[0, 0, 512, 512])
+        c = d.get("crop") or {}
+        check(st == 200 and d["ok"] and d["rev"] == rev + 1 and c.get("rect") == [0, 0, 512, 512] and c["status"] == "changed"
+              and c["changed"] == ["rect"] and c["manifest"]["rect"] == [0, 0, 384, 384], f"update rect → changed·rev+1 {st} {d}")
+        check(set(d["checks"]) == set(ids) and any(x["code"] == "L-overlap" and x["other"] == ids[0] for x in d["checks"][ids[1]]),
+              "응답 checks = 모든 크롭(겹침은 상대 크롭 쪽에도)")
+        check((Path(root) / store.LAYOUT_HISTORY_DIR / "r0.json").is_file() and store.load_manifest(root)["rev"] == mrev,
+              "이전 판 layout_history/r0.json, 매니페스트 rev 그대로")
+        st, d = await h.post(f"{API}/layout/crop", {"root": key, "rev": rev, "op": "update", "id": ids[0], "note": "낡음"})
+        check(st == 409 and "다른 창에서 바뀌었습니다" in d["error"] and lay(root)["rev"] == rev + 1, f"낡은 rev → 409 {st} {d}")
+        st, d = await crop_op(h, key, root, op="update", id=ids[1], name=" 002_눈알 ")
+        c = d.get("crop") or {}
+        check(st == 200 and c.get("id") == ids[1] and c["name"] == "002_눈알" and c["changed"] == ["name"] and c["psd_name"] == "002_눈",
+              f"이름 바꾸기 → id·psd_name 유지(D3), 이름 정규화 {st} {c.get('name')}")
+        st, d = await crop_op(h, key, root, op="add", name="002_눈", rect=[384, 384, 512, 512])
+        c = d.get("crop") or {}
+        check(st == 200 and c.get("id") == f"{ids[1]}-2" and c["status"] == "new" and c["psd_name"] is None
+              and c["targets"] == [{"tid": "A", "text": "", "box": None, "adopted": None}] and c["manifest"] is None
+              and "H-orphan" not in codes(c), f"옛 이름으로 add → 해시 ID 가 쓰이는 중이라 -2, 새 크롭 기본값 {st} {c.get('id')}")
+        orphan = store.crop_id_for(_LAYOUT_BOARD_ORPHAN)
+        st, d = await crop_op(h, key, root, op="add", name=_LAYOUT_BOARD_ORPHAN, rect=[512, 640, 768, 896], note="옛 크롭",
+                              targets=[{"tid": "A", "text": "red ribbon", "box": [540, 660, 740, 880]}])
+        c = d.get("crop") or {}
+        check(st == 200 and c.get("id") == orphan and "H-orphan" in codes(c) and "P-70" in codes(c)
+              and c["history"] == {"candidates": 1, "picks": 0, "spec": True, "by_file": 1} and c["note"] == "옛 크롭",
+              f"지웠던 크롭 이름으로 add → 옛 후보·스펙이 이어짐(H-orphan 정보), 상자 검사 {st} {codes(c)}")
+        st, d = await crop_op(h, key, root, op="update", id=ids[0],
+                              targets=[{"tid": "A", "text": "  hair band ", "box": [100, 100, 300, 200], "adopted": "junk"},
+                                       {"tid": "B", "text": "", "box": None}])
+        c = d.get("crop") or {}
+        stored = next(x for x in lay(root)["crops"] if x["id"] == ids[0])["targets"]
+        check(st == 200 and stored == [{"tid": "A", "text": "hair band", "box": [100, 100, 300, 200]},
+                                       {"tid": "B", "text": "", "box": None}] and c["changed"] == ["rect", "targets"]
+              and [t["adopted"] for t in c["targets"]] == ["hair band", None],
+              f"targets 통째로(문구 NFC·strip, 응답 전용 키 버림) {st} {stored}")
+        st, d = await crop_op(h, key, root, op="update", id=ids[0], note="메모")
+        r1 = d.get("rev")
+        st2, d2 = await crop_op(h, key, root, op="update", id=ids[0], note="메모", name="001_머리")
+        check(st == 200 and st2 == 200 and d2["rev"] == r1 == lay(root)["rev"], "같은 값(자기 이름 포함)으로 update → 저장 안 함(rev 그대로)")
+        st, d = await crop_op(h, key, root, op="delete", id=ids[3])
+        check(st == 200 and d["crop"] is None and ids[3] not in d["checks"] and ids[3] not in {x["id"] for x in lay(root)["crops"]}
+              and d.get("index") == 3, f"delete → crop null·index = 지운 위치(실행 취소가 그 자리로 되살림) {st} {d.get('index')}")
+        st, g = await h.jget(f"{API}/layout", root=key)
+        check(g["removed"] == [{"id": ids[3], "name": "004_발", "rect": [384, 384, 768, 768], "candidates": 0, "picks": 0}],
+              f"매니페스트에만 남은 크롭 = removed {g['removed']}")
+        st, d = await crop_op(h, key, root, op="delete", id=ids[3])
+        check(st == 404, f"없는 크롭 delete → 404 ({st})")
+        gone = g["removed"][0]
+        st, d = await crop_op(h, key, root, op="add", id=ids[3], psd_name="004_발_원본", name=gone["name"], rect=gone["rect"])
+        c = d.get("crop") or {}
+        st2, d2 = await crop_op(h, key, root, op="add", id=ids[0], name="011_다른것", rect=[0, 0, 128, 128])
+        c2 = d2.get("crop") or {}
+        check(st == 200 and c.get("id") == ids[3] and c["psd_name"] == "004_발_원본" and c["status"] == "same"
+              and st2 == 200 and c2.get("id") == store.crop_id_for("011_다른것") and c2["psd_name"] is None,
+              f"add 의 id·psd_name(실행 취소 되살리기): 비어 있는 id 는 그대로·psd_name 유지, 쓰는 중인 id 는 이름 해시 {c.get('id')} {c2.get('id')}")
+        for cid in (ids[3], c2.get("id")):
+            await crop_op(h, key, root, op="delete", id=cid)
+        st, d = await crop_op(h, key, root, op="update", id=ids[4], note="옛 값")
+        st2, d2 = await crop_op(h, key, root, op="update", id=ids[4], name="009_긴띠")
+        L9 = next(x for x in lay(root)["crops"] if x["id"] == ids[4])
+        check(st == 200 and st2 == 200 and L9["name"] == "009_긴띠" and L9["rect"] == [0, 896, 768, 1024] and L9["psd_name"] == "9_긴띠",
+              f"이관된 비정상 rect(비 6)·옛 이름 크롭도 메모·이름만 바꾸기 성공(바꾼 필드만 검증) {st} {st2} {d2.get('error')}")
+        st, d = await crop_op(h, key, root, op="update", id=ids[4], rect=[0, 896, 768, 1024])
+        st2, d2 = await crop_op(h, key, root, op="update", id=ids[4], name="9_긴띠")
+        check(st == 400 and st2 == 400, f"그 크롭의 rect·옛 이름을 다시 보내면 400 ({st} {st2})")
+        st, d = await crop_op(h, key, root, op="add", name="007_Hat", rect=[0, 768, 128, 896])
+        check(st == 200, f"add 007_Hat ({st} {d.get('error') if isinstance(d, dict) else d})")
+
+        R = [640, 768, 768, 896]
+        add = {"op": "add", "name": "010_x", "rect": R}
+        cases = [
+            (dict(add, name="1_x"), 400, "이름 길이"), (dict(add, name="010가나다"), 400, "이름 머리 NNN_"),
+            (dict(add, name="010_a b"), 400, "이름 공백"), (dict(add, name="010_a|b"), 400, "이름 |"),
+            (dict(add, name="010_a;b"), 400, "이름 ;"), (dict(add, name=XSS), 400, "XSS 이름(<img …> 는 금지 문자)"),
+            (dict(add, name="001_머리"), 400, "같은 이름"), (dict(add, name="007_hat"), 400, "같은 이름(대소문자 무시)"),
+            (dict(add, name=5), 400, "이름 숫자"), ({"op": "add", "name": "010_x"}, 400, "add rect 없음"),
+            ({"op": "add", "rect": R}, 400, "add name 없음"),
+            (dict(add, rect=[700, 0, 828, 128]), 400, "캔버스 밖"), (dict(add, rect=[-16, 0, 112, 128]), 400, "음수 좌표"),
+            (dict(add, rect=[0, 0, 512, 128]), 400, "비 4:1"), (dict(add, rect=[0, 0, 128.0, 128]), 400, "rect 소수"),
+            (dict(add, rect=[0, 0, True, 128]), 400, "rect bool"), (dict(add, rect=[0, 0, 128]), 400, "rect 3개"),
+            (dict(add, rect=[128, 0, 128, 128]), 400, "rect 폭 0"), (dict(add, rect=[0, 0, 70000, 128]), 400, "|값| > 65536"),
+            (dict(add, rect="0,0,128,128"), 400, "rect 문자열"), (dict(add, rect=None), 400, "rect null"),
+            (dict(add, targets=[{"tid": "A", "text": ""}] * 27), 400, "targets 27개"),
+            (dict(add, targets=[{"tid": "a", "text": ""}]), 400, "tid 소문자"),
+            (dict(add, targets=[{"tid": "AB", "text": ""}]), 400, "tid 두 글자"),
+            (dict(add, targets=[{"text": "x"}]), 400, "tid 없음"),
+            (dict(add, targets=[{"tid": "A", "text": ""}, {"tid": "A", "text": "x"}]), 400, "tid 중복"),
+            (dict(add, targets=[{"tid": "A", "text": "x;y"}]), 400, "문구 ;"),
+            (dict(add, targets=[{"tid": "A", "text": "x｜y"}]), 400, "문구 전각 |"),
+            (dict(add, targets=[{"tid": "A", "text": "red, B: blue"}]), 400, "문구 왕복(', B:' 꼴)"),
+            (dict(add, targets=[{"tid": "A", "text": "x" * 121}]), 400, "문구 121자"),
+            (dict(add, targets=[{"tid": "A", "text": "a\nb"}]), 400, "문구 줄바꿈"),
+            (dict(add, targets=[{"tid": "A", "text": 5}]), 400, "문구 숫자"),
+            (dict(add, targets=[{"tid": "A", "text": "", "box": [0, 0, 1.5, 2]}]), 400, "box 소수"),
+            (dict(add, targets=[{"tid": "A", "text": "", "box": [0, 0, 5]}]), 400, "box 3개"),
+            (dict(add, targets=[{"tid": "A", "text": "", "box": [10, 0, 5, 5]}]), 400, "box 뒤집힘"),
+            (dict(add, targets=[{"tid": "A", "text": "", "box": "x"}]), 400, "box 문자열"),
+            (dict(add, targets="A: x"), 400, "targets 문자열"), (dict(add, targets=[5]), 400, "targets 항목 숫자"),
+            (dict(add, note="x" * 501), 400, "note 501자"), (dict(add, note=5), 400, "note 숫자"),
+            (dict(add, id="../x"), 400, "add id 형식"), (dict(add, psd_name=5), 400, "psd_name 숫자"),
+            ({"op": "update", "id": "../x", "note": "x"}, 400, "id 형식"), ({"op": "update", "note": "x"}, 400, "id 없음"),
+            ({"op": "update", "id": "zzz_000000", "note": "x"}, 404, "없는 id"), ({"op": "update", "id": ids[0]}, 400, "바꿀 것 없음"),
+            ({"op": "update", "id": ids[0], "rect": [0, 0, 512, 128]}, 400, "update rect 비"),
+            ({"op": "update", "id": ids[0], "name": "002_눈알"}, 400, "update 다른 크롭과 같은 이름"),
+            ({"op": "delete", "id": "zzz_000000"}, 404, "없는 id 지우기"), ({"op": "move", "id": ids[0]}, 400, "op"),
+            ({"id": ids[0], "note": "x"}, 400, "op 없음"),
+        ]
+        before = json.dumps(lay(root), ensure_ascii=False)
+        rev0 = lay(root)["rev"]
+        for body, want, what in cases:
+            st, d = await h.post(f"{API}/layout/crop", {"root": key, "rev": rev0, **body})
+            check(st == want and isinstance(d, dict) and d.get("error"), f"crop {what} → {st} (기대 {want}) {d}")
+        upd = {"op": "update", "id": ids[0], "note": "x"}
+        for body, want, what in (({"root": key, **upd}, 400, "rev 없음"), ({"root": key, "rev": str(rev0), **upd}, 400, "rev 문자열"),
+                                 ({"root": key, "rev": True, **upd}, 400, "rev bool"), ({"root": key, "rev": -1, **upd}, 400, "rev 음수"),
+                                 ({"root": key, "rev": rev0 - 1, **upd}, 409, "낡은 rev"),
+                                 ({"root": key, "rev": rev0 + 5, **upd}, 409, "앞선 rev"),
+                                 ({"root": "000000000000", "rev": rev0, **upd}, 404, "등록 안 된 root"),
+                                 ({"root": root, "rev": rev0, **upd}, 404, "경로를 root 로")):
+            st, d = await h.post(f"{API}/layout/crop", body)
+            check(st == want and isinstance(d, dict) and d.get("error"), f"crop {what} → {st} (기대 {want}) {d}")
+        st, d = await h.post(f"{API}/layout/crop", json.dumps({"root": key, "rev": rev0, **upd}), ctype="text/plain")
+        check(st == 415, f"Content-Type text/plain → 415 ({st})")
+        st, d = await h.post(f"{API}/layout/crop", json.dumps({"root": key, "rev": rev0, **upd, "pad": "x" * 20000}))
+        check(st == 413, f"16KB 넘는 본문 → 413 ({st})")
+        st, d = await h.post(f"{API}/layout/crop", "{not json")
+        check(st == 400, f"깨진 JSON → 400 ({st})")
+        check(json.dumps(lay(root), ensure_ascii=False) == before, "거부된 요청은 저장하지 않음(레이아웃 그대로)")
+        st, d = await crop_op(h, key, root, op="add", name="021_새부품", rect=[512, 768, 640, 896])
+        nid = (d.get("crop") or {}).get("id")
+        st2, d2 = await crop_op(h, key, root, op="update", id=nid, name="021_새부품_고침")
+        st3, d3 = await crop_op(h, key, root, op="update", id=nid, name="021_새부품_또")
+        got = next(x for x in lay(root)["crops"] if x["id"] == nid)
+        check((st, st2, st3) == (200, 200, 200) and (d.get("crop") or {}).get("psd_name") is None
+              and (got["name"], got["psd_name"]) == ("021_새부품_또", "021_새부품"),
+              f"Studio 에서 만든 크롭(psd_name 없음)의 이름을 바꾸면 사전 편집 이름은 처음 이름으로 고정(두 번째 변경에도 유지, Codex) {got}")
+        await crop_op(h, key, root, op="delete", id=nid)
+
+    async def b22_psd(h, key, root, ids):
+        section("B22 POST /layout/psd (take·ack·스냅숏 없음·믿을 수 없음 400·본 스냅숏과 다름 409)")
+        for op in ("take", "ack"):
+            st, d = await h.post(f"{API}/layout/psd", {"root": key, "rev": lay(root)["rev"], "op": op})
+            check(st == 400 and "스냅숏" in d["error"], f"스냅숏 없음 {op} → 400 {st} {d}")
+        base = copy.deepcopy(lay(root)["psd"]["crops"])
+        snap1 = [dict(c) for c in base if c["name"] != "003_손_왼쪽"]
+        snap1[0]["rect"] = [0, 64, 384, 448]
+        snap1[1]["layer_name"] = "002_눈 | A: 눈동자; B: 눈썹"
+        snap1.append({"name": "008_리본", "layer_name": "008_리본 | A: red ribbon", "rect": [384, 768, 768, 896]})
+        _layout_board_snap(root, snap1, [5, 6], sync=False)  # 스냅숏 지문 [5, 6] ≠ 매니페스트 source 지문 [1, 2](마지막 Import)
+        st, d = await h.jget(f"{API}/layout", root=key)
+        lrev = lay(root)["rev"]
+        st2, d2 = await h.post(f"{API}/layout/psd", {"root": key, "rev": lrev, "op": "take"})
+        check(st == 200 and d["psd_diff"] is None and not any("D-psd" in codes(c) for c in d["crops"])
+              and st2 == 400 and "믿을 수 있는 PSD 스냅숏이 없습니다" in d2["error"] and lay(root)["rev"] == lrev,
+              f"마지막 Import 와 다른 지문의 낡은 스냅숏 → psd_diff null·D-psd 없음·take 400 {d['psd_diff']} {st2} {d2}")
+        _layout_board_snap(root, snap1, [5, 6])
+        st, d = await h.jget(f"{API}/layout", root=key)
+        pd = d["psd_diff"]
+        check(pd["fingerprint"] == [5, 6] and pd["at"] == "2026-10-16 10:00:00"
+              and [x["name"] for x in pd["changed"]] == ["001_머리", "002_눈"]
+              and pd["changed"][0]["fields"] == ["rect"] and pd["changed"][1]["fields"] == ["layer_name"]
+              and [x["name"] for x in pd["added"]] == ["008_리본"] and [x["name"] for x in pd["removed"]] == ["003_손_왼쪽"],
+              f"psd_diff = store.psd_diff(기준점, 스냅숏) + 스냅숏 지문·at {pd}")
+        R = rows(d)
+        with_d = sorted(cid for cid, c in R.items() if "D-psd" in codes(c))
+        check(with_d == sorted([ids[0], ids[1], f"{ids[1]}-2", ids[2]]),
+              f"D-psd = psd_name(없으면 이름)으로 짝: 바뀜 001·002(이름을 바꿔도 psd_name)·새 002_눈, 사라짐 003 {with_d}")
+        rev = lay(root)["rev"]
+        st, d = await h.post(f"{API}/layout/psd", {"root": key, "rev": rev, "op": "take", "names": ["001_머리", "008_리본"]})
+        L = lay(root)
+        c1 = next(c for c in L["crops"] if c["id"] == ids[0])
+        id8 = store.crop_id_for("008_리본")
+        c8 = next((c for c in L["crops"] if c["id"] == id8), {})
+        check(st == 200 and d == {"ok": True, "rev": rev + 1, "taken": [{"id": ids[0], "name": "001_머리", "fields": ["rect"]}],
+                                  "added": [id8], "skipped": []}, f"take(names) 응답(가져온 필드) {st} {d}")
+        check(c1["rect"] == [0, 64, 384, 448] and c1["targets"] == [{"tid": "A", "text": "hair band", "box": [100, 100, 300, 200]},
+                                                                    {"tid": "B", "text": "", "box": None}],
+              f"take: PS 에서 rect 만 옮김 → rect = PSD 값, Studio 에서 쓴 A 문구·B 대상·상자는 그대로 {c1}")
+        check(c8.get("name") == "008_리본" and c8.get("rect") == [384, 768, 768, 896] and c8.get("psd_name") == "008_리본"
+              and c8.get("targets") == [{"tid": "A", "text": "red ribbon", "box": None}], f"take: 새 shape → 크롭 추가(id 해시) {c8}")
+        check(L["psd"]["fingerprint"] == [5, 6] and [c["name"] for c in L["psd"]["crops"]] == [c["name"] for c in snap1]
+              and all(set(c) == {"name", "layer_name", "rect"} for c in L["psd"]["crops"]), "기준점 = 지금 스냅숏(rect_source 등 뺌)")
+        c2 = next(c for c in L["crops"] if c["id"] == ids[1])
+        check(len(c2["targets"]) == 3, "names 에 없는 002 는 크롭 그대로(기준점만 넘어감)")
+        st, d = await h.jget(f"{API}/layout", root=key)
+        check(not any(d["psd_diff"][k] for k in ("changed", "added", "removed"))
+              and not any("D-psd" in codes(c) for c in d["crops"]), "take 뒤 갈라짐 0·D-psd 없음")
+        for op in ("take", "ack"):
+            st, d = await h.post(f"{API}/layout/psd", {"root": key, "rev": lay(root)["rev"], "op": op})
+            check(st == 400 and "갈라짐 없음" in d["error"], f"차이 없음 {op} → 400 {st} {d}")
+        st, d = await crop_op(h, key, root, op="update", id=ids[1], rect=[384, 0, 768, 512],
+                              targets=[{"tid": "A", "text": "눈동자", "box": None}, {"tid": "B", "text": "눈썹", "box": [400, 20, 600, 200]},
+                                       {"tid": "C", "text": "속눈썹", "box": None}])
+        check(st == 200, f"Studio 에서 002 rect 이동·B 상자 {st} {d.get('error')}")
+        snap2 = copy.deepcopy(snap1)
+        for c in snap2:
+            if c["name"] == "9_긴띠":
+                c["rect"] = [0, 768, 768, 1024]
+            if c["name"] == "004_발":
+                c["rect"] = [384, 400, 768, 784]
+            if c["name"] == "002_눈":
+                c["layer_name"] = "002_눈 | A: 눈동자; B: 눈썹; D: 점"
+        _layout_board_snap(root, snap2, [7, 8])
+        rev = lay(root)["rev"]
+        st, d = await h.post(f"{API}/layout/psd", {"root": key, "rev": rev, "op": "take", "names": ["nope"]})
+        check(st == 400 and "차이에 없는" in d["error"], f"차이에 없는 이름 → 400 {st} {d}")
+        for bad in ("001_머리", [5], {"a": 1}):
+            st, d = await h.post(f"{API}/layout/psd", {"root": key, "rev": rev, "op": "take", "names": bad})
+            check(st == 400, f"names={bad!r} → 400 ({st})")
+        st, d = await h.post(f"{API}/layout/psd", {"root": key, "rev": rev, "op": "pull"})
+        check(st == 400, f"op pull → 400 ({st})")
+        st, d = await h.post(f"{API}/layout/psd", {"root": key, "rev": rev - 1, "op": "ack"})
+        check(st == 409, f"psd 낡은 rev → 409 ({st})")
+        st, d = await h.post(f"{API}/layout/psd", {"root": key, "rev": rev, "op": "take"})
+        c9 = next(c for c in lay(root)["crops"] if c["id"] == ids[4])
+        c2 = next(c for c in lay(root)["crops"] if c["id"] == ids[1])
+        check(st == 200 and d["taken"] == [{"id": ids[1], "name": "002_눈알", "fields": ["layer_name"]},
+                                           {"id": ids[4], "name": "009_긴띠", "fields": ["rect"]}]
+              and d["skipped"] == ["004_발"] and d["added"] == [] and c9["rect"] == [0, 768, 768, 1024] and c9["name"] == "009_긴띠",
+              f"take(names 없음 = 전부): 이름을 바꾼 크롭도 psd_name 으로 짝, 레이아웃에서 지운 크롭은 skipped {st} {d}")
+        check(c2["rect"] == [384, 0, 768, 512] and c2["targets"] == [
+            {"tid": "A", "text": "눈동자", "box": None}, {"tid": "B", "text": "눈썹", "box": [400, 20, 600, 200]},
+            {"tid": "D", "text": "점", "box": None}],
+            f"take: PS 에서 레이어명만 바꿈 → 대상 = PSD 값(같은 tid 상자 유지), Studio 에서 옮긴 rect 는 그대로 {c2}")
+        snap3 = copy.deepcopy(snap2)
+        snap3[0]["rect"] = [0, 128, 384, 512]
+        _layout_board_snap(root, snap3, [9, 9], at="2026-10-16 11:00:00")
+        st, g = await h.jget(f"{API}/layout", root=key)
+        seen = {"token": g["psd_diff"]["token"]}
+        _layout_board_snap(root, snap3, [9, 9], at="2026-10-16 12:00:00")  # 사용자가 본 뒤 Import 가 스냅숏을 다시 씀
+        before = [copy.deepcopy(c) for c in lay(root)["crops"]]
+        base0 = copy.deepcopy(lay(root)["psd"])
+        rev = lay(root)["rev"]
+        st, d = await h.post(f"{API}/layout/psd", {"root": key, "rev": rev, "op": "ack", "snapshot": seen})
+        check(st == 409 and "PSD 스냅숏이 바뀌었습니다" in d["error"] and lay(root)["psd"] == base0 and lay(root)["rev"] == rev,
+              f"본 스냅숏(옛 at)으로 ack → 409, 기준점 그대로 {st} {d}")
+        for bad in ("x", {"fingerprint": [9, 9]}, {"fingerprint": [9, 9], "at": "t"}, {"token": 5}, {"at": "t"}):
+            st, d = await h.post(f"{API}/layout/psd", {"root": key, "rev": rev, "op": "ack", "snapshot": bad})
+            check(st == 400 and "snapshot" in d["error"], f"snapshot={bad!r} → 400 ({st})")
+        st, g = await h.jget(f"{API}/layout", root=key)
+        st, d = await h.post(f"{API}/layout/psd", {"root": key, "rev": rev, "op": "ack", "snapshot": {"token": g["psd_diff"]["token"]}})
+        L = lay(root)
+        check(st == 200 and d == {"ok": True, "rev": rev + 1, "taken": [], "added": [], "skipped": []}
+              and L["crops"] == before and L["psd"]["fingerprint"] == [9, 9] and L["psd"]["at"] == "2026-10-16 12:00:00"
+              and L["psd"]["crops"][0]["rect"] == [0, 128, 384, 512], f"ack(지금 스냅숏을 봄): 크롭 그대로, 기준점만 지금 스냅숏 {st} {d}")
+        big = [1792045035971889600, 108930902]  # 실제 PSD 지문 = [mtime_ns, size] — mtime_ns 는 JS 안전 정수(2^53)를 넘음
+        snap4 = copy.deepcopy(snap3)
+        snap4[0]["rect"] = [0, 0, 384, 512]
+        _layout_board_snap(root, snap4, big, at="2026-10-16 13:00:00")
+        st, _hd, raw = await h.get(f"{API}/layout", root=key)
+        js = json.loads(raw.decode("utf-8"), parse_int=float)  # 브라우저 JSON.parse 처럼 정수를 double 로
+        rev = lay(root)["rev"]
+        check(int(js["psd_diff"]["fingerprint"][0]) != big[0], "(전제) 큰 지문은 JS 숫자로 바꾸면 값이 달라짐")
+        st, d = await h.post(f"{API}/layout/psd", {"root": key, "rev": rev, "op": "ack", "snapshot": {"token": js["psd_diff"]["token"]}})
+        check(st == 200 and lay(root)["psd"]["fingerprint"] == big,
+              f"실제 크기 지문(mtime_ns)도 브라우저를 거친 token 으로 ack 성공(지문 숫자를 되돌려 보내면 늘 409, Codex) {st} {d}")
+
+    async def b23_state(h, key, root, ids, plain_key, plain_root):
+        section("B23 state: layout_rev·layout_status, 레이아웃 쓰기는 매니페스트 rev 불변")
+        st, s = await h.jget(f"{API}/state", root=key)
+        L = lay(root)
+        status = {c["id"]: c["layout_status"] for c in s["crops"]}
+        check(st == 200 and s["layout_rev"] == L["rev"], f"state.layout_rev = layout rev ({s.get('layout_rev')} / {L['rev']})")
+        check(status == {ids[0]: "changed", ids[1]: "changed", ids[2]: "same", ids[3]: "removed", ids[4]: "changed"},
+              f"크롭 요약 layout_status(id 기준) {status}")
+        st, u = await h.jget(f"{API}/state", root=key, since_rev=str(s["rev"]))
+        check(u == {"unchanged": True, "rev": s["rev"], "running": False, "drain": False, "layout_rev": L["rev"]},
+              f"unchanged 응답에도 layout_rev {u}")
+        mrev = store.load_manifest(root)["rev"]
+        st, d = await crop_op(h, key, root, op="update", id=ids[2], note="state 확인")
+        st, u = await h.jget(f"{API}/state", root=key, since_rev=str(s["rev"]))
+        check(store.load_manifest(root)["rev"] == mrev and u.get("unchanged") and u["layout_rev"] == L["rev"] + 1,
+              f"레이아웃 쓰기: 매니페스트 rev 그대로, unchanged 의 layout_rev 만 +1 {u}")
+        st, s = await h.jget(f"{API}/state", root=plain_key)
+        st, u = await h.jget(f"{API}/state", root=plain_key, since_rev=str(s["rev"]))
+        check(s["layout_rev"] is None and all(c["layout_status"] is None for c in s["crops"]) and len(s["crops"]) == 5
+              and u["layout_rev"] is None, "레이아웃 없음 → layout_rev null, layout_status null")
+        (Path(plain_root) / store.LAYOUT_NAME).write_text("{", encoding="utf-8")
+        st, s = await h.jget(f"{API}/state", root=plain_key)
+        st2, d = await h.jget(f"{API}/layout", root=plain_key)
+        check(st == 200 and s["layout_rev"] is None and all(c["layout_status"] is None for c in s["crops"]),
+              "깨진 layout.json 이어도 state 는 200(layout_rev null)")
+        check(st2 == 200 and d["exists"] is True and d["editable"] is False and d["rev"] is None and d["crops"] == []
+              and store.LAYOUT_HISTORY_DIR in (d["error"] or ""), f"깨진 layout.json → error(이력 안내)·편집 불가 {d.get('error')}")
+        st, d = await h.post(f"{API}/layout/crop", {"root": plain_key, "rev": 0, "op": "delete", "id": "x"})
+        st2, d2 = await h.post(f"{API}/layout/start", {"root": plain_key})
+        check(st == 400 and st2 == 409, f"깨진 레이아웃: 쓰기 400·start 409(덮어쓰지 않음) ({st} {st2})")
+        (Path(plain_root) / store.LAYOUT_NAME).unlink()
+        store.update_manifest(root, lambda mm: mm["source"].__setitem__("layout", {"rev": 3, "sig": "0" * 16}))
+        st, d = await h.jget(f"{API}/layout", root=key)
+        check(d["applied_rev"] == 3 and d["applied"] is False,
+              f"applied_rev = 매니페스트 source.layout.rev ({d['applied_rev']}), sig 가 지금 판과 다르면 applied false")
+
+    async def b11_concurrency(h, key, root, ids):
+        section("B11 확장: 레이아웃 쓰기 + pick·reroll 쓰기 동시(매니페스트·레이아웃 잃은 쓰기 0)")
+
+        def clear(mm):
+            mm["picks"].clear()
+            for c in mm["candidates"]:
+                c["picked"] = False
+            mm["rerolls"].pop(mm["jobs"][1]["cell_key"], None)
+
+        store.update_manifest(root, clear)
+        m = store.load_manifest(root)
+        mrev0, lrev0 = m["rev"], lay(root)["rev"]
+        keys = [c["key"] for c in m["candidates"] if c["crop_id"] == ids[0]]
+        ck = m["jobs"][1]["cell_key"]
+        live = [c["id"] for c in lay(root)["crops"]]
+        tries = []
+
+        async def writer(cid):
+            for n in range(1, 60):
+                _st, g = await h.jget(f"{API}/layout", root=key)
+                st, _d = await h.post(f"{API}/layout/crop", {"root": key, "rev": g["rev"], "op": "update", "id": cid,
+                                                             "note": f"동시 {cid}"})
+                if st != 409:
+                    tries.append(n)
+                    return st
+            return 409
+
+        reqs = [writer(cid) for cid in live]
+        reqs += [h.post(f"{API}/pick", {"root": key, "crop_id": ids[0], "tid": "A", "key": k, "mode": "add"}) for k in keys]
+        reqs += [h.post(f"{API}/reroll", {"root": key, "cell_key": ck, "count": 1}) for _ in range(3)]
+        res = await asyncio.gather(*reqs)
+        L, m = lay(root), store.load_manifest(root)
+        check(all(st == 200 for st in res[:len(live)]) and all(r[0] == 200 for r in res[len(live):]),
+              f"동시 요청 모두 200(레이아웃은 409 뒤 새 rev 로 다시) {[r if isinstance(r, int) else r[0] for r in res]}")
+        check(all(c["note"] == f"동시 {c['id']}" for c in L["crops"]) and L["rev"] == lrev0 + len(live),
+              f"레이아웃 쓰기 {len(live)}개 잃음 0 (rev {lrev0} → {L['rev']}, 시도 {sorted(tries)})")
+        check(sorted(m["picks"].get(f"{ids[0]}/A") or []) == sorted(keys) and m["rerolls"].get(ck) == 3
+              and m["rev"] == mrev0 + len(keys) + 3, f"매니페스트 쓰기 잃음 0, 레이아웃 쓰기는 매니페스트 rev 를 올리지 않음 ({mrev0} → {m['rev']})")
+        rev = L["rev"]
+        res = await asyncio.gather(*[h.post(f"{API}/layout/crop", {"root": key, "rev": rev, "op": "update", "id": ids[2],
+                                                                    "note": f"같은 rev {i}"}) for i in range(6)])
+        ok = [i for i, (st, _d) in enumerate(res) if st == 200]
+        check(len(ok) == 1 and sum(st == 409 for st, _d in res) == 5 and lay(root)["rev"] == rev + 1
+              and next(c for c in lay(root)["crops"] if c["id"] == ids[2])["note"] == f"같은 rev {ok[0]}",
+              f"같은 rev 로 동시 6개 → 하나만 저장, 나머지 409 {[st for st, _d in res]}")
+
+    async def b12_server(h):
+        section("B12 확장(서버 쪽): 정적 목록·라우트 목록")
+        check(board._STATIC.get("layout_geom.js") == "text/javascript" and board._STATIC.get("layout_edit.js") == "text/javascript",
+              "_STATIC 에 layout_geom.js·layout_edit.js")
+        routes = web.RouteTableDef()
+        board.register_routes(routes)
+        paths = {(r.method, r.path) for r in routes}
+        want = {("GET", f"{API}/layout"), ("GET", f"{API}/layout/refs"), ("POST", f"{API}/layout/start"),
+                ("POST", f"{API}/layout/crop"), ("POST", f"{API}/layout/psd")}
+        check(want <= paths and len(routes) == 17, f"레이아웃 라우트 5개 등록(모두 17) {len(routes)}")
+        for name in ("layout_geom.js", "layout_edit.js"):
+            st, hd, body = await h.get(f"{API}/board/{name}")
+            f = PKG / "web_design_patch" / name
+            if f.is_file():
+                check(st == 200 and hd["Content-Type"].startswith("text/javascript") and body == f.read_bytes()
+                      and hd.get("X-Content-Type-Options") == "nosniff", f"정적 {name} {st}")
+            else:
+                check(st == 404 and "보드 파일이 없습니다" in json.loads(body)["error"], f"정적 {name}: 파일 없음 → 404 ({st})")
+                note(f"S1-B web_design_patch/{name} 아직 없음(U4) — 화이트리스트만 확인")
+        for path in ("layout/start", "layout/crop", "layout/psd"):
+            st, _hd, _b = await h.get(f"{API}/{path}")
+            check(st == 405, f"GET {path} → 405 ({st})")
+
+    async def b19_real(h):
+        section("B19r 실데이터 사본 18크롭(s0_261014 → 출력 폴더, refs_dir 비움 — G: 안 읽음)")
+        src = _S0_261014
+        if not (src / store.MANIFEST_NAME).is_file():
+            skip(f"실데이터 사본 없음({src}) → B19r 생략")
+            return
+        root = store.project_root(str(BASE), "s0_copy")
+        shutil.rmtree(root, ignore_errors=True)
+        shutil.copytree(src / "specs", Path(root) / "specs")
+        m = json.loads((src / store.MANIFEST_NAME).read_text(encoding="utf-8"))
+        m["project"] = "s0_copy"
+        m["source"]["refs_dir"] = ""
+        store.write_json_atomic(os.path.join(root, store.MANIFEST_NAME), m)
+        key = store.register_root(root)
+        st, d = await h.post(f"{API}/layout/start", {"root": key})
+        check(st == 200 and d["crops"] == 18 and d["warnings"] == [], f"실데이터 이관 18크롭, 경고 0 {st} {d.get('warnings')}")
+        t0 = time.perf_counter()
+        st, d = await h.jget(f"{API}/layout", root=key)
+        dt = (time.perf_counter() - t0) * 1000
+        adopted = sum(1 for c in d["crops"] if any(t["adopted"] for t in c["targets"]) or c["adopted_only"])
+        with_lt = sum(1 for c in m["crops"] if board._spec(root, c["id"]).get("_layer_targets"))
+        check(st == 200 and len(d["crops"]) == 18 and all(c["status"] == "same" for c in d["crops"]) and d["refs_dir"] is False
+              and all(c["refs"] is None for c in d["crops"]), "실데이터: 18 전부 same, refs_dir 없음 → refs null·R-none 없음")
+        check(adopted == with_lt and adopted > 0, f"채택 칩 = 스펙 _layer_targets 있는 크롭 {adopted}/{with_lt}")
+        check(not any(c["draft_boxes"]["trusted"] for c in d["crops"]), "사본에 초안 원장 없음 → 초안 상자 믿지 않음")
+        pairs = sum(1 for c in d["crops"] for x in c["checks"] if x["code"] == "L-overlap") // 2
+        note(f"S1-B 실데이터 GET /layout 18크롭 {dt:.0f}ms · 겹침 {pairs}쌍 · 채택 칩 {adopted} · "
+             f"초안 bbox 있는 크롭 {sum(1 for c in d['crops'] if c['draft_boxes']['n'])}")
+        L0 = lay(root)
+        c1 = L0["crops"][0]
+        st, d = await crop_op(h, key, root, op="delete", id=c1["id"])
+        st2, d2 = await crop_op(h, key, root, op="add", id=c1["id"], restore_rev=L0["rev"], index=d.get("index"),
+                                **{k: c1[k] for k in ("name", "rect", "targets", "note", "psd_name")})
+        check(st == st2 == 200 and d.get("index") == 0 and lay(root)["crops"] == L0["crops"]
+              and [c["id"] for c in lay(root)["crops"]] == [c["id"] for c in m["crops"]],
+              f"실데이터 001 지우기 → 실행 취소(restore_rev·index) = 맨 앞 그대로, 크롭 순서 = 매니페스트 순서 {st} {st2} {d2.get('error')}")
+
+    async def b24_review(h):
+        section("B24 리뷰 수정: 실행 취소 되살리기·same_name_continues·대상 문구·applied·응답 실패·D-pname·refs·채택 옛 이름·이관 막힘")
+        root = _layout_board_project(BASE, "rs")
+        key = store.register_root(root)
+        long_a = "y" * 128
+
+        def migrated(mm):  # 이관될 비정상 값: 이름 중복(017 꼴)·규칙 밖 이름(공백)·비 4:1·캔버스 밖·128자 문구
+            c = mm["crops"]
+            for i, name in ((1, "017_겉옷"), (2, "017_겉옷"), (3, "003_가슴 장식")):
+                c[i].update(name=name, layer_name=name)
+            c[4]["rect"] = [0, 896, 512, 1024]
+            for name, layer, rect in (("005_밖", "005_밖", [640, 768, 896, 1024]),
+                                      ("010_x", f"010_x | A: {long_a}; B: chain", [384, 768, 640, 1024])):
+                c.append(dict(c[0], id=store.crop_id_for(name), name=name, layer_name=layer, rect=rect))
+
+        store.update_manifest(root, migrated)
+        st, d = await h.post(f"{API}/layout/start", {"root": key})
+        ids = [c["id"] for c in lay(root)["crops"]]
+        i_head, i_dup1, i_dup2, i_sp, i_r4, i_out, i_x = ids
+        check(st == 200 and len(ids) == 7 and len(d["warnings"]) >= 5, f"비정상 값 이관(경고만) {st} {d.get('warnings')}")
+
+        def crop_of(cid):
+            return next(c for c in lay(root)["crops"] if c["id"] == cid)
+
+        st, g = await h.jget(f"{API}/layout", root=key)
+        R = rows(g)
+        check({cid: R[cid]["same_name_continues"] for cid in ids}
+              == {i_head: True, i_dup1: False, i_dup2: False, i_sp: False, i_r4: False, i_out: True, i_x: True},
+              "same_name_continues: 이관 직후 크롭 true, 규칙 밖 이름(공백·9_)·이름 중복 쌍은 false")
+        check([x["level"] for x in R[i_dup1]["checks"] if x["code"] == "D-pname"] == ["info"]
+              and "D-pname" in codes(R[i_dup2]) and "D-pname" not in codes(R[i_head]),
+              "이름 중복 쌍 = 같은 사전 편집 그룹 이름 → D-pname(스냅숏 없음 = info)")
+
+        section("B24 a·b·c 이관된 비정상 값의 실행 취소(restore_rev 판과 같은 값은 규칙 검사 건너뜀, index 로 제자리)")
+        rv = lay(root)["rev"]
+        moves = [await crop_op(h, key, root, op="update", id=i_out, rect=r, **x)
+                 for r, x in (([512, 768, 768, 1024], {}), ([640, 768, 896, 1024], {}),
+                              ([624, 768, 880, 1024], {"restore_rev": rv}), ([640, 768, 896, 1024], {"restore_rev": rv}))]
+        check([s for s, _d in moves] == [200, 400, 400, 200] and crop_of(i_out)["rect"] == [640, 768, 896, 1024],
+              f"b: 캔버스 밖 크롭을 안으로 → 옛 rect 되돌리기: restore_rev 없음 400 · 판과 다른 값 400 · 판과 같은 값 200 "
+              f"{[(s, d_.get('error')) for s, d_ in moves]}")
+        for cid, what in ((i_sp, "규칙 밖 이름 003_가슴 장식"), (i_dup1, "이름 중복 017"), (i_out, "캔버스 밖"), (i_r4, "비 4:1·9_ 이름")):
+            L0 = lay(root)
+            old = next(c for c in L0["crops"] if c["id"] == cid)
+            body = {k: old[k] for k in ("name", "rect", "targets", "note", "psd_name")}
+            st, d = await crop_op(h, key, root, op="delete", id=cid)
+            st2, _d2 = await crop_op(h, key, root, op="add", id=cid, **body)
+            st3, _d3 = await crop_op(h, key, root, op="add", id=cid, restore_rev=L0["rev"],
+                                     **dict(body, name=old["name"] + "2", rect=[r + 16 for r in old["rect"]]))
+            at = {} if cid == i_r4 else {"index": d.get("index")}  # 9_긴띠 는 index 없이 — 판의 위치로
+            st4, d4 = await crop_op(h, key, root, op="add", id=cid, restore_rev=L0["rev"], **at, **body)
+            check(st == 200 and d.get("index") == ids.index(cid) and st2 == 400 and st3 == 400 and st4 == 200
+                  and d4["crop"]["id"] == cid and lay(root)["crops"] == L0["crops"],
+                  f"a·c {what}: 지우기(index {d.get('index')}) → add 400(restore_rev 없음)·400(판과 다른 값) → "
+                  f"add(id·restore_rev{'' if at else ', index 없음'}) 200 = 같은 id·제자리·같은 값 {st} {st2} {st3} {st4} {d4.get('error')}")
+
+        section("B24 대상 문구: 이관된 128자 문구가 있어도 다른 대상 상자는 됨, 바뀐 문구만 검사(오류에 tid)")
+        tx = crop_of(i_x)["targets"]
+        st, d = await crop_op(h, key, root, op="update", id=i_x, targets=[dict(tx[0]), dict(tx[1], box=[400, 800, 600, 1000])])
+        check(st == 200 and crop_of(i_x)["targets"][1]["box"] == [400, 800, 600, 1000] and crop_of(i_x)["targets"][0]["text"] == long_a,
+              f"128자 A 그대로 + B 상자 → 200 {st} {d.get('error')}")
+        st, d = await crop_op(h, key, root, op="update", id=i_x, targets=[dict(tx[0], text="z" * 128), dict(tx[1])])
+        check(st == 400 and d["error"].startswith("대상 A:"), f"A 를 다른 128자로 → 400, 메시지에 tid {st} {d}")
+        rv = lay(root)["rev"]
+        tx = crop_of(i_x)["targets"]
+        st, d = await crop_op(h, key, root, op="update", id=i_x, targets=[dict(tx[0], text="short"), dict(tx[1])])
+        st2, _d2 = await crop_op(h, key, root, op="update", id=i_x, targets=tx)
+        st3, d3 = await crop_op(h, key, root, op="update", id=i_x, targets=tx, restore_rev=rv)
+        check(st == 200 and st2 == 400 and st3 == 200 and crop_of(i_x)["targets"] == tx,
+              f"A 를 짧게 고친 뒤 실행 취소: restore_rev 없음 400, 그 판의 문구면 200 {st} {st2} {st3} {d3.get('error')}")
+        for bad in ({"restore_rev": -1}, {"restore_rev": "3"}, {"restore_rev": True}, {"index": -1}, {"index": 1.5}):
+            st, d = await crop_op(h, key, root, op="add", name="019_새것", rect=[0, 0, 128, 128], **bad)
+            check(st == 400, f"{bad} → 400 ({st})")
+
+        section("B24 applied = source.layout.sig == layout_sig(메모·상자는 반영된 것)")
+        sig = store.layout_sig(lay(root))
+        store.update_manifest(root, lambda mm: mm["source"].__setitem__("layout", {"rev": 0, "sig": sig}))
+        seq = []
+        for body in (None, {"id": i_head, "note": "메모만"},
+                     {"id": i_x, "targets": [dict(t, box=None) for t in crop_of(i_x)["targets"]]},
+                     {"id": i_head, "rect": [0, 0, 512, 512]}, {"id": i_head, "rect": [0, 0, 384, 384]}):
+            if body:
+                await crop_op(h, key, root, op="update", **body)
+            seq.append((await h.jget(f"{API}/layout", root=key))[1]["applied"])
+        check(seq == [True, True, True, False, True], f"applied: 같음·메모·상자 → true, rect → false, 되돌림 → true {seq}")
+
+        section("B24 사람이 고친 스펙·원장(초안 상자)이 /layout 을 깨지 않음 · 쓰기 뒤 응답 실패 · 파일 잠김 JSON 500")
+        specs = Path(root) / "specs"
+        k3 = "c3" * 12
+        for cid, spec in ((i_head, {"targets": [{"id": "A", "bbox": ["0.1", None, 1e308, float("nan")]}],
+                                    "_draft": {"key": "a1" * 12, "attempt": 1}}),
+                          (i_dup1, {"targets": 5, "_draft": {"key": "b2" * 12, "attempt": 2}}),
+                          (i_out, {"targets": [{"id": "A", "bbox": [0.1, 0.1, 0.5, 0.5]}], "_draft": {"key": "a1" * 12, "attempt": 10 ** 30}}),
+                          (i_x, {"targets": [{"id": "A", "bbox": [0.1, 0.1, 0.5, 0.5]}], "_draft": {"key": k3, "attempt": 1}}),
+                          (i_dup2, {"targets": [{"id": "A", "bbox": [0.1, 0.1, 0.5, 0.5]}], "_draft": {"key": k3, "attempt": 2}})):
+            (specs / f"{cid}.json").write_text(json.dumps(spec), encoding="utf-8")
+        store.write_json_atomic(os.path.join(root, "vlm", i_x, k3, "a1.req.json"), {"kind": "crop", "body": {"images": [["canvas"]]}})
+        store.write_json_atomic(os.path.join(root, "vlm", i_dup2, k3, "a2.req.json"),
+                                {"kind": "crop", "body": {"images": [["canvas", "c.png", ["not", "sha"], 8, 8]]}})
+        st, _hd, body = await h.get(f"{API}/layout", root=key)  # 고치기 전에는 aiohttp 의 텍스트 500
+        R = rows(json.loads(body)) if st == 200 else {}
+        check(st == 200 and R[i_head]["draft_boxes"] == {"trusted": False, "boxes": {}, "n": 0}
+              and R[i_dup1]["draft_boxes"]["n"] == 0 and R[i_out]["draft_boxes"] == {"trusted": False, "boxes": {}, "n": 1}
+              and R[i_x]["draft_boxes"] == {"trusted": False, "boxes": {}, "n": 1}
+              and R[i_dup2]["draft_boxes"] == {"trusted": False, "boxes": {}, "n": 1},
+              f"bbox ['0.1', null, 1e308, NaN]·targets 5·attempt 10**30·잘린 원장·src_sha 가 목록 → 200, 초안 상자 믿지 않음 {st}")
+        rv = lay(root)["rev"]
+        st, d = await crop_op(h, key, root, op="update", id=i_r4, note="다른 크롭")
+        check(st == 200 and d["rev"] == rv + 1, f"그 상태에서 다른 크롭 update → 200·rev+1 {st} {d.get('error')}")
+        orig_boxes, orig_keep = board._draft_boxes, store._keep_layout_history
+
+        def locked(*_a):
+            raise PermissionError(13, "다른 프로세스가 파일을 사용 중입니다")
+
+        board.logger.disabled = True
+        try:
+            board._draft_boxes = lambda *_a: 1 / 0
+            rv = lay(root)["rev"]
+            st, d = await crop_op(h, key, root, op="update", id=i_r4, note="응답 실패")
+            board._draft_boxes = orig_boxes
+            store._keep_layout_history = locked
+            st2, d2 = await crop_op(h, key, root, op="update", id=i_r4, note="잠김")
+        finally:
+            board._draft_boxes, store._keep_layout_history = orig_boxes, orig_keep
+            board.logger.disabled = False
+        check(st == 200 and d["ok"] and d["rev"] == rv + 1 and d["crop"] is None and d["checks"] == {}
+              and "응답 구성 실패" in d["warning"] and lay(root)["rev"] == rv + 1 and crop_of(i_r4)["note"] == "응답 실패",
+              f"쓰기 커밋 뒤 응답 구성 실패 → 200(ok·rev+1·crop null·warning) — 500 이면 편집기가 같은 쓰기를 되풀이 {st} {d}")
+        check(st2 == 500 and isinstance(d2, dict) and "파일을 읽거나 쓰지 못했습니다" in d2.get("error", "")
+              and lay(root)["rev"] == rv + 1, f"이력 쓰기 OSError → JSON 500(저장 안 함) {st2} {d2}")
+
+        section("B24 D-pname: 이름을 바꾼 크롭의 psd_name 을 새 크롭 이름으로 → 두 크롭에, 스냅숏 pixel_nodes 에 있으면 warn")
+        st, d = await crop_op(h, key, root, op="update", id=i_head, name="001_장식")
+        st2, d2 = await crop_op(h, key, root, op="add", name="001_머리", rect=[0, 0, 256, 256])
+        new = (d2.get("crop") or {}).get("id")
+        dp = {cid: [x for x in (d2.get("checks") or {}).get(cid, []) if x["code"] == "D-pname"] for cid in (i_head, new)}
+        check(st == st2 == 200 and new == f"{i_head}-2" and all(len(v) == 1 and v[0]["level"] == "info" for v in dp.values())
+              and "001_머리 을 크롭 001_머리 도" in dp[i_head][0]["msg"] and "001_머리 을 크롭 001_장식 도" in dp[new][0]["msg"]
+              and d["crop"]["same_name_continues"] is False and d2["crop"]["same_name_continues"] is True,
+              f"add 응답 checks 의 D-pname(두 크롭), 이름을 바꾼 크롭은 same_name_continues false {dp}")
+        _layout_board_snap(root, lay(root)["psd"]["crops"], [1, 2], pixel_nodes=["001_머리"])
+        st, g = await h.jget(f"{API}/layout", root=key)
+        R = rows(g)
+        check([x["level"] for c in (i_head, new) for x in R[c]["checks"] if x["code"] == "D-pname"] == ["warn", "warn"],
+              "믿을 수 있는 스냅숏의 pixel_nodes 에 그 이름 → warn(같은 덧칠이 두 소스에)")
+
+        section("B24 채택 문구: 이름을 바꾼 크롭의 '옛 이름 | A: x' 스펙(psd_name 별칭)")
+        (specs / f"{i_dup2}.json").write_text(json.dumps({"_layer_targets": "017_겉옷 | A: x"}, ensure_ascii=False), encoding="utf-8")
+        st, d = await crop_op(h, key, root, op="update", id=i_dup2, name="017_안감")
+        c = d.get("crop") or {}
+        check(st == 200 and c.get("psd_name") == "017_겉옷" and [t["adopted"] for t in c["targets"]] == ["x"],
+              f"adopted A = 'x'(옛 이름 앞머리를 뗌) {c.get('targets')}")
+
+        section("B24 GET /layout/refs (이름 바꾸기 미리보기 = match_refs, 형식만 검사)")
+        refs = BASE / "refs_rs"
+        for fn in ("009_모자_t.png", "009_모자본체_휘장.png", "009_모자본체.png"):
+            (refs / fn).write_bytes(png_bytes(np.full((8, 8, 3), 128, np.uint8)))
+        got = {}
+        for name, part in (("009_모자", "모자"), ("009_모자본체_휘장", "모자본체_휘장"), ("001_머리", "머리")):
+            st, r = await h.jget(f"{API}/layout/refs", root=key, name=name)
+            want = store.match_refs(refs.as_posix(), name[:3], part=part)
+            got[name] = r
+            check(st == 200 and r == {"n": len(want), "first": want[0] if want else None},
+                  f"refs {name} = match_refs(nnn, part) {r} / {want}")
+        check(got["009_모자본체_휘장"]["first"] != got["009_모자"]["first"] and got["001_머리"]["n"] == 1,
+              f"009_모자 → 009_모자본체_휘장 으로 바꾸면 첫 레퍼런스가 바뀜, 쓰는 이름(001_머리)도 됨(유일성 안 봄) {got}")
+        for bad in ("9_x", "009_a b", "", None):
+            st, r = await h.jget(f"{API}/layout/refs", root=key, **({} if bad is None else {"name": bad}))
+            check(st == 400 and r.get("error"), f"refs name={bad!r} → 400 ({st})")
+        st, r = await h.jget(f"{API}/layout/refs", root="000000000000", name="009_모자")
+        check(st == 404, f"refs 등록 안 된 root → 404 ({st})")
+        store.update_manifest(root, lambda mm: mm["source"].__setitem__("refs_dir", ""))
+        st, r = await h.jget(f"{API}/layout/refs", root=key, name="009_모자")
+        check(st == 200 and r is None, f"refs_dir 없음 → null ({st} {r})")
+
+        section("B24 이관 막힘: 레이아웃 모드 결과 매니페스트(layout.json 치움) + 믿을 수 있는 스냅숏 없음")
+        root2 = _layout_board_project(BASE, "lm")
+        key2 = store.register_root(root2)
+
+        def studio_result(mm):  # Import 가 레이아웃 모드로 쓴 매니페스트(Studio 에서 002 이름·rect 를 바꿈)
+            mm["source"]["layout"] = {"rev": 4, "sig": "0" * 16}
+            for c in mm["crops"]:
+                c["psd_name"] = c["name"]
+            mm["crops"][1].update(name="002_눈알", layer_name="002_눈알 | A: 눈동자; B: 눈썹; C: 속눈썹", rect=[384, 0, 768, 512])
+
+        store.update_manifest(root2, studio_result)
+        shapes = [{"name": store.parse_crop_layer_name(ln)["name"], "layer_name": ln, "rect": list(r)} for ln, r in _LAYOUT_BOARD_ROWS]
+        _layout_board_snap(root2, shapes, [3, 3], sync=False)  # 다른 PSD 로 쓴 낡은 스냅숏
+        st, g = await h.jget(f"{API}/layout", root=key2)
+        st2, d2 = await h.post(f"{API}/layout/start", {"root": key2})
+        check(st == 200 and g["exists"] is False and g["editable"] is True and isinstance(g["start_blocked"], str)
+              and st2 == 400 and d2["error"] == g["start_blocked"] and not (Path(root2) / store.LAYOUT_NAME).exists(),
+              f"start_blocked = POST start 400 과 같은 문구, 파일 안 만듦 {g.get('start_blocked')} {st2}")
+        _layout_board_snap(root2, shapes, [1, 2])
+        st, g = await h.jget(f"{API}/layout", root=key2)
+        st2, d2 = await h.post(f"{API}/layout/start", {"root": key2})
+        L2 = lay(root2)
+        check(g["start_blocked"] is None and st2 == 200 and L2["crops"][1]["name"] == "002_눈알" and L2["crops"][1]["psd_name"] == "002_눈"
+              and L2["crops"][1]["rect"] == [384, 0, 768, 512] and L2["psd"]["crops"] == shapes and L2["psd"]["fingerprint"] == [1, 2]
+              and L2["psd"]["at"] == "2026-10-16 10:00:00",
+              f"믿을 수 있는 스냅숏 → 시작 200: psd_name 유지, 기준점 = 스냅숏 {st2} {d2.get('error')}")
+        st, g = await h.jget(f"{API}/layout", root=key2)
+        check(not any(g["psd_diff"][k] for k in ("changed", "added", "removed")), "기준점 = 스냅숏 → 갈라짐 0")
+
+    async def run_all():
+        b0_pure()
+        root = _layout_board_project(BASE, "lb")
+        nobase = _layout_board_project(BASE, "nobase", base=False)
+        plain = _layout_board_project(BASE, "plain")
+        key, nobase_key, plain_key = (store.register_root(r) for r in (root, nobase, plain))
+        ids = [c["id"] for c in store.load_manifest(root)["crops"]]
+        routes = web.RouteTableDef()
+        board.register_routes(routes)
+        app = web.Application()
+        app.add_routes(routes)
+        async with TestClient(TestServer(app)) as client:
+            h = Http(client)
+            await b20_start(h, key, root, nobase_key, nobase)
+            await b19_get(h, key, root, ids)
+            await b21_crop(h, key, root, ids)
+            await b22_psd(h, key, root, ids)
+            await b23_state(h, key, root, ids, plain_key, plain)
+            await b11_concurrency(h, key, root, ids)
+            await b12_server(h)
+            await b19_real(h)
+            await b24_review(h)
+
+    asyncio.run(run_all())
+
+
+# ── U4 도우미. node 하네스: layout_geom.js·layout_edit.js 를 vm 에서(window 전역) 돌린다. 브라우저·서버 없음.
+#    J-L1 = 공용 표 전 행·GPT 크기 훑기·실데이터 검사, J-L2 = 실행 취소 스택(가짜 fetch 서버 — add 의 id 를 받는 서버·무시하는 서버).
+_LAYOUT_JS_HARNESS = r"""
+import fs from "node:fs";
+import vm from "node:vm";
+
+const [geomPath, editPath, inPath] = process.argv.slice(2);
+const IN = JSON.parse(fs.readFileSync(inPath, "utf8"));
+const ctx = vm.createContext({ window: {}, URLSearchParams });
+vm.runInContext(fs.readFileSync(geomPath, "utf8"), ctx, { filename: "layout_geom.js" });
+vm.runInContext(fs.readFileSync(editPath, "utf8"), ctx, { filename: "layout_edit.js" });
+const G = ctx.window.DPLayoutGeom;
+const E = ctx.window.DPLayoutEdit;
+const plain = (v) => JSON.parse(JSON.stringify(v ?? null));
+const pairs = (lay) => Object.entries(G.geomChecks(lay)).flatMap(([id, rows]) => rows.map((r) => [id, r.code]));
+const out = {};
+
+const RUN = {
+  move: (a) => G.move(a.rect, a.dx, a.dy, a.canvas, a.snap),
+  resize: (a) => G.resize(a.rect, a.handle, a.dx, a.dy, a.canvas, a.snap, a.keep),
+  new: (a) => G.newRect(a.sx, a.sy, a.dx, a.dy, a.canvas, a.snap, a.keep),
+  suggest: (a) => G.suggest(a.boxes, a.canvas, a.snap),
+  validate_rect: (a) => G.rectProblem(a.rect, a.canvas),
+  gpt_size: (a) => G.gptSize(a.w, a.h),
+  check_name: (a) => G.checkName(a.name),
+  check_text: (a) => G.checkText(a.text),
+  geom_checks: (a) => pairs(a.layout),
+  name_dup: (a) => {
+    const crops = [a.a, a.b].map((name, i) => ({ id: "ab"[i], name, rect: [1024 * i, 0, 1024 * i + 512, 512], targets: [] }));
+    const dup = pairs({ canvas: [3072, 4096], crops }).some(([id, code]) => id === "b" && code === "N-dup");
+    const same = G.fold(a.a) === G.fold(a.b);
+    return same === dup ? dup : "fold ≠ N-dup";
+  },
+};
+out.rows = IN.table.rows.map((r) => {
+  try {
+    return { v: plain(RUN[r.fn](r.in)) };
+  } catch (e) {
+    return { e: String(e) };
+  }
+});
+out.sweep = IN.sweep.map(([w, h]) => plain(G.gptSize(w, h)));
+out.real = IN.real ? pairs(IN.real) : null;
+
+function fakeServer(ignoreId) {
+  const lay = { rev: 0, crops: [{ id: "001_aaaaaa", name: "001_모자", rect: [0, 0, 512, 512], targets: [{ tid: "A", text: "", box: null }],
+    psd_name: "001_모자", note: "" }] };
+  const srv = { log: [], fail409: false, n: 0 };
+  const resp = (status, data) => ({ ok: status < 400, status, json: async () => data });
+  srv.fetch = async (url, o) => {
+    const path = new URL(url).pathname.replace("/bmk/design_patch/", "");
+    if (!o || !o.method) {
+      return resp(200, { exists: true, editable: true, rev: lay.rev, canvas: [3072, 4096], applied_rev: null, pending_rerolls: 0,
+        psd_diff: null, removed: [], crops: lay.crops.map((c) => Object.assign({ status: "same", checks: [] }, JSON.parse(JSON.stringify(c)))) });
+    }
+    const b = JSON.parse(o.body);
+    srv.log.push(Object.assign({ path }, b));
+    if (srv.fail409 || b.rev !== lay.rev) return resp(409, { error: "레이아웃이 다른 창에서 바뀌었습니다 — 새로고침" });
+    let crop = null;
+    if (b.op === "add") {
+      srv.n += 1;
+      crop = { id: !ignoreId && b.id ? b.id : `${b.name.slice(0, 3)}_n${srv.n}`, name: b.name, rect: b.rect,
+        targets: b.targets || [{ tid: "A", text: "", box: null }], psd_name: b.psd_name ?? null, note: b.note || "", checks: [] };
+      lay.crops.push(crop);
+    } else {
+      const i = lay.crops.findIndex((c) => c.id === b.id);
+      if (i < 0) return resp(404, { error: `크롭 없음: ${b.id}` });
+      if (b.op === "delete") {
+        lay.crops.splice(i, 1);
+      } else {
+        crop = lay.crops[i];
+        for (const k of ["name", "rect", "targets", "note"]) if (k in b) crop[k] = b[k];
+      }
+    }
+    lay.rev += 1;
+    return resp(200, { ok: true, rev: lay.rev, crop, checks: {} });
+  };
+  return srv;
+}
+
+async function scenario(ignoreId) {
+  const srv = fakeServer(ignoreId);
+  const s = E.session((rel) => `http://127.0.0.1:8189/bmk/design_patch/${rel}`, "abcdef012345", srv.fetch);
+  await s.load();
+  const a = await s.add({ name: "002_새크롭", rect: [512, 0, 1024, 512] });
+  const id = a.crop.id;
+  await s.update(id, { rect: [512, 0, 1152, 512] });
+  await s.update(id, { note: "메모" });
+  await s.remove(id);
+  const depth = [s.undo.length, s.redo.length];
+  for (let i = 0; i < 4; i++) await s.undoStep();
+  const afterUndo = { ids: s.L.crops.map((c) => c.id), depth: [s.undo.length, s.redo.length] };
+  await s.redoStep();
+  const afterRedo = { ids: s.L.crops.map((c) => c.id), depth: [s.undo.length, s.redo.length] };
+  srv.fail409 = true;
+  let err = null;
+  try {
+    await s.redoStep();
+  } catch (e) {
+    err = { status: e.status, msg: e.message };
+  }
+  return { log: srv.log, id, depth, afterUndo, afterRedo, err, final: [s.undo.length, s.redo.length], busy: s.busy };
+}
+
+out.undo = await scenario(false);
+out.remap = await scenario(true);
+console.log(JSON.stringify(out));
+"""
+
+
+# ── U4 도우미(편집기). node 하네스 둘째: 쓰기 큐·실행 취소 되살리기·다른 창·PSD 스냅숏(세션), 순수 판정(reloadKind·renameNote·
+#    Import 상류), 그리고 create() 를 작은 DOM 대역(요소 트리·이벤트·포커스·querySelector)과 가짜 서버로 돌린 화면 시나리오.
+#    시나리오마다 예외를 결과로 돌려 다른 시나리오를 막지 않는다.
+_LAYOUT_EDIT_HARNESS = r"""
+import fs from "node:fs";
+import vm from "node:vm";
+
+const [geomPath, editPath, inPath] = process.argv.slice(2);
+const IN = JSON.parse(fs.readFileSync(inPath, "utf8"));
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const ctx = vm.createContext({ window: {}, URLSearchParams, setTimeout, clearTimeout, console });
+vm.runInContext(fs.readFileSync(geomPath, "utf8"), ctx, { filename: "layout_geom.js" });
+vm.runInContext(fs.readFileSync(editPath, "utf8"), ctx, { filename: "layout_edit.js" });
+const G = ctx.window.DPLayoutGeom;
+const E = ctx.window.DPLayoutEdit;
+const API = (rel) => `http://127.0.0.1:8189/bmk/design_patch/${rel}`;
+const out = {};
+async function scenario(name, fn) {
+  try {
+    out[name] = await fn();
+  } catch (e) {
+    out[name] = { error: String(e && e.stack || e).slice(0, 600) };
+  }
+}
+
+// ── 작은 DOM 대역 ──
+class El {
+  constructor(doc, tag) {
+    Object.assign(this, { doc, tagName: tag.toUpperCase(), children: [], parent: null, own: "", className: "", dataset: {}, style: {},
+      on: {}, hidden: false, disabled: false, value: "", title: "", type: "" });
+  }
+  get textContent() { return this.own + this.children.map((c) => c.textContent).join(""); }
+  set textContent(t) { this.replaceChildren(); this.own = String(t); }
+  get classList() {
+    const names = () => this.className.split(" ").filter(Boolean);
+    const set = (c, on) => { this.className = names().filter((x) => x !== c).concat(on ? [c] : []).join(" "); return on; };
+    return { contains: (c) => names().includes(c), add: (c) => set(c, true), remove: (c) => set(c, false),
+      toggle: (c, on) => set(c, on === undefined ? !names().includes(c) : !!on) };
+  }
+  append(...xs) { for (const x of xs) { x.parent = this; this.children.push(x); } }
+  replaceChildren(...xs) { for (const c of this.children) c.parent = null; this.children = []; this.own = ""; this.append(...xs); }
+  addEventListener(type, fn) { (this.on[type] ??= []).push(fn); }
+  fire(type, extra = {}) {  // 거품: 자기 → 조상
+    const ev = Object.assign({ type, target: this, preventDefault() {} }, extra);
+    for (let n = this; n; n = n.parent) for (const fn of n.on[type] || []) fn(Object.assign(ev, { currentTarget: n }));
+  }
+  focus() {
+    if (this.doc.activeElement !== this) this.doc.activeElement.blur();
+    this.doc.activeElement = this;
+  }
+  blur() {
+    if (this.doc.activeElement !== this) return;
+    this.doc.activeElement = this.doc.body;
+    this.fire("focusout");
+  }
+  contains(x) { for (let n = x; n; n = n.parent) if (n === this) return true; return false; }
+  all() { return this.children.flatMap((c) => [c, ...c.all()]); }
+  querySelector(sel) {
+    const [, tag, cls, k] = /^(\w*)((?:\.[\w-]+)*)(?:\[data-k="([^"]*)"\])?$/.exec(sel);
+    return this.all().find((e) => (!tag || e.tagName === tag.toUpperCase()) && cls.split(".").filter(Boolean).every((c) => e.classList.contains(c))
+      && (k === undefined || e.dataset.k === k)) || null;
+  }
+  scrollIntoView() {}
+}
+class Doc {
+  constructor() { this.body = new El(this, "body"); this.activeElement = this.body; }
+  createElement(tag) { return new El(this, tag); }
+}
+
+// ── 가짜 서버: GET /layout(편집기가 쓰는 행 필드)·/layout/refs, POST /layout/crop(add·update·delete)·/layout/psd. POST 만 log ──
+const crop = (id, name, rect, o = {}) => Object.assign({ id, name, rect, targets: [{ tid: "A", text: "", box: null }], psd_name: name, note: "" }, o);
+
+function server(crops, L = {}) {
+  const { psd_diff = null, ...rest } = L;
+  const srv = { lay: { rev: 0, crops }, log: [], gets: [], fail400: false, ignoreId: false, delay: 0, n: 0, psd_diff, psdResp: null,
+    refs: {}, L: rest, noView: false };
+  const resp = (status, data) => ({ ok: status < 400, status, json: async () => data });
+  // noView = 보드 layout_crop 이 쓰기 뒤 응답(크롭 행)을 만들지 못한 꼴: 200 + crop null + warning
+  const view = (c) => (srv.noView ? { crop: null, checks: {}, warning: "응답 구성 실패: 시험" } : { crop: row(c), checks: {} });
+  const row = (c) => Object.assign({ status: "same", changed: [], checks: [], adopted_only: [], refs: null, manifest: null,
+    history: { candidates: 0, picks: 0, spec: false, by_file: 0 }, draft_boxes: { trusted: false, boxes: {}, n: 0 }, same_name_continues: true },
+    JSON.parse(JSON.stringify(c)));
+  srv.fetch = async (url, o) => {
+    const u = new URL(url);
+    const path = u.pathname.replace("/bmk/design_patch/", "");
+    if (!o || !o.method) {
+      srv.gets.push(path + u.search);
+      if (path === "layout/refs") return resp(200, srv.refs[u.searchParams.get("name")] ?? null);
+      return resp(200, Object.assign({ exists: true, editable: true, error: null, rev: srv.lay.rev, canvas: [3072, 4096], applied_rev: null,
+        pending_rerolls: 0, refs_dir: false, psd_diff: srv.psd_diff, removed: [], crops: srv.lay.crops.map(row) }, srv.L));
+    }
+    const b = JSON.parse(o.body);
+    srv.log.push(Object.assign({ path }, b));
+    if (srv.delay) await sleep(srv.delay);
+    if (srv.fail400) {
+      srv.fail400 = false;
+      return resp(400, { error: "규칙 위반(시험)" });
+    }
+    if (b.rev !== srv.lay.rev) return resp(409, { error: "레이아웃이 다른 창에서 바뀌었습니다 — 새로고침" });
+    srv.lay.rev += 1;
+    if (path === "layout/psd") {
+      srv.psd_diff = null;
+      return resp(200, Object.assign({ ok: true, rev: srv.lay.rev }, srv.psdResp));
+    }
+    const cs = srv.lay.crops;
+    if (b.op === "add") {
+      srv.n += 1;
+      const id = !srv.ignoreId && b.id && !cs.some((x) => x.id === b.id) ? b.id : `${b.name.slice(0, 3)}_n${srv.n}`;
+      const c = crop(id, b.name, b.rect, { targets: b.targets || [{ tid: "A", text: "", box: null }], psd_name: b.psd_name ?? null, note: b.note || "" });
+      cs.splice(b.index ?? cs.length, 0, c);
+      return resp(200, Object.assign({ ok: true, rev: srv.lay.rev }, view(c)));
+    }
+    const c = cs.find((x) => x.id === b.id);
+    if (b.op === "delete") {
+      cs.splice(cs.indexOf(c), 1);
+      return resp(200, { ok: true, rev: srv.lay.rev, crop: null, checks: {} });
+    }
+    for (const k of ["name", "rect", "targets", "note"]) if (k in b) c[k] = b[k];
+    return resp(200, Object.assign({ ok: true, rev: srv.lay.rev }, view(c)));
+  };
+  return srv;
+}
+
+async function editor(crops, L = {}, st = {}) {
+  const srv = server(crops, L);
+  const doc = new Doc();
+  const confirms = [];
+  Object.assign(ctx, { document: doc, fetch: srv.fetch });
+  Object.assign(ctx.window, { confirm: (m) => { confirms.push(m); return true; }, DPViewer: { svg: (tag) => new El(doc, tag) } });
+  const hosts = { list: doc.createElement("ol"), panel: doc.createElement("section"), head: doc.createElement("div") };
+  doc.body.append(hosts.list, hosts.panel, hosts.head);
+  const toasts = [];
+  const queued = [];
+  const queuedRev = []; // 반영(큐) 를 요청한 순간 서버 레이아웃 판(저장이 끝난 뒤였는지)
+  const viewer = { setEditor() {}, setSelection() {}, setCursor() {}, redraw() {}, flags: () => ({ rectsOn: true }), scale: () => 1,
+    canvasPoint: (e) => [e.x, e.y] };
+  const ed = E.create(hosts, { apiUrl: API, root: "abcdef012345", viewer, toast: (m, k) => toasts.push(`${k || ""}:${m}`),
+    queue: (layout) => { queued.push(layout); queuedRev.push(srv.lay.rev); }, exit() {} });
+  ed.enter(Object.assign({ rev: 1, layout_rev: 0, canvas: [3072, 4096], crops: [] }, st));
+  await sleep(30);
+  const find = (root, pred) => root.all().find(pred) || null;
+  const env = { srv, doc, ed, toasts, queued, queuedRev, confirms, ...hosts, find,
+    key: (code, m = {}) => ed.onKey(Object.assign({ code, key: code, repeat: false, ctrlKey: false, metaKey: false, shiftKey: false, altKey: false }, m)),
+    pick: async (name) => {
+      find(hosts.list, (e) => e.tagName === "LI" && e.children[0].textContent === name).fire("click");
+      await sleep(30);
+    },
+    button: (root, label) => find(root, (e) => e.tagName === "BUTTON" && e.textContent.startsWith(label)),
+    field: (k) => hosts.panel.querySelector(`[data-k="${k}"]`),
+    type: (k, v) => {
+      const i = env.field(k);
+      i.focus();
+      i.value = v;
+      i.fire("input");
+      return i;
+    },
+    state: (rev, layout_rev) => ed.stateChanged({ rev, layout_rev, canvas: [3072, 4096], crops: [] }),
+  };
+  return env;
+}
+
+const C1 = () => crop("001_aaaaaa", "001_모자", [0, 0, 512, 512]);
+const C2 = () => crop("002_bbbbbb", "002_눈", [1024, 0, 1536, 512], { targets: [{ tid: "A", text: "", box: [1100, 100, 1300, 300] }] });
+
+// ── 세션(J-L2) ──
+await scenario("queue", async () => {  // 응답이 느릴 때 쓰기 둘을 연달아 → 큐로 차례대로(rev 이어짐), 둘 다 결과
+  const srv = server([C1()]);
+  const s = E.session(API, "abcdef012345", srv.fetch);
+  await s.load();
+  srv.delay = 30;
+  const p = [s.update("001_aaaaaa", { note: "가" }), s.update("001_aaaaaa", { note: "나" })];
+  const busy = s.busy;
+  const r = await Promise.all(p);
+  return { log: srv.log.map((x) => [x.rev, x.note]), ok: r.map((x) => !!x && x.ok), busy, after: s.busy, inv: s.undo.map((e) => e.inv.note) };
+});
+
+await scenario("steps", async () => {  // 400 실행 취소는 단계를 남김 · 지운 크롭 역연산 = restore_rev·index · 새 ID 로 되살린 뒤 다시 = 새 ID 로 delete
+  const srv = server([C1(), C2()]);
+  const s = E.session(API, "abcdef012345", srv.fetch);
+  await s.load();
+  await s.update("002_bbbbbb", { rect: [1024, 0, 1664, 512] });
+  await s.remove("002_bbbbbb");
+  const inv = JSON.parse(JSON.stringify(s.undo[1].inv));
+  const upd = s.undo[0].inv.restore_rev;
+  srv.fail400 = true;
+  let err = null;
+  try {
+    await s.undoStep();
+  } catch (e) {
+    err = e.status;
+  }
+  const kept = [s.undo.length, s.redo.length];
+  srv.ignoreId = true;
+  await s.undoStep();
+  const back = srv.log.at(-1);
+  await s.redoStep();
+  const redo = srv.log.at(-1);
+  return { inv: { restore_rev: inv.restore_rev, index: inv.index }, upd, err, kept, back: [back.op, back.restore_rev, back.index],
+    redo: [redo.op, redo.id], ids: s.L.crops.map((c) => c.id) };
+});
+
+await scenario("notice", async () => {  // 다른 창의 쓰기를 읽으면 두 스택을 비우고 알림
+  const srv = server([C1()]);
+  const s = E.session(API, "abcdef012345", srv.fetch);
+  await s.load();
+  await s.update("001_aaaaaa", { note: "가" });
+  const before = [s.undo.length, s.notice];
+  srv.lay.rev += 1;
+  await s.load();
+  return { before, after: [s.undo.length, s.redo.length], notice: s.notice, own: s.ownRev };
+});
+
+await scenario("psdBody", async () => {  // PSD 가져오기·경고 끄기는 본 스냅숏(psd_diff.token — 지문 숫자는 JS 에서 반올림)을 싣는다
+  const srv = server([C1()], { psd_diff: { fingerprint: [11, 22], at: "2026-10-16 10:00:00", token: "tok-10", changed: [], added: [],
+    removed: [{ name: "007_x", layer_name: "007_x", rect: [0, 0, 128, 128] }] } });
+  const s = E.session(API, "abcdef012345", srv.fetch);
+  await s.load();
+  await s.psd("ack");
+  const b = srv.log.at(-1);
+  return { path: b.path, op: b.op, snapshot: b.snapshot };
+});
+
+await scenario("targetsLatest", async () => {  // 대상 쓰기 둘을 응답 전에 연달아: 둘째는 큐에서 실행할 때의 최신 목록으로(Codex)
+  const two = [{ tid: "A", text: "", box: null }, { tid: "B", text: "", box: null }];
+  const srv = server([crop("001_aaaaaa", "001_a", [0, 0, 384, 384], { targets: two })]);
+  srv.delay = 20;
+  const s = E.session(API, "abcdef012345", srv.fetch);
+  await s.load();
+  const setText = (tid, text) => (cur) => ({ targets: cur.targets.map((t) => ({ tid: t.tid, text: t.tid === tid ? text : t.text, box: t.box })) });
+  await Promise.all([s.update("001_aaaaaa", setText("A", "gold")), s.update("001_aaaaaa", setText("B", "red"))]);
+  return { texts: srv.lay.crops[0].targets.map((t) => t.text), inv: s.undo.at(-1).inv.targets.map((t) => t.text) };
+});
+
+await scenario("reloadFail", async () => {  // 쓰기 뒤 다시 읽기가 실패하면 낡은 L 로 만든 다음 쓰기를 보내지 않음(Codex 3차)
+  const two = [{ tid: "A", text: "", box: null }, { tid: "B", text: "", box: null }];
+  const srv = server([crop("001_aaaaaa", "001_a", [0, 0, 384, 384], { targets: two })]);
+  let failGet = 0;
+  const s = E.session(API, "abcdef012345", async (u, o) => {
+    if (!(o && o.method) && failGet > 0) {
+      failGet -= 1;
+      return { ok: false, status: 500, json: async () => ({ error: "읽기 실패(시험)" }) };
+    }
+    return srv.fetch(u, o);
+  });
+  await s.load();
+  failGet = 1;
+  const setText = (tid, text) => (cur) => ({ targets: cur.targets.map((t) => ({ tid: t.tid, text: t.tid === tid ? text : t.text, box: t.box })) });
+  const r = await Promise.allSettled([s.update("001_aaaaaa", setText("A", "gold")), s.update("001_aaaaaa", setText("B", "red"))]);
+  const mid = { status: r.map((x) => x.status), msg: r[1].reason ? String(r[1].reason.message) : null,
+    texts: srv.lay.crops[0].targets.map((t) => t.text) };
+  await s.update("001_aaaaaa", setText("B", "red")); // 다시 읽은 뒤에는 쓸 수 있음
+  return Object.assign(mid, { after: srv.lay.crops[0].targets.map((t) => t.text) });
+});
+
+await scenario("remoteRect", async () => {  // 사각형 편집을 시작한 뒤 다른 창이 쓰면 옛 사각형 기준 값은 보내지 않고 409(Codex 6차)
+  const srv = server([C1()]);
+  const s = E.session(API, "abcdef012345", srv.fetch);
+  await s.load();
+  const since = s.remote;
+  srv.lay.rev += 1;
+  srv.lay.crops[0].rect = [0, 0, 640, 512]; // 다른 창이 옮김
+  await s.load();
+  let err = null;
+  try {
+    await s.update("001_aaaaaa", { rect: [16, 0, 528, 512] }, since);
+  } catch (e) {
+    err = [e.status, String(e.message)];
+  }
+  const fresh = await s.update("001_aaaaaa", { rect: [0, 0, 768, 512] }, s.remote); // 받은 뒤 시작한 편집은 보냄
+  return { err, rectAfterReject: srv.log.length, fresh: !!(fresh && fresh.ok), rect: srv.lay.crops[0].rect };
+});
+
+await scenario("readOrder", async () => {  // 겹친 읽기가 뒤바뀌어 오면 먼저 보낸(낡은) 응답은 버림(Codex 6차)
+  const srv = server([C1()]);
+  let hold = false;
+  const s = E.session(API, "abcdef012345", async (u, o) => {
+    const r = await srv.fetch(u, o);
+    if (hold && !(o && o.method)) {
+      hold = false;
+      await sleep(40);
+    }
+    return r;
+  });
+  await s.load();
+  hold = true;
+  const slow = s.load(); // rev 0 응답이 늦게 옴
+  srv.lay.rev = 1;
+  srv.lay.crops[0].note = "다른 창";
+  await s.load();
+  await slow;
+  return { rev: s.L.rev, note: s.crop("001_aaaaaa").note };
+});
+
+await scenario("restoreLower", async () => {  // layout_history 파일로 되돌려 판이 낮아짐 → 받아들이고 기록을 비움, 다음 쓰기는 409 없이(Codex)
+  const srv = server([C1()]);
+  const s = E.session(API, "abcdef012345", srv.fetch);
+  await s.load();
+  await s.update("001_aaaaaa", { note: "가" });
+  await s.update("001_aaaaaa", { note: "나" });
+  srv.lay.rev = 1;
+  srv.lay.crops[0].note = "가";
+  await s.load();
+  const got = { rev: s.L.rev, own: s.ownRev, undo: s.undo.length, note: s.crop("001_aaaaaa").note, notice: s.notice };
+  await s.update("001_aaaaaa", { note: "다" });
+  return Object.assign(got, { after: [srv.lay.rev, srv.lay.crops[0].note] });
+});
+
+await scenario("staleRead", async () => {  // 쓰기가 끝나기 전에 보낸 읽기의 늦은 응답은 버린다(판 크기로 거르지 않음)
+  const srv = server([C1()]);
+  let hold = false;
+  const s = E.session(API, "abcdef012345", async (u, o) => {
+    const r = await srv.fetch(u, o); // 응답 본문은 요청 순간의 값
+    if (hold && !(o && o.method)) {
+      hold = false;
+      await sleep(30);
+    }
+    return r;
+  });
+  await s.load();
+  hold = true;
+  const slow = s.load();
+  await s.update("001_aaaaaa", { note: "새" });
+  await slow;
+  return { rev: s.L.rev, note: s.crop("001_aaaaaa").note };
+});
+
+// ── 순수 판정 ──
+await scenario("pure", async () => ({
+  reload: {
+    stale: E.reloadKind(5, 4, { rev: 5, layout_rev: 3 }, 3), newer: E.reloadKind(5, 4, { rev: 5, layout_rev: 5 }, 4),
+    afterErr: E.reloadKind(null, 4, { rev: 5, layout_rev: 4 }, 4), manifest: E.reloadKind(5, 4, { rev: 6, layout_rev: 4 }, 4),
+    same: E.reloadKind(5, 4, { rev: 5, layout_rev: 4 }, 4), created: E.reloadKind(5, null, { rev: 5, layout_rev: 0 }, null),
+    broken: E.reloadKind(5, 4, { rev: 5, layout_rev: null }, 4), restored: E.reloadKind(5, 9, { rev: 5, layout_rev: 3 }, 9),
+  },
+  rename: {
+    moved: E.renameNote({ n: 1, first: "009_a_t.png" }, { n: 0, first: null }, 0),
+    same: E.renameNote({ n: 1, first: "009_a_t.png" }, { n: 1, first: "009_a_t.png" }, 0),
+    files: E.renameNote({ n: 1, first: "009_a_t.png" }, { n: 1, first: "009_a_t.png" }, 2),
+  },
+  edge: {
+    newRight: G.newRect(3066, 1000, 234, 400, [3072, 4096], true, false),
+    suggestWide: G.suggest([[500, 400, 3300, 700]], [4096, 1024], true),
+    thinN: G.resize([1000, 1000, 1016, 1048], "n", 0, -200, [3072, 4096], true, false),
+  },
+}));
+
+await scenario("upstream", async () => {  // js/bmk_design_patch.js importUpstream: Review 조상에 Import 가 있는가
+  const X = vm.runInNewContext(`${IN.ext}\n({ importUpstream })`);
+  const P = (o) => Object.fromEntries(Object.entries(o).map(([id, [cls, src]]) => [id, { class_type: cls, inputs: src ? { project: [src, 0] } : {} }]));
+  return {
+    chain: X.importUpstream(P({ 1: ["BMKDesignPatchProject"], 2: ["BMKDesignPatchImportPSD", "1"], 3: ["BMKDesignPatchRun", "2"],
+      4: ["BMKDesignPatchReview", "3"] }), ["4"]),
+    side: X.importUpstream(P({ 1: ["BMKDesignPatchProject"], 2: ["BMKDesignPatchImportPSD", "1"], 4: ["BMKDesignPatchReview", "1"] }), ["4"]),
+    sub: X.importUpstream(P({ "10:2": ["BMKDesignPatchImportPSD"], 4: ["BMKDesignPatchReview", "10:2"] }), ["4"]),
+  };
+});
+
+// ── 화면(J-L3): create() + 작은 DOM ──
+await scenario("nudgeUndo", async () => {  // 001 이동(POST) → 002 화살표 → 400ms 안 Ctrl+Z = 미세 이동 취소(POST 0) → Ctrl+Z = 001 이동 되돌림
+  const env = await editor([C1(), C2()]);
+  await env.pick("001_모자");
+  env.key("ArrowRight");
+  await sleep(450);
+  const moved = env.srv.log.length;
+  await env.pick("002_눈");
+  env.key("ArrowRight");
+  env.key("KeyZ", { ctrlKey: true });
+  await sleep(450);
+  const cancelled = env.srv.log.length;
+  env.key("KeyZ", { ctrlKey: true });
+  await sleep(60);
+  return { moved, cancelled, log: env.srv.log.map((x) => [x.op, x.id, x.rect, x.rev]), toasts: env.toasts };
+});
+
+await scenario("nudgeEnter", async () => {  // 화살표 → 상자에 맞춤 → Enter = 미세 이동 먼저 보내고 제안이 마지막(타이머가 덮지 않음)
+  const env = await editor([C1(), C2()]);
+  await env.pick("002_눈");
+  env.key("ArrowDown");
+  env.button(env.panel, "상자에 맞춤").fire("click");
+  env.key("Enter");
+  await sleep(500);
+  return { log: env.srv.log.map((x) => x.rect), final: env.srv.lay.crops[1].rect, want: G.suggest([[1100, 100, 1300, 300]], [3072, 4096], true) };
+});
+
+await scenario("pending", async () => {  // 입력 중 다른 크롭 선택 = 그 크롭에 저장(한 번만 — 늦은 change·먼저 온 change 둘 다)
+  const env = await editor([C1(), C2()]);
+  await env.pick("001_모자");
+  const a = env.type("t-A", "gold hat");
+  await env.pick("002_눈");
+  a.fire("change");
+  await sleep(50);
+  const b = env.type("t-A", "blue eye");
+  b.fire("change");
+  await env.pick("001_모자");
+  await sleep(50);
+  return env.srv.log.map((x) => [x.id, x.op, x.targets ? x.targets.map((t) => t.text) : null]);
+});
+
+await scenario("side", async () => {  // 좌우 select 를 바꾼 뒤 포커스가 select 에 남지 않음 → 화살표 = 미세 이동
+  const env = await editor([C1()]);
+  await env.pick("001_모자");
+  const side = env.field("side");
+  side.focus();
+  side.value = "left";
+  side.fire("change");
+  await sleep(50);
+  const focus = env.doc.activeElement.tagName;
+  env.key("ArrowRight");
+  await sleep(450);
+  return { focus, log: env.srv.log.map((x) => [x.op, x.name ?? null, x.rect ?? null]) };
+});
+
+await scenario("minusTwo", async () => {  // 대상 A·B 를 저장 응답 전에 연달아 빼면 C 가 남음 — 그릴 때의 자리로 빼지 않음(Codex)
+  const three = ["A", "B", "C"].map((tid) => ({ tid, text: tid.toLowerCase(), box: null }));
+  const env = await editor([crop("001_aaaaaa", "001_모자", [0, 0, 512, 512], { targets: three })]);
+  await env.pick("001_모자");
+  env.srv.delay = 40;
+  const minus = (tid) => env.find(env.panel, (e) => e.tagName === "BUTTON" && e.title === `${tid} 대상 빼기`);
+  const a = minus("A");
+  const b = minus("B");
+  a.fire("click");
+  b.fire("click");
+  await sleep(250);
+  return env.srv.lay.crops[0].targets.map((t) => t.tid);
+});
+
+await scenario("applyWaits", async () => {  // 저장 중인 대상 문구가 서버에 닿은 뒤에 반영(큐) 요청(Codex)
+  const env = await editor([C1()]);
+  await env.pick("001_모자");
+  env.srv.delay = 40;
+  env.type("t-A", "hat").fire("change");
+  env.button(env.head, "반영(큐)").fire("click");
+  await sleep(200);
+  return { queued: env.queued, revAtQueue: env.queuedRev, text: env.srv.lay.crops[0].targets[0].text };
+});
+
+await scenario("renameScope", async () => {  // 이름 적용 응답을 기다리는 사이 다른 크롭으로 옮겨 쓰기 시작한 이름은 지우지 않음(Codex 3차)
+  const env = await editor([C1(), C2()]);
+  await env.pick("001_모자");
+  env.srv.delay = 150;
+  env.type("part", "모자장식").fire("keydown", { key: "Enter", keyCode: 13 });
+  await sleep(5);
+  await env.pick("002_눈");
+  env.type("part", "눈동자");
+  await sleep(300);
+  return { part: env.field("part").value, log: env.srv.log.map((x) => [x.op, x.id, x.name ?? null]) };
+});
+
+await scenario("renameNudge", async () => {  // 미세 이동 저장을 기다리는 사이 다른 크롭을 골라 쓴 이름으로 원래 크롭을 바꾸지 않음(Codex 4차)
+  const env = await editor([C1(), C2()]);
+  await env.pick("001_모자");
+  env.srv.delay = 120;
+  env.key("ArrowRight");
+  env.type("part", "새이름").fire("keydown", { key: "Enter", keyCode: 13 });
+  await sleep(5);
+  await env.pick("002_눈");
+  env.type("part", "다른이름");
+  await sleep(500);
+  return { part: env.field("part").value, log: env.srv.log.map((x) => [x.op, x.id, x.name ?? null, x.rect ?? null]) };
+});
+
+await scenario("renameSameCrop", async () => {  // 이름 응답 전에 같은 크롭 이름 칸을 더 고치면 그 입력은 남음(Codex 4차)
+  const env = await editor([C1()]);
+  await env.pick("001_모자");
+  env.srv.delay = 120;
+  env.type("part", "가").fire("keydown", { key: "Enter", keyCode: 13 });
+  await sleep(20);
+  env.type("part", "가나");
+  await sleep(300);
+  return { part: env.field("part").value, log: env.srv.log.map((x) => [x.op, x.name ?? null]) };
+});
+
+await scenario("nudgeRemote", async () => {  // 미세 이동 대기 중 다른 창의 판을 받으면 옛 사각형 기준 이동은 보내지 않고 알림(Codex 6차)
+  const env = await editor([C1()]);
+  await env.pick("001_모자");
+  env.key("ArrowRight");
+  env.srv.lay.rev += 1;
+  env.srv.lay.crops[0].rect = [0, 0, 640, 512];
+  env.state(1, env.srv.lay.rev); // 다음 state 폴링 = 다른 창이 씀
+  await sleep(500);
+  return { posts: env.srv.log.length, rect: env.srv.lay.crops[0].rect, toast: env.toasts.find((t) => t.includes("다른 창")) || null };
+});
+
+await scenario("textFlip", async () => {  // 저장 중 대상 문구를 ""→"new"→"" 로 빨리 바꾸면 마지막 값이 남음 — 바뀜 판정은 큐에서 최신 크롭과(Codex 5차)
+  const env = await editor([C1()]);
+  await env.pick("001_모자");
+  env.srv.delay = 80;
+  env.type("t-A", "new target").fire("change");
+  await sleep(5);
+  env.type("t-A", "").fire("change");
+  await sleep(400);
+  return { text: env.srv.lay.crops[0].targets[0].text, posts: env.srv.log.length };
+});
+
+await scenario("composeSave", async () => {  // 저장 응답이 다른 칸의 한글 조합 중에 와도 패널을 다시 만들지 않음 → 입력이 끝나면 그림(Codex 5차)
+  const env = await editor([C1()]);
+  await env.pick("001_모자");
+  env.srv.delay = 60;
+  env.type("t-A", "hat").fire("change");
+  const memo = env.field("note");
+  memo.focus();
+  memo.fire("compositionstart");
+  await sleep(200);
+  const kept = env.field("note") === memo;
+  memo.fire("compositionend");
+  memo.blur();
+  await sleep(20);
+  return { kept, redrawn: env.field("note") !== memo, text: env.srv.lay.crops[0].targets[0].text };
+});
+
+await scenario("ime", async () => {  // 한글 조합을 확정하는 Enter(isComposing)는 이름 적용·문구 저장을 하지 않음(Codex)
+  const env = await editor([C1()]);
+  await env.pick("001_모자");
+  const part = env.type("part", "모자장식");
+  part.fire("keydown", { key: "Enter", isComposing: true, keyCode: 229 });
+  await sleep(50);
+  const mid = [env.doc.activeElement === part, env.srv.log.length];
+  part.fire("keydown", { key: "Enter", isComposing: false, keyCode: 13 });
+  await sleep(50);
+  const txt = env.type("t-A", "gold hat");
+  txt.fire("keydown", { key: "Enter", isComposing: true, keyCode: 229 });
+  await sleep(50);
+  const midText = [env.doc.activeElement === txt, env.srv.log.length];
+  return { mid, midText, log: env.srv.log.map((x) => [x.op, x.name ?? null]) };
+});
+
+await scenario("remove", async () => {  // 지우기 확인 창: 이름을 바꾼 크롭(same_name_continues false) = 새 ID, 규칙 밖 이름 = 다시 만들 수 없음
+  const env = await editor([crop("003_c0ffee", "003_새이름", [0, 0, 512, 512], { same_name_continues: false }),
+    crop("01_x", "01_옛이름", [1024, 0, 1536, 512], { same_name_continues: false })]);
+  await env.pick("003_새이름");
+  env.key("Delete");
+  await sleep(50);
+  await env.pick("01_옛이름");
+  env.key("Delete");
+  await sleep(50);
+  return { confirms: env.confirms, log: env.srv.log.map((x) => [x.op, x.id]) };
+});
+
+await scenario("badRect", async () => {  // 이관된 비 4:1 크롭을 화살표로 옮기면 보내기 전에 막음(서버 규칙과 같은 G5) — 이름 칸은 그대로 고침
+  const env = await editor([crop("004_dddddd", "004_긴띠", [0, 0, 128, 512])]);
+  await env.pick("004_긴띠");
+  env.key("ArrowRight");
+  await sleep(450);
+  const moved = env.srv.log.length;
+  env.type("t-A", "strap").fire("change");
+  await sleep(50);
+  return { moved, toast: env.toasts.find((t) => t.startsWith("err:")) ?? null, log: env.srv.log.map((x) => [x.op, Object.keys(x).filter((k) => k !== "path" && k !== "root" && k !== "rev" && k !== "op" && k !== "id")]) };
+});
+
+await scenario("addTarget", async () => {  // 실데이터 003 꼴(targets [A], adopted_only [B]) → + 대상 = C
+  const env = await editor([crop("003_c0ffee", "003_모자", [0, 0, 512, 512], { adopted_only: [{ tid: "B", text: "brim" }] })]);
+  await env.pick("003_모자");
+  env.button(env.panel, "+ 대상").fire("click");
+  await sleep(50);
+  return env.srv.log.map((x) => x.targets.map((t) => t.tid));
+});
+
+const DIFF = () => ({ fingerprint: [11, 22], at: "2026-10-16 10:00:00", token: "tok-10",
+  changed: [{ name: "005_모자", fields: ["rect"], from: { layer_name: "005_모자", rect: [0, 0, 512, 512] }, to: { layer_name: "005_모자", rect: [0, 0, 640, 512] } },
+    { name: "009_휘장", fields: ["rect", "layer_name"], from: { layer_name: "009_휘장", rect: [1024, 0, 1536, 512] },
+      to: { layer_name: "009_휘장 | A: badge", rect: [1024, 0, 1664, 512] } }],
+  added: [{ name: "019_새", layer_name: "019_새", rect: [2048, 0, 2560, 512] }], removed: [] });
+
+await scenario("take", async () => {  // 갈라짐 3(005·009 바뀜, 새 019): 크롭 하나 take = 나머지는 경고만 꺼짐을 알림, 토스트 = taken·added·skipped
+  const env = await editor([crop("005_aaaaaa", "005_모자", [0, 0, 512, 512]), crop("009_bbbbbb", "009_휘장", [1024, 0, 1536, 512])], { psd_diff: DIFF() });
+  await env.pick("005_모자");
+  const label = env.button(env.panel, "PSD 값으로").textContent;
+  env.srv.psdResp = { taken: [{ id: "005_aaaaaa", name: "005_모자", fields: ["rect"] }], added: [], skipped: [] };
+  env.button(env.panel, "PSD 값으로").fire("click");
+  await sleep(50);
+  const one = { label, confirm: env.confirms.at(-1), body: env.srv.log.at(-1), toast: env.toasts.at(-1) };
+  const all = await editor([crop("005_aaaaaa", "005_모자", [0, 0, 512, 512])], { psd_diff: DIFF() });
+  all.srv.psdResp = { taken: [{ id: "005_aaaaaa", name: "005_모자", fields: ["rect"] }], added: ["019_n9"], skipped: ["009_휘장"] };
+  all.button(all.head, "PSD 값 가져오기").fire("click");
+  await sleep(50);
+  return { one, all: { confirm: all.confirms.at(-1), names: all.srv.log.at(-1).names, toast: all.toasts.at(-1) } };
+});
+
+await scenario("start", async () => {  // 시작이 막히면 그 이유를 보이고 버튼을 끔
+  const why = "레이아웃 모드 결과 매니페스트에 믿을 수 있는 PSD 스냅숏이 없습니다(시험)";
+  const no = await editor([], { exists: false, rev: null, start_blocked: why }, { layout_rev: null, crops: [{}, {}] });
+  const ok = await editor([], { exists: false, rev: null, start_blocked: null }, { layout_rev: null, crops: [{}, {}] });
+  const b = (env) => env.button(env.panel, "레이아웃 편집 시작");
+  return { why, no: { disabled: b(no).disabled, text: no.panel.textContent }, ok: { disabled: b(ok).disabled, text: ok.panel.textContent } };
+});
+
+await scenario("head", async () => {  // 깨진 layout.json = 오류만 · 반영됨 = 서버 applied(sig) · 반영(큐) = layout 요청
+  const broken = await editor([], { exists: true, error: "layout.json 형식 오류(시험)", rev: null, applied_rev: null, editable: false }, { layout_rev: null });
+  const applied = await editor([C1()], { applied: true, applied_rev: 7 });
+  const stale = await editor([C1()], { applied: false, applied_rev: 0 });
+  applied.button(applied.head, "반영(큐)").fire("click");
+  await sleep(30);
+  return { broken: broken.head.textContent, applied: applied.head.textContent, stale: stale.head.textContent, queued: applied.queued };
+});
+
+await scenario("refs", async () => {  // 이름을 바꾸는 중: 멈춘 뒤 GET layout/refs 한 번 → 바꾼 뒤 레퍼런스·새 셀 경고·옛 이름 파일 경고
+  const env = await editor([crop("009_c0ffee", "009_휘장", [0, 0, 512, 512],
+    { refs: { n: 1, first: "009_휘장_t.png" }, history: { candidates: 3, picks: 1, spec: true, by_file: 2 } })], { refs_dir: true });
+  env.srv.refs["009_모자"] = { n: 0, first: null };
+  await env.pick("009_휘장");
+  env.type("part", "모");
+  env.type("part", "모자");
+  await sleep(450);
+  const after = env.find(env.panel, (e) => e.children.length && e.children[0].textContent === "바꾼 뒤");
+  return { gets: env.srv.gets.filter((g) => g.startsWith("layout/refs")).map((g) => new URLSearchParams(g.split("?")[1]).get("name")),
+    note: env.find(env.panel, (e) => e.classList.contains("lp-note")).textContent, after: after && !after.hidden ? after.textContent : null };
+});
+
+await scenario("poll", async () => {  // 입력 중 매니페스트 rev 만 바뀜 = 패널을 다시 만들지 않음(입력이 끝나면) · 낡은 state 는 다시 받지 않음
+  const env = await editor([C1()]);
+  await env.pick("001_모자");
+  const inp = env.type("t-A", "abc");
+  const g0 = env.srv.gets.length;
+  env.state(2, 0);
+  await sleep(30);
+  const typing = { gets: env.srv.gets.length - g0, kept: env.panel.contains(inp), focus: env.doc.activeElement === inp };
+  inp.blur();
+  await sleep(30);
+  const blurred = env.panel.contains(inp);
+  env.key("ArrowRight");
+  await sleep(450);
+  const g1 = env.srv.gets.length;
+  env.state(2, 0);
+  await sleep(30);
+  const stale = env.srv.gets.length - g1;
+  env.srv.lay.rev += 1;  // 다른 창
+  env.state(2, 2);
+  await sleep(30);
+  return { typing, blurred, stale, newer: env.srv.gets.length - g1, toasts: env.toasts };
+});
+
+await scenario("degraded", async () => {  // 보드가 쓰기 뒤 응답을 못 만듦(200 + crop null + warning): 예외 없이 알림, 새 ID 를 모르는 추가는 기록 안 함
+  const srv = server([C1(), C2()]);
+  const s = E.session(API, "abcdef012345", srv.fetch);
+  await s.load();
+  await s.remove("002_bbbbbb");
+  srv.noView = true;
+  let err = null;
+  try {
+    await s.undoStep();  // 지운 크롭 되살리기(add) 응답 crop null
+    await s.add({ name: "003_새것", rect: [0, 1024, 512, 1536] });
+  } catch (e) {
+    err = String(e);
+  }
+  const sess = { err, undo: s.undo.length, redo: s.redo.length, ids: s.L.crops.map((c) => c.id) };
+  const env = await editor([C1()]);
+  env.srv.noView = true;
+  await env.pick("001_모자");
+  env.type("t-A", "hat").fire("change");
+  await sleep(50);
+  return { sess, toasts: env.toasts, log: env.srv.log.length };
+});
+
+await scenario("psdSeen", async () => {  // 확인 창 뒤 앞 쓰기를 기다리는 사이 Import 가 스냅숏을 다시 씀 → 확인 창 때 본 스냅숏(token)을 보냄(서버 409)
+  const d0 = { fingerprint: [11, 22], at: "2026-10-16 10:00:00", token: "tok-10", changed: [], added: [],
+    removed: [{ name: "007_x", layer_name: "007_x", rect: [0, 0, 128, 128] }] };
+  const env = await editor([C1()], { psd_diff: d0 });
+  await env.pick("001_모자");
+  env.srv.delay = 40;
+  env.type("t-A", "hat").fire("change");  // 앞 쓰기(응답 40ms)
+  await sleep(5);
+  ctx.window.confirm = () => {
+    env.srv.psd_diff = Object.assign({}, d0, { at: "2026-10-16 11:00:00", token: "tok-11" });
+    return true;
+  };
+  env.button(env.head, "경고 끄기").fire("click");
+  await sleep(200);
+  const b = env.srv.log.at(-1);
+  return { path: b.path, token: b.snapshot ? b.snapshot.token : null, n: env.srv.log.length };
+});
+
+console.log(JSON.stringify(out));
+"""
+
+
+def _layout_js_fn(src, name, indent="  "):
+    """indent 만큼 들여쓴 function name(…) { … } 소스(닫는 } 앞까지 — 정적 검사용, 돌리려면 "\\n}" 를 붙임).
+    board.js 는 2칸, layout_edit.js 의 create() 안은 4칸, js/bmk_design_patch.js 는 0칸."""
+    i = src.index(f"{indent}function {name}(")
+    return src[i:src.index(f"\n{indent}}}\n", i)]
+
+
+def layout_js_unit():
+    """S1-J 레이아웃 JS(U4): 정적(B12 의 JS 쪽)·J-L1 공용 표·J-L2 실행 취소 스택. --quick 포함(node)."""
+    section("S1-J 레이아웃 JS")
+    web = PKG / "web_design_patch"
+    names = ("layout_geom.js", "layout_edit.js", "viewer.js", "board.js")
+    src = {n: (web / n).read_text(encoding="utf-8") for n in names}
+    code = {n: re.sub(r"//[^\n]*", "", s) for n, s in src.items()}
+    html = (web / "board.html").read_text(encoding="utf-8")
+
+    for n in ("layout_geom.js", "layout_edit.js"):
+        for bad in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function", "setAttribute(\"on",
+                    "srcdoc", "javascript:"):
+            check(bad not in code[n], f"{n} 에 {bad} 없음")
+        check(not re.search(r"https?://", src[n]) and not any(ord(ch) >= 0x1F000 or ch == "️" for ch in src[n]),
+              f"{n} 외부 URL·이모지 없음")
+    check("document" not in code["layout_geom.js"] and "fetch" not in code["layout_geom.js"], "layout_geom.js = 순수 함수(DOM·fetch 없음)")
+    ed = code["layout_edit.js"]
+    paths = set(re.findall(r'call\("([^"?]+)', ed))
+    check(paths == {"layout", "layout/refs", "layout/crop", "layout/start", "layout/psd"} and "fetchFn(apiUrl(path)" in ed,
+          f"layout_edit.js 서버 주소 = apiUrl 상대 경로 5개뿐 {sorted(paths)}")
+    check("textContent" in ed and "replaceChildren" in ed, "layout_edit.js textContent·replaceChildren")
+    check(re.findall(r'<script src="([^"]+)" defer></script>', html) == ["layout_geom.js", "viewer.js", "layout_edit.js", "board.js"],
+          "board.html script 순서 layout_geom → viewer → layout_edit → board")
+    check(all(f'id="{i}"' in html for i in ("btn-edit", "layout-head", "layout-list", "layout-panel")), "board.html 편집 모드 요소 4개")
+    vj = code["viewer.js"]
+    vret = vj[vj.rindex("return { setState"):]
+    check(all(k in vret for k in ("setEditor", "setCursor", "canvasPoint", "scale", "redraw")) and "return { create, svg };" in vj,
+          "viewer.js 편집기 훅 공개(setEditor·canvasPoint·scale·redraw·setCursor, DPViewer.svg)")
+    check("editor.pointerdown(e)" in vj and "!space" in vj and "e.button === 1" in vj,
+          "viewer.js: 왼쪽 버튼은 편집기가 먼저, Space·가운데 버튼은 화면 이동")
+    bj = code["board.js"]
+    kd = _layout_js_fn(bj, "onKeyDown")
+    first = kd.split("{", 1)[1].strip().split("\n", 1)[0]
+    check(first.startswith("if (typing(e.target)) return;"), f"board.js onKeyDown 첫 줄 = 입력칸 포커스면 보드 단축키 무시 {first!r}")
+    ty = _layout_js_fn(bj, "typing")
+    check(all(x in ty for x in ("input", "textarea", "select", "contenteditable")), "typing() = input·textarea·select·contenteditable")
+    off = re.search(r"const EDIT_OFF = new Set\(\[([^\]]*)\]\)", bj)
+    check(bool(off) and {"Space", "KeyX", "KeyR"} <= set(re.findall(r'"(\w+)"', off.group(1))), "EDIT_OFF 에 Space(★)·X(탈락)·R(재굴림)")
+    i_ed, i_mod, i_off, i_sw = (kd.find(s) for s in ("editor.onKey(e)", "e.ctrlKey || e.metaKey || e.altKey",
+                                                     "editing && EDIT_OFF.has(e.code)", "switch (e.code)"))
+    check(0 < i_ed < i_mod < i_off < i_sw, "onKeyDown 순서: 편집기 키(Ctrl+Z 등) → Ctrl 거름 → 편집 모드 Space·X·R 끔 → 검토 키")
+    check('"layout_rev" in S' in bj and "if (window.DPLayoutEdit)" in bj, "옛 서버(state 에 layout_rev 없음·layout_*.js 없음)면 편집 버튼 끔")
+    rp = _layout_js_fn(ed, "renderPanel", "    ")
+    check("textField(a)" in rp and "textField(e)" in ed and '"TEXTAREA"' in ed and "SELECT" not in ed,
+          "renderPanel 포커스 복원 = 글자 입력칸만(좌우 select 제외 — 화살표가 크롭을 움직이게)")
+    rr = bj[bj.index("async function reroll("):bj.index("function comfyConnected(")]
+    check(all(x in rr for x in ("LAYOUT_STATUS[c.layout_status]", "window.confirm(", "재굴림이 실행되지 않습니다", "함께 반영")),
+          "검토 재굴림: 이 크롭의 레이아웃이 미반영이면 확인 창(셀이 바뀌어 안 돎), 다른 크롭만이면 토스트로 함께 반영 알림")
+    check("다음 큐(반영(큐)·재굴림·ComfyUI 큐 모두)의 Import 에서 매니페스트에 반영" in html
+          and "이름을 바꾼 크롭은 같은 이름으로 다시 만들어도 새 ID" in html, "board.html 도움말: 반영 시점·지우기 되살리기")
+    ext = (PKG / "js" / "bmk_design_patch.js").read_text(encoding="utf-8")
+    check('postMessage({ type: "bmk-dp-queue", rootKey: ROOT, layout }, location.origin)' in bj and "opts.queue(true)" in ed
+          and "if (d.layout === true) boardLayout.add(key);" in ext and "queueReview(key, boardLayout.delete(key))" in ext
+          and "importUpstream(prompt, targets.map(execIdOf)" in ext[ext.index("async function queueReview("):ext.index("function onBoardMessage(")],
+          "반영(큐) = layout 요청 → ComfyUI 탭은 Review 상류에 Import 가 있을 때만 큐(아니면 알림)")
+    node = shutil.which("node")
+    if not node:
+        skip("node 없음 → node --check·J-L1·J-L2·J-L3 생략")
+        return
+    for n in names:
+        r = subprocess.run([node, "--check", str(web / n)], capture_output=True, text=True, encoding="utf-8", timeout=60)
+        check(r.returncode == 0, f"node --check {n} {r.stderr.strip()[:200]}")
+
+    out = OUT_ROOT / "layout_js"
+    shutil.rmtree(out, ignore_errors=True)
+    out.mkdir(parents=True)
+    table = json.loads(_LAYOUT_RULES.read_text(encoding="utf-8"))
+    sides = [128, 256, 384, 512, 640, 768, 896, 1024, 1152, 1280, 1536, 1664, 1920, 2048, 2560, 3072, 4096, 100, 333, 500, 777, 1001, 2347]
+    sweep = [[w, h] for w in sides for h in sides]
+    real = None
+    if (_S0_261014 / store.MANIFEST_NAME).exists():
+        lay = store.layout_from_manifest(store.load_manifest(str(_S0_261014)))
+        real = {"canvas": lay["canvas"], "crops": lay["crops"]}
+    else:
+        skip(f"실데이터 사본 없음({_S0_261014}) — J-L1 실데이터 검사 생략")
+    (out / "in.json").write_text(json.dumps({"table": table, "sweep": sweep, "real": real}, ensure_ascii=False), encoding="utf-8")
+    (out / "harness.mjs").write_text(_LAYOUT_JS_HARNESS, encoding="utf-8")
+    r = subprocess.run([node, str(out / "harness.mjs"), str(web / "layout_geom.js"), str(web / "layout_edit.js"), str(out / "in.json")],
+                       capture_output=True, text=True, encoding="utf-8", timeout=180)
+    if r.returncode != 0 or not r.stdout.strip():
+        check(False, f"node 하네스 실패({r.returncode}): {r.stderr.strip()[-800:]}")
+        return
+    res = json.loads(r.stdout.strip().splitlines()[-1])
+
+    # J-L1: 공용 표 전 행(Python 기대값과 같음)
+    bad = []
+    for row, got in zip(table["rows"], res["rows"]):
+        v = got.get("v")
+        if row["fn"] == "geom_checks" and "v" in got:
+            v = [list(p) for p in sorted({tuple(p) for p in v})]
+        if "e" in got or v != row["out"]:
+            bad.append(f"{row['fn']} {row['note']}: 기대 {row['out']} / JS {got}")
+    fns = {}
+    for row in table["rows"]:
+        fns[row["fn"]] = fns.get(row["fn"], 0) + 1
+    check(len(res["rows"]) == len(table["rows"]) and not bad, f"J-L1 공용 표 {len(table['rows'])}행 JS = Python {fns} {bad[:3]}")
+    want = []
+    for w, h in sweep:
+        W, H, info = store.gpt_output_size(w, h)
+        want.append({"size": [W, H], "k": info["k"], "method": info["method"]})
+    diff = [(s, a, b) for s, a, b in zip(sweep, res["sweep"], want) if a != b]
+    methods = {}
+    for x in want:
+        methods[x["method"]] = methods.get(x["method"], 0) + 1
+    check(not diff, f"J-L1 GPT 크기 훑기 {len(sweep)}쌍 JS = store.gpt_output_size {methods} {diff[:3]}")
+    if real is not None:
+        py = sorted({(cid, x["code"]) for cid, rows in store.layout_geom_checks(real).items() for x in rows})
+        js = sorted({tuple(p) for p in res["real"]})
+        check(js == py, f"J-L1 실데이터 {len(real['crops'])}크롭 검사 JS = Python ({len(py)}건) {sorted(set(js) ^ set(py))[:4]}")
+
+    # J-L2: 실행 취소 스택 — 한 단계 = 역연산 POST 하나, rev 차례대로, 409 뒤 두 스택 비움
+    u = res["undo"]
+    log, nid = u["log"], u["id"]
+    ops = [x["op"] for x in log]
+    check(ops == ["add", "update", "update", "delete", "add", "update", "update", "delete", "add", "update"]
+          and [x["rev"] for x in log] == list(range(10)) and {x["path"] for x in log} == {"layout/crop"}
+          and all(x["root"] == "abcdef012345" for x in log),
+          f"J-L2 add→update(rect)→update(note)→delete, 실행 취소 4번 = 역연산 add·update·update·delete, 다시 1번 = add, rev 0…9 {ops}")
+    back = log[4]
+    check(back["id"] == nid and back["name"] == "002_새크롭" and back["rect"] == [512, 0, 1152, 512] and back["note"] == "메모"
+          and back["targets"] == [{"tid": "A", "text": "", "box": None}] and log[5]["id"] == nid and log[5]["note"] == ""
+          and log[6]["rect"] == [512, 0, 1024, 512] and "note" not in log[6] and log[7]["id"] == nid and log[8]["rect"] == [512, 0, 1024, 512],
+          f"J-L2 역연산 본문: 지운 크롭 되살림(지울 때 값) → 메모 되돌림 → rect 되돌림 → add 취소 = delete {log[4:9]}")
+    check(u["depth"] == [4, 0] and u["afterUndo"] == {"ids": ["001_aaaaaa"], "depth": [0, 4]}
+          and u["afterRedo"] == {"ids": ["001_aaaaaa", nid], "depth": [1, 3]}, f"J-L2 스택 깊이 {u['depth']} {u['afterUndo']} {u['afterRedo']}")
+    check(u["err"] is not None and u["err"]["status"] == 409 and "실행 취소 기록을 비웠습니다" in u["err"]["msg"]
+          and u["final"] == [0, 0] and u["busy"] is False, f"J-L2 409 → 두 스택 비움·busy 풀림 {u['err']} {u['final']}")
+    m = res["remap"]
+    check([x["id"] for x in m["log"][5:8]] == ["002_n2"] * 3 and m["log"][9]["id"] == "002_n3" and m["afterRedo"]["ids"][-1] == "002_n3",
+          f"J-L2 서버가 add 의 id 를 무시해도 남은 단계가 새 ID 로 {[x.get('id') for x in m['log']]}")
+
+    # J-L2(이어서)·J-L3: 쓰기 큐·되살리기·다른 창·PSD 스냅숏, 순수 판정, 편집기 화면(작은 DOM 대역 + 가짜 서버)
+    ext_fns = "\n".join([re.search(r'^const IMPORT_NODE = "\w+";$', ext, re.M).group(0)]
+                        + [_layout_js_fn(ext, n, "") + "\n}" for n in ("partialRunIds", "importUpstream")])
+    (out / "edit_in.json").write_text(json.dumps({"ext": ext_fns}, ensure_ascii=False), encoding="utf-8")
+    (out / "editor.mjs").write_text(_LAYOUT_EDIT_HARNESS, encoding="utf-8")
+    r = subprocess.run([node, str(out / "editor.mjs"), str(web / "layout_geom.js"), str(web / "layout_edit.js"), str(out / "edit_in.json")],
+                       capture_output=True, text=True, encoding="utf-8", timeout=180)
+    if r.returncode != 0 or not r.stdout.strip():
+        check(False, f"node 편집기 하네스 실패({r.returncode}): {r.stderr.strip()[-800:]}")
+        return
+    ej = json.loads(r.stdout.strip().splitlines()[-1])
+    q = ej["queue"]
+    check(q.get("log") == [[0, "가"], [1, "나"]] and q["ok"] == [True, True] and q["busy"] is True and q["after"] is False
+          and q["inv"] == ["", "가"], f"J-L2 응답 전 둘째 쓰기 = 큐로 차례대로(rev 0·1, 둘째 역연산은 첫째 결과 기준) {q}")
+    st = ej["steps"]
+    check(st.get("inv") == {"restore_rev": 1, "index": 1} and st["upd"] == 0 and st["back"] == ["add", 1, 1],
+          f"J-L2 역연산의 되살리기 인자: update = restore_rev(직전 판), 지운 크롭 add = restore_rev·index {st}")
+    check(st.get("err") == 400 and st["kept"] == [2, 0], f"J-L2 400 이 난 실행 취소는 단계를 스택에 남김 {st}")
+    check(st.get("redo") == ["delete", "002_n1"] and st["ids"] == ["001_aaaaaa"],
+          f"J-L2 지움 → 실행 취소(서버가 새 ID) → 다시 = 새 ID 로 delete(그 단계도 remap) {st}")
+    nt = ej["notice"]
+    check(nt.get("before") == [1, None] and nt["after"] == [0, 0] and "다른 창" in (nt["notice"] or "") and nt["own"] == 2,
+          f"J-L2 다른 창의 쓰기를 읽음 → 두 스택 비움·알림·이 창의 판 갱신 {nt}")
+    check(ej["psdBody"] == {"path": "layout/psd", "op": "ack", "snapshot": {"token": "tok-10"}},
+          f"J-L2 PSD 쓰기에 본 스냅숏(지문·at) {ej['psdBody']}")
+    check(ej["targetsLatest"] == {"texts": ["gold", "red"], "inv": ["gold", ""]},
+          f"J-L2 대상 쓰기 둘을 응답 전에 연달아 → 둘째는 최신 목록(A 변경 유지)·역연산도 그 판 기준(Codex) {ej['targetsLatest']}")
+    rl = ej["restoreLower"]
+    check({k: rl.get(k) for k in ("rev", "own", "undo", "note", "after")} == {"rev": 1, "own": 1, "undo": 0, "note": "가", "after": [2, "다"]}
+          and "다른 창" in (rl.get("notice") or ""),
+          f"J-L2 이력 파일로 되돌려 판이 낮아짐 → 받아들이고 기록 비움, 다음 쓰기 409 없음(Codex) {rl}")
+    check(ej["staleRead"] == {"rev": 1, "note": "새"}, f"J-L2 쓰기 전에 보낸 읽기의 늦은 응답은 버림 {ej['staleRead']}")
+    rr = ej["remoteRect"]
+    check(rr.get("err") is not None and rr["err"][0] == 409 and "다른 창" in rr["err"][1] and rr.get("fresh") is True
+          and rr.get("rect") == [0, 0, 768, 512] and rr.get("rectAfterReject") == 1,
+          f"J-L2 사각형 편집 시작 뒤 다른 창이 쓰면 그 값은 보내지 않음(409), 받은 뒤 시작한 편집은 보냄(Codex 6차) {rr}")
+    check(ej["readOrder"] == {"rev": 1, "note": "다른 창"}, f"J-L2 겹친 읽기가 뒤바뀌어 오면 먼저 보낸 응답은 버림(Codex 6차) {ej['readOrder']}")
+    rf = ej["reloadFail"]
+    check(rf.get("status") == ["fulfilled", "rejected"] and "다시 읽지 못해" in (rf.get("msg") or "")
+          and rf.get("texts") == ["gold", ""] and rf.get("after") == ["gold", "red"],
+          f"J-L2 쓰기 뒤 다시 읽기 실패 → 낡은 목록의 다음 대상 쓰기는 보내지 않음(A 유지), 다시 읽은 뒤 정상(Codex 3차) {rf}")
+    edit_src = (PKG / "web_design_patch" / "layout_edit.js").read_text(encoding="utf-8")
+    check(len(re.findall(r"S\.update\(c\.id, \(cur\) =>", edit_src)) >= 2 and "S.update(c.id, { targets" not in edit_src,
+          "편집기 대상 쓰기(commitTargets·commitPending)는 함수 꼴 — 큐에서 실행할 때의 최신 크롭으로 목록을 만듦")
+    check(edit_src.count("e.isComposing || e.keyCode === 229") == 2, "이름·대상 입력칸 Enter/Esc 는 IME 조합 중이면 건너뜀(Codex)")
+    pure = ej["pure"]
+    check(pure.get("reload") == {"stale": None, "newer": "layout", "afterErr": "layout", "manifest": "manifest", "same": None,
+                                 "created": "layout", "broken": "layout", "restored": "layout"},
+          f"J-L2 reloadKind: 낡은 state(직전 state 와 같음)는 다시 받지 않음 · 새 layout_rev·되돌려 낮아진 판·읽기 실패 뒤는 다시 받음 · "
+          f"매니페스트만 = 부드럽게 {pure}")
+    rn = pure.get("rename", {})
+    check("레퍼런스가 바뀌어" in rn.get("moved", "") and "부위 라벨" in rn.get("same", "") and "mapping_json" not in rn.get("same", "")
+          and "mapping_json" in rn.get("files", ""), f"J-L2 이름 바꾸기 경고 고르기 {rn}")
+    nr, sw, tn = (pure.get("edge", {}).get(k) for k in ("newRight", "suggestWide", "thinN"))
+    check(bool(nr) and nr[2] - nr[0] >= 128 and nr[3] - nr[1] >= 128 and nr[2] <= 3072, f"J-L1 오른쪽 변(3066)에서 바깥으로 끈 새 크롭 ≥ 128 {nr}")
+    check(bool(sw) and max(sw[2] - sw[0], sw[3] - sw[1]) <= 3 * min(sw[2] - sw[0], sw[3] - sw[1]) and sw[2] <= 4096 and sw[3] <= 1024,
+          f"J-L1 4096×1024 캔버스 상자 맞춤 제안 비 ≤ 3 {sw}")
+    check(bool(tn) and tn[2] > tn[0] and tn[3] > tn[1], f"J-L1 16×48 이관 크롭 변 핸들 → 폭·높이 0 아님 {tn}")
+    check(ej["upstream"] == {"chain": True, "side": False, "sub": True}, f"J-L2 importUpstream(Review 조상에 Import) {ej['upstream']}")
+    nu = ej["nudgeUndo"]
+    check(nu.get("moved") == 1 and nu["cancelled"] == 1 and any(t.endswith("미세 이동 취소") for t in nu["toasts"])
+          and nu["log"] == [["update", "001_aaaaaa", [16, 0, 528, 512], 0], ["update", "001_aaaaaa", [0, 0, 512, 512], 1]],
+          f"J-L3 001 이동 → 002 화살표 → 400ms 안 Ctrl+Z = POST 없이 미세 이동 취소, 다음 Ctrl+Z = 001 이동 되돌림 {nu}")
+    ne = ej["nudgeEnter"]
+    check(ne.get("log") == [[1024, 16, 1536, 528], ne["want"]] and ne["final"] == ne["want"],
+          f"J-L3 화살표 → 상자에 맞춤 → Enter = 미세 이동 먼저, 최종 = 제안 {ne}")
+    check(ej["pending"] == [["001_aaaaaa", "update", ["gold hat"]], ["002_bbbbbb", "update", ["blue eye"]]],
+          f"J-L3 입력 중 다른 크롭 선택 = 그 크롭에 한 번 저장(늦은 change·먼저 온 change) {ej['pending']}")
+    sd = ej["side"]
+    check(sd.get("focus") != "SELECT" and sd["log"] == [["update", "001_모자_왼쪽", None], ["update", None, [16, 0, 528, 512]]],
+          f"J-L3 좌우 변경 뒤 포커스가 select 에 남지 않음 → 화살표 = 미세 이동 {sd}")
+    check(ej["minusTwo"] == ["C"], f"J-L3 대상 A·B 를 저장 응답 전에 연달아 빼면 C 가 남음(Codex) {ej['minusTwo']}")
+    check(ej["renameNudge"] == {"part": "다른이름", "log": [["update", "001_aaaaaa", None, [16, 0, 528, 512]],
+                                                          ["update", "001_aaaaaa", "001_새이름", None]]},
+          f"J-L3 미세 이동 저장을 기다리는 사이 다른 크롭에서 쓴 이름이 원래 크롭 이름이 되지 않음·그 입력은 남음(Codex 4차) {ej['renameNudge']}")
+    nr = ej["nudgeRemote"]
+    check({k: nr.get(k) for k in ("posts", "rect")} == {"posts": 0, "rect": [0, 0, 640, 512]} and "다른 창" in (nr.get("toast") or ""),
+          f"J-L3 미세 이동 대기 중 다른 창의 판을 받으면 옛 사각형 기준 이동은 서버에 닿지 않고 알림(Codex 6차) {nr}")
+    check(ej["textFlip"] == {"text": "", "posts": 2},
+          f"J-L3 저장 중 대상 문구를 ''→'new target'→'' 로 바꾸면 마지막 값('')이 남음(Codex 5차) {ej['textFlip']}")
+    check(ej["composeSave"] == {"kept": True, "redrawn": True, "text": "hat"},
+          f"J-L3 저장 응답이 메모 칸의 한글 조합 중에 와도 패널을 다시 만들지 않고, 입력이 끝나면 그림(Codex 5차) {ej['composeSave']}")
+    check(ej["renameSameCrop"] == {"part": "가나", "log": [["update", "001_가"]]},
+          f"J-L3 이름 응답 전에 같은 크롭 이름 칸을 더 고치면 그 입력은 남음(Codex 4차) {ej['renameSameCrop']}")
+    check(ej["renameScope"] == {"part": "눈동자", "log": [["update", "001_aaaaaa", "001_모자장식"]]},
+          f"J-L3 이름 적용 응답 전에 다른 크롭으로 옮겨 쓰기 시작한 이름은 남음(Codex 3차) {ej['renameScope']}")
+    check(ej["applyWaits"] == {"queued": [True], "revAtQueue": [1], "text": "hat"},
+          f"J-L3 반영(큐) 는 저장 중인 대상 문구가 서버에 닿은 뒤 요청(Codex) {ej['applyWaits']}")
+    im = ej["ime"]
+    check(im == {"mid": [True, 0], "midText": [True, 1], "log": [["update", "001_모자장식"]]},
+          f"J-L3 IME 조합 확정 Enter 는 입력칸에 남고 보내지 않음, 조합 밖 Enter 는 적용(Codex) {im}")
+    rm = ej["remove"]
+    cf = rm.get("confirms") or ["", ""]
+    check("새 ID" in cf[0] and "003_c0ffee" in cf[0] and "이어집니다" not in cf[0] and "다시 만들 수 없음" in cf[1]
+          and rm["log"] == [["delete", "003_c0ffee"], ["delete", "01_x"]], f"J-L3 지우기 확인 창: 이름 바꾼 크롭 = 새 ID, 규칙 밖 = 다시 만들 수 없음 {rm}")
+    br = ej["badRect"]
+    check(br.get("moved") == 0 and "3:1" in (br["toast"] or "") and br["log"] == [["update", ["targets"]]],
+          f"J-L3 비 > 3 사각형은 보내기 전에 막고 알림(다른 칸은 고칠 수 있음) {br}")
+    check(ej["addTarget"] == [["A", "C"]], f"J-L3 + 대상 = 채택 글자(B) 건너뛰고 C {ej['addTarget']}")
+    one, whole = ej["take"].get("one", {}), ej["take"].get("all", {})
+    check(one.get("label") == "PSD 값으로(나머지 2건 경고 끔)"
+          and all(x in one["confirm"] for x in ("005_모자 — 사각형", "009_휘장", "019_새", "경고만 꺼")) and "새 크롭으로 더함" not in one["confirm"]
+          and one["body"]["names"] == ["005_모자"] and one["body"]["snapshot"] == {"token": "tok-10"}
+          and all(x in one["toast"] for x in ("005_모자(사각형)", "새 크롭 0", "건너뜀 0")),
+          f"J-L3 크롭 하나 PSD 값으로 = 나머지 갈라짐은 경고만 꺼짐을 라벨·확인 창에, 토스트 = 가져옴·새 크롭·건너뜀 {one}")
+    check("새 크롭으로 더함" in whole.get("confirm", "") and whole["names"] == ["005_모자", "009_휘장", "019_새"]
+          and all(x in whole["toast"] for x in ("새 크롭 1: 019_n9", "건너뜀 1", "레이아웃에서 지운 크롭이라 건너뜀")),
+          f"J-L3 머리줄 PSD 값 가져오기 = 새 shape 는 새 크롭, 지운 크롭은 건너뜀 {whole}")
+    sb = ej["start"]
+    check(sb.get("no", {}).get("disabled") is True and sb["why"] in sb["no"]["text"] and "매니페스트 크롭" not in sb["no"]["text"]
+          and sb["ok"]["disabled"] is False and "매니페스트 크롭 2개" in sb["ok"]["text"],
+          f"J-L3 시작이 막히면(start_blocked) 이유를 보이고 시작 버튼을 끔 {sb}")
+    hd = ej["head"]
+    check("layout.json 오류" in hd.get("broken", "") and "반영됨" not in hd["broken"] and "반영(큐)" not in hd["broken"]
+          and "반영됨" in hd["applied"] and "반영됨" not in hd["stale"] and "미반영" in hd["stale"] and hd["queued"] == [True],
+          f"J-L3 머리줄: 깨진 layout.json = 오류만, 반영됨 = 서버 applied, 반영(큐) = layout 요청 {hd}")
+    rf = ej["refs"]
+    check(rf.get("gets") == ["009_모자"] and "레퍼런스가 바뀌어" in rf["note"] and "mapping_json" in rf["note"] and "없음" in (rf["after"] or ""),
+          f"J-L3 이름을 바꾸는 중: 멈춘 뒤 refs 한 번 → 바꾼 뒤 레퍼런스·새 셀·옛 이름 파일 경고 {rf}")
+    pl = ej["poll"]
+    check(pl.get("typing") == {"gets": 1, "kept": True, "focus": True} and pl["blurred"] is False and pl["stale"] == 0 and pl["newer"] == 1
+          and any("다른 창에서 레이아웃이 바뀌어" in t for t in pl["toasts"]),
+          f"J-L3 폴링: 입력 중이면 패널 유지(입력이 끝나면 그림) · 낡은 state 는 다시 받지 않음 · 다른 창 쓰기 = 기록 비움 알림 {pl}")
+    dg = ej["degraded"]
+    check(dg.get("sess") == {"err": None, "undo": 0, "redo": 1, "ids": ["001_aaaaaa", "002_bbbbbb", "003_n2"]}
+          and "warn:응답 구성 실패: 시험" in dg["toasts"] and dg["log"] == 1,
+          f"J-L3 보드 응답 구성 실패(200·crop null·warning): 되살리기·추가가 예외 없음(추가는 기록 안 함), 경고 토스트 {dg}")
+    check(ej["psdSeen"] == {"path": "layout/psd", "token": "tok-10", "n": 2},
+          f"J-L3 PSD 경고 끄기 = 확인 창 때 본 스냅숏을 보냄(큐에서 기다린 사이 다시 읽은 것 아님) {ej['psdSeen']}")
+    note(f"S1-J 공용 표 {len(table['rows'])}행 · GPT 훑기 {len(sweep)}쌍 {methods} · 실행 취소 POST {len(log)}회 · 화면 시나리오 {len(ej)}")
+
+
+def _layout_node_psd(path, base, pixels=(), crop_group=True):
+    """S1-N 합성 PSD: I2I_base 픽셀 레이어 + 빈 '02.크롭영역'(사각형은 read_crop_rects 대역이 준다, crop_group=False 면 그룹 없음)
+    + pixels = [(크롭 이름, rect, rgb)] → '크롭이미지' 그룹의 같은 이름 픽셀 레이어(사전 편집 → group_composite)."""
+    H, W = base.shape[:2]
+    wr = dpsd.PSDWriter((W, H))
+    wr.add_pixel(None, "I2I_base", base, 0, 0)
+    if crop_group:
+        wr.add_group(None, "02.크롭영역")
+    if pixels:
+        g = wr.add_group(None, "크롭이미지")
+        for name, r, rgb in pixels:
+            wr.add_pixel(g, name, rgb, r[0], r[1])
+    wr.save(str(path))
+
+
+def _layout_http(bd):
+    """보드 라우트를 실제 aiohttp 서버(127.0.0.1 임의 포트)로 부른다: call(key, path, body=None, **query) → (상태, JSON).
+    body 가 None 이면 GET ?root=key&query, 아니면 JSON POST {root: key, **body}. 노드 실행 사이에 끼워 쓰려고 요청마다 서버를 띄운다."""
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    async def go(key, path, body, query):
+        routes = web.RouteTableDef()
+        bd.register_routes(routes)
+        app = web.Application()
+        app.add_routes(routes)
+        async with TestClient(TestServer(app)) as client:
+            url = f"{bd.API}/{path}"
+            r = await (client.get(url, params={"root": key, **query}) if body is None
+                       else client.post(url, json=dict(body, root=key)))
+            return r.status, await r.json()
+
+    return lambda key, path, body=None, **query: asyncio.run(go(key, path, body, query))
+
+
+def _layout_node_n16(dp, NS, project, migrate, edit, mm):
+    """M2-N16 본문: Project IS_CHANGED 가 layout.json 을 따라가고(같은 판이면 같음), 실제 execution.PromptExecutor(CLASSIC) 큐
+    Project → Import → Prepare → Run(approve 비움)에서 레이아웃 쓰기(실제 보드 라우트 POST /layout/crop) 뒤 큐 = 하류가 다시 돌아
+    Import 가 새 rect 를 반영하고 Run 은 0 호출, 그다음 큐는 아무것도 실행하지 않는다."""
+    import execution
+    import nodes
+    st = dp.store
+    h, root, psd = project("s1n16")
+    name, base_dir = "s1n16", str(NS)
+    ic = dp.BMKDesignPatchProject.IS_CHANGED
+
+    class Srv:
+        def __init__(self):
+            self.client_id = None
+            self.last_node_id = None
+            self.last_prompt_id = None
+            self.log: list = []
+
+        def send_sync(self, event, data, sid=None):
+            self.log.append((event, data))
+
+        def queue_updated(self):
+            pass
+
+    p = {"1": {"class_type": "BMKDesignPatchProject", "inputs": {"project": name, "base_dir": base_dir}},
+         "2": {"class_type": "BMKDesignPatchImportPSD",
+               "inputs": {"project": ["1", 0], "psd_path": str(psd), "crop_group": "auto", "clean_plate_layer": "auto",
+                          "base_layer": "auto", "crop_pixels_group": "auto", "refs_dir": "", "glossary_path": ""}},
+         "3": {"class_type": "BMKDesignPatchPrepare",
+               "inputs": {"project": ["2", 0], "model": MODEL25, "quality": "high", "size_rule": "user_k", "variants": "V1",
+                          "n": 1, "ref_style": "at", "calls_per_cell": 1}},
+         "4": {"class_type": "BMKDesignPatchRun",
+               "inputs": {"project": ["3", 0], "approve": "", "max_new_calls": 64, "concurrency": 4, "wave_minutes": 25,
+                          "retry_failed": False, "retry_orphans": False, "only": ""}}}
+    srv = Srv()
+    saved = {k: nodes.NODE_CLASS_MAPPINGS.get(k) for k in dp.NODE_CLASS_MAPPINGS}
+    nodes.NODE_CLASS_MAPPINGS.update(dp.NODE_CLASS_MAPPINGS)
+    nq = [0]
+
+    def q():
+        srv.log = []
+        nq[0] += 1
+        mm.interrupt_current_processing(False)
+        ex.execute(copy.deepcopy(p), f"s1n16-{nq[0]}", {"client_id": "s1n16"}, ["4"])
+        if not ex.success:
+            err = [m_[1] for m_ in ex.status_messages if m_[0] == "execution_error"]
+            check(False, f"N16 큐 {nq[0]} 실패: {err[-1].get('exception_message') if err else ex.status_messages[-1:]}")
+        return [d["node"] for ev, d in srv.log if ev == "executing" and d.get("node") is not None]
+
+    def settle():  # 노드가 매니페스트를 쓴 큐 다음 한 번은 Project 지문이 바뀌어 다시 확인(각 노드는 캐시로 끝남) → 실행 없음
+        runs = [q() for _ in range(2)]
+        return runs[-1] == [] and q() == []
+
+    try:
+        ex = execution.PromptExecutor(srv, cache_type=execution.CacheType.CLASSIC,
+                                      cache_args={"lru": 0, "ram": 0, "ram_inactive": 0})
+        ex1 = q()
+        check(ex1 == ["1", "2", "3", "4"] and settle(), f"큐 1 = 전부 실행, 그 뒤 안정(실행 없음) {ex1}")
+        v0 = ic(project=name, base_dir=base_dir)
+        migrate(root)
+        v1 = ic(project=name, base_dir=base_dir)
+        check(v1 != v0 and ic(project=name, base_dir=base_dir) == v1, "layout.json 을 쓰면 Project IS_CHANGED 가 바뀌고, 같은 판이면 같음")
+        ex3 = q()
+        check(ex3[:2] == ["1", "2"] and settle() and st.load_manifest(root)["source"]["layout"]["rev"] == 0,
+              f"이관 뒤 큐: Project → Import(레이아웃 rev 0 반영) 실행, 그 뒤 안정 {ex3}")
+        R4m = [128, 320, 256, 448]
+        s_w, r_w = edit(root, op="update", id=next(c["id"] for c in st.load_layout(root)["crops"] if c["name"] == "004_아래"), rect=R4m)
+        check(s_w == 200 and r_w["rev"] == 1 and ic(project=name, base_dir=base_dir) != v1,
+              f"보드 라우트로 레이아웃 rect 를 고침(rev 1) → Project 지문 바뀜 {s_w} {r_w.get('error')}")
+        ex4 = q()
+        m = st.load_manifest(root)
+        c4 = next(c for c in m["crops"] if c["name"] == "004_아래")
+        check(ex4 == ["1", "2", "3", "4"] and c4["rect"] == R4m and c4["rect_source"] == "layout"
+              and m["source"]["layout"]["rev"] == 1 and _ledger_reqs(root) == 0
+              and any(j["crop_id"] == c4["id"] for j in m["jobs"]),
+              f"레이아웃 쓰기 뒤 큐: Project → Import(새 rect 반영) → Prepare → Run(0 호출) {ex4}")
+        check(settle(), "그다음 큐들은 안정(같은 지문 → 실행 없음)")
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                nodes.NODE_CLASS_MAPPINGS.pop(k, None)
+            else:
+                nodes.NODE_CLASS_MAPPINGS[k] = v
+        mm.interrupt_current_processing(False)
+
+
+def layout_node_unit():
+    """S1-N 레이아웃 노드(U2): M2-N13–N17·R1′. --quick 이면 생략(_dp_package, mock, 유료 호출 0).
+    합성 PSD 는 I2I_base + 사전 편집 그룹(크롭 003 하나)을 실제로 쓰고, 크롭 사각형은 read_crop_rects 대역(shapes 목록)으로 준다
+    (PSDWriter 는 shape 레이어를 못 씀 — M2-N10 과 같음). PSD 열기 횟수는 dpsd.open_psd 를 감싸 센다."""
+    section("S1-N 레이아웃 노드")
+    dp = _dp_package()
+    import folder_paths  # noqa: E402  (ComfyUI 루트)
+    import comfy.model_management as mm
+
+    st, rn = dp.store, dp.runner
+    NS = OUT_ROOT / "s1_nodes"
+    shutil.rmtree(NS, ignore_errors=True)
+    NS.mkdir(parents=True)
+    folder_paths.set_output_directory(str(NS / "output"))
+    mock_file = NS / "bmk_design_patch" / "_MOCK_API"
+    mock_file.parent.mkdir(parents=True)
+    mock_file.write_text(json.dumps({"delay_s": 0.0}), encoding="utf-8")
+    env_mock = os.environ.pop(rn.MOCK_ENV, None)
+    IMP, CIN, PRE, RUN_ = (dp.BMKDesignPatchImportPSD(), dp.BMKDesignPatchCandidateIn(), dp.BMKDesignPatchPrepare(),
+                           dp.BMKDesignPatchRun())
+    ANA, COM, REV_ = dp.BMKDesignPatchAnalyze(), dp.BMKDesignPatchCompose(), dp.BMKDesignPatchReview()
+    base = texture(512, 640, 51)
+    R1, R2, R3, R4 = [32, 32, 160, 160], [192, 64, 320, 192], [352, 160, 480, 288], [96, 320, 224, 448]
+    pre3 = texture(128, 128, 77)  # 003 의 사전 편집(크롭이미지 > 003_오른쪽)
+    SHAPES0 = [("001_왼쪽", R1), ("002_가운데 | A: 단추; B: 리본;", R2), ("003_오른쪽", R3), ("004_아래", R4)]
+    shapes = list(SHAPES0)
+    opens: list = []
+    orig_rects, orig_open = dp.dpsd.read_crop_rects, dp.dpsd.open_psd
+
+    def fake_rects(psd, group="auto"):  # 크롭 영역 그룹이 있으면 shapes, 없으면 진짜(그룹 없음 오류)
+        if dp.dpsd.find_crop_group(psd, group) is None:
+            return orig_rects(psd, group)
+        return [{"name": n, "rect": list(r), "rect_source": "vector", "layer_index": i, "visible": True, "warnings": []}
+                for i, (n, r) in enumerate(shapes)]
+
+    dp.dpsd.read_crop_rects = fake_rects
+    dp.dpsd.open_psd = lambda p: (opens.append(p), orig_open(p))[1]
+
+    def project(name, pixels=(("003_오른쪽", R3, pre3),), crop_group=True):
+        psd = NS / f"{name}.psd"
+        _layout_node_psd(psd, base, pixels, crop_group)
+        h, _s = dp.BMKDesignPatchProject().open(name, str(NS))
+        return h, h["root"], psd
+
+    def imp(h, psd, touch=False, crop_group="auto"):
+        """Import PSD → (보고서, 이번 실행의 PSD 열기 횟수)."""
+        if touch:  # PSD 지문이 바뀜(PS 에서 다시 저장)
+            t = os.stat(psd).st_mtime_ns + 1_000_000_000
+            os.utime(psd, ns=(t, t))
+        n0 = len(opens)
+        rep = IMP.run(h, str(psd), crop_group, "auto", "auto", "auto", "", "")[2]
+        return rep, len(opens) - n0
+
+    def lay_write(root, fn):  # 사람이 손으로 고친 것·이관된 비정상 값(라우트가 거절하는 rect·캔버스)을 흉내 낼 때만
+        return st.update_layout(root, fn, expect_rev=None)[1]
+
+    http = _layout_http(dp.board)
+
+    def route(root, path, body=None, **query):  # 실제 보드 라우트(키 = 레지스트리 등록 — Review 노드와 같음)
+        return http(st.register_root(root), path, body, **query)
+
+    def migrate(root):  # 보드 POST /layout/start → rev
+        return route(root, "layout/start", {})[1].get("rev")
+
+    def edit(root, **body):  # 보드 POST /layout/crop(지금 rev) → (상태, 응답)
+        return route(root, "layout/crop", dict(body, rev=st.load_layout(root)["rev"]))
+
+    def crop_of(lay, name):
+        return next(c for c in lay["crops"] if c["name"] == name)
+
+    def mcrops(root):
+        return {c["id"]: c for c in st.load_manifest(root)["crops"]}
+
+    def core(root):  # N13 불변 대상: id·rect·source·targets(tid·label·name_en·mode·refs·origin)
+        return {cid: (c["rect"], c["source"], c["targets"]) for cid, c in mcrops(root).items()}
+
+    def prep(h):
+        PRE.run(h, MODEL25, "high", "user_k", "V1", 1, "at", 1)
+        return {j["cell_key"]: json.dumps(j, sort_keys=True, ensure_ascii=False) for j in st.load_manifest(h["root"])["jobs"]}
+
+    def jobs_by_crop(root):
+        out: dict = {}
+        for j in st.load_manifest(root)["jobs"]:
+            out.setdefault(j["crop_id"], []).append(json.dumps(j, sort_keys=True, ensure_ascii=False))
+        return out
+
+    def run_hash(h):  # Run 드라이런(approve 비움 — 과금 0)의 승인 해시
+        out = asyncio.run(RUN_.run(h, "", max_new_calls=64, concurrency=4, wave_minutes=25, retry_failed=False,
+                                   retry_orphans=False, only="", unique_id="s1"))
+        return out["ui"]["bmk_dp_run"][0]["pending_hash"]
+
+    def draft_keys(root):  # Spec Draft 초안 키(계획만, 호출 없음)
+        cfg = dict(family="openai", model="gpt-6-astra", effort="high", image_detail="high", draft_round=0, mode="fill",
+                   only=[], concurrency=1, model_dir="", apply_mode="full")
+        return {k: r.key for k, r in dp._draft_plan(root, st.load_manifest(root), "", "vlm_openai", **cfg)[1].items()}
+
+    def spec(root, cid, obj):
+        d = Path(root) / "specs"
+        d.mkdir(exist_ok=True)
+        (d / f"{cid}.json").write_text(json.dumps(obj, ensure_ascii=False), encoding="utf-8")
+
+    def folder_cands(h, name, files):  # files = {파일 이름: rect} → 폴더 후보 등록(pick 없는 타깃은 자동 pick)
+        d = NS / name
+        d.mkdir(exist_ok=True)
+        for fn, r in files.items():
+            Image.fromarray(_fx_cand(base, r)).save(d / fn)
+        CIN.run(h, "folder", str(d), "", "", True, True)
+
+    try:
+        section("M2-N13 이관 불변: Import(PSD) → Prepare·Run 드라이런·초안 키 → 레이아웃 편집 시작 → Import = 같음")
+        h, root, psd = project("s1n13")
+        rep, n_open = imp(h, psd)
+        m = st.load_manifest(root)
+        ids = {c["name"]: c["id"] for c in m["crops"]}
+        check([c["source_kind"] for c in m["crops"]] == ["base_crop", "base_crop", "group_composite", "base_crop"]
+              and n_open == 1 and "PSD 읽기" in rep and not (Path(root) / st.LAYOUT_NAME).exists()
+              and not (Path(root) / "derived" / "psd_crops.json").exists() and "layout" not in m["source"],
+              f"layout.json 없음 = 지금 그대로(PSD shape, 003 사전 편집 합성), layout.json·스냅숏을 만들지 않음 {rep.splitlines()[:2]}")
+        spec(root, ids["001_왼쪽"], {"_layer_targets": "A: gold badge"})
+        folder_cands(h, "s1n13_c", {"001_왼쪽_a.png": R1, "004_아래_a.png": R4})
+        rep, _n = imp(h, psd)
+        before, jobs0 = core(root), prep(h)
+        hash0, keys0 = run_hash(h), draft_keys(root)
+        check("캐시 적중" in rep and len(jobs0) == 4 and hash0 and set(keys0) == set(ids.values()) | {dp.dvlm.STYLE_ID}
+              and _ledger_reqs(root) == 0 and mcrops(root)[ids["001_왼쪽"]]["targets"][0]["origin"] == "adopt",
+              f"이관 전: 채택 타깃(001) · 후보 2 · jobs 4 · Run 드라이런 해시 {hash0} · 초안 키 4 + 화풍 {sorted(keys0)}")
+        check(migrate(root) == 0, "레이아웃 편집 시작(보드 POST /layout/start) → rev 0")
+        rep, n_open = imp(h, psd)
+        m = st.load_manifest(root)
+        c2 = mcrops(root)[ids["002_가운데"]]
+        check(rep.splitlines()[1] == "레이아웃 rev 0 · 크롭 4 · 바뀜 0(소스 다시 만듦 0, PSD 안 엶)" and n_open == 0,
+              f"보고서 둘째 줄 = 레이아웃 줄, PSD 열기 0 {rep.splitlines()[1:3]}")
+        check(core(root) == before, "N13 crops 의 id·rect·source·targets(tid·label·name_en·mode·refs·origin) 같음")
+        check(c2["layer_name"] == "002_가운데 | A: 단추; B: 리본" and c2["rect_source"] == "layout" and c2["psd_name"] == "002_가운데"
+              and m["source"]["layout"] == {"rev": 0, "sig": st.layout_sig(st.load_layout(root))},
+              f"layer_name 정규화(끝 ';' 빠짐)·rect_source layout·psd_name·source.layout {c2['layer_name']!r}")
+        check(prep(h) == jobs0, "N13 Prepare jobs(cell_key 포함) 바이트 같음")
+        check(run_hash(h) == hash0 and draft_keys(root) == keys0 and _ledger_reqs(root) == 0,
+              "N13 Run 승인 해시·Spec Draft 초안 키 같음(0 호출)")
+        r0 = st.load_manifest(root)["rev"]
+        rep, n_open = imp(h, psd)
+        check("캐시 적중(PSD·그룹 설정·레이아웃 같음" in rep and n_open == 0 and st.load_manifest(root)["rev"] == r0,
+              "같은 레이아웃으로 다시 = 캐시 적중, rev 불변")
+        lay_write(root, lambda d: crop_of(d, "001_왼쪽").update(note="메모만"))
+        rep, n_open = imp(h, psd)
+        check("캐시 적중" in rep and "레이아웃 rev 1 · " in rep and st.load_manifest(root)["source"]["layout"]["rev"] == 1
+              and core(root) == before, "메모만 바꿈(지문 밖) = 캐시 적중, source.layout.rev 만 따라감")
+
+        section("M2-N14 a 한 크롭 이동 → 그 크롭만 source·cell_key 바뀜(스냅숏이 없으면 PSD 를 한 번 엶)")
+        jb0 = jobs_by_crop(root)
+        c4 = ids["004_아래"]
+        R4m = [112, 304, 240, 432]
+        lay_write(root, lambda d: crop_of(d, "004_아래").update(rect=R4m))
+        rep, n_open = imp(h, psd)
+        prep(h)
+        after, jb1 = core(root), jobs_by_crop(root)
+        check("바뀜 1(소스 다시 만듦 1, PSD 엶)" in rep and n_open == 1 and (Path(root) / "derived" / "psd_crops.json").is_file(),
+              f"a: 바뀜 1, 스냅숏 없음 → PSD 한 번 엶(스냅숏 씀) {rep.splitlines()[1:3]}")
+        check(after[c4][0] == R4m and after[c4][1] != before[c4][1]
+              and all(after[k] == before[k] for k in before if k != c4)
+              and jb1[c4] != jb0[c4] and all(jb1[k] == jb0[k] for k in jb0 if k != c4),
+              "a: 004 만 source·jobs 바뀜, 나머지 crops·jobs 바이트 같음")
+
+        section("M2-N14 c PSD 를 열지 않는 경로 = crop_sources base_crop 과 바이트 같음(캔버스 밖 0 패딩 포함)")
+        c1 = ids["001_왼쪽"]
+        R1m = [-16, 24, 112, 152]  # 이관된 값처럼 캔버스 밖(레이아웃은 경고만)
+        lay_write(root, lambda d: crop_of(d, "001_왼쪽").update(rect=R1m))
+        rep, n_open = imp(h, psd)
+        cr = mcrops(root)[c1]
+        psd_obj = orig_open(str(psd))
+        ref = dpsd.crop_sources(psd_obj, [{"name": "001_왼쪽", "rect": R1m}], dpsd.read_base(psd_obj)[0],
+                                work_rect=st.load_manifest(root)["work_rect"])[0]
+        png = Path(st.resolve_path(root, cr["source"]))
+        check(n_open == 0 and "바뀜 1(소스 다시 만듦 1, PSD 안 엶)" in rep and "PSD 안 엶(지문·그룹 설정 같음" in rep,
+              f"c: 스냅숏이 001 을 사전 편집 자식으로 보지 않음 → PSD 열기 0 {rep.splitlines()[1:3]}")
+        check(np.array_equal(np.asarray(Image.open(png)), ref["rgba"]) and cr["source"] == st.save_png_ca(root, "inputs", ref["rgba"])
+              and cr["source_kind"] == ref["kind"] == "base_crop" and cr["alpha_frac"] == round(ref["alpha_frac"], 6) > 0
+              and dp._source_warnings(ref) == [w for w in cr["warnings"] if not w.startswith(dp._LAYOUT_WARN)]
+              and any("캔버스 밖" in w for w in cr["warnings"]),
+              f"c: source = crop_sources base_crop(같은 PNG 경로·kind·alpha_frac·경고) {cr['warnings']}")
+        lay_write(root, lambda d: crop_of(d, "001_왼쪽").update(rect=R1))
+        rep, n_open = imp(h, psd)
+        check(core(root)[c1] == before[c1] and n_open == 0, "c: 제자리로 → 처음 source 로 돌아옴(내용 주소), PSD 열기 0")
+
+        section("M2-N14 b 이름 변경 → id·스펙·후보·★ 유지, psd_name 으로 사전 편집 합성 유지")
+        c3 = ids["003_오른쪽"]
+        spec(root, c3, {"_hint": "keep"})
+        folder_cands(h, "s1n13_c3", {"003_오른쪽_a.png": R3})
+        k3 = next(c["key"] for c in st.load_manifest(root)["candidates"] if c["crop_id"] == c3)
+        lay_write(root, lambda d: crop_of(d, "003_오른쪽").update(name="003_오른쪽_장식"))
+        rep, n_open = imp(h, psd)
+        cr = mcrops(root)[c3]
+        cand = next(c for c in st.load_manifest(root)["candidates"] if c["key"] == k3)
+        check(cr["name"] == "003_오른쪽_장식" and cr["psd_name"] == "003_오른쪽" and cr["source"] == before[c3][1]
+              and cr["source_kind"] == "group_composite" and n_open == 0 and cand["crop_id"] == c3 and cand["picked"]
+              and st.load_spec_override(root, c3).get("_hint") == "keep" and f"ID 는 처음 이름 기준(이름을 바꿔도 유지): {c3} = 003_오른쪽_장식" in rep
+              and "이름을 바꾼 크롭에 폴더·PSD 수확 후보가 있음(003_오른쪽_장식) — 옛 이름 파일은 mapping_json 에 ID 로" in rep
+              and "사라짐" not in rep,
+              f"b: id 유지·후보 ★·스펙 그대로, source 다시 만들지 않음(PSD 열기 0), 폴더 후보 경고(§5) {rep.splitlines()[1:5]}")
+        rep, n_open = imp(h, psd, touch=True)
+        cr = mcrops(root)[c3]
+        check(n_open == 1 and "바뀜 0(소스 다시 만듦 4, PSD 엶)" in rep and "PSD 읽기" in rep and cr["source"] == before[c3][1]
+              and cr["source_kind"] == "group_composite" and core(root)[ids["002_가운데"]] == before[ids["002_가운데"]],
+              f"b: PSD 가 바뀌면 전부 다시(베이스 포함) — 사전 편집은 psd_name 으로 찾아 source 같음 {rep.splitlines()[1:3]}")
+
+        section("M2-N14 e 대상 문구 > 스펙 _layer_targets (레이아웃이 PSD 문구 자리)")
+        lay_write(root, lambda d: crop_of(d, "001_왼쪽").update(targets=[{"tid": "A", "text": "silver badge", "box": None}]))
+        rep, n_open = imp(h, psd)
+        t1 = mcrops(root)[c1]["targets"]
+        check([(t["tid"], t["label"], t["name_en"], t.get("origin")) for t in t1] == [("A", "silver badge", "silver badge", None)]
+              and "'silver badge' 가 이김" in rep and "바뀜 1(소스 다시 만듦 0, PSD 안 엶)" in rep and n_open == 0,
+              f"e: 레이아웃 문구가 채택 'gold badge' 를 이김 + 경고, 소스는 그대로 {t1}")
+
+        section("M2-N14 d 크롭 지우기 → 매니페스트에서 빠짐·고아 보고·Compose/Export 에서 제외")
+        k4 = next(c["key"] for c in st.load_manifest(root)["candidates"] if c["crop_id"] == c4)
+        lay_write(root, lambda d: d.__setitem__("crops", [c for c in d["crops"] if c["id"] != c4]))
+        rep, n_open = imp(h, psd)
+        rep_c = COM.run(h, "hand", False, False, "auto_small_on_top")[3]
+        p_x, ui_x = _run_export(dp, h, "s1gone", "pixel", "hidden_all", "raw", "hand", True, True, skip_empty=True)
+        check(c4 not in mcrops(root) and f"레이아웃에서 사라짐: {c4}" in rep and "바뀜 1(" in rep and n_open == 0,
+              f"d: 004 빠짐, 보고서 '크롭이 사라짐' 줄 {rep.splitlines()[:3]}")
+        lay_x = json.loads(Path(os.path.splitext(p_x)[0] + ".json").read_text(encoding="utf-8"))["export_layers"] if p_x else []
+        check(f"{k4}: 매니페스트에 크롭 {c4} 가 없음" in rep_c and p_x and k4 not in {w["key"] for w in lay_x},
+              f"d: Compose 경고·제외, Export 에 004 후보 없음 {len(lay_x)}")
+
+        section("M2-N14 f·g 깨진 layout.json·캔버스 크기 다름 → Import 오류")
+        lp = Path(root) / st.LAYOUT_NAME
+        good = lp.read_bytes()
+        lp.write_text("{broken", encoding="utf-8")
+        expect_raises(lambda: imp(h, psd), "f: 깨진 layout.json → Import 오류(이력 안내)", contains=st.LAYOUT_HISTORY_DIR)
+        lp.write_bytes(good)
+        lay_write(root, lambda d: d.__setitem__("canvas", [641, 512]))
+        expect_raises(lambda: imp(h, psd), "g: 캔버스 641x512 ≠ PSD 640x512 → Import 오류", contains="641x512")
+        expect_raises(lambda: imp(h, psd, touch=True), "g: PSD 를 다시 읽는 경로도 같은 오류", contains="640x512")
+        lay_write(root, lambda d: d.__setitem__("canvas", [640, 512]))
+        rep, _n = imp(h, psd)
+        check("레이아웃 rev" in rep and len(mcrops(root)) == 3, "g: 캔버스를 되돌리면 다시 가져옴")
+
+        section("M2-N15 갈라짐: PSD shape 이동·추가 → 레이아웃 그대로 + 경고 줄 + 스냅숏 → take → 반영 · 경고 0")
+        R2p, R5 = [208, 64, 336, 192], [480, 352, 608, 480]
+        shapes[1] = ("002_가운데 | A: 단추; B: 리본;", R2p)
+        shapes.append(("005_새것", R5))
+        rep, n_open = imp(h, psd, touch=True)
+        snap = json.loads((Path(root) / "derived" / "psd_crops.json").read_text(encoding="utf-8"))
+        check(mcrops(root)[ids["002_가운데"]]["rect"] == R2 and len(mcrops(root)) == 3 and n_open == 1
+              and f"002_가운데 rect {R2}→{R2p}" in rep and "새 shape 005_새것" in rep and "PSD 사각형이 이관 뒤 바뀜" in rep
+              and "사라진 shape" not in rep, f"PSD 를 다시 읽어도 크롭은 레이아웃 그대로 + 갈라짐 경고 {[ln for ln in rep.splitlines() if 'PSD 사각형' in ln]}")
+        check(set(snap) == {"psd", "fingerprint", "crop_group", "crop_pixels_group", "at", "crops", "pixel_nodes"}
+              and snap["psd"] == str(psd).replace("\\", "/") and snap["fingerprint"] == st.file_fingerprint(str(psd))
+              and snap["pixel_nodes"] == ["003_오른쪽"] and snap["crops"][1] == {
+                  "name": "002_가운데", "layer_name": "002_가운데 | A: 단추; B: 리본;", "rect": R2p, "rect_source": "vector"}
+              and [c["name"] for c in snap["crops"]] == ["001_왼쪽", "002_가운데", "003_오른쪽", "004_아래", "005_새것"],
+              f"스냅숏 derived/psd_crops.json 형식 {sorted(snap)}")
+        rep, n_open = imp(h, psd)
+        check("PSD 사각형이 이관 뒤 바뀜" in rep and n_open == 0, "같은 PSD 지문 = 열지 않음, 믿을 수 있는 스냅숏이라 경고는 남음")
+        _s, L = route(root, "layout")
+        c5 = st.crop_id_for("005_새것")
+        check([x["name"] for x in L["psd_diff"]["changed"]] == ["002_가운데"] and [x["name"] for x in L["psd_diff"]["added"]] == ["005_새것"]
+              and L["psd_diff"]["fingerprint"] == snap["fingerprint"],
+              f"보드 GET /layout 의 psd_diff = Import 가 쓴 스냅숏 대 기준점 {L['psd_diff']}")
+        s_t, r_t = route(root, "layout/psd", {"rev": st.load_layout(root)["rev"], "op": "take"})
+        rep, n_open = imp(h, psd)
+        mc = mcrops(root)
+        check(s_t == 200 and r_t["taken"] == [{"id": ids["002_가운데"], "name": "002_가운데", "fields": ["rect"]}]
+              and r_t["added"] == [c5] and r_t["skipped"] == [],
+              f"보드 POST /layout/psd take(전부) {s_t} {r_t}")
+        check(mc[ids["002_가운데"]]["rect"] == R2p and mc[c5]["rect"] == R5 and "PSD 사각형" not in rep
+              and "바뀜 2(소스 다시 만듦 2, PSD 안 엶)" in rep and n_open == 0,
+              f"take → Import 반영(002 이동·005 추가, PSD 열기 0), 경고 0 {rep.splitlines()[1:3]}")
+        (Path(root) / st.LAYOUT_NAME).unlink()
+        rep, n_open = imp(h, psd)
+        m = st.load_manifest(root)
+        check("PSD 읽기" in rep and n_open == 1 and "layout" not in m["source"] and "레이아웃 rev" not in rep
+              and [c["name"] for c in m["crops"]] == [st.parse_crop_layer_name(n)["name"] for n, _r in shapes]
+              and all(c["rect_source"] == "vector" and "psd_name" not in c for c in m["crops"]),
+              "layout.json 을 치우면 같은 PSD 라도 다시 읽어 PSD shape 로 돌아옴(source.layout·psd_name 없음)")
+        shapes[:] = SHAPES0  # 다음 묶음은 처음 PSD 사각형으로
+
+        section("M2-N16 Project 지문 = layout.json · 실제 PromptExecutor 큐: 레이아웃 쓰기 → Import 반영 · Run 0 호출")
+        _layout_node_n16(dp, NS, project, migrate, edit, mm)
+
+        section("M2-N17 빈 시작(D6): 크롭 그룹 없는 PSD → 크롭 0 · Candidate In·Prepare 경고 · Review 까지 → 편집 시작 → add → 크롭 1")
+        h, root, psd = project("s1n17", pixels=(), crop_group=False)
+        rep, n_open = imp(h, psd)
+        m = st.load_manifest(root)
+        check(m["crops"] == [] and m["base"] and m["canvas"] == [640, 512] and n_open == 1
+              and "크롭 없음(크롭 영역 그룹 없음) — Studio 에서 '레이아웃 편집 시작'" in rep and "크롭 0 " in rep.splitlines()[0],
+              f"Import: 크롭 0 + 안내, 베이스만 {rep.splitlines()[:3]}")
+        expect_raises(lambda: imp(h, psd, crop_group="02.크롭영역"), "그룹 이름을 직접 적었는데 없으면 지금처럼 오류",
+                      contains="크롭 영역 그룹을 찾을 수 없습니다")
+        (NS / "s1n17_empty").mkdir()
+        h, rep_c = CIN.run(h, "folder", str(NS / "s1n17_empty"), "", "", True, True)
+        h, _sheet, rep_p = PRE.run(h, MODEL25, "high", "user_k", "V1", 1, "at", 1)
+        h, _cs, rep_a = ANA.run(h, "guarded_affine", "field", 16, 8.0, 9, 3.5, "none", False)
+        out_r = asyncio.run(REV_.run(h))
+        h = out_r["result"][0]
+        h, _img, _mk, rep_co = COM.run(h, "hand_else_auto", True, True, "auto_small_on_top")
+        p_e, ui_e = _run_export(dp, h, "s1empty", "pixel", "hidden_all", "raw", "auto", True, True, skip_empty=True)
+        check("크롭 없음" in rep_c and "크롭 없음 — 작업 없음" in rep_p and st.load_manifest(root)["jobs"] == []
+              and rep_a.startswith("Analyze: 후보 0") and rep_co.startswith("Compose: pick 0") and p_e == ""
+              and out_r["ui"]["bmk_dp_board"][0]["root_key"] == st.root_key(root),
+              f"크롭 0: Candidate In·Prepare 경고(예외 아님), Analyze·Review·Compose·Export 통과 → Studio 키 {rep_c} / {rep_p.splitlines()[-1]}")
+        lay0 = st.layout_from_manifest(st.load_manifest(root))
+        check(migrate(root) == 0 and lay0["crops"] == [] and lay0["psd"]["crops"] == [], "레이아웃 편집 시작: 빈 레이아웃(rev 0)")
+
+        s_a, r_a = edit(root, op="add", name="001_새크롭", rect=[64, 64, 320, 320])
+        check(s_a == 200 and r_a["crop"]["status"] == "new" and r_a["rev"] == 1, f"보드 POST /layout/crop add {s_a} {r_a.get('error')}")
+        rep, n_open = imp(h, psd)
+        _h, _sheet, rep_p = PRE.run(h, MODEL25, "high", "user_k", "V1", 1, "at", 1)
+        m = st.load_manifest(root)
+        snap = json.loads((Path(root) / "derived" / "psd_crops.json").read_text(encoding="utf-8"))
+        check([c["id"] for c in m["crops"]] == [st.crop_id_for("001_새크롭")] and m["crops"][0]["source_kind"] == "base_crop"
+              and m["crops"][0]["psd_name"] == "001_새크롭" and len(m["jobs"]) == 1 and "크롭 없음" not in rep_p
+              and "레이아웃 rev 1 · 크롭 1 · 바뀜 1(소스 다시 만듦 1, PSD 엶)" in rep and snap["crops"] == [] == snap["pixel_nodes"],
+              f"add → 큐: 크롭 1(base_crop), jobs 1, 스냅숏(그룹 없음 = shape 0) {rep.splitlines()[1:3]}")
+
+        section("S1-E2E 이관 → 편집(실제 보드 라우트) → 다시 Import: 반영 상태 same·applied_rev = rev · 다른 크롭 cell_key 불변 · Run 0 호출")
+        h, root, psd = project("s1e2e")
+        imp(h, psd)
+        prep(h)
+        ids = {c["name"]: c["id"] for c in st.load_manifest(root)["crops"]}
+        jb0, src0, mrev = jobs_by_crop(root), {cid: c["source"] for cid, c in mcrops(root).items()}, st.load_manifest(root)["rev"]
+        s0, r0 = route(root, "layout/start", {})
+        s1, r1 = edit(root, op="update", id=ids["004_아래"], rect=[128, 320, 256, 448])
+        s2, r2 = edit(root, op="update", id=ids["003_오른쪽"], name="003_오른쪽_장식")
+        s3, _r3 = route(root, "layout/crop", {"rev": 1, "op": "update", "id": ids["001_왼쪽"], "note": "낡은 rev"})
+        check(s0 == s1 == s2 == 200 and (r0["rev"], r0["crops"], r1["rev"], r2["rev"]) == (0, 4, 1, 2) and s3 == 409
+              and r2["crop"]["id"] == ids["003_오른쪽"] and r2["crop"]["psd_name"] == "003_오른쪽",
+              f"라우트: start rev 0 · 004 이동 rev 1 · 003 이름 변경 rev 2(id·psd_name 유지) · 낡은 rev 409 {(s0, s1, s2, s3)}")
+        _s, L1 = route(root, "layout")
+        _s, S1 = route(root, "state")
+        want = {ids["001_왼쪽"]: ("same", []), ids["002_가운데"]: ("same", []), ids["003_오른쪽"]: ("changed", ["name"]),
+                ids["004_아래"]: ("changed", ["rect"])}
+        check({c["id"]: (c["status"], c["changed"]) for c in L1["crops"]} == want and L1["applied_rev"] is None
+              and S1["layout_rev"] == 2 and {c["id"]: c["layout_status"] for c in S1["crops"]} == {k: v[0] for k, v in want.items()}
+              and S1["rev"] == st.load_manifest(root)["rev"] == mrev,
+              f"반영 전: GET /layout 바뀜 2(name·rect)·applied_rev 없음, state layout_rev 2·layout_status, 매니페스트 rev 그대로 {L1['crops'][3]['status']}")
+        rep, n_open = imp(h, psd)
+        prep(h)
+        jb1, mc = jobs_by_crop(root), mcrops(root)
+        _s, L2 = route(root, "layout")
+        _s, S2 = route(root, "state")
+        check(rep.splitlines()[1] == "레이아웃 rev 2 · 크롭 4 · 바뀜 2(소스 다시 만듦 1, PSD 엶)" and n_open == 1
+              and L2["applied_rev"] == L2["rev"] == 2 and all(c["status"] == "same" for c in L2["crops"]) and L2["removed"] == []
+              and S2["layout_rev"] == 2 and all(c["layout_status"] == "same" for c in S2["crops"]),
+              f"다시 Import(노드): 반영됨 — applied_rev = rev 2, 크롭 상태·state layout_status 모두 same {rep.splitlines()[1:3]}")
+        check(all(jb1[ids[n]] == jb0[ids[n]] for n in ("001_왼쪽", "002_가운데")) and jb1[ids["004_아래"]] != jb0[ids["004_아래"]]
+              and mc[ids["004_아래"]]["source"] != src0[ids["004_아래"]] and mc[ids["003_오른쪽"]]["source"] == src0[ids["003_오른쪽"]]
+              and mc[ids["003_오른쪽"]]["source_kind"] == "group_composite",
+              "편집하지 않은 001·002 의 jobs(cell_key 포함) 바이트 같음, 004 만 소스·jobs 바뀜, 이름만 바꾼 003 은 psd_name 으로 사전 편집 소스 그대로")
+        run_hash(h)
+        check(_ledger_reqs(root) == 0, "Run 드라이런(approve 비움) 0 호출")
+        jb2 = jobs_by_crop(root)
+        c3 = next(c for c in L2["crops"] if c["id"] == ids["003_오른쪽"])
+        s4, _r4 = edit(root, op="delete", id=c3["id"])
+        s5, r5 = edit(root, op="add", id=c3["id"], psd_name=c3["psd_name"], name=c3["name"], rect=c3["rect"], note=c3["note"],
+                      targets=[{k: t[k] for k in ("tid", "text", "box")} for t in c3["targets"]])
+        rep, n_open = imp(h, psd)
+        prep(h)
+        _s, u = route(root, "layout", since=str(r5["rev"]))
+        check(s4 == s5 == 200 and r5["crop"]["id"] == c3["id"] and r5["crop"]["status"] == "same"
+              and "바뀜 0(소스 다시 만듦 0, PSD 안 엶)" in rep and n_open == 0 and jobs_by_crop(root) == jb2
+              and u == {"unchanged": True, "rev": 4} and _ledger_reqs(root) == 0,
+              f"편집기 실행 취소(지운 크롭 되살리기 = add + id·psd_name): 같은 ID·사전 편집 소스 → jobs 같음, since = rev 면 unchanged "
+              f"{rep.splitlines()[1:3]} {u}")
+        order0, style0 = [c["id"] for c in st.load_manifest(root)["crops"]], draft_keys(root)[dp.dvlm.STYLE_ID]
+        L3 = st.load_layout(root)
+        c1 = L3["crops"][0]
+        s6, r6 = edit(root, op="delete", id=c1["id"])
+        s7, _r7 = edit(root, op="add", id=c1["id"], restore_rev=L3["rev"], index=r6.get("index"),
+                       **{k: c1[k] for k in ("name", "rect", "targets", "note", "psd_name")})
+        rep, n_open = imp(h, psd)
+        check(s6 == s7 == 200 and c1["name"] == "001_왼쪽" and r6.get("index") == 0
+              and [c["id"] for c in st.load_manifest(root)["crops"]] == order0 and draft_keys(root)[dp.dvlm.STYLE_ID] == style0
+              and "바뀜 0(소스 다시 만듦 0, PSD 안 엶)" in rep and n_open == 0,
+              f"맨 앞 001 지우기 → 실행 취소(restore_rev·index) → Import: 매니페스트 crops 순서·화풍(_style) 초안 키 같음 {rep.splitlines()[1:2]}")
+
+        section("S1-N18 layout.json 을 치운 뒤 다시 편집 시작(매니페스트 = 레이아웃 모드 결과): 스냅숏 없음 = 400 · 있음 = psd_name 유지·"
+                "기준점 = 스냅숏 → 다음 Import 불변·갈라짐 0")
+        h, root, psd = project("s1n18")
+        imp(h, psd)
+        ids = {c["name"]: c["id"] for c in st.load_manifest(root)["crops"]}
+        migrate(root)
+        s_r, _r = edit(root, op="update", id=ids["003_오른쪽"], name="003_오른쪽_장식")
+        imp(h, psd)
+        lp, snap_p = Path(root) / st.LAYOUT_NAME, Path(root) / st.PSD_SNAPSHOT
+        kept = lp.read_bytes()
+        lp.unlink()
+        s_n, _r = route(root, "layout/start", {})
+        check(s_r == 200 and not snap_p.exists() and s_n == 400 and not lp.exists(),
+              f"이관 → 003 이름 변경 → Import(PSD 안 엶 = 스냅숏 없음) → layout.json 삭제 → 시작 400, layout.json 만들지 않음 {s_r} {s_n}")
+        lp.write_bytes(kept)
+        rep, n_open = imp(h, psd, touch=True)  # PSD 를 열어 스냅숏을 씀(레이아웃 모드)
+        before, jobs0 = core(root), prep(h)
+        lp.unlink()
+        s_s, r_s = route(root, "layout/start", {})
+        lay = st.load_layout(root)
+        snap = json.loads(snap_p.read_text(encoding="utf-8"))
+        c3 = None if lay is None else next(c for c in lay["crops"] if c["id"] == ids["003_오른쪽"])
+        check(n_open == 1 and s_s == 200 and c3 is not None and c3["name"] == "003_오른쪽_장식" and c3["psd_name"] == "003_오른쪽"
+              and lay["psd"]["crops"] == [{k: c[k] for k in ("name", "layer_name", "rect")} for c in snap["crops"]]
+              and lay["psd"]["fingerprint"] == snap["fingerprint"],
+              f"스냅숏 있음 → 시작 200: psd_name 유지 · PSD 기준점 = 스냅숏 {s_s} {r_s.get('error')}")
+        rep, n_open = imp(h, psd)
+        check(core(root) == before and prep(h) == jobs0 and n_open == 0 and "PSD 사각형" not in rep
+              and mcrops(root)[ids["003_오른쪽"]]["source_kind"] == "group_composite",
+              f"다시 시작 뒤 Import: source·targets·cell_key 불변(003 사전 편집 합성 유지)·갈라짐 0·PSD 열기 0 {rep.splitlines()[1:3]}")
+
+        section("S1-N R-D6 빈 시작 좁힘: 크롭 있던 PSD 모드 + 그룹 없음·shape 0(auto) → 멈춤(매니페스트 그대로) · 빈 프로젝트 빈 그룹 = "
+                "빈 시작 · layout.json 을 치운 매니페스트 = 빈 시작 + 되돌림 안내")
+        pix3 = (("003_오른쪽", R3, pre3),)
+        h, root, psd = project("s1x_d6a")
+        imp(h, psd)
+        prep(h)
+        mp = Path(root) / st.MANIFEST_NAME
+        m_bytes = mp.read_bytes()
+        _layout_node_psd(psd, base, pix3, crop_group=False)
+        expect_raises(lambda: imp(h, psd, touch=True), "a: 크롭 4 PSD 모드 + 그룹 없는 PSD(auto) → 오류",
+                      contains="크롭 영역 그룹을 찾을 수 없습니다(또는 shape 0) — 기존 크롭 4개를 지우지 않으려고 멈춥니다")
+        _layout_node_psd(psd, base, pix3)
+        shapes[:] = []
+        expect_raises(lambda: imp(h, psd, touch=True), "a: 그룹은 있는데 shape 0(auto)도 같은 오류 + 안내",
+                      contains="PSD 의 02.크롭영역 그룹을 확인하거나, Studio 로만 쓰려면 먼저 레이아웃 편집 시작")
+        m = st.load_manifest(root)
+        check(mp.read_bytes() == m_bytes and len(m["crops"]) == 4 and len(m["jobs"]) == 4,
+              f"a: 멈춘 Import 는 매니페스트(crops·jobs·rev {m['rev']})를 바이트 그대로 둠")
+        h, root, psd = project("s1x_d6b", pixels=())  # shapes [] = 빈 '02.크롭영역'
+        rep, _n = imp(h, psd)
+        check(st.load_manifest(root)["crops"] == [] and "크롭 없음(크롭 영역 그룹 없음) — Studio 에서 '레이아웃 편집 시작'" in rep,
+              f"b: 빈 프로젝트 + 빈 그룹(auto) = 빈 시작(크롭 0) + M2-N17 과 같은 안내 {rep.splitlines()[:3]}")
+        expect_raises(lambda: imp(h, psd, crop_group="02.크롭영역"), "b: 이름을 적은 그룹이 비면 빈 프로젝트라도 오류 + 같은 안내",
+                      contains="Studio 로만 쓰려면 먼저 레이아웃 편집 시작")
+        shapes[:] = SHAPES0
+        h, root, psd = project("s1x_d6d")
+        imp(h, psd)
+        ids = {c["name"]: c["id"] for c in st.load_manifest(root)["crops"]}
+        migrate(root)
+        R4d = [128, 320, 256, 448]
+        s_1, _r = edit(root, op="update", id=ids["004_아래"], rect=R4d)
+        s_2, _r = edit(root, op="update", id=ids["001_왼쪽"], note="되돌림 확인")
+        imp(h, psd)
+        lp = Path(root) / st.LAYOUT_NAME
+        lp.unlink()
+        _layout_node_psd(psd, base, pix3, crop_group=False)
+        rep, _n = imp(h, psd, touch=True)
+        m = st.load_manifest(root)
+        check(s_1 == s_2 == 200 and m["crops"] == [] and "layout" not in m["source"]
+              and f"{st.LAYOUT_HISTORY_DIR}/r1.json 을 {st.LAYOUT_NAME} 으로 복사하면 되돌림" in rep,
+              f"d: layout.json 을 치운 레이아웃 모드 매니페스트 + 그룹 없는 PSD = 크롭 0 + 되돌림 안내(이력 최대 r1) {rep.splitlines()[1:4]}")
+        shutil.copyfile(Path(root) / st.LAYOUT_HISTORY_DIR / "r1.json", lp)
+        rep, _n = imp(h, psd)
+        mc = mcrops(root)
+        check(len(mc) == 4 and mc[ids["004_아래"]]["rect"] == R4d and mc[ids["003_오른쪽"]]["source_kind"] == "group_composite",
+              f"d: 안내대로 r1 을 layout.json 으로 복사 → 다시 Import = 크롭 4 되돌아옴 {rep.splitlines()[1:3]}")
+
+        section("S1-N R-grp 레이아웃 모드: 크롭 영역 그룹을 못 읽어도(레이어명 라벨 중복·이름 적은 그룹 없음) Import 성공 · 경고 한 줄 · "
+                "스냅숏 안 씀")
+        R3m = [352, 192, 480, 320]
+        h, root, psd = project("s1x_grpa")
+        imp(h, psd)
+        migrate(root)
+        shapes[1] = ("002_가운데 | A: x; A: y", R2)
+        lay_write(root, lambda d: crop_of(d, "003_오른쪽").update(rect=R3m))
+        rep, n_open = imp(h, psd)
+        mc = st.load_manifest(root)["crops"]
+        check(n_open == 1 and "갈라짐 확인 못 함(크롭 영역 그룹): 레이어 이름에 같은 타깃 라벨이 두 번 있습니다(A)" in rep
+              and "PSD 사각형이 이관 뒤 바뀜" not in rep
+              and [(c["name"], c["rect"]) for c in mc] == [(c["name"], c["rect"]) for c in st.load_layout(root)["crops"]]
+              and mc[2]["rect"] == R3m and mc[2]["source_kind"] == "group_composite" and not (Path(root) / st.PSD_SNAPSHOT).exists(),
+              f"a: 라벨 중복 shape + 사전 편집 자식 크롭 이동 → 성공·크롭 = 레이아웃·스냅숏 없음 {rep.splitlines()[1:]}")
+        shapes[:] = SHAPES0
+        h, root, psd = project("s1x_grpb")
+        imp(h, psd, crop_group="02.크롭영역")
+        migrate(root)
+        _layout_node_psd(psd, base, pix3, crop_group=False)
+        lay_write(root, lambda d: crop_of(d, "003_오른쪽").update(rect=R3m))
+        rep, n_open = imp(h, psd, touch=True, crop_group="02.크롭영역")
+        mc = st.load_manifest(root)["crops"]
+        check(n_open == 1 and "갈라짐 확인 못 함(크롭 영역 그룹): 크롭 영역 그룹을 찾을 수 없습니다: 02.크롭영역" in rep
+              and [(c["name"], c["rect"]) for c in mc] == [(c["name"], c["rect"]) for c in st.load_layout(root)["crops"]]
+              and mc[2]["source_kind"] == "group_composite" and not (Path(root) / st.PSD_SNAPSHOT).exists(),
+              f"b: crop_group='02.크롭영역' 인데 그 그룹을 지운 PSD → 성공 + 같은 경고 {rep.splitlines()[1:]}")
+
+        section("S1-N R-race PSD 모드 Import 중 '편집 시작'(낡은 기준점): 보고서 주의 · 옛 스냅숏 지움 → 다음 레이아웃 Import 가 PSD 를 "
+                "열어 갈라짐(새 shape 004·002 레이어명) · GET /layout psd_diff 같음")
+        OLD3 = [("001_왼쪽", R1), ("002_가운데 | A: 단추", R2), ("003_오른쪽", R3)]
+        shapes[:] = OLD3
+        h, root, psd = project("s1x_race")
+        imp(h, psd)  # 지문 F_old, 크롭 3
+        shapes[:] = SHAPES0  # PS 에서 004 추가·002 문구 고침 → F_new
+        t = os.stat(psd).st_mtime_ns + 1_000_000_000
+        os.utime(psd, ns=(t, t))
+        snap_p = Path(root) / st.PSD_SNAPSHOT
+        st.write_json_atomic(str(snap_p), {  # 옛 레이아웃 모드 때 남은 스냅숏(지금 설정과 키가 같아 남아 있으면 믿게 됨)
+            "psd": str(psd).replace("\\", "/"), "fingerprint": st.file_fingerprint(str(psd)), "crop_group": "auto",
+            "crop_pixels_group": "auto", "at": "", "pixel_nodes": ["003_오른쪽"],
+            "crops": [{"name": st.parse_crop_layer_name(n)["name"], "layer_name": n, "rect": r, "rect_source": "vector"} for n, r in OLD3]})
+        orig_base = dp.dpsd.read_base
+
+        def racing_base(*a, **kw):  # PSD 를 읽는 동안 보드 '레이아웃 편집 시작' = 이 Import 전 매니페스트(F_old, 크롭 3)를 이관
+            dp.dpsd.read_base = orig_base
+            migrate(root)
+            return orig_base(*a, **kw)
+
+        dp.dpsd.read_base = racing_base
+        try:
+            rep, _n = imp(h, psd)
+        finally:
+            dp.dpsd.read_base = orig_base
+        lay, m = st.load_layout(root), st.load_manifest(root)
+        check(lay is not None and len(lay["crops"]) == 3 and lay["psd"]["fingerprint"] != m["source"]["fingerprint"]
+              and len(m["crops"]) == 4 and "layout" not in m["source"] and not snap_p.exists()
+              and "주의: 이 Import 중 layout.json 이 생김 — 이관 기준점이 이 Import 전 매니페스트일 수 있음(다음 큐에서 PSD 를 열어 갈라짐 확인)" in rep,
+              f"PSD 모드 Import(크롭 4, F_new) 중 이관(크롭 3, F_old) → 보고서 주의 · 옛 스냅숏 지움 {rep.splitlines()[-2:]}")
+        rep, n_open = imp(h, psd)
+        drift = next((ln for ln in rep.splitlines() if "PSD 사각형이 이관 뒤 바뀜" in ln), "")
+        check(n_open == 1 and snap_p.is_file() and "새 shape 004_아래" in drift
+              and "002_가운데 레이어명 '002_가운데 | A: 단추'→'002_가운데 | A: 단추; B: 리본;'" in drift and "사라진" not in drift
+              and [c["name"] for c in st.load_manifest(root)["crops"]] == ["001_왼쪽", "002_가운데", "003_오른쪽"],
+              f"다음 레이아웃 Import: 기준점 지문 ≠ PSD · 믿을 스냅숏 없음 → 바뀐 크롭 0 이어도 PSD 한 번 엶 · 스냅숏 씀 · 갈라짐 {drift!r}")
+        _s, L = route(root, "layout")
+        check([(x["name"], x["fields"]) for x in L["psd_diff"]["changed"]] == [("002_가운데", ["layer_name"])]
+              and [x["name"] for x in L["psd_diff"]["added"]] == ["004_아래"] and L["psd_diff"]["removed"] == [],
+              f"같은 상태에서 GET /layout psd_diff 도 같음 {L['psd_diff']}")
+        rep, n_open = imp(h, psd)
+        check(n_open == 0 and "새 shape 004_아래" in rep and "이 Import 중 layout.json" not in rep,
+              "스냅숏을 쓴 뒤로는 믿음 → 다시 열지 않음(갈라짐 경고는 남음)")
+
+        section("S1-N R-pname 같은 사전 편집 그룹(psd_name)을 두 크롭이 씀 → 두 크롭 모두 경고(스냅숏으로 다시 판정 · 지우면 사라짐)")
+        h, root, psd = project("s1x_pname")
+        imp(h, psd)
+        ids = {c["name"]: c["id"] for c in st.load_manifest(root)["crops"]}
+        migrate(root)
+        s_r, _r = edit(root, op="update", id=ids["003_오른쪽"], name="003_장식")
+        s_a, r_a = edit(root, op="add", name="003_오른쪽", rect=[352, 288, 480, 416])
+        rep, n_open = imp(h, psd)
+        mc = {c["name"]: c for c in st.load_manifest(root)["crops"]}
+        w_pn = "레이아웃: 사전 편집 그룹 003_오른쪽 을 크롭 003_장식·003_오른쪽 가 함께 씀"
+        check(s_r == s_a == 200 and n_open == 1 and w_pn in mc["003_장식"]["warnings"] and w_pn in mc["003_오른쪽"]["warnings"]
+              and mc["003_오른쪽"]["source_kind"] == "group_composite"
+              and not any(w_pn in c["warnings"] for n, c in mc.items() if n not in ("003_장식", "003_오른쪽")),
+              f"이름 바꾼 003(psd_name 003_오른쪽) + 새 크롭 '003_오른쪽' → 두 크롭에 경고 {mc['003_장식']['warnings']}")
+        edit(root, op="update", id=ids["003_오른쪽"], targets=[{"tid": "A", "text": "ribbon", "box": None}])
+        rep, n_open = imp(h, psd)
+        mc = {c["name"]: c for c in st.load_manifest(root)["crops"]}
+        check(n_open == 0 and "바뀜 1(소스 다시 만듦 0, PSD 안 엶)" in rep and w_pn in mc["003_장식"]["warnings"]
+              and w_pn in mc["003_오른쪽"]["warnings"],
+              f"대상 문구만 바꿈(PSD 안 엶) → 스냅숏 pixel_nodes 로 다시 판정해 경고 유지 {rep.splitlines()[1:3]}")
+        edit(root, op="delete", id=r_a["crop"]["id"])
+        rep, n_open = imp(h, psd)
+        check(n_open == 0 and all(w_pn not in c["warnings"] for c in st.load_manifest(root)["crops"]),
+              "새 크롭을 지우면 경고도 사라짐(크롭 정의 경고 — 매번 다시 계산)")
+
+        section("S1-N R-alias 이름을 바꾼 크롭의 스펙 _layer_targets '<처음 이름> | …' → 채택 유지(merge_layer_targets 에 ID·psd_name)")
+        shapes[:] = [("001_가", R1)] + SHAPES0[1:]
+        h, root, psd = project("s1x_alias")
+        imp(h, psd)
+        c1 = st.crop_id_for("001_가")
+        spec(root, c1, {"_layer_targets": "001_가 | A: gold badge"})
+        imp(h, psd)
+        prep(h)
+        keys0 = {json.loads(j)["cell_key"] for j in jobs_by_crop(root)[c1]}
+        migrate(root)
+        lay_write(root, lambda d: crop_of(d, "001_가").update(name="001_가방"))
+        rep, _n = imp(h, psd)
+        t1 = mcrops(root)[c1]["targets"]
+        prep(h)
+        check([(t["tid"], t["label"], t.get("origin")) for t in t1] == [("A", "gold badge", "adopt")] and "레이어명 타깃만" not in rep
+              and mcrops(root)[c1]["name"] == "001_가방" and keys0
+              and {json.loads(j)["cell_key"] for j in jobs_by_crop(root).get(c1, [])} == keys0,
+              f"001_가 → 001_가방(ID 유지): 타깃 A = 채택 'gold badge' 유지, Prepare cell_key 불변 {t1}")
+        shapes[:] = SHAPES0
+
+        section("R1′ 참조 데이터: 03 PSD(22 rect) Import → 이관 → 다시 Import · 소스 파일을 지우고 다시(사전 편집 합성) = 22/22")
+        if not HAVE_REF:
+            skip("R1′: 참조 폴더 없음")
+        else:
+            dp.dpsd.read_crop_rects = orig_rects
+            h, _s = dp.BMKDesignPatchProject().open("s1r1", str(NS))
+            root = h["root"]
+            t0 = time.time()
+            IMP.run(h, str(PSD03), "auto", "auto", "auto", "auto", "", "")
+            t_imp = time.time() - t0
+            m0 = st.load_manifest(root)
+            sha0 = {c["id"]: (c["rect"], c["source_kind"], st.pixel_sha(np.asarray(Image.open(st.resolve_path(root, c["source"])))))
+                    for c in m0["crops"]}
+            migrate(root)
+            n0 = len(opens)
+            rep = IMP.run(h, str(PSD03), "auto", "auto", "auto", "auto", "", "")[2]
+            m1 = st.load_manifest(root)
+            check(len(m1["crops"]) == 22 and [c["id"] for c in m1["crops"]] == [c["id"] for c in m0["crops"]]
+                  and all((c["rect"], c["source"]) == (o["rect"], o["source"]) for c, o in zip(m1["crops"], m0["crops"]))
+                  and "바뀜 0(소스 다시 만듦 0, PSD 안 엶)" in rep and len(opens) == n0,
+                  f"R1′ 이관 뒤 Import: 22 크롭 id·rect·source 그대로, PSD 열기 0 {rep.splitlines()[1]}")
+            for c in m1["crops"]:
+                Path(st.resolve_path(root, c["source"])).unlink(missing_ok=True)
+            t0 = time.time()
+            rep = IMP.run(h, str(PSD03), "auto", "auto", "auto", "auto", "", "")[2]
+            m2 = st.load_manifest(root)
+            sha2 = {c["id"]: (c["rect"], c["source_kind"], st.pixel_sha(np.asarray(Image.open(st.resolve_path(root, c["source"])))))
+                    for c in m2["crops"]}
+            same = sum(sha2.get(k) == v for k, v in sha0.items())
+            check(same == 22 and "소스 다시 만듦 22, PSD 엶" in rep and any(v[1] == "group_composite" for v in sha2.values()),
+                  f"R1′ 소스 파일 없음 → PSD 한 번 열어 22 개 다시(psd_name 으로 사전 편집 합성): rect·kind·source sha {same}/22")
+            note(f"R1′ 03 PSD Import {t_imp:.1f}s, 레이아웃 모드 소스 22 다시 {time.time() - t0:.1f}s")
+    finally:
+        dp.dpsd.read_crop_rects, dp.dpsd.open_psd = orig_rects, orig_open
+        mock_file.unlink(missing_ok=True)
+        if env_mock is not None:
+            os.environ[rn.MOCK_ENV] = env_mock
+
+
+# ═════════════════════════════════════════════════════════════════
+def want(name: str) -> bool:
+    return not ONLY or name in ONLY
+
+
 if __name__ == "__main__":
     T0 = time.time()
-    store_unit()
-    m2_store_unit()  # T0 의 import 의존성 검사(torch·comfy·aiohttp 없음)는 다른 묶음이 그것들을 불러오기 전에
-    prompt_unit()
-    analysis_unit()
-    psd_unit()
-    m2_runner_unit(with_comfy=not QUICK)  # R0(torch·comfy 없음) 먼저, C*(comfy 를 CPU 로 import)는 끝에
-    m2_board_unit()
-    vlm_unit()  # M3: torch·comfy 를 import 하지 않음(V18 은 가짜 libs)
-    if not QUICK:
+    if ONLY:
+        print(f"--only: {', '.join(sorted(ONLY))}")
+    if want("store_unit"):
+        store_unit()
+    if want("m2_store_unit"):
+        m2_store_unit()  # T0 의 import 의존성 검사(torch·comfy·aiohttp 없음)는 다른 묶음이 그것들을 불러오기 전에
+    if want("layout_store_unit"):
+        layout_store_unit()
+    if want("prompt_unit"):
+        prompt_unit()
+    if want("analysis_unit"):
+        analysis_unit()
+    if want("psd_unit"):
+        psd_unit()
+    if want("m2_runner_unit"):
+        m2_runner_unit(with_comfy=not QUICK)  # R0(torch·comfy 없음) 먼저, C*(comfy 를 CPU 로 import)는 끝에
+    if want("m2_board_unit"):
+        m2_board_unit()
+    if want("layout_board_unit"):
+        layout_board_unit()
+    if want("vlm_unit"):
+        vlm_unit()  # M3: torch·comfy 를 import 하지 않음(V18 은 가짜 libs)
+    if not QUICK and want("vlm_comfy"):
         vlm_comfy()  # comfy_api_nodes 를 CPU 로 import
-    m2_js_unit()
+    if want("m2_js_unit"):
+        m2_js_unit()
+    if want("layout_js_unit"):
+        layout_js_unit()
     print(f"\n단위 테스트 {time.time() - T0:.1f}s (PASS {PASSES} FAIL {len(FAILS)})")
     if QUICK:
         print("\n--quick: 회귀·노드 생략")
     else:
         if not HAVE_REF:
             skip(f"참조 폴더 없음({REF}) — 회귀·M1 노드 통합·M2 체인 생략")
-        else:
+        elif want("regression"):
             t_r = time.time()
             reg = psd_regression()
             print(f"\npsd 회귀 {time.time() - t_r:.1f}s")
@@ -12496,13 +16045,19 @@ if __name__ == "__main__":
             t_r = time.time()
             export_path = node_integration(reg["psd05"], reg["crops03"])
             print(f"\n노드 통합 {time.time() - t_r:.1f}s → {export_path}")
-        t_r = time.time()
-        m2_node_unit()
-        print(f"\nM2 노드 {time.time() - t_r:.1f}s")
-        t_r = time.time()
-        vlm_node_unit()
-        print(f"\nM3 노드 {time.time() - t_r:.1f}s")
-        if HAVE_REF:
+        if want("m2_node_unit"):
+            t_r = time.time()
+            m2_node_unit()
+            print(f"\nM2 노드 {time.time() - t_r:.1f}s")
+        if want("layout_node_unit"):
+            t_r = time.time()
+            layout_node_unit()
+            print(f"\nS1 레이아웃 노드 {time.time() - t_r:.1f}s")
+        if want("vlm_node_unit"):
+            t_r = time.time()
+            vlm_node_unit()
+            print(f"\nM3 노드 {time.time() - t_r:.1f}s")
+        if HAVE_REF and want("m2_chain"):
             t_r = time.time()
             m2_chain()
             print(f"\nM2 체인 {time.time() - t_r:.1f}s")

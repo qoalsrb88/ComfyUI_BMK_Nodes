@@ -32,6 +32,10 @@ Design Patch(구 가제 Multi Layer Crop Edit)는 Photoshop 에서 손으로 하
                                       이름 중복(03 PSD 의 017)은 범위가 rect 와 가장 잘 맞는(IoU 최대) 노드를 쓴다.
                                       이름에 '가이드'/'guide' 가 들어간 하위 그룹은 크롭 소스에서 제외(경고).
                                       반환은 crops 와 같은 순서의 list(같은 이름의 크롭이 여럿이어도 각자 자기 rect).
+  crop_pixel_nodes(psd, ...)          크롭 이미지 그룹의 바로 아래 자식 이름(사전 편집이 있는 크롭).
+  base_crop_sources(base, crops, wr)  PSD 를 열지 않고 crop_sources 의 base_crop 항목을 만든다(같은 바이트 — Import 레이아웃
+                                      모드가 사전 편집 자식이 없는 크롭에 쓴다).
+- find_crop_group(psd, group)         크롭 영역 그룹 노드 또는 None(Import 의 빈 시작 판정).
 - harvest_results(psd, "03.수정", crops)  그룹 아래 SO 레이어마다 임베드 원본 bytes·quad·마스크·crop 매칭(crop_index).
                                       중첩 PSB/PSD SO 는 저장된 병합 이미지(topil)를 PNG 로 바꿔 돌려준다.
                                       원근 quad·SO 워프(customEnvelopeWarp)는 경고만 한다(쓰기 쪽은 affine 만 지원).
@@ -308,15 +312,20 @@ def _origination_rect(layer):
     return None
 
 
-def read_crop_rects(psd, group="auto") -> list[dict]:
-    """크롭 영역 그룹의 shape 레이어 → [{"name","rect","rect_source","layer_index","visible","warnings"}].
+def find_crop_group(psd, group="auto"):
+    """크롭 영역 그룹 노드. auto = 이름이 '02.크롭영역' 또는 '크롭영역' 인 그룹(중첩 포함, descendants 순서 첫 일치). 없으면 None."""
+    return _find_group(psd, CROP_GROUP_NAMES if _is_auto(group) else (str(group),))
 
-    group auto = 이름이 '02.크롭영역' 또는 '크롭영역' 인 그룹(중첩 포함, descendants 순서 첫 일치).
+
+def read_crop_rects(psd, group="auto") -> list[dict]:
+    """크롭 영역 그룹(find_crop_group)의 shape 레이어 → [{"name","rect","rect_source","layer_index","visible","warnings"}].
+
     layer_index = 그룹 descendants 순서 index(0 = 맨 아래, 하위 그룹 안 shape 포함). shape 가 아닌 레이어는 건너뛴다.
+    그룹이 없으면 ValueError.
     """
-    names = CROP_GROUP_NAMES if _is_auto(group) else (str(group),)
-    grp = _find_group(psd, names)
+    grp = find_crop_group(psd, group)
     if grp is None:
+        names = CROP_GROUP_NAMES if _is_auto(group) else (str(group),)
         raise ValueError(f"크롭 영역 그룹을 찾을 수 없습니다: {' / '.join(names)}")
     W, H = psd.size
     out = []
@@ -545,6 +554,74 @@ def _base_window(base: np.ndarray, base_alpha: np.ndarray, rect) -> np.ndarray:
     return out
 
 
+def _work_alpha(work_rect, W: int, H: int) -> np.ndarray:
+    """RGB 베이스의 알파: work_rect(캔버스로 자름) 안 = 255."""
+    wr = _check_rect(work_rect, "work_rect")
+    alpha = np.zeros((H, W), np.uint8)
+    alpha[max(0, wr[1]):min(H, wr[3]), max(0, wr[0]):min(W, wr[2])] = 255
+    return alpha
+
+
+def _pixel_children(psd, crop_pixels_group) -> list:
+    """크롭 이미지 그룹의 바로 아래 자식(crop_sources 가 크롭 이름으로 찾는 노드). none 이거나 auto 인데 그룹이 없으면 [],
+    이름을 직접 적었는데 없으면 ValueError."""
+    if _is_none(crop_pixels_group):
+        return []
+    names = CROP_PIXELS_GROUP_NAMES if _is_auto(crop_pixels_group) else (str(crop_pixels_group),)
+    grp = _find_group(psd, names)
+    if grp is None and not _is_auto(crop_pixels_group):
+        raise ValueError(f"크롭 이미지 그룹을 찾을 수 없습니다: {crop_pixels_group!r}")
+    return list(grp) if grp is not None else []
+
+
+def crop_pixel_nodes(psd, crop_pixels_group="auto") -> list[str]:
+    """크롭 이미지 그룹의 바로 아래 자식 이름(그룹 순서). 이 이름의 크롭만 crop_sources 가 사전 편집을 합성한다
+    (Import 레이아웃 모드의 스냅숏 pixel_nodes — 나머지 크롭은 base_crop_sources 로 PSD 를 열지 않고 만든다)."""
+    return [n.name for n in _pixel_children(psd, crop_pixels_group)]
+
+
+def _crop_source(c: dict, base: np.ndarray, base_alpha: np.ndarray, children, W: int, H: int) -> dict:
+    """crop_sources 의 크롭 하나(children = 크롭 이미지 그룹 자식, 비면 베이스 그대로)."""
+    name = c["name"]
+    rect = _check_rect(c["rect"], f"crop {name} rect")
+    warns: list[str] = []
+    under = _base_window(base, base_alpha, rect)
+    cands = [n for n in children if n.name == name]
+    kind, node_desc = "base_crop", None
+    result = under
+    if cands:
+        if len(cands) > 1:
+            scored = sorted(((_rect_iou(_node_extent(n), rect), i, n) for i, n in enumerate(cands)),
+                            key=lambda t: (-t[0], t[1]))
+            node = scored[0][2]
+            warns.append(f"같은 이름 노드 {len(cands)}개 → rect IoU 최대({scored[0][0]:.2f}) {node.kind} 사용")
+        else:
+            node = cands[0]
+        content = None
+        if node.is_group():
+            content = _composite_children(node, rect, warns, node.name)
+            content = _apply_node_alpha(node, content, rect)
+        elif node.kind in _RENDER_KINDS:
+            if node.blend_mode != BlendMode.NORMAL:
+                warns.append(f"blend {node.blend_mode.name} → normal 로 합성: {node.name}")
+            content = _layer_window(node, rect)
+        else:
+            warns.append(f"{node.kind} 노드는 합성 불가 → 베이스 사용")
+        if content is not None:
+            result = np.array(Image.alpha_composite(Image.fromarray(under, "RGBA"),
+                                                    Image.fromarray(content, "RGBA")))
+            kind = "group_composite"
+            node_desc = f"{node.kind}:{node.name}"
+    oob = rect[0] < 0 or rect[1] < 0 or rect[2] > W or rect[3] > H
+    if oob:
+        warns.append("rect 가 캔버스 밖으로 나감 → 0 패딩(알파 0)")
+    alpha_frac = float((result[..., 3] < 255).mean())
+    for wmsg in warns:
+        logger.info("%s crop_sources %s: %s", _TAG, name, wmsg)
+    return {"name": name, "rgba": result, "kind": kind, "warnings": warns, "alpha_frac": alpha_frac,
+            "rect": rect, "node": node_desc}
+
+
 def crop_sources(psd, crops, base_rgb, crop_pixels_group="auto", *, work_rect=None) -> list[dict]:
     """크롭별 소스 RGBA → crops 와 같은 순서의 [{"name","rgba","kind","warnings","alpha_frac","rect","node"}].
 
@@ -566,59 +643,18 @@ def crop_sources(psd, crops, base_rgb, crop_pixels_group="auto", *, work_rect=No
         if work_rect is None:
             bl = _auto_base_layer(psd)
             work_rect = list(bl.bbox) if bl is not None else [0, 0, W, H]
-        wr = _check_rect(work_rect, "work_rect")
-        base_alpha = np.zeros((H, W), np.uint8)
-        base_alpha[max(0, wr[1]):min(H, wr[3]), max(0, wr[0]):min(W, wr[2])] = 255
+        base_alpha = _work_alpha(work_rect, W, H)
+    children = _pixel_children(psd, crop_pixels_group)
+    return [_crop_source(c, base, base_alpha, children, W, H) for c in crops]
 
-    grp = None
-    if not _is_none(crop_pixels_group):
-        names = CROP_PIXELS_GROUP_NAMES if _is_auto(crop_pixels_group) else (str(crop_pixels_group),)
-        grp = _find_group(psd, names)
-        if grp is None and not _is_auto(crop_pixels_group):
-            raise ValueError(f"크롭 이미지 그룹을 찾을 수 없습니다: {crop_pixels_group!r}")
-    children = list(grp) if grp is not None else []
 
-    out: list[dict] = []
-    for c in crops:
-        name = c["name"]
-        rect = _check_rect(c["rect"], f"crop {name} rect")
-        warns: list[str] = []
-        under = _base_window(base, base_alpha, rect)
-        cands = [n for n in children if n.name == name]
-        kind, node_desc = "base_crop", None
-        result = under
-        if cands:
-            if len(cands) > 1:
-                scored = sorted(((_rect_iou(_node_extent(n), rect), i, n) for i, n in enumerate(cands)),
-                                key=lambda t: (-t[0], t[1]))
-                node = scored[0][2]
-                warns.append(f"같은 이름 노드 {len(cands)}개 → rect IoU 최대({scored[0][0]:.2f}) {node.kind} 사용")
-            else:
-                node = cands[0]
-            content = None
-            if node.is_group():
-                content = _composite_children(node, rect, warns, node.name)
-                content = _apply_node_alpha(node, content, rect)
-            elif node.kind in _RENDER_KINDS:
-                if node.blend_mode != BlendMode.NORMAL:
-                    warns.append(f"blend {node.blend_mode.name} → normal 로 합성: {node.name}")
-                content = _layer_window(node, rect)
-            else:
-                warns.append(f"{node.kind} 노드는 합성 불가 → 베이스 사용")
-            if content is not None:
-                result = np.array(Image.alpha_composite(Image.fromarray(under, "RGBA"),
-                                                        Image.fromarray(content, "RGBA")))
-                kind = "group_composite"
-                node_desc = f"{node.kind}:{node.name}"
-        oob = rect[0] < 0 or rect[1] < 0 or rect[2] > W or rect[3] > H
-        if oob:
-            warns.append("rect 가 캔버스 밖으로 나감 → 0 패딩(알파 0)")
-        alpha_frac = float((result[..., 3] < 255).mean())
-        for wmsg in warns:
-            logger.info("%s crop_sources %s: %s", _TAG, name, wmsg)
-        out.append({"name": name, "rgba": result, "kind": kind, "warnings": warns, "alpha_frac": alpha_frac,
-                    "rect": rect, "node": node_desc})
-    return out
+def base_crop_sources(base_rgb, crops, work_rect) -> list[dict]:
+    """PSD 를 열지 않는 crop_sources: 크롭 이미지 그룹에 같은 이름 자식이 없는 크롭의 base_crop 항목(rgba·warnings·alpha_frac
+    까지 crop_sources 와 같음). base_rgb = read_base 의 RGB(Import 가 저장한 베이스 PNG), work_rect = 그때의 work_rect."""
+    base = np.asarray(base_rgb)
+    H, W = base.shape[:2]
+    alpha = _work_alpha(work_rect, W, H)
+    return [_crop_source(c, base, alpha, (), W, H) for c in crops]
 
 
 # ═════════════════════════════════════════════════════════════════
