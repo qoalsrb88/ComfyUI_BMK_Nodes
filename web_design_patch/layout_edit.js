@@ -3,6 +3,7 @@
 // 끄는 동안은 클라이언트만 바뀌고 놓을 때 POST 한 번. 쓰기는 큐로 하나씩(rev 차례). 실행 취소 = 세션 안 스택, 한 단계 = 역연산 POST 하나
 // (409 이거나 다른 창의 쓰기를 받으면 비움).
 // 기하·이름 규칙은 layout_geom.js(DPLayoutGeom). 모든 문자열은 textContent 로만 넣는다. 서버 URL 은 opts.apiUrl(상대 경로)로만 연다.
+// 이름 바꾸기 미리보기(GET layout/refs)는 크롭 id 를 함께 보낸다 — 이름 바꾸기가 레퍼런스를 먼저 고정하므로(S2 §2.6) 바꾼 뒤에도 연결 유지.
 "use strict";
 
 window.DPLayoutEdit = (() => {
@@ -239,7 +240,8 @@ window.DPLayoutEdit = (() => {
       return r;
     });
 
-    s.refs = (name) => call("layout/refs?" + new URLSearchParams({ root, name }).toString());
+    // id = 이름을 바꾸는 크롭 — 고정된 크롭(또는 이름 바꾸기가 먼저 고정할 크롭)은 이름과 상관없이 지금 레퍼런스(연결 유지, S2 §2.6)
+    s.refs = (name, id) => call("layout/refs?" + new URLSearchParams({ root, name, id }).toString());
 
     s.idle = async () => {
       // 쓰기 큐가 빌 때까지(기다리는 사이 더 들어온 쓰기 포함) — 반영(큐) 전에 저장 중인 편집이 디스크에 닿게
@@ -259,6 +261,7 @@ window.DPLayoutEdit = (() => {
     let state = null; // 보드 state(캔버스·매니페스트 크롭·rev·layout_rev)
     let seen = null; // /layout 을 마지막으로 맞춘 매니페스트 rev(null = 처음·읽기 실패 뒤 — 다음 state 에서 다시 받음)
     let seenLr = null; // 직전 state 의 layout_rev(reloadKind — 이 창의 쓰기 직후에 오는 낡은 state 를 거름)
+    let seenRf = null; // 직전 state 의 [refs_rev, refs_files_v] — S2 연결·바깥 파일 변경은 두 판을 그대로 두지만 크롭 행의 레퍼런스 줄을 바꿈
     let sel = null; // 선택 크롭 id
     let drag = null; // {kind: move|resize|new|box, id, handle, tid, start, x, y, rect0, rect, moved, next}
     let draft = null; // 새 크롭 초안 {rect} — 이름을 넣고 만들기(Enter) = add 한 번
@@ -270,7 +273,7 @@ window.DPLayoutEdit = (() => {
     let live = null; // 끄는 동안 고치는 패널 칸 {gpt, checks}
     let composing = false; // 패널 입력칸에서 한글 조합 중
     let pendingPanel = false; // 입력 중이라 미룬 패널 다시 그리기(폴링·저장 응답)
-    let refsAt = { name: null, refs: undefined, timer: null }; // 바꾸는 중인 이름의 레퍼런스(GET layout/refs)
+    let refsAt = { name: null, id: null, refs: undefined, timer: null }; // 바꾸는 중인 이름의 레퍼런스(GET layout/refs)
     let nameShow = null; // 지금 패널 이름 칸의 다시 표시(레퍼런스 응답이 오면 부름)
 
     function el(tag, cls, text) {
@@ -1186,10 +1189,10 @@ window.DPLayoutEdit = (() => {
         nnn.classList.toggle("bad", !/^[0-9]{3}$/.test(nnn.value));
         part.classList.toggle("bad", !part.value || G.checkName(`000_${part.value}`).err === "char"); // 금지 문자는 입력 즉시
         const renamed = !!c && !issue.msg && name !== c.name;
-        const refs = renamed && S.L.refs_dir ? refsAfter(name) : null;
+        const refs = renamed && S.L.refs_dir ? refsAfter(name, c.id) : null;
         after.hidden = !refs;
         after.classList.toggle("warn", !!refs && !refs.n);
-        if (refs) av.textContent = refs.n ? `${refs.n}개 · 첫 ${refs.first}` : "없음";
+        if (refs) av.textContent = (refs.n ? `${refs.n}개 · 첫 ${refs.first}` : "없음") + (refs.fixed ? " · 연결 유지(ID)" : "");
         note.className = "lp-note " + (issue.msg ? "bad" : "warn");
         note.textContent = issue.msg || (renamed ? renameNote(c.refs, refs, c.history.by_file) : "");
       };
@@ -1230,14 +1233,14 @@ window.DPLayoutEdit = (() => {
       return after;
     }
 
-    function refsAfter(name) {
-      // 바꾸는 중인 이름의 레퍼런스: 입력이 멈추면 GET layout/refs 한 번(이름마다). 받기 전 = undefined, 못 받음 = null
-      if (refsAt.name === name) return refsAt.refs;
+    function refsAfter(name, id) {
+      // 바꾸는 중인 이름의 레퍼런스: 입력이 멈추면 GET layout/refs 한 번(크롭·이름마다). 받기 전 = undefined, 못 받음 = null
+      if (refsAt.name === name && refsAt.id === id) return refsAt.refs;
       clearTimeout(refsAt.timer);
-      const at = { name, refs: undefined, timer: null };
+      const at = { name, id, refs: undefined, timer: null };
       at.timer = setTimeout(async () => {
         try {
-          at.refs = await S.refs(name);
+          at.refs = await S.refs(name, id);
         } catch (e) {
           at.refs = null;
         }
@@ -1431,6 +1434,7 @@ window.DPLayoutEdit = (() => {
     function enter(st) {
       on = true;
       state = st;
+      seenRf = [st.refs_rev, st.refs_files_v];
       viewer.setEditor({ pointerdown, pointermove, pointerup, cancel, draw });
       syncSel(false);
       render();
@@ -1448,9 +1452,13 @@ window.DPLayoutEdit = (() => {
       // 레이아웃 쓰기는 매니페스트 rev 를 올리지 않는다 — 다시 받을지는 reloadKind(레이아웃 판은 지금 가진 판·지난 state 와 비교)
       state = st;
       const prevLr = seenLr;
+      const prevRf = seenRf;
       seenLr = st.layout_rev;
+      seenRf = [st.refs_rev, st.refs_files_v];
       if (!on || S.busy) return;
-      const kind = reloadKind(seen, S.L ? S.L.rev : null, st, prevLr);
+      // 레퍼런스 연결(refs_rev)·refs_dir 파일(refs_files_v)만 바뀜 = 매니페스트 rev 만 바뀐 것처럼 입력을 지키며 다시 받음(codex10)
+      const kind = reloadKind(seen, S.L ? S.L.rev : null, st, prevLr)
+        || (prevRf && (prevRf[0] !== seenRf[0] || prevRf[1] !== seenRf[1]) ? "manifest" : null);
       if (kind) reload(kind === "manifest");
     }
 

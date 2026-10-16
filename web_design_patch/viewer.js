@@ -3,6 +3,8 @@
 // 모든 문자열은 textContent 로만 넣는다. 서버 URL 은 opts.apiUrl(상대 경로) 로만 연다.
 // 편집기 훅(S1, layout_edit.js): setEditor(ed) — ed.pointerdown/move/up(ev) 이 왼쪽 버튼 입력을 먼저 받고 true 면 소비,
 // ed.draw(svg, z) 가 사각형·이름을 그린다(뷰어는 크롭 사각형·이름을 그리지 않음). 화면 이동 = Space 를 누른 채 끌기·가운데 버튼 끌기.
+// 시트 원천 훅(S2, ref_edit.js — 두 번째 인스턴스): setSheet(sh) — 바탕 = 시트 미리보기를 시트 원크기로 늘여 놓음(크롭·이음매·★ 합성 없음),
+// 확대가 미리보기 배율의 1.5배를 넘으면 멈춘 뒤 보이는 영역 + 25% 를 원해상도로 받아(sh.region) 겹친다.
 "use strict";
 
 window.DPViewer = (() => {
@@ -10,6 +12,10 @@ window.DPViewer = (() => {
   const ZMIN = 0.02;
   const ZMAX = 16;
   const CLICK_PX = 4;
+  const SHEET_PREVIEW = 2048; // refs.SHEET_PREVIEW — 시트 미리보기 긴 변
+  const HI_MAX = 2048; // 원해상도 창 긴 변 상한(/refs/sheet?kind=region max)
+  const HI_AREA = 8192 * 8192; // 원해상도 창 넓이 상한(refs.MAX_RECT_AREA)
+  const HI_MS = 250;
 
   function el(tag, cls, text) {
     const e = document.createElement(tag);
@@ -56,6 +62,10 @@ window.DPViewer = (() => {
     const imgBg = el("img", "bg");
     imgBg.alt = "";
     imgBg.draggable = false;
+    const imgHi = el("img", "hi"); // 시트 원해상도 창(setSheet)
+    imgHi.alt = "";
+    imgHi.draggable = false;
+    imgHi.hidden = true;
     // 선택 크롭 겹침: ov = 크롭 주변 영역(원해상도 ★ 합성), 그 안의 ovCrop = 크롭 rect(Before·후보)
     const ov = el("div", "ov");
     const ovComp = el("img", "ov-comp");
@@ -70,7 +80,7 @@ window.DPViewer = (() => {
     ovCrop.append(ovBefore, ovAfter, split);
     ov.append(ovComp, ovCrop);
     const marks = svg("svg", { class: "marks" });
-    stage.append(imgBg, ov, marks);
+    stage.append(imgBg, imgHi, ov, marks);
     const labels = el("div", "labels");
     const empty = el("div", "vempty", "불러오는 중…");
     port.append(stage, labels, empty);
@@ -97,6 +107,9 @@ window.DPViewer = (() => {
     let editor = null; // 레이아웃 편집기(setEditor)
     let edit = null; // 편집기가 잡은 pointerId
     let space = false; // Space 를 누르고 있음(편집 모드 화면 이동)
+    let sheet = null; // 시트 원천(setSheet) {size, kind, preview_url, region(rect, max), view}
+    let hi = null; // 지금 겹친 원해상도 창 {rect, res(시트 px 당 창 px)}
+    let hiTimer = null;
     const loadTok = new WeakMap();
 
     // ── 이미지: 다 받은 뒤 바꿔 끼워 깜빡이지 않게 ──
@@ -140,6 +153,10 @@ window.DPViewer = (() => {
       zoomLabel.textContent = `${Math.round(z * dpr() * 100)}%`;
       drawLabels();
       if (editor) drawMarks(); // 핸들·이름 글자 크기는 화면 px 기준
+      if (sheet) {
+        clearTimeout(hiTimer);
+        hiTimer = setTimeout(loadHi, HI_MS);
+      }
     }
 
     function view() {
@@ -353,6 +370,75 @@ window.DPViewer = (() => {
         s.severity === "bad" ? "err" : "warn");
     }
 
+    // ── 시트(S2) ──
+    function loadHi() {
+      // 확대가 미리보기 배율의 1.5배를 넘으면 보이는 영역 + 25%(변마다 1/8)를 원해상도 창으로(긴 변 ≤ 2048). 지금 창이 보이는 영역을 덮고
+      // 해상도도 충분하면 다시 받지 않는다. 낡은 응답은 loadInto 가 버린다(받은 창의 자리는 그 이미지가 들어올 때 옮김)
+      if (!sheet) return;
+      const [W, H] = sheet.size;
+      const px = z * dpr();
+      if (px <= 1.5 * Math.min(1, SHEET_PREVIEW / Math.max(W, H))) return;
+      const v = view();
+      const vis = [Math.max(0, -tx / z), Math.max(0, -ty / z), Math.min(W, (v.w - tx) / z), Math.min(H, (v.h - ty) / z)];
+      if (vis[2] <= vis[0] || vis[3] <= vis[1]) return;
+      const mx = (vis[2] - vis[0]) / 8;
+      const my = (vis[3] - vis[1]) / 8;
+      const rect = [Math.max(0, Math.floor(vis[0] - mx)), Math.max(0, Math.floor(vis[1] - my)),
+        Math.min(W, Math.ceil(vis[2] + mx)), Math.min(H, Math.ceil(vis[3] + my))];
+      const long = Math.max(rect[2] - rect[0], rect[3] - rect[1]);
+      if ((rect[2] - rect[0]) * (rect[3] - rect[1]) > HI_AREA) return;
+      const max = Math.min(HI_MAX, Math.ceil(long * px));
+      const res = Math.min(1, max / long);
+      if (hi && hi.rect[0] <= vis[0] && hi.rect[1] <= vis[1] && hi.rect[2] >= vis[2] && hi.rect[3] >= vis[3]
+          && hi.res >= 0.9 * Math.min(1, px, HI_MAX / long)) return;
+      const sh = sheet;
+      loadInto(imgHi, sh.region(rect, max), (ok) => {
+        // 같은 시트를 다시 열면(setSheet same) 객체는 새것 — 미리보기로 같은 시트인지 본다(낡은 창 응답은 loadInto 가 이미 버림)
+        if (!sheet || sheet.preview_url !== sh.preview_url) return;
+        hi = ok ? { rect, res } : null;
+        if (ok) Object.assign(imgHi.style, { left: `${rect[0]}px`, top: `${rect[1]}px`, width: `${rect[2] - rect[0]}px`, height: `${rect[3] - rect[1]}px` });
+      });
+    }
+
+    function setSheet(sh) {
+      // S2 레퍼런스 편집기: sh = {size, kind, preview_url, region(rect, max) → 상대 URL, view?: [x0, y0, x1, y1]} | null(닫기).
+      // 같은 미리보기면 보기 위치를 그대로 둔다. 크롭 사각형·이음매·★ 합성 단추는 숨긴다
+      const same = !!sheet && !!sh && sheet.preview_url === sh.preview_url;
+      sheet = sh;
+      canvas = sh ? { size: sh.size } : null;
+      crops = [];
+      seams = null;
+      for (const b of [bBg, bRects, bSeam]) b.hidden = true;
+      if (!same) { // 같은 시트면 확대·이동 뒤 걸어 둔 원해상도 창 받기(hiTimer)를 그대로 둔다 — 보기 위치가 같아 apply() 가 다시 걸지 않음
+        clearTimeout(hiTimer);
+        hi = null;
+        loadInto(imgHi, null);
+      }
+      empty.hidden = !!sh;
+      stage.hidden = !sh;
+      if (!sh) {
+        empty.textContent = "시트를 고르세요";
+        loadInto(imgBg, null);
+        return;
+      }
+      for (const e of [stage, imgBg]) Object.assign(e.style, { width: `${sh.size[0]}px`, height: `${sh.size[1]}px` });
+      if (!same) {
+        fitMode = null;
+        setMsg(sh.kind === "psd" ? "PSD 합성 중…(첫 열기만 — 캐시)" : "불러오는 중…", "busy");
+        loadInto(imgBg, sh.preview_url, (ok) => {
+          if (sheet && sheet.preview_url === sh.preview_url) setMsg(ok ? "" : "시트를 불러오지 못했습니다", ok ? "" : "err");
+        });
+      }
+      if (!fitMode && sh.view) {
+        fitBox(sh.view[0], sh.view[1], sh.view[2], sh.view[3], 0);
+        fitMode = "manual";
+      } else if (!fitMode) {
+        fitCanvas();
+      }
+      drawMarks();
+      drawOverlay();
+    }
+
     // ── 공개 ──
     function setState(st) {
       const was = canvas;
@@ -513,9 +599,11 @@ window.DPViewer = (() => {
       }
     });
 
-    // Space 를 누른 채 끌기 = 화면 이동(편집 모드에서 왼쪽 끌기는 편집). 입력칸에서 친 Space 는 보지 않는다.
+    // Space 를 누른 채 끌기 = 화면 이동(편집 모드에서 왼쪽 끌기는 편집). 입력칸에서 친 Space 는 보지 않는다 — 단 data-keys="board"
+    // (레퍼런스 패널의 슬라이더·select·체크박스 — 놓은 뒤 포커스가 남음)는 보드 키를 받는 칸이라 화면 이동도 된다(board.js typing 과 같은 판정)
     document.addEventListener("keydown", (e) => {
-      if (e.code !== "Space" || space || e.target.closest("input, textarea, select")) return;
+      if (e.code !== "Space" || space
+          || (e.target.closest("input, textarea, select, [contenteditable]") && !e.target.closest('[data-keys="board"]'))) return;
       space = true;
       port.classList.add("space");
       port.style.cursor = "";
@@ -541,7 +629,7 @@ window.DPViewer = (() => {
     bRects.classList.add("on");
     drawSeamButton();
     return { setState, setSelection, setFlags, flags, setBg, toggleRects, fitCanvas, fitCrop, zoomTo, nextSeam,
-      seams: () => seams, setEditor, setCursor, canvasPoint: toCanvas, scale: () => z, redraw: drawMarks };
+      seams: () => seams, setEditor, setCursor, canvasPoint: toCanvas, scale: () => z, redraw: drawMarks, setSheet };
   }
 
   return { create, svg };

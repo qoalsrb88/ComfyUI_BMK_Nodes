@@ -63,6 +63,16 @@ BMK Mask Stitch
   붙이고, image 가 RGB 면 원본 알파를 뗀다.
 - 배치: image 프레임마다 원본·mask 를 순환 사용.
 
+공개 함수 segment (Design Patch Studio S2 Ref Cut 노드가 씀)
+-------------------------------------------------------------
+segment(ckpt_name, image, box=None, points=(), text=None, refine_iterations=0, multimask=True) -> bool [H, W] (CPU 텐서)
+- image = 한 장 HxWx3 float 0..1(텐서 또는 numpy). box = [x0, y0, x1, y1], points = [(x, y, 1 양 | 0 음)] — 모두 image px.
+- 상자·점: 코어 SAM3Model.forward_segment(comfy/ldm/sam3/detector.py) 경로. 코어는 점이 정확히 1개일 때만 멀티마스크
+  (후보 3개 중 예측 IoU 최고)를 켜는데, multimask 면 늘 켠다(U0 실측 — 상자 + 점 2개에서 0.664 → 0.866,
+  STUDIO_S2_SPEC §6.5). refine_iterations 는 코어 SAM3 Detect 와 같은 뜻(mask_inputs 다듬기 refine − 1 번).
+- text 가 있으면 이 노드의 감지 경로(_run_sam3, 문턱 0.3, _refine_mask refine 번) 결과를 box 밖 0 으로 자른다 — 점은 쓰지 않는다.
+- 불러온 모델은 이 노드와 같은 한 벌(_load_sam3)이고 comfy.model_management.load_model_gpu 로 올린다(실행 스레드에서 부를 것).
+
 v1 (2026-10)
 ------------
 - 최초 구현. 테스트 워크플로우(Load Checkpoint + CLIPTextEncode → SAM3 Detect → AILab MaskEnhancer ×3 +
@@ -70,6 +80,10 @@ v1 (2026-10)
   blur → offset), 합집합은 max(테스트는 1−(1−a)(1−b)). 이진 영역은 같고 경계 1~2px 만 다르다.
 - 체크포인트 로더 내장(model/clip 입력 대신 ckpt_name). 사용 모델이 사실상 고정이라 노드 하나를 줄이고,
   감지가 필요 없는 실행에서는 모델을 불러오지 않게 했다.
+
+v2 (2026-10, Design Patch Studio S2)
+------------------------------------
+- 공개 함수 segment(상자·점·텍스트 → bool 마스크). Studio 레퍼런스 컷(BMK Design Patch Ref Cut)이 불러온 모델 한 벌을 같이 쓴다.
 """
 
 from __future__ import annotations
@@ -90,6 +104,7 @@ import comfy.sd
 import comfy.utils
 import folder_paths
 import nodes as core_nodes
+from comfy.ops import cast_to_input
 from comfy_extras import nodes_sam3
 
 logger = logging.getLogger(__name__)
@@ -104,6 +119,7 @@ _RESIZE_ALGOS = ["lanczos", "bicubic", "bilinear", "area", "nearest-exact"]
 _PREVIEW_TINT = {"+": (0.25, 0.85, 0.35), "-": (0.95, 0.30, 0.30)}
 _PREVIEW_ALPHA = 0.6
 _CACHE_CAPACITY = 32
+_TEXT_THRESHOLD = 0.3  # segment 의 텍스트 감지 문턱(레이어 행 threshold 기본값과 같음)
 
 # 감지 캐시: key → (bool 마스크 [B,H,W] CPU, 감지 개수). key 첫 항목이 체크포인트 (경로, mtime) 라
 # 모델이 바뀌면 자연히 빗나간다.
@@ -268,6 +284,66 @@ def _detect(ckpt_name, image, layers, refine_iterations):
         _cache.popitem(last=False)
     logger.debug("%s 감지 %d개 중 캐시 적중 %d개", _TAG, len(set(keys)), len(set(keys)) - len(missing))
     return [found[k] for k in keys]
+
+
+def _forward_multimask(sam3_model, frame, point_inputs, box_inputs):
+    """코어 SAM3Model.forward_segment(comfy/ldm/sam3/detector.py) 본문과 같되 multimask_output 을 늘 켠다. 반환 = 고해상도 로짓."""
+    bb = sam3_model.detector.backbone["vision_backbone"]
+    if bb.multiplex:
+        _, _, feats, _ = bb(frame, tracker_mode="interactive")
+    else:
+        _, _, feats, _ = bb(frame, need_tracker=True)
+        if sam3_model.detector.scalp > 0:
+            feats = feats[:-sam3_model.detector.scalp]
+    high_res, feat = list(feats[:-1]), feats[-1]
+    B, C, H, W = feat.shape
+    no_mem = getattr(sam3_model.tracker, "interactivity_no_mem_embed", None)
+    if no_mem is None:
+        no_mem = getattr(sam3_model.tracker, "no_mem_embed", None)
+    if no_mem is not None:
+        flat = feat.flatten(2).permute(0, 2, 1)
+        feat = (flat + cast_to_input(no_mem, flat)).view(B, H, W, C).permute(0, 3, 1, 2)
+    _, high_res_masks, _, _ = sam3_model.tracker._forward_sam_heads(
+        backbone_features=feat, point_inputs=point_inputs, mask_inputs=None, box_inputs=box_inputs,
+        high_res_features=high_res, multimask_output=True)
+    return high_res_masks
+
+
+def segment(ckpt_name, image, box=None, points=(), text=None, refine_iterations=0, multimask=True):
+    """이미지 한 장의 SAM3 분할 → bool [H, W] CPU 텐서. 인자·경로는 모듈 docstring '공개 함수 segment'."""
+    path = folder_paths.get_full_path_or_raise("checkpoints", ckpt_name)
+    model, clip = _load_sam3((path, os.path.getmtime(path)))
+    img = torch.as_tensor(image, dtype=torch.float32)
+    H, W = img.shape[:2]
+    if text:
+        found = _run_sam3(model, clip, img[None], [(text, _TEXT_THRESHOLD)], refine_iterations)[0][0][0]
+        if box is None:
+            return found
+        x0, y0, x1, y1 = (int(v) for v in box)
+        m = torch.zeros_like(found)
+        m[y0:y1, x0:x1] = found[y0:y1, x0:x1]
+        return m
+
+    comfy.model_management.load_model_gpu(model)
+    device = comfy.model_management.get_torch_device()
+    dtype = model.model.get_dtype()
+    sam3_model = model.model.diffusion_model
+    frame = comfy.utils.common_upscale(img[None].movedim(-1, 1), 1008, 1008, "bilinear", crop="disabled").to(device=device, dtype=dtype)
+    sx, sy = 1008 / W, 1008 / H
+    box_inputs = None
+    if box is not None:
+        box_inputs = torch.tensor([[[box[0] * sx, box[1] * sy], [box[2] * sx, box[3] * sy]]], device=device, dtype=dtype)
+    point_inputs = None
+    if points:
+        point_inputs = {"point_coords": torch.tensor([[[p[0] * sx, p[1] * sy] for p in points]], device=device, dtype=dtype),
+                        "point_labels": torch.tensor([[int(p[2]) for p in points]], device=device, dtype=torch.int32)}
+    if multimask:
+        logit = _forward_multimask(sam3_model, frame, point_inputs, box_inputs)
+    else:
+        logit = sam3_model.forward_segment(frame, point_inputs=point_inputs, box_inputs=box_inputs)
+    for _ in range(max(0, refine_iterations - 1)):
+        logit = sam3_model.forward_segment(frame, mask_inputs=logit)
+    return (F.interpolate(logit.float(), size=(H, W), mode="bilinear", align_corners=False)[0, 0] > 0).cpu()
 
 
 class BMKSAM3MaskLayers:

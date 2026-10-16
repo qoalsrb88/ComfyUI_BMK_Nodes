@@ -22,6 +22,8 @@ M3 는 Spec Draft(VLM 이 specs/<crop_id>.json 초안을 씀)를 더한다.
 - bmk_design_patch_board     Review Board aiohttp 라우트(web_design_patch/ 페이지)·보드 썸네일
 - bmk_design_patch_vlm       Spec Draft 의 VLM 초안기: 문맥·키·프롬프트·스키마·원장(vlm/)·계획/승인·백엔드(openai /
                              local_qwen / mock)·JSON 추출·정규화·3-way 스펙 병합·렌더 점검·보고서
+- bmk_design_patch_refs      Studio S2 레퍼런스 연결(refs.json)·이름 규칙·시트 캐시·컷 요청/결과·변환·파일 동작
+                             (SAM3 자체는 bmk_sam3_mask_layers.segment — 불러온 모델 한 벌을 그 노드와 같이 씀)
 이 파일은 노드와 노드 경계 변환(텐서 ↔ numpy, MASK 의미 반전), 보드 라우트 등록만 담는다.
 
 동시 쓰기 (M2)
@@ -37,7 +39,7 @@ M3 는 Spec Draft(VLM 이 specs/<crop_id>.json 초안을 씀)를 더한다.
   서로의 결과를 덮어쓰지 않는다(명세 §5 의 핸들 4키에 더한 확장). Spec Draft 는 "draft"(초안 대기 요약)를 실어
   Prepare 를 지나 Run 까지 보낸다(Run 의 초안 대기 경고).
 - Project      : <base_dir>/bmk_design_patch/<project>/ 를 열거나 만든다. base_dir "" = ComfyUI input 폴더.
-                 IS_CHANGED = 매니페스트·layout.json·specs/·glossary.json 과 specs 가 가리키는 파일(guide·before_paste·refs) 지문
+                 IS_CHANGED = 매니페스트·layout.json·refs.json·specs/·glossary.json 과 specs 가 가리키는 파일(guide·before_paste·refs) 지문
                  + Spec Draft 원장(vlm/<crop_id>/<key>/a*.json 이름·크기, 재폴링 표시) + mock 스위치
                  → 다른 노드가 원장을 바꾸면 다음 큐에서 하류 전체가 다시 확인된다(각 노드는 디스크 캐시로 즉시 끝남).
                  매니페스트의 project 이름은 폴더 이름에 맞춘다(복사한 폴더).
@@ -56,6 +58,9 @@ M3 는 Spec Draft(VLM 이 specs/<crop_id>.json 초안을 씀)를 더한다.
                  crop_group=auto 인데 그룹이 없거나 shape 0 이면, 지울 크롭이 없거나(첫 Import) layout.json 을 치운 매니페스트일
                  때만 크롭 0(베이스만) + 안내 — PSD 모드로 크롭이 있던 프로젝트는 오류(매니페스트 그대로).
                  Candidate In·Prepare 는 크롭 0 이면 예외 대신 경고(Review 까지 돌게).
+                 레퍼런스 연결(S2, 프로젝트 폴더에 refs.json — Studio 레퍼런스 편집기가 만든다): 크롭마다 refs.resolve_refs —
+                 고정된 크롭(크롭 ID 로 연결)은 refs_auto = 연결 파일 중 refs_dir 에 있는 것, refs_main = 대표(Prepare 가 고름),
+                 고정 안 된 크롭·refs.json 없음·refs_dir 다름(경고)은 이름 매칭 그대로. 깨진 refs.json 은 오류(refs_history 안내).
 - Candidate In : 후보 등록. psd_harvest = 최종 PSD 의 결과 그룹 SO(원본 bytes·quad·손 마스크·보임 여부),
                  folder = 폴더 이미지(파일명 앞부분 = 크롭 이름, quad = crop rect). 원본 bytes 는 cands/ 에
                  디코드 없이 저장(내용 주소). mapping_json 으로 크롭/타깃 지정·건너뛰기.
@@ -91,6 +96,13 @@ M3 는 Spec Draft(VLM 이 specs/<crop_id>.json 초안을 씀)를 더한다.
                  핸들의 draft 에 초안 대기가 있으면 보고서·ui(draft_pending)로 경고한다(초안 없는 프롬프트로 과금).
 - Review (M2)  : 프로젝트를 보드 레지스트리에 등록하고 보드 썸네일을 미리 만든다(출력 노드). ui bmk_dp_board 로
                  JS 의 Open Board 가 별도 창 Review Board(키보드 ★·slice·탈락·재굴림)를 연다.
+- Ref Cut (S2) : Studio 레퍼런스 편집기가 ComfyUI /api/prompt 로 이 노드 하나만 큐에 넣는다(그래프에 둘 일 없음, 출력 없음, 무료).
+                 입력 = 보드 레지스트리 키 + 컷 요청 ID. 요청 파일(derived/refcut/<req>.req.json)을 다시 검증 → 시트 창(선택 +
+                 변마다 12%) → 상자 + 자동 양점(늘 맨 앞, 사람 점은 뒤에) → bmk_sam3_mask_layers.segment(멀티마스크 늘 켬)
+                 → refs.finish_mask → <req>_mask.png·<req>.res.json. res.json 의 auto_point = 맨 앞에 넣은 자동 양점(시트 좌표 =
+                 창 좌표 + 창 원점), null = 넣지 않음(선택 안이 모두 투명 · 텍스트 감지 경로 — 점을 안 씀, 경고 한 줄). 보드 다듬기(base)
+                 결과는 base 의 auto_point 를 이어 받는다. 예외·취소면 res.json {ok: false, error} 를 쓰고 다시 올린다.
+                 실행 스레드에서 돌아 SAM3 가 ComfyUI 모델 관리·VRAM 을 다른 노드와 순서대로 쓴다(STUDIO_S2_SPEC D2).
 - Analyze / Compose / Export 는 보드의 탈락(rejects) 후보를 분석·합성·대안에서 뺀다. Compose / Export 는 크롭 타깃에
   없는 tid 의 후보(레이어명·채택에서 지운 타깃)도 경고하고 뺀다(보드와 같게).
 
@@ -114,6 +126,7 @@ M3 는 Spec Draft(VLM 이 specs/<crop_id>.json 초안을 씀)를 더한다.
 - source.refs_dir / refs_fingerprint / glossary / glossary_fingerprint, crops[].layer_name / rect_source
 - 레이아웃 모드(S1): source.layout = {rev, sig}(Import 가 이번에 읽은 layout.json 판 — 보드의 '미반영' 표시),
   crops[].psd_name(사전 편집 그룹에서 찾은 이름), rect_source "layout"
+- 레퍼런스 연결(S2): source.refs_links(refs.refs_sig — refs.json 이 있을 때만 키), crops[].refs_main(고정된 크롭의 대표만 키)
 - crops[].targets[].origin ("adopt" = specs 의 _layer_targets 에서 온 타깃, 그 밖은 키 없음)
 - candidates[].hand_mask.bg / origin_info.crop_source(폴더), jobs[].inputs[].source(canvas), 분석 항목의 params /
   skipped / no_source / rect / seq / quad_reg / mask_area / thumb / tone.full
@@ -170,6 +183,11 @@ v4 (2026-10, Studio S1 — STUDIO_S1_SPEC §2·D6)
   '레이아웃 rev N · 크롭 n · 바뀜 k(소스 다시 만듦 s, PSD 엶|안 엶)'). layout.json 이 없으면 지금 그대로(만들지 않음).
   이관(Studio '레이아웃 편집 시작')만으로는 id·rect·source·targets·cell_key·Run 승인 해시·초안 키가 바뀌지 않는다.
 - Project 지문에 layout.json. 빈 시작(D6): Import 크롭 0, Candidate In·Prepare 경고.
+v5 (2026-10, Studio S2 — STUDIO_S2_SPEC §2·§3)
+- Import PSD 가 refs.json(크롭 ID 연결)을 해석(refs_auto·refs_main·source.refs_links, 보고서 'refs N(연결)'·레퍼런스 줄),
+  Prepare 는 refs_main 을 고름(고정 때 refs_main = 지금 자동 선택 → refs_auto·cell_key·승인 해시·초안 키 그대로).
+  refs.json 이 없으면 지금 그대로(키를 만들지 않음). Project 지문에 refs.json.
+- Ref Cut 노드(SAM3 컷, 무료 출력 노드). 모듈 import 때 board.set_sam3_ckpts(이름에 sam3 가 든 체크포인트).
 """
 
 from __future__ import annotations
@@ -202,17 +220,21 @@ try:
     from . import bmk_design_patch_board as board
     from . import bmk_design_patch_prompt as dprompt
     from . import bmk_design_patch_psd as dpsd
+    from . import bmk_design_patch_refs as refs
     from . import bmk_design_patch_runner as runner
     from . import bmk_design_patch_store as store
     from . import bmk_design_patch_vlm as dvlm
+    from . import bmk_sam3_mask_layers as sam3
 except ImportError:  # 단독 실행/테스트
     import bmk_design_patch_analysis as an
     import bmk_design_patch_board as board
     import bmk_design_patch_prompt as dprompt
     import bmk_design_patch_psd as dpsd
+    import bmk_design_patch_refs as refs
     import bmk_design_patch_runner as runner
     import bmk_design_patch_store as store
     import bmk_design_patch_vlm as dvlm
+    import bmk_sam3_mask_layers as sam3
 
 logger = logging.getLogger(__name__)
 
@@ -394,9 +416,11 @@ def _vlm_fp(root: str):
 def _project_fp(root: str) -> str:
     """Project IS_CHANGED. mock 스위치(환경변수·_MOCK_API 파일)도 넣는다 — 켜고 끄면 Draft·Prepare·Run 이 다시 실행돼
     백엔드에 묶인 승인 해시·'mock 초안 교체' 대기·Run 의 초안 대기 경고가 지금 백엔드를 따른다.
-    layout.json(Studio 레이아웃 편집, S1)도 넣는다 — Import 의 IS_CHANGED 는 루트를 모르므로(링크 입력) 하류 전체를 여기서 깨운다."""
+    layout.json(Studio 레이아웃 편집, S1)·refs.json(레퍼런스 연결, S2)도 넣는다 — Import 의 IS_CHANGED 는 루트를 모르므로(링크 입력)
+    하류 전체를 여기서 깨운다."""
     return "|".join(str(v) for v in (_file_fp(os.path.join(root, store.MANIFEST_NAME)),
                                      _file_fp(os.path.join(root, store.LAYOUT_NAME)),
+                                     _file_fp(os.path.join(root, refs.REFS_NAME)),
                                      _dir_fp(os.path.join(root, "specs")),
                                      _file_fp(os.path.join(root, "glossary.json")),
                                      _spec_files_fp(root),
@@ -1228,6 +1252,7 @@ class BMKDesignPatchImportPSD:
             raise ValueError(f"{_TAG} 용어집 파일이 없습니다: {glossary_path!r}")
         try:
             lay = store.load_layout(root)  # 깨진 layout.json 은 오류(조용히 PSD 로 돌아가면 크롭 원천이 뒤집힘)
+            rdoc = refs.load_refs(root)  # 깨진 refs.json 도 오류(조용히 이름 매칭으로 돌아가면 레퍼런스 원천이 뒤집힘)
         except ValueError as e:
             raise ValueError(f"{_TAG} {e}") from e
         heavy = {"psd": psd_path.replace("\\", "/"), "fingerprint": store.file_fingerprint(psd_path),
@@ -1246,15 +1271,31 @@ class BMKDesignPatchImportPSD:
         notes = self._targets(root, m, old, cached)
         light = {"refs_dir": refs_dir.replace("\\", "/"), "refs_fingerprint": _dir_fp(refs_dir),
                  "glossary": glossary_path.replace("\\", "/"), "glossary_fingerprint": _file_fp(glossary_path)}
-        if not cached or any(src.get(k) != v for k, v in light.items()):
+        if rdoc is not None:  # refs.json 이 없으면 키를 만들지 않는다(기존 매니페스트 바이트 그대로)
+            light["refs_links"] = refs.refs_sig(rdoc, refs_dir)
+        again = (not cached or ("refs_links" in src) != ("refs_links" in light)
+                 or any(src.get(k) != v for k, v in light.items()))
+        resolved = {c["id"]: refs.resolve_refs(refs_dir, c, rdoc) for c in m["crops"]} if again or rdoc is not None else {}
+        if again:
             for c in m["crops"]:
-                c["refs_auto"] = store.match_refs(refs_dir, c["nnn"], part=c["part"]) if refs_dir and c["nnn"] else []
+                r = resolved[c["id"]]
+                c["refs_auto"] = r["refs_auto"]
+                if r["refs_main"] is None:
+                    c.pop("refs_main", None)
+                else:
+                    c["refs_main"] = r["refs_main"]
             m["source"].update(light)
+            if rdoc is None:
+                m["source"].pop("refs_links", None)
+        if rdoc is not None:
+            info_line += "\n" + self._refs_line(rdoc, refs_dir, m, resolved)
+        linked = {cid for cid, r in resolved.items() if r["linked"]}
+        ref_notes = {cid: resolved[cid]["notes"] for cid in linked if resolved[cid]["notes"]}
         late = lay is None and os.path.isfile(os.path.join(root, store.LAYOUT_NAME))  # PSD 모드 Import 중 보드 '편집 시작'
         handle, conflicts = _commit(root, m, before, project)
         base = _load_rgb(root, m["base"])
-        report = "\n".join([self._report(m, psd_path, info_line, time.time() - t0, notes)] + ([_LATE_LAYOUT] if late else [])
-                           + [f"  - {w}" for w in conflicts])
+        report = "\n".join([self._report(m, psd_path, info_line, time.time() - t0, notes, linked, ref_notes)]
+                           + ([_LATE_LAYOUT] if late else []) + [f"  - {w}" for w in conflicts])
         logger.info("%s %s", _TAG, report.splitlines()[0])
         return (handle, _to_image(_overview(base, m["crops"])), report)
 
@@ -1451,7 +1492,19 @@ class BMKDesignPatchImportPSD:
         return notes
 
     @staticmethod
-    def _report(m: dict, psd_path: str, info_line: str, sec: float, notes: dict[str, list[str]]) -> str:
+    def _refs_line(rdoc: dict, refs_dir: str, m: dict, resolved: dict[str, dict]) -> str:
+        """refs.json 이 있을 때의 보고서 줄: 연결 rev·고정 크롭 수·크롭이 사라진 연결(R-orphan), refs_dir 가 다르면 '연결 무시' 주의."""
+        if not refs.same_refs_dir(rdoc["refs_dir"], refs_dir):
+            return (f"주의: {refs.REFS_NAME} 의 refs_dir({rdoc['refs_dir']})가 지금 refs_dir({refs_dir or '비어 있음'})와 달라 "
+                    "레퍼런스 연결을 무시하고 이름으로 찾음")
+        known = {c["id"] for c in m["crops"]}
+        orphans = sorted(cid for cid in rdoc["links"] if cid not in known)
+        return (f"레퍼런스 연결 rev {rdoc['rev']} · 고정 {sum(r['linked'] for r in resolved.values())}/{len(m['crops'])} 크롭"
+                + (f" · 크롭이 사라진 연결 {len(orphans)}({', '.join(orphans)}) — Studio 에서 다른 크롭에 다시 연결" if orphans else ""))
+
+    @staticmethod
+    def _report(m: dict, psd_path: str, info_line: str, sec: float, notes: dict[str, list[str]], linked: set[str],
+                ref_notes: dict[str, list[str]]) -> str:
         n_warn = sum(1 for c in m["crops"] if c["warnings"])
         n_note = sum(len(v) for v in notes.values())
         lines = [f"Import PSD: {os.path.basename(psd_path)} {m['canvas'][0]}x{m['canvas'][1]} | 크롭 {len(m['crops'])}"
@@ -1469,11 +1522,13 @@ class BMKDesignPatchImportPSD:
             tg = "; ".join(f"{t['tid']}: {t['name_en'] or t['label']}" + (" (채택)" if t.get("origin") == "adopt" else "")
                            for t in c["targets"])
             lines.append(f"{i + 1:2d}. {c['id']} {c['name']} {x1 - x0}x{y1 - y0} [{c['source_kind']}] "
-                         f"refs {len(c['refs_auto'])} | {tg}")
+                         f"refs {len(c['refs_auto'])}{'(연결)' if c['id'] in linked else ''} | {tg}")
             for wmsg in c["warnings"]:
                 lines.append(f"      - {wmsg}")
             for wmsg in notes.get(c["id"], []):
                 lines.append(f"      - 채택: {wmsg}")
+            for wmsg in ref_notes.get(c["id"], []):
+                lines.append(f"      - 레퍼런스: {wmsg}")
         return "\n".join(lines)
 
     @classmethod
@@ -3269,6 +3324,84 @@ class BMKDesignPatchSpecDraft:
             raise comfy.model_management.InterruptProcessingException() from e
 
 
+# ══════════════════════════════════════════════════════════════════════
+# 노드 11 — Ref Cut (Studio S2, 무료 — 보드가 /api/prompt 로 이 노드 하나만 큐에 넣는다)
+# ══════════════════════════════════════════════════════════════════════
+def _sam3_ckpt_names() -> list[str]:
+    """checkpoints 중 이름에 'sam3' 가 든 것(sam3._sam3_checkpoints 는 하나도 없으면 전체를 돌려주므로 쓰지 않는다)."""
+    return [n for n in folder_paths.get_filename_list("checkpoints") if "sam3" in n.lower()]
+
+
+class BMKDesignPatchRefCut:
+    """Studio 레퍼런스 편집기의 SAM3 컷: 요청 파일(derived/refcut/<req>.req.json) → 시트 창 → SAM3 → 결과 파일."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "root": ("STRING", {"default": "", "tooltip": "보드 레지스트리 키(소문자 16진 12자 — Review 노드가 등록한 프로젝트)."}),
+                "req": ("STRING", {"default": "", "tooltip": "컷 요청 ID(소문자 16진 32자) — 보드 POST /refs/cut 이 만든 요청 파일."}),
+            },
+        }
+
+    RETURN_TYPES = ()
+    FUNCTION = "run"
+    OUTPUT_NODE = True
+    CATEGORY = _CATEGORY
+    DESCRIPTION = (
+        "Studio 가 큐에 넣는 노드 — 그래프에 둘 일 없음. 보드 레퍼런스 편집기의 SAM3 컷 요청 하나를 로컬 SAM3(BMK SAM3 Mask Layers 와 "
+        "같은 모델 한 벌)로 실행해 프로젝트의 derived/refcut/ 에 마스크·결과 파일을 씁니다. 유료 호출 없음."
+    )
+    SEARCH_ALIASES = _ALIASES + ["ref cut", "reference cutout", "sam3", "레퍼런스 컷", "컷아웃"]
+
+    def run(self, root, req):
+        path = store.resolve_board_root(root)
+        if path is None:
+            raise ValueError(f"{_TAG} 보드에 등록되지 않은 프로젝트 키입니다(Review 노드를 한 번 실행): {root!r}")
+        if not isinstance(req, str) or not refs._REQ_RE.fullmatch(req):
+            raise ValueError(f"{_TAG} 컷 요청 ID 형식이 잘못되었습니다([0-9a-f] 32자): {req!r}")
+        t0 = time.time()
+        try:
+            r = refs.load_cut_request(path, req)
+            if r["method"] != "sam3":
+                raise ValueError(f"Ref Cut 노드는 sam3 요청만 실행합니다(사각형·다각형은 보드가 바로 계산): {r['method']}")
+            names = _sam3_ckpt_names()
+            ckpt = r["ckpt"] or (names[0] if names else None)
+            if ckpt is None:
+                raise ValueError("checkpoints 폴더에 이름에 sam3 가 든 체크포인트가 없습니다")
+            rgb, alpha, window = refs.cut_window(refs.sheet_array(path, r["sheet"], r["layer"]), r["rect"], r["pad"])
+            wx, wy = window[:2]
+            box = [r["rect"][0] - wx, r["rect"][1] - wy, r["rect"][2] - wx, r["rect"][3] - wy]
+            points = [(x - wx, y - wy, lab) for x, y, lab in r["points"]]
+            warnings = []
+            if r["text"]:
+                # 텍스트 = 감지 경로(sam3.segment 의 _run_sam3 — 점을 보지 않음) → 자동 양점을 넣지 않고 auto_point null(보드가 회색 점을 그리지 않게)
+                auto = None
+                warnings.append("텍스트가 있으면 점(자동 양점 포함)은 쓰지 않음(감지 경로)")
+            else:
+                # 상자만은 SAM3.1 이 못 맞춤 → 상자 가운데에 가장 가까운 불투명 픽셀을 사람 점이 있어도 늘 맨 앞에(§3.2 — U0 고침 클릭 실측이 이 조건)
+                auto = refs.auto_point(alpha > 127, box)
+                if auto is None:
+                    warnings.append("선택 안이 모두 투명해 자동 양점 없음")
+                else:
+                    points.insert(0, auto)
+            raw = sam3.segment(ckpt, torch.from_numpy(rgb).float() / 255.0, box=box, points=points, text=r["text"] or None,
+                               refine_iterations=r["refine"], multimask=r["multimask"] == "always")
+            sel, stats = refs.finish_mask(raw, r, window, alpha)
+            res = refs.save_cut_result(path, req, sel, {"window": window, "rect": r["rect"], **stats,
+                                                        "sec": round(time.time() - t0, 2), "ckpt": ckpt, "warnings": warnings,
+                                                        "auto_point": None if auto is None else [auto[0] + wx, auto[1] + wy]})
+        except (Exception, comfy.model_management.InterruptProcessingException) as e:  # IPE 는 BaseException — 취소도 보드가 기다리지 않게
+            refs.save_cut_error(path, req, "취소됨" if isinstance(e, comfy.model_management.InterruptProcessingException) else str(e))
+            raise
+        logger.info("%s Ref Cut %s: 면적 %.3f · 조각 %d · %.2fs", _TAG, req[:8], res["area_frac"], res["n_parts"], res["sec"])
+        return {}
+
+    @classmethod
+    def IS_CHANGED(cls, root="", req="", **kwargs):
+        return req
+
+
 def _register_board_routes() -> None:
     """보드 라우트를 ComfyUI 서버에 한 번 등록한다(서버의 add_routes 전, 노드 모듈 import 때). 서버가 없으면(테스트) 건너뜀."""
     srv = _server()
@@ -3277,6 +3410,7 @@ def _register_board_routes() -> None:
 
 
 _register_board_routes()
+board.set_sam3_ckpts(_sam3_ckpt_names())  # 보드는 folder_paths 를 import 하지 않는다(B0) — 재시작 전 새로 넣은 파일은 안 보임
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -3291,6 +3425,7 @@ NODE_CLASS_MAPPINGS = {
     "BMKDesignPatchReview": BMKDesignPatchReview,
     "BMKDesignPatchCompose": BMKDesignPatchCompose,
     "BMKDesignPatchExportPSD": BMKDesignPatchExportPSD,
+    "BMKDesignPatchRefCut": BMKDesignPatchRefCut,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -3304,4 +3439,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "BMKDesignPatchReview": "BMK Design Patch Review",
     "BMKDesignPatchCompose": "BMK Design Patch Compose",
     "BMKDesignPatchExportPSD": "BMK Design Patch Export PSD",
+    "BMKDesignPatchRefCut": "BMK Design Patch Ref Cut (Studio)",
 }

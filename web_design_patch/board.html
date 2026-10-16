@@ -9,6 +9,7 @@
 <script src="layout_geom.js" defer></script>
 <script src="viewer.js" defer></script>
 <script src="layout_edit.js" defer></script>
+<script src="ref_edit.js" defer></script>
 <script src="board.js" defer></script>
 </head>
 <body>
@@ -17,9 +18,11 @@
   <div id="proj" class="proj"></div>
   <div id="badges" class="badges"></div>
   <div id="layout-head" class="lhead"></div>
+  <div id="ref-head" class="lhead"></div>
   <div class="spacer"></div>
   <div id="status" class="status"></div>
   <button type="button" id="btn-edit" tabindex="-1" disabled>편집</button>
+  <button type="button" id="btn-refs" tabindex="-1" disabled>레퍼런스</button>
   <button type="button" id="btn-viewer" tabindex="-1" title="캔버스 뷰어 보이기/숨기기 (V)">캔버스</button>
   <button type="button" id="btn-queue" tabindex="-1" title="ComfyUI 탭에 Review 노드 부분 실행을 요청합니다(재굴림 소화)">ComfyUI 큐</button>
   <button type="button" id="btn-drain" tabindex="-1" title="진행 중인 Run 이 새 호출 발사를 멈춥니다(진행 중인 호출은 끝까지 받아 저장)">Drain</button>
@@ -30,9 +33,15 @@
   <aside id="targets" aria-label="크롭·타깃 목록">
     <ol id="target-list"></ol>
     <ol id="layout-list"></ol>
+    <ol id="ref-list"></ol>
   </aside>
 
   <section id="viewer" aria-label="캔버스 뷰어"></section>
+
+  <section id="ref-view" aria-label="시트">
+    <div id="ref-sheets"></div>
+    <div id="ref-viewer" hidden></div>
+  </section>
 
   <section id="center">
     <div id="compare">
@@ -70,6 +79,7 @@
   </section>
 
   <section id="layout-panel" aria-label="레이아웃 속성"></section>
+  <section id="ref-panel" aria-label="레퍼런스 관리·컷"></section>
 </main>
 
 <div id="help" class="overlay" hidden>
@@ -113,6 +123,18 @@
       <tr><td><kbd>Esc</kbd></td><td>끌기 취소 → 선택 해제 → 편집 모드 나가기</td></tr>
     </table>
     <p class="dim">편집 모드에서는 ★(Space)·탈락(X)·재굴림(R)이 꺼집니다. 편집은 layout.json 에만 쓰고, 다음 큐(반영(큐)·재굴림·ComfyUI 큐 모두)의 Import 에서 매니페스트에 반영합니다.</p>
+    <h3>레퍼런스 (<kbd>T</kbd>)</h3>
+    <table>
+      <tr><td>빈 곳 끌기 · 핸들</td><td>영역(선택은 부품에 바짝 — 넉넉하면 옆 부품이 들어옴) · 고치기</td></tr>
+      <tr><td>방법</td><td>사각형(기본, 시트 알파 그대로) · SAM3 시도(붙은 장식 — ComfyUI 대기열 앞에서 돎) · 다각형</td></tr>
+      <tr><td>SAM3: 클릭 · <kbd>Alt</kbd>+클릭</td><td>양(+) · 음(−) 점. 자동 양점(회색)은 늘 함께</td></tr>
+      <tr><td>다각형: 클릭 · 더블클릭</td><td>꼭짓점 · 닫기(새 선택). <kbd>Shift</kbd>+닫기 = 앞 결과에 더하기 · <kbd>Alt</kbd>+닫기 = 빼기</td></tr>
+      <tr><td><kbd>Enter</kbd> · <kbd>Backspace</kbd></td><td>컷(다각형이면 닫기) · 마지막 점·꼭짓점 지우기. 설명 칸의 <kbd>Enter</kbd> = 저장</td></tr>
+      <tr><td><kbd>[</kbd> <kbd>]</kbd> · <kbd>H</kbd></td><td>회전 ∓0.5°(<kbd>Shift</kbd> ∓5° · <kbd>Ctrl</kbd> ∓90°) · 좌우 반전(대칭 부품만)</td></tr>
+      <tr><td><kbd>0</kbd> <kbd>1</kbd> <kbd>2</kbd> <kbd>F</kbd></td><td>시트 전체 · 1:1 · 2:1 · 영역 맞춤 (확대하면 원해상도로 겹침)</td></tr>
+      <tr><td><kbd>Esc</kbd> · <kbd>T</kbd></td><td>그리기 취소 → 영역 해제 → 크롭 선택 해제 → 모드 나가기 · 나가기</td></tr>
+    </table>
+    <p class="dim">레퍼런스 모드는 무료 기능만 씁니다(스펙·_hint 는 쓰지 않음 — 제안 문구만 복사). 저장은 덮어쓰지 않고, 옛 대표·보류는 refs\_보류\ 로 옮깁니다. 연결은 크롭 ID 로 고정되고 다음 큐의 Import 에서 매니페스트에 반영합니다.</p>
     <h3>알아 둘 것</h3>
     <ul>
       <li>보드는 선택만 기록합니다. 유료 호출은 ComfyUI 탭의 큐(Review 노드 부분 실행)로만 일어납니다.</li>

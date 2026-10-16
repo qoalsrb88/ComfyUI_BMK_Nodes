@@ -27,6 +27,7 @@ Design Patch(가제 Multi Layer Crop Edit)는 일러스트의 크롭마다 GPT �
 - flatten_canvas(rgba) -> (rgb HxWx3 uint8, info)
 - flatten_ref(rgba, matte=(128,128,128)) -> rgb HxWx3 uint8
 - spec_from_manifest(crop, target, refs_dir, glossary, overrides) -> spec   매니페스트 crop/target 항목 → 최소 스펙.
+- auto_pick_ref(crop_name, refs_auto) -> str      refs_auto 중 Prepare 가 고르는 1장(아래 refs 규칙 — Studio S2 refs.seed_link 도 이것).
 
 스펙 형식 (JSON 직렬화 가능 dict — 시제품 docstring 과 같음)
 ------------------------------------------------------------
@@ -68,7 +69,8 @@ spec_from_manifest 규칙 (최소 스펙)
 -----------------------------------
 - target: 매니페스트 타깃 dict 하나, 또는 None(크롭의 모든 타깃 → 다중 타깃 스펙).
 - 이름: overrides 타깃 name → target.name_en → store.translate(label, glossary) → label 그대로(+경고).
-- refs: overrides 타깃 refs → target.refs → crop.refs_auto 에서 1개 자동 선택(+경고, self_restore 면 안 함):
+- refs: overrides 타깃 refs → target.refs → crop.refs_auto 에서 1개 선택(+경고, self_restore 면 안 함):
+  crop.refs_main(Studio S2 가 고정한 대표)이 refs_auto 안이면 그것, 아니면 자동 선택(auto_pick_ref) —
   크롭 이름으로 시작 → `_t` 컷아웃 → 크롭 이름과 공통 접두 길이 → refs_auto 순서.
   refs_dir 가 있으면 상대 경로를 refs_dir 기준으로 합치고, 없는 파일은 경고.
 - mode: overrides → target.mode → "ref_correct". 렌더가 깨지는 조합은 고치고 경고:
@@ -85,6 +87,8 @@ spec_from_manifest 규칙 (최소 스펙)
 v1 (2026-10, M1) — 시제품 gpt_edit_prompt.py(2026-10-06) 문장 그대로 이식(TEMPLATE_VERSION "dp-prompt/1").
   rendered/*.spec.json 5건(toast, pen, fingers, toast_paste, self_receipt)의 .txt 와 바이트 일치 확인.
   flatten_canvas / flatten_ref / spec_from_manifest / validate_spec / select_variants 추가.
+Studio S2 (2026-10, TEMPLATE_VERSION 그대로) — _auto_pick_ref → 공개 이름 auto_pick_ref(refs.seed_link 가 같은 규칙),
+  refs 선택에 crop.refs_main. 렌더러·변형·평탄화는 바꾸지 않음(고정 때 refs_main = 지금 자동 선택이라 cell_key 그대로).
 """
 
 from __future__ import annotations
@@ -486,7 +490,7 @@ def flatten_ref(rgba, matte=DEFAULT_MATTE) -> np.ndarray:
 # ════════════════════════════════════════════════════════════════
 # 매니페스트 → 최소 스펙
 # ════════════════════════════════════════════════════════════════
-def _auto_pick_ref(crop_name: str, refs_auto: list) -> str:
+def auto_pick_ref(crop_name: str, refs_auto: list) -> str:
     """refs_auto 중 하나: 크롭 이름으로 시작 → `_t` 컷아웃 → 크롭 이름과 공통 접두 길이 → refs_auto 순서."""
     def key(item):
         i, r = item
@@ -550,8 +554,11 @@ def spec_from_manifest(crop: dict, target, refs_dir: str, glossary, overrides) -
             refs = [str(r) for r in o["refs"] or []]
         elif t.get("refs"):
             refs = [str(r) for r in t["refs"]]
+        elif refs_auto and mode != "self_restore" and crop.get("refs_main") in refs_auto:
+            refs = [crop["refs_main"]]
+            warnings.append(f"{tid}: 대표 레퍼런스: {os.path.basename(refs[0])} (Studio 연결, 후보 {len(refs_auto)}개)")
         elif refs_auto and mode != "self_restore":
-            refs = [_auto_pick_ref(crop_name, refs_auto)]
+            refs = [auto_pick_ref(crop_name, refs_auto)]
             warnings.append(f"{tid}: 레퍼런스를 자동 선택했습니다: {os.path.basename(refs[0])} (후보 {len(refs_auto)}개)")
         else:
             refs = []
