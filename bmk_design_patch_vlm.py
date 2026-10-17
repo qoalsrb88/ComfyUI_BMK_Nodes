@@ -76,6 +76,16 @@ mock (MockVLM)
     → plan / approval 다시(남은 대기·해시) → format_report · review_markdown → finally: keep_loaded 가 아니면
     unload_cached()(vlm 이 무엇이든). merge_spec 의 provenance 에는 원장 done 의 transport 를 넣는다(_draft.transport).
 
+Studio 공용 (STUDIO_S3_SPEC §2.4·§2.5·§3.5 — 노드와 보드 라우트가 같은 함수를 부른다)
+------------------------------------------------------------------------------------
+- draft_plan(...)             노드 Spec Draft 의 계획(문맥·요청·plan·approval). 같은 상태·설정·only 면 노드가 승인 대조에 쓰는 실행 전 해시
+- merge_crop(...)             크롭 하나의 정규화·병합·렌더 점검(노드 크롭 쓰기와 Studio 채택) · project_style_for = 화풍 전파값
+- WRITE_MARK·unwritten_specs  스펙을 못 쓴 크롭 표식(vlm/write_pending.json) · ledger_progress(root, since) = 진행 표시용 원장 집계
+- draft_view·adopt_write      GET /draft·POST /draft/adopt 본문(제안 채택·수정·해제 — 스펙 _layer_targets 만, 반영은 다음 Import).
+                              동시성 = seen(스펙 지문 토큰)·crop_signature(크롭 서명). SpecConflict(409)·AdoptRefused(400 + extra)
+- adopt_state(...)            [채택] 판정(GET /draft 의 adopt·보드 '채택 가능' 칩 공용) — 원장에 도착했지만 스펙에 안 쓰인 초안이
+                              있으면(Spec Draft 취소·preview) 옛 제안을 채택하지 않음(unwritten 과 같은 이유)
+
 버전 이력
 ---------
 v1 (2026-10, M3) — 문맥·키·프롬프트(RP §7 + S1–S9, U1–U6)·스키마(L2/L1/L0)·비용 추정·원장·계획/승인·
@@ -124,6 +134,11 @@ v1.5 (2026-10-13, TARGETS_ONLY_SPEC §9 — 키·프롬프트·스키마·렌더
   지금 문구로, 제안에는 기록 없는 글자(스펙 targets·_draft.labels 밖). MockVLM 옵션 suggest. 보고서: 첫 줄 [타깃만],
   targets 크롭 줄(이름·구조 플래그만), [제안] 묶음과 adopt 안내(adopt_hint — 다음 큐가 읽을 파일 기준),
   review.md 참고(적용 안 함). 이전의 '제안 타깃 → 레이어명' 줄은 [제안] 묶음으로 옮김.
+v1.6 (2026-10-17, Studio S3a U2a — 키·프롬프트·스키마·렌더러·병합 그대로): 노드에서 옮김 — draft_plan(노드 _draft_plan 본문, memo 는
+  호출자 것·DRAFT_MEMO_MAX), merge_crop·_owned_paths·_drop_paths(노드 _merge_crop — backend 인자를 따로 받음), project_style_for(노드
+  화풍 전파 규칙), WRITE_MARK·unwritten_specs. 새 Studio 채택: draft_view·adopt_write·adopt_state·crop_signature·SpecConflict·
+  AdoptRefused, 진행 ledger_progress. build_crop_ctx 의 타깃 만들기는 _target_ins 로(채택 미리보기의 반영 뒤 타깃과 공용), 키 계산은
+  _draft_key(원장 req 의 설정·키 모델로 도착분의 키를 다시 만드는 채택 판정과 공용).
 """
 
 from __future__ import annotations
@@ -148,7 +163,7 @@ import sys
 import threading
 import time
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from types import SimpleNamespace
 from typing import Any, Callable
 
@@ -210,6 +225,10 @@ NEVER_WRITE = ("canvas", "guide", "before_paste", "ref_style", "notes", "guide_c
 UI_KEY = "bmk_dp_draft"   # 노드 ui 키
 BRANCH_KEY = "draft"      # 핸들 가지 키(main _BRANCH_KEYS)
 SCHEMA_ECHO = "dp-draft-1"
+WRITE_MARK = "write_pending.json"   # vlm/ 바로 아래. 스펙을 쓰지 못한(잠김) 크롭 — Spec Draft 가 실패할 때마다 다시 쓰고, 다 쓰면 지운다
+DRAFT_MEMO_MAX = 4096               # draft_plan 평탄화 memo 상한(넘으면 비움 — 노드 _DRAFT_MEMO·보드 memo 공통)
+ADOPT_OPS = ("adopt", "set", "clear")   # Studio 채택 쓰기(adopt_write)
+_INFO_ROWS = ("keep_human", "keep_deleted", "unknown_target", "dup_target", "unrendered")   # 내용을 바꾸지 않는 병합 행
 
 _KEY_RE = re.compile(r"[0-9a-f]{24}")
 _LEDGER_RE = re.compile(r"a(\d+)\.(req|inflight|created|resp|done|failed|rejected)\.json")
@@ -244,6 +263,19 @@ class ParseError(ValueError):
 
 class VramError(RuntimeError):
     """local_qwen 을 올릴 VRAM 이 모자람(아무것도 내리지 않고 거절했거나, 내린 뒤에도 모자람)."""
+
+
+class SpecConflict(ValueError):
+    """Studio 채택 쓰기 경합(adopt_write): 요청의 seen(스펙 지문)·crop_sig(크롭 서명)·value(채택 값)가 지금과 다름 — 보드 409(다시 읽기)."""
+
+
+class AdoptRefused(ValueError):
+    """Studio 채택·수정을 쓰지 않음(adopt_write — 보드 400). extra = 응답에 함께 싣는 키(reason = 채택하지 않는 이유,
+    rows = 내용 보호에 걸린 병합 행 "경로: 종류")."""
+
+    def __init__(self, message: str, **extra):
+        super().__init__(message)
+        self.extra = extra
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -460,6 +492,21 @@ def _ref_key(r: str) -> str:
     return os.path.normcase(os.path.normpath(str(r)))
 
 
+def _target_ins(targets: list, layer: str, glossary: dict) -> list[TargetIn]:
+    """매니페스트 타깃 → TargetIn(build_crop_ctx·Studio 채택 미리보기의 반영 뒤 타깃). layer = 그 크롭의 레이어명(레거시 판정)."""
+    legacy = store._PIPE_RE.search(layer) is None  # 채택 타깃은 레거시가 아님(origin 없는 타깃은 키 그대로)
+    out = []
+    for t in targets:
+        label = str(t.get("label") or "").strip()
+        mode = str(t.get("mode") or "ref_correct")
+        origin = t.get("origin") or None
+        out.append(TargetIn(tid=str(t.get("tid") or "A"), label=label, name_en=str(t.get("name_en") or "").strip(),
+                            gloss=store.translate(label, glossary), human_mode=mode if mode != "ref_correct" else None,
+                            human_refs=tuple(str(r) for r in t.get("refs") or [] if r),
+                            legacy=legacy and origin != "adopt", origin=origin))
+    return out
+
+
 def build_crop_ctx(root: str, m: dict, crop: dict, *, refs_dir: str, glossary: dict, backend: str,
                    memo: dict) -> CropCtx:
     """매니페스트 크롭 하나 → CropCtx(캔버스 평탄화·sha, 레퍼런스 정렬·숨김, 타깃, 용어집 적중, 스펙·_hint).
@@ -517,16 +564,7 @@ def build_crop_ctx(root: str, m: dict, crop: dict, *, refs_dir: str, glossary: d
     for w in warnings:
         logger.warning(f"{_TAG} VLM 초안 {cid}: {w}")
 
-    legacy = store._PIPE_RE.search(layer) is None  # 채택 타깃은 레거시가 아님(origin 없는 타깃은 키 그대로)
-    targets = []
-    for t in crop.get("targets") or []:
-        label = str(t.get("label") or "").strip()
-        mode = str(t.get("mode") or "ref_correct")
-        origin = t.get("origin") or None
-        targets.append(TargetIn(tid=str(t.get("tid") or "A"), label=label, name_en=str(t.get("name_en") or "").strip(),
-                                gloss=store.translate(label, glossary), human_mode=mode if mode != "ref_correct" else None,
-                                human_refs=tuple(str(r) for r in t.get("refs") or [] if r),
-                                legacy=legacy and origin != "adopt", origin=origin))
+    targets = _target_ins(crop.get("targets") or [], layer, glossary)
     keys = [k for k in (store._gloss_norm(x) for x in [str(crop.get("part") or "")] + [t.label for t in targets]) if k]
     hints: list[tuple[str, str]] = []
     for k, v in (glossary or {}).items():
@@ -626,15 +664,19 @@ def _user_text(parts: list) -> str:
     return "\n".join(out)
 
 
-def _finish_request(req: Request, model_dir: str) -> Request:
+def _draft_key(req: Request, key_model: str) -> str:
+    """초안 키 = sha256(요청 문맥·설정·키 모델 _key_model)[:24]. 원장 req 본문의 model 이 그 시도의 키 모델이다."""
     fam = req.backend
     images = [[im.role, im.name, im.src_sha, int(im.sent_wh[0]), int(im.sent_wh[1])] for im in _images_of(req)]
-    payload = {"v": DRAFT_VERSION, "pass": PASS_PLAN, "kind": req.kind, "backend": fam,
-               "model": _key_model(fam, req.model, model_dir),
+    payload = {"v": DRAFT_VERSION, "pass": PASS_PLAN, "kind": req.kind, "backend": fam, "model": key_model,
                "effort": req.effort if fam == "openai" else None,
                "detail": req.image_detail if fam == "openai" else None,
                "prompt": prompt_fingerprint(), "user": req.user_text, "images": images, "round": int(req.draft_round)}
-    req.key = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:24]
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:24]
+
+
+def _finish_request(req: Request, model_dir: str) -> Request:
+    req.key = _draft_key(req, _key_model(req.backend, req.model, model_dir))
     return req
 
 
@@ -843,7 +885,8 @@ def _named(t: TargetIn, spec: dict | None, written: dict) -> bool:
         return False
     if t.name_en or t.gloss:
         return True
-    st = next((x for x in (spec or {}).get("targets") or [] if isinstance(x, dict) and str(x.get("id")) == t.tid), {})
+    ts = (spec or {}).get("targets")  # 사람이 고친 스펙 — 목록이 아니면 이름 없음(merge_spec 은 타깃 병합을 건너뜀)
+    st = next((x for x in ts if isinstance(x, dict) and str(x.get("id")) == t.tid), {}) if isinstance(ts, list) else {}
     b = written.get(t.tid) if isinstance(written.get(t.tid), dict) else {}
     return bool(st.get("name")) and ("name" not in b or not _eq(st["name"], b["name"]))
 
@@ -1069,6 +1112,46 @@ def approval(plan: dict, approve: str, *, backend_name: str, concurrency: int = 
             "reasons": reasons, "orphan_retries": sum(1 for u in units if u.state == "orphan")}
 
 
+def draft_plan(root: str, m: dict, approve: str, backend_name: str, *, family: str, model: str, effort: str,
+               image_detail: str, draft_round: int, mode: str, only: list[str], concurrency: int, model_dir: str,
+               apply_mode: str, memo: dict):
+    """§3.3 3단계(노드 Spec Draft·Studio 계획 라우트 공용 — STUDIO_S3_SPEC §2.4): 크롭마다 build_crop_ctx → build_request,
+    화풍 문맥·요청, plan → approval. 같은 파일 상태·설정·only 에서 노드가 승인 대조에 쓰는 실행 전 해시와 같은 값이다.
+    memo = 평탄화 캐시(호출자 소유 — 노드 _DRAFT_MEMO·보드 자체 것, DRAFT_MEMO_MAX 를 넘으면 비움). model_dir 은 local_qwen 키
+    (config.json sha8·transformers 버전)용. apply_mode="targets" 는 화풍 문맥·요청을 만들지 않는다(style_req None → 대기·실행·
+    _project.json 쓰기 모두 화풍 없음, TARGETS_ONLY_SPEC §9.3) — full 이면 화풍 입력 vlm/img/<sha12>.png(내용 주소)를 만들 수 있고
+    그 밖에는 쓰지 않는다. 용어집 형식 오류는 ValueError.
+    반환 (ctxs, reqs{crop_id | STYLE_ID: Request}, style_req, plan, approval)."""
+    refs_dir = (m.get("source") or {}).get("refs_dir") or ""
+    glossary = store.project_glossary(root, m)
+    if len(memo) > DRAFT_MEMO_MAX:
+        memo.clear()
+    cfg = {"backend": family, "model": model, "effort": effort, "image_detail": image_detail, "draft_round": draft_round,
+           "model_dir": model_dir}
+    ctxs, reqs = [], {}
+    for crop in m["crops"]:
+        ctx = build_crop_ctx(root, m, crop, refs_dir=refs_dir, glossary=glossary, backend=family, memo=memo)
+        ctxs.append(ctx)
+        if not (ctx.spec_error or ctx.skip_reason):  # 건너뛰는 크롭은 plan 이 skipped 로 보고
+            reqs[ctx.crop_id] = build_request(ctx, **cfg)
+    style_ctx = None if apply_mode == "targets" else build_style_ctx(root, m, backend=family, memo=memo)
+    style_req = build_style_request(style_ctx, **cfg) if style_ctx is not None else None
+    if style_req is not None:
+        reqs[STYLE_ID] = style_req
+    pl = plan(root, ctxs, reqs, style_req, mode=mode, only=only, apply_mode=apply_mode)
+    return ctxs, reqs, style_req, pl, approval(pl, approve, backend_name=backend_name, concurrency=concurrency)
+
+
+def unwritten_specs(root: str) -> list[str]:
+    """vlm/<WRITE_MARK> 의 크롭 목록(초안은 원장에 있지만 스펙 파일에 아직 못 씀 — 노드 Draft 가 쓰고 지움). 없거나 읽을 수 없으면 []."""
+    try:
+        with open(os.path.join(root, LEDGER_DIR, WRITE_MARK), encoding="utf-8") as f:
+            specs = json.load(f).get("specs")
+    except (OSError, ValueError, AttributeError):
+        return []
+    return [str(s) for s in specs] if isinstance(specs, list) else []
+
+
 # ══════════════════════════════════════════════════════════════════════
 # 원장 (§2.5, §5.3)
 # ══════════════════════════════════════════════════════════════════════
@@ -1187,6 +1270,38 @@ class Ledger:
                 req = self.read(cid, k, d["attempt"], "req") or {}
                 out.append(dict(d, settings=req.get("settings")))
         return out
+
+
+_PROGRESS_OF = {"req": "inflight", "inflight": "inflight", "created": "created", "resp": "created", "done": "done",
+                "failed": "failed", "rejected": "failed"}
+
+
+def ledger_progress(root: str, since: float) -> dict:
+    """Spec Draft 진행(STUDIO_S3_SPEC §3.5 — 보드 /pipeline/progress 의 draft): since(epoch 초) 이후 수정된 원장 파일
+    vlm/<crop_id>/<key>/a<n>.<kind>.json(화풍 _style 포함)이 있는 키마다 Ledger.state 를 센다 → {"inflight", "created", "done",
+    "failed"}. inflight = 보내는 중(req·inflight), created = 응답 대기·재파싱 전(created·resp), failed = 실패·과금 전 거부(failed·
+    rejected). stat·JSON 읽기만 하고 설정과 무관하다 — 그래프가 낸 Draft 도 보인다. 읽는 사이 사라진 파일은 세지 않는다."""
+    base = os.path.join(root, LEDGER_DIR)
+    ledger = Ledger(root)
+    out = {"inflight": 0, "created": 0, "done": 0, "failed": 0}
+
+    def fresh(kdir: str, fn: str) -> bool:
+        try:
+            return _LEDGER_RE.fullmatch(fn) is not None and os.stat(os.path.join(kdir, fn)).st_mtime >= since
+        except OSError:
+            return False
+
+    for cid in sorted(os.listdir(base)) if os.path.isdir(base) else []:
+        cdir = os.path.join(base, cid)
+        if cid == "img" or not store._CROP_ID_RE.match(cid) or not os.path.isdir(cdir):
+            continue
+        for key in sorted(os.listdir(cdir)):
+            kdir = os.path.join(cdir, key)
+            if _KEY_RE.fullmatch(key) and os.path.isdir(kdir) and any(fresh(kdir, fn) for fn in os.listdir(kdir)):
+                kind = _PROGRESS_OF.get(ledger.state(cid, key)["status"])
+                if kind:
+                    out[kind] += 1
+    return out
 
 
 def _caps_path(root: str) -> str:
@@ -3061,6 +3176,513 @@ def write_spec(root: str, crop_id: str, merge: Callable[[dict | None], MergeResu
     return res, backup
 
 
+def _owned_paths(spec: dict) -> set[str]:
+    """병합 결과에서 노드가 쓴 그대로인 필드("crop.<키>" / "<tid>.<키>", §5.2 의 C == B). render_check 가 렌더 예외 때
+    정해진 순서로 뺄 수 있는 필드다 — 사람 값은 빼지 않는다."""
+    d = spec.get("_draft")
+    written = d.get("written") if isinstance(d, dict) else None
+    if not isinstance(written, dict):
+        return set()
+    by_id = {t.get("id"): t for t in spec.get("targets") or [] if isinstance(t, dict)}
+    out = set()
+    for owner, fields in written.items():
+        cur = spec if owner == "crop" else by_id.get(owner)
+        if isinstance(fields, dict) and isinstance(cur, dict):
+            out |= {f"{owner}.{k}" for k, v in fields.items() if k in cur and cur[k] == v}
+    return out
+
+
+def _drop_paths(spec: dict, paths) -> None:
+    """render_check 가 사본에서 뺀 노드 필드를 쓸 스펙에서도 뺀다. _draft.written 에서도 빼서 다음 실행이 그 빈자리를
+    '사람이 지운 필드' 로 보고하지 않게 한다(다시 채워도 같은 점검에서 다시 빠지므로 파일은 그대로)."""
+    d = spec.get("_draft")
+    written = d.get("written") if isinstance(d, dict) else None
+    for p in paths:
+        owner, _, k = str(p).partition(".")
+        owners = [spec] if owner == "crop" else [t for t in spec.get("targets") or []
+                                                  if isinstance(t, dict) and t.get("id") == owner]
+        if isinstance(written, dict) and isinstance(written.get(owner), dict):
+            owners.append(written[owner])
+        for o in owners:
+            o.pop(k, None)
+
+
+def merge_crop(cur, mode: str, *, ctx: CropCtx, req: Request | None, crop: dict, done, prov: dict, project_style,
+               apply_mode: str, adopt: bool, backend: str | None, refs_dir: str, glossary: dict, out: dict) -> MergeResult:
+    """크롭 하나(§3.3 5단계 b·c·e — 노드 Spec Draft·Studio 채택 공용): 정규화(지금 파일의 사람 값이 제약) → 3-way 병합 → 렌더 점검
+    (실패면 spec·rows·merged 없음, 쓰지 않음 — 이번 채택은 "채택 안 함" 메모) → 병합 전후 V1 비교. preview 는 refresh 로 병합한
+    결과를 점검·비교에만 쓴다. write_spec 이 잠금 안에서 부른다(cur = 다시 읽은 파일). out 에 draft·check 를 남긴다. force 는 키마다
+    1회(merge_mode)이고, force 정규화는 스펙의 사람 mode·refs 를 제약으로 쓰지 않는다(매니페스트 값만 — 스펙 값은 force 가 새 값으로
+    바꾼다). done = 지금 키의 원장 done(None = 초안 없이 화풍 전파·양보·채택만 — req 는 done 이 있을 때만 쓴다), backend = 지금
+    백엔드(family — merge_spec 의 mock 판정, None 이면 판정 안 함). adopt = 이 크롭을 채택 — 채택 값은 merge_spec 이 cur 에 이미 있던
+    제안에서 계산한다(preview 는 보고만)."""
+    draft = None
+    mode = merge_mode(cur, mode, req.key if done is not None else None)
+    if done is not None:
+        draft = normalize(done["parsed"], ctx, req, constraints=constraints_for(ctx, None if mode == "force" else cur),
+                          glossary=glossary, repairs=done.get("repairs"))
+    kw = {"project_style": project_style, "provenance": prov, "apply_mode": apply_mode, "adopt": adopt, "backend": backend}
+    res = merge_spec(cur, draft, ctx, mode=mode, **kw)
+    after = merge_spec(cur, draft, ctx, mode="refresh", **kw).spec if mode == "preview" else res.spec
+    eff = after if after is not None else (cur or {})
+    chk = render_check(crop, copy.deepcopy(eff), refs_dir=refs_dir, glossary=glossary, owned=_owned_paths(eff))
+    out["draft"], out["check"] = draft, chk
+    if after is None:
+        return res
+    if not chk.ok:  # 보고서가 쓰지 않은 diff·채택을 세지 않게
+        if any(r.path == "crop._layer_targets" and r.kind == "add" for r in res.rows):
+            res.notes.append("채택 안 함 — 렌더 점검 실패(쓰지 않음)")
+        res.spec, res.changed, res.rows, res.merged = None, False, [], None
+        res.notes.append("렌더 점검 실패 — 쓰지 않음")
+        return res
+    _drop_paths(after, chk.dropped)
+    before = render_check(crop, copy.deepcopy(cur or {}), refs_dir=refs_dir, glossary=glossary, owned=set())
+    res.render_changed = before.v1 != chk.v1
+    return res
+
+
+def project_style_for(root: str, apply_mode: str, *, proj: Any = _MISSING) -> str | None:
+    """merge_spec 의 project_style(크롭 style_note 전파값 — 노드 Spec Draft·Studio 채택 공용): _project.json 의 style_note(키 없음 =
+    None — 노드가 쓴 그대로인 크롭에서 지움), _project.json 을 읽지 못하면 ""(전파 끔). targets 는 노드가 쓴 화풍(C == B)도 양보(None)
+    — 사람 값 문자열만 전파한다(TARGETS_ONLY_SPEC §9.2). proj = 노드가 이미 읽은 _project.json(preview 는 refresh 로 병합한 것,
+    None = 읽지 못함), 생략하면 지금 파일을 읽는다."""
+    if proj is _MISSING:
+        try:
+            proj = store.load_spec_override(root, PROJECT_SPEC_ID)
+        except ValueError:
+            proj = None
+    style = "" if proj is None else proj.get("style_note")
+    if apply_mode == "targets" and proj is not None:
+        pd = proj.get("_draft") if isinstance(proj.get("_draft"), dict) else {}
+        pw = pd.get("written") if isinstance(pd.get("written"), dict) else {}
+        if not isinstance(style, str) or style == pw.get("style_note"):
+            style = None
+    return style
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Studio 제안 채택·수정 (STUDIO_S3_SPEC §2.5·§3.4 — 보드 GET /draft·POST /draft/adopt, 모양 정본 tools/fixtures/pipeline_api.json)
+# ══════════════════════════════════════════════════════════════════════
+def _check_family(family: Any) -> None:
+    if not isinstance(family, str) or family not in BACKEND_NAMES:
+        raise ValueError(f"family 는 {', '.join(BACKEND_NAMES)} 중 하나여야 합니다(None 이면 mock 초안 거절이 꺼짐): {family!r}")
+
+
+def _adopt_crop(m: dict, crop_id: str) -> dict:
+    """채택·수정 대상 = 매니페스트 크롭만(_project·없는 크롭 = ValueError)."""
+    if crop_id == PROJECT_SPEC_ID:
+        raise ValueError(f"{PROJECT_SPEC_ID} 는 채택 대상이 아닙니다(매니페스트 크롭만)")
+    crop = next((c for c in m["crops"] if c["id"] == crop_id), None)
+    if crop is None:
+        raise ValueError(f"크롭이 없습니다: {crop_id}")
+    return crop
+
+
+def _origin(crop: dict, t: dict) -> str:
+    """타깃 출처: adopt = 스펙 _layer_targets, layout = 레이아웃 모드 크롭(layout.json 문구), psd = PSD 레이어명."""
+    if t.get("origin") == "adopt":
+        return "adopt"
+    return "layout" if crop.get("rect_source") == "layout" else "psd"
+
+
+def crop_signature(crop: dict) -> str:
+    """크롭 서명(§2.5 동시성) = JSON [layer_name, [[tid, label, 출처], …]]. 채택 쓰기는 매니페스트 rev 대신 이것을 대조한다(★·탈락·
+    재굴림도 rev 를 올려 헛 409 가 나지 않게). Studio 는 GET /draft 의 crop_sig 를 그대로 POST 에 싣는다."""
+    return json.dumps([str(crop.get("layer_name") or ""),
+                       [[t["tid"], t["label"], _origin(crop, t)] for t in crop.get("targets") or []]],
+                      ensure_ascii=False, separators=(",", ":"))
+
+
+def _spec_seen(path: str) -> str:
+    """스펙 파일 지문 토큰 = json.dumps(store.file_fingerprint) — [mtime_ns, size] 문자열(mtime_ns > 2^53 이라 JS 숫자로 왕복하지 않게),
+    파일 없음 = "null"."""
+    try:
+        return json.dumps(store.file_fingerprint(path))
+    except ValueError:
+        return "null"
+
+
+def _next_crop(root: str, crop: dict) -> tuple[dict, dict[str, str]]:
+    """다음 반영(Import)이 읽을 크롭 → (크롭, 레이아웃 대상 문구 {tid: 문구}). 레이아웃 모드(layout.json 에 이 ID 가 있음)면
+    layer_name = 합성 레이어명, psd_name = Import 와 같은 규칙(psd_name 없으면 name), rect_source "layout" 과 그 대상 문구, 아니면
+    매니페스트 크롭 그대로와 {}. 깨진 layout.json 은 매니페스트 크롭으로 본다(다음 Import 가 그 오류를 낸다)."""
+    try:
+        lay = store.load_layout(root)
+    except ValueError:
+        lay = None
+    lc = next((c for c in (lay or {}).get("crops") or [] if c.get("id") == crop["id"]), None)
+    if lc is None:
+        return crop, {}
+    nxt = {**crop, "layer_name": store.layout_layer_name(lc), "psd_name": lc.get("psd_name") or lc["name"],
+           "rect_source": "layout"}
+    return nxt, {t["tid"]: t["text"] for t in lc["targets"] if t["text"]}
+
+
+def _lt_cb(spec: Any) -> tuple:
+    """스펙 _layer_targets 의 (C = 파일 값, B = _draft.written.crop 기록) — 없으면 _MISSING(merge_spec 과 같은 해석, null = 없음)."""
+    s = spec if isinstance(spec, dict) else {}
+    d = s.get("_draft") if isinstance(s.get("_draft"), dict) else {}
+    w = d.get("written") if isinstance(d.get("written"), dict) else {}
+    wc = w.get("crop") if isinstance(w.get("crop"), dict) else {}
+    c = s.get("_layer_targets", _MISSING)
+    return (_MISSING if c is None else c), wc.get("_layer_targets", _MISSING)
+
+
+def _lt_view(spec: Any) -> dict:
+    """{"value": 지금 _layer_targets | None, "owner": node(C == B) | human(C 있고 B 없음·다름) | deleted(C 없음·B 있음) | None}."""
+    c, b = _lt_cb(spec)
+    if c is _MISSING:
+        owner = None if b is _MISSING else "deleted"
+    else:
+        owner = "node" if b is not _MISSING and _eq(c, b) else "human"
+    return {"value": None if c is _MISSING else c, "owner": owner}
+
+
+def _kind_why(kind: str | None, c: Any, value: str) -> str:
+    """채택 단추가 꺼지는 이유(kind ≠ add): 사람 값·해제 기록은 [수정]으로만, 노드 값이 이미 있으면 이미 채택 또는 노드 옛 값."""
+    if kind == "keep_human":
+        return "사람 값 있음 — [수정]으로 바꾸세요"
+    if kind == "keep_deleted":
+        return "해제함 — 다시 쓰려면 [수정]"
+    return "이미 채택" if c is not _MISSING and _eq(c, value) else "노드 값 그대로 — 바꾸려면 [수정]"
+
+
+def _strip_adopted(spec: Any) -> dict:
+    """내용 보호 비교용(§2.5 ⑥): 채택이 바꾸는 자리(_layer_targets·_draft.written.crop._layer_targets·_draft.adopted)와 기록
+    (_draft.pending·deleted — 사람 편집 옆 새 값·지운 기록, 내용 아님)을 뺀 사본. 빈 written.crop 은 없는 것과 같다."""
+    s = copy.deepcopy(spec) if isinstance(spec, dict) else {}
+    s.pop("_layer_targets", None)
+    d = s.get("_draft")
+    if isinstance(d, dict):
+        for k in ("adopted", "pending", "deleted"):
+            d.pop(k, None)
+        w = d.get("written")
+        if isinstance(w, dict) and isinstance(w.get("crop"), dict):
+            w["crop"].pop("_layer_targets", None)
+            if not w["crop"]:
+                del w["crop"]
+    return s
+
+
+_UNWRITTEN_WHY = "원장 초안이 아직 스펙에 안 쓰임 — 그래프 Spec Draft 를 한 번 큐(0 호출)"
+
+
+def _targets_error(spec: Any) -> str | None:
+    """채택 경계의 스펙 형식 검사(깨진 JSON 과 같이 다룸): targets 가 있는데 목록이 아니면 문구 — 병합·렌더 점검·Prepare 가 목록으로
+    순회한다(사람이 손으로 고친 파일)."""
+    ts = spec.get("targets") if isinstance(spec, dict) else None
+    return None if ts is None or isinstance(ts, list) else "targets 가 목록이 아님"
+
+
+def _arrived(root: str, m: dict, crop: dict, ctx: CropCtx, spec: Any, *, family: str, memo: dict) -> bool:
+    """스펙에 아직 안 쓰인 도착 초안이 있음 — §2.5 오류 줄의 unwritten 과 같은 상태인데 write_pending 표식이 없는 경우(Spec Draft 가
+    원장 done 을 받은 뒤 스펙 쓰기 전에 취소됨, write_mode=preview 로 돎). 이 크롭의 원장 done 가운데 키 ≠ 스펙 _draft.key, 기록 시각
+    ≥ _draft.drafted 이고, 그 시도의 req 기록(settings, 본문 model = 키 모델)으로 지금 문맥의 요청을 다시 만들면 같은 키(같은 설정의
+    그래프 Spec Draft 가 0 호출로 병합)이며, 노드 fill 이 그 초안을 적용하는(merge_spec 과 같은 _fill_reasons — 키만 바뀐 '갱신
+    가능'은 노드도 적용하지 않아 옛 제안 채택이 노드 adopt 와 같다) 것이 있으면 True. 노드 adopt 는 이 상태에서 병합한 새 제안이 채택
+    값을 바꾸면 '새 제안'으로 거절한다. ctx = family 로 만든 지금 문맥(다른 백엔드의 도착분은 그 백엔드 문맥을 memo 로 다시 만든다)."""
+    d = spec.get("_draft") if isinstance(spec, dict) and isinstance(spec.get("_draft"), dict) else {}
+    # 백엔드는 'mock 초안 교체' 사유만 가른다 — 실제 백엔드로 센 사유가 어느 도착분의 사유도 덮는다(원장을 읽기 전 거름)
+    if not d.get("key") or not _fill_reasons(d, ctx, "openai"):
+        return False
+    try:
+        keys = sorted(k for k in os.listdir(os.path.join(root, LEDGER_DIR, crop["id"])) if _KEY_RE.fullmatch(k) and k != d["key"])
+    except OSError:
+        return False
+    ledger = Ledger(root)
+    for key in keys:
+        done = ledger.done(crop["id"], key)
+        if done is None or str(done.get("at") or "") < str(d.get("drafted") or ""):
+            continue
+        rq = ledger.read(crop["id"], key, done["attempt"], "req") or {}
+        st, body = rq.get("settings"), rq.get("body")
+        if not (isinstance(st, dict) and isinstance(body, dict) and isinstance(body.get("model"), str)):
+            continue
+        try:
+            fam = _family(str(st.get("backend")))
+            c2 = ctx if fam == family else build_crop_ctx(
+                root, m, crop, refs_dir=(m.get("source") or {}).get("refs_dir") or "", glossary=store.project_glossary(root, m),
+                backend=fam, memo=memo)
+            req = build_request(c2, backend=fam, model=str(st.get("model")), effort=st.get("effort"),
+                                image_detail=st.get("image_detail"), draft_round=int(st.get("draft_round") or 0))
+        except (TypeError, ValueError):  # 손상된 req 기록 — 그 시도는 병합 대상으로 보지 않음
+            continue
+        if _draft_key(req, body["model"]) == key and _fill_reasons(d, ctx, fam):
+            return True
+    return False
+
+
+def _yield_paths(spec: Any, ctx: CropCtx) -> list[str]:
+    """마지막 초안 뒤 생긴 영문 이름·용어집·사람 refs·mode 때문에 지금 병합이 지울 노드 값(C == B) 경로 — merge_spec 의 양보 규칙을
+    초안 없이·full·화풍 전파 끔으로 돌린다. apply·화풍과 무관하게(targets 의 양보는 이것을 포함) 채택 병합에 함께 들어가 §2.5 ⑥ 내용
+    보호가 늘 거절하므로 adopt_state 가 [채택]·칩을 미리 끈다."""
+    return [r.path for r in merge_spec(spec, None, ctx, mode="fill", project_style="", provenance={}).rows if r.kind == "yield"]
+
+
+def adopt_state(root: str, m: dict, ctx: CropCtx, spec: Any, *, family: str, memo: dict) -> tuple[str, str | None, str]:
+    """[채택] 판정(GET /draft 의 adopt·보드 '채택 가능' 칩 공용 — §3.4·§3.7) → (value, kind, why). spec = 판정할 스펙(draft_view =
+    seen 과 같은 바이트, 보드 = ctx.spec), ctx = 같은 family·memo 의 build_crop_ctx. 목록이 아닌 targets = 스펙 JSON 오류, 그다음
+    adopt_check 이유·kind(_merge_path fill), kind add 인데 스펙에 안 쓰인 도착 초안이 있으면(_arrived) unwritten 과 같은 이유로,
+    노드 값 양보가 남았으면(_yield_paths — 채택 쓰기의 내용 보호가 늘 거절) 그 경로로 거절(값은 남김 — [수정] 초깃값).
+    write_pending 표식(unwritten_specs)·깨진 JSON(ctx.spec_error)은 호출자가 따로 본다."""
+    if _targets_error(spec):
+        return "", None, "스펙 JSON 오류 — 파일을 고친 뒤 다시"
+    value, why = adopt_check(spec, ctx, family)
+    kind = _merge_path("fill", *_lt_cb(spec), value)[2] if value else None
+    if kind == "add" and _arrived(root, m, _adopt_crop(m, ctx.crop_id), ctx, spec, family=family, memo=memo):
+        return "", None, _UNWRITTEN_WHY
+    ylds = _yield_paths(spec, ctx) if kind == "add" else []
+    if ylds:
+        more = f" 외 {len(ylds) - 4}" if len(ylds) > 4 else ""
+        return value, None, (f"초안 뒤 생긴 영문 이름·용어집·사람 refs·mode 로 노드 값 양보가 남음({', '.join(ylds[:4])}{more}) — "
+                             "그래프 Spec Draft 로 채택")
+    return value, kind, why
+
+
+def draft_view(root: str, m: dict, crop_id: str, *, family: str, memo: dict | None = None) -> dict:
+    """GET /draft 본문(§6): {id, name, crop_sig, seen, spec_error, unwritten, targets[{tid, label, name_en|None, origin}],
+    suggestions[{tid, text, bbox|None, reason|None}](제안 레이어명의 타깃 — 초안 때 타깃은 스펙 bbox·이유 없음), draft{key, backend,
+    mock, drafted}|None, adopt{value, kind, reason}, layer_targets{value, owner}, layout_text{tid: 문구}}. 쓰지 않는다.
+    seen = 읽은 바이트와 같은 stat, family = 지금 초안 백엔드(adopt_write 와 같은 값 — None 금지), memo = build_crop_ctx 평탄화 캐시
+    (None = 매번). 깨진 스펙 JSON·목록이 아닌 targets 는 spec_error 로 싣고 스펙을 없는 것으로 본다(채택 값을 비우고 채택·수정 단추를
+    끔). 읽기 실패(OSError — 잠김)도 spec_error 지만 adopt.reason 은 JSON 오류가 아니라 다시 읽기 안내.
+    adopt = adopt_state(원장에 도착했지만 스펙에 안 쓰인 초안이 있으면 옛 제안을 채택하지 않게 unwritten 과 같은 거절 이유, 초안 뒤
+    문맥으로 노드 값 양보가 남았으면 그 이유 — 채택 쓰기와 같은 판정).
+    _project·없는 크롭 = ValueError."""
+    _check_family(family)
+    crop = _adopt_crop(m, crop_id)
+    path = _spec_path(root, crop_id)
+    memo = {} if memo is None else memo
+    spec, err, seen = None, None, "null"
+    err_why = "스펙 JSON 오류 — 파일을 고친 뒤 다시"
+    try:
+        with open(path, "rb") as f:
+            st = os.fstat(f.fileno())
+            raw = f.read()
+        seen = json.dumps([int(st.st_mtime_ns), int(st.st_size)])
+        spec, err = _parse_spec(raw)
+        err = err or _targets_error(spec)
+        if err:
+            spec, err = None, f"specs/{crop_id}.json — {err}"
+    except FileNotFoundError:
+        pass
+    except OSError as e:  # 편집기·백신이 잡고 있음 — 파일은 멀쩡, 다시 읽으면 됨(잠김이 풀려도 stat 이 그대로라 패널은 저절로 안 읽음 — [다시 읽기])
+        err = f"specs/{crop_id}.json 읽기 실패: {e}"
+        err_why = "스펙 파일을 읽지 못함(다른 프로그램이 잡고 있으면 잠시 뒤 [다시 읽기])"
+    _nxt, layout_text = _next_crop(root, crop)
+    d = spec.get("_draft") if isinstance(spec, dict) and isinstance(spec.get("_draft"), dict) else {}
+    by_id = {str(t.get("id")): t for t in (spec or {}).get("targets") or [] if isinstance(t, dict)}
+    suggestions = []
+    for e in suggestion_targets(d.get("suggestions")):
+        s = e["suggestion"]
+        bb = s.get("bbox") if s is not None else by_id.get(e["tid"], {}).get("bbox")
+        suggestions.append({"tid": e["tid"], "text": e["text"], "bbox": bb if isinstance(bb, list) else None,
+                            "reason": s.get("reason") if s is not None else None})
+    if err:
+        value, kind, why = "", None, err_why
+    else:
+        ctx = build_crop_ctx(root, m, crop, refs_dir=(m.get("source") or {}).get("refs_dir") or "",
+                             glossary=store.project_glossary(root, m), backend=family, memo=memo)
+        value, kind, why = adopt_state(root, m, ctx, spec, family=family, memo=memo)
+    return {"id": crop["id"], "name": str(crop.get("name") or crop["id"]), "crop_sig": crop_signature(crop), "seen": seen,
+            "spec_error": err, "unwritten": crop_id in unwritten_specs(root),
+            "targets": [{"tid": t["tid"], "label": t["label"], "name_en": t.get("name_en") or None, "origin": _origin(crop, t)}
+                        for t in crop["targets"]],
+            "suggestions": suggestions,
+            "draft": ({"key": d["key"], "backend": d.get("backend"), "mock": d.get("backend") == BACKEND_NAMES["mock"],
+                       "drafted": d.get("drafted")} if d.get("key") else None),
+            "adopt": {"value": value, "kind": kind, "reason": why},
+            "layer_targets": _lt_view(spec),
+            "layout_text": layout_text}
+
+
+def _adopt_effects(crop: dict, nxt: dict, ctx: CropCtx, cur: Any, after: Any, layout_text: dict, *, glossary: dict,
+                   family: str, apply_mode: str, arrived: bool) -> tuple[dict, list[str]]:
+    """채택·수정·해제 뒤(after) 다음 반영의 영향(§2.5 미리보기) → (effects, 경고). targets_after = 다음 Import 가 만들 타깃
+    (store.merge_adopted + new_targets, old = 지금 크롭), prompt_changed = (tid, 라벨, name_en, mode) 가 지금 매니페스트 타깃과 다름(그
+    크롭은 다음 반영에서 새 셀 = Run 승인 대상), draft_wait = 반영 전·후 fill 대기 사유(_fill_reasons — targets 는 영문 이름·용어집이
+    있는 타깃을 대기로 세지 않음, full 은 바뀐 타깃마다 재초안 대기, _accepted 는 []), layout_wins = 레이아웃 문구가 이기는 tid.
+    arrived = 스펙에 안 쓰인 도착 초안이 있음(_arrived — 다음 그래프 Draft 가 0 호출로 병합): 반영 전은 대기 없음, 반영 뒤도 프롬프트가
+    그대로면(키 그대로) 대기 없음, 프롬프트가 바뀌면 그 초안은 병합되지 않으므로 경고."""
+    parsed = store.parse_crop_layer_name(nxt["layer_name"])
+    merged, warns = store.merge_adopted(nxt, parsed, after if isinstance(after, dict) else {})
+    tafter = store.new_targets(merged, crop)
+    rows = [{"tid": t["tid"], "label": t["label"], "name_en": t["name_en"] or None, "origin": _origin(nxt, t)} for t in tafter]
+    changed = ([(t["tid"], t["label"], t["name_en"], t["mode"]) for t in tafter]
+               != [(t.get("tid"), t.get("label"), t.get("name_en") or "", t.get("mode") or "ref_correct") for t in crop["targets"]])
+    lt = after.get("_layer_targets") if isinstance(after, dict) else None
+    wins = []
+    if isinstance(lt, str) and layout_text:
+        ent, empty = store.merge_layer_targets({**parsed, "targets": []}, lt, crop_id=crop["id"],
+                                               aliases=[nxt["psd_name"]] if nxt.get("psd_name") else [])
+        wins = [t["tid"] for t in ent["targets"] if layout_text.get(t["tid"]) and layout_text[t["tid"]].strip() != t["text"]]
+        if wins:  # 합성 레이어명의 문구 = 레이아웃 문구 — 같은 tid 의 '레이어명 문구가 이김' 대신 이 한 줄(빈 문구 경고는 남김)
+            warns = empty + [f"레이아웃 문구가 이김({', '.join(wins)}) — 편집 모드에서 고치세요"]
+
+    def wait(targets: list, layer: str, spec: Any) -> list[str]:
+        s = spec if isinstance(spec, dict) else None
+        if s is not None and s.get("_accepted") is True:
+            return []
+        h = s.get("_hint") if s is not None else None
+        c2 = replace(ctx, layer_name=layer, targets=_target_ins(targets, layer, glossary), spec=s,
+                     hint=" ".join(h.split()) if isinstance(h, str) else "")
+        return _fill_reasons(s.get("_draft") if s is not None and isinstance(s.get("_draft"), dict) else None, c2, family,
+                             apply_mode)
+
+    effects = {"targets_after": rows, "prompt_changed": changed,
+               "draft_wait": {"before": [] if arrived else wait(crop["targets"], crop["layer_name"], cur),
+                              "after": [] if arrived and not changed else wait(tafter, nxt["layer_name"], after)},
+               "layout_wins": wins}
+    if arrived and changed:
+        warns = warns + ["원장에 도착한 초안이 아직 스펙에 안 쓰임 — 이 쓰기를 반영하면 타깃이 바뀌어 그 초안은 병합되지 않음"
+                         "(먼저 그래프 Spec Draft 를 한 번 큐하면 0 호출로 병합)"]
+    return effects, warns
+
+
+def adopt_write(root: str, m: dict, crop_id: str, op: str, text: str | None = None, *, seen: str, crop_sig: str,
+                value: str | None = None, family: str, apply_mode: str, preview: bool = False,
+                memo: dict | None = None) -> dict:
+    """Studio 의 스펙 _layer_targets 쓰기(§2.5 D8 — POST /draft/adopt). 반환 {ok, seen(쓴 뒤 지문), layer_targets{value, owner},
+    targets_after, effects{targets_after, prompt_changed, draft_wait{before, after}, layout_wins}, warnings}. 반영은 다음 무료 반영(Import).
+    - op="adopt": 노드 adopt 와 같은 merge_crop(fill, 초안 없음, adopt=True — 원장 초안은 병합하지 않음). write_spec 잠금 안에서
+      ① seen·crop_sig ② adopt_check(지금 파일, family) — 이유가 있으면 AdoptRefused(reason) ③ kind(_merge_path fill) ≠ add 면
+      AdoptRefused(reason — 해제 뒤 채택이 _draft.deleted 기록만 쓰지 않게) ④ value ≠ 다시 계산한 값이면 SpecConflict ⑤ 병합
+      ⑥ 내용 보호: _layer_targets 자리·_draft.adopted·pending/deleted 기록 밖이 바뀌거나 render_changed 면 AdoptRefused(rows)
+      ⑦ 렌더 점검(지금 크롭 + 수정과 같은 반영 뒤 크롭 crop') 실패면 AdoptRefused. ②③ 은 GET /draft 와 같은 adopt_state(표식 없는
+      도착 초안 _arrived·⑥ 을 늘 거절할 노드 값 양보 _yield_paths 도 거절 이유). 원장 초안이 아직 스펙에 안 쓰인 크롭
+      (unwritten_specs·도착분)은 AdoptRefused — 수정·해제는 허용하고 영향에 그 초안을 반영.
+    - op="set": text 를 _layer_targets 로(사람 값 — _draft.written 은 건드리지 않아 이후 keep_human). 검사 = store.merge_layer_targets(
+      다음 반영이 읽을 레이어명, text, crop_id, aliases=[psd_name]) — 노드 merge_adopted 와 같은 인자, 문법 오류 ValueError, 빈 문구·
+      'X:' 항목이 없는 문구(';'·'<크롭 이름> |') AdoptRefused("해제를 쓰세요"). 렌더 점검은 반영 뒤 크롭(타깃 = new_targets)으로 —
+      실패하거나 노드 필드를 빼야 렌더되면 AdoptRefused, 플래그는 노드 보고서와 같은 기준(_shown_flags)으로 골라 warnings.
+    - op="clear": _layer_targets 키 삭제(노드 값을 지우면 다시 채택은 [수정]으로만 — keep_deleted).
+    동시성: seen = GET /draft(draft_view)의 스펙 지문 토큰(파일 없음 "null"), crop_sig = crop_signature — 다르면 SpecConflict(409).
+    family = pipeline.draft.vlm → parse_vlm_choice(openai + mock 스위치면 mock) — None 금지(mock 초안 거절이 꺼짐), apply_mode =
+    pipeline.draft.apply(화풍 전파 project_style_for). preview=True 는 같은 검사를 잠금 없이 하고 쓰지 않는다(seen 그대로).
+    깨진 스펙 JSON·목록이 아닌 targets ValueError, 파일 잠김 OSError, _project·없는 크롭 ValueError. memo = build_crop_ctx 평탄화
+    캐시(None = 매번)."""
+    if op not in ADOPT_OPS:
+        raise ValueError(f"op 는 {', '.join(ADOPT_OPS)} 중 하나여야 합니다: {op!r}")
+    _check_family(family)
+    if apply_mode not in APPLY_MODES:
+        raise ValueError(f"apply 값이 잘못되었습니다: {apply_mode!r} (선택지: {', '.join(APPLY_MODES)})")
+    crop = _adopt_crop(m, crop_id)
+    if not isinstance(seen, str) or not isinstance(crop_sig, str):
+        raise ValueError("seen·crop_sig 는 GET /draft 가 준 문자열 그대로여야 합니다")
+    if op == "adopt" and not isinstance(value, str):
+        raise ValueError("채택 값(value)이 필요합니다 — GET /draft 의 adopt.value 그대로")
+    if op == "set":
+        if not isinstance(text, str):
+            raise ValueError("수정 문구(text)가 필요합니다")
+        text = text.strip()
+        if not text:
+            raise AdoptRefused("수정 문구가 비었습니다 — 해제를 쓰세요")
+    if op == "adopt" and crop_id in unwritten_specs(root):
+        raise AdoptRefused(_UNWRITTEN_WHY)
+    if crop_signature(crop) != crop_sig:
+        raise SpecConflict("크롭이 바뀌었습니다(레이어명·타깃) — 다시 읽기")
+    refs_dir = (m.get("source") or {}).get("refs_dir") or ""
+    glossary = store.project_glossary(root, m)
+    memo = {} if memo is None else memo
+    nxt, layout_text = _next_crop(root, crop)
+    if op == "set":  # 문법 오류 = ValueError(쓰기 전)
+        parsed = store.parse_crop_layer_name(nxt["layer_name"])
+        store.merge_adopted(nxt, parsed, {"_layer_targets": text})
+        # 'X:' 항목이 하나도 없는 문구(';'·'<크롭 이름> |')는 다음 반영에 효과 없는 사람 값으로 남아 [채택]만 막는다 — 빈 문구처럼 거절
+        # (타깃 없는 parsed 로 다시 병합: 문구 있는 항목은 모두 타깃, 'B:' 처럼 빈 항목은 경고 — 빈 항목뿐이면 명세대로 경고만)
+        ent, empty = store.merge_adopted(nxt, {**parsed, "targets": []}, {"_layer_targets": text})
+        if not ent["targets"] and not empty:
+            raise AdoptRefused("수정 문구에 타깃 항목('B: …')이 없습니다 — 해제를 쓰세요")
+    ctx = build_crop_ctx(root, m, crop, refs_dir=refs_dir, glossary=glossary, backend=family, memo=memo)
+    style = project_style_for(root, apply_mode) if op == "adopt" else None
+    path = _spec_path(root, crop_id)
+    seen_cur: list = []   # decide 가 본 지금 파일(영향의 '반영 전')
+    flags: list[str] = []
+
+    def check_next(spec: dict) -> list[str]:
+        """렌더 점검을 반영 뒤 크롭(crop' — 타깃 = 다음 Import 의 new_targets)으로(채택·수정 공용, 검증 D-7: 지금 크롭에는 _layer_targets
+        가 더하는 tid 가 없어 그 tid 의 스펙 항목이 렌더되지 않는다). 실패하거나 노드 필드를 빼야 렌더되면 AdoptRefused, 반환 = 보일 플래그
+        (노드 보고서와 같은 기준 _shown_flags — 이 스펙의 초안 유무·반영 뒤 타깃으로: 초안 전·targets 의 기대값은 날것으로 싣지 않음)."""
+        merged_, _w = store.merge_adopted(nxt, store.parse_crop_layer_name(nxt["layer_name"]), spec)
+        tg = store.new_targets(merged_, crop)
+        chk = render_check({**nxt, "targets": tg}, copy.deepcopy(spec), refs_dir=refs_dir, glossary=glossary, owned=_owned_paths(spec))
+        if not chk.ok:
+            raise AdoptRefused("렌더 점검 실패 — 쓰지 않음: " + "; ".join(chk.problems))
+        if chk.dropped:
+            raise AdoptRefused(f"렌더 점검 실패 — 노드가 쓴 {', '.join(chk.dropped)} 를 빼야 렌더됨(쓰지 않음 — 그래프 Spec Draft 로)")
+        sd = spec.get("_draft")
+        return _shown_flags(chk.flags, drafted=isinstance(sd, dict) and bool(sd.get("key")), targets_only=apply_mode == "targets",
+                            bare=[t.tid for t in _target_ins(tg, nxt["layer_name"], glossary) if t.legacy and not (t.name_en or t.gloss)])
+
+    def adopt(cur: dict | None) -> MergeResult:
+        value_now, kind, why = adopt_state(root, m, ctx, cur, family=family, memo=memo)  # GET /draft 와 같은 판정(도착분 포함)
+        if why:
+            raise AdoptRefused(f"채택하지 않음: {why}", reason=why)
+        if kind != "add":
+            why = _kind_why(kind, _lt_cb(cur)[0], value_now)
+            raise AdoptRefused(f"채택하지 않음: {why}", reason=why)
+        if value != value_now:
+            raise SpecConflict("채택 값이 바뀌었습니다 — 다시 읽기")
+        out: dict = {}
+        res = merge_crop(cur, "fill", ctx=ctx, req=None, crop=crop, done=None, prov={}, project_style=style,
+                         apply_mode=apply_mode, adopt=True, backend=family, refs_dir=refs_dir, glossary=glossary, out=out)
+        chk = out["check"]
+        if not chk.ok:
+            raise AdoptRefused("렌더 점검 실패 — 쓰지 않음: " + "; ".join(chk.problems))
+        rows = [f"{r.path}: {r.kind}" for r in res.rows if r.path != "crop._layer_targets" and r.kind not in _INFO_ROWS]
+        rows += [f"{p}: render_fallback" for p in chk.dropped]
+        after = res.spec if res.spec is not None else cur
+        if rows or res.render_changed or not _eq(_strip_adopted(after), _strip_adopted(cur)):
+            raise AdoptRefused("Studio 초안 설정(apply·화풍)이 이 스펙을 마지막으로 쓴 Spec Draft 와 달라 채택 외 필드가 바뀜 — "
+                               "설정 확인 또는 그래프 Spec Draft 로 채택", rows=rows)
+        check_next(after)  # 채택이 더하는 tid 의 스펙 항목(사람 값)이 다음 Prepare 를 멈추지 않게 — 플래그는 노드 adopt 처럼 싣지 않음
+        return res
+
+    def decide(cur: dict | None) -> MergeResult:
+        bad = _targets_error(cur)
+        if bad:  # 깨진 JSON(write_spec·미리보기의 _parse_spec)과 같이 — 병합·렌더 점검이 targets 를 목록으로 순회
+            raise ValueError(f"{_TAG} specs/{crop_id}.json — {bad}")
+        if _spec_seen(path) != seen:
+            raise SpecConflict("스펙이 다른 곳에서 바뀌었습니다 — 다시 읽기")
+        now = next((c for c in store.load_manifest(root)["crops"] if c["id"] == crop_id), None)
+        if now is None or crop_signature(now) != crop_sig:
+            raise SpecConflict("크롭이 바뀌었습니다(레이어명·타깃) — 다시 읽기")
+        seen_cur.append(cur)
+        if op == "adopt":
+            return adopt(cur)
+        new = copy.deepcopy(cur) if isinstance(cur, dict) else {}
+        if op == "clear":
+            new.pop("_layer_targets", None)
+        else:
+            _set_key(new, "_layer_targets", text)
+            _to_end(new, "_draft")
+            flags.extend(check_next(new))
+        changed = not _eq(new, cur if cur is not None else {})
+        return MergeResult(new if changed else None, changed, [], False, False, [])
+
+    if preview:
+        try:
+            with open(path, "rb") as f:
+                cur, err = _parse_spec(f.read())
+        except FileNotFoundError:
+            cur, err = None, None
+        if err:
+            raise ValueError(f"{_TAG} specs/{crop_id}.json — {err}")
+        res = decide(cur)
+        new_seen = seen
+    else:
+        with store.manifest_lock(root):  # 쓴 뒤 지문까지 같은 잠금 안에서(write_spec 도 같은 RLock)
+            res, _backup = write_spec(root, crop_id, decide)
+            new_seen = _spec_seen(path)
+    cur = seen_cur[0]
+    after = res.spec if res.spec is not None else cur
+    arrived = op != "adopt" and _arrived(root, m, crop, ctx, cur, family=family, memo=memo)
+    effects, warns = _adopt_effects(crop, nxt, ctx, cur, after, layout_text, glossary=glossary, family=family,
+                                    apply_mode=apply_mode, arrived=arrived)
+    return {"ok": True, "seen": new_seen, "layer_targets": _lt_view(after), "targets_after": effects["targets_after"],
+            "effects": effects, "warnings": warns + flags}
+
+
 # ══════════════════════════════════════════════════════════════════════
 # 백엔드 (§2.9)
 # ══════════════════════════════════════════════════════════════════════
@@ -4139,6 +4761,19 @@ _NO_DRAFT_FLAGS = ("lint: CJK", "warn: 기본 설명", "v4_equals_v1")   # 초�
 _TARGETS_FLAGS = ("name_too_long", "truncated_output", "missing_target", "unknown_target", "dup_target", "id_coerced")
 
 
+def _shown_flags(flags: list[str], *, drafted: bool, targets_only: bool, bare: list[str]) -> list[str]:
+    """렌더 점검 플래그 중 보일 것(노드 보고서 _crop_status·Studio [수정] 미리보기 warnings 같은 기준): 초안 전(drafted 거짓)은
+    _NO_DRAFT_FLAGS 가 기대값(한글 라벨·기본 설명으로 렌더), apply=targets 는 기본 설명·v4_equals_v1 이 기대값이고 lint: CJK 는
+    bare(영문 이름·용어집 없는 레거시 tid)가 있으면 '영문 이름 없음 → adopt 또는 용어집'."""
+    if not drafted:
+        flags = [f for f in flags if f not in _NO_DRAFT_FLAGS]
+    if targets_only:
+        flags = [f for f in flags if f not in ("warn: 기본 설명", "v4_equals_v1")]
+        if bare and "lint: CJK" in flags:
+            flags[flags.index("lint: CJK")] = f"{', '.join(bare)} 영문 이름 없음 → adopt 또는 용어집"
+    return flags
+
+
 def _targets_flag(f: str) -> bool:
     """apply=targets 의 크롭 줄에 남기는 초안 플래그: 이름·bbox·구조(타깃 누락·모름·중복, 잘림, id 보정)."""
     parts = f.split(": ")
@@ -4192,15 +4827,11 @@ def _crop_status(ctx: CropCtx, plan: dict, merges: dict, checks: dict, drafts: d
     if chk is not None:
         flags += chk.flags + [f"validate: {p}" for p in chk.problems]  # validate_spec 문제는 쓰기를 막지 않고 경고로
     sd = ctx.spec.get("_draft") if isinstance(ctx.spec, dict) else None
-    if d is None and not (isinstance(sd, dict) and sd.get("key")) and any(f in _NO_DRAFT_FLAGS for f in flags):
-        flags = [f for f in flags if f not in _NO_DRAFT_FLAGS]
-        if not flags:
-            return 4, cid, []
-    if targets_only:
-        flags = [f for f in flags if f not in ("warn: 기본 설명", "v4_equals_v1")]
-        bare = [t.tid for t in ctx.targets if t.legacy and not (t.name_en or t.gloss)]
-        if bare and "lint: CJK" in flags:
-            flags[flags.index("lint: CJK")] = f"{', '.join(bare)} 영문 이름 없음 → adopt 또는 용어집"
+    drafted = d is not None or (isinstance(sd, dict) and bool(sd.get("key")))
+    if not drafted and flags and all(f in _NO_DRAFT_FLAGS for f in flags):
+        return 4, cid, []
+    flags = _shown_flags(flags, drafted=drafted, targets_only=targets_only,
+                         bare=[t.tid for t in ctx.targets if t.legacy and not (t.name_en or t.gloss)])
     if res is not None:
         extra = [f"  {_row_line(r)}" for r in res.rows
                  if r.kind in ("add", "update", "delete", "force", "keep_human", "keep_deleted", "yield")][:8] + extra

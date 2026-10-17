@@ -2,7 +2,9 @@
 // 서버: bmk_design_patch_board.py (/bmk/design_patch/*). 모든 문자열(PSD 레이어명 등)은 textContent 로만 넣는다.
 // 보드는 매니페스트(★·slice·탈락·재굴림 의도)만 고친다. 유료 호출은 opener(ComfyUI 탭)가 Review 노드를 큐에 넣을 때만.
 // 캔버스 뷰어는 viewer.js(DPViewer) — 이 파일이 선택·키 입력을 넘긴다. 레이아웃 편집 모드(E)는 layout_edit.js(DPLayoutEdit),
-// 레퍼런스 모드(T)는 ref_edit.js(DPRefEdit — 시트 뷰어 = DPViewer 두 번째 인스턴스). 두 모드와 검토는 서로 배타.
+// 레퍼런스 모드(T)는 ref_edit.js(DPRefEdit — 시트 뷰어 = DPViewer 두 번째 인스턴스), 진행 모드(G)는 pipeline.js(DPPipeline — 실행 설정·
+// 무료 반영·계획/비용·채택·★ 점검·Export, 머리줄 한 줄·ComfyUI 탭 hello 표시). 세 모드와 검토는 서로 배타.
+// 편집기의 "반영(큐)"는 무료 반영(apply 템플릿 — 탭 불필요)이고, 옛 서버(재시작 전)면 ComfyUI 탭의 Review 부분 실행으로 대신한다.
 "use strict";
 
 (() => {
@@ -19,7 +21,20 @@
     "KeyS", "KeyM", "KeyV"]);
   // 레퍼런스 모드에서 끄는 키: 검토 키 + 편집(E) + 숨은 캔버스 뷰어 키(B·O·N). 0·1·2·F 는 ref_edit.js 가 시트 뷰어에 쓴다
   const REFS_OFF = new Set([...EDIT_OFF, "KeyE", "KeyB", "KeyO", "KeyN"]);
+  // 진행 모드에서 끄는 키: 검토 키 + 편집(E)·레퍼런스(T). 뷰어 키(B·O·N·0·F·1·2)는 그대로(가운데 = 캔버스 뷰어)
+  const PIPE_OFF = new Set([...EDIT_OFF, "KeyE", "KeyT"]);
   const LAYOUT_STATUS = { changed: "레이아웃 바뀜(미반영)", removed: "레이아웃에서 지움(미반영)" }; // state 크롭의 layout_status
+  // ComfyUI 탭 hello(DPPipeline.link) 상태 → 배지(S3a 는 표시만 — 유료 승인 단추는 S3b). 키 = tabKey: ok 라도 채널로 찾은 탭은 found(R·ComfyUI 큐는
+  // opener 로만 감 — S2 의 'ComfyUI 탭 없음' 사전 경고를 잃지 않게), old 중 응답이 아예 없으면 silent(옛 확장인지 다른 주소로 옮겼는지 모름)
+  const TAB_BADGE = {
+    ok: ["b-run", "ComfyUI 탭 연결(S3)"],
+    found: ["b-wait", "ComfyUI 탭 찾음(채널) — 재굴림·ComfyUI 큐는 Open Board 창에서"],
+    old: ["b-wait", "탭 확장이 옛 판 — ComfyUI 탭 새로고침"],
+    silent: ["b-wait", "ComfyUI 탭 응답 없음 — 탭 새로고침 또는 Open Board 로 다시 열기"],
+    none: ["b-dim", "ComfyUI 탭 없음"],
+    many: ["b-wait", "ComfyUI 탭 여러 개 — Open Board 로 다시 여세요"],
+    wait: ["b-dim", "ComfyUI 탭 확인 중"],
+  };
 
   let S = null; // 마지막 전체 상태
   let tKey = null; // 선택한 타깃 "crop_id/tid"
@@ -41,6 +56,9 @@
   let editing = false;
   let refEd = null; // DPRefEdit — 옛 서버는 ref_edit.js 를 주지 않아 null
   let refsOn = false;
+  let pipe = null; // DPPipeline 패널 — 옛 서버는 pipeline.js 를 주지 않아 null
+  let pipeOn = false;
+  let tabLink = null; // DPPipeline.link — ComfyUI 탭 hello 상태
 
   const $ = (id) => document.getElementById(id);
 
@@ -152,11 +170,18 @@
       if (d.unchanged && S) {
         S.running = d.running;
         S.drain = d.drain;
+        S.drafting = d.drafting; // S3: Spec Draft 실행 중(옛 서버 = undefined)
         // 레이아웃·레퍼런스 쓰기는 매니페스트 rev 를 올리지 않는다 — layout_rev·refs_rev 가 바뀌면 크롭 요약을 새로 받는다.
         // refs_files_v = 바깥(PS·탐색기)에서 refs_dir 파일이 바뀜 — 새 S 가 있어야 크롭 요약 칩·레퍼런스 편집기(since 없이 GET /refs)가 따라온다
         if ("layout_rev" in d && d.layout_rev !== S.layout_rev) pollAgain = true;
         if ("refs_rev" in d && d.refs_rev !== S.refs_rev) pollAgain = true;
         if ("refs_files_v" in d && d.refs_files_v !== S.refs_files_v) pollAgain = true;
+        // S3: 실행 설정(pipeline.json)·기억한 계획의 서명이 바뀜 — 크롭 요약(초안 대기 칩)·진행 패널이 새 S 로 따라온다
+        if ("pipeline_rev" in d && d.pipeline_rev !== S.pipeline_rev) pollAgain = true;
+        // 서버가 옛 판으로 재시작됨(unchanged 에 pipeline_rev 가 없어짐 — 매니페스트 rev 는 그대로): 전체 state 를 받아 S 에서도 빼야
+        // applyFree·진행 패널이 옛 서버로 판정(탭 반영 대체)
+        if (!("pipeline_rev" in d) && "pipeline_rev" in S) pollAgain = true;
+        if ("plan_v" in d && d.plan_v !== S.plan_v) pollAgain = true;
         renderHeader();
       } else if (!d.unchanged) {
         S = d;
@@ -165,6 +190,7 @@
       }
       if (editing && S) editor.stateChanged(S);
       if (refsOn && S) refEd.stateChanged(S);
+      if (pipe && S) pipe.stateChanged(S); // 머리줄 한 줄·첫 계획(칩)·이어 받기는 모든 모드
       setConn("");
     } catch (e) {
       setConn(e.message);
@@ -244,6 +270,7 @@
     cKey = defaultCand(curTarget());
     refIdx = 0;
     rerollArm = null;
+    if (pipeOn) pipe.select(curTarget().crop_id); // 진행 모드: 채택 패널도 그 크롭(캔버스 클릭)
     renderAll(true);
   }
 
@@ -363,13 +390,21 @@
       return;
     }
     const what = `재굴림 +1 호출 (${cell.variant || cell.cell_key.slice(0, 8)}${usd(cell)})`;
+    // 셀 가격(est_usd)은 마지막 Prepare 의 jobs 값 — S3a 부터 Studio 반영일 수 있어 그래프 Prepare 를 다시 도는 큐와 다를 수 있음을 함께 적는다
+    const graphPrep = "금액은 지금 jobs(마지막 Prepare — Studio 반영 포함) 기준: 큐·Run 은 그래프 Prepare(그래프 위젯 값)를 다시 돌린 뒤 과금하므로 "
+      + "그래프 Prepare 값이 Studio 설정과 다르면 장 수·비용이 바뀌거나(n·셀당 호출) 셀이 바뀌어 이 재굴림이 미뤄짐(모델·품질·변형 등)";
+    // 큐 요청은 opener(Open Board 로 연 탭)로만 간다 — 채널로 찾은 탭이 있어도 없으면 예약만(다음 Run 때 선택과 무관하게 과금)
+    const tab = comfyConnected();
     if (fromButton) {
-      if (!window.confirm(`${what}\n유료 호출이 사전 승인되고 ComfyUI 탭에 큐 요청을 보냅니다. 계속할까요?`)) return;
+      if (!window.confirm(`${what}\n${graphPrep}\n` + (tab ? "유료 호출이 사전 승인되고 ComfyUI 탭에 큐 요청을 보냅니다. 계속할까요?"
+        : "유료 호출이 사전 승인됩니다 — 이 창은 Open Board 로 열리지 않아 큐를 보낼 탭이 없음: 재굴림은 예약만 되고 다음 Run 때(선택과 무관) "
+          + "함께 과금됩니다. 계속할까요?"))) return;
     } else {
       const now = Date.now();
       if (!rerollArm || rerollArm.cell !== cell.cell_key || now > rerollArm.until) {
         rerollArm = { cell: cell.cell_key, until: now + REROLL_CONFIRM_MS };
-        toast(`R 을 한 번 더 누르면 ${what} — 유료`, "warn");
+        toast(`R 을 한 번 더 누르면 ${what} — 유료` + (tab ? "" : " · 큐를 보낼 탭 없음(예약만 — 다음 Run 때 과금)")
+          + " · 금액은 지금 jobs 기준(그래프 Prepare 값이 Studio 와 다르면 바뀜)", "warn");
         return;
       }
     }
@@ -392,7 +427,7 @@
   }
 
   function queueInComfy(layout = false) {
-    // layout = 편집기 "반영(큐)" — ComfyUI 탭은 Review 상류에 Import PSD 가 있을 때만 큐에 넣는다(아니면 그 탭이 알림)
+    // layout = 옛 서버 대체(재시작 전 — applyFree) 탭 layout 요청 — ComfyUI 탭은 Review 상류에 Import PSD 가 있을 때만 큐에 넣는다(아니면 그 탭이 알림)
     const op = window.opener;
     if (op && !op.closed) {
       try {
@@ -405,6 +440,31 @@
     }
     toast("ComfyUI 탭에서 큐에 넣으세요 — 이 창은 Review 노드의 Open Board 로 열리지 않았습니다", "warn");
     return false;
+  }
+
+  async function applyFree() {
+    // 편집기 "반영(큐)"(opts.queue) = 무료 반영(서버 apply 템플릿을 /api/prompt 로 — 탭 불필요, 재굴림은 돌지 않음). 옛 서버(재시작 전 —
+    // state 에 pipeline_rev 없음·pipeline.js 없음·/pipeline/prompt 404)면 지금까지의 반영(큐)(ComfyUI 탭의 Review 부분 실행)으로 대신한다.
+    // 그 길은 대기 재굴림까지 과금하므로(편집기 확인 창은 무료 반영 문구) 대기 재굴림이 있으면 다시 묻는다
+    if (pipe && S && "pipeline_rev" in S) {
+      const r = await pipe.queue("apply");
+      if (!r) return;
+    }
+    // 서버는 S3 인데 이 창에 pipeline.js 가 없음 = 이 창이 ComfyUI 재시작 전에 열림(다시 재시작해도 그대로 — 창 새로고침), 그 밖 = 서버가 옛 버전
+    const stale = !pipe && !!S && "pipeline_rev" in S;
+    const why = stale ? "Studio 창 새로고침 필요(이 창이 ComfyUI 재시작 전에 열려 무료 반영 모듈이 없음)" : "ComfyUI 재시작 필요(서버가 옛 버전)";
+    const n = S ? S.pending_preapproved || 0 : 0;
+    if (n && !window.confirm(`${why} — 무료 반영 대신 ComfyUI 탭의 Review 부분 실행으로 반영합니다. 대기 재굴림 ${n}건(사전 승인)도 함께 과금됩니다.`
+      + (stale ? " 창을 새로고침하면 무료 반영(재굴림 과금 없음)을 씁니다." : "") + " 계속할까요?")) return;
+    toast(queueInComfy(true) ? `${why} — 이번 반영은 ComfyUI 탭의 Review 부분 실행으로 보냈습니다`
+      : `${why} — 무료 반영을 쓸 수 없어 ComfyUI 탭에서 큐에 넣어야 반영됩니다`, "warn");
+  }
+
+  function goTarget(key) {
+    // 진행 패널 ★ 점검의 줄 → 그 타깃을 검토 모드에서
+    if (!S || !S.targets.some((t) => t.key === key)) return;
+    setPipe(false);
+    selectTarget(key);
   }
 
   function drain() {
@@ -425,6 +485,13 @@
     savePref({ viewer: on });
   }
 
+  function notReady(what, key, mod) {
+    // 모드를 못 쓰는 이유: state 에 key 가 있는데 모듈 JS 가 없음 = 이 창이 ComfyUI 재시작 전에 열려 그 파일이 404 였음(창 새로고침 — 다시 재시작해도
+    // 그대로), 아니면 서버가 옛 버전(ComfyUI 재시작)
+    return S && key in S && !mod ? `Studio 창을 새로고침해야 ${what}을 쓸 수 있습니다(이 창이 ComfyUI 재시작 전에 열려 모듈이 없음)`
+      : `ComfyUI 를 재시작해야 ${what}을 쓸 수 있습니다(서버가 옛 버전)`;
+  }
+
   function layoutReady() {
     // 서버가 S1 이전 버전이면 state 에 layout_rev 가 없다(라우트도 없음) — 편집 버튼을 끄고 재시작 안내
     return !!editor && !!S && "layout_rev" in S;
@@ -432,10 +499,11 @@
 
   function setEditing(on) {
     if (on && !layoutReady()) {
-      toast("ComfyUI 를 재시작해야 레이아웃 편집을 쓸 수 있습니다(서버가 옛 버전)", "warn");
+      toast(notReady("레이아웃 편집", "layout_rev", editor), "warn");
       return;
     }
     if (on && refsOn) setRefs(false);
+    if (on && pipeOn) setPipe(false);
     editing = on;
     document.body.classList.toggle("editing", on);
     $("btn-edit").classList.toggle("on", on);
@@ -454,10 +522,11 @@
 
   function setRefs(on) {
     if (on && !refsReady()) {
-      toast("ComfyUI 를 재시작해야 레퍼런스 편집을 쓸 수 있습니다(서버가 옛 버전)", "warn");
+      toast(notReady("레퍼런스 편집", "refs_rev", refEd), "warn");
       return;
     }
     if (on && editing) setEditing(false);
+    if (on && pipeOn) setPipe(false);
     refsOn = on;
     document.body.classList.toggle("refs", on);
     $("btn-refs").classList.toggle("on", on);
@@ -465,6 +534,31 @@
       refEd.enter(S);
     } else {
       refEd.leave();
+      syncViewer(false);
+    }
+  }
+
+  function pipeReady() {
+    // 서버가 S3 이전 버전이면 state 에 pipeline_rev 가 없다(파이프라인 라우트도 없음)
+    return !!pipe && !!S && "pipeline_rev" in S;
+  }
+
+  function setPipe(on) {
+    if (on && !pipeReady()) {
+      toast(notReady("진행(G)", "pipeline_rev", pipe), "warn");
+      return;
+    }
+    if (on && editing) setEditing(false);
+    if (on && refsOn) setRefs(false);
+    pipeOn = on;
+    document.body.classList.toggle("pipe", on);
+    $("pipe-panel").hidden = !on; // onKeyDown 의 진행 모드 판정(도움말과 같은 꼴)
+    $("btn-pipe").classList.toggle("on", on);
+    if (on) {
+      const t = curTarget();
+      pipe.enter(S, t ? t.crop_id : null);
+    } else {
+      pipe.leave();
       syncViewer(false);
     }
   }
@@ -511,20 +605,55 @@
     }
     if (S.rerolls_total) b.append(el("span", "badge", `재굴림 누적 ${S.rerolls_total}`));
     if (S.orphan_candidates) b.append(el("span", "badge b-bad", `크롭 없는 후보 ${S.orphan_candidates}`));
-    const on = comfyConnected();
-    const cn = el("span", "badge " + (on ? "b-run" : "b-dim"), on ? "ComfyUI 탭 연결" : "ComfyUI 탭 없음");
-    cn.title = on ? "재굴림 큐 요청을 이 창을 연 ComfyUI 탭으로 보냅니다"
-      : "Review 노드의 Open Board 로 열지 않았거나 그 탭이 닫혔습니다 — 재굴림은 ComfyUI 탭에서 직접 큐에 넣어야 합니다";
-    b.append(cn);
+    if (tabLink) {
+      const [cls, label] = TAB_BADGE[tabKey(tabLink)];
+      const cn = el("span", "badge " + cls, label);
+      cn.title = tabTitle(tabLink);
+      b.append(cn);
+    } else {
+      const on = comfyConnected();
+      const cn = el("span", "badge " + (on ? "b-run" : "b-dim"), on ? "ComfyUI 탭 연결" : "ComfyUI 탭 없음");
+      cn.title = on ? "재굴림 큐 요청을 이 창을 연 ComfyUI 탭으로 보냅니다"
+        : "Review 노드의 Open Board 로 열지 않았거나 그 탭이 닫혔습니다 — 재굴림은 ComfyUI 탭에서 직접 큐에 넣어야 합니다";
+      b.append(cn);
+    }
     $("btn-drain").disabled = !S.running;
+    const pb = $("btn-pipe");
+    pb.disabled = !pipeReady();
+    pb.title = pipeReady() ? "진행 (G) — 실행 설정·무료 반영·계획/비용·채택·★ 점검·Export(탭 불필요 — 유료 승인은 S3b)"
+      : notReady("진행", "pipeline_rev", pipe);
     const eb = $("btn-edit");
     eb.disabled = !layoutReady();
-    eb.title = layoutReady() ? "레이아웃 편집 (E) — 크롭 사각형·이름·대상을 Studio 에서"
-      : "ComfyUI 를 재시작해야 레이아웃 편집을 쓸 수 있습니다(서버가 옛 버전)";
+    eb.title = layoutReady() ? "레이아웃 편집 (E) — 크롭 사각형·이름·대상을 Studio 에서" : notReady("레이아웃 편집", "layout_rev", editor);
     const rb = $("btn-refs");
     rb.disabled = !refsReady();
-    rb.title = refsReady() ? "레퍼런스 (T) — 시트에서 오려 refs 에 저장·크롭 ID 로 연결(무료)"
-      : "ComfyUI 를 재시작해야 레퍼런스 편집을 쓸 수 있습니다(서버가 옛 버전)";
+    rb.title = refsReady() ? "레퍼런스 (T) — 시트에서 오려 refs 에 저장·크롭 ID 로 연결(무료)" : notReady("레퍼런스 편집", "refs_rev", refEd);
+  }
+
+  function tabKey(k) {
+    // TAB_BADGE 키(link 상태 + 길): 채널로만 찾은 탭은 found, opener 가 hello 에 아예 답하지 않으면 silent
+    if (k.state === "ok" && k.via !== "opener") return "found";
+    if (k.state === "old" && k.ext === null) return "silent";
+    return k.state;
+  }
+
+  function tabTitle(k) {
+    const busy = k.busy ? " · 큐 처리 중" : "";
+    if (k.state === "ok" && k.via === "opener") {
+      return `Open Board 로 연 ComfyUI 탭(확장 판 ${k.ext}${busy}) — 재굴림·ComfyUI 큐 요청이 이 탭으로. 유료 승인은 S3b 전이라 그래프의 승인 버튼`;
+    }
+    if (k.state === "ok") {
+      return `채널로 찾은 ComfyUI 탭(확장 판 ${k.ext}${busy}) — 이 창은 Open Board 로 열리지 않아 재굴림·ComfyUI 큐는 그 탭에서 직접`
+        + "(R 은 사전 승인만 되고 다음 Run 때 과금). 유료 승인은 S3b 전이라 그래프의 승인 버튼";
+    }
+    if (k.state === "old" && k.ext === null) {
+      return "이 창을 연 ComfyUI 탭이 hello 에 답하지 않음 — 확장이 옛 판이면 그 탭을 새로고침, 그 탭이 다른 주소·페이지로 옮겨 갔으면 "
+        + "Review 노드의 Open Board 로 다시 열기";
+    }
+    if (k.state === "old") return `이 창을 연 ComfyUI 탭의 확장이 옛 판(${k.ext}) — 탭을 새로고침해야 바뀜`;
+    if (k.state === "many") return "응답한 ComfyUI 탭이 둘 이상이라 어느 탭인지 정할 수 없음 — Review 노드의 Open Board 로 다시 열면 그 탭";
+    if (k.state === "none") return "응답하는 ComfyUI 탭이 없음 — 반영·Export 는 탭 없이 됨, 재굴림은 ComfyUI 탭에서 큐에 넣어야 함";
+    return "ComfyUI 탭에 hello 를 보내는 중";
   }
 
   function targetTitle(t) {
@@ -565,6 +694,23 @@
     }
   }
 
+  function draftChips(ch, c) {
+    // §3.7 초안 대기 칩: state 크롭 요약 draft_chip = 보드가 기억한 only 없는 계획(없으면 null — 옛 서버엔 키 없음).
+    // 그 계획의 서명이 지금과 다르면(plan_stale) 흐리게 — 다시 계산은 머리줄
+    const d = c.draft_chip;
+    if (!d) return;
+    const st = c.plan_stale ? " stale" : "";
+    if (d.running) ch.append(chip("실행 중", "b-run" + st));
+    if (d.wait.length) {
+      const w = chip("초안 대기", "b-wait" + st);
+      w.title = d.wait.join("\n");
+      ch.append(w);
+    }
+    if (d.refresh) ch.append(chip("초안 갱신 가능", st));
+    if (d.adopt === "add") ch.append(chip("채택 가능", "b-reg" + st));
+    if (d.run_need) ch.append(chip(`승인 필요 ${d.run_need}`, "b-wait" + st));
+  }
+
   function renderTargets() {
     // 크롭마다 묶음: 타깃 하나면 한 줄(크롭 이름 + 타깃·크롭 칩), 여럿이면 크롭 머리 줄 + 타깃 줄
     const ol = $("target-list");
@@ -584,6 +730,7 @@
         const ch = el("div", "chips");
         if (c.pending) ch.append(chip(`대기 ${c.pending}`, "b-wait"));
         cropChips(ch, c);
+        draftChips(ch, c);
         if (ch.childElementCount) head.append(ch);
         head.addEventListener("click", () => selectTarget(ts[0].key));
         ol.append(head);
@@ -601,7 +748,10 @@
         if (t.name_en && t.name_en !== t.label) li.append(el("div", "tsub", t.name_en));
         const ch = el("div", "chips");
         targetChips(ch, t);
-        if (single) cropChips(ch, c);
+        if (single) {
+          cropChips(ch, c);
+          draftChips(ch, c);
+        }
         li.append(ch);
         li.addEventListener("click", () => selectTarget(t.key));
         ol.append(li);
@@ -813,6 +963,7 @@
     // change 로 회전 점프·다듬기 컷 요청이 말없이 감). 보드·레퍼런스 키 처리는 아래에서 그대로
     if (e.target instanceof Element && e.target.closest('[data-keys="board"]') && !e.ctrlKey && !e.metaKey && e.key !== "Tab") e.preventDefault();
     const helpOpen = !$("help").hidden;
+    const pipeShown = !$("pipe-panel").hidden; // 진행 모드(G) — setPipe 가 패널의 hidden 을 함께 바꾼다
     if (editing && !helpOpen && editor.onKey(e)) {
       e.preventDefault();
       return;
@@ -843,12 +994,19 @@
       e.preventDefault();
       return;
     }
+    if (pipeShown && PIPE_OFF.has(e.code)) {
+      e.preventDefault();
+      return;
+    }
     switch (e.code) {
       case "KeyE":
         if (!e.repeat) setEditing(!editing);
         break;
       case "KeyT":
         if (!e.repeat) setRefs(!refsOn);
+        break;
+      case "KeyG":
+        if (!e.repeat) setPipe(!pipeShown);
         break;
       case "ArrowUp": moveTarget(-1); break;
       case "ArrowDown": moveTarget(1); break;
@@ -946,6 +1104,7 @@
     on("btn-help", () => help());
     on("btn-edit", () => setEditing(!editing));
     on("btn-refs", () => setRefs(!refsOn));
+    on("btn-pipe", () => setPipe(!pipeOn));
     $("ref-frame").addEventListener("click", () => {
       const t = curTarget();
       if (t && t.refs.length > 1) {
@@ -970,14 +1129,31 @@
     }
     if (loadPref().viewer === false) document.body.classList.add("no-viewer");
     viewer = window.DPViewer.create($("viewer"), { apiUrl, onPick: pickCrop, onSeams });
+    // 편집기 "반영(큐)" = 무료 반영(applyFree), 확인 창 맨 앞 줄 = Prepare 설정 갈라짐(진행 패널이 읽은 GET /pipeline)
+    const applyWarn = () => (pipe ? pipe.applyWarn() : []);
     if (window.DPLayoutEdit) {
+      // psdPartial = 서버가 S1-a(PSD 기준점을 고른 이름만 갱신)인가 — S3 서버(state 에 pipeline_rev)와 함께 들어옴. 재시작 전 옛 서버는 take·ack 가
+      // 기준점을 통째로 바꿔 나머지 갈라짐 경고도 꺼진다(편집기가 옛 문구로)
       editor = window.DPLayoutEdit.create({ list: $("layout-list"), panel: $("layout-panel"), head: $("layout-head") },
-        { apiUrl, root: ROOT, viewer, toast, queue: queueInComfy, exit: () => setEditing(false) });
+        { apiUrl, root: ROOT, viewer, toast, queue: applyFree, applyWarn, psdPartial: () => !!S && "pipeline_rev" in S, exit: () => setEditing(false) });
     }
     if (window.DPRefEdit) {
       const sheetViewer = window.DPViewer.create($("ref-viewer"), { apiUrl });
       refEd = window.DPRefEdit.create({ list: $("ref-list"), panel: $("ref-panel"), head: $("ref-head"), sheets: $("ref-sheets"),
-        view: $("ref-viewer") }, { apiUrl, comfyUrl, root: ROOT, viewer: sheetViewer, toast, queue: queueInComfy, exit: () => setRefs(false) });
+        view: $("ref-viewer") }, { apiUrl, comfyUrl, root: ROOT, viewer: sheetViewer, toast, queue: applyFree, applyWarn, exit: () => setRefs(false) });
+    }
+    if (window.DPPipeline) {
+      pipe = window.DPPipeline.create({ list: $("pipe-list"), panel: $("pipe-panel"), head: $("pipe-head") }, {
+        apiUrl, comfyUrl, root: ROOT, toast, drain, goTarget,
+        refresh: () => refresh(true),
+        select: (id) => {
+          const t = S ? S.targets.find((x) => x.crop_id === id) : null;
+          if (t) selectTarget(t.key);
+        },
+        seams: () => seamsByCrop,
+        enter: () => setPipe(true),
+      });
+      tabLink = window.DPPipeline.link(window, renderHeader);
     }
     wireButtons();
     document.addEventListener("keydown", onKeyDown);

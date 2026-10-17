@@ -31,7 +31,7 @@
   "suggest": {
    "in": "{boxes:[[x0,y0,x1,y1],…], canvas, snap}",
    "out": "[x0,y0,x1,y1]",
-   "rule": "G4: U = 상자 합집합. 축마다 need = ceil(크기*10/7) (÷0.7 을 정수 식으로). w = max(128, snap ? ceilq(need,128) : need) (h 도). w > 3h 이면 h = up(w/3), 아니고 h > 3w 이면 w = up(h/3) (up = snap ? ceilq(.,128) : ceil). w = min(w, W), h = min(h, H). 그래서 w > 3h 이면 w = 3h, 아니고 h > 3w 이면 h = 3w (4096×1024 같은 넓은 캔버스 — 128 단위 없이). q = snap ? 16 : 1. x0 = rnd((ux0+ux1)/2 - w/2, q), y0 도(줄인 크기로 가운데). x0 = min(max(x0,0), W-w), y0 도."
+   "rule": "G4: U = 상자 합집합. 축마다 need = ceil(크기*10/7) (÷0.7 을 정수 식으로). w = max(128, snap ? ceilq(need,128) : need) (h 도). w > 3h 이면 h = up(w/3), 아니고 h > 3w 이면 w = up(h/3) (up = snap ? ceilq(.,128) : ceil). w = min(w, W), h = min(h, H). 그래서 w > 3h 이면 w = down(3h), 아니고 h > 3w 이면 h = down(3w) (4096×1000 같은 넓은 캔버스 — S1-b: down = snap ? 128 내림, 그것이 0 이면 1px 내림 : 내림 — place 의 down 과 같음). q = snap ? 16 : 1. x0 = rnd((ux0+ux1)/2 - w/2, q), y0 도(줄인 크기로 가운데). x0 = min(max(x0,0), W-w), y0 도."
   },
   "validate_rect": {
    "in": "{rect: 아무 값, canvas}",
@@ -1933,6 +1933,106 @@
     0,
     3436,
     1024
+   ]
+  },
+  {
+   "fn": "suggest",
+   "note": "S1-b 4096×1000 넓은 상자: 높이를 캔버스로 자른 뒤 비 > 3 → 폭 = down(3×1000) = 2944(128 내림)",
+   "in": {
+    "boxes": [
+     [
+      500,
+      400,
+      3300,
+      700
+     ]
+    ],
+    "canvas": [
+     4096,
+     1000
+    ],
+    "snap": true
+   },
+   "out": [
+    432,
+    0,
+    3376,
+    1000
+   ]
+  },
+  {
+   "fn": "suggest",
+   "note": "S1-b 같은 상자 스냅 끔 → 폭 = 3×1000",
+   "in": {
+    "boxes": [
+     [
+      500,
+      400,
+      3300,
+      700
+     ]
+    ],
+    "canvas": [
+     4096,
+     1000
+    ],
+    "snap": false
+   },
+   "out": [
+    400,
+    0,
+    3400,
+    1000
+   ]
+  },
+  {
+   "fn": "suggest",
+   "note": "S1-b 세로 1000×4096: 높이 = down(3×1000) = 2944",
+   "in": {
+    "boxes": [
+     [
+      400,
+      500,
+      700,
+      3300
+     ]
+    ],
+    "canvas": [
+     1000,
+     4096
+    ],
+    "snap": true
+   },
+   "out": [
+    0,
+    432,
+    1000,
+    3376
+   ]
+  },
+  {
+   "fn": "suggest",
+   "note": "S1-b 4096×40: down(3×40) 의 128 내림 0 → 1px 내림 120(비 = 3)",
+   "in": {
+    "boxes": [
+     [
+      100,
+      5,
+      3000,
+      30
+     ]
+    ],
+    "canvas": [
+     4096,
+     40
+    ],
+    "snap": true
+   },
+   "out": [
+    1488,
+    0,
+    1608,
+    40
    ]
   },
   {

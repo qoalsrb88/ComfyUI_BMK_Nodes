@@ -12,9 +12,10 @@ Run 이 만든 후보가 타깃마다 여러 장이 되면 노드 미리보기�
 라우트 (register_routes — 모든 root 파라미터 = store 레지스트리 키(소문자 hex 12자), 경로 금지)
 -------------------------------------------------------------------------------------------
 - GET  /bmk/design_patch/board/            board.html (web_design_patch/ 의 board.html·board.js·viewer.js·layout_geom.js·
-                                            layout_edit.js·ref_edit.js·board.css 만)
+                                            layout_edit.js·ref_edit.js·pipeline.js·board.css 만)
 - GET  /bmk/design_patch/state?root=&since_rev=
-       보드 요약(JSON). since_rev 가 지금 rev 와 같으면 {"unchanged": true, rev, running, drain, layout_rev, refs_rev, refs_files_v}.
+       보드 요약(JSON). since_rev 가 지금 rev 와 같으면 {"unchanged": true, rev, running, drain, layout_rev, refs_rev, refs_files_v,
+       pipeline_rev, plan_v}.
 - GET  /bmk/design_patch/thumb?root=&kind=&key=&size=[&v=]
        JPEG. kind = cand(후보 키) | before(crop_id/tid) | ref(crop_id/tid/번호) | delta(후보 키) | context(후보 키).
        size ∈ 128·192·256·384·512·768·1024, 또는 0 = 원해상도(cand·before 만).
@@ -35,7 +36,8 @@ Run 이 만든 후보가 타깃마다 여러 장이 되면 노드 미리보기�
 - POST /bmk/design_patch/layout/start {root}           매니페스트 크롭 → layout.json(이관, 있으면 409)
 - POST /bmk/design_patch/layout/crop  {root, rev, op: add|update|delete, …, restore_rev?, index?}
        update 가 이름을 바꾸면 먼저 refs.json 에 그 크롭을 바꾸기 전 이름으로 고정(S2 §2.6 — 실패하면 이름도 안 바꿈)
-- POST /bmk/design_patch/layout/psd   {root, rev, op: take|ack, names?, snapshot?}   PSD 스냅숏과 갈라졌을 때
+- POST /bmk/design_patch/layout/psd   {root, rev, op: take|ack, names?, snapshot?}   PSD 스냅숏과 갈라졌을 때(고른 이름만 기준점 갱신 —
+                                                       남은 갈라짐은 계속 경고, S1-a)
   레이아웃 쓰기는 모두 store.update_layout(expect_rev = rev) — rev 가 다르면 409, 매니페스트는 건드리지 않는다.
 - GET  /bmk/design_patch/refs?root=&since=             레퍼런스 편집기 상태(STUDIO_S2_SPEC §5.1, refs_state)
 - GET  /bmk/design_patch/refs/sheets?root=             시트 후보 목록 [{path, size, kind, bytes, v, preview_url}] (§5.2)
@@ -49,6 +51,20 @@ Run 이 만든 후보가 타깃마다 여러 장이 되면 노드 미리보기�
   레퍼런스 쓰기는 모두 drefs.update_refs(expect_rev = rev, null = 아직 없음 → 만들기) — rev 가 다르면 409, 매니페스트는 건드리지
   않는다. 이름으로 직접 가리키는 파일을 옮기거나 그 이름에 새 그림을 쓰면 409 {error, explicit} → confirm 에 이름을 넣어 다시.
   유료 경로 없음: SAM3 는 보드가 /api/prompt 로 큐에 넣는 무료 Ref Cut 노드가 돌린다(이 모듈은 요청·결과 파일만).
+- GET  /bmk/design_patch/pipeline?root=                실행 설정(STUDIO_S3_SPEC §6 — pl.view: 파일·유도값·갈라짐·경로 경고·최근 Export·
+                                                       설정 위젯 표). 파일을 쓰지 않는다
+- POST /bmk/design_patch/pipeline/settings {root, rev, section, values}   절 하나를 통째로(pl.update — rev 0 = 파일 생성, 깨진 파일
+                                                       덮어쓰기 = null, 다르면 409)
+- GET  /bmk/design_patch/pipeline/prompt?root=&stage=apply|export   무료 템플릿 {stage, prompt, targets: null, sig}(S3a — 유료·
+                                                       모르는 stage 400, 설정 확인·경로·깨진 파일 409 {reason})
+- GET  /bmk/design_patch/pipeline/plan?root=&only=&style=   Run·Draft 계획(pipeline_plan — 노드와 같은 함수의 승인 해시·비용·크롭별),
+                                                       다른 계획을 계산 중이면 202 {busy: true}
+- GET  /bmk/design_patch/pipeline/progress?root=       Run(원장)·Spec Draft(draft_active 동안의 원장) 진행
+- GET  /bmk/design_patch/draft?root=&crop=             크롭의 초안 제안·채택 상태(vlm.draft_view)
+- POST /bmk/design_patch/draft/adopt {root, crop_id, op: adopt|set|clear, text?, value?, seen, crop_sig, preview?}
+                                                       스펙 _layer_targets 채택·수정·해제(vlm.adopt_write — 거절 400 {reason|rows},
+                                                       seen·crop_sig·value 경합 409)
+  유료 경로 없음: 무료 템플릿(Run·Spec Draft 없음)만 내고 Studio 가 /api/prompt 로 큐에 넣는다. 유료 승인(S3b)은 탭 경유.
 POST 는 Content-Type application/json 만 받는다(다른 사이트의 단순 폼 POST 차단). 오류는 4xx + {"error": 한국어}
 (레퍼런스: 목록 밖 시트·없는 파일 404, 같은 이름이 있음 409).
 CPU·파일 작업은 asyncio.to_thread 로 돌려 aiohttp 루프를 막지 않는다. 시트 디코드·PSD 합성·컷·변환은 _REF_SLOTS 로 한 번에 하나.
@@ -95,6 +111,12 @@ CPU·파일 작업은 asyncio.to_thread 로 돌려 aiohttp 루프를 막지 않�
                                                     두 레지스트리를 합쳐 답한다(어느 쪽을 drain_flag 로 넘겨도 동작).
 - run_active(root) / is_running(root)              Run 진행 표시(컨텍스트 관리자, runner.run_calls 밖에서 쓸 때). 처음 들어갈 때·
                                                     마지막으로 나갈 때 이 모듈 drain 플래그를 지운다. is_running 은 runner 것도 본다.
+- set_qwen_dir(path)                               Studio Draft 계획의 local_qwen 모델 폴더(노드 모듈이 import 때 — 비면 local_qwen 계획 오류).
+- draft_active(root) / draft_since(root)           Spec Draft 실행 표시(컨텍스트 관리자 — 노드 run() 전체를 감쌈, run_active 와 별개)·
+                                                    가장 이른 시작 시각(없으면 None). 계획 라우트의 draft.running·진행 라우트의 since.
+- pipeline_plan(root, settings=None, *, only_ids, style, confirm=()) -> dict
+                                                    GET /pipeline/plan 본문(aiohttp 없음 — settings None = 실행 설정 파일(라우트),
+                                                    노드 대조 시험 N25·N26 은 설정을 넘겨 직접 부름).
 
 버전 이력
 ---------
@@ -126,6 +148,18 @@ v4 (2026-10-16, Studio S2 — _proto/STUDIO_S2_SPEC.md §5)
   FileExistsError 409·RefsConflict 409.
 - 보류·대표 교체는 refs.json held 에 원래 이름·크롭을 남긴다 — 되살리기는 그 이름으로(이름에서 접미를 짐작하지 않음), 보류 목록은 번호 접두 밖에
   기록의 크롭으로도(S1 번호 바꾸기 뒤), 보류 행 restore_as(codex6).
+v5 (2026-10-17, Studio S3a — _proto/STUDIO_S3_SPEC.md §2.4·§2.6·§3.5·§3.7·§6)
+- pipeline 라우트 7종(실행 설정 GET·POST, 무료 템플릿, 계획, 진행, 초안 채택 GET·POST — 모두 25 → 32 RouteDef, 경로 31), 정적
+  pipeline.js. 실행 설정·유도·템플릿은 bmk_design_patch_pipeline, 초안 계획·채택은 vlm(_vlm() 지연 접근자 하나 — state·layout·refs
+  경로는 vlm 을 불러오지 않음). 계획(pipeline_plan)은 노드와 같은 식(Run = runner.plan_calls + split_approval, Draft = vlm.draft_plan)
+  으로 only 없는 계획(크롭별) + 선택 계획(해시)을 계산하고 파일 stat 서명(설정보다 먼저 잡음) + 쓴 설정 지문으로 기억(계산 오류는
+  다시 쓰지 않음) — 라우트 잠금을 못 잡으면 202 busy. runner 실패는 run {error}(원장 대체 계산 없음), Draft 오류·실행 중은 draft 만
+  따로. '반영 필요' 판정 하나 = 계획 apply_pending(Import 미반영 + prepare_inputs 불일치 — 요청마다). Spec Draft 실행 표시
+  draft_active(시작 시각)·local_qwen 모델 폴더 set_qwen_dir 실제 구현.
+- state: pipeline_rev·plan_v(unchanged 응답에도), 크롭 요약 draft_chip·plan_stale(기억한 계획 — 계산하지 않음).
+- _guard 409 에 PipelineConflict·vlm.SpecConflict, 채택 거절(AdoptRefused)은 400 {error, reason|rows}.
+- S1-a: /layout/psd 가 고른 이름만 기준점을 스냅숏 값으로(이름 묶음 통째), ack 는 사라진 shape 도 고를 수 있음, names [] 400,
+  take 에 사라진 shape 뿐인 이름 400, 메타는 갈라짐 0 일 때만 스냅숏 값.
 """
 
 from __future__ import annotations
@@ -133,6 +167,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextlib
+import copy
 import functools
 import hashlib
 import io
@@ -154,12 +189,14 @@ from PIL import Image
 
 try:
     from . import bmk_design_patch_analysis as an
+    from . import bmk_design_patch_pipeline as pl
     from . import bmk_design_patch_prompt as dprompt
     from . import bmk_design_patch_psd as dpsd
     from . import bmk_design_patch_refs as drefs
     from . import bmk_design_patch_store as store
 except ImportError:  # 단독 실행/테스트
     import bmk_design_patch_analysis as an
+    import bmk_design_patch_pipeline as pl
     import bmk_design_patch_prompt as dprompt
     import bmk_design_patch_psd as dpsd
     import bmk_design_patch_refs as drefs
@@ -173,7 +210,7 @@ API = "/bmk/design_patch"
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web_design_patch")
 _STATIC = {"board.html": "text/html", "board.js": "text/javascript", "viewer.js": "text/javascript",
            "layout_geom.js": "text/javascript", "layout_edit.js": "text/javascript", "ref_edit.js": "text/javascript",
-           "board.css": "text/css"}
+           "pipeline.js": "text/javascript", "board.css": "text/css"}
 
 THUMB_KINDS = ("cand", "before", "ref", "delta", "context")
 THUMB_SIZES = (128, 192, 256, 384, 512, 768, 1024)
@@ -224,6 +261,8 @@ _FOCUS_LOCK = threading.Lock()
 _FLAGS_LOCK = threading.Lock()
 _DRAIN: dict[str, float] = {}      # root_key → 요청 시각
 _RUNNING: dict[str, int] = {}      # root_key → 진행 중인 Run 수
+_DRAFTS: dict[str, list[float]] = {}  # root_key → 진행 중인 Spec Draft 시작 시각(draft_active)
+_STARTS: dict[str, list[int]] = {}    # root_key → [Run 시작 수, Spec Draft 시작 수] — 계획 계산 중 시작한 실행(끝났어도)을 알아챔
 _PREF: dict[str, dict] = {}        # root_key → 보드가 쓸 분석 설정(prebuild_thumbs)
 _PLAN_WARNED: set[str] = set()
 _REFS_MEMO: dict[str, tuple] = {}  # refs_dir → (파일 이름 목록, {(nnn, part): match_refs 결과}) — 이름 목록이 바뀌면 버림
@@ -290,6 +329,7 @@ def run_active(root: str):
         if _RUNNING.get(k, 0) == 0:
             _DRAIN.pop(k, None)
         _RUNNING[k] = _RUNNING.get(k, 0) + 1
+        _STARTS.setdefault(k, [0, 0])[0] += 1
     try:
         yield
     finally:
@@ -300,6 +340,33 @@ def run_active(root: str):
             else:
                 _RUNNING.pop(k, None)
                 _DRAIN.pop(k, None)
+
+
+@contextlib.contextmanager
+def draft_active(root: str):
+    """Spec Draft 노드 run() 전체를 감싼다(STUDIO_S3_SPEC §2.4·§3.5): 그동안 계획 라우트는 draft {running: true} 만 답하고(진행 중
+    단위의 inflight 를 'orphan 재시도(과금됐을 수 있음)'로 잘못 읽지 않게), 진행 라우트는 시작 시각(draft_since) 뒤 원장을 센다.
+    run_active·drain 플래그와 별개. 예외·취소로 나가도 지운다."""
+    k = store.root_key(root)
+    t = time.time()
+    with _FLAGS_LOCK:
+        _DRAFTS.setdefault(k, []).append(t)
+        _STARTS.setdefault(k, [0, 0])[1] += 1
+    try:
+        yield
+    finally:
+        with _FLAGS_LOCK:
+            ts = _DRAFTS.get(k, [])
+            ts.remove(t)
+            if not ts:
+                _DRAFTS.pop(k, None)
+
+
+def draft_since(root: str) -> float | None:
+    """진행 중인 Spec Draft 의 가장 이른 시작 시각(epoch 초) — 없으면 None."""
+    with _FLAGS_LOCK:
+        ts = _DRAFTS.get(store.root_key(root))
+        return min(ts) if ts else None
 
 
 def board_url(key: str) -> str:
@@ -415,6 +482,17 @@ def _runner():
         except ImportError:
             return None
     return runner if hasattr(runner, "plan_calls") else None
+
+
+@functools.lru_cache(maxsize=1)
+def _vlm():
+    """bmk_design_patch_vlm — 보드의 vlm import 는 여기 하나(STUDIO_S3_SPEC §6). 초안 계획·채택 라우트만 처음 쓸 때 읽는다:
+    state·layout·refs 경로는 부르지 않는다(S2 B0 — 새 프로세스 프로브가 sys.modules 에 vlm 이 없음을 본다)."""
+    try:
+        from . import bmk_design_patch_vlm as dvlm
+    except ImportError:
+        import bmk_design_patch_vlm as dvlm
+    return dvlm
 
 
 def _ledger_pending(root: str, m: dict) -> dict[str, int]:
@@ -1231,14 +1309,25 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
     refs_files_v(unchanged 응답에도) = _refs_files_v — 바깥(탐색기·PS)에서 레퍼런스 파일을 넣고·고치고·지우면 바뀐다(refs_rev 는 그대로라
     보드는 이것이 바뀌면 GET /refs 를 since 없이 다시 받는다).
     크롭 요약의 refs = {n, main(Prepare 가 고를 대표), fixed, none(files [] 고정 — 연결 파일이 모두 사라진 고정은 false)} — 지금 연결
-    해석(drefs.resolve_refs) 기준, refs_dir 폴더가 없으면 null."""
+    해석(drefs.resolve_refs) 기준, refs_dir 폴더가 없으면 null.
+    drafting(unchanged 응답에도, S3) = Spec Draft 실행 중(draft_since — running 은 Run 만, 진행 모드는 이것으로 폴링마다 실행 중을 알아
+    낡은 계획·초안 다시 받기를 미룸). pipeline_rev(unchanged 응답에도, S3) = pipeline.json rev(없거나 깨졌으면 null), plan_v(unchanged
+    응답에도) = 보드가 기억한 only 없는 계획(pipeline_plan)의 서명이 지금 서명(_plan_sigs — 파일 stat 만(스펙 JSON 은 specs/ 목록이 바뀔 때만 파싱), vlm 없음)과 같고 계산 오류가 없으면 그 서명, 다르거나 오류거나
+    계획이 없으면 null — 보드는 둘 중 하나가 바뀌면 since_rev 없이 다시 받는다. 크롭 요약의 draft_chip = 기억한 계획의 {wait, refresh,
+    adopt, run_need, running(지금 Run·Spec Draft 실행 중)}(계획이 없으면 null), plan_stale = 기억한 계획이 지금과 다르거나 오류(칩을
+    흐리게 — §3.7)."""
     m = store.load_manifest(root)
     rk = store.root_key(root)
-    running = is_running(root)
+    running, drafting = is_running(root), draft_since(root) is not None
     lay = _layout_or_none(root)
     doc = _refs_doc(root)[0]
-    flags = {"running": running, "drain": running and drain_requested(root), "layout_rev": lay["rev"] if lay else None,
-             "refs_rev": doc["rev"] if doc else None, "refs_files_v": _refs_files_v(_refs_dir(m))}
+    flags = {"running": running, "drain": running and drain_requested(root), "drafting": drafting,
+             "layout_rev": lay["rev"] if lay else None, "refs_rev": doc["rev"] if doc else None, "refs_files_v": _refs_files_v(_refs_dir(m)),
+             "pipeline_rev": pl.pipeline_rev(root), "plan_v": None}
+    plan = _plan_free(root)
+    if plan is not None:
+        r_sig, d_sig = _plan_sigs(root, m, (running, drafting), flags["refs_files_v"])
+        flags["plan_v"] = plan["sig"] if plan["sig"] == f"r:{r_sig}|d:{d_sig}" and _plan_ok(plan) else None
     if since_rev is not None and since_rev == m["rev"]:
         return {"unchanged": True, "rev": m["rev"], **flags}
     pref = _PREF.get(rk)
@@ -1333,9 +1422,17 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
     by_id = {c["id"]: c for c in lay["crops"]} if lay else {}
     refs_dir = _refs_dir(m)
     refs_ok = _refs_dir_ok(refs_dir)
+    run_rows = (plan or {}).get("run", {}).get("by_crop") or {}
+    draft_rows = (plan or {}).get("draft", {}).get("by_crop") or {}
+    busy = running or drafting
     for c, mc in zip(crops, m["crops"]):  # 레이아웃 대 매니페스트(검토 모드 목록의 "미반영" 칩)
         c["layout_status"] = (None if lay is None else "removed" if c["id"] not in by_id
                               else _layout_status(by_id[c["id"]], mc)[0])
+        d = draft_rows.get(c["id"]) or {}
+        c["draft_chip"] = None if plan is None else {
+            "wait": list(d.get("wait") or []), "refresh": bool(d.get("refresh")), "adopt": d.get("adopt"),
+            "run_need": int((run_rows.get(c["id"]) or {}).get("need") or 0), "running": busy}
+        c["plan_stale"] = plan is not None and flags["plan_v"] is None
         r = drefs.resolve_refs(refs_dir, mc, doc) if refs_ok else None
         # none = 의도한 '레퍼런스 없음' 고정(files [] — 부수 효과 아님) — 연결한 파일이 모두 사라진 고정(n 0)과 칩을 가른다.
         # auto = 다른 크롭의 동작이 함께 '없음'으로 고정함(files [] + fixed.auto — 칩 '레퍼런스 없음(자동 고정)')
@@ -2035,16 +2132,29 @@ def _snap_token(snap: dict) -> str:
     return json.dumps([snap.get("fingerprint"), snap.get("at")])
 
 
+def _shape(c: dict) -> dict:
+    return {"name": c["name"], "layer_name": c["layer_name"], "rect": list(c["rect"])}
+
+
 def layout_psd(root: str, rev: int, op: str, names: list[str] | None, seen: str | None = None) -> dict:
-    """POST /layout/psd(§4.5): 믿을 수 있는 PSD 스냅숏(_read_snapshot)이 기준점(layout.psd)과 갈라졌을 때.
-    take = names(없으면 차이의 바뀐·새 shape 전부)의 PSD 값을 가져온다: 바뀐 shape → psd_name(없으면 name)이 같은 레이아웃 크롭
-    (여럿이면 기준점 rect 와 IoU 가 큰 것)의 PSD 에서 바뀐 필드만 — rect 면 rect, layer_name 이면 대상(레이어명 파싱, 같은 tid 의
-    상자는 유지) — Studio 에서 고친 나머지는 그대로. 새 shape → 크롭 추가(id 해시). 짝 크롭을 레이아웃에서 지운 바뀐 shape 는
-    skipped. ack = 크롭은 그대로 두고 경고만 끈다. 둘 다 끝나면 기준점 = 지금 스냅숏(갈라짐 0).
-    seen = 사용자가 본 스냅숏의 token(GET /layout 의 psd_diff.token) — 지금 스냅숏과 다르면 LayoutConflict(409, 새로고침).
+    """POST /layout/psd(§4.5, S1-a 이름별 갱신 — STUDIO_S3_SPEC §2.6): 믿을 수 있는 PSD 스냅숏(_read_snapshot)이 기준점(layout.psd)과
+    갈라졌을 때. 고를 수 있는 이름: take = 바뀐·새 shape, ack = 바뀐·새·사라진 shape(사라진 shape 의 경고는 ack 로만 끈다).
+    names 없음 = 그 op 의 전부(기준점은 사라진 shape 까지 스냅숏 통째 — 지금과 같음), names [] = 400, 범위 밖 이름 = 400, take 에
+    사라진 shape 뿐인 이름 = 400(경고 끄기로).
+    take = 고른 이름의 PSD 값을 가져온다: 바뀐 shape → psd_name(없으면 name)이 같은 레이아웃 크롭(여럿이면 기준점 rect 와 IoU 가 큰
+    것)의 PSD 에서 바뀐 필드만 — rect 면 rect, layer_name 이면 대상(레이어명 파싱, 같은 tid 의 상자는 유지) — Studio 에서 고친 나머지는
+    그대로. 새 shape → 크롭 추가(id 해시). 짝 크롭을 레이아웃에서 지운 바뀐 shape 는 skipped. ack = 크롭은 그대로 두고 경고만 끈다.
+    기준점은 고른 이름만 스냅숏 값 — 그 이름의 항목을 모두 빼고 스냅숏의 같은 이름 항목 전부(스냅숏 순서)를 그 이름의 첫 항목
+    자리에(없던 이름이면 끝에) 넣는다(skipped 이름도). psd_diff 는 이름 안에서만 짝지으므로 고른 이름의 차이는 0, 남은 갈라짐은
+    계속 경고. 메타(path·fingerprint·crop_group·at)는 갱신 뒤 차이가 0 일 때만 기준점 = 스냅숏 통째, 아니면 그대로(노드 Import 가
+    스냅숏을 잃었을 때 PSD 를 다시 열게).
+    seen = 사용자가 본 스냅숏의 token(GET /layout 의 psd_diff.token) — 지금 스냅숏과 다르면 LayoutConflict(409, 새로고침). 기준점이
+    아니라 스냅숏의 표시라 부분 갱신 뒤에도 같은 token 으로 다시 쓸 수 있다.
     스냅숏이 없거나 믿을 수 없거나 차이가 없으면 400. → {ok, rev, taken: [{id, name, fields}], added, skipped}"""
     if op not in ("take", "ack"):
         raise _Reject(400, "op 는 take, ack 중 하나여야 합니다")
+    if names is not None and not names:
+        raise _Reject(400, "고른 shape 가 없습니다")
 
     def mutate(lay):
         snap = _read_snapshot(root, store.load_manifest(root))
@@ -2055,10 +2165,16 @@ def layout_psd(root: str, rev: int, op: str, names: list[str] | None, seen: str 
         diff = store.psd_diff(lay["psd"], snap)
         if not any(diff.values()):
             raise _Reject(400, "PSD 사각형이 기준점과 같습니다(갈라짐 없음)")
-        avail = [x["name"] for x in diff["changed"] + diff["added"]]
+        takeable = [x["name"] for x in diff["changed"] + diff["added"]]
+        gone = [x["name"] for x in diff["removed"]]
+        avail = takeable + gone if op == "ack" else takeable
         want = set(avail if names is None else names)
+        if op == "take" and want & set(gone) - set(takeable):
+            raise _Reject(400, f"사라진 shape 는 가져올 수 없습니다 — 경고 끄기로: {sorted(want & set(gone) - set(takeable))}")
         if not want <= set(avail):
             raise _Reject(400, f"PSD 차이에 없는 shape 입니다: {sorted(want - set(avail))}")
+        if names is None:  # 전부 = 지금처럼 기준점 = 스냅숏 통째(take 도 사라진 shape 경고를 끔 — §0 S1-a), 크롭 쪽은 바뀐·새 shape 만
+            want |= set(gone)
         taken, added, skipped = [], [], []
         if op == "take":
             for ch in diff["changed"]:
@@ -2086,9 +2202,21 @@ def layout_psd(root: str, rev: int, op: str, names: list[str] | None, seen: str 
                                                  for t in store.parse_crop_layer_name(a["layer_name"])["targets"]],
                                      "psd_name": a["name"], "note": ""})
                 added.append(cid)
-        lay["psd"] = {"path": snap.get("psd"), "fingerprint": snap.get("fingerprint"), "crop_group": snap.get("crop_group"),
-                      "at": snap.get("at"), "crops": [{"name": c["name"], "layer_name": c["layer_name"], "rect": list(c["rect"])}
-                                                      for c in snap["crops"]]}
+        new_shapes = {}
+        for c in snap["crops"]:
+            if c["name"] in want:
+                new_shapes.setdefault(c["name"], []).append(_shape(c))
+        base = []
+        for c in lay["psd"]["crops"]:
+            if c["name"] not in want:
+                base.append(c)
+            elif c["name"] in new_shapes:  # 그 이름의 첫 항목 자리에 스냅숏 항목 전부(사라진 이름은 빠짐)
+                base += new_shapes.pop(c["name"])
+        base += [s for rows in new_shapes.values() for s in rows]  # 기준점에 없던 이름(새 shape)은 끝에
+        lay["psd"]["crops"] = base
+        if not any(store.psd_diff(lay["psd"], snap).values()):
+            lay["psd"] = {"path": snap.get("psd"), "fingerprint": snap.get("fingerprint"), "crop_group": snap.get("crop_group"),
+                          "at": snap.get("at"), "crops": [_shape(c) for c in snap["crops"]]}
         return {"taken": taken, "added": added, "skipped": skipped}
 
     res, new_rev = store.update_layout(root, mutate, expect_rev=rev)
@@ -2130,6 +2258,7 @@ def layout_refs(root: str, name, crop_id=None) -> dict | None:
 _REF_SLOTS = threading.BoundedSemaphore(1)   # 시트 디코드·PSD 합성·컷·변환은 한 번에 하나(시트 RGBA 119MB — 부록 A)
 _REFS_WRITE_LOCKS: dict[str, threading.RLock] = {}  # root_key → 레퍼런스 쓰기 잠금(_refs_write_lock)
 _SAM3_CKPTS: list[str] = []                  # set_sam3_ckpts — 노드 모듈이 import 때 넘긴 SAM3 체크포인트 이름
+_QWEN_DIR: list[str] = []                    # set_qwen_dir — 노드 모듈이 import 때 넘긴 local_qwen 모델 폴더(비면 미설정)
 _REF_IMG_WHERE = ("refs", "held", "cut", "cutmask")
 _REF_IMG_SIZES = (0, 128, 256, 512)
 _REF_BGS = {"gray": 128, "white": 255, "check": None}   # GPT 가 받는 매트 #808080 · 흰 · 체크(8px)
@@ -2148,6 +2277,17 @@ def set_sam3_ckpts(names) -> None:
     folder_paths 를 import 하지 않는다(재시작 전 새로 넣은 파일은 안 보임). 이름에 'sam3' 가 든 것만 둔다
     (bmk_sam3_mask_layers._sam3_checkpoints 는 하나도 없으면 전체 목록을 돌려줌)."""
     _SAM3_CKPTS[:] = [str(n) for n in names if "sam3" in str(n).lower()]
+
+
+def set_qwen_dir(path) -> None:
+    """local_qwen 모델 폴더(노드 모듈이 import 때 — 보드는 folder_paths 를 import 하지 않음). Studio Draft 계획의 local_qwen 키
+    (config.json sha8)에 쓴다(STUDIO_S3_SPEC §2.4). 비어 있으면(재시작 전·노드 모듈 없음) local_qwen 계획은 오류 — 키를 'nodir' 로
+    계산해 노드와 다른 해시를 보이지 않게."""
+    _QWEN_DIR[:] = [str(path)] if path else []
+
+
+def _qwen_dir() -> str:
+    return _QWEN_DIR[0] if _QWEN_DIR else ""
 
 
 def _refs_doc(root: str) -> tuple[dict | None, str | None]:
@@ -2196,7 +2336,8 @@ def _pick(name: str, r: dict) -> str | None:
 
 
 def _side_of(name: str) -> str | None:
-    """vlm.side_of 와 같은 규칙(보드는 vlm 을 import 하지 않는다): 이름의 좌우 토큰(보는 사람 기준), 둘 다 있으면 None."""
+    """vlm.side_of 와 같은 규칙(refs·state 경로라 vlm 을 불러오지 않는다 — S2 B0, vlm 은 계획·초안 라우트의 _vlm() 로만): 이름의 좌우
+    토큰(보는 사람 기준), 둘 다 있으면 None."""
     stem = unicodedata.normalize("NFC", os.path.basename(name))
     root_, ext = os.path.splitext(stem)
     if ext.lower() in store.REF_EXTS:
@@ -3046,6 +3187,557 @@ def ref_link(root: str, rev: int | None, op, data: dict) -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════════
+# 파이프라인 (S3a — STUDIO_S3_SPEC §2.4·§3.5·§3.7·§6). 실행 설정·유도·템플릿은 bmk_design_patch_pipeline(pl), 초안 계획·채택은
+# vlm(_vlm() 로만 — state·layout·refs 경로는 vlm 을 불러오지 않는다). 계획은 노드와 같은 함수(runner.plan_calls·split_approval,
+# vlm.draft_plan)라 라우트 해시 = 노드가 승인 대조에 쓰는 실행 전 해시(N25·N26). 계산은 요청 때만 — state 는 기억한 계획과
+# 파일 stat 서명만 본다(plan_v·draft_chip). 응답 모양 정본 = tools/fixtures/pipeline_api.json.
+# ══════════════════════════════════════════════════════════════════════
+_PLAN_LOCK = threading.Lock()            # 계획 라우트는 한 번에 하나 — 못 잡으면 기다리지 않고 202 busy
+_PLAN_MEMO: dict[str, dict] = {}         # root_key → {"free": only 없는 계획 {sig, settings, computed_at, run, draft},
+                                         #             "sel": {(sig, settings, only): 선택 부분}} — settings = 계산에 쓴 설정의 지문
+_PLAN_MEMO_LOCK = threading.Lock()
+_PLAN_SEL_MAX = 8                        # 루트마다 기억하는 선택 계획 수
+_DRAFT_MEMO: dict = {}                   # 보드 평탄화 memo(초안 계획·채택 — 노드 _DRAFT_MEMO 와 따로, 같은 상한)
+_SPEC_PATHS: dict[str, tuple] = {}       # root_key → ((specs/ 목록, refs_dir), 스펙이 가리키는 파일 경로) — 계획 서명이 폴링마다 스펙 JSON 을
+                                         # 파싱하지 않게(목록이 바뀔 때만 store._spec_paths)
+_RUN_LEDGER_RE = re.compile(r"r\d+\.(req|inflight|resp|done|failed)\.json")  # runner 원장(plan_calls 가 읽는 파일)
+_VLM_CAPS = "_vlm_caps.json"             # vlm.CAPS_FILE 와 같음(root 의 부모 폴더 — openai 예상 크레딧 보정, Draft est 에 들어감)
+_SINCE_SLACK = 0.05                      # 원장 파일 시각은 time.time() 보다 거칠다(NTFS 갱신 틱·float 반올림) — Draft 시작 직후
+                                         # 쓴 원장이 진행 수에서 빠지지 않게 시작 시각을 이만큼 당겨 센다
+_RUN_ZERO = {"need": 0, "pre": 0, "free": 0, "done": 0, "failed": 0, "orphaned": 0, "inflight": 0, "est_usd": [0.0, 0.0],
+             "selected": False}
+_STALE = "_stale"                        # run.by_crop: crop_id 가 없거나 매니페스트에 없는 크롭의 옛 셀
+_DRAFT_SEL_EMPTY = {"hash": "", "units": [], "refresh_available": [], "skipped": [], "cached": [], "accepted": [], "filtered": [],
+                    "est_credits": [0, 0], "est_seconds": 0}  # 선택 없는 Draft 계획의 선택 필드(정본 alt.no_selection)
+
+
+def _now_text() -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _draft_memo() -> dict:
+    """보드 평탄화 memo — 노드와 같은 상한(vlm.DRAFT_MEMO_MAX)을 넘으면 비운다(draft_view·adopt_write 는 스스로 비우지 않음)."""
+    if len(_DRAFT_MEMO) > _vlm().DRAFT_MEMO_MAX:
+        _DRAFT_MEMO.clear()
+    return _DRAFT_MEMO
+
+
+def _route_settings(root: str, m: dict | None = None) -> dict:
+    """계획·채택 라우트의 실행 설정 = pl.current(deep=True)(파일이 없으면 GET /pipeline 과 같은 유도값). 깨졌으면 409 pipeline_broken
+    (prompt_gate 와 같은 문구 — 덮어쓰기는 설정 패널)."""
+    cur = pl.current(root, m, deep=True)
+    if cur["error"] is not None:
+        raise _Reject(409, f"실행 설정 파일이 깨졌습니다 — 설정 패널에서 다시 저장(덮어쓰기): {cur['error']}", reason="pipeline_broken")
+    return cur
+
+
+def _draft_family(root: str, settings: dict) -> str:
+    """초안 백엔드 family(노드 Spec Draft 와 같은 판정): pipeline.draft.vlm 의 family, openai 이고 mock 스위치면 mock — None 은 없다
+    (adopt_check 의 mock 초안 거절이 꺼지지 않게)."""
+    fam, _model = _vlm().parse_vlm_choice(settings["draft"]["vlm"])
+    return "mock" if fam == "openai" and _mock_active(root) else fam
+
+
+def _scan(path: str, keep: re.Pattern | None = None, depth: int = 0, skip: tuple = ()) -> list:
+    """폴더의 파일 [이름, 크기, mtime_ns](keep 이 있으면 그 이름만) + depth 단계 하위 폴더 [이름, …](skip 제외). scandir 이라 Windows 는
+    파일마다 stat 을 부르지 않는다. 없거나 읽는 사이 사라진 것은 뺀다."""
+    try:
+        with os.scandir(path) as it:
+            ents = sorted(it, key=lambda e: e.name)
+    except OSError:
+        return []
+    rows = []
+    for e in ents:
+        try:
+            if e.is_file():
+                if keep is None or keep.fullmatch(e.name):
+                    st = e.stat()
+                    rows.append([e.name, st.st_size, st.st_mtime_ns])
+            elif depth > 0 and e.is_dir() and e.name not in skip:
+                rows.append([e.name, _scan(e.path, keep, depth - 1)])
+        except OSError:
+            continue
+    return rows
+
+
+def _busy(root: str) -> tuple[bool, bool]:
+    """(Run 실행 중, Spec Draft 실행 중) — 계획 서명의 실행 상태 재료."""
+    return is_running(root), draft_since(root) is not None
+
+
+def _starts(root: str) -> tuple[int, int]:
+    """(Run 시작 수, Spec Draft 시작 수) — 계획 계산 앞뒤로 읽어 그 사이 시작한 실행을 안다(파일을 되돌리고 끝난 실행 포함)."""
+    with _FLAGS_LOCK:
+        return tuple(_STARTS.get(store.root_key(root), (0, 0)))
+
+
+def _spec_paths(root: str, specs: list, refs_dir: str) -> list[str]:
+    """스펙 JSON 이 가리키는 파일 경로(store._spec_paths — guide·before_paste·스펙 refs). specs = _scan(specs/) — 그것과 refs_dir 가
+    지난번과 같으면 기억한 경로(스펙을 다시 파싱하지 않음)."""
+    rk, key = store.root_key(root), (specs, refs_dir)
+    hit = _SPEC_PATHS.get(rk)
+    if hit is None or hit[0] != key:
+        try:
+            hit = _SPEC_PATHS[rk] = (key, store._spec_paths(root, refs_dir))
+        except OSError:  # 목록을 읽는 사이 specs/ 가 사라지거나 잠김(_scan 과 같게 state 를 500 으로 만들지 않음) — 기억하지 않고 다음에 다시
+            return []
+    return hit[1]
+
+
+def _plan_sigs(root: str, m: dict, busy: tuple[bool, bool], refs_v: str | None) -> tuple[str, str]:
+    """(Run 서명, Draft 서명) — 파일 stat 과 매니페스트 일부만(vlm·runner 계산 없음 — state 의 plan_v 가 폴링마다 부름, §2.4 서명).
+    Run = jobs·rerolls + 마지막 Prepare 기록(prepare_settings·prepare_inputs — 같은 위젯·같은 프롬프트의 그래프 Prepare 는 jobs 를 같은
+    바이트로 두고 이 둘만 처음 기록·갱신하는데, 그것이 apply_pending('지문 없음'·'입력이 바뀜')·notes(Prepare 갈라짐)를 바꾼다 — 빠지면
+    plan_v 가 그대로라 Studio 가 낡은 '반영 필요'·해시 복사 끔을 다시 받지 않음, Codex 2차 c2-2) + 원장(cands/<셀>/ 원장 파일) + mock
+    스위치 + pipeline.json 지문 + Run 실행 중.
+    Draft = 크롭·source·베이스 + specs/·refs.json·glossary.json·layout.json·source.glossary·PSD·레퍼런스 파일(타깃 refs·refs_auto)·
+    스펙이 가리키는 파일(guide·before_paste·스펙 refs — prepare_inputs_fp 의 재료라 그림만 바뀌어도 apply_pending '입력이 바뀜'이 되는데,
+    specs/ 바로 아래·refs_dir 바로 아래가 아니면 다른 재료로는 잡히지 않음, Codex 3차 c3-1. 경로는 _spec_paths 기억값이라 폴링은 stat 만)·
+    refs_dir 목록 + 초안 원장(vlm/ — img 제외) + mock 스위치 + pipeline.json 지문 + Draft 실행 중 + Qwen config.json + 예상 크레딧
+    보정(_vlm_caps.json — 같은 기반 폴더의 다른 프로젝트 Draft 도 바꿈).
+    실행 설정은 절 값 대신 pipeline.json 지문(stat — 파일이 없으면 유도값이라 위 재료로 정해짐). 매니페스트 rev 전체는 쓰지 않는다 —
+    ★·탈락·후보 등록으로 칩이 낡지 않게. 내용 주소 크롭 소스(inputs/<sha>)는 지워지지 않는다고 보고 넣지 않는다(지우면 다음 서명
+    변화까지 기억값). busy = 실행 상태(_busy — pipeline_plan 이 한 번 읽어 넘기고 계산 뒤 다시 읽은 값과 비교), refs_v = refs_dir 목록
+    지문(_refs_files_v — build_state 는 flags 에서 이미 계산한 값을 넘긴다)."""
+    src = m.get("source") or {}
+    refs_dir = _refs_dir(m)
+    mock = _mock_active(root)
+    running, drafting = busy
+    pfp = store._file_fp(os.path.join(root, pl.PIPELINE_NAME))
+    run = [m.get("jobs"), m.get("rerolls"), m.get("prepare_settings"), m.get("prepare_inputs"),
+           _scan(os.path.join(root, "cands"), _RUN_LEDGER_RE, 1), mock, pfp, running]
+    refs = []
+    for c in m["crops"]:
+        for r in [x for t in c.get("targets") or [] for x in t.get("refs") or []] + list(c.get("refs_auto") or []):
+            p = store._ref_path(r, refs_dir)
+            refs.append([p, store._file_fp(p)])
+    specs = _scan(os.path.join(root, "specs"))
+    refs += [[p, store._file_fp(p)] for p in _spec_paths(root, specs, refs_dir)]
+    qdir = _qwen_dir()
+    draft = [m["crops"], src, m.get("base"), m.get("work_rect"), specs,
+             [store._file_fp(os.path.join(root, n)) for n in (drefs.REFS_NAME, "glossary.json", store.LAYOUT_NAME)],
+             store._file_fp(src["glossary"]) if src.get("glossary") else None,
+             store._file_fp(src["psd"]) if src.get("psd") else None, refs, refs_v,
+             _scan(os.path.join(root, "vlm"), depth=2, skip=("img",)), mock, pfp, drafting,
+             store._file_fp(os.path.join(qdir, "config.json")) if qdir else None,
+             store._file_fp(os.path.join(os.path.dirname(os.path.abspath(root)), _VLM_CAPS))]
+    return _sig("plan-run", run), _sig("plan-draft", draft)
+
+
+def _run_plans(root: str, m: dict, run_cfg: dict, only: str = "") -> tuple:
+    """노드 _run_plan 과 같은 식: runner.plan_calls(m, root, retry_failed, retry_orphans, only) + split_approval(backend = mock 판정).
+    → (runner, backend, plan, approval). runner 를 못 읽으면 ValueError."""
+    runner = _runner()
+    if runner is None:
+        raise ValueError("runner 를 읽을 수 없음")
+    backend = runner.BACKEND_MOCK if runner.mock_enabled(root) else runner.BACKEND_COMFY_ORG
+    plan = runner.plan_calls(m, root, retry_failed=bool(run_cfg["retry_failed"]), retry_orphans=bool(run_cfg["retry_orphans"]),
+                             only=only)
+    return runner, backend, plan, runner.split_approval(plan, "", backend=backend)
+
+
+def _run_free(root: str, m: dict, run_cfg: dict) -> dict:
+    """only 없는 Run 계획: by_crop(크롭별 승인 필요·사전 승인·복구·완료·실패·orphaned·실행 중·예상 USD — 옛 셀은 _stale)·pre·free·
+    est_usd_pre(재굴림은 approve·only 와 무관하게 Run 실행 때 함께 과금)·running + 비운 선택 필드(hash "" 등). 실패하면 {error}
+    — 원장 대체 계산(_ledger_pending)으로 해시 없는 계획을 보이지 않는다."""
+    try:
+        runner, backend, plan, ap = _run_plans(root, m, run_cfg)
+    except Exception as e:  # runner 없음·손상된 매니페스트·원장 — 계획을 보이지 않고 이유만
+        return {"error": f"Run 계획을 계산하지 못함: {e}"}
+    ids = {c["id"] for c in m["crops"]}
+    rows = {c["id"]: copy.deepcopy(_RUN_ZERO) for c in m["crops"]}
+    need: dict[str, list] = {}
+
+    def row(e: dict) -> tuple[str, dict]:
+        k = e.get("crop_id") if e.get("crop_id") in ids else _STALE
+        return k, rows.setdefault(k, copy.deepcopy(_RUN_ZERO))
+
+    for e in ap["needs_approval"]:
+        k, r = row(e)
+        r["need"] += 1
+        need.setdefault(k, []).append(e)
+    for key, entries in (("pre", ap["preapproved"]), ("free", ap["free"]), ("done", plan["done"]), ("failed", plan["failed"]),
+                         ("orphaned", plan["orphaned"]), ("inflight", plan["inflight"])):
+        for e in entries:
+            row(e)[1][key] += 1
+    for k, entries in need.items():
+        rows[k]["est_usd"] = list(runner.estimate_calls(entries))
+    return {"hash": "", "backend": backend, "need": 0, "pre": len(ap["preapproved"]), "free": len(ap["free"]), "filtered": 0,
+            "est_usd": [0.0, 0.0], "est_usd_pre": list(runner.estimate_calls(ap["preapproved"])), "credits": [0, 0], "reasons": [],
+            "by_crop": rows, "running": is_running(root)}
+
+
+def _run_sel(root: str, m: dict, run_cfg: dict, only: str) -> dict:
+    """선택(only) Run 계획: hash(노드 Run 이 같은 only 로 대조할 실행 전 해시)·need·filtered·est_usd·credits·reasons. only 의 style
+    토큰은 뺀다(Run 위젯과 같은 문자열 — pl.strip_style)."""
+    try:
+        runner, _backend, plan, ap = _run_plans(root, m, run_cfg, pl.strip_style(only))
+    except Exception as e:  # _run_free 와 같은 이유
+        return {"error": f"Run 계획을 계산하지 못함: {e}"}
+    lo, hi = ap["est_usd"]
+    reasons: dict[str, int] = {}
+    for e in ap["needs_approval"]:
+        reasons[e["reason"]] = reasons.get(e["reason"], 0) + 1
+    return {"hash": ap["pending_hash"], "need": len(ap["needs_approval"]), "filtered": plan["filtered"], "est_usd": [lo, hi],
+            "credits": [round(lo * runner.CREDITS_PER_USD), round(hi * runner.CREDITS_PER_USD)],
+            "reasons": [{"reason": r, "n": n} for r, n in reasons.items()]}
+
+
+def _draft_cfg(root: str, settings: dict) -> tuple[str, dict]:
+    """노드 Spec Draft 와 같은 draft_plan 인자(only 제외) → (백엔드 이름, cfg). model 은 mock 으로 강제돼도 위젯의 모델(노드와 같음 —
+    openai 키에 들어감, mock 키는 "mock" 이라 모델이 들어가지 않음)."""
+    d = settings["draft"]
+    dvlm = _vlm()
+    _fam, model = dvlm.parse_vlm_choice(d["vlm"])
+    family = _draft_family(root, settings)
+    return dvlm.BACKEND_NAMES[family], {
+        "family": family, "model": model, "effort": d["effort"], "image_detail": d["image_detail"],
+        "draft_round": int(d["draft_round"]), "mode": d["write_mode"], "concurrency": int(d["concurrency"]),
+        "model_dir": _qwen_dir(), "apply_mode": d["apply"]}
+
+
+def _import_pending(root: str, m: dict, settings: dict) -> list[str]:
+    """Draft 해시가 '반영 뒤 확정'인 이유(§2.4): 같은 큐의 Import 가 매니페스트를 바꾸면 초안 키가 바뀐다 — 레이아웃·refs.json 미반영,
+    레이어명 + 스펙 _layer_targets 로 Import 가 만들 타깃 ≠ 매니페스트 타깃(store.adopt_stale — Prepare 가드와 같은 판정), 실행 설정
+    import 절 ≠ 마지막 Import(source — pl.drift), 마지막 Import 뒤 PSD 파일이 바뀜. 깨진 layout.json·refs.json·스펙(Import 가 멈춤)도."""
+    out = []
+    src = m.get("source") or {}
+    try:
+        lay = store.load_layout(root)
+    except ValueError:
+        out.append("layout.json 이 깨짐 — 다음 Import 가 멈춤")
+    else:
+        if lay is not None and (src.get("layout") or {}).get("sig") != store.layout_sig(lay):
+            out.append(f"레이아웃 미반영(rev {lay['rev']})")
+        elif lay is None and src.get("layout"):
+            out.append("레이아웃을 치움 — 다음 Import 가 PSD 로 다시 읽음")
+    try:
+        doc = drefs.load_refs(root)
+    except ValueError:
+        out.append("refs.json 이 깨짐 — 다음 Import 가 멈춤")
+    else:
+        refs_dir = _refs_dir(m)
+        if _refs_dir_ok(refs_dir):
+            n = 0
+            for c in m["crops"]:
+                r = drefs.resolve_refs(refs_dir, c, doc)
+                n += (list(c.get("refs_auto") or []), c.get("refs_main")) != (r["refs_auto"], r["refs_main"])
+            if n:
+                out.append(f"레퍼런스 미반영({n}크롭)")
+    stale, broken = [], []
+    for c in m["crops"]:
+        try:
+            ov = store.load_spec_override(root, c["id"])
+        except ValueError:
+            broken.append(c.get("nnn") or c["id"])
+            continue
+        if store.adopt_stale(c, ov):
+            stale.append(c.get("nnn") or c["id"])
+    if broken:
+        out.append(f"스펙 JSON 오류({', '.join(broken)}) — 다음 Import 가 멈춤")
+    if stale:
+        out.append(f"채택 미반영({', '.join(stale)})")
+    imp = [d["field"] for d in pl.drift(settings, m) if d["kind"] == "import"]
+    if imp:
+        out.append(f"Import 설정이 마지막 Import 와 다름({', '.join(imp)})")
+    if src.get("psd") and os.path.isfile(src["psd"]) and store._file_fp(src["psd"]) != src.get("fingerprint"):
+        out.append("마지막 Import 뒤 PSD 파일이 바뀜")
+    return out
+
+
+def _draft_free(root: str, m: dict, settings: dict) -> dict:
+    """only 없는 Draft 계획: backend·family·by_crop(대기 사유·갱신 가능·채택 가능 — 채택은 GET /draft 의 [채택] 단추와 같은 조건)·
+    warnings(unwritten = 매니페스트 크롭·_project 의 못 쓴 스펙, mock_specs = family mock 일 때 mock 초안이 남은 스펙)·import_pending
+    + 비운 선택 필드. Spec Draft 실행 중이면 {running: true}, 계산 오류(용어집 형식·스펙 경로 등)는 {error, hash: null},
+    local_qwen 인데 모델 폴더를 모르면(set_qwen_dir 전) 계산하지 않고 오류.
+    채택 칩은 draft_plan 이 만든 크롭 문맥(ctx — draft_view 와 같은 인자의 build_crop_ctx)으로 GET /draft 와 같은 vlm.adopt_state
+    판정(목록이 아닌 targets·스펙에 안 쓰인 도착 초안·⑥ 이 늘 거절할 노드 값 양보 거절 포함)을 한다 — 크롭마다 draft_view 를 부르면
+    문맥을 다시 만들어 레퍼런스 경고가 같은 요청에서 두 번 로그된다."""
+    if draft_since(root) is not None:
+        return {"running": True}
+    try:
+        backend, cfg = _draft_cfg(root, settings)
+        if cfg["family"] == "local_qwen" and not cfg["model_dir"]:
+            return {"error": "local_qwen 모델 경로 미설정 — ComfyUI 재시작", "hash": None}
+        dvlm = _vlm()
+        memo = _draft_memo()
+        ctxs, _reqs, _style, plan, _ap = dvlm.draft_plan(root, m, "", backend, only=[], memo=memo, **cfg)
+        pending = _import_pending(root, m, settings)
+        marked = dvlm.unwritten_specs(root)
+        live = {c["id"] for c in m["crops"]} | {dvlm.PROJECT_SPEC_ID}
+        unwritten = [s for s in marked if s in live]
+        adopt = {}
+        for ctx in ctxs:
+            kind = why = None
+            if ctx.spec_error is None and ctx.crop_id not in marked:
+                _value, kind, why = dvlm.adopt_state(root, m, ctx, ctx.spec, family=cfg["family"], memo=memo)
+            adopt[ctx.crop_id] = "add" if kind == "add" and not why else None
+        mock_specs = dvlm.mock_drafted(root, ctxs, cfg["apply_mode"]) if cfg["family"] == "mock" else 0
+    except (ValueError, OSError) as e:  # 용어집·스펙 경로 오류 — run 계획은 그대로 둔다
+        return {"error": str(e), "hash": None}
+    waits: dict[str, list] = {}
+    for u in plan["units"]:
+        waits.setdefault(u.crop_id, []).extend(u.reasons)
+    refresh = {cid for cid, _est in plan["refresh_available"]}
+    return {**copy.deepcopy(_DRAFT_SEL_EMPTY), "backend": backend, "family": cfg["family"],
+            "by_crop": {c["id"]: {"wait": waits.get(c["id"], []), "refresh": c["id"] in refresh, "adopt": adopt[c["id"]]}
+                        for c in m["crops"]},
+            "warnings": {"unwritten": unwritten, "mock_specs": mock_specs}, "import_pending": pending}
+
+
+def _draft_sel(root: str, m: dict, settings: dict, only: str) -> dict:
+    """선택(only) Draft 계획: hash(노드 Spec Draft 가 only = vlm.parse_only(같은 문자열)로 대조할 실행 전 해시)·units·refresh_available·
+    skipped·cached·accepted·filtered·est_credits·est_seconds. 오류는 {error, hash: null}."""
+    try:
+        backend, cfg = _draft_cfg(root, settings)
+        dvlm = _vlm()
+        _c, _r, _s, plan, ap = dvlm.draft_plan(root, m, "", backend, only=dvlm.parse_only(only), memo=_draft_memo(), **cfg)
+    except (ValueError, OSError) as e:
+        return {"error": str(e), "hash": None}
+    return {"hash": ap["pending_hash"],
+            "units": [{"crop_id": u.crop_id, "state": u.state, "reasons": list(u.reasons), "est": list(u.est)} for u in plan["units"]],
+            "refresh_available": [{"crop_id": cid, "est": list(est)} for cid, est in plan["refresh_available"]],
+            "skipped": [{"crop_id": cid, "reason": why} for cid, why in plan["skipped"]],
+            "cached": list(plan["cached"]), "accepted": list(plan["accepted"]), "filtered": list(plan["filtered"]),
+            "est_credits": list(ap["est_credits"]), "est_seconds": ap["est_seconds"]}
+
+
+# Prepare 설정 갈라짐(pl.drift kind) → 계획 notes 의 이유(앞이 무거운 것 — 한 종류면 문구만, 여럿이면 종류마다 필드)
+_PREPARE_DRIFT_WHY = (("cell", "그래프와 Studio 를 번갈아 돌리면 셀이 바뀌어 다시 과금 대상"),
+                      ("calls", "셀당 호출을 늘리면 완료된 셀마다 새 호출이 생겨 다시 과금 대상(Run 승인 필요)"),
+                      ("cost", "셀은 그대로, 승인 해시·비용이 바뀜"))
+
+
+def _plan_notes(root: str, m: dict, settings: dict, confirm) -> list[str]:
+    """계획 머리 줄 — Run·Draft 공통으로 '반영 뒤 다시 계산'(§3.3)인 설정 쪽 이유: 설정 미확인(confirm), Prepare 설정 갈라짐(셀/호출/비용 —
+    옛 프로젝트는 jobs 와 비교), Import 설정 갈라짐. 파일 쪽 '반영 필요'는 _apply_pending. 매번 계산한다."""
+    out = []
+    if confirm:
+        out.append(f"설정 미확인: {', '.join(confirm)} — 반영 전에 설정 패널에서 확인·저장")
+    rows = pl.drift(settings, m)
+    pre = [d for d in rows if d["section"] == "prepare"]
+    if pre:
+        last = "매니페스트" if pl.prepare_record(m)[0] == "prepare_settings" else "jobs 추정"  # 옛 프로젝트 = jobs 최다값
+        what = ", ".join(f"{d['field']}({last} {d['manifest']} · Studio {d['settings']})" for d in pre)
+        why = [(text, [d["field"] for d in pre if d["kind"] == kind]) for kind, text in _PREPARE_DRIFT_WHY]
+        why = [(text, fs) for text, fs in why if fs]
+        out.append(f"Prepare 설정 갈라짐: {what} — "
+                   + (why[0][0] if len(why) == 1 else "; ".join(f"{text}({', '.join(fs)})" for text, fs in why)))
+    imp = [d["field"] for d in rows if d["kind"] == "import"]
+    if imp:
+        out.append(f"Import 설정이 마지막 Import 와 다름({', '.join(imp)}) — 반영하면 크롭·타깃·레퍼런스가 바뀔 수 있음")
+    return out
+
+
+def _apply_pending(root: str, m: dict, settings: dict) -> list[str]:
+    """'반영 필요'(§2.2·§3.3 — 무료 반영 apply 가 풀 차이) 사유 = 같은 큐의 Import 가 매니페스트를 바꿀 차이(_import_pending — 레이아웃·
+    레퍼런스·채택·Import 설정 미반영, 깨진 파일) + prepare_inputs 불일치(마지막 Prepare 뒤 스펙·레이아웃·레퍼런스·용어집이 바뀜 —
+    초안 쓰기·채택 포함). 지문만 보면 Import 뒤·Prepare 앞에 끼어든 layout.json·refs.json 쓰기(새 파일이 지문에 들어감)를 놓치고,
+    Import 쪽만 보면 스펙 문장 수정을 놓친다 — 둘을 합친 이 하나가 Studio 머리줄·반영 칸·S3b apply_needed 의 판정이다. 지문은 Prepare 를
+    한 번이라도 돈 프로젝트(jobs·prepare_settings·prepare_inputs 중 하나 — 첫 Prepare 부터 채택 가드면 jobs·지문이 없음)만 본다.
+    매번 계산한다(Draft 계획의 import_pending 은 기억값이고 Spec Draft 실행 중·오류면 없다)."""
+    try:
+        out = _import_pending(root, m, settings)
+    except (ValueError, OSError) as e:  # 잠긴 파일 등 — 판정할 수 없으면 반영 필요로
+        out = [f"반영 상태를 판정하지 못함({e})"]
+    if m.get("jobs") or "prepare_inputs" in m or "prepare_settings" in m:
+        want = m.get("prepare_inputs")
+        try:
+            now = store.prepare_inputs_fp(root, m)
+        except (OSError, ValueError) as e:  # 잠긴 폴더 등
+            out.append(f"Prepare 입력 지문을 계산하지 못함({e})")
+        else:
+            if not want:
+                out.append("Prepare 입력 지문 없음(지문을 남기기 전 Prepare)")
+            elif now != want:
+                out.append("Prepare 입력이 바뀜(마지막 Prepare 뒤 스펙·레이아웃·레퍼런스·용어집)")
+    return out
+
+
+def _plan_ok(plan: dict) -> bool:
+    """계산 오류(run·draft error)가 없는 계획 — 오류는 잠긴 원장 같은 일시 오류일 수 있어 다시 쓰지 않는다(다음 요청이 다시 계산,
+    state 는 plan_v null 로 칩을 흐림)."""
+    return not any("error" in (plan[k] or {}) for k in ("run", "draft"))
+
+
+def pipeline_plan(root: str, settings: dict | None = None, *, only_ids, style: bool, confirm=()) -> dict:
+    """GET /pipeline/plan 본문(STUDIO_S3_SPEC §2.4 — aiohttp 없음, 라우트는 asyncio.to_thread). settings 가 None 이면(라우트) 서명을
+    잡은 뒤 pl.current(root, m, deep=True)(설정 패널과 같은 값)와 그 confirm(notes 의 '설정 미확인')을 읽는다 — 그 사이 저장된
+    설정·스펙은 다음 서명에서 달라져 다시 계산된다(설정을 먼저 읽으면 옛 설정으로 계산한 결과가 새 서명으로 기억됨). 넘기면(노드 대조
+    시험) 그 값과 confirm 으로 계산한다.
+    Run = 노드 _run_plan 과 같은 식을 두 번: only 없는 계획(by_crop·pre·free·est_usd_pre·running) + 선택 계획(hash·need·filtered·
+    est_usd·credits·reasons) — Σ by_crop[선택].need = need. runner 를 못 읽거나 계획이 실패하면 run {error}(대체 계산 없음).
+    Draft = vlm.draft_plan(노드 Spec Draft 와 같은 인자 — family 는 openai + mock 스위치면 mock, model_dir = set_qwen_dir 값, only =
+    vlm.parse_only(정규 only)) 도 두 번(by_crop·warnings·import_pending / 선택 해시·단위). Spec Draft 실행 중이면 draft {running: true},
+    계산 오류는 draft {error, hash: null}(run 은 그대로).
+    only_ids = 고른 crop_id(정규형 pl.only_string — 매니페스트 크롭만, style 토큰은 style 이고 apply=full 일 때만). 비면 선택 계획 없이
+    선택 필드는 빈 값(hash "" — 빈 only 는 노드에서 '전부'라 그 해시를 보이지 않음, 정본 alt.no_selection).
+    sig = "r:<Run 서명>|d:<Draft 서명>"(_plan_sigs) + 선택이 있으면 "|o:<정규 only>". 같은 서명·같은 설정(계산에 쓴 설정의 지문 —
+    다른 settings 로 부르면 다시 계산)·같은 선택이면 기억한 결과(computed_at 그대로)를 계산 없이 — notes(설정 쪽 '반영 뒤 다시 계산')·
+    apply_pending('반영 필요' — Import 미반영 + prepare_inputs 불일치, _apply_pending)은 매번 계산. 오류가 있는
+    계획은 다시 쓰지 않는다(_plan_ok — 선택 부분은 only 없는 계획도 오류 없을 때만 기억). 계산 중 Run·Spec Draft 가 시작·끝나면
+    (서명에 넣은 실행 상태 ≠ 계산 뒤 실행 상태·계산이 본 run.running·draft {running}, 또는 그 사이 시작 수(_starts)가 늚 — 시작해서
+    파일을 되돌리고 끝난 실행 포함) 이번 계산은 기억하지 않는다 — 실행 중 값이 '실행 중 아님' 서명으로 남으면 그 실행이 파일을 바꾸지
+    않고 끝났을 때(초안 형식 오류·로그아웃 401 되돌림) 다음 파일 변화까지 그대로 다시 쓰인다. 그 응답은 계산 뒤 실행 상태로 실행 중
+    표시를 하고(Spec Draft 가 돌면 draft {running: true} 만, Run 이 돌면 run.running — §2.4, 계산이 그 실행을 못 봤어도) sig 는 계산 중
+    돈 실행을 '실행 중'으로 넣은 서명이다 — 실행이 끝난 뒤의 state plan_v 와 달라 Studio 가 낡은 계획으로 본다(해시 복사 끔 — 진행
+    모드는 같은 plan_v 에 한 번 더 받고, 그 밖의 모드는 머리줄 [다시 계산]).
+    only 없는 계획은 state 의 plan_v·draft_chip 이 쓴다(plan_v 는 파일 서명만 본다). 파일은 apply=full 일 때
+    화풍 입력 vlm/img(내용 주소)만 쓸 수 있다. 매니페스트는 한 번 읽고 manifest_lock 은 쥐지 않는다."""
+    m = store.load_manifest(root)
+    starts, busy = _starts(root), _busy(root)
+    refs_v = _refs_files_v(_refs_dir(m))
+    r_sig, d_sig = _plan_sigs(root, m, busy, refs_v)
+    if settings is None:
+        cur = _route_settings(root, m)
+        settings, confirm = cur["settings"], cur["confirm"]
+    ids = [c["id"] for c in m["crops"]]
+    only = pl.only_string(list(only_ids), bool(style) and settings["draft"]["apply"] == "full", known=ids) if only_ids else ""
+    chosen = set(pl.strip_style(only).split(",")) if only else set()
+    sig = f"r:{r_sig}|d:{d_sig}"
+    skey = _sig("plan-settings", settings)
+    rk = store.root_key(root)
+    with _PLAN_MEMO_LOCK:
+        memo = _PLAN_MEMO.setdefault(rk, {"free": None, "sel": {}})
+        f = memo["free"]
+        free = f if f is not None and (f["sig"], f["settings"]) == (sig, skey) and _plan_ok(f) else None
+        sel = memo["sel"].get((sig, skey, only)) if only else None
+    new_free, new_sel = free is None, bool(only) and sel is None
+    if new_free:
+        free = {"sig": sig, "settings": skey, "computed_at": _now_text(), "run": _run_free(root, m, settings["run"]),
+                "draft": _draft_free(root, m, settings)}
+    if new_sel:
+        sel = {"computed_at": _now_text(),
+               "run": None if "error" in free["run"] else _run_sel(root, m, settings["run"], only),
+               "draft": None if "hash" not in free["draft"] or free["draft"]["hash"] is None
+               else _draft_sel(root, m, settings, only)}
+    after, moved = _busy(root), tuple(a != b for a, b in zip(starts, _starts(root)))
+    seen = (free["run"].get("running", busy[0]), "running" in free["draft"])
+    steady = after == busy == seen and not any(moved)
+    if steady:  # 계산 중 실행 상태가 그대로이고 시작한 실행이 없을 때만
+        with _PLAN_MEMO_LOCK:
+            if new_free:
+                memo["free"] = free
+                memo["sel"] = {k: v for k, v in memo["sel"].items() if k[:2] == (sig, skey)}
+            if new_sel and _plan_ok(sel) and _plan_ok(free):  # free 오류로 비운 칸(None)을 기억하면 free 가 회복된 뒤에도 빈 선택 필드(hash "")
+                memo["sel"][(sig, skey, only)] = sel
+                while len(memo["sel"]) > _PLAN_SEL_MAX:
+                    memo["sel"].pop(next(iter(memo["sel"])))
+    run, draft = copy.deepcopy(free["run"]), copy.deepcopy(free["draft"])
+    if sel is not None and sel["run"] is not None:
+        run = copy.deepcopy(sel["run"]) if "error" in sel["run"] else {**run, **copy.deepcopy(sel["run"])}
+    if sel is not None and sel["draft"] is not None:
+        draft = copy.deepcopy(sel["draft"]) if "error" in sel["draft"] else {**draft, **copy.deepcopy(sel["draft"])}
+    for cid, row in (run.get("by_crop") or {}).items():
+        row["selected"] = cid in chosen
+    if after[0] and "error" not in run:
+        run["running"] = True
+    if after[1]:
+        draft = {"running": True}
+    if not steady:
+        ran = tuple(any(x) for x in zip(busy, after, seen, moved))
+        if ran != busy:
+            r_sig, d_sig = _plan_sigs(root, m, ran, refs_v)
+            sig = f"r:{r_sig}|d:{d_sig}"
+    return {"sig": sig + (f"|o:{only}" if only else ""), "computed_at": (sel or free)["computed_at"],
+            "notes": _plan_notes(root, m, settings, confirm), "apply_pending": _apply_pending(root, m, settings), "run": run, "draft": draft}
+
+
+def _plan_route(root: str, ids: list[str], style: bool) -> dict | None:
+    """GET /pipeline/plan(라우트 스레드): 계획 잠금을 기다리지 않는다 — 못 잡으면 None(202 busy, JS 는 0.5초 뒤 한 번 다시)."""
+    if not _PLAN_LOCK.acquire(blocking=False):
+        return None
+    try:
+        return pipeline_plan(root, only_ids=ids, style=style)
+    finally:
+        _PLAN_LOCK.release()
+
+
+def _plan_free(root: str) -> dict | None:
+    with _PLAN_MEMO_LOCK:
+        memo = _PLAN_MEMO.get(store.root_key(root))
+        return memo["free"] if memo else None
+
+
+def pipeline_prompt(root: str, stage, approve=None, only=None) -> dict:
+    """GET /pipeline/prompt(S3a): 무료 템플릿만 — apply·export(Run·Spec Draft 없음, T1). 유료(draft·run·reroll)·모르는 stage 는
+    approve 유무와 무관하게 400(유료 승인은 S3b 까지 그래프의 Run·Spec Draft 승인 버튼). 설정 판정은 pl.prompt_gate 의 409 본문 그대로,
+    위젯 값은 pl.current(deep=True)(GET /pipeline 과 같은 값) — 판정과 템플릿은 pipeline.json 을 한 번 읽은 같은 값으로(두 번 읽으면
+    그 사이 다른 창이 저장한 값이 판정 없이 템플릿에 실림). 무료 stage 에 approve·only 를 실으면 400(build_prompt).
+    → {stage, prompt, targets: null, sig: "<pipeline rev>:<매니페스트 rev>"}"""
+    if stage not in pl.STAGES:
+        raise _Reject(400, f"모르는 stage 입니다: {stage!r} (stage: {', '.join(pl.STAGES)})")
+    if stage not in pl.FREE_STAGES:
+        raise _Reject(400, f"S3a 는 무료 stage(apply·export)만 냅니다 — 유료 승인은 그래프의 Run·Spec Draft 승인 버튼: {stage!r}")
+    m = store.load_manifest(root)
+    cur = pl.current(root, m, deep=True)
+    gate = pl.prompt_gate(root, stage, m, cur=cur)
+    if gate is not None:
+        raise _Reject(409, gate.pop("error"), **gate)
+    return {"stage": stage, "prompt": pl.build_prompt(stage, cur["settings"], root, approve=approve or "", only=only or ""),
+            "targets": None, "sig": f"{cur['rev']}:{m['rev']}"}
+
+
+def pipeline_progress(root: str) -> dict:
+    """GET /pipeline/progress(§3.5): Run = 원장(runner.plan_calls 기본 옵션 — 어느 탭·그래프가 큐에 넣었든 같음)의 완료·실행 중·실패·
+    orphaned·남은 승인분·사전 승인 + 실행 중·drain. Draft = draft_active 가 실행 중일 때만 vlm.ledger_progress(시작 시각 뒤 바뀐 원장
+    키의 상태 수 — 파일 시각 해상도만큼 _SINCE_SLACK 당겨 셈) + since(시작 시각), 아니면 null(vlm 을 불러오지 않음)."""
+    runner = _runner()
+    if runner is None:
+        raise _Reject(500, "runner 를 읽을 수 없어 진행을 셀 수 없습니다")
+    running = is_running(root)
+    plan = runner.plan_calls(store.load_manifest(root), root)
+    ap = runner.split_approval(plan, "", backend=runner.BACKEND_MOCK if runner.mock_enabled(root) else runner.BACKEND_COMFY_ORG)
+    since = draft_since(root)
+    return {"running": running, "drain": running and drain_requested(root),
+            "run": {"done": len(plan["done"]), "inflight": len(plan["inflight"]), "failed": len(plan["failed"]),
+                    "orphaned": len(plan["orphaned"]), "need": len(ap["needs_approval"]), "pre": len(ap["preapproved"])},
+            "draft": None if since is None else {**_vlm().ledger_progress(root, since - _SINCE_SLACK), "since": since}}
+
+
+def _adopt_crop_id(m: dict, crop_id) -> str:
+    """채택 라우트의 크롭: 형식이 틀리면 400, 매니페스트에 없으면 404(_project 는 vlm 이 400 — 매니페스트 크롭만 채택 대상)."""
+    if not isinstance(crop_id, str) or not _CROP_ID_RE.fullmatch(crop_id):
+        raise _Reject(400, "crop 형식이 잘못되었습니다")
+    if crop_id != _vlm().PROJECT_SPEC_ID and _crop(m, crop_id) is None:
+        raise _Reject(404, f"크롭이 없습니다: {crop_id}")
+    return crop_id
+
+
+def draft_get(root: str, crop_id) -> dict:
+    """GET /draft(§3.4·§6): 크롭의 초안 제안·채택 상태(vlm.draft_view — family = 지금 초안 백엔드, 보드 평탄화 memo). 쓰지 않는다."""
+    m = store.load_manifest(root)
+    cid = _adopt_crop_id(m, crop_id)
+    cur = _route_settings(root, m)
+    return _vlm().draft_view(root, m, cid, family=_draft_family(root, cur["settings"]), memo=_draft_memo())
+
+
+def draft_adopt(root: str, data: dict) -> dict:
+    """POST /draft/adopt(§2.5 D8): 스펙 _layer_targets 채택·수정·해제(vlm.adopt_write — family = 지금 초안 백엔드(None 아님),
+    apply_mode = pipeline.draft.apply). 채택하지 않는 이유(AdoptRefused)는 400 {error, reason|rows}, seen·crop_sig·value 경합
+    (SpecConflict)은 _guard 의 409. preview = 같은 검사, 쓰지 않음. 반영은 다음 무료 반영(Import).
+    draft.apply 가 아직 확인 전(confirm — 스펙에 기록되지 않아 유도값은 노드 기본값)이면 warnings 맨 앞에 '초안 대기는 추정값' 한 줄
+    (확인 창은 초안 대기 줄 바로 뒤에 warnings 를 보인다 — full 로 돌리는 프로젝트의 유료 재초안 대기를 '없음'으로 믿지 않게)."""
+    preview = data.get("preview", False)
+    if not isinstance(preview, bool):
+        raise _Reject(400, "preview 는 true/false 여야 합니다")
+    m = store.load_manifest(root)
+    cid = _adopt_crop_id(m, data.get("crop_id"))
+    cur = _route_settings(root, m)
+    apply_mode = cur["settings"]["draft"]["apply"]
+    dvlm = _vlm()
+    try:
+        out = dvlm.adopt_write(root, m, cid, data.get("op"), data.get("text"), seen=data.get("seen"),
+                               crop_sig=data.get("crop_sig"), value=data.get("value"), family=_draft_family(root, cur["settings"]),
+                               apply_mode=apply_mode, preview=preview, memo=_draft_memo())
+    except dvlm.AdoptRefused as e:
+        raise _Reject(400, str(e), **e.extra) from None
+    if "draft.apply" in cur["confirm"]:
+        out["warnings"].insert(0, f"초안 apply 미확인 — 초안 대기는 {apply_mode}(추정값) 기준, 설정 패널에서 확인·저장")
+    return out
+
+
+# ══════════════════════════════════════════════════════════════════════
 # HTTP 핸들러
 # ══════════════════════════════════════════════════════════════════════
 def _dumps(obj) -> str:
@@ -3057,6 +3749,14 @@ def _json(data: dict, status: int = 200) -> web.Response:
                              headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
 
 
+def _conflicts() -> tuple:
+    """_guard 의 409(새로고침·다시 읽기) 예외: 레이아웃·레퍼런스·실행 설정 rev 경합(LayoutConflict·RefsConflict·PipelineConflict)과
+    채택 쓰기 경합(vlm.SpecConflict — _vlm() 이 vlm 을 읽은 뒤에만 넣는다: 그 전에는 날 수 없고, state·layout·refs 경로의 오류
+    처리가 vlm 을 불러오지 않게)."""
+    out = (store.LayoutConflict, drefs.RefsConflict, pl.PipelineConflict)
+    return out + (_vlm().SpecConflict,) if _vlm.cache_info().currsize else out
+
+
 def _guard(fn):
     @functools.wraps(fn)
     async def wrapped(request: web.Request) -> web.StreamResponse:
@@ -3064,7 +3764,7 @@ def _guard(fn):
             return await fn(request)
         except _Reject as e:
             return _json({"error": e.message, **e.extra}, status=e.status)
-        except (store.LayoutConflict, drefs.RefsConflict) as e:  # 레이아웃·레퍼런스 rev 가 요청과 다름(다른 창에서 바뀜)·이미 있음·없음 — 새로고침
+        except _conflicts() as e:  # rev·지문이 요청과 다름(다른 창·노드에서 바뀜)·이미 있음·없음 — 새로고침
             return _json({"error": str(e)}, status=409)
         except ValueError as e:  # store·refs 검증(매니페스트가 사라짐·형식 오류 등)
             return _json({"error": str(e)}, status=400)
@@ -3387,6 +4087,59 @@ async def refs_link_handler(request: web.Request) -> web.StreamResponse:
     return _json(await asyncio.to_thread(ref_link, root, _refs_rev(data), data.get("op"), data))
 
 
+@_guard
+async def pipeline_handler(request: web.Request) -> web.StreamResponse:
+    root = _root_param(request.query.get("root"))
+    return _json(await asyncio.to_thread(pl.view, root))
+
+
+@_guard
+async def pipeline_settings_handler(request: web.Request) -> web.StreamResponse:
+    data = await _body(request)
+    root = _root_param(data.get("root"))
+    if "rev" not in data:
+        raise _Reject(400, "rev 가 없습니다(GET /pipeline 의 rev — 파일이 없으면 0, 깨진 파일 덮어쓰기는 null)")
+    return _json(await asyncio.to_thread(pl.update, root, data["rev"], data.get("section"), data.get("values")))
+
+
+@_guard
+async def pipeline_prompt_handler(request: web.Request) -> web.StreamResponse:
+    q = request.query
+    root = _root_param(q.get("root"))
+    return _json(await asyncio.to_thread(pipeline_prompt, root, q.get("stage"), q.get("approve"), q.get("only")))
+
+
+@_guard
+async def pipeline_plan_handler(request: web.Request) -> web.StreamResponse:
+    q = request.query
+    root = _root_param(q.get("root"))
+    style = q.get("style") or "0"
+    if style not in ("0", "1"):
+        raise _Reject(400, "style 은 0 또는 1 이어야 합니다")
+    ids = [t.strip() for t in (q.get("only") or "").split(",") if t.strip()]
+    res = await asyncio.to_thread(_plan_route, root, ids, style == "1")
+    return _json({"busy": True}, status=202) if res is None else _json(res)
+
+
+@_guard
+async def pipeline_progress_handler(request: web.Request) -> web.StreamResponse:
+    root = _root_param(request.query.get("root"))
+    return _json(await asyncio.to_thread(pipeline_progress, root))
+
+
+@_guard
+async def draft_handler(request: web.Request) -> web.StreamResponse:
+    root = _root_param(request.query.get("root"))
+    return _json(await asyncio.to_thread(draft_get, root, request.query.get("crop")))
+
+
+@_guard
+async def draft_adopt_handler(request: web.Request) -> web.StreamResponse:
+    data = await _body(request)
+    root = _root_param(data.get("root"))
+    return _json(await asyncio.to_thread(draft_adopt, root, data))
+
+
 _ROUTES = (
     ("GET", f"{API}/board", board_redirect),
     ("GET", f"{API}/board/", board_static),
@@ -3413,6 +4166,13 @@ _ROUTES = (
     ("GET", f"{API}/refs/cut", refs_cut_state_handler),
     ("POST", f"{API}/refs/save", refs_save_handler),
     ("POST", f"{API}/refs/link", refs_link_handler),
+    ("GET", f"{API}/pipeline", pipeline_handler),
+    ("POST", f"{API}/pipeline/settings", pipeline_settings_handler),
+    ("GET", f"{API}/pipeline/prompt", pipeline_prompt_handler),
+    ("GET", f"{API}/pipeline/plan", pipeline_plan_handler),
+    ("GET", f"{API}/pipeline/progress", pipeline_progress_handler),
+    ("GET", f"{API}/draft", draft_handler),
+    ("POST", f"{API}/draft/adopt", draft_adopt_handler),
 )
 
 

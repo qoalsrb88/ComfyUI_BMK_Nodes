@@ -126,8 +126,10 @@ window.DPLayoutGeom = (() => {
 
   function suggest(boxes, canvas, snap) {
     // G4 상자에 맞춘 크롭: 합집합 ÷ 0.7(정수 식 ×10/7) → 128 올림 → 비 ≤ 3 → 캔버스보다 크면 그 축 = 캔버스 → 그래서 비 > 3 이면
-    // (4096×1024 같은 넓은 캔버스) 긴 축 = 3×짧은 → 줄인 크기로 가운데 정렬(격자) → 캔버스 안
+    // (4096×1000 같은 넓은 캔버스) 긴 축 = down(3·짧은)(S1-b — place 의 down 과 같음: 128 내림, 0 이면 1px 내림) → 줄인 크기로
+    // 가운데 정렬(격자) → 캔버스 안
     const up = snap ? (v) => Math.ceil(v / SIZE) * SIZE : Math.ceil;
+    const down = snap ? (v) => Math.floor(v / SIZE) * SIZE || Math.floor(v) : Math.floor;
     const ux0 = Math.min(...boxes.map((b) => b[0]));
     const uy0 = Math.min(...boxes.map((b) => b[1]));
     const ux1 = Math.max(...boxes.map((b) => b[2]));
@@ -138,8 +140,8 @@ window.DPLayoutGeom = (() => {
     else if (h > RATIO * w) w = up(h / RATIO);
     w = Math.min(w, canvas[0]);
     h = Math.min(h, canvas[1]);
-    if (w > RATIO * h) w = RATIO * h;
-    else if (h > RATIO * w) h = RATIO * w;
+    if (w > RATIO * h) w = down(RATIO * h);
+    else if (h > RATIO * w) h = down(RATIO * w);
     const q = snap ? POS : 1;
     const x0 = Math.min(Math.max(rnd((ux0 + ux1) / 2 - w / 2, q), 0), canvas[0] - w);
     const y0 = Math.min(Math.max(rnd((uy0 + uy1) / 2 - h / 2, q), 0), canvas[1] - h);

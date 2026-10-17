@@ -10,6 +10,7 @@
 <script src="viewer.js" defer></script>
 <script src="layout_edit.js" defer></script>
 <script src="ref_edit.js" defer></script>
+<script src="pipeline.js" defer></script>
 <script src="board.js" defer></script>
 </head>
 <body>
@@ -19,10 +20,12 @@
   <div id="badges" class="badges"></div>
   <div id="layout-head" class="lhead"></div>
   <div id="ref-head" class="lhead"></div>
+  <div id="pipe-head" class="lhead"></div>
   <div class="spacer"></div>
   <div id="status" class="status"></div>
   <button type="button" id="btn-edit" tabindex="-1" disabled>편집</button>
   <button type="button" id="btn-refs" tabindex="-1" disabled>레퍼런스</button>
+  <button type="button" id="btn-pipe" tabindex="-1" disabled>진행</button>
   <button type="button" id="btn-viewer" tabindex="-1" title="캔버스 뷰어 보이기/숨기기 (V)">캔버스</button>
   <button type="button" id="btn-queue" tabindex="-1" title="ComfyUI 탭에 Review 노드 부분 실행을 요청합니다(재굴림 소화)">ComfyUI 큐</button>
   <button type="button" id="btn-drain" tabindex="-1" title="진행 중인 Run 이 새 호출 발사를 멈춥니다(진행 중인 호출은 끝까지 받아 저장)">Drain</button>
@@ -34,6 +37,7 @@
     <ol id="target-list"></ol>
     <ol id="layout-list"></ol>
     <ol id="ref-list"></ol>
+    <ol id="pipe-list"></ol>
   </aside>
 
   <section id="viewer" aria-label="캔버스 뷰어"></section>
@@ -80,6 +84,7 @@
 
   <section id="layout-panel" aria-label="레이아웃 속성"></section>
   <section id="ref-panel" aria-label="레퍼런스 관리·컷"></section>
+  <section id="pipe-panel" aria-label="진행 — 설정·반영·계획·★ 점검·Export·채택" hidden></section>
 </main>
 
 <div id="help" class="overlay" hidden>
@@ -122,7 +127,7 @@
       <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd> · <kbd>Ctrl</kbd>+<kbd>Y</kbd></td><td>실행 취소 · 다시(이 창의 편집만 — 다른 창에서 바뀌면 기록을 비움)</td></tr>
       <tr><td><kbd>Esc</kbd></td><td>끌기 취소 → 선택 해제 → 편집 모드 나가기</td></tr>
     </table>
-    <p class="dim">편집 모드에서는 ★(Space)·탈락(X)·재굴림(R)이 꺼집니다. 편집은 layout.json 에만 쓰고, 다음 큐(반영(큐)·재굴림·ComfyUI 큐 모두)의 Import 에서 매니페스트에 반영합니다.</p>
+    <p class="dim">편집 모드에서는 ★(Space)·탈락(X)·재굴림(R)이 꺼집니다. 편집은 layout.json 에만 쓰고, 다음 큐(반영(무료 — 탭 불필요)·재굴림·ComfyUI 큐 모두)의 Import 에서 매니페스트에 반영합니다.</p>
     <h3>레퍼런스 (<kbd>T</kbd>)</h3>
     <table>
       <tr><td>빈 곳 끌기 · 핸들</td><td>영역(선택은 부품에 바짝 — 넉넉하면 옆 부품이 들어옴) · 고치기</td></tr>
@@ -135,6 +140,15 @@
       <tr><td><kbd>Esc</kbd> · <kbd>T</kbd></td><td>그리기 취소 → 영역 해제 → 크롭 선택 해제 → 모드 나가기 · 나가기</td></tr>
     </table>
     <p class="dim">레퍼런스 모드는 무료 기능만 씁니다(스펙·_hint 는 쓰지 않음 — 제안 문구만 복사). 저장은 덮어쓰지 않고, 옛 대표·보류는 refs\_보류\ 로 옮깁니다. 연결은 크롭 ID 로 고정되고 다음 큐의 Import 에서 매니페스트에 반영합니다.</p>
+    <h3>진행 (<kbd>G</kbd>)</h3>
+    <table>
+      <tr><td>왼쪽 체크</td><td>계획·해시의 대상 크롭(only) — 전체 · 없음 · 승인 필요만. 크롭을 누르면 오른쪽 아래 채택 패널</td></tr>
+      <tr><td>설정</td><td>실행 설정(pipeline.json — 노드 위젯 그대로). "확인 필요"가 남으면 반영·Export 를 막음(추정한 Prepare 설정으로 셀이 뒤집히지 않게)</td></tr>
+      <tr><td>반영 · Export</td><td>무료 템플릿(Run·Spec Draft 없음)을 ComfyUI 에 직접 큐 — 탭 불필요. 반영 = Import → Prepare → Analyze → Review(대기열 앞), Export = Analyze → Compose → Export(대기열 뒤)</td></tr>
+      <tr><td>계획</td><td>Run·초안의 승인 필요 수·비용·해시(노드와 같은 계산). 승인 단추는 S3b 전이라 꺼짐 — 해시 복사로 그래프 노드의 approve·only 에</td></tr>
+      <tr><td>채택 · 수정 · 해제</td><td>스펙 _layer_targets 를 씀(미리보기 → 확인). 반영은 다음 무료 반영</td></tr>
+    </table>
+    <p class="dim">진행 모드에서는 검토 키(Space·X·R·Q·D·C·S·M·V·화살표)와 E·T 가 꺼집니다. 재굴림(R)·ComfyUI 큐는 지금처럼 ComfyUI 탭의 Review 부분 실행(사전 승인 재굴림 과금)입니다.</p>
     <h3>알아 둘 것</h3>
     <ul>
       <li>보드는 선택만 기록합니다. 유료 호출은 ComfyUI 탭의 큐(Review 노드 부분 실행)로만 일어납니다.</li>

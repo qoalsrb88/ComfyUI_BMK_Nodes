@@ -46,6 +46,13 @@ S1 레이아웃 (명세 STUDIO_S1_SPEC.md §1.3·§3.6·§3.7)
 - check_crop_name / check_target_text / check_layout_rect / layout_rect_problem   이름·대상 문구·사각형 규칙(서버 거절용)
 - layout_parsed / layout_layer_name / new_layout_id / layout_sig   Import 가 쓰는 크롭 정의(합성 레이어명·고정 ID·지문)
 - layout_geom_checks / psd_diff              편집기 검사 목록(L-·N-·P- 코드) / PSD 기준점 대 스냅숏 차이
+S3 Studio 파이프라인 (명세 STUDIO_S3_SPEC.md §2.2·§2.4 — 노드에서 옮겨 노드·보드·vlm 이 같이 씀)
+- merge_adopted(crop, parsed, ov) / new_targets(parsed, old_crop) / adopt_stale(crop, ov)
+                                             Import 의 채택 병합·매니페스트 타깃 만들기, Prepare 채택 가드(Import 가 만들 타깃 ≠ 매니페스트)
+- project_glossary(root, m)                  프로젝트 glossary.json + Import 의 glossary_path(source.glossary) 용어집
+- prepare_inputs_fp(root, m)                 Prepare 입력 지문(스펙·참조 파일·specs/·refs.json·layout.json·용어집·refs_dir·source.layout.rev)
+- 보조: _file_fp / _dir_fp / _spec_files_fp  노드 Project 지문·Import IS_CHANGED 와 같은 파일·폴더 지문(없으면 None)
+- 보조: _spec_paths(root, refs_dir)          스펙이 가리키는 파일 경로(_spec_files_fp 의 스펙 쪽 — 보드 계획 서명이 기억해 stat 만)
 
 규칙 메모
 ---------
@@ -71,6 +78,11 @@ S1 레이아웃 (명세 STUDIO_S1_SPEC.md §1.3·§3.6·§3.7)
 
 버전 이력
 ---------
+v4 (2026-10, Studio S3a)
+- 노드에서 옮김(동작 그대로): _merge_adopted·_new_targets·_adopt_stale·_glossary → merge_adopted·new_targets·adopt_stale·
+  project_glossary, 지문 _file_fp·_dir_fp·_spec_files_fp. 단 _dir_fp 는 목록 뒤 사라진 파일(원자 쓰기 임시 파일)을
+  건너뜀 — 옛 노드는 FileNotFoundError(경합이 없으면 값은 같음). 새 prepare_inputs_fp(Prepare 가 매니페스트 prepare_inputs 로
+  남기고 보드가 '반영 필요'를 판정).
 v3 (2026-10)
 - S1 레이아웃: layout.json 스키마·이관·쓰기·이름/문구/사각형 규칙·검사 목록·psd_diff.
 v2 (2026-10)
@@ -230,6 +242,30 @@ def file_fingerprint(path: str) -> list[int]:
     except OSError as e:
         raise ValueError(f"파일을 찾을 수 없습니다: {path} ({e})") from e
     return [int(st.st_mtime_ns), int(st.st_size)]
+
+
+def _file_fp(path: str):
+    """file_fingerprint, 없거나 읽을 수 없으면 None(노드 IS_CHANGED·Project 지문·prepare_inputs_fp)."""
+    try:
+        return file_fingerprint(path)
+    except ValueError:
+        return None
+
+
+def _dir_fp(path: str):
+    """폴더 바로 아래 파일 (이름, 크기, mtime) 목록의 해시. 없으면 None."""
+    if not path or not os.path.isdir(path):
+        return None
+    rows = []
+    for fn in sorted(os.listdir(path)):
+        full = os.path.join(path, fn)
+        if os.path.isfile(full):
+            try:
+                st = os.stat(full)
+            except FileNotFoundError:  # 목록 뒤 사라짐 — 잠금 없이 부르는 보드 계획과 겹친 원자 쓰기의 임시 파일
+                continue
+            rows.append(f"{fn}|{st.st_size}|{st.st_mtime_ns}")
+    return hashlib.sha1("\n".join(rows).encode("utf-8")).hexdigest()[:16]
 
 
 def _norm_relparts(rel: str, what: str) -> list[str]:
@@ -644,6 +680,49 @@ def merge_layer_targets(parsed: dict, text: Any, *, crop_id: str | None = None, 
     return out, warnings
 
 
+def merge_adopted(crop: dict, parsed: dict, ov: dict) -> tuple[dict, list[str]]:
+    """merge_layer_targets(레이어명 파싱 + 스펙 _layer_targets). 크롭 ID·psd_name 을 넘겨 Studio 에서 이름을 바꾼 크롭의 스펙
+    앞머리 '<처음 이름> |' 도 뗀다. Import(_targets)·Prepare 가드(adopt_stale)·Studio 채택(vlm.adopt_write)이 같은 규칙."""
+    return merge_layer_targets(parsed, ov.get("_layer_targets"), crop_id=crop["id"],
+                               aliases=[crop["psd_name"]] if crop.get("psd_name") else [])
+
+
+def new_targets(parsed: dict, old_crop: dict | None) -> list[dict]:
+    """레이어명 타깃 → 매니페스트 타깃. 영문(ASCII) 문구는 name_en, 한글 문구·레거시는 label(번역은 Prepare).
+    parsed 가 merge_layer_targets 를 거쳤으면 채택 타깃의 origin 을 그대로 옮긴다(채택 타깃에만 키가 있음)."""
+    old = {t["tid"]: t for t in (old_crop or {}).get("targets") or []}
+    out = []
+    for t in parsed["targets"]:
+        text = t["text"].strip()
+        label = text or parsed["part"] or parsed["name"]
+        name_en = text if (text and text.isascii()) else ""
+        tt = {"tid": t["tid"], "label": label, "name_en": name_en, "mode": "ref_correct", "refs": []}
+        o = old.get(t["tid"])
+        if o and o.get("label") == label:  # 사람이 매니페스트에서 고친 값은 유지
+            for k in ("name_en", "mode", "refs"):
+                if o.get(k) and not (k == "name_en" and name_en):
+                    tt[k] = o[k]
+        if t.get("origin"):
+            tt["origin"] = t["origin"]
+        out.append(tt)
+    return out
+
+
+def adopt_stale(crop: dict, ov: dict) -> str:
+    """Prepare 가드: 레이어명 + 스펙 _layer_targets 로 Import 가 만들 타깃(tid, 라벨)이 매니페스트와 다르면 그 이유, 같으면 "".
+    Draft 는 Import 뒤에 채택을 쓰거나 지우므로(mock 채택 양보) 그 큐의 매니페스트는 옛 타깃이다 — 그 크롭의 jobs 를 만들지
+    않아 Run 해시가 바뀐다(드라이런, 옛 타깃 과금 없음). 문구는 채택·채택 해제 어느 쪽에도 맞게."""
+    p = parse_crop_layer_name(crop["layer_name"])
+    try:
+        merged, _w = merge_adopted(crop, p, ov)
+    except ValueError as e:
+        return f"채택 확인 못 함 — {e}"
+    want = [(t["tid"], t["label"]) for t in new_targets(merged, None)]
+    if want != [(t["tid"], t["label"]) for t in crop["targets"]]:
+        return "매니페스트 타깃이 레이어명 + _layer_targets 와 다름 — 다음 큐에서 Import PSD 가 반영"
+    return ""
+
+
 # ══════════════════════════════════════════════════════════════════════
 # 용어집
 # ══════════════════════════════════════════════════════════════════════
@@ -687,6 +766,14 @@ def load_glossary(path: str) -> dict:
         if k2 and v2:
             out[k2] = v2
     return out
+
+
+def project_glossary(root: str, m: dict) -> dict:
+    """프로젝트 용어집 = <root>/glossary.json + Import 의 glossary_path(source.glossary, 같은 키는 뒤가 이김). Prepare·Spec Draft·
+    Studio 계획·채택이 같은 값을 쓴다. 형식 오류는 ValueError."""
+    g = load_glossary(os.path.join(root, "glossary.json"))
+    g.update(load_glossary((m.get("source") or {}).get("glossary") or ""))
+    return g
 
 
 def translate(label: str, glossary: dict) -> str | None:
@@ -1883,3 +1970,63 @@ def psd_diff(baseline: dict, snapshot: dict) -> dict:
                             "to": {"layer_name": s["layer_name"], "rect": list(s["rect"])}})
     paired = set(pairs.values())
     return {"changed": changed, "added": [shape(s) for j, s in enumerate(new) if j not in paired], "removed": removed}
+
+
+# ══════════════════════════════════════════════════════════════════════
+# S3 Studio 파이프라인 — Prepare 입력 지문 (STUDIO_S3_SPEC §2.2 prepare_inputs)
+# ══════════════════════════════════════════════════════════════════════
+_REFS_FILE = "refs.json"  # bmk_design_patch_refs.REFS_NAME(refs 가 store 를 import 하므로 이름만 복사 — V-S1 이 대조)
+
+
+def _ref_path(r, refs_dir: str) -> str:
+    r = str(r)
+    return r if os.path.isabs(r) or not refs_dir else os.path.join(refs_dir, r)
+
+
+def _spec_paths(root: str, refs_dir: str) -> list[str]:
+    """specs/*.json 이 가리키는 파일 경로(guide, before_paste = 프로젝트 폴더 기준, targets[].refs = refs_dir 기준 — Prepare 와 같은
+    해석), 스펙 파일 이름 순. 스펙 JSON 을 모두 파싱하므로 보드 계획 서명(state 폴링)은 specs/ 목록이 같으면 기억한 결과를 쓴다."""
+    paths = []
+    sd = os.path.join(root, "specs")
+    for fn in sorted(os.listdir(sd)) if os.path.isdir(sd) else []:
+        if not fn.endswith(".json"):
+            continue
+        try:
+            ov = load_spec_override(root, fn[:-5])
+        except ValueError:  # JSON 오류: 스펙 파일 자체의 지문은 _dir_fp(specs) 에 있다
+            continue
+        paths += [p if os.path.isabs(p) else os.path.join(root, p)
+                  for p in (ov.get("guide"), ov.get("before_paste")) if isinstance(p, str) and p]
+        ts = ov.get("targets")  # 사람이 고친 스펙: 목록이 아닌 targets·refs 는 가리키는 파일 없음(Studio 계획 라우트가 500 이 되지 않게)
+        paths += [_ref_path(r, refs_dir) for t in (ts if isinstance(ts, list) else []) if isinstance(t, dict)
+                  for r in (t["refs"] if isinstance(t.get("refs"), list) else [])]
+    return paths
+
+
+def _spec_files_fp(root: str, m: dict | None = None) -> list:
+    """매니페스트 타깃 refs 와 specs/*.json 이 가리키는 파일(_spec_paths)의 지문. 가이드 그림이나 하위 폴더 레퍼런스만 바뀌어도
+    Project 지문이 바뀌어 Prepare 가 다시 실행된다. m 이 없으면 디스크에서 읽는다."""
+    if m is None:
+        try:
+            m = load_manifest(root)
+        except ValueError:  # 깨진 매니페스트: 지문은 _file_fp 가 이미 반영
+            return []
+    refs_dir = (m.get("source") or {}).get("refs_dir") or ""
+    paths = [_ref_path(r, refs_dir) for c in m["crops"] for t in c.get("targets") or [] for r in t.get("refs") or []]
+    return [(p, _file_fp(p)) for p in paths + _spec_paths(root, refs_dir)]
+
+
+def prepare_inputs_fp(root: str, m: dict) -> str:
+    """Prepare 입력 지문(sha256 앞 16자) — Prepare 가 jobs 와 같은 커밋에 매니페스트 prepare_inputs 로 남기고, 지금 값이 그것과
+    다르면 '반영 필요'(레이아웃·레퍼런스·_layer_targets 미반영, 마지막 Prepare 뒤 초안 쓰기·채택·스펙 수정). 재료 = 스펙이
+    가리키는 파일(_spec_files_fp — 노드 Project 지문과 같은 해석)·specs/·refs.json·layout.json·glossary.json·source.glossary·
+    refs_dir 바로 아래 파일 목록의 [mtime_ns, size](폴더는 _dir_fp)와 두 경로, source.layout.rev. 매니페스트·원장(cands/·vlm/)·
+    mock 스위치는 넣지 않는다 — Prepare 자신의 쓰기(inputs/·jobs)로는 바뀌지 않는다."""
+    src = m.get("source") or {}
+    refs_dir = src.get("refs_dir") or ""
+    gloss = src.get("glossary") or ""
+    lay = src.get("layout") if isinstance(src.get("layout"), dict) else {}
+    rows = [_spec_files_fp(root, m), _dir_fp(os.path.join(root, "specs")), _file_fp(os.path.join(root, _REFS_FILE)),
+            _file_fp(os.path.join(root, LAYOUT_NAME)), _file_fp(os.path.join(root, "glossary.json")),
+            [gloss, _file_fp(gloss)], [refs_dir, _dir_fp(refs_dir)], lay.get("rev")]
+    return hashlib.sha256(json.dumps(rows, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()[:16]

@@ -21,6 +21,9 @@ window.DPLayoutEdit = (() => {
   const LEVELS = { error: "오류", warn: "경고", info: "정보" };
   const SERVER_CODES = /^[RDH]-/; // 서버만 아는 검사(레퍼런스·PSD·옛 기록) — 끄는 동안에도 서버 값 그대로
   const RECT_MSGS = { error: "사각형이 비었거나 잘못되었습니다", outside: "사각형이 캔버스 밖으로 나갑니다", ratio: "사각형 비가 3:1 을 넘습니다" };
+  // 반영(큐) 확인 창의 정보 줄(S3 §3.2 — 무료 반영은 Spec Draft 를 돌리지 않는다)
+  const APPLY_NOTE = "원장에만 남은 초안(받았지만 스펙에 못 쓴 것)은 이 반영이 병합하지 않음 — 진행(G) 초안 줄의 '못 쓴 스펙'으로 보이고, "
+    + "그래프 Spec Draft 를 승인 없이 한 번 큐하면 병합";
 
   function sameRect(a, b) {
     return a.every((v, i) => v === b[i]);
@@ -866,9 +869,16 @@ window.DPLayoutEdit = (() => {
       render();
     }
 
+    function partial() {
+      // 서버가 S1-a(기준점을 고른 이름만 갱신)인가 — 재시작 전 옛 서버는 take·ack 가 기준점을 지금 PSD 로 통째 바꿔 나머지 갈라짐 경고도 꺼진다
+      return !opts.psdPartial || opts.psdPartial();
+    }
+
     function psdSplit(names) {
-      // take(names) 가 가져올 shape 와 나머지(가져오지 않고 기준점만 지금 PSD 로 바뀌어 경고가 꺼짐) — 확인 창 줄
+      // take(names) 가 가져올 shape 와 나머지 — S1-a: 기준점은 고른 이름만 지금 PSD 값으로 바뀌어(같은 이름의 사라진 shape 도 경고만 꺼짐)
+      // 나머지 갈라짐은 그대로 경고(옛 서버: 나머지는 가져오지 않고 경고만 꺼짐). 확인 창 줄
       const d = S.L.psd_diff;
+      const part = partial();
       const take = [];
       const rest = [];
       for (const x of d.changed) {
@@ -879,7 +889,10 @@ window.DPLayoutEdit = (() => {
         if (names.includes(x.name)) take.push(`${x.name} — PSD 에만 있는 shape 는 새 크롭으로 더함`);
         else rest.push(`${x.name} — 새 shape`);
       }
-      for (const x of d.removed) rest.push(`${x.name} — 사라진 shape: 레이아웃 그대로, 경고만 꺼짐`);
+      for (const x of d.removed) {
+        if (part && names.includes(x.name)) take.push(`${x.name} — 사라진 shape: 레이아웃 그대로, 경고만 꺼짐`);
+        else rest.push(`${x.name} — 사라진 shape` + (part ? "(경고 끄기로)" : ": 레이아웃 그대로, 경고만 꺼짐"));
+      }
       return { take, rest };
     }
 
@@ -889,7 +902,10 @@ window.DPLayoutEdit = (() => {
       if (!seen) return;
       const { take, rest } = psdSplit(names);
       const lines = ["PSD 값 가져오기(실행 취소로 되돌릴 수 없음):", ...take.map((x) => ` · ${x}`)];
-      if (rest.length) lines.push(`나머지 갈라짐 ${rest.length}건은 가져오지 않고 경고만 꺼집니다(기준점이 지금 PSD 로 바뀜):`, ...rest.map((x) => ` · ${x}`));
+      if (rest.length) {
+        lines.push(partial() ? `나머지 갈라짐 ${rest.length}건은 가져오지 않고 그대로 경고:`
+          : `나머지 갈라짐 ${rest.length}건은 가져오지 않고 경고만 꺼집니다(기준점이 지금 PSD 로 바뀜 — ComfyUI 재시작 전 서버):`, ...rest.map((x) => ` · ${x}`));
+      }
       if (!window.confirm(lines.concat("계속할까요?").join("\n"))) return;
       const r = await act(S.psd("take", names, seen));
       if (!r) return;
@@ -900,21 +916,26 @@ window.DPLayoutEdit = (() => {
       r.skipped.length ? "warn" : "");
     }
 
-    async function ackPsd() {
+    async function ackPsd(names) {
+      // names 없음 = 갈라짐 전부의 경고를 끔(기준점 = 지금 PSD 통째), names = 그 shape 들만(S1-a — 나머지는 그대로 경고)
       await flushNudge();
       const seen = S.L.psd_diff;
       if (!seen) return;
-      if (!window.confirm("레이아웃은 그대로 두고 PSD 기준점만 지금 PSD 로 바꿉니다(갈라짐 경고를 끔). 계속할까요?")) return;
-      if (await act(S.psd("ack", undefined, seen))) opts.toast("PSD 기준점을 갱신했습니다");
+      const rest = names ? psdSplit(names).rest.length : 0;
+      if (!window.confirm(names ? `${names.join(", ")} 의 갈라짐 경고만 끕니다(레이아웃 그대로, 그 shape 의 PSD 기준점만 지금 PSD 로)`
+        + (rest ? ` — 나머지 갈라짐 ${rest}건은 그대로 경고` : "") + ". 계속할까요?"
+        : "레이아웃은 그대로 두고 PSD 기준점만 지금 PSD 로 바꿉니다(갈라짐 경고를 모두 끔). 계속할까요?")) return;
+      if (await act(S.psd("ack", names, seen))) opts.toast(names ? `PSD 기준점 갱신: ${names.join(", ")}` : "PSD 기준점을 갱신했습니다");
     }
 
     async function applyQueue() {
       await flushNudge();
       await S.idle(); // 저장 중인 이름·대상 편집이 끝난 뒤 — 그 전에 큐에 넣으면 Import 가 옛 판을 반영한다
       const n = S.L.pending_rerolls || 0;
-      if (!window.confirm("반영(큐): ComfyUI 탭에 Review 노드 부분 실행을 요청합니다.\n"
-        + "Import 부터 다시 실행(Review 가 Import 의 하류일 때 — 아니면 ComfyUI 탭이 큐에 넣지 않고 알림) · "
-        + `대기 재굴림 ${n}건(사전 승인, 과금)도 함께 돕니다. 계속할까요?`)) return;
+      const lines = (opts.applyWarn ? opts.applyWarn() : [])
+        .concat("반영(큐): 무료 반영(Import → Prepare → Analyze → Review 템플릿, 탭 불필요)으로 레이아웃을 매니페스트에 반영합니다.");
+      if (n) lines.push(`재굴림 대기 ${n}건(사전 승인)은 이 반영에서 돌지 않음 — R·ComfyUI 큐·그래프 Run 에서 과금`);
+      if (!window.confirm(lines.concat(APPLY_NOTE, "계속할까요?").join("\n"))) return;
       opts.queue(true);
     }
 
@@ -1037,7 +1058,7 @@ window.DPLayoutEdit = (() => {
         head.append(el("span", "lh-title", `레이아웃 rev ${L.rev}`));
         const st = el("span", applied ? "lh-ok" : "lh-wait", applied ? "반영됨" : `미반영 ${k}`);
         st.title = applied ? "마지막 Import 가 이 판을 읽었습니다" : `매니페스트 반영 rev ${L.applied_rev ?? "없음"} — 다음 큐의 Import 에서 반영`;
-        head.append(st, button("반영(큐)", "ComfyUI 탭에 Review 노드 부분 실행 요청 — Import 부터 다시 실행해 레이아웃을 매니페스트에 반영",
+        head.append(st, button("반영(큐)", "무료 반영(Import → Prepare → Analyze → Review 템플릿, 탭 불필요) — 레이아웃을 매니페스트에 반영",
           applyQueue));
         const d = L.psd_diff;
         const nd = d ? d.changed.length + d.added.length + d.removed.length : 0;
@@ -1048,8 +1069,8 @@ window.DPLayoutEdit = (() => {
           head.append(p);
           const names = [...psdShapes(["changed", "added"])];
           if (names.length) {
-            head.append(button("PSD 값 가져오기", "갈라진 shape 의 PSD 값(바뀐 필드만)을 레이아웃으로 · 새 shape 는 새 크롭 — 사라진 shape 는 경고만 꺼짐",
-              () => takePsd(names)));
+            head.append(button("PSD 값 가져오기", "갈라진 shape 의 PSD 값(바뀐 필드만)을 레이아웃으로 · 새 shape 는 새 크롭 — 사라진 shape 는 "
+              + (partial() ? "경고 끄기로" : "경고만 꺼짐"), () => takePsd(names)));
           }
           head.append(button("경고 끄기", "레이아웃은 그대로, PSD 기준점만 지금 PSD 로", ackPsd));
         }
@@ -1296,13 +1317,18 @@ window.DPLayoutEdit = (() => {
       const b = el("div", "lp-btns");
       b.append(button("상자에 맞춤", "부품 상자 합집합 ÷ 0.7 → 128 배수 → 비 ≤ 3 → 캔버스 안(미리보기, Enter 적용)", propose));
       if (proposal && proposal.id === c.id) b.append(button("제안 적용", "Enter", applyProposal, "primary"));
-      if (psdShapes(["changed"]).has(c.psd_name || c.name)) {
-        // take 뒤 기준점 = 지금 PSD 라 다른 갈라짐의 경고도 꺼진다 — 라벨에 그 수를 적는다
-        const names = [c.psd_name || c.name];
-        const rest = psdSplit(names).rest.length;
-        b.append(button(rest ? `PSD 값으로(나머지 ${rest}건 경고 끔)` : "PSD 값으로",
-          "이 크롭의 PSD 에서 바뀐 필드(사각형·대상)를 지금 PSD 값으로" + (rest ? ` — 나머지 갈라짐 ${rest}건은 가져오지 않고 경고만 꺼짐` : ""),
-          () => takePsd(names)));
+      const pn = c.psd_name || c.name;
+      const part = partial();
+      if (psdShapes(["changed"]).has(pn)) {
+        // S1-a: 이 이름의 기준점만 지금 PSD 값으로 — 다른 갈라짐은 그대로 경고. 옛 서버는 기준점이 통째로 바뀌어 다른 갈라짐 경고도 꺼짐(라벨에 그 수)
+        const rest = part ? 0 : psdSplit([pn]).rest.length;
+        b.append(button(rest ? `PSD 값으로(나머지 ${rest}건 경고 끔)` : "PSD 값으로", "이 크롭의 PSD 에서 바뀐 필드(사각형·대상)를 지금 PSD 값으로 — "
+          + (part ? "다른 갈라짐은 그대로 경고" : rest ? `나머지 갈라짐 ${rest}건은 가져오지 않고 경고만 꺼짐(ComfyUI 재시작 전 서버)` : "갈라짐은 이것뿐"),
+        () => takePsd([pn])));
+      }
+      if (part && psdShapes(["changed", "removed"]).has(pn)) {
+        b.append(button("이 shape 경고 끄기", "레이아웃은 그대로, 이 shape 의 PSD 기준점만 지금 PSD 로(다른 갈라짐은 그대로 경고)",
+          () => ackPsd([pn])));
       }
       b.append(button("지우기", "Delete", removeSel, "danger"));
       panel.append(b);

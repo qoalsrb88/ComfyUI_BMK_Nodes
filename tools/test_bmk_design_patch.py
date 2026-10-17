@@ -40,6 +40,13 @@ r"""Design Patch 통합 테스트 (M1_SPEC §6, M2_SPEC §6, M3_SPEC §7): 보�
   M2-C 노드 체인(실제 로더 nodes.load_custom_node + execution.PromptExecutor, 서버 포트 없음, mock):
      Project → Import(03) → Prepare → Run(드라이런 0 호출 → 승인 N 호출 → 재실행 0 호출) → Analyze → Review →
      보드 pick(라우트) → Compose → Export, 그리고 Run·Analyze 실행 중 보드 쓰기 경합(잃은 갱신 0)
+S3a 파이프라인(STUDIO_S3_SPEC §7 — --only 이름 = 묶음, 응답 모양 정본 tools/fixtures/pipeline_api.json · 대조기 _pl_shape)
+  pipeline_unit       P1 템플릿 T1–T6·only 정규형 · P3 pipeline.json 검증·수명·rev 409·잠금 경합 · P4 유도·갈라짐(261014 사본) · B0 순도(U1)
+  pipeline_vlm_unit   V-S1 vlm·store 이동 순수성·adopt_write 표(U2a)
+  pipeline_board_unit B32–B35·B37·B38 라우트·B22′ S1-a·B0‴·B11·B12″ 서버(U3)
+  pipeline_js_unit    J-P1·J-P2·J-P4·B12″ JS·P5 S1-b(U4)
+  pipeline_node_unit  (--quick 생략) _pipeline_node_u2b = N24·N30·N31(U2b, --only=pipeline_node_u2b) ·
+                      _pipeline_node_u3 = P2·N25–N28·R1‴(U3, --only=pipeline_node_u3)
 출력물은 H:\BmkNodeDesign\MultiLayerCropEdit\_proto\m2_test_out\ 아래에만 쓴다(M1 회귀 결과를 읽기만 하는 곳은 m1_test_out).
 """
 from __future__ import annotations
@@ -5619,7 +5626,11 @@ def m2_board_unit():
                        ("GET", "/bmk/design_patch/refs"), ("GET", "/bmk/design_patch/refs/sheets"),  # S2 §5(라우트 7, /refs/cut 은 GET·POST)
                        ("GET", "/bmk/design_patch/refs/sheet"), ("GET", "/bmk/design_patch/refs/img"),
                        ("GET", "/bmk/design_patch/refs/cut"), ("POST", "/bmk/design_patch/refs/cut"),
-                       ("POST", "/bmk/design_patch/refs/save"), ("POST", "/bmk/design_patch/refs/link")})
+                       ("POST", "/bmk/design_patch/refs/save"), ("POST", "/bmk/design_patch/refs/link"),
+                       ("GET", "/bmk/design_patch/pipeline"), ("POST", "/bmk/design_patch/pipeline/settings"),  # S3 §6(라우트 7)
+                       ("GET", "/bmk/design_patch/pipeline/prompt"), ("GET", "/bmk/design_patch/pipeline/plan"),
+                       ("GET", "/bmk/design_patch/pipeline/progress"), ("GET", "/bmk/design_patch/draft"),
+                       ("POST", "/bmk/design_patch/draft/adopt")})
         check(paths == want, f"라우트 목록 {paths}")
         # 재시작 흉내: 메모리 레지스트리에서 지움 → base_dir 로 다시 등록하면 _roots.json 에서 복구
         with store._ROOTS_LOCK:
@@ -5699,9 +5710,11 @@ def m2_board_unit():
         check(s2["backend_mock"] is True, "_MOCK_API 파일 → backend_mock")
         (BASE / "bmk_design_patch" / "_MOCK_API").unlink()
         st, u = await h.jget("/bmk/design_patch/state", root=key, since_rev=str(s["rev"]))
-        check(st == 200 and u == {"unchanged": True, "rev": s["rev"], "running": False, "drain": False, "layout_rev": None,
-                                  "refs_rev": None, "refs_files_v": None} and s.get("refs_files_v", "없음") is None,
-              f"since_rev 같음 → unchanged(레이아웃·refs.json·refs_dir 없음 → layout_rev·refs_rev·refs_files_v null, S1 §4.2·S2 §5.8) {u}")
+        check(st == 200 and u == {"unchanged": True, "rev": s["rev"], "running": False, "drain": False, "drafting": False, "layout_rev": None,
+                                  "refs_rev": None, "refs_files_v": None, "pipeline_rev": None, "plan_v": None}
+              and s.get("refs_files_v", "없음") is None,
+              f"since_rev 같음 → unchanged(레이아웃·refs.json·refs_dir·pipeline.json·기억한 계획 없음 → layout_rev·refs_rev·refs_files_v·"
+              f"pipeline_rev·plan_v null, S1 §4.2·S2 §5.8·S3 §6) {u}")
         st, u = await h.jget("/bmk/design_patch/state", root=key, since_rev=str(s["rev"] - 1))
         check(st == 200 and "targets" in u, "since_rev 다름 → 전체")
         for bad in ("abc", "-1", "1.5", "9" * 20):
@@ -6139,12 +6152,12 @@ def m2_board_unit():
                   f"{name} 외부 URL·CDN 없음")
             check(not any(ord(ch) >= 0x1F000 or ch == "\ufe0f" for ch in text), f"{name} 이모지 없음")
         check(re.findall(r'<script src="([^"]+)" defer></script>', html)
-              == ["layout_geom.js", "viewer.js", "layout_edit.js", "ref_edit.js", "board.js"]
-              and not re.search(r"<script(?![^>]*\bsrc=\"(?:layout_geom|viewer|layout_edit|ref_edit|board)\.js\")", html)
+              == ["layout_geom.js", "viewer.js", "layout_edit.js", "ref_edit.js", "pipeline.js", "board.js"]
+              and not re.search(r"<script(?![^>]*\bsrc=\"(?:layout_geom|viewer|layout_edit|ref_edit|pipeline|board)\.js\")", html)
               and "on" + "click=" not in html.lower(),
-              "html 에 인라인 스크립트·이벤트 속성 없음, layout_geom → viewer → layout_edit → ref_edit → board 순서")
+              "html 에 인라인 스크립트·이벤트 속성 없음, layout_geom → viewer → layout_edit → ref_edit → pipeline → board 순서")
         check('postMessage({ type: "bmk-dp-queue", rootKey: ROOT, layout }, location.origin)' in js,
-              "opener postMessage 형식(명세 §4.2, layout = 편집기 반영(큐))")
+              "opener postMessage 형식(명세 §4.2, layout = 옛 서버 대체(재시작 전) — 탭 layout 요청)")
         check("POLL_MS = 2000" in js and "since_rev" in js, "2초 폴링 + since_rev")
         for code_name in ("ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "\"Space\"", "KeyX", "KeyQ", "KeyD", "KeyC", "KeyR",
                           "Slash", "Escape", "KeyB", "KeyO", "Digit0", "KeyF", "Digit1", "Digit2", "KeyS", "KeyM", "KeyN",
@@ -8232,7 +8245,7 @@ def vlm_unit():
         def tg(s, tid="A"):
             return next((t for t in (s or {}).get("targets") or [] if t.get("id") == tid), {})
 
-        def node(cur, mode, targets):  # main._merge_crop 순서: merge_mode → 제약(force 는 매니페스트만) → normalize → merge_spec
+        def node(cur, mode, targets):  # dvlm.merge_crop 순서: merge_mode → 제약(force 는 매니페스트만) → normalize → merge_spec
             mode = dvlm.merge_mode(cur, mode, req.key)
             d = dvlm.normalize(_vparsed(targets), ctx, req, glossary={},
                                constraints=dvlm.constraints_for(ctx, None if mode == "force" else cur))
@@ -9411,7 +9424,7 @@ def vlm_unit():
               and "stale" in "\n".join(ev._md_table(s4["rows"])), "C21 키 다름 + 원장 req 본문 없음 → stale(채점 안 함, 표에 표시)")
         rq_path.write_text(rq_orig, encoding="utf-8")
         store.update_manifest(root, flip)  # 원래 순서로
-        # 재정규화도 노드(_merge_crop)처럼 done 의 repairs 를 넘긴다 — 잘린 출력의 끊긴 마지막 절이 채점·ab_draft 에 들어가지 않게
+        # 재정규화도 노드(dvlm.merge_crop)처럼 done 의 repairs 를 넘긴다 — 잘린 출력의 끊긴 마지막 절이 채점·ab_draft 에 들어가지 않게
         c_t = mn["crops"][0]
         txt = json.dumps(_vparsed([_vt("A", detail="a slice of bread; a golden rim; one small square pat")]), ensure_ascii=False)
         pj_t, reps_t = dvlm.extract_json(txt[:txt.index("one small sq") + 12])
@@ -10328,11 +10341,12 @@ def m2_node_unit():
             n1 = len(fake.routes)
             dp._register_board_routes()
         paths = {r.path for r in fake.routes}
-        check(n1 == 25 and len(fake.routes) == 25 and {"/bmk/design_patch/state", "/bmk/design_patch/drain",
+        check(n1 == 32 and len(fake.routes) == 32 and {"/bmk/design_patch/state", "/bmk/design_patch/drain",
                                                        "/bmk/design_patch/board/", "/bmk/design_patch/canvas",
                                                        "/bmk/design_patch/layout", "/bmk/design_patch/layout/refs",
-                                                       "/bmk/design_patch/refs", "/bmk/design_patch/refs/cut"} <= paths,
-              f"보드 라우트 25개(S1 레이아웃 5·S2 레퍼런스 8 포함), 두 번 불러도 한 번 ({n1}, {len(fake.routes)})")
+                                                       "/bmk/design_patch/refs", "/bmk/design_patch/refs/cut",
+                                                       "/bmk/design_patch/pipeline/plan", "/bmk/design_patch/draft/adopt"} <= paths,
+              f"보드 라우트 32개(S1 레이아웃 5·S2 레퍼런스 8·S3 파이프라인 7 포함), 두 번 불러도 한 번 ({n1}, {len(fake.routes)})")
         check(dp._server() is None, "가짜 서버는 블록 밖에서 되돌림")
 
         section("M2-N1 Prepare calls_per_cell · Run 과 같은 승인 해시")
@@ -11775,7 +11789,7 @@ def vlm_node_unit():
         set_mock()
         h, root = project("m3lock", rects[:2])
         crops = [c["id"] for c in st.load_manifest(root)["crops"]]
-        mark = Path(root) / dv.LEDGER_DIR / dp._WRITE_MARK
+        mark = Path(root) / dv.LEDGER_DIR / dv.WRITE_MARK
         (_h, _r, _s), e = draft_node(h)
         orig = dv.write_spec
 
@@ -11793,7 +11807,7 @@ def vlm_node_unit():
             fp_b = dp._project_fp(root)
         finally:
             dv.write_spec = orig
-        check(e1["approved_now"] and sorted(dp._unwritten_specs(root)) == sorted(crops) and h1["draft"].get("unwritten") == 2
+        check(e1["approved_now"] and sorted(dv.unwritten_specs(root)) == sorted(crops) and h1["draft"].get("unwritten") == 2
               and "스펙 파일을 쓰지 못함" in rep1 and not any((Path(root) / "specs" / f"{c}.json").exists() for c in crops)
               and all(f"[실패] {c}" in rep1 for c in crops) and "쓰지 않음(파일 잠김)" in rep1,
               f"잠김: 초안은 원장에, 스펙 없음, 표식·가지 unwritten 2, 보고서 [실패] {h1.get('draft')}")
@@ -11813,7 +11827,7 @@ def vlm_node_unit():
               "잠금 해제 뒤 큐: 원장으로 스펙을 씀(0 호출), 표식 지움, 그 뒤 지문 고정")
         # _project.json(화풍)만 잠김: 받은 화풍 초안을 못 씀 → 표식 ['_project'], 풀리면 씀
         h5, root5 = project("m3lock_p", rects[:1])
-        mark5 = Path(root5) / dv.LEDGER_DIR / dp._WRITE_MARK
+        mark5 = Path(root5) / dv.LEDGER_DIR / dv.WRITE_MARK
         (_h, _r, _s), e5 = draft_node(h5)
 
         def locked_p(root_, cid, merge):
@@ -11829,9 +11843,9 @@ def vlm_node_unit():
             fp7 = dp._project_fp(root5)
         finally:
             dv.write_spec = orig
-        check(dp._unwritten_specs(root5) == [dv.PROJECT_SPEC_ID] and h6["draft"].get("unwritten") == 1 and fp7 != fp6
+        check(dv.unwritten_specs(root5) == [dv.PROJECT_SPEC_ID] and h6["draft"].get("unwritten") == 1 and fp7 != fp6
               and not (Path(root5) / "specs" / f"{dv.PROJECT_SPEC_ID}.json").exists(),
-              f"_project 잠김 → 표식 ['_project'], 가지 unwritten 1, 잠긴 채 큐마다 지문 바뀜 {dp._unwritten_specs(root5)}")
+              f"_project 잠김 → 표식 ['_project'], 가지 unwritten 1, 잠긴 채 큐마다 지문 바뀜 {dv.unwritten_specs(root5)}")
         draft_node(h5)
         check(not mark5.exists() and (Path(root5) / "specs" / f"{dv.PROJECT_SPEC_ID}.json").is_file(),
               "_project 잠금 해제 뒤 큐: 화풍을 씀, 표식 지움")
@@ -11839,7 +11853,7 @@ def vlm_node_unit():
         # _project.json 의 JSON 오류(잠김 아님)는 표식을 남기지 않는다(큐마다 다시 돌지 않게)
         h8, root8 = project("m3lock_k", rects[:2])
         crops8 = [c["id"] for c in st.load_manifest(root8)["crops"]]
-        mark8 = Path(root8) / dv.LEDGER_DIR / dp._WRITE_MARK
+        mark8 = Path(root8) / dv.LEDGER_DIR / dv.WRITE_MARK
         (_h, _r, _s), e8 = draft_node(h8)
 
         def locked_crops(root_, cid, merge):
@@ -11855,7 +11869,7 @@ def vlm_node_unit():
         spec0 = Path(root8) / "specs" / f"{crops8[0]}.json"
         spec0.write_text("{broken", encoding="utf-8")
         draft_node(h8)
-        kept = dp._unwritten_specs(root8)
+        kept = dv.unwritten_specs(root8)
         spec0.unlink()
         st.write_json_atomic(str(mark8), {"at": 1, "specs": kept + ["999_zzzzzz"]})
         (h10, _r, _s), _e10 = draft_node(h8, write_mode="preview")
@@ -12170,11 +12184,11 @@ def vlm_node_unit():
               "노드가 model_dir 을 넘김: local_qwen 키가 config.json(sha8)을 따라감(§2.3)")
 
     def t_n8():
-        section("M3-N8 보드 라우트 수는 25 (M3 는 라우트를 더하지 않음, S0 의 canvas·seams·S1 레이아웃 5·S2 레퍼런스 8 포함)")
+        section("M3-N8 보드 라우트 수는 32 (M3 는 라우트를 더하지 않음, S0 의 canvas·seams·S1 레이아웃 5·S2 레퍼런스 8·S3 파이프라인 7 포함)")
         fake = _FakeServer(web.RouteTableDef())
         with _prompt_server(fake):
             dp._register_board_routes()
-        check(len(fake.routes) == 25, f"보드 라우트 {len(fake.routes)}")
+        check(len(fake.routes) == 32, f"보드 라우트 {len(fake.routes)}")
 
     def t_n9():
         section("M3-N9 평가 도구의 순수 복제 new_targets == main._new_targets (표본 레이어명 6 + 채택 origin 3)")
@@ -12593,10 +12607,12 @@ def _layout_new(sx, sy, dx, dy, canvas, snap, keep):
 
 def _layout_suggest(boxes, canvas, snap):
     """G4 상자에 맞춘 크롭 제안(§3.4): 합집합 축마다 need = ceil(크기 × 10 / 7)(÷ 0.7) → 스냅이면 128 단위 올림, 최소 128 → 비 > 3 이면
-    짧은 축 = 긴/3 올림(스냅이면 128 단위) → 캔버스보다 크면 그 축 = 캔버스 → 그래서 비 > 3 이면(4096×1024 같은 넓은 캔버스)
-    긴 축 = 3×짧은 → 합집합 가운데에 왼쪽 위를 16px 격자로(끔 = 1px — 줄인 크기로 가운데 유지) → 캔버스 안으로 밀기."""
+    짧은 축 = 긴/3 올림(스냅이면 128 단위) → 캔버스보다 크면 그 축 = 캔버스 → 그래서 비 > 3 이면(4096×1000 같은 넓은 캔버스)
+    긴 축 = down(3·짧은)(S1-b — place 의 down 과 같음: 스냅이면 128 내림, 그것이 0 이면 1px 내림) → 합집합 가운데에 왼쪽 위를
+    16px 격자로(끔 = 1px — 줄인 크기로 가운데 유지) → 캔버스 안으로 밀기."""
     S, R = _LAYOUT_G["size"], _LAYOUT_G["ratio"]
     up = (lambda v: math.ceil(v / S) * S) if snap else math.ceil
+    down = (lambda v: math.floor(v / S) * S or math.floor(v)) if snap else math.floor
     ux0, uy0 = min(b[0] for b in boxes), min(b[1] for b in boxes)
     ux1, uy1 = max(b[2] for b in boxes), max(b[3] for b in boxes)
     w = max(_LAYOUT_G["min"], up(math.ceil((ux1 - ux0) * 10 / 7)))
@@ -12607,9 +12623,9 @@ def _layout_suggest(boxes, canvas, snap):
         w = up(h / R)
     w, h = min(w, canvas[0]), min(h, canvas[1])
     if w > R * h:
-        w = R * h
+        w = down(R * h)
     elif h > R * w:
-        h = R * w
+        h = down(R * w)
     q = _LAYOUT_G["pos"] if snap else 1
     x0, y0 = _layout_rnd((ux0 + ux1) / 2 - w / 2, q), _layout_rnd((uy0 + uy1) / 2 - h / 2, q)
     x0, y0 = min(max(x0, 0), canvas[0] - w), min(max(y0, 0), canvas[1] - h)
@@ -13067,6 +13083,10 @@ def layout_store_unit():
             (_layout_suggest([[0, 1000, 2000, 1100]], C, True), [0, 544, 2944, 1568], "넓은 상자 → 짧은 축 = 긴/3 올림"),
             (_layout_suggest([[500, 400, 3300, 700]], [4096, 1024], True), [368, 0, 3440, 1024],
              "4096×1024 넓은 상자: 높이를 캔버스로 자른 뒤 비 4 → 폭 = 3×1024, 가운데 유지(합집합 500–3300 을 덮음)"),
+            (_layout_suggest([[500, 400, 3300, 700]], [4096, 1000], True), [432, 0, 3376, 1000],
+             "S1-b 4096×1000(128 배수 아님): 폭 = down(3×1000) = 2944(128 내림)"),
+            (_layout_suggest([[100, 5, 3000, 30]], [4096, 40], True), [1488, 0, 1608, 40],
+             "S1-b 4096×40: down(3×40) 의 128 내림 0 → 1px 내림 120"),
         ]
         for got, exp, label in hand:
             check(got == exp, f"오라클 손계산 {label}: {got} ≠ {exp}")
@@ -13725,15 +13745,20 @@ def layout_board_unit():
         await crop_op(h, key, root, op="delete", id=nid)
 
     async def b22_psd(h, key, root, ids):
-        section("B22 POST /layout/psd (take·ack·스냅숏 없음·믿을 수 없음 400·본 스냅숏과 다름 409)")
+        section("B22 POST /layout/psd (take·ack — S1-a 고른 이름만 기준점 갱신 ①②③⑤·스냅숏 없음·믿을 수 없음 400·본 스냅숏과 다름 409)")
         for op in ("take", "ack"):
             st, d = await h.post(f"{API}/layout/psd", {"root": key, "rev": lay(root)["rev"], "op": op})
             check(st == 400 and "스냅숏" in d["error"], f"스냅숏 없음 {op} → 400 {st} {d}")
         base = copy.deepcopy(lay(root)["psd"]["crops"])
+        base_meta = {k: v for k, v in lay(root)["psd"].items() if k != "crops"}
         snap1 = [dict(c) for c in base if c["name"] != "003_손_왼쪽"]
         snap1[0]["rect"] = [0, 64, 384, 448]
         snap1[1]["layer_name"] = "002_눈 | A: 눈동자; B: 눈썹"
+        next(c for c in snap1 if c["name"] == "004_발")["rect"] = [384, 392, 768, 776]  # 짝 크롭 없음(psd_name 004_발_원본) → skipped
         snap1.append({"name": "008_리본", "layer_name": "008_리본 | A: red ribbon", "rect": [384, 768, 768, 896]})
+
+        def named(crops, n):
+            return [c for c in crops if c["name"] == n]
         _layout_board_snap(root, snap1, [5, 6], sync=False)  # 스냅숏 지문 [5, 6] ≠ 매니페스트 source 지문 [1, 2](마지막 Import)
         st, d = await h.jget(f"{API}/layout", root=key)
         lrev = lay(root)["rev"]
@@ -13745,16 +13770,18 @@ def layout_board_unit():
         st, d = await h.jget(f"{API}/layout", root=key)
         pd = d["psd_diff"]
         check(pd["fingerprint"] == [5, 6] and pd["at"] == "2026-10-16 10:00:00"
-              and [x["name"] for x in pd["changed"]] == ["001_머리", "002_눈"]
-              and pd["changed"][0]["fields"] == ["rect"] and pd["changed"][1]["fields"] == ["layer_name"]
+              and [x["name"] for x in pd["changed"]] == ["001_머리", "002_눈", "004_발"]
+              and [x["fields"] for x in pd["changed"]] == [["rect"], ["layer_name"], ["rect"]]
               and [x["name"] for x in pd["added"]] == ["008_리본"] and [x["name"] for x in pd["removed"]] == ["003_손_왼쪽"],
               f"psd_diff = store.psd_diff(기준점, 스냅숏) + 스냅숏 지문·at {pd}")
+        token = {"token": pd["token"]}
         R = rows(d)
         with_d = sorted(cid for cid, c in R.items() if "D-psd" in codes(c))
         check(with_d == sorted([ids[0], ids[1], f"{ids[1]}-2", ids[2]]),
-              f"D-psd = psd_name(없으면 이름)으로 짝: 바뀜 001·002(이름을 바꿔도 psd_name)·새 002_눈, 사라짐 003 {with_d}")
+              f"D-psd = psd_name(없으면 이름)으로 짝: 바뀜 001·002(이름을 바꿔도 psd_name)·새 002_눈, 사라짐 003 — 004 는 짝 크롭 없음 {with_d}")
         rev = lay(root)["rev"]
-        st, d = await h.post(f"{API}/layout/psd", {"root": key, "rev": rev, "op": "take", "names": ["001_머리", "008_리본"]})
+        st, d = await h.post(f"{API}/layout/psd", {"root": key, "rev": rev, "op": "take", "names": ["001_머리", "008_리본"],
+                                                    "snapshot": token})
         L = lay(root)
         c1 = next(c for c in L["crops"] if c["id"] == ids[0])
         id8 = store.crop_id_for("008_리본")
@@ -13766,13 +13793,39 @@ def layout_board_unit():
               f"take: PS 에서 rect 만 옮김 → rect = PSD 값, Studio 에서 쓴 A 문구·B 대상·상자는 그대로 {c1}")
         check(c8.get("name") == "008_리본" and c8.get("rect") == [384, 768, 768, 896] and c8.get("psd_name") == "008_리본"
               and c8.get("targets") == [{"tid": "A", "text": "red ribbon", "box": None}], f"take: 새 shape → 크롭 추가(id 해시) {c8}")
-        check(L["psd"]["fingerprint"] == [5, 6] and [c["name"] for c in L["psd"]["crops"]] == [c["name"] for c in snap1]
-              and all(set(c) == {"name", "layer_name", "rect"} for c in L["psd"]["crops"]), "기준점 = 지금 스냅숏(rect_source 등 뺌)")
+        LP = L["psd"]
+        check({k: v for k, v in LP.items() if k != "crops"} == base_meta
+              and [c["name"] for c in LP["crops"]] == [c["name"] for c in base] + ["008_리본"]
+              and named(LP["crops"], "001_머리") == named(snap1, "001_머리") and named(LP["crops"], "008_리본") == named(snap1, "008_리본")
+              and all(named(LP["crops"], n) == named(base, n) for n in ("002_눈", "003_손_왼쪽", "004_발"))
+              and all(set(c) == {"name", "layer_name", "rect"} for c in LP["crops"]),
+              f"S1-a take(names): 고른 이름(001·008)만 기준점 = 스냅숏 값(새 이름 008 은 끝에, rect_source 등 뺌), 나머지 이름·메타(지문·at)는 "
+              f"그대로 {[c['name'] for c in LP['crops']]} {base_meta}")
         c2 = next(c for c in L["crops"] if c["id"] == ids[1])
-        check(len(c2["targets"]) == 3, "names 에 없는 002 는 크롭 그대로(기준점만 넘어감)")
+        check(len(c2["targets"]) == 3, "names 에 없는 002 는 크롭 그대로(기준점도 그대로 — S1-a)")
+        st, d = await h.jget(f"{API}/layout", root=key)
+        pd = d["psd_diff"]
+        check([x["name"] for x in pd["changed"]] == ["002_눈", "004_발"] and pd["added"] == []
+              and [x["name"] for x in pd["removed"]] == ["003_손_왼쪽"] and pd["token"] == token["token"]
+              and sorted(cid for cid, c in rows(d).items() if "D-psd" in codes(c)) == sorted([ids[1], f"{ids[1]}-2", ids[2]]),
+              f"① take 뒤 남은 갈라짐(002·004 바뀜, 003 사라짐)은 계속 경고 — D-psd 는 남은 크롭만, 스냅숏 token 그대로 {pd}")
+        st, d = await h.post(f"{API}/layout/psd", {"root": key, "rev": rev + 1, "op": "take", "names": ["004_발"], "snapshot": token})
+        check(st == 200 and d == {"ok": True, "rev": rev + 2, "taken": [], "added": [], "skipped": ["004_발"]}
+              and named(lay(root)["psd"]["crops"], "004_발") == named(snap1, "004_발"),
+              f"② 같은 token 으로 두 번째 take 200 — 짝 크롭이 없는 바뀐 shape(skipped)도 고른 이름이라 기준점 = 스냅숏 값 {st} {d}")
+        st, d = await h.post(f"{API}/layout/psd", {"root": key, "rev": rev + 2, "op": "take", "names": ["003_손_왼쪽"]})
+        check(st == 400 and "경고 끄기로" in d["error"] and lay(root)["rev"] == rev + 2,
+              f"⑤ take 에 사라진 shape 뿐인 이름 → 400(경고 끄기로) {st} {d}")
+        before = copy.deepcopy(lay(root)["crops"])
+        st, d = await h.post(f"{API}/layout/psd", {"root": key, "rev": rev + 2, "op": "ack", "names": ["002_눈", "003_손_왼쪽"],
+                                                    "snapshot": token})
+        LP = lay(root)["psd"]
+        check(st == 200 and d == {"ok": True, "rev": rev + 3, "taken": [], "added": [], "skipped": []} and lay(root)["crops"] == before
+              and LP["fingerprint"] == [5, 6] and LP["at"] == "2026-10-16 10:00:00" and LP["crops"] == snap1,
+              f"③ ack names=[002_눈, 003_손_왼쪽](사라진 shape 포함) → 갈라짐 0 → 기준점 = 스냅숏 통째(메타 포함), 크롭 그대로 {st} {d}")
         st, d = await h.jget(f"{API}/layout", root=key)
         check(not any(d["psd_diff"][k] for k in ("changed", "added", "removed"))
-              and not any("D-psd" in codes(c) for c in d["crops"]), "take 뒤 갈라짐 0·D-psd 없음")
+              and not any("D-psd" in codes(c) for c in d["crops"]), "take·ack 뒤 갈라짐 0·D-psd 없음")
         for op in ("take", "ack"):
             st, d = await h.post(f"{API}/layout/psd", {"root": key, "rev": lay(root)["rev"], "op": op})
             check(st == 400 and "갈라짐 없음" in d["error"], f"차이 없음 {op} → 400 {st} {d}")
@@ -13853,9 +13906,10 @@ def layout_board_unit():
               f"크롭 요약 layout_status(id 기준) {status}")
         st, u = await h.jget(f"{API}/state", root=key, since_rev=str(s["rev"]))
         refs_rev = (board.drefs.load_refs(root) or {}).get("rev")  # B21 이름 바꾸기가 고정(S2 §2.6)해 refs.json 이 있음
-        check(u == {"unchanged": True, "rev": s["rev"], "running": False, "drain": False, "layout_rev": L["rev"], "refs_rev": refs_rev,
-                    "refs_files_v": s.get("refs_files_v")}
-              and refs_rev is not None and isinstance(s.get("refs_files_v"), str), f"unchanged 응답에도 layout_rev·refs_rev·refs_files_v {u}")
+        check(u == {"unchanged": True, "rev": s["rev"], "running": False, "drain": False, "drafting": False, "layout_rev": L["rev"],
+                    "refs_rev": refs_rev, "refs_files_v": s.get("refs_files_v"), "pipeline_rev": None, "plan_v": None}
+              and refs_rev is not None and isinstance(s.get("refs_files_v"), str),
+              f"unchanged 응답에도 layout_rev·refs_rev·refs_files_v(S3 drafting false, pipeline_rev·plan_v 는 파일·계획이 없어 null) {u}")
         mrev = store.load_manifest(root)["rev"]
         st, d = await crop_op(h, key, root, op="update", id=ids[2], note="state 확인")
         st, u = await h.jget(f"{API}/state", root=key, since_rev=str(s["rev"]))
@@ -13936,7 +13990,7 @@ def layout_board_unit():
         paths = {(r.method, r.path) for r in routes}
         want = {("GET", f"{API}/layout"), ("GET", f"{API}/layout/refs"), ("POST", f"{API}/layout/start"),
                 ("POST", f"{API}/layout/crop"), ("POST", f"{API}/layout/psd")}
-        check(want <= paths and len(routes) == 25, f"레이아웃 라우트 5개 등록(모두 25 — S2 레퍼런스 8 포함) {len(routes)}")
+        check(want <= paths and len(routes) == 32, f"레이아웃 라우트 5개 등록(모두 32 — S2 레퍼런스 8·S3 파이프라인 7 포함) {len(routes)}")
         for name in ("layout_geom.js", "layout_edit.js"):
             st, hd, body = await h.get(f"{API}/board/{name}")
             f = PKG / "web_design_patch" / name
@@ -14427,8 +14481,11 @@ function server(crops, L = {}) {
     }
     if (b.rev !== srv.lay.rev) return resp(409, { error: "레이아웃이 다른 창에서 바뀌었습니다 — 새로고침" });
     srv.lay.rev += 1;
-    if (path === "layout/psd") {
-      srv.psd_diff = null;
+    if (path === "layout/psd") {  // S1-a: 고른 이름(names)만 갈라짐에서 빠짐 — names 없음 = 전부
+      const d = srv.psd_diff;
+      const keep = (x) => !!b.names && !b.names.includes(x.name);
+      const left = d && { changed: d.changed.filter(keep), added: d.added.filter(keep), removed: d.removed.filter(keep) };
+      srv.psd_diff = left && left.changed.length + left.added.length + left.removed.length ? Object.assign({}, d, left) : null;
       return resp(200, Object.assign({ ok: true, rev: srv.lay.rev }, srv.psdResp));
     }
     const cs = srv.lay.crops;
@@ -14450,7 +14507,7 @@ function server(crops, L = {}) {
   return srv;
 }
 
-async function editor(crops, L = {}, st = {}) {
+async function editor(crops, L = {}, st = {}, more = {}) {  // more = 편집기 opts 에 더할 것(S3 applyWarn 등)
   const srv = server(crops, L);
   const doc = new Doc();
   const confirms = [];
@@ -14463,8 +14520,8 @@ async function editor(crops, L = {}, st = {}) {
   const queuedRev = []; // 반영(큐) 를 요청한 순간 서버 레이아웃 판(저장이 끝난 뒤였는지)
   const viewer = { setEditor() {}, setSelection() {}, setCursor() {}, redraw() {}, flags: () => ({ rectsOn: true }), scale: () => 1,
     canvasPoint: (e) => [e.x, e.y] };
-  const ed = E.create(hosts, { apiUrl: API, root: "abcdef012345", viewer, toast: (m, k) => toasts.push(`${k || ""}:${m}`),
-    queue: (layout) => { queued.push(layout); queuedRev.push(srv.lay.rev); }, exit() {} });
+  const ed = E.create(hosts, Object.assign({ apiUrl: API, root: "abcdef012345", viewer, toast: (m, k) => toasts.push(`${k || ""}:${m}`),
+    queue: (layout) => { queued.push(layout); queuedRev.push(srv.lay.rev); }, exit() {} }, more));
   ed.enter(Object.assign({ rev: 1, layout_rev: 0, canvas: [3072, 4096], crops: [] }, st));
   await sleep(30);
   const find = (root, pred) => root.all().find(pred) || null;
@@ -14890,19 +14947,43 @@ const DIFF = () => ({ fingerprint: [11, 22], at: "2026-10-16 10:00:00", token: "
       to: { layer_name: "009_휘장 | A: badge", rect: [1024, 0, 1664, 512] } }],
   added: [{ name: "019_새", layer_name: "019_새", rect: [2048, 0, 2560, 512] }], removed: [] });
 
-await scenario("take", async () => {  // 갈라짐 3(005·009 바뀜, 새 019): 크롭 하나 take = 나머지는 경고만 꺼짐을 알림, 토스트 = taken·added·skipped
+await scenario("take", async () => {  // 갈라짐 3(005·009 바뀜, 새 019): 크롭 하나 take = 그 이름만(S1-a — 나머지는 그대로 경고), 토스트 = taken·added·skipped
   const env = await editor([crop("005_aaaaaa", "005_모자", [0, 0, 512, 512]), crop("009_bbbbbb", "009_휘장", [1024, 0, 1536, 512])], { psd_diff: DIFF() });
   await env.pick("005_모자");
   const label = env.button(env.panel, "PSD 값으로").textContent;
+  const headBefore = env.head.textContent;
   env.srv.psdResp = { taken: [{ id: "005_aaaaaa", name: "005_모자", fields: ["rect"] }], added: [], skipped: [] };
   env.button(env.panel, "PSD 값으로").fire("click");
   await sleep(50);
-  const one = { label, confirm: env.confirms.at(-1), body: env.srv.log.at(-1), toast: env.toasts.at(-1) };
+  const one = { label, confirm: env.confirms.at(-1), body: env.srv.log.at(-1), toast: env.toasts.at(-1), headBefore, headAfter: env.head.textContent };
   const all = await editor([crop("005_aaaaaa", "005_모자", [0, 0, 512, 512])], { psd_diff: DIFF() });
   all.srv.psdResp = { taken: [{ id: "005_aaaaaa", name: "005_모자", fields: ["rect"] }], added: ["019_n9"], skipped: ["009_휘장"] };
+  const takeTitle = all.button(all.head, "PSD 값 가져오기").title;
   all.button(all.head, "PSD 값 가져오기").fire("click");
   await sleep(50);
-  return { one, all: { confirm: all.confirms.at(-1), names: all.srv.log.at(-1).names, toast: all.toasts.at(-1) } };
+  // S1-a ack 이름별: 사라진 shape(007_끈)가 있는 크롭 패널의 '이 shape 경고 끄기' = ack names [그 이름] — 다른 갈라짐은 그대로
+  const d2 = Object.assign(DIFF(), { removed: [{ name: "007_끈", layer_name: "007_끈", rect: [2048, 0, 2304, 512] }] });
+  const ack = await editor([crop("005_aaaaaa", "005_모자", [0, 0, 512, 512]), crop("007_cccccc", "007_끈", [2048, 0, 2304, 512])], { psd_diff: d2 });
+  await ack.pick("007_끈");
+  const noTake = !ack.button(ack.panel, "PSD 값으로");
+  ack.button(ack.panel, "이 shape 경고 끄기").fire("click");
+  await sleep(50);
+  // 옛 서버(ComfyUI 재시작 전 — board 가 psdPartial false, r1-13): take·ack 가 기준점을 통째로 바꿔 다른 갈라짐 경고도 꺼짐 — 라벨·확인 창·툴팁이 그렇게
+  // 말하고 '이 shape 경고 끄기'(이름별 ack)는 없음
+  const old = await editor([crop("005_aaaaaa", "005_모자", [0, 0, 512, 512]), crop("007_cccccc", "007_끈", [2048, 0, 2304, 512])], { psd_diff: d2 }, {},
+    { psdPartial: () => false });
+  const oldTitle = old.button(old.head, "PSD 값 가져오기").title;
+  await old.pick("005_모자");
+  const oldLabel = old.button(old.panel, "PSD 값으로").textContent;
+  const oldAck = !!old.button(old.panel, "이 shape 경고 끄기");
+  old.srv.psdResp = { taken: [{ id: "005_aaaaaa", name: "005_모자", fields: ["rect"] }], added: [], skipped: [] };
+  old.button(old.panel, "PSD 값으로").fire("click");
+  await sleep(50);
+  const oldConfirm = old.confirms.at(-1);
+  await old.pick("007_끈");
+  return { one, all: { confirm: all.confirms.at(-1), names: all.srv.log.at(-1).names, toast: all.toasts.at(-1), takeTitle },
+    ack: { noTake, confirm: ack.confirms.at(-1), body: ack.srv.log.at(-1), head: ack.head.textContent },
+    old: { title: oldTitle, label: oldLabel, ack: oldAck || !!old.button(old.panel, "이 shape 경고 끄기"), confirm: oldConfirm } };
 });
 
 await scenario("start", async () => {  // 시작이 막히면 그 이유를 보이고 버튼을 끔
@@ -14913,13 +14994,15 @@ await scenario("start", async () => {  // 시작이 막히면 그 이유를 보�
   return { why, no: { disabled: b(no).disabled, text: no.panel.textContent }, ok: { disabled: b(ok).disabled, text: ok.panel.textContent } };
 });
 
-await scenario("head", async () => {  // 깨진 layout.json = 오류만 · 반영됨 = 서버 applied(sig) · 반영(큐) = layout 요청
+await scenario("head", async () => {  // 깨진 layout.json = 오류만 · 반영됨 = 서버 applied(sig) · 반영(큐) = 확인 창(S3 무료 반영) 뒤 queue 콜백
   const broken = await editor([], { exists: true, error: "layout.json 형식 오류(시험)", rev: null, applied_rev: null, editable: false }, { layout_rev: null });
-  const applied = await editor([C1()], { applied: true, applied_rev: 7 });
+  const applied = await editor([C1()], { applied: true, applied_rev: 7, pending_rerolls: 2 }, {},
+    { applyWarn: () => ["prepare.model: 마지막 Prepare a · Studio b — 그래프와 Studio 를 번갈아 돌리면 셀이 바뀌어 다시 과금 대상"] });
   const stale = await editor([C1()], { applied: false, applied_rev: 0 });
   applied.button(applied.head, "반영(큐)").fire("click");
   await sleep(30);
-  return { broken: broken.head.textContent, applied: applied.head.textContent, stale: stale.head.textContent, queued: applied.queued };
+  return { broken: broken.head.textContent, applied: applied.head.textContent, stale: stale.head.textContent, queued: applied.queued,
+    confirm: [broken, applied, stale].flatMap((e) => e.confirms).at(-1) ?? "" };  // window.confirm 은 마지막 editor() 의 것
 });
 
 await scenario("refs", async () => {  // 이름을 바꾸는 중: 멈춘 뒤 GET layout/refs 한 번 → 바꾼 뒤 레퍼런스·새 셀 경고·옛 이름 파일 경고
@@ -15058,8 +15141,8 @@ def layout_js_unit():
           f"layout_edit.js 서버 주소 = apiUrl 상대 경로 5개뿐 {sorted(paths)}")
     check("textContent" in ed and "replaceChildren" in ed, "layout_edit.js textContent·replaceChildren")
     check(re.findall(r'<script src="([^"]+)" defer></script>', html)
-          == ["layout_geom.js", "viewer.js", "layout_edit.js", "ref_edit.js", "board.js"],
-          "board.html script 순서 layout_geom → viewer → layout_edit → ref_edit → board")
+          == ["layout_geom.js", "viewer.js", "layout_edit.js", "ref_edit.js", "pipeline.js", "board.js"],
+          "board.html script 순서 layout_geom → viewer → layout_edit → ref_edit → pipeline → board")
     check(all(f'id="{i}"' in html for i in ("btn-edit", "layout-head", "layout-list", "layout-panel")), "board.html 편집 모드 요소 4개")
     vj = code["viewer.js"]
     vret = vj[vj.rindex("return { setState"):]
@@ -15085,13 +15168,14 @@ def layout_js_unit():
     rr = bj[bj.index("async function reroll("):bj.index("function comfyConnected(")]
     check(all(x in rr for x in ("LAYOUT_STATUS[c.layout_status]", "window.confirm(", "재굴림이 실행되지 않습니다", "함께 반영")),
           "검토 재굴림: 이 크롭의 레이아웃이 미반영이면 확인 창(셀이 바뀌어 안 돎), 다른 크롭만이면 토스트로 함께 반영 알림")
-    check("다음 큐(반영(큐)·재굴림·ComfyUI 큐 모두)의 Import 에서 매니페스트에 반영" in html
-          and "이름을 바꾼 크롭은 같은 이름으로 다시 만들어도 새 ID" in html, "board.html 도움말: 반영 시점·지우기 되살리기")
+    check("다음 큐(반영(무료 — 탭 불필요)·재굴림·ComfyUI 큐 모두)의 Import 에서 매니페스트에 반영" in html
+          and "이름을 바꾼 크롭은 같은 이름으로 다시 만들어도 새 ID" in html, "board.html 도움말: 반영 시점(S3 무료 반영)·지우기 되살리기")
     ext = (PKG / "js" / "bmk_design_patch.js").read_text(encoding="utf-8")
     check('postMessage({ type: "bmk-dp-queue", rootKey: ROOT, layout }, location.origin)' in bj and "opts.queue(true)" in ed
+          and "queueInComfy(true)" in bj[bj.index("async function applyFree("):bj.index("function goTarget(")]
           and "if (d.layout === true) boardLayout.add(key);" in ext and "queueReview(key, boardLayout.delete(key))" in ext
           and "importUpstream(prompt, targets.map(execIdOf)" in ext[ext.index("async function queueReview("):ext.index("function onBoardMessage(")],
-          "반영(큐) = layout 요청 → ComfyUI 탭은 Review 상류에 Import 가 있을 때만 큐(아니면 알림)")
+          "반영(큐) = applyFree(무료 반영), 옛 서버 대체(재시작 전) = 탭 layout 요청 → ComfyUI 탭은 Review 상류에 Import 가 있을 때만 큐(아니면 알림)")
     node = shutil.which("node")
     if not node:
         skip("node 없음 → node --check·J-L1·J-L2·J-L3 생략")
@@ -15267,15 +15351,28 @@ def layout_js_unit():
     check(br.get("moved") == 0 and "3:1" in (br["toast"] or "") and br["log"] == [["update", ["targets"]]],
           f"J-L3 비 > 3 사각형은 보내기 전에 막고 알림(다른 칸은 고칠 수 있음) {br}")
     check(ej["addTarget"] == [["A", "C"]], f"J-L3 + 대상 = 채택 글자(B) 건너뛰고 C {ej['addTarget']}")
-    one, whole = ej["take"].get("one", {}), ej["take"].get("all", {})
-    check(one.get("label") == "PSD 값으로(나머지 2건 경고 끔)"
-          and all(x in one["confirm"] for x in ("005_모자 — 사각형", "009_휘장", "019_새", "경고만 꺼")) and "새 크롭으로 더함" not in one["confirm"]
+    one, whole, ack = (ej["take"].get(k, {}) for k in ("one", "all", "ack"))
+    check(one.get("label") == "PSD 값으로"
+          and all(x in one["confirm"] for x in ("005_모자 — 사각형", "009_휘장", "019_새", "나머지 갈라짐 2건은 가져오지 않고 그대로 경고"))
+          and "경고만 꺼" not in one["confirm"] and "새 크롭으로 더함" not in one["confirm"]
           and one["body"]["names"] == ["005_모자"] and one["body"]["snapshot"] == {"token": "tok-10"}
           and all(x in one["toast"] for x in ("005_모자(사각형)", "새 크롭 0", "건너뜀 0")),
-          f"J-L3 크롭 하나 PSD 값으로 = 나머지 갈라짐은 경고만 꺼짐을 라벨·확인 창에, 토스트 = 가져옴·새 크롭·건너뜀 {one}")
+          f"J-L3 S1-a 크롭 하나 PSD 값으로 = 그 이름만(라벨에 나머지 수 없음), 확인 창 = 나머지 갈라짐은 그대로 경고, 토스트 = 가져옴·새 크롭·건너뜀 {one}")
+    check("PSD 갈라짐 3" in one.get("headBefore", "") and "PSD 갈라짐 2" in one.get("headAfter", ""),
+          f"J-L3 S1-a take 뒤 머리줄 PSD 갈라짐 3 → 2(고른 이름만 빠짐) {one.get('headBefore')!r} → {one.get('headAfter')!r}")
     check("새 크롭으로 더함" in whole.get("confirm", "") and whole["names"] == ["005_모자", "009_휘장", "019_새"]
-          and all(x in whole["toast"] for x in ("새 크롭 1: 019_n9", "건너뜀 1", "레이아웃에서 지운 크롭이라 건너뜀")),
-          f"J-L3 머리줄 PSD 값 가져오기 = 새 shape 는 새 크롭, 지운 크롭은 건너뜀 {whole}")
+          and all(x in whole["toast"] for x in ("새 크롭 1: 019_n9", "건너뜀 1", "레이아웃에서 지운 크롭이라 건너뜀"))
+          and "사라진 shape 는 경고 끄기로" in whole.get("takeTitle", ""),
+          f"J-L3 머리줄 PSD 값 가져오기 = 새 shape 는 새 크롭, 지운 크롭은 건너뜀, 툴팁 '사라진 shape 는 경고 끄기로' {whole}")
+    check(ack.get("noTake") is True and (ack.get("body") or {}).get("op") == "ack" and ack["body"].get("names") == ["007_끈"]
+          and "나머지 갈라짐 3건은 그대로 경고" in (ack.get("confirm") or "") and "PSD 갈라짐 3" in ack.get("head", ""),
+          f"J-L3 S1-a 사라진 shape 크롭 = 'PSD 값으로' 없음, '이 shape 경고 끄기' = ack names [그 이름]·나머지는 그대로 경고(4 → 3) {ack}")
+    od = ej["take"].get("old") or {}
+    check(od.get("label") == "PSD 값으로(나머지 3건 경고 끔)" and od.get("ack") is False
+          and "나머지 갈라짐 3건은 가져오지 않고 경고만 꺼집니다" in (od.get("confirm") or "") and "그대로 경고" not in (od.get("confirm") or "")
+          and "007_끈 — 사라진 shape: 레이아웃 그대로, 경고만 꺼짐" in (od.get("confirm") or "") and "사라진 shape 는 경고만 꺼짐" in (od.get("title") or ""),
+          f"r1-13 옛 서버(재시작 전 — psdPartial false: take·ack 가 기준점을 통째로 바꿈) = 라벨 '나머지 N건 경고 끔'·확인 창 '경고만 꺼집니다'·툴팁, "
+          f"'이 shape 경고 끄기' 없음('그대로 경고'라 말하지 않음) {od}")
     sb = ej["start"]
     check(sb.get("no", {}).get("disabled") is True and sb["why"] in sb["no"]["text"] and "매니페스트 크롭" not in sb["no"]["text"]
           and sb["ok"]["disabled"] is False and "매니페스트 크롭 2개" in sb["ok"]["text"],
@@ -15283,7 +15380,12 @@ def layout_js_unit():
     hd = ej["head"]
     check("layout.json 오류" in hd.get("broken", "") and "반영됨" not in hd["broken"] and "반영(큐)" not in hd["broken"]
           and "반영됨" in hd["applied"] and "반영됨" not in hd["stale"] and "미반영" in hd["stale"] and hd["queued"] == [True],
-          f"J-L3 머리줄: 깨진 layout.json = 오류만, 반영됨 = 서버 applied, 반영(큐) = layout 요청 {hd}")
+          f"J-L3 머리줄: 깨진 layout.json = 오류만, 반영됨 = 서버 applied, 반영(큐) = 넘겨받은 queue 콜백(apply) {hd}")
+    hc = hd.get("confirm") or ""
+    check("무료 반영(Import → Prepare → Analyze → Review 템플릿, 탭 불필요)" in hc and "재굴림 대기 2건(사전 승인)은 이 반영에서 돌지 않음" in hc
+          and "대기 재굴림" not in hc and "함께 돕니다" not in hc and "원장에만 남은 초안" in hc
+          and hc.split("\n")[0] == "prepare.model: 마지막 Prepare a · Studio b — 그래프와 Studio 를 번갈아 돌리면 셀이 바뀌어 다시 과금 대상",
+          f"J-L3 S3 반영(큐) 확인 창 = Prepare 갈라짐(applyWarn) 줄 맨 앞·무료 반영·재굴림은 돌지 않음(과금 줄 없음)·초안 병합 정보 줄 {hc!r}")
     rf = ej["refs"]
     check(rf.get("gets") == ["009_모자", "009_모자장식"] and "레퍼런스가 바뀌어" in rf["note"] and "mapping_json" in rf["note"]
           and "없음" in (rf["after"] or ""), f"J-L3 이름을 바꾸는 중: 멈춘 뒤 refs 한 번 → 바꾼 뒤 레퍼런스·새 셀·옛 이름 파일 경고 {rf}")
@@ -17785,9 +17887,15 @@ def refs_board_unit():
               f"레퍼런스 함수 {len(names)}개에 지연 import 없음 {[n for n in names if n not in fns]}")
         mods = {a.name for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom)) for a in n.names}
         mods |= {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module}
-        check(not any(x.split(".")[0] in ("folder_paths", "bmk_design_patch_vlm", "bmk_sam3_mask_layers", "torch", "comfy", "server")
-                      for x in mods) and "extra_data" not in (PKG / "bmk_design_patch_board.py").read_text(encoding="utf-8"),
-              f"보드 모듈: vlm·folder_paths·SAM3·torch import 없음, 큐 본문(extra_data)을 만들지 않음(I1) {sorted(mods)}")
+        check(not any(x.split(".")[0] in ("folder_paths", "bmk_sam3_mask_layers", "torch", "comfy", "server") for x in mods)
+              and "extra_data" not in (PKG / "bmk_design_patch_board.py").read_text(encoding="utf-8"),
+              f"보드 모듈: folder_paths·SAM3·torch import 없음, 큐 본문(extra_data)을 만들지 않음(I1 — Studio 무료 경로는 vlm 네트워크를 "
+              f"부르지 않음) {sorted(mods)}")
+        in_vlm = {id(x) for x in ast.walk(fns["_vlm"])} if "_vlm" in fns else set()
+        vlm_imps = [n for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom))
+                    and "bmk_design_patch_vlm" in {a.name.split(".")[0] for a in n.names} | {(getattr(n, "module", None) or "").split(".")[0]}]
+        check(len(vlm_imps) == 2 and all(id(n) in in_vlm for n in vlm_imps),
+              f"보드의 vlm import 는 _vlm() 지연 접근자 안에만(상대 → 절대 폴백 2줄, S3 §6) {[n.lineno for n in vlm_imps]}")
 
     async def b25_sheets(h, key, root):
         section("B25 GET /refs/sheets (제외 폴더·깊이·확장자·짧은 변·PSD·200개 상한)")
@@ -18522,8 +18630,8 @@ def refs_board_unit():
         paths = {(r.method, r.path) for r in routes}
         want = {("GET", f"{API}/refs"), ("GET", f"{API}/refs/sheets"), ("GET", f"{API}/refs/sheet"), ("GET", f"{API}/refs/img"),
                 ("POST", f"{API}/refs/cut"), ("GET", f"{API}/refs/cut"), ("POST", f"{API}/refs/save"), ("POST", f"{API}/refs/link")}
-        check(want <= paths and len(routes) == 25 and len({p for _m, p in paths}) == 24,
-              f"레퍼런스 라우트 7개(cut 은 GET·POST) — RouteDef 25·경로 24 {len(routes)}")
+        check(want <= paths and len(routes) == 32 and len({p for _m, p in paths}) == 31,
+              f"레퍼런스 라우트 7개(cut 은 GET·POST) — RouteDef 32·경로 31(S3 파이프라인 7 포함) {len(routes)}")
         st, hd, body = await h.get(f"{API}/board/ref_edit.js")
         f = PKG / "web_design_patch" / "ref_edit.js"
         if f.is_file():
@@ -19912,7 +20020,7 @@ async function screen(o = {}) {
   const queued = [];
   const exits = [];
   const ed = E.create(hosts, { apiUrl: API, comfyUrl: COMFY, root: KEY, viewer, toast: (m, k) => toasts.push(`${k || ""}:${m}`),
-    queue: (l) => queued.push(l), exit: () => exits.push(true) });
+    queue: (l) => queued.push(l), applyWarn: o.applyWarn, exit: () => exits.push(true) });
   const st = { rev: 10, refs_rev: 3, targets: [{ crop_id: "009_f21344", before_full_url: `thumb?root=${KEY}&kind=before&key=009_f21344%2FA&size=0` }] };
   ed.enter(st);
   await sleep(30);
@@ -19939,7 +20047,7 @@ async function screen(o = {}) {
 }
 
 await scenario("ui", async () => {
-  const env = await screen();
+  const env = await screen({ applyWarn: () => ["prepare.ref_style: 마지막 Prepare at · Studio sheet — 그래프와 Studio 를 번갈아 돌리면 셀이 바뀌어 다시 과금 대상"] });
   const { hosts, viewer, srv, all } = env;
   const r = {};
   r.list = all(hosts.list).filter((e) => e.tagName === "LI").map((li) => [li.children[0].textContent, li.children[1].children.map((c) => c.textContent)]);
@@ -21280,8 +21388,8 @@ def refs_js_unit():
     check("textField(a)" in rp and '"TEXTAREA"' in rj and "renderSoon" in rj, "패널 다시 그리기 = 글자 입력칸 포커스 복원, 입력 중이면 미룸")
     # board.html·board.js·viewer.js·board.css 연결
     scripts = re.findall(r'<script src="([^"]+)" defer></script>', html)
-    check(scripts == ["layout_geom.js", "viewer.js", "layout_edit.js", "ref_edit.js", "board.js"],
-          f"board.html script 순서 layout_geom → viewer → layout_edit → ref_edit → board {scripts}")
+    check(scripts == ["layout_geom.js", "viewer.js", "layout_edit.js", "ref_edit.js", "pipeline.js", "board.js"],
+          f"board.html script 순서 layout_geom → viewer → layout_edit → ref_edit → pipeline → board {scripts}")
     check(all(f'id="{i}"' in html for i in ("btn-refs", "ref-head", "ref-list", "ref-view", "ref-sheets", "ref-viewer", "ref-panel"))
           and "레퍼런스 (<kbd>T</kbd>)" in html, "board.html 레퍼런스 모드 요소 7개·도움말")
     bj = code["board.js"]
@@ -21473,7 +21581,12 @@ def refs_js_unit():
     check(all(ui["manage"].values()), f"레퍼런스 관리: 보류(PSD 이름만·되살리기)·연결 안 된 파일·명시 참조·바깥에서 바뀜 {ui['manage']}")
     check(ui["hold"]["body"] == {"root": "abcdef012345", "rev": 5, "op": "hold", "crop_id": "009_f21344", "name": "009_모자본체_휘장_t.png"}
           and "_보류" in (ui["hold"]["confirm"] or "") and "새 셀일 수 있음" in (ui["hold"]["confirm"] or ""), f"대표 보류 = 확인 창(영향 줄) 뒤 link hold {ui['hold']}")
-    check(ui["queued"] == [True] and "대기 재굴림 1건" in (ui["queueConfirm"] or ""), f"반영(큐) = 확인 창 뒤 layout 큐 요청 {ui['queued']}")
+    qc = ui["queueConfirm"] or ""
+    check(ui["queued"] == [True] and "무료 반영" in qc and "탭 불필요" in qc and "재굴림 대기 1건(사전 승인)은 이 반영에서 돌지 않음" in qc
+          and "대기 재굴림" not in qc and "원장에만 남은 초안" in qc
+          and qc.split("\n")[0] == "prepare.ref_style: 마지막 Prepare at · Studio sheet — 그래프와 Studio 를 번갈아 돌리면 셀이 바뀌어 다시 과금 대상",
+          f"반영(큐) = 확인 창(S3 무료 반영 — Prepare 갈라짐 줄(applyWarn) 맨 앞·대기 재굴림 과금 줄 없음·초안 병합 정보 줄) 뒤 넘겨받은 queue 콜백(apply) "
+          f"{ui['queued']} {qc!r}")
     check(ui["polyMarks"] == 1 and ui["polySub"] == {"root": "abcdef012345", "sheet": "00_원본/refer_total.png", "grow": 0, "feather": 0,
                                                      "method": "poly", "rect": [100, 100, 400, 500], "base": req1,
                                                      "polys": [{"op": "sub", "pts": [[150, 150], [300, 150], [300, 300]]}]},
@@ -23185,6 +23298,9432 @@ def refs_node_unit():
 
 
 # ═════════════════════════════════════════════════════════════════
+# S3a 파이프라인(STUDIO_S3_SPEC §7). 묶음 5개 — pipeline_unit 은 U1, 나머지 함수 몸통은 각 단위가 채운다(서로 떨어진 최상위 함수).
+# _pl_api·_pl_shape 는 응답 모양 정본 tools/fixtures/pipeline_api.json 과 그 대조 규칙(_doc) — U3 B32–B38 도 이것으로 대조한다.
+_PL_API = _HERE.parent / "fixtures" / "pipeline_api.json"
+
+
+def _pl_api() -> dict:
+    return json.loads(_PL_API.read_text(encoding="utf-8"))
+
+
+def _pl_kind(v) -> str:
+    return ("null" if v is None else "bool" if isinstance(v, bool) else "num" if isinstance(v, (int, float))
+            else "str" if isinstance(v, str) else "list" if isinstance(v, list) else "obj" if isinstance(v, dict) else type(v).__name__)
+
+
+_PL_RULES = ("request", "ok", "alt", "errors", "nullable", "optional", "maps", "any", "opaque")
+
+
+def _pl_walk(body, spec, path=""):
+    """예시 본문의 (경로, 값) 전부 — 경로 문법은 _doc(점으로 잇는 키, 배열 원소 '[]', maps 값 '*')."""
+    yield path, body
+    if isinstance(body, dict):
+        for k, v in body.items():
+            yield from _pl_walk(v, spec, f"{path}.*" if path in spec.get("maps", ()) else f"{path}.{k}" if path else k)
+    elif isinstance(body, list):
+        for v in body:
+            yield from _pl_walk(v, spec, path + "[]")
+
+
+def _pl_pool(spec, ex) -> dict:
+    """경로 → 대조 예시 ex, 그 라우트의 ok·alt(state·history 는 그 항목의 예시) 순으로 처음 나오는 null·빈 배열·빈 객체가 아닌 값
+    (_doc 대조 규칙 1·7 — 대조 예시가 null·빈 값이거나 대조 예시에 없는 optional 경로도 실제 값의 타입을 보게)."""
+    rest = {k: v for k, v in spec.items() if k not in _PL_RULES}
+    pool: dict = {}
+    for body in (ex, spec.get("ok"), *(spec.get("alt") or {}).values(), rest):
+        for p, v in _pl_walk(body, spec):
+            if p not in pool and v is not None and v != [] and v != {}:
+                pool[p] = v
+    return pool
+
+
+def _pl_shape(ex, act, spec, path="", pool=None) -> list[str]:
+    """pipeline_api.json 대조 규칙(_doc '대조 규칙'): 예시 ex 와 실제 act 의 키 집합·JSON 타입 차이 목록(빈 목록 = 같은 모양).
+    spec = 그 라우트 항목(nullable·optional·maps·any·opaque 경로 목록과 ok·alt 예시). 경로 = 점으로 잇는 키, 배열 원소 '[]', maps 값 '*'.
+    ex 의 그 경로가 null(nullable)·빈 배열·빈 maps 이거나 ex 에 없는 optional 키이면 _pl_pool 의 값으로 대조한다(규칙 1·7)."""
+    where = path or "(본문)"
+    if path in spec.get("any", ()):
+        return []
+    if pool is None:
+        pool = _pl_pool(spec, ex)
+    if ex is None and act is not None and path in spec.get("nullable", ()):
+        ex = pool.get(path)
+        if ex is None:  # 어느 예시에도 값이 없음(S3a 의 prompt targets 등) — 타입을 볼 수 없음
+            return []
+    if act is None or ex is None:
+        return [] if act is ex or path in spec.get("nullable", ()) else [f"{where}: {_pl_kind(act)} ≠ 예시 {_pl_kind(ex)}"]
+    if path in spec.get("opaque", ()):
+        return [] if isinstance(act, dict) else [f"{where}: 객체가 아님({_pl_kind(act)})"]
+    if _pl_kind(ex) != _pl_kind(act):
+        return [f"{where}: {_pl_kind(act)} ≠ 예시 {_pl_kind(ex)}"]
+    errs: list[str] = []
+    if isinstance(ex, dict):
+        if path in spec.get("maps", ()):
+            src = ex or pool.get(path) or {}
+            first = next(iter(src.values()), None)
+            for v in act.values() if src else ():
+                errs += _pl_shape(first, v, spec, path + ".*", pool)
+            return errs
+        opt = set(spec.get("optional", ()))
+        for k in list(ex) + [k for k in act if k not in ex]:
+            sub = f"{path}.{k}" if path else k
+            if k not in act or k not in ex:
+                if sub not in opt:
+                    errs.append(f"{sub}: {'없음' if k not in act else '예시에 없는 키'}")
+                elif k in act and sub in pool:  # 대조 예시에 없는 optional 키(ok 의 run.error 등)도 다른 예시의 값으로 타입을 본다
+                    errs += _pl_shape(pool[sub], act[k], spec, sub, pool)
+            else:
+                errs += _pl_shape(ex[k], act[k], spec, sub, pool)
+    elif isinstance(ex, list):
+        ex = ex or pool.get(path) or []
+        item = ex[0] if ex else None
+        if ex and all(isinstance(e, dict) for e in ex):  # 객체 원소 = 키마다 처음으로 null 이 아닌 예시 값
+            item = {k: next((e[k] for e in ex if e.get(k) is not None), None) for k in ex[0]}
+        for v in act if ex else ():
+            errs += _pl_shape(item, v, spec, path + "[]", pool)
+    return errs
+
+
+def _pl_project(base, name, specs=None, **fields):
+    """S3 합성 프로젝트: 매니페스트(fields = 최상위 키 덮어쓰기, source 는 update) + specs/<id>.json(str 이면 그대로) → root."""
+    root = store.project_root(str(base), name)
+    os.makedirs(root, exist_ok=True)
+    m = store.new_manifest(name)
+    m["source"].update(fields.pop("source", {}))
+    m.update(fields)
+    store.save_manifest(root, m)
+    for cid, spec in (specs or {}).items():
+        p = Path(root, "specs", f"{cid}.json")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(spec if isinstance(spec, str) else json.dumps(spec, ensure_ascii=False), encoding="utf-8")
+    return root
+
+
+def _pl_job(crop_id, variant="V1_standard", *, model="gpt-image-2.5-sunburst", quality="max", n=2, reps=1, rule="user_k"):
+    return {"cell_key": hashlib.sha256(f"{crop_id}/{variant}/{model}/{quality}/{rule}".encode()).hexdigest()[:24],
+            "crop_id": crop_id, "tid": "A", "variant": variant, "model": model, "quality": quality, "size": [1024, 1024],
+            "n": n, "reps": reps, "background": "opaque", "size_info": {"rule": rule}}
+
+
+def pipeline_unit():
+    """S3a P1·P3·P4·B0: pipeline 모듈(bmk_design_patch_pipeline — torch·comfy·vlm 없음, --quick 포함, U1)."""
+    section("S3a pipeline_unit — pipeline 모듈(U1)")
+    import bmk_design_patch_pipeline as pl
+    import bmk_design_patch_refs as refs
+    OUT = OUT_ROOT / "pipeline_unit"
+    if OUT.exists():
+        shutil.rmtree(OUT)
+    OUT.mkdir(parents=True)
+    H = "0123456789ab"
+    A1, A2, A3 = store.crop_id_for("001_머리"), store.crop_id_for("002_눈"), store.crop_id_for("003_손")
+
+    def b0_pure():
+        section("S3a-B0 pipeline import 순도(새 프로세스 sys.modules · AST 최상위 import)")
+        banned = ("torch", "comfy", "comfy_api_nodes", "aiohttp", "folder_paths", "server", "execution", "nodes",
+                  "bmk_design_patch", "bmk_design_patch_vlm", "bmk_design_patch_board")
+        psd = OUT / "b0" / "art.psd"
+        psd.parent.mkdir(parents=True)
+        psd.write_bytes(b"x")
+        root = _pl_project(OUT / "b0", "probe", source={"psd": str(psd).replace("\\", "/")}, jobs=[_pl_job(A1)],
+                           crops=[{"id": A1, "name": "001_머리"}],
+                           specs={A1: {"_draft": {"backend": "vlm_openai", "model": "gpt-6-sol", "effort": "xhigh", "round": 0}}})
+        v = pl.view(root, store.load_manifest(root))  # 파일은 이 프로세스에서 만든다(update 는 deep 유도라 vlm 을 부름)
+        pl.update(root, 0, "prepare", v["settings"]["prepare"])
+        pl.update(root, 1, "import", v["settings"]["import"])
+        nofile = _pl_project(OUT / "b0", "probe_nofile", crops=[{"id": A1, "name": "001_머리"}],
+                             specs={A1: {"_draft": {"backend": "vlm_openai", "model": "gpt-5.4", "effort": "xhigh", "round": 0}}})
+        probe = OUT / "b0_probe.py"
+        probe.write_text(
+            "import json, sys\n"
+            "sys.path.insert(0, sys.argv[1])\n"
+            "import bmk_design_patch_pipeline as pl\n"
+            f"BAN = {banned!r}\n"
+            "seen = lambda: sorted(m for m in sys.modules if m.split('.')[0] in BAN)\n"
+            "after_import = seen()\n"
+            "import bmk_design_patch_store as store\n"
+            "root, cid, H = sys.argv[2], sys.argv[3], '0123456789ab'\n"
+            "m = store.load_manifest(root)\n"
+            "cur = pl.current(root, m)\n"
+            "s = cur['settings']\n"
+            "gate = pl.prompt_gate(root, 'apply', m)\n"
+            "pl.pipeline_rev(root); pl.load(root); pl.derive(root, m); pl.drift(s, m); pl.path_warnings(s); pl.recent_exports(m)\n"
+            "pl.build_prompt('apply', s, root); pl.build_prompt('export', s, root)\n"
+            "pl.build_prompt('run', s, root, approve=H, only=cid); pl.build_prompt('reroll', s, root, only=cid)\n"
+            "pl.only_string([cid]); pl.strip_style('a_1,style')\n"
+            "mn = store.load_manifest(sys.argv[4])\n"
+            "nf = pl.current(sys.argv[4], mn)\n"
+            "after_use = seen()\n"
+            "nfd = pl.current(sys.argv[4], mn, deep=True)\n"
+            "pl.view(root, m); pl.update(root, cur['rev'], 'run', dict(s['run'], max_new_calls=7))\n"
+            "pl.build_prompt('draft', s, root, approve=H, only=cid)\n"
+            "print(json.dumps({'import': after_import, 'use': after_use, 'route': seen(), 'gate': gate, 'rev': cur['rev'],\n"
+            "                  'nofile': [nf['rev'], nf['settings']['draft']['vlm'], nfd['rev'], nfd['settings']['draft']['vlm']]}))\n",
+            encoding="utf-8")
+        r = subprocess.run([sys.executable, "-X", "utf8", "-W", "ignore", str(probe), str(PKG), root, A1, nofile], capture_output=True,
+                           text=True, encoding="utf-8", timeout=180)
+        out = json.loads(r.stdout.strip().splitlines()[-1]) if r.returncode == 0 and r.stdout.strip() else None
+        check(out is not None and out["import"] == [] and out["use"] == [] and out["gate"] is None and out["rev"] == 1
+              and out["nofile"][:2] == [0, "openai/gpt-5.4"],
+              f"새 프로세스: import 직후·load·current(파일 있음·없음 — 얕은 유도)·derive(얕음)·gate·apply/export/run/reroll 템플릿 뒤 "
+              f"torch·comfy·aiohttp·노드·vlm·보드 모듈 없음 {out} {r.stderr.strip()[-400:]}")
+        check(out is not None and out["route"] == ["bmk_design_patch_vlm"] and out["nofile"][2:] == [0, "openai/gpt-6-sol"],
+              f"current(deep=True)·view·update(deep 유도)·draft 템플릿(/pipeline 라우트 경로)만 vlm 을 함수 안에서 지연 import — 그 밖 금지 "
+              f"모듈 없음, 파일 없는 current(deep) = 선택지 안 유도값 {out}")
+        tree = ast.parse(Path(pl.__file__).read_text(encoding="utf-8"))
+
+        def mods(n):
+            if isinstance(n, ast.Import):
+                return [a.name.split(".")[0] for a in n.names]
+            return [n.module.split(".")[0]] if n.module else [a.name for a in n.names]
+
+        def top(node):  # 함수 몸통 밖(모듈 import 때 도는 곳)의 import
+            for ch in ast.iter_child_nodes(node):
+                if isinstance(ch, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                    continue
+                if isinstance(ch, (ast.Import, ast.ImportFrom)):
+                    yield ch
+                else:
+                    yield from top(ch)
+
+        top_mods = {x for n in top(tree) for x in mods(n)}
+        all_mods = {x for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom)) for x in mods(n)}
+        lazy = all_mods - top_mods
+        check(top_mods - set(sys.stdlib_module_names) == {"bmk_design_patch_store"},
+              f"T6 모듈 최상위 import = 표준 라이브러리 + store 만 {sorted(top_mods - set(sys.stdlib_module_names))}")
+        check(not all_mods & {"torch", "comfy", "comfy_api_nodes", "aiohttp", "folder_paths", "bmk_design_patch",
+                              "bmk_design_patch_board"} and lazy == {"bmk_design_patch_prompt", "bmk_design_patch_vlm"},
+              f"T6 전체: torch·comfy·aiohttp·folder_paths·노드·보드 import 없음, 함수 안 지연 import = prompt·vlm 뿐 {sorted(lazy)}")
+        api = ["widget_table", "settings_widgets", "section_keys", "defaults", "validate_section", "load", "pipeline_rev", "current",
+               "update", "view", "derive", "drift", "prepare_record", "path_warnings", "recent_exports", "prompt_gate", "build_prompt",
+               "only_string", "strip_style"]
+        check(all(callable(getattr(pl, n, None)) for n in api) and pl.SCHEMA == "bmk.design_patch.pipeline/1"
+              and pl.PIPELINE_NAME == "pipeline.json" and issubclass(pl.PipelineConflict, ValueError)
+              and pl.STAGES == ("apply", "export", "draft", "run", "reroll") and pl.FREE_STAGES == ("apply", "export")
+              and all(k == f"dp_{r}" for r, k in pl.NODE_KEYS.items()),
+              "pipeline 공개 API·상수(SCHEMA·STAGES·NODE_KEYS dp_*·PipelineConflict ⊂ ValueError)")
+
+    def p1_template():
+        section("S3a-P1 템플릿(stage 5 × cand 켬/끔 — T1–T5·연결·only 정규형)")
+        root = store.project_root(str(OUT / "p1"), "p1proj")
+        s0 = pl.defaults(root)  # 모든 키를 노드 기본값과 다른 유효값으로 — T5 비교가 기본값끼리의 비교가 되지 않게
+        s0["import"].update(psd_path="G:/x/Art_DP.psd", crop_group="02.크롭", clean_plate_layer="none", base_layer="베이스",
+                            crop_pixels_group="none", refs_dir="G:/x/refs", glossary_path="G:/x/g.json")
+        s0["cand"].update(source="folder", path="G:/x/harvest", group="04.후보", mapping_json='{"a": "B"}', visible_is_pick=False,
+                          keep_hand_masks=False)
+        s0["prepare"].update(model="gpt-image-2.5-flare", quality="high", size_rule="int_k_2560", variants="V1,V2", n=2,
+                             ref_style="plain", calls_per_cell=2)
+        s0["draft"].update(vlm="openai/gpt-6-astra", effort="high", image_detail="original", write_mode="refresh", draft_round=3,
+                           concurrency=2, credit_cap=1200, apply="full")
+        s0["run"].update(max_new_calls=10, concurrency=2, wave_minutes=5, retry_failed=True, retry_orphans=True)
+        s0["analyze"].update(register="translation", tone="global", tone_sigma=24, dE=6.5, grow=5, feather_sigma=2.0,
+                             roi_prior="hand_bbox", only_picked=True)
+        s0["compose"].update(mask_source="auto", use_registration=False, use_tone=False, zorder="harvest")
+        s0["export"].update(filename_prefix="p1_접두", layer_mode="pixel", alternates="none", color="raw", mask_source="auto",
+                            include_base=False, include_crop_outlines=False, skip_empty=False)
+        base = pl.defaults(root)
+        check(all(s0[x][k] != base[x][k] for x in pl.SECTIONS for k in pl.section_keys(x) if (x, k) != ("cand", "enabled"))
+              and all(pl.validate_section(x, s0[x]) == s0[x] for x in pl.SECTIONS),
+              "P1 설정: 모든 위젯 키가 노드 기본값과 다른 유효값(T5 가 절 값을 실제로 싣는지 보게)")
+        sel = pl.only_string([A2, A1], style=True)
+        check(sel == f"{A1},{A2},style" and pl.strip_style(sel) == f"{A1},{A2}", f"only 정규형: 정렬 명시 목록 + style {sel}")
+        # §2.3 표 글자 그대로 — 기대값을 모듈 상수(STAGE_NODES·OUTPUT_KEY·CLASS)에서 뽑지 않는다(표를 바꾼 변이가 살아남지 않게)
+        run_nodes = ["project", "import", "cand", "prepare", "run", "analyze", "review"]
+        want_nodes = {"apply": ["project", "import", "cand", "prepare", "analyze", "review"], "export": ["project", "analyze", "compose", "export"],
+                      "draft": ["project", "import", "cand", "draft"], "run": run_nodes, "reroll": run_nodes}
+        want_out = {"apply": "dp_review", "export": "dp_export", "draft": "dp_draft", "run": "dp_review", "reroll": "dp_review"}
+        want_cls = {"project": "BMKDesignPatchProject", "import": "BMKDesignPatchImportPSD", "cand": "BMKDesignPatchCandidateIn",
+                    "prepare": "BMKDesignPatchPrepare", "draft": "BMKDesignPatchSpecDraft", "run": "BMKDesignPatchRun",
+                    "analyze": "BMKDesignPatchAnalyze", "review": "BMKDesignPatchReview", "compose": "BMKDesignPatchCompose",
+                    "export": "BMKDesignPatchExportPSD"}
+        check({st: list(r) for st, r in pl.STAGE_NODES.items()} == want_nodes and pl.OUTPUT_KEY == want_out and pl.CLASS == want_cls,
+              "STAGE_NODES·OUTPUT_KEY·CLASS = §2.3 표(Import 를 담는 apply·run·reroll 은 [cand]·Prepare 도, draft 는 Prepare 없음, "
+              "run·reroll = Prepare → Run → Analyze → Review)")
+        rows = []
+        for stage in pl.STAGES:
+            for cand in (False, True):
+                s = copy.deepcopy(s0)
+                s["cand"]["enabled"] = cand
+                paid = stage not in pl.FREE_STAGES
+                p = pl.build_prompt(stage, s, root, approve=H if stage in ("run", "draft") else "", only=sel if paid else "")
+                tag = f"{stage}/cand {'on' if cand else 'off'}"
+                roles = [r for r in want_nodes[stage] if r != "cand" or cand]
+                cls_of = {k: v["class_type"] for k, v in p.items()}
+                check(list(p) == [f"dp_{r}" for r in roles] and all(cls_of[f"dp_{r}"] == want_cls[r] for r in roles),
+                      f"{tag}: 노드 순서·클래스 = §2.3 표 {list(p)}")
+                check(all(k.startswith("dp_") and c.startswith("BMKDesignPatch") for k, c in cls_of.items()), f"{tag}: T4 키 dp_*·클래스 BMKDesignPatch*")
+                if not paid:
+                    check(not {"BMKDesignPatchRun", "BMKDesignPatchSpecDraft"} & set(cls_of.values()), f"{tag}: T1 무료 stage 에 Run·SpecDraft 없음")
+                appr = {k: v["inputs"]["approve"] for k, v in p.items() if "approve" in v["inputs"]}
+                if stage == "run":
+                    check(appr == {"dp_run": H} and "dp_draft" not in p and p["dp_run"]["inputs"]["only"] == f"{A1},{A2}",
+                          f"{tag}: T2 approve 는 dp_run 하나 = 해시, Draft 없음, Run only 는 style 뺀 것 {appr}")
+                elif stage == "draft":
+                    check(appr == {"dp_draft": H} and "dp_run" not in p and p["dp_draft"]["inputs"]["only"] == sel,
+                          f"{tag}: T2 approve 는 dp_draft 하나 = 해시, Run 없음, Draft only 는 정규 문자열 그대로 {appr}")
+                elif stage == "reroll":
+                    check(appr == {"dp_run": ""} and "dp_draft" not in p, f"{tag}: T2 reroll approve \"\" {appr}")
+                else:
+                    check(appr == {}, f"{tag}: 무료 stage 에 approve 입력 없음")
+                check(all(v["inputs"].get("adopt", "") == "" and v["inputs"].get("keep_loaded", False) is False for v in p.values()),
+                      f"{tag}: T3 adopt \"\"·keep_loaded false")
+                ok5 = all(set(v["inputs"]) == set(pl.NODE_INPUTS[v["class_type"]]) for v in p.values())
+                for r in roles:
+                    if r in pl.SECTIONS:
+                        inp = (p.get(f"dp_{r}") or {}).get("inputs", {})  # 표의 노드가 빠졌으면(순서 검사가 실패) 여기서 멈추지 않게
+                        ok5 &= bool(inp) and all(inp.get(k) == s[r][k] for k in pl.section_keys(r) if k != "enabled") and "enabled" not in inp
+                proj = p["dp_project"]["inputs"]
+                ok5 &= (proj["project"] == "p1proj" and os.path.normcase(proj["base_dir"]) == os.path.normcase(os.path.abspath(OUT / "p1"))
+                        and os.path.normcase(store.project_root(proj["base_dir"], proj["project"])) == os.path.normcase(root))
+                check(ok5, f"{tag}: T5 inputs = 노드 입력 이름 정확히·절 값 그대로(cand.enabled 없음)·Project = 폴더 이름 + 두 단계 위")
+                parent, seen_, k = {}, [], want_out[stage]
+                for key, v in p.items():
+                    link = v["inputs"].get("project")
+                    if key != "dp_project":
+                        parent[key] = link[0] if isinstance(link, list) and len(link) == 2 and link[1] == 0 and link[0] in p else None
+                while k is not None and k not in seen_:
+                    seen_.append(k)
+                    k = parent.get(k)
+                check(k is None and seen_[::-1] == list(p),
+                      f"{tag}: 연결 = [바로 앞 노드 키, 0], 출력 {want_out[stage]} 에서 dp_project 까지 순환 없이 표 순서대로 모든 노드 {seen_}")
+                rows.append((stage, cand, set(p)))
+        check(all("dp_import" not in keys for st, _c, keys in rows if st == "export")
+              and all(("dp_cand" in keys) == (c and st != "export") for st, c, keys in rows),
+              "export 에 Import 없음, dp_cand 는 켰을 때만(export 제외)")
+        bad = [("모르는 stage", lambda: pl.build_prompt("apply2", s0, root)),
+               ("무료 stage + approve", lambda: pl.build_prompt("apply", s0, root, approve=H)),
+               ("무료 stage + only", lambda: pl.build_prompt("export", s0, root, only=A1)),
+               ("run approve 빔", lambda: pl.build_prompt("run", s0, root, only=A1)),
+               ("draft approve 빔", lambda: pl.build_prompt("draft", s0, root, only=A1)),
+               ("run approve 대문자", lambda: pl.build_prompt("run", s0, root, approve=H.upper(), only=A1)),
+               ("run approve 11자", lambda: pl.build_prompt("run", s0, root, approve=H[:11], only=A1)),
+               ("reroll approve 있음", lambda: pl.build_prompt("reroll", s0, root, approve=H)),
+               ("run only 빔(= 전부)", lambda: pl.build_prompt("run", s0, root, approve=H)),
+               ("run only style 뿐", lambda: pl.build_prompt("run", s0, root, approve=H, only="style")),
+               ("only NNN 토큰", lambda: pl.build_prompt("run", s0, root, approve=H, only="001")),
+               ("only cell_key 접두", lambda: pl.build_prompt("run", s0, root, approve=H, only="8a8e5fa3d29a")),
+               ("모르는 위젯 키", lambda: pl.build_prompt("apply", dict(s0, prepare=dict(s0["prepare"], seed=1)), root)),
+               ("절 없음", lambda: pl.build_prompt("apply", {k: v for k, v in s0.items() if k != "prepare"}, root)),
+               ("cand 켬 + 빈 path", lambda: pl.build_prompt("apply", dict(s0, cand=dict(s0["cand"], enabled=True, path="")), root)),
+               ("루트가 bmk_design_patch/<이름> 아님", lambda: pl.build_prompt("apply", s0, str(OUT / "p1" / "elsewhere" / "p1proj")))]
+        for label, fn in bad:
+            expect_raises(fn, f"P1 거절: {label}")
+        for label, fn, frag in (("draft only 빔(= 전부)", lambda: pl.build_prompt("draft", s0, root, approve=H), "only"),
+                                ("draft only NNN 토큰", lambda: pl.build_prompt("draft", s0, root, approve=H, only="001"), "only"),
+                                ("draft only cell_key 접두", lambda: pl.build_prompt("draft", s0, root, approve=H, only="8a8e5fa3d29a"),
+                                 "only"),
+                                ("run approve 13자", lambda: pl.build_prompt("run", s0, root, approve=H + "0", only=A1), "승인 해시"),
+                                ("draft approve hex 아님", lambda: pl.build_prompt("draft", s0, root, approve="0123456789ag", only=A1),
+                                 "승인 해시"),
+                                # draft 절은 깊게 검사(vlm 선택지·모델별 effort — 노드 VALIDATE_INPUTS 와 같게)
+                                ("draft vlm 선택지 밖", lambda: pl.build_prompt("draft", dict(s0, draft=dict(s0["draft"], vlm="openai/gpt-9")),
+                                                                           root, approve=H, only=A1), "선택지"),
+                                ("draft gpt-5.5-pro + effort low",
+                                 lambda: pl.build_prompt("draft", dict(s0, draft=dict(s0["draft"], vlm="openai/gpt-5.5-pro", effort="low")),
+                                                         root, approve=H, only=A1), "gpt-5.5-pro")):
+            expect_raises(fn, f"P1 거절(유료 stage 서버 방어선): {label}", contains=frag)
+        expect_raises(lambda: pl.build_prompt("apply", s0, str(OUT / "p1" / store.PROJECTS_DIRNAME / " p1proj")),
+                      "P1 거절: 폴더 이름이 Project 위젯 왕복(store.project_root)으로 같은 루트가 되지 않음(앞 공백 — Project 는 잘라 다른 폴더)",
+                      contains="다시 만들 수 없습니다")
+        check(pl.build_prompt("draft", s0, root, approve=H, only="style")["dp_draft"]["inputs"]["only"] == "style",
+              "draft only = style(화풍만)은 받음")
+        for label, fn in (("선택 0개", lambda: pl.only_string([])), ("NNN", lambda: pl.only_string(["001"])),
+                          ("style 이름", lambda: pl.only_string(["style"])), ("_style", lambda: pl.only_string(["_style"])),
+                          ("문자열 하나", lambda: pl.only_string(A1)), ("숫자", lambda: pl.only_string([1])),
+                          ("hex(밑줄 없음)", lambda: pl.only_string(["8a8e5fa3d29a"])),
+                          ("known 밖", lambda: pl.only_string([A1, A3], known=[A1, A2])),
+                          ("style 이 bool 아님", lambda: pl.only_string([A1], style="1"))):
+            expect_raises(fn, f"only_string 거절: {label}")
+        check(pl.only_string([A2, A1, A2], known=[A1, A2]) == f"{A1},{A2}" and pl.only_string((A1,)) == A1
+              and pl.strip_style(f" {A1}, style ,_STYLE {A2} ") == f"{A1},{A2}",
+              "only_string 중복 제거·known 안, strip_style 은 style·_style(대소문자 무관) 제거")
+
+    def p3_settings():
+        section("S3a-P3 pipeline.json — 검증 표·수명·rev 409·깨진 파일·confirm")
+        expect_raises(lambda: pl.section_keys("review"), "모르는 절 ValueError")
+        keys = {s: pl.section_keys(s) for s in pl.SECTIONS}
+        check(keys["cand"][0] == "enabled" and len(keys["import"]) == 7 and len(keys["prepare"]) == 7 and len(keys["draft"]) == 8
+              and len(keys["run"]) == 5 and len(keys["analyze"]) == 8 and len(keys["compose"]) == 4 and len(keys["export"]) == 8
+              and not any(k in pl.NOT_STORED for ks in keys.values() for k in ks),
+              f"절 키 = 노드 위젯 − {{project, approve, only, adopt, keep_loaded}} (+ cand.enabled) {[len(v) for v in keys.values()]}")
+        d0 = pl.defaults()
+        check(all(pl.validate_section(s, d0[s]) == d0[s] for s in pl.SECTIONS) and d0["export"]["filename_prefix"] == "design_patch"
+              and pl.defaults("C:/x/bmk_design_patch/내프로젝트")["export"]["filename_prefix"] == "내프로젝트",
+              "노드 기본값은 검사 통과, filename_prefix 기본 = 폴더 이름(root 가 있을 때)")
+        wt = pl.widget_table()
+        import bmk_design_patch_vlm as dvlm
+        check(wt["BMKDesignPatchSpecDraft"]["vlm"]["choices"] == tuple(dvlm.VLM_CHOICES)
+              and wt["BMKDesignPatchSpecDraft"]["apply"]["choices"] == tuple(dvlm.APPLY_MODES)
+              and wt["BMKDesignPatchSpecDraft"]["vlm"]["default"] == dvlm.DEFAULT_VLM
+              and wt["BMKDesignPatchSpecDraft"]["effort"]["default"] == dvlm.DEFAULT_EFFORT
+              and wt["BMKDesignPatchSpecDraft"]["apply"]["default"] == dvlm.DEFAULT_APPLY
+              and wt["BMKDesignPatchPrepare"]["size_rule"]["choices"] == tuple(store.GPT_SIZE_RULES)
+              and pl.WIDGETS["BMKDesignPatchSpecDraft"]["vlm"]["choices"] == "vlm:VLM_CHOICES",
+              "widget_table: vlm 선택지는 vlm 상수(지연), 복사 기본값 = vlm 기본값, size_rule = store.GPT_SIZE_RULES")
+        sw = pl.settings_widgets()
+        check(list(sw) == list(pl.SECTIONS) and all(list(sw[x]) == list(pl.section_keys(x)) for x in pl.SECTIONS)
+              and {x: {k: v["default"] for k, v in sw[x].items()} for x in sw} == d0
+              and sw["draft"]["write_mode"]["choices"] == ["fill", "refresh"] and sw["draft"]["vlm"]["choices"] == list(dvlm.VLM_CHOICES)
+              and sw["prepare"]["n"] == {"type": "INT", "default": 4, "min": 1, "max": 10}
+              and [(x, k) for x in sw for k, v in sw[x].items() if v.get("readonly")] == [("draft", "draft_round")]
+              and sw["cand"]["enabled"] == {"type": "BOOLEAN", "default": False} and json.loads(json.dumps(sw)) == sw,
+              "settings_widgets(GET /pipeline widgets): 절·키 = section_keys, 기본값 = defaults(), write_mode 는 fill·refresh, "
+              "draft_round 만 readonly, 선택지는 JSON 목록(노드 선택지 그대로 — JS 에 복사하지 않음)")
+
+        def upd(sec, **kw):
+            return dict(d0[sec], **kw)
+
+        bad = [("prepare", {k: v for k, v in d0["prepare"].items() if k != "n"}, "빠짐"), ("prepare", upd("prepare", seed=1), "모르는 키"),
+               ("prepare", upd("prepare", n="4"), "정수"), ("prepare", upd("prepare", n=True), "정수"), ("prepare", upd("prepare", n=4.0), "정수"),
+               ("prepare", upd("prepare", n=0), "범위"), ("prepare", upd("prepare", n=11), "범위"),
+               ("prepare", upd("prepare", calls_per_cell=9), "범위"), ("prepare", upd("prepare", model="gpt-image-1"), "선택지"),
+               ("prepare", upd("prepare", quality="ultra"), "선택지"), ("prepare", upd("prepare", size_rule="k3"), "선택지"),
+               ("prepare", upd("prepare", ref_style="AT"), "선택지"), ("prepare", upd("prepare", variants="X1"), "variants"),
+               ("prepare", upd("prepare", variants=4), "문자열"),
+               ("analyze", upd("analyze", dE=True), "숫자"), ("analyze", upd("analyze", dE="8"), "숫자"),
+               ("analyze", upd("analyze", dE=0.5), "범위"), ("analyze", upd("analyze", dE=50.5), "범위"),
+               ("analyze", upd("analyze", feather_sigma=float("nan")), "숫자"), ("analyze", upd("analyze", only_picked="false"), "true/false"),
+               # 310자리 넘는 JSON 정수: FLOAT 자리에서 OverflowError(ValueError 아님)가 아니라 범위 400(r2-15)
+               ("analyze", upd("analyze", dE=10 ** 400), "범위"), ("analyze", upd("analyze", feather_sigma=-10 ** 400), "범위"),
+               ("prepare", upd("prepare", n=10 ** 400), "범위"),
+               ("analyze", upd("analyze", only_picked=0), "true/false"), ("analyze", upd("analyze", tone_sigma=1), "범위"),
+               ("run", upd("run", retry_failed=None), "true/false"), ("run", upd("run", wave_minutes=61), "범위"),
+               ("compose", upd("compose", zorder="top"), "선택지"),
+               ("draft", upd("draft", write_mode="preview"), "fill · refresh"), ("draft", upd("draft", write_mode="force"), "fill · refresh"),
+               ("draft", upd("draft", vlm="openai/gpt-9"), "선택지"), ("draft", upd("draft", effort="ultra"), "선택지"),
+               ("draft", upd("draft", image_detail="low"), "선택지"), ("draft", upd("draft", apply="all"), "선택지"),
+               ("draft", upd("draft", vlm="openai/gpt-5.5-pro", effort="low"), "gpt-5.5-pro"),
+               ("draft", upd("draft", credit_cap=-1), "범위"),
+               ("export", upd("export", filename_prefix="a/b"), "filename_prefix"), ("export", upd("export", filename_prefix="a..b"), "filename_prefix"),
+               ("export", upd("export", filename_prefix="a\\b"), "filename_prefix"), ("export", upd("export", filename_prefix="a:b"), "filename_prefix"),
+               ("export", upd("export", skip_empty="true"), "true/false"),
+               ("cand", upd("cand", mapping_json="[1]"), "객체"), ("cand", upd("cand", mapping_json="{bad"), "형식 오류"),
+               ("cand", upd("cand", mapping_json='{"a": 1}'), "타깃 문자열"), ("cand", upd("cand", enabled=True), "cand.path"),
+               ("cand", upd("cand", enabled=True, path="  "), "cand.path"), ("cand", upd("cand", enabled="true"), "true/false"),
+               ("cand", upd("cand", source="zip"), "선택지"), ("import", upd("import", psd_path=None), "문자열"),
+               ("import", "G:/x.psd", "객체")]
+        for sec, vals, frag in bad:
+            expect_raises(lambda sec=sec, vals=vals: pl.validate_section(sec, vals), f"P3 거절 {sec}: {frag}", contains=frag)
+        expect_raises(lambda: pl.validate_section("draft", upd("draft", draft_round=1), draft_rounds={0}), "P3 거절: draft_round 바꿈",
+                      contains="draft_round")
+        good = [("analyze", upd("analyze", dE=8), "dE", 8.0), ("analyze", upd("analyze", feather_sigma=0), "feather_sigma", 0.0),
+                # max 경계(노드가 받는 값 — '<' 로 바뀌면 Studio 가 400 으로 거절)
+                ("prepare", upd("prepare", n=10), "n", 10), ("prepare", upd("prepare", calls_per_cell=8), "calls_per_cell", 8),
+                ("run", upd("run", wave_minutes=60), "wave_minutes", 60), ("run", upd("run", max_new_calls=1000), "max_new_calls", 1000),
+                ("run", upd("run", concurrency=8), "concurrency", 8), ("draft", upd("draft", credit_cap=100000), "credit_cap", 100000),
+                ("draft", upd("draft", draft_round=99), "draft_round", 99), ("draft", upd("draft", concurrency=8), "concurrency", 8),
+                ("analyze", upd("analyze", dE=50.0), "dE", 50.0), ("analyze", upd("analyze", grow=64), "grow", 64),
+                ("analyze", upd("analyze", tone_sigma=128), "tone_sigma", 128),
+                ("analyze", upd("analyze", feather_sigma=32), "feather_sigma", 32.0),
+                ("draft", upd("draft", write_mode="refresh"), "write_mode", "refresh"),
+                ("draft", upd("draft", vlm="openai/gpt-5.5-pro", effort="high"), "effort", "high"),
+                ("draft", upd("draft", vlm="local_qwen/Qwen3-VL-8B-Instruct", effort="low"), "effort", "low"),
+                ("draft", upd("draft", draft_round=3), "draft_round", 3),
+                ("prepare", upd("prepare", variants="v2; V3"), "variants", "v2; V3"), ("prepare", upd("prepare", variants="V2_isolate_A"), "variants", "V2_isolate_A"),
+                ("export", upd("export", filename_prefix="한글 이름_1.v2"), "filename_prefix", "한글 이름_1.v2"),
+                ("export", upd("export", filename_prefix=""), "filename_prefix", ""),
+                ("cand", upd("cand", mapping_json="  "), "mapping_json", "  "), ("cand", upd("cand", mapping_json='{"a": "B", "b": {"skip": true}}'), "mapping_json", '{"a": "B", "b": {"skip": true}}'),
+                ("cand", upd("cand", enabled=True, path="G:/x/h.psd"), "enabled", True),
+                ("import", upd("import", psd_path=' "G:\\x\\a.psd" '), "psd_path", "G:/x/a.psd"),
+                ("import", upd("import", refs_dir="'C:\\r\\refs'"), "refs_dir", "C:/r/refs"),
+                ("import", upd("import", glossary_path="C:\\g.json"), "glossary_path", "C:/g.json")]
+        for sec, vals, key, want_v in good:
+            got = pl.validate_section(sec, vals)[key]
+            check(got == want_v and type(got) is type(want_v), f"P3 통과 {sec}.{key} = {want_v!r} (받은 {got!r})")
+        check(type(pl.validate_section("analyze", upd("analyze", dE=8))["dE"]) is float, "FLOAT 위젯의 JSON 정수는 float 로")
+
+        # 수명: GET 은 쓰지 않음 → 첫 POST(rev 0) 가 유도값 전체 + 보낸 절로 만듦 → rev 409 → 같은 값은 쓰지 않음
+        psd = OUT / "p3" / "in" / "Art.psd"
+        psd.parent.mkdir(parents=True)
+        psd.write_bytes(b"x")
+        (OUT / "p3" / "in" / "refs").mkdir()
+        P = str(psd).replace("\\", "/")
+        root = _pl_project(OUT / "p3", "life", source={"psd": P, "crop_group": "auto", "clean_plate_layer": "auto", "base_layer": "auto",
+                                                       "crop_pixels_group": "auto", "refs_dir": str(OUT / "p3" / "in" / "refs").replace("\\", "/"),
+                                                       "glossary": ""},
+                           crops=[{"id": A1, "name": "001_머리"}], jobs=[_pl_job(A1), _pl_job(A1, "V4_checklist")],
+                           analysis={"c1": {"h1": {"params_hash": "h1", "params": {k: d0["analyze"][k] for k in d0["analyze"] if k != "only_picked"}}}},
+                           exports=[{"rev": 2, "psd": "C:/o/life_r2.psd", "time": "2026-10-17 10:00:00", "problems": 0, "bytes": 10,
+                                     "options": {**{k: d0["export"][k] for k in pl.section_keys("export")[1:7]}, "prefix": "life"},
+                                     "compose": dict(d0["compose"])}],
+                           specs={A1: {"_draft": {"backend": "vlm_openai", "model": "gpt-6-sol", "effort": "xhigh", "image_detail": "high",
+                                                  "round": 0}}})
+        fpath = Path(root, pl.PIPELINE_NAME)
+        files0 = sorted(os.listdir(root))
+        m = store.load_manifest(root)
+        v = pl.view(root, m)
+        der = pl.derive(root, m)
+        check(v["rev"] == 0 and v["saved"] is False and v["error"] is None and v["settings"] == der["settings"]
+              and v["confirm"] == der["confirm"] == ["prepare.variants", "prepare.ref_style", "draft.apply"] and v["drift"] == []
+              and v["warnings"] == [] and len(v["exports"]) == 1 and v["widgets"] == sw
+              and set(v) == {"rev", "saved", "error", "settings", "confirm", "derived", "drift", "warnings", "exports", "widgets"},
+              f"파일 없음: rev 0·saved false·유도값·confirm(추정 variants·ref_style·draft.apply) {v['confirm']}")
+        g = pl.prompt_gate(root, "apply", m)
+        check(pl.pipeline_rev(root) is None and pl.load(root) is None and g["reason"] == "confirm_settings"
+              and g["fields"] == ["prepare.variants", "prepare.ref_style"] and sorted(os.listdir(root)) == files0,
+              f"파일 없음: pipeline_rev null·apply 409 confirm_settings, view·derive·gate 가 파일을 쓰지 않음 {g}")
+        for rv in (1, None):
+            expect_raises(lambda rv=rv: pl.update(root, rv, "prepare", der["settings"]["prepare"]), f"파일 없음 + rev {rv} → 409",
+                          exc=pl.PipelineConflict)
+        for rv, label in ((True, "bool"), ("0", "문자열"), (-1, "음수")):
+            expect_raises(lambda rv=rv: pl.update(root, rv, "prepare", der["settings"]["prepare"]), f"rev {label} → 400",
+                          contains="rev 는")
+        expect_raises(lambda: pl.update(root, 0, "review", {}), "모르는 절 → 400")
+        r1 = pl.update(root, 0, "prepare", der["settings"]["prepare"])
+        doc1 = json.loads(fpath.read_text(encoding="utf-8"))
+        check(r1["ok"] is True and r1["rev"] == 1 and set(r1) == {"ok", "rev", "settings", "confirm", "drift"}
+              and r1["confirm"] == ["draft.apply"] and r1["settings"] == der["settings"]
+              and list(doc1) == ["schema", "rev", "confirm"] + list(pl.SECTIONS) and doc1["rev"] == 1
+              and doc1["schema"] == pl.SCHEMA and pl.pipeline_rev(root) == 1,
+              f"첫 POST(rev 0) = 유도값 전체 + 보낸 절, rev 1, prepare.* confirm 지움 {r1['confirm']}")
+        expect_raises(lambda: pl.update(root, 0, "prepare", der["settings"]["prepare"]), "낡은 rev 0 → PipelineConflict(409)",
+                      exc=pl.PipelineConflict, contains="새로고침")
+        raw1 = fpath.read_bytes()
+        r_same = pl.update(root, 1, "prepare", der["settings"]["prepare"])
+        check(r_same["rev"] == 1 and fpath.read_bytes() == raw1, "같은 값 저장 = 쓰지 않음(rev 그대로)")
+        check(pl.prompt_gate(root, "apply", m) is None and pl.prompt_gate(root, "export", m) is None,
+              "prepare·import 확인됨 + 경로 있음 → apply·export 통과(draft.apply 확인 남음은 막지 않음)")
+        imp_case = dict(der["settings"]["import"], psd_path=P.replace("Art.psd", "art.psd"))
+        r2 = pl.update(root, 1, "import", imp_case)
+        dr = [x for x in r2["drift"] if x["section"] == "import"]
+        check(r2["rev"] == 2 and dr == [{"section": "import", "field": "psd_path", "manifest": P, "settings": imp_case["psd_path"],
+                                         "kind": "import"}],
+              f"import 저장 → 매니페스트 source 와 대소문자 구분 비교(갈라짐 kind import) {dr}")
+        r3 = pl.update(root, 2, "import", dict(der["settings"]["import"], psd_path=""))
+        g = pl.prompt_gate(root, "apply", m)
+        check(r3["rev"] == 3 and g["reason"] == "no_psd" and pl.path_warnings(r3["settings"])[0]["reason"] == "no_psd",
+              f"psd_path 빔 → 저장은 받고 apply 409 no_psd {g}")
+        miss = dict(der["settings"]["import"], refs_dir="C:/없는/refs", glossary_path="C:/없는/g.json")
+        r4 = pl.update(root, 3, "import", miss)
+        g = pl.prompt_gate(root, "export", m)
+        check(r4["rev"] == 4 and g["reason"] == "missing_path" and g["field"] == "import.refs_dir"
+              and g["fields"] == ["import.refs_dir", "import.glossary_path"]
+              and [w["field"] for w in pl.view(root, m)["warnings"]] == ["import.refs_dir", "import.glossary_path"],
+              f"없는 경로 → 저장은 받고 GET warnings, export 409 missing_path {g}")
+        check(pl.update(root, 4, "import", der["settings"]["import"])["rev"] == 5, "import 되돌림 저장 rev 5")
+        r5c = pl.update(root, 5, "cand", dict(der["settings"]["cand"], enabled=True, path="C:/없는/h.psd"))
+        gates = {stg: pl.prompt_gate(root, stg, m) for stg in pl.STAGES}
+        want_c = {"error": "후보 등록 PSD 파일이 없음: C:/없는/h.psd", "reason": "missing_path", "field": "cand.path", "fields": ["cand.path"]}
+        check(r5c["rev"] == 6 and [w["field"] for w in pl.path_warnings(r5c["settings"])] == ["cand.path"]
+              and all(gates[stg] == want_c for stg in ("apply", "draft", "run", "reroll")) and gates["export"] is None,
+              f"켠 후보 등록의 없는 경로 → 저장은 받고, dp_cand 를 담는 stage(apply·draft·run·reroll)는 409 missing_path(field cand.path — "
+              f"Import 가 커밋한 뒤 Candidate In 이 실패하는 반쪽 상태를 막음, r2-06), export(dp_cand 없음)는 통과 {gates}")
+        check(pl.path_warnings(dict(r5c["settings"], cand=dict(r5c["settings"]["cand"], enabled=False))) == [],
+              "꺼진 후보 등록의 없는 경로는 경고하지 않음(템플릿에 dp_cand 가 없음)")
+        ind = str(OUT / "p3" / "in").replace("\\", "/")
+
+        def cand_gate(stage, imp=None, **kw):  # 파일을 쓰지 않고 판정만(cur 를 직접) — rev 순서를 건드리지 않게
+            s = dict(r5c["settings"], cand=dict(r5c["settings"]["cand"], **kw), **({"import": imp} if imp else {}))
+            return pl.prompt_gate(root, stage, m, cur={"rev": 6, "saved": True, "error": None, "settings": s, "confirm": []})
+
+        kinds = {"psd_harvest + 폴더": cand_gate("apply", path=ind), "folder + 파일": cand_gate("apply", source="folder", path=P),
+                 "folder + 없는 폴더": cand_gate("apply", source="folder", path="C:/없는/h")}
+        check([(g or {}).get("fields") for g in kinds.values()] == [["cand.path"]] * 3
+              and "PSD 파일이 없음" in kinds["psd_harvest + 폴더"]["error"] and "폴더가 없음" in kinds["folder + 파일"]["error"],
+              f"cand.path 판정 = Candidate In 과 같게(psd_harvest 는 파일만 — isfile, folder 는 폴더만 — isdir): 종류가 틀린 경로도 409 {kinds}")
+        check(cand_gate("apply", source="folder", path=ind) is None and cand_gate("apply", path=P) is None
+              and cand_gate("apply", path=f' "{P}" ') is None and cand_gate("apply", enabled=False) is None,
+              "있는 폴더(folder)·있는 PSD(psd_harvest — 따옴표·공백은 노드 _strip_path 처럼 뗌)·꺼진 후보 등록 → 통과")
+        imp_miss = dict(der["settings"]["import"], refs_dir="C:/없는/refs")
+        ga, ge = cand_gate("apply", imp_miss), cand_gate("export", imp_miss)
+        check(ga["field"] == "import.refs_dir" and ga["fields"] == ["import.refs_dir", "cand.path"] and ge["fields"] == ["import.refs_dir"],
+              f"import 경로와 cand.path 가 함께 없음 → apply fields 둘 다(field = import 먼저), export 는 import 만 {ga} {ge}")
+        expect_raises(lambda: pl.update(root, 6, "draft", dict(der["settings"]["draft"], draft_round=1)),
+                      "draft_round 바꿈 → 400(유도값·저장값만)", contains="draft_round")
+        r6 = pl.update(root, 6, "draft", dict(der["settings"]["draft"], write_mode="refresh"))
+        check(r6["rev"] == 7 and r6["confirm"] == [] and r6["settings"]["draft"]["write_mode"] == "refresh",
+              "draft 절 저장 → draft.apply confirm 지움")
+        raw7 = fpath.read_bytes()
+        for vals, frag in ((dict(der["settings"]["draft"], vlm="openai/gpt-9"), "선택지"),
+                           (dict(der["settings"]["draft"], vlm="openai/gpt-5.5-pro", effort="low"), "gpt-5.5-pro"),
+                           (dict(der["settings"]["draft"], apply="all"), "선택지")):
+            expect_raises(lambda vals=vals: pl.update(root, 7, "draft", vals),
+                          f"update = 깊은 검사(vlm 선택지·모델별 effort·apply) 400: {vals['vlm']} {vals['effort']} {vals['apply']}", contains=frag)
+        check(fpath.read_bytes() == raw7 and pl.pipeline_rev(root) == 7, "거절된 draft 저장은 파일·rev 를 그대로 둠")
+        # 깨진 파일: GET 200 error·rev null, prompt 409 pipeline_broken, 덮어쓰기는 rev null 로만(rev = 읽히면 그 뒤 번호)
+        for raw, label in (("{", "JSON 오류"), ('{"schema": "bmk.design_patch.pipeline/2", "rev": 7}', "schema 다름"),
+                           (json.dumps(dict(doc1, rev=0)), "rev 0"), (json.dumps(dict(doc1, confirm=["prepare.seed"])), "confirm 모르는 경로"),
+                           (json.dumps(dict(doc1, extra=1)), "모르는 최상위 키"),
+                           (json.dumps(dict(doc1, prepare=dict(doc1["prepare"], n=50))), "범위 밖 값"),
+                           (json.dumps(dict(doc1, analyze=dict(doc1["analyze"], dE=10 ** 400))), "FLOAT 자리에 400자리 정수(OverflowError 아님)"),
+                           (json.dumps({k: v for k, v in doc1.items() if k != "run"}), "절 없음"), ("[]", "목록")):
+            fpath.write_text(raw, encoding="utf-8")
+            vb = pl.view(root, m)
+            gb = pl.prompt_gate(root, "apply", m)
+            check(vb["rev"] is None and vb["saved"] is True and isinstance(vb["error"], str) and vb["settings"] is None
+                  and vb["confirm"] is None and vb["derived"]["settings"] == der["settings"] and pl.pipeline_rev(root) is None
+                  and gb["reason"] == "pipeline_broken" and fpath.read_text(encoding="utf-8") == raw,
+                  f"깨진 파일({label}): GET error·rev null, prompt 409 pipeline_broken, 파일 그대로 {vb['error']}")
+        expect_raises(lambda: pl.load(root), "깨진 파일 load → ValueError")
+        expect_raises(lambda: pl.update(root, 7, "run", der["settings"]["run"]), "깨진 파일 + rev 숫자 → 409", exc=pl.PipelineConflict)
+        fpath.write_text(json.dumps(dict(doc1, rev=9, prepare=dict(doc1["prepare"], n=50))), encoding="utf-8")
+        rb = pl.update(root, None, "run", dict(der["settings"]["run"], max_new_calls=10))
+        check(rb["rev"] == 10 and rb["settings"]["run"]["max_new_calls"] == 10 and rb["settings"]["prepare"] == der["settings"]["prepare"]
+              and rb["confirm"] == der["confirm"] and pl.pipeline_rev(root) == 10,
+              f"rev null 덮어쓰기 = 유도값 + 보낸 절, rev = 깨진 파일의 rev 다음(9 → 10) {rb['rev']}")
+        fpath.write_text("{", encoding="utf-8")
+        check(pl.update(root, None, "run", der["settings"]["run"])["rev"] == 1, "rev 를 못 읽는 깨진 파일 덮어쓰기 → rev 1")
+        expect_raises(lambda: pl.update(root, None, "run", der["settings"]["run"]), "멀쩡한 파일 + rev null → 409", exc=pl.PipelineConflict)
+        fpath.write_text(json.dumps(dict(doc1, rev=3, analyze=dict(doc1["analyze"], feather_sigma=-10 ** 400))), encoding="utf-8")
+        expect_raises(lambda: pl.load(root), "FLOAT 자리에 아주 큰 정수 → load ValueError(r2-15 — OverflowError 로 새지 않음)", contains="범위")
+        expect_raises(lambda: pl.update(root, 3, "run", der["settings"]["run"]), "그 파일 + rev 숫자 → 409(깨진 파일)", exc=pl.PipelineConflict)
+        rbig = pl.update(root, None, "run", der["settings"]["run"])
+        check(rbig["rev"] == 4 and rbig["settings"]["analyze"] == der["settings"]["analyze"] and pl.pipeline_rev(root) == 4,
+              f"FLOAT 자리에 아주 큰 정수인 파일도 rev null 덮어쓰기로 회복(3 → 4) {rbig['rev']}")
+        # r3-12: rev 가 2^53−1(브라우저 Number.MAX_SAFE_INTEGER)을 넘는 파일 = 깨진 파일 — 브라우저가 반올림한 rev 로는 저장(409)·반영(sig 대조)이
+        # 늘 어긋나 Studio 안에서 회복할 길이 없었다. 깨진 파일이면 rev null 덮어쓰기로 회복하고 새 rev 는 1(넘는 rev 를 이어 가지 않음).
+        # 상한인 파일은 멀쩡하고, 저장하면 rev 1(저장한 파일이 깨진 파일로 읽히지 않게) — 깨진 파일의 rev 가 상한이어도 덮어쓰기 rev 1
+        mx = 2 ** 53 - 1
+        huge = {}
+        for over in (mx + 1, mx + 2):
+            fpath.write_text(json.dumps(dict(doc1, rev=over)), encoding="utf-8")
+            vh = pl.view(root, m)
+            huge[over] = (vh["rev"], "너무 큽니다" in (vh["error"] or ""), pl.pipeline_rev(root), (pl.prompt_gate(root, "apply", m) or {}).get("reason"))
+            expect_raises(lambda: pl.update(root, mx + 1, "run", der["settings"]["run"]),
+                          f"rev {over} 파일 + 브라우저가 반올림한 rev 2^53 → 409(깨진 파일)", exc=pl.PipelineConflict)
+            try:
+                rh = pl.update(root, None, "run", dict(der["settings"]["run"], max_new_calls=12))
+                huge[over] += (rh["rev"], pl.pipeline_rev(root), pl.load(root)["run"]["max_new_calls"])
+            except ValueError as e:  # 멀쩡한 파일로 읽으면 rev null 은 409 — 회복할 길이 없음
+                huge[over] += (f"{type(e).__name__}: {e}",)
+        check(huge == {k: (None, True, None, "pipeline_broken", 1, 1, 12) for k in (mx + 1, mx + 2)},
+              f"rev 2^53·2^53+1 파일 = 깨진 파일(GET error·rev null·pipeline_rev null·prompt 409) → rev null 덮어쓰기로 회복, 새 rev 1 {huge}")
+        fpath.write_text(json.dumps(dict(doc1, rev=mx)), encoding="utf-8")
+        ok_max = pl.pipeline_rev(root)
+        rmx = pl.update(root, mx, "run", dict(der["settings"]["run"], max_new_calls=13))
+        fpath.write_text(json.dumps(dict(doc1, rev=mx, prepare=dict(doc1["prepare"], n=50))), encoding="utf-8")
+        rbx = pl.update(root, None, "run", der["settings"]["run"])
+        check(ok_max == mx and rmx["rev"] == 1 and rbx["rev"] == 1 and pl.pipeline_rev(root) == 1,
+              f"rev 2^53−1 파일은 멀쩡(그 rev 로 저장 → rev 1), rev 2^53−1 인 깨진 파일 덮어쓰기 → rev 1 {ok_max} {rmx['rev']} {rbx['rev']}")
+
+        # 같은 값으로 다시 저장 = "확인": 다른 절로 만든 파일에 남은 prepare.* confirm 이 그 절 저장(값 그대로)으로 지워지고 게이트가 풀림
+        src_ok = {"psd": P, "crop_group": "auto", "clean_plate_layer": "auto", "base_layer": "auto", "crop_pixels_group": "auto",
+                  "refs_dir": "", "glossary": ""}
+        rc = _pl_project(OUT / "p3", "reconfirm", source=src_ok, crops=[{"id": A1, "name": "001_머리"}], jobs=[_pl_job(A1)])
+        mc = store.load_manifest(rc)
+        dc = pl.derive(rc, mc)
+        pl.update(rc, 0, "import", dc["settings"]["import"])
+        g1 = pl.prompt_gate(rc, "apply", mc)
+        rr = pl.update(rc, 1, "prepare", dc["settings"]["prepare"])
+        doc_c = json.loads(Path(rc, pl.PIPELINE_NAME).read_text(encoding="utf-8"))
+        check(g1["reason"] == "confirm_settings" and g1["fields"] == ["prepare.variants", "prepare.ref_style"]
+              and rr["rev"] == 2 and doc_c["rev"] == 2 and not [c for c in doc_c["confirm"] if c.startswith("prepare.")]
+              and doc_c["prepare"] == dc["settings"]["prepare"] and pl.prompt_gate(rc, "apply", mc) is None,
+              f"값 그대로 다시 저장 = 확인: rev +1, 파일 confirm 에서 prepare.* 빠짐, apply 게이트 풀림 {g1} {doc_c['confirm']}")
+        # PSD·용어집 자리에 폴더: 파일만 받는다(isfile) — Import 노드에서야 실패하지 않게 반영·Export 에서 막음
+        dirp = str(OUT / "p3" / "in").replace("\\", "/")
+        pl.update(rc, 2, "import", dict(dc["settings"]["import"], psd_path=dirp))
+        gd = pl.prompt_gate(rc, "apply", mc) or {}
+        pl.update(rc, 3, "import", dict(dc["settings"]["import"], glossary_path=dirp))
+        gg = pl.prompt_gate(rc, "export", mc) or {}
+        check(gd.get("reason") == "missing_path" and gd.get("field") == "import.psd_path" and gd.get("fields") == ["import.psd_path"]
+              and gg.get("reason") == "missing_path" and gg.get("fields") == ["import.glossary_path"],
+              f"psd_path·glossary_path 자리에 폴더 → missing_path(파일만) {gd} {gg}")
+        # refs_dir 자리에 파일: 폴더만 받는다(isdir — Import 노드의 '레퍼런스 폴더가 없습니다'와 같은 판정)
+        pl.update(rc, 4, "import", dict(dc["settings"]["import"], refs_dir=P))
+        gr = pl.prompt_gate(rc, "apply", mc) or {}
+        check(gr.get("reason") == "missing_path" and gr.get("field") == "import.refs_dir" and gr.get("fields") == ["import.refs_dir"]
+              and [w["field"] for w in pl.view(rc, mc)["warnings"]] == ["import.refs_dir"],
+              f"refs_dir 자리에 파일 → missing_path(폴더만)·GET warnings {gr}")
+        # 읽을 수 없는 pipeline.json(그 자리에 폴더 — Windows 는 PermissionError): 깨진 파일과 같게(state 의 pipeline_rev 가 500 을 내지 않게)
+        ud = _pl_project(OUT / "p3", "unreadable", crops=[{"id": A1, "name": "001_머리"}])
+        os.makedirs(Path(ud, pl.PIPELINE_NAME))
+        mu = store.load_manifest(ud)
+        vu = pl.view(ud, mu)
+        check(pl.pipeline_rev(ud) is None and vu["rev"] is None and "읽을 수 없습니다" in (vu["error"] or "") and vu["settings"] is None
+              and pl.prompt_gate(ud, "apply", mu)["reason"] == "pipeline_broken",
+              f"읽을 수 없는 pipeline.json → pipeline_rev null·GET error·prompt 409 pipeline_broken {vu['error']}")
+        expect_raises(lambda: pl.load(ud), "읽을 수 없는 pipeline.json load → ValueError", contains="읽을 수 없습니다")
+        # import.* confirm 도 게이트(Import 기록 없음 → no_psd 보다 먼저 confirm_settings — 설정 패널을 열게), 모르는 stage 거절
+        ni = _pl_project(OUT / "p3", "noimport", crops=[{"id": A1, "name": "001_머리"}], jobs=[_pl_job(A1)])
+        mi = store.load_manifest(ni)
+        pl.update(ni, 0, "prepare", pl.derive(ni, mi)["settings"]["prepare"])
+        gi = pl.prompt_gate(ni, "export", mi)
+        check(gi["reason"] == "confirm_settings" and gi["fields"] == [f"import.{k}" for k in pl.section_keys("import")],
+              f"prepare 만 확인 + Import 기록 없음 → confirm_settings(fields import.*) {gi}")
+        expect_raises(lambda: pl.prompt_gate(ni, "apply2", mi), "prompt_gate 모르는 stage → ValueError", contains="stage")
+
+    def p3_race():
+        section("S3a-P3 잠금 경합: pipeline 4×25 + 매니페스트·layout·refs 쓰기 + 읽기 스레드 → 잃은 쓰기 0")
+        root = _pl_project(OUT / "p3r", "race", crops=[{"id": A1, "name": "001_머리"}])
+        r0 = pl.update(root, 0, "run", pl.defaults()["run"])
+        store.update_layout(root, lambda d: d.update(_layout_doc([_layout_crop("001_머리", [0, 0, 384, 384])])), expect_rev=None, create=True)
+        refs.update_refs(root, lambda d: d.update(refs.new_refs(str(OUT / "p3r" / "refs"))), expect_rev=None, create=True)
+        n_thr, n_ops = 4, 25
+        errors, conflicts, done = [], [0], {}
+        stop = threading.Event()
+        barrier = threading.Barrier(n_thr)
+        kinds = {"manifest": 0, "layout": 0, "refs": 0}
+        for t in range(n_thr):
+            for i in range(n_ops):
+                kinds[("manifest", "layout", "refs")[(t + i) % 3]] += 1
+
+        def writer(t):
+            try:
+                barrier.wait()
+                for i in range(n_ops):
+                    val = 1 + t * n_ops + i
+                    while True:
+                        cur = pl.load(root)["rev"]
+                        try:
+                            res = pl.update(root, cur, "run", dict(pl.defaults()["run"], max_new_calls=val))
+                            done[res["rev"]] = val
+                            break
+                        except pl.PipelineConflict:
+                            conflicts[0] += 1
+                    kind = ("manifest", "layout", "refs")[(t + i) % 3]
+                    if kind == "manifest":
+                        store.update_manifest(root, lambda m, t=t, i=i: m["picks"].__setitem__(f"T{t}/{i}", [str(i)]))
+                    elif kind == "layout":
+                        store.update_layout(root, lambda d, t=t, i=i: d["crops"][0].update(note=f"T{t}/{i}"), expect_rev=None)
+                    else:
+                        refs.update_refs(root, lambda d, t=t, i=i: d["links"].__setitem__(f"{100 + t * n_ops + i:03d}_t{t}",
+                                                                                         {"main": None, "files": []}), expect_rev=None)
+            except Exception as e:  # 스레드 오류는 모아서 보고
+                errors.append(f"T{t}: {type(e).__name__}: {e}")
+
+        def reader():
+            while not stop.is_set():
+                try:
+                    pl.load(root)
+                    store.load_manifest(root)
+                    store.load_layout(root)
+                    refs.load_refs(root)
+                except Exception as e:  # 읽기 실패를 모아서 보고
+                    errors.append(f"read: {type(e).__name__}: {e}")
+
+        ths = [threading.Thread(target=writer, args=(t,)) for t in range(n_thr)]
+        rth = threading.Thread(target=reader)
+        rth.start()
+        for th in ths:
+            th.start()
+        for th in ths:
+            th.join()
+        stop.set()
+        rth.join()
+        doc, m, lay, rd = pl.load(root), store.load_manifest(root), store.load_layout(root), refs.load_refs(root)
+        total = n_thr * n_ops
+        check(not errors, f"경합 중 오류 0 {errors[:2]}")
+        check(r0["rev"] == 1 and doc["rev"] == 1 + total and sorted(done) == list(range(2, 2 + total))
+              and sorted(done.values()) == list(range(1, 1 + total)) and doc["run"]["max_new_calls"] == done[1 + total],
+              f"pipeline 잃은 쓰기 0: 성공한 rev 2…{1 + total} 이 하나씩, 마지막 값 = 마지막 rev 의 값 (rev {doc['rev']})")
+        check(len(m["picks"]) == kinds["manifest"] and lay["rev"] == kinds["layout"] and len(rd["links"]) == kinds["refs"]
+              and rd["rev"] == kinds["refs"],
+              f"매니페스트·layout·refs 잃은 쓰기 0 ({len(m['picks'])}/{kinds['manifest']} · rev {lay['rev']}/{kinds['layout']} · "
+              f"{len(rd['links'])}/{kinds['refs']})")
+        note(f"S3a-P3 경합 4×25: pipeline rev {doc['rev']}, 낡은 rev 재시도 {conflicts[0]}회, 매니페스트 {len(m['picks'])} · "
+             f"layout rev {lay['rev']} · refs rev {rd['rev']}, 오류 0")
+
+    def p4_derive():
+        section("S3a-P4 처음 값 유도·갈라짐(합성 매니페스트)")
+        P1 = {"register": "guarded_affine", "tone": "field", "tone_sigma": 16, "dE": 8.0, "grow": 9, "feather_sigma": 3.5, "roi_prior": "none"}
+        P2 = {"register": "translation", "tone": "global", "tone_sigma": 24, "dE": 6.5, "grow": 5, "feather_sigma": 2.0, "roi_prior": "hand_bbox"}
+        P3 = {"register": "off", "tone": "off", "tone_sigma": 12, "dE": 4.0, "grow": 3, "feather_sigma": 1.0, "roi_prior": "none"}
+        src = {"psd": "G:/x/Art_DP.psd", "fingerprint": [1, 2], "crop_group": "02.크롭영역", "clean_plate_layer": "none", "base_layer": "auto",
+               "crop_pixels_group": "none", "refs_dir": "G:/x/refs", "glossary": "G:/x/g.json"}
+        crops = [{"id": store.crop_id_for(f"{k:03d}_c{k}"), "name": f"{k:03d}_c{k}"} for k in range(1, 8)]
+        ids = [c["id"] for c in crops]
+
+        def dr(backend, model=None, effort=None, detail=None, rnd=0):
+            return {"_draft": {"backend": backend, "model": model, "effort": effort, "image_detail": detail, "round": rnd}}
+
+        full = _pl_project(OUT / "p4", "full", source=src, crops=crops,
+                           prepare_settings={"model": "gpt-image-2.5-flare", "quality": "high", "size_rule": "int_k_2560",
+                                             "variants": "V1,V2", "n": 3, "ref_style": "plain"},
+                           jobs=[_pl_job(ids[0], model="gpt-image-2.5-sunburst", n=2)],
+                           # 후보별 마지막 = P1·P2·P2·P3(최다 P2 ≠ 첫·끝 후보), 후보별 첫 항목의 최다는 P1
+                           analysis={"c1": {"h1": {"params_hash": "h1", "params": P3}, "h2": {"params_hash": "h2", "params": P1}},
+                                     "c2": {"h3": {"params_hash": "h3", "params": P1}, "h4": {"params_hash": "h4", "params": P2}},
+                                     "c3": {"h5": {"params_hash": "h5", "params": P2}},
+                                     "c4": {"h6": {"params_hash": "h6", "params": P1}, "h7": {"params_hash": "h7", "params": P3}}},
+                           exports=[{"rev": 3, "psd": "G:/o/a_r3.psd", "time": "t3", "options": {"prefix": "old"}},
+                                    {"rev": 9, "psd": "G:/o/a_r9.psd", "time": "2026-10-17 10:00:00", "problems": 2, "bytes": 1234,
+                                     "options": {"layer_mode": "pixel", "alternates": "none", "color": "raw", "mask_source": "auto",
+                                                 "include_base": False, "include_crop_outlines": False, "prefix": "새_접두"},
+                                     "compose": {"mask_source": "hand", "use_registration": False, "use_tone": False, "zorder": "harvest"}}],
+                           specs={ids[0]: dr("vlm_openai", "gpt-6-astra", "high", "original"), ids[1]: dr("vlm_openai", "gpt-6-astra", "high", "original"),
+                                  ids[2]: dr("vlm_local_qwen", "Qwen3-VL-8B-Instruct"), ids[3]: dr("vlm_mock", "mock"),
+                                  ids[4]: dr("vlm_mock", "mock"), ids[5]: dr("vlm_mock", "mock"), ids[6]: "{bad json"})
+        before = sorted(os.listdir(full))
+        m = store.load_manifest(full)
+        d = pl.derive(full, m)
+        s, frm = d["settings"], d["from"]
+        check(set(d) == {"settings", "from", "confirm", "notes"} and set(frm) == {f"{x}.{k}" for x in pl.SECTIONS for k in pl.section_keys(x)}
+              and set(frm.values()) <= {"manifest", "jobs", "spec_draft", "default"} and sorted(os.listdir(full)) == before,
+              "derive 모양 {settings, from(모든 '절.키'), confirm, notes}, 파일을 쓰지 않음")
+        check(s["import"] == {"psd_path": src["psd"], "crop_group": "02.크롭영역", "clean_plate_layer": "none", "base_layer": "auto",
+                              "crop_pixels_group": "none", "refs_dir": "G:/x/refs", "glossary_path": "G:/x/g.json"}
+              and all(frm[f"import.{k}"] == "manifest" for k in pl.section_keys("import")),
+              f"import = 매니페스트 source(glossary → glossary_path) {s['import']}")
+        check(s["prepare"] == {"model": "gpt-image-2.5-flare", "quality": "high", "size_rule": "int_k_2560", "variants": "V1,V2", "n": 3,
+                               "ref_style": "plain", "calls_per_cell": 1} and frm["prepare.n"] == "manifest"
+              and frm["prepare.calls_per_cell"] == "manifest" and not [c for c in d["confirm"] if c.startswith("prepare.")],
+              f"prepare = prepare_settings 우선(jobs 무시, calls_per_cell 생략 = 1), 확인 필요 없음 {s['prepare']}")
+        check(s["draft"]["vlm"] == "openai/gpt-6-astra" and s["draft"]["effort"] == "high" and s["draft"]["image_detail"] == "original"
+              and s["draft"]["draft_round"] == 0 and s["draft"]["credit_cap"] == 1200 and s["draft"]["apply"] == "targets"
+              and s["draft"]["write_mode"] == "fill" and frm["draft.vlm"] == "spec_draft" and frm["draft.apply"] == "default"
+              and "draft.vlm" not in d["confirm"] and "draft.apply" in d["confirm"]
+              and any("건너뜀" in x and ids[6] in x for x in d["notes"]) and any("다름" in x for x in d["notes"] if x.startswith("draft")),
+              f"draft = 가장 많은 실제 출처(mock 3·깨진 스펙 제외), credit_cap 권장 1200, apply 는 늘 확인 {s['draft']} {d['notes']}")
+        check(s["analyze"] == dict(P2, only_picked=False) and frm["analyze.only_picked"] == "default" and frm["analyze.dE"] == "manifest"
+              and any(x.startswith("analyze:") and "다름" in x for x in d["notes"]),
+              f"analyze = 후보별 마지막 항목의 최다 params(첫·끝 후보 값 아님, only_picked 는 기록 없음 → 기본값), 섞임 메모 {s['analyze']}")
+        check(s["compose"] == {"mask_source": "hand", "use_registration": False, "use_tone": False, "zorder": "harvest"}
+              and s["export"] == {"filename_prefix": "새_접두", "layer_mode": "pixel", "alternates": "none", "color": "raw",
+                                  "mask_source": "auto", "include_base": False, "include_crop_outlines": False, "skip_empty": True}
+              and frm["export.filename_prefix"] == "manifest" and frm["export.skip_empty"] == "default",
+              f"compose = exports[-1].compose, export = exports[-1].options(prefix → filename_prefix, skip_empty 기본 true) {s['export']}")
+        check(s["run"] == pl.defaults()["run"] and s["cand"] == pl.defaults()["cand"] and d["confirm"] == ["draft.apply"],
+              f"run·cand = 노드 기본값, confirm = draft.apply 뿐 {d['confirm']}")
+        check(pl.recent_exports(m) == [{"rev": 9, "psd": "G:/o/a_r9.psd", "time": "2026-10-17 10:00:00", "layers": None, "problems": 2,
+                                        "bytes": 1234},
+                                       {"rev": 3, "psd": "G:/o/a_r3.psd", "time": "t3", "layers": None, "problems": None, "bytes": None}]
+              and pl.recent_exports({"exports": [{"rev": 4, "psd": "a.psd", "time": "t", "layers": 36, "problems": 0, "bytes": 1,
+                                                  "hash": "h", "options": {}}]})[0]["layers"] == 36,
+              "recent_exports: 최근 것 먼저, 6키(없으면 null) — layers = Export 기록의 레이어 수(§3.6 new 의 레이어 수)")
+        ex12 = [{"rev": i, "psd": f"G:/o/a_r{i}.psd", "time": f"t{i}", "problems": 0, "bytes": i} for i in range(1, 13)]
+        check([e["rev"] for e in pl.recent_exports({"exports": ex12})] == list(range(12, 2, -1)),
+              "recent_exports: 최근 10개만(최근 것 먼저 — 가장 오래된 2개 제외)")
+        check([e["rev"] for e in pl.view(full, dict(m, exports=ex12))["exports"]] == list(range(12, 2, -1)),
+              "GET /pipeline(view) exports = 최근 10개(§6 — 기본 n 그대로)")
+        # 갈라짐: import 는 대소문자 구분 그대로, prepare 는 셀(모델·품질·크기·변형 집합·ref_style) / 비용(n·calls_per_cell)
+        st = copy.deepcopy(s)
+        st["import"]["psd_path"] = "G:/x/art_DP.psd"
+        st["prepare"].update(variants=" v2;V1 ", n=4, calls_per_cell=2)
+        check(pl.drift(s, m) == [] and pl.drift(st, m) == [
+            {"section": "import", "field": "psd_path", "manifest": "G:/x/Art_DP.psd", "settings": "G:/x/art_DP.psd", "kind": "import"},
+            {"section": "prepare", "field": "n", "manifest": 3, "settings": 4, "kind": "cost"},
+            {"section": "prepare", "field": "calls_per_cell", "manifest": 1, "settings": 2, "kind": "calls"}],
+              f"갈라짐: 대소문자 다른 PSD = import, 변형 토큰 집합 같음(대소문자·순서·구분자 무시) = 없음, n = cost, calls_per_cell 늘림 = calls "
+              f"{pl.drift(st, m)}")
+        # r3-02 calls_per_cell 방향: 늘리면 calls(jobs[].reps 가 늘어 완료된 셀에도 빠진 rep 이 새 유료 호출), 줄이면 cost(새 호출 없음), 같으면 없음.
+        # 기록이 정수가 아니면(손으로 고친 매니페스트) 늘린 쪽으로
+        rows_c = {}
+        for mv, sv in ((3, 2), (3, 3), (3, 4), ("3", 2)):
+            sc = copy.deepcopy(s)
+            sc["prepare"]["calls_per_cell"] = sv
+            rows_c[(mv, sv)] = [x["kind"] for x in pl.drift(sc, dict(m, prepare_settings=dict(m["prepare_settings"], calls_per_cell=mv)))]
+        check(rows_c == {(3, 2): ["cost"], (3, 3): [], (3, 4): ["calls"], ("3", 2): ["calls"]},
+              f"갈라짐 calls_per_cell: 3→2 cost, 같음 없음, 3→4 calls, 기록 '3'(정수 아님) → calls {rows_c}")
+        # 변형 비교 = Prepare(prompt.select_variants)와 같은 정규화 — V<n> 접두만 대문자로, 밑줄 있는 정확한 이름은 대소문자 그대로(다른 변형을 고름)
+        allv = dict.fromkeys(("V1_standard", "V2_isolate_A", "V4_checklist"), {})
+        rows_v = []
+        for mv, sv, same in (("V1,V2_isolate_A", "V1,V2_isolate_a", False), ("V1,V2_isolate_A", "v1; V2_isolate_A", True),
+                             ("V1_standard", "V1_Standard", False), ("v1,V4", "V4 , V1", True)):
+            mt = dict(m, prepare_settings=dict(m["prepare_settings"], variants=mv))
+            sv_ = copy.deepcopy(s)
+            sv_["prepare"]["variants"] = sv
+            node_same = list(P.select_variants(allv, mv)) == list(P.select_variants(allv, sv))
+            rows_v.append((mv, sv, [x["field"] for x in pl.drift(sv_, mt)] == ([] if same else ["variants"]) and node_same == same))
+        check(all(ok for _mv, _sv, ok in rows_v),
+              f"갈라짐 variants: 밑줄 이름의 대소문자 차이(V2_isolate_A·V2_isolate_a — Prepare 는 다른 변형을 고름) = cell, 접두 토큰의 "
+              f"대소문자·순서·구분자만 다름 = 없음(노드가 고르는 변형 같음) {rows_v}")
+        for key, val in (("model", "gpt-image-2.5-sunburst"), ("quality", "max"), ("size_rule", "user_k"), ("variants", "V1,V4"),
+                         ("ref_style", "at")):
+            st2 = copy.deepcopy(s)
+            st2["prepare"][key] = val
+            check([x["kind"] for x in pl.drift(st2, m)] == ["cell"], f"갈라짐: prepare.{key} 다르면 kind cell")
+        st3 = copy.deepcopy(s)
+        st3["import"]["refs_dir"] = ""
+        check([x["field"] for x in pl.drift(st3, m)] == ["refs_dir"], "갈라짐: refs_dir 비움도 Import 와 다름")
+        # light 키(refs_dir·glossary)를 기록하기 전의 매니페스트: 키 없음 = "" 와 같은 Import(Import 캐시 판정과 같게) → 갈라짐 0
+        nl = _pl_project(OUT / "p4", "nolight", source={k: v for k, v in src.items() if k not in ("refs_dir", "glossary")}, crops=crops[:1])
+        ml = store.load_manifest(nl)
+        dl = pl.derive(nl, ml)["settings"]
+        check("refs_dir" not in ml["source"] and "glossary" not in ml["source"]
+              and dl["import"]["refs_dir"] == dl["import"]["glossary_path"] == "" and pl.drift(dl, ml) == [],
+              f"source 에 refs_dir·glossary 키 없음 = '' → 갈라짐 0 {pl.drift(dl, ml)}")
+
+        # 옛 프로젝트(prepare_settings 없음): jobs 에서(최다값 + 섞인 값 확인), 변형 규칙, ref_style 기본·확인
+        old = _pl_project(OUT / "p4", "old", source=src, crops=crops[:2],
+                          jobs=[_pl_job(ids[0], "V1_standard"), _pl_job(ids[1], "V1_standard"),
+                                _pl_job(ids[0], "V4_checklist", model="gpt-image-2.5-flare", n=2, reps=2)])
+        d2 = pl.derive(old, store.load_manifest(old))
+        check(d2["settings"]["prepare"] == {"model": "gpt-image-2.5-sunburst", "quality": "max", "size_rule": "user_k", "variants": "V1,V4",
+                                            "n": 2, "ref_style": "at", "calls_per_cell": 1}
+              and d2["confirm"] == ["prepare.model", "prepare.variants", "prepare.ref_style", "prepare.calls_per_cell", "draft.vlm", "draft.apply",
+                                    "analyze.register", "analyze.tone", "analyze.tone_sigma", "analyze.dE", "analyze.grow", "analyze.feather_sigma",
+                                    "analyze.roi_prior", "analyze.only_picked"] + [f"compose.{k}" for k in pl.section_keys("compose")]
+              + [f"export.{k}" for k in pl.section_keys("export")]
+              and d2["from"]["prepare.model"] == "jobs" and d2["from"]["prepare.ref_style"] == "default"
+              and d2["settings"]["export"]["filename_prefix"] == "old" and pl.drift(d2["settings"], store.load_manifest(old)) == [],
+              f"옛 프로젝트: jobs 최다값(섞인 model·calls_per_cell 확인), V1·V4 → V1,V4, 분석·Export 없음 → 기본값 + 확인 {d2['confirm']}")
+        # r3-01 옛 프로젝트 갈라짐 = derive 와 같은 jobs 최다값과 비교(유도값 그대로면 0). variants·ref_style 은 jobs 에 기록이 없어 비교 안 함
+        mo = store.load_manifest(old)
+        rows_o = {}
+        for key, val in (("model", "gpt-image-2.5-flare"), ("quality", "high"), ("size_rule", "int_k_2560"), ("n", 4), ("calls_per_cell", 2),
+                         ("variants", "V1"), ("ref_style", "plain")):
+            so = copy.deepcopy(d2["settings"])
+            so["prepare"][key] = val
+            rows_o[key] = [(x["field"], x["manifest"], x["kind"]) for x in pl.drift(so, mo)]
+        check(pl.prepare_record(mo) == ("jobs", {"model": "gpt-image-2.5-sunburst", "quality": "max", "n": 2, "calls_per_cell": 1,
+                                                 "size_rule": "user_k"})
+              and rows_o == {"model": [("model", "gpt-image-2.5-sunburst", "cell")], "quality": [("quality", "max", "cell")],
+                             "size_rule": [("size_rule", "user_k", "cell")], "n": [("n", 2, "cost")],
+                             "calls_per_cell": [("calls_per_cell", 1, "calls")], "variants": [], "ref_style": []},
+              f"옛 프로젝트(prepare_settings 없음): jobs 최다값과 비교 — 셀 설정 cell, n cost, calls_per_cell 늘림 calls, variants·ref_style 은 "
+              f"비교 안 함 {rows_o}")
+        nr = _pl_project(OUT / "p4", "norule", source=src, crops=crops[:1], jobs=[dict(_pl_job(ids[0]), size_info={}, model=None)])
+        mn = store.load_manifest(nr)
+        sn = copy.deepcopy(d2["settings"])
+        sn["prepare"].update(model="gpt-image-2.5-flare", size_rule="int_k_2560")
+        check(pl.prepare_record(mn) == ("jobs", {"quality": "max", "n": 2, "calls_per_cell": 1}) and pl.drift(sn, mn) == []
+              and pl.prepare_record({"jobs": []}) == (None, {}) and pl.drift(sn, {"jobs": []}) == [],
+              f"jobs 최다값이 없음(None — size_info 비어 있음·model 없음)인 키는 비교 안 함(derive 는 확인 필요), jobs 도 없으면 기록 없음 "
+              f"{pl.prepare_record(mn)}")
+        for name, variants, want_v in (("v12", ("V1_standard", "V2_isolate_A"), "V1,V2"), ("v4", ("V4_checklist",), "V4"),
+                                       ("v1", ("V1_standard",), "V1,V4"), ("v31", ("V3_free", "V1_standard"), "V1,V3")):
+            rt = _pl_project(OUT / "p4", name, source=src, jobs=[_pl_job(ids[0], v) for v in variants])
+            got = pl.derive(rt, store.load_manifest(rt))["settings"]["prepare"]["variants"]
+            check(got == want_v, f"변형 접두 {variants} → {want_v} (받은 {got})")
+        for name, ns_, want_n in (("tie24", (2, 4), 2), ("tie42", (4, 2), 4)):  # 동률 = 먼저 나온 값(_majority)
+            tj = _pl_project(OUT / "p4", name, source=src, crops=crops[:2], jobs=[_pl_job(ids[k], n=v) for k, v in enumerate(ns_)])
+            dt = pl.derive(tj, store.load_manifest(tj))
+            check(dt["settings"]["prepare"]["n"] == want_n and "prepare.n" in dt["confirm"],
+                  f"jobs n {ns_} 동률 → 먼저 나온 {want_n}(섞인 값 확인) {dt['settings']['prepare']['n']}")
+        bare = _pl_project(OUT / "p4", "bare", crops=crops[:1], specs={ids[0]: dr("vlm_mock", "mock")})
+        d3 = pl.derive(bare, store.load_manifest(bare))
+        check(d3["settings"]["import"] == pl.defaults()["import"] and d3["settings"]["prepare"] == pl.defaults()["prepare"]
+              and all(f"import.{k}" in d3["confirm"] for k in pl.section_keys("import"))
+              and all(f"prepare.{k}" in d3["confirm"] for k in pl.section_keys("prepare"))
+              and d3["settings"]["draft"]["vlm"] == "openai/gpt-6-sol" and "draft.vlm" in d3["confirm"]
+              and d3["settings"]["export"]["filename_prefix"] == "bare" and pl.drift(d3["settings"], store.load_manifest(bare)) == [],
+              f"빈 프로젝트: import·prepare 전부 확인 필요, 전부 mock 초안 → 기본 vlm + 확인, filename_prefix = 폴더 이름 {d3['confirm'][:3]}")
+        # 옛 꼴 기록: 분석 항목이 평평한 dp-an/1({params_hash, params}), openai 초안인데 model 이 빔(선택지를 만들 수 없음 — 세지 않음)
+        fl = _pl_project(OUT / "p4", "flat", crops=crops[:1], analysis={"c1": {"params_hash": "h", "params": P2}},
+                         specs={ids[0]: dr("vlm_openai", "", "high", "original")})
+        df = pl.derive(fl, store.load_manifest(fl))
+        check(df["settings"]["analyze"] == dict(P2, only_picked=False) and df["from"]["analyze.register"] == "manifest"
+              and df["settings"]["draft"]["vlm"] == pl.defaults()["draft"]["vlm"] and df["from"]["draft.vlm"] == "default"
+              and "draft.vlm" in df["confirm"],
+              f"평평한 분석 항목(dp-an/1) → 그 params, model 빈 openai 초안은 세지 않음(기본 vlm + 확인) {df['settings']['draft']['vlm']}")
+        qw = _pl_project(OUT / "p4", "qwen", crops=crops[:1], specs={ids[0]: dr("vlm_local_qwen", "Qwen3-VL-8B-Instruct", rnd=2)})
+        d4 = pl.derive(qw, store.load_manifest(qw))["settings"]["draft"]
+        check(d4["vlm"] == "local_qwen/Qwen3-VL-8B-Instruct" and d4["effort"] == "xhigh" and d4["image_detail"] == "high"
+              and d4["draft_round"] == 2, f"local_qwen 출처 → local_qwen/…, effort None → 기본, detail None → high, round 그대로 {d4}")
+        r = pl.update(qw, 0, "draft", d4)
+        expect_raises(lambda: pl.update(qw, 1, "draft", dict(d4, draft_round=0)), "draft_round 유도값 2 → 0 저장 400", contains="draft_round")
+        Path(qw, "specs", f"{ids[0]}.json").write_text(json.dumps(dr("vlm_local_qwen", "x", rnd=3)), encoding="utf-8")
+        r_saved = pl.update(qw, 1, "draft", dict(d4, write_mode="refresh"))  # 그래프가 round 를 3 으로 올린 뒤 저장값 2 그대로
+        expect_raises(lambda: pl.update(qw, 2, "draft", dict(d4, draft_round=1)), "draft_round 유도값 3·저장값 2 밖(1) → 400",
+                      contains="draft_round")
+        check(r["rev"] == 1 and r_saved["rev"] == 2 and r_saved["settings"]["draft"]["draft_round"] == 2
+              and pl.update(qw, 2, "draft", dict(d4, draft_round=3))["rev"] == 3
+              and pl.update(qw, 3, "draft", dict(d4, draft_round=3))["rev"] == 3,
+              "draft_round = 지금 유도값(3) 또는 저장값(2)만 받음")
+        for i, rnd in enumerate((150, -1, True, 2.0)):  # 스펙 round 가 0–99 정수가 아니면 0 — 초안 출처(vlm 등)는 그대로
+            rp = _pl_project(OUT / "p4", f"round{i}", crops=crops[:1], specs={ids[0]: dr("vlm_openai", "gpt-6-astra", "high", "original", rnd=rnd)})
+            mp = store.load_manifest(rp)
+            got = [pl.derive(rp, mp, deep=dp_)["settings"]["draft"] for dp_ in (False, True)]
+            check(all(g_["draft_round"] == 0 and g_["vlm"] == "openai/gpt-6-astra" and g_["effort"] == "high" for g_ in got),
+                  f"스펙 round {rnd!r} → draft_round 0, vlm·effort 는 출처 그대로(얕음·deep) {[(g_['vlm'], g_['draft_round']) for g_ in got]}")
+        bad_ps = _pl_project(OUT / "p4", "badps", source=src, prepare_settings={"model": "gpt-image-9", "quality": "max"},
+                             jobs=[_pl_job(ids[0])])
+        d5 = pl.derive(bad_ps, store.load_manifest(bad_ps))
+        check(d5["settings"]["prepare"]["model"] == "gpt-image-2.5-sunburst" and d5["from"]["prepare.model"] == "jobs"
+              and any("prepare_settings 를 쓸 수 없음" in x for x in d5["notes"]),
+              "검사를 통과하지 못한 prepare_settings → jobs 로 유도(노트)")
+        # 절별 폴백: 검사를 통과하지 못한 유도값(export prefix 'a/b')은 그 절 = 노드 기본값 + 전부 확인 + note, 분석 params 일부만 = 나머지 기본값
+        fb = _pl_project(OUT / "p4", "fallback", source=src, crops=crops[:1],
+                         analysis={"c1": {"h1": {"params_hash": "h1", "params": {"register": "translation", "tone": "global"}}}},
+                         exports=[{"rev": 2, "psd": "G:/o/x_r2.psd", "time": "t", "options": {"prefix": "a/b", "layer_mode": "pixel"},
+                                   "compose": {"mask_source": "auto", "use_registration": True, "use_tone": True, "zorder": "harvest"}}])
+        d6 = pl.derive(fb, store.load_manifest(fb))
+        check(d6["settings"]["analyze"] == dict(pl.defaults()["analyze"], register="translation", tone="global")
+              and d6["from"]["analyze.register"] == d6["from"]["analyze.tone"] == "manifest" and d6["from"]["analyze.dE"] == "default"
+              and not [c for c in d6["confirm"] if c.startswith("analyze.")],
+              f"분석 params 일부만 → 그 키만 매니페스트, 나머지 노드 기본값(확인 필요 없음) {d6['settings']['analyze']}")
+        check(d6["settings"]["export"] == pl.defaults(fb)["export"] and all(d6["from"][f"export.{k}"] == "default" for k in pl.section_keys("export"))
+              and all(f"export.{k}" in d6["confirm"] for k in pl.section_keys("export"))
+              and any(x.startswith("export: 기록 값을 쓸 수 없음") for x in d6["notes"])
+              and d6["settings"]["compose"]["zorder"] == "harvest" and not [c for c in d6["confirm"] if c.startswith("compose.")],
+              f"검사를 통과하지 못한 export 유도값 → 그 절만 노드 기본값 + 전부 확인 + note(compose 는 그대로) {d6['settings']['export']}")
+        pl.update(fb, 0, "run", d6["settings"]["run"])
+        check(pl.load(fb)["export"] == pl.defaults(fb)["export"], "폴백한 유도값으로 만든 파일이 깨지지 않음(load 정상)")
+        # 선택지 밖 옛 초안 모델: derive(얕음)는 그대로 두고, view·update(deep)는 vlm·effort·image_detail = 노드 기본값 + 확인 — 다시 저장할
+        # 수 없는 값을 파일에 안 씀. draft_round(스펙 출처 — 읽기 전용)·credit_cap(권장 1200 — notes 와 같음)은 그대로
+        want_d = dict(pl.defaults()["draft"], credit_cap=1200, draft_round=2)
+        for model, eff in (("gpt-5.4", "xhigh"), ("gpt-5.5-pro", "low")):
+            ro = _pl_project(OUT / "p4", f"oldvlm_{model.replace('.', '_')}", source=src, crops=crops[:1],
+                             specs={ids[0]: dr("vlm_openai", model, eff, "high", rnd=2)})
+            mo = store.load_manifest(ro)
+            sh, vo = pl.derive(ro, mo), pl.view(ro, mo)
+            dd = vo["derived"]
+            check(sh["settings"]["draft"]["vlm"] == f"openai/{model}" and dd["settings"]["draft"] == want_d
+                  and vo["settings"] == dd["settings"]
+                  and [c for c in dd["confirm"] if c.startswith("draft.")] == ["draft.vlm", "draft.effort", "draft.image_detail", "draft.apply"]
+                  and [dd["from"][f"draft.{k}"] for k in ("vlm", "effort", "image_detail", "draft_round")] == ["default"] * 3 + ["spec_draft"]
+                  and any(x.startswith("draft: 기록 값을 쓸 수 없음") for x in dd["notes"])
+                  and any("credit_cap" in x and "권장 1200" in x for x in dd["notes"]),
+                  f"옛 초안 모델 {model}/{eff}: 얕은 유도는 그대로, GET /pipeline(deep) = vlm·effort·image_detail 노드 기본값 + 확인, "
+                  f"draft_round 2(스펙)·credit_cap 1200(notes 와 같음) {dd['settings']['draft']}")
+            cd, cs = pl.current(ro, mo, deep=True), pl.current(ro, mo)
+            check(cd["rev"] == 0 and cd["settings"] == vo["settings"] and cd["confirm"] == vo["confirm"]
+                  and cs["settings"]["draft"]["vlm"] == f"openai/{model}",
+                  f"{model}: 파일 없음 current(deep=True)(계획·prompt 라우트) = GET /pipeline settings·confirm, 얕은 current(state 경로)는 "
+                  f"유도값 그대로 {cd['settings']['draft']['vlm']} {cs['settings']['draft']['vlm']}")
+            pl.update(ro, 0, "prepare", dd["settings"]["prepare"])
+            f1 = pl.load(ro)
+            ro2 = pl.update(ro, 1, "draft", dd["settings"]["draft"])
+            check(f1["draft"] == want_d and "draft.vlm" in f1["confirm"]
+                  and ro2["rev"] == 2 and not [c for c in ro2["confirm"] if c.startswith("draft.")],
+                  f"{model}: 첫 POST(다른 절)가 만든 파일의 draft = 기본 vlm·credit_cap 1200·draft_round 2 + draft 확인 → "
+                  f"[매니페스트 값으로 다시](draft 절 POST)가 400 없이 저장 {f1['draft']}")
+
+    def p4_real():
+        section("S3a-P4 실데이터 s0_261014 사본(매니페스트·스펙) — 유도 기대값")
+        if not (_S0_261014 / store.MANIFEST_NAME).exists():
+            skip(f"실데이터 사본 없음({_S0_261014}) — P4 261014 기대값 생략")
+            return
+        root = store.project_root(str(OUT / "p4r"), "s0_261014")
+        os.makedirs(root)
+        shutil.copy2(_S0_261014 / store.MANIFEST_NAME, root)
+        shutil.copytree(_S0_261014 / "specs", Path(root, "specs"))
+        m = store.load_manifest(root)
+        d = pl.derive(root, m)
+        s = d["settings"]
+        check(s["prepare"] == {"model": "gpt-image-2.5-sunburst", "quality": "max", "size_rule": "user_k", "variants": "V1,V4", "n": 2,
+                               "ref_style": "at", "calls_per_cell": 1}
+              and d["confirm"] == ["prepare.variants", "prepare.ref_style", "draft.apply"],
+              f"261014: sunburst·max·user_k·V1,V4(확인)·n 2·at(확인)·1 {s['prepare']} {d['confirm']}")
+        check(s["export"]["filename_prefix"] == "261014_Test" and s["import"]["psd_path"] == m["source"]["psd"]
+              and s["import"]["refs_dir"] == m["source"]["refs_dir"] and s["draft"]["vlm"] == "openai/gpt-6-sol"
+              and s["draft"]["effort"] == "xhigh" and s["draft"]["image_detail"] == "high" and s["draft"]["draft_round"] == 0
+              and s["analyze"] == dict(pl.defaults()["analyze"]) and s["compose"] == pl.defaults()["compose"]
+              and pl.drift(s, m) == [] and [(e["rev"], e["layers"]) for e in pl.recent_exports(m)] == [(76, 36), (74, 36), (69, 36), (29, 30)],
+              f"261014: filename_prefix 261014_Test(prefix → filename_prefix), import = source, draft = sol/xhigh/high/0, 갈라짐 0")
+        r = pl.update(root, 0, "prepare", s["prepare"])
+        p = pl.build_prompt("apply", r["settings"], root)
+        g = pl.prompt_gate(root, "apply", m)
+        exists = os.path.isfile(s["import"]["psd_path"]) and os.path.isdir(s["import"]["refs_dir"])
+        check(r["confirm"] == ["draft.apply"] and list(p) == ["dp_project", "dp_import", "dp_prepare", "dp_analyze", "dp_review"]
+              and p["dp_prepare"]["inputs"]["n"] == 2 and p["dp_project"]["inputs"]["project"] == "s0_261014"
+              and (g is None if exists else g["reason"] == "missing_path"),
+              f"261014: prepare 확인 저장 → apply 템플릿(Run·Draft 없음), 경로 {'있음 → 통과' if exists else '없음 → missing_path'} {g}")
+        # r3-01: 이 실데이터는 prepare_settings 가 없는 옛 프로젝트 — Studio Prepare 를 바꿔 저장하면 jobs 와의 갈라짐(반영 확인 창 맨 앞 줄·
+        # 계획 notes·머리줄 배지의 재료)이 POST 응답·GET /pipeline 에 나온다. 되돌리면 0
+        rev, rows = r["rev"], {}
+        for key, val in (("model", "gpt-image-2.5-flare"), ("quality", "high"), ("size_rule", "int_k_2560"), ("n", 4), ("calls_per_cell", 2)):
+            u = pl.update(root, rev, "prepare", dict(s["prepare"], **{key: val}))
+            rev = u["rev"]
+            rows[key] = ([(x["field"], x["manifest"], x["kind"]) for x in u["drift"]], pl.view(root, m)["drift"] == u["drift"])
+        back = pl.update(root, rev, "prepare", s["prepare"])
+        check(rows == {"model": ([("model", "gpt-image-2.5-sunburst", "cell")], True), "quality": ([("quality", "max", "cell")], True),
+                       "size_rule": ([("size_rule", "user_k", "cell")], True), "n": ([("n", 2, "cost")], True),
+                       "calls_per_cell": ([("calls_per_cell", 1, "calls")], True)}
+              and back["drift"] == [] and pl.prompt_gate(root, "apply", m) == g,
+              f"261014(prepare_settings 없음): Studio model·quality·size_rule = cell, n = cost, calls_per_cell 늘림 = calls(jobs 최다값과 비교), "
+              f"되돌리면 0 {rows}")
+
+    def api_fixture():
+        section("S3a 응답 모양 정본 tools/fixtures/pipeline_api.json(라우트 7·대조 규칙·모듈 출력과 같은 모양)")
+        api = _pl_api()
+        routes = api["routes"]
+        want_routes = ["GET /pipeline", "POST /pipeline/settings", "GET /pipeline/prompt", "GET /pipeline/plan", "GET /pipeline/progress",
+                       "GET /draft", "POST /draft/adopt"]
+        fields = {"request", "ok", "alt", "errors", "nullable", "optional", "maps", "any", "opaque"}
+        check(api["schema"] == "bmk.design_patch.pipeline_api/1" and list(routes) == want_routes
+              and all(set(e) == fields for e in routes.values()) and {"flags", "crop", "unchanged", "nullable"} == set(api["state"]),
+              f"라우트 7개 · 항목 키 {sorted(fields)} · state(flags·crop·unchanged)")
+        errs_ok = all(isinstance(b.get("error"), str) for e in routes.values() for st, bs in e["errors"].items() if st != "202" for b in bs)
+        check(errs_ok and routes["GET /pipeline/plan"]["errors"]["202"] == [{"busy": True}]
+              and {b["reason"] for b in routes["GET /pipeline/prompt"]["errors"]["409"]} == {"confirm_settings", "no_psd", "missing_path",
+                                                                                             "pipeline_broken"},
+              "오류 본문 = error 문자열(+ reason 등), 202 = {busy: true}, prompt 409 사유 4종")
+        g = routes["GET /pipeline"]
+        ok = g["ok"]
+        check(all(list(ok["settings"][x]) == list(pl.section_keys(x)) and list(ok["derived"]["settings"][x]) == list(pl.section_keys(x))
+                  for x in pl.SECTIONS) and list(ok["settings"]) == list(pl.SECTIONS)
+              and set(ok["derived"]["from"]) == {f"{x}.{k}" for x in pl.SECTIONS for k in pl.section_keys(x)}
+              and all(pl.validate_section(x, ok["settings"][x]) == ok["settings"][x] for x in pl.SECTIONS)
+              and all(pl.validate_section(x, routes["POST /pipeline/settings"]["request"]["body"]["values"]) for x in ("prepare",)),
+              "예시 settings·derived.settings = 절 8개·section_keys 순서, 값은 검사 통과, from = 모든 '절.키'")
+        pr = routes["GET /pipeline/prompt"]
+        rootG = r"G:\AI_output\_Input\bmk_design_patch\261014_Test"
+        check(pr["ok"]["prompt"] == pl.build_prompt("apply", ok["settings"], rootG)
+              and pr["alt"]["export"]["prompt"] == pl.build_prompt("export", ok["settings"], rootG),
+              "예시 prompt(apply·export) = build_prompt 출력 그대로(가짜 서버가 돌려주는 템플릿이 T1–T6 을 지킴)")
+        # 대조기 자체
+        sp = {"nullable": ["n"], "optional": ["o"], "maps": ["mp"], "any": ["an"], "opaque": ["op"]}
+        ex = {"a": 1, "s": "x", "l": [{"c": True}], "n": None, "mp": {"001_x": {"v": [1, 2]}}, "an": 1, "op": {"k": 1}}
+        good = {"a": 2.5, "s": "", "l": [], "n": "y", "mp": {"002_y": {"v": []}, "_stale": {"v": [0.5]}}, "an": None, "op": {}, "o": 3}
+        check(_pl_shape(ex, good, sp) == [], f"대조기: 숫자 int/float 같음·빈 배열·nullable·maps·any·opaque·optional {_pl_shape(ex, good, sp)}")
+        sp2 = {"nullable": ["l[].r"]}
+        ex2 = {"l": [{"t": "A", "r": None}, {"t": "B", "r": "이유"}]}
+        check(_pl_shape(ex2, {"l": [{"t": "C", "r": "x"}, {"t": "D", "r": None}]}, sp2) == []
+              and _pl_shape(ex2, {"l": [{"t": "C", "r": 1}]}, sp2) == ["l[].r: num ≠ 예시 str"],
+              "대조기: 배열의 객체 원소는 키마다 처음으로 null 이 아닌 예시 값과 대조")
+        for label, act, frag in (("bool ≠ 숫자", dict(good, a=True), "a:"), ("빠진 키", {k: v for k, v in good.items() if k != "s"}, "s: 없음"),
+                                 ("모르는 키", dict(good, z=1), "z: 예시에 없는 키"), ("배열 원소 타입", dict(good, l=[{"c": "x"}]), "l[].c"),
+                                 ("maps 값 모양", dict(good, mp={"k": {"v": "x"}}), "mp.*.v"), ("null 금지", dict(good, s=None), "s:"),
+                                 ("opaque 가 객체 아님", dict(good, op=[]), "op:")):
+            errs = _pl_shape(ex, act, sp)
+            check(errs and frag in errs[0], f"대조기 거절: {label} {errs}")
+        # 모듈 출력(GET /pipeline·POST 응답·409 본문)이 정본과 같은 모양
+        psd = OUT / "api" / "art.psd"
+        psd.parent.mkdir(parents=True)
+        psd.write_bytes(b"x")
+        root = _pl_project(OUT / "api", "shape", source={"psd": str(psd).replace("\\", "/"), "crop_group": "auto", "clean_plate_layer": "auto",
+                                                         "base_layer": "auto", "crop_pixels_group": "auto", "refs_dir": "", "glossary": ""},
+                           crops=[{"id": A1, "name": "001_머리"}], jobs=[_pl_job(A1)],
+                           exports=[{"rev": 2, "psd": "C:/o/x_r2.psd", "time": "2026-10-17 10:00:00", "problems": 0, "bytes": 10,
+                                     "options": {"prefix": "x"}}],
+                           prepare_settings=dict(pl.defaults()["prepare"], n=4))
+        m = store.load_manifest(root)
+        v0 = pl.view(root, m)
+        check(_pl_shape(g["alt"]["missing"], v0, g) == [], f"view(파일 없음) = alt.missing 모양 {_pl_shape(g['alt']['missing'], v0, g)}")
+        pl.update(root, 0, "import", v0["settings"]["import"])
+        po = pl.update(root, 1, "prepare", dict(v0["settings"]["prepare"], n=2))
+        v1 = pl.view(root, m)
+        sp_post = routes["POST /pipeline/settings"]
+        check(_pl_shape(ok, v1, g) == [] and _pl_shape(sp_post["ok"], po, sp_post) == [] and po["drift"],
+              f"view(저장됨) = ok 모양, update 응답 = POST ok 모양 {_pl_shape(ok, v1, g)} {_pl_shape(sp_post['ok'], po, sp_post)}")
+        want_drift = [{"section": "prepare", "field": "n", "manifest": 4, "settings": 2, "kind": "cost"}]
+        check(v1["drift"] == po["drift"] == want_drift and pl.drift(v1["derived"]["settings"], m) == [],
+              f"GET /pipeline drift = 저장된 설정과 매니페스트 비교(유도값과 비교하면 늘 빔) {v1['drift']}")
+        gates = {b["reason"]: b for b in pr["errors"]["409"]}
+        acts = {}
+        pl.update(root, 2, "import", dict(v0["settings"]["import"], psd_path=""))
+        acts["no_psd"] = pl.prompt_gate(root, "apply", m)
+        pl.update(root, 3, "import", dict(v0["settings"]["import"], refs_dir="C:/없는/refs"))
+        acts["missing_path"] = pl.prompt_gate(root, "apply", m)
+        Path(root, pl.PIPELINE_NAME).write_text("{", encoding="utf-8")
+        acts["pipeline_broken"] = pl.prompt_gate(root, "apply", m)
+        vb = pl.view(root, m)
+        Path(root, pl.PIPELINE_NAME).unlink()
+        acts["confirm_settings"] = pl.prompt_gate(root, "apply", m)
+        bad = {k: _pl_shape(gates[k], a, {}) for k, a in acts.items()}
+        check(all(a is not None and a["reason"] == k for k, a in acts.items()) and not any(bad.values())
+              and _pl_shape(g["alt"]["broken"], vb, g) == [],
+              f"prompt_gate 409 본문 4종 = 정본 예시 모양, view(깨짐) = alt.broken 모양 {bad}")
+
+        # 대조 예시가 null·빈 배열인 경로는 다른 예시(ok·alt)의 값으로 타입을 본다(규칙 7) — 그 값이 정본 어딘가에 있어야 한다
+        st, hi = api["state"], api["history"]
+        groups = [(n, [e["ok"], *e["alt"].values()], e) for n, e in routes.items()]
+        groups += [("state", [{k: st[k]} for k in ("flags", "crop", "unchanged")], st), ("history", [{"bmk_dp_export": hi["bmk_dp_export"]}], hi)]
+        always_null = {("GET /pipeline/prompt", "targets")}  # S3a 에서 늘 null — S3b 가 [출력 노드 키] 예시를 더함
+        walked = {n: [pv for b in bodies for pv in _pl_walk(b, sp_) if not any(pv[0] == o or pv[0].startswith(o + ".")
+                                                                              for o in sp_.get("opaque", []))]
+                  for n, bodies, sp_ in groups}
+        bare = [f"{n}: {p}" for n, bodies, sp_ in groups for p in sp_["nullable"] + sp_.get("optional", [])
+                if (n, p) not in always_null and not any(q == p and x is not None for q, x in walked[n])]
+        empty = sorted({f"{n}: {q}" for n, pv in walked.items() for q, x in pv if isinstance(x, list)}
+                       - {f"{n}: {q}" for n, pv in walked.items() for q, x in pv if isinstance(x, list) and x})
+        check(not bare and not empty,
+              f"정본: nullable·optional 경로마다 null 아닌 예시, 배열 경로마다 비지 않은 예시가 어딘가에 있음 {bare} {empty}")
+        # 규칙 7 회귀: ok(그 경로가 null·빈 배열)와 대조해도 실제 값의 타입을 본다 — maps 의 첫 값이 null 인 경로도 다른 값으로
+        dg, pp, ad = routes["GET /draft"], routes["GET /pipeline/plan"], routes["POST /draft/adopt"]
+        e1 = _pl_shape(dg["ok"], dict(dg["ok"], layer_targets={"value": 123, "owner": 5}, spec_error=["x"],
+                                      targets=[dict(dg["ok"]["targets"][0], name_en=7)], adopt=dict(dg["ok"]["adopt"], kind=7)), dg)
+        e2 = _pl_shape(pp["ok"], dict(pp["ok"], draft=dict(pp["ok"]["draft"], accepted=[{"crop_id": 1}])), pp)
+        fx = dict(ad["ok"]["effects"], draft_wait={"before": [], "after": [1, {"x": 2}]})
+        e3 = _pl_shape(ad["ok"], dict(ad["ok"], effects=fx), ad)
+        e4 = _pl_shape(g["ok"], dict(g["ok"], error=5), g)
+        e5 = _pl_shape({"m": {"a": {"x": None}, "b": {"x": "s"}}}, {"m": {"c": {"x": 1}}}, {"maps": ["m"], "nullable": ["m.*.x"]})
+        e6 = _pl_shape({"m": {}}, {"m": {"c": 1}}, {"maps": ["m"], "ok": {"m": {"a": "s"}}, "alt": {}})
+        ns0 = pp["alt"]["no_selection"]  # 선택 필드가 빈 배열인 예시 — 원소 타입은 ok 의 것으로
+        e7 = _pl_shape(ns0, dict(ns0, draft=dict(ns0["draft"], accepted=[1], cached=["001_38a818"])), pp)
+        check(sorted(e1) == ["adopt.kind: num ≠ 예시 str", "layer_targets.owner: num ≠ 예시 str", "layer_targets.value: num ≠ 예시 str",
+                             "spec_error: list ≠ 예시 str", "targets[].name_en: num ≠ 예시 str"]
+              and e2 == ["draft.accepted[]: obj ≠ 예시 str"]
+              and e3 == ["effects.draft_wait.after[]: num ≠ 예시 str", "effects.draft_wait.after[]: obj ≠ 예시 str"]
+              and e4 == ["error: num ≠ 예시 str"] and e5 == ["m.*.x: num ≠ 예시 str"] and e6 == ["m.*: num ≠ 예시 str"]
+              and e7 == ["draft.accepted[]: num ≠ 예시 str"],
+              f"대조기 규칙 7: 대조 예시의 null·빈 배열·빈 maps 경로도 다른 예시의 타입으로, maps 의 첫 값이 null 이어도 "
+              f"{e1} {e2} {e3} {e4} {e5} {e6} {e7}")
+        # 규칙 1·7: 대조 예시(ok)에 없는 optional 키가 실제에 있으면 그 키를 가진 다른 예시(alt)의 값으로 타입을 본다
+        e8 = [_pl_shape(pp["ok"], dict(pp["ok"], run=dict(pp["ok"]["run"], error=5)), pp),
+              _pl_shape(pp["ok"], dict(pp["ok"], draft=dict(pp["ok"]["draft"], running="yes")), pp),
+              _pl_shape(pp["ok"], dict(pp["ok"], draft=dict(pp["ok"]["draft"], error=[1])), pp)]
+        okx = dict(pp["ok"], run=dict(pp["ok"]["run"], error="x"), draft=dict(pp["ok"]["draft"], running=True, error="y"))
+        check(e8 == [["run.error: num ≠ 예시 str"], ["draft.running: str ≠ 예시 bool"], ["draft.error: list ≠ 예시 str"]]
+              and _pl_shape(pp["ok"], okx, pp) == [],
+              f"대조기 규칙 1: 예시에 없는 optional 키(run.error·draft.running·draft.error)도 alt 의 타입과 대조 {e8} {_pl_shape(pp['ok'], okx, pp)}")
+        # §6 라우트 표의 확정 키(+ §2.4 by_crop·§2.5 effects) 글자 그대로 — 정본을 고칠 때 §6 키가 빠지거나 표 밖 키가 붙으면 막는다.
+        # 표가 키를 정한 객체(그 경로의 부모)만 본다: ok = 표 키 ∪ 허용 목록 정확히, alt = 그 부분집합(+ optional), optional 은 alt 어딘가에
+        six = {"GET /pipeline": "rev saved error settings confirm derived derived.settings derived.from derived.confirm derived.notes drift "
+                                "drift[].section drift[].field drift[].manifest drift[].settings drift[].kind warnings exports exports[].rev "
+                                "exports[].psd exports[].time exports[].problems exports[].bytes",
+               "POST /pipeline/settings": "ok rev settings confirm drift",
+               "GET /pipeline/prompt": "stage prompt targets sig",
+               "GET /pipeline/plan": "sig computed_at notes apply_pending run run.hash run.backend run.need run.pre run.free run.filtered run.est_usd "
+                                     "run.est_usd_pre run.credits run.reasons run.reasons[].reason run.reasons[].n run.by_crop run.by_crop.*.need "
+                                     "run.by_crop.*.pre run.by_crop.*.free run.by_crop.*.done run.by_crop.*.failed run.by_crop.*.orphaned "
+                                     "run.by_crop.*.inflight run.by_crop.*.est_usd run.by_crop.*.selected run.running draft draft.hash "
+                                     "draft.backend draft.family draft.units draft.units[].crop_id draft.units[].state draft.units[].reasons "
+                                     "draft.units[].est draft.refresh_available draft.refresh_available[].crop_id draft.refresh_available[].est "
+                                     "draft.skipped draft.skipped[].crop_id draft.skipped[].reason draft.cached draft.accepted draft.filtered "
+                                     "draft.est_credits draft.est_seconds draft.by_crop draft.by_crop.*.wait draft.by_crop.*.refresh "
+                                     "draft.by_crop.*.adopt draft.warnings draft.warnings.unwritten draft.warnings.mock_specs draft.import_pending",
+               "GET /pipeline/progress": "running drain run run.done run.inflight run.failed run.orphaned run.need run.pre draft draft.inflight "
+                                         "draft.created draft.done draft.failed draft.since",
+               "GET /draft": "id name crop_sig seen spec_error unwritten targets targets[].tid targets[].label targets[].name_en targets[].origin "
+                             "suggestions suggestions[].tid suggestions[].text suggestions[].bbox suggestions[].reason draft draft.key "
+                             "draft.backend draft.mock draft.drafted adopt adopt.value adopt.kind adopt.reason layer_targets layer_targets.value "
+                             "layer_targets.owner layout_text",
+               "POST /draft/adopt": "ok seen layer_targets layer_targets.value layer_targets.owner targets_after targets_after[].tid "
+                                    "targets_after[].label targets_after[].name_en targets_after[].origin effects effects.targets_after "
+                                    "effects.targets_after[].tid effects.targets_after[].label effects.targets_after[].name_en "
+                                    "effects.targets_after[].origin effects.prompt_changed effects.draft_wait effects.draft_wait.before "
+                                    "effects.draft_wait.after effects.layout_wins warnings"}
+        six_opt = {"GET /pipeline/plan": {"run.error", "draft.running", "draft.error"}}
+        # §6 밖에서 더한 키: 설정 패널 선택지(settings_widgets), Export 레이어 수(§3.6 new 가 보이는 값 — §6 exports 모양엔 빠짐)
+        six_extra = {"GET /pipeline": {"widgets", "exports[].layers"}}
+
+        def up(q):
+            return q.rsplit(".", 1)[0] if "." in q else ""
+
+        def keyed(body, sp_, parents=None):  # 키로 붙은 경로(배열 원소 '[]'·maps 값 '*' 자체는 빼고), parents 가 있으면 그 객체의 키만
+            return {q for q, _v in _pl_walk(body, sp_) if q and not q.endswith(("[]", "*")) and (parents is None or up(q) in parents)}
+
+        bad6 = []
+        for n, txt in six.items():
+            e = routes[n]
+            req, opt6, extra6 = set(txt.split()), six_opt.get(n, set()), six_extra.get(n, set())
+            parents = {up(q) for q in req | opt6}
+            got = keyed(e["ok"], e, parents)
+            if got != req | extra6:
+                bad6.append(f"{n} ok: 빠짐 {sorted(req - got)} · 표 밖 {sorted(got - req - extra6)}")
+            for an, ab in e["alt"].items():
+                if keyed(ab, e, parents) - req - opt6 - extra6:
+                    bad6.append(f"{n} alt.{an}: 표 밖 {sorted(keyed(ab, e, parents) - req - opt6 - extra6)}")
+            if not opt6 <= set(e["optional"]) & set().union(*(keyed(ab, e) for ab in e["alt"].values())):
+                bad6.append(f"{n}: optional {sorted(opt6)} 이 정본 optional·alt 예시에 없음")
+        check(not bad6, f"정본 = §6 라우트 표의 확정 키(+ §2.4 by_crop·§2.5 effects, 허용 widgets): {bad6}")
+        # state: null 이 정상인 값(칩 adopt·unchanged 의 rev 들·plan_v), 감싸서 대조(_doc 구조.state)
+        un = dict(st["unchanged"], pipeline_rev=None, plan_v=None, layout_rev=None, refs_rev=None, refs_files_v=None)
+        bad_st = (_pl_shape({"unchanged": st["unchanged"]}, {"unchanged": un}, st)
+                  + _pl_shape({"unchanged": st["unchanged"]}, {"unchanged": dict(st["unchanged"], layout_rev=5, refs_rev=9)}, st)
+                  + _pl_shape({"flags": st["flags"]}, {"flags": {"drafting": True, "pipeline_rev": None, "plan_v": None}}, st)
+                  + _pl_shape({"crop": st["crop"]}, {"crop": dict(st["crop"], draft_chip=dict(st["crop"]["draft_chip"], adopt=None))}, st)
+                  + _pl_shape({"crop": st["crop"]}, {"crop": {"draft_chip": None, "plan_stale": False}}, st))
+        check(not bad_st and isinstance(st["unchanged"]["layout_rev"], int)
+              and _pl_shape({"flags": st["flags"]}, {"flags": {"drafting": False, "pipeline_rev": "3", "plan_v": None}}, st) == ["flags.pipeline_rev: str ≠ 예시 num"],
+              f"state: unchanged 의 pipeline_rev·plan_v·layout_rev·refs_rev·refs_files_v null, draft_chip(.adopt) null 통과, 타입은 대조 {bad_st}")
+        # plan: 채택할 제안 없는 크롭(adopt null), only 빈 값 = alt.no_selection(칩용 — 선택 필드 빈 값, 해시 "")
+        pp = routes["GET /pipeline/plan"]
+        ns = pp["alt"]["no_selection"]
+        okc = copy.deepcopy(pp["ok"])
+        for cv in okc["draft"]["by_crop"].values():
+            cv["adopt"] = None
+        check(_pl_shape(pp["ok"], okc, pp) == [] and _pl_shape(pp["ok"], ns, pp) == []
+              and any(cv["adopt"] is None for cv in pp["ok"]["draft"]["by_crop"].values())
+              and ns["sig"] == st["flags"]["plan_v"] and ns["run"]["hash"] == ns["draft"]["hash"] == "" and ns["run"]["need"] == 0
+              and ns["run"]["by_crop"] == {k: dict(cv, selected=False) for k, cv in pp["ok"]["run"]["by_crop"].items()}
+              and ns["draft"]["by_crop"] == pp["ok"]["draft"]["by_crop"] and ns["draft"]["units"] == []
+              and ns["run"]["est_usd_pre"] == pp["ok"]["run"]["est_usd_pre"],
+              "plan: draft.by_crop.*.adopt null 허용, alt.no_selection = ok 모양(새 nullable 없음)·sig 'r:…|d:…'·해시 \"\"·selected 전부 false·"
+              "by_crop·est_usd_pre 는 only 없는 계획")
+        # GET /draft: owner·kind 마다 장면(J-P2 가짜 서버), 모두 ok 모양
+        dg = routes["GET /draft"]
+        scenes = [dg["ok"], *dg["alt"].values()]
+        check(all(_pl_shape(dg["ok"], b, dg) == [] for b in scenes)
+              and {b["layer_targets"]["owner"] for b in scenes} == {None, "node", "human", "deleted"}
+              and {b["adopt"]["kind"] for b in scenes} == {"add", "keep_human", "keep_deleted", None}
+              and isinstance(dg["alt"]["spec_error"]["spec_error"], str) and dg["alt"]["spec_error"]["draft"] is None
+              and _pl_shape(dg["alt"]["human"], dict(dg["alt"]["human"], layer_targets={"value": 1, "owner": "human"}), dg)
+              == ["layer_targets.value: num ≠ 예시 str"],
+              "GET /draft: alt adopted·human·deleted·spec_error = ok 모양, owner·kind 전 종류, alt 로 null 가능 경로의 타입 대조")
+        # history: Export ui bmk_dp_export(U2b 생산·U4 소비) — 세 경우, empty 는 psd·rev null
+        hx = {"bmk_dp_export": hi["bmk_dp_export"]}
+        check(set(hi) == {"bmk_dp_export", "nullable"} and [e["outcome"] for e in hi["bmk_dp_export"]] == ["new", "unchanged", "empty"]
+              and all(_pl_shape(hx, {"bmk_dp_export": [e]}, hi) == [] for e in hi["bmk_dp_export"])
+              and hi["bmk_dp_export"][2]["psd"] is None is hi["bmk_dp_export"][2]["rev"]
+              and _pl_shape(hx, {"bmk_dp_export": [{"outcome": "new", "psd": 1, "rev": 2}]}, hi) == ["bmk_dp_export[].psd: num ≠ 예시 str"],
+              "history.bmk_dp_export: new·unchanged·empty 원소 모양(empty = psd·rev null)")
+
+    _guarded("S3a-B0", b0_pure)
+    _guarded("S3a-P1", p1_template)
+    _guarded("S3a-P3", p3_settings)
+    _guarded("S3a-P3 경합", p3_race)
+    _guarded("S3a-P4", p4_derive)
+    _guarded("S3a-P4 실데이터", p4_real)
+    _guarded("S3a-API", api_fixture)
+
+
+# ── U2a(STUDIO_S3_SPEC §8 — vlm·store 이동) ─────────────────────────────
+def pipeline_vlm_unit():
+    """S3a V-S1(U2a): vlm.draft_plan·merge_crop·project_style_for·unwritten_specs·adopt_write·ledger_progress, store.project_glossary·
+    merge_adopted·new_targets·adopt_stale·prepare_inputs_fp 이동 순수성(새 프로세스 torch·comfy 없음)과 adopt_write 표(--quick 포함).
+    채택 읽기·쓰기 본문(vlm.draft_view = GET /draft, adopt_write = POST /draft/adopt)은 _pl_shape 로 pipeline_api.json 과 대조한다."""
+    section("S3a pipeline_vlm_unit — vlm·store 이동·Studio 채택 쓰기(U2a)")
+    import bmk_design_patch_refs as drefs
+    import bmk_design_patch_runner as runner
+    import bmk_design_patch_vlm as dvlm
+    OUT = OUT_ROOT / "pipeline_vlm_unit"
+    if OUT.exists():
+        shutil.rmtree(OUT)
+    OUT.mkdir(parents=True)
+    VLM_OUT.mkdir(parents=True, exist_ok=True)
+    env_mock = os.environ.pop(runner.MOCK_ENV, None)  # 사용자 환경의 mock 스위치가 섞이지 않게
+    api = _pl_api()["routes"]
+    GET, POST = api["GET /draft"], api["POST /draft/adopt"]
+    LEG, FIT = "008_치마금속장식", "side connection fitting"
+    VAL = "A: mock part A; B: side connection fitting"  # 레거시 A(초안 영문 이름) + 제안 B 의 채택 값
+
+    def node_write(root, m, ctx, req, done, prov, *, apply_mode="targets", fam="openai", adopt=False):
+        """노드 Spec Draft 의 크롭 쓰기(_draft_write — write_spec(merge_crop), 지금 키의 원장 done)와 같은 호출."""
+        crop = m["crops"][0]
+        style = dvlm.project_style_for(root, apply_mode)
+        return dvlm.write_spec(root, crop["id"], lambda cur: dvlm.merge_crop(
+            cur, "fill", ctx=ctx, req=req, crop=crop, done=done, prov=prov, project_style=style, apply_mode=apply_mode,
+            adopt=adopt, backend=fam, refs_dir=m["source"].get("refs_dir") or "", glossary=store.project_glossary(root, m),
+            out={}))[0]
+
+    def drafted(case, layer=LEG, *, suggest=(FIT,), apply_mode="targets", fam="openai", backend_name="vlm_openai", style=None, extra=(),
+                wh=(256, 256), refs=()):
+        """합성 프로젝트(크롭 하나 + extra 크롭 — 초안은 첫 크롭만) + 노드 경로로 쓴 초안 스펙(mock 출력 → extract → normalize →
+        merge_crop). style = 초안 전에 둔 _project.json style_note(화풍 전파), wh = 첫 크롭 크기, refs = _vlm_project refs(레퍼런스가
+        있으면 ref_correct — 기본 설명). 반환 (root, cid, 노드 재료)."""
+        root, refs_dir, m = _vlm_project(f"s3a_{case}", [(layer, wh, {}), *extra], refs=refs)
+        if style is not None:
+            store.write_json_atomic(os.path.join(root, "specs", f"{dvlm.PROJECT_SPEC_ID}.json"), {"style_note": style})
+        crop = m["crops"][0]
+        ctx = dvlm.build_crop_ctx(root, m, crop, refs_dir=refs_dir, glossary=store.project_glossary(root, m), backend=fam, memo={})
+        oa = fam == "openai"
+        req = dvlm.build_request(ctx, backend=fam, model="gpt-6-sol" if oa else "mock", effort="xhigh" if oa else None,
+                                 image_detail="high" if oa else None, draft_round=0, model_dir="")
+        parsed, repairs = dvlm.extract_json(dvlm._mock_text(req, list(suggest)))
+        nd = {"ctx": ctx, "req": req, "done": {"parsed": parsed, "repairs": repairs}, "prov": _vprov(req, backend=backend_name)}
+        node_write(root, m, **nd, apply_mode=apply_mode, fam=fam)
+        return root, crop["id"], nd
+
+    def view(root, cid, fam="openai"):
+        return dvlm.draft_view(root, store.load_manifest(root), cid, family=fam)
+
+    def write(root, cid, op="adopt", text=None, *, fam="openai", apply_mode="targets", preview=False, m=None, **over):
+        """GET /draft(draft_view)의 seen·crop_sig·adopt.value 를 그대로 실은 adopt_write(over 로 덮어씀)."""
+        v = view(root, cid, fam)
+        kw = {"seen": v["seen"], "crop_sig": v["crop_sig"], "value": v["adopt"]["value"] if op == "adopt" else None, **over}
+        return dvlm.adopt_write(root, m or store.load_manifest(root), cid, op, text, family=fam, apply_mode=apply_mode,
+                                preview=preview, **kw)
+
+    def spec_path(root, cid):
+        return Path(root, "specs", f"{cid}.json")
+
+    def spec(root, cid):
+        return json.loads(spec_path(root, cid).read_text(encoding="utf-8"))
+
+    def put(root, cid, d):
+        store.write_json_atomic(str(spec_path(root, cid)), d)
+
+    def snap(root, cid):  # 스펙 바이트·mtime(없으면 None) — 쓰지 않았는지
+        p = spec_path(root, cid)
+        return (p.read_bytes(), p.stat().st_mtime_ns) if p.exists() else None
+
+    def error(fn):
+        try:
+            fn()
+        except Exception as e:  # noqa: BLE001 — 시험: 예외 형식·extra 를 본다
+            return e
+        return None
+
+    def refused(root, cid, fn, msg, **extra):
+        """AdoptRefused(extra 를 주면 그 키·값과 정확히 같음) + 스펙 파일 그대로(바이트·mtime)."""
+        before = snap(root, cid)
+        e = error(fn)
+        check(isinstance(e, dvlm.AdoptRefused) and (not extra or e.extra == extra) and snap(root, cid) == before,
+              f"{msg}: {type(e).__name__} {e} {getattr(e, 'extra', None)}")
+        return e if isinstance(e, dvlm.AdoptRefused) else None
+
+    def t_pure():
+        section("S3a-V-S1a 이동 순수성 — 새 프로세스에서 vlm·store 도우미를 돌린 뒤 torch·comfy·folder_paths·aiohttp·노드·보드 없음, store AST")
+        root, cid, _nd = drafted("pure")
+        banned = ("torch", "transformers", "comfy", "comfy_api_nodes", "folder_paths", "aiohttp", "server", "execution", "nodes",
+                  "bmk_design_patch", "bmk_design_patch_board")
+        probe = OUT / "v_s1_probe.py"
+        probe.write_text("\n".join([
+            "import json, sys",
+            "sys.path.insert(0, sys.argv[1])",
+            "import bmk_design_patch_store as store, bmk_design_patch_vlm as dvlm",
+            f"BAN = {banned!r}",
+            "root, cid = sys.argv[2], sys.argv[3]",
+            "m = store.load_manifest(root)",
+            "crop = m['crops'][0]",
+            "store.project_glossary(root, m)",
+            "merged, _w = store.merge_adopted(crop, store.parse_crop_layer_name(crop['layer_name']), store.load_spec_override(root, cid))",
+            "store.new_targets(merged, crop); stale = store.adopt_stale(crop, {}); fp = store.prepare_inputs_fp(root, m)",
+            "pl = dvlm.draft_plan(root, m, '', 'vlm_mock', family='mock', model='mock', effort=None, image_detail=None, draft_round=0,",
+            "                     mode='fill', only=[], concurrency=4, model_dir='', apply_mode='full', memo={})",
+            "dvlm.project_style_for(root, 'targets'); dvlm.unwritten_specs(root); prog = dvlm.ledger_progress(root, 0)",
+            "v = dvlm.draft_view(root, m, cid, family='openai')",
+            "kw = dict(seen=v['seen'], crop_sig=v['crop_sig'], value=v['adopt']['value'], family='openai', apply_mode='targets')",
+            "pv = dvlm.adopt_write(root, m, cid, 'adopt', preview=True, **kw)",
+            "w = dvlm.adopt_write(root, m, cid, 'adopt', **kw)",
+            "print(json.dumps({'mods': sorted(k for k in sys.modules if k.split('.')[0] in BAN), 'fp': fp, 'stale': stale,",
+            "                  'units': len(pl[3]['units']), 'kind': v['adopt']['kind'], 'ok': [pv['ok'], w['ok']],",
+            "                  'lt': w['layer_targets'], 'prog': prog}, ensure_ascii=False))", ""]), encoding="utf-8")
+        r = subprocess.run([sys.executable, "-X", "utf8", "-W", "ignore", str(probe), str(PKG), root, cid], capture_output=True,
+                           text=True, encoding="utf-8", timeout=180)
+        out = json.loads(r.stdout.strip().splitlines()[-1]) if r.returncode == 0 and r.stdout.strip() else None
+        check(out is not None and out["mods"] == [] and out["kind"] == "add" and out["ok"] == [True, True] and out["stale"] == ""
+              and out["lt"] == {"value": VAL, "owner": "node"} and out["units"] >= 1 and re.fullmatch(r"[0-9a-f]{16}", out["fp"])
+              and out["prog"] == {"inflight": 0, "created": 0, "done": 0, "failed": 0},
+              f"새 프로세스: store 이동 함수·prepare_inputs_fp·draft_plan·project_style_for·unwritten_specs·ledger_progress·draft_view·"
+              f"adopt_write(미리보기·쓰기 → merge_crop) 뒤 torch·transformers·comfy*·folder_paths·aiohttp·노드·보드 모듈 없음 {out} "
+              f"{r.stderr.strip()[-400:]}")
+        tree = ast.parse(Path(store.__file__).read_text(encoding="utf-8"))
+        mods = {a.name.split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
+        mods |= {n.module.split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module}
+        check(mods - set(sys.stdlib_module_names) == {"numpy", "PIL"},
+              f"store import = 표준 라이브러리 + numpy·PIL 만(torch·comfy·vlm·refs 없음) {sorted(mods - set(sys.stdlib_module_names))}")
+        check(store._REFS_FILE == drefs.REFS_NAME, "store._REFS_FILE = refs.REFS_NAME(refs 가 store 를 import 해 이름만 복사)")
+        api_v = ["draft_plan", "merge_crop", "project_style_for", "unwritten_specs", "adopt_write", "ledger_progress", "draft_view",
+                 "crop_signature", "adopt_state"]
+        api_s = ["project_glossary", "merge_adopted", "new_targets", "adopt_stale", "prepare_inputs_fp"]
+        check(all(callable(getattr(dvlm, n, None)) for n in api_v) and all(callable(getattr(store, n, None)) for n in api_s)
+              and issubclass(dvlm.SpecConflict, ValueError) and issubclass(dvlm.AdoptRefused, ValueError)
+              and not issubclass(dvlm.SpecConflict, dvlm.AdoptRefused) and dvlm.WRITE_MARK == "write_pending.json"
+              and dvlm.DRAFT_MEMO_MAX == 4096 and dvlm.ADOPT_OPS == ("adopt", "set", "clear"),
+              "공개 API·상수(SpecConflict·AdoptRefused ⊂ ValueError·서로 다름, WRITE_MARK, DRAFT_MEMO_MAX = 노드 옛 상한 4096)")
+
+    def t_store():
+        section("S3a-V-S1b store 이동(new_targets·merge_adopted·adopt_stale·project_glossary) · prepare_inputs_fp(바뀌는 것·안 바뀌는 것)")
+        p = store.parse_crop_layer_name("003_펜이름표")
+        crop = {"id": store.crop_id_for("003_펜이름표"), "name": "003_펜이름표", "layer_name": "003_펜이름표",
+                "targets": store.new_targets(p, None)}
+        check([(t["tid"], t["label"], t["name_en"]) for t in crop["targets"]] == [("A", "펜이름표", "")]
+              and "origin" not in crop["targets"][0], "new_targets: 레거시 A = 부위 라벨, origin 없음")
+        check(store.adopt_stale(crop, {}) == "" and store.adopt_stale(crop, {"_layer_targets": "A: name badge"}).startswith("매니페스트 타깃이")
+              and store.adopt_stale(crop, {"_layer_targets": "name badge"}).startswith("채택 확인 못 함"),
+              "adopt_stale: 같으면 '' · Import 가 만들 타깃이 다르면 이유 · 문법 오류는 '채택 확인 못 함'")
+        ren = {"id": store.crop_id_for("003_처음이름"), "name": "003_새이름", "layer_name": "003_새이름", "psd_name": "003_옛이름",
+               "targets": []}
+        mg, w = store.merge_adopted(ren, store.parse_crop_layer_name("003_새이름"), {"_layer_targets": "003_옛이름 | B: red pen"})
+        nt = store.new_targets(mg, None)
+        check([(t["tid"], t["label"], t["name_en"], t.get("origin")) for t in nt]
+              == [("A", "새이름", "", None), ("B", "red pen", "red pen", "adopt")] and w == [],
+              f"merge_adopted: psd_name 별칭 앞머리를 떼고 채택 타깃 origin adopt {nt}")
+        expect_raises(lambda: store.merge_adopted(dict(ren, psd_name=None), store.parse_crop_layer_name("003_새이름"),
+                                                  {"_layer_targets": "003_옛이름 | B: red pen"}),
+                      "별칭이 없으면 앞머리가 라벨 없는 조각 → ValueError", contains="라벨 없는 조각")
+        root, refs_dir, m = _vlm_project("s3a_fp", [(LEG, (64, 64), {})], glossary={"치마": "skirt", "장식": "ornament"})
+        gx = OUT / "glossary_x.json"
+        store.write_json_atomic(str(gx), {"장식": "trim"})
+        store.update_manifest(root, lambda mm: mm["source"].update(glossary=str(gx)))
+        check(store.project_glossary(root, store.load_manifest(root)) == {"치마": "skirt", "장식": "trim"},
+              "project_glossary = glossary.json + source.glossary(같은 키는 뒤가 이김)")
+        gx.write_text("[1]", encoding="utf-8")
+        expect_raises(lambda: store.project_glossary(root, store.load_manifest(root)), "깨진 source.glossary → ValueError")
+        cid = m["crops"][0]["id"]
+
+        def fp():
+            return store.prepare_inputs_fp(root, store.load_manifest(root))
+
+        fp0 = fp()
+        check(re.fullmatch(r"[0-9a-f]{16}", fp0) is not None and fp() == fp0, "prepare_inputs_fp: 결정적, sha256 앞 16자")
+        mx = store.load_manifest(root)
+        mx["crops"][0]["targets"][0]["refs"] = ["m_only.png"]  # 디스크 매니페스트에는 없는 타깃 refs
+        check(store.prepare_inputs_fp(root, mx) != fp0, "prepare_inputs_fp 는 넘긴 m 을 읽음(Prepare 가 같은 _commit 에서 연 매니페스트 — "
+                                                        "디스크를 다시 읽지 않음)")
+        job = _pl_job(cid)
+        store.update_manifest(root, lambda mm: mm["jobs"].append(job))
+        for rel in ("cands/aaaa/r1.done.json", f"vlm/{cid}/{'0' * 24}/a1.done.json", "inputs/zz.png", "derived/psd_crops.json"):
+            Path(root, rel).parent.mkdir(parents=True, exist_ok=True)
+            Path(root, rel).write_text("{}", encoding="utf-8")
+        check(fp() == fp0, "매니페스트 jobs·rev, 원장(cands/·vlm/)·inputs/·derived/ 는 지문 밖(Prepare 자신의 쓰기로 바뀌지 않음)")
+        mock = Path(root).parent / runner.MOCK_FILE  # mock 스위치(파일·환경변수)와 vlm/ 표식(Spec Draft 드라이런도 씀 — §1.8)도 지문 밖
+        mock.write_text("", encoding="utf-8")
+        os.environ[runner.MOCK_ENV] = "1"
+        try:
+            for mark in (dvlm.WRITE_MARK, "repoll_pending.json"):
+                store.write_json_atomic(os.path.join(root, dvlm.LEDGER_DIR, mark), {"at": 1, "specs": [cid]})
+            got = [runner.mock_enabled(root), fp() == fp0]
+            os.environ.pop(runner.MOCK_ENV)
+            got += [runner.mock_enabled(root), fp() == fp0]
+        finally:
+            os.environ.pop(runner.MOCK_ENV, None)
+            mock.unlink()
+        check(got == [True] * 4 and fp() == fp0,
+              f"mock 스위치({runner.MOCK_FILE} 파일·{runner.MOCK_ENV})·vlm/{dvlm.WRITE_MARK}·repoll_pending.json 은 지문 밖 {got}")
+        guide = Path(root, "guides", "g.png")
+        guide.parent.mkdir()
+        rd2, gx2 = OUT / "refs_copy", OUT / "glossary_copy.json"
+        sub = rd2 / "sub" / "r.png"
+        same_fp = []  # 사본 단계의 전제: 지문(이름·크기·mtime)이 원본과 같아 경로 문자열만 다름
+
+        def rename_only(d, a, b):  # 파일 이름만 — os.rename 은 크기·mtime 을 지킨다(레퍼런스는 이름 앞머리 NNN_ 로 크롭에 매칭)
+            st = os.stat(os.path.join(d, a))
+            os.rename(os.path.join(d, a), os.path.join(d, b))
+            st2 = os.stat(os.path.join(d, b))
+            same_fp.append((st.st_size, st.st_mtime_ns) == (st2.st_size, st2.st_mtime_ns))
+
+        def respec_same_size():  # 같은 바이트 수 문구 — mtime 만 바뀜(빠른 연속 쓰기는 같은 mtime 일 수 있어 1초 옮김)
+            p = spec_path(root, cid)
+            st = p.stat()
+            put(root, cid, {"_hint": "y", "guide": "guides/g.png"})
+            os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns + 10 ** 9))
+            same_fp.append(p.stat().st_size == st.st_size)
+
+        def glossary_copy():
+            shutil.copy2(gx, gx2)
+            same_fp.append(store._file_fp(str(gx2)) == store._file_fp(str(gx)))
+            store.update_manifest(root, lambda mm: mm["source"].update(glossary=str(gx2)))
+
+        def refs_dir_copy():
+            shutil.copytree(refs_dir, rd2)
+            same_fp.append(store._dir_fp(str(rd2)) == store._dir_fp(refs_dir) is not None)
+            store.update_manifest(root, lambda mm: mm["source"].update(refs_dir=str(rd2)))
+
+        def target_refs():  # refs_dir 하위 폴더 = _dir_fp(refs_dir) 밖 — 매니페스트 타깃 refs 로만 들어감
+            sub.parent.mkdir()
+            sub.write_bytes(b"1")
+            store.update_manifest(root, lambda mm: mm["crops"][0]["targets"][0].update(refs=["sub/r.png"]))
+
+        steps = [("스펙 파일", lambda: put(root, cid, {"_hint": "x"})),
+                 ("스펙 guide 가 가리키는 파일 생김", lambda: (put(root, cid, {"_hint": "x", "guide": "guides/g.png"}),
+                                                     guide.write_bytes(b"1"))),
+                 ("guide 파일 내용", lambda: guide.write_bytes(b"22")),
+                 ("스펙 파일 같은 바이트 수(mtime 만)", respec_same_size),
+                 ("specs/ 새 파일", lambda: put(root, "009_aaaaaa", {})),
+                 ("specs/ 파일 이름만(크기·mtime 같음)", lambda: rename_only(Path(root, "specs"), "009_aaaaaa.json", "009_bbbbbb.json")),
+                 ("refs.json", lambda: Path(root, drefs.REFS_NAME).write_text("{}", encoding="utf-8")),
+                 ("layout.json", lambda: Path(root, store.LAYOUT_NAME).write_text("{}", encoding="utf-8")),
+                 ("glossary.json", lambda: store.write_json_atomic(os.path.join(root, "glossary.json"), {"치마": "skirts"})),
+                 ("source.glossary 파일", lambda: gx.write_text('{"장식": "trims"}', encoding="utf-8")),
+                 ("source.glossary 경로(같은 지문의 사본)", glossary_copy),
+                 ("source.glossary 경로 비움", lambda: store.update_manifest(root, lambda mm: mm["source"].update(glossary=""))),
+                 ("refs_dir 바로 아래 파일", lambda: Path(refs_dir, "008_치마금속장식.png").write_bytes(b"333")),
+                 ("refs_dir 파일 이름만(크기·mtime 같음)", lambda: rename_only(refs_dir, "008_치마금속장식.png", "008_치마장식.png")),
+                 ("refs_dir 경로(같은 목록의 사본)", refs_dir_copy),
+                 ("매니페스트 타깃 refs(refs_dir 하위 폴더) 생김", target_refs),
+                 ("매니페스트 타깃 refs 파일 내용", lambda: sub.write_bytes(b"22")),
+                 ("source.layout.rev", lambda: store.update_manifest(root, lambda mm: mm["source"].update(layout={"rev": 3, "sig": "s"}))),
+                 ("source.layout.rev 다시", lambda: store.update_manifest(root, lambda mm: mm["source"].update(layout={"rev": 4, "sig": "s"})))]
+        prev, same = fp0, []
+        for what, do in steps:
+            do()
+            cur = fp()
+            if cur == prev:
+                same.append(what)
+            prev = cur
+        check(same_fp == [True] * 5, f"전제: 같은 크기로 다시 쓴 스펙·이름만 바꾼 파일(specs/·refs_dir)은 크기·mtime 그대로, copy2 사본"
+                                     f"(용어집·refs_dir)은 지문이 원본과 같음 {same_fp}")
+        check(not same, f"prepare_inputs_fp: 스펙(같은 크기 mtime 포함)·guide·specs/(파일·이름)·refs.json·layout.json·용어집 둘(파일·경로)·"
+                        f"refs_dir(파일·이름·경로)·매니페스트 타깃 refs(하위 폴더)·source.layout.rev 가 바뀔 때마다 바뀜 {same}")
+        # 잠금 없이 부르는 쪽(보드 계획 §2.4): specs/ 원자 쓰기의 임시 파일이 목록 뒤 사라져도 예외 없이 건너뜀
+        tmp = Path(root, "specs", f".{cid}.json.1.0a0a0a0a.tmp")
+        tmp.write_text("{}", encoding="utf-8")
+        isfile = os.path.isfile
+
+        def vanish(path):  # isfile 과 stat 사이에 os.replace 가 임시 파일을 옮긴 것과 같다
+            if os.path.basename(path) == tmp.name and isfile(path):
+                os.remove(path)
+                return True
+            return isfile(path)
+
+        os.path.isfile = vanish  # 이 블록 안에서만
+        try:
+            got = fp()
+        except OSError as e:
+            got = repr(e)
+        finally:
+            os.path.isfile = isfile
+        check(got == prev and not tmp.exists(), f"_dir_fp: 목록 뒤 사라진 파일은 건너뜀(FileNotFoundError 없음) {got}")
+
+    def t_vlm_moved():
+        section("S3a-V-S1c vlm 이동(draft_plan memo 상한·화풍·해시 · unwritten_specs · project_style_for · ledger_progress · merge_crop "
+                "render_changed·backend·render_fallback·preview · 노드 연결)")
+        root, _refs, m = _vlm_project("s3a_plan", [(LEG, (128, 128), {}), ("009_리본 | A: 리본", (96, 96), {})])
+        memo = {i: None for i in range(dvlm.DRAFT_MEMO_MAX + 1)}
+        cfg = dict(family="mock", model="mock", effort=None, image_detail=None, draft_round=0, mode="fill", only=[], concurrency=4,
+                   model_dir="")
+        ctxs, reqs, style_req, pl, ap = dvlm.draft_plan(root, m, "", "vlm_mock", apply_mode="targets", memo=memo, **cfg)
+        check(memo and not any(isinstance(k, int) for k in memo) and style_req is None and dvlm.STYLE_ID not in reqs
+              and [c.crop_id for c in ctxs] == [c["id"] for c in m["crops"]] and len(pl["units"]) == 2
+              and ap["pending_hash"] == dvlm.approval(pl, "", backend_name="vlm_mock")["pending_hash"] != ""
+              and not Path(root, dvlm.IMG_SUBDIR).exists(),
+              "draft_plan(targets): 상한을 넘은 memo 를 비우고 다시 채움, 화풍 요청 없음(vlm/img 안 씀), 크롭 2 신규 대기, 해시 = approval(plan)")
+        n = len(memo)
+        _c, reqs2, style2, pl2, ap2 = dvlm.draft_plan(root, m, ap["pending_hash"], "vlm_mock", apply_mode="full", memo=memo, **cfg)
+        check(style2 is not None and reqs2[dvlm.STYLE_ID] is style2 and pl2["units"][-1].crop_id == dvlm.STYLE_ID
+              and Path(root, dvlm.IMG_SUBDIR).is_dir() and len(memo) > n and not ap2["approved_now"],
+              "draft_plan(full): 화풍 요청·대기(화풍 입력 vlm/img 만 씀), 해시가 달라 지난 해시로는 승인 아님")
+        ap3 = dvlm.draft_plan(root, m, ap2["pending_hash"], "vlm_mock", apply_mode="full", memo=memo, **cfg)[4]
+        check(ap3["approved_now"] and ap3["pending_hash"] == ap2["pending_hash"], "같은 파일 상태·설정 = 같은 해시(승인 대조)")
+        mark = Path(root, dvlm.LEDGER_DIR, dvlm.WRITE_MARK)
+        got = [dvlm.unwritten_specs(root)]
+        mark.parent.mkdir(parents=True, exist_ok=True)
+        for body in ('{"at": 1, "specs": ["001_a", "_project"]}', '{"specs": "x"}', "[1]", "{broken"):
+            mark.write_text(body, encoding="utf-8")
+            got.append(dvlm.unwritten_specs(root))
+        mark.unlink()
+        check(got == [[], ["001_a", "_project"], [], [], []], f"unwritten_specs: 표식 목록, 없음·형식 오류·깨짐 = [] {got}")
+        pj = Path(root, "specs", f"{dvlm.PROJECT_SPEC_ID}.json")
+        pj.parent.mkdir(exist_ok=True)
+        node_style = {"style_note": "flat cel", "_draft": {"written": {"style_note": "flat cel"}}}
+        human = {"style_note": "warm pastel", "_draft": {"written": {"style_note": "flat cel"}}}
+        got = [dvlm.project_style_for(root, "targets"), dvlm.project_style_for(root, "full")]
+        for body in (node_style, human):
+            store.write_json_atomic(str(pj), body)
+            got += [dvlm.project_style_for(root, "targets"), dvlm.project_style_for(root, "full")]
+        pj.write_text("{broken", encoding="utf-8")
+        got += [dvlm.project_style_for(root, "targets"), dvlm.project_style_for(root, "full"),
+                dvlm.project_style_for(root, "targets", proj=None), dvlm.project_style_for(root, "targets", proj=human),
+                dvlm.project_style_for(root, "targets", proj=node_style)]
+        pj.unlink()
+        check(got == [None, None, None, "flat cel", "warm pastel", "warm pastel", "", "", "", "warm pastel", None],
+              f"project_style_for: 없음 None · targets 는 노드 화풍 양보(None)·사람 값 전파 · full 은 그대로 · 못 읽음 ''(끔) · "
+              f"노드가 넘긴 proj(preview 병합)는 파일보다 우선 {got}")
+        cid = m["crops"][0]["id"]
+        led = dvlm.Ledger(root)
+        keys = [f"{i:024x}" for i in range(1, 9)]
+        check(dvlm.ledger_progress(root, 0) == {"inflight": 0, "created": 0, "done": 0, "failed": 0}, "원장 없음 → 0")
+        led.write(cid, keys[6], 1, "done", {"text": "{}", "parsed": {}})
+        old = time.time() - 600
+        for f in Path(led.dir(cid, keys[6])).iterdir():
+            os.utime(f, (old, old))
+        since = time.time() - 1.0
+        led.write(cid, keys[0], 1, "req", {})
+        led.write(cid, keys[0], 1, "inflight", {})
+        led.write(cid, keys[7], 1, "req", {})  # 보내기 직전에 멈춘 키(req 만)
+        led.write(cid, keys[1], 1, "created", {"response_id": "r"})
+        led.write(cid, keys[2], 1, "resp", {"text": "x"})
+        led.write(cid, keys[3], 1, "done", {"text": "{}", "parsed": {}})
+        led.write(dvlm.STYLE_ID, keys[4], 1, "failed", {"error": "x", "maybe_billed": True})
+        led.write(cid, keys[5], 1, "rejected", {"error": "y"})
+        Path(root, dvlm.IMG_SUBDIR, "x.png").write_bytes(b"1")
+        for junk in (Path(root, dvlm.IMG_SUBDIR, keys[0]), Path(root, dvlm.LEDGER_DIR, cid, "not_a_key")):  # 원장 꼴 파일이 있어도
+            junk.mkdir()
+            (junk / "a1.done.json").write_text("{}", encoding="utf-8")
+        Path(led.dir(cid, keys[6]), "notes.txt").write_text("x", encoding="utf-8")  # 옛 키 폴더의 원장 아닌 새 파일
+        got = dvlm.ledger_progress(root, since)
+        check(got == {"inflight": 2, "created": 2, "done": 1, "failed": 2},
+              f"ledger_progress: since 뒤 바뀐 원장 파일(a<n>.<kind>.json)이 있는 키만 Ledger.state 로(req 만·req 뒤 inflight → inflight, "
+              f"created·resp → created, failed·rejected → failed, 화풍 포함, 옛 done(원장 아닌 새 파일만)·img·키 아닌 폴더 제외) {got}")
+        check(dvlm.ledger_progress(root, time.time() + 600) == {"inflight": 0, "created": 0, "done": 0, "failed": 0},
+              "since 뒤 바뀐 파일이 없으면 0")
+
+        # merge_crop: render_changed = 병합 전후 실제 렌더(V1) 비교 — 노드 보고서 '렌더가 바뀐 크롭 → Prepare 새 cell_key' 의 근거
+        def merged(root_, nd, cur, *, apply_mode, mode="fill", style=None, adopt=False, backend="openai", out=None):
+            """노드 _draft_write 와 같은 인자(크롭 하나). out = merge_crop 이 draft·check 를 남길 dict."""
+            m_ = store.load_manifest(root_)
+            return dvlm.merge_crop(cur, mode, **nd, crop=m_["crops"][0], project_style=style, apply_mode=apply_mode, adopt=adopt,
+                                   backend=backend, refs_dir=m_["source"]["refs_dir"], glossary=store.project_glossary(root_, m_),
+                                   out={} if out is None else out)
+
+        rf, cf, ndf = drafted("render", apply_mode="full")
+        sf = spec(rf, cf)
+        got = [(r_.spec is not None, r_.render_changed) for r_ in (merged(rf, ndf, None, apply_mode="full"),
+                                                                     merged(rf, ndf, sf, apply_mode="full"),
+                                                                     merged(rf, ndf, sf, apply_mode="full", adopt=True))]
+        check(got == [(True, True), (False, False), (True, False)],
+              f"merge_crop render_changed: 빈 스펙 + full 초안 True · 고정점(쓰지 않음) False · 채택(_layer_targets 만 — 렌더 밖) False {got}")
+        # merge_crop 렌더 대체(render_fallback): 노드가 쓴 그대로인 필드(C == B)만 빼고 쓴다 — _draft.written 에서도 빼서 다음 실행이
+        # '사람이 지운 필드' 로 보지 않게. 사람이 바꾼 값(C ≠ B)은 빼지 않고 쓰지 않음(Studio 채택·수정의 owned 도 같은 _owned_paths)
+        got = []
+        for wv in (5, "x"):  # written.A.text = 노드가 쓴 그대로(5) / 노드는 'x' 를 썼고 사람이 5 로 바꿈
+            cur = copy.deepcopy(sf)
+            next(t for t in cur["targets"] if t.get("id") == "A")["text"] = 5  # 렌더를 깸(KeyError)
+            cur["_draft"]["written"]["A"]["text"] = wv
+            out = {}
+            r_ = merged(rf, {"ctx": ndf["ctx"], "req": None, "done": None, "prov": {}}, cur, apply_mode="full", style="warm pastel light",
+                        out=out)  # 초안 없이 화풍 전파만 — 쓰기가 생김
+            sp_ = r_.spec or {}
+            got.append((out["check"].ok, out["check"].dropped, r_.spec is not None,
+                        "text" in next((t for t in sp_.get("targets") or [] if t.get("id") == "A"), {}),
+                        "text" in ((sp_.get("_draft") or {}).get("written") or {}).get("A", {}), sp_.get("style_note"),
+                        "렌더 점검 실패 — 쓰지 않음" in r_.notes))
+        check(got == [(True, ["A.text"], True, False, False, "warm pastel light", False), (False, [], False, False, False, None, True)],
+              f"merge_crop render_fallback: 노드 값 A.text 는 스펙·_draft.written 에서 빼고 씀, 사람 값은 빼지 않고 쓰지 않음(메모) {got}")
+        # preview 는 refresh 로 병합한 결과를 점검: 지난 초안이 쓴 옛 노드 값(C == B)을 refresh 는 새 초안 값으로, fill 은 그대로 둠
+        cur = copy.deepcopy(sf)
+        next(t for t in cur["targets"] if t.get("id") == "A")["name"] = cur["_draft"]["written"]["A"]["name"] = "old mock part A"
+        got = {}
+        for md in ("preview", "refresh", "fill"):
+            out = {}
+            got[md] = (merged(rf, ndf, cur, apply_mode="full", mode=md, out=out).spec is not None, out["check"].v1)
+        check(got["preview"][0] is False and got["preview"][1] == got["refresh"][1] != got["fill"][1]
+              and "old mock part A" in got["fill"][1] and "old mock part A" not in got["refresh"][1],
+              f"merge_crop preview: 쓰지 않고, 점검 V1 = refresh 병합 결과(fill 결과 아님) {got}")
+        # merge_crop backend = 지금 백엔드: mock 초안에서 채택한 값은 실제 백엔드 병합이 양보(지움), None 이면 판정 안 함
+        ry, cy, ndy = drafted("yield", fam="mock", backend_name="vlm_mock")
+        write(ry, cy, fam="mock")
+        sy = spec(ry, cy)
+        got = []
+        for be in ("openai", None):  # 초안 없이(done None) 화풍 전파·양보만 — 노드가 실제 백엔드로 드라이런할 때
+            r_ = merged(ry, {"ctx": ndy["ctx"], "req": None, "done": None, "prov": {}}, sy, apply_mode="targets", backend=be)
+            got.append(((r_.spec or sy).get("_layer_targets"), [(x.path, x.kind) for x in r_.rows], any("채택 양보" in n for n in r_.notes)))
+        check(got == [(None, [("crop._layer_targets", "yield")], True), (VAL, [], False)],
+              f"merge_crop backend: mock 채택값을 실제 백엔드(openai)는 양보(지움·메모), None 은 그대로 {got}")
+        # 노드 연결(소스 AST — 노드 모듈은 torch 를 불러 --quick 에서 import 하지 않음): Spec Draft 쓰기가 지금 백엔드·이미 읽은
+        # _project(preview 병합)를 넘기고, _glossary 는 store.project_glossary 그대로(계획·Prepare·채택과 같은 용어집)
+        fns = {n.name: n for n in ast.parse(Path(PKG, "bmk_design_patch.py").read_text(encoding="utf-8")).body
+               if isinstance(n, ast.FunctionDef)}
+
+        def calls(fn, name):  # 노드 함수 fn 안의 name(…)·partial(name, …) 호출
+            return [n for n in ast.walk(fns[fn]) if isinstance(n, ast.Call)
+                    and name in (ast.unparse(n.func), ast.unparse(n.args[0]) if n.args else "")]
+
+        mc = calls("_draft_write", "dvlm.merge_crop")
+        got = ([{k.arg: ast.unparse(k.value) for k in c.keywords}.get("backend") for c in mc],
+               [ast.unparse(c) for c in calls("_draft_write", "dvlm.project_style_for")],
+               ast.unparse(fns["_glossary"].body[-1]))
+        check(got == (["req.backend"], ["dvlm.project_style_for(root, apply_mode, proj=proj)"], "return store.project_glossary(root, m)"),
+              f"노드 _draft_write → merge_crop(backend=req.backend)·project_style_for(proj=proj), _glossary = store.project_glossary {got}")
+
+    def t_adopt():
+        section("S3a-V-S1d adopt_write 채택 — 고정점 스펙에서 노드 adopt 와 같은 바이트 · draft_view · 미리보기 · 영향 · 내용 보호 · 응답 모양")
+        root, cid, nd = drafted("fix")
+        m = store.load_manifest(root)
+        p = spec_path(root, cid)
+        s0 = p.read_bytes()
+        check(node_write(root, m, **nd).spec is None and p.read_bytes() == s0, "시험 전제: 노드 경로 두 번째 병합 = 고정점(쓰지 않음)")
+        node_write(root, m, **nd, adopt=True)
+        node_bytes = p.read_bytes()
+        p.write_bytes(s0)
+        v0 = view(root, cid)
+        check(v0["adopt"] == {"value": VAL, "kind": "add", "reason": ""} and v0["layer_targets"] == {"value": None, "owner": None}
+              and v0["draft"] == {"key": nd["req"].key, "backend": "vlm_openai", "mock": False, "drafted": "2026-10-07 12:00:00"}
+              and [(s["tid"], s["text"], s["reason"]) for s in v0["suggestions"]] == [("A", "mock part A", None), ("B", FIT, "mock suggestion")]
+              and all(isinstance(s["bbox"], list) and len(s["bbox"]) == 4 for s in v0["suggestions"])
+              and v0["targets"] == [{"tid": "A", "label": "치마금속장식", "name_en": None, "origin": "psd"}]
+              and v0["crop_sig"] == GET["ok"]["crop_sig"] and v0["spec_error"] is None and v0["unwritten"] is False
+              and v0["layout_text"] == {},
+              f"draft_view: 채택 값·kind add·제안(초안 타깃 = 스펙 bbox·이유 없음 / 제안 = 이유)·초안 머리·지금 타깃(출처 psd)·crop_sig {v0}")
+        seen = json.loads(v0["seen"])
+        check(v0["seen"] == json.dumps(store.file_fingerprint(str(p))) and isinstance(seen[0], int) and seen[0] > 2 ** 53
+              and seen[1] == len(s0), "seen = json.dumps(file_fingerprint) 문자열(mtime_ns > 2^53 — 숫자로 바꾸지 않음), 읽은 바이트와 같은 stat")
+        before = snap(root, cid)
+        pv = write(root, cid, preview=True)
+        check(snap(root, cid) == before and pv["seen"] == v0["seen"] and pv["layer_targets"] == {"value": VAL, "owner": "node"},
+              "preview: 쓰지 않음(바이트·mtime 그대로), seen 그대로, 쓸 결과의 layer_targets")
+        res = write(root, cid)
+        d = spec(root, cid)
+        check(p.read_bytes() == node_bytes, "채택 = 노드 adopt(merge_crop adopt=True + 원장 초안)와 같은 바이트 — 고정점 스펙(N28 전제)")
+        check(d["_layer_targets"] == VAL and d["_draft"]["written"]["crop"]["_layer_targets"] == VAL
+              and d["_draft"]["adopted"] == {"key": nd["req"].key, "backend": "vlm_openai"}
+              and res["seen"] == json.dumps(store.file_fingerprint(str(p))) != v0["seen"]
+              and res["layer_targets"] == {"value": VAL, "owner": "node"},
+              "채택 쓰기: _layer_targets·written·adopted, 응답 seen = 쓴 뒤 지문")
+        ta = [{"tid": "A", "label": "mock part A", "name_en": "mock part A", "origin": "adopt"},
+              {"tid": "B", "label": FIT, "name_en": FIT, "origin": "adopt"}]
+        check(res["targets_after"] == ta == res["effects"]["targets_after"] == pv["targets_after"]
+              and res["effects"]["prompt_changed"] is True and res["effects"]["draft_wait"] == {"before": [], "after": []}
+              and res["effects"]["layout_wins"] == [] and res["warnings"] == [] and pv["effects"] == res["effects"],
+              f"영향: 다음 반영 타깃(레거시 A 의 이름·제안 B, 출처 adopt)·프롬프트 바뀜(새 셀)·targets 대기 없음(영문 이름) {res}")
+        for name, body, route in (("GET /draft", v0, GET), ("POST adopt", res, POST), ("POST preview", pv, POST)):
+            diff = _pl_shape(route["ok"], body, route)
+            check(diff == [], f"{name} 본문 모양 = pipeline_api.json ok {diff}")
+        va = view(root, cid)
+        check(va["adopt"] == {"value": VAL, "kind": None, "reason": ""} and va["layer_targets"] == {"value": VAL, "owner": "node"}
+              and _pl_shape(GET["alt"]["adopted"], va, GET) == [], f"채택 뒤 draft_view = alt adopted(kind 없음·owner node) {va['adopt']}")
+        refused(root, cid, lambda: write(root, cid), "같은 값 다시 채택 → 400", reason="이미 채택")
+        # full 로 쓴 스펙: targets 채택은 노드 필드 양보가 채택 외 필드를 바꿈 → 400(rows), 같은 apply 면 노드 바이트
+        rf, cf, ndf = drafted("full", apply_mode="full")
+        pf = spec_path(rf, cf)
+        sf = pf.read_bytes()
+        node_write(rf, store.load_manifest(rf), **ndf, apply_mode="full", adopt=True)
+        nbf = pf.read_bytes()
+        pf.write_bytes(sf)
+        e = refused(rf, cf, lambda: write(rf, cf, apply_mode="targets"), "full 로 쓴 스펙에 targets 채택 → 400 내용 보호(쓰지 않음)")
+        rows = (e.extra.get("rows") if e else None) or []
+        check(e is not None and "채택 외 필드가 바뀜" in str(e) and {"crop.preserve: yield", "A.mode: yield"} <= set(rows)
+              and not any(r.startswith("crop._layer_targets") for r in rows)
+              and _pl_shape(POST["errors"]["400"][2], {"error": str(e), **e.extra}, POST) == [],
+              f"내용 보호 행 = 채택 밖 병합 행(경로: 종류), 본문 {{error, rows}} 모양 = 400 예시 {rows}")
+        rfr = write(rf, cf, apply_mode="full")
+        check(pf.read_bytes() == nbf and rfr["effects"]["draft_wait"] == {"before": [], "after": ["타깃 추가", "타깃 변경(A)"]},
+              f"같은 apply(full) 채택 = 노드 바이트, full 대기 = 바뀐 타깃 재초안(타깃 추가·타깃 변경) {rfr['effects']['draft_wait']}")
+        # 내용을 바꾸지 않는 정보 행·기록(_draft.pending/deleted)은 내용 보호 사유가 아님
+        rh, ch, _ = drafted("human")
+        dh = spec(rh, ch)
+        dh["style_note"] = "warm pastel light"
+        dh["targets"].append({"id": "Z", "detail": "kept"})
+        put(rh, ch, dh)
+        write(rh, ch)
+        dh2 = spec(rh, ch)
+        check(dh2["style_note"] == "warm pastel light" and dh2["targets"][-1] == {"id": "Z", "detail": "kept"}
+              and dh2["_layer_targets"] == VAL, "모르는 타깃 id(unknown_target 정보 행)·화풍 없는 targets 의 사람 style_note(병합이 안 건드림)는 "
+                                                "통과 — 채택만 씀")
+        got = []
+        for case, edit in (("keep_human", lambda d_: d_.update(style_note="warm pastel")), ("keep_deleted", lambda d_: d_.pop("style_note"))):
+            rk, ck, ndk = drafted(case, apply_mode="full", style="flat cel")  # full + _project 화풍 → 크롭 style_note 노드 값
+            dk = spec(rk, ck)
+            got.append((dk.get("style_note"), dk["_draft"]["written"]["crop"].get("style_note"),
+                        node_write(rk, store.load_manifest(rk), **ndk, apply_mode="full").spec))
+            edit(dk)
+            put(rk, ck, dk)
+            write(rk, ck, apply_mode="full")
+            dk = spec(rk, ck)
+            got.append((dk.get("style_note"), dk["_layer_targets"], dk["_draft"].get("pending") or {}, dk["_draft"].get("deleted") or []))
+        check(got == [("flat cel", "flat cel", None), ("warm pastel", VAL, {"crop.style_note": "flat cel"}, []),
+                      ("flat cel", "flat cel", None), (None, VAL, {}, ["crop.style_note"])],
+              f"화풍 전파가 사람 편집에 막힘(keep_human → _draft.pending·keep_deleted → _draft.deleted 기록)은 통과 — 사람 값 그대로 {got}")
+        rd2, cd2, _ = drafted("dup")
+        dd2 = spec(rd2, cd2)
+        dd2["targets"] += [{"id": "Z", "detail": "a"}, {"id": "Z", "detail": "b"}]
+        put(rd2, cd2, dd2)
+        write(rd2, cd2)
+        dd2 = spec(rd2, cd2)
+        check([t for t in dd2["targets"] if t.get("id") == "Z"] == [{"id": "Z", "detail": "a"}, {"id": "Z", "detail": "b"}]
+              and dd2["_layer_targets"] == VAL, "같은 id 타깃 둘(dup_target 정보 행)은 통과 — 그대로 둠")
+        # Studio 화풍(_project.json 의 사람 style_note)이 이 스펙을 마지막으로 쓴 Draft 와 다름 → 전파가 채택 외 필드를 바꿈 → 400
+        rp, cp, _ = drafted("style")
+        store.write_json_atomic(os.path.join(rp, "specs", f"{dvlm.PROJECT_SPEC_ID}.json"), {"style_note": "flat thin lines"})
+        e = refused(rp, cp, lambda: write(rp, cp), "Studio 화풍(사람 _project style_note)이 스펙을 쓴 Draft 와 다름 → 400")
+        check(e is not None and e.extra == {"rows": ["crop.style_note: add"]}, f"내용 보호 행 = 화풍 전파 {e and e.extra}")
+        # 사람이 _draft.written 을 손으로 고침(객체 아닌 항목) → 병합이 정리하며 채택 밖 _draft 가 바뀜 → 400(병합 행이 없어도)
+        rj, cj, _ = drafted("junk")
+        dj = spec(rj, cj)
+        dj["_draft"]["written"]["Z"] = "손으로 쓴 값"
+        put(rj, cj, dj)
+        e = refused(rj, cj, lambda: write(rj, cj), "병합이 _draft 를 고쳐 쓰는 스펙(병합 행 없음) → 400")
+        check(e is not None and e.extra == {"rows": []}, f"내용 보호는 행이 아니라 결과 비교로 판정 {e and e.extra}")
+        # 마지막 초안 뒤 용어집·매니페스트 name_en·mode·사람 refs 가 생김 → 노드 값 양보(name·mode)가 채택 병합에 함께 들어가 내용 보호가
+        # apply·화풍과 무관하게 늘 거절 — GET /draft·보드 칩(adopt_state)·POST 가 같은 이유로 미리 끔(값은 [수정] 초깃값으로 남김),
+        # 그래프 Spec Draft(초안 없는 fill — 키만 바뀐 '갱신 가능')가 양보를 쓰면 다시 채택 가능(리뷰 3차 r3-04)
+        LAY3 = "008_치마 | A: 금속 장식; B: 리본; C: 단추"
+
+        def why_y(paths):
+            return f"초안 뒤 생긴 영문 이름·용어집·사람 refs·mode 로 노드 값 양보가 남음({paths}) — 그래프 Spec Draft 로 채택"
+
+        def gloss(r_, body):
+            store.write_json_atomic(os.path.join(r_, "glossary.json"), body)
+
+        def spec_refs(r_, c_):
+            d_ = spec(r_, c_)
+            d_["targets"][0]["refs"] = ["human.png"]  # 사람 refs(C ≠ B) → 노드가 쓴 A.mode 양보
+            put(r_, c_, d_)
+
+        cases = (("gloss", "targets", lambda r_, c_: gloss(r_, {"금속 장식": "metal trim"}), "A.name"),
+                 ("name_en", "targets", lambda r_, c_: store.update_manifest(
+                     r_, lambda mm: mm["crops"][0]["targets"][0].update(name_en="metal trim")), "A.name"),
+                 ("spec_refs", "full", spec_refs, "A.mode"),
+                 ("many", "full", lambda r_, c_: (gloss(r_, {"금속 장식": "metal trim", "리본": "ribbon", "단추": "button"}),
+                                                  store.update_manifest(r_, lambda mm: [t.update(mode="self_restore")
+                                                                                        for t in mm["crops"][0]["targets"]])),
+                  "A.name, A.mode, B.name, B.mode 외 2"))
+        got = []
+        for case, am, edit, paths in cases:
+            ry, cy, _ = drafted(f"yield_{case}", LAY3, apply_mode=am)
+            v1 = view(ry, cy)
+            edit(ry, cy)
+            my = store.load_manifest(ry)
+            cx = dvlm.build_crop_ctx(ry, my, my["crops"][0], refs_dir=my["source"].get("refs_dir") or "",
+                                     glossary=store.project_glossary(ry, my), backend="openai", memo={})
+            vy = view(ry, cy)
+            want = {"value": v1["adopt"]["value"], "kind": None, "reason": why_y(paths)}
+            ok = (v1["adopt"]["kind"] == "add" and vy["adopt"] == want
+                  and dvlm.adopt_state(ry, my, cx, cx.spec, family="openai", memo={}) == tuple(want.values()))
+            for pv in (True, False):
+                for am2 in ("targets", "full"):  # Studio apply 를 어떻게 바꿔도 같은 이유(설정 차이 문구 아님)
+                    ok = refused(ry, cy, lambda: write(ry, cy, apply_mode=am2, value=v1["adopt"]["value"], preview=pv),
+                                 f"{case}: 채택(apply={am2}, preview={pv}) → 400 양보 이유", reason=want["reason"]) is not None and ok
+            node_write(ry, my, cx, None, None, {}, apply_mode=am)  # 노드 Spec Draft fill(초안 없음) = 양보만 씀
+            va = view(ry, cy)
+            got.append((case, ok, va["adopt"]["kind"], write(ry, cy, apply_mode=am)["ok"], spec(ry, cy)["_layer_targets"] == want["value"]))
+        check(got == [(c_, True, "add", True, True) for c_, *_ in cases],
+              f"초안 뒤 용어집·name_en·사람 refs·mode → GET·칩·POST 같은 이유(kind 없음·값 남김·경로 4개 + 외 n), 노드 fill 이 양보를 쓴 "
+              f"뒤 채택 됨 {got}")
+        # 레이아웃 모드: 다음 반영의 레이어명 = layout.json(그 tid 문구가 이김)
+        rl, cl, _ = drafted("layout")
+        lay = store.layout_from_manifest(store.load_manifest(rl))
+        lay["crops"][0]["targets"] = [{"tid": "A", "text": "", "box": None}, {"tid": "B", "text": "레이아웃 문구", "box": None}]
+        store.update_layout(rl, lambda doc: doc.update(lay), expect_rev=None, create=True)
+        vl = view(rl, cl)
+        wl = write(rl, cl, preview=True)
+        check(vl["layout_text"] == {"B": "레이아웃 문구"} and wl["effects"]["layout_wins"] == ["B"]
+              and wl["warnings"] == ["레이아웃 문구가 이김(B) — 편집 모드에서 고치세요"]
+              and [(t["tid"], t["label"], t["origin"]) for t in wl["targets_after"]]
+              == [("A", "mock part A", "adopt"), ("B", "레이아웃 문구", "layout")],
+              f"레이아웃 모드: layout_text·layout_wins·경고 한 줄(같은 tid 의 '레이어명 문구가 이김' 없음), 다음 반영 타깃(레이아웃 문구 = "
+              f"출처 layout) {wl}")
+
+    def t_refuse():
+        section("S3a-V-S1e adopt_write 거절(400·쓰지 않음) — adopt_check 이유 4종·_accepted 대기·렌더 점검 실패·mock 초안 + 실제 family·kind·"
+                "unwritten·잘못된 인자")
+        ra, ca, _ = drafted("acc")
+        da = spec(ra, ca)
+        da["_accepted"] = True
+        put(ra, ca, da)
+        check(view(ra, ca)["adopt"] == {"value": "", "kind": None, "reason": "_accepted"}, "draft_view: _accepted → 채택 값 없음·이유")
+        refused(ra, ca, lambda: write(ra, ca, value=VAL), "_accepted → 400", reason="_accepted")
+        got = [write(ra, ca, "set", "B: 빨간 장식", preview=True)["effects"]["draft_wait"]]
+        da.pop("_accepted")
+        put(ra, ca, da)
+        got.append(write(ra, ca, "set", "B: 빨간 장식", preview=True)["effects"]["draft_wait"])
+        check(got == [{"before": [], "after": []}, {"before": [], "after": ["타깃 추가"]}],
+              f"수정 미리보기 draft_wait: _accepted 크롭은 대기 없음(계획이 세지 않음) — 같은 한글 새 타깃이 _accepted 가 아니면 '타깃 추가' {got}")
+        rv, cv, _ = drafted("render_fail")
+        dv = spec(rv, cv)
+        next(t for t in dv["targets"] if t.get("id") == "A")["mode"] = 5  # 사람 값(written 과 다름) — 렌더를 깸, 뺄 수 없음
+        put(rv, cv, dv)
+        check(view(rv, cv)["adopt"]["kind"] == "add", "시험 전제: 렌더를 깬 스펙도 채택 값·kind add")
+        for pv in (False, True):
+            e = refused(rv, cv, lambda: write(rv, cv, preview=pv), f"채택 뒤 렌더 점검 실패 → 400(preview={pv}, 쓰지 않음)")
+            check(e is not None and str(e).startswith("렌더 점검 실패 — 쓰지 않음") and "mode '5'" in str(e) and e.extra == {},
+                  f"렌더 점검 실패 문구(사람 값 때문에 Prepare 가 멈춤) {e}")
+        # 채택이 더하는 tid(B)의 스펙 항목은 지금 크롭(B 없음)에서 렌더되지 않음 — 렌더 점검은 수정처럼 반영 뒤 크롭(crop')으로도.
+        # 지금 크롭으로만 보면 써 버리고 다음 반영 뒤 Prepare 가 그 크롭에서 멈춘다(리뷰 3차 r3-14)
+        rb, cb, _ = drafted("render_next")
+        db = spec(rb, cb)
+        db["targets"].append({"id": "B", "mode": 5})  # 사람 값(unknown_target 정보 행 — 내용 보호 사유 아님)
+        put(rb, cb, db)
+        check(view(rb, cb)["adopt"]["kind"] == "add", "시험 전제: 지금 크롭에 없는 B 의 사람 항목이 있어도 채택 값·kind add")
+        for pv in (False, True):
+            e = refused(rb, cb, lambda: write(rb, cb, preview=pv), f"채택 뒤 crop'(B 추가) 렌더 점검 실패 → 400(preview={pv}, 쓰지 않음)")
+            check(e is not None and str(e).startswith("렌더 점검 실패 — 쓰지 않음") and "B: mode '5'" in str(e) and e.extra == {},
+                  f"crop' 렌더 점검 실패 문구 = 수정과 같음(B 의 사람 값) {e}")
+        db["targets"][-1] = {"id": "B", "text": 5}
+        db["_draft"]["written"]["B"] = {"text": 5}  # 노드가 쓴 그대로(C == B) — crop' 에서는 빼야 렌더됨
+        put(rb, cb, db)
+        e = refused(rb, cb, lambda: write(rb, cb), "crop' 에서 노드 필드를 빼야 렌더되는 채택 → 400(채택은 채택 밖 필드를 지우지 않음)")
+        check(e is not None and "B.text 를 빼야 렌더됨" in str(e), f"crop' dropped 거절 문구 = 수정과 같음 {e}")
+        db["targets"].pop()
+        del db["_draft"]["written"]["B"]
+        put(rb, cb, db)
+        check(write(rb, cb)["ok"] and spec(rb, cb)["_layer_targets"] == VAL, "B 항목을 지우면 채택 됨")
+        rn, _refs, mn = _vlm_project("s3a_nodraft", [(LEG, (64, 64), {})])
+        cn = mn["crops"][0]["id"]
+        vn = view(rn, cn)
+        check(vn["seen"] == "null" and vn["draft"] is None and vn["suggestions"] == [] and vn["layer_targets"] == {"value": None, "owner": None}
+              and vn["adopt"] == {"value": "", "kind": None, "reason": "초안 없음 — 채택할 제안 없음"} and _pl_shape(GET["ok"], vn, GET) == [],
+              f"draft_view: 스펙 없음 → seen 'null'·draft null·채택 이유 {vn}")
+        refused(rn, cn, lambda: write(rn, cn), "초안 없음 → 400(스펙 파일을 만들지 않음)", reason="초안 없음 — 채택할 제안 없음")
+        rm_, cm_, _ = drafted("moved")
+
+        def relabel(mm):
+            mm["crops"][0].update(layer_name=f"{LEG} | A: 치마 장식")
+            mm["crops"][0]["targets"][0]["label"] = "치마 장식"
+
+        store.update_manifest(rm_, relabel)
+        refused(rm_, cm_, lambda: write(rm_, cm_, value=VAL), "초안 뒤 라벨이 바뀜 → 400", reason="초안 뒤 레이어명이 바뀜(A) — 재초안 뒤 채택")
+        rs, cs, _ = drafted("nosugg", "008_치마 | A: metal plate", suggest=())
+        refused(rs, cs, lambda: write(rs, cs), "채택할 제안 없음(PSD 문구 타깃뿐) → 400", reason="채택할 제안 없음")
+        rk, ck, _ = drafted("mockdraft", fam="mock", backend_name="vlm_mock")
+        why = "mock 초안의 제안 — 실제 백엔드로 다시 초안한 뒤 채택"
+        check(view(rk, ck)["adopt"]["reason"] == why and view(rk, ck, "mock")["adopt"]["kind"] == "add",
+              "draft_view: mock 초안 — 실제 family 는 거절 이유, mock family 는 채택 가능")
+        e = refused(rk, ck, lambda: write(rk, ck, value=view(rk, ck, "mock")["adopt"]["value"]),
+                    "mock 초안 + 실제 family(openai) → 400, 쓰지 않음(mock 채택값 양보만 남기지 않음)", reason=why)
+        check(e is not None and _pl_shape(POST["errors"]["400"][0], {"error": str(e), **e.extra}, POST) == []
+              and str(e) == f"채택하지 않음: {why}", "거절 본문 {error, reason} 모양 = 400 예시")
+        # kind: keep_human(수정 뒤) · keep_deleted(해제 뒤) · 노드 옛 값(C == B ≠ 지금 제안)
+        rk2, ck2, _ = drafted("human_kind")
+        write(rk2, ck2, "set", "B: metal clasp")
+        vh = view(rk2, ck2)
+        check(vh["adopt"]["kind"] == "keep_human" and vh["layer_targets"] == {"value": "B: metal clasp", "owner": "human"}
+              and _pl_shape(GET["alt"]["human"], vh, GET) == [], f"수정 뒤 draft_view = alt human(keep_human) {vh['adopt']}")
+        refused(rk2, ck2, lambda: write(rk2, ck2), "사람 값 있음 → 400", reason="사람 값 있음 — [수정]으로 바꾸세요")
+        rk3, ck3, _ = drafted("deleted")
+        write(rk3, ck3)
+        rc = write(rk3, ck3, "clear")
+        vd = view(rk3, ck3)
+        dd = spec(rk3, ck3)
+        check("_layer_targets" not in dd and dd["_draft"]["written"]["crop"]["_layer_targets"] == VAL
+              and rc["layer_targets"] == {"value": None, "owner": "deleted"} and vd["adopt"]["kind"] == "keep_deleted"
+              and _pl_shape(GET["alt"]["deleted"], vd, GET) == [] and [t["origin"] for t in rc["targets_after"]] == ["psd"]
+              and rc["effects"]["prompt_changed"] is False and _pl_shape(POST["ok"], rc, POST) == [],
+              f"해제: 키만 지움(written 기록 남음 → keep_deleted), 다음 반영 = 레이어명 타깃만·프롬프트 그대로 {rc}")
+        refused(rk3, ck3, lambda: write(rk3, ck3), "해제한 노드 값 다시 채택 → 400(_draft.deleted 기록만 쓰지 않게 — [수정]으로만)",
+                reason="해제함 — 다시 쓰려면 [수정]")
+        dk = spec(rk3, ck3)
+        dk["_layer_targets"] = dk["_draft"]["written"]["crop"]["_layer_targets"] = "B: old fitting"
+        put(rk3, ck3, dk)
+        vo = view(rk3, ck3)
+        check(vo["adopt"] == {"value": VAL, "kind": None, "reason": ""} and vo["layer_targets"] == {"value": "B: old fitting", "owner": "node"},
+              "노드 옛 값(C == B ≠ 제안): kind 없음·owner node")
+        refused(rk3, ck3, lambda: write(rk3, ck3), "노드 옛 값 그대로 → 400", reason="노드 값 그대로 — 바꾸려면 [수정]")
+        # unwritten: 채택만 400, 수정·해제는 허용하되 write_pending 표식은 바꾸지 않음(노드 Draft 가 원장 초안을 다시 쓰게) — 표식의 그 크롭만
+        ru, cu, _ = drafted("unwritten", extra=[("009_리본 | A: 리본", (96, 96), {})])
+        mk = Path(ru, dvlm.LEDGER_DIR, dvlm.WRITE_MARK)
+        mk.parent.mkdir(parents=True, exist_ok=True)
+        store.write_json_atomic(str(mk), {"at": 1, "specs": [cu]})
+        check(view(ru, cu)["unwritten"] is True, "draft_view: unwritten 표식")
+        e = refused(ru, cu, lambda: write(ru, cu), "원장 초안이 아직 스펙에 안 쓰인 크롭 채택 → 400")
+        check(e is not None and str(e) == POST["errors"]["400"][3]["error"] and e.extra == {}, f"unwritten 거절 문구 {e}")
+        refused(ru, cu, lambda: write(ru, cu, preview=True), "원장 초안이 아직 스펙에 안 쓰인 크롭 채택 미리보기 → 400(같은 검사)·쓰지 않음")
+        mb = mk.read_bytes()
+        ws, wc = write(ru, cu, "set", "B: metal clasp"), write(ru, cu, "clear")
+        check(ws["layer_targets"]["owner"] == "human" and wc["layer_targets"] == {"value": None, "owner": None}
+              and mk.is_file() and mk.read_bytes() == mb, "unwritten 크롭도 수정·해제는 허용, 라우트 쓰기는 표식을 바꾸지 않음(바이트 그대로)")
+        refused(ru, cu, lambda: write(ru, cu), "수정·해제 뒤에도 표식이 남아 채택 → 400")
+        other = store.load_manifest(ru)["crops"][1]["id"]
+        store.write_json_atomic(str(mk), {"at": 1, "specs": [other, dvlm.PROJECT_SPEC_ID]})
+        vu = view(ru, cu)
+        wu = write(ru, cu)
+        check(vu["unwritten"] is False and wu["ok"] and spec(ru, cu)["_layer_targets"] == VAL,
+              f"표식에 다른 크롭·_project 만 → 이 크롭은 unwritten 아님·채택 됨 {vu['unwritten']}")
+        mu = store.load_manifest(ru)
+        base = dict(seen="null", crop_sig="", value="", family="openai", apply_mode="targets")
+        bad = [("family None", dict(base, family=None), cu, "adopt", "family"), ("family 이름(vlm_openai)", dict(base, family="vlm_openai"), cu, "adopt", "family"),
+               ("모르는 op", base, cu, "merge", "op"), ("apply 잘못", dict(base, apply_mode="all"), cu, "adopt", "apply"),
+               ("_project", base, dvlm.PROJECT_SPEC_ID, "set", "채택 대상이 아닙니다"), ("없는 크롭", base, "099_000000", "clear", "크롭이 없습니다"),
+               ("value 없음", dict(base, crop_sig=view(ru, cu)["crop_sig"], value=None), cu, "adopt", "value")]
+        for name, kw, c_, op, contains in bad:
+            expect_raises(lambda: dvlm.adopt_write(ru, mu, c_, op, "B: x", **kw), f"adopt_write {name} → ValueError", contains=contains)
+        expect_raises(lambda: dvlm.draft_view(ru, mu, cu, family=None), "draft_view family None → ValueError", contains="family")
+        expect_raises(lambda: dvlm.draft_view(ru, mu, dvlm.PROJECT_SPEC_ID, family="openai"), "draft_view _project → ValueError",
+                      contains="채택 대상이 아닙니다")
+
+    def t_set():
+        section("S3a-V-S1f 수정(op=set) — 문법 오류·빈 문구·같은 문구·수정·해제 미리보기·이름 바꾼 크롭 앞머리(aliases·crop_id)·레이아웃 모드 "
+                "레이어명·반영 뒤 크롭 렌더 점검(dropped·사람 값 포함)·플래그")
+        r, c, _ = drafted("set")
+
+        def bad(text, contains):
+            before = snap(r, c)
+            e = error(lambda: write(r, c, "set", text))
+            check(type(e) is ValueError and contains in str(e) and snap(r, c) == before, f"수정 {text!r} → ValueError({contains}) {e!r}")
+
+        bad("metal clasp", "라벨 없는 조각")
+        bad("B: x; B: y", "두 번")
+        e = refused(r, c, lambda: write(r, c, "set", "   "), "빈 문구 → 400")
+        check(e is not None and str(e) == POST["errors"]["400"][1]["error"], f"빈 문구 거절 문구 = 400 예시 {e}")
+        # 'X:' 항목이 하나도 없는 문구(구분자뿐·'<크롭 이름> |' 만) — 그대로 쓰면 효과 없는 사람 값이 [채택]을 keep_human 으로 막음(리뷰 2차 r2-12)
+        for t in (";", " ; ｜ ；", f"{LEG} |", f"{LEG} | ; "):
+            for pv in (False, True):
+                e = refused(r, c, lambda: write(r, c, "set", t, preview=pv), f"'X:' 항목 없는 수정 {t!r}(preview={pv}) → 400")
+                check(e is not None and "타깃 항목" in str(e) and "해제를 쓰세요" in str(e), f"항목 없음 거절 문구 {e}")
+        ve = write(r, c, "set", "B:", preview=True)
+        check(ve["ok"] and ve["warnings"][0] == "_layer_targets B: 문구가 비어 무시" and ve["layer_targets"]["value"] == "B:",
+              f"빈 항목('B:')뿐 = 명세대로 경고만(400 아님) {ve['warnings']}")
+        ws = write(r, c, "set", "  B: metal clasp  ")
+        d = spec(r, c)
+        check(d["_layer_targets"] == "B: metal clasp" and "_layer_targets" not in d["_draft"]["written"]["crop"] and list(d)[-1] == "_draft"
+              and ws["layer_targets"] == {"value": "B: metal clasp", "owner": "human"}
+              and [(t["tid"], t["label"], t["origin"]) for t in ws["targets_after"]] == [("A", "치마금속장식", "psd"), ("B", "metal clasp", "adopt")]
+              and ws["effects"]["prompt_changed"] is True and _pl_shape(POST["ok"], ws, POST) == [],
+              f"수정: 사람 값(written 그대로 → owner human), _draft 는 끝, 다음 반영 타깃에 B {ws}")
+        before = snap(r, c)
+        w2 = write(r, c, "set", "B: metal clasp")
+        check(snap(r, c) == before and w2["seen"] == json.dumps(store.file_fingerprint(str(spec_path(r, c)))),
+              "같은 문구 다시 수정 = 쓰지 않음(바이트·mtime 그대로)")
+        vs = view(r, c)
+        pvs = [write(r, c, op, text, preview=True) for op, text in (("set", "B: gold clasp"), ("clear", None))]
+        check(snap(r, c) == before and [x["seen"] for x in pvs] == [vs["seen"]] * 2
+              and [x["layer_targets"] for x in pvs] == [{"value": "B: gold clasp", "owner": "human"}, {"value": None, "owner": None}],
+              f"수정·해제 미리보기: 쓰지 않음(바이트·mtime 그대로), seen = 요청 seen, 쓸 결과의 layer_targets {pvs}")
+        # 렌더 점검 플래그 = 노드 보고서와 같은 기준(_shown_flags)으로 고른 warnings(Codex 1차 b-1 — 8189 [수정] 확인 창의 날것 'warn: 기본 설명'·
+        # 'v4_equals_v1'): targets 의 레거시 lint: CJK = '영문 이름 없음' 문구, full 은 그대로
+        wt, wf = write(r, c, "set", "B: 빨간 장식")["warnings"], write(r, c, "set", "B: 빨간 장식", apply_mode="full", preview=True)["warnings"]
+        check(wt == ["A 영문 이름 없음 → adopt 또는 용어집"] and wf == ["lint: CJK"],
+              f"렌더 점검 플래그는 warnings — targets 의 레거시 CJK 는 노드 보고서 문구, full 은 lint: CJK {wt} {wf}")
+        # 레퍼런스가 있는 크롭(ref_correct — 기본 설명이 들어가 V4 = V1): 초안 전 = 기대값 셋(lint: CJK·기본 설명·v4_equals_v1) 숨김, 초안 뒤
+        # targets = 기본 설명·v4_equals_v1 숨김(노드 보고서처럼 — 확인 창에 늘 뜨던 날것 코드), full = 그대로(노드 보고서도 보임)
+        lref = [(f"{LEG}.png", (96, 96))]
+        rf, cf, _ = drafted("set_flags", refs=lref)
+        rn0, _refs, mn0 = _vlm_project("s3a_set_flags0", [(LEG, (128, 128), {})], refs=lref)
+        texts = ("A: metal plate; B: red pen", "B: red pen")
+        got = {f"{k}/{am}/{t}": write(root_, cid_, "set", t, apply_mode=am, preview=True)["warnings"]
+               for k, root_, cid_ in (("drafted", rf, cf), ("nodraft", rn0, mn0["crops"][0]["id"])) for am in ("targets", "full") for t in texts}
+        want = {f"drafted/targets/{texts[0]}": [], f"drafted/targets/{texts[1]}": ["A 영문 이름 없음 → adopt 또는 용어집"],
+                f"drafted/full/{texts[0]}": ["warn: 기본 설명", "v4_equals_v1"], f"drafted/full/{texts[1]}": ["lint: CJK", "warn: 기본 설명", "v4_equals_v1"],
+                **{f"nodraft/{am}/{t}": [] for am in ("targets", "full") for t in texts}}
+        check(got == want, f"[수정] warnings 의 렌더 플래그 = 노드 보고서 기준(초안 전 기대값 숨김·targets 의 기본 설명·v4_equals_v1 숨김·full 은 그대로) {got}")
+        # 병합 경고(레이어명 문구가 이김·빈 문구 무시)도 warnings — 수정의 일부가 무시됨을 Studio 가 보이는 유일한 신호
+        rw, _refs, mw = _vlm_project("s3a_set_warn", [("008_치마 | A: metal plate; B: red pen", (64, 64), {})])
+        cw = mw["crops"][0]["id"]
+        got = [write(rw, cw, "set", text, preview=pv)["warnings"] for text in ("A: other plate; B: red pen", "B: red pen; C:")
+               for pv in (True, False)]
+        check(got == [["_layer_targets A: 레이어명 문구 'metal plate' 가 이김('other plate' 무시)"]] * 2
+              + [["_layer_targets C: 문구가 비어 무시"]] * 2, f"수정 warnings = merge_layer_targets 경고(미리보기·쓰기 같음) {got}")
+        same = write(rw, cw, "set", "A: metal plate", preview=True)
+        check(same["ok"] and same["warnings"] == [] and same["effects"]["prompt_changed"] is False,
+              f"PSD 문구와 같은 항목('A: metal plate') = 항목 1개 — 채택 타깃·경고가 없어도 400 아님 {same['warnings']}")
+        # prompt_changed 는 name_en 도 비교: 사람이 매니페스트에서 고친 name_en 을 같은 라벨의 ASCII 문구가 덮음 → 다음 반영에서 새 셀
+        got = [write(rw, cw, "set", "B: red pen", preview=True)["effects"]["prompt_changed"]]
+        store.update_manifest(rw, lambda mm: mm["crops"][0]["targets"][1].update(name_en="pen, red"))
+        got.append(write(rw, cw, "set", "B: red pen", preview=True)["effects"]["prompt_changed"])
+        check(got == [False, True], f"prompt_changed: 같은 타깃이면 False, 매니페스트 name_en(사람 값)만 달라도 True {got}")
+        d = spec(r, c)
+        d["targets"].append({"id": "C", "mode": 5})  # 사람 값 — 지금 크롭(C 없음)에서는 렌더에 안 들어감
+        put(r, c, d)
+        e = refused(r, c, lambda: write(r, c, "set", "B: metal clasp; C: gold rim"), "반영 뒤 크롭(C 추가)으로 렌더 점검 실패 → 400")
+        check(e is not None and "렌더 점검 실패" in str(e) and write(r, c, "set", "B: metal rim")["ok"],
+              "렌더 점검은 반영 뒤 크롭(crop' — 새 타깃 포함)으로: C 를 더하는 수정만 막힘(지금 크롭으로 보면 통과했을 것)")
+        rr, _refs, mr = _vlm_project("s3a_alias", [("008_새이름", (64, 64), {})])
+        cr = mr["crops"][0]["id"]
+        store.update_manifest(rr, lambda mm: mm["crops"][0].update(psd_name="008_옛이름"))
+        wa = write(rr, cr, "set", "008_옛이름 | B: red pen")
+        check(store.crop_id_for("008_옛이름") != cr and spec(rr, cr)["_layer_targets"] == "008_옛이름 | B: red pen"
+              and [(t["tid"], t["label"]) for t in wa["targets_after"]] == [("A", "새이름"), ("B", "red pen")],
+              f"이름 바꾼 크롭: psd_name 별칭 앞머리를 떼고 검사(노드 merge_adopted 와 같은 인자) {wa['targets_after']}")
+        store.update_manifest(rr, lambda mm: mm["crops"][0].pop("psd_name"))
+        e = error(lambda: write(rr, cr, "set", "008_옛이름 | C: blue pen"))
+        check(type(e) is ValueError and "라벨 없는 조각" in str(e), f"별칭이 없으면 같은 앞머리 = 문법 오류 {e!r}")
+        ri, _refs, mi = _vlm_project("s3a_rename", [("008_처음이름", (64, 64), {})])
+        ci = mi["crops"][0]["id"]
+        store.update_manifest(ri, lambda mm: mm["crops"][0].update(name="008_새이름", layer_name="008_새이름"))  # Studio 이름 바꿈
+        wi = write(ri, ci, "set", "008_처음이름 | B: red pen")
+        check(ci == store.crop_id_for("008_처음이름") and [(t["tid"], t["label"]) for t in wi["targets_after"]] == [("A", "새이름"), ("B", "red pen")],
+              f"이름 바꾼 크롭(psd_name 없음): 크롭 ID(처음 이름) 앞머리를 떼고 검사(crop_id 인자) {wi['targets_after']}")
+        # 레이아웃 모드: 검사·렌더 점검은 다음 반영이 읽을 합성 레이어명(C 문구 포함)과 레이아웃 크롭의 psd_name 으로
+        rl, cl, _ = drafted("set_layout")
+        lay = store.layout_from_manifest(store.load_manifest(rl))
+        lay["crops"][0].update(psd_name="008_옛이름", targets=[{"tid": "A", "text": "", "box": None}, {"tid": "B", "text": "", "box": None},
+                                                             {"tid": "C", "text": "gold rim", "box": None}])
+        store.update_layout(rl, lambda doc: doc.update(lay), expect_rev=None, create=True)
+        wl = write(rl, cl, "set", "008_옛이름 | B: red pen")
+        check(store.load_manifest(rl)["crops"][0].get("psd_name") is None
+              and [(t["tid"], t["label"], t["origin"]) for t in wl["targets_after"]]
+              == [("A", "치마금속장식", "layout"), ("B", "red pen", "adopt"), ("C", "gold rim", "layout")],
+              f"레이아웃 모드: 레이아웃 크롭 psd_name(매니페스트엔 없음) 앞머리를 떼고, 다음 반영 타깃 = 합성 레이어명 + 수정 {wl['targets_after']}")
+        wv = write(rl, cl, "set", "B: red pen; C: blue rim; D:", preview=True)
+        check(wv["effects"]["layout_wins"] == ["C"]
+              and wv["warnings"] == ["_layer_targets D: 문구가 비어 무시", "레이아웃 문구가 이김(C) — 편집 모드에서 고치세요", "lint: CJK"],
+              f"레이아웃 모드 경고: 레이아웃 문구가 이긴 tid 는 레이아웃 경고 한 줄(같은 뜻의 '레이어명 문구가 이김' 없음), 빈 문구 경고는 남음, "
+              f"렌더 플래그(A 의 한글 부위 라벨)는 뒤 {wv['warnings']}")
+        dl = spec(rl, cl)
+        dl["targets"].append({"id": "C", "mode": 5})  # 사람 값 — 매니페스트 크롭(C 없음)으로 보면 렌더에 안 들어감
+        put(rl, cl, dl)
+        e = refused(rl, cl, lambda: write(rl, cl, "set", "B: metal clasp"), "레이아웃 C 문구가 들어간 crop' 렌더 점검 실패 → 400")
+        check(e is not None and "렌더 점검 실패" in str(e) and "C: mode" in str(e), f"crop' = 다음 반영 레이어명의 타깃(C 포함) {e}")
+        # 노드가 쓴 그대로인 필드를 빼야 렌더되면(render_check dropped) 쓰지 않음 — 노드 Draft 와 달리 Studio 수정은 노드 필드를 지우지 않는다
+        rd, cd, _ = drafted("set_dropped")
+        dd = spec(rd, cd)
+        dd["targets"].append({"id": "C", "text": 5})
+        dd["_draft"]["written"]["C"] = {"text": 5}  # C == B — render_check 가 뺄 수 있는 노드 필드
+        put(rd, cd, dd)
+        e = refused(rd, cd, lambda: write(rd, cd, "set", "B: metal clasp; C: gold rim"), "노드 필드를 빼야 렌더되는 수정 → 400")
+        check(e is not None and "C.text 를 빼야 렌더됨" in str(e), f"dropped 거절 문구 {e}")
+        dd["_draft"]["written"]["C"] = {"text": "x"}  # 노드는 'x' 를 썼고 사람이 5 로 바꿈(C ≠ B) — owned 아님, 빼지 않음
+        put(rd, cd, dd)
+        e = refused(rd, cd, lambda: write(rd, cd, "set", "B: metal clasp; C: gold rim"), "사람이 바꾼 필드가 렌더를 깨는 수정 → 400")
+        check(e is not None and str(e).startswith("렌더 점검 실패 — 쓰지 않음") and "빼야" not in str(e),
+              f"사람 값은 노드 필드로 세지 않음(렌더 점검 실패 문구 — '노드가 쓴 … 빼야' 아님) {e}")
+
+    def t_conflict():
+        section("S3a-V-S1g 동시성 409(SpecConflict) — seen·crop_sig(채택·수정·해제 × 쓰기·미리보기)·value, 잠금 안에서 다시 읽은 크롭, "
+                "깨진 스펙 JSON 400")
+        r, c, _ = drafted("conflict")
+        v = view(r, c)
+
+        def conflict(fn, contains, msg):
+            before = snap(r, c)
+            e = error(fn)
+            check(isinstance(e, dvlm.SpecConflict) and contains in str(e) and snap(r, c) == before, f"{msg}: {e!r}")
+
+        p = spec_path(r, c)
+        p.write_text(p.read_text(encoding="utf-8") + "\n", encoding="utf-8")  # 다른 곳의 쓰기(내용 같고 지문만 바뀜)
+        ops = (("adopt", None), ("set", "B: metal clasp"), ("clear", None))
+        for op, text in ops:
+            for pv in (False, True):
+                conflict(lambda: dvlm.adopt_write(r, store.load_manifest(r), c, op, text, seen=v["seen"], crop_sig=v["crop_sig"],
+                                                  value=VAL if op == "adopt" else None, family="openai", apply_mode="targets", preview=pv),
+                         "스펙이 다른 곳에서 바뀌었습니다", f"seen 다름 → 409({op}, preview={pv})")
+                conflict(lambda: write(r, c, op, text, crop_sig=v["crop_sig"].replace("psd", "adopt"), preview=pv), "크롭이 바뀌었습니다",
+                         f"crop_sig 다름 → 409({op}, preview={pv})")
+        conflict(lambda: write(r, c, value="B: other"), "채택 값이 바뀌었습니다", "value 다름 → 409")
+        v2 = view(r, c)
+        m_old = store.load_manifest(r)
+        store.update_manifest(r, lambda mm: mm["crops"][0].update(layer_name=f"{LEG} | A: 치마"))
+        for op, text in ops:
+            for pv in (False, True):
+                conflict(lambda: dvlm.adopt_write(r, m_old, c, op, text, seen=v2["seen"], crop_sig=v2["crop_sig"],
+                                                  value=VAL if op == "adopt" else None, family="openai", apply_mode="targets", preview=pv),
+                         "크롭이 바뀌었습니다", f"호출자 매니페스트(낡음)와는 맞지만 잠금 안에서 다시 읽은 크롭 ≠ crop_sig → 409({op}, preview={pv})")
+        v3 = view(r, c)
+        for op, text in ops:  # 잠금 앞 대조 — 수정은 낡은 크롭으로 nxt·검사·crop' 를 만들고 디스크 대조는 통과해 그대로 쓴다
+            for pv in (False, True):
+                conflict(lambda: dvlm.adopt_write(r, m_old, c, op, text, seen=v3["seen"], crop_sig=v3["crop_sig"],
+                                                  value=v3["adopt"]["value"] if op == "adopt" else None, family="openai",
+                                                  apply_mode="targets", preview=pv),
+                         "크롭이 바뀌었습니다", f"디스크와는 맞지만 호출자 매니페스트(낡음)의 크롭 ≠ crop_sig → 409({op}, preview={pv})"
+                                            f"(낡은 크롭으로 문맥을 만들지 않게)")
+        if os.name == "nt":  # 다른 프로그램의 바이트 잠금(OSError) — 파일은 멀쩡: 이유는 JSON 오류가 아니라 다시 읽기 안내(리뷰 2차 r2-13)
+            import msvcrt
+            with open(p, "r+b") as fh:
+                size = p.stat().st_size
+                msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, size)
+                try:
+                    vl = view(r, c)
+                finally:
+                    fh.seek(0)
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, size)
+            check(vl["spec_error"].startswith(f"specs/{c}.json 읽기 실패:") and vl["seen"] == "null"
+                  and vl["adopt"] == {"value": "", "kind": None, "reason": "스펙 파일을 읽지 못함(다른 프로그램이 잡고 있으면 잠시 뒤 [다시 읽기])"}
+                  and _pl_shape(GET["alt"]["spec_error"], vl, GET) == [],
+                  f"잠긴 스펙: spec_error 에 원인, adopt.reason 은 'JSON 오류 — 고친 뒤' 아님 {vl['spec_error']} {vl['adopt']}")
+            check(view(r, c)["adopt"] == v3["adopt"], "잠김이 풀린 뒤 다시 읽으면 채택 판정 그대로")
+        p.write_text("{broken", encoding="utf-8")
+        vb = view(r, c)
+        check(vb["spec_error"] and vb["draft"] is None and vb["suggestions"] == [] and vb["layer_targets"] == {"value": None, "owner": None}
+              and vb["adopt"] == {"value": "", "kind": None, "reason": "스펙 JSON 오류 — 파일을 고친 뒤 다시"}
+              and vb["seen"] == json.dumps(store.file_fingerprint(str(p))) and _pl_shape(GET["alt"]["spec_error"], vb, GET) == [],
+              f"깨진 스펙: draft_view 가 spec_error 로 싣고 채택 값을 비움(alt spec_error 모양) {vb['spec_error']}")
+        wrong = []
+        for op, text in (("adopt", None), ("set", "B: x"), ("clear", None)):
+            for pv in (False, True):
+                e = error(lambda: dvlm.adopt_write(r, store.load_manifest(r), c, op, text, seen=vb["seen"], crop_sig=vb["crop_sig"],
+                                                   value="", family="openai", apply_mode="targets", preview=pv))
+                if not (type(e) is ValueError and "JSON 오류" in str(e)):
+                    wrong.append((op, pv, repr(e)))
+        check(not wrong and p.read_text(encoding="utf-8") == "{broken", f"깨진 스펙: 채택·수정·해제(쓰기·미리보기) 모두 400, 파일 그대로 {wrong}")
+
+    def t_shape():
+        section("S3a-V-S1h 사람이 고친 스펙의 targets 가 목록이 아님(5·true·'x')·refs 가 목록이 아님 — GET /draft spec_error·채택 쓰기 400"
+                "(TypeError 500 아님)·계획 경로(draft_plan targets·prepare_inputs_fp·explicit_refs·보드 계획 라우트)")
+        import bmk_design_patch_board as board
+        r, c, _ = drafted("shape", extra=[("009_리본 | A: 리본", (96, 96), {})])
+        m = store.load_manifest(r)
+        c2 = m["crops"][1]["id"]
+        good = spec(r, c)
+        # 009: 영문 이름 없는 비레거시 타깃 + 초안 키 — apply=targets 대기 판정(_named)이 스펙 targets 를 읽는다
+        good2 = {"targets": [], "_draft": {"key": "a1" * 12, "written": {"A": {}}}}
+        why = "스펙 JSON 오류 — 파일을 고친 뒤 다시"
+        for bad in (5, True, "x"):
+            put(r, c, {**good, "targets": bad})
+            put(r, c2, {**good2, "targets": bad})
+            e = error(lambda: view(r, c))
+            v = view(r, c) if e is None else e
+            check(isinstance(v, dict) and v["spec_error"] == f"specs/{c}.json — targets 가 목록이 아님" and v["draft"] is None
+                  and v["adopt"] == {"value": "", "kind": None, "reason": why} and _pl_shape(GET["alt"]["spec_error"], v, GET) == [],
+                  f"targets {bad!r}: draft_view 가 spec_error 로 싣고 스펙을 없는 것으로(채택·수정 단추 끔 — alt spec_error 모양) {v!r}"[:400])
+            wrong = []
+            for op, text in (("adopt", None), ("set", "B: x"), ("clear", None)):
+                for pv in (False, True):
+                    before = snap(r, c)
+                    e = error(lambda: dvlm.adopt_write(r, store.load_manifest(r), c, op, text, seen=json.dumps(store.file_fingerprint(
+                        str(spec_path(r, c)))), crop_sig=dvlm.crop_signature(m["crops"][0]), value="", family="openai",
+                        apply_mode="targets", preview=pv))
+                    if not (type(e) is ValueError and "targets 가 목록이 아님" in str(e)) or snap(r, c) != before:
+                        wrong.append((op, pv, repr(e)))
+            check(not wrong, f"targets {bad!r}: 채택·수정·해제(쓰기·미리보기) 모두 ValueError(400)·파일 그대로 {wrong}")
+            ctx = dvlm.build_crop_ctx(r, m, m["crops"][0], refs_dir=m["source"].get("refs_dir") or "",
+                                      glossary=store.project_glossary(r, m), backend="openai", memo={})
+            check(dvlm.adopt_state(r, m, ctx, ctx.spec, family="openai", memo={}) == ("", None, why),
+                  f"targets {bad!r}: 보드 칩 공용 판정 adopt_state 도 스펙 오류")
+            got = {}
+            for am in ("targets", "full"):
+                got[am] = error(lambda: dvlm.draft_plan(r, m, "", "vlm_openai", family="openai", model="gpt-6-sol", effort="xhigh",
+                                                        image_detail="high", draft_round=0, mode="fill", only=[], concurrency=4,
+                                                        model_dir="", apply_mode=am, memo={}))
+            got["prepare_inputs_fp"] = error(lambda: store.prepare_inputs_fp(r, m))
+            got["explicit_refs"] = error(lambda: drefs.explicit_refs(r, m))
+            got["pipeline_plan"] = error(lambda: board.pipeline_plan(r, only_ids=[], style=False))
+            check(all(e is None for e in got.values()), f"targets {bad!r}: 계획 경로가 예외 없이 끝남(보드 계획 라우트 500 아님) {got}")
+        put(r, c, {**good, "targets": [{"id": "A", "refs": 5}, {"id": "B", "refs": [5, "x.png"]}]})
+        got = [error(lambda: store.prepare_inputs_fp(r, m)), error(lambda: drefs.explicit_refs(r, m))]
+        check(got == [None, None], f"refs 가 목록이 아님·원소가 문자열 아님 → 지문·이름 참조가 예외 없이 {got}")
+        put(r, c, good)
+        put(r, c2, good2)
+        check(view(r, c)["spec_error"] is None and write(r, c)["ok"] and spec(r, c)["_layer_targets"] == VAL,
+              "고친 뒤 → 다시 채택 가능")
+
+    def t_arrived():
+        section("S3a-V-S1i 원장에 도착했지만 스펙에 안 쓰인 초안(Spec Draft 취소·preview — write_pending 표식 없음) — 옛 제안 채택 거절·"
+                "수정·해제 영향·노드 병합 뒤 새 제안 채택, 거절 아님: 키만 바뀐 도착분·지금 입력과 다른 도착분·스펙 초안 전 done, 다른 백엔드 도착분")
+        NEW, WHY = "golden clasp ring", POST["errors"]["400"][3]["error"]
+        WARN = "원장에 도착한 초안이 아직 스펙에 안 쓰임"
+
+        def arrive(root, cid, fam, model, effort=None, detail=None, *, at=None, rnd=0):
+            """원장에 done 만 남은 시도(req 기록 settings·본문 model = 키 모델) — 지금 문맥(그 백엔드)으로 만든 요청의 키."""
+            mm = store.load_manifest(root)
+            cx = dvlm.build_crop_ctx(root, mm, mm["crops"][0], refs_dir=mm["source"].get("refs_dir") or "",
+                                     glossary=store.project_glossary(root, mm), backend=fam, memo={})
+            rq = dvlm.build_request(cx, backend=fam, model=model, effort=effort, image_detail=detail, draft_round=rnd, model_dir="")
+            lg = dvlm.Ledger(root)
+            lg.write(cid, rq.key, 1, "req", {"settings": {"backend": dvlm.BACKEND_NAMES[fam], "model": model, "effort": rq.effort,
+                                                          "image_detail": rq.image_detail, "draft_round": rnd},
+                                             "body": {"model": dvlm._key_model(fam, model, "")}})
+            parsed, repairs = dvlm.extract_json(dvlm._mock_text(rq, [NEW]))
+            lg.write(cid, rq.key, 1, "done", {"parsed": parsed, "repairs": repairs, **({"at": at} if at else {})})
+            return rq
+
+        def hint(root, cid, h):
+            d = spec(root, cid)
+            d["_hint"] = h
+            put(root, cid, d)
+
+        # (1) mock 백엔드: 사람이 _hint 를 고침 → 승인한 Draft 가 원장 done 을 받은 뒤 취소(_draft_write 없음 — 실제 run_units 기록)
+        r, c, _ = drafted("arr", fam="mock", backend_name="vlm_mock")
+        v0 = view(r, c, "mock")
+        hint(r, c, "look at the gold clasp")
+        m = store.load_manifest(r)
+        cfg = dict(family="mock", model="mock", effort=None, image_detail=None, draft_round=0, mode="fill", only=[], concurrency=4,
+                   model_dir="", apply_mode="targets")
+        ap = dvlm.draft_plan(r, m, "", "vlm_mock", memo={}, **cfg)[4]
+        ctxs, reqs, _s, _p, ap = dvlm.draft_plan(r, m, ap["pending_hash"], "vlm_mock", memo={}, **cfg)
+        asyncio.run(dvlm.run_units(r, ap["to_run"], reqs, dvlm.MockVLM({"suggest": {c: [NEW]}}), model="mock", effort=None,
+                                   image_detail=None, concurrency=1, credit_cap=0, progress_cb=lambda *a: None))
+        pl2 = dvlm.draft_plan(r, m, "", "vlm_mock", memo={}, **cfg)[3]
+        va = view(r, c, "mock")
+        check(len(ap["to_run"]) == 1 and dvlm.unwritten_specs(r) == [] and pl2["units"] == [] and pl2["cached"] == [c]
+              and va["unwritten"] is False and va["adopt"] == {"value": "", "kind": None, "reason": WHY}
+              and va["suggestions"] == v0["suggestions"] and _pl_shape(GET["ok"], va, GET) == [],
+              f"도착분(계획 cached·표식 없음): GET /draft 는 옛 제안을 채택 가능으로 보이지 않음(unwritten 과 같은 이유) {va['adopt']}")
+        ctx = next(x for x in ctxs if x.crop_id == c)
+        check(dvlm.adopt_state(r, m, ctx, ctx.spec, family="mock", memo={}) == ("", None, WHY), "보드 칩 공용 판정 adopt_state 도 같은 거절")
+        for pv in (False, True):
+            refused(r, c, lambda: write(r, c, fam="mock", value=v0["adopt"]["value"], preview=pv),
+                    f"도착분 크롭 채택(옛 화면의 value) → 400·쓰지 않음(preview={pv}) — 409 아님", reason=WHY)
+        ws = write(r, c, "set", "B: brass ring", fam="mock", preview=True)
+        wc = write(r, c, "clear", fam="mock", preview=True)
+        check(ws["effects"]["prompt_changed"] is True and ws["effects"]["draft_wait"]["before"] == []
+              and ws["effects"]["draft_wait"]["after"] == ["_hint 변경"] and any(WARN in w for w in ws["warnings"])
+              and wc["effects"]["prompt_changed"] is False and wc["effects"]["draft_wait"] == {"before": [], "after": []}
+              and not any(WARN in w for w in wc["warnings"]),
+              f"수정·해제는 허용: 반영 전 대기 없음(도착분이 0 호출로 병합), 프롬프트가 바뀌는 수정만 그 초안을 잃는다는 경고·반영 뒤 유료 대기 "
+              f"{ws['effects']['draft_wait']} {ws['warnings']} / {wc['effects']['draft_wait']}")
+        req = reqs[c]
+        node_write(r, store.load_manifest(r), ctx, req, dvlm.Ledger(r).done(c, req.key), _vprov(req, backend="vlm_mock", key=req.key),
+                   fam="mock")
+        vn = view(r, c, "mock")
+        wn = write(r, c, fam="mock")
+        check(vn["adopt"]["kind"] == "add" and NEW in vn["adopt"]["value"] and wn["ok"] and NEW in spec(r, c)["_layer_targets"],
+              f"노드가 도착분을 병합한 뒤 → 새 제안 채택 {vn['adopt']}")
+        # (2) 키만 바뀐 도착분(effort — fill 사유 없음 = 노드 '갱신 가능', fill 이 적용하지 않음) → 거절 아님(노드 adopt 도 옛 제안)
+        rk, ck, _ = drafted("arr_key")
+        arrive(rk, ck, "openai", "gpt-6-sol", "high", "high")
+        check(view(rk, ck)["adopt"]["kind"] == "add" and write(rk, ck)["ok"], "키만 바뀐 도착분 → 채택 가능(노드 fill 도 적용 안 함)")
+        # (3) 도착분 뒤 사람이 _hint 를 다시 고침 → 지금 입력의 키가 아님(노드도 병합 안 함) → 거절 아님
+        rh, ch, _ = drafted("arr_moved")
+        hint(rh, ch, "look at the gold clasp")
+        arrive(rh, ch, "openai", "gpt-6-sol", "xhigh", "high")
+        got = [view(rh, ch)["adopt"]["reason"]]
+        hint(rh, ch, "look at the side fitting")
+        got.append(view(rh, ch)["adopt"]["kind"])
+        check(got == [WHY, "add"], f"같은 입력의 도착분 → 거절, 그 뒤 _hint 를 또 고치면(다른 키) → 채택 가능 {got}")
+        # (4) 스펙 초안(_draft.drafted) 전 done 은 도착분이 아님 · 다른 설정(model)의 새 done 은 도착분
+        ro, co, _ = drafted("arr_old")
+        hint(ro, co, "look at the gold clasp")
+        arrive(ro, co, "openai", "gpt-6-sol", "xhigh", "high", at="2026-10-01 00:00:00")
+        got = [view(ro, co)["adopt"]["kind"]]
+        arrive(ro, co, "openai", "gpt-6-astra", "high", "high")
+        got.append(view(ro, co)["adopt"]["reason"])
+        check(got == ["add", WHY], f"drafted 전 done → 채택 가능, 그 뒤 다른 설정의 새 done → 거절(Studio 설정과 무관) {got}")
+        # (5) 다른 백엔드(local_qwen — 본문 model = 키 모델, 그 백엔드 문맥(전송 크기 32 배수)으로 다시 만든 키)의 도착분도 거절
+        rq_, cq, _ = drafted("arr_qwen", wh=(250, 170))
+        hint(rq_, cq, "look at the gold clasp")
+        arrive(rq_, cq, "local_qwen", "Qwen3-VL-8B-Instruct")
+        refused(rq_, cq, lambda: write(rq_, cq), "local_qwen 도착분(Studio family openai, 전송 크기가 다른 문맥) → 400", reason=WHY)
+        # (6) mock 초안 스펙 + mock 도착분(draft_round 만 다름): 'mock 초안 교체'는 실제 백엔드의 사유 — mock 노드 fill 은 적용 안 함
+        rm_, cm_, _ = drafted("arr_mockround", fam="mock", backend_name="vlm_mock")
+        arrive(rm_, cm_, "mock", "mock", rnd=1)
+        check(view(rm_, cm_, "mock")["adopt"]["kind"] == "add", "mock 스펙의 mock 도착분이 키만 다름 → 채택 가능(노드 mock fill 도 적용 안 함)")
+
+    try:
+        _guarded("V-S1a", t_pure)
+        _guarded("V-S1b", t_store)
+        _guarded("V-S1c", t_vlm_moved)
+        _guarded("V-S1d", t_adopt)
+        _guarded("V-S1e", t_refuse)
+        _guarded("V-S1f", t_set)
+        _guarded("V-S1g", t_conflict)
+        _guarded("V-S1h", t_shape)
+        _guarded("V-S1i", t_arrived)
+    finally:
+        if env_mock is not None:
+            os.environ[runner.MOCK_ENV] = env_mock
+
+
+# ── U3(보드 라우트) ─────────────────────────────────────────────────────
+def pipeline_board_unit():
+    """S3a B32–B35·B37·B38·B22′·B0‴·B11·B12″(서버)(U3): /pipeline·/pipeline/settings·/pipeline/prompt·/pipeline/plan·/pipeline/progress·
+    /draft·/draft/adopt 라우트, state pipeline_rev·plan_v·draft_chip, S1-a layout_psd 이름별 갱신, 보드 vlm 경계(--quick 포함).
+    응답 모양은 _pl_api()·_pl_shape 로 tools/fixtures/pipeline_api.json 과 대조. 합성 프로젝트 = _vlm_project(크롭 3 — 001 은 초안 없음,
+    002·003 은 노드 경로(write_spec(merge_crop))로 쓴 openai 초안 + 제안) + jobs 3(001 완료·002 대기 1 + 재굴림 1·003 실패) + 옛 셀
+    복구 1. 유료 호출 0(계획·채택만 — 실행 없음)."""
+    section("S3a pipeline_board_unit — 보드 파이프라인 라우트(U3)")
+    import bmk_design_patch_board as board
+    import bmk_design_patch_pipeline as pl
+    import bmk_design_patch_runner as runner
+    import bmk_design_patch_vlm as dvlm
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    OUT = OUT_ROOT / "pipeline_board"
+    shutil.rmtree(OUT, ignore_errors=True)
+    OUT.mkdir(parents=True)
+    VLM_OUT.mkdir(parents=True, exist_ok=True)
+    API = "/bmk/design_patch"
+    R, ST = _pl_api()["routes"], _pl_api()["state"]
+    LEG, FIT = "003_치마금속장식", "side connection fitting"
+    STALE = "ab" * 12  # jobs 에 없는 옛 셀(원장 req·resp — 매니페스트에 없는 크롭)
+    H = "0123456789ab"
+    env_mock = os.environ.pop(runner.MOCK_ENV, None)
+
+    class Http:
+        def __init__(self, client):
+            self.c = client
+
+        async def get(self, path, **params):
+            r = await self.c.get(path, params=params or None, allow_redirects=False)
+            return r.status, r.headers, await r.read()
+
+        async def jget(self, path, **params):
+            st, _hd, body = await self.get(path, **params)
+            return st, json.loads(body.decode("utf-8"))
+
+        async def post(self, path, payload, ctype="application/json"):
+            data = payload if isinstance(payload, (bytes, str)) else json.dumps(payload, ensure_ascii=False)
+            r = await self.c.post(path, data=data.encode("utf-8") if isinstance(data, str) else data, headers={"Content-Type": ctype})
+            body = await r.read()
+            try:
+                return r.status, json.loads(body.decode("utf-8"))
+            except ValueError:
+                return r.status, body
+
+    def ledger(root, ck, name, obj):
+        p = Path(root, "cands", ck, name)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(obj), encoding="utf-8")
+
+    def draft_spec(root, i, suggest=(FIT,), fam="openai", apply_mode="targets"):
+        """노드 Spec Draft 의 크롭 쓰기(write_spec(merge_crop) — mock 출력 → extract → 정규화)로 크롭 i 의 초안 스펙(제안 있음).
+        fam = 초안 백엔드(openai 출처 | mock 출처), apply_mode = 그 Draft 의 apply 위젯(full 이면 문장 필드도 씀)."""
+        m = store.load_manifest(root)
+        crop = m["crops"][i]
+        rd, gl = m["source"].get("refs_dir") or "", store.project_glossary(root, m)
+        ctx = dvlm.build_crop_ctx(root, m, crop, refs_dir=rd, glossary=gl, backend=fam, memo={})
+        req = dvlm.build_request(ctx, backend=fam, model="gpt-6-sol", effort="xhigh", image_detail="high", draft_round=0,
+                                 model_dir="")
+        parsed, repairs = dvlm.extract_json(dvlm._mock_text(req, list(suggest)))
+        prov = _vprov(req, backend=dvlm.BACKEND_NAMES[fam], model="gpt-6-sol", effort="xhigh")
+        dvlm.write_spec(root, crop["id"], lambda cur: dvlm.merge_crop(
+            cur, "fill", ctx=ctx, req=req, crop=crop, done={"parsed": parsed, "repairs": repairs}, prov=prov,
+            project_style=dvlm.project_style_for(root, apply_mode), apply_mode=apply_mode, adopt=False, backend=fam,
+            refs_dir=rd, glossary=gl, out={}))
+
+    def project(case):
+        """합성 프로젝트 → (root, ids, jobs). pipeline.json 없음, prepare_settings 없음(jobs 에서 유도 — variants·ref_style 확인 필요),
+        Export 기록 1(prefix), prepare_inputs = 지금 지문(반영됨)."""
+        root, refs_dir, m = _vlm_project(f"s3u3_{case}", [("001_머리 | A: 리본", (128, 128), {}), ("002_장갑", (96, 96), {}),
+                                                          (LEG, (128, 96), {})], refs=[("001_머리.png", (64, 64))])
+        psd = Path(root).parent.parent / "art_DP.psd"
+        psd.write_bytes(b"psd")
+        ids = [c["id"] for c in m["crops"]]
+        jobs = [_pl_job(ids[0]), _pl_job(ids[1], reps=2), _pl_job(ids[2])]
+
+        def edit(mm):
+            mm["source"].update(psd=psd.as_posix(), fingerprint=store.file_fingerprint(str(psd)), crop_group="auto",
+                                clean_plate_layer="auto", base_layer="auto", crop_pixels_group="auto",
+                                refs_dir=Path(refs_dir).as_posix(), glossary="")
+            mm["jobs"], mm["rerolls"] = jobs, {jobs[1]["cell_key"]: 1}
+            mm["exports"] = [{"rev": 2, "psd": "G:/o/proj_r2.psd", "time": "2026-10-17 10:00:00", "problems": 0, "bytes": 10,
+                              "options": {"prefix": "proj", "layer_mode": "smart_object", "alternates": "hidden_all", "color": "toned",
+                                          "mask_source": "hand_else_auto", "include_base": True, "include_crop_outlines": True},
+                              "compose": {"mask_source": "hand_else_auto", "use_registration": True, "use_tone": True,
+                                          "zorder": "auto_small_on_top"}}]
+
+        store.update_manifest(root, edit)
+        ledger(root, jobs[0]["cell_key"], "r0.done.json", {"call_id": f"{jobs[0]['cell_key']}_r0"})
+        ledger(root, jobs[2]["cell_key"], "r0.failed.json", {"error": "고장", "retryable": True})
+        ledger(root, STALE, "r0.req.json", {"cell_key": STALE, "crop_id": "009_aaaaaa", "tid": "A", "variant": "V1", "n": 2})
+        ledger(root, STALE, "r0.resp.json", {"data": []})
+        for i in (1, 2):
+            draft_spec(root, i)
+        store.update_manifest(root, lambda mm: mm.update(prepare_inputs=store.prepare_inputs_fp(root, mm)))
+        return root, ids, jobs
+
+    def cur(root):
+        return pl.current(root, deep=True)
+
+    async def save(h, key, root, section_, **over):
+        c = cur(root)
+        return await h.post(f"{API}/pipeline/settings", {"root": key, "rev": c["rev"], "section": section_,
+                                                          "values": dict(c["settings"][section_], **over)})
+
+    async def plan(h, key, only=(), style="0"):
+        q = {"root": key, "style": style}
+        if only:
+            q["only"] = ",".join(only)
+        return await h.jget(f"{API}/pipeline/plan", **q)
+
+    def run_ap(root, only="", rf=False, ro=False):
+        """노드 _run_plan 과 같은 식(디스크 매니페스트 + 원장, 백엔드 = mock 판정)."""
+        be = runner.BACKEND_MOCK if runner.mock_enabled(root) else runner.BACKEND_COMFY_ORG
+        p = runner.plan_calls(store.load_manifest(root), root, retry_failed=rf, retry_orphans=ro, only=only)
+        return p, runner.split_approval(p, "", backend=be)
+
+    def draft_plan_of(root, only):
+        """노드 Spec Draft 와 같은 인자의 vlm.draft_plan(설정 = pl.current(deep), only = vlm.parse_only) → (ctxs, reqs, style_req, plan, approval)."""
+        s = cur(root)["settings"]["draft"]
+        fam, model = dvlm.parse_vlm_choice(s["vlm"])
+        fam = "mock" if fam == "openai" and runner.mock_enabled(root) else fam
+        return dvlm.draft_plan(root, store.load_manifest(root), "", dvlm.BACKEND_NAMES[fam], family=fam, model=model, effort=s["effort"],
+                               image_detail=s["image_detail"], draft_round=s["draft_round"], mode=s["write_mode"],
+                               only=dvlm.parse_only(only), concurrency=s["concurrency"], model_dir=board._qwen_dir(),
+                               apply_mode=s["apply"], memo={})
+
+    def draft_hash(root, only):
+        return draft_plan_of(root, only)[4]["pending_hash"]
+
+    def chips(root, d, fam="openai"):
+        """계획의 채택 칩 ↔ GET /draft(vlm.draft_view)의 [채택] 단추 조건(kind add·이유 없음·못 쓴 스펙 아님·스펙 오류 없음), 크롭마다 쌍."""
+        m = store.load_manifest(root)
+        out = []
+        for c in m["crops"]:
+            v = dvlm.draft_view(root, m, c["id"], family=fam)
+            want = "add" if v["adopt"]["kind"] == "add" and not v["adopt"]["reason"] and not v["unwritten"] and v["spec_error"] is None else None
+            out.append((d["draft"]["by_crop"][c["id"]]["adopt"], want))
+        return out
+
+    class Grab(logging.Handler):
+        """vlm 로거 줄 모으기(build_crop_ctx 의 레퍼런스 경고 수)."""
+        def __init__(self):
+            super().__init__()
+            self.rows = []
+
+        def emit(self, record):
+            self.rows.append(record.getMessage())
+
+    @contextlib.contextmanager
+    def counting():
+        """runner.plan_calls·vlm.draft_plan·draft_view 호출 수(보드는 호출 때 모듈 속성으로 찾는다)."""
+        n = {"plan_calls": 0, "draft_plan": 0, "draft_view": 0}
+        saved = (runner.plan_calls, dvlm.draft_plan, dvlm.draft_view)
+
+        def wrap(name, fn):
+            def w(*a, **kw):
+                n[name] += 1
+                return fn(*a, **kw)
+            return w
+
+        runner.plan_calls, dvlm.draft_plan, dvlm.draft_view = (wrap("plan_calls", saved[0]), wrap("draft_plan", saved[1]),
+                                                               wrap("draft_view", saved[2]))
+        try:
+            yield n
+        finally:
+            runner.plan_calls, dvlm.draft_plan, dvlm.draft_view = saved
+
+    def shape(route, body, which="ok"):
+        spec = R[route]
+        return _pl_shape(spec["ok"] if which == "ok" else spec["alt"][which], body, spec)
+
+    def err_keys(route, status, i, body):
+        return set(body) == set(R[route]["errors"][str(status)][i])
+
+    def b0_triple(root, ids):
+        section("S3a-B0‴ 새 프로세스: /pipeline·/pipeline/plan·/pipeline/progress·/draft·/draft/adopt 경로 뒤 torch·comfy·노드 없음, "
+                "계획 경로는 _node() 를 쓰지 않고 state 경로는 _vlm() 을 쓰지 않음")
+        probe = OUT / "b0_probe.py"
+        probe.write_text("\n".join([
+            "import json, sys",
+            "sys.path.insert(0, sys.argv[1])",
+            "import bmk_design_patch_board as board, bmk_design_patch_pipeline as pl",
+            "root, cid = sys.argv[2], sys.argv[3]",
+            "BAN = ('torch', 'comfy', 'comfy_api_nodes', 'transformers', 'folder_paths', 'nodes', 'server', 'execution', 'bmk_design_patch')",
+            "st0 = board.build_state(root)",
+            "after_state = 'bmk_design_patch_vlm' in sys.modules",
+            "c = pl.current(root, deep=True); pl.view(root)",
+            "p = board.pipeline_plan(root, c['settings'], only_ids=[sys.argv[4], cid], style=False, confirm=c['confirm'])",
+            "board.pipeline_progress(root)",
+            "v = board.draft_get(root, cid)",
+            "a = board.draft_adopt(root, {'crop_id': cid, 'op': 'adopt', 'value': v['adopt']['value'], 'seen': v['seen'],",
+            "                             'crop_sig': v['crop_sig'], 'preview': True})",
+            "st1 = board.build_state(root)",
+            "print(json.dumps({'bad': sorted(k for k in sys.modules if k.split('.')[0] in BAN), 'vlm_after_state': after_state,",
+            "                  'vlm': 'bmk_design_patch_vlm' in sys.modules, 'run': p['run'].get('hash'), 'draft': p['draft'].get('hash'),",
+            "                  'ok': a['ok'], 'plan_v': st1['plan_v'], 'sig': p['sig']}, ensure_ascii=False))", ""]), encoding="utf-8")
+        r = subprocess.run([sys.executable, "-X", "utf8", "-W", "ignore", str(probe), str(PKG), root, ids[1], ids[0]], capture_output=True,
+                           text=True, encoding="utf-8", timeout=300)
+        out = json.loads(r.stdout.strip().splitlines()[-1]) if r.returncode == 0 and r.stdout.strip() else None
+        check(out is not None and out["bad"] == [] and out["vlm_after_state"] is False and out["vlm"] is True and out["ok"] is True
+              and re.fullmatch(r"[0-9a-f]{12}", out["run"] or "") and re.fullmatch(r"[0-9a-f]{12}", out["draft"] or "")
+              and out["plan_v"] == out["sig"].split("|o:")[0],
+              f"새 프로세스: state(계획 전) 뒤 vlm 없음, 설정·계획·진행·초안 읽기·채택 미리보기 뒤 torch·comfy·comfy_api_nodes·transformers·"
+              f"folder_paths·nodes·server·노드 모듈 없음(vlm·runner 는 허용), 계획 뒤 state plan_v = 계획 서명 {out} {r.stderr.strip()[-400:]}")
+        probe2 = OUT / "b0_http_probe.py"
+        probe2.write_text("\n".join([
+            "import asyncio, importlib.abc, json, sys",
+            "sys.path.insert(0, sys.argv[1])",
+            "import bmk_design_patch_board as board, bmk_design_patch_pipeline as pl, bmk_design_patch_store as store",
+            "from aiohttp import web",
+            "from aiohttp.test_utils import TestClient, TestServer",
+            "root, cid = sys.argv[2], sys.argv[3]",
+            "key = store.register_root(root)",
+            "calls = []",
+            "def poison(name):",
+            "    def f(*a, **k):",
+            "        calls.append(name)",
+            "        raise RuntimeError(f'state·layout·refs 경로가 {name}() 을 부름')",
+            "    return f",
+            "class Block(importlib.abc.MetaPathFinder):",
+            "    def find_spec(self, name, path, target=None):",
+            "        if name.endswith('bmk_design_patch_vlm'):",
+            "            calls.append('import ' + name)",
+            "            raise ImportError('blocked')",
+            "async def main():",
+            "    routes = web.RouteTableDef()",
+            "    board.register_routes(routes)",
+            "    app = web.Application()",
+            "    app.add_routes(routes)",
+            "    async with TestClient(TestServer(app)) as c:",
+            "        async def get(path, **q):",
+            "            r = await c.get(f'/bmk/design_patch/{path}', params={'root': key, **q})",
+            "            return r.status, (await r.json() if r.status == 200 else None)",
+            "        out = {'status': []}",
+            "        for method, path, body in (('get', 'state', None), ('get', 'layout', None), ('get', 'refs', None),",
+            "                                   ('post', 'layout/psd', {'root': key, 'rev': 0, 'op': 'take'}),",
+            "                                   ('post', 'refs/link', {'root': key, 'rev': 99, 'op': 'fix', 'crop_id': cid})):",
+            "            r = await (c.get(f'/bmk/design_patch/{path}', params={'root': key}) if method == 'get'",
+            "                       else c.post(f'/bmk/design_patch/{path}', json=body))",
+            "            out['status'].append(r.status)",
+            "        out['vlm'] = 'bmk_design_patch_vlm' in sys.modules",
+            "        # 계획을 기억한 뒤(state 의 plan_v·draft_chip 가지가 돎): vlm 접근자 둘을 독으로(cache_info 는 그대로 — _conflicts 가드),",
+            "        # vlm 모듈을 빼고 import 를 막음 — 그 뒤 state(전체·unchanged)·layout·refs 가 vlm 을 건드리면 호출 기록·500",
+            "        p = board.pipeline_plan(root, only_ids=[], style=False)",
+            "        bp = poison('board._vlm')",
+            "        bp.cache_info = board._vlm.cache_info",
+            "        board._vlm, pl._vlm = bp, poison('pl._vlm')",
+            "        sys.modules.pop('bmk_design_patch_vlm', None)",
+            "        sys.meta_path.insert(0, Block())",
+            "        s1, d1 = await get('state')",
+            "        s2, d2 = await get('state', since_rev=str((d1 or {}).get('rev', 0)))",
+            "        s3, _d = await get('layout')",
+            "        s4, _d = await get('refs')",
+            "        out['post'] = {'status': [s1, s2, s3, s4], 'calls': calls, 'sig': p['sig'], 'plan_v': [(d1 or {}).get('plan_v'), (d2 or {}).get('plan_v')],",
+            "                       'unchanged': (d2 or {}).get('unchanged'), 'chips': all(isinstance(x.get('draft_chip'), dict) for x in (d1 or {}).get('crops') or [{}])}",
+            "        return out",
+            "print(json.dumps(asyncio.run(main()), ensure_ascii=False))", ""]), encoding="utf-8")
+        r = subprocess.run([sys.executable, "-X", "utf8", "-W", "ignore", str(probe2), str(PKG), root, ids[1]], capture_output=True,
+                           text=True, encoding="utf-8", timeout=300)
+        out = json.loads(r.stdout.strip().splitlines()[-1]) if r.returncode == 0 and r.stdout.strip() else None
+        check(out is not None and out["status"] == [200, 200, 200, 409, 409] and out["vlm"] is False,
+              f"새 프로세스 HTTP: state·layout·refs 와 그 409 오류 경로(레이아웃 없음 LayoutConflict·낡은 rev RefsConflict — _guard 의 "
+              f"_conflicts())를 지난 뒤에도 vlm 없음 {out} {r.stderr.strip()[-400:]}")
+        post = (out or {}).get("post") or {}
+        check(post.get("status") == [200, 200, 200, 200] and post.get("calls") == [] and post.get("unchanged") is True
+              and post.get("plan_v") == [post.get("sig"), post.get("sig")] and post.get("chips") is True,
+              f"같은 프로세스에서 계획을 기억한 뒤(plan_v·draft_chip 가지): board._vlm·pl._vlm 독 + vlm import 차단에서도 state(전체·unchanged)·"
+              f"layout·refs 200, vlm 호출·import 0(state 서명은 파일 stat 만 — §6) {post} {r.stderr.strip()[-400:]}")
+        tree = ast.parse((PKG / "bmk_design_patch_board.py").read_text(encoding="utf-8"))
+        fns = {n.name: n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+
+        def names_in(fn):
+            return {x.id for x in ast.walk(fns[fn]) if isinstance(x, ast.Name)}
+
+        plan_fns = ("pipeline_plan", "_plan_route", "_run_plans", "_run_free", "_run_sel", "_draft_cfg", "_draft_free", "_draft_sel",
+                    "_import_pending", "_plan_notes", "_apply_pending", "_plan_sigs", "_route_settings", "_draft_family", "pipeline_prompt",
+                    "pipeline_progress", "draft_get", "draft_adopt", "_adopt_crop_id")
+        state_fns = ("build_state", "_plan_sigs", "_plan_free", "draft_since", "_scan", "_crop_summaries", "_refs_files_v")
+        check(all(f in fns for f in plan_fns + state_fns) and not any("_node" in names_in(f) for f in plan_fns)
+              and not any("_vlm" in names_in(f) for f in state_fns),
+              f"계획·초안 라우트 함수는 _node()(노드 모듈) 를 쓰지 않고, state 경로 함수는 _vlm() 을 쓰지 않음 "
+              f"{[f for f in plan_fns + state_fns if f not in fns]}")
+
+    async def b34_nofile(h, key, root, ids):
+        section("S3a-B34a 파일 없음: prompt 409 confirm_settings · plan 은 깊은 유도값(GET /pipeline 과 같은 값)으로 계산(notes 설정 미확인)")
+        st, d = await h.jget(f"{API}/pipeline/prompt", root=key, stage="apply")
+        check(st == 409 and d.get("reason") == "confirm_settings" and "prepare.variants" in d.get("fields", [])
+              and err_keys("GET /pipeline/prompt", 409, 0, d) and not Path(root, pl.PIPELINE_NAME).exists(),
+              f"pipeline.json 없음 → 409 confirm_settings(추정한 Prepare 설정 — fields), 파일을 쓰지 않음 {st} {d}")
+        for stage, extra in (("run", {}), ("draft", {}), ("run", {"approve": H, "only": ids[0]}), ("draft", {"approve": H, "only": ids[0]})):
+            st, d = await h.jget(f"{API}/pipeline/prompt", root=key, stage=stage, **extra)
+            check(st == 400 and "S3a" in d.get("error", "") and set(d) == {"error"},
+                  f"파일 없음(설정 미확인)에서도 유료 stage={stage} {extra} → 400 S3a(무료 stage 판정이 설정 게이트보다 먼저) {st} {d}")
+        st, d = await plan(h, key, ())
+        check(st == 200 and d["notes"] and d["notes"][0].startswith("설정 미확인") and "prepare.variants" in d["notes"][0]
+              and d["run"]["hash"] == "" and d["run"]["by_crop"] and not Path(root, pl.PIPELINE_NAME).exists(),
+              f"파일 없음 → 계획은 유도값으로(notes 첫 줄 '설정 미확인'), 파일을 쓰지 않음 {st} {d.get('notes')}")
+        sps = [Path(root, "specs", f"{i}.json") for i in ids[1:]]
+        raws = [p.read_bytes() for p in sps]
+        for p in sps:  # 초안 출처 = 노드 위젯에서 쓸 수 없는 조합(gpt-5.5-pro + low) — 얕은 유도는 그대로, 깊은 유도(설정 패널)는 기본값
+            sp = json.loads(p.read_text(encoding="utf-8"))
+            sp["_draft"].update(model="gpt-5.5-pro", effort="low")
+            store.write_json_atomic(str(p), sp)
+        try:
+            st, d = await plan(h, key, [ids[0]])
+            shallow, deep, want_h = pl.current(root)["settings"]["draft"], cur(root)["settings"]["draft"], draft_hash(root, ids[0])
+        finally:
+            for p, r in zip(sps, raws):
+                p.write_bytes(r)
+        check(st == 200 and (shallow["vlm"], shallow["effort"]) == ("openai/gpt-5.5-pro", "low") and deep["vlm"] != shallow["vlm"]
+              and d["draft"]["hash"] == want_h and re.fullmatch(r"[0-9a-f]{12}", want_h or ""),
+              f"파일 없음 계획의 Draft 설정 = 깊은 유도(GET /pipeline 과 같은 값 — 쓸 수 없는 초안 출처는 기본값) {deep['vlm']} {d['draft'].get('hash')}")
+
+    async def b32_get(h, key, root):
+        section("S3a-B32 GET /pipeline (파일 없음·있음·깨짐·갈라짐·exports·warnings)")
+        spec, pj = R["GET /pipeline"], Path(root, pl.PIPELINE_NAME)
+        st, d = await h.jget(f"{API}/pipeline", root=key)
+        check(st == 200 and d["rev"] == 0 and d["saved"] is False and d["error"] is None and not pj.exists()
+              and d == json.loads(json.dumps(pl.view(root), ensure_ascii=False)) and not shape("GET /pipeline", d, "missing"),
+              f"파일 없음 → 200 alt.missing(rev 0·saved false·유도값, 파일을 쓰지 않음 — pl.view 그대로) {st} "
+              f"{shape('GET /pipeline', d, 'missing')}")
+        check(d["confirm"] == d["derived"]["confirm"] and {"prepare.variants", "prepare.ref_style"} <= set(d["confirm"])
+              and d["settings"]["prepare"]["n"] == 2 and d["settings"]["export"]["filename_prefix"] == "proj"
+              and d["settings"]["draft"]["vlm"] == "openai/gpt-6-sol" and "widgets" in d,
+              f"유도: jobs 의 n 2·variants/ref_style 확인 필요·Export prefix·스펙 초안 출처의 vlm {d['confirm']}")
+        st, s = await save(h, key, root, "prepare")
+        check(st == 200 and s["rev"] == 1 and pj.exists() and not any(c.startswith("prepare.") for c in s["confirm"]),
+              f"rev 0 POST → 파일 생성(rev 1), prepare 확인 지움 {st} {s.get('error')}")
+        st, d = await h.jget(f"{API}/pipeline", root=key)
+        m = store.load_manifest(root)
+        check(st == 200 and d["saved"] is True and d["rev"] == 1 and not shape("GET /pipeline", d)
+              and d["exports"] == pl.recent_exports(m) and d["exports"][0]["psd"] == "G:/o/proj_r2.psd" and d["drift"] == []
+              and d["warnings"] == [], f"파일 있음 → 정본 ok 모양, exports = 최근 Export, 갈라짐·경고 없음 {shape('GET /pipeline', d)}")
+        other = OUT / "other_DP.psd"
+        other.write_bytes(b"x")
+        st, _s = await save(h, key, root, "import", psd_path=str(other), refs_dir="C:/nope_s3u3")
+        st2, d = await h.jget(f"{API}/pipeline", root=key)
+        check(st == 200 and [(r["field"], r["kind"]) for r in d["drift"]] == [("psd_path", "import"), ("refs_dir", "import")]
+              and {(w["field"], w["reason"]) for w in d["warnings"]} == {("import.refs_dir", "missing_path")}
+              and d["settings"]["import"]["psd_path"] == other.as_posix(),
+              f"저장값 ≠ 매니페스트 source → drift(import, '\\'→'/' 정규화), 없는 refs_dir → warnings missing_path {d['drift']} {d['warnings']}")
+        der = cur(root)["settings"]  # 파일 값(아직 다른 PSD) — 매니페스트 값으로 되돌림
+        st, _s = await save(h, key, root, "import", **{k: v for k, v in pl.derive(root, m)["settings"]["import"].items()})
+        check(st == 200 and pl.drift(cur(root)["settings"], m) == [] and der["import"]["psd_path"] == other.as_posix(),
+              "[매니페스트 값으로 다시] = 유도값 저장 → 갈라짐 없음")
+        raw = pj.read_bytes()
+        pj.write_text("{", encoding="utf-8")
+        st, d = await h.jget(f"{API}/pipeline", root=key)
+        check(st == 200 and d["rev"] is None and isinstance(d["error"], str) and d["settings"] is None
+              and not shape("GET /pipeline", d, "broken"), f"깨진 파일 → 200 alt.broken(error·rev null) {st} {d.get('error')}")
+        # FLOAT 자리에 400자리 JSON 정수(손으로 고친 파일): OverflowError 가 _guard 를 빠져나가 state·/pipeline 이 500 이던 것(r2-15)
+        doc = json.loads(raw.decode("utf-8"))
+        pj.write_text(json.dumps(dict(doc, analyze=dict(doc["analyze"], dE=10 ** 400))), encoding="utf-8")
+        try:  # 500(JSON 아님)이어도 파일을 되돌려 뒤 묶음이 같은 파일로 무너지지 않게
+            st, d = await h.jget(f"{API}/pipeline", root=key)
+            st2, s = await h.jget(f"{API}/state", root=key)
+            st3, p = await h.jget(f"{API}/pipeline/prompt", root=key, stage="apply")
+        finally:
+            pj.write_bytes(raw)
+        check(st == 200 and d["rev"] is None and "범위" in (d["error"] or "") and not shape("GET /pipeline", d, "broken")
+              and st2 == 200 and s["pipeline_rev"] is None and st3 == 409 and p["reason"] == "pipeline_broken",
+              f"FLOAT 자리에 아주 큰 정수 → GET /pipeline 200 alt.broken·state 200 pipeline_rev null·prompt 409 pipeline_broken(설정 패널 "
+              f"덮어쓰기로 회복할 수 있게) {st} {st2} {st3} {str(d.get('error'))[:60]}")
+        st, d = await h.jget(f"{API}/pipeline", root="000000000000")
+        check(st == 404 and err_keys("GET /pipeline", 404, 0, d), f"모르는 키 → 404 {st}")
+
+    async def b33_settings(h, key, root):
+        section("S3a-B33 POST /pipeline/settings (절 통째·일부 400·모르는 키·타입·검증 표·409·confirm 지우기·415·413)")
+        c = cur(root)
+        rev, S = c["rev"], c["settings"]
+        bad = [("prepare", {k: v for k, v in S["prepare"].items() if k != "calls_per_cell"}, "빠짐"),
+               ("prepare", dict(S["prepare"], foo=1), "모르는 키"), ("prepare", dict(S["prepare"], n="2"), "정수"),
+               ("prepare", dict(S["prepare"], n=0), "범위"), ("draft", dict(S["draft"], write_mode="force"), "fill"),
+               ("draft", dict(S["draft"], draft_round=1), "draft_round"),
+               ("draft", dict(S["draft"], vlm="openai/gpt-5.5-pro", effort="low"), "effort"),
+               ("export", dict(S["export"], filename_prefix="../x"), "filename_prefix"),
+               ("cand", dict(S["cand"], enabled=True, path=""), "cand.path"), ("nope", {}, "모르는 설정 절"),
+               ("analyze", dict(S["analyze"], dE=10 ** 400), "범위")]  # 400자리 정수 → 400(OverflowError 500 아님, r2-15)
+        for sec, vals, word in bad:
+            st, d = await h.post(f"{API}/pipeline/settings", {"root": key, "rev": rev, "section": sec, "values": vals})
+            check(st == 400 and word in d.get("error", "") and set(d) == {"error"}, f"{sec} {word} → 400 {st} {d}")
+        base = {"root": key, "section": "prepare", "values": S["prepare"]}
+        st, d = await h.post(f"{API}/pipeline/settings", dict(base, rev="3"))
+        check(st == 400 and "rev 는" in d["error"], f"rev 문자열 → 400 {st} {d}")
+        st, d = await h.post(f"{API}/pipeline/settings", base)
+        check(st == 400 and "rev 가 없습니다" in d["error"], f"rev 없음 → 400 {st} {d}")
+        for r in (rev + 5, None):
+            st, d = await h.post(f"{API}/pipeline/settings", dict(base, rev=r))
+            check(st == 409 and set(d) == {"error"} and pl.pipeline_rev(root) == rev, f"rev {r} ≠ 지금 rev {rev} → 409(PipelineConflict) {st} {d}")
+        st, d = await h.post(f"{API}/pipeline/settings", json.dumps(dict(base, rev=rev)), ctype="text/plain")
+        check(st == 415 and err_keys("POST /pipeline/settings", 415, 0, d), f"Content-Type → 415 {st}")
+        st, d = await h.post(f"{API}/pipeline/settings", dict(base, rev=rev, pad="x" * 20000))
+        check(st == 413 and err_keys("POST /pipeline/settings", 413, 0, d), f"본문 > 16KB → 413 {st}")
+        st, d = await h.post(f"{API}/pipeline/settings", dict(base, rev=rev))
+        check(st == 200 and d["rev"] == rev and not shape("POST /pipeline/settings", d), f"같은 값 → 쓰지 않음(rev 그대로), 정본 ok 모양 {st} {d.get('rev')}")
+        st, d = await save(h, key, root, "run", max_new_calls=7)
+        check(st == 200 and d["rev"] == rev + 1 and d["settings"]["run"]["max_new_calls"] == 7 and not any(x.startswith("run.") for x in d["confirm"]),
+              f"절 통째 저장 → rev + 1 {st} {d.get('rev')}")
+
+    async def b34_prompt(h, key, root, ids):
+        section("S3a-B34 GET /pipeline/prompt (apply·export, 409 no_psd·missing_path·pipeline_broken, 유료·모르는 stage 400)")
+        spec = R["GET /pipeline/prompt"]
+        st, d = await h.jget(f"{API}/pipeline/prompt", root=key, stage="apply")
+        c, m = cur(root), store.load_manifest(root)
+        p = d.get("prompt") or {}
+        check(st == 200 and not shape("GET /pipeline/prompt", d) and d["stage"] == "apply" and d["targets"] is None
+              and d["sig"] == f"{c['rev']}:{m['rev']}" and p == json.loads(json.dumps(pl.build_prompt("apply", c["settings"], root)))
+              and list(p) == ["dp_project", "dp_import", "dp_prepare", "dp_analyze", "dp_review"]
+              and all(v["class_type"].startswith("BMKDesignPatch") for v in p.values()),
+              f"apply = pl.build_prompt(설정 = current(deep)) — Run·SpecDraft 없음(T1), sig = pipeline rev:매니페스트 rev {st} "
+              f"{shape('GET /pipeline/prompt', d)} {list(p)}")
+        st, d = await h.jget(f"{API}/pipeline/prompt", root=key, stage="export")
+        check(st == 200 and not shape("GET /pipeline/prompt", d, "export")
+              and list(d["prompt"]) == ["dp_project", "dp_analyze", "dp_compose", "dp_export"],
+              f"export 템플릿(Import 없음) {st} {list(d.get('prompt') or {})}")
+        for stage, extra in (("draft", {}), ("run", {}), ("reroll", {}), ("run", {"approve": H, "only": ids[0]}),
+                             ("draft", {"approve": H, "only": ids[0]}), ("reroll", {"only": ids[0]}), ("apply2", {}), (None, {})):
+            q = dict(extra, **({"stage": stage} if stage is not None else {}))
+            st, d = await h.jget(f"{API}/pipeline/prompt", root=key, **q)
+            check(st == 400 and set(d) == {"error"} and ("S3a" in d["error"] if stage in ("draft", "run", "reroll") else "모르는 stage" in d["error"]),
+                  f"stage={stage!r} {extra} → 400(approve 유무와 무관) {st} {d}")
+        st, d = await h.jget(f"{API}/pipeline/prompt", root=key, stage="apply", approve=H)
+        check(st == 400 and "approve" in d["error"], f"무료 stage 에 approve → 400 {st} {d}")
+        st, d = await h.jget(f"{API}/pipeline/prompt", root=key, stage="apply", only=ids[0])
+        check(st == 400 and "only" in d["error"] and set(d) == {"error"}, f"무료 stage 에 only → 400(라우트가 only 를 그대로 넘김) {st} {d}")
+        imp = cur(root)["settings"]["import"]
+        st, _s = await save(h, key, root, "import", psd_path="")
+        st, d = await h.jget(f"{API}/pipeline/prompt", root=key, stage="apply")
+        check(st == 409 and d["reason"] == "no_psd" and err_keys("GET /pipeline/prompt", 409, 1, d), f"psd_path 빔 → 409 no_psd {st} {d}")
+        st, _s = await save(h, key, root, "import", psd_path=imp["psd_path"], refs_dir="C:/nope_s3u3")
+        st, d = await h.jget(f"{API}/pipeline/prompt", root=key, stage="export")
+        check(st == 409 and d["reason"] == "missing_path" and d["field"] == "import.refs_dir" and err_keys("GET /pipeline/prompt", 409, 2, d),
+              f"없는 refs_dir → 409 missing_path(field) {st} {d}")
+        st, _s = await save(h, key, root, "import", **imp)
+        # 켠 후보 등록의 없는 경로(r2-06): Import 가 미반영 편집을 커밋한 뒤 Candidate In 이 실패하지 않게 반영을 큐 전에 막음
+        cand0, mrev = cur(root)["settings"]["cand"], store.load_manifest(root)["rev"]
+        st, _s = await save(h, key, root, "cand", enabled=True, path="C:/nope_s3u3/harvest.psd")
+        st1, d = await h.jget(f"{API}/pipeline/prompt", root=key, stage="apply")
+        st2, d2 = await h.jget(f"{API}/pipeline/prompt", root=key, stage="export")
+        st3, _s = await save(h, key, root, "cand", **cand0)
+        check(st == 200 and st1 == 409 and d["reason"] == "missing_path" and d["field"] == "cand.path" and d["fields"] == ["cand.path"]
+              and err_keys("GET /pipeline/prompt", 409, 2, d) and st2 == 200 and "dp_cand" not in d2["prompt"] and st3 == 200
+              and store.load_manifest(root)["rev"] == mrev,
+              f"켠 후보 등록의 없는 PSD → apply 409 missing_path(field cand.path), export(dp_cand 없음)는 200, 매니페스트 그대로 {st1} {d} {st2}")
+        pj = Path(root, pl.PIPELINE_NAME)
+        raw = pj.read_bytes()
+        pj.write_text('{"schema": 1}', encoding="utf-8")
+        st, d = await h.jget(f"{API}/pipeline/prompt", root=key, stage="apply")
+        check(st == 409 and d["reason"] == "pipeline_broken" and err_keys("GET /pipeline/prompt", 409, 3, d), f"깨진 파일 → 409 {st} {d}")
+        pj.write_bytes(raw)
+        # 판정과 템플릿 = pipeline.json 을 한 번 읽은 같은 값: 라우트가 설정을 읽은 직후 다른 창이 import.psd_path 를 없는 경로로 저장(rev + 1)
+        c0, saved_cur, seen_rev = cur(root), pl.current, []
+
+        def racing(*a, **kw):
+            out = saved_cur(*a, **kw)
+            if not seen_rev:
+                seen_rev.append(out["rev"])
+                pl.update(root, out["rev"], "import", dict(out["settings"]["import"], psd_path="Z:/s3u3_nope/missing.psd"))
+            return out
+
+        pl.current = racing
+        try:
+            st, d = await h.jget(f"{API}/pipeline/prompt", root=key, stage="apply")
+        finally:
+            pl.current = saved_cur
+            raced, gate = cur(root), pl.prompt_gate(root, "apply")
+            st2, _s = await save(h, key, root, "import", **c0["settings"]["import"])
+        check(st == 200 and seen_rev == [c0["rev"]] and raced["rev"] == c0["rev"] + 1
+              and d["prompt"]["dp_import"]["inputs"]["psd_path"] == c0["settings"]["import"]["psd_path"] != raced["settings"]["import"]["psd_path"]
+              and d["sig"] == f"{c0['rev']}:{store.load_manifest(root)['rev']}" and (gate or {}).get("reason") == "missing_path",
+              f"설정을 읽은 직후 다른 창 저장(없는 PSD 경로) → 판정한 rev {c0['rev']} 값으로 템플릿(판정 없이 새 경로가 실리지 않음 — 그 값은 "
+              f"다음 요청이 409 missing_path) {st} {d.get('sig')} {(d.get('prompt') or {}).get('dp_import', {}).get('inputs', {}).get('psd_path')}")
+
+    async def b35_plan(h, key, root, ids, jobs):
+        section("S3a-B35 GET /pipeline/plan — Run(_run_plan 식·only·retry·MOCK·Σ by_crop·_stale·est_usd_pre·running·runner 실패)")
+        mock_file = Path(root).parent / runner.MOCK_FILE
+        st, d = await plan(h, key, [ids[1]])
+        p0, a0 = run_ap(root)
+        p1, a1 = run_ap(root, ids[1])
+        run, bc = d["run"], d["run"]["by_crop"]
+        check(st == 200 and not shape("GET /pipeline/plan", d), f"선택 계획 = 정본 ok 모양 {shape('GET /pipeline/plan', d)}")
+        check(run["hash"] == a1["pending_hash"] != "" and run["backend"] == runner.BACKEND_COMFY_ORG and run["need"] == len(a1["needs_approval"]) == 1
+              and run["est_usd"] == list(a1["est_usd"]) and run["filtered"] == p1["filtered"] == 0
+              and run["pre"] == len(a0["preapproved"]) == 1 and run["free"] == len(a0["free"]) == 1
+              and run["est_usd_pre"] == list(runner.estimate_calls(a0["preapproved"])) and run["est_usd_pre"][0] > 0
+              and run["credits"] == [round(x * runner.CREDITS_PER_USD) for x in a1["est_usd"]]
+              and run["reasons"] == [{"reason": a1["needs_approval"][0]["reason"], "n": 1}] and run["running"] is False,
+              f"Run 해시·수·USD = 노드 _run_plan 식(plan_calls + split_approval, only = 선택) — 사전 승인·복구·est_usd_pre 는 only 없는 계획 {run}")
+        check(set(bc) == set(ids) | {"_stale"} and bc[ids[0]]["done"] == 1 and (bc[ids[1]]["need"], bc[ids[1]]["pre"]) == (1, 1)
+              and bc[ids[2]]["failed"] == 1 and bc["_stale"]["free"] == 1 and [k for k, v in bc.items() if v["selected"]] == [ids[1]]
+              and sum(v["need"] for v in bc.values() if v["selected"]) == run["need"]
+              and bc[ids[1]]["est_usd"] == list(runner.estimate_calls(a0["needs_approval"])),
+              f"by_crop = only 없는 계획(완료·대기·재굴림·실패·옛 셀 _stale), Σ 선택 need = need {bc}")
+        m_ = store.load_manifest(root)
+        r_sig, d_sig = board._plan_sigs(root, m_, board._busy(root), board._refs_files_v(board._refs_dir(m_)))
+        check(d["sig"] == f"r:{r_sig}|d:{d_sig}|o:{ids[1]}" and re.fullmatch(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d", d["computed_at"]),
+              f"sig = r:…|d:…|o:정규 only, computed_at {d['sig']}")
+        st, _s = await save(h, key, root, "run", retry_failed=True)
+        st, d = await plan(h, key, [ids[2], ids[1]])
+        _p, a2 = run_ap(root, f"{ids[1]},{ids[2]}", rf=True)
+        st2, d2 = await plan(h, key, [ids[1]])
+        p3, _a3 = run_ap(root, ids[1], rf=True)
+        check(d["run"]["hash"] == a2["pending_hash"] and d["run"]["need"] == 2 and d["run"]["by_crop"][ids[2]]["need"] == 1
+              and d["sig"].endswith(f"|o:{ids[1]},{ids[2]}") and d2["run"]["filtered"] == p3["filtered"] == 1 and d2["run"]["need"] == 1,
+              f"retry_failed(pipeline.run) → 실패 재시도가 승인 필요, only 정규형(정렬), only 밖은 filtered {d['run']['need']} {d2['run']['filtered']}")
+        st, _s = await save(h, key, root, "run", retry_failed=False)
+        st, d = await plan(h, key, [ids[0]])
+        bc = d["run"]["by_crop"]
+        check(d["run"]["need"] == 0 and d["run"]["filtered"] == 1 and (bc[ids[1]]["need"], bc[ids[1]]["selected"]) == (1, False)
+              and bc[ids[0]]["selected"] is True,
+              f"by_crop 은 선택과 무관(only 없는 계획) — 고르지 않은 002 의 승인 필요 1 그대로, 선택 계획은 need 0·filtered 1 "
+              f"{d['run']['need']} {bc[ids[1]]}")
+        ck0, m0 = jobs[0]["cell_key"], store.load_manifest(root)
+        store.update_manifest(root, lambda mm: (mm["jobs"][0].update(n=1), mm.update(rerolls={ck0: 1})))
+        try:
+            _p, a = run_ap(root)
+            pre_usd, need_usd = list(runner.estimate_calls(a["preapproved"])), list(runner.estimate_calls(a["needs_approval"]))
+            outs = [(await plan(h, key, sel))[1] for sel in ([ids[1]], [ids[2]], [ids[0]])]
+        finally:
+            store.update_manifest(root, lambda mm: mm.update(jobs=m0["jobs"], rerolls=m0["rerolls"]))
+        check(pre_usd != need_usd and pre_usd[0] > 0 and all(o["run"]["est_usd_pre"] == pre_usd and o["run"]["pre"] == 1 for o in outs)
+              and outs[0]["run"]["by_crop"][ids[0]]["pre"] == 1,
+              f"est_usd_pre = 사전 승인(001 셀 재굴림 — n 1)의 예상 USD, 승인 필요(002 셀 n 2)와 다름 · 선택과 무관 {pre_usd} {need_usd} "
+              f"{[o['run']['est_usd_pre'] for o in outs]}")
+        ledger(root, ck0, "r1.inflight.json", {"call_id": f"{ck0}_r1"})  # 실행 중이 아닌 inflight = orphaned(과금됐을 수 있음)
+        try:
+            st, d = await plan(h, key, [ids[0]])
+            st, _s = await save(h, key, root, "run", retry_orphans=True)
+            st, d2 = await plan(h, key, [ids[0]])
+            _p, ao = run_ap(root, ids[0], ro=True)
+        finally:
+            st, _s = await save(h, key, root, "run", retry_orphans=False)
+            Path(root, "cands", ck0, "r1.inflight.json").unlink()
+        check(d["run"]["by_crop"][ids[0]]["orphaned"] == 1 and d["run"]["need"] == 0
+              and d2["run"]["hash"] == ao["pending_hash"] != "" and d2["run"]["need"] == len(ao["needs_approval"]) == 1
+              and d2["run"]["by_crop"][ids[0]]["need"] == 1 and d2["run"]["reasons"][0]["reason"].startswith("orphaned 재호출"),
+              f"retry_orphans(pipeline.run) → orphaned 재호출이 승인 필요, 해시 = _run_plan 식(retry_orphans=True) {d2['run']}")
+        mock_file.write_text("", encoding="utf-8")
+        try:
+            st, d = await plan(h, key, [ids[1]])
+            _p, am = run_ap(root, ids[1])
+            check(d["run"]["backend"] == runner.BACKEND_MOCK and d["run"]["hash"] == am["pending_hash"] != a1["pending_hash"]
+                  and d["draft"]["family"] == "mock" and d["draft"]["backend"] == "vlm_mock",
+                  f"MOCK 스위치 → Run 해시는 backend:mock 에 묶임(유료 해시와 다름), Draft family mock {d['run']['backend']} {d['draft'].get('family')}")
+        finally:
+            mock_file.unlink()
+        with board.run_active(root):
+            st, d = await plan(h, key, [ids[1]])
+        st2, d2 = await plan(h, key, [ids[1]])
+        check(d["run"]["running"] is True and d2["run"]["running"] is False and d["sig"] != d2["sig"],
+              "Run 실행 중 → running true(서명에 들어감 — 끝나면 다시 계산)")
+        board._PLAN_MEMO.clear()
+        saved = runner.plan_calls
+        runner.plan_calls = lambda *a, **kw: (_ for _ in ()).throw(ValueError("원장 고장"))
+        try:
+            st, d = await plan(h, key, [ids[1]])
+            st2, d2 = await plan(h, key, ())
+        finally:
+            runner.plan_calls = saved
+        check(st == 200 and d["run"] == {"error": "Run 계획을 계산하지 못함: 원장 고장"} and isinstance(d["draft"].get("hash"), str)
+              and not shape("GET /pipeline/plan", d, "run_error") and st2 == 200 and d2["run"] == d["run"],
+              f"plan_calls 실패 → run {{error}} 만(원장 대체 계산 없음 — 선택 없는 칩용 계획도), draft 는 그대로 {d['run']} {d2['run']}")
+        st, s = await h.jget(f"{API}/state", root=key)
+        check(s["plan_v"] is None and all(c["plan_stale"] and c["draft_chip"] is not None for c in s["crops"]),
+              f"오류 계획을 기억해도 state plan_v null — 칩은 흐림(승인 필요 0 을 믿게 하지 않음) {s['plan_v']}")
+        n_err = {"plan_calls": 0, "draft_plan": 0}
+        saved_pc, saved_dp = runner.plan_calls, dvlm.draft_plan
+
+        def once(name, fn):  # 첫 호출만 일시 오류(백신·동기화가 원장을 잠금)
+            def w(*a, **kw):
+                n_err[name] += 1
+                if n_err[name] == 1:
+                    raise PermissionError("백신이 원장을 잡음")
+                return fn(*a, **kw)
+            return w
+
+        board._PLAN_MEMO.clear()
+        runner.plan_calls, dvlm.draft_plan = once("plan_calls", saved_pc), once("draft_plan", saved_dp)
+        try:
+            st, e1 = await plan(h, key, ())
+            st, s1 = await h.jget(f"{API}/state", root=key)
+            st, e2 = await plan(h, key, ())
+            st, s2 = await h.jget(f"{API}/state", root=key)
+        finally:
+            runner.plan_calls, dvlm.draft_plan = saved_pc, saved_dp
+        chip2 = {c["id"]: c["draft_chip"] for c in s2["crops"]}
+        check("백신" in e1["run"].get("error", "") and "백신" in (e1["draft"].get("error") or "") and e2["sig"] == e1["sig"]
+              and "error" not in e2["run"] and "error" not in e2["draft"] and n_err["draft_plan"] == 2 and n_err["plan_calls"] >= 2
+              and s1["plan_v"] is None and all(c["plan_stale"] for c in s1["crops"])
+              and s2["plan_v"] == e2["sig"] and chip2[ids[1]]["run_need"] == 1 and not any(c["plan_stale"] for c in s2["crops"]),
+              f"일시 오류(같은 서명) → 기억한 오류를 다시 쓰지 않고 다음 요청이 다시 계산, 그동안 state plan_v null {n_err} "
+              f"{e1['run']} {s1['plan_v']} {chip2.get(ids[1])}")
+        n_sel = [0]
+
+        def sel_once(*a, **kw):  # 선택(only) 계획만 첫 호출 일시 오류
+            if kw.get("only"):
+                n_sel[0] += 1
+                if n_sel[0] == 1:
+                    raise PermissionError("백신이 원장을 잡음")
+            return saved_pc(*a, **kw)
+
+        runner.plan_calls = sel_once
+        try:
+            st, f1 = await plan(h, key, [ids[1]])
+            st, f2 = await plan(h, key, [ids[1]])
+        finally:
+            runner.plan_calls = saved_pc
+        _p, a_now = run_ap(root, ids[1])
+        check("백신" in f1["run"].get("error", "") and f2["run"].get("hash") == a_now["pending_hash"] != "" and n_sel[0] == 2,
+              f"선택 계획의 일시 오류도 기억하지 않음 — 다음 요청이 다시 계산 {f1['run']} {f2['run'].get('hash')} {n_sel}")
+        two = [ids[0], ids[1]]  # 001 = 초안 대기(Draft 해시 있음), 002 = Run 승인 필요 1
+        for which, part in (("plan_calls", "run"), ("draft_plan", "draft")):  # only 없는 계획만 첫 호출 일시 오류(선택 계산은 비워 둠)
+            board._PLAN_MEMO.clear()
+            n_err.update(plan_calls=0, draft_plan=0)
+            if which == "plan_calls":
+                runner.plan_calls = once(which, saved_pc)
+            else:
+                dvlm.draft_plan = once(which, saved_dp)
+            try:
+                gs = [(await plan(h, key, two))[1] for _ in range(3)]
+            finally:
+                runner.plan_calls, dvlm.draft_plan = saved_pc, saved_dp
+            _p, a_two = run_ap(root, pl.only_string(two))
+            want_d = draft_hash(root, pl.only_string(two))
+            check("백신" in (gs[0][part].get("error") or "") and set(gs[0][part]) == ({"error"} if part == "run" else {"error", "hash"})
+                  and a_two["pending_hash"] != "" and re.fullmatch(r"[0-9a-f]{12}", want_d or "")
+                  and all(g["run"].get("hash") == a_two["pending_hash"] and g["run"].get("need") == len(a_two["needs_approval"]) == 1
+                          and sum(v["need"] for v in g["run"]["by_crop"].values() if v["selected"]) == g["run"]["need"]
+                          and g["draft"].get("hash") == want_d for g in gs[1:]),
+                  f"only 없는 {part} 계획의 일시 오류 → 그 칸은 오류뿐(해시 없는 계획 — 선택 계산을 섞지 않음), 그때 비운 선택 칸을 "
+                  f"기억하지 않음 — 회복 뒤 같은 선택 요청도 선택 계획을 다시 계산"
+                  f"(hash = 노드 식, Σ 선택 by_crop need = need — 빈 선택 필드 hash '' 로 굳지 않음) "
+                  f"{[(g['run'].get('hash'), g['run'].get('need'), g['draft'].get('hash')) for g in gs]} {a_two['pending_hash']} {want_d}")
+        board._PLAN_MEMO.clear()
+        saved_runner = board._runner
+        board._runner = lambda: None
+        try:
+            st, d = await plan(h, key, [ids[1]])
+        finally:
+            board._runner = saved_runner
+            board._PLAN_MEMO.clear()
+        check(st == 200 and d["run"] == {"error": "Run 계획을 계산하지 못함: runner 를 읽을 수 없음"}, f"runner 없음 → run {{error}} {d['run']}")
+
+        section("S3a-B35 Draft — mock family·vlm.draft_plan 해시·import_pending·running(draft_active)·error 분리·local_qwen 미설정·style")
+        st, d = await plan(h, key, [ids[0], ids[1]])
+        dr = d["draft"]
+        check(dr["hash"] == draft_hash(root, f"{ids[0]},{ids[1]}") != "" and dr["family"] == "openai" and dr["backend"] == "vlm_openai"
+              and {u["crop_id"] for u in dr["units"]} <= {ids[0], ids[1]} and set(dr["by_crop"]) == set(ids)
+              and [dr["by_crop"][i]["adopt"] for i in ids] == [None, "add", "add"] and dr["by_crop"][ids[0]]["wait"]
+              and dr["warnings"] == {"unwritten": [], "mock_specs": 0} and dr["import_pending"] == [],
+              f"Draft 해시 = vlm.draft_plan(노드와 같은 인자·only = parse_only), by_crop(대기·채택 가능 = 제안 있는 002·003) {dr}")
+        ref = Path(store.load_manifest(root)["source"]["refs_dir"]) / "001_머리.png"  # 001 의 refs_auto — 치우면 문맥마다 '레퍼런스 파일 없음'
+        hide, grab = ref.with_name("s3u3_hidden.bin"), Grab()
+        ref.rename(hide)
+        try:
+            dvlm.logger.addHandler(grab)
+            try:
+                board._PLAN_MEMO.clear()
+                with counting() as n:
+                    st, dn = await plan(h, key, ())
+            finally:
+                dvlm.logger.removeHandler(grab)
+            ch = chips(root, dn)
+        finally:
+            hide.rename(ref)
+            board._PLAN_MEMO.clear()
+        miss = [r for r in grab.rows if "레퍼런스 파일 없음" in r and ids[0] in r]
+        check(st == 200 and n["draft_plan"] == 1 and n["draft_view"] == 0 and len(miss) == 1
+              and [a for a, _w in ch] == [None, "add", "add"] and all(a == w for a, w in ch),
+              f"채택 칩 = draft_plan 이 만든 크롭 문맥으로 draft_view 의 [채택] 조건(크롭마다 draft_view 로 문맥을 다시 만들지 않음 — 계획 한 번에 "
+              f"레퍼런스 경고 한 줄) {n} {miss} {ch}")
+        eff0, rows = cur(root)["settings"]["draft"]["effort"], []
+        sp0, sp2 = Path(root, "specs", f"{ids[0]}.json"), Path(root, "specs", f"{ids[2]}.json")
+        raw2 = sp2.read_bytes()
+        st, _s = await save(h, key, root, "draft", effort="high")  # fill 에서 초안 키만 바뀜 → 002·003 갱신 가능
+        try:
+            for sel, odd in (([ids[0], ids[1]], False), ([ids[1]], False), ([ids[1]], True)):
+                if odd:  # 001 스펙 JSON 오류(skipped)·003 확정(_accepted — accepted)
+                    sp0.write_text("{", encoding="utf-8")
+                    store.write_json_atomic(str(sp2), dict(json.loads(raw2), _accepted=True))
+                st, d = await plan(h, key, sel)
+                _c, _r, _sr, dp, ap = draft_plan_of(root, pl.only_string(sel))
+                want = {"est_credits": list(ap["est_credits"]), "est_seconds": ap["est_seconds"],
+                        "refresh_available": [{"crop_id": c, "est": list(e)} for c, e in dp["refresh_available"]],
+                        "skipped": [{"crop_id": c, "reason": w} for c, w in dp["skipped"]],
+                        "cached": list(dp["cached"]), "accepted": list(dp["accepted"]), "filtered": list(dp["filtered"])}
+                rows.append(({k: d["draft"].get(k) for k in want}, want))
+        finally:
+            st, _s = await save(h, key, root, "draft", effort=eff0)
+            sp0.unlink(missing_ok=True)
+            sp2.write_bytes(raw2)
+        check(rows[0][1]["est_credits"][1] > 0 and rows[0][1]["est_seconds"] > 0 and len(rows[0][1]["refresh_available"]) == 2
+              and rows[1][1]["filtered"] == [ids[0]] and [r["crop_id"] for r in rows[2][1]["skipped"]] == [ids[0]]
+              and rows[2][1]["accepted"] == [ids[2]] and all(g == w for g, w in rows),
+              f"선택 Draft 계획의 비용·목록(est_credits·est_seconds·refresh_available·skipped·cached·accepted·filtered) = 같은 인자의 "
+              f"vlm.draft_plan 값 — 초안 키만 바뀐 002·003 갱신 가능, only 밖 대기 001 은 filtered, 스펙 오류 001 은 skipped, "
+              f"확정 003 은 accepted {rows}")
+        # cached(비어 있지 않음): 001 의 지금 키 원장에 done(스펙 쓰기 표식 없음 — 노드 Draft 가 스펙을 쓰고 표식을 지운 뒤와 같은 원장)
+        vdir = Path(root, dvlm.LEDGER_DIR)
+        had = {p: p.exists() for p in (vdir, vdir / ids[0])}
+        led, key0 = dvlm.Ledger(root), draft_plan_of(root, ids[0])[1][ids[0]].key
+        led.write(ids[0], key0, 1, "done", {"text": "{}", "parsed": {}})
+        try:
+            st, d = await plan(h, key, [ids[0], ids[1]])
+            _c, _r, _sr, dp, ap = draft_plan_of(root, pl.only_string([ids[0], ids[1]]))
+            mark = Path(root, dvlm.LEDGER_DIR, dvlm.WRITE_MARK).exists()
+        finally:
+            shutil.rmtree(led.dir(ids[0], key0), ignore_errors=True)
+            for p in (vdir / ids[0], vdir):
+                if not had[p]:
+                    with contextlib.suppress(OSError):
+                        p.rmdir()
+        dd = d.get("draft") or {}
+        check(st == 200 and dd.get("cached") == list(dp["cached"]) == [ids[0]] and dd.get("hash") == ap["pending_hash"]
+              and ids[0] not in {u["crop_id"] for u in dd.get("units") or []} and not mark and dd.get("warnings", {}).get("unwritten") == [],
+              f"선택 Draft 계획의 cached = 지금 키 done 이 원장에 있는 크롭(호출 없음) = 같은 인자의 vlm.draft_plan 값, 그 크롭은 units 에 "
+              f"없음 {st} {dd.get('cached')} {dp['cached']} {[u['crop_id'] for u in dd.get('units') or []]}")
+        pj = Path(root, pl.PIPELINE_NAME)
+        raw, every = pj.read_bytes(), pl.only_string(ids)
+        dflt = draft_hash(root, every)
+        doc = json.loads(raw)  # 그래프가 round 1 로 초안한 뒤 저장한 설정(draft_round 는 유도값만 저장 — 파일로 흉내)
+        doc["draft"].update(effort="high", image_detail="original", write_mode="refresh", draft_round=1, concurrency=2)
+        pj.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+        try:
+            st, d = await plan(h, key, ids)
+            _c, _r, _sr, dp, ap = draft_plan_of(root, every)
+            want_h = ap["pending_hash"]
+        finally:
+            pj.write_bytes(raw)
+        four = dvlm.estimate_seconds(dp["units"], backend="vlm_openai", concurrency=4, effort="high")
+        check(st == 200 and d["draft"]["hash"] == want_h not in (dflt, "", None) and d["draft"]["family"] == "openai"
+              and d["draft"]["est_seconds"] == ap["est_seconds"] != four,
+              f"실행 설정 draft 절(effort·image_detail·write_mode·draft_round·concurrency 가 기본값과 다름) 그대로 vlm.draft_plan — 해시 = 노드 "
+              f"인자 식, 예상 시간 = 동시 2 의 값(동시 4 와 다름) {d['draft'].get('hash')} {want_h} (기본값 {dflt}) "
+              f"{d['draft'].get('est_seconds')} {ap['est_seconds']} {four}")
+        st, _s = await save(h, key, root, "draft", vlm="openai/gpt-6-astra")  # 다른 openai 모델(xhigh 를 받음) — 모델은 초안 키에 들어감
+        try:
+            st2, d = await plan(h, key, ids)
+            want_h = draft_hash(root, every)
+        finally:
+            st, _s = await save(h, key, root, "draft", vlm="openai/gpt-6-sol")
+        check(st2 == 200 and d["draft"]["hash"] == want_h not in (dflt, "", None) and d["draft"]["family"] == "openai",
+              f"실행 설정 draft.vlm 이 다른 openai 모델 → 그 모델로 vlm.draft_plan(해시 = 노드 인자 식, 기본 모델 해시와 다름) "
+              f"{d['draft'].get('hash')} {want_h} (기본값 {dflt})")
+        st, d = await plan(h, key, [ids[1]], style="1")
+        check(d["sig"].endswith(f"|o:{ids[1]}") and not Path(root, "vlm", "img").exists(),
+              f"apply=targets 에서는 style 토큰을 붙이지 않음, vlm/img 를 쓰지 않음 {d['sig']}")
+        st, _s = await save(h, key, root, "draft", apply="full")
+        st, d = await plan(h, key, [ids[1]], style="1")
+        check(d["sig"].endswith(f"|o:{ids[1]},style") and d["draft"]["hash"] == draft_hash(root, f"{ids[1]},style")
+              and Path(root, "vlm", "img").is_dir() and not shape("GET /pipeline/plan", d, "style"),
+              f"apply=full + style=1 → only 에 style(화풍 단위), 화풍 입력 vlm/img 를 씀, 정본 alt.style 모양 {d['sig']} "
+              f"{shape('GET /pipeline/plan', d, 'style')}")
+        node = shutil.which("node")
+        if node:  # 실제 계획(서버 화풍 단위 crop_id)을 pipeline.js draftText 에 — 정본 예시에 없는 화풍 단위를 '+ 화풍'으로 세는지(r1-02)
+            (OUT / "style_plan.json").write_text(json.dumps(d["draft"], ensure_ascii=False), encoding="utf-8")
+            js = ("const vm = require('vm'), fs = require('fs');"
+                  "const c = vm.createContext({ window: {}, URLSearchParams, setTimeout, clearTimeout, setInterval, clearInterval, console });"
+                  "vm.runInContext(fs.readFileSync(process.argv[1], 'utf8'), c, { filename: 'pipeline.js' });"
+                  "process.stdout.write(JSON.stringify(c.window.DPPipeline.draftText(JSON.parse(fs.readFileSync(process.argv[2], 'utf8')))));")
+            r = subprocess.run([node, "-e", js, str(PKG / "web_design_patch" / "pipeline.js"), str(OUT / "style_plan.json")],
+                               capture_output=True, text=True, encoding="utf-8", timeout=60)
+            got = json.loads(r.stdout) if r.returncode == 0 and r.stdout else {"error": r.stderr[-300:]}
+            units = [u["crop_id"] for u in d["draft"]["units"]]
+            n_crops = sum(u != dvlm.STYLE_ID for u in units)
+            check(dvlm.STYLE_ID in units and got.get("what") == (f"{n_crops}크롭 + 화풍" if n_crops else "화풍")
+                  and any(x.startswith("화풍: ") for x in got.get("rows") or []),
+                  f"실제 화풍 계획(units 의 crop_id {dvlm.STYLE_ID!r})이 진행 모드 초안 줄에서 '+ 화풍'·'화풍:' 행으로 보임 {units} {got}")
+        else:
+            skip("node 없음 → 실제 화풍 계획의 draftText 확인 생략")
+        st, d0 = await plan(h, key, [ids[0]], style="0")
+        st2, dn = await h.jget(f"{API}/pipeline/plan", root=key, only=ids[0])  # style 없음 = "0"(정본 _doc)
+        want0, want_s = draft_hash(root, ids[0]), draft_hash(root, f"{ids[0]},style")
+        check(st == st2 == 200 and d0["sig"].endswith(f"|o:{ids[0]}") and d0["draft"]["hash"] == want0 and want0 not in ("", None, want_s)
+              and (dn.get("sig"), (dn.get("draft") or {}).get("hash"), (dn.get("run") or {}).get("hash")) == (d0["sig"], want0, d0["run"]["hash"]),
+              f"apply=full 이어도 style=0·style 없음 → only 에 style 없음, Draft 해시 = 화풍 없는 식(고르지 않은 화풍 단위가 승인 집합에 "
+              f"들어가지 않음) {st2} {d0['sig'][-24:]} {str(dn.get('sig'))[-24:]} {d0['draft'].get('hash')} {want0} {want_s} {dn.get('error')}")
+        st, _s = await save(h, key, root, "draft", apply="targets")
+        st, d = await plan(h, key, [ids[1]], style="1")
+        check(d["sig"].endswith(f"|o:{ids[1]}"), "apply=targets 로 되돌림")
+        board.layout_start(root)
+        try:
+            st, d = await plan(h, key, [ids[1]])
+            check("레이아웃 미반영(rev 0)" in d["draft"]["import_pending"] and isinstance(d["draft"].get("hash"), str),
+                  f"레이아웃 미반영 → import_pending(해시는 '반영 뒤 확정') {d['draft']['import_pending']}")
+            L = store.load_layout(root)
+            store.update_manifest(root, lambda mm: mm["source"].update(layout={"rev": L["rev"], "sig": store.layout_sig(L)}))
+            st, d1 = await plan(h, key, [ids[1]])
+
+            def narrow(lay):
+                r = lay["crops"][0]["rect"]
+                lay["crops"][0]["rect"] = [r[0], r[1], r[2] - 8, r[3]]
+
+            _res, rev1 = store.update_layout(root, narrow, expect_rev=L["rev"])
+            st, d2 = await plan(h, key, [ids[1]])
+            check(d1["draft"]["import_pending"] == [] and d2["draft"]["import_pending"] == [f"레이아웃 미반영(rev {rev1})"],
+                  f"반영된 레이아웃(source.layout sig 같음) → 대기 없음, 반영 뒤 또 고침(sig 다름) → 레이아웃 미반영 "
+                  f"{d1['draft']['import_pending']} {d2['draft']['import_pending']}")
+            # Import 가 끝난 뒤·Prepare 가 지문을 잡기 전에 Studio 가 layout.json 을 저장 — 새 파일이 지문에 들어가 prepare_inputs 는 '같음'
+            mp_ = store.load_manifest(root)
+            store.update_manifest(root, lambda mm: mm.update(prepare_inputs=store.prepare_inputs_fp(root, mm)))
+            try:
+                st, d3 = await plan(h, key, [ids[1]])
+            finally:
+                store.update_manifest(root, lambda mm: mm.update(prepare_inputs=mp_["prepare_inputs"]))
+            check(d3["apply_pending"] == [f"레이아웃 미반영(rev {rev1})"] and d2["apply_pending"][0] == f"레이아웃 미반영(rev {rev1})",
+                  f"Import 뒤·Prepare 앞 레이아웃 쓰기(지문은 같음) → apply_pending 은 레이아웃 미반영(지문만 보면 '반영됨'으로 새는 경로) "
+                  f"{d2['apply_pending']} {d3['apply_pending']}")
+        finally:
+            os.remove(os.path.join(root, store.LAYOUT_NAME))
+            store.update_manifest(root, lambda mm: mm["source"].pop("layout", None))
+        st, d = await plan(h, key, [ids[1]])
+        check(d["draft"]["import_pending"] == [], "layout.json 을 치우면(source.layout 없음) 반영 대기 없음")
+        board.layout_start(root)
+        L = store.load_layout(root)
+        store.update_manifest(root, lambda mm: mm["source"].update(layout={"rev": L["rev"], "sig": store.layout_sig(L)}))
+        os.remove(os.path.join(root, store.LAYOUT_NAME))  # 반영한 레이아웃을 바깥에서 지움(source.layout 은 남음)
+        try:
+            st, d = await plan(h, key, [ids[1]])
+        finally:
+            store.update_manifest(root, lambda mm: mm["source"].pop("layout", None))
+        check(d["draft"]["import_pending"] == ["레이아웃을 치움 — 다음 Import 가 PSD 로 다시 읽음"] and isinstance(d["draft"].get("hash"), str),
+              f"layout.json 만 치움(source.layout 남음) → import_pending '레이아웃을 치움'(다음 Import 가 PSD 로 다시 읽어 타깃이 바뀔 수 있음) "
+              f"{d['draft'].get('import_pending')}")
+        for what, path, want in ((store.LAYOUT_NAME, Path(root, store.LAYOUT_NAME), "layout.json 이 깨짐 — 다음 Import 가 멈춤"),
+                                 ("refs.json", Path(root, "refs.json"), "refs.json 이 깨짐 — 다음 Import 가 멈춤"),
+                                 ("스펙", Path(root, "specs", f"{ids[2]}.json"), f"스펙 JSON 오류({ids[2].split('_')[0]}) — 다음 Import 가 멈춤")):
+            raw_b = path.read_bytes() if path.exists() else None
+            path.write_text("{", encoding="utf-8")
+            try:
+                st, d = await plan(h, key, [ids[1]])
+            finally:
+                if raw_b is None:
+                    path.unlink()
+                else:
+                    path.write_bytes(raw_b)
+            check(st == 200 and want in (d["draft"].get("import_pending") or []),
+                  f"깨진 {what} → import_pending '{want}'(Import 가 멈춰 해시는 반영 뒤 확정) {st} {d['draft']}")
+        extra = Path(store.load_manifest(root)["source"]["refs_dir"]) / f"{LEG.split('_')[0]}_장식.png"
+        extra.write_bytes(png_bytes(np.full((16, 16, 3), 90, np.uint8)))
+        try:
+            st, d = await plan(h, key, [ids[1]])
+        finally:
+            extra.unlink()
+        check(d["draft"]["import_pending"] == ["레퍼런스 미반영(1크롭)"],
+              f"refs_dir 에 크롭 이름 그림이 새로 생김(연결 해석 ≠ 매니페스트 refs_auto) → 레퍼런스 미반영 {d['draft']['import_pending']}")
+        alt = OUT / "refs_alt"
+        alt.mkdir(exist_ok=True)
+        imp = cur(root)["settings"]["import"]
+        st, _s = await save(h, key, root, "import", refs_dir=alt.as_posix())
+        try:
+            st, d = await plan(h, key, [ids[1]])
+        finally:
+            st, _s = await save(h, key, root, "import", **imp)
+        check(d["draft"]["import_pending"] == ["Import 설정이 마지막 Import 와 다름(refs_dir)"]
+              and "Import 설정이 마지막 Import 와 다름(refs_dir) — 반영하면 크롭·타깃·레퍼런스가 바뀔 수 있음" in d["notes"],
+              f"pipeline.import ≠ 매니페스트 source(존재하는 다른 refs_dir) → 반영 대기·notes 갈라짐 줄 {d['draft']['import_pending']} {d['notes']}")
+        psd = Path(store.load_manifest(root)["source"]["psd"])
+        fs = psd.stat()
+        os.utime(psd, ns=(fs.st_atime_ns, fs.st_mtime_ns + 10 ** 9))
+        try:
+            st, d = await plan(h, key, [ids[1]])
+        finally:
+            os.utime(psd, ns=(fs.st_atime_ns, fs.st_mtime_ns))
+        check(d["draft"]["import_pending"] == ["마지막 Import 뒤 PSD 파일이 바뀜"],
+              f"마지막 Import 뒤 PSD 시각이 바뀜(source.fingerprint 와 다름) → 반영 대기 {d['draft']['import_pending']}")
+        st, d0 = await plan(h, key, [ids[1]])  # 기억된 계획(해시 있음) — 파일은 그대로 두고 Spec Draft 가 시작됨(아직 원장을 안 씀)
+        with board.draft_active(root):
+            st, sa = await h.jget(f"{API}/state", root=key)
+            st, d = await plan(h, key, [ids[1]])
+        st, d2 = await plan(h, key, [ids[1]])
+        check(d["draft"] == {"running": True} and re.fullmatch(r"[0-9a-f]{12}", d["run"]["hash"]) and not shape("GET /pipeline/plan", d, "draft_running")
+              and sa["plan_v"] is None and all(c["plan_stale"] and c["draft_chip"]["running"] for c in sa["crops"])
+              and isinstance(d0["draft"].get("hash"), str) and d2["draft"].get("hash") == d0["draft"]["hash"] == draft_hash(root, ids[1]),
+              f"Spec Draft 실행 중(draft_active — 파일 변화 없이) → 기억한 계획을 쓰지 않고 draft {{running: true}} 만(해시 없음), run 은 그대로, "
+              f"그동안 state plan_v null·칩 running, 끝나면 해시 다시 {d['draft']} {sa['plan_v']} {d2['draft'].get('hash')}")
+        @contextlib.contextmanager
+        def midway(kind, start, end, fx=(None, None)):
+            """계획 계산 중 실행(kind = board.draft_active | board.run_active)이 start 지점에서 시작해 end 지점(None = 요청 뒤)에서 파일
+            변화 없이 끝남(초안 형식 오류·로그아웃 401 되돌림). 지점 = (이름, n) — n번째 호출 직전(보드는 호출 때 모듈 속성으로 찾음):
+            board._mock_active(1 = _plan_sigs — 계획이 실행 상태를 읽은 뒤)·runner.plan_calls(1 = _run_free, 2 = _run_sel)·
+            dvlm.draft_plan(1 = _draft_free, 2 = _draft_sel — free 를 기억했으면 1 = 선택 계획). fx = (시작 때, 끝날 때) 원장 쓰기·되돌리기.
+            → 일어난 일 목록."""
+            mods = {"_mock_active": board, "plan_calls": runner, "draft_plan": dvlm}
+            saved = {k: getattr(mod, k) for k, mod in mods.items()}
+            calls, act, log = dict.fromkeys(mods, 0), [], []
+
+            def wrap(name):
+                def w(*a, **kw):
+                    calls[name] += 1
+                    if (name, calls[name]) == start:
+                        act.append(kind(root))
+                        act[0].__enter__()
+                        if fx[0]:
+                            fx[0]()
+                        log.append("start")
+                    elif (name, calls[name]) == end and act:
+                        if fx[1]:
+                            fx[1]()
+                        act.pop().__exit__(None, None, None)
+                        log.append("end")
+                    return saved[name](*a, **kw)
+                return w
+
+            for k, mod in mods.items():
+                setattr(mod, k, wrap(k))
+            try:
+                yield log
+            finally:
+                for k, mod in mods.items():
+                    setattr(mod, k, saved[k])
+                for cm in act:
+                    cm.__exit__(None, None, None)
+                    log.append("end")
+
+        def head(d):
+            return d["sig"].split("|o:")[0]
+
+        def running_shown(kind, d):
+            """계산 뒤에도 도는 실행의 실행 중 표시(§2.4): Spec Draft = draft {running: true} 만(해시 없음), Run = run.running."""
+            return d["draft"] == {"running": True} if kind is board.draft_active else d["run"]["running"] is True
+
+        for kind, start, end in ((board.draft_active, ("plan_calls", 1), None), (board.run_active, ("plan_calls", 1), None),
+                                 (board.draft_active, ("plan_calls", 1), ("plan_calls", 2)),  # 시작·끝 모두 계산 중
+                                 (board.run_active, ("plan_calls", 1), ("draft_plan", 1)),
+                                 (board.run_active, ("plan_calls", 2), None),  # 계산이 실행 상태를 읽은 뒤 시작(선택 Run 계산 중)
+                                 (board.draft_active, ("draft_plan", 2), None)):  # 선택 Draft 계산 중 시작(only 없는 Draft 는 그 전)
+            board._PLAN_MEMO.clear()
+            with midway(kind, start, end) as log:
+                st, d1 = await plan(h, key, [ids[1]])
+            st, s1 = await h.jget(f"{API}/state", root=key)
+            with counting() as n:
+                st, d2 = await plan(h, key, [ids[1]])
+            st, s2 = await h.jget(f"{API}/state", root=key)
+            what = f"{kind.__name__} {start}→{end or '요청 뒤'}"
+            check(log == ["start", "end"] and s1["plan_v"] is None and n["plan_calls"] > 0 and n["draft_plan"] > 0
+                  and d2["run"]["running"] is False and d2["draft"].get("hash") == draft_hash(root, ids[1])
+                  and d2["run"]["hash"] == a1["pending_hash"],
+                  f"계산 중 {what} — 실행 상태가 계산 중 바뀐 계산은 '실행 중 아님' 서명으로 기억하지 않음(그 실행이 파일을 바꾸지 않고 "
+                  f"끝나도 실행 중 값이 남지 않게) — 그동안 state plan_v null, 다음 계획은 다시 계산(running 아님·Draft 해시) {log} "
+                  f"{d1['run'].get('running')} {d1['draft'].get('running')} {s1['plan_v']} {n}")
+            check((end is not None or running_shown(kind, d1)) and s2["plan_v"] == head(d2) != head(d1),
+                  f"계산 중 {what} — 첫 응답: 계산 뒤에도 돌면 실행 중 표시(계산이 그 실행을 못 봤어도 — 해시·'orphan 재시도' 대신), sig 는 "
+                  f"계산 중 돈 실행을 '실행 중'으로 넣은 서명(실행이 끝난 뒤의 state plan_v 와 달라 Studio 가 낡은 계획으로 보고 다시 받음) "
+                  f"{d1['run'].get('running')} {d1['draft']} {head(d1)[-12:]} {s2['plan_v'] and s2['plan_v'][-12:]}")
+        ck1 = jobs[1]["cell_key"]
+        led = Path(root, "cands", ck1)
+        led.mkdir(parents=True, exist_ok=True)  # 원장 폴더가 이미 있는 셀(되돌린 뒤 파일 목록이 처음과 같음)
+
+        def fire():  # 그래프 Run 이 002 호출을 발사(runner._begin_call — req·inflight)
+            ledger(root, ck1, "r0.req.json", {"call_id": f"{ck1}_r0", "cell_key": ck1, "rep": 0, "kind": "new", "attempt": 1})
+            ledger(root, ck1, "r0.inflight.json", {"call_id": f"{ck1}_r0", "started_ts": time.time()})
+
+        def rollback():  # 401 — 과금 전 거부라 원장을 되돌림(_request_failed)
+            for nm in ("r0.req.json", "r0.inflight.json"):
+                (led / nm).unlink()
+
+        try:
+            for kind, start, end, fx in ((board.draft_active, ("draft_plan", 1), None, (None, None)),  # 기억한 free + 선택 Draft 계산 중 시작
+                                         (board.run_active, ("plan_calls", 1), None, (None, None)),  # 기억한 free + 선택 Run 계산 중 시작
+                                         (board.run_active, ("plan_calls", 1), ("draft_plan", 1), (fire, rollback))):  # 시작·발사·되돌림·끝
+                board._PLAN_MEMO.clear()
+                st, d0 = await plan(h, key, [ids[0]])  # only 없는 계획을 기억(plan_v = X) — 다음 요청은 선택 부분만 계산
+                with midway(kind, start, end, fx) as log:
+                    st, d1 = await plan(h, key, [ids[1]])
+                st, s1 = await h.jget(f"{API}/state", root=key)
+                st, d2 = await plan(h, key, [ids[1]])
+                what = f"기억한 free · {kind.__name__} {start}→{end or '요청 뒤'}"
+                check(log == ["start", "end"] and (end is not None or running_shown(kind, d1)) and s1["plan_v"] == head(d0) != head(d1)
+                      and d2["run"]["hash"] == a1["pending_hash"] and d2["run"]["need"] == 1 and d2["run"]["running"] is False
+                      and d2["draft"].get("hash") == draft_hash(root, ids[1]),
+                      f"{what} — 첫 응답은 실행 중 표시·기억한 free 서명(X)과 다른 sig(Studio 가 X 로 '지금 계획'이라 믿지 않음), 시작해서 원장을 "
+                      f"되돌리고 끝난 Run 도 시작 수로 알아채 선택 계획을 기억하지 않음(파일이 처음과 같아도 다음 요청은 다시 계산 — need 1·해시) "
+                      f"{log} {d1['run'].get('running')} {d1['run'].get('need')} {d1['draft'].get('running')} {s1['plan_v'] and s1['plan_v'][-12:]} "
+                      f"{head(d1)[-12:]} {d2['run'].get('need')}")
+        finally:
+            shutil.rmtree(led, ignore_errors=True)
+            board._PLAN_MEMO.clear()
+        board._PLAN_MEMO.clear()
+        with midway(board.run_active, ("_mock_active", 1), ("plan_calls", 1)) as log:  # 실행 상태를 읽은 직후 Run 이 돌다 끝남(계산 전)
+            st, d1 = await plan(h, key, [ids[1]])
+        with board.run_active(root):
+            st, d2 = await plan(h, key, [ids[1]])
+        check(log == ["start", "end"] and d1["run"]["running"] is False and d2["run"]["running"] is True,
+              f"서명의 실행 상태 = 계획이 한 번 읽어 비교한 값(서명 안에서 다시 읽지 않음) — 그 사이 끝난 Run 의 '실행 중' 서명으로 "
+              f"'실행 중 아님' 계산을 기억하지 않음 {log} {d1['run'].get('running')} {d2['run'].get('running')}")
+        gl = Path(root, "glossary.json")
+        gl.write_text("[1]", encoding="utf-8")
+        try:
+            st, d = await plan(h, key, [ids[1]])
+        finally:
+            gl.unlink()
+        check(st == 200 and d["draft"]["hash"] is None and isinstance(d["draft"].get("error"), str) and set(d["draft"]) == {"error", "hash"}
+              and d["run"]["hash"] == a1["pending_hash"] and not shape("GET /pipeline/plan", d, "draft_error"),
+              f"용어집 형식 오류 → draft {{error, hash: null}}(HTTP 200, run 그대로) {d['draft']}")
+        saved_q = list(board._QWEN_DIR)
+        st, _s = await save(h, key, root, "draft", vlm="local_qwen/Qwen3-VL-8B-Instruct")
+        try:
+            board.set_qwen_dir("")
+            st, d = await plan(h, key, [ids[1]])
+            check(d["draft"] == {"error": "local_qwen 모델 경로 미설정 — ComfyUI 재시작", "hash": None}
+                  and not shape("GET /pipeline/plan", d, "draft_qwen_nodir"),
+                  f"local_qwen + set_qwen_dir 전 → 해시 없이 오류('nodir' 키로 계산하지 않음) {d['draft']}")
+            qdir = OUT / "qwen"
+            qdir.mkdir(exist_ok=True)
+            (qdir / "config.json").write_text('{"v": 1}', encoding="utf-8")
+            board.set_qwen_dir(str(qdir))
+            st, d = await plan(h, key, [ids[0]])  # 001 = 스펙 없음 → 새 초안 대기(해시가 키를 따라감)
+            h1, e1 = d["draft"].get("hash"), draft_hash(root, ids[0])
+            (qdir / "config.json").write_text('{"v": 22}', encoding="utf-8")
+            st, d2 = await plan(h, key, [ids[0]])
+            check(d["draft"]["family"] == "local_qwen" and re.fullmatch(r"[0-9a-f]{12}", h1 or "") and h1 == e1
+                  and d2["draft"]["hash"] == draft_hash(root, ids[0]) not in (h1, None) and d2["sig"] != d["sig"],
+                  f"set_qwen_dir → local_qwen 키(config.json)로 계산, config.json 이 바뀌면 서명·해시가 바뀜 {h1} {d2['draft'].get('hash')}")
+        finally:
+            board._QWEN_DIR[:] = saved_q
+            st, _s = await save(h, key, root, "draft", vlm="openai/gpt-6-sol")
+
+        section("S3a-B35 공통 — 선택 없음(no_selection)·202 busy·같은 서명 기억·notes·400·409·404")
+        st, d = await plan(h, key, ())
+        check(st == 200 and not shape("GET /pipeline/plan", d, "no_selection") and d["run"]["hash"] == "" and d["run"]["need"] == 0
+              and d["draft"]["hash"] == "" and d["draft"]["units"] == [] and "|o:" not in d["sig"]
+              and not any(v["selected"] for v in d["run"]["by_crop"].values()) and d["run"]["pre"] == 1,
+              f"only 없음 → alt.no_selection(선택 필드 빈 값·hash '' — 빈 only 는 '전부'라 해시를 보이지 않음) {shape('GET /pipeline/plan', d, 'no_selection')}")
+        st, d0 = await h.jget(f"{API}/pipeline/plan", root=key)  # Studio 칩용 계획 요청 = only·style 둘 다 없음(style 없으면 "0")
+        check(st == 200 and not shape("GET /pipeline/plan", d0, "no_selection") and d0.get("sig") == d["sig"] and d0.get("run") == d["run"],
+              f"only·style 없는 요청 → 200 alt.no_selection(style=0 과 같은 서명·계획) {st} {d0.get('error')}")
+        board._PLAN_MEMO.clear()
+        saved_dp, wrote = dvlm.draft_plan, []
+
+        def writing(*a, **kw):  # 계획 계산 중 다른 스레드(노드 write_spec·Run 매니페스트 쓰기)가 manifest_lock 을 잡음
+            if not wrote:
+                th = threading.Thread(target=store.update_manifest, args=(root, lambda mm: None))
+                th.start()
+                th.join(5)
+                wrote.append(not th.is_alive())
+            return saved_dp(*a, **kw)
+
+        dvlm.draft_plan = writing
+        try:
+            st, d = await plan(h, key, [ids[1]])
+        finally:
+            dvlm.draft_plan = saved_dp
+        check(st == 200 and wrote == [True] and isinstance(d["draft"].get("hash"), str),
+              f"계획 계산은 manifest_lock 을 쥐지 않음 — 계산 중 다른 스레드의 매니페스트 쓰기가 계산이 끝나기 전에 끝남 {wrote}")
+        board._PLAN_LOCK.acquire()
+        try:
+            t0 = time.monotonic()
+            st, d = await plan(h, key, [ids[1]])
+            dt = time.monotonic() - t0
+        finally:
+            board._PLAN_LOCK.release()
+        check(st == 202 and d == R["GET /pipeline/plan"]["errors"]["202"][0] and dt < 1.0,
+              f"계획 잠금을 못 잡음 → 기다리지 않고 202 {{busy: true}} {st} {d} {dt:.2f}s")
+        store.update_manifest(root, lambda mm: mm.update(prepare_inputs=store.prepare_inputs_fp(root, mm)))  # 반영됨(앞 사례가 스펙을 바꿈)
+        with counting() as n:
+            st, d1 = await plan(h, key, [ids[1]])
+            n1 = dict(n)
+            st, d2 = await plan(h, key, [ids[1]])
+            same = dict(n) == n1
+            Path(root, "specs", f"{ids[0]}.json").write_text('{"_hint": "x"}', encoding="utf-8")
+            st, d3 = await plan(h, key, [ids[1]])
+        check(same and d2["computed_at"] == d1["computed_at"] and d2["run"] == d1["run"] and d3["sig"] != d1["sig"]
+              and n["plan_calls"] > n1["plan_calls"] and n["draft_plan"] > n1["draft_plan"],
+              f"같은 서명·같은 선택 → 기억한 결과(계산 0), 스펙이 바뀌면 다시 계산 {n1} {n}")
+        check(d3["apply_pending"] == ["Prepare 입력이 바뀜(마지막 Prepare 뒤 스펙·레이아웃·레퍼런스·용어집)"]
+              and not any(x.startswith("Prepare 입력") for x in d1["apply_pending"])
+              and not any(x.startswith(("반영 필요", "Prepare 입력")) for x in d3["notes"]),
+              f"스펙 쓰기 → prepare_inputs 불일치 = apply_pending '반영 필요'(notes 는 설정 쪽만) {d1['apply_pending']} {d3['apply_pending']} "
+              f"{d3['notes']}")
+        os.remove(os.path.join(root, "specs", f"{ids[0]}.json"))
+
+        async def resig(what, mutate, restore, part):
+            """재료 하나를 바꾸면 그 서명(part: r = Run, d = Draft)만 바뀌어 다시 계산(기억 없이 계산한 값과 같음), 그 전에 state plan_v null."""
+            st, d0 = await plan(h, key, [ids[1]])
+            st, s0 = await h.jget(f"{API}/state", root=key)
+            try:
+                mutate()
+                st, s1 = await h.jget(f"{API}/state", root=key)
+                with counting() as n:
+                    st, d1 = await plan(h, key, [ids[1]])
+                board._PLAN_MEMO.clear()
+                st, d2 = await plan(h, key, [ids[1]])
+            finally:
+                restore()
+            (r0, x0), (r1, x1) = d0["sig"].split("|")[:2], d1["sig"].split("|")[:2]
+            got = ("r" if r0 != r1 else "") + ("d" if x0 != x1 else "")
+            check(got == part and s0["plan_v"] == d0["sig"].split("|o:")[0] and s1["plan_v"] is None and n["plan_calls"] > 0
+                  and n["draft_plan"] > 0 and (d1["run"], d1["draft"]) == (d2["run"], d2["draft"]),
+                  f"서명 재료 '{what}' 바뀜 → 서명 {part} 바뀜·다시 계산(= 기억 없이 계산한 값)·그 전 state plan_v null {got} {n}")
+            return d1
+
+        ck, m0 = [j["cell_key"] for j in jobs], store.load_manifest(root)
+        psd = Path(m0["source"]["psd"])
+        fs = psd.stat()
+        gfile, ext, caps = OUT / "gloss_src.json", OUT / "ext_ref.png", Path(root).parent / "_vlm_caps.json"
+        rj, named_ref = Path(root, "refs.json"), Path(m0["source"]["refs_dir"]) / f"{LEG.split('_')[0]}_장식.png"
+        vled, vkey = Path(root, "vlm", ids[0], "e" * 24), Path(root, "vlm", ids[2], "f" * 24)
+        store.write_json_atomic(str(vkey / "a1.req.json"), {"kind": "crop"})  # 이미 있는 키 폴더(시도가 진행되는 자리)
+        gfile.write_text(json.dumps({"리본": "ribbon"}, ensure_ascii=False), encoding="utf-8")
+        ext.write_bytes(png_bytes(np.full((16, 16, 3), 60, np.uint8)))
+        t0 = copy.deepcopy(m0["crops"][0]["targets"][0])
+        store.update_manifest(root, lambda mm: (mm["source"].update(glossary=gfile.as_posix()),
+                                                mm["crops"][0]["targets"][0].update(refs=[ext.as_posix()])))
+        try:
+            for what, mutate, restore, part in (
+                    ("jobs(그래프 Prepare)", lambda: store.update_manifest(root, lambda mm: mm["jobs"][2].update(n=4)),
+                     lambda: store.update_manifest(root, lambda mm: mm["jobs"][2].update(n=2)), "r"),
+                    # Codex 2차 c2-2: 같은 위젯·같은 프롬프트의 그래프 Prepare = jobs 같은 바이트 + 설정·입력 지문만 처음 기록(옛 프로젝트) —
+                    # apply_pending('지문 없음')·notes(Prepare 갈라짐)가 바뀌므로 plan_v 도 바뀌어야 Studio 가 계획을 다시 받는다
+                    ("prepare_settings(jobs 를 그대로 둔 그래프 Prepare — 설정 기록)",
+                     lambda: store.update_manifest(root, lambda mm: mm.update(prepare_settings=dict(cur(root)["settings"]["prepare"]))),
+                     lambda: store.update_manifest(root, lambda mm: mm.update(prepare_settings=m0["prepare_settings"]) if "prepare_settings" in m0
+                                                   else mm.pop("prepare_settings", None)), "r"),
+                    ("prepare_inputs(jobs 를 그대로 둔 그래프 Prepare — 입력 지문 기록)",
+                     lambda: store.update_manifest(root, lambda mm: mm.update(prepare_inputs="0" * 16)),
+                     lambda: store.update_manifest(root, lambda mm: mm.update(prepare_inputs=m0["prepare_inputs"]) if "prepare_inputs" in m0
+                                                   else mm.pop("prepare_inputs", None)), "r"),
+                    ("rerolls(R 재굴림)", lambda: board.apply_reroll(root, 1, cell_key=ck[0]),
+                     lambda: store.update_manifest(root, lambda mm: mm.update(rerolls=dict(m0["rerolls"]))), "r"),
+                    ("cands 원장(Run 결과)", lambda: ledger(root, ck[1], "r0.failed.json", {"error": "x", "retryable": True}),
+                     lambda: Path(root, "cands", ck[1], "r0.failed.json").unlink(), "r"),
+                    ("_MOCK_API 파일", lambda: mock_file.write_text("", encoding="utf-8"), mock_file.unlink, "rd"),
+                    ("BMK_DP_MOCK_API 환경변수", lambda: os.environ.__setitem__(runner.MOCK_ENV, "1"),
+                     lambda: os.environ.pop(runner.MOCK_ENV), "rd"),
+                    ("레퍼런스 파일(refs_dir 밖 타깃 refs)", lambda: ext.write_bytes(png_bytes(np.full((16, 16, 3), 61, np.uint8))),
+                     lambda: None, "d"),
+                    ("source.glossary 내용", lambda: gfile.write_text(json.dumps({"리본": "ribbon", "장갑": "glove"}, ensure_ascii=False),
+                                                                      encoding="utf-8"), lambda: None, "d"),
+                    ("PSD 파일", lambda: os.utime(psd, ns=(fs.st_atime_ns, fs.st_mtime_ns + 2 * 10 ** 9)),
+                     lambda: os.utime(psd, ns=(fs.st_atime_ns, fs.st_mtime_ns)), "d"),
+                    ("매니페스트 크롭", lambda: store.update_manifest(root, lambda mm: mm["crops"][2].update(warnings=["x"])),
+                     lambda: store.update_manifest(root, lambda mm: mm["crops"][2].update(warnings=[])), "d"),
+                    ("초안 원장(vlm/)", lambda: store.write_json_atomic(str(vled / "a1.req.json"), {"kind": "crop"}),
+                     lambda: shutil.rmtree(vled.parent), "d"),
+                    ("초안 원장 — 있던 키 폴더의 새 시도 파일(req → resp)", lambda: store.write_json_atomic(str(vkey / "a1.resp.json"),
+                                                                                     {"status": "completed"}),
+                     lambda: (vkey / "a1.resp.json").unlink(), "d"),
+                    ("작업 영역(work_rect — 화풍 입력)", lambda: store.update_manifest(root, lambda mm: mm.update(work_rect=[0, 0, 64, 64])),
+                     lambda: store.update_manifest(root, lambda mm: mm.update(work_rect=m0.get("work_rect"))), "d"),
+                    ("베이스(base — 화풍 입력)", lambda: store.update_manifest(root, lambda mm: mm.update(base="inputs/s3u3_base.png")),
+                     lambda: store.update_manifest(root, lambda mm: mm.update(base=m0.get("base"))), "d"),
+                    ("예상 크레딧 보정(_vlm_caps.json)", lambda: caps.write_text("{}", encoding="utf-8"), caps.unlink, "d"),
+                    ("refs.json(레퍼런스 연결 — 001 '없음' 고정)", lambda: board.ref_link(root, None, "none", {"crop_id": ids[0]}),
+                     rj.unlink, "d"),
+                    ("refs_dir 목록(크롭 이름 그림이 새로 생김)", lambda: named_ref.write_bytes(png_bytes(np.full((16, 16, 3), 90, np.uint8))),
+                     named_ref.unlink, "d")):
+                d1 = await resig(what, mutate, restore, part)
+                if what == "PSD 파일":
+                    check("마지막 Import 뒤 PSD 파일이 바뀜" in d1["draft"]["import_pending"], "PSD 가 바뀐 계획은 import_pending 에도")
+                if what.startswith("refs"):
+                    check("레퍼런스 미반영(1크롭)" in d1["draft"]["import_pending"],
+                          f"{what} → 다시 계산한 계획의 import_pending '레퍼런스 미반영'(Draft 해시는 반영 뒤 확정) {d1['draft']['import_pending']}")
+        finally:
+            store.update_manifest(root, lambda mm: (mm["source"].update(glossary=""), mm["crops"][0]["targets"].__setitem__(0, t0)))
+            shutil.rmtree(vkey.parent)
+
+        # Codex 3차 c3-1: 스펙 JSON 은 그대로 두고 스펙이 가리키는 그림(guide·before_paste·스펙에만 있는 타깃 refs)만 바뀜 — prepare_inputs_fp 가
+        # 바뀌어 apply_pending '입력이 바뀜'이 되므로 plan_v 도 바뀌어야 Studio 가 계획을 다시 받는다(specs/ 바로 아래·refs_dir 바로 아래가 아니면
+        # 다른 서명 재료로는 잡히지 않음). 스펙 JSON 은 specs/ 목록이 바뀔 때만 파싱(state 폴링 = stat 수준)
+        changed_w = "Prepare 입력이 바뀜(마지막 Prepare 뒤 스펙·레이아웃·레퍼런스·용어집)"
+        pi0, sp = store.load_manifest(root).get("prepare_inputs"), Path(root, "specs", f"{ids[0]}.json")
+        gd, gd2, bp = Path(root, "guides", "g.png"), Path(root, "guides", "g2.png"), OUT / "outside_bp.png"
+        sref = Path(m0["source"]["refs_dir"]) / "sub" / "x.png"
+        for i, p in enumerate((gd, gd2, bp, sref)):
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(png_bytes(np.full((16, 16, 3), 40 + i, np.uint8)))
+
+        def bump(p, v):  # 그림만 다시 씀(크기가 같을 수 있어 mtime 도 민다)
+            old = p.stat()
+            p.write_bytes(png_bytes(np.full((16, 16, 3), v, np.uint8)))
+            os.utime(p, ns=(old.st_atime_ns, old.st_mtime_ns + 5 * 10 ** 9))
+
+        def mark():  # 반영됨(지금 지문)
+            store.update_manifest(root, lambda mm: mm.update(prepare_inputs=store.prepare_inputs_fp(root, mm)))
+
+        sp.write_text(json.dumps({"guide": "guides/g.png", "before_paste": bp.as_posix(), "targets": [{"id": "A", "refs": ["sub/x.png"]}]}),
+                      encoding="utf-8")
+        saved_sp, nsp = store._spec_paths, []
+
+        def spying(*a):
+            nsp.append(a)
+            return saved_sp(*a)
+
+        try:
+            for what, img, v in (("guide(프로젝트 하위 guides/)", gd, 200), ("before_paste(프로젝트 밖 절대 경로)", bp, 201),
+                                 ("스펙 refs(refs_dir 하위 폴더 — 스펙에만 있는 타깃 refs)", sref, 202)):
+                mark()
+                st, a0 = await plan(h, key, [ids[1]])
+                st, s0 = await h.jget(f"{API}/state", root=key)
+                sp_ns = sp.stat().st_mtime_ns
+                bump(img, v)
+                st, s1 = await h.jget(f"{API}/state", root=key)
+                st, s2 = await h.jget(f"{API}/state", root=key, since_rev=str(s1["rev"]))
+                st, a1 = await plan(h, key, [ids[1]])
+                st, s3 = await h.jget(f"{API}/state", root=key)
+                (r0, x0), (r1, x1) = a0["sig"].split("|")[:2], a1["sig"].split("|")[:2]
+                check(sp.stat().st_mtime_ns == sp_ns and a0["apply_pending"] == [] and s0["plan_v"] == a0["sig"].split("|o:")[0]
+                      and s1["plan_v"] is None and s2.get("unchanged") is True and s2["plan_v"] is None
+                      and a1["apply_pending"] == [changed_w] and r0 == r1 and x0 != x1 and s3["plan_v"] == a1["sig"].split("|o:")[0],
+                      f"스펙이 가리키는 {what} 그림만 바뀜(스펙 JSON 그대로) → Draft 서명이 바뀌어 state plan_v null(전체·unchanged) → 다시 받은 "
+                      f"계획 apply_pending '입력이 바뀜' {a0['apply_pending']} {s0['plan_v'] == a0['sig'].split('|o:')[0]} {s1['plan_v']} "
+                      f"{s2.get('plan_v')} {a1['apply_pending']} {(r0 == r1, x0 != x1)}")
+            mark()
+            st, a0 = await plan(h, key, [ids[1]])
+            store._spec_paths = spying
+            st, s0 = await h.jget(f"{API}/state", root=key)
+            st, s1 = await h.jget(f"{API}/state", root=key, since_rev=str(s0["rev"]))
+            n_same = len(nsp)
+            sp.write_text(json.dumps({"guide": "guides/g2.png"}), encoding="utf-8")  # 스펙이 가리키는 파일이 바뀜(specs/ 목록 변화)
+            st, s2 = await h.jget(f"{API}/state", root=key)
+            st, s3 = await h.jget(f"{API}/state", root=key)
+            n_new = len(nsp)
+            mark()
+            st, a1 = await plan(h, key, [ids[1]])
+            st, s4 = await h.jget(f"{API}/state", root=key)
+            bump(gd2, 203)
+            st, s5 = await h.jget(f"{API}/state", root=key)
+            st, a2 = await plan(h, key, [ids[1]])
+            bump(gd, 204)  # 스펙이 더는 가리키지 않는 옛 guide
+            st, s6 = await h.jget(f"{API}/state", root=key)
+            check(s0["plan_v"] == a0["sig"].split("|o:")[0] == s1["plan_v"] and n_same == 0 and s2["plan_v"] is None and n_new == 1
+                  and s4["plan_v"] == a1["sig"].split("|o:")[0] and s5["plan_v"] is None and a2["apply_pending"] == [changed_w]
+                  and s6["plan_v"] == a2["sig"].split("|o:")[0],
+                  f"state 폴링은 specs/ 목록이 같으면 스펙 JSON 을 파싱하지 않음(파싱 0), 스펙이 바뀌면 한 번 파싱해 새 경로를 기억 — 새 guide 그림 "
+                  f"변화는 plan_v 를 바꾸고 더는 가리키지 않는 옛 guide 는 바꾸지 않음 {n_same} {n_new} {s4['plan_v'] == a1['sig'].split('|o:')[0]} "
+                  f"{s5['plan_v']} {a2['apply_pending']} {s6['plan_v'] == a2['sig'].split('|o:')[0]}")
+
+            def locked(*a):
+                raise PermissionError("specs/ 잠김")
+
+            store._spec_paths = locked
+            sp.write_text(json.dumps({"guide": "guides/g.png"}), encoding="utf-8")
+            st_l, s7 = await h.jget(f"{API}/state", root=key)
+            store._spec_paths = spying
+            nsp.clear()
+            for _ in range(2):
+                st, _s = await h.jget(f"{API}/state", root=key)
+            check(st_l == 200 and s7["plan_v"] is None and len(nsp) == 1,
+                  f"스펙 경로를 읽다 OSError(specs/ 잠김·사라짐) → state 는 200(plan_v null), 기억하지 않아 다음 폴링이 다시 읽음 {st_l} {len(nsp)}")
+
+            # 기억 키의 refs_dir: Import 가 refs_dir 를 바꾸면(스펙 JSON·specs/ 목록 그대로) 스펙 refs 상대 경로를 새 refs_dir 기준으로 다시 읽어야
+            # 새 refs_dir 하위 그림 변화가 plan_v 를 바꾼다(키에 refs_dir 가 없으면 옛 refs_dir 경로를 계속 씀 — c3-1 과 같은 증상)
+            rd0, rdb = m0["source"]["refs_dir"], OUT / "c3_refs_b"
+            xb = rdb / "sub" / "x.png"
+            xb.parent.mkdir(parents=True, exist_ok=True)
+            xb.write_bytes(png_bytes(np.full((16, 16, 3), 50, np.uint8)))
+            sp.write_text(json.dumps({"targets": [{"id": "A", "refs": ["sub/x.png"]}]}), encoding="utf-8")
+            try:
+                st, _s = await h.jget(f"{API}/state", root=key)  # 옛 refs_dir 로 경로를 기억
+                store.update_manifest(root, lambda mm: mm["source"].update(refs_dir=rdb.as_posix()))
+                mark()
+                st, b0 = await plan(h, key, [ids[1]])
+                st, t0 = await h.jget(f"{API}/state", root=key)
+                bump(xb, 205)
+                st, t1 = await h.jget(f"{API}/state", root=key)
+                st, t2 = await h.jget(f"{API}/state", root=key, since_rev=str(t1["rev"]))
+                st, b1 = await plan(h, key, [ids[1]])
+                check(t0["plan_v"] == b0["sig"].split("|o:")[0] and changed_w not in b0["apply_pending"] and t1["plan_v"] is None
+                      and t2.get("unchanged") is True and t2["plan_v"] is None and changed_w in b1["apply_pending"],
+                      f"refs_dir 를 바꾼 뒤 새 refs_dir 하위(sub/)의 스펙 refs 그림만 바뀜 → 경로를 새 refs_dir 로 다시 읽어 plan_v null(전체·unchanged) "
+                      f"{t0['plan_v'] == b0['sig'].split('|o:')[0]} {b0['apply_pending']} {t1['plan_v']} {t2.get('plan_v')} {b1['apply_pending']}")
+            finally:
+                store.update_manifest(root, lambda mm: mm["source"].update(refs_dir=rd0))
+                shutil.rmtree(rdb)
+        finally:
+            store._spec_paths = saved_sp
+            sp.unlink()
+            shutil.rmtree(gd.parent)
+            shutil.rmtree(sref.parent)
+            bp.unlink()
+            store.update_manifest(root, lambda mm: mm.update(prepare_inputs=pi0))
+
+        c0, sel = cur(root), [ids[0], ids[2]]
+        s_off, s_on, s_eff = (copy.deepcopy(c0["settings"]) for _ in range(3))
+        s_on["run"]["retry_failed"], s_eff["draft"]["effort"] = True, "high"
+        pa = board.pipeline_plan(root, s_off, only_ids=sel, style=False)
+        pb = board.pipeline_plan(root, s_on, only_ids=sel, style=False)
+        pc = board.pipeline_plan(root, s_eff, only_ids=sel, style=False)
+        _p, ab = run_ap(root, pl.only_string(sel), rf=True)
+        board._PLAN_MEMO.clear()
+        pc2 = board.pipeline_plan(root, s_eff, only_ids=sel, style=False)
+        check(pa["sig"] == pb["sig"] == pc["sig"] and pa["run"]["need"] == 0 and pb["run"]["need"] == 1
+              and pb["run"]["hash"] == ab["pending_hash"] != pa["run"]["hash"] and pc["draft"]["hash"] == pc2["draft"]["hash"] != pa["draft"]["hash"]
+              and (pa["run"]["by_crop"][ids[2]]["need"], pb["run"]["by_crop"][ids[2]]["need"]) == (0, 1)
+              and (pa["draft"]["by_crop"][ids[1]]["refresh"], pc["draft"]["by_crop"][ids[1]]["refresh"]) == (False, True),
+              f"같은 파일 상태(같은 서명)라도 넘긴 settings 가 다르면 다시 계산 — 선택 계획도 only 없는 계획(by_crop)도(기억 키 = 서명 + 설정 지문) "
+              f"{pa['run']['hash']} {pb['run']['hash']} {pc['draft']['hash']} {pc2['draft']['hash']}")
+
+        pj = Path(root, pl.PIPELINE_NAME)
+        raw = pj.read_bytes()
+        saved_cur, raced = pl.current, []
+
+        def racing(*a, **kw):  # 계획이 설정을 읽은 직후 다른 창이 retry_failed 를 저장(쓰기가 끼어듦)
+            out = saved_cur(*a, **kw)
+            if not raced:
+                raced.append(1)
+                c = saved_cur(root, deep=True)
+                pl.update(root, c["rev"], "run", dict(c["settings"]["run"], retry_failed=True))
+            return out
+
+        board._PLAN_MEMO.clear()
+        pl.current = racing
+        try:
+            st, d1 = await plan(h, key, [ids[2]])
+        finally:
+            pl.current = saved_cur
+        try:
+            st, s1 = await h.jget(f"{API}/state", root=key)
+            st, d2 = await plan(h, key, [ids[2]])
+            _p, a2 = run_ap(root, ids[2], rf=True)
+        finally:
+            pj.write_bytes(raw)
+        check(raced and d1["run"]["need"] == 0 and s1["plan_v"] is None and d2["run"]["need"] == 1 and d2["run"]["hash"] == a2["pending_hash"],
+              f"계획 계산 중 설정 저장이 끼어듦 → 서명을 설정보다 먼저 잡아 옛 설정 결과는 옛 서명으로만 기억(state plan_v null), "
+              f"다음 요청은 새 설정으로 다시 계산 {d1['run']['need']} {s1['plan_v']} {d2['run']['need']}")
+        store.update_manifest(root, lambda mm: mm.update(prepare_settings=dict(cur(root)["settings"]["prepare"], n=4)))
+        st, d = await plan(h, key, [ids[1]])
+        check(any(x.startswith("Prepare 설정 갈라짐: n(매니페스트 4 · Studio 2) — 셀은 그대로") for x in d["notes"])
+              and d["draft"]["import_pending"] == [],
+              f"prepare_settings 와 n 만 다름 → notes 비용 갈라짐, Draft import_pending 에는 없음(Import 설정 갈라짐만 초안 키를 바꿈) "
+              f"{d['notes']} {d['draft'].get('import_pending')}")
+        store.update_manifest(root, lambda mm: mm.update(prepare_settings=dict(cur(root)["settings"]["prepare"], model="gpt-image-2.5-flare")))
+        st, d = await plan(h, key, [ids[1]])
+        check(any(x.startswith("Prepare 설정 갈라짐: model") and "다시 과금 대상" in x for x in d["notes"]), f"모델 갈라짐 → 셀 {d['notes']}")
+        store.update_manifest(root, lambda mm: mm.pop("prepare_settings", None))
+        # r3-01·r3-02: prepare_settings 없음(옛 프로젝트 — jobs reps 1·2·1) → jobs 최다값과 비교('jobs 추정'). calls_per_cell 을 늘리면 완료된 셀마다
+        # 새 호출(다시 과금 대상) 문구, 종류가 여럿이면 종류마다 필드. 그 반영(jobs reps 2) 뒤 Run 계획에 완료된 셀(ids[0])의 '셀당 호출 수 증가'
+        # 유료 호출이 실제로 생긴다(문구의 근거)
+        pj_raw, c0 = pj.read_bytes(), cur(root)
+        base_p = c0["settings"]["prepare"]
+        try:
+            st, e0 = await plan(h, key, [ids[1]])
+            r1 = pl.update(root, c0["rev"], "prepare", dict(base_p, calls_per_cell=2))
+            st, e1 = await plan(h, key, [ids[1]])
+            pl.update(root, r1["rev"], "prepare", dict(base_p, calls_per_cell=2, model="gpt-image-2.5-flare", n=4))
+            st, e2 = await plan(h, key, [ids[1]])
+        finally:
+            pj.write_bytes(pj_raw)
+        mj = store.load_manifest(root)
+        store.update_manifest(root, lambda mm: [j.update(reps=2) for j in mm["jobs"]])
+        try:
+            more = [c["cell_key"] for c in run_ap(root)[0]["pending"] if c["billable"] and c["reason"].startswith("셀당 호출 수 증가")]
+        finally:
+            store.update_manifest(root, lambda mm: mm.update(jobs=mj["jobs"]))
+        calls_w = "셀당 호출을 늘리면 완료된 셀마다 새 호출이 생겨 다시 과금 대상(Run 승인 필요)"
+
+        def pre_notes(d_):
+            return [x for x in d_["notes"] if x.startswith("Prepare 설정 갈라짐")]
+
+        check(pl.prepare_record(mj)[0] == "jobs" and (base_p["calls_per_cell"], base_p["n"]) == (1, 2) and pre_notes(e0) == []
+              and pre_notes(e1) == [f"Prepare 설정 갈라짐: calls_per_cell(jobs 추정 1 · Studio 2) — {calls_w}"]
+              and pre_notes(e2) == ["Prepare 설정 갈라짐: model(jobs 추정 gpt-image-2.5-sunburst · Studio gpt-image-2.5-flare), "
+                                    "n(jobs 추정 2 · Studio 4), calls_per_cell(jobs 추정 1 · Studio 2) — 그래프와 Studio 를 번갈아 돌리면 셀이 "
+                                    f"바뀌어 다시 과금 대상(model); {calls_w}(calls_per_cell); 셀은 그대로, 승인 해시·비용이 바뀜(n)"]
+              and mj["jobs"][0]["cell_key"] in more,
+              f"옛 프로젝트 notes = jobs 와 비교(유도값 그대로면 없음), calls_per_cell 늘림 = 완료된 셀마다 새 호출 문구, 여러 종류 = 종류마다 필드, "
+              f"reps 2 반영 뒤 완료된 셀에 새 유료 호출 {pre_notes(e0)} {pre_notes(e1)} {pre_notes(e2)} {more}")
+        store.update_manifest(root, lambda mm: mm.update(prepare_inputs=store.prepare_inputs_fp(root, mm)))  # 반영됨(지금 지문 — 앞 사례가 스펙 mtime 을 바꿈)
+        mp = store.load_manifest(root)
+
+        def fp_notes(d_):
+            return [x for x in d_["apply_pending"] if x.startswith("Prepare 입력")]
+
+        st, d = await plan(h, key, [ids[1]])
+        store.update_manifest(root, lambda mm: mm.pop("prepare_inputs"))  # 지문을 남기기 전 Prepare 가 만든 jobs(옛 프로젝트 — 실데이터 s0_261014)
+        try:
+            st, d1 = await plan(h, key, [ids[1]])
+            store.update_manifest(root, lambda mm: mm.update(jobs=[]))
+            st, d2 = await plan(h, key, [ids[1]])
+            # 첫 Prepare 부터 모든 크롭이 채택 가드(Import 미반영)로 건너뜀 — jobs·prepare_inputs 없이 prepare_settings 만 남는다
+            store.update_manifest(root, lambda mm: mm.update(prepare_settings=cur(root)["settings"]["prepare"]))
+            st, d3 = await plan(h, key, [ids[1]])
+        finally:
+            store.update_manifest(root, lambda mm: (mm.pop("prepare_settings", None),
+                                                    mm.update(jobs=mp["jobs"], prepare_inputs=mp["prepare_inputs"])))
+        check(fp_notes(d) == [] and fp_notes(d1) == ["Prepare 입력 지문 없음(지문을 남기기 전 Prepare)"] and fp_notes(d2) == []
+              and fp_notes(d3) == ["Prepare 입력 지문 없음(지문을 남기기 전 Prepare)"],
+              f"prepare_inputs 없음 + jobs 있음 → apply_pending '지문 없음'(반영 필요), jobs 도 없으면(Prepare 전) 그 줄 없음, jobs 없이 "
+              f"prepare_settings 만(첫 Prepare 가 전부 채택 가드) → '지문 없음' {fp_notes(d)} {fp_notes(d1)} {fp_notes(d2)} {fp_notes(d3)}")
+        saved_fp = board.store.prepare_inputs_fp
+
+        def locked_fp(*a, **kw):
+            raise PermissionError("백신이 specs 를 잡음")
+
+        board.store.prepare_inputs_fp = locked_fp
+        try:
+            st, d = await plan(h, key, [ids[1]])
+        finally:
+            board.store.prepare_inputs_fp = saved_fp
+        check(st == 200 and fp_notes(d) == ["Prepare 입력 지문을 계산하지 못함(백신이 specs 를 잡음)"]
+              and re.fullmatch(r"[0-9a-f]{12}", d["run"].get("hash") or ""),
+              f"prepare_inputs_fp 가 OSError → apply_pending '지문을 계산하지 못함'(반영 필요), HTTP 200(500 으로 새지 않음) {st} "
+              f"{d.get('apply_pending')}")
+        saved_ip = board._import_pending
+
+        def locked_ip(*a, **kw):
+            raise PermissionError("백신이 layout.json 을 잡음")
+
+        board._import_pending = locked_ip
+        try:
+            st, d = await plan(h, key, [ids[1]])
+        finally:
+            board._import_pending = saved_ip
+        check(st == 200 and d["apply_pending"] == ["반영 상태를 판정하지 못함(백신이 layout.json 을 잡음)"],
+              f"Import 쪽 판정이 OSError → apply_pending '판정하지 못함'(반영 필요 — '반영됨'으로 읽지 않음), HTTP 200 {st} {d.get('apply_pending')}")
+        for only, style, word in ((["001"], "0", "crop_id"), (["099_000000"], "0", "매니페스트에 없는"), ([ids[1]], "2", "style")):
+            st, d = await plan(h, key, only, style)
+            check(st == 400 and word in d["error"] and set(d) == {"error"}, f"only={only} style={style} → 400 {st} {d}")
+        pj = Path(root, pl.PIPELINE_NAME)
+        raw = pj.read_bytes()
+        pj.write_text("{", encoding="utf-8")
+        st, d = await plan(h, key, [ids[1]])
+        pj.write_bytes(raw)
+        check(st == 409 and d["reason"] == "pipeline_broken" and err_keys("GET /pipeline/plan", 409, 0, d), f"깨진 설정 → 409 {st} {d}")
+        st, d = await plan(h, "000000000000", [ids[1]])
+        check(st == 404, f"모르는 키 → 404 {st}")
+
+    async def b38_progress_state(h, key, root, ids):
+        section("S3a-B38 GET /pipeline/progress·state (pipeline_rev·plan_v·draft_chip·plan_stale — 파일 stat 외 계산 없음)")
+        sp = R["GET /pipeline/progress"]
+        st, d = await h.jget(f"{API}/pipeline/progress", root=key)
+        _p, a = run_ap(root)
+        check(st == 200 and d["draft"] is None and d["running"] is False and not _pl_shape(sp["alt"]["idle"], d, sp)
+              and d["run"] == {"done": 1, "inflight": 0, "failed": 1, "orphaned": 0, "need": len(a["needs_approval"]), "pre": 1},
+              f"진행(쉼): 원장의 완료·실패·남은 승인분·사전 승인, Spec Draft 실행 중 아님 → draft null {d}")
+        ck0 = store.load_manifest(root)["jobs"][0]["cell_key"]
+        rid, cid1 = runner._rid(root), runner.call_id_for(ck0, 1)
+        ledger(root, ck0, "r1.inflight.json", {"call_id": cid1})
+        try:
+            with board.run_active(root):  # 이 프로세스의 Run 이 001 셀 r1 을 보내는 중(runner 활성 레지스트리)
+                runner._claim(rid, cid1)
+                try:
+                    st, gi = await h.jget(f"{API}/pipeline/progress", root=key)
+                    st, pi = await plan(h, key, [ids[0]])
+                finally:
+                    runner._release(rid, cid1)
+            st, go = await h.jget(f"{API}/pipeline/progress", root=key)  # Run 이 결과 없이 끝남(인터럽트) → orphaned
+            st, po = await plan(h, key, [ids[0]])
+        finally:
+            Path(root, "cands", ck0, "r1.inflight.json").unlink()
+        bi, bo = pi["run"]["by_crop"][ids[0]], po["run"]["by_crop"][ids[0]]
+        check((gi["run"]["inflight"], gi["run"]["orphaned"], go["run"]["inflight"], go["run"]["orphaned"]) == (1, 0, 0, 1)
+              and (bi["inflight"], bi["orphaned"], bo["inflight"], bo["orphaned"]) == (1, 0, 0, 1)
+              and gi["running"] is True and pi["run"]["running"] is True and po["run"]["running"] is False,
+              f"보내는 중인 호출 → progress·by_crop inflight 1·orphaned 0, Run 이 결과 없이 끝나면 orphaned 1(과금됐을 수 있음) — 둘을 "
+              f"바꿔 보이지 않음 {gi['run']} {go['run']} {bi} {bo}")
+        with board.run_active(root):
+            board.set_drain(root)
+            st, dd = await h.jget(f"{API}/pipeline/progress", root=key)
+        check(st == 200 and dd["running"] is True and dd["drain"] is True and not board.drain_requested(root),
+              f"Run 실행 중 + Drain 요청 → progress drain true(끝나면 플래그 지움) {dd}")
+        check(board._VLM_CAPS == dvlm.CAPS_FILE and board._RUN_LEDGER_RE.pattern == runner._LEDGER_RE.pattern.replace(r"(\d+)", r"\d+"),
+              f"보드가 복사한 상수 = 원본(vlm.CAPS_FILE·runner._LEDGER_RE — Draft·Run 서명 재료) {board._VLM_CAPS} {board._RUN_LEDGER_RE.pattern}")
+        led, old = Path(root, "vlm", ids[0], "c" * 24), Path(root, "vlm", ids[0], "d" * 24)
+        with board.draft_active(root):
+            t = board.draft_since(root)
+            store.write_json_atomic(str(led / "a1.req.json"), {"kind": "crop"})
+            os.utime(led / "a1.req.json", (t - 0.02, t - 0.02))  # 시작 직후 쓴 원장 — 파일 시계(틱·float)가 시작보다 앞서 찍힘
+            store.write_json_atomic(str(old / "a1.req.json"), {"kind": "crop"})
+            os.utime(old / "a1.req.json", (t - 5, t - 5))  # 시작 전(직전 실행)에 남은 원장 — 세지 않음
+            with board.run_active(root):
+                st, d = await h.jget(f"{API}/pipeline/progress", root=key)
+        shutil.rmtree(led.parent)
+        check(st == 200 and d["running"] is True and d["draft"] == {"inflight": 1, "created": 0, "done": 0, "failed": 0, "since": t}
+              and not _pl_shape(sp["ok"], d, sp) and board.draft_since(root) is None,
+              f"draft_active 중 → vlm.ledger_progress(시작 뒤 원장 — 파일 시각 해상도만큼 여유, 시작 전 원장은 뺌) + since(시작 시각), "
+              f"run_active → running {d}")
+        try:
+            with board.draft_active(root):
+                raise RuntimeError("노드 실패")
+        except RuntimeError:
+            pass
+        check(board.draft_since(root) is None, "Spec Draft 가 예외로 끝나도 draft_active 표시를 지움")
+        with board.draft_active(root):  # 같은 프로젝트의 Spec Draft 둘이 겹침(실행기는 async 노드를 함께 돌림) — 안쪽이 먼저 실패로 끝남
+            t_out = board.draft_since(root)
+            time.sleep(0.05)
+            try:
+                with board.draft_active(root):
+                    both = board.draft_since(root)
+                    raise RuntimeError("안쪽 Spec Draft 실패")
+            except RuntimeError:
+                pass
+            mid = board.draft_since(root)
+            st, pm = await plan(h, key, ())
+            st, sm = await h.jget(f"{API}/state", root=key)
+        check(t_out is not None and both == mid == t_out and pm["draft"] == {"running": True}
+              and all(c["draft_chip"]["running"] for c in sm["crops"]) and board.draft_since(root) is None,
+              f"Spec Draft 둘이 겹침 → since = 가장 이른 시작(바깥), 안쪽이 끝나도 바깥이 도는 동안 계획 draft {{running: true}}·칩 running, "
+              f"둘 다 끝나면 표시 지움 {t_out} {both} {mid} {pm['draft']} {board.draft_since(root)}")
+        board._PLAN_MEMO.clear()
+        st, s = await h.jget(f"{API}/state", root=key)
+        check(s["pipeline_rev"] == pl.pipeline_rev(root) is not None and s["plan_v"] is None
+              and all(c["draft_chip"] is None and c["plan_stale"] is False for c in s["crops"]),
+              f"기억한 계획 없음 → plan_v null, draft_chip null·plan_stale false {s['plan_v']}")
+        st, p = await plan(h, key, ())
+        st, s = await h.jget(f"{API}/state", root=key)
+        st, u = await h.jget(f"{API}/state", root=key, since_rev=str(s["rev"]))
+        chips = {c["id"]: c["draft_chip"] for c in s["crops"]}
+        db = p["draft"]["by_crop"]
+        check(s["plan_v"] == p["sig"] and u.get("unchanged") and u["plan_v"] == p["sig"] and u["pipeline_rev"] == s["pipeline_rev"]
+              and chips[ids[1]] == {"wait": db[ids[1]]["wait"], "refresh": db[ids[1]]["refresh"], "adopt": "add", "run_need": 1, "running": False}
+              and chips[ids[2]]["adopt"] == "add" and chips[ids[0]]["adopt"] is None and chips[ids[0]]["run_need"] == 0
+              and not any(c["plan_stale"] for c in s["crops"]),
+              f"계획 뒤 state·unchanged: plan_v = 그 서명, draft_chip = 기억한 only 없는 계획 {s['plan_v']} {chips}")
+        bad = (_pl_shape({"flags": ST["flags"]}, {"flags": {k: s[k] for k in ST["flags"]}}, ST)
+               + _pl_shape({"crop": ST["crop"]}, {"crop": {k: s["crops"][1][k] for k in ST["crop"]}}, ST)
+               + _pl_shape({"unchanged": ST["unchanged"]}, {"unchanged": u}, ST))
+        check(not bad, f"state flags·crop·unchanged = 정본 state 모양 {bad}")
+        with board.run_active(root):
+            st, sr = await h.jget(f"{API}/state", root=key)
+        with board.draft_active(root):
+            st, sd = await h.jget(f"{API}/state", root=key)
+            st, ud = await h.jget(f"{API}/state", root=key, since_rev=str(s["rev"]))
+        check(all(c["draft_chip"]["running"] for c in sr["crops"] + sd["crops"]) and not any(c["draft_chip"]["running"] for c in s["crops"]),
+              "Run 실행 중·Spec Draft 실행 중 → 칩 running true(쉬면 false)")
+        check((s["drafting"], u["drafting"], sr["drafting"], sr["running"], sd["drafting"], sd["running"], ud.get("unchanged"), ud.get("drafting"))
+              == (False, False, False, True, True, False, True, True),
+              f"state drafting = Spec Draft 실행 중(running 은 Run 만) — 전체·unchanged 응답 둘 다(진행 모드가 폴링마다 실행 중을 앎) "
+              f"{(s['drafting'], u['drafting'], sr['drafting'], sd['drafting'], ud.get('drafting'))}")
+        with counting() as n:
+            board.build_state(root, since_rev=s["rev"])
+            board.build_state(root)
+        check(n["draft_plan"] == 0 and n["draft_view"] == 0, f"state 는 초안 계획을 계산하지 않음(기억한 것 + 파일 stat) {n}")
+        with counting() as n:
+            board.build_state(root, since_rev=s["rev"])
+        check(n == {"plan_calls": 0, "draft_plan": 0, "draft_view": 0}, f"unchanged state 의 plan_v 는 파일 stat 만 {n}")
+        calls = {"_refs_files_v": 0, "is_running": 0}
+        saved_fn = {k: getattr(board, k) for k in calls}
+
+        def counted(k):
+            def w(*a, **kw):
+                calls[k] += 1
+                return saved_fn[k](*a, **kw)
+            return w
+
+        for k in calls:
+            setattr(board, k, counted(k))
+        try:
+            su = board.build_state(root, since_rev=s["rev"])
+        finally:
+            for k, fn in saved_fn.items():
+                setattr(board, k, fn)
+        check(su["plan_v"] == p["sig"] and calls == {"_refs_files_v": 1, "is_running": 1},
+              f"계획을 기억한 state 폴링: refs_dir 목록 지문·실행 중을 한 번씩만(flags 값을 계획 서명에 그대로 — 폴링마다 scandir 두 번 아님) {calls}")
+        Path(root, "specs", f"{ids[0]}.json").write_text('{"_hint": "y"}', encoding="utf-8")
+        st, s2 = await h.jget(f"{API}/state", root=key)
+        st, u2 = await h.jget(f"{API}/state", root=key, since_rev=str(s2["rev"]))
+        os.remove(os.path.join(root, "specs", f"{ids[0]}.json"))
+        st, s3 = await h.jget(f"{API}/state", root=key)
+        check(s2["plan_v"] is None and u2["plan_v"] is None and all(c["plan_stale"] and c["draft_chip"] for c in s2["crops"])
+              and s3["plan_v"] == p["sig"] and not any(c["plan_stale"] for c in s3["crops"]),
+              "스펙이 바뀜 → plan_v null·plan_stale(칩은 기억한 값 그대로 흐리게), 되돌리면 같은 서명 → plan_v 다시")
+        st, _s = await save(h, key, root, "draft", effort="high")  # fill 에서 초안 키만 바뀜 → 002·003 갱신 가능
+        try:
+            st, pr = await plan(h, key, ())
+            st, s4 = await h.jget(f"{API}/state", root=key)
+        finally:
+            st, _s = await save(h, key, root, "draft", effort="xhigh")
+        ch4 = {c["id"]: c["draft_chip"] for c in s4["crops"]}
+        check(s4["plan_v"] == pr["sig"] and [ch4[i]["refresh"] for i in ids] == [False, True, True]
+              and [pr["draft"]["by_crop"][i]["refresh"] for i in ids] == [False, True, True],
+              f"초안 키만 바뀐 크롭 → 계획 by_crop·칩 refresh true(초안 갱신 가능) {ch4}")
+
+    async def b37_draft(h, key, root, ids):
+        section("S3a-B37 GET /draft·POST /draft/adopt (모양·seen 왕복·SpecConflict·crop_sig 409·거절 400·_project·깨진 스펙·preview·쓰기 뒤 plan_v)")
+        G, P = R["GET /draft"], R["POST /draft/adopt"]
+        cid = ids[2]
+        sp = Path(root, "specs", f"{cid}.json")
+        st, v = await h.jget(f"{API}/draft", root=key, crop=cid)
+        fs = os.stat(sp)
+        check(st == 200 and not _pl_shape(G["ok"], v, G) and v["adopt"]["kind"] == "add" and v["adopt"]["value"] and not v["adopt"]["reason"]
+              and isinstance(v["seen"], str) and json.loads(v["seen"]) == [fs.st_mtime_ns, fs.st_size] and fs.st_mtime_ns > 2 ** 53
+              and v == dvlm.draft_view(root, store.load_manifest(root), cid, family="openai"),
+              f"GET /draft = vlm.draft_view(family = 지금 초안 백엔드), seen = 실제 [mtime_ns, size] 문자열(> 2^53) {_pl_shape(G['ok'], v, G)}")
+        body = {"root": key, "crop_id": cid, "op": "adopt", "value": v["adopt"]["value"], "seen": v["seen"], "crop_sig": v["crop_sig"]}
+        st, p0 = await plan(h, key, ())
+        raw0, mt0 = sp.read_bytes(), os.stat(sp).st_mtime_ns
+        st, d = await h.post(f"{API}/draft/adopt", dict(body, preview=True))
+        check(st == 200 and d["ok"] and d["seen"] == v["seen"] and sp.read_bytes() == raw0 and os.stat(sp).st_mtime_ns == mt0
+              and not _pl_shape(P["ok"], d, P) and d["layer_targets"]["value"] == body["value"],
+              f"preview → 같은 검사·영향, 쓰지 않음(바이트·mtime 그대로) {st} {_pl_shape(P['ok'], d, P)}")
+        pj = Path(root, pl.PIPELINE_NAME)
+        raw_pj = pj.read_bytes()
+        doc = json.loads(raw_pj)
+        pj.write_text(json.dumps(dict(doc, confirm=doc["confirm"] + ["draft.apply"]), ensure_ascii=False), encoding="utf-8")
+        try:
+            st, dw = await h.post(f"{API}/draft/adopt", dict(body, preview=True))
+        finally:
+            pj.write_bytes(raw_pj)
+        why = "초안 apply 미확인 — 초안 대기는 targets(추정값) 기준, 설정 패널에서 확인·저장"
+        check("draft.apply" not in doc["confirm"] and not any("apply 미확인" in w for w in d["warnings"])
+              and st == 200 and dw["warnings"] == [why] + d["warnings"] and dw["effects"] == d["effects"] and not _pl_shape(P["ok"], dw, P),
+              f"draft.apply 확인 전(confirm — 스펙에 기록되지 않아 노드 기본값 추정) → 미리보기 warnings 맨 앞에 '초안 대기는 추정값'(확인 창의 "
+              f"초안 대기 줄 바로 뒤), 확인 뒤엔 없음 {st} {dw.get('warnings')} {d['warnings']}")
+        os.utime(sp, ns=(fs.st_atime_ns, fs.st_mtime_ns + 10 ** 9))
+        st, d = await h.post(f"{API}/draft/adopt", body)
+        check(st == 409 and "스펙이 다른 곳에서" in d["error"] and err_keys("POST /draft/adopt", 409, 0, d) and sp.read_bytes() == raw0,
+              f"GET 뒤 스펙이 바뀜(같은 바이트·다른 mtime) → 409 SpecConflict(_guard), 쓰지 않음 {st} {d}")
+        st, v = await h.jget(f"{API}/draft", root=key, crop=cid)
+        body["seen"] = v["seen"]
+        st, d = await h.post(f"{API}/draft/adopt", dict(body, crop_sig=v["crop_sig"].replace("psd", "layout")))
+        check(st == 409 and "크롭이 바뀌었습니다" in d["error"], f"crop_sig 다름 → 409 {st} {d}")
+        st, d = await h.post(f"{API}/draft/adopt", dict(body, value="A: other"))
+        check(st == 409 and "채택 값이 바뀌었습니다" in d["error"], f"value 다름 → 409 {st} {d}")
+        st, d = await h.post(f"{API}/draft/adopt", body)
+        spec_now = json.loads(sp.read_text(encoding="utf-8"))
+        check(st == 200 and d["ok"] and spec_now["_layer_targets"] == body["value"] and d["seen"] == json.dumps(store.file_fingerprint(str(sp)))
+              and d["layer_targets"] == {"value": body["value"], "owner": "node"} and not _pl_shape(P["ok"], d, P),
+              f"채택 쓰기 → 스펙 _layer_targets = 채택 값(owner node), 응답 seen = 쓴 뒤 지문 {st} {d.get('error')}")
+        st, v2 = await h.jget(f"{API}/draft", root=key, crop=cid)
+        st, d = await h.post(f"{API}/draft/adopt", dict(body, seen=v2["seen"], crop_sig=v2["crop_sig"], value=v2["adopt"]["value"]))
+        check(v2["adopt"]["kind"] is None and not _pl_shape(G["alt"]["adopted"], v2, G)
+              and st == 400 and set(d) == {"error", "reason"} and "이미 채택" in d["reason"],
+              f"다시 채택 → 400 {{error, reason}}(AdoptRefused — kind ≠ add) {st} {d}")
+        st, s = await h.jget(f"{API}/state", root=key)
+        st, pp = await plan(h, key, [cid])
+        par = [("채택 뒤(이미 채택)", chips(root, pp))]  # 계획 채택 칩 = GET /draft [채택] 조건 — 상태마다 모아 끝에서 한 번에 본다
+        check(p0["sig"] != s["plan_v"] and s["plan_v"] is None and all(c["plan_stale"] for c in s["crops"])
+              and f"채택 미반영({cid.split('_')[0]})" in pp["draft"]["import_pending"]
+              and {f"채택 미반영({cid.split('_')[0]})", "Prepare 입력이 바뀜(마지막 Prepare 뒤 스펙·레이아웃·레퍼런스·용어집)"} <= set(pp["apply_pending"]),
+              f"쓰기 뒤 state 재요청 신호: plan_v null·plan_stale, 계획은 채택 미반영·반영 필요(apply_pending = Import 미반영 + 지문 불일치) "
+              f"{s['plan_v']} {pp['draft'].get('import_pending')} {pp.get('apply_pending')}")
+        st, v3 = await h.jget(f"{API}/draft", root=key, crop=cid)
+        sb = {"root": key, "crop_id": cid, "seen": v3["seen"], "crop_sig": v3["crop_sig"]}
+        st, d = await h.post(f"{API}/draft/adopt", dict(sb, op="set", text="  "))
+        check(st == 400 and "해제를 쓰세요" in d["error"], f"수정 문구 빔 → 400 {st} {d}")
+        st, d = await h.post(f"{API}/draft/adopt", dict(sb, op="set", text="A: metal plate"))
+        check(st == 200 and d["layer_targets"] == {"value": "A: metal plate", "owner": "human"}, f"수정 → 사람 값(owner human) {st} {d.get('error')}")
+        st, v4 = await h.jget(f"{API}/draft", root=key, crop=cid)
+        check(v4["layer_targets"]["owner"] == "human" and v4["adopt"]["kind"] == "keep_human" and not _pl_shape(G["alt"]["human"], v4, G),
+              f"수정 뒤 GET /draft = 정본 alt.human(kind keep_human) {_pl_shape(G['alt']['human'], v4, G)}")
+        st, ph = await plan(h, key, ())
+        par.append(("수정 뒤(keep_human)", chips(root, ph)))
+        st, d = await h.post(f"{API}/draft/adopt", dict(sb, op="clear", seen=v4["seen"]))
+        check(st == 200 and d["layer_targets"] == {"value": None, "owner": "deleted"} and "_layer_targets" not in json.loads(sp.read_text(encoding="utf-8")),
+              f"해제 → 키 삭제(owner deleted — 노드 값이 있던 자리) {st} {d.get('error')}")
+        st, v4d = await h.jget(f"{API}/draft", root=key, crop=cid)
+        check(v4d["layer_targets"] == {"value": None, "owner": "deleted"} and v4d["adopt"]["kind"] == "keep_deleted"
+              and not _pl_shape(G["alt"]["deleted"], v4d, G),
+              f"해제 뒤 GET /draft = 정본 alt.deleted(kind keep_deleted) {_pl_shape(G['alt']['deleted'], v4d, G)}")
+        st, pd_ = await plan(h, key, ())
+        par.append(("해제 뒤(keep_deleted)", chips(root, pd_)))
+        for cid_, path, want in (("_project", "draft", 400), ("099_000000", "draft", 404), ("x/y", "draft", 400)):
+            st, d = await h.jget(f"{API}/{path}", root=key, crop=cid_)
+            st2, d2 = await h.post(f"{API}/draft/adopt", {"root": key, "crop_id": cid_, "op": "clear", "seen": "null", "crop_sig": "x"})
+            check(st == want and st2 == want and set(d) == {"error"}, f"crop={cid_!r} → GET·POST {want} ({st}, {st2}) {d}")
+        sp1 = Path(root, "specs", f"{ids[1]}.json")
+        raw1 = sp1.read_bytes()
+        sp1.write_text("{", encoding="utf-8")
+        st, v5 = await h.jget(f"{API}/draft", root=key, crop=ids[1])
+        st2, d = await h.post(f"{API}/draft/adopt", {"root": key, "crop_id": ids[1], "op": "clear", "seen": v5["seen"], "crop_sig": v5["crop_sig"]})
+        st3, pb = await plan(h, key, ())
+        par.append(("깨진 스펙", chips(root, pb)))
+        sp1.write_bytes(raw1)
+        check(st == 200 and isinstance(v5["spec_error"], str) and v5["adopt"]["kind"] is None and not _pl_shape(G["alt"]["spec_error"], v5, G)
+              and st2 == 400 and set(d) == {"error"}, f"깨진 스펙 → GET spec_error(쓰기 끔)·POST 400 {st} {st2} {d}")
+        mark = Path(root, "vlm", dvlm.WRITE_MARK)
+        store.write_json_atomic(str(mark), {"at": 1, "specs": [ids[1], "099_000000", dvlm.PROJECT_SPEC_ID]})  # 매니페스트 밖 크롭은 경고에서 뺌
+        st, v6 = await h.jget(f"{API}/draft", root=key, crop=ids[1])
+        st2, d = await h.post(f"{API}/draft/adopt", {"root": key, "crop_id": ids[1], "op": "adopt", "value": v6["adopt"]["value"],
+                                                      "seen": v6["seen"], "crop_sig": v6["crop_sig"]})
+        st3, pu = await plan(h, key, ())
+        par.append(("못 쓴 스펙", chips(root, pu)))
+        mark.unlink()
+        check(v6["unwritten"] is True and st2 == 400 and "원장 초안이 아직" in d["error"]
+              and pu["draft"]["warnings"]["unwritten"] == [ids[1], dvlm.PROJECT_SPEC_ID] and pu["draft"]["by_crop"][ids[1]]["adopt"] is None,
+              f"못 쓴 스펙(write_pending) → GET unwritten·채택 400·계획 warnings.unwritten(매니페스트 크롭·_project 만)·채택 가능 아님 {st2} {d} "
+              f"{pu['draft']['warnings']}")
+        # 목록이 아닌 targets·스펙에 안 쓰인 도착 초안(표식 없음 — Spec Draft 취소): GET /draft 가 거절하면 칩도(같은 vlm.adopt_state)
+        vdir, led = Path(root, dvlm.LEDGER_DIR), dvlm.Ledger(root)
+        had = {p: p.exists() for p in (vdir, vdir / ids[1])}
+        rq = None
+        try:
+            store.write_json_atomic(str(sp1), dict(json.loads(raw1), targets=5))
+            st, vt = await h.jget(f"{API}/draft", root=key, crop=ids[1])
+            st2, pt = await plan(h, key, ())
+            par.append(("targets 가 목록이 아님", chips(root, pt)))
+            store.write_json_atomic(str(sp1), dict(json.loads(raw1), _hint="look at the gold clasp"))
+            sd = cur(root)["settings"]["draft"]
+            fam, model = dvlm.parse_vlm_choice(sd["vlm"])
+            rq = draft_plan_of(root, ids[1])[1][ids[1]]
+            led.write(ids[1], rq.key, 1, "req", {"settings": {"backend": dvlm.BACKEND_NAMES[fam], "model": model, "effort": rq.effort,
+                                                              "image_detail": rq.image_detail, "draft_round": sd["draft_round"]},
+                                                 "body": {"model": dvlm._key_model(fam, model, "")}})
+            led.write(ids[1], rq.key, 1, "done", {"parsed": {}, "repairs": []})
+            st3, va = await h.jget(f"{API}/draft", root=key, crop=ids[1])
+            st4, pa = await plan(h, key, ())
+            par.append(("도착분(표식 없음)", chips(root, pa)))
+        finally:
+            if rq is not None:
+                shutil.rmtree(led.dir(ids[1], rq.key), ignore_errors=True)
+            for p in (vdir / ids[1], vdir):
+                if not had[p]:
+                    with contextlib.suppress(OSError):
+                        p.rmdir()
+            sp1.write_bytes(raw1)
+        check(st == st2 == st3 == st4 == 200 and isinstance(vt["spec_error"], str) and pt["draft"]["by_crop"][ids[1]]["adopt"] is None
+              and va["adopt"] == {"value": "", "kind": None, "reason": P["errors"]["400"][3]["error"]}
+              and va["unwritten"] is False and pa["draft"]["by_crop"][ids[1]]["adopt"] is None,
+              f"목록이 아닌 targets(GET spec_error)·도착분(GET 거절 이유, 표식 없음) → 계획 채택 칩도 채택 가능 아님(vlm.adopt_state 공용) "
+              f"{st} {st2} {st3} {st4} {vt.get('spec_error')} {va.get('adopt')} {pa['draft'].get('by_crop', {}).get(ids[1])}")
+        c0 = ids[0]
+        sp0, mock_file = Path(root, "specs", f"{c0}.json"), Path(root).parent / runner.MOCK_FILE
+        draft_spec(root, 0, fam="mock")  # mock 출처 초안(제안 있음) — 실제 백엔드에서는 채택하면 안 됨(다음 반영에서 새 셀)
+        try:
+            raw0 = sp0.read_bytes()
+            st, v = await h.jget(f"{API}/draft", root=key, crop=c0)
+            st2, d = await h.post(f"{API}/draft/adopt", {"root": key, "crop_id": c0, "op": "adopt", "value": v["adopt"]["value"],
+                                                          "seen": v["seen"], "crop_sig": v["crop_sig"]})
+            st3, pm = await plan(h, key, ())
+            par.append(("mock 초안 + openai", chips(root, pm)))
+            check(st == 200 and v["draft"]["mock"] is True and "mock 초안" in (v["adopt"]["reason"] or "") and v["adopt"]["kind"] is None
+                  and st2 == 400 and set(d) == {"error", "reason"} and "mock 초안" in d["reason"] and sp0.read_bytes() == raw0
+                  and pm["draft"]["family"] == "openai" and pm["draft"]["warnings"]["mock_specs"] == 0 and pm["draft"]["by_crop"][c0]["adopt"] is None,
+                  f"mock 출처 초안 + 실제 백엔드(openai) → GET 거절 이유·POST 채택 400(쓰지 않음)·계획 채택 가능 아님·mock_specs 0 "
+                  f"{v['adopt']} {st2} {d}")
+            mock_file.write_text("", encoding="utf-8")
+            st, v = await h.jget(f"{API}/draft", root=key, crop=c0)
+            st2, d = await h.post(f"{API}/draft/adopt", {"root": key, "crop_id": c0, "op": "adopt", "value": v["adopt"]["value"],
+                                                          "seen": v["seen"], "crop_sig": v["crop_sig"], "preview": True})
+            st3, pm = await plan(h, key, ())
+            par.append(("mock 초안 + mock", chips(root, pm, fam="mock")))
+            check(st == 200 and v["adopt"]["kind"] == "add" and not v["adopt"]["reason"] and st2 == 200 and d["ok"] and sp0.read_bytes() == raw0
+                  and pm["draft"]["family"] == "mock" and pm["draft"]["warnings"]["mock_specs"] == 1 and pm["draft"]["by_crop"][c0]["adopt"] == "add",
+                  f"같은 스펙 + _MOCK_API(family mock) → 채택 가능(미리보기 200)·계획 mock_specs 1 {v['adopt']} {st2} {pm['draft'].get('warnings')}")
+        finally:
+            if mock_file.exists():
+                mock_file.unlink()
+            sp0.unlink()
+        kinds = {w for _what, rows in par for _a, w in rows}
+        check(kinds == {None, "add"} and all(a == w for _what, rows in par for a, w in rows),
+              f"계획 채택 칩(draft_plan 문맥으로 판정) = 크롭마다 GET /draft 의 [채택] 조건 — 이미 채택·keep_human·keep_deleted·깨진 스펙·못 쓴 "
+              f"스펙·mock 초안(openai 거절·mock 허용) {[(w_, r) for w_, r in par if any(a != b for a, b in r)]}")
+        draft_spec(root, 0, apply_mode="full")  # apply=full 인 Spec Draft 가 쓴 스펙(문장 필드까지) — 채택 쓰기는 실행 설정 draft.apply 로 병합
+        try:
+            raw0 = sp0.read_bytes()
+            st, v = await h.jget(f"{API}/draft", root=key, crop=c0)
+            ab = {"root": key, "crop_id": c0, "op": "adopt", "value": v["adopt"]["value"], "seen": v["seen"], "crop_sig": v["crop_sig"]}
+            st2, d = await h.post(f"{API}/draft/adopt", ab)
+            check(st == 200 and v["adopt"]["kind"] == "add" and st2 == 400 and err_keys("POST /draft/adopt", 400, 2, d)
+                  and "채택 외 필드가 바뀜" in d["error"] and d["rows"] and all(isinstance(r, str) for r in d["rows"]) and sp0.read_bytes() == raw0,
+                  f"full 로 쓴 스펙 + 실행 설정 apply=targets → 채택 400 {{error, rows}}(내용 보호 — 채택 외 필드가 양보됨, 쓰지 않음) {st2} {d}")
+            st, _s = await save(h, key, root, "draft", apply="full")
+            st3, d3 = await h.post(f"{API}/draft/adopt", dict(ab, preview=True))
+            st4, d4 = await h.post(f"{API}/draft/adopt", ab)
+            before, after = json.loads(raw0), json.loads(sp0.read_text(encoding="utf-8"))
+            check(st3 == 200 and d3["ok"] and st4 == 200 and d4["ok"] and after.get("_layer_targets") == ab["value"]
+                  and {k: x for k, x in after.items() if k not in ("_layer_targets", "_draft")}
+                  == {k: x for k, x in before.items() if k not in ("_layer_targets", "_draft")},
+                  f"같은 스펙 + 실행 설정 apply=full(그 Draft 와 같음) → 채택 미리보기·쓰기 200, 스펙은 _layer_targets 만 바뀜 "
+                  f"{st3} {st4} {d4.get('error')} {d4.get('rows')}")
+        finally:
+            st, _s = await save(h, key, root, "draft", apply="targets")
+            sp0.unlink()
+        pj = Path(root, pl.PIPELINE_NAME)
+        raw, raw1 = pj.read_bytes(), sp1.read_bytes()
+        pj.write_text("{", encoding="utf-8")
+        try:
+            st, v7 = await h.jget(f"{API}/draft", root=key, crop=ids[1])
+            st2, d = await h.post(f"{API}/draft/adopt", {"root": key, "crop_id": ids[1], "op": "clear", "seen": "null", "crop_sig": "x"})
+        finally:
+            pj.write_bytes(raw)
+        check(st == 409 and st2 == 409 and v7.get("reason") == d.get("reason") == "pipeline_broken" and sp1.read_bytes() == raw1
+              and err_keys("GET /draft", 409, 0, v7) and err_keys("POST /draft/adopt", 409, 3, d),
+              f"실행 설정이 깨짐 → GET /draft·POST /draft/adopt 409 pipeline_broken(family 를 정할 수 없음 — 쓰지 않음, 정본 409 예시 모양) "
+              f"{st} {st2} {d}")
+        st, d = await h.post(f"{API}/draft/adopt", dict(sb, op="clear", preview="yes"))
+        st2, d2 = await h.post(f"{API}/draft/adopt", json.dumps(dict(sb, op="clear")), ctype="text/plain")
+        st3, d3 = await h.post(f"{API}/draft/adopt", dict(sb, op="clear", text="x" * 20000))
+        check(st == 400 and st2 == 415 and st3 == 413 and err_keys("POST /draft/adopt", 415, 0, d2), f"preview 형식 400·415·413 {st} {st2} {st3}")
+
+    async def b11_concurrency(h, key, root, ids, jobs):
+        section("S3a-B11 확장: 설정 같은 rev 동시 6 → 하나만, 계획 동시 4 → 200|202, 채택 쓰기 + 재굴림 동시(잃은 쓰기 0)")
+        c = cur(root)
+        res = await asyncio.gather(*[h.post(f"{API}/pipeline/settings", {"root": key, "rev": c["rev"], "section": "run",
+                                                                        "values": dict(c["settings"]["run"], max_new_calls=10 + i)})
+                                     for i in range(6)])
+        ok = [i for i, (st, _d) in enumerate(res) if st == 200]
+        check(len(ok) == 1 and sum(st == 409 for st, _d in res) == 5 and pl.pipeline_rev(root) == c["rev"] + 1
+              and cur(root)["settings"]["run"]["max_new_calls"] == 10 + ok[0], f"같은 rev 동시 6 → 하나만 저장, 나머지 409 {[st for st, _d in res]}")
+        board._PLAN_MEMO.clear()
+        res = await asyncio.gather(*[plan(h, key, [ids[1]]) for _ in range(4)])
+        check(all(st in (200, 202) for st, _d in res) and any(st == 200 for st, _d in res)
+              and len({d["run"]["hash"] for st, d in res if st == 200}) == 1, f"계획 동시 4 → 200 또는 202(busy) {[st for st, _d in res]}")
+        st, v = await h.jget(f"{API}/draft", root=key, crop=ids[1])
+        r0 = (store.load_manifest(root).get("rerolls") or {}).get(jobs[0]["cell_key"], 0)
+        res = await asyncio.gather(h.post(f"{API}/draft/adopt", {"root": key, "crop_id": ids[1], "op": "adopt", "value": v["adopt"]["value"],
+                                                                "seen": v["seen"], "crop_sig": v["crop_sig"]}),
+                                   *[h.post(f"{API}/reroll", {"root": key, "cell_key": jobs[0]["cell_key"], "count": 1}) for _ in range(3)])
+        spec1 = json.loads(Path(root, "specs", f"{ids[1]}.json").read_text(encoding="utf-8"))
+        check(all(st == 200 for st, _d in res) and spec1.get("_layer_targets") == v["adopt"]["value"]
+              and store.load_manifest(root)["rerolls"][jobs[0]["cell_key"]] == r0 + 3,
+              f"채택(스펙 — manifest_lock) + 재굴림 3(매니페스트) 동시 → 둘 다 남음 {[st for st, _d in res]}")
+
+    async def b12_server(h):
+        section("S3a-B12″ 서버: 정적 pipeline.js·라우트 목록(RouteDef 32·경로 31)·POST 전용 405")
+        check(board._STATIC.get("pipeline.js") == "text/javascript", "_STATIC 에 pipeline.js")
+        routes = web.RouteTableDef()
+        board.register_routes(routes)
+        paths = {(r.method, r.path) for r in routes}
+        want = {("GET", f"{API}/pipeline"), ("POST", f"{API}/pipeline/settings"), ("GET", f"{API}/pipeline/prompt"),
+                ("GET", f"{API}/pipeline/plan"), ("GET", f"{API}/pipeline/progress"), ("GET", f"{API}/draft"), ("POST", f"{API}/draft/adopt")}
+        check(want <= paths and len(routes) == 32 and len({p for _m, p in paths}) == 31,
+              f"파이프라인 라우트 7개 — RouteDef 32·경로 31 {len(routes)}")
+        st, hd, body = await h.get(f"{API}/board/pipeline.js")
+        f = PKG / "web_design_patch" / "pipeline.js"
+        if f.is_file():
+            check(st == 200 and hd["Content-Type"].startswith("text/javascript") and body == f.read_bytes(), f"정적 pipeline.js {st}")
+        else:
+            check(st == 404 and "보드 파일이 없습니다" in json.loads(body)["error"], f"정적 pipeline.js: 파일 없음 → 404 ({st})")
+            note("S3a-B web_design_patch/pipeline.js 아직 없음(U4) — 화이트리스트만 확인")
+        for path in ("pipeline/settings", "draft/adopt"):
+            st, _hd, _b = await h.get(f"{API}/{path}")
+            check(st == 405, f"GET {path} → 405 ({st})")
+
+    async def b22p(h):
+        section("S3a-B22′ S1-a: ④ 같은 이름 둘(하나 이동 + 하나 추가) ⑤ 사라진 shape 뿐인 이름 ack 200 ⑥ names [] 400 ⑦ names 없는 ack = 스냅숏 통째 "
+                "· 사라진 shape 만 남으면 메타 그대로 · names 없는 take = 스냅숏 통째")
+        root = _layout_board_project(OUT / "s1a", "s1a")
+        key = store.register_root(root)
+        board.layout_start(root)
+        R1, R2 = [0, 512, 192, 704], [192, 512, 384, 704]
+
+        def add17(l):
+            l["psd"]["crops"] += [{"name": "017_리본", "layer_name": "017_리본", "rect": R1},
+                                  {"name": "017_리본", "layer_name": "017_리본", "rect": R2}]
+
+        store.update_layout(root, add17, expect_rev=None)
+        base = copy.deepcopy(store.load_layout(root)["psd"])
+        snap = [dict(c) for c in base["crops"] if c["name"] != "003_손_왼쪽"]
+        snap[0]["rect"] = [0, 64, 384, 448]
+        i17 = next(i for i, c in enumerate(snap) if c["name"] == "017_리본" and c["rect"] == R1)
+        snap[i17] = dict(snap[i17], rect=[0, 520, 192, 712])
+        snap.append({"name": "017_리본", "layer_name": "017_리본 | A: 리본", "rect": [384, 512, 576, 704]})
+        _layout_board_snap(root, snap, [5, 6])
+
+        async def psd(op, names=None, **kw):
+            body = {"root": key, "rev": store.load_layout(root)["rev"], "op": op, **kw}
+            if names is not None:
+                body["names"] = names
+            return await h.post(f"{API}/layout/psd", body)
+
+        def named(crops, n):
+            return [c for c in crops if c["name"] == n]
+
+        st, g = await h.jget(f"{API}/layout", root=key)
+        pd = g["psd_diff"]
+        check([x["name"] for x in pd["changed"]] == ["001_머리", "017_리본"] and [x["name"] for x in pd["added"]] == ["017_리본"]
+              and [x["name"] for x in pd["removed"]] == ["003_손_왼쪽"], f"전제: 017 은 이름 안에서 짝(하나 이동·하나 새) {pd}")
+        for op in ("take", "ack"):
+            st, d = await psd(op, [])
+            check(st == 400 and "고른 shape 가 없습니다" in d["error"], f"⑥ {op} names [] → 400 {st} {d}")
+        rev = store.load_layout(root)["rev"]
+        st, d = await psd("take", ["017_리본"], snapshot={"token": pd["token"]})
+        L = store.load_layout(root)
+        new = [c for c in L["crops"] if c.get("psd_name") == "017_리본"]
+        check(st == 200 and d["taken"] == [] and d["skipped"] == ["017_리본"] and len(d["added"]) == 1 and d["rev"] == rev + 1
+              and [c["id"] for c in new] == d["added"] and new[0]["rect"] == [384, 512, 576, 704],
+              f"④ take [017]: 짝 크롭 없는 이동은 skipped, 새 shape 는 크롭 추가 {st} {d}")
+        check(named(L["psd"]["crops"], "017_리본") == [c for c in snap if c["name"] == "017_리본"]
+              and [c["name"] for c in L["psd"]["crops"]] == [c["name"] for c in base["crops"]] + ["017_리본"]
+              and named(L["psd"]["crops"], "001_머리") == named(base["crops"], "001_머리")
+              and named(L["psd"]["crops"], "003_손_왼쪽") == named(base["crops"], "003_손_왼쪽")
+              and {k: v for k, v in L["psd"].items() if k != "crops"} == {k: v for k, v in base.items() if k != "crops"},
+              f"④ 기준점: 017 묶음 전체 = 스냅숏의 017 항목들(첫 017 자리에, 스냅숏 순서), 다른 이름·메타 그대로 {L['psd']['crops']}")
+        st, g = await h.jget(f"{API}/layout", root=key)
+        check([x["name"] for x in g["psd_diff"]["changed"]] == ["001_머리"] and g["psd_diff"]["added"] == []
+              and [x["name"] for x in g["psd_diff"]["removed"]] == ["003_손_왼쪽"], f"④ 뒤 017 차이 0, 001·003 그대로 {g['psd_diff']}")
+        st, d = await psd("take", ["003_손_왼쪽"])
+        st2, d2 = await psd("ack", ["003_손_왼쪽"])
+        L = store.load_layout(root)
+        check(st == 400 and "경고 끄기로" in d["error"] and st2 == 200 and d2["taken"] == [] and not named(L["psd"]["crops"], "003_손_왼쪽")
+              and L["psd"]["fingerprint"] == base["fingerprint"],
+              f"⑤ 사라진 shape 뿐인 이름: take 400 · ack 200(기준점에서 빠짐, 001 갈라짐이 남아 메타 그대로) {st} {st2} {d2}")
+        before = copy.deepcopy(L["crops"])
+        st, d = await psd("ack")
+        L = store.load_layout(root)
+        check(st == 200 and d["taken"] == [] and L["crops"] == before and L["psd"]["fingerprint"] == [5, 6]
+              and L["psd"]["crops"] == [{"name": c["name"], "layer_name": c["layer_name"], "rect": c["rect"]} for c in snap],
+              f"⑦ names 없는 ack = 지금과 같음 — 기준점 = 스냅숏 통째(메타 포함), 크롭 그대로 {st} {d}")
+        st, d = await psd("ack")
+        check(st == 400 and "갈라짐 없음" in d["error"], f"⑦ 뒤 차이 없음 → 400 {st}")
+        snap2 = [dict(c) for c in snap if c["name"] != "002_눈"]
+        snap2[0] = dict(snap2[0], rect=[0, 0, 320, 320])
+        snap2.append({"name": "019_새끈", "layer_name": "019_새끈", "rect": [0, 640, 192, 832]})
+        _layout_board_snap(root, snap2, [7, 8], at="2026-10-17 09:00:00")
+        st, d = await psd("take", ["001_머리", "019_새끈"])
+        L = store.load_layout(root)
+        st2, g2 = await h.jget(f"{API}/layout", root=key)
+        check(st == 200 and g2["psd_diff"]["changed"] == g2["psd_diff"]["added"] == []
+              and [x["name"] for x in g2["psd_diff"]["removed"]] == ["002_눈"] and L["psd"]["fingerprint"] == [5, 6]
+              and named(L["psd"]["crops"], "001_머리") == named(snap2, "001_머리") and named(L["psd"]["crops"], "019_새끈") == named(snap2, "019_새끈"),
+              f"고른 이름 take 뒤 사라진 shape 만 남음 → 메타는 그대로(갈라짐이 0 이 아님 — removed 도 셈) {g2['psd_diff']} {L['psd']['fingerprint']}")
+        snap3 = [dict(c) for c in snap2]
+        i4 = next(i for i, c in enumerate(snap3) if c["name"] == "004_발")
+        snap3[i4] = dict(snap3[i4], rect=[448, 384, 768, 704])
+        snap3.append({"name": "020_새끈", "layer_name": "020_새끈", "rect": [192, 640, 384, 832]})
+        _layout_board_snap(root, snap3, [9, 10], at="2026-10-17 09:30:00")
+        st, g = await h.jget(f"{API}/layout", root=key)
+        pd3 = g["psd_diff"]
+        st, d = await psd("take")
+        L = store.load_layout(root)
+        st2, g2 = await h.jget(f"{API}/layout", root=key)
+        check([x["name"] for x in pd3["changed"]] == ["004_발"] and [x["name"] for x in pd3["removed"]] == ["002_눈"]
+              and [x["name"] for x in pd3["added"]] == ["020_새끈"] and st == 200 and [t["name"] for t in d["taken"]] == ["004_발"]
+              and len(d["added"]) == 1 and not any(g2["psd_diff"][k] for k in ("changed", "added", "removed"))
+              and L["psd"]["fingerprint"] == [9, 10] and L["psd"]["at"] == "2026-10-17 09:30:00"
+              and L["psd"]["crops"] == [{"name": c["name"], "layer_name": c["layer_name"], "rect": c["rect"]} for c in snap3]
+              and any(c["name"] == "002_눈" for c in L["crops"]),
+              f"names 없는 take = 지금처럼 전부 — 바뀐·새 shape 를 가져오고 기준점 = 스냅숏 통째(메타 포함, 사라진 shape 경고도 꺼짐 — "
+              f"§0 S1-a), 사라진 shape 의 크롭은 그대로 {st} {d} {g2['psd_diff']}")
+
+    async def run_all():
+        root, ids, jobs = project("pb")
+        key = store.register_root(root)
+        b0_triple(root, ids)
+        routes = web.RouteTableDef()
+        board.register_routes(routes)
+        app = web.Application()
+        app.add_routes(routes)
+        saved_q = list(board._QWEN_DIR)
+        try:
+            async with TestClient(TestServer(app)) as client:
+                h = Http(client)
+                for name, fn, args in (("b34_nofile", b34_nofile, (h, key, root, ids)), ("b32", b32_get, (h, key, root)),
+                                       ("b33", b33_settings, (h, key, root)), ("b34", b34_prompt, (h, key, root, ids)),
+                                       ("b35", b35_plan, (h, key, root, ids, jobs)), ("b38", b38_progress_state, (h, key, root, ids)),
+                                       ("b37", b37_draft, (h, key, root, ids)), ("b11", b11_concurrency, (h, key, root, ids, jobs)),
+                                       ("b12", b12_server, (h,)), ("b22p", b22p, (h,))):
+                    try:
+                        await fn(*args)
+                    except Exception:
+                        check(False, f"S3a {name} 예외:\n{traceback.format_exc()}")
+        finally:
+            board._QWEN_DIR[:] = saved_q
+            board._PLAN_MEMO.clear()
+
+    try:
+        asyncio.run(run_all())
+    finally:
+        if env_mock is not None:
+            os.environ[runner.MOCK_ENV] = env_mock
+
+
+# ── U4(JS) ──────────────────────────────────────────────────────────────
+# node 하네스: pipeline.js(vm) 세션·순수 판정·패널(작은 DOM 대역), board.js 에서 뗀 applyFree·onKeyDown, 탭 확장 hello(가짜 window·
+# BroadcastChannel). 가짜 서버의 보드 라우트 = tools/fixtures/pipeline_api.json 예시 그대로, ComfyUI = /api/prompt·queue·history 대본.
+# 시나리오마다 예외를 결과로 돌려 다른 시나리오를 막지 않는다.
+_PL_JS_HARNESS = r"""
+import fs from "node:fs";
+import vm from "node:vm";
+import { pathToFileURL } from "node:url";
+
+const IN = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const R = IN.api.routes;
+const H = IN.api.history;
+const ORIGIN = "http://127.0.0.1:8189";
+const KEY = "fe410d7f025d";
+const A = (rel) => `${ORIGIN}/bmk/design_patch/${rel}`;
+const C = (rel) => `${ORIGIN}/api/${rel}`;
+const JOB = `bmk-dp-job:${KEY}`;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const clone = (v) => JSON.parse(JSON.stringify(v));
+const out = {};
+async function scenario(name, fn) {
+  try {
+    out[name] = await fn();
+  } catch (e) {
+    out[name] = { error: String((e && e.stack) || e).slice(0, 800) };
+  }
+}
+async function until(cond, ms = 3000) {
+  for (let t = 0; t < ms && !cond(); t += 5) await sleep(5);
+  return !!cond();
+}
+
+const ctx = vm.createContext({ window: {}, URLSearchParams, setTimeout, clearTimeout, setInterval, clearInterval, console });
+vm.runInContext(fs.readFileSync(IN.pipelineJs, "utf8"), ctx, { filename: "pipeline.js" });
+const P = ctx.window.DPPipeline;
+const boardSrc = fs.readFileSync(IN.boardJs, "utf8");
+const boardFn = (name) => {
+  const m = new RegExp(`\n  (?:async )?function ${name}\\([^)]*\\) \\{[\\s\\S]*?\n  \\}\n`).exec(boardSrc);
+  return m ? m[0].trim() : null;
+};
+
+function mem(init) {
+  const m = new Map(Object.entries(init || {}));
+  return { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), removeItem: (k) => m.delete(k) };
+}
+
+function server() {
+  // route.<이름> = [status, 본문] 또는 (q, body) => [status, 본문](요청 때 정함), delay[path] = 요청마다 응답을 늦출 ms 목록(답은 요청 순간에 정함)
+  const srv = { log: [], plan: [], planDelay: [], adopt: [], route: {}, delay: {}, prompt: null, promptDelay: 0, n: 0,
+    queue: { queue_running: [], queue_pending: [] }, hist: () => null };
+  const resp = (status, data) => ({ ok: status >= 200 && status < 300, status,
+    json: async () => { if (data === undefined) throw new SyntaxError("not json"); return clone(data); } });
+  srv.fetch = async (url, o) => {
+    const u = new URL(url);
+    const method = o && o.method ? o.method : "GET";
+    const body = o && o.body ? JSON.parse(o.body) : null;
+    const path = u.pathname.replace(/^\/bmk\/design_patch\//, "").replace(/^\/api\//, "api/");
+    const q = Object.fromEntries(u.searchParams);
+    srv.log.push({ method, path, q, body });
+    const cur = () => (typeof srv.queue === "function" ? srv.queue() : srv.queue);
+    const pick = (x) => (typeof x === "function" ? x(q, body) : x);
+    let r;
+    if (path === "pipeline") r = pick(srv.route.pipeline) || [200, R["GET /pipeline"].ok];
+    else if (path === "pipeline/settings") r = pick(srv.route.settings) || [200, R["POST /pipeline/settings"].ok];
+    else if (path === "pipeline/prompt") r = pick(srv.route.prompt) || [200, q.stage === "export" ? R["GET /pipeline/prompt"].alt.export : R["GET /pipeline/prompt"].ok];
+    else if (path === "pipeline/plan") {
+      const d = srv.planDelay.shift();
+      if (d) await sleep(d);
+      r = srv.plan.length ? srv.plan.shift() : pick(srv.route.plan) || [200, q.only ? R["GET /pipeline/plan"].ok : R["GET /pipeline/plan"].alt.no_selection];
+    } else if (path === "pipeline/progress") r = pick(srv.route.progress) || [200, R["GET /pipeline/progress"].alt.idle];
+    else if (path === "draft") r = pick(srv.route.draft) || [200, R["GET /draft"].ok];
+    else if (path === "draft/adopt") r = srv.adopt.length ? srv.adopt.shift() : pick(srv.route.adopt) || [200, R["POST /draft/adopt"].ok];
+    else if (path === "api/prompt") {
+      if (srv.promptDelay) await sleep(srv.promptDelay);
+      srv.n += 1;
+      r = srv.prompt || [200, { prompt_id: `pid-${srv.n}`, number: 4 + srv.n, node_errors: {} }];
+    } else if (path === "api/queue" && method === "GET") r = [200, cur()];
+    else if (path === "api/queue") {
+      // afterDelete = delete 뒤 대기열(지우기 직전에 실행이 시작된 경합 — ComfyUI delete 는 대기 중 항목만 지우고 늘 200)
+      const q0 = cur();
+      srv.queue = srv.afterDelete || { queue_running: q0.queue_running, queue_pending: q0.queue_pending.filter((x) => !body.delete.includes(x[1])) };
+      r = [200, undefined];
+    } else if (path.startsWith("api/history/")) {
+      // hist(pid) = 기록 항목 | null(아직 없음) | [status, 본문](그대로 — 본문 undefined = JSON 아님: 프록시 오류 쪽·재시작 중)
+      const pid = decodeURIComponent(path.slice("api/history/".length));
+      const h = srv.hist(pid);
+      r = Array.isArray(h) ? h : [200, h ? { [pid]: h } : {}];
+    } else r = [404, undefined];
+    const dl = (srv.delay[path] || []).shift();
+    if (dl) await sleep(dl);
+    return resp(r[0], r[1]);
+  };
+  srv.paths = () => srv.log.map((x) => `${x.method} ${x.path}`);
+  srv.count = (p, m) => srv.log.filter((x) => x.path === p && (!m || x.method === m)).length;
+  return srv;
+}
+
+const entry = (status_str, messages, outputs) => ({ prompt: [], outputs: outputs || {}, meta: {},
+  status: { status_str, completed: status_str === "success", messages } });
+const OK_H = entry("success", [["execution_start", {}], ["execution_success", {}]], { dp_review: { text: ["Review"] } });
+const EX_H = (o) => entry("success", [["execution_start", {}]], { dp_export: { text: ["Export"], bmk_dp_export: [o] } });
+
+async function run(hist, stage = "apply") {
+  // 무료 큐 하나를 끝까지(대기열은 늘 빔): hist(pid, n) → 기록 항목 | null
+  const srv = server();
+  let polls = 0;
+  srv.hist = (pid) => hist(pid, ++polls);
+  const store = mem();
+  const s = P.session(A, C, KEY, srv.fetch, store, 5);
+  let done = null;
+  s.onDone = (job, res) => { done = { stage: job.stage, res: clone(res) }; };
+  await s.queue(stage);
+  await until(() => done);
+  return { done, polls, after: store.getItem(JOB), body: (srv.log.find((x) => x.path === "api/prompt") || {}).body, last: clone(s.last) };
+}
+
+// ── J-P1 무료 큐·끝 판정·이어 받기·Export 결과 ──
+await scenario("flow", async () => {  // 대기(앞 2) → 실행 중 → 대기열에서 빠짐(기록 전) → 기록 success = 끝
+  const srv = server();
+  let step = 0;
+  srv.queue = () => {
+    step += 1;
+    return step === 1 ? { queue_running: [[1, "user-x"]], queue_pending: [[2, "user-y"], [5, "pid-1"], [9, "user-z"]] }
+      : step === 2 ? { queue_running: [[5, "pid-1"]], queue_pending: [] } : { queue_running: [], queue_pending: [] };
+  };
+  srv.hist = () => (step >= 3 ? OK_H : null);
+  const store = mem();
+  const s = P.session(A, C, KEY, srv.fetch, store, 5);
+  const seen = [];
+  let done = null;
+  let writes = 0;
+  s.onChange = () => { if (s.job) seen.push([s.job.running, s.job.ahead]); };
+  s.onDone = (job, res) => { done = clone(res); };
+  s.onWrite = () => { writes += 1; };
+  await s.queue("apply");
+  const stored = JSON.parse(store.getItem(JOB));
+  await until(() => done);
+  return { body: srv.log.find((x) => x.path === "api/prompt").body, promptQ: srv.log.find((x) => x.path === "pipeline/prompt").q, stored, seen, done,
+    after: store.getItem(JOB), last: s.last.apply ? s.last.apply.state : null, job: s.job, writes,
+    comfy: [...new Set(srv.paths().filter((p) => p.includes("api/")))] };
+});
+
+await scenario("ends", async () => {
+  const cached = await run(() => entry("success", [["execution_start", {}], ["execution_cached", { nodes: ["dp_project", "dp_import"] }]]));
+  const cancelled = await run(() => entry("error", [["execution_start", {}], ["execution_interrupted", { node_id: "dp_prepare" }]]));
+  const error = await run(() => entry("error", [["execution_start", {}], ["execution_error", { node_id: "dp_import",
+    node_type: "BMKDesignPatchImportPSD", exception_message: "PSD 를 열 수 없습니다\n" }]]));
+  const gone = await run(() => null);
+  // 기록을 읽지 못함(JSON 아님 3회 → 500 1회) + 대기열에도 없음: 사라짐으로 끝내지 않고 이어 폴링 → 기록 success = 끝
+  const unread = await run((pid, n) => (n <= 3 ? [200, undefined] : n === 4 ? [500, undefined] : OK_H));
+  return { cached: cached.done.res, cancelled: cancelled.done.res, error: error.done.res, gone: gone.done.res, gonePolls: gone.polls,
+    goneAfter: gone.after, unread: unread.done.res, unreadPolls: unread.polls };
+});
+
+await scenario("resume", async () => {  // 다시 연 창: sessionStorage 의 {stage, pid, number} 를 이어서 폴링(템플릿·큐 요청 없음)
+  const srv = server();
+  srv.queue = { queue_running: [[9, "pid-9"]], queue_pending: [] };
+  let n = 0;
+  srv.hist = (pid) => (++n >= 2 && pid === "pid-9" ? EX_H(H.bmk_dp_export[0]) : null);
+  const store = mem({ [JOB]: JSON.stringify({ stage: "export", pid: "pid-9", number: 9 }) });
+  const s = P.session(A, C, KEY, srv.fetch, store, 5);
+  let done = null;
+  s.onDone = (job, res) => { done = { stage: job.stage, res: clone(res) }; };
+  const resumed = s.resume();
+  const running = s.job ? s.job.pid : null;
+  const twice = s.resume();  // 이미 폴링 중이면 다시 이어 받지 않음(폴링 둘이 끝을 두 번 알리지 않게)
+  let ends = 0;
+  const onDone0 = s.onDone;
+  s.onDone = (job, res) => { ends += 1; onDone0(job, res); };
+  await until(() => done);
+  await sleep(30);
+  return { resumed, running, twice, ends, done, after: store.getItem(JOB), paths: [...new Set(srv.paths())], again: s.resume(),
+    broken: P.session(A, C, KEY, srv.fetch, mem({ [JOB]: "{oops" }), 5).resume(), noStore: P.session(A, C, KEY, srv.fetch, null, 5).resume() };
+});
+
+await scenario("exports", async () => {  // Export ui bmk_dp_export 세 경우 + 노드가 옛 버전(항목 없음)
+  const r = {};
+  for (const o of H.bmk_dp_export) {
+    const x = await run(() => EX_H(o), "export");
+    r[o.outcome] = { export: x.done.res.export, front: x.body.front, keys: Object.keys(x.body), prompt: x.body.prompt, last: x.last.export.export };
+  }
+  r.oldNode = P.endOf(entry("success", [], { dp_export: { text: ["Export"] } })).export;
+  return r;
+});
+
+await scenario("refuse", async () => {  // 보내기 전 검사: 서버가 Run·Spec Draft·숫자 키·다른 클래스를 섞으면 /api/prompt 0회
+  const ok = R["GET /pipeline/prompt"].ok;
+  const cases = {
+    run: Object.assign({}, ok.prompt, { dp_run: { class_type: "BMKDesignPatchRun", inputs: { project: ["dp_prepare", 0], approve: "" } } }),
+    draft: Object.assign({}, ok.prompt, { dp_draft: { class_type: "BMKDesignPatchSpecDraft", inputs: {} } }),
+    numeric: Object.assign({}, ok.prompt, { 7: { class_type: "BMKDesignPatchReview", inputs: {} } }),
+    other: Object.assign({}, ok.prompt, { dp_x: { class_type: "KSampler", inputs: {} } }),
+    empty: {},
+  };
+  const r = {};
+  for (const [k, p] of Object.entries(cases)) {
+    const srv = server();
+    srv.route.prompt = [200, Object.assign({}, ok, { prompt: p })];
+    const s = P.session(A, C, KEY, srv.fetch, mem(), 5);
+    let err = null;
+    try {
+      await s.queue("apply");
+    } catch (e) {
+      err = e.message;
+    }
+    r[k] = { err, posts: srv.count("api/prompt"), job: s.job };
+  }
+  r.check = { apply: P.checkPrompt(ok.prompt), export: P.checkPrompt(R["GET /pipeline/prompt"].alt.export.prompt) };
+  r.body = P.freeBody({ dp_review: {} }, "apply");
+  return r;
+});
+
+await scenario("gates", async () => {  // 409(설정 확인·PSD 없음)·옛 서버 404·등록 안 된 키 404·ComfyUI 거절(노드 없음·검증 실패)·유료 stage
+  const one = async (route, prompt) => {
+    const srv = server();
+    if (route) srv.route.prompt = route;
+    if (prompt) srv.prompt = prompt;
+    const s = P.session(A, C, KEY, srv.fetch, mem(), 5);
+    let res = null;
+    let err = null;
+    try {
+      res = await s.queue("apply");
+    } catch (e) {
+      err = { msg: e.message, status: e.status ?? null, reason: (e.data && e.data.reason) || null };
+    }
+    return { old: !!(res && res.old), err, posts: srv.count("api/prompt"), job: !!s.job };
+  };
+  const e409 = R["GET /pipeline/prompt"].errors["409"];
+  return {
+    confirm: await one([409, e409[0]]), noPsd: await one([409, e409[1]]), old: await one([404, undefined]),
+    unknownKey: await one([404, R["GET /pipeline/prompt"].errors["404"][0]]),
+    missing: await one(null, [400, { error: { type: "missing_node_type", message: "Node 'BMKDesignPatchPrepare' not found." }, node_errors: {} }]),
+    invalid: await one(null, [400, { error: { type: "prompt_outputs_failed_validation", message: "Prompt outputs failed validation" },
+      node_errors: { dp_prepare: { errors: [{ message: "Value not in list", details: "model: 'x'" }], class_type: "BMKDesignPatchPrepare" } } }]),
+    paid: await (async () => {
+      const srv = server();
+      try {
+        await P.session(A, C, KEY, srv.fetch, mem(), 5).queue("run");
+        return { err: null, gets: srv.log.length };
+      } catch (e) {
+        return { err: e.message, gets: srv.log.length };
+      }
+    })(),
+  };
+});
+
+await scenario("busy", async () => {  // 큐에 넣는 중·실행 중 연타는 막음(/api/prompt 1회), 실행 중엔 계획을 부르지 않음
+  const srv = server();
+  srv.promptDelay = 30;
+  srv.queue = { queue_running: [], queue_pending: [[5, "pid-1"]] };
+  const s = P.session(A, C, KEY, srv.fetch, mem(), 5);
+  const a = s.queue("apply");
+  let second = null;
+  try {
+    await s.queue("export");
+  } catch (e) {
+    second = e.message;
+  }
+  await a;
+  let third = null;
+  try {
+    await s.queue("apply");
+  } catch (e) {
+    third = e.message;
+  }
+  const planned = await s.loadPlan("001_38a818", false);
+  const r = { second, third, planned, planGets: srv.count("pipeline/plan"), posts: srv.count("api/prompt") };
+  srv.hist = () => OK_H;
+  await until(() => !s.job);
+  return r;
+});
+
+await scenario("quiet", async () => {  // 폴링 중 자리(실행 중·앞 작업 수)가 그대로면 다시 그리지 않음(누르는 중인 단추를 갈지 않게)
+  const srv = server();
+  srv.queue = { queue_running: [[1, "user-x"]], queue_pending: [[5, "pid-1"]] };
+  const s = P.session(A, C, KEY, srv.fetch, mem(), 5);
+  let changes = 0;
+  s.onChange = () => { changes += 1; };
+  await s.queue("apply");
+  await sleep(80);
+  const r = { changes, polls: srv.count("api/queue", "GET") };
+  srv.queue = { queue_running: [[5, "pid-1"]], queue_pending: [] };
+  await until(() => changes > r.changes);
+  r.afterMove = changes;
+  srv.hist = () => OK_H;
+  await until(() => !s.job);
+  return r;
+});
+
+await scenario("plans", async () => {  // 낡은 계획 응답 버림 · 202 = 0.5초 간격으로 다시(요청 6번까지 — r1-09) · only 없는 계획(칩용)
+  const srv = server();
+  const s = P.session(A, C, KEY, srv.fetch, mem(), 5);
+  srv.planDelay = [60, 0];
+  const p1 = s.loadPlan("001_38a818", false);
+  await sleep(5);
+  const p2 = s.loadPlan("001_38a818,002_d98f99", true);
+  const [r1, r2] = await Promise.all([p1, p2]);
+  const stale = { r1, r2, only: s.planOnly, q: srv.log.filter((x) => x.path === "pipeline/plan").map((x) => x.q) };
+  srv.plan = [[202, { busy: true }], [200, R["GET /pipeline/plan"].ok]];
+  const t0 = Date.now();
+  const ok1 = await s.loadPlan("001_38a818", false);
+  const busyOnce = { ok: ok1, ms: Date.now() - t0, gets: srv.count("pipeline/plan") - 2, err: s.planErr };
+  const keep = s.plan.sig;
+  // 202 세 번 뒤 200(재시작 직후 차가운 계산 1–2초 — 앞 요청이 잠금을 쥔 동안): 기다려 받음
+  let g = srv.count("pipeline/plan");
+  srv.plan = [[202, { busy: true }], [202, { busy: true }], [202, { busy: true }], [200, R["GET /pipeline/plan"].ok]];
+  const okLong = await s.loadPlan("001_38a818", false);
+  const busyLong = { ok: okLong, gets: srv.count("pipeline/plan") - g, err: s.planErr };
+  g = srv.count("pipeline/plan");
+  srv.plan = Array.from({ length: 6 }, () => [202, { busy: true }]);
+  const ok2 = await s.loadPlan("001_38a818", false);
+  const busyTwice = { ok: ok2, gets: srv.count("pipeline/plan") - g, err: s.planErr, kept: s.plan.sig === keep, left: srv.plan.length };
+  const ok3 = await s.loadPlan(null, false);
+  const chip = { ok: ok3, q: srv.log.at(-1).q, only: s.planOnly, hash: s.plan.run.hash };
+  // 202 로 기다리는 동안 새 계획 요청이 오면 앞 요청은 다시 묻지 않고 그만둠
+  srv.plan = [[202, { busy: true }]];
+  const g0 = srv.count("pipeline/plan");
+  const w1 = s.loadPlan("001_38a818", false);
+  await sleep(50);
+  const w2 = s.loadPlan("002_d98f99", false);
+  const [a1, a2] = await Promise.all([w1, w2]);
+  await sleep(20);
+  const superseded = { a1, a2, gets: srv.count("pipeline/plan") - g0, only: s.planOnly };
+  // 202 로 기다리는 사이 이 Studio 의 무료 큐가 시작됨: 다시 묻지 않음(Import 뒤·Prepare 전 반쪽 상태 계획을 받지 않음 — 끝나면 onDone 이 다시)
+  srv.plan = [[202, { busy: true }], [200, R["GET /pipeline/plan"].ok]];
+  srv.queue = () => ({ queue_running: [[5, `pid-${srv.n}`]], queue_pending: [] });  // 반영이 실행 중으로 남음
+  const g3 = srv.count("pipeline/plan");
+  const sig3 = s.plan.sig;
+  const w3 = s.loadPlan("001_38a818", false);
+  await sleep(50);
+  await s.queue("apply");
+  const a3 = await w3;
+  const jobMid = { ok: a3, gets: srv.count("pipeline/plan") - g3, job: !!s.job, kept: s.plan.sig === sig3 };
+  srv.plan = [];
+  srv.hist = () => OK_H;
+  await until(() => !s.job);
+  return { stale, busyOnce, busyLong, busyTwice, chip, superseded, jobMid };
+});
+
+await scenario("settings", async () => {  // 설정 저장: rev 409 → 다시 읽기, 성공 = 쓰기 신호(보드 state 전체 재요청) + 다시 읽기
+  const srv = server();
+  const s = P.session(A, C, KEY, srv.fetch, mem(), 5);
+  let writes = 0;
+  s.onWrite = () => { writes += 1; };
+  await s.load();
+  const vals = clone(R["GET /pipeline"].ok.settings.prepare);
+  srv.route.settings = [409, R["POST /pipeline/settings"].errors["409"][0]];
+  let err = null;
+  try {
+    await s.save("prepare", vals);
+  } catch (e) {
+    err = { status: e.status, msg: e.message };
+  }
+  const after409 = { tail: srv.paths().slice(-2), writes };
+  delete srv.route.settings;
+  const r = await s.save("prepare", vals);
+  const res = { err, after409, writes, rev: r.rev, tail: srv.paths().slice(-2), body: srv.log.filter((x) => x.path === "pipeline/settings").at(-1).body,
+    busy: s.busy };
+  // 연타: 앞 저장이 끝나기 전 두 번째 저장은 거절(POST 1회)
+  srv.delay["pipeline/settings"] = [40];
+  const n0 = srv.count("pipeline/settings");
+  const first = s.save("prepare", vals);
+  let second = null;
+  try {
+    await s.save("prepare", vals);
+  } catch (e) {
+    second = e.message;
+  }
+  await first;
+  res.twice = { second, posts: srv.count("pipeline/settings") - n0 };
+  // 낡은 GET /pipeline: 먼저 보낸 읽기의 응답이 늦게 오면 버리고 나중 것을 남김
+  let k = 0;
+  srv.route.pipeline = () => [200, Object.assign(clone(R["GET /pipeline"].ok), { rev: ++k === 1 ? 11 : 12 })];
+  srv.delay.pipeline = [300, 0];
+  const [l1, l2] = await Promise.all([s.load(), (async () => { await sleep(5); return s.load(); })()]);
+  res.stale = { l1, l2, rev: s.P.rev };
+  // 깨진 pipeline.json: GET 은 rev null → 덮어쓰기 저장은 POST rev null(0 이 아님 — §2.1)
+  const sb = server();
+  sb.route.pipeline = [200, R["GET /pipeline"].alt.broken];
+  const s2 = P.session(A, C, KEY, sb.fetch, mem(), 5);
+  await s2.load();
+  await s2.save("prepare", vals);
+  res.broken = { rev: s2.P.rev, body: sb.log.find((x) => x.path === "pipeline/settings").body };
+  return res;
+});
+
+await scenario("cancel", async () => {  // 대기 중 취소 = /api/queue delete → 취소됨, 실행 중이면 취소하지 않음(끝까지 받음)
+  const srv = server();
+  srv.queue = { queue_running: [[1, "user-x"]], queue_pending: [[5, "pid-1"]] };
+  const s = P.session(A, C, KEY, srv.fetch, mem(), 5);
+  let done = null;
+  s.onDone = (job, res) => { done = clone(res); };
+  await s.queue("export");
+  await sleep(20);
+  const ok = await s.cancel();
+  const first = done;
+  const del = srv.log.find((x) => x.path === "api/queue" && x.method === "POST");
+  srv.queue = { queue_running: [[6, "pid-2"]], queue_pending: [] };
+  await s.queue("export");
+  await sleep(20);
+  const running = await s.cancel();
+  const dels = srv.count("api/queue", "POST");
+  srv.hist = () => EX_H(H.bmk_dp_export[2]);
+  await until(() => !s.job);
+  const res = { ok, first, del: del && del.body, running, dels, last: s.last.export.state };
+  // 기록을 읽는 사이 취소로 끝났으면 늦게 온 기록으로 다시 끝내지 않음(끝 알림 한 번, 상태 = 취소됨) — 폴링의 첫 기록 읽기(늦게 옴)만 끝을 싣고,
+  // 취소가 지운 뒤 읽는 기록은 없음(대기 중에 지워졌으니)
+  const sv = server();
+  sv.queue = { queue_running: [], queue_pending: [[5, "pid-1"]] };
+  let hn = 0;
+  sv.hist = () => (++hn === 1 ? OK_H : null);
+  sv.delay["api/history/pid-1"] = [60];
+  const s2 = P.session(A, C, KEY, sv.fetch, mem(), 5);
+  let ends = 0;
+  s2.onDone = () => { ends += 1; };
+  await s2.queue("apply");
+  await sleep(15);
+  const c2 = await s2.cancel();
+  await sleep(100);
+  res.race = { cancelled: c2, ends, last: s2.last.apply ? s2.last.apply.state : null };
+  // delete 직전에 실행이 시작됨(delete 는 200 이지만 대기열에 실행 중으로 남음): 취소됨으로 끝내지 않고 job 을 이어서 폴링 → 기록 = 끝
+  const sx = server();
+  sx.queue = { queue_running: [], queue_pending: [[5, "pid-1"]] };
+  sx.afterDelete = { queue_running: [[5, "pid-1"]], queue_pending: [] };
+  const s3 = P.session(A, C, KEY, sx.fetch, mem(), 5);
+  let end3 = null;
+  s3.onDone = (job, r3) => { end3 = r3.state; };
+  await s3.queue("export");
+  await sleep(15);
+  const c3 = await s3.cancel();
+  res.started = { cancelled: c3, job: s3.job ? s3.job.pid : null, end: end3, dels: sx.count("api/queue", "POST") };
+  sx.hist = () => EX_H(H.bmk_dp_export[0]);
+  await until(() => end3);
+  res.started.after = end3;
+  // delete 직전에 실행을 시작해 곧 끝남(delete 뒤 대기열에 없고 기록 success — r1-25): 취소됨이 아니라 그 기록으로 끝(Export 결과 그대로)
+  const sf = server();
+  sf.queue = { queue_running: [], queue_pending: [[5, "pid-1"]] };
+  sf.afterDelete = { queue_running: [], queue_pending: [] };
+  sf.hist = () => (sf.count("api/queue", "POST") ? EX_H(H.bmk_dp_export[0]) : null);
+  const s4 = P.session(A, C, KEY, sf.fetch, mem(), 5);
+  let end4 = null;
+  let ends4 = 0;
+  s4.onDone = (job, r4) => { end4 = clone(r4); ends4 += 1; };
+  await s4.queue("export");
+  await sleep(15);
+  const c4 = await s4.cancel();
+  await sleep(30);
+  res.finished = { cancelled: c4, state: end4 && end4.state, export: end4 && end4.export, ends: ends4, last: s4.last.export ? s4.last.export.state : null,
+    job: s4.job };
+  return res;
+});
+
+await scenario("applyFree", async () => {  // board.js applyFree: 옛 서버(state 에 pipeline_rev 없음·pipeline.js 없음·/pipeline/prompt 404) = 탭 반영(큐)
+  const src = boardFn("applyFree");
+  const one = async (S, pipeRes, ok = true) => {  // ok = 확인 창의 답(false = 취소)
+    const c = { pipe: 0, stage: null, comfy: [], confirms: [], toasts: [] };
+    const vctx = vm.createContext({ S, pipe: pipeRes === undefined ? null : { queue: async (st) => { c.pipe += 1; c.stage = st; return pipeRes; } },
+      window: { confirm: (m) => { c.confirms.push(m); return ok; } }, toast: (m, k) => c.toasts.push(`${k || ""}:${m}`),
+      queueInComfy: (layout) => { c.comfy.push(layout); return true; } });
+    await vm.runInContext(`(${src})`, vctx)();
+    return c;
+  };
+  const neu = { pipeline_rev: 3, pending_preapproved: 2 };
+  // board.js notReady(r1-14): state 에 키가 있는데 모듈이 없음 = 이 창이 재시작 전에 열림(새로고침), 키 없음 = 옛 서버(재시작)
+  const nr = boardFn("notReady");
+  const why = (S, mod) => (nr ? vm.runInContext(`(${nr})`, vm.createContext({ S }))("진행(G)", "pipeline_rev", mod) : null);
+  return { found: !!src, oldState: await one({ pending_preapproved: 2 }, null), route404: await one(neu, { old: true }),
+    normal: await one(neu, null), noPipe: await one(neu, undefined), noRerolls: await one({ pending_preapproved: 0 }, null),
+    oldNo: await one({ pending_preapproved: 2 }, null, false), route404No: await one(neu, { old: true }, false), noPipeNo: await one(neu, undefined, false),
+    notReady: { stale: why({ pipeline_rev: 3 }, null), old: why({ rev: 1 }, null), loaded: why({ pipeline_rev: 3 }, {}) } };
+});
+
+await scenario("rerollTab", async () => {  // board.js reroll(r1-04): 큐 요청은 opener 로만 — opener 가 없으면 확인 창·첫 R 토스트가 '예약만 — 다음 Run 때 과금'
+  const src = boardFn("reroll");
+  const one = async (tab, fromButton) => {
+    const c = { confirms: [], toasts: [], writes: [] };
+    const cell = { cell_key: "abcdef0123456789", variant: "V1", est_usd: [0.62, 0.62] };
+    const rc = vm.createContext({ S: { crops: [] }, LAYOUT_STATUS: {}, REROLL_CONFIRM_MS: 2500, rerollArm: null, Date, setTimeout: () => 0,
+      window: { confirm: (m) => { c.confirms.push(m); return true; } }, toast: (m, k) => c.toasts.push(`${k || ""}:${m}`),
+      rerollCell: () => cell, usd: () => " ≈ $0.62", curTarget: () => ({ crop_id: "001_38a818" }), comfyConnected: () => tab,
+      write: async (path) => { c.writes.push(path); return { variant: "V1", cell_pending: 1, pending_calls: 1 }; }, queueInComfy: () => tab });
+    await vm.runInContext(`(${src})`, rc)(fromButton);
+    return c;
+  };
+  return { found: !!src, noTab: await one(false, true), tab: await one(true, true), noTabKey: await one(false, false), tabKey: await one(true, false) };
+});
+
+// ── J-P2 채택: GET /draft → 미리보기 → 쓰기, 409 → 다시 읽기, kind 별 단추 ──
+await scenario("adopt", async () => {
+  const srv = server();
+  const s = P.session(A, C, KEY, srv.fetch, mem(), 5);
+  let writes = 0;
+  s.onWrite = () => { writes += 1; };
+  const dv = await s.draft("008_e1d4cc");
+  const shown = [];
+  const r = await s.adopt(dv, "adopt", null, (pv) => { shown.push(pv.effects.prompt_changed); return true; });
+  const flow = { paths: srv.paths(), bodies: srv.log.filter((x) => x.path === "draft/adopt").map((x) => x.body), writes, shown, seen: r.seen,
+    q: srv.log[0].q };
+  const n0 = srv.log.length;
+  const no = await s.adopt(dv, "clear", null, () => false);
+  const declined = { r: no, paths: srv.paths().slice(n0), writes, body: srv.log.at(-1).body };
+  srv.adopt = [[200, R["POST /draft/adopt"].ok], [409, R["POST /draft/adopt"].errors["409"][0]]];
+  const n1 = srv.log.length;
+  let c409 = null;
+  try {
+    await s.adopt(dv, "set", "A: metal skirt plaque", () => true);
+  } catch (e) {
+    c409 = { status: e.status, msg: e.message, view: e.view ? e.view.id : null };
+  }
+  const conflict = { c409, paths: srv.paths().slice(n1), body: srv.log.filter((x) => x.path === "draft/adopt").at(-1).body, writes };
+  srv.adopt = [[400, R["POST /draft/adopt"].errors["400"][0]]];
+  let c400 = null;
+  try {
+    await s.adopt(dv, "adopt", null, () => true);
+  } catch (e) {
+    c400 = { status: e.status, msg: e.message, reason: e.data ? e.data.reason : null };
+  }
+  await s.preview(dv, "A: x");
+  const pvBody = srv.log.at(-1).body;
+  const writes0 = writes;
+  // 연타: 앞 채택(미리보기 → 쓰기)이 끝나기 전 두 번째 채택은 거절(POST 2회 = 한 번의 미리보기·쓰기)
+  srv.delay["draft/adopt"] = [30, 30];
+  const n2 = srv.count("draft/adopt");
+  const first = s.adopt(dv, "adopt", null, () => true);
+  let second = null;
+  try {
+    await s.adopt(dv, "adopt", null, () => true);
+  } catch (e) {
+    second = e.message;
+  }
+  await first;
+  return { flow, declined, conflict, c400, pvBody, busy: s.busy, writes: writes0, twice: { second, posts: srv.count("draft/adopt") - n2, writes: writes - writes0 } };
+});
+
+await scenario("adoptState", async () => {
+  const d = R["GET /draft"];
+  const st = (v) => P.adoptState(v);
+  return {
+    add: st(d.ok), adopted: st(d.alt.adopted), human: st(d.alt.human), deleted: st(d.alt.deleted), specError: st(d.alt.spec_error),
+    specReason: d.alt.spec_error.adopt.reason,
+    unwritten: st(Object.assign(clone(d.ok), { unwritten: true })),
+    refused: st(Object.assign(clone(d.ok), { adopt: { value: d.ok.adopt.value, kind: "add", reason: "mock 초안 — 실제 백엔드로 다시 초안" } })),
+    nodeOld: st(Object.assign(clone(d.alt.adopted), { layer_targets: { value: "A: old", owner: "human" } })),
+    none: st(Object.assign(clone(d.ok), { adopt: { value: "", kind: null, reason: "" } })),
+  };
+});
+
+await scenario("texts", async () => {  // 계획 문구(§3.3): Run·초안 줄, 오류·실행 중·선택 없음·mock
+  const p = R["GET /pipeline/plan"];
+  return { run: P.runText(p.ok.run), draft: P.draftText(p.ok.draft), runErr: P.runText(p.alt.run_error.run), draftRun: P.draftText(p.alt.draft_running.draft),
+    draftErr: P.draftText(p.alt.draft_error.draft), nosel: P.runText(p.alt.no_selection.run).line,
+    mock: P.runText(Object.assign(clone(p.ok.run), { backend: "mock" })).line, running: P.runText(Object.assign(clone(p.ok.run), { running: true })),
+    qwen: P.draftText(Object.assign(clone(p.ok.draft), { family: "local_qwen", backend: "vlm_local_qwen" })).line,
+    style: P.draftText(Object.assign(clone(p.ok.draft), { units: [...p.ok.draft.units, { crop_id: "_style", state: "new", reasons: ["화풍 신규"], est: [3, 5] }] })).what,
+    // 화풍 단위 crop_id = vlm.STYLE_ID "_style"(r1-02 — "_project" 는 스펙 파일 이름): 크롭으로 세지 않고 행 이름 = 화풍, 갱신 가능·선택 밖·건너뜀도 따로
+    styleAll: P.draftText(Object.assign(clone(p.ok.draft), {
+      units: [{ crop_id: "001_870cd9", state: "new", reasons: [], est: [1, 2] }, { crop_id: "002_3703ed", state: "new", reasons: [], est: [1, 2] },
+        { crop_id: "_style", state: "new", reasons: ["화풍 신규"], est: [3, 5] }],
+      refresh_available: [{ crop_id: "002_d98f99", est: [0, 0] }, { crop_id: "_style", est: [0, 0] }], filtered: ["005_efaa82", "_style"],
+      skipped: [{ crop_id: "_style", reason: "_project.json 오류 — 시험" }] })),
+    styleOnly: P.draftText(Object.assign(clone(p.ok.draft), { units: [{ crop_id: "_style", state: "new", reasons: ["화풍 신규"], est: [3, 5] }],
+      refresh_available: [], filtered: ["_style"] })),
+    styleFix: P.draftText(p.alt.style.draft) };  // 정본 alt.style(apply full + style — 서버 화풍 단위) 그대로
+});
+
+await scenario("keys", async () => {  // board.js onKeyDown: 입력칸(IME 포함) = 보드 키 무시, 진행 모드 = 검토 키·E·T 끔, 뷰어 키·G 는 듦
+  class Element {
+    constructor(tag, attrs = {}, parent = null) { Object.assign(this, { tag, attrs, parent }); }
+    closest(sel) {
+      const one = (n, s) => {
+        const a = /^\[([\w-]+)(?:="([^"]*)")?\]$/.exec(s);
+        return a ? a[1] in n.attrs && (a[2] === undefined || n.attrs[a[1]] === a[2]) : n.tag === s;
+      };
+      for (let n = this; n; n = n.parent) if (sel.split(",").some((s) => one(n, s.trim()))) return n;
+      return null;
+    }
+  }
+  const sets = {};
+  for (const k of ["EDIT_OFF", "REFS_OFF", "PIPE_OFF"]) {
+    const m = new RegExp(`const ${k} = (new Set\\(\\[[\\s\\S]*?\\]\\));`).exec(boardSrc);
+    sets[k] = m ? m[1] : "new Set()";
+  }
+  const press = (pipeOn, code, target, m = {}) => {
+    const calls = [];
+    const spy = (name) => (...a) => calls.push([name, ...a]);
+    const kc = vm.createContext({ Element, $: (id) => ({ hidden: id === "help" ? true : id === "pipe-panel" ? !pipeOn : true }),
+      editing: false, editor: null, refsOn: false, refEd: null, help: spy("help"), setEditing: spy("setEditing"), setRefs: spy("setRefs"),
+      setPipe: spy("setPipe"), setStar: spy("setStar"), toggleSlice: spy("toggleSlice"), toggleReject: spy("toggleReject"), reroll: spy("reroll"),
+      moveTarget: spy("moveTarget"), viewer: { setBg: spy("setBg"), flags: () => ({ bg: "composite" }) } });
+    vm.runInContext(`typing = ${boardFn("typing")}; EDIT_OFF = ${sets.EDIT_OFF}; REFS_OFF = ${sets.REFS_OFF}; PIPE_OFF = ${sets.PIPE_OFF};`, kc);
+    const kd = vm.runInContext(`(${boardFn("onKeyDown")})`, kc);
+    let prevented = false;
+    kd(Object.assign({ code, key: code, target: target || new Element("body"), repeat: false, ctrlKey: false, metaKey: false, altKey: false,
+      shiftKey: false, preventDefault() { prevented = true; } }, m));
+    return { calls, prevented };
+  };
+  const input = () => new Element("input", { type: "text" }, new Element("section"));
+  return {
+    pipe: Object.fromEntries(["Space", "KeyR", "KeyX", "ArrowDown", "KeyE", "KeyT", "KeyB", "KeyG"].map((k) => [k, press(true, k)])),
+    review: Object.fromEntries(["Space", "KeyG", "KeyR"].map((k) => [k, press(false, k)])),
+    typing: { r: press(false, "KeyR", input()), g: press(true, "KeyG", input()), ime: press(false, "Space", input(), { isComposing: true, keyCode: 229 }) },
+  };
+});
+
+// ── J-P4 hello: 탭 확장(가짜 window·BroadcastChannel) ↔ Studio link ──
+await scenario("hello", async () => {
+  const bus = new Set();
+  class Chan {
+    constructor(name) { this.name = name; this.onmessage = null; bus.add(this); }
+    postMessage(data) {
+      const m = clone(data);
+      for (const c of bus) if (c !== this && c.name === this.name) setTimeout(() => c.onmessage && c.onmessage({ data: m }), 0);
+    }
+    close() { bus.delete(this); }
+  }
+  const mkWin = (opener) => ({ location: { origin: ORIGIN }, opener, listeners: [], BroadcastChannel: Chan,
+    addEventListener(t, fn) { if (t === "message") this.listeners.push(fn); } });
+  async function tab(name, win, busy = false) {
+    globalThis.window = win;
+    const env = {};
+    globalThis.__bmk = {
+      app: { get processingQueue() { return busy; }, registerExtension(ext) { env.ext = ext; }, extensionManager: {}, rootGraph: { nodes: [] } },
+      api: { addEventListener() {}, queuePrompt: async () => ({}), fetchApi: async () => ({ ok: true, json: async () => ({}) }), fileURL: (p) => p },
+    };
+    await import(`${pathToFileURL(IN.extMjs).href}?tab=${name}`);
+    env.ext.setup();
+    return env;
+  }
+  const post = (win, data, origin = ORIGIN) => {
+    const got = [];
+    for (const fn of win.listeners) fn({ origin, data, source: { postMessage: (m, o) => got.push([clone(m), o]) } });
+    return got;
+  };
+  const r = {};
+  const w1 = mkWin(null);
+  await tab("a", w1, true);
+  const a1 = post(w1, { type: "bmk-dp-hello", id: "h1" });
+  r.reply = a1;
+  r.otherOrigin = post(w1, { type: "bmk-dp-hello", id: "h2" }, "http://evil.example").length;
+  r.otherTab = post(w1, { type: "bmk-dp-hello", id: "h3", tab: "zzz" }).length;
+  r.ownTab = a1.length ? post(w1, { type: "bmk-dp-hello", id: "h4", tab: a1[0][0].tab }).length : -1;
+  r.badId = post(w1, { type: "bmk-dp-hello" }).length;
+  const probe = new Chan("bmk-dp");
+  const heard = [];
+  probe.onmessage = (ev) => heard.push(ev.data);
+  probe.postMessage({ type: "bmk-dp-hello", id: "c1" });
+  probe.postMessage({ type: "bmk-dp-hello", id: "c2", tab: "zzz" });
+  probe.postMessage({ type: "bmk-dp-hello", id: "c3", tab: "x", ext: 2 });  // 다른 탭의 응답 모양 — 답하지 않음
+  await sleep(20);
+  probe.close();
+  r.channel = heard;
+  const studio = async (win, wait = 40) => {
+    const changes = [];
+    const st = P.link(win, (x) => changes.push(x.state), 100000, wait);
+    const first = st.state;
+    await sleep(wait + 40);
+    st.stop();
+    return { first, state: st.state, via: st.via, ext: st.ext, submit: st.submit, busy: st.busy, tab: st.tab, changes };
+  };
+  r.one = await studio(mkWin(null));
+  const w2 = mkWin(null);
+  await tab("b", w2);
+  r.many = await studio(mkWin(null));
+  bus.clear();
+  r.none = await studio(mkWin(null));
+  r.noChannel = await studio(Object.assign(mkWin(null), { BroadcastChannel: undefined }));
+  const w3 = mkWin(null);
+  const c = await tab("c", w3);
+  const sw = mkWin(null);
+  const opener = (replyOrigin) => {
+    const op = { closed: false, postMessage(data, origin) {
+      if (origin !== ORIGIN) return;
+      const src = { postMessage: (m) => setTimeout(() => { for (const fn of sw.listeners) fn({ origin: replyOrigin, data: clone(m), source: op }); }, 0) };
+      for (const fn of w3.listeners) fn({ origin: ORIGIN, data: clone(data), source: src });
+    } };
+    return op;
+  };
+  sw.opener = opener(ORIGIN);
+  r.opener = await studio(sw);
+  r.openerTabIsC = r.opener.tab !== null && r.opener.tab !== (a1[0] || [{}])[0].tab;
+  const sw2 = mkWin({ closed: false, postMessage() {} });  // 옛 확장: opener 가 답하지 않음 — 채널에 탭(c)이 있어도 opener 만 본다
+  r.openerOld = await studio(sw2);
+  sw.listeners = [];
+  sw.opener = opener("http://evil.example");
+  r.openerEvil = await studio(sw);
+  const sw3 = mkWin({ closed: true, postMessage() {} });  // 닫힌 opener = 채널로
+  r.openerClosed = await studio(sw3);
+  r.found = !!c.ext;
+  // opener 가 있으면 opener 응답만(D6·§4.2): 같은 출처지만 opener 가 아닌 창이 이번 id 로 답해도 무시 — opener 무응답 = 옛 확장
+  const answer = (win, from, d) => setTimeout(() => {
+    for (const fn of win.listeners) fn({ origin: ORIGIN, source: from, data: Object.assign({ type: "bmk-dp-hello", submit: "unsupported", busy: false }, d) });
+  }, 0);
+  const sw4 = mkWin(null);
+  sw4.opener = { closed: false, postMessage(data) { answer(sw4, { postMessage() {} }, { id: data.id, tab: "intruder", ext: 2 }); } };
+  r.openerSpoof = await studio(sw4);
+  const sw5 = mkWin(null);  // 확장 판 < 2 = 옛 확장(연결로 치지 않음)
+  sw5.opener = { closed: false, postMessage(data) { answer(sw5, sw5.opener, { id: data.id, tab: "t-ext1", ext: 1 }); } };
+  r.openerExt1 = await studio(sw5);
+  // 주기적인 다시 hello(§4.2 — 짧은 주기로): 탭이 닫히면 none, 새로고침(새 tab ID)으로 다시 붙으면 ok
+  const tabs = [...bus];
+  const seen = [];
+  const lk = P.link(mkWin(null), (x) => seen.push([x.state, x.tab]), 80, 40);
+  await until(() => lk.state === "ok", 1000);
+  for (const t of tabs) bus.delete(t);
+  await until(() => lk.state === "none", 1000);
+  await tab("d", mkWin(null));
+  await until(() => lk.state === "ok", 1000);
+  lk.stop();
+  r.periodic = { seen, tabs: tabs.length };
+  return r;
+});
+
+// ── 패널(작은 DOM 대역): 머리줄·진행 패널·★ 점검·채택·설정·선택·반영·Export ──
+class El {
+  constructor(doc, tag) {
+    Object.assign(this, { doc, tagName: tag.toUpperCase(), children: [], parent: null, own: "", className: "", dataset: {}, style: {}, on: {},
+      hidden: false, disabled: false, value: "", title: "", type: "", checked: false });
+  }
+  get textContent() { return this.own + this.children.map((c) => c.textContent).join(""); }
+  set textContent(t) { this.replaceChildren(); this.own = String(t); }
+  get childElementCount() { return this.children.length; }
+  get classList() {
+    const names = () => this.className.split(" ").filter(Boolean);
+    const set = (c, on) => { this.className = names().filter((x) => x !== c).concat(on ? [c] : []).join(" "); return on; };
+    return { contains: (c) => names().includes(c), add: (c) => set(c, true), remove: (c) => set(c, false),
+      toggle: (c, on) => set(c, on === undefined ? !names().includes(c) : !!on) };
+  }
+  append(...xs) { for (const x of xs) { x.parent = this; this.children.push(x); } }
+  replaceChildren(...xs) { for (const c of this.children) c.parent = null; this.children = []; this.own = ""; this.append(...xs); }
+  addEventListener(type, fn) { (this.on[type] ??= []).push(fn); }
+  fire(type, extra = {}) {
+    // 대상 → 부모로(stopPropagation 이면 멈춤), 문서에 붙어 있으면 끝에 document 처리기(capture 와 순서만 다름)
+    let stop = false;
+    let top = this;
+    const ev = Object.assign({ type, target: this, preventDefault() {}, stopPropagation() { stop = true; } }, extra);
+    for (let n = this; n && !stop; n = n.parent) {
+      top = n;
+      for (const fn of n.on[type] || []) fn(Object.assign(ev, { currentTarget: n }));
+    }
+    if (!stop && top === this.doc.body) for (const fn of this.doc.on[type] || []) fn(Object.assign(ev, { currentTarget: this.doc }));
+  }
+  focus() { if (this.doc.activeElement !== this) this.doc.activeElement.blur(); this.doc.activeElement = this; }
+  blur() { if (this.doc.activeElement !== this) return; this.doc.activeElement = this.doc.body; this.fire("focusout"); }
+  contains(x) { for (let n = x; n; n = n.parent) if (n === this) return true; return false; }
+  all() { return this.children.flatMap((c) => [c, ...c.all()]); }
+}
+class Doc {
+  constructor() { this.body = new El(this, "body"); this.activeElement = this.body; this.on = {}; }
+  createElement(tag) { return new El(this, tag); }
+  createTextNode(t) { const e = new El(this, "#text"); e.own = String(t); return e; }
+  addEventListener(type, fn) { (this.on[type] ??= []).push(fn); }
+}
+
+async function mouse(el, gap = 30) {
+  // 마우스 클릭 한 번(Chromium 순서): pointerdown → 포커스 이동(mousedown 기본 동작 — 단추·입력칸은 그 요소, 그 밖은 body라 입력칸 focusout) →
+  // 그 사이 타이머가 돎 → pointerup → click(누른 요소가 아직 문서에 있을 때만 — 그 사이 빠졌으면 Chromium 은 click 을 보내지 않음) →
+  // 체크박스는 checked 토글·change. → click 이 갔는가
+  const doc = el.doc;
+  el.fire("pointerdown", { buttons: 1 });
+  if (/^(BUTTON|INPUT|SELECT|TEXTAREA)$/.test(el.tagName)) el.focus();
+  else doc.activeElement.blur();
+  await sleep(gap);
+  const on = doc.body.contains(el);
+  (on ? el : doc.body).fire("pointerup", { buttons: 0 });
+  if (!on) return false;
+  el.fire("click");
+  if (el.tagName === "INPUT" && el.type === "checkbox") {
+    el.checked = !el.checked;
+    el.fire("change");
+  }
+  return true;
+}
+
+function boardState() {
+  const crops = [["001_38a818", "001_머리", null], ["002_d98f99", "002_눈", null], ["003_2f8f50", "003_리본", "changed"],
+    ["008_e1d4cc", "008_치마금속장식", null], ["012_93661a", "012_소매", null]];
+  return {
+    rev: 79, project: "261014_Test", running: false, drain: false, pipeline_rev: 3, plan_v: "r:5c0e4f1a9b23d7e8|d:41b0c2aa7e9d3f10", pending_preapproved: 1,
+    crops: crops.map(([id, name, ls]) => ({ id, name, layout_status: ls, dup_picks: [], stale_picked: [], warnings: [], draft_chip: null, plan_stale: false })),
+    targets: crops.map(([id, name], i) => ({ key: `${id}/A`, crop_id: id, crop_name: name, tid: "A", pick_keys: i < 3 ? [`k${i}`] : [],
+      candidates: [{ key: `k${i}`, picked: i < 3, analysis: i === 1 ? "none" : "ok" }] })),
+  };
+}
+
+await scenario("panel", async () => {
+  const srv = server();
+  const hist = {};
+  srv.hist = (pid) => hist[pid] || null;
+  const doc = new Doc();
+  const confirms = [];
+  const toasts = [];
+  let answer = true;  // 확인 창의 답(false = 취소)
+  const calls = { refresh: 0, select: [], goTarget: [], enter: 0, copied: null, drain: 0 };
+  Object.assign(ctx, { document: doc, fetch: srv.fetch, navigator: { clipboard: { writeText: async (t) => { calls.copied = t; } } } });
+  Object.assign(ctx.window, { confirm: (m) => { confirms.push(m); return answer; }, sessionStorage: mem() });
+  const hosts = { list: doc.createElement("ol"), panel: doc.createElement("section"), head: doc.createElement("div") };
+  doc.body.append(hosts.list, hosts.panel, hosts.head);
+  const pipe = P.create(hosts, { apiUrl: A, comfyUrl: C, root: KEY, toast: (m, k) => toasts.push(`${k || ""}:${m}`),
+    refresh: () => { calls.refresh += 1; }, select: (id) => calls.select.push(id), goTarget: (k) => calls.goTarget.push(k),
+    seams: () => new Map([["008_e1d4cc", { n: 2, bad: 1 }]]), drain: () => { calls.drain += 1; }, enter: () => { calls.enter += 1; } });
+  const B = (label, root = hosts.panel) => root.all().find((e) => e.tagName === "BUTTON" && e.textContent.startsWith(label)) || null;
+  const planQ = () => srv.log.filter((x) => x.path === "pipeline/plan").map((x) => x.q);
+  const S = boardState();
+  S.crops[1].dup_picks = [{ key: "k1", tid: "B", same_as: "A" }]; // 다중 대상 크롭의 중복 ★·옛 크롭 ★(§3.6)
+  S.crops[1].stale_picked = ["k9"];
+  const r = {};
+  pipe.stateChanged(S);
+  await sleep(40);
+  r.head = hosts.head.textContent;
+  r.headTitle = (hosts.head.children[0] || {}).title || "";
+  const hd0 = hosts.head.children.find((e) => e.textContent === "Prepare 갈라짐");  // r2-05 머리줄 Prepare 갈라짐 배지(정본 drift prepare.n cost)
+  r.headDrift = hd0 ? [hd0.textContent, hd0.className, hd0.title] : null;
+  r.firstPlan = planQ();
+  r.applyWarn = pipe.applyWarn();
+  pipe.enter(S, "008_e1d4cc");
+  await sleep(60);
+  const text = hosts.panel.textContent;
+  r.enterPlan = planQ().at(-1);
+  r.sections = Object.fromEntries(["설정", "반영", "계획", "★ 점검", "Export", "채택 — 008_치마금속장식", "확인 필요: draft.apply", "prepare.n: 마지막 Prepare 4 · Studio 2",
+    "반영 뒤 다시 계산", "레이아웃 미반영 1", "새 PSD", "r76", "Run: 승인 필요(선택 1크롭) 4건", "대기 승인분(전체) 9"].map((x) => [x, text.includes(x)]));
+  // r1-19: 해시 안내 = Run 해시를 바꾸는 Run 위젯(retry_failed·retry_orphans)과 Studio 값
+  r.hashNote = hosts.panel.all().filter((e) => e.classList.contains("pp-row") && e.own.startsWith("해시는 ")).map((e) => e.own);
+  const ra = B("Run 승인");
+  const da = B("초안 승인");
+  r.approve = { run: ra && [ra.disabled, ra.title, ra.textContent], draft: da && [da.disabled, da.title, da.textContent] };
+  r.copy = hosts.panel.all().filter((e) => e.tagName === "BUTTON" && e.textContent === "해시 복사").map((e) => e.disabled);
+  const links = hosts.panel.all().filter((e) => e.classList.contains("link") && e.classList.contains("warn")).map((e) => e.textContent);
+  r.checks = links;
+  for (const head of ["008_치마금속장식 · A — ★ 없음", "002_눈 · B — 중복 ★", "002_눈 — 옛 크롭 ★"]) {
+    const row = hosts.panel.all().find((e) => e.classList.contains("link") && e.textContent.startsWith(head));
+    if (row) row.fire("click");
+  }
+  r.goTarget = calls.goTarget.slice();
+  r.list = { boxes: hosts.list.all().filter((e) => e.tagName === "INPUT" && e.type === "checkbox").map((e) => e.checked),
+    chips: hosts.list.textContent.includes("승인 필요 2") && hosts.list.textContent.includes("채택 가능") && hosts.list.textContent.includes("레이아웃 미반영") };
+  // 채택 확인 창에서 취소 = 미리보기만(쓰기·state 재요청·토스트 없음)
+  answer = false;
+  const na = srv.log.length;
+  const ta = toasts.length;
+  const fa = calls.refresh;
+  B("채택").fire("click");
+  await sleep(40);
+  r.adoptDeclined = { flags: srv.log.slice(na).filter((x) => x.path === "draft/adopt").map((x) => x.body.preview), refresh: calls.refresh - fa,
+    toasts: toasts.slice(ta), confirm: confirms.at(-1) };
+  answer = true;
+  // 채택(미리보기 → 확인 → 쓰기)
+  const n0 = srv.log.length;
+  B("채택").fire("click");
+  await sleep(40);
+  r.adopt = { paths: srv.paths().slice(n0), confirm: confirms.at(-1), refresh: calls.refresh, toast: toasts.find((t) => t.includes("채택 — ")) || null,
+    previewFlags: srv.log.slice(n0).filter((x) => x.path === "draft/adopt").map((x) => x.body.preview),
+    winsLines: (confirms.at(-1) || "").split("\n").filter((x) => x.startsWith("레이아웃 문구가 이김")).length };
+  // 수정: 입력 → 미리보기 검사(IME 조합 Enter 는 보내지 않음) → Enter = 미리보기 → 확인 → 쓰기
+  B("수정").fire("click");
+  await sleep(10);
+  const inp = hosts.panel.all().find((e) => e.tagName === "INPUT" && e.classList.contains("pp-text"));
+  r.editStart = inp ? inp.value : null;
+  if (inp) {
+    inp.focus();
+    inp.value = "A: metal skirt plaque";
+    inp.fire("input");
+    await sleep(450);
+    const pv = srv.log.filter((x) => x.path === "draft/adopt").at(-1).body;
+    const n1 = srv.log.length;
+    inp.fire("keydown", { key: "Enter", isComposing: true, keyCode: 229 });
+    await sleep(20);
+    const ime = srv.log.length - n1;
+    inp.fire("keydown", { key: "Enter", isComposing: false, keyCode: 13 });
+    await sleep(40);
+    // r1-11: Enter 로 저장에 성공하면(포커스는 입력칸 그대로) 입력칸·[저장]이 바로 닫힘 — 옛 입력칸에 다시 Enter 해도 '문구가 비었습니다' 오류 없음
+    const kept = hosts.panel.contains(inp);
+    const saveLeft = !!B("저장");
+    const t0 = toasts.length;
+    doc.activeElement.fire("keydown", { key: "Enter", isComposing: false, keyCode: 13 });  // 키는 포커스가 있는 요소로
+    await sleep(20);
+    const again = toasts.slice(t0);
+    inp.blur();
+    await sleep(40);
+    r.edit = { pv, ime, writes: srv.log.slice(n1).filter((x) => x.path === "draft/adopt").map((x) => [x.body.op, x.body.text, x.body.preview]),
+      kept, saveLeft, again, focus: doc.activeElement === inp, closed: !hosts.panel.all().some((e) => e.classList.contains("pp-text")) };
+  }
+  // 설정: 위젯 표(GET /pipeline widgets)로 그림 → prepare.n = 3 저장(숫자)
+  B("설정").fire("click");
+  await sleep(10);
+  const boxes = hosts.panel.children.filter((e) => e.classList.contains("pp-sec"));
+  const fields = hosts.panel.all().filter((e) => e.classList.contains("pp-field"));
+  const prep = boxes.find((b) => b.children[0].textContent === "Prepare");
+  const draftBox = boxes.find((b) => b.children[0].textContent === "Spec Draft");
+  const nRow = prep && prep.children.find((e) => e.classList.contains("pp-field") && e.children[0].textContent === "n");
+  r.settings = { fields: fields.length, boxes: boxes.map((b) => b.children[0].textContent), draftConfirm: draftBox ? draftBox.textContent.includes("apply (확인 필요)") : null,
+    draftRoundDisabled: draftBox ? draftBox.all().find((e) => e.classList.contains("pp-field") && e.children[0].textContent === "draft_round").children[1].disabled : null,
+    writeModes: draftBox ? draftBox.all().find((e) => e.classList.contains("pp-field") && e.children[0].textContent === "write_mode").children[1].children.map((o) => o.value) : null };
+  if (nRow) {
+    nRow.children[1].value = "3";
+    nRow.children[1].fire("input");
+    B("저장", prep).fire("click");
+    await sleep(40);
+    const sv = srv.log.filter((x) => x.path === "pipeline/settings").at(-1);
+    r.settings.saved = sv ? sv.body : null;
+  }
+  B("← 진행").fire("click");
+  await sleep(10);
+  // 선택: 없음 → 계획 끔(only 없는 계획), 승인 필요만 → Run 승인 필요·초안 대기 크롭
+  B("없음", hosts.list).fire("click");
+  await sleep(350);
+  r.none = { q: planQ().at(-1), text: hosts.panel.textContent.includes("선택한 크롭 없음") };
+  B("승인 필요만", hosts.list).fire("click");
+  await sleep(350);
+  r.need = planQ().at(-1);
+  // 반영 확인 창에서 취소 = 템플릿·큐 요청 없음(토스트·머리줄 실행 중 없음)
+  answer = false;
+  const nd = srv.log.length;
+  const td = toasts.length;
+  B("반영").fire("click");
+  await sleep(30);
+  r.applyDeclined = { confirm: confirms.at(-1), paths: srv.paths().slice(nd), toasts: toasts.slice(td), head: hosts.head.textContent };
+  answer = true;
+  // 반영(무료 큐) → 확인 창 → /api/prompt(front true) → 머리줄 실행 중 → 끝 = 토스트·state 재요청(패널 세션 폴링 = 1초)
+  const refreshBefore = calls.refresh;
+  B("반영").fire("click");
+  await sleep(30);
+  r.apply = { confirm: confirms.at(-1), body: (srv.log.filter((x) => x.path === "api/prompt").at(-1) || {}).body, head: hosts.head.textContent };
+  hist["pid-1"] = OK_H;
+  await until(() => toasts.some((t) => t.includes("반영 끝")));
+  await sleep(20);
+  r.applyDone = { toast: toasts.find((t) => t.includes("반영 끝")) || null, refresh: calls.refresh - refreshBefore, head: hosts.head.textContent };
+  B("Export").fire("click");
+  await sleep(30);
+  r.exportBody = (srv.log.filter((x) => x.path === "api/prompt").at(-1) || {}).body;
+  hist["pid-2"] = EX_H(H.bmk_dp_export[0]);
+  await until(() => toasts.some((t) => t.includes("Export: 새 PSD")));
+  await sleep(20);
+  r.exportDone = { toast: toasts.find((t) => t.includes("Export: 새 PSD")) || null, panel: hosts.panel.textContent.includes(`새 PSD r${H.bmk_dp_export[0].rev}`) };
+  B("경로 복사").fire("click");
+  await sleep(10);
+  r.copied = calls.copied;
+  r.errors = toasts.filter((t) => t.startsWith("err:"));
+  pipe.leave();
+  r.left = hosts.panel.children.length + hosts.list.children.length;
+  return r;
+});
+
+await scenario("panelDim", async () => {  // 해시 흐림·복사 끔(§3.3): 조건마다 하나씩 — 나머지(설정 확인·갈라짐·notes·반영 필요)는 비운 장면
+  const scene = async (mod = {}) => {
+    const srv = server();
+    const body = Object.assign(clone(R["GET /pipeline"].ok), { confirm: [], drift: [] });
+    if (mod.P) mod.P(body);
+    srv.route.pipeline = [200, body];
+    const plan = clone(R["GET /pipeline/plan"].ok);
+    plan.notes = [];
+    plan.apply_pending = [];
+    plan.draft.import_pending = [];
+    if (mod.plan) mod.plan(plan);
+    srv.plan = mod.plans || [[200, R["GET /pipeline/plan"].alt.no_selection], [200, plan], [200, plan]];
+    const doc = new Doc();
+    Object.assign(ctx, { document: doc, fetch: srv.fetch });
+    Object.assign(ctx.window, { confirm: () => true, sessionStorage: mem() });
+    const hosts = { list: doc.createElement("ol"), panel: doc.createElement("section"), head: doc.createElement("div") };
+    doc.body.append(hosts.list, hosts.panel, hosts.head);
+    const pipe = P.create(hosts, { apiUrl: A, comfyUrl: C, root: KEY, toast() {}, refresh() {}, select() {}, goTarget() {}, seams: () => new Map(),
+      drain() {}, enter() {} });
+    const S = boardState();
+    S.crops.forEach((c) => { c.layout_status = null; });
+    if (mod.S) mod.S(S);
+    pipe.stateChanged(S);
+    await sleep(30);
+    pipe.enter(S, "001_38a818");
+    await sleep(60);
+    const copies = hosts.panel.all().filter((e) => e.tagName === "BUTTON" && e.textContent === "해시 복사");
+    const text = hosts.panel.textContent;
+    const star = hosts.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent === "★ 점검");
+    const apply = hosts.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent === "반영");
+    const res = { copy: copies.map((e) => e.disabled), titles: copies.map((e) => e.title), dimRow: text.includes("반영 뒤 다시 계산"),
+      runBusy: text.includes("Run 실행 중 — 끝난 뒤 다시 계산"), draftBusy: text.includes("초안: Spec Draft 실행 중"),
+      head: hosts.head.children[0] ? hosts.head.children[0].textContent : null, headTitle: hosts.head.children[0] ? hosts.head.children[0].title : null,
+      chip: hosts.list.textContent.includes("레이아웃 미반영"),
+      checks: star ? star.children.slice(1).map((e) => e.own).filter((t) => /레이아웃|반영 필요:/.test(t)) : null,
+      star: star ? star.children.slice(1).map((e) => e.own) : null,
+      apply: apply ? apply.children.filter((e) => e.classList.contains("pp-row")).map((e) => e.own) : null };
+    pipe.leave();
+    return res;
+  };
+  const same = (S) => S.crops.forEach((c) => { c.layout_status = "same"; });
+  // 모든 타깃에 분석 있는 ★ — ★ 점검이 반영 상태만으로 갈리게(정본 alt draft_running·draft_error·draft_qwen_nodir 에는 import_pending 이 없음)
+  const allStar = (S) => S.targets.forEach((t) => { t.pick_keys = [`k-${t.crop_id}`]; t.candidates = [{ key: `k-${t.crop_id}`, picked: true, analysis: "ok" }]; });
+  const altDraft = (name) => (p) => { p.draft = clone(R["GET /pipeline/plan"].alt[name].draft); };
+  const e409 = [409, R["GET /pipeline/plan"].errors["409"][0]];
+  return {
+    starClean: await scene({ S: allStar }),
+    draftError: await scene({ S: allStar, plan: altDraft("draft_error") }),
+    qwenNodir: await scene({ S: allStar, plan: altDraft("draft_qwen_nodir") }),
+    planFail: await scene({ S: allStar, plans: [e409, e409, e409] }),
+    clean: await scene(),
+    pending: await scene({ plan: (p) => { p.draft.import_pending = ["레퍼런스 미반영(2크롭)"]; } }),
+    confirm: await scene({ P: (b) => { b.confirm = ["prepare.ref_style"]; } }),
+    drift: await scene({ P: (b) => { b.drift = [{ section: "prepare", field: "n", manifest: 4, settings: 2, kind: "cost" }]; } }),
+    notes: await scene({ plan: (p) => { p.notes = ["Import 설정이 마지막 Import 와 다름(refs_dir) — 반영하면 크롭·타깃·레퍼런스가 바뀔 수 있음"]; } }),
+    applyPending: await scene({ S: allStar, plan: (p) => { p.apply_pending = ["Prepare 입력이 바뀜(마지막 Prepare 뒤 스펙·레이아웃·레퍼런스·용어집)"]; } }),
+    applyDup: await scene({ plan: (p) => { p.apply_pending = ["레퍼런스 미반영(2크롭)", "Prepare 입력 지문 없음(지문을 남기기 전 Prepare)"];
+      p.draft.import_pending = ["레퍼런스 미반영(2크롭)"]; } }),
+    runRunning: await scene({ plan: (p) => { p.run.running = true; } }),
+    draftRunning: await scene({ S: allStar, plan: altDraft("draft_running") }),
+    layoutSame: await scene({ S: same }),
+    layoutChanged: await scene({ S: (S) => { same(S); S.crops[2].layout_status = "changed"; } }),
+    layoutNew: await scene({ S: same, plan: (p) => { p.draft.import_pending = ["레이아웃 미반영(rev 8)"]; } }),
+    layoutDup: await scene({ S: (S) => { same(S); S.crops[2].layout_status = "changed"; },
+      plan: (p) => { p.draft.import_pending = ["레이아웃 미반영(rev 7)", "레퍼런스 미반영(2크롭)"]; } }),
+  };
+});
+
+function mkPanel(srv, store = mem()) {
+  // 패널 하나(작은 DOM 대역) — env.B(라벨, 뿌리) = 그 라벨로 시작하는 단추, env.input() = [수정] 입력칸.
+  // env.refreshState = () => state 를 두면 refresh(보드 refresh(true))가 그 state 로 stateChanged 를 부른다(보드처럼 — 없으면 세기만)
+  const doc = new Doc();
+  const env = { srv, doc, confirms: [], toasts: [], goTarget: [], refresh: 0, refreshState: null };
+  Object.assign(ctx, { document: doc, fetch: srv.fetch, navigator: { clipboard: { writeText: async () => {} } } });
+  Object.assign(ctx.window, { confirm: (m) => { env.confirms.push(m); return true; }, sessionStorage: store });
+  const hosts = { list: doc.createElement("ol"), panel: doc.createElement("section"), head: doc.createElement("div") };
+  doc.body.append(hosts.list, hosts.panel, hosts.head);
+  Object.assign(env, hosts);
+  env.pipe = P.create(hosts, { apiUrl: A, comfyUrl: C, root: KEY, toast: (m, k) => env.toasts.push(`${k || ""}:${m}`),
+    refresh: () => {
+      env.refresh += 1;
+      if (env.refreshState) setTimeout(() => env.pipe.stateChanged(env.refreshState()), 0);
+    }, select() {}, goTarget: (k) => env.goTarget.push(k), seams: () => new Map(), drain() {}, enter() {} });
+  env.B = (label, root = hosts.panel) => root.all().find((e) => e.tagName === "BUTTON" && e.textContent.startsWith(label)) || null;
+  env.copies = () => hosts.panel.all().filter((e) => e.tagName === "BUTTON" && e.textContent === "해시 복사").map((e) => [e.disabled, e.title]);
+  env.input = () => hosts.panel.all().find((e) => e.tagName === "INPUT" && e.classList.contains("pp-text")) || null;
+  return env;
+}
+
+await scenario("panelStyle", async () => {  // 화풍 단위(apply = full): 초안 해시 복사의 only = 그 해시를 계산한 정규 only(+ style) — 계획 실패·apply 바뀜이면 옛 짝을 보이지 않음
+  const srv = server();
+  const body = (apply) => {
+    const b = Object.assign(clone(R["GET /pipeline"].ok), { confirm: [], drift: [] });
+    b.settings.draft.apply = apply;
+    return [200, b];
+  };
+  srv.route.pipeline = body("full");
+  srv.route.plan = (q) => {
+    const p = clone(q.only ? R["GET /pipeline/plan"].ok : R["GET /pipeline/plan"].alt.no_selection);
+    p.notes = [];
+    p.apply_pending = [];
+    p.draft.import_pending = [];
+    return [200, p];
+  };
+  const env = mkPanel(srv);
+  const S = boardState();
+  S.crops.forEach((c) => { c.layout_status = null; });
+  const planQ = () => srv.log.filter((x) => x.path === "pipeline/plan").map((x) => x.q).at(-1);
+  const r = {};
+  env.pipe.stateChanged(S);
+  await sleep(30);
+  env.pipe.enter(S, "001_38a818");
+  await sleep(60);
+  r.plain = { q: planQ(), copies: env.copies() };
+  const box = env.panel.all().find((e) => e.tagName === "INPUT" && e.type === "checkbox" && e.parent && e.parent.classList.contains("rf-check"));
+  r.box = !!box;
+  if (box) {
+    srv.plan = Array.from({ length: 6 }, () => [202, { busy: true }]);  // 요청 6번 모두 202(r1-09 — 0.5초 간격으로 다시)
+    box.checked = true;
+    box.fire("change");
+    await sleep(2800);
+    r.failed = { q: planQ(), copies: env.copies(), err: env.panel.textContent.includes("다른 계획 계산이 끝나지 않았습니다"),
+      box: env.panel.all().some((e) => e.parent && e.parent.classList && e.parent.classList.contains("rf-check")) };
+    env.B("다시 계산").fire("click");
+    await sleep(40);
+    r.styled = { q: planQ(), copies: env.copies() };
+  }
+  srv.route.pipeline = body("targets");  // 다른 창이 apply 를 targets 로(pipeline_rev 바뀜): 다시 읽고 계획을 다시 — 체크는 남아도 style 은 싣지 않음
+  const g0 = srv.count("pipeline/plan");
+  env.pipe.stateChanged(Object.assign({}, S, { pipeline_rev: 4 }));
+  await sleep(40);
+  r.targets = { q: planQ(), plans: srv.count("pipeline/plan") - g0, copies: env.copies(),
+    box: env.panel.all().some((e) => e.parent && e.parent.classList && e.parent.classList.contains("rf-check")) };
+  env.pipe.leave();
+  return r;
+});
+
+await scenario("panelAdopt", async () => {  // J-P2 화면: 낡은 GET /draft·미리보기 응답 버림, 채택 409 → 다시 읽은 seen, 미리보기 409 → 다시 읽고 한 번 더
+  const srv = server();
+  const S = boardState();
+  S.crops.forEach((c) => { c.layout_status = null; });
+  const dv0 = R["GET /draft"].ok;
+  const e409 = R["POST /draft/adopt"].errors["409"][0];
+  const e400 = R["POST /draft/adopt"].errors["400"][0];
+  let seen = dv0.seen;
+  srv.route.draft = (q) => [200, Object.assign(clone(dv0), { id: q.crop, name: (S.crops.find((c) => c.id === q.crop) || {}).name || q.crop, seen })];
+  const env = mkPanel(srv);
+  const bodies = () => srv.log.filter((x) => x.path === "draft/adopt").map((x) => x.body);
+  const typeIn = async (txt, ms = 500) => {
+    const inp = env.input();
+    inp.focus();
+    inp.value = txt;
+    inp.fire("input");
+    await sleep(ms);
+    inp.blur();
+    await sleep(20);
+  };
+  const r = {};
+  env.pipe.stateChanged(S);
+  await sleep(30);
+  // 느린 GET /draft(001) 뒤 빠른 008: 패널·채택은 008
+  srv.delay.draft = [300, 0];
+  env.pipe.enter(S, "001_38a818");
+  await sleep(10);
+  env.pipe.select("008_e1d4cc");
+  await sleep(400);
+  const sec = env.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent.startsWith("채택 — "));
+  let n = bodies().length;
+  env.B("채택").fire("click");
+  await sleep(40);
+  r.slow = { title: sec ? sec.children[0].textContent : null, gets: srv.log.filter((x) => x.path === "draft").map((x) => x.q.crop).slice(0, 2),
+    writes: bodies().slice(n).map((b) => [b.crop_id, b.preview]) };
+  // 채택 쓰기 409 → GET /draft 다시 읽음 → 다음 채택은 새 seen
+  srv.adopt = [[200, R["POST /draft/adopt"].ok], [409, e409]];
+  seen = "[1, 2]";
+  n = bodies().length;
+  env.B("채택").fire("click");
+  await sleep(40);
+  env.B("채택").fire("click");
+  await sleep(40);
+  r.reread = { seen: bodies().slice(n).map((b) => [b.seen, b.preview]), toast: env.toasts.some((t) => t.startsWith("err:") && t.includes("다시 읽음")) };
+  // [수정] 미리보기 409 → GET /draft 다시 읽기(입력 그대로) → 새 seen 으로 한 번 더, [저장] 켜짐
+  env.B("수정").fire("click");
+  await sleep(10);
+  seen = "[3, 4]";
+  srv.adopt = [[409, e409]];
+  n = bodies().length;
+  let g = srv.count("draft");
+  await typeIn("A: metal skirt plaque");
+  r.pv409 = { bodies: bodies().slice(n).map((b) => [b.seen, b.preview, b.text]), gets: srv.count("draft") - g,
+    save: env.B("저장") ? env.B("저장").disabled : null, err: env.panel.textContent.includes(e409.error),
+    effects: env.panel.textContent.includes("다음 반영 뒤 타깃"), text: env.input() ? env.input().value : null };
+  // 다시 409 = 오류 줄만, [저장]은 켜 둠(저장 경로가 409 뒤 다시 읽음) · 400(문법·렌더 점검) = [저장] 끔
+  srv.adopt = [[409, e409], [409, e409]];
+  n = bodies().length;
+  await typeIn("A: metal skirt plate");
+  r.pv409twice = { posts: bodies().length - n, save: env.B("저장").disabled, err: env.panel.textContent.includes(e409.error) };
+  srv.adopt = [[400, e400]];
+  await typeIn("A:");
+  r.pv400 = { save: env.B("저장").disabled, err: env.panel.textContent.includes(e400.error) };
+  // 낡은 미리보기: 먼저 보낸 미리보기의 응답이 늦게 오면 버림
+  srv.adopt = [];
+  srv.route.adopt = (q, b) => {
+    const x = clone(R["POST /draft/adopt"].ok);
+    x.effects.targets_after = [{ tid: "A", label: b.text, name_en: b.text, origin: "adopt" }];
+    return [200, x];
+  };
+  srv.delay["draft/adopt"] = [800, 0];
+  const inp = env.input();
+  inp.focus();
+  inp.value = "A: one";
+  inp.fire("input");
+  await sleep(450);
+  inp.value = "A: two";
+  inp.fire("input");
+  await sleep(1000);
+  inp.blur();
+  await sleep(20);
+  r.stalePv = { two: env.panel.textContent.includes("다음 반영 뒤 타깃: A A: two"), one: env.panel.textContent.includes("A A: one") };
+  // 채택 쓰기 409 가 늦게 오는 사이 다른 크롭(002)을 고르면 다시 읽은 008 응답은 버림 — 패널·다음 채택 = 002, 확인 창 첫 줄에 크롭 이름
+  env.B("취소").fire("click");
+  await sleep(10);
+  srv.adopt = [[200, R["POST /draft/adopt"].ok], [409, e409]];
+  srv.delay["draft/adopt"] = [0, 150];
+  env.B("채택").fire("click");
+  await sleep(40);
+  env.pipe.select("002_d98f99");
+  await sleep(400);
+  const sec2 = env.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent.startsWith("채택 — "));
+  n = bodies().length;
+  env.B("채택").fire("click");
+  await sleep(60);
+  r.race = { title: sec2 ? sec2.children[0].textContent : null, writes: bodies().slice(n).map((b) => [b.crop_id, b.preview]),
+    confirm: (env.confirms.at(-1) || "").split("\n")[0] };
+  // [수정] 입력 400ms 안에 Esc·다른 크롭: 남은 미리보기 타이머를 버림(닫힌 뒤 text null 미리보기를 보내지 않음)
+  const quick = async (txt) => {
+    env.B("수정").fire("click");
+    await sleep(10);
+    const i2 = env.input();
+    i2.focus();
+    i2.value = txt;
+    i2.fire("input");
+    await sleep(100);
+    return i2;
+  };
+  const i2 = await quick("A: esc");
+  n = bodies().length;
+  i2.fire("keydown", { key: "Escape", isComposing: false, keyCode: 27 });
+  await sleep(500);
+  r.esc = { posts: bodies().slice(n).map((b) => [b.crop_id, b.text]), open: !!env.input() };
+  await quick("A: other crop");
+  n = bodies().length;
+  env.pipe.select("001_38a818");
+  await sleep(500);
+  r.esc.select = bodies().slice(n).map((b) => [b.crop_id, b.text]);
+  env.pipe.leave();
+  return r;
+});
+
+await scenario("panelSync", async () => {  // 화면이 세션 결과를 씀: 처음 state 에서 이어 받기, 다른 창의 설정 저장(pipeline_rev) 뒤 다시 읽기,
+  // 머리줄 '다시 계산'(plan_v null), 설정 확인 409 → 설정 패널, [매니페스트 값으로 다시] = 절마다 유도값 저장
+  const srv = server();
+  srv.hist = (pid) => (pid === "pid-77" ? OK_H : null);
+  srv.queue = { queue_running: [[3, "pid-77"]], queue_pending: [] };
+  const env = mkPanel(srv, mem({ [JOB]: JSON.stringify({ stage: "apply", pid: "pid-77", number: 3 }) }));
+  const S = boardState();
+  const r = {};
+  env.pipe.stateChanged(S);
+  await sleep(30);
+  r.resumed = { head: env.head.textContent };
+  await until(() => env.toasts.some((t) => t.includes("반영 끝")), 3000);
+  Object.assign(r.resumed, { toast: env.toasts.some((t) => t.includes("반영 끝")), posts: srv.count("api/prompt"), hist: srv.count("api/history/pid-77") > 0,
+    head: [r.resumed.head, env.head.textContent] });
+  await sleep(20);
+  const g0 = srv.count("pipeline");
+  env.pipe.stateChanged(Object.assign({}, S, { pipeline_rev: 4 }));
+  await sleep(20);
+  const g1 = srv.count("pipeline") - g0;
+  env.pipe.stateChanged(Object.assign({}, S, { pipeline_rev: 4 }));
+  await sleep(20);
+  r.rev = { first: g1, again: srv.count("pipeline") - g0 };
+  r.recalc = { before: !!env.B("다시 계산", env.head) };
+  const p0 = srv.count("pipeline/plan");
+  env.pipe.stateChanged(Object.assign({}, S, { pipeline_rev: 4, plan_v: null }));
+  await sleep(20);
+  const rb = env.B("다시 계산", env.head);
+  r.recalc.after = !!rb;
+  r.recalc.title = env.head.children[0] ? env.head.children[0].title : "";  // 검토·T 모드는 다시 받지 않음 — 옛 계획을 '미반영 없음'으로 읽지 않음
+  if (rb) rb.fire("click");
+  await sleep(30);
+  r.recalc.plans = srv.count("pipeline/plan") - p0;
+  env.pipe.enter(S, "001_38a818");
+  await sleep(60);
+  srv.route.prompt = [409, R["GET /pipeline/prompt"].errors["409"][0]];
+  env.B("반영").fire("click");
+  await sleep(40);
+  r.confirm409 = { settings: env.panel.textContent.includes("실행 설정 — pipeline.json"), posts: srv.count("api/prompt") };
+  const s0 = srv.count("pipeline/settings");
+  const reset = env.B("매니페스트 값으로 다시");
+  // 확인 창에서 취소 = 저장 없음(POST /pipeline/settings 0회)
+  const yes = ctx.window.confirm;
+  ctx.window.confirm = (m) => { env.confirms.push(m); return false; };
+  if (reset) reset.fire("click");
+  await sleep(80);
+  ctx.window.confirm = yes;
+  r.resetDeclined = { posts: srv.count("pipeline/settings") - s0, confirm: env.confirms.at(-1) || "" };
+  if (reset) reset.fire("click");
+  await sleep(80);
+  r.reset = { bodies: srv.log.filter((x) => x.path === "pipeline/settings").slice(s0).map((x) => x.body), confirm: env.confirms.at(-1) || "" };
+  env.B("← 진행").fire("click");
+  await sleep(10);
+  srv.route.prompt = [409, R["GET /pipeline/prompt"].errors["409"].find((x) => x.reason === "pipeline_broken")];
+  env.B("반영").fire("click");
+  await sleep(40);
+  r.broken409 = { settings: env.panel.textContent.includes("실행 설정 — pipeline.json"), posts: srv.count("api/prompt") };
+  env.pipe.leave();
+  return r;
+});
+
+await scenario("headCancel", async () => {  // 머리줄 [취소] = 대기 중일 때만(§3.1): 이어 받은 직후(자리 모름)·실행 중·끝이면 없음
+  const srv = server();
+  srv.queue = { queue_running: [[1, "user-x"]], queue_pending: [[5, "pid-5"]] };
+  const env = mkPanel(srv, mem({ [JOB]: JSON.stringify({ stage: "export", pid: "pid-5", number: 5 }) }));
+  const has = () => !!env.B("취소", env.head);
+  const at = () => ({ head: env.head.textContent, cancel: has() });
+  const r = {};
+  env.pipe.stateChanged(boardState());
+  await sleep(30);
+  r.sent = at();
+  await until(() => env.head.textContent.includes("대기 — 앞 1"), 2500);
+  r.waiting = at();
+  srv.queue = { queue_running: [[5, "pid-5"]], queue_pending: [] };
+  await until(() => env.head.textContent.includes("Export(export) 실행 중"), 2500);
+  r.running = at();
+  srv.hist = () => EX_H(H.bmk_dp_export[0]);
+  await until(() => !env.head.textContent.includes("실행 중:"), 2500);
+  r.done = at();
+  r.dels = srv.count("api/queue", "POST");
+  env.pipe.leave();
+  return r;
+});
+
+await scenario("exportLayers", async () => {  // r1-20: Export 결과 new 줄 = GET /pipeline exports 의 그 rev 항목의 레이어 수·문제 수·용량(§3.6)
+  const srv = server();
+  const o = H.bmk_dp_export[0];
+  const body = Object.assign(clone(R["GET /pipeline"].ok), { confirm: [], drift: [] });
+  body.exports = [Object.assign(clone(body.exports[0]), { rev: o.rev, psd: o.psd, layers: 33, problems: 2 })].concat(body.exports);
+  srv.route.pipeline = [200, body];
+  srv.hist = () => EX_H(o);
+  const env = mkPanel(srv, mem({ [JOB]: JSON.stringify({ stage: "export", pid: "pid-5", number: 5 }) }));
+  const S = boardState();
+  S.crops.forEach((c) => { c.layout_status = null; });
+  env.pipe.stateChanged(S);
+  await sleep(30);
+  env.pipe.enter(S, S.crops[0].id);
+  const row = () => env.panel.all().map((e) => e.textContent).find((t) => t.startsWith(`새 PSD r${o.rev}:`)) || null;
+  await until(() => (row() || "").includes("레이어"), 2500);
+  const r = { row: row(), bytes: body.exports[0].bytes, list: env.panel.all().map((e) => e.textContent).filter((t) => /^r\d+ · /.test(t)),
+    listBytes: body.exports.map((x) => x.bytes) };
+  env.pipe.leave();
+  return r;
+});
+
+await scenario("panelFresh", async () => {  // 진행 모드의 낡은 계획(§2.4·§3.3): 다른 창의 쓰기(plan_v)·그래프 Run 시작·크롭 더함/빠짐·다시 계산
+  // 실패면 옛 해시를 복사하게 두지 않고, 쉬는 중이면 계획을 한 번 다시 받는다(실행 중에는 미룸 — 서명이 폴링마다 바뀜). 같은 state 폴링은
+  // 다시 그리지 않음(누르는 중인 단추 그대로). 옛 서버 무료 큐 알림은 패널 단추만(board.js applyFree 가 따로 알림)
+  const srv = server();
+  srv.route.pipeline = [200, Object.assign(clone(R["GET /pipeline"].ok), { confirm: [], drift: [] })];
+  let base = "r:5c0e4f1a9b23d7e8|d:41b0c2aa7e9d3f10";
+  srv.route.plan = (q) => {
+    const p = clone(q.only ? R["GET /pipeline/plan"].ok : R["GET /pipeline/plan"].alt.no_selection);
+    p.notes = [];
+    p.apply_pending = [];
+    p.draft.import_pending = [];
+    p.sig = base + (q.only ? `|o:${q.only}` : "");
+    return [200, p];
+  };
+  const env = mkPanel(srv);
+  const S = boardState();
+  S.crops.forEach((c) => { c.layout_status = null; });
+  const plans = () => srv.count("pipeline/plan");
+  const lastQ = () => srv.log.filter((x) => x.path === "pipeline/plan").at(-1).q;
+  const live = () => env.copies().map((x) => !x[0]);
+  const has = (t) => env.panel.textContent.includes(t);
+  const r = {};
+  env.pipe.stateChanged(S);
+  await sleep(30);
+  env.pipe.enter(S, "001_38a818");
+  await sleep(60);
+  r.enter = { live: live(), plans: plans() };
+  // 다른 창의 쓰기(plan_v null): 바로 복사 끔 → 계획 한 번 다시 → 새 plan_v 가 올 때까지 끔, 같은 null 이 다시 와도 되풀이 요청 없음
+  base = "r:5c0e4f1a9b23d7e8|d:9999aaaa0000bbbb";
+  let p0 = plans();
+  env.pipe.stateChanged(Object.assign({}, S, { plan_v: null }));
+  await sleep(10);
+  const headSt = () => (env.head.children[0] ? env.head.children[0].textContent : null);
+  r.write = { now: live(), staleRow: has("계획이 지금 파일 상태와 다름"), head: !!env.B("다시 계산", env.head), headSt: headSt() };
+  await sleep(400);
+  r.write.plans = plans() - p0;
+  r.write.waiting = live();
+  env.pipe.stateChanged(Object.assign({}, S, { plan_v: null }));
+  await sleep(400);
+  r.write.again = plans() - p0;
+  let st = Object.assign({}, S, { plan_v: base });
+  env.pipe.stateChanged(st);
+  await sleep(30);
+  Object.assign(r.write, { fresh: live(), final: plans() - p0, headAfter: !!env.B("다시 계산", env.head), headFresh: headSt() });
+  // 그래프가 Run 시작(state running·plan_v null): Run 줄 흐림·두 복사 끔, 실행 중에는 계획을 다시 받지 않음, 같은 state 폴링 = 단추 그대로
+  p0 = plans();
+  const runS = Object.assign({}, st, { running: true, plan_v: null });
+  env.pipe.stateChanged(runS);
+  await sleep(40);
+  const d1 = env.B("Drain");
+  const h1 = env.head.children[0];
+  const g0 = srv.count("pipeline/progress");
+  for (let i = 0; i < 3; i++) {
+    env.pipe.stateChanged(runS);
+    await sleep(40);
+  }
+  r.run = { live: live(), dimLine: has("Run 실행 중 — 끝난 뒤 다시 계산"), drain: !!d1 && !d1.disabled,
+    same: env.B("Drain") === d1 && env.head.children[0] === h1, progress: srv.count("pipeline/progress") - g0, headSt: headSt() };
+  await sleep(350);
+  r.run.plans = plans() - p0;
+  base = "r:aaaa5555bbbb6666|d:9999aaaa0000bbbb";  // Run 끝(쉬는 중으로) — 계획 한 번 다시
+  env.pipe.stateChanged(Object.assign({}, st, { running: false, plan_v: null }));
+  await sleep(400);
+  r.run.after = plans() - p0;
+  st = Object.assign({}, st, { plan_v: base });
+  env.pipe.stateChanged(st);
+  await sleep(30);
+  r.run.fresh = live();
+  // 쉬는 중에도 state 5번에 한 번 진행 수를 다시 읽음(그래프가 낸 실행도 알아채게)
+  const g1 = srv.count("pipeline/progress");
+  for (let i = 0; i < 5; i++) env.pipe.stateChanged(st);
+  await sleep(30);
+  r.run.idleProgress = srv.count("pipeline/progress") - g1;
+  // 새 크롭이 든 state(반영·그래프 Import 뒤)·크롭이 빠진 state: 선택이 바뀌면 계획 한 번(멈춘 '계산 중…' 없음)
+  const extra = { id: "019_aaaaaa", name: "019_새", layout_status: null, dup_picks: [], stale_picked: [], warnings: [], draft_chip: null, plan_stale: false };
+  p0 = plans();
+  st = Object.assign({}, st, { rev: 80, crops: [...st.crops, extra] });
+  env.pipe.stateChanged(st);
+  await sleep(450);
+  r.added = { plans: plans() - p0, only: lastQ().only, computing: has("계산 중…"), live: live() };
+  p0 = plans();
+  st = Object.assign({}, st, { rev: 81, crops: st.crops.filter((c) => c.id !== "002_d98f99") });
+  env.pipe.stateChanged(st);
+  await sleep(450);
+  r.removed = { plans: plans() - p0, only: lastQ().only, computing: has("계산 중…"), live: live() };
+  // 같은 선택으로 다시 계산했는데 실패(409): 오류 줄만 — 옛 해시 복사를 함께 두지 않음
+  srv.route.plan = [409, R["GET /pipeline/plan"].errors["409"][0]];
+  env.B("다시 계산").fire("click");
+  await sleep(40);
+  r.failed = { copies: env.copies().length, err: has("계획: 실행 설정 파일이 깨졌습니다") };
+  // 옛 서버(/pipeline/prompt 404 — JSON 아님): 보드에 넘긴 queue 는 알리지 않고 {old}(applyFree 가 탭 반영과 함께 한 번 알림), 패널 [Export] 는 한 번 알림
+  srv.route.prompt = [404, undefined];
+  const t0 = env.toasts.length;
+  const res = await env.pipe.queue("apply");
+  r.old = { res: clone(res), toasts: env.toasts.slice(t0) };
+  env.B("Export").fire("click");
+  await sleep(30);
+  r.old.panel = env.toasts.slice(t0);
+  env.pipe.leave();
+  return r;
+});
+
+await scenario("panelView", async () => {  // §3.4 채택 패널 표시(owner·레이아웃 문구 경고·MOCK·제안 bbox) · §3.5 초안 진행 줄 · §5.6 절별 경고·저장 본문 타입·
+  // 경로 경고(모두 막힘 — import.* 는 반영·Export, cand.path 는 반영만: r2-06 prompt_gate)
+  const srv = server();
+  const body = Object.assign(clone(R["GET /pipeline"].ok), { confirm: [], drift: [] });
+  body.warnings = [...body.warnings, { field: "cand.path", reason: "missing_path", msg: "후보 폴더가 없음: G:/AI_output/_Input/x/03" }];
+  srv.route.pipeline = [200, body];
+  srv.route.progress = [200, R["GET /pipeline/progress"].ok];
+  const d = R["GET /draft"];
+  const mock = Object.assign(clone(d.ok), { layout_text: {} });
+  mock.draft.mock = true;
+  const views = { "001_38a818": d.alt.human, "002_d98f99": d.alt.adopted, "003_2f8f50": d.alt.deleted, "008_e1d4cc": d.ok, "012_93661a": mock };
+  srv.route.draft = (q) => [200, Object.assign(clone(views[q.crop]), { id: q.crop })];
+  const env = mkPanel(srv);
+  const S = boardState();
+  S.crops.forEach((c) => { c.layout_status = null; });
+  const sec = (title) => env.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent.startsWith(title));
+  const rows = (s) => (s ? s.children.filter((e) => e.classList.contains("pp-row")).map((e) => [e.own, e.className, e.title]) : null);
+  const r = { adopt: {} };
+  env.pipe.stateChanged(S);
+  await sleep(30);
+  env.pipe.enter(S, "008_e1d4cc");
+  await sleep(80);
+  for (const id of Object.keys(views)) {
+    env.pipe.select(id);
+    await sleep(40);
+    r.adopt[id] = rows(sec("채택 — "));
+  }
+  r.plan = rows(sec("계획"));
+  r.settings = rows(sec("설정"));
+  env.B("설정").fire("click");
+  await sleep(10);
+  const box = (name) => env.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent === name);
+  const field = (b, k) => b.children.find((e) => e.classList.contains("pp-field") && e.children[0].textContent === k).children[1];
+  r.warn = Object.fromEntries(env.panel.children.filter((e) => e.classList.contains("pp-sec"))
+    .map((b) => [b.children[0].textContent, rows(b).map((x) => [x[0], x[1]])]));
+  const saved = async (name, edit) => {
+    edit(box(name));
+    env.B("저장", box(name)).fire("click");
+    await sleep(40);
+    return srv.log.filter((x) => x.path === "pipeline/settings").at(-1).body;
+  };
+  r.analyze = await saved("Analyze", (b) => {
+    const op = field(b, "only_picked");
+    op.checked = !op.checked;
+    op.fire("change");
+    const fs = field(b, "feather_sigma");
+    fs.value = "4.25";
+    fs.fire("input");
+  });
+  r.run = await saved("Run", (b) => {
+    const rf = field(b, "retry_failed");
+    rf.checked = !rf.checked;
+    rf.fire("change");
+  });
+  env.pipe.leave();
+  return r;
+});
+
+await scenario("panelClick", async () => {  // §5.4·§5.6 입력 중 미뤄 둔 다시 그리기 + 마우스 클릭(Chromium 순서 — mouse()): 입력칸 focusout 이 mousedown 과
+  // mouseup 사이에 와도 누른 단추·체크·목록 줄이 갈리지 않아 첫 클릭이 듦([수정] → [저장], 목록 체크·크롭 줄, 설정 [저장]), 누르는 동안 온 state 도 미룸
+  const srv = server();
+  srv.route.pipeline = [200, Object.assign(clone(R["GET /pipeline"].ok), { confirm: [], drift: [] })];
+  const env = mkPanel(srv);
+  const S = boardState();
+  S.crops.forEach((c) => { c.layout_status = null; });
+  const bodies = () => srv.log.filter((x) => x.path === "draft/adopt").map((x) => [x.body.op, x.body.text, x.body.preview]);
+  const title = () => {
+    const s = env.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent.startsWith("채택 — "));
+    return s ? s.children[0].textContent : null;
+  };
+  const typing = async (txt) => {  // [수정] 입력 → 미리보기 응답이 옴(입력칸 포커스라 패널 다시 그리기는 미룸)
+    if (!env.input()) {
+      env.B("수정").fire("click");
+      await sleep(10);
+    }
+    const inp = env.input();
+    inp.focus();
+    inp.value = txt;
+    inp.fire("input");
+    await sleep(450);
+  };
+  const r = {};
+  env.pipe.stateChanged(S);
+  await sleep(30);
+  env.pipe.enter(S, "008_e1d4cc");
+  await sleep(60);
+  await typing("A: metal skirt plaque");
+  let n = bodies().length;
+  r.save = { clicked: await mouse(env.B("저장")) };
+  await sleep(60);
+  r.save.writes = bodies().slice(n);
+  await typing("A: metal skirt plate");
+  const p0 = srv.count("pipeline/plan");
+  r.check = { clicked: await mouse(env.list.all().find((e) => e.tagName === "INPUT" && e.type === "checkbox")) };
+  await sleep(400);
+  r.check.plans = srv.count("pipeline/plan") - p0;
+  r.check.only = srv.log.filter((x) => x.path === "pipeline/plan").at(-1).q.only;
+  await typing("A: metal skirt plate 2");
+  r.row = { clicked: await mouse(env.list.children.find((e) => e.textContent.includes("012_소매"))) };
+  await sleep(60);
+  r.row.title = title();
+  env.B("설정").fire("click");
+  await sleep(10);
+  const prep = () => env.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent === "Prepare");
+  const nIn = prep().children.find((e) => e.classList.contains("pp-field") && e.children[0].textContent === "n").children[1];
+  nIn.focus();
+  nIn.value = "3";
+  nIn.fire("input");
+  env.pipe.stateChanged(Object.assign({}, S, { rev: 80 }));  // 입력 중 state 가 바뀜 → 패널 다시 그리기를 미룸
+  await sleep(20);
+  const s0 = srv.count("pipeline/settings");
+  r.settings = { clicked: await mouse(env.B("저장", prep())) };
+  await sleep(60);
+  r.settings.posts = srv.log.filter((x) => x.path === "pipeline/settings").slice(s0).map((x) => [x.body.section, x.body.values.n]);
+  // 누르는 동안 온 state(그래프 Run 시작)는 그리지 않고, pointerup 을 놓쳐도 버튼 없이 움직이면 그때 그림
+  env.B("← 진행").fire("click");
+  await sleep(10);
+  env.panel.fire("pointerdown", { buttons: 1 });
+  env.pipe.stateChanged(Object.assign({}, S, { rev: 81, running: true }));
+  await sleep(20);
+  const dr = env.B("Drain");
+  r.held = { during: dr ? dr.disabled : null };
+  env.panel.fire("pointermove", { buttons: 0 });
+  await sleep(20);
+  r.held.after = env.B("Drain") ? env.B("Drain").disabled : null;
+  env.pipe.leave();
+  return r;
+});
+
+await scenario("headRetry", async () => {  // 검토 모드: Studio 를 연 뒤 첫 계획이 실패(요청 6번 모두 202)하면 머리줄 '다시 계산'(같은 state 폴링은 다시
+  // 받지 않음) → 누르면 받음. 누르지 않아도 서버에 새 계획이 생기면(state plan_v 바뀜 — r1-09) 한 번 다시 받음
+  const mk = () => {
+    const srv = server();
+    srv.route.pipeline = [200, Object.assign(clone(R["GET /pipeline"].ok), { confirm: [], drift: [] })];
+    srv.plan = Array.from({ length: 6 }, () => [202, { busy: true }]);
+    srv.route.plan = () => {
+      const p = clone(R["GET /pipeline/plan"].alt.no_selection);
+      p.notes = [];
+      p.apply_pending = [];
+      p.draft.import_pending = [];
+      if (srv.sig) p.sig = srv.sig;
+      return [200, p];
+    };
+    return srv;
+  };
+  const S = boardState();
+  S.crops.forEach((c) => { c.layout_status = null; });
+  const fail = async (srv) => {
+    const env = mkPanel(srv);
+    env.pipe.stateChanged(S);
+    await sleep(2800);
+    for (let i = 0; i < 3; i++) env.pipe.stateChanged(S);
+    await sleep(20);
+    return env;
+  };
+  const srv = mk();
+  const env = await fail(srv);
+  const b = env.B("다시 계산", env.head);
+  const r = { head: env.head.children[0] ? env.head.children[0].textContent : null, btn: !!b, title: b ? b.title : null, plans: srv.count("pipeline/plan") };
+  if (b) b.fire("click");
+  await sleep(40);
+  Object.assign(r, { after: env.head.children[0].textContent, plansAfter: srv.count("pipeline/plan"), btnAfter: !!env.B("다시 계산", env.head) });
+  const sv2 = mk();
+  const e2 = await fail(sv2);
+  const p0 = sv2.count("pipeline/plan");
+  sv2.sig = "r:aaaa|d:bbbb";
+  e2.pipe.stateChanged(Object.assign({}, S, { plan_v: sv2.sig }));
+  await sleep(400);  // schedulePlan 300ms
+  r.auto = { plans: sv2.count("pipeline/plan") - p0, head: e2.head.children[0] ? e2.head.children[0].textContent : null, btn: !!e2.B("다시 계산", e2.head) };
+  return r;
+});
+
+function quietPipeline(mod) {  // 갈라짐·확인 필요 없는 GET /pipeline(정본 ok) — mod(본문) 로 고침
+  const b = Object.assign(clone(R["GET /pipeline"].ok), { confirm: [], drift: [] });
+  if (mod) mod(b);
+  return [200, b];
+}
+
+function quietPlan(srv, sig = "r:5c0e4f1a9b23d7e8|d:41b0c2aa7e9d3f10") {  // 반영 필요·notes 없는 계획, sig = boardState plan_v(+ |o:only)
+  srv.route.plan = (q) => {
+    const p = clone(q.only ? R["GET /pipeline/plan"].ok : R["GET /pipeline/plan"].alt.no_selection);
+    p.notes = [];
+    p.apply_pending = [];
+    p.draft.import_pending = [];
+    p.sig = sig + (q.only ? `|o:${q.only}` : "");
+    return [200, p];
+  };
+}
+
+function quietState() {
+  const S = boardState();
+  S.crops.forEach((c) => { c.layout_status = null; });
+  return S;
+}
+
+await scenario("panelDrift", async () => {  // r1-01: 그래프 Prepare(매니페스트 rev 만 바뀜 — pipeline_rev 그대로) 뒤 GET /pipeline 을 다시 읽어 확인 창 맨 앞 줄·
+  // [매니페스트 값으로 다시]가 새 갈라짐·유도값을 씀. 편집기 확인 창(동기 applyWarn) 뒤 새로 생긴 갈라짐은 큐 직전에 한 번 더 묻고, 거절하면 큐 없음
+  const srv = server();
+  const cell = (field, m, s) => ({ section: "prepare", field, manifest: m, settings: s, kind: "cell" });
+  const at = (q, drift) => quietPipeline((b) => {
+    b.settings.prepare.quality = "max";
+    b.derived.settings = clone(b.settings);
+    b.derived.settings.prepare.quality = q;
+    b.drift = drift || [];
+  });
+  srv.route.pipeline = at("max");
+  quietPlan(srv);
+  srv.hist = () => OK_H;
+  const env = mkPanel(srv);
+  const S = quietState();
+  const r = {};
+  env.pipe.stateChanged(S);
+  await sleep(30);
+  r.before = env.pipe.applyWarn();
+  srv.route.pipeline = at("high", [cell("quality", "high", "max")]);  // 그래프 Prepare 를 quality high 로
+  const g0 = srv.count("pipeline");
+  const S2 = Object.assign({}, S, { rev: 80 });
+  env.pipe.stateChanged(S2);
+  await sleep(30);
+  env.pipe.stateChanged(S2);  // 같은 state 폴링 = 다시 읽지 않음
+  await sleep(30);
+  r.reload = { gets: srv.count("pipeline") - g0, warn: env.pipe.applyWarn() };
+  // 편집기 확인 창(quality 줄) 뒤 state 폴링 전에 그래프가 model 도 바꿈 → 큐 직전에 새 줄만 한 번 더 — 거절 = 큐 없음
+  srv.route.pipeline = at("high", [cell("quality", "high", "max"), cell("model", "gpt-image-2", "gpt-image-2.5-sunburst")]);
+  const c0 = env.confirms.length;
+  ctx.window.confirm = (m) => { env.confirms.push(m); return false; };
+  const no = await env.pipe.queue("apply");
+  ctx.window.confirm = (m) => { env.confirms.push(m); return true; };
+  r.editorNo = { res: no === undefined ? null : clone(no), asked: env.confirms.slice(c0), posts: srv.count("api/prompt") };
+  // 진행 [반영]: 확인 창을 만들기 전에 다시 읽음(state 폴링 전 — ref_style 갈라짐이 맨 앞), 확인 뒤 새 줄이 없으면 다시 묻지 않음
+  env.pipe.enter(S2, "001_38a818");
+  await sleep(60);
+  srv.route.pipeline = at("high", [cell("ref_style", "plain", "at")]);
+  const c1 = env.confirms.length;
+  env.B("반영").fire("click");
+  await sleep(60);
+  r.panelApply = { first: (env.confirms[c1] || "").split("\n")[0], asked: env.confirms.length - c1, posts: srv.count("api/prompt") };
+  await until(() => env.toasts.some((t) => t.includes("반영 끝")), 3000);
+  // [매니페스트 값으로 다시]: 패널이 가진 유도값(max — 저장값과 같음) 대신 다시 읽은 유도값(high)으로 저장
+  srv.route.pipeline = at("max");
+  env.pipe.stateChanged(Object.assign({}, S, { rev: 81 }));
+  await sleep(30);
+  srv.route.pipeline = at("high", [cell("quality", "high", "max")]);
+  env.B("설정").fire("click");
+  await sleep(10);
+  const s0 = srv.count("pipeline/settings");
+  const t0 = env.toasts.length;
+  env.B("매니페스트 값으로 다시").fire("click");
+  await sleep(80);
+  r.reset = { bodies: srv.log.filter((x) => x.path === "pipeline/settings").slice(s0).map((x) => [x.body.section, x.body.values.quality]),
+    confirm: env.confirms.at(-1) || "", toasts: env.toasts.slice(t0) };
+  // 연타: 확인 뒤 저장 POST 를 기다리는 사이 다시 누르면 무시(확인 창 하나·POST 하나 — 다시 읽기가 끼어 확인 창이 둘 뜨지 않게)
+  srv.delay["pipeline/settings"] = [60];
+  const c2 = env.confirms.length;
+  const s1 = srv.count("pipeline/settings");
+  env.B("매니페스트 값으로 다시").fire("click");
+  await sleep(20);
+  env.B("매니페스트 값으로 다시").fire("click");
+  await sleep(150);
+  r.twice = { asked: env.confirms.length - c2, posts: srv.count("pipeline/settings") - s1 };
+  env.pipe.leave();
+  return r;
+});
+
+await scenario("panelReset", async () => {  // r1-05: pipeline.json 없음(정본 alt missing — 추정값 확인 필요 3) [매니페스트 값으로 다시] = 확인 창에 확정할 추정값·출처
+  const srv = server();
+  srv.route.pipeline = [200, R["GET /pipeline"].alt.missing];
+  quietPlan(srv);
+  const env = mkPanel(srv);
+  const S = quietState();
+  env.pipe.stateChanged(S);
+  await sleep(30);
+  env.pipe.enter(S, "001_38a818");
+  await sleep(40);
+  env.B("설정").fire("click");
+  await sleep(10);
+  const s0 = srv.count("pipeline/settings");
+  env.B("매니페스트 값으로 다시").fire("click");
+  await sleep(80);
+  const r = { confirm: env.confirms.at(-1) || "", sections: srv.log.filter((x) => x.path === "pipeline/settings").slice(s0).map((x) => x.body.section) };
+  env.pipe.leave();
+  return r;
+});
+
+await scenario("panelCold", async () => {  // r1-09: ComfyUI 재시작 직후 차가운 계획 계산(1.5초)이 잠금을 쥔 동안 G 로 들어가면 새 요청은 202 — 0.5초 간격으로
+  // 다시 물어 앞 계산이 끝난 뒤 받음(이 창이 버린 앞 요청 때문에 오류로 멈추지 않음)
+  const srv = server();
+  srv.route.pipeline = quietPipeline();
+  quietPlan(srv);
+  const T = 1500;
+  let lockUntil = 0;
+  let cold = true;
+  const busy = [];
+  const base = srv.fetch;
+  srv.fetch = async (url, o) => {  // 서버 _PLAN_LOCK(비차단) 흉내: 계산 중이면 202, 첫 계산만 T ms
+    if (new URL(url).pathname.endsWith("/pipeline/plan")) {
+      const now = Date.now();
+      if (now < lockUntil) {
+        busy.push(now);
+        return { ok: true, status: 202, json: async () => ({ busy: true }) };
+      }
+      if (cold) {
+        cold = false;
+        lockUntil = now + T;
+        await sleep(T);
+      }
+    }
+    return base(url, o);
+  };
+  const env = mkPanel(srv);
+  const S = quietState();
+  env.pipe.stateChanged(S);  // 검토 모드 첫 계획(only 없음 — 칩용) = 차가운 계산
+  await sleep(200);
+  env.pipe.enter(S, "001_38a818");  // 선택 계획 — 잠금 중이라 202
+  await sleep(T + 1300);
+  const r = { busy: busy.length, err: env.panel.textContent.includes("다른 계획 계산이 끝나지 않았습니다"), live: env.copies().map((x) => !x[0]),
+    only: srv.log.filter((x) => x.path === "pipeline/plan").at(-1).q.only || null,
+    head: env.head.children[0] ? env.head.children[0].textContent : null };
+  env.pipe.leave();
+  return r;
+});
+
+await scenario("panelDraftSync", async () => {  // r1-10: 스펙만 바뀐 쓰기(그래프 Spec Draft·다른 창의 채택 — 매니페스트 rev 그대로, plan_v 만 바뀜) 뒤
+  // 채택 패널이 GET /draft 를 다시 읽음. 실행 중(plan_v 가 폴링마다 바뀜)에는 미룸
+  const srv = server();
+  srv.route.pipeline = quietPipeline();
+  quietPlan(srv);
+  const d = R["GET /draft"];
+  let view = clone(d.alt.adopted);
+  srv.route.draft = (q) => [200, Object.assign(clone(view), { id: q.crop })];
+  const env = mkPanel(srv);
+  const S = quietState();
+  env.pipe.stateChanged(S);
+  await sleep(30);
+  env.pipe.enter(S, "008_e1d4cc");
+  await sleep(60);
+  const r = { before: env.B("채택").disabled };
+  view = clone(d.ok);  // 그래프 Spec Draft 가 새 제안(kind add)을 씀
+  let g0 = srv.count("draft");
+  env.pipe.stateChanged(Object.assign({}, S, { plan_v: null }));
+  await sleep(40);
+  env.pipe.stateChanged(Object.assign({}, S, { plan_v: null }));  // 같은 state = 다시 읽지 않음
+  await sleep(40);
+  r.spec = { gets: srv.count("draft") - g0, adopt: env.B("채택").disabled, sugg: env.panel.textContent.includes("제안 A: metal skirt ornament") };
+  g0 = srv.count("draft");
+  for (const v of ["r:1|d:1", "r:2|d:2", "r:3|d:3"]) {
+    env.pipe.stateChanged(Object.assign({}, S, { running: true, plan_v: v }));
+    await sleep(20);
+  }
+  r.running = srv.count("draft") - g0;
+  // 그래프 Spec Draft 실행 중(state running = Run 만 false, 진행 수는 아직 쉼) — state drafting 으로 실행 중을 안다(미룸), 끝나면 한 번
+  g0 = srv.count("draft");
+  let p0 = srv.count("pipeline/plan");
+  for (const v of ["r:4|d:4", "r:5|d:5", "r:6|d:6"]) {
+    env.pipe.stateChanged(Object.assign({}, S, { drafting: true, plan_v: v }));
+    await sleep(20);
+  }
+  r.drafting = { gets: srv.count("draft") - g0, plans: srv.count("pipeline/plan") - p0 };
+  g0 = srv.count("draft");
+  p0 = srv.count("pipeline/plan");
+  env.pipe.stateChanged(Object.assign({}, S, { drafting: false, plan_v: null }));
+  await sleep(400);  // 계획 요청은 PLAN_MS(300) 뒤
+  r.drafted = { gets: srv.count("draft") - g0, plans: srv.count("pipeline/plan") - p0 };
+  env.pipe.leave();
+  return r;
+});
+
+await scenario("panelDecline", async () => {  // r1-26: [채택] 미리보기를 기다리는 사이 state 가 바뀌어 단추가 꺼진 채 그려져도, 확인 창 [취소] 뒤 다시 켬
+  const srv = server();
+  srv.route.pipeline = quietPipeline();
+  quietPlan(srv);
+  const env = mkPanel(srv);
+  const S = quietState();
+  env.pipe.stateChanged(S);
+  await sleep(30);
+  env.pipe.enter(S, "008_e1d4cc");
+  await sleep(60);
+  ctx.window.confirm = (m) => { env.confirms.push(m); return false; };
+  srv.delay["draft/adopt"] = [80];
+  env.B("채택").fire("click");
+  await sleep(20);
+  env.pipe.stateChanged(Object.assign({}, S, { rev: 80 }));
+  await sleep(30);
+  const during = env.B("채택").disabled;
+  await sleep(120);
+  ctx.window.confirm = (m) => { env.confirms.push(m); return true; };
+  const r = { during, after: env.B("채택").disabled, posts: srv.log.filter((x) => x.path === "draft/adopt").map((x) => x.body.preview) };
+  env.pipe.leave();
+  return r;
+});
+
+await scenario("panelForm", async () => {  // r1-27: 설정 절 [저장] 응답을 기다리는 사이 같은 절 다른 칸에 친 값은 남음(보낸 키만 지움) — 다음 저장에 실림
+  const srv = server();
+  srv.route.pipeline = quietPipeline();
+  quietPlan(srv);
+  const env = mkPanel(srv);
+  const S = quietState();
+  env.pipe.stateChanged(S);
+  await sleep(30);
+  env.pipe.enter(S, "001_38a818");
+  await sleep(40);
+  env.B("설정").fire("click");
+  await sleep(10);
+  const prep = () => env.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent === "Prepare");
+  const fld = (k) => prep().children.find((e) => e.classList.contains("pp-field") && e.children[0].textContent === k).children[1];
+  const n = fld("n");
+  n.value = "3";
+  n.fire("input");
+  srv.delay["pipeline/settings"] = [300];
+  env.B("저장", prep()).fire("click");
+  await sleep(50);
+  const v = fld("variants");
+  v.focus();
+  v.value = "V2";
+  v.fire("input");
+  await sleep(400);
+  v.blur();
+  await sleep(30);
+  const r = { kept: fld("variants").value };
+  env.B("저장", prep()).fire("click");
+  await sleep(60);
+  r.posts = srv.log.filter((x) => x.path === "pipeline/settings").map((x) => [x.body.values.n, x.body.values.variants]);
+  env.pipe.leave();
+  return r;
+});
+
+await scenario("panelRows", async () => {  // r1-24: 채택 내용 보호 400 의 rows(바뀌는 필드)를 토스트·[수정] 미리보기 줄에 보임
+  const srv = server();
+  srv.route.pipeline = quietPipeline();
+  quietPlan(srv);
+  const e400 = R["POST /draft/adopt"].errors["400"].find((x) => x.rows);
+  const env = mkPanel(srv);
+  const S = quietState();
+  env.pipe.stateChanged(S);
+  await sleep(30);
+  env.pipe.enter(S, "008_e1d4cc");
+  await sleep(60);
+  srv.adopt = [[400, e400]];
+  env.B("채택").fire("click");
+  await sleep(40);
+  const r = { toast: env.toasts.filter((t) => t.startsWith("err:")).at(-1) || null };
+  env.B("수정").fire("click");
+  await sleep(10);
+  srv.adopt = [[400, e400]];
+  const inp = env.input();
+  inp.focus();
+  inp.value = "A: metal skirt plaque";
+  inp.fire("input");
+  await sleep(450);
+  inp.blur();
+  await sleep(20);
+  r.preview = env.panel.all().filter((e) => e.classList.contains("pp-row") && e.own.startsWith(e400.error)).map((e) => e.own);
+  env.pipe.leave();
+  return r;
+});
+
+await scenario("headCancelDone", async () => {  // r1-25: 머리줄 [취소]를 누른 사이 실행을 시작해 끝남 = 기록의 끝(Export 결과) — '취소됨'·'취소하지 않음'으로 덮지 않음
+  const srv = server();
+  srv.queue = { queue_running: [[1, "user-x"]], queue_pending: [[5, "pid-5"]] };
+  srv.afterDelete = { queue_running: [], queue_pending: [] };
+  srv.hist = () => (srv.count("api/queue", "POST") ? EX_H(H.bmk_dp_export[0]) : null);
+  const env = mkPanel(srv, mem({ [JOB]: JSON.stringify({ stage: "export", pid: "pid-5", number: 5 }) }));
+  env.pipe.stateChanged(boardState());
+  await until(() => !!env.B("취소", env.head), 2500);
+  const b = env.B("취소", env.head);
+  if (b) b.fire("click");
+  await until(() => env.toasts.some((t) => t.includes("Export: 새 PSD")), 2500);
+  await sleep(30);
+  const r = { clicked: !!b, toasts: env.toasts.slice() };
+  env.pipe.leave();
+  return r;
+});
+
+await scenario("draftChips", async () => {  // board.js draftChips(§3.7): state draft_chip 칩 다섯, plan_stale = 흐림(stale), null = 칩 없음
+  const doc = new Doc();
+  const srcs = ["el", "chip", "draftChips"].map(boardFn);
+  const dc = vm.createContext({ document: doc });
+  vm.runInContext(`el = ${srcs[0]}; chip = ${srcs[1]}; draftChips = ${srcs[2]};`, dc);
+  const run = (c) => {
+    const ch = doc.createElement("div");
+    dc.draftChips(ch, c);
+    return ch.children.map((e) => [e.textContent, e.className, e.title || ""]);
+  };
+  const full = { wait: ["타깃 추가", "타깃 변경(B)"], refresh: true, adopt: "add", run_need: 2, running: true };
+  const st = IN.api.state.crop;
+  return { found: srcs.every(Boolean), fixture: run({ draft_chip: st.draft_chip, plan_stale: st.plan_stale }), all: run({ draft_chip: full, plan_stale: false }),
+    stale: run({ draft_chip: full, plan_stale: true }), none: run({ draft_chip: null, plan_stale: false }),
+    quiet: run({ draft_chip: { wait: [], refresh: false, adopt: null, run_need: 0, running: false }, plan_stale: false }) };
+});
+
+await scenario("tabBadge", async () => {  // board.js 머리줄 탭 배지(§3.8): link 상태 다섯 → TAB_BADGE 문구·클래스, title = tabTitle(opener·채널 구분)
+  const doc = new Doc();
+  const m = /\n  const TAB_BADGE = (\{[\s\S]*?\n  \});/.exec(boardSrc);
+  const els = {};
+  const bc = vm.createContext({ document: doc, $: (id) => (els[id] ??= doc.createElement("div")), comfyConnected: () => true, credits: () => "",
+    pipeReady: () => true, layoutReady: () => true, refsReady: () => true, tabLink: null,
+    S: { project: "261014_Test", crops: [], counts: { targets: 0, candidates: 0, picks: 0 }, cost: { calls: 0 } } });
+  vm.runInContext(`el = ${boardFn("el")}; TAB_BADGE = ${m ? m[1] : "{}"}; tabTitle = ${boardFn("tabTitle")}; renderHeader = ${boardFn("renderHeader")};`
+    + ` tabKey = ${boardFn("tabKey") || "null"};`, bc);
+  const show = (state, via = "channel", ext = state === "ok" ? 2 : null) => {
+    bc.tabLink = { state, via, ext, busy: false, tab: state === "ok" || ext !== null ? "t" : null };
+    bc.renderHeader();
+    const b = els.badges.children.at(-1);
+    return b ? [b.textContent, b.className, b.title] : null;
+  };
+  // r1-04: 채널로만 찾은 탭(opener 없음)은 R·ComfyUI 큐가 가지 않으므로 '연결'(초록)이 아님 · r1-28: opener 가 아예 답하지 않음(silent)과 확장 판 < 2(old)를 가름
+  return { found: !!m, ok: show("ok"), okOpener: show("ok", "opener"), old: show("old", "opener", 1), silent: show("old", "opener"), none: show("none"),
+    many: show("many"), wait: show("wait", null) };
+});
+
+await scenario("boardGo", async () => {  // board.js goTarget(★ 점검 줄 → 검토 모드로 나간 뒤 그 타깃)·진행 목록 select 콜백(뷰어를 그 크롭 첫 타깃으로)
+  const calls = [];
+  const spy = (name) => (...a) => calls.push([name, ...a]);
+  const gc = vm.createContext({ S: boardState(), setPipe: spy("setPipe"), selectTarget: spy("selectTarget") });
+  const go = vm.runInContext(`(${boardFn("goTarget")})`, gc);
+  const m = /\n {8}select: (\(id\) => \{[\s\S]*?\n {8}\}),\n/.exec(boardSrc);
+  const sel = m ? vm.runInContext(`(${m[1]})`, gc) : () => {};
+  const r = { found: !!m };
+  go("002_d98f99/B");
+  r.unknown = calls.splice(0);
+  go("002_d98f99/A");
+  r.known = calls.splice(0);
+  sel("008_e1d4cc");
+  r.select = calls.splice(0);
+  sel("019_zzz");
+  r.selectNone = calls.splice(0);
+  return r;
+});
+
+// ── 리뷰 2차 수정(r2-01·02·03·07·08·09·10·11·14) ──
+await scenario("panelBroken", async () => {  // r2-01: 깨진 pipeline.json(GET confirm null) = 덮어쓸 때 서버가 싣는 derived.confirm 을 확인 필요로 — 머리줄·진행 설정 칸·
+  // 설정 칸 '(확인 필요)'·'확인·저장'·[매니페스트 값으로 다시] 확인 창의 추정값·출처(덮어쓰기는 첫 절 rev null — 다음 절은 앞 저장 응답 rev: c1-1)
+  const srv = server();
+  srv.route.pipeline = [200, R["GET /pipeline"].alt.broken];
+  quietPlan(srv);
+  const env = mkPanel(srv);
+  const S = quietState();
+  env.pipe.stateChanged(S);
+  await sleep(30);
+  const hb = env.head.children.find((e) => e.textContent === "설정 확인 필요");
+  const r = { head: hb ? hb.title : null };
+  env.pipe.enter(S, "001_38a818");
+  await sleep(40);
+  r.panel = env.panel.all().filter((e) => e.classList.contains("pp-row") && e.own.startsWith("확인 필요: ")).map((e) => e.own);
+  env.B("설정").fire("click");
+  await sleep(10);
+  const boxes = env.panel.children.filter((e) => e.classList.contains("pp-sec"));
+  r.marked = env.panel.all().filter((e) => e.classList.contains("pp-field") && e.children[0].textContent.endsWith(" (확인 필요)"))
+    .map((e) => e.children[0].textContent);
+  r.buttons = Object.fromEntries(boxes.map((b) => [b.children[0].textContent, (b.all().find((e) => e.tagName === "BUTTON") || {}).textContent]));
+  const s0 = srv.count("pipeline/settings");
+  env.B("매니페스트 값으로 다시").fire("click");
+  await sleep(150);
+  r.confirm = env.confirms.at(-1) || "";
+  r.posts = srv.log.filter((x) => x.path === "pipeline/settings").slice(s0).map((x) => [x.body.section, x.body.rev]);
+  env.pipe.leave();
+  return r;
+});
+
+await scenario("applyRace", async () => {  // r2-02: [반영] — 확인 창이 떠 있는 동안 또 생긴 갈라짐은 새 줄이 없을 때까지 다시 묻고, GET /pipeline 다시 읽기가 실패하면
+  // 큐에 넣지 않으며, 마지막으로 확인한 뒤 다른 창이 저장해 템플릿 sig 의 pipeline rev 가 다르면 보내지 않음
+  const cell = (field, m, s) => ({ section: "prepare", field, manifest: m, settings: s, kind: "cell" });
+  const at = (rev, drift) => quietPipeline((b) => { b.rev = rev; b.drift = drift; });
+  const one = async ({ pre, steps = [], sig = null, editor = false }) => {
+    // steps[i] = i 번째 확인 창이 떠 있는 동안 서버에 생기는 일 {rev, drift} | null(GET /pipeline 500), sig = 템플릿 sig 의 pipeline rev(없으면 지금 rev)
+    const srv = server();
+    let rev = 3;
+    srv.route.pipeline = at(3, []);
+    quietPlan(srv);
+    srv.hist = () => OK_H;
+    srv.route.prompt = () => [200, Object.assign(clone(R["GET /pipeline/prompt"].ok), { sig: `${sig ?? rev}:79` })];
+    const env = mkPanel(srv);
+    const S = quietState();
+    env.pipe.stateChanged(S);
+    await sleep(30);
+    env.pipe.enter(S, "001_38a818");
+    await sleep(60);
+    const c0 = env.confirms.length;
+    ctx.window.confirm = (m) => {
+      env.confirms.push(m);
+      const st = steps[env.confirms.length - c0 - 1];
+      if (st === null) srv.route.pipeline = [500, { error: "pipeline.json 을 읽지 못함(잠김)" }];
+      else if (st) {
+        rev = st.rev;
+        srv.route.pipeline = at(st.rev, st.drift);
+      }
+      return true;
+    };
+    if (pre) srv.route.pipeline = pre;
+    const t0 = env.toasts.length;
+    let res;
+    if (editor) res = await env.pipe.queue("apply");
+    else {
+      env.B("반영").fire("click");
+      await sleep(150);
+    }
+    const r = { asked: env.confirms.slice(c0).map((c) => c.split("\n")), posts: srv.count("api/prompt"), toasts: env.toasts.slice(t0),
+      res: res === undefined ? null : clone(res) };
+    await until(() => !env.head.textContent.includes("실행 중:"), 3000);
+    env.pipe.leave();
+    return r;
+  };
+  const q = cell("quality", "high", "max");
+  const mo = cell("model", "gpt-image-2", "gpt-image-2.5-flare");
+  return {
+    twice: await one({ steps: [{ rev: 3, drift: [q] }, { rev: 4, drift: [q, mo] }] }),
+    reloadFail: await one({ steps: [null] }),
+    firstFail: await one({ pre: [500, { error: "pipeline.json 을 읽지 못함(잠김)" }] }),
+    sigMoved: await one({ sig: 5 }),
+    editorFail: await one({ pre: [500, { error: "pipeline.json 을 읽지 못함(잠김)" }], editor: true }),
+  };
+});
+
+await scenario("panelConflict", async () => {  // r2-03: 설정 패널 — 편집을 시작한 뒤 다른 창이 같은 절을 저장(state pipeline_rev → 다시 읽어 rev 가 새 판 — 409 가 안 남)해도
+  // 말없이 덮지 않음: 손댄 키 = 칸 옆 다른 창 값·덮어쓸지 확인, 입력 중(다시 그리기 미룸) 바뀐 손대지 않은 키 = 화면에 없던 값 확인. 이 창의 저장은 묻지 않음
+  const srv = server();
+  let doc = quietPipeline()[1];  // 서버의 pipeline.json(GET 응답)
+  srv.route.pipeline = () => [200, clone(doc)];
+  srv.route.settings = (q, b) => {  // 서버 update 처럼 rev 가 같을 때만
+    if (b.rev !== doc.rev) return [409, { error: `실행 설정이 다른 창에서 바뀌었습니다(rev ${b.rev} → ${doc.rev}) — 새로고침` }];
+    doc = Object.assign(clone(doc), { rev: doc.rev + 1 });
+    doc.settings[b.section] = clone(b.values);
+    return [200, Object.assign(clone(R["POST /pipeline/settings"].ok), { rev: doc.rev, settings: clone(doc.settings) })];  // settings = 저장한 판(pl.update)
+  };
+  const other = (sec, vals) => {  // 다른 창의 저장
+    doc = Object.assign(clone(doc), { rev: doc.rev + 1 });
+    Object.assign(doc.settings[sec], vals);
+    return doc.rev;
+  };
+  quietPlan(srv);
+  const env = mkPanel(srv);
+  const prep = () => env.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent === "Prepare");
+  const fld = (k) => prep().children.find((e) => e.classList.contains("pp-field") && e.children[0].textContent === k);
+  const posts = () => srv.log.filter((x) => x.path === "pipeline/settings").map((x) => [x.body.rev, x.body.values.n, x.body.values.model, x.body.values.variants]);
+  const answer = (yes) => { ctx.window.confirm = (m) => { env.confirms.push(m); return yes; }; };
+  let st = quietState();
+  env.pipe.stateChanged(st);
+  await sleep(30);
+  env.pipe.enter(st, "001_38a818");
+  await sleep(40);
+  env.B("설정").fire("click");
+  await sleep(10);
+  // ① 이 창이 n 2→3 을 친 뒤 다른 창이 n 4 저장 → 백그라운드 다시 읽기(rev 4): 칸 옆 다른 창 값, [저장] = 덮어쓸지 확인(거절 = POST 없음)
+  let inp = fld("n").children[1];
+  inp.focus();
+  inp.value = "3";
+  inp.fire("input");
+  inp.blur();
+  await sleep(10);
+  st = Object.assign({}, st, { pipeline_rev: other("prepare", { n: 4 }) });
+  env.pipe.stateChanged(st);
+  await sleep(40);
+  const r = { mark: fld("n").children.slice(2).map((e) => e.textContent), shown: fld("n").children[1].value };
+  answer(false);
+  let c0 = env.confirms.length;
+  env.B("저장", prep()).fire("click");
+  await sleep(40);
+  r.declined = { asked: env.confirms.slice(c0), posts: posts() };
+  answer(true);
+  env.B("저장", prep()).fire("click");
+  await sleep(40);
+  r.over = { posts: posts(), server: doc.settings.prepare.n, mark: fld("n").children.slice(2).map((e) => e.textContent) };
+  // ② n 입력칸 포커스 중(다시 그리기 미룸) 다른 창이 model 저장 → 화면은 옛 model: [저장] 마우스 = 화면에 없던 값을 확인
+  inp = fld("n").children[1];
+  inp.focus();
+  inp.value = "5";
+  inp.fire("input");
+  st = Object.assign({}, st, { pipeline_rev: other("prepare", { model: "gpt-image-2.5-flare" }) });
+  env.pipe.stateChanged(st);
+  await sleep(40);
+  r.unseenShown = fld("model").children[1].value;
+  c0 = env.confirms.length;
+  let p0 = posts().length;
+  r.unseen = { clicked: await mouse(env.B("저장", prep())) };
+  await sleep(60);
+  Object.assign(r.unseen, { asked: env.confirms.slice(c0), posts: posts().slice(p0) });
+  // ③ 이 창의 저장(입력칸 포커스 그대로 — 다시 그리기 미룸) 뒤 같은 절을 다시 저장 = 제가 저장한 값을 '다른 창 값'으로 묻지 않음
+  inp = fld("n").children[1];
+  inp.focus();
+  inp.value = "6";
+  inp.fire("input");
+  env.B("저장", prep()).fire("click");
+  await sleep(40);
+  const vi = fld("variants").children[1];
+  vi.focus();
+  vi.value = "V1";
+  vi.fire("input");
+  c0 = env.confirms.length;
+  p0 = posts().length;
+  env.B("저장", prep()).fire("click");
+  await sleep(40);
+  r.own = { asked: env.confirms.slice(c0), posts: posts().slice(p0 - 1) };
+  env.pipe.leave();
+  return r;
+});
+
+await scenario("panelHashClick", async () => {  // r2-07: [수정] 입력 중(패널 다시 그리기 미룸) 계획이 바뀌거나 그래프 Run 이 시작되면 옛 [해시 복사]를 마우스로 눌러도
+  // 복사하지 않고 다시 그림(누를 때 지금 판정과 대조), 대조가 맞으면 복사
+  const srv = server();
+  srv.route.pipeline = quietPipeline();
+  let base = "r:5c0e4f1a9b23d7e8|d:41b0c2aa7e9d3f10";
+  let hash = "3f9a1c2b7d10";
+  srv.route.plan = (q) => {
+    const p = clone(q.only ? R["GET /pipeline/plan"].ok : R["GET /pipeline/plan"].alt.no_selection);
+    p.notes = [];
+    p.apply_pending = [];
+    p.draft.import_pending = [];
+    p.sig = base + (q.only ? `|o:${q.only}` : "");
+    p.run.hash = hash;
+    return [200, p];
+  };
+  const env = mkPanel(srv);
+  const copied = [];
+  ctx.navigator = { clipboard: { writeText: async (t) => { copied.push(t); } } };
+  const runCopy = () => env.panel.all().filter((e) => e.tagName === "BUTTON" && e.textContent === "해시 복사")[1] || null;
+  const at = () => (runCopy() ? [runCopy().disabled, runCopy().title] : null);
+  const typing = async () => {
+    if (!env.input()) {
+      env.B("수정").fire("click");
+      await sleep(10);
+    }
+    const inp = env.input();
+    inp.focus();
+    inp.value = "A: metal skirt plaque";
+    inp.fire("input");
+  };
+  let st = quietState();
+  env.pipe.stateChanged(st);
+  await sleep(30);
+  env.pipe.enter(st, "008_e1d4cc");
+  await sleep(60);
+  const r = { before: at() };
+  // V1: 다른 창의 쓰기(plan_v null) → 새 계획(Run 해시 bbbb) → state plan_v 새 서명 — 패널은 미뤄져 옛 단추(3f9a)가 켜진 채
+  await typing();
+  base = "r:aaaa5555bbbb6666|d:41b0c2aa7e9d3f10";
+  hash = "bbbbbbbbbbbb";
+  st = Object.assign({}, st, { plan_v: null });
+  env.pipe.stateChanged(st);
+  await sleep(400);
+  st = Object.assign({}, st, { plan_v: base });
+  env.pipe.stateChanged(st);
+  await sleep(20);
+  let old = runCopy();
+  let t0 = env.toasts.length;
+  r.v1 = { old: [old.disabled, old.title], clicked: await mouse(old) };
+  await sleep(40);
+  Object.assign(r.v1, { copied: copied.splice(0), toasts: env.toasts.slice(t0), now: at() });
+  // V2: 다시 입력 중 그래프 Run 시작(state running) — 옛 단추(bbbb, 켜짐) 클릭 = 복사 없음
+  await typing();
+  st = Object.assign({}, st, { running: true });
+  env.pipe.stateChanged(st);
+  await sleep(20);
+  old = runCopy();
+  t0 = env.toasts.length;
+  r.v2 = { old: [old.disabled, old.title], clicked: await mouse(old) };
+  await sleep(40);
+  Object.assign(r.v2, { copied: copied.splice(0), toasts: env.toasts.slice(t0), now: at() });
+  // 대조: Run 이 끝나고 패널이 지금 판정으로 그려졌으면 누른 대로 복사
+  st = Object.assign({}, st, { running: false });
+  env.pipe.stateChanged(st);
+  await sleep(40);
+  env.doc.activeElement.blur();
+  await sleep(20);
+  r.ok = { clicked: await mouse(runCopy()) };
+  await sleep(40);
+  r.ok.copied = copied.splice(0);
+  env.pipe.leave();
+  return r;
+});
+
+await scenario("cancelUnread", async () => {  // r2-08: delete 로 대기열에서 빠졌는데 기록을 읽지 못함 = '취소하지 않음'이 아니라 끝을 모름(null) → 기록 없이 사라지면
+  // '취소됨'(사라짐 아님). 패널: [취소] 토스트 '취소 요청 보냄', 끝 토스트 'Export: 취소됨'
+  const srv = server();
+  srv.queue = { queue_running: [[1, "user-x"]], queue_pending: [[5, "pid-1"]] };
+  let failing = true;
+  srv.hist = () => (failing ? [502, undefined] : null);
+  const s = P.session(A, C, KEY, srv.fetch, mem(), 5);
+  let end = null;
+  s.onDone = (job, res) => { end = clone(res); };
+  await s.queue("export");
+  await sleep(15);
+  const c = await s.cancel();
+  const r = { cancelled: c, job: s.job ? s.job.pid : null, pending: srv.queue.queue_pending.length };
+  failing = false;
+  await until(() => end, 2000);
+  r.end = end;
+  const sv = server();
+  sv.queue = { queue_running: [[1, "user-x"]], queue_pending: [[5, "pid-5"]] };
+  let fail2 = true;
+  sv.hist = () => (fail2 ? [502, undefined] : null);
+  const env = mkPanel(sv, mem({ [JOB]: JSON.stringify({ stage: "export", pid: "pid-5", number: 5 }) }));
+  env.pipe.stateChanged(boardState());
+  await until(() => !!env.B("취소", env.head), 2500);
+  const b = env.B("취소", env.head);
+  if (b) b.fire("click");
+  await until(() => env.toasts.some((t) => t.includes("취소 요청 보냄")), 1000);
+  fail2 = false;
+  await until(() => !env.head.textContent.includes("실행 중:"), 5000);
+  await sleep(30);
+  r.panel = { clicked: !!b, toasts: env.toasts.slice() };
+  env.pipe.leave();
+  return r;
+});
+
+await scenario("planTransient", async () => {  // r2-09: 계산 중 실행이 시작했다 끝난 계획(서버가 기억하지 않음 — sig 가 '실행 중' 서명, state plan_v 그대로) = 쉬는 중이면
+  // 한 번 더 받아 해시 복사가 풀림. 다시 받아도 낡으면 같은 plan_v 에 되풀이하지 않음
+  const S = quietState();
+  const X = S.plan_v;
+  const Y = "r:5c0e4f1a9b23d7e8|d:7777777777777777";
+  const one = async (sigs) => {  // 계획 요청마다 응답 sig 머리(마지막 값은 남음) — 처음 둘 = 칩용·진행 모드 진입
+    const srv = server();
+    srv.route.pipeline = quietPipeline();
+    srv.route.plan = (q) => {
+      const p = clone(q.only ? R["GET /pipeline/plan"].ok : R["GET /pipeline/plan"].alt.no_selection);
+      p.notes = [];
+      p.apply_pending = [];
+      p.draft.import_pending = [];
+      p.sig = (sigs.length > 1 ? sigs.shift() : sigs[0]) + (q.only ? `|o:${q.only}` : "");
+      return [200, p];
+    };
+    const env = mkPanel(srv);
+    env.pipe.stateChanged(S);
+    await sleep(30);
+    env.pipe.enter(S, "001_38a818");
+    await sleep(60);
+    const p0 = srv.count("pipeline/plan");
+    await mouse(env.list.all().find((e) => e.tagName === "INPUT" && e.type === "checkbox"));
+    await sleep(1200);
+    const r = { plans: srv.count("pipeline/plan") - p0, live: env.copies().map((x) => !x[0]), stale: env.panel.textContent.includes("계획이 지금 파일 상태와 다름") };
+    env.pipe.leave();
+    return r;
+  };
+  return { once: await one([X, X, Y, X]), stuck: await one([X, X, Y]) };
+});
+
+await scenario("planWait", async () => {  // r2-10: 이 Studio 의 무료 프롬프트가 대기 중이면 계획을 부르지 않음 — 계획 칸에 그 이유, [다시 계산] 끔(멈춘 '계산 중…' 없음), 끝나면 계산
+  const srv = server();
+  srv.route.pipeline = quietPipeline();
+  quietPlan(srv);
+  srv.queue = { queue_running: [[1, "user-long"]], queue_pending: [[5, "pid-1"]] };
+  const env = mkPanel(srv);
+  const S = quietState();
+  env.pipe.stateChanged(S);
+  await sleep(30);
+  env.pipe.enter(S, "001_38a818");
+  await sleep(60);
+  env.B("Export").fire("click");
+  await sleep(40);
+  const p0 = srv.count("pipeline/plan");
+  await mouse(env.list.all().find((e) => e.tagName === "INPUT" && e.type === "checkbox"));
+  await until(() => env.head.textContent.includes("대기 — 앞 1"), 2500);
+  await sleep(400);
+  const plan = env.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent === "계획");
+  const rb = env.B("다시 계산");
+  const r = { plans: srv.count("pipeline/plan") - p0, first: plan && plan.children[1] ? plan.children[1].own : null, btn: rb ? [rb.disabled, rb.title] : null };
+  env.refreshState = () => Object.assign({}, S);  // 끝 → 보드 refresh(true) → state(r3-07: 계획은 그 state 뒤 — 디바운스 300ms)
+  srv.hist = () => EX_H(H.bmk_dp_export[0]);
+  srv.queue = { queue_running: [], queue_pending: [] };
+  await until(() => !env.head.textContent.includes("실행 중:"), 3000);
+  await sleep(400);
+  r.after = { plans: srv.count("pipeline/plan") - p0, waiting: env.panel.textContent.includes("계산 대기"), btn: env.B("다시 계산").disabled };
+  env.pipe.leave();
+  return r;
+});
+
+await scenario("editKept", async () => {  // r2-11: [수정] Enter 뒤 미리보기·쓰기를 기다리는 사이 더 친 문구 = 저장은 보낸 문구(확인 창 그대로), 입력칸은 남은 문구로
+  // 열어 두고 다시 미리보기(말없이 사라지지 않음)
+  const srv = server();
+  srv.route.pipeline = quietPipeline();
+  quietPlan(srv);
+  const env = mkPanel(srv);
+  const S = quietState();
+  env.pipe.stateChanged(S);
+  await sleep(30);
+  env.pipe.enter(S, "008_e1d4cc");
+  await sleep(60);
+  env.B("수정").fire("click");
+  await sleep(10);
+  const inp = env.input();
+  inp.focus();
+  inp.value = "A: metal skirt";
+  inp.fire("input");
+  await sleep(450);
+  const n0 = srv.count("draft/adopt");
+  const t0 = env.toasts.length;
+  srv.delay["draft/adopt"] = [150, 150];
+  inp.fire("keydown", { key: "Enter", isComposing: false, keyCode: 13 });
+  await sleep(50);
+  inp.value = "A: metal skirt plaque";  // 미리보기 응답 전에 더 침
+  inp.fire("input");
+  await sleep(1000);
+  const bodies = srv.log.filter((x) => x.path === "draft/adopt").slice(n0).map((x) => [x.body.text, x.body.preview]);
+  const r = { writes: bodies.filter((x) => !x[1]).map((x) => x[0]), first: bodies[0] || null, later: bodies.slice(2).map((x) => x[0]),
+    open: env.input() ? env.input().value : null, toasts: env.toasts.slice(t0) };
+  env.pipe.leave();
+  return r;
+});
+
+await scenario("clearToast", async () => {  // r2-14: [해제] 성공 토스트 = '다음 반영에서 채택 타깃이 빠짐'(채택·수정의 '타깃에 들어감'과 다름).
+  // r3-15: 괄호는 응답 owner 로 — 노드 값 해제(deleted — keep_deleted) = '[수정]으로만', 사람 값 해제(owner 없음 — kind add 로 돌아감) = 다시 [채택]
+  const one = async (owner) => {
+    const srv = server();
+    srv.route.pipeline = quietPipeline();
+    quietPlan(srv);
+    srv.route.draft = (q) => [200, Object.assign(clone(R["GET /draft"].alt.adopted), { id: q.crop })];
+    srv.route.adopt = (q, b) => [200, Object.assign(clone(R["POST /draft/adopt"].ok), b.preview ? {} : { layer_targets: { value: null, owner } })];
+    const env = mkPanel(srv);
+    const S = quietState();
+    env.pipe.stateChanged(S);
+    await sleep(30);
+    env.pipe.enter(S, "008_e1d4cc");
+    await sleep(60);
+    const t0 = env.toasts.length;
+    env.B("해제").fire("click");
+    await sleep(60);
+    const r = { toasts: env.toasts.slice(t0), ops: srv.log.filter((x) => x.path === "draft/adopt").map((x) => [x.body.op, x.body.preview]) };
+    env.pipe.leave();
+    return r;
+  };
+  return Object.assign(await one("deleted"), { human: await one(null) });
+});
+
+await scenario("specReread", async () => {  // r2-13: 스펙을 읽지 못함(잠김) — 풀려도 stat 이 그대로라 state(rev·plan_v)가 안 바뀌어 저절로 다시 읽지 않음 = [다시 읽기]
+  const srv = server();
+  srv.route.pipeline = quietPipeline();
+  quietPlan(srv);
+  const locked = Object.assign(clone(R["GET /draft"].alt.spec_error), { seen: "null", spec_error: "specs/008_e1d4cc.json 읽기 실패: [Errno 13] Permission denied",
+    adopt: { value: "", kind: null, reason: "스펙 파일을 읽지 못함(다른 프로그램이 잡고 있으면 잠시 뒤 [다시 읽기])" } });
+  let lock = true;
+  srv.route.draft = (q) => [200, Object.assign(clone(lock ? locked : R["GET /draft"].ok), { id: q.crop })];
+  const env = mkPanel(srv);
+  const S = quietState();
+  const view = () => ({ reread: !!env.B("다시 읽기"), adopt: env.B("채택").disabled, edit: env.B("수정").disabled,
+    why: env.panel.textContent.includes("잠시 뒤 [다시 읽기])"), gets: srv.count("draft") });
+  env.pipe.stateChanged(S);
+  await sleep(30);
+  env.pipe.enter(S, "008_e1d4cc");
+  await sleep(60);
+  const r = { locked: view() };
+  lock = false;
+  env.pipe.stateChanged(Object.assign({}, S));
+  await sleep(40);
+  r.still = view();
+  env.B("다시 읽기").fire("click");
+  await sleep(40);
+  r.reread = view();
+  env.pipe.leave();
+  return r;
+});
+
+// ── 리뷰 3차 수정(r3-05·06·07·08·09·10·11·15·16 — r3-13 은 panel 의 hashNote) ──
+await scenario("ownSave", async () => {  // r3-05: 다른 창 없이 이 창의 저장만 — (a) 저장 응답을 기다리는 사이 같은 칸에 더 침, (b) 저장 뒤(입력 중 — 다시 그리기
+  // 미룸) 같은 칸을 다시 고침, (c) import 경로 역슬래시(서버가 '/' 로 정규화)를 저장한 뒤 같은 절 다른 칸 = 다음 저장이 제 값을 '다른 창 값'으로 묻지
+  // 않고 칸 옆 '다른 창이 … 바꿈'도 없음
+  const BS = String.fromCharCode(92);
+  const mk = () => {
+    const srv = server();
+    let doc = quietPipeline()[1];
+    srv.route.pipeline = () => [200, clone(doc)];
+    srv.route.settings = (q, b) => {  // 서버 pl.update 처럼: rev 대조, import 경로 정규화(_norm_path), 응답 settings = 저장한 판
+      if (b.rev !== doc.rev) return [409, { error: `실행 설정이 다른 창에서 바뀌었습니다(rev ${b.rev} → ${doc.rev}) — 새로고침` }];
+      const v = clone(b.values);
+      if (b.section === "import") for (const k of ["psd_path", "refs_dir", "glossary_path"]) v[k] = String(v[k]).trim().split(BS).join("/");
+      doc = Object.assign(clone(doc), { rev: doc.rev + 1 });
+      doc.settings[b.section] = v;
+      return [200, Object.assign(clone(R["POST /pipeline/settings"].ok), { rev: doc.rev, settings: clone(doc.settings) })];
+    };
+    quietPlan(srv);
+    srv.doc = () => doc;
+    return srv;
+  };
+  const open = async (srv) => {
+    const env = mkPanel(srv);
+    const st = quietState();
+    env.pipe.stateChanged(st);
+    await sleep(30);
+    env.pipe.enter(st, "001_38a818");
+    await sleep(40);
+    env.B("설정").fire("click");
+    await sleep(10);
+    return env;
+  };
+  const box = (env, name) => env.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent === name);
+  const fld = (env, name, k) => box(env, name).children.find((e) => e.classList.contains("pp-field") && e.children[0].textContent === k);
+  const marks = (env, name, k) => fld(env, name, k).children.slice(2).map((e) => e.textContent);
+  const posts = (srv) => srv.log.filter((x) => x.path === "pipeline/settings").map((x) => [x.body.rev, x.body.section]);
+  const r = {};
+  // (a) n 2→3 [저장] → 응답(60ms)을 기다리는 사이 n 칸에 4 → [저장]
+  let srv = mk();
+  let env = await open(srv);
+  let inp = fld(env, "Prepare", "n").children[1];
+  inp.focus();
+  inp.value = "3";
+  inp.fire("input");
+  srv.delay["pipeline/settings"] = [60];
+  env.B("저장", box(env, "Prepare")).fire("click");
+  await sleep(20);
+  inp.value = "4";
+  inp.fire("input");
+  await sleep(100);
+  let c0 = env.confirms.length;
+  env.B("저장", box(env, "Prepare")).fire("click");
+  await sleep(60);
+  inp.blur();
+  await sleep(20);
+  r.typed = { asked: env.confirms.slice(c0), n: srv.doc().settings.prepare.n, posts: posts(srv), mark: marks(env, "Prepare", "n") };
+  env.pipe.leave();
+  // (b) n 3 [저장](포커스 n 칸 그대로 — 다시 그리기 미룸) → 같은 칸 5 → 포커스 빠짐(다시 그림 — 칸 옆 표시) → [저장]
+  srv = mk();
+  env = await open(srv);
+  inp = fld(env, "Prepare", "n").children[1];
+  inp.focus();
+  inp.value = "3";
+  inp.fire("input");
+  env.B("저장", box(env, "Prepare")).fire("click");
+  await sleep(60);
+  inp.value = "5";
+  inp.fire("input");
+  inp.blur();
+  await sleep(20);
+  r.again = { cls: fld(env, "Prepare", "n").className, mark: marks(env, "Prepare", "n") };
+  c0 = env.confirms.length;
+  env.B("저장", box(env, "Prepare")).fire("click");
+  await sleep(60);
+  Object.assign(r.again, { asked: env.confirms.slice(c0), n: srv.doc().settings.prepare.n, posts: posts(srv) });
+  env.pipe.leave();
+  // (c) psd_path 에 역슬래시 경로 [저장](다시 그리기 미룸) → glossary_path 고쳐 [저장]
+  srv = mk();
+  env = await open(srv);
+  inp = fld(env, "Import PSD", "psd_path").children[1];
+  inp.focus();
+  inp.value = ["C:", "work", "char", "a.psd"].join(BS);
+  inp.fire("input");
+  env.B("저장", box(env, "Import PSD")).fire("click");
+  await sleep(60);
+  const g = fld(env, "Import PSD", "glossary_path").children[1];
+  g.focus();
+  g.value = "G:/AI_output/gloss.json";
+  g.fire("input");
+  c0 = env.confirms.length;
+  env.B("저장", box(env, "Import PSD")).fire("click");
+  await sleep(60);
+  g.blur();
+  await sleep(20);
+  r.path = { asked: env.confirms.slice(c0), psd: srv.doc().settings.import.psd_path, glossary: srv.doc().settings.import.glossary_path, posts: posts(srv),
+    mark: marks(env, "Import PSD", "psd_path") };
+  env.pipe.leave();
+  return r;
+});
+
+await scenario("draftFail", async () => {  // r3-06: GET /draft 실패(500 — 매니페스트 잠김·재시작 중). ① 크롭의 첫 읽기 실패 = 오류 + [다시 읽기](같은 state 폴링은
+  // 다시 읽지 않음) → 누르면 읽음, 옛 값이 있는 읽기 실패 = 옛 값·단추 + [다시 읽기], 같은 크롭 줄 = 다시 읽음. ② [수정] 입력 중 미리보기 409 → 다시 읽기
+  // 실패 = 입력칸·[취소]·[다시 읽기]가 남고 state 가 바뀌면 입력 중이어도 다시 읽음, 미뤄 둔 입력칸의 Enter = TypeError 없이 쓰기(옛 seen)
+  const srv = server();
+  srv.route.pipeline = quietPipeline();
+  quietPlan(srv);
+  let fail = 0;
+  let gone = 0;  // 404 크롭 없음(반영·그래프 Import 가 지움)
+  srv.route.draft = (q) => (gone-- > 0 ? [404, { error: `크롭이 없습니다: ${q.crop}` }] : fail-- > 0 ? [500, { error: "매니페스트를 읽을 수 없습니다(잠김)" }]
+    : [200, Object.assign(clone(R["GET /draft"].ok), { id: q.crop })]);
+  const e409 = R["POST /draft/adopt"].errors["409"][0];
+  const env = mkPanel(srv);
+  let S = quietState();
+  const sec = () => env.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent.startsWith("채택 — "));
+  const view = () => ({ rows: sec().children.slice(1).filter((e) => e.classList.contains("pp-row")).map((e) => e.own).slice(0, 2),
+    buttons: sec().all().filter((e) => e.tagName === "BUTTON").map((e) => e.textContent), input: env.input() ? env.input().value : null, gets: srv.count("draft") });
+  env.pipe.stateChanged(S);
+  await sleep(30);
+  fail = 1;
+  env.pipe.enter(S, "008_e1d4cc");
+  await sleep(60);
+  const r = { first: view() };
+  for (let i = 0; i < 3; i++) env.pipe.stateChanged(S);
+  await sleep(30);
+  r.same = view();
+  env.B("다시 읽기").fire("click");
+  await sleep(40);
+  r.reread = view();
+  fail = 1;
+  S = Object.assign({}, S, { rev: S.rev + 1 });
+  env.pipe.stateChanged(S);
+  await sleep(40);
+  r.kept = view();
+  env.list.children.find((li) => li.classList.contains("sel")).fire("click");
+  await sleep(40);
+  r.row = view();
+  // ② [수정] 입력 → 미리보기 409 → GET /draft 실패
+  env.B("수정").fire("click");
+  await sleep(10);
+  let inp = env.input();
+  inp.focus();
+  inp.value = "A: metal clasp";
+  inp.fire("input");
+  srv.adopt = [[409, e409]];
+  fail = 1;
+  await sleep(500);
+  inp.blur();
+  await sleep(20);
+  r.edit = view();
+  const g0 = srv.count("draft");
+  S = Object.assign({}, S, { rev: S.rev + 1 });
+  env.pipe.stateChanged(S);
+  await sleep(40);
+  r.edit.recover = srv.count("draft") - g0;
+  r.edit.after = view();
+  // 미뤄 둔 입력칸에서 Enter: 미리보기 409 → 다시 읽기 실패 뒤(옛 값) — 쓰기 경로로 감(TypeError 토스트 없음)
+  inp = env.input();
+  inp.focus();
+  inp.value = "A: metal clasp plate";
+  inp.fire("input");
+  srv.adopt = [[409, e409]];
+  fail = 1;
+  await sleep(500);
+  const t0 = env.toasts.length;
+  const a0 = srv.count("draft/adopt");
+  inp.fire("keydown", { key: "Enter", isComposing: false, keyCode: 13 });
+  await sleep(60);
+  r.enter = { toasts: env.toasts.slice(t0), writes: srv.log.filter((x) => x.path === "draft/adopt").slice(a0).map((x) => [x.body.text, x.body.preview]) };
+  // 404(크롭이 사라짐) = 옛 값·단추·[수정] 입력을 비움, 미뤄 둔 옛 입력칸의 Enter = 쓰지 않음(오류 토스트 없음)
+  inp.blur();
+  await sleep(20);
+  env.B("수정").fire("click");
+  await sleep(10);
+  inp = env.input();
+  inp.focus();
+  inp.value = "A: gone";
+  inp.fire("input");
+  srv.adopt = [[409, e409]];  // 미리보기 409 → GET /draft 다시 읽기 = 404
+  gone = 1;
+  await sleep(500);
+  const t1 = env.toasts.length;
+  const a1 = srv.count("draft/adopt");
+  inp.fire("keydown", { key: "Enter", isComposing: false, keyCode: 13 });
+  await sleep(40);
+  inp.blur();
+  await sleep(20);
+  r.gone = Object.assign(view(), { toasts: env.toasts.slice(t1), posts: srv.count("draft/adopt") - a1 });
+  env.pipe.leave();
+  return r;
+});
+
+await scenario("doneSel", async () => {  // r3-07: 진행 모드 [반영] 끝 — 계획은 다시 받은 state(반영이 지운 크롭을 선택에서 뺀 뒤)로: 지운 크롭이 only 에 실리지 않음
+  // (서버 400 '매니페스트에 없는 크롭' 없음), state 를 받은 뒤 계획 한 번
+  const srv = server();
+  srv.route.pipeline = quietPipeline();
+  let removed = false;
+  const ids = () => quietState().crops.map((c) => c.id).filter((id) => !(removed && id === "003_2f8f50"));
+  srv.route.plan = (q) => {
+    const bad = (q.only || "").split(",").filter((x) => x && x !== "style" && !ids().includes(x));
+    if (bad.length) return [400, { error: `매니페스트에 없는 크롭입니다: ${bad.join(", ")}` }];
+    const p = clone(q.only ? R["GET /pipeline/plan"].ok : R["GET /pipeline/plan"].alt.no_selection);
+    p.notes = [];
+    p.apply_pending = [];
+    p.draft.import_pending = [];
+    p.sig = "r:5c0e4f1a9b23d7e8|d:41b0c2aa7e9d3f10" + (q.only ? `|o:${q.only}` : "");
+    return [200, p];
+  };
+  const env = mkPanel(srv);
+  const S = quietState();
+  const S2 = Object.assign({}, S, { rev: S.rev + 1, crops: S.crops.filter((c) => c.id !== "003_2f8f50") });
+  env.pipe.stateChanged(S);
+  await sleep(30);
+  env.pipe.enter(S, "001_38a818");
+  await sleep(60);
+  const p0 = srv.count("pipeline/plan");
+  env.B("반영").fire("click");
+  await sleep(40);
+  removed = true;  // 반영의 Import 가 레이아웃에서 지운 크롭 003 을 매니페스트에서 뺌
+  env.refreshState = () => S2;  // 끝 → 보드 refresh(true) → 반영 뒤 state
+  srv.hist = () => OK_H;
+  await until(() => env.toasts.some((t) => t.includes("반영 끝")), 3000);
+  const errs = [];
+  for (let i = 0; i < 10; i++) {
+    await sleep(50);
+    if (env.panel.textContent.includes("매니페스트에 없는 크롭")) errs.push(i);
+  }
+  const qs = srv.log.filter((x) => x.path === "pipeline/plan").slice(p0).map((x) => x.q.only || "");
+  const r = { posts: srv.count("api/prompt"), onlys: qs, bad: qs.filter((o) => o.split(",").includes("003_2f8f50")).length, errs,
+    last: qs.at(-1) || null, live: env.copies().map((x) => !x[0]) };
+  env.pipe.leave();
+  return r;
+});
+
+await scenario("cancelLost", async () => {  // r3-08: delete 직전에 실행이 시작됐고(delete 무효) 지운 뒤 대기열을 읽지 못함(null) → 폴링이 실행 중을 보면 '지움' 표시를
+  // 거둠: 그 실행이 기록 없이 사라지면(ComfyUI 재시작) '사라짐'('대기 중에 취소함' 아님). 패널 = '대기열을 다시 읽지 못해'(대기열에서 빠짐이라 단정하지 않음)
+  const srv = server();
+  srv.queue = { queue_running: [[1, "user-x"]], queue_pending: [[5, "pid-1"]] };
+  let n = 0;  // delete 뒤 대기열 읽기: 1 = 읽지 못함(JSON 아님), 2–3 = 실행 중, 그 뒤 = 없음(기록도 없음 — 재시작)
+  srv.afterDelete = () => (++n === 1 ? undefined : n <= 3 ? { queue_running: [[5, "pid-1"]], queue_pending: [] } : { queue_running: [], queue_pending: [] });
+  const s = P.session(A, C, KEY, srv.fetch, mem(), 5);
+  let end = null;
+  s.onDone = (job, res) => { end = clone(res); };
+  await s.queue("export");
+  await sleep(15);
+  const c = await s.cancel();
+  const r = { cancelled: c, deleted: s.job ? !!s.job.deleted : null };
+  await until(() => end, 2000);
+  r.end = end;
+  // 패널(이어 받은 Export): [취소] → 지운 뒤 대기열을 읽지 못함 → 토스트
+  const sv = server();
+  sv.queue = { queue_running: [[1, "user-x"]], queue_pending: [[5, "pid-5"]] };
+  let m = 0;
+  sv.afterDelete = () => (++m === 1 ? undefined : { queue_running: [], queue_pending: [] });
+  const env = mkPanel(sv, mem({ [JOB]: JSON.stringify({ stage: "export", pid: "pid-5", number: 5 }) }));
+  env.pipe.stateChanged(boardState());
+  await until(() => !!env.B("취소", env.head), 2500);
+  const b = env.B("취소", env.head);
+  const t0 = env.toasts.length;
+  if (b) b.fire("click");
+  await until(() => env.toasts.length > t0, 1000);
+  r.panel = { clicked: !!b, toasts: env.toasts.slice(t0) };
+  sv.hist = () => EX_H(H.bmk_dp_export[0]);
+  await until(() => !env.head.textContent.includes("실행 중:"), 3000);
+  env.pipe.leave();
+  return r;
+});
+
+await scenario("pipelineRetry", async () => {  // r3-09: 첫 GET /pipeline 이 한 번 실패(500)해도 같은 state 폴링에서 다시 읽음 — 머리줄 '설정 확인 필요'·'Prepare 갈라짐'
+  // 배지가 돌아오고 설정 패널이 '읽기 오류'에 멈추지 않음. 받은 뒤 같은 state 는 다시 읽지 않음
+  const srv = server();
+  let fail = 1;
+  srv.route.pipeline = () => (fail-- > 0 ? [500, { error: "pipeline.json 을 읽지 못함(잠김)" }] : [200, clone(R["GET /pipeline"].ok)]);
+  quietPlan(srv);
+  const env = mkPanel(srv);
+  const S = quietState();
+  const badges = () => env.head.children.map((e) => e.textContent).filter((t) => t === "설정 확인 필요" || t === "Prepare 갈라짐");
+  env.pipe.stateChanged(S);
+  await sleep(30);
+  const r = { first: { badges: badges(), gets: srv.count("pipeline") } };
+  env.pipe.stateChanged(S);
+  await sleep(30);
+  r.again = { badges: badges(), gets: srv.count("pipeline") };
+  for (let i = 0; i < 3; i++) env.pipe.stateChanged(S);
+  await sleep(30);
+  r.quiet = srv.count("pipeline");
+  env.pipe.leave();
+  // 진행 모드 설정 패널: 읽기 실패 두 번(처음·진행 모드 진입) = '읽기 오류' → 다음 state 폴링에서 회복(절·[저장]이 그려짐)
+  const sv = server();
+  let fail2 = 2;
+  sv.route.pipeline = () => (fail2-- > 0 ? [500, { error: "pipeline.json 을 읽지 못함(잠김)" }] : [200, clone(R["GET /pipeline"].ok)]);
+  quietPlan(sv);
+  const e2 = mkPanel(sv);
+  e2.pipe.stateChanged(S);
+  await sleep(30);
+  e2.pipe.enter(S, "001_38a818");
+  await sleep(40);
+  e2.B("설정").fire("click");
+  await sleep(10);
+  const panelErr = () => e2.panel.children.some((e) => e.classList.contains("pp-row") && e.own.startsWith("읽기 오류"));
+  r.panel = { failed: panelErr() };
+  e2.pipe.stateChanged(S);
+  await sleep(40);
+  Object.assign(r.panel, { after: panelErr(), saveButtons: e2.panel.all().filter((e) => e.tagName === "BUTTON" && /^(확인·)?저장$/.test(e.textContent)).length,
+    gets: sv.count("pipeline") });
+  e2.pipe.leave();
+  return r;
+});
+
+await scenario("planShare", async () => {  // r3-10: 같은 only·style 계획 요청이 겹치면 앞 요청의 응답을 기다린 뒤 한 번 더(겹쳐 묻지 않음 — 뒤 요청이 세대를 올려 앞 정상
+  // 응답을 버리고 앞 계산을 202 로 기다리지 않음, Codex 1차 c1-2: 앞 응답만 함께 받으면 낡을 수 있어 한 번 더 — planFollow). only·style 이 다르면 새
+  // 요청(앞 응답은 버림), 끝난 뒤의 같은 요청은 새로 묻는다
+  const srv = server();
+  const s = P.session(A, C, KEY, srv.fetch, mem(), 5);
+  srv.planDelay = [150];
+  const a = s.loadPlan("001_38a818", false);
+  await sleep(20);
+  const b = s.loadPlan("001_38a818", false);
+  const [ra, rb] = await Promise.all([a, b]);
+  const r = { same: { ra, rb, gets: srv.count("pipeline/plan"), only: s.planOnly } };
+  let g = srv.count("pipeline/plan");
+  srv.planDelay = [150];
+  const c = s.loadPlan("001_38a818", false);
+  await sleep(20);
+  const d = s.loadPlan("001_38a818", true);
+  const [rc, rd] = await Promise.all([c, d]);
+  r.diff = { rc, rd, gets: srv.count("pipeline/plan") - g, style: s.planStyle };
+  g = srv.count("pipeline/plan");
+  const e = await s.loadPlan("001_38a818", true);
+  r.later = { e, gets: srv.count("pipeline/plan") - g };
+  return r;
+});
+
+await scenario("doubleClicks", async () => {  // r3-11: [Export]·[채택]·설정 [저장] 두 번 누름·[수정] Enter 두 번 = 요청은 한 번, 빨간 오류 토스트 없음.
+  // [수정] Enter 키 반복(누르고 있음 — repeat) = 보내지 않음
+  const srv = server();
+  srv.route.pipeline = quietPipeline();
+  quietPlan(srv);
+  srv.promptDelay = 60;
+  const env = mkPanel(srv);
+  const S = quietState();
+  env.pipe.stateChanged(S);
+  await sleep(30);
+  env.pipe.enter(S, "008_e1d4cc");
+  await sleep(60);
+  const errs = () => env.toasts.filter((t) => t.startsWith("err:"));
+  let b = env.B("Export");
+  b.fire("click");
+  await sleep(10);
+  b.fire("click");
+  await sleep(120);
+  const r = { export: { posts: srv.count("api/prompt"), errs: errs() } };
+  srv.hist = () => EX_H(H.bmk_dp_export[0]);
+  await until(() => !env.head.textContent.includes("실행 중:"), 3000);
+  await sleep(20);
+  srv.delay["draft/adopt"] = [60, 0];
+  let a0 = srv.count("draft/adopt");
+  b = env.B("채택");
+  b.fire("click");
+  await sleep(10);
+  b.fire("click");
+  await sleep(150);
+  r.adopt = { posts: srv.count("draft/adopt") - a0, errs: errs() };
+  env.B("설정").fire("click");
+  await sleep(10);
+  const prep = env.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent === "Prepare");
+  const nIn = prep.children.find((e) => e.classList.contains("pp-field") && e.children[0].textContent === "n").children[1];
+  nIn.value = "3";
+  nIn.fire("input");
+  srv.delay["pipeline/settings"] = [60];
+  const s0 = srv.count("pipeline/settings");
+  b = env.B("저장", prep);
+  b.fire("click");
+  await sleep(10);
+  b.fire("click");
+  await sleep(150);
+  r.save = { posts: srv.count("pipeline/settings") - s0, errs: errs() };
+  env.B("← 진행").fire("click");
+  await sleep(10);
+  env.B("수정").fire("click");
+  await sleep(10);
+  const inp = env.input();
+  inp.focus();
+  inp.value = "A: metal skirt plaque";
+  inp.fire("input");
+  await sleep(450);
+  a0 = srv.count("draft/adopt");
+  inp.fire("keydown", { key: "Enter", isComposing: false, keyCode: 13, repeat: true });
+  await sleep(30);
+  r.repeat = srv.count("draft/adopt") - a0;
+  srv.delay["draft/adopt"] = [60, 0];
+  inp.fire("keydown", { key: "Enter", isComposing: false, keyCode: 13 });
+  await sleep(10);
+  inp.fire("keydown", { key: "Enter", isComposing: false, keyCode: 13 });
+  await sleep(150);
+  r.enter = { posts: srv.count("draft/adopt") - a0, errs: errs() };
+  env.pipe.leave();
+  return r;
+});
+
+await scenario("pollOld", async () => {  // r3-16: board.js 폴링 — unchanged 응답에 pipeline_rev 가 없어짐(서버가 옛 판으로 재시작, 매니페스트 rev 그대로) = 전체 state 를
+  // 다시 받아 S 에서도 빠짐(applyFree 의 첫 갈래 — 탭 반영 대체). 키가 그대로면 다시 받지 않음
+  const src = boardFn("refresh");
+  const one = async (unchanged) => {
+    const c = { gets: [], piped: [] };
+    const S0 = { rev: 5, running: false, drain: false, layout_rev: 1, refs_rev: 1, refs_files_v: "v1", pipeline_rev: 3, plan_v: "r:a|d:b", crops: [], targets: [] };
+    const vctx = vm.createContext({ polling: false, pollAgain: false, S: S0, editing: false, refsOn: false, editor: null, refEd: null,
+      getState: async (force) => { c.gets.push(!!force); return force ? { rev: 5, running: false, drain: false, crops: [], targets: [] } : clone(unchanged); },
+      reconcile() {}, renderAll() {}, renderHeader() {}, setConn() {}, pipe: { stateChanged: (st) => c.piped.push("pipeline_rev" in st) } });
+    await vm.runInContext(`(${src})`, vctx)(false);
+    return Object.assign(c, { pipelineRev: "pipeline_rev" in vctx.S });
+  };
+  const base = { unchanged: true, rev: 5, running: false, drain: false, layout_rev: 1, refs_rev: 1, refs_files_v: "v1" };
+  return { found: !!src, old: await one(base), same: await one(Object.assign({ pipeline_rev: 3, plan_v: "r:a|d:b" }, base)) };
+});
+
+await scenario("driftCalls", async () => {  // r3-02(화면): Prepare 갈라짐 kind calls(calls_per_cell 을 늘림 — 완료된 셀마다 새 유료 호출)는 cell 처럼 다시 과금 대상 —
+  // 반영 확인 창(applyWarn) 맨 앞(cost 앞)·머리줄 'Prepare 갈라짐' 배지 빨강·진행 설정 칸·설정 패널 줄 'bad', 문구는 DRIFT.calls('— calls' 아님).
+  // 대조: cost 만이면 노랑·'warn'(r2-05)
+  const imp = { section: "import", field: "refs_dir", manifest: "D:/a", settings: "D:/b", kind: "import" };
+  const nCost = { section: "prepare", field: "n", manifest: 4, settings: 2, kind: "cost" };
+  const cpc = { section: "prepare", field: "calls_per_cell", manifest: 1, settings: 3, kind: "calls" };
+  const rows = (root) => root.all().filter((e) => e.classList.contains("pp-row") && /^(prepare|import)\.\w+: 마지막 /.test(e.own)).map((e) => [e.own, e.className]);
+  const one = async (drift) => {
+    const srv = server();
+    srv.route.pipeline = quietPipeline((b) => { b.drift = drift; });
+    quietPlan(srv);
+    const env = mkPanel(srv);
+    const S = quietState();
+    env.pipe.stateChanged(S);
+    await sleep(30);
+    const hd = env.head.children.find((e) => e.textContent === "Prepare 갈라짐");
+    const r = { warn: env.pipe.applyWarn(), head: hd ? [hd.className, hd.title.split("\n")] : null };
+    env.pipe.enter(S, "001_38a818");
+    await sleep(40);
+    r.panel = rows(env.panel);
+    const sb = env.B("설정");
+    if (sb) sb.fire("click");
+    await sleep(10);
+    r.settings = rows(env.panel);
+    env.pipe.leave();
+    return r;
+  };
+  return { calls: await one([imp, nCost, cpc]), cost: await one([nCost]) };
+});
+
+// ── Codex 1차 대응(c1-1·c1-2·b-3 — b-2 는 exportLayers) ──
+await scenario("resetRace", async () => {  // Codex 1차 c1-1: [매니페스트 값으로 다시]가 여러 절을 잇따라 저장 — 다음 절은 이 창의 앞 저장 응답 rev 로(저장마다 다시 읽은
+  // GET /pipeline 의 rev 가 아님). 그 사이 다른 창이 저장하면 409 로 멈추고(다른 창 값 그대로), 확인 창이 떠 있는 동안의 저장도 409(첫 절)
+  const one = async (when) => {
+    const ok = R["GET /pipeline"].ok;
+    const file = { rev: 3, settings: clone(ok.settings) };
+    file.settings.prepare.quality = "high";  // 유도값(max)과 다름 → import·prepare 두 절
+    const other = () => {
+      file.settings.prepare.n = 5;
+      file.rev += 1;
+    };
+    const srv = server();
+    srv.route.pipeline = () => [200, Object.assign(clone(ok), { rev: file.rev, settings: clone(file.settings), confirm: [], drift: [],
+      derived: Object.assign(clone(ok.derived), { confirm: [] }) })];
+    srv.route.settings = (q, b) => {  // bmk_design_patch_pipeline.update 의 rev 규칙(파일 전체 rev — 다르면 409, 쓰면 +1)
+      if (b.rev !== file.rev) return [409, { error: `실행 설정이 다른 창에서 바뀌었습니다(rev ${b.rev} → ${file.rev}) — 새로고침` }];
+      file.settings[b.section] = clone(b.values);
+      file.rev += 1;
+      const r = [200, Object.assign(clone(R["POST /pipeline/settings"].ok), { rev: file.rev, settings: clone(file.settings) })];
+      if (when === "between" && b.section === "import") other();  // 이 창의 import 저장 직후·이 창이 다시 읽기 전
+      return r;
+    };
+    quietPlan(srv);
+    const env = mkPanel(srv);
+    if (when === "dialog") ctx.window.confirm = (m) => { env.confirms.push(m); other(); return true; };
+    const S = quietState();
+    env.pipe.stateChanged(S);
+    await sleep(30);
+    env.pipe.enter(S, "001_38a818");
+    await sleep(40);
+    env.B("설정").fire("click");
+    await sleep(10);
+    const t0 = env.toasts.length;
+    env.B("매니페스트 값으로 다시").fire("click");
+    await sleep(120);
+    ctx.window.confirm = (m) => { env.confirms.push(m); return true; };
+    const r = { posts: srv.log.filter((x) => x.path === "pipeline/settings").map((x) => [x.body.section, x.body.rev]), toasts: env.toasts.slice(t0),
+      n: file.settings.prepare.n, quality: file.settings.prepare.quality, rev: file.rev };
+    env.pipe.leave();
+    return r;
+  };
+  return { between: await one("between"), dialog: await one("dialog"), none: await one("none") };
+});
+
+await scenario("planFollow", async () => {  // Codex 1차 c1-2(세션): 같은 only·style 계획 요청이 도는 사이의 부름 = 겹쳐 묻지 않고 그 응답 뒤 한 번 더(기다리는 부름은 같은
+  // 다음 요청 하나) — 앞 요청의 서명이 그 부름의 이유(설정·스펙 쓰기)보다 먼저 잡혔을 수 있다. 그 사이 다른 선택의 요청이 나가면 다시 묻지 않음
+  const srv = server();
+  let live = 0;
+  let peak = 0;
+  let n = 0;
+  srv.route.plan = (q) => [200, Object.assign(clone(R["GET /pipeline/plan"].ok), { sig: `r:R|d:D${++n}|o:${q.only}` })];
+  const base = srv.fetch;
+  srv.fetch = async (url, o) => {
+    const plan = new URL(url).pathname.endsWith("/pipeline/plan");
+    if (plan) peak = Math.max(peak, ++live);
+    try {
+      return await base(url, o);
+    } finally {
+      if (plan) live -= 1;
+    }
+  };
+  const s = P.session(A, C, KEY, srv.fetch, mem(), 5);
+  srv.planDelay = [150, 60];
+  const a = s.loadPlan("001_38a818", false);
+  await sleep(20);
+  const b = s.loadPlan("001_38a818", false);
+  await sleep(20);
+  const c = s.loadPlan("001_38a818", false);
+  const res = await Promise.all([a, b, c]);
+  const r = { follow: { res, same: b === c, gets: srv.count("pipeline/plan"), peak, sig: s.plan.sig } };
+  // 기다리는 사이 다른 선택의 요청이 나감 = 앞 선택의 다음 요청은 없음(false), 마지막 계획 = 새 선택
+  const g = srv.count("pipeline/plan");
+  srv.planDelay = [150, 0];
+  const d = s.loadPlan("001_38a818", false);
+  await sleep(20);
+  const e = s.loadPlan("001_38a818", false);
+  await sleep(20);
+  const f = s.loadPlan("002_d98f99", false);
+  const res2 = await Promise.all([d, e, f]);
+  await sleep(30);
+  r.superseded = { res: res2, gets: srv.count("pipeline/plan") - g, onlys: srv.log.filter((x) => x.path === "pipeline/plan").slice(g).map((x) => x.q.only),
+    only: s.planOnly };
+  return r;
+});
+
+await scenario("planAfterSave", async () => {  // Codex 1차 c1-2(화면): 계획 요청 A(저장 전 서명)가 계산 중일 때 설정을 저장 — 저장 뒤 부름들이 A 만 받으면 A 가 낡은
+  // 계획으로 남고(plan_v null — 폴링도 다시 부르지 않음) 해시 복사가 [다시 계산] 전까지 꺼진다. A 뒤 한 번 더 받아 풀림
+  const srv = server();
+  let doc = quietPipeline()[1];
+  let ver = 0;  // pipeline.json 지문 판(계획 서명에 들어감)
+  let memo = 0;  // 서버가 기억한 계획의 판
+  let busy = false;
+  let ms = 5;
+  const sigOf = (v) => `r:R${v}|d:D${v}`;
+  srv.route.pipeline = () => [200, clone(doc)];
+  srv.route.settings = (q, b) => {
+    if (b.rev !== doc.rev) return [409, { error: `rev ${b.rev} → ${doc.rev}` }];
+    doc = Object.assign(clone(doc), { rev: doc.rev + 1 });
+    doc.settings[b.section] = clone(b.values);
+    ver += 1;
+    return [200, Object.assign(clone(R["POST /pipeline/settings"].ok), { rev: doc.rev, settings: clone(doc.settings) })];
+  };
+  const base = srv.fetch;
+  srv.fetch = async (url, o) => {  // pipeline_plan 흉내: 서명을 먼저 잡고 계산, 계산 중 다른 요청 = 202, 끝나면 그 서명을 기억
+    const u = new URL(url);
+    if (!u.pathname.endsWith("/pipeline/plan")) return base(url, o);
+    const q = Object.fromEntries(u.searchParams);
+    srv.log.push({ method: "GET", path: "pipeline/plan", q, body: null });
+    const resp = (status, data) => ({ ok: status >= 200 && status < 300, status, json: async () => clone(data) });
+    if (busy) return resp(202, { busy: true });
+    busy = true;
+    const v = ver;
+    const p = clone(q.only ? R["GET /pipeline/plan"].ok : R["GET /pipeline/plan"].alt.no_selection);
+    p.notes = [];
+    p.apply_pending = [];
+    p.draft.import_pending = [];
+    p.sig = sigOf(v) + (q.only ? `|o:${q.only}` : "");
+    await sleep(ms);
+    memo = v;
+    busy = false;
+    return resp(200, p);
+  };
+  const st0 = Object.assign(quietState(), { plan_v: sigOf(0) });
+  const state = () => Object.assign({}, st0, { pipeline_rev: doc.rev, plan_v: memo === ver ? sigOf(ver) : null });
+  const env = mkPanel(srv);
+  env.pipe.stateChanged(state());
+  await sleep(30);
+  env.pipe.enter(state(), "001_38a818");
+  await sleep(60);
+  const r = { entered: env.copies().map((x) => !x[0]) };
+  env.B("설정").fire("click");
+  await sleep(10);
+  const runBox = env.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent === "Run");
+  const rf = runBox.children.find((e) => e.classList.contains("pp-field") && e.children[0].textContent === "retry_failed").children[1];
+  rf.checked = !rf.checked;
+  rf.fire("change");
+  ms = 400;  // 느린 계획 요청 A(저장 전 서명) — [다시 계산]·선택 바꿈·앞 폴링으로 나간 것
+  env.pipe.recalc();
+  await sleep(15);
+  ms = 5;
+  const p0 = srv.count("pipeline/plan");
+  env.B("저장", runBox).fire("click");
+  await sleep(40);
+  for (let i = 0; i < 12; i++) {  // 보드 폴링(저장 뒤 state — pipeline_rev 바뀜·plan_v null → 새 계획을 기억하면 그 서명)
+    env.pipe.stateChanged(state());
+    await sleep(60);
+  }
+  env.B("← 진행").fire("click");
+  await sleep(10);
+  Object.assign(r, { live: env.copies().map((x) => !x[0]), planV: state().plan_v, plans: srv.count("pipeline/plan") - p0,
+    stale: env.panel.textContent.includes("계획이 지금 파일 상태와 다름") });
+  env.pipe.leave();
+  return r;
+});
+
+await scenario("draftBusy", async () => {  // Codex 1차 b-3: 계획을 받은 뒤 그래프·다른 경로의 Spec Draft 가 시작(state drafting — 실행 중엔 계획을 다시 받지 않음) =
+  // 초안 줄 'Spec Draft 실행 중'·흐림(Run 줄의 state running 과 같이), 초안 해시 복사도 같은 판정으로 끔. 끝나면 계획 한 번
+  const srv = server();
+  srv.route.pipeline = quietPipeline();
+  quietPlan(srv);
+  srv.route.progress = [200, R["GET /pipeline/progress"].alt.idle];
+  const env = mkPanel(srv);
+  const S = quietState();
+  const draftRow = () => {
+    const sec = env.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent === "계획");
+    const row = sec && sec.children.find((e) => e.classList.contains("pp-row") && e.own.startsWith("초안: "));
+    return row ? [row.own, row.className] : null;
+  };
+  env.pipe.stateChanged(S);
+  await sleep(30);
+  env.pipe.enter(S, "001_38a818");
+  await sleep(60);
+  const r = { before: { row: draftRow(), live: env.copies().map((x) => !x[0]) } };
+  const p0 = srv.count("pipeline/plan");
+  // 실제 모양: Spec Draft 가 시작하면 Draft 서명이 바뀌어 plan_v null(낡음 — 두 복사 끔)
+  for (let i = 0; i < 3; i++) {
+    env.pipe.stateChanged(Object.assign({}, S, { drafting: true, plan_v: null }));
+    await sleep(40);
+  }
+  r.during = { row: draftRow(), live: env.copies().map((x) => !x[0]), plans: srv.count("pipeline/plan") - p0 };
+  // 그리기·누르기 같은 판정: 낡음이 아니어도(plan_v 그대로) drafting 이면 초안 해시 복사만 끔(Run 은 그대로)
+  env.pipe.stateChanged(Object.assign({}, S, { rev: 90, drafting: true }));
+  await sleep(40);
+  r.same = { row: draftRow(), live: env.copies().map((x) => !x[0]) };
+  env.pipe.stateChanged(Object.assign({}, S, { rev: 91, drafting: false }));
+  await sleep(400);
+  r.after = { row: draftRow(), live: env.copies().map((x) => !x[0]), plans: srv.count("pipeline/plan") - p0 };
+  env.pipe.leave();
+  return r;
+});
+
+// ── Codex 2차 대응(c2-1·m-1 — c2-2 는 pipeline_board_unit 서명 재료 표) ──
+await scenario("resetTyped", async () => {  // Codex 2차 c2-1: [매니페스트 값으로 다시]가 저장을 기다리는 사이(칸은 켜져 있음) 친 값 = 보내지 않은 새 편집 — 리셋
+  // 뒤에도 남는다(saveSection 과 같은 뜻 — blur 뒤 칸이 저장값으로 돌아가거나, 바로 누른 [저장]이 친 값 대신 저장값을 '저장 성공'으로 보내지 않게).
+  // 확인 창 전의 편집은 리셋이 덮고(확인 창의 값), 두 절이면 앞 절 저장 중 뒤 절에 친 값도 남는다
+  const one = async (mode) => {
+    const ok = R["GET /pipeline"].ok;
+    const file = { rev: 3, settings: clone(ok.derived.settings) };
+    file.settings.prepare.n = 3;  // 유도값 n 2 와 다름 → prepare 절
+    if (mode === "two") file.settings.import = clone(ok.settings.import);  // import 도 유도값과 다름 → import·prepare 두 절
+    const srv = server();
+    srv.route.pipeline = () => [200, Object.assign(clone(ok), { rev: file.rev, settings: clone(file.settings), confirm: [], drift: [],
+      derived: Object.assign(clone(ok.derived), { confirm: [] }) })];
+    srv.route.settings = (q, b) => {  // bmk_design_patch_pipeline.update 의 rev 규칙
+      if (b.rev !== file.rev) return [409, { error: `실행 설정이 다른 창에서 바뀌었습니다(rev ${b.rev} → ${file.rev}) — 새로고침` }];
+      file.settings[b.section] = clone(b.values);
+      file.rev += 1;
+      return [200, Object.assign(clone(R["POST /pipeline/settings"].ok), { rev: file.rev, settings: clone(file.settings) })];
+    };
+    quietPlan(srv);
+    const env = mkPanel(srv);
+    const S = quietState();
+    env.pipe.stateChanged(S);
+    await sleep(30);
+    env.pipe.enter(S, "001_38a818");
+    await sleep(40);
+    env.B("설정").fire("click");
+    await sleep(10);
+    const prep = () => env.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent === "Prepare");
+    const row = (k) => prep().children.find((e) => e.classList.contains("pp-field") && e.children[0].textContent === k);
+    const fld = (k) => row(k).children[1];
+    if (mode === "pre") {  // 확인 창 전의 편집(n 5) — 리셋이 덮음
+      const n0 = fld("n");
+      n0.focus();
+      n0.value = "5";
+      n0.fire("input");
+      n0.blur();
+      await sleep(20);
+    }
+    srv.delay["pipeline/settings"] = mode === "two" ? [200, 0] : [200];
+    const c0 = env.confirms.length;
+    env.B("매니페스트 값으로 다시").fire("click");
+    await sleep(60);  // 확인 창 OK 뒤·첫 POST 응답(200ms) 전
+    const n = fld("n");
+    const r = { disabled: n.disabled };
+    if (mode !== "pre") {
+      n.focus();
+      n.value = "7";
+      n.fire("input");
+    }
+    await sleep(400);  // 리셋(POST·다시 읽기) 끝
+    if (mode === "save") {
+      r.clicked = await mouse(env.B("저장", prep()));  // 칸에 7 이 보이는 채로 바로 Prepare [저장](pointerdown → focusout → pointerup → click)
+      await sleep(150);
+    } else {
+      n.blur();
+      await sleep(30);
+    }
+    r.shown = fld("n").value;
+    r.moved = row("n").all().some((e) => e.own.startsWith("다른 창이 "));
+    r.posts = srv.log.filter((x) => x.path === "pipeline/settings").map((x) => [x.body.section, x.body.rev, x.body.values.n ?? null]);
+    r.fileN = file.settings.prepare.n;
+    r.dialogs = env.confirms.length - c0;
+    r.toasts = env.toasts.filter((t) => t.includes("설정 저장") || t.startsWith("err:"));
+    env.pipe.leave();
+    return r;
+  };
+  return { blur: await one("blur"), save: await one("save"), two: await one("two"), pre: await one("pre") };
+});
+
+await scenario("confirmGate", async () => {  // m-1: 진행 설정 칸 '확인 필요' 줄·머리줄 배지 = 서버 prompt_gate 판정 — prepare.*·import.*(깨진 파일은 전부)·파일 없음만
+  // '반영·Export 를 막음'(빨강), 늘 남는 draft.apply·기록 없는 analyze·compose·export 등은 '막지 않음(해시만 흐림)'(노랑). 섞이면 두 줄
+  const one = async (body) => {
+    const srv = server();
+    srv.route.pipeline = [200, body];
+    quietPlan(srv);
+    const env = mkPanel(srv);
+    const S = quietState();
+    env.pipe.stateChanged(S);
+    await sleep(30);
+    const hb = env.head.children.find((e) => e.textContent === "설정 확인 필요");
+    env.pipe.enter(S, "001_38a818");
+    await sleep(40);
+    const sec = env.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent === "설정");
+    const r = { head: hb ? hb.className : null,
+      rows: sec.children.filter((e) => e.classList.contains("pp-row") && /^(확인 필요: |pipeline\.json 없음)/.test(e.own)).map((e) => [e.own, e.className]) };
+    env.pipe.leave();
+    return r;
+  };
+  const ok = R["GET /pipeline"].ok;
+  const withConf = (base, confirm) => Object.assign(clone(base), { confirm, drift: [] });
+  const miss = R["GET /pipeline"].alt.missing;
+  return {
+    draftOnly: await one(withConf(ok, ["draft.apply"])),
+    rest: await one(withConf(ok, ["draft.apply", "analyze.register", "compose.zorder", "export.filename_prefix"])),
+    mixed: await one(withConf(ok, ["prepare.variants", "draft.apply", "import.refs_dir", "export.filename_prefix"])),
+    missing: await one(withConf(miss, miss.confirm)),
+    missingRest: await one(withConf(miss, ["draft.apply"])),
+    broken: await one(clone(R["GET /pipeline"].alt.broken)),
+  };
+});
+
+console.log(JSON.stringify(out));
+process.exit(0);
+"""
+
+
+def pipeline_js_unit():
+    """S3a J-P1·J-P2·J-P4·B12″(JS)·P5(U4): pipeline.js 세션(가짜 fetch = pipeline_api.json)·채택 패널·탭 확장 hello·정적 검사·
+    S1-b 공용 표 새 행(--quick 포함)."""
+    section("S3a pipeline_js_unit — Studio 진행 모드(G)·무료 큐·채택·hello JS(U4)")
+    web = PKG / "web_design_patch"
+    pj = (web / "pipeline.js").read_text(encoding="utf-8")
+    bj = (web / "board.js").read_text(encoding="utf-8")
+    html = (web / "board.html").read_text(encoding="utf-8")
+    css = (web / "board.css").read_text(encoding="utf-8")
+    ext = (PKG / "js" / "bmk_design_patch.js").read_text(encoding="utf-8")
+    pcode = re.sub(r"//[^\n]*", "", pj)
+    bcode = re.sub(r"//[^\n]*", "", bj)
+    api = _pl_api()
+
+    # B12″(JS 쪽) 정적
+    for bad in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function", "setAttribute(\"on", "srcdoc",
+                "javascript:", "localStorage"):
+        check(bad not in pcode, f"pipeline.js 에 {bad} 없음")
+    check(not re.search(r"https?://", pj) and not any(ord(ch) >= 0x1F000 or ch == "\ufe0f" for ch in pj), "pipeline.js 외부 URL·이모지 없음")
+    check("textContent" in pcode and "replaceChildren" in pcode, "pipeline.js textContent·replaceChildren")
+    dr_js = re.search(r"const DRIFT = \{(.*?)\n  \};", pcode, re.S)
+    dr_keys = re.findall(r"^\s*(\w+):", dr_js.group(1), re.M) if dr_js else []
+    check(sorted(dr_keys) == sorted(api["_doc"]["열거"]["drift[].kind"]),
+          f"pipeline.js DRIFT 문구 = 정본 열거 drift[].kind 전부(새 kind 가 '— <kind>' 로 나오지 않게 — r3-02 calls) {dr_keys}")
+    check(re.findall(r"window\.(\w+)\s*=(?!=)", pcode) == ["DPPipeline"], f"pipeline.js 가 정의하는 전역은 window.DPPipeline 하나 {re.findall(r'window.(\w+)\s*=(?!=)', pcode)}")
+    fb = _layout_js_fn(pcode, "freeBody")
+    check(pcode.count('comfy("prompt"') == 1 and 'comfy("prompt", freeBody(t.prompt, stage))' in pcode and pcode.count("freeBody(") == 2
+          and fb.rstrip().endswith("return { prompt, front: STAGES[stage].front };"),
+          "/api/prompt 본문을 만드는 곳은 pipeline.js 안에 freeBody 하나(서버가 준 prompt + front 만)")
+    for tok in ("extra_data", "client_id", "api_key", "auth_token", "bmk-dp-approve", "approve="):
+        check(tok not in pj and tok not in bj, f"B12″: pipeline.js·board.js 에 {tok} 없음(S3a — 인증·유료 승인 메시지·approve 쿼리 없음)")
+    check("bmk-dp-approve" not in ext and "EXT_VERSION = 2" in ext and 'submit: "unsupported"' in ext,
+          "탭 확장 = hello 응답만(S3a — ext 2·submit unsupported, 승인 메시지 처리 없음)")
+    qf = pcode[pcode.index("s.queue = async"):pcode.index("s.resume = ")]
+    check(0 < qf.index("checkPrompt(t.prompt)") < qf.index('comfy("prompt"') and "if (bad) throw" in qf,
+          "보내기 전 검사(checkPrompt) 가 /api/prompt 앞 — 어긋나면 던지고 보내지 않음")
+    check('const PAID = ["BMKDesignPatchRun", "BMKDesignPatchSpecDraft"];' in pcode and "/^dp_[a-z]+$/" in pcode
+          and 'cls.startsWith("BMKDesignPatch")' in pcode, "checkPrompt: 키 dp_*·class_type BMKDesignPatch*·Run·Spec Draft 아님")
+    da = _layout_js_fn(pcode, "disabledApprove", "    ")
+    check('const S3B = "S3b 전 — 그래프의 승인 버튼 사용";' in pcode and "b.disabled = true;" in da and "button(label.trim(), S3B" in da,
+          "유료 승인 단추는 늘 꺼짐(제목 'S3b 전 — 그래프의 승인 버튼 사용')")
+    check("approve: ${hash}  only: ${only}" in pcode, "해시 복사 = approve·only 한 줄(§3.3 — 'approve=' 문자열은 쓰지 않음)")
+    check("apply: { front: true" in pcode and "export: { front: false" in pcode, "apply = 대기열 앞(front true), export = 뒤(front false)")
+    check(re.search(r"widgets\[sec\]|P0\.widgets", pcode) is not None and "COMBO" in pcode and "choices" in pcode
+          and not re.search(r'"(?:gpt-image-2\.5-sunburst|guarded_affine|hand_else_auto)"', pcode),
+          "설정 패널 선택지·범위 = GET /pipeline widgets(JS 에 표 복사 없음)")
+    # board.js·html·css 연결
+    check("if (window.DPPipeline)" in bcode and '"pipeline_rev" in S' in bcode and bcode.count("queue: applyFree") == 2
+          and "queue: queueInComfy" not in bcode and "applyWarn" in bcode, "board.js: DPPipeline 판별·옛 서버(pipeline_rev 없음)·편집기 queue 콜백 = applyFree")
+    check(re.search(r'const PIPE_OFF = new Set\(\[\.\.\.EDIT_OFF, "KeyE", "KeyT"\]\);', bcode) is not None, "PIPE_OFF = 검토 키 + E·T")
+    kd = _layout_js_fn(bcode, "onKeyDown")
+    i_ref, i_pipe, i_sw = (kd.find(s) for s in ("refsOn && REFS_OFF.has(e.code)", "pipeShown && PIPE_OFF.has(e.code)", "switch (e.code)"))
+    check(0 < i_ref < i_pipe < i_sw and 'case "KeyG":' in kd and "setPipe(!pipeShown)" in kd and "pipeOn" not in kd,
+          "onKeyDown: 레퍼런스 끔 → 진행 모드 끔(검토 키·E·T) → G 토글, 진행 판정은 패널 hidden(떼어 돌리는 하네스에 새 전역 없음)")
+    check("if (on && pipeOn) setPipe(false);" in bcode and bcode.count("if (on && pipeOn) setPipe(false);") == 2
+          and "if (on && editing) setEditing(false);" in _layout_js_fn(bcode, "setPipe"), "진행(G)·편집(E)·레퍼런스(T) 모드는 배타")
+    check(_layout_js_fn(bcode, "renderTargets").count("draftChips(ch, c);") == 2 and "draftChips" not in _layout_js_fn(bcode, "cropChips")
+          and "c.draft_chip" in _layout_js_fn(bcode, "draftChips"),
+          "검토 모드 크롭 칩 = state draft_chip(§3.7 — 크롭 머리 줄·한 줄 타깃 둘 다, cropChips 와 따로)")
+    check('"pipeline_rev" in d && d.pipeline_rev !== S.pipeline_rev' in bcode and '"plan_v" in d && d.plan_v !== S.plan_v' in bcode
+          and "if (pipe && S) pipe.stateChanged(S);" in bcode, "폴링: pipeline_rev·plan_v 가 바뀌면 전체 state, 진행 패널은 모든 모드에서 state 를 받음")
+    check(all(f'id="{i}"' in html for i in ("btn-pipe", "pipe-head", "pipe-list", "pipe-panel")) and 'id="pipe-panel" aria-label' in html
+          and re.search(r'<section id="pipe-panel"[^>]*hidden>', html) is not None and "진행 (<kbd>G</kbd>)" in html,
+          "board.html 진행 모드 요소 4개(패널은 처음 hidden)·도움말")
+    check("body.pipe #pipe-panel" in css and "body.pipe #target-list, body.pipe #center" in css and ".chip.stale" in css, "board.css 진행 모드 3분할·흐린 칩")
+
+    # P5 S1-b: 공용 표 suggest 새 행 4개(값은 S1-L4 = 오라클, J-L1 = JS 가 모든 행에서 다시 본다)
+    table = json.loads(_LAYOUT_RULES.read_text(encoding="utf-8"))
+    sug = [(r["in"]["boxes"], r["in"]["canvas"], r["in"]["snap"], r["out"]) for r in table["rows"] if r["fn"] == "suggest"]
+    want4 = [([[500, 400, 3300, 700]], [4096, 1000], True, [432, 0, 3376, 1000]), ([[500, 400, 3300, 700]], [4096, 1000], False, [400, 0, 3400, 1000]),
+             ([[400, 500, 700, 3300]], [1000, 4096], True, [0, 432, 1000, 3376]), ([[100, 5, 3000, 30]], [4096, 40], True, [1488, 0, 1608, 40])]
+    check(len(sug) == 14 and all(w in sug for w in want4) and all(_layout_suggest(b, c, s) == o for b, c, s, o in want4),
+          f"P5 S1-b suggest 새 행 4개(기존 10 + 4) = 오라클 down(3·짧은) {len(sug)}")
+    check("down(3h)" in table["fns"]["suggest"]["rule"] and "128 단위 없이" not in table["fns"]["suggest"]["rule"]
+          and "down(RATIO * h)" in (web / "layout_geom.js").read_text(encoding="utf-8"), "P5 규칙 문구·layout_geom.js = down(3·짧은)")
+
+    node = shutil.which("node")
+    if not node:
+        skip("node 없음 → pipeline.js node --check·J-P1·J-P2·J-P4 생략")
+        return
+    r = subprocess.run([node, "--check", str(web / "pipeline.js")], capture_output=True, text=True, encoding="utf-8", timeout=60)
+    check(r.returncode == 0, f"node --check pipeline.js {r.stderr.strip()[:200]}")
+    out = OUT_ROOT / "pipeline_js"
+    shutil.rmtree(out, ignore_errors=True)
+    out.mkdir(parents=True)
+    esrc, n_imp = re.subn(r'^import \{ (app|api) \} from "\.\./\.\./scripts/(app|api)\.js";\r?\n', "", ext, flags=re.M)
+    check(n_imp == 2, f"탭 확장 import 두 줄(app·api)만 바꿈 ({n_imp})")
+    (out / "ext.mjs").write_text("const { app, api } = globalThis.__bmk;\n" + esrc, encoding="utf-8")
+    (out / "in.json").write_text(json.dumps({"api": api, "pipelineJs": str(web / "pipeline.js"), "boardJs": str(web / "board.js"),
+                                             "extMjs": str(out / "ext.mjs")}, ensure_ascii=False), encoding="utf-8")
+    (out / "harness.mjs").write_text(_PL_JS_HARNESS, encoding="utf-8")
+    r = subprocess.run([node, str(out / "harness.mjs"), str(out / "in.json")], capture_output=True, text=True, encoding="utf-8", timeout=180)
+    if r.returncode != 0 or not r.stdout.strip():
+        check(False, f"node 하네스 실패({r.returncode}): {r.stderr.strip()[-800:]}")
+        return
+    res = json.loads(r.stdout.strip().splitlines()[-1])
+    for k, v in res.items():
+        if isinstance(v, dict) and "error" in v and len(v) == 1:
+            check(False, f"J-P 시나리오 {k} 예외: {v['error']}")
+    R = api["routes"]
+    hx = api["history"]["bmk_dp_export"]
+
+    # J-P1 무료 큐·끝 판정·이어 받기
+    fl = res.get("flow") or {}
+    if "body" in fl:
+        check(fl["body"] == {"prompt": R["GET /pipeline/prompt"]["ok"]["prompt"], "front": True} and fl["promptQ"] == {"root": "fe410d7f025d", "stage": "apply"},
+              f"J-P1 /api/prompt 본문 = 서버 템플릿 + front 뿐(인증·client_id·extra_data 없음) {sorted(fl['body'])}")
+        check(fl["seen"] == [[False, None], [False, 2], [True, 0], [False, None]] and fl["done"] == {"state": "done", "msg": "", "export": None}
+              and fl["last"] == "done" and fl["job"] is None and fl["writes"] == 0,
+              f"J-P1 대기(앞 2 = 실행 중 1 + 번호가 작은 대기 1) → 실행 중 → 빠짐 → 기록 success = 끝 {fl['seen']} {fl['done']}")
+        check(fl["stored"] == {"stage": "apply", "pid": "pid-1", "number": 5} and fl["after"] is None
+              and fl["comfy"] == ["POST api/prompt", "GET api/history/pid-1", "GET api/queue"],
+              f"J-P1 sessionStorage 에 {{stage, pid, number}} → 끝나면 지움, ComfyUI 호출은 prompt·history·queue 뿐(기록 지우지 않음) {fl['comfy']}")
+    en = res.get("ends") or {}
+    if "cached" in en:
+        check(en["cached"]["state"] == "done" and en["cancelled"] == {"state": "cancelled", "msg": "취소됨", "export": None}
+              and en["error"] == {"state": "error", "msg": "BMKDesignPatchImportPSD: PSD 를 열 수 없습니다", "export": None},
+              f"J-P1 끝 판정: 캐시만 = 끝, interrupted = 취소됨, execution_error = 오류(메시지 그대로) {en}")
+        check(en["gone"]["state"] == "gone" and en["gonePolls"] == 3 and en["goneAfter"] is None,
+              f"J-P1 대기열에도 기록에도 없음 3회 = 사라짐(busy 풀림) {en['gone']} {en['gonePolls']}")
+        check((en.get("unread") or {}).get("state") == "done" and en.get("unreadPolls") == 5,
+              f"J-P1 기록을 읽지 못한 폴링(JSON 아님 3회·500 1회)은 대기열에 없어도 사라짐으로 세지 않음 → 기록 success = 끝 "
+              f"{en.get('unread')} {en.get('unreadPolls')}")
+    rs = res.get("resume") or {}
+    if "resumed" in rs:
+        check(rs["resumed"] is True and rs["running"] == "pid-9" and rs["done"]["stage"] == "export" and rs["done"]["res"]["export"] == hx[0]
+              and rs["after"] is None and set(rs["paths"]) == {"GET api/history/pid-9", "GET api/queue"} and rs["again"] is False
+              and rs["broken"] is False and rs["noStore"] is False and rs["twice"] is False and rs["ends"] == 1,
+              f"J-P1 이어 받기: 다시 연 창이 저장된 프롬프트를 폴링만(템플릿·큐 없음), 폴링 중이면 다시 이어 받지 않음, 끝나면 지움, 깨진 값·저장소 없음은 무시 {rs}")
+    ex = res.get("exports") or {}
+    if "new" in ex:
+        exp_prompt = R["GET /pipeline/prompt"]["alt"]["export"]["prompt"]
+        check(all(ex[o["outcome"]]["export"] == o and ex[o["outcome"]]["last"] == o for o in hx)
+              and all(ex[o["outcome"]]["front"] is False and ex[o["outcome"]]["keys"] == ["prompt", "front"] and ex[o["outcome"]]["prompt"] == exp_prompt for o in hx)
+              and ex["oldNode"] is None,
+              f"J-P1 Export outcome new·unchanged·empty = history bmk_dp_export, export 는 대기열 뒤(front false), 옛 노드 = 판정 없음 {ex.get('oldNode')}")
+    rf = res.get("refuse") or {}
+    if "run" in rf:
+        check(all(rf[k]["posts"] == 0 and rf[k]["job"] is None and (rf[k]["err"] or "").startswith("큐에 넣지 않음") for k in ("run", "draft", "numeric", "other", "empty"))
+              and "유료 노드 dp_run" in rf["run"]["err"] and "유료 노드 dp_draft" in rf["draft"]["err"]
+              and rf["check"] == {"apply": "", "export": ""} and rf["body"] == {"prompt": {"dp_review": {}}, "front": True},
+              f"J-P1/B12″ 가짜 서버가 Run·Spec Draft·숫자 키·다른 클래스·빈 템플릿을 주면 /api/prompt 0회 {rf}")
+    gt = res.get("gates") or {}
+    if "confirm" in gt:
+        check(gt["confirm"]["err"]["reason"] == "confirm_settings" and gt["confirm"]["err"]["status"] == 409 and gt["confirm"]["posts"] == 0
+              and gt["noPsd"]["err"]["reason"] == "no_psd" and gt["noPsd"]["posts"] == 0,
+              f"J-P1 409 confirm_settings·no_psd = 큐 없음(이유 그대로 — 패널은 설정을 엶) {gt['confirm']}")
+        check(gt["old"] == {"old": True, "err": None, "posts": 0, "job": False} and gt["unknownKey"]["old"] is False and gt["unknownKey"]["err"]["status"] == 404,
+              f"J-P1 /pipeline/prompt 404(JSON 아님 — 라우트 없는 옛 서버) = {{old}} → 호출자가 탭 반영, 등록 안 된 키 404 는 오류 {gt['old']} {gt['unknownKey']}")
+        check(gt["missing"]["err"]["msg"].startswith("ComfyUI 재시작 필요") and not gt["missing"]["job"]
+              and "Prompt outputs failed validation" in gt["invalid"]["err"]["msg"] and "dp_prepare: Value not in list" in gt["invalid"]["err"]["msg"]
+              and gt["paid"]["err"] is not None and gt["paid"]["gets"] == 0,
+              f"J-P1 노드 없음 400 = 'ComfyUI 재시작 필요', 검증 실패 = 메시지 그대로, 유료 stage 는 요청 없이 거절 {gt['missing']} {gt['invalid']} {gt['paid']}")
+    bz = res.get("busy") or {}
+    if "posts" in bz:
+        check(bz["posts"] == 1 and bz["second"] == "큐에 넣는 중입니다" and "실행이 끝난 뒤 다시" in (bz["third"] or "")
+              and bz["planned"] is False and bz["planGets"] == 0,
+              f"J-P1 busy: 넣는 중·실행 중 연타 = /api/prompt 1회, 실행 중엔 계획을 부르지 않음 {bz}")
+    qt = res.get("quiet") or {}
+    if "changes" in qt:
+        check(qt["changes"] == 2 and qt["polls"] >= 4 and qt["afterMove"] == 3,
+              f"J-P1 폴링 중 자리(실행 중·앞 작업 수)가 그대로면 다시 그리지 않음(큐 1 + 첫 자리 1), 실행 중으로 바뀌면 1 {qt}")
+    pl = res.get("plans") or {}
+    if "stale" in pl:
+        st = pl["stale"]
+        check(st["r1"] is False and st["r2"] is True and st["only"] == "001_38a818,002_d98f99"
+              and st["q"] == [{"root": "fe410d7f025d", "only": "001_38a818", "style": "0"}, {"root": "fe410d7f025d", "only": "001_38a818,002_d98f99", "style": "1"}],
+              f"J-P1 낡은 계획 응답(먼저 보낸 것)은 버림, 쿼리 = 정규 only·style 1|0 {st}")
+        check(pl["busyOnce"]["ok"] is True and pl["busyOnce"]["gets"] == 2 and pl["busyOnce"]["ms"] >= 450 and pl["busyOnce"]["err"] is None
+              and pl.get("busyLong") == {"ok": True, "gets": 4, "err": None}
+              and pl["busyTwice"]["ok"] is False and pl["busyTwice"]["gets"] == 6 and pl["busyTwice"]["err"] and pl["busyTwice"]["kept"] is True
+              and pl["busyTwice"].get("left") == 0,
+              f"J-P1 계획 202 = 0.5초 간격으로 다시(r1-09 — 요청 6번까지: 차가운 계산 1–2초 동안 202 세 번 뒤 받음), 6번 모두 202 면 멈추고 앞 계획 유지 "
+              f"{pl['busyOnce']} {pl.get('busyLong')} {pl['busyTwice']}")
+        check(pl.get("jobMid") == {"ok": False, "gets": 1, "job": True, "kept": True},
+              f"r1-09 202 로 다시 묻기를 기다리는 사이 이 Studio 의 무료 큐(반영)가 시작되면 그만둠(반쪽 상태 계획을 받지 않음 — 앞 계획 유지) {pl.get('jobMid')}")
+        check(pl["chip"] == {"ok": True, "q": {"root": "fe410d7f025d"}, "only": None, "hash": ""},
+              f"J-P1 only 없는 계획(칩용) = only·style 쿼리 없음, 선택 해시 '' {pl['chip']}")
+        check(pl["superseded"] == {"a1": False, "a2": True, "gets": 2, "only": "002_d98f99"},
+              f"J-P1 202 로 기다리는 동안 새 계획 요청이 오면 앞 요청은 다시 묻지 않음(GET 2회) {pl['superseded']}")
+    sg = res.get("settings") or {}
+    if "err" in sg:
+        check(sg["err"] and sg["err"]["status"] == 409 and sg["after409"] == {"tail": ["POST pipeline/settings", "GET pipeline"], "writes": 0}
+              and sg["writes"] == 1 and sg["tail"] == ["POST pipeline/settings", "GET pipeline"] and sg["busy"] is False
+              and sg["body"] == {"root": "fe410d7f025d", "rev": 3, "section": "prepare", "values": R["GET /pipeline"]["ok"]["settings"]["prepare"]},
+              f"J-P1 설정 저장 rev 409 → 다시 읽기(쓰기 신호 없음), 성공 = 쓰기 신호 1·다시 읽기, 본문 = {{rev, section, values}} {sg}")
+        check(sg["twice"] == {"second": "앞 저장을 처리하는 중입니다 — 끝난 뒤 다시 하세요", "posts": 1}
+              and sg["stale"] == {"l1": False, "l2": True, "rev": 12},
+              f"J-P1 설정 저장 연타 = 두 번째 거절(POST 1회), 늦게 온 앞 GET /pipeline 응답은 버림(나중 읽기 유지) {sg['twice']} {sg['stale']}")
+        check(sg["broken"]["rev"] is None and sg["broken"]["body"]["rev"] is None and sg["broken"]["body"]["section"] == "prepare",
+              f"J-P1 깨진 pipeline.json(GET rev null) 덮어쓰기 = POST rev null(§2.1 — 0 이면 서버 409) {sg['broken']}")
+    cn = res.get("cancel") or {}
+    if "ok" in cn:
+        check(cn["ok"] is True and cn["first"] == {"state": "cancelled", "msg": "대기 중에 취소함", "export": None} and cn["del"] == {"delete": ["pid-1"]}
+              and cn["running"] is False and cn["dels"] == 1 and cn["last"] == "done",
+              f"J-P1 대기 중 취소 = /api/queue delete → 취소됨, 실행 중이면 취소하지 않음 {cn}")
+        check(cn["race"] == {"cancelled": True, "ends": 1, "last": "cancelled"},
+              f"J-P1 기록을 읽는 사이 취소로 끝나면 늦게 온 기록으로 다시 끝내지 않음(끝 알림 1회) {cn['race']}")
+        check(cn.get("started") == {"cancelled": False, "job": "pid-1", "end": None, "dels": 1, "after": "done"},
+              f"J-P1 delete 직전에 실행이 시작됨(delete 200 뒤에도 대기열에 남음) = 취소됨으로 끝내지 않고 job 을 이어서 폴링 → 기록 = 끝 {cn.get('started')}")
+        check(cn.get("finished") == {"cancelled": False, "state": "done", "export": hx[0], "ends": 1, "last": "done", "job": None},
+              f"J-P1 delete 직전에 실행을 시작해 곧 끝남(delete 뒤 대기열에 없고 기록 success — r1-25) = '대기 중에 취소함'이 아니라 기록의 끝(Export 결과 그대로) "
+              f"{cn.get('finished')}")
+    af = res.get("applyFree") or {}
+    if "found" in af:
+        old, r404, nrm, npipe, nre = (af[k] for k in ("oldState", "route404", "normal", "noPipe", "noRerolls"))
+        check(af["found"] and old["comfy"] == [True] and old["pipe"] == 0 and len(old["confirms"]) == 1 and "대기 재굴림 2건" in old["confirms"][0]
+              and any("ComfyUI 재시작 필요" in t for t in old["toasts"]),
+              f"J-P1 옛 서버(state 에 pipeline_rev 없음) → queueInComfy(true) 대체 + 재굴림 과금 확인 + 'ComfyUI 재시작 필요' {old}")
+        check(r404["pipe"] == 1 and r404["stage"] == "apply" and r404["comfy"] == [True] and nrm["pipe"] == 1 and nrm["comfy"] == [] and nrm["confirms"] == []
+              and npipe["comfy"] == [True] and nre["confirms"] == [] and nre["comfy"] == [True],
+              f"J-P1 /pipeline/prompt 404 → 탭 반영, 정상 = 무료 반영만(탭 요청 없음), pipeline.js 없음 → 탭 반영, 재굴림 0 = 확인 없음 {r404} {nrm}")
+        ono, rno, pno = af["oldNo"], af["route404No"], af["noPipeNo"]
+        check(all(x["comfy"] == [] and x["toasts"] == [] and len(x["confirms"]) == 1 and "대기 재굴림 2건" in x["confirms"][0] for x in (ono, rno, pno))
+              and ono["pipe"] == 0 and rno["pipe"] == 1 and pno["pipe"] == 0,
+              f"J-P1 탭 Review 부분 실행 대체(옛 state·/pipeline/prompt 404·pipeline.js 없음 — 대기 재굴림 과금) 확인 창에서 취소 = queueInComfy 없음·"
+              f"'보냈습니다' 토스트 없음 {ono} {rno} {pno}")
+        nr = af.get("notReady") or {}
+        check(len(npipe["confirms"]) == 1 and "Studio 창 새로고침 필요" in npipe["confirms"][0] and "새로고침하면 무료 반영(재굴림 과금 없음)" in npipe["confirms"][0]
+              and any("Studio 창 새로고침 필요" in t for t in npipe["toasts"]) and not any("ComfyUI 재시작 필요" in t for t in npipe["toasts"] + npipe["confirms"])
+              and not any("새로고침" in t for t in old["toasts"] + old["confirms"] + r404["toasts"] + r404["confirms"])
+              and (nr.get("stale") or "").startswith("Studio 창을 새로고침해야 진행(G)을") and (nr.get("old") or "").startswith("ComfyUI 를 재시작해야 진행(G)을")
+              and (nr.get("loaded") or "").startswith("ComfyUI 를 재시작해야"),
+              f"r1-14 서버는 S3(state pipeline_rev)인데 이 창에 pipeline.js 가 없음(재시작 전에 연 창) = 'Studio 창 새로고침 필요'(재시작 아님) — 반영 확인 창·토스트·"
+              f"모드 단추 안내(notReady), 옛 서버·라우트 404 는 그대로 '재시작' {npipe} {nr}")
+    rt = res.get("rerollTab") or {}
+    if "found" in rt:
+        no_tab = "큐를 보낼 탭이 없음: 재굴림은 예약만 되고 다음 Run 때(선택과 무관) 함께 과금"
+        check(rt["found"] and len(rt["noTab"]["confirms"]) == 1 and no_tab in rt["noTab"]["confirms"][0] and "ComfyUI 탭에 큐 요청을 보냅니다" not in rt["noTab"]["confirms"][0]
+              and "ComfyUI 탭에 큐 요청을 보냅니다" in rt["tab"]["confirms"][0] and no_tab not in rt["tab"]["confirms"][0]
+              and rt["noTab"]["writes"] == ["reroll"] and rt["tab"]["writes"] == ["reroll"]
+              and any("큐를 보낼 탭 없음(예약만 — 다음 Run 때 과금)" in t for t in rt["noTabKey"]["toasts"])
+              and not any("큐를 보낼 탭 없음" in t for t in rt["tabKey"]["toasts"]) and rt["noTabKey"]["writes"] == [],
+              f"r1-04 R(재굴림): opener(Open Board 로 연 탭)가 없으면 확인 창·첫 R 토스트 = '큐를 보낼 탭 없음 — 예약만, 다음 Run 때 과금'(채널로 찾은 탭이 있어도) {rt}")
+
+    # J-P2 채택
+    ad = res.get("adopt") or {}
+    if "flow" in ad:
+        f = ad["flow"]
+        dv = R["GET /draft"]["ok"]
+        base = {"root": "fe410d7f025d", "crop_id": dv["id"], "op": "adopt", "seen": dv["seen"], "crop_sig": dv["crop_sig"], "value": dv["adopt"]["value"]}
+        check(f["paths"] == ["GET draft", "POST draft/adopt", "POST draft/adopt"] and f["q"] == {"root": "fe410d7f025d", "crop": "008_e1d4cc"}
+              and f["bodies"] == [dict(base, preview=True), dict(base, preview=False)] and f["writes"] == 1 and f["shown"] == [True],
+              f"J-P2 GET /draft → 미리보기(preview true) → 확인 → 쓰기(같은 seen·crop_sig·value) → 쓰기 신호 1 {f}")
+        check(ad["declined"]["r"] is None and ad["declined"]["paths"] == ["POST draft/adopt"] and ad["declined"]["writes"] == 1
+              and ad["declined"]["body"]["op"] == "clear" and "value" not in ad["declined"]["body"],
+              f"J-P2 확인 거절 = 미리보기만(쓰기 없음) {ad['declined']}")
+        c = ad["conflict"]
+        check(c["c409"] and c["c409"]["status"] == 409 and c["c409"]["view"] == "008_e1d4cc" and c["paths"] == ["POST draft/adopt", "POST draft/adopt", "GET draft"]
+              and c["body"]["op"] == "set" and c["body"]["text"] == "A: metal skirt plaque" and c["writes"] == 1,
+              f"J-P2 쓰기 409 → GET /draft 다시 읽기(e.view), 쓰기 신호 없음 {c}")
+        check(ad["c400"] and ad["c400"]["status"] == 400 and ad["c400"]["reason"] and ad["busy"] is False and ad["writes"] == 1
+              and ad["pvBody"] == {"root": "fe410d7f025d", "crop_id": dv["id"], "op": "set", "text": "A: x", "seen": dv["seen"], "crop_sig": dv["crop_sig"], "preview": True},
+              f"J-P2 거절 400 은 이유 그대로, [수정] 미리보기 = preview true(쓰지 않음) {ad['c400']} {ad['pvBody']}")
+        check(ad["twice"] == {"second": "앞 저장을 처리하는 중입니다 — 끝난 뒤 다시 하세요", "posts": 2, "writes": 1},
+              f"J-P2 채택 연타 = 두 번째 거절(앞 채택의 미리보기·쓰기 POST 2회만) {ad['twice']}")
+    a_s = res.get("adoptState") or {}
+    if "add" in a_s:
+        check(a_s["add"] == {"can": True, "why": ""} and a_s["adopted"] == {"can": False, "why": "이미 채택"}
+              and a_s["human"] == {"can": False, "why": "사람 값 있음 — [수정]"} and a_s["deleted"] == {"can": False, "why": "해제함 — 다시 쓰려면 [수정]"}
+              and a_s["specError"] == {"can": False, "why": a_s["specReason"]} and "원장 초안이 아직 스펙에 안 쓰임" in a_s["unwritten"]["why"]
+              and a_s["refused"] == {"can": False, "why": "mock 초안 — 실제 백엔드로 다시 초안"} and a_s["nodeOld"]["why"] == "노드 값 그대로 — 바꾸려면 [수정]"
+              and a_s["none"] == {"can": False, "why": "채택할 제안 없음"} and not any(a_s[k]["can"] for k in ("unwritten", "specError")),
+              f"J-P2 kind 별 채택 단추: add 만 켬, 거절 이유·keep_human·keep_deleted·이미 채택·노드 값·unwritten·스펙 오류 {a_s}")
+    tx = res.get("texts") or {}
+    if "run" in tx:
+        check("Run: 승인 필요(선택 1크롭) 4건 ≈ $2.40–3.16(≈ 506–667 크레딧)" in tx["run"]["line"] and "재굴림(사전 승인) 1건 ≈ $0.62 도 함께 과금(선택과 무관)" in tx["run"]["line"]
+              and "해시 3f9a1c2b7d10" in tx["run"]["line"] and tx["run"]["rows"] == ["새 셀 — 이전 셀 대비 변경: 프롬프트 × 2", "새 셀(처음 실행) × 2"]
+              and tx["mock"].endswith("[MOCK]") and tx["running"]["dim"] is True and "실행 중" in tx["running"]["line"] and "해시 없음" in tx["nosel"]
+              and tx["runErr"]["dim"] is True and "계산하지 못함" in tx["runErr"]["line"],
+              f"J-P1 §3.3 Run 줄(승인 필요(선택 n크롭 — C13)·재굴림 함께 과금·해시·MOCK·실행 중 흐림) {tx['run']['line']}")
+        check(tx["draft"]["line"].startswith("초안: 승인 필요 1크롭 ≈ 27(최대 47) 크레딧 · 약 5분") and "갱신 가능 1" in tx["draft"]["line"]
+              and "해시 b21c09e4f7a3" in tx["draft"]["line"] and any("못 쓴 스펙 1(004_90a231)" in x for x in tx["draft"]["rows"])
+              and tx["draftRun"]["dim"] and tx["draftErr"]["dim"] and "용어집 형식 오류" in tx["draftErr"]["line"]
+              and "로컬 Qwen 약 5분" in tx["qwen"] and tx["style"] == "1크롭 + 화풍",
+              f"J-P1 §3.3 초안 줄(크레딧·분·갱신 가능·해시·못 쓴 스펙·로컬 Qwen·화풍) {tx['draft']['line']}")
+        sa, so = tx.get("styleAll") or {}, tx.get("styleOnly") or {}
+        check(sa.get("what") == "2크롭 + 화풍" and (sa.get("line") or "").startswith("초안: 승인 필요 2크롭 + 화풍 ")
+              and "갱신 가능 1 + 화풍" in sa["line"] and "선택 밖 1 + 화풍" in sa["line"]
+              and sa.get("rows", [])[:4] == ["001_870cd9: new", "002_3703ed: new", "화풍: 화풍 신규", "화풍: 건너뜀 — _project.json 오류 — 시험"]
+              and so.get("what") == "화풍" and "선택 밖 화풍" in (so.get("line") or "") and not any("_style" in x for x in sa.get("rows", []) + [sa.get("line", "")]),
+              f"r1-02 화풍 단위 crop_id = vlm.STYLE_ID('_style' — 서버 실제 값): 크롭으로 세지 않음('2크롭 + 화풍'), 행 이름 '화풍', 갱신 가능·선택 밖·건너뜀도 "
+              f"따로 셈 {sa} {so}")
+        sf = tx.get("styleFix") or {}
+        check(sf.get("what") == "1크롭 + 화풍" and "화풍: 화풍 신규" in (sf.get("rows") or []) and "해시 7d2e94b1c0a5" in (sf.get("line") or ""),
+              f"r1-02 정본 alt.style(서버 화풍 단위 '_style') → 초안 줄 '1크롭 + 화풍'·'화풍:' 행 {sf}")
+    import bmk_design_patch_vlm as dvlm
+    su = re.search(r'const STYLE_UNIT = "([^"]*)";', pcode)
+    check(bool(su) and su.group(1) == dvlm.STYLE_ID and '"_project"' not in pcode,
+          f"r1-02 pipeline.js STYLE_UNIT = vlm.STYLE_ID({dvlm.STYLE_ID!r} — 초안 계획 units·refresh_available·skipped·filtered 의 화풍 crop_id) {su and su.group(1)!r}")
+    ky = res.get("keys") or {}
+    if "pipe" in ky:
+        pk = ky["pipe"]
+        check(all(pk[k] == {"calls": [], "prevented": True} for k in ("Space", "KeyR", "KeyX", "ArrowDown", "KeyE", "KeyT"))
+              and pk["KeyB"]["calls"] == [["setBg", "base"]] and pk["KeyG"]["calls"] == [["setPipe", False]],
+              f"J-P2 진행 모드: 검토 키(Space·R·X·화살표)·E·T 끔, 뷰어 키(B)·G 는 듦 {pk}")
+        rv, ty = ky["review"], ky["typing"]
+        check(rv["Space"]["calls"] == [["setStar"]] and rv["KeyG"]["calls"] == [["setPipe", True]] and rv["KeyR"]["calls"] == [["reroll", False]]
+              and all(ty[k] == {"calls": [], "prevented": False} for k in ("r", "g", "ime")),
+              f"J-P2 입력칸 포커스(IME 조합 포함)면 보드 키 무시, 검토 모드 G = 진행 모드로 {ty} {rv}")
+
+    # J-P4 hello
+    he = res.get("hello") or {}
+    if "reply" in he:
+        rp = he["reply"]
+        ok1 = len(rp) == 1 and rp[0][1] == "http://127.0.0.1:8189" and {k: v for k, v in rp[0][0].items() if k != "tab"} \
+            == {"type": "bmk-dp-hello", "id": "h1", "ext": 2, "submit": "unsupported", "busy": True} and isinstance(rp[0][0].get("tab"), str)
+        check(ok1 and he["otherOrigin"] == 0 and he["otherTab"] == 0 and he["ownTab"] == 1 and he["badId"] == 0,
+              f"J-P4 탭 확장 hello(opener 길) = {{id, tab, ext 2, submit unsupported, busy}} 같은 출처로 · 다른 출처·다른 tab ID·id 없음 무시 {he['reply']}")
+        ch = he["channel"]
+        check(len(ch) == 1 and ch[0]["id"] == "c1" and ch[0]["ext"] == 2 and ch[0]["tab"] == rp[0][0]["tab"],
+              f"J-P4 채널(BroadcastChannel bmk-dp) hello = 채널로 답함, tab 지정·응답 모양 메시지는 답하지 않음 {ch}")
+        check(he["one"]["first"] == "wait" and he["one"]["state"] == "ok" and he["one"]["via"] == "channel" and he["one"]["ext"] == 2
+              and he["one"]["submit"] == "unsupported" and he["one"]["busy"] is True and he["one"]["changes"] == ["ok"],
+              f"J-P4 Studio(opener 없음): 채널 응답 하나 = 연결 {he['one']}")
+        check(he["many"]["state"] == "many" and he["many"]["tab"] is None and he["none"]["state"] == "none" and he["noChannel"]["state"] == "none",
+              f"J-P4 채널 응답 둘 = 연결 안 함(many), 없음 = none {he['many']['state']} {he['none']['state']}")
+        check(he["opener"]["state"] == "ok" and he["opener"]["via"] == "opener" and he["openerTabIsC"] is True
+              and he["openerOld"]["state"] == "old" and he["openerOld"]["via"] == "opener"
+              and he["openerEvil"]["state"] == "old" and he["openerClosed"]["via"] == "channel",
+              f"J-P4 opener 우선(그 탭 응답만 — 채널 탭이 있어도), opener 무응답 = 옛 확장, 다른 출처 응답 무시, 닫힌 opener = 채널 "
+              f"{he['opener']} {he['openerOld']['state']} {he['openerEvil']['state']} {he['openerClosed']['via']}")
+        sp, e1 = he.get("openerSpoof") or {}, he.get("openerExt1") or {}
+        check(sp.get("state") == "old" and sp.get("via") == "opener" and sp.get("tab") is None and sp.get("changes") == ["old"],
+              f"J-P4 opener 가 있으면 opener 응답만(D6·§4.2): 같은 출처지만 opener 가 아닌 창이 이번 id 로 답해도 무시 → 옛 확장 {sp}")
+        check(e1.get("state") == "old" and e1.get("via") == "opener" and e1.get("tab") == "t-ext1" and e1.get("ext") == 1,
+              f"J-P4 opener 응답의 확장 판 < 2 = 옛 확장(old — 연결로 치지 않음) {e1}")
+        pe = (he.get("periodic") or {}).get("seen") or []
+        pe = pe[[x[0] for x in pe].index("ok"):] if any(x[0] == "ok" for x in pe) else pe  # 부하로 첫 판정이 응답 전에 끝난 none 은 뺌
+        check(len(pe) == 3 and [x[0] for x in pe] == ["ok", "none", "ok"] and pe[0][1] == he["opener"]["tab"] and pe[1][1] is None
+              and isinstance(pe[2][1], str) and pe[2][1] != pe[0][1] and he["periodic"]["tabs"] == 1,
+              f"J-P4 주기적인 다시 hello(§4.2 — 2초): 탭이 닫히면 none, 새로고침(새 tab ID)으로 다시 붙으면 ok — 첫 판정에서 굳지 않음 {he.get('periodic')}")
+    tb = res.get("tabBadge") or {}
+    if "found" in tb:
+        okc = "채널로 찾은 ComfyUI 탭(확장 판 2)"
+        check(tb["found"] and tb["ok"][:2] == ["ComfyUI 탭 찾음(채널) — 재굴림·ComfyUI 큐는 Open Board 창에서", "badge b-wait"] and tb["ok"][2].startswith(okc)
+              and tb["okOpener"][:2] == ["ComfyUI 탭 연결(S3)", "badge b-run"] and tb["okOpener"][2].startswith("Open Board 로 연 ComfyUI 탭(확장 판 2)")
+              and tb["old"][:2] == ["탭 확장이 옛 판 — ComfyUI 탭 새로고침", "badge b-wait"]
+              and (tb.get("silent") or [None, None])[:2] == ["ComfyUI 탭 응답 없음 — 탭 새로고침 또는 Open Board 로 다시 열기", "badge b-wait"]
+              and "Open Board 로 다시 열기" in tb["silent"][2] and tb["none"][:2] == ["ComfyUI 탭 없음", "badge b-dim"]
+              and tb["many"][1] == "badge b-wait" and "Open Board 로 다시 여세요" in tb["many"][0] and tb["wait"][1] == "badge b-dim"
+              and len({tb[k][0] for k in ("ok", "okOpener", "old", "silent", "none", "many", "wait")}) == 7,
+              f"§3.8 머리줄 탭 배지(board.js renderHeader·TAB_BADGE): opener 연결 = 'ComfyUI 탭 연결(S3)'(초록), 채널로만 찾은 탭 = 초록 '연결'이 아님(r1-04 — "
+              f"R·ComfyUI 큐는 opener 로만 감), opener 무응답 = '응답 없음 — 새로고침 또는 Open Board 로 다시'(r1-28 — 옛 판 단정은 확장 판 < 2 일 때만)·"
+              f"none·many·wait 일곱 문구가 다름 {tb}")
+    check("tabLink = window.DPPipeline.link(window, renderHeader);" in bcode, "board.js: 탭 연결 상태가 바뀌면 머리줄(배지)을 다시 그림")
+    bg = res.get("boardGo") or {}
+    if "found" in bg:
+        check(bg == {"found": True, "unknown": [], "known": [["setPipe", False], ["selectTarget", "002_d98f99/A"]],
+                     "select": [["selectTarget", "008_e1d4cc/A"]], "selectNone": []},
+              f"§3.6 ★ 점검 줄 = board.js goTarget(진행 모드를 끈 뒤 그 타깃 — 없는 키는 아무것도 안 함), 진행 목록 선택 = select 콜백(뷰어를 그 크롭 첫 타깃으로) {bg}")
+
+    # 패널(작은 DOM 대역)
+    pn = res.get("panel") or {}
+    if "head" in pn:
+        check(all(x in pn["head"] for x in ("반영 필요 2", "설정 확인 필요", "Run 승인 필요(전체) 4건 $2.4", "초안 1", "★ 3/5", "Export r76"))
+              and pn["headTitle"] == "레이아웃 미반영 1\nPrepare 입력이 바뀜(마지막 Prepare 뒤 스펙·레이아웃·레퍼런스·용어집)"
+              and pn["firstPlan"] == [{"root": "fe410d7f025d"}],
+              f"패널 머리줄(모든 모드) = 반영 필요(state 미반영 크롭과 계획 apply_pending·import_pending 의 '레이아웃 미반영(rev 7)'은 한 번만 + "
+              f"apply_pending 의 Prepare 입력 바뀜)·설정 확인·Run 승인 필요(전체 — only 없는 계획)·"
+              f"초안·★·Export, Studio 를 연 뒤 only 없는 계획 한 번 {pn['head']!r} {pn['headTitle']!r}")
+        gl = R["GET /pipeline"]["ok"]["settings"]["import"]["glossary_path"]
+        check(pn["applyWarn"] == ["prepare.n: 마지막 Prepare 4 · Studio 2 — 셀은 그대로, 대기 호출의 장 수·비용·승인 해시가 바뀜",
+                                  f'import.glossary_path: 마지막 Import "" · Studio {gl} — 마지막 Import 와 다름 — 다음 반영이 크롭 소스·레퍼런스를 바꿀 수 있음'],
+              f"편집기 반영 확인 창 맨 앞 줄 = Prepare 갈라짐(applyWarn), 그 뒤 Import 갈라짐(r1-01 권고 — 다음 반영이 크롭 소스·레퍼런스·cell_key 를 바꿈) "
+              f"{pn['applyWarn']}")
+        check(pn["enterPlan"] == {"root": "fe410d7f025d", "only": "001_38a818,002_d98f99,003_2f8f50,008_e1d4cc,012_93661a", "style": "0"}
+              and all(pn["sections"][k] for k in pn["sections"] if k not in ("새 PSD",)) and not pn["sections"]["새 PSD"],
+              f"진행 모드 진입 = 지금 선택(기본 전부, 정규 only)의 계획, 패널 칸 {pn['sections']}")
+        check(pn.get("hashNote") == ["해시는 그래프 Import PSD 위젯(같은 큐에서 먼저 돎)·Run·Draft 노드의 only·Prepare·초안 설정과 Run 노드의 "
+                                     "retry_failed·retry_orphans(Studio false·false) 가 Studio 와 같을 때만 같습니다 — 다르면 과금 없이 드라이런"],
+              f"r1-19·r3-13 해시 안내 = Run 해시를 바꾸는 Run 위젯 retry_failed·retry_orphans 와 지금 Studio 값, 같은 큐에서 먼저 도는 그래프 Import PSD 위젯"
+              f"(Studio 는 그래프 위젯을 모름 — 다르면 드라이런) {pn.get('hashNote')}")
+        s3b = "S3b 전 — 그래프의 승인 버튼 사용"
+        check(pn["approve"]["run"] and pn["approve"]["run"][:2] == [True, s3b] and pn["approve"]["draft"][:2] == [True, s3b]
+              and pn["approve"]["run"][2].startswith("Run 승인 4건 ≈ $2.40–3.16") and pn["copy"] == [True, True],
+              f"S3a 승인 단추 = 꺼짐('S3b 전 — 그래프의 승인 버튼 사용'), 반영 필요면 해시 복사도 끔 {pn['approve']} {pn['copy']}")
+        check(any("008_치마금속장식 · A — ★ 없음" in x for x in pn["checks"]) and any("002_눈 · A — 분석 없는 ★" in x for x in pn["checks"])
+              and any("이음매 bad 1" in x for x in pn["checks"]) and any("003_리본 — 레이아웃 미반영(반영 뒤 Export)" in x for x in pn["checks"])
+              and "002_눈 · B — 중복 ★(같은 이미지는 A 에만)" in pn["checks"] and "002_눈 — 옛 크롭 ★ 1" in pn["checks"]
+              and not any(x.startswith("반영 필요: 레이아웃 미반영") for x in pn["checks"])
+              and pn["goTarget"] == ["008_e1d4cc/A", "002_d98f99/B", "002_d98f99/A"],
+              f"★ 점검(§3.6): ★ 없음·분석 없는 ★·중복 ★·옛 크롭 ★·이음매 bad·레이아웃 미반영(크롭 줄로만 — 반영 필요 줄로 다시 적지 않음), "
+              f"누르면 그 타깃(중복 ★ = 그 tid) {pn['checks']} {pn['goTarget']}")
+        check(pn["list"]["boxes"] == [True] * 5 and pn["list"]["chips"], f"왼쪽 목록 = 선택 체크(기본 전부)·계획 칩 {pn['list']}")
+        ad0 = pn.get("adoptDeclined") or {}
+        check(ad0.get("flags") == [True] and ad0.get("refresh") == 0 and ad0.get("toasts") == [] and "다음 반영에서 이 크롭 새 셀" in (ad0.get("confirm") or ""),
+              f"패널 [채택] 확인 창에서 취소 = 미리보기(preview true)만 — 쓰기(preview false)·state 재요청·토스트 없음 {ad0}")
+        a = pn["adopt"]
+        check(a["paths"][:3] == ["POST draft/adopt", "POST draft/adopt", "GET draft"] and a["previewFlags"] == [True, False]
+              and "다음 반영에서 이 크롭 새 셀" in (a["confirm"] or "") and a["toast"] and a["refresh"] >= 1 and a["winsLines"] == 1,
+              f"패널 [채택] = 미리보기 → 확인(영향 줄 — '레이아웃 문구가 이김'은 서버 warnings 한 줄만) → 쓰기 → 다시 읽기·state 재요청 {a}")
+        e = pn.get("edit") or {}
+        check(pn["editStart"] == R["GET /draft"]["ok"]["adopt"]["value"] and e.get("pv", {}).get("op") == "set" and e.get("pv", {}).get("preview") is True
+              and e["ime"] == 0 and e["writes"] == [["set", "A: metal skirt plaque", True], ["set", "A: metal skirt plaque", False]]
+              and e["kept"] is False and e.get("saveLeft") is False and e.get("again") == [] and e.get("focus") is False and e["closed"] is True,
+              f"패널 [수정]: 입력 즉시 미리보기 검사, IME 조합 Enter 는 보내지 않음, Enter = 미리보기 → 쓰기, 저장에 성공하면 입력칸·[저장]이 바로 닫힘(r1-11 — "
+              f"포커스를 놓아 미뤄 둔 다시 그리기가 돎, 다시 Enter 해도 '문구가 비었습니다' 오류 없음) {e}")
+        wsum = sum(len(v) for v in R["GET /pipeline"]["ok"]["widgets"].values())
+        se = pn["settings"]
+        check(se["fields"] == wsum and se["boxes"] == ["Import PSD", "Candidate In", "Prepare", "Spec Draft", "Run", "Analyze", "Compose", "Export"]
+              and se["draftConfirm"] is True and se["draftRoundDisabled"] is True and se["writeModes"] == ["fill", "refresh"],
+              f"설정 패널 = GET /pipeline widgets 그대로(위젯 {wsum}개·확인 필요 표시·draft_round 읽기 전용·write_mode fill/refresh) {se}")
+        sv = se.get("saved") or {}
+        check(sv.get("section") == "prepare" and sv.get("rev") == 3 and (sv.get("values") or {}).get("n") == 3
+              and type((sv.get("values") or {}).get("n")) is int and set(sv.get("values") or {}) == set(R["GET /pipeline"]["ok"]["widgets"]["prepare"]),
+              f"설정 저장 = 절 통째(키 전부)·숫자 타입 {sv}")
+        check(pn["none"] == {"q": {"root": "fe410d7f025d"}, "text": True}
+              and pn["need"] == {"root": "fe410d7f025d", "only": "001_38a818,003_2f8f50,012_93661a", "style": "0"},
+              f"선택 없음 = 계획·승인 끔(only 없는 계획만), 승인 필요만 = Run 승인 필요·초안 대기 크롭 {pn['none']} {pn['need']}")
+        dc = pn["applyDeclined"]
+        check("재굴림 대기 1건(사전 승인)은 이 반영에서 돌지 않음" in dc["confirm"] and dc["toasts"] == [] and "실행 중:" not in dc["head"]
+              and not {"GET pipeline/prompt", "POST api/prompt"} & set(dc["paths"]),
+              f"패널 [반영] 확인 창에서 취소 = GET /pipeline/prompt·POST /api/prompt 0회, 토스트·머리줄 실행 중 없음 {dc}")
+        ap = pn["apply"]
+        check(ap["confirm"].startswith("prepare.n: 마지막 Prepare 4") and "무료 반영(Import → Prepare → Analyze → Review 템플릿, 탭 불필요)" in ap["confirm"]
+              and "재굴림 대기 1건(사전 승인)은 이 반영에서 돌지 않음" in ap["confirm"] and "원장에만 남은 초안" in ap["confirm"]
+              and ap["body"] == {"prompt": R["GET /pipeline/prompt"]["ok"]["prompt"], "front": True} and "실행 중: 반영(apply)" in ap["head"],
+              f"패널 [반영] = 확인 창(갈라짐 줄 먼저·재굴림은 돌지 않음) → 무료 큐(front true) → 머리줄 실행 중 {ap}")
+        check(pn["applyDone"]["toast"] and pn["applyDone"]["refresh"] >= 1 and "실행 중" not in pn["applyDone"]["head"]
+              and pn["exportBody"] == {"prompt": R["GET /pipeline/prompt"]["alt"]["export"]["prompt"], "front": False}
+              and pn["exportDone"]["toast"] and pn["exportDone"]["panel"] and pn["copied"] == hx[0]["psd"] and pn["errors"] == [] and pn["left"] == 0,
+              f"반영 끝 = 토스트·state 재요청, [Export] = 무료 큐(front false) → outcome new 표시·경로 복사, 오류 토스트 없음 {pn['applyDone']} {pn['exportDone']} {pn['errors']}")
+    allids = "001_38a818,002_d98f99,003_2f8f50,008_e1d4cc,012_93661a"
+    d_title, r_title = f"approve: b21c09e4f7a3  only: {allids}", f"approve: 3f9a1c2b7d10  only: {allids}"
+    pd = res.get("panelDim") or {}
+    if "clean" in pd:
+        check(pd["clean"]["copy"] == [False, False] and pd["clean"]["dimRow"] is False and pd["clean"]["titles"] == [d_title, r_title]
+              and pd["clean"]["head"] == "반영됨",
+              f"§3.3 흐림 조건이 하나도 없으면 초안·Run 해시 복사 = approve·only 한 줄, 머리줄 반영됨 {pd['clean']}")
+        dims = {k: pd[k] for k in ("pending", "confirm", "drift", "notes", "applyPending", "applyDup", "layoutChanged", "layoutNew", "layoutDup")}
+        check(all(v["copy"] == [True, True] and v["dimRow"] is True for v in dims.values()),
+              f"§3.3 '반영 뒤 다시 계산' 조건 하나씩(반영 필요 import_pending · confirm 남음 · Prepare 갈라짐 · 계획 notes(설정 쪽) · "
+              f"apply_pending(prepare_inputs 불일치) · 레이아웃 미반영) = 두 해시 복사 끔·흐림 줄 "
+              f"{ {k: (v['copy'], v['dimRow']) for k, v in dims.items()} }")
+        ap_, ad_ = pd["applyPending"], pd["applyDup"]
+        fp_r = "Prepare 입력이 바뀜(마지막 Prepare 뒤 스펙·레이아웃·레퍼런스·용어집)"
+        check(ap_["head"] == "반영 필요 1" and ap_["headTitle"] == fp_r and ap_["apply"][0] == fp_r
+              and ap_["star"] == [f"반영 필요: {fp_r} — 반영 뒤 Export"]
+              and ad_["head"] == "반영 필요 2" and ad_["headTitle"] == "레퍼런스 미반영(2크롭)\nPrepare 입력 지문 없음(지문을 남기기 전 Prepare)",
+              f"§5.1·§5.2·§3.6 계획 apply_pending(서버의 '반영 필요' 판정 — prepare_inputs 불일치)이 머리줄 '반영 필요'·반영 칸·★ 점검에 "
+              f"나옴(import_pending 과 같은 사유는 한 번) {ap_} {ad_['head']} {ad_['headTitle']!r}")
+        rr, dr = pd["runRunning"], pd["draftRunning"]
+        check(rr["copy"] == [False, True] and rr["runBusy"] is True and rr["dimRow"] is False and dr["draftBusy"] is True,
+              f"§2.4 Run 실행 중 = Run 줄만 흐림·Run 해시 복사 끔, Spec Draft 실행 중 = 초안 줄 '실행 중' {rr} {dr}")
+        sc = pd["starClean"]
+        check(sc["head"] == "반영됨" and (sc["apply"] or [""])[0].startswith("반영됨 — ") and sc["star"] == ["점검 통과 — 모든 타깃에 ★, 미반영 없음"]
+              and sc["copy"] == [False, False],
+              f"대조: import_pending [] · 모든 타깃 분석 있는 ★ = 머리줄·반영 칸 반영됨, ★ 점검 통과, 해시 복사 켬 {sc}")
+        unk = {k: pd[k] for k in ("draftRunning", "draftError", "qwenNodir", "planFail")}
+        check(all(v["head"] == "반영 상태 확인 못 함" and not any(x.startswith("반영됨") for x in v["apply"])
+                  and any(x.startswith("레퍼런스·채택·Import 설정 미반영을 확인하지 못함(") for x in v["apply"])
+                  and "점검 통과 — 모든 타깃에 ★, 미반영 없음" not in v["star"]
+                  and any(x.startswith("반영 상태를 확인하지 못함(") and x.endswith("— 계획을 다시 계산한 뒤 Export") for x in v["star"])
+                  and all(v["copy"]) for v in unk.values())
+              and "Spec Draft 실행 중" in unk["draftRunning"]["headTitle"] and "용어집 형식 오류" in unk["draftError"]["headTitle"]
+              and "local_qwen 모델 경로 미설정" in unk["qwenNodir"]["headTitle"] and "계획 오류" in unk["planFail"]["headTitle"]
+              and unk["planFail"]["copy"] == [] and all(unk[k]["dimRow"] and unk[k]["copy"] == [True, True] for k in ("draftRunning", "draftError", "qwenNodir")),
+              f"§3.6·§5 정본 alt draft_running·draft_error·draft_qwen_nodir(import_pending 없음)·계획 실패 = 반영 상태 모름 — 머리줄 '반영됨'·반영 칸 "
+              f"'미반영 없음'·★ '점검 통과'를 내지 않고 확인 못 함 줄, 두 해시 복사 끔(보수) { {k: (v['head'], v['apply'], v['star'], v['copy']) for k, v in unk.items()} }")
+        ls, lc, ln, lu = pd["layoutSame"], pd["layoutChanged"], pd["layoutNew"], pd["layoutDup"]
+        check(ls["copy"] == [False, False] and ls["dimRow"] is False and ls["head"] == "반영됨" and ls["chip"] is False and ls["checks"] == [],
+              f"layout_status 'same'(반영됨) = 미반영 아님 — 머리줄 반영됨·칩 없음·★ 점검 줄 없음·해시 복사 켬 {ls}")
+        check(lc["head"] == "반영 필요 1" and lc["headTitle"] == "레이아웃 미반영 1" and lc["chip"] is True
+              and lc["checks"] == ["003_리본 — 레이아웃 미반영(반영 뒤 Export)"],
+              f"layout_status 'changed' = 미반영 1(칩·★ 크롭 줄) {lc}")
+        check(ln["head"] == "반영 필요 1" and ln["headTitle"] == "레이아웃 미반영(rev 8)" and ln["chip"] is False
+              and ln["checks"] == ["반영 필요: 레이아웃 미반영(rev 8) — 반영 뒤 Export"],
+              f"state 미반영 크롭 0 이면 계획의 레이아웃 사유(layout.json 에만 있는 새 크롭 등)를 그대로 셈 {ln}")
+        check(lu["head"] == "반영 필요 2" and lu["headTitle"] == "레이아웃 미반영 1\n레퍼런스 미반영(2크롭)"
+              and lu["checks"] == ["003_리본 — 레이아웃 미반영(반영 뒤 Export)", "반영 필요: 레퍼런스 미반영(2크롭) — 반영 뒤 Export"]
+              and pd["pending"]["checks"] == ["반영 필요: 레퍼런스 미반영(2크롭) — 반영 뒤 Export"],
+              f"같은 레이아웃 원인은 한 번만(state 크롭 수 + 계획의 다른 사유), ★ 점검 '반영 필요' 줄 = 크롭 줄에 없는 사유 {lu}")
+    ps = res.get("panelStyle") or {}
+    if "plain" in ps:
+        check(ps["box"] is True and ps["plain"]["q"] == {"root": "fe410d7f025d", "only": allids, "style": "0"} and ps["plain"]["copies"] == [[False, d_title], [False, r_title]],
+              f"apply = full: 화풍 체크 칸, 처음 계획 style 0 · 복사 only = 정규 only {ps['plain']}")
+        check(ps["failed"]["q"]["style"] == "1" and ps["failed"]["copies"] == [] and ps["failed"]["err"] is True and ps["failed"]["box"] is True,
+              f"화풍 체크 뒤 계획이 202 두 번으로 실패 = style 0 계획의 해시를 'only …,style' 로 복사하지 않음(복사 칸 없음), 체크 칸은 남음(풀 수 있게) "
+              f"{ps['failed']}")
+        check(ps["styled"]["q"]["style"] == "1" and ps["styled"]["copies"] == [[False, d_title + ",style"], [False, r_title]],
+              f"style 1 계획을 받으면 초안 복사 only 에 style(계획 요청과 같은 문자열), Run 은 style 없이 {ps['styled']}")
+        check(ps["targets"]["box"] is False and ps["targets"]["plans"] == 1 and ps["targets"]["q"]["style"] == "0"
+              and ps["targets"]["copies"] == [[False, d_title], [False, r_title]],
+              f"다른 창이 apply 를 full 밖으로 저장(pipeline_rev) → 다시 읽고 계획 한 번 — 화풍 체크가 남아도 style 을 싣지 않음(계획 style 0·복사 only 에 style 없음) "
+              f"{ps['targets']}")
+    pa = res.get("panelAdopt") or {}
+    if "slow" in pa:
+        dv0 = R["GET /draft"]["ok"]
+        check(pa["slow"]["title"] == "채택 — 008_치마금속장식" and pa["slow"]["gets"] == ["001_38a818", "008_e1d4cc"]
+              and pa["slow"]["writes"] == [["008_e1d4cc", True], ["008_e1d4cc", False]],
+              f"J-P2 느린 GET /draft(001) 뒤 008 로 바꾸면 늦게 온 001 응답은 버림 — 패널·채택 쓰기 = 008 {pa['slow']}")
+        check(pa["reread"]["seen"] == [[dv0["seen"], True], [dv0["seen"], False], ["[1, 2]", True], ["[1, 2]", False]] and pa["reread"]["toast"],
+              f"J-P2 패널 채택 쓰기 409 → GET /draft 다시 읽은 값(e.view)을 씀 — 다음 채택 seen = 새 값 {pa['reread']}")
+        p9 = pa["pv409"]
+        check(p9["bodies"] == [["[1, 2]", True, "A: metal skirt plaque"], ["[3, 4]", True, "A: metal skirt plaque"]] and p9["gets"] == 1
+              and p9["save"] is False and p9["err"] is False and p9["effects"] is True and p9["text"] == "A: metal skirt plaque",
+              f"J-P2 [수정] 미리보기 409 → GET /draft 다시 읽기(입력 그대로) → 새 seen 으로 한 번 더 → 영향 줄·[저장] 켬 {p9}")
+        check(pa["pv409twice"] == {"posts": 2, "save": False, "err": True} and pa["pv400"] == {"save": True, "err": True},
+              f"J-P2 다시 409 = 오류 줄만([저장] 켬 — 저장 경로가 다시 읽음, 되풀이 없음), 400(문법·렌더 점검) = [저장] 끔 {pa['pv409twice']} {pa['pv400']}")
+        check(pa["stalePv"] == {"two": True, "one": False}, f"J-P2 먼저 보낸 미리보기의 응답이 늦게 오면 버림 {pa['stalePv']}")
+        rc = pa.get("race") or {}
+        check(rc.get("title") == "채택 — 002_눈" and rc.get("writes") == [["002_d98f99", True], ["002_d98f99", False]]
+              and (rc.get("confirm") or "").startswith("채택(002_눈): "),
+              f"J-P2 채택 쓰기 409 응답 전에 다른 크롭을 고르면 다시 읽은 옛 크롭 GET /draft 는 버림 — 패널·다음 채택 쓰기 = 새 크롭, 확인 창에 크롭 이름 {rc}")
+        check(pa.get("esc") == {"posts": [], "open": False, "select": []},
+              f"J-P2 [수정] 입력 400ms 안에 Esc·다른 크롭 = 남은 미리보기 타이머를 버림(닫힌 뒤 text null 미리보기 POST 없음) {pa.get('esc')}")
+    sy = res.get("panelSync") or {}
+    if "resumed" in sy:
+        rz = sy["resumed"]
+        check(rz["toast"] and rz["posts"] == 0 and rz["hist"] and "실행 중: 반영(apply)" in rz["head"][0] and "실행 중" not in rz["head"][1],
+              f"화면: 처음 state 에서 sessionStorage 의 프롬프트를 이어 받아 폴링(큐 없음) → 끝 토스트 {rz}")
+        check(sy["rev"] == {"first": 1, "again": 1}, f"다른 창이 설정을 저장(state pipeline_rev 바뀜) → GET /pipeline 한 번 더, 같은 판이면 다시 읽지 않음 {sy['rev']}")
+        rcl = sy["recalc"]
+        check({k: rcl.get(k) for k in ("before", "after", "plans")} == {"before": False, "after": True, "plans": 1},
+              f"머리줄 '다시 계산' = 기억한 계획이 지금 파일과 다를 때(plan_v null)만, 누르면 계획 한 번 {rcl}")
+        check("레퍼런스·채택·Import 설정 미반영 확인 못 함 — 계획이 지금 파일 상태와 다름" in rcl.get("title", ""),
+              f"§5.1·§3.7 검토·T 모드(계획을 스스로 다시 받지 않음)에서 계획이 낡으면 머리줄이 옛 계획을 '미반영 없음'으로 읽지 않음 {rcl.get('title')!r}")
+        check(sy["confirm409"] == {"settings": True, "posts": 0} and sy.get("broken409") == {"settings": True, "posts": 0},
+              f"[반영] 409 confirm_settings·pipeline_broken → 큐 없음·설정 패널을 엶 {sy['confirm409']} {sy.get('broken409')}")
+        dset = R["GET /pipeline"]["ok"]["derived"]["settings"]
+        rd = sy.get("resetDeclined") or {}
+        check(rd.get("posts") == 0 and "매니페스트 값으로 다시" in rd.get("confirm", ""),
+              f"[매니페스트 값으로 다시] 확인 창에서 취소 = 저장 없음(POST /pipeline/settings 0회) {rd}")
+        rb = sy["reset"]["bodies"]
+        check([b["section"] for b in rb] == ["import", "draft"] and all(b["values"] == dset[b["section"]] for b in rb) and rb[0]["rev"] == 3
+              and "Import PSD, Spec Draft" in sy["reset"]["confirm"],
+              f"[매니페스트 값으로 다시] = 다른 절(import)·확인 필요 절(draft)만 GET /pipeline derived.settings 그대로 절마다 POST {rb}")
+        sset = R["GET /pipeline"]["ok"]["settings"]
+        check(f" · draft.apply = {dset['draft']['apply']} (기록 없음 — 노드 기본값)" in sy["reset"]["confirm"]
+              and f" · import.glossary_path: {sset['import']['glossary_path']} → \"\"" in sy["reset"]["confirm"]
+              and "확인 필요 항목을 아래 값으로 확인한 것으로 저장합니다" in sy["reset"]["confirm"],
+              f"r1-05 [매니페스트 값으로 다시] 확인 창 = 확인됨으로 바꿀 확인 필요 항목의 값·출처, 저장값에서 바뀌는 키(저장값 → 유도값) {sy['reset']['confirm']!r}")
+    hc = res.get("headCancel") or {}
+    if "sent" in hc:
+        check("실행 중: Export(export) 보냄" in hc["sent"]["head"] and hc["sent"]["cancel"] is False
+              and "대기 — 앞 1" in hc["waiting"]["head"] and hc["waiting"]["cancel"] is True
+              and "Export(export) 실행 중" in hc["running"]["head"] and hc["running"]["cancel"] is False
+              and "실행 중:" not in hc["done"]["head"] and hc["done"]["cancel"] is False and hc["dels"] == 0,
+              f"§3.1 머리줄 [취소] = 대기 중(앞 작업 수를 앎)일 때만 — 이어 받은 직후(자리 모름)·실행 중·끝이면 없음 {hc}")
+    xl, xo = res.get("exportLayers") or {}, hx[0]
+    check(xl.get("row") == f"새 PSD r{xo['rev']}: {xo['psd']} · 레이어 33 · 문제 2 · {(xl.get('bytes') or 0) / 1e6:.1f}MB",
+          f"r1-20 §3.6 Export 결과 new 줄 = 그 rev 의 exports 항목(GET /pipeline)의 레이어 수·문제 수·용량 {xl}")
+    xlb = xl.get("listBytes") or []
+    check(len(xl.get("list") or []) == len(xlb) > 1 and all(t.endswith(f" · {b / 1e6:.1f}MB") for t, b in zip(xl["list"], xlb))
+          and xl["list"][1] == "r76 · 2026-10-15 16:11:56 · 문제 0 · 218.8MB",
+          f"Codex 1차 b-2 Export 줄·이전 목록 용량 = 노드 Export 보고서와 같은 식(바이트 / 1e6, 소수 한 자리 — 2^20 '209 MB' 아님) {xl.get('list')}")
+    fr = res.get("panelFresh") or {}
+    if "enter" in fr:
+        w, rn = fr["write"], fr["run"]
+        check(fr["enter"]["live"] == [True, True] and w["now"] == [False, False] and w["staleRow"] and w["head"] and w["plans"] == 1
+              and w["waiting"] == [False, False] and w["again"] == 1 and w["fresh"] == [True, True] and w["final"] == 1 and w["headAfter"] is False,
+              f"§2.4 진행 모드에서 다른 창의 쓰기(plan_v null) = 두 해시 복사 바로 끔 → 계획 한 번 다시(같은 null 이 다시 와도 1번) → 새 plan_v 가 오면 켬 "
+              f"{fr['enter']} {w}")
+        check(rn["live"] == [False, False] and rn["dimLine"] and rn["drain"] and rn["plans"] == 0 and rn["after"] == 1 and rn["fresh"] == [True, True],
+              f"§2.4 계획을 받은 뒤 그래프가 Run 시작(state running) = Run 줄 '실행 중'·두 복사 끔, 실행 중엔 계획을 다시 받지 않고 끝나면 한 번 {rn}")
+        check(rn["same"] is True and rn["progress"] == 3,
+              f"진행 모드 + 실행 중: 같은 state 폴링 = 진행 수만 다시 읽고 같으면 다시 그리지 않음(Drain·머리줄 단추 그대로) {rn}")
+        check(w.get("headSt") == "반영 상태 확인 못 함" and rn.get("headSt") == "반영 상태 확인 못 함" and w.get("headFresh") == "반영됨",
+              f"§5.1 머리줄 = 반영 칸과 같은 판정: 계획이 지금 파일과 다르면(다른 창의 쓰기·그래프 Run) '반영됨'이 아니라 '반영 상태 확인 못 함', 새 계획이면 반영됨 "
+              f"{w.get('headSt')} {rn.get('headSt')} {w.get('headFresh')}")
+        check(rn.get("idleProgress") == 1, f"§3.5 쉬는 중에도 state 5번에 한 번 진행 수를 다시 읽음(그래프가 낸 실행도 알아채게) {rn.get('idleProgress')}")
+        ad, rm = fr["added"], fr["removed"]
+        check(ad == {"plans": 1, "only": allids + ",019_aaaaaa", "computing": False, "live": [True, True]}
+              and rm == {"plans": 1, "only": allids.replace("002_d98f99,", "") + ",019_aaaaaa", "computing": False, "live": [True, True]},
+              f"§2.4 state 에 크롭이 더해지거나 빠져 선택이 바뀌면 계획 한 번(멈춘 '계산 중…' 없음) {ad} {rm}")
+        check(fr["failed"] == {"copies": 0, "err": True}, f"같은 선택으로 다시 계산이 실패(409) = 오류 줄만, 옛 해시 복사 없음 {fr['failed']}")
+        check(fr["old"] == {"res": {"old": True}, "toasts": [], "panel": ["warn:ComfyUI 재시작 필요 — 서버에 무료 템플릿 라우트가 없습니다(옛 버전)"]},
+              f"§3.2 옛 서버: 보드에 넘긴 queue 는 {{old}} 만(알림은 applyFree 한 번), 패널 [Export] 는 한 번 알림 {fr['old']}")
+    pv = res.get("panelView") or {}
+    if "adopt" in pv:
+        dok = R["GET /draft"]["ok"]
+        va = pv["adopt"]
+        lt = {k: [x[0] for x in v if x[0].startswith("_layer_targets: ")] for k, v in va.items()}
+        check(lt == {"001_38a818": ["_layer_targets: A: metal skirt plaque · 사람 값"],
+                     "002_d98f99": [f"_layer_targets: {R['GET /draft']['alt']['adopted']['layer_targets']['value']} · 노드 값(채택)"],
+                     "003_2f8f50": ["_layer_targets: (없음) · 해제함"], "008_e1d4cc": ["_layer_targets: (없음) · 기록 없음"],
+                     "012_93661a": ["_layer_targets: (없음) · 기록 없음"]},
+              f"§3.4 _layer_targets 줄 = 값 + owner(human 사람 값 · node 노드 값(채택) · deleted 해제함 · null 기록 없음 — 다음 Spec Draft 가 덮는지가 갈림) {lt}")
+        wins = {k: [x[:2] for x in v if x[0].startswith("레이아웃 문구")] for k, v in va.items()}
+        check(all(wins[k] == [["레이아웃 문구 있음(A) — 같은 tid 는 채택·수정 값보다 레이아웃 문구가 이김(미리보기 경고 참고)", "pp-row dim"]]
+                  for k in wins if k != "012_93661a") and wins["012_93661a"] == [],
+              f"§3.4 GET /draft layout_text 가 있는 tid = 패널에 정보 한 줄 '레이아웃 문구 있음(…)'(r1-23 — 실제로 이기는지는 미리보기 layout_wins·warnings 가 "
+              f"알림, 늘 뜨는 '이김 — 고치세요' 경고 없음, 없으면 없음) {wins}")
+        dl = {k: [x[0] for x in v if x[0].startswith("초안 ")] for k, v in va.items()}
+        check(dl["008_e1d4cc"] == [f"초안 {dok['draft']['backend']} · {dok['draft']['drafted']}"]
+              and dl["012_93661a"] == [f"초안 {dok['draft']['backend']} [MOCK] · {dok['draft']['drafted']}"],
+              f"§3.4 제안 줄의 초안 백엔드·drafted, mock 초안이면 [MOCK] {dl['008_e1d4cc']} {dl['012_93661a']}")
+        sg8 = [x for x in va["008_e1d4cc"] if x[0].startswith("제안 ")]
+        check([x[2] for x in sg8] == [f"bbox [{', '.join(str(b) for b in g['bbox'])}]" for g in dok["suggestions"]]
+              and sg8[1][0] == f"제안 B: {dok['suggestions'][1]['text']} — {dok['suggestions'][1]['reason']}",
+              f"§3.4 제안 줄 = tid·문구·이유, bbox 는 줄 title {sg8}")
+        pl = [x[:2] for x in pv["plan"] if x[0].startswith("초안 진행 — ")]
+        pgo = R["GET /pipeline/progress"]["ok"]["draft"]
+        check(pl == [[f"초안 진행 — 진행 {pgo['inflight']} · 받음 {pgo['created']} · 완료 {pgo['done']} · 실패 {pgo['failed']}", "pp-row warn"]],
+              f"§3.5 진행에 draft 가 있으면(Spec Draft 실행 중) 초안 진행 줄 {{inflight, created, done, failed}} {pl}")
+        sw = {x[0]: x[1] for x in pv["settings"]}
+        imsg = R["GET /pipeline"]["ok"]["warnings"][0]["msg"]
+        cmsg = "후보 폴더가 없음: G:/AI_output/_Input/x/03 — 반영을 막음(Export 는 됨): [설정]에서 경로를 고치거나 후보 등록을 끔"
+        check(sw.get(imsg) == "pp-row bad" and sw.get(cmsg) == "pp-row bad" and "후보 폴더가 없음: G:/AI_output/_Input/x/03" not in sw,
+              f"설정 칸 경로 경고 = 모두 막힘(bad — 서버 prompt 409): import.* 는 문구 그대로(반영·Export), cand.path 는 '반영을 막음(Export 는 됨)'"
+              f"(r2-06 — dp_cand 를 담는 템플릿만 막음, 정본 _doc warnings) {pv['settings']}")
+        warn = {"Import PSD": "다음 반영에서 크롭 소스·타깃·레퍼런스가 바뀌면 새 셀(유료 대상)", "Prepare": "다음 반영에서 jobs 가 바뀌어 새 셀이 될 수 있음(유료 대상)",
+                "Spec Draft": "초안 키가 바뀜 — fill 은 갱신 가능 표시만, refresh 면 전 크롭 재초안(유료)"}
+        check(pv["warn"] == {k: ([[warn[k], "pp-row dim"]] if k in warn else []) for k in pv["warn"]} and len(pv["warn"]) == 8,
+              f"§5.6 설정 패널 절별 경고(import·prepare·draft — 유료 대상 안내, 다른 절 없음) {pv['warn']}")
+        an, rn2 = pv["analyze"]["values"], pv["run"]["values"]
+        wd = R["GET /pipeline"]["ok"]["widgets"]
+        check(pv["analyze"]["section"] == "analyze" and set(an) == set(wd["analyze"]) and an["only_picked"] is True and an["feather_sigma"] == 4.25
+              and type(an["dE"]) in (int, float) and an["dE"] == 8 and type(an["tone_sigma"]) is int and type(an["grow"]) is int and an["register"] == "guarded_affine"
+              and pv["run"]["section"] == "run" and rn2["retry_failed"] is True and rn2["retry_orphans"] is False and type(rn2["max_new_calls"]) is int,
+              f"§2.1 설정 저장 본문 타입 엄격(서버는 문자열 'true'·'8' 이면 400): BOOLEAN = JSON 불리언, FLOAT·INT = 숫자(입력칸 문자열 '4.25' → 4.25) {an} {rn2}")
+    ck = res.get("panelClick") or {}
+    if "save" in ck:
+        check(ck["save"] == {"clicked": True, "writes": [["set", "A: metal skirt plaque", True], ["set", "A: metal skirt plaque", False]]},
+              f"§3.4 [수정] 입력 → 미리보기 응답(패널 다시 그리기 미룸) → [저장] 마우스 한 번 = 미리보기 → 쓰기(입력칸 focusout 이 mousedown·mouseup 사이에 "
+              f"패널을 갈아 첫 클릭이 사라지지 않음) {ck['save']}")
+        check(ck["check"] == {"clicked": True, "plans": 1, "only": "002_d98f99,003_2f8f50,008_e1d4cc,012_93661a"} and ck["row"] == {"clicked": True, "title": "채택 — 012_소매"},
+              f"§5.1 입력 중 왼쪽 목록 체크·크롭 줄 마우스 한 번 = 선택 바뀜(계획 1회)·그 크롭 채택 패널 {ck['check']} {ck['row']}")
+        check(ck["settings"] == {"clicked": True, "posts": [["prepare", 3]]},
+              f"§5.6 설정 입력 중 state 가 바뀌어 다시 그리기가 미뤄진 뒤 [저장] 마우스 한 번 = 저장 1회 {ck['settings']}")
+        check(ck["held"] == {"during": True, "after": False},
+              f"포인터가 눌린 동안 온 state(그래프 Run 시작)는 다시 그리지 않고, pointerup 을 놓쳐도 버튼 없이 움직이면 그림(Drain 켜짐) {ck['held']}")
+    hr = res.get("headRetry") or {}
+    if "head" in hr:
+        check(hr["head"] == "반영 상태 확인 못 함" and hr["btn"] is True and "계획을 받지 못함" in (hr["title"] or "") and hr["plans"] == 6
+              and hr["plansAfter"] == 7 and hr["after"] == "반영됨" and hr["btnAfter"] is False,
+              f"§2.4 검토 모드: Studio 를 연 뒤 첫 계획이 실패(요청 6번 모두 202)하면 머리줄에 '다시 계산'(같은 state 폴링은 다시 받지 않음) → 누르면 받아 반영됨 {hr}")
+        check(hr.get("auto") == {"plans": 1, "head": "반영됨", "btn": False},
+              f"r1-09 계획을 한 번도 받지 못한 채(202·오류) 서버에 새 계획이 생기면(state plan_v 바뀜) 누르지 않아도 한 번 다시 받음 {hr.get('auto')}")
+    # 리뷰 1차 수정(r1-01·05·09·10·24·26·27) — 패널
+    cell_w = "그래프와 Studio 를 번갈아 돌리면 셀이 바뀌어 다시 과금 대상"
+    dd = res.get("panelDrift") or {}
+    if "before" in dd:
+        check(dd["before"] == [] and dd["reload"] == {"gets": 1, "warn": [f"prepare.quality: 마지막 Prepare high · Studio max — {cell_w}"]},
+              f"r1-01 그래프 Prepare 뒤(state 매니페스트 rev 만 바뀜 — pipeline_rev 그대로) GET /pipeline 을 한 번 다시 읽어 편집기·[반영] 확인 창 맨 앞 줄이 "
+              f"새 갈라짐(같은 state 폴링은 다시 읽지 않음) {dd['before']} {dd['reload']}")
+        en = dd.get("editorNo") or {}
+        ask = (en.get("asked") or [""])[0]
+        check(en.get("res") is None and len(en.get("asked") or []) == 1 and ask.startswith("확인 창을 띄운 뒤 설정 갈라짐이 새로 생겼습니다")
+              and "prepare.model: 마지막 Prepare gpt-image-2 · Studio gpt-image-2.5-sunburst" in ask and "prepare.quality" not in ask and en.get("posts") == 0,
+              f"r1-01 편집기 확인 창(동기 applyWarn) 뒤 state 폴링 전에 생긴 갈라짐 = 큐 직전에 새 줄만 한 번 더 묻고, 거절하면 /api/prompt 없음 {en}")
+        pa_ = dd.get("panelApply") or {}
+        check(pa_.get("first") == f"prepare.ref_style: 마지막 Prepare plain · Studio at — {cell_w}" and pa_.get("asked") == 1 and pa_.get("posts") == 1,
+              f"r1-01 진행 [반영] = 확인 창을 만들기 전에 GET /pipeline 을 다시 읽음(state 폴링 전에 생긴 갈라짐이 맨 앞), 확인 뒤 새 줄이 없으면 다시 묻지 않고 큐 {pa_}")
+        rs_ = dd.get("reset") or {}
+        check(rs_.get("bodies") == [["prepare", "high"]] and " · prepare.quality: max → high" in rs_.get("confirm", "")
+              and not any("유도값과 같습니다" in t for t in rs_.get("toasts", [])),
+              f"r1-01 [매니페스트 값으로 다시] = 다시 읽은 유도값(high — 패널이 가진 낡은 max 가 아님)으로 저장, 확인 창에 저장값 → 유도값 {rs_}")
+        check(dd.get("twice") == {"asked": 1, "posts": 1},
+              f"r1-01 다시 읽기가 끼어든 확인 창 동작(반영·매니페스트 값으로 다시)은 한 번에 하나 — 저장을 기다리는 사이 연타 = 확인 창·POST 하나 {dd.get('twice')}")
+    rz = res.get("panelReset") or {}
+    if "confirm" in rz:
+        mi = R["GET /pipeline"]["alt"]["missing"]
+        md, mf = mi["derived"]["settings"], mi["derived"]["from"]
+        froms = {"jobs": "jobs 에서 추정", "default": "기록 없음 — 노드 기본값"}
+        want = [f" · {c} = {md[c.split('.')[0]][c.split('.')[1]]} ({froms[mf[c]]})" for c in mi["confirm"]]
+        secs = [s for s in mi["widgets"] if mi["settings"][s] != md[s] or any(c.startswith(s + ".") for c in mi["confirm"])]
+        check(all(w in rz["confirm"] for w in want) and "확인 필요 항목을 아래 값으로 확인한 것으로 저장합니다" in rz["confirm"] and rz["sections"] == secs
+              and len(want) == 3,
+              f"r1-05 pipeline.json 없음(추정값 확인 필요 {mi['confirm']}) [매니페스트 값으로 다시] 확인 창 = 확인됨으로 바꿀 추정값·출처(jobs 에서 추정·노드 기본값) "
+              f"{rz['confirm']!r} {rz['sections']}")
+    co = res.get("panelCold") or {}
+    if "busy" in co:
+        check(co["busy"] >= 2 and co["err"] is False and co["live"] == [True, True] and co["only"] == allids and co["head"] == "반영됨",
+              f"r1-09 재시작 직후 차가운 계획(1.5초)이 잠금을 쥔 동안 G = 새 요청 202 를 0.5초 간격으로 다시 물어 받음(오류로 멈추지 않음 — 해시 복사 켬) {co}")
+    ds = res.get("panelDraftSync") or {}
+    if "before" in ds:
+        check(ds["before"] is True and ds["spec"] == {"gets": 1, "adopt": False, "sugg": True} and ds["running"] == 0,
+              f"r1-10 스펙만 바뀐 쓰기(매니페스트 rev 그대로 — plan_v 만 바뀜) 뒤 채택 패널 GET /draft 다시 한 번 → 새 제안·[채택] 켬, 실행 중(plan_v 가 폴링마다 "
+              f"바뀜)에는 다시 읽지 않음 {ds}")
+    check(ds.get("drafting") == {"gets": 0, "plans": 0} and ds.get("drafted") == {"gets": 1, "plans": 1},
+          f"r1-10 그래프 Spec Draft 실행 중(state running false·진행 수 아직 안 읽음)도 state drafting 으로 미룸 — plan_v 가 폴링마다 바뀌어도 "
+          f"GET /draft·계획 다시 받기 없음, 끝나면(drafting false) 한 번씩 {ds.get('drafting')} {ds.get('drafted')}")
+    check("S.drafting = d.drafting;" in bcode[bcode.index("if (d.unchanged && S) {"):bcode.index("} else if (!d.unchanged) {")],
+          "board.js: unchanged state 응답에서도 drafting 을 S 에 옮김(running·drain 과 같이 — 폴링마다)")
+    dc = res.get("panelDecline") or {}
+    if "during" in dc:
+        check(dc == {"during": True, "after": False, "posts": [True]},
+              f"r1-26 [채택] 미리보기를 기다리는 사이(busy) 다시 그려 꺼진 단추 = 확인 창 [취소] 뒤 다시 켬(쓰기 없음) {dc}")
+    fm = res.get("panelForm") or {}
+    if "kept" in fm:
+        check(fm == {"kept": "V2", "posts": [[3, "V1,V4"], [2, "V2"]]},
+              f"r1-27 설정 [저장] 응답을 기다리는 사이 같은 절 다른 칸에 친 값은 남음(보낸 키만 지움) — 다음 저장에 실림 {fm}")
+    rw = res.get("panelRows") or {}
+    if "toast" in rw:
+        e4 = next(x for x in R["POST /draft/adopt"]["errors"]["400"] if x.get("rows"))
+        w4 = f"{e4['error']} — 바뀌는 필드: {', '.join(e4['rows'])}"
+        check(rw["toast"] == f"err:{w4}" and rw["preview"] == [w4],
+              f"r1-24 채택 내용 보호 400 = 거절 문구 + 바뀌는 필드(rows — apply 차이·화풍 차이를 가름), [채택] 토스트·[수정] 미리보기 줄 {rw}")
+    hd = res.get("headCancelDone") or {}
+    if "toasts" in hd:
+        check(hd["clicked"] and any("Export: 새 PSD" in t for t in hd["toasts"]) and "Export: 새 PSD" in hd["toasts"][-1]
+              and not any("취소" in t for t in hd["toasts"]),
+              f"r1-25 머리줄 [취소] 사이 실행을 시작해 끝남 = 기록의 끝 알림(Export 결과)이 마지막 — '취소됨'·'취소하지 않음' 토스트로 덮지 않음 {hd}")
+    check('psdPartial: () => !!S && "pipeline_rev" in S' in bcode,
+          "r1-13 board.js: 레이아웃 편집기에 서버의 S1-a 지원 여부(psdPartial — S3 서버 = state pipeline_rev) — 재시작 전 옛 서버는 옛 PSD 문구")
+    dcs = res.get("draftChips") or {}
+    if "all" in dcs:
+        names = ["실행 중", "초안 대기", "초안 갱신 가능", "채택 가능", "승인 필요 2"]
+        check(dcs["found"] and [x[0] for x in dcs["all"]] == names and not any("stale" in x[1].split() for x in dcs["all"])
+              and dcs["all"][1][2] == "타깃 추가\n타깃 변경(B)"
+              and [x[0] for x in dcs["stale"]] == names and all("stale" in x[1].split() for x in dcs["stale"])
+              and dcs["none"] == [] and dcs["quiet"] == [] and [x[0] for x in dcs["fixture"]] == ["초안 대기", "채택 가능", "승인 필요 2"],
+              f"§3.7 검토 모드 칩(board.js draftChips) = draft_chip 칩 다섯, plan_stale 이면 모두 흐림(stale), null·빈 값은 칩 없음 {dcs}")
+    # 리뷰 2차 수정(r2-01·02·03·05·07·08·09·10·11·14)
+    bk = res.get("panelBroken") or {}
+    if "confirm" in bk:
+        b0 = R["GET /pipeline"]["alt"]["broken"]
+        bd, bf, bc = b0["derived"]["settings"], b0["derived"]["from"], b0["derived"]["confirm"]
+        froms = {"jobs": "jobs 에서 추정", "default": "기록 없음 — 노드 기본값"}
+        want = [f" · {c} = {bd[c.split('.')[0]][c.split('.')[1]]} ({froms[bf[c]]})" for c in bc]
+        names = {"import": "Import PSD", "cand": "Candidate In", "prepare": "Prepare", "draft": "Spec Draft", "run": "Run", "analyze": "Analyze",
+                 "compose": "Compose", "export": "Export"}
+        check(bk["head"] == "\n".join(bc) and bk["panel"] == [f"확인 필요: {', '.join(bc)} — 확인(저장) 전에는 반영·Export 를 막음"]
+              and sorted(bk["marked"]) == sorted(f"{c.split('.')[1]} (확인 필요)" for c in bc)
+              and bk["buttons"] == {names[s]: ("확인·저장" if any(c.startswith(s + ".") for c in bc) else "저장") for s in b0["widgets"]}
+              and len(bc) == 3,
+              f"r2-01 깨진 pipeline.json(confirm null) = derived.confirm 을 확인 필요로: 머리줄 '설정 확인 필요'·진행 설정 칸·설정 칸 '(확인 필요)'·'확인·저장' "
+              f"{bk['head']!r} {bk['panel']} {bk['marked']} {bk['buttons']}")
+        check(all(w in bk["confirm"] for w in want) and "확인 필요 항목을 아래 값으로 확인한 것으로 저장합니다" in bk["confirm"]
+              and [s for s, _ in bk["posts"]] == list(b0["widgets"]) and bk["posts"][0][1] is None
+              and all(rv == R["POST /pipeline/settings"]["ok"]["rev"] for _, rv in bk["posts"][1:]),
+              f"r2-01 깨진 파일에서 [매니페스트 값으로 다시] 확인 창 = 확인됨으로 바꿀 추정값·출처(jobs 에서 추정·노드 기본값), 덮어쓰기 = 첫 절 rev null, "
+              f"다음 절은 앞 저장 응답 rev(c1-1 — 덮어쓴 뒤 파일은 그 rev) {bk['confirm']!r} {bk['posts']}")
+    ar = res.get("applyRace") or {}
+    if "twice" in ar:
+        tw = ar["twice"]
+        q_line = "prepare.quality: 마지막 Prepare high · Studio max — 그래프와 Studio 를 번갈아 돌리면 셀이 바뀌어 다시 과금 대상"
+        m_line = "prepare.model: 마지막 Prepare gpt-image-2 · Studio gpt-image-2.5-flare — 그래프와 Studio 를 번갈아 돌리면 셀이 바뀌어 다시 과금 대상"
+        head2 = "확인 창을 띄운 뒤 설정 갈라짐이 새로 생겼습니다(그래프 Prepare·Import):"
+        check(len(tw["asked"]) == 3 and tw["asked"][1][:2] == [head2, q_line] and tw["asked"][2][:2] == [head2, m_line] and q_line not in tw["asked"][2]
+              and tw["posts"] == 1,
+              f"r2-02 [반영] 두 번째 확인 창이 떠 있는 동안 또 생긴 갈라짐(다른 창이 prepare.model 저장) = 새 줄로 한 번 더 묻고(새 줄이 없을 때까지) 큐 "
+              f"{[a[:2] for a in tw['asked']]} {tw['posts']}")
+        rd = "err:실행 설정(GET /pipeline)을 다시 읽지 못해 멈춤 — pipeline.json 을 읽지 못함(잠김)"
+        rf_, ff, sm, ef = ar["reloadFail"], ar["firstFail"], ar["sigMoved"], ar["editorFail"]
+        check(len(rf_["asked"]) == 1 and rf_["posts"] == 0 and rd in rf_["toasts"]
+              and ff["asked"] == [] and ff["posts"] == 0 and rd in ff["toasts"]
+              and ef["asked"] == [] and ef["posts"] == 0 and ef["res"] is None and rd in ef["toasts"],
+              f"r2-02 GET /pipeline 다시 읽기 실패 = 옛 설정으로 '새 갈라짐 없음' 판정·확인 창을 만들지 않고 큐에 넣지 않음(반영 확인 뒤·확인 창 전·편집기 반영) "
+              f"{rf_} {ff} {ef}")
+        check(len(sm["asked"]) == 1 and sm["posts"] == 0
+              and any(t.startswith("err:큐에 넣지 않음 — 확인한 뒤 실행 설정이 바뀜(pipeline rev 3 → 5") for t in sm["toasts"]),
+              f"r2-02 마지막 확인 뒤 템플릿 sig 의 pipeline rev 가 다름(그 사이 다른 창이 저장) = /api/prompt 없음 {sm}")
+    cf = res.get("panelConflict") or {}
+    if "declined" in cf:
+        over_l = " · prepare.n: 다른 창이 쓴 4 을 이 창 값 3 로 덮어씀"
+        check(cf["mark"] == ["다른 창이 4(으)로 바꿈"] and cf["shown"] == "3" and len(cf["declined"]["asked"]) == 1
+              and over_l in cf["declined"]["asked"][0].split("\n") and cf["declined"]["posts"] == []
+              and cf["over"]["posts"] == [[4, 3, "gpt-image-2.5-sunburst", "V1,V4"]] and cf["over"]["server"] == 3 and cf["over"]["mark"] == [],
+              f"r2-03 손댄 키(n)를 다른 창이 저장(백그라운드 다시 읽기로 rev 가 새 판 — 409 없음) = 칸 옆 다른 창 값, [저장]은 덮어쓸지 묻고(거절 = POST 없음) "
+              f"확인하면 덮어씀 {cf['mark']} {cf['declined']} {cf['over']}")
+        un = cf["unseen"]
+        un_l = " · prepare.model: gpt-image-2.5-sunburst → gpt-image-2.5-flare (화면에 없던 다른 창 값 — 그대로 저장)"
+        check(cf["unseenShown"] == "gpt-image-2.5-sunburst" and un["clicked"] and len(un["asked"]) == 1 and un_l in un["asked"][0].split("\n")
+              and not any(x.startswith(" · prepare.n") for x in un["asked"][0].split("\n"))
+              and un["posts"] == [[6, 5, "gpt-image-2.5-flare", "V1,V4"]],
+              f"r2-03 입력칸 포커스 중(다시 그리기 미룸) 다른 창이 손대지 않은 키(model)를 저장 = [저장] 마우스 한 번에 화면에 없던 값을 묻고 저장 {cf['unseenShown']} {un}")
+        check(cf["own"] == {"asked": [], "posts": [[7, 6, "gpt-image-2.5-flare", "V1,V4"], [8, 6, "gpt-image-2.5-flare", "V1"]]},
+              f"r2-03 이 창의 저장 뒤(입력 중 — 다시 그리기 미룸) 같은 절을 다시 저장 = 제가 저장한 값을 '다른 창 값'으로 묻지 않음 {cf['own']}")
+    hk = res.get("panelHashClick") or {}
+    if "v1" in hk:
+        t_old = f"approve: 3f9a1c2b7d10  only: {allids}"
+        t_new = f"approve: bbbbbbbbbbbb  only: {allids}"
+        stale_t = "warn:계획이 바뀜(다른 창·그래프의 쓰기·실행) — 해시를 복사하지 않음: 다시 그린 계획 칸을 보고 다시 누르세요"
+        v1, v2, ok_ = hk["v1"], hk["v2"], hk["ok"]
+        check(hk["before"] == [False, t_old] and v1["old"] == [False, t_old] and v1["clicked"] and v1["copied"] == [] and v1["toasts"] == [stale_t]
+              and v1["now"] == [False, t_new],
+              f"r2-07 [수정] 입력 중 다른 창의 쓰기로 새 계획(해시 bbbb)이 와도 미뤄진 패널의 옛 [해시 복사](3f9a) 클릭 = 복사 없음·다시 그림 {v1}")
+        check(v2["old"] == [False, t_new] and v2["clicked"] and v2["copied"] == [] and v2["toasts"] == [stale_t] and v2["now"][0] is True
+              and ok_["clicked"] and ok_["copied"] == [t_new],
+              f"r2-07 [수정] 입력 중 그래프 Run 시작(state running) 뒤 켜진 채 남은 옛 단추 클릭 = 복사 없음, Run 이 끝나 지금 판정으로 그린 단추 = 복사 {v2} {ok_}")
+    cu = res.get("cancelUnread") or {}
+    if "end" in cu:
+        cp = cu["panel"]
+        check(cu["cancelled"] is None and cu["job"] == "pid-1" and cu["pending"] == 0
+              and cu["end"] == {"state": "cancelled", "msg": "대기 중에 취소함", "export": None},
+              f"r2-08 delete 로 대기열에서 빠졌는데 기록을 읽지 못함 = 취소 결과 모름(null — job 유지) → 기록 없이 사라지면 '취소됨'(사라짐 아님) {cu}")
+        check(cp["clicked"] and any(t.startswith("warn:취소 요청 보냄") for t in cp["toasts"])
+              and cp["toasts"][-1] == "warn:Export: 취소됨 — 대기 중에 취소함" and not any("취소하지 않음" in t or "사라짐" in t for t in cp["toasts"]),
+              f"r2-08 머리줄 [취소] = '취소 요청 보냄'(취소하지 않음 아님), 끝 = 'Export: 취소됨 — 대기 중에 취소함' {cp}")
+    pt = res.get("planTransient") or {}
+    if "once" in pt:
+        check(pt["once"] == {"plans": 2, "live": [True, True], "stale": False} and pt["stuck"] == {"plans": 2, "live": [False, False], "stale": True},
+              f"r2-09 계산 중 실행이 시작했다 끝난 계획(서명 ≠ 그대로인 plan_v) = 쉬는 중이면 한 번 더 받아 해시 복사가 풀림, 다시 받아도 낡으면 되풀이 없음 {pt}")
+    pw = res.get("planWait") or {}
+    if "first" in pw:
+        check(pw["plans"] == 0 and (pw["first"] or "").startswith("계산 대기 — 이 Studio 의 Export(export) 대기 — 앞 1 이 끝난 뒤 계산")
+              and pw["btn"] and pw["btn"][0] is True and pw["btn"][1].startswith("이 Studio 의 Export(export) 대기 — 앞 1 이 끝난 뒤 계산")
+              and pw["after"]["plans"] >= 1 and pw["after"]["waiting"] is False and pw["after"]["btn"] is False,
+              f"r2-10 이 Studio 의 Export 가 대기 중이면 계획을 부르지 않음 = 계획 칸에 그 이유·[다시 계산] 끔('계산 중…' 아님), 끝나면 계산 {pw}")
+    ek = res.get("editKept") or {}
+    if "writes" in ek:
+        check(ek["writes"] == ["A: metal skirt"] and ek["first"] == ["A: metal skirt", True] and ek["later"] and set(ek["later"]) == {"A: metal skirt plaque"}
+              and ek["open"] == "A: metal skirt plaque"
+              and any(t.startswith("warn:수정 — ") and "그 사이 더 친 문구는 저장 안 함(입력칸에 남김 — 다시 [저장])" in t for t in ek["toasts"]),
+              f"r2-11 [수정] Enter 뒤 응답을 기다리는 사이 더 친 문구 = 저장은 보낸 문구, 입력칸은 남은 문구로 열어 두고 다시 미리보기·알림 {ek}")
+    ct = res.get("clearToast") or {}
+    if "toasts" in ct:
+        check(ct["toasts"] == [":해제 — 008_치마금속장식: 다음 반영에서 채택 타깃이 빠짐(다시 쓰려면 [수정])"] and ct["ops"] == [["clear", True], ["clear", False]],
+              f"r2-14 [해제] 성공 토스트 = '다음 반영에서 채택 타깃이 빠짐'('타깃에 들어감' 아님) {ct}")
+        check(ct.get("human") == {"toasts": [":해제 — 008_치마금속장식: 다음 반영에서 사람 값 타깃이 빠짐(제안이 있으면 다시 [채택])"],
+                                  "ops": [["clear", True], ["clear", False]]},
+              f"r3-15 사람 값 [해제](응답 owner 없음 — kind add 로 돌아가 [채택]이 켜짐) 토스트 = '제안이 있으면 다시 [채택]'('[수정]으로만' 아님) {ct.get('human')}")
+    sr = res.get("specReread") or {}
+    check("locked" in sr and sr["locked"] == {"reread": True, "adopt": True, "edit": True, "why": True, "gets": 1} and sr["still"] == sr["locked"]
+          and sr["reread"] == {"reread": False, "adopt": False, "edit": False, "why": False, "gets": 2},
+          f"r2-13 스펙을 읽지 못함(잠김) = 채택·수정 끔 + 이유 '잠시 뒤 [다시 읽기]' + [다시 읽기] 단추 — 풀려도 state 가 그대로면 저절로 안 읽음, "
+          f"누르면 GET /draft 다시(정상 스펙엔 단추 없음·채택 켬) {sr}")
+    rr2 = res.get("rerollTab") or {}
+    if "found" in rr2:
+        gp = "금액은 지금 jobs(마지막 Prepare — Studio 반영 포함) 기준: 큐·Run 은 그래프 Prepare(그래프 위젯 값)를 다시 돌린 뒤 과금"
+        check(all(gp in rr2[k]["confirms"][0] for k in ("tab", "noTab"))
+              and all(any("금액은 지금 jobs 기준(그래프 Prepare 값이 Studio 와 다르면 바뀜)" in t for t in rr2[k]["toasts"]) for k in ("tabKey", "noTabKey")),
+              f"r2-05 R 확인 창·첫 R 토스트 = 금액은 지금 jobs(Studio 반영 포함) 기준 — 탭 큐·Run 은 그래프 Prepare 를 다시 돌린 뒤 과금(장 수·비용·셀이 바뀔 수 있음) {rr2}")
+    check(pn.get("headDrift") == ["Prepare 갈라짐", "lh-wait", "prepare.n: 마지막 Prepare 4 · Studio 2 — 셀은 그대로, 대기 호출의 장 수·비용·승인 해시가 바뀜\n"
+                                  "R·ComfyUI 큐·그래프 Run 은 그래프 Prepare(그래프 위젯 값)로 jobs 를 다시 쓴 뒤 과금"],
+          f"r2-05 머리줄(모든 모드) Prepare 갈라짐 배지 — 셀 갈라짐이면 빨강, 장 수·비용만이면 노랑, 제목에 갈라짐 줄·R·큐 과금 안내 {pn.get('headDrift')}")
+    # 리뷰 3차 수정(r3-05·06·07·08·09·10·11·16 — r3-13·15 는 위 hashNote·clearToast)
+    os_ = res.get("ownSave") or {}
+    if "typed" in os_:
+        ty, ag, pa = os_["typed"], os_["again"], os_["path"]
+        check(ty == {"asked": [], "n": 4, "posts": [[3, "prepare"], [4, "prepare"]], "mark": []},
+              f"r3-05 (a) 저장 응답을 기다리는 사이 같은 칸에 더 친 값(3 → 4)을 다시 저장 = 제 저장(3)을 '다른 창이 쓴 값'으로 묻지 않음 {ty}")
+        check(ag == {"cls": "lp-row pp-field", "mark": [], "asked": [], "n": 5, "posts": [[3, "prepare"], [4, "prepare"]]},
+              f"r3-05 (b) 저장 뒤(입력 중 — 다시 그리기 미룸) 같은 칸을 다시 고침 = 칸 옆 '다른 창이 … 바꿈' 없음·다시 저장도 묻지 않음 {ag}")
+        check(pa == {"asked": [], "psd": "C:/work/char/a.psd", "glossary": "G:/AI_output/gloss.json", "posts": [[3, "import"], [4, "import"]], "mark": []},
+              f"r3-05 (c) import 경로 역슬래시 저장(서버가 '/' 로 정규화) 뒤 같은 절 다른 칸 저장 = 정규화한 제 값을 '화면에 없던 다른 창 값'으로 묻지 않음 {pa}")
+    df = res.get("draftFail") or {}
+    if "first" in df:
+        err_l = "매니페스트를 읽을 수 없습니다(잠김)"
+        adopt_b = ["채택", "수정", "해제"]
+        check(df["first"] == {"rows": [err_l], "buttons": ["다시 읽기"], "input": None, "gets": 1} and df["same"] == df["first"]
+              and df["reread"]["buttons"] == adopt_b and df["reread"]["gets"] == 2 and err_l not in df["reread"]["rows"],
+              f"r3-06 ① 크롭의 첫 GET /draft 실패 = 오류 + [다시 읽기](같은 state 폴링은 다시 읽지 않음) → 누르면 다시 읽어 채택 단추 {df['first']} {df['reread']}")
+        check(df["kept"]["rows"][0] == err_l and df["kept"]["buttons"] == adopt_b + ["다시 읽기"] and df["kept"]["gets"] == 3
+              and df["row"]["buttons"] == adopt_b and df["row"]["gets"] == 4,
+              f"r3-06 옛 값이 있는 읽기 실패 = 옛 값·단추 + 오류·[다시 읽기], 같은 크롭 줄을 다시 누름 = 다시 읽음 {df['kept']} {df['row']}")
+        ed = df["edit"]
+        check(ed["rows"][0] == err_l and ed["buttons"] == adopt_b + ["다시 읽기", "저장", "취소"] and ed["input"] == "A: metal clasp"
+              and ed["recover"] == 1 and ed["after"]["buttons"] == adopt_b + ["저장", "취소"] and ed["after"]["input"] == "A: metal clasp",
+              f"r3-06 ② [수정] 입력 중 미리보기 409 → GET /draft 실패 = 입력칸·[저장]·[취소]·[다시 읽기]가 남고, state 가 바뀌면 입력 중이어도 다시 읽음 {ed}")
+        check(df["enter"]["writes"] == [["A: metal clasp plate", True], ["A: metal clasp plate", False]]
+              and not any("Cannot read" in t or t.startswith("err:") for t in df["enter"]["toasts"])
+              and any(t.startswith(":수정 — 008_치마금속장식") for t in df["enter"]["toasts"]),
+              f"r3-06 ② 다시 읽기 실패 뒤 미뤄 둔 입력칸의 Enter = TypeError 토스트 없이 쓰기 경로(옛 seen — 서버가 409 로 지킴) {df['enter']}")
+        gn = df.get("gone") or {}
+        check(gn.get("rows") == ["크롭이 없습니다: 008_e1d4cc"] and gn.get("buttons") == ["다시 읽기"] and gn.get("input") is None
+              and gn.get("toasts") == [] and gn.get("posts") == 0,
+              f"r3-06 404(크롭이 사라짐 — 반영·그래프 Import) = 옛 값·단추·[수정] 입력을 비움, 미뤄 둔 옛 입력칸의 Enter = 쓰지 않음·오류 토스트 없음 {gn}")
+    ds = res.get("doneSel") or {}
+    if "onlys" in ds:
+        check(ds["posts"] == 1 and ds["bad"] == 0 and ds["errs"] == [] and ds["onlys"] == ["001_38a818,002_d98f99,008_e1d4cc,012_93661a"]
+              and ds["live"] == [True, True],
+              f"r3-07 진행 모드 [반영] 끝 = 다시 받은 state(지운 크롭 003 을 선택에서 뺌) 뒤 계획 한 번 — 003 이 only 에 실리지 않음(400 '매니페스트에 없는 크롭' "
+              f"없음) {ds}")
+    cl = res.get("cancelLost") or {}
+    if "end" in cl:
+        check(cl["cancelled"] is None and cl["deleted"] is True and cl["end"] == {"state": "gone", "msg": "ComfyUI 재시작 또는 큐에서 지움", "export": None},
+              f"r3-08 delete 직전 실행 시작 + 지운 뒤 대기열을 읽지 못함(null) → 폴링이 실행 중을 보면 '지움' 표시를 거둠 — 기록 없이 사라지면 '사라짐'"
+              f"('대기 중에 취소함' 아님) {cl}")
+        check(cl["panel"] == {"clicked": True, "toasts": ["warn:취소 요청 보냄 — 대기열을 다시 읽지 못해 취소됐는지 확인하는 중"]},
+              f"r3-08 머리줄 [취소] 뒤 대기열을 다시 읽지 못함 = '대기열을 다시 읽지 못해 확인하는 중'(대기열에서 빠짐이라 단정하지 않음 — 기록 읽기 실패와 가름) "
+              f"{cl['panel']}")
+    prt = res.get("pipelineRetry") or {}
+    if "again" in prt:
+        check(prt["first"] == {"badges": [], "gets": 1} and prt["again"] == {"badges": ["설정 확인 필요", "Prepare 갈라짐"], "gets": 2} and prt["quiet"] == 2
+              and prt["panel"] == {"failed": True, "after": False, "saveButtons": len(R["GET /pipeline"]["ok"]["widgets"]), "gets": 3},
+              f"r3-09 GET /pipeline 실패 뒤 같은 state 폴링에서 다시 읽음(받은 뒤엔 다시 읽지 않음) — 머리줄 '설정 확인 필요'·'Prepare 갈라짐' 배지, 설정 패널 "
+              f"'읽기 오류' → 절·[저장] {prt}")
+    psh = res.get("planShare") or {}
+    if "same" in psh:
+        check(psh["same"] == {"ra": True, "rb": True, "gets": 2, "only": "001_38a818"}
+              and psh["diff"] == {"rc": False, "rd": True, "gets": 2, "style": True} and psh["later"] == {"e": True, "gets": 1},
+              f"r3-10 같은 only·style 계획 요청이 겹치면 앞 요청 응답을 기다린 뒤 한 번 더(GET 2회, 겹치지 않음 — 앞 정상 응답을 버리지 않음, c1-2), "
+              f"다른 style = 새 요청(앞 응답 버림), 끝난 뒤 같은 요청 = 새로 물음 {psh}")
+    # Codex 1차 대응(c1-1·c1-2·b-3)
+    rr_ = res.get("resetRace") or {}
+    if "between" in rr_:
+        bw, dg, no = rr_["between"], rr_["dialog"], rr_["none"]
+        check(bw["posts"] == [["import", 3], ["prepare", 4]] and bw["n"] == 5 and bw["quality"] == "high" and bw["rev"] == 5
+              and len(bw["toasts"]) == 1 and bw["toasts"][0].startswith("err:Prepare: 실행 설정이 다른 창에서 바뀌었습니다(rev 4 → 5)")
+              and "앞 절(Import PSD)은 저장됨" in bw["toasts"][0],
+              f"c1-1 [매니페스트 값으로 다시] 두 절 사이에 다른 창이 저장 = 다음 절은 이 창의 앞 저장 응답 rev(4)로 → 409 로 멈춤(다른 창 값 n 5 그대로 — "
+              f"다시 읽은 rev 5 로 덮지 않음), 토스트에 저장된 앞 절 {bw}")
+        check(dg["posts"] == [["import", 3]] and dg["n"] == 5 and not any("앞 절" in t for t in dg["toasts"])
+              and no == {"posts": [["import", 3], ["prepare", 4]], "toasts": [], "n": 2, "quality": "max", "rev": 5},
+              f"c1-1 확인 창이 떠 있는 동안의 다른 창 저장 = 첫 절 409, 다른 창 없음 = 3 → 4 → 5 그대로 저장 {dg} {no}")
+    else:
+        check(False, f"resetRace 시나리오 결과 없음 {rr_}")
+    pf = res.get("planFollow") or {}
+    check(pf.get("follow") == {"res": [True, True, True], "same": True, "gets": 2, "peak": 1, "sig": "r:R|d:D2|o:001_38a818"}
+          and pf.get("superseded") == {"res": [False, False, True], "gets": 2, "onlys": ["001_38a818", "002_d98f99"], "only": "002_d98f99"},
+          f"c1-2 같은 계획 요청이 도는 사이의 부름 둘 = 그 응답 뒤 같은 다음 요청 하나(겹치지 않음 — 동시 1, 마지막 계획 = 다음 요청 응답), 그 사이 다른 "
+          f"선택 요청이 나가면 앞 선택은 다시 묻지 않음 {pf}")
+    pas = res.get("planAfterSave") or {}
+    check(pas.get("entered") == [True, True] and pas.get("live") == [True, True] and pas.get("planV") == "r:R1|d:D1" and pas.get("plans") == 1
+          and pas.get("stale") is False,
+          f"c1-2 계획 요청 A(저장 전 서명)가 계산 중일 때 설정 저장 = A 뒤 한 번 더 받아 새 서명 기억·해시 복사 켬([다시 계산] 없이 — 낡은 A 로 멈추지 않음) {pas}")
+    dbz = res.get("draftBusy") or {}
+    if "during" in dbz:
+        busy_l = ["초안: Spec Draft 실행 중 — 끝난 뒤 다시 계산", "pp-row dim"]
+        check(dbz["before"]["row"][1] == "pp-row " and dbz["before"]["live"] == [True, True]
+              and dbz["during"] == {"row": busy_l, "live": [False, False], "plans": 0},
+              f"b-3 계획을 받은 뒤 그래프 Spec Draft 시작(state drafting·plan_v null — 계획은 다시 받지 않음) = 초안 줄 '실행 중'·흐림(Run 줄처럼) {dbz}")
+        check(dbz["same"] == {"row": busy_l, "live": [False, True]} and dbz["after"]["row"] == dbz["before"]["row"] and dbz["after"]["live"] == [True, True],
+              f"b-3 초안 해시 복사도 같은 판정(낡음이 아니어도 drafting 이면 초안만 끔 — 그리기·누르기 같음), 끝나면 원래 줄 {dbz['same']} {dbz['after']}")
+    else:
+        check(False, f"draftBusy 시나리오 결과 없음 {dbz}")
+    dc = res.get("doubleClicks") or {}
+    if "export" in dc:
+        check(dc["export"] == {"posts": 1, "errs": []} and dc["adopt"] == {"posts": 2, "errs": []} and dc["save"] == {"posts": 1, "errs": []}
+              and dc["repeat"] == 0 and dc["enter"] == {"posts": 2, "errs": []},
+              f"r3-11 [Export]·[채택]·설정 [저장]·[수정] Enter 두 번 = 요청 한 번(채택·수정은 미리보기+쓰기)·빨간 오류 토스트 없음, Enter 키 반복 = 보내지 않음 {dc}")
+    po = res.get("pollOld") or {}
+    check(po.get("found") and po.get("old") == {"gets": [False, True], "piped": [True, False], "pipelineRev": False}
+          and po.get("same") == {"gets": [False], "piped": [True], "pipelineRev": True},
+          f"r3-16 board.js 폴링: unchanged 응답에 pipeline_rev 가 없어짐(옛 판으로 재시작) = 전체 state 다시 → S 에서도 빠짐(applyFree 탭 반영 갈래), "
+          f"그대로면 다시 받지 않음 {po}")
+    dk = res.get("driftCalls") or {}
+    if "calls" in dk:
+        cpc_l = "prepare.calls_per_cell: 마지막 Prepare 1 · Studio 3 — 셀은 그대로지만 완료된 셀마다 새 호출이 생겨 다시 과금 대상(Run 승인 필요)"
+        n_l = "prepare.n: 마지막 Prepare 4 · Studio 2 — 셀은 그대로, 대기 호출의 장 수·비용·승인 해시가 바뀜"
+        imp_l = "import.refs_dir: 마지막 Import D:/a · Studio D:/b — 마지막 Import 와 다름 — 다음 반영이 크롭 소스·레퍼런스를 바꿀 수 있음"
+        r_note = "R·ComfyUI 큐·그래프 Run 은 그래프 Prepare(그래프 위젯 값)로 jobs 를 다시 쓴 뒤 과금"
+        ca, co = dk["calls"], dk["cost"]
+        want_rows = [[imp_l, "pp-row warn"], [n_l, "pp-row warn"], [cpc_l, "pp-row bad"]]
+        check(ca["warn"] == [cpc_l, n_l, imp_l] and ca["head"] == ["lh-bad", [n_l, cpc_l, r_note]]
+              and ca["panel"] == want_rows and ca["settings"] == want_rows,
+              f"r3-02 갈라짐 kind calls(calls_per_cell 늘림 — 완료된 셀마다 새 유료 호출) = cell 처럼 다시 과금 대상: 반영 확인 창 맨 앞(cost·import 앞)·"
+              f"머리줄 배지 빨강·진행 설정 칸·설정 패널 줄 'bad', 문구 DRIFT.calls {ca}")
+        check(co["warn"] == [n_l] and co["head"] == ["lh-wait", [n_l, r_note]] and co["panel"] == [[n_l, "pp-row warn"]]
+              and co["settings"] == [[n_l, "pp-row warn"]],
+              f"대조: cost 만(n 이 다름)이면 머리줄 배지 노랑·줄 'warn' {co}")
+    else:
+        check(False, f"driftCalls 시나리오 결과 없음 {dk}")
+    # Codex 2차 대응(c2-1·m-1)
+    rt = res.get("resetTyped") or {}
+    if "blur" in rt:
+        bl, sv, tw, pr = rt["blur"], rt["save"], rt["two"], rt["pre"]
+        check(bl == {"disabled": False, "shown": "7", "moved": False, "posts": [["prepare", 3, 2]], "fileN": 2, "dialogs": 1, "toasts": []},
+              f"c2-1 [매니페스트 값으로 다시] 저장을 기다리는 사이(칸 켜짐) n 에 7 을 친 뒤 blur = 칸에 7 이 남음(보내지 않은 새 편집 — 저장값 2 로 "
+              f"돌아가지 않음), 남긴 편집의 기준값 = 이 창이 저장한 값('다른 창이 바꿈' 표시 없음) {bl}")
+        check(sv == {"disabled": False, "clicked": True, "shown": "7", "moved": False, "posts": [["prepare", 3, 2], ["prepare", 4, 7]], "fileN": 7,
+                     "dialogs": 1, "toasts": [":Prepare 설정 저장 — rev 5"]},
+              f"c2-1 같은 상황에서 칸에 7 이 보이는 채로 바로 Prepare [저장] = n 7 을 저장(저장값 2 를 '저장 성공'으로 다시 보내지 않음 — '다른 창' 확인 "
+              f"창 없음) {sv}")
+        check(tw == {"disabled": False, "shown": "7", "moved": False, "posts": [["import", 3, None], ["prepare", 4, 2]], "fileN": 2, "dialogs": 1,
+                     "toasts": []},
+              f"c2-1 두 절(import·prepare) — 앞 절(import) 저장 중 뒤 절(prepare) n 에 친 7 도 확인 창 뒤의 편집이라 남음(prepare 저장은 확인 창 값 2) {tw}")
+        check(pr["posts"] == [["prepare", 3, 2]] and pr["shown"] == "2" and pr["fileN"] == 2 and pr["dialogs"] == 1 and not pr["moved"],
+              f"c2-1 대조: 확인 창 전의 편집(n 5)은 리셋이 확인 창 값(유도값 2)으로 덮음 {pr}")
+    else:
+        check(False, f"resetTyped 시나리오 결과 없음 {rt}")
+    cgt = res.get("confirmGate") or {}
+    if "draftOnly" in cgt:
+        soft = "— 반영·Export 는 막지 않음(확인(저장) 전에는 계획 해시를 흐림)"
+        hard = "— 확인(저장) 전에는 반영·Export 를 막음"
+        mc = R["GET /pipeline"]["alt"]["missing"]["confirm"]
+        bc = R["GET /pipeline"]["alt"]["broken"]["derived"]["confirm"]
+        m_gate, m_rest = [c for c in mc if c.split(".")[0] in ("prepare", "import")], [c for c in mc if c.split(".")[0] not in ("prepare", "import")]
+        check(cgt["draftOnly"] == {"head": "lh-wait", "rows": [[f"확인 필요: draft.apply {soft}", "pp-row warn"]]}
+              and cgt["rest"] == {"head": "lh-wait", "rows": [[f"확인 필요: draft.apply, analyze.register, compose.zorder, export.filename_prefix {soft}",
+                                                                "pp-row warn"]]},
+              f"m-1 정본 ok(저장됨, confirm [draft.apply])·기록 없는 analyze·compose·export 만 남음 = 서버 prompt_gate 통과 → '막지 않음(해시만 흐림)' "
+              f"노랑 줄·머리줄 배지 노랑('반영·Export 를 막음'이라 하지 않음) {cgt['draftOnly']} {cgt['rest']}")
+        check(cgt["mixed"] == {"head": "lh-bad", "rows": [[f"확인 필요: prepare.variants, import.refs_dir {hard}", "pp-row bad"],
+                                                         [f"확인 필요: draft.apply, export.filename_prefix {soft}", "pp-row warn"]]},
+              f"m-1 prepare.*·import.* 가 섞이면 그 항목만 '막음' 빨강 줄 + 나머지 노랑 줄, 배지 빨강 {cgt['mixed']}")
+        check(m_gate and m_rest and cgt["missing"] == {"head": "lh-bad", "rows": [[f"확인 필요: {', '.join(m_gate)} {hard}", "pp-row bad"],
+                                                                                  [f"확인 필요: {', '.join(m_rest)} {soft}", "pp-row warn"]]}
+              and cgt["missingRest"] == {"head": "lh-bad", "rows": [["pipeline.json 없음 — 한 번 저장하기 전에는 반영·Export 를 막음", "pp-row bad"],
+                                                                    [f"확인 필요: draft.apply {soft}", "pp-row warn"]]},
+              f"m-1 파일 없음 = 막는 항목이 없어도 '파일 없음 — 막음' 빨강(서버 confirm_settings — not saved), 배지 빨강 {cgt['missing']} {cgt['missingRest']}")
+        check(cgt["broken"] == {"head": "lh-bad", "rows": [[f"확인 필요: {', '.join(bc)} {hard}", "pp-row bad"]]},
+              f"m-1 깨진 파일(pipeline_broken — 전부 막음) = derived.confirm 전부 '막음' 한 줄(r2-01 문구 그대로) {cgt['broken']}")
+    else:
+        check(False, f"confirmGate 시나리오 결과 없음 {cgt}")
+    note(f"S3a-J 시나리오 {len(res)}")
+
+
+# ── U2b(노드) ───────────────────────────────────────────────────────────
+def _pipeline_node_u2b():
+    """S3a N24·N30·N31(U2b, pipeline_node_unit 의 앞 블록 — --only=pipeline_node_u2b 로 따로): Prepare prepare_settings·prepare_inputs,
+    Export ui bmk_dp_export, pipeline.json 은 노드 밖. 그리고 §2.4 노드 쪽(Spec Draft run 전체 = board.draft_active, import 때
+    board.set_qwen_dir)과 U2a 가 넘긴 노드 행동(mock 채택 양보 → 다음 Import·Prepare, preview 승인의 화풍 전파, source.glossary).
+    노드는 _dp_package(mock — 유료 0: mock 을 끈 Draft 는 approve "" 이고 run_units 는 mock 이 아니면 예외)."""
+    section("S3a pipeline_node_u2b — Prepare prepare_settings·prepare_inputs · Export bmk_dp_export · Draft draft_active · 노드 밖 "
+            "pipeline.json(U2b)")
+    dp = _dp_package()
+    import folder_paths  # noqa: E402  (ComfyUI 루트)
+    import comfy.model_management as mm
+
+    st, rn, dv, bd = dp.store, dp.runner, dp.dvlm, dp.board  # 노드와 같은 모듈(_bmk_dp_pkg)
+    pl = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_pipeline")
+    OUT = OUT_ROOT / "pipeline_node_u2b"
+    shutil.rmtree(OUT, ignore_errors=True)
+    OUT.mkdir(parents=True)
+    folder_paths.set_output_directory(str(OUT / "output"))
+    mock_file = OUT / "bmk_design_patch" / "_MOCK_API"
+    env_mock = os.environ.pop(rn.MOCK_ENV, None)
+    PRE, RUN_, DR = dp.BMKDesignPatchPrepare(), dp.BMKDesignPatchRun(), dp.BMKDesignPatchSpecDraft()
+    IMP, EXP = dp.BMKDesignPatchImportPSD(), dp.BMKDesignPatchExportPSD()
+    base = texture(384, 512, 51)
+    rects = [("001_왼쪽", [32, 32, 160, 160]), ("002_가운데", [192, 64, 320, 192]), ("003_오른쪽", [352, 160, 480, 288])]
+    # 7개 모두 노드 위젯 기본값과 다른 값 — 받은 값 대신 기본값을 기록하는 결함(셀 설정 model·size_rule 포함)이 걸리게
+    PRE_ARGS = ("gpt-image-2.5-flare", "high", "int_k_2560", " v1 ; V4 ", 2, "plain", 3)
+
+    def set_mock(**vlm_opts):
+        mock_file.parent.mkdir(parents=True, exist_ok=True)
+        mock_file.write_text(json.dumps({"delay_s": 0.0, "vlm": dict({"delay_s": 0.0}, **vlm_opts)}), encoding="utf-8")
+
+    def man(root):
+        return st.load_manifest(root)
+
+    def raw(root):
+        return Path(root, st.MANIFEST_NAME).read_bytes()
+
+    @contextlib.contextmanager
+    def patched(obj, **attrs):
+        old = {k: getattr(obj, k) for k in attrs}
+        for k, v in attrs.items():
+            setattr(obj, k, v)
+        try:
+            yield
+        finally:
+            for k, v in old.items():
+                setattr(obj, k, v)
+
+    def draft_coro(h, approve="", **kw):
+        args = dict(vlm="openai/gpt-6-sol", effort="xhigh", image_detail="high", write_mode="fill", only="", draft_round=0,
+                    concurrency=4, credit_cap=0, keep_loaded=False, apply="targets", adopt="")
+        args.update(kw)
+        return DR.run(h, approve, unique_id="88", **args)
+
+    def draft_node(h, approve="", **kw):
+        out = asyncio.run(draft_coro(h, approve, **kw))
+        return out["result"], out["ui"][dv.UI_KEY][0]
+
+    def run_node(h, approve=""):
+        out = asyncio.run(RUN_.run(h, approve, max_new_calls=64, concurrency=4, wave_minutes=25, retry_failed=False,
+                                   retry_orphans=False, only="", unique_id="77"))
+        return out["result"], out["ui"]["bmk_dp_run"][0]
+
+    def t_n24():
+        section("S3a-N24 Prepare: prepare_settings(위젯 7개)·prepare_inputs(입력 지문)를 jobs 와 같은 커밋에 · 같은 설정 = 바이트·rev "
+                "그대로 · cell_key 불변 · calls_per_cell 생략 = 1 · Studio 유도·갈라짐 · 입력 지문은 읽기 전에")
+        h, root = _fx_project(dp, OUT, "n24", rects, base)
+        m0 = man(root)
+        keys = ("prepare_settings", "prepare_inputs")
+        check(not any(k in m0 for k in keys) and not any(k in st._skeleton("x") or k in st._M2_KEYS for k in keys),
+              "Prepare 전(옛 프로젝트) = 키 없음 · store 골격·M2 키에 넣지 않음(키 없음 = 옛 프로젝트)")
+        doc = dp.__doc__
+        extra = doc[doc.index("매니페스트 추가 키"):doc.index("명세와 다른 모양")]
+        check(all(k in extra for k in keys), "노드 머리 '매니페스트 추가 키' 목록에 두 키")
+        calls = {"commit_merge": 0, "update_manifest": 0, "save_manifest": 0}
+
+        def counted(name):
+            fn = getattr(st, name)
+
+            def wrap(*a, **kw):
+                calls[name] += 1
+                return fn(*a, **kw)
+            return wrap
+
+        with patched(st, **{k: counted(k) for k in calls}):
+            h1, _s, _r = PRE.run(h, *PRE_ARGS[:4], 2.0, "plain", 3.0)  # 검증을 거치지 않은 숫자(float)도 int 로 기록
+        m1 = man(root)
+        ps = m1.get("prepare_settings")
+        wdef = {k: PRE.INPUT_TYPES()["required"][k][1]["default"] for k in pl.section_keys("prepare")}
+        same_def = [k for k, v in zip(pl.section_keys("prepare"), PRE_ARGS) if v == wdef[k]]
+        check(ps == {"model": "gpt-image-2.5-flare", "quality": "high", "size_rule": "int_k_2560", "variants": " v1 ; V4 ", "n": 2,
+                     "ref_style": "plain", "calls_per_cell": 3}
+              and same_def == [] and list(ps) == list(pl.section_keys("prepare")) and type(ps["n"]) is int
+              and type(ps["calls_per_cell"]) is int,
+              f"prepare_settings = 실제로 쓴 위젯 값 7개(모두 위젯 기본값과 다른 값 — 기본값과 같은 키 {same_def}; variants 는 받은 문자열 "
+              f"그대로, n·calls_per_cell 은 int — 2.0·3.0 도, 키 순서 = Studio prepare 절) {ps}")
+        rect_of = {c["id"]: c["rect"] for c in m1["crops"]}
+        cell_of = {j["crop_id"]: (j["model"], j["quality"], j["size"]) for j in m1["jobs"]}
+        check(len(cell_of) == len(rect_of) and all(
+            cell_of[cid] == (ps["model"], ps["quality"], list(st.gpt_output_size(r[2] - r[0], r[3] - r[1], ps["size_rule"])[:2]))
+            for cid, r in rect_of.items()),
+              f"jobs 의 셀 설정 = prepare_settings(model·quality, size = 그 size_rule 로 계산한 출력 크기) {cell_of}")
+        check(m1.get("prepare_inputs") == st.prepare_inputs_fp(root, m1) and re.fullmatch(r"[0-9a-f]{16}", m1.get("prepare_inputs") or ""),
+              "prepare_inputs = store.prepare_inputs_fp(root, m)")
+        check(calls == {"commit_merge": 1, "update_manifest": 0, "save_manifest": 1} and m1["rev"] == m0["rev"] + 1 == h1["rev"]
+              and m1["jobs"] and all(j["reps"] == 3 and j["n"] == 2 for j in m1["jobs"]),
+              f"jobs·prepare_settings·prepare_inputs 가 한 커밋(commit_merge 1·저장 1·update_manifest 0) — 첫 실행 rev +1 한 번 "
+              f"{calls} rev {m0['rev']}→{m1['rev']}")
+
+        b1 = raw(root)
+        PRE.run(h1, *PRE_ARGS)
+        check(raw(root) == b1, "같은 설정 재실행 = 매니페스트 바이트·rev 그대로(commit_merge 가 같으면 저장 안 함)")
+        cks = sorted(j["cell_key"] for j in m1["jobs"])
+        same_ck = all(st.cell_key(j["model"], j["quality"], j["size"], j["background"], j["prompt"], [i["sha"] for i in j["inputs"]],
+                                  j["template_version"], j["variant"]) == j["cell_key"] for j in m1["jobs"])
+        h2, _s, _r = PRE.run(h1, *PRE_ARGS[:4], 4, "plain", 1)
+        m2 = man(root)
+        check(same_ck and sorted(j["cell_key"] for j in m2["jobs"]) == cks and m2["rev"] == m1["rev"] + 1
+              and (m2["prepare_settings"]["n"], m2["prepare_settings"]["calls_per_cell"]) == (4, 1)
+              and all((j["n"], j["reps"]) == (4, 1) for j in m2["jobs"]),
+              "cell_key 불변: 셀 입력만으로 다시 계산한 값과 같고, n·calls_per_cell 만 바꾸면 셀 그대로(설정 기록·jobs n/reps 만 바뀜)")
+        b2 = raw(root)
+        h3, _s, _r = PRE.run(h2, *PRE_ARGS[:4], 4, "plain")
+        check(raw(root) == b2 and man(root)["prepare_settings"]["calls_per_cell"] == 1,
+              "calls_per_cell 생략(옛 워크플로 — Python 기본 1) = 1 로 기록, 바이트·rev 그대로")
+
+        m3 = man(root)
+        d = pl.derive(root, m3)
+        pre = d["settings"]["prepare"]
+        check(pre == m3["prepare_settings"] and all(d["from"][f"prepare.{k}"] == "manifest" for k in pl.section_keys("prepare"))
+              and not any(c.startswith("prepare.") for c in d["confirm"]) and pl.drift(d["settings"], m3) == [],
+              f"Studio 유도(derive): prepare 절 = prepare_settings(from manifest, 확인 필요 없음) → 갈라짐 0 {pre}")
+        kinds = {f: [x["kind"] for x in pl.drift(dict(d["settings"], prepare=dict(pre, **{f: v})), m3)]
+                 for f, v in (("variants", "V4,v1"), ("n", 2), ("calls_per_cell", 2), ("model", MODEL25), ("quality", "max"),
+                              ("size_rule", "user_k"), ("ref_style", "at"))}
+        check(kinds == {"variants": [], "n": ["cost"], "calls_per_cell": ["calls"], "model": ["cell"], "quality": ["cell"],
+                        "size_rule": ["cell"], "ref_style": ["cell"]},
+              f"갈라짐: 변형 토큰 집합 같음 = 없음, n = 비용, 셀당 호출 1→2(늘림 — 리뷰 3차 r3-02) = 호출, 모델·품질·크기 규칙·ref_style(노드 "
+              f"기본값으로 되돌림) = 셀 {kinds}")
+
+        fp3, jobs3 = m3["prepare_inputs"], json.dumps(m3["jobs"], sort_keys=True)
+        c0 = m3["crops"][0]["id"]
+        sp = Path(root, "specs", f"{c0}.json")
+        sp.parent.mkdir(exist_ok=True)
+        sp.write_text("{}", encoding="utf-8")  # 빈 오버라이드 — 스펙 파일은 바뀌었지만 jobs 는 그대로
+        fp_spec = st.prepare_inputs_fp(root, man(root))
+        h4, _s, _r = PRE.run(h3, *PRE_ARGS[:4], 4, "plain", 1)
+        m4 = man(root)
+        check(fp_spec != fp3 and m4["prepare_inputs"] == fp_spec and m4["rev"] == m3["rev"] + 1
+              and json.dumps(m4["jobs"], sort_keys=True) == jobs3,
+              "스펙을 바꾸면 prepare_inputs_fp 가 달라짐('반영 필요') → 다음 Prepare 가 새 지문을 기록(jobs 그대로, rev +1)")
+        lay = Path(root, st.LAYOUT_NAME)
+        lay.write_text("{}", encoding="utf-8")
+        fp_lay = st.prepare_inputs_fp(root, man(root))
+        lay.unlink()
+        check(fp_lay != fp_spec and st.prepare_inputs_fp(root, man(root)) == fp_spec, "layout.json 을 바꾸면 지문이 달라짐(지우면 돌아옴)")
+        orig_vs, hit = dp.dprompt.validate_spec, []
+
+        def touching(spec):  # 크롭을 읽는 도중 용어집이 바뀜(Studio·사람 쓰기가 실행과 겹침)
+            if not hit:
+                hit.append(1)
+                Path(root, "glossary.json").write_text("{}", encoding="utf-8")
+            return orig_vs(spec)
+
+        with patched(dp.dprompt, validate_spec=touching):
+            PRE.run(h4, *PRE_ARGS[:4], 4, "plain", 1)
+        m5 = man(root)
+        check(hit and m5["prepare_inputs"] == fp_spec != st.prepare_inputs_fp(root, m5) and m5["rev"] == m4["rev"],
+              "실행 도중 바뀐 입력 → 기록 = 읽기 전 지문(지금 값과 달라 '반영 필요'로 남음 — 과금 쪽으로 새지 않음)")
+        PRE.run(h4, *PRE_ARGS[:4], 4, "plain", 1)
+        m6 = man(root)
+        fp6 = st.prepare_inputs_fp(root, m6)
+        check(m6["prepare_inputs"] == fp6 != fp_spec, "다음 Prepare 가 지금 지문을 기록(반영됨)")
+        orig_gl = dp._glossary
+
+        def reading(r, mm):  # 용어집을 읽은 바로 뒤에 바뀜 — 지문이 읽기보다 뒤면 옛 용어집으로 만든 jobs 가 '반영됨'으로 남는다
+            got = orig_gl(r, mm)
+            Path(root, "glossary.json").write_text(json.dumps({"단추": "knob"}, ensure_ascii=False), encoding="utf-8")
+            return got
+
+        with patched(dp, _glossary=reading):
+            PRE.run(h4, *PRE_ARGS[:4], 4, "plain", 1)
+        m7 = man(root)
+        check(m7["prepare_inputs"] == fp6 != st.prepare_inputs_fp(root, m7) and m7["rev"] == m6["rev"],
+              "용어집을 읽은 바로 뒤에 바뀐 입력 → 기록 = 용어집을 읽기 전 지문(지금 값과 달라 '반영 필요')")
+
+        # jobs 0 인 Prepare(빈 시작 D6 · 전 크롭 캔버스 밖)도 같은 커밋에 두 키 — 없으면 Studio 유도가 노드 기본값+확인으로 떨어진다
+        clear = np.zeros((128, 128, 4), np.uint8)  # 완전 투명 = 평탄화 불가(크롭이 캔버스 밖) → 작업 없음
+        zero = {}
+        for name, rs in (("n24e", []), ("n24o", rects[:1])):
+            _hz, rz = _fx_project(dp, OUT, name, rs, base)
+            if rs:
+                src = st.save_png_ca(rz, "inputs", clear)
+                st.update_manifest(rz, lambda mm: mm["crops"][0].update(source=src))
+            mz0 = man(rz)
+            hz, _s, rep = PRE.run(dp._handle(rz, mz0), *PRE_ARGS)
+            mz = man(rz)
+            dz = pl.derive(rz, mz)
+            bz = raw(rz)
+            PRE.run(hz, *PRE_ARGS)
+            zero[name] = (len(mz["crops"]) == len(rs) and mz["jobs"] == [] and ("작업 없음" in rep)
+                          and mz.get("prepare_settings") == dict(zip(pl.section_keys("prepare"), PRE_ARGS))
+                          and mz.get("prepare_inputs") == st.prepare_inputs_fp(rz, mz) and mz["rev"] == mz0["rev"] + 1
+                          and all(dz["from"][f"prepare.{k}"] == "manifest" for k in pl.section_keys("prepare"))
+                          and not any(c.startswith("prepare.") for c in dz["confirm"]) and pl.drift(dz["settings"], mz) == []
+                          and raw(rz) == bz, mz.get("prepare_settings"), mz.get("prepare_inputs"), mz["rev"] - mz0["rev"])
+        check(all(v[0] for v in zero.values()),
+              f"jobs 0(빈 시작·전 크롭 캔버스 밖)도 prepare_settings·prepare_inputs 를 rev +1 한 커밋에 → Studio 유도 = 매니페스트(확인 "
+              f"필요 없음)·갈라짐 0, 같은 설정 재실행 = 바이트 그대로 {zero}")
+
+        # 채택 가드(Import 뒤·Prepare 앞의 _layer_targets 쓰기 — 같은 큐 Draft 채택·Studio /draft/adopt): 그 크롭의 채택은 반영되지
+        # 않았으니 지문을 올리지 않는다(열 때 값 그대로, 키가 없으면 쓰지 않음). 문법 오류는 Import 로도 안 풀리므로 기록
+        LT, BAD = {"_layer_targets": "A: name badge; B: red pen"}, {"_layer_targets": "name badge"}
+        hg, rg = _fx_project(dp, OUT, "n24g", rects[:2], base)
+        cg = [c["id"] for c in man(rg)["crops"]]
+        Path(rg, "specs").mkdir(exist_ok=True)
+
+        def spec_g(i, ov):
+            Path(rg, "specs", f"{cg[i]}.json").write_text(json.dumps(ov), encoding="utf-8")
+
+        def pre_g():
+            _h, _s, rep = PRE.run(hg, *PRE_ARGS)
+            mg = man(rg)
+            return mg, rep, sorted({j["crop_id"] for j in mg["jobs"]}), st.prepare_inputs_fp(rg, mg)
+
+        spec_g(0, LT)  # 첫 Prepare 부터 가드 — 키 없음은 그대로
+        mk, rep_k, jk, _fk = pre_g()
+        check("prepare_inputs" not in mk and mk.get("prepare_settings") == dict(zip(pl.section_keys("prepare"), PRE_ARGS))
+              and "Import PSD 가 반영" in rep_k and jk == cg[1:],
+              f"가드(Import 미반영 채택)가 걸린 첫 Prepare: prepare_inputs 키를 쓰지 않음(Studio '지문 없음 — 반영 뒤 확정'), "
+              f"prepare_settings·다른 크롭 jobs 는 씀 {mk.get('prepare_inputs')} {jk}")
+        Path(rg, "specs", f"{cg[0]}.json").unlink()
+        ma, _r, ja, fa = pre_g()
+        spec_g(0, LT)
+        mh, rep_h, jh, fh = pre_g()
+        bh = raw(rg)
+        pre_g()
+        check(ma["prepare_inputs"] == fa and ja == cg and "Import PSD 가 반영" in rep_h and jh == cg[1:]
+              and mh["prepare_inputs"] == fa != fh and raw(rg) == bh,
+              f"Import 없이 _layer_targets 쓰기 → Prepare(가드): 기록 = 열 때 지문 ≠ 지금 지문('반영 필요' 유지 — 채택 미반영·그 크롭 "
+              f"jobs 없음), 다시 실행 = 바이트 그대로 {jh}")
+        spec_g(0, BAD)
+        mb, rep_b, jb, fb = pre_g()
+        check("채택 확인 못 함" in rep_b and jb == cg[1:] and mb["prepare_inputs"] == fb != fa,
+              f"문법 오류('채택 확인 못 함' — Import 로도 안 풀림)만 가드 = 지금 지문 기록('반영 필요'가 영영 남지 않게) {jb}")
+        spec_g(1, BAD)
+        spec_g(0, LT)
+        mx, rep_x, jx, fx = pre_g()
+        check("채택 확인 못 함" in rep_x and "Import PSD 가 반영" in rep_x and jx == [] and mx["prepare_inputs"] == fb != fx,
+              "앞 크롭 Import 미반영 + 뒤 크롭 문법 오류 = 지문 그대로(크롭 하나라도 미반영이면 — 마지막 크롭이 판정을 덮지 않음)")
+
+    def t_n30():
+        section("S3a-N30 Export ui bmk_dp_export: new(새 PSD·그 exports rev) · unchanged(같은 내용의 기존 항목 psd·rev) · empty(psd·rev "
+                "null) — text 그대로, 정본 history 모양")
+        h, root = _fx_project(dp, OUT, "n30", rects[:2], base)
+        set_mock()
+        h, _s, _r = PRE.run(h, MODEL25, "high", "user_k", "V1", 1, "at", 1)
+        ph = rn.split_approval(rn.plan_calls(man(root), root), "", backend=rn.BACKEND_MOCK)["pending_hash"]
+        (h, _rep, _g), e = run_node(h, ph)
+        check(e["approved_now"] and e["backend"] == "mock" and len(man(root)["candidates"]) == 2, "준비: mock Run 후보 2(과금 없음)")
+        hist = _pl_api()["history"]
+
+        def export(prefix, alternates="hidden_all"):
+            out = EXP.run(h, prefix, "pixel", alternates, "raw", "auto", True, False)
+            json.dumps(out["ui"])  # /api/history 로 나가는 JSON
+            return out["result"][0], out["ui"]
+
+        def shape(ui):
+            return _pl_shape({"bmk_dp_export": hist["bmk_dp_export"]}, {"bmk_dp_export": ui.get("bmk_dp_export")}, hist)
+
+        pa, ua = export("n30a")
+        ex = man(root)["exports"]
+        check(set(ua) == {"text", "bmk_dp_export"} and ua["bmk_dp_export"] == [{"outcome": "new", "psd": pa, "rev": ex[-1]["rev"]}]
+              and pa == ex[-1]["psd"] and os.path.isfile(pa) and type(ex[-1]["rev"]) is int and shape(ua) == [],
+              f"new: psd = 결과 경로 = exports[-1].psd('/'), rev = 그 항목의 rev, 정본 모양 {ua.get('bmk_dp_export')} {shape(ua)}")
+        head = rf"Export PSD: {re.escape(os.path.normpath(pa))} \| 레이어 2 \(pick 0\) · .* \| rev {man(root)['rev']} \| \d+\.\ds"
+        check(re.fullmatch(head, ua["text"][0]) is not None
+              and ua["text"][1:] == ["상류 Analyze 설정(없으면 기본값)의 분석이 없던 후보 2개를 분석함"],
+              f"new: text(머리줄·경고 — 줄 목록 전체) 그대로 {ua['text']}")
+        pb, ub = export("n30b")
+        ex = man(root)["exports"]
+        rev_a = next(x["rev"] for x in ex if x["psd"] == pa)
+        check(ub["bmk_dp_export"] == [{"outcome": "new", "psd": pb, "rev": ex[-1]["rev"]}] and pb != pa and ex[-1]["rev"] > rev_a,
+              f"다른 설정(prefix) = 새 PSD {ub.get('bmk_dp_export')}")
+        pa2, ua2 = export("n30a")
+        check(pa2 == pa and ua2["bmk_dp_export"] == [{"outcome": "unchanged", "psd": pa, "rev": rev_a}] and rev_a != ex[-1]["rev"]
+              and ua2["text"] == [f"변경 없음: {pa}"] and man(root)["exports"] == ex and shape(ua2) == [],
+              f"unchanged: 같은 내용의 기존 파일 = 그 항목의 psd·rev(마지막 Export 가 아니어도), exports 에 붙이지 않음, text 그대로 "
+              f"{ua2.get('bmk_dp_export')}")
+        pe, ue = export("n30e", alternates="none")  # pick 0 + 대안 미포함 = 넣을 후보 없음(skip_empty 기본 True)
+        check(pe == "" and ue["bmk_dp_export"] == [{"outcome": "empty", "psd": None, "rev": None}]
+              and ue["text"] == ["내보낼 후보 없음(pick 0 · 대안 미포함) → PSD 를 쓰지 않음"] and man(root)["exports"] == ex and shape(ue) == [],
+              f"empty: psd·rev null, exports 에 붙이지 않음, text 그대로 {ue}")
+        check(shape({"bmk_dp_export": [{"outcome": "new", "psd": pa, "rev": str(rev_a)}]}) != [],
+              "정본 대조기가 rev 타입 어긋남을 잡음(대조 자체 점검)")
+
+    def t_n31():
+        section("S3a-N31 pipeline.json 은 노드 밖: Project IS_CHANGED 불변(없음·있음·깨짐) · 노드는 위젯 값만 · 노드 소스에 참조 없음")
+        h, root = _fx_project(dp, OUT, "n31", rects[:1], base)
+
+        def ic():
+            return dp.BMKDesignPatchProject.IS_CHANGED(project="n31", base_dir=str(OUT))
+
+        ic0 = ic()
+        res = pl.update(root, 0, "prepare", dict(pl.defaults()["prepare"], n=7, model="gpt-image-2.5-flare"))
+        pj = Path(root, pl.PIPELINE_NAME)
+        good = pj.read_bytes()
+        ic1 = ic()
+        pj.write_text("{broken", encoding="utf-8")
+        ic2 = ic()
+        check(res["ok"] and res["rev"] == 1 and ic0 == ic1 == ic2, "pipeline.json 을 쓰거나 깨도 Project IS_CHANGED 그대로(지문 밖)")
+        pj.write_bytes(good)
+        PRE.run(h, MODEL25, "high", "user_k", "V1", 1, "at", 1)
+        ps = man(root)["prepare_settings"]
+        check((ps["model"], ps["n"]) == (MODEL25, 1) and pj.read_bytes() == good,
+              "Prepare 는 위젯 값만 기록(pipeline.json 의 prepare 절 flare·n 7 무시), pipeline.json 그대로")
+        src = (PKG / "bmk_design_patch.py").read_text(encoding="utf-8")
+        mods = [a.name for n in ast.walk(ast.parse(src)) if isinstance(n, ast.Import) for a in n.names]
+        mods += [f"{n.module or ''}.{a.name}" for n in ast.walk(ast.parse(src)) if isinstance(n, ast.ImportFrom) for a in n.names]
+        check("pipeline.json" not in src and "bmk_design_patch_pipeline" not in src and not any("pipeline" in x for x in mods),
+              "노드 모듈 소스에 pipeline.json·bmk_design_patch_pipeline 참조·import 없음")
+
+    def t_qwen():
+        section("S3a §2.4 노드 import 때 board.set_qwen_dir(Spec Draft 와 같은 Qwen 폴더) — 모듈 최상위, set_sam3_ckpts 바로 다음")
+        tree = ast.parse((PKG / "bmk_design_patch.py").read_text(encoding="utf-8"))
+        top = [n.value for n in tree.body if isinstance(n, ast.Expr) and isinstance(n.value, ast.Call)]
+        names = [ast.unparse(c.func) for c in top]
+        i = names.index("board.set_sam3_ckpts") if "board.set_sam3_ckpts" in names else -1
+        q = top[i + 1] if 0 <= i < len(top) - 1 and names[i + 1] == "board.set_qwen_dir" and len(top[i + 1].args) == 1 else None
+        path = eval(compile(ast.Expression(q.args[0]), "<set_qwen_dir>", "eval"), vars(dp)) if q is not None else None
+        run_src = inspect.getsource(dp.BMKDesignPatchSpecDraft.run)
+        check(path == os.path.join(folder_paths.models_dir, *dp._QWEN_DIR)
+              and "model_dir = os.path.join(folder_paths.models_dir, *_QWEN_DIR)" in run_src and bd._qwen_dir() == path,
+              f"set_qwen_dir 인자 = models/{'/'.join(dp._QWEN_DIR)}(Spec Draft run 의 model_dir 와 같은 식), 라우트가 쓰는 보드 값도 "
+              f"같음(호출 뒤 덮어쓰기 없음) {path} {bd._qwen_dir()}")
+
+    def t_active():
+        section("S3a §2.4 Spec Draft run 전체가 board.draft_active(root) 안: 계획·쓰기·finally 의 모델 내림, 위젯 검사 예외·계획 예외·"
+                "idle(force·빈 only — 호출·쓰기 없음) 포함, 인터럽트·취소 뒤에도 레지스트리 빔 — 핸들을 못 열면(루트 모름) 들어가지 않음")
+        set_mock()
+        h, root = _fx_project(dp, OUT, "nda", rects[:2], base)
+        events, active, seen = [], set(), []
+
+        @contextlib.contextmanager
+        def recorder(r):
+            events.append(("enter", r))
+            active.add(r)
+            try:
+                yield
+            except BaseException as e:
+                events.append(("exit", r, type(e).__name__))
+                raise
+            else:
+                events.append(("exit", r, None))
+            finally:
+                active.discard(r)
+
+        def spy(name, fn):
+            def wrap(*a, **kw):
+                seen.append((name, root in active))
+                return fn(*a, **kw)
+            return wrap
+
+        def boom(*a, **kw):
+            raise RuntimeError("계획 실패(시험)")
+
+        def took():  # 이번 실행의 (들어감·나감, 안에서 부른 것) → 다음 실행을 위해 비움
+            got = (list(events), list(seen))
+            events.clear()
+            seen.clear()
+            return got
+
+        def inside(calls):  # 계획으로 시작해 모델 내림(finally)으로 끝나고, 모두 draft_active 안
+            names = [n for n, _a in calls]
+            return bool(calls) and names[0] == "plan" and names[-1] == "unload" and "files" in names and all(a for _n, a in calls)
+
+        once = [("enter", root), ("exit", root, None)]
+        ok = {}
+        with patched(bd, draft_active=recorder), patched(dp, _draft_plan=spy("plan", dp._draft_plan),
+                                                         _draft_files=spy("files", dp._draft_files),
+                                                         _unload_resident_qwen=spy("unload", dp._unload_resident_qwen)):
+            (_h, _r, _s), e = draft_node(h)
+            ev, calls = took()
+            ok["드라이런"] = (ev == once and inside(calls), ev, calls)
+            (_h, _r, _s), e2 = draft_node(h, e["pending_hash"])
+            ev, calls = took()
+            ok["승인 실행"] = (e2["approved_now"] and ev == once and inside(calls) and [n for n, _a in calls].count("plan") == 2, ev, calls)
+            draft_node(h, write_mode="force", only="")
+            ev, calls = took()
+            ok["idle(force·빈 only)"] = (ev == once and inside(calls), ev, calls)
+            expect_raises(lambda: draft_node(h, write_mode="bogus"), "위젯 검사 예외(check_widgets — try 앞)")
+            ev, calls = took()
+            ok["위젯 예외"] = (ev == [("enter", root), ("exit", root, "ValueError")] and calls == [], ev, calls)
+            with patched(dp, _draft_plan=boom):
+                expect_raises(lambda: draft_node(h), "계획 예외", RuntimeError)
+            ev, calls = took()
+            ok["계획 예외"] = (ev == [("enter", root), ("exit", root, "RuntimeError")] and calls == [("unload", True)], ev, calls)
+            bad = {"schema": st.SCHEMA, "root": str(OUT / "없는_프로젝트"), "project": "x", "rev": 0}
+            expect_raises(lambda: draft_node(bad), "핸들을 못 엶 → _open 예외")
+            ev, calls = took()
+            ok["열기 실패"] = (ev == [] and calls == [], ev, calls)
+        check(all(v[0] for v in ok.values()), f"draft_active: 들어감·나감 1번씩(예외는 그 예외로), 안에서 계획·파일·모델 내림 {ok}")
+        check(bd.draft_active is not recorder and dp._draft_plan.__name__ == "_draft_plan", "가짜는 블록 밖에서 되돌림")
+        orig_plan, live = dp._draft_plan, []
+
+        def live_plan(*a, **kw):  # 실제 레지스트리: 실행 중에는 시작 시각이 보임
+            live.append(bd.draft_since(root))
+            return orig_plan(*a, **kw)
+
+        with patched(dp, _draft_plan=live_plan):
+            (_h, _r, _s), e3 = draft_node(h)
+            after = [bd.draft_since(root)]
+            expect_raises(lambda: draft_node(h, write_mode="bogus"), "실제 draft_active: 위젯 검사 예외")
+            after.append(bd.draft_since(root))
+        with patched(dp, _draft_plan=boom):
+            expect_raises(lambda: draft_node(h), "실제 draft_active: 계획 예외", RuntimeError)
+        after.append(bd.draft_since(root))
+
+        def ipe(*a, **kw):  # 사용자 Cancel = 계획 도중 InterruptProcessingException(BaseException — Exception 이 아님)
+            raise mm.InterruptProcessingException()
+
+        with patched(dp, _draft_plan=ipe):
+            expect_raises(lambda: draft_node(h), "실제 draft_active: 인터럽트", mm.InterruptProcessingException)
+        after.append(bd.draft_since(root))
+        started, release = threading.Event(), threading.Event()
+
+        def held(*a, **kw):  # 계획 스레드에서 멈춤 — 그동안 작업을 취소(await 중인 run 에 CancelledError)
+            started.set()
+            release.wait(10)
+
+        async def cancelled():
+            task = asyncio.create_task(draft_coro(h))
+            try:
+                await asyncio.to_thread(started.wait, 10)
+                during = bd.draft_since(root)
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    return during, bd.draft_since(root)
+                return during, "취소되지 않음"
+            finally:
+                release.set()
+
+        with patched(dp, _draft_plan=held):
+            during, gone = asyncio.run(cancelled())
+        after.append(gone)
+        check(e3["pending"] == 0 and live and all(isinstance(t, float) for t in live) and isinstance(during, float)
+              and after == [None] * 5,
+              f"실제 board.draft_active 로 다시 실행(0 호출): 실행 중 draft_since = 시작 시각(취소 직전 {during}), 정상·위젯 예외·계획 예외·"
+              f"인터럽트·작업 취소 뒤 = None(레지스트리 빔) {live} {after}")
+
+    def t_preview():
+        section("S3a U2a 넘김: preview 승인 실행 — 원장 화풍 초안을 메모리에서 병합해 크롭에 전파 행(crop.style_note +)을 보이고 아무것도 "
+                "쓰지 않음 → 다음 fill = 같은 화풍을 씀")
+        set_mock()
+        h, root = _fx_project(dp, OUT, "npv", rects[:2], base)
+        crops = [c["id"] for c in man(root)["crops"]]
+        (_h, _r, _s), e = draft_node(h, write_mode="preview", apply="full")
+        (_h, rep, _s), e2 = draft_node(h, e["pending_hash"], write_mode="preview", apply="full")
+        md = Path(root, dv.LEDGER_DIR, "review.md").read_text(encoding="utf-8")
+        rows = re.findall(r"^\| crop\.style_note \| \+ add \|  \| (.+) \|$", md, re.M)
+        specs = sorted(p.name for p in Path(root, "specs").glob("*.json")) if Path(root, "specs").is_dir() else []
+        check(e["pending"] == 3 and e2["approved_now"] and len(rows) == len(crops) and len(set(rows)) == 1 and rows[0]
+              and "화풍(_project.json): + style_note" in rep and specs == [],
+              f"preview 승인: 크롭마다 화풍 전파 행(메모리 병합한 _project — 디스크에는 없음), 스펙·_project.json 은 쓰지 않음 {rows} {specs}")
+        draft_node(h, apply="full")  # 같은 키 = 원장 초안 병합·쓰기(0 호출)
+        proj = st.load_spec_override(root, dv.PROJECT_SPEC_ID)
+        check(proj.get("style_note") == rows[0] and all(st.load_spec_override(root, c).get("style_note") == rows[0] for c in crops),
+              "다음 fill 이 쓴 _project.json·크롭 style_note = preview 가 보인 전파 값")
+
+    def t_gloss():
+        section("S3a U2a 넘김: source.glossary 를 둔 프로젝트 — dp._glossary = store.project_glossary(바깥 용어집이 이김) · Prepare 프롬프트 · "
+                "바깥 용어집 수정 = '반영 필요' → 다음 Prepare")
+        h, root = _fx_project(dp, OUT, "ngl", [("004_단추", [32, 32, 160, 160])], base)
+        ext = OUT / "ngl_glossary.json"
+        ext.write_text(json.dumps({"단추": "brass button"}, ensure_ascii=False), encoding="utf-8")
+        Path(root, "glossary.json").write_text(json.dumps({"단추": "knob", "리본": "ribbon"}, ensure_ascii=False), encoding="utf-8")
+        st.update_manifest(root, lambda m: m["source"].update(glossary=str(ext).replace("\\", "/")))
+        m = man(root)
+        check(dp._glossary(root, m) == st.project_glossary(root, m) == {"단추": "brass button", "리본": "ribbon"},
+              "dp._glossary(root, m) == store.project_glossary(root, m) (glossary.json + source.glossary, 같은 키는 뒤)")
+        PRE.run(h, MODEL25, "high", "user_k", "V1", 1, "at", 1)
+        m = man(root)
+        p0 = m["jobs"][0]["prompt"]
+        check("brass button" in p0 and "knob" not in p0 and m["prepare_inputs"] == st.prepare_inputs_fp(root, m),
+              "Prepare 프롬프트 = 바깥 용어집 이름, 지문 기록")
+        ext.write_text(json.dumps({"단추": "silver button"}, ensure_ascii=False), encoding="utf-8")
+        stale = st.prepare_inputs_fp(root, man(root)) != m["prepare_inputs"]
+        PRE.run(h, MODEL25, "high", "user_k", "V1", 1, "at", 1)
+        m2 = man(root)
+        check(stale and "silver button" in m2["jobs"][0]["prompt"] and m2["prepare_inputs"] == st.prepare_inputs_fp(root, m2),
+              "바깥 용어집 수정 → 지문이 달라짐('반영 필요') → 다음 Prepare 가 반영·새 지문")
+
+    def t_yield():
+        section("S3a U2a 넘김: Spec Draft(mock) 채택 → _MOCK_API 끔 → openai 드라이런(approve \"\") = mock 출처 _layer_targets 양보·"
+                "'채택 양보' 메모 → 다음 Import·Prepare 에 mock 채택 없음(가드 경고 없음)")
+        R3, R4 = [32, 32, 160, 160], [192, 64, 320, 192]
+        h, root = _fx_project(dp, OUT, "nyd", [("003_펜이름표", R3), ("004_단추 | A: button", R4)], base)
+        c3, c4 = [c["id"] for c in man(root)["crops"]]
+        psd = OUT / "nyd.psd"  # Import 는 캐시 경로만(PSD 지문·그룹 설정 = 매니페스트 source) — 파일은 읽지 않음
+        psd.write_bytes(b"8BPS")
+        st.update_manifest(root, lambda m: m["source"].update(
+            psd=str(psd).replace("\\", "/"), fingerprint=st.file_fingerprint(str(psd)), crop_group="auto",
+            clean_plate_layer="auto", base_layer="auto", crop_pixels_group="auto"))
+        h = dp._handle(root, man(root))
+        LT = "A: mock part A; B: red pen"
+
+        def spec3():
+            return st.load_spec_override(root, c3)
+
+        def targets_of(cid):
+            return [(t["tid"], t["label"], t.get("origin")) for c in man(root)["crops"] if c["id"] == cid for t in c["targets"]]
+
+        def imp(h_):
+            return IMP.run(h_, str(psd), "auto", "auto", "auto", "auto", "", "")
+
+        set_mock(suggest={c3: ["red pen"]})
+        (_h, _r, _s), e0 = draft_node(h)
+        draft_node(h, e0["pending_hash"])
+        draft_node(h, adopt="003")
+        check(spec3().get("_layer_targets") == LT and (spec3()["_draft"].get("adopted") or {}).get("backend") == "vlm_mock",
+              f"준비: mock 초안의 제안을 채택(_draft.adopted backend vlm_mock) {spec3().get('_layer_targets')!r}")
+        h1, _o, _ri = imp(h)
+        h2, _s, _rp = PRE.run(h1, MODEL25, "high", "user_k", "V1", 1, "at", 1)
+        check(targets_of(c3) == [("A", "mock part A", "adopt"), ("B", "red pen", "adopt")]
+              and {j["crop_id"]: j["tid"] for j in man(root)["jobs"]} == {c3: "A,B", c4: "A"},
+              "준비: Import·Prepare 가 mock 채택 타깃 A·B 로 jobs")
+        mock_file.unlink()
+
+        def ledger():
+            return sorted(p.relative_to(root).as_posix() for p in Path(root, dv.LEDGER_DIR).rglob("a*.json"))
+
+        led0 = ledger()
+        orig_units = dv.run_units
+
+        async def guarded(root_, units, reqs, backend, **kw):  # 유료 0: mock 이 아닌 백엔드로 단위를 보내면 실패
+            if backend.name != dv.BACKEND_NAMES["mock"]:
+                raise RuntimeError(f"유료 백엔드 호출 시도: {backend.name}")
+            return await orig_units(root_, units, reqs, backend, **kw)
+
+        with patched(dv, run_units=guarded):
+            (_h, rep, _s), e = draft_node(h2)
+        check(e["backend"] == dv.BACKEND_NAMES["openai"] and not e["approved_now"]
+              and "채택 양보 — mock 초안에서 채택한 _layer_targets 를 지움(실제 백엔드로 다시 초안한 뒤 채택)" in rep
+              and "_layer_targets" not in spec3() and spec3()["_draft"].get("adopted") is None and ledger() == led0,
+              f"openai 드라이런(인증 없음·approve 빈 값): mock 채택 양보 + 메모, 원장 그대로(보낸 것 0) {e.get('backend')} "
+              f"{spec3().get('_layer_targets')!r}")
+        fp2 = man(root)["prepare_inputs"]
+        hg, _s, rep_g = PRE.run(_h, MODEL25, "high", "user_k", "V1", 1, "at", 1)  # 같은 큐(Import → Draft → Prepare)의 Prepare
+        mg = man(root)
+        check("_layer_targets 와 다름" in rep_g and c3 not in {j["crop_id"] for j in mg["jobs"]}
+              and mg["prepare_inputs"] == fp2 != st.prepare_inputs_fp(root, mg),
+              "양보가 Import 뒤라 같은 큐의 Prepare 는 가드(그 크롭 jobs 없음) — 지문은 그대로라 Studio '반영 필요'가 남음(채택 해제 미반영)")
+        h3, _o, _ri = imp(hg)
+        _h, _s, rep_p = PRE.run(h3, MODEL25, "high", "user_k", "V1", 1, "at", 1)
+        m3 = man(root)
+        jobs = {j["crop_id"]: j for j in m3["jobs"]}
+        check(targets_of(c3) == [("A", "펜이름표", None)] and jobs[c3]["tid"] == "A" and "red pen" not in jobs[c3]["prompt"]
+              and "_layer_targets 와 다름" not in rep_p and m3["prepare_inputs"] == st.prepare_inputs_fp(root, m3),
+              f"다음 Import·Prepare: mock 채택 타깃 없음(레이어명 타깃만), 가드 경고 없음, 지문 기록(반영됨) {targets_of(c3)}")
+
+    try:
+        _guarded("S3a-N24", t_n24)
+        _guarded("S3a-N30", t_n30)
+        _guarded("S3a-N31", t_n31)
+        _guarded("S3a-qwen", t_qwen)
+        _guarded("S3a-active", t_active)
+        _guarded("S3a-preview", t_preview)
+        _guarded("S3a-gloss", t_gloss)
+        _guarded("S3a-yield", t_yield)
+    finally:
+        if mock_file.exists():
+            mock_file.unlink()
+        if env_mock is not None:
+            os.environ[rn.MOCK_ENV] = env_mock
+
+
+# ── U3(노드 대조) ───────────────────────────────────────────────────────
+def _pipeline_node_u3():
+    """S3a P2·N25–N28·R1‴(U3, pipeline_node_unit 의 뒤 블록 — --only=pipeline_node_u3 로 따로): 위젯 표 대조, Run·Draft 라우트 해시 =
+    노드 실행 전 해시, 템플릿 = 그래프, 채택 = 노드 adopt, 실데이터 apply 템플릿. 라우트 쪽은 HTTP 대신 보드 함수(pipeline_plan·
+    draft_get·draft_adopt)를 직접 부른다. 합성 PSD = I2I_base + 빈 '02.크롭영역'(사각형은 read_crop_rects 대역 — S1-N 과 같음),
+    Run·Spec Draft 는 mock(유료 0). 같은 씨앗 프로젝트를 base_dir 째 복사해 경우마다 새 사본을 쓴다(실행이 재굴림을 소비함)."""
+    section("S3a pipeline_node_u3 — 위젯 표·Run/Draft 라우트 해시 = 노드·템플릿 = 그래프·채택 = 노드 adopt·실데이터 apply(U3)")
+    dp = _dp_package()
+    import folder_paths  # noqa: E402  (ComfyUI 루트)
+    import comfy.model_management as mm
+
+    st, rn, dv, bd = dp.store, dp.runner, dp.dvlm, dp.board  # 노드와 같은 모듈(_bmk_dp_pkg)
+    pl = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_pipeline")
+    NS = OUT_ROOT / "pipeline_node_u3"
+    shutil.rmtree(NS, ignore_errors=True)
+    NS.mkdir(parents=True)
+    folder_paths.set_output_directory(str(NS / "output"))
+    env_mock = os.environ.pop(rn.MOCK_ENV, None)
+    IMP, PRE, RUN_, DR = dp.BMKDesignPatchImportPSD(), dp.BMKDesignPatchPrepare(), dp.BMKDesignPatchRun(), dp.BMKDesignPatchSpecDraft()
+    ANA, REV_, COM, EXP = dp.BMKDesignPatchAnalyze(), dp.BMKDesignPatchReview(), dp.BMKDesignPatchCompose(), dp.BMKDesignPatchExportPSD()
+    base = texture(512, 640, 61)
+    SHAPES = [("001_왼쪽", [32, 32, 160, 160]), ("002_가운데 | A: 단추; B: 리본;", [192, 64, 320, 192]), ("003_오른쪽", [352, 160, 480, 288])]
+    PSD = NS / "u3.psd"
+    _layout_node_psd(PSD, base)
+    PRE_ARGS = {"model": MODEL25, "quality": "high", "size_rule": "user_k", "variants": "V1", "n": 1, "ref_style": "at", "calls_per_cell": 1}
+    IMPORT = {"psd_path": PSD.as_posix(), "crop_group": "auto", "clean_plate_layer": "auto", "base_layer": "auto",
+              "crop_pixels_group": "auto", "refs_dir": "", "glossary_path": ""}
+    DRAFT = {"vlm": "openai/gpt-6-sol", "effort": "xhigh", "image_detail": "high", "write_mode": "fill", "draft_round": 0,
+             "concurrency": 4, "credit_cap": 0, "apply": "targets"}
+    FIT = "side connection fitting"
+    orig_rects = dp.dpsd.read_crop_rects
+
+    def fake_rects(psd, group="auto"):  # 크롭 영역 그룹이 있으면 SHAPES(PSDWriter 는 shape 레이어를 못 씀), 없으면 진짜
+        if dp.dpsd.find_crop_group(psd, group) is None:
+            return orig_rects(psd, group)
+        return [{"name": n, "rect": list(r), "rect_source": "vector", "layer_index": i, "visible": True, "warnings": []}
+                for i, (n, r) in enumerate(SHAPES)]
+
+    def mock(b, fail_plan=None, **vlm):
+        f = Path(b) / "bmk_design_patch" / rn.MOCK_FILE
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps({"delay_s": 0.0, "fail_plan": fail_plan or {}, "vlm": dict({"delay_s": 0.0}, **vlm)}), encoding="utf-8")
+
+    def seed(name, **vlm):
+        """base_dir = NS/name, mock 켬 → Project → Import(합성 PSD) → Prepare(PRE_ARGS). → (핸들, root, base_dir)."""
+        b = NS / name
+        mock(b, **vlm)
+        h, _s = dp.BMKDesignPatchProject().open(name, str(b))
+        h = IMP.run(h, **IMPORT)[0]
+        h = PRE.run(h, **PRE_ARGS)[0]
+        return h, h["root"], b
+
+    def clone(b, name, tag):
+        """씨앗의 base_dir 통째(_MOCK_API 포함) 복사 → (핸들, root, base_dir)."""
+        nb = NS / f"{name}_{tag}"
+        shutil.copytree(b, nb)
+        h, _s = dp.BMKDesignPatchProject().open(name, str(nb))
+        return h, h["root"], nb
+
+    def ids_of(root):
+        return [c["id"] for c in st.load_manifest(root)["crops"]]
+
+    def settings(root, run=None, **draft):
+        """라우트·템플릿 설정 = 유도값(pl.current deep) + 노드에 넘기는 값(PRE_ARGS·IMPORT·DRAFT)."""
+        s = pl.current(root, deep=True)["settings"]
+        s["import"], s["prepare"], s["draft"] = dict(IMPORT), dict(PRE_ARGS), dict(DRAFT, **draft)
+        s["run"].update(run or {})
+        return s
+
+    def route(root, only_ids, run=None, **draft):
+        return bd.pipeline_plan(root, settings(root, run, **draft), only_ids=only_ids, style=False)
+
+    def run_node(h, approve="", **kw):
+        args = dict(max_new_calls=64, concurrency=4, wave_minutes=25, retry_failed=False, retry_orphans=False, only="")
+        args.update(kw)
+        out = asyncio.run(RUN_.run(h, approve, unique_id="77", **args))
+        return out["result"], out["ui"]["bmk_dp_run"][0]
+
+    def draft_node(h, approve="", **kw):
+        args = {**{k: v for k, v in DRAFT.items() if k != "apply"}, "only": "", "keep_loaded": False, "apply": DRAFT["apply"], "adopt": ""}
+        args.update(kw)
+        out = asyncio.run(DR.run(h, approve, unique_id="88", **args))
+        return out["result"], out["ui"][dv.UI_KEY][0]
+
+    def fired(rep: str) -> int:
+        mt = re.search(r"실행: 발사 (\d+)", rep)
+        return int(mt.group(1)) if mt else 0
+
+    def execute(prompt, pid):
+        """템플릿을 실제 execution.PromptExecutor(CLASSIC)로: validate_prompt(전체 출력 노드) → execute(client_id·extra_data 없음 —
+        Studio 의 /api/prompt 본문과 같음). NODE_CLASS_MAPPINGS 는 잠깐 병합·복원. → (검증 결과, 성공, ui 출력, 상태 메시지)."""
+        import execution
+        import nodes
+
+        class Srv:
+            def __init__(self):
+                self.client_id, self.last_node_id, self.last_prompt_id = None, None, None
+
+            def send_sync(self, event, data, sid=None):
+                pass
+
+            def queue_updated(self):
+                pass
+
+        saved = {k: nodes.NODE_CLASS_MAPPINGS.get(k) for k in dp.NODE_CLASS_MAPPINGS}
+        nodes.NODE_CLASS_MAPPINGS.update(dp.NODE_CLASS_MAPPINGS)
+        try:
+            mm.interrupt_current_processing(False)
+            valid = asyncio.run(execution.validate_prompt(pid, copy.deepcopy(prompt), None))
+            if not valid[0]:
+                return valid, False, {}, []
+            ex = execution.PromptExecutor(Srv(), cache_type=execution.CacheType.CLASSIC, cache_args={"lru": 0, "ram": 0, "ram_inactive": 0})
+            ex.execute(copy.deepcopy(prompt), pid, {}, valid[2])
+            return valid, ex.success, ex.history_result.get("outputs", {}), ex.status_messages
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    nodes.NODE_CLASS_MAPPINGS.pop(k, None)
+                else:
+                    nodes.NODE_CLASS_MAPPINGS[k] = v
+            mm.interrupt_current_processing(False)
+
+    def widget_diffs(table) -> list[str]:
+        """pipeline 복사 표(widget_table 꼴) 대 노드 INPUT_TYPES(required∪optional, hidden 제외): 이름·순서·type·default·choices·
+        min·max·step. 콤보 default 가 없으면 첫 선택지(ComfyUI 와 같음)."""
+        bad = []
+        for cls, spec in table.items():
+            node = dp.NODE_CLASS_MAPPINGS.get(cls)
+            if node is None:
+                bad.append(f"{cls}: 노드 없음")
+                continue
+            it = node.INPUT_TYPES()
+            ins = {**it.get("required", {}), **it.get("optional", {})}
+            if list(ins) != list(spec):
+                bad.append(f"{cls}: 입력 {list(ins)} ≠ 표 {list(spec)}")
+            for name, val in ins.items():
+                t, o = val[0], (val[1] if len(val) > 1 else {})
+                if isinstance(t, (list, tuple)):
+                    got = {"type": "COMBO", "choices": tuple(t), "default": o.get("default", t[0])}
+                else:
+                    got = {"type": t, **{k: o[k] for k in ("default", "min", "max", "step") if k in o}}
+                want = {k: tuple(v) if k == "choices" else v for k, v in (spec.get(name) or {}).items()}
+                if got != want:
+                    bad.append(f"{cls}.{name}: 노드 {got} ≠ 표 {want}")
+        return bad
+
+    def t_p2():
+        section("S3a-P2 위젯 대조: pipeline 복사 표(이름·순서·type·default·choices·min·max·step)·_SAFE_PREFIX_RE = 노드")
+        table = pl.widget_table()
+        bad = widget_diffs(table)
+        check(not bad and set(pl.CLASS.values()) <= set(dp.NODE_CLASS_MAPPINGS) and pl._SAFE_PREFIX_RE.pattern == dp._SAFE_PREFIX_RE.pattern
+              and {c: tuple(s) for c, s in table.items()} == pl.NODE_INPUTS,
+              f"템플릿 노드 입력 = INPUT_TYPES(hidden 제외), 복사 표 값 = 노드 값, 파일 이름 접두 식 같음 {bad}")
+        muts = []
+        for cls, name, key, val in (("BMKDesignPatchPrepare", "n", "max", 11), ("BMKDesignPatchAnalyze", "dE", "step", 1.0),
+                                    ("BMKDesignPatchRun", "max_new_calls", "default", 63), ("BMKDesignPatchExportPSD", "skip_empty", "default", False),
+                                    ("BMKDesignPatchCompose", "zorder", "choices", ("harvest", "auto_small_on_top"))):
+            t2 = copy.deepcopy(table)
+            t2[cls][name][key] = val
+            muts.append(bool(widget_diffs(t2)))
+        t2 = copy.deepcopy(table)
+        t2["BMKDesignPatchReview"]["extra"] = {"type": "STRING", "default": ""}
+        muts.append(bool(widget_diffs(t2)))
+        check(muts == [True] * 6, f"대조기 자기 시험: 복사 표의 max·step·default·choices 변이와 없는 위젯이 잡힘 {muts}")
+
+    def t_n25():
+        section("S3a-N25 Run 해시: 라우트(pipeline_plan) = Run 노드 실행 전 해시 — (a) 드라이런 (b) 재굴림 1·실패 1 × retry_failed × only "
+                "(c) orphaned · retry_orphans")
+        h0, root0, b0 = seed("n25")
+        ids = ids_of(root0)
+        for sel, only in ((ids, ""), (ids[2:], ids[2])):
+            p = route(root0, sel)
+            (_h, rep, _g), e = run_node(h0, "", only=only)
+            check(p["run"]["hash"] == e["pending_hash"] != "" and p["run"]["need"] == e["pending"] and p["run"]["backend"] == e["backend"]
+                  and _ledger_reqs(root0) == 0 and "드라이런" in rep,
+                  f"(a) 재굴림·복구 없음: 라우트 해시(only {len(sel)}크롭) = Run 드라이런 ui pending_hash(only {only!r}) {p['run']['hash']} {e['pending_hash']}")
+        cks = [j["cell_key"] for j in st.load_manifest(root0)["jobs"]]
+        mock(b0, fail_plan={f"{cks[1]}_r0": {"error": 500}})
+        (_h, rep, _g), e = run_node(h0, route(root0, ids)["run"]["hash"])
+        mock(b0)
+        h0 = PRE.run(h0, **dict(PRE_ARGS, calls_per_cell=2))[0]
+        bd.apply_reroll(root0, 1, cell_key=cks[0])
+        pc = rn.plan_calls(st.load_manifest(root0), root0)
+        check(fired(rep) == 3 and len(pc["failed"]) == 1 and pc["failed"][0]["cell_key"] == cks[1]
+              and sum(1 for x in pc["pending"] if x["preapproved"]) == 1,
+              f"(b) 전제: 셀1 r0 실패 · calls_per_cell 2 · 셀0 재굴림 1(사전 승인) {fired(rep)} {len(pc['failed'])}")
+        want = {(False, 3): 2, (False, 1): 1, (True, 3): 3, (True, 1): 1}  # (retry_failed, 고른 크롭 수) → 승인 필요 수
+        for i, (rf, sel) in enumerate([(rf, sel) for rf in (False, True) for sel in (ids, ids[2:])]):
+            for wrong in (False, True):
+                h, root, _b = clone(b0, "n25", f"{i}{'w' if wrong else ''}")
+                p = route(root, sel, run={"retry_failed": rf})
+                H, need, pre = p["run"]["hash"], p["run"]["need"], p["run"]["pre"]
+                approve = H[:-1] + ("1" if H[-1] == "0" else "0") if wrong else H
+                (_h, rep, _g), e = run_node(h, approve, retry_failed=rf, only="" if sel == ids else ",".join(sel))
+                check(need == want[(rf, len(sel))] and pre == 1 and e["approved_now"] is (not wrong)
+                      and fired(rep) == (pre if wrong else need + pre),
+                      f"(b) retry_failed={rf} only {len(sel)}크롭 {'틀린' if wrong else '라우트'} 해시: approved_now {e['approved_now']}, "
+                      f"발사 {fired(rep)} = {'사전 승인만' if wrong else '승인 필요(선택) + 사전 승인(전체)'} (need {need} · pre {pre})")
+        h, root, _b = clone(b0, "n25", "orph")
+        j2 = st.load_manifest(root)["jobs"][2]
+        st.write_json_atomic(str(Path(root, "cands", j2["cell_key"], "r1.inflight.json")), {"call_id": f"{j2['cell_key']}_r1"})
+        p = route(root, ids, run={"retry_orphans": True})
+        (_h, rep, _g), e = run_node(h, p["run"]["hash"], retry_orphans=True)
+        check(p["run"]["by_crop"][j2["crop_id"]]["need"] == 1 and p["run"]["need"] == 2 and e["approved_now"] is True
+              and fired(rep) == p["run"]["need"] + p["run"]["pre"],
+              f"(c) orphaned rep + retry_orphans: 라우트 해시(pipeline.run.retry_orphans) = Run(retry_orphans=True) 실행 전 해시 → 승인, "
+              f"발사 = 승인 필요(orphan 재호출 포함) + 사전 승인 {p['run']['need']} {fired(rep)} {e['approved_now']}")
+
+    def t_n26():
+        section("S3a-N26 Draft 해시: ② 드라이런 뒤 라우트 = ui pending_hash ① 라우트 해시로 승인(openai+mock·vlm mock) ② openai 인증 없음 · "
+                "기본값 아닌 설정·apply=full ③ 미완료 resp → 재파싱 실패(retry) · local_qwen ②")
+        h, root, b = seed("n26")
+        ids = ids_of(root)
+        h_c, root_c, _b = clone(b, "n26", "c")
+        h_m, root_m, _b = clone(b, "n26", "m")
+        h_o, root_o, b_o = clone(b, "n26", "o")
+        p0 = route(root, ids)
+        (_r, rep, _s), e = draft_node(h, "")
+        bd._PLAN_MEMO.clear()  # 드라이런 뒤 다시 계산한 값(기억값끼리 비교하지 않게)
+        p1 = route(root, ids)
+        check(p0["draft"]["family"] == "mock" and re.fullmatch(r"[0-9a-f]{12}", p0["draft"]["hash"] or "")
+              and e["pending_hash"] == p0["draft"]["hash"] == p1["draft"]["hash"] and e["approved_now"] is False and e["backend"] == "vlm_mock",
+              f"② mock(openai + _MOCK_API): 드라이런 ui pending_hash = 드라이런 전·뒤 라우트 해시 {p0['draft']['hash']} {e['pending_hash']}")
+        p2 = route(root, ids[2:])
+        (_r, rep, _s), e = draft_node(h, p2["draft"]["hash"], only=ids[2])
+        p3, p4 = route(root, ids[2:]), route(root, ids)
+        check(e["approved_now"] is True and dv.Ledger(root).state(ids[2], json.loads(Path(root, "specs", f"{ids[2]}.json").read_text(
+              encoding="utf-8"))["_draft"]["key"])["status"] == "done" and e["pending_hash"] == p3["draft"]["hash"] == ""
+              and p4["draft"]["hash"] not in ("", p0["draft"]["hash"]),
+              f"① 라우트 해시(only 1크롭)로 승인 → approved_now, 그 크롭 초안 done · 실행 뒤 ui pending_hash = 같은 only 로 다시 계산한 라우트 "
+              f"해시('' — 남은 대기 없음), 다른 크롭은 아직 대기 {e['pending_hash']!r} {p4['draft']['hash']}")
+        pm = route(root_m, ids[:1], vlm="mock")
+        (_r, rep, _s), e = draft_node(h_m, pm["draft"]["hash"], vlm="mock", only=ids[0])
+        check(pm["draft"]["family"] == "mock" and re.fullmatch(r"[0-9a-f]{12}", pm["draft"]["hash"] or "") and e["approved_now"] is True
+              and e["backend"] == "vlm_mock", f"① vlm='mock' 선택지: 라우트 해시로 승인 → approved_now {pm['draft'].get('hash')} {e.get('approved_now')}")
+        (Path(b_o) / "bmk_design_patch" / rn.MOCK_FILE).unlink()  # 실제 백엔드(openai) — 인증 없는 드라이런은 보내지 않음(유료 0)
+        orig_units = dv.run_units
+
+        async def guarded(root_, units, reqs, backend, **kw):  # 유료 0: mock 이 아닌 백엔드로 단위를 보내면 실패
+            if backend.name != dv.BACKEND_NAMES["mock"]:
+                raise RuntimeError(f"유료 백엔드 호출 시도: {backend.name}")
+            return await orig_units(root_, units, reqs, backend, **kw)
+
+        dv.run_units = guarded
+        try:
+            for kw, style in (({"effort": "high", "image_detail": "original", "write_mode": "refresh"}, False),
+                              ({"effort": "high", "image_detail": "original", "apply": "full"}, True),
+                              ({"vlm": "openai/gpt-6-astra", "effort": "high"}, False)):  # 다른 openai 모델(키에 들어감)
+                q0 = bd.pipeline_plan(root_o, settings(root_o, **kw), only_ids=ids, style=style)
+                only = pl.only_string(ids, style)
+                (_r, rep, _s), e = draft_node(h_o, "", only=only, **kw)
+                bd._PLAN_MEMO.clear()
+                q1 = bd.pipeline_plan(root_o, settings(root_o, **kw), only_ids=ids, style=style)
+                check(q0["draft"]["family"] == "openai" and e["backend"] == "vlm_openai" and e["approved_now"] is False
+                      and re.fullmatch(r"[0-9a-f]{12}", q1["draft"]["hash"] or "") and e["pending_hash"] == q1["draft"]["hash"] == q0["draft"]["hash"]
+                      and ("style" in q0["sig"]) is style,
+                      f"② openai(인증 없음 — 보내지 않음) · 기본값이 아닌 초안 설정 {kw}: 드라이런 ui pending_hash = 라우트 해시(드라이런 전·뒤) "
+                      f"{q0['draft'].get('hash')} {e['pending_hash']} {q1['draft'].get('hash')}")
+        finally:
+            dv.run_units = orig_units
+        crop = st.load_manifest(root_c)["crops"][0]
+        cfg = {k: DRAFT[k] for k in ("effort", "image_detail", "draft_round", "concurrency")}
+        reqs = dv.draft_plan(root_c, st.load_manifest(root_c), "", "vlm_mock", family="mock", model="gpt-6-sol", mode="fill", only=[],
+                             model_dir=bd._qwen_dir(), apply_mode="targets", memo={}, **cfg)[1]
+        led = dv.Ledger(root_c)
+        led.write(crop["id"], reqs[crop["id"]].key, 1, "req", {"kind": "crop", "settings": {"backend": "vlm_openai"}})
+        led.write(crop["id"], reqs[crop["id"]].key, 1, "resp", {"status": "incomplete"})
+        q0 = route(root_c, ids)
+        (_r, rep, _s), e = draft_node(h_c, "")
+        q1 = route(root_c, ids)
+        check(e["pending_hash"] != q0["draft"]["hash"] and e["pending_hash"] == q1["draft"]["hash"]
+              and led.state(crop["id"], reqs[crop["id"]].key)["status"] == "failed"
+              and crop["id"] not in {u["crop_id"] for u in q0["draft"]["units"]}
+              and crop["id"] in {u["crop_id"] for u in q1["draft"]["units"] if u["state"] == "retry"},
+              f"③ 대기 크롭에 미완료 resp → 드라이런이 재파싱(무료) 실패 → retry a+1: 드라이런 전 라우트 해시 ≠ ui pending_hash, ②는 성립 "
+              f"{q0['draft']['hash']} {e['pending_hash']} {q1['draft']['hash']}")
+        qdir = os.path.join(folder_paths.models_dir, *dp._QWEN_DIR)
+        check(bd._qwen_dir() == qdir, f"노드 모듈 import 가 board.set_qwen_dir(Spec Draft 와 같은 Qwen 폴더)를 부름(U2b) {bd._qwen_dir()}")
+        hq, root_q, _b = clone(b, "n26", "q")
+        (_r, rep, _s), e = draft_node(hq, "", vlm="local_qwen/Qwen3-VL-8B-Instruct")
+        pq = route(root_q, ids, vlm="local_qwen/Qwen3-VL-8B-Instruct")
+        check(e["backend"] == "vlm_local_qwen" and pq["draft"]["family"] == "local_qwen" and e["pending_hash"] == pq["draft"]["hash"] != ""
+              and e["approved_now"] is False, f"local_qwen ②(모델 안 올림): 라우트 해시 = 드라이런 ui pending_hash {pq['draft']['hash']} {e['pending_hash']}")
+
+    def t_n27():
+        section("S3a-N27 템플릿 = 그래프: apply·export 템플릿(PromptExecutor) 사본 대 같은 위젯 값의 노드 체인 사본")
+        h, root, b = seed("n27")
+        ids = ids_of(root)
+        (_h, rep, _g), _e = run_node(h, route(root, ids)["run"]["hash"])
+        check(fired(rep) == 3, f"전제: Run(mock) 승인 → 후보 3 {fired(rep)}")
+        _ha, ra, _ba = clone(b, "n27", "tpl")
+        hb, rb, _bb = clone(b, "n27", "node")
+        s = settings(ra)
+        check(s == settings(rb), "두 사본의 설정이 같음")
+        valid, ok, outs, msgs = execute(pl.build_prompt("apply", s, ra), "s3n27-apply")
+        hb = IMP.run(hb, **s["import"])[0]
+        hb = PRE.run(hb, **s["prepare"])[0]
+        hb = ANA.run(hb, **s["analyze"])[0]
+        rv = asyncio.run(REV_.run(hb))
+        ma, mb = st.load_manifest(ra), st.load_manifest(rb)
+
+        def masked(text, root_):
+            return re.sub(r"\d+\.\d+s\b", "<s>", text.replace(st.root_key(root_), "<key>"))
+
+        ta = (outs.get("dp_review") or {}).get("text") or [""]
+        check(valid[0] and ok and set(outs) == {"dp_review"},
+              f"apply 템플릿: 검증 통과·성공, 기록 ui 는 Review 만(Import·Prepare·Analyze 는 ui 없음 — §1.5) {valid[1]} {sorted(outs)} "
+              f"{[m_[0] for m_ in msgs]}")
+        check(json.dumps(ma["jobs"], sort_keys=True) == json.dumps(mb["jobs"], sort_keys=True) and ma["prepare_settings"] == mb["prepare_settings"]
+              and json.dumps(ma["analysis"], sort_keys=True) == json.dumps(mb["analysis"], sort_keys=True)
+              and len(ma["analysis"]) == len(ma["candidates"]) == 4,  # 002 는 다중 타깃(A·B) 작업 — 결과가 타깃마다 후보
+              f"apply 템플릿 = 노드 체인: jobs(cell_key)·prepare_settings·분석 같음 {len(ma['analysis'])} {len(mb['analysis'])}")
+        check(masked(ta[0], ra) == masked(rv["ui"]["text"][0], rb),
+              f"apply 템플릿 = 노드 체인: Review 보고서 첫 줄 같음(보드 키·초 가림) {masked(ta[0], ra)!r} {masked(rv['ui']['text'][0], rb)!r}")
+        ap_a = bd._apply_pending(ra, ma, s)
+        check(ma["prepare_settings"] == s["prepare"] and pl.drift(s, ma) == [] and ap_a == [],
+              f"이음매: apply 템플릿 뒤 Prepare 가 쓴 prepare_settings = 템플릿에 실은 설정(타입 포함) → 갈라짐 0(Import 경로 정규화 포함), "
+              f"계획 apply_pending [](반영됨) {ma['prepare_settings']} {pl.drift(s, ma)} {ap_a}")
+        res_a, res_b = [], []
+        for _ in range(2):  # 두 번째 = 변경 없음
+            valid, ok, outs, _msgs = execute(pl.build_prompt("export", s, ra), "s3n27-export")
+            res_a.append((valid[0] and ok, (outs.get("dp_export") or {}).get(dp._EXPORT_UI)))
+            hb2 = ANA.run(hb, **s["analyze"])[0]
+            hb3 = COM.run(hb2, **s["compose"])[0]
+            res_b.append(EXP.run(hb3, **s["export"])["ui"][dp._EXPORT_UI])
+        ea, eb = st.load_manifest(ra)["exports"], st.load_manifest(rb)["exports"]
+        side = [json.loads(Path(e_[-1]["psd"][:-4] + ".json").read_text(encoding="utf-8")) for e_ in (ea, eb)]
+        check(all(ok_ for ok_, _u in res_a) and [u[0]["outcome"] for _ok, u in res_a] == [u[0]["outcome"] for u in res_b] == ["new", "unchanged"]
+              and len(ea) == len(eb) == 1 and ea[-1]["hash"] == eb[-1]["hash"] and ea[-1]["psd"] != eb[-1]["psd"]
+              and len(side[0]["export_layers"]) == len(side[1]["export_layers"]) > 0 and ea[-1]["problems"] == eb[-1]["problems"]
+              and res_a[0][1][0]["psd"] == ea[-1]["psd"] and res_a[1][1][0]["psd"] == ea[-1]["psd"],
+              f"export: 두 사본 exports[-1].hash 같음 · 사이드카 export_layers 수·problems 같음 · bmk_dp_export new → unchanged {res_a} {res_b}")
+        he, re_, _be = seed("n27e")
+        valid, ok, outs, _msgs = execute(pl.build_prompt("export", settings(re_), re_), "s3n27-empty")
+        eb2 = EXP.run(COM.run(ANA.run(he, **s["analyze"])[0], **s["compose"])[0], **s["export"])["ui"][dp._EXPORT_UI]
+        check(valid[0] and ok and (outs.get("dp_export") or {}).get(dp._EXPORT_UI) == eb2 == [{"outcome": "empty", "psd": None, "rev": None}],
+              f"export: 후보 없음 → 템플릿·노드 모두 empty(psd·rev null) {outs.get('dp_export')} {eb2}")
+
+    def t_n28():
+        section("S3a-N28 채택 = 노드 adopt: 고정점 바이트 같음 · 사람 편집 뒤 수렴 · 수정·해제 → apply 템플릿 → 타깃 반영·Prepare 가드 없음")
+        h, root, b = seed("n28")
+        ids = ids_of(root)
+        X = ids[2]  # 003_오른쪽(레거시 A) — 제안 B 를 채택
+        mock(b, suggest={X: [FIT]})
+        p = route(root, ids)
+        (_r, rep, _s), e = draft_node(h, p["draft"]["hash"])
+        check(e["approved_now"] is True, f"전제: Spec Draft(mock) 승인 — 제안 기록 {e}")
+
+        def spec_bytes(root_):
+            return Path(root_, "specs", f"{X}.json").read_bytes()
+
+        def adopt_route(root_):
+            v = bd.draft_get(root_, X)
+            return v, bd.draft_adopt(root_, {"crop_id": X, "op": "adopt", "value": v["adopt"]["value"], "seen": v["seen"],
+                                            "crop_sig": v["crop_sig"]})
+
+        _hp, rp, _b = clone(b, "n28", "p")
+        hq, rq, _b = clone(b, "n28", "q")
+        v, w = adopt_route(rp)
+        (_r, rep_q, _s), _e = draft_node(hq, "", adopt=X)
+        check(v["adopt"]["kind"] == "add" and w["ok"] and spec_bytes(rp) == spec_bytes(rq)
+              and json.loads(spec_bytes(rp))["_layer_targets"] == v["adopt"]["value"],
+              f"고정점(Spec Draft 직후 손대지 않은 스펙): 라우트 채택 바이트 = Spec Draft(adopt=크롭) 바이트 {v['adopt']}")
+        hp2, rp2, _b = clone(b, "n28", "p2")
+        hq2, rq2, _b = clone(b, "n28", "q2")
+        for r_ in (rp2, rq2):
+            sp = json.loads(spec_bytes(r_))
+            sp["targets"][0]["name"] = "hand fixed name"  # 사람이 노드 필드를 고침(이후 keep_human)
+            st.write_json_atomic(str(Path(r_, "specs", f"{X}.json")), sp)
+        v2, w2 = adopt_route(rp2)
+        draft_node(hp2, "")
+        draft_node(hq2, "", adopt=X)
+        draft_node(hq2, "")
+        check(w2["ok"] and spec_bytes(rp2) == spec_bytes(rq2) and json.loads(spec_bytes(rp2))["targets"][0]["name"] == "hand fixed name",
+              "사람 편집 뒤: 라우트 채택 → Draft 한 번 = 노드 adopt → Draft 한 번(수렴, 사람 값 유지)")
+        _h3, r3, _b = clone(b, "n28", "c")
+        s3 = settings(r3)
+        v3 = bd.draft_get(r3, X)
+        w3 = bd.draft_adopt(r3, {"crop_id": X, "op": "set", "text": "A: left hand; B: ribbon", "seen": v3["seen"], "crop_sig": v3["crop_sig"]})
+        valid, ok, _o, _m = execute(pl.build_prompt("apply", s3, r3), "s3n28-set")
+        m3 = st.load_manifest(r3)
+        c3 = next(c for c in m3["crops"] if c["id"] == X)
+        check(w3["ok"] and valid[0] and ok and [(t["tid"], t["label"], t.get("origin")) for t in c3["targets"]]
+              == [("A", "left hand", "adopt"), ("B", "ribbon", "adopt")]
+              and st.adopt_stale(c3, st.load_spec_override(r3, X)) == ""
+              and sorted(t for j in m3["jobs"] if j["crop_id"] == X for t in j["tid"].split(",")) == ["A", "B"],
+              f"수정 → apply 템플릿: 타깃 반영(origin adopt), Prepare 가드 없음(그 크롭 jobs 있음) {[t['label'] for t in c3['targets']]}")
+        v4 = bd.draft_get(r3, X)
+        bd.draft_adopt(r3, {"crop_id": X, "op": "clear", "seen": v4["seen"], "crop_sig": v4["crop_sig"]})
+        valid, ok, _o, _m = execute(pl.build_prompt("apply", s3, r3), "s3n28-clear")
+        m4 = st.load_manifest(r3)
+        c4 = next(c for c in m4["crops"] if c["id"] == X)
+        check(valid[0] and ok and [t["tid"] for t in c4["targets"]] == ["A"] and c4["targets"][0].get("origin") is None
+              and st.adopt_stale(c4, st.load_spec_override(r3, X)) == "" and any(j["crop_id"] == X for j in m4["jobs"]),
+              f"해제 → apply 템플릿: 레이어명 타깃만, Prepare 가드 없음 {c4['targets']}")
+
+    def t_r1():
+        section("R1‴ 실데이터: s0_261014 사본 → 유도(P4 기대값) → 확인 저장 → apply 템플릿(PromptExecutor) → Prepare 신규 0 · jobs 바이트 같음")
+        src = _S0_261014
+        if not (src / st.MANIFEST_NAME).is_file():
+            skip(f"R1‴: 실데이터 사본 없음({src})")
+            return
+        m = json.loads((src / st.MANIFEST_NAME).read_text(encoding="utf-8"))
+        if not (os.path.isfile(m["source"]["psd"]) and os.path.isdir(m["source"]["refs_dir"])):
+            skip(f"R1‴: 원본 PSD·refs 없음({m['source']['psd']})")
+            return
+        root = st.project_root(str(NS / "r1"), "s3r1")
+        Path(root).mkdir(parents=True)
+        for sub in ("specs", "inputs", "cands", "derived"):
+            if (src / sub).is_dir():
+                shutil.copytree(src / sub, Path(root) / sub)
+        shutil.copyfile(src / st.MANIFEST_NAME, Path(root) / st.MANIFEST_NAME)
+        der = pl.derive(root, st.load_manifest(root), deep=True)
+        pre = der["settings"]["prepare"]
+        check(pre == {"model": "gpt-image-2.5-sunburst", "quality": "max", "size_rule": "user_k", "variants": "V1,V4", "n": 2, "ref_style": "at",
+                      "calls_per_cell": 1} and {"prepare.variants", "prepare.ref_style"} <= set(der["confirm"])
+              and der["settings"]["export"]["filename_prefix"] == "261014_Test",
+              f"유도 = P4 261014 기대값(V1,V4·at 확인 필요) {pre} {der['confirm']}")
+        pl.update(root, 0, "prepare", pre)
+        check(pl.prompt_gate(root, "apply") is None, "확인 저장 뒤 apply 게이트 통과")
+        cells0 = [j["cell_key"] for j in st.load_manifest(root)["jobs"]]
+        reqs0 = _ledger_reqs(root)
+        lines: list[str] = []
+
+        class Grab(logging.Handler):
+            def emit(self, rec):
+                lines.append(rec.getMessage())
+
+        def apply(pid):
+            lines.clear()
+            g = Grab(logging.INFO)
+            old = dp.logger.level
+            dp.logger.addHandler(g)
+            dp.logger.setLevel(logging.INFO)
+            try:
+                res = execute(pl.build_prompt("apply", pl.current(root, deep=True)["settings"], root), pid)
+            finally:
+                dp.logger.removeHandler(g)
+                dp.logger.setLevel(old)
+            return res, next((x for x in lines if "Prepare: 작업" in x), "")
+
+        t0 = time.time()
+        (valid, ok, outs, msgs), prep = apply("s3r1-apply")
+        jobs1 = json.dumps(st.load_manifest(root)["jobs"], sort_keys=True, ensure_ascii=False)
+        check(valid[0] and ok and set(outs) == {"dp_review"}, f"R1‴ apply 템플릿(Import → Prepare → Analyze → Review) 검증·실행 성공 {valid[1]} "
+                                                               f"{sorted(outs)} {[m_[0] for m_ in msgs]}")
+        check("(신규 0 ·" in prep and [j["cell_key"] for j in st.load_manifest(root)["jobs"]] == cells0 and _ledger_reqs(root) == reqs0,
+              f"R1‴ Prepare 신규 0 · cell_key 그대로(다시 과금 대상 없음) · 원장 req 그대로({reqs0}) {prep[:120]}")
+        m1, cur1 = st.load_manifest(root), pl.current(root, deep=True)
+        v1, ap1 = pl.view(root, m1), bd._apply_pending(root, m1, cur1["settings"])
+        check(m1.get("prepare_settings") == cur1["settings"]["prepare"] and v1["drift"] == [] and ap1 == [],
+              f"R1‴ 이음매: 저장한 pipeline.json 으로 apply → Prepare 가 쓴 prepare_settings = 저장값 → GET /pipeline drift [], 계획 "
+              f"apply_pending [](반영됨) {m1.get('prepare_settings')} {v1['drift']} {ap1}")
+        (valid, ok, _outs, _msgs), prep2 = apply("s3r1-apply2")
+        check(valid[0] and ok and "(신규 0 ·" in prep2 and json.dumps(st.load_manifest(root)["jobs"], sort_keys=True, ensure_ascii=False) == jobs1
+              and _ledger_reqs(root) == reqs0,
+              "R1‴ 다시 apply: Prepare 신규 0 · jobs 바이트 같음(사본의 10/14 jobs 는 canvas source 필드 전 판이라 첫 반영에서 그 필드만 더해짐)")
+        note(f"R1‴ s0_261014 사본 apply 템플릿 2회 {time.time() - t0:.1f}s")
+
+    def t_cand():
+        section("S3a-N28′ cand.path 게이트 = Candidate In 경로 판정(r2-06): 게이트가 막는 경로 = 노드가 '파일·폴더를 찾을 수 없습니다'로 "
+                "실패하는 경로, 막힌 반영은 라우트가 409(큐 없음 — Import 뒤·Prepare 전 반쪽 상태 없음), 통과한 dp_cand 템플릿은 끝까지 실행")
+        h, root, _b = seed("ncand")
+        pl.update(root, 0, "prepare", PRE_ARGS)
+        empty = NS / "ncand_empty"
+        empty.mkdir()
+        CI, rows = dp.BMKDesignPatchCandidateIn(), []
+        for source, path in (("psd_harvest", "C:/nope_ncand/h.psd"), ("psd_harvest", empty.as_posix()), ("folder", "C:/nope_ncand/h"),
+                             ("folder", PSD.as_posix()), ("folder", empty.as_posix()), ("psd_harvest", PSD.as_posix())):
+            c = pl.current(root, deep=True)
+            pl.update(root, c["rev"], "cand", dict(c["settings"]["cand"], enabled=True, source=source, path=path, group="02.크롭영역"))
+            g = pl.prompt_gate(root, "apply")
+            rev0 = st.load_manifest(root)["rev"]
+            try:
+                bd.pipeline_prompt(root, "apply")
+                route_ = 200
+            except bd._Reject as e:
+                route_ = e.status
+            route_rev = st.load_manifest(root)["rev"]
+            try:
+                CI.run(h, source, path, "02.크롭영역", "", True, True)
+                node = "ok"
+            except ValueError as e:
+                node = "path" if ("파일을 찾을 수 없습니다" in str(e) or "폴더를 찾을 수 없습니다" in str(e)) else f"기타: {e}"
+            rows.append((source, path, (g or {}).get("field"), route_, route_rev == rev0, node))
+        check([(r[2], r[3], r[5]) for r in rows] == [("cand.path", 409, "path")] * 4 + [(None, 200, "ok")] * 2 and all(r[4] for r in rows),
+              f"cand.path 게이트(source 별 isfile·isdir) = Candidate In 경로 판정: 없는 PSD·PSD 자리에 폴더·없는 폴더·폴더 자리에 파일 → "
+              f"게이트·라우트 409 이고 노드도 그 경로로 실패, 있는 폴더·있는 PSD → 둘 다 통과, 라우트 판정은 매니페스트를 쓰지 않음 {rows}")
+        c = pl.current(root, deep=True)
+        pl.update(root, c["rev"], "cand", dict(c["settings"]["cand"], enabled=True, source="folder", path=empty.as_posix()))
+        prompt = bd.pipeline_prompt(root, "apply")["prompt"]
+        valid, ok, outs, msgs = execute(prompt, "ncand-apply")
+        check("dp_cand" in prompt and valid[0] and ok and set(outs) == {"dp_review"},
+              f"게이트를 통과한 dp_cand 든 apply 템플릿(PromptExecutor) → Import·Candidate In·Prepare·Analyze·Review 끝까지 성공 {valid[1]} "
+              f"{[m_[0] for m_ in msgs]}")
+
+    dp.dpsd.read_crop_rects = fake_rects
+    try:
+        for name, fn in (("P2", t_p2), ("N25", t_n25), ("N26", t_n26), ("N27", t_n27), ("N28", t_n28), ("N28′", t_cand), ("R1‴", t_r1)):
+            _guarded(f"S3a-{name}", fn)
+    finally:
+        dp.dpsd.read_crop_rects = orig_rects
+        bd._PLAN_MEMO.clear()
+        if env_mock is not None:
+            os.environ[rn.MOCK_ENV] = env_mock
+
+
+# ═════════════════════════════════════════════════════════════════
 def want(name: str) -> bool:
     return not ONLY or name in ONLY
 
@@ -23201,6 +32740,10 @@ if __name__ == "__main__":
         layout_store_unit()
     if want("refs_unit"):
         refs_unit()
+    if want("pipeline_unit"):
+        pipeline_unit()
+    if want("pipeline_vlm_unit"):
+        pipeline_vlm_unit()
     if want("prompt_unit"):
         prompt_unit()
     if want("analysis_unit"):
@@ -23215,6 +32758,8 @@ if __name__ == "__main__":
         layout_board_unit()
     if want("refs_board_unit"):
         refs_board_unit()
+    if want("pipeline_board_unit"):
+        pipeline_board_unit()
     if want("vlm_unit"):
         vlm_unit()  # M3: torch·comfy 를 import 하지 않음(V18 은 가짜 libs)
     if not QUICK and want("vlm_comfy"):
@@ -23225,6 +32770,8 @@ if __name__ == "__main__":
         layout_js_unit()
     if want("refs_js_unit"):
         refs_js_unit()
+    if want("pipeline_js_unit"):
+        pipeline_js_unit()
     print(f"\n단위 테스트 {time.time() - T0:.1f}s (PASS {PASSES} FAIL {len(FAILS)})")
     if QUICK:
         print("\n--quick: 회귀·노드 생략")
@@ -23253,6 +32800,13 @@ if __name__ == "__main__":
             t_r = time.time()
             refs_node_unit()
             print(f"\nS2 레퍼런스 노드 {time.time() - t_r:.1f}s")
+        if want("pipeline_node_unit") or {"pipeline_node_u2b", "pipeline_node_u3"} & ONLY:
+            t_r = time.time()
+            if want("pipeline_node_unit") or "pipeline_node_u2b" in ONLY:
+                _pipeline_node_u2b()
+            if want("pipeline_node_unit") or "pipeline_node_u3" in ONLY:
+                _pipeline_node_u3()
+            print(f"\nS3 파이프라인 노드 {time.time() - t_r:.1f}s")
         if want("vlm_node_unit"):
             t_r = time.time()
             vlm_node_unit()

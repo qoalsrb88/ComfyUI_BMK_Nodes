@@ -459,5 +459,56 @@ svg.marks .rpt.auto.approx { fill: none; stroke: #9aa0a6; stroke-dasharray: 3 2;
 svg.marks .rpoly { fill: rgba(255, 201, 64, .12); stroke: var(--star); stroke-width: 1.5px; vector-effect: non-scaling-stroke; }
 svg.marks .rvtx { fill: #fff; stroke: var(--star); stroke-width: 1px; vector-effect: non-scaling-stroke; }
 
+/* ── 진행 모드 (pipeline.js) ─────────────── */
+#pipe-list { display: none; }
+body.pipe #target-list, body.pipe #center { display: none; }
+body.pipe #pipe-list, body.pipe #pipe-panel { display: block; }
+body.pipe #viewer { display: flex; }
+#btn-pipe.on { border-color: var(--accent); color: #fff; background: #22314a; }
+body.pipe #top button { flex: none; white-space: nowrap; }
+body.pipe .proj { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#pipe-head { display: flex; flex: 0 1 auto; min-width: 0; overflow: hidden; }
+#pipe-head span { overflow: hidden; text-overflow: ellipsis; }
+#pipe-head:empty { display: none; }
+.chip.stale { opacity: .5; }
+
+#pipe-list { list-style: none; margin: 0; padding: 4px; }
+#pipe-list li { padding: 6px 8px; border-radius: 6px; cursor: pointer; border: 1px solid transparent; }
+#pipe-list li:hover { background: var(--panel2); }
+#pipe-list li.sel { background: #22314a; border-color: var(--accent); }
+#pipe-list li.pl-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; cursor: default; }
+#pipe-list li.pl-bar:hover { background: none; }
+#pipe-list li.pl-bar button { padding: 1px 8px; }
+#pipe-list .pl-top { display: flex; gap: 6px; align-items: center; min-width: 0; }
+#pipe-list .chips { margin-top: 3px; }
+
+#pipe-panel { flex: none; width: clamp(380px, 34vw, 600px); overflow-y: auto; padding: 8px 12px; background: var(--panel); }
+.pp-sec { margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+.pp-row { margin: 2px 0; overflow-wrap: anywhere; }
+.pp-row.ok { color: var(--ok); }
+.pp-row.warn { color: var(--slice); }
+.pp-row.bad { color: var(--bad); }
+.pp-row.dim { color: var(--dim); }
+.pp-row.link { cursor: pointer; text-decoration: underline dotted; }
+.pp-field { display: flex; align-items: center; gap: 8px; }
+.pp-field .k { width: 11em; flex: none; color: var(--dim); }
+.pp-field.bad .k { color: var(--bad); }
+.pp-field input[type="text"], .pp-field input[type="number"], .pp-field select { flex: 1; min-width: 0; }
+#pipe-panel input[type="text"], #pipe-panel input[type="number"], #pipe-panel select {
+  background: #0e0f12;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 3px 6px;
+  font: inherit;
+}
+#pipe-panel input:focus, #pipe-panel select:focus { outline: none; border-color: var(--accent); }
+#pipe-panel input.pp-text { width: 100%; margin-top: 6px; }
+.pp-table { border-collapse: collapse; margin: 6px 0; font-size: 12px; font-variant-numeric: tabular-nums; }
+.pp-table th, .pp-table td { padding: 1px 6px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+.pp-table th:first-child, .pp-table td:first-child { text-align: left; max-width: 12em; overflow: hidden; text-overflow: ellipsis; }
+.pp-table th { color: var(--dim); font-weight: normal; }
+.pp-table tr.sel td:first-child { color: #9ccbff; }
+
 .fatal { margin: 40px; font-size: 15px; color: var(--bad); }
 body.busy { cursor: progress; }

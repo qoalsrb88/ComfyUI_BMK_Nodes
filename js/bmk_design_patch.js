@@ -42,7 +42,14 @@
 //    보드 재굴림은 서버에서 사전 승인된 호출이라 Run 이 그 호출만 과금한다 — 큐에 넣기 전에 모든 유료 노드(Run·Draft)의
 //    approve 를 비운다.
 //    layout = 편집기 "반영(큐)": Review 의 상류에 켜진 Import PSD 가 있을 때만 넣는다(부분 실행이 Import 를 다시 돌려야 반영됨).
-//    연타는 0.8초 단위로 한 번에 묶는다(그 안에 layout 요청이 있으면 묶음 전체가 layout).
+//    연타는 0.8초 단위로 한 번에 묶는다(그 안에 layout 요청이 있으면 묶음 전체가 layout). S3 Studio 는 무료 반영을 직접 큐하고
+//    이 길은 옛 서버(재시작 전) 대체로만 쓴다.
+//
+// Studio 연결 확인(S3a — hello 응답만, 승인 처리 없음)
+//  - Studio 가 opener postMessage 또는 BroadcastChannel("bmk-dp") 로 {type:"bmk-dp-hello", id} 를 보내면 같은 길로
+//    {type:"bmk-dp-hello", id, tab, ext, submit, busy} 를 돌려준다. tab = 탭 로드마다 새 임의 ID, ext = 확장 판(S3b 가 3 으로 올림 —
+//    3 미만이면 Studio 의 유료 단추는 꺼짐), submit = 제출 바꿔치기 여부(S3a 는 늘 "unsupported"), busy = 이 탭이 큐를 처리하는 중.
+//    같은 출처만 받고, tab 을 지정한 메시지는 그 탭만 답한다(채널은 모든 탭에 간다 — 다른 탭의 응답도 tab 이 있어 여기서 걸러짐).
 //
 // 1.53 클래식 모드 주의: 위젯은 addWidget("button") 만, 위젯 배열 맨 뒤에 serialize=false 로 붙인다
 // (widgets_values 위치 호환). 노드별 상태는 WeakMap 에 둔다. 위젯 객체에 얹는 것은 프론트가 부르는 afterQueued 훅뿐이다
@@ -71,6 +78,10 @@ const BOARD_PATH = "/bmk/design_patch/board/";
 const DRAIN_PATH = "/bmk/design_patch/drain";
 const ROOT_KEY_RE = /^[0-9a-f]{12}$/; // store.root_key = sha1(root)[:12]
 const BOARD_QUEUE_DELAY_MS = 800;
+const HELLO = "bmk-dp-hello";
+const HELLO_CHANNEL = "bmk-dp";
+const EXT_VERSION = 2; // S3a(hello 응답만) — S3b 승인 처리가 3
+const TAB_ID = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
 const MODE_NEVER = 2;
 const MODE_BYPASS = 4;
 
@@ -722,9 +733,20 @@ async function queueReview(key, layout) {
     if (await queueOnly(targets, "보드 요청")) notify("info", "보드 요청으로 Review 를 큐에 넣었습니다.", 3000);
 }
 
+function helloReply(d) {
+    // Studio hello → 이 탭의 응답(아니면 null). tab 을 지정했으면 그 탭만(다른 탭의 응답 메시지도 여기서 걸러짐)
+    if (d?.type !== HELLO || typeof d.id !== "string" || (d.tab !== undefined && d.tab !== TAB_ID)) return null;
+    return { type: HELLO, id: d.id, tab: TAB_ID, ext: EXT_VERSION, submit: "unsupported", busy: !!app.processingQueue };
+}
+
 function onBoardMessage(ev) {
     if (ev.origin !== window.location.origin) return;
     const d = ev.data;
+    const hello = helloReply(d);
+    if (hello) {
+        ev.source?.postMessage(hello, window.location.origin);
+        return;
+    }
     if (d?.type !== "bmk-dp-queue" || typeof d.rootKey !== "string" || !ROOT_KEY_RE.test(d.rootKey)) return;
     const key = d.rootKey;
     if (d.layout === true) boardLayout.add(key);
@@ -776,6 +798,14 @@ app.registerExtension({
         api.addEventListener("execution_interrupted", (e) => onPromptEnd(e.detail, "취소되었습니다"));
         api.addEventListener("bmk.dp.wave", (e) => onWave(e.detail));
         window.addEventListener("message", onBoardMessage);
+        if (typeof window.BroadcastChannel === "function") {
+            // opener 가 없는 Studio(즐겨찾기·패널 브라우저)도 이 탭을 찾게
+            const ch = new window.BroadcastChannel(HELLO_CHANNEL);
+            ch.onmessage = (ev) => {
+                const hello = helloReply(ev.data);
+                if (hello) ch.postMessage(hello);
+            };
+        }
         watchSubmits();
     },
 

@@ -78,6 +78,8 @@ M3 는 Spec Draft(VLM 이 specs/<crop_id>.json 초안을 씀)를 더한다.
                  변형별 결정적 프롬프트 → GPT 출력 크기 → cell_key 로 jobs[] 를 만든다(호출은 M2 Run).
                  채택 가드: 레이어명 + _layer_targets 로 Import 가 만들 타깃이 매니페스트와 다르면(같은 큐에서 Draft 가
                  Import 뒤에 채택을 씀) 그 크롭은 jobs 를 만들지 않는다 → Run 해시가 바뀌어 드라이런.
+                 jobs 와 같은 커밋에 쓴 위젯 값(prepare_settings)·입력 지문(prepare_inputs)을 남긴다(Studio S3). 가드가
+                 'Import 가 반영할 차이'로 건너뛴 크롭이 있으면 지문은 그대로 둔다(문법 오류는 제외).
 - Analyze      : 후보마다 배치(LANCZOS) → 가드 정합(손 마스크가 있으면 정합 제외 영역) → ΔE 자동 마스크 →
                  저주파 톤 보정장 → 게이트. 결과는 analysis[key][params_hash] (같은 설정이면 건너뜀, 후보마다 최근
                  설정 4개까지 보관하고 밀려난 항목의 derived 파일은 지움).
@@ -87,7 +89,8 @@ M3 는 Spec Draft(VLM 이 specs/<crop_id>.json 초안을 씀)를 더한다.
                  > 후보 SO(pick 보임·녹색, 대안 숨김·빨강) 구조의 PSD 를 output/design_patch/<project 폴더 이름>/ 에 쓴다.
                  정합은 SO quad 에 affine 으로(비파괴), color=toned 면 톤 보정한 풀해상도 PNG 를 임베드.
                  이미 있는 파일은 덮어쓰지 않는다(<prefix>_r<rev>_2 …). 병합 프리뷰는 레이어와 같은 순서로 직접 합성.
-                 정합·z순서는 상류 Compose 설정(핸들), 없으면 기본값.
+                 정합·z순서는 상류 Compose 설정(핸들), 없으면 기본값. ui bmk_dp_export = 결과 하나
+                 {outcome: new(새 파일) | unchanged(같은 내용의 기존 파일) | empty(넣을 후보 없음 — 쓰지 않음), psd, rev}.
 - Run (M2)     : jobs 를 comfy.org GPT Image(/proxy/openai/images/edits)로 실행(async, 출력 노드). 과금 대상 =
                  보드 재굴림(사전 승인) + approve == 현재 pending_hash 일 때 나머지. 승인이 없으면 과금 없이 드라이런
                  보고와 ui bmk_dp_run(해시·개수·예상 USD)만 낸다. 원장(cands/<cell_key>/)에 먼저 쓰고 결과는 도착하는 대로
@@ -131,6 +134,10 @@ M3 는 Spec Draft(VLM 이 specs/<crop_id>.json 초안을 씀)를 더한다.
 - candidates[].hand_mask.bg / origin_info.crop_source(폴더), jobs[].inputs[].source(canvas), 분석 항목의 params /
   skipped / no_source / rect / seq / quad_reg / mask_area / thumb / tone.full
 - exports[].hash / options / compose / bytes / smart_objects / problems
+- Studio S3: prepare_settings(Prepare 가 실제로 쓴 위젯 값 7개 {model, quality, size_rule, variants(받은 문자열 그대로), n, ref_style,
+  calls_per_cell} — n·calls_per_cell 은 int) / prepare_inputs(store.prepare_inputs_fp — Prepare 입력 지문). 둘 다 Prepare 가 jobs 와 같은
+  커밋에 쓴다(Studio 처음 값·그래프와의 설정 갈라짐·'반영 필요' 판정). 키 없음 = 그 전의 프로젝트(store 골격에 넣지 않음).
+  단 채택 가드가 'Import 가 반영할 차이'로 건너뛴 크롭이 있으면 prepare_inputs 는 쓰지 않는다(채택이 반영되지 않았으므로 '반영 필요' 유지)
 명세와 다른 모양: analysis 는 {key: {params_hash: 항목}}(명세는 {key: 항목}) — Analyze 가지가 여럿이어도 서로
 밀어내지 않게. 핸들은 4키 + analyze / compose / draft(위).
 
@@ -188,12 +195,21 @@ v5 (2026-10, Studio S2 — STUDIO_S2_SPEC §2·§3)
   Prepare 는 refs_main 을 고름(고정 때 refs_main = 지금 자동 선택 → refs_auto·cell_key·승인 해시·초안 키 그대로).
   refs.json 이 없으면 지금 그대로(키를 만들지 않음). Project 지문에 refs.json.
 - Ref Cut 노드(SAM3 컷, 무료 출력 노드). 모듈 import 때 board.set_sam3_ckpts(이름에 sam3 가 든 체크포인트).
+v6 (2026-10, Studio S3a — STUDIO_S3_SPEC §2.4·§2.5)
+- Studio 계획·채택 라우트가 노드와 같은 함수를 쓰도록 옮김(동작·보고서·파일 바이트 그대로 — 단 store._dir_fp 는 목록 뒤 사라진 파일을
+  건너뜀, 옛 _dir_fp 는 FileNotFoundError): Spec Draft 계획 본문 → dvlm.draft_plan
+  (_draft_plan 은 _DRAFT_MEMO 를 넘기는 얇은 함수), _merge_crop·_owned_paths·_drop_paths·화풍 전파 규칙 → dvlm.merge_crop·
+  project_style_for, 미기록 표식 → dvlm.WRITE_MARK·unwritten_specs, _merge_adopted·_new_targets·_adopt_stale·_glossary·
+  _file_fp·_dir_fp·_spec_files_fp → store(_new_targets·_glossary 는 얇은 함수).
+- Prepare 가 jobs 와 같은 커밋에 매니페스트 prepare_settings·prepare_inputs(§2.2 — 입력 지문은 스펙을 읽기 전에 계산, 같은 설정·입력의
+  재실행은 바이트·rev 그대로, 채택 가드가 Import 미반영 크롭을 건너뛰면 지문은 그대로). Export ui 에 bmk_dp_export(§3.6 — 보고서
+  문구는 그대로). Spec Draft run 의 _open 뒤 전체(예외·인터럽트·취소·finally 포함 — 핸들을 못 열면 루트를 몰라 표시하지 않음)를
+  board.draft_active(root) 로 감쌈(§2.4). 모듈 import 때 board.set_qwen_dir(Spec Draft 와 같은 Qwen 모델 폴더).
 """
 
 from __future__ import annotations
 
 import asyncio
-import copy
 import hashlib
 import io
 import json
@@ -268,6 +284,7 @@ _COMPOSE_DEFAULTS = {"mask_source": "hand_else_auto", "use_registration": True, 
 _TONE_CLAMP = 12.0
 _BACKGROUND = "opaque"  # cell_key 의 background (GPT 편집 결과는 불투명)
 _EXPORT_VERSION = "dp-export/2"
+_EXPORT_UI = "bmk_dp_export"  # Export ui 결과 [{outcome: new|unchanged|empty, psd, rev}] — Studio 가 /api/history 로 판정(exports 만으로는 못 앎)
 _MIN_CROP_IOU = 0.5  # 이보다 크롭과 덜 겹치는 SO 는 부분 패치로 보고 분석하지 않음
 _THUMB = 160
 _SAFE_PREFIX_RE = re.compile(r"^[\w\-.가-힣 ]+$")
@@ -339,58 +356,8 @@ def _abs(root: str, rel: str) -> str:
     return store.resolve_path(root, rel)
 
 
-def _file_fp(path: str):
-    try:
-        return store.file_fingerprint(path)
-    except ValueError:
-        return None
-
-
-def _dir_fp(path: str):
-    """폴더 바로 아래 파일 (이름, 크기, mtime) 목록의 해시. 없으면 None."""
-    if not path or not os.path.isdir(path):
-        return None
-    rows = []
-    for fn in sorted(os.listdir(path)):
-        full = os.path.join(path, fn)
-        if os.path.isfile(full):
-            st = os.stat(full)
-            rows.append(f"{fn}|{st.st_size}|{st.st_mtime_ns}")
-    return hashlib.sha1("\n".join(rows).encode("utf-8")).hexdigest()[:16]
-
-
-def _spec_files_fp(root: str) -> list:
-    """specs/*.json 이 가리키는 파일(guide, before_paste, targets[].refs)과 매니페스트 타깃 refs 의 지문.
-    경로 해석은 Prepare 와 같다(guide·before_paste = 프로젝트 폴더 기준, refs = refs_dir 기준). 가이드 그림이나
-    하위 폴더 레퍼런스만 바뀌어도 Project 지문이 바뀌어 Prepare 가 다시 실행된다."""
-    try:
-        m = store.load_manifest(root)
-    except ValueError:  # 깨진 매니페스트: 지문은 _file_fp 가 이미 반영
-        return []
-    refs_dir = (m.get("source") or {}).get("refs_dir") or ""
-
-    def ref_path(r) -> str:
-        r = str(r)
-        return r if os.path.isabs(r) or not refs_dir else os.path.join(refs_dir, r)
-
-    paths = [ref_path(r) for c in m["crops"] for t in c.get("targets") or [] for r in t.get("refs") or []]
-    sd = os.path.join(root, "specs")
-    for fn in sorted(os.listdir(sd)) if os.path.isdir(sd) else []:
-        if not fn.endswith(".json"):
-            continue
-        try:
-            ov = store.load_spec_override(root, fn[:-5])
-        except ValueError:  # JSON 오류: 스펙 파일 자체의 지문은 _dir_fp(specs) 에 있다
-            continue
-        paths += [p if os.path.isabs(p) else os.path.join(root, p)
-                  for p in (ov.get("guide"), ov.get("before_paste")) if isinstance(p, str) and p]
-        paths += [ref_path(r) for t in ov.get("targets") or [] if isinstance(t, dict) for r in t.get("refs") or []]
-    return [(p, _file_fp(p)) for p in paths]
-
-
 _LEDGER_FILE_RE = re.compile(r"a\d+\.[a-z]+\.json")
 _REPOLL_MARK = "repoll_pending.json"  # vlm/ 바로 아래. Spec Draft 가 created(무료 재폴링 대기)를 남기고 끝날 때마다 다시 쓴다
-_WRITE_MARK = "write_pending.json"    # vlm/ 바로 아래. 스펙을 쓰지 못한(잠김) 크롭 — 실패할 때마다 다시 쓰고, 다 쓰면 지운다
 
 
 def _vlm_fp(root: str):
@@ -409,7 +376,7 @@ def _vlm_fp(root: str):
             if os.path.isdir(kdir):
                 rows += [f"{cid}/{key}/{fn}|{os.path.getsize(os.path.join(kdir, fn))}"
                          for fn in sorted(os.listdir(kdir)) if _LEDGER_FILE_RE.fullmatch(fn)]
-    rows += [str(_file_fp(os.path.join(base, mark))) for mark in (_REPOLL_MARK, _WRITE_MARK)]
+    rows += [str(store._file_fp(os.path.join(base, mark))) for mark in (_REPOLL_MARK, dvlm.WRITE_MARK)]
     return hashlib.sha1("\n".join(rows).encode("utf-8")).hexdigest()[:16]
 
 
@@ -418,15 +385,15 @@ def _project_fp(root: str) -> str:
     백엔드에 묶인 승인 해시·'mock 초안 교체' 대기·Run 의 초안 대기 경고가 지금 백엔드를 따른다.
     layout.json(Studio 레이아웃 편집, S1)·refs.json(레퍼런스 연결, S2)도 넣는다 — Import 의 IS_CHANGED 는 루트를 모르므로(링크 입력)
     하류 전체를 여기서 깨운다."""
-    return "|".join(str(v) for v in (_file_fp(os.path.join(root, store.MANIFEST_NAME)),
-                                     _file_fp(os.path.join(root, store.LAYOUT_NAME)),
-                                     _file_fp(os.path.join(root, refs.REFS_NAME)),
-                                     _dir_fp(os.path.join(root, "specs")),
-                                     _file_fp(os.path.join(root, "glossary.json")),
-                                     _spec_files_fp(root),
+    return "|".join(str(v) for v in (store._file_fp(os.path.join(root, store.MANIFEST_NAME)),
+                                     store._file_fp(os.path.join(root, store.LAYOUT_NAME)),
+                                     store._file_fp(os.path.join(root, refs.REFS_NAME)),
+                                     store._dir_fp(os.path.join(root, "specs")),
+                                     store._file_fp(os.path.join(root, "glossary.json")),
+                                     store._spec_files_fp(root),
                                      _vlm_fp(root),
                                      runner.mock_enabled(root),
-                                     _file_fp(os.path.join(os.path.dirname(os.path.abspath(root)), runner.MOCK_FILE))))
+                                     store._file_fp(os.path.join(os.path.dirname(os.path.abspath(root)), runner.MOCK_FILE))))
 
 
 def _rect_iou(a, b) -> float:
@@ -1033,32 +1000,9 @@ class BMKDesignPatchProject:
 # ══════════════════════════════════════════════════════════════════════
 # 노드 2 — Import PSD
 # ══════════════════════════════════════════════════════════════════════
-def _merge_adopted(crop: dict, parsed: dict, ov: dict) -> tuple[dict, list[str]]:
-    """store.merge_layer_targets(레이어명 파싱 + 스펙 _layer_targets). 크롭 ID·psd_name 을 넘겨 Studio 에서 이름을 바꾼 크롭의 스펙
-    앞머리 '<처음 이름> |' 도 뗀다. Import(_targets)·Prepare 가드(_adopt_stale)가 같은 규칙."""
-    return store.merge_layer_targets(parsed, ov.get("_layer_targets"), crop_id=crop["id"],
-                                     aliases=[crop["psd_name"]] if crop.get("psd_name") else [])
-
-
 def _new_targets(parsed: dict, old_crop: dict | None) -> list[dict]:
-    """레이어명 타깃 → 매니페스트 타깃. 영문(ASCII) 문구는 name_en, 한글 문구·레거시는 label(번역은 Prepare).
-    parsed 가 store.merge_layer_targets 를 거쳤으면 채택 타깃의 origin 을 그대로 옮긴다(채택 타깃에만 키가 있음)."""
-    old = {t["tid"]: t for t in (old_crop or {}).get("targets") or []}
-    out = []
-    for t in parsed["targets"]:
-        text = t["text"].strip()
-        label = text or parsed["part"] or parsed["name"]
-        name_en = text if (text and text.isascii()) else ""
-        tt = {"tid": t["tid"], "label": label, "name_en": name_en, "mode": "ref_correct", "refs": []}
-        o = old.get(t["tid"])
-        if o and o.get("label") == label:  # 사람이 매니페스트에서 고친 값은 유지
-            for k in ("name_en", "mode", "refs"):
-                if o.get(k) and not (k == "name_en" and name_en):
-                    tt[k] = o[k]
-        if t.get("origin"):
-            tt["origin"] = t["origin"]
-        out.append(tt)
-    return out
+    """store.new_targets(레이어명 타깃 → 매니페스트 타깃 — Import 와 평가 도구 대조 M3-N9 가 부름)."""
+    return store.new_targets(parsed, old_crop)
 
 
 def _adopt_changes(m: dict, crop: dict, prev: list[dict]) -> list[str]:
@@ -1269,8 +1213,8 @@ class BMKDesignPatchImportPSD:
         else:
             info_line, cached = self._import_layout(root, m, psd_path, heavy, lay, old)
         notes = self._targets(root, m, old, cached)
-        light = {"refs_dir": refs_dir.replace("\\", "/"), "refs_fingerprint": _dir_fp(refs_dir),
-                 "glossary": glossary_path.replace("\\", "/"), "glossary_fingerprint": _file_fp(glossary_path)}
+        light = {"refs_dir": refs_dir.replace("\\", "/"), "refs_fingerprint": store._dir_fp(refs_dir),
+                 "glossary": glossary_path.replace("\\", "/"), "glossary_fingerprint": store._file_fp(glossary_path)}
         if rdoc is not None:  # refs.json 이 없으면 키를 만들지 않는다(기존 매니페스트 바이트 그대로)
             light["refs_links"] = refs.refs_sig(rdoc, refs_dir)
         again = (not cached or ("refs_links" in src) != ("refs_links" in light)
@@ -1479,7 +1423,7 @@ class BMKDesignPatchImportPSD:
                 ov = store.load_spec_override(root, c["id"])
                 if cached and "_layer_targets" not in ov and not any(t.get("origin") == "adopt" for t in prev):
                     continue
-                merged, msgs = _merge_adopted(c, p, ov)
+                merged, msgs = store.merge_adopted(c, p, ov)
             except ValueError as e:
                 if cached:
                     notes[c["id"]] = [f"지금 타깃 유지 — {e}"]
@@ -1537,8 +1481,8 @@ class BMKDesignPatchImportPSD:
             return float("nan")
         psd_path, refs_dir, glossary_path = (_strip_path(v) for v in (psd_path, refs_dir, glossary_path))
         vals = {k: kwargs.get(k) for k in ("crop_group", "clean_plate_layer", "base_layer", "crop_pixels_group")}
-        return json.dumps([psd_path, _file_fp(psd_path), refs_dir, _dir_fp(refs_dir), glossary_path,
-                           _file_fp(glossary_path), vals], ensure_ascii=False)
+        return json.dumps([psd_path, store._file_fp(psd_path), refs_dir, store._dir_fp(refs_dir), glossary_path,
+                           store._file_fp(glossary_path), vals], ensure_ascii=False)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1806,7 +1750,7 @@ class BMKDesignPatchCandidateIn:
         if path is None:  # 링크된 경로: 파일 지문을 볼 수 없음
             return float("nan")
         path = _strip_path(path)
-        fp = _file_fp(path) if os.path.isfile(path) else _dir_fp(path)
+        fp = store._file_fp(path) if os.path.isfile(path) else store._dir_fp(path)
         vals = {k: kwargs.get(k) for k in ("group", "mapping_json", "visible_is_pick", "keep_hand_masks")}
         return json.dumps([source, path, fp, vals], ensure_ascii=False)
 
@@ -1815,24 +1759,8 @@ class BMKDesignPatchCandidateIn:
 # 노드 4 — Prepare (무료)
 # ══════════════════════════════════════════════════════════════════════
 def _glossary(root: str, m: dict) -> dict:
-    g = store.load_glossary(os.path.join(root, "glossary.json"))
-    g.update(store.load_glossary((m.get("source") or {}).get("glossary") or ""))
-    return g
-
-
-def _adopt_stale(crop: dict, ov: dict) -> str:
-    """Prepare 가드: 레이어명 + 스펙 _layer_targets 로 Import 가 만들 타깃(tid, 라벨)이 매니페스트와 다르면 그 이유, 같으면 "".
-    Draft 는 Import 뒤에 채택을 쓰거나 지우므로(mock 채택 양보) 그 큐의 매니페스트는 옛 타깃이다 — 그 크롭의 jobs 를 만들지
-    않아 Run 해시가 바뀐다(드라이런, 옛 타깃 과금 없음). 문구는 채택·채택 해제 어느 쪽에도 맞게."""
-    p = store.parse_crop_layer_name(crop["layer_name"])
-    try:
-        merged, _w = _merge_adopted(crop, p, ov)
-    except ValueError as e:
-        return f"채택 확인 못 함 — {e}"
-    want = [(t["tid"], t["label"]) for t in _new_targets(merged, None)]
-    if want != [(t["tid"], t["label"]) for t in crop["targets"]]:
-        return "매니페스트 타깃이 레이어명 + _layer_targets 와 다름 — 다음 큐에서 Import PSD 가 반영"
-    return ""
+    """store.project_glossary(프로젝트 glossary.json + Import 의 glossary_path — Prepare·Spec Draft·Studio 가 같은 값)."""
+    return store.project_glossary(root, m)
 
 
 class BMKDesignPatchPrepare:
@@ -1884,10 +1812,13 @@ class BMKDesignPatchPrepare:
         if ref_style not in _REF_STYLES:
             raise ValueError(f"{_TAG} ref_style 은 {_REF_STYLES} 중 하나여야 합니다: {ref_style!r}")
         dprompt.select_variants({}, variants)  # 형식 검사(잘못된 토큰이면 ValueError)
+        # 입력 지문은 스펙·용어집을 읽기 전에 — 실행 도중 바뀐 입력은 지금 값과 달라 Studio 에 '반영 필요'로 남는다
+        inputs_fp = store.prepare_inputs_fp(root, m)
         refs_dir = (m.get("source") or {}).get("refs_dir") or ""
         glossary = _glossary(root, m)
         old_jobs = {j["cell_key"]: j for j in m["jobs"]}
         jobs, tiles, warn_lines, dup_lines = [], [], [], []
+        adopt_pending = False  # 채택 가드가 'Import 가 반영할 차이'로 건너뛴 크롭이 있음 → 입력 지문을 올리지 않는다
         if not m["crops"]:  # 빈 시작(D6): 예외 대신 경고
             warn_lines.append("  크롭 없음 — 작업 없음(Studio 레이아웃 편집에서 크롭을 그린 뒤 다시 큐)")
         n_new = n_dup = 0
@@ -1911,8 +1842,10 @@ class BMKDesignPatchPrepare:
             sha_of[cpath], rel_of[cpath] = store.pixel_sha(canvas_rgb), crel
             spec["canvas"] = cpath
             if "_layer_targets" in ov or any(t.get("origin") == "adopt" for t in crop["targets"]):
-                stale = _adopt_stale(crop, ov)
+                stale = store.adopt_stale(crop, ov)
                 if stale:
+                    # 문법 오류('채택 확인 못 함')는 Import 로도 풀리지 않는다 — 지문까지 막으면 '반영 필요'가 영영 남음
+                    adopt_pending = adopt_pending or not stale.startswith("채택 확인 못 함")
                     warn_lines.append(f"  {crop['id']} {crop['name']}: 작업 없음 - {stale}")
                     tiles.append(_label_tile([_fit(canvas_rgb, _THUMB)], [_ascii(crop["id"]), "0 jobs: targets out of sync"],
                                              (255, 140, 120)))
@@ -1984,6 +1917,11 @@ class BMKDesignPatchPrepare:
                           + (f"  fill {finfo['alpha_frac'] * 100:.0f}%" if finfo["method"] != "none" else ""))]
             tiles.append(_label_tile(cells, lab, (255, 140, 120) if (spec["warnings"] or probs) else (220, 220, 220)))
         m["jobs"] = _plain(jobs)
+        # jobs 와 같은 커밋에(STUDIO_S3_SPEC §2.2): 실제로 쓴 위젯 값 — Studio 처음 값·그래프와의 갈라짐 판정, 같은 설정이면 바이트 그대로
+        m["prepare_settings"] = {"model": model, "quality": quality, "size_rule": size_rule, "variants": variants,
+                                 "n": int(n), "ref_style": ref_style, "calls_per_cell": int(calls_per_cell)}
+        if not adopt_pending:  # 채택 미반영 크롭이 있으면 열 때 값 그대로(없으면 키 없음) — Studio '반영 필요'가 다음 반영까지 남게
+            m["prepare_inputs"] = inputs_fp
         handle, conflicts = _commit(root, m, before, project)
         plan = runner.plan_calls(m, root)
         mock = runner.mock_enabled(root)  # 해시는 백엔드에 묶인다 — Run 이 지금 쓸 백엔드와 같게
@@ -2296,7 +2234,8 @@ class BMKDesignPatchExportPSD:
             msg = ("내보낼 후보 없음(pick 0" + ("" if alternates == "hidden_all" else " · 대안 미포함")
                    + (f" · 크롭·타깃이 빠진 후보 {len(want)} 제외" if want else "") + ") → PSD 를 쓰지 않음")
             logger.info("%s Export: %s", _TAG, msg)
-            return {"ui": {"text": [msg] + conflicts}, "result": ("",)}
+            return {"ui": {"text": [msg] + conflicts, _EXPORT_UI: [{"outcome": "empty", "psd": None, "rev": None}]},
+                    "result": ("",)}
         entries: dict = {}
         if _needs_analysis(mask_source, use_reg, toned):
             entries, done, _hit, w2 = _ensure_analysis(root, m, inc, project.get("analyze"))
@@ -2308,7 +2247,9 @@ class BMKDesignPatchExportPSD:
         if last and os.path.isfile(last["psd"]) and _sidecar_hash(last["psd"]) == eh:  # 다른 export 가 덮어쓴 파일은 재사용 안 함
             _h, conflicts = _commit(root, m, before)
             logger.info("%s Export: 바뀐 것 없음 → 기존 파일 %s", _TAG, last["psd"])
-            return {"ui": {"text": [f"변경 없음: {last['psd']}"] + conflicts}, "result": (last["psd"],)}
+            return {"ui": {"text": [f"변경 없음: {last['psd']}"] + conflicts,
+                           _EXPORT_UI: [{"outcome": "unchanged", "psd": last["psd"], "rev": last["rev"]}]},
+                    "result": (last["psd"],)}
 
         rev = int(m["rev"])
         out_dir = _output_dir(os.path.basename(os.path.normpath(root)))  # 폴더 이름(복사한 매니페스트의 project 값 아님)
@@ -2412,7 +2353,8 @@ class BMKDesignPatchExportPSD:
         logger.info("%s %s", _TAG, head)
         for wmsg in warns:
             logger.warning("%s Export: %s", _TAG, wmsg)
-        return {"ui": {"text": [head] + warns}, "result": (psd_path.replace("\\", "/"),)}
+        return {"ui": {"text": [head] + warns, _EXPORT_UI: [{"outcome": "new", "psd": rec["psd"], "rev": rev}]},
+                "result": (rec["psd"],)}
 
     @staticmethod
     def _so_bytes(root: str, it: dict, pix: np.ndarray, is_toned: bool) -> tuple[bytes, str]:
@@ -2694,7 +2636,6 @@ class BMKDesignPatchReview:
 # 노드 10 — Spec Draft (M3, VLM 스펙 초안)
 # ══════════════════════════════════════════════════════════════════════
 _DRAFT_MEMO: dict = {}  # 평탄화 캐시 {(역할 태그…, abs path, size, mtime_ns): (src_sha, wh, finfo|저장 경로)} — 보드 큐마다 다시 실행됨
-_DRAFT_MEMO_MAX = 4096
 _QWEN_DIR = ("LLM", "Qwen-VL", "Qwen3-VL-8B-Instruct")  # models/ 아래(folder_paths 에 LLM 키가 없어 직접 잇는다)
 _SHEET_CANVAS = 320
 _BOX_COLORS = {"A": (255, 60, 60), "B": (40, 220, 90), "C": (70, 130, 255), "D": (255, 160, 40)}
@@ -2726,28 +2667,11 @@ def _draft_pending_text(n: int, style: int) -> str:
 def _draft_plan(root: str, m: dict, approve: str, backend_name: str, *, family: str, model: str, effort: str,
                 image_detail: str, draft_round: int, mode: str, only: list[str], concurrency: int, model_dir: str,
                 apply_mode: str):
-    """§3.3 3단계: 크롭마다 build_crop_ctx → build_request, 화풍 문맥·요청, plan → approval.
-    model_dir 은 local_qwen 키(config.json sha8·transformers 버전)용. apply_mode="targets" 는 화풍 문맥·요청을 만들지 않는다
-    (style_req None → 대기·실행·_project.json 쓰기 모두 화풍 없음, TARGETS_ONLY_SPEC §9.3).
+    """dvlm.draft_plan(평탄화 memo = _DRAFT_MEMO) — Studio 계획 라우트와 같은 함수(STUDIO_S3_SPEC §2.4).
     반환 (ctxs, reqs{crop_id | STYLE_ID: Request}, style_req, plan, approval)."""
-    refs_dir = (m.get("source") or {}).get("refs_dir") or ""
-    glossary = _glossary(root, m)
-    if len(_DRAFT_MEMO) > _DRAFT_MEMO_MAX:
-        _DRAFT_MEMO.clear()
-    cfg = {"backend": family, "model": model, "effort": effort, "image_detail": image_detail, "draft_round": draft_round,
-           "model_dir": model_dir}
-    ctxs, reqs = [], {}
-    for crop in m["crops"]:
-        ctx = dvlm.build_crop_ctx(root, m, crop, refs_dir=refs_dir, glossary=glossary, backend=family, memo=_DRAFT_MEMO)
-        ctxs.append(ctx)
-        if not (ctx.spec_error or ctx.skip_reason):  # 건너뛰는 크롭은 plan 이 skipped 로 보고
-            reqs[ctx.crop_id] = dvlm.build_request(ctx, **cfg)
-    style_ctx = None if apply_mode == "targets" else dvlm.build_style_ctx(root, m, backend=family, memo=_DRAFT_MEMO)
-    style_req = dvlm.build_style_request(style_ctx, **cfg) if style_ctx is not None else None
-    if style_req is not None:
-        reqs[dvlm.STYLE_ID] = style_req
-    pl = dvlm.plan(root, ctxs, reqs, style_req, mode=mode, only=only, apply_mode=apply_mode)
-    return ctxs, reqs, style_req, pl, dvlm.approval(pl, approve, backend_name=backend_name, concurrency=concurrency)
+    return dvlm.draft_plan(root, m, approve, backend_name, family=family, model=model, effort=effort,
+                           image_detail=image_detail, draft_round=draft_round, mode=mode, only=only,
+                           concurrency=concurrency, model_dir=model_dir, apply_mode=apply_mode, memo=_DRAFT_MEMO)
 
 
 def _draft_provenance(req, done: dict, **extra) -> dict:
@@ -2767,77 +2691,13 @@ def _merge_mode(mode: str, only: list[str], spec_id: str) -> str:
     return "fill" if mode == "force" and not dvlm.only_match(only, spec_id) else mode
 
 
-def _owned_paths(spec: dict) -> set[str]:
-    """병합 결과에서 노드가 쓴 그대로인 필드("crop.<키>" / "<tid>.<키>", §5.2 의 C == B). render_check 가 렌더 예외 때
-    정해진 순서로 뺄 수 있는 필드다 — 사람 값은 빼지 않는다."""
-    d = spec.get("_draft")
-    written = d.get("written") if isinstance(d, dict) else None
-    if not isinstance(written, dict):
-        return set()
-    by_id = {t.get("id"): t for t in spec.get("targets") or [] if isinstance(t, dict)}
-    out = set()
-    for owner, fields in written.items():
-        cur = spec if owner == "crop" else by_id.get(owner)
-        if isinstance(fields, dict) and isinstance(cur, dict):
-            out |= {f"{owner}.{k}" for k, v in fields.items() if k in cur and cur[k] == v}
-    return out
-
-
-def _drop_paths(spec: dict, paths) -> None:
-    """render_check 가 사본에서 뺀 노드 필드를 쓸 스펙에서도 뺀다. _draft.written 에서도 빼서 다음 실행이 그 빈자리를
-    '사람이 지운 필드' 로 보고하지 않게 한다(다시 채워도 같은 점검에서 다시 빠지므로 파일은 그대로)."""
-    d = spec.get("_draft")
-    written = d.get("written") if isinstance(d, dict) else None
-    for p in paths:
-        owner, _, k = str(p).partition(".")
-        owners = [spec] if owner == "crop" else [t for t in spec.get("targets") or []
-                                                  if isinstance(t, dict) and t.get("id") == owner]
-        if isinstance(written, dict) and isinstance(written.get(owner), dict):
-            owners.append(written[owner])
-        for o in owners:
-            o.pop(k, None)
-
-
-def _merge_crop(cur, mode: str, *, ctx, req, crop: dict, done, prov: dict, project_style, apply_mode: str, adopt: bool,
-                refs_dir: str, glossary: dict, out: dict):
-    """크롭 하나(§3.3 5단계 b·c·e): 정규화(지금 파일의 사람 값이 제약) → 3-way 병합 → 렌더 점검(실패면 spec·rows·merged
-    없음, 쓰지 않음 — 이번 채택은 "채택 안 함" 메모) → 병합 전후 V1 비교. preview 는 refresh 로 병합한 결과를 점검·비교에만 쓴다. write_spec 이 잠금 안에서
-    부른다(cur = 다시 읽은 파일). out 에 draft·check 를 남긴다. force 는 키마다 1회(dvlm.merge_mode)이고, force 정규화는
-    스펙의 사람 mode·refs 를 제약으로 쓰지 않는다(매니페스트 값만 — 스펙 값은 force 가 새 값으로 바꾼다).
-    adopt = adopt 위젯이 이 크롭을 고름 — 채택 값은 merge_spec 이 cur 에 이미 있던 제안에서 계산한다(preview 는 보고만)."""
-    draft = None
-    mode = dvlm.merge_mode(cur, mode, req.key if done is not None else None)
-    if done is not None:
-        draft = dvlm.normalize(done["parsed"], ctx, req, constraints=dvlm.constraints_for(ctx, None if mode == "force" else cur),
-                               glossary=glossary, repairs=done.get("repairs"))
-    kw = {"project_style": project_style, "provenance": prov, "apply_mode": apply_mode, "adopt": adopt,
-          "backend": req.backend}
-    res = dvlm.merge_spec(cur, draft, ctx, mode=mode, **kw)
-    after = dvlm.merge_spec(cur, draft, ctx, mode="refresh", **kw).spec if mode == "preview" else res.spec
-    eff = after if after is not None else (cur or {})
-    chk = dvlm.render_check(crop, copy.deepcopy(eff), refs_dir=refs_dir, glossary=glossary, owned=_owned_paths(eff))
-    out["draft"], out["check"] = draft, chk
-    if after is None:
-        return res
-    if not chk.ok:  # 보고서가 쓰지 않은 diff·채택을 세지 않게
-        if any(r.path == "crop._layer_targets" and r.kind == "add" for r in res.rows):
-            res.notes.append("채택 안 함 — 렌더 점검 실패(쓰지 않음)")
-        res.spec, res.changed, res.rows, res.merged = None, False, [], None
-        res.notes.append("렌더 점검 실패 — 쓰지 않음")
-        return res
-    _drop_paths(after, chk.dropped)
-    before = dvlm.render_check(crop, copy.deepcopy(cur or {}), refs_dir=refs_dir, glossary=glossary, owned=set())
-    res.render_changed = before.v1 != chk.v1
-    return res
-
-
 def _draft_write(root: str, m: dict, ctxs: list, reqs: dict, style_req, *, mode: str, only: list[str], apply_mode: str,
                  adopt: list[str]):
     """§3.3 5단계(순서가 중요): (a) 화풍 done → normalize_style → _project.json, 그다음 크롭마다 지금 키의 done(없으면
-    화풍 전파만)을 _merge_crop → write_spec(preview 는 쓰지 않음). 반환 (merges, checks, drafts, 경고).
+    화풍 전파만)을 dvlm.merge_crop → write_spec(preview 는 쓰지 않음). 반환 (merges, checks, drafts, 경고).
     targets 는 style_req 가 None 이라 _project.json 을 쓰지 않고, 그 style_note 가 사람 값일 때만 크롭에 전파한다(§9.2) —
     _project.json 을 읽지 못하면 full 과 같이 크롭 style_note 를 건드리지 않는다("").
-    adopt = 채택할 crop_id(dvlm.adopt_select). 쓰지 못한 파일은 vlm/<_WRITE_MARK> 에 남겨(Project 지문이 바뀜) 다음 큐에서
+    adopt = 채택할 crop_id(dvlm.adopt_select). 쓰지 못한 파일은 vlm/<dvlm.WRITE_MARK> 에 남겨(Project 지문이 바뀜) 다음 큐에서
     원장으로 다시 쓴다(0 호출)."""
     refs_dir = (m.get("source") or {}).get("refs_dir") or ""
     glossary = _glossary(root, m)
@@ -2845,7 +2705,7 @@ def _draft_write(root: str, m: dict, ctxs: list, reqs: dict, style_req, *, mode:
     crops = _crop_map(m)
     preview = mode == "preview"
     merges, checks, drafts, warns = {}, {}, {}, []
-    failed: list[str] = []      # 쓰기를 시도했지만 못 쓴 스펙(잠김) → vlm/<_WRITE_MARK>
+    failed: list[str] = []      # 쓰기를 시도했지만 못 쓴 스펙(잠김) → vlm/<dvlm.WRITE_MARK>
     attempted: set[str] = set()
 
     def unwritten(sid: str, e: OSError) -> dvlm.MergeResult:  # "쓰지 않음" 메모 = 보고서 [실패]·review.md 메모
@@ -2882,12 +2742,7 @@ def _draft_write(root: str, m: dict, ctxs: list, reqs: dict, style_req, *, mode:
                 merges[dvlm.PROJECT_SPEC_ID] = unwritten(dvlm.PROJECT_SPEC_ID, e)
                 warns.append(f"{dvlm.PROJECT_SPEC_ID}.json 을 쓰지 못함(다음 큐에서 원장으로 다시 씀, 0 호출) — {e}")
         warns += [f"화풍 초안: {f}" for f in sflags]
-    project_style = "" if proj is None else proj.get("style_note")  # None = 키 없음(손대지 않은 크롭에서도 지움)
-    if apply_mode == "targets" and proj is not None:  # 노드가 쓴 화풍(C == B)은 양보 — None 이면 merge_spec 이 크롭 style_note 를 지움
-        pd = proj.get("_draft") if isinstance(proj.get("_draft"), dict) else {}
-        pw = pd.get("written") if isinstance(pd.get("written"), dict) else {}
-        if not isinstance(project_style, str) or project_style == pw.get("style_note"):
-            project_style = None
+    project_style = dvlm.project_style_for(root, apply_mode, proj=proj)  # preview 는 병합한 화풍, 못 읽음(None) = 전파 끔
 
     for ctx in ctxs:
         cid = ctx.crop_id
@@ -2897,8 +2752,9 @@ def _draft_write(root: str, m: dict, ctxs: list, reqs: dict, style_req, *, mode:
         done = ledger.done(cid, req.key)
         prov = _draft_provenance(req, done, hint=ctx.hint, refs_shown=list(req.shown_refs)) if done is not None else {}
         out: dict = {}
-        merge = partial(_merge_crop, ctx=ctx, req=req, crop=crop, done=done, prov=prov, project_style=project_style,
-                        apply_mode=apply_mode, adopt=cid in adopt, refs_dir=refs_dir, glossary=glossary, out=out)
+        merge = partial(dvlm.merge_crop, ctx=ctx, req=req, crop=crop, done=done, prov=prov, project_style=project_style,
+                        apply_mode=apply_mode, adopt=cid in adopt, backend=req.backend, refs_dir=refs_dir, glossary=glossary,
+                        out=out)
         cmode = _merge_mode(mode, only, cid)
         try:
             if preview:
@@ -2920,15 +2776,15 @@ def _draft_write(root: str, m: dict, ctxs: list, reqs: dict, style_req, *, mode:
         if "check" in out:
             checks[cid] = out["check"]
     if not preview:  # 이번에 시도하지 못한(건너뛴) 크롭의 지난 표식은 그 크롭이 매니페스트에 남아 있는 동안 이어 둔다
-        keep = [s for s in _unwritten_specs(root) if s not in attempted and (s in crops or s == dvlm.PROJECT_SPEC_ID)]
+        keep = [s for s in dvlm.unwritten_specs(root) if s not in attempted and (s in crops or s == dvlm.PROJECT_SPEC_ID)]
         _mark_unwritten(root, list(dict.fromkeys(failed + keep)))
     return merges, checks, drafts, warns
 
 
 def _mark_unwritten(root: str, failed: list[str]) -> None:
-    """스펙 쓰기가 실패한(편집기·백신 잠금) 크롭을 vlm/<_WRITE_MARK> 에 남긴다 → Project 지문이 바뀌어 다음 큐에서 Draft 가
+    """스펙 쓰기가 실패한(편집기·백신 잠금) 크롭을 vlm/<dvlm.WRITE_MARK> 에 남긴다 → Project 지문이 바뀌어 다음 큐에서 Draft 가
     다시 실행돼 원장으로 다시 쓴다(0 호출). 실패가 없으면 지운다(그 다음 큐 한 번은 지문이 바뀌어 다시 확인만 함)."""
-    path = os.path.join(root, dvlm.LEDGER_DIR, _WRITE_MARK)
+    path = os.path.join(root, dvlm.LEDGER_DIR, dvlm.WRITE_MARK)
     try:
         if failed:
             os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -2936,17 +2792,7 @@ def _mark_unwritten(root: str, failed: list[str]) -> None:
         elif os.path.exists(path):
             os.remove(path)
     except OSError as e:
-        logger.warning("%s %s 를 갱신하지 못함(다음 큐가 스펙을 다시 쓰지 않을 수 있음): %s", _TAG, _WRITE_MARK, e)
-
-
-def _unwritten_specs(root: str) -> list[str]:
-    """vlm/<_WRITE_MARK> 의 크롭 목록(초안은 원장에 있지만 스펙 파일에 아직 못 씀). 없거나 읽을 수 없으면 []."""
-    try:
-        with open(os.path.join(root, dvlm.LEDGER_DIR, _WRITE_MARK), encoding="utf-8") as f:
-            specs = json.load(f).get("specs")
-    except (OSError, ValueError, AttributeError):
-        return []
-    return [str(s) for s in specs] if isinstance(specs, list) else []
+        logger.warning("%s %s 를 갱신하지 못함(다음 큐가 스펙을 다시 쓰지 않을 수 있음): %s", _TAG, dvlm.WRITE_MARK, e)
 
 
 def _mark_repoll(root: str, units: list) -> None:
@@ -3209,103 +3055,106 @@ class BMKDesignPatchSpecDraft:
         # 첫 줄부터 await: 이후 예외는 ComfyUI 의 대기 노드 경로로 보고되어 입력값(hidden 토큰)이 기록되지 않는다
         # (코어가 run 전에 입력 목록을 자르다 나는 예외는 남은 한계 — M3_SPEC §11.6 F1)
         root, m = await asyncio.to_thread(_open, project)
-        dvlm.check_widgets(vlm, effort, image_detail, write_mode)
-        if apply not in dvlm.APPLY_MODES:
-            raise ValueError(f"{_TAG} apply 값이 잘못되었습니다: {apply!r} (선택지: {', '.join(dvlm.APPLY_MODES)})")
-        adopt_ids, adopt_notes = dvlm.adopt_select(adopt, [c["id"] for c in m["crops"]])
-        family, model = dvlm.parse_vlm_choice(vlm)
-        mock_forced = family == "openai" and runner.mock_enabled(root)
-        if mock_forced:
-            family = "mock"
-        tokens = dvlm.parse_only(only)
-        idle = write_mode == "force" and not tokens  # force 는 only 필수 — 호출·쓰기 없이 보고만
-        approve = str(approve or "").strip()
-        key = _board_key(root)
-        # 백엔드를 먼저 정한다: 승인 해시·실행·ui backend 를 한 백엔드가 정해야 MOCK 드라이런 해시가 유료 실행을 승인하지 않는다
-        model_dir = os.path.join(folder_paths.models_dir, *_QWEN_DIR)
-        backend = dvlm.make_vlm(family, root, {"auth_token": auth_token, "api_key": api_key, "usage_source": usage_source,
-                                               "unique_id": unique_id}, model_dir=model_dir, keep_loaded=bool(keep_loaded))
-        cfg = {"family": family, "model": model, "effort": effort, "image_detail": image_detail,
-               "draft_round": int(draft_round), "mode": write_mode, "only": tokens, "concurrency": int(concurrency),
-               "model_dir": model_dir, "apply_mode": apply}
-        watch = []  # 네트워크 단위(재폴링·새 호출) — 끝난 뒤 created 로 남으면 재폴링 표시(_mark_repoll)
-        try:
-            ctxs, reqs, style_req, pl, ap = await asyncio.to_thread(_draft_plan, root, m, approve, backend.name, **cfg)
-            watch = [] if idle else [u for u in ap["to_run"] if u.state != "reparse"]
-            has_auth = family != "openai" or backend.has_auth()
-            # 인증 없이 보내면 401 — 401 로 처리되기 전에 막는다(원장 재파싱만 로컬이라 남김)
-            to_run = [] if idle else [u for u in ap["to_run"] if has_auth or u.state == "reparse"]
-            auth_held = 0 if idle else len(ap["to_run"]) - len(to_run)
-            run_rep = None
-            if to_run:
-                run_rep = await self._execute(root, to_run, reqs, backend, model=model, effort=effort,
-                                              image_detail=image_detail, concurrency=int(concurrency),
-                                              credit_cap=int(credit_cap), unique_id=unique_id)
-            merges, checks, drafts, warns = ({}, {}, {}, []) if idle else await asyncio.to_thread(
-                _draft_write, root, m, ctxs, reqs, style_req, mode=write_mode, only=tokens, apply_mode=apply,
-                adopt=adopt_ids)
-            if to_run or (write_mode != "preview" and any(r.spec is not None for r in merges.values())):
-                # 원장·스펙 _draft 가 바뀜 → 지금 상태로 다시 계획(ui·보고서의 해시 = 다음 큐가 계산할 해시)
-                ctxs, reqs, style_req, pl_after, ap_after = await asyncio.to_thread(
-                    _draft_plan, root, m, "", backend.name, **cfg)
-            else:
-                pl_after, ap_after = pl, dvlm.approval(pl, "", backend_name=backend.name, concurrency=int(concurrency))
-            m = store.load_manifest(root)
-            shown_model = "mock" if family == "mock" else model
-            shown_effort = effort if family == "openai" else None
-            header = {"backend": backend.name, "family": family, "model": shown_model, "effort": shown_effort,
-                      "image_detail": image_detail if family == "openai" else None, "write_mode": write_mode,
-                      "only": tokens, "approve": approve, "approved_now": ap["approved_now"],
-                      "pending_hash_before": ap["pending_hash"], "blocked_before": len(ap["blocked"]),
-                      "mock_forced": mock_forced, "draft_round": int(draft_round), "concurrency": int(concurrency),
-                      "credit_cap": int(credit_cap), "rev": m["rev"], "seconds": round(time.time() - t0, 1),
-                      "apply": apply}
-            lines = dvlm.format_report(header=header, plan=pl_after, approval=ap_after, run=run_rep, merges=merges,
-                                       checks=checks, drafts=drafts, ctxs=ctxs).splitlines()
-            if keep_loaded and (family == "local_qwen" or _qwen_resident()):  # 다른 vlm 이어도 남아 있는 Qwen 은 알린다
-                lines.insert(1, dvlm.QWEN_RESIDENT_WARNING)
-            if idle:
-                lines.append("force 는 only(crop_id·NNN·style)가 필요합니다 — 호출·쓰기 없이 보고만 함"
-                             + (" (adopt 도 쓰지 않음)" if adopt_ids else ""))
-            lines += adopt_notes
-            if not has_auth and (pl_after["units"] or auth_held):
-                lines.append("주의: comfy.org 로그인 필요 — 로그인(또는 API 키) 정보가 없어 호출하지 않았습니다. "
-                             "ComfyUI 에 로그인한 뒤 큐에 넣으세요")
-            lines += [f"  - {w}" for w in warns]
-            text = "\n".join(lines)
-            await asyncio.to_thread(_draft_files, root, dvlm.review_markdown(ctxs, merges, checks, drafts, apply), text)
-            sheet = await asyncio.to_thread(_draft_sheet, root, m, ctxs, reqs, pl_after, drafts, checks, apply)
-            logger.info("%s %s", _TAG, lines[0] if lines else "Spec Draft")
-            entry = {"pending_hash": ap_after["pending_hash"], "pending": len(pl_after["units"]),
-                     "reasons": ap_after["reasons"], "orphan_retries": ap_after["orphan_retries"],
-                     "est_credits": list(ap_after["est_credits"]), "est_usd": list(ap_after["est_usd"]),
-                     "est_seconds": ap_after["est_seconds"], "backend": backend.name, "model": shown_model,
-                     "effort": shown_effort, "approved_now": ap["approved_now"], "root_key": key,
-                     "refresh_available": len(pl_after["refresh_available"])}
-            # pending_style = 대기 중 화풍 단위(0/1) — Run 경고가 크롭과 화풍을 따로 센다. unwritten = 스펙 파일에 아직 못 쓴
-            # 변경(잠김, vlm/<_WRITE_MARK>, 지금 매니페스트의 크롭·_project 만) — 초안 대기와 따로 Run 이 경고한다.
-            # held = only 로 보류된 대기(승인 목록 밖이라 pending 에 없음), mock_specs = vlm=mock 으로 쓴 초안이 남은 스펙
-            # (실제 백엔드면 'mock 초안 교체' 대기라 pending 이 센다)
-            live = {c["id"] for c in m["crops"]} | {dvlm.PROJECT_SPEC_ID}
-            unwritten = sum(1 for s in await asyncio.to_thread(_unwritten_specs, root) if s in live)
-            held = pl_after["filtered"]
-            mock_specs = await asyncio.to_thread(dvlm.mock_drafted, root, ctxs, apply) if family == "mock" else 0
-            branch = {"pending": entry["pending"], "pending_hash": entry["pending_hash"],
-                      "refresh_available": entry["refresh_available"],
-                      "pending_style": sum(1 for u in pl_after["units"] if u.crop_id == dvlm.STYLE_ID),
-                      **({"unwritten": unwritten} if unwritten else {}),
-                      **({"held": len(held), "held_style": int(dvlm.STYLE_ID in held)} if held else {}),
-                      **({"mock_specs": mock_specs} if mock_specs else {})}
-            return {"ui": {dvlm.UI_KEY: [entry], "text": [text]},
-                    "result": (_handle(root, m, project, draft=branch), text, sheet)}
-        finally:
-            if watch:  # 취소·폴링 실패·로그인 없음 뒤에도 — 다음 큐가 Draft 를 다시 실행해 무료 재폴링하게
-                await asyncio.to_thread(_mark_repoll, root, watch)
-            if not keep_loaded:  # 0 호출 실행이어도, vlm 을 바꿨어도 — 지난 실행이 keep_loaded 로 남긴 모델까지 내린다
-                if family == "local_qwen":
-                    backend.unload()
+        # _open 뒤 run 전체(예외·인터럽트·취소·finally 포함 — 핸들을 못 열면 루트를 몰라 표시하지 않음)를 보드 실행 표시로
+        # — Studio 계획은 실행 중 Draft 의 해시를 내지 않고 진행 표시는 시작 시각 뒤 원장만 센다
+        with board.draft_active(root):
+            dvlm.check_widgets(vlm, effort, image_detail, write_mode)
+            if apply not in dvlm.APPLY_MODES:
+                raise ValueError(f"{_TAG} apply 값이 잘못되었습니다: {apply!r} (선택지: {', '.join(dvlm.APPLY_MODES)})")
+            adopt_ids, adopt_notes = dvlm.adopt_select(adopt, [c["id"] for c in m["crops"]])
+            family, model = dvlm.parse_vlm_choice(vlm)
+            mock_forced = family == "openai" and runner.mock_enabled(root)
+            if mock_forced:
+                family = "mock"
+            tokens = dvlm.parse_only(only)
+            idle = write_mode == "force" and not tokens  # force 는 only 필수 — 호출·쓰기 없이 보고만
+            approve = str(approve or "").strip()
+            key = _board_key(root)
+            # 백엔드를 먼저 정한다: 승인 해시·실행·ui backend 를 한 백엔드가 정해야 MOCK 드라이런 해시가 유료 실행을 승인하지 않는다
+            model_dir = os.path.join(folder_paths.models_dir, *_QWEN_DIR)
+            backend = dvlm.make_vlm(family, root, {"auth_token": auth_token, "api_key": api_key, "usage_source": usage_source,
+                                                   "unique_id": unique_id}, model_dir=model_dir, keep_loaded=bool(keep_loaded))
+            cfg = {"family": family, "model": model, "effort": effort, "image_detail": image_detail,
+                   "draft_round": int(draft_round), "mode": write_mode, "only": tokens, "concurrency": int(concurrency),
+                   "model_dir": model_dir, "apply_mode": apply}
+            watch = []  # 네트워크 단위(재폴링·새 호출) — 끝난 뒤 created 로 남으면 재폴링 표시(_mark_repoll)
+            try:
+                ctxs, reqs, style_req, pl, ap = await asyncio.to_thread(_draft_plan, root, m, approve, backend.name, **cfg)
+                watch = [] if idle else [u for u in ap["to_run"] if u.state != "reparse"]
+                has_auth = family != "openai" or backend.has_auth()
+                # 인증 없이 보내면 401 — 401 로 처리되기 전에 막는다(원장 재파싱만 로컬이라 남김)
+                to_run = [] if idle else [u for u in ap["to_run"] if has_auth or u.state == "reparse"]
+                auth_held = 0 if idle else len(ap["to_run"]) - len(to_run)
+                run_rep = None
+                if to_run:
+                    run_rep = await self._execute(root, to_run, reqs, backend, model=model, effort=effort,
+                                                  image_detail=image_detail, concurrency=int(concurrency),
+                                                  credit_cap=int(credit_cap), unique_id=unique_id)
+                merges, checks, drafts, warns = ({}, {}, {}, []) if idle else await asyncio.to_thread(
+                    _draft_write, root, m, ctxs, reqs, style_req, mode=write_mode, only=tokens, apply_mode=apply,
+                    adopt=adopt_ids)
+                if to_run or (write_mode != "preview" and any(r.spec is not None for r in merges.values())):
+                    # 원장·스펙 _draft 가 바뀜 → 지금 상태로 다시 계획(ui·보고서의 해시 = 다음 큐가 계산할 해시)
+                    ctxs, reqs, style_req, pl_after, ap_after = await asyncio.to_thread(
+                        _draft_plan, root, m, "", backend.name, **cfg)
                 else:
-                    _unload_resident_qwen(model_dir)
+                    pl_after, ap_after = pl, dvlm.approval(pl, "", backend_name=backend.name, concurrency=int(concurrency))
+                m = store.load_manifest(root)
+                shown_model = "mock" if family == "mock" else model
+                shown_effort = effort if family == "openai" else None
+                header = {"backend": backend.name, "family": family, "model": shown_model, "effort": shown_effort,
+                          "image_detail": image_detail if family == "openai" else None, "write_mode": write_mode,
+                          "only": tokens, "approve": approve, "approved_now": ap["approved_now"],
+                          "pending_hash_before": ap["pending_hash"], "blocked_before": len(ap["blocked"]),
+                          "mock_forced": mock_forced, "draft_round": int(draft_round), "concurrency": int(concurrency),
+                          "credit_cap": int(credit_cap), "rev": m["rev"], "seconds": round(time.time() - t0, 1),
+                          "apply": apply}
+                lines = dvlm.format_report(header=header, plan=pl_after, approval=ap_after, run=run_rep, merges=merges,
+                                           checks=checks, drafts=drafts, ctxs=ctxs).splitlines()
+                if keep_loaded and (family == "local_qwen" or _qwen_resident()):  # 다른 vlm 이어도 남아 있는 Qwen 은 알린다
+                    lines.insert(1, dvlm.QWEN_RESIDENT_WARNING)
+                if idle:
+                    lines.append("force 는 only(crop_id·NNN·style)가 필요합니다 — 호출·쓰기 없이 보고만 함"
+                                 + (" (adopt 도 쓰지 않음)" if adopt_ids else ""))
+                lines += adopt_notes
+                if not has_auth and (pl_after["units"] or auth_held):
+                    lines.append("주의: comfy.org 로그인 필요 — 로그인(또는 API 키) 정보가 없어 호출하지 않았습니다. "
+                                 "ComfyUI 에 로그인한 뒤 큐에 넣으세요")
+                lines += [f"  - {w}" for w in warns]
+                text = "\n".join(lines)
+                await asyncio.to_thread(_draft_files, root, dvlm.review_markdown(ctxs, merges, checks, drafts, apply), text)
+                sheet = await asyncio.to_thread(_draft_sheet, root, m, ctxs, reqs, pl_after, drafts, checks, apply)
+                logger.info("%s %s", _TAG, lines[0] if lines else "Spec Draft")
+                entry = {"pending_hash": ap_after["pending_hash"], "pending": len(pl_after["units"]),
+                         "reasons": ap_after["reasons"], "orphan_retries": ap_after["orphan_retries"],
+                         "est_credits": list(ap_after["est_credits"]), "est_usd": list(ap_after["est_usd"]),
+                         "est_seconds": ap_after["est_seconds"], "backend": backend.name, "model": shown_model,
+                         "effort": shown_effort, "approved_now": ap["approved_now"], "root_key": key,
+                         "refresh_available": len(pl_after["refresh_available"])}
+                # pending_style = 대기 중 화풍 단위(0/1) — Run 경고가 크롭과 화풍을 따로 센다. unwritten = 스펙 파일에 아직 못 쓴
+                # 변경(잠김, vlm/<dvlm.WRITE_MARK>, 지금 매니페스트의 크롭·_project 만) — 초안 대기와 따로 Run 이 경고한다.
+                # held = only 로 보류된 대기(승인 목록 밖이라 pending 에 없음), mock_specs = vlm=mock 으로 쓴 초안이 남은 스펙
+                # (실제 백엔드면 'mock 초안 교체' 대기라 pending 이 센다)
+                live = {c["id"] for c in m["crops"]} | {dvlm.PROJECT_SPEC_ID}
+                unwritten = sum(1 for s in await asyncio.to_thread(dvlm.unwritten_specs, root) if s in live)
+                held = pl_after["filtered"]
+                mock_specs = await asyncio.to_thread(dvlm.mock_drafted, root, ctxs, apply) if family == "mock" else 0
+                branch = {"pending": entry["pending"], "pending_hash": entry["pending_hash"],
+                          "refresh_available": entry["refresh_available"],
+                          "pending_style": sum(1 for u in pl_after["units"] if u.crop_id == dvlm.STYLE_ID),
+                          **({"unwritten": unwritten} if unwritten else {}),
+                          **({"held": len(held), "held_style": int(dvlm.STYLE_ID in held)} if held else {}),
+                          **({"mock_specs": mock_specs} if mock_specs else {})}
+                return {"ui": {dvlm.UI_KEY: [entry], "text": [text]},
+                        "result": (_handle(root, m, project, draft=branch), text, sheet)}
+            finally:
+                if watch:  # 취소·폴링 실패·로그인 없음 뒤에도 — 다음 큐가 Draft 를 다시 실행해 무료 재폴링하게
+                    await asyncio.to_thread(_mark_repoll, root, watch)
+                if not keep_loaded:  # 0 호출 실행이어도, vlm 을 바꿨어도 — 지난 실행이 keep_loaded 로 남긴 모델까지 내린다
+                    if family == "local_qwen":
+                        backend.unload()
+                    else:
+                        _unload_resident_qwen(model_dir)
 
     @staticmethod
     async def _execute(root, units, reqs, backend, *, model, effort, image_detail, concurrency, credit_cap, unique_id):
@@ -3411,6 +3260,7 @@ def _register_board_routes() -> None:
 
 _register_board_routes()
 board.set_sam3_ckpts(_sam3_ckpt_names())  # 보드는 folder_paths 를 import 하지 않는다(B0) — 재시작 전 새로 넣은 파일은 안 보임
+board.set_qwen_dir(os.path.join(folder_paths.models_dir, *_QWEN_DIR))  # Studio Draft 계획의 local_qwen 키(Spec Draft 와 같은 경로)
 
 
 # ══════════════════════════════════════════════════════════════════════

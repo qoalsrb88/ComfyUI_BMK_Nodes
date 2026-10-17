@@ -32,7 +32,7 @@ store 가 prompt 를 import 하면 순환이라 새 모듈에 둔다. torch·com
                                                 이미 고정이면 그대로 돌려준다(update_refs 의 mutate 안에서 쓰는 순수 함수)
 - explicit_refs(root, m) -> {ref_key(이름): [(crop_id, tid, "spec"|"manifest")]}
                                                 스펙 targets[].refs·매니페스트 타깃 refs 가 이름으로 직접 가리키는 파일(D5). 해석은
-                                                bmk_design_patch._spec_files_fp 와 같다(절대 경로는 그대로, 아니면 refs_dir 기준).
+                                                bmk_design_patch_store._spec_files_fp 와 같다(절대 경로는 그대로, 아니면 refs_dir 기준).
                                                 키 = refs_dir 기준 상대 경로('/' 구분, 보류면 "_보류/<이름>")의 ref_key — refs_dir 밖은 뺀다
 - ref_key(name) -> str                          이름 비교 키(NFC·'/'·casefold — Windows 는 대소문자를 구분하지 않는 경로)
 - norm_refs_dir(path) -> str · same_refs_dir(a, b) -> bool   refs.json 에 적는 꼴(절대·'/') / 같은 폴더인지(normcase)
@@ -565,7 +565,7 @@ def resolve_refs(refs_dir: Any, crop: dict, doc: dict | None) -> dict:
 
 def explicit_refs(root: str, m: dict) -> dict[str, list[tuple[str, str, str]]]:
     """스펙(specs/*.json targets[].refs)·매니페스트(crops[].targets[].refs)가 이름으로 직접 가리키는 파일(D5 — 옮기거나 그 이름에 새 그림을
-    쓰면 확인). 경로 해석은 bmk_design_patch._spec_files_fp·Prepare 와 같다: 절대 경로는 그대로, 아니면 매니페스트 source.refs_dir 기준.
+    쓰면 확인). 경로 해석은 bmk_design_patch_store._spec_files_fp·Prepare 와 같다: 절대 경로는 그대로, 아니면 매니페스트 source.refs_dir 기준.
     반환 {ref_key(refs_dir 기준 상대 경로): [(crop_id, tid, "manifest"|"spec"), …]} — refs_dir 밖(다른 드라이브 포함)은 뺀다.
     refs_dir 가 비면 {}. 깨진 스펙 파일은 건너뛴다(그 파일 자체는 Project 지문이 본다)."""
     refs_dir = (m.get("source") or {}).get("refs_dir") or ""
@@ -601,9 +601,10 @@ def explicit_refs(root: str, m: dict) -> dict[str, list[tuple[str, str, str]]]:
             ov = store.load_spec_override(root, fn[:-5])
         except ValueError:
             continue
-        for t in ov.get("targets") or []:
-            if isinstance(t, dict):
-                for r in t.get("refs") or []:
+        ts = ov.get("targets")  # 사람이 고친 스펙: 목록이 아닌 targets·refs 는 가리키는 이름 없음(store._spec_files_fp 와 같게)
+        for t in ts if isinstance(ts, list) else []:
+            if isinstance(t, dict) and isinstance(t.get("refs"), list):
+                for r in t["refs"]:
                     add(r, fn[:-5], t.get("id"), "spec")
     return out
 

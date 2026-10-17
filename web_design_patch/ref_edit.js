@@ -59,6 +59,9 @@ window.DPRefEdit = (() => {
     relink: "다른 크롭에 다시 연결" };
   // 이름으로 가리키는 곳(explicit 행 where): 스펙·매니페스트 타깃(D5) · 다른 크롭의 고정 연결 · 다른 크롭의 이름 매칭
   const WHERE = { spec: "스펙", manifest: "매니페스트", link: "연결", match: "이름 매칭" };
+  // 반영(큐) 확인 창의 정보 줄(S3 §3.2 — 무료 반영은 Spec Draft 를 돌리지 않는다)
+  const APPLY_NOTE = "원장에만 남은 초안(받았지만 스펙에 못 쓴 것)은 이 반영이 병합하지 않음 — 진행(G) 초안 줄의 '못 쓴 스펙'으로 보이고, "
+    + "그래프 Spec Draft 를 승인 없이 한 번 큐하면 병합";
 
   // ── 이름·변환 규칙(공용 표 refs_rules.json — refs.check_desc·ref_file_name·transform_rgba 크기) ──
   function strip(s) {
@@ -142,7 +145,7 @@ window.DPRefEdit = (() => {
     return did.length ? `Reference cutout was ${did.join(" and then ")} to match the canvas angle.` : "";
   }
 
-  // ── ComfyUI 큐 본문(I1): 보드가 /api/prompt 로 보내는 것은 이것뿐 ──
+  // ── ComfyUI 큐 본문(I1): 레퍼런스 편집기가 /api/prompt 로 보내는 것은 이것뿐(Studio 의 무료 템플릿 큐는 pipeline.js freeBody 하나) ──
   function promptBody(key, req) {
     // 무료 노드 하나(Ref Cut — 프로젝트 레지스트리 키와 요청 ID 만), 대기열 앞. 노드 키는 숫자가 아님 — ComfyUI 탭이 실행 중 노드를
     // 자기 그래프의 같은 번호 노드로 착각해 강조하지 않게. 인증·탭 정보는 싣지 않는다(무료 노드만 돌 수 있는 경로)
@@ -1509,9 +1512,10 @@ window.DPRefEdit = (() => {
         return;
       }
       const n = S.R ? S.R.pending_rerolls || 0 : 0;
-      if (!window.confirm("반영(큐): ComfyUI 탭에 Review 노드 부분 실행을 요청합니다.\n"
-        + "Import 부터 다시 실행해 레퍼런스 연결을 매니페스트에 반영(Review 가 Import 의 하류일 때 — 아니면 ComfyUI 탭이 큐에 넣지 않고 알림) · "
-        + `대기 재굴림 ${n}건(사전 승인, 과금)도 함께 돕니다. 계속할까요?`)) return;
+      const lines = (opts.applyWarn ? opts.applyWarn() : [])
+        .concat("반영(큐): 무료 반영(Import → Prepare → Analyze → Review 템플릿, 탭 불필요)으로 레퍼런스 연결을 매니페스트에 반영합니다.");
+      if (n) lines.push(`재굴림 대기 ${n}건(사전 승인)은 이 반영에서 돌지 않음 — R·ComfyUI 큐·그래프 Run 에서 과금`);
+      if (!window.confirm(lines.concat(APPLY_NOTE, "계속할까요?").join("\n"))) return;
       opts.queue(true);
     }
 
@@ -1523,7 +1527,7 @@ window.DPRefEdit = (() => {
         const k = R.crops.filter((c) => c.status !== "same").length;
         const st = el("span", k ? "lh-wait" : "lh-ok", k ? `미반영 ${k}` : "반영됨");
         st.title = k ? "매니페스트 refs_auto·refs_main 이 지금 연결과 다름 — 다음 큐의 Import 에서 반영" : "매니페스트가 지금 연결과 같음";
-        head.append(st, button("반영(큐)", "ComfyUI 탭에 Review 노드 부분 실행 요청 — Import 부터 다시 실행해 연결을 매니페스트에 반영", applyQueue));
+        head.append(st, button("반영(큐)", "무료 반영(Import → Prepare → Analyze → Review 템플릿, 탭 불필요) — 연결을 매니페스트에 반영", applyQueue));
         if (R.doc_dir_match === false) {
           const b = el("span", "lh-bad", "연결 무시 중");
           b.title = "refs.json 의 refs_dir 가 지금 Import 의 refs_dir 와 다름(R-dir) — 이름 매칭으로 동작";
