@@ -45,11 +45,30 @@
 //    연타는 0.8초 단위로 한 번에 묶는다(그 안에 layout 요청이 있으면 묶음 전체가 layout). S3 Studio 는 무료 반영을 직접 큐하고
 //    이 길은 옛 서버(재시작 전) 대체로만 쓴다.
 //
-// Studio 연결 확인(S3a — hello 응답만, 승인 처리 없음)
-//  - Studio 가 opener postMessage 또는 BroadcastChannel("bmk-dp") 로 {type:"bmk-dp-hello", id} 를 보내면 같은 길로
-//    {type:"bmk-dp-hello", id, tab, ext, submit, busy} 를 돌려준다. tab = 탭 로드마다 새 임의 ID, ext = 확장 판(S3b 가 3 으로 올림 —
-//    3 미만이면 Studio 의 유료 단추는 꺼짐), submit = 제출 바꿔치기 여부(S3a 는 늘 "unsupported"), busy = 이 탭이 큐를 처리하는 중.
-//    같은 출처만 받고, tab 을 지정한 메시지는 그 탭만 답한다(채널은 모든 탭에 간다 — 다른 탭의 응답도 tab 이 있어 여기서 걸러짐).
+// Studio 승인(S3b — Studio 의 유료 Run·Spec Draft·재굴림을 이 탭이 큐에 넣는다. 토큰은 프론트가 app.queuePrompt 안에서만 붙인다)
+//  - 길: 같은 출처 postMessage(opener — 답은 ev.source 로) 또는 BroadcastChannel("bmk-dp")(답은 채널로). tab = 탭 로드마다 새 임의
+//    ID, tab 을 지정한 메시지는 그 탭만 받는다(채널은 모든 탭에 간다 — 다른 탭의 응답도 tab 이 있어 여기서 걸러짐).
+//  - hello {type:"bmk-dp-hello", id} → {type, id, tab, ext: 3, submit, busy}. submit = 제출 감싸개가 설치됐고 app.queuePrompt 가
+//    함수면 "ok"(아니면 "unsupported" — Studio 유료 단추 끔), busy = 이 탭이 큐를 처리하는 중이거나 Studio 승인을 처리하는 중.
+//  - 승인 {type:"bmk-dp-approve", id, tab, rootKey, stage: run|draft|reroll, hash, only, what}: tab 이 이 탭일 때만(없으면 무시).
+//    모양이 틀리면 bad_request, 바쁘면 busy(프론트 자동 큐가 켜져 있어도 — 아래), 아니면 곧바로 ack 를 보내고 서버(GET /pipeline/prompt)에서 그 단계의 템플릿을 받는다 — 서버가 승인 해시를 지금 계획·반영
+//    상태와 대조하고(409 는 reason 그대로 Studio 로), Studio 가 보낸 프롬프트는 쓰지 않는다. 템플릿 검사(응답 stage·hash·only =
+//    요청, 대상 = 출력 노드 하나, 노드 키 dp_*·class BMKDesignPatch*, 승인 해시는 그 단계 유료 노드 하나에만, 초안 adopt ""·
+//    keep_loaded false)를 통과하면 무장하고 app.queuePrompt(0, 1, {queueNodeIds: 대상}) — 제출 감싸개(watchSubmits)가 그 제출
+//    한 번의 output 만 템플릿으로 바꾼다(workflow 는 그대로 — 안쪽 감싸개가 만짐).
+//  - 닫힌 실패: 무장 중(서버 템플릿을 받은 뒤 app.queuePrompt 가 돌아오고 프론트 큐 처리 app.processingQueue 가 끝날 때까지 — 기다리지 않는
+//    감싸개·먼저 시작된 처리 루프에서 늦게 꺼낸 항목도 막음)에 대상이 다르거나 두 번째인 제출은 오류를 던져 아무것도 보내지 않는다 —
+//    처리 중 끼어든 사용자 큐(프론트는 뒤에 쌓인 것부터 꺼냄 — 다시 넣을 것은 이것뿐)·셋째 인자를 버린 다른 확장 감싸개(사용자 그래프 전체
+//    실행이 토큰과 나감)·큐 반복 노드의 두 번째 제출(까닭마다 토스트 문구가 다름 — 원래 함수를 미뤄 부르는 감싸개 탓에 우리 항목을 아직 모르면
+//    '직접 누른 큐였다면 다시'). 무장을 풀 때 무장 동안 쌓여 꺼내지지 않은 항목(먼저 꺼낸 항목이 던져 처리 루프가 끝남)은 프론트 큐에서 빼고,
+//    막힌·거절된 제출 뒤 프론트가 남긴 토큰(api.authToken·apiKey)도 지운다.
+//    성공 = 바꿔치기 했고 prompt_id 를 받음(app.queuePrompt 는 막혀도 true) — 아니면 not_submitted(까닭별 문구)·rejected.
+//    결과마다 탭 토스트(프론트 대화상자는 다른 확장 스크립트를 탓할 수 있음) + Studio 에 bmk-dp-approved.
+//  - 프론트 자동 큐(Run (On Change)·Run (Instant) 실행 중·옛 메뉴 Auto Queue)가 켜져 있으면 받을 때·무장 직전에 busy — 승인 제출의
+//    부수 효과(시드 afterQueued·처리 시작의 clearRunErrors)로 템플릿 실행이 끝난 뒤 프론트가 사용자 그래프 전체를 무장 없이 토큰과 함께
+//    다시 큐한다. hello busy 에는 넣지 않는다(Studio 에 '큐 처리 중'으로 보이고 R 이 옛 Review 부분 실행 길로 감 — 승인 때 이유와 거절).
+//  - 템플릿 실행의 wave(노드 키 dp_*)는 그래프에서 찾지 않고 bmk-dp-wave 로 채널과 그 프로젝트 승인을 보낸 창들에 전한다
+//    (Run 은 Studio 에서 이어서 승인, 재굴림은 사전 승인분이라 Studio 머리줄 'ComfyUI 큐' — 자동 없음).
 //
 // 1.53 클래식 모드 주의: 위젯은 addWidget("button") 만, 위젯 배열 맨 뒤에 serialize=false 로 붙인다
 // (widgets_values 위치 호환). 노드별 상태는 WeakMap 에 둔다. 위젯 객체에 얹는 것은 프론트가 부르는 afterQueued 훅뿐이다
@@ -80,7 +99,17 @@ const ROOT_KEY_RE = /^[0-9a-f]{12}$/; // store.root_key = sha1(root)[:12]
 const BOARD_QUEUE_DELAY_MS = 800;
 const HELLO = "bmk-dp-hello";
 const HELLO_CHANNEL = "bmk-dp";
-const EXT_VERSION = 2; // S3a(hello 응답만) — S3b 승인 처리가 3
+const EXT_VERSION = 3; // S3a 2(hello 응답만) → S3b 3(Studio 승인 처리)
+const APPROVE = "bmk-dp-approve";
+const PROMPT_PATH = "/bmk/design_patch/pipeline/prompt";
+const HASH_RE = /^[0-9a-f]{12}$/; // 승인 해시(run·draft)
+const ONLY_RE = /^[A-Za-z0-9_, -]+$/; // only = crop_id·style 토큰(쉼표·공백 구분 — 서버가 정규화)
+// Studio 승인 stage → 템플릿 출력 노드(부분 실행 대상)·그 단계 유료 노드(승인 해시를 싣는 곳 — reroll 은 "")·토스트 이름
+const STUDIO_STAGES = {
+    run: { target: "dp_review", paid: "dp_run", cls: RUN_NODE, label: "Run" },
+    draft: { target: "dp_draft", paid: "dp_draft", cls: DRAFT_NODE, label: "Spec Draft" },
+    reroll: { target: "dp_review", paid: "dp_run", cls: RUN_NODE, label: "재굴림" },
+};
 const TAB_ID = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
 const MODE_NEVER = 2;
 const MODE_BYPASS = 4;
@@ -93,6 +122,24 @@ const boardLayout = new Set(); // 묶음 안에 레이아웃 반영 요청이 �
 // 이 탭이 큐에 넣어 지금 실행 중인 프롬프트. execution_start/success 는 큐에 넣은 탭에만 온다
 // (bmk.dp.wave 는 모든 탭에 방송되므로 이 값으로 남의 실행을 걸러 낸다).
 let runningPromptId = null;
+// Studio 승인 무장 {targets, output: 템플릿, used, result: 그 제출의 결과 promise({prompt_id} | {error, unknown}), items, told, changed, unsure} — app.queuePrompt 가 돌아오고 프론트 큐 처리가 끝날 때까지만
+let studioSubmit = null;
+let studioBusy = false; // Studio 승인을 받아 결과를 돌려줄 때까지(그동안 온 승인은 busy)
+const approveIds = new Set(); // 이 탭 로드 동안 받은 Studio 승인 id — 같은 id 가 다시 와도(중복 전달·window 와 채널 둘 다) 한 번만 처리
+let submitHooked = false; // 제출 감싸개(watchSubmits) 설치됨 — hello submit
+let studioChannel = null;
+const waveTo = new Map(); // rootKey → 그 프로젝트 승인을 보낸 Studio 창들(템플릿 실행의 wave 를 전함)
+const studioRuns = new Map(); // Studio 승인으로 낸 prompt_id → stage(그 실행이 끝날 때까지 — wave 문구)
+// 무장 중 막은 제출의 까닭 → 문구(토스트·던지는 오류). 다시 넣을 것은 처리 중 끼어든 사용자 큐뿐. unsure = 우리 항목을 아직 모를 때 막은 것
+// (감싸개가 원래 함수를 미뤄 부르며 셋째 인자도 버렸으면 우리 항목도 사용자 큐와 똑같이 보임) — 누른 사람만 다시 넣게
+const BLOCKED = {
+    user: "Studio 승인을 제출하는 중이라 이 큐 제출을 막았습니다(과금 없음) — 다시 큐에 넣으세요",
+    repeat: "Studio 승인 제출을 다른 확장(큐 반복 노드 — Prompt Pack·Prompt Multi·XY Plot 등)이 되풀이해 두 번째부터 막았습니다(과금 없음) — 다시 큐에 넣지 마세요",
+    changed: "Studio 승인 제출이 다른 확장 감싸개를 지나며 대상이 바뀌어(셋째 인자를 버림 등 — 사용자 그래프 전체 실행이 됨) 막았습니다(과금 없음) — 다시 승인해도 같음",
+    unsure: "Studio 승인을 제출하는 중이라 이 큐 제출을 막았습니다(과금 없음) — 직접 누른 큐였다면 다시 큐에 넣으세요(누르지 않았다면 다른 확장 감싸개가 " +
+        "Studio 승인 제출의 대상을 바꾼 것 — 다시 승인해도 같음)",
+};
+const AUTO_QUEUE = { change: "Run (On Change)", "instant-running": "Run (Instant)" }; // 1.53 queueSettings.mode → Run 단추 이름
 
 function stateOf(node) {
     let s = states.get(node);
@@ -209,6 +256,11 @@ async function queueOnly(nodes, what) {
     const ids = nodes.map(execIdOf).filter(Boolean);
     if (!ids.length) {
         notify("error", `${what}: 지금 열린 워크플로에서 노드를 찾지 못해 큐에 넣지 못했습니다.`);
+        return false;
+    }
+    if (studioSubmit) {
+        // 넣어도 처리 중이라 나중에 꺼내지고 무장 중인 제출 감싸개가 막는다 — 넣었다고 표시하지 않게 여기서 거절
+        notify("warn", `${what}: Studio 승인을 제출하는 중입니다. 잠시 뒤 다시 큐에 넣으세요.`);
         return false;
     }
     try {
@@ -444,6 +496,7 @@ function onRunExecuted(node, message) {
 function onWave(detail) {
     if (!runningPromptId) return; // 이 탭이 큐에 넣은 실행이 아님
     const nodeId = String(detail?.node ?? "");
+    if (nodeId.startsWith("dp_")) return studioWave(detail, nodeId);
     let node = null;
     walkNodes((n, execId) => execId === nodeId && classOf(n) === RUN_NODE && ((node = n), true));
     const remaining = countOf(detail?.remaining);
@@ -501,6 +554,7 @@ function onPromptEnd(detail, failure) {
     const id = detail?.prompt_id;
     if (!id) return;
     if (id === runningPromptId) runningPromptId = null;
+    studioRuns.delete(id);
     for (const node of [...armed]) {
         const s = stateOf(node);
         const cont = s.cont;
@@ -630,13 +684,63 @@ function partialRunIds(prompt, targets) {
     return ids;
 }
 
+// 서버 응답 오류 문구를 토스트 한 줄로: HTML 주석·태그와 줄바꿈을 걷고 200자까지
+function brief(text) {
+    const s = text.replace(/<!--[\s\S]*?-->|<[!/]?[A-Za-z][^>]*>/g, " ").replace(/\s+/g, " ").trim();
+    return s.length > 200 ? `${s.slice(0, 200)}…` : s;
+}
+
 function watchSubmits() {
     const submit = api.queuePrompt;
     api.queuePrompt = function (number, data, options) {
         const targets = options?.partialExecutionTargets;
+        const s = studioSubmit;
+        if (s) {
+            // Studio 승인 무장 중: 대상이 정확히 같은 첫 제출만 output 을 템플릿으로(새 객체 — workflow 는 그대로), 그 밖(처리 중 끼어든
+            // 사용자 항목·셋째 인자를 버린 감싸개의 전체 실행·반복 제출)은 아무것도 보내지 않는다
+            const same = targets?.length === s.targets.length && s.targets.every((t, i) => targets[i] === t);
+            if (s.used || !same) {
+                // 대상이 같은데 이미 썼음 = 승인 제출의 반복(사용자 그래프에는 dp_* 가 없음). 안 썼는데 우리 호출이 바로 쌓은 항목 중 큐에서
+                // 꺼내진 수가 지금까지 '대상이 바뀜'으로 막은 수보다 많음 = 꺼낸 것이 우리 항목(대상이 바뀜). 안 썼고 우리 항목을 아직 모름(바로 쌓은
+                // 항목이 없고 대상이 같은 항목도 큐에 없음 — 감싸개가 미뤄 쌓음) = 어느 쪽인지 모름. 그 밖(우리 항목이 아직 큐에 있음·꺼내진 우리
+                // 항목은 이미 막음) = 끼어든 다른 제출
+                let kind = s.used && same ? "repeat" : "user";
+                if (!s.used && s.items.filter((it) => !app.queueItems?.includes(it)).length > s.changed) {
+                    kind = "changed";
+                    s.changed += 1;
+                } else if (!s.used && !s.items.length && !app.queueItems?.some((it) => it?.queueNodeIds === s.targets)) {
+                    kind = "unsure";
+                    s.unsure += 1;
+                }
+                // 프론트 대화상자는 다른 확장 스크립트를 탓할 수 있다(제출마다 뜸) — 탭 토스트는 까닭마다 무장 한 번에 한 번
+                if (!s.told.has(kind)) notify("warn", BLOCKED[kind], 10000);
+                s.told.add(kind);
+                throw new Error(`BMK Design Patch: ${BLOCKED[kind]}`);
+            }
+            s.used = true;
+            const args = [...arguments];
+            args[1] = { ...data, output: s.output };
+            partialRun = partialRunIds(s.output, targets);
+            // PromptExecutionError(서버 응답 4xx·5xx)는 message 가 늘 같아 toString 이 이유를 담는다 — JSON 이 아닌 응답(프록시 오류 페이지)이면
+            // 본문 전체가 실리므로 줄여 씀
+            const why = (e) => ({ error: e?.response ? brief(String(e)) : (e?.message ?? String(e)) });
+            let sent;
+            try {
+                sent = submit.apply(this, args);
+            } catch (e) {
+                s.result = Promise.resolve(why(e)); // 안쪽 감싸개가 보내기 전에 동기로 던짐
+                throw e;
+            }
+            // 거절이 확정된 것은 서버의 4xx(ComfyUI 는 큐에 넣지 않을 때 400)뿐. 연결 끊김(TypeError)·200 인데 JSON 아님·5xx(프록시가 넘긴 뒤
+            // 오류) 는 서버가 이미 큐에 넣었을 수 있다 — 결과 모름
+            s.result = Promise.resolve(sent).then((r) => ({ prompt_id: r?.prompt_id ?? null }),
+                (e) => ({ ...why(e), unknown: !(e?.response && e.status >= 400 && e.status < 500) }));
+            return sent;
+        }
         partialRun = targets?.length ? partialRunIds(data?.output ?? {}, targets) : null;
         return submit.apply(this, arguments);
     };
+    submitHooked = true;
 }
 
 // adopt 는 큐 하나에만 쓴다: 프론트가 프롬프트를 제출한 뒤 모든 노드의 위젯에 afterQueued 를 부른다(제출 실패면 부르지 않음).
@@ -733,18 +837,16 @@ async function queueReview(key, layout) {
     if (await queueOnly(targets, "보드 요청")) notify("info", "보드 요청으로 Review 를 큐에 넣었습니다.", 3000);
 }
 
-function helloReply(d) {
-    // Studio hello → 이 탭의 응답(아니면 null). tab 을 지정했으면 그 탭만(다른 탭의 응답 메시지도 여기서 걸러짐)
-    if (d?.type !== HELLO || typeof d.id !== "string" || (d.tab !== undefined && d.tab !== TAB_ID)) return null;
-    return { type: HELLO, id: d.id, tab: TAB_ID, ext: EXT_VERSION, submit: "unsupported", busy: !!app.processingQueue };
-}
-
 function onBoardMessage(ev) {
     if (ev.origin !== window.location.origin) return;
     const d = ev.data;
     const hello = helloReply(d);
     if (hello) {
         ev.source?.postMessage(hello, window.location.origin);
+        return;
+    }
+    if (d?.type === APPROVE) {
+        studioApprove(d, (m) => ev.source?.postMessage(m, window.location.origin), ev.source);
         return;
     }
     if (d?.type !== "bmk-dp-queue" || typeof d.rootKey !== "string" || !ROOT_KEY_RE.test(d.rootKey)) return;
@@ -786,6 +888,235 @@ function registerReview(nodeType) {
     };
 }
 
+// ─── Studio 승인 (S3b) ──────────────────────────────────────────
+
+// 프론트 큐 항목이 이 무장의 승인 제출인가: 프론트는 options.queueNodeIds 배열을 그대로 담는다(인자를 넘기는 감싸개도 같은 배열),
+// 셋째 인자를 바꾸거나 버린 감싸개면 우리 호출이 바로 쌓은 항목(items — 원래 함수를 미뤄 부르는 감싸개면 알 수 없음)
+function ourItem(s, it) {
+    return it?.queueNodeIds === s.targets || s.items.includes(it);
+}
+
+// 프론트 큐 처리 루프가 끝날 때(processingQueue = false 대입 — 1.53.10 은 finally·작업공간 전환 실패·로그인 오류) 풀리는 promise. 그 대입에서 덫을
+// 거두고(보통 속성으로 되돌림) 풀므로 무장은 바로 뒤 마이크로태스크에서 풀린다 — 타이머로 살피면 그 틈에 시작된 새 사용자 처리(클릭 = 새 태스크)까지
+// 무장에 걸리고, 숨은 탭에서는 그 틈이 1초 이상으로 늘어난다
+function queueLoopEnd() {
+    return new Promise((resolve) => {
+        let on = true;
+        Object.defineProperty(app, "processingQueue", {
+            configurable: true,
+            enumerable: true,
+            get: () => on,
+            set(v) {
+                on = v;
+                if (v) return;
+                Object.defineProperty(app, "processingQueue", { value: false, writable: true, configurable: true, enumerable: true });
+                resolve();
+            },
+        });
+    });
+}
+
+// 재굴림 실패의 탭 토스트 문구: 할 일 '(Studio 에서) 다시 승인'이 R 재누름(+1 사전 승인)으로 읽히지 않게 빼거나 Studio 머리줄 'ComfyUI 큐'로 바꾸고,
+// 사전 승인분이 예약된 채 남는다고 덧붙인다(Studio refusal()·paidResult 와 같은 안내 — Studio 로 보내는 error 는 Studio 가 바꿈)
+function rerollWhy(reason, error) {
+    const why = error
+        .replace(/ — (잠시 뒤 다시 승인|승인은 Studio 에서 다시)(?= — |$)/, "")
+        .replace(/(Studio 에서 )?다시 승인(?= — |$)/, "Studio 머리줄 'ComfyUI 큐'");
+    return (
+        `${why} · ${reason === "unknown" ? "큐에 들어가지 않았으면 " : ""}사전 승인한 재굴림은 예약된 채 남음(다음 Run·ComfyUI 큐 때 과금): ` +
+        "지금 보내려면 Studio 머리줄 'ComfyUI 큐' — R 을 다시 누르면 +1 호출이 더 승인됨"
+    );
+}
+
+// 프론트 자동 큐가 켜져 있으면 승인을 받지 않는 이유 | "". 켜져 있으면 승인 제출의 부수 효과(시드 afterQueued 가 그래프를 바꿔 promptQueued
+// 뒤 'change' 판정, 처리 시작의 clearRunErrors 가 오류로 멈춘 Instant 를 풂)로 템플릿 실행이 끝난 뒤 프론트가 사용자 그래프 전체를
+// app.queuePrompt(셋째 인자 없음)로 다시 큐한다 — 무장이 풀린 뒤라 토큰과 함께 나가고 시드가 randomize 면 되풀이된다.
+// instant-idle(Instant 를 골랐지만 멈춤)은 사용자가 Run 을 눌러야 돈다
+function autoQueueWhy() {
+    const mode = app.extensionManager?.queueSettings?.mode;
+    let on = typeof mode === "string" && mode !== "disabled" && mode !== "instant-idle" ? (AUTO_QUEUE[mode] ?? mode) : "";
+    if (!on && app.ui?.autoQueueEnabled === true) on = "Auto Queue"; // 옛 메뉴
+    if (!on) return "";
+    return (
+        `ComfyUI 탭의 자동 큐(${on})가 켜져 있음 — 승인 제출 뒤 사용자 그래프 전체가 토큰과 함께 자동으로 큐될 수 있어 받지 않음: ` +
+        "ComfyUI 탭의 Run 단추 모드를 Run 으로 바꾼 뒤 다시 승인"
+    );
+}
+
+function helloReply(d) {
+    // Studio hello → 이 탭의 응답(아니면 null). tab 을 지정했으면 그 탭만(다른 탭의 응답 메시지도 여기서 걸러짐)
+    if (d?.type !== HELLO || typeof d.id !== "string" || (d.tab !== undefined && d.tab !== TAB_ID)) return null;
+    const submit = submitHooked && typeof app.queuePrompt === "function" ? "ok" : "unsupported";
+    return { type: HELLO, id: d.id, tab: TAB_ID, ext: EXT_VERSION, submit, busy: !!app.processingQueue || studioBusy };
+}
+
+// 승인 메시지 모양에서 틀린 필드 이름 하나 | "". reroll 은 사전 승인분 전체라 해시·only 가 없다
+function approveFault(d, stage) {
+    if (!stage) return "stage";
+    if (typeof d.rootKey !== "string" || !ROOT_KEY_RE.test(d.rootKey)) return "rootKey";
+    const paid = stage !== "reroll";
+    if (paid ? typeof d.hash !== "string" || !HASH_RE.test(d.hash) : d.hash !== "") return "hash";
+    if (paid ? typeof d.only !== "string" || !ONLY_RE.test(d.only) : d.only !== "") return "only";
+    return "";
+}
+
+// 서버가 준 템플릿에서 어긋난 항목 하나 | "". 응답 stage·hash·only = 요청(서버가 지금 계획과 대조하고 정규화한 값),
+// 대상 = 그 단계 출력 노드 하나, 노드 키 dp_*·class BMKDesignPatch*, 유료 노드는 그 단계 것 하나(그 키에만), 승인 해시는 그 노드에만
+function templateFault(t, d) {
+    const spec = STUDIO_STAGES[d.stage];
+    const p = t?.prompt;
+    if (!p || typeof p !== "object" || Array.isArray(p)) return "prompt 없음";
+    if (t.stage !== d.stage) return `응답 stage ${t.stage} ≠ ${d.stage}`;
+    if (t.hash !== d.hash) return "응답 hash ≠ 승인 해시";
+    if (t.only !== d.only) return "응답 only ≠ 요청 only";
+    if (!Array.isArray(t.targets) || t.targets.length !== 1 || t.targets[0] !== spec.target) return `targets ≠ [${spec.target}]`;
+    if (!p[spec.target]) return `대상 노드 ${spec.target} 없음`;
+    for (const [k, n] of Object.entries(p)) {
+        const cls = n?.class_type;
+        if (!/^dp_[a-z]+$/.test(k) || typeof cls !== "string" || !cls.startsWith("BMKDesignPatch")) return `규칙 밖 노드 ${k}`;
+        if (k !== spec.paid && (n.inputs?.approve ?? "") !== "") return `${k}.inputs.approve 가 비지 않음`;
+        if (PAID_NODES.includes(cls) && (cls !== spec.cls || k !== spec.paid)) return `${spec.label} 템플릿에 ${k}(${cls})`;
+    }
+    if (p[spec.paid]?.class_type !== spec.cls) return `${spec.paid}(${spec.cls}) 없음`;
+    if (p[spec.paid].inputs?.approve !== d.hash) return `${spec.paid}.inputs.approve ≠ ${d.hash ? "승인 해시" : '""'}`;
+    const dr = p.dp_draft?.inputs;
+    if (dr && dr.adopt !== "") return 'dp_draft.inputs.adopt ≠ ""';
+    if (dr && dr.keep_loaded !== false) return "dp_draft.inputs.keep_loaded ≠ false";
+    return "";
+}
+
+// Studio 승인 메시지 하나 → 서버 템플릿 → 무장 제출 → bmk-dp-approved. reply = 받은 길로 답함, source = 보낸 창(채널이면 null)
+async function studioApprove(d, reply, source) {
+    if (d.tab !== TAB_ID || typeof d.id !== "string") return; // 채널은 모든 탭에 간다
+    if (approveIds.has(d.id)) return; // 승인 한 번 = 프롬프트 하나 — 처리 중이든 끝났든 답도 하나
+    approveIds.add(d.id);
+    const stage = Object.keys(STUDIO_STAGES).includes(d.stage) ? d.stage : null;
+    const label = stage ? STUDIO_STAGES[stage].label : "";
+    const answer = (m) => reply({ type: "bmk-dp-approved", id: d.id, tab: TAB_ID, stage, ...m });
+    const fail = (reason, error, more) => {
+        const shown = stage === "reroll" ? rerollWhy(reason, error) : error;
+        notify("warn", `Studio 승인${label ? `(${label})` : ""}${reason === "unknown" ? "" : " 안 됨"}: ${shown}`, 10000);
+        answer({ ok: false, reason, error, ...more });
+    };
+    const bad = approveFault(d, stage);
+    if (bad) return fail("bad_request", `승인 메시지 모양이 잘못됨: ${bad}`);
+    if (app.processingQueue || studioBusy) {
+        return fail("busy", `ComfyUI 탭이 ${studioBusy ? "다른 Studio 승인을" : "큐를"} 처리하는 중 — 잠시 뒤 다시 승인`);
+    }
+    const aq = autoQueueWhy();
+    if (aq) return fail("busy", aq);
+    studioBusy = true;
+    reply({ type: "bmk-dp-ack", id: d.id, tab: TAB_ID });
+    if (source) waveTo.set(d.rootKey, (waveTo.get(d.rootKey) ?? new Set()).add(source));
+    try {
+        const q = stage === "reroll" ? "" : `&approve=${encodeURIComponent(d.hash)}&only=${encodeURIComponent(d.only)}`;
+        let res, t;
+        try {
+            res = await api.fetchApi(`${PROMPT_PATH}?root=${encodeURIComponent(d.rootKey)}&stage=${stage}${q}`);
+            t = await res.json().catch(() => null);
+        } catch (e) {
+            return fail("http", `템플릿 요청 실패: ${e?.message ?? e}`);
+        }
+        if (res.status === 409 && typeof t?.reason === "string") {
+            // 서버가 승인 해시를 지금 계획·반영 상태와 대조한 결과 — Studio 가 계획을 다시 받는다
+            const more = t.reason === "stale" ? { hash: t.hash } : t.reason === "apply_needed" ? { pending: t.pending } : {};
+            return fail(t.reason, t.error ?? `HTTP ${res.status}`, more);
+        }
+        if (!res.ok) return fail("http", `템플릿 요청 실패(HTTP ${res.status})${t?.error ? `: ${t.error}` : ""}`);
+        const fault = templateFault(t, d);
+        if (fault) return fail("template", `템플릿 검사 실패: ${fault}`);
+        // 서버를 기다리는 사이 큐 처리가 시작됐으면 지금 넣은 항목은 무장이 풀린 뒤에 나간다. 그사이 켠 자동 큐도 거절
+        if (app.processingQueue) return fail("busy", "ComfyUI 탭이 큐를 처리하는 중 — 잠시 뒤 다시 승인");
+        const late = autoQueueWhy();
+        if (late) return fail("busy", late);
+        // items = 우리 호출이 쌓은 큐 항목, told = 토스트를 낸 막힘 까닭, changed = 대상이 바뀌어 막은 우리 항목 수, unsure = 우리 것인지 모르고 막은 수
+        const sub = (studioSubmit = {
+            targets: [STUDIO_STAGES[stage].target], output: t.prompt, used: false, result: null, items: [], told: new Set(), changed: 0, unsure: 0,
+        });
+        let err = null;
+        let ret;
+        let left = 0;
+        let stray = 0;
+        const before = new Set(app.queueItems ?? []);
+        try {
+            const call = app.queuePrompt(0, 1, { queueNodeIds: sub.targets });
+            sub.items = (app.queueItems ?? []).filter((it) => !before.has(it)); // 감싸개가 원래 함수를 바로 부르면 그 안에서 쌓임
+            ret = await call;
+            // 처리를 기다리지 않고 돌아오는 감싸개(return 누락)·우리 호출 전에 시작된 처리에서는 우리 항목이 아직 큐에 있다 — 그 처리가 끝날 때까지 무장
+            if (app.processingQueue) await queueLoopEnd();
+        } catch (e) {
+            err = e;
+        } finally {
+            // 무장 동안 쌓였는데 꺼내지지 않은 항목(먼저 꺼낸 항목이 던져 처리 루프가 끝남 등)은 무장이 풀리면 다음 큐 때 토큰과 함께 나간다 — 우리 항목은
+            // 사용자 그래프 + 대상 dp_review, 우리 것인지 모르는 항목(원래 함수를 미뤄 부르며 셋째 인자를 버린 감싸개·그동안 누른 큐)은 전체 실행. 모두 뺀다
+            const queue = app.queueItems;
+            for (let i = Array.isArray(queue) ? queue.length - 1 : -1; i >= 0; i--) {
+                if (before.has(queue[i])) continue;
+                if (ourItem(sub, queue[i])) left++;
+                else stray++;
+                queue.splice(i, 1);
+            }
+            if (stray && !sub.told.has("unsure")) notify("warn", BLOCKED.unsure, 10000);
+            // 프론트는 성공한 제출 뒤에만 토큰을 지운다 — 막힌(던짐)·거절된 제출 뒤 남은 토큰이 다음 app.queuePrompt 전에 api.queuePrompt 를
+            // 직접 부르는 코드에 실리지 않게(진행 중인 제출이 없을 때만)
+            if (!app.processingQueue) {
+                delete api.authToken;
+                delete api.apiKey;
+            }
+            studioSubmit = null;
+        }
+        if (!sub.used) {
+            // 제출을 멈춘 확장 알림의 계속 단추(deno Director 의 Apply/Keep 등)는 이 제출을 잇지 않고 무장이 풀린 뒤 app.queuePrompt(0)·
+            // (0, 1, [그 노드]) 로 열린 그래프를 토큰과 함께 큐한다 — '알림 확인'으로 이끌지 않음
+            let why =
+                "ComfyUI 탭이 제출하지 않고 돌아옴 — 다른 확장이 제출을 멈췄거나(Pixaroma 큐 반복 노드의 빈 목록·XY Plot 확인 취소·실행 중, " +
+                "deno Ideogram 사전 점검 등) 로그인·작업공간 전환 오류: 다른 확장 알림의 계속·적용 단추는 Studio 승인을 잇지 않고 열린 그래프를 " +
+                "실행함 — 승인은 Studio 에서 다시";
+            if (err) {
+                why =
+                    `ComfyUI 탭의 큐 제출이 오류로 끝남(${err.message ?? err}) — 승인 제출도 그 탭에 열린 워크플로를 프롬프트로 바꾼 뒤 내용만 ` +
+                    "바꿔치기하므로 그 워크플로가 변환에 실패하면(서브그래프·bypass 된 Get 노드 등) 다시 승인해도 같음: 그 탭에서 다른 워크플로로 바꾼 뒤 다시 승인";
+            } else if (ret?.deno_ideogram_director) {
+                why =
+                    "deno Ideogram Director 의 실행 전 점검(새 JSON 프롬프트 확인 등)이 승인 제출을 멈춤 — 그 노드 알림의 Apply and Replace·" +
+                    "Keep Current Board 는 Studio 승인을 잇지 않고 ComfyUI 탭에 열린 그래프를 실행함(그 그래프의 유료 노드는 과금): 그래프를 돌릴 게 " +
+                    "아니면 누르지 말고 Director 가 없는 워크플로로 바꾼 뒤 Studio 에서 다시 승인";
+            } else if (sub.changed) {
+                why = "다른 확장 감싸개가 승인 제출의 대상을 바꿈(셋째 인자를 버림 등 — 사용자 그래프 전체 실행이 되어 막음)";
+            } else if (sub.unsure) {
+                why =
+                    "무장 중 막은 큐 제출이 승인 제출인지 모름 — 다른 확장 감싸개가 원래 함수를 미뤄 부르며 셋째 인자를 버렸으면 승인 제출의 대상이 바뀐 것" +
+                    "(사용자 그래프 전체 실행이 되어 막음 — 다시 승인해도 같음)";
+            } else if (left || stray) {
+                why = "ComfyUI 탭의 큐 처리가 승인 항목을 꺼내기 전에 끝남";
+            }
+            const gone = `${left ? " — 남은 승인 항목은 큐에서 뺌" : ""}${stray ? " — 무장 중 쌓여 남은 큐 항목(승인 항목인지 모름)은 큐에서 뺌" : ""}`;
+            return fail("not_submitted", `제출되지 않음(과금 없음) — ${why}${gone}`);
+        }
+        const r = await sub.result;
+        if (r?.unknown) return fail("unknown", `제출 결과 모름(응답 오류: ${r.error}) — 이미 큐에 들어갔을 수 있음: ComfyUI 큐를 확인`);
+        if (!r?.prompt_id) return fail("rejected", `ComfyUI 가 거절함(prompt_id 없음): ${r?.error ?? "응답에 prompt_id 없음"}`);
+        studioRuns.set(r.prompt_id, stage);
+        const what = typeof d.what === "string" ? d.what.slice(0, 200) : "";
+        notify("success", `Studio 승인으로 ${label} 큐${what ? ` — ${what}` : ""}`);
+        answer({ ok: true, prompt_id: r.prompt_id });
+    } finally {
+        studioBusy = false;
+    }
+}
+
+// 템플릿 실행(노드 키 dp_* — 그래프에 없음)의 wave: 이어 가지 않고 Studio 로 전한다(채널 + 그 프로젝트 승인을 보낸 창들)
+function studioWave(detail, node) {
+    const rootKey = String(detail.root_key ?? "");
+    const remaining = countOf(detail.remaining);
+    const msg = { type: "bmk-dp-wave", tab: TAB_ID, rootKey, prompt_id: runningPromptId, node, remaining };
+    studioChannel?.postMessage(msg);
+    for (const w of waveTo.get(rootKey) ?? []) w.postMessage(msg, window.location.origin);
+    // 재굴림 템플릿도 Run 노드 키가 dp_run — 남은 것은 사전 승인분이라 새 승인 없이 이어 감(Studio 의 재굴림 wave 안내와 같게)
+    const go = studioRuns.get(runningPromptId) === "reroll" ? "사전 승인 재굴림이라 Studio 머리줄 'ComfyUI 큐'(또는 다음 Run)로 이어서" : "Studio 에서 이어서 승인";
+    notify("info", `wave 종료(남은 ${remaining}건) — ${go}`, 10000);
+}
+
 app.registerExtension({
     name: "BMK.DesignPatch",
 
@@ -799,11 +1130,12 @@ app.registerExtension({
         api.addEventListener("bmk.dp.wave", (e) => onWave(e.detail));
         window.addEventListener("message", onBoardMessage);
         if (typeof window.BroadcastChannel === "function") {
-            // opener 가 없는 Studio(즐겨찾기·패널 브라우저)도 이 탭을 찾게
-            const ch = new window.BroadcastChannel(HELLO_CHANNEL);
+            // opener 가 없는 Studio(즐겨찾기·패널 브라우저)도 이 탭을 찾고 승인을 보내게 — 답은 채널로
+            const ch = (studioChannel = new window.BroadcastChannel(HELLO_CHANNEL));
             ch.onmessage = (ev) => {
                 const hello = helloReply(ev.data);
                 if (hello) ch.postMessage(hello);
+                else if (ev.data?.type === APPROVE) studioApprove(ev.data, (m) => ch.postMessage(m), null);
             };
         }
         watchSubmits();

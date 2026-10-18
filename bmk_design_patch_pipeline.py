@@ -51,7 +51,8 @@ pipeline.json
       넘었으면 1), 있음 = 지금 rev 만 — 아니면 PipelineConflict. 상한(2^53−1)인 파일을 저장하면 rev 1.
       절 하나를 통째 교체하고 confirm 의 그 절 항목을 지운다. 바뀐 것이 없으면 쓰지 않음(rev 그대로). 잠금 = store.manifest_lock.
       draft.draft_round 는 지금 유도값 또는 저장값만 받는다(바꾸면 400 — 다시 초안은 그래프)
-- view(root, m=None) -> GET /pipeline 응답 {rev, saved, error, settings, confirm, derived(deep), drift, warnings, exports, widgets}
+- view(root, m=None) -> GET /pipeline 응답 {rev, saved, error, settings, confirm, derived(deep), drift, warnings, exports, widgets,
+      manifest_rev}
 유도·갈라짐·경고
 - derive(root, m, *, deep=False) -> {"settings", "from": {"절.키": "manifest"|"jobs"|"spec_draft"|"default"}, "confirm": [키 경로], "notes"}
       매니페스트와 specs/<crop_id>.json(store.load_spec_override)만 읽는다(vlm 원장 아님). deep 이면 마지막 절 검사가 vlm 선택지·모델별
@@ -69,7 +70,7 @@ pipeline.json
 - prompt_gate(root, stage, m=None, *, cur=None) -> None | {"error", "reason", "fields"?, "field"?}   cur = 템플릿을 만들 current() 값
       reason = pipeline_broken | confirm_settings(fields — 파일 없음이거나 confirm 에 prepare.*·import.* 남음) | no_psd | missing_path(field, fields).
       missing_path 는 import 경로 + dp_cand 를 담는 stage(export 빼고 전부)면 cand.path 도. 보드는 그대로 409 로(_Reject(409, error,
-      reason=…)). 그 밖에는 stage 와 무관하게 같은 판정(유료 stage 의 추가 판정은 S3b)
+      reason=…)). 그 밖에는 stage 와 무관하게 같은 판정(유료 stage 의 추가 판정 — 실행 중·반영 필요·해시 — 은 보드 pipeline_prompt)
 - build_prompt(stage, settings, root, *, approve="", only="") -> {노드 키: {"class_type", "inputs"}}
       T1–T5: 무료 stage 에 Run·SpecDraft 없음, run·draft 는 approve(12자 소문자 hex) 필수·only 필수, reroll 은 approve "",
       무료 stage 는 approve·only 없음. adopt "", keep_loaded false. 연결 = [앞 노드 키, 0]. Project 위젯 = {project: 폴더 이름,
@@ -83,6 +84,7 @@ pipeline.json
 ---------
 v1 (2026-10)
 - S3a U1 최초 구현(STUDIO_S3_SPEC §2.1–§2.3·§6).
+- S3b(10/18): view 에 manifest_rev(무료 반영 expect — _proto/s3b/S3B_CONTRACT.md §1).
 """
 
 from __future__ import annotations
@@ -829,14 +831,15 @@ def recent_exports(m: dict, n: int = 10) -> list[dict]:
 
 
 def view(root: str, m: dict | None = None) -> dict:
-    """GET /pipeline 응답 {rev, saved, error, settings, confirm, derived, drift, warnings, exports, widgets}. 유도는 deep(설정 패널의
-    [매니페스트 값으로 다시]가 그대로 저장되게), widgets = settings_widgets(). 파일을 쓰지 않는다."""
+    """GET /pipeline 응답 {rev, saved, error, settings, confirm, derived, drift, warnings, exports, widgets, manifest_rev}. 유도는
+    deep(설정 패널의 [매니페스트 값으로 다시]가 그대로 저장되게), widgets = settings_widgets(), manifest_rev = 매니페스트 rev(Studio 가
+    GET /pipeline/prompt 의 expect '<rev>:<manifest_rev>' 를 만듦 — S3b 계약 §1). 파일을 쓰지 않는다."""
     m = m if m is not None else store.load_manifest(root)
     der = derive(root, m, deep=True)
     cur = current(root, m, derived=der)
     st = cur["settings"]
     return {**cur, "derived": der, "drift": drift(st, m) if st else [], "warnings": path_warnings(st) if st else [],
-            "exports": recent_exports(m), "widgets": settings_widgets()}
+            "exports": recent_exports(m), "widgets": settings_widgets(), "manifest_rev": m["rev"]}
 
 
 # ══════════════════════════════════════════════════════════════════════

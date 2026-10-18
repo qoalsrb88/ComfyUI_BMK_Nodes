@@ -1,9 +1,12 @@
-// BMK Design Patch Studio — S3a 파이프라인 조작(STUDIO_S3_SPEC §3·§5). board.js 가 진행 모드(G)에서 켜고 끈다(머리줄 한 줄은 모든 모드).
-// 무료 조작만: 실행 설정(pipeline.json)·무료 템플릿 큐(반영 = apply, Export — 서버가 만든 템플릿을 ComfyUI /api/prompt 로 직접 넣음, 탭 불필요)·
-// 계획/비용 미리보기(Run·초안 해시까지)·진행·★ 점검·Export 결과·제안 채택/수정. 유료 승인은 S3b — 승인 단추는 꺼 두고 해시 복사만 준다.
+// BMK Design Patch Studio — 파이프라인 조작(STUDIO_S3_SPEC §3–§5). board.js 가 진행 모드(G)에서 켜고 끈다(머리줄 한 줄은 모든 모드).
+// 무료(S3a): 실행 설정(pipeline.json)·무료 템플릿 큐(반영 = apply, Export — 서버가 만든 템플릿을 ComfyUI /api/prompt 로 직접 넣음, 탭 불필요)·
+// 계획/비용 미리보기(Run·초안 해시까지)·진행·★ 점검·Export 결과·제안 채택/수정.
+// 유료(S3b — 계약 _proto/s3b/S3B_CONTRACT.md §5): 초안·Run 승인·재굴림은 ComfyUI 탭에 승인 메시지(stage·hash·only)만 보내고 탭이 서버 템플릿을
+// app.queuePrompt 로 낸다(토큰은 탭에서만 — D5). 초안·Run 승인은 사용자 클릭(isTrusted) + 확인 창(mock = 페이지 상자, 아니면 네이티브 confirm — D7),
+// 재굴림(reroll — board.js queueReroll)은 확인 창·isTrusted 없음: 동의는 R 의 확인(사전 승인 — 그 재굴림·복구만 과금)과 머리줄 클릭.
 // /api/prompt 본문을 만드는 곳은 freeBody 하나(서버가 준 템플릿 prompt + front — 인증·탭 정보 없음)이고, 보내기 전에 checkPrompt 로 본다.
 // 왼쪽 = 크롭 목록 + 선택 체크(only), 가운데 = 뷰어(그대로), 오른쪽 = 진행 패널(위: 설정·반영·초안·Run·★·Export, 아래: 선택 크롭의 채택).
-// 응답 모양은 tools/fixtures/pipeline_api.json(정본). ComfyUI 탭 연결 표시(hello — D6)는 link. 모든 문자열은 textContent 로만 넣는다.
+// 응답·메시지 모양은 tools/fixtures/pipeline_api.json(정본). ComfyUI 탭 연결(hello — D6)·승인 메시지는 link. 모든 문자열은 textContent 로만 넣는다.
 // 서버 URL 은 opts.apiUrl(보드 라우트)·opts.comfyUrl(ComfyUI /api) 상대 경로로만 연다.
 "use strict";
 
@@ -17,13 +20,33 @@ window.DPPipeline = (() => {
   const PROGRESS_EVERY = 5; // 아무것도 돌지 않을 때 진행 수를 다시 읽는 state 폴링 간격(그래프가 낸 실행도 알아채게)
   const HELLO_MS = 2000; // 탭 hello 주기(탭 새로고침·닫힘 감지)
   const REPLY_MS = 1000; // hello 응답을 모으는 시간
+  const ACK_MS = 5000; // 승인 메시지를 보낸 뒤 탭의 ack 를 기다리는 시간
+  const END_MS = 60000; // 승인 메시지를 보낸 뒤 결과(approved)를 기다리는 시간(템플릿 계산·토큰 얻기 — 계약 D-S3b §4.2)
   const CHANNEL = "bmk-dp";
   const HELLO = "bmk-dp-hello";
+  const APPROVE = "bmk-dp-approve";
+  const ACK = "bmk-dp-ack";
+  const APPROVED = "bmk-dp-approved";
+  const WAVE = "bmk-dp-wave";
   const JOB_KEY = "bmk-dp-job:"; // sessionStorage(+ 보드 키) — 다시 연 창이 이 Studio 가 낸 프롬프트를 이어서 폴링
-  // apply = 짧고 사용자가 기다리는 중(대기열 앞), export = 수십 초(사용자 생성 작업을 앞지르지 않게 뒤)
-  const STAGES = { apply: { front: true, label: "반영" }, export: { front: false, label: "Export" } };
+  // 무료: apply = 짧고 사용자가 기다리는 중(대기열 앞), export = 수십 초(사용자 생성 작업을 앞지르지 않게 뒤).
+  // 유료(paid): 탭이 승인 템플릿으로 낸 프롬프트 — Studio 는 그 prompt_id 를 무료 큐와 같이 이어 받고 끝을 판정한다
+  const STAGES = { apply: { front: true, label: "반영" }, export: { front: false, label: "Export" },
+    run: { paid: true, label: "Run" }, draft: { paid: true, label: "Spec Draft" }, reroll: { paid: true, label: "재굴림" } };
   const PAID = ["BMKDesignPatchRun", "BMKDesignPatchSpecDraft"];
-  const S3B = "S3b 전 — 그래프의 승인 버튼 사용";
+  // 승인 메시지가 계획을 다시 받아야 하는 결과(서버 409 사유 + 결과를 모름 — 이미 큐에 들어갔을 수 있음)
+  const REPLAN = ["stale", "apply_needed", "nothing_to_approve", "running", "stale_settings", "timeout", "tab_changed", "unknown"];
+  // 결과를 모르고 끝난 사유(이미 큐에 들어갔을 수 있음 — link 가 끝냄 no_ack·timeout·tab_changed, 탭이 제출한 뒤 응답을 잃음 unknown): 토스트 머리
+  // '결과 모름'·같은 해시 재승인 확인 창 줄·진행 패널 줄
+  const UNKNOWN = ["no_ack", "timeout", "tab_changed", "unknown"];
+  // 승인 제출의 사용자 그래프 부수 효과(§10.7 보정 4) — 유료 확인 창·mock 상자·유료 탭으로 가는 R 확인 창 끝 줄. 그래프를 실행하지 않아도 제출이
+  // 받아들여지면 탭의 다른 확장이 사용자 그래프의 '다음 값'을 소비한다(Pixaroma Dropdown 감싸개 commitPick·Prompt pick_commit — 로드 뒤 첫 실행은 겉으로 같음)
+  const SIDE = "승인 제출은 ComfyUI 탭에 열린 그래프에서 실행마다 바뀌는 값을 한 번 진행시킵니다(그래프는 실행하지 않음) — 시드 제어(randomize·increment)와 "
+    + "Pixaroma Dropdown·Prompt 의 순서·무작위 선택이 다음 값으로 넘어가고(Prompt 순서는 설정에 저장됨), BMK Cyclic Seed 의 batch_count 를 1 로·"
+    + "자동 난수를 새로 뽑으며, 워크플로가 '수정됨'이 되고, 이 실행이 그 워크플로의 실행으로 큐·진행 표시에 보입니다.";
+  // 노드 보고의 인증 중지(r1-15 — Run ui stopped_reason "auth"·Spec Draft ui auth_held): 승인 해시가 맞아도 호출하지 않음. 할 일은 단계마다 —
+  // 재굴림은 원장이 되돌려져 사전 승인분이 남으므로 '다시 승인'(= R 재누름 +1)이 아니라 머리줄 'ComfyUI 큐'(paidReport)
+  const LOGIN = "comfy.org 로그인 필요 — 로그인·API 키가 없거나 인증이 거부돼 남은 호출을 보내지 않음(그 호출은 과금 없음)";
   const END = { done: "끝", cancelled: "취소됨", error: "오류", gone: "사라짐" };
   const SECTIONS = { import: "Import PSD", cand: "Candidate In", prepare: "Prepare", draft: "Spec Draft", run: "Run", analyze: "Analyze",
     compose: "Compose", export: "Export" };
@@ -122,9 +145,10 @@ window.DPPipeline = (() => {
   }
 
   function runText(run, running = run.running) {
-    // §3.3 Run 줄 → {line, rows, dim}. 승인 필요 = 선택(only) 계획(C13 — 전체 수치와 가르게 선택 크롭 수를 붙임), 재굴림 = 사전 승인
-    // (Run 실행 때 선택과 무관하게 함께 과금). running = 실행 중(계획을 받은 뒤 그래프가 Run 을 시작하면 패널이 state running 을 넘김)
-    if (run.error) return { line: `Run: 계산하지 못함 — ${run.error}`, rows: [], dim: true };
+    // §3.3 Run 줄 → {line, rows, dim, label}. 승인 필요 = 선택(only) 계획(C13 — 전체 수치와 가르게 선택 크롭 수를 붙임), 재굴림 = 사전 승인
+    // (Run 실행 때 선택과 무관하게 함께 과금). running = 실행 중(계획을 받은 뒤 그래프가 Run 을 시작하면 패널이 state running 을 넘김).
+    // label = 승인 단추(계약 §5 'Run 승인 9건 ≈ $5.40–7.10')
+    if (run.error) return { line: `Run: 계산하지 못함 — ${run.error}`, rows: [], dim: true, label: "Run 승인" };
     const picked = Object.values(run.by_crop || {}).filter((x) => x.selected).length;
     const parts = [`Run: 승인 필요(선택 ${picked}크롭) ${run.need}건` + (run.need ? ` ≈ ${usd(run.est_usd)}(≈ ${span(run.credits)} 크레딧)` : "")];
     if (run.pre) parts.push(`재굴림(사전 승인) ${run.pre}건 ≈ ${usd(run.est_usd_pre)} 도 함께 과금(선택과 무관)`);
@@ -133,7 +157,7 @@ window.DPPipeline = (() => {
     parts.push(`해시 ${run.hash || "없음"}`);
     const line = parts.join(" · ") + (run.backend === "mock" ? "  [MOCK]" : "");
     return { line: running ? `Run 실행 중 — 끝난 뒤 다시 계산 (${line})` : line, rows: run.reasons.map((x) => `${x.reason} × ${x.n}`),
-      dim: !!running };
+      dim: !!running, label: `Run 승인 ${run.need}건` + (run.need ? ` ≈ ${usd(run.est_usd)}` : "") + (run.backend === "mock" ? " [MOCK]" : "") };
   }
 
   function tally(ids, unit = "") {
@@ -143,18 +167,29 @@ window.DPPipeline = (() => {
     return crops ? `${crops}${unit}${style ? " + 화풍" : ""}` : style ? "화풍" : "0";
   }
 
+  function minutes(d) {
+    // 초안 예상 분(초안 줄·승인 단추 라벨·확인 창): 노드 확인 창(js draftMinutes)·노드 UI 와 같은 올림 — §4.4 같은 계획이면 같은 분
+    return Math.max(1, Math.ceil(d.est_seconds / 60));
+  }
+
   function draftText(d, running = d.running) {
-    // §3.3 초안 줄 → {line, rows, dim, what}: 승인 필요 크롭 + 화풍(STYLE_UNIT 단위), 크레딧(openai)·분(local_qwen), 갱신 가능, 해시.
-    // running = 실행 중(계획을 받은 뒤 그래프·다른 경로의 Spec Draft 가 시작하면 패널이 state drafting 을 넘김 — runText 와 같은 뜻)
-    if (d.error) return { line: `초안: 계산하지 못함 — ${d.error}`, rows: [], dim: true, what: "" };
-    if (running) return { line: "초안: Spec Draft 실행 중 — 끝난 뒤 다시 계산", rows: [], dim: true, what: "" };
-    const min = Math.max(1, Math.round(d.est_seconds / 60));
+    // §3.3 초안 줄 → {line, rows, dim, what, label}: 승인 필요 크롭 + 화풍(STYLE_UNIT 단위), 크레딧(openai)·분(local_qwen), 갱신 가능, 해시.
+    // running = 실행 중(계획을 받은 뒤 그래프·다른 경로의 Spec Draft 가 시작하면 패널이 state drafting 을 넘김 — runText 와 같은 뜻).
+    // label = 승인 단추(계약 §5 '초안 승인 3크롭 + 화풍 ≈ 81(최대 140) 크레딧', local_qwen '로컬 n건 ≈ m분')
+    if (d.error) return { line: `초안: 계산하지 못함 — ${d.error}`, rows: [], dim: true, what: "", label: "초안 승인" };
+    if (running) return { line: "초안: Spec Draft 실행 중 — 끝난 뒤 다시 계산", rows: [], dim: true, what: "", label: "초안 승인" };
+    const min = minutes(d);
     const what = tally(d.units.map((u) => u.crop_id), "크롭");
+    const qwen = d.family === "local_qwen";
+    const mock = d.backend === "vlm_mock"; // 크레딧 추정은 openai 만(mock 은 늘 0 — 노드 단추처럼 건수만)
     let head = `초안: 승인 필요 ${what}`;
+    let cost = "";
     if (d.units.length) {
-      head += d.family === "local_qwen" ? ` · 로컬 Qwen 약 ${min}분(ComfyUI 모델을 VRAM 에서 내림 — 과금 없음)`
-        : ` ≈ ${num(d.est_credits[0])}(최대 ${num(d.est_credits[1])}) 크레딧 · 약 ${min}분`;
+      head += qwen ? ` · 로컬 Qwen 약 ${min}분(ComfyUI 모델을 VRAM 에서 내림 — 과금 없음)`
+        : mock ? ` · 약 ${min}분` : ` ≈ ${num(d.est_credits[0])}(최대 ${num(d.est_credits[1])}) 크레딧 · 약 ${min}분`;
+      cost = qwen ? ` ≈ ${min}분` : mock ? "" : ` ≈ ${num(d.est_credits[0])}(최대 ${num(d.est_credits[1])}) 크레딧`;
     }
+    const label = `초안 승인 ${qwen ? `로컬 ${d.units.length}건` : what}${cost}${mock ? " [MOCK]" : ""}`;
     const parts = [head];
     if (d.refresh_available.length) parts.push(`갱신 가능 ${tally(d.refresh_available.map((x) => x.crop_id))}`);
     if (d.filtered.length) parts.push(`선택 밖 ${tally(d.filtered)}`);
@@ -165,7 +200,63 @@ window.DPPipeline = (() => {
     const w = d.warnings;
     if (w.unwritten.length) rows.push(`못 쓴 스펙 ${w.unwritten.length}(${w.unwritten.join(", ")}) — 그래프 Spec Draft 를 승인 없이 한 번 큐하면 병합`);
     if (w.mock_specs) rows.push(`mock 초안이 남은 스펙 ${w.mock_specs} — 실제 백엔드 Spec Draft 가 양보시킴`);
-    return { line: parts.join(" · ") + (d.backend === "vlm_mock" ? "  [MOCK]" : ""), rows, dim: false, what };
+    return { line: parts.join(" · ") + (d.backend === "vlm_mock" ? "  [MOCK]" : ""), rows, dim: false, what, label };
+  }
+
+  function approveText(kind, p, ids, style, full) {
+    // 유료 확인 창 문구(§4.4 — 노드 JS 확인 창과 같은 말, 계약 §5 경고 줄) → 줄 목록(끝 = 부수 효과 줄 SIDE). kind = run·draft, p = 지금 계획,
+    // ids = 선택 crop_id, style = 화풍 단위를 골랐나(only 에 style), full = 초안 apply 가 full(화풍을 안 골랐으면 화풍 초안은 only 로 보류)
+    const d = p.draft;
+    const out = [];
+    if (kind === "draft" && d.family === "local_qwen") {
+      out.push(`로컬 Qwen 으로 ${d.units.length}건(≈ ${minutes(d)}분). ComfyUI 모델을 VRAM 에서 내립니다(과금 없음).`);
+    } else if (kind === "draft") {
+      out.push(`VLM 초안 ${tally(d.units.map((u) => u.crop_id), "크롭")}(보통 ≈ ${num(d.est_credits[0])}, 최대 ${num(d.est_credits[1])} 크레딧)을 승인하고 `
+        + "과금합니다." + (d.orphan_retries ? ` orphan 재시도 ${d.orphan_retries}건 포함(과금됐을 수 있음).` : ""));
+      if (d.reasons.length) out.push(`사유: ${d.reasons.map((x) => `${x.reason} × ${x.n}`).join(", ")}`);
+      out.push("드라이런 이후 대기 목록이 바뀌었으면 서버가 호출 없이 드라이런만 다시 합니다.");
+    } else {
+      const r = p.run;
+      out.push(`GPT Image 호출 ${r.need}건(예상 ${usd(r.est_usd)} ≈ ${span(r.credits)} 크레딧)을 승인하고 과금합니다. 대상: ${ids.join(", ")}`);
+      if (r.pre) out.push(`재굴림(사전 승인) ${r.pre}건 ≈ ${usd(r.est_usd_pre)} 도 함께 과금 — 선택과 무관(다른 크롭 포함).`);
+      out.push("드라이런 이후 대기 목록이 바뀌었으면 서버가 과금 없이 드라이런만 다시 합니다.");
+      // 초안 대기: 선택 크롭(by_crop wait — only 없는 판정)과 화풍(pending_style)을 따로. 화풍을 고르지 않은 apply=full 이면 화풍 초안은 보류
+      const wait = ids.filter((id) => d.by_crop[id] && d.by_crop[id].wait.length).length;
+      const sw = !!d.pending_style && style;
+      if (wait || sw) {
+        out.push(`주의: 스펙 초안 대기 ${[wait ? `${wait}크롭` : "", sw ? "화풍" : ""].filter(Boolean).join(" + ")}(Spec Draft 미승인) — `
+          + "지금 승인하면 초안 없는 프롬프트로 과금합니다.");
+      }
+      if (d.pending_style && full && !style) {
+        out.push("주의: 화풍 단위를 고르지 않아(계획 칸 '화풍 단위 포함' 끔) 화풍 초안 대기가 보류됨 — 지금 승인하면 화풍 초안 없는 프롬프트로 과금합니다.");
+      }
+      const unw = d.warnings.unwritten.length;
+      if (unw) out.push(`주의: 스펙 파일 ${unw}개에 초안·화풍 변경을 아직 못 씀(잠김) — 지금 승인하면 그 변경 없이 과금합니다.`);
+      const mk = r.backend === "mock" ? 0 : d.warnings.mock_specs;
+      if (mk) out.push(`주의: 스펙 ${mk}개가 mock 초안(자리표시 문구) — 지금 승인하면 그 문구로 과금합니다.`);
+    }
+    return out.concat(SIDE);
+  }
+
+  function paidReport(stage, h) {
+    // 유료 실행 끝 한 줄(계약 §5): /api/history 항목의 Run 보고 dp_run.bmk_dp_run[0](run·reroll)·Spec Draft 보고 dp_draft.bmk_dp_draft[0](draft) —
+    // approved_now(승인 해시로 실행했나 — 아니면 실행 전 계획이 바뀌어 드라이런)·pending(남은 승인 필요), 인증 중지(stopped_reason "auth" — Run 은
+    // 로그인 정보 없음·401/402/403 부터 멈춤, Spec Draft 는 실행 중 401/402/403, Spec Draft auth_held — 로그인 정보가 없어 보내지 않은 단위 수:
+    // 승인 해시가 맞아도 호출하지 않음 — LOGIN).
+    // 보고가 없으면 성공 = 노드가 옛 버전, 오류·취소 = Run·Spec Draft 전에 멈춤("" — 끝 줄은 오류 문구만)
+    const out = (h && h.outputs) || {};
+    const ui = stage === "draft" ? (out.dp_draft || {}).bmk_dp_draft : (out.dp_run || {}).bmk_dp_run;
+    const e = Array.isArray(ui) && ui.length ? ui[0] : null;
+    if (!e) return endOf(h).state === "done" ? "보고 없음(노드가 옛 버전 — ComfyUI 재시작)" : "";
+    const mock = e.backend === "mock" || e.backend === "vlm_mock" ? " [MOCK]" : "";
+    const login = e.stopped_reason === "auth" || (stage === "draft" && e.auth_held > 0);
+    if (stage === "reroll") {
+      return `${login ? `재굴림 중지 — ${LOGIN}: ComfyUI 탭에서 로그인한 뒤 머리줄 'ComfyUI 큐'(사전 승인한 재굴림은 예약된 채 남음 — R 을 다시 누르면 `
+        + "+1 호출이 더 승인됨)" : "재굴림(사전 승인)·복구만 실행"} · 승인 필요 ${e.pending}건 남음${mock}`;
+    }
+    const ran = !e.approved_now ? "승인 안 됨 — 승인 해시가 실행 전 계획과 달라 드라이런(승인 필요분 과금 없음)"
+      : login ? `승인했지만 중지 — ${LOGIN}: ComfyUI 탭에서 로그인한 뒤 다시 승인` : "승인분 실행";
+    return stage === "draft" ? `${ran} · 남은 초안 대기 ${e.pending}건${mock}` : `${ran} · 남은 승인 필요 ${e.pending}건${mock}`;
   }
 
   function shown(x) {
@@ -208,11 +299,11 @@ window.DPPipeline = (() => {
     return out;
   }
 
-  // ── 서버 세션: 설정(P)·계획·Studio 가 낸 무료 프롬프트(job)·채택. DOM 을 쓰지 않는다(J-P1·J-P2 가 node 에서 가짜 fetch 로 돈다) ──
+  // ── 서버 세션: 설정(P)·계획·Studio 가 낸 프롬프트(job)·채택. DOM 을 쓰지 않는다(J-P1·J-P2 가 node 에서 가짜 fetch 로 돈다) ──
   function session(apiUrl, comfyUrl, root, fetchFn, store, pollMs = POLL_MS) {
     // P = 마지막 GET /pipeline, plan = 받아들인 마지막 계획(planOnly·planStyle = 그 계획을 요청한 정규 only·화풍 — null·false = only 없음),
-    // job = 이 Studio 가 낸 무료 프롬프트 {stage, pid, number, running, ahead, gone}, last = stage 마다 마지막 끝 {state, msg, at, export},
-    // busy = 설정·채택 쓰기 중(하나씩)
+    // job = 이 Studio 가 낸 프롬프트 {stage, pid, number, running, ahead, gone} — 무료 큐 또는 탭이 승인 템플릿으로 낸 유료 프롬프트(track),
+    // last = stage 마다 마지막 끝 {state, msg, at, pid, export, report(유료 — paidReport)}, busy = 설정·채택 쓰기 중(하나씩)
     const s = { P: null, err: null, plan: null, planOnly: null, planStyle: false, planErr: null, job: null, sending: false, busy: false,
       last: {}, progress: null, onChange() {}, onDone() {}, onWrite() {} };
     let reads = 0; // 보낸 GET /pipeline 수(요청 순서)
@@ -299,9 +390,9 @@ window.DPPipeline = (() => {
       const run = d.queue_running || [];
       const pend = d.queue_pending || [];
       job.running = run.some((x) => x[1] === job.pid);
-      const waiting = pend.some((x) => x[1] === job.pid);
-      job.ahead = job.running ? 0 : waiting ? run.length + pend.filter((x) => x[0] < job.number).length : null;
-      job.gone = job.running || waiting ? 0 : job.gone + 1;
+      const mine = pend.find((x) => x[1] === job.pid); // 대기열 항목 [번호, prompt_id, …] — 탭이 낸 유료 프롬프트는 번호를 대기열에서만 앎
+      job.ahead = job.running ? 0 : mine ? run.length + pend.filter((x) => x[0] < mine[0]).length : null;
+      job.gone = job.running || mine ? 0 : job.gone + 1;
       return true;
     }
 
@@ -316,10 +407,12 @@ window.DPPipeline = (() => {
       }
     }
 
-    function finish(job, res) {
+    function finish(job, res, h) {
+      // h = 끝을 판정한 /api/history 항목(사라짐·대기 중 취소는 없음) — 유료 실행이면 그 Run·Spec Draft 보고 한 줄(report)
       s.job = null;
       remember(null);
-      s.last[job.stage] = Object.assign({ at: new Date().toLocaleTimeString("ko-KR", { hour12: false }) }, res);
+      s.last[job.stage] = Object.assign({ at: new Date().toLocaleTimeString("ko-KR", { hour12: false }), pid: job.pid }, res);
+      if (STAGES[job.stage].paid && h) s.last[job.stage].report = paidReport(job.stage, h);
       s.onDone(job, res);
       s.onChange();
     }
@@ -333,7 +426,7 @@ window.DPPipeline = (() => {
         const h = await record(job.pid);
         if (s.job !== job) return;
         if (h) {
-          finish(job, endOf(h));
+          finish(job, endOf(h), h);
           return;
         }
         const was = [job.running, job.ahead].join("|");
@@ -357,38 +450,52 @@ window.DPPipeline = (() => {
     s.queue = async (stage, expect) => {
       // 무료 템플릿 큐(§3.1): GET /pipeline/prompt → 보내기 전 검사 → POST /api/prompt → 폴링. → job | {old: true}(라우트 없는 옛 서버 —
       // 호출자가 탭 반영으로 대신). 409(설정 확인 필요·PSD 없음·경로 없음·깨진 설정 — e.data.reason)·검사 실패·ComfyUI 거절은 예외.
-      // expect = 사용자가 확인 창에서 본 pipeline rev(반영) — 템플릿 sig('<pipeline rev>:<매니페스트 rev>')의 rev 가 다르면(확인 뒤 다른 창이 저장)
-      // 보내지 않고 예외(rev null·0 = 깨짐·파일 없음은 서버가 409)
-      if (!STAGES[stage]) throw new Error(`무료 stage 가 아닙니다: ${stage}`);
+      // expect = 마지막 갈라짐 점검을 통과한 '<pipeline rev>:<매니페스트 rev>'(반영 — checkWarn) — 서버가 지금 값과 다르면 409 stale_settings(확인 뒤 다른
+      // 창의 저장·그래프 Prepare·Import), 옛 서버(S3a — expect 를 보지 않음)는 템플릿 sig 의 pipeline rev 를 여기서 대조. 둘 다 보내지 않고 예외
+      // (rev null·0 = 깨짐·파일 없음은 서버가 409)
+      if (!STAGES[stage] || STAGES[stage].paid) throw new Error(`무료 stage 가 아닙니다: ${stage}`);
       if (s.job) throw new Error(`이 Studio 의 ${STAGES[s.job.stage].label}(${s.job.stage}) 실행이 끝난 뒤 다시 하세요`);
       if (s.sending) throw new Error("큐에 넣는 중입니다");
       s.sending = true;
       try {
         let t;
         try {
-          t = await call("pipeline/prompt?" + qs({ stage }));
+          t = await call("pipeline/prompt?" + qs(expect ? { stage, expect } : { stage }));
         } catch (e) {
           if (e.status === 404 && !e.data) return { old: true };
+          if (e.data && e.data.reason === "stale_settings") {
+            e.message = `큐에 넣지 않음 — 확인한 뒤 실행 설정·매니페스트가 바뀜(${expect} → ${e.data.sig}, 다른 창의 저장·그래프 실행): 다시 [반영]해 새 설정으로 확인하세요`;
+          }
           throw e;
         }
         const bad = checkPrompt(t.prompt);
         if (bad) throw new Error(`큐에 넣지 않음 — ${bad}`);
+        const want = expect && expect.split(":")[0];
         const got = String(t.sig).split(":")[0];
-        if (expect && got !== String(expect)) {
-          throw new Error(`큐에 넣지 않음 — 확인한 뒤 실행 설정이 바뀜(pipeline rev ${expect} → ${got}, 다른 창의 저장): 다시 [반영]해 새 설정으로 확인하세요`);
+        if (want && got !== want) {
+          throw new Error(`큐에 넣지 않음 — 확인한 뒤 실행 설정이 바뀜(pipeline rev ${want} → ${got}, 다른 창의 저장): 다시 [반영]해 새 설정으로 확인하세요`);
         }
         const r = await comfy("prompt", freeBody(t.prompt, stage));
         const d = await readJson(r);
         if (!r.ok || !d || !d.prompt_id) throw new Error(comfyRefusal(d, r.status));
-        const job = { stage, pid: d.prompt_id, number: d.number, running: false, ahead: null, gone: 0 };
-        s.job = job;
-        remember(job);
-        s.onChange();
-        watch(job);
-        return job;
+        return begin({ stage, pid: d.prompt_id, number: d.number, running: false, ahead: null, gone: 0 });
       } finally {
         s.sending = false;
       }
+    };
+
+    function begin(job) {
+      s.job = job;
+      remember(job);
+      s.onChange();
+      watch(job);
+      return job;
+    }
+
+    s.track = (stage, pid) => {
+      // 탭이 승인 템플릿으로 낸 유료 프롬프트(approved 의 prompt_id)를 이 Studio 의 실행으로 — 무료 큐와 같은 이어 받기·끝 판정·진행 줄.
+      // → job | null(이 Studio 가 다른 실행을 보는 중 — 호출자가 알림)
+      return s.job ? null : begin({ stage, pid, number: null, running: false, ahead: null, gone: 0 });
     };
 
     s.resume = () => {
@@ -428,7 +535,7 @@ window.DPPipeline = (() => {
       if (s.job !== job) return false;
       if (h === undefined) return null;
       if (h) {
-        finish(job, endOf(h));
+        finish(job, endOf(h), h);
         return false;
       }
       finish(job, { state: "cancelled", msg: "대기 중에 취소함", export: null });
@@ -535,18 +642,49 @@ window.DPPipeline = (() => {
     return s;
   }
 
-  // ── ComfyUI 탭 연결 표시(D6 — S3a 는 표시만, 유료 단추 활성은 S3b) ──
-  function link(win, onChange, every = HELLO_MS, wait = REPLY_MS) {
+  // ── ComfyUI 탭 연결(D6)·유료 승인 메시지(S3b 계약 §3·§5) ──
+  function link(win, onChange, every = HELLO_MS, wait = REPLY_MS, ackMs = ACK_MS, endMs = END_MS) {
     // every 마다 hello {type, id}: opener(Open Board 로 연 창)가 있으면 그 탭의 응답만, 없으면 BroadcastChannel("bmk-dp") 로 묻고 wait 동안 모은
     // 응답의 탭이 정확히 하나일 때만 연결. 같은 출처·이번 hello 의 id 만 받는다. state = wait(첫 판정 전)·ok·old(opener 가 답하지 않음 —
-    // 옛 확장)·none·many. 응답 = {tab(탭 로드마다 새 ID), ext(확장 판 — 3 미만이면 유료 단추 끔), submit, busy}
+    // 옛 확장)·none·many. 응답 = {tab(탭 로드마다 새 ID), ext(확장 판), submit(승인 제출 가능 ok|unsupported), busy(탭이 큐 처리 중)}.
+    // paidWhy() = 유료 승인을 못 하는 이유("" = 유료 가능: 연결·ext 3 이상·submit ok·busy 아님 — 머리줄 배지 제목(board.js tabTitle)도 이 문장).
+    // send(msg, late, sent) = 지금 연결된 길(opener·채널)로 msg + {id, tab} → 결과 promise: 탭의 approved 그대로, 또는 Studio 가 끝낸 {ok: false, reason, error}
+    // (no_ack = ackMs 안에 ack 없음 · timeout = endMs 안에 결과 없음 · tab_changed = 기다리는 사이 탭이 바뀜·끊김 · unsent = 보내지 못함).
+    // 답은 같은 id·같은 tab·같은 길에서 온 것만. Studio 가 끝낸 요청에 늦게 온 approved 는 late(답) 으로 넘긴다(이미 큐에 들어간 실행을 놓치지 않게).
+    // sent({id, tab, via}) = 보낸 직후(호출자가 창을 새로 열어도 이어 받게 남김), adopt({id, tab, via}, late) = 앞 창이 보내고 결과를 모르는 요청의
+    // 늦은 approved 를 이 창에서 late 로 받음. onWave(fn) = 연결된 탭(tab 일치)이 보낸 wave
     const st = { state: "wait", tab: null, ext: null, submit: null, busy: false, via: null };
     const Channel = win.BroadcastChannel;
     const ch = typeof Channel === "function" ? new Channel(CHANNEL) : null;
     let round = null;
+    const asks = new Map(); // 보낸 승인 id → {id, tab, via, acked, done, resolve, late, timers}
+    let wave = () => {};
 
     function take(d, via) {
-      if (round && via === round.via && d && d.type === HELLO && d.id === round.id && typeof d.tab === "string") round.replies.set(d.tab, d);
+      if (!d || typeof d !== "object") return;
+      if (d.type === HELLO) {
+        if (round && via === round.via && d.id === round.id && typeof d.tab === "string") round.replies.set(d.tab, d);
+      } else if (d.type === WAVE) {
+        if (st.state === "ok" && d.tab === st.tab) wave(d);
+      } else if (d.type === ACK || d.type === APPROVED) {
+        const a = asks.get(d.id);
+        if (!a || d.tab !== a.tab || via !== a.via) return;
+        if (d.type === ACK) a.acked = true;
+        else if (!a.done) end(a, d);
+        else {
+          asks.delete(a.id);
+          if (a.late) a.late(d);
+        }
+      }
+    }
+
+    function end(a, res) {
+      // 요청 하나를 한 번만 끝냄. 탭의 답(approved)으로 끝나면 잊고, Studio 가 끝낸 것(시간·탭 바뀜)은 늦게 올 approved 를 위해 남긴다
+      if (a.done) return;
+      a.done = true;
+      for (const t of a.timers) clearTimeout(t);
+      if (res.type === APPROVED) asks.delete(a.id);
+      a.resolve(res);
     }
 
     win.addEventListener("message", (ev) => {
@@ -561,8 +699,56 @@ window.DPPipeline = (() => {
         : { state: r.via === "opener" ? "old" : got.length ? "many" : "none", tab: null, ext: null, submit: null, busy: false, via: r.via };
       const changed = Object.keys(next).some((k) => st[k] !== next[k]);
       Object.assign(st, next);
+      // 기다리던 요청의 탭이 아니게 됨(새로고침 = 새 tab ID·닫힘·끊김) — 결과를 모름(이미 큐에 들어갔을 수 있음)
+      for (const a of asks.values()) {
+        if (!a.done && a.tab !== st.tab) end(a, { ok: false, reason: "tab_changed", error: "ComfyUI 탭이 바뀜(새로고침·닫힘·연결 끊김) — 결과 모름: ComfyUI 큐를 확인" });
+      }
       if (changed) onChange(st);
     }
+
+    st.paidWhy = () => {
+      // old = opener 가 있는데 답하지 않음(ext null — 옛 확장·새로고침 중·다른 주소로 옮겨 감) 또는 확장 판 < 2
+      if (st.state === "old") {
+        return st.ext === null ? "이 창을 연 ComfyUI 탭이 hello 에 답하지 않음(확장이 옛 판·새로고침 중, 또는 그 탭이 다른 주소·페이지로 옮겨 감) — "
+          + "그 탭을 새로고침하거나 Open Board 로 다시 열기"
+          : `이 창을 연 ComfyUI 탭의 확장이 옛 판(${st.ext}) — 그 탭을 새로고침한 뒤 유료 승인`;
+      }
+      if (st.state !== "ok") return "ComfyUI 탭 연결 없음 — Review 노드의 Open Board 로 열거나 ComfyUI 탭을 하나만 열어 두기";
+      if (st.ext < 3) return `ComfyUI 탭의 확장이 옛 판(S3a — 판 ${st.ext}) — 그 탭을 새로고침한 뒤 유료 승인`;
+      if (st.submit !== "ok") return "ComfyUI 탭이 승인 제출을 못 함(submit unsupported — ComfyUI 프론트가 바뀜) — 그래프의 승인 버튼 사용";
+      // 할 일('잠시 뒤 다시')은 붙이지 않음 — 재굴림 확인 창·예약 토스트에도 실려 R 재누름(+1 사전 승인)으로 읽히지 않게(단추는 끝나면 저절로 켜짐)
+      if (st.busy) return "ComfyUI 탭이 큐를 처리하는 중";
+      return "";
+    };
+
+    st.send = (msg, late, sent) => new Promise((resolve) => {
+      const a = { id: Math.random().toString(36).slice(2), tab: st.tab, via: st.via, acked: false, done: false, resolve, late, timers: [] };
+      const m = Object.assign({ id: a.id, tab: a.tab }, msg);
+      asks.set(a.id, a); // 보내기 전에 — 답이 postMessage 안에서 바로 와도 받게
+      try {
+        if (a.via === "opener") win.opener.postMessage(m, win.location.origin);
+        else ch.postMessage(m);
+      } catch (e) {
+        asks.delete(a.id);
+        resolve({ ok: false, reason: "unsent", error: `ComfyUI 탭에 보내지 못함(${e.message}) — 보내지 않음(과금 없음)` });
+        return;
+      }
+      if (sent) sent({ id: a.id, tab: a.tab, via: a.via });
+      a.timers = [
+        setTimeout(() => a.acked || end(a, { ok: false, reason: "no_ack", error: "ComfyUI 탭 응답 없음 — ComfyUI 탭 새로고침(결과가 늦게 오면 이어서 봄)" }), ackMs),
+        setTimeout(() => end(a, { ok: false, reason: "timeout",
+          error: "ComfyUI 탭에서 결과를 받지 못함 — 이미 큐에 들어갔을 수 있으니 ComfyUI 큐를 확인(다시 보내지 않음)" }), endMs),
+      ];
+    });
+
+    st.onWave = (fn) => {
+      wave = fn;
+    };
+
+    st.adopt = (a, late) => {
+      // 끝난 요청으로 등록(타이머·탭 바뀜 판정 없음) — 같은 id·tab·길의 approved 가 오면 late 로
+      asks.set(a.id, { id: a.id, tab: a.tab, via: a.via, acked: true, done: true, resolve() {}, late, timers: [] });
+    };
 
     function ping() {
       const op = win.opener && !win.opener.closed ? win.opener : null;
@@ -589,8 +775,9 @@ window.DPPipeline = (() => {
   // ── 화면 ──
   function create(hosts, opts) {
     // opts: apiUrl·comfyUrl·root·toast, refresh(보드 state 전체 다시), select(crop_id — 뷰어 맞춤), goTarget(타깃 키 — 검토로),
-    // seams() → 크롭별 이음매, drain(), enter()(진행 모드로)
+    // seams() → 크롭별 이음매, drain(), enter()(진행 모드로), link(이 창의 link — 유료 승인 메시지·wave. 없으면 유료 단추 끔)
     const { list, panel, head } = hosts;
+    const L = opts.link || null;
     let store = null;
     try {
       store = window.sessionStorage;
@@ -630,7 +817,19 @@ window.DPPipeline = (() => {
     let warned = []; // 마지막 확인 창에 보인 갈라짐 줄(applyWarn)
     let asking = false; // 확인 창을 만드는 동작(once — 반영·매니페스트 값으로 다시)이 도는 중(연타 막음)
     let retried; // 받은 계획이 이미 낡아 한 번 더 부른 state plan_v(planNow — 같은 값에 되풀이하지 않음)
-    let doneReplan = false; // 이 Studio 의 무료 큐가 끝남 — 다음 state(반영이 크롭을 더하고 뺀 선택)를 받은 뒤 계획을 다시(§3.1)
+    let doneReplan = false; // 이 Studio 의 큐가 끝남 — 다음 state(반영이 크롭을 더하고 뺀 선택)를 받은 뒤 계획을 다시(§3.1)
+    let paying = null; // 확인·결과를 기다리는 유료 승인 stage(run·draft·reroll) — 이 Studio 는 유료 요청을 하나씩만
+    // 이 Studio 의 유료 Run·재굴림 실행이 wave 로 멈춤 {stage, pid, remaining} — 끝난 뒤 Run 줄(D9: run = '이어서 승인' — 클릭만, reroll = 사전 승인분이라
+    // 'ComfyUI 큐'로 이어서). 다음 Run·재굴림 승인을 보낼 때 지움(Run 템플릿은 사전 승인 재굴림도 함께 쏨)
+    let wave = null;
+    let replanned = null; // 결과가 '계획 다시'(REPLAN)였던 승인 때의 계획 — 다시 받은 계획(새 객체)이 올 때까지 그 해시로 승인 끔
+    // 보내고 결과를 아직 모르는 승인(stage → [{id, tab, via, hash, lost}] 보낸 차례 — sessionStorage 에도: 기다리는 사이·결과 모름으로 끝난 뒤 이 창을
+    // 새로 열어도(새로고침) 결과 모름 표시·늦은 approved 이어 받기가 남게). lost = 결과를 모르고 끝남(UNKNOWN — 이미 큐에 들어갔을 수 있음): 같은 해시를
+    // 다시 승인하면 확인 창에 한 줄, 진행 패널에 줄. 그 요청의 결과를 알면 지우고(answered — 늦게 온 unknown 은 아직 모름), 제출(ok)이면 그보다 먼저 보낸
+    // 것까지(대기열은 차례대로라 그 실행이 끝날 때 앞 요청도 끝남). 다른 요청의 거절은 앞 요청에 대해 아무것도 말하지 않아 둔다
+    const asked = {};
+    const ASK_KEY = "bmk-dp-ask:" + opts.root;
+    let ask = null; // mock 확인 상자 {box, close}(열려 있을 때)
 
     function el(tag, cls, txt) {
       const e = document.createElement(tag);
@@ -650,7 +849,7 @@ window.DPPipeline = (() => {
       if (title) b.title = title;
       b.addEventListener("click", (e) => {
         e.currentTarget.blur();
-        fn();
+        fn(e); // 유료 승인 단추는 이벤트로 사용자 클릭(isTrusted)을 가린다
       });
       return b;
     }
@@ -743,10 +942,11 @@ window.DPPipeline = (() => {
     }
 
     function planDim() {
-      // 해시를 흐리게(반영 뒤 다시 계산 — 복사 끔): 반영 필요(apply_pending — prepare_inputs 불일치 포함)·반영 상태 모름(초안 계획 실행 중·오류)·
-      // 설정 확인 남음·Prepare 갈라짐·계획 notes(서버의 설정 쪽 '반영 뒤 다시 계산' 사유)
+      // 해시를 흐리게(반영 뒤 다시 계산 — 복사·승인 끔): 실행 설정 모름(GET /pipeline 을 아직 못 읽음·마지막 읽기 실패 — 확인 남음·갈라짐을 모름)·
+      // 반영 필요(apply_pending — prepare_inputs 불일치 포함)·반영 상태 모름(초안 계획 실행 중·오류)·설정 확인 남음·Prepare 갈라짐·계획 notes(서버의
+      // 설정 쪽 '반영 뒤 다시 계산' 사유)
       const P0 = PS.P;
-      return pendingApply().length > 0 || !!pendingUnknown() || confirmOf(P0).length > 0 || (!!P0 && P0.drift.some((x) => x.section === "prepare"))
+      return !P0 || !!PS.err || pendingApply().length > 0 || !!pendingUnknown() || confirmOf(P0).length > 0 || P0.drift.some((x) => x.section === "prepare")
         || (!!PS.plan && PS.plan.notes.length > 0);
     }
 
@@ -792,13 +992,14 @@ window.DPPipeline = (() => {
     async function checkWarn() {
       // 확인 창을 띄운 뒤(편집기 확인 창은 이 창이 마지막으로 읽은 GET /pipeline 으로 만든다) 그래프 Prepare·Import 로 갈라짐이 새로 생겼으면
       // 큐에 넣기 전에 묻는다 — 서버 큐 게이트는 갈라짐을 보지 않는다. 묻는 동안 또 바뀔 수 있어 새 줄이 없을 때까지 다시 읽고 묻는다.
-      // → 사용자가 마지막으로 확인한 pipeline rev(큐의 expect — 그 뒤 다른 창이 저장하면 큐가 거절) | null(거절·다시 읽지 못함)
+      // → {sig: 마지막 갈라짐 점검을 통과한 '<pipeline rev>:<매니페스트 rev>'}(큐의 expect — 그 뒤 다른 창의 저장·그래프 실행이 바꾸면 큐가 거절) |
+      // null(거절·다시 읽지 못함)
       for (;;) {
         const shown = warned;
         if (!(await reload())) return null;
-        const rev = PS.P.rev;
+        const sig = `${PS.P.rev}:${PS.P.manifest_rev}`;
         const extra = applyWarn().filter((x) => !shown.includes(x));
-        if (!extra.length) return { rev };
+        if (!extra.length) return { sig };
         if (!window.confirm(["확인 창을 띄운 뒤 설정 갈라짐이 새로 생겼습니다(그래프 Prepare·Import):", ...extra, "그래도 반영할까요?"].join("\n"))) return null;
       }
     }
@@ -832,19 +1033,27 @@ window.DPPipeline = (() => {
     // ── 동작 ──
     async function queue(stage, expect) {
       // 무료 큐 → {old: true}(옛 서버 — 알림·대신 반영은 호출자: board.js applyFree 는 탭 반영, 패널 단추는 queueHere) | undefined.
-      // 결과·오류는 토스트, 설정 확인이 필요하면 설정 패널. expect = 확인한 pipeline rev(PS.queue). 앞 큐 요청이 아직 가는 중이면(두 번 누름)
-      // 조용히 버린다 — 앞 요청의 결과 토스트가 나온다
+      // 결과·오류는 토스트, 설정 확인이 필요하면 설정 패널. expect = 확인한 '<pipeline rev>:<매니페스트 rev>'(PS.queue). 앞 큐 요청이 아직 가는 중이면(두 번 누름)
+      // 조용히 버린다 — 앞 요청의 결과 토스트가 나온다. 유료 승인 결과를 기다리는 중이면 보내지 않는다(board.js 편집기 반영(큐)도 이 길 — 무료 큐가
+      // 이 Studio 의 실행 자리를 먼저 차지하면 탭이 돌려준 prompt_id 를 이어 받지 못함)
       if (PS.sending) return undefined;
+      if (paying) {
+        opts.toast(`${STAGES[stage].label}: ${STAGES[paying].label} 승인 응답을 기다리는 중 — 끝난 뒤 다시`, "warn");
+        return undefined;
+      }
+      const q = PS.queue(stage, expect);
+      render(); // 템플릿 요청 동안(PS.sending) 승인 단추를 끈 모양으로 — Export 등 once 밖의 길도
       try {
-        const r = await PS.queue(stage, expect);
+        const r = await q;
         if (r.old) return r;
         opts.toast(`${STAGES[stage].label}: ComfyUI 대기열 ${STAGES[stage].front ? "앞" : "뒤"}에 넣음(무료 템플릿 — Run·Spec Draft 없음)`);
       } catch (e) {
         opts.toast(e.message, "err");
         const reason = e.data && e.data.reason;
         if (reason === "confirm_settings" || reason === "pipeline_broken") openSettings();
+      } finally {
+        render();
       }
-      render();
       return undefined;
     }
 
@@ -857,18 +1066,21 @@ window.DPPipeline = (() => {
       // board.js(편집기 반영(큐) → applyFree)가 부르는 큐 — 편집기가 이미 물은 뒤라 새 갈라짐만 한 번 더 묻는다(거절 = undefined: 호출자는 끝냄)
       if (stage !== "apply") return queue(stage);
       const ok = await checkWarn();
-      return ok ? queue(stage, ok.rev) : undefined;
+      return ok ? queue(stage, ok.sig) : undefined;
     }
 
     function once(fn) {
-      // 확인 창을 만드는 동작(GET /pipeline 다시 읽기 → 확인 → 큐·저장)은 한 번에 하나 — 다시 읽는 사이의 연타가 확인 창을 둘 띄우지 않게
+      // 확인 창을 만드는 동작(GET /pipeline 다시 읽기 → 확인 → 큐·저장)은 한 번에 하나 — 다시 읽는 사이의 연타가 확인 창을 둘 띄우지 않게.
+      // 그동안 승인 단추는 끈 모양으로(paidLock — 켜진 채 남으면 누를 때 '계획·탭 상태가 바뀜'이 뜸), 끝나면 다시 그림(취소해도)
       return async () => {
         if (asking) return;
         asking = true;
+        render();
         try {
           await fn();
         } finally {
           asking = false;
+          render();
         }
       };
     }
@@ -880,7 +1092,7 @@ window.DPPipeline = (() => {
       if (n) lines.push(`재굴림 대기 ${n}건(사전 승인)은 이 반영에서 돌지 않음 — R·ComfyUI 큐·그래프 Run 에서 과금`);
       if (!window.confirm(lines.concat(DRAFT_NOTE, "계속할까요?").join("\n"))) return;
       const ok = await checkWarn();
-      if (ok) await queueHere("apply", ok.rev);
+      if (ok) await queueHere("apply", ok.sig);
     }
 
     async function cancelJob() {
@@ -897,6 +1109,241 @@ window.DPPipeline = (() => {
         opts.toast(e.message, "err");
       }
       render();
+    }
+
+    function paidLock() {
+      // 이 Studio 가 지금 유료 요청을 보내지 않는 이유("" = 보냄 — 유료 요청·실행·무료 큐는 하나씩): 승인 응답 기다림, 이 Studio 의 실행(무료 큐 포함),
+      // 무료 큐를 만드는 중(반영 확인 창·템플릿 요청 — 그 큐가 실행 자리를 먼저 차지하면 탭이 돌려준 prompt_id 를 이어 받지 못함)
+      if (paying) return paying === "reroll" ? "재굴림 큐 요청을 처리하는 중" : `${STAGES[paying].label} 승인 요청을 처리하는 중`;
+      if (PS.job) return `이 Studio 의 ${jobText(PS.job)} 이 끝난 뒤`;
+      return asking || PS.sending ? "반영 확인·큐 요청을 처리하는 중" : "";
+    }
+
+    function serverWhy() {
+      // 서버가 유료 템플릿(GET /pipeline/prompt)을 내주지 않을 이유("" = 낼 수 있음 — 마지막 GET /pipeline 으로 본 prompt_gate, stage 무관): 옛 서버
+      // (S3a 판은 유료 stage 400 — GET /pipeline 에 manifest_rev 없음)·실행 설정을 읽지 못함·깨진 파일·확인 필요(prepare.*·import.*)·파일 없음·경로 경고
+      const P0 = PS.P;
+      if (S && !("pipeline_rev" in S)) return "ComfyUI 재시작 필요 — 서버가 옛 판(유료 템플릿 없음)";
+      if (!P0 || PS.err) return `실행 설정을 읽지 못함(${PS.err || "읽는 중"})`;
+      if (!("manifest_rev" in P0)) return "ComfyUI 재시작 필요 — 서버가 S3a 판(유료 템플릿 없음)";
+      if (P0.error) return "실행 설정 파일이 깨짐 — 진행(G) [설정]에서 다시 저장";
+      const cg = confirmGate(P0);
+      if (cg.gate.length) return `실행 설정 확인 필요(${cg.gate.join(", ")}) — 진행(G) [설정]에서 확인·저장`;
+      if (cg.noFile) return "실행 설정(pipeline.json) 없음 — 진행(G) [설정]에서 한 번 저장";
+      return P0.warnings.length ? `${P0.warnings.map((w) => w.msg).join("; ")} — 진행(G) [설정]에서 경로를 고침` : "";
+    }
+
+    function paidWhy() {
+      // 유료 승인 메시지를 보내도 템플릿이 나오지 않을 이유("" = 보낼 수 있음): 탭(link.paidWhy — 연결·확장 판·제출 가능·큐 처리 중), 그다음 서버
+      // (serverWhy). 승인 단추와 board.js tabWay(R·머리줄 'ComfyUI 큐'의 유료 탭 길 — 막히면 opener·예약만)·R 확인 문구가 같은 판정
+      return L ? L.paidWhy() || serverWhy() : "ComfyUI 탭 연결 없음";
+    }
+
+    function approveWhy(hash) {
+      // 초안·Run 승인 단추가 꺼진 이유("" = 켬 — 계약 §5): 이 Studio 의 유료 요청·실행·무료 큐(paidLock), 승인할 해시 없음(copyHashes — 선택 없음·
+      // 흐림·낡음·실행 중·승인할 것 없음), 앞 승인이 '계획 다시'로 끝나 계획을 다시 받는 중, 탭·서버(paidWhy)
+      const lock = paidLock();
+      if (lock) return lock;
+      if (!hash) return "승인할 해시 없음(승인할 것 없음·반영 필요·흐림·낡음·실행 중)";
+      if (PS.plan === replanned) return "앞 승인 결과로 계획을 다시 받는 중";
+      return paidWhy();
+    }
+
+    async function approve(e, kind, label, pair) {
+      // 유료 승인(§4.4·계약 §5). 사용자 클릭(isTrusted)이 아니면 아무것도 안 함. 누를 때 지금 판정(해시·only·탭)이 그린 값과 다르면 보내지 않고
+      // 다시 그림(r2-07 — 입력 중이라 미뤄 둔 옛 단추). 확인 = mock 백엔드면 페이지 상자, 아니면 네이티브 confirm(Claude 브라우저 패널에서는 늘
+      // false — 유료 승인을 누를 수 없는 장치, D7). 상자를 기다리는 사이 바뀌었을 수 있어 확인 뒤 한 번 더 대조
+      if (!e || !e.isTrusted || paying) return;
+      const now = () => same(copyHashes()[kind], pair) && !approveWhy(pair[0]);
+      const moved = () => {
+        opts.toast("계획·탭 상태가 바뀜 — 승인하지 않음: 다시 그린 계획 칸을 보고 다시 누르세요", "warn");
+        render();
+      };
+      if (!now()) {
+        moved();
+        return;
+      }
+      const p = PS.plan;
+      const full = !!(PS.P && PS.P.settings && PS.P.settings.draft.apply === "full");
+      const mock = kind === "run" ? p.run.backend === "mock" : p.draft.backend === "vlm_mock";
+      // 앞서 같은 해시로 보낸 승인의 결과를 모름(서버 해시·실행 중 판정은 대기열에 있는 첫 프롬프트를 모름) — 첫 승인이 큐에 있고 승인분을 소화하면 둘째는
+      // 해시가 바뀌어 드라이런, 큐에 없거나 Run 앞에서 멈추면 둘째가 과금
+      const again = (asked[kind] || []).some((a) => a.lost && a.hash === pair[0])
+        ? [`앞서 보낸 같은 승인(해시 ${pair[0]})의 결과를 모름 — 첫 승인이 ComfyUI 큐에 있으면 둘째는 그 실행이 승인분을 소화한 뒤라 과금 없이 드라이런, `
+          + "큐에 없으면(또는 첫 실행이 Run 앞에서 멈추면) 이 승인이 과금합니다 — 보내기 전에 ComfyUI 큐 확인."] : [];
+      paying = kind;
+      render();
+      let ok = false;
+      try {
+        ok = mock ? await mockAsk(label, kind === "draft" && !!p.draft.mock_forced)
+          : window.confirm(approveText(kind, p, pair[1].split(","), PS.planStyle, full).concat(again, "계속할까요?").join("\n"));
+      } catch (err) {
+        // 확인 창 문구를 만들지 못함 = 계획에 확인 창 필드가 없음(새 JS + 재시작 전 옛 서버 — §1.3: S3a 초안 계획에는 reasons 등이 없음).
+        // 보내지 않고 아래에서 잠금(paying)을 푼다 — 남으면 창을 새로 열 때까지 승인·반영·Export·무료 큐가 꺼진 채
+        opts.toast(`${STAGES[kind].label} 승인 안 됨 — 확인 창을 만들지 못함(${err.message}): 서버가 옛 판이면 ComfyUI 재시작`, "err");
+      }
+      paying = null;
+      if (!ok) {
+        render();
+        return;
+      }
+      if (!now()) {
+        moved();
+        return;
+      }
+      await sendPaid(kind, pair[0], pair[1], label);
+    }
+
+    function mockAsk(label, forced) {
+      // mock 백엔드 확인 = 페이지 안 상자(해시가 mock 에 묶여 유료 실행을 승인할 수 없음 — §4.4). [승인]·[취소]도 사용자 클릭만, Esc = 취소.
+      // 제목 = 단추 라벨에서 금액·끝 [MOCK] 을 뗀 이름(과금 없음 옆에 달러 추정·태그 두 번을 두지 않음)
+      return new Promise((resolve) => {
+        const box = el("div", "overlay");
+        const sheet = el("div", "sheet");
+        const close = (ok) => {
+          ask = null;
+          box.remove();
+          resolve(ok);
+        };
+        sheet.append(el("h2", "", `[MOCK] 과금 없음 — ${label.replace(/ ≈ .*| \[MOCK\]$/, "")}`),
+          el("p", "", "mock 백엔드 — 승인 해시가 mock 에 묶여 있어 유료 실행을 승인하지 못합니다."
+            + (forced ? " 실행 설정의 초안 vlm 은 openai 지만 mock 스위치(_MOCK_API)로 mock 입니다." : "")),
+          el("p", "dim", SIDE));
+        btns(sheet, button("승인", "mock 승인 — 과금 없음", (e) => e.isTrusted && close(true), "primary"),
+          button("취소", "Esc", (e) => e.isTrusted && close(false)));
+        box.append(sheet);
+        document.body.append(box);
+        ask = { box, close };
+      });
+    }
+
+    async function sendPaid(stage, hash, only, what) {
+      // 승인 메시지(계약 §3 bmk-dp-approve) — 보내는 곳은 여기 하나. hash·only = 그린 계획 값(reroll 은 둘 다 ""), what = 탭 토스트용 설명
+      paying = stage;
+      if (stage !== "draft") wave = null;
+      render();
+      let id = null;
+      const r = await L.send({ type: APPROVE, rootKey: opts.root, stage, hash, only, what }, (d) => {
+        answered(stage, id, d);
+        paidResult(stage, d, true);
+        render();
+      }, (a) => {
+        id = a.id;
+        (asked[stage] = asked[stage] || []).push(Object.assign({ hash, lost: false }, a));
+        saveAsks();
+      });
+      paying = null;
+      answered(stage, id, r);
+      paidResult(stage, r, false);
+      render();
+    }
+
+    function answered(stage, id, d) {
+      // 요청 id 의 결과 d(바로 온 것·늦게 온 것)를 asked 에: 결과를 모르면(UNKNOWN — Studio 가 끝냄·탭이 응답을 잃음) 결과 모름으로 남기고, 알면 그 기록을
+      // 지움 — 제출됨이면 같은 단계에서 그보다 먼저 보낸 기록도(대기열은 차례대로 — 다른 요청의 거절로는 지우지 않음)
+      const xs = asked[stage] || [];
+      const i = xs.findIndex((a) => a.id === id);
+      if (i < 0) return;
+      if (UNKNOWN.includes(d.reason)) {
+        xs[i].lost = true;
+        return;
+      }
+      asked[stage] = submitted(d) ? xs.slice(i + 1) : xs.filter((a) => a.id !== id);
+      saveAsks();
+    }
+
+    function saveAsks() {
+      // asked → sessionStorage {stage: [{hash, id, tab, via}]}(빈 단계는 빼고 다 비면 지움) — 저장소가 없거나 막히면 이 창에서만
+      const m = {};
+      for (const [stage, xs] of Object.entries(asked)) {
+        if (xs.length) m[stage] = xs.map((a) => ({ hash: a.hash, id: a.id, tab: a.tab, via: a.via }));
+      }
+      try {
+        if (Object.keys(m).length) store.setItem(ASK_KEY, JSON.stringify(m));
+        else store.removeItem(ASK_KEY);
+      } catch (e) {
+        // 저장소 없음·막힘 — 새로 연 창에서 이어 받지 못할 뿐
+      }
+    }
+
+    function resumeAsks() {
+      // 앞 창(새로고침 전)이 보내고 결과를 모르는 승인 → 결과 모름(lost — 같은 해시 재승인 확인 창 줄·진행 패널 줄) + 그 id 의 늦은 approved 이어 받기
+      let m = null;
+      try {
+        m = JSON.parse(store.getItem(ASK_KEY) || "{}");
+      } catch (e) {
+        // 저장소 없음·막힘·깨진 값 — 이어 받을 것 없음
+      }
+      for (const [stage, xs] of Object.entries(m && typeof m === "object" ? m : {})) {
+        if (!STAGES[stage] || !STAGES[stage].paid || !Array.isArray(xs)) continue;
+        asked[stage] = xs.filter((a) => a && typeof a.id === "string")
+          .map((a) => ({ hash: String(a.hash || ""), id: a.id, tab: a.tab, via: a.via, lost: true }));
+        if (!L) continue;
+        for (const a of asked[stage]) {
+          L.adopt(a, (d) => {
+            answered(stage, a.id, d);
+            paidResult(stage, d, true);
+            render();
+          });
+        }
+      }
+    }
+
+    function paidResult(stage, d, late) {
+      // ok = 탭이 낸 prompt_id 를 이 Studio 의 실행으로(무료 큐와 같은 이어 받기·끝 판정·진행 줄). 실패 = 사유별 토스트, 계획을 다시 받아야 하는
+      // 사유(REPLAN — 결과를 모르는 것 포함)면 계획 다시(받을 때까지 지금 계획의 해시로 승인 끔). late = Studio 가 시간·탭 바뀜으로 끝낸 뒤 온 결과
+      // (이미 큐에 들어간 실행을 놓치지 않게)
+      const label = STAGES[stage].label;
+      const pre = late ? "늦게 온 결과 — " : "";
+      if (submitted(d)) {
+        if (PS.track(stage, d.prompt_id)) opts.toast(`${pre}${label} 큐에 들어감 — ComfyUI 탭이 승인 템플릿을 제출함(진행은 머리줄)`);
+        else opts.toast(`${pre}${label} 큐에 들어감(prompt ${d.prompt_id}) — 이 Studio 가 다른 실행을 보는 중이라 진행은 ComfyUI 큐에서 확인`, "warn");
+        return;
+      }
+      // 머리: 결과를 모르고 끝남(UNKNOWN — Studio 가 끝냄·탭이 응답을 잃음) = '결과 모름'(이미 큐에 들어갔을 수 있음), 재굴림 = '큐 안 됨'(R 이 이미 사전 승인 — 예약된 채 남아 다음 Run·
+      // ComfyUI 큐 때 과금, R 을 다시 누르면 +1 이 더 승인됨), 그 밖 = 서버·탭이 확정한 거절 '승인 안 됨'
+      const unknown = UNKNOWN.includes(d.reason);
+      const head = unknown ? `${label} 결과 모름` : stage === "reroll" ? "재굴림 큐 안 됨" : `${label} 승인 안 됨`;
+      const kept = stage !== "reroll" ? "" : ` · ${unknown ? "큐에 들어가지 않았으면 " : ""}사전 승인한 재굴림은 예약된 채 남음(다음 Run·ComfyUI 큐 때 `
+        + "선택과 무관하게 과금): 지금 보내려면 머리줄 'ComfyUI 큐' — R 을 다시 누르면 +1 호출이 더 승인됨";
+      opts.toast(`${pre}${head} — ${refusal(d, stage)}${kept}`, unknown || (stage !== "reroll" && d.reason === "busy") ? "warn" : "err");
+      if (REPLAN.includes(d.reason)) {
+        replanned = PS.plan;
+        planNow();
+      }
+    }
+
+    function submitted(d) {
+      // 탭의 approved 가 제출 성공(계약 §4 6 — ok true 이고 prompt_id 가 비지 않은 문자열)
+      return d.ok === true && typeof d.prompt_id === "string" && !!d.prompt_id;
+    }
+
+    function refusal(d, stage) {
+      // 승인 실패 문구: 반영 필요는 '먼저 [반영]'(사유), 낡은 해시는 지금 해시 — 그 밖(서버 409·탭·Studio 사유)은 받은 error 그대로. 탭 error 는
+      // 이유와 할 일을 함께 싣는다(큐 처리 중 = 잠시 뒤 다시 승인, 자동 큐 = Run 단추 모드를 바꾼 뒤 다시 승인, 제출 안 됨 = 승인은 Studio 에서 다시 등) —
+      // 재굴림은 그 할 일이 R 재누름(+1 사전 승인)으로 읽히지 않게 빼거나 머리줄 'ComfyUI 큐'로(머리줄 큐 안내가 뒤에 붙음)
+      if (d.reason === "apply_needed") return `반영 필요 — 먼저 [반영]${Array.isArray(d.pending) && d.pending.length ? `(${d.pending.join(", ")})` : ""}`;
+      if (d.reason === "stale") return `계획이 바뀜(지금 해시 ${d.hash || "?"}) — 다시 받은 계획을 보고 다시 승인`;
+      const why = String(d.error || (d.reason === "busy" ? "탭이 바쁨 — 잠시 뒤 다시 승인" : "ComfyUI 탭 응답 모양이 잘못됨"));
+      if (stage !== "reroll") return why;
+      // 탭 not_submitted 의 꼬리(남은 승인 항목·무장 중 쌓인 큐 항목을 뺌 — 하나 또는 둘)는 떼고 할 일을 바꾼 뒤 다시 붙임
+      const tail = /( — 남은 승인 항목은 큐에서 뺌| — 무장 중 쌓여 남은 큐 항목\(승인 항목인지 모름\)은 큐에서 뺌)+$/.exec(why);
+      const head = tail ? why.slice(0, tail.index) : why;
+      return head.replace(/ — (잠시 뒤 다시 승인|승인은 Studio 에서 다시)$/, "").replace(/(Studio 에서 )?다시 승인$/, "머리줄 'ComfyUI 큐'")
+        + (tail ? tail[0] : "");
+    }
+
+    function reroll() {
+      // board.js queueReroll(R 뒤·머리줄 'ComfyUI 큐' — 유료 가능한 탭일 때): reroll stage(approve·only 없음 — Run 은 사전 승인 재굴림·복구만 과금).
+      // 확인 창 없음(R 의 확인이 동의). 이 Studio 가 유료 요청을 보내지 않는 중(paidLock)이면 보내지 않음(재굴림은 이미 사전 승인 — 머리줄 큐·다음 Run 때
+      // 과금 — R 확인 문구도 이 판정으로 '지금은 예약만')
+      const lock = paidLock();
+      if (lock) {
+        opts.toast(`재굴림 예약됨 — 지금 보내지 않음(${lock}): 머리줄 'ComfyUI 큐'로 보내거나 다음 Run 때 과금`, "warn");
+        return;
+      }
+      const n = S ? S.pending_preapproved || 0 : 0;
+      sendPaid("reroll", "", "", n ? `재굴림(사전 승인) ${n}건` : "ComfyUI 큐(재굴림 대기 없음 — 반영·복구만)");
     }
 
     function openSettings() {
@@ -1230,11 +1677,13 @@ window.DPPipeline = (() => {
         c.title = confirmOf(PS.P).join("\n");
         head.append(c);
       }
-      // Prepare 갈라짐(마지막 Prepare ≠ Studio 설정) — 검토 모드의 R·ComfyUI 큐는 그래프 Prepare 값으로 과금하므로 모든 모드에서 보임
+      // Prepare 갈라짐(마지막 Prepare ≠ Studio 설정) — 검토 모드의 R·ComfyUI 큐도 Prepare 를 다시 돈 뒤 과금하므로 모든 모드에서 보임(유료 가능한 탭의
+      // 재굴림 템플릿 = Studio 설정 — 이 갈라짐이 반영됨, 옛 탭의 Review 부분 실행·그래프 Run = 그래프 위젯 값)
       const pdr = PS.P && PS.P.drift ? PS.P.drift.filter((x) => x.section === "prepare") : [];
       if (pdr.length) {
         const c = el("span", pdr.some((x) => DRIFT_BILL.includes(x.kind)) ? "lh-bad" : "lh-wait", "Prepare 갈라짐");
-        c.title = pdr.map(driftText).concat("R·ComfyUI 큐·그래프 Run 은 그래프 Prepare(그래프 위젯 값)로 jobs 를 다시 쓴 뒤 과금").join("\n");
+        c.title = pdr.map(driftText).concat("R·ComfyUI 큐(유료 승인 탭 — 재굴림 템플릿)는 Studio 실행 설정으로 Prepare 를 다시 돌려 이 갈라짐을 반영한 뒤 과금"
+          + "(셀이 바뀌면 재굴림이 미뤄짐), 그래프 Run·옛 탭의 Review 부분 실행은 그래프 Prepare(그래프 위젯 값)로 jobs 를 다시 쓴 뒤 과금").join("\n");
         head.append(c);
       }
       if (p && p.run.by_crop) {
@@ -1255,6 +1704,11 @@ window.DPPipeline = (() => {
       if (PS.job) {
         head.append(el("span", "lh-wait", `실행 중: ${jobText(PS.job)}`));
         if (PS.job.ahead !== null && !PS.job.running) head.append(button("취소", "대기 중인 이 Studio 의 프롬프트를 ComfyUI 대기열에서 지움", cancelJob));
+      }
+      // 재굴림 큐는 확인 창 없음(R 의 확인이 동의 — 사전 승인분 제출)이라 '승인 — 확인' 이 아님
+      if (paying) {
+        head.append(el("span", "lh-wait", paying === "reroll" ? "재굴림 큐 — ComfyUI 탭 응답 기다리는 중"
+          : `${STAGES[paying].label} 승인 — 확인·ComfyUI 탭 응답 기다리는 중`));
       }
       // 낡은 계획, 또는 계획을 한 번도 받지 못함(Studio 를 연 뒤 첫 계획이 202 두 번·409) — 검토·E·T 모드는 스스로 다시 받지 않으므로 여기서
       if (planStale() || (!p && PS.planErr)) {
@@ -1357,11 +1811,10 @@ window.DPPipeline = (() => {
       if (pend.length) line(s, pend.join(" · "), "warn");
       if (unsure) line(s, `레퍼런스·채택·Import 설정 미반영을 확인하지 못함(${unsure}) — 계획을 다시 계산`, "warn");
       else if (!pend.length) line(s, "반영됨 — 레이아웃·레퍼런스·채택·Import 설정 미반영·Prepare 입력 바뀜 없음", "ok");
-      const la = PS.last.apply;
-      if (la) line(s, `이 Studio 의 마지막 반영: ${la.at} ${END[la.state]}${la.msg ? ` — ${la.msg}` : ""}`, la.state === "done" ? "dim" : "bad");
+      lastRow(s, "apply");
       if (PS.job && PS.job.stage === "apply") line(s, jobText(PS.job), "warn");
       const ab = button("반영", "무료 반영 — Import → Prepare → Analyze → Review 템플릿을 ComfyUI 에 직접(탭 불필요)", once(applyNow), "primary");
-      ab.disabled = !!PS.job;
+      ab.disabled = !!PS.job || !!paying;
       btns(s, ab);
 
       // 초안·Run(계획) — 흐림(planDim — 반영 뒤 다시 계산)·낡음(stale — 다시 받을 때까지)이면 해시 복사 끔(copyHashes)
@@ -1387,18 +1840,29 @@ window.DPPipeline = (() => {
         s.append(lb);
       }
       if (planOk && only) {
-        const why = pend.concat(unk ? [`반영 상태 확인 못 함 — ${unk}`] : []);
+        const why = pend.concat(unk ? [`반영 상태 확인 못 함 — ${unk}`] : [], !P0 || PS.err ? [`실행 설정을 읽지 못함 — ${PS.err || "불러오는 중"}`] : []);
         if (stale) line(s, "계획이 지금 파일 상태와 다름(다른 창·그래프의 쓰기·실행) — 다시 받기 전에는 해시 복사 끔", "warn");
         if (dim) line(s, `반영 뒤 다시 계산 — 지금 해시는 반영 뒤 달라질 수 있음${why.length ? `(${why.join(", ")})` : ""}`, "warn");
         const dt = draftText(p.draft, p.draft.running || !!(S && S.drafting)); // 실행 중에는 계획을 다시 받지 않으므로 state 로 흐림(Run 줄과 같이)
         line(s, dt.line, dt.dim || dim ? "dim" : "");
         for (const r of dt.rows) line(s, `· ${r}`, "dim");
         if ((p.draft.import_pending || []).length) line(s, `초안 해시는 반영 뒤 확정: ${p.draft.import_pending.join(", ")}`, "warn");
-        btns(s, disabledApprove(`초안 승인 ${dt.what}`), hashCopy("draft", hc.draft));
+        btns(s, approveButton("draft", dt.label, hc.draft), hashCopy("draft", hc.draft));
+        lastRow(s, "draft");
         const rt = runText(p.run, p.run.running || !!(S && S.running));
         line(s, rt.line, rt.dim || dim ? "dim" : "");
         for (const r of rt.rows) line(s, `· ${r}`, "dim");
-        btns(s, disabledApprove(`Run 승인 ${p.run.error ? "" : `${p.run.need}건${p.run.need ? ` ≈ ${usd(p.run.est_usd)}` : ""}`}`), hashCopy("run", hc.run));
+        // D9: 이 Studio 의 유료 Run 이 wave 로 멈춤 — 끝난 뒤 새 계획·새 해시로 '이어서 승인'(확인 창 — 클릭만, 자동 없음). 재굴림 실행의 wave 는
+        // 남은 것이 사전 승인분이라 승인 없이 'ComfyUI 큐'로. 줄의 수 = wave 가 멈출 때 남은 호출, 단추의 수 = 새 계획의 승인 필요(다를 수 있음)
+        const cont = !!wave && wave.stage === "run" && !PS.job && p.run.need > 0;
+        if (wave && !PS.job) {
+          line(s, wave.stage === "run" ? `wave 로 멈춤 — 멈출 때 남은 ${wave.remaining}건: 새 계획(단추의 건수)으로 이어서 승인(클릭만 — 자동 이어가기 없음)`
+            : `재굴림 wave 로 멈춤 — 남은 ${wave.remaining}건: 사전 승인분이라 머리줄 'ComfyUI 큐'(또는 다음 Run)로 이어서`, "warn");
+        }
+        btns(s, approveButton("run", cont ? `남은 ${p.run.need}건 이어서 승인 ≈ ${usd(p.run.est_usd)}` + (p.run.backend === "mock" ? " [MOCK]" : "") : rt.label, hc.run),
+          hashCopy("run", hc.run));
+        lastRow(s, "run");
+        lastRow(s, "reroll");
         // Run 해시는 retry_failed·retry_orphans 로 승인 대상이 바뀜(그래프 Run 위젯 값). 그래프 Import PSD 는 같은 큐에서 Run·Draft 보다 먼저 돌아
         // 위젯 값으로 매니페스트 source 를 다시 씀 — Studio import 절과 다르면 초안 키·jobs 가 바뀌어 해시가 맞지 않음(Studio 는 그래프 위젯을 모름)
         const rc = P0 && P0.settings ? P0.settings.run : null;
@@ -1435,15 +1899,33 @@ window.DPPipeline = (() => {
       s = section("Export");
       exportRows(s, P0);
       const eb = button("Export", "무료 Export 템플릿(Analyze → Compose → Export — Import 없음, ComfyUI 대기열 뒤)", () => queueHere("export"), "primary");
-      eb.disabled = !!PS.job;
+      eb.disabled = !!PS.job || !!paying;
       btns(s, eb);
 
       renderAdopt();
     }
 
-    function disabledApprove(label) {
-      const b = button(label.trim(), S3B, () => {});
-      b.disabled = true;
+    function lastRow(s, stage) {
+      // 이 Studio 가 낸 그 stage 의 마지막 끝 — 오류·취소 문구, 유료면 그 뒤에 Run·Spec Draft 보고 한 줄(paidReport — Run 뒤 노드에서 멈춰도 보고는 있음),
+      // 인증 중지(LOGIN)는 끝이어도 경고. 그 단계 승인의 결과를 모르면(asked 의 lost — 이 창·새로고침 전 창이 보낸 것) 해시마다 그 줄
+      const x = PS.last[stage];
+      const why = x ? [x.msg, x.report].filter(Boolean).join(" · ") : "";
+      if (x) {
+        line(s, `이 Studio 의 마지막 ${STAGES[stage].label}: ${x.at} ${END[x.state]}${why ? ` — ${why}` : ""}`,
+          x.state !== "done" ? "bad" : (x.report || "").includes(LOGIN) ? "warn" : "dim");
+      }
+      for (const h of new Set((asked[stage] || []).filter((a) => a.lost).map((a) => a.hash))) {
+        line(s, `앞서 보낸 ${STAGES[stage].label} 승인${h ? `(해시 ${h})` : ""}의 결과를 모름 — 이미 ComfyUI 큐에 들어갔을 수 있음: `
+          + "다시 보내기 전에 ComfyUI 큐 확인", "warn");
+      }
+    }
+
+    function approveButton(kind, label, pair) {
+      // 초안·Run 승인 단추(pair = copyHashes 의 [해시, only] — 그린 값). 꺼진 이유는 제목에
+      const why = approveWhy(pair[0]);
+      const b = button(label, why || `확인 창 뒤 ComfyUI 탭이 승인 템플릿을 큐에 넣음 — approve: ${pair[0]}  only: ${pair[1]}`,
+        (e) => approve(e, kind, label, pair), "primary");
+      b.disabled = !!why;
       return b;
     }
 
@@ -1696,13 +2178,39 @@ window.DPPipeline = (() => {
     document.addEventListener("pointermove", (e) => {
       if (held && !e.buttons) release();
     }, true);
+    // mock 확인 상자가 열린 동안 보드 키를 막고 Esc = 취소
+    document.addEventListener("keydown", (e) => {
+      if (!ask) return;
+      e.stopPropagation();
+      if (e.key === "Escape") {
+        e.preventDefault();
+        ask.close(false);
+      }
+    }, true);
+    if (L) {
+      L.onWave((d) => {
+        // D9: 이 Studio 의 유료 Run·재굴림(실행 중이거나 방금 끝남 — 그 prompt_id)이 wave 로 멈춤 → 끝난 뒤 Run 줄 '남은 N건'(Run 은 '이어서 승인' — 클릭만)
+        if (d.rootKey !== opts.root) return;
+        const stage = ["run", "reroll"].find((k) => {
+          const j = PS.job && PS.job.stage === k ? PS.job : PS.last[k];
+          return !!j && j.pid === d.prompt_id;
+        });
+        if (!stage) return;
+        wave = { stage, pid: d.prompt_id, remaining: d.remaining };
+        render();
+      });
+    }
+    resumeAsks();
 
     PS.onChange = render;
     PS.onWrite = () => opts.refresh();
     PS.onDone = (job, res) => {
       const label = STAGES[job.stage].label;
       const o = res.export;
+      const w = wave && wave.pid === job.pid
+        ? ` · wave 로 멈춤(남은 ${wave.remaining}건) — ${wave.stage === "run" ? "Run 줄에서 이어서 승인" : "머리줄 'ComfyUI 큐'로 이어서"}` : "";
       if (res.state !== "done") opts.toast(`${label}: ${END[res.state]}${res.msg ? ` — ${res.msg}` : ""}`, res.state === "cancelled" ? "warn" : "err");
+      else if (STAGES[job.stage].paid) opts.toast(`${label} 끝 — ${PS.last[job.stage].report}${w}`, w || PS.last[job.stage].report.includes(LOGIN) ? "warn" : "");
       else if (job.stage !== "export") opts.toast(`${label} 끝 — 새 상태·계획을 다시 받습니다`);
       else if (!o) opts.toast("Export 끝 — 결과 판정 없음(노드가 옛 버전 — ComfyUI 재시작)", "warn");
       else opts.toast(o.outcome === "new" ? `Export: 새 PSD r${o.rev} — ${o.psd}` : o.outcome === "unchanged" ? `Export: 변경 없음 — 기존 파일 ${o.psd}`
@@ -1747,10 +2255,12 @@ window.DPPipeline = (() => {
         // (확인 창 맨 앞 줄·[매니페스트 값으로 다시]·설정 칸이 이 값을 쓴다. 편집기 확인 창도 — 진행 모드가 아니어도)
         seenLoad = st.rev;
         PS.load().then(render);
-      } else if (PS.err) {
-        // 앞 GET /pipeline 이 실패함(잠김·재시작 중) — rev 가 그대로여도 폴링마다 다시(머리줄 '설정 확인 필요'·'Prepare 갈라짐'·설정 칸이
-        // '읽기 오류'·옛 값에 멈추지 않게)
-        PS.load().then((ok) => ok && render());
+      } else if (PS.err || (PS.P && !("manifest_rev" in PS.P))) {
+        // 앞 GET /pipeline 이 실패함(잠김·재시작 중) 또는 옛 서버(S3a 판 — manifest_rev 없음: 새 JS 를 받은 뒤 ComfyUI 재시작 전) — rev 가 그대로여도
+        // 폴링마다 다시(머리줄 '설정 확인 필요'·'Prepare 갈라짐'·설정 칸이 '읽기 오류'·옛 값에, 승인 단추·R 길이 '재시작 필요'에 멈추지 않게 — 재시작해도
+        // pipeline_rev·매니페스트 rev 는 그대로). 다시 그리기는 읽기가 돌아왔거나 서버가 새 판이 된 때만
+        const failed = !!PS.err;
+        PS.load().then((ok) => ok && (failed || "manifest_rev" in PS.P) && render());
       }
       // 계획을 한 번 다시(서버는 같은 서명·선택이면 계산 없이 기억값): 진행 모드에서 선택이 바뀜, 쉬는 중에 계획이 지금 파일과 달라짐(다른 창·그래프의
       // 쓰기 — plan_v)·실행이 끝남, 또는 계획을 한 번도 받지 못했는데(202·오류) 서버에 새 계획이 생김(모든 모드 — 머리줄). 실행 중에는 원장·초안 원장이
@@ -1800,8 +2310,11 @@ window.DPPipeline = (() => {
       panel.replaceChildren();
     }
 
-    return { stateChanged, enter, leave, select, queue: boardQueue, applyWarn, recalc: planNow, openSettings };
+    // tabChanged = link 상태가 바뀜(board.js 가 부름 — 승인 단추 켜짐·제목), reroll = board.js queueReroll 의 유료 가능 탭 갈래, paidWhy·paidLock·side =
+    // board.js tabWay·R 확인 문구(유료 탭 길을 쓰나·지금은 예약만인가·그 길의 부수 효과 줄)
+    return { stateChanged, enter, leave, select, queue: boardQueue, applyWarn, recalc: planNow, openSettings, reroll, tabChanged: render, paidWhy, paidLock,
+      side: SIDE };
   }
 
-  return { create, session, link, checkPrompt, freeBody, endOf, adoptState, runText, draftText, starChecks };
+  return { create, session, link, checkPrompt, freeBody, endOf, adoptState, runText, draftText, approveText, paidReport, starChecks };
 })();

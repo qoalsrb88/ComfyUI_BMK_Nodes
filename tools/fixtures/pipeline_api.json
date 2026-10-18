@@ -1,11 +1,12 @@
 {
  "schema": "bmk.design_patch.pipeline_api/1",
  "_doc": {
-  "목적": "Design Patch Studio S3 라우트 7개(STUDIO_S3_SPEC §6)의 응답 모양 정본 — U1 이 병렬 착수 전에 쓴다. U3 의 B32–B38 은 실제 응답을 이 예시와 대조하고(키 집합·JSON 타입, 아래 대조 규칙), U4 의 J-P1·J-P2 가짜 서버는 이 예시를 그대로 돌려준다. 값은 261014_Test 꼴(s0_261014 사본 — 보드 키 fe410d7f025d, crop_id = store.crop_id_for 'NNN_<blake2b 3바이트 hex>', Run 해시·Draft 해시 = 12자 소문자 hex)이고 수치는 문구 예시다(한 응답 안의 값들이 서로 맞는 장면일 필요는 없음).",
+  "목적": "Design Patch Studio S3 라우트 7개(STUDIO_S3_SPEC §6)의 응답 모양 정본 — U1 이 병렬 착수 전에 쓴다. U3 의 B32–B38 은 실제 응답을 이 예시와 대조하고(키 집합·JSON 타입, 아래 대조 규칙), U4 의 J-P1·J-P2 가짜 서버는 이 예시를 그대로 돌려준다. S3b(유료 승인)는 라우트 응답에 더한 키와 Studio ↔ ComfyUI 탭 메시지(messages)를 같은 정본에 둔다(아래 S3b). 값은 261014_Test 꼴(s0_261014 사본 — 보드 키 fe410d7f025d, crop_id = store.crop_id_for 'NNN_<blake2b 3바이트 hex>', Run 해시·Draft 해시 = 12자 소문자 hex)이고 수치는 문구 예시다(한 응답 안의 값들이 서로 맞는 장면일 필요는 없음).",
   "구조": {
    "routes.\"<METHOD> <경로>\"": "경로는 /bmk/design_patch/ 아래. request = 요청 예시(GET 은 query, POST 는 body) · ok = 정상 200 본문 · alt = {이름: 다른 200 본문(같은 대조 규칙)} · errors = {HTTP 상태: [본문 예시 …]}(202 busy 포함) · nullable · optional · maps · any · opaque = 그 응답의 경로 목록(아래 경로 문법)",
    "state": "기존 GET /state 응답에 더하는 것: flags = 최상위 키(since_rev 가 같아 {unchanged: true, …} 로 답할 때에도 같은 키), crop = 크롭 요약 crops[] 항목에 더하는 키, unchanged = 그 응답 예시 전체. nullable 경로가 'flags.…'·'crop.…'·'unchanged.…' 이므로 이름으로 감싸 대조한다: _pl_shape({\"flags\": state.flags}, {\"flags\": {키: 실제 state[키] for 키 in state.flags}}, state) · _pl_shape({\"crop\": state.crop}, {\"crop\": {키: 크롭 요약[키] for 키 in state.crop}}, state) · _pl_shape({\"unchanged\": state.unchanged}, {\"unchanged\": 실제 unchanged 응답}, state)",
-   "history": "ComfyUI /api/history/<prompt_id> 의 outputs[노드 키] 중 Design Patch 가 정하는 ui 항목(라우트 밖 — U2b 가 노드에서 내고 U4 가 가짜 history 로 읽음). bmk_dp_export = Export ui(STUDIO_S3_SPEC §3.6) 원소 예시 3개(new·unchanged·empty). 대조 = _pl_shape({\"bmk_dp_export\": history.bmk_dp_export}, {\"bmk_dp_export\": 실제 목록}, history)"
+   "history": "ComfyUI /api/history/<prompt_id> 의 outputs[노드 키] 중 Design Patch 가 정하는 ui 항목(라우트 밖 — U2b 가 노드에서 내고 U4 가 가짜 history 로 읽음). bmk_dp_export = Export ui(STUDIO_S3_SPEC §3.6) 원소 예시 3개(new·unchanged·empty). 대조 = _pl_shape({\"bmk_dp_export\": history.bmk_dp_export}, {\"bmk_dp_export\": 실제 목록}, history)",
+   "messages": "Studio ↔ ComfyUI 탭 메시지(S3b 계약 §3 — 라우트 밖). {키: {examples, nullable, optional}}, 키 = type 값(탭의 hello 답만 'bmk-dp-hello_reply' — 그 type 값은 'bmk-dp-hello' 그대로). 보냄 → 받음: bmk-dp-hello·bmk-dp-approve = Studio → 탭, bmk-dp-hello_reply·bmk-dp-ack·bmk-dp-approved·bmk-dp-wave = 탭 → Studio. 길 = 같은 출처 window postMessage(opener — 답은 ev.source.postMessage(답, location.origin)) 또는 BroadcastChannel(\"bmk-dp\"). 모든 메시지에 type·id(문자열)·tab — 예외: hello 요청의 tab 은 선택(지정하면 그 탭만 답함), wave 는 요청의 답이 아닌 방송이라 id 가 없다(Studio 는 tab·prompt_id 로 거름). 대조 = _pl_shape(같은 경우의 예시, 실제 메시지, 그 항목) — routes 와 같은 규칙(키 집합·JSON 타입, optional 키는 없어도 됨). 같은 경우 = hello 는 tab 유무, approve 는 stage, approved 는 ok·reason 이 같은 예시. U1 탭·U3 Studio·U4 왕복 시험의 가짜 상대는 이 예시를 그대로 보낸다."
   },
   "경로 문법": "점으로 잇는 키, 배열 원소 = '[]', maps 의 값 = '*'. 예: run.by_crop.*.est_usd · draft.units[].est · drift[].manifest",
   "대조 규칙": [
@@ -15,7 +16,7 @@
    "4 opaque 경로는 객체이기만 하면 된다(prompt — 템플릿 모양은 pipeline_unit P1 의 T1–T6 이 본다).",
    "5 오류 본문은 늘 error(한국어 문자열) + 그 예시의 다른 키(reason·fields·field·rows). 202 는 {busy: true} 하나뿐.",
    "6 alt 의 본문은 그 이름의 경우(파일 없음·깨짐·오류 분리 등)에 대조한다 — ok 의 optional 로 흡수하지 않는다.",
-   "7 대조 예시의 그 경로가 null(nullable 경로)·빈 배열·빈 maps 이면, 대조 예시 → ok → alt 순(state·history 는 그 항목의 예시)으로 그 경로에 처음 나오는 null·빈 값이 아닌 값과 대조한다 — ok 와 대조해도 nullable 경로(spec_error·layer_targets.value 등)·빈 배열의 실제 타입을 본다. 그래서 정본은 nullable·optional·배열 경로마다 그런 값을 어느 예시엔가 하나 둔다(pipeline_unit 메타 검사 — S3a 에서 늘 null 인 GET /pipeline/prompt targets 만 예외)."
+   "7 대조 예시의 그 경로가 null(nullable 경로)·빈 배열·빈 maps 이면, 대조 예시 → ok → alt 순(state·history·messages 는 그 항목의 예시)으로 그 경로에 처음 나오는 null·빈 값이 아닌 값과 대조한다 — ok 와 대조해도 nullable 경로(spec_error·layer_targets.value 등)·빈 배열의 실제 타입을 본다. 그래서 정본은 nullable·optional·배열 경로마다 그런 값을 어느 예시엔가 하나 둔다(pipeline_unit 메타 검사 — messages 포함)."
   ],
   "열거": {
    "derived.from 값": [
@@ -34,12 +35,47 @@
     "no_psd",
     "missing_path"
    ],
-   "409 reason(GET /pipeline/prompt)": [
-    "confirm_settings",
-    "no_psd",
-    "missing_path",
-    "pipeline_broken"
-   ],
+   "409 reason(GET /pipeline/prompt — 판정 순서, S3b 계약 §1)": {
+    "pipeline_broken": "실행 설정 파일이 깨짐(pl.prompt_gate — 모든 stage, 아래 셋도)",
+    "confirm_settings": "설정 미저장·prepare.*·import.* 확인 필요 — fields",
+    "no_psd": "PSD 경로가 비어 있음",
+    "missing_path": "경로가 없음 — field·fields(cand.path 는 dp_cand 가 드는 stage 만)",
+    "stale_settings": "expect(선택 인자 '<pipeline rev>:<매니페스트 rev>')가 지금과 다름 — stale: true, sig = 지금(모든 stage)",
+    "running": "run = 그 root 의 Run 또는 Spec Draft 실행 중, draft = Spec Draft 실행 중(실행 중 계획의 해시는 일시값) — stale: true. 계획 잠금을 기다리고 계산하는 사이 시작한 실행(곧바로 끝났어도)도 계산 뒤 다시 봐서 409. reroll 은 막지 않음",
+    "apply_needed": "반영 필요(run = 계획 apply_pending 과 같은 판정 + Prepare 설정 갈라짐(notes 의 그 줄 — 템플릿 Prepare 가 jobs 를 바꿔 해시가 달라짐), draft = 같은 큐의 Import 가 매니페스트를 바꿀 때만, 판정 실패는 '반영 상태를 판정하지 못함') — stale: true, pending = 사유. reroll 은 막지 않음",
+    "busy": "계획 잠금을 15초 안에 잡지 못함(run·draft)",
+    "plan_error": "선택 계획 계산 오류·local_qwen 모델 경로 미설정(run·draft)",
+    "nothing_to_approve": "지금 선택 계획의 해시가 \"\"(승인할 것 없음 — run·draft)",
+    "stale": "요청 approve ≠ 지금 선택 계획의 해시 — stale: true, hash = 지금 해시(run·draft)"
+   },
+   "messages bmk-dp-approve stage": {
+    "run": "hash = 계획 run.hash(12자 소문자 hex), only = 정규 only",
+    "draft": "hash = 계획 draft.hash, only = 정규 only(apply=full 이고 화풍을 고르면 ',style')",
+    "reroll": "hash \"\"·only \"\" — 사전 승인분 전체(R 뒤, 확인 창 없음)"
+   },
+   "messages bmk-dp-hello_reply submit": {
+    "ok": "감싸개 설치됨 && typeof app.queuePrompt === \"function\"",
+    "unsupported": "그 밖(유료 단추 끔)"
+   },
+   "messages bmk-dp-approved reason": {
+    "busy": "탭이 큐 처리 중(app.processingQueue)·다른 Studio 승인 처리 중·프론트 자동 큐가 켜져 있음(Run (On Change)·Run (Instant) 실행 중·옛 메뉴 Auto Queue — 받을 때와 무장 직전), 또는 서버 409 busy — error 에 이유와 할 일(Studio 는 그대로 보임)",
+    "bad_request": "승인 메시지 모양(stage·hash·only·rootKey)이 틀림 — stage 가 run·draft·reroll 이 아니면 stage null",
+    "pipeline_broken": "서버 409 그대로",
+    "confirm_settings": "서버 409 그대로",
+    "no_psd": "서버 409 그대로",
+    "missing_path": "서버 409 그대로",
+    "stale_settings": "서버 409 그대로",
+    "running": "서버 409 그대로",
+    "apply_needed": "서버 409 그대로 — pending = 사유",
+    "plan_error": "서버 409 그대로",
+    "nothing_to_approve": "서버 409 그대로",
+    "stale": "서버 409 그대로 — hash = 지금 해시",
+    "http": "그 밖 HTTP 오류·네트워크 — error 에 상태·문구",
+    "template": "템플릿 검사 실패 — error 에 어긋난 항목",
+    "not_submitted": "app.queuePrompt 가 돌아왔는데 바꿔치기 안 됨(used false) — error = '제출되지 않음(과금 없음) — <까닭>': 던진 오류(+ 승인 제출도 열린 워크플로를 거치므로 다시 승인해도 같음 — 다른 워크플로로 바꾼 뒤) · deno Ideogram Director 사전 점검(그 알림의 Apply/Keep 은 열린 그래프를 실행 — 누르지 말 것) · 다른 확장 감싸개가 대상을 바꿈(셋째 인자를 버림 등) · 처리 루프가 승인 항목을 꺼내기 전에 끝남(남은 항목은 큐에서 뺌) · 제출하지 않고 돌아옴(Pixaroma 큐 반복 노드의 빈 목록·XY Plot 확인 취소·실행 중, 로그인·작업공간 전환 — 다른 확장 알림의 계속 단추는 열린 그래프를 실행)",
+    "rejected": "바꿔치기는 했는데 서버가 큐에 넣지 않음 — 서버 4xx(PromptExecutionError status 400–499)·응답에 prompt_id 없음·안쪽 감싸개가 보내기 전에 동기로 던짐, error 에 이유",
+    "unknown": "바꿔치기한 본문을 보낸 뒤 결과를 모름 — 연결 끊김·200 인데 JSON 아님·5xx(서버가 이미 큐에 넣었을 수 있음): Studio 는 '결과 모름'(no_ack·timeout·tab_changed 와 같이 계획 다시·같은 해시 재승인 확인 창 줄)"
+   },
    "run.backend": [
     "comfy_org",
     "mock"
@@ -93,17 +129,20 @@
    "confirm·derived.confirm = '절.키' 경로 목록(절·키 순서). GET /pipeline 은 파일을 쓰지 않는다 — 없으면 alt.missing(rev 0·saved false·유도값), 깨졌으면 alt.broken(rev null·settings null·confirm null).",
    "field 의 두 뜻: drift[].field = 키 이름만(절은 section 에 따로 — {section: 'import', field: 'glossary_path'}), warnings[].field·409 field·fields = '절.키'('import.glossary_path').",
    "warnings 는 모두 템플릿을 막는다(GET /pipeline/prompt 409 no_psd·missing_path — pipeline.prompt_gate): field 가 import.* 인 것은 반영·Export, cand.path(켠 후보 등록의 경로가 source 에 맞지 않음 — psd_harvest = 파일, folder = 폴더가 없음, reason missing_path)는 반영만(export 템플릿에는 dp_cand 가 없음). cand.path 를 막지 않으면 Import 가 미반영 편집을 커밋한 뒤 Candidate In 에서 실패해 Import 뒤·Prepare 전의 반쪽 상태가 남는다.",
-   "sig(GET /pipeline/prompt) = '<pipeline rev>:<매니페스트 rev>'(Studio 표시용). targets 는 S3a 에서 늘 null(S3b 유료 stage = [출력 노드 키]).",
+   "sig(GET /pipeline/prompt) = '<pipeline rev>:<매니페스트 rev>'(Studio 표시용 — 선택 인자 expect 와 같은 꼴, GET /pipeline 의 rev·manifest_rev 로 만든다). targets = 무료 stage null, 유료 stage [출력 노드 키](run·reroll [\"dp_review\"], draft [\"dp_draft\"]). hash = 요청 approve(run·draft — 지금 선택 계획의 해시와 같음을 확인한 값), reroll·무료 \"\". only = 서버가 정규화한 only(pl.only_string — 매니페스트 crop_id 정렬 + apply=full 이고 style 토큰이면 ',style'), reroll·무료 \"\" — 탭은 응답 stage·hash·only 가 요청과 같은지 본다. 400 = 모르는 stage·인자 모양(run·draft 는 approve 12자 소문자 hex·비지 않은 only, reroll·무료는 approve·only 없음)·only 정규화 실패(crop_id 꼴·매니페스트 밖).",
    "seen = json.dumps(store.file_fingerprint(스펙)) 문자열(mtime_ns > 2^53 — 숫자로 바꾸지 말 것), 파일 없음 = \"null\". crop_sig = 크롭 서명(layer_name·[(tid, label, origin)])의 불투명 문자열 — 받은 그대로 POST 에 싣는다.",
    "est_usd·est_usd_pre·credits·est·est_credits = [보통|최소, 최대]. progress 의 draft.since = 시작 시각(epoch 초, 숫자).",
    "GET /pipeline/plan 의 by_crop 은 only 없는 계획(크롭 전부), hash·need·est_usd·credits·reasons·filtered(run)와 units·refresh_available·skipped·cached·accepted·filtered·est_credits·est_seconds(draft)는 선택(only/style) 계획. run.by_crop 의 '_stale' 칸 = crop_id 가 없거나 매니페스트에 없는 크롭의 옛 셀. draft.by_crop.*.adopt = \"add\" | null(채택할 제안 없음 — 대부분의 크롭).",
+   "GET /pipeline/plan draft 확인 창 필드(§4.4 — S3b 계약 §2): 선택 계획 = orphan_retries(orphan 재시도 수)·est_usd([보통, 최대] = est_credits ÷ runner.CREDITS_PER_USD)·reasons([{reason, n}] — vlm.approval reasons 를 run.reasons 꼴로)·free(재파싱 등 무료 단위 수), only 없는 계획 = pending_style(0|1 — only 없는 계획 units 에 화풍 단위 _style 이 있음)·mock_forced(draft.vlm 이 openai 인데 mock 스위치로 mock — 노드 header.mock_forced 와 같은 식). draft running·error alt 에는 없음, run 에는 더하지 않음.",
    "state.crop.draft_chip = null 이면 보드가 기억한 계획이 없음(plan_stale false), draft_chip.adopt = \"add\" | null. plan_v = 기억한 계획의 서명이 지금과 같으면 그 서명, 아니면 null. unchanged 의 layout_rev·refs_rev·refs_files_v 는 파일·폴더가 없으면 null(기존 build_state), pipeline_rev 는 pipeline.json 이 없거나 깨졌으면 null. drafting(flags·unchanged 둘 다) = Spec Draft 실행 중(board.draft_since — running 은 Run 만) — 진행 모드는 이것으로 실행 중을 알아 낡은 계획·초안 다시 받기를 미룬다.",
-   "GET /pipeline/plan 요청: only = 고른 crop_id 를 쉼표로 이은 정규형(pipeline.only_string — style 토큰 없이), style = \"1\" | \"0\"(없으면 \"0\" — Draft 화풍, apply=full 일 때만 뜻이 있음). only 가 비면(없거나 \"\") 선택 계획을 만들지 않는다(칩용 — Studio 를 연 뒤 한 번, 빈 only 는 노드에서 '전부'라 그 해시를 보이지 않음) → alt.no_selection: sig = 'r:…|d:…'(o: 없음 — state plan_v 꼴), 선택 필드는 빈 값 (hash \"\" = 승인할 것 없음, need 0·filtered 0, est_usd·credits·est_credits [0, 0], est_seconds 0, reasons·units·refresh_available·skipped·cached·accepted·filtered []), by_crop(selected 전부 false)·pre·free·est_usd_pre·running·warnings·import_pending 은 only 없는 계획 그대로.",
+   "GET /pipeline/plan 요청: only = 고른 crop_id 를 쉼표로 이은 정규형(pipeline.only_string — style 토큰 없이), style = \"1\" | \"0\"(없으면 \"0\" — Draft 화풍, apply=full 일 때만 뜻이 있음). only 가 비면(없거나 \"\") 선택 계획을 만들지 않는다(칩용 — Studio 를 연 뒤 한 번, 빈 only 는 노드에서 '전부'라 그 해시를 보이지 않음) → alt.no_selection: sig = 'r:…|d:…'(o: 없음 — state plan_v 꼴), 선택 필드는 빈 값 (hash \"\" = 승인할 것 없음, need 0·filtered 0, est_usd·credits·est_credits [0, 0], est_seconds 0, reasons·units·refresh_available·skipped·cached·accepted·filtered [], draft 의 orphan_retries·free 0·est_usd [0, 0]), by_crop(selected 전부 false)·pre·free·est_usd_pre·running·warnings·import_pending·pending_style·mock_forced 는 only 없는 계획 그대로.",
    "GET /pipeline/plan alt.style = draft.apply full + style \"1\"(only 에 style 토큰 — sig '…|o:<crop_id…>,style'): 화풍은 draft 의 units·refresh_available·skipped·filtered 에 crop_id \"_style\"(vlm.STYLE_ID — \"_project\" 는 화풍 스펙 파일 이름일 뿐) 단위로 나오고 크롭 수로 세지 않는다(Studio '2크롭 + 화풍'). 나머지 필드는 ok 와 같다.",
    "GET /pipeline 의 widgets = pipeline.settings_widgets() — 설정 패널의 절별 위젯 {절: {키: {type, default, choices?, min?, max?, step?, readonly?}}}. 노드 선택지 그대로(draft.write_mode 는 fill·refresh 만, draft.draft_round 는 readonly) — JS 는 선택지를 복사하지 않고 이것을 쓴다.",
    "derived = pipeline.derive(deep=True): 절마다 유도값이 검사(vlm 선택지·모델별 effort 포함)를 통과하지 못하면 그 절은 노드 기본값 + 그 절 전부 confirm(+ notes) — draft 절은 스펙 출처 조합 vlm·effort·image_detail 만(draft_round = 스펙 출처 그대로, credit_cap = 권장 1200 그대로) — [매니페스트 값으로 다시]가 늘 저장된다. from 'default' = 기록이 없어 Studio 처음 값(노드 기본값과 같되 draft.credit_cap 만 권장 1200 — 노드 0 = 상한 없음, notes 에 적음). 파일이 없을 때 계획·prompt 라우트의 settings 도 이 유도값(pipeline.current(root, m, deep=True)) — 설정 패널과 같은 값으로 계산한다.",
-   "GET /pipeline/plan 의 apply_pending = '반영 필요' 판정 하나(STUDIO_S3_SPEC §2.2·§3.3 — 보드 _apply_pending, 요청마다 계산): 같은 큐의 Import 가 매니페스트를 바꿀 차이(draft.import_pending 과 같은 사유 — 레이아웃·레퍼런스·채택·Import 설정 미반영·깨진 파일) + prepare_inputs 불일치('Prepare 입력이 바뀜'·'지문 없음'·'지문을 계산하지 못함'). 비면 반영됨. Draft 가 실행 중·오류여도 있다(import_pending 은 그때 없음). notes 는 설정 쪽 사유(설정 미확인·Prepare/Import 설정 갈라짐)만. GET /draft·POST /draft/adopt 도 실행 설정이 깨졌으면 409 pipeline_broken(초안 family·apply 를 정할 수 없어 쓰지 않음)."
-  ]
+   "GET /pipeline/plan 의 apply_pending = '반영 필요' 판정 하나(STUDIO_S3_SPEC §2.2·§3.3 — 보드 _apply_pending, 요청마다 계산): 같은 큐의 Import 가 매니페스트를 바꿀 차이(draft.import_pending 과 같은 사유 — 레이아웃·레퍼런스·채택·Import 설정 미반영·깨진 파일) + prepare_inputs 불일치('Prepare 입력이 바뀜'·'지문 없음'·'지문을 계산하지 못함'). 비면 반영됨. Draft 가 실행 중·오류여도 있다(import_pending 은 그때 없음). notes 는 설정 쪽 사유(설정 미확인·Prepare/Import 설정 갈라짐)만. GET /draft·POST /draft/adopt 도 실행 설정이 깨졌으면 409 pipeline_broken(초안 family·apply 를 정할 수 없어 쓰지 않음).",
+   "GET /pipeline 의 manifest_rev = 매니페스트 rev(int — 늘 실림, alt.missing·broken 에도). Studio 무료 반영이 GET /pipeline/prompt 의 expect = '<rev>:<manifest_rev>' 를 만든다(S3b 계약 §1 — S3a r2-02 남은 틈)."
+  ],
+  "S3b": "S3b 에서 바뀐 것(계약 _proto/s3b/S3B_CONTRACT.md §1–§3): GET /pipeline/prompt 의 모든 200 본문에 hash·only(무료 \"\")와 alt run·draft·reroll, 400 유료 인자 오류(S3a '유료 stage 400' 없어짐), 409 stale·apply_needed·nothing_to_approve·running·busy·plan_error·stale_settings(기존 4개 뒤에 — 색인 그대로) · GET /pipeline 최상위 manifest_rev · GET /pipeline/plan draft 확인 창 필드(orphan_retries·est_usd·reasons·free·pending_style·mock_forced) · 새 절 messages."
  },
  "routes": {
   "GET /pipeline": {
@@ -738,7 +777,8 @@
        "default": true
       }
      }
-    }
+    },
+    "manifest_rev": 79
    },
    "alt": {
     "missing": {
@@ -1348,7 +1388,8 @@
         "default": true
        }
       }
-     }
+     },
+     "manifest_rev": 79
     },
     "broken": {
      "rev": null,
@@ -1882,7 +1923,8 @@
         "default": true
        }
       }
-     }
+     },
+     "manifest_rev": 79
     }
    },
    "errors": {
@@ -2165,6 +2207,8 @@
      }
     },
     "targets": null,
+    "hash": "",
+    "only": "",
     "sig": "3:79"
    },
    "alt": {
@@ -2227,16 +2271,266 @@
       }
      },
      "targets": null,
+     "hash": "",
+     "only": "",
+     "sig": "3:79"
+    },
+    "run": {
+     "stage": "run",
+     "prompt": {
+      "dp_project": {
+       "class_type": "BMKDesignPatchProject",
+       "inputs": {
+        "project": "261014_Test",
+        "base_dir": "G:\\AI_output\\_Input"
+       }
+      },
+      "dp_import": {
+       "class_type": "BMKDesignPatchImportPSD",
+       "inputs": {
+        "project": [
+         "dp_project",
+         0
+        ],
+        "psd_path": "G:/AI_output/_Input/bmk_design_patch/261014_Test/261014_Test_DP.psd",
+        "crop_group": "auto",
+        "clean_plate_layer": "auto",
+        "base_layer": "auto",
+        "crop_pixels_group": "auto",
+        "refs_dir": "G:/AI_output/_Input/bmk_design_patch/261014_Test/refs",
+        "glossary_path": "G:/AI_output/_Input/bmk_design_patch/261014_Test/glossary.json"
+       }
+      },
+      "dp_prepare": {
+       "class_type": "BMKDesignPatchPrepare",
+       "inputs": {
+        "project": [
+         "dp_import",
+         0
+        ],
+        "model": "gpt-image-2.5-sunburst",
+        "quality": "max",
+        "size_rule": "user_k",
+        "variants": "V1,V4",
+        "n": 2,
+        "ref_style": "at",
+        "calls_per_cell": 1
+       }
+      },
+      "dp_run": {
+       "class_type": "BMKDesignPatchRun",
+       "inputs": {
+        "project": [
+         "dp_prepare",
+         0
+        ],
+        "approve": "3f9a1c2b7d10",
+        "max_new_calls": 64,
+        "concurrency": 4,
+        "wave_minutes": 25,
+        "retry_failed": false,
+        "retry_orphans": false,
+        "only": "001_38a818,002_d98f99,003_2f8f50"
+       }
+      },
+      "dp_analyze": {
+       "class_type": "BMKDesignPatchAnalyze",
+       "inputs": {
+        "project": [
+         "dp_run",
+         0
+        ],
+        "register": "guarded_affine",
+        "tone": "field",
+        "tone_sigma": 16,
+        "dE": 8.0,
+        "grow": 9,
+        "feather_sigma": 3.5,
+        "roi_prior": "none",
+        "only_picked": false
+       }
+      },
+      "dp_review": {
+       "class_type": "BMKDesignPatchReview",
+       "inputs": {
+        "project": [
+         "dp_analyze",
+         0
+        ]
+       }
+      }
+     },
+     "targets": [
+      "dp_review"
+     ],
+     "hash": "3f9a1c2b7d10",
+     "only": "001_38a818,002_d98f99,003_2f8f50",
+     "sig": "3:79"
+    },
+    "draft": {
+     "stage": "draft",
+     "prompt": {
+      "dp_project": {
+       "class_type": "BMKDesignPatchProject",
+       "inputs": {
+        "project": "261014_Test",
+        "base_dir": "G:\\AI_output\\_Input"
+       }
+      },
+      "dp_import": {
+       "class_type": "BMKDesignPatchImportPSD",
+       "inputs": {
+        "project": [
+         "dp_project",
+         0
+        ],
+        "psd_path": "G:/AI_output/_Input/bmk_design_patch/261014_Test/261014_Test_DP.psd",
+        "crop_group": "auto",
+        "clean_plate_layer": "auto",
+        "base_layer": "auto",
+        "crop_pixels_group": "auto",
+        "refs_dir": "G:/AI_output/_Input/bmk_design_patch/261014_Test/refs",
+        "glossary_path": "G:/AI_output/_Input/bmk_design_patch/261014_Test/glossary.json"
+       }
+      },
+      "dp_draft": {
+       "class_type": "BMKDesignPatchSpecDraft",
+       "inputs": {
+        "project": [
+         "dp_import",
+         0
+        ],
+        "approve": "b21c09e4f7a3",
+        "vlm": "openai/gpt-6-sol",
+        "effort": "xhigh",
+        "image_detail": "high",
+        "write_mode": "fill",
+        "only": "001_38a818,002_d98f99,003_2f8f50",
+        "draft_round": 0,
+        "concurrency": 4,
+        "credit_cap": 1200,
+        "keep_loaded": false,
+        "apply": "targets",
+        "adopt": ""
+       }
+      }
+     },
+     "targets": [
+      "dp_draft"
+     ],
+     "hash": "b21c09e4f7a3",
+     "only": "001_38a818,002_d98f99,003_2f8f50",
+     "sig": "3:79"
+    },
+    "reroll": {
+     "stage": "reroll",
+     "prompt": {
+      "dp_project": {
+       "class_type": "BMKDesignPatchProject",
+       "inputs": {
+        "project": "261014_Test",
+        "base_dir": "G:\\AI_output\\_Input"
+       }
+      },
+      "dp_import": {
+       "class_type": "BMKDesignPatchImportPSD",
+       "inputs": {
+        "project": [
+         "dp_project",
+         0
+        ],
+        "psd_path": "G:/AI_output/_Input/bmk_design_patch/261014_Test/261014_Test_DP.psd",
+        "crop_group": "auto",
+        "clean_plate_layer": "auto",
+        "base_layer": "auto",
+        "crop_pixels_group": "auto",
+        "refs_dir": "G:/AI_output/_Input/bmk_design_patch/261014_Test/refs",
+        "glossary_path": "G:/AI_output/_Input/bmk_design_patch/261014_Test/glossary.json"
+       }
+      },
+      "dp_prepare": {
+       "class_type": "BMKDesignPatchPrepare",
+       "inputs": {
+        "project": [
+         "dp_import",
+         0
+        ],
+        "model": "gpt-image-2.5-sunburst",
+        "quality": "max",
+        "size_rule": "user_k",
+        "variants": "V1,V4",
+        "n": 2,
+        "ref_style": "at",
+        "calls_per_cell": 1
+       }
+      },
+      "dp_run": {
+       "class_type": "BMKDesignPatchRun",
+       "inputs": {
+        "project": [
+         "dp_prepare",
+         0
+        ],
+        "approve": "",
+        "max_new_calls": 64,
+        "concurrency": 4,
+        "wave_minutes": 25,
+        "retry_failed": false,
+        "retry_orphans": false,
+        "only": ""
+       }
+      },
+      "dp_analyze": {
+       "class_type": "BMKDesignPatchAnalyze",
+       "inputs": {
+        "project": [
+         "dp_run",
+         0
+        ],
+        "register": "guarded_affine",
+        "tone": "field",
+        "tone_sigma": 16,
+        "dE": 8.0,
+        "grow": 9,
+        "feather_sigma": 3.5,
+        "roi_prior": "none",
+        "only_picked": false
+       }
+      },
+      "dp_review": {
+       "class_type": "BMKDesignPatchReview",
+       "inputs": {
+        "project": [
+         "dp_analyze",
+         0
+        ]
+       }
+      }
+     },
+     "targets": [
+      "dp_review"
+     ],
+     "hash": "",
+     "only": "",
      "sig": "3:79"
     }
    },
    "errors": {
     "400": [
      {
-      "error": "S3a 는 무료 stage(apply·export)만 냅니다 — 유료 승인은 그래프의 Run·Spec Draft 승인 버튼: 'run'"
+      "error": "모르는 stage 입니다: 'apply2' (stage: apply, export, draft, run, reroll)"
      },
      {
-      "error": "모르는 stage 입니다: 'apply2' (stage: apply, export, draft, run, reroll)"
+      "error": "run 는 승인 해시(12자 소문자 hex)가 필요합니다: '3F9A1C2B7D10'"
+     },
+     {
+      "error": "draft 는 only(고른 크롭 명시 목록)가 필요합니다 — 빈 only 는 '전부'라 승인 집합이 계획과 다름"
+     },
+     {
+      "error": "reroll 은 approve·only 없이(사전 승인 재굴림 전체 — only 무관): approve='3f9a1c2b7d10' only=''"
+     },
+     {
+      "error": "매니페스트에 없는 크롭입니다: 099_ffffff"
      }
     ],
     "404": [
@@ -2268,6 +2562,44 @@
      {
       "error": "실행 설정 파일이 깨졌습니다 — 설정 패널에서 다시 저장(덮어쓰기): pipeline.json JSON 형식이 잘못되었습니다(Expecting property name enclosed in double quotes: line 1 column 2 (char 1))",
       "reason": "pipeline_broken"
+     },
+     {
+      "error": "승인한 계획이 지금과 다릅니다 — 계획을 다시 받아 승인(지금 해시 5e81d07c2a94)",
+      "reason": "stale",
+      "stale": true,
+      "hash": "5e81d07c2a94"
+     },
+     {
+      "error": "반영 필요 — 먼저 [반영]: 레이아웃 미반영(rev 7); Prepare 입력이 바뀜(마지막 Prepare 뒤 스펙·레이아웃·레퍼런스·용어집)",
+      "reason": "apply_needed",
+      "stale": true,
+      "pending": [
+       "레이아웃 미반영(rev 7)",
+       "Prepare 입력이 바뀜(마지막 Prepare 뒤 스펙·레이아웃·레퍼런스·용어집)"
+      ]
+     },
+     {
+      "error": "승인할 것이 없습니다 — 지금 계획의 승인 대상 0건(사전 승인 재굴림은 R)",
+      "reason": "nothing_to_approve"
+     },
+     {
+      "error": "Run 실행 중 — 끝난 뒤 계획을 다시 받아 승인",
+      "reason": "running",
+      "stale": true
+     },
+     {
+      "error": "계획 계산이 밀려 있습니다(15초) — 잠시 뒤 다시",
+      "reason": "busy"
+     },
+     {
+      "error": "Run 계획을 계산하지 못함: runner 를 읽을 수 없음",
+      "reason": "plan_error"
+     },
+     {
+      "error": "실행 설정·매니페스트가 바뀜(요청 3:79 · 지금 4:80) — 계획을 다시 받아 확인",
+      "reason": "stale_settings",
+      "stale": true,
+      "sig": "4:80"
      }
     ]
    },
@@ -2420,6 +2752,18 @@
       47
      ],
      "est_seconds": 300.0,
+     "orphan_retries": 0,
+     "est_usd": [
+      0.13,
+      0.22
+     ],
+     "reasons": [
+      {
+       "reason": "타깃 추가",
+       "n": 1
+      }
+     ],
+     "free": 0,
      "by_crop": {
       "003_2f8f50": {
        "wait": [
@@ -2442,7 +2786,9 @@
      },
      "import_pending": [
       "레이아웃 미반영(rev 7)"
-     ]
+     ],
+     "pending_style": 0,
+     "mock_forced": false
     }
    },
    "alt": {
@@ -2503,6 +2849,18 @@
        47
       ],
       "est_seconds": 300.0,
+      "orphan_retries": 0,
+      "est_usd": [
+       0.13,
+       0.22
+      ],
+      "reasons": [
+       {
+        "reason": "타깃 추가",
+        "n": 1
+       }
+      ],
+      "free": 0,
       "by_crop": {
        "003_2f8f50": {
         "wait": [
@@ -2525,7 +2883,9 @@
       },
       "import_pending": [
        "레이아웃 미반영(rev 7)"
-      ]
+      ],
+      "pending_style": 0,
+      "mock_forced": false
      }
     },
     "draft_running": {
@@ -2888,6 +3248,13 @@
        0
       ],
       "est_seconds": 0.0,
+      "orphan_retries": 0,
+      "est_usd": [
+       0.0,
+       0.0
+      ],
+      "reasons": [],
+      "free": 0,
       "by_crop": {
        "003_2f8f50": {
         "wait": [
@@ -2910,7 +3277,9 @@
       },
       "import_pending": [
        "레이아웃 미반영(rev 7)"
-      ]
+      ],
+      "pending_style": 0,
+      "mock_forced": false
      }
     },
     "style": {
@@ -3055,6 +3424,22 @@
        61
       ],
       "est_seconds": 360.0,
+      "orphan_retries": 0,
+      "est_usd": [
+       0.17,
+       0.29
+      ],
+      "reasons": [
+       {
+        "reason": "타깃 추가",
+        "n": 1
+       },
+       {
+        "reason": "화풍 신규",
+        "n": 1
+       }
+      ],
+      "free": 0,
       "by_crop": {
        "003_2f8f50": {
         "wait": [
@@ -3077,7 +3462,9 @@
       },
       "import_pending": [
        "레이아웃 미반영(rev 7)"
-      ]
+      ],
+      "pending_style": 1,
+      "mock_forced": false
      }
     }
    },
@@ -3683,5 +4070,278 @@
    "bmk_dp_export[].psd",
    "bmk_dp_export[].rev"
   ]
+ },
+ "messages": {
+  "bmk-dp-hello": {
+   "examples": [
+    {
+     "type": "bmk-dp-hello",
+     "id": "k3f9x2m7q1"
+    },
+    {
+     "type": "bmk-dp-hello",
+     "id": "p8d2v6n0t4",
+     "tab": "mgvq3k1x7h2p9d4a"
+    }
+   ],
+   "nullable": [],
+   "optional": [
+    "tab"
+   ]
+  },
+  "bmk-dp-hello_reply": {
+   "examples": [
+    {
+     "type": "bmk-dp-hello",
+     "id": "k3f9x2m7q1",
+     "tab": "mgvq3k1x7h2p9d4a",
+     "ext": 3,
+     "submit": "ok",
+     "busy": false
+    }
+   ],
+   "nullable": [],
+   "optional": []
+  },
+  "bmk-dp-approve": {
+   "examples": [
+    {
+     "type": "bmk-dp-approve",
+     "id": "a7k2m9x4p1",
+     "tab": "mgvq3k1x7h2p9d4a",
+     "rootKey": "fe410d7f025d",
+     "stage": "run",
+     "hash": "3f9a1c2b7d10",
+     "only": "001_38a818,002_d98f99,003_2f8f50",
+     "what": "Run 승인 4건 ≈ $2.40–3.16"
+    },
+    {
+     "type": "bmk-dp-approve",
+     "id": "d4n8q2w6z0",
+     "tab": "mgvq3k1x7h2p9d4a",
+     "rootKey": "fe410d7f025d",
+     "stage": "draft",
+     "hash": "b21c09e4f7a3",
+     "only": "001_38a818,002_d98f99,003_2f8f50",
+     "what": "초안 승인 1크롭 ≈ 27(최대 47) 크레딧"
+    },
+    {
+     "type": "bmk-dp-approve",
+     "id": "r5t1y7u3i9",
+     "tab": "mgvq3k1x7h2p9d4a",
+     "rootKey": "fe410d7f025d",
+     "stage": "reroll",
+     "hash": "",
+     "only": "",
+     "what": "재굴림(사전 승인) 1건 ≈ $0.62"
+    }
+   ],
+   "nullable": [],
+   "optional": [
+    "what"
+   ]
+  },
+  "bmk-dp-ack": {
+   "examples": [
+    {
+     "type": "bmk-dp-ack",
+     "id": "a7k2m9x4p1",
+     "tab": "mgvq3k1x7h2p9d4a"
+    }
+   ],
+   "nullable": [],
+   "optional": []
+  },
+  "bmk-dp-approved": {
+   "examples": [
+    {
+     "type": "bmk-dp-approved",
+     "id": "a7k2m9x4p1",
+     "tab": "mgvq3k1x7h2p9d4a",
+     "stage": "run",
+     "ok": true,
+     "prompt_id": "9ee523eb-6c1d-4a8e-b2f7-3d5a0c9e1b42"
+    },
+    {
+     "type": "bmk-dp-approved",
+     "id": "a7k2m9x4p1",
+     "tab": "mgvq3k1x7h2p9d4a",
+     "stage": "run",
+     "ok": false,
+     "reason": "busy",
+     "error": "ComfyUI 탭이 큐를 처리하는 중 — 잠시 뒤 다시 승인"
+    },
+    {
+     "type": "bmk-dp-approved",
+     "id": "a7k2m9x4p1",
+     "tab": "mgvq3k1x7h2p9d4a",
+     "stage": null,
+     "ok": false,
+     "reason": "bad_request",
+     "error": "승인 메시지 모양이 잘못됨: stage"
+    },
+    {
+     "type": "bmk-dp-approved",
+     "id": "a7k2m9x4p1",
+     "tab": "mgvq3k1x7h2p9d4a",
+     "stage": "run",
+     "ok": false,
+     "reason": "pipeline_broken",
+     "error": "실행 설정 파일이 깨졌습니다 — 설정 패널에서 다시 저장(덮어쓰기): pipeline.json JSON 형식이 잘못되었습니다(Expecting property name enclosed in double quotes: line 1 column 2 (char 1))"
+    },
+    {
+     "type": "bmk-dp-approved",
+     "id": "a7k2m9x4p1",
+     "tab": "mgvq3k1x7h2p9d4a",
+     "stage": "run",
+     "ok": false,
+     "reason": "confirm_settings",
+     "error": "실행 설정 확인 필요 — 추정한 Import·Prepare 설정으로 반영하면 셀이 바뀌어 다시 과금 대상이 될 수 있음"
+    },
+    {
+     "type": "bmk-dp-approved",
+     "id": "a7k2m9x4p1",
+     "tab": "mgvq3k1x7h2p9d4a",
+     "stage": "run",
+     "ok": false,
+     "reason": "no_psd",
+     "error": "PSD 경로가 비어 있습니다 — 그래프에서 처음 Import"
+    },
+    {
+     "type": "bmk-dp-approved",
+     "id": "a7k2m9x4p1",
+     "tab": "mgvq3k1x7h2p9d4a",
+     "stage": "run",
+     "ok": false,
+     "reason": "missing_path",
+     "error": "레퍼런스 폴더가 없음: G:/AI_output/_Input/bmk_design_patch/261014_Test/refs_old"
+    },
+    {
+     "type": "bmk-dp-approved",
+     "id": "a7k2m9x4p1",
+     "tab": "mgvq3k1x7h2p9d4a",
+     "stage": "run",
+     "ok": false,
+     "reason": "stale_settings",
+     "error": "실행 설정·매니페스트가 바뀜(요청 3:79 · 지금 4:80) — 계획을 다시 받아 확인"
+    },
+    {
+     "type": "bmk-dp-approved",
+     "id": "a7k2m9x4p1",
+     "tab": "mgvq3k1x7h2p9d4a",
+     "stage": "run",
+     "ok": false,
+     "reason": "running",
+     "error": "Run 실행 중 — 끝난 뒤 계획을 다시 받아 승인"
+    },
+    {
+     "type": "bmk-dp-approved",
+     "id": "a7k2m9x4p1",
+     "tab": "mgvq3k1x7h2p9d4a",
+     "stage": "run",
+     "ok": false,
+     "reason": "apply_needed",
+     "error": "반영 필요 — 먼저 [반영]: 레이아웃 미반영(rev 7); Prepare 입력이 바뀜(마지막 Prepare 뒤 스펙·레이아웃·레퍼런스·용어집)",
+     "pending": [
+      "레이아웃 미반영(rev 7)",
+      "Prepare 입력이 바뀜(마지막 Prepare 뒤 스펙·레이아웃·레퍼런스·용어집)"
+     ]
+    },
+    {
+     "type": "bmk-dp-approved",
+     "id": "a7k2m9x4p1",
+     "tab": "mgvq3k1x7h2p9d4a",
+     "stage": "run",
+     "ok": false,
+     "reason": "plan_error",
+     "error": "Run 계획을 계산하지 못함: runner 를 읽을 수 없음"
+    },
+    {
+     "type": "bmk-dp-approved",
+     "id": "a7k2m9x4p1",
+     "tab": "mgvq3k1x7h2p9d4a",
+     "stage": "run",
+     "ok": false,
+     "reason": "nothing_to_approve",
+     "error": "승인할 것이 없습니다 — 지금 계획의 승인 대상 0건(사전 승인 재굴림은 R)"
+    },
+    {
+     "type": "bmk-dp-approved",
+     "id": "a7k2m9x4p1",
+     "tab": "mgvq3k1x7h2p9d4a",
+     "stage": "run",
+     "ok": false,
+     "reason": "stale",
+     "error": "승인한 계획이 지금과 다릅니다 — 계획을 다시 받아 승인(지금 해시 5e81d07c2a94)",
+     "hash": "5e81d07c2a94"
+    },
+    {
+     "type": "bmk-dp-approved",
+     "id": "a7k2m9x4p1",
+     "tab": "mgvq3k1x7h2p9d4a",
+     "stage": "run",
+     "ok": false,
+     "reason": "http",
+     "error": "템플릿 요청 실패(HTTP 404): 등록되지 않은 프로젝트 키입니다 — Review 노드를 실행한 뒤 노드의 Open Board 로 여세요"
+    },
+    {
+     "type": "bmk-dp-approved",
+     "id": "a7k2m9x4p1",
+     "tab": "mgvq3k1x7h2p9d4a",
+     "stage": "run",
+     "ok": false,
+     "reason": "template",
+     "error": "템플릿 검사 실패: dp_run.inputs.approve ≠ 승인 해시"
+    },
+    {
+     "type": "bmk-dp-approved",
+     "id": "a7k2m9x4p1",
+     "tab": "mgvq3k1x7h2p9d4a",
+     "stage": "run",
+     "ok": false,
+     "reason": "not_submitted",
+     "error": "제출되지 않음(과금 없음) — ComfyUI 탭이 제출하지 않고 돌아옴 — 다른 확장이 제출을 멈췄거나(Pixaroma 큐 반복 노드의 빈 목록·XY Plot 확인 취소·실행 중, deno Ideogram 사전 점검 등) 로그인·작업공간 전환 오류: 다른 확장 알림의 계속·적용 단추는 Studio 승인을 잇지 않고 열린 그래프를 실행함 — 승인은 Studio 에서 다시"
+    },
+    {
+     "type": "bmk-dp-approved",
+     "id": "a7k2m9x4p1",
+     "tab": "mgvq3k1x7h2p9d4a",
+     "stage": "run",
+     "ok": false,
+     "reason": "rejected",
+     "error": "ComfyUI 가 거절함(prompt_id 없음): Prompt outputs failed validation"
+    },
+    {
+     "type": "bmk-dp-approved",
+     "id": "a7k2m9x4p1",
+     "tab": "mgvq3k1x7h2p9d4a",
+     "stage": "run",
+     "ok": false,
+     "reason": "unknown",
+     "error": "제출 결과 모름(응답 오류: Failed to fetch) — 이미 큐에 들어갔을 수 있음: ComfyUI 큐를 확인"
+    }
+   ],
+   "nullable": [
+    "stage"
+   ],
+   "optional": [
+    "hash",
+    "pending"
+   ]
+  },
+  "bmk-dp-wave": {
+   "examples": [
+    {
+     "type": "bmk-dp-wave",
+     "tab": "mgvq3k1x7h2p9d4a",
+     "rootKey": "fe410d7f025d",
+     "prompt_id": "9ee523eb-6c1d-4a8e-b2f7-3d5a0c9e1b42",
+     "node": "dp_run",
+     "remaining": 5
+    }
+   ],
+   "nullable": [],
+   "optional": []
+  }
  }
 }

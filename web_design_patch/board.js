@@ -1,6 +1,7 @@
 // BMK Design Patch Studio(Review Board) — vanilla JS, 빌드·외부 리소스 없음.
 // 서버: bmk_design_patch_board.py (/bmk/design_patch/*). 모든 문자열(PSD 레이어명 등)은 textContent 로만 넣는다.
-// 보드는 매니페스트(★·slice·탈락·재굴림 의도)만 고친다. 유료 호출은 opener(ComfyUI 탭)가 Review 노드를 큐에 넣을 때만.
+// 보드는 매니페스트(★·slice·탈락·재굴림 의도)만 고친다. 유료 호출은 ComfyUI 탭이 큐에 넣을 때만 — 유료 승인을 받는 탭(S3b)이면 승인 템플릿
+// (pipeline.js — 재굴림은 reroll stage), 옛 확장의 opener 탭이면 Review 노드 부분 실행.
 // 캔버스 뷰어는 viewer.js(DPViewer) — 이 파일이 선택·키 입력을 넘긴다. 레이아웃 편집 모드(E)는 layout_edit.js(DPLayoutEdit),
 // 레퍼런스 모드(T)는 ref_edit.js(DPRefEdit — 시트 뷰어 = DPViewer 두 번째 인스턴스), 진행 모드(G)는 pipeline.js(DPPipeline — 실행 설정·
 // 무료 반영·계획/비용·채택·★ 점검·Export, 머리줄 한 줄·ComfyUI 탭 hello 표시). 세 모드와 검토는 서로 배타.
@@ -24,11 +25,14 @@
   // 진행 모드에서 끄는 키: 검토 키 + 편집(E)·레퍼런스(T). 뷰어 키(B·O·N·0·F·1·2)는 그대로(가운데 = 캔버스 뷰어)
   const PIPE_OFF = new Set([...EDIT_OFF, "KeyE", "KeyT"]);
   const LAYOUT_STATUS = { changed: "레이아웃 바뀜(미반영)", removed: "레이아웃에서 지움(미반영)" }; // state 크롭의 layout_status
-  // ComfyUI 탭 hello(DPPipeline.link) 상태 → 배지(S3a 는 표시만 — 유료 승인 단추는 S3b). 키 = tabKey: ok 라도 채널로 찾은 탭은 found(R·ComfyUI 큐는
-  // opener 로만 감 — S2 의 'ComfyUI 탭 없음' 사전 경고를 잃지 않게), old 중 응답이 아예 없으면 silent(옛 확장인지 다른 주소로 옮겼는지 모름)
+  // ComfyUI 탭 hello(DPPipeline.link) 상태 → 배지. 키 = tabKey: 유료 승인을 받는 탭(확장 판 3 이상·submit ok)은 길마다 ok(opener)·channel —
+  // 승인·재굴림·ComfyUI 큐가 그 탭으로(계약 §5). 판 2(S3a 확장)는 s3a, 판 3 인데 제출을 못 함은 nosubmit — 유료 승인 끔(R·ComfyUI 큐는 opener 만).
+  // old 중 응답이 아예 없으면 silent(옛 확장인지 다른 주소로 옮겼는지 모름)
   const TAB_BADGE = {
-    ok: ["b-run", "ComfyUI 탭 연결(S3)"],
-    found: ["b-wait", "ComfyUI 탭 찾음(채널) — 재굴림·ComfyUI 큐는 Open Board 창에서"],
+    ok: ["b-run", "ComfyUI 탭 연결"],
+    channel: ["b-run", "ComfyUI 탭 연결(채널)"],
+    s3a: ["b-wait", "탭 확장이 옛 판(S3a) — 유료 승인은 ComfyUI 탭 새로고침 뒤"],
+    nosubmit: ["b-wait", "ComfyUI 탭이 승인 제출을 못 함 — 유료 승인 끔"],
     old: ["b-wait", "탭 확장이 옛 판 — ComfyUI 탭 새로고침"],
     silent: ["b-wait", "ComfyUI 탭 응답 없음 — 탭 새로고침 또는 Open Board 로 다시 열기"],
     none: ["b-dim", "ComfyUI 탭 없음"],
@@ -46,7 +50,7 @@
   let polling = false;
   let pollAgain = false;
   let pollTimer = null;
-  let rerollArm = null; // {cell, until}
+  let rerollArm = null; // {cell, way, until} — way = 첫 R 토스트를 만든 판정(tabWay)
   let toastTimer = null;
   let viewer = null;
   let slider = false;
@@ -383,28 +387,49 @@
     return own || t.cells[0] || null;
   }
 
-  async function reroll(fromButton) {
+  async function reroll(fromButton, scripted) {
     const cell = rerollCell();
     if (!cell) {
       toast("이 타깃의 작업(jobs)이 없습니다 — Prepare 를 먼저 실행하세요", "err");
       return;
     }
     const what = `재굴림 +1 호출 (${cell.variant || cell.cell_key.slice(0, 8)}${usd(cell)})`;
-    // 셀 가격(est_usd)은 마지막 Prepare 의 jobs 값 — S3a 부터 Studio 반영일 수 있어 그래프 Prepare 를 다시 도는 큐와 다를 수 있음을 함께 적는다
-    const graphPrep = "금액은 지금 jobs(마지막 Prepare — Studio 반영 포함) 기준: 큐·Run 은 그래프 Prepare(그래프 위젯 값)를 다시 돌린 뒤 과금하므로 "
-      + "그래프 Prepare 값이 Studio 설정과 다르면 장 수·비용이 바뀌거나(n·셀당 호출) 셀이 바뀌어 이 재굴림이 미뤄짐(모델·품질·변형 등)";
-    // 큐 요청은 opener(Open Board 로 연 탭)로만 간다 — 채널로 찾은 탭이 있어도 없으면 예약만(다음 Run 때 선택과 무관하게 과금)
-    const tab = comfyConnected();
+    // 큐 요청은 queueReroll 의 길(유료 승인을 받는 탭 — 채널 포함 · 옛 확장의 opener 탭)로 — 둘 다 없으면 예약만(다음 Run 때 선택과 무관하게 과금).
+    // 0.6초 뒤 큐는 이 판정(way·lock)을 넘겨받는다 — 그 사이 길이 바뀌면(busy 풀림·잡힘 등) 확인한 문구의 길이 아니므로 보내지 않음(예약만).
+    // 탭 길이어도 이 Studio 가 유료 요청·실행·무료 큐 중이면(lock — 길과 무관: 자기 승인을 처리하는 탭은 hello busy 라 opener 길이 됨) 지금은
+    // 예약만이라고 쓰고, 그 뒤 lock 이 풀려도 보내지 않음(동의한 것은 예약만 — 부수 효과 줄도 보이지 않았음). 키보드 R 도 첫 R 토스트(문구)를 만든
+    // 판정과 다르면 다시 무장. scripted = 스크립트 키(합성 KeyboardEvent — isTrusted 아님): 사전 승인(예약)만 — 확인 창 없이 지금 보내는 큐(유료 탭
+    // 길의 승인 제출·opener 의 Review 부분 실행)는 사용자 키 입력에서만(D7 — 스크립트가 바로 과금하지 않게)
+    const way = scripted ? "" : tabWay();
+    const tab = !!way;
+    const lock = tab && pipe ? pipe.paidLock() : "";
+    const why = tab ? "" : (pipe && pipe.paidWhy()) || "이 창을 연 ComfyUI 탭 없음";
+    // 셀 가격(est_usd)은 마지막 Prepare 의 jobs 값 — 큐는 Prepare 를 다시 돈 뒤 과금한다. 유료 가능한 탭의 재굴림 템플릿은 Studio 실행 설정(반영과
+    // 같음 — 반영 확인 창처럼 Prepare·Import 갈라짐 줄을 앞에), 옛 탭의 Review 부분 실행·다음 그래프 Run 은 그래프 위젯 값
+    const graphPrep = way === "paid" ? pipe.applyWarn().concat("금액은 지금 jobs(마지막 Prepare) 기준: 재굴림 템플릿은 Studio 실행 설정(pipeline.json)으로 "
+      + "Import·Prepare 를 다시 돈 뒤 과금하므로 Prepare 갈라짐이 있으면 장 수·비용이 바뀌거나(n·셀당 호출) 셀이 바뀌어 이 재굴림이 미뤄짐(모델·품질·변형 등)")
+      .join("\n")
+      : "금액은 지금 jobs(마지막 Prepare — Studio 반영 포함) 기준: 큐·Run 은 그래프 Prepare(그래프 위젯 값)를 다시 돌린 뒤 과금하므로 "
+        + "그래프 Prepare 값이 Studio 설정과 다르면 장 수·비용이 바뀌거나(n·셀당 호출) 셀이 바뀌어 이 재굴림이 미뤄짐(모델·품질·변형 등)";
     if (fromButton) {
-      if (!window.confirm(`${what}\n${graphPrep}\n` + (tab ? "유료 호출이 사전 승인되고 ComfyUI 탭에 큐 요청을 보냅니다. 계속할까요?"
-        : "유료 호출이 사전 승인됩니다 — 이 창은 Open Board 로 열리지 않아 큐를 보낼 탭이 없음: 재굴림은 예약만 되고 다음 Run 때(선택과 무관) "
-          + "함께 과금됩니다. 계속할까요?"))) return;
+      // 유료 탭 길은 승인 제출이라 사용자 그래프 부수 효과 줄(pipe.side — §10.7 보정 4)을 붙임(지금 보내지 않으면 없음)
+      if (!window.confirm(`${what}\n${graphPrep}\n` + (lock ? `유료 호출이 사전 승인됩니다 — 지금은 큐를 보내지 않음(${lock}): 재굴림은 예약만 되고 `
+        + "머리줄 'ComfyUI 큐'로 보내거나 다음 Run 때(선택과 무관) 함께 과금됩니다. 계속할까요?"
+        : tab ? (way === "paid" ? `${pipe.side}\n` : "") + "유료 호출이 사전 승인되고 ComfyUI 탭에 큐 요청을 보냅니다. 계속할까요?"
+          : `유료 호출이 사전 승인됩니다 — 지금 큐를 보내지 않음(${why}): 재굴림은 예약만 되고 다음 Run 때(선택과 무관) 함께 과금됩니다. 계속할까요?`))) {
+        return;
+      }
     } else {
       const now = Date.now();
-      if (!rerollArm || rerollArm.cell !== cell.cell_key || now > rerollArm.until) {
-        rerollArm = { cell: cell.cell_key, until: now + REROLL_CONFIRM_MS };
-        toast(`R 을 한 번 더 누르면 ${what} — 유료` + (tab ? "" : " · 큐를 보낼 탭 없음(예약만 — 다음 Run 때 과금)")
-          + " · 금액은 지금 jobs 기준(그래프 Prepare 값이 Studio 와 다르면 바뀜)", "warn");
+      if (!rerollArm || rerollArm.cell !== cell.cell_key || rerollArm.way !== way || rerollArm.lock !== lock || now > rerollArm.until) {
+        rerollArm = { cell: cell.cell_key, way, lock, until: now + REROLL_CONFIRM_MS };
+        // 유료 탭 길로 지금 보내면 승인 제출 — 버튼 R 확인 창의 부수 효과 줄(pipe.side)을 짧게
+        toast(`R 을 한 번 더 누르면 ${what} — 유료`
+          + (tab ? "" : ` · 지금 큐를 보내지 않음(${scripted ? "스크립트 키 — 큐는 사용자 키 입력만, " : ""}예약만 — 다음 Run 때 과금)`)
+          + (lock ? ` · 지금은 예약만(${lock} — 머리줄 'ComfyUI 큐' 또는 다음 Run 때 과금)` : "")
+          + (way === "paid" && !lock ? " · 승인 제출이라 ComfyUI 탭 그래프의 시드 제어 등 실행마다 바뀌는 값이 한 번 진행됨(그래프는 실행 안 함)" : "")
+          + (way === "paid" ? " · 금액은 지금 jobs 기준(Prepare 갈라짐 — Studio 실행 설정이 마지막 Prepare 와 다르면 바뀜)"
+            : " · 금액은 지금 jobs 기준(그래프 Prepare 값이 Studio 와 다르면 바뀜)"), "warn");
         return;
       }
     }
@@ -418,7 +443,37 @@
     const r = await write("reroll", { cell_key: cell.cell_key, count: 1 },
       (x) => `재굴림 +1 → ${x.variant || ""} 셀 대기 ${x.cell_pending} · 전체 대기 ${x.pending_calls}`
         + (pend.length && !mine ? ` · 미반영 레이아웃 ${pend.length}건 함께 반영` : ""));
-    if (r) setTimeout(queueInComfy, 600);
+    if (r && !scripted) setTimeout(() => queueReroll(way, !!lock), 600);
+  }
+
+  function tabWay() {
+    // R·머리줄 'ComfyUI 큐'가 갈 길: "paid" = 유료 승인을 받는 ComfyUI 탭(opener·채널)이고 서버가 재굴림 템플릿을 낼 수 있음(pipe.paidWhy — 탭 판정 +
+    // 마지막 GET /pipeline 의 템플릿 게이트: 실행 설정 미저장·확인 필요·경로 경고·옛 서버면 늘 409·400 이라 S3a 처럼 opener 로), "opener" = opener 탭
+    // (Review 부분 실행 — 옛 확장·유료 탭 길이 막힘), "" = 없음
+    if (pipe && !pipe.paidWhy()) return "paid";
+    return comfyConnected() ? "opener" : "";
+  }
+
+  function queueReroll(planned, held) {
+    // 재굴림 큐(계약 §5): 유료 가능한 탭 = reroll stage 승인 메시지(템플릿 Run approve "" — 사전 승인 재굴림·복구만 과금, 확인 창 없음 — R 의
+    // 확인이 동의), opener = 지금의 Review 부분 실행(옛 확장 대체), 없음 = 예약만(유료 탭 길을 못 쓰는 이유 — pipe.paidWhy 와 함께).
+    // planned = R 확인 때의 판정(reroll) — "" 이면 '예약만'에 동의했으므로 그 사이 탭이 생겨도 보내지 않음, paid·opener 면 지금 판정이 같을 때만
+    // (확인 문구의 과금 기준이 길마다 다름 — paid = Studio 실행 설정의 템플릿, opener = 그래프 위젯 값의 Review 부분 실행. 그 사이 탭이 큐 처리·
+    // 이 Studio 의 유료 승인 처리로 바빠지거나 풀리면 길이 바뀜). held = R 확인 때 이 Studio 가 바빠(lock) '지금은 예약만'에 동의함 — 그 사이 풀려도
+    // 보내지 않음. 길과 무관하게 지금 이 Studio 가 유료 요청·실행·무료 큐 중(paidLock)이면 보내지 않음(pipe.reroll 과 같은 예약 — 자기 승인을 처리하는
+    // 탭은 hello busy 라 opener 길이 되므로 그 탭의 Review 부분 실행으로 새지 않게). 머리줄 'ComfyUI 큐'는 지금 판정
+    const way = tabWay();
+    const lock = way && pipe ? pipe.paidLock() : "";
+    if (planned === "" && way) toast("재굴림 예약됨 — R 확인 때 큐를 보낼 탭이 없어 지금 보내지 않음: 머리줄 'ComfyUI 큐'로 보내거나 다음 Run 때 과금", "warn");
+    else if (planned && way !== planned) {
+      const why = way === "paid" ? "탭이 이제 유료 승인을 받음 — 확인한 Review 부분 실행과 과금 기준이 다름"
+        : (pipe && pipe.paidWhy()) || "이 창을 연 ComfyUI 탭 없음";
+      toast(`재굴림 예약됨 — R 확인 뒤 ComfyUI 탭 상태가 바뀌어 지금 보내지 않음(${why}): 머리줄 'ComfyUI 큐'로 보내거나 다음 Run 때 과금`, "warn");
+    } else if (held || lock) {
+      toast(`재굴림 예약됨 — 지금 보내지 않음(${lock || "R 확인 때 '지금은 예약만'에 동의함"}): 머리줄 'ComfyUI 큐'로 보내거나 다음 Run 때 과금`, "warn");
+    } else if (way === "paid") pipe.reroll();
+    else if (way === "opener") queueInComfy();
+    else toast(`재굴림 예약됨 — Run 실행 때 과금(${(pipe && pipe.paidWhy()) || "큐를 보낼 ComfyUI 탭 없음"})`, "warn");
   }
 
   function comfyConnected() {
@@ -620,7 +675,7 @@
     $("btn-drain").disabled = !S.running;
     const pb = $("btn-pipe");
     pb.disabled = !pipeReady();
-    pb.title = pipeReady() ? "진행 (G) — 실행 설정·무료 반영·계획/비용·채택·★ 점검·Export(탭 불필요 — 유료 승인은 S3b)"
+    pb.title = pipeReady() ? "진행 (G) — 실행 설정·무료 반영·계획/비용·채택·★ 점검·Export(탭 불필요), 초안·Run 승인(ComfyUI 탭이 큐에 넣음)"
       : notReady("진행", "pipeline_rev", pipe);
     const eb = $("btn-edit");
     eb.disabled = !layoutReady();
@@ -631,26 +686,31 @@
   }
 
   function tabKey(k) {
-    // TAB_BADGE 키(link 상태 + 길): 채널로만 찾은 탭은 found, opener 가 hello 에 아예 답하지 않으면 silent
-    if (k.state === "ok" && k.via !== "opener") return "found";
+    // TAB_BADGE 키(link 상태 + 확장 판·제출 가능 + 길): opener 가 hello 에 아예 답하지 않으면 silent
+    if (k.state === "ok" && k.ext < 3) return "s3a";
+    if (k.state === "ok" && k.submit !== "ok") return "nosubmit";
+    if (k.state === "ok") return k.via === "opener" ? "ok" : "channel";
     if (k.state === "old" && k.ext === null) return "silent";
     return k.state;
   }
 
   function tabTitle(k) {
-    const busy = k.busy ? " · 큐 처리 중" : "";
-    if (k.state === "ok" && k.via === "opener") {
-      return `Open Board 로 연 ComfyUI 탭(확장 판 ${k.ext}${busy}) — 재굴림·ComfyUI 큐 요청이 이 탭으로. 유료 승인은 S3b 전이라 그래프의 승인 버튼`;
-    }
+    // 유료 승인을 못 받는 이유는 한 곳의 문장(승인 단추 제목·R 확인 문구와 같은 말 — 연결된 탭은 tabWay 와 같은 pipe.paidWhy: 탭 + 서버 템플릿
+    // 게이트, 그 밖은 link.paidWhy) — 여기는 탭(길·확장 판)과 그동안 R·ComfyUI 큐의 길만
+    const why = k.state === "ok" && pipe ? pipe.paidWhy() : k.paidWhy();
     if (k.state === "ok") {
-      return `채널로 찾은 ComfyUI 탭(확장 판 ${k.ext}${busy}) — 이 창은 Open Board 로 열리지 않아 재굴림·ComfyUI 큐는 그 탭에서 직접`
-        + "(R 은 사전 승인만 되고 다음 Run 때 과금). 유료 승인은 S3b 전이라 그래프의 승인 버튼";
+      const tab = `${k.via === "opener" ? "Open Board 로 연" : "채널로 찾은"} ComfyUI 탭(확장 판 ${k.ext})`;
+      // 그 길이 있어도 이 Studio 가 유료 요청·실행·무료 큐 중이면(paidLock — queueReroll 처럼 길보다 먼저: 자기 승인을 처리하는 탭은 hello busy 라
+      // opener 길이 됨) R·ComfyUI 큐는 지금은 예약만
+      const lock = pipe && (!why || k.via === "opener") ? pipe.paidLock() : "";
+      const held = `재굴림·ComfyUI 큐는 지금은 예약만(${lock} — 머리줄 'ComfyUI 큐' 또는 다음 Run 때 과금)`;
+      if (!why) return `${tab} — 초안·Run 승인·재굴림·ComfyUI 큐가 이 탭으로(탭이 서버 템플릿을 큐에 넣음)` + (lock ? `. ${held}` : "");
+      // 유료 탭 길이 막힘(S3a 판·제출 못 함·큐 처리 중·서버가 템플릿을 못 냄 — tabWay): R·ComfyUI 큐는 opener 면 그 탭의 Review 부분 실행(그래프 위젯
+      // 값으로 과금), 채널로만 찾았으면 그 탭에서 직접
+      return `${tab}: ${why}. ` + (lock ? held : k.via === "opener" ? "재굴림·ComfyUI 큐는 이 탭의 Review 부분 실행으로(그래프 Prepare 위젯 값으로 과금)"
+        : "이 창은 Open Board 로 열리지 않아 재굴림·ComfyUI 큐는 그 탭에서 직접(R 은 사전 승인만 되고 다음 Run 때 과금)");
     }
-    if (k.state === "old" && k.ext === null) {
-      return "이 창을 연 ComfyUI 탭이 hello 에 답하지 않음 — 확장이 옛 판이면 그 탭을 새로고침, 그 탭이 다른 주소·페이지로 옮겨 갔으면 "
-        + "Review 노드의 Open Board 로 다시 열기";
-    }
-    if (k.state === "old") return `이 창을 연 ComfyUI 탭의 확장이 옛 판(${k.ext}) — 탭을 새로고침해야 바뀜`;
+    if (k.state === "old") return why;
     if (k.state === "many") return "응답한 ComfyUI 탭이 둘 이상이라 어느 탭인지 정할 수 없음 — Review 노드의 Open Board 로 다시 열면 그 탭";
     if (k.state === "none") return "응답하는 ComfyUI 탭이 없음 — 반영·Export 는 탭 없이 됨, 재굴림은 ComfyUI 탭에서 큐에 넣어야 함";
     return "ComfyUI 탭에 hello 를 보내는 중";
@@ -1038,7 +1098,7 @@
         }
         break;
       case "KeyR":
-        if (!e.repeat) reroll(false);
+        if (!e.repeat) reroll(false, !e.isTrusted);
         break;
       case "KeyB":
         if (!e.repeat && viewer) viewer.setBg(viewer.flags().bg === "base" ? "composite" : "base");
@@ -1092,13 +1152,14 @@
   function wireButtons() {
     const on = (id, fn) => $(id).addEventListener("click", (e) => {
       e.currentTarget.blur();
-      fn();
+      fn(e);
     });
     on("btn-star", setStar);
     on("btn-slice", toggleSlice);
     on("btn-reject", toggleReject);
     on("btn-reroll", () => reroll(true));
-    on("btn-queue", queueInComfy);
+    // 머리줄 'ComfyUI 큐'는 확인 창 없이 지금 큐를 보냄(사전 승인분 과금) — 사용자 클릭만(D7: 스크립트 클릭이 바로 과금하지 않게)
+    on("btn-queue", (e) => (e.isTrusted ? queueReroll() : toast("머리줄 'ComfyUI 큐'는 사용자 클릭만 — 스크립트 클릭은 큐를 보내지 않음", "warn")));
     on("btn-drain", drain);
     on("btn-viewer", () => toggleViewer());
     on("btn-help", () => help());
@@ -1143,8 +1204,13 @@
         view: $("ref-viewer") }, { apiUrl, comfyUrl, root: ROOT, viewer: sheetViewer, toast, queue: applyFree, applyWarn, exit: () => setRefs(false) });
     }
     if (window.DPPipeline) {
+      // 탭 연결이 바뀌면 머리줄 배지와 진행 패널의 승인 단추를 다시 그림(첫 판정은 hello 응답을 모은 뒤 — 그때는 pipe 가 있음)
+      tabLink = window.DPPipeline.link(window, () => {
+        renderHeader();
+        pipe.tabChanged();
+      });
       pipe = window.DPPipeline.create({ list: $("pipe-list"), panel: $("pipe-panel"), head: $("pipe-head") }, {
-        apiUrl, comfyUrl, root: ROOT, toast, drain, goTarget,
+        apiUrl, comfyUrl, root: ROOT, toast, drain, goTarget, link: tabLink,
         refresh: () => refresh(true),
         select: (id) => {
           const t = S ? S.targets.find((x) => x.crop_id === id) : null;
@@ -1153,7 +1219,6 @@
         seams: () => seamsByCrop,
         enter: () => setPipe(true),
       });
-      tabLink = window.DPPipeline.link(window, renderHeader);
     }
     wireButtons();
     document.addEventListener("keydown", onKeyDown);

@@ -5,8 +5,9 @@
 Run 이 만든 후보가 타깃마다 여러 장이 되면 노드 미리보기로는 고르기 어렵다. Review Board 는 ComfyUI 탭이 연
 별도 창(두 번째 모니터 등)에서 타깃별 모든 후보를 같은 초점 영역으로 확대해 보여 주고, 키보드로 ★·slice·탈락을
 고르고 재굴림(+1 호출)을 요청한다. 보드는 매니페스트만 고친다(모든 쓰기는 store.update_manifest).
-과금 큐잉은 opener 인 ComfyUI 탭이 postMessage 를 받아 Review 노드를 부분 실행해서 한다 — 인증 토큰은
-그 경로(app.queuePrompt)로만 붙으므로 라우트는 유료 호출을 할 수 없다.
+과금 큐잉은 ComfyUI 탭의 app.queuePrompt 로만 한다 — Studio 승인 메시지(opener postMessage·BroadcastChannel "bmk-dp")를
+받은 탭이 이 모듈의 유료 템플릿(GET /pipeline/prompt run·draft·reroll — 해시 대조 뒤)을 제출하거나(S3b), 옛 확장의 opener 탭이
+Review 노드를 부분 실행한다(대체 경로). 인증 토큰은 그 경로로만 붙으므로 라우트는 큐에 넣지도 유료 호출을 하지도 못한다.
 명세: H:\\BmkNodeDesign\\MultiLayerCropEdit\\_proto\\M2_SPEC.md §4.
 
 라우트 (register_routes — 모든 root 파라미터 = store 레지스트리 키(소문자 hex 12자), 경로 금지)
@@ -52,11 +53,14 @@ Run 이 만든 후보가 타깃마다 여러 장이 되면 노드 미리보기�
   않는다. 이름으로 직접 가리키는 파일을 옮기거나 그 이름에 새 그림을 쓰면 409 {error, explicit} → confirm 에 이름을 넣어 다시.
   유료 경로 없음: SAM3 는 보드가 /api/prompt 로 큐에 넣는 무료 Ref Cut 노드가 돌린다(이 모듈은 요청·결과 파일만).
 - GET  /bmk/design_patch/pipeline?root=                실행 설정(STUDIO_S3_SPEC §6 — pl.view: 파일·유도값·갈라짐·경로 경고·최근 Export·
-                                                       설정 위젯 표). 파일을 쓰지 않는다
+                                                       설정 위젯 표·manifest_rev). 파일을 쓰지 않는다
 - POST /bmk/design_patch/pipeline/settings {root, rev, section, values}   절 하나를 통째로(pl.update — rev 0 = 파일 생성, 깨진 파일
                                                        덮어쓰기 = null, 다르면 409)
-- GET  /bmk/design_patch/pipeline/prompt?root=&stage=apply|export   무료 템플릿 {stage, prompt, targets: null, sig}(S3a — 유료·
-                                                       모르는 stage 400, 설정 확인·경로·깨진 파일 409 {reason})
+- GET  /bmk/design_patch/pipeline/prompt?root=&stage=&approve=&only=&expect=
+       템플릿 {stage, prompt, targets, hash, only, sig}(pipeline_prompt — S3b 계약 §1). apply·export = 무료(targets null, hash·only ""),
+       run·draft = approve 가 지금 선택 계획의 해시와 같을 때만(only 는 서버 정규형으로 돌려줌), reroll = approve·only 없이(사전 승인분).
+       인자 400, 409 {reason} = 설정 확인·경로·깨진 파일·expect('<pipeline rev>:<매니페스트 rev>') 다름·실행 중·반영 필요·계획 잠금
+       15초·계획 오류·승인할 것 없음·해시 다름(stale — 지금 해시)
 - GET  /bmk/design_patch/pipeline/plan?root=&only=&style=   Run·Draft 계획(pipeline_plan — 노드와 같은 함수의 승인 해시·비용·크롭별),
                                                        다른 계획을 계산 중이면 202 {busy: true}
 - GET  /bmk/design_patch/pipeline/progress?root=       Run(원장)·Spec Draft(draft_active 동안의 원장) 진행
@@ -64,7 +68,8 @@ Run 이 만든 후보가 타깃마다 여러 장이 되면 노드 미리보기�
 - POST /bmk/design_patch/draft/adopt {root, crop_id, op: adopt|set|clear, text?, value?, seen, crop_sig, preview?}
                                                        스펙 _layer_targets 채택·수정·해제(vlm.adopt_write — 거절 400 {reason|rows},
                                                        seen·crop_sig·value 경합 409)
-  유료 경로 없음: 무료 템플릿(Run·Spec Draft 없음)만 내고 Studio 가 /api/prompt 로 큐에 넣는다. 유료 승인(S3b)은 탭 경유.
+  라우트는 큐에 넣지 않는다: 무료 템플릿(Run·Spec Draft 없음)은 Studio 가 /api/prompt 로, 유료 템플릿(S3b)은 Studio 의 승인 메시지를
+  받은 ComfyUI 탭이 검사한 뒤 app.queuePrompt 로 큐에 넣는다(인증 토큰은 그 경로로만 붙음 — 서버는 템플릿과 해시 대조만).
 POST 는 Content-Type application/json 만 받는다(다른 사이트의 단순 폼 POST 차단). 오류는 4xx + {"error": 한국어}
 (레퍼런스: 목록 밖 시트·없는 파일 404, 같은 이름이 있음 409).
 CPU·파일 작업은 asyncio.to_thread 로 돌려 aiohttp 루프를 막지 않는다. 시트 디코드·PSD 합성·컷·변환은 _REF_SLOTS 로 한 번에 하나.
@@ -160,6 +165,11 @@ v5 (2026-10-17, Studio S3a — _proto/STUDIO_S3_SPEC.md §2.4·§2.6·§3.5·§3
 - _guard 409 에 PipelineConflict·vlm.SpecConflict, 채택 거절(AdoptRefused)은 400 {error, reason|rows}.
 - S1-a: /layout/psd 가 고른 이름만 기준점을 스냅숏 값으로(이름 묶음 통째), ack 는 사라진 shape 도 고를 수 있음, names [] 400,
   take 에 사라진 shape 뿐인 이름 400, 메타는 갈라짐 0 일 때만 스냅숏 값.
+v6 (2026-10-18, Studio S3b — _proto/s3b/S3B_CONTRACT.md §1·§2)
+- /pipeline/prompt 유료 갈래(run·draft·reroll): 인자 → only 정규화 → 설정 게이트 → expect → 실행 중 → 반영 필요 → 계획 잠금(최대
+  15초) 안에서 기억값 없이 선택 계획 → 해시 대조 순으로 판정하고 통과하면 템플릿. 응답 키는 stage 와 무관하게 하나(무료 hash·only "").
+- /pipeline/plan draft 확인 창 필드(orphan_retries·est_usd·reasons·free · pending_style·mock_forced — 노드 Spec Draft ui·가지와 같은 식),
+  GET /pipeline manifest_rev. local_qwen 모델 폴더 미설정은 _draft_cfg 의 오류 하나로(계획·prompt 같은 문구).
 """
 
 from __future__ import annotations
@@ -3187,12 +3197,14 @@ def ref_link(root: str, rev: int | None, op, data: dict) -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# 파이프라인 (S3a — STUDIO_S3_SPEC §2.4·§3.5·§3.7·§6). 실행 설정·유도·템플릿은 bmk_design_patch_pipeline(pl), 초안 계획·채택은
-# vlm(_vlm() 로만 — state·layout·refs 경로는 vlm 을 불러오지 않는다). 계획은 노드와 같은 함수(runner.plan_calls·split_approval,
-# vlm.draft_plan)라 라우트 해시 = 노드가 승인 대조에 쓰는 실행 전 해시(N25·N26). 계산은 요청 때만 — state 는 기억한 계획과
-# 파일 stat 서명만 본다(plan_v·draft_chip). 응답 모양 정본 = tools/fixtures/pipeline_api.json.
+# 파이프라인 (S3a — STUDIO_S3_SPEC §2.4·§3.5·§3.7·§6, S3b — _proto/s3b/S3B_CONTRACT.md §1·§2). 실행 설정·유도·템플릿은
+# bmk_design_patch_pipeline(pl), 초안 계획·채택은 vlm(_vlm() 로만 — state·layout·refs 경로는 vlm 을 불러오지 않는다). 계획은 노드와
+# 같은 함수(runner.plan_calls·split_approval, vlm.draft_plan)라 라우트 해시 = 노드가 승인 대조에 쓰는 실행 전 해시(N25·N26) — 유료
+# 템플릿은 그 해시가 요청 approve 와 같을 때만 낸다. 계산은 요청 때만 — state 는 기억한 계획과 파일 stat 서명만 본다(plan_v·
+# draft_chip). 응답 모양 정본 = tools/fixtures/pipeline_api.json.
 # ══════════════════════════════════════════════════════════════════════
 _PLAN_LOCK = threading.Lock()            # 계획 라우트는 한 번에 하나 — 못 잡으면 기다리지 않고 202 busy
+_PROMPT_LOCK_WAIT = 15.0                 # 유료 prompt 는 계획 잠금을 이만큼 기다린다(못 잡으면 409 busy — 탭이 받는 답이라 202 없음)
 _PLAN_MEMO: dict[str, dict] = {}         # root_key → {"free": only 없는 계획 {sig, settings, computed_at, run, draft},
                                          #             "sel": {(sig, settings, only): 선택 부분}} — settings = 계산에 쓴 설정의 지문
 _PLAN_MEMO_LOCK = threading.Lock()
@@ -3208,7 +3220,8 @@ _RUN_ZERO = {"need": 0, "pre": 0, "free": 0, "done": 0, "failed": 0, "orphaned":
              "selected": False}
 _STALE = "_stale"                        # run.by_crop: crop_id 가 없거나 매니페스트에 없는 크롭의 옛 셀
 _DRAFT_SEL_EMPTY = {"hash": "", "units": [], "refresh_available": [], "skipped": [], "cached": [], "accepted": [], "filtered": [],
-                    "est_credits": [0, 0], "est_seconds": 0}  # 선택 없는 Draft 계획의 선택 필드(정본 alt.no_selection)
+                    "est_credits": [0, 0], "est_seconds": 0, "orphan_retries": 0, "est_usd": [0.0, 0.0], "reasons": [],
+                    "free": 0}  # 선택 없는 Draft 계획의 선택 필드(정본 alt.no_selection)
 
 
 def _now_text() -> str:
@@ -3231,11 +3244,11 @@ def _route_settings(root: str, m: dict | None = None) -> dict:
     return cur
 
 
-def _draft_family(root: str, settings: dict) -> str:
+def _draft_family(root: str, settings: dict, mock: bool | None = None) -> str:
     """초안 백엔드 family(노드 Spec Draft 와 같은 판정): pipeline.draft.vlm 의 family, openai 이고 mock 스위치면 mock — None 은 없다
-    (adopt_check 의 mock 초안 거절이 꺼지지 않게)."""
+    (adopt_check 의 mock 초안 거절이 꺼지지 않게). mock = 이미 읽은 스위치(pipeline_plan), None 이면 지금 읽음."""
     fam, _model = _vlm().parse_vlm_choice(settings["draft"]["vlm"])
-    return "mock" if fam == "openai" and _mock_active(root) else fam
+    return "mock" if fam == "openai" and (_mock_active(root) if mock is None else mock) else fam
 
 
 def _scan(path: str, keep: re.Pattern | None = None, depth: int = 0, skip: tuple = ()) -> list:
@@ -3284,7 +3297,7 @@ def _spec_paths(root: str, specs: list, refs_dir: str) -> list[str]:
     return hit[1]
 
 
-def _plan_sigs(root: str, m: dict, busy: tuple[bool, bool], refs_v: str | None) -> tuple[str, str]:
+def _plan_sigs(root: str, m: dict, busy: tuple[bool, bool], refs_v: str | None, mock: bool | None = None) -> tuple[str, str]:
     """(Run 서명, Draft 서명) — 파일 stat 과 매니페스트 일부만(vlm·runner 계산 없음 — state 의 plan_v 가 폴링마다 부름, §2.4 서명).
     Run = jobs·rerolls + 마지막 Prepare 기록(prepare_settings·prepare_inputs — 같은 위젯·같은 프롬프트의 그래프 Prepare 는 jobs 를 같은
     바이트로 두고 이 둘만 처음 기록·갱신하는데, 그것이 apply_pending('지문 없음'·'입력이 바뀜')·notes(Prepare 갈라짐)를 바꾼다 — 빠지면
@@ -3298,10 +3311,12 @@ def _plan_sigs(root: str, m: dict, busy: tuple[bool, bool], refs_v: str | None) 
     실행 설정은 절 값 대신 pipeline.json 지문(stat — 파일이 없으면 유도값이라 위 재료로 정해짐). 매니페스트 rev 전체는 쓰지 않는다 —
     ★·탈락·후보 등록으로 칩이 낡지 않게. 내용 주소 크롭 소스(inputs/<sha>)는 지워지지 않는다고 보고 넣지 않는다(지우면 다음 서명
     변화까지 기억값). busy = 실행 상태(_busy — pipeline_plan 이 한 번 읽어 넘기고 계산 뒤 다시 읽은 값과 비교), refs_v = refs_dir 목록
-    지문(_refs_files_v — build_state 는 flags 에서 이미 계산한 값을 넘긴다)."""
+    지문(_refs_files_v — build_state 는 flags 에서 이미 계산한 값을 넘긴다), mock = 스위치(pipeline_plan 이 한 번 읽어 서명과 계산에
+    같이 넘김, None 이면 지금 읽음)."""
     src = m.get("source") or {}
     refs_dir = _refs_dir(m)
-    mock = _mock_active(root)
+    if mock is None:
+        mock = _mock_active(root)
     running, drafting = busy
     pfp = store._file_fp(os.path.join(root, pl.PIPELINE_NAME))
     run = [m.get("jobs"), m.get("rerolls"), m.get("prepare_settings"), m.get("prepare_inputs"),
@@ -3324,24 +3339,24 @@ def _plan_sigs(root: str, m: dict, busy: tuple[bool, bool], refs_v: str | None) 
     return _sig("plan-run", run), _sig("plan-draft", draft)
 
 
-def _run_plans(root: str, m: dict, run_cfg: dict, only: str = "") -> tuple:
-    """노드 _run_plan 과 같은 식: runner.plan_calls(m, root, retry_failed, retry_orphans, only) + split_approval(backend = mock 판정).
-    → (runner, backend, plan, approval). runner 를 못 읽으면 ValueError."""
+def _run_plans(root: str, m: dict, run_cfg: dict, only: str = "", mock: bool | None = None) -> tuple:
+    """노드 _run_plan 과 같은 식: runner.plan_calls(m, root, retry_failed, retry_orphans, only) + split_approval(backend = mock 판정 —
+    mock = 이미 읽은 스위치, None 이면 지금 읽음). → (runner, backend, plan, approval). runner 를 못 읽으면 ValueError."""
     runner = _runner()
     if runner is None:
         raise ValueError("runner 를 읽을 수 없음")
-    backend = runner.BACKEND_MOCK if runner.mock_enabled(root) else runner.BACKEND_COMFY_ORG
+    backend = runner.BACKEND_MOCK if (runner.mock_enabled(root) if mock is None else mock) else runner.BACKEND_COMFY_ORG
     plan = runner.plan_calls(m, root, retry_failed=bool(run_cfg["retry_failed"]), retry_orphans=bool(run_cfg["retry_orphans"]),
                              only=only)
     return runner, backend, plan, runner.split_approval(plan, "", backend=backend)
 
 
-def _run_free(root: str, m: dict, run_cfg: dict) -> dict:
+def _run_free(root: str, m: dict, run_cfg: dict, mock: bool | None = None) -> dict:
     """only 없는 Run 계획: by_crop(크롭별 승인 필요·사전 승인·복구·완료·실패·orphaned·실행 중·예상 USD — 옛 셀은 _stale)·pre·free·
     est_usd_pre(재굴림은 approve·only 와 무관하게 Run 실행 때 함께 과금)·running + 비운 선택 필드(hash "" 등). 실패하면 {error}
     — 원장 대체 계산(_ledger_pending)으로 해시 없는 계획을 보이지 않는다."""
     try:
-        runner, backend, plan, ap = _run_plans(root, m, run_cfg)
+        runner, backend, plan, ap = _run_plans(root, m, run_cfg, mock=mock)
     except Exception as e:  # runner 없음·손상된 매니페스트·원장 — 계획을 보이지 않고 이유만
         return {"error": f"Run 계획을 계산하지 못함: {e}"}
     ids = {c["id"] for c in m["crops"]}
@@ -3367,11 +3382,11 @@ def _run_free(root: str, m: dict, run_cfg: dict) -> dict:
             "by_crop": rows, "running": is_running(root)}
 
 
-def _run_sel(root: str, m: dict, run_cfg: dict, only: str) -> dict:
+def _run_sel(root: str, m: dict, run_cfg: dict, only: str, mock: bool | None = None) -> dict:
     """선택(only) Run 계획: hash(노드 Run 이 같은 only 로 대조할 실행 전 해시)·need·filtered·est_usd·credits·reasons. only 의 style
     토큰은 뺀다(Run 위젯과 같은 문자열 — pl.strip_style)."""
     try:
-        runner, _backend, plan, ap = _run_plans(root, m, run_cfg, pl.strip_style(only))
+        runner, _backend, plan, ap = _run_plans(root, m, run_cfg, pl.strip_style(only), mock)
     except Exception as e:  # _run_free 와 같은 이유
         return {"error": f"Run 계획을 계산하지 못함: {e}"}
     lo, hi = ap["est_usd"]
@@ -3383,13 +3398,16 @@ def _run_sel(root: str, m: dict, run_cfg: dict, only: str) -> dict:
             "reasons": [{"reason": r, "n": n} for r, n in reasons.items()]}
 
 
-def _draft_cfg(root: str, settings: dict) -> tuple[str, dict]:
+def _draft_cfg(root: str, settings: dict, mock: bool | None = None) -> tuple[str, dict]:
     """노드 Spec Draft 와 같은 draft_plan 인자(only 제외) → (백엔드 이름, cfg). model 은 mock 으로 강제돼도 위젯의 모델(노드와 같음 —
-    openai 키에 들어감, mock 키는 "mock" 이라 모델이 들어가지 않음)."""
+    openai 키에 들어감, mock 키는 "mock" 이라 모델이 들어가지 않음). local_qwen 인데 모델 폴더를 모르면(set_qwen_dir 전) ValueError
+    — 'nodir' 키로 계산하지 않는다. mock = _draft_family 로."""
     d = settings["draft"]
     dvlm = _vlm()
     _fam, model = dvlm.parse_vlm_choice(d["vlm"])
-    family = _draft_family(root, settings)
+    family = _draft_family(root, settings, mock)
+    if family == "local_qwen" and not _qwen_dir():
+        raise ValueError("local_qwen 모델 경로 미설정 — ComfyUI 재시작")
     return dvlm.BACKEND_NAMES[family], {
         "family": family, "model": model, "effort": d["effort"], "image_detail": d["image_detail"],
         "draft_round": int(d["draft_round"]), "mode": d["write_mode"], "concurrency": int(d["concurrency"]),
@@ -3445,20 +3463,19 @@ def _import_pending(root: str, m: dict, settings: dict) -> list[str]:
     return out
 
 
-def _draft_free(root: str, m: dict, settings: dict) -> dict:
+def _draft_free(root: str, m: dict, settings: dict, mock: bool | None = None) -> dict:
     """only 없는 Draft 계획: backend·family·by_crop(대기 사유·갱신 가능·채택 가능 — 채택은 GET /draft 의 [채택] 단추와 같은 조건)·
     warnings(unwritten = 매니페스트 크롭·_project 의 못 쓴 스펙, mock_specs = family mock 일 때 mock 초안이 남은 스펙)·import_pending
-    + 비운 선택 필드. Spec Draft 실행 중이면 {running: true}, 계산 오류(용어집 형식·스펙 경로 등)는 {error, hash: null},
-    local_qwen 인데 모델 폴더를 모르면(set_qwen_dir 전) 계산하지 않고 오류.
+    + 비운 선택 필드 + 확인 창 필드(S3b 계약 §2 — 노드 Spec Draft 와 같은 식): pending_style = 화풍 단위(_style) 대기 수(0|1 — 노드
+    가지 draft.pending_style), mock_forced = draft.vlm 이 openai 인데 mock 스위치로 mock(노드 header.mock_forced).
+    Spec Draft 실행 중이면 {running: true}, 계산 오류(용어집 형식·스펙 경로·local_qwen 모델 폴더 미설정 등)는 {error, hash: null}.
     채택 칩은 draft_plan 이 만든 크롭 문맥(ctx — draft_view 와 같은 인자의 build_crop_ctx)으로 GET /draft 와 같은 vlm.adopt_state
     판정(목록이 아닌 targets·스펙에 안 쓰인 도착 초안·⑥ 이 늘 거절할 노드 값 양보 거절 포함)을 한다 — 크롭마다 draft_view 를 부르면
     문맥을 다시 만들어 레퍼런스 경고가 같은 요청에서 두 번 로그된다."""
     if draft_since(root) is not None:
         return {"running": True}
     try:
-        backend, cfg = _draft_cfg(root, settings)
-        if cfg["family"] == "local_qwen" and not cfg["model_dir"]:
-            return {"error": "local_qwen 모델 경로 미설정 — ComfyUI 재시작", "hash": None}
+        backend, cfg = _draft_cfg(root, settings, mock)
         dvlm = _vlm()
         memo = _draft_memo()
         ctxs, _reqs, _style, plan, _ap = dvlm.draft_plan(root, m, "", backend, only=[], memo=memo, **cfg)
@@ -3473,6 +3490,7 @@ def _draft_free(root: str, m: dict, settings: dict) -> dict:
                 _value, kind, why = dvlm.adopt_state(root, m, ctx, ctx.spec, family=cfg["family"], memo=memo)
             adopt[ctx.crop_id] = "add" if kind == "add" and not why else None
         mock_specs = dvlm.mock_drafted(root, ctxs, cfg["apply_mode"]) if cfg["family"] == "mock" else 0
+        forced = cfg["family"] == "mock" and dvlm.parse_vlm_choice(settings["draft"]["vlm"])[0] == "openai"
     except (ValueError, OSError) as e:  # 용어집·스펙 경로 오류 — run 계획은 그대로 둔다
         return {"error": str(e), "hash": None}
     waits: dict[str, list] = {}
@@ -3482,14 +3500,16 @@ def _draft_free(root: str, m: dict, settings: dict) -> dict:
     return {**copy.deepcopy(_DRAFT_SEL_EMPTY), "backend": backend, "family": cfg["family"],
             "by_crop": {c["id"]: {"wait": waits.get(c["id"], []), "refresh": c["id"] in refresh, "adopt": adopt[c["id"]]}
                         for c in m["crops"]},
-            "warnings": {"unwritten": unwritten, "mock_specs": mock_specs}, "import_pending": pending}
+            "warnings": {"unwritten": unwritten, "mock_specs": mock_specs}, "import_pending": pending,
+            "pending_style": sum(1 for u in plan["units"] if u.crop_id == dvlm.STYLE_ID), "mock_forced": forced}
 
 
-def _draft_sel(root: str, m: dict, settings: dict, only: str) -> dict:
+def _draft_sel(root: str, m: dict, settings: dict, only: str, mock: bool | None = None) -> dict:
     """선택(only) Draft 계획: hash(노드 Spec Draft 가 only = vlm.parse_only(같은 문자열)로 대조할 실행 전 해시)·units·refresh_available·
-    skipped·cached·accepted·filtered·est_credits·est_seconds. 오류는 {error, hash: null}."""
+    skipped·cached·accepted·filtered·est_credits·est_seconds + 확인 창 필드(노드 ui bmk_dp_draft 와 같은 vlm.approval 값):
+    orphan_retries·est_usd·reasons(run.reasons 꼴 [{reason, n}])·free(재파싱·재폴링 무료 단위 수). 오류는 {error, hash: null}."""
     try:
-        backend, cfg = _draft_cfg(root, settings)
+        backend, cfg = _draft_cfg(root, settings, mock)
         dvlm = _vlm()
         _c, _r, _s, plan, ap = dvlm.draft_plan(root, m, "", backend, only=dvlm.parse_only(only), memo=_draft_memo(), **cfg)
     except (ValueError, OSError) as e:
@@ -3499,7 +3519,9 @@ def _draft_sel(root: str, m: dict, settings: dict, only: str) -> dict:
             "refresh_available": [{"crop_id": cid, "est": list(est)} for cid, est in plan["refresh_available"]],
             "skipped": [{"crop_id": cid, "reason": why} for cid, why in plan["skipped"]],
             "cached": list(plan["cached"]), "accepted": list(plan["accepted"]), "filtered": list(plan["filtered"]),
-            "est_credits": list(ap["est_credits"]), "est_seconds": ap["est_seconds"]}
+            "est_credits": list(ap["est_credits"]), "est_seconds": ap["est_seconds"], "orphan_retries": ap["orphan_retries"],
+            "est_usd": list(ap["est_usd"]), "reasons": [{"reason": r, "n": n} for r, n in ap["reasons"].items()],
+            "free": len(plan["free"])}
 
 
 # Prepare 설정 갈라짐(pl.drift kind) → 계획 notes 의 이유(앞이 무거운 것 — 한 종류면 문구만, 여럿이면 종류마다 필드)
@@ -3533,7 +3555,8 @@ def _apply_pending(root: str, m: dict, settings: dict) -> list[str]:
     """'반영 필요'(§2.2·§3.3 — 무료 반영 apply 가 풀 차이) 사유 = 같은 큐의 Import 가 매니페스트를 바꿀 차이(_import_pending — 레이아웃·
     레퍼런스·채택·Import 설정 미반영, 깨진 파일) + prepare_inputs 불일치(마지막 Prepare 뒤 스펙·레이아웃·레퍼런스·용어집이 바뀜 —
     초안 쓰기·채택 포함). 지문만 보면 Import 뒤·Prepare 앞에 끼어든 layout.json·refs.json 쓰기(새 파일이 지문에 들어감)를 놓치고,
-    Import 쪽만 보면 스펙 문장 수정을 놓친다 — 둘을 합친 이 하나가 Studio 머리줄·반영 칸·S3b apply_needed 의 판정이다. 지문은 Prepare 를
+    Import 쪽만 보면 스펙 문장 수정을 놓친다 — 둘을 합친 이 하나가 Studio 머리줄·반영 칸의 판정이고 S3b run apply_needed 는 여기에 Prepare
+    설정 갈라짐을 더한다(pipeline_prompt ⑦). 지문은 Prepare 를
     한 번이라도 돈 프로젝트(jobs·prepare_settings·prepare_inputs 중 하나 — 첫 Prepare 부터 채택 가드면 jobs·지문이 없음)만 본다.
     매번 계산한다(Draft 계획의 import_pending 은 기억값이고 Spec Draft 실행 중·오류면 없다)."""
     try:
@@ -3583,11 +3606,14 @@ def pipeline_plan(root: str, settings: dict | None = None, *, only_ids, style: b
     돈 실행을 '실행 중'으로 넣은 서명이다 — 실행이 끝난 뒤의 state plan_v 와 달라 Studio 가 낡은 계획으로 본다(해시 복사 끔 — 진행
     모드는 같은 plan_v 에 한 번 더 받고, 그 밖의 모드는 머리줄 [다시 계산]).
     only 없는 계획은 state 의 plan_v·draft_chip 이 쓴다(plan_v 는 파일 서명만 본다). 파일은 apply=full 일 때
-    화풍 입력 vlm/img(내용 주소)만 쓸 수 있다. 매니페스트는 한 번 읽고 manifest_lock 은 쥐지 않는다."""
+    화풍 입력 vlm/img(내용 주소)만 쓸 수 있다. 매니페스트는 한 번 읽고 manifest_lock 은 쥐지 않는다.
+    mock 스위치도 한 번 읽어 서명·네 계산(run·draft × free·선택)에 같이 넘긴다 — 계산마다 다시 읽으면 계산 중 _MOCK_API 가 바뀔 때
+    'backend mock + 실제 백엔드 해시' 계획이 mock 서명으로 기억돼 Studio 가 그 해시를 '[MOCK]' 페이지 상자로 승인할 수 있음(r1-07)."""
     m = store.load_manifest(root)
     starts, busy = _starts(root), _busy(root)
+    mock = _mock_active(root)
     refs_v = _refs_files_v(_refs_dir(m))
-    r_sig, d_sig = _plan_sigs(root, m, busy, refs_v)
+    r_sig, d_sig = _plan_sigs(root, m, busy, refs_v, mock)
     if settings is None:
         cur = _route_settings(root, m)
         settings, confirm = cur["settings"], cur["confirm"]
@@ -3604,13 +3630,13 @@ def pipeline_plan(root: str, settings: dict | None = None, *, only_ids, style: b
         sel = memo["sel"].get((sig, skey, only)) if only else None
     new_free, new_sel = free is None, bool(only) and sel is None
     if new_free:
-        free = {"sig": sig, "settings": skey, "computed_at": _now_text(), "run": _run_free(root, m, settings["run"]),
-                "draft": _draft_free(root, m, settings)}
+        free = {"sig": sig, "settings": skey, "computed_at": _now_text(), "run": _run_free(root, m, settings["run"], mock),
+                "draft": _draft_free(root, m, settings, mock)}
     if new_sel:
         sel = {"computed_at": _now_text(),
-               "run": None if "error" in free["run"] else _run_sel(root, m, settings["run"], only),
+               "run": None if "error" in free["run"] else _run_sel(root, m, settings["run"], only, mock),
                "draft": None if "hash" not in free["draft"] or free["draft"]["hash"] is None
-               else _draft_sel(root, m, settings, only)}
+               else _draft_sel(root, m, settings, only, mock)}
     after, moved = _busy(root), tuple(a != b for a, b in zip(starts, _starts(root)))
     seen = (free["run"].get("running", busy[0]), "running" in free["draft"])
     steady = after == busy == seen and not any(moved)
@@ -3637,7 +3663,7 @@ def pipeline_plan(root: str, settings: dict | None = None, *, only_ids, style: b
     if not steady:
         ran = tuple(any(x) for x in zip(busy, after, seen, moved))
         if ran != busy:
-            r_sig, d_sig = _plan_sigs(root, m, ran, refs_v)
+            r_sig, d_sig = _plan_sigs(root, m, ran, refs_v, mock)
             sig = f"r:{r_sig}|d:{d_sig}"
     return {"sig": sig + (f"|o:{only}" if only else ""), "computed_at": (sel or free)["computed_at"],
             "notes": _plan_notes(root, m, settings, confirm), "apply_pending": _apply_pending(root, m, settings), "run": run, "draft": draft}
@@ -3659,23 +3685,84 @@ def _plan_free(root: str) -> dict | None:
         return memo["free"] if memo else None
 
 
-def pipeline_prompt(root: str, stage, approve=None, only=None) -> dict:
-    """GET /pipeline/prompt(S3a): 무료 템플릿만 — apply·export(Run·Spec Draft 없음, T1). 유료(draft·run·reroll)·모르는 stage 는
-    approve 유무와 무관하게 400(유료 승인은 S3b 까지 그래프의 Run·Spec Draft 승인 버튼). 설정 판정은 pl.prompt_gate 의 409 본문 그대로,
-    위젯 값은 pl.current(deep=True)(GET /pipeline 과 같은 값) — 판정과 템플릿은 pipeline.json 을 한 번 읽은 같은 값으로(두 번 읽으면
-    그 사이 다른 창이 저장한 값이 판정 없이 템플릿에 실림). 무료 stage 에 approve·only 를 실으면 400(build_prompt).
-    → {stage, prompt, targets: null, sig: "<pipeline rev>:<매니페스트 rev>"}"""
+def pipeline_prompt(root: str, stage, approve=None, only=None, expect=None) -> dict:
+    """GET /pipeline/prompt(S3b 계약 §1) → {stage, prompt, targets, hash, only, sig: "<pipeline rev>:<매니페스트 rev>"}. 앞에서 걸리면
+    거기서 끝난다(파일을 쓰지 않음 — 계획 라우트처럼 apply=full 인 draft 의 ⑧ 계획만 화풍 입력 vlm/img 내용 주소 파일을 쓸 수 있음,
+    manifest_lock 을 쥐지 않음):
+    ① 모르는 stage 400 ② 인자 400 — run·draft 는 approve(12자 소문자 hex)와 비지 않은 only(빈 only 는 '전부'라 승인 집합이 계획과
+    다름), reroll·무료 stage 는 approve·only 없음 ③ only 정규화(run·draft — 쉼표·공백 토큰, style 토큰은 draft.apply full 일 때만
+    남음, 매니페스트 밖 크롭 400) = 응답 only(탭이 요청과 대조) ④ pl.prompt_gate 409 본문 그대로 ⑤ expect(선택, 모든 stage)가
+    지금 sig 와 다르면 409 stale_settings ⑥ 실행 중 409 running — run 은 Run 또는 Spec Draft, draft 는 Spec Draft(실행 중 계획의
+    해시는 일시값) ⑦ 반영 필요 409 apply_needed — run 은 계획 apply_pending 과 같은 판정 + Prepare 설정 갈라짐(계획 notes 의 그 줄 —
+    템플릿 Prepare 가 jobs 를 바꿔 해시가 달라짐), draft 는 같은 큐의 Import 가 초안 키를 바꿀 때만(_import_pending — prepare_inputs
+    불일치·Prepare 설정은 초안 키와 무관, 판정 실패는 run 처럼 '판정하지 못함' 사유) ⑧ 계획 잠금을 _PROMPT_LOCK_WAIT 초까지 기다려(못 잡으면 409
+    busy) 기억값 없이 지금 상태의 선택 계획(_run_sel·_draft_sel) — 계산 뒤 ⑥ 을 다시 본다: 잠금을 기다리고 계산하는 사이 ⑥ 의
+    실행이 돌거나 시작 수(_starts)가 늘었으면(시작해서 파일을 되돌리고 끝난 실행 포함 — 계획 라우트 steady 와 같은 재료) 그 해시는
+    일시값이라 409 running, 그다음 오류 409 plan_error, 해시 "" 409 nothing_to_approve, 해시 ≠ approve 409 stale(지금 해시)
+    ⑨ pl.build_prompt.
+    reroll 은 ⑥–⑧ 을 보지 않는다(사전 승인분만 과금하고 템플릿의 Import·Prepare 가 반영을 겸함 — R 경로와 같음). 매니페스트·
+    pipeline.json 은 한 번 읽은 같은 값으로 판정·해시·템플릿까지(두 번 읽으면 그 사이 다른 창·그래프가 바꾼 값이 판정 없이 템플릿에
+    실림 — r1-21). targets = 무료 null, 유료 [출력 노드 키], hash = 대조한 approve(reroll·무료 ""), only = 정규 only(reroll·무료 "")."""
     if stage not in pl.STAGES:
         raise _Reject(400, f"모르는 stage 입니다: {stage!r} (stage: {', '.join(pl.STAGES)})")
-    if stage not in pl.FREE_STAGES:
-        raise _Reject(400, f"S3a 는 무료 stage(apply·export)만 냅니다 — 유료 승인은 그래프의 Run·Spec Draft 승인 버튼: {stage!r}")
+    approve, only = approve or "", only or ""
+    paid = stage in ("run", "draft")
+    if paid and not pl._HASH_RE.fullmatch(approve):
+        raise _Reject(400, f"{stage} 는 승인 해시(12자 소문자 hex)가 필요합니다: {approve!r}")
+    if paid and not only.strip():
+        raise _Reject(400, f"{stage} 는 only(고른 크롭 명시 목록)가 필요합니다 — 빈 only 는 '전부'라 승인 집합이 계획과 다름")
+    if not paid and (approve or only):
+        raise _Reject(400, f"reroll 은 approve·only 없이(사전 승인 재굴림 전체 — only 무관): approve={approve!r} only={only!r}"
+                      if stage == "reroll" else f"무료 stage({stage})에는 approve·only 를 싣지 않습니다")
     m = store.load_manifest(root)
     cur = pl.current(root, m, deep=True)
+    settings = cur["settings"]
+    if paid:  # 깨진 설정은 ④ 가 409 — 그 전에도 크롭 형식·매니페스트 밖 크롭은 400
+        toks = pl._only_tokens(only)
+        style = any(pl._is_style(t) for t in toks) and settings is not None and settings["draft"]["apply"] == "full"
+        only = pl.only_string([t for t in toks if not pl._is_style(t)], style, known=[c["id"] for c in m["crops"]])
     gate = pl.prompt_gate(root, stage, m, cur=cur)
     if gate is not None:
         raise _Reject(409, gate.pop("error"), **gate)
-    return {"stage": stage, "prompt": pl.build_prompt(stage, cur["settings"], root, approve=approve or "", only=only or ""),
-            "targets": None, "sig": f"{cur['rev']}:{m['rev']}"}
+    sig = f"{cur['rev']}:{m['rev']}"
+    if expect and expect != sig:
+        raise _Reject(409, f"실행 설정·매니페스트가 바뀜(요청 {expect} · 지금 {sig}) — 계획을 다시 받아 확인", reason="stale_settings",
+                      stale=True, sig=sig)
+    if paid:
+        starts, (running, drafting) = _starts(root), _busy(root)  # 시작 수가 먼저 — 그 뒤 시작한 실행은 _busy 나 재확인의 시작 수가 봄
+        if drafting or (stage == "run" and running):
+            raise _Reject(409, f"{'Spec Draft' if drafting else 'Run'} 실행 중 — 끝난 뒤 계획을 다시 받아 승인", reason="running", stale=True)
+        if stage == "run":
+            pending = _apply_pending(root, m, settings)
+            pre = [d["field"] for d in pl.drift(settings, m) if d["section"] == "prepare"]
+            if pre:  # 템플릿 Prepare 가 이 설정으로 jobs 를 다시 써 노드 해시 ≠ approve(늘 드라이런) — Studio 가 흐리는 기준과 같음(r1-06)
+                pending.append(f"Prepare 설정 갈라짐({', '.join(pre)}) — 템플릿의 Prepare 가 jobs 를 바꿔 승인 해시가 달라짐")
+        else:
+            try:
+                pending = _import_pending(root, m, settings)
+            except (ValueError, OSError) as e:  # _apply_pending 과 같게 — 잠긴 레퍼런스 폴더 등(500 이면 Studio 가 계획을 다시 받지 않음)
+                pending = [f"반영 상태를 판정하지 못함({e})"]
+        if pending:
+            raise _Reject(409, f"반영 필요 — 먼저 [반영]: {'; '.join(pending)}", reason="apply_needed", stale=True, pending=pending)
+        if not _PLAN_LOCK.acquire(timeout=_PROMPT_LOCK_WAIT):
+            raise _Reject(409, f"계획 계산이 밀려 있습니다({_PROMPT_LOCK_WAIT:g}초) — 잠시 뒤 다시", reason="busy")
+        try:
+            sel = _run_sel(root, m, settings["run"], only) if stage == "run" else _draft_sel(root, m, settings, only)
+        finally:
+            _PLAN_LOCK.release()
+        moved, (running, drafting) = [a != b for a, b in zip(starts, _starts(root))], _busy(root)
+        if drafting or moved[1] or (stage == "run" and (running or moved[0])):
+            raise _Reject(409, f"계획 계산 중 {'Spec Draft' if drafting or moved[1] else 'Run'} 실행이 시작됨 — 끝난 뒤 계획을 다시 받아 승인",
+                          reason="running", stale=True)
+        if "error" in sel:
+            raise _Reject(409, sel["error"], reason="plan_error")
+        if not sel["hash"]:
+            raise _Reject(409, "승인할 것이 없습니다 — 지금 계획의 승인 대상 0건(사전 승인 재굴림은 R)", reason="nothing_to_approve")
+        if sel["hash"] != approve:
+            raise _Reject(409, f"승인한 계획이 지금과 다릅니다 — 계획을 다시 받아 승인(지금 해시 {sel['hash']})", reason="stale",
+                          stale=True, hash=sel["hash"])
+    return {"stage": stage, "prompt": pl.build_prompt(stage, settings, root, approve=approve, only=only),
+            "targets": None if stage in pl.FREE_STAGES else [pl.OUTPUT_KEY[stage]], "hash": approve, "only": only, "sig": sig}
 
 
 def pipeline_progress(root: str) -> dict:
@@ -4106,7 +4193,7 @@ async def pipeline_settings_handler(request: web.Request) -> web.StreamResponse:
 async def pipeline_prompt_handler(request: web.Request) -> web.StreamResponse:
     q = request.query
     root = _root_param(q.get("root"))
-    return _json(await asyncio.to_thread(pipeline_prompt, root, q.get("stage"), q.get("approve"), q.get("only")))
+    return _json(await asyncio.to_thread(pipeline_prompt, root, q.get("stage"), q.get("approve"), q.get("only"), q.get("expect")))
 
 
 @_guard

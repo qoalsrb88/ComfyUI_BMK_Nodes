@@ -2504,9 +2504,11 @@ class BMKDesignPatchRun:
                             draft_unwritten, draft_held, draft_held_style, draft_mock)
         logger.info("%s %s", _TAG, text.splitlines()[0])
         # continuation_hash = 이번 실행이 승인받고 남긴 호출의 해시. JS 자동 이어가기는 pending_hash 가 이것과 같을 때만
-        # 승인한다(개수가 아니라 집합 비교 — 승인하지 않은 호출이 섞이면 멈춤)
+        # 승인한다(개수가 아니라 집합 비교 — 승인하지 않은 호출이 섞이면 멈춤). stopped_reason = 실행이 멈춘 까닭(runner.STOP_REASONS —
+        # auth = 로그인 없음·401/402/403 부터 보내지 않음: Studio 끝 줄이 '승인분 실행' 대신 로그인 필요)
         entry = {"pending_hash": ap_after["pending_hash"], "pending": len(ap_after["needs_approval"]),
                  "est_usd": list(ap_after["est_usd"]), "approved_now": ap["approved_now"], "root_key": key,
+                 "stopped_reason": report.stopped_reason if report is not None else "none",
                  "backend": backend.name, "continuation_hash": report.continuation_hash if report is not None else "",
                  "draft_pending": draft_pending, "draft_style": draft_style, "draft_unwritten": draft_unwritten,
                  "draft_held": draft_held, "draft_held_style": draft_held_style, "draft_mock": draft_mock}
@@ -3130,7 +3132,10 @@ class BMKDesignPatchSpecDraft:
                          "est_credits": list(ap_after["est_credits"]), "est_usd": list(ap_after["est_usd"]),
                          "est_seconds": ap_after["est_seconds"], "backend": backend.name, "model": shown_model,
                          "effort": shown_effort, "approved_now": ap["approved_now"], "root_key": key,
-                         "refresh_available": len(pl_after["refresh_available"])}
+                         "refresh_available": len(pl_after["refresh_available"]),
+                         # 인증 중지(Studio 끝 줄 — 로그인 필요): auth_held = 로그인 정보가 없어 보내지 않은 단위 수, stopped_reason auth =
+                         # 실행 중 401/402/403 부터 보내지 않음
+                         "auth_held": auth_held, "stopped_reason": run_rep.stopped_reason if run_rep is not None else "none"}
                 # pending_style = 대기 중 화풍 단위(0/1) — Run 경고가 크롭과 화풍을 따로 센다. unwritten = 스펙 파일에 아직 못 쓴
                 # 변경(잠김, vlm/<dvlm.WRITE_MARK>, 지금 매니페스트의 크롭·_project 만) — 초안 대기와 따로 Run 이 경고한다.
                 # held = only 로 보류된 대기(승인 목록 밖이라 pending 에 없음), mock_specs = vlm=mock 으로 쓴 초안이 남은 스펙

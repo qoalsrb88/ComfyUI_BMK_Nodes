@@ -47,6 +47,11 @@ S3a 파이프라인(STUDIO_S3_SPEC §7 — --only 이름 = 묶음, 응답 모양
   pipeline_js_unit    J-P1·J-P2·J-P4·B12″ JS·P5 S1-b(U4)
   pipeline_node_unit  (--quick 생략) _pipeline_node_u2b = N24·N30·N31(U2b, --only=pipeline_node_u2b) ·
                       _pipeline_node_u3 = P2·N25–N28·R1‴(U3, --only=pipeline_node_u3)
+S3b 유료 승인(STUDIO_S3_SPEC §4·§7 · 계약 _proto\s3b\S3B_CONTRACT.md)
+  paid_board_unit     B36 유료 GET /pipeline/prompt·plan 확인 창 필드·expect·manifest_rev(U2)
+  paid_js_unit        _paid_js_tab = J-X1–X4 탭 확장(U1, --only=paid_js_tab) · _paid_js_studio = J-P3·R 재굴림·B12″ 유료(U3,
+                      --only=paid_js_studio) · _paid_js_e2e = Studio ↔ 탭 왕복(U4, --only=paid_js_e2e)
+  paid_node_unit      (--quick 생략) N29 유료 템플릿 실행(mock)(U4)
 출력물은 H:\BmkNodeDesign\MultiLayerCropEdit\_proto\m2_test_out\ 아래에만 쓴다(M1 회귀 결과를 읽기만 하는 곳은 m1_test_out).
 """
 from __future__ import annotations
@@ -23755,8 +23760,8 @@ def pipeline_unit():
         der = pl.derive(root, m)
         check(v["rev"] == 0 and v["saved"] is False and v["error"] is None and v["settings"] == der["settings"]
               and v["confirm"] == der["confirm"] == ["prepare.variants", "prepare.ref_style", "draft.apply"] and v["drift"] == []
-              and v["warnings"] == [] and len(v["exports"]) == 1 and v["widgets"] == sw
-              and set(v) == {"rev", "saved", "error", "settings", "confirm", "derived", "drift", "warnings", "exports", "widgets"},
+              and v["warnings"] == [] and len(v["exports"]) == 1 and v["widgets"] == sw and v["manifest_rev"] == m["rev"]
+              and set(v) == {"rev", "saved", "error", "settings", "confirm", "derived", "drift", "warnings", "exports", "widgets", "manifest_rev"},
               f"파일 없음: rev 0·saved false·유도값·confirm(추정 variants·ref_style·draft.apply) {v['confirm']}")
         g = pl.prompt_gate(root, "apply", m)
         check(pl.pipeline_rev(root) is None and pl.load(root) is None and g["reason"] == "confirm_settings"
@@ -24316,20 +24321,30 @@ def pipeline_unit():
               f"되돌리면 0 {rows}")
 
     def api_fixture():
-        section("S3a 응답 모양 정본 tools/fixtures/pipeline_api.json(라우트 7·대조 규칙·모듈 출력과 같은 모양)")
+        section("S3a 응답 모양 정본 tools/fixtures/pipeline_api.json(라우트 7·S3b 메시지·대조 규칙·모듈 출력과 같은 모양)")
         api = _pl_api()
         routes = api["routes"]
         want_routes = ["GET /pipeline", "POST /pipeline/settings", "GET /pipeline/prompt", "GET /pipeline/plan", "GET /pipeline/progress",
                        "GET /draft", "POST /draft/adopt"]
         fields = {"request", "ok", "alt", "errors", "nullable", "optional", "maps", "any", "opaque"}
-        check(api["schema"] == "bmk.design_patch.pipeline_api/1" and list(routes) == want_routes
+        check(api["schema"] == "bmk.design_patch.pipeline_api/1" and list(api) == ["schema", "_doc", "routes", "state", "history", "messages"]
+              and list(routes) == want_routes
               and all(set(e) == fields for e in routes.values()) and {"flags", "crop", "unchanged", "nullable"} == set(api["state"]),
-              f"라우트 7개 · 항목 키 {sorted(fields)} · state(flags·crop·unchanged)")
+              f"라우트 7개 · 항목 키 {sorted(fields)} · state(flags·crop·unchanged) · messages(S3b)")
         errs_ok = all(isinstance(b.get("error"), str) for e in routes.values() for st, bs in e["errors"].items() if st != "202" for b in bs)
+        e409 = routes["GET /pipeline/prompt"]["errors"]["409"]
+        stale_keys = {b["reason"]: set(b) - {"error", "reason"} for b in e409 if b.get("stale") is True}
         check(errs_ok and routes["GET /pipeline/plan"]["errors"]["202"] == [{"busy": True}]
-              and {b["reason"] for b in routes["GET /pipeline/prompt"]["errors"]["409"]} == {"confirm_settings", "no_psd", "missing_path",
-                                                                                             "pipeline_broken"},
-              "오류 본문 = error 문자열(+ reason 등), 202 = {busy: true}, prompt 409 사유 4종")
+              and [b["reason"] for b in e409] == ["confirm_settings", "no_psd", "missing_path", "pipeline_broken", "stale", "apply_needed",
+                                                  "nothing_to_approve", "running", "busy", "plan_error", "stale_settings"]
+              and stale_keys == {"stale": {"stale", "hash"}, "apply_needed": {"stale", "pending"}, "running": {"stale"},
+                                 "stale_settings": {"stale", "sig"}}
+              and all(set(b) == {"error", "reason"} for b in e409 if b["reason"] in ("nothing_to_approve", "busy", "plan_error"))
+              and list(api["_doc"]["열거"]["409 reason(GET /pipeline/prompt — 판정 순서, S3b 계약 §1)"])
+              == ["pipeline_broken", "confirm_settings", "no_psd", "missing_path", "stale_settings", "running", "apply_needed", "busy",
+                  "plan_error", "nothing_to_approve", "stale"],
+              f"오류 본문 = error 문자열(+ reason 등), 202 = {{busy: true}}, prompt 409 사유 = S3a 4종(색인 그대로) + S3b 7종(stale·apply_needed·"
+              f"running·stale_settings 는 stale: true + hash·pending·sig — S3b 계약 §1), 열거는 판정 순서 {stale_keys}")
         g = routes["GET /pipeline"]
         ok = g["ok"]
         check(all(list(ok["settings"][x]) == list(pl.section_keys(x)) and list(ok["derived"]["settings"][x]) == list(pl.section_keys(x))
@@ -24343,6 +24358,20 @@ def pipeline_unit():
         check(pr["ok"]["prompt"] == pl.build_prompt("apply", ok["settings"], rootG)
               and pr["alt"]["export"]["prompt"] == pl.build_prompt("export", ok["settings"], rootG),
               "예시 prompt(apply·export) = build_prompt 출력 그대로(가짜 서버가 돌려주는 템플릿이 T1–T6 을 지킴)")
+        # S3b 유료 갈래(계약 §1): 같은 settings 의 build_prompt(approve = hash, only = 정규 only) · targets = [출력 노드] · 응답 키는 stage 와 무관하게 하나
+        pp, prompt_bodies = routes["GET /pipeline/plan"], {"apply": pr["ok"], **pr["alt"]}
+        only0 = pl.only_string(pp["request"]["query"]["only"].split(","))
+        paid = {st_: (b["targets"], b["hash"], b["only"]) for st_, b in prompt_bodies.items() if st_ not in pl.FREE_STAGES}
+        check(list(prompt_bodies) == ["apply", "export", "run", "draft", "reroll"]
+              and all(list(b) == ["stage", "prompt", "targets", "hash", "only", "sig"] and b["stage"] == st_ and b["sig"] == pr["ok"]["sig"]
+                      for st_, b in prompt_bodies.items())
+              and all(b["targets"] is None and b["hash"] == b["only"] == "" for st_, b in prompt_bodies.items() if st_ in pl.FREE_STAGES)
+              and paid == {"run": (["dp_review"], pp["ok"]["run"]["hash"], only0), "draft": (["dp_draft"], pp["ok"]["draft"]["hash"], only0),
+                           "reroll": (["dp_review"], "", "")}
+              and all(b["prompt"] == pl.build_prompt(st_, ok["settings"], rootG, approve=b["hash"], only=b["only"])
+                      for st_, b in prompt_bodies.items() if st_ not in pl.FREE_STAGES),
+              f"예시 prompt(run·draft·reroll) = build_prompt(approve = 계획 해시, only = 정규 only — reroll 은 둘 다 \"\"), targets = "
+              f"[OUTPUT_KEY], 모든 본문 키 = stage·prompt·targets·hash·only·sig(무료 hash·only \"\"·targets null) {paid}")
         # 대조기 자체
         sp = {"nullable": ["n"], "optional": ["o"], "maps": ["mp"], "any": ["an"], "opaque": ["op"]}
         ex = {"a": 1, "s": "x", "l": [{"c": True}], "n": None, "mp": {"001_x": {"v": [1, 2]}}, "an": 1, "op": {"k": 1}}
@@ -24401,12 +24430,12 @@ def pipeline_unit():
         st, hi = api["state"], api["history"]
         groups = [(n, [e["ok"], *e["alt"].values()], e) for n, e in routes.items()]
         groups += [("state", [{k: st[k]} for k in ("flags", "crop", "unchanged")], st), ("history", [{"bmk_dp_export": hi["bmk_dp_export"]}], hi)]
-        always_null = {("GET /pipeline/prompt", "targets")}  # S3a 에서 늘 null — S3b 가 [출력 노드 키] 예시를 더함
+        groups += [(f"messages {n}", e["examples"], e) for n, e in api["messages"].items()]
         walked = {n: [pv for b in bodies for pv in _pl_walk(b, sp_) if not any(pv[0] == o or pv[0].startswith(o + ".")
                                                                               for o in sp_.get("opaque", []))]
                   for n, bodies, sp_ in groups}
         bare = [f"{n}: {p}" for n, bodies, sp_ in groups for p in sp_["nullable"] + sp_.get("optional", [])
-                if (n, p) not in always_null and not any(q == p and x is not None for q, x in walked[n])]
+                if not any(q == p and x is not None for q, x in walked[n])]
         empty = sorted({f"{n}: {q}" for n, pv in walked.items() for q, x in pv if isinstance(x, list)}
                        - {f"{n}: {q}" for n, pv in walked.items() for q, x in pv if isinstance(x, list) and x})
         check(not bare and not empty,
@@ -24439,13 +24468,14 @@ def pipeline_unit():
         check(e8 == [["run.error: num ≠ 예시 str"], ["draft.running: str ≠ 예시 bool"], ["draft.error: list ≠ 예시 str"]]
               and _pl_shape(pp["ok"], okx, pp) == [],
               f"대조기 규칙 1: 예시에 없는 optional 키(run.error·draft.running·draft.error)도 alt 의 타입과 대조 {e8} {_pl_shape(pp['ok'], okx, pp)}")
-        # §6 라우트 표의 확정 키(+ §2.4 by_crop·§2.5 effects) 글자 그대로 — 정본을 고칠 때 §6 키가 빠지거나 표 밖 키가 붙으면 막는다.
+        # §6 라우트 표의 확정 키(+ §2.4 by_crop·§2.5 effects, GET /pipeline/prompt 는 S3b 계약 §1 의 hash·only) 글자 그대로 — 정본을 고칠 때
+        # §6 키가 빠지거나 표 밖 키가 붙으면 막는다.
         # 표가 키를 정한 객체(그 경로의 부모)만 본다: ok = 표 키 ∪ 허용 목록 정확히, alt = 그 부분집합(+ optional), optional 은 alt 어딘가에
         six = {"GET /pipeline": "rev saved error settings confirm derived derived.settings derived.from derived.confirm derived.notes drift "
                                 "drift[].section drift[].field drift[].manifest drift[].settings drift[].kind warnings exports exports[].rev "
                                 "exports[].psd exports[].time exports[].problems exports[].bytes",
                "POST /pipeline/settings": "ok rev settings confirm drift",
-               "GET /pipeline/prompt": "stage prompt targets sig",
+               "GET /pipeline/prompt": "stage prompt targets sig hash only",
                "GET /pipeline/plan": "sig computed_at notes apply_pending run run.hash run.backend run.need run.pre run.free run.filtered run.est_usd "
                                      "run.est_usd_pre run.credits run.reasons run.reasons[].reason run.reasons[].n run.by_crop run.by_crop.*.need "
                                      "run.by_crop.*.pre run.by_crop.*.free run.by_crop.*.done run.by_crop.*.failed run.by_crop.*.orphaned "
@@ -24467,8 +24497,11 @@ def pipeline_unit():
                                     "effects.targets_after[].origin effects.prompt_changed effects.draft_wait effects.draft_wait.before "
                                     "effects.draft_wait.after effects.layout_wins warnings"}
         six_opt = {"GET /pipeline/plan": {"run.error", "draft.running", "draft.error"}}
-        # §6 밖에서 더한 키: 설정 패널 선택지(settings_widgets), Export 레이어 수(§3.6 new 가 보이는 값 — §6 exports 모양엔 빠짐)
-        six_extra = {"GET /pipeline": {"widgets", "exports[].layers"}}
+        # §6 밖에서 더한 키: 설정 패널 선택지(settings_widgets), Export 레이어 수(§3.6 new 가 보이는 값 — §6 exports 모양엔 빠짐),
+        # 무료 반영 expect 를 만드는 매니페스트 rev(S3b 계약 §1), Draft 확인 창 필드(§4.4 확인 창 — S3b 계약 §2)
+        six_extra = {"GET /pipeline": {"widgets", "exports[].layers", "manifest_rev"},
+                     "GET /pipeline/plan": {"draft.orphan_retries", "draft.est_usd", "draft.reasons", "draft.reasons[].reason", "draft.reasons[].n",
+                                            "draft.free", "draft.pending_style", "draft.mock_forced"}}
 
         def up(q):
             return q.rsplit(".", 1)[0] if "." in q else ""
@@ -24480,7 +24513,7 @@ def pipeline_unit():
         for n, txt in six.items():
             e = routes[n]
             req, opt6, extra6 = set(txt.split()), six_opt.get(n, set()), six_extra.get(n, set())
-            parents = {up(q) for q in req | opt6}
+            parents = {up(q) for q in req | opt6 | extra6}
             got = keyed(e["ok"], e, parents)
             if got != req | extra6:
                 bad6.append(f"{n} ok: 빠짐 {sorted(req - got)} · 표 밖 {sorted(got - req - extra6)}")
@@ -24489,7 +24522,7 @@ def pipeline_unit():
                     bad6.append(f"{n} alt.{an}: 표 밖 {sorted(keyed(ab, e, parents) - req - opt6 - extra6)}")
             if not opt6 <= set(e["optional"]) & set().union(*(keyed(ab, e) for ab in e["alt"].values())):
                 bad6.append(f"{n}: optional {sorted(opt6)} 이 정본 optional·alt 예시에 없음")
-        check(not bad6, f"정본 = §6 라우트 표의 확정 키(+ §2.4 by_crop·§2.5 effects, 허용 widgets): {bad6}")
+        check(not bad6, f"정본 = §6 라우트 표의 확정 키(+ §2.4 by_crop·§2.5 effects, 허용 widgets·manifest_rev·Draft 확인 창 필드): {bad6}")
         # state: null 이 정상인 값(칩 adopt·unchanged 의 rev 들·plan_v), 감싸서 대조(_doc 구조.state)
         un = dict(st["unchanged"], pipeline_rev=None, plan_v=None, layout_rev=None, refs_rev=None, refs_files_v=None)
         bad_st = (_pl_shape({"unchanged": st["unchanged"]}, {"unchanged": un}, st)
@@ -24514,6 +24547,17 @@ def pipeline_unit():
               and ns["run"]["est_usd_pre"] == pp["ok"]["run"]["est_usd_pre"],
               "plan: draft.by_crop.*.adopt null 허용, alt.no_selection = ok 모양(새 nullable 없음)·sig 'r:…|d:…'·해시 \"\"·selected 전부 false·"
               "by_crop·est_usd_pre 는 only 없는 계획")
+        # plan draft 확인 창 필드(§4.4 — S3b 계약 §2): 계획인 draft 에만, no_selection 은 선택 필드 빈 값·only 없는 필드 그대로
+        plans = {"ok": pp["ok"], **pp["alt"]}
+        have = sorted(n for n, b in plans.items() if "pending_style" in b["draft"])
+        conf = ("orphan_retries", "est_usd", "reasons", "free", "pending_style", "mock_forced")
+        check(have == ["no_selection", "ok", "run_error", "style"]
+              and {k: ns["draft"][k] for k in conf} == {"orphan_retries": 0, "est_usd": [0, 0], "reasons": [], "free": 0,
+                                                       "pending_style": 0, "mock_forced": pp["ok"]["draft"]["mock_forced"]}
+              and pp["ok"]["draft"]["pending_style"] == 0 and pp["alt"]["style"]["draft"]["pending_style"] == 1
+              and all(isinstance(plans[n]["draft"]["mock_forced"], bool) for n in have),
+              f"plan draft 확인 창 필드: running·error alt 엔 없음, no_selection 선택 필드 빈 값, pending_style = 화풍 대기(apply full 인 alt.style 만 1) "
+              f"{have} {[ns['draft'].get(k) for k in conf]}")
         # GET /draft: owner·kind 마다 장면(J-P2 가짜 서버), 모두 ok 모양
         dg = routes["GET /draft"]
         scenes = [dg["ok"], *dg["alt"].values()]
@@ -24531,6 +24575,40 @@ def pipeline_unit():
               and hi["bmk_dp_export"][2]["psd"] is None is hi["bmk_dp_export"][2]["rev"]
               and _pl_shape(hx, {"bmk_dp_export": [{"outcome": "new", "psd": 1, "rev": 2}]}, hi) == ["bmk_dp_export[].psd: num ≠ 예시 str"],
               "history.bmk_dp_export: new·unchanged·empty 원소 모양(empty = psd·rev null)")
+        # messages(S3b 계약 §3): Studio ↔ 탭 6종 — 승인 예시는 prompt 예시(hash·only)와, 실패 사유는 409 사유 + 탭 쪽 사유와 맞물림
+        ms = api["messages"]
+        mx = {n: e["examples"] for n, e in ms.items()}
+        tab = mx["bmk-dp-hello_reply"][0]["tab"]
+        appr = {b["stage"]: b for b in mx["bmk-dp-approve"]}
+        fails = {b["reason"]: b for b in mx["bmk-dp-approved"] if b["ok"] is False}
+        base = {"type", "id", "tab", "stage", "ok", "reason", "error"}
+        check(list(ms) == ["bmk-dp-hello", "bmk-dp-hello_reply", "bmk-dp-approve", "bmk-dp-ack", "bmk-dp-approved", "bmk-dp-wave"]
+              and all(set(e) == {"examples", "nullable", "optional"} and e["examples"] for e in ms.values())
+              and all(b["type"] == ("bmk-dp-hello" if n == "bmk-dp-hello_reply" else n) and isinstance(b.get("id"), str) != (n == "bmk-dp-wave")
+                      and (n == "bmk-dp-hello" or b["tab"] == tab) for n, bs in mx.items() for b in bs)
+              and [b.get("tab") for b in mx["bmk-dp-hello"]] == [None, tab]
+              and {k: mx["bmk-dp-hello_reply"][0][k] for k in ("ext", "submit", "busy")} == {"ext": 3, "submit": "ok", "busy": False}
+              and list(appr) == ["run", "draft", "reroll"]
+              and all((b["rootKey"], b["hash"], b["only"]) == (pr["request"]["query"]["root"], pr["alt"][s_]["hash"], pr["alt"][s_]["only"])
+                      for s_, b in appr.items())
+              and mx["bmk-dp-ack"][0]["id"] == appr["run"]["id"] == mx["bmk-dp-approved"][0]["id"]
+              and set(mx["bmk-dp-approved"][0]) == base - {"reason", "error"} | {"prompt_id"} and mx["bmk-dp-approved"][0]["ok"] is True
+              and set(fails) == {"busy", "bad_request", "http", "template", "not_submitted", "rejected", "unknown"} | {b["reason"] for b in e409}
+              and list(fails) == [r for r in api["_doc"]["열거"]["messages bmk-dp-approved reason"] if r in fails]
+              and all(set(b) == base | ({"hash"} if r == "stale" else {"pending"} if r == "apply_needed" else set()) for r, b in fails.items())
+              and fails["stale"]["hash"] == e409[4]["hash"] and fails["apply_needed"]["pending"] == e409[5]["pending"]
+              and fails["bad_request"]["stage"] is None and mx["bmk-dp-wave"][0]["node"].startswith("dp_")
+              and mx["bmk-dp-wave"][0]["rootKey"] == pr["request"]["query"]["root"],
+              f"messages: hello(tab 선택)·hello 답(ext 3·submit ok)·approve(run·draft·reroll — rootKey·hash·only = prompt 예시)·ack·approved"
+              f"(ok·실패 사유마다 — 409 사유 전부 + busy·bad_request·http·template·not_submitted·rejected·unknown, stale 은 hash·apply_needed 는 pending)·"
+              f"wave(id 없음) {sorted(fails)}")
+        mp, ma = ms["bmk-dp-approve"], ms["bmk-dp-approved"]
+        e9 = [_pl_shape(appr["reroll"], {k: v for k, v in appr["reroll"].items() if k != "what"}, mp),
+              _pl_shape(fails["stale"], {k: v for k, v in fails["stale"].items() if k != "hash"}, ma),
+              _pl_shape(fails["bad_request"], dict(fails["bad_request"], stage="run"), ma),
+              _pl_shape(appr["run"], dict(appr["run"], hash=1), mp), _pl_shape(fails["busy"], dict(fails["busy"], prompt_id="x"), ma)]
+        check(e9 == [[], [], [], ["hash: num ≠ 예시 str"], ["prompt_id: 예시에 없는 키"]],
+              f"messages 대조 = _pl_shape(같은 경우의 예시, 실제, 그 항목): optional(what·hash) 없어도 됨·nullable stage, 타입·모르는 키는 거절 {e9}")
 
     _guarded("S3a-B0", b0_pure)
     _guarded("S3a-P1", p1_template)
@@ -25903,8 +25981,9 @@ def pipeline_board_unit():
               f"pipeline.json 없음 → 409 confirm_settings(추정한 Prepare 설정 — fields), 파일을 쓰지 않음 {st} {d}")
         for stage, extra in (("run", {}), ("draft", {}), ("run", {"approve": H, "only": ids[0]}), ("draft", {"approve": H, "only": ids[0]})):
             st, d = await h.jget(f"{API}/pipeline/prompt", root=key, stage=stage, **extra)
-            check(st == 400 and "S3a" in d.get("error", "") and set(d) == {"error"},
-                  f"파일 없음(설정 미확인)에서도 유료 stage={stage} {extra} → 400 S3a(무료 stage 판정이 설정 게이트보다 먼저) {st} {d}")
+            want = (409, "confirm_settings") if extra else (400, None)  # S3b: 인자 모양 400 이 설정 게이트보다 먼저
+            check((st, d.get("reason")) == want and (err_keys("GET /pipeline/prompt", 409, 0, d) if extra else set(d) == {"error"}),
+                  f"파일 없음(설정 미확인): 유료 stage={stage} {extra} → 인자가 틀리면 400(게이트보다 먼저), 맞으면 409 confirm_settings {st} {d}")
         st, d = await plan(h, key, ())
         check(st == 200 and d["notes"] and d["notes"][0].startswith("설정 미확인") and "prepare.variants" in d["notes"][0]
               and d["run"]["hash"] == "" and d["run"]["by_crop"] and not Path(root, pl.PIPELINE_NAME).exists(),
@@ -26012,12 +26091,14 @@ def pipeline_board_unit():
               f"절 통째 저장 → rev + 1 {st} {d.get('rev')}")
 
     async def b34_prompt(h, key, root, ids):
-        section("S3a-B34 GET /pipeline/prompt (apply·export, 409 no_psd·missing_path·pipeline_broken, 유료·모르는 stage 400)")
+        section("S3a-B34 GET /pipeline/prompt (apply·export, 409 no_psd·missing_path·pipeline_broken, 유료 인자 모양·모르는 stage 400 — "
+                "유료 갈래는 paid_board_unit B36)")
         spec = R["GET /pipeline/prompt"]
         st, d = await h.jget(f"{API}/pipeline/prompt", root=key, stage="apply")
         c, m = cur(root), store.load_manifest(root)
         p = d.get("prompt") or {}
         check(st == 200 and not shape("GET /pipeline/prompt", d) and d["stage"] == "apply" and d["targets"] is None
+              and (d["hash"], d["only"]) == ("", "")
               and d["sig"] == f"{c['rev']}:{m['rev']}" and p == json.loads(json.dumps(pl.build_prompt("apply", c["settings"], root)))
               and list(p) == ["dp_project", "dp_import", "dp_prepare", "dp_analyze", "dp_review"]
               and all(v["class_type"].startswith("BMKDesignPatch") for v in p.values()),
@@ -26027,12 +26108,13 @@ def pipeline_board_unit():
         check(st == 200 and not shape("GET /pipeline/prompt", d, "export")
               and list(d["prompt"]) == ["dp_project", "dp_analyze", "dp_compose", "dp_export"],
               f"export 템플릿(Import 없음) {st} {list(d.get('prompt') or {})}")
-        for stage, extra in (("draft", {}), ("run", {}), ("reroll", {}), ("run", {"approve": H, "only": ids[0]}),
-                             ("draft", {"approve": H, "only": ids[0]}), ("reroll", {"only": ids[0]}), ("apply2", {}), (None, {})):
+        for stage, extra in (("draft", {}), ("run", {}), ("run", {"approve": H.upper(), "only": ids[0]}), ("draft", {"approve": H}),
+                             ("reroll", {"only": ids[0]}), ("reroll", {"approve": H}), ("apply2", {}), (None, {})):
             q = dict(extra, **({"stage": stage} if stage is not None else {}))
             st, d = await h.jget(f"{API}/pipeline/prompt", root=key, **q)
-            check(st == 400 and set(d) == {"error"} and ("S3a" in d["error"] if stage in ("draft", "run", "reroll") else "모르는 stage" in d["error"]),
-                  f"stage={stage!r} {extra} → 400(approve 유무와 무관) {st} {d}")
+            check(st == 400 and set(d) == {"error"} and ("모르는 stage" in d["error"]) == (stage not in pl.STAGES),
+                  f"stage={stage!r} {extra} → 400(S3b: run·draft 는 approve 12자 소문자 hex·비지 않은 only, reroll 은 approve·only 없음) "
+                  f"{st} {d}")
         st, d = await h.jget(f"{API}/pipeline/prompt", root=key, stage="apply", approve=H)
         check(st == 400 and "approve" in d["error"], f"무료 stage 에 approve → 400 {st} {d}")
         st, d = await h.jget(f"{API}/pipeline/prompt", root=key, stage="apply", only=ids[0])
@@ -26492,7 +26574,7 @@ def pipeline_board_unit():
         def midway(kind, start, end, fx=(None, None)):
             """계획 계산 중 실행(kind = board.draft_active | board.run_active)이 start 지점에서 시작해 end 지점(None = 요청 뒤)에서 파일
             변화 없이 끝남(초안 형식 오류·로그아웃 401 되돌림). 지점 = (이름, n) — n번째 호출 직전(보드는 호출 때 모듈 속성으로 찾음):
-            board._mock_active(1 = _plan_sigs — 계획이 실행 상태를 읽은 뒤)·runner.plan_calls(1 = _run_free, 2 = _run_sel)·
+            board._mock_active(1 = 계획이 실행 상태를 읽은 직후 한 번 — 서명·계산이 같이 씀)·runner.plan_calls(1 = _run_free, 2 = _run_sel)·
             dvlm.draft_plan(1 = _draft_free, 2 = _draft_sel — free 를 기억했으면 1 = 선택 계획). fx = (시작 때, 끝날 때) 원장 쓰기·되돌리기.
             → 일어난 일 목록."""
             mods = {"_mock_active": board, "plan_calls": runner, "draft_plan": dvlm}
@@ -28029,19 +28111,60 @@ await scenario("applyFree", async () => {  // board.js applyFree: 옛 서버(sta
     notReady: { stale: why({ pipeline_rev: 3 }, null), old: why({ rev: 1 }, null), loaded: why({ pipeline_rev: 3 }, {}) } };
 });
 
-await scenario("rerollTab", async () => {  // board.js reroll(r1-04): 큐 요청은 opener 로만 — opener 가 없으면 확인 창·첫 R 토스트가 '예약만 — 다음 Run 때 과금'
+await scenario("rerollTab", async () => {  // board.js reroll(r1-04·S3b 계약 §5): 큐 = 0.6초 뒤 queueReroll(확인 때의 판정), '탭 있음' = tabWay(유료 가능한 탭·opener) — 없으면 확인 창(그 이유)·첫 R 토스트가 '예약만 — 다음 Run 때 과금'
+  // pipe = 진행 패널 대역: paidWhy(유료 탭 길을 못 쓰는 이유)·paidLock(이 Studio 가 지금 유료 요청을 보내지 않는 이유 — r1-25)·side(부수 효과 줄 — r1-11)
   const src = boardFn("reroll");
-  const one = async (tab, fromButton) => {
-    const c = { confirms: [], toasts: [], writes: [] };
+  const mk = (way, lock) => {
+    const c = { confirms: [], toasts: [], writes: [], timers: [], queued: [] };
     const cell = { cell_key: "abcdef0123456789", variant: "V1", est_usd: [0.62, 0.62] };
-    const rc = vm.createContext({ S: { crops: [] }, LAYOUT_STATUS: {}, REROLL_CONFIRM_MS: 2500, rerollArm: null, Date, setTimeout: () => 0,
+    const rc = vm.createContext({ S: { crops: [] }, LAYOUT_STATUS: {}, REROLL_CONFIRM_MS: 2500, rerollArm: null, Date,
+      setTimeout: (fn, ms) => { c.timers.push(ms); fn(); return 0; },
       window: { confirm: (m) => { c.confirms.push(m); return true; } }, toast: (m, k) => c.toasts.push(`${k || ""}:${m}`),
-      rerollCell: () => cell, usd: () => " ≈ $0.62", curTarget: () => ({ crop_id: "001_38a818" }), comfyConnected: () => tab,
-      write: async (path) => { c.writes.push(path); return { variant: "V1", cell_pending: 1, pending_calls: 1 }; }, queueInComfy: () => tab });
-    await vm.runInContext(`(${src})`, rc)(fromButton);
+      rerollCell: () => cell, usd: () => " ≈ $0.62", curTarget: () => ({ crop_id: "001_38a818" }), tabWay: () => way, tabLink: {},
+      pipe: { applyWarn: () => ["prepare.n: 마지막 Prepare 4 · Studio 2 — 갈라짐 줄"], paidWhy: () => "ComfyUI 탭이 큐를 처리하는 중",
+        paidLock: () => lock, side: "부수 효과 줄" },
+      write: async (path) => { c.writes.push(path); return { variant: "V1", cell_pending: 1, pending_calls: 1 }; }, queueReroll: (...a) => c.queued.push(a) });
+    return [c, vm.runInContext(`(${src})`, rc)];
+  };
+  const one = async (way, fromButton, lock = "") => {
+    const [c, rr] = mk(way, lock);
+    await rr(fromButton);
     return c;
   };
-  return { found: !!src, noTab: await one(false, true), tab: await one(true, true), noTabKey: await one(false, false), tabKey: await one(true, false) };
+  const keys = async (way, ...scripted) => {  // r3-13 키보드 R 을 차례로(같은 무장) — scripted = 그 R 이 합성 키(isTrusted 아님)인가
+    const [c, rr] = mk(way, "");
+    for (const s of scripted) await rr(false, s);
+    return c;
+  };
+  // r2-09: lock 은 길과 무관(자기 승인을 처리하는 탭은 hello busy 라 opener 길) — opener 길에서도 '지금은 예약만'·큐에 held
+  return { found: !!src, noTab: await one("", true), tab: await one("opener", true), paid: await one("paid", true), noTabKey: await one("", false),
+    tabKey: await one("opener", false), paidKey: await one("paid", false), lock: await one("paid", true, "Run 승인 요청을 처리하는 중"),
+    lockKey: await one("paid", false, "Run 승인 요청을 처리하는 중"), lockOpener: await one("opener", true, "Run 승인 요청을 처리하는 중"),
+    lockNoTab: await one("", true, "Run 승인 요청을 처리하는 중"),
+    userPaid: await keys("paid", false, false), scriptedPaid: await keys("paid", true, true), scriptedOpener: await keys("opener", true, true),
+    mixed: await keys("paid", false, true) };
+});
+
+await scenario("rerollQueue", async () => {  // board.js queueReroll(planned, held) — r2-01 R 확인 때 lock(held) = 그 뒤 풀려도 보내지 않음, r2-09 지금 lock 이면 길과
+  // 무관하게 보내지 않음(opener 길 Review 부분 실행 포함), r2-14 길이 바뀐 이유는 지금 길로(pipe 없는 창에서 opener 가 닫힘 = 탭 없음)
+  const one = (o) => {
+    const c = { reroll: 0, comfy: 0, toasts: [] };
+    const pipe = o.pipe === null ? null : { paidWhy: () => o.why || "", paidLock: () => o.lock || "", reroll: () => { c.reroll += 1; } };
+    const qc = vm.createContext({ pipe, comfyConnected: () => !!o.opener, queueInComfy: () => { c.comfy += 1; return true; },
+      toast: (m, k) => c.toasts.push(`${k || ""}:${m}`) });
+    vm.runInContext(`tabWay = ${boardFn("tabWay")}; queueReroll = ${boardFn("queueReroll")};`, qc);
+    qc.queueReroll(...o.args);
+    return Object.assign(c, { way: qc.tabWay() });
+  };
+  const busy = "ComfyUI 탭이 큐를 처리하는 중";
+  return { found: !!boardFn("queueReroll"),
+    paid: one({ args: ["paid", false] }), heldFreed: one({ args: ["paid", true] }), heldStill: one({ args: ["paid", true], lock: "Run 승인 요청을 처리하는 중" }),
+    heldOpener: one({ args: ["opener", true], why: busy, opener: true }),
+    opener: one({ args: ["opener", false], why: busy, opener: true }), openerLock: one({ args: ["opener", false], why: busy, opener: true, lock: "Run 승인 요청을 처리하는 중" }),
+    headLock: one({ args: [], why: busy, opener: true, lock: "이 Studio 의 Run(run) 이 끝난 뒤" }), headOpener: one({ args: [], why: busy, opener: true }),
+    headPaidLock: one({ args: [], lock: "재굴림 큐 요청을 처리하는 중" }),
+    gone: one({ args: ["opener", false], pipe: null }), goneWhy: one({ args: ["opener", false], why: "ComfyUI 탭 연결 없음 — 시험" }),
+    nowPaid: one({ args: ["opener", false], opener: true }), noneNow: one({ args: [], why: "ComfyUI 탭 연결 없음 — 시험" }) };
 });
 
 // ── J-P2 채택: GET /draft → 미리보기 → 쓰기, 409 → 다시 읽기, kind 별 단추 ──
@@ -28110,6 +28233,9 @@ await scenario("texts", async () => {  // 계획 문구(§3.3): Run·초안 줄,
     draftErr: P.draftText(p.alt.draft_error.draft), nosel: P.runText(p.alt.no_selection.run).line,
     mock: P.runText(Object.assign(clone(p.ok.run), { backend: "mock" })).line, running: P.runText(Object.assign(clone(p.ok.run), { running: true })),
     qwen: P.draftText(Object.assign(clone(p.ok.draft), { family: "local_qwen", backend: "vlm_local_qwen" })).line,
+    // r2-13 분 = 노드 확인 창(draftMinutes)과 같은 올림: local_qwen 1건 65초(40+25n) = 2분, 4건 140초 = 3분 — 반올림이면 1·2분
+    qwenMin: [65, 140].map((s) => { const t = P.draftText(Object.assign(clone(p.ok.draft), { family: "local_qwen", backend: "vlm_local_qwen", est_seconds: s }));
+      return [t.line.split(" · ")[1], t.label]; }),
     style: P.draftText(Object.assign(clone(p.ok.draft), { units: [...p.ok.draft.units, { crop_id: "_style", state: "new", reasons: ["화풍 신규"], est: [3, 5] }] })).what,
     // 화풍 단위 crop_id = vlm.STYLE_ID "_style"(r1-02 — "_project" 는 스펙 파일 이름): 크롭으로 세지 않고 행 이름 = 화풍, 갱신 가능·선택 밖·건너뜀도 따로
     styleAll: P.draftText(Object.assign(clone(p.ok.draft), {
@@ -28150,7 +28276,7 @@ await scenario("keys", async () => {  // board.js onKeyDown: 입력칸(IME 포�
     const kd = vm.runInContext(`(${boardFn("onKeyDown")})`, kc);
     let prevented = false;
     kd(Object.assign({ code, key: code, target: target || new Element("body"), repeat: false, ctrlKey: false, metaKey: false, altKey: false,
-      shiftKey: false, preventDefault() { prevented = true; } }, m));
+      shiftKey: false, isTrusted: true, preventDefault() { prevented = true; } }, m));
     return { calls, prevented };
   };
   const input = () => new Element("input", { type: "text" }, new Element("section"));
@@ -28158,7 +28284,26 @@ await scenario("keys", async () => {  // board.js onKeyDown: 입력칸(IME 포�
     pipe: Object.fromEntries(["Space", "KeyR", "KeyX", "ArrowDown", "KeyE", "KeyT", "KeyB", "KeyG"].map((k) => [k, press(true, k)])),
     review: Object.fromEntries(["Space", "KeyG", "KeyR"].map((k) => [k, press(false, k)])),
     typing: { r: press(false, "KeyR", input()), g: press(true, "KeyG", input()), ime: press(false, "Space", input(), { isComposing: true, keyCode: 229 }) },
+    scriptedR: press(false, "KeyR", undefined, { isTrusted: false }),  // r3-13 합성 KeyboardEvent(isTrusted 아님) = scripted
   };
+});
+
+await scenario("queueClick", async () => {  // r3-13 board.js wireButtons: 머리줄 'ComfyUI 큐'(확인 창 없이 지금 큐)는 사용자 클릭(isTrusted)만 — 스크립트 클릭은 큐 0·경고
+  const els = {};
+  const calls = [];
+  const spy = (name) => (...a) => calls.push([name, ...a]);
+  const wc = vm.createContext({ $: (id) => (els[id] ??= { on: {}, addEventListener(t, fn) { (this.on[t] ??= []).push(fn); } }),
+    setStar: spy("setStar"), toggleSlice: spy("toggleSlice"), toggleReject: spy("toggleReject"), reroll: spy("reroll"), queueReroll: spy("queueReroll"),
+    drain: spy("drain"), toggleViewer: spy("toggleViewer"), help: spy("help"), setEditing: spy("setEditing"), setRefs: spy("setRefs"), setPipe: spy("setPipe"),
+    toast: spy("toast"), editing: false, refsOn: false, pipeOn: false });
+  const src = boardFn("wireButtons");
+  if (src) vm.runInContext(`(${src})`, wc)();
+  const click = (id, isTrusted) => {
+    const n = calls.length;
+    for (const fn of (els[id] && els[id].on.click) || []) fn({ isTrusted, currentTarget: { blur() {} } });
+    return calls.slice(n);
+  };
+  return { found: !!src, scripted: click("btn-queue", false), user: click("btn-queue", true), reroll: click("btn-reroll", false) };
 });
 
 // ── J-P4 hello: 탭 확장(가짜 window·BroadcastChannel) ↔ Studio link ──
@@ -28178,7 +28323,8 @@ await scenario("hello", async () => {
     globalThis.window = win;
     const env = {};
     globalThis.__bmk = {
-      app: { get processingQueue() { return busy; }, registerExtension(ext) { env.ext = ext; }, extensionManager: {}, rootGraph: { nodes: [] } },
+      app: { get processingQueue() { return busy; }, registerExtension(ext) { env.ext = ext; }, extensionManager: {}, rootGraph: { nodes: [] },
+        queuePrompt: async () => true },
       api: { addEventListener() {}, queuePrompt: async () => ({}), fetchApi: async () => ({ ok: true, json: async () => ({}) }), fileURL: (p) => p },
     };
     await import(`${pathToFileURL(IN.extMjs).href}?tab=${name}`);
@@ -29136,8 +29282,8 @@ await scenario("headRetry", async () => {  // 검토 모드: Studio 를 연 뒤 
   return r;
 });
 
-function quietPipeline(mod) {  // 갈라짐·확인 필요 없는 GET /pipeline(정본 ok) — mod(본문) 로 고침
-  const b = Object.assign(clone(R["GET /pipeline"].ok), { confirm: [], drift: [] });
+function quietPipeline(mod) {  // 갈라짐·확인 필요·경로 경고(서버 템플릿 게이트 — 유료 탭 길을 막음) 없는 GET /pipeline(정본 ok) — mod(본문) 로 고침
+  const b = Object.assign(clone(R["GET /pipeline"].ok), { confirm: [], drift: [], warnings: [] });
   if (mod) mod(b);
   return [200, b];
 }
@@ -29454,24 +29600,42 @@ await scenario("draftChips", async () => {  // board.js draftChips(§3.7): state
     quiet: run({ draft_chip: { wait: [], refresh: false, adopt: null, run_need: 0, running: false }, plan_stale: false }) };
 });
 
-await scenario("tabBadge", async () => {  // board.js 머리줄 탭 배지(§3.8): link 상태 다섯 → TAB_BADGE 문구·클래스, title = tabTitle(opener·채널 구분)
+await scenario("tabBadge", async () => {  // board.js 머리줄 탭 배지(§3.8·S3b 계약 §5): link 상태·확장 판·submit·길 → TAB_BADGE 문구·클래스, title = tabTitle
   const doc = new Doc();
   const m = /\n  const TAB_BADGE = (\{[\s\S]*?\n  \});/.exec(boardSrc);
   const els = {};
   const bc = vm.createContext({ document: doc, $: (id) => (els[id] ??= doc.createElement("div")), comfyConnected: () => true, credits: () => "",
-    pipeReady: () => true, layoutReady: () => true, refsReady: () => true, tabLink: null,
+    pipeReady: () => true, layoutReady: () => true, refsReady: () => true, tabLink: null, pipe: null,
     S: { project: "261014_Test", crops: [], counts: { targets: 0, candidates: 0, picks: 0 }, cost: { calls: 0 } } });
   vm.runInContext(`el = ${boardFn("el")}; TAB_BADGE = ${m ? m[1] : "{}"}; tabTitle = ${boardFn("tabTitle")}; renderHeader = ${boardFn("renderHeader")};`
     + ` tabKey = ${boardFn("tabKey") || "null"};`, bc);
-  const show = (state, via = "channel", ext = state === "ok" ? 2 : null) => {
-    bc.tabLink = { state, via, ext, busy: false, tab: state === "ok" || ext !== null ? "t" : null };
+  // 실제 link 객체(hello 를 보내지 않는 창 — 상태만 바꿔 씀): 제목의 이유 문장 = link.paidWhy(r1-26 — 승인 단추 제목과 같은 문장)
+  const lk = P.link({ location: { origin: ORIGIN }, opener: null, addEventListener() {} }, () => {}, 1e9, 1e9);
+  const show = (state, via = "channel", ext = state === "ok" ? 3 : null, submit = state === "ok" ? "ok" : null, busy = false) => {
+    bc.tabLink = Object.assign(lk, { state, via, ext, submit, busy, tab: state === "ok" || ext !== null ? "t" : null });
     bc.renderHeader();
     const b = els.badges.children.at(-1);
-    return b ? [b.textContent, b.className, b.title] : null;
+    return b ? [b.textContent, b.className, b.title, lk.paidWhy()] : null;
   };
-  // r1-04: 채널로만 찾은 탭(opener 없음)은 R·ComfyUI 큐가 가지 않으므로 '연결'(초록)이 아님 · r1-28: opener 가 아예 답하지 않음(silent)과 확장 판 < 2(old)를 가름
-  return { found: !!m, ok: show("ok"), okOpener: show("ok", "opener"), old: show("old", "opener", 1), silent: show("old", "opener"), none: show("none"),
-    many: show("many"), wait: show("wait", null) };
+  // S3b: 유료 승인을 받는 탭(ext 3·submit ok)은 opener·채널 모두 '연결'(승인·R·ComfyUI 큐가 그 탭으로), S3a 확장(ext 2)·제출 못 함은 유료 승인 끔 ·
+  // r1-28: opener 가 아예 답하지 않음(silent)과 확장 판 < 2(old)를 가름
+  const r = { found: !!m, ok: show("ok", "opener"), channel: show("ok"), busy: show("ok", "channel", 3, "ok", true), busyOpener: show("ok", "opener", 3, "ok", true),
+    s3a: show("ok", "channel", 2, "unsupported"),
+    s3aOpener: show("ok", "opener", 2, "unsupported"), nosubmit: show("ok", "opener", 3, "unsupported"), old: show("old", "opener", 1), silent: show("old", "opener"),
+    none: show("none"), many: show("many"), wait: show("wait", null) };
+  // r2-05: 진행 패널(pipe)이 있으면 연결된 탭의 이유 = pipe.paidWhy(탭 + 서버 템플릿 게이트 — tabWay 와 같은 판정). 대역 = link 이유 뒤 서버 이유
+  const gate = "실행 설정 확인 필요(prepare.variants) — 진행(G) [설정]에서 확인·저장";
+  bc.pipe = { paidWhy: () => lk.paidWhy() || gate, paidLock: () => "" };
+  Object.assign(r, { gateOpener: show("ok", "opener"), gateChannel: show("ok"), gateBusy: show("ok", "channel", 3, "ok", true), gateOld: show("old", "opener", 1) });
+  bc.pipe = { paidWhy: () => lk.paidWhy(), paidLock: () => "" };
+  r.pipeOk = show("ok", "opener");
+  // r3-11: 이 Studio 가 유료 요청·실행·무료 큐 중(paidLock)이면 R·ComfyUI 큐는 길과 무관하게 지금은 예약만(queueReroll 과 같은 판정 순서) — 유료 탭 길·opener 길
+  // 제목 끝이 그 말, 채널로만 찾은 탭이 막힌 길(그 탭에서 직접)은 그대로
+  bc.pipe = { paidWhy: () => lk.paidWhy(), paidLock: () => "Run 승인 요청을 처리하는 중" };
+  Object.assign(r, { lockOk: show("ok", "opener"), lockChannel: show("ok"), lockBusyOpener: show("ok", "opener", 3, "ok", true),
+    lockBusyChannel: show("ok", "channel", 3, "ok", true) });
+  lk.stop();
+  return r;
 });
 
 await scenario("boardGo", async () => {  // board.js goTarget(★ 점검 줄 → 검토 모드로 나간 뒤 그 타깃)·진행 목록 select 콜백(뷰어를 그 크롭 첫 타깃으로)
@@ -29524,17 +29688,21 @@ await scenario("panelBroken", async () => {  // r2-01: 깨진 pipeline.json(GET 
 });
 
 await scenario("applyRace", async () => {  // r2-02: [반영] — 확인 창이 떠 있는 동안 또 생긴 갈라짐은 새 줄이 없을 때까지 다시 묻고, GET /pipeline 다시 읽기가 실패하면
-  // 큐에 넣지 않으며, 마지막으로 확인한 뒤 다른 창이 저장해 템플릿 sig 의 pipeline rev 가 다르면 보내지 않음
+  // 큐에 넣지 않으며, 마지막으로 확인한 뒤 다른 창이 저장해 템플릿 sig 의 pipeline rev 가 다르면 보내지 않음(S3b: 확인한 '<rev>:<manifest_rev>' 를
+  // expect 로 실어 그 뒤 그래프 실행이 매니페스트를 바꿔도 서버가 409 stale_settings)
   const cell = (field, m, s) => ({ section: "prepare", field, manifest: m, settings: s, kind: "cell" });
   const at = (rev, drift) => quietPipeline((b) => { b.rev = rev; b.drift = drift; });
-  const one = async ({ pre, steps = [], sig = null, editor = false }) => {
-    // steps[i] = i 번째 확인 창이 떠 있는 동안 서버에 생기는 일 {rev, drift} | null(GET /pipeline 500), sig = 템플릿 sig 의 pipeline rev(없으면 지금 rev)
+  const one = async ({ pre, steps = [], sig = null, editor = false, mrev = null }) => {
+    // steps[i] = i 번째 확인 창이 떠 있는 동안 서버에 생기는 일 {rev, drift} | null(GET /pipeline 500), sig = 템플릿 sig 의 pipeline rev(없으면 지금 rev),
+    // mrev = 템플릿을 받을 때 서버의 매니페스트 rev(S3b 서버 — expect '<rev>:<manifest_rev>' 가 다르면 409 stale_settings, null = expect 를 보지 않는 옛 서버)
     const srv = server();
     let rev = 3;
     srv.route.pipeline = at(3, []);
     quietPlan(srv);
     srv.hist = () => OK_H;
-    srv.route.prompt = () => [200, Object.assign(clone(R["GET /pipeline/prompt"].ok), { sig: `${sig ?? rev}:79` })];
+    srv.route.prompt = (q) => (mrev !== null && q.expect !== `${rev}:${mrev}`
+      ? [409, Object.assign(clone(R["GET /pipeline/prompt"].errors["409"].find((x) => x.reason === "stale_settings")), { sig: `${rev}:${mrev}` })]
+      : [200, Object.assign(clone(R["GET /pipeline/prompt"].ok), { sig: `${sig ?? rev}:${mrev ?? 79}` })]);
     const env = mkPanel(srv);
     const S = quietState();
     env.pipe.stateChanged(S);
@@ -29561,7 +29729,7 @@ await scenario("applyRace", async () => {  // r2-02: [반영] — 확인 창이 
       await sleep(150);
     }
     const r = { asked: env.confirms.slice(c0).map((c) => c.split("\n")), posts: srv.count("api/prompt"), toasts: env.toasts.slice(t0),
-      res: res === undefined ? null : clone(res) };
+      res: res === undefined ? null : clone(res), expect: srv.log.filter((x) => x.path === "pipeline/prompt").map((x) => x.q.expect ?? null) };
     await until(() => !env.head.textContent.includes("실행 중:"), 3000);
     env.pipe.leave();
     return r;
@@ -29574,6 +29742,9 @@ await scenario("applyRace", async () => {  // r2-02: [반영] — 확인 창이 
     firstFail: await one({ pre: [500, { error: "pipeline.json 을 읽지 못함(잠김)" }] }),
     sigMoved: await one({ sig: 5 }),
     editorFail: await one({ pre: [500, { error: "pipeline.json 을 읽지 못함(잠김)" }], editor: true }),
+    sameSig: await one({ mrev: 79 }),
+    manifestMoved: await one({ mrev: 80 }),
+    editorMoved: await one({ mrev: 80, editor: true }),
   };
 });
 
@@ -30685,18 +30856,23 @@ def pipeline_js_unit():
     check(pcode.count('comfy("prompt"') == 1 and 'comfy("prompt", freeBody(t.prompt, stage))' in pcode and pcode.count("freeBody(") == 2
           and fb.rstrip().endswith("return { prompt, front: STAGES[stage].front };"),
           "/api/prompt 본문을 만드는 곳은 pipeline.js 안에 freeBody 하나(서버가 준 prompt + front 만)")
-    for tok in ("extra_data", "client_id", "api_key", "auth_token", "bmk-dp-approve", "approve="):
-        check(tok not in pj and tok not in bj, f"B12″: pipeline.js·board.js 에 {tok} 없음(S3a — 인증·유료 승인 메시지·approve 쿼리 없음)")
-    check("bmk-dp-approve" not in ext and "EXT_VERSION = 2" in ext and 'submit: "unsupported"' in ext,
-          "탭 확장 = hello 응답만(S3a — ext 2·submit unsupported, 승인 메시지 처리 없음)")
+    for tok in ("extra_data", "client_id", "api_key", "auth_token", "approve="):
+        check(tok not in pj and tok not in bj, f"B12″: pipeline.js·board.js 에 {tok} 없음(인증·approve 쿼리 없음 — 유료 템플릿은 탭이 서버에서 받음)")
+    check(pj.count('"bmk-dp-approve"') == 1 and "bmk-dp-approve" not in bj and pcode.count(".send(") == 1
+          and "L.send({ type: APPROVE, rootKey: opts.root, stage, hash, only, what }" in pcode,
+          "B12″(S3b): 승인 메시지를 보내는 곳은 pipeline.js sendPaid 하나(const APPROVE 한 번·link.send 한 곳 — stage·hash·only 만, prompt 없음), board.js 에는 없음")
+    check("const EXT_VERSION = 3;" in ext and 'const APPROVE = "bmk-dp-approve";' in ext
+          and 'submitHooked && typeof app.queuePrompt === "function" ? "ok" : "unsupported"' in ext,
+          "탭 확장 = S3b(ext 3 — Studio 승인 처리, submit = 감싸개 설치 && app.queuePrompt 함수, 동작은 paid_js_tab)")
     qf = pcode[pcode.index("s.queue = async"):pcode.index("s.resume = ")]
     check(0 < qf.index("checkPrompt(t.prompt)") < qf.index('comfy("prompt"') and "if (bad) throw" in qf,
           "보내기 전 검사(checkPrompt) 가 /api/prompt 앞 — 어긋나면 던지고 보내지 않음")
     check('const PAID = ["BMKDesignPatchRun", "BMKDesignPatchSpecDraft"];' in pcode and "/^dp_[a-z]+$/" in pcode
           and 'cls.startsWith("BMKDesignPatch")' in pcode, "checkPrompt: 키 dp_*·class_type BMKDesignPatch*·Run·Spec Draft 아님")
-    da = _layout_js_fn(pcode, "disabledApprove", "    ")
-    check('const S3B = "S3b 전 — 그래프의 승인 버튼 사용";' in pcode and "b.disabled = true;" in da and "button(label.trim(), S3B" in da,
-          "유료 승인 단추는 늘 꺼짐(제목 'S3b 전 — 그래프의 승인 버튼 사용')")
+    ab = _layout_js_fn(pcode, "approveButton", "    ")
+    check("S3b 전" not in pj and 'approveButton("draft", dt.label, hc.draft)' in pcode and 'approveButton("run", ' in pcode
+          and "b.disabled = !!why;" in ab and "(e) => approve(e, kind, label, pair)" in ab,
+          "S3b 승인 단추 = approveButton(초안·Run — 그린 해시·only 짝, 꺼진 이유는 제목, 누르면 이벤트째 approve), 'S3b 전' 고정 꺼짐 없음")
     check("approve: ${hash}  only: ${only}" in pcode, "해시 복사 = approve·only 한 줄(§3.3 — 'approve=' 문자열은 쓰지 않음)")
     check("apply: { front: true" in pcode and "export: { front: false" in pcode, "apply = 대기열 앞(front true), export = 뒤(front false)")
     check(re.search(r"widgets\[sec\]|P0\.widgets", pcode) is not None and "COMBO" in pcode and "choices" in pcode
@@ -30883,13 +31059,62 @@ def pipeline_js_unit():
               f"모드 단추 안내(notReady), 옛 서버·라우트 404 는 그대로 '재시작' {npipe} {nr}")
     rt = res.get("rerollTab") or {}
     if "found" in rt:
-        no_tab = "큐를 보낼 탭이 없음: 재굴림은 예약만 되고 다음 Run 때(선택과 무관) 함께 과금"
-        check(rt["found"] and len(rt["noTab"]["confirms"]) == 1 and no_tab in rt["noTab"]["confirms"][0] and "ComfyUI 탭에 큐 요청을 보냅니다" not in rt["noTab"]["confirms"][0]
-              and "ComfyUI 탭에 큐 요청을 보냅니다" in rt["tab"]["confirms"][0] and no_tab not in rt["tab"]["confirms"][0]
-              and rt["noTab"]["writes"] == ["reroll"] and rt["tab"]["writes"] == ["reroll"]
-              and any("큐를 보낼 탭 없음(예약만 — 다음 Run 때 과금)" in t for t in rt["noTabKey"]["toasts"])
-              and not any("큐를 보낼 탭 없음" in t for t in rt["tabKey"]["toasts"]) and rt["noTabKey"]["writes"] == [],
-              f"r1-04 R(재굴림): opener(Open Board 로 연 탭)가 없으면 확인 창·첫 R 토스트 = '큐를 보낼 탭 없음 — 예약만, 다음 Run 때 과금'(채널로 찾은 탭이 있어도) {rt}")
+        no_tab = "지금 큐를 보내지 않음(ComfyUI 탭이 큐를 처리하는 중): 재굴림은 예약만 되고 다음 Run 때(선택과 무관) 함께 과금"
+        conf = {k: rt[k]["confirms"][0] if len(rt[k]["confirms"]) == 1 else "" for k in ("noTab", "tab", "paid", "lock", "lockOpener", "lockNoTab")}
+        check(rt["found"] and no_tab in conf["noTab"] and "ComfyUI 탭에 큐 요청을 보냅니다" not in conf["noTab"]
+              and all("ComfyUI 탭에 큐 요청을 보냅니다" in conf[k] and no_tab not in conf[k] for k in ("tab", "paid"))
+              and all(rt[k]["writes"] == ["reroll"] and rt[k]["timers"] == [600] and rt[k]["queued"] == [[w, held]]
+                      for k, w, held in (("noTab", "", False), ("tab", "opener", False), ("paid", "paid", False), ("lock", "paid", True),
+                                         ("lockOpener", "opener", True), ("lockNoTab", "", False)))
+              and any("지금 큐를 보내지 않음(예약만 — 다음 Run 때 과금)" in t for t in rt["noTabKey"]["toasts"])
+              and not any("큐를 보내지 않음" in t or "예약만" in t for t in rt["tabKey"]["toasts"] + rt["paidKey"]["toasts"]) and rt["noTabKey"]["writes"] == [],
+              f"r1-04·S3b R(재굴림): 쓰기 성공 뒤 0.6초에 queueReroll(확인 때의 판정 — '예약만'에 동의했으면 그 사이 탭이 생겨도 보내지 않음), "
+              f"길(tabWay — 유료 탭 길·opener)이 없으면 확인 창 = '지금 큐를 보내지 않음(그 이유 — pipe.paidWhy: 탭·서버 게이트) — 예약만, 다음 Run 때 과금'·"
+              f"첫 R 토스트 {rt}")
+        check("ComfyUI 탭에 큐 요청을 보냅니다" not in conf["lock"] and "부수 효과 줄" not in conf["lock"]
+              and conf["lock"].endswith("유료 호출이 사전 승인됩니다 — 지금은 큐를 보내지 않음(Run 승인 요청을 처리하는 중): 재굴림은 예약만 되고 머리줄 'ComfyUI 큐'로 "
+                                        "보내거나 다음 Run 때(선택과 무관) 함께 과금됩니다. 계속할까요?")
+              and any("지금은 예약만(Run 승인 요청을 처리하는 중 — 머리줄 'ComfyUI 큐' 또는 다음 Run 때 과금)" in t for t in rt["lockKey"]["toasts"])
+              and rt["lockKey"]["writes"] == [],
+              f"r1-25 유료 탭 길인데 이 Studio 가 유료 요청·실행·무료 큐 중(pipe.paidLock — pipe.reroll 이 보내지 않고 예약만)이면 R 확인 창·첫 R 토스트 = "
+              f"'지금은 큐를 보내지 않음(이유) — 예약만'(큐 요청을 보낸다·부수 효과 줄 없음) {conf['lock']!r} {rt['lockKey']['toasts']}")
+        check("ComfyUI 탭에 큐 요청을 보냅니다" not in conf["lockOpener"]
+              and "지금은 큐를 보내지 않음(Run 승인 요청을 처리하는 중): 재굴림은 예약만 되고 머리줄 'ComfyUI 큐'로" in conf["lockOpener"]
+              and no_tab in conf["lockNoTab"] and "지금은 큐를 보내지 않음(Run" not in conf["lockNoTab"],
+              f"r2-09 lock 은 길과 무관(자기 승인을 처리하는 탭은 hello busy 라 opener 길): opener 길이어도 이 Studio 가 바쁘면 R 확인 창 = '지금은 예약만'"
+              f"(Review 부분 실행 요청 아님)·큐에 held, 탭 없음은 그대로(탭 없음 이유) {conf['lockOpener']!r} {conf['lockNoTab']!r}")
+        sk = "지금 큐를 보내지 않음(스크립트 키 — 큐는 사용자 키 입력만, 예약만 — 다음 Run 때 과금)"
+        up, sp_, so_, mx_ = (rt.get(k) or {} for k in ("userPaid", "scriptedPaid", "scriptedOpener", "mixed"))
+        check(up.get("writes") == ["reroll"] and up.get("queued") == [["paid", False]]
+              and all(x.get("writes") == ["reroll"] and x.get("queued") == [] and x.get("timers") == [] and x.get("confirms") == []
+                      and any(sk in t for t in x.get("toasts", [])) and not any("시드 제어" in t for t in x.get("toasts", [])) for x in (sp_, so_))
+              and mx_.get("writes") == [] and mx_.get("queued") == [] and len(mx_.get("toasts", [])) == 2 and sk in mx_["toasts"][1],
+              f"r3-13 합성 키 R R(isTrusted 아님) = 사전 승인(예약)만 — 유료 탭 길 승인 제출·opener Review 부분 실행으로 가는 큐(queueReroll) 0, 첫 R 토스트에 "
+              f"'스크립트 키 — 큐는 사용자 키 입력만', 사용자 R 로 무장한 뒤 합성 R = 다시 무장(쓰기 0) {up} {sp_} {so_} {mx_}")
+    rq = res.get("rerollQueue") or {}
+    if "found" in rq:
+        held_ = "warn:재굴림 예약됨 — 지금 보내지 않음({}): 머리줄 'ComfyUI 큐'로 보내거나 다음 Run 때 과금"
+        moved_ = "warn:재굴림 예약됨 — R 확인 뒤 ComfyUI 탭 상태가 바뀌어 지금 보내지 않음({}): 머리줄 'ComfyUI 큐'로 보내거나 다음 Run 때 과금"
+        agreed = "R 확인 때 '지금은 예약만'에 동의함"
+        q = lambda way, reroll=0, comfy=0, toasts=(): {"reroll": reroll, "comfy": comfy, "toasts": list(toasts), "way": way}
+        want = {"paid": q("paid", reroll=1), "heldFreed": q("paid", toasts=[held_.format(agreed)]),
+                "heldStill": q("paid", toasts=[held_.format("Run 승인 요청을 처리하는 중")]), "heldOpener": q("opener", toasts=[held_.format(agreed)]),
+                "opener": q("opener", comfy=1), "openerLock": q("opener", toasts=[held_.format("Run 승인 요청을 처리하는 중")]),
+                "headLock": q("opener", toasts=[held_.format("이 Studio 의 Run(run) 이 끝난 뒤")]), "headOpener": q("opener", comfy=1),
+                "headPaidLock": q("paid", toasts=[held_.format("재굴림 큐 요청을 처리하는 중")]),
+                "gone": q("", toasts=[moved_.format("이 창을 연 ComfyUI 탭 없음")]), "goneWhy": q("", toasts=[moved_.format("ComfyUI 탭 연결 없음 — 시험")]),
+                "nowPaid": q("paid", toasts=[moved_.format("탭이 이제 유료 승인을 받음 — 확인한 Review 부분 실행과 과금 기준이 다름")]),
+                "noneNow": q("", toasts=["warn:재굴림 예약됨 — Run 실행 때 과금(ComfyUI 탭 연결 없음 — 시험)"])}
+        bad = {k: rq[k] for k in want if rq[k] != want[k]}
+        check(rq["found"] and not bad,
+              f"r2-01·r2-09·r2-14 board.js queueReroll(planned, held): R 확인 때 lock(held)이면 그 뒤 풀려도 예약만(재굴림 메시지·Review 부분 실행 0), "
+              f"지금 이 Studio 가 바쁘면(paidLock) 길과 무관하게 예약만(머리줄 'ComfyUI 큐' 포함 — opener 길 Review 부분 실행으로 새지 않음), 길이 바뀐 "
+              f"이유는 지금 길로(pipe 없는 창에서 opener 닫힘 = '이 창을 연 ComfyUI 탭 없음' — '탭이 이제 유료 승인을 받음' 아님) {bad}")
+        side_key = "승인 제출이라 ComfyUI 탭 그래프의 시드 제어 등 실행마다 바뀌는 값이 한 번 진행됨(그래프는 실행 안 함)"
+        check(any(side_key in t for t in rt["paidKey"]["toasts"])
+              and not any(side_key in t for k in ("tabKey", "noTabKey", "lockKey") for t in rt[k]["toasts"]),
+              f"r1-11 키보드 첫 R 토스트: 유료 탭 길로 지금 보내면(paid·lock 없음) 승인 제출 부수 효과 짧은 줄(버튼 R 확인 창의 pipe.side 와 같은 뜻), "
+              f"opener(Review 부분 실행 — 그래프가 실제로 돎)·예약만·lock 이면 없음 {rt['paidKey']['toasts']} {rt['tabKey']['toasts']}")
 
     # J-P2 채택
     ad = res.get("adopt") or {}
@@ -30932,6 +31157,10 @@ def pipeline_js_unit():
               and tx["draftRun"]["dim"] and tx["draftErr"]["dim"] and "용어집 형식 오류" in tx["draftErr"]["line"]
               and "로컬 Qwen 약 5분" in tx["qwen"] and tx["style"] == "1크롭 + 화풍",
               f"J-P1 §3.3 초안 줄(크레딧·분·갱신 가능·해시·못 쓴 스펙·로컬 Qwen·화풍) {tx['draft']['line']}")
+        vram = "(ComfyUI 모델을 VRAM 에서 내림 — 과금 없음)"
+        check(tx.get("qwenMin") == [[f"로컬 Qwen 약 2분{vram}", "초안 승인 로컬 1건 ≈ 2분"], [f"로컬 Qwen 약 3분{vram}", "초안 승인 로컬 1건 ≈ 3분"]],
+              f"r2-13 local_qwen 분 = 노드 확인 창·노드 UI 와 같은 올림(65초 = 2분, 140초 = 3분 — 반올림 1·2분이면 같은 계획에 노드와 다른 분) "
+              f"{tx.get('qwenMin')}")
         sa, so = tx.get("styleAll") or {}, tx.get("styleOnly") or {}
         check(sa.get("what") == "2크롭 + 화풍" and (sa.get("line") or "").startswith("초안: 승인 필요 2크롭 + 화풍 ")
               and "갱신 가능 1 + 화풍" in sa["line"] and "선택 밖 1 + 화풍" in sa["line"]
@@ -30953,23 +31182,30 @@ def pipeline_js_unit():
               and pk["KeyB"]["calls"] == [["setBg", "base"]] and pk["KeyG"]["calls"] == [["setPipe", False]],
               f"J-P2 진행 모드: 검토 키(Space·R·X·화살표)·E·T 끔, 뷰어 키(B)·G 는 듦 {pk}")
         rv, ty = ky["review"], ky["typing"]
-        check(rv["Space"]["calls"] == [["setStar"]] and rv["KeyG"]["calls"] == [["setPipe", True]] and rv["KeyR"]["calls"] == [["reroll", False]]
+        check(rv["Space"]["calls"] == [["setStar"]] and rv["KeyG"]["calls"] == [["setPipe", True]] and rv["KeyR"]["calls"] == [["reroll", False, False]]
               and all(ty[k] == {"calls": [], "prevented": False} for k in ("r", "g", "ime")),
               f"J-P2 입력칸 포커스(IME 조합 포함)면 보드 키 무시, 검토 모드 G = 진행 모드로 {ty} {rv}")
+        check(ky.get("scriptedR") == {"calls": [["reroll", False, True]], "prevented": True},
+              f"r3-13 합성 키 R(isTrusted 아님) = reroll(키보드, scripted) — 사전 승인(예약)만, 지금 보내는 큐 없음(rerollTab scripted) {ky.get('scriptedR')}")
+    qc_ = res.get("queueClick") or {}
+    check(qc_.get("found") is True and qc_.get("scripted") == [["toast", "머리줄 'ComfyUI 큐'는 사용자 클릭만 — 스크립트 클릭은 큐를 보내지 않음", "warn"]]
+          and qc_.get("user") == [["queueReroll"]] and qc_.get("reroll") == [["reroll", True]],
+          f"r3-13 머리줄 'ComfyUI 큐'(확인 창 없이 지금 큐 — 유료 탭 길 승인 제출·opener Review 부분 실행)는 사용자 클릭(isTrusted)만: 스크립트 클릭 = 큐 0·경고, "
+          f"R 단추는 확인 창이 동의 {qc_}")
 
     # J-P4 hello
     he = res.get("hello") or {}
     if "reply" in he:
         rp = he["reply"]
         ok1 = len(rp) == 1 and rp[0][1] == "http://127.0.0.1:8189" and {k: v for k, v in rp[0][0].items() if k != "tab"} \
-            == {"type": "bmk-dp-hello", "id": "h1", "ext": 2, "submit": "unsupported", "busy": True} and isinstance(rp[0][0].get("tab"), str)
+            == {"type": "bmk-dp-hello", "id": "h1", "ext": 3, "submit": "ok", "busy": True} and isinstance(rp[0][0].get("tab"), str)
         check(ok1 and he["otherOrigin"] == 0 and he["otherTab"] == 0 and he["ownTab"] == 1 and he["badId"] == 0,
-              f"J-P4 탭 확장 hello(opener 길) = {{id, tab, ext 2, submit unsupported, busy}} 같은 출처로 · 다른 출처·다른 tab ID·id 없음 무시 {he['reply']}")
+              f"J-P4 탭 확장 hello(opener 길) = {{id, tab, ext 3, submit ok, busy}} 같은 출처로 · 다른 출처·다른 tab ID·id 없음 무시 {he['reply']}")
         ch = he["channel"]
-        check(len(ch) == 1 and ch[0]["id"] == "c1" and ch[0]["ext"] == 2 and ch[0]["tab"] == rp[0][0]["tab"],
+        check(len(ch) == 1 and ch[0]["id"] == "c1" and ch[0]["ext"] == 3 and ch[0]["tab"] == rp[0][0]["tab"],
               f"J-P4 채널(BroadcastChannel bmk-dp) hello = 채널로 답함, tab 지정·응답 모양 메시지는 답하지 않음 {ch}")
-        check(he["one"]["first"] == "wait" and he["one"]["state"] == "ok" and he["one"]["via"] == "channel" and he["one"]["ext"] == 2
-              and he["one"]["submit"] == "unsupported" and he["one"]["busy"] is True and he["one"]["changes"] == ["ok"],
+        check(he["one"]["first"] == "wait" and he["one"]["state"] == "ok" and he["one"]["via"] == "channel" and he["one"]["ext"] == 3
+              and he["one"]["submit"] == "ok" and he["one"]["busy"] is True and he["one"]["changes"] == ["ok"],
               f"J-P4 Studio(opener 없음): 채널 응답 하나 = 연결 {he['one']}")
         check(he["many"]["state"] == "many" and he["many"]["tab"] is None and he["none"]["state"] == "none" and he["noChannel"]["state"] == "none",
               f"J-P4 채널 응답 둘 = 연결 안 함(many), 없음 = none {he['many']['state']} {he['none']['state']}")
@@ -30990,18 +31226,53 @@ def pipeline_js_unit():
               f"J-P4 주기적인 다시 hello(§4.2 — 2초): 탭이 닫히면 none, 새로고침(새 tab ID)으로 다시 붙으면 ok — 첫 판정에서 굳지 않음 {he.get('periodic')}")
     tb = res.get("tabBadge") or {}
     if "found" in tb:
-        okc = "채널로 찾은 ComfyUI 탭(확장 판 2)"
-        check(tb["found"] and tb["ok"][:2] == ["ComfyUI 탭 찾음(채널) — 재굴림·ComfyUI 큐는 Open Board 창에서", "badge b-wait"] and tb["ok"][2].startswith(okc)
-              and tb["okOpener"][:2] == ["ComfyUI 탭 연결(S3)", "badge b-run"] and tb["okOpener"][2].startswith("Open Board 로 연 ComfyUI 탭(확장 판 2)")
+        paid = "초안·Run 승인·재굴림·ComfyUI 큐가 이 탭으로"
+        check(tb["found"] and tb["ok"][:2] == ["ComfyUI 탭 연결", "badge b-run"] and tb["ok"][2].startswith("Open Board 로 연 ComfyUI 탭(확장 판 3)") and paid in tb["ok"][2]
+              and tb["channel"][:2] == ["ComfyUI 탭 연결(채널)", "badge b-run"] and tb["channel"][2].startswith("채널로 찾은 ComfyUI 탭(확장 판 3)") and paid in tb["channel"][2]
+              and tb["busy"][:2] == tb["channel"][:2] and ": ComfyUI 탭이 큐를 처리하는 중. " in tb["busy"][2] and paid not in tb["busy"][2]
+              and "재굴림·ComfyUI 큐는 그 탭에서 직접(R 은 사전 승인만 되고 다음 Run 때 과금)" in tb["busy"][2]
+              and tb["busyOpener"][:2] == tb["ok"][:2] and paid not in tb["busyOpener"][2] and "재굴림·ComfyUI 큐는 이 탭의 Review 부분 실행으로" in tb["busyOpener"][2]
+              and tb["s3a"][:2] == tb["s3aOpener"][:2] == ["탭 확장이 옛 판(S3a) — 유료 승인은 ComfyUI 탭 새로고침 뒤", "badge b-wait"]
+              and "재굴림·ComfyUI 큐는 그 탭에서 직접(R 은 사전 승인만 되고 다음 Run 때 과금)" in tb["s3a"][2]
+              and "재굴림·ComfyUI 큐는 이 탭의 Review 부분 실행으로" in tb["s3aOpener"][2]
+              and tb["nosubmit"][:2] == ["ComfyUI 탭이 승인 제출을 못 함 — 유료 승인 끔", "badge b-wait"] and "submit unsupported" in tb["nosubmit"][2]
               and tb["old"][:2] == ["탭 확장이 옛 판 — ComfyUI 탭 새로고침", "badge b-wait"]
               and (tb.get("silent") or [None, None])[:2] == ["ComfyUI 탭 응답 없음 — 탭 새로고침 또는 Open Board 로 다시 열기", "badge b-wait"]
               and "Open Board 로 다시 열기" in tb["silent"][2] and tb["none"][:2] == ["ComfyUI 탭 없음", "badge b-dim"]
               and tb["many"][1] == "badge b-wait" and "Open Board 로 다시 여세요" in tb["many"][0] and tb["wait"][1] == "badge b-dim"
-              and len({tb[k][0] for k in ("ok", "okOpener", "old", "silent", "none", "many", "wait")}) == 7,
-              f"§3.8 머리줄 탭 배지(board.js renderHeader·TAB_BADGE): opener 연결 = 'ComfyUI 탭 연결(S3)'(초록), 채널로만 찾은 탭 = 초록 '연결'이 아님(r1-04 — "
-              f"R·ComfyUI 큐는 opener 로만 감), opener 무응답 = '응답 없음 — 새로고침 또는 Open Board 로 다시'(r1-28 — 옛 판 단정은 확장 판 < 2 일 때만)·"
-              f"none·many·wait 일곱 문구가 다름 {tb}")
-    check("tabLink = window.DPPipeline.link(window, renderHeader);" in bcode, "board.js: 탭 연결 상태가 바뀌면 머리줄(배지)을 다시 그림")
+              and len({tb[k][0] for k in ("ok", "channel", "s3a", "nosubmit", "old", "silent", "none", "many", "wait")}) == 9,
+              f"§3.8·S3b 계약 §5 머리줄 탭 배지(board.js renderHeader·TAB_BADGE): 유료 승인을 받는 탭(ext 3·submit ok) = opener 'ComfyUI 탭 연결'·채널 "
+              f"'ComfyUI 탭 연결(채널)'(초록 — 승인·R·ComfyUI 큐가 그 탭으로 — 큐 처리 중이면 제목 끝 = 유료 승인을 못 받는 탭의 길), "
+              f"S3a 확장(ext 2) = '옛 판(S3a) — 유료 승인은 새로고침 뒤'(R·큐는 opener 만), "
+              f"제출 못 함 = 유료 승인 끔, opener 무응답 = '응답 없음'(r1-28)·none·many·wait 아홉 문구가 다름 {tb}")
+    if "found" in tb:
+        nopaid = ("busy", "busyOpener", "s3a", "s3aOpener", "nosubmit", "old", "silent")
+        check(all(len(tb[k]) == 4 and tb[k][3] and tb[k][3] in tb[k][2] for k in nopaid) and tb["old"][2] == tb["old"][3] and tb["silent"][2] == tb["silent"][3]
+              and not tb["ok"][3] and not tb["channel"][3] and "다른 주소·페이지로 옮겨 감" in tb["silent"][3],
+              f"r1-26 유료 승인을 못 받는 이유 문장은 link.paidWhy 한 곳 — 배지 제목(tabTitle)은 그 문장 + 길(opener·채널)·그동안 R·ComfyUI 큐의 길만 "
+              f"덧붙임(silent·old 는 그 문장 그대로, 승인 단추 제목·R 확인 문구와 같은 말) {[(k, tb[k][2:]) for k in nopaid]}")
+        gate_ = "실행 설정 확인 필요(prepare.variants) — 진행(G) [설정]에서 확인·저장"
+        paid_ = "초안·Run 승인·재굴림·ComfyUI 큐가 이 탭으로(탭이 서버 템플릿을 큐에 넣음)"
+        go, gc, gb = (tb.get(k) or [None] * 4 for k in ("gateOpener", "gateChannel", "gateBusy"))
+        check(go[:2] == tb["ok"][:2] and go[2] == f"Open Board 로 연 ComfyUI 탭(확장 판 3): {gate_}. 재굴림·ComfyUI 큐는 이 탭의 Review 부분 실행으로(그래프 Prepare 위젯 값으로 과금)"
+              and gc[2] == (f"채널로 찾은 ComfyUI 탭(확장 판 3): {gate_}. 이 창은 Open Board 로 열리지 않아 재굴림·ComfyUI 큐는 그 탭에서 직접(R 은 사전 승인만 되고 "
+                            "다음 Run 때 과금)")
+              and gb[2] == tb["busy"][2] and (tb.get("gateOld") or [None] * 3)[2] == tb["old"][2]
+              and (tb.get("pipeOk") or [None] * 3)[2] == tb["ok"][2] and paid_ in tb["ok"][2],
+              f"r2-05 연결된 탭인데 서버가 템플릿을 낼 수 없음(pipe.paidWhy — 실행 설정 확인 필요 등: tabWay 가 opener·예약만으로 감) = 배지 제목도 그 이유 + "
+              f"R·ComfyUI 큐의 실제 길(opener = Review 부분 실행 — 그래프 위젯 값, 채널 = 그 탭에서 직접) — '서버 템플릿을 큐에 넣음' 아님, 탭 이유(busy)가 "
+              f"먼저, 연결 안 된 상태(old)는 link 문장 그대로 {go[2:3]} {gc[2:3]} {gb[2:3]}")
+        lock_ = "재굴림·ComfyUI 큐는 지금은 예약만(Run 승인 요청을 처리하는 중 — 머리줄 'ComfyUI 큐' 또는 다음 Run 때 과금)"
+        lo, lc, lbo, lbc = (tb.get(k) or [None] * 4 for k in ("lockOk", "lockChannel", "lockBusyOpener", "lockBusyChannel"))
+        check(lo[2] == f"Open Board 로 연 ComfyUI 탭(확장 판 3) — {paid_}. {lock_}" and lc[2] == f"채널로 찾은 ComfyUI 탭(확장 판 3) — {paid_}. {lock_}"
+              and lbo[2] == f"Open Board 로 연 ComfyUI 탭(확장 판 3): ComfyUI 탭이 큐를 처리하는 중. {lock_}" and lbc[2] == tb["busy"][2]
+              and "Review 부분 실행으로" not in lbo[2],
+              f"r3-11 이 Studio 가 유료 요청·실행·무료 큐 중(paidLock)이면 배지 제목의 R·ComfyUI 큐 길 = '지금은 예약만(이유)'(queueReroll 과 같은 판정 순서 — "
+              f"자기 승인을 처리하는 탭은 hello busy 라 opener 길이어도 Review 부분 실행이 아님), 채널로만 찾은 탭의 막힌 길은 그대로 {lo[2:3]} {lc[2:3]} {lbo[2:3]} "
+              f"{lbc[2:3]}")
+    check("tabLink = window.DPPipeline.link(window, () => {\n        renderHeader();\n        pipe.tabChanged();\n      });" in bcode
+          and "link: tabLink," in bcode and bcode.index("tabLink = window.DPPipeline.link(") < bcode.index("pipe = window.DPPipeline.create("),
+          "board.js: 탭 연결 상태가 바뀌면 머리줄(배지)·진행 패널(승인 단추)을 다시 그림, 진행 패널에 link(승인 메시지·wave)")
     bg = res.get("boardGo") or {}
     if "found" in bg:
         check(bg == {"found": True, "unknown": [], "known": [["setPipe", False], ["selectTarget", "002_d98f99/A"]],
@@ -31029,10 +31300,10 @@ def pipeline_js_unit():
                                      "retry_failed·retry_orphans(Studio false·false) 가 Studio 와 같을 때만 같습니다 — 다르면 과금 없이 드라이런"],
               f"r1-19·r3-13 해시 안내 = Run 해시를 바꾸는 Run 위젯 retry_failed·retry_orphans 와 지금 Studio 값, 같은 큐에서 먼저 도는 그래프 Import PSD 위젯"
               f"(Studio 는 그래프 위젯을 모름 — 다르면 드라이런) {pn.get('hashNote')}")
-        s3b = "S3b 전 — 그래프의 승인 버튼 사용"
-        check(pn["approve"]["run"] and pn["approve"]["run"][:2] == [True, s3b] and pn["approve"]["draft"][:2] == [True, s3b]
-              and pn["approve"]["run"][2].startswith("Run 승인 4건 ≈ $2.40–3.16") and pn["copy"] == [True, True],
-              f"S3a 승인 단추 = 꺼짐('S3b 전 — 그래프의 승인 버튼 사용'), 반영 필요면 해시 복사도 끔 {pn['approve']} {pn['copy']}")
+        nohash = "승인할 해시 없음(승인할 것 없음·반영 필요·흐림·낡음·실행 중)"
+        check(pn["approve"]["run"] and pn["approve"]["run"] == [True, nohash, "Run 승인 4건 ≈ $2.40–3.16"]
+              and pn["approve"]["draft"] == [True, nohash, "초안 승인 1크롭 ≈ 27(최대 47) 크레딧"] and pn["copy"] == [True, True],
+              f"S3b 승인 단추 라벨(계약 §5) · 반영 필요(흐림)면 해시 복사와 함께 꺼짐 — 제목에 이유 {pn['approve']} {pn['copy']}")
         check(any("008_치마금속장식 · A — ★ 없음" in x for x in pn["checks"]) and any("002_눈 · A — 분석 없는 ★" in x for x in pn["checks"])
               and any("이음매 bad 1" in x for x in pn["checks"]) and any("003_리본 — 레이아웃 미반영(반영 뒤 Export)" in x for x in pn["checks"])
               and "002_눈 · B — 중복 ★(같은 이미지는 A 에만)" in pn["checks"] and "002_눈 — 옛 크롭 ★ 1" in pn["checks"]
@@ -31401,6 +31672,13 @@ def pipeline_js_unit():
         check(len(sm["asked"]) == 1 and sm["posts"] == 0
               and any(t.startswith("err:큐에 넣지 않음 — 확인한 뒤 실행 설정이 바뀜(pipeline rev 3 → 5") for t in sm["toasts"]),
               f"r2-02 마지막 확인 뒤 템플릿 sig 의 pipeline rev 가 다름(그 사이 다른 창이 저장) = /api/prompt 없음 {sm}")
+        ss, mm, em = ar["sameSig"], ar["manifestMoved"], ar["editorMoved"]
+        moved_t = "err:큐에 넣지 않음 — 확인한 뒤 실행 설정·매니페스트가 바뀜(3:79 → 3:80, 다른 창의 저장·그래프 실행): 다시 [반영]해 새 설정으로 확인하세요"
+        check(ss["expect"] == ["3:79"] and ss["posts"] == 1
+              and mm["expect"] == ["3:79"] and mm["posts"] == 0 and moved_t in mm["toasts"]
+              and em["expect"] == ["3:79"] and em["posts"] == 0 and em["res"] is None and moved_t in em["toasts"],
+              f"S3b r2-02 남은 틈: [반영]·편집기 반영(큐)은 마지막 갈라짐 점검의 GET /pipeline '<rev>:<manifest_rev>' 를 expect 로 — 같으면 큐, 그 뒤 "
+              f"그래프 실행이 매니페스트를 바꿔 서버 409 stale_settings 면 /api/prompt 없음·다시 [반영] 안내 {ss} {mm} {em}")
     cf = res.get("panelConflict") or {}
     if "declined" in cf:
         over_l = " · prepare.n: 다른 창이 쓴 4 을 이 창 값 3 로 덮어씀"
@@ -31469,11 +31747,22 @@ def pipeline_js_unit():
     rr2 = res.get("rerollTab") or {}
     if "found" in rr2:
         gp = "금액은 지금 jobs(마지막 Prepare — Studio 반영 포함) 기준: 큐·Run 은 그래프 Prepare(그래프 위젯 값)를 다시 돌린 뒤 과금"
-        check(all(gp in rr2[k]["confirms"][0] for k in ("tab", "noTab"))
-              and all(any("금액은 지금 jobs 기준(그래프 Prepare 값이 Studio 와 다르면 바뀜)" in t for t in rr2[k]["toasts"]) for k in ("tabKey", "noTabKey")),
-              f"r2-05 R 확인 창·첫 R 토스트 = 금액은 지금 jobs(Studio 반영 포함) 기준 — 탭 큐·Run 은 그래프 Prepare 를 다시 돌린 뒤 과금(장 수·비용·셀이 바뀔 수 있음) {rr2}")
+        drift_ = "prepare.n: 마지막 Prepare 4 · Studio 2 — 갈라짐 줄"
+        paid_ = ["재굴림 +1 호출 (V1 ≈ $0.62)", drift_,
+                 "금액은 지금 jobs(마지막 Prepare) 기준: 재굴림 템플릿은 Studio 실행 설정(pipeline.json)으로 Import·Prepare 를 다시 돈 뒤 과금하므로 Prepare 갈라짐이 "
+                 "있으면 장 수·비용이 바뀌거나(n·셀당 호출) 셀이 바뀌어 이 재굴림이 미뤄짐(모델·품질·변형 등)",
+                 "부수 효과 줄", "유료 호출이 사전 승인되고 ComfyUI 탭에 큐 요청을 보냅니다. 계속할까요?"]
+        check(all(gp in rr2[k]["confirms"][0] and drift_ not in rr2[k]["confirms"][0] and "부수 효과 줄" not in rr2[k]["confirms"][0] for k in ("tab", "noTab"))
+              and all(any("금액은 지금 jobs 기준(그래프 Prepare 값이 Studio 와 다르면 바뀜)" in t for t in rr2[k]["toasts"]) for k in ("tabKey", "noTabKey"))
+              and rr2["paid"]["confirms"][0].split("\n") == paid_
+              and any("금액은 지금 jobs 기준(Prepare 갈라짐 — Studio 실행 설정이 마지막 Prepare 와 다르면 바뀜)" in t for t in rr2["paidKey"]["toasts"])
+              and not any("그래프 Prepare" in t for t in rr2["paidKey"]["toasts"]),
+              f"r2-05·S3b R 확인 창·첫 R 토스트 = 금액은 지금 jobs 기준 — 유료 가능한 탭(재굴림 템플릿)은 Studio 실행 설정으로 Import·Prepare 를 다시 돈 뒤 과금"
+              f"(반영 확인 창처럼 갈라짐 줄을 앞에 — r1-11 승인 제출이라 끝에 부수 효과 줄 pipe.side), 옛 탭(opener)·탭 없음은 그래프 Prepare 를 다시 돌린 뒤 "
+              f"과금(장 수·비용·셀이 바뀔 수 있음 — 그래프를 실행하는 길이라 부수 효과 줄 없음) {rr2}")
     check(pn.get("headDrift") == ["Prepare 갈라짐", "lh-wait", "prepare.n: 마지막 Prepare 4 · Studio 2 — 셀은 그대로, 대기 호출의 장 수·비용·승인 해시가 바뀜\n"
-                                  "R·ComfyUI 큐·그래프 Run 은 그래프 Prepare(그래프 위젯 값)로 jobs 를 다시 쓴 뒤 과금"],
+                                  "R·ComfyUI 큐(유료 승인 탭 — 재굴림 템플릿)는 Studio 실행 설정으로 Prepare 를 다시 돌려 이 갈라짐을 반영한 뒤 과금(셀이 바뀌면 "
+                                  "재굴림이 미뤄짐), 그래프 Run·옛 탭의 Review 부분 실행은 그래프 Prepare(그래프 위젯 값)로 jobs 를 다시 쓴 뒤 과금"],
           f"r2-05 머리줄(모든 모드) Prepare 갈라짐 배지 — 셀 갈라짐이면 빨강, 장 수·비용만이면 노랑, 제목에 갈라짐 줄·R·큐 과금 안내 {pn.get('headDrift')}")
     # 리뷰 3차 수정(r3-05·06·07·08·09·10·11·16 — r3-13·15 는 위 hashNote·clearToast)
     os_ = res.get("ownSave") or {}
@@ -31581,7 +31870,8 @@ def pipeline_js_unit():
         cpc_l = "prepare.calls_per_cell: 마지막 Prepare 1 · Studio 3 — 셀은 그대로지만 완료된 셀마다 새 호출이 생겨 다시 과금 대상(Run 승인 필요)"
         n_l = "prepare.n: 마지막 Prepare 4 · Studio 2 — 셀은 그대로, 대기 호출의 장 수·비용·승인 해시가 바뀜"
         imp_l = "import.refs_dir: 마지막 Import D:/a · Studio D:/b — 마지막 Import 와 다름 — 다음 반영이 크롭 소스·레퍼런스를 바꿀 수 있음"
-        r_note = "R·ComfyUI 큐·그래프 Run 은 그래프 Prepare(그래프 위젯 값)로 jobs 를 다시 쓴 뒤 과금"
+        r_note = ("R·ComfyUI 큐(유료 승인 탭 — 재굴림 템플릿)는 Studio 실행 설정으로 Prepare 를 다시 돌려 이 갈라짐을 반영한 뒤 과금(셀이 바뀌면 재굴림이 미뤄짐), "
+                  "그래프 Run·옛 탭의 Review 부분 실행은 그래프 Prepare(그래프 위젯 값)로 jobs 를 다시 쓴 뒤 과금")
         ca, co = dk["calls"], dk["cost"]
         want_rows = [[imp_l, "pp-row warn"], [n_l, "pp-row warn"], [cpc_l, "pp-row bad"]]
         check(ca["warn"] == [cpc_l, n_l, imp_l] and ca["head"] == ["lh-bad", [n_l, cpc_l, r_note]]
@@ -32724,6 +33014,4595 @@ def _pipeline_node_u3():
 
 
 # ═════════════════════════════════════════════════════════════════
+# S3b 유료 승인(STUDIO_S3_SPEC §4·§7 — 계약 _proto/s3b/S3B_CONTRACT.md). 단위마다 자기 함수 몸통만 고친다.
+# ═════════════════════════════════════════════════════════════════
+def paid_board_unit():
+    """S3b U2: B36 유료 GET /pipeline/prompt(판정 순서·409 사유·only 정규화·reroll)·plan 확인 창 필드·expect·GET /pipeline manifest_rev.
+    합성 프로젝트 = pipeline_board_unit 과 같은 꼴(크롭 3 — 001 초안 없음, 002·003 노드 경로 openai 초안 + jobs 3: 001 완료·002 대기 1 +
+    재굴림 1·003 실패) + 설정 확인 끝(pipeline.json 절마다 저장). 응답은 정본(pipeline_api.json)과 _pl_shape 로 대조. 유료 호출 0(실행 없음)."""
+    section("S3b paid_board_unit — 유료 GET /pipeline/prompt·plan 확인 창 필드·manifest_rev(U2)")
+    import bmk_design_patch_board as board
+    import bmk_design_patch_pipeline as pl
+    import bmk_design_patch_runner as runner
+    import bmk_design_patch_vlm as dvlm
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    OUT = OUT_ROOT / "paid_board"
+    shutil.rmtree(OUT, ignore_errors=True)
+    OUT.mkdir(parents=True)
+    VLM_OUT.mkdir(parents=True, exist_ok=True)
+    API = "/bmk/design_patch"
+    R = _pl_api()["routes"]
+    PR, PP = R["GET /pipeline/prompt"], R["GET /pipeline/plan"]
+    E409 = {b["reason"]: b for b in PR["errors"]["409"]}
+    H = "0123456789ab"
+    CHANGED = "Prepare 입력이 바뀜(마지막 Prepare 뒤 스펙·레이아웃·레퍼런스·용어집)"
+    env_mock = os.environ.pop(runner.MOCK_ENV, None)
+
+    def ledger(root, ck, name, obj):
+        p = Path(root, "cands", ck, name)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(obj), encoding="utf-8")
+
+    def draft_spec(root, i):
+        """노드 Spec Draft 의 크롭 쓰기(write_spec(merge_crop) — mock 출력 → 정규화, openai 출처)로 크롭 i 의 초안 스펙."""
+        m = store.load_manifest(root)
+        crop = m["crops"][i]
+        rd, gl = m["source"].get("refs_dir") or "", store.project_glossary(root, m)
+        ctx = dvlm.build_crop_ctx(root, m, crop, refs_dir=rd, glossary=gl, backend="openai", memo={})
+        req = dvlm.build_request(ctx, backend="openai", model="gpt-6-sol", effort="xhigh", image_detail="high", draft_round=0,
+                                 model_dir="")
+        parsed, repairs = dvlm.extract_json(dvlm._mock_text(req, ["side connection fitting"]))
+        prov = _vprov(req, backend=dvlm.BACKEND_NAMES["openai"], model="gpt-6-sol", effort="xhigh")
+        dvlm.write_spec(root, crop["id"], lambda cur_: dvlm.merge_crop(
+            cur_, "fill", ctx=ctx, req=req, crop=crop, done={"parsed": parsed, "repairs": repairs}, prov=prov,
+            project_style=dvlm.project_style_for(root, "targets"), apply_mode="targets", adopt=False, backend="openai",
+            refs_dir=rd, glossary=gl, out={}))
+
+    def project(case):
+        """합성 프로젝트 → (root, ids). prepare_inputs = 지금 지문(반영됨), pipeline.json = 유도값을 절마다 저장(확인 끝 — 게이트 통과)."""
+        root, refs_dir, m = _vlm_project(f"s3b_{case}", [("001_머리 | A: 리본", (128, 128), {}), ("002_장갑", (96, 96), {}),
+                                                         ("003_치마금속장식", (128, 96), {})], refs=[("001_머리.png", (64, 64))])
+        psd = Path(root).parent.parent / "art_DP.psd"
+        psd.write_bytes(b"psd")
+        ids = [c["id"] for c in m["crops"]]
+        jobs = [_pl_job(ids[0]), _pl_job(ids[1], reps=2), _pl_job(ids[2])]
+
+        def edit(mm):
+            mm["source"].update(psd=psd.as_posix(), fingerprint=store.file_fingerprint(str(psd)), crop_group="auto",
+                                clean_plate_layer="auto", base_layer="auto", crop_pixels_group="auto",
+                                refs_dir=Path(refs_dir).as_posix(), glossary="")
+            mm["jobs"], mm["rerolls"] = jobs, {jobs[1]["cell_key"]: 1}
+
+        store.update_manifest(root, edit)
+        ledger(root, jobs[0]["cell_key"], "r0.done.json", {"call_id": f"{jobs[0]['cell_key']}_r0"})
+        ledger(root, jobs[2]["cell_key"], "r0.failed.json", {"error": "고장", "retryable": True})
+        for i in (1, 2):
+            draft_spec(root, i)
+        mark(root)
+        for sec in pl.SECTIONS:
+            c = cur(root)
+            pl.update(root, c["rev"], sec, c["settings"][sec])
+        return root, ids
+
+    def cur(root):
+        return pl.current(root, deep=True)
+
+    def save(root, section_, **over):
+        c = cur(root)
+        return pl.update(root, c["rev"], section_, dict(c["settings"][section_], **over))
+
+    def mark(root):  # 반영됨(지금 prepare_inputs 지문)
+        store.update_manifest(root, lambda mm: mm.update(prepare_inputs=store.prepare_inputs_fp(root, mm)))
+
+    def draft_plan_of(root, only, s=None):
+        """노드 Spec Draft 와 같은 인자의 vlm.draft_plan(설정 = s(Spec Draft 입력 — 없으면 pl.current(deep) 의 draft 절), only =
+        vlm.parse_only) → (ctxs, reqs, style_req, plan, approval)."""
+        s = s or cur(root)["settings"]["draft"]
+        fam, model = dvlm.parse_vlm_choice(s["vlm"])
+        fam = "mock" if fam == "openai" and runner.mock_enabled(root) else fam
+        return dvlm.draft_plan(root, store.load_manifest(root), "", dvlm.BACKEND_NAMES[fam], family=fam, model=model, effort=s["effort"],
+                               image_detail=s["image_detail"], draft_round=s["draft_round"], mode=s["write_mode"],
+                               only=dvlm.parse_only(only), concurrency=s["concurrency"], model_dir=board._qwen_dir(),
+                               apply_mode=s["apply"], memo={})
+
+    def err(st, d, status, reason=None):
+        """오류 응답 = 정본 errors 예시(400 은 {error}, 409 는 그 reason 의 예시)와 같은 키·타입."""
+        ex = PR["errors"]["400"][0] if status == 400 else E409[reason]
+        return st == status and d.get("reason") == reason and not _pl_shape(ex, d, {})
+
+    async def get(c, path, **q):
+        r = await c.get(f"{API}/{path}", params=q)
+        return r.status, await r.json()
+
+    async def waiting(c, key, stage, q, during):
+        """계획 잠금을 쥔 채 유료 prompt 요청 → ⑥ 을 지나 ⑦ 판정에 들어오면(다음은 잠금 대기) during 에 들어가 잠금을 풀고 응답을 받는다."""
+        name = "_apply_pending" if stage == "run" else "_import_pending"
+        orig, passed = getattr(board, name), threading.Event()
+
+        def spy(*a):
+            passed.set()
+            return orig(*a)
+
+        setattr(board, name, spy)
+        board._PLAN_LOCK.acquire()
+        try:
+            task = asyncio.create_task(get(c, "pipeline/prompt", root=key, stage=stage, **q))
+            await asyncio.to_thread(passed.wait, 5)
+            with during:
+                board._PLAN_LOCK.release()
+                return await task
+        finally:
+            setattr(board, name, orig)
+
+    def b0_paid(root, ids):
+        section("S3b-B0 새 프로세스: 유료 갈래(run·draft 해시 대조·reroll 템플릿) 뒤 torch·comfy·노드 모듈 없음, pipeline_prompt 는 _node() 를 "
+                "쓰지 않고 지연 import 없음")
+        probe = OUT / "b0_paid_probe.py"
+        probe.write_text("\n".join([
+            "import json, sys",
+            "sys.path.insert(0, sys.argv[1])",
+            "import bmk_design_patch_board as board",
+            "root, ids = sys.argv[2], sys.argv[3:]",
+            "BAN = ('torch', 'comfy', 'comfy_api_nodes', 'transformers', 'folder_paths', 'nodes', 'server', 'execution', 'bmk_design_patch')",
+            "p = board.pipeline_plan(root, only_ids=ids, style=False)",
+            "only = p['sig'].split('|o:')[1]",
+            "got = [board.pipeline_prompt(root, s, p[s]['hash'], only)['hash'] for s in ('run', 'draft')]",
+            "rr = board.pipeline_prompt(root, 'reroll')",
+            "print(json.dumps({'bad': sorted(k for k in sys.modules if k.split('.')[0] in BAN), 'got': got,",
+            "                  'want': [p['run']['hash'], p['draft']['hash']], 'reroll': rr['targets']}))", ""]), encoding="utf-8")
+        r = subprocess.run([sys.executable, "-X", "utf8", "-W", "ignore", str(probe), str(PKG), root, ids[0], ids[1]], capture_output=True,
+                           text=True, encoding="utf-8", timeout=300)
+        out = json.loads(r.stdout.strip().splitlines()[-1]) if r.returncode == 0 and r.stdout.strip() else None
+        tree = ast.parse((PKG / "bmk_design_patch_board.py").read_text(encoding="utf-8"))
+        fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "pipeline_prompt")
+        names = {x.id for x in ast.walk(fn) if isinstance(x, ast.Name)}
+        check(out is not None and out["bad"] == [] and out["got"] == out["want"] and out["reroll"] == ["dp_review"]
+              and all(re.fullmatch(r"[0-9a-f]{12}", h or "") for h in out["want"])
+              and "_node" not in names and not any(isinstance(x, (ast.Import, ast.ImportFrom)) for x in ast.walk(fn)),
+              f"새 프로세스: 계획 해시로 run·draft 템플릿(해시 대조)·reroll 템플릿 뒤 torch·comfy·comfy_api_nodes·transformers·folder_paths·"
+              f"nodes·server·execution·노드 모듈 없음(vlm·runner 는 허용) {out} {r.stderr.strip()[-400:]}")
+
+    async def b36_args(c, key, root, ids):
+        section("S3b-B36 ① stage ② 인자 ③ only 정규화 → 400(설정 게이트보다 먼저) · ④ 게이트 409")
+        for q, word in (({"stage": "apply2"}, "모르는 stage"), ({}, "모르는 stage"), ({"stage": "run"}, "승인 해시"),
+                        ({"stage": "run", "approve": H.upper(), "only": ids[1]}, "승인 해시"),
+                        ({"stage": "draft", "approve": H[:11], "only": ids[1]}, "승인 해시"),
+                        ({"stage": "run", "approve": H + "0", "only": ids[1]}, "승인 해시"),
+                        ({"stage": "run", "approve": " " + H, "only": ids[1]}, "승인 해시"), ({"stage": "run", "approve": H}, "only(고른"),
+                        ({"stage": "draft", "approve": H, "only": "  "}, "only(고른"), ({"stage": "reroll", "approve": H}, "reroll 은"),
+                        ({"stage": "reroll", "only": ids[1]}, "reroll 은"), ({"stage": "apply", "approve": H}, "무료 stage"),
+                        ({"stage": "export", "only": ids[1]}, "무료 stage"), ({"stage": "run", "approve": H, "only": "001"}, "crop_id"),
+                        ({"stage": "draft", "approve": H, "only": "099_ffffff"}, "매니페스트에 없는 크롭"),
+                        ({"stage": "draft", "approve": H, "only": "style"}, "고른 크롭이 없습니다")):
+            st, d = await get(c, "pipeline/prompt", root=key, **q)
+            check(err(st, d, 400) and word in d["error"], f"{q} → 400 '{word}' {st} {d}")
+        pj = Path(root, pl.PIPELINE_NAME)
+        raw = pj.read_bytes()
+        pj.write_text("{", encoding="utf-8")
+        try:
+            st1, d1 = await get(c, "pipeline/prompt", root=key, stage="run", approve=H, only="099_ffffff")
+            st2, d2 = await get(c, "pipeline/prompt", root=key, stage="draft", approve=H, only=f"{ids[0]},style")
+            st3, d3 = await get(c, "pipeline/prompt", root=key, stage="reroll")
+        finally:
+            pj.write_bytes(raw)
+        check(err(st1, d1, 400) and "매니페스트에 없는" in d1["error"] and err(st2, d2, 409, "pipeline_broken")
+              and err(st3, d3, 409, "pipeline_broken"),
+              f"깨진 pipeline.json: 매니페스트 밖 크롭은 그래도 400(③ 이 ④ 보다 먼저), 맞는 인자는 409 pipeline_broken(draft·reroll) {st1} {st2} {st3}")
+        imp = cur(root)["settings"]["import"]
+        save(root, "import", psd_path="")
+        try:
+            got = [await get(c, "pipeline/prompt", root=key, **q) for q in ({"stage": "run", "approve": H, "only": ids[1]},
+                                                                             {"stage": "draft", "approve": H, "only": ids[0]},
+                                                                             {"stage": "reroll"}, {"stage": "reroll", "expect": "0:0"},
+                                                                             {"stage": "run", "approve": H, "only": ids[1], "expect": "0:0"})]
+        finally:
+            save(root, "import", **imp)
+        check(all(err(st, d, 409, "no_psd") for st, d in got),
+              f"psd_path 빔 → run·draft·reroll 409 no_psd(pl.prompt_gate 본문 그대로 — 해시 대조 전, 틀린 expect 보다도 먼저 ④ > ⑤) "
+              f"{[(st, d.get('reason')) for st, d in got]}")
+
+    async def b36_expect(c, key, root, ids):
+        section("S3b-B36 ⑤ expect = GET /pipeline 의 '<rev>:<manifest_rev>' — 같으면 200, 다르면 409 stale_settings(무료·유료·reroll)")
+        sel = [ids[0], ids[1]]
+        only = pl.only_string(sel)
+        st, v1 = await get(c, "pipeline", root=key)
+        check(st == 200 and v1["manifest_rev"] == store.load_manifest(root)["rev"]
+              and not _pl_shape(R["GET /pipeline"]["ok"], v1, R["GET /pipeline"]),
+              f"GET /pipeline manifest_rev = 매니페스트 rev, 정본 ok 모양 {v1.get('manifest_rev')} {_pl_shape(R['GET /pipeline']['ok'], v1, R['GET /pipeline'])}")
+        store.update_manifest(root, lambda mm: mm.setdefault("exports", []).append(
+            {"rev": 9, "psd": "G:/o/s3b_r9.psd", "time": "2026-10-18 09:00:00", "problems": 0, "bytes": 10}))
+        mark(root)
+        try:
+            st, v2 = await get(c, "pipeline", root=key)
+            mrev = store.load_manifest(root)["rev"]
+            old, new = f"{v1['rev']}:{v1['manifest_rev']}", f"{v2['rev']}:{v2['manifest_rev']}"
+            st, p = await get(c, "pipeline/plan", root=key, only=only)
+            rows = {}
+            for stage in ("apply", "export", "reroll", "run", "draft"):
+                q = {"approve": p[stage]["hash"], "only": only} if stage in ("run", "draft") else {}
+                rows[stage] = [await get(c, "pipeline/prompt", root=key, stage=stage, expect=e, **q) for e in (new, old)]
+        finally:
+            store.update_manifest(root, lambda mm: mm["exports"].pop())
+            mark(root)
+        check(v2["manifest_rev"] == mrev > v1["manifest_rev"] and v2["rev"] == v1["rev"] and old != new,
+              f"매니페스트가 바뀌면 manifest_rev 도 따라감 {v1['manifest_rev']} → {v2['manifest_rev']} ({mrev})")
+        want = {"apply": (None, "", ""), "export": (None, "", ""), "reroll": (["dp_review"], "", ""),
+                "run": (["dp_review"], p["run"]["hash"], only), "draft": (["dp_draft"], p["draft"]["hash"], only)}
+        for stage, ((s_new, d_new), (s_old, d_old)) in rows.items():
+            check(s_new == 200 and d_new["sig"] == new and err(s_old, d_old, 409, "stale_settings") and d_old["sig"] == new
+                  and (d_new["targets"], d_new["hash"], d_new["only"]) == want[stage]
+                  and not _pl_shape(PR["ok"] if stage == "apply" else PR["alt"][stage], d_new, PR),
+                  f"{stage}: expect 같음 → 200(무료 hash·only \"\"·targets null), 다름 → 409 stale_settings(sig = 지금 — 해시가 맞아도) "
+                  f"{s_new} {d_new.get('sig')} {s_old} {d_old}")
+
+    async def b36_hash(c, key, root, ids):
+        section("S3b-B36 ⑧⑨ GET /pipeline/plan 의 선택 해시 → 200 템플릿(T2·targets·hash·only 정규형·sig, mock family) · 한 글자 다름 → "
+                "409 stale(지금 해시 = 계획 선택 해시) · only 정규화(순서·중복·style) · nothing_to_approve · 해시는 실행 설정으로(run "
+                "retry_failed·retry_orphans, draft effort·image_detail·write_mode — draft_round 는 유도값만)")
+        mock_file = Path(root).parent / runner.MOCK_FILE
+        sel = [ids[0], ids[1]]
+        only = pl.only_string(sel)
+        mock_file.write_text("", encoding="utf-8")
+        try:
+            st, p = await get(c, "pipeline/plan", root=key, only=only)
+            s = cur(root)
+            sig = f"{s['rev']}:{store.load_manifest(root)['rev']}"
+            check(st == 200 and p["run"]["backend"] == runner.BACKEND_MOCK and p["draft"]["family"] == "mock"
+                  and all(re.fullmatch(r"[0-9a-f]{12}", p[x]["hash"] or "") for x in ("run", "draft")),
+                  f"전제: mock family 계획(run backend mock·draft family mock), 두 해시 있음 {p['run'].get('hash')} {p['draft'].get('hash')}")
+            for stage, node, other in (("run", "dp_run", "dp_draft"), ("draft", "dp_draft", "dp_run")):
+                h = p[stage]["hash"]
+                st1, d1 = await get(c, "pipeline/prompt", root=key, stage=stage, approve=h, only=f"{ids[1]} {ids[0]},{ids[1]}")
+                st2, d2 = await get(c, "pipeline/prompt", root=key, stage=stage, approve=h[:-1] + ("1" if h[-1] == "0" else "0"), only=only)
+                pr = d1.get("prompt") or {}
+                appr = {k: v["inputs"]["approve"] for k, v in pr.items() if "approve" in v["inputs"]}
+                check(st1 == 200 and not _pl_shape(PR["alt"][stage], d1, PR)
+                      and (d1["stage"], d1["targets"], d1["hash"], d1["only"], d1["sig"]) == (stage, [pl.OUTPUT_KEY[stage]], h, only, sig)
+                      and pr == json.loads(json.dumps(pl.build_prompt(stage, s["settings"], root, approve=h, only=only)))
+                      and appr == {node: h} and other not in pr and pl.OUTPUT_KEY[stage] in pr
+                      and (stage == "run" or (pr[node]["inputs"]["adopt"], pr[node]["inputs"]["keep_loaded"]) == ("", False)),
+                      f"{stage}: 계획 선택 해시 + 순서 바꿈·중복·공백 only → 200, only = 정규형, approve 는 {node} 에만(= 해시), {other} 없음, "
+                      f"targets·sig, prompt = build_prompt {st1} {d1.get('only')} {appr} {_pl_shape(PR['alt'][stage], d1, PR)}")
+                check(err(st2, d2, 409, "stale") and d2["hash"] == h,
+                      f"{stage}: approve 한 글자 다름 → 409 stale, hash = 지금 해시(계획 선택 해시 그대로) {st2} {d2}")
+            st, p0 = await get(c, "pipeline/plan", root=key, only=ids[0])
+            st1, d1 = await get(c, "pipeline/prompt", root=key, stage="run", approve=H, only=ids[0])
+            check(p0["run"]["hash"] == "" and err(st1, d1, 409, "nothing_to_approve"),
+                  f"run: 고른 크롭(001 완료)의 계획 해시 \"\" → 409 nothing_to_approve(아무 approve 나) {p0['run'].get('hash')!r} {st1} {d1}")
+            st1, d1 = await get(c, "pipeline/prompt", root=key, stage="draft", approve=p["draft"]["hash"], only=f"style,{ids[1]},{ids[0]}")
+            st2, d2 = await get(c, "pipeline/prompt", root=key, stage="run", approve=p["run"]["hash"], only=f"{ids[1]},style,{ids[0]}")
+            check(st1 == 200 and d1["only"] == only and d1["hash"] == p["draft"]["hash"]
+                  and st2 == 200 and d2["only"] == only and d2["prompt"]["dp_run"]["inputs"]["only"] == only,
+                  f"apply=targets: only 의 style 토큰은 run·draft 모두 빠짐 → 정규 only·화풍 없는 해시로 200 {st1} {d1.get('only')} "
+                  f"{st2} {d2.get('only')}")
+            save(root, "draft", apply="full")
+            try:
+                st, ps = await get(c, "pipeline/plan", root=key, only=only, style="1")
+                st, pn = await get(c, "pipeline/plan", root=key, only=only, style="0")
+                hs, only_s = ps["draft"]["hash"], f"{only},style"
+                st1, d1 = await get(c, "pipeline/prompt", root=key, stage="draft", approve=hs, only=f"_style {ids[1]},{ids[0]},{ids[0]}")
+                st2, d2 = await get(c, "pipeline/prompt", root=key, stage="draft", approve=hs, only=only)
+                st3, d3 = await get(c, "pipeline/prompt", root=key, stage="run", approve=ps["run"]["hash"], only=f"{only},STYLE")
+            finally:
+                save(root, "draft", apply="targets")
+            check(ps["sig"].endswith(f"|o:{only_s}") and hs not in ("", pn["draft"]["hash"])
+                  and st1 == 200 and (d1["only"], d1["hash"], d1["prompt"]["dp_draft"]["inputs"]["only"]) == (only_s, hs, only_s)
+                  and err(st2, d2, 409, "stale") and d2["hash"] == pn["draft"]["hash"]
+                  and st3 == 200 and d3["only"] == only_s and d3["prompt"]["dp_run"]["inputs"]["only"] == only,
+                  f"apply=full: style·_style 토큰 → only ',style'(화풍 단위 해시로 200), style 없는 only 는 화풍 없는 계획 해시와 대조(409 stale), "
+                  f"run 은 정규 only 에 style 을 싣되 Run 위젯은 style 을 뺀 목록 {st1} {d1.get('only')} {st2} {d2.get('hash')} {st3} {d3.get('only')}")
+        finally:
+            mock_file.unlink(missing_ok=True)
+        st, p1 = await get(c, "pipeline/plan", root=key, only=ids[1])
+        st1, d1 = await get(c, "pipeline/prompt", root=key, stage="draft", approve=H, only=ids[1])
+        check(p1["draft"]["family"] == "openai" and p1["draft"]["hash"] == "" and err(st1, d1, 409, "nothing_to_approve"),
+              f"draft: 고른 크롭(002 초안 그대로)의 계획 해시 \"\" → 409 nothing_to_approve {p1['draft'].get('hash')!r} {st1} {d1}")
+        only = pl.only_string(ids)
+        ck1 = store.load_manifest(root)["jobs"][1]["cell_key"]
+        try:
+            for stage, over in (("run", {"retry_failed": True}), ("run", {"retry_orphans": True}),
+                                ("draft", {"effort": "high", "image_detail": "original", "write_mode": "refresh"})):
+                if "retry_orphans" in over:  # 002 첫 호출이 결과 없이 끊김(실행 중 아님 → orphaned)
+                    ledger(root, ck1, "r0.inflight.json", {})
+                st, p0 = await get(c, "pipeline/plan", root=key, only=only)
+                keep = {k: cur(root)["settings"][stage][k] for k in over}
+                save(root, stage, **over)
+                try:
+                    st, p1 = await get(c, "pipeline/plan", root=key, only=only)
+                    h = p1[stage]["hash"]
+                    st1, d1 = await get(c, "pipeline/prompt", root=key, stage=stage, approve=h, only=only)
+                finally:
+                    save(root, stage, **keep)
+                ok = st1 == 200 and d1["hash"] == h
+                if ok:  # 노드 식 — 템플릿 입력 그대로 Run 은 plan_calls + split_approval, Spec Draft 는 draft_plan
+                    inp = d1["prompt"][f"dp_{stage}"]["inputs"]
+                    ap = (runner.split_approval(runner.plan_calls(store.load_manifest(root), root, retry_failed=inp["retry_failed"],
+                                                                  retry_orphans=inp["retry_orphans"], only=inp["only"]),
+                                                inp["approve"], backend=runner.BACKEND_COMFY_ORG)
+                          if stage == "run" else draft_plan_of(root, inp["only"], inp)[4])
+                    ok = {k: inp[k] for k in over} == over and ap["pending_hash"] == inp["approve"]
+                check(h not in ("", p0[stage]["hash"]) and ok,
+                      f"{stage} {over}: 계획 선택 해시(기본 설정 해시 {p0[stage]['hash']!r} 와 다름 — 003 실패·002 orphaned 원장) → 200, 템플릿에 "
+                      f"그 설정, 노드 식(템플릿 입력 그대로의 plan_calls + split_approval · draft_plan)의 실행 전 해시 = approve {h} {st1} "
+                      f"{d1.get('reason')}")
+        finally:
+            Path(root, "cands", ck1, "r0.inflight.json").unlink(missing_ok=True)
+
+    async def b36_once(c, key, root, ids):
+        section("S3b-B36 한 번 읽은 값 — 계획 잠금을 기다리는 사이 다른 창이 실행 설정·매니페스트를 저장해도 ⑧ 해시·⑨ 템플릿·sig 는 처음 "
+                "읽은 값(r1-21 — 다시 읽으면 409 stale 이거나 판정하지 않은 설정이 템플릿에 실림)")
+        only = pl.only_string(ids)
+        files = [Path(root, store.MANIFEST_NAME), Path(root, pl.PIPELINE_NAME)]
+        for stage, over, edit in (("run", {"retry_failed": True}, lambda mm: mm["jobs"][1].update(reps=3)),
+                                  ("draft", {"effort": "high"}, lambda mm: mm["crops"][0].update(source=mm["crops"][2]["source"]))):
+            st, p = await get(c, "pipeline/plan", root=key, only=only)
+            m0, s0, raw = store.load_manifest(root), cur(root), [f.read_bytes() for f in files]
+
+            @contextlib.contextmanager
+            def saved():  # 잠금을 기다리는 사이 다른 창이 실행 설정·매니페스트를 저장
+                save(root, stage, **over)
+                store.update_manifest(root, edit)
+                yield
+
+            try:
+                st1, d1 = await waiting(c, key, stage, {"approve": p[stage]["hash"], "only": only}, saved())
+                m1, s1 = store.load_manifest(root), cur(root)["settings"]
+                alt = [x["hash"] for x in
+                       ((board._run_sel(root, m1, s0["settings"]["run"], only), board._run_sel(root, m0, s1["run"], only)) if stage == "run"
+                        else (board._draft_sel(root, m1, s0["settings"], only), board._draft_sel(root, m0, s1, only)))]
+            finally:
+                for f, b in zip(files, raw):
+                    f.write_bytes(b)
+            check(st1 == 200 and p[stage]["hash"] not in alt and (d1["hash"], d1["sig"]) == (p[stage]["hash"], f"{s0['rev']}:{m0['rev']}")
+                  and d1["prompt"] == json.loads(json.dumps(pl.build_prompt(stage, s0["settings"], root, approve=d1["hash"], only=only))),
+                  f"{stage}: 잠금 대기 중 {over}·매니페스트 저장(새 매니페스트만·새 설정만으로도 해시가 바뀜 {alt}) → 처음 읽은 값으로 200 — "
+                  f"hash = 계획 해시, sig = 저장 전, prompt = build_prompt(저장 전 설정) {st1} {d1.get('reason')} {d1.get('sig')}")
+
+    async def b36_running(c, key, root, ids):
+        section("S3b-B36 ⑥ 실행 중 — run 은 Run·Spec Draft, draft 는 Spec Draft 만 409 running, reroll 은 막지 않음")
+        only = pl.only_string([ids[0], ids[1]])
+        st, p = await get(c, "pipeline/plan", root=key, only=only)
+        rows, bodies = [], []
+        for kind in (board.run_active, board.draft_active):
+            with kind(root):
+                for stage in ("run", "draft", "reroll"):
+                    q = {} if stage == "reroll" else {"approve": p[stage]["hash"], "only": only}
+                    st, d = await get(c, "pipeline/prompt", root=key, stage=stage, **q)
+                    rows.append((kind.__name__, stage, st, d.get("reason")))
+                    bodies.append((st, d))
+        check(rows == [("run_active", "run", 409, "running"), ("run_active", "draft", 200, None), ("run_active", "reroll", 200, None),
+                       ("draft_active", "run", 409, "running"), ("draft_active", "draft", 409, "running"), ("draft_active", "reroll", 200, None)]
+              and all(err(st, d, 409, "running") for st, d in bodies if st == 409)
+              and bodies[0][1]["error"].startswith("Run 실행 중") and bodies[3][1]["error"].startswith("Spec Draft 실행 중"),
+              f"실행 중 판정(run: is_running·draft_since, draft: draft_since, reroll 없음) {rows}")
+
+    async def b36_apply(c, key, root, ids):
+        section("S3b-B36 ⑦ 반영 필요 — run = apply_pending(레이아웃·채택 미반영·prepare_inputs 불일치 각각) + Prepare 설정 갈라짐, draft = "
+                "import_pending 만(prepare_inputs 불일치·Prepare 설정만이면 200), 판정 실패는 둘 다 409, reroll 은 막지 않음")
+        only = pl.only_string([ids[0], ids[1]])
+        st, p = await get(c, "pipeline/plan", root=key, only=only)
+        check(p["apply_pending"] == [] and p["draft"]["import_pending"] == [], f"전제: 반영됨 {p['apply_pending']}")
+        lay, sp1 = Path(root, store.LAYOUT_NAME), Path(root, "specs", f"{ids[1]}.json")
+        pi0, raw1, st1 = store.load_manifest(root)["prepare_inputs"], sp1.read_bytes(), sp1.stat()
+
+        def layout_on():
+            board.layout_start(root)
+            mark(root)
+
+        def adopt_on():  # 채택이 스펙 _layer_targets 에만 있음(Import 전 — 레이어명에 타깃 문구가 없는 002)
+            sp1.write_text(json.dumps(dict(json.loads(raw1), _layer_targets="A: hair ribbon"), ensure_ascii=False), encoding="utf-8")
+            mark(root)
+
+        def adopt_off():  # 내용·시각까지 되돌림(prepare_inputs 지문 = 처음)
+            sp1.write_bytes(raw1)
+            os.utime(sp1, ns=(st1.st_atime_ns, st1.st_mtime_ns))
+            mark(root)
+
+        for what, on, off, want_run, want_draft in (
+                ("레이아웃 미반영", layout_on, lambda: (lay.unlink(), mark(root)), "레이아웃 미반영", True),
+                ("채택 미반영", adopt_on, adopt_off, "채택 미반영(002)", True),
+                ("prepare_inputs 불일치", lambda: store.update_manifest(root, lambda mm: mm.update(prepare_inputs="0" * 16)),
+                 lambda: mark(root), CHANGED, False)):
+            on()
+            try:
+                m, s = store.load_manifest(root), cur(root)["settings"]
+                pend_run, pend_draft = board._apply_pending(root, m, s), board._import_pending(root, m, s)
+                got = [await get(c, "pipeline/prompt", root=key, stage=stage, **({} if stage == "reroll" else {"approve": p[stage]["hash"], "only": only}))
+                       for stage in ("run", "draft", "reroll")]
+            finally:
+                off()
+            (sr, dr), (sd, dd), (sx, _dx) = got
+            check(err(sr, dr, 409, "apply_needed") and dr["pending"] == pend_run and len(pend_run) == 1 and pend_run[0].startswith(want_run)
+                  and (err(sd, dd, 409, "apply_needed") and dd["pending"] == pend_draft != [] if want_draft
+                       else sd == 200 and pend_draft == [] and dd["hash"] == p["draft"]["hash"])
+                  and sx == 200,
+                  f"{what}: run 409 apply_needed(pending = 계획 apply_pending 사유 하나), draft {'409(import_pending)' if want_draft else '200'}, "
+                  f"reroll 200 {sr} {dr.get('pending')} {sd} {dd.get('pending')} {sx}")
+        check(store.load_manifest(root)["prepare_inputs"] == pi0 and not lay.exists() and sp1.read_bytes() == raw1, "되돌림: 반영됨 그대로")
+        for over in ({"n": 4}, {"calls_per_cell": 2}):  # pipeline.json prepare 절만 저장(매니페스트 그대로 — 계획 해시도 그대로, r1-06)
+            keep = {k: cur(root)["settings"]["prepare"][k] for k in over}
+            save(root, "prepare", **over)
+            try:
+                st, p2 = await get(c, "pipeline/plan", root=key, only=only)
+                got = [await get(c, "pipeline/prompt", root=key, stage=stage, **({} if stage == "reroll" else {"approve": p2[stage]["hash"], "only": only}))
+                       for stage in ("run", "draft", "reroll")]
+            finally:
+                save(root, "prepare", **keep)
+            (sr, dr), (sd, dd), (sx, _dx) = got
+            field = next(iter(over))
+            check(p2["apply_pending"] == [] and p2["run"]["hash"] == p["run"]["hash"] and any(n.startswith("Prepare 설정 갈라짐") for n in p2["notes"])
+                  and err(sr, dr, 409, "apply_needed") and len(dr["pending"]) == 1 and dr["pending"][0].startswith(f"Prepare 설정 갈라짐({field})")
+                  and sd == 200 and dd["hash"] == p["draft"]["hash"] and sx == 200,
+                  f"prepare {over} 저장(계획 notes 갈라짐 — apply_pending 없음, 계획 해시 그대로): run 409 apply_needed(템플릿 Prepare 가 jobs 를 "
+                  f"바꿔 노드 해시 ≠ approve — 늘 드라이런이 될 승인을 큐 전에 거름, Studio 흐림과 같은 기준), draft·reroll 200(Prepare 와 무관·"
+                  f"사전 승인분) {sr} {dr.get('pending')} {sd} {sx}")
+        real_match = store.match_refs
+
+        def locked(refs_dir, *a, **kw):  # refs_dir 목록 읽기가 막힘(권한·백신 — os.listdir PermissionError, r1-19)
+            raise PermissionError(13, "액세스가 거부되었습니다", refs_dir)
+
+        store.match_refs = locked
+        try:
+            got = [await get(c, "pipeline/prompt", root=key, stage=stage, approve=p[stage]["hash"], only=only) for stage in ("run", "draft")]
+        finally:
+            store.match_refs = real_match
+        check(all(err(st, d, 409, "apply_needed") and len(d["pending"]) == 1 and d["pending"][0].startswith("반영 상태를 판정하지 못함(")
+                  for st, d in got),
+              f"레퍼런스 폴더 목록을 못 읽음(_import_pending 의 resolve_refs) → run·draft 모두 409 apply_needed '반영 상태를 판정하지 못함'(draft 도 "
+              f"500 이 아님 — Studio 가 계획을 다시 받는 사유) {[(st, d.get('reason'), d.get('pending') or d.get('error')) for st, d in got]}")
+
+    async def b36_order(c, key, root, ids):
+        section("S3b-B36 판정 순서 — 조건이 겹치면 앞 단계 사유: ③ 매니페스트 밖 400 > ⑤ expect 다름 stale_settings > ⑥ running > ⑦ "
+                "apply_needed > ⑧ 해시(레이아웃 미반영 × 실행 없음·Run·Spec Draft × approve·expect), 거기서 끝나면 프로젝트 폴더에 쓰지 않음")
+        only = pl.only_string([ids[0], ids[1]])
+        st, p = await get(c, "pipeline/plan", root=key, only=only)
+        lay = Path(root, store.LAYOUT_NAME)
+
+        def tree():
+            return {f.relative_to(root).as_posix(): f.stat().st_mtime_ns for f in Path(root).rglob("*") if f.is_file()}
+
+        board.layout_start(root)
+        mark(root)
+        rows = {}
+        try:
+            sig, before = f"{cur(root)['rev']}:{store.load_manifest(root)['rev']}", tree()
+            for kind in (None, board.run_active, board.draft_active):
+                with kind(root) if kind else contextlib.nullcontext():
+                    for stage in ("run", "draft"):
+                        q = {"approve": p[stage]["hash"], "only": only}
+                        rows[(kind and kind.__name__, stage)] = [
+                            await get(c, "pipeline/prompt", root=key, stage=stage, **dict(q, **x))
+                            for x in ({}, {"approve": H}, {"expect": sig}, {"expect": "0:0"}, {"expect": "0:0", "only": "099_ffffff"})]
+            after = tree()
+        finally:
+            lay.unlink()
+            mark(root)
+        got = {k: [(st, d.get("reason")) for st, d in v] for k, v in rows.items()}
+        A, R, S, B = (409, "apply_needed"), (409, "running"), (409, "stale_settings"), (400, None)
+        want = {(None, "run"): [A, A, A, S, B], (None, "draft"): [A, A, A, S, B],
+                ("run_active", "run"): [R, R, R, S, B], ("run_active", "draft"): [A, A, A, S, B],
+                ("draft_active", "run"): [R, R, R, S, B], ("draft_active", "draft"): [R, R, R, S, B]}
+        check(got == want and before == after,
+              f"[계획 해시, 틀린 해시, expect 같음, expect 다름, expect 다름 + 밖 크롭] — 실행 중이면 running(run 은 Run·Spec Draft, draft 는 Spec "
+              f"Draft 만), 아니면 apply_needed(틀린 해시도 ⑧ 전), expect 다름은 실행 중에도 stale_settings, 밖 크롭은 400 · 파일 그대로 "
+              f"{before == after} {[(k, v) for k, v in got.items() if v != want[k]]}")
+
+    async def b36_lock(c, key, root, ids):
+        section("S3b-B36 ⑧ 계획 잠금(다른 스레드가 쥠 → 기다렸다 409 busy, 그 사이 풀리면 200 — plan 은 기다리지 않고 202, 유료 계산 중에도 "
+                "plan 202)·plan_error(runner 없음·local_qwen 모델 폴더 미설정·용어집 형식)·계산 뒤 재확인(409 running 이 계획 결과 판정보다 먼저)")
+        only = pl.only_string([ids[0], ids[1]])
+        st, p = await get(c, "pipeline/plan", root=key, only=only)
+        wait0, held, done = board._PROMPT_LOCK_WAIT, threading.Event(), threading.Event()
+
+        def hold():
+            with board._PLAN_LOCK:
+                held.set()
+                done.wait(30)
+
+        board._PROMPT_LOCK_WAIT = 0.3
+        th = threading.Thread(target=hold)
+        th.start()
+        held.wait(5)
+        try:
+            t0 = time.monotonic()
+            st1, d1 = await get(c, "pipeline/prompt", root=key, stage="run", approve=p["run"]["hash"], only=only)
+            dt = time.monotonic() - t0
+            st2, d2 = await get(c, "pipeline/prompt", root=key, stage="draft", approve=p["draft"]["hash"], only=only)
+            st3, _d3 = await get(c, "pipeline/prompt", root=key, stage="reroll")
+            st4, d4 = await get(c, "pipeline/plan", root=key, only=only)
+        finally:
+            done.set()
+            th.join(5)
+        board._PROMPT_LOCK_WAIT = 5.0
+        board._PLAN_LOCK.acquire()
+        threading.Timer(0.3, board._PLAN_LOCK.release).start()
+        try:
+            t0 = time.monotonic()
+            st5, d5 = await get(c, "pipeline/prompt", root=key, stage="run", approve=p["run"]["hash"], only=only)
+            dt5 = time.monotonic() - t0
+        finally:
+            board._PROMPT_LOCK_WAIT = wait0
+        check(err(st1, d1, 409, "busy") and 0.25 <= dt < 5 and err(st2, d2, 409, "busy") and st3 == 200 and st4 == 202
+              and st5 == 200 and d5["hash"] == p["run"]["hash"] and dt5 >= 0.25 and wait0 == 15.0,
+              f"계획 잠금을 다른 스레드가 쥠 → run·draft 는 _PROMPT_LOCK_WAIT(기본 15초, 시험 0.3초)를 기다린 뒤 409 busy, reroll 200(잠금 "
+              f"안 씀), plan 202 · 기다리는 동안 풀리면 200 {st1} {dt:.2f}s {st2} {st3} {st4} {st5} {dt5:.2f}s")
+        held_rows = []
+        for stage, name in (("run", "_run_sel"), ("draft", "_draft_sel")):
+            orig, entered, go = getattr(board, name), threading.Event(), threading.Event()
+
+            def slow(*a):  # 유료 prompt 의 계획 계산을 멈춰 둠
+                entered.set()
+                go.wait(5)
+                return orig(*a)
+
+            setattr(board, name, slow)
+            try:
+                task = asyncio.create_task(get(c, "pipeline/prompt", root=key, stage=stage, approve=p[stage]["hash"], only=only))
+                await asyncio.to_thread(entered.wait, 5)
+                stp, _dp = await get(c, "pipeline/plan", root=key, only=only)
+                go.set()
+                stq, dq = await task
+            finally:
+                go.set()
+                setattr(board, name, orig)
+            held_rows.append((stage, stp, stq, dq.get("hash") == p[stage]["hash"]))
+        check(held_rows == [("run", 202, 200, True), ("draft", 202, 200, True)],
+              f"유료 prompt 는 계획 잠금을 쥔 채 계산(⑧) — 그동안 plan 은 기다리지 않고 202, 계산이 끝나면 prompt 200 {held_rows}")
+        saved = board._runner
+        board._runner = lambda: None
+        try:
+            st1, d1 = await get(c, "pipeline/prompt", root=key, stage="run", approve=p["run"]["hash"], only=only)
+        finally:
+            board._runner = saved
+        gl = Path(root, "glossary.json")
+        gl.write_text("[1]", encoding="utf-8")
+        try:
+            st2, d2 = await get(c, "pipeline/prompt", root=key, stage="draft", approve=p["draft"]["hash"], only=only)
+        finally:
+            gl.unlink()
+        saved_q = list(board._QWEN_DIR)
+        save(root, "draft", vlm="local_qwen/Qwen3-VL-8B-Instruct")
+        try:
+            board.set_qwen_dir("")
+            st3, d3 = await get(c, "pipeline/prompt", root=key, stage="draft", approve=H, only=only)
+            st4, d4 = await get(c, "pipeline/plan", root=key, only=only)
+        finally:
+            board._QWEN_DIR[:] = saved_q
+            save(root, "draft", vlm="openai/gpt-6-sol")
+        check(err(st1, d1, 409, "plan_error") and d1["error"] == "Run 계획을 계산하지 못함: runner 를 읽을 수 없음"
+              and err(st2, d2, 409, "plan_error") and "용어집" in d2["error"]
+              and err(st3, d3, 409, "plan_error") and d3["error"] == "local_qwen 모델 경로 미설정 — ComfyUI 재시작"
+              and st4 == 200 and d4["draft"] == {"error": d3["error"], "hash": None} and not _pl_shape(PP["alt"]["draft_qwen_nodir"], d4, PP),
+              f"계획 오류 → 409 plan_error(runner 없음 · 용어집 형식 오류 · local_qwen 모델 폴더 미설정 — 계획 라우트 draft 오류와 같은 문구) "
+              f"{d1} {d2} {d3} {d4.get('draft')}")
+
+        @contextlib.contextmanager
+        def blip(kind):  # 시작해서 곧바로 끝난 실행(시작 수만 늚 — 파일을 되돌리고 끝난 실행)
+            with kind(root):
+                pass
+            yield
+
+        @contextlib.contextmanager
+        def runner_run(root_):  # runner.run_calls 레지스트리만(run_active 밖 — 시작 수에 잡히지 않고 실행 중으로만 보임)
+            rid = runner._rid(root_)
+            with runner._REG_LOCK:
+                runner._RUNS[rid] = runner._RUNS.get(rid, 0) + 1
+            try:
+                yield
+            finally:
+                with runner._REG_LOCK:
+                    runner._RUNS[rid] -= 1
+
+        got = [(stage, kind.__name__, stay, *await waiting(c, key, stage, {"approve": p[stage]["hash"], "only": only},
+                                                           kind(root) if stay else blip(kind)))
+               for stage, kind, stay in (("run", board.run_active, True), ("run", runner_run, True), ("run", board.run_active, False),
+                                         ("run", board.draft_active, False), ("draft", board.draft_active, True),
+                                         ("draft", board.draft_active, False), ("draft", board.run_active, True))]
+        check([(st, d.get("reason")) for *_k, st, d in got] == [(409, "running")] * 6 + [(200, None)]
+              and all(err(st, d, 409, "running") and d["error"].startswith(f"계획 계산 중 {'Spec Draft' if k == 'draft_active' else 'Run'} 실행")
+                      for _s, k, _y, st, d in got[:6]) and got[6][4]["hash"] == p["draft"]["hash"],
+              f"⑥ 을 지난 뒤 계획 잠금을 기다리는 사이 실행 시작(계속 돎·곧바로 끝남·runner 레지스트리만) → run 은 Run·Spec Draft, draft 는 Spec "
+              f"Draft 만 409 running(계산 뒤 다시 봄 — 일시 해시로 200 을 내지 않음), draft 는 Run 이 돌아도 200 "
+              f"{[(s, k, y, st, d.get('error')) for s, k, y, st, d in got]}")
+
+        @contextlib.contextmanager
+        def no_runner():
+            saved_r = board._runner
+            board._runner = lambda: None
+            try:
+                yield
+            finally:
+                board._runner = saved_r
+
+        @contextlib.contextmanager
+        def bad_glossary():
+            gl.write_text("[1]", encoding="utf-8")
+            try:
+                yield
+            finally:
+                gl.unlink()
+
+        late = []
+        for stage, q, kind, setup in (("run", {"approve": H, "only": only}, board.run_active, contextlib.nullcontext),
+                                      ("run", {"approve": H, "only": ids[0]}, board.run_active, contextlib.nullcontext),
+                                      ("run", {"approve": p["run"]["hash"], "only": only}, board.run_active, no_runner),
+                                      ("draft", {"approve": H, "only": only}, board.draft_active, contextlib.nullcontext),
+                                      ("draft", {"approve": p["draft"]["hash"], "only": only}, board.draft_active, bad_glossary)):
+            with setup():
+                st0, d0 = await get(c, "pipeline/prompt", root=key, stage=stage, **q)
+                st1, d1 = await waiting(c, key, stage, q, blip(kind))
+            late.append((stage, st0, d0.get("reason"), st1, d1.get("reason"), d1.get("error", "")))
+        check([r[1:3] for r in late] == [(409, "stale"), (409, "nothing_to_approve"), (409, "plan_error"), (409, "stale"), (409, "plan_error")]
+              and all((st, why) == (409, "running") and e.startswith(f"계획 계산 중 {'Spec Draft' if s == 'draft' else 'Run'} 실행")
+                      for s, _st0, _w0, st, why, e in late),
+              f"틀린 해시(stale)·승인 대상 0(nothing_to_approve)·계획 오류(plan_error — runner 없음·용어집) 요청도 잠금 대기 중 실행이 시작돼 "
+              f"끝나면 409 running(재확인이 계획 결과 판정보다 먼저) {late}")
+        stack, orig_busy, orig_sel = contextlib.ExitStack(), board._busy, board._run_sel
+
+        def busy_then_start(r):  # ⑥ 이 실행 상태를 읽은 바로 뒤 Run 시작
+            board._busy = orig_busy
+            out = orig_busy(r)
+            stack.enter_context(board.run_active(r))
+            return out
+
+        def sel_after_end(*a):  # 계산 전에 그 Run 이 끝남 — 재확인 때는 시작 수만 남음
+            stack.close()
+            return orig_sel(*a)
+
+        board._busy, board._run_sel = busy_then_start, sel_after_end
+        try:
+            st1, d1 = await get(c, "pipeline/prompt", root=key, stage="run", approve=p["run"]["hash"], only=only)
+        finally:
+            stack.close()
+            board._busy, board._run_sel = orig_busy, orig_sel
+        check(err(st1, d1, 409, "running") and d1["error"].startswith("계획 계산 중 Run 실행"),
+              f"⑥ 의 _busy 바로 뒤 시작해 계산 전에 끝난 Run → 409 running(시작 수를 _busy 보다 먼저 읽어야 재확인이 그 Run 을 봄) {st1} {d1}")
+        srv_log, rows = logging.getLogger("aiohttp.server"), []
+        for stage, obj, name in (("run", board, "_run_sel"), ("draft", dvlm, "draft_plan")):
+            orig = getattr(obj, name)
+
+            def boom(*a, **kw):
+                raise RuntimeError("계획 중 예외(시험)")
+
+            setattr(obj, name, boom)
+            srv_log.disabled = True  # 처리하지 않은 예외의 aiohttp 트레이스백
+            try:
+                r = await c.get(f"{API}/pipeline/prompt", params={"root": key, "stage": stage, "approve": p[stage]["hash"], "only": only})
+            finally:
+                setattr(obj, name, orig)
+                srv_log.disabled = False
+            free = board._PLAN_LOCK.acquire(blocking=False)
+            board._PLAN_LOCK.release()  # 새는 잠금이었으면 여기서 풀어 다음 시험이 기다리지 않게
+            st2, _d2 = await get(c, "pipeline/prompt", root=key, stage=stage, approve=p[stage]["hash"], only=only)
+            rows.append((stage, r.status, free, st2))
+        check(rows == [("run", 500, True, 200), ("draft", 500, True, 200)],
+              f"잠금 안 계획 계산이 ValueError·OSError 가 아닌 예외 → 500, 계획 잠금은 풀림(finally — 새면 계획 라우트 늘 202·유료 늘 409 busy) "
+              f"→ 같은 요청 200 {rows}")
+
+    async def b36_reroll(c, key, root, ids):
+        section("S3b-B36 reroll — approve·only 없이 200(사전 승인분 — dp_run approve·only \"\", Spec Draft 없음)")
+        st, d = await get(c, "pipeline/prompt", root=key, stage="reroll")
+        s = cur(root)
+        pr = d.get("prompt") or {}
+        check(st == 200 and not _pl_shape(PR["alt"]["reroll"], d, PR) and (d["targets"], d["hash"], d["only"]) == (["dp_review"], "", "")
+              and (pr["dp_run"]["inputs"]["approve"], pr["dp_run"]["inputs"]["only"]) == ("", "") and "dp_draft" not in pr
+              and d["sig"] == f"{s['rev']}:{store.load_manifest(root)['rev']}"
+              and pr == json.loads(json.dumps(pl.build_prompt("reroll", s["settings"], root))),
+              f"reroll 템플릿 = build_prompt('reroll') — targets [dp_review]·hash·only \"\" {st} {_pl_shape(PR['alt']['reroll'], d, PR)}")
+
+    async def plan_fields(c, key, root, ids):
+        section("S3b plan 확인 창 필드 — 선택 계획 orphan_retries·est_usd·reasons·free = vlm.approval·draft_plan 값(orphan·재파싱 원장), "
+                "only 없는 계획 pending_style·mock_forced = 노드 Spec Draft 가지·header 식, 정본 모양")
+        mock_file = Path(root).parent / runner.MOCK_FILE
+        only = pl.only_string(ids)
+        sp2 = Path(root, "specs", f"{ids[2]}.json")
+        raw2 = sp2.read_bytes()
+        sp2.unlink()  # 003 도 초안 없음(001 처럼 대기 단위)
+        reqs = draft_plan_of(root, only)[1]
+        led = dvlm.Ledger(root)
+        for i in (0, 2):  # 실행 중이 아닌 inflight = orphan 재시도(과금됐을 수 있음) — 같은 사유 2건
+            led.write(ids[i], reqs[ids[i]].key, 1, "req", {"kind": "crop"})
+            led.write(ids[i], reqs[ids[i]].key, 1, "inflight", {})
+        led.write(ids[1], reqs[ids[1]].key, 1, "resp", {"status": "completed"})  # 받은 응답만 있음 = 무료 재파싱(대기 2 단위 ≠ 무료 1)
+        try:
+            st, d = await get(c, "pipeline/plan", root=key, only=only)
+            _c, _r, _s, dp, ap = draft_plan_of(root, only)
+            st0, d0 = await get(c, "pipeline/plan", root=key)
+        finally:
+            for i in ids:
+                shutil.rmtree(Path(root, dvlm.LEDGER_DIR, i), ignore_errors=True)
+            sp2.write_bytes(raw2)
+            mark(root)
+        dr, conf = d["draft"], ("orphan_retries", "est_usd", "reasons", "free")
+        check(st == 200 and not _pl_shape(PP["ok"], d, PP) and ap["orphan_retries"] == 2 and ap["reasons"].get("orphan 재시도") == 2
+              and len(dp["free"]) == 1 != len(dp["units"]) and ap["est_usd"][1] > 0
+              and {k: dr[k] for k in conf} == {"orphan_retries": ap["orphan_retries"], "est_usd": list(ap["est_usd"]),
+                                               "reasons": [{"reason": r, "n": n} for r, n in ap["reasons"].items()], "free": len(dp["free"])}
+              and "orphan 재시도" in {r["reason"] for r in dr["reasons"]} and dr["hash"] == ap["pending_hash"],
+              f"선택 Draft 계획의 확인 창 필드 = 같은 인자의 vlm.draft_plan·approval 값(노드 ui bmk_dp_draft 의 orphan_retries·est_usd·reasons "
+              f"— reasons 는 run.reasons 꼴 목록, free = 무료 단위 수) {[dr.get(k) for k in conf]} {_pl_shape(PP['ok'], d, PP)}")
+        check(st0 == 200 and not _pl_shape(PP["alt"]["no_selection"], d0, PP)
+              and {k: d0["draft"][k] for k in conf} == {"orphan_retries": 0, "est_usd": [0.0, 0.0], "reasons": [], "free": 0}
+              and (d0["draft"]["pending_style"], d0["draft"]["mock_forced"]) == (0, False),
+              f"only 없음 → 선택 필드 빈 값(alt.no_selection), apply=targets 는 화풍 대기 0, mock 스위치 없음 {[d0['draft'].get(k) for k in conf]}")
+        save(root, "draft", apply="full")
+        base0, rows = store.load_manifest(root)["base"], []
+        try:
+            for vlm, mock, base in (("openai/gpt-6-sol", False, base0), ("openai/gpt-6-sol", True, base0), ("mock", True, base0),
+                                    ("openai/gpt-6-sol", False, None)):
+                save(root, "draft", vlm=vlm)
+                if mock:
+                    mock_file.write_text("", encoding="utf-8")
+                store.update_manifest(root, lambda mm: mm.update(base=base))  # 베이스 없음 = 화풍 문맥 없음(apply=full 이어도 화풍 단위 0)
+                st, f = await get(c, "pipeline/plan", root=key)
+                units = draft_plan_of(root, "")[3]["units"]
+                rows.append(((f["draft"]["family"], f["draft"]["pending_style"], f["draft"]["mock_forced"]),
+                             ("mock" if mock else "openai", sum(1 for u in units if u.crop_id == dvlm.STYLE_ID),
+                              dvlm.parse_vlm_choice(vlm)[0] == "openai" and runner.mock_enabled(root))))
+                mock_file.unlink(missing_ok=True)
+        finally:
+            mock_file.unlink(missing_ok=True)
+            store.update_manifest(root, lambda mm: mm.update(base=base0))
+            save(root, "draft", apply="targets", vlm="openai/gpt-6-sol")
+        check(all(g == w for g, w in rows) and [g[1] for g, _w in rows] == [1, 1, 1, 0]
+              and [g[2] for g, _w in rows] == [False, True, False, False],
+              f"only 없는 계획: pending_style = 화풍 단위 대기(apply=full — 노드 가지 draft.pending_style 식, 베이스가 없으면 apply=full 이어도 0), "
+              f"mock_forced = openai + mock 스위치(노드 header.mock_forced 식 — vlm=mock 은 강제가 아님) {rows}")
+
+    async def plan_mock(c, key, root, ids):
+        section("S3b 계획의 mock 스위치는 한 번 읽음 — 계산 중 _MOCK_API 가 지워져도 run·draft 의 backend·family·mock_forced·해시·서명이 같은 "
+                "값(r1-07 — 섞이면 실제 백엔드 해시가 '[MOCK]' 페이지 상자로 승인될 수 있음)")
+        mock_file = Path(root).parent / runner.MOCK_FILE
+        only = pl.only_string([ids[0], ids[1]])
+        mock_file.write_text("", encoding="utf-8")
+        try:
+            board._PLAN_MEMO.clear()
+            st, pm = await get(c, "pipeline/plan", root=key, only=only)
+            mock_file.unlink()
+            st, pr = await get(c, "pipeline/plan", root=key, only=only)
+            want = {"run": pm["run"]["hash"], "draft": pm["draft"]["hash"]}
+            check(pm["run"]["backend"] == runner.BACKEND_MOCK and pr["run"]["backend"] == runner.BACKEND_COMFY_ORG
+                  and (pm["draft"]["backend"], pm["draft"]["mock_forced"], pr["draft"]["backend"]) == ("vlm_mock", True, "vlm_openai")
+                  and all(re.fullmatch(r"[0-9a-f]{12}", want[x] or "") and want[x] != pr[x]["hash"] for x in want),
+                  f"전제: mock 켬·끔 계획의 해시가 백엔드마다 다름 {want} {pr['run'].get('hash')} {pr['draft'].get('hash')}")
+            rows = []
+            for obj, name in ((runner, "plan_calls"), (dvlm, "draft_plan")):  # only 없는 Run·Draft 계산 중(백엔드를 읽은 뒤) 스위치를 지움
+                orig, n = getattr(obj, name), [0]
+
+                def off_once(*a, _orig=orig, **kw):
+                    n[0] += 1
+                    if n[0] == 1:
+                        mock_file.unlink(missing_ok=True)
+                    return _orig(*a, **kw)
+
+                mock_file.write_text("", encoding="utf-8")
+                board._PLAN_MEMO.clear()
+                setattr(obj, name, off_once)
+                try:
+                    st, d = await get(c, "pipeline/plan", root=key, only=only)
+                finally:
+                    setattr(obj, name, orig)
+                st, s_off = await get(c, "state", root=key)
+                mock_file.write_text("", encoding="utf-8")
+                st, s_on = await get(c, "state", root=key)
+                st, d2 = await get(c, "pipeline/plan", root=key, only=only)
+                got = [await get(c, "pipeline/prompt", root=key, stage=x, approve=d[x]["hash"], only=only) for x in ("run", "draft")]
+                mock_file.unlink()
+                got += [await get(c, "pipeline/prompt", root=key, stage=x, approve=d[x]["hash"], only=only) for x in ("run", "draft")]
+                head = d["sig"].split("|o:")[0]
+                rows.append((name, n[0] > 0, d["run"].get("backend"), d["run"].get("hash") == want["run"], d["draft"].get("backend"),
+                             d["draft"].get("family"), d["draft"].get("mock_forced"), d["draft"].get("hash") == want["draft"],
+                             s_off["plan_v"] != head == s_on["plan_v"], d2 == d, [(st, x.get("reason")) for st, x in got]))
+            check(rows == [(nm, True, runner.BACKEND_MOCK, True, "vlm_mock", "mock", True, True, True, True,
+                            [(200, None), (200, None), (409, "stale"), (409, "stale")]) for nm in ("plan_calls", "draft_plan")],
+                  f"계산 중 _MOCK_API 지움 → 응답 run·draft 는 처음 읽은 스위치(mock) 하나로: backend mock·vlm_mock(mock_forced)·해시 = mock 계획 해시"
+                  f"(백엔드 라벨과 해시가 같은 백엔드), sig 도 mock 켬 서명(지운 동안 state plan_v 와 달라 Studio 가 낡았다고 봄 — 되살리면 같고 "
+                  f"기억값도 같은 계획), 그 해시는 mock 켬에서만 200(끄면 409 stale — 페이지 상자로 실제 백엔드를 승인할 수 없음) {rows}")
+        finally:
+            mock_file.unlink(missing_ok=True)
+            board._PLAN_MEMO.clear()
+
+    async def run_all():
+        root, ids = project("pb")
+        key = store.register_root(root)
+        b0_paid(root, ids)
+        routes = web.RouteTableDef()
+        board.register_routes(routes)
+        app = web.Application()
+        app.add_routes(routes)
+        saved_q = list(board._QWEN_DIR)
+        try:
+            async with TestClient(TestServer(app)) as c:
+                for name, fn in (("args", b36_args), ("expect", b36_expect), ("hash", b36_hash), ("once", b36_once),
+                                 ("running", b36_running), ("apply", b36_apply), ("order", b36_order), ("lock", b36_lock),
+                                 ("reroll", b36_reroll), ("plan", plan_fields), ("plan_mock", plan_mock)):
+                    try:
+                        await fn(c, key, root, ids)
+                    except Exception:
+                        check(False, f"S3b {name} 예외:\n{traceback.format_exc()}")
+        finally:
+            board._QWEN_DIR[:] = saved_q
+            board._PLAN_MEMO.clear()
+            (Path(root).parent / runner.MOCK_FILE).unlink(missing_ok=True)
+
+    try:
+        asyncio.run(run_all())
+    finally:
+        if env_mock is not None:
+            os.environ[runner.MOCK_ENV] = env_mock
+
+
+# J-X 하네스: 실제 탭 확장을 가짜 window·BroadcastChannel·app(1.53.10 app.queuePrompt 재현)·api(바닥 ComfyApi.queuePrompt 가 본문 기록)와 돌린다.
+#   Studio 쪽 메시지·서버 템플릿은 정본(pipeline_api.json messages·routes "GET /pipeline/prompt") 예시 그대로. 다른 확장 감싸개는 before(모듈
+#   최상위 — 우리 setup 보다 안쪽)·after(setup 뒤 — 바깥)로 흉내 낸다.
+_PAID_TAB_JS_HARNESS = r"""
+import fs from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const IN = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const R = IN.api.routes["GET /pipeline/prompt"];
+const M = IN.api.messages;
+const ORIGIN = "http://127.0.0.1:8189";
+const KEY = "fe410d7f025d";
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const clone = (v) => JSON.parse(JSON.stringify(v));
+const out = {};
+async function scenario(name, fn) {
+  try {
+    out[name] = await fn();
+  } catch (e) {
+    out[name] = { error: String((e && e.stack) || e).slice(0, 800) };
+  }
+}
+async function until(cond, ms = 3000) {
+  // 벽시계 기준(Windows 의 sleep(5) ≈ 15ms) — 답이 안 오는 회귀에서도 대기가 send 당 3초로 묶이게
+  const end = Date.now() + ms;
+  while (!cond() && Date.now() < end) await sleep(5);
+  return !!cond();
+}
+
+// 1.53.10 PromptExecutionError(api-BcAwDOK5.js): message 는 늘 같고 toString 이 이유
+class PromptExecutionError extends Error {
+  constructor(response, status) {
+    super("Prompt execution failed");
+    this.response = response;
+    this.status = status;
+  }
+  toString() {
+    const e = this.response.error;
+    return typeof e === "string" ? e : `${e.message}: ${e.details}`;
+  }
+}
+
+function bus() {
+  // 탭 로드마다 따로인 BroadcastChannel(같은 이름끼리, 보낸 객체 자신은 받지 않음)
+  const chans = new Set();
+  return class Chan {
+    constructor(name) { this.name = name; this.onmessage = null; chans.add(this); }
+    postMessage(data) {
+      const m = clone(data);
+      for (const c of chans) if (c !== this && c.name === this.name) setTimeout(() => c.onmessage && c.onmessage({ data: m }), 0);
+    }
+    close() { chans.delete(this); }
+  };
+}
+
+// 서버(정본 routes "GET /pipeline/prompt" 의 alt — stage 별 템플릿)
+const serve = (path) => [200, R.alt[new URL(path, ORIGIN).searchParams.get("stage")]];
+
+async function tab(name, o = {}) {
+  const env = { log: [], bodies: [], dialogs: [], toasts: [], listeners: {}, g2p: [], jobs: [], tokenMs: 5, updateMs: 0, noAuth: false, reject: null,
+    fault: null, g2pThrow: false, g2pMs: 0, server: o.server || serve };
+  const win = { location: { origin: ORIGIN }, listeners: [], BroadcastChannel: bus(),
+    addEventListener(t, fn) { if (t === "message") this.listeners.push(fn); } };
+  globalThis.window = win;
+  const nodes = [];
+  const who = (x) => (x === api ? "api" : x === app ? "app" : "other");
+  const api = {
+    clientId: "client-A",
+    addEventListener(evt, fn) { (env.listeners[evt] ??= []).push(fn); },
+    async fetchApi(path) {
+      env.log.push(["GET", path]);
+      const [status, body] = await env.server(path, env);
+      return { ok: status >= 200 && status < 300, status, json: async () => clone(body) };
+    },
+    // 바닥 ComfyApi.queuePrompt: 본문 extra_data 의 토큰 = 그때의 this.authToken·apiKey
+    async queuePrompt(number, data, options) {
+      const { output, workflow } = data;
+      const body = { client_id: this.clientId ?? "", prompt: output,
+        ...(options?.partialExecutionTargets && { partial_execution_targets: options.partialExecutionTargets }),
+        extra_data: { auth_token_comfy_org: this.authToken, api_key_comfy_org: this.apiKey, comfy_usage_source: "comfyui-frontend", extra_pnginfo: { workflow } } };
+      env.bodies.push({ body: clone(body), self: who(this), sameData: data === env.sent?.b, sameOptions: options === env.sent?.options,
+        sameWorkflow: workflow === env.sent?.b.workflow, hello: env.hello() });
+      env.log.push(["submit"]);
+      if (env.reject) throw new PromptExecutionError({ error: { message: env.reject, details: "dp_review" }, node_errors: {} }, 400);
+      if (env.fault) throw env.fault(); // 본문이 서버에 닿은 뒤 응답을 잃음(연결 끊김·200 인데 JSON 아님·프록시 5xx)
+      return { prompt_id: `pid-${env.bodies.length}`, number: env.bodies.length, node_errors: {} };
+    },
+    fileURL: (p) => p,
+  };
+  const app = {
+    processingQueue: false, queueItems: [], lastNodeErrors: null, rootGraph: { nodes },
+    extensionManager: { toast: { add: (t) => env.toasts.push(`${t.severity}: ${t.detail}`) }, dialog: { confirm: async () => true } },
+    registerExtension(ext) { env.ext = ext; },
+    async graphToPrompt() {
+      // 부를 때마다 새 {output, workflow}(사용자 그래프). g2pThrow = true(늘)·숫자(그 횟수만) 던짐, g2pMs = 변환 시간
+      if (env.g2pMs) await sleep(env.g2pMs);
+      if (env.g2pThrow) {
+        if (typeof env.g2pThrow === "number") env.g2pThrow -= 1;
+        throw new Error("graphToPrompt 실패");
+      }
+      const output = Object.fromEntries(nodes.map((n) => [String(n.id), { class_type: n.comfyClass,
+        inputs: Object.fromEntries(n.widgets.filter((w) => w.type !== "button").map((w) => [w.name, w.value])) }]));
+      const r = { output, workflow: { nodes: nodes.map((n) => n.id) } };
+      env.g2p.push(r);
+      return r;
+    },
+    // 1.53.10 app.queuePrompt(settingStore — STUDIO_S3_SPEC 부록 A·§10.7): 쌓고 처리 중이면 false → 토큰 얻기(비동기) → 뒤에서부터 꺼내
+    // graphToPrompt → api.authToken·apiKey 대입 → await api.queuePrompt → delete → 반환값의 prompt_id 로 job 기록(반환이 undefined 면 TypeError) → afterQueued
+    // → ui.queue.update(). 감싸개가 던진 오류 = 대화상자 + break(반환은 true)
+    async queuePrompt(number, batchCount = 1, opts = {}) {
+      const { queueNodeIds } = Array.isArray(opts) ? { queueNodeIds: opts } : opts;
+      this.queueItems.push({ number, batchCount, queueNodeIds });
+      env.log.push(["queue", queueNodeIds ?? null]);
+      if (this.processingQueue) return false;
+      this.processingQueue = true;
+      let l = null;
+      try {
+        await sleep(env.tokenMs);
+        if (env.noAuth) {
+          env.dialogs.push("userNotAuthenticated");
+          this.queueItems.length = 0;
+          return false;
+        }
+        while (this.queueItems.length) {
+          const it = this.queueItems.pop();
+          const partial = !!it.queueNodeIds?.length;
+          for (let i = 0; i < it.batchCount; i++) {
+            const b = await this.graphToPrompt(this.rootGraph);
+            const options = { partialExecutionTargets: it.queueNodeIds, previewMethod: "default" };
+            env.sent = { b, options };
+            try {
+              api.authToken = "TOKEN-A";
+              api.apiKey = "KEY-A";
+              const t = await api.queuePrompt(it.number, b, options);
+              delete api.authToken;
+              delete api.apiKey;
+              if (t.prompt_id) env.jobs.push(t.prompt_id);
+              l = null;
+            } catch (e) {
+              env.dialogs.push(e instanceof PromptExecutionError ? `rejected: ${e}` : `error: ${e.message}`);
+              if (e instanceof PromptExecutionError) l = false;
+              break;
+            }
+            for (const n of nodes) for (const w of n.widgets) w.afterQueued?.({ isPartialExecution: partial });
+            await sleep(env.updateMs); // ui.queue.update()(큐 목록을 다시 받음)
+          }
+        }
+      } finally {
+        this.processingQueue = false;
+      }
+      return l ?? !this.lastNodeErrors;
+    },
+  };
+  o.before?.(app, api, env, who);
+  globalThis.__bmk = { app, api };
+  await import(`${pathToFileURL(IN.extMjs).href}?tab=${name}`);
+  env.ext.setup();
+  o.after?.(app, api, env, who);
+  // 사용자 그래프: Spec Draft 3(adopt 남음)·Run 4·KSampler 7(seed — 제출 성공 때 afterQueued 로 바뀜)
+  const types = {};
+  for (const cls of ["BMKDesignPatchRun", "BMKDesignPatchSpecDraft"]) {
+    const T = function () {};
+    env.ext.beforeRegisterNodeDef(T, { name: cls });
+    types[cls] = T;
+  }
+  const mk = (cls, id, widgets) => {
+    const n = Object.assign(types[cls] ? new types[cls]() : {}, { id, comfyClass: cls, mode: 0, properties: {}, size: [240, 120], widgets,
+      addWidget(type, wname, value, cb) { const w = { type, name: wname, value, callback: cb }; this.widgets.push(w); return w; },
+      addProperty(p, v) { this.properties[p] = v; }, findInputSlot() { return -1; }, isInputConnected() { return false; },
+      setDirtyCanvas() {}, computeSize() { return [240, 120]; }, setSize(s) { this.size = s; } });
+    n.onNodeCreated?.();
+    nodes.push(n);
+    return n;
+  };
+  // o.approve = 사용자 Draft·Run approve 처음 값(보초 해시면 Studio 승인이 그 위젯에 쓰지도 비우지도 않는지 봄 — P3·계약 §4.11)
+  const draft = mk("BMKDesignPatchSpecDraft", 3, [{ name: "approve", value: o.approve ?? "" }, { name: "adopt", value: "001_38a818" }]);
+  const run = mk("BMKDesignPatchRun", 4, [{ name: "approve", value: o.approve ?? "" }]);
+  env.adopt = draft.widgets[1];
+  env.userApprove = () => [draft.widgets[0].value, run.widgets[0].value];
+  env.seed = mk("KSampler", 7, [{ name: "seed", value: 100, afterQueued() { this.value += 1; } }]).widgets[0];
+  Object.assign(env, { app, api, win });
+  env.src = (hook) => {
+    const s = { got: [], postMessage(m, origin) { s.got.push([clone(m), origin]); env.log.push(["reply", m.type]); hook?.(m); } };
+    return s;
+  };
+  env.post = (data, src, origin = ORIGIN) => { for (const fn of win.listeners) fn({ origin, data: clone(data), source: src }); };
+  env.hello = () => {
+    const s = env.src();
+    env.post({ type: "bmk-dp-hello", id: "h" }, s);
+    return s.got.length ? s.got[0][0] : null;
+  };
+  env.send = async (msg, src = env.src(), origin = ORIGIN) => {
+    env.post(msg, src, origin);
+    await until(() => !!finalOf(src.got));
+    return src;
+  };
+  env.emit = (evt, detail) => { for (const fn of env.listeners[evt] ?? []) fn({ detail }); };
+  env.tab = env.hello()?.tab;
+  return env;
+}
+
+let seq = 0;
+// Studio 가 보내는 승인 = 정본 messages 예시 그대로(tab 은 이 탭, id 는 새로)
+const approveMsg = (env, stage, more = {}) =>
+  Object.assign(clone(M["bmk-dp-approve"].examples.find((e) => e.stage === stage)), { tab: env.tab, id: `a${++seq}` }, more);
+const finalOf = (got) => (got.find(([m]) => m.type === "bmk-dp-approved") || [null])[0];
+const msgs = (src) => src.got.map(([m]) => m);
+const count = (env, k) => env.log.filter((x) => x[0] === k).length;
+// 사용자 그래프 approve 보초(승인 해시 꼴) — 본문(prompt·graphToPrompt output)의 사용자 Draft 3·Run 4 approve
+const USER_APPROVE = "deadbeef0000";
+const approveIn = (p) => [p?.["3"]?.inputs.approve, p?.["4"]?.inputs.approve];
+
+// ── J-X1 정상: run(메시지의 prompt 는 쓰지 않음) ──
+await scenario("x1", async () => {
+  const env = await tab("x1", { approve: USER_APPROVE });
+  let atAck = null;
+  const src = env.src((m) => { if (m.type === "bmk-dp-ack") atAck = env.hello(); });
+  const msg = approveMsg(env, "run", { prompt: clone(R.ok.prompt) });
+  await env.send(msg, src);
+  const b = env.bodies[0] || {};
+  const after = { adopt: env.adopt.value, seed: env.seed.value, token: "authToken" in env.api || "apiKey" in env.api, hello: env.hello(), toasts: env.toasts.slice(),
+    approve: env.userApprove() };
+  // 무장이 풀렸는가(finally): 다음 사용자 제출은 대상이 같아도 바꾸지 않고 받은 그대로 넘김
+  await env.app.queuePrompt(0, 1, { queueNodeIds: ["dp_review"] });
+  const n = env.bodies[1] || {};
+  return { tab: env.tab, msg, got: src.got, log: env.log.map((x) => x.join(" ")), body: b.body, self: b.self, sameWorkflow: b.sameWorkflow, sameData: b.sameData,
+    inSubmit: b.hello, atAck, after, g2pKeys: env.g2p.map((r) => Object.keys(r.output)), g2pApprove: env.g2p.map((r) => approveIn(r.output)), dialogs: env.dialogs,
+    next: { keys: Object.keys(n.body?.prompt ?? {}), sameData: n.sameData, sameOptions: n.sameOptions, targets: n.body?.partial_execution_targets,
+      approve: approveIn(n.body?.prompt) } };
+});
+
+// ── J-X1 draft·reroll ──
+await scenario("x1dr", async () => {
+  const env = await tab("x1dr", { approve: USER_APPROVE });
+  const res = { tab: env.tab };
+  for (const stage of ["draft", "reroll"]) {
+    const src = await env.send(approveMsg(env, stage, stage === "reroll" ? { what: "x".repeat(300) } : {}));
+    const b = env.bodies.at(-1) || {};
+    res[stage] = { got: msgs(src), get: env.log.filter((x) => x[0] === "GET").at(-1)?.[1], prompt: b.body?.prompt,
+      targets: b.body?.partial_execution_targets, token: b.body?.extra_data.auth_token_comfy_org, toast: env.toasts.at(-1), approve: env.userApprove() };
+  }
+  return res;
+});
+
+// ── J-X1 템플릿 검사 실패 표(서버가 어긋난 템플릿을 줌) — 큐에 넣지 않음 ──
+const TEMPLATE_CASES = [
+  ["key", "run", (t) => { t.prompt["5"] = t.prompt.dp_analyze; delete t.prompt.dp_analyze; }],
+  ["keyDigit", "run", (t) => { t.prompt.dp_run2 = clone(t.prompt.dp_analyze); }],
+  ["keyUpper", "run", (t) => { t.prompt.dp_Analyze = t.prompt.dp_analyze; delete t.prompt.dp_analyze; }],
+  ["class", "run", (t) => { t.prompt.dp_analyze.class_type = "KSampler"; }],
+  ["classBmk", "run", (t) => { t.prompt.dp_analyze.class_type = "BMKCyclicSeed"; }],
+  ["classMissing", "run", (t) => { delete t.prompt.dp_analyze.class_type; }],
+  ["approve2", "run", (t) => { t.prompt.dp_rerun = clone(t.prompt.dp_run); }],
+  ["runTwo", "run", (t) => { t.prompt.dp_runb = clone(t.prompt.dp_run); t.prompt.dp_runb.inputs.approve = ""; }],
+  ["draftTwo", "draft", (t) => {
+    t.prompt.dp_draftb = clone(t.prompt.dp_draft);
+    Object.assign(t.prompt.dp_draftb.inputs, { approve: "", adopt: "001_38a818", keep_loaded: true });
+  }],
+  ["approveEmpty", "run", (t) => { t.prompt.dp_run.inputs.approve = ""; }],
+  ["approveOther", "run", (t) => { t.prompt.dp_run.inputs.approve = "5e81d07c2a94"; }],
+  ["rerollHash", "reroll", (t) => { t.prompt.dp_run.inputs.approve = "3f9a1c2b7d10"; }],
+  ["draftInRun", "run", (t) => { t.prompt.dp_draft = clone(R.alt.draft.prompt.dp_draft); t.prompt.dp_draft.inputs.approve = ""; }],
+  ["runInDraft", "draft", (t) => { t.prompt.dp_run = clone(R.alt.reroll.prompt.dp_run); }],
+  ["noRun", "run", (t) => { delete t.prompt.dp_run; }],
+  ["adopt", "draft", (t) => { t.prompt.dp_draft.inputs.adopt = "001_38a818"; }],
+  ["adoptMissing", "draft", (t) => { delete t.prompt.dp_draft.inputs.adopt; }],
+  ["keepLoaded", "draft", (t) => { t.prompt.dp_draft.inputs.keep_loaded = true; }],
+  ["keepMissing", "draft", (t) => { delete t.prompt.dp_draft.inputs.keep_loaded; }],
+  ["keepStr", "draft", (t) => { t.prompt.dp_draft.inputs.keep_loaded = "false"; }],
+  ["targets", "run", (t) => { t.targets = ["dp_analyze"]; }],
+  ["targets2", "run", (t) => { t.targets = ["dp_review", "dp_run"]; }],
+  ["targetGone", "run", (t) => { delete t.prompt.dp_review; }],
+  ["hash", "run", (t) => { t.hash = "5e81d07c2a94"; }],
+  ["only", "run", (t) => { t.only = "001_38a818"; }],
+  ["stage", "run", (t) => { t.stage = "reroll"; }],
+  ["noPrompt", "run", (t) => { delete t.prompt; }],
+];
+await scenario("xt", async () => {
+  let mutate = null;
+  const env = await tab("xt", { approve: USER_APPROVE, server: (path) => { const [s, t] = serve(path); const c = clone(t); mutate(c); return [s, c]; } });
+  const res = { tab: env.tab, cases: {} };
+  for (const [name, stage, fn] of TEMPLATE_CASES) {
+    mutate = fn;
+    res.cases[name] = msgs(await env.send(approveMsg(env, stage)));
+  }
+  Object.assign(res, { queued: count(env, "queue"), bodies: env.bodies.length, gets: count(env, "GET"), toast: env.toasts.at(-1), approve: env.userApprove() });
+  return res;
+});
+
+// ── 서버 오류: 409 reason 그대로(stale hash·apply_needed pending), 그 밖 http ──
+await scenario("xe", async () => {
+  let reply = null;
+  const env = await tab("xe", { server: async () => { if (reply instanceof Error) throw reply; return reply; } });
+  const one = async (r) => { reply = r; return finalOf((await env.send(approveMsg(env, "run"))).got); };
+  const res = { tab: env.tab, e409: [] };
+  for (const e of R.errors["409"]) res.e409.push(await one([409, e]));
+  res.e404 = await one([404, R.errors["404"][0]]);
+  res.e400 = await one([400, R.errors["400"][4]]);
+  res.noReason = await one([409, { error: "사유 없는 409" }]);
+  res.e502 = await one([502, undefined]);
+  res.net = await one(new TypeError("Failed to fetch"));
+  Object.assign(res, { queued: count(env, "queue"), bodies: env.bodies.length, toast: env.toasts.at(-1) });
+  return res;
+});
+
+// ── 모양 틀림(bad_request — ack 없음·서버 안 감) · 다른 출처·다른 tab·tab 없음·id 없음 무시 ──
+await scenario("xb", async () => {
+  const env = await tab("xb");
+  const BAD = {
+    stageApply: ["run", { stage: "apply" }], stageMissing: ["run", { stage: undefined }], stageArray: ["run", { stage: ["run"] }],
+    hashUpper: ["run", { hash: "3F9A1C2B7D10" }], hashEmpty: ["draft", { hash: "" }], hashShort: ["run", { hash: "3f9a1c" }],
+    onlyEmpty: ["run", { only: "" }], onlyNum: ["draft", { only: 7 }], rootUpper: ["run", { rootKey: "FE410D7F025D" }],
+    // r2-11 짝 없는 서로게이트(ack 뒤 encodeURIComponent 가 던져 답 없이 끝나던 것)·토큰 밖 문자
+    onlySurrogate: ["run", { only: "001_38a818\uD800" }], onlyChar: ["draft", { only: "001_38a818;002_d98f99" }],
+    rootMissing: ["run", { rootKey: undefined }], rerollHash: ["reroll", { hash: "3f9a1c2b7d10" }], rerollOnly: ["reroll", { only: "001_38a818" }],
+    rerollHashMissing: ["reroll", { hash: undefined }], rerollOnlyMissing: ["reroll", { only: undefined }],
+  };
+  const res = { tab: env.tab, bad: {} };
+  for (const [k, [stage, more]] of Object.entries(BAD)) res.bad[k] = msgs(await env.send(approveMsg(env, stage, more)));
+  const silent = async (msg, origin = ORIGIN) => {
+    const s = env.src();
+    env.post(msg, s, origin);
+    await sleep(30);
+    return s.got.length;
+  };
+  res.ignored = {
+    otherOrigin: await silent(approveMsg(env, "run"), "http://evil.example"),
+    otherTab: await silent(approveMsg(env, "run", { tab: "zzz" })),
+    noTab: await silent(approveMsg(env, "run", { tab: undefined })),
+    noId: await silent(approveMsg(env, "run", { id: undefined })),
+    numId: await silent(approveMsg(env, "run", { id: 5 })),
+  };
+  Object.assign(res, { gets: count(env, "GET"), queued: count(env, "queue"), toast: env.toasts.at(-1) });
+  return res;
+});
+
+// ── busy: 탭이 큐 처리 중 · 다른 Studio 승인 처리 중(서버 응답 대기) · 서버를 기다리는 사이 큐 처리가 시작됨 ──
+await scenario("xbusy", async () => {
+  let open;
+  const gate = new Promise((r) => (open = r));
+  const env = await tab("xbusy", { server: async (path) => { await gate; return serve(path); } });
+  env.app.processingQueue = true;
+  const q = msgs(await env.send(approveMsg(env, "run")));
+  env.app.processingQueue = false;
+  const first = env.src();
+  env.post(approveMsg(env, "run"), first);
+  await until(() => first.got.length > 0);
+  const helloMid = env.hello();
+  const second = msgs(await env.send(approveMsg(env, "draft")));
+  open();
+  await until(() => !!finalOf(first.got));
+  const res = { tab: env.tab, queueBusy: q, second, first: msgs(first), helloMid, helloAfter: env.hello(), gets: count(env, "GET"), bodies: env.bodies.length };
+  const env2 = await tab("xrace", { server: (path) => { env2.app.processingQueue = true; return serve(path); } });
+  res.race = { got: msgs(await env2.send(approveMsg(env2, "run"))), queued: count(env2, "queue"), bodies: env2.bodies.length };
+  env2.app.processingQueue = false;
+  return res;
+});
+
+// ── 같은 승인 id 가 다시 옴(처리 중 window·채널, 끝난 뒤) → 답 없이 무시: 서버·제출·approved 한 번 ──
+await scenario("xdup", async () => {
+  let open;
+  const gate = new Promise((r) => (open = r));
+  const env = await tab("xdup", { server: async (path) => { await gate; return serve(path); } });
+  const msg = approveMsg(env, "run");
+  const first = env.src();
+  env.post(msg, first);
+  await until(() => first.got.length > 0);
+  const mid = env.src();
+  env.post(msg, mid);
+  const c = new env.win.BroadcastChannel("bmk-dp");
+  const heard = [];
+  c.onmessage = (ev) => heard.push(ev.data);
+  c.postMessage(msg);
+  await sleep(30);
+  open();
+  await until(() => !!finalOf(first.got));
+  const again = env.src();
+  env.post(msg, again);
+  c.postMessage(msg);
+  await sleep(30);
+  return { tab: env.tab, first: msgs(first), mid: msgs(mid), again: msgs(again), heard, gets: count(env, "GET"), queued: count(env, "queue"), bodies: env.bodies.length };
+});
+
+// ── 채널 길: 승인·ack·approved·hello 가 채널로, 다른 tab 은 답 없음 ──
+await scenario("xch", async () => {
+  const env = await tab("xch");
+  const c = new env.win.BroadcastChannel("bmk-dp");
+  const got = [];
+  c.onmessage = (ev) => got.push(ev.data);
+  c.postMessage(approveMsg(env, "run"));
+  await until(() => got.some((m) => m.type === "bmk-dp-approved"));
+  c.postMessage(approveMsg(env, "run", { tab: "zzz" }));
+  c.postMessage({ type: "bmk-dp-hello", id: "hc" });
+  await sleep(30);
+  return { tab: env.tab, got, bodies: env.bodies.length, prompt: env.bodies[0]?.body.prompt };
+});
+
+// ── J-X2 경합 ──
+await scenario("x2a", async () => {  // 토큰을 얻는 동안 사용자가 큐를 누름(전체·부분) → 뒤에서부터 꺼내므로 먼저 나오지만 막힘, 바뀌지 않음
+  const env = await tab("x2a", { approve: USER_APPROVE });
+  env.tokenMs = 30;
+  const src = env.src();
+  env.post(approveMsg(env, "run"), src);
+  await until(() => count(env, "queue") > 0);
+  const userFull = await env.app.queuePrompt(0, 1);
+  const userPartial = await env.app.queuePrompt(0, 1, { queueNodeIds: ["4"] });
+  await until(() => !!finalOf(src.got));
+  return { userFull, userPartial, final: finalOf(src.got), bodies: env.bodies.map((b) => ({ keys: Object.keys(b.body.prompt), targets: b.body.partial_execution_targets ?? null })),
+    dialogs: env.dialogs, toasts: env.toasts, seed: env.seed.value, g2pKeys: env.g2p.map((r) => Object.keys(r.output)),
+    g2pApprove: env.g2p.map((r) => approveIn(r.output)), approve: env.userApprove() };
+});
+
+await scenario("x2b", async () => {  // 셋째 인자를 버리는 app.queuePrompt 감싸개 → 우리 항목이 전체 실행이 됨 → 막음(보낸 것 0)
+  const env = await tab("x2b", { before: (app) => { const orig = app.queuePrompt; app.queuePrompt = function (n, b) { return orig.call(this, n, b); }; } });
+  const src = await env.send(approveMsg(env, "run"));
+  const r = { final: finalOf(src.got), bodies: env.bodies.length, dialogs: env.dialogs.splice(0), hello: env.hello() };
+  // 토큰을 얻는 사이 사용자 Queue → 먼저 꺼낸 사용자 항목은 끼어든 제출(우리 항목이 아직 큐에 있음 — 셋째 인자를 버려도 우리 호출이 쌓은 항목으로 앎), 우리 항목은 대상이 바뀜
+  env.tokenMs = 30;
+  const s2 = env.src();
+  env.post(approveMsg(env, "run"), s2);
+  await until(() => count(env, "queue") > 1);
+  await env.app.queuePrompt(0, 1);
+  await until(() => !!finalOf(s2.got));
+  r.mixed = { final: finalOf(s2.got), bodies: env.bodies.length, dialogs: env.dialogs.splice(0) };
+  return r;
+});
+
+await scenario("x2k", async () => {  // r2-08 같은 감싸개 + 우리 항목을 꺼내 변환하는 사이 사용자 Queue → 우리 항목은 '대상이 바뀜', 같은 처리 루프에서 뒤에 꺼낸
+  // 사용자 항목은 '다시 큐에 넣으세요'(우리 항목은 한 번만 꺼내짐 — 까닭마다 탭 토스트)
+  const env = await tab("x2k", { before: (app) => { const orig = app.queuePrompt; app.queuePrompt = function (n, b) { return orig.call(this, n, b); }; } });
+  env.g2pMs = 100; // 우리 항목을 꺼내 변환하는 동안 — until 폴링(Windows 약 15ms)이 놓치지 않게 넉넉히
+  const src = env.src();
+  env.post(approveMsg(env, "run"), src);
+  const popped = await until(() => count(env, "queue") === 1 && env.app.processingQueue && !env.app.queueItems.length);
+  const user = await env.app.queuePrompt(0, 1);
+  await until(() => !!finalOf(src.got));
+  return { tab: env.tab, popped, user, final: finalOf(src.got), bodies: env.bodies.length, dialogs: env.dialogs, toasts: env.toasts };
+});
+
+await scenario("x2g", async () => {  // 대상을 하나 덧붙이는 app.queuePrompt 감싸개 → [dp_review, dp_run] 은 대상이 정확히 같지 않음 → 막음(보낸 것 0)
+  const env = await tab("x2g", { before: (app) => {
+    const orig = app.queuePrompt;
+    app.queuePrompt = function (n, b, o) { return orig.call(this, n, b, { ...o, queueNodeIds: [...(o?.queueNodeIds ?? []), "dp_run"] }); };
+  } });
+  const src = await env.send(approveMsg(env, "run"));
+  return { tab: env.tab, final: finalOf(src.got), bodies: env.bodies.length, dialogs: env.dialogs, log: env.log.filter((x) => x[0] === "queue").map((x) => x.join(" ")) };
+});
+
+await scenario("x2h", async () => {  // 무장 중에 보드 큐(bmk-dp-queue 0.8초 타이머)가 끼어듦 → 넣지 않고 경고(넣었다는 토스트 없음), 템플릿만 나감
+  const env = await tab("x2h");
+  env.app.rootGraph.nodes.push({ id: 9, comfyClass: "BMKDesignPatchReview", mode: 0, properties: { bmk_dp_root_key: KEY }, widgets: [] });
+  env.tokenMs = 1200;
+  env.post({ type: "bmk-dp-queue", rootKey: KEY }, env.src());
+  await sleep(10);
+  const src = await env.send(approveMsg(env, "run"));
+  return { final: finalOf(src.got), bodies: env.bodies.map((b) => Object.keys(b.body.prompt)), log: env.log.filter((x) => x[0] === "queue").map((x) => x.join(" ")),
+    dialogs: env.dialogs, toasts: env.toasts };
+});
+
+await scenario("x2c", async () => {  // workflow 를 만지는 안쪽 api 감싸개(inspire 흉내 — {output, workflow} 새 객체, api 로 부름)
+  const env = await tab("x2c", { before: (app, api) => {
+    const orig = api.queuePrompt;
+    api.queuePrompt = async function (n, { output, workflow }, o) {
+      workflow.widget_idx_map = { 7: { seed: 0 } };
+      return orig.call(api, n, { output, workflow }, o);
+    };
+  } });
+  const src = await env.send(approveMsg(env, "run"));
+  const b = env.bodies[0] || {};
+  return { final: finalOf(src.got), n: env.bodies.length, prompt: b.body?.prompt, workflow: b.body?.extra_data.extra_pnginfo.workflow, sameWorkflow: b.sameWorkflow,
+    token: b.body?.extra_data.auth_token_comfy_org };
+});
+
+await scenario("x2d", async () => {  // Prompt Pack 식: app.queuePrompt 를 세 번 → 템플릿은 첫 번째만, 나머지는 막힘(반복 문구 — 토스트는 한 번), 막힌 제출 뒤 토큰 안 남음
+  const env = await tab("x2d", { before: (app) => {
+    const orig = app.queuePrompt;
+    app.queuePrompt = async function () {
+      await orig.apply(this, arguments);
+      await orig.apply(this, arguments);
+      return orig.apply(this, arguments);
+    };
+  } });
+  const src = await env.send(approveMsg(env, "run"));
+  return { final: finalOf(src.got), bodies: env.bodies.map((b) => Object.keys(b.body.prompt)), dialogs: env.dialogs, queued: count(env, "queue"),
+    toasts: env.toasts, token: "authToken" in env.api || "apiKey" in env.api };
+});
+
+await scenario("x2e", async () => {  // deno 식: setup 에서 우리보다 바깥에 감싼 api 감싸개(인자를 그대로 넘김)
+  const env = await tab("x2e", { after: (app, api, e) => {
+    const inner = api.queuePrompt;
+    e.outerSaw = [];
+    api.queuePrompt = async function (n, data) {
+      e.outerSaw.push(Object.keys(data.output));
+      return inner.apply(this, arguments);
+    };
+  } });
+  const src = await env.send(approveMsg(env, "run"));
+  return { final: finalOf(src.got), bodies: env.bodies.map((b) => Object.keys(b.body.prompt)), outerSaw: env.outerSaw };
+});
+
+await scenario("x2f", async () => {  // this: 바깥이 this = app 으로 부름 → 우리는 그대로 넘김 → rgthree.js 식(app 으로) → prompt_service 식(api 로 다시 묶음)
+  const env = await tab("x2f", {
+    before: (app, api, e, who) => {
+      e.thisSeen = [];
+      const bottom = api.queuePrompt;
+      const ps = function () { e.thisSeen.push(["ps", who(this)]); return bottom.apply(api, arguments); };
+      api.queuePrompt = function () { e.thisSeen.push(["rg", who(this)]); return ps.apply(app, arguments); };
+    },
+    after: (app, api, e, who) => {
+      const inner = api.queuePrompt;
+      api.queuePrompt = function () { e.thisSeen.push(["outer", who(this)]); return inner.apply(app, arguments); };
+    },
+  });
+  const src = await env.send(approveMsg(env, "run"));
+  const b = env.bodies[0] || {};
+  return { final: finalOf(src.got), thisSeen: env.thisSeen, self: b.self, keys: Object.keys(b.body?.prompt ?? {}),
+    token: [b.body?.extra_data.auth_token_comfy_org, b.body?.extra_data.api_key_comfy_org] };
+});
+
+const bodiesOf = (env) => env.bodies.map((b) => ({ keys: Object.keys(b.body.prompt), targets: b.body.partial_execution_targets ?? null,
+  token: b.body.extra_data.auth_token_comfy_org ?? null }));
+
+await scenario("x2n", async () => {  // 기다리지 않는 app.queuePrompt 감싸개(return 누락 — 셋째 인자 버림·넘김) → 우리 호출이 돌아온 뒤에 프론트가 우리 항목을 꺼냄
+  const res = {};
+  for (const k of ["drop", "keep"]) {
+    const env = await tab(`x2n-${k}`, { before: (app) => {
+      const orig = app.queuePrompt;
+      app.queuePrompt = k === "drop" ? function (n, b) { orig.call(this, n, b); } : function () { orig.apply(this, arguments); };
+    } });
+    const src = await env.send(approveMsg(env, "run"));
+    await until(() => !env.app.processingQueue);
+    res[k] = { tab: env.tab, final: finalOf(src.got), bodies: bodiesOf(env), dialogs: env.dialogs };
+  }
+  return res;
+});
+
+await scenario("x2w", async () => {  // 사용자 Queue 가 먼저 바깥 감싸개(await) 안에서 기다리는 사이 승인 → 우리 호출은 처리 중이라 false 로 돌아오고 우리 항목은 그 처리에서 나감
+  const env = await tab("x2w", { after: (app) => {
+    const orig = app.queuePrompt;
+    app.queuePrompt = async function () { await sleep(40); return orig.apply(this, arguments); };
+  } });
+  env.tokenMs = 60;
+  env.updateMs = 80; // 우리 항목 다음 사용자 항목까지 무장 확인 주기(50ms)보다 김 — 바꿔치기 뒤에도 그 처리가 끝날 때까지 무장인지
+  const user = env.app.queuePrompt(0, 1);
+  await sleep(5);
+  const src = await env.send(approveMsg(env, "run"));
+  await user;
+  return { tab: env.tab, final: finalOf(src.got), bodies: bodiesOf(env), dialogs: env.dialogs, toasts: env.toasts,
+    log: env.log.filter((x) => x[0] === "queue").map((x) => x.join(" ")) };
+});
+
+await scenario("x2v", async () => {  // deno Ideogram 사전 점검 식: app.queuePrompt 감싸개가 원래 함수를 미뤄 부름(사용자 40ms·우리 120ms) → 무장 중 먼저 꺼낸
+  // 사용자 항목은 우리 항목을 아직 모를 때라(아직 안 쌓임 — 미뤄 쌓으며 셋째 인자를 버린 우리 항목과 구별 못 함) '직접 누른 큐였다면 다시'(r3-01), 우리 항목은
+  // 그 뒤 바꿔치기
+  let calls = 0;
+  const env = await tab("x2v", { after: (app) => {
+    const orig = app.queuePrompt;
+    app.queuePrompt = async function () { await sleep(++calls === 1 ? 40 : 120); return orig.apply(this, arguments); };
+  } });
+  const user = env.app.queuePrompt(0, 1);
+  await sleep(10);
+  const src = await env.send(approveMsg(env, "run"));
+  await user;
+  return { tab: env.tab, final: finalOf(src.got), bodies: bodiesOf(env), dialogs: env.dialogs, toasts: env.toasts };
+});
+
+await scenario("x2u", async () => {  // r3-01 원래 함수를 미뤄 부르며(await 뒤) 셋째 인자도 버리는 app.queuePrompt 감싸개, 끼어든 사용자 큐 없음 → 우리 항목이 사용자 전체
+  // 실행과 똑같이 보임(바로 쌓은 항목 없음) → 막되 '직접 누른 큐였다면 다시'(누르지 않은 사용자에게 '다시 큐에 넣으세요'가 아님), not_submitted 도 그 까닭
+  const env = await tab("x2u", { after: (app) => {
+    const orig = app.queuePrompt;
+    app.queuePrompt = async function (n, b) { await sleep(20); return orig.call(this, n, b); };
+  } });
+  const src = await env.send(approveMsg(env, "run"));
+  return { tab: env.tab, final: finalOf(src.got), bodies: env.bodies.length, dialogs: env.dialogs, toasts: env.toasts, left: env.app.queueItems.length };
+});
+
+await scenario("x2z", async () => {  // r3-06 기다리지 않는 감싸개라 우리 호출이 돌아온 뒤 처리 루프 끝까지 무장 — 그 루프가 끝난 바로 다음 작업에서 사용자가 누른 Queue 는
+  // 새 처리라 무장 밖(끝을 50ms 타이머로 살피면 그 틈의 새 사용자 처리까지 막혀 탭 토스트 없이 사라짐)
+  const env = await tab("x2z", { before: (app) => {
+    const orig = app.queuePrompt;
+    app.queuePrompt = function () { orig.apply(this, arguments); };
+  } });
+  const src = env.src();
+  env.post(approveMsg(env, "run"), src);
+  let user = false;
+  const end = Date.now() + 3000;
+  while (!user && Date.now() < end) {
+    await new Promise((r) => setImmediate(r));
+    if (env.bodies.length && !env.app.processingQueue) {
+      user = true;
+      env.app.queuePrompt(0, 1, { queueNodeIds: ["7"] });
+    }
+  }
+  await until(() => !!finalOf(src.got) && env.bodies.length + env.dialogs.length >= 2);
+  return { tab: env.tab, user, final: finalOf(src.got), bodies: bodiesOf(env), dialogs: env.dialogs, toasts: env.toasts };
+});
+
+// ── J-X3 닫힌 실패: 프론트가 api.queuePrompt 를 안 부름·제출이 throw·graphToPrompt 실패 — 다음 사용자 제출은 그대로 ──
+await scenario("x3", async () => {
+  const env = await tab("x3", { approve: USER_APPROVE });
+  const user = async () => {
+    await env.app.queuePrompt(0, 1, { queueNodeIds: ["dp_review"] });
+    const b = env.bodies.at(-1);
+    return { keys: Object.keys(b.body.prompt), sameData: b.sameData, sameOptions: b.sameOptions, approve: approveIn(b.body.prompt) };
+  };
+  const res = { tab: env.tab };
+  env.noAuth = true;
+  res.noAuth = { final: finalOf((await env.send(approveMsg(env, "run"))).got), bodies: env.bodies.length, dialogs: env.dialogs.slice(), approve: env.userApprove() };
+  env.noAuth = false;
+  res.noAuthNext = await user();
+  env.reject = "Prompt outputs failed validation";
+  res.reject = { final: finalOf((await env.send(approveMsg(env, "run"))).got), keys: Object.keys(env.bodies.at(-1).body.prompt), bodies: env.bodies.length,
+    token: "authToken" in env.api || "apiKey" in env.api, approve: env.userApprove() };
+  env.reject = null;
+  res.rejectNext = await user();
+  env.g2pThrow = true;
+  res.g2p = { final: finalOf((await env.send(approveMsg(env, "run"))).got), bodies: env.bodies.length, approve: env.userApprove() };
+  env.g2pThrow = false;
+  res.g2pNext = await user();
+  res.toasts = env.toasts;
+  return res;
+});
+
+await scenario("x3L", async () => {  // 토큰을 얻는 사이 쌓인 사용자 항목이 먼저 꺼내져 graphToPrompt 에서 던짐 → 처리 루프가 끝나 우리 항목이 큐에 남음 → 큐에서 빼고 not_submitted
+  const res = {};
+  for (const k of ["plain", "drop"]) {  // drop = 셋째 인자를 버리는 감싸개(남은 우리 항목은 전체 실행 — 우리 호출이 쌓은 항목으로 앎)
+    const env = await tab(`x3L-${k}`, k === "drop" ? { before: (app) => {
+      const orig = app.queuePrompt;
+      app.queuePrompt = function (n, b) { return orig.call(this, n, b); };
+    } } : {});
+    env.tokenMs = 30;
+    const src = env.src();
+    env.post(approveMsg(env, "run"), src);
+    await until(() => count(env, "queue") > 0);
+    env.g2pThrow = 1;
+    const user = await env.app.queuePrompt(0, 1);
+    await until(() => !!finalOf(src.got));
+    const left = env.app.queueItems.map((it) => it.queueNodeIds ?? null);
+    await env.app.queuePrompt(0, 1);  // 그래프를 고친 뒤 사용자 Queue — 남은 승인 항목이 무장 없이 사용자 그래프(+ 대상 dp_review) + 토큰으로 나가지 않음
+    res[k] = { tab: env.tab, user, final: finalOf(src.got), left, bodies: bodiesOf(env) };
+  }
+  return res;
+});
+
+await scenario("x3La", async () => {  // r3-01 사용자 Queue 가 먼저 바깥 감싸개(await) 안에서 기다리는 사이 승인 → 사용자 항목이 변환에서 던져 처리 루프가 끝나고 늦게 쌓인
+  // 우리 항목이 큐에 남음. 감싸개가 셋째 인자를 버리면(asyncDrop) 우리 항목인지 모르지만 무장 동안 쌓였으니 뺌 — 다음 사용자 Queue 는 사용자 그래프 하나만(남은
+  // 항목이 토큰과 함께 사용자 그래프 전체로 또 나가지 않음), 인자를 넘기면(asyncKeep) 우리 항목으로 앎
+  const res = {};
+  for (const k of ["asyncDrop", "asyncKeep"]) {
+    let calls = 0;
+    const env = await tab(`x3La-${k}`, { server: async (path) => { await sleep(10); return serve(path); }, after: (app) => {
+      const orig = app.queuePrompt;
+      app.queuePrompt = k === "asyncDrop"
+        ? async function (n, b) { await sleep(++calls === 2 ? 120 : 60); return orig.call(this, n, b); }
+        : async function () { await sleep(++calls === 2 ? 120 : 60); return orig.apply(this, arguments); };
+    } });
+    env.tokenMs = 1;
+    env.g2pMs = 300;
+    env.g2pThrow = 1;
+    const user = env.app.queuePrompt(0, 1).catch((e) => `rejected: ${e.message}`);
+    await sleep(5);
+    const src = env.src();
+    env.post(approveMsg(env, "run"), src);
+    const u1 = await user;
+    await until(() => !!finalOf(src.got));
+    const left = env.app.queueItems.map((it) => it.queueNodeIds ?? null);
+    env.g2pMs = 0;
+    await env.app.queuePrompt(0, 1);  // 그래프를 고친 뒤 사용자 Queue 한 번
+    res[k] = { tab: env.tab, u1, final: finalOf(src.got), left, bodies: bodiesOf(env), toasts: env.toasts };
+  }
+  return res;
+});
+
+await scenario("x3i", async () => {  // 안쪽 api 감싸개가 보내지 않고 {prompt_id: null}·undefined 를 돌려줌(deno 사전 점검 식)·보내기 전에 동기로 던짐 → rejected(그 이유)
+  const env = await tab("x3i", { before: (app, api, e) => {
+    const orig = api.queuePrompt;
+    api.queuePrompt = function () {
+      if (e.inner === "null") return (async () => ({ prompt_id: null }))();
+      if (e.inner === "undef") return (async () => undefined)();
+      if (e.inner === "throw") throw new Error("안쪽 감싸개 동기 오류");
+      return orig.apply(this, arguments);
+    };
+  } });
+  const res = { tab: env.tab };
+  for (const k of ["null", "undef", "throw"]) {
+    env.inner = k;
+    res[k] = { final: finalOf((await env.send(approveMsg(env, "run"))).got), bodies: env.bodies.length, dialogs: env.dialogs.splice(0), toast: env.toasts.at(-1) };
+  }
+  env.inner = null;
+  await env.app.queuePrompt(0, 1, { queueNodeIds: ["dp_review"] });
+  const b = env.bodies.at(-1) || {};
+  res.next = { keys: Object.keys(b.body?.prompt ?? {}), sameData: b.sameData, n: env.bodies.length };
+  return res;
+});
+
+await scenario("x3u", async () => {  // r2-03 바꿔치기한 본문이 서버에 닿은 뒤 응답을 잃음(연결 끊김·200 인데 JSON 아님·프록시 5xx) → unknown(결과 모름 — 큐 확인),
+  // 서버 4xx(PromptExecutionError — ComfyUI 는 큐에 넣지 않을 때 400)만 rejected
+  const env = await tab("x3u");
+  const FAULTS = {
+    net: () => new TypeError("Failed to fetch"),
+    json: () => new SyntaxError("Unexpected token '<' in JSON at position 0"),
+    e502: () => new PromptExecutionError({ error: { type: "server_error", message: "502 Bad Gateway", details: "proxy" }, node_errors: {} }, 502),
+    e403: () => new PromptExecutionError({ error: { type: "server_error", message: "403 Forbidden", details: "origin" }, node_errors: {} }, 403),
+    // r3-07 JSON 이 아닌 응답(프록시 오류 페이지) — 1.53.10 은 details = 응답 본문 전체
+    e502html: () => new PromptExecutionError({ error: { type: "server_error", message: "502 Bad Gateway", details: "<html>\r\n<head><title>502 Bad Gateway</title></head>\r\n" +
+      "<body>\r\n<center><h1>502 Bad Gateway</h1></center>\r\n<hr><center>nginx/1.25.3</center>\r\n" +
+      "<!-- a padding to disable MSIE and Chrome friendly error page -->\r\n".repeat(6) + "</body>\r\n</html>\r\n" } }, 502),
+    e413long: () => new PromptExecutionError({ error: { type: "server_error", message: "413 Payload Too Large", details: "x".repeat(400) } }, 413),
+  };
+  const res = { tab: env.tab };
+  for (const [k, f] of Object.entries(FAULTS)) {
+    env.fault = f;
+    const n = env.bodies.length;
+    const final = finalOf((await env.send(approveMsg(env, "run"))).got);
+    res[k] = { final, sent: env.bodies.length - n, token: env.bodies.at(-1)?.body.extra_data.auth_token_comfy_org, toast: env.toasts.at(-1),
+      kept: "authToken" in env.api || "apiKey" in env.api };
+  }
+  env.fault = null;
+  return res;
+});
+
+await scenario("x3d", async () => {  // r2-02 deno Ideogram Director 사전 점검(app.queuePrompt 바깥 감싸개)이 원래 함수를 부르지 않고 {prompt_id: null,
+  // deno_ideogram_director} 를 돌려줌 → 전용 문구('알림 확인'으로 이끌지 않음), 보낸 것 0. 그 알림의 Keep 은 app.queuePrompt(0) — 무장이 풀린 뒤라 사용자 그래프 + 토큰
+  const env = await tab("x3d", { after: (app, api, e) => {
+    const orig = app.queuePrompt;
+    app.queuePrompt = async function (...args) {
+      if (e.pending) {
+        e.alerts = (e.alerts ?? 0) + 1;
+        return { prompt_id: null, deno_ideogram_director: "preflight_waiting" };
+      }
+      return orig.apply(this, args);
+    };
+  } });
+  env.pending = true;
+  const src = await env.send(approveMsg(env, "run"));
+  const r = { tab: env.tab, final: finalOf(src.got), bodies: env.bodies.length, alerts: env.alerts, toast: env.toasts.at(-1) };
+  env.pending = false;
+  await env.app.queuePrompt(0);
+  r.keep = bodiesOf(env);
+  return r;
+});
+
+// ── J-X4 wave·hello ──
+await scenario("x4", async () => {
+  const other = "0123456789ab";
+  const env = await tab("x4", { server: (path) => (new URL(path, ORIGIN).searchParams.get("root") === KEY ? serve(path) : [409, R.errors["409"][4]]) });
+  const hello = env.hello();
+  const probe = new env.win.BroadcastChannel("bmk-dp");
+  const heard = [];
+  probe.onmessage = (ev) => heard.push(ev.data);
+  const a = await env.send(approveMsg(env, "run"));
+  const b = await env.send(approveMsg(env, "run", { rootKey: other }));
+  env.emit("execution_start", { prompt_id: "pid-1" });
+  env.emit("bmk.dp.wave", { node: "dp_run", root_key: KEY, remaining: 5 });
+  await sleep(20);
+  const r = { tab: env.tab, hello, toWin: a.got.slice(2), toOther: b.got.slice(2), heard: heard.slice(), toast: env.toasts.at(-1) };
+  env.emit("bmk.dp.wave", { node: "4", root_key: KEY, remaining: 3 });
+  await sleep(20);
+  r.graph = { win: a.got.length, heard: heard.length, toast: env.toasts.at(-1) };
+  env.emit("execution_success", { prompt_id: "pid-1" });
+  const nt = env.toasts.length;
+  env.emit("bmk.dp.wave", { node: "dp_run", root_key: KEY, remaining: 2 });
+  await sleep(20);
+  r.notMine = { win: a.got.length, heard: heard.length, toasts: env.toasts.length - nt };
+  return r;
+});
+
+await scenario("x4u", async () => {  // app.queuePrompt 가 함수가 아니면(프론트 제출 경로가 바뀜) submit unsupported
+  const env = await tab("x4u", { before: (app) => { delete app.queuePrompt; } });
+  return { hello: env.hello() };
+});
+
+await scenario("x4r", async () => {  // 재굴림 템플릿 실행의 wave(Run 노드 키가 같은 dp_run) → 사전 승인분 문구, Run 은 'Studio 에서 이어서 승인'
+  const env = await tab("x4r");
+  const ids = [];
+  for (const stage of ["reroll", "run"]) ids.push(finalOf((await env.send(approveMsg(env, stage))).got)?.prompt_id);
+  const toasts = [];
+  for (const pid of ids) {
+    env.emit("execution_start", { prompt_id: pid });
+    env.emit("bmk.dp.wave", { node: "dp_run", root_key: KEY, remaining: 3 });
+    toasts.push(env.toasts.at(-1));
+    env.emit("execution_success", { prompt_id: pid });
+  }
+  return { ids, toasts };
+});
+
+await scenario("xrr", async () => {  // r3-02 재굴림 승인이 탭에서 안 됨 → 탭 토스트의 할 일 '(잠시 뒤·Studio 에서) 다시 승인'이 R 재누름(+1 사전 승인)으로 읽히지 않게 빼거나
+  // Studio 머리줄 'ComfyUI 큐'로 + 사전 승인분이 예약된 채 남는다는 안내(Studio refusal()·paidResult 와 같게). Studio 로 가는 error 는 그대로, Run 은 그대로
+  const env = await tab("xrr", { after: (app, api, e) => {
+    const orig = app.queuePrompt;
+    app.queuePrompt = async function (...args) {
+      return e.deno ? { prompt_id: null, deno_ideogram_director: "preflight_waiting" } : orig.apply(this, args);
+    };
+  } });
+  const qs = (env.app.extensionManager.queueSettings = { mode: "disabled", batchCount: 1 });
+  const one = async (stage = "reroll") => ({ final: finalOf((await env.send(approveMsg(env, stage))).got), toast: env.toasts.at(-1) });
+  const res = { tab: env.tab };
+  env.app.processingQueue = true;
+  res.busy = await one();
+  res.busyRun = await one("run");
+  env.app.processingQueue = false;
+  qs.mode = "change";
+  res.autoQueue = await one();
+  qs.mode = "disabled";
+  env.noAuth = true;
+  res.noAuth = await one();
+  env.noAuth = false;
+  env.g2pThrow = true;
+  res.g2p = await one();
+  env.g2pThrow = false;
+  env.deno = true;
+  res.deno = await one();
+  env.deno = false;
+  env.fault = () => new TypeError("Failed to fetch");
+  res.unknown = await one();
+  env.fault = null;
+  // 토큰을 얻는 사이 쌓인 사용자 항목이 던져 우리 항목이 남음(x3L) — 할 일 뒤에 ' — 남은 승인 항목은 큐에서 뺌'이 붙어도 바꿈
+  env.tokenMs = 30;
+  const src = env.src();
+  env.post(approveMsg(env, "reroll"), src);
+  await until(() => env.app.processingQueue);
+  env.g2pThrow = 1;
+  await env.app.queuePrompt(0, 1);
+  await until(() => !!finalOf(src.got));
+  res.left = { final: finalOf(src.got), toast: env.toasts.at(-1) };
+  res.bodies = env.bodies.length;
+  return res;
+});
+
+// ── 프론트 자동 큐(1.53 Run 단추 모드·옛 메뉴 Auto Queue)가 켜져 있으면 받을 때 busy(서버·큐 0) — 템플릿 실행 뒤 프론트가 사용자 그래프 전체를
+// 무장 없이 토큰과 함께 다시 큐하므로. instant-idle(멈춤)·disabled 는 정상, 서버를 기다리는 사이 켜지면 무장 직전 busy, hello busy 는 그대로 ──
+await scenario("xaq", async () => {
+  const env = await tab("xaq");
+  const qs = (env.app.extensionManager.queueSettings = { mode: "disabled", batchCount: 1 });
+  const res = { tab: env.tab, modes: {} };
+  for (const mode of ["change", "instant-running", "instant-idle", "disabled"]) {
+    qs.mode = mode;
+    res.modes[mode] = { got: msgs(await env.send(approveMsg(env, "run"))), busy: env.hello()?.busy };
+    qs.mode = "disabled";
+  }
+  env.app.ui = { autoQueueEnabled: true };
+  res.legacy = msgs(await env.send(approveMsg(env, "reroll")));
+  env.app.ui = { autoQueueEnabled: false };
+  env.server = (path) => { qs.mode = "change"; return serve(path); };
+  res.late = msgs(await env.send(approveMsg(env, "draft")));
+  qs.mode = "disabled";
+  Object.assign(res, { gets: count(env, "GET"), queued: count(env, "queue"), bodies: bodiesOf(env).map((b) => b.targets), toast: env.toasts.at(-1) });
+  return res;
+});
+
+console.log(JSON.stringify(out));
+"""
+
+
+def _paid_js_tab():
+    """S3b U1: J-X1–X4 — 탭 확장(js/bmk_design_patch.js)의 승인 메시지·서버 템플릿 검사·바꿔치기·무장 중 다른 제출 막기·wave 전달·hello ext 3."""
+    section("S3b paid_js_tab — 탭 확장 Studio 승인 J-X1–X4(node + 가짜 window·채널·app·api, 정본 messages·routes)")
+    ext = (PKG / "js" / "bmk_design_patch.js").read_text(encoding="utf-8")
+    code = re.sub(r"//[^\n]*", "", ext)
+    sa = _layout_js_fn(code, "studioApprove", "")
+    ws = _layout_js_fn(code, "watchSubmits", "")
+    order = [sa.find(s) for s in ('reply({ type: "bmk-dp-ack"', "api.fetchApi(", "templateFault(t, d)", "(studioSubmit = {",
+                                  "app.queuePrompt(0, 1, { queueNodeIds: sub.targets });", "await call;", "studioSubmit = null;", "if (!sub.used)")]
+    check(-1 not in order and order == sorted(order) and "d.prompt" not in sa and code.count("app.queuePrompt(0, 1,") == 2,
+          "studioApprove 순서: ack → 서버 GET → 템플릿 검사 → 무장 → app.queuePrompt(await) → finally 무장 풀기 → used 판정, 메시지의 prompt 는 읽지 않음, "
+          "app.queuePrompt 를 부르는 곳은 queueOnly·studioApprove 둘")
+    check(ws.rstrip().endswith("        partialRun = targets?.length ? partialRunIds(data?.output ?? {}, targets) : null;\n"
+                               "        return submit.apply(this, arguments);\n    };\n    submitHooked = true;")
+          and "args[1] = { ...data, output: s.output };" in ws and "watchSubmits();\n    }," in code,
+          "watchSubmits: 무장 중이 아니면 S3a 와 같은 두 줄(바이트 같게), 무장 중 바꿔치기는 새 객체 {...data, output}, setup 끝에서 설치(지금 자리)")
+    node = shutil.which("node")
+    if not node:
+        skip("node 없음 → J-X1–X4 생략")
+        return
+    api = _pl_api()
+    M, R = api["messages"], api["routes"]["GET /pipeline/prompt"]
+    out = OUT_ROOT / "paid_js_tab"
+    shutil.rmtree(out, ignore_errors=True)
+    out.mkdir(parents=True)
+    esrc, n_imp = re.subn(r'^import \{ (app|api) \} from "\.\./\.\./scripts/(app|api)\.js";\r?\n', "", ext, flags=re.M)
+    check(n_imp == 2, f"탭 확장 import 두 줄(app·api)만 바꿈 ({n_imp})")
+    (out / "ext.mjs").write_text("const { app, api } = globalThis.__bmk;\n" + esrc, encoding="utf-8")
+    (out / "in.json").write_text(json.dumps({"api": api, "extMjs": str(out / "ext.mjs")}, ensure_ascii=False), encoding="utf-8")
+    (out / "harness.mjs").write_text(_PAID_TAB_JS_HARNESS, encoding="utf-8")
+    try:
+        r = subprocess.run([node, str(out / "harness.mjs"), str(out / "in.json")], capture_output=True, text=True, encoding="utf-8", timeout=180)
+    except subprocess.TimeoutExpired:
+        check(False, "node 하네스가 180초 안에 끝나지 않음(승인에 답하지 않는 회귀 — send 마다 until 대기가 쌓임)")
+        return
+    if r.returncode != 0 or not r.stdout.strip():
+        check(False, f"node 하네스 실패({r.returncode}): {r.stderr.strip()[-800:]}")
+        return
+    res = json.loads(r.stdout.strip().splitlines()[-1])
+    for k, v in res.items():
+        if isinstance(v, dict) and "error" in v and len(v) == 1:
+            check(False, f"J-X 시나리오 {k} 예외: {v['error']}")
+    check(set(res) == {"x1", "x1dr", "xt", "xe", "xb", "xbusy", "xdup", "xch", "x2a", "x2b", "x2k", "x2g", "x2h", "x2c", "x2d", "x2e", "x2f", "x2n",
+                       "x2w", "x2v", "x2u", "x2z", "x3", "x3L", "x3La", "x3i", "x3u", "x3d", "x4", "x4u", "x4r", "xrr", "xaq"},
+          f"J-X 시나리오 서른셋 {sorted(res)}")
+    origin = "http://127.0.0.1:8189"
+    tpl = R["alt"]["run"]["prompt"]
+    user3 = ["3", "4", "7"]
+    ua = ["deadbeef0000"] * 2  # 하네스 USER_APPROVE — 사용자 Draft 3·Run 4 approve 보초
+    # 무장 중 막은 까닭별 문구 — 다시 넣을 것은 끼어든 사용자 큐(user)뿐: 반복(repeat)은 '다시 넣지 마세요', 우리 제출의 대상이 바뀜(changed)은 '다시 승인해도 같음'
+    blk = {"user": "Studio 승인을 제출하는 중이라 이 큐 제출을 막았습니다(과금 없음) — 다시 큐에 넣으세요",
+           "repeat": "Studio 승인 제출을 다른 확장(큐 반복 노드 — Prompt Pack·Prompt Multi·XY Plot 등)이 되풀이해 두 번째부터 막았습니다(과금 없음) — 다시 큐에 넣지 마세요",
+           "changed": "Studio 승인 제출이 다른 확장 감싸개를 지나며 대상이 바뀌어(셋째 인자를 버림 등 — 사용자 그래프 전체 실행이 됨) 막았습니다(과금 없음) — 다시 승인해도 같음",
+           # r3-01 우리 항목을 아직 모를 때(원래 함수를 미뤄 부르며 셋째 인자를 버린 감싸개면 우리 항목도 사용자 큐와 똑같음) — 누른 사람만 다시 넣게
+           "unsure": "Studio 승인을 제출하는 중이라 이 큐 제출을 막았습니다(과금 없음) — 직접 누른 큐였다면 다시 큐에 넣으세요(누르지 않았다면 다른 확장 감싸개가 "
+                     "Studio 승인 제출의 대상을 바꾼 것 — 다시 승인해도 같음)"}
+    blocked, blocked_toast = f"error: BMK Design Patch: {blk['user']}", f"warn: {blk['user']}"
+    unsure_dlg, unsure_toast = f"error: BMK Design Patch: {blk['unsure']}", f"warn: {blk['unsure']}"
+    # not_submitted = '제출되지 않음(과금 없음) — <까닭>' — 다른 확장 알림의 계속 단추로 이끌지 않음(r2-02: 그 단추는 열린 그래프를 실행)
+    not_sent = ("제출되지 않음(과금 없음) — ComfyUI 탭이 제출하지 않고 돌아옴 — 다른 확장이 제출을 멈췄거나(Pixaroma 큐 반복 노드의 빈 목록·XY Plot 확인 취소·"
+                "실행 중, deno Ideogram 사전 점검 등) 로그인·작업공간 전환 오류: 다른 확장 알림의 계속·적용 단추는 Studio 승인을 잇지 않고 열린 그래프를 실행함 — "
+                "승인은 Studio 에서 다시")
+    not_changed = "제출되지 않음(과금 없음) — 다른 확장 감싸개가 승인 제출의 대상을 바꿈(셋째 인자를 버림 등 — 사용자 그래프 전체 실행이 되어 막음)"
+    # r2-12 app.queuePrompt 가 던짐(graphToPrompt 실패 등) — 원시 오류 + 승인 제출도 열린 워크플로를 거친다는 것과 할 일
+    not_g2p = ("제출되지 않음(과금 없음) — ComfyUI 탭의 큐 제출이 오류로 끝남(graphToPrompt 실패) — 승인 제출도 그 탭에 열린 워크플로를 프롬프트로 바꾼 뒤 "
+               "내용만 바꿔치기하므로 그 워크플로가 변환에 실패하면(서브그래프·bypass 된 Get 노드 등) 다시 승인해도 같음: 그 탭에서 다른 워크플로로 바꾼 뒤 다시 승인")
+    aq_why = ("ComfyUI 탭의 자동 큐({})가 켜져 있음 — 승인 제출 뒤 사용자 그래프 전체가 토큰과 함께 자동으로 큐될 수 있어 받지 않음: "
+              "ComfyUI 탭의 Run 단추 모드를 Run 으로 바꾼 뒤 다시 승인")
+
+    def shape(key, m):
+        # 정본 messages[key] 의 같은 경우 예시와 대조(_doc 구조.messages — approved 는 ok·reason 이 같은 예시)
+        sp = M[key]
+        ex = next((e for e in sp["examples"] if key != "bmk-dp-approved" or (e["ok"], e.get("reason")) == (m.get("ok"), m.get("reason"))), None)
+        return _pl_shape(ex, m, sp) if ex is not None else [f"{key}: 같은 경우의 예시 없음"]
+
+    def approved(tab, m, stage, **kw):
+        # 그 요청(id)의 approved 기대값 — m 은 실제 메시지(id 를 맞춰 봄)
+        return {"type": "bmk-dp-approved", "id": (m or {}).get("id"), "tab": tab, "stage": stage, **kw}
+
+    x1 = res.get("x1") or {}
+    if "got" in x1:
+        tab, mid = x1["tab"], x1["msg"]["id"]
+        got = x1["got"]
+        check([g[0] for g in got] == [{"type": "bmk-dp-ack", "id": mid, "tab": tab},
+                                      {"type": "bmk-dp-approved", "id": mid, "tab": tab, "stage": "run", "ok": True, "prompt_id": "pid-1"}]
+              and all(g[1] == origin for g in got) and shape("bmk-dp-ack", got[0][0]) == [] and shape("bmk-dp-approved", got[1][0]) == [],
+              f"J-X1 승인(window 길) → ack → approved ok(prompt_id) — 보낸 창(ev.source)으로 같은 출처, 정본 messages 모양 {got}")
+        lg = x1["log"]
+        get = "GET /bmk/design_patch/pipeline/prompt?root=fe410d7f025d&stage=run&approve=3f9a1c2b7d10&only=001_38a818%2C002_d98f99%2C003_2f8f50"
+        pos = [lg.index(w) if w in lg else -1 for w in ("reply bmk-dp-ack", get, "queue dp_review", "submit", "reply bmk-dp-approved")]
+        check(-1 not in pos and pos == sorted(pos), f"J-X1 순서: ack → 서버 GET(인자 encodeURIComponent) → app.queuePrompt(대상 dp_review) → 제출 → approved {lg}")
+        b = x1.get("body") or {}  # 제출이 없으면 node 쪽 JSON 에서 body·self 등 키가 빠진다
+        ed = b.get("extra_data") or {}
+        check(b.get("prompt") == tpl and x1["msg"]["prompt"] != tpl and b.get("partial_execution_targets") == ["dp_review"]
+              and b.get("client_id") == "client-A" and x1.get("self") == "api",
+              "J-X1 최종 본문 prompt = 서버 템플릿(정본 alt.run — 메시지에 실린 prompt 는 쓰지 않음)·부분 실행 대상 dp_review·this = api")
+        check(ed.get("auth_token_comfy_org") == "TOKEN-A" and ed.get("api_key_comfy_org") == "KEY-A" and x1["after"]["token"] is False,
+              f"J-X1 토큰 자리 = 가짜 프론트가 app.queuePrompt 안에서 넣은 값(제출 뒤 프론트가 지움) {ed}")
+        check(x1.get("sameWorkflow") is True and x1.get("sameData") is False and ed.get("extra_pnginfo") == {"workflow": {"nodes": [3, 4, 7]}}
+              and x1["g2pKeys"] == [user3, user3],
+              "J-X1 바꿔치기 = 새 객체 {...data, output} — workflow 는 사용자 그래프 객체 그대로, graphToPrompt 결과는 건드리지 않음")
+        af = x1["after"]
+        check(af["adopt"] == "001_38a818" and af["seed"] == 101 and x1["dialogs"] == []
+              and af["toasts"] == ["success: Studio 승인으로 Run 큐 — Run 승인 4건 ≈ $2.40–3.16"],
+              f"J-X1 사용자 그래프: Spec Draft adopt 남음(partialRun 은 바꾼 본문으로 셈)·시드 afterQueued 한 번, 토스트 'Studio 승인으로 Run 큐 — <what>' {af}")
+        hs = (x1["atAck"] or {}, x1.get("inSubmit") or {}, af["hello"] or {})
+        check([(h.get("ext"), h.get("submit"), h.get("busy")) for h in hs] == [(3, "ok", True), (3, "ok", True), (3, "ok", False)]
+              and shape("bmk-dp-hello_reply", af["hello"]) == [],
+              f"J-X4 hello ext 3·submit ok, busy = Studio 승인 처리 중(ack 뒤 큐 전)·제출 중 true, 끝나면 false {hs}")
+        check(x1["next"] == {"keys": user3, "sameData": True, "sameOptions": True, "targets": ["dp_review"], "approve": ua},
+              f"J-X1 무장은 finally 에서 풀림 — 다음 사용자 제출(대상이 같아도)은 받은 data·options 그대로 {x1['next']}")
+        check(af["approve"] == ua and x1["g2pApprove"] == [ua, ua],
+              f"J-X1 P3: 사용자 Draft·Run approve(보초 해시)는 Studio 승인 중·뒤 그대로(탭이 승인 해시를 쓰지도 비우지도 않음 — 1회용·기존 경로 그대로), "
+              f"승인 제출·다음 사용자 제출의 graphToPrompt 도 그 값 {af['approve']} {x1['g2pApprove']}")
+    dr = res.get("x1dr") or {}
+    if "draft" in dr:
+        d, rr = dr["draft"], dr["reroll"]
+        check(d.get("get") == "/bmk/design_patch/pipeline/prompt?root=fe410d7f025d&stage=draft&approve=b21c09e4f7a3&only=001_38a818%2C002_d98f99%2C003_2f8f50"
+              and d.get("prompt") == R["alt"]["draft"]["prompt"] and d.get("targets") == ["dp_draft"] and d.get("token") == "TOKEN-A"
+              and len(d["got"]) == 2 and d["got"][1:] == [approved(dr["tab"], d["got"][0], "draft", ok=True, prompt_id="pid-1")]
+              and d.get("toast") == "success: Studio 승인으로 Spec Draft 큐 — 초안 승인 1크롭 ≈ 27(최대 47) 크레딧",
+              f"J-X1 draft: GET approve·only → 템플릿 alt.draft·대상 dp_draft {d.get('get')} {d['got']}")
+        check(rr.get("get") == "/bmk/design_patch/pipeline/prompt?root=fe410d7f025d&stage=reroll" and rr.get("prompt") == R["alt"]["reroll"]["prompt"]
+              and rr.get("targets") == ["dp_review"] and len(rr["got"]) == 2
+              and rr["got"][1:] == [approved(dr["tab"], rr["got"][0], "reroll", ok=True, prompt_id="pid-2")]
+              and rr.get("toast") == "success: Studio 승인으로 재굴림 큐 — " + "x" * 200,
+              f"J-X1 reroll: approve·only 없이 GET → 템플릿 alt.reroll(dp_run approve \"\"), what 은 200자까지만 표시 {rr.get('get')}")
+        check(d.get("approve") == ua and rr.get("approve") == ua,
+              f"J-X1 P3: draft·reroll 승인 뒤에도 사용자 Draft·Run approve(보초 해시) 그대로 {d.get('approve')} {rr.get('approve')}")
+    want_t = {"key": "규칙 밖 노드 5", "keyDigit": "규칙 밖 노드 dp_run2", "keyUpper": "규칙 밖 노드 dp_Analyze", "class": "규칙 밖 노드 dp_analyze",
+              "classBmk": "규칙 밖 노드 dp_analyze", "classMissing": "규칙 밖 노드 dp_analyze", "approve2": "dp_rerun.inputs.approve 가 비지 않음",
+              "runTwo": "Run 템플릿에 dp_runb(BMKDesignPatchRun)", "draftTwo": "Spec Draft 템플릿에 dp_draftb(BMKDesignPatchSpecDraft)",
+              "approveEmpty": "dp_run.inputs.approve ≠ 승인 해시", "approveOther": "dp_run.inputs.approve ≠ 승인 해시",
+              "rerollHash": 'dp_run.inputs.approve ≠ ""', "draftInRun": "Run 템플릿에 dp_draft(BMKDesignPatchSpecDraft)",
+              "runInDraft": "Spec Draft 템플릿에 dp_run(BMKDesignPatchRun)", "noRun": "dp_run(BMKDesignPatchRun) 없음",
+              "adopt": 'dp_draft.inputs.adopt ≠ ""', "adoptMissing": 'dp_draft.inputs.adopt ≠ ""',
+              "keepLoaded": "dp_draft.inputs.keep_loaded ≠ false", "keepMissing": "dp_draft.inputs.keep_loaded ≠ false",
+              "keepStr": "dp_draft.inputs.keep_loaded ≠ false", "targets": "targets ≠ [dp_review]",
+              "targets2": "targets ≠ [dp_review]", "targetGone": "대상 노드 dp_review 없음", "hash": "응답 hash ≠ 승인 해시",
+              "only": "응답 only ≠ 요청 only", "stage": "응답 stage reroll ≠ run", "noPrompt": "prompt 없음"}
+    xt = res.get("xt") or {}
+    if "cases" in xt:
+        stage_of = {"rerollHash": "reroll", "runInDraft": "draft", "draftTwo": "draft", "adopt": "draft", "adoptMissing": "draft", "keepLoaded": "draft",
+                    "keepMissing": "draft", "keepStr": "draft"}
+        bad_t = {k: g for k, g in xt["cases"].items()
+                 if k not in want_t or not (len(g) == 2 and g[0]["type"] == "bmk-dp-ack" and shape("bmk-dp-approved", g[1]) == []
+                                            and g[1] == approved(xt["tab"], g[0], stage_of.get(k, "run"), ok=False, reason="template",
+                                                                 error=f"템플릿 검사 실패: {want_t[k]}"))}
+        check(not bad_t and set(xt["cases"]) == set(want_t) and xt["queued"] == 0 and xt["bodies"] == 0 and xt["gets"] == len(want_t)
+              and xt.get("approve") == ua,
+              f"J-X1 템플릿 검사 실패 표 {len(want_t)}종(노드 키(숫자·대문자·dp_ 뒤 숫자)·class(비 BMK·비 Design Patch BMK·없음)·approve 둘·같은 단계 유료 노드 둘·"
+              f"approve 빔/다름·reroll 에 hash·다른 단계 유료 노드·Run 없음·adopt(값·없음)·keep_loaded(true·없음·문자열)·대상 다름·대상 노드 없음·"
+              f"응답 hash/only/stage·prompt 없음) → template + 어긋난 항목, 큐·제출 0, 사용자 approve(보초) 그대로 {bad_t} q{xt['queued']} b{xt['bodies']} "
+              f"{xt.get('approve')}")
+    else:
+        check(False, f"xt 시나리오 결과 없음 {xt}")
+    xe = res.get("xe") or {}
+    if "e409" in xe:
+        bad_e = []
+        for e, m in zip(R["errors"]["409"], xe["e409"]):
+            want = approved(xe["tab"], m, "run", ok=False, reason=e["reason"], error=e["error"])
+            want.update({k: e[k] for k in ("hash", "pending") if (k, e["reason"]) in (("hash", "stale"), ("pending", "apply_needed"))})
+            if m != want or shape("bmk-dp-approved", m):
+                bad_e.append((e["reason"], m))
+        check(not bad_e and len(xe["e409"]) == len(R["errors"]["409"]) == 11,
+              f"J-X1 서버 409 11종 → approved reason·error 그대로(stale 은 hash, apply_needed 는 pending), 정본 approved 모양 {bad_e}")
+        http = {k: (xe[k] or {}).get("error") for k in ("e404", "e400", "noReason", "e502", "net")}
+        check(all((xe[k] or {}).get("reason") == "http" and shape("bmk-dp-approved", xe[k]) == [] for k in http)
+              and http == {"e404": f"템플릿 요청 실패(HTTP 404): {R['errors']['404'][0]['error']}",
+                           "e400": f"템플릿 요청 실패(HTTP 400): {R['errors']['400'][4]['error']}",
+                           "noReason": "템플릿 요청 실패(HTTP 409): 사유 없는 409", "e502": "템플릿 요청 실패(HTTP 502)",
+                           "net": "템플릿 요청 실패: Failed to fetch"},
+              f"J-X1 그 밖 HTTP 오류·reason 없는 409·JSON 아닌 응답·네트워크 = http(error 에 상태·문구) {http}")
+        check(xe["queued"] == 0 and xe["bodies"] == 0 and xe.get("toast") == "warn: Studio 승인(Run) 안 됨: 템플릿 요청 실패: Failed to fetch",
+              f"J-X1 서버가 거절하면 큐·제출 0, 실패마다 탭 토스트 {xe.get('toast')!r}")
+    xb = res.get("xb") or {}
+    if "bad" in xb:
+        want_b = {"stageApply": (None, "stage"), "stageMissing": (None, "stage"), "stageArray": (None, "stage"), "hashUpper": ("run", "hash"),
+                  "hashEmpty": ("draft", "hash"), "hashShort": ("run", "hash"), "onlyEmpty": ("run", "only"), "onlyNum": ("draft", "only"),
+                  "onlySurrogate": ("run", "only"), "onlyChar": ("draft", "only"),
+                  "rootUpper": ("run", "rootKey"), "rootMissing": ("run", "rootKey"), "rerollHash": ("reroll", "hash"),
+                  "rerollOnly": ("reroll", "only"), "rerollHashMissing": ("reroll", "hash"), "rerollOnlyMissing": ("reroll", "only")}
+        bad_b = {k: g for k, g in xb["bad"].items()
+                 if k not in want_b or not (len(g) == 1 and shape("bmk-dp-approved", g[0]) == []
+                                            and g[0] == approved(xb["tab"], g[0], want_b[k][0], ok=False, reason="bad_request",
+                                                                 error=f"승인 메시지 모양이 잘못됨: {want_b[k][1]}"))}
+        check(not bad_b and set(xb["bad"]) == set(want_b) and xb["gets"] == 0 and xb["queued"] == 0,
+              f"J-X1 모양 틀림 {len(want_b)}종(reroll 은 hash·only 가 \"\" 이어야 함 — 값·빠짐, only 는 crop_id·style 토큰 문자만 — 짝 없는 서로게이트가 "
+              f"ack 뒤 encodeURIComponent 에서 던져 답 없이 끝나지 않게 r2-11) → ack 없이 bad_request(틀린 필드 — stage 를 모르면 stage null), 서버·큐 0 {bad_b}")
+        check(xb["ignored"] == {"otherOrigin": 0, "otherTab": 0, "noTab": 0, "noId": 0, "numId": 0},
+              f"메시지 출처: 다른 출처·다른 tab·tab 없음·id 없음(문자열 아님)은 답 없이 무시 {xb['ignored']}")
+    xy = res.get("xbusy") or {}
+    if "first" in xy:
+        qb, sb, f, rc = xy["queueBusy"], xy["second"], xy["first"], xy["race"]
+        check(len(qb) == len(sb) == 1
+              and qb == [approved(xy["tab"], qb[0], "run", ok=False, reason="busy", error="ComfyUI 탭이 큐를 처리하는 중 — 잠시 뒤 다시 승인")]
+              and sb == [approved(xy["tab"], sb[0], "draft", ok=False, reason="busy", error="ComfyUI 탭이 다른 Studio 승인을 처리하는 중 — 잠시 뒤 다시 승인")]
+              and shape("bmk-dp-approved", sb[0]) == [],
+              f"busy: 탭이 큐 처리 중·다른 Studio 승인 처리 중이면 ack 없이 busy {qb} {sb}")
+        check([m["type"] for m in f] == ["bmk-dp-ack", "bmk-dp-approved"] and f[1].get("ok") is True and xy["gets"] == 1 and xy["bodies"] == 1
+              and (xy["helloMid"] or {}).get("busy") is True and (xy["helloAfter"] or {}).get("busy") is False,
+              f"busy: 처리 중이던 첫 승인은 그대로 끝남(서버·제출 한 번), 그동안 hello busy true {f}")
+        check([m["type"] for m in rc["got"]] == ["bmk-dp-ack", "bmk-dp-approved"] and rc["got"][1].get("reason") == "busy"
+              and rc["queued"] == 0 and rc["bodies"] == 0,
+              f"busy: 서버를 기다리는 사이 큐 처리가 시작되면 무장하지 않고 busy(지금 넣으면 무장이 풀린 뒤에 나감) {rc}")
+    xd = res.get("xdup") or {}
+    if "first" in xd:
+        f = xd["first"]
+        check(len(f) == 2 and f == [{"type": "bmk-dp-ack", "id": f[0].get("id"), "tab": xd["tab"]},
+                                    approved(xd["tab"], f[0], "run", ok=True, prompt_id="pid-1")]
+              and xd["mid"] == [] and xd["again"] == [] and xd["heard"] == [] and xd["gets"] == 1 and xd["queued"] == 1 and xd["bodies"] == 1,
+              f"같은 승인 id 를 다시 받음(처리 중 window·채널, 끝난 뒤 window·채널) → 답 없이 무시 — 서버·큐·제출·approved 한 번(승인 한 번 = 프롬프트 하나) {xd}")
+    xc = res.get("xch") or {}
+    if "got" in xc:
+        g = xc["got"]
+        check(len(g) == 3 and g[0] == {"type": "bmk-dp-ack", "id": g[0].get("id"), "tab": xc["tab"]}
+              and g[1] == approved(xc["tab"], g[0], "run", ok=True, prompt_id="pid-1")
+              and g[2] == {"type": "bmk-dp-hello", "id": "hc", "tab": xc["tab"], "ext": 3, "submit": "ok", "busy": False}
+              and xc["bodies"] == 1 and xc["prompt"] == tpl,
+              f"채널 길(BroadcastChannel bmk-dp): 승인 → ack·approved 가 채널로, 다른 tab 의 승인은 답 없음, hello 도 채널로 {g}")
+    a2 = res.get("x2a") or {}
+    if "bodies" in a2:
+        check(a2["userFull"] is False and a2["userPartial"] is False and a2["bodies"] == [{"keys": list(tpl), "targets": ["dp_review"]}]
+              and a2["dialogs"] == [blocked, blocked] and (a2["final"] or {}).get("ok") is True and a2["seed"] == 101
+              and a2["g2pKeys"] == [user3] * 3 and a2["toasts"] == [blocked_toast, "success: Studio 승인으로 Run 큐 — Run 승인 4건 ≈ $2.40–3.16"]
+              and a2.get("g2pApprove") == [ua] * 3 and a2.get("approve") == ua,
+              f"J-X2 처리 중 끼어든 사용자 큐(전체·부분 — 뒤에서부터 꺼내 먼저 나옴)는 막힘(보내지 않음·바뀌지 않음 — 우리 항목이 아직 큐에 있어 '다시 큐에 넣으세요', "
+              f"대화상자는 제출마다·탭 토스트는 까닭마다 한 번), 템플릿은 한 번, 사용자 approve(보초)는 막힌 제출 본문·끝난 뒤 모두 그대로 {a2}")
+    else:
+        check(False, f"x2a 시나리오 결과 없음 {a2}")
+    b2 = res.get("x2b") or {}
+    if "final" in b2:
+        check(b2["final"] == approved((b2["final"] or {}).get("tab"), b2["final"], "run", ok=False, reason="not_submitted", error=not_changed)
+              and b2["bodies"] == 0 and b2["dialogs"] == [f"error: BMK Design Patch: {blk['changed']}"] and (b2["hello"] or {}).get("submit") == "ok",
+              f"J-X2 셋째 인자를 버리는 app.queuePrompt 감싸개 → 우리 항목이 전체 실행 → 막음(보낸 것 0 — '다시 승인해도 같음') → not_submitted(대상이 바뀜) {b2}")
+        mx = b2.get("mixed") or {}
+        check(mx.get("final") == approved(b2["final"].get("tab"), mx.get("final"), "run", ok=False, reason="not_submitted", error=not_changed)
+              and mx.get("bodies") == 0 and mx.get("dialogs") == [blocked, f"error: BMK Design Patch: {blk['changed']}"],
+              f"J-X2 같은 감싸개 + 토큰을 얻는 사이 사용자 Queue → 먼저 꺼낸 사용자 항목은 '다시 큐에 넣으세요'(셋째 인자가 없어도 우리 호출이 쌓은 항목이 "
+              f"아직 큐에 있음), 우리 항목은 '대상이 바뀜' {mx}")
+    else:
+        check(False, f"x2b 시나리오 결과 없음 {b2}")
+    k2 = res.get("x2k") or {}
+    ch_dlg = f"error: BMK Design Patch: {blk['changed']}"
+    check(k2.get("popped") is True and k2.get("user") is False
+          and k2.get("final") == approved(k2.get("tab"), k2.get("final"), "run", ok=False, reason="not_submitted", error=not_changed)
+          and k2.get("bodies") == 0 and k2.get("dialogs") == [ch_dlg, blocked]
+          and k2.get("toasts") == [f"warn: {blk['changed']}", blocked_toast, f"warn: Studio 승인(Run) 안 됨: {not_changed}"],
+          f"J-X2 같은 감싸개 + 우리 항목을 꺼내 변환하는 사이 사용자 Queue → 우리 항목은 '대상이 바뀜', 같은 처리 루프에서 뒤에 꺼낸 사용자 항목은 "
+          f"'다시 큐에 넣으세요'(대화상자·탭 토스트 — 우리 항목은 한 번만 꺼내지므로 '대상이 바뀜'도 한 번, r2-08) {k2}")
+    g2 = res.get("x2g") or {}
+    if "final" in g2:
+        check(g2["final"] == approved(g2["tab"], g2["final"], "run", ok=False, reason="not_submitted", error=not_changed)
+              and g2["bodies"] == 0 and g2["dialogs"] == [f"error: BMK Design Patch: {blk['changed']}"] and g2["log"] == ["queue dp_review,dp_run"],
+              f"J-X2 대상을 덧붙이는 app.queuePrompt 감싸개 → [dp_review, dp_run](대상이 길이·순서까지 같지 않음) → 막음(보낸 것 0) → not_submitted {g2}")
+    else:
+        check(False, f"x2g 시나리오 결과 없음 {g2}")
+    h2 = res.get("x2h") or {}
+    if "final" in h2:
+        check((h2["final"] or {}).get("ok") is True and h2["bodies"] == [list(tpl)] and h2["log"] == ["queue dp_review"] and h2["dialogs"] == []
+              and h2["toasts"] == ["warn: 보드 요청: Studio 승인을 제출하는 중입니다. 잠시 뒤 다시 큐에 넣으세요.",
+                                   "success: Studio 승인으로 Run 큐 — Run 승인 4건 ≈ $2.40–3.16"],
+              f"J-X2 무장 중 끼어든 보드 큐(queueOnly)는 넣지 않고 경고 — '넣었습니다' 토스트 없음(넣었으면 감싸개에 막혀 나가지 않음), 템플릿만 {h2}")
+    c2 = res.get("x2c") or {}
+    if "final" in c2:
+        check((c2["final"] or {}).get("ok") is True and c2["n"] == 1 and c2.get("prompt") == tpl and c2.get("sameWorkflow") is True
+              and c2.get("workflow") == {"nodes": [3, 4, 7], "widget_idx_map": {"7": {"seed": 0}}} and c2.get("token") == "TOKEN-A",
+              f"J-X2 workflow 를 만지는 안쪽 api 감싸개(inspire 식) → 정상 제출(템플릿·사용자 workflow 객체·토큰) {c2.get('workflow')}")
+    d2 = res.get("x2d") or {}
+    if "final" in d2:
+        rp = f"error: BMK Design Patch: {blk['repeat']}"
+        check((d2["final"] or {}).get("prompt_id") == "pid-1" and d2["bodies"] == [list(tpl)] and d2["dialogs"] == [rp, rp] and d2["queued"] == 3
+              and d2["toasts"] == [f"warn: {blk['repeat']}", "success: Studio 승인으로 Run 큐 — Run 승인 4건 ≈ $2.40–3.16"],
+              f"J-X2 Prompt Pack 식 app.queuePrompt 3번 → 템플릿 1번, 2·3번째는 막힘(무장은 app.queuePrompt 가 돌아오고 프론트 큐 처리가 끝날 때까지) — "
+              f"반복 문구('다시 큐에 넣지 마세요' — 다시 넣으면 사용자 그래프가 돎), 대화상자는 제출마다·탭 토스트는 한 번 {d2}")
+        check(d2["token"] is False,
+              "J-X2 막힌 제출(감싸개가 던짐 — 프론트는 성공한 제출 뒤에만 토큰을 지움) 뒤 api.authToken·apiKey 가 남지 않음(무장을 풀 때 지움 — r1-17)")
+    else:
+        check(False, f"x2d 시나리오 결과 없음 {d2}")
+    e2 = res.get("x2e") or {}
+    if "final" in e2:
+        check((e2["final"] or {}).get("ok") is True and e2["bodies"] == [list(tpl)] and e2["outerSaw"] == [user3],
+              f"J-X2 deno 식 setup 바깥 api 감싸개 → 정상(바깥은 사용자 본문을 봄 — §10.7) {e2}")
+    f2 = res.get("x2f") or {}
+    if "final" in f2:
+        check((f2["final"] or {}).get("ok") is True and f2["thisSeen"] == [["outer", "api"], ["rg", "app"], ["ps", "app"]]
+              and f2.get("self") == "api" and f2["keys"] == list(tpl) and f2["token"] == ["TOKEN-A", "KEY-A"],
+              f"J-X2 this: 바깥이 app 으로 부르면 그대로 안쪽에 넘김(rgthree 식 → prompt_service 식이 api 로 다시 묶어 토큰 실림) {f2}")
+    n2 = res.get("x2n") or {}
+    if "drop" in n2:
+        dp, kp = n2["drop"], n2["keep"]
+        check(dp["final"] == approved(dp["tab"], dp["final"], "run", ok=False, reason="not_submitted", error=not_changed)
+              and dp["bodies"] == [] and dp["dialogs"] == [f"error: BMK Design Patch: {blk['changed']}"],
+              f"J-X2 기다리지 않고 셋째 인자를 버리는 app.queuePrompt 감싸개 → 우리 호출이 먼저 돌아와도 프론트 처리가 끝날 때까지 무장 — 늦게 꺼낸 "
+              f"전체 실행은 막힘(사용자 그래프 + 토큰이 나가지 않음) → not_submitted {dp}")
+        check(kp["final"] == approved(kp["tab"], kp["final"], "run", ok=True, prompt_id="pid-1")
+              and kp["bodies"] == [{"keys": list(tpl), "targets": ["dp_review"], "token": "TOKEN-A"}] and kp["dialogs"] == [],
+              f"J-X2 기다리지 않고 인자는 넘기는 감싸개 → 늦게 꺼낸 우리 항목도 무장 중이라 바꿔치기(사용자 그래프 + dp_review 로 나가지 않음) {kp}")
+    else:
+        check(False, f"x2n 시나리오 결과 없음 {n2}")
+    w2 = res.get("x2w") or {}
+    if "final" in w2:
+        check(w2["final"] == approved(w2["tab"], w2["final"], "run", ok=True, prompt_id="pid-1")
+              and w2["bodies"] == [{"keys": list(tpl), "targets": ["dp_review"], "token": "TOKEN-A"}] and w2["dialogs"] == [blocked]
+              and w2["log"] == ["queue ", "queue dp_review"]
+              and w2["toasts"] == [blocked_toast, "success: Studio 승인으로 Run 큐 — Run 승인 4건 ≈ $2.40–3.16"],
+              f"J-X2 사용자 Queue 가 바깥 감싸개(await) 안에서 먼저 처리를 시작 → 우리 호출은 false 로 돌아오지만 그 처리가 끝날 때까지 무장 — 우리 항목은 "
+              f"바꿔치기(LIFO 로 먼저), 뒤의 사용자 전체 실행은 막힘(다시 큐) {w2}")
+    else:
+        check(False, f"x2w 시나리오 결과 없음 {w2}")
+    v2 = res.get("x2v") or {}
+    check(v2.get("final") == approved(v2.get("tab"), v2.get("final"), "run", ok=True, prompt_id="pid-1")
+          and v2.get("bodies") == [{"keys": list(tpl), "targets": ["dp_review"], "token": "TOKEN-A"}] and v2.get("dialogs") == [unsure_dlg]
+          and v2.get("toasts") == [unsure_toast, "success: Studio 승인으로 Run 큐 — Run 승인 4건 ≈ $2.40–3.16"],
+          f"J-X2 원래 함수를 미뤄 부르는 app.queuePrompt 감싸개(deno Ideogram 사전 점검 식) → 무장 중 먼저 꺼낸 사용자 Run 은 막되 우리 항목을 아직 모를 때라 "
+          f"'직접 누른 큐였다면 다시 큐에 넣으세요'('대상이 바뀜'으로 단정하지 않음 — 미뤄 쌓으며 셋째 인자를 버린 우리 항목과 구별 못 함, r3-01), 우리 항목은 그 뒤 "
+          f"바꿔치기 {v2}")
+    u2 = res.get("x2u") or {}
+    not_unsure = ("제출되지 않음(과금 없음) — 무장 중 막은 큐 제출이 승인 제출인지 모름 — 다른 확장 감싸개가 원래 함수를 미뤄 부르며 셋째 인자를 버렸으면 "
+                  "승인 제출의 대상이 바뀐 것(사용자 그래프 전체 실행이 되어 막음 — 다시 승인해도 같음)")
+    check(u2.get("final") == approved(u2.get("tab"), u2.get("final"), "run", ok=False, reason="not_submitted", error=not_unsure)
+          and u2.get("bodies") == 0 and u2.get("left") == 0 and u2.get("dialogs") == [unsure_dlg]
+          and u2.get("toasts") == [unsure_toast, f"warn: Studio 승인(Run) 안 됨: {not_unsure}"],
+          f"J-X2 r3-01 원래 함수를 미뤄 부르며 셋째 인자도 버리는 감싸개(끼어든 사용자 큐 없음) → 우리 항목이 사용자 전체 실행과 똑같이 보임 → 막음(보낸 것 0), "
+          f"누르지 않은 사용자에게 '다시 큐에 넣으세요'로 단정하지 않음(대화상자·탭 토스트), not_submitted 도 그 까닭 {u2}")
+    z2 = res.get("x2z") or {}
+    check(z2.get("user") is True and z2.get("final") == approved(z2.get("tab"), z2.get("final"), "run", ok=True, prompt_id="pid-1")
+          and z2.get("bodies") == [{"keys": list(tpl), "targets": ["dp_review"], "token": "TOKEN-A"}, {"keys": user3, "targets": ["7"], "token": "TOKEN-A"}]
+          and z2.get("dialogs") == [] and z2.get("toasts") == ["success: Studio 승인으로 Run 큐 — Run 승인 4건 ≈ $2.40–3.16"],
+          f"J-X2 r3-06 기다리지 않는 감싸개 → 처리 루프 끝까지 무장(우리 항목 바꿔치기), 그 루프가 끝난 바로 다음 작업에서 누른 사용자 Queue 는 새 처리라 무장 "
+          f"밖 — 그대로 나감(무장 끝을 타이머로 살피지 않고 processingQueue = false 대입 순간에 품) {z2}")
+    x3 = res.get("x3") or {}
+    if "noAuth" in x3:
+        same = {"keys": user3, "sameData": True, "sameOptions": True, "approve": ua}
+        na, rj, gp = x3["noAuth"], x3["reject"], x3["g2p"]
+        check([na.get("approve"), rj.get("approve"), gp.get("approve")] == [ua] * 3,
+              f"J-X3 P3: 닫힌 실패(로그인 오류·거절·graphToPrompt 실패) 뒤 사용자 Draft·Run approve(보초 해시) 그대로, 다음 사용자 제출 본문도 그 값 "
+              f"{[na.get('approve'), rj.get('approve'), gp.get('approve')]}")
+        check(na["final"] == approved(x3["tab"], na["final"], "run", ok=False, reason="not_submitted", error=not_sent) and na["bodies"] == 0
+              and na["dialogs"] == ["userNotAuthenticated"] and x3["noAuthNext"] == same and shape("bmk-dp-approved", na["final"]) == [],
+              f"J-X3 프론트가 api.queuePrompt 를 안 부름(로그인 오류) → used false → not_submitted, 다음 사용자 제출은 그대로 {na} {x3['noAuthNext']}")
+        check(rj["final"] == approved(x3["tab"], rj["final"], "run", ok=False, reason="rejected",
+                                      error="ComfyUI 가 거절함(prompt_id 없음): Prompt outputs failed validation: dp_review")
+              and rj["keys"] == list(tpl) and rj["bodies"] == 2 and x3["rejectNext"] == same and shape("bmk-dp-approved", rj["final"]) == []
+              and rj["token"] is False,
+              f"J-X3 바꿔치기한 제출이 throw(서버 400) → rejected(error = PromptExecutionError 이유), 다음 사용자 제출에 바꿔치기 안 남음, "
+              f"프론트가 남긴 토큰은 무장을 풀 때 지움 {rj}")
+        check(gp["final"] == approved(x3["tab"], gp["final"], "run", ok=False, reason="not_submitted", error=not_g2p)
+              and gp["bodies"] == 3 and x3["g2pNext"] == same,
+              f"J-X3 app.queuePrompt 가 던짐(graphToPrompt 실패) → not_submitted(그 이유 + 승인 제출도 열린 워크플로를 거침·다른 워크플로로 바꾼 뒤 "
+              f"다시 승인 — r2-12), 무장 풀림 {gp}")
+        check(len(x3["toasts"]) == 3 and all(t.startswith("warn: Studio 승인(Run) 안 됨: ") for t in x3["toasts"]),
+              f"J-X3 실패마다 탭 토스트(프론트 대화상자와 따로 이유) {x3['toasts']}")
+    xi = res.get("x3i") or {}
+    if "throw" in xi:
+        rej = "ComfyUI 가 거절함(prompt_id 없음): "
+        want_i = {"null": (rej + "응답에 prompt_id 없음", []),
+                  "undef": (rej + "응답에 prompt_id 없음", ["error: Cannot read properties of undefined (reading 'prompt_id')"]),
+                  "throw": (rej + "안쪽 감싸개 동기 오류", ["error: 안쪽 감싸개 동기 오류"])}
+        bad_i = {k: xi[k] for k, (err, dlg) in want_i.items()
+                 if not (xi[k]["final"] == approved(xi["tab"], xi[k]["final"], "run", ok=False, reason="rejected", error=err)
+                         and shape("bmk-dp-approved", xi[k]["final"]) == [] and xi[k]["bodies"] == 0 and xi[k]["dialogs"] == dlg
+                         and xi[k].get("toast") == f"warn: Studio 승인(Run) 안 됨: {err}")}
+        check(not bad_i and xi["next"] == {"keys": user3, "sameData": True, "n": 1},
+              f"J-X3 안쪽 api 감싸개가 보내지 않고 {{prompt_id: null}}·undefined 를 돌려줌·보내기 전에 동기로 던짐 → used 인데 prompt_id 없음 → rejected"
+              f"(동기 throw 도 그 이유 — undefined 는 1.53.10 이 prompt_id 를 읽다 TypeError 대화상자), 보낸 것 0, 다음 사용자 제출은 그대로 {bad_i} {xi['next']}")
+    xu = res.get("x3u") or {}
+    unk = "제출 결과 모름(응답 오류: {}) — 이미 큐에 들어갔을 수 있음: ComfyUI 큐를 확인"
+    want_u = {"net": ("unknown", unk.format("Failed to fetch")), "json": ("unknown", unk.format("Unexpected token '<' in JSON at position 0")),
+              "e502": ("unknown", unk.format("502 Bad Gateway: proxy")), "e403": ("rejected", "ComfyUI 가 거절함(prompt_id 없음): 403 Forbidden: origin"),
+              # r3-07 프록시 오류 페이지(HTML 전체)는 주석·태그·줄바꿈을 걷고, 긴 본문은 200자에서 자름
+              "e502html": ("unknown", unk.format("502 Bad Gateway: 502 Bad Gateway 502 Bad Gateway nginx/1.25.3")),
+              "e413long": ("rejected", "ComfyUI 가 거절함(prompt_id 없음): " + ("413 Payload Too Large: " + "x" * 400)[:200] + "…")}
+    bad_u = {k: xu.get(k) for k, (reason, err) in want_u.items()
+             if not ((xu.get(k) or {}).get("final") == approved(xu.get("tab"), (xu.get(k) or {}).get("final"), "run", ok=False, reason=reason, error=err)
+                     and xu[k]["sent"] == 1 and xu[k]["token"] == "TOKEN-A" and xu[k]["kept"] is False
+                     and xu[k]["toast"] == f"warn: Studio 승인(Run){' 안 됨' if reason == 'rejected' else ''}: {err}")}
+    ex_ = {e.get("reason"): e for e in M["bmk-dp-approved"]["examples"]}
+    check(not bad_u and shape("bmk-dp-approved", (xu.get("net") or {}).get("final") or {}) == []
+          and ex_.get("unknown", {}).get("error") == want_u["net"][1] and ex_["not_submitted"]["error"] == not_sent,
+          f"J-X3 바꿔치기한 본문이 서버에 닿은 뒤 응답을 잃음(연결 끊김 TypeError·200 인데 JSON 아님·프록시 5xx) → unknown '결과 모름 — 큐 확인'(거절·과금 없음으로 "
+          f"확정하지 않음 — r2-03, 탭 토스트도 '안 됨' 없이), 서버 4xx 만 rejected, 응답 본문이 HTML·긴 글이면 태그·줄바꿈을 걷고 200자까지(r3-07), "
+          f"토큰은 무장을 풀 때 지움, 정본 approved unknown 예시와 같은 모양·문구(not_submitted 예시도 탭 문구 그대로) {bad_u}")
+    xd = res.get("x3d") or {}
+    deno_why = ("제출되지 않음(과금 없음) — deno Ideogram Director 의 실행 전 점검(새 JSON 프롬프트 확인 등)이 승인 제출을 멈춤 — 그 노드 알림의 Apply and "
+                "Replace·Keep Current Board 는 Studio 승인을 잇지 않고 ComfyUI 탭에 열린 그래프를 실행함(그 그래프의 유료 노드는 과금): 그래프를 돌릴 게 아니면 "
+                "누르지 말고 Director 가 없는 워크플로로 바꾼 뒤 Studio 에서 다시 승인")
+    check(xd.get("final") == approved(xd.get("tab"), xd.get("final"), "run", ok=False, reason="not_submitted", error=deno_why)
+          and xd.get("bodies") == 0 and xd.get("alerts") == 1 and xd.get("toast") == f"warn: Studio 승인(Run) 안 됨: {deno_why}"
+          and xd.get("keep") == [{"keys": user3, "targets": None, "token": "TOKEN-A"}] and "알림 확인" not in not_sent + deno_why,
+          f"J-X3 deno Ideogram Director 사전 점검이 승인 제출을 멈춤({{prompt_id: null, deno_ideogram_director}}) → 전용 문구 — 그 알림의 Apply/Keep 은 "
+          f"무장이 풀린 뒤 app.queuePrompt(0) 이라 사용자 그래프가 토큰과 함께 나감(keep), 그래서 '알림 확인'으로 이끌지 않고 누르지 말라고 함(r2-02) {xd}")
+    x4 = res.get("x4") or {}
+    if "toWin" in x4:
+        wv = {"type": "bmk-dp-wave", "tab": x4["tab"], "rootKey": "fe410d7f025d", "prompt_id": "pid-1", "node": "dp_run", "remaining": 5}
+        check(x4["toWin"] == [[wv, origin]] and x4["toOther"] == [] and x4["heard"] == [wv] and shape("bmk-dp-wave", x4["heard"][0]) == []
+              and x4.get("toast") == "info: wave 종료(남은 5건) — Studio 에서 이어서 승인",
+              f"J-X4 템플릿 실행 wave(dp_run) → bmk-dp-wave 를 채널과 그 rootKey 승인을 보낸 창에만(다른 프로젝트 창 아님), 탭 토스트 {x4['toWin']} {x4['heard']}")
+        check(x4["graph"] == {"win": 3, "heard": 1, "toast": "info: wave 시간 상한으로 멈췄습니다. 남은 호출 3건 — 이 실행이 끝나면 승인 버튼으로 이어서 실행하세요."}
+              and x4["notMine"] == {"win": 3, "heard": 1, "toasts": 0},
+              f"J-X4 그래프 Run 의 wave 는 지금 규칙(Studio 로 안 감), 이 탭이 큐에 넣은 실행이 아니면(runningPromptId 없음) 아무것도 안 함 {x4['graph']} {x4['notMine']}")
+        check(x4["hello"] == {"type": "bmk-dp-hello", "id": "h", "tab": x4["tab"], "ext": 3, "submit": "ok", "busy": False}
+              and ((res.get("x4u") or {}).get("hello") or {}).get("submit") == "unsupported",
+              f"J-X4 hello ext 3·submit ok(감싸개 설치 && app.queuePrompt 함수 — 함수가 아니면 unsupported) {x4['hello']} {res.get('x4u')}")
+    x4r = res.get("x4r") or {}
+    check(x4r.get("ids") == ["pid-1", "pid-2"]
+          and x4r.get("toasts") == ["info: wave 종료(남은 3건) — 사전 승인 재굴림이라 Studio 머리줄 'ComfyUI 큐'(또는 다음 Run)로 이어서",
+                                    "info: wave 종료(남은 3건) — Studio 에서 이어서 승인"],
+          f"J-X4 재굴림 템플릿 실행의 wave(Run 과 같은 dp_run) → 사전 승인분 문구(Studio 의 재굴림 wave 안내와 같게 — 새 승인 아님), Run 은 그대로 {x4r}")
+    xl = res.get("x3L") or {}
+    bad_l = {k: v for k, v in xl.items()
+             if not (v.get("user") is False
+                     and v.get("final") == approved(v.get("tab"), v.get("final"), "run", ok=False, reason="not_submitted",
+                                                    error=not_g2p + " — 남은 승인 항목은 큐에서 뺌")
+                     and v.get("left") == [] and v.get("bodies") == [{"keys": user3, "targets": None, "token": "TOKEN-A"}])}
+    check(set(xl) == {"plain", "drop"} and not bad_l,
+          f"J-X3 처리 중 쌓인 사용자 항목이 먼저 꺼내져 던짐(처리 루프가 끝남) → 꺼내지지 않은 우리 항목을 프론트 큐에서 빼고 not_submitted — 다음 사용자 Queue 는 "
+          f"사용자 그래프 하나만(남은 항목이 무장 없이 사용자 그래프 + 대상 dp_review(셋째 인자를 버린 감싸개면 전체 실행) + 토큰으로 나가지 않음) {bad_l or xl}")
+    xa = res.get("x3La") or {}
+    ended = "제출되지 않음(과금 없음) — ComfyUI 탭의 큐 처리가 승인 항목을 꺼내기 전에 끝남"
+    want_a = {"asyncDrop": (ended + " — 무장 중 쌓여 남은 큐 항목(승인 항목인지 모름)은 큐에서 뺌", [unsure_toast]),
+              "asyncKeep": (ended + " — 남은 승인 항목은 큐에서 뺌", [])}
+    bad_a = {k: xa.get(k) for k, (err, pre) in want_a.items()
+             if not ((xa.get(k) or {}).get("u1") == "rejected: graphToPrompt 실패"
+                     and xa[k].get("final") == approved(xa[k].get("tab"), xa[k].get("final"), "run", ok=False, reason="not_submitted", error=err)
+                     and xa[k].get("left") == [] and xa[k].get("bodies") == [{"keys": user3, "targets": None, "token": "TOKEN-A"}]
+                     and xa[k].get("toasts") == pre + [f"warn: Studio 승인(Run) 안 됨: {err}"])}
+    check(set(xa) == set(want_a) and not bad_a,
+          f"J-X3 r3-01 사용자 Queue 가 바깥 감싸개(await) 안에서 먼저 처리를 시작해 변환에서 던짐 → 늦게 쌓인 우리 항목이 큐에 남음 — 원래 함수를 미뤄 부르며 셋째 "
+          f"인자를 버리는 감싸개면 우리 항목인지 몰라도 무장 동안 쌓였으니 빼고 '직접 누른 큐였다면 다시', 인자를 넘기면 우리 항목으로 앎 — 다음 사용자 Queue 는 "
+          f"사용자 그래프 하나만(남은 항목이 토큰과 함께 사용자 그래프 전체로 또 나가지 않음) {bad_a or xa}")
+    xr = res.get("xrr") or {}
+    kept = (" · 사전 승인한 재굴림은 예약된 채 남음(다음 Run·ComfyUI 큐 때 과금): 지금 보내려면 Studio 머리줄 'ComfyUI 큐' — R 을 다시 누르면 +1 호출이 "
+            "더 승인됨")
+    head = "Studio 머리줄 'ComfyUI 큐'"
+    busy_err = "ComfyUI 탭이 큐를 처리하는 중 — 잠시 뒤 다시 승인"
+    aq_on = aq_why.format("Run (On Change)")
+    want_r = {  # 경우 → (reason, Studio 로 가는 error = 그대로, 탭 토스트)
+        "busy": ("busy", busy_err, "warn: Studio 승인(재굴림) 안 됨: ComfyUI 탭이 큐를 처리하는 중" + kept),
+        "autoQueue": ("busy", aq_on, "warn: Studio 승인(재굴림) 안 됨: " + aq_on.removesuffix("다시 승인") + head + kept),
+        "noAuth": ("not_submitted", not_sent, "warn: Studio 승인(재굴림) 안 됨: " + not_sent.removesuffix(" — 승인은 Studio 에서 다시") + kept),
+        "g2p": ("not_submitted", not_g2p, "warn: Studio 승인(재굴림) 안 됨: " + not_g2p.removesuffix("다시 승인") + head + kept),
+        "deno": ("not_submitted", deno_why, "warn: Studio 승인(재굴림) 안 됨: " + deno_why.removesuffix("Studio 에서 다시 승인") + head + kept),
+        "unknown": ("unknown", unk.format("Failed to fetch"), "warn: Studio 승인(재굴림): " + unk.format("Failed to fetch") + " · 큐에 들어가지 않았으면 " + kept[3:]),
+        "left": ("not_submitted", not_g2p + " — 남은 승인 항목은 큐에서 뺌",
+                 "warn: Studio 승인(재굴림) 안 됨: " + not_g2p.removesuffix("다시 승인") + head + " — 남은 승인 항목은 큐에서 뺌" + kept),
+    }
+    bad_r = {k: xr.get(k) for k, (reason, err, toast) in want_r.items()
+             if not ((xr.get(k) or {}).get("final") == approved(xr.get("tab"), xr[k].get("final"), "reroll", ok=False, reason=reason, error=err)
+                     and xr[k].get("toast") == toast)}
+    br = xr.get("busyRun") or {}
+    check(set(want_r) <= set(xr) and not bad_r and xr.get("bodies") == 1 and br.get("toast") == f"warn: Studio 승인(Run) 안 됨: {busy_err}"
+          and br.get("final") == approved(xr.get("tab"), br.get("final"), "run", ok=False, reason="busy", error=busy_err),
+          f"J-X3 r3-02 재굴림 승인이 탭에서 안 됨(큐 처리 중·자동 큐·제출 안 됨·변환 실패·deno 사전 점검·결과 모름·남은 항목 뺌) → 탭 토스트의 할 일 '(잠시 뒤·"
+          f"Studio 에서) 다시 승인'은 빼거나 Studio 머리줄 'ComfyUI 큐'로(R 재누름 = +1 사전 승인으로 읽히지 않게) + 사전 승인분이 예약된 채 남는다는 안내"
+          f"(Studio refusal()·paidResult 와 같게), Studio 로 가는 error 는 그대로, Run 토스트는 그대로 {bad_r or xr}")
+    xq = res.get("xaq") or {}
+    if "modes" in xq:
+        def ok_run(g):
+            return [m["type"] for m in g] == ["bmk-dp-ack", "bmk-dp-approved"] and g[1].get("ok") is True
+
+        md = xq["modes"]
+        aq_fail = {k: [approved(xq["tab"], md[k]["got"][0] if md[k]["got"] else None, "run", ok=False, reason="busy", error=aq_why.format(n))]
+                   for k, n in (("change", "Run (On Change)"), ("instant-running", "Run (Instant)"))}
+        check(all(md[k]["got"] == aq_fail[k] for k in aq_fail) and ok_run(md["instant-idle"]["got"]) and ok_run(md["disabled"]["got"])
+              and all(md[k]["busy"] is False for k in md)
+              and xq["legacy"] == [approved(xq["tab"], (xq["legacy"] or [None])[0], "reroll", ok=False, reason="busy", error=aq_why.format("Auto Queue"))]
+              and shape("bmk-dp-approved", md["change"]["got"][0]) == [],
+              f"자동 큐(Run (On Change)·Run (Instant) 실행 중·옛 메뉴 Auto Queue)가 켜져 있으면 받을 때 ack 없이 busy(이유 — 승인 제출이 템플릿 실행 뒤 "
+              f"사용자 그래프 전체 자동 큐를 부름), instant-idle·disabled 는 정상, hello busy 는 그대로 {md} {xq['legacy']}")
+        lt = xq["late"]
+        check([m["type"] for m in lt] == ["bmk-dp-ack", "bmk-dp-approved"]
+              and lt[1] == approved(xq["tab"], lt[0], "draft", ok=False, reason="busy", error=aq_why.format("Run (On Change)"))
+              and xq["gets"] == 3 and xq["queued"] == 2 and xq["bodies"] == [["dp_review"], ["dp_review"]],
+              f"자동 큐: 서버를 기다리는 사이 켜지면 무장 직전에 busy(큐·제출 0), 거절한 승인은 서버·큐에 닿지 않음 {lt} g{xq['gets']} q{xq['queued']} {xq['bodies']}")
+    else:
+        check(False, f"xaq 시나리오 결과 없음 {xq}")
+
+
+# U3(JS): 실제 pipeline.js link·진행 패널 ↔ 가짜 ComfyUI 탭(정본 messages 예시로 답함) ↔ 가짜 서버(정본 routes). 앞부분(머리·가짜 서버·작은 DOM
+# 대역·boardState·quiet*)은 _PL_JS_HARNESS 에서 잘라 붙인다(_paid_js_studio). 채널은 여기서 동기 전달 — hello 응답이 hello 판정 시간에 늘 닿게
+# (승인 메시지의 ack·approved 는 가짜 탭 대본의 시간으로 늦춤).
+_PAID_STUDIO_JS_HARNESS = r"""
+const M = IN.api.messages;
+const TAB = M["bmk-dp-approve"].examples[0].tab;
+const ACK = M["bmk-dp-ack"].examples[0];
+const FAIL = (reason) => M["bmk-dp-approved"].examples.find((x) => x.reason === reason);
+const ok = (m) => Object.assign(clone(M["bmk-dp-approved"].examples.find((x) => x.ok)), { stage: m.stage, prompt_id: `pid-${m.stage}` });
+const okReply = (m) => [[0, ACK], [20, ok(m)]];
+const ALL = "001_38a818,002_d98f99,003_2f8f50,008_e1d4cc,012_93661a";
+El.prototype.remove = function () {
+  if (this.parent) this.parent.children = this.parent.children.filter((c) => c !== this);
+  this.parent = null;
+};
+const bus = new Set();
+class Chan {
+  constructor(name) { this.name = name; this.onmessage = null; bus.add(this); }
+  postMessage(data) { for (const c of [...bus]) if (c !== this && c.name === this.name && c.onmessage) c.onmessage({ data: clone(data) }); }
+  close() { bus.delete(this); }
+}
+const mkWin = () => ({ location: { origin: ORIGIN }, opener: null, listeners: [], BroadcastChannel: Chan,
+  addEventListener(t, fn) { if (t === "message") this.listeners.push(fn); } });
+const ui = (key, base) => (e) => entry("success", [["execution_start", {}], ["execution_success", {}]],
+  { [key === "bmk_dp_run" ? "dp_run" : "dp_draft"]: { [key]: [Object.assign(clone(base), e)], text: ["보고"] }, dp_review: { text: ["Review"] } });
+const RUN_H = ui("bmk_dp_run", { pending_hash: "", pending: 0, est_usd: [0, 0], approved_now: true, root_key: KEY, backend: "comfy_org", continuation_hash: "",
+  draft_pending: 0, draft_style: 0, draft_unwritten: 0, draft_held: 0, draft_held_style: 0, draft_mock: 0 });
+const DRAFT_H = ui("bmk_dp_draft", { pending_hash: "", pending: 0, reasons: {}, orphan_retries: 0, est_credits: [0, 0], est_usd: [0, 0], est_seconds: 0,
+  backend: "vlm_openai", model: "gpt-5", effort: "high", approved_now: true, root_key: KEY, refresh_available: 0 });
+
+function mkTab(win, t) {
+  // 가짜 ComfyUI 탭: hello = 정본 hello 답(ext·submit·busy·tab 을 바꿈), 이 탭 앞 승인 메시지 = got 에 쌓고 reply(msg) 의 [[ms, 답, raw], …]를 차례로
+  // (raw 가 아니면 id·tab 을 그 요청 것으로). win = 이 탭을 opener 로 둔 Studio 창(답 = window message, source = opener) | null(채널). post = 그 길로 그대로
+  const tab = Object.assign({ id: TAB, ext: 3, submit: "ok", busy: false, got: [], reply: okReply }, t);
+  tab.post = (d) => {
+    if (win) for (const fn of win.listeners) fn({ origin: ORIGIN, data: clone(d), source: tab.op });
+    else tab.ch.postMessage(d);
+  };
+  const on = (m) => {
+    if (m.type === "bmk-dp-hello") {
+      tab.post(Object.assign(clone(M["bmk-dp-hello_reply"].examples[0]), { id: m.id, tab: tab.id, ext: tab.ext, submit: tab.submit, busy: tab.busy }));
+    } else if (m.type === "bmk-dp-approve" && m.tab === tab.id) {
+      tab.got.push(clone(m));
+      for (const [ms, d, raw] of tab.reply(m)) setTimeout(() => tab.post(raw ? d : Object.assign(clone(d), { id: m.id, tab: tab.id })), ms);
+    }
+  };
+  tab.ch = new Chan("bmk-dp");
+  tab.ch.onmessage = (ev) => { if (!win) on(ev.data); };
+  if (win) {
+    tab.op = { closed: false, postMessage: (d, origin) => { if (origin === ORIGIN) on(clone(d)); } };
+    win.opener = tab.op;
+  }
+  return tab;
+}
+
+async function mkStudio(o = {}) {
+  // 진행 패널 + 실제 link(짧은 hello — ack·끝 시간은 o.ack·o.end 로 주입) + 가짜 탭(o.tab = mkTab 옵션 | null = 탭 없음, o.opener = opener 길) + 가짜 서버
+  // (조용한 정본 — 반영 필요·notes·확인 필요 없음: 승인 단추가 켜지는 장면). o.P(b)·o.plan(p, q)·o.S(S) = GET /pipeline·계획·state 고침,
+  // o.pipeline = GET /pipeline 라우트 통째(server route 꼴), o.store = sessionStorage, o.queue = ComfyUI 대기열
+  bus.clear();
+  const srv = server();
+  if (o.queue) srv.queue = o.queue;
+  srv.route.pipeline = o.pipeline || quietPipeline(o.P);
+  quietPlan(srv);
+  const base = srv.route.plan;
+  srv.route.plan = (q, b) => {
+    const r = base(q, b);
+    if (o.plan) o.plan(r[1], q);
+    return r;
+  };
+  const env = { srv, hist: {}, confirms: [], toasts: [], answer: true, refresh: 0, store: o.store || mem(), win: mkWin(), doc: new Doc() };
+  srv.hist = (pid) => env.hist[pid] || null;
+  Object.assign(ctx, { document: env.doc, fetch: srv.fetch, navigator: { clipboard: { writeText: async () => {} } } });
+  Object.assign(ctx.window, { confirm: (m) => { env.confirms.push(m); return env.answer; }, sessionStorage: env.store });
+  if (o.tab !== null) env.tab = mkTab(o.opener ? env.win : null, o.tab);
+  env.link = P.link(env.win, () => env.pipe && env.pipe.tabChanged(), 60, 25, o.ack || 1500, o.end || 4000);
+  const hosts = { list: env.doc.createElement("ol"), panel: env.doc.createElement("section"), head: env.doc.createElement("div") };
+  env.doc.body.append(hosts.list, hosts.panel, hosts.head);
+  Object.assign(env, hosts);
+  env.pipe = P.create(hosts, { apiUrl: A, comfyUrl: C, root: KEY, toast: (m, k) => env.toasts.push(`${k || ""}:${m}`), refresh: () => { env.refresh += 1; },
+    select() {}, goTarget() {}, seams: () => new Map(), drain() {}, enter() {}, link: env.link });
+  env.B = (label, root = hosts.panel) => root.all().find((e) => e.tagName === "BUTTON" && e.textContent.startsWith(label)) || null;
+  env.btn = (label) => { const b = env.B(label); return b && [b.disabled, b.title]; };
+  env.click = (b) => b.fire("click", { isTrusted: true });
+  env.box = () => env.doc.body.children.find((e) => e.classList.contains("overlay")) || null;
+  env.toast = (s) => env.toasts.find((t) => t.includes(s)) || null;
+  env.rows = (head) => hosts.panel.all().filter((e) => e.classList.contains("pp-row") && e.own.startsWith(head))
+    .map((e) => e.own.replace(/\d+시 \d+분 \d+초|\d+:\d+:\d+/, "T"));
+  env.key = (key) => {
+    const ev = { key, stopped: false, prevented: false, stopPropagation() { this.stopped = true; }, preventDefault() { this.prevented = true; } };
+    for (const fn of env.doc.on.keydown || []) fn(ev);
+    return [ev.stopped, ev.prevented];
+  };
+  env.finish = async (pid, h, done) => {  // 이 Studio 의 실행을 끝냄(기록 success) — 다음 장면의 가짜 서버로 폴링이 새지 않게
+    env.hist[pid] = h;
+    await until(() => env.toast(done), 4000);
+  };
+  env.S = quietState();
+  if (o.S) o.S(env.S);
+  env.pipe.stateChanged(env.S);
+  await sleep(20);
+  env.pipe.enter(env.S, "001_38a818");
+  // 탭 판정 + 계획 칸(이 Studio 의 실행이 있으면 계획을 부르지 않음 — 머리줄 '실행 중')
+  await until(() => (o.tab === null ? env.link.state !== "wait" : env.link.state === "ok")
+    && (hosts.panel.textContent.includes("Run: 승인 필요") || hosts.head.textContent.includes("실행 중")), 2000);
+  await sleep(30);
+  env.stop = () => {
+    env.link.stop();
+    env.pipe.leave();
+    bus.clear();
+  };
+  return env;
+}
+
+// ── J-P3 승인 단추: 사용자 클릭 · 네이티브 confirm · 메시지 · 이 Studio 의 실행 · 끝 ──
+await scenario("approve", async () => {  // opener 길: isTrusted 아님 = 아무것도 안 함, confirm 취소 = 보내지 않음, 확인 = 메시지 → ack → approved ok → 실행 → Run 보고 한 줄
+  const env = await mkStudio({ opener: true });
+  const r = { via: env.link.via, drawn: env.btn("Run 승인"), label: (env.B("Run 승인") || {}).textContent, draft: env.btn("초안 승인") };
+  env.B("Run 승인").fire("click");
+  await sleep(30);
+  r.untrusted = { confirms: env.confirms.length, sent: env.tab.got.length };
+  env.answer = false;
+  env.click(env.B("Run 승인"));
+  await sleep(30);
+  r.declined = { confirm: env.confirms.at(-1) || null, sent: env.tab.got.length, again: env.btn("Run 승인") };
+  env.answer = true;
+  env.click(env.B("Run 승인"));
+  r.during = { run: env.btn("Run 승인"), draft: env.btn("초안 승인"), apply: env.btn("반영")[0], head: env.head.textContent };
+  await until(() => env.toast("Run 큐에 들어감"));
+  r.msgs = env.tab.got;
+  r.ok = { toast: env.toast("Run 큐에 들어감"), stored: JSON.parse(env.store.getItem(JOB) || "null"), head: env.head.textContent, run: env.btn("Run 승인") };
+  await env.finish("pid-run", RUN_H({}), "Run 끝");
+  await sleep(20);
+  const p0 = env.srv.count("pipeline/plan");
+  env.pipe.stateChanged(env.S);  // onDone 의 refresh 로 보드가 다시 받은 state
+  await sleep(450);
+  r.done = { toast: env.toast("Run 끝"), refresh: env.refresh, stored: env.store.getItem(JOB), row: env.rows("이 Studio 의 마지막 Run"),
+    replan: env.srv.count("pipeline/plan") - p0, run: env.btn("Run 승인")[0], toasts: env.toasts.filter((t) => t.startsWith("err:")) };
+  env.stop();
+  return r;
+});
+
+await scenario("draftStyle", async () => {  // 채널 길 · 초안 apply full + 화풍 체크: 초안 승인 = 그 계획의 해시·only(+ style), 확인 창 = VLM 초안 문구, 끝 = Spec Draft 보고
+  const env = await mkStudio({ P: (b) => { b.settings.draft.apply = "full"; },
+    plan: (p, q) => { if (q.style === "1") p.draft = Object.assign(clone(R["GET /pipeline/plan"].alt.style.draft), { import_pending: [] }); } });
+  const cb = env.panel.all().find((e) => e.tagName === "INPUT" && e.type === "checkbox");
+  cb.checked = true;
+  cb.fire("change");
+  await until(() => (env.B("초안 승인") || {}).textContent === "초안 승인 1크롭 + 화풍 ≈ 36(최대 61) 크레딧" && !env.B("초안 승인").disabled, 2000);
+  const r = { via: env.link.via, label: env.B("초안 승인").textContent, title: env.B("초안 승인").title };
+  env.answer = false;
+  env.click(env.B("Run 승인"));
+  r.runConfirm = env.confirms.at(-1) || null;
+  env.answer = true;
+  env.click(env.B("초안 승인"));
+  r.confirm = env.confirms.at(-1) || null;
+  await until(() => env.toast("Spec Draft 큐에 들어감"));
+  r.msgs = env.tab.got;
+  r.head = env.head.textContent;
+  await env.finish("pid-draft", DRAFT_H({ pending: 0 }), "Spec Draft 끝");
+  r.done = env.toast("Spec Draft 끝");
+  r.row = env.rows("이 Studio 의 마지막 Spec Draft");
+  env.stop();
+  return r;
+});
+
+await scenario("mock", async () => {  // mock 백엔드 = 페이지 안 상자(네이티브 confirm 아님): 상자 단추도 사용자 클릭만, [취소]·Esc = 보내지 않음, 열린 동안 보드 키 막음, [승인] = 메시지
+  const env = await mkStudio({ plan: (p) => { p.run.backend = "mock"; p.draft.backend = "vlm_mock"; p.draft.mock_forced = true; } });
+  const r = { labels: [env.B("Run 승인").textContent, env.B("초안 승인").textContent] };
+  env.click(env.B("초안 승인"));
+  await sleep(10);
+  r.draftBox = env.box() ? env.box().textContent : null;
+  env.click(env.B("취소", env.box()));
+  await sleep(10);
+  r.cancel = { box: !!env.box(), sent: env.tab.got.length, confirms: env.confirms.length, draft: env.btn("초안 승인")[0] };
+  env.click(env.B("Run 승인"));
+  await sleep(10);
+  const box = env.box();
+  r.runBox = box ? box.textContent : null;
+  r.during = env.btn("Run 승인");
+  env.B("승인", box).fire("click");
+  env.B("취소", box).fire("click");
+  await sleep(10);
+  r.untrusted = { box: !!env.box(), sent: env.tab.got.length };
+  r.keyOpen = env.key("r");
+  r.esc = env.key("Escape");
+  await sleep(10);
+  r.afterEsc = { box: !!env.box(), sent: env.tab.got.length, run: env.btn("Run 승인")[0] };
+  r.keyClosed = env.key("r");
+  env.click(env.B("Run 승인"));
+  await sleep(10);
+  env.click(env.B("승인", env.box()));
+  await until(() => env.toast("Run 큐에 들어감"));
+  r.msgs = env.tab.got;
+  r.box = !!env.box();
+  r.confirms = env.confirms.length;
+  await env.finish("pid-run", RUN_H({ backend: "mock" }), "Run 끝");
+  r.done = env.toast("Run 끝");
+  env.stop();
+  return r;
+});
+
+await scenario("mockMix", async () => {  // P7: 페이지 상자(Claude 가 누를 수 있는 길)는 그 단계의 백엔드가 mock 일 때만 — Run comfy_org + 초안 vlm_mock, 거꾸로
+  // Run mock + 초안 vlm_openai 에서 단계마다 확인 창 종류(취소 — 보내지 않음)
+  const one = async (run, draft) => {
+    const env = await mkStudio({ plan: (p) => { p.run.backend = run; p.draft.backend = draft; } });
+    env.answer = false;
+    const r = {};
+    for (const [k, label] of [["run", "Run 승인"], ["draft", "초안 승인"]]) {
+      const n = env.confirms.length;
+      env.click(env.B(label));
+      await sleep(10);
+      r[k] = { confirm: env.confirms.length - n, box: !!env.box() };
+      if (env.box()) env.click(env.B("취소", env.box()));
+      await sleep(10);
+    }
+    r.sent = env.tab.got.length;
+    env.stop();
+    return r;
+  };
+  return { draftMock: await one("comfy_org", "vlm_mock"), runMock: await one("mock", "vlm_openai") };
+});
+
+await scenario("recheck", async () => {  // r2-07: 누를 때와 mock 상자 확인 뒤 지금 판정(해시·only·탭)이 그린 값과 다르면 보내지 않고 다시 그림
+  const env = await mkStudio({ plan: (p) => { p.run.backend = "mock"; } });
+  const warn = "warn:계획·탭 상태가 바뀜 — 승인하지 않음: 다시 그린 계획 칸을 보고 다시 누르세요";
+  const old = env.B("Run 승인");
+  for (const fn of env.doc.on.pointerdown) fn({});  // 포인터가 눌린 동안은 다시 그리지 않음 — 옛 단추가 남음
+  env.pipe.stateChanged(Object.assign(clone(env.S), { plan_v: "r:aaaaaaaaaaaaaaaa|d:bbbbbbbbbbbbbbbb" }));  // 다른 창·그래프의 쓰기 = 계획이 낡음
+  env.click(old);
+  await sleep(10);
+  const r = { stale: { box: !!env.box(), sent: env.tab.got.length, toast: env.toasts.at(-1) || null } };
+  for (const fn of env.doc.on.pointerup) fn({});
+  await sleep(20);
+  r.redrawn = env.btn("Run 승인");
+  env.pipe.stateChanged(env.S);
+  await until(() => env.B("Run 승인") && !env.B("Run 승인").disabled, 2000);
+  env.click(env.B("Run 승인"));
+  await sleep(10);
+  env.tab.ext = 2;  // 상자를 띄운 사이 탭이 S3a 판으로 새로고침
+  await until(() => env.link.ext === 2);
+  env.click(env.B("승인", env.box()));
+  await sleep(20);
+  r.tab = { box: !!env.box(), sent: env.tab.got.length, toast: env.toasts.at(-1) || null, run: env.btn("Run 승인") };
+  r.warn = warn;
+  env.stop();
+  // 다른 유효 해시: 포인터가 눌린 동안 다시 받은 계획이 다른 해시 → 옛 단추(그린 해시)는 지금 해시를 보내지 않음(확인 창·메시지 없음)
+  let hash = "3f9a1c2b7d10";
+  const e2 = await mkStudio({ plan: (p) => { p.run.hash = hash; } });
+  const old2 = e2.B("Run 승인");
+  for (const fn of e2.doc.on.pointerdown) fn({});
+  hash = "c0ffee123456";
+  const c0 = e2.srv.count("pipeline/plan");
+  e2.pipe.recalc();
+  await until(() => e2.srv.count("pipeline/plan") > c0, 1000);
+  await sleep(30);
+  e2.click(old2);
+  await sleep(10);
+  r.newHash = { title: old2.title, confirms: e2.confirms.length, box: !!e2.box(), sent: e2.tab.got.length, toast: e2.toasts.at(-1) || null };
+  for (const fn of e2.doc.on.pointerup) fn({});
+  await sleep(20);
+  r.newHash.redrawn = e2.btn("Run 승인");
+  e2.stop();
+  return r;
+});
+
+await scenario("busy", async () => {  // 단계당 하나(이 Studio 의 유료 요청은 하나씩): 결과를 기다리는 사이 다시 누름·다른 단계 단추·재굴림 = 보내지 않음, 실행 중 = 끔
+  const env = await mkStudio({ tab: { reply: (m) => [[0, ACK], [600, ok(m)]] } });
+  const run = env.B("Run 승인");
+  const draft = env.B("초안 승인");
+  env.click(run);
+  env.click(run);
+  env.click(draft);
+  env.pipe.reroll();
+  await sleep(30);
+  const r = { mid: { sent: env.tab.got.length, confirms: env.confirms.length, toasts: env.toasts.slice(), run: env.btn("Run 승인"), draft: env.btn("초안 승인"),
+    exp: env.btn("Export")[0] } };
+  await until(() => env.toast("Run 큐에 들어감"));
+  r.after = { sent: env.tab.got.length, draft: env.btn("초안 승인") };
+  env.pipe.reroll();
+  r.rerollJob = env.toasts.at(-1);
+  await env.finish("pid-run", RUN_H({}), "Run 끝");
+  env.stop();
+  return r;
+});
+
+await scenario("refuse", async () => {  // 실패 사유마다: 계획 다시(stale·apply_needed·nothing_to_approve·running·stale_settings), 그 밖(busy 포함) = 오류 그대로 — 다시 켜짐
+  const env = await mkStudio();
+  const r = {};
+  for (const reason of ["stale", "apply_needed", "nothing_to_approve", "running", "stale_settings", "busy", "template", "not_submitted", "rejected", "http",
+    "bad_request", "confirm_settings"]) {
+    env.tab.reply = () => [[0, ACK], [5, FAIL(reason)]];
+    await until(() => env.B("Run 승인") && !env.B("Run 승인").disabled, 1000);
+    const n = env.toasts.length;
+    const p0 = env.srv.count("pipeline/plan");
+    env.click(env.B("Run 승인"));
+    await until(() => env.toasts.length > n);
+    await sleep(60);
+    r[reason] = { toasts: env.toasts.slice(n), replan: env.srv.count("pipeline/plan") - p0, run: env.btn("Run 승인")[0] };
+  }
+  for (const [name, fix] of [["noPid", (x) => { delete x.prompt_id; }], ["emptyPid", (x) => { x.prompt_id = ""; }]]) {
+    // ok 인데 prompt_id 없음·빈 문자열 = 성공 아님(계약 §4 6 — 탭은 used && prompt_id 만 ok): 이 Studio 의 실행으로 이어 받지 않고 단추 다시 켬
+    env.tab.reply = (m) => { const x = ok(m); fix(x); return [[0, ACK], [5, x]]; };
+    await until(() => env.B("Run 승인") && !env.B("Run 승인").disabled, 1000);
+    const n = env.toasts.length;
+    const p0 = env.srv.count("pipeline/plan");
+    env.click(env.B("Run 승인"));
+    await until(() => env.toasts.length > n);
+    await sleep(60);
+    r[name] = { toasts: env.toasts.slice(n), replan: env.srv.count("pipeline/plan") - p0, run: env.btn("Run 승인")[0], stored: env.store.getItem(JOB),
+      job: env.head.textContent.includes("실행 중") };
+  }
+  r.sent = env.tab.got.length;
+  env.stop();
+  return r;
+});
+
+await scenario("timeouts", async () => {  // ack·최종 시간(짧게 주입): ack 없음 = '탭 응답 없음', 최종 무응답 = '결과를 받지 못함 — 큐 확인'(다시 보내지 않음), 탭 바뀜 = '결과 모름',
+  // 셋 다 늦게 온 approved ok 는 버리지 않고 이 Studio 의 실행으로
+  const r = {};
+  let env = await mkStudio({ ack: 60, end: 300, tab: { reply: (m) => [[150, ok(m)]] } });
+  let p0 = env.srv.count("pipeline/plan");
+  env.click(env.B("Run 승인"));
+  await until(() => env.toast("ComfyUI 탭 응답 없음"));
+  r.noAck = { toasts: env.toasts.slice(), sent: env.tab.got.length, run: env.btn("Run 승인")[0] };
+  await until(() => env.toast("늦게 온 결과"));
+  await sleep(20);
+  r.lateOk = { toast: env.toast("늦게 온 결과"), head: env.head.textContent, stored: JSON.parse(env.store.getItem(JOB) || "null"),
+    replan: env.srv.count("pipeline/plan") - p0 };
+  await env.finish("pid-run", RUN_H({}), "Run 끝");
+  env.stop();
+
+  env = await mkStudio({ ack: 60, end: 200, tab: { reply: () => [[0, ACK]] } });
+  p0 = env.srv.count("pipeline/plan");
+  env.click(env.B("Run 승인"));
+  await until(() => env.toast("결과를 받지 못함"));
+  await sleep(250);
+  r.timeout = { toasts: env.toasts.slice(), sent: env.tab.got.length, replan: env.srv.count("pipeline/plan") - p0, run: env.btn("Run 승인")[0],
+    job: env.head.textContent.includes("실행 중"), row: env.rows("앞서 보낸 Run 승인") };
+  env.stop();
+
+  env = await mkStudio({ tab: { reply: () => [[0, ACK]] } });
+  p0 = env.srv.count("pipeline/plan");
+  env.click(env.B("Run 승인"));
+  await sleep(30);
+  const m0 = env.tab.got[0];
+  env.tab.id = "newtab0000000000";  // 새로고침 = 새 tab ID
+  await until(() => env.toast("ComfyUI 탭이 바뀜"));
+  await sleep(20);
+  r.changed = { toasts: env.toasts.slice(), linkTab: env.link.tab, replan: env.srv.count("pipeline/plan") - p0, run: env.btn("Run 승인")[0] };
+  env.tab.post(Object.assign(ok(m0), { id: m0.id, tab: TAB }));  // 옛 탭이 낸 결과(같은 id·옛 tab·같은 길)
+  await until(() => env.toast("늦게 온 결과"));
+  r.changedLate = { toast: env.toast("늦게 온 결과"), head: env.head.textContent };
+  await env.finish("pid-run", RUN_H({}), "Run 끝");
+  env.stop();
+
+  // 연결이 끊김(채널 탭이 hello 에 답하지 않음 — 연결된 탭 없음)도 '결과 모름' + 계획 다시, 다시 붙은 같은 탭의 늦은 ok 는 이어 받음
+  env = await mkStudio({ tab: { reply: () => [[0, ACK]] } });
+  p0 = env.srv.count("pipeline/plan");
+  env.click(env.B("Run 승인"));
+  await sleep(30);
+  const m1 = env.tab.got[0];
+  bus.delete(env.tab.ch);
+  await until(() => env.toast("ComfyUI 탭이 바뀜"));
+  await until(() => env.srv.count("pipeline/plan") > p0);
+  await sleep(20);
+  r.gone = { toasts: env.toasts.slice(), state: env.link.state, replan: env.srv.count("pipeline/plan") - p0, run: env.btn("Run 승인") };
+  bus.add(env.tab.ch);
+  await until(() => env.link.state === "ok");
+  env.tab.post(Object.assign(ok(m1), { id: m1.id, tab: TAB }));
+  await until(() => env.toast("늦게 온 결과"));
+  r.goneLate = { toast: env.toast("늦게 온 결과"), head: env.head.textContent.includes("실행 중: Run(run)") };
+  await env.finish("pid-run", RUN_H({}), "Run 끝");
+  env.stop();
+
+  env = await mkStudio({ opener: true, tab: { reply: () => [[0, ACK]] } });  // opener 가 닫힘 → 채널로 물어도 답 없음
+  env.click(env.B("Run 승인"));
+  await sleep(30);
+  env.tab.op.closed = true;
+  await until(() => env.toast("ComfyUI 탭이 바뀜"));
+  await sleep(20);
+  r.closed = { toasts: env.toasts.slice(), state: env.link.state, via: env.link.via };
+  env.stop();
+
+  // 탭이 결과를 모름(unknown — 바꿔치기한 본문을 보낸 뒤 응답을 잃음): '결과 모름' + 계획 다시 + 진행 패널 줄, 보낸 승인 기록(새로고침 뒤 결과 모름)을 남김
+  env = await mkStudio({ tab: { reply: () => [[0, ACK], [5, FAIL("unknown")]] } });
+  p0 = env.srv.count("pipeline/plan");
+  env.click(env.B("Run 승인"));
+  await until(() => env.toast("결과 모름"));
+  await until(() => env.srv.count("pipeline/plan") > p0);
+  await sleep(20);
+  r.tabUnknown = { toasts: env.toasts.slice(), sent: env.tab.got.length, replan: env.srv.count("pipeline/plan") - p0, run: env.btn("Run 승인")[0],
+    row: env.rows("앞서 보낸 Run 승인"), kept: Object.keys(JSON.parse(env.store.getItem(`bmk-dp-ask:${KEY}`) || "{}")) };
+  env.stop();
+  return r;
+});
+
+await scenario("match", async () => {  // 답은 같은 id·같은 tab·같은 길만: 다른 id·다른 tab·다른 길(opener 로 보냈는데 채널)의 approved 는 버림 → 끝 시간, 진짜 답 = 늦은 결과
+  const env = await mkStudio({ opener: true, end: 300, tab: { reply: (m) => [[0, ACK], [5, Object.assign(ok(m), { id: "otherid", tab: TAB }), true],
+    [10, Object.assign(ok(m), { id: m.id, tab: "othertab00000000" }), true]] } });
+  env.click(env.B("Run 승인"));
+  await sleep(30);
+  const m0 = env.tab.got[0];
+  env.tab.ch.postMessage(Object.assign(ok(m0), { id: m0.id, tab: TAB }));
+  await until(() => env.toast("결과를 받지 못함"));
+  const r = { ignored: { toasts: env.toasts.slice(), job: env.head.textContent.includes("실행 중") } };
+  env.tab.post(Object.assign(ok(m0), { id: m0.id, tab: TAB }));
+  await until(() => env.toast("늦게 온 결과"));
+  r.late = { toast: env.toast("늦게 온 결과"), head: env.head.textContent };
+  env.tab.post(Object.assign(ok(m0), { id: m0.id, tab: TAB }));  // 같은 결과가 또 와도 한 번만
+  await sleep(30);
+  r.twice = env.toasts.filter((t) => t.includes("Run 큐에 들어감")).length;
+  await env.finish("pid-run", RUN_H({}), "Run 끝");
+  env.stop();
+  return r;
+});
+
+await scenario("wave", async () => {  // D9: 이 Studio 의 유료 Run 의 wave(그 탭·그 prompt_id·그 프로젝트만) → 끝난 뒤 Run 줄 '남은 N건' + '남은 N건 이어서 승인 ≈ $X'
+  // (새 계획·새 해시·확인 창 — 자동으로 보내지 않음)
+  let hash = "3f9a1c2b7d10";
+  const env = await mkStudio({ opener: true, plan: (p) => { p.run.hash = hash; } });
+  const W = (o) => Object.assign(clone(M["bmk-dp-wave"].examples[0]), { tab: TAB, rootKey: KEY, prompt_id: "pid-run", remaining: 5 }, o);
+  const rb = () => env.panel.all().find((e) => e.tagName === "BUTTON" && /^(Run 승인|남은)/.test(e.textContent));  // Run 줄 승인 단추
+  env.click(rb());
+  await until(() => env.toast("Run 큐에 들어감"));
+  env.tab.post(W({ tab: "othertab00000000" }));
+  env.tab.post(W({ prompt_id: "pid-user" }));
+  env.tab.post(W({ rootKey: "000000000000" }));
+  await env.finish("pid-run", RUN_H({ pending: 4 }), "Run 끝");
+  await sleep(20);
+  const r = { other: { toast: env.toast("Run 끝"), row: env.rows("wave 로 멈춤"), label: rb().textContent } };
+  env.toasts.length = 0;
+  env.click(rb());
+  await until(() => env.toast("Run 큐에 들어감"));
+  env.tab.post(W({}));
+  env.tab.ch.postMessage(W({}));  // 채널 방송으로도 같은 wave(탭은 둘 다 보냄)
+  await sleep(20);
+  r.midRow = env.rows("wave 로 멈춤");
+  r.midBtn = rb().textContent;  // 실행 중에는 '이어서 승인' 라벨도 아님
+  await env.finish("pid-run", RUN_H({ pending: 4 }), "Run 끝");
+  hash = "c0ffee123456";
+  env.pipe.stateChanged(env.S);
+  await until(() => rb().textContent.startsWith("남은") && rb().title.includes(hash), 2000);
+  r.after = { toast: env.toast("Run 끝"), row: env.rows("wave 로 멈춤"), btn: [rb().textContent, rb().disabled], sent: env.tab.got.length };
+  env.click(rb());
+  await until(() => env.tab.got.length === 3);
+  r.cont = { confirm: env.confirms.at(-1), msg: env.tab.got[2], row: env.rows("wave 로 멈춤") };
+  await until(() => env.toasts.filter((t) => t.includes("Run 큐에 들어감")).length === 2);
+  await env.finish("pid-run", RUN_H({}), "Run 끝 — 승인분 실행 · 남은 승인 필요 0건");
+  env.stop();
+  return r;
+});
+
+await scenario("disabled", async () => {  // 승인 단추 꺼짐(계약 §5 — 제목에 이유): 탭 ext 2·submit unsupported·탭 큐 처리 중·탭 없음·흐림·낡음·Run 실행 중·선택 0·승인할 것 없음·이 Studio 의 실행
+  const scene = async (o, act) => {
+    const env = await mkStudio(o);
+    const after = act ? await act(env) : null;
+    const res = { run: env.btn("Run 승인"), draft: env.btn("초안 승인") };
+    if (after) await after();
+    env.stop();
+    return res;
+  };
+  return {
+    ok: await scene({}),
+    ext2: await scene({ tab: { ext: 2, submit: "unsupported" } }),
+    unsupported: await scene({ tab: { submit: "unsupported" } }),
+    tabBusy: await scene({ tab: { busy: true } }),
+    noTab: await scene({ tab: null }),
+    silent: await scene({ opener: true }, async (env) => {  // opener 가 hello 에 답하지 않음(옛 확장·새로고침 중)
+      env.tab.op.postMessage = () => {};
+      await until(() => env.link.state === "old");
+    }),
+    old1: await scene({ opener: true }, async (env) => {  // opener 의 확장 판 < 2
+      env.tab.ext = 1;
+      await until(() => env.link.state === "old");
+    }),
+    dim: await scene({ plan: (p) => { p.apply_pending = ["Prepare 입력이 바뀜(마지막 Prepare 뒤 스펙·레이아웃·레퍼런스·용어집)"]; } }),
+    stale: await scene({ S: (S) => { S.plan_v = "r:aaaaaaaaaaaaaaaa|d:bbbbbbbbbbbbbbbb"; } }),
+    running: await scene({ S: (S) => { S.running = true; } }),
+    nothing: await scene({ plan: (p) => { p.run.hash = ""; p.run.need = 0; } }),
+    none: await scene({}, async (env) => { env.B("없음", env.list).fire("click"); await sleep(400); }),
+    job: await scene({}, async (env) => {  // 이 Studio 의 무료 반영이 대기 중
+      env.B("반영").fire("click");
+      await until(() => env.head.textContent.includes("실행 중"));
+      return () => env.finish("pid-1", OK_H, "반영 끝");
+    }),
+  };
+});
+
+await scenario("noSettings", async () => {  // 실행 설정(GET /pipeline)을 읽지 못함 = 확인 필요·Prepare 갈라짐을 모름 → 해시 흐림(§10.6 '반영 상태 모름 = 끔'): 두 승인
+  // 단추·해시 복사 끔(눌러도 확인 창·메시지 없음), 다시 읽히면 켬, 읽은 뒤 다음 읽기가 실패해도 옛 설정으로 켜 두지 않음
+  let fail = true;
+  const env = await mkStudio({ pipeline: () => (fail ? [500, { error: "잠김" }] : quietPipeline()) });
+  const copies = () => env.panel.all().filter((e) => e.tagName === "BUTTON" && e.textContent === "해시 복사").map((b) => b.disabled);
+  const r = { run: env.btn("Run 승인"), draft: env.btn("초안 승인"), copy: copies(), row: env.rows("반영 뒤 다시 계산"), settings: env.rows("읽기 오류") };
+  env.click(env.B("Run 승인"));
+  env.click(env.B("초안 승인"));
+  await sleep(30);
+  r.clicked = { confirms: env.confirms.length, sent: env.tab.got.length };
+  fail = false;
+  env.pipe.stateChanged(env.S);  // 폴링 — 앞 읽기가 실패했으면 rev 가 그대로여도 다시 읽음
+  await until(() => env.B("Run 승인") && !env.B("Run 승인").disabled, 2000);
+  r.back = { run: env.btn("Run 승인"), draft: env.btn("초안 승인"), copy: copies() };
+  fail = true;
+  env.pipe.stateChanged(Object.assign(clone(env.S), { rev: env.S.rev + 1 }));  // 매니페스트가 바뀌어 다시 읽음 → 실패
+  await until(() => env.B("Run 승인") && env.B("Run 승인").disabled, 2000);
+  r.failAgain = { run: env.btn("Run 승인"), draft: env.btn("초안 승인"), copy: copies() };
+  env.stop();
+  return r;
+});
+
+await scenario("reroll", async () => {  // board.js queueReroll(R 뒤·머리줄 'ComfyUI 큐'): 유료 가능한 탭 = reroll 승인 메시지(hash·only "" — 확인 창 없음) → 실행 → Run 보고,
+  // 탭이 S3a 판이면 opener = Review 부분 실행(옛 확장 대체)·없음 = '재굴림 예약됨'
+  const env = await mkStudio();
+  const calls = { comfy: 0, toasts: [] };
+  const way = vm.createContext({ tabLink: env.link, pipe: env.pipe, comfyConnected: () => false, queueInComfy: () => { calls.comfy += 1; return true; },
+    toast: (m, k) => calls.toasts.push(`${k || ""}:${m}`) });
+  vm.runInContext(`tabWay = ${boardFn("tabWay")}; queueReroll = ${boardFn("queueReroll")};`, way);
+  const r = { way: way.tabWay() };
+  way.queueReroll();
+  r.paying = { head: env.head.textContent, lock: env.pipe.paidLock() };  // r2-15 탭 응답을 기다리는 동안(확인 창 없음 — '승인 — 확인' 아님)
+  await until(() => env.toast("재굴림 큐에 들어감"));
+  r.sent = { msgs: env.tab.got, confirms: env.confirms.length, head: env.head.textContent };
+  await env.finish("pid-reroll", RUN_H({ approved_now: false, pending: 4 }), "재굴림 끝");
+  r.done = { toast: env.toast("재굴림 끝"), row: env.rows("이 Studio 의 마지막 재굴림") };
+  way.queueReroll("");  // R 확인 때 '예약만'(탭 없음)에 동의한 큐(board.js reroll 이 0.6초 뒤 넘김) — 그 사이 유료 가능한 탭이 생겨도 보내지 않음
+  r.planned = { sent: env.tab.got.length, toast: calls.toasts.shift() || null };
+  env.tab.ext = 2;
+  env.tab.submit = "unsupported";
+  await until(() => env.link.ext === 2);
+  way.comfyConnected = () => true;
+  r.oldOpener = way.tabWay();
+  way.queueReroll();
+  way.comfyConnected = () => false;
+  r.oldNone = way.tabWay();
+  way.queueReroll();
+  r.old = { comfy: calls.comfy, toasts: calls.toasts, sent: env.tab.got.length };
+  env.stop();
+  return r;
+});
+
+await scenario("resume", async () => {  // 다시 연 창: sessionStorage 의 유료 실행 {stage: run, pid} 을 무료 큐와 같이 이어서 폴링(대기열 번호는 대기열에서)·끝 = Run 보고
+  const store = mem({ [JOB]: JSON.stringify({ stage: "run", pid: "pid-9", number: null }) });
+  const env = await mkStudio({ store, queue: { queue_running: [[2, "user-a"]], queue_pending: [[3, "user-b"], [7, "pid-9"], [9, "user-c"]] } });
+  await until(() => env.head.textContent.includes("대기 — 앞"), 3000);
+  const r = { head: env.head.textContent, plan: env.panel.textContent.includes("계산 대기 — 이 Studio 의 Run(run)"), cancel: !!env.B("취소", env.head) };
+  env.srv.queue = { queue_running: [], queue_pending: [] };
+  await env.finish("pid-9", RUN_H({ approved_now: false, pending: 4 }), "Run 끝");
+  r.done = env.toast("Run 끝");
+  r.stored = env.store.getItem(JOB);
+  env.stop();
+  return r;
+});
+
+await scenario("freeWhilePaying", async () => {  // 유료 승인 결과를 기다리는 사이 무료 큐(board.js 편집기 반영(큐) = pipe.queue — 패널 단추 밖의 길)는 보내지 않고 탭의 ok 를
+  // 이 Studio 의 실행으로 이어 받음. 반영 확인(once — GET /pipeline 다시 읽기)·템플릿 요청(PS.sending) 중에는 승인·재굴림을 보내지 않음
+  let env = await mkStudio({ tab: { reply: (m) => [[0, ACK], [300, ok(m)]] } });
+  env.click(env.B("Run 승인"));
+  await sleep(30);
+  const q = await env.pipe.queue("apply");
+  const r = { paying: { r: q === undefined, prompts: env.srv.count("api/prompt"), toast: env.toasts.at(-1) || null } };
+  await until(() => env.toast("Run 큐에 들어감"));
+  r.tracked = { stored: JSON.parse(env.store.getItem(JOB) || "null"), head: env.head.textContent.includes("실행 중: Run(run)") };
+  await env.finish("pid-run", RUN_H({}), "Run 끝");
+  env.stop();
+  const held = async (start, done, end = "반영 끝") => {  // env 에서 start = 무료 큐를 시작해 다시 읽기·템플릿 요청에서 멈춘 사이 → 승인 단추 모양(r3-12 —
+    // 그 사이 다시 그려 꺼진 모양), 그래도 누름(옛 단추)·재굴림
+    await start();
+    const drawn = env.btn("Run 승인");
+    const n = env.toasts.length;
+    env.click(env.B("Run 승인"));
+    env.pipe.reroll();
+    await sleep(10);
+    const res = { drawn, confirms: env.confirms.length, sent: env.tab.got.length, toasts: env.toasts.slice(n), run: env.btn("Run 승인") };
+    await done();
+    await env.finish("pid-1", OK_H, end);
+    env.stop();
+    return res;
+  };
+  env = await mkStudio();
+  r.asking = await held(async () => {
+    env.srv.delay.pipeline = [200];
+    env.B("반영").fire("click");  // once(applyNow): GET /pipeline 다시 읽기(200ms) → 확인 창 → 큐
+    await sleep(30);
+  }, () => until(() => env.head.textContent.includes("실행 중")));
+  env = await mkStudio();
+  let q2 = null;
+  r.sending = await held(async () => {
+    env.srv.delay["pipeline/prompt"] = [200];
+    q2 = env.pipe.queue("apply");  // checkWarn(GET /pipeline) → GET /pipeline/prompt(200ms) 동안 PS.sending
+    await until(() => env.srv.count("pipeline/prompt") === 1);
+  }, () => q2);
+  env = await mkStudio();
+  r.exporting = await held(async () => {  // [Export](once 밖 — 확인 창 없음): GET /pipeline/prompt(200ms) 동안 PS.sending
+    env.srv.delay["pipeline/prompt"] = [200];
+    env.B("Export").fire("click");
+    await until(() => env.srv.count("pipeline/prompt") === 1);
+  }, () => until(() => env.head.textContent.includes("실행 중")), "Export 끝");
+  env = await mkStudio();  // [반영] 확인 창을 취소 = 큐 없음 → 승인 단추 다시 켬(끈 모양으로 남지 않음)
+  env.answer = false;
+  env.srv.delay.pipeline = [200];
+  env.B("반영").fire("click");
+  await sleep(30);
+  r.cancel = { drawn: env.btn("Run 승인") };
+  await until(() => env.confirms.length === 1);
+  await sleep(20);
+  Object.assign(r.cancel, { run: env.btn("Run 승인"), prompts: env.srv.count("api/prompt") });
+  env.stop();
+  return r;
+});
+
+await scenario("lateWhileFree", async () => {  // 결과를 모르고 끝낸 승인(ack 없음) 뒤 이 Studio 가 무료 반영을 냄 → 늦게 온 ok 는 그 실행(끝 판정·이어 받기)을 덮지 않고
+  // 토스트에 prompt_id 만
+  const env = await mkStudio({ ack: 60, end: 4000, tab: { reply: (m) => [[300, ok(m)]] } });
+  env.click(env.B("Run 승인"));
+  await until(() => env.toast("ComfyUI 탭 응답 없음"));
+  env.B("반영").fire("click");
+  await until(() => env.head.textContent.includes("실행 중"));
+  await until(() => env.toast("늦게 온 결과"), 1000);
+  const r = { toast: env.toast("늦게 온 결과"), head: env.head.textContent.includes("실행 중: 반영(apply)"), stored: JSON.parse(env.store.getItem(JOB) || "null") };
+  await env.finish("pid-1", OK_H, "반영 끝");
+  env.stop();
+  return r;
+});
+
+const WV = (o) => Object.assign(clone(M["bmk-dp-wave"].examples[0]), { tab: TAB, rootKey: KEY, prompt_id: "pid-run", remaining: 5 }, o);
+const runBtn = (env) => env.panel.all().find((e) => e.tagName === "BUTTON" && /^(Run 승인|남은)/.test(e.textContent));  // Run 줄 승인 단추
+
+await scenario("waveLate", async () => {  // D9: 끝난 Run(PS.last.run)에 늦게 온 wave 도 받음 → Run 줄 '남은 N건' + '남은 N건 이어서 승인'
+  const env = await mkStudio();
+  env.click(env.B("Run 승인"));
+  await until(() => env.toast("Run 큐에 들어감"));
+  await env.finish("pid-run", RUN_H({ pending: 4 }), "Run 끝");
+  await sleep(20);
+  env.tab.post(WV({ remaining: 2 }));
+  await sleep(20);
+  const r = { row: env.rows("wave 로 멈춤"), label: runBtn(env).textContent };
+  env.click(env.B("초안 승인"));  // 초안 승인은 Run wave 를 지우지 않음(초안 템플릿은 Run 을 쏘지 않음)
+  await until(() => env.toast("Spec Draft 큐에 들어감"));
+  await env.finish("pid-draft", DRAFT_H({}), "Spec Draft 끝");
+  await sleep(20);
+  r.afterDraft = env.rows("wave 로 멈춤");
+  env.stop();
+  return r;
+});
+
+await scenario("rerollWave", async () => {  // 재굴림 실행의 wave → 끝난 뒤 '재굴림 wave 로 멈춤 — 남은 N건'(사전 승인분 — 'ComfyUI 큐'로, Run 승인 라벨은 그대로), 다음 Run 승인을 보내면 지움
+  const env = await mkStudio();
+  env.pipe.reroll();
+  await until(() => env.toast("재굴림 큐에 들어감"));
+  env.tab.post(WV({ prompt_id: "pid-reroll", remaining: 3 }));
+  await sleep(20);
+  const r = { mid: env.rows("재굴림 wave") };
+  await env.finish("pid-reroll", RUN_H({ approved_now: false, pending: 4 }), "재굴림 끝");
+  await sleep(20);
+  Object.assign(r, { toast: env.toast("재굴림 끝"), row: env.rows("재굴림 wave"), runRow: env.rows("wave 로 멈춤"), label: runBtn(env).textContent });
+  env.click(runBtn(env));
+  await until(() => env.toast("Run 큐에 들어감"));
+  r.cleared = env.rows("재굴림 wave");
+  await env.finish("pid-run", RUN_H({}), "Run 끝");
+  env.stop();
+  return r;
+});
+
+await scenario("endRows", async () => {  // 유료 실행이 오류·취소로 끝남 → '마지막 Run' 줄 = 오류 문구(+ Run 보고가 있으면 그 한 줄) — '노드가 옛 버전'은 성공인데 보고가 없을 때만
+  const one = async (h) => {
+    const env = await mkStudio();
+    env.click(env.B("Run 승인"));
+    await until(() => env.toast("Run 큐에 들어감"));
+    env.hist["pid-run"] = h;
+    await until(() => env.rows("이 Studio 의 마지막 Run").length, 4000);
+    const r = { row: env.rows("이 Studio 의 마지막 Run"), toast: env.toasts.at(-1) || null };
+    env.stop();
+    return r;
+  };
+  const err = (node_type, msg) => [["execution_start", {}], ["execution_error", { node_id: "dp_x", node_type, exception_message: msg }]];
+  return {
+    importErr: await one(entry("error", err("BMKDesignPatchImportPSD", "PSD 파일이 없습니다"), { dp_project: { text: ["p"] } })),
+    cancel: await one(entry("error", [["execution_start", {}], ["execution_interrupted", {}]], {})),
+    reviewErr: await one(entry("error", err("BMKDesignPatchReview", "검토 실패"), RUN_H({}).outputs)),
+  };
+});
+
+await scenario("replan", async () => {  // '계획 다시' 결과(stale 등) 뒤 다시 받은 계획이 올 때까지 그 계획의 해시로 승인 끔(같은 낡은 해시 재전송 없음), 새 계획 = 다시 켬
+  const env = await mkStudio();
+  env.tab.reply = () => [[0, ACK], [5, FAIL("stale")]];
+  env.srv.planDelay = [300];
+  env.click(env.B("Run 승인"));
+  await until(() => env.toast("계획이 바뀜"));
+  await sleep(20);
+  const r = { during: env.btn("Run 승인"), draft: env.btn("초안 승인") };
+  env.click(env.B("Run 승인"));
+  await sleep(20);
+  r.again = { confirms: env.confirms.length, sent: env.tab.got.length };
+  await until(() => env.B("Run 승인") && !env.B("Run 승인").disabled, 2000);
+  r.after = env.btn("Run 승인");
+  env.stop();
+  return r;
+});
+
+await scenario("again", async () => {  // 결과를 모르고 끝낸 승인(ack 없음·최종 시간·탭 바뀜) 뒤 같은 해시로 다시 승인 = 확인 창에 '앞서 보낸 같은 승인의 결과를
+  // 모름' 한 줄(다른 단계는 없음). 결과를 알게 되면 지움 — 그 단계의 다음 결과, 그 요청의 늦은 결과(이어 받은 실행이 Run 앞에서 오류로 끝남 — 해시 그대로)
+  let env = await mkStudio({ ack: 60, end: 4000, tab: { reply: () => [] } });
+  env.click(env.B("Run 승인"));
+  const r = { first: env.confirms.at(-1) || null };
+  await until(() => env.toast("ComfyUI 탭 응답 없음"));
+  env.answer = false;
+  env.click(env.B("Run 승인"));
+  r.same = env.confirms.at(-1) || null;
+  env.click(env.B("초안 승인"));
+  r.draft = env.confirms.at(-1) || null;
+  r.sent = env.tab.got.length;
+  env.tab.reply = () => [[0, ACK], [5, FAIL("busy")]];
+  env.answer = true;
+  env.click(env.B("Run 승인"));
+  await until(() => env.toast("큐를 처리하는 중"));
+  await sleep(20);
+  env.answer = false;
+  env.click(env.B("Run 승인"));
+  r.known = env.confirms.at(-1) || null;
+  env.stop();
+  const lost = async (o, cut) => {  // cut(env) = 결과를 모르고 끝남 → 다시 받은 계획으로 단추가 켜진 뒤 같은 해시 확인 창(취소)
+    env = await mkStudio(o);
+    env.click(env.B("Run 승인"));
+    await cut(env);
+    await until(() => env.B("Run 승인") && !env.B("Run 승인").disabled, 2000);
+    env.answer = false;
+    env.click(env.B("Run 승인"));
+    const c = env.confirms.at(-1) || null;
+    env.stop();
+    return c;
+  };
+  r.timeout = await lost({ ack: 60, end: 200, tab: { reply: () => [[0, ACK]] } }, (e) => until(() => e.toast("결과를 받지 못함")));
+  r.changed = await lost({ tab: { reply: () => [[0, ACK]] } }, async (e) => {
+    await sleep(30);
+    e.tab.id = "newtab0000000000";
+    await until(() => e.toast("ComfyUI 탭이 바뀜"));
+  });
+  r.unknown = await lost({ tab: { reply: () => [[0, ACK], [5, FAIL("unknown")]] } }, (e) => until(() => e.toast("결과 모름")));
+  const importErr = entry("error", [["execution_start", {}], ["execution_error", { node_id: "dp_import", node_type: "BMKDesignPatchImportPSD",
+    exception_message: "PSD 파일이 없습니다" }]], { dp_project: { text: ["p"] } });
+  const endErr = async () => {  // 이어 받은 실행이 Import 오류로 끝남 → 다음 state 뒤 계획 다시·단추 켜짐 → 같은 해시 확인 창(취소)
+    env.hist["pid-run"] = importErr;
+    await until(() => env.rows("이 Studio 의 마지막 Run").length, 4000);
+    env.pipe.stateChanged(env.S);
+    await until(() => env.B("Run 승인") && !env.B("Run 승인").disabled, 2000);
+    env.answer = false;
+    env.click(env.B("Run 승인"));
+    return env.confirms.at(-1) || null;
+  };
+  env = await mkStudio({ ack: 60, end: 4000, tab: { reply: (m) => [[150, ok(m)]] } });
+  env.click(env.B("Run 승인"));
+  await until(() => env.toast("늦게 온 결과"));
+  const c = await endErr();
+  r.lateErr = { row: env.rows("이 Studio 의 마지막 Run"), confirm: c };
+  env.stop();
+  env = await mkStudio({ ack: 60, end: 4000, tab: { reply: () => [] } });  // 결과 모름 두 번 → 첫 요청의 늦은 ok 는 둘째의 표시를 지우지 않음
+  env.click(env.B("Run 승인"));
+  await until(() => env.toast("ComfyUI 탭 응답 없음"));
+  env.click(env.B("Run 승인"));
+  await until(() => env.toasts.filter((t) => t.includes("ComfyUI 탭 응답 없음")).length === 2);
+  const m1 = env.tab.got[0];
+  env.tab.post(Object.assign(ok(m1), { id: m1.id, tab: TAB }));
+  await until(() => env.toast("늦게 온 결과"));
+  r.twoLost = await endErr();
+  env.stop();
+  return r;
+});
+
+await scenario("rerollRefuse", async () => {  // r1-08: 재굴림(R·머리줄 'ComfyUI 큐' — 유료 탭 길)이 안 됨 = '재굴림 큐 안 됨'(R 의 사전 승인은 예약된 채 남아
+  // 다음 Run·ComfyUI 큐 때 과금 — 머리줄 큐 안내·R 재누름 +1 경고, busy 도 '잠시 뒤 다시'가 아님), 결과 모름 = '재굴림 결과 모름'(들어가지 않았으면 예약된 채)
+  const env = await mkStudio();
+  const r = {};
+  for (const reason of ["busy", "http", "not_submitted", "confirm_settings"]) {
+    env.tab.reply = () => [[0, ACK], [5, FAIL(reason)]];
+    const n = env.toasts.length;
+    env.pipe.reroll();
+    await until(() => env.toasts.length > n);
+    await sleep(30);
+    r[reason] = env.toasts.slice(n);
+  }
+  // r2-06 탭 문구 끝의 할 일 '(Studio 에서) 다시 승인'(자동 큐 busy·graphToPrompt 던짐·deno 멈춤)은 재굴림이면 R 재누름(+1)으로 읽히므로 머리줄 큐로
+  r.redo = {};
+  // r3-08 남은 승인 항목을 뺀 not_submitted(left > 0)는 할 일 뒤에 꼬리 ' — 남은 승인 항목은 큐에서 뺌' — 꼬리를 둔 채 할 일만 바꿈
+  for (const [k, reason, tail] of [["aq", "busy", "ComfyUI 탭의 Run 단추 모드를 Run 으로 바꾼 뒤 다시 승인"],
+    ["g2p", "not_submitted", "그 탭에서 다른 워크플로로 바꾼 뒤 다시 승인"], ["deno", "not_submitted", "Director 가 없는 워크플로로 바꾼 뒤 Studio 에서 다시 승인"],
+    ["g2pL", "not_submitted", "그 탭에서 다른 워크플로로 바꾼 뒤 다시 승인 — 남은 승인 항목은 큐에서 뺌"],
+    ["denoL", "not_submitted", "Director 가 없는 워크플로로 바꾼 뒤 Studio 에서 다시 승인 — 남은 승인 항목은 큐에서 뺌"],
+    ["leftL", "not_submitted", "ComfyUI 탭의 큐 처리가 승인 항목을 꺼내기 전에 끝남 — 남은 승인 항목은 큐에서 뺌"],
+    // r3 탭 r3-01 무장 중 쌓인 모르는 항목(stray)을 뺀 꼬리 — 홀로·남은 승인 항목 꼬리 뒤에
+    ["g2pS", "not_submitted", "그 탭에서 다른 워크플로로 바꾼 뒤 다시 승인 — 무장 중 쌓여 남은 큐 항목(승인 항목인지 모름)은 큐에서 뺌"],
+    ["denoLS", "not_submitted", "Director 가 없는 워크플로로 바꾼 뒤 Studio 에서 다시 승인 — 남은 승인 항목은 큐에서 뺌 — 무장 중 쌓여 남은 큐 항목(승인 항목인지 모름)은 큐에서 뺌"]]) {
+    env.tab.reply = () => [[0, ACK], [5, Object.assign(clone(FAIL(reason)), { error: `이유 ${k}: ${tail}` })]];
+    const n = env.toasts.length;
+    env.pipe.reroll();
+    await until(() => env.toasts.length > n);
+    await sleep(30);
+    r.redo[k] = env.toasts.slice(n);
+  }
+  r.sent = env.tab.got.map((m) => m.stage);
+  env.stop();
+  const e2 = await mkStudio({ ack: 60, end: 4000, tab: { reply: () => [] } });
+  e2.pipe.reroll();
+  await until(() => e2.toast("ComfyUI 탭 응답 없음"));
+  await sleep(20);
+  r.noAck = { toasts: e2.toasts.slice(), row: e2.rows("앞서 보낸 재굴림") };
+  e2.stop();
+  return r;
+});
+
+await scenario("gate", async () => {  // r1-09: 서버가 유료 템플릿을 내주지 않을 상태(마지막 GET /pipeline — 파일 없음·확인 필요·경로 경고·옛 서버)면 R·머리줄
+  // 'ComfyUI 큐'의 길(board.js tabWay)은 유료 탭이 아니라 opener(Review 부분 실행 — S3a 와 같음)·예약만, R 확인 창은 그 이유, 승인 단추는 그 이유로 꺼짐
+  const one = async (fix, send = true, opener = false) => {
+    const env = await mkStudio({ P: fix, opener });
+    const calls = { comfy: 0, toasts: [], confirms: [] };
+    const c = vm.createContext({ tabLink: env.link, pipe: env.pipe, comfyConnected: () => false, queueInComfy: () => { calls.comfy += 1; return true; },
+      toast: (m, k) => calls.toasts.push(`${k || ""}:${m}`) });
+    vm.runInContext(`tabWay = ${boardFn("tabWay")}; queueReroll = ${boardFn("queueReroll")}; tabTitle = ${boardFn("tabTitle")};`, c);
+    // r2-05 머리줄 탭 배지 제목(tabTitle)도 이 판정(실제 link·pipe — 서버 템플릿 게이트)
+    const r = { why: env.pipe.paidWhy(), none: c.tabWay(), run: env.btn("Run 승인"), title: c.tabTitle(env.link) };
+    if (send) {
+      // R(버튼): 확인 창 = 그 이유 → 0.6초 뒤 큐는 확인 때 판정(예약만), 머리줄 'ComfyUI 큐'(지금 판정 — opener 없음 = 예약만·있음 = Review 부분 실행)
+      const rc = vm.createContext({ S: { crops: [] }, LAYOUT_STATUS: {}, REROLL_CONFIRM_MS: 2500, rerollArm: null, Date, setTimeout: (fn) => fn(),
+        window: { confirm: (m) => { calls.confirms.push(m); return true; } }, toast: c.toast, rerollCell: () => ({ cell_key: "abcdef0123456789", variant: "V1" }),
+        usd: () => " ≈ $0.62", curTarget: () => ({ crop_id: "001_38a818" }), tabWay: c.tabWay, tabLink: env.link, pipe: env.pipe,
+        write: async () => ({}), queueReroll: c.queueReroll });
+      await vm.runInContext(`(${boardFn("reroll")})`, rc)(true);
+      c.queueReroll();
+      c.comfyConnected = () => true;
+      r.opener = c.tabWay();
+      c.queueReroll();
+      await sleep(30);
+      Object.assign(r, { comfy: calls.comfy, toasts: calls.toasts, confirm: (calls.confirms[0] || "").split("\n").at(-1), sent: env.tab.got.length });
+    }
+    env.stop();
+    return r;
+  };
+  return {
+    noFile: await one((b) => { b.saved = false; b.rev = 0; b.confirm = ["draft.apply"]; }),
+    confirm: await one((b) => { b.confirm = ["prepare.variants"]; }, false),
+    confirmOpener: await one((b) => { b.confirm = ["prepare.variants"]; }, false, true),
+    path: await one((b) => { b.warnings = [{ field: "import.psd_path", reason: "missing_path", msg: "PSD 파일이 없음: G:/x.psd" }]; }),
+    oldServer: await one((b) => { delete b.manifest_rev; }),
+    ok: await one(undefined, false),
+  };
+});
+
+await scenario("login", async () => {  // r1-15: 노드 보고의 인증 중지(Run stopped_reason auth — 로그인 없음·401/402/403)면 끝 토스트·마지막 줄이 '승인분 실행'이 아니라
+  // 'comfy.org 로그인 필요 — 호출을 보내지 않음'(경고)
+  const env = await mkStudio();
+  env.click(env.B("Run 승인"));
+  await until(() => env.toast("Run 큐에 들어감"));
+  await env.finish("pid-run", RUN_H({ stopped_reason: "auth", pending: 4 }), "Run 끝");
+  await sleep(20);
+  const r = { toast: env.toast("Run 끝"), row: env.rows("이 Studio 의 마지막 Run"),
+    cls: (env.panel.all().find((e) => e.classList.contains("pp-row") && e.own.startsWith("이 Studio 의 마지막 Run")) || { className: "" }).className };
+  env.stop();
+  return r;
+});
+
+await scenario("refresh", async () => {  // r1-13: 승인을 보내고 결과를 기다리는 사이(ack 뒤) Studio 창을 새로 엶(같은 sessionStorage) → 새 창 = 결과 모름 줄·같은 해시
+  // 재승인 확인 창 줄, 탭이 그 뒤 보낸 approved(같은 id·tab·길) = 늦게 온 결과로 이어 받음(실행·끝 판정), 받은 뒤 기록 지움
+  const ASK = `bmk-dp-ask:${KEY}`;
+  const store = mem();
+  const env1 = await mkStudio({ store, tab: { reply: () => [[0, ACK]] } });
+  env1.click(env1.B("Run 승인"));
+  await sleep(30);
+  const m0 = env1.tab.got[0];
+  const r = { id: m0.id, kept: JSON.parse(store.getItem(ASK) || "null") };
+  env1.stop();
+  const env = await mkStudio({ store });
+  r.row = env.rows("앞서 보낸 Run 승인");
+  env.answer = false;
+  env.click(env.B("Run 승인"));
+  r.confirm = (env.confirms.at(-1) || "").split("\n").slice(-2);
+  env.tab.post(Object.assign(ok(m0), { id: m0.id, tab: TAB }));
+  await until(() => env.toast("늦게 온 결과"));
+  await sleep(20);
+  r.late = { toast: env.toast("늦게 온 결과"), head: env.head.textContent.includes("실행 중: Run(run)"), job: JSON.parse(store.getItem(JOB) || "null"),
+    kept: store.getItem(ASK), row: env.rows("앞서 보낸 Run 승인") };
+  await env.finish("pid-run", RUN_H({}), "Run 끝");
+  env.stop();
+  return r;
+});
+
+await scenario("rerollHeld", async () => {  // r2-01·r2-09: R 확인 때 이 Studio 가 바쁨(paidLock — 길과 무관) = '지금은 예약만'에 동의 → 0.6초 큐 전에 lock 이
+  // 풀려도(탭의 확정 거절) 재굴림 메시지 0(버튼·키보드 R R). 자기 승인을 처리하는 탭(hello busy — opener 길)으로도 Review 부분 실행 0(R·머리줄
+  // 'ComfyUI 큐' — 승인 결과 뒤 낡은 busy 동안 이 Studio 의 실행 중 포함). board.js reroll·tabWay·queueReroll 은 실제 함수(이 Studio 의 link·pipe)
+  const boardR = (env, opener) => {
+    const k = { comfy: 0, timers: [], confirms: [] };
+    const c = vm.createContext({ tabLink: env.link, pipe: env.pipe, comfyConnected: () => opener, queueInComfy: () => { k.comfy += 1; return true; },
+      toast: (m, t) => env.toasts.push(`${t || ""}:${m}`) });
+    vm.runInContext(`tabWay = ${boardFn("tabWay")}; queueReroll = ${boardFn("queueReroll")}; tabTitle = ${boardFn("tabTitle")};`, c);
+    const rc = vm.createContext({ S: { crops: [] }, LAYOUT_STATUS: {}, REROLL_CONFIRM_MS: 2500, rerollArm: null, Date, setTimeout: (fn) => k.timers.push(fn),
+      window: { confirm: (m) => { k.confirms.push(m); return true; } }, toast: c.toast, rerollCell: () => ({ cell_key: "abcdef0123456789", variant: "V1" }),
+      usd: () => " ≈ $0.62", curTarget: () => ({ crop_id: "001_38a818" }), tabWay: c.tabWay, tabLink: env.link, pipe: env.pipe,
+      write: async () => ({}), queueReroll: c.queueReroll });
+    return Object.assign(k, { c, reroll: vm.runInContext(`(${boardFn("reroll")})`, rc) });
+  };
+  const r = {};
+  // 채널 길: Run 승인 응답을 기다리는 중(paying) R → 탭이 확정 거절(busy)로 답해 lock 이 풀린 뒤 0.6초 큐(타이머는 손으로)
+  const env = await mkStudio({ tab: { reply: (m) => (m.stage === "run" ? [[0, ACK], [150, FAIL("busy")]] : [[0, ACK], [5, ok(m)]]) } });
+  for (const key of [false, true]) {
+    const b = boardR(env, false);
+    await until(() => env.B("Run 승인") && !env.B("Run 승인").disabled, 2000);
+    const n = env.toasts.length;
+    const g = env.tab.got.length;
+    env.click(env.B("Run 승인"));
+    const at = { way: b.c.tabWay(), lock: env.pipe.paidLock() };
+    if (key) {
+      await b.reroll(false);
+      await b.reroll(false);
+    } else await b.reroll(true);
+    await until(() => env.toasts.slice(n).some((t) => t.includes("Run 승인 안 됨")));
+    const freed = { way: b.c.tabWay(), lock: env.pipe.paidLock() };
+    const timers = b.timers.splice(0);
+    for (const fn of timers) fn();
+    await sleep(40);
+    r[key ? "key" : "button"] = { at, freed, timers: timers.length, confirm: (b.confirms[0] || "").split("\n").at(-1),
+      side: b.confirms.some((x) => x.includes(env.pipe.side)), sent: env.tab.got.slice(g).map((m) => m.stage), toasts: env.toasts.slice(n) };
+  }
+  env.stop();
+  // opener 길: 탭이 이 Studio 의 Run 승인을 처리하는 동안 hello busy(studioBusy) → tabWay = opener — R(버튼)·머리줄 큐 모두 Review 부분 실행 0
+  const e2 = await mkStudio({ opener: true, tab: { reply: (m) => [[0, ACK], [400, ok(m)]] } });
+  const b2 = boardR(e2, true);
+  const n2 = e2.toasts.length;
+  e2.click(e2.B("Run 승인"));
+  e2.tab.busy = true;
+  await until(() => e2.link.busy === true);
+  const mid = { way: b2.c.tabWay(), lock: e2.pipe.paidLock(), title: b2.c.tabTitle(e2.link) };  // r3-11 머리줄 배지 제목도 '지금은 예약만'
+  await b2.reroll(true);
+  for (const fn of b2.timers.splice(0)) fn();
+  b2.c.queueReroll();
+  Object.assign(mid, { comfy: b2.comfy, confirm: (b2.confirms[0] || "").split("\n").at(-1) });
+  await until(() => e2.toast("Run 큐에 들어감"));
+  const after = { way: b2.c.tabWay(), lock: e2.pipe.paidLock(), title: b2.c.tabTitle(e2.link) };  // 결과 뒤 다음 hello 까지 낡은 busy + 이 Studio 의 Run 실행 중
+  b2.c.queueReroll();
+  after.comfy = b2.comfy;
+  r.opener = { mid, after, sent: e2.tab.got.map((m) => m.stage), toasts: e2.toasts.slice(n2) };
+  e2.tab.busy = false;
+  await e2.finish("pid-run", RUN_H({}), "Run 끝");
+  e2.stop();
+  return r;
+});
+
+await scenario("lateUnknown", async () => {  // r3-03: Studio 가 먼저 끝낸 요청(최종 시간)·새로 연 창이 이어 받은 요청에 늦게 온 approved unknown(탭이 바꿔치기한
+  // 본문을 보낸 뒤 응답을 잃음) = 여전히 결과 모름 — 진행 패널 줄·보낸 승인 기록·같은 해시 재승인 확인 창 줄이 남음(늦은 토스트는 뜸)
+  const ASK = `bmk-dp-ask:${KEY}`;
+  let env = await mkStudio({ ack: 60, end: 200, tab: { reply: () => [[0, ACK], [400, FAIL("unknown")]] } });
+  env.click(env.B("Run 승인"));
+  await until(() => env.toast("결과를 받지 못함"));
+  await until(() => env.toast("늦게 온 결과"), 2000);
+  await sleep(20);
+  await until(() => env.B("Run 승인") && !env.B("Run 승인").disabled, 2000);
+  env.answer = false;
+  env.click(env.B("Run 승인"));
+  const r = { late: { toast: env.toast("늦게 온 결과"), row: env.rows("앞서 보낸 Run 승인"), kept: Object.keys(JSON.parse(env.store.getItem(ASK) || "{}")),
+    confirm: (env.confirms.at(-1) || "").split("\n").at(-2) } };
+  env.stop();
+  const store = mem();
+  const env1 = await mkStudio({ store, tab: { reply: () => [[0, ACK]] } });
+  env1.click(env1.B("Run 승인"));
+  await sleep(30);
+  const m0 = env1.tab.got[0];
+  env1.stop();
+  env = await mkStudio({ store });
+  env.tab.post(Object.assign(clone(FAIL("unknown")), { id: m0.id, tab: TAB }));
+  await until(() => env.toast("늦게 온 결과"));
+  await sleep(20);
+  r.resumed = { toast: env.toast("늦게 온 결과"), row: env.rows("앞서 보낸 Run 승인"), kept: Object.keys(JSON.parse(store.getItem(ASK) || "{}")) };
+  env.stop();
+  return r;
+});
+
+await scenario("lostKept", async () => {  // r3-09: 결과 모름 A 뒤 같은 단계 B 의 확정 거절(busy — A 에 대해 아무것도 말하지 않음)은 A 의 줄·기록을 지우지 않음(같은 해시 확인
+  // 창 줄도), 그 창 세션을 새로 열어도 A 의 줄·늦은 ok 이어 받기. B 가 제출되면(ok — 대기열은 차례대로) A 도 지움
+  const ASK = `bmk-dp-ask:${KEY}`;
+  const store = mem();
+  let env = await mkStudio({ store, ack: 60, end: 4000, tab: { reply: () => [] } });
+  env.click(env.B("Run 승인"));
+  await until(() => env.toast("ComfyUI 탭 응답 없음"));
+  const mA = env.tab.got[0];
+  await until(() => env.B("Run 승인") && !env.B("Run 승인").disabled, 2000);
+  env.tab.reply = () => [[0, ACK], [5, FAIL("busy")]];
+  env.click(env.B("Run 승인"));
+  await until(() => env.toast("큐를 처리하는 중"));
+  await sleep(20);
+  const r = { busy: { row: env.rows("앞서 보낸 Run 승인"), kept: (JSON.parse(store.getItem(ASK) || "{}").run || []).map((a) => a.id === mA.id) } };
+  await until(() => env.B("Run 승인") && !env.B("Run 승인").disabled, 2000);
+  env.answer = false;
+  env.click(env.B("Run 승인"));
+  r.busy.confirm = (env.confirms.at(-1) || "").split("\n").at(-2);
+  env.stop();
+  env = await mkStudio({ store });
+  r.reopened = { row: env.rows("앞서 보낸 Run 승인") };
+  env.tab.post(Object.assign(ok(mA), { id: mA.id, tab: TAB }));
+  await until(() => env.toast("늦게 온 결과"));
+  await sleep(20);
+  r.reopened.late = { toast: env.toast("늦게 온 결과"), head: env.head.textContent.includes("실행 중: Run(run)"), kept: store.getItem(ASK),
+    row: env.rows("앞서 보낸 Run 승인") };
+  await env.finish("pid-run", RUN_H({}), "Run 끝");
+  env.stop();
+  env = await mkStudio({ ack: 60, end: 4000, tab: { reply: () => [] } });
+  env.click(env.B("Run 승인"));
+  await until(() => env.toast("ComfyUI 탭 응답 없음"));
+  await until(() => env.B("Run 승인") && !env.B("Run 승인").disabled, 2000);
+  env.tab.reply = okReply;
+  env.click(env.B("Run 승인"));
+  await until(() => env.toast("Run 큐에 들어감"));
+  r.submitted = { row: env.rows("앞서 보낸 Run 승인"), kept: env.store.getItem(ASK) };
+  await env.finish("pid-run", RUN_H({}), "Run 끝");
+  env.pipe.stateChanged(env.S);
+  await until(() => env.B("Run 승인") && !env.B("Run 승인").disabled, 2000);
+  env.answer = false;
+  env.click(env.B("Run 승인"));
+  r.submitted.confirm = (env.confirms.at(-1) || "").split("\n").at(-2);
+  env.stop();
+  return r;
+});
+
+await scenario("restart", async () => {  // r3-05: 새 JS + 옛 서버(S3a — GET /pipeline 에 manifest_rev 없음)로 연 창 → ComfyUI 재시작(파일·rev 그대로) → 같은 state
+  // 폴링에서 GET /pipeline 을 다시 읽어 승인 단추 켬. 옛 서버인 동안 폴링은 다시 읽되 다시 그리지 않음, 새 판이 된 뒤에는 다시 읽지 않음
+  let restarted = false;
+  const env = await mkStudio({ opener: true, pipeline: () => { const [s, b] = quietPipeline(); if (!restarted) delete b.manifest_rev; return [s, b]; } });
+  const gets = () => env.srv.count("pipeline");
+  const b0 = env.B("Run 승인");
+  const r = { before: env.btn("Run 승인") };
+  const g0 = gets();
+  env.pipe.stateChanged(env.S);
+  await sleep(40);
+  r.oldPoll = { gets: gets() - g0, same: env.B("Run 승인") === b0 };
+  restarted = true;
+  env.pipe.stateChanged(env.S);
+  await until(() => env.B("Run 승인") && !env.B("Run 승인").disabled, 2000);
+  r.after = env.btn("Run 승인");
+  const g1 = gets();
+  for (let i = 0; i < 3; i++) {
+    env.pipe.stateChanged(env.S);
+    await sleep(20);
+  }
+  r.settled = gets() - g1;
+  env.stop();
+  return r;
+});
+
+await scenario("texts", async () => {  // 확인 창 문구(§4.4 + 계약 §5 경고 줄·부수 효과 줄)·승인 단추 라벨·끝 보고 한 줄 — 순수 함수
+  const p = R["GET /pipeline/plan"];
+  const ids = ["001_38a818", "002_d98f99", "003_2f8f50"];
+  const mod = (base, f) => { const x = clone(base); f(x); return x; };
+  return {
+    run: P.approveText("run", p.ok, ids, false, false),
+    runStyle: P.approveText("run", p.alt.style, ids, true, true),
+    runHeld: P.approveText("run", p.alt.style, ids, false, true),
+    runNoFull: P.approveText("run", p.alt.style, ids, false, false),
+    runOther: P.approveText("run", p.ok, ["001_38a818"], false, false),
+    runMockSpecs: P.approveText("run", mod(p.ok, (x) => { x.draft.warnings.mock_specs = 2; }), ids, false, false),
+    runMockBackend: P.approveText("run", mod(p.ok, (x) => { x.draft.warnings.mock_specs = 2; x.run.backend = "mock"; }), ids, false, false),
+    runBare: P.approveText("run", mod(p.ok, (x) => { x.run.pre = 0; x.draft.warnings.unwritten = []; }), ["001_38a818"], false, false),
+    draft: P.approveText("draft", mod(p.ok, (x) => { x.draft.orphan_retries = 2; }), ids, false, false),
+    draftStyle: P.approveText("draft", p.alt.style, ids, true, true),
+    qwen: P.approveText("draft", mod(p.ok, (x) => { x.draft.family = "local_qwen"; x.draft.backend = "vlm_local_qwen"; }), ids, false, false),
+    qwen65: P.approveText("draft", mod(p.ok, (x) => { x.draft.family = "local_qwen"; x.draft.backend = "vlm_local_qwen"; x.draft.est_seconds = 65; }), ids, false, false),
+    labels: { run: P.runText(p.ok.run).label, mock: P.runText(mod(p.ok.run, (x) => { x.backend = "mock"; })).label, none: P.runText(p.alt.no_selection.run).label,
+      err: P.runText(p.alt.run_error.run).label, draft: P.draftText(p.ok.draft).label, style: P.draftText(p.alt.style.draft).label,
+      qwen: P.draftText(mod(p.ok.draft, (x) => { x.family = "local_qwen"; x.backend = "vlm_local_qwen"; })).label,
+      vmock: P.draftText(mod(p.ok.draft, (x) => { x.backend = "vlm_mock"; })).label, derr: P.draftText(p.alt.draft_error.draft).label,
+      drun: P.draftText(p.alt.draft_running.draft).label },
+    report: { run: P.paidReport("run", RUN_H({})), dry: P.paidReport("run", RUN_H({ approved_now: false, pending: 4 })),
+      mock: P.paidReport("run", RUN_H({ backend: "mock" })), draft: P.paidReport("draft", DRAFT_H({ pending: 1 })),
+      reroll: P.paidReport("reroll", RUN_H({ approved_now: false, pending: 4 })), none: P.paidReport("run", OK_H),
+      login: P.paidReport("run", RUN_H({ stopped_reason: "auth", pending: 4 })), wave: P.paidReport("run", RUN_H({ stopped_reason: "wave", pending: 4 })),
+      draftLogin: P.paidReport("draft", DRAFT_H({ auth_held: 3, pending: 3 })), draftHeld0: P.paidReport("draft", DRAFT_H({ auth_held: 0, pending: 1 })),
+      draft401: P.paidReport("draft", DRAFT_H({ auth_held: 0, stopped_reason: "auth", pending: 2 })),
+      draftCap: P.paidReport("draft", DRAFT_H({ auth_held: 0, stopped_reason: "credit_cap", pending: 2 })),
+      rerollLogin: P.paidReport("reroll", RUN_H({ approved_now: false, stopped_reason: "auth", pending: 4 })),
+      error: P.paidReport("run", entry("error", [["execution_start", {}], ["execution_error", { node_type: "BMKDesignPatchImportPSD", exception_message: "x" }]], {})) },
+  };
+});
+
+console.log(JSON.stringify(out));
+process.exit(0);
+"""
+
+
+def _paid_js_studio():
+    """S3b U3: J-P3 — Studio(pipeline.js·board.js) 승인 단추·확인 창·ack/최종 응답·이어서 승인·R → reroll, B12″ 유료 정적."""
+    section("S3b paid_js_studio — Studio 승인 단추·확인 창·ack/최종 응답·wave 이어서 승인·R → reroll(U3, node + 가짜 탭·정본 messages·routes)")
+    web = PKG / "web_design_patch"
+    pj = (web / "pipeline.js").read_text(encoding="utf-8")
+    bj = (web / "board.js").read_text(encoding="utf-8")
+    html = (web / "board.html").read_text(encoding="utf-8")
+    pcode = re.sub(r"//[^\n]*", "", pj)
+    bcode = re.sub(r"//[^\n]*", "", bj)
+    side = ("승인 제출은 ComfyUI 탭에 열린 그래프에서 실행마다 바뀌는 값을 한 번 진행시킵니다(그래프는 실행하지 않음) — 시드 제어(randomize·increment)와 "
+            "Pixaroma Dropdown·Prompt 의 순서·무작위 선택이 다음 값으로 넘어가고(Prompt 순서는 설정에 저장됨), BMK Cyclic Seed 의 batch_count 를 1 로·"
+            "자동 난수를 새로 뽑으며, 워크플로가 '수정됨'이 되고, 이 실행이 그 워크플로의 실행으로 큐·진행 표시에 보입니다.")
+    # r2-06 할 일은 단계마다: Run·Spec Draft = 다시 승인, 재굴림 = 머리줄 'ComfyUI 큐'(사전 승인분이 남음 — '다시 승인'은 R 재누름 +1 로 읽힘)
+    login_ = "comfy.org 로그인 필요 — 로그인·API 키가 없거나 인증이 거부돼 남은 호출을 보내지 않음(그 호출은 과금 없음)"
+    login = f"{login_}: ComfyUI 탭에서 로그인한 뒤 다시 승인"
+    login_rr = (f"{login_}: ComfyUI 탭에서 로그인한 뒤 머리줄 'ComfyUI 큐'(사전 승인한 재굴림은 예약된 채 남음 — R 을 다시 누르면 +1 호출이 더 "
+                "승인됨)")
+
+    def part(src, a, b):
+        # 정적 검사 구간 a … b(못 찾으면 "" — 그 check 만 실패로 남기고 묶음은 계속)
+        i = src.find(a)
+        j = src.find(b, i + 1) if i >= 0 else -1
+        return src[i:j] if j > i else ""
+
+    def order(src, *xs):
+        # xs 가 모두 있고 이 순서로 처음 나옴
+        at = [src.find(x) for x in xs]
+        return min(at) >= 0 and at == sorted(at)
+
+    # B12″ 유료 정적(P7·P1): 승인 처리기 = 사용자 클릭만 → mock 이면 페이지 상자·아니면 네이티브 confirm → 누를 때·확인 뒤 지금 판정 대조, 보내는 곳 하나
+    ap = part(pcode, "    async function approve(", "    function mockAsk(")
+    check(order(ap, "if (!e || !e.isTrusted || paying) return;", "if (!now())", "paying = kind;", "window.confirm(") and "mock ? await mockAsk(" in ap
+          and 'p.run.backend === "mock"' in ap and 'p.draft.backend === "vlm_mock"' in ap and ap.count("if (!now())") == 2
+          and 0 <= ap.rfind("if (!now())") < ap.find("await sendPaid("),
+          "B12″(P7): 승인 처리기 = 사용자 클릭(isTrusted)만 · mock 백엔드면 페이지 상자, 아니면 네이티브 window.confirm · 누를 때와 확인 뒤 지금 판정 대조(r2-07)")
+    mk = part(pcode, "    function mockAsk(", "\n    }\n")
+    check(mk.count("(e) => e.isTrusted && close(") == 2 and "document.body.append(box)" in mk and "el(" in mk,
+          "mock 확인 상자: [승인]·[취소]도 사용자 클릭만, el(textContent)로 만듦")
+    sp = part(pcode, "    async function sendPaid(", "    function paidResult(")
+    check("approve=" not in pj and "innerHTML" not in pcode and pcode.count("freeBody(") == 2 and pcode.count('comfy("prompt"') == 1
+          and "L.send({ type: APPROVE, rootKey: opts.root, stage, hash, only, what }" in sp and "prompt" not in sp
+          and "const ACK_MS = 5000;" in pcode and "const END_MS = 60000;" in pcode,
+          "B12″: 'approve=' 쿼리·innerHTML 없음, /api/prompt 본문은 freeBody 하나(무료), 승인 메시지는 stage·hash·only·what 만(prompt 없음 — 탭이 서버 템플릿), "
+          "ack 5초·최종 60초(시험은 link 인자로 짧게)")
+    check('on("btn-queue", (e) => (e.isTrusted ? queueReroll() : toast(' in bcode and "      fn(e);\n" in bcode
+          and "setTimeout(() => queueReroll(way, !!lock), 600)" in bcode and "bmk-dp-approve" not in bj
+          and "pipe.reroll()" in part(bcode, "  function queueReroll(", "\n  }\n") and "!pipe.paidWhy()" in part(bcode, "  function tabWay(", "\n  }\n"),
+          "board.js: R 뒤 큐·머리줄 'ComfyUI 큐' = queueReroll 하나(유료 가능한 탭 → pipe.reroll, 그 밖 opener·예약 — R 확인 때의 판정(길·lock)을 넘김), "
+          "r3-13 머리줄 'ComfyUI 큐'는 사용자 클릭(isTrusted)만, 승인 메시지는 board.js 에 없음")
+    check(side.split("은 ", 1)[1] in html and "승인 제출(초안·Run 승인, 그 탭으로 가는 재굴림·ComfyUI 큐)은" in html,
+          "§10.7 보정 4: board.html 도움말(알아 둘 것)에 승인 제출의 부수 효과 한 줄(확인 창·mock 상자와 같은 말)")
+    qb = re.search(r'<button type="button" id="btn-queue"[^>]*title="([^"]*)"', html)
+    blocked_ = "그 길이 막히면(옛 확장·탭이 큐 처리 중·실행 설정 미저장·확인 필요·경로 경고·옛 서버) Open Board 탭의 Review"
+    check(bool(qb) and "승인 제출이라 ComfyUI 탭 그래프의 시드 제어 등 실행마다 바뀌는 값이 한 번 진행됨(그래프는 실행 안 함)" in qb.group(1)
+          and "확인 창 없음 — 사용자 클릭만" in qb.group(1) and "그래프 Prepare 위젯 값으로 과금" in qb.group(1) and blocked_ in qb.group(1)
+          and "옛 확장의 opener 탭이면" not in html and blocked_ in html.split('id="help"', 1)[-1],
+          f"r2-10 머리줄 'ComfyUI 큐'(확인 창 없음)도 유료 탭 길이면 승인 제출 — 단추 제목에 부수 효과 짧은 줄(키보드 첫 R 토스트와 같은 말)·opener 길 과금 기준, "
+          f"r3-14 opener 길(Review 부분 실행)은 옛 확장만이 아니라 유료 탭 길이 막힌 모든 경우(tabWay — 단추 제목·도움말) {qb and qb.group(1)!r}")
+    node = shutil.which("node")
+    if not node:
+        skip("node 없음 → S3b Studio J-P3 생략")
+        return
+    api = _pl_api()
+    M, R = api["messages"], api["routes"]
+    out = OUT_ROOT / "paid_js_studio"
+    shutil.rmtree(out, ignore_errors=True)
+    out.mkdir(parents=True)
+    h = _PL_JS_HARNESS
+    cut = [h[h.index(a):h.index(b, h.index(a))] for a, b in (("import fs", "async function run("), ("class El {", "async function mouse("),
+                                                             ("function boardState()", 'await scenario("panel"'),
+                                                             ("function quietPipeline(mod)", 'await scenario("panelDrift"'))]
+    (out / "in.json").write_text(json.dumps({"api": api, "pipelineJs": str(web / "pipeline.js"), "boardJs": str(web / "board.js")}, ensure_ascii=False),
+                                 encoding="utf-8")
+    (out / "harness.mjs").write_text("".join(cut) + _PAID_STUDIO_JS_HARNESS, encoding="utf-8")
+    try:
+        r = subprocess.run([node, str(out / "harness.mjs"), str(out / "in.json")], capture_output=True, text=True, encoding="utf-8", timeout=240)
+    except subprocess.TimeoutExpired:
+        check(False, "node 하네스가 240초 안에 끝나지 않음(장면의 until 대기가 쌓임 — 단추·토스트를 못 찾는 회귀)")
+        return
+    if r.returncode != 0 or not r.stdout.strip():
+        check(False, f"node 하네스 실패({r.returncode}): {r.stderr.strip()[-800:]}")
+        return
+
+    class Got(dict):
+        # 장면 결과의 빠진 키 = 빈 값 — KeyError 로 묶음이 멈추지 않고 그 check 만 실패로 남게
+        def __missing__(self, k):
+            return Got()
+
+    res = json.loads(r.stdout.strip().splitlines()[-1], object_hook=Got)
+    for k, v in res.items():
+        if isinstance(v, dict) and "error" in v and len(v) == 1:
+            check(False, f"J-P3 시나리오 {k} 예외: {v['error']}")
+    key, tab = "fe410d7f025d", M["bmk-dp-approve"]["examples"][0]["tab"]
+    allids = "001_38a818,002_d98f99,003_2f8f50,008_e1d4cc,012_93661a"
+    head = "GPT Image 호출 4건(예상 $2.40–3.16 ≈ 506–667 크레딧)을 승인하고 과금합니다. 대상: "
+    pre = "재굴림(사전 승인) 1건 ≈ $0.62 도 함께 과금 — 선택과 무관(다른 크롭 포함)."
+    dry = "드라이런 이후 대기 목록이 바뀌었으면 서버가 과금 없이 드라이런만 다시 합니다."
+    wait1 = "주의: 스펙 초안 대기 1크롭(Spec Draft 미승인) — 지금 승인하면 초안 없는 프롬프트로 과금합니다."
+    unw = "주의: 스펙 파일 1개에 초안·화풍 변경을 아직 못 씀(잠김) — 지금 승인하면 그 변경 없이 과금합니다."
+    on_ = lambda h: [False, f"확인 창 뒤 ComfyUI 탭이 승인 템플릿을 큐에 넣음 — approve: {h}  only: {allids}"]
+    busy_ = [True, "Run 승인 요청을 처리하는 중"]
+    late = ":늦게 온 결과 — Run 큐에 들어감 — ComfyUI 탭이 승인 템플릿을 제출함(진행은 머리줄)"
+    # r1-14 Studio 가 결과를 모르고 끝냄(no_ack·timeout·tab_changed) = 머리 '결과 모름'·경고(큐에 들어갔을 수 있음 — '승인 안 됨'·빨강 아님)
+    lost = "warn:Run 결과 모름 — ComfyUI 탭에서 결과를 받지 못함 — 이미 큐에 들어갔을 수 있으니 ComfyUI 큐를 확인(다시 보내지 않음)"
+    lost_row = ("앞서 보낸 Run 승인(해시 3f9a1c2b7d10)의 결과를 모름 — 이미 ComfyUI 큐에 들어갔을 수 있음: 다시 보내기 전에 ComfyUI 큐 확인")
+    reserved = (" · 사전 승인한 재굴림은 예약된 채 남음(다음 Run·ComfyUI 큐 때 선택과 무관하게 과금): 지금 보내려면 머리줄 'ComfyUI 큐' — "
+                "R 을 다시 누르면 +1 호출이 더 승인됨")
+
+    def shape(m):
+        # 정본 messages bmk-dp-approve 의 같은 경우(stage) 예시와 대조(_doc 구조.messages) + 키 집합(prompt 를 싣지 않음)
+        sp = M["bmk-dp-approve"]
+        ex = next((e for e in sp["examples"] if e["stage"] == m.get("stage")), None)
+        return ((_pl_shape(ex, m, sp) if ex else ["같은 stage 예시 없음"])
+                + ([] if set(m) == {"type", "id", "tab", "rootKey", "stage", "hash", "only", "what"} else [f"키 {sorted(m)}"]))
+
+    def sent(m, stage, hash_, only, what):
+        return (not shape(m) and (m["type"], m["tab"], m["rootKey"], m["stage"], m["hash"], m["only"], m["what"])
+                == ("bmk-dp-approve", tab, key, stage, hash_, only, what))
+
+    def off(pair, why):
+        # 꺼진 단추 [disabled, title] — title 이 why 로 시작(단추가 없으면 null)
+        return isinstance(pair, list) and len(pair) == 2 and pair[0] is True and str(pair[1]).startswith(why)
+
+    check(set(res) == {"approve", "draftStyle", "mock", "mockMix", "recheck", "busy", "refuse", "timeouts", "match", "wave", "disabled", "noSettings",
+                       "reroll", "resume", "freeWhilePaying", "lateWhileFree", "waveLate", "rerollWave", "endRows", "replan", "again", "rerollRefuse", "gate",
+                       "login", "refresh", "rerollHeld", "lateUnknown", "lostKept", "restart", "texts"},
+          f"J-P3 시나리오 서른 {sorted(res)}")
+    a = res.get("approve") or {}
+    if "drawn" in a:
+        check(a["via"] == "opener" and a["drawn"] == on_("3f9a1c2b7d10") and a["label"] == "Run 승인 4건 ≈ $2.40–3.16" and a["draft"] == on_("b21c09e4f7a3")
+              and a["untrusted"] == {"confirms": 0, "sent": 0},
+              f"J-P3 유료 가능한 탭(opener — ext 3·submit ok)·지금 해시 = 승인 단추 켜짐(라벨 계약 §5, 제목 approve·only), 스크립트 클릭(isTrusted 아님) = "
+              f"확인 창·메시지 없음 {a['drawn']} {a['untrusted']}")
+        check((a["declined"]["confirm"] or "").split("\n") == [head + allids.replace(",", ", "), pre, dry, wait1, unw, side, "계속할까요?"]
+              and a["declined"]["sent"] == 0 and a["declined"]["again"] == on_("3f9a1c2b7d10"),
+              f"J-P3 유료 확인 = 네이티브 confirm(§4.4 + 계약 §5 — 재굴림 함께 과금·초안 대기·못 쓴 스펙·부수 효과 줄), false = 메시지 안 보냄·단추 다시 켬 "
+              f"{a['declined']}")
+        check(a["during"]["run"] == busy_ and a["during"]["draft"] == busy_ and a["during"]["apply"] is True
+              and "Run 승인 — 확인·ComfyUI 탭 응답 기다리는 중" in a["during"]["head"],
+              f"결과를 기다리는 동안 두 승인 단추·반영을 끔(이 Studio 의 유료 요청은 하나씩), 머리줄에 기다림 {a['during']}")
+        check(len(a["msgs"]) == 1 and sent(a["msgs"][0], "run", "3f9a1c2b7d10", allids, "Run 승인 4건 ≈ $2.40–3.16"),
+              f"승인 메시지 = 정본 messages bmk-dp-approve 모양(_pl_shape)·hash·only = 지금 계획 값·prompt 없음 {a['msgs']} {[shape(m) for m in a['msgs']]}")
+        check(a["ok"]["toast"] == ":Run 큐에 들어감 — ComfyUI 탭이 승인 템플릿을 제출함(진행은 머리줄)"
+              and a["ok"]["stored"] == {"stage": "run", "pid": "pid-run", "number": None} and "실행 중: Run(run)" in a["ok"]["head"]
+              and off(a["ok"]["run"], "이 Studio 의 Run(run)"),
+              f"approved ok = 그 prompt_id 를 이 Studio 의 실행으로(sessionStorage 이어 받기·머리줄 진행 — 무료 큐와 같음), 실행 중엔 승인 끔 {a['ok']}")
+        check(a["done"] == {"toast": ":Run 끝 — 승인분 실행 · 남은 승인 필요 0건", "refresh": 1, "stored": None,
+                            "row": ["이 Studio 의 마지막 Run: T 끝 — 승인분 실행 · 남은 승인 필요 0건"], "replan": a["done"]["replan"], "run": False, "toasts": []}
+              and a["done"]["replan"] >= 1,
+              f"끝 = history dp_run.bmk_dp_run[0] 결과 한 줄(approved_now·pending), state 다시(refresh)·다음 state 뒤 계획 다시, 이어 받기 지움 {a['done']}")
+    ds = res.get("draftStyle") or {}
+    if "label" in ds:
+        check(ds["via"] == "channel" and ds["label"] == "초안 승인 1크롭 + 화풍 ≈ 36(최대 61) 크레딧"
+              and ds["title"].endswith(f"approve: 7d2e94b1c0a5  only: {allids},style") and len(ds["msgs"]) == 1
+              and sent(ds["msgs"][0], "draft", "7d2e94b1c0a5", f"{allids},style", ds["label"])
+              and (ds["confirm"] or "").split("\n") == ["VLM 초안 1크롭 + 화풍(보통 ≈ 36, 최대 61 크레딧)을 승인하고 과금합니다.", "사유: 타깃 추가 × 1, 화풍 신규 × 1",
+                                                         "드라이런 이후 대기 목록이 바뀌었으면 서버가 호출 없이 드라이런만 다시 합니다.", side, "계속할까요?"]
+              and "주의: 스펙 초안 대기 1크롭 + 화풍(Spec Draft 미승인)" in (ds["runConfirm"] or "") and "실행 중: Spec Draft(draft)" in ds["head"]
+              and ds["done"] == ":Spec Draft 끝 — 승인분 실행 · 남은 초안 대기 0건" and ds["row"] == ["이 Studio 의 마지막 Spec Draft: T 끝 — 승인분 실행 · 남은 초안 대기 0건"],
+              f"J-P3 채널 길·초안 apply full + 화풍: 초안 승인 = 그 계획의 해시·only(',style'), 확인 창 = VLM 초안 문구(크레딧·사유), Run 확인 창은 화풍 대기, "
+              f"끝 = dp_draft.bmk_dp_draft[0] 한 줄 {ds}")
+    mo = res.get("mock") or {}
+    if "labels" in mo:
+        check(mo["labels"] == ["Run 승인 4건 ≈ $2.40–3.16 [MOCK]", "초안 승인 1크롭 [MOCK]"]
+              and (mo["draftBox"] or "").startswith("[MOCK] 과금 없음 — 초안 승인 1크롭mock 백엔드 — ")
+              and "mock 스위치(_MOCK_API)로 mock" in mo["draftBox"] and side in mo["draftBox"]
+              and (mo["runBox"] or "").startswith("[MOCK] 과금 없음 — Run 승인 4건mock 백엔드 — ") and "mock 스위치" not in mo["runBox"]
+              and "≈" not in mo["draftBox"] + mo["runBox"] and (mo["draftBox"] + mo["runBox"]).count("[MOCK]") == 2
+              and mo["cancel"] == {"box": False, "sent": 0, "confirms": 0, "draft": False} and mo["during"] == busy_
+              and mo["untrusted"] == {"box": True, "sent": 0},
+              f"J-P3 mock 백엔드 = 페이지 안 상자('[MOCK] 과금 없음 — 단추 이름'(r1-23 — 금액·끝 [MOCK] 은 뗌)·mock 스위치·부수 효과 줄 — 네이티브 "
+              f"confirm 0회), [취소] = 보내지 않음, 상자 단추도 스크립트 클릭은 무시 {mo}")
+        check(mo["keyOpen"] == [True, False] and mo["esc"] == [True, True] and mo["afterEsc"] == {"box": False, "sent": 0, "run": False}
+              and mo["keyClosed"] == [False, False],
+              f"mock 상자가 열린 동안 보드 키를 막음, Esc = 취소(보내지 않음·단추 다시 켬), 닫힌 뒤엔 막지 않음 {mo['keyOpen']} {mo['esc']} {mo['afterEsc']}")
+        check(len(mo["msgs"]) == 1 and sent(mo["msgs"][0], "run", "3f9a1c2b7d10", allids, "Run 승인 4건 ≈ $2.40–3.16 [MOCK]") and mo["box"] is False
+              and mo["confirms"] == 0 and mo["done"] == ":Run 끝 — 승인분 실행 · 남은 승인 필요 0건 [MOCK]",
+              f"mock 상자 [승인](사용자 클릭) = 메시지 하나 → 실행 → 끝 보고 [MOCK] {mo['msgs']} {mo['done']}")
+    mx = res.get("mockMix") or {}
+    check(mx.get("draftMock") == {"run": {"confirm": 1, "box": False}, "draft": {"confirm": 0, "box": True}, "sent": 0}
+          and mx.get("runMock") == {"run": {"confirm": 0, "box": True}, "draft": {"confirm": 1, "box": False}, "sent": 0},
+          f"P7 확인 창 종류는 그 단계의 백엔드로: Run comfy_org + 초안 vlm_mock = Run 네이티브 confirm·초안 상자, Run mock + 초안 vlm_openai = Run 상자·"
+          f"초안 네이티브 confirm(유료 단계가 페이지 상자로 승인되지 않음) {mx}")
+    rc = res.get("recheck") or {}
+    if "stale" in rc:
+        check(rc["stale"] == {"box": False, "sent": 0, "toast": rc["warn"]}
+              and rc["redrawn"] == [True, "승인할 해시 없음(승인할 것 없음·반영 필요·흐림·낡음·실행 중)"]
+              and rc["tab"] == {"box": False, "sent": 0, "toast": rc["warn"], "run": [True, "ComfyUI 탭의 확장이 옛 판(S3a — 판 2) — 그 탭을 새로고침한 뒤 유료 승인"]},
+              f"r2-07 다시 대조: 다시 그리기를 미룬 사이 계획이 낡은 옛 단추 = 확인 창 없이 멈춤, mock 상자를 띄운 사이 탭이 바뀌면 [승인]해도 보내지 않음 — "
+              f"다시 그린 단추는 꺼짐(이유) {rc}")
+        nh = rc["newHash"]
+        check(str(nh["title"]).endswith(f"approve: 3f9a1c2b7d10  only: {allids}") and nh["confirms"] == 0 and nh["box"] is False and nh["sent"] == 0
+              and nh["toast"] == rc["warn"] and nh["redrawn"] == on_("c0ffee123456"),
+              f"r2-07 다시 받은 계획이 다른 유효 해시인데 옛 단추(그린 해시)가 남음 → 누르면 확인 창·메시지 없음(지금 해시를 대신 보내지 않음), 다시 그린 단추 = 새 해시 {nh}")
+    bu = res.get("busy") or {}
+    if "mid" in bu:
+        held_ = ": 머리줄 'ComfyUI 큐'로 보내거나 다음 Run 때 과금"
+        check(bu["mid"] == {"sent": 1, "confirms": 1, "toasts": [f"warn:재굴림 예약됨 — 지금 보내지 않음(Run 승인 요청을 처리하는 중){held_}"],
+                            "run": busy_, "draft": busy_, "exp": True}
+              and bu["after"]["sent"] == 1 and off(bu["after"]["draft"], "이 Studio 의 Run(run)")
+              and str(bu["rerollJob"]).startswith("warn:재굴림 예약됨 — 지금 보내지 않음(이 Studio 의 Run(run)")
+              and str(bu["rerollJob"]).endswith(f" 이 끝난 뒤){held_}"),
+              f"J-P3 단계당 하나(§4.6 — 이 Studio 의 유료 요청은 하나씩): 결과를 기다리는 사이 같은 단추 다시·다른 단계의 옛 단추·재굴림 = 보내지 않음"
+              f"(메시지 1·확인 창 1), 실행 중엔 승인 끄고 재굴림은 예약만 {bu}")
+    rf = res.get("refuse") or {}
+    if "stale" in rf:
+        ex = {e.get("reason"): e for e in M["bmk-dp-approved"]["examples"]}
+        want = {"stale": "계획이 바뀜(지금 해시 5e81d07c2a94) — 다시 받은 계획을 보고 다시 승인",
+                "apply_needed": "반영 필요 — 먼저 [반영](레이아웃 미반영(rev 7), Prepare 입력이 바뀜(마지막 Prepare 뒤 스펙·레이아웃·레퍼런스·용어집))"}
+        bad = {k: v for k, v in rf.items() if k in ex and v != {
+            "toasts": [f"{'warn' if k == 'busy' else 'err'}:Run 승인 안 됨 — {want.get(k) or ex[k]['error']}"],
+            "replan": int(k in ("stale", "apply_needed", "nothing_to_approve", "running", "stale_settings")), "run": False}}
+        check(len(rf) == 15 and rf["sent"] == 14 and not bad,
+              f"J-P3 실패 사유(정본 approved 예시): stale·apply_needed('먼저 [반영]')·nothing_to_approve·running·stale_settings = 토스트 + 계획 다시, busy = "
+              f"경고 토스트(탭의 이유·할 일 그대로 — '잠시 뒤 다시(…)'로 감싸지 않음), 그 밖(template·not_submitted·rejected·http·bad_request·409 게이트) = "
+              f"오류 그대로 — 모두 단추 다시 켬 {bad}")
+        nopid = {"toasts": ["err:Run 승인 안 됨 — ComfyUI 탭 응답 모양이 잘못됨"], "replan": 0, "run": False, "stored": None, "job": False}
+        check(rf["noPid"] == nopid and rf["emptyPid"] == nopid,
+              f"계약 §4 6 성공 판정 = ok true && prompt_id 가 비지 않은 문자열: ok 인데 prompt_id 없음·\"\" = 승인 안 됨(이어 받기·머리줄 실행 없음), 단추 다시 켬 "
+              f"{rf['noPid']} {rf['emptyPid']}")
+    to = res.get("timeouts") or {}
+    if "noAck" in to:
+        check(to["noAck"] == {"toasts": ["warn:Run 결과 모름 — ComfyUI 탭 응답 없음 — ComfyUI 탭 새로고침(결과가 늦게 오면 이어서 봄)"], "sent": 1, "run": False}
+              and to["lateOk"]["toast"] == late and "실행 중: Run(run)" in to["lateOk"]["head"]
+              and to["lateOk"]["stored"] == {"stage": "run", "pid": "pid-run", "number": None} and to["lateOk"]["replan"] == 0,
+              f"J-P3 ack 시간(주입 — 기본 5초) 안에 ack 없음 = '결과 모름 — 탭 응답 없음 — 새로고침'(r1-14 경고), 그 뒤 온 approved ok 는 버리지 않고 이 "
+              f"Studio 의 실행으로 {to['noAck']} {to['lateOk']}")
+        check(to["timeout"] == {"toasts": [lost], "sent": 1, "replan": 1, "run": False, "job": False, "row": [lost_row]},
+              f"J-P3 최종 시간(주입 — 기본 60초) 안에 결과 없음 = '결과 모름 — 결과를 받지 못함 — 큐 확인'(다시 보내지 않음 — r1-14 경고) + 계획 다시, 진행 "
+              f"패널에 결과 모름 줄(토스트가 사라져도) {to['timeout']}")
+        check(to["changed"] == {"toasts": ["warn:Run 결과 모름 — ComfyUI 탭이 바뀜(새로고침·닫힘·연결 끊김) — 결과 모름: ComfyUI 큐를 확인"],
+                                "linkTab": "newtab0000000000", "replan": 1, "run": False}
+              and to["changedLate"]["toast"] == late and "실행 중: Run(run)" in to["changedLate"]["head"],
+              f"J-P3 기다리는 사이 탭이 바뀜(새 tab ID) = '결과 모름 — 큐 확인' + 계획 다시, 옛 탭이 낸 늦은 approved ok 도 이어서 {to['changed']} {to['changedLate']}")
+        gone_ = ["warn:Run 결과 모름 — ComfyUI 탭이 바뀜(새로고침·닫힘·연결 끊김) — 결과 모름: ComfyUI 큐를 확인"]
+        check(to["gone"] == {"toasts": gone_, "state": "none", "replan": 1,
+                             "run": [True, "ComfyUI 탭 연결 없음 — Review 노드의 Open Board 로 열거나 ComfyUI 탭을 하나만 열어 두기"]}
+              and to["goneLate"] == {"toast": late, "head": True} and to["closed"] == {"toasts": gone_, "state": "none", "via": "channel"},
+              f"계약 §5 연결이 끊김(채널 탭이 답하지 않음·opener 닫힘 — 연결된 탭 없음)도 '결과 모름' + 계획 다시(최종 시간까지 기다리지 않음), 다시 붙은 같은 탭의 "
+              f"늦은 ok 는 이어 받음 {to['gone']} {to['goneLate']} {to['closed']}")
+        unk_ = next(e for e in M["bmk-dp-approved"]["examples"] if e.get("reason") == "unknown")["error"]
+        check(to.get("tabUnknown") == {"toasts": [f"warn:Run 결과 모름 — {unk_}"], "sent": 1, "replan": 1, "run": False, "row": [lost_row], "kept": ["run"]},
+              f"r2-03 탭이 제출 결과를 모름(approved unknown — 바꿔치기한 본문을 보낸 뒤 응답을 잃음) = Studio 도 '결과 모름'(경고 — 거절로 확정하지 않음) + "
+              f"계획 다시 + 진행 패널 결과 모름 줄 + 보낸 승인 기록을 남김(새로고침 뒤에도 결과 모름) {to.get('tabUnknown')}")
+    mt = res.get("match") or {}
+    if "ignored" in mt:
+        check(mt["ignored"] == {"toasts": [lost], "job": False} and mt["late"]["toast"] == late and "실행 중: Run(run)" in mt["late"]["head"] and mt["twice"] == 1,
+              f"계약 §5 답은 같은 id·같은 tab·같은 길만: 다른 id·다른 tab·다른 길(opener 로 보냈는데 채널)의 approved 는 버림(→ 최종 시간), 같은 답 = 늦은 결과 "
+              f"한 번만 {mt}")
+    wv = res.get("wave") or {}
+    if "other" in wv:
+        check(wv["other"] == {"toast": ":Run 끝 — 승인분 실행 · 남은 승인 필요 4건", "row": [], "label": "Run 승인 4건 ≈ $2.40–3.16"} and wv["midRow"] == []
+              and wv["midBtn"] == "Run 승인 4건 ≈ $2.40–3.16"
+              and wv["after"] == {"toast": "warn:Run 끝 — 승인분 실행 · 남은 승인 필요 4건 · wave 로 멈춤(남은 5건) — Run 줄에서 이어서 승인",
+                                  "row": ["wave 로 멈춤 — 멈출 때 남은 5건: 새 계획(단추의 건수)으로 이어서 승인(클릭만 — 자동 이어가기 없음)"],
+                                  "btn": ["남은 4건 이어서 승인 ≈ $2.40–3.16", False], "sent": 2},
+              f"D9 wave: 다른 탭·다른 실행·다른 프로젝트의 wave 는 무시, 이 Studio 의 유료 Run 의 wave(두 길로 와도 하나) = 실행 중엔 줄·라벨 그대로, 끝난 뒤 "
+              f"Run 줄 '멈출 때 남은 N건'(wave 의 수) + '남은 M건 이어서 승인 ≈ $X'(새 계획의 수 — 자동으로 보내지 않음) {wv}")
+        check(sent(wv["cont"]["msg"], "run", "c0ffee123456", allids, "남은 4건 이어서 승인 ≈ $2.40–3.16")
+              and (wv["cont"]["confirm"] or "").startswith(head) and wv["cont"]["row"] == [],
+              f"이어서 승인 = 새 계획의 새 해시·확인 창(클릭만), 보낸 뒤 wave 줄 지움 {wv['cont']}")
+    di = res.get("disabled") or {}
+    if "ok" in di:
+        nohash = [True, "승인할 해시 없음(승인할 것 없음·반영 필요·흐림·낡음·실행 중)"]
+        both = lambda t: {"run": [True, t], "draft": [True, t]}
+        jb = di["job"]
+        check(di["ok"] == {"run": on_("3f9a1c2b7d10"), "draft": on_("b21c09e4f7a3")}
+              and di["ext2"] == both("ComfyUI 탭의 확장이 옛 판(S3a — 판 2) — 그 탭을 새로고침한 뒤 유료 승인")
+              and di["unsupported"] == both("ComfyUI 탭이 승인 제출을 못 함(submit unsupported — ComfyUI 프론트가 바뀜) — 그래프의 승인 버튼 사용")
+              and di["tabBusy"] == both("ComfyUI 탭이 큐를 처리하는 중")
+              and di["noTab"] == both("ComfyUI 탭 연결 없음 — Review 노드의 Open Board 로 열거나 ComfyUI 탭을 하나만 열어 두기")
+              and di["dim"] == di["stale"] == {"run": nohash, "draft": nohash} and di["running"] == di["nothing"] == {"run": nohash, "draft": on_("b21c09e4f7a3")}
+              and di["none"] == {"run": None, "draft": None}
+              and jb["run"] == jb["draft"] and off(jb["run"], "이 Studio 의 반영(apply)"),
+              f"계약 §5 승인 단추 꺼짐(제목에 이유): 탭 ext 2·submit unsupported·탭 큐 처리 중·탭 없음(link.paidWhy), 흐림·낡음(해시 복사 꺼짐 조건), "
+              f"Run 실행 중·승인할 것 없음(그 단계만), 선택 0(단추 없음), 이 Studio 의 실행 {di}")
+        check(di["silent"] == both("이 창을 연 ComfyUI 탭이 hello 에 답하지 않음(확장이 옛 판·새로고침 중, 또는 그 탭이 다른 주소·페이지로 옮겨 감) — "
+                                   "그 탭을 새로고침하거나 Open Board 로 다시 열기")
+              and di["old1"] == both("이 창을 연 ComfyUI 탭의 확장이 옛 판(1) — 그 탭을 새로고침한 뒤 유료 승인"),
+              f"link.paidWhy opener 가 답하지 않음(silent)·확장 판 < 2(old) = 머리줄 배지와 같은 안내('Open Board 로 열거나'가 아님) {di['silent']} {di['old1']}")
+    ns = res.get("noSettings") or {}
+    if "run" in ns:
+        nohash = [True, "승인할 해시 없음(승인할 것 없음·반영 필요·흐림·낡음·실행 중)"]
+        check(ns["run"] == ns["draft"] == nohash and ns["copy"] == [True, True] and ns["row"] == ["반영 뒤 다시 계산 — 지금 해시는 반영 뒤 달라질 수 있음(실행 설정을 읽지 못함 — 잠김)"]
+              and ns["settings"] == ["읽기 오류: 잠김"] and ns["clicked"] == {"confirms": 0, "sent": 0}
+              and ns["back"] == {"run": on_("3f9a1c2b7d10"), "draft": on_("b21c09e4f7a3"), "copy": [False, False]}
+              and ns["failAgain"] == {"run": nohash, "draft": nohash, "copy": [True, True]},
+              f"실행 설정(GET /pipeline)을 읽지 못함 = 확인 필요·Prepare 갈라짐을 모름 → 해시 흐림(두 승인 단추·해시 복사 끔 — 눌러도 확인 창·메시지 없음, 흐림 줄에 "
+              f"이유), 다시 읽히면 켬, 읽은 뒤 다시 읽기가 실패하면 옛 설정으로 켜 두지 않음 {ns}")
+    else:
+        check(False, f"noSettings 시나리오 결과 없음 {ns}")
+    rr = res.get("reroll") or {}
+    if "sent" in rr:
+        check(rr["way"] == "paid" and len(rr["sent"]["msgs"]) == 1 and sent(rr["sent"]["msgs"][0], "reroll", "", "", "재굴림(사전 승인) 1건")
+              and rr["sent"]["confirms"] == 0 and "실행 중: 재굴림(reroll)" in rr["sent"]["head"]
+              and rr["done"] == {"toast": ":재굴림 끝 — 재굴림(사전 승인)·복구만 실행 · 승인 필요 4건 남음",
+                                 "row": ["이 Studio 의 마지막 재굴림: T 끝 — 재굴림(사전 승인)·복구만 실행 · 승인 필요 4건 남음"]},
+              f"R·'ComfyUI 큐'(board.js queueReroll) + 유료 가능한 탭 = reroll stage 메시지(hash·only '' — 확인 창 없음, R 의 확인이 동의) → 이 Studio 의 실행 → "
+              f"Run 보고 한 줄 {rr['sent']} {rr['done']}")
+        check(rr["oldOpener"] == "opener" and rr["oldNone"] == ""
+              and rr["old"] == {"comfy": 1, "sent": 1,
+                                "toasts": ["warn:재굴림 예약됨 — Run 실행 때 과금(ComfyUI 탭의 확장이 옛 판(S3a — 판 2) — 그 탭을 새로고침한 뒤 유료 승인)"]},
+              f"탭이 S3a 판(유료 승인 못 받음): opener 가 있으면 지금의 Review 부분 실행(옛 확장 대체), 없으면 '재굴림 예약됨 — Run 실행 때 과금(못 받는 이유)' "
+              f"{rr['old']}")
+        check(rr["planned"] == {"sent": 1, "toast": "warn:재굴림 예약됨 — R 확인 때 큐를 보낼 탭이 없어 지금 보내지 않음: 머리줄 'ComfyUI 큐'로 보내거나 다음 Run 때 과금"},
+              f"R 확인 때 '예약만'(탭 없음)에 동의한 큐(queueReroll(\"\")) = 그 사이 유료 가능한 탭이 생겨도 보내지 않음(머리줄 'ComfyUI 큐' 안내) {rr['planned']}")
+        pg = rr.get("paying") or {}
+        check("재굴림 큐 — ComfyUI 탭 응답 기다리는 중" in str(pg.get("head")) and "승인 — 확인" not in str(pg.get("head"))
+              and pg.get("lock") == "재굴림 큐 요청을 처리하는 중",
+              f"r2-15 재굴림 큐는 확인 창 없음(R 의 확인이 동의) — 탭 응답을 기다리는 머리줄·paidLock 문구가 '재굴림 승인 — 확인'이 아님 {pg}")
+    rd = res.get("rerollHeld") or {}
+    if "button" in rd:
+        lk_ = "Run 승인 요청을 처리하는 중"
+        held_ = "warn:재굴림 예약됨 — 지금 보내지 않음({}): 머리줄 'ComfyUI 큐'로 보내거나 다음 Run 때 과금"
+        agreed = held_.format("R 확인 때 '지금은 예약만'에 동의함")
+        conf_ = (f"유료 호출이 사전 승인됩니다 — 지금은 큐를 보내지 않음({lk_}): 재굴림은 예약만 되고 머리줄 'ComfyUI 큐'로 보내거나 다음 Run 때(선택과 무관) "
+                 "함께 과금됩니다. 계속할까요?")
+        bt, ky = rd["button"], rd["key"]
+        check(bt["at"] == {"way": "paid", "lock": lk_} and bt["freed"] == {"way": "paid", "lock": ""} and bt["timers"] == 1 and bt["confirm"] == conf_
+              and bt["side"] is False and bt["sent"] == ["run"] and bt["toasts"][-1:] == [agreed]
+              and ky["at"] == bt["at"] and ky["freed"] == bt["freed"] and ky["timers"] == 1 and ky["sent"] == ["run"] and ky["toasts"][-1:] == [agreed]
+              and any(f"지금은 예약만({lk_} — 머리줄 'ComfyUI 큐' 또는 다음 Run 때 과금)" in t for t in ky["toasts"]),
+              f"r2-01 R 확인 때 이 Studio 가 Run 승인 응답을 기다림(lock) = '지금은 예약만'(부수 효과 줄 없음)에 동의 → 탭이 확정 거절(busy)로 lock 이 풀린 뒤 "
+              f"0.6초 큐 = 재굴림 메시지 0·'예약됨(동의함)' 토스트(버튼·키보드 R R) {bt} {ky}")
+        op = rd["opener"]
+        mid, aft = op["mid"], op["after"]
+        ot_ = "Open Board 로 연 ComfyUI 탭(확장 판 3): ComfyUI 탭이 큐를 처리하는 중. 재굴림·ComfyUI 큐는 지금은 예약만({} — 머리줄 'ComfyUI 큐' 또는 다음 Run 때 과금)"
+        check(mid == {"way": "opener", "lock": lk_, "comfy": 0, "confirm": conf_, "title": ot_.format(lk_)}
+              and aft.get("way") == "opener" and str(aft.get("lock")).startswith("이 Studio 의 Run(run)") and aft.get("comfy") == 0 and op["sent"] == ["run"]
+              and op["toasts"].count(held_.format(lk_)) == 2 and held_.format(aft.get("lock")) in op["toasts"] and aft.get("title") == ot_.format(aft.get("lock")),
+              f"r2-09 탭이 이 Studio 의 Run 승인을 처리하는 동안 hello busy(studioBusy) → 길 opener 여도 이 Studio 가 바쁘면(paidLock — 길과 무관) R 확인 창 = "
+              f"'지금은 예약만'·큐·머리줄 'ComfyUI 큐' 모두 Review 부분 실행 0, 승인 결과 뒤 낡은 busy(이 Studio 의 Run 실행 중)에도 0 — r3-11 머리줄 배지 제목도 "
+              f"'Review 부분 실행으로'가 아니라 '지금은 예약만(이유)' {op}")
+    rs = res.get("resume") or {}
+    if "head" in rs:
+        check("실행 중: Run(run) 대기 — 앞 2" in rs["head"] and rs["plan"] is True and rs["cancel"] is True
+              and rs["done"] == ":Run 끝 — 승인 안 됨 — 승인 해시가 실행 전 계획과 달라 드라이런(승인 필요분 과금 없음) · 남은 승인 필요 4건" and rs["stored"] is None,
+              f"다시 연 창: sessionStorage 의 유료 실행(stage run)을 무료 큐와 같이 이어 받음(대기열 번호로 앞 작업 수·[취소]·계획 미룸), 끝 = Run 보고(드라이런) {rs}")
+    fw = res.get("freeWhilePaying") or {}
+    if "paying" in fw:
+        held_off = [True, "반영 확인·큐 요청을 처리하는 중"]
+        hold = {"drawn": held_off, "confirms": 0, "sent": 0, "run": held_off,
+                "toasts": ["warn:계획·탭 상태가 바뀜 — 승인하지 않음: 다시 그린 계획 칸을 보고 다시 누르세요",
+                           "warn:재굴림 예약됨 — 지금 보내지 않음(반영 확인·큐 요청을 처리하는 중): 머리줄 'ComfyUI 큐'로 보내거나 다음 Run 때 과금"]}
+        check(fw["paying"] == {"r": True, "prompts": 0, "toast": "warn:반영: Run 승인 응답을 기다리는 중 — 끝난 뒤 다시"}
+              and fw["tracked"] == {"stored": {"stage": "run", "pid": "pid-run", "number": None}, "head": True},
+              f"계약 §5 유료 승인 결과를 기다리는 사이 무료 큐(board.js 편집기 반영(큐) = pipe.queue — 패널 단추 밖의 길)는 보내지 않음 → 탭의 ok 를 이 Studio 의 "
+              f"실행으로 이어 받음 {fw['paying']} {fw['tracked']}")
+        check(fw["asking"] == hold and fw["sending"] == hold and fw.get("exporting") == hold
+              and fw.get("cancel") == {"drawn": held_off, "run": [False, f"확인 창 뒤 ComfyUI 탭이 승인 템플릿을 큐에 넣음 — approve: 3f9a1c2b7d10  only: {allids}"],
+                                      "prompts": 0},
+              f"무료 큐를 만드는 중(반영 확인 — GET /pipeline 다시 읽기·템플릿 요청 PS.sending, [Export] 포함)에는 승인 단추를 그 이유로 끈 모양으로 다시 그림(r3-12 — "
+              f"켜진 채 남아 누르면 '계획·탭 상태가 바뀜'이 뜨지 않게), 옛 단추를 눌러도·재굴림도 보내지 않음, 확인 창을 취소하면 다시 켬 "
+              f"{fw['asking']} {fw['sending']} {fw.get('exporting')} {fw.get('cancel')}")
+    lw = res.get("lateWhileFree") or {}
+    if "toast" in lw:
+        check(lw == {"toast": "warn:늦게 온 결과 — Run 큐에 들어감(prompt pid-run) — 이 Studio 가 다른 실행을 보는 중이라 진행은 ComfyUI 큐에서 확인",
+                     "head": True, "stored": {"stage": "apply", "pid": "pid-1", "number": 5}},
+              f"결과를 모르고 끝낸 승인 뒤 이 Studio 가 무료 반영을 냄 → 늦게 온 ok 는 그 실행(머리줄·이어 받기)을 덮지 않고 토스트에 prompt_id {lw}")
+    wl = res.get("waveLate") or {}
+    if "row" in wl:
+        row_ = ["wave 로 멈춤 — 멈출 때 남은 2건: 새 계획(단추의 건수)으로 이어서 승인(클릭만 — 자동 이어가기 없음)"]
+        check(wl == {"row": row_, "label": "남은 4건 이어서 승인 ≈ $2.40–3.16", "afterDraft": row_},
+              f"D9 끝난 Run(PS.last.run)에 늦게 온 wave 도 받음 → Run 줄 '남은 N건' + 이어서 승인 라벨, 초안 승인을 보내고 끝나도 Run wave 줄은 남음 {wl}")
+    rw = res.get("rerollWave") or {}
+    if "mid" in rw:
+        check(rw == {"mid": [], "toast": "warn:재굴림 끝 — 재굴림(사전 승인)·복구만 실행 · 승인 필요 4건 남음 · wave 로 멈춤(남은 3건) — 머리줄 'ComfyUI 큐'로 이어서",
+                     "row": ["재굴림 wave 로 멈춤 — 남은 3건: 사전 승인분이라 머리줄 'ComfyUI 큐'(또는 다음 Run)로 이어서"], "runRow": [],
+                     "label": "Run 승인 4건 ≈ $2.40–3.16", "cleared": []},
+              f"재굴림 실행의 wave(탭 토스트가 Studio 를 가리킴) = 끝난 뒤 '재굴림 wave 로 멈춤 — 남은 N건'(사전 승인분 — 'ComfyUI 큐'로, Run 승인 라벨은 그대로), "
+              f"다음 Run 승인을 보내면 지움 {rw}")
+    er = res.get("endRows") or {}
+    if "importErr" in er:
+        check(er == {"importErr": {"row": ["이 Studio 의 마지막 Run: T 오류 — BMKDesignPatchImportPSD: PSD 파일이 없습니다"],
+                                   "toast": "err:Run: 오류 — BMKDesignPatchImportPSD: PSD 파일이 없습니다"},
+                     "cancel": {"row": ["이 Studio 의 마지막 Run: T 취소됨 — 취소됨"], "toast": "warn:Run: 취소됨 — 취소됨"},
+                     "reviewErr": {"row": ["이 Studio 의 마지막 Run: T 오류 — BMKDesignPatchReview: 검토 실패 · 승인분 실행 · 남은 승인 필요 0건"],
+                                   "toast": "err:Run: 오류 — BMKDesignPatchReview: 검토 실패"}},
+              f"계약 §5 유료 실행이 오류·취소로 끝남 = '마지막 Run' 줄에 그 오류 문구(+ Run 뒤 노드에서 멈췄으면 Run 보고 한 줄) — '노드가 옛 버전 — 재시작'은 "
+              f"성공인데 보고가 없을 때만 {er}")
+    rp = res.get("replan") or {}
+    if "during" in rp:
+        wait_ = [True, "앞 승인 결과로 계획을 다시 받는 중"]
+        check(rp == {"during": wait_, "draft": wait_, "again": {"confirms": 1, "sent": 1}, "after": on_("3f9a1c2b7d10")},
+              f"'계획 다시' 결과(409 stale 등) 뒤 다시 받은 계획이 올 때까지 그 계획의 해시로 승인 끔(같은 낡은 해시로 확인 창·메시지 다시 없음), 새 계획 = 다시 켬 {rp}")
+    ag = res.get("again") or {}
+    if "same" in ag:
+        lost_ = ("앞서 보낸 같은 승인(해시 3f9a1c2b7d10)의 결과를 모름 — 첫 승인이 ComfyUI 큐에 있으면 둘째는 그 실행이 승인분을 소화한 뒤라 과금 없이 드라이런, "
+                 "큐에 없으면(또는 첫 실행이 Run 앞에서 멈추면) 이 승인이 과금합니다 — 보내기 전에 ComfyUI 큐 확인.")
+        tail = lambda c: str(c).split("\n")[-2:]
+        check(tail(ag["same"]) == [lost_, "계속할까요?"] and lost_ not in str(ag["first"]) and lost_ not in str(ag["draft"])
+              and str(ag["draft"]).startswith("VLM 초안") and ag["sent"] == 1 and tail(ag["known"]) == [lost_, "계속할까요?"],
+              f"결과를 모르고 끝낸 승인(ack 없음) 뒤 같은 해시로 다시 승인 = 확인 창에 '앞서 보낸 같은 승인의 결과를 모름' 한 줄(첫 승인이 큐에 있으면 드라이런·"
+              f"없으면 과금 — 조건부), 첫 승인·다른 단계는 없음, r3-09 같은 단계 다음 요청의 확정 거절(탭이 바쁨 — 앞 요청에 대해 아무것도 말하지 않음) 뒤에도 "
+              f"남음 {ag}")
+        check(tail(ag.get("unknown")) == [lost_, "계속할까요?"],
+              f"r2-03 탭이 결과를 모름(unknown) 뒤 같은 해시로 다시 승인 = 확인 창에 같은 한 줄(ack 없음·최종 시간·탭 바뀜과 같음) {ag.get('unknown')}")
+        check(tail(ag["timeout"]) == [lost_, "계속할까요?"] and tail(ag["changed"]) == [lost_, "계속할까요?"]
+              and ag["lateErr"]["row"] == ["이 Studio 의 마지막 Run: T 오류 — BMKDesignPatchImportPSD: PSD 파일이 없습니다"]
+              and tail(ag["lateErr"]["confirm"]) == [side, "계속할까요?"] and tail(ag["twoLost"]) == [lost_, "계속할까요?"],
+              f"최종 시간·탭 바뀜으로 끝낸 승인 뒤에도 그 한 줄, 늦게 온 ok 로 결과를 안 뒤(이어 받은 실행이 Run 앞 Import 오류로 끝남 — 해시 그대로라 이번 승인이 "
+              f"과금)에는 없음(거짓 '드라이런' 안내 없음), 결과 모름이 둘이면 첫 요청의 늦은 결과는 둘째의 표시를 지우지 않음 "
+              f"{ag['timeout']} {ag['changed']} {ag['lateErr']} {ag['twoLost']}")
+        unk_ = next(e for e in M["bmk-dp-approved"]["examples"] if e.get("reason") == "unknown")["error"]
+        lu = res.get("lateUnknown") or {}
+        check(lu.get("late") == {"toast": f"warn:늦게 온 결과 — Run 결과 모름 — {unk_}", "row": [lost_row], "kept": ["run"], "confirm": lost_}
+              and lu.get("resumed") == {"toast": f"warn:늦게 온 결과 — Run 결과 모름 — {unk_}", "row": [lost_row], "kept": ["run"]},
+              f"r3-03 Studio 가 먼저 끝낸 요청(최종 시간)·새로 연 창이 이어 받은 요청에 늦게 온 approved unknown = 여전히 결과 모름: 늦은 토스트는 뜨고 진행 패널 "
+              f"줄·보낸 승인 기록(새로고침 뒤에도)·같은 해시 재승인 확인 창 줄이 남음 {lu}")
+        lk = res.get("lostKept") or {}
+        check(lk.get("busy") == {"row": [lost_row], "kept": [True], "confirm": lost_}
+              and lk.get("reopened") == {"row": [lost_row], "late": {"toast": late, "head": True, "kept": None, "row": []}}
+              and lk.get("submitted") == {"row": [], "kept": None, "confirm": side},
+              f"r3-09 결과 모름 A 뒤 같은 단계 B 의 확정 거절(busy)은 A 의 줄·기록(B 것만 지움)·같은 해시 확인 창 줄을 지우지 않음, 그 창 세션을 새로 열어도 A 줄 + "
+              f"A 의 늦은 ok 이어 받음(받은 뒤 기록·줄 지움), B 가 제출되면(ok — 대기열은 차례대로) A 도 지움 {lk}")
+    rsv = res.get("restart") or {}
+    check(rsv.get("before") == [True, "ComfyUI 재시작 필요 — 서버가 S3a 판(유료 템플릿 없음)"] and rsv.get("oldPoll") == {"gets": 1, "same": True}
+          and rsv.get("after") == on_("3f9a1c2b7d10") and rsv.get("settled") == 0,
+          f"r3-05 새 JS + 옛 서버(GET /pipeline 에 manifest_rev 없음)로 연 창: 승인 단추 '재시작 필요', ComfyUI 재시작 뒤(pipeline_rev·매니페스트 rev 그대로) 같은 "
+          f"state 폴링에서 GET /pipeline 을 다시 읽어 켬 — 옛 서버인 동안 폴링은 다시 읽되 다시 그리지 않음, 새 판이 된 뒤엔 다시 읽지 않음 {rsv}")
+    tx = res.get("texts") or {}
+    if "run" in tx:
+        ids3 = "001_38a818, 002_d98f99, 003_2f8f50"
+        wait_s = "주의: 스펙 초안 대기 1크롭 + 화풍(Spec Draft 미승인) — 지금 승인하면 초안 없는 프롬프트로 과금합니다."
+        # r1-22 보류 줄 = Studio 에서 고칠 곳(계획 칸 체크) — 그래프 Spec Draft 노드의 only 위젯 말이 아님
+        held = "주의: 화풍 단위를 고르지 않아(계획 칸 '화풍 단위 포함' 끔) 화풍 초안 대기가 보류됨 — 지금 승인하면 화풍 초안 없는 프롬프트로 과금합니다."
+        mock2 = "주의: 스펙 2개가 mock 초안(자리표시 문구) — 지금 승인하면 그 문구로 과금합니다."
+        check(tx["run"] == [head + ids3, pre, dry, wait1, unw, side] and wait_s in tx["runStyle"] and held not in tx["runStyle"]
+              and wait1 in tx["runHeld"] and held in tx["runHeld"] and wait1 in tx["runNoFull"] and held not in tx["runNoFull"]
+              and not any(x.startswith("주의: 스펙 초안 대기") for x in tx["runOther"]) and mock2 in tx["runMockSpecs"] and mock2 not in tx["runMockBackend"]
+              and tx["runBare"] == [head + "001_38a818", dry, side],
+              f"§4.4·계약 §5 Run 확인 창: 재굴림(사전 승인) 함께 과금, 선택 크롭의 초안 대기와 화풍(골랐으면 대기·apply full 인데 안 골랐으면 보류), 못 쓴 스펙, "
+              f"mock 초안 스펙(Run 백엔드가 mock 이면 0), 끝 줄 = 부수 효과 {tx['run']}")
+        check(tx["draft"] == ["VLM 초안 1크롭(보통 ≈ 27, 최대 47 크레딧)을 승인하고 과금합니다. orphan 재시도 2건 포함(과금됐을 수 있음).", "사유: 타깃 추가 × 1",
+                              "드라이런 이후 대기 목록이 바뀌었으면 서버가 호출 없이 드라이런만 다시 합니다.", side]
+              and tx["draftStyle"][0] == "VLM 초안 1크롭 + 화풍(보통 ≈ 36, 최대 61 크레딧)을 승인하고 과금합니다."
+              and tx["qwen"] == ["로컬 Qwen 으로 1건(≈ 5분). ComfyUI 모델을 VRAM 에서 내립니다(과금 없음).", side]
+              and tx.get("qwen65") == ["로컬 Qwen 으로 1건(≈ 2분). ComfyUI 모델을 VRAM 에서 내립니다(과금 없음).", side],
+              f"§4.4 초안 확인 창: openai = 크롭 + 화풍·보통/최대 크레딧·orphan 재시도(과금됐을 수 있음)·사유, local_qwen = 분·VRAM 내림(과금 없음) — 분은 노드 "
+              f"확인 창과 같은 올림(r2-13: 65초 = 2분) {tx['draft']} {tx['qwen']} {tx.get('qwen65')}")
+        check(tx["labels"] == {"run": "Run 승인 4건 ≈ $2.40–3.16", "mock": "Run 승인 4건 ≈ $2.40–3.16 [MOCK]", "none": "Run 승인 0건", "err": "Run 승인",
+                               "draft": "초안 승인 1크롭 ≈ 27(최대 47) 크레딧", "style": "초안 승인 1크롭 + 화풍 ≈ 36(최대 61) 크레딧", "qwen": "초안 승인 로컬 1건 ≈ 5분",
+                               "vmock": "초안 승인 1크롭 [MOCK]", "derr": "초안 승인", "drun": "초안 승인"},
+              f"계약 §5 승인 단추 라벨(runText·draftText label — mock 초안은 크레딧 추정 없이 건수만, 노드 단추와 같게) {tx['labels']}")
+        check(tx["report"] == {"run": "승인분 실행 · 남은 승인 필요 0건",
+                               "dry": "승인 안 됨 — 승인 해시가 실행 전 계획과 달라 드라이런(승인 필요분 과금 없음) · 남은 승인 필요 4건",
+                               "mock": "승인분 실행 · 남은 승인 필요 0건 [MOCK]", "draft": "승인분 실행 · 남은 초안 대기 1건",
+                               "reroll": "재굴림(사전 승인)·복구만 실행 · 승인 필요 4건 남음", "none": "보고 없음(노드가 옛 버전 — ComfyUI 재시작)",
+                               "error": "", "login": f"승인했지만 중지 — {login} · 남은 승인 필요 4건", "wave": "승인분 실행 · 남은 승인 필요 4건",
+                               "draftLogin": f"승인했지만 중지 — {login} · 남은 초안 대기 3건", "draftHeld0": "승인분 실행 · 남은 초안 대기 1건",
+                               "draft401": f"승인했지만 중지 — {login} · 남은 초안 대기 2건", "draftCap": "승인분 실행 · 남은 초안 대기 2건",
+                               "rerollLogin": f"재굴림 중지 — {login_rr} · 승인 필요 4건 남음"},
+              f"끝 보고 한 줄(paidReport — history dp_run.bmk_dp_run[0]·dp_draft.bmk_dp_draft[0] 의 approved_now·pending, 보고 없음 = 성공이면 옛 노드·"
+              f"오류면 \"\", r1-15 인증 중지(stopped_reason auth — Run·Spec Draft 실행 중 401/402/403, Spec Draft auth_held > 0)면 '승인분 실행'이 아니라 "
+              f"로그인 필요, 다른 중지(credit_cap)는 그대로 — r2-06 재굴림은 '다시 승인'(R 재누름 +1)이 아니라 머리줄 'ComfyUI 큐') {tx['report']}")
+    lg = res.get("login") or {}
+    check(lg.get("toast") == f"warn:Run 끝 — 승인했지만 중지 — {login} · 남은 승인 필요 4건"
+          and lg.get("row") == [f"이 Studio 의 마지막 Run: T 끝 — 승인했지만 중지 — {login} · 남은 승인 필요 4건"] and "warn" in str(lg.get("cls")).split(),
+          f"r1-15 인증 중지로 끝난 Studio 승인 Run = 끝 토스트·마지막 줄이 경고 '로그인 필요 — 호출을 보내지 않음'(거짓 '승인분 실행' 아님) {lg}")
+    rx = res.get("rerollRefuse") or {}
+    if "busy" in rx:
+        ex = {e.get("reason"): e for e in M["bmk-dp-approved"]["examples"]}
+        # 탭 문구의 할 일 '잠시 뒤 다시 승인'·'승인은 Studio 에서 다시'(not_submitted 정본 예시 끝)는 빼고 이유만 — 할 일은 뒤의 머리줄 큐 안내
+        why_rr = {"busy": "ComfyUI 탭이 큐를 처리하는 중", "not_submitted": ex["not_submitted"]["error"].removesuffix(" — 승인은 Studio 에서 다시")}
+        bad = {k: rx[k] for k in ("busy", "http", "not_submitted", "confirm_settings")
+               if rx[k] != [f"err:재굴림 큐 안 됨 — {why_rr.get(k) or ex[k]['error']}{reserved}"]}
+        left_ = " — 남은 승인 항목은 큐에서 뺌"
+        stray_ = " — 무장 중 쌓여 남은 큐 항목(승인 항목인지 모름)은 큐에서 뺌"
+        redo = {"aq": "이유 aq: ComfyUI 탭의 Run 단추 모드를 Run 으로 바꾼 뒤 머리줄 'ComfyUI 큐'",
+                "g2p": "이유 g2p: 그 탭에서 다른 워크플로로 바꾼 뒤 머리줄 'ComfyUI 큐'", "deno": "이유 deno: Director 가 없는 워크플로로 바꾼 뒤 머리줄 'ComfyUI 큐'",
+                "g2pL": f"이유 g2pL: 그 탭에서 다른 워크플로로 바꾼 뒤 머리줄 'ComfyUI 큐'{left_}",
+                "denoL": f"이유 denoL: Director 가 없는 워크플로로 바꾼 뒤 머리줄 'ComfyUI 큐'{left_}",
+                "leftL": f"이유 leftL: ComfyUI 탭의 큐 처리가 승인 항목을 꺼내기 전에 끝남{left_}",
+                "g2pS": f"이유 g2pS: 그 탭에서 다른 워크플로로 바꾼 뒤 머리줄 'ComfyUI 큐'{stray_}",
+                "denoLS": f"이유 denoLS: Director 가 없는 워크플로로 바꾼 뒤 머리줄 'ComfyUI 큐'{left_}{stray_}"}
+        bad.update({k: rx["redo"].get(k) for k, v in redo.items() if rx["redo"].get(k) != [f"err:재굴림 큐 안 됨 — {v}{reserved}"]})
+        # 꼬리 두 문구는 탭(js/bmk_design_patch.js studioApprove 의 gone)이 실제로 붙이는 말 그대로 — 탭이 바꾸면 Studio 정규식도 함께
+        tab_js = (PKG / "js" / "bmk_design_patch.js").read_text(encoding="utf-8")
+        if not (f'"{left_}"' in tab_js and f'"{stray_}"' in tab_js):
+            bad["tabTails"] = "탭 not_submitted 꼬리 문구가 이 시험(=Studio refusal 정규식)과 다름"
+        check(not bad and rx["sent"] == ["reroll"] * 12 and ex["not_submitted"]["error"].endswith(" — 승인은 Studio 에서 다시"),
+              f"r1-08 재굴림 큐(유료 탭 길)가 안 됨 = '재굴림 큐 안 됨 — 이유 · 사전 승인한 재굴림은 예약된 채 남음(다음 Run·ComfyUI 큐 때 과금) — 머리줄 큐·R 재누름 +1 "
+              f"경고'('승인 안 됨'·busy '잠시 뒤 다시' 아님 — 6초 오류 토스트), r2-06 탭 문구 끝의 '(Studio 에서) 다시 승인'·'승인은 Studio 에서 다시'는 "
+              f"재굴림이면 머리줄 큐로(R 재누름 +1 로 읽히지 않게) — r3-08 남은 승인 항목을 뺀 꼬리가 붙어도(꼬리는 그대로 끝에), 무장 중 쌓인 모르는 "
+              f"항목을 뺀 꼬리(홀로·둘 다)도 같음(탭 문구와 같은 말) {bad}")
+        check(rx["noAck"] == {"toasts": ["warn:재굴림 결과 모름 — ComfyUI 탭 응답 없음 — ComfyUI 탭 새로고침(결과가 늦게 오면 이어서 봄) · 큐에 들어가지 않았으면 "
+                                         + reserved[3:]],
+                              "row": ["앞서 보낸 재굴림 승인의 결과를 모름 — 이미 ComfyUI 큐에 들어갔을 수 있음: 다시 보내기 전에 ComfyUI 큐 확인"]},
+              f"r1-08·r1-14 재굴림 결과 모름 = '재굴림 결과 모름'(들어가지 않았으면 예약된 채 남음) + 진행 패널 줄 {rx['noAck']}")
+    gt = res.get("gate") or {}
+    if "noFile" in gt:
+        nohash = [True, "승인할 해시 없음(승인할 것 없음·반영 필요·흐림·낡음·실행 중)"]
+        whys = {"noFile": "실행 설정(pipeline.json) 없음 — 진행(G) [설정]에서 한 번 저장",
+                "path": "PSD 파일이 없음: G:/x.psd — 진행(G) [설정]에서 경로를 고침", "oldServer": "ComfyUI 재시작 필요 — 서버가 S3a 판(유료 템플릿 없음)"}
+        # r2-05 머리줄 탭 배지 제목도 같은 판정: 서버가 템플릿을 낼 수 없으면 '서버 템플릿을 큐에 넣음'이 아니라 그 이유 + R·ComfyUI 큐의 실제 길
+        ch_t = "채널로 찾은 ComfyUI 탭(확장 판 3): {}. 이 창은 Open Board 로 열리지 않아 재굴림·ComfyUI 큐는 그 탭에서 직접(R 은 사전 승인만 되고 다음 Run 때 과금)"
+        cf_why = "실행 설정 확인 필요(prepare.variants) — 진행(G) [설정]에서 확인·저장"
+        bad = {}
+        for k, why in whys.items():
+            g = gt[k]
+            want = {"why": why, "none": "", "run": nohash if k == "noFile" else [True, why], "opener": "opener", "comfy": 1, "sent": 0,
+                    "toasts": [f"warn:재굴림 예약됨 — Run 실행 때 과금({why})"] * 2, "title": ch_t.format(why),
+                    "confirm": f"유료 호출이 사전 승인됩니다 — 지금 큐를 보내지 않음({why}): 재굴림은 예약만 되고 다음 Run 때(선택과 무관) 함께 과금됩니다. 계속할까요?"}
+            if g != want:
+                bad[k] = g
+        check(not bad and gt["confirm"] == {"why": cf_why, "none": "", "run": nohash, "title": ch_t.format(cf_why)}
+              and gt["confirmOpener"] == {"why": cf_why, "none": "", "run": nohash,
+                                          "title": f"Open Board 로 연 ComfyUI 탭(확장 판 3): {cf_why}. 재굴림·ComfyUI 큐는 이 탭의 Review 부분 실행으로(그래프 Prepare 위젯 값으로 과금)"}
+              and gt["ok"] == {"why": "", "none": "paid", "run": on_("3f9a1c2b7d10"),
+                               "title": "채널로 찾은 ComfyUI 탭(확장 판 3) — 초안·Run 승인·재굴림·ComfyUI 큐가 이 탭으로(탭이 서버 템플릿을 큐에 넣음)"},
+              f"r1-09 서버가 유료 템플릿을 내주지 않을 상태(GET /pipeline — 파일 없음·확인 필요·경로 경고·옛 서버(manifest_rev 없음)) = 유료 탭 길 아님: R 확인 창 "
+              f"'지금 큐를 보내지 않음(그 이유)'·큐 = 예약만, opener 가 있으면 Review 부분 실행(S3a 와 같음), 승인 단추 꺼짐(그 이유) — 탭에 승인 메시지 0, "
+              f"r2-05 머리줄 배지 제목도 그 이유·실제 길(실제 link·pipe) {bad} {gt.get('confirm')} {gt.get('confirmOpener')} {gt.get('ok')}")
+    rh = res.get("refresh") or {}
+    if "kept" in rh:
+        check(rh["kept"] == {"run": [{"hash": "3f9a1c2b7d10", "id": rh["id"], "tab": tab, "via": "channel"}]} and rh["row"] == [lost_row]
+              and rh["confirm"] == [("앞서 보낸 같은 승인(해시 3f9a1c2b7d10)의 결과를 모름 — 첫 승인이 ComfyUI 큐에 있으면 둘째는 그 실행이 승인분을 소화한 뒤라 과금 "
+                                     "없이 드라이런, 큐에 없으면(또는 첫 실행이 Run 앞에서 멈추면) 이 승인이 과금합니다 — 보내기 전에 ComfyUI 큐 확인."), "계속할까요?"]
+              and rh["late"] == {"toast": late, "head": True, "job": {"stage": "run", "pid": "pid-run", "number": None}, "kept": None, "row": []},
+              f"r1-13 승인을 보내고 결과를 기다리는 사이 Studio 창을 새로 엶 = 보낸 요청(sessionStorage — hash·id·tab·길)으로 결과 모름 줄·같은 해시 재승인 확인 창 "
+              f"줄, 탭이 그 뒤 보낸 approved(같은 id) = 늦게 온 결과로 이어 받음(이 Studio 의 실행·이어 받기), 받은 뒤 기록·줄 지움 {rh}")
+
+
+# U4(JS) 왕복: 실제 pipeline.js(link·진행 패널·승인 단추) ↔ 실제 탭 확장(js/bmk_design_patch.js — _PAID_TAB_JS_HARNESS 의 tab(): 가짜 1.53.10
+# app·api·사용자 그래프) ↔ 가짜 서버 하나(_PL_JS_HARNESS server() — 탭의 GET /pipeline/prompt 는 정본 alt run·draft·reroll·409 예시). 머리·가짜
+# 서버·DOM 대역·quiet* 와 tab() 은 두 하네스에서 잘라 붙인다(_paid_js_e2e). 창 사이 postMessage·채널은 다음 작업으로 전한다(setImmediate —
+# 브라우저처럼 보낸 쪽 호출 안에서 받지 않음).
+_PAID_E2E_JS_HARNESS = r"""
+const M = IN.api.messages;
+const PR = R["GET /pipeline/prompt"];
+const STALE = PR.errors["409"].find((e) => e.reason === "stale");
+const chans = new Set();
+class Chan {
+  // BroadcastChannel — Studio 창·탭 창이 한 버스(보낸 객체 자신·닫힌 것은 받지 않음)
+  constructor(name) { this.name = name; this.onmessage = null; chans.add(this); }
+  postMessage(data) {
+    for (const c of chans) {
+      if (c === this || c.name !== this.name) continue;
+      const m = clone(data);
+      setImmediate(() => chans.has(c) && c.onmessage && c.onmessage({ data: m }));
+    }
+  }
+  close() { chans.delete(this); }
+}
+const bus = () => Chan;  // tab() 의 창 BroadcastChannel
+// 노드가 남기는 끝 보고(/api/history 의 Run·Spec Draft ui — 같은 키를 paid_node_unit N29 가 실제 실행기 출력으로 봄)
+const paidH = (stage, e) => entry("success", [["execution_start", {}], ["execution_success", {}]], stage === "draft"
+  ? { dp_draft: { bmk_dp_draft: [Object.assign({ pending_hash: "", root_key: KEY, backend: "vlm_openai" }, e)], text: ["보고"] } }
+  : { dp_run: { bmk_dp_run: [Object.assign({ pending_hash: "", root_key: KEY, backend: "comfy_org" }, e)], text: ["보고"] }, dp_review: { text: ["Review"] } });
+
+async function world(name, o = {}) {
+  // 탭(실제 확장 — o.ext = 판을 고친 사본) + Studio(실제 pipeline.js — state 크롭 3개: 선택 only = 정본 only) + 가짜 서버 하나. o.opener = 그 탭이 연
+  // Studio 창(opener 길), 아니면 채널. o.plan(계획) = 계획 라우트 응답을 고침. w.wire = 오간 Studio ↔ 탭 메시지([길, 메시지] — hello 빼고), w.hash =
+  // 서버의 지금 Run 계획 해시(계획 라우트가 이 값), w.stale = 탭의 GET /pipeline/prompt 가 409 stale
+  chans.clear();
+  const srv = server();
+  srv.route.pipeline = quietPipeline();
+  quietPlan(srv);
+  const w = { srv, hist: {}, confirms: [], toasts: [], answer: true, refresh: 0, store: mem(), wire: [], hash: null, stale: false, doc: new Doc(),
+    win: { location: { origin: ORIGIN }, opener: null, listeners: [], BroadcastChannel: Chan,
+      addEventListener(t, fn) { if (t === "message") this.listeners.push(fn); } } };
+  const plan = srv.route.plan;
+  srv.route.plan = (q, b) => {
+    const r = plan(q, b);
+    if (w.hash) r[1].run.hash = w.hash;
+    if (o.plan) o.plan(r[1]);
+    return r;
+  };
+  // 탭의 GET /pipeline/prompt: 정본 예시 — run·draft 는 approve 가 그 예시 해시(= 계획 해시)이고 only 를 정규화(서버 ③ — 토큰 정렬)한 값이 예시 only
+  // 일 때만(응답 only = 정규 only — 탭이 보낸 only 와 대조), 아니면 409 stale(서버 ⑧)
+  srv.route.prompt = (q) => {
+    const ex = PR.alt[q.stage];
+    const canon = String(q.only || "").split(/[,\s]+/).filter(Boolean).sort().join(",");
+    return w.stale || (q.stage !== "reroll" && (q.approve !== ex.hash || canon !== ex.only)) ? [409, STALE] : [200, ex];
+  };
+  srv.queue = () => ({ queue_running: w.t.jobs.filter((p) => !w.hist[p]).map((p, i) => [i + 1, p]), queue_pending: [] });  // 탭이 낸 실행 — 기록 전까지
+  srv.hist = (pid) => w.hist[pid] || null;
+  const spy = new Chan("bmk-dp");
+  spy.onmessage = (ev) => ev.data.type !== "bmk-dp-hello" && w.wire.push(["channel", ev.data]);
+  const ext = IN.extMjs;
+  IN.extMjs = o.ext || ext;
+  try {
+    // 사용자 Draft·Run approve = 보초 해시(왕복 뒤 그대로인지 — P3)
+    w.t = await tab(name, { approve: "deadbeef0000", server: async (path) => {
+      const r = await srv.fetch(ORIGIN + path);
+      return [r.status, await r.json().catch(() => undefined)];
+    } });
+  } finally {
+    IN.extMjs = ext;
+  }
+  if (o.opener) {
+    // Studio 창.opener = 탭 창, 탭이 받는 ev.source = Studio 창(답·wave 가 그리로). targetOrigin 이 다르면 브라우저는 버림
+    const send = (to, d, origin, source) => {
+      if (origin !== ORIGIN) return;
+      const m = clone(d);
+      setImmediate(() => {
+        if (m.type !== "bmk-dp-hello") w.wire.push(["window", clone(m)]);
+        for (const fn of to.listeners) fn({ origin: ORIGIN, data: m, source });
+      });
+    };
+    const back = { postMessage: (d, origin) => send(w.win, d, origin, op) };
+    const op = { closed: false, postMessage: (d, origin) => send(w.t.win, d, origin, back) };
+    w.win.opener = op;
+  }
+  Object.assign(ctx, { document: w.doc, fetch: srv.fetch, navigator: { clipboard: { writeText: async () => {} } } });
+  Object.assign(ctx.window, { confirm: (m) => { w.confirms.push(m); return w.answer; }, sessionStorage: w.store });
+  w.link = P.link(w.win, () => w.pipe && w.pipe.tabChanged(), 80, 30, 1500, 4000);
+  const hosts = { list: w.doc.createElement("ol"), panel: w.doc.createElement("section"), head: w.doc.createElement("div") };
+  w.doc.body.append(hosts.list, hosts.panel, hosts.head);
+  Object.assign(w, hosts);
+  w.pipe = P.create(hosts, { apiUrl: A, comfyUrl: C, root: KEY, toast: (m, k) => w.toasts.push(`${k || ""}:${m}`), refresh: () => { w.refresh += 1; },
+    select() {}, goTarget() {}, seams: () => new Map(), drain() {}, enter() {}, link: w.link });
+  w.B = (label) => hosts.panel.all().find((e) => e.tagName === "BUTTON" && e.textContent.startsWith(label)) || null;
+  w.btn = (label) => { const b = w.B(label); return b && [b.disabled, b.title]; };
+  w.click = (b) => b.fire("click", { isTrusted: true });
+  w.toast = (s) => w.toasts.find((t) => t.includes(s)) || null;
+  w.rows = (head) => hosts.panel.all().filter((e) => e.classList.contains("pp-row") && e.own.startsWith(head))
+    .map((e) => e.own.replace(/\d+시 \d+분 \d+초|\d+:\d+:\d+/, "T"));
+  w.finish = async (pid, h, done) => {  // 탭이 낸 실행의 끝(기록) — Studio 폴링이 끝을 판정
+    w.hist[pid] = h;
+    await until(() => w.toast(done), 4000);
+  };
+  w.stop = () => {
+    w.link.stop();
+    w.pipe.leave();
+    chans.clear();
+  };
+  w.S = quietState();
+  w.S.crops.splice(3);
+  w.S.targets.splice(3);
+  w.pipe.stateChanged(w.S);
+  await sleep(20);
+  w.pipe.enter(w.S, "001_38a818");
+  await until(() => w.link.state === "ok" && hosts.panel.textContent.includes("Run: 승인 필요"), 3000);
+  await sleep(30);
+  return w;
+}
+
+function board(w) {
+  // board.js tabWay·queueReroll(R 뒤 큐·머리줄 'ComfyUI 큐') — 이 Studio 의 link·pipe 로. w.review = queueInComfy(opener 길 Review 부분 실행) 부른 수
+  w.review = 0;
+  const c = vm.createContext({ tabLink: w.link, pipe: w.pipe, comfyConnected: () => !!w.win.opener, queueInComfy: () => { w.review += 1; return true; },
+    toast: (m, k) => w.toasts.push(`${k || ""}:${m}`) });
+  vm.runInContext(`tabWay = ${boardFn("tabWay")}; queueReroll = ${boardFn("queueReroll")};`, c);
+  return c;
+}
+
+// bodies[].tpl = 바닥 본문 prompt 와 JSON 문자열이 같은 정본 템플릿의 stage(키 순서·false/0 까지 — 둘 다 같은 in.json 을 읽은 값)
+const seen = (w) => ({ tab: w.t.tab, wire: w.wire.slice(), q: w.srv.log.filter((x) => x.path === "pipeline/prompt").map((x) => x.q),
+  bodies: w.t.bodies.map((b) => ({ body: b.body, sameWorkflow: b.sameWorkflow,
+    tpl: Object.keys(PR.alt).find((k) => JSON.stringify(PR.alt[k].prompt) === JSON.stringify(b.body.prompt)) || null })),
+  confirms: w.confirms.length, tabToasts: w.t.toasts.slice(), dialogs: w.t.dialogs.slice() });
+
+// ── 채널 길: Run 승인(사용자 클릭·confirm) → 탭 ack → 서버 템플릿 → 바닥 제출(템플릿·토큰 자리·사용자 workflow) → approved → Studio 실행 → 끝 ──
+await scenario("channel", async () => {
+  const w = await world("e2e-ch");
+  const r = { link: [w.link.state, w.link.via, w.link.ext, w.link.submit, w.link.tab], btn: w.btn("Run 승인") };
+  // 001 체크를 껐다 켬 → 선택 삽입 순서 002,003,001(정렬과 다름): 계획 요청·승인의 only 는 정렬한 정규 only 라야 서버 only_canon(응답 only — 탭이
+  // 보낸 only 와 대조)과 같다
+  const p0 = w.srv.count("pipeline/plan");
+  for (const on of [false, true]) {
+    const cb = w.list.all().find((e) => e.tagName === "INPUT" && e.type === "checkbox");
+    cb.checked = on;
+    cb.fire("change");
+  }
+  await until(() => w.srv.count("pipeline/plan") > p0 && (w.btn("Run 승인") || [true])[0] === false);
+  r.planOnly = w.srv.log.filter((x) => x.path === "pipeline/plan").at(-1).q.only;
+  w.click(w.B("Run 승인"));
+  await until(() => w.toast("Run 큐에 들어감"));
+  Object.assign(r, seen(w), { toast: w.toast("Run 큐에 들어감"), stored: JSON.parse(w.store.getItem(JOB) || "null"), head: w.head.textContent,
+    jobs: w.t.jobs.slice(), seed: w.t.seed.value, adopt: w.t.adopt.value, approve: w.t.userApprove(), confirm: (w.confirms[0] || "").split("\n")[0] });
+  await w.finish("pid-1", paidH("run", { approved_now: true, pending: 0 }), "Run 끝");
+  r.done = { toast: w.toast("Run 끝"), row: w.rows("이 Studio 의 마지막 Run"), stored: w.store.getItem(JOB) };
+  w.stop();
+  return r;
+});
+
+// ── opener 길(Open Board 로 연 창): 초안 승인 → 그 탭(window postMessage — 답은 ev.source) → 템플릿 alt.draft·대상 dp_draft → 끝 ──
+await scenario("opener", async () => {
+  const w = await world("e2e-op", { opener: true });
+  const r = { link: [w.link.state, w.link.via, w.link.ext, w.link.submit, w.link.tab], btn: w.btn("초안 승인") };
+  w.click(w.B("초안 승인"));
+  await until(() => w.toast("Spec Draft 큐에 들어감"));
+  Object.assign(r, seen(w), { toast: w.toast("Spec Draft 큐에 들어감"), adopt: w.t.adopt.value, approve: w.t.userApprove() });
+  await w.finish("pid-1", paidH("draft", { approved_now: true, pending: 0 }), "Spec Draft 끝");
+  r.done = { toast: w.toast("Spec Draft 끝"), row: w.rows("이 Studio 의 마지막 Spec Draft") };
+  w.stop();
+  return r;
+});
+
+// ── 서버 409 stale(정본 — 지금 해시) → 탭 approved stale·hash → Studio 토스트 + 계획 다시(새 해시 단추), 큐·제출 0 ──
+await scenario("stale", async () => {
+  const w = await world("e2e-stale");
+  w.stale = true;
+  const p0 = w.srv.count("pipeline/plan");
+  w.click(w.B("Run 승인"));
+  w.hash = STALE.hash;  // 서버의 지금 계획 — 다시 받은 계획이 이 해시
+  await until(() => w.toast("Run 승인 안 됨"));
+  await until(() => String((w.btn("Run 승인") || [])[1]).includes(STALE.hash), 2000);
+  const r = Object.assign(seen(w), { toast: w.toast("Run 승인 안 됨"), replan: w.srv.count("pipeline/plan") - p0, btn: w.btn("Run 승인"),
+    queued: w.t.log.filter((x) => x[0] === "queue").length });
+  w.stop();
+  return r;
+});
+
+// ── 받을 때 탭이 바쁨(Studio 의 마지막 hello 뒤 큐 처리 시작) → ack 없이 approved busy → Studio 는 그 답으로 끝냄(ack 시간이 지나도 '응답 없음' 없음) ──
+await scenario("busy", async () => {
+  const w = await world("e2e-busy");
+  w.t.app.processingQueue = true;  // 다음 hello 전 — Studio 는 아직 유료 가능으로 앎
+  w.click(w.B("Run 승인"));
+  await until(() => w.toast("Run 승인 안 됨"));
+  w.t.app.processingQueue = false;
+  await sleep(1700);  // ack 시간(1500ms) 뒤
+  const r = Object.assign(seen(w), { toasts: w.toasts.slice(), run: w.btn("Run 승인") });
+  w.stop();
+  return r;
+});
+
+// ── 탭의 자동 큐(Run (On Change))가 켜짐 → 탭이 busy + 이유(Run 단추 모드)로 거절 → Studio 는 그 이유 그대로('잠시 뒤 다시(…)'로 감싸지 않음),
+// 재굴림(머리줄 'ComfyUI 큐')도 이유를 잃지 않음(재굴림 큐 안 됨 — 이유 · 예약된 채 남음) ──
+await scenario("autoQueue", async () => {
+  const w = await world("e2e-aq");
+  w.t.app.extensionManager.queueSettings = { mode: "change", batchCount: 1 };
+  w.click(w.B("Run 승인"));
+  await until(() => w.toast("Run 승인 안 됨"));
+  const n = w.toasts.length;
+  board(w).queueReroll();
+  await until(() => w.toasts.length > n);
+  await sleep(60);
+  const r = Object.assign(seen(w), { toasts: w.toasts.slice() });
+  w.stop();
+  return r;
+});
+
+// ── 탭 확장이 옛 판(ext 2 — 판만 고친 사본): 두 승인 단추 꺼짐(이유), 눌러도·R 도 탭에 승인 메시지 없음 → R 은 예약만 ──
+await scenario("old", async () => {
+  const w = await world("e2e-old", { ext: IN.ext2Mjs });
+  const r = { link: [w.link.state, w.link.ext], run: w.btn("Run 승인"), draft: w.btn("초안 승인") };
+  w.click(w.B("Run 승인"));
+  w.click(w.B("초안 승인"));
+  const b = board(w);
+  r.way = b.tabWay();
+  b.queueReroll();
+  await sleep(60);
+  Object.assign(r, seen(w), { toasts: w.toasts.slice() });
+  w.stop();
+  return r;
+});
+
+// ── R(board.js reroll → 0.6초 뒤 queueReroll(확인 때 판정 paid — 지금도 paid)) + 유료 가능한 탭 → reroll 승인(hash·only "", 확인 창 없음) →
+// GET stage=reroll → 템플릿 alt.reroll → 끝, 이어서 머리줄 'ComfyUI 큐'(queueReroll() — 지금 판정)도 같은 왕복 ──
+await scenario("reroll", async () => {
+  const w = await world("e2e-rr");
+  const b = board(w);
+  const r = { way: b.tabWay() };
+  b.queueReroll(r.way);
+  await until(() => w.toast("재굴림 큐에 들어감"));
+  Object.assign(r, seen(w), { toast: w.toast("재굴림 큐에 들어감") });
+  await w.finish("pid-1", paidH("reroll", { approved_now: false, pending: 4, pending_hash: "3f9a1c2b7d10" }), "재굴림 끝");
+  r.done = w.toast("재굴림 끝");
+  b.queueReroll();
+  await until(() => w.toasts.filter((t) => t.includes("재굴림 큐에 들어감")).length === 2);
+  const s = seen(w);
+  r.head = Object.assign(s, { wire: s.wire.slice(r.wire.length), q: s.q.slice(r.q.length), bodies: s.bodies.slice(r.bodies.length) });
+  w.stop();
+  return r;
+});
+
+// ── R 확인 뒤 길이 바뀜(board.js reroll → 0.6초 뒤 queueReroll(확인 때 판정)): 확인 = 유료 가능(paid)인데 그 사이 탭이 바빠짐(opener 길) → Review
+// 부분 실행·승인 메시지 없이 예약만, 반대(opener 확인 → 큐 처리가 끝나 paid)도 예약만. 키보드 R 은 두 번 사이에 길이 바뀌면 다시 무장(그 길의 문구),
+// 사전 승인한 R 의 큐는 실제 queueReroll(확인 때 opener — 지금도 opener)로 Review 부분 실행 ──
+await scenario("rerollMoved", async () => {
+  const w = await world("e2e-rm", { opener: true });
+  const b = board(w);
+  const busy = async (on) => {
+    w.t.app.processingQueue = on;
+    await until(() => w.link.busy === on);
+    return b.tabWay();
+  };
+  const r = { ways: [b.tabWay()] };
+  r.ways.push(await busy(true));
+  b.queueReroll("paid");
+  r.ways.push(await busy(false));
+  b.queueReroll("opener");
+  const moved = w.review;
+  // 키보드 R(fromButton false): 첫 R = 무장(paid 문구) → 탭이 바빠진 두 번째 R = 다시 무장(opener 문구) → 세 번째 R = 사전 승인 → 큐는 opener 판정으로
+  const writes = [];
+  const planned = [];
+  const rc = vm.createContext({ S: { crops: [] }, LAYOUT_STATUS: {}, REROLL_CONFIRM_MS: 2500, rerollArm: null, Date, setTimeout: (fn) => fn(),
+    window: { confirm: () => true }, toast: b.toast, rerollCell: () => ({ cell_key: "abcdef0123456789", variant: "V1" }), usd: () => " ≈ $0.62",
+    curTarget: () => ({ crop_id: "001_38a818" }), tabWay: b.tabWay, tabLink: w.link, pipe: w.pipe,
+    write: async (path) => { writes.push(path); return {}; }, queueReroll: (x) => { planned.push(x); b.queueReroll(x); } });
+  const reroll = vm.runInContext(`(${boardFn("reroll")})`, rc);
+  await reroll(false);
+  await busy(true);
+  await reroll(false);
+  const armed = writes.length;
+  await reroll(false);
+  await sleep(60);
+  Object.assign(r, seen(w), { review: [moved, w.review], toasts: w.toasts.slice(), armed, writes, planned });
+  w.stop();
+  return r;
+});
+
+// ── 확인 창 문구를 만들지 못함(새 JS + 재시작 전 옛 서버 §1.3 — S3a 초안 계획에는 확인 창 필드가 없음): 초안 승인 → 오류 토스트·확인 창·메시지 0, 잠금
+// (paying)이 풀려 두 승인 단추가 다시 켜지고 이어서 Run 승인이 왕복 ──
+await scenario("oldPlan", async () => {
+  const w = await world("e2e-oldplan", { plan: (p) => {
+    for (const k of ["reasons", "orphan_retries", "est_usd", "free", "pending_style", "mock_forced"]) delete p.draft[k];
+  } });
+  const r = { draft: w.btn("초안 승인") };
+  w.click(w.B("초안 승인"));
+  await until(() => w.toast("Spec Draft 승인 안 됨"));
+  await sleep(20);
+  Object.assign(r, seen(w), { toasts: w.toasts.slice(), after: [w.btn("초안 승인"), w.btn("Run 승인")], head: w.head.textContent });
+  w.click(w.B("Run 승인"));
+  await until(() => w.toast("Run 큐에 들어감"));
+  r.run = w.toast("Run 큐에 들어감");
+  w.stop();
+  return r;
+});
+
+// ── D9: 템플릿 Run 의 wave(node dp_run) → 탭이 승인을 보낸 창(opener)·채널로 → 끝난 뒤 Studio Run 줄 '남은 N건 이어서 승인'(새 해시 — 자동 없음) ──
+await scenario("wave", async () => {
+  const w = await world("e2e-wave", { opener: true });
+  const rb = () => w.panel.all().find((e) => e.tagName === "BUTTON" && /^(Run 승인|남은)/.test(e.textContent)) || null;
+  w.click(rb());
+  await until(() => w.toast("Run 큐에 들어감"));
+  w.t.emit("execution_start", { prompt_id: "pid-1" });
+  w.t.emit("bmk.dp.wave", { node: "dp_run", root_key: KEY, remaining: 5 });
+  await until(() => w.wire.filter(([, m]) => m.type === "bmk-dp-wave").length === 2);
+  await sleep(20);
+  const r = { tab: w.t.tab, waves: w.wire.filter(([, m]) => m.type === "bmk-dp-wave"), tabToast: w.t.toasts.at(-1), mid: rb().textContent };
+  w.hash = "c0ffee123456";  // 그 실행 뒤 남은 승인 필요의 새 계획
+  w.t.emit("execution_success", { prompt_id: "pid-1" });
+  await w.finish("pid-1", paidH("run", { approved_now: true, pending: 4, pending_hash: "c0ffee123456" }), "Run 끝");
+  w.pipe.stateChanged(w.S);  // 끝 뒤 보드 폴링 — 계획 다시
+  await until(() => rb().textContent.startsWith("남은") && rb().title.includes("c0ffee123456"), 3000);
+  Object.assign(r, { done: w.toast("Run 끝"), row: w.rows("wave 로 멈춤"), btn: [rb().textContent, rb().disabled, rb().title],
+    approves: w.wire.filter(([, m]) => m.type === "bmk-dp-approve").length });
+  w.stop();
+  return r;
+});
+
+// ── 탭이 토큰을 얻는 사이(무장 중) 사용자가 Queue → 뒤에서부터 꺼내 먼저 나오지만 막힘(보내지 않음), Studio 승인 템플릿은 한 번 그대로 ──
+await scenario("intrude", async () => {
+  const w = await world("e2e-in");
+  w.t.tokenMs = 150;
+  w.click(w.B("Run 승인"));
+  await until(() => w.t.log.some((x) => x[0] === "queue"));
+  const user = await w.t.app.queuePrompt(0, 1);
+  await until(() => w.toast("Run 큐에 들어감"));
+  const r = Object.assign(seen(w), { user, log: w.t.log.filter((x) => x[0] === "queue" || x[0] === "submit").map((x) => x.join(" ")),
+    seed: w.t.seed.value, toast: w.toast("Run 큐에 들어감"), approve: w.t.userApprove() });
+  await w.finish("pid-1", paidH("run", { approved_now: true, pending: 0 }), "Run 끝");
+  w.stop();
+  return r;
+});
+
+// ── r2-03 탭이 바꿔치기한 본문을 보낸 뒤 응답을 잃음(바닥 api.queuePrompt 가 TypeError — 연결 끊김) → 탭 approved unknown → Studio '결과 모름'(거절로 확정하지
+// 않음) + 계획 다시 + 결과 모름 줄·보낸 승인 기록 → 같은 해시를 다시 승인하면 확인 창에 '앞서 보낸 같은 승인의 결과를 모름' 한 줄 ──
+await scenario("unknown", async () => {
+  const w = await world("e2e-unk");
+  w.t.fault = () => new TypeError("Failed to fetch");
+  const p0 = w.srv.count("pipeline/plan");
+  w.click(w.B("Run 승인"));
+  await until(() => w.toast("Run 결과 모름"));
+  await until(() => w.srv.count("pipeline/plan") > p0 && (w.btn("Run 승인") || [true])[0] === false, 3000);
+  const r = Object.assign(seen(w), { toasts: w.toasts.slice(), row: w.rows("앞서 보낸 Run 승인"), armed: "authToken" in w.t.api || "apiKey" in w.t.api,
+    kept: Object.keys(JSON.parse(w.store.getItem(`bmk-dp-ask:${KEY}`) || "{}")), approve: w.t.userApprove() });
+  w.t.fault = null;
+  w.answer = false;
+  w.click(w.B("Run 승인"));
+  r.again = (w.confirms.at(-1) || "").split("\n").at(-2);
+  r.sentAgain = w.wire.filter(([, m]) => m.type === "bmk-dp-approve").length;
+  w.stop();
+  return r;
+});
+
+console.log(JSON.stringify(out));
+process.exit(0);
+"""
+
+
+def _paid_js_e2e():
+    """S3b U4: 실제 pipeline.js link·승인 ↔ 실제 탭 확장 ↔ 가짜 서버(정본) 왕복 — 채널·opener 길(선택 순서 ≠ 정렬 → 정규 only), 409 stale → 계획 다시,
+    받을 때 busy(ack 없음), 옛 판 탭 → 단추 꺼짐, R·머리줄 'ComfyUI 큐' → reroll 템플릿, R 확인 뒤 길이 바뀜 → 예약만(같으면 그 길), wave →
+    이어서 승인 라벨, 무장 중 끼어든 사용자 큐 막힘, 확인 창을 못 만듦(옛 서버 계획) → 잠금 풀림, 제출 뒤 응답을 잃음(unknown) → 결과 모름·계획 다시.
+    메시지는 정본 messages 와 _pl_shape 로 대조."""
+    section("S3b paid_js_e2e — Studio(pipeline.js link·승인 단추) ↔ 탭 확장(bmk_design_patch.js·가짜 1.53.10 app/api) ↔ 가짜 서버(정본) 왕복(U4)")
+    node = shutil.which("node")
+    if not node:
+        skip("node 없음 → S3b 왕복 생략")
+        return
+    api = _pl_api()
+    M, R = api["messages"], api["routes"]["GET /pipeline/prompt"]
+    out = OUT_ROOT / "paid_js_e2e"
+    shutil.rmtree(out, ignore_errors=True)
+    out.mkdir(parents=True)
+    web = PKG / "web_design_patch"
+    ext = "const { app, api } = globalThis.__bmk;\n" + re.sub(r'^import \{ (app|api) \} from "\.\./\.\./scripts/(app|api)\.js";\r?\n', "",
+                                                              (PKG / "js" / "bmk_design_patch.js").read_text(encoding="utf-8"), flags=re.M)
+    (out / "ext.mjs").write_text(ext, encoding="utf-8")
+    (out / "ext2.mjs").write_text(ext.replace("const EXT_VERSION = 3;", "const EXT_VERSION = 2;"), encoding="utf-8")  # 옛 판 탭(판 번호만)
+    h, t = _PL_JS_HARNESS, _PAID_TAB_JS_HARNESS
+    cut = [s[s.index(a):s.index(b, s.index(a))] for s, a, b in (
+        (h, "import fs", "async function run("), (h, "class El {", "async function mouse("), (h, "function boardState()", 'await scenario("panel"'),
+        (h, "function quietPipeline(mod)", 'await scenario("panelDrift"'), (t, "class PromptExecutionError", "function bus()"),
+        (t, "async function tab(", "let seq = 0;"))]
+    (out / "in.json").write_text(json.dumps({"api": api, "pipelineJs": str(web / "pipeline.js"), "boardJs": str(web / "board.js"),
+                                             "extMjs": str(out / "ext.mjs"), "ext2Mjs": str(out / "ext2.mjs")}, ensure_ascii=False), encoding="utf-8")
+    (out / "harness.mjs").write_text("".join(cut) + _PAID_E2E_JS_HARNESS, encoding="utf-8")
+    try:
+        r = subprocess.run([node, str(out / "harness.mjs"), str(out / "in.json")], capture_output=True, text=True, encoding="utf-8", timeout=180)
+    except subprocess.TimeoutExpired:
+        check(False, "node 하네스가 180초 안에 끝나지 않음(왕복이 끝나지 않는 회귀 — 장면의 until 대기가 쌓임)")
+        return
+    if r.returncode != 0 or not r.stdout.strip():
+        check(False, f"node 하네스 실패({r.returncode}): {r.stderr.strip()[-800:]}")
+        return
+    res = json.loads(r.stdout.strip().splitlines()[-1])
+    for k, v in res.items():
+        if isinstance(v, dict) and "error" in v and len(v) == 1:
+            check(False, f"왕복 장면 {k} 예외: {v['error']}")
+    check(set(res) == {"channel", "opener", "stale", "busy", "autoQueue", "old", "reroll", "rerollMoved", "wave", "intrude", "oldPlan", "unknown"},
+          f"왕복 장면 열둘 {sorted(res)}")
+    key, only = "fe410d7f025d", R["alt"]["run"]["only"]
+    ua = ["deadbeef0000"] * 2  # world() 의 사용자 Draft·Run approve 보초
+    run_what, draft_what = "Run 승인 4건 ≈ $2.40–3.16", "초안 승인 1크롭 ≈ 27(최대 47) 크레딧"
+    stale = next(e for e in R["errors"]["409"] if e["reason"] == "stale")
+    queued = ":{} 큐에 들어감 — ComfyUI 탭이 승인 템플릿을 제출함(진행은 머리줄)"
+    blocked = "Studio 승인을 제출하는 중이라 이 큐 제출을 막았습니다(과금 없음) — 다시 큐에 넣으세요"
+    title = "확인 창 뒤 ComfyUI 탭이 승인 템플릿을 큐에 넣음 — approve: {}  only: " + only
+
+    def shape(m):
+        # 정본 messages 의 같은 경우 예시와 대조(_doc 구조.messages — approve 는 stage, approved 는 ok·reason 이 같은 예시)
+        k = m.get("type")
+        if k not in M:
+            return [f"정본에 없는 메시지 {k}"]
+        ex = next((e for e in M[k]["examples"] if (k != "bmk-dp-approve" or e["stage"] == m.get("stage"))
+                   and (k != "bmk-dp-approved" or (e["ok"], e.get("reason")) == (m.get("ok"), m.get("reason")))), None)
+        return _pl_shape(ex, m, M[k]) if ex is not None else [f"{k}: 같은 경우의 예시 없음"]
+
+    def trip(sc, path, stage, what, **final):
+        """sc.wire(wave 빼고)가 그 길로 approve → ack → approved 하나씩(같은 id·이 탭·정본 모양)이고 approve 의 hash·only 가 그 단계 정본 템플릿 값,
+        approved 가 final 인가 → 어긋난 것(빈 목록 = 맞음)"""
+        w = [(p, m) for p, m in sc.get("wire") or [] if m.get("type") != "bmk-dp-wave"]
+        got = [(p, m.get("type")) for p, m in w]
+        if got != [(path, "bmk-dp-approve"), (path, "bmk-dp-ack"), (path, "bmk-dp-approved")]:
+            return [f"길·순서 {got}"]
+        a, k, f = (m for _p, m in w)
+        ids = {"id": a.get("id"), "tab": sc.get("tab")}
+        bad = [f"{m['type']}: {s}" for _p, m in w for s in shape(m)]
+        if a != {"type": "bmk-dp-approve", **ids, "rootKey": key, "stage": stage, "hash": R["alt"][stage]["hash"], "only": R["alt"][stage]["only"],
+                 "what": what}:
+            bad.append(f"approve {a}")
+        if k != {"type": "bmk-dp-ack", **ids}:
+            bad.append(f"ack {k}")
+        if f != {"type": "bmk-dp-approved", **ids, "stage": stage, **final}:
+            bad.append(f"approved {f}")
+        return bad
+
+    def sent(sc, stage):
+        # 바닥 api.queuePrompt 본문 하나 = 서버 템플릿(정본 alt — JSON 문자열까지 같음: tpl)·대상·토큰 자리(가짜 프론트가 app.queuePrompt 안에서 넣은
+        # 값)·사용자 workflow 객체 그대로
+        bs = sc.get("bodies") or []
+        b = (bs or [{}])[0].get("body") or {}
+        ed = b.get("extra_data") or {}
+        return (len(bs) == 1 and bs[0].get("tpl") == stage and b.get("partial_execution_targets") == R["alt"][stage]["targets"]
+                and b.get("client_id") == "client-A" and (ed.get("auth_token_comfy_org"), ed.get("api_key_comfy_org")) == ("TOKEN-A", "KEY-A")
+                and ed.get("extra_pnginfo") == {"workflow": {"nodes": [3, 4, 7]}} and bs[0].get("sameWorkflow") is True)
+
+    ch = res.get("channel") or {}
+    if "wire" in ch:
+        bad = trip(ch, "channel", "run", run_what, ok=True, prompt_id="pid-1")
+        check(ch["link"] == ["ok", "channel", 3, "ok", ch["tab"]] and ch["btn"] == [False, title.format(R["alt"]["run"]["hash"])] and ch["planOnly"] == only,
+              f"채널 길 연결: Studio link = hello 답(ext 3·submit ok)의 그 탭, Run 승인 단추 = 정본 run 해시·only(크롭 3 선택), 체크를 껐다 켠 뒤(선택 순서 "
+              f"002,003,001)의 계획 요청 only = 정렬한 정규 only {ch['link']} {ch['btn']} {ch['planOnly']}")
+        check(not bad and ch["q"] == [{"root": key, "stage": "run", "approve": R["alt"]["run"]["hash"], "only": only}] and ch["confirms"] == 1
+              and ch["confirm"].startswith("GPT Image 호출 4건"),
+              f"Run 승인(사용자 클릭·네이티브 confirm 하나) → 채널로 approve → 탭 ack → 서버 GET 하나(stage·approve = 계획 해시·only = Studio 정규 only — "
+              f"선택 순서가 정렬과 달라도 서버 only_canon 과 바이트 같음) → approved ok(prompt_id) — 같은 id·hello 의 tab·정본 messages 모양 {bad} {ch['q']}")
+        check(sent(ch, "run") and ch["dialogs"] == [] and ch["seed"] == 101 and ch["adopt"] == "001_38a818" and ch["jobs"] == ["pid-1"]
+              and ch.get("approve") == ua,
+              "바닥 api.queuePrompt 본문 = 서버 템플릿(정본 alt.run)·대상 dp_review·토큰 자리·사용자 workflow 객체 그대로, 사용자 그래프는 시드 "
+              f"afterQueued 한 번·Spec Draft adopt 남음(대상 밖)·Draft·Run approve(보초 해시) 그대로(P3) {ch.get('approve')}")
+        check(ch["toast"] == queued.format("Run") and ch["stored"] == {"stage": "run", "pid": "pid-1", "number": None} and "실행 중: Run(run)" in ch["head"]
+              and ch["tabToasts"] == [f"success: Studio 승인으로 Run 큐 — {run_what}"]
+              and ch["done"] == {"toast": ":Run 끝 — 승인분 실행 · 남은 승인 필요 0건", "row": ["이 Studio 의 마지막 Run: T 끝 — 승인분 실행 · 남은 승인 필요 0건"],
+                                 "stored": None},
+              f"Studio 가 탭의 prompt_id 를 이 Studio 의 실행으로(sessionStorage·머리줄 진행) → 기록 dp_run.bmk_dp_run[0] 으로 끝 한 줄, 탭 토스트 'what' "
+              f"{ch['toast']} {ch['done']}")
+    op = res.get("opener") or {}
+    if "wire" in op:
+        bad = trip(op, "window", "draft", draft_what, ok=True, prompt_id="pid-1")
+        check(op["link"] == ["ok", "opener", 3, "ok", op["tab"]] and op["btn"] == [False, title.format(R["alt"]["draft"]["hash"])] and not bad
+              and op["q"] == [{"root": key, "stage": "draft", "approve": R["alt"]["draft"]["hash"], "only": only}] and sent(op, "draft")
+              and op["adopt"] == "001_38a818" and op["confirms"] == 1 and op.get("approve") == ua,
+              f"opener 길(Open Board 로 연 창): 초안 승인 → window postMessage(답 = ev.source — 채널엔 없음) → GET stage=draft → 템플릿 alt.draft·대상 "
+              f"dp_draft, 사용자 Spec Draft adopt·Draft·Run approve(보초 해시) 남음 {bad} {op['q']} {op.get('approve')}")
+        check(op["toast"] == queued.format("Spec Draft") and op["tabToasts"] == [f"success: Studio 승인으로 Spec Draft 큐 — {draft_what}"]
+              and op["done"] == {"toast": ":Spec Draft 끝 — 승인분 실행 · 남은 초안 대기 0건",
+                                 "row": ["이 Studio 의 마지막 Spec Draft: T 끝 — 승인분 실행 · 남은 초안 대기 0건"]},
+              f"opener 길 끝: 기록 dp_draft.bmk_dp_draft[0] 한 줄 {op['toast']} {op['done']}")
+    sl = res.get("stale") or {}
+    if "wire" in sl:
+        bad = trip(sl, "channel", "run", run_what, ok=False, reason="stale", error=stale["error"], hash=stale["hash"])
+        check(not bad and sl["q"] == [{"root": key, "stage": "run", "approve": R["alt"]["run"]["hash"], "only": only}] and sl["bodies"] == []
+              and sl["queued"] == 0 and sl["tabToasts"] == [f"warn: Studio 승인(Run) 안 됨: {stale['error']}"],
+              f"서버 409 stale → 탭은 큐에 넣지 않고 approved stale(error·지금 hash 그대로 — 정본 모양) {bad}")
+        check(sl["toast"] == f"err:Run 승인 안 됨 — 계획이 바뀜(지금 해시 {stale['hash']}) — 다시 받은 계획을 보고 다시 승인" and sl["replan"] >= 1
+              and sl["btn"] == [False, title.format(stale["hash"])],
+              f"Studio: stale = 토스트(지금 해시) + 계획 다시 → 승인 단추가 새 해시로 {sl['toast']} {sl['btn']}")
+    bz = res.get("busy") or {}
+    if "wire" in bz:
+        busy = "ComfyUI 탭이 큐를 처리하는 중 — 잠시 뒤 다시 승인"
+        a, f = (bz["wire"] + [[None, {}]] * 2)[:2]
+        check([(p, m.get("type")) for p, m in bz["wire"]] == [("channel", "bmk-dp-approve"), ("channel", "bmk-dp-approved")]
+              and f[1] == {"type": "bmk-dp-approved", "id": a[1].get("id"), "tab": bz["tab"], "stage": "run", "ok": False, "reason": "busy", "error": busy}
+              and not shape(f[1]) and bz["q"] == [] and bz["bodies"] == []
+              and bz["toasts"] == [f"warn:Run 승인 안 됨 — {busy}"] and bz["run"] == [False, title.format(R["alt"]["run"]["hash"])],
+              f"받을 때 탭이 바쁨 → ack 없이 approved busy(서버·큐 0) → Studio 는 그 답으로 끝냄(탭의 이유·할 일 그대로 — '잠시 뒤 다시(…)'로 겹쳐 감싸지 "
+              f"않음) — ack 시간이 지나도 '응답 없음' 없음, 단추 다시 켬 {bz['wire']} {bz['toasts']}")
+    aq = res.get("autoQueue") or {}
+    if "wire" in aq:
+        why = ("ComfyUI 탭의 자동 큐(Run (On Change))가 켜져 있음 — 승인 제출 뒤 사용자 그래프 전체가 토큰과 함께 자동으로 큐될 수 있어 받지 않음: "
+               "ComfyUI 탭의 Run 단추 모드를 Run 으로 바꾼 뒤 다시 승인")
+        kept = (" · 사전 승인한 재굴림은 예약된 채 남음(다음 Run·ComfyUI 큐 때 선택과 무관하게 과금): 지금 보내려면 머리줄 'ComfyUI 큐' — "
+                "R 을 다시 누르면 +1 호출이 더 승인됨")
+        fins = [m for _p, m in aq["wire"] if m.get("type") == "bmk-dp-approved"]
+        check([(m.get("stage"), m.get("reason"), m.get("error")) for m in fins] == [("run", "busy", why), ("reroll", "busy", why)]
+              and not any(shape(m) for m in fins) and aq["q"] == [] and aq["bodies"] == []
+              and aq["toasts"] == [f"warn:Run 승인 안 됨 — {why}", f"err:재굴림 큐 안 됨 — {why.removesuffix(' 다시 승인')} 머리줄 'ComfyUI 큐'{kept}"],
+              f"탭 자동 큐(Run (On Change)) → 탭이 Run·재굴림 모두 busy + 이유(서버·큐 0) → Studio 토스트는 그 이유 그대로('잠시 뒤 다시(…)' 아님 — "
+              f"재굴림도 '큐 처리 중'으로 바꾸지 않음 — 다만 할 일 끝의 '다시 승인'은 R 재누름 +1 로 읽히므로 머리줄 'ComfyUI 큐'로, r2-06) {fins} {aq['toasts']}")
+    od = res.get("old") or {}
+    if "run" in od:
+        why = "ComfyUI 탭의 확장이 옛 판(S3a — 판 2) — 그 탭을 새로고침한 뒤 유료 승인"
+        check(od["link"] == ["ok", 2] and od["run"] == [True, why] and od["draft"] == [True, why] and od["way"] == "" and od["wire"] == []
+              and od["q"] == [] and od["confirms"] == 0 and od["toasts"][-1:] == [f"warn:재굴림 예약됨 — Run 실행 때 과금({why})"],
+              f"탭 확장 옛 판(hello ext 2): 두 승인 단추 꺼짐(제목 = 이유), 눌러도 확인 창·메시지 없음, R 은 예약만 — 탭에 승인·서버 GET 0 {od}")
+    rr = res.get("reroll") or {}
+    if "wire" in rr:
+        bad = trip(rr, "channel", "reroll", "재굴림(사전 승인) 1건", ok=True, prompt_id="pid-1")
+        check(rr["way"] == "paid" and not bad and rr["q"] == [{"root": key, "stage": "reroll"}] and sent(rr, "reroll") and rr["confirms"] == 0
+              and rr["toast"] == queued.format("재굴림") and rr["done"] == ":재굴림 끝 — 재굴림(사전 승인)·복구만 실행 · 승인 필요 4건 남음",
+              f"R(board.js reroll → queueReroll(확인 때 판정 paid — 지금도 paid)) + 유료 가능한 탭 → reroll 승인(hash·only \"\" — 확인 창 없음) → "
+              f"GET stage=reroll(approve·only 없음) → 템플릿 alt.reroll(dp_run approve \"\") → 끝 {bad} {rr['q']} {rr['done']}")
+        hd = rr.get("head") or {}
+        bad = trip(hd, "channel", "reroll", "재굴림(사전 승인) 1건", ok=True, prompt_id="pid-2")
+        check(not bad and hd.get("q") == [{"root": key, "stage": "reroll"}] and sent(hd, "reroll") and hd.get("confirms") == 0,
+              f"이어서 머리줄 'ComfyUI 큐'(queueReroll() — 지금 판정 paid)도 같은 왕복(승인 메시지·GET stage=reroll·템플릿 한 번) {bad} {hd.get('q')}")
+    rm = res.get("rerollMoved") or {}
+    if "wire" in rm:
+        # 예약 토스트 = pipe.reroll 의 lock 예약과 같은 꼴(r1-08 — 이유를 겹친 줄표 안에 넣지 않고, 탭 큐 처리 중 이유에 '잠시 뒤 다시'(R 재누름 = +1)가 없음)
+        moved = "warn:재굴림 예약됨 — R 확인 뒤 ComfyUI 탭 상태가 바뀌어 지금 보내지 않음({}): 머리줄 'ComfyUI 큐'로 보내거나 다음 Run 때 과금"
+        arm = "warn:R 을 한 번 더 누르면 재굴림 +1 호출 (V1 ≈ $0.62) — 유료{} · 금액은 지금 jobs 기준({})"
+        side = " · 승인 제출이라 ComfyUI 탭 그래프의 시드 제어 등 실행마다 바뀌는 값이 한 번 진행됨(그래프는 실행 안 함)"
+        check(rm["ways"] == ["paid", "opener", "paid"] and rm["review"][0] == 0 and rm["wire"] == [] and rm["q"] == [] and rm["bodies"] == []
+              and rm["toasts"][:2] == [moved.format("ComfyUI 탭이 큐를 처리하는 중"),
+                                       moved.format("탭이 이제 유료 승인을 받음 — 확인한 Review 부분 실행과 과금 기준이 다름")],
+              f"R 확인 뒤 길이 바뀜(queueReroll(확인 때 판정)): paid 확인 → 탭이 바빠져 opener 길이어도 Review 부분 실행(그래프 위젯 값으로 과금) 없이 "
+              f"예약만, opener 확인 → paid 가 돼도 승인 메시지 없이 예약만 {rm['ways']} {rm['review']} {rm['toasts'][:2]}")
+        check(rm["toasts"][2:] == [arm.format(side, "Prepare 갈라짐 — Studio 실행 설정이 마지막 Prepare 와 다르면 바뀜"),
+                                   arm.format("", "그래프 Prepare 값이 Studio 와 다르면 바뀜")]
+              and rm["armed"] == 0 and rm["writes"] == ["reroll"] and rm["planned"] == ["opener"] and rm["review"][1] == 1,
+              f"키보드 R: 첫 R(paid 문구 — 승인 제출 부수 효과 짧은 줄, r1-11) 뒤 길이 바뀐 두 번째 R 은 사전 승인하지 않고 다시 무장(opener 문구 — 부수 효과 "
+              f"줄 없음), 세 번째 R 이 사전 승인 → 큐는 그 판정(지금도 opener — Review 부분 실행 한 번, 예약 토스트 없음) {rm['toasts'][2:]} {rm['writes']} "
+              f"{rm['planned']} {rm['review']}")
+    wv = res.get("wave") or {}
+    if "waves" in wv:
+        want = {"type": "bmk-dp-wave", "tab": wv["tab"], "rootKey": key, "prompt_id": "pid-1", "node": "dp_run", "remaining": 5}
+        check(sorted(p for p, _m in wv["waves"]) == ["channel", "window"] and all(m == want and not shape(m) for _p, m in wv["waves"])
+              and wv["tabToast"] == "info: wave 종료(남은 5건) — Studio 에서 이어서 승인" and not wv["mid"].startswith("남은"),
+              f"템플릿 Run 의 wave(node dp_run) → 탭이 채널과 승인을 보낸 창(opener)에 bmk-dp-wave(정본 모양), 실행 중엔 이어서 승인 아님 {wv['waves']}")
+        check(wv["done"] == "warn:Run 끝 — 승인분 실행 · 남은 승인 필요 4건 · wave 로 멈춤(남은 5건) — Run 줄에서 이어서 승인"
+              and wv["row"] == ["wave 로 멈춤 — 멈출 때 남은 5건: 새 계획(단추의 건수)으로 이어서 승인(클릭만 — 자동 이어가기 없음)"]
+              and wv["btn"] == ["남은 4건 이어서 승인 ≈ $2.40–3.16", False, title.format("c0ffee123456")] and wv["approves"] == 1,
+              f"D9: 끝난 뒤 Run 줄 'wave 로 멈춤' + 단추 '남은 N건 이어서 승인'(새 계획 해시 — 자동으로 보내지 않음) {wv['done']} {wv['btn']}")
+    it = res.get("intrude") or {}
+    if "wire" in it:
+        bad = trip(it, "channel", "run", run_what, ok=True, prompt_id="pid-1")
+        check(it["user"] is False and it["log"] == ["queue dp_review", "queue ", "submit"] and sent(it, "run") and not bad
+              and it["dialogs"] == [f"error: BMK Design Patch: {blocked}"]
+              and it["tabToasts"] == [f"warn: {blocked}", f"success: Studio 승인으로 Run 큐 — {run_what}"] and it["toast"] == queued.format("Run")
+              and it["seed"] == 101 and it.get("approve") == ua,
+              f"탭 무장 중(토큰 얻는 사이) 사용자 Queue → 먼저 꺼내지지만 막힘(보내지 않음 — 프론트 대화상자·탭 토스트), Studio 승인 템플릿만 한 번 나가고 "
+              f"Studio 는 그 prompt_id, 사용자 approve(보초) 그대로 {it['log']} {bad} {it.get('approve')}")
+    ol = res.get("oldPlan") or {}
+    if "wire" in ol:
+        on = [[False, title.format(R["alt"][k]["hash"])] for k in ("draft", "run")]
+        t0 = (ol["toasts"] + [""])[0]
+        check(ol["draft"] == on[0] and ol["confirms"] == 0 and ol["wire"] == [] and ol["q"] == [] and len(ol["toasts"]) == 1
+              and t0.startswith("err:Spec Draft 승인 안 됨 — 확인 창을 만들지 못함(") and t0.endswith("): 서버가 옛 판이면 ComfyUI 재시작")
+              and ol["after"] == on and "승인 — 확인" not in ol["head"] and ol["run"] == queued.format("Run"),
+              f"확인 창 문구를 못 만듦(S3a 모양 초안 계획 — reasons 등 없음, 새 JS + 재시작 전 옛 서버): 오류 토스트·확인 창·메시지 0, 잠금이 풀려 두 승인 "
+              f"단추 다시 켬·이어서 Run 승인 왕복 {ol['toasts']} {ol['after']} {ol['run']}")
+    uk = res.get("unknown") or {}
+    if "wire" in uk:
+        unk = "제출 결과 모름(응답 오류: Failed to fetch) — 이미 큐에 들어갔을 수 있음: ComfyUI 큐를 확인"
+        bad = trip(uk, "channel", "run", run_what, ok=False, reason="unknown", error=unk)
+        h0 = R["alt"]["run"]["hash"]
+        check(not bad and sent(uk, "run") and uk["armed"] is False and uk["tabToasts"] == [f"warn: Studio 승인(Run): {unk}"]
+              and uk["toasts"] == [f"warn:Run 결과 모름 — {unk}"] and uk["kept"] == ["run"] and uk.get("approve") == ua
+              and uk["row"] == [f"앞서 보낸 Run 승인(해시 {h0})의 결과를 모름 — 이미 ComfyUI 큐에 들어갔을 수 있음: 다시 보내기 전에 ComfyUI 큐 확인"]
+              and str(uk.get("again")).startswith(f"앞서 보낸 같은 승인(해시 {h0})의 결과를 모름") and uk["sentAgain"] == 1,
+              f"r2-03 왕복: 탭이 바꿔치기한 본문을 보낸 뒤 응답을 잃음(TypeError) → approved unknown(정본 예시 모양 — 탭 토스트 '안 됨' 없음, 토큰 지움) → "
+              f"Studio '결과 모름'(경고)·계획 다시·결과 모름 줄·보낸 승인 기록, 같은 해시 재승인 확인 창에 결과 모름 한 줄(취소 — 메시지 1) {bad} {uk.get('toasts')} "
+              f"{uk.get('row')} {uk.get('again')}")
+
+
+def paid_node_unit():
+    """S3b U4: N29(§7.3·P6) — 라우트(board.pipeline_prompt)가 내준 유료 템플릿을 실제 실행기로(validate_prompt(대상 = 탭이 보내는
+    partial_execution_targets) → PromptExecutor, client_id·extra_data 없음 — _pipeline_node_u3 N27 꼴, NODE_CLASS_MAPPINGS 병합·복원):
+    run(approve = 라우트 계획 해시) → 승인·발사·후보, approve 한 글자 다름(build_prompt 직접) → 드라이런, reroll(POST /reroll 과 같은 board
+    함수 뒤) → 사전 승인분만, draft → 초안 쓰기, dp_* 대상 + 사용자 그래프식 프롬프트 → 검증 거절(prompt_no_outputs — 서버 400). 합성 PSD·
+    mock 씨앗은 N25 와 같은 꼴(실행 설정 = 노드 위젯 값으로 저장), 경우마다 씨앗 base_dir 째 새 사본. 유료 0(mock)."""
+    section("S3b paid_node_unit — N29 유료 템플릿 실행(mock): run 승인·한 글자 드라이런·reroll 사전 승인분·draft 초안·dp_* 대상 사용자 그래프(U4)")
+    dp = _dp_package()
+    import execution
+    import folder_paths  # noqa: E402  (ComfyUI 루트)
+    import nodes
+    import comfy.model_management as mm
+
+    st, rn, dv, bd = dp.store, dp.runner, dp.dvlm, dp.board  # 노드와 같은 모듈(_bmk_dp_pkg)
+    pl = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_pipeline")
+    NS = OUT_ROOT / "paid_node"
+    shutil.rmtree(NS, ignore_errors=True)
+    NS.mkdir(parents=True)
+    folder_paths.set_output_directory(str(NS / "output"))
+    env_mock = os.environ.pop(rn.MOCK_ENV, None)
+    SHAPES = [("001_왼쪽", [32, 32, 160, 160]), ("002_가운데 | A: 단추; B: 리본;", [192, 64, 320, 192]), ("003_오른쪽", [352, 160, 480, 288])]
+    PSD = NS / "n29.psd"
+    _layout_node_psd(PSD, texture(512, 640, 61))
+    IMPORT = {"psd_path": PSD.as_posix(), "crop_group": "auto", "clean_plate_layer": "auto", "base_layer": "auto",
+              "crop_pixels_group": "auto", "refs_dir": "", "glossary_path": ""}
+    PRE_ARGS = {"model": MODEL25, "quality": "high", "size_rule": "user_k", "variants": "V1", "n": 1, "ref_style": "at", "calls_per_cell": 1}
+    DRAFT = {"vlm": "openai/gpt-6-sol", "effort": "xhigh", "image_detail": "high", "write_mode": "fill", "apply": "targets"}  # + _MOCK_API = mock
+    orig_rects = dp.dpsd.read_crop_rects
+
+    def fake_rects(psd, group="auto"):  # 크롭 영역 그룹이 있으면 SHAPES(PSDWriter 는 shape 레이어를 못 씀), 없으면 진짜
+        if dp.dpsd.find_crop_group(psd, group) is None:
+            return orig_rects(psd, group)
+        return [{"name": n, "rect": list(r), "rect_source": "vector", "layer_index": i, "visible": True, "warnings": []}
+                for i, (n, r) in enumerate(SHAPES)]
+
+    def seed():
+        """씨앗 base_dir: mock 켬 → Project → Import(합성 PSD) → Prepare, 실행 설정 import·prepare·draft 절 = 노드 위젯 값(확인 끝 — 게이트 통과,
+        Prepare 가 남긴 설정·입력 지문과 같아 반영 필요 없음)."""
+        b = NS / "seed"
+        f = b / "bmk_design_patch" / rn.MOCK_FILE
+        f.parent.mkdir(parents=True)
+        f.write_text(json.dumps({"delay_s": 0.0, "fail_plan": {}, "vlm": {"delay_s": 0.0}}), encoding="utf-8")
+        h, _s = dp.BMKDesignPatchProject().open("n29", str(b))
+        h = dp.BMKDesignPatchImportPSD().run(h, **IMPORT)[0]
+        dp.BMKDesignPatchPrepare().run(h, **PRE_ARGS)
+        for sec, vals in (("import", IMPORT), ("prepare", PRE_ARGS), ("draft", DRAFT)):
+            c = pl.current(h["root"], deep=True)
+            pl.update(h["root"], c["rev"], sec, dict(c["settings"][sec], **vals))
+        return b
+
+    def fresh(tag):
+        """씨앗 base_dir 째 새 사본(실행이 원장·재굴림을 바꿈) → (root, crop_id 목록)."""
+        nb = NS / tag
+        shutil.copytree(base, nb)
+        root = dp.BMKDesignPatchProject().open("n29", str(nb))[0]["root"]
+        return root, [c["id"] for c in st.load_manifest(root)["crops"]]
+
+    def plan(root, ids):
+        """라우트 계획(GET /pipeline/plan 과 같은 함수 — 실행 설정 = pipeline.json) → (계획, 정규 only = 계획 sig 의 only — Studio 가 싣는 값)."""
+        p = bd.pipeline_plan(root, only_ids=ids, style=False)
+        return p, p["sig"].split("|o:")[1]
+
+    def execute(prompt, pid, targets, run=True):
+        """탭이 보내는 /api/prompt 와 같은 판정: validate_prompt(대상 = partial_execution_targets) → run 이면 PromptExecutor.execute(client_id·
+        extra_data 없음 — 토큰 없음, mock). → (검증 결과, 성공, 기록 outputs)"""
+
+        class Srv:
+            def __init__(self):
+                self.client_id, self.last_node_id, self.last_prompt_id = None, None, None
+
+            def send_sync(self, event, data, sid=None):
+                pass
+
+            def queue_updated(self):
+                pass
+
+        saved = {k: nodes.NODE_CLASS_MAPPINGS.get(k) for k in dp.NODE_CLASS_MAPPINGS}
+        nodes.NODE_CLASS_MAPPINGS.update(dp.NODE_CLASS_MAPPINGS)
+        try:
+            mm.interrupt_current_processing(False)
+            valid = asyncio.run(execution.validate_prompt(pid, copy.deepcopy(prompt), targets))
+            if not (valid[0] and run):
+                return valid, False, {}
+            ex = execution.PromptExecutor(Srv(), cache_type=execution.CacheType.CLASSIC, cache_args={"lru": 0, "ram": 0, "ram_inactive": 0})
+            ex.execute(copy.deepcopy(prompt), pid, {}, valid[2])
+            return valid, ex.success, ex.history_result.get("outputs", {})
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    nodes.NODE_CLASS_MAPPINGS.pop(k, None)
+                else:
+                    nodes.NODE_CLASS_MAPPINGS[k] = v
+            mm.interrupt_current_processing(False)
+
+    def report(outs, node="dp_run", key="bmk_dp_run"):
+        """기록 outputs 의 노드 보고 → (ui 항목, 보고문) — Studio paidReport 가 읽는 자리(outputs.<노드 키>.<ui 키>[0])."""
+        o = outs.get(node) or {}
+        return (o.get(key) or [{}])[0], (o.get("text") or [""])[0]
+
+    def fired(rep: str) -> int:
+        mt = re.search(r"실행: 발사 (\d+)", rep)
+        return int(mt.group(1)) if mt else 0
+
+    def t_run():
+        section("S3b-N29 run: 라우트 템플릿(approve = 계획 해시·정규 only) → Run 승인·mock 발사 = 승인 필요·후보 등록, 기록 ui = Studio 가 읽는 자리")
+        root, ids = fresh("run")
+        p, only = plan(root, ids)
+        t = bd.pipeline_prompt(root, "run", p["run"]["hash"], only)
+        valid, ok, outs = execute(t["prompt"], "n29-run", t["targets"])
+        e, rep = report(outs)
+        m = st.load_manifest(root)
+        check(valid[0] and ok and t["targets"] == ["dp_review"] and set(outs) == {"dp_run", "dp_review"} and e.get("approved_now") is True
+              and e.get("pending") == 0 and e.get("backend") == rn.BACKEND_MOCK and e.get("root_key") == st.root_key(root) and e.get("stopped_reason") == "none"
+              and fired(rep) == p["run"]["need"] == _ledger_reqs(root) == len(m["jobs"]) > 0 and len(m["candidates"]) == 4,
+              f"run 템플릿(대상 dp_review) → Run 승인(approved_now)·발사 = 계획 승인 필요 = 원장 req, 후보 등록(002 는 A·B), 끝 보고 = 기록 "
+              f"outputs.dp_run.bmk_dp_run[0] {fired(rep)} {p['run']['need']} {_ledger_reqs(root)} {len(m['candidates'])} {sorted(outs)} {e}")
+
+    def t_dry():
+        section("S3b-N29 approve 한 글자 다름(라우트는 409 stale — build_prompt 직접): 템플릿 실행 → 드라이런(호출 0), ui pending_hash = 라우트 해시")
+        root, ids = fresh("dry")
+        p, only = plan(root, ids)
+        H = p["run"]["hash"]
+        wrong = H[:-1] + ("1" if H[-1] == "0" else "0")
+        try:
+            bd.pipeline_prompt(root, "run", wrong, only)
+            route = None
+        except bd._Reject as x:
+            route = (x.status, x.extra.get("reason"), x.extra.get("hash"))
+        prompt = pl.build_prompt("run", pl.current(root, deep=True)["settings"], root, approve=wrong, only=only)
+        valid, ok, outs = execute(prompt, "n29-dry", ["dp_review"])
+        e, rep = report(outs)
+        check(route == (409, "stale", H) and prompt["dp_run"]["inputs"]["approve"] == wrong and valid[0] and ok and e.get("approved_now") is False
+              and fired(rep) == 0 and _ledger_reqs(root) == 0 and not st.load_manifest(root)["candidates"] and e.get("pending") == p["run"]["need"]
+              and e.get("pending_hash") == H and "드라이런" in rep,
+              f"한 글자 다른 approve 의 run 템플릿 → 승인 안 됨·발사 0(드라이런 — 과금 없음), 남은 승인 필요·pending_hash = 라우트 계획 {route} {e}")
+
+    def t_reroll():
+        section("S3b-N29 reroll: 첫 크롭만 승인 실행 → 그 셀 재굴림 1(POST /reroll 과 같은 board 함수) → reroll 템플릿(approve·only \"\") → 사전 "
+                "승인분만 발사, 나머지 승인 필요는 그대로")
+        root, ids = fresh("reroll")
+        p0, only0 = plan(root, ids[:1])
+        t0 = bd.pipeline_prompt(root, "run", p0["run"]["hash"], only0)
+        _v, ok0, _o = execute(t0["prompt"], "n29-rr-run", t0["targets"])
+        ck = next(j["cell_key"] for j in st.load_manifest(root)["jobs"] if j["crop_id"] == ids[0])
+        rr = bd._reroll_and_count(root, 1, {"cell_key": ck})
+        p, _only = plan(root, ids)
+        n0 = _ledger_reqs(root)
+        t = bd.pipeline_prompt(root, "reroll")
+        valid, ok, outs = execute(t["prompt"], "n29-reroll", t["targets"])
+        e, rep = report(outs)
+        check(ok0 and n0 == 1 and rr["pending_preapproved"] == 1 and (p["run"]["pre"], p["run"]["need"]) == (1, len(ids) - 1)
+              and (t["hash"], t["only"], t["prompt"]["dp_run"]["inputs"]["approve"]) == ("", "", "") and valid[0] and ok
+              and fired(rep) == 1 and _ledger_reqs(root) - n0 == 1 and e.get("approved_now") is False and e.get("pending") == p["run"]["need"]
+              and e.get("pending_hash") == p["run"]["hash"],
+              f"reroll 템플릿 → 사전 승인 재굴림 1건만 발사(승인 필요 {p['run']['need']}건은 드라이런 — 과금 없음), pending_hash = 라우트 계획 "
+              f"{fired(rep)} {_ledger_reqs(root) - n0} {rr} {e}")
+
+    def t_draft():
+        section("S3b-N29 draft(mock — openai + _MOCK_API): 라우트 템플릿(approve = 계획 초안 해시) → 초안 승인·대기 크롭마다 스펙 초안 done(Run 호출 0), "
+                "기록 outputs.dp_draft.bmk_dp_draft[0], 크롭 하나만 고른 계획이면 그 크롭만")
+        root, ids = fresh("draft")
+        p, only = plan(root, ids)
+        t = bd.pipeline_prompt(root, "draft", p["draft"]["hash"], only)
+        valid, ok, outs = execute(t["prompt"], "n29-draft", t["targets"])
+        e, _rep = report(outs, "dp_draft", dv.UI_KEY)
+
+        def drafted(r, i):
+            f = Path(r, "specs", f"{i}.json")
+            k = f.is_file() and (json.loads(f.read_text(encoding="utf-8")).get("_draft") or {}).get("key")
+            return bool(k) and dv.Ledger(r).state(i, k)["status"] == "done"
+
+        units = [u["crop_id"] for u in p["draft"]["units"]]
+        check(p["draft"]["family"] == "mock" and units and all(drafted(root, i) for i in units) and t["targets"] == ["dp_draft"]
+              and sorted(t["prompt"]) == ["dp_draft", "dp_import", "dp_project"] and valid[0] and ok and set(outs) == {"dp_draft"}
+              and e.get("approved_now") is True and e.get("pending") == 0 and e.get("backend") == dv.BACKEND_NAMES["mock"] and _ledger_reqs(root) == 0
+              and (e.get("auth_held"), e.get("stopped_reason")) == (0, "none"),
+              f"draft 템플릿(대상 dp_draft) → 초안 승인(approved_now)·대기 {len(units)}크롭 초안 done, 끝 보고 = 기록 outputs.dp_draft.bmk_dp_draft[0] "
+              f"{units} {sorted(outs)} {e}")
+        # 크롭 하나만 고른 계획의 해시: 라우트 템플릿의 only = 그 선택이라 승인 — 고른 크롭만 초안, 나머지 대기는 그대로
+        root1, _ids = fresh("draft1")
+        p1, only1 = plan(root1, ids[:1])
+        t1 = bd.pipeline_prompt(root1, "draft", p1["draft"]["hash"], only1)
+        valid1, ok1, outs1 = execute(t1["prompt"], "n29-draft1", t1["targets"])
+        e1, _rep = report(outs1, "dp_draft", dv.UI_KEY)
+        rest = [i for i in units if i != ids[0]]
+        check(ids[0] in units and rest and [u["crop_id"] for u in p1["draft"]["units"]] == ids[:1] and valid1[0] and ok1
+              and e1.get("approved_now") is True and drafted(root1, ids[0]) and not any(drafted(root1, i) for i in rest),
+              f"크롭 하나({ids[0]})만 고른 계획 해시의 draft 템플릿 → 초안 승인(approved_now)·그 크롭만 초안 done, 나머지 대기 {rest} 는 그대로 {e1}")
+
+    def t_auth():
+        section("S3b-N29 인증 중지(r1-15 — Studio 끝 줄 '승인했지만 중지 — 로그인 필요'): mock 401(Run fail_plan *·Spec Draft 크롭마다 401) → 기록 ui "
+                "stopped_reason auth(Run 은 과금 전 거부라 승인 필요로 되돌림·후보 없음, Spec Draft 는 초안 대기 그대로·auth_held 0)")
+        root, ids = fresh("auth")
+        (NS / "auth" / "bmk_design_patch" / rn.MOCK_FILE).write_text(json.dumps(
+            {"delay_s": 0.0, "fail_plan": {"*": {"error": 401}}, "vlm": {"delay_s": 0.0, "fail_plan": {i: ["401"] for i in ids}}}), encoding="utf-8")
+        p, only = plan(root, ids)
+        t = bd.pipeline_prompt(root, "run", p["run"]["hash"], only)
+        valid, ok, outs = execute(t["prompt"], "n29-auth-run", t["targets"])
+        e, rep = report(outs)
+        check(valid[0] and ok and e.get("approved_now") is True and e.get("stopped_reason") == "auth" and e.get("pending") == p["run"]["need"] > 0
+              and not st.load_manifest(root)["candidates"],
+              f"Run 템플릿 + 401 → approved_now·stopped_reason auth(Studio paidReport 의 LOGIN), 승인 필요 {p['run']['need']}건 그대로·후보 없음 {e}")
+        p2, only2 = plan(root, ids)
+        t2 = bd.pipeline_prompt(root, "draft", p2["draft"]["hash"], only2)
+        valid2, ok2, outs2 = execute(t2["prompt"], "n29-auth-draft", t2["targets"])
+        e2, _rep = report(outs2, "dp_draft", dv.UI_KEY)
+        units = len(p2["draft"]["units"])
+        check(valid2[0] and ok2 and e2.get("approved_now") is True and (e2.get("auth_held"), e2.get("stopped_reason")) == (0, "auth")
+              and e2.get("pending") == units > 0,
+              f"draft 템플릿 + 401(로그인 정보는 있음 — 보내다 거부) → auth_held 0·stopped_reason auth(Studio 가 로그인 필요로), 초안 대기 {units} 그대로 {e2}")
+
+    def t_user():
+        section("S3b-N29 P6: 대상 dp_* 를 사용자 그래프식 프롬프트(같은 노드·숫자 키 — graphToPrompt 꼴, Run approve = 라우트 해시)에 붙인 부분 실행 → "
+                "검증 거절 prompt_no_outputs(서버 /prompt 400 — 실행·과금 없음), 그 그래프 자기 대상이면 통과")
+        root, ids = fresh("user")
+        p, only = plan(root, ids)
+        t = bd.pipeline_prompt(root, "run", p["run"]["hash"], only)
+        num = {k: str(i + 1) for i, k in enumerate(t["prompt"])}
+        user = {num[k]: {"class_type": n["class_type"], "inputs": {a: [num[v[0]], v[1]] if isinstance(v, list) else v for a, v in n["inputs"].items()}}
+                for k, n in t["prompt"].items()}
+        bad, _ok, _o = execute(user, "n29-user", t["targets"], run=False)
+        own, _ok, _o = execute(user, "n29-user-own", [num["dp_review"]], run=False)
+        check(not any(k.startswith("dp_") for k in user) and user[num["dp_run"]]["inputs"]["approve"] == p["run"]["hash"] and bad[0] is False
+              and bad[1]["type"] == "prompt_no_outputs" and own[0] is True and _ledger_reqs(root) == 0,
+              f"사용자 그래프 + 대상 {t['targets']} → 출력 노드 0개라 검증 거절(prompt_no_outputs), 같은 그래프 자기 Review 대상은 통과(거절 이유는 대상뿐) "
+              f"{bad[1]} {own[0]}")
+
+    dp.dpsd.read_crop_rects = fake_rects
+    try:
+        base = _guarded("S3b-N29 씨앗", seed)
+        if base is not None:
+            for name, fn in (("run", t_run), ("dry", t_dry), ("reroll", t_reroll), ("draft", t_draft), ("auth", t_auth), ("P6", t_user)):
+                _guarded(f"S3b-N29 {name}", fn)
+    finally:
+        dp.dpsd.read_crop_rects = orig_rects
+        bd._PLAN_MEMO.clear()
+        if env_mock is not None:
+            os.environ[rn.MOCK_ENV] = env_mock
+
+
+# ═════════════════════════════════════════════════════════════════
 def want(name: str) -> bool:
     return not ONLY or name in ONLY
 
@@ -32760,6 +37639,8 @@ if __name__ == "__main__":
         refs_board_unit()
     if want("pipeline_board_unit"):
         pipeline_board_unit()
+    if want("paid_board_unit"):
+        paid_board_unit()
     if want("vlm_unit"):
         vlm_unit()  # M3: torch·comfy 를 import 하지 않음(V18 은 가짜 libs)
     if not QUICK and want("vlm_comfy"):
@@ -32772,6 +37653,13 @@ if __name__ == "__main__":
         refs_js_unit()
     if want("pipeline_js_unit"):
         pipeline_js_unit()
+    if want("paid_js_unit") or {"paid_js_tab", "paid_js_studio", "paid_js_e2e"} & ONLY:
+        if want("paid_js_unit") or "paid_js_tab" in ONLY:
+            _paid_js_tab()
+        if want("paid_js_unit") or "paid_js_studio" in ONLY:
+            _paid_js_studio()
+        if want("paid_js_unit") or "paid_js_e2e" in ONLY:
+            _paid_js_e2e()
     print(f"\n단위 테스트 {time.time() - T0:.1f}s (PASS {PASSES} FAIL {len(FAILS)})")
     if QUICK:
         print("\n--quick: 회귀·노드 생략")
@@ -32807,6 +37695,10 @@ if __name__ == "__main__":
             if want("pipeline_node_unit") or "pipeline_node_u3" in ONLY:
                 _pipeline_node_u3()
             print(f"\nS3 파이프라인 노드 {time.time() - t_r:.1f}s")
+        if want("paid_node_unit"):
+            t_r = time.time()
+            paid_node_unit()
+            print(f"\nS3b 유료 노드 {time.time() - t_r:.1f}s")
         if want("vlm_node_unit"):
             t_r = time.time()
             vlm_node_unit()
