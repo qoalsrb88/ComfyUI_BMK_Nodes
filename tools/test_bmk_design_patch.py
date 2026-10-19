@@ -5635,7 +5635,10 @@ def m2_board_unit():
                        ("GET", "/bmk/design_patch/pipeline"), ("POST", "/bmk/design_patch/pipeline/settings"),  # S3 §6(라우트 7)
                        ("GET", "/bmk/design_patch/pipeline/prompt"), ("GET", "/bmk/design_patch/pipeline/plan"),
                        ("GET", "/bmk/design_patch/pipeline/progress"), ("GET", "/bmk/design_patch/draft"),
-                       ("POST", "/bmk/design_patch/draft/adopt")})
+                       ("POST", "/bmk/design_patch/draft/adopt"),
+                       ("GET", "/bmk/design_patch/mask"), ("GET", "/bmk/design_patch/mask/img"),  # S4 §4(라우트 5)
+                       ("POST", "/bmk/design_patch/mask/save"), ("POST", "/bmk/design_patch/mask/edit"),
+                       ("GET", "/bmk/design_patch/mask/alts")})
         check(paths == want, f"라우트 목록 {paths}")
         # 재시작 흉내: 메모리 레지스트리에서 지움 → base_dir 로 다시 등록하면 _roots.json 에서 복구
         with store._ROOTS_LOCK:
@@ -5668,8 +5671,8 @@ def m2_board_unit():
 
     async def b3_roots(h: Http, key, root):
         section("B3 root 검증 (레지스트리 키만)")
-        bads = ["", "000000000000", key.upper(), key + "\n", key[:-1], root, os.path.dirname(root), "../" + key,
-                key + "0", "zzzzzzzzzzzz"]
+        bads = ["", "000000000000", key + "\n", key[:-1], root, os.path.dirname(root), "../" + key, key + "0", "zzzzzzzzzzzz"]
+        bads += [key.upper()] if key.upper() != key else []  # 숫자만인 키(출력 폴더 경로에 따라 ≈ 0.4%)는 대문자로 바꿔도 같은 키
         for b in bads:
             st, d = await h.jget("/bmk/design_patch/state", root=b)
             check(st == 404 and "등록되지 않은" in (d.get("error") or ""), f"state root={b!r} → {st}")
@@ -5716,7 +5719,7 @@ def m2_board_unit():
         (BASE / "bmk_design_patch" / "_MOCK_API").unlink()
         st, u = await h.jget("/bmk/design_patch/state", root=key, since_rev=str(s["rev"]))
         check(st == 200 and u == {"unchanged": True, "rev": s["rev"], "running": False, "drain": False, "drafting": False, "layout_rev": None,
-                                  "refs_rev": None, "refs_files_v": None, "pipeline_rev": None, "plan_v": None}
+                                  "refs_rev": None, "refs_files_v": None, "pipeline_rev": None, "plan_v": None, "pref_v": None}
               and s.get("refs_files_v", "없음") is None,
               f"since_rev 같음 → unchanged(레이아웃·refs.json·refs_dir·pipeline.json·기억한 계획 없음 → layout_rev·refs_rev·refs_files_v·"
               f"pipeline_rev·plan_v null, S1 §4.2·S2 §5.8·S3 §6) {u}")
@@ -6157,10 +6160,10 @@ def m2_board_unit():
                   f"{name} 외부 URL·CDN 없음")
             check(not any(ord(ch) >= 0x1F000 or ch == "\ufe0f" for ch in text), f"{name} 이모지 없음")
         check(re.findall(r'<script src="([^"]+)" defer></script>', html)
-              == ["layout_geom.js", "viewer.js", "layout_edit.js", "ref_edit.js", "pipeline.js", "board.js"]
-              and not re.search(r"<script(?![^>]*\bsrc=\"(?:layout_geom|viewer|layout_edit|ref_edit|pipeline|board)\.js\")", html)
+              == ["layout_geom.js", "viewer.js", "layout_edit.js", "ref_edit.js", "pipeline.js", "mask_edit.js", "board.js"]
+              and not re.search(r"<script(?![^>]*\bsrc=\"(?:layout_geom|viewer|layout_edit|ref_edit|pipeline|mask_edit|board)\.js\")", html)
               and "on" + "click=" not in html.lower(),
-              "html 에 인라인 스크립트·이벤트 속성 없음, layout_geom → viewer → layout_edit → ref_edit → pipeline → board 순서")
+              "html 에 인라인 스크립트·이벤트 속성 없음, layout_geom → viewer → layout_edit → ref_edit → pipeline → mask_edit → board 순서")
         check('postMessage({ type: "bmk-dp-queue", rootKey: ROOT, layout }, location.origin)' in js,
               "opener postMessage 형식(명세 §4.2, layout = 옛 서버 대체(재시작 전) — 탭 layout 요청)")
         check("POLL_MS = 2000" in js and "since_rev" in js, "2초 폴링 + since_rev")
@@ -10346,12 +10349,12 @@ def m2_node_unit():
             n1 = len(fake.routes)
             dp._register_board_routes()
         paths = {r.path for r in fake.routes}
-        check(n1 == 32 and len(fake.routes) == 32 and {"/bmk/design_patch/state", "/bmk/design_patch/drain",
+        check(n1 == 37 and len(fake.routes) == 37 and {"/bmk/design_patch/state", "/bmk/design_patch/drain",
                                                        "/bmk/design_patch/board/", "/bmk/design_patch/canvas",
                                                        "/bmk/design_patch/layout", "/bmk/design_patch/layout/refs",
                                                        "/bmk/design_patch/refs", "/bmk/design_patch/refs/cut",
                                                        "/bmk/design_patch/pipeline/plan", "/bmk/design_patch/draft/adopt"} <= paths,
-              f"보드 라우트 32개(S1 레이아웃 5·S2 레퍼런스 8·S3 파이프라인 7 포함), 두 번 불러도 한 번 ({n1}, {len(fake.routes)})")
+              f"보드 라우트 37개(S1 레이아웃 5·S2 레퍼런스 8·S3 파이프라인 7·S4 마스크 5 포함), 두 번 불러도 한 번 ({n1}, {len(fake.routes)})")
         check(dp._server() is None, "가짜 서버는 블록 밖에서 되돌림")
 
         section("M2-N1 Prepare calls_per_cell · Run 과 같은 승인 해시")
@@ -10896,7 +10899,7 @@ def _m2_studio(dp, NODES2, ANA, COM):
     mt = json.loads(json.dumps(m))
     mt["crops"][1]["targets"].append(dict(mt["crops"][1]["targets"][0], tid="B"))
     next(c for c in mt["candidates"] if c["key"] == keys[c2id])["tid"] = "B"
-    check(len(bd._composite_picks(mt)) == len(bd._composite_picks(m)) and bd._composite_sig(mt, None) != bd._composite_sig(m, None),
+    check(len(bd._composite_picks(mt)) == len(bd._composite_picks(m)) and bd._composite_sig(root, mt, None) != bd._composite_sig(root, m, None),
           "★ 후보의 타깃만 바뀌어도 합성 서명이 바뀜")
     bd.apply_pick(root, m["crops"][1]["id"], "A", keys[c2id], "remove")
     s2 = bd.build_state(root)
@@ -10915,11 +10918,11 @@ def _m2_studio(dp, NODES2, ANA, COM):
           and np.array_equal(bd._final_mask_local(root, crop2, cand2, e2), am),
           "최종 마스크: hand(손 마스크 없음) → 마스크 없음, auto·hand_else_auto → 자동 마스크")
     m_hand = dict(m, exports=[{"compose": {"mask_source": "hand", "use_registration": False}}])
-    check(bd._compose_settings(m_hand) == dict(dp._COMPOSE_DEFAULTS, mask_source="hand", use_registration=False)
-          and bd._view_flags(m_hand, "context") == (False, True) and bd._view_flags(m_hand, "cand") == (True, True)
-          and bd._cand_sig("context", 512, m_hand, crop2, cand2, e2, None) != bd._cand_sig("context", 512, m, crop2, cand2, e2, None)
-          and bd._cand_sig("cand", 0, m_hand, crop2, cand2, e2, None) == bd._cand_sig("cand", 0, m, crop2, cand2, e2, None)
-          and bd._composite_sig(m_hand, None) != bd._composite_sig(m, None),
+    check(bd._compose_settings(root, m_hand) == dict(dp._COMPOSE_DEFAULTS, mask_source="hand", use_registration=False)
+          and bd._view_flags(root, m_hand, "context") == (False, True) and bd._view_flags(root, m_hand, "cand") == (True, True)
+          and bd._cand_sig(root, "context", 512, m_hand, crop2, cand2, e2, None) != bd._cand_sig(root, "context", 512, m, crop2, cand2, e2, None)
+          and bd._cand_sig(root, "cand", 0, m_hand, crop2, cand2, e2, None) == bd._cand_sig(root, "cand", 0, m, crop2, cand2, e2, None)
+          and bd._composite_sig(root, m_hand, None) != bd._composite_sig(root, m, None),
           "export 설정이 바뀌면 context·★ 합성 서명이 바뀜(cand·delta 는 Analyze 보기라 그대로)")
     # 캔버스 밖으로 나간 크롭(Codex S0 리뷰 3): 이음매 샘플을 캔버스 안으로 잘라 합성이 실패하지 않음
     r_out = [-16, 32, 160, 160]
@@ -12189,11 +12192,11 @@ def vlm_node_unit():
               "노드가 model_dir 을 넘김: local_qwen 키가 config.json(sha8)을 따라감(§2.3)")
 
     def t_n8():
-        section("M3-N8 보드 라우트 수는 32 (M3 는 라우트를 더하지 않음, S0 의 canvas·seams·S1 레이아웃 5·S2 레퍼런스 8·S3 파이프라인 7 포함)")
+        section("M3-N8 보드 라우트 수는 37 (M3 는 라우트를 더하지 않음, S0 의 canvas·seams·S1 레이아웃 5·S2 레퍼런스 8·S3 파이프라인 7·S4 마스크 5 포함)")
         fake = _FakeServer(web.RouteTableDef())
         with _prompt_server(fake):
             dp._register_board_routes()
-        check(len(fake.routes) == 32, f"보드 라우트 {len(fake.routes)}")
+        check(len(fake.routes) == 37, f"보드 라우트 {len(fake.routes)}")
 
     def t_n9():
         section("M3-N9 평가 도구의 순수 복제 new_targets == main._new_targets (표본 레이어명 6 + 채택 origin 3)")
@@ -13912,7 +13915,7 @@ def layout_board_unit():
         st, u = await h.jget(f"{API}/state", root=key, since_rev=str(s["rev"]))
         refs_rev = (board.drefs.load_refs(root) or {}).get("rev")  # B21 이름 바꾸기가 고정(S2 §2.6)해 refs.json 이 있음
         check(u == {"unchanged": True, "rev": s["rev"], "running": False, "drain": False, "drafting": False, "layout_rev": L["rev"],
-                    "refs_rev": refs_rev, "refs_files_v": s.get("refs_files_v"), "pipeline_rev": None, "plan_v": None}
+                    "refs_rev": refs_rev, "refs_files_v": s.get("refs_files_v"), "pipeline_rev": None, "plan_v": None, "pref_v": None}
               and refs_rev is not None and isinstance(s.get("refs_files_v"), str),
               f"unchanged 응답에도 layout_rev·refs_rev·refs_files_v(S3 drafting false, pipeline_rev·plan_v 는 파일·계획이 없어 null) {u}")
         mrev = store.load_manifest(root)["rev"]
@@ -13995,7 +13998,7 @@ def layout_board_unit():
         paths = {(r.method, r.path) for r in routes}
         want = {("GET", f"{API}/layout"), ("GET", f"{API}/layout/refs"), ("POST", f"{API}/layout/start"),
                 ("POST", f"{API}/layout/crop"), ("POST", f"{API}/layout/psd")}
-        check(want <= paths and len(routes) == 32, f"레이아웃 라우트 5개 등록(모두 32 — S2 레퍼런스 8·S3 파이프라인 7 포함) {len(routes)}")
+        check(want <= paths and len(routes) == 37, f"레이아웃 라우트 5개 등록(모두 37 — S2 레퍼런스 8·S3 파이프라인 7·S4 마스크 5 포함) {len(routes)}")
         for name in ("layout_geom.js", "layout_edit.js"):
             st, hd, body = await h.get(f"{API}/board/{name}")
             f = PKG / "web_design_patch" / name
@@ -15201,8 +15204,8 @@ def layout_js_unit():
           f"layout_edit.js 서버 주소 = apiUrl 상대 경로 5개뿐 {sorted(paths)}")
     check("textContent" in ed and "replaceChildren" in ed, "layout_edit.js textContent·replaceChildren")
     check(re.findall(r'<script src="([^"]+)" defer></script>', html)
-          == ["layout_geom.js", "viewer.js", "layout_edit.js", "ref_edit.js", "pipeline.js", "board.js"],
-          "board.html script 순서 layout_geom → viewer → layout_edit → ref_edit → pipeline → board")
+          == ["layout_geom.js", "viewer.js", "layout_edit.js", "ref_edit.js", "pipeline.js", "mask_edit.js", "board.js"],
+          "board.html script 순서 layout_geom → viewer → layout_edit → ref_edit → pipeline → mask_edit → board")
     check(all(f'id="{i}"' in html for i in ("btn-edit", "layout-head", "layout-list", "layout-panel")), "board.html 편집 모드 요소 4개")
     vj = code["viewer.js"]
     vret = vj[vj.rindex("return { setState"):]
@@ -18701,8 +18704,8 @@ def refs_board_unit():
         paths = {(r.method, r.path) for r in routes}
         want = {("GET", f"{API}/refs"), ("GET", f"{API}/refs/sheets"), ("GET", f"{API}/refs/sheet"), ("GET", f"{API}/refs/img"),
                 ("POST", f"{API}/refs/cut"), ("GET", f"{API}/refs/cut"), ("POST", f"{API}/refs/save"), ("POST", f"{API}/refs/link")}
-        check(want <= paths and len(routes) == 32 and len({p for _m, p in paths}) == 31,
-              f"레퍼런스 라우트 7개(cut 은 GET·POST) — RouteDef 32·경로 31(S3 파이프라인 7 포함) {len(routes)}")
+        check(want <= paths and len(routes) == 37 and len({p for _m, p in paths}) == 36,
+              f"레퍼런스 라우트 7개(cut 은 GET·POST) — RouteDef 37·경로 36(S3 파이프라인 7·S4 마스크 5 포함) {len(routes)}")
         st, hd, body = await h.get(f"{API}/board/ref_edit.js")
         f = PKG / "web_design_patch" / "ref_edit.js"
         if f.is_file():
@@ -21459,8 +21462,8 @@ def refs_js_unit():
     check("textField(a)" in rp and '"TEXTAREA"' in rj and "renderSoon" in rj, "패널 다시 그리기 = 글자 입력칸 포커스 복원, 입력 중이면 미룸")
     # board.html·board.js·viewer.js·board.css 연결
     scripts = re.findall(r'<script src="([^"]+)" defer></script>', html)
-    check(scripts == ["layout_geom.js", "viewer.js", "layout_edit.js", "ref_edit.js", "pipeline.js", "board.js"],
-          f"board.html script 순서 layout_geom → viewer → layout_edit → ref_edit → pipeline → board {scripts}")
+    check(scripts == ["layout_geom.js", "viewer.js", "layout_edit.js", "ref_edit.js", "pipeline.js", "mask_edit.js", "board.js"],
+          f"board.html script 순서 layout_geom → viewer → layout_edit → ref_edit → pipeline → mask_edit → board {scripts}")
     check(all(f'id="{i}"' in html for i in ("btn-refs", "ref-head", "ref-list", "ref-view", "ref-sheets", "ref-viewer", "ref-panel"))
           and "레퍼런스 (<kbd>T</kbd>)" in html, "board.html 레퍼런스 모드 요소 7개·도움말")
     bj = code["board.js"]
@@ -24139,6 +24142,15 @@ def pipeline_unit():
         check(s["analyze"] == dict(P2, only_picked=False) and frm["analyze.only_picked"] == "default" and frm["analyze.dE"] == "manifest"
               and any(x.startswith("analyze:") and "다름" in x for x in d["notes"]),
               f"analyze = 후보별 마지막 항목의 최다 params(첫·끝 후보 값 아님, only_picked 는 기록 없음 → 기본값), 섞임 메모 {s['analyze']}")
+        store.save_board_pref(full, P3)  # 마지막 Analyze·Review 설정(노드가 씀) — 매니페스트 최다(P2)와 다름
+        d_pref = pl.derive(full, m)
+        Path(full, store.BOARD_PREF_NAME).write_text(json.dumps({"analyze": {k: v for k, v in P3.items() if k != "dE"}}), encoding="utf-8")
+        d_part = pl.derive(full, m)["settings"]["analyze"]
+        os.remove(Path(full, store.BOARD_PREF_NAME))
+        check(d_pref["settings"]["analyze"] == dict(P3, only_picked=False) and d_pref["from"]["analyze.dE"] == "manifest"
+              and not any(x.startswith("analyze:") for x in d_pref["notes"]) and d_part == dict(P2, only_picked=False),
+              "리뷰 analysis-r2-01: board_pref.json(마지막 Analyze·Review 설정)이 있으면 analyze = 그 값(후보별 마지막 삽입 항목은 설정을 "
+              "A→B→A 로 되돌리면 B — 보드가 재시작 뒤 되살리는 설정과 같게), 키가 빠졌으면 매니페스트 최다값")
         check(s["compose"] == {"mask_source": "hand", "use_registration": False, "use_tone": False, "zorder": "harvest"}
               and s["export"] == {"filename_prefix": "새_접두", "layer_mode": "pixel", "alternates": "none", "color": "raw",
                                   "mask_source": "auto", "include_base": False, "include_crop_outlines": False, "skip_empty": True}
@@ -24147,11 +24159,12 @@ def pipeline_unit():
         check(s["run"] == pl.defaults()["run"] and s["cand"] == pl.defaults()["cand"] and d["confirm"] == ["draft.apply"],
               f"run·cand = 노드 기본값, confirm = draft.apply 뿐 {d['confirm']}")
         check(pl.recent_exports(m) == [{"rev": 9, "psd": "G:/o/a_r9.psd", "time": "2026-10-17 10:00:00", "layers": None, "problems": 2,
-                                        "bytes": 1234},
-                                       {"rev": 3, "psd": "G:/o/a_r3.psd", "time": "t3", "layers": None, "problems": None, "bytes": None}]
+                                        "bytes": 1234, "mask_groups": None, "mask_edits": None},
+                                       {"rev": 3, "psd": "G:/o/a_r3.psd", "time": "t3", "layers": None, "problems": None, "bytes": None,
+                                        "mask_groups": None, "mask_edits": None}]
               and pl.recent_exports({"exports": [{"rev": 4, "psd": "a.psd", "time": "t", "layers": 36, "problems": 0, "bytes": 1,
                                                   "hash": "h", "options": {}}]})[0]["layers"] == 36,
-              "recent_exports: 최근 것 먼저, 6키(없으면 null) — layers = Export 기록의 레이어 수(§3.6 new 의 레이어 수)")
+              "recent_exports: 최근 것 먼저, 8키(없으면 null) — layers = Export 기록의 레이어 수(§3.6 new 의 레이어 수), mask_* = S4")
         ex12 = [{"rev": i, "psd": f"G:/o/a_r{i}.psd", "time": f"t{i}", "problems": 0, "bytes": i} for i in range(1, 13)]
         check([e["rev"] for e in pl.recent_exports({"exports": ex12})] == list(range(12, 2, -1)),
               "recent_exports: 최근 10개만(최근 것 먼저 — 가장 오래된 2개 제외)")
@@ -24564,8 +24577,9 @@ def pipeline_unit():
                                     "effects.draft_wait.after effects.layout_wins warnings"}
         six_opt = {"GET /pipeline/plan": {"run.error", "draft.running", "draft.error"}}
         # §6 밖에서 더한 키: 설정 패널 선택지(settings_widgets), Export 레이어 수(§3.6 new 가 보이는 값 — §6 exports 모양엔 빠짐),
-        # 무료 반영 expect 를 만드는 매니페스트 rev(S3b 계약 §1), Draft 확인 창 필드(§4.4 확인 창 — S3b 계약 §2)
-        six_extra = {"GET /pipeline": {"widgets", "exports[].layers", "manifest_rev"},
+        # 무료 반영 expect 를 만드는 매니페스트 rev(S3b 계약 §1), Draft 확인 창 필드(§4.4 확인 창 — S3b 계약 §2),
+        # Export 그룹 마스크·편집 수(S4 §7 결과 줄 '그룹 마스크 n (편집 k)')
+        six_extra = {"GET /pipeline": {"widgets", "exports[].layers", "manifest_rev", "exports[].mask_groups", "exports[].mask_edits"},
                      "GET /pipeline/plan": {"draft.orphan_retries", "draft.est_usd", "draft.reasons", "draft.reasons[].reason", "draft.reasons[].n",
                                             "draft.free", "draft.pending_style", "draft.mock_forced"}}
 
@@ -27556,15 +27570,15 @@ def pipeline_board_unit():
               f"채택(스펙 — manifest_lock) + 재굴림 3(매니페스트) 동시 → 둘 다 남음 {[st for st, _d in res]}")
 
     async def b12_server(h):
-        section("S3a-B12″ 서버: 정적 pipeline.js·라우트 목록(RouteDef 32·경로 31)·POST 전용 405")
+        section("S3a-B12″ 서버: 정적 pipeline.js·라우트 목록(RouteDef 37·경로 36 — S4 마스크 5 포함)·POST 전용 405")
         check(board._STATIC.get("pipeline.js") == "text/javascript", "_STATIC 에 pipeline.js")
         routes = web.RouteTableDef()
         board.register_routes(routes)
         paths = {(r.method, r.path) for r in routes}
         want = {("GET", f"{API}/pipeline"), ("POST", f"{API}/pipeline/settings"), ("GET", f"{API}/pipeline/prompt"),
                 ("GET", f"{API}/pipeline/plan"), ("GET", f"{API}/pipeline/progress"), ("GET", f"{API}/draft"), ("POST", f"{API}/draft/adopt")}
-        check(want <= paths and len(routes) == 32 and len({p for _m, p in paths}) == 31,
-              f"파이프라인 라우트 7개 — RouteDef 32·경로 31 {len(routes)}")
+        check(want <= paths and len(routes) == 37 and len({p for _m, p in paths}) == 36,
+              f"파이프라인 라우트 7개 — RouteDef 37·경로 36 {len(routes)}")
         st, hd, body = await h.get(f"{API}/board/pipeline.js")
         f = PKG / "web_design_patch" / "pipeline.js"
         if f.is_file():
@@ -29505,6 +29519,24 @@ await scenario("panelDrift", async () => {  // r1-01: 그래프 Prepare(매니�
   r.twice = { asked: env.confirms.length - c2, posts: srv.count("pipeline/settings") - s1 };
   env.pipe.leave();
   return r;
+});
+
+await scenario("panelPref", async () => {  // Codex 4차: 매니페스트 rev 는 그대로 board_pref.json(pref_v — 분석·Export 설정)만 바뀌면 GET /pipeline 한 번 다시
+  const srv = server();
+  srv.route.pipeline = quietPipeline();
+  quietPlan(srv);
+  srv.hist = () => OK_H;
+  const env = mkPanel(srv);
+  const S = Object.assign(quietState(), { pref_v: "a1b2c3d4e5f6" });
+  env.pipe.stateChanged(S);
+  await sleep(30);
+  const g0 = srv.count("pipeline");
+  const S2 = Object.assign({}, S, { pref_v: "0f9e8d7c6b5a" });
+  env.pipe.stateChanged(S2);
+  await sleep(30);
+  env.pipe.stateChanged(S2);  // 같은 state 폴링 = 다시 읽지 않음
+  await sleep(30);
+  return { gets: srv.count("pipeline") - g0 };
 });
 
 await scenario("panelReset", async () => {  // r1-05: pipeline.json 없음(정본 alt missing — 추정값 확인 필요 3) [매니페스트 값으로 다시] = 확인 창에 확정할 추정값·출처
@@ -31623,11 +31655,11 @@ def pipeline_js_unit():
               and "실행 중:" not in hc["done"]["head"] and hc["done"]["cancel"] is False and hc["dels"] == 0,
               f"§3.1 머리줄 [취소] = 대기 중(앞 작업 수를 앎)일 때만 — 이어 받은 직후(자리 모름)·실행 중·끝이면 없음 {hc}")
     xl, xo = res.get("exportLayers") or {}, hx[0]
-    check(xl.get("row") == f"새 PSD r{xo['rev']}: {xo['psd']} · 레이어 33 · 문제 2 · {(xl.get('bytes') or 0) / 1e6:.1f}MB",
-          f"r1-20 §3.6 Export 결과 new 줄 = 그 rev 의 exports 항목(GET /pipeline)의 레이어 수·문제 수·용량 {xl}")
+    check(xl.get("row") == f"새 PSD r{xo['rev']}: {xo['psd']} · 레이어 33 · 그룹 마스크 18 (편집 3) · 문제 2 · {(xl.get('bytes') or 0) / 1e6:.1f}MB",
+          f"r1-20 §3.6 Export 결과 new 줄 = 그 rev 의 exports 항목(GET /pipeline)의 레이어 수·그룹 마스크(편집 — S4 §7)·문제 수·용량 {xl}")
     xlb = xl.get("listBytes") or []
     check(len(xl.get("list") or []) == len(xlb) > 1 and all(t.endswith(f" · {b / 1e6:.1f}MB") for t, b in zip(xl["list"], xlb))
-          and xl["list"][1] == "r76 · 2026-10-15 16:11:56 · 문제 0 · 218.8MB",
+          and xl["list"][1] == "r76 · 2026-10-15 16:11:56 · 편집 3 · 문제 0 · 218.8MB",
           f"Codex 1차 b-2 Export 줄·이전 목록 용량 = 노드 Export 보고서와 같은 식(바이트 / 1e6, 소수 한 자리 — 2^20 '209 MB' 아님) {xl.get('list')}")
     fr = res.get("panelFresh") or {}
     if "enter" in fr:
@@ -31714,6 +31746,9 @@ def pipeline_js_unit():
               f"r1-09 계획을 한 번도 받지 못한 채(202·오류) 서버에 새 계획이 생기면(state plan_v 바뀜) 누르지 않아도 한 번 다시 받음 {hr.get('auto')}")
     # 리뷰 1차 수정(r1-01·05·09·10·24·26·27) — 패널
     cell_w = "그래프와 Studio 를 번갈아 돌리면 셀이 바뀌어 다시 과금 대상"
+    check(res.get("panelPref") == {"gets": 1},
+          f"Codex 4차: 매니페스트 rev 그대로 pref_v(board_pref.json — 분석·Export 설정)만 바뀐 state = GET /pipeline 한 번 다시(처음 값이 마지막 "
+          f"Export·분석 설정을 따름), 같은 state 폴링은 다시 읽지 않음 {res.get('panelPref')}")
     dd = res.get("panelDrift") or {}
     if "before" in dd:
         check(dd["before"] == [] and dd["reload"] == {"gets": 1, "warn": [f"prepare.quality: 마지막 Prepare high · Studio max — {cell_w}"]},
@@ -37831,7 +37866,7 @@ await scenario("seen", async () => {
   const state = (...keys) => ({ targets: [{ candidates: keys.map((k) => ({ key: k })) }] });
   const mk = (store, S) => {
     const c = vm.createContext({ ROOT: "fe410d7f025d", S, seen: null, localStorage: store, JSON, editing: false, refsOn: false, pipeOn: false,
-      cKey: null, renders: 0 });
+      maskOn: false, cKey: null, renders: 0 });
     vm.runInContext(`${boardConst("SEEN_KEY")}; syncSeen = ${boardFn("syncSeen")}; saveSeen = ${boardFn("saveSeen")}; `
       + `markSeen = ${boardFn("markSeen")}; isNew = ${boardFn("isNew")}; seeCurrent = ${boardFn("seeCurrent")}; `
       + "renderTargets = () => { renders += 1; }; renderGrid = () => { renders += 1; };", c);
@@ -37977,7 +38012,7 @@ await scenario("renderWiring", async () => {
     chips: { n: cands.length, picked: 0, gate_fail: 0, reframed: 0, mock: 0, rejected: 0 } });
   const crop = (id) => ({ id, name: id, calls: 0, dup_picks: [], stale_picked: [], pending: 0 });
   const c = vm.createContext({ ROOT: "fe410d7f025d", S: null, tKey: null, cKey: null, refIdx: 0, rerollArm: null, seen: null, editing: false, refsOn: false,
-    pipeOn: false, qHeld: false, view: "cand", localStorage: store, JSON, GATE_NAMES: {}, document: { body: { classList: { toggle() {} } }, createTextNode: (t) => ({ textContent: t }) },
+    pipeOn: false, maskOn: false, qHeld: false, view: "cand", localStorage: store, JSON, GATE_NAMES: {}, document: { body: { classList: { toggle() {} } }, createTextNode: (t) => ({ textContent: t }) },
     $: (id) => (els[id] = els[id] || mkEl("div", "", "")), el: mkEl, chip: (text, cls = "") => mkEl("span", "chip " + cls, text), setImg() {},
     setTimeout: (fn) => timers.push(fn), pipeReady: () => true, syncViewer() {}, preloadAround() {}, usd: () => "", credits: () => "", rowButton() {},
     pipe: { enter() {}, leave() {}, select() {} }, chipsLog: [] });
@@ -38312,6 +38347,4990 @@ def studio_ux_unit():
 
 
 # ═════════════════════════════════════════════════════════════════
+# S4 마무리 편집(STUDIO_S4_SPEC.md §9) — 묶음마다 소유 단위: mask_unit·mask_node_unit = U1, mask_board_unit = U2, mask_js_unit = U3.
+# 각 단위는 자기 함수 몸통만 채운다(디스패처 줄은 이미 있음).
+# ── U1 오라클(§3.5 — 서버는 쓰지 않는다: 브라우저 mask_edit.js 의 기준 구현). tools/fixtures/mask_rules.json 의 기대값을 _mk_rules 로 만들고
+#    mask_unit K4 가 다시 계산해 맞춰 본다(JS J-K1 은 같은 표). _mk_fade 는 U0 _proto\s4_u0\s4_u0_fade.py 의 fade 와 같은 식이고
+#    mask_node_unit R1⁗ 이 실데이터 015 윗변 편집을 이것으로 만든다(그래서 mask_unit 안이 아니라 모듈 수준).
+_MASK_API = _HERE.parent / "fixtures" / "mask_api.json"
+_MASK_RULES = _HERE.parent / "fixtures" / "mask_rules.json"
+_UX1_261014 = Path(r"C:\Users\SHIFTUP\AppData\Local\Temp\claude\H--ComfyUI-Easy-Install\comfy8189\input\bmk_design_patch\ux1_261014")
+
+
+def _mk_smooth(t):
+    t = np.clip(t, 0.0, 1.0)
+    return t * t * (3 - 2 * t)
+
+
+def _mk_fade(side, rect, w, x, y, a=None, b=None):
+    """경계 페이드 배수 f = 1 − (1 − smoothstep((d + 0.5) / w))·t (스칼라·배열). rect = 크롭 rect ∩ 캔버스, x·y = 캔버스 픽셀,
+    d = 변에서 안쪽 px, p = 변 좌표(rect 의 x0·y0 기준 — 이음매 구간 a·b 와 같은 축), t = [a, b] 안 1·밖으로 w 동안 1 → 0(a None = 변 전체)."""
+    x0, y0, x1, y1 = rect
+    d, p = {"top": (y - y0, x - x0), "bottom": (y1 - 1 - y, x - x0), "left": (x - x0, y - y0), "right": (x1 - 1 - x, y - y0)}[side]
+    t = 1.0 if a is None else np.clip(np.minimum((p - (a - w)) / w, ((b + w) - p) / w), 0.0, 1.0)
+    return 1 - (1 - _mk_smooth((d + 0.5) / w)) * t
+
+
+def _mk_kernel(sigma):
+    """전체 페더의 1D 가우시안: 반경 ceil(3σ), 합 1."""
+    r = math.ceil(3 * sigma)
+    k = np.exp(-np.arange(-r, r + 1, dtype=np.float64) ** 2 / (2.0 * sigma * sigma))
+    return k / k.sum()
+
+
+def _mk_feather(m, sigma):
+    """분리 가우시안(가로 → 세로, 가장자리 복제)."""
+    k = _mk_kernel(sigma)
+    off = np.arange(-(len(k) // 2), len(k) // 2 + 1)
+    m = np.asarray(m, np.float64)
+    h, w = m.shape
+    tmp = (m[:, np.clip(np.arange(w)[:, None] + off, 0, w - 1)] * k).sum(axis=2)
+    return (tmp[np.clip(np.arange(h)[:, None] + off, 0, h - 1), :] * k[None, :, None]).sum(axis=1)
+
+
+def _mk_stamp(R, hard, r):
+    """붓 도장 세기: r ≤ R·경도 → 1, R 에서 0(그 사이 1 − smoothstep). r = 도장 중심 ~ 픽셀 중심 거리, R = 반지름."""
+    if r <= R * hard:
+        return 1.0
+    if r >= R:
+        return 0.0
+    return float(1 - _mk_smooth((r - R * hard) / (R - R * hard)))
+
+
+def _mk_op(op, m, s, k, blur=None):
+    """도장 한 번: 지우기 m·(1 − s·k), 살리기 m + (1 − m)·s·k, 부드럽게 m + (blur − m)·s·k(blur = 획 시작 때 σ = R/4 사본의 그 픽셀)."""
+    if op == "erase":
+        return m * (1 - s * k)
+    if op == "revive":
+        return m + (1 - m) * s * k
+    return m + (blur - m) * s * k
+
+
+def _mk_quant(m):
+    """PNG 값 = floor(clip(m, 0, 1)·255 + 0.5) — store._to_pil 과 같은 반올림."""
+    return int(math.floor(min(1.0, max(0.0, m)) * 255 + 0.5))
+
+
+def _mk_rules() -> dict:
+    """mask_rules.json 의 데이터 절(설명 글은 표 파일에만)."""
+    rect = [128, 2560, 1408, 3328]  # 261014 015_치마밑단_주름
+    at = {"top": lambda d, p: (rect[0] + p, rect[1] + d), "bottom": lambda d, p: (rect[0] + p, rect[3] - 1 - d),
+          "left": lambda d, p: (rect[0] + d, rect[1] + p), "right": lambda d, p: (rect[2] - 1 - d, rect[1] + p)}
+    fade = []
+    for side in ("top", "bottom", "left", "right"):
+        for w in (32, 64, 128):
+            for d in (-1, 0, 1, w // 4, w // 2 - 1, w // 2, w - 1, w, w + 7):
+                x, y = at[side](d, 300)
+                fade.append({"side": side, "w": w, "a": None, "b": None, "x": x, "y": y, "d": d, "p": 300,
+                             "out": float(_mk_fade(side, rect, w, x, y))})
+    for side, w, a, b in (("left", 64, 158, 198), ("top", 64, 447, 1209), ("bottom", 32, 40, 50), ("right", 128, 300, 420)):
+        for p in sorted({a - w - 1, a - w, a - w + 1, a - w // 2, a - 1, a, (a + b) // 2, b - 1, b, b + 1, b + w // 2, b + w - 1, b + w,
+                         b + w + 1}):
+            for d in (0, w // 2):
+                x, y = at[side](d, p)
+                fade.append({"side": side, "w": w, "a": a, "b": b, "x": x, "y": y, "d": d, "p": p,
+                             "out": float(_mk_fade(side, rect, w, x, y, a, b))})
+    block = np.zeros((5, 9))
+    block[1:4, 3:7] = 1.0
+    step = np.zeros((3, 12))
+    step[:, :6] = 1.0
+    ramp = np.tile(np.linspace(0.0, 1.0, 10), (4, 1))
+    return {
+        "rect": rect,
+        "smoothstep": [{"t": t, "out": float(_mk_smooth(t))} for t in (-0.5, 0.0, 0.25, 0.5, 0.75, 1.0, 1.5)],
+        "fade": fade,
+        "kernel": [{"sigma": s, "radius": math.ceil(3 * s), "k": _mk_kernel(s).tolist()} for s in (1, 2.5, 4, 16)],
+        "feather": [{"sigma": s, "in": a.tolist(), "out": _mk_feather(a, s).tolist()} for s, a in ((1, block), (4, step), (2.5, ramp))],
+        "stamp": [{"R": 32, "hard": hd, "r": r, "out": _mk_stamp(32, hd, r)}
+                  for hd in (0, 0.5, 1) for r in (0, 8, 15.5, 16, 16.5, 20, 24, 28, 31, 31.75, 32, 33)],
+        "ops": [{"op": op, "m": m, "s": s, "k": k, "blur": bl, "out": float(_mk_op(op, m, s, k, bl))}
+                for op, m, s, k, bl in (("erase", 0.8, 0.5, 0.6, None), ("erase", 1.0, 1.0, 1.0, None), ("erase", 0.4, 0.25, 1.0, None),
+                                        ("revive", 0.2, 0.5, 0.6, None), ("revive", 0.2, 1.0, 1.0, None), ("revive", 0.0, 0.3, 0.5, None),
+                                        ("soften", 0.9, 0.75, 0.5, 0.3), ("soften", 0.1, 1.0, 1.0, 0.6), ("soften", 0.5, 0.0, 1.0, 0.0))],
+        "quant": [{"m": m, "out": _mk_quant(m)} for m in (-0.1, 0.0, 0.0019, 0.002, 0.25, 0.5, 0.998, 1.0, 1.2)],
+    }
+
+
+def mask_unit():
+    """S4 K1–K6: mask 모듈(bmk_design_patch_mask — torch·comfy·vlm 없음)·기록·병합·stale·공용 표 mask_rules.json·PNG 검사·
+    board_pref.json(store — 분석 설정·마지막 Export 해시)(--quick, U1)."""
+    section("S4 mask_unit — mask 모듈(U1)")
+    import bmk_design_patch_board as board
+    import bmk_design_patch_mask as dm
+
+    OUT = OUT_ROOT / "mask_unit"
+    shutil.rmtree(OUT, ignore_errors=True)
+    OUT.mkdir(parents=True)
+    R = [10, 20, 74, 68]  # 64×48 편집 창
+    FP = {"src": "auto", "file": "derived/k_am_000000000000.png", "ph": "0123456789abcdef", "ms": "hand_else_auto"}
+
+    def png(arr, **kw):
+        buf = io.BytesIO()
+        Image.fromarray(np.ascontiguousarray(arr)).save(buf, "PNG", **kw)
+        return buf.getvalue()
+
+    def raster(seed, rect=R):
+        return np.random.default_rng(seed).integers(0, 256, (rect[3] - rect[1], rect[2] - rect[0]), dtype=np.uint8)
+
+    def read_l(root, rel):
+        with Image.open(store.resolve_path(root, rel)) as im:
+            return np.asarray(im)
+
+    def project(name, keys):
+        """크롭마다 타깃 A 하나·★ 후보 하나인 매니페스트(파일 없음) → root."""
+        root = store.project_root(str(OUT), name)
+        os.makedirs(root, exist_ok=True)
+        m = store.new_manifest(name)
+        m["crops"] = [{"id": f"00{i}_c", "name": f"00{i}_c", "rect": [0, 0, 100, 100], "targets": [{"tid": "A"}]} for i in range(len(keys))]
+        m["candidates"] = [{"key": k, "crop_id": f"00{i}_c", "tid": "A", "picked": True} for i, k in enumerate(keys)]
+        store.save_manifest(root, m)
+        return root
+
+    def conflict(fn):
+        """MaskConflict 의 409 본문({error, **extra}) — 안 나면 None."""
+        try:
+            fn()
+        except dm.MaskConflict as e:
+            return {"error": str(e), **e.extra}
+        return None
+
+    def save(root, key, arr, seen, rect=R, ops="붓"):
+        return dm.save_edit(root, key, png(arr), seen=seen, rect=list(rect), base=dict(FP), ops=ops)
+
+    def k1():
+        section("S4-K1 기록: 키 집합·rect·file·ops·hist 자르기 · save/undo/reset · seen·★ 아님 409 · edit_mask·edit_rect")
+        rec = {"file": "masks/k_e_0123456789ab.png", "rect": list(R), "base": dict(FP), "ops": "변 페이드 top 64",
+               "at": "2026-10-19 18:20:41", "hist": []}
+        h1 = {k: rec[k] for k in ("file", "rect", "base", "at", "ops")}
+        check(dm.check_record(copy.deepcopy(rec)) == rec
+              and dm.check_record(dict(rec, ops="가" * 200, hist=[h1] * 20))
+              and dm.check_record(dict(rec, base={"src": "none", "file": None, "ph": None, "ms": "hand"}))
+              and dm.check_record(dict(rec, rect=[0, 0, 4096, 4096])),
+              "정상 기록 통과(경계: ops 200자·hist 20·기준 none·rect 정확히 4096²)")
+        for label, r in (("모르는 키", dict(rec, extra=1)), ("빠진 키", {k: v for k, v in rec.items() if k != "at"}), ("목록", [rec]),
+                         ("rect 실수", dict(rec, rect=[10.0, 20, 74, 68])), ("rect bool", dict(rec, rect=[True, 20, 74, 68])),
+                         ("rect 음수", dict(rec, rect=[-1, 20, 74, 68])), ("rect 빈 창", dict(rec, rect=[10, 20, 10, 68])),
+                         ("rect 3개", dict(rec, rect=[10, 20, 74])), ("rect 4096² 초과", dict(rec, rect=[0, 0, 4097, 4096])),
+                         ("file masks 밖", dict(rec, file="derived/k.png")), ("file ..", dict(rec, file="masks/../design_patch.json")),
+                         ("file 하위 폴더", dict(rec, file="masks/a/b.png")), ("file 절대", dict(rec, file="C:/x/masks/k.png")),
+                         ("file png 아님", dict(rec, file="masks/k.jpg")), ("file 이름 뒤 경로", dict(rec, file="masks/k_e_0123456789ab.png/../x.png")),
+                         ("file 이름 뒤 확장자", dict(rec, file="masks/k.png.bak")), ("file 이름 뒤 줄바꿈", dict(rec, file="masks/k.png\n")),
+                         ("ops 201자", dict(rec, ops="가" * 201)),
+                         ("ops 줄바꿈", dict(rec, ops="a\nb")), ("ops 숫자", dict(rec, ops=3)), ("at 꼴", dict(rec, at="2026/10/19")),
+                         ("base 모르는 src", dict(rec, base=dict(FP, src="edit"))), ("base none 인데 file", dict(rec, base=dict(FP, src="none"))),
+                         ("base auto 인데 file null", dict(rec, base=dict(FP, file=None))), ("base ms 모름", dict(rec, base=dict(FP, ms="edit"))),
+                         ("base 키 더", dict(rec, base=dict(FP, x=1))), ("base ph 숫자", dict(rec, base=dict(FP, ph=1))),
+                         ("hist 21", dict(rec, hist=[h1] * 21)), ("hist 목록 아님", dict(rec, hist={})),
+                         ("hist 항목 키 더", dict(rec, hist=[dict(h1, hist=[])])), ("hist 항목 file", dict(rec, hist=[dict(h1, file="../x.png")]))):
+            expect_raises(lambda r=r: dm.check_record(r), f"기록 거절: {label}")
+        K, KH, KF = "r_aaaaaaaaaaaa_0_0", "h_bbbbbbbbbbbb", "f_cccccccccccc"
+        root = project("k1", [K, KH, KF])
+        rev0 = store.load_manifest(root)["rev"]
+        r1, rev1 = save(root, K, raster(1), "", ops="변 페이드 top 64")
+        m = store.load_manifest(root)
+        check(rev1 == rev0 + 1 and m["mask_edits"] == {K: r1} and r1["file"].startswith("masks/r_aaaaaaaa_e_") and r1["rect"] == R
+              and r1["base"] == FP and r1["hist"] == [] and r1["ops"] == "변 페이드 top 64" and np.array_equal(read_l(root, r1["file"]), raster(1)),
+              f"save: 기록·내용 주소 PNG(masks/<key 앞 10자>_e_…)·rev +1 {r1['file']}")
+        r2, _ = save(root, K, raster(1), r1["file"], ops="다시")
+        check(r2["file"] == r1["file"] and [x["file"] for x in r2["hist"]] == [r1["file"]] and r2["hist"][0]["ops"] == "변 페이드 top 64"
+              and len(os.listdir(Path(root, "masks"))) == 1, "같은 PNG 다시 = 같은 파일 하나, 이전 판은 hist 앞(file·rect·base·at·ops)")
+        n_files = len(os.listdir(Path(root, "masks")))
+        for label, fn in (("ops 201자", lambda: dm.save_edit(root, K, png(raster(2)), seen=r2["file"], rect=list(R), base=dict(FP), ops="x" * 201)),
+                          ("기준 틀림", lambda: dm.save_edit(root, K, png(raster(2)), seen=r2["file"], rect=list(R), base=dict(FP, src="x"), ops="")),
+                          ("rect 틀림", lambda: dm.save_edit(root, K, png(raster(2)), seen=r2["file"], rect=[0, 0, 0, 0], base=dict(FP), ops="")),
+                          ("크기 ≠ rect", lambda: save(root, K, raster(2)[:, :-1], r2["file"]))):
+            expect_raises(fn, f"save 거절(파일을 쓰기 전): {label}")
+        check(len(os.listdir(Path(root, "masks"))) == n_files and store.load_manifest(root)["mask_edits"][K] == r2, "거절된 save 는 파일·기록 그대로")
+        c_seen = conflict(lambda: save(root, K, raster(3), ""))
+        check(c_seen is not None and c_seen["reason"] == "changed" and set(c_seen) == {"error", "reason"} and "다른 창" in c_seen["error"],
+              f"seen 다름(기록 있는데 \"\") → MaskConflict changed {c_seen}")
+        files, cur = [r2["file"]], r2["file"]
+        for i in range(21):
+            rr, _ = save(root, K, raster(10 + i), cur, ops=f"붓 {i}획")
+            files.append(rr["file"])
+            cur = rr["file"]
+        hist = store.load_manifest(root)["mask_edits"][K]["hist"]
+        check(len(hist) == 20 and [x["file"] for x in hist] == files[-2:0:-1] and hist[0]["ops"] == "붓 19획",
+              "hist 최근 20(가장 최근이 앞), 21번째 이전 판부터 버림")
+        R2 = [12, 20, 76, 70]
+        r_big, _ = save(root, K, raster(99, R2), cur, rect=R2, ops="창 바뀜")
+        u1, _ = dm.undo_edit(root, K, seen=r_big["file"])
+        check(u1["file"] == cur and u1["rect"] == R and u1["ops"] == "붓 20획" and len(u1["hist"]) == 19 and dm.check_record(u1),
+              "undo = hist 첫 판(그 판의 창·기준까지), hist 는 나머지")
+        seen, n_undo = u1["file"], 0
+        for _i in range(dm.HIST_KEEP + 2):  # 상한 — hist 를 다 쓴 undo 가 기록을 지우지 않는 회귀면 끝없이 돌지 않고 아래 검사가 실패
+            rr, _ = dm.undo_edit(root, K, seen=seen)
+            n_undo += 1
+            if rr is None:
+                break
+            seen = rr["file"]
+        left = store.load_manifest(root)
+        none2, rev_b = dm.undo_edit(root, K, seen="") if K not in left["mask_edits"] else ("기록 남음", None)
+        check(n_undo == 20 and K not in left["mask_edits"] and none2 is None and rev_b == left["rev"],
+              f"undo 연쇄: hist 소진 → 기록 지움(= 기준), 기록 없는 undo 는 그대로(rev 불변) {n_undo} {none2}")
+        store.update_manifest(root, lambda mm: mm["mask_edits"].pop(K, None))  # 위가 실패해도 아래 save(seen "")가 돌게 — 통과면 바뀜 없음
+        r3, _ = save(root, K, raster(5), "")
+        r4, _ = save(root, K, raster(6), r3["file"])
+        c_reset = conflict(lambda: dm.reset_edit(root, K, seen=r3["file"]))
+        c_undo = conflict(lambda: dm.undo_edit(root, K, seen=""))
+        _n, rv = dm.reset_edit(root, K, seen=r4["file"])
+        rev_c = store.load_manifest(root)["rev"]
+        _n2, rv2 = dm.reset_edit(root, K, seen="")
+        check(c_reset and c_reset["reason"] == "changed" and c_undo and c_undo["reason"] == "changed" and _n is None
+              and K not in store.load_manifest(root)["mask_edits"] and rv2 == rev_c == rv,
+              "reset = 기록 지움(hist 도), seen 다르면 changed(undo 도), 기록 없는 reset 은 그대로")
+        bad_rows = []  # 리뷰 3차(보드 _edit_rec 의 짝): 형식이 깨진 기록 = 없음 — 보드가 편집 없음으로 보여 Studio 는 seen ""
+        for label, bad in (("hist 없음", {k: v for k, v in r4.items() if k != "hist"}), ("문자열", r4["file"]), ("base null", dict(r4, base=None))):
+            for op, fn in (("save", lambda: save(root, K, raster(9), "")[0]), ("undo", lambda: dm.undo_edit(root, K, seen="")[0]),
+                           ("reset", lambda: dm.reset_edit(root, K, seen="")[0])):
+                store.update_manifest(root, lambda mm, bad=bad: mm["mask_edits"].__setitem__(K, bad))
+                try:
+                    c_file = conflict(lambda: dm.reset_edit(root, K, seen=r4["file"]))
+                    got = fn()
+                except (TypeError, KeyError) as e:  # 회귀 = 날 예외(보드 500) — 실행을 끊지 않고 행에 남김
+                    bad_rows.append((label, op, type(e).__name__, False))
+                    continue
+                now = store.load_manifest(root)["mask_edits"].get(K, "지움")
+                bad_rows.append((label, op, (c_file or {}).get("reason"),
+                                 now == got and got["hist"] == [] if op == "save" else got is None and now == "지움"))
+        store.update_manifest(root, lambda mm: mm["mask_edits"].pop(K, None))
+        check(len(bad_rows) == 9 and all(r[2:] == ("changed", True) for r in bad_rows),
+              f"형식이 깨진 기록(손으로 고친 매니페스트) = 없음: seen 은 \"\" 만(file 을 보내면 changed — 날 TypeError·KeyError 500 아님), "
+              f"save 는 hist 없이 덮고 undo·reset 은 지움(Studio [적용]이 409 changed 를 되풀이하지 않음) {bad_rows}")
+        store.update_manifest(root, lambda mm: (mm["candidates"][1].update(picked=False), mm["rejects"].update({KF: True}),
+                                                mm["crops"][0]["targets"].clear()))
+        bodies = {k: conflict(lambda k=k: save(root, k, raster(7), "")) for k in (K, KH, KF, "r_zzzzzzzzzzzz_0_0")}
+        check(all(b and b["reason"] == "not_picked" for b in bodies.values()) and "mask_edits" in store.load_manifest(root)
+              and not store.load_manifest(root)["mask_edits"],
+              f"★ 아님(타깃이 크롭에서 빠짐·★ 해제·탈락·없는 후보) → MaskConflict not_picked {sorted(bodies)}")
+        check(dm.star_cand(store.load_manifest(root), K) is None and dm.edit_record({}, K) is None
+              and dm.edit_record({"mask_edits": {K: r1}}, K) == r1, "star_cand·edit_record")
+        root2 = project("k1b", [K])
+        rec, _ = save(root2, K, raster(8), "")
+        mk, why = dm.edit_mask(root2, rec)
+        check(why is None and (mk["left"], mk["top"], mk["bg"]) == (R[0], R[1], 0) and np.array_equal(mk["arr"], raster(8)),
+              "edit_mask: 기록 → 노드 마스크 dict(창 = rect, bg 0)")
+        gone = dm.edit_mask(root2, dict(rec, file="masks/zz_e_000000000000.png"))
+        size = dm.edit_mask(root2, dict(rec, rect=[R[0], R[1], R[2] + 1, R[3]]))
+        broken = dm.edit_mask(root2, dict(rec, extra=1))
+        check(gone == (None, "마스크 편집 파일 없음 → 기준 마스크") and size[0] is None and "크기 64x48 ≠ 기록의 창 65x48" in size[1]
+              and broken[0] is None and "읽지 못함" in broken[1] and broken[1].endswith("→ 기준 마스크"),
+              f"edit_mask: 파일 없음·크기 다름·형식 오류 = None + 경고 {size[1]} / {broken[1]}")
+        junk, cut, hole = (Path(root2, "masks", f"k_e_{n}.png") for n in ("junk00000000", "cut000000000", "dir000000000"))
+        junk.write_bytes(b"not a png")
+        cut.write_bytes(png(raster(8))[:-40])
+        torn = [dm.edit_mask(root2, dict(rec, file=f"masks/{p.name}")) for p in (junk, cut)]
+        check(all(x[0] is None and "읽지 못함" in x[1] and x[1].endswith("→ 기준 마스크") for x in torn),
+              f"edit_mask: 깨진 PNG(PNG 아님·잘림 — 다시 읽어도 같은 내용 오류, errno 없음) = None + 경고 {[x[1][:40] for x in torn]}")
+
+        def errno_of(r):
+            """edit_mask 가 올린 OSError 의 errno — 기준으로 떨어뜨리면 '떨어뜨림'."""
+            try:
+                return "떨어뜨림", dm.edit_mask(root2, r)[1]
+            except OSError as e:
+                return e.errno, None
+
+        hole.mkdir()  # 폴더 = 열기에서 errno 가 있는 OSError(Windows PermissionError 13 · POSIX IsADirectoryError 21)
+        held = []
+        if os.name == "nt":
+            import ctypes
+            k32 = ctypes.windll.kernel32
+            k32.CreateFileW.restype = ctypes.c_void_p
+            k32.CloseHandle.argtypes = [ctypes.c_void_p]
+            hdl = k32.CreateFileW(str(Path(root2, rec["file"])), 0x80000000, 0, None, 3, 0x80, None)  # GENERIC_READ, 공유 0 = 백신·동기화가 잡음
+            try:
+                held.append(errno_of(rec))
+            finally:
+                k32.CloseHandle(hdl)
+        dirn = errno_of(dict(rec, file=f"masks/{hole.name}"))
+        check(isinstance(dirn[0], int) and len(held) == (os.name == "nt") and all(x[0] == 13 for x in held) and dm.edit_mask(root2, rec)[1] is None,
+              f"리뷰 server-r2-01: 잠김(공유 없이 열림)·권한 등 errno 가 있는 OSError 는 기준으로 떨어뜨리지 않고 올림 — 떨어뜨리면 보드가 편집 전 "
+              f"합성을 편집 서명으로 캐시(풀려도 Studio 는 편집 전, Export 는 편집), 풀리면 다시 편집 {held} {dirn}")
+        check(dm.edit_rect([-3, 5, 50, 900], [64, 800]) == [0, 5, 50, 800] and dm.edit_rect([70, 0, 90, 10], [64, 800]) is None
+              and dm.edit_rect(dpsd.quad_bbox([10.4, 20.0, 73.6, 20.0, 73.6, 67.2, 10.4, 67.2]), [100, 100]) == R,
+              "edit_rect = quad bbox(바깥으로 정수) ∩ 캔버스, 빈 창 None")
+
+    def k2():
+        section("S4-K2 병합: mask_edits 키 단위 3-way — 노드 커밋 ∥ 보드 save·pick·reject(스레드 4 × 25)")
+        check(store._MERGE_KEYED_DICTS == ("picks", "rejects", "rerolls", "approvals", "mask_edits"), "store 병합 키 단위 dict 에 mask_edits")
+        keys = [f"r_{i:012d}_0_0" for i in range(4)]
+        root = project("k2", keys)
+
+        def old(i):
+            return {"file": f"masks/d{i}_e_{i:012d}.png", "rect": list(R), "base": dict(FP), "ops": "", "at": "2026-10-19 00:00:00", "hist": []}
+
+        store.update_manifest(root, lambda mm: mm.update(mask_edits={f"d{i}": old(i) for i in range(10)}))
+        lock, count, last, errors = threading.Lock(), [0], {}, []
+
+        def board_writer(i):
+            try:
+                seen = ""
+                for j in range(25):
+                    if j % 3 == 0:
+                        seen = save(root, keys[i], raster(100 * i + j), seen, ops=f"t{i} {j}")[0]["file"]
+                    elif j % 3 == 1:
+                        store.update_manifest(root, lambda mm: mm["picks"].__setitem__(f"x{i}/{j}", [keys[i]]))
+                    else:
+                        store.update_manifest(root, lambda mm: mm["rejects"].__setitem__(f"g{i}_{j}", True))
+                    with lock:
+                        count[0] += 1
+                last[i] = seen
+            except Exception as e:  # noqa: BLE001 — 시험이 보고
+                errors.append(f"{i}: {type(e).__name__} {e}")
+
+        threads = [threading.Thread(target=board_writer, args=(i,)) for i in range(4)]
+        for t in threads:
+            t.start()
+        node_conf, overlapped = [], 0
+        for n in range(10):  # 노드 커밋: 연 시점 스냅숏 → (그 사이 보드 쓰기) → 편집 하나 지움(Candidate In 정리)·exports 더함
+            before = json.loads(json.dumps(store.load_manifest(root)))
+            start, t_end = count[0], time.time() + 2
+            while count[0] < start + 2 and time.time() < t_end and any(t.is_alive() for t in threads):
+                time.sleep(0.002)
+            overlapped += count[0] > start
+            ours = copy.deepcopy(before)
+            ours["mask_edits"].pop(f"d{n}")
+            ours["exports"].append({"rev": n, "psd": f"p{n}.psd"})
+            node_conf += store.commit_merge(root, before, ours)[2]
+        for t in threads:
+            t.join()
+        m = store.load_manifest(root)
+        me = m["mask_edits"]
+        check(not errors and node_conf == [] and set(me) == set(keys) and all(me[keys[i]]["file"] == last[i] and len(me[keys[i]]["hist"]) == 8
+                                                                              for i in range(4))
+              and len(m["exports"]) == 10 and all(f"x{i}/{j}" in m["picks"] for i in range(4) for j in range(1, 25, 3))
+              and all(f"g{i}_{j}" in m["rejects"] for i in range(4) for j in range(2, 25, 3)) and overlapped >= 5,
+              f"잃은 쓰기 0: 보드 save 9 × 4(hist 8)·pick·reject 전부 + 노드가 지운 편집 10·exports 10, 충돌 0 "
+              f"(겹친 커밋 {overlapped}/10) {errors[:2]}")
+        rec = {k: old(i) for i, k in enumerate(("a", "b", "c"))}
+        merged, conf = store.merge_manifest({"mask_edits": {"kx": rec["a"]}}, {"mask_edits": {}},
+                                            {"mask_edits": {"kx": rec["b"], "ky": rec["c"]}})
+        merged2, conf2 = store.merge_manifest({"mask_edits": {"kx": rec["a"]}}, {"mask_edits": {"kx": rec["a"], "kz": rec["b"]}},
+                                              {"mask_edits": {"ky": rec["c"]}})
+        check(conf == ["mask_edits/kx"] and merged["mask_edits"] == {"ky": rec["c"]}
+              and conf2 == [] and merged2["mask_edits"] == {"kz": rec["b"], "ky": rec["c"]},
+              f"같은 키 양쪽 변경 = ours + 충돌 경로 mask_edits/<key>, 다른 키는 둘 다 {conf} {conf2}")
+        # 같은 key 동시 save(두 창이 같은 기준 seen "" 에서 [적용]) — update_manifest 앞에서 Barrier 로 두 스레드를 맞춘다(결정적).
+        # seen 대조가 잠금(mutate) 안이어야 하나만 기록되고 다른 하나는 409 changed — 잠금 밖이면 둘 다 성공하고 뒤 판이 앞 판을 hist 로 민다
+        kr = "r_aaaaaaaaaaaa_0_0"
+        rootr = project("k2race", [kr])
+        bar, orig, res = threading.Barrier(2), dm.store.update_manifest, {}
+
+        def gated(root_, mutate):
+            bar.wait(timeout=10)
+            return orig(root_, mutate)
+
+        def racer(i):
+            try:
+                res[i] = save(rootr, kr, np.full((R[3] - R[1], R[2] - R[0]), 40 * (i + 1), np.uint8), "", ops=f"r{i}")[0]["file"]
+            except dm.MaskConflict as e:
+                res[i] = "409 " + e.extra["reason"]
+            except Exception as e:  # noqa: BLE001 — 시험이 보고(Barrier 시간 넘김 포함)
+                res[i] = f"{type(e).__name__} {e}"
+
+        dm.store.update_manifest = gated
+        try:
+            racers = [threading.Thread(target=racer, args=(i,)) for i in range(2)]
+            for t in racers:
+                t.start()
+            for t in racers:
+                t.join()
+        finally:
+            dm.store.update_manifest = orig
+        rr = dm.edit_record(store.load_manifest(rootr), kr)
+        check(rr is not None and sorted(res.values()) == ["409 changed", rr["file"]] and rr["hist"] == [],
+              f"같은 key·같은 seen 동시 save = 하나만 기록(hist 0)·다른 하나 409 changed(seen 대조가 update_manifest 잠금 안) {res}")
+
+    def k3():
+        section("S4-K3 기준 지문·stale 표(src·file·ph·ms 하나씩, 손 마스크 + 정합 꺼짐 = ph 없음)")
+        hm = {"file": "inputs/hand_000000000000.png", "rect": [0, 0, 10, 10], "bg": 0}
+        e1 = {"params_hash": "p1", "automask": "derived/a1.png"}
+        es = {"params_hash": "ps", "skipped": "부분 패치"}
+        rows = [(None, e1, "auto", ("auto", "derived/a1.png")), (None, e1, "hand_else_auto", ("auto", "derived/a1.png")),
+                (None, e1, "hand", ("none", None)), (hm, e1, "auto", ("auto", "derived/a1.png")),
+                (hm, e1, "hand_else_auto", ("hand", hm["file"])), (hm, e1, "hand", ("hand", hm["file"])),
+                (hm, None, "auto", ("hand", hm["file"])), (None, None, "hand_else_auto", ("none", None)), (hm, es, "auto", ("hand", hm["file"])),
+                (None, es, "hand_else_auto", ("none", None)), (None, {"params_hash": "p0", "automask": None}, "auto", ("none", None))]
+        got = [dm.base_source({"key": "k", "hand_mask": h}, e, ms) for h, e, ms, _x in rows]
+        check(got == [x[3] for x in rows], f"base_source 표(노드 _final_mask 의 고르기 — mask_node_unit 이 노드와 대조) {got}")
+        fp = dm.base_fp({"key": "k", "hand_mask": None}, e1, "hand_else_auto")
+        rec = {"base": dict(fp)}
+        check(fp == {"src": "auto", "file": "derived/a1.png", "ph": "p1", "ms": "hand_else_auto"} and not dm.is_stale(rec, dict(fp)),
+              "지문 = {src, file, ph, ms}, 같으면 stale 아님")
+        for k, v in (("src", "hand"), ("file", "derived/a2.png"), ("ph", "p2"), ("ms", "auto")):
+            check(dm.is_stale(rec, dict(fp, **{k: v})), f"stale: {k} 만 바뀜")
+        check(dm.is_stale(rec, dm.base_fp({"key": "k", "hand_mask": None}, {"params_hash": "p9", "automask": "derived/a9.png"}, "hand_else_auto"))
+              and dm.is_stale(rec, dm.base_fp({"key": "k", "hand_mask": hm}, e1, "hand_else_auto"))
+              and dm.is_stale(rec, dm.base_fp({"key": "k", "hand_mask": None}, None, "hand_else_auto")),
+              "정합·톤이 바뀜(자동 마스크·ph 함께)·손 마스크가 생김·분석 항목이 없어짐 → stale")
+        fph = dm.base_fp({"key": "k", "hand_mask": hm}, None, "hand")
+        rh = {"base": dict(fph)}
+        check(fph == {"src": "hand", "file": hm["file"], "ph": None, "ms": "hand"}
+              and not dm.is_stale(rh, dm.base_fp({"key": "k", "hand_mask": dict(hm)}, None, "hand"))
+              and dm.is_stale(rh, dm.base_fp({"key": "k", "hand_mask": dict(hm, file="inputs/hand_2.png")}, None, "hand"))
+              and dm.is_stale(rh, dm.base_fp({"key": "k", "hand_mask": hm}, None, "hand_else_auto")),
+              "손 마스크 + 정합 꺼짐(분석 항목 없음 — ph null): 같으면 아님, file·ms 가 바뀌면 stale")
+
+    def k4():
+        section("S4-K4 공용 표 tools/fixtures/mask_rules.json(페이드·구간 테이퍼·페더 커널·도장·붓 연산·양자화) = 오라클")
+        check(_mk_smooth(0.0) == 0 and _mk_smooth(1.0) == 1 and _mk_smooth(0.5) == 0.5 and _mk_smooth(-1.0) == 0 and _mk_smooth(2.0) == 1,
+              "smoothstep 손계산")
+        rc = [128, 2560, 1408, 3328]
+        check(_mk_fade("top", rc, 64, 500, 2559) == 0 and _mk_fade("top", rc, 64, 500, 2560 + 64) == 1
+              and _mk_fade("left", rc, 64, 128 + 31, 3000) == _mk_smooth(31.5 / 64) and _mk_fade("bottom", rc, 32, 600, 3327 - 15) == _mk_smooth(15.5 / 32)
+              and _mk_fade("right", rc, 128, 1407, 2700) == _mk_fade("left", rc, 128, 128, 2700)
+              and _mk_fade("left", rc, 64, 128, 2560 + 158 - 64, 158, 198) == 1 and _mk_fade("left", rc, 64, 128, 2560 + 198 + 64, 158, 198) == 1
+              and _mk_fade("left", rc, 64, 128, 2560 + 170, 158, 198) == _mk_fade("left", rc, 64, 128, 2560 + 170)
+              and abs(_mk_fade("top", rc, 64, 128 + 158 - 32, 2560, 158, 198) - (1 - (1 - _mk_smooth(0.5 / 64)) * 0.5)) < 1e-12,
+              "페이드 손계산: 변 바깥 0·w 안쪽 1·변마다 d(왼·아래·오른)·구간 안 = 변 전체·구간 밖 w 에서 1·중간 t 0.5")
+        ks = {s: _mk_kernel(s) for s in (1, 2.5, 4, 16)}
+        check(all(abs(k.sum() - 1) < 1e-12 and len(k) == 2 * math.ceil(3 * s) + 1 and np.allclose(k, k[::-1]) and k.argmax() == len(k) // 2
+                  for s, k in ks.items()) and np.allclose(_mk_feather(np.full((4, 7), 0.3), 4), 0.3),
+              "커널 합 1·반경 ceil(3σ)·대칭, 상수 마스크 페더 = 그대로")
+        check([_mk_stamp(32, 1, r) for r in (0, 32, 32.01)] == [1.0, 1.0, 0.0] and _mk_stamp(32, 0, 16) == 0.5 and _mk_stamp(32, 0.5, 24) == 0.5
+              and _mk_op("erase", 0.7, 1, 1) == 0 and abs(_mk_op("revive", 0.3, 1, 1) - 1) < 1e-12 and abs(_mk_op("soften", 0.9, 1, 1, 0.2) - 0.2) < 1e-12
+              and [_mk_quant(v) for v in (-1, 0.0019, 0.002, 1, 7)] == [0, 0, 1, 255, 255],
+              "도장(경도 1 = 원 안 1·밖 0, 중간 0.5)·연산·양자화 손계산")
+        if not _MASK_RULES.exists():
+            check(False, f"공용 표가 없음: {_MASK_RULES}")
+            return
+        table = json.loads(_MASK_RULES.read_text(encoding="utf-8"))
+        built = json.loads(json.dumps(_mk_rules()))
+        diff = [k for k in built if table.get(k) != built[k]]
+        if diff:
+            (OUT / "mask_rules.computed.json").write_text(json.dumps(built, ensure_ascii=False, indent=1), encoding="utf-8")
+        check(table.get("schema") == "bmk.design_patch.mask_rules/1" and not diff,
+              f"표 = 오라클(다르면 계산값을 {OUT / 'mask_rules.computed.json'} 에 씀 — 규칙을 고친 뒤 표를 바꿀 것) {diff}")
+        check(len(built["fade"]) == 4 * 3 * 9 + 4 * 14 * 2 and {r["w"] for r in built["fade"]} == {32, 64, 128}
+              and [k["sigma"] for k in built["kernel"]] == [1, 2.5, 4, 16] and {r["hard"] for r in built["stamp"]} == {0, 0.5, 1},
+              "표 범위: 변 4 × 폭 32/64/128 × 거리 9 + 구간 테이퍼 4 × 14 × 2, 커널 σ 1·2.5·4·16, 경도 0·0.5·1")
+
+    def k5():
+        section("S4-K5 PNG 검사(모드 L 만·크기 = rect·4096²·깨진 PNG·RGBA 거절)")
+        a = raster(5)
+        check(np.array_equal(dm.validate_png(png(a), R), a) and np.array_equal(dm.validate_png(png(a)), a)
+              and np.array_equal(dm.validate_png(bytearray(png(a)), R), a) and dm.validate_png(png(a)).dtype == np.uint8,
+              "L PNG 통과(bytes·bytearray, rect 없으면 크기 안 봄)")
+        buf = io.BytesIO()
+        Image.fromarray(a).save(buf, "JPEG")
+        big, edge = io.BytesIO(), io.BytesIO()
+        Image.new("L", (4097, 4096)).save(big, "PNG")
+        Image.new("L", (4096, 4096)).save(edge, "PNG")
+        check(dm.validate_png(edge.getvalue()).shape == dm.validate_png(edge.getvalue(), [0, 0, 4096, 4096]).shape == (4096, 4096),
+              "경계: 정확히 4096² L PNG 통과(rect 없음·창 4096²)")
+        p16, pal = io.BytesIO(), io.BytesIO()
+        Image.fromarray(a.astype(np.uint16) * 257).save(p16, "PNG")
+        Image.fromarray(a).convert("P").save(pal, "PNG")
+        good = png(a)
+        for label, data, frag in (("RGBA", png(np.dstack([a, a, a, a])), "회색조"), ("RGB", png(np.dstack([a, a, a])), "회색조"),
+                                  ("LA", png(np.dstack([a, a])), "회색조"), ("16비트", p16.getvalue(), "회색조"),
+                                  ("1비트", png(a > 127), "회색조"), ("팔레트", pal.getvalue(), "회색조"),
+                                  ("투명색 L", png(a, transparency=0), "회색조"), ("크기 ≠ rect", png(a[:, :-1]), "≠ 편집 창 64x48"),
+                                  ("JPEG", buf.getvalue(), "PNG 가 아닙니다"), ("빈 본문", b"", "PNG 가 아닙니다"), ("문자열", "\x89PNG", "PNG 가 아닙니다"),
+                                  ("잘림", good[:60], "깨진 PNG"), ("머리 뒤 쓰레기", good[:8] + b"\x00" * 40, "깨진 PNG"),
+                                  ("4096² 초과", big.getvalue(), "너무 큽니다")):
+            expect_raises(lambda d=data: dm.validate_png(d, R if label != "4096² 초과" else None), f"PNG 거절: {label}", contains=frag)
+
+    def k6():
+        section("S4-K6 board_pref.json: 분석 설정(save_board_pref)·마지막 Export 해시(save_board_export)는 서로 지우지 않음 · store.last_export = "
+                "그 해시의 마지막 exports[] 기록, 없거나 못 찾으면 마지막 기록(리뷰 analysis-r3-01)")
+        root = project("k6", ["k"])
+        path = Path(root, store.BOARD_PREF_NAME)
+        A = {"register": "off", "dE": 8.0}
+        rows = [{"rev": 1, "hash": "h1", "compose": {"use_registration": True}}, "깨진 항목", {"rev": 2, "hash": "h2"},
+                {"rev": 3, "hash": "h1", "psd": "같은 내용 다시"}, {"rev": 4, "hash": "h3"}]
+        m = {"exports": rows}
+        none0 = [store.last_export(root, m), store.last_export(root, {"exports": []}), store.last_export(root, {})]
+        store.save_board_pref(root, A)
+        store.save_board_export(root, "h1")
+        doc1, got1 = json.loads(path.read_text(encoding="utf-8")), store.last_export(root, m)
+        store.save_board_pref(root, dict(A, dE=12.0))
+        store.save_board_export(root, "h2")
+        doc2, got2 = json.loads(path.read_text(encoding="utf-8")), store.last_export(root, m)
+        store.save_board_export(root, "zz")
+        got3 = store.last_export(root, m)
+        os.utime(path, (1_000_000_000, 1_000_000_000))
+        store.save_board_export(root, "zz")
+        store.save_board_pref(root, dict(A, dE=12.0))
+        same = path.stat().st_mtime == 1_000_000_000
+        path.write_text("{깨짐", encoding="utf-8")
+        broken = [store.last_export(root, m), store.load_board_pref(root)]
+        store.save_board_export(root, "h2")
+        check(none0 == [rows[4], None, None] and doc1 == {"analyze": A, "export": "h1"} and got1 is rows[3]
+              and doc2 == {"analyze": dict(A, dE=12.0), "export": "h2"} and got2 is rows[2] and got3 is rows[4] and same
+              and broken == [rows[4], None] and json.loads(path.read_text(encoding="utf-8")) == {"export": "h2"},
+              f"파일 없음 = 마지막 기록(dict 만)·기록 없음 None · 두 키를 번갈아 저장해도 서로 남음 {doc2} · 해시 h1 = 그 해시의 마지막 기록(rev 3), "
+              f"못 찾는 해시·깨진 파일 = 마지막 기록 · 같은 값이면 쓰지 않음(mtime 그대로) · 깨진 파일 위 저장 = 그 키만")
+
+    def api():
+        section("S4 응답 모양 정본 tools/fixtures/mask_api.json(라우트 5·409 사유·state·manifest = mask 모듈·보드 출력과 같은 모양)")
+        doc = json.loads(_MASK_API.read_text(encoding="utf-8"))
+        routes = doc["routes"]
+        fields = {"request", "ok", "alt", "errors", "nullable", "optional", "maps", "any", "opaque"}
+        check(doc["schema"] == "bmk.design_patch.mask_api/1" and list(doc) == ["schema", "_doc", "routes", "state", "manifest"]
+              and list(routes) == ["GET /mask", "GET /mask/img", "POST /mask/save", "POST /mask/edit", "GET /mask/alts"]
+              and all(set(e) == fields for e in routes.values()), f"라우트 5 · 항목 키 {sorted(fields)} · state · manifest")
+        reasons = {r: [b.get("reason") for b in e["errors"].get("409", [])] for r, e in routes.items()}
+        enum = doc["_doc"]["열거"]
+        check(reasons == {"GET /mask": ["not_picked"], "GET /mask/img": ["stale", "not_picked"],
+                          "POST /mask/save": ["not_picked", "rect_changed", "changed"], "POST /mask/edit": ["changed"],
+                          "GET /mask/alts": ["not_picked"]}
+              and all(isinstance(b.get("error"), str) and set(b) <= {"error", "reason", "rect"}
+                      for e in routes.values() for st_, bs in e["errors"].items() if st_ != "202" for b in bs)
+              and [r for r, e in routes.items() if "202" in e["errors"]] == ["GET /mask/alts"]
+              and routes["GET /mask/alts"]["errors"]["202"] == [{"busy": True}]
+              and set(enum["409 reason"]) == {"not_picked", "stale", "rect_changed", "changed"}
+              and enum["GET /mask/img kind"] == list(routes["GET /mask/img"]["ok"]["kinds"]) == ["base", "edit", "under", "patch", "over"]
+              and list(enum["POST /mask/edit op"]) == ["undo", "reset"] and tuple(enum["base.src"]) == dm.BASE_SRCS,
+              f"409 사유(라우트별)·오류 본문 = error + reason·rect, 202 = alts 만 {{busy: true}}, 열거 = mask 모듈 {reasons}")
+        same = {f"{r} {n}": _pl_shape(e["ok"], b, e) for r, e in routes.items() if r != "GET /mask/img" for n, b in e["alt"].items()}
+        miss = [f"{r} {p}" for r, e in routes.items() for p in e["nullable"] if p not in _pl_pool(e, e["ok"])]
+        check(len(same) == 4 and all(v == [] for v in same.values()) and not miss,
+              f"alt 예시 = ok 모양(nullable 지정이 맞음)·nullable 경로마다 null 아닌 예시(규칙 7) {same} {miss}")
+        g, sv, ed, al = (routes[k] for k in ("GET /mask", "POST /mask/save", "POST /mask/edit", "GET /mask/alts"))
+        check(sorted(g["ok"]["edit"]) == sorted(sv["ok"]["edit"]) == sorted(ed["ok"]["edit"]) == sorted(["file", "at", "ops", "hist", "stale", "url"])
+              and list(sv["ok"]) == list(ed["ok"]) == ["ok", "edit", "rev", "composite_sig"]
+              and all(b["layers"]["box"] == board._region_rect(b["rect"], 3072, 4096) for b in (g["ok"], *g["alt"].values())),
+              "edit 꼴 = GET·save·edit 같음, save·edit 응답 키 같음, layers.box = board._region_rect(rect)(261014 캔버스 3072×4096)")
+        vs = re.findall(r"[?&]v=(\w+)", _MASK_API.read_text(encoding="utf-8"))
+        check(len(vs) >= 10 and all(board._MASK_V_RE.fullmatch(v) for v in vs)
+              and list(sv["request"]["query"]) == ["root", "key", "seen", "ops", "rect"],
+              f"예시 URL 의 v = 보드 /mask/img 형식(서명 16자 — edit 도 _edit_sig)·save 쿼리에 rect(세션 창, 필수) {sorted(set(map(len, vs)))}")
+        img0 = np.zeros((40, 40, 3), np.uint8)
+        seg = board._seam_segment(img0, img0, "c", [0, 0, 20, 40], "A", "k", "right", 0, 40)
+        check(list(g["ok"]["seams"][0]) == list(seg) and list(al["ok"]["rows"][0]["this_crop"][0]) == list(seg)
+              and _pl_shape(g["ok"]["seams"][0], seg, {}) == [], "seams·this_crop 원소 = board._seam_segment 출력 그대로(키·타입)")
+        root = project("api", ["r_aaaaaaaaaaaa_0_0", "r_bbbbbbbbbbbb_0_0"])
+        store.update_manifest(root, lambda mm: mm["candidates"][1].update(picked=False))
+        rec, _ = save(root, "r_aaaaaaaaaaaa_0_0", raster(1), "")
+        ex409 = {b["reason"]: b for b in sv["errors"]["409"]}
+        b_np = conflict(lambda: save(root, "r_bbbbbbbbbbbb_0_0", raster(1), ""))
+        b_ch = conflict(lambda: save(root, "r_aaaaaaaaaaaa_0_0", raster(2), ""))
+        b_ed = conflict(lambda: dm.undo_edit(root, "r_aaaaaaaaaaaa_0_0", seen="masks/x.png"))
+        check(_pl_shape(ex409["not_picked"], b_np, {}) == [] and _pl_shape(ex409["changed"], b_ch, {}) == []
+              and _pl_shape(ed["errors"]["409"][0], b_ed, {}) == [], f"409 본문 = MaskConflict {{error, **extra}} 그대로 {b_np} {b_ch}")
+        man = doc["manifest"]
+        recs = man["mask_edits"]
+        check(all(dm.check_record(copy.deepcopy(r)) == r for r in recs.values()) and _pl_shape({"mask_edits": man["mask_edits"]}, {"mask_edits": {"k": rec}}, man) == []
+              and g["ok"]["edit"]["file"] == recs[g["ok"]["key"]]["file"] and g["ok"]["rect"] == recs[g["ok"]["key"]]["rect"]
+              and g["ok"]["edit"]["hist"] == len(recs[g["ok"]["key"]]["hist"]) and ed["ok"]["edit"]["file"] == recs[g["ok"]["key"]]["hist"][0]["file"]
+              and list(man["exports_item"]) == ["mask_groups", "mask_edits"] and man["export_layers_item"]["mask_src"] == "edit"
+              and set(doc["state"]) == {"cand", "crop", "flags", "nullable"} and list(doc["state"]["cand"]["mask_edit"]) == ["at", "stale"]
+              and list(doc["state"]["crop"]) == ["mask_edits", "mask_stale"] and list(doc["state"]["flags"]) == ["pref_v"],
+              "manifest 기록 예시 = check_record 통과·save_edit 출력과 같은 모양, GET /mask 예시 = 그 기록(file·rect·hist 수), state·exports 키")
+        gp = json.loads(_PL_API.read_text(encoding="utf-8"))["routes"]["GET /pipeline"]
+        rec_ex = dict(gp["ok"]["exports"][0], hash="h", options={}, **man["exports_item"])
+        got = [board.pl.recent_exports({"exports": [rec_ex]})[0], board.pl.recent_exports({"exports": [{"rev": 1, "psd": "a.psd", "time": "t"}]})[0]]
+        check(all(_pl_shape({"exports": gp["ok"]["exports"]}, {"exports": [g_]}, gp) == [] for g_ in got)
+              and {k: got[0][k] for k in man["exports_item"]} == man["exports_item"] and got[1]["mask_edits"] is None
+              and {"exports[].mask_groups", "exports[].mask_edits"} <= set(gp["nullable"]),
+              f"Studio 결과 줄·이전 Export 목록의 재료: GET /pipeline exports[](pipeline.recent_exports)가 exports_item 키를 싣고 "
+              f"옛 기록은 null — pipeline_api.json 예시·nullable 과 같은 모양 {got}")
+
+    for fn in (k1, k2, k3, k4, k5, k6, api):
+        fn()
+
+
+def mask_node_unit():
+    """S4 N32–N36·R1⁗: 노드 _plan 편집 적용·z 고정·Export 그룹 마스크·기준 바뀜·정리/지문·실데이터 사본(_dp_package, --quick 생략, U1)."""
+    section("S4 mask_node_unit — 노드(U1)")
+    dp = _dp_package()
+    import folder_paths  # noqa: E402  (ComfyUI 루트)
+
+    st, bd, dm = dp.store, dp.board, dp.dmask  # 노드와 같은 모듈(_bmk_dp_pkg)
+    NS = OUT_ROOT / "mask_node"
+    shutil.rmtree(NS, ignore_errors=True)
+    NS.mkdir(parents=True)
+    folder_paths.set_output_directory(str(NS / "output"))
+    ANA, COM, EXP, CIN = dp.BMKDesignPatchAnalyze(), dp.BMKDesignPatchCompose(), dp.BMKDesignPatchExportPSD(), dp.BMKDesignPatchCandidateIn()
+    prm = dict(dp._ANALYZE_DEFAULTS)
+    ana_args = [prm[k] for k in ("register", "tone", "tone_sigma", "dE", "grow", "feather_sigma", "roi_prior")] + [False]
+    MS = "hand_else_auto"
+
+    def u8(img):
+        return np.clip(np.rint(img[0].numpy() * 255.0), 0, 255).astype(np.uint8)
+
+    def tinted(base, rect, tint):
+        """크롭 창 2배 + 전체 색 바꿈 → 자동 마스크가 크롭 거의 전체."""
+        x0, y0, x1, y1 = rect
+        im = np.asarray(Image.fromarray(base[y0:y1, x0:x1]).resize(((x1 - x0) * 2, (y1 - y0) * 2), Image.LANCZOS)).astype(np.int16)
+        return np.clip(im + np.int16(tint), 0, 255).astype(np.uint8)
+
+    def plan_of(root, ms=MS):
+        m = st.load_manifest(root)
+        picks = [c for c in m["candidates"] if dm.star_cand(m, c["key"])]
+        entries = dp._ensure_analysis(root, m, picks, prm)[0]
+        warns: list[str] = []
+        return dp._plan(root, m, entries, ms, True, "auto_small_on_top", False, warns), entries, warns
+
+    def item(plan, key):
+        return next(it for _p, _t, it in dp._slices_in_order(plan) if it["cand"]["key"] == key)
+
+    def order(plan):
+        return [it["cand"]["key"] for _p, _t, it in dp._slices_in_order(plan)]
+
+    def window(it, canvas):
+        """편집 창(실효 quad bbox ∩ 캔버스)과 그 창의 기준 마스크 uint8."""
+        rect = dm.edit_rect(dpsd.quad_bbox(it["quad"]), canvas)
+        return rect, np.floor(dp._mask_region(it["base_mask"], *rect) * 255 + 0.5).astype(np.uint8)
+
+    def composite(root, plan, base, masks, order_keys=None):
+        """손계산 합성: plan 의 순서(order_keys 면 그 순서)로, masks = {key: 마스크 dict} 는 그 마스크로 바꿔서."""
+        its = {it["cand"]["key"]: it for _p, _t, it in dp._slices_in_order(plan)}
+        canvas, union = base.astype(np.float32), np.zeros(base.shape[:2], np.float32)
+        for k in order_keys or list(its):
+            it = its[k]
+            pix, _tn = dp._cand_pixels(root, it, True)
+            rgb, _al, eff, left, top = dp._render(pix, it["quad"], masks.get(k, it["mask"]))
+            dp._paste(canvas, union, rgb, eff, left, top)
+        return np.clip(np.rint(canvas), 0, 255).astype(np.uint8)
+
+    def export(hc):
+        out = EXP.run(hc, "s4", "smart_object", "hidden_all", "toned", MS, True, True)
+        return out["ui"]["bmk_dp_export"][0], "\n".join(out["ui"]["text"])
+
+    def psd_groups(r):
+        """Export 결과 → ({후보 key: 사이드카 export_layers 줄}, {후보 key: PSD 에서 그 SO 의 부모 그룹})."""
+        lay = {x["key"]: x for x in json.loads(Path(os.path.splitext(r["psd"])[0] + ".json").read_text(encoding="utf-8"))["export_layers"]}
+        sos = {x.name: x for x in PSDImage.open(r["psd"]).descendants() if x.kind == "smartobject"}
+        return lay, {k: sos[x["name"]].parent for k, x in lay.items()}
+
+    base = texture(320, 480, 71)
+    RA, RB = [32, 32, 224, 224], [160, 96, 288, 224]
+    KEEP = [160, 96, 192, 224]  # A ∩ B([160, 96, 224, 224])의 왼쪽 절반 — N33 이 A 에서 남기는 곳
+    h, root = _fx_project(dp, NS, "s4node", [("001_큰", RA), ("002_작은", RB)], base)
+    fdir = NS / "s4node_folder"
+    fdir.mkdir()
+    Image.fromarray(tinted(base, RA, (70, -50, 40))).save(fdir / "001_큰_a.png")
+    Image.fromarray(tinted(base, RB, (-60, 60, -40))).save(fdir / "002_작은_a.png")
+    Image.fromarray(tinted(base, RB, (40, 40, -70))).save(fdir / "002_작은_b.png")
+    h, _rep = CIN.run(h, "folder", str(fdir), "", "", True, True)
+    h, _cs, _rep = ANA.run(h, *ana_args)
+    m0 = st.load_manifest(root)
+    idA, idB = m0["crops"][0]["id"], m0["crops"][1]["id"]
+    cA = next(c for c in m0["candidates"] if c["crop_id"] == idA)
+    cB = next(c for c in m0["candidates"] if c["crop_id"] == idB and c.get("picked"))
+    cB2 = next(c for c in m0["candidates"] if c["crop_id"] == idB and not c.get("picked"))
+    hc, img0, _mk, rep0 = COM.run(h, MS, True, True, "auto_small_on_top")
+    out0 = u8(img0)
+    plan0, ent0, _w = plan_of(root)
+    itA0, itB0 = item(plan0, cA["key"]), item(plan0, cB["key"])
+    check(order(plan0) == [cA["key"], cB["key"]] and "'auto': 2" in rep0 and itA0["area"] > itB0["area"] > 0.4 * 128 * 128
+          and itB0["msrc"] == itB0["base_msrc"] == "auto" and itB0["mask_edit"] is None,
+          f"합성 프로젝트: 큰 A(아래)·작은 B(위) ★ 자동 마스크(넓이 A > B), _plan 항목 base_mask·base_msrc·mask_edit "
+          f"{itA0['area']:.0f} {itB0['area']:.0f}")
+    state = {}
+
+    def n32():
+        section("S4-N32 적용: B 편집(오른쪽 변 띠 0) 저장 → Compose = 편집 마스크 손계산·msrc edit, 분석 항목·params_hash 그대로(재분석 0)")
+        rect, arr = window(itB0, m0["canvas"])
+        arr[:, -24:] = 0
+        an0 = json.dumps(st.load_manifest(root)["analysis"], sort_keys=True)
+        rec, _rev = dm.save_edit(root, cB["key"], png_bytes(arr), seen="", rect=rect, base=dm.base_fp(cB, ent0[cB["key"]], MS),
+                                 ops="변 페이드 right 24")
+        _hc, img1, _mk, rep1 = COM.run(h, MS, True, True, "auto_small_on_top")
+        out1 = u8(img1)
+        exp = composite(root, plan0, base, {cB["key"]: {"arr": arr, "left": rect[0], "top": rect[1], "bg": 0}})
+        band = np.s_[rect[1]:rect[3], rect[2] - 24:rect[2]]
+        changed = np.nonzero(np.any(out1 != out0, axis=2))[1]
+        plan1, ent1, _w = plan_of(root)
+        it1 = item(plan1, cB["key"])
+        check(np.array_equal(out1, exp) and np.array_equal(out1[band], base[band]) and len(changed) and changed.min() >= rect[2] - 24,
+              f"Compose = 손계산(편집 전 계획 순서, B 만 편집 래스터 @ 창 {rect}) 픽셀 동일 · 띠 = 베이스 · 바뀐 곳은 띠 안만")
+        check(it1["msrc"] == "edit" and it1["base_msrc"] == "auto" and it1["mask_edit"] == rec["file"] and it1["area"] == itB0["area"]
+              and f"{cB['key']} mask edit" in rep1 and "'edit': 1" in rep1,
+              "_plan: msrc edit·base_msrc auto·mask_edit = 파일·넓이 = 기준(편집 전), Compose 보고서 마스크 {…, 'edit': 1}")
+        _h2, _cs, rep_a = ANA.run(h, *ana_args)
+        check(json.dumps(st.load_manifest(root)["analysis"], sort_keys=True) == an0 and "계산 0" in rep_a
+              and {k: e["params_hash"] for k, e in ent1.items()} == {k: e["params_hash"] for k, e in ent0.items()} and "분석함" not in rep1,
+              "분석 항목·params_hash 편집 전후 같음 — Analyze 다시 = 계산 0, Compose 도 분석하지 않음")
+        state.update(rectB=rect, arrB=arr, recB=rec, out1=out1)
+
+    def n33():
+        section("S4-N33 z 고정: A 를 겹침 왼쪽 절반만 남기고 지움(편집 넓이 < B 편집 넓이) → _plan 순서 = 편집 전, 붓질 안 한 겹침 픽셀 같음")
+        rect, arr = window(itA0, m0["canvas"])
+        keep = np.zeros(arr.shape, bool)
+        keep[KEEP[1] - rect[1]:KEEP[3] - rect[1], KEEP[0] - rect[0]:KEEP[2] - rect[0]] = True
+        arr[~keep] = 0
+        recA, _rev = dm.save_edit(root, cA["key"], png_bytes(arr), seen="", rect=rect, base=dm.base_fp(cA, ent0[cA["key"]], MS), ops="붓 지우기")
+        plan2, _e, _w = plan_of(root)
+        _hc, img2, _mk, _rep = COM.run(h, MS, True, True, "auto_small_on_top")
+        out2 = u8(img2)
+        ov = np.s_[KEEP[1]:KEEP[3], KEEP[0]:KEEP[2]]
+        a_only = np.s_[RA[1]:RA[3], RA[0]:KEEP[0] - 4]
+        edits = {cA["key"]: {"arr": arr, "left": rect[0], "top": rect[1], "bg": 0},
+                 cB["key"]: {"arr": state["arrB"], "left": state["rectB"][0], "top": state["rectB"][1], "bg": 0}}
+        flipped = composite(root, plan2, base, edits, [cB["key"], cA["key"]])
+        check(arr.sum() / 255 < state["arrB"].sum() / 255 and item(plan2, cA["key"])["area"] == itA0["area"]
+              and item(plan2, cB["key"])["area"] == itB0["area"],
+              f"편집한 넓이로 재면 A({arr.sum() / 255:.0f}) < B({state['arrB'].sum() / 255:.0f}) — 넓이 규칙이 편집을 보면 뒤집힐 편집, "
+              f"_plan 넓이 = 기준")
+        check(order(plan2) == order(plan0) and np.array_equal(out2[ov], state["out1"][ov]) and np.array_equal(out2[a_only], base[a_only])
+              and not np.array_equal(flipped[ov], out2[ov]),
+              "_plan 순서 = 편집 전(D5) · 겹침(붓질 안 함) 픽셀 = 편집 전 · A 만 덮던 곳 = 베이스 · (뒤집혔다면 겹침이 달랐음)")
+        dm.reset_edit(root, cA["key"], seen=recA["file"])
+
+    def n34():
+        section("S4-N34 Export: 그룹 마스크 = 편집 래스터(대안도 같은 그룹)·병합 프리뷰·_mask.png·사이드카 mask_src edit·exports mask_edits·"
+                "슬라이스 타깃·해시(편집 없으면 옛 값)")
+        hc, img34, mk34, _rep = COM.run(h, MS, True, True, "auto_small_on_top")
+        rect, arr, recB = state["rectB"], state["arrB"], state["recB"]
+        r1, t1 = export(hc)
+        ex = st.load_manifest(root)["exports"][-1]
+        lay = psd_groups(r1)[0]
+        check(r1["outcome"] == "new" and "그룹 마스크 2 (편집 1)" in t1 and ex.get("mask_edits") == 1 and ex.get("mask_groups") == 2
+              and lay[cB["key"]]["mask_src"] == "edit" and lay[cB["key"]].get("mask_edit") == recB["file"] and lay[cB["key"]]["mask_rect"] == rect
+              and lay[cB2["key"]]["mask_src"] == "auto" and "mask_edit" not in lay[cB2["key"]]
+              and lay[cA["key"]]["mask_src"] == "auto" and "mask_edit" not in lay[cA["key"]],
+              f"Export: 보고서 '그룹 마스크 2 (편집 1)'·exports[-1] mask_groups 2·mask_edits 1·사이드카 ★ B mask_src edit + mask_edit "
+              f"(대안·A 는 auto, mask_edit 없음) {t1[:160]}")
+        pe = bd.pl.recent_exports(st.load_manifest(root))[0]
+        check(pe["rev"] == ex["rev"] and (pe.get("mask_groups"), pe.get("mask_edits")) == (2, 1),
+              f"GET /pipeline exports[0](pipeline.recent_exports) = 그 기록의 mask_groups 2·mask_edits 1(Studio 결과 줄 '그룹 마스크 n (편집 k)') {pe}")
+        psd = PSDImage.open(r1["psd"])
+        sos = {x.name: x for x in psd.descendants() if x.kind == "smartobject"}
+        sb, sb2 = sos[lay[cB["key"]]["name"]], sos[lay[cB2["key"]]["name"]]
+        g = sb.parent
+        check(g is not None and g.kind == "group" and sb2.parent is g and g.has_mask() and list(g.mask.bbox) == rect
+              and np.array_equal(np.asarray(g.mask.topil()), arr) and g._record.mask_data.background_color == 0 and sb.visible and not sb2.visible,
+              "PSD 다시 읽기: B 타깃 그룹 마스크 = 편집 래스터(bbox = 창·픽셀·배경 0), 대안 B2(숨김)도 같은 그룹")
+        band = np.s_[rect[1]:rect[3], rect[2] - 24:rect[2]]  # 편집이 지운 띠(A 크롭 밖 — 편집 전에는 B 패치, 편집 뒤에는 베이스)
+        pv = np.asarray(psd.topil().convert("RGB")).astype(np.int16)
+        mpng = np.asarray(Image.open(os.path.splitext(r1["psd"])[0] + "_mask.png")).astype(np.int16)
+        un34 = np.rint((1.0 - mk34[0].numpy()) * 255.0)
+        check(np.abs(pv - u8(img34)).max() <= 1 and np.abs(mpng - un34).max() <= 1 and np.array_equal(pv[band], base[band])
+              and not mpng[band].any() and np.any(out0[band] != base[band]) and window(itB0, m0["canvas"])[1][:, -24:].any(),
+              "병합 프리뷰(flat)·_mask.png 도 편집 마스크로 — Compose 출력·마스크와 1 이내, 지운 띠 = 베이스·마스크 0(편집 전 띠는 B 패치·기준 마스크 > 0)")
+        r2, _t = export(hc)
+        rec2, _rev = dm.save_edit(root, cB["key"], png_bytes(np.where(np.arange(arr.shape[1]) < 40, 0, arr).astype(np.uint8)), seen=recB["file"],
+                                  rect=rect, base=recB["base"], ops="변 페이드 left 40")
+        r3, t3 = export(hc)
+        r4, _t = export(hc)
+        dm.undo_edit(root, cB["key"], seen=rec2["file"])
+        r5, _t = export(hc)
+        check([r["outcome"] for r in (r2, r3, r4, r5)] == ["unchanged", "new", "unchanged", "unchanged"] and r2["psd"] == r1["psd"]
+              and r3["psd"] != r1["psd"] and r4["psd"] == r3["psd"] and r5["psd"] == r1["psd"],
+              "다시 큐 = 변경 없음 · 편집 바꿈 = 새 PSD · 다시 = 변경 없음 · [이전 판으로] = 그 판의 PSD(변경 없음)")
+        sh = [rect[0] + 3, rect[1], rect[2] + 3, rect[3]]  # 같은 래스터(같은 file — 내용 주소)를 다른 창에(정합이 바뀐 뒤 같은 판을 다시 적용한 꼴)
+        rec6, _rev = dm.save_edit(root, cB["key"], png_bytes(arr), seen=recB["file"], rect=sh, base=recB["base"], ops="창 이동")
+        r6, t6 = export(hc)
+        lay6, g6 = psd_groups(r6)
+        g6 = g6[cB["key"]]
+        dm.undo_edit(root, cB["key"], seen=rec6["file"])
+        r7, _t = export(hc)
+        check(rec6["file"] == recB["file"] and r6["outcome"] == "new" and r6["psd"] not in (r1["psd"], r3["psd"]) and list(g6.mask.bbox) == sh
+              and lay6[cB["key"]]["mask_rect"] == sh and r7["outcome"] == "unchanged" and r7["psd"] == r1["psd"],
+              f"같은 file·다른 창 = 새 PSD(Export 해시에 창이 들어감 — 그룹 마스크 bbox·사이드카 mask_rect = 새 창 {sh}, 기준 마스크 창 아님) · "
+              f"되돌리면 그 판의 PSD(변경 없음) "
+              f"{r6['outcome']} {r7['outcome']}")
+        moved = f"{cB['key']} ({m0['crops'][1]['name']}): 마스크 편집 기준 바뀜(창 {sh} → {rect}) → 편집 그대로 씀"
+        check(moved in t6 and "마스크 편집 기준 바뀜" not in t1 and "마스크 편집 기준 바뀜" not in t3,
+              f"리뷰 analysis-r1-02: 기록 창 ≠ 이번 Export 의 패치 창 = 보고서에 '마스크 편집 기준 바뀜(창 기록 → 지금)'(조용히 어긋난 그룹 마스크를 "
+              f"알림), 창·분석 항목이 같으면 없음 {[x for x in t6.splitlines() if '기준 바뀜' in x]}")
+        mfix = {"base": "inputs/b.png", "canvas": [64, 48], "work_rect": [0, 0, 64, 48],
+                "crops": [{"id": "001_aaaaaa", "name": "001_x", "rect": [0, 0, 32, 32], "targets": [{"tid": "A", "label": "A"}]}],
+                "candidates": [{"key": "f_k1", "crop_id": "001_aaaaaa", "tid": "A", "picked": True, "file": "cands/x.png"}],
+                "rejects": {}, "mask_edits": {}}
+        efix = {"f_k1": {"params_hash": "0123456789abcdef"}}
+        opts = {"layer_mode": "smart_object", "alternates": "hidden_all", "color": "toned", "mask_source": MS, "include_base": True,
+                "include_crop_outlines": True, "prefix": "t"}
+        comp = dict(dp._COMPOSE_DEFAULTS)
+        hs = [dp._export_hash(mfix, efix, comp, opts), dp._export_hash(mfix, efix, comp, opts, {}),
+              dp._export_hash(dict(mfix, rejects={"f_k2": {}}), efix, comp, opts),
+              dp._export_hash(mfix, efix, comp, opts, {"f_k1": ["masks/f_k1_e_000000000000.png", [0, 0, 32, 32]]}),
+              dp._export_hash(mfix, efix, comp, opts, {"f_k1": ["masks/f_k1_e_000000000000.png", [1, 0, 33, 32]]})]
+        check(hs[:3] == ["2d5d9b737e610c61", "2d5d9b737e610c61", "daf2ce4764d77e75"] and len(set(hs)) == 4,
+              f"_export_hash: 편집 없음 = S3(3216d98) 고정값(빈 mask_edits 도), 탈락 = 고정값, 편집(file·창)이 들어가면 다름 {hs}")
+        bd.apply_pick(root, idB, cB2["tid"], cB2["key"], "add")  # B 타깃 ★ 둘 = 슬라이스마다 그룹·마스크(편집은 cB 만)
+        r8, t8 = export(hc)
+        ex8 = st.load_manifest(root)["exports"][-1]
+        lay8, g8 = psd_groups(r8)
+        bm2 = item(plan_of(root)[0], cB2["key"])["base_mask"]
+        bd.apply_pick(root, idB, cB2["tid"], cB2["key"], "remove")
+        gs, gs2 = g8[cB["key"]], g8[cB2["key"]]
+        check(r8["outcome"] == "new" and "그룹 마스크 3 (편집 1)" in t8 and (ex8.get("mask_groups"), ex8.get("mask_edits")) == (3, 1)
+              and gs is not gs2 and " · slice " in gs.name and " · slice " in gs2.name and gs.parent is gs2.parent
+              and list(gs.mask.bbox) == rect and np.array_equal(np.asarray(gs.mask.topil()), arr)
+              and lay8[cB["key"]]["mask_src"] == "edit" and lay8[cB2["key"]]["mask_src"] == "auto"
+              and np.array_equal(np.asarray(gs2.mask.topil()), bm2["arr"]),
+              f"슬라이스 타깃(B 에 ★ 둘): 편집한 ★ 의 슬라이스 그룹 마스크 = 편집 래스터, 다른 슬라이스 = 기준(자동), 보고서 '그룹 마스크 3 (편집 1)'·"
+              f"exports mask_groups 3·mask_edits 1 {t8[:160]}")
+
+    def n34b():
+        section("S4-N34b 편집 파일 없음·크기 다름 → 경고하고 기준 마스크(Compose·Export), Export 해시 = 실제로 그룹 마스크에 쓴 편집")
+        rect, recB = state["rectB"], state["recB"]
+        arrX = state["arrB"].copy()
+        arrX[:, 40:64] = 0  # 아직 Export 하지 않은 판
+        recX, _rev = dm.save_edit(root, cB["key"], png_bytes(arrX), seen=recB["file"], rect=rect, base=recB["base"], ops="붓 지우기")
+        fX = Path(root) / recX["file"]
+        good = fX.read_bytes()
+        who = f"{cB['key']} ({m0['crops'][1]['name']}): "
+        fX.unlink()
+        hc, img, _mk, rep = COM.run(h, MS, True, True, "auto_small_on_top")
+        rX0, tX0 = export(hc)
+        exX0 = st.load_manifest(root)["exports"][-1]
+        layX0, gX0 = psd_groups(rX0)
+        rX0b, tX0b = export(hc)  # 파일이 없는 채 다시 — 같은 해시 = '변경 없음'(기존 PSD)이어도 기준으로 떨어진 경고를 알림(Codex 4차)
+        check(rX0b["outcome"] == "unchanged" and rX0b["psd"] == rX0["psd"] and who + "마스크 편집 파일 없음 → 기준 마스크" in tX0b,
+              f"편집 파일이 없는 채 다시 Export = '변경 없음'(기존 PSD) + 경고 '마스크 편집 파일 없음 → 기준 마스크'(조용히 편집 없는 PSD 를 돌려주지 않음) "
+              f"{rX0b['outcome']} {tX0b[:200]}")
+        fX.write_bytes(png_bytes(arrX[:-8]))
+        _hc, img_s, _mk, rep_s = COM.run(h, MS, True, True, "auto_small_on_top")
+        fX.write_bytes(good)
+        w, hh = rect[2] - rect[0], rect[3] - rect[1]
+        check(who + "마스크 편집 파일 없음 → 기준 마스크" in rep and f"{cB['key']} mask auto" in rep and np.array_equal(u8(img), out0)
+              and who + f"마스크 편집 크기 {w}x{hh - 8} ≠ 기록의 창 {w}x{hh} → 기준 마스크" in rep_s and f"{cB['key']} mask auto" in rep_s
+              and np.array_equal(u8(img_s), out0),
+              "Compose: 편집 파일 없음·PNG 크기 ≠ 기록의 창 = 경고(후보·크롭 이름) + 기준 마스크(msrc auto) — 출력 = 편집 전")
+        check(rX0["outcome"] == "new" and who + "마스크 편집 파일 없음 → 기준 마스크" in tX0 and "그룹 마스크 2 (편집 0)" in tX0
+              and exX0.get("mask_edits") == 0 and layX0[cB["key"]]["mask_src"] == "auto" and "mask_edit" not in layX0[cB["key"]]
+              and np.array_equal(np.asarray(gX0[cB["key"]].mask.topil()), itB0["base_mask"]["arr"]),
+              "Export: 편집 파일 없음 = 경고 + 그룹 마스크 기준(자동)·mask_edits 0·사이드카 mask_src auto")
+        rX1, _t = export(hc)
+        gX1 = psd_groups(rX1)[1][cB["key"]]
+        dm.undo_edit(root, cB["key"], seen=recX["file"])
+        check(rX1["outcome"] == "new" and rX1["psd"] != rX0["psd"] and list(gX1.mask.bbox) == rect and np.array_equal(np.asarray(gX1.mask.topil()), arrX),
+              f"파일을 되살리면 새 PSD(그룹 마스크 = 편집) — 해시는 기록이 아니라 실제로 쓴 편집이라 기준으로 떨어진 PSD 를 '변경 없음'으로 돌려주지 않음 "
+              f"{rX1['outcome']}")
+        bd.apply_pick(root, idB, cB["tid"], cB["key"], "remove")  # ★ 해제 — 기록은 남지만 쓰이지 않음(N36)
+        rU0, _t = export(hc)
+        held, _rev = st.update_manifest(root, lambda mm: mm["mask_edits"].pop(cB["key"]))
+        rU1, _t = export(hc)
+        st.update_manifest(root, lambda mm: mm["mask_edits"].__setitem__(cB["key"], held))
+        bd.apply_pick(root, idB, cB["tid"], cB["key"], "set")
+        check(rU0["outcome"] == "new" and rU1["outcome"] == "unchanged" and rU1["psd"] == rU0["psd"] and held["file"] == recB["file"]
+              and dm.edit_record(st.load_manifest(root), cB["key"]) == held,
+              f"★ 해제(hidden_all — B 는 대안으로 들어감) 뒤 Export → 그 기록을 지워도 '변경 없음'(쓰이지 않는 기록은 해시 밖) {rU0['outcome']} {rU1['outcome']}")
+
+    def n34c():
+        section("S4-N34c 리뷰 server-r2-01: 편집 파일 잠김(공유 없이 열림) → 보드 ★ 합성·GET /mask 422(캐시 없음)·Compose 실패 → 풀리면 편집")
+        if os.name != "nt":
+            skip("S4-N34c: Windows 공유 잠금(CreateFileW) 전용")
+            return
+        import ctypes
+        k32 = ctypes.windll.kernel32
+        k32.CreateFileW.restype = ctypes.c_void_p
+        k32.CloseHandle.argtypes = [ctypes.c_void_p]
+        m = st.load_manifest(root)
+        pref = bd._PREF.get(st.root_key(root))
+        rec, sig = dm.edit_record(m, cB["key"]), bd.build_state(root)["canvas"]["composite_sig"]
+        cache = [Path(bd._thumb_path(root, f"composite_{sig}.jpg")), Path(bd._thumb_path(root, f"seams_{sig}.json"))]
+        for p in cache:
+            p.unlink(missing_ok=True)
+
+        def err(fn):
+            try:
+                fn()
+            except bd._Reject as e:
+                return e.status
+            except OSError as e:
+                return type(e).__name__
+            return None
+
+        hdl = k32.CreateFileW(str(Path(root, rec["file"])), 0x80000000, 0, None, 3, 0x80, None)  # GENERIC_READ, 공유 0 = 백신·동기화가 잡음
+        try:
+            locked = [err(lambda: bd._composite_for(root, None)), err(lambda: bd.mask_view(root, cB["key"])),
+                      err(lambda: COM.run(h, MS, True, True, "auto_small_on_top"))]
+            left = [p.exists() for p in cache]
+        finally:
+            k32.CloseHandle(hdl)
+        data, info, sig2 = bd._composite_for(root, None)
+        out, fresh = bd._compose_full(root, st.load_manifest(root), pref)
+        _hc, _img, _mk, rep = COM.run(h, MS, True, True, "auto_small_on_top")
+        check(locked == [422, 422, "PermissionError"] and left == [False, False],
+              f"잠긴 동안: ★ 합성·GET /mask = 422(편집 전 합성을 편집 서명 {sig} 으로 캐시하지 않음), Compose = PermissionError(경고 + 기준으로 "
+              f"떨어뜨려 편집 전 결과를 내지 않음 — 손·자동 마스크를 못 읽을 때와 같게) {locked} {left}")
+        check(sig2 == sig and info["segments"] == fresh["segments"] and data == bd._jpeg(Image.fromarray(bd._preview(out)))
+              and not [w for w in info["warnings"] if w.startswith(cB["key"])] and f"{cB['key']} mask edit" in rep,
+              "풀린 뒤: 같은 서명의 ★ 합성·이음매 = 지금 편집으로 새로 계산한 것(경고 없음), Compose = 편집(msrc edit)")
+
+    def n35():
+        section("S4-N35 기준 바뀜: Analyze 설정 바꿔 재분석 → 편집은 계속 쓰이고 stale, mask_source auto·hand 여도 편집이 이김")
+        m = st.load_manifest(root)
+        rec = m["mask_edits"][cB["key"]]
+
+        def stale_of(key):
+            """보드 state 의 (후보 mask_edit, 그 크롭 mask_stale)."""
+            s = bd.build_state(root)
+            t = next(t for t in s["targets"] if any(c["key"] == key for c in t["candidates"]))
+            return (next(c["mask_edit"] for c in t["candidates"] if c["key"] == key),
+                    next(x["mask_stale"] for x in s["crops"] if x["id"] == t["crop_id"]))
+
+        bd.prebuild_thumbs(root, prm)  # Review(기본 분석 설정)를 한 뒤 — 보드 _PREF = 기본
+        st0 = stale_of(cB["key"])
+        h3, _cs, rep3 = ANA.run(h, "guarded_affine", "field", 16, 12.0, 9, 3.5, "none", False)  # Review 없는 Export 템플릿의 Analyze
+        st1 = stale_of(cB["key"])
+        m3 = st.load_manifest(root)
+        e_new = bd._entry_for(m3, cB["key"], dict(prm, dE=12.0))
+        e_old = ent0[cB["key"]]
+        check("계산 3" in rep3 and e_new["params_hash"] != e_old["params_hash"] and dm.is_stale(rec, dm.base_fp(cB, e_new, MS))
+              and not dm.is_stale(rec, dm.base_fp(cB, e_old, MS)) and dm.is_stale(rec, dm.base_fp(cB, e_old, "auto")),
+              "재분석(dE 12) → 기준 지문(ph·자동 마스크)이 달라 stale, 옛 항목이면 아님, mask_source 만 바뀌어도 stale")
+        check(st0 == ({"at": rec["at"], "stale": False}, 0) and st1 == ({"at": rec["at"], "stale": True}, 1)
+              and bd._PREF[st.root_key(root)] == dict(prm, dE=12.0),
+              f"리뷰 analysis-r1-01: Review(기본) 뒤 Review 없이 Analyze(dE 12)만 다시 → 보드 state 도 stale true·크롭 mask_stale 1"
+              f"(Analyze 가 보드 분석 설정을 바꿈 — Export 가 쓰는 항목과 같음) {st0} → {st1}")
+        reps = {ms: COM.run(h3, ms, True, True, "auto_small_on_top")[3] for ms in (MS, "auto", "hand")}
+        rep_old = COM.run(h, MS, True, True, "auto_small_on_top")[3]
+        check(all(f"{cB['key']} mask edit" in r for r in reps.values()) and f"{cA['key']} mask auto" in reps["auto"]
+              and f"{cA['key']} mask none" in reps["hand"],
+              "편집은 계속 쓰임 — 새 분석 설정·mask_source auto·hand 모두 B = edit(A 는 auto·none)")
+        check(f"{cB['key']} ({m0['crops'][1]['name']}): 마스크 편집 기준 바뀜(분석 항목) → 편집 그대로 씀" in reps[MS]
+              and "마스크 편집 기준 바뀜" not in rep_old,
+              "리뷰 analysis-r1-02: 편집할 때와 다른 분석 항목으로 Compose = 보고서 경고(분석 항목 — 창은 같음), 같은 분석 설정이면 없음")
+        hm = {"file": st.save_png_ca(root, "inputs", np.full((16, 16), 255, np.uint8)), "rect": [40, 40, 56, 56], "bg": 0}
+        crop = m3["crops"][0]
+        skipped = {"params_hash": "s" * 16, "skipped": "부분 패치"}
+        rows = [(hand, e, ms) for hand in (None, hm) for e in (ent0[cA["key"]], None, skipped) for ms in dp._MASK_SOURCES]
+        bad = [(bool(hand), bool(e), ms) for hand, e, ms in rows
+               if (lambda nm, bs: nm[1] != bs[0] or (nm[0] is None) != (bs[0] == "none"))(
+                   dp._final_mask(root, dict(cA, hand_mask=hand), e, crop, ms), dm.base_source(dict(cA, hand_mask=hand), e, ms))]
+        check(not bad and set(dm.MASK_SOURCES) == set(dp._MASK_SOURCES),
+              f"노드 _final_mask = mask.base_source(손 마스크 유무 × 분석 항목 있음·없음·생략 × mask_source 3 = 18) {bad}")
+
+    def n35b():
+        section("S4-N35b 리뷰 analysis-r2-01: Analyze 설정 A→B→A(캐시) 뒤 재시작(보드 _PREF·레지스트리 비우고 노드 모듈 다시 실행) → "
+                "board_pref.json 에서 A 를 되살림 — 편집 기준 그대로·저장 기준 A·처음 값 A, rev·Project 지문 그대로")
+        from aiohttp import web
+
+        rk = st.root_key(root)
+        args_b = list(ana_args)
+        args_b[3] = 12.0
+        keys = [c["key"] for c in (cA, cB, cB2)]
+        st.register_root(root)  # 보드가 여는 프로젝트(Review 가 등록) — 재시작 때 레지스트리에서 되살아나는 루트
+        fp0, rev0 = dp.BMKDesignPatchProject.IS_CHANGED(project="s4node", base_dir=str(NS)), st.load_manifest(root)["rev"]
+        _h, _cs, rep_b = ANA.run(h, *args_b)
+        pref_b = st.load_board_pref(root)
+        _h, _cs, rep_a = ANA.run(h, *ana_args)  # 설정을 되돌림 — 캐시 적중이라 항목 순서(삽입 순)는 그대로 B 가 끝
+        m = st.load_manifest(root)
+        fp1 = dp.BMKDesignPatchProject.IS_CHANGED(project="s4node", base_dir=str(NS))
+        check("계산 0" in rep_b and "계산 0" in rep_a and pref_b == dict(prm, dE=12.0) and st.load_board_pref(root) == prm
+              and all([e["params"]["dE"] for e in m["analysis"][k].values()] == [prm["dE"], 12.0] for k in keys)
+              and m["rev"] == rev0 and fp1 == fp0,
+              "A→B→A(모두 캐시 적중): board_pref.json = 마지막 Analyze 설정(B → A), 삽입 순은 [A, B] 그대로(보드가 설정을 모르면 B), "
+              "매니페스트 rev·Project 지문 그대로(DP-INT-3 — 가지를 번갈아 돌려도 하류가 다시 돌지 않음)")
+        rec = dm.edit_record(m, cB["key"])
+        bd._PREF.pop(rk, None)  # ComfyUI 재시작 흉내(Review·Analyze 전)
+        st_none = bd.build_state(root)
+        with st._ROOTS_LOCK:
+            st._ROOTS.pop(rk, None)  # 레지스트리도 비움 — 새 프로세스처럼 import 때의 라우트 등록이 _roots.json 을 다시 읽어야 되살아남
+        inp = folder_paths.get_input_directory()
+        folder_paths.set_input_directory(str(NS))  # 라우트 등록의 base_dir(ComfyUI input) = 이 프로젝트들의 base_dir
+        try:
+            with _prompt_server(_FakeServer(web.RouteTableDef())):
+                # 노드 모듈 파일을 새로 실행(보조 모듈은 같은 패키지의 것) — _restore_board_prefs 를 직접 부르지 않고 import 때의
+                # 최상위 연결(라우트 등록 → 되살리기)로 되살아나는지 본다(리뷰 tests-r3-01)
+                spec = importlib.util.spec_from_file_location("_bmk_dp_pkg.bmk_design_patch_restart", PKG / "bmk_design_patch.py")
+                spec.loader.exec_module(importlib.util.module_from_spec(spec))
+        finally:
+            folder_paths.set_input_directory(inp)
+        s = bd.build_state(root)
+        stale = next(c["mask_edit"] for t in s["targets"] for c in t["candidates"] if c["key"] == cB["key"])
+        v = bd.mask_view(root, cB["key"])
+        t = bd._mask_target(root, m, cB, bd._PREF.get(rk))
+        arr = np.rint(bd._mask_region(t["it"]["mask"], *t["rect"]) * 255).astype(np.uint8)
+        arr[:, :8] = 0
+        res = bd.mask_save(root, cB["key"], png_bytes(arr), rec["file"], "재시작 뒤 붓", ",".join(map(str, t["rect"])))
+        rec2 = dm.edit_record(st.load_manifest(root), cB["key"])
+        check(bd._PREF.get(rk) == prm and st.resolve_board_root(rk) is not None
+              and rec["base"]["ph"] == ent0[cB["key"]]["params_hash"] and stale == {"at": rec["at"], "stale": False}
+              and v["edit"]["stale"] is False and not [w for w in v["warnings"] if "기준 바뀜" in w]
+              and rec2["base"] == rec["base"] and res["edit"]["stale"] is False
+              and next(c["mask_edit"] for t in st_none["targets"] for c in t["candidates"] if c["key"] == cB["key"])["stale"] is True,
+              f"재시작 뒤(노드 모듈 import — 레지스트리 복구 뒤 _restore_board_prefs): 보드 분석 설정 = A → 편집(기준 A) stale 아님·"
+              f"GET /mask 경고 없음, 그때 저장한 기준 = A (되살리지 않으면 마지막 삽입 B 로 stale — '기준으로 다시 시작' 권함) {rec2['base']['ph']}")
+        bd._PREF[rk] = dict(prm, grow=3)
+        dp._restore_board_prefs()
+        kept = bd._PREF[rk]
+        bd._PREF[rk] = dict(prm)
+        dm.undo_edit(root, cB["key"], seen=rec2["file"])
+        check(kept == dict(prm, grow=3) and bd.pl.derive(root, m)["settings"]["analyze"]["dE"] == prm["dE"],
+              "되살리기는 이미 든 설정을 덮지 않음 · Studio 진행 설정 처음 값(pipeline.derive) analyze = 마지막 Analyze 설정 A(삽입 순 마지막 B 아님)")
+        hB = dict(h, analyze=dict(prm, dE=12.0))
+        rep_rv = asyncio.run(dp.BMKDesignPatchReview().run(hB))["result"][1]
+        pref_rv = st.load_board_pref(root)
+        asyncio.run(dp.BMKDesignPatchReview().run(h))
+        check(rep_rv.startswith("Review:") and pref_rv == dict(prm, dE=12.0) and st.load_board_pref(root) == prm and bd._PREF[rk] == prm,
+              "Review 도 보드 분석 설정(prebuild_thumbs)을 board_pref.json 에 남김(B 핸들 → B, A 핸들 → A)")
+
+    def n35c():
+        section("S4-N35c 리뷰 analysis-r3-01: Compose 정합 켬→끔→켬('변경 없음') Export → 보드 편집 창·stale·★ 합성과 Studio 처음 값이 최신 PSD(켬)를 "
+                "따름 — 그 창으로 저장한 편집 = 다음 PSD 그룹 마스크, 매니페스트 rev·Project 지문 그대로")
+        hr, rr = _fx_project(dp, NS, "s4ureg", [("001_큰", RA), ("002_작은", RB)], base)
+        fd = NS / "s4ureg_folder"
+        fd.mkdir()
+        Image.fromarray(tinted(base, RA, (70, -50, 40))).save(fd / "001_큰_a.png")
+        Image.fromarray(tinted(base, RB, (-60, 60, -40))).save(fd / "002_작은_a.png")
+        hr, _rep = CIN.run(hr, "folder", str(fd), "", "", True, True)
+        hr, _cs, _rep = ANA.run(hr, *ana_args)
+        m = st.load_manifest(rr)
+        kB = next(c for c in m["candidates"] if c["crop_id"] == m["crops"][1]["id"])["key"]
+        q = [float(v) for v in next(c for c in m["candidates"] if c["key"] == kB)["quad"]]
+        q_on = [x + (6 if i % 2 == 0 else 4) for i, x in enumerate(q)]
+
+        def reg(mm):  # B 의 분석 항목 = 정합 (6, 4) 적용(params_hash 그대로 — Export 의 _ensure_analysis 캐시 적중)
+            for e in mm["analysis"][kB].values():
+                e["quad_reg"], e["reg"]["applied"] = list(q_on), True
+
+        st.update_manifest(rr, reg)
+        win_on, win_off = dm.edit_rect(dpsd.quad_bbox(q_on), m["canvas"]), dm.edit_rect(dpsd.quad_bbox(q), m["canvas"])
+
+        def ex(use_reg):
+            return export(COM.run(hr, MS, use_reg, True, "auto_small_on_top")[0])
+
+        def fp():
+            return st.load_manifest(rr)["rev"], dp.BMKDesignPatchProject.IS_CHANGED(project="s4ureg", base_dir=str(NS))
+
+        r1, _t = ex(True)
+        r2, _t = ex(False)
+        fp2 = fp()
+        r3, _t = ex(True)
+        m3 = st.load_manifest(rr)
+        e3 = st.last_export(rr, m3)
+        check([r1["outcome"], r2["outcome"], r3["outcome"]] == ["new", "new", "unchanged"] and r3["psd"] == r1["psd"] and fp() == fp2
+              and m3["exports"][-1]["compose"]["use_registration"] is False and e3["psd"] == r1["psd"] and e3["compose"]["use_registration"] is True
+              and json.loads(Path(rr, st.BOARD_PREF_NAME).read_text(encoding="utf-8"))["export"] == e3["hash"]
+              and bd.pl.derive(rr, m3)["settings"]["compose"]["use_registration"] is True and win_on != win_off,
+              f"켬→끔→켬: 마지막 '변경 없음' Export 는 매니페스트를 쓰지 않고(rev·Project 지문 그대로 — DP-INT-3) board_pref.json export = 그 PSD "
+              f"해시 → store.last_export = r1 기록(켬 — exports[-1] 은 끔), Studio 처음 값(pipeline.derive) compose 도 켬 {win_on} {win_off}")
+        pref = bd._PREF.get(st.root_key(rr))
+        v = bd.mask_view(rr, kB)
+        t = bd._mask_target(rr, m3, next(c for c in m3["candidates"] if c["key"] == kB), pref)
+        arr = np.rint(bd._mask_region(t["it"]["base_mask"], *t["rect"]) * 255).astype(np.uint8)
+        arr[:, -24:] = 0
+        res = bd.mask_save(rr, kB, png_bytes(arr), "", "오른쪽 24 지움", ",".join(map(str, v["rect"])))
+        seen, _i = bd._compose_full(rr, st.load_manifest(rr), pref)  # [적용] 뒤 Studio 가 보여 주는 ★ 합성
+        r4, t4 = ex(True)
+        lay, _g = psd_groups(r4)
+        so = next(x for x in PSDImage.open(r4["psd"]).descendants() if x.kind == "smartobject" and x.name == lay[kB]["name"])
+        x0, y0, x1, y1 = win_on
+        flat = np.asarray(PSDImage.open(r4["psd"]).topil().convert("RGB")).astype(np.int16)
+        dmax = int(np.abs(flat[y0:y1, x0:x1] - seen[y0:y1, x0:x1].astype(np.int16)).max())
+        check(v["rect"] == t["rect"] == win_on and res["edit"]["stale"] is False and r4["outcome"] == "new" and "기준 바뀜" not in t4
+              and lay[kB]["mask_rect"] == list(so.parent.mask.bbox) == list(so.bbox) == win_on and dmax <= 1,
+              f"보드(store.last_export 의 Compose 설정): GET /mask 창 = 켬 창 → 그 창으로 저장한 편집이 다음 Export(켬)의 그룹 마스크 = SO 창, "
+              f"경고 없음, PSD 병합 = 저장 직후 보드 ★ 합성(B 창 차이 {dmax}) — 예전: 끔 창으로 저장해 패치와 어긋남 {v['rect']} {lay[kB]['mask_rect']}")
+        r5, _t = ex(False)
+        e5 = st.last_export(rr, st.load_manifest(rr))
+        r6, _t = ex(True)
+        e6 = st.last_export(rr, st.load_manifest(rr))
+        me = next(c["mask_edit"] for tt in bd.build_state(rr)["targets"] for c in tt["candidates"] if c["key"] == kB)
+        v6 = bd.mask_view(rr, kB)
+        check(r5["outcome"] == "new" and e5["psd"] == r5["psd"] and e5["compose"]["use_registration"] is False
+              and r6["outcome"] == "unchanged" and r6["psd"] == e6["psd"] == r4["psd"],
+              "편집 뒤 끔(new r5 — last_export 가 새 기록으로) → 켬('변경 없음' = r4 다시 냄 — last_export 가 r4 로 돌아감)")
+        check(me["stale"] is False and v6["rect"] == win_on and v6["edit"]["stale"] is False and not [w for w in v6["warnings"] if "기준 바뀜" in w],
+              f"보드: 최신 PSD(r4, 켬)와 맞는 편집은 state·GET /mask 모두 stale 아님·창 = 켬 창(예전: exports[-1] = 끔 r5 에 머물러 거짓 stale — "
+              f"'기준으로 다시 시작' 권함) {me} {v6['rect']}")
+
+    def n36():
+        section("S4-N36 정리·지문: Candidate In 이 지운 수확 후보의 편집 지움, 탈락·★ 해제는 기록 유지, 편집 저장 → Project IS_CHANGED")
+        R1, R2 = [32, 32, 160, 160], [192, 64, 320, 192]
+        hh, rh = _fx_project(dp, NS, "s4harv", [("001_왼쪽", R1), ("002_오른쪽", R2)], base)
+        hp = NS / "s4harv.psd"
+        items = [("001_왼쪽", "001 결과", _fx_cand(base, R1), dpsd.quad_from_rect(R1), True, None),
+                 ("002_오른쪽", "002 결과", _fx_cand(base, R2), dpsd.quad_from_rect(R2), True, None)]
+        _fx_harvest_psd(hp, (480, 320), items)
+        hh, _rep = CIN.run(hh, "psd_harvest", str(hp), "03.수정", "", True, True)
+        mh = st.load_manifest(rh)
+        k1, k2 = (next(c for c in mh["candidates"] if c["origin_info"]["layer"] == n)["key"] for n in ("001 결과", "002 결과"))
+        fp0 = dp.BMKDesignPatchProject.IS_CHANGED(project="s4harv", base_dir=str(NS))
+        recs = {}
+        for c in mh["candidates"]:
+            rect = dm.edit_rect(dpsd.quad_bbox(c["quad"]), mh["canvas"])
+            arr = np.full((rect[3] - rect[1], rect[2] - rect[0]), 255, np.uint8)
+            arr[10:40, 10:40] = 0
+            recs[c["key"]] = dm.save_edit(rh, c["key"], png_bytes(arr), seen="", rect=rect, base=dm.base_fp(c, None, MS), ops="붓")[0]
+        fp1 = dp.BMKDesignPatchProject.IS_CHANGED(project="s4harv", base_dir=str(NS))
+        check(fp1 != fp0 and recs[k1]["base"] == {"src": "none", "file": None, "ph": None, "ms": MS} and recs[k1]["file"].startswith("masks/h_"),
+              "편집 저장 → Project IS_CHANGED 바뀜(매니페스트 지문 — 다음 큐에서 Export 템플릿이 다시 돎), 분석 없는 수확 ★ = 기준 none")
+        bd.apply_reject(rh, k1, True)
+        _fx_harvest_psd(hp, (480, 320), items[:1])
+        hh, rep_c = CIN.run(hh, "psd_harvest", str(hp), "03.수정", "", True, True)
+        mh2 = st.load_manifest(rh)
+        check(k2 not in {c["key"] for c in mh2["candidates"]} and k2 not in mh2["mask_edits"] and mh2["mask_edits"].get(k1) == recs[k1]
+              and "제거 1" in rep_c,
+              "같은 PSD 에서 사라진 수확 후보 = 후보·분석과 함께 편집 지움, 탈락시킨 후보의 기록은 그대로")
+        bd.apply_reject(rh, k1, False)
+        cid = next(c for c in mh2["candidates"] if c["key"] == k1)["crop_id"]
+        bd.apply_pick(rh, cid, "A", k1, "remove")
+        m_off = st.load_manifest(rh)
+        w_off: list[str] = []
+        off = [it["cand"]["key"] for _p, _t, it in dp._slices_in_order(dp._plan(rh, m_off, {}, MS, False, "auto_small_on_top", True, w_off))]
+        alts = [it for p in dp._plan(rh, m_off, {}, MS, False, "auto_small_on_top", True, w_off) for t in p["targets"] for it in t["alts"]]
+        bd.apply_pick(rh, cid, "A", k1, "set")
+        m_on = st.load_manifest(rh)
+        w_on: list[str] = []
+        on = item(dp._plan(rh, m_on, {}, MS, False, "auto_small_on_top", False, w_on), k1)
+        check(m_off["mask_edits"].get(k1) == recs[k1] and k1 not in off and [a["msrc"] for a in alts if a["cand"]["key"] == k1] == ["none"]
+              and on["msrc"] == "edit" and on["mask_edit"] == recs[k1]["file"],
+              "★ 해제 = 기록 유지·쓰이지 않음(대안으로 들어가도 기준), 다시 ★ = 편집 살아남")
+        w_base: list[str] = []
+        dp._plan(rh, dict(m_on, mask_edits={}), {}, MS, False, "auto_small_on_top", False, w_base)
+        fk = Path(rh) / recs[k1]["file"]
+        fk.rename(fk.with_suffix(".gone"))
+        w_gone: list[str] = []
+        dp._plan(rh, m_on, {}, MS, False, "auto_small_on_top", False, w_gone)
+        fk.with_suffix(".gone").rename(fk)
+
+        def mine(ws):
+            return [w for w in ws if w.startswith(f"{k1} (")]
+
+        check(not mine(w_on) and any("마스크 없이" in w for w in mine(w_base))
+              and any("마스크 편집 파일 없음" in w for w in mine(w_gone)) and any("마스크 없이" in w for w in mine(w_gone)),
+              f"리뷰 tests-r1-05: 분석 없는 ★ 를 편집하면 _plan 경고(Compose·Export 보고서·GET /mask)에 '마스크 없이' 없음(편집을 적용한 뒤 판정) — "
+              f"편집이 없거나 편집 파일을 못 읽으면 되살아남 {mine(w_on)} {mine(w_gone)}")
+
+    def r1():
+        section("S4-R1⁗ 실데이터: ux1_261014 사본(★ 파일만 복사) → 015 ★ 윗변 페이드 64 저장 → 015 윗변 이음매 0 · 다른 크롭 이음매 같음")
+        src = _UX1_261014
+        if not (src / st.MANIFEST_NAME).is_file():
+            skip(f"R1⁗: 실데이터 사본 없음({src})")
+            return
+        K, C014 = "r_61ba2d695f0f_0_0", "014_0f9cc5"
+        root1 = st.project_root(str(NS / "r1"), "ux1copy")
+        Path(root1).mkdir(parents=True)
+        shutil.copyfile(src / st.MANIFEST_NAME, Path(root1) / st.MANIFEST_NAME)
+        m = st.load_manifest(root1)
+        picks = bd._composite_picks(m)
+        need = {m["base"]}
+        for c in picks:
+            need |= {c["file"], (c.get("hand_mask") or {}).get("file")}
+            e = bd._entry_for(m, c["key"], None) or {}
+            need |= {e.get("automask"), (e.get("tone") or {}).get("delta"), (e.get("tone") or {}).get("full")}
+        for rel in sorted(need - {None}):
+            if (src / rel).is_file():
+                (Path(root1) / rel).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(src / rel, Path(root1) / rel)
+        t0 = time.time()
+        _o, info0 = bd._compose_full(root1, m, None)
+        cs = info0["settings"]
+        entries = {c["key"]: e for c in picks if (e := bd._entry_for(m, c["key"], None)) is not None}
+        it = item(dp._plan(root1, m, entries, cs["mask_source"], bool(cs["use_registration"]), cs["zorder"], False, []), K)
+        crop = next(c for c in m["crops"] if c["id"] == it["cand"]["crop_id"])
+        W, H = m["canvas"]
+        cr = [max(0, crop["rect"][0]), max(0, crop["rect"][1]), min(W, crop["rect"][2]), min(H, crop["rect"][3])]
+        rect = dm.edit_rect(dpsd.quad_bbox(it["quad"]), m["canvas"])
+        ys, xs = np.mgrid[rect[1]:rect[3], rect[0]:rect[2]]
+        arr = np.floor(dp._mask_region(it["base_mask"], *rect) * _mk_fade("top", cr, 64, xs, ys) * 255 + 0.5).astype(np.uint8)
+        dm.save_edit(root1, K, png_bytes(arr), seen="", rect=rect, base=dm.base_fp(it["cand"], it["entry"], cs["mask_source"]),
+                     ops="변 페이드 top 64")
+        m2 = st.load_manifest(root1)
+        _o, info1 = bd._compose_full(root1, m2, None)
+        it2 = item(dp._plan(root1, m2, entries, cs["mask_source"], bool(cs["use_registration"]), cs["zorder"], False, []), K)
+        s0, s1 = info0["segments"], info1["segments"]
+
+        def pick(segs, cid, side=None):
+            return [s for s in segs if s["crop_id"] == cid and side in (None, s["side"])]
+
+        def others(segs):  # 014 는 015 위에 겹친 크롭 — 왼변 이음매의 바깥 줄이 015 패치라 p90 값만 따라 바뀔 수 있음(U0 §2.2 도 014·015 를 따로 셈)
+            return [s for s in segs if s["crop_id"] not in (crop["id"], C014)]
+
+        def where(segs):
+            return [(s["side"], s["x0"], s["y0"], s["x1"], s["y1"], s["severity"]) for s in segs]
+
+        check(dm.star_cand(m, K) is not None and crop["name"].startswith("015") and it2["msrc"] == "edit"
+              and len(pick(s0, crop["id"], "top")) >= 1 and pick(s1, crop["id"], "top") == [],
+              f"015 ★ 윗변 페이드 64 → 015 윗변 이음매 {len(pick(s0, crop['id'], 'top'))} → 0 (U0 §2.2)")
+        p014 = [(a["diff_p90"], b["diff_p90"]) for a, b in zip(pick(s0, C014), pick(s1, C014)) if a["diff_p90"] != b["diff_p90"]]
+        check(others(s1) == others(s0) and pick(s1, crop["id"], "left") == pick(s0, crop["id"], "left")
+              and where(pick(s1, C014)) == where(pick(s0, C014)),
+              f"다른 크롭 이음매 목록 그대로({len(others(s0))}개)·015 왼변 그대로·014(015 위 겹침) 구간·등급 그대로(p90 바뀐 것 {p014})")
+        note(f"S4-R1⁗ 실데이터 이음매 {len(s0)} (bad {sum(s['severity'] == 'bad' for s in s0)}) → {len(s1)} "
+             f"(bad {sum(s['severity'] == 'bad' for s in s1)}) — 015 윗변 {len(pick(s0, crop['id'], 'top'))} 구간 사라짐, 014 왼변 p90 {p014}, "
+             f"편집 창 {rect}, 합성 2회 {time.time() - t0:.1f}s")
+
+    for fn in (n32, n33, n34, n34b, n34c, n35, n35b, n35c, n36, r1):
+        fn()
+
+
+def mask_board_unit():
+    """S4 B39–B53·B11/B12(서버)·B0·N37: 마스크 라우트 5·state·서명·3층(U2). B45–B53 = 검증 지적(편집 창이 바뀜·편집 파일 없음·손 마스크 기준·
+    ★ 슬라이스 둘·3층 동시 요청·창이 영역 밖·3층 서명 범위·다른 ★ 마스크 파일 없음·형식이 깨진 기록·편집 파일이 깨짐). 합성 프로젝트(큰 A 아래·작은 B 위 — ★ + 대안 + 탈락,
+    떨어진 C = 분석 뒤에 들어온 ★ 를 크롭 rect 를 옮겨 옛 크롭 ★ 로)는 노드 함수(Candidate In 폴더·Analyze — _dp_package, comfy CPU)로
+    만들고 보드 라우트는 aiohttp 시험 서버로 부른다. 응답 모양은 _pl_shape 로 tools/fixtures/mask_api.json 과 대조. --quick 생략."""
+    section("S4 mask_board_unit — 라우트(U2)")
+    if QUICK:
+        print("  --quick: 생략(노드 _plan·_render 를 쓰는 묶음 — comfy CPU import)")
+        return
+    dp = _dp_package()
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    st, bd, dm = dp.store, dp.board, dp.dmask  # 노드와 같은 모듈(_bmk_dp_pkg)
+    OUT = OUT_ROOT / "mask_board"
+    shutil.rmtree(OUT, ignore_errors=True)
+    OUT.mkdir(parents=True)
+    API = "/bmk/design_patch"
+    DOC = json.loads(_MASK_API.read_text(encoding="utf-8"))
+    R, STATE = DOC["routes"], DOC["state"]
+    MS = "hand_else_auto"
+    prm = dict(dp._ANALYZE_DEFAULTS)
+    ana_args = [prm[k] for k in ("register", "tone", "tone_sigma", "dE", "grow", "feather_sigma", "roi_prior")] + [False]
+    ANA, CIN = dp.BMKDesignPatchAnalyze(), dp.BMKDesignPatchCandidateIn()
+
+    def tinted(base, rect, tint):
+        """크롭 창 2배 + 전체 색 바꿈 → 자동 마스크가 크롭 거의 전체(변마다 이음매)."""
+        x0, y0, x1, y1 = rect
+        im = np.asarray(Image.fromarray(base[y0:y1, x0:x1]).resize(((x1 - x0) * 2, (y1 - y0) * 2), Image.LANCZOS)).astype(np.int16)
+        return np.clip(im + np.int16(tint), 0, 255).astype(np.uint8)
+
+    base = texture(320, 480, 83)
+    RA, RB, RC, RC2 = [32, 32, 224, 224], [160, 96, 288, 224], [352, 192, 448, 288], [368, 208, 464, 304]
+    h0, root = _fx_project(dp, OUT, "s4board", [("001_큰", RA), ("002_작은", RB), ("003_따로", RC)], base)
+    f1, f2 = OUT / "folder1", OUT / "folder2"
+    f1.mkdir()
+    f2.mkdir()
+    for name, rect, tint in (("001_큰_a", RA, (70, -50, 40)), ("002_작은_a", RB, (-60, 60, -40)), ("002_작은_b", RB, (40, 40, -70)),
+                             ("002_작은_c", RB, (10, -70, 60))):
+        Image.fromarray(tinted(base, rect, tint)).save(f1 / f"{name}.png")
+    Image.fromarray(tinted(base, RC, (50, 50, 50))).save(f2 / "003_따로_a.png")
+    h0, _rep = CIN.run(h0, "folder", str(f1), "", "", True, True)
+    h0, _cs, _rep = ANA.run(h0, *ana_args)
+    h0, _rep = CIN.run(h0, "folder", str(f2), "", "", True, True)  # 분석 뒤에 들어온 C = 분석 없는 ★
+    m0 = st.load_manifest(root)
+    ids = [c["id"] for c in m0["crops"]]
+    k_of = {c["origin_info"]["filename"]: c["key"] for c in m0["candidates"]}
+    kA, kB, kB2, kB3, kC = (k_of[f"{n}.png"] for n in ("001_큰_a", "002_작은_a", "002_작은_b", "002_작은_c", "003_따로_a"))
+    for cid, k in ((ids[0], kA), (ids[1], kB), (ids[2], kC)):
+        bd.apply_pick(root, cid, "A", k, "set")
+    bd.apply_reject(root, kB3, True)
+    st.update_manifest(root, lambda mm: mm["crops"][2].update(rect=list(RC2)))  # C 크롭을 옮김 → C ★ = 옛 크롭 ★(quad 는 RC 그대로)
+    key = st.register_root(root)
+    members_B = [c["key"] for c in m0["candidates"] if c["crop_id"] == ids[1]]
+
+    class Http:
+        def __init__(self, client):
+            self.c = client
+
+        async def get(self, path, **params):
+            r = await self.c.get(path, params=params or None, allow_redirects=False)
+            return r.status, r.headers, await r.read()
+
+        async def jget(self, path, **params):
+            st_, _hd, body = await self.get(path, **params)
+            return st_, json.loads(body.decode("utf-8"))
+
+        async def post(self, path, payload, ctype="application/json", params=None):
+            data = json.dumps(payload, ensure_ascii=False).encode("utf-8") if isinstance(payload, dict) else payload
+            r = await self.c.post(path, params=params, data=data, headers={"Content-Type": ctype})
+            body = await r.read()
+            try:
+                return r.status, json.loads(body.decode("utf-8"))
+            except ValueError:
+                return r.status, body
+
+        async def save(self, k, data, seen="", ops="붓", ctype="image/png", rect="now"):
+            """rect "now" = 지금 편집 창(GET /mask — Studio 가 세션을 연 창, ★ 아니면 뺌), None = 뺌(필수 — 400)."""
+            if rect == "now":
+                s_, d = await self.jget(f"{API}/mask", root=key, key=k)
+                rect = d["rect"] if s_ == 200 else None
+            q = {p: v for p, v in (("root", key), ("key", k), ("seen", seen), ("ops", ops),
+                                   ("rect", rect if rect is None or isinstance(rect, str) else ",".join(map(str, rect)))) if v is not None}
+            return await self.post(f"{API}/mask/save", data, ctype, q)
+
+        async def edit(self, k, seen, op, **over):
+            return await self.post(f"{API}/mask/edit", {"root": key, "key": k, "seen": seen, "op": op, **over})
+
+        async def img(self, url):
+            st_, hd, body = await self.get(f"{API}/{url}")
+            return st_, hd, body
+
+    def item(m, k):
+        return next(it for _p, _t, it in dp._slices_in_order(bd._star_plan(root, m, None)[0]) if it["cand"]["key"] == k)
+
+    def cand(m, k):
+        return next(c for c in m["candidates"] if c["key"] == k)
+
+    def shape(route, body, which="ok"):
+        spec = R[route]
+        return _pl_shape(spec["ok"] if which == "ok" else spec["alt"][which], body, spec)
+
+    def err_ok(route, status, body, reason=None):
+        """오류 본문 = error(문자열) + 정본의 그 상태 예시 하나와 같은 키 집합(reason·rect), reason 이 주어지면 그 값."""
+        return (isinstance(body, dict) and isinstance(body.get("error"), str) and any(set(body) == set(e) for e in R[route]["errors"][str(status)])
+                and (reason is None or body.get("reason") == reason))
+
+    def q_of(url):
+        return dict(urllib.parse.parse_qsl(url.split("?", 1)[1]))
+
+    def png(arr, **kw):
+        buf = io.BytesIO()
+        Image.fromarray(np.ascontiguousarray(arr)).save(buf, "PNG", **kw)
+        return buf.getvalue()
+
+    def decode(data):
+        with Image.open(io.BytesIO(data)) as im:
+            return im.mode, np.asarray(im)
+
+    def thumbs():
+        d = Path(root, "derived", "thumbs")
+        return sorted(os.listdir(d)) if d.is_dir() else []
+
+    def n_masks():
+        d = Path(root, "masks")
+        return len(os.listdir(d)) if d.is_dir() else 0
+
+    def csig():
+        return bd._composite_sig(root, st.load_manifest(root), None)
+
+    def seams_of(sig, cid, side=None):
+        segs = json.loads(Path(root, "derived", "thumbs", f"seams_{sig}.json").read_text(encoding="utf-8"))["segments"]
+        return [s for s in segs if s["crop_id"] == cid and side in (None, s["side"])]
+
+    def window(arr, rect, box):
+        """편집 창 래스터(uint8) → box 좌표 float 0..1(창 밖 0)."""
+        return bd._mask_region({"arr": arr, "left": rect[0], "top": rect[1], "bg": 0}, *box)
+
+    s_first = bd.build_state(root)
+    ctx0 = {c["key"]: q_of(c["context_url"])["v"] for t in s_first["targets"] for c in t["candidates"]}
+
+    def sigs_unchanged():
+        section("S4 서명: 편집 없는 프로젝트의 ★ 합성·context 서명 = S3 식 그대로, ★ 의 편집이 있을 때만 file·창을 덧붙임")
+        m = st.load_manifest(root)
+        crops = {c["id"]: c for c in m["crops"]}
+        old = [[c["key"], c["crop_id"], c["tid"], c["file"], c["quad"], c.get("hand_mask"), c.get("z"), crops[c["crop_id"]]["rect"],
+                (bd._entry_for(m, c["key"], None) or {}).get("params_hash")] for c in bd._composite_picks(m)]
+        s_old = bd._sig("composite", bd.CANVAS_PREVIEW, m.get("base"), m.get("canvas"), bd._compose_settings(root, m), old)
+        cB, crop = cand(m, kB), crops[ids[1]]
+        e = bd._entry_for(m, kB, None)
+        ctx_old = bd._sig("context", 512, bd._placed_parts(crop, cB, e, *bd._view_flags(root, m, "context")), [None, None, None, e["automask"]],
+                          MS, m.get("base"), m.get("canvas"))
+        rec = dm.check_record({"file": "masks/x_e_000000000000.png", "rect": [1, 2, 3, 4], "ops": "붓", "at": "2026-10-19 12:00:00", "hist": [],
+                               "base": {"src": "auto", "file": e["automask"], "ph": e["params_hash"], "ms": MS}})
+        check(bd._composite_sig(root, m, None) == bd._composite_sig(root, dict(m, mask_edits={}), None) == s_old
+              and bd._cand_sig(root, "context", 512, m, crop, cB, e, None) == ctx_old and "mask_edits" not in m,
+              "편집 없음(키 없음·빈 mask_edits) = S3 식의 ★ 합성 서명·context 서명 그대로(캐시 유지)")
+        check(bd._composite_sig(root, dict(m, mask_edits={kB: rec}), None) != s_old
+              and bd._composite_sig(root, dict(m, mask_edits={kB: dict(rec, rect=[2, 2, 4, 4])}), None) != bd._composite_sig(root, dict(m, mask_edits={kB: rec}), None)
+              and bd._composite_sig(root, dict(m, mask_edits={kB2: rec}), None) == s_old
+              and bd._cand_sig(root, "context", 512, dict(m, mask_edits={kB: rec}), crop, cB, e, None) != ctx_old,
+              "★ 의 편집(file·창 각각)은 ★ 합성·context 서명을 바꾸고, ★ 아닌 후보의 기록은 ★ 합성 서명 밖")
+        sw = (ids[1], "A", kB2)
+
+        def swap_sig(edits):
+            return bd._composite_sig(root, dict(m, mask_edits=edits), None, sw)
+
+        check(swap_sig({kB2: rec}) != swap_sig({}) and swap_sig({kB2: dict(rec, file="masks/y_e_000000000000.png")}) != swap_sig({kB2: rec})
+              and swap_sig({kB2: dict(rec, rect=[2, 2, 4, 4])}) != swap_sig({kB2: rec}) and swap_sig({kB: rec}) == swap_sig({}),
+              "★ 교체 가정(swap — '이 후보를 ★ 하면'·/mask/alts)의 서명 = 가정한 ★(지금 ★ 아님)의 옛 기록(file·창 각각)을 담음 — _compose_full(swap) 이 "
+              "그 기록을 적용(§3.1 다시 ★ 하면 살아남)하므로 옛 region_·composite_·seams_ 캐시가 나가지 않게. 가정에서 빠진 지금 ★ 의 기록은 뺌")
+
+    async def b39(h):
+        section("S4-B39 GET /mask: 모양(mask_api)·편집 창 = 계획 항목의 실효 quad bbox ∩ 캔버스·기준·z·seams null(합성 전)·★ 아님 409·"
+                "분석 없는 ★ 경고·옛 크롭 ★·파일을 쓰지 않음·창 넓이 > 저장 상한 422")
+        man = Path(root, st.MANIFEST_NAME)
+        before = (thumbs(), man.stat().st_mtime_ns)
+        res = {k: await h.jget(f"{API}/mask", root=key, key=k) for k in (kA, kB, kC)}
+        after = (thumbs(), man.stat().st_mtime_ns)
+        m = st.load_manifest(root)
+        W, H = m["canvas"]
+        (sa, dA), (sb, dB), (sc, dC) = res[kA], res[kB], res[kC]
+        shp = [shape("GET /mask", dA, "no_edit"), shape("GET /mask", dB, "no_edit"), shape("GET /mask", dC, "unanalyzed")]
+        check(sa == sb == sc == 200 and shp == [[], [], []], f"200·모양 = mask_api(no_edit·unanalyzed) {shp}")
+        itB = item(m, kB)
+        check(dB["rect"] == dm.edit_rect(dpsd.quad_bbox(itB["quad"]), (W, H)) and dB["crop_id"] == ids[1] and dB["tid"] == "A"
+              and dB["c"] == members_B.index(kB) + 1 and dB["picked"] is True and dB["composite_sig"] == csig() == s_first["canvas"]["composite_sig"]
+              and dB["mask_source"] == MS and dB["base"]["src"] == "auto" and dB["edit"] is None and dB["seams"] is None
+              and dB["layers"]["box"] == bd._region_rect(RB, W, H) and dB["warnings"] == []
+              and q_of(dB["base"]["url"]) == {"root": key, "key": kB, "kind": "base", "v": dB["base"]["sig"]}
+              and all(q_of(dB["layers"][f"{k}_url"]) == {"root": key, "key": kB, "kind": k, "v": dB["layers"]["sig"]} for k in ("under", "patch", "over")),
+              f"B ★: 편집 창 = Compose 계획 항목의 실효 quad bbox ∩ 캔버스 {dB['rect']}·c {dB['c']}·기준 auto·layers.box = 크롭 영역·URL v = 서명")
+        check(dA["z"] == {"below": [], "above": ["002_작은 · A"]} and dB["z"] == {"below": ["001_큰 · A"], "above": []}
+              and dC["z"] == {"below": [], "above": []}, f"z: layers.box 와 겹치는 다른 ★(합성 순서 아래 → 위) {dA['z']} {dB['z']} {dC['z']}")
+        check(dC["base"]["src"] == "none" and dC["rect"] == RC and dC["layers"]["box"] == bd._region_rect(RC2, W, H)
+              and len(dC["warnings"]) == 2 and dC["warnings"][0] == "분석 없음 — 반영(Analyze) 뒤 편집 권장"
+              and dC["warnings"][1].startswith(f"{kC} (") and "마스크 없이" in dC["warnings"][1],
+              f"분석 없는 ★ = 기준 none + 경고(_plan 의 '마스크 없이' 도) · 옛 크롭 ★ = 편집 창은 그 후보 quad {RC}, 영역은 지금 크롭 {dC['warnings']}")
+        check(after == before, "GET /mask 는 파일을 쓰지 않음(썸네일 캐시·매니페스트 그대로)")
+        errs = [await h.jget(f"{API}/mask", root=key, key=k) for k in (kB2, kB3, "f_000000000000", "../x")]
+        errs.append(await h.jget(f"{API}/mask", root="0" * 12, key=kB))
+        targets_c = copy.deepcopy(m["crops"][2]["targets"])
+        st.update_manifest(root, lambda mm: mm["crops"][2]["targets"].clear())
+        errs.append(await h.jget(f"{API}/mask", root=key, key=kC))
+        st.update_manifest(root, lambda mm: mm["crops"][2].update(targets=targets_c))
+        bd.apply_reject(root, kA, True)
+        errs.append(await h.jget(f"{API}/mask", root=key, key=kA))
+        bd.apply_reject(root, kA, False)
+        bd.apply_pick(root, ids[0], "A", kA, "set")
+        want = [(409, "not_picked"), (409, "not_picked"), (404, None), (400, None), (404, None), (409, "not_picked"), (409, "not_picked")]
+        check([s_ for s_, _d in errs] == [w[0] for w in want] and all(err_ok("GET /mask", w[0], d, w[1]) for (_s, d), w in zip(errs, want))
+              and "후보가 없습니다" in errs[2][1]["error"],
+              f"대안·탈락·없는 후보·key 형식·없는 root·타깃이 크롭에서 빠짐·★ 를 탈락 → 409 not_picked·404·400(정본 오류 모양) {[s_ for s_, _d in errs]}")
+        quad_c = cand(m, kC)["quad"]
+        st.update_manifest(root, lambda mm: cand(mm, kC).update(quad=[W + 10.0, 0.0, W + 50.0, 0.0, W + 50.0, 40.0, W + 10.0, 40.0]))
+        so, do_ = await h.jget(f"{API}/mask", root=key, key=kC)
+        st.update_manifest(root, lambda mm: cand(mm, kC).update(quad=quad_c))
+        check(so == 422 and err_ok("GET /mask", 422, do_) and "캔버스 밖" in do_["error"],
+              f"패치가 캔버스 밖(편집 창 없음) → 422 {{error}}(다시 받아도 그대로 — 409 는 늘 reason) {so} {do_}")
+        rb, keep_max = dB["rect"], bd.dmask.MAX_PIXELS
+        area = (rb[2] - rb[0]) * (rb[3] - rb[1])
+        try:  # 시험 캔버스는 4096² 보다 작아 상한을 이 창 넓이로 낮춰 경계를 본다(저장 validate_png 와 같은 값)
+            bd.dmask.MAX_PIXELS = area
+            s_eq, _d = await h.jget(f"{API}/mask", root=key, key=kB)
+            bd.dmask.MAX_PIXELS = area - 1
+            s_big, d_big = await h.jget(f"{API}/mask", root=key, key=kB)
+            s_bimg, _hd, b_bimg = await h.get(f"{API}/mask/img", **q_of(dB["base"]["url"]))
+        finally:
+            bd.dmask.MAX_PIXELS = keep_max
+        check(s_eq == 200 and s_big == s_bimg == 422 and err_ok("GET /mask", 422, d_big) and "4096²" in d_big["error"]
+              and err_ok("GET /mask/img", 422, json.loads(b_bimg.decode("utf-8"))),
+              f"편집 창 넓이 > 저장 상한(MAX_PIXELS) → GET /mask·/mask/img 422 {{error}}(칠한 뒤 [적용]마다 400 대신 열 때 알림 — 같으면 200) "
+              f"{s_eq} {s_big} {s_bimg} {d_big}")
+        s0 = csig()
+        sts, seams = await h.jget(f"{API}/seams", root=key, v=s0)
+        st7, dB2 = await h.jget(f"{API}/mask", root=key, key=kB)
+        mine = [s for s in seams["segments"] if s["crop_id"] == ids[1]]
+        check(sts == st7 == 200 and dB2["seams"] == mine and any(s["side"] == "right" for s in mine) and shape("GET /mask", dB2) == [],
+              f"★ 합성 뒤 seams = 그 서명 이음매 중 이 크롭(B 오른쪽 변 이음매 있음) {[(s['side'], s['severity']) for s in mine]}")
+
+    async def b40(h):
+        section("S4-B40 GET /mask/img: kind 5·모드·크기·오래 캐시·3층은 한 번에 계산(캐시 재사용)·v 409 stale·형식 400·없는 key 404·"
+                "★ 아님 409·편집 없음 404")
+        _s, d = await h.jget(f"{API}/mask", root=key, key=kB)
+        m = st.load_manifest(root)
+        rect, box = d["rect"], d["layers"]["box"]
+        rw, rh, bw, bh = rect[2] - rect[0], rect[3] - rect[1], box[2] - box[0], box[3] - box[1]
+        sb, hb, bb = await h.img(d["base"]["url"])
+        mode_b, arr_b = decode(bb)
+        want_b = np.rint(bd._mask_region(item(m, kB)["base_mask"], *rect) * 255).astype(np.uint8)
+        check(sb == 200 and hb["Content-Type"] == "image/png" and "immutable" in hb["Cache-Control"] and hb["ETag"] == f'"{d["base"]["sig"]}"'
+              and mode_b == "L" and arr_b.shape == (rh, rw) and np.array_equal(arr_b, want_b) and arr_b.max() == 255
+              and f"maskbase_{d['base']['sig']}.png" in thumbs(),
+              f"base = 기준(자동) 마스크를 편집 창으로(L {rw}x{rh})·오래 캐시·derived/thumbs 캐시")
+        _s, dC = await h.jget(f"{API}/mask", root=key, key=kC)
+        sc, hc, bc = await h.img(dC["base"]["url"])
+        mode_c, arr_c = decode(bc)
+        rc = dC["rect"]
+        check(dC["base"]["src"] == "none" and sc == 200 and "immutable" in hc["Cache-Control"] and mode_c == "L"
+              and arr_c.shape == (rc[3] - rc[1], rc[2] - rc[0]) and arr_c.min() == 255,
+              f"분석 없는 ★(기준 none) base = 창 전체 255(L {arr_c.shape[::-1]}·오래 캐시) — 세션이 다 지운 마스크로 열리지 않음")
+        calls, orig = [], bd._mask_layers
+
+        def broken(*_a):
+            raise OSError("시험: 3층 계산 실패")
+
+        bd._mask_layers = broken
+        try:
+            sf, df = await h.jget(f"{API}/mask/img", **q_of(d["layers"]["under_url"]))
+        finally:
+            bd._mask_layers = orig
+        check(sf == 422 and err_ok("GET /mask/img", 422, df) and df["error"].startswith("브러시 미리보기 층을 만들 수 없습니다")
+              and not any(d["layers"]["sig"] in f for f in thumbs()),
+              f"3층 계산 실패 → 422(500 아님)·mask<kind>_<sig>.png 남지 않음(다음 요청이 다시 계산) {sf} {df}")
+        bd._mask_layers = lambda *a: calls.append(a[3]) or orig(*a)
+        try:
+            got = {}
+            for k in ("under", "patch", "over", "patch"):
+                s_, hd, body = await h.img(d["layers"][f"{k}_url"])
+                got[k] = (s_, hd["Content-Type"], *decode(body))
+        finally:
+            bd._mask_layers = orig
+        files = [f"mask{k}_{d['layers']['sig']}.png" for k in ("under", "patch", "over")]
+        check(all(v[0] == 200 and v[1] == "image/png" for v in got.values()) and got["under"][2] == "RGB"
+              and got["patch"][2] == got["over"][2] == "RGBA" and all(v[3].shape[:2] == (bh, bw) for v in got.values())
+              and calls == [kB] and all(f in thumbs() for f in files),
+              f"under RGB·patch·over RGBA = 영역 {bw}x{bh}, 셋을 한 번에 계산·캐시(요청 4 → 계산 {len(calls)}) {[(k, v[0], v[2]) for k, v in got.items()]}")
+        pa = got["patch"][3][..., 3]
+        inside = np.zeros((bh, bw), bool)
+        inside[max(0, rect[1] - box[1]):rect[3] - box[1], max(0, rect[0] - box[0]):rect[2] - box[0]] = True
+        a_reg = (slice(RA[1] - box[1], RA[3] - box[1]), slice(max(0, RA[0] - box[0]), RA[2] - box[0]))
+        check(pa.max() == 255 and not pa[~inside].any() and not got["over"][3][..., 3].any()
+              and not np.array_equal(got["under"][3][a_reg], base[box[1]:box[3], box[0]:box[2]][a_reg]),
+              "patch 알파 = SO 캐시 알파(편집 창 밖 0) · B 위에 ★ 없음(over 투명) · under 에 아래 A 패치")
+        lsig = d["layers"]["sig"]
+        cases = [("under", lsig[:-1] + ("0" if lsig[-1] != "0" else "1"), kB, 409, "stale"), ("base", lsig, kB, 409, "stale"),
+                 ("edit", "0" * 16, kB, 404, None), ("nope", lsig, kB, 400, None), ("..", lsig, kB, 400, None), ("under", "xyz", kB, 400, None),
+                 ("under", None, kB, 400, None), ("under", lsig, "../x", 400, None), ("under", lsig, "f_000000000000", 404, None),
+                 ("under", lsig, kB2, 409, "not_picked")]
+        res = []
+        for kind, v, k, want, reason in cases:
+            q = {p: x for p, x in (("root", key), ("key", k), ("kind", kind), ("v", v)) if x is not None}
+            s_, body = await h.jget(f"{API}/mask/img", **q)
+            res.append((s_, want, err_ok("GET /mask/img", want, body, reason)))
+        check(all(s_ == want and ok for s_, want, ok in res),
+              f"v 다름 409 stale(3층·기준)·편집 없음 404·kind·v 형식·v 없음·key 형식(..) 400·없는 후보 404·대안 409 not_picked {res}")
+
+    async def b41(h):
+        section("S4-B41 POST /mask/save: 415·413(content_length·실제)·본문 400·rect_changed 409·★ 아님 409·seen·ops 400·판정 순서·"
+                "저장(모양·rev +1·서명 바뀜·내용 주소·같은 PNG = 파일 하나)·seen 409·이음매 다시 계산·hist 21번째 버림")
+        _s, d = await h.jget(f"{API}/mask", root=key, key=kB)
+        rect = d["rect"]
+        _sb, _hb, bb = await h.img(d["base"]["url"])
+        arr = decode(bb)[1].copy()
+        arr[:, -24:] = 0  # 오른쪽 변 24px 띠 지움 → 오른쪽 변 이음매가 닿지 않음
+        good = png(arr)
+        big = io.BytesIO()
+        Image.new("L", (4097, 4096)).save(big, "PNG")
+        rev0, sig0 = st.load_manifest(root)["rev"], csig()
+
+        async def chunks():
+            for _i in range(5):
+                yield b"\0" * (1024 * 1024)
+
+        rej = [("415", await h.save(kB, good, ctype="application/json"), 415, None),
+               ("413 content_length", await h.save(kB, good + b"\0" * (bd._MAX_PNG_BODY + 1 - len(good))), 413, None),
+               ("413 실제(chunked)", await h.save(kB, chunks()), 413, None),
+               ("PNG 아님", await h.save(kB, b"not a png"), 400, None),
+               ("RGBA", await h.save(kB, png(np.dstack([arr, arr, arr, arr]))), 400, None),
+               ("4096² 초과", await h.save(kB, big.getvalue()), 400, None),
+               ("크기 ≠ 창", await h.save(kB, png(arr[:, :-1])), 409, "rect_changed"),
+               ("대안", await h.save(kB2, good), 409, "not_picked"),
+               ("순서: ★ 아님 > 본문", await h.save(kB2, b"not a png"), 409, "not_picked"),
+               ("순서: 본문 > 크기", await h.save(kB, png(np.dstack([arr, arr, arr, arr])[:, :-1])), 400, None),
+               ("순서: 크기 > seen", await h.save(kB, png(arr[:, :-1]), seen="bad"), 409, "rect_changed"),
+               ("rect ≠ 창(같은 크기로 옮겨짐)", await h.save(kB, good, rect=[rect[0] + 6, rect[1] + 4, rect[2] + 6, rect[3] + 4]), 409, "rect_changed"),
+               ("순서: rect > seen", await h.save(kB, good, seen="bad", rect=[rect[0] + 6, rect[1], rect[2] + 6, rect[3]]), 409, "rect_changed"),
+               ("rect 형식", await h.save(kB, good, rect="1,2,3"), 400, None),
+               ("rect 없음(크기만으론 옮겨진 창을 모름)", await h.save(kB, good, rect=None), 400, None),
+               ("seen 형식", await h.save(kB, good, seen="x.png"), 400, None),
+               ("seen 없음", await h.save(kB, good, seen=None), 400, None),
+               ("ops 201자", await h.save(kB, good, ops="가" * 201), 400, None),
+               ("ops 없음", await h.save(kB, good, ops=None), 400, None),
+               ("seen 다름(기록 없음)", await h.save(kB, good, seen="masks/zz_e_000000000000.png"), 409, "changed")]
+        bad = [(n, s_, b if not isinstance(b, bytes) else b[:60]) for n, (s_, b), want, reason in rej
+               if s_ != want or not err_ok("POST /mask/save", want, b, reason)]
+        rc = [b.get("rect") for n, (_s, b), _w, reason in rej if reason == "rect_changed"]
+        check(not bad and rc == [rect] * 4, f"거절 20가지(정본 오류 모양·판정 순서 — rect_changed 는 지금 창 {rect}, rect = 세션을 연 창이 같은 크기로 "
+              f"옮겨져도 · rect 없음 400) {bad}")
+        check(st.load_manifest(root)["rev"] == rev0 and "mask_edits" not in st.load_manifest(root) and n_masks() <= 1,
+              "거절은 매니페스트를 바꾸지 않음(seen 409 는 잠금 안 — 내용 주소 PNG 만 남을 수 있음, dmask 문서)")
+        s1, d1 = await h.save(kB, good, ops="변 페이드 right 24", rect=rect)
+        m1 = st.load_manifest(root)
+        rec1 = m1["mask_edits"][kB]
+        sig1 = csig()
+        check(s1 == 200 and shape("POST /mask/save", d1) == [] and d1["ok"] is True and d1["rev"] == rev0 + 1 == m1["rev"]
+              and d1["composite_sig"] == sig1 != sig0 and d1["edit"]["file"] == rec1["file"] and rec1["file"].startswith(f"masks/{kB[:10]}_e_")
+              and d1["edit"]["hist"] == 0 and d1["edit"]["stale"] is False and d1["edit"]["ops"] == rec1["ops"] == "변 페이드 right 24"
+              and d1["edit"]["at"] == rec1["at"] and q_of(d1["edit"]["url"]) == {"root": key, "key": kB, "kind": "edit", "v": bd._edit_sig(rec1, rect)}
+              and rec1["rect"] == rect and rec1["base"] == dm.base_fp(cand(m1, kB), item(m1, kB)["entry"], MS) and n_masks() == 1,
+              f"저장: 정본 모양·rev +1·★ 합성 서명 바뀜·기록(file = 내용 주소·창 = 지금 편집 창·기준 = 지금 지문)·stale false {d1.get('edit')}")
+        se, he, be = await h.img(d1["edit"]["url"])
+        check(se == 200 and "immutable" in he["Cache-Control"] and decode(be)[0] == "L" and np.array_equal(decode(be)[1], arr),
+              "kind=edit = 기록 래스터(창이 그대로면 기록 파일과 같은 픽셀·L·편집 창 크기)")
+        _s, dg = await h.jget(f"{API}/mask", root=key, key=kB)
+        Path(root, "derived", "thumbs", f"maskbase_{dg['base']['sig']}.png").unlink()  # 편집 전에 만든 캐시를 지워 편집이 있는 계산을 밟음
+        sg, _hg, bg_ = await h.img(dg["base"]["url"])
+        want_g = np.rint(bd._mask_region(item(m1, kB)["base_mask"], *rect) * 255).astype(np.uint8)
+        check(dg["base"]["sig"] == d["base"]["sig"] and sg == 200 and np.array_equal(decode(bg_)[1], want_g) and not np.array_equal(want_g, arr),
+              "편집이 있어도 kind=base = 기준(_plan 의 base_mask — 편집 래스터 아님: [기준으로]·Q·S 왼쪽·M 빗금이 이것)·기준 서명은 편집과 무관"
+              "(캐시를 지우고 다시 계산해도 같은 래스터)")
+        s2, d2 = await h.save(kB, good, seen=rec1["file"], ops="다시")
+        s3, d3 = await h.save(kB, good, seen="")
+        m2 = st.load_manifest(root)
+        check(s2 == 200 and d2["edit"]["file"] == rec1["file"] and d2["edit"]["hist"] == 1 and n_masks() == 1
+              and s3 == 409 and err_ok("POST /mask/save", 409, d3, "changed") and m2["rev"] == d2["rev"],
+              f"같은 PNG 다시 = 같은 파일 하나(hist 1) · seen \"\" 인데 기록 있음 = 409 changed(쓰지 않음) {s3}")
+        sts, seams = await h.jget(f"{API}/seams", root=key, v=csig())
+        _s, dB = await h.jget(f"{API}/mask", root=key, key=kB)
+        right0, right1 = seams_of(sig0, ids[1], "right"), [s for s in seams["segments"] if s["crop_id"] == ids[1] and s["side"] == "right"]
+        check(sts == 200 and right0 and not right1 and dB["seams"] == [s for s in seams["segments"] if s["crop_id"] == ids[1]]
+              and dB["edit"]["file"] == rec1["file"] and shape("GET /mask", dB) == [],
+              f"새 서명으로 이음매 다시 계산 — B 오른쪽 변 이음매 {len(right0)} → 0, GET /mask 의 seams·edit 도 새 값")
+        cur, files, hists = rec1["file"], [rec1["file"]], []
+        for i in range(21):
+            a2 = arr.copy()
+            a2[0, i] = 7
+            _s, dd = await h.save(kB, png(a2), seen=cur, ops=f"붓 {i}획")
+            cur = dd["edit"]["file"]
+            files.append(cur)
+            hists.append(dd["edit"]["hist"])
+        recN = st.load_manifest(root)["mask_edits"][kB]
+        _s, dN = await h.jget(f"{API}/mask", root=key, key=kB)
+        check(len(recN["hist"]) == 20 and [x["file"] for x in recN["hist"]] == files[-2::-1][:20] and recN["hist"][0]["ops"] == "붓 19획"
+              and hists == [min(i + 2, 20) for i in range(21)] and dN["edit"]["hist"] == 20,
+              f"hist 최근 20(가장 최근이 앞) — 21번째 이전 판부터 버림 · 응답 edit.hist = 이전 판 수(저장마다 2 → 20, GET /mask 20 — 패널 '이전 판 n'·"
+              f"[편집 지우기] 확인 창의 수) {hists} {dN['edit']['hist']}")
+        dm.reset_edit(root, kB, seen=cur)
+        _s, d4 = await h.save(kB, good, ops="변 페이드 right 24")
+        state["recB"], state["arrB"] = st.load_manifest(root)["mask_edits"][kB], arr
+
+    async def n37(h):
+        section("S4-N37 3층 공식: under·patch·over + 편집 마스크로 over·a + (under + (patch − under)·patch.a·mask)·(1 − over.a) = "
+                "_compose_full(box)(편집 적용) 최대 1 — A(위에 B 가 덮음)·B(아래에 A)")
+        _s, dA = await h.jget(f"{API}/mask", root=key, key=kA)
+        _s, _hb, ba = await h.img(dA["base"]["url"])
+        ra = dA["rect"]
+        ea = np.rint(decode(ba)[1] * np.clip(np.arange(ra[3] - ra[1], dtype=np.float32)[:, None] / 64.0, 0, 1)).astype(np.uint8)
+        ea[60:100, 60:140] = 0  # 윗변 기울기 64 + 가운데 구멍(오른쪽 끝은 위 B 아래로 들어감)
+        s_, sv = await h.save(kA, png(ea), ops="변 페이드 top 64 · 붓")
+        m = st.load_manifest(root)
+        rows = []
+        for k in (kA, kB):
+            _s, d = await h.jget(f"{API}/mask", root=key, key=k)
+            lay = {}
+            for kind in ("under", "patch", "over"):
+                _s2, _hd, body = await h.img(d["layers"][f"{kind}_url"])
+                lay[kind] = decode(body)[1].astype(np.float32)
+            _s3, _hd, eb = await h.img(d["edit"]["url"])
+            _s4, _hd, bb = await h.img(d["base"]["url"])
+            box, rect = d["layers"]["box"], d["rect"]
+            u, p, o = lay["under"], lay["patch"], lay["over"]
+            oa, pa = o[..., 3:] / 255.0, p[..., 3:] / 255.0
+
+            def formula(mk):
+                return np.rint(o[..., :3] * oa + (u + (p[..., :3] - u) * pa * mk[..., None]) * (1 - oa))
+
+            ref = bd._compose_full(root, m, None, None, box)[0].astype(np.float32)
+            got = formula(window(decode(eb)[1], rect, box))
+            rows.append((k, float(np.abs(got - ref).max()), float(np.abs(formula(window(decode(bb)[1], rect, box)) - ref).max()),
+                         float(oa.max()), d["layers"]["sig"]))
+        check(s_ == 200 and all(mx <= 1 and base_mx > 8 for _k, mx, base_mx, _oa, _sig in rows) and rows[0][3] > 0.5 and rows[1][3] == 0
+              and rows[0][4] == dA["layers"]["sig"],
+              f"3층 공식(8비트 PNG 왕복) = Compose 영역 최대 1 · 기준 마스크로는 크게 다름(편집이 적용됨) · A 는 위 B 가 over · [적용]해도 자기 3층 서명 그대로 "
+              f"{[(k[:8], mx, bmx, round(oa_, 2)) for k, mx, bmx, oa_, _s in rows]}")
+        note(f"S4-N37 3층 공식 vs _compose_full(box) 최대 차: A {rows[0][1]:.0f}·B {rows[1][1]:.0f}(기준 마스크로는 {rows[0][2]:.0f}·{rows[1][2]:.0f})")
+
+    async def b42(h):
+        section("S4-B42 POST /mask/edit: undo 연쇄(hist 소진 → 기록 지움 → 그대로)·reset·seen 409·형식 400·415·413·없는 후보 404·모양")
+        m = st.load_manifest(root)
+        f0 = m["mask_edits"][kA]["file"]
+        _s, d = await h.jget(f"{API}/mask", root=key, key=kA)
+        _s, _hb, ba = await h.img(d["base"]["url"])
+        a = decode(ba)[1]
+        files = [f0]
+        for i in (1, 2):
+            _s, dd = await h.save(kA, png(np.where(np.arange(a.shape[1]) < 8 * i, 0, a).astype(np.uint8)), seen=files[-1], ops=f"판 {i}")
+            files.append(dd["edit"]["file"])
+        rev = st.load_manifest(root)["rev"]
+        chain = []
+        for seen in (files[2], files[1], files[0]):
+            chain.append(await h.edit(kA, seen, "undo"))
+        s4, d4 = await h.edit(kA, "", "undo")
+        m4 = st.load_manifest(root)
+        check([s_ for s_, _d in chain] == [200, 200, 200] and [(dd["edit"] or {}).get("file") for _s, dd in chain] == [files[1], files[0], None]
+              and [(dd["edit"] or {}).get("hist") for _s, dd in chain] == [1, 0, None] and [dd["rev"] for _s, dd in chain] == [rev + 1, rev + 2, rev + 3]
+              and shape("POST /mask/edit", chain[0][1]) == [] and shape("POST /mask/edit", chain[2][1], "cleared") == []
+              and kA not in m4["mask_edits"] and s4 == 200 and d4["edit"] is None and d4["rev"] == m4["rev"] == rev + 3
+              and chain[2][1]["composite_sig"] == d4["composite_sig"] == csig(),
+              f"undo 연쇄 = hist 첫 판 → … → 기록 지움(= 기준) → 기록 없는 undo 는 그대로 200 null(rev 불변) {[(s_, dd.get('rev')) for s_, dd in chain]}")
+        _s, r1 = await h.save(kA, png(a), seen="", ops="r1")
+        _s, r2 = await h.save(kA, png(np.where(a > 0, 128, 0).astype(np.uint8)), seen=r1["edit"]["file"], ops="r2")
+        s5, d5 = await h.edit(kA, r1["edit"]["file"], "reset")
+        s6, d6 = await h.edit(kA, r2["edit"]["file"], "reset")
+        s7, d7 = await h.edit(kA, r2["edit"]["file"], "undo")
+        check(s5 == 409 and err_ok("POST /mask/edit", 409, d5, "changed") and s6 == 200 and d6["edit"] is None
+              and shape("POST /mask/edit", d6, "cleared") == [] and kA not in st.load_manifest(root)["mask_edits"]
+              and s7 == 409 and err_ok("POST /mask/edit", 409, d7, "changed"),
+              f"reset = 기록 지움(hist 도) · seen 다름 409 changed(reset·undo) {s5} {s6} {s7}")
+        errs = [await h.edit(kA, "", "redo"), await h.edit(kA, 3, "undo"), await h.edit(kA, "../x.png", "undo"), await h.edit("../x", "", "undo"),
+                await h.edit("f_000000000000", "", "undo"),
+                await h.post(f"{API}/mask/edit", json.dumps({"root": key, "key": kA, "seen": "", "op": "undo"}), ctype="text/plain"),
+                await h.edit(kA, "", "undo", filler="x" * 20000), await h.post(f"{API}/mask/edit", "{", ctype="application/json")]
+        want = [400, 400, 400, 400, 404, 415, 413, 400]
+        check([s_ for s_, _d in errs] == want and all(err_ok("POST /mask/edit", w, d_) for (_s, d_), w in zip(errs, want) if w != 404)
+              and set(errs[4][1]) == {"error"}, f"op·seen 형식·key 형식·없는 후보·Content-Type·16KB·JSON {[s_ for s_, _d in errs]}")
+
+    async def b43(h):
+        section("S4-B43 GET /mask/alts: 행 = _compose_full(swap) 이음매(이 크롭·바뀌는 크롭)·탈락 후보 뺌·ran(원장)·202 busy·캐시·모양·weak 행")
+        ck = "c" * 24
+
+        def ran(mm):
+            cand(mm, kB2)["origin_info"]["call_id"] = f"{ck}_r0"
+            mm.setdefault("calls", []).append({"call_id": f"{ck}_r0", "cell_key": ck, "crop_id": ids[1], "status": "done",
+                                               "finished": "2026-10-19 12:00:00", "approved_by": "hash:0123456789ab"})
+
+        st.update_manifest(root, ran)
+        m = st.load_manifest(root)
+        sig_now, swap = csig(), (ids[1], "A", kB2)
+        seen_swaps, orig = [], bd._compose_full
+
+        def swap_fails(*a, **kw):
+            if (a[3] if len(a) > 3 else kw.get("swap")) is not None:
+                raise OSError("시험: 대안 합성 실패")
+            return orig(*a, **kw)
+
+        bd._compose_full = swap_fails
+        try:
+            sf, df = await h.jget(f"{API}/mask/alts", root=key, key=kB)
+        finally:
+            bd._compose_full = orig
+        held = bd._ALTS_LOCK.locked()
+        if held:  # 잡힌 채면 아래 with 가 이 시험을 멈춰 세운다
+            bd._ALTS_LOCK.release()
+        check(sf == 422 and err_ok("GET /mask/alts", 422, df) and df["error"].startswith("대안 이음매를 계산할 수 없습니다") and not held,
+              f"대안 합성 실패 → 422·_ALTS_LOCK 풀림(안 풀리면 재시작까지 모든 /mask/alts 가 202) {sf} {df} 잠김 {held}")
+        with bd._ALTS_LOCK:
+            sb, db = await h.jget(f"{API}/mask/alts", root=key, key=kB)
+        bd._compose_full = lambda *a, **kw: seen_swaps.append(a[3] if len(a) > 3 else kw.get("swap")) or orig(*a, **kw)
+        try:
+            s1, d1 = await h.jget(f"{API}/mask/alts", root=key, key=kB)
+            n1 = len(seen_swaps)
+            with bd._ALTS_LOCK:
+                s2, d2 = await h.jget(f"{API}/mask/alts", root=key, key=kB)
+        finally:
+            bd._compose_full = orig
+        now = orig(root, m, None)[1]["segments"]
+        exp = orig(root, m, None, swap)[1]["segments"]
+
+        def rest(ss):
+            out = {}
+            for s in ss:
+                if s["crop_id"] != ids[1]:
+                    out.setdefault(s["crop_id"], []).append(json.dumps(s, sort_keys=True))
+            return {k: sorted(v) for k, v in out.items()}
+
+        mine, now_b = [s for s in exp if s["crop_id"] == ids[1]], [s for s in now if s["crop_id"] == ids[1]]
+        changed = [c["id"] for c in m["crops"] if c["id"] != ids[1] and rest(now).get(c["id"]) != rest(exp).get(c["id"])]
+        row = (d1.get("rows") or [{}])[0]
+        check(sb == 202 and db == {"busy": True} and s1 == 200 and shape("GET /mask/alts", d1) == [] and [r["key"] for r in d1["rows"]] == [kB2]
+              and row["c"] == members_B.index(kB2) + 1 and row["ran"] == {"done": "2026-10-19 12:00:00", "via": "run"}
+              and row["this_crop"] == mine and row["bad"] == sum(s["severity"] == "bad" for s in mine)
+              and row["weak"] == sum(s["severity"] == "weak" for s in mine) and row["worst_p90"] == max((s["diff_p90"] for s in mine), default=None)
+              and row["changed_crops"] == changed and d1["sig"] == sig_now
+              and d1["now"] == {"bad": sum(s["severity"] == "bad" for s in now_b), "worst": max((s["diff_p90"] for s in now_b), default=None)}
+              and swap in seen_swaps and f"seams_{bd._composite_sig(root, m, None, swap)}.json" in thumbs(),
+              f"다른 계산 중 202 {{busy}} · 행 = 대안 후보 하나(탈락 c 뺌)·c·ran(원장 calls)·이 크롭 이음매·bad/weak/최악·바뀌는 크롭 {changed} = "
+              f"_compose_full(swap) · now = 지금 이 크롭 · swap 서명 캐시 {row}")
+        check(s2 == 200 and d2 == d1 and len(seen_swaps) == n1, f"다시 = 캐시(합성 0회 — 잠금이 잡혀 있어도 200) {s2} {len(seen_swaps) - n1}")
+        sa, da = await h.jget(f"{API}/mask/alts", root=key, key=kA)
+        sn, dn = await h.jget(f"{API}/mask/alts", root=key, key=kB2)
+        check(sa == 200 and da["rows"] == [] and shape("GET /mask/alts", da, "no_alternatives") == [] and da["sig"] == csig()
+              and sn == 409 and err_ok("GET /mask/alts", 409, dn, "not_picked"), f"대안 없음 = rows [] · 대안 후보 409 not_picked {sa} {sn}")
+        # 위 행은 weak 가 없어 0 == 0 — 옅은 색 차 대안(분석 없음 = quad 전체)을 잠깐 더해 이 크롭 오른쪽 변(바깥 = 베이스)에 weak 구간을 만든다
+        f3 = OUT / "folder3"
+        f3.mkdir()
+        Image.fromarray(tinted(base, RB, (16, 16, 16))).save(f3 / "002_작은_w.png")
+        CIN.run(h0, "folder", str(f3), "", "", True, True)
+        kW = next(c["key"] for c in st.load_manifest(root)["candidates"] if (c.get("origin_info") or {}).get("filename") == "002_작은_w.png")
+        try:
+            sw, dw = await h.jget(f"{API}/mask/alts", root=key, key=kB)
+            exp_w = [s for s in orig(root, st.load_manifest(root), None, (ids[1], "A", kW))[1]["segments"] if s["crop_id"] == ids[1]]
+            bd.apply_pick(root, ids[1], "A", kW, "set")  # 옅은 후보를 잠깐 ★ — 지금 행(now)에도 weak 구간
+            snw, dnw = await h.jget(f"{API}/mask/alts", root=key, key=kW)
+            now_w = [s for s in orig(root, st.load_manifest(root), None)[1]["segments"] if s["crop_id"] == ids[1]]
+        finally:
+            bd.apply_pick(root, ids[1], "A", kB, "set")
+            st.update_manifest(root, lambda mm: mm["candidates"].remove(cand(mm, kW)))
+        roww = next((r for r in dw.get("rows") or [] if r["key"] == kW), {})
+        n_weak = sum(s["severity"] == "weak" for s in exp_w)
+        check(sw == 200 and n_weak >= 1 and roww.get("weak") == n_weak and roww.get("bad") == sum(s["severity"] == "bad" for s in exp_w)
+              and roww.get("this_crop") == exp_w,
+              f"대안 행 weak = _compose_full(swap) 의 이 크롭 weak 수(≥ 1 — [다른 후보로] 표의 판단 재료) {[(s['side'], s['severity'], s['diff_p90']) for s in exp_w]}")
+        nw_bad = sum(s["severity"] == "bad" for s in now_w)
+        check(snw == 200 and nw_bad < len(now_w) and dnw["now"] == {"bad": nw_bad, "worst": max((s["diff_p90"] for s in now_w), default=None)}
+              and st.load_manifest(root)["picks"][f"{ids[1]}/A"] == [kB],
+              f"지금 행 now.bad = 지금 ★ 이 크롭 이음매의 bad 만(weak {len(now_w) - nw_bad} 은 빼고 — 대안 행과 같은 기준) {dnw.get('now')} "
+              f"{[(s['side'], s['severity']) for s in now_w]}")
+
+    async def b44(h):
+        section("S4-B44 state: 후보 mask_edit {at, stale}·크롭 mask_edits/mask_stale(지금 ★ 만)·모양·기준 바뀜(mask_source)·unchanged rev·"
+                "context 서명·썸네일 마스크·썸네일 그림(지운 띠 = 베이스)")
+        rec = st.load_manifest(root)["mask_edits"][kB]
+
+        async def state_of(**q):
+            s_, s = await h.jget(f"{API}/state", root=key, **q)
+            if s.get("unchanged"):
+                return s_, s, {}, {}
+            return s_, s, {c["key"]: c for t in s["targets"] for c in t["candidates"]}, {c["id"]: c for c in s["crops"]}
+
+        s0, s, cands, crops = await state_of()
+        shp = [_pl_shape({"cand": STATE["cand"]}, {"cand": {k: cands[x][k] for k in STATE["cand"]}}, STATE) for x in (kA, kB)]
+        shp.append(_pl_shape({"crop": STATE["crop"]}, {"crop": {k: crops[ids[1]][k] for k in STATE["crop"]}}, STATE))
+        check(s0 == 200 and shp == [[], [], []] and cands[kB]["mask_edit"] == {"at": rec["at"], "stale": False}
+              and all(cands[k]["mask_edit"] is None for k in (kA, kB2, kB3, kC))
+              and [(crops[i]["mask_edits"], crops[i]["mask_stale"]) for i in ids] == [(0, 0), (1, 0), (0, 0)],
+              f"state 모양(mask_api state)·B ★ mask_edit {{at, stale false}}·나머지 null·크롭 mask_edits/mask_stale {shp}")
+        st.update_manifest(root, lambda mm: mm["exports"].append({"rev": 1, "psd": "x.psd", "compose": {"mask_source": "auto"}}))
+        s1, _s, c1, cr1 = await state_of()
+        _sm, dm1 = await h.jget(f"{API}/mask", root=key, key=kB)
+        ssv, dsv = await h.save(kB, png(np.full_like(state["arrB"], 77)), seen=rec["file"], ops="auto 기준")
+        _sg, dsg = await h.jget(f"{API}/mask", root=key, key=kB)
+        sun, dun = await h.edit(kB, dsv["edit"]["file"], "undo")
+        _sg, dug = await h.jget(f"{API}/mask", root=key, key=kB)
+        st.update_manifest(root, lambda mm: mm["exports"].pop())
+
+        def su_(e):
+            return {k: e[k] for k in ("stale", "url")}
+
+        check(s1 == 200 and c1[kB]["mask_edit"]["stale"] is True and (cr1[ids[1]]["mask_edits"], cr1[ids[1]]["mask_stale"]) == (1, 1)
+              and dm1["edit"]["stale"] is True and dm1["mask_source"] == "auto",
+              "기준 바뀜(마지막 Export 의 Compose mask_source auto) → state·GET /mask stale true·크롭 mask_stale 1")
+        check(ssv == 200 and dsv["edit"]["stale"] is False and su_(dsv["edit"]) == su_(dsg["edit"])
+              and sun == 200 and dun["edit"]["file"] == rec["file"] and dun["edit"]["stale"] is True and su_(dun["edit"]) == su_(dug["edit"])
+              and st.load_manifest(root)["mask_edits"][kB] == rec,
+              f"mask_source auto 아래 [적용] → stale false, [이전 판으로](hand_else_auto 기준 판) → stale true — /mask/save·/mask/edit 의 edit "
+              f"{{stale, url}} = GET /mask(Compose mask_source 로 지문) {su_(dun['edit'])} {su_(dug['edit'])}")
+        bd.apply_pick(root, ids[1], "A", kB2, "set")
+        s2, _s, c2, cr2 = await state_of()
+        bd.apply_pick(root, ids[1], "A", kB, "set")
+        check(c2[kB]["mask_edit"] == {"at": rec["at"], "stale": False} and cr2[ids[1]]["mask_edits"] == 0,
+              "★ 해제한 후보도 기록이 있으면 mask_edit(다시 ★ 하면 살아남) — 크롭 수는 지금 ★ 만")
+        s3, s3b, _c, _cr = await state_of()
+        su, su_b, _c, _cr = await state_of(since_rev=str(s3b["rev"]))
+        _s, dd = await h.save(kB, png(np.full_like(state["arrB"], 200)), seen=rec["file"], ops="전체 200")
+        s5, s5b, c5, _cr = await state_of(since_rev=str(s3b["rev"]))
+        check(su == 200 and su_b.get("unchanged") is True and su_b["rev"] == s3b["rev"] and s5b.get("unchanged") is None
+              and s5b["rev"] == dd["rev"] == s3b["rev"] + 1 and c5[kB]["mask_edit"]["at"] == dd["edit"]["at"],
+              "unchanged 응답에도 rev · 편집 쓰기는 매니페스트 rev 를 올려 since_rev 폴링이 새 상태를 받음")
+        m = st.load_manifest(root)
+        crop, cB = m["crops"][1], cand(m, kB)
+        e = bd._entry_for(m, kB, None)
+        recn = m["mask_edits"][kB]
+        loc = bd._final_mask_local(root, crop, cB, e, MS, recn)
+        em = dm.edit_mask(root, recn)[0]
+        sth, _hd, tb = await h.get(f"{API}/thumb", root=key, kind="context", key=kB, size="512", v=q_of(c5[kB]["context_url"])["v"])
+        check(np.array_equal(loc, bd._mask_region(em, *crop["rect"])) and not np.array_equal(loc, bd._final_mask_local(root, crop, cB, e, MS))
+              and q_of(c5[kB]["context_url"])["v"] != ctx0[kB] and q_of(c5[kA]["context_url"])["v"] == ctx0[kA] and sth == 200 and tb[:2] == b"\xff\xd8",
+              "context: 썸네일 마스크 = 편집 래스터(크롭 창으로)·서명이 바뀜(편집 없는 A 는 처음 서명 그대로)·썸네일 200")
+        # 그림 자체: 오른쪽 48px 띠를 지운 편집 → 썸네일의 그 띠 = 베이스(기준 마스크는 크롭 거의 전체라 편집 없는 렌더면 패치), 나머지 = 패치
+        _s, dk = await h.jget(f"{API}/mask", root=key, key=kB)
+        r = dk["rect"]
+        band = np.full((r[3] - r[1], r[2] - r[0]), 255, np.uint8)
+        band[:, -48:] = 0
+        sbd, _d = await h.save(kB, png(band), seen=recn["file"], ops="오른쪽 48 지움", rect=r)
+        _s, _s6, c6, _cr = await state_of()
+        st6, _hd, t6 = await h.get(f"{API}/thumb", root=key, kind="context", key=kB, size="512", v=q_of(c6[kB]["context_url"])["v"])
+        W, H = m["canvas"]
+        x0, y0, x1, y1 = crop["rect"]
+        cx, cy, sw_, sh_ = (x0 + x1) / 2, (y0 + y1) / 2, (x1 - x0) * bd._CONTEXT_SCALE / 2, (y1 - y0) * bd._CONTEXT_SCALE / 2
+        cr = [max(0, math.floor(cx - sw_)), max(0, math.floor(cy - sh_)), min(W, math.ceil(cx + sw_)), min(H, math.ceil(cy + sh_))]
+        b512 = np.asarray(bd._fit(bd._read_rgb(bd._open_rel(root, m["base"]))[cr[1]:cr[3], cr[0]:cr[2]], 512), np.float32)
+        g6 = decode(t6)[1].astype(np.float32)
+        k = g6.shape[1] / (cr[2] - cr[0])
+
+        def inner(bx0, by0, bx1, by1):  # 캔버스 사각형(4px 안쪽 — LANCZOS 번짐·크롭 테두리 선 밖) → 썸네일 자르기
+            return np.s_[round((by0 + 4 - cr[1]) * k):round((by1 - 4 - cr[1]) * k), round((bx0 + 4 - cr[0]) * k):round((bx1 - 4 - cr[0]) * k)]
+
+        top, bot = max(y0, r[1]), min(y1, r[3])
+        d_er, d_kp = (float(np.abs(g6[s] - b512[s]).mean()) for s in (inner(max(x0, r[2] - 48), top, min(x1, r[2]), bot),
+                                                                     inner(max(x0, r[0]), top, min(x1, r[2] - 48), bot)))
+        check(sbd == 200 and st6 == 200 and g6.shape[:2] == b512.shape[:2] and d_er < 4 and d_kp > 20,
+              f"context 썸네일 그림 = 편집 마스크로 합성(편집이 지운 띠 = 베이스 평균 차 {d_er:.1f}, 남긴 곳 = 패치 {d_kp:.1f}) — 서명·URL 만이 아니라 "
+              f"그림도 ★ 합성·Compose·PSD 와 같은 마스크")
+
+    async def b11(h):
+        section("S4-B11 확장: 마스크 저장 + pick·reroll·레이아웃 쓰기 동시(매니페스트·레이아웃 잃은 쓰기 0), 같은 seen 동시 저장 6 = 하나만")
+        job = _pl_job(ids[0])
+        st.update_manifest(root, lambda mm: mm["jobs"].append(job))
+        bd.layout_start(root)
+        lrev = st.load_layout(root)["rev"]
+        rev0 = st.load_manifest(root)["rev"]
+        _s, d = await h.jget(f"{API}/mask", root=key, key=kA)
+        _s, _hb, ba = await h.img(d["base"]["url"])
+        a = decode(ba)[1]
+        res = await asyncio.gather(h.save(kA, png(a // 2), ops="동시"),
+                                   *[h.post(f"{API}/reroll", {"root": key, "cell_key": job["cell_key"], "count": 1}) for _i in range(3)],
+                                   h.post(f"{API}/pick", {"root": key, "crop_id": ids[1], "tid": "A", "key": kB2, "mode": "add"}),
+                                   h.post(f"{API}/layout/crop", {"root": key, "rev": lrev, "op": "update", "id": ids[2], "note": "동시 S4"}))
+        m, L = st.load_manifest(root), st.load_layout(root)
+        check([s_ for s_, _d in res] == [200] * 6 and kA in m["mask_edits"] and m["rerolls"].get(job["cell_key"]) == 3
+              and kB2 in m["picks"].get(f"{ids[1]}/A", []) and m["rev"] == rev0 + 5
+              and next(c for c in L["crops"] if c["id"] == ids[2]).get("note") == "동시 S4" and L["rev"] == lrev + 1,
+              f"동시 6 → 모두 200, 마스크 편집·재굴림 3·pick·레이아웃 모두 남음(매니페스트 rev +5) {[s_ for s_, _d in res]}")
+        seen = m["mask_edits"][kA]["file"]
+        res = await asyncio.gather(*[h.save(kA, png(np.full_like(a, 10 * (i + 1))), seen=seen, ops=f"경합 {i}") for i in range(6)])
+        ok = [d_ for s_, d_ in res if s_ == 200]
+        rec = st.load_manifest(root)["mask_edits"][kA]
+        check(len(ok) == 1 and all(s_ == 409 and err_ok("POST /mask/save", 409, d_, "changed") for s_, d_ in res if s_ != 200)
+              and rec["file"] == ok[0]["edit"]["file"] and [x["file"] for x in rec["hist"]][:1] == [seen],
+              f"같은 seen 동시 저장 6 → 하나만 기록(hist 앞 = 그 seen), 나머지 409 changed {[s_ for s_, _d in res]}")
+        bd.apply_pick(root, ids[1], "A", kB2, "remove")
+        dm.reset_edit(root, kA, seen=rec["file"])
+
+    async def b12(h):
+        section("S4-B12 서버: 정적 mask_edit.js·라우트 목록(RouteDef 37·경로 36)·POST 전용 405")
+        check(bd._STATIC.get("mask_edit.js") == "text/javascript", "_STATIC 에 mask_edit.js")
+        routes = web.RouteTableDef()
+        bd.register_routes(routes)
+        paths = {(r.method, r.path) for r in routes}
+        want = {("GET", f"{API}/mask"), ("GET", f"{API}/mask/img"), ("POST", f"{API}/mask/save"), ("POST", f"{API}/mask/edit"),
+                ("GET", f"{API}/mask/alts")}
+        check(want <= paths and len(routes) == 37 and len({p for _m, p in paths}) == 36, f"마스크 라우트 5개 — RouteDef 37·경로 36 {len(routes)}")
+        st_, hd, body = await h.get(f"{API}/board/mask_edit.js")
+        f = PKG / "web_design_patch" / "mask_edit.js"
+        if f.is_file():
+            check(st_ == 200 and hd["Content-Type"].startswith("text/javascript") and body == f.read_bytes()
+                  and hd.get("X-Content-Type-Options") == "nosniff", f"정적 mask_edit.js {st_}")
+        else:
+            check(st_ == 404 and "보드 파일이 없습니다" in json.loads(body)["error"], f"정적 mask_edit.js: 파일 없음 → 404 ({st_})")
+            note("S4-B web_design_patch/mask_edit.js 아직 없음(U3) — 화이트리스트만 확인")
+        for path in ("mask/save", "mask/edit"):
+            st_, _hd, _b = await h.get(f"{API}/{path}")
+            check(st_ == 405, f"GET {path} → 405 ({st_})")
+
+    async def layers_of(h, d):
+        """GET /mask 의 영역 3층(float) — (under, patch, over)."""
+        out = []
+        for kind in ("under", "patch", "over"):
+            _s, _hd, body = await h.img(d["layers"][f"{kind}_url"])
+            out.append(decode(body)[1].astype(np.float32))
+        return out
+
+    def formula(lay, mk):
+        """§2.4 3층 공식(mk = box 좌표 마스크 0..1)."""
+        u, p, o = lay
+        oa, pa = o[..., 3:] / 255.0, p[..., 3:] / 255.0
+        return np.rint(o[..., :3] * oa + (u + (p[..., :3] - u) * pa * mk[..., None]) * (1 - oa))
+
+    async def star_b(h):
+        _s, s = await h.jget(f"{API}/state", root=key)
+        return (next(c for t in s["targets"] for c in t["candidates"] if c["key"] == kB)["mask_edit"],
+                next(c for c in s["crops"] if c["id"] == ids[1])["mask_stale"])
+
+    async def b45(h):
+        section("S4-B45 편집 창이 바뀜(재분석 정합·Compose use_registration): kind=edit = 기록 래스터를 지금 창으로(= _plan — 3층 공식 = Compose)·"
+                "stale(GET /mask·state·/mask/edit — 창만 바뀌어도)·적용 = 새 창·옛 창 세션 적용 409 rect_changed(같은 크기)·다른 창 판으로 undo = stale·"
+                "창 크기가 바뀌어도 열림·_edit_window = 계획 창(정합 끔·원근)·창이 바뀐 뒤 kind=base = 기준·정합 끔 + 창이 영역 밖 3층 200")
+        m0 = st.load_manifest(root)
+        keep = copy.deepcopy(m0["analysis"][kB]), copy.deepcopy(m0["mask_edits"][kB]), len(m0["exports"])
+        W, H = m0["canvas"]
+        q = [float(v) for v in cand(m0, kB)["quad"]]
+        R0 = dm.edit_rect(dpsd.quad_bbox(q), (W, H))
+
+        def reanalyze(quad_reg, ph):  # 재분석이 정합을 바꿈(새 params_hash) — 분석 항목만 바꿈
+            def mut(mm):
+                e = bd._entry_for(mm, kB, None)
+                e.update(quad_reg=quad_reg, params_hash=ph)
+                e["reg"]["applied"] = True
+            st.update_manifest(root, mut)
+
+        reanalyze([x + (6 if i % 2 == 0 else 4) for i, x in enumerate(q)], "a" * 16)
+        _s, d1 = await h.jget(f"{API}/mask", root=key, key=kB)
+        R1 = d1["rect"]
+        _s, _hb, bb = await h.img(d1["base"]["url"])
+        se, _he, be = await h.img(d1["edit"]["url"])
+        old = decode(Path(root, keep[1]["file"]).read_bytes())[1]
+        check(R1 == [R0[0] + 6, R0[1] + 4, R0[2] + 6, R0[3] + 4] and d1["edit"]["stale"] is True and se == 200
+              and np.array_equal(decode(be)[1], np.rint(bd._mask_region({"arr": old, "left": R0[0], "top": R0[1], "bg": 0}, *R1) * 255).astype(np.uint8)),
+              f"재분석(정합 (6, 4)·새 ph) → 창 {R0} → {R1}: 옛 창의 기록 = stale·kind=edit = 그 기록을 새 창으로 옮긴 것(크기 = 지금 창)")
+        check(np.array_equal(decode(bb)[1], np.rint(bd._mask_region(item(st.load_manifest(root), kB)["base_mask"], *R1) * 255).astype(np.uint8))
+              and not np.array_equal(decode(bb)[1], decode(be)[1]),
+              "창이 바뀐 뒤 처음 계산하는 kind=base(새 base 서명 — 편집이 있는 채로) = 기준 base_mask(편집 래스터 아님)")
+        ea = decode(bb)[1].copy()
+        ea[:, :40] = 0
+        s1, d1s = await h.save(kB, png(ea), seen=keep[1]["file"], ops="왼쪽 40 지움", rect=R1)
+        rec1 = st.load_manifest(root)["mask_edits"][kB]
+        sb1 = await star_b(h)
+        check(s1 == 200 and rec1["rect"] == R1 and d1s["edit"]["stale"] is False and sb1 == ({"at": rec1["at"], "stale": False}, 0),
+              f"새 창에 저장 → stale false(GET·state) {sb1}")
+
+        st.update_manifest(root, lambda mm: mm["exports"].append({"rev": 1, "psd": "x.psd", "compose": {"use_registration": False}}))
+        m2 = st.load_manifest(root)
+        it2 = item(m2, kB)
+        _s, d2 = await h.jget(f"{API}/mask", root=key, key=kB)
+        se, _he, be = await h.img(d2["edit"]["url"])
+        mode_e, arr_e = decode(be)
+        want = np.rint(bd._mask_region({"arr": ea, "left": R1[0], "top": R1[1], "bg": 0}, *R0) * 255).astype(np.uint8)
+        box = d2["layers"]["box"]
+        lay = await layers_of(h, d2)
+        ref = bd._compose_full(root, m2, None, None, box)[0].astype(np.float32)
+        mx, mx_asis = (float(np.abs(formula(lay, window(a, R0, box)) - ref).max()) for a in (arr_e, ea))
+        sb2 = await star_b(h)
+        check(d2["rect"] == R0 and d2["edit"]["stale"] is True and d2["edit"]["file"] == rec1["file"] and shape("GET /mask", d2) == []
+              and q_of(d2["edit"]["url"])["v"] == bd._edit_sig(rec1, R0) != q_of(d1s["edit"]["url"])["v"]
+              and it2["msrc"] == "edit" and [it2["mask"]["left"], it2["mask"]["top"]] == R1[:2]
+              and se == 200 and mode_e == "L" and np.array_equal(arr_e, want) and not np.array_equal(arr_e, ea)
+              and mx <= 1 and mx_asis > 8 and sb2 == ({"at": rec1["at"], "stale": True}, 1),
+              f"Compose use_registration 끔(ph·ms 그대로) → 창 {R1} → {R0}(같은 크기): stale true(GET·state·크롭 mask_stale)·URL v 바뀜·"
+              f"kind=edit = _plan 이 기록 창 그대로 쓰는 편집을 지금 창으로 → 3층 공식 = Compose 최대 {mx}(기록을 지금 창에 그대로 놓으면 {mx_asis})")
+        keep_rect, far = copy.deepcopy(m2["crops"][1]["rect"]), [32, 240, 128, 304]
+        st.update_manifest(root, lambda mm: mm["crops"][1].update(rect=far))  # 크롭을 패드 너머로 → 계획 창(R0)이 영역 밖
+        try:
+            _s, d2f = await h.jget(f"{API}/mask", root=key, key=kB)
+            got2f = [(await h.img(d2f["layers"][f"{k}_url"]))[0] for k in ("under", "patch", "over")]
+        finally:
+            st.update_manifest(root, lambda mm: mm["crops"][1].update(rect=keep_rect))
+        check(d2f["rect"] == R0 and d2f["layers"]["box"] == bd._layers_box(far, R0, W, H) != bd._layers_box(far, R1, W, H) and got2f == [200] * 3,
+              f"use_registration 끔 + 창이 영역 밖: /mask/img 3층이 다시 계산한 box·서명 = GET /mask(계획 창 R0 — 정합 창 R1 아님) → 200 {got2f}")
+        rev2 = st.load_manifest(root)["rev"]
+        sx, dx = await h.save(kB, png(ea), seen=rec1["file"], ops="옛 창 세션", rect=R1)
+        sn, dn = await h.save(kB, png(ea), seen=rec1["file"], ops="옛 창 세션", rect=None)
+        mx2 = st.load_manifest(root)
+        check(sx == 409 and err_ok("POST /mask/save", 409, dx, "rect_changed") and dx["rect"] == R0
+              and sn == 400 and err_ok("POST /mask/save", 400, dn) and mx2["rev"] == rev2 and mx2["mask_edits"][kB] == rec1,
+              f"창 {R1} 에서 연 세션을 창이 같은 크기로 {R0} 로 옮겨진 뒤 [적용](rect = 세션 창, PNG 크기는 지금 창과 같음) → 409 rect_changed"
+              f"(지금 창)·rect 를 빼면 400(크기만 보고 받지 않음)·쓰지 않음 — 본 것과 다른 자리에 저장되지 않음 {sx} {dx} {sn}")
+        s3, d3 = await h.save(kB, png(arr_e), seen=rec1["file"], ops="새 창", rect=R0)
+        rec2 = st.load_manifest(root)["mask_edits"][kB]
+        sb3 = await star_b(h)
+        check(s3 == 200 and rec2["rect"] == R0 and rec2["hist"][0]["rect"] == R1 and d3["edit"]["stale"] is False
+              and sb3 == ({"at": rec2["at"], "stale": False}, 0), "연 그대로 [적용] = 지금 창으로 새 판(stale 풀림 — 이전 판은 옛 창 그대로 hist)")
+        s3u, d3u = await h.edit(kB, rec2["file"], "undo")
+        _s, d3g = await h.jget(f"{API}/mask", root=key, key=kB)
+        check(s3u == 200 and d3u["edit"]["file"] == rec1["file"] and d3u["edit"]["stale"] is True
+              and q_of(d3u["edit"]["url"])["v"] == bd._edit_sig(rec1, R0) and shape("POST /mask/edit", d3u) == []
+              and {k: d3u["edit"][k] for k in ("stale", "url")} == {k: d3g["edit"][k] for k in ("stale", "url")},
+              f"다른 창({R1})의 이전 판으로 undo(지금 창 {R0}) → /mask/edit 의 edit stale true·url v = _edit_sig(그 판, 지금 창) = GET /mask {d3u.get('edit')}")
+        _s, _d = await h.save(kB, png(arr_e), seen=rec1["file"], ops="새 창", rect=R0)
+        rec2 = st.load_manifest(root)["mask_edits"][kB]
+
+        st.update_manifest(root, lambda mm: mm["exports"].pop())
+        m4 = st.load_manifest(root)
+        _s, d4 = await h.jget(f"{API}/mask", root=key, key=kB)
+        sb4 = await star_b(h)
+        check(d4["rect"] == R1 and d4["edit"]["stale"] is True and sb4 == ({"at": rec2["at"], "stale": True}, 1)
+              and not dm.is_stale(rec2, dm.base_fp(cand(m4, kB), bd._entry_for(m4, kB, None), MS)),
+              f"정합 다시 켬 → 창만 바뀜(기준 지문 같음) → stale true(state 는 계획 없이 _edit_window) {sb4}")
+        s5, d5 = await h.edit(kB, rec2["file"], "undo")
+        _s, d5g = await h.jget(f"{API}/mask", root=key, key=kB)
+        sb5 = await star_b(h)
+        check(s5 == 200 and d5["edit"]["file"] == rec1["file"] and d5["edit"]["stale"] is False
+              and {k: d5["edit"][k] for k in ("stale", "url")} == {k: d5g["edit"][k] for k in ("stale", "url")}
+              and sb5 == ({"at": rec1["at"], "stale": False}, 0),
+              "/mask/edit(계획 없이 _edit_window)의 edit stale·url = GET /mask(계획 창) — 지금 창과 같은 이전 판으로 stale 풀림")
+
+        cx, cy = (q[0] + q[4]) / 2, (q[1] + q[5]) / 2
+        reanalyze([round(c0 + (x - c0) * 1.04 + 3, 3) for x, c0 in zip(q, [cx, cy] * 4)], "b" * 16)
+        m6 = st.load_manifest(root)
+        _s, d6 = await h.jget(f"{API}/mask", root=key, key=kB)
+        R2 = d6["rect"]
+        se6, _he, be6 = await h.img(d6["edit"]["url"])
+        box6 = d6["layers"]["box"]
+        e6 = decode(be6)[1]
+        mx6 = float(np.abs(formula(await layers_of(h, d6), window(e6, R2, box6)) - bd._compose_full(root, m6, None, None, box6)[0]).max())
+        check((R2[2] - R2[0], R2[3] - R2[1]) != (R1[2] - R1[0], R1[3] - R1[1]) and d6["edit"]["stale"] is True and se6 == 200
+              and e6.shape == (R2[3] - R2[1], R2[2] - R2[0])
+              and np.array_equal(e6, np.rint(bd._mask_region(item(m6, kB)["mask"], *R2) * 255).astype(np.uint8)) and mx6 <= 1,
+              f"재분석으로 창 크기가 바뀜 {R1} → {R2}: kind=edit = 지금 창 크기(Studio 가 열림)·_plan 이 쓰는 편집 그대로 → 3층 공식 = Compose 최대 {mx6}")
+
+        mp = copy.deepcopy(m6)
+        persp = [166.0, 100.0, 300.0, 106.0, 292.0, 230.0, 160.0, 224.0]
+        bd._entry_for(mp, kB, None)["quad_reg"] = persp
+        rows = []
+        for ur in (True, False):
+            mu = dict(mp, exports=mp["exports"] + [{"rev": 1, "psd": "x.psd", "compose": {"use_registration": ur}}])
+            for k in (kA, kB, kC):
+                rows.append((ur, k[:8], bd._edit_window(mu, cand(mu, k), bd._entry_for(mu, k, None), ur),
+                             dm.edit_rect(dpsd.quad_bbox(item(mu, k)["quad"]), (W, H))))
+        check(dpsd.quad_kind(persp) == "perspective" and dm.edit_rect(dpsd.quad_bbox(persp), (W, H)) != rows[1][3]
+              and all(a == b for _u, _k, a, b in rows),
+              f"_edit_window(계획 없이) = 계획 항목의 편집 창 — 정합 켬·끔 × ★ 3(원근 quad 는 평행사변형 근사 — 근사 전 bbox 와 다름) {rows}")
+        mn = copy.deepcopy(mp)
+        mn["exports"] = mn["exports"] + [{"rev": 1, "psd": "x.psd", "compose": {"use_registration": True}}]
+        bd._entry_for(mn, kB, None)["reg"]["applied"] = False  # 정합 거절 — quad_reg(원근)가 남아 있어도 노드 _eff_quad 는 후보 quad
+        rej = (bd._edit_window(mn, cand(mn, kB), bd._entry_for(mn, kB, None), True), dm.edit_rect(dpsd.quad_bbox(item(mn, kB)["quad"]), (W, H)))
+        check(rej[0] == rej[1] == R0 != rows[1][3],
+              f"정합이 거절된 항목(applied false·quad_reg ≠ 후보 quad): _edit_window = 계획 창 = 후보 quad 창 {R0}(quad_reg 창 {rows[1][3]} 아님 — "
+              f"아니면 state·/mask/edit stale 이 거짓으로 true) {rej}")
+
+        def restore(mm):
+            mm["analysis"][kB], mm["mask_edits"][kB] = keep[0], keep[1]
+            del mm["exports"][keep[2]:]
+
+        st.update_manifest(root, restore)
+        sbr = await star_b(h)
+        check(sbr == ({"at": keep[1]["at"], "stale": False}, 0), f"분석·편집·Export 기록 복원 {sbr}")
+
+    async def b46(h):
+        section("S4-B46 편집 파일이 없음(masks/ 를 지움 — 정리는 §12 범위 밖): _plan·context = 기준 + 경고, GET /mask 는 edit 를 두고 edit.url = 기준 url"
+                "(Studio 가 _plan 의 마스크로 열림 — [적용]·[이전 판으로]·[편집 지우기]로 나감), kind=edit 404, state stale true")
+        _s, d = await h.jget(f"{API}/mask", root=key, key=kA)
+        _s, _hb, ba = await h.img(d["base"]["url"])
+        a = decode(ba)[1]
+        s1, _d1 = await h.save(kA, png(np.where(np.arange(a.shape[1]) < 24, 0, a).astype(np.uint8)), ops="왼쪽 24 지움")
+        rec = st.load_manifest(root)["mask_edits"][kA]
+        f = Path(root, rec["file"])
+        f.rename(f.with_suffix(".gone"))
+        m = st.load_manifest(root)
+        it = item(m, kA)
+        s2, d2 = await h.jget(f"{API}/mask", root=key, key=kA)
+        so, _ho, bo = await h.img(d2["edit"]["url"])
+        sx, dx = await h.jget(f"{API}/mask/img", root=key, key=kA, kind="edit", v=bd._edit_sig(rec, d2["rect"]))
+        check(s1 == 200 and s2 == 200 and shape("GET /mask", d2) == [] and d2["edit"]["file"] == rec["file"] and d2["edit"]["url"] == d2["base"]["url"]
+              and any(w.startswith(f"{kA} (") and "마스크 편집 파일 없음 → 기준 마스크" in w for w in d2["warnings"])
+              and it["msrc"] == "auto" and it["mask_edit"] is None and so == 200
+              and np.array_equal(decode(bo)[1], np.rint(bd._mask_region(it["mask"], *d2["rect"]) * 255).astype(np.uint8))
+              and sx == 404 and err_ok("GET /mask/img", 404, dx),
+              f"GET /mask 200·edit 그대로·edit.url = 기준(= _plan 마스크)·_plan 경고·kind=edit 404 {d2['warnings']} {sx}")
+        _s, s = await h.jget(f"{API}/state", root=key)
+        cA = next(c for t in s["targets"] for c in t["candidates"] if c["key"] == kA)
+        crop, e = m["crops"][0], bd._entry_for(m, kA, None)
+        sth, _hd, tb = await h.get(f"{API}/thumb", root=key, kind="context", key=kA, size="512", v=q_of(cA["context_url"])["v"])
+        crA = next(c for c in s["crops"] if c["id"] == ids[0])
+        check(cA["mask_edit"] == {"at": rec["at"], "stale": True} and (crA["mask_edits"], crA["mask_stale"]) == (1, 1)
+              and np.array_equal(bd._final_mask_local(root, crop, cand(m, kA), e, MS, rec), bd._final_mask_local(root, crop, cand(m, kA), e, MS))
+              and sth == 200 and tb[:2] == b"\xff\xd8",
+              f"state: 편집 파일이 없으면 mask_edit stale true·크롭 mask_stale 1(배지·칩 '편집 기준 바뀜'·★ 점검 줄 → K 의 경고가 까닭 — Export 는 기준 "
+              f"마스크인데 '편집' 으로 보이지 않게)·context 썸네일 = 기준 마스크·200 {cA['mask_edit']} {(crA['mask_edits'], crA['mask_stale'])}")
+        s3, d3 = await h.save(kA, png(a), seen=rec["file"], ops="다시")
+        _s, d4 = await h.jget(f"{API}/mask", root=key, key=kA)
+        _s, s4 = await h.jget(f"{API}/state", root=key)
+        s5, d5 = await h.edit(kA, d3["edit"]["file"], "undo")
+        s6, d6 = await h.edit(kA, rec["file"], "reset")
+        f.with_suffix(".gone").rename(f)
+        check(s3 == 200 and d4["edit"]["url"] != d4["base"]["url"] and q_of(d4["edit"]["url"])["kind"] == "edit"
+              and next(c for t in s4["targets"] for c in t["candidates"] if c["key"] == kA)["mask_edit"]["stale"] is False
+              and not any("마스크 편집" in w for w in d4["warnings"]) and s5 == 200 and d5["edit"]["file"] == rec["file"]
+              and s6 == 200 and d6["edit"] is None and kA not in st.load_manifest(root)["mask_edits"],
+              f"나가는 길: 없는 판의 seen 으로 [적용] 200(새 판 — 경고 사라짐)·[이전 판으로] 200·[편집 지우기] 200 {s3} {s5} {s6}")
+
+    async def b47(h):
+        section("S4-B47 기준 = 손 마스크(src hand, 배경 255·0): base 래스터 = 손 마스크 + 창 안 손 rect 밖은 배경값·서명이 배경값으로 바뀜")
+        hand = np.full((40, 60), 90, np.uint8)
+        hand[:, :20] = 200
+        rel = st.save_png_ca(root, "masks", hand, prefix="hand_")
+        hr = [RC[0] + 10, RC[1] + 20, RC[0] + 70, RC[1] + 60]
+        out = []
+        for bg in (255, 0):
+            st.update_manifest(root, lambda mm: cand(mm, kC).update(hand_mask={"file": rel, "rect": hr, "bg": bg}))
+            s_, d = await h.jget(f"{API}/mask", root=key, key=kC)
+            sb, _hb, bb = await h.img(d["base"]["url"])
+            want = np.full((RC[3] - RC[1], RC[2] - RC[0]), bg, np.uint8)
+            want[hr[1] - RC[1]:hr[3] - RC[1], hr[0] - RC[0]:hr[2] - RC[0]] = hand
+            out.append((s_, d["base"]["src"], d["base"]["sig"], sb, np.array_equal(decode(bb)[1], want), d["rect"],
+                        [w for w in d["warnings"] if "마스크 없이" in w]))
+        st.update_manifest(root, lambda mm: cand(mm, kC).pop("hand_mask"))
+        check(all(o[0] == 200 and o[1] == "hand" and o[3] == 200 and o[4] and o[5] == RC and not o[6] for o in out) and out[0][2] != out[1][2],
+              f"손 마스크 기준(배경 255·0): src hand·래스터 = 손 마스크 + 배경값·'마스크 없이' 경고 없음·base 서명이 배경값으로 다름 "
+              f"{[(o[0], o[1], o[4]) for o in out]}")
+
+    async def b48(h):
+        section("S4-B48 한 타깃에 ★ 슬라이스 둘(B·b): z 에 형제 슬라이스·3층(형제가 아래면 under, 위면 over·아래 A 의 over = 위 ★ 둘) 공식 = Compose·"
+                "3층 동시 요청 = 계산 한 번")
+        bd.apply_pick(root, ids[1], "A", kB2, "add")
+        m = st.load_manifest(root)
+        lo, hi = [it["cand"]["key"] for _p, _t, it in dp._slices_in_order(bd._star_plan(root, m, None)[0]) if it["cand"]["crop_id"] == ids[1]]
+        d = {k: (await h.jget(f"{API}/mask", root=key, key=k))[1] for k in (lo, hi)}
+        calls, orig = [], bd._mask_layers
+        bd._mask_layers = lambda *a: calls.append(a[3]) or orig(*a)
+        try:
+            got = await asyncio.gather(*[h.img(d[kB2]["layers"][f"{k}_url"]) for k in ("under", "patch", "over")])
+        finally:
+            bd._mask_layers = orig
+        box = d[kB]["layers"]["box"]
+        bw, bh = box[2] - box[0], box[3] - box[1]
+        check([g[0] for g in got] == [200] * 3 and [decode(g[2])[0] for g in got] == ["RGB", "RGBA", "RGBA"]
+              and all(decode(g[2])[1].shape[:2] == (bh, bw) for g in got) and calls == [kB2],
+              f"3층 동시 요청 3 → 모두 200·계산 한 번(_COMPOSE_LOCK 안에서 다시 읽음) {calls}")
+        d[kA] = (await h.jget(f"{API}/mask", root=key, key=kA))[1]
+        rows, lays = {}, {}
+        for k in (lo, hi, kA):  # A = 위 ★ 둘(B·b)이 겹친 over(1 − Π(1 − a)·프리멀티 쌓기)
+            bx = d[k]["layers"]["box"]
+            ref = bd._compose_full(root, m, None, None, bx)[0].astype(np.float32)
+            lays[k] = await layers_of(h, d[k])
+            _s, _hd, body = await h.img((d[k]["edit"] or d[k]["base"])["url"])
+            rows[k] = (float(np.abs(formula(lays[k], window(decode(body)[1], d[k]["rect"], bx)) - ref).max()), float(lays[k][2][..., 3].max()))
+        sib = "002_작은 · A"
+        bd.apply_pick(root, ids[1], "A", kB2, "remove")
+        check(d[lo]["z"] == {"below": ["001_큰 · A"], "above": [sib]} and d[hi]["z"] == {"below": ["001_큰 · A", sib], "above": []}
+              and d[kA]["z"] == {"below": [], "above": [sib, sib]}
+              and all(mx <= 1 for mx, _oa in rows.values()) and rows[lo][1] > 128 and rows[hi][1] == 0 and rows[kA][1] > 128
+              and not np.array_equal(lays[lo][0], lays[hi][0]),
+              f"z 에 형제 슬라이스(아래 {lo[:8]} → 위 {hi[:8]})·3층 공식 = Compose(아래 슬라이스의 over = 위 슬라이스, 위 슬라이스의 under 에 아래 슬라이스, "
+              f"A 의 over = 위 ★ 둘) {rows}")
+
+    async def b49(h):
+        section("S4-B49 편집 창이 크롭 영역 밖(옛 크롭 ★ 를 패드보다 멀리 옮김·수확 SO 처럼 quad 가 크롭 + 패드보다 큼): layers.box = 영역 ∪ 창·"
+                "3층이 창 전체를 덮음·영역 밖 변 페이드도 3층 공식 = Compose")
+        m0 = st.load_manifest(root)
+        W, H = m0["canvas"]
+        keep = copy.deepcopy(m0["crops"][2]["rect"]), copy.deepcopy(cand(m0, kC)["quad"])
+        big = [300.0, 100.0, 470.0, 100.0, 470.0, 310.0, 300.0, 310.0]
+        rows, rec = [], ""
+
+        def back(mm):
+            mm["crops"][2].update(rect=keep[0])
+            cand(mm, kC).update(quad=keep[1])
+
+        try:
+            for name, mut in (("옛 크롭 ★(크롭을 패드 너머로 옮김)", lambda mm: mm["crops"][2].update(rect=[32, 240, 128, 304])),
+                              ("quad > 크롭 + 패드", lambda mm: (back(mm), cand(mm, kC).update(quad=big)))):
+                st.update_manifest(root, mut)
+                _s, d = await h.jget(f"{API}/mask", root=key, key=kC)
+                rect, box = d["rect"], d["layers"]["box"]
+                reg = bd._region_rect(st.load_manifest(root)["crops"][2]["rect"], W, H)
+                fade = np.repeat(np.rint(255 * np.clip(np.arange(rect[3] - rect[1], dtype=np.float32) / 64.0, 0, 1)).astype(np.uint8)[:, None],
+                                 rect[2] - rect[0], axis=1)
+                sv, dv = await h.save(kC, png(fade), seen=rec, ops="변 페이드 top 64", rect=rect)
+                rec = dv["edit"]["file"] if sv == 200 else rec
+                lay = await layers_of(h, d)
+                ys, xs = np.mgrid[box[1]:box[3], box[0]:box[2]]
+                in_win = (xs >= rect[0]) & (xs < rect[2]) & (ys >= rect[1]) & (ys < rect[3])
+                in_reg = (xs >= reg[0]) & (xs < reg[2]) & (ys >= reg[1]) & (ys < reg[3])
+                ref = bd._compose_full(root, st.load_manifest(root), None, None, box)[0].astype(np.float32)
+                covers = box[0] <= rect[0] and box[1] <= rect[1] and box[2] >= rect[2] and box[3] >= rect[3]
+                rows.append((name, sv, not (reg[0] <= rect[0] and reg[1] <= rect[1] and reg[2] >= rect[2] and reg[3] >= rect[3]),
+                             box == [min(reg[0], rect[0]), min(reg[1], rect[1]), max(reg[2], rect[2]), max(reg[3], rect[3])],
+                             covers and lay[1].shape[:2] == (box[3] - box[1], box[2] - box[0]) and bool(lay[1][..., 3][in_win].min() > 0),
+                             float(np.abs(formula(lay, window(fade, rect, box)) - ref).max()),
+                             float(np.abs(formula(lay, in_win.astype(np.float32)) - ref)[in_win & ~in_reg].max(initial=0.0))))
+        finally:
+            st.update_manifest(root, back)
+            if rec:
+                dm.reset_edit(root, kC, seen=rec)
+        check(all(r[1] == 200 and r[2] and r[3] and r[4] and r[5] <= 1 and r[6] > 8 for r in rows),
+              f"창이 영역 밖으로 나가도 box = 영역 ∪ 창·3층(patch 알파)이 창 전체·영역 밖 페이드가 미리보기에 보임(기준과 차 > 8)·공식 = Compose ≤ 1 "
+              f"— 보이는 것 = 저장되는 것 {rows}")
+
+    async def b50(h):
+        section("S4-B50 3층 서명 = box 와 만나는 ★ 가 있는 크롭의 ★ 만: 떨어진 ★(C)의 [적용]·★ 해제·다시 ★ 는 A 의 3층 서명·캐시 그대로"
+                "(다시 계산 0 — 공식 = Compose), 겹친 ★(B)의 [적용]·그 크롭의 떨어진 ★ 가 z 를 뒤집으면 바꿈")
+        _s, dA = await h.jget(f"{API}/mask", root=key, key=kA)
+        await layers_of(h, dA)
+        _s, dC = await h.jget(f"{API}/mask", root=key, key=kC)
+        rc = dC["rect"]
+        sc, dc = await h.save(kC, png(np.full((rc[3] - rc[1], rc[2] - rc[0]), 90, np.uint8)), seen=(dC["edit"] or {}).get("file", ""),
+                              ops="C 전체 90", rect=rc)
+        _s, dA1 = await h.jget(f"{API}/mask", root=key, key=kA)
+        bd.apply_pick(root, ids[2], "A", kC, "remove")
+        _s, dA2 = await h.jget(f"{API}/mask", root=key, key=kA)
+        bd.apply_pick(root, ids[2], "A", kC, "set")
+        calls, orig = [], bd._mask_layers
+        bd._mask_layers = lambda *a: calls.append(a[3]) or orig(*a)
+        try:
+            lay = await layers_of(h, dA1)
+        finally:
+            bd._mask_layers = orig
+        box = dA1["layers"]["box"]
+        _s, _hd, ba = await h.img((dA1["edit"] or dA1["base"])["url"])
+        mx = float(np.abs(formula(lay, window(decode(ba)[1], dA1["rect"], box)) - bd._compose_full(root, st.load_manifest(root), None, None, box)[0]).max())
+        _s, dB = await h.jget(f"{API}/mask", root=key, key=kB)
+        rb = dB["rect"]
+        sb, dbs = await h.save(kB, png(np.full((rb[3] - rb[1], rb[2] - rb[0]), 60, np.uint8)), seen=(dB["edit"] or {}).get("file", ""),
+                               ops="B 전체 60", rect=rb)
+        _s, dA3 = await h.jget(f"{API}/mask", root=key, key=kA)
+        su, _du = await h.edit(kB, dbs["edit"]["file"], "undo")
+        dm.reset_edit(root, kC, seen=dc["edit"]["file"])
+        sigs = [x["layers"]["sig"] for x in (dA, dA1, dA2, dA3)]
+        check(sc == sb == su == 200 and sigs[0] == sigs[1] == sigs[2] != sigs[3] and calls == [] and mx <= 1,
+              f"C(A 의 box 밖 크롭) [적용]·★ 해제·다시 ★ → A 3층 서명 그대로·다시 계산 {len(calls)}·공식 = Compose 최대 {mx}, "
+              f"B(겹침) [적용] → 서명 바뀜 {[s[:6] for s in sigs]}")
+        # 같은 크롭(B 의 002)의 떨어진 둘째 타깃 ★: A 의 box 와 만나지 않지만 크롭·타깃 넓이 합을 키워 z 가 뒤집힘(B 가 A 아래로) → A 3층 서명이 바뀜
+        _s, dA4 = await h.jget(f"{API}/mask", root=key, key=kA)
+        kF = kB[:-4] + "_far"
+
+        def add_far(mm):
+            crop = mm["crops"][1]
+            crop["targets"] = list(crop["targets"]) + [dict(copy.deepcopy(crop["targets"][0]), tid="B")]
+            mm["candidates"].append(dict(copy.deepcopy(cand(mm, kB)), key=kF, tid="B", picked=True,
+                                         quad=[0.0, 300.0, 320.0, 300.0, 320.0, 480.0, 0.0, 480.0]))
+            mm["picks"][f"{ids[1]}/B"] = [kF]
+
+        def drop_far(mm):
+            mm["crops"][1]["targets"] = [t for t in mm["crops"][1]["targets"] if t["tid"] != "B"]
+            mm["candidates"].remove(cand(mm, kF))
+            mm["picks"].pop(f"{ids[1]}/B", None)
+
+        st.update_manifest(root, add_far)
+        try:
+            m5 = st.load_manifest(root)
+            order = [it["cand"]["key"] for _p, _t, it in dp._slices_in_order(bd._star_plan(root, m5, None)[0])]
+            _s, dA5 = await h.jget(f"{API}/mask", root=key, key=kA)
+            box5 = dA5["layers"]["box"]
+            lay5 = await layers_of(h, dA5)
+            _s, _hd, b5 = await h.img((dA5["edit"] or dA5["base"])["url"])
+            mx5 = float(np.abs(formula(lay5, window(decode(b5)[1], dA5["rect"], box5)) - bd._compose_full(root, m5, None, None, box5)[0]).max())
+            win_f = bd._edit_window(m5, cand(m5, kF), None, True)
+        finally:
+            st.update_manifest(root, drop_far)
+        check(order.index(kB) < order.index(kA) and box5 == dA4["layers"]["box"] and win_f[1] > box5[3] + 2
+              and dA4["z"] == {"below": [], "above": ["002_작은 · A"]} and dA5["z"] == {"below": ["002_작은 · A"], "above": []}
+              and dA5["layers"]["sig"] != dA4["layers"]["sig"] and lay5[2][..., 3].max() == 0 and mx5 <= 1,
+              f"같은 크롭의 떨어진 ★(창 {win_f} — box {box5} 와 만나지 않음)가 z 를 뒤집음 → A 3층 서명 바뀜·over 비움(B 가 아래로)·공식 = Compose "
+              f"최대 {mx5}(옛 캐시 3층이면 B 가 A 위로 보임) {[k[-6:] for k in order]}")
+
+    async def b51(h):
+        section("S4-B51 다른 ★(B)의 자동 마스크 파일이 없음: A 의 GET /mask·/mask/img base·/mask/save = 422 '편집 대상을 계산할 수 없습니다'"
+                "(없는 후보로 읽히는 404·날 errno 아님) — 파일이 돌아오면 200")
+        _s, d = await h.jget(f"{API}/mask", root=key, key=kA)
+        _s, _hb, ba = await h.img(d["base"]["url"])
+        f = Path(root, bd._entry_for(st.load_manifest(root), kB, None)["automask"])
+        f.rename(f.with_suffix(".gone"))
+        try:
+            res = [await h.jget(f"{API}/mask", root=key, key=kA), await h.jget(f"{API}/mask/img", **q_of(d["base"]["url"])),
+                   await h.save(kA, ba, seen=(d["edit"] or {}).get("file", ""), ops="파일 없음", rect=d["rect"])]
+        finally:
+            f.with_suffix(".gone").rename(f)
+        s_back, _d = await h.jget(f"{API}/mask", root=key, key=kA)
+        check([s_ for s_, _b in res] == [422] * 3 and s_back == 200
+              and all(err_ok(r, 422, b_) and b_["error"].startswith("편집 대상을 계산할 수 없습니다")
+                      for (_s, b_), r in zip(res, ("GET /mask", "GET /mask/img", "POST /mask/save"))),
+              f"다른 ★ 의 마스크 파일 문제 → 422(정본 오류 모양) · 돌아오면 200 {[(s_, b_.get('error', '')[:40]) for s_, b_ in res]} {s_back}")
+
+    async def b52(h):
+        section("S4-B52 형식이 깨진 기록(손으로 고친 매니페스트 — hist 없음·문자열·base null): state·GET /mask 200(날 500 아님)·편집 없음(mask_edit null·"
+                "edit null·kind=edit 404)·★ 합성·context 서명 = 기록을 뺀 서명(_plan 도 경고하고 기준 마스크)·_plan 경고가 K 에")
+        _s, d = await h.jget(f"{API}/mask", root=key, key=kB)
+        if d["edit"] is None:
+            _s, _hb, bb = await h.img(d["base"]["url"])
+            await h.save(kB, bb, ops="B52 기준", rect=d["rect"])
+        keep = st.load_manifest(root)["mask_edits"][kB]
+
+        async def jtry(path, **q):
+            s_, _hd, body = await h.get(path, **q)
+            try:
+                return s_, json.loads(body.decode("utf-8"))
+            except ValueError:
+                return s_, None
+
+        rows = []
+        try:
+            for name, bad in (("hist 없음", {k: v for k, v in keep.items() if k != "hist"}), ("문자열", keep["file"]),
+                              ("base null", dict(keep, base=None))):
+                st.update_manifest(root, lambda mm: mm["mask_edits"].__setitem__(kB, bad))
+                m = st.load_manifest(root)
+                ss, s = await jtry(f"{API}/state", root=key)
+                sm, dv = await jtry(f"{API}/mask", root=key, key=kB)
+                si, _b = await jtry(f"{API}/mask/img", root=key, key=kB, kind="edit", v="0" * 16)
+                mv = dict(m, mask_edits={k: v for k, v in m["mask_edits"].items() if k != kB})
+                it = item(m, kB)
+                cB = next(c for t in (s or {}).get("targets") or [] for c in t["candidates"] if c["key"] == kB) if ss == 200 else {}
+                crB = next(c for c in s["crops"] if c["id"] == ids[1]) if ss == 200 else {}
+                ctx_v = bd._cand_sig(root, "context", bd.BIG_SIZE, mv, mv["crops"][1], cand(mv, kB), bd._entry_for(mv, kB, None), None)
+                rows.append((name, ss, sm, si, cB.get("mask_edit", "?"), crB.get("mask_edits"), (dv or {}).get("edit", "?"),
+                             ss == 200 and s["canvas"]["composite_sig"] == bd._composite_sig(root, mv, None) == (dv or {}).get("composite_sig"),
+                             ss == 200 and q_of(cB["context_url"])["v"] == ctx_v, it["mask_edit"] is None and it["msrc"] != "edit",
+                             any(w.startswith(f"{kB} (") and "→ 기준 마스크" in w for w in (dv or {}).get("warnings") or [])))
+        finally:
+            st.update_manifest(root, lambda mm: mm["mask_edits"].__setitem__(kB, keep))
+        _s, s_back = await h.jget(f"{API}/state", root=key)
+        back = next(c for t in s_back["targets"] for c in t["candidates"] if c["key"] == kB)["mask_edit"]
+        check(all(r[1:] == (200, 200, 404, None, 0, None, True, True, True, True) for r in rows) and len(rows) == 3
+              and bd._composite_sig(root, st.load_manifest(root), None) != bd._composite_sig(root, mv, None) and back == {"at": keep["at"], "stale": False},
+              f"형식이 깨진 기록 = 보드도 편집 없음(_plan 처럼 — 서명·state·GET /mask 가 같은 판정, 보드는 열림) · 고친 기록을 되돌리면 다시 편집 {rows}")
+
+    async def b53(h):
+        section("S4-B53 편집 파일이 깨짐(앞 60바이트만·창보다 8줄 짧은 PNG — 동기화·백신 같은 바깥 손상): _plan·Export = 기준 + 경고 → state mask_edit "
+                "stale true·크롭 mask_stale 1(배지·★ 점검 줄 — 파일이 있다고 '편집'으로 보이지 않게)·GET /mask edit.url = 기준, 되돌리면 stale 풀림")
+        _s, d = await h.jget(f"{API}/mask", root=key, key=kA)
+        _s, _hb, ba = await h.img(d["base"]["url"])
+        a = decode(ba)[1]
+        s1, _d1 = await h.save(kA, png(np.where(np.arange(a.shape[1]) >= a.shape[1] - 40, 0, a).astype(np.uint8)),
+                               seen=(d["edit"] or {}).get("file", ""), ops="오른쪽 40 지움", rect=d["rect"])
+        rec = st.load_manifest(root)["mask_edits"][kA]
+        f = Path(root, rec["file"])
+        good = f.read_bytes()
+        _s, s_good = await h.jget(f"{API}/state", root=key)
+        ctx_good = q_of(next(c for t in s_good["targets"] for c in t["candidates"] if c["key"] == kA)["context_url"])["v"]
+        rows = []
+        try:
+            for name, data in (("앞 60바이트", good[:60]), ("8줄 짧음", png(a[:-8])), ("되돌림", good)):
+                f.write_bytes(data)
+                it = item(st.load_manifest(root), kA)
+                _s, s = await h.jget(f"{API}/state", root=key)
+                cA = next(c for t in s["targets"] for c in t["candidates"] if c["key"] == kA)
+                crA = next(c for c in s["crops"] if c["id"] == ids[0])
+                _s, dk = await h.jget(f"{API}/mask", root=key, key=kA)
+                rows.append((name, it["mask_edit"] is None, cA["mask_edit"], (crA["mask_edits"], crA["mask_stale"]), dk["edit"]["url"] == dk["base"]["url"],
+                             any(w.startswith(f"{kA} (") and "→ 기준 마스크" in w for w in dk["warnings"]),
+                             s["canvas"]["composite_sig"] != s_good["canvas"]["composite_sig"], q_of(cA["context_url"])["v"] != ctx_good))
+        finally:
+            f.write_bytes(good)
+            dm.reset_edit(root, kA, seen=rec["file"])
+        want = [(n, True, {"at": rec["at"], "stale": True}, (1, 1), True, True, True, True) for n in ("앞 60바이트", "8줄 짧음")]
+        check(s1 == 200 and rows == want + [("되돌림", False, {"at": rec["at"], "stale": False}, (1, 0), False, False, False, False)],
+              f"_plan 이 편집 파일을 쓰지 못하면(깨짐·크기 다름 — 파일은 있음) state stale true·크롭 mask_stale 1·★ 합성·context 서명이 바뀜(Codex 3차 — "
+              f"편집으로 그린 캐시를 내지 않음), 파일이 돌아오면 stale false·원래 서명 {rows}")
+
+    async def b54(h):
+        section("S4-B54 Codex 2차: state pref_v(board_pref.json — 분석·Export 설정이 바뀌어도 rev 그대로 → unchanged 응답의 pref_v 가 바뀜)·"
+                "save 의 창 재검사가 잠금 안에서(창을 고른 뒤 잠그기 전에 재분석이 정합을 바꾸면 409 rect_changed {rect: 지금 창} — 옛 좌표로 저장하지 않음)")
+        pf = Path(root, st.BOARD_PREF_NAME)
+        keep_pref = pf.read_bytes() if pf.is_file() else None
+        _s, s0 = await h.jget(f"{API}/state", root=key)
+        try:
+            st.save_board_pref(root, {"register": "off", "b54": 1})
+            _s, u = await h.jget(f"{API}/state", root=key, since_rev=str(s0["rev"]))
+        finally:
+            if keep_pref is None:
+                pf.unlink(missing_ok=True)
+            else:
+                pf.write_bytes(keep_pref)
+        _s, u_back = await h.jget(f"{API}/state", root=key, since_rev=str(s0["rev"]))
+        check(u.get("unchanged") is True and u["rev"] == s0["rev"] and isinstance(u["pref_v"], str) and u["pref_v"] != s0["pref_v"]
+              and u_back["pref_v"] == s0["pref_v"] == st.board_pref_v(root),
+              f"board_pref.json 이 바뀌면 rev 그대로 unchanged 응답의 pref_v 가 바뀜(보드가 다시 받음), 되돌리면 같은 값 {s0['pref_v']} {u.get('pref_v')} {u_back.get('pref_v')}")
+
+        _s, d = await h.jget(f"{API}/mask", root=key, key=kA)
+        _s, _hb, ba = await h.img(d["base"]["url"])
+        m0 = st.load_manifest(root)
+        keep_an = copy.deepcopy(m0["analysis"][kA])
+        keep_cand = copy.deepcopy(cand(m0, kA)["quad"])
+        keep_edit = copy.deepcopy((m0.get("mask_edits") or {}).get(kA))
+        orig = bd._mask_target
+
+        def racing(*a, **kw):  # 창을 고른 뒤(잠그기 전) 재분석이 정합을 (6, 4) 옮김 — 후보 quad 도(정합 끔 설정이어도 창이 옮겨지게)
+            t = orig(*a, **kw)
+
+            def mut(mm):
+                e = bd._entry_for(mm, kA, None)
+                q = e["quad_reg"] if (e.get("reg") or {}).get("applied") else cand(mm, kA)["quad"]
+                e.update(quad_reg=[float(v) + (6 if i % 2 == 0 else 4) for i, v in enumerate(q)], params_hash="c" * 16)
+                e["reg"]["applied"] = True
+                c = cand(mm, kA)
+                c["quad"] = [float(v) + (6 if i % 2 == 0 else 4) for i, v in enumerate(c["quad"])]
+            st.update_manifest(root, mut)
+            return t
+
+        bd._mask_target = racing
+        try:
+            s1, b1 = await h.save(kA, ba, seen=(d["edit"] or {}).get("file", ""), ops="B54 경합", rect=d["rect"])
+            m1 = st.load_manifest(root)
+            now = bd._edit_window(m1, cand(m1, kA), bd._entry_for(m1, kA, bd._PREF.get(st.root_key(root))),
+                                  bool(bd._compose_settings(root, m1)["use_registration"]))
+        finally:
+            bd._mask_target = orig
+
+            def back(mm):
+                mm["analysis"][kA] = keep_an
+                cand(mm, kA)["quad"] = keep_cand
+            st.update_manifest(root, back)
+        check(s1 == 409 and b1.get("reason") == "rect_changed" and b1.get("rect") == now and now != d["rect"]
+              and (m1.get("mask_edits") or {}).get(kA) == keep_edit,
+              f"창을 고른 뒤 잠그기 전 재분석 → 잠금 안 재검사 409 rect_changed {{rect: 지금 창}}·기록 그대로(옛 좌표로 저장 안 함) {s1} {b1} {d['rect']} → {now}")
+
+    def b0():
+        section("S4-B0 mask 모듈 import 순도·새 프로세스 HTTP(state·/mask/edit·오류 경로) 뒤 vlm·노드 모듈 없음·라우트 함수의 _vlm()·_node() 사용")
+        probe = OUT / "b0_mask_import.py"
+        probe.write_text("\n".join([
+            "import json, sys",
+            "sys.path.insert(0, sys.argv[1])",
+            "import bmk_design_patch_mask",
+            "BAN = ('torch', 'comfy', 'comfy_api_nodes', 'folder_paths', 'aiohttp', 'transformers', 'bmk_design_patch_vlm', 'bmk_design_patch',",
+            "       'bmk_design_patch_board', 'bmk_design_patch_runner')",
+            "print(json.dumps(sorted(k for k in sys.modules if k.split('.')[0] in BAN)))", ""]), encoding="utf-8")
+        r = subprocess.run([sys.executable, "-X", "utf8", "-W", "ignore", str(probe), str(PKG)], capture_output=True, text=True,
+                           encoding="utf-8", timeout=120)
+        out = json.loads(r.stdout.strip().splitlines()[-1]) if r.returncode == 0 and r.stdout.strip() else None
+        check(out == [], f"새 프로세스: import bmk_design_patch_mask 뒤 torch·comfy·aiohttp·vlm·노드·보드·runner 없음 {out} {r.stderr.strip()[-300:]}")
+        rec = dm.edit_record(st.load_manifest(root), kB)
+        probe2 = OUT / "b0_mask_http.py"
+        probe2.write_text("\n".join([
+            "import asyncio, json, sys",
+            "sys.path.insert(0, sys.argv[1])",
+            "import bmk_design_patch_board as board, bmk_design_patch_store as store",
+            "from aiohttp import web",
+            "from aiohttp.test_utils import TestClient, TestServer",
+            "root, kB, kC, cur = sys.argv[2:6]",
+            "key = store.register_root(root)",
+            "async def main():",
+            "    routes = web.RouteTableDef()",
+            "    board.register_routes(routes)",
+            "    app = web.Application()",
+            "    app.add_routes(routes)",
+            "    out = {'status': [], 'bodies': []}",
+            "    async with TestClient(TestServer(app)) as c:",
+            "        reqs = [('get', 'state', {'root': key}, None), ('post', 'mask/edit', None, {'root': key, 'key': kB, 'seen': '', 'op': 'undo'}),",
+            "                ('post', 'mask/edit', None, {'root': key, 'key': kC, 'seen': '', 'op': 'reset'}),",
+            "                ('get', 'mask', {'root': key, 'key': '../x'}, None), ('get', 'mask/img', {'root': key, 'key': kB, 'kind': 'x', 'v': '0' * 16}, None),",
+            "                ('get', 'mask/alts', {'root': key, 'key': '../x'}, None)]",
+            "        for method, path, q, body in reqs:",
+            "            r = await (c.get(f'/bmk/design_patch/{path}', params=q) if method == 'get' else c.post(f'/bmk/design_patch/{path}', json=body))",
+            "            out['status'].append(r.status)",
+            "            out['bodies'].append(await r.json() if r.status != 200 or path != 'state' else None)",
+            "        r = await c.post('/bmk/design_patch/mask/save', params={'root': key, 'key': kB, 'seen': cur, 'ops': ''}, data=b'x',",
+            "                         headers={'Content-Type': 'text/plain'})",
+            "        out['status'].append(r.status)",
+            "        st = await (await c.get('/bmk/design_patch/state', params={'root': key})).json()",
+            "        out['mask_edit'] = [x['mask_edit'] for t in st['targets'] for x in t['candidates'] if x['key'] == kB]",
+            "    out['vlm'] = 'bmk_design_patch_vlm' in sys.modules",
+            "    out['node'] = 'bmk_design_patch' in sys.modules",
+            "    return out",
+            "print(json.dumps(asyncio.run(main()), ensure_ascii=False))", ""]), encoding="utf-8")
+        r = subprocess.run([sys.executable, "-X", "utf8", "-W", "ignore", str(probe2), str(PKG), root, kB, kC, rec["file"]], capture_output=True,
+                           text=True, encoding="utf-8", timeout=300)
+        out = json.loads(r.stdout.strip().splitlines()[-1]) if r.returncode == 0 and r.stdout.strip() else None
+        check(out is not None and out["status"] == [200, 409, 200, 400, 400, 400, 415] and out["bodies"][1].get("reason") == "changed"
+              and out["bodies"][2] == {"ok": True, "edit": None, "rev": out["bodies"][2]["rev"], "composite_sig": out["bodies"][2]["composite_sig"]}
+              and out["mask_edit"] == [{"at": rec["at"], "stale": False}] and out["vlm"] is False and out["node"] is False,
+              f"새 프로세스 HTTP: state(mask_edit 계산)·/mask/edit(409 changed — _guard MaskConflict·기록 없는 reset 200)·마스크 라우트 400·415 "
+              f"뒤 vlm·노드 모듈 없음(그리는 라우트만 _node()) {out} {r.stderr.strip()[-400:]}")
+        tree = ast.parse((PKG / "bmk_design_patch_board.py").read_text(encoding="utf-8"))
+        fns = {n.name: n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+
+        def names_in(fn):
+            return {x.id for x in ast.walk(fns[fn]) if isinstance(x, ast.Name)}
+
+        mask_fns = ("mask_view", "mask_image", "mask_save", "mask_edit", "mask_alts", "_mask_cand", "_mask_target", "_window_l",
+                    "_layers_sig", "_edit_view", "_mask_layers", "_layer_png", "_star_plan", "_png_body", "mask_handler", "mask_img_handler",
+                    "mask_save_handler", "mask_edit_handler", "mask_alts_handler")
+        light = ("build_state", "_crop_summaries", "mask_edit", "_mask_cand", "_edit_view", "_edit_window", "_edit_stale", "_edit_sig",
+                 "_edit_rec", "_edit_usable", "_layers_sig", "_composite_sig", "_cand_sig")
+        check(all(f in fns for f in mask_fns + light) and not any("_vlm" in names_in(f) for f in mask_fns)
+              and not any(n in names_in(f) for f in light for n in ("_node", "_star_plan")),
+              f"마스크 라우트 함수는 _vlm() 을 쓰지 않고, state·/mask/edit·서명 경로는 _node()·_star_plan 을 쓰지 않음 "
+              f"{[f for f in mask_fns + light if f not in fns]}")
+
+    state: dict = {}
+
+    async def run_all():
+        routes = web.RouteTableDef()
+        bd.register_routes(routes)
+        app = web.Application(client_max_size=100 * 1024 * 1024)  # ComfyUI 서버(max_upload_size 기본 100MB)처럼 — 기본 1MiB 면 aiohttp 가 413 을 먼저 냄
+        app.add_routes(routes)
+        async with TestClient(TestServer(app)) as client:
+            h = Http(client)
+            for name, fn in (("b39", b39), ("b40", b40), ("b41", b41), ("n37", n37), ("b42", b42), ("b43", b43), ("b44", b44),
+                             ("b11", b11), ("b12", b12), ("b45", b45), ("b46", b46), ("b47", b47), ("b48", b48), ("b49", b49),
+                             ("b50", b50), ("b51", b51), ("b52", b52), ("b53", b53), ("b54", b54)):
+                try:
+                    await fn(h)
+                except Exception:
+                    check(False, f"S4 {name} 예외:\n{traceback.format_exc()}")
+
+    sigs_unchanged()
+    asyncio.run(run_all())
+    b0()
+
+
+def mask_js_unit():
+    """S4 J-K1–K5·B12(JS): mask_edit.js 세션·붓·페이드·페더·키·★ 점검 S4 줄·3층 합성(node, --quick, U3).
+    node 하네스 = _PL_JS_HARNESS 의 앞부분(가짜 fetch 서버·작은 DOM·boardState·mkPanel) + 아래 S4 장면. 마스크 라우트는 tools/fixtures/mask_api.json
+    정본을 그대로 돌려주는 가짜 서버(U2 라우트와 병렬 — 실제 응답 대조는 mask_board_unit), 이미지는 가짜 디코드(kind 별 무늬)."""
+    section("S4 mask_js_unit — JS(U3)")
+    web = PKG / "web_design_patch"
+    src = {n: (web / n).read_text(encoding="utf-8") for n in ("mask_edit.js", "board.js", "viewer.js", "pipeline.js", "board.html", "board.css")}
+    code = {n: re.sub(r"//[^\n]*", "", s) for n, s in src.items() if n.endswith(".js")}
+    mj, bj, vj, pj = code["mask_edit.js"], code["board.js"], code["viewer.js"], code["pipeline.js"]
+    html, css = src["board.html"], src["board.css"]
+
+    section("S4-B12(JS) mask_edit.js·board.js·viewer.js·html·css 정적")
+    for bad in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function", "setAttribute(\"on", "srcdoc",
+                "javascript:", "localStorage"):
+        check(bad not in mj, f"mask_edit.js 에 {bad} 없음")
+    check(not re.search(r"https?://", src["mask_edit.js"]) and not any(ord(ch) >= 0x1F000 or ch == "️" for ch in src["mask_edit.js"]),
+          "mask_edit.js 외부 URL·이모지 없음")
+    check("textContent" in mj and "replaceChildren" in mj, "mask_edit.js textContent·replaceChildren")
+    check(re.findall(r"window\.(\w+)\s*=(?!=)", mj) == ["DPMaskEdit"], f"mask_edit.js 가 정의하는 전역은 window.DPMaskEdit 하나 {re.findall(r'window.(\w+)\s*=(?!=)', mj)}")
+    paths = set(re.findall(r'"(mask(?:/\w+)?)[?"]', mj))
+    check(paths == {"mask", "mask/save", "mask/edit", "mask/alts"} and mj.count("fetchFn(apiUrl(") == 4 and mj.count("fetch(") == 1
+          and "(u, o) => fetch(u, o)" in mj,
+          f"mask_edit.js 보드 주소 = apiUrl 상대 경로(mask·mask/save·mask/edit·mask/alts + GET /mask 가 준 mask/img url) — 세션의 fetchFn 만 {sorted(paths)}")
+    check('headers: { "Content-Type": "image/png" }' in mj and 'new CompressionStream("deflate")' in mj and "head[8] = 8;" in mj
+          and "toBlob" not in mj and "toDataURL" not in mj,
+          "[적용] 본문 = 직접 만든 L 8비트 PNG(IHDR 비트 8·색 형식 0, zlib = CompressionStream deflate — canvas.toBlob 의 RGBA 아님)")
+    off = re.search(r"const MASK_OFF = new Set\(\[\.\.\.EDIT_OFF, ([^\]]*)\]\)", bj)
+    check(bool(off) and set(re.findall(r'"(\w+)"', off.group(1))) == {"KeyE", "KeyT", "KeyG"}, "MASK_OFF = 검토 키 + E·T·G")
+    kd = _layout_js_fn(bj, "onKeyDown")
+    idx = [kd.find(s) for s in ("refEd.onKey(e)", "maskShown && !helpOpen && maskEd.onKey(e)", "e.ctrlKey || e.metaKey || e.altKey",
+                                "pipeShown && PIPE_OFF.has(e.code)", "maskShown && MASK_OFF.has(e.code)", "switch (e.code)")]
+    check(all(0 < a < b for a, b in zip(idx, idx[1:])) and 'case "KeyK":' in kd and "setMask(!maskShown)" in kd and "maskOn" not in kd
+          and 'const maskShown = !$("mask-panel").hidden;' in kd,
+          f"onKeyDown 순서: 레퍼런스 키 → 마스크 키(Esc·Enter·X·[ ]·Q·S·M·Ctrl+Z/Y) → Ctrl 거름 → 진행 끔 → 마스크 끔 → K 토글, 판정은 패널 hidden {idx}")
+    check('"pref_v" in d && d.pref_v !== S.pref_v' in bj, "Codex 2차: board.js 폴링이 unchanged 응답의 pref_v(분석·Export 설정)가 바뀌면 since_rev 없이 다시 받음")
+    check("if (window.DPMaskEdit)" in bj and '"mask_edits" in c' in _layout_js_fn(bj, "maskReady") and "if (maskOn) maskEd.stateChanged(S);" in bj
+          and bj.count("leaveMask() && set") == 4 and 'on("btn-mask", () => setMask(!maskOn));' in bj and "goMask," in bj
+          and "if (maskOn) maskEd.seamsChanged();" in bj and "pipe.setMaskLeft(maskEd.pending())" in bj
+          and 'window.addEventListener("beforeunload", onUnload);' in bj,
+          "board.js: DPMaskEdit 판별·옛 서버(크롭 요약에 mask_edits 없음)면 K 끔, 머리줄 편집·레퍼런스·진행 단추·진행 설정 열기 앞에 마스크 모드 나가기, "
+          "새 state·이음매를 마스크 편집기로, 나갈 때 적용 안 한 편집을 진행 ★ 점검으로, 새로고침·닫기 확인(beforeunload)")
+    vret = vj[vj.rindex("return { setState"):]
+    check("setMaskLayer" in vret and "showSeam" in vret and "curSeam" in vret and "opts.onPick(s.crop_id, s.tid, s.key, s)" in vj
+          and "if (maskCv || !crop" in vj,
+          "viewer.js 마스크 겹침 훅(setMaskLayer — 선택 크롭 겹침 대신)·showSeam·curSeam(3차 ui-r3-03)·N 이 onPick 에 구간을 넘김")
+    check(re.findall(r'<script src="([^"]+)" defer></script>', html)
+          == ["layout_geom.js", "viewer.js", "layout_edit.js", "ref_edit.js", "pipeline.js", "mask_edit.js", "board.js"]
+          and all(f'id="{i}"' in html for i in ("btn-mask", "mask-list", "mask-panel")) and re.search(r'<section id="mask-panel"[^>]*hidden>', html)
+          and "마스크 (<kbd>K</kbd>)" in html,
+          "board.html: mask_edit.js 가 pipeline 뒤·board 앞, 마스크 모드 요소 3개(패널은 처음 hidden)·도움말 '마스크 (K)' 표")
+    check("body.mask #mask-panel" in css and "body.mask #target-list, body.mask #center" in css and "canvas.ov-mask" in css and ".mbrush" in css,
+          "board.css 마스크 모드 3분할·겹침 캔버스·붓 원")
+    check(re.search(r"#mask-panel \.pp-table td\.wrap \{[^}]*white-space: normal", css) is not None,
+          "1차 리뷰 ui-r1-05: 대안 표의 완료·바뀌는 크롭 칸은 줄바꿈(.pp-table 의 nowrap 을 풀어 좁은 패널에서 표가 덜 넘침 — 단추는 첫 열)")
+    check("starChecks(S, opts.seams(), pend, maskLeft)" in pj and "opts.goMask(c.mask, c.key)" in pj and "setMaskLeft" in pj[pj.rindex("return { stateChanged"):],
+          "pipeline.js ★ 점검 = S4 줄(maskLeft) — 누르면 마스크 모드(goMask), board.js 가 setMaskLeft")
+    check("exit: () => setMask(false)," in bj and "pick: maskPick," in bj and "seams: () => (S && S.canvas && !viewer.seams() ? null : seamsByCrop)," in bj,
+          "2차 리뷰 tests-r2-07·04·ui-r2-02: 마스크 편집기 exit = setMask(false)(Esc 로 K 를 나감), pick = maskPick(POST /pick set), 진행 ★ 점검의 이음매 = "
+          "다시 재는 중(viewer.seams() null)이면 null('재는 중' 한 줄 — 옛 bad 수 아님)")
+
+    node = shutil.which("node")
+    if not node:
+        skip("node 없음 → node --check·J-K1–K5 생략")
+        return
+    for n in ("mask_edit.js", "board.js", "viewer.js", "pipeline.js"):
+        r = subprocess.run([node, "--check", str(web / n)], capture_output=True, text=True, encoding="utf-8", timeout=60)
+        check(r.returncode == 0, f"node --check {n} {r.stderr.strip()[:200]}")
+    out = OUT_ROOT / "mask_js"
+    shutil.rmtree(out, ignore_errors=True)
+    out.mkdir(parents=True)
+    h = _PL_JS_HARNESS
+    cut = [h[h.index(a):h.index(b, h.index(a))] for a, b in (("import fs", "async function run("), ("class El {", "async function mouse("),
+                                                             ("function boardState()", 'await scenario("panel"'),
+                                                             ("function mkPanel(", 'await scenario("panelStyle"'))]
+    rules = json.loads(_MASK_RULES.read_text(encoding="utf-8"))
+    doc = json.loads(_MASK_API.read_text(encoding="utf-8"))
+    (out / "in.json").write_text(json.dumps({"api": _pl_api(), "mask": doc, "rules": rules, "pipelineJs": str(web / "pipeline.js"),
+                                             "boardJs": str(web / "board.js"), "maskJs": str(web / "mask_edit.js"), "viewerJs": str(web / "viewer.js")},
+                                            ensure_ascii=False), encoding="utf-8")
+    harness = r"""// ── S4 J-K: mask_edit.js(vm — window 전역) · board.js K 모드 함수 · pipeline.js ★ 점검 S4 줄·Export 줄. 가짜 서버 = mask_api.json 정본 ──
+import { createHash } from "node:crypto";
+const MA = IN.mask.routes;
+const RULES = IN.rules;
+const K15 = "r_61ba2d695f0f_0_0";
+const K15B = "r_61ba2d695f0f_0_1";
+const K14 = "r_d9b7ffb9fb7c_0_1";
+const sha = (u8) => createHash("sha256").update(Buffer.from(u8.buffer, u8.byteOffset, u8.byteLength)).digest("hex");
+
+class SvgEl {
+  constructor(tag, attrs) {
+    Object.assign(this, { tag, attrs: {}, parentNode: null });
+    for (const [k, v] of Object.entries(attrs || {})) this.attrs[k] = String(v);
+  }
+  setAttribute(k, v) { this.attrs[k] = String(v); }
+}
+
+function fakeImage(f) {
+  // GET /mask/img 대역: base = x < 100 이면 0 아니면 255(L), edit = (x + 2y) & 255(L), under = RGB 무늬, patch = 단색·a 128/255 번갈아, over = 파랑·10줄마다 a 128
+  const { kind, w, h } = f;
+  const d = new Uint8ClampedArray(w * h * 4);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      if (kind === "base" || kind === "edit") {
+        const v = kind === "base" ? (x < 100 ? 0 : 255) : (x + 2 * y) & 255;
+        d[i] = d[i + 1] = d[i + 2] = v;
+        d[i + 3] = 255;
+      } else if (kind === "under") {
+        d[i] = x & 255;
+        d[i + 1] = y & 255;
+        d[i + 2] = 128;
+        d[i + 3] = 255;
+      } else if (kind === "patch") {
+        d[i] = 200;
+        d[i + 1] = 60;
+        d[i + 2] = 40;
+        d[i + 3] = x % 2 ? 255 : 128;
+      } else {
+        d[i + 2] = 255;
+        d[i + 3] = y % 10 ? 0 : 128;
+      }
+    }
+  }
+  return { w, h, data: d };
+}
+
+function maskInfo(key) {
+  return key === K14 ? clone(MA["GET /mask"].alt.no_edit) : clone(MA["GET /mask"].ok);
+}
+
+function maskServer() {
+  // route.save·edit·alts = 응답 차례 [[status, 본문] …](비면 정본 ok), info[key] = GET /mask 본문, hold = save 응답을 이 약속까지 늦춤,
+  // editRect = kind=edit PNG 의 창(기록 rect — 없으면 GET /mask rect), imgFail = 이 kind 의 /mask/img 를 404, gate = {key, p} — 그 key 의 /mask/img 를 p 까지 늦춤,
+  // wait(path, q) = 이 요청(GET /mask 포함)을 늦출 약속 | null, strictSeen = save 의 seen ≠ 지금 기록 file 이면 409 changed(실서버 dmask._expect — 다른 창이 그 사이 저장)
+  const srv = { log: [], info: {}, save: [], edit: [], alts: [], hold: null, editRect: null, imgFail: null, gate: null, wait: null, strictSeen: false };
+  const resp = (status, data, fake) => ({ ok: status >= 200 && status < 300, status,
+    json: async () => { if (data === undefined) throw new SyntaxError("not json"); return clone(data); }, blob: async () => ({ fake }) });
+  srv.fetch = async (url, o) => {
+    const u = new URL(url);
+    const path = u.pathname.replace(/^\/bmk\/design_patch\//, "");
+    const q = Object.fromEntries(u.searchParams);
+    const rec = { method: (o && o.method) || "GET", path, q, ctype: o && o.headers ? o.headers["Content-Type"] : null };
+    if (o && o.body !== undefined) rec.body = typeof o.body === "string" ? JSON.parse(o.body) : Buffer.from(await o.body.arrayBuffer());
+    srv.log.push(rec);
+    if (srv.wait) await srv.wait(path, q);
+    const info = srv.info[q.key] || maskInfo(q.key);
+    if (path === "mask") return resp(200, info);
+    if (path === "mask/img") {
+      if (srv.gate && q.key === srv.gate.key) await srv.gate.p;
+      if (q.kind === srv.imgFail) return resp(404, { error: `마스크 편집 파일이 없습니다: ${info.edit.file}` });
+      const r = q.kind === "edit" && srv.editRect ? srv.editRect : ["base", "edit"].includes(q.kind) ? info.rect : info.layers.box;
+      return resp(200, undefined, { kind: q.kind, w: r[2] - r[0], h: r[3] - r[1] });
+    }
+    if (path === "mask/save") {
+      if (srv.hold) await srv.hold;
+      // 서버 mask_save 처럼 rect(세션을 연 창) ≠ 지금 편집 창이면 409 rect_changed — 같은 크기로 옮겨진 창은 PNG 크기로는 못 잡는다
+      const now = srv.info[q.key] || maskInfo(q.key);
+      if (q.rect !== now.rect.join()) return resp(409, Object.assign(clone(MA["POST /mask/save"].errors["409"][1]), { rect: now.rect }));
+      if (srv.strictSeen && q.seen !== (now.edit ? now.edit.file : "")) return resp(409, MA["POST /mask/save"].errors["409"].find((x) => x.reason === "changed"));
+      return resp(...(srv.save.shift() || [200, MA["POST /mask/save"].ok]));
+    }
+    if (path === "mask/edit") return resp(...(srv.edit.shift() || [200, MA["POST /mask/edit"].ok]));
+    if (path === "mask/alts") return resp(...(srv.alts.shift() || [200, MA["GET /mask/alts"].ok]));
+    return resp(404, undefined);
+  };
+  srv.count = (p) => srv.log.filter((x) => x.path === p).length;
+  return srv;
+}
+
+function maskCtx(extra) {
+  const c = vm.createContext(Object.assign({ window: { DPViewer: { svg: (tag, attrs) => new SvgEl(tag, attrs) }, addEventListener() {}, confirm: () => true },
+    URLSearchParams, setTimeout, clearTimeout, console, Blob, Response, CompressionStream }, extra || {}));
+  vm.runInContext(fs.readFileSync(IN.maskJs, "utf8"), c, { filename: "mask_edit.js" });
+  return c;
+}
+
+// J-K1 공용 표(mask_rules.json — 모든 행)
+await scenario("rules", async () => {
+  const D = maskCtx().window.DPMaskEdit;
+  const worst = {};
+  const n = {};
+  const bump = (k, got, want) => {
+    worst[k] = Math.max(worst[k] || 0, Math.abs(got - want));
+    n[k] = (n[k] || 0) + 1;
+  };
+  for (const r of RULES.smoothstep) bump("smoothstep", D.smooth(r.t), r.out);
+  for (const r of RULES.fade) bump("fade", D.fade(r.side, RULES.rect, r.w, r.x, r.y, r.a, r.b), r.out);
+  const lens = [];
+  for (const r of RULES.kernel) {
+    const k = D.kernel(r.sigma);
+    lens.push([k.length, r.k.length, 2 * r.radius + 1]);
+    r.k.forEach((v, i) => bump("kernel", k[i], v));
+  }
+  for (const r of RULES.feather) {
+    const [h, w] = [r.in.length, r.in[0].length];
+    const o = D.feather(new Float32Array(r.in.flat()), w, h, r.sigma);
+    r.out.flat().forEach((v, i) => bump("feather", o[i], v));
+  }
+  for (const r of RULES.stamp) bump("stamp", D.stamp(r.R, r.hard, r.r), r.out);
+  for (const r of RULES.ops) bump("ops", D.op(r.op, r.m, r.s, r.k, r.blur), r.out);
+  for (const r of RULES.quant) bump("quant", D.quant(r.m), r.out);
+  return { worst, n, lens };
+});
+
+// J-K2 [적용] 본문 = L 8비트 PNG(pngL — Python 이 PIL 로 다시 읽음)
+await scenario("png", async () => {
+  const D = maskCtx().window.DPMaskEdit;
+  const [w, h] = [37, 23];
+  const px = new Uint8Array(w * h).map((_, i) => (i * 37 + (i >> 3) * 11) & 255);
+  const blob = await D.pngL(px, w, h);
+  return { type: blob.type, b64: Buffer.from(await blob.arrayBuffer()).toString("base64"), px: Buffer.from(px).toString("base64"), w, h };
+});
+
+// J-K2 세션: 열기·획·실행 취소/다시·페이드·페더·기준으로·50단계·[적용](PNG·seen·ops)·409·적용 중 막힘·[이전 판으로]·대안 표 202·다시 받기
+await scenario("session", async () => {
+  const D = maskCtx().window.DPMaskEdit;
+  const srv = maskServer();
+  const s = D.session(A, KEY, srv.fetch, async (b) => fakeImage(b.fake), 5);
+  const r = {};
+  const W = 1280;
+  const at = (x, y) => s.m[y * W + x];
+  r.opened = await s.open(K15);
+  r.open = { win: s.win, file: s.file, pending: s.pending(), m: [at(0, 0), at(5, 7)], base: [s.base[50], s.base[150]],
+    paths: srv.log.map((x) => `${x.path}${x.q.kind ? ":" + x.q.kind : ""}`), seen: srv.log[0].q };
+  const before = s.m.slice();
+  const c0 = [128 + 300, 2560 + 300];
+  r.strokeRect = s.begin("erase", c0, 24, 1, 1);
+  r.mid = s.move([c0[0] + 100, c0[1]]);
+  r.busyBegin = s.begin("erase", c0, 24, 1, 1);  // 획 중에는 새 획 없음
+  s.end();
+  const after = s.m.slice();
+  r.stroke = { line: [300, 330, 360, 400].map((x) => at(x, 300)), out: [at(300, 325), at(299, 276)], pending: s.pending(), ops: s.ops(),
+    undoRect: s.undo[0].r };
+  s.step(true);
+  r.undo = { same: s.m.every((v, i) => v === before[i]), pending: s.pending(), redo: s.redo.length };
+  s.step(false);
+  r.redo = { same: s.m.every((v, i) => v === after[i]), pending: s.pending() };
+  // 페이드·페더·기준으로 — 바뀌는 사각형만 단계로
+  const crop = [128, 2560, 1408, 3328];
+  const pre = s.m.slice();
+  const fr = s.fade("top", 64, crop);
+  r.fadeTop = { rect: fr, undoRect: s.undo[s.undo.length - 1].r, d0: [at(500, 0), pre[500] * D.fade("top", crop, 64, 628, 2560)],
+    d63: [at(500, 63), pre[63 * W + 500] * D.fade("top", crop, 64, 628, 2623)], d64same: at(500, 64) === pre[64 * W + 500] };
+  const pre2 = s.m.slice();
+  s.fade("left", 64, crop, 158, 198);
+  const lr = s.undo[s.undo.length - 1].r;
+  r.fadeRange = { undoRect: lr, inside: [at(0, 178), pre2[178 * W] * D.fade("left", crop, 64, 128, 2738, 158, 198)],
+    outside: at(0, 300) === pre2[300 * W] };
+  s.feather(2);
+  s.toBase();
+  r.chain = { ops: s.ops(), pending: s.pending(), base: s.m.every((v, i) => v === s.base[i]) };
+  // 부드럽게: 획 시작 때 사본의 σ = R/4 흐림 쪽으로
+  await s.open(K15);
+  const sm = s.m.slice();
+  s.begin("soften", [128 + 156.5, 2560 + 50.5], 8, 1, 1);  // edit 무늬 (x + 2y) & 255 가 255 → 0 으로 넘어가는 자리(흐림이 값을 바꿈)
+  s.end();
+  r.soften = { at: at(156, 50), was: sm[50 * W + 156], blur: (() => {
+    const k = D.kernel(2);
+    let acc = 0;
+    for (let j = -6; j <= 6; j++) {
+      let row = 0;
+      for (let i = -6; i <= 6; i++) row += k[i + 6] * sm[(50 + j) * W + 156 + i];
+      acc += k[j + 6] * row;
+    }
+    return acc;
+  })() };
+  // 50단계: 넘으면 오래된 것부터 버리고 ops 요약에는 남김
+  await s.open(K15);
+  for (let i = 0; i < 55; i++) {
+    s.begin("erase", [128 + 20 + 15 * i, 2560 + 400], 4, 1, 0.5);
+    s.end();
+  }
+  r.cap = { undo: s.undo.length, dropped: s.dropped.length, pending: s.pending(), ops: s.ops() };
+  // [적용] — 적용 중 붓·실행 취소 막힘, 본문 = 창 크기 L PNG(quant), 쿼리 seen·ops, 성공 = 단계 비움·올린 값이 출발
+  let release;
+  srv.hold = new Promise((ok) => { release = ok; });
+  const q = new Uint8Array(s.m.length).map((_, i) => D.quant(s.m[i]));
+  const p = s.apply();
+  await sleep(5);
+  r.applying = { busy: s.busy, begin: s.begin("erase", c0, 8, 1, 1), step: s.step(true), again: await s.apply(), fade: s.fade("top", 64, crop) };
+  release();
+  srv.hold = null;
+  const d = await p;
+  const save = srv.log.filter((x) => x.path === "mask/save");
+  r.apply = { n: save.length, method: save[0].method, ctype: save[0].ctype, q: save[0].q, png: save[0].body.toString("base64"), sha: sha(q),
+    ok: d.ok, pending: s.pending(), file: s.file, quant: s.m.every((v, i) => v === Math.fround(q[i] / 255)), seams: s.info.seams, sig: s.info.composite_sig,
+    edit: s.info.edit };
+  // 409(다른 창·창 바뀜): 세션 그대로, conflict
+  for (const body of MA["POST /mask/save"].errors["409"].slice(1)) {
+    s.begin("erase", c0, 8, 1, 1);
+    s.end();
+    const m0 = s.m.slice();
+    const n0 = s.pending();
+    srv.save.push([409, body]);
+    const x = await s.apply();
+    (r.conflicts = r.conflicts || []).push({ reason: x.reason, conflict: s.conflict && s.conflict.reason, pending: [n0, s.pending()],
+      same: s.m.every((v, i) => v === m0[i]), seen: srv.log.filter((y) => y.path === "mask/save").pop().q.seen });
+  }
+  // U3 3차 검증 must: 세션 중 창이 같은 크기로 옮겨짐(재분석의 순수 이동 정합·use_registration) — 다시 받기는 적용 안 한 획 때문에 세션 그대로(behind),
+  // [적용] = rect(세션 창)를 보내 409 rect_changed(크기만 보면 옮겨진 창에 그대로 저장 — 칠할 때 본 자리 ≠ PSD)
+  srv.info[K15] = Object.assign(clone(s.info), { rect: [131, 2560, 1411, 3328] });
+  const m1 = s.m.slice();
+  const n1 = s.pending();
+  r.shifted = { reopened: await s.refresh(), behind: s.behind() };
+  const xs = await s.apply();
+  Object.assign(r.shifted, { reason: xs.reason, rect: xs.rect, conflict: s.conflict && s.conflict.reason, sent: srv.log.filter((y) => y.path === "mask/save").pop().q.rect,
+    win: s.win, pending: [n1, s.pending()], same: s.m.every((v, i) => v === m1[i]) });
+  delete srv.info[K15];
+  // 저장된 판: [이전 판으로] = POST /mask/edit JSON → 다시 열기(세션 버림), 409 = conflict
+  const nGet = srv.count("mask");
+  const ed = await s.edit("undo");
+  r.edit = { ok: ed.ok, body: srv.log.filter((x) => x.path === "mask/edit")[0].body, ctype: srv.log.filter((x) => x.path === "mask/edit")[0].ctype,
+    reopened: srv.count("mask") === nGet + 1, pending: s.pending() };
+  srv.edit.push([409, MA["POST /mask/edit"].errors["409"][0]]);
+  const e2 = await s.edit("reset");
+  r.edit409 = { reason: e2.reason, conflict: s.conflict && s.conflict.reason };
+  // 대안 표: 202 두 번 뒤 200
+  srv.alts.push([202, { busy: true }], [202, { busy: true }]);
+  const al = await s.alts(K15);
+  r.alts = { n: srv.count("mask/alts"), rows: al.rows.map((x) => x.key), now: al.now };
+  // 다시 받기: 세션이 비었으면 서버 판이 바뀐 때 다시 염, 적용 안 한 획이 있으면 그대로
+  await s.open(K15);
+  const moved = maskInfo(K15);
+  moved.edit.file = "masks/r_61ba2d69_e_77d0c3a1e5f2.png";
+  srv.info[K15] = moved;
+  const nImg = srv.count("mask/img");
+  r.refreshClean = { reopened: await s.refresh(), file: s.file, imgs: srv.count("mask/img") - nImg };
+  s.begin("erase", c0, 8, 1, 1);
+  s.end();
+  moved.edit.file = "masks/r_61ba2d69_e_0000000000aa.png";
+  const keep = s.m.slice();
+  r.refreshDirty = { reopened: await s.refresh(), file: s.file, info: s.info.edit.file, same: s.m.every((v, i) => v === keep[i]), pending: s.pending() };
+  // U3 2차 검증: 세션이 연 판 뒤에 있음(behind) → 획을 버리면 다시 받기가 서버 판으로 다시 염. 기준 서명만 바뀐 것(획이 있는 동안의 재분석)도 연 판의
+  // 서명과 비교(바로 앞 GET /mask 와 비교하면 그 사이 받은 판이 같아 놓침)
+  r.behind = { dirty: s.behind() };
+  s.discard();
+  const nI = srv.count("mask/img");
+  r.behind.clean = { behind: s.behind(), reopened: await s.refresh(), file: s.file, after: s.behind(), imgs: srv.count("mask/img") - nI };
+  s.begin("erase", c0, 8, 1, 1);
+  s.end();
+  const sigMoved = clone(moved);
+  sigMoved.base.sig = "0a1b2c3d4e5f6071";
+  srv.info[K15] = sigMoved;
+  r.behind.sig = { kept: await s.refresh(), behind: s.behind() };
+  s.discard();
+  Object.assign(r.behind.sig, { reopened: await s.refresh(), sig: s.sig, after: s.behind() });
+  // 3층: 같은 서명이면 다시 받지 않음
+  r.layers = { first: await s.loadLayers(), again: await s.loadLayers(), box: s.layers.box, n: s.layers.under.length };
+  // U3 3차 검증: 3층을 받는 사이 새 GET /mask(3층 서명 바뀜)가 오고 새 3층이 먼저 끝나면, 옛 서명의 늦은 응답은 버림(새 3층을 덮어 미리보기가 낡지 않게)
+  const lay = (sig) => Object.assign(clone(sigMoved), { layers: Object.assign(clone(sigMoved.layers), { sig }) });
+  srv.info[K15] = lay("a1a1a1a1a1a1a1a1");
+  await s.refresh();
+  let lateL;
+  srv.gate = { key: K15, p: new Promise((ok) => { lateL = ok; }) };
+  const pOld = s.loadLayers();
+  srv.gate = null;
+  srv.info[K15] = lay("b2b2b2b2b2b2b2b2");
+  await s.refresh();
+  const fresh = await s.loadLayers();
+  lateL();
+  r.lateLayers = { old: await pOld, fresh, sig: s.layers.sig };
+  // 래스터를 못 받아도(편집 PNG 가 기록 창 크기 — 창이 바뀐 ★ 를 옛 서버가 줌 / 404 — 그 사이 바뀐 판) info·seen 은 남김(세션 없음 — 편집 기준 바뀜 줄·
+  // 되돌리기·지우기 길), 다시 받기가 다시 염
+  const mv = maskInfo(K15);
+  mv.rect = [126, 2558, 1410, 3330];
+  srv.info[K15] = mv;
+  srv.editRect = [128, 2560, 1408, 3328];
+  r.moved = { opened: await s.open(K15), info: !!s.info, file: s.file, m: s.m, err: s.err };
+  srv.editRect = null;
+  srv.imgFail = "edit";
+  r.lost = { opened: await s.open(K15), info: !!s.info, file: s.file, m: s.m, err: s.err };
+  srv.imgFail = null;
+  r.lost.again = { reopened: await s.refresh(), m: !!s.m, win: s.win, err: s.err };
+  // 대상 경합(N·목록이 응답 전에 대상을 바꿈): 늦게 온 A(K15) 래스터는 버림 — 세션 = B(K14)의 info·창·seen(A 의 마스크가 B 의 편집으로 저장되지 않게)
+  srv.info[K15] = maskInfo(K15);
+  let late;
+  srv.gate = { key: K15, p: new Promise((ok) => { late = ok; }) };
+  const pa = s.open(K15);
+  await sleep(5);
+  const ob = await s.open(K14);
+  late();
+  const oa = await pa;
+  srv.gate = null;
+  r.race = { a: oa, b: ob, key: s.key, info: s.info.key, file: s.file, win: s.win, busy: s.busy };
+  // 옛 서버(라우트 없음 — JSON 아닌 404)
+  const old = D.session(A, KEY, async () => ({ ok: false, status: 404, json: async () => { throw new SyntaxError("x"); } }), async () => null, 5);
+  r.oldServer = { opened: await old.open(K15), err: old.err };
+  return r;
+});
+
+function gate() {
+  let go;
+  const p = new Promise((ok) => { go = ok; });
+  return { p, go };
+}
+
+// 1차 리뷰(JS) 세션: 끄는 중 다른 대상 열기 · A → B → A 열기 경합 · 앞 대상의 늦은 3층 · [적용] seen = 연 판 · 천천히 끈 획(carry) · 창 ⊃ 크롭 페이드 ·
+// ops 200자 · 칸을 넘는 부드럽게 획(오라클)
+await scenario("sessionR1", async () => {
+  const D = maskCtx().window.DPMaskEdit;
+  const srv = maskServer();
+  const s = D.session(A, KEY, srv.fetch, async (b) => fakeImage(b.fake), 5);
+  const r = {};
+  // session-r1-01: 끄는 중 다른 대상을 열면 그 획은 버림(새 창에 옛 창 좌표·사본으로 이어 칠하지 않음)
+  await s.open(K15);
+  s.begin("erase", [128 + 300, 2560 + 300], 24, 1, 1);
+  s.move([128 + 330, 2560 + 300]);
+  await s.open(K14);
+  const m14 = s.m.slice();
+  r.strokeOpen = { stroke: s.stroke, move: s.move([700, 2600]) };
+  s.end();
+  Object.assign(r.strokeOpen, { pending: s.pending(), same: s.m.every((v, i) => v === m14[i]) });
+  // session-r1-02: A → B → A — 앞 A 의 늦은 응답은 뒤 A 를 대신하지 않음(busy 를 풀지 않아 그 사이 획 없음 — 뒤 A 응답이 말없이 지우지 않게)
+  const [g1, g2] = [gate(), gate()];
+  let nA = 0;
+  srv.wait = (path, q) => (path === "mask" && q.key === K15 ? (++nA === 1 ? g1.p : g2.p) : null);
+  const a1 = s.open(K15);
+  await sleep(5);
+  const b = s.open(K14);
+  await sleep(5);
+  const a2 = s.open(K15);
+  await sleep(5);
+  g1.go();
+  r.reopen = { a1: await a1, b: await b, busy: s.busy, begin: s.begin("erase", [128 + 300, 2560 + 300], 24, 1, 1) };
+  if (s.stroke) s.end();
+  g2.go();
+  Object.assign(r.reopen, { a2: await a2, pending: s.pending(), busy2: s.busy, key: s.key, info: s.info.key });
+  // session-r1-03: 앞 대상(K15)의 3층이 새 대상(K14)의 GET /mask 보다 먼저 오면 버림(K15 box 가 K14 겹침이 되지 않게)
+  const [gL, gB] = [gate(), gate()];
+  srv.wait = (path, q) => (path === "mask/img" && q.key === K15 && ["under", "patch", "over"].includes(q.kind) ? gL.p
+    : path === "mask" && q.key === K14 ? gB.p : null);
+  const pL = s.loadLayers();
+  await sleep(5);
+  const pB = s.open(K14);
+  await sleep(5);
+  gL.go();
+  r.lateOther = { loaded: await pL, layers: s.layers && s.layers.box };
+  gB.go();
+  await pB;
+  srv.wait = null;
+  Object.assign(r.lateOther, { again: await s.loadLayers(), box: s.layers && s.layers.box });
+  // tests-r1-01: [적용] seen = 세션을 연 판 — 다른 창이 그 사이 새 판을 저장했으면(적용 안 한 획 때문에 세션은 연 판) 409 changed(덮어쓰지 않음)
+  srv.strictSeen = true;
+  await s.open(K15);
+  const opened = s.file;
+  const other = maskInfo(K15);
+  other.edit.file = "masks/r_61ba2d69_e_00000000bbbb.png";
+  srv.info[K15] = other;
+  s.begin("erase", [128 + 300, 2560 + 300], 8, 1, 1);
+  s.end();
+  r.seen = { reopened: await s.refresh(), behind: s.behind() };
+  const xs = await s.apply();
+  Object.assign(r.seen, { opened, sent: srv.log.filter((y) => y.path === "mask/save").pop().q.seen, reason: xs && xs.reason, pending: s.pending(), file: s.file });
+  srv.strictSeen = false;
+  delete srv.info[K15];
+  // tests-r1-02: 천천히 끈 획(이벤트 간격 1px < R/4 — 남은 거리 carry 가 다음 이벤트로) = 한 번에 끈 획과 같은 도장
+  await s.open(K15);
+  const p0 = [128 + 130, 2560 + 260];
+  s.begin("erase", p0, 8, 1, 1);
+  s.move([p0[0] + 100, p0[1]]);
+  s.end();
+  const fast = s.m.slice();
+  s.discard();
+  s.begin("erase", p0, 8, 1, 1);
+  for (let i = 1; i <= 100; i++) s.move([p0[0] + i, p0[1]]);
+  s.end();
+  r.slow = { diff: s.m.reduce((n, v, i) => n + (v !== fast[i]), 0), mid: s.m[260 * 1280 + 180], was: s.start[260 * 1280 + 180] };
+  // tests-r1-03: 창 ⊃ 크롭(실데이터 R1⁗ 꼴): 변 4개·구간 페이드 = 띠 안은 기존 값 × fade(크롭 밖 줄·열은 0), 띠 밖은 그대로
+  srv.info[K15] = Object.assign(maskInfo(K15), { rect: [100, 2540, 1430, 3350] });
+  await s.open(K15);
+  const crop = [128, 2560, 1408, 3328];
+  const [ww, wh] = [1330, 810];
+  const band = { top: (x, y) => y < 2560 + 64, bottom: (x, y) => y >= 3328 - 64, left: (x, y) => x < 128 + 64, right: (x, y) => x >= 1408 - 64 };
+  const beyond = { top: (x, y) => y < 2560, bottom: (x, y) => y >= 3328, left: (x) => x < 128, right: (x) => x >= 1408 };
+  r.fadeWide = {};
+  for (const [side, a, b2] of [["top", null, null], ["bottom", null, null], ["left", null, null], ["right", null, null], ["top", 300, 420]]) {
+    const pre = s.m.slice();
+    s.fade(side, 64, crop, a, b2);
+    let worst = 0;
+    let outside = 0;
+    for (let y = 0; y < wh; y++) {
+      for (let x = 0; x < ww; x++) {
+        const i = y * ww + x;
+        const [cx, cy] = [x + 100, y + 2540];
+        const want = band[side](cx, cy) ? Math.fround(pre[i] * D.fade(side, crop, 64, cx, cy, a, b2)) : pre[i];
+        worst = Math.max(worst, Math.abs(s.m[i] - want));
+        if (beyond[side](cx, cy) && a === null) outside = Math.max(outside, s.m[i]);
+      }
+    }
+    r.fadeWide[side + (a === null ? "" : " range")] = { worst, outside };
+    s.step(true);
+  }
+  delete srv.info[K15];
+  // tests-r1-04: ops 요약 ≤ 200자(서버 _check_ops 상한 — 넘으면 400) — 단계가 많으면 자르고 '…'
+  await s.open(K15);
+  for (let i = 0; i < 30; i++) s.fade("left", 32, crop, 10 + i, 20 + i);
+  const ops = s.ops();
+  const nSave = srv.count("mask/save");
+  await s.apply();
+  r.opsCap = { len: ops.length, tail: ops.slice(-1), sent: srv.count("mask/save") === nSave + 1 && srv.log.filter((y) => y.path === "mask/save").pop().q.ops === ops,
+    head: ops.slice(0, 26) };
+  // tests-r1-09·session-r1-04: 칸(64)을 넘는 여러 도장 부드럽게 획 = 획 시작 사본을 σ = R/4 로 흐린 값 쪽으로(오라클: 창 전체 feather 뒤 같은 도장 차례)
+  r.softTiles = [];
+  for (const [R, from, to] of [[16, [30, 100], [250, 140]], [80, [500, 300], [700, 420]]]) {  // 첫 획은 칸 열 0 에서 시작(가로 패스 표시가 열마다인지)
+    await s.open(K15);
+    const [w, h] = [1280, 768];
+    const snap = s.m.slice();
+    s.begin("soften", [128 + from[0], 2560 + from[1]], R, 0.5, 0.7);
+    s.move([128 + to[0], 2560 + to[1]]);
+    s.end();
+    const blur = D.feather(snap, w, h, R / 4);
+    const m = snap.slice();
+    const dabAt = (cx, cy) => {
+      for (let y = Math.max(0, Math.floor(cy - R)); y < Math.min(h, Math.ceil(cy + R)); y++) {
+        for (let x = Math.max(0, Math.floor(cx - R)); x < Math.min(w, Math.ceil(cx + R)); x++) {
+          const v = D.stamp(R, 0.5, Math.hypot(x + 0.5 - cx, y + 0.5 - cy));
+          if (v) m[y * w + x] = D.op("soften", m[y * w + x], v, 0.7, blur[y * w + x]);
+        }
+      }
+    };
+    dabAt(from[0], from[1]);
+    const d = Math.hypot(to[0] - from[0], to[1] - from[1]);
+    for (let t = R / 4; t <= d; t += R / 4) dabAt(from[0] + ((to[0] - from[0]) * t) / d, from[1] + ((to[1] - from[1]) * t) / d);
+    let worst = 0;
+    let moved = 0;
+    for (let i = 0; i < m.length; i++) {
+      worst = Math.max(worst, Math.abs(s.m[i] - m[i]));
+      moved = Math.max(moved, Math.abs(s.m[i] - snap[i]));
+    }
+    r.softTiles.push({ R, worst, moved });
+  }
+  return r;
+});
+
+// J-K5 3층 합성(§2.4) — 작은 배열: Python 이 같은 식으로 다시 계산, 바뀐 사각형만 다시 그려도 전체와 같음
+await scenario("compose", async () => {
+  const D = maskCtx().window.DPMaskEdit;
+  let seed = 12345;
+  const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+  const box = [10, 20, 17, 25];
+  const win = [12, 21, 19, 24];
+  const [bw, bh] = [7, 5];
+  const layer = () => new Uint8ClampedArray(bw * bh * 4).map(() => Math.floor(rnd() * 256));
+  const L = { box, under: layer(), patch: layer(), over: layer() };
+  for (let i = 3; i < L.under.length; i += 4) L.under[i] = 255;
+  L.over[3] = 0;
+  L.over[7] = 255;
+  L.patch[11] = 0;
+  const mask = new Float32Array(21).map(() => rnd() * 1.2 - 0.1);
+  const base = new Float32Array(21).map(() => rnd());
+  // 보이는 창(box x 2–6 · y 1–3 = 창 wx 0–4)에 범위 밖 값 둘과 8비트 반올림 경계 값 하나(patch 200·a 255·over a 0) — [0, 1] 자르기나 quant 를
+  // 빼면 그 픽셀이 0.5 넘게 달라진다(0.0022: quant 1/255 → 0.78, 그대로면 0.44 → 출력 반올림 0)
+  for (const [x, v, u] of [[2, 1.3, 100], [3, -0.2, 100], [4, 0.0022, 0]]) {
+    const i = (7 + x) * 4;
+    L.under.set([u, u, u, 255], i);
+    L.patch.set([200, 200, 200, 255], i);
+    L.over[i + 3] = 0;
+    mask[x - 2] = v;
+  }
+  const view = { base: false, split: null, mark: false };
+  const full = new Uint8ClampedArray(bw * bh * 4);
+  D.compose(L, win, mask, base, full, 0, 0, bw, bh, view);
+  const out = {};
+  for (const [k, v] of Object.entries({ under: L.under, patch: L.patch, over: L.over, mask, base, full })) out[k] = Array.from(v);
+  // 바뀐 사각형만: mask 일부를 바꾸고 그 box 사각형만 다시 → 처음부터 전체와 같음
+  mask[1 * 7 + 2] = 0.25;
+  mask[2 * 7 + 3] = 0.9;
+  const part = full.slice();
+  D.compose(L, win, mask, base, part, 3, 2, 6, 4, view);
+  const again = new Uint8ClampedArray(bw * bh * 4);
+  D.compose(L, win, mask, base, again, 0, 0, bw, bh, view);
+  out.partSame = part.every((v, i) => v === again[i]);
+  out.partDiff = part.some((v, i) => v !== full[i]);
+  const qv = new Uint8ClampedArray(bw * bh * 4);
+  D.compose(L, win, mask, base, qv, 0, 0, bw, bh, { base: true, split: null, mark: false });
+  out.baseView = Array.from(qv);
+  const sv = new Uint8ClampedArray(bw * bh * 4);
+  D.compose(L, win, mask, base, sv, 0, 0, bw, bh, { base: false, split: 4, mark: false });
+  out.splitOk = sv.every((v, i) => v === ((i / 4) % bw < 4 ? qv[i] : again[i]));
+  const mk = new Uint8ClampedArray(bw * bh * 4);
+  D.compose(L, win, mask, base, mk, 0, 0, bw, bh, { base: false, split: null, mark: true });
+  out.markOnlyPatch = mk.every((v, i) => L.patch[i - (i % 4) + 3] !== 0 || v === again[i]);
+  out.markChanged = mk.some((v, i) => v !== again[i]);
+  out.mask2 = Array.from(mask);
+  out.again = Array.from(again);
+  return out;
+});
+
+// J-K2·J-K3 화면: create()(작은 DOM 대역·뷰어 대역) — 패널·키·붓·적용 중 단추 끔·409·확인 창(후보 바꿈·나가기)
+function maskState() {
+  const cand = (key, n, o) => Object.assign({ key, n, picked: false, slice_index: null, rejected: false, mask_edit: null }, o || {});
+  return { rev: 136, canvas: { size: [2048, 4096], composite_sig: "5d1f0c9a3be27741" },
+    crops: [{ id: "015_d556f2", name: "015_치마밑단_주름", rect: [128, 2560, 1408, 3328], mask_edits: 1, mask_stale: 0 },
+      { id: "014_0f9cc5", name: "014_치마원단_문양", rect: [512, 2240, 1536, 3008], mask_edits: 0, mask_stale: 0 }],
+    targets: [{ key: "015_d556f2/A", crop_id: "015_d556f2", crop_name: "015_치마밑단_주름", tid: "A", pick_keys: [K15],
+      candidates: [cand(K15, 1, { picked: true, slice_index: 1, mask_edit: { at: "2026-10-19 18:20:41", stale: false } }), cand(K15B, 2), cand("h_3c5e7a9b1d2f", 3)] },
+    { key: "014_0f9cc5/A", crop_id: "014_0f9cc5", crop_name: "014_치마원단_문양", tid: "A", pick_keys: [K14],
+      candidates: [cand("r_d9b7ffb9fb7c_0_0", 1), cand(K14, 2, { picked: true, slice_index: 1 }), cand("h_0a1b2c3d4e5f", 3)] }] };
+}
+
+function maskViewer(seams) {
+  const v = { ed: null, layer: null, looks: [], redraws: 0, marks: [], seamsObj: seams };
+  v.setEditor = (ed) => { v.ed = ed; };
+  v.setMaskLayer = (l) => { v.layer = l; };
+  v.showSeam = (s) => v.looks.push([(s.x0 + s.x1) / 2, (s.y0 + s.y1) / 2, 2]);
+  v.canvasPoint = (e) => [e.cx, e.cy];
+  v.seams = () => v.seamsObj;
+  v.redraw = () => {
+    v.redraws += 1;
+    for (const m of v.marks) m.parentNode = null;
+    v.marks = [];
+    const root = { append: (...xs) => { for (const x of xs) { x.parentNode = root; v.marks.push(x); } } };
+    if (v.ed) v.ed.draw(root, 1);
+  };
+  return v;
+}
+
+function maskPanel() {
+  // create() 한 벌(작은 DOM 대역·뷰어 대역): 가짜 서버·rAF 줄·확인 창(답 = P.answer)·토스트·보드 콜백 기록·패널 줄/단추 찾기
+  const P = { srv: maskServer(), doc: new Doc(), puts: [], rafQ: [], confirms: [], answer: true, toasts: [], calls: { exit: 0, refresh: 0, select: [], pick: [] } };
+  const { doc, srv } = P;
+  const mkEl = doc.createElement.bind(doc);
+  doc.createElement = (tag) => {
+    const e = mkEl(tag);
+    if (tag !== "canvas") return e;
+    return Object.assign(e, { width: 0, height: 0, getContext: () => ({
+      drawImage(b) { this.b = b; }, getImageData() { return { data: this.b.im.data }; },
+      createImageData: (w, h) => ({ width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }),
+      putImageData: (img, x, y, ...rect) => { P.img = img; P.puts.push(rect); } }) });
+  };
+  const sg = clone(MA["GET /mask"].ok.seams);
+  P.seams = { sig: "5d1f0c9a3be27741", segments: sg.concat([Object.assign(clone(sg[0]), { crop_id: "014_0f9cc5", key: K14, side: "left", x0: 512, x1: 512,
+    y0: 2604, y1: 2694, diff_p90: 38.4 })]) };
+  P.viewer = maskViewer(P.seams);
+  const c = maskCtx({ document: doc, fetch: srv.fetch, requestAnimationFrame: (fn) => P.rafQ.push(fn), cancelAnimationFrame() {},
+    createImageBitmap: async (b) => { const im = fakeImage(b.fake); return { width: im.w, height: im.h, im, close() {} }; } });
+  c.window.confirm = (m) => { P.confirms.push(m); return P.answer; };
+  P.winOn = {};  // window 처리기(창 blur — Q 떼기)
+  c.window.addEventListener = (type, fn) => (P.winOn[type] ??= []).push(fn);
+  P.raf = () => P.rafQ.splice(0).forEach((f) => f());
+  P.list = doc.createElement("ol");
+  P.panel = doc.createElement("section");
+  doc.body.append(P.list, P.panel);
+  P.ed = c.window.DPMaskEdit.create({ list: P.list, panel: P.panel }, { apiUrl: A, root: KEY, viewer: P.viewer, toast: (m, k) => P.toasts.push(`${k || ""}:${m}`),
+    exit: () => { P.calls.exit += 1; }, refresh: () => { P.calls.refresh += 1; }, seams: () => P.viewer.seamsObj, select: (k, f) => P.calls.select.push([k, f]),
+    pick: async (t, k) => { P.calls.pick.push([t.key, k]); return P.pick ? P.pick() : { ok: true }; }, ranText: (x) => `${x.done} ${x.via}` });
+  P.rows = () => P.panel.all().filter((e) => e.classList.contains("pp-row")).map((e) => e.textContent);
+  P.B = (label) => P.panel.all().find((e) => e.tagName === "BUTTON" && e.textContent === label) || null;
+  P.key = (code, m) => P.ed.onKey(Object.assign({ code, key: code, repeat: false, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false }, m || {}));
+  P.count = (p, kind) => srv.log.filter((x) => x.path === p && (!kind || x.q.kind === kind)).length;
+  return P;
+}
+
+await scenario("panel", async () => {
+  const P = maskPanel();
+  const { srv, viewer, ed, rows, B, key, raf, puts, confirms, toasts, calls, list, panel, seams } = P;
+  const r = {};
+  const S = maskState();
+  ed.enter(S, { key: K15, seam: null });
+  await until(() => viewer.layer && !rows().some((t) => t.includes("불러오는 중")));
+  raf();
+  r.enter = { editor: !!viewer.ed, layerBox: viewer.layer && viewer.layer.box, put: puts[0], select: calls.select[0], rows: rows().slice(0, 4),
+    list: list.children.map((e) => e.textContent), paths: srv.log.map((x) => `${x.path}${x.q.kind ? ":" + x.q.kind : ""}`) };
+  // 키: X·[ ]·Shift+[ ]·Q(누르는 동안)·M·S, 검토 키는 받지 않음(board.js MASK_OFF 가 끔)
+  r.keys = { x: key("KeyX"), tool: panel.all().filter((e) => e.tagName === "BUTTON" && e.classList.contains("on")).map((e) => e.textContent) };
+  key("BracketRight");
+  key("BracketLeft", { shiftKey: true });
+  r.keys.sliders = panel.all().filter((e) => e.classList.contains("rf-slider")).map((e) => e.textContent);
+  key("KeyQ");
+  r.keys.q = rows().find((t) => t.startsWith("보기")) || null;
+  ed.onKeyUp({ code: "KeyQ" });
+  key("KeyM");
+  key("KeyS");
+  r.keys.view = rows().find((t) => t.startsWith("보기")) || null;
+  key("KeyM");
+  key("KeyS");
+  r.keys.review = ["Space", "KeyR", "ArrowDown", "KeyE", "KeyG", "KeyN", "KeyB"].map((k) => key(k));
+  // 붓(뷰어 편집기 훅): 끌기 = 한 획, 바뀐 사각형만 다시 그림, 붓 원
+  raf();
+  const n0 = puts.length;
+  const pd = viewer.ed.pointerdown({ cx: 600, cy: 2900, shiftKey: false });
+  viewer.ed.pointermove({ cx: 640, cy: 2900, shiftKey: false });
+  viewer.ed.pointerup({});
+  raf();
+  const ring = viewer.marks.find((m) => m.tag === "circle");
+  r.stroke = { pd, pending: ed.pending(), puts: puts.slice(n0), ring: ring && clone(ring.attrs), row: rows().find((t) => t.startsWith("적용 안 한 획")) || null,
+    marks: viewer.marks.map((m) => m.attrs.class) };
+  key("KeyZ", { ctrlKey: true });
+  r.undo = ed.pending();
+  key("KeyY", { ctrlKey: true });
+  r.redo = ed.pending();
+  key("KeyZ", { ctrlKey: true });
+  key("KeyZ", { ctrlKey: true, shiftKey: true });  // U3 3차 검증: Ctrl+Shift+Z = 다시([다시] 단추 설명)
+  r.redoShift = ed.pending();
+  // 다른 후보로 바꾸기·나가기 = 확인 창(아니오면 그대로)
+  P.answer = false;
+  r.goNo = { ok: ed.go({ key: K14, seam: null }), confirm: confirms.pop(), gets: srv.count("mask") };
+  r.leaveNo = { ok: ed.leave(), confirm: confirms.pop(), editor: !!viewer.ed };
+  P.answer = true;
+  // 적용 — 적용 중 단추 끔 → 409(세션 남김·다시 받기) → 다시 적용 200
+  let release;
+  srv.hold = new Promise((ok) => { release = ok; });
+  srv.save.push([409, MA["POST /mask/save"].errors["409"][2]]);
+  key("Enter");
+  await sleep(10);
+  r.applying = { row: rows().find((t) => t.startsWith("적용 중")) || null,
+    disabled: ["실행 취소", "적용", "버리기", "위 변 페이드", "전체 페더", "이전 판으로"].map((l) => (B(l) ? B(l).disabled : null)),
+    brush: viewer.ed.pointerdown({ cx: 600, cy: 2900, shiftKey: false }), undoKey: key("KeyZ", { ctrlKey: true }), pending: ed.pending() };
+  // 적용 중 대상 바꾸기(N·목록) 거절 — 받으면 적용 성공 길이 옛 대상의 값·file 을 새 대상 세션에 씀
+  Object.assign(r.applying, { go: ed.go({ key: K14, seam: null }), goToast: toasts.at(-1), confirms: confirms.length });
+  // U3 3차 검증: 적용 중 나가기(K·Esc)도 거절 — 나가면 board 가 그때의 적용 안 한 획을 진행 ★ 점검에 넣는데, 적용이 끝나 세션이 비어도 그 줄이 남음
+  Object.assign(r.applying, { leave: ed.leave(), leaveToast: toasts.at(-1), leaveConfirms: confirms.length, editor: !!viewer.ed });
+  release();
+  srv.hold = null;
+  await until(() => rows().some((t) => t.includes("다른 창에서 바뀌었습니다")));
+  r.conflict = { rows: rows().filter((t) => t.includes("다른 창에서")), again: !!B("다시 받기"), pending: ed.pending(), toast: toasts.pop() };
+  key("Enter");
+  await until(() => calls.refresh === 1);
+  r.applied = { pending: ed.pending(), toast: toasts.pop(), q: srv.log.filter((x) => x.path === "mask/save").map((x) => x.q.seen) };
+  // 적용 전후(패널 6): 새 서명의 이음매 전엔 '다시 계산 중', 새 state(rev)가 오면 GET /mask 다시(편집 판·3층 서명 반영) + 새 이음매로 전후 줄
+  r.diffWait = rows().filter((t) => t.startsWith("적용 뒤") || t.startsWith("적용 전후"));
+  const SIG2 = MA["POST /mask/save"].ok.composite_sig;
+  const S2 = Object.assign(maskState(), { rev: 137 });
+  S2.canvas.composite_sig = SIG2;
+  const i2 = Object.assign(maskInfo(K15), { composite_sig: SIG2, seams: null, edit: Object.assign(clone(MA["POST /mask/save"].ok.edit), { ops: "붓 1획", hist: 1 }) });
+  i2.layers.sig = "7c41aa0e92b3d5f9";
+  srv.info[K15] = i2;
+  const seg15 = (o) => Object.assign(clone(seams.segments[1]), o);
+  viewer.seamsObj = { sig: SIG2, segments: [seg15({ diff_p90: 12.1, severity: "weak" }),
+    seg15({ side: "bottom", x0: 300, y0: 3327, x1: 340, y1: 3327, length: 40, diff_p90: 35.0, severity: "bad" }),
+    seg15({ side: "right", x0: 1407, y0: 2600, x1: 1407, y1: 2700, length: 100, diff_p90: 9.5, severity: "weak" }),
+    // 같은 크롭·같은 변의 다른 ★(타깃 B) 구간 — 이 ★ 의 전후 짝이 아님(새로 생김)
+    seg15({ tid: "B", key: "r_7e8f9a0b1c2d_0_0", side: "left", x0: 128, y0: 2720, x1: 128, y1: 2750, length: 30, diff_p90: 20.0, severity: "weak" }),
+    seams.segments[2]] };
+  const g0 = [P.count("mask"), P.count("mask/img", "under")];
+  ed.stateChanged(S2);
+  ed.seamsChanged();
+  await until(() => P.count("mask/img", "under") > g0[1]);
+  await sleep(5);
+  r.diff = { gets: [P.count("mask") - g0[0], P.count("mask/img", "under") - g0[1]], rows: rows().filter((t) => t.startsWith("적용 전후")),
+    edit: rows().find((t) => t.startsWith("편집 ")) || null, hist: rows().find((t) => t.startsWith("이전 판")) || null, list: list.children.map((e) => e.textContent) };
+  // 그 뒤 다른 쓰기(다른 창·노드)로 ★ 합성이 적용 전도 뒤도 아닌 서명이 되면 전후 줄을 지움('적용 뒤 … 다시 계산 중'이 남지 않음)
+  const SIG3 = "0f1e2d3c4b5a6978";
+  const S2b = Object.assign(maskState(), { rev: 138 });
+  S2b.canvas.composite_sig = SIG3;
+  viewer.seamsObj = { sig: SIG3, segments: viewer.seamsObj.segments };
+  const g2 = P.count("mask");
+  ed.stateChanged(S2b);
+  await until(() => P.count("mask") > g2);
+  await sleep(5);
+  r.diffGone = rows().filter((t) => t.startsWith("적용 뒤") || t.startsWith("적용 전후"));
+  // Codex 2차: 같은 rev 라도 pref_v(board_pref.json — 분석·Export 설정, 바뀌어도 rev 는 그대로)가 바뀌면 GET /mask 다시, 같은 판이면 다시 받지 않음
+  const gp = P.count("mask");
+  ed.stateChanged(Object.assign({}, S2b, { pref_v: "a1b2c3d4e5f6" }));
+  await until(() => P.count("mask") > gp);
+  await sleep(5);
+  ed.stateChanged(Object.assign({}, S2b, { pref_v: "a1b2c3d4e5f6" }));
+  await sleep(10);
+  r.pref = P.count("mask") - gp;
+  // 획 중에 새 state = 받기를 미룸 → 획이 끝나면 GET /mask(적용 안 한 획이 있어 세션은 그대로 — 편집 줄만 새 판), 같은 rev 는 다시 받지 않음
+  const S3 = Object.assign(maskState(), { rev: 139 });
+  S3.canvas.composite_sig = SIG3;
+  srv.info[K15] = Object.assign(clone(i2), { edit: Object.assign(clone(i2.edit), { file: "masks/r_61ba2d69_e_0000000000bb.png", ops: "다른 창의 붓 2획", hist: 2 }) });
+  const g1 = P.count("mask");
+  viewer.ed.pointerdown({ cx: 700, cy: 2900, shiftKey: false });
+  ed.stateChanged(S3);
+  await sleep(10);
+  r.again = { during: P.count("mask") - g1 };
+  viewer.ed.pointermove({ cx: 720, cy: 2900, shiftKey: false });
+  viewer.ed.pointerup({});
+  await until(() => rows().some((t) => t.includes("다른 창의 붓 2획")));
+  ed.stateChanged(S3);
+  await sleep(10);
+  Object.assign(r.again, { after: P.count("mask") - g1, pending: ed.pending(), edit: rows().find((t) => t.startsWith("편집 ")) || null });
+  // U3 2차 검증: 세션이 연 판 뒤(다른 창의 새 판)면 세션 칸에 경고 + [다시 받기] — Ctrl+Z 로 0 이 돼도(다시 Ctrl+Y 할 수 있게 세션은 그대로), [버리기]는
+  // 서버 판으로 다시 염(미리보기 = Compose·Export 가 쓰는 판)
+  const behindRow = () => rows().filter((t) => t.startsWith("서버 판이 바뀜"));
+  r.again.behind = behindRow();
+  key("KeyZ", { ctrlKey: true });
+  r.again.zero = { pending: ed.pending(), behind: behindRow(), button: !!B("다시 받기"), gets: P.count("mask") - g1 };
+  key("KeyY", { ctrlKey: true });
+  const n1 = [P.count("mask"), P.count("mask/img", "edit")];
+  B("버리기").fire("click");
+  raf();  // U3 3차 검증: 브라우저에선 [버리기]의 rAF 가 다시 열기보다 먼저 돎(연 판 합성) — 다시 연 뒤 겹침 전체를 서버 판으로 다시 그려야 함
+  const pDisc = puts.length;
+  await until(() => P.count("mask/img", "edit") > n1[1] && !behindRow().length);
+  await sleep(5);
+  raf();
+  r.again.discard = { confirm: confirms.pop(), pending: ed.pending(), gets: [P.count("mask") - n1[0], P.count("mask/img", "edit") - n1[1]], behind: behindRow(),
+    reput: puts.slice(pDisc) };
+  // 저장된 판(패널 5): [이전 판으로](획 없으면 확인 없음) → POST /mask/edit undo → 다시 열기 · 획이 있으면 확인(아니오 = 그대로) ·
+  // [편집 지우기] = 확인 창(이전 판 수·버릴 획) → reset → 기준 마스크로
+  srv.info[K15] = i2;
+  const e0 = [P.count("mask"), confirms.length, calls.refresh];
+  B("이전 판으로").fire("click");
+  await until(() => toasts.some((t) => t.startsWith(":이전 판으로")));
+  r.undo2 = { body: srv.log.filter((x) => x.path === "mask/edit").pop().body, confirms: confirms.length - e0[1], gets: P.count("mask") - e0[0],
+    refresh: calls.refresh - e0[2], toast: toasts.pop() };
+  viewer.ed.pointerdown({ cx: 600, cy: 2900, shiftKey: false });
+  viewer.ed.pointerup({});
+  P.answer = false;
+  const nEdit = P.count("mask/edit");
+  B("이전 판으로").fire("click");
+  r.undoAsk = { confirm: confirms.pop(), posts: P.count("mask/edit") - nEdit, pending: ed.pending() && ed.pending().n };
+  P.answer = true;
+  srv.edit.push([200, MA["POST /mask/edit"].alt.cleared]);
+  srv.info[K15] = Object.assign(clone(i2), { edit: null });
+  B("편집 지우기").fire("click");
+  await until(() => toasts.some((t) => t.startsWith(":마스크 편집 지움")) && rows().includes("저장된 편집 없음"));
+  r.reset = { confirm: confirms.pop(), body: srv.log.filter((x) => x.path === "mask/edit").pop().body, pending: ed.pending(), toast: toasts.pop(),
+    rows: rows().filter((t) => t.startsWith("편집 없음") || t === "저장된 편집 없음") };
+  // N·이음매 목록: 다른 ★ 의 이음매 → 그 후보를 편집 대상(획 없으면 확인 없음)으로, 그 구간을 2:1
+  const n14 = confirms.length;
+  r.goSeam = { ok: ed.go({ key: K14, seam: seams.segments[2] }), confirms: confirms.length - n14, look: viewer.looks.pop() };
+  await until(() => rows().some((t) => t.includes("c02 ★")));
+  r.goSeam.rows = rows().slice(0, 2);
+  r.goSeam.fade = B("선택 이음매 구간 페이드") ? B("선택 이음매 구간 페이드").disabled : null;
+  // 이 크롭 이음매 목록 = 뷰어 이음매(지금 서명)에서 이 크롭만 · 누르면 그 구간
+  r.seamRows = rows().filter((t) => / · p90 /.test(t));
+  // [선택 이음매 구간 페이드] = 구간 끝을 크롭 rect 기준으로(왼·오른 변은 y0, 위·아래 변은 x0) — 014 왼변 2604–2694 → 364–454(U0 §2.2), 바뀐 띠만 다시 그림
+  await until(() => viewer.layer && viewer.layer.box[0] === 256);
+  raf();
+  const p0 = puts.length;
+  B("선택 이음매 구간 페이드").fire("click");
+  raf();
+  r.range = { row: rows().find((t) => t.startsWith("적용 안 한 획")) || null, puts: puts.slice(p0) };
+  ed.go({ key: K14, seam: { crop_id: "014_0f9cc5", tid: "A", key: K14, side: "top", x0: 700, y0: 2240, x1: 800, y1: 2240, length: 100, diff_med: 20, diff_p90: 40,
+    severity: "bad" } });
+  B("선택 이음매 구간 페이드").fire("click");
+  r.range.top = rows().find((t) => t.startsWith("적용 안 한 획")) || null;
+  key("KeyZ", { ctrlKey: true });
+  key("KeyZ", { ctrlKey: true });
+  r.range.undone = ed.pending();
+  // 대안 표(이 ★ 타깃의 다른 후보)
+  const altRow = MA["GET /mask/alts"].ok.rows;
+  srv.alts.push([200, { sig: SIG3, now: { bad: 1, worst: 38.4 }, rows: [Object.assign(clone(altRow[0]), { key: "r_d9b7ffb9fb7c_0_0", c: 1, bad: 0, weak: 1,
+    worst_p90: 14.9, this_crop: [], changed_crops: ["015_d556f2"] }), Object.assign(clone(altRow[1]), { key: "h_0a1b2c3d4e5f", c: 3 })] }]);
+  B("다른 후보로").fire("click");
+  await until(() => panel.all().some((e) => e.tagName === "TABLE"));
+  const table = panel.all().find((e) => e.tagName === "TABLE");
+  r.alts = { rows: table.children.map((tr) => tr.children.map((td) => td.textContent)), now: rows().find((t) => t.startsWith("지금 c")) || null };
+  // [이 후보를 ★] = 확인 창(아니오 = 그대로) → 보드 pick(타깃, 그 후보 — 검토의 Space) → 새 ★ 를 편집 대상으로
+  P.answer = false;
+  B("이 후보를 ★").fire("click");
+  await sleep(5);
+  r.star = { no: { confirm: confirms.pop(), pick: calls.pick.length } };
+  P.answer = true;
+  srv.info.r_d9b7ffb9fb7c_0_0 = Object.assign(clone(MA["GET /mask"].alt.no_edit), { key: "r_d9b7ffb9fb7c_0_0", c: 1 });
+  B("이 후보를 ★").fire("click");
+  await until(() => rows().some((t) => t.startsWith("014_치마원단_문양 · A · c01 ★")));
+  r.star.yes = { pick: calls.pick, select: calls.select.at(-1), get: srv.log.filter((x) => x.path === "mask").pop().q.key, row: rows()[0] };
+  // 나가기 — 세션이 비었으면 확인 없이, 뷰어 훅을 뗌
+  const nc = confirms.length;
+  r.leave = { ok: ed.leave(), confirms: confirms.length - nc, editor: viewer.ed, layer: viewer.layer, panel: panel.children.length, pending: ed.pending() };
+  return r;
+});
+
+// 1차 리뷰(JS) 화면: 끄는 중 N = 획을 끝내 확인 · 여는 동안 대상 줄 = 불러오는 중만·앞 대상의 늦은 3층은 붙이지 않음 · 대안 표(남은 편집 칩·[이 후보를 ★] 문구·
+// ★ 합성이 바뀌면 낡음) · ★ 가 아닌 세션 후보 확인 문구 · Shift 끌기 = 부드럽게 · [ ] 크기·경도 범위
+await scenario("panelR1", async () => {
+  const P = maskPanel();
+  const { srv, viewer, ed, rows, B, raf, confirms, panel } = P;
+  const r = {};
+  const S = maskState();
+  S.targets[0].candidates[1].mask_edit = { at: "2026-10-19 18:11:05", stale: true };  // K15B(c02) — 예전 ★ 일 때 남긴 편집(★ 해제돼도 기록은 남음)
+  ed.enter(S, { key: K15, seam: null });
+  await until(() => viewer.layer && !rows().some((t) => t.includes("불러오는 중")));
+  raf();
+  // session-r1-01: 끄는 중 N(go — 뷰어 포인터 캡처는 클릭만 막음) = 획을 끝내 확인 창에 셈(아니오 = 그대로 — 끝난 획 1, 그 뒤 끌기는 칠하지 않음)
+  viewer.ed.pointerdown({ cx: 600, cy: 2900, shiftKey: false });
+  viewer.ed.pointermove({ cx: 620, cy: 2900, shiftKey: false });
+  P.answer = false;
+  r.midGo = { ok: ed.go({ key: K14, seam: null }), confirm: confirms.pop() || null, pending: ed.pending() && ed.pending().n };
+  viewer.ed.pointermove({ cx: 660, cy: 2900, shiftKey: false });
+  viewer.ed.pointerup({});
+  r.midGo.after = ed.pending() && ed.pending().n;
+  // apply-r1-02·analysis-r1-04: 대안 표 — 단추 첫 열, 후보 칸 칩 = 남은 편집, [이 후보를 ★] 문구 = 남은 편집이 다시 쓰임 / 편집 없이 기준
+  srv.alts.push([200, MA["GET /mask/alts"].ok]);
+  B("다른 후보로").fire("click");
+  await until(() => panel.all().some((e) => e.tagName === "TABLE"));
+  r.alts = panel.all().find((e) => e.tagName === "TABLE").children.map((tr) => tr.children.map((td) => td.textContent));
+  for (const b of panel.all().filter((e) => e.tagName === "BUTTON" && e.textContent === "이 후보를 ★")) b.fire("click");
+  r.starAsk = confirms.splice(0);
+  // ui-r1-02: 표를 계산한 뒤 ★ 합성이 바뀜(적용·되돌리기·다른 창 — 새 state) → 표 대신 '낡음' 줄 + [다른 후보로](다시 계산)
+  const S1 = Object.assign(maskState(), { rev: 137 });
+  S1.canvas.composite_sig = "0f1e2d3c4b5a6978";
+  ed.stateChanged(S1);
+  await sleep(10);
+  r.altsOld = { table: panel.all().some((e) => e.tagName === "TABLE"), row: rows().find((t) => t.includes("표가 낡음")) || null, button: !!B("다른 후보로") };
+  srv.alts.push([200, Object.assign(clone(MA["GET /mask/alts"].ok), { sig: "0f1e2d3c4b5a6978" })]);
+  const na = srv.count("mask/alts");
+  B("다른 후보로").fire("click");
+  await until(() => panel.all().some((e) => e.tagName === "TABLE"));
+  r.altsOld.refetch = srv.count("mask/alts") - na;
+  // Codex 5차: ★ 합성 서명은 그대로인데 후보 집합이 바뀜(다른 창의 탈락·Run 의 새 후보) → 표 대신 '낡음' 줄(탈락 행의 [이 후보를 ★]로 탈락이 풀리지 않게)
+  const S1b = Object.assign(maskState(), { rev: 137 });
+  S1b.canvas.composite_sig = "0f1e2d3c4b5a6978";
+  S1b.targets[0].candidates[1].rejected = true;
+  ed.stateChanged(S1b);
+  await sleep(10);
+  r.altsSet = { table: panel.all().some((e) => e.tagName === "TABLE"), row: rows().find((t) => t.includes("표가 낡음")) || null, button: !!B("다른 후보로") };
+  // Codex 6차: 다른 창이 대안(★ 아님) c02 의 저장된 편집을 지움 — 다시 ★ 하면 쓰일 편집이라 그 가정 합성이 바뀜(서명·후보 key 는 그대로) → 표 낡음
+  const S1c = Object.assign(maskState(), { rev: 137 });  // 탈락이 풀림 = 표를 계산할 때의 후보 집합 그대로 → 표가 다시 보임
+  S1c.canvas.composite_sig = "0f1e2d3c4b5a6978";
+  ed.stateChanged(S1c);
+  await sleep(10);
+  const back = panel.all().some((e) => e.tagName === "TABLE");
+  const S1d = Object.assign(maskState(), { rev: 137 });
+  S1d.canvas.composite_sig = "0f1e2d3c4b5a6978";
+  const was = S1d.targets[0].candidates[1].mask_edit;
+  S1d.targets[0].candidates[1].mask_edit = { at: "2026-10-20 04:30:00", stale: false };  // 다른 창에서 c02 가 ★ 이던 동안 저장 → ★ 를 되돌림
+  ed.stateChanged(S1d);
+  await sleep(10);
+  r.altsEdit = { back, was, table: panel.all().some((e) => e.tagName === "TABLE"), row: rows().find((t) => t.includes("표가 낡음")) || null };
+  // ui-r1-03: 세션 후보가 검토에서 ★ 해제됨(c02 를 ★) — 다른 후보로 갈 때 확인 문구가 '이제 ★ 가 아니라 적용할 수 없음'
+  const S2 = Object.assign(maskState(), { rev: 138 });
+  S2.canvas.composite_sig = "0f1e2d3c4b5a6978";
+  Object.assign(S2.targets[0].candidates[0], { picked: false, slice_index: null });
+  Object.assign(S2.targets[0].candidates[1], { picked: true, slice_index: 1 });
+  S2.targets[0].pick_keys = [K15B];
+  ed.stateChanged(S2);
+  await sleep(10);
+  const hint = rows().find((t) => t.startsWith("이 후보는 이제 ★ 가 아님")) || null;
+  r.gone = { hint, ok: ed.go({ key: K15B, seam: null }), confirm: confirms.pop() || null };
+  P.answer = true;
+  ed.leave();
+  // session-r1-05·03: 다른 대상을 여는 동안 대상 줄 = 새 대상 '불러오는 중'만(옛 대상의 c·창·z·편집을 섞지 않음), 앞 대상의 늦은 3층은 붙이지 않음
+  const Q = maskPanel();
+  const [gL, gB] = [gate(), gate()];
+  Q.srv.wait = (path, q) => (path === "mask/img" && q.key === K15 && ["under", "patch", "over"].includes(q.kind) ? gL.p
+    : path === "mask" && q.key === K14 ? gB.p : null);
+  Q.ed.enter(maskState(), { key: K15, seam: null });
+  await until(() => Q.rows().some((t) => t.startsWith("015_치마밑단_주름 · A · c01 ★")) && Q.count("mask/img", "over") === 1);
+  Q.ed.go({ key: K14, seam: null });
+  await sleep(5);
+  r.loading = { rows: Q.rows().slice(0, 2), list: Q.list.children.filter((e) => e.classList.contains("sel")).map((e) => e.textContent) };
+  gL.go();
+  await sleep(10);
+  r.loading.late = Q.viewer.layer && Q.viewer.layer.box;
+  gB.go();
+  await until(() => Q.viewer.layer && Q.viewer.layer.box[0] === 256);
+  r.loading.layer = Q.viewer.layer.box;
+  Q.srv.wait = null;
+  Q.ed.leave();
+  // tests-r1-08: Shift 누른 채 끌기 = 부드럽게(붓 원 점선) — 고른 도구(지우기)가 아님: 균일한 곳(014 기준 255)에서는 합성이 그대로, 지우기는 바뀜
+  const V = maskPanel();
+  V.ed.enter(maskState(), { key: K14, seam: null });
+  await until(() => V.viewer.layer && !V.rows().some((t) => t.includes("불러오는 중")));
+  V.raf();
+  const px = () => {
+    const L = V.viewer.layer.box;
+    const i = ((2600 - L[1]) * (L[2] - L[0]) + (900 - L[0])) * 4;
+    return Array.from(V.img.data.slice(i, i + 4)).join();
+  };
+  const before = px();
+  V.viewer.ed.pointerdown({ cx: 900, cy: 2600, shiftKey: true });
+  V.viewer.ed.pointermove({ cx: 910, cy: 2600, shiftKey: true });
+  r.shift = { ring: (V.viewer.marks.find((m) => m.tag === "circle") || { attrs: {} }).attrs.class };
+  V.viewer.ed.pointerup({});
+  V.raf();
+  Object.assign(r.shift, { same: px() === before, pending: V.ed.pending() && V.ed.pending().n });
+  V.viewer.ed.pointerdown({ cx: 900, cy: 2600, shiftKey: false });
+  V.viewer.ed.pointerup({});
+  V.raf();
+  r.shift.erase = px() !== before;
+  // tests-r1-10: [ ] 크기 4–512, Shift+[ ] 경도 0–1 — 범위 끝에서 멈춤(슬라이더·붓 원)
+  const sl = () => V.panel.all().filter((e) => e.classList.contains("rf-slider")).map((e) => e.textContent).slice(0, 2);
+  for (let i = 0; i < 25; i++) V.key("BracketRight");
+  r.clamp = { up: sl(), ring: (V.viewer.marks.find((m) => m.tag === "circle") || { attrs: {} }).attrs.r };
+  for (let i = 0; i < 40; i++) V.key("BracketLeft");
+  r.clamp.down = sl()[0];
+  for (let i = 0; i < 12; i++) V.key("BracketRight", { shiftKey: true });
+  r.clamp.hardUp = sl()[1];
+  for (let i = 0; i < 14; i++) V.key("BracketLeft", { shiftKey: true });
+  r.clamp.hardDown = sl()[1];
+  V.ed.leave();
+  return r;
+});
+
+// D4 편집 기준 바뀜 ★ — 편집 창이 바뀜(재분석으로 quad bbox 가 움직임 — 서버가 기록 창의 편집을 지금 창으로 옮겨 줌, stale): K 로 열리고 경고 줄 +
+// [기준으로 다시 시작]·[이전 판으로]·[편집 지우기], 붓 → [적용] = 지금 창 크기 PNG(seen = 기록 file). 편집 래스터를 못 받아도(404 등) 같은 줄·단추가
+// 남고(세션·겹침만 없음) [다시 받기]가 다시 연다
+await scenario("panelStale", async () => {
+  const states = (P) => ({ rows: P.rows().slice(0, 4), restart: P.panel.all().filter((e) => e.tagName === "BUTTON" && e.textContent === "기준으로 다시 시작").length,
+    on: ["기준으로 다시 시작", "이전 판으로", "편집 지우기", "위 변 페이드"].map((l) => (P.B(l) ? !P.B(l).disabled : null)), layer: P.viewer.layer && P.viewer.layer.box });
+  const stale = () => {
+    const mv = Object.assign(maskInfo(K15), { rect: [126, 2558, 1410, 3330] });
+    mv.edit.stale = true;
+    return mv;
+  };
+  const P = maskPanel();
+  P.srv.info[K15] = stale();
+  P.ed.enter(maskState(), { key: K15, seam: null });
+  await until(() => P.viewer.layer && !P.rows().some((t) => t.includes("불러오는 중")));
+  P.raf();
+  const r = { open: states(P) };
+  P.answer = false;
+  P.B("기준으로 다시 시작").fire("click");
+  r.restartAsk = { confirm: P.confirms.pop(), posts: P.count("mask/edit") };
+  P.answer = true;
+  P.viewer.ed.pointerdown({ cx: 600, cy: 2900, shiftKey: false });
+  P.viewer.ed.pointerup({});
+  P.key("Enter");
+  await until(() => P.calls.refresh === 1);
+  const sv = P.srv.log.filter((x) => x.path === "mask/save").pop();
+  r.save = { seen: sv.q.seen, wh: [sv.body.readUInt32BE(16), sv.body.readUInt32BE(20)] };
+  P.ed.leave();
+  const Q = maskPanel();
+  Q.srv.info[K15] = stale();
+  Q.srv.imgFail = "edit";
+  Q.ed.enter(maskState(), { key: K15, seam: null });
+  await until(() => Q.rows().some((t) => t.includes("마스크 편집 파일이 없습니다")) && Q.count("mask/img", "over") === 1);
+  await sleep(5);
+  r.lost = Object.assign(states(Q), { err: Q.rows().find((t) => t.includes("마스크 편집 파일이 없습니다")) || null });
+  Q.srv.imgFail = null;
+  Q.B("다시 받기").fire("click");
+  await until(() => Q.viewer.layer);
+  r.lost.again = { on: Q.B("위 변 페이드") && !Q.B("위 변 페이드").disabled, layer: Q.viewer.layer.box, err: Q.rows().some((t) => t.includes("없습니다")) };
+  // 새 state(서버 판이 바뀜)의 다시 열기가 래스터를 못 받으면 옛 세션 겹침을 뗌(패널 = 오류 줄 + [다시 받기])
+  const mv2 = stale();
+  mv2.edit.file = "masks/r_61ba2d69_e_0000000000cc.png";
+  Q.srv.info[K15] = mv2;
+  Q.srv.imgFail = "edit";
+  Q.ed.stateChanged(Object.assign(maskState(), { rev: 137 }));
+  await until(() => !Q.viewer.layer && Q.rows().some((t) => t.startsWith("마스크 편집 파일이 없습니다")));
+  r.lost.refail = { layer: Q.viewer.layer && Q.viewer.layer.box, err: Q.rows().find((t) => t.startsWith("마스크 편집 파일이 없습니다")) || null };
+  Q.srv.imgFail = null;
+  Q.ed.leave();
+  return r;
+});
+
+// U3 3차 검증: 끌던 중 나가기(획을 끝내 확인 창·★ 점검에 넣음) · 나갔다 다시 들어오기(세션 그대로 — 겹침을 다시 붙이고 전체 다시 그림) ·
+// 기준 서명만 바뀐 세션(같은 창·같은 기록 — 서버가 받음: '거절'이 아니라 지금 기준으로 저장된다고 알림)
+await scenario("panelLife", async () => {
+  const P = maskPanel();
+  const { viewer, ed, rows, raf, puts, confirms } = P;
+  const S = maskState();
+  ed.enter(S, { key: K15, seam: null });
+  await until(() => viewer.layer && !rows().some((t) => t.includes("불러오는 중")));
+  raf();
+  const r = {};
+  viewer.ed.pointerdown({ cx: 600, cy: 2900, shiftKey: false });
+  viewer.ed.pointermove({ cx: 640, cy: 2900, shiftKey: false });
+  r.midStroke = { ok: ed.leave(), confirm: confirms.pop() || null, pending: ed.pending(), layer: viewer.layer, editor: viewer.ed };
+  const g0 = P.count("mask");
+  ed.enter(S, { key: K15, seam: null });
+  await until(() => P.count("mask") > g0);
+  await sleep(5);
+  const p0 = puts.length;
+  raf();
+  r.reenter = { layer: viewer.layer && viewer.layer.box, puts: puts.slice(p0), pending: ed.pending() && ed.pending().n };
+  const moved = maskInfo(K15);
+  moved.base.sig = "0a1b2c3d4e5f6071";
+  P.srv.info[K15] = moved;
+  ed.stateChanged(Object.assign(maskState(), { rev: 137 }));
+  await until(() => rows().some((t) => t.startsWith("기준 마스크가 바뀜")));
+  r.sigOnly = { rows: rows().filter((t) => t.startsWith("기준 마스크가 바뀜") || t.startsWith("서버 판이 바뀜")) };
+  P.key("Enter");
+  await until(() => P.calls.refresh === 1);
+  r.sigOnly.save = { rect: P.srv.log.filter((x) => x.path === "mask/save").pop()?.q.rect ?? null, pending: ed.pending() };
+  ed.leave();
+  return r;
+});
+
+// U3 3차 검증: 실제 viewer.js 의 setMaskLayer — K 진입 = 3층 합성 캔버스를 stage 에(선택 크롭 겹침 숨김), 나가기 = 떼고 겹침 되살림,
+// 다시 들어오기 = 다시 붙임, 다른 대상을 여는 동안 = 뗌(옛 대상 합성이 남지 않게)
+await scenario("viewerMask", async () => {
+  class VEl extends El {
+    constructor(doc, tag) {
+      super(doc, tag);
+      this.attrs = {};
+    }
+    get parentNode() { return this.parent; }
+    get clientWidth() { return this.classList.contains("vport") ? 1000 : 0; }
+    get clientHeight() { return this.classList.contains("vport") ? 800 : 0; }
+    setAttribute(k, v) { this.attrs[k] = String(v); }
+    getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; }
+    removeAttribute(k) { delete this.attrs[k]; }
+    insertBefore(x, ref) {
+      x.remove();
+      x.parent = this;
+      const i = this.children.indexOf(ref);
+      this.children.splice(i < 0 ? this.children.length : i, 0, x);
+    }
+    remove() {
+      if (this.parent) this.parent.children = this.parent.children.filter((e) => e !== this);
+      this.parent = null;
+    }
+  }
+  const doc = new Doc();
+  doc.createElement = (tag) => {
+    const e = new VEl(doc, tag);
+    if (tag !== "canvas") return e;
+    return Object.assign(e, { width: 0, height: 0, getContext: () => ({
+      drawImage(b) { this.b = b; }, getImageData() { return { data: this.b.im.data }; },
+      createImageData: (w, h) => ({ width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }), putImageData() {} }) });
+  };
+  doc.createElementNS = (ns, tag) => new VEl(doc, tag);
+  const srv = maskServer();
+  const seams = { sig: "5d1f0c9a3be27741", segments: clone(MA["GET /mask"].ok.seams) };
+  const c = vm.createContext({ window: { devicePixelRatio: 1, addEventListener() {}, confirm: () => true }, document: doc,
+    fetch: (u, o) => (new URL(u).pathname.endsWith("/seams") ? Promise.resolve({ ok: true, status: 200, json: async () => clone(seams) }) : srv.fetch(u, o)),
+    requestAnimationFrame: () => 1, cancelAnimationFrame() {}, ResizeObserver: class { observe() {} }, Image: class {},
+    createImageBitmap: async (b) => { const im = fakeImage(b.fake); return { width: im.w, height: im.h, im, close() {} }; },
+    URLSearchParams, setTimeout, clearTimeout, console, Blob, Response, CompressionStream });
+  vm.runInContext(fs.readFileSync(IN.viewerJs, "utf8"), c, { filename: "viewer.js" });
+  vm.runInContext(fs.readFileSync(IN.maskJs, "utf8"), c, { filename: "mask_edit.js" });
+  const host = doc.createElement("div");
+  doc.body.append(host);
+  const vopts = { apiUrl: A };
+  const viewer = c.window.DPViewer.create(host, vopts);
+  const S = maskState();
+  Object.assign(S.canvas, { composite_url: "composite?v=1", base_url: "base?v=1", seams_url: "seams?v=1" });
+  for (const cr of S.crops) Object.assign(cr, { region: [cr.rect[0] - 64, cr.rect[1] - 64, cr.rect[2] + 64, cr.rect[3] + 64], region_url: `region?crop=${cr.id}` });
+  viewer.setState(S);
+  const selFor = (key) => {
+    const t = S.targets.find((x) => x.candidates.some((cd) => cd.key === key));
+    return { crop: S.crops.find((x) => x.id === t.crop_id), target: Object.assign({ before_full_url: "before?v=1" }, t), cand: t.candidates.find((cd) => cd.key === key) };
+  };
+  viewer.setSelection(selFor(K15), false);
+  const ed = c.window.DPMaskEdit.create({ list: doc.createElement("ol"), panel: doc.createElement("section") }, { apiUrl: A, root: KEY, viewer, toast() {},
+    exit() {}, refresh() {}, seams: () => viewer.seams(), select: (k, f) => viewer.setSelection(selFor(k), f), pick: async () => null, ranText: () => "" });
+  const find = (cls) => host.all().find((e) => e.classList.contains(cls));
+  const [stage, ov, port] = ["stage", "ov", "vport"].map(find);
+  const snap = () => {
+    const ms = stage.children.filter((e) => e.classList.contains("ov-mask"));
+    return { masks: ms.map((e) => [e.style.left, e.style.top, e.style.width, e.style.height].join(" ")), ov: ov.hidden, edit: port.classList.contains("edit") };
+  };
+  const loaded = async (key) => {
+    await until(() => srv.log.some((x) => x.q.key === key && x.q.kind === "over") && !ed.pending() && snap().masks.length === 1);
+    await sleep(5);
+  };
+  const r = { before: snap() };
+  ed.enter(S, { key: K15, seam: null });
+  await loaded(K15);
+  r.enter = snap();
+  // tests-r2-08: 3층 캔버스는 marks(붓 원·편집 창·선택 이음매 — z-index 없음 = DOM 순서) 앞(불투명 합성이 붓 원을 가리지 않게)
+  r.order = stage.children.map((e) => (e.classList.contains("ov-mask") ? "mask" : e.attrs.class === "marks" ? "marks" : null)).filter(Boolean);
+  ed.leave();
+  r.leave = snap();
+  const g0 = srv.count("mask");
+  ed.enter(S, { key: K15, seam: null });
+  await until(() => srv.count("mask") > g0);
+  await sleep(5);
+  r.reenter = snap();
+  ed.go({ key: K14, seam: null });
+  r.opening = snap().masks;
+  await loaded(K14);
+  r.opened = snap();
+  ed.leave();
+  r.end = snap();
+  // ui-r1-06: N 을 받은 쪽(마스크 편집기 go)이 거절(onPick → false — 적용 안 한 획 확인 취소·적용 중)하면 자리·강조·메시지 그대로, 받으면 다음 이음매로
+  await until(() => viewer.seams());
+  const msg = find("vmsg");
+  const cur = () => host.all().filter((e) => / cur$/.test(e.attrs.class || "")).length;
+  const n0 = { msg: msg.textContent, z: viewer.scale() };
+  vopts.onPick = () => false;
+  viewer.nextSeam();
+  r.nRefused = { msg: msg.textContent === n0.msg, cur: cur(), z: viewer.scale() === n0.z };
+  vopts.onPick = () => undefined;
+  viewer.nextSeam();
+  r.nTaken = { msg: msg.textContent.startsWith("이음매 1/"), cur: cur(), z: viewer.scale() !== n0.z };
+  // 3차 ui-r3-03: showSeam(편집기의 선택 구간 — GET /mask 사본이어도 같은 구간이면) = N 의 자리·강조·메시지도 그 구간(다음 N 은 그다음), curSeam = 그 구간.
+  // 목록에 없는 구간이면 자리 없음
+  const segs = viewer.seams().segments;
+  viewer.showSeam(clone(segs[1]));
+  r.showSeam = { msg: msg.textContent.startsWith(`이음매 2/${segs.length}`), cur: cur(), curSeam: viewer.curSeam() === segs[1] };
+  viewer.nextSeam();
+  r.showSeam.next = [msg.textContent.startsWith(`이음매 ${(2 % segs.length) + 1}/`), viewer.curSeam() === segs[2 % segs.length]];
+  viewer.showSeam(Object.assign(clone(segs[0]), { x0: segs[0].x0 + 1 }));
+  r.showSeam.miss = { cur: cur(), curSeam: viewer.curSeam() };
+  return r;
+});
+
+// J-K3 board.js: K 모드 onKeyDown(검토 키·E·T·G 끔, 마스크 키 먼저, K 토글) · setMask·leaveMask·goMask·pickCrop
+await scenario("boardKeys", async () => {
+  const sets = {};
+  for (const k of ["EDIT_OFF", "REFS_OFF", "PIPE_OFF", "MASK_OFF"]) {
+    const m = new RegExp(`const ${k} = (new Set\\(\\[[\\s\\S]*?\\]\\));`).exec(boardSrc);
+    sets[k] = m ? m[1] : "new Set()";
+  }
+  const press = (mask, code, m) => {
+    const calls = [];
+    const spy = (name) => (...a) => calls.push([name, ...a]);
+    const kc = vm.createContext({ Element: class {}, $: (id) => ({ hidden: id === "mask-panel" ? !mask : true }),
+      editing: false, editor: null, refsOn: false, refEd: null, help: spy("help"), setEditing: spy("setEditing"), setRefs: spy("setRefs"),
+      setPipe: spy("setPipe"), setMask: spy("setMask"), setStar: spy("setStar"), toggleReject: spy("toggleReject"), reroll: spy("reroll"),
+      moveTarget: spy("moveTarget"), maskEd: { onKey: (e) => ["KeyX", "KeyQ", "Escape"].includes(e.code) && calls.push(["maskKey", e.code]) > 0 },
+      viewer: { setBg: spy("setBg"), flags: () => ({ bg: "composite" }), nextSeam: spy("nextSeam") } });
+    vm.runInContext(`typing = () => false; EDIT_OFF = ${sets.EDIT_OFF}; REFS_OFF = ${sets.REFS_OFF}; PIPE_OFF = ${sets.PIPE_OFF}; MASK_OFF = ${sets.MASK_OFF};`, kc);
+    const kd = vm.runInContext(`(${boardFn("onKeyDown")})`, kc);
+    let prevented = false;
+    kd(Object.assign({ code, key: code, target: null, repeat: false, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, isTrusted: true,
+      preventDefault() { prevented = true; } }, m || {}));
+    return { calls: calls.map((x) => x[0] + (x.length > 1 ? `:${x[1]}` : "")), prevented };
+  };
+  return { mask: Object.fromEntries(["Space", "KeyR", "ArrowDown", "KeyE", "KeyT", "KeyG", "KeyX", "KeyQ", "Escape", "KeyK", "KeyB", "KeyN"]
+    .map((k) => [k, press(true, k)])), review: { KeyK: press(false, "KeyK") }, maskOff: sets.MASK_OFF };
+});
+
+await scenario("boardMask", async () => {
+  const run = (o, fn) => {
+    const log = [];
+    const spy = (name, ret) => (...a) => { log.push([name, ...a.map((x) => (x && typeof x === "object" ? clone(x) : x))]); return ret; };
+    const els = {};
+    const S = { crops: o.noCrops ? [] : [{ id: "015_d556f2", mask_edits: 1 }], targets: o.targets || [] };
+    if (o.old) delete S.crops[0].mask_edits;
+    const kc = vm.createContext({ S, maskOn: !!o.on, editing: !!o.editing, refsOn: false, pipeOn: !!o.pipe,
+      maskEd: o.noMod ? null : { leave: spy("leave", o.leave !== false), enter: spy("enter"), go: spy("go", o.goRet), pending: () => o.left || null },
+      $: (id) => (els[id] ??= { hidden: true, disabled: false, title: "", classList: { add() {}, remove() {} } }),
+      document: { body: { classList: { add: spy("bodyOn"), remove: spy("bodyOff") } } },
+      toast: spy("toast"), curTarget: () => o.t || null, curCand: () => o.c || null, setEditing: spy("setEditing"), setRefs: spy("setRefs"),
+      setPipe: spy("setPipe"), setViewFlags: spy("setViewFlags"), pipe: { setMaskLeft: spy("setMaskLeft") }, renderAll: spy("renderAll"), setTimeout: spy("setTimeout"),
+      seeCurrent() {}, goTarget: spy("goTarget"), selectTarget: spy("selectTarget"), syncViewer: spy("syncViewer"),
+      tKey: o.tKey || null, cKey: null, refIdx: 2, rerollArm: { cell: "c" },
+      viewer: { seams: () => (o.noSeams ? null : { segments: [{ crop_id: "014_0f9cc5", key: "k14", side: "left" }, { crop_id: "015_d556f2", key: "k15", side: "top" }] }),
+        curSeam: () => o.curSeam || null } });
+    vm.runInContext(["maskReady", "maskWhy", "setMask", "leaveMask", "goMask", "pickCrop", "onUnload", "maskSelect"].map((n) => `${n} = ${boardFn(n)};`).join("\n"), kc);
+    const ret = fn(kc);
+    return { ret, log: log.map((x) => x.slice(0, 3)), on: kc.maskOn, panel: els["mask-panel"] ? els["mask-panel"].hidden : null };
+  };
+  const t = { key: "015_d556f2/A", pick_keys: ["k15"] };
+  const enterKey = (x) => (x.log.find((y) => y[0] === "enter") || [])[2]?.key ?? null;
+  const tgt = (key, picked, rejected = false) => [{ key: "015_d556f2/A", crop_id: "015_d556f2", pick_keys: picked ? [key] : ["k15"],
+    candidates: [{ key, picked, rejected }].concat(key === "k15" ? [] : [{ key: "k15", picked: !picked, rejected: false }]) }];
+  return {
+    noStar: run({ t: { key: "x/A", pick_keys: [] } }, (k) => k.setMask(true)),
+    star: run({ t, pipe: true }, (k) => k.setMask(true)),
+    slice: run({ t, c: { key: "k15s", picked: true } }, (k) => k.setMask(true)),
+    left: run({ t, left: { key: "kL", n: 2 }, targets: tgt("kL", true) }, (k) => k.setMask(true)),
+    // ui-r1-03: 세션 후보가 검토에서 ★ 해제·탈락됨 — 그 후보로 들어가지 않음(409 막다른 상태) → 검토의 ★(편집기 go 가 버릴지 확인)
+    leftGone: [tgt("kL", false), tgt("kL", true, true)].map((targets) => enterKey(run({ t, left: { key: "kL", n: 2 }, targets }, (k) => k.setMask(true)))),
+    // ui-r1-07: 이음매를 다시 받는 중(viewer.seams() null — 적용 직후)이면 그 크롭 첫 ★ 로(구간 없이 — 검토로 가지 않음)
+    goNoSeams: run({ t, noSeams: true, targets: tgt("k15", true) }, (k) => k.goMask({ crop: "015_d556f2" }, "015_d556f2/A")),
+    // ui-r1-08: 크롭이 없는 프로젝트(Import 전) — 서버가 옛 버전이라고 하지 않음
+    noCrops: run({ t, noCrops: true }, (k) => [k.maskReady(), k.maskWhy()]).ret,
+    // ui-r1-06: N(pickCrop)을 편집기가 거절하면 false 를 뷰어에 돌려줌(제자리)
+    pickRefused: run({ on: true, goRet: false }, (k) => k.pickCrop("015_d556f2", "A", "k15", { side: "top" })).ret,
+    // ui-r1-01: K 의 대상 선택이 타깃을 바꾸면 레퍼런스 번호·R 연타 대기를 처음으로(같은 타깃이면 그대로)
+    select: run({ tKey: "015_d556f2/A", targets: tgt("k15", true).concat([{ key: "014_0f9cc5/A", crop_id: "014_0f9cc5", pick_keys: ["k14"],
+      candidates: [{ key: "k14", picked: true }] }]) }, (k) => {
+      k.maskSelect("k15", false);
+      const same = [k.refIdx, k.rerollArm];
+      k.maskSelect("k14", true);
+      return { same, other: [k.refIdx, k.rerollArm, k.tKey, k.cKey] };
+    }).ret,
+    to: run({ t, left: { key: "kL", n: 2 } }, (k) => k.setMask(true, { key: "k9", seam: null })),
+    old: run({ t, old: true }, (k) => k.setMask(true)),
+    noMod: run({ t, noMod: true }, (k) => k.setMask(true)),
+    leaveNo: run({ on: true, leave: false }, (k) => k.setMask(false)),
+    leaveYes: run({ on: true, left: { key: "kL", n: 2 } }, (k) => k.setMask(false)),
+    guardNo: run({ on: true, leave: false }, (k) => k.leaveMask()),
+    guardOff: run({}, (k) => k.leaveMask()),
+    goCrop: run({ t }, (k) => k.goMask({ crop: "015_d556f2" }, "015_d556f2/A")),
+    goKey: run({ t }, (k) => k.goMask({ key: "kS" }, "015_d556f2/A")),
+    goOld: run({ t, old: true }, (k) => k.goMask({ crop: "015_d556f2" }, "015_d556f2/A")),
+    pickN: run({ on: true }, (k) => k.pickCrop("015_d556f2", "A", "k15", { side: "top" })),
+    // 새로고침·닫기(beforeunload) — 적용 안 한 마스크 획(모드 밖 포함)이 있을 때만 브라우저 확인 창(preventDefault)
+    unload: [{}, { left: { key: "kL", n: 2 } }, { left: { key: "kL", n: 2 }, on: true }, { noMod: true }].map((o) => run(o, (k) => {
+      let n = 0;
+      k.onUnload({ preventDefault: () => { n += 1; } });
+      return n;
+    }).ret),
+    // 3차 tests-r3-04: 검토에서 고른 후보가 ★ 가 아니면(대안을 보다가 K) 그 후보가 아니라 타깃 첫 ★(409 not_picked 오류 화면이 아님)
+    altPick: enterKey(run({ t, c: { key: "kAlt", picked: false } }, (k) => k.setMask(true))),
+    // 3차 ui-r3-02: 세션 후보가 X·Shift+Space 로 ★ 를 잃고 그 타깃에 ★ 가 없음 — 진행 ★ 점검 줄('K 에서 버리기')이 보낸 그 타깃의 K = 세션으로(패널 [버리기]),
+    // 세션이 다른 타깃이면 그대로 '★ 를 먼저'
+    goneOnly: (() => {
+      const targets = [{ key: "015_d556f2/A", crop_id: "015_d556f2", pick_keys: [], candidates: [{ key: "kA", picked: false, rejected: true }] },
+        { key: "014_0f9cc5/A", crop_id: "014_0f9cc5", pick_keys: [], candidates: [{ key: "kB", picked: false, rejected: false }] }];
+      return targets.map((t1) => {
+        const x = run({ t: t1, c: t1.candidates[0], left: { key: "kA", n: 5 }, targets }, (k) => k.setMask(true));
+        return [x.ret, enterKey(x), (x.log.find((y) => y[0] === "toast") || [])[1] || null];
+      });
+    })(),
+    // 3차 ui-r3-03: 검토의 N 이 가리키는 이음매가 들어갈 ★ 의 것이면 K 진입 = 그 구간 선택(아니면 구간 없이, 지정 대상이면 지정 구간)
+    nSeam: [[{ key: "k15", side: "top" }], [{ key: "k14", side: "left" }], [{ key: "k15", side: "top" }, { key: "k15", seam: null }]].map(([s, to]) =>
+      (run({ t, curSeam: s }, (k) => k.setMask(true, to)).log.find((y) => y[0] === "enter") || [])[2] || null),
+    // K 모드는 검토 화면을 보이지 않음 — 새 state 의 reconcile·진행 → K 의 seeCurrent 가 편집 대상을 '본 후보'로 하지 않음(나올 때 seeCurrent)
+    seen: [true, false].map((maskOn) => {
+      const kc = vm.createContext({ seen: new Set(), editing: false, refsOn: false, pipeOn: false, maskOn, saveSeen() {} });
+      vm.runInContext(`markSeen = ${boardFn("markSeen")};`, kc);
+      return [kc.markSeen("k15"), kc.seen.has("k15")];
+    }),
+  };
+});
+
+// J-K4 pipeline.js ★ 점검 S4 줄(편집 기준 바뀜·적용 안 한 편집·이음매 bad → K 모드)·Export 결과 줄 '그룹 마스크 n (편집 k)'·이전 목록 '편집 k'
+await scenario("checks", async () => {
+  const S = boardState();
+  S.crops.forEach((c) => { c.layout_status = null; });
+  S.targets[0].candidates[0] = { key: "k0", n: 1, picked: true, analysis: "ok", mask_edit: { at: "2026-10-19 18:20:41", stale: true } };
+  S.targets[0].candidates.push({ key: "k0b", n: 2, picked: false, analysis: "ok", mask_edit: { at: "2026-10-19 18:11:05", stale: true } }); // 옛 ★ 의 편집 — 줄 없음
+  S.targets[2].candidates[0].mask_edit = { at: "2026-10-19 18:20:41", stale: false };
+  const seamsMap = new Map([["003_2f8f50", { n: 2, bad: 1 }]]);
+  const left = { key: "k2", n: 3, name: "003_리본 · A" };
+  const pure = P.starChecks(S, seamsMap, [], left).map((x) => clone(x));
+  // ui-r1-03: 세션 후보(k3)가 ★ 가 아님(검토에서 ★ 해제·탈락) — 그 획은 적용할 수 없어 K(409) 대신 그 타깃을 검토로
+  const gone = P.starChecks(S, seamsMap, [], { key: "k3", n: 2, name: "008_치마금속장식 · A" }).filter((x) => x.text.startsWith("008_치마금속장식 · A — 적용 안 한"))
+    .map((x) => clone(x));
+  const srv = server();
+  srv.route.pipeline = [200, Object.assign(clone(R["GET /pipeline"].ok), { confirm: [], drift: [] })];
+  const doc = new Doc();
+  Object.assign(ctx, { document: doc, fetch: srv.fetch, navigator: { clipboard: { writeText: async () => {} } } });
+  Object.assign(ctx.window, { confirm: () => true, sessionStorage: mem() });
+  const hosts = { list: doc.createElement("ol"), panel: doc.createElement("section"), head: doc.createElement("div") };
+  doc.body.append(hosts.list, hosts.panel, hosts.head);
+  const go = { mask: [], target: [] };
+  const pipe = P.create(hosts, { apiUrl: A, comfyUrl: C, root: KEY, toast() {}, refresh() {}, select() {}, goTarget: (k) => go.target.push(k),
+    goMask: (m, k) => go.mask.push([clone(m), k]), seams: () => seamsMap, drain() {}, enter() {} });
+  pipe.stateChanged(S);
+  await sleep(30);
+  pipe.enter(S, S.crops[0].id);
+  pipe.setMaskLeft(left);
+  await sleep(40);
+  const star = hosts.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent === "★ 점검");
+  const lines = star ? star.children.slice(1) : [];
+  for (const head of ["001_머리 · A — 마스크 편집 기준 바뀜", "003_리본 — 이음매 bad", "003_리본 · A — 적용 안 한 마스크 편집"]) {
+    const row = lines.find((e) => e.textContent.startsWith(head));
+    if (row) row.fire("click");
+  }
+  const res = { pure, gone, panel: lines.map((e) => [e.textContent, e.className]), go };
+  pipe.setMaskLeft(null);
+  res.cleared = star ? hosts.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent === "★ 점검").children.slice(1)
+    .some((e) => e.textContent.includes("적용 안 한 마스크 편집")) : null;
+  pipe.leave();
+  return res;
+});
+
+await scenario("exportEdits", async () => {
+  const srv = server();
+  const o = H.bmk_dp_export[0];
+  const body = Object.assign(clone(R["GET /pipeline"].ok), { confirm: [], drift: [] });
+  body.exports = [Object.assign(clone(body.exports[0]), { rev: o.rev, psd: o.psd, layers: 55, problems: 0, mask_groups: 18, mask_edits: 3 })].concat(body.exports);
+  srv.route.pipeline = [200, body];
+  srv.hist = () => EX_H(o);
+  const env = mkPanel(srv, mem({ [JOB]: JSON.stringify({ stage: "export", pid: "pid-5", number: 5 }) }));
+  const S = boardState();
+  S.crops.forEach((c) => { c.layout_status = null; });
+  env.pipe.stateChanged(S);
+  await sleep(30);
+  env.pipe.enter(S, S.crops[0].id);
+  const row = () => env.panel.all().map((e) => e.textContent).find((t) => t.startsWith(`새 PSD r${o.rev}:`)) || null;
+  await until(() => (row() || "").includes("레이어"), 2500);
+  const r = { row: row(), rev: o.rev, psd: o.psd, bytes: body.exports[0].bytes, list: env.panel.all().map((e) => e.textContent).filter((t) => /^r\d+ · /.test(t)) };
+  env.pipe.leave();
+  return r;
+});
+
+// 2차 리뷰(JS) 세션: 열기 시작에서 단계 비움 · 다시 받기 가드(끄는 중·대상 바뀜·적용 전에 나간 GET·두 다시 받기 차례) · 새 획 = 다시 비움 · [버리기] = 연 판·적용한 판
+await scenario("sessionR2", async () => {
+  const D = maskCtx().window.DPMaskEdit;
+  const srv = maskServer();
+  const s = D.session(A, KEY, srv.fetch, async (b) => fakeImage(b.fake), 5);
+  const r = {};
+  const pt = (x, y) => [128 + x, 2560 + y];
+  const stroke = (p) => { s.begin("erase", p, 8, 1, 1); s.end(); };
+  // session-r2-01: 다른 대상을 받는 동안 단계 0(부르는 쪽이 이미 버리기를 확인 — 버린 획을 새 대상 이름으로 세지 않게)
+  await s.open(K15);
+  stroke(pt(300, 300));
+  stroke(pt(400, 300));
+  s.step(true);
+  const g0 = gate();
+  srv.wait = (path, q) => (path === "mask" && q.key === K14 ? g0.p : null);
+  const po = s.open(K14);
+  await sleep(5);
+  r.loading = { pending: s.pending(), undo: s.undo.length, redo: s.redo.length, busy: s.busy };
+  g0.go();
+  r.loading.opened = await po;
+  srv.wait = null;
+  // session-r2-02: 다시 받기 GET 이 끄는 중에 옴(서버 판이 바뀜 — behind·단계 0) → 다시 열지 않음(끌던 획 유지)
+  await s.open(K15);
+  const g1 = gate();
+  srv.wait = (path) => (path === "mask" ? g1.p : null);
+  const pr = s.refresh();
+  await sleep(5);
+  s.begin("erase", pt(300, 300), 8, 1, 1);
+  const other = maskInfo(K15);
+  other.edit.file = "masks/r_61ba2d69_e_00000000cccc.png";
+  srv.info[K15] = other;
+  g1.go();
+  r.midStroke = { reopened: await pr, stroke: !!s.stroke, behind: s.behind() };
+  s.end();
+  r.midStroke.pending = s.pending();
+  srv.wait = null;
+  delete srv.info[K15];
+  // session-r2-02: A 의 다시 받기가 B 로 옮긴 뒤 도착 → 버림(세션·info = B — 늦은 A info 로 A 를 다시 열지 않음)
+  await s.open(K15);
+  const g2 = gate();
+  srv.wait = (path, q) => (path === "mask" && q.key === K15 ? g2.p : null);
+  const n0 = srv.log.length;
+  const pa = s.refresh();
+  await sleep(5);
+  srv.wait = null;
+  await s.open(K14);
+  g2.go();
+  r.moved = { reopened: await pa, key: s.key, info: s.info.key, gets: srv.log.slice(n0).filter((x) => x.path === "mask").map((x) => x.q.key) };
+  // session-r2-04: [적용]보다 먼저 나간 다시 받기 GET 이 저장 뒤에 옴(옛 판) → 버림(behind 가 거짓으로 켜져 '서버 판이 바뀜 … 적용하면 거절'이 뜨지 않게)
+  await s.open(K15);
+  const F1 = "masks/r_61ba2d69_e_00000000dddd.png";
+  const g3 = gate();
+  srv.wait = (path) => (path === "mask" ? g3.p : null);
+  const pb = s.refresh();
+  await sleep(5);
+  srv.wait = null;
+  stroke(pt(300, 300));
+  srv.save.push([200, Object.assign(clone(MA["POST /mask/save"].ok), { edit: Object.assign(clone(MA["POST /mask/save"].ok.edit), { file: F1 }) })]);
+  const ap = await s.apply();
+  stroke(pt(400, 300));
+  g3.go();
+  r.afterApply = { ok: ap.ok, reopened: await pb, info: s.info.edit.file, file: s.file, behind: s.behind(), pending: s.pending() };
+  // 두 다시 받기(rev 가 연달아 바뀜) — 먼저 나간 것이 나중에 오면 버림(뒤 응답이 새 판)
+  const F2 = "masks/r_61ba2d69_e_00000000eeee.png";
+  const g4 = gate();
+  let nR = 0;
+  srv.wait = (path) => (path === "mask" && ++nR === 1 ? g4.p : null);
+  const p1 = s.refresh();
+  await sleep(5);
+  const newer = maskInfo(K15);
+  newer.edit.file = F2;
+  srv.info[K15] = newer;
+  const second = await s.refresh();
+  delete srv.info[K15];
+  g4.go();
+  r.twoRefresh = { first: await p1, second, info: s.info.edit.file };
+  srv.wait = null;
+  // tests-r2-01: 실행 취소 → 새 획 → 다시(Ctrl+Y) = 없음(되돌린 획이 새 획 뒤에 되살아나 [적용]에 들어가지 않게)
+  await s.open(K15);
+  const iA = 16 * 1280 + 20;
+  const a0 = s.m[iA];
+  stroke(pt(20, 16));
+  s.step(true);
+  stroke(pt(60, 16));
+  const keep = s.m.slice();
+  r.redoCut = { step: s.step(false), redo: s.redo.length, a: s.m[iA] === a0, a0: a0 > 0.1, same: s.m.every((v, i) => v === keep[i]), pending: s.pending() };
+  // tests-r2-02: [버리기] = 연 판으로, [적용] 뒤의 [버리기] = 적용한 판으로(방금 적용한 편집을 다음 [적용]이 말없이 되돌리지 않게)
+  await s.open(K15);
+  const opened = s.m.slice();
+  stroke(pt(300, 300));
+  s.discard();
+  r.discard = { open: s.m.every((v, i) => v === opened[i]), pending: s.pending() };
+  stroke(pt(500, 300));
+  await s.apply();
+  const up = s.m.slice();
+  stroke(pt(700, 300));
+  s.discard();
+  const i5 = 300 * 1280 + 500;
+  Object.assign(r.discard, { applied: s.m.every((v, i) => v === up[i]), kept: s.m[i5], was: opened[i5] > 0.2 });
+  return r;
+});
+
+// 2차 리뷰(JS) 화면: 다른 대상을 받는 동안 확인 창·나가기·창 테두리 · 다시 들어오기 = 다시 받기 · 끄는 중 state → 획 끝에 다시 받기 · 409 뒤 [다시 받기](확인 창·충돌 줄) ·
+// S·M 두 번 · 받는 중·적용 중 state → 끝난 뒤 다시 받기 · 대안 표 경합 · [이 후보를 ★] 획 문구 · 이음매 줄 누르기 · 3층 실패 뒤 다시 들어오기 · Esc · 적용 전후 구간 짝
+await scenario("panelR2", async () => {
+  const P = maskPanel();
+  const { srv, viewer, ed, rows, B, key, raf, confirms, calls, list, panel } = P;
+  const r = {};
+  const S = maskState();
+  S.crops[0].mask_stale = 1;
+  const ready = () => until(() => viewer.layer && !rows().some((t) => t.includes("불러오는 중")));
+  const brush = (x) => {
+    viewer.ed.pointerdown({ cx: x, cy: 2900, shiftKey: false });
+    viewer.ed.pointerup({});
+  };
+  ed.enter(S, { key: K15, seam: null });
+  await ready();
+  raf();
+  // tests-r2-09: 마스크 목록의 크롭 칩 '편집 기준 바뀜'
+  r.staleChip = list.children[0].textContent;
+  // session-r2-01·ui-r2-01·ui-r2-04: 획 1 → 다른 대상(확인 예) — 받는 동안 획 수 없음(다시 다른 대상·나가기는 확인 없이), 앞 대상의 창·크롭 테두리 없음
+  brush(600);
+  const g = gate();
+  srv.wait = (path, q) => (path === "mask" && q.key === K14 ? g.p : null);
+  const c0 = confirms.length;
+  ed.go({ key: K14, seam: null });
+  r.loading = { pending: ed.pending(), marks: viewer.marks.map((m) => m.attrs.class) };
+  Object.assign(r.loading, { second: ed.go({ key: K15, seam: null }), left: ed.leave(), confirms: confirms.slice(c0), after: ed.pending() });
+  srv.wait = null;
+  g.go();
+  await sleep(20);
+  // session-r2-03: K 를 나갔다 같은 대상으로 다시 들어오기 = GET /mask 다시 · 패널 줄
+  const n1 = P.count("mask");
+  ed.enter(S, { key: K15, seam: null });
+  await until(() => P.count("mask") > n1 && rows().length > 3);
+  await sleep(5);
+  r.reenter = { gets: P.count("mask") - n1, head: rows()[0] || null };
+  await ready();
+  raf();
+  // session-r2-03: 끄는 중 새 state(다른 창의 새 판) → 획을 끝내면 바로 다시 받기(다음 state 를 기다리지 않음)·'서버 판이 바뀜'
+  const other = maskInfo(K15);
+  other.edit.file = "masks/r_61ba2d69_e_00000000ffff.png";
+  srv.info[K15] = other;
+  const n2 = P.count("mask");
+  viewer.ed.pointerdown({ cx: 700, cy: 2900, shiftKey: false });
+  ed.stateChanged(Object.assign(maskState(), { rev: 137 }));
+  await sleep(10);
+  const during = P.count("mask") - n2;
+  viewer.ed.pointerup({});
+  await until(() => rows().some((t) => t.startsWith("서버 판이 바뀜")));
+  r.strokeState = { during, after: P.count("mask") - n2, warn: rows().filter((t) => t.startsWith("서버 판이 바뀜")) };
+  // session-r2-02·03·tests-r2-03: 획이 있는 세션의 409 뒤 [다시 받기] = 확인 창(아니오 = 세션·충돌 줄 그대로), 예 = 서버 판으로 다시 열고 충돌 줄 없음
+  srv.save.push([409, MA["POST /mask/save"].errors["409"][2]]);
+  key("Enter");
+  await until(() => rows().some((t) => t.includes("다른 창에서 바뀌었습니다")));
+  const conflictRow = () => rows().some((t) => t.includes("다른 창에서 바뀌었습니다"));
+  const n3 = P.count("mask");
+  P.answer = false;
+  B("다시 받기").fire("click");
+  r.reload = { no: { confirm: confirms.pop() || null, pending: ed.pending() && ed.pending().n, gets: P.count("mask") - n3, conflict: conflictRow() } };
+  P.answer = true;
+  B("다시 받기").fire("click");
+  await until(() => P.count("mask") > n3 && !rows().some((t) => t.includes("불러오는 중")));
+  await sleep(5);
+  r.reload.yes = { confirm: confirms.pop() || null, pending: ed.pending(), conflict: conflictRow() };
+  // tests-r2-07: S·M 두 번째 = 끔(보기: 편집)
+  key("KeyS");
+  key("KeyM");
+  const on2 = rows().find((t) => t.startsWith("보기")) || null;
+  key("KeyS");
+  key("KeyM");
+  r.viewKeys = { on: on2, off: rows().find((t) => t.startsWith("보기")) || null };
+  // session-r2-03: 받는 중 새 state = 미룸 → 열고 나서 다시 받기
+  const kGets = (k) => srv.log.filter((x) => x.path === "mask" && x.q.key === k).length;
+  const g5 = gate();
+  srv.wait = (path, q) => (path === "mask" && q.key === K14 ? g5.p : null);
+  const k0 = kGets(K14);
+  ed.go({ key: K14, seam: null });
+  await sleep(5);
+  ed.stateChanged(Object.assign(maskState(), { rev: 138 }));
+  await sleep(5);
+  srv.wait = null;
+  g5.go();
+  await until(() => kGets(K14) === k0 + 2);
+  await ready();
+  await sleep(10);
+  r.deferred = { load: kGets(K14) - k0 };
+  // tests-r2-12: 대안 표 경합 — 앞 대상(K14)의 늦은 표 응답은 새 대상(K15) 표에 넣지 않음(K15 응답 전까지 '계산 중')
+  const [ga, gb] = [gate(), gate()];
+  srv.wait = (path, q) => (path === "mask/alts" ? (q.key === K14 ? ga.p : gb.p) : null);
+  B("다른 후보로").fire("click");
+  await sleep(5);
+  ed.go({ key: K15, seam: null });
+  await ready();
+  B("다른 후보로").fire("click");
+  await sleep(5);
+  ga.go();
+  await sleep(10);
+  r.altsRace = { table: panel.all().some((e) => e.tagName === "TABLE"), row: rows().find((t) => t.startsWith("계산 중")) || null };
+  gb.go();
+  await until(() => panel.all().some((e) => e.tagName === "TABLE"));
+  r.altsRace.after = panel.all().some((e) => e.tagName === "TABLE");
+  srv.wait = null;
+  // tests-r2-03: 획이 있을 때 [이 후보를 ★] 확인 문구 = 그 획을 버린다고 알림(아니오 = 그대로)
+  brush(600);
+  P.answer = false;
+  B("이 후보를 ★").fire("click");
+  await sleep(5);
+  r.starStroke = { confirm: confirms.pop() || null, pick: calls.pick.length, pending: ed.pending() && ed.pending().n };
+  P.answer = true;
+  B("버리기").fire("click");
+  confirms.pop();
+  // tests-r2-05: 패널 6 이음매 줄 누르기(지금 대상) = 그 구간으로 2:1·선택 구간(줄 강조·구간 페이드 켬)
+  const nLook = viewer.looks.length;
+  panel.all().find((e) => e.classList.contains("pp-row") && e.textContent.startsWith("top 575–1337")).fire("click");
+  const fadeB = B("선택 이음매 구간 페이드");
+  r.seamClick = { look: viewer.looks.slice(nLook), sel: panel.all().filter((e) => e.classList.contains("pp-row") && e.classList.contains("sel")).map((e) => e.textContent),
+    fade: fadeB ? [fadeB.disabled, fadeB.title] : null };
+  // session-r2-03: 적용 중 새 state = 미룸 → 적용 뒤 다시 받기
+  delete srv.info[K15];  // 저장 뒤 서버 판 = 정본(올린 file) — 다시 받기가 behind 로 다시 열지 않음
+  brush(600);
+  let rel;
+  srv.hold = new Promise((ok) => { rel = ok; });
+  key("Enter");
+  await sleep(5);
+  const a0 = kGets(K15);
+  ed.stateChanged(Object.assign(maskState(), { rev: 139 }));
+  await sleep(5);
+  const duringApply = kGets(K15) - a0;
+  rel();
+  srv.hold = null;
+  await until(() => kGets(K15) > a0);
+  await sleep(10);
+  r.deferred.apply = [duringApply, kGets(K15) - a0];
+  // session-r2-03: 대상을 바꾼 뒤 3층을 받지 못함 → 나갔다 다시 들어와도 앞 대상(K15) 3층을 붙이지 않음
+  srv.wait = (path, q) => (path === "mask/img" && q.key === K14 && q.kind === "under" ? Promise.reject(new Error("3층 없음")) : null);
+  ed.go({ key: K14, seam: null });
+  await until(() => rows().some((t) => t.startsWith("미리보기 3층을 받지 못함")));
+  const lay0 = viewer.layer;
+  ed.leave();
+  ed.enter(S, { key: K14, seam: null });
+  const lay1 = viewer.layer && viewer.layer.box;
+  await sleep(20);
+  r.layerFail = { before: lay0, enter: lay1, after: viewer.layer && viewer.layer.box, row: rows().some((t) => t.startsWith("미리보기 3층을 받지 못함")) };
+  srv.wait = null;
+  // tests-r2-07: Esc = K 모드 나가기(board setMask(false))
+  r.esc = { ret: key("Escape"), exit: calls.exit };
+  ed.leave();
+  // tests-r2-06: 적용 전후 — 같은 변·같은 ★ 라도 구간이 겹치는 것끼리만 짝(고친 구간이 같은 변 다른 구간의 값으로 보이지 않게)
+  const Q = maskPanel();
+  const seg = (o) => Object.assign(clone(MA["GET /mask"].ok.seams[1]), o);
+  Q.viewer.seamsObj = { sig: "5d1f0c9a3be27741", segments: [seg({ x0: 200, x1: 300, length: 100, diff_p90: 40.0 }), seg({ x0: 900, x1: 1000, length: 100, diff_p90: 30.0 })] };
+  Q.ed.enter(maskState(), { key: K15, seam: null });
+  await until(() => Q.viewer.layer && !Q.rows().some((t) => t.includes("불러오는 중")));
+  Q.viewer.ed.pointerdown({ cx: 600, cy: 2900, shiftKey: false });
+  Q.viewer.ed.pointerup({});
+  Q.key("Enter");
+  await until(() => Q.calls.refresh === 1);
+  const SIG2 = MA["POST /mask/save"].ok.composite_sig;
+  const S2 = Object.assign(maskState(), { rev: 137 });
+  S2.canvas.composite_sig = SIG2;
+  Q.viewer.seamsObj = { sig: SIG2, segments: [seg({ x0: 900, x1: 1000, length: 100, diff_p90: 31.5 })] };
+  Q.ed.stateChanged(S2);
+  Q.ed.seamsChanged();
+  await until(() => Q.rows().some((t) => t.startsWith("적용 전후 top 900")));
+  r.diffPair = Q.rows().filter((t) => t.startsWith("적용 전후"));
+  Q.ed.leave();
+  return r;
+});
+
+// tests-r2-07: M 보기의 회색 빗금 = 기준보다 지운 곳(패치가 있는 곳, (x + y) & 7 < 3 줄무늬)
+await scenario("composeHatch", async () => {
+  const D = maskCtx().window.DPMaskEdit;
+  const box = [0, 0, 8, 1];
+  const L = { box, under: new Uint8ClampedArray(32).fill(100), patch: new Uint8ClampedArray(32).fill(200), over: new Uint8ClampedArray(32) };
+  const [mask, base] = [new Float32Array(8), new Float32Array(8).fill(1)];
+  const [plain, mark] = [new Uint8ClampedArray(32), new Uint8ClampedArray(32)];
+  D.compose(L, box, mask, base, plain, 0, 0, 8, 1, { base: false, split: null, mark: false });
+  D.compose(L, box, mask, base, mark, 0, 0, 8, 1, { base: false, split: null, mark: true });
+  return { plain: Array.from(plain.filter((_, i) => i % 4 === 0)), mark: Array.from(mark.filter((_, i) => i % 4 === 0)) };
+});
+
+// 2차 리뷰(JS) board.js: keyup → 마스크 편집기(Q 떼기) · [이 후보를 ★] = POST /pick set · 새 이음매 → 진행 패널 다시(★ 점검) · 이음매 재는 중 줄 ·
+// 편집 기준 바뀜 칩(검토 크롭 목록·후보 배지)
+await scenario("boardR2", async () => {
+  const fn = (names, extra) => {
+    const kc = vm.createContext(extra);
+    vm.runInContext(names.map((n) => `${n} = ${boardFn(n)};`).join("\n"), kc);
+    return kc;
+  };
+  const r = {};
+  const ups = [];
+  fn(["onKeyUp"], { maskOn: true, maskEd: { onKeyUp: (e) => ups.push(e.code) }, qHeld: false, renderCompare() {}, setViewFlags() {} }).onKeyUp({ code: "KeyQ" });
+  r.keyUp = ups;
+  const writes = [];
+  await fn(["maskPick"], { write: (...a) => { writes.push(clone(a)); return Promise.resolve({ ok: true }); } })
+    .maskPick({ crop_id: "014_0f9cc5", tid: "A", crop_name: "014_치마원단_문양" }, "r_d9b7ffb9fb7c_0_0");
+  r.pick = writes;
+  r.onSeams = [true, false].map((pipeOn) => {
+    const log = [];
+    const kc = fn(["onSeams"], { seamsByCrop: new Map(), maskOn: false, pipeOn, maskEd: null, renderTargets: () => log.push("renderTargets"),
+      pipe: { tabChanged: () => log.push("tabChanged") } });
+    kc.onSeams({ segments: [{ crop_id: "015_d556f2", severity: "bad" }] });
+    return { log, map: [...kc.seamsByCrop.entries()] };
+  });
+  const S = boardState();
+  S.crops.forEach((c) => { c.layout_status = null; });
+  r.checksNull = P.starChecks(S, null, [], null).map((x) => x.text).filter((t) => t.includes("이음매"));
+  r.checksMap = P.starChecks(S, new Map([["003_2f8f50", { n: 2, bad: 1 }]]), [], null).map((x) => x.text).filter((t) => t.includes("이음매"));
+  const bag = () => ({ kids: [], append(...xs) { this.kids.push(...xs); } });
+  const cc = fn(["cropChips", "tileBadges"], { LAYOUT_STATUS: {}, seamsByCrop: new Map(), credits: () => "", chip: (t, c) => ({ t, c }),
+    el: (tag, cls, txt) => Object.assign(bag(), { cls, txt }), isNew: () => false, oldCell: () => false });
+  const ch = bag();
+  cc.cropChips(ch, { id: "015_d556f2", layout_status: null, refs: null, calls: 0, dup_picks: [], stale_picked: [], mask_edits: 2, mask_stale: 1, warnings: [] });
+  r.cropChips = ch.kids.map((x) => `${x.t}|${x.c}`);
+  r.badges = [{ stale: true }, { stale: false }, null].map((me) => cc.tileBadges({ picked: false, gates: null, analysis: "ok", mask_edit: me }).kids.map((x) => `${x.txt}|${x.cls}`));
+  return r;
+});
+
+// 3차 리뷰(JS) 세션 가드(session-r3-03): A → B 에서 A 래스터의 늦은 실패 · 버린 다시 받기의 늦은 실패 · 55단계 뒤 [버리기] · 202 사이에 대상이 바뀐 대안 표
+await scenario("sessionR3", async () => {
+  const D = maskCtx().window.DPMaskEdit;
+  const srv = maskServer();
+  const s = D.session(A, KEY, srv.fetch, async (b) => fakeImage(b.fake), 5);
+  const r = {};
+  const late = (g, msg) => g.p.then(() => { throw new Error(msg); });
+  const g1 = gate();
+  srv.wait = (path, q) => (path === "mask/img" && q.key === K15 ? late(g1, "늦은 실패") : null);
+  const pa = s.open(K15);
+  await sleep(5);
+  const ob = await s.open(K14);
+  g1.go();
+  r.lateFail = { a: await pa, b: ob, key: s.key, m: !!s.m, win: s.win, err: s.err, busy: s.busy };
+  srv.wait = null;
+  await s.open(K15);
+  let nR = 0;
+  const g2 = gate();
+  srv.wait = (path) => (path === "mask" && ++nR === 1 ? late(g2, "버린 다시 받기 실패") : null);
+  const p1 = s.refresh();
+  await sleep(5);
+  const second = await s.refresh();
+  g2.go();
+  r.lateRefreshErr = { first: await p1, second, err: s.err };
+  srv.wait = null;
+  for (let i = 0; i < 55; i++) {
+    s.begin("erase", [128 + 20 + 15 * i, 2560 + 400], 4, 1, 0.5);
+    s.end();
+  }
+  const n55 = s.pending();
+  s.discard();
+  r.discard55 = { before: n55, after: s.pending(), ops: s.ops(), same: s.m.every((v, i) => v === s.start[i]) };
+  srv.alts.push([202, { busy: true }], [202, { busy: true }], [202, { busy: true }]);
+  const nA = srv.count("mask/alts");
+  const pAlt = s.alts(K15);
+  const po = s.open(K14);
+  r.altsMoved = { result: await pAlt, asks: srv.count("mask/alts") - nA };
+  await po;
+  srv.alts.length = 0;
+  return r;
+});
+
+// 3차 리뷰(JS) 화면: 끄는 중 같은 ★ 의 이음매(N·줄)·F·0·1·2 = 획을 먼저 끝냄 · [이 후보를 ★] 의 보드 쓰기 실패 = 그대로 · 쓰기 동안 세션 잠금
+await scenario("panelR3", async () => {
+  const P = maskPanel();
+  const { srv, viewer, ed, rows, B, key, raf, puts, confirms, toasts, calls, panel } = P;
+  const r = {};
+  ed.enter(maskState(), { key: K15, seam: null });
+  await until(() => viewer.layer && !rows().some((t) => t.includes("불러오는 중")));
+  raf();
+  const n = () => (ed.pending() ? ed.pending().n : 0);
+  // session-r3-02: 같은 ★ 의 이음매 — 2:1 로 옮기기 전에 획을 끝냄(옮긴 화면의 같은 화면 점 = 먼 캔버스 점과 앞 점을 잇지 않음)
+  const top = P.seams.segments.find((x) => x.key === K15 && x.side === "top");
+  viewer.ed.pointerdown({ cx: 600, cy: 2900, shiftKey: false });
+  viewer.ed.pointermove({ cx: 610, cy: 2900, shiftKey: false });
+  raf();
+  const l0 = viewer.looks.length;
+  r.seamMid = { ok: ed.go({ key: K15, seam: top }), n: n() };
+  const p0 = puts.length;
+  viewer.ed.pointermove({ cx: 961, cy: 2600, shiftKey: false });
+  viewer.ed.pointerup({});
+  raf();
+  Object.assign(r.seamMid, { looks: viewer.looks.slice(l0), puts: puts.slice(p0), after: n() });
+  r.viewKeys = [];
+  for (const code of ["KeyF", "Digit0", "Digit1", "Digit2"]) {
+    viewer.ed.pointerdown({ cx: 700, cy: 2900, shiftKey: false });
+    viewer.ed.pointermove({ cx: 705, cy: 2900, shiftKey: false });
+    raf();
+    const before = n();
+    const ret = key(code);
+    const ended = n() - before;
+    const p1 = puts.length;
+    viewer.ed.pointermove({ cx: 1200, cy: 3200, shiftKey: false });
+    viewer.ed.pointerup({});
+    raf();
+    r.viewKeys.push([code, ret, ended, puts.length - p1]);
+  }
+  B("버리기").fire("click");
+  confirms.pop();
+  // tests-r3-02: 보드 쓰기 실패(null — 보드가 다른 쓰기 중·409·네트워크) = 대상·세션 그대로
+  srv.alts.push([200, MA["GET /mask/alts"].ok]);
+  B("다른 후보로").fire("click");
+  await until(() => panel.all().some((e) => e.tagName === "TABLE"));
+  viewer.ed.pointerdown({ cx: 600, cy: 2900, shiftKey: false });
+  viewer.ed.pointerup({});
+  const gets = () => srv.log.filter((x) => x.path === "mask").map((x) => x.q.key);
+  const g0 = gets().length;
+  P.pick = async () => null;
+  B("이 후보를 ★").fire("click");
+  await sleep(10);
+  r.pickFail = { pick: calls.pick.length, confirms: confirms.splice(0).length, gets: gets().slice(g0), n: n(), head: rows()[0] || null,
+    on: B("적용") ? !B("적용").disabled : null };
+  // session-r3-01: 쓰기(POST /pick + state 다시) 동안 세션 잠금, 끝나면 새 ★ 를 엶(확인한 대로 획 버림)
+  srv.info[K15B] = Object.assign(maskInfo(K15), { key: K15B, c: 2, edit: null });
+  const gp = gate();
+  P.pick = () => gp.p.then(() => ({ ok: true }));
+  const s0 = P.count("mask/save");
+  const t0 = toasts.length;
+  if (B("이 후보를 ★")) B("이 후보를 ★").fire("click");  // 쓰기 실패에도 대상을 바꿨으면(회귀) 표가 없음 — pickFail 이 그 이유를 적음
+  await sleep(5);
+  const brush = viewer.ed.pointerdown({ cx: 650, cy: 2900, shiftKey: false });
+  viewer.ed.pointerup({});
+  r.pickHold = { brush, enter: key("Enter"), undo: key("KeyZ", { ctrlKey: true }), go: ed.go({ key: K14, seam: null }), leave: ed.leave(), n: n(),
+    off: ["적용", "버리기", "실행 취소", "이 후보를 ★"].map((l) => (B(l) ? B(l).disabled : null)) };
+  await sleep(10);
+  Object.assign(r.pickHold, { saves: P.count("mask/save") - s0, toasts: toasts.slice(t0), confirms: confirms.splice(0).length, editor: !!viewer.ed });
+  gp.go();
+  await until(() => (rows()[0] || "").startsWith("015_치마밑단_주름 · A · c02 ★ —"));
+  r.pickHold.after = { n: n(), gets: gets().slice(-1), saves: P.count("mask/save") - s0, select: calls.select.at(-1) };
+  ed.leave();
+  return r;
+});
+
+// 3차 리뷰(JS) 화면 가드: 같은 ★ 의 다른 구간으로 다시 들어오기 · 뷰어 이음매 실패·옛 서명 · ★ 둘인 크롭의 목록 하위 행 · Q 를 누른 채 창 blur·나가기 ·
+// 되돌리기 중 대상 바꾸기·나가기 · 되돌린 뒤 다시 열기 실패의 rAF · 누르는 동안 다시 그리기 미룸
+await scenario("panelR3b", async () => {
+  const r = {};
+  const ready = (P) => until(() => P.viewer.layer && !P.rows().some((t) => t.includes("불러오는 중")));
+  const selRows = (P) => P.panel.all().filter((e) => e.classList.contains("pp-row") && e.classList.contains("sel")).map((e) => e.textContent);
+  // tests-r3-03: 진행 ★ 점검 이음매 줄 → 나갔던 같은 ★ 의 다른 구간 = 그 구간 선택·2:1(앞서 고른 구간에 페이드가 들어가지 않게)
+  const E = maskPanel();
+  E.ed.enter(maskState(), { key: K15, seam: null });
+  await ready(E);
+  const [left, top] = ["left", "top"].map((sd) => E.seams.segments.find((x) => x.key === K15 && x.side === sd));
+  E.ed.go({ key: K15, seam: left });
+  E.ed.leave();
+  const l0 = E.viewer.looks.length;
+  E.ed.enter(maskState(), { key: K15, seam: top });
+  await sleep(10);
+  const fb = E.B("선택 이음매 구간 페이드");
+  r.reenterSeam = { looks: E.viewer.looks.slice(l0), sel: selRows(E), fade: fb ? fb.title : null, select: E.calls.select.at(-1) };
+  E.ed.leave();
+  // tests-r3-06: 뷰어 이음매가 실패(서명 없는 {segments: [], error})·옛 서명이면 쓰지 않음 — GET /mask 의 이음매(같은 서명)나 '계산 중…'
+  const V = maskPanel();
+  const err = { segments: [], error: "이음매 검사 실패: HTTP 500" };
+  V.viewer.seamsObj = err;
+  V.ed.enter(maskState(), { key: K14, seam: null });
+  await ready(V);
+  const seamRows = () => V.rows().filter((t) => / · p90 /.test(t) || t === "이음매 없음" || t === "계산 중…");
+  r.seamsErr = { k14: seamRows() };
+  V.viewer.seamsObj = { sig: "0f0f0f0f0f0f0f0f", segments: V.seams.segments };
+  V.ed.seamsChanged();
+  r.seamsErr.oldSig = seamRows();
+  V.viewer.seamsObj = err;
+  V.ed.go({ key: K15, seam: null });
+  await until(() => V.rows().some((t) => t.startsWith("015_치마밑단_주름 · A · c01 ★ —")));
+  r.seamsErr.k15 = seamRows();
+  V.ed.leave();
+  // tests-r3-07: ★ 둘인 크롭 = ★ 마다 하위 행(편집 칩) — 두 번째 행 = 그 ★ 편집
+  const L = maskPanel();
+  const KB = "r_7e8f9a0b1c2d_0_0";
+  const SL = maskState();
+  SL.targets.splice(1, 0, { key: "015_d556f2/B", crop_id: "015_d556f2", crop_name: "015_치마밑단_주름", tid: "B", pick_keys: [KB],
+    candidates: [{ key: KB, n: 1, picked: true, slice_index: 1, rejected: false, mask_edit: { at: "2026-10-19 18:30:00", stale: true } }] });
+  L.srv.info[KB] = Object.assign(maskInfo(K15), { key: KB, tid: "B", c: 1, edit: null });
+  L.ed.enter(SL, { key: K15, seam: null });
+  await ready(L);
+  const subEls = () => L.list.children.filter((e) => e.classList.contains("sub"));
+  const subs = () => subEls().map((e) => [e.textContent, e.className]);
+  r.listSubs = { rows: subs() };
+  const nL = L.srv.log.length;
+  if (subEls()[1]) subEls()[1].fire("click");
+  await until(() => (L.rows()[0] || "").startsWith("015_치마밑단_주름 · B · c01 ★ —"));
+  Object.assign(r.listSubs, { gets: L.srv.log.slice(nL).filter((x) => x.path === "mask").map((x) => x.q.key), head: L.rows()[0] || null, after: subs() });
+  L.ed.leave();
+  // tests-r3-08: Q 를 누른 채 창 blur = 떼기, Q·M·S 를 켠 채 나갔다 다시 들어오기 = 보기 처음으로
+  const Q = maskPanel();
+  Q.ed.enter(maskState(), { key: K15, seam: null });
+  await ready(Q);
+  const viewRow = () => Q.rows().find((t) => t.startsWith("보기")) || null;
+  Q.key("KeyQ");
+  const vr = [viewRow()];
+  for (const f of Q.winOn.blur || []) f();
+  vr.push(viewRow());
+  Q.key("KeyQ");
+  Q.key("KeyM");
+  Q.key("KeyS");
+  vr.push(viewRow());
+  Q.ed.leave();
+  Q.ed.enter(maskState(), { key: K15, seam: null });
+  await sleep(10);
+  vr.push(viewRow());
+  r.viewReset = vr;
+  Q.ed.leave();
+  // session-r3-03 (4)(5): [이전 판으로] 처리 중 대상 바꾸기·나가기 거절
+  const Ep = maskPanel();
+  Ep.ed.enter(maskState(), { key: K15, seam: null });
+  await ready(Ep);
+  const ge = gate();
+  Ep.srv.wait = (path) => (path === "mask/edit" ? ge.p : null);
+  Ep.B("이전 판으로").fire("click");
+  await sleep(5);
+  r.editHold = { go: Ep.ed.go({ key: K14, seam: null }), leave: Ep.ed.leave(), toasts: Ep.toasts.slice(), editor: !!Ep.viewer.ed,
+    k14: Ep.srv.log.filter((x) => x.path === "mask" && x.q.key === K14).length };
+  Ep.srv.wait = null;
+  ge.go();
+  await until(() => Ep.toasts.some((t) => t.startsWith(":이전 판으로")));
+  Ep.ed.leave();
+  // session-r3-03 (8): [이전 판으로] 뒤 다시 열기가 래스터를 못 받음(세션 없음) — 3층을 다시 받는 사이 rAF 가 돌아도 합성하지 않음, 겹침은 뗌
+  const F = maskPanel();
+  F.ed.enter(maskState(), { key: K15, seam: null });
+  await ready(F);
+  F.raf();
+  const mv = maskInfo(K15);
+  mv.layers.sig = "abababababababab";
+  F.srv.info[K15] = mv;
+  F.srv.imgFail = "edit";
+  const gl = gate();
+  F.srv.wait = (path, q) => (path === "mask/img" && ["under", "patch", "over"].includes(q.kind) ? gl.p : null);
+  F.B("이전 판으로").fire("click");
+  await until(() => F.toasts.some((t) => t.startsWith(":이전 판으로")));
+  await sleep(5);
+  const queued = F.rafQ.length;
+  let threw = null;
+  try {
+    F.raf();
+  } catch (e) {
+    threw = String((e && e.message) || e).slice(0, 120);
+  }
+  F.srv.wait = null;
+  gl.go();
+  await until(() => !F.viewer.layer);
+  r.flushLost = { queued, threw, layer: F.viewer.layer, err: F.rows().some((t) => t.startsWith("마스크 편집 파일이 없습니다")) };
+  F.srv.imgFail = null;
+  F.ed.leave();
+  // ui-r3-01: 누르는 동안(문서 pointerdown capture) 새 이음매로 다시 그리기는 미룸 — 누른 단추가 그대로라 click 이 가고, 놓은 뒤 목록·패널을 그림.
+  // pointerup 을 놓치면(창 밖에서 놓음) 버튼 없는 pointermove 가 놓은 것으로
+  const Hp = maskPanel();
+  Hp.ed.enter(maskState(), { key: K15, seam: null });
+  await ready(Hp);
+  const xb = Hp.B("살리기");
+  xb.fire("pointerdown", { buttons: 1 });
+  Hp.viewer.seamsObj = { sig: Hp.seams.sig, segments: Hp.seams.segments.concat([Object.assign(clone(Hp.seams.segments[0]), { y0: 2600, y1: 2650 })]) };
+  Hp.ed.seamsChanged();
+  const kept = Hp.panel.contains(xb);
+  const listDuring = Hp.list.children[0].textContent;
+  xb.fire("pointerup", { buttons: 0 });
+  if (Hp.panel.contains(xb)) xb.fire("click");
+  await sleep(5);
+  r.held = { kept, listDuring, list: Hp.list.children[0].textContent,
+    tool: Hp.panel.all().filter((e) => e.tagName === "BUTTON" && e.classList.contains("on")).map((e) => e.textContent) };
+  Hp.panel.fire("pointerdown", { buttons: 1 });
+  Hp.panel.fire("pointermove", { buttons: 0 });
+  const b2 = Hp.B("살리기");
+  Hp.ed.seamsChanged();
+  r.held.missedUp = Hp.panel.contains(b2);
+  Hp.ed.leave();
+  // 3차 통합(보드 _edit_usable 의 짝): GET /mask edit.url = base.url(_plan 이 편집 파일을 쓰지 못함 — 경고 줄) = 편집 줄을 초록으로 두지 않음
+  const editOk = async (gone) => {
+    const U = maskPanel();
+    U.srv.info[K15] = maskInfo(K15);
+    if (gone) U.srv.info[K15].edit.url = U.srv.info[K15].base.url;
+    U.ed.enter(maskState(), { key: K15, seam: null });
+    await ready(U);
+    const on = U.panel.all().filter((e) => e.classList.contains("pp-row") && /^편집 (?!없음|기준)/.test(e.textContent)).map((e) => e.classList.contains("ok"));
+    U.ed.leave();
+    return on;
+  };
+  r.unusable = { ok: await editOk(false), gone: await editOk(true) };
+  return r;
+});
+"""
+    (out / "harness.mjs").write_text("".join(cut) + harness + "\nconsole.log(JSON.stringify(out));\n", encoding="utf-8")
+    try:
+        r = subprocess.run([node, str(out / "harness.mjs"), str(out / "in.json")], capture_output=True, text=True, encoding="utf-8", timeout=240)
+    except subprocess.TimeoutExpired:
+        check(False, "S4 node 하네스가 240초 안에 끝나지 않음(장면의 until 대기가 쌓임)")
+        return
+    if r.returncode != 0 or not r.stdout.strip():
+        check(False, f"S4 node 하네스 실패({r.returncode}): {r.stderr.strip()[-800:]}")
+        return
+    res = json.loads(r.stdout.strip().splitlines()[-1])
+    for k, v in res.items():
+        if isinstance(v, dict) and "error" in v:
+            check(False, f"S4 JS {k} 장면 예외: {v['error']}")
+
+    section("S4-J-K1 공용 표 mask_rules.json — JS 가 모든 행에서 같은 값(Float32 마스크 tol)")
+    ru = res.get("rules") or {}
+    if "worst" in ru:
+        want_n = {"smoothstep": len(rules["smoothstep"]), "fade": len(rules["fade"]), "kernel": sum(len(x["k"]) for x in rules["kernel"]),
+                  "feather": sum(len(x["out"]) * len(x["out"][0]) for x in rules["feather"]), "stamp": len(rules["stamp"]), "ops": len(rules["ops"]),
+                  "quant": len(rules["quant"])}
+        check(ru["n"] == want_n and all(ru["worst"][k] <= rules["tol"] for k in want_n) and ru["worst"]["quant"] == 0
+              and all(a == b == c for a, b, c in ru["lens"]),
+              f"smoothstep·fade(변 4 × 폭 3 × 거리, 구간 테이퍼)·kernel(반경 ceil(3σ))·feather(분리·가장자리 복제)·stamp·ops·quant 모든 행 ≤ tol "
+              f"{ru['worst']} {ru['n']}")
+
+    section("S4-J-K2 세션: 획·실행 취소/다시·페이드·[적용](L PNG·seen·ops)·409·적용 중 막힘·저장된 판·대안 202·다시 받기")
+    pg = res.get("png") or {}
+    if "b64" in pg:
+        im = Image.open(io.BytesIO(base64.b64decode(pg["b64"])))
+        im.load()
+        check(pg["type"] == "image/png" and im.mode == "L" and im.size == (pg["w"], pg["h"]) and im.tobytes() == base64.b64decode(pg["px"]),
+              f"pngL = 8비트 회색조(L) PNG — PIL 이 그대로 읽음(값·크기, 줄 필터 Up) {im.mode} {im.size}")
+    se = res.get("session") or {}
+    if "open" in se:
+        o = se["open"]
+        check(se["opened"] and o["win"] == [128, 2560, 1408, 3328] and o["file"] == doc["routes"]["GET /mask"]["ok"]["edit"]["file"] and o["pending"] == 0
+              and o["paths"] == ["mask", "mask/img:base", "mask/img:edit"] and o["seen"] == {"root": "fe410d7f025d", "key": "r_61ba2d695f0f_0_0"}
+              and abs(o["m"][1] - 19 / 255) < 1e-6 and o["base"] == [0, 1],
+              f"열기: GET /mask → 기준·편집 래스터(GET /mask 가 준 url) → 세션 = 편집, seen = 기록 file {o}")
+        st = se["stroke"]
+        check(se["strokeRect"] == [404, 2836, 452, 2884] and se["mid"] == [410, 2836, 548, 2884] and se["busyBegin"] is None
+              and st["line"] == [0, 0, 0, 0] and abs(st["out"][0] - 182 / 255) < 1e-6 and st["out"][1] == 0 and st["pending"] == 1 and st["ops"] == "붓 1획"
+              and st["undoRect"] == [276, 276, 420, 324],
+              f"획(지우기 경도 1·세기 1·R 24): 마우스 사이 R/4 간격 도장, 반지름 안 0·밖 그대로, 바뀐 사각형만 실행 취소 값, 획 중 새 획 없음 {st}")
+        check(se["undo"] == {"same": True, "pending": 0, "redo": 1} and se["redo"] == {"same": True, "pending": 1},
+              f"Ctrl+Z·Y = 획 단위로 정확히 되돌림·다시 {se['undo']} {se['redo']}")
+        ft, fr = se["fadeTop"], se["fadeRange"]
+        check(ft["rect"] == [128, 2560, 1408, 2624] and ft["undoRect"] == [0, 0, 1280, 64] and abs(ft["d0"][0] - ft["d0"][1]) < 1e-6
+              and abs(ft["d63"][0] - ft["d63"][1]) < 1e-6 and ft["d64same"]
+              and fr["undoRect"] == [0, 94, 64, 263] and abs(fr["inside"][0] - fr["inside"][1]) < 1e-6 and fr["outside"],
+              f"변 페이드 top 64 = 안쪽 64줄만(m·fade), 구간 페이드 left 158–198 ± 64 = 그 띠만 {ft} {fr}")
+        check(se["chain"] == {"ops": "붓 1획 · 변 페이드 top 64 · 구간 페이드 left 158–198 64 · 페더 σ2 · 기준으로", "pending": 5, "base": True},
+              f"한 번에 하는 연산도 단계 하나씩, ops 요약 = 차례대로(이어진 붓은 '붓 n획'), [기준으로] = 기준 마스크 {se['chain']}")
+        so = se["soften"]
+        check(so["was"] == 0 and abs(so["at"] - so["blur"]) < 1e-6 and so["at"] > 0.3,
+              f"부드럽게(세기 1·도장 중심) = 획 시작 때 사본의 σ = R/4 가우시안 값 {so}")
+        check(se["cap"] == {"undo": 50, "dropped": 5, "pending": 55, "ops": "붓 55획"}, f"실행 취소 최근 50 — 넘으면 오래된 것부터 버림, 적용 요약에는 남김 {se['cap']}")
+        ap = se["applying"]
+        check(ap == {"busy": "apply", "begin": None, "step": None, "again": None, "fade": None}, f"적용 중: 붓·실행 취소·다시 적용·페이드 막힘 {ap}")
+        a = se["apply"]
+        im = Image.open(io.BytesIO(base64.b64decode(a["png"])))
+        im.load()
+        sv = doc["routes"]["POST /mask/save"]["ok"]
+        check(a["n"] == 1 and a["method"] == "POST" and a["ctype"] == "image/png" and im.mode == "L" and im.size == (1280, 768)
+              and hashlib.sha256(im.tobytes()).hexdigest() == a["sha"]
+              and a["q"] == {"root": "fe410d7f025d", "key": "r_61ba2d695f0f_0_0", "seen": doc["routes"]["GET /mask"]["ok"]["edit"]["file"], "ops": "붓 55획",
+                             "rect": "128,2560,1408,3328"},
+              f"[적용] = POST /mask/save?root·key·seen(연 판 file)·ops·rect(세션 창 x0,y0,x1,y1), 본문 image/png = 창 크기 L PNG(값 = quant(m)) "
+              f"{a['q']} {im.mode} {im.size}")
+        check(a.get("ok") and a["pending"] == 0 and a["file"] == sv["edit"]["file"] and a["quant"] and a.get("seams") is None and a.get("sig") == sv["composite_sig"]
+              and a.get("edit") == sv["edit"],
+              f"적용 성공 = 단계 비움·올린 8비트 값이 새 출발·seen = 새 file·합성 서명 갱신(이음매는 새 서명으로 다시) {a['file']} {a['sig']}")
+        check([(c["reason"], c["conflict"], c["pending"][0] == c["pending"][1], c["same"]) for c in se.get("conflicts") or []]
+              == [("rect_changed", "rect_changed", True, True), ("changed", "changed", True, True)],
+              f"409 rect_changed·changed = 세션(획·마스크) 그대로 + conflict(다시 받기는 사람이) {se.get('conflicts')}")
+        check(se.get("shifted") == {"reopened": False, "behind": True, "reason": "rect_changed", "rect": [131, 2560, 1411, 3328], "conflict": "rect_changed",
+                                    "sent": "128,2560,1408,3328", "win": [128, 2560, 1408, 3328], "pending": [2, 2], "same": True},
+              f"U3 3차 검증 must: 세션 중 창이 같은 크기로 옮겨짐(순수 이동 정합) — 다시 받기는 세션 그대로(behind), [적용]은 rect = 세션 창을 보내 409 rect_changed"
+              f"(PNG 크기만으론 못 잡아 옮겨진 창에 저장되던 것) {se.get('shifted')}")
+        check(se["edit"] == {"ok": True, "body": {"root": "fe410d7f025d", "key": "r_61ba2d695f0f_0_0", "seen": sv["edit"]["file"], "op": "undo"},
+                             "ctype": "application/json", "reopened": True, "pending": 0}
+              and se["edit409"] == {"reason": "changed", "conflict": "changed"},
+              f"[이전 판으로] = POST /mask/edit JSON {{root, key, seen, op}} → 다시 열기, 409 = conflict {se['edit']} {se['edit409']}")
+        check(se["alts"] == {"n": 3, "rows": ["r_61ba2d695f0f_0_1", "h_3c5e7a9b1d2f"], "now": {"bad": 5, "worst": 73.5}},
+              f"[다른 후보로] GET /mask/alts — 202 busy 면 다시 묻기 {se['alts']}")
+        check(se["refreshClean"] == {"reopened": True, "file": "masks/r_61ba2d69_e_77d0c3a1e5f2.png", "imgs": 2}
+              and se["refreshDirty"] == {"reopened": False, "file": "masks/r_61ba2d69_e_77d0c3a1e5f2.png", "info": "masks/r_61ba2d69_e_0000000000aa.png",
+                                         "same": True, "pending": 1},
+              f"다시 받기: 세션이 비었으면 서버 판(기록 file)이 바뀐 때 래스터를 다시, 적용 안 한 획이 있으면 세션 그대로(seen 은 연 판 — 적용하면 409) "
+              f"{se['refreshClean']} {se['refreshDirty']}")
+        bh = se.get("behind") or {}
+        check(bh.get("dirty") is True
+              and bh.get("clean") == {"behind": True, "reopened": True, "file": "masks/r_61ba2d69_e_0000000000aa.png", "after": False, "imgs": 2}
+              and bh.get("sig") == {"kept": False, "behind": True, "reopened": True, "sig": "0a1b2c3d4e5f6071", "after": False},
+              f"U3 2차 검증: behind = 세션을 연 판(기록 file·기준 서명·창) ≠ 마지막 GET /mask — 획을 버린 뒤 다시 받기가 서버 판으로 다시 염, "
+              f"기준 서명만 바뀐 것(획이 있는 동안 받은 판)도 연 판과 비교 {bh}")
+        check(se["layers"] == {"first": True, "again": False, "box": [0, 2304, 1664, 3584], "n": 1664 * 1280 * 4}
+              and se["oldServer"] == {"opened": False, "err": "마스크 라우트가 없습니다 — ComfyUI 를 재시작해야 마스크 편집(K)을 쓸 수 있습니다"},
+              f"3층은 서명이 바뀐 때만 받음, 옛 서버(JSON 아닌 404) = 재시작 안내 {se['layers']} {se['oldServer']}")
+        check(se.get("lateLayers") == {"old": False, "fresh": True, "sig": "b2b2b2b2b2b2b2b2"},
+              f"U3 3차 검증: 3층을 받는 사이 새 GET /mask(3층 서명 바뀜)가 먼저 끝나면 옛 서명의 늦은 응답은 버림(새 3층을 덮지 않음) {se.get('lateLayers')}")
+        ef = doc["routes"]["GET /mask"]["ok"]["edit"]["file"]
+        check(se["moved"] == {"opened": False, "info": True, "file": ef, "m": None, "err": "이미지 크기 1280×768 ≠ 1284×772 — 다시 받기"}
+              and se["lost"] == {"opened": False, "info": True, "file": ef, "m": None, "err": f"마스크 편집 파일이 없습니다: {ef}",
+                                 "again": {"reopened": True, "m": True, "win": [126, 2558, 1410, 3330], "err": None}},
+              f"U3 리뷰 must: 편집 래스터를 못 받아도(기록 창 크기 PNG·404) info·seen 남김(세션 없음 — 편집 기준 바뀜 줄·되돌리기·지우기 길), "
+              f"다시 받기가 다시 염 {se['moved']} {se['lost']}")
+        check(se.get("race") == {"a": False, "b": True, "key": "r_d9b7ffb9fb7c_0_1", "info": "r_d9b7ffb9fb7c_0_1", "file": "",
+                                 "win": [512, 2240, 1536, 3008], "busy": ""},
+              f"U3 2차 검증: 대상 경합 — 앞 대상(A)의 늦은 GET /mask·래스터 응답은 버림(세션 = 바꾼 대상 B 의 info·창·seen) {se.get('race')}")
+
+    section("S4-J-K2·J-K3 화면: 패널·키·붓·적용 중 단추 끔·409 다시 받기·확인 창(후보 바꿈·나가기·N)·이음매 목록·대안 표")
+    pn = res.get("panel") or {}
+    if "enter" in pn:
+        e = pn["enter"]
+        check(e["editor"] and e["layerBox"] == [0, 2304, 1664, 3584] and e["put"] == [0, 0, 1664, 1280] and e["select"] == ["r_61ba2d695f0f_0_0", True]
+              and e["rows"] == ["015_치마밑단_주름 · A · c01 ★ — 기준 자동 마스크 1280×768 (z: 아래 0 · 위 4)", "편집 10/19 18:20 · 변 페이드 top 64 · 붓 12획",
+                                "보기: 편집", "적용 안 한 획 0"]
+              and e["list"] == ["015_치마밑단_주름편집 1이음매 2", "014_치마원단_문양이음매 1"]
+              and e["paths"] == ["mask", "mask/img:base", "mask/img:edit", "mask/img:under", "mask/img:patch", "mask/img:over"],
+              f"K 진입: 뷰어 편집기 훅·겹침 캔버스(box)·전체 합성 한 번, 보드 선택 = 편집 대상, 대상 줄(크롭·타깃·c·★·기준·창·z)·편집 줄, 왼쪽 크롭 칩 {e}")
+        k = pn["keys"]
+        check(k["x"] is True and k["tool"] == ["살리기", "폭 64"] and k["sliders"] == ["크기58px", "경도0.40", "세기1.00", "페더 σ4"]
+              and k["q"] == "보기: 기준(Q 누르는 중)" and k["view"] == "보기: 기준|편집 슬라이더(S — 왼쪽 = 기준) · 마스크(M)" and k["review"] == [False] * 7,
+              f"키: X 지우기 ↔ 살리기, ] 크기 ×1.2, Shift+[ 경도 −0.1, Q 누르는 동안 기준, M·S 보기, 검토·뷰어 키는 받지 않음(board.js 가 끔·뷰어로) {k}")
+        sk = pn["stroke"]
+        check(sk["pd"] is True and sk["pending"] == {"key": "r_61ba2d695f0f_0_0", "n": 1, "name": "015_치마밑단_주름 · A"}
+              and sk["puts"] == [[571, 567, 95, 58]] and sk["ring"] == {"class": "mbrush", "cx": "640", "cy": "2900", "r": "29"}
+              and sk["row"] == "적용 안 한 획 1 — 붓 1획" and sk["marks"] == ["mwin", "mcrop", "mbrush"] and pn["undo"] is None and pn["redo"]["n"] == 1
+              and (pn.get("redoShift") or {}).get("n") == 1,
+              f"붓: 끌기 = 한 획, 바뀐 사각형만 다시 합성(rAF 한 번), 붓 원 = 크롭 px 반지름, Ctrl+Z·Y·Ctrl+Shift+Z(다시) {sk} {pn.get('redoShift')}")
+        check(pn["goNo"] == {"ok": False, "confirm": "적용 안 한 획 1(015_치마밑단_주름 · A · c01)을 버리고 014_치마원단_문양 · A · c02 를 편집할까요?", "gets": 1}
+              and pn["leaveNo"]["ok"] is False and pn["leaveNo"]["editor"] and "은 이 창에만 남습니다" in pn["leaveNo"]["confirm"],
+              f"적용 안 한 획: 다른 후보로(목록·N·이음매) = 확인 창(아니오면 그대로), 나가기 = 확인 창(세션은 이 창에 남음) {pn['goNo']} {pn['leaveNo']}")
+        ap = pn["applying"]
+        check(ap["row"] == "적용 중… (획 1)" and ap["disabled"] == [True] * 6 and ap["brush"] is False and ap["undoKey"] is True and ap["pending"]["n"] == 1
+              and ap["go"] is False and ap["goToast"] == "warn:적용·되돌리기·★ 바꾸기를 처리하는 중 — 끝난 뒤 바꾸세요" and ap["confirms"] == 0,
+              f"적용 중: 실행 취소·적용·버리기·페이드·페더·이전 판 단추 끔, 붓 안 됨(왼쪽 끌기는 화면 이동), Ctrl+Z 무시, 대상 바꾸기 거절(확인 창 없이) {ap}")
+        check(ap.get("leave") is False and ap.get("leaveToast") == "warn:적용·되돌리기·★ 바꾸기를 처리하는 중 — 끝난 뒤 나가세요" and ap.get("leaveConfirms") == 0
+              and ap.get("editor") is True,
+              f"U3 3차 검증: 적용 중 나가기(K·Esc·다른 모드 단추)도 거절 — 나가면 진행 ★ 점검에 낡은 '적용 안 한 편집' 줄이 남음 {ap}")
+        cf = pn["conflict"]
+        check(len(cf["rows"]) == 1 and "세션은 남김" in cf["rows"][0] and cf["again"] and cf["pending"]["n"] == 1 and cf["toast"].startswith("warn:적용 안 됨 — "),
+              f"409 = '다른 창에서 바뀜 — 다시 받기'(세션 남김 · [다시 받기]) {cf}")
+        check(pn["applied"]["pending"] is None and pn["applied"]["toast"].startswith(":마스크 편집 적용 — 015_치마밑단_주름 · A · c01")
+              and len(pn["applied"]["q"]) == 2,
+              f"다시 [적용](Enter) 200 = 세션 비움·보드 state 다시(이음매 새 서명) {pn['applied']}")
+        df = pn["diff"]
+        check(pn["diffWait"] == ["적용 뒤 이음매 다시 계산 중…"] and df["gets"] == [1, 1]
+              and df["rows"] == ["적용 전후 bad 2 → 1", "적용 전후 left 2718–2758 p90 73.5 → 없음", "적용 전후 top 575–1337 p90 43.3 → 12.1 weak",
+                                 "적용 전후 bottom 300–340 p90 35 bad — 새로 생김", "적용 전후 right 2600–2700 p90 9.5 weak — 새로 생김",
+                                 "적용 전후 left 2720–2750 p90 20 weak — 새로 생김"]
+              and df["edit"] == "편집 10/19 18:20 · 붓 1획" and df["hist"] == "이전 판 1"
+              and df["list"] == ["015_치마밑단_주름편집 1이음매 4", "014_치마원단_문양이음매 1"],
+              f"적용 전후(패널 6): 새 서명 이음매 전엔 '다시 계산 중', 새 state(rev) = GET /mask 다시(편집 판·3층 서명 → 3층 다시) · 새 이음매 = 전후 줄"
+              f"(bad n → m · 'p90 → 없음' · 새로 생김 — 같은 변이라도 다른 ★ 의 구간은 짝이 아님)·왼쪽 칩 {pn['diffWait']} {df}")
+        check(pn["diffGone"] == [], f"U3 2차 검증: 그 뒤 다른 쓰기로 ★ 합성 서명이 적용 전·뒤 둘 다 아니면 전후 줄을 지움('다시 계산 중' 이 남지 않음) {pn['diffGone']}")
+        check(pn["pref"] == 1, f"Codex 2차: 같은 rev 에 pref_v(분석·Export 설정)만 바뀐 state = GET /mask 한 번 더(같은 판은 다시 받지 않음) {pn['pref']}")
+        ag = pn["again"]
+        bline = ["서버 판이 바뀜(다른 창·노드) — 이 세션·미리보기는 연 판(적용하면 거절) 다시 받기"]
+        check(ag["during"] == 0 and ag["after"] == 1 and ag["pending"]["n"] == 1 and ag["edit"] == "편집 10/19 18:20 · 다른 창의 붓 2획",
+              f"획 중의 새 state = 받기를 미룸 → 획이 끝나면 GET /mask 한 번(적용 안 한 획 — 세션 그대로·편집 줄만 새 판), 같은 rev 는 다시 받지 않음 {ag}")
+        check(ag["behind"] == bline and ag["zero"] == {"pending": None, "behind": bline, "button": True, "gets": 1}
+              and ag["discard"] == {"confirm": "적용 안 한 획 1 을 모두 버릴까요?", "pending": None, "gets": [2, 1], "behind": [], "reput": [[0, 0, 1664, 1280]]},
+              f"U3 2차 검증: 세션이 연 판 뒤(다른 창의 새 판)면 세션 칸 경고 + [다시 받기](Ctrl+Z 로 0 이어도 — 세션은 Ctrl+Y 할 수 있게 그대로), "
+              f"[버리기] = 서버 판으로 다시 열기(GET /mask·편집 래스터 — 미리보기 = Compose·Export 의 판, 3차: 다시 연 뒤 겹침 전체 다시 그림 — "
+              f"[버리기]의 rAF 가 먼저 돌아도 연 판 합성이 남지 않게) {ag}")
+        sv0 = doc["routes"]["POST /mask/save"]["ok"]["edit"]["file"]
+        u2 = pn["undo2"]
+        check(u2 == {"body": {"root": "fe410d7f025d", "key": "r_61ba2d695f0f_0_0", "seen": "masks/r_61ba2d69_e_0000000000bb.png", "op": "undo"},
+                     "confirms": 0, "gets": 1, "refresh": 1,
+                     "toast": ":이전 판으로 — 015_치마밑단_주름 · A · c01"}
+              and pn["undoAsk"] == {"confirm": "적용 안 한 획 1 을 버리고 이전 판으로 돌아갈까요?", "posts": 0, "pending": 1}
+              and pn["reset"] == {"confirm": "015_치마밑단_주름 · A · c01 의 마스크 편집 기록(이전 판 1 포함)을 지우고 기준 마스크로 돌아갑니다. 적용 안 한 획 1 도 버립니다. 계속할까요?",
+                                  "body": {"root": "fe410d7f025d", "key": "r_61ba2d695f0f_0_0", "seen": sv0, "op": "reset"}, "pending": None,
+                                  "toast": ":마스크 편집 지움 — 015_치마밑단_주름 · A · c01 은 기준 마스크로", "rows": ["편집 없음 — 기준 마스크 그대로", "저장된 편집 없음"]},
+              f"저장된 판(패널 5): [이전 판으로] = 획 없으면 확인 없이 POST /mask/edit undo → 다시 열기·보드 다시, 획이 있으면 확인(아니오 = 그대로), "
+              f"[편집 지우기] = 확인 창(이전 판 수·버릴 획) → reset → 기준 마스크 {u2} {pn['undoAsk']} {pn['reset']}")
+        gs = pn["goSeam"]
+        check(gs["ok"] and gs["confirms"] == 0 and gs["look"] == [512, 2649, 2]
+              and gs["rows"] == ["014_치마원단_문양 · A · c02 ★ — 기준 자동 마스크 1024×768 (z: 아래 1 · 위 2)", "편집 없음 — 기준 마스크 그대로"]
+              and gs["fade"] is False and pn["seamRows"] == ["left 2604–2694 · 40px · p90 38.4 bad"],
+              f"이음매(N·목록) = 그 구간을 만든 ★ 후보를 편집 대상(획 없으면 확인 없음)·2:1·구간 페이드 켬, 이 크롭 이음매 = 뷰어 이음매(지금 서명) 중 이 크롭 {gs} {pn['seamRows']}")
+        rg = pn["range"]
+        check(rg["row"] == "적용 안 한 획 1 — 구간 페이드 left 364–454 64" and rg["puts"] == [[256, 556, 64, 219]]
+              and rg["top"] == "적용 안 한 획 2 — 구간 페이드 left 364–454 64 · 구간 페이드 top 188–288 64" and rg["undone"] is None,
+              f"[선택 이음매 구간 페이드] = 구간 끝 − 크롭 rect y0(왼·오른 변)·x0(위·아래 변) ± 폭 — 014 왼변 2604–2694 = 364–454(U0 §2.2), 바뀐 띠만 다시 그림 {rg}")
+        check(pn["alts"]["now"] == "지금 c02 ★ · 이 크롭 bad 1 · 최악 p90 38.4"
+              and pn["alts"]["rows"] == [["", "후보", "완료", "bad", "weak", "최악 p90", "바뀌는 크롭"],
+                                         ["이 후보를 ★", "c01", "2026-10-15 18:25:00 run", "0", "1", "14.9", "015_치마밑단_주름"],
+                                         ["이 후보를 ★", "c03", "", "0", "0", "", ""]],
+              f"[다른 후보로] 표: 지금 행 + 후보마다 [이 후보를 ★](첫 열 — 좁은 패널에서도 보임)·완료·bad·weak·최악 p90·바뀌는 크롭 이름 {pn['alts']}")
+        st = pn["star"]
+        check(st["no"] == {"confirm": "c01 를 014_치마원단_문양 · A 의 ★ 로 바꿉니다(검토의 Space 와 같음).\n이 크롭의 마스크 편집은 옛 ★ c02 에 남고(다시 ★ 하면 살아남) "
+                                      "새 ★ 는 편집 없이 기준 마스크로 시작합니다.\n계속할까요?", "pick": 0}
+              and st["yes"] == {"pick": [["014_0f9cc5/A", "r_d9b7ffb9fb7c_0_0"]], "select": ["r_d9b7ffb9fb7c_0_0", False], "get": "r_d9b7ffb9fb7c_0_0",
+                                "row": "014_치마원단_문양 · A · c01 ★ — 기준 자동 마스크 1024×768 (z: 아래 1 · 위 2)"},
+              f"[이 후보를 ★] = 확인 창(편집은 옛 ★ 에 남음 — 아니오면 그대로) → 보드 pick(타깃, 그 후보) → 새 ★ 를 편집 대상으로 열기 {st}")
+        check(pn["leave"] == {"ok": True, "confirms": 0, "editor": None, "layer": None, "panel": 0, "pending": None},
+              f"나가기(획 없음) = 확인 없이 뷰어 훅·겹침을 뗌 {pn['leave']}")
+    pm = res.get("panelStale") or {}
+    if "open" in pm:
+        ef = doc["routes"]["GET /mask"]["ok"]["edit"]["file"]
+        head = ["015_치마밑단_주름 · A · c01 ★ — 기준 자동 마스크 1284×772 (z: 아래 0 · 위 4)", "편집 10/19 18:20 · 변 페이드 top 64 · 붓 12획"]
+        # 1차 리뷰 analysis-r1-07: stale 은 기준 지문 또는 편집 창(정합 켬/끔·quad)으로 켜짐 — 문구가 둘 다 말함
+        stale = lambda t: t.startswith("편집 기준 바뀜 — 기준 마스크(재분석·마스크 출처)나 편집 창(정합 켬/끔·quad)이 ") and t.endswith("기준으로 다시 시작")
+        o, lo = pm["open"], pm["lost"]
+        check(o["rows"][:2] == head and stale(o["rows"][2]) and o["restart"] == 1 and o["on"] == [True] * 4 and o["layer"] == [0, 2304, 1664, 3584]
+              and pm["restartAsk"] == {"confirm": "015_치마밑단_주름 · A · c01 의 마스크 편집 기록(이전 판 1 포함)을 지우고 기준 마스크로 돌아갑니다. 계속할까요?", "posts": 0}
+              and pm["save"] == {"seen": ef, "wh": [1284, 772]},
+              f"D4 편집 창이 바뀐 ★(stale): K 로 열림 — 경고 줄 + [기준으로 다시 시작](reset 확인 창)·[이전 판으로]·[편집 지우기]·붓, [적용] = 지금 창 크기 PNG·"
+              f"seen = 기록 file {pm['open']} {pm['restartAsk']} {pm['save']}")
+        check(lo["rows"][:2] == head and stale(lo["rows"][2]) and lo["restart"] == 1 and lo["on"] == [True, True, True, False] and lo["layer"] is None
+              and (lo["err"] or "").startswith(f"마스크 편집 파일이 없습니다: {ef}") and (lo["err"] or "").endswith("다시 받기")
+              and lo["again"] == {"on": True, "layer": [0, 2304, 1664, 3584], "err": False},
+              f"U3 리뷰 must: 편집 래스터를 못 받아도 대상·편집 기준 바뀜 줄·[기준으로 다시 시작]·[이전 판으로]·[편집 지우기]는 남음(붓·페이드·겹침만 없음), "
+              f"[다시 받기] = 다시 열어 붓·겹침 {lo}")
+        check(lo.get("refail") == {"layer": None, "err": "마스크 편집 파일이 없습니다: masks/r_61ba2d69_e_0000000000cc.png 다시 받기"},
+              f"U3 2차 검증 nit: 새 state 의 다시 열기가 래스터를 못 받으면 옛 세션 겹침을 뗌(오류 줄 + [다시 받기]) {lo.get('refail')}")
+    pl = res.get("panelLife") or {}
+    if "midStroke" in pl:
+        check(pl["midStroke"] == {"ok": True, "confirm": "적용 안 한 획 1(015_치마밑단_주름 · A · c01)은 이 창에만 남습니다 — Export·다른 창에는 들어가지 않음"
+                                                       "(K 로 돌아오면 이어서). 나갈까요?",
+                                  "pending": {"key": "r_61ba2d695f0f_0_0", "n": 1, "name": "015_치마밑단_주름 · A"}, "layer": None, "editor": None},
+              f"U3 3차 검증: 끌던 중 나가기 = 획을 끝내고(pointerup 이 오지 않음) 확인 창·진행 ★ 점검에 그 획을 셈 — 세션이 '획 중'으로 굳지 않음 {pl['midStroke']}")
+        check(pl["reenter"] == {"layer": [0, 2304, 1664, 3584], "puts": [[0, 0, 1664, 1280]], "pending": 1},
+              f"U3 3차 검증: K 를 나갔다 같은 대상으로 다시 들어오기(세션 유지) = 겹침 캔버스를 다시 붙이고 전체 다시 그림(붓이 숨은 캔버스에 칠해지지 않게) "
+              f"{pl['reenter']}")
+        check(pl["sigOnly"] == {"rows": ["기준 마스크가 바뀜(재분석·마스크 출처) — 이 세션·미리보기는 연 판의 기준(적용하면 지금 기준의 편집으로 저장 — "
+                                         "'편집 기준 바뀜' 표시 사라짐) 다시 받기"],
+                                "save": {"rect": "128,2560,1408,3328", "pending": None}},
+              f"U3 3차 검증 nit: 기준 서명만 바뀐 세션(같은 창·같은 기록)은 서버가 받음 — '적용하면 거절'이 아니라 지금 기준의 편집으로 저장된다고 알림 {pl['sigOnly']}")
+    vw = res.get("viewerMask") or {}
+    if "enter" in vw:
+        bare = {"masks": [], "ov": False, "edit": False}
+        k15 = {"masks": ["0px 2304px 1664px 1280px"], "ov": True, "edit": True}
+        check({k: v for k, v in vw.items() if not k.startswith("n") and k not in ("order", "showSeam")} == {"before": bare, "enter": k15, "leave": bare, "reenter": k15, "opening": [],
+                     "opened": {"masks": ["256px 1984px 1536px 1280px"], "ov": True, "edit": True}, "end": bare},
+              f"U3 3차 검증: 실제 viewer.js setMaskLayer — K 진입 = 3층 캔버스를 stage 에 box 자리로(선택 크롭 겹침 숨김), 나가기 = 떼고 겹침 되살림, "
+              f"다시 들어오기 = 다시 붙임, 다른 대상을 여는 동안 = 뗌(옛 대상 합성이 남지 않음) {vw}")
+        check(vw.get("nRefused") == {"msg": True, "cur": 0, "z": True} and vw.get("nTaken") == {"msg": True, "cur": 1, "z": True},
+              f"1차 리뷰 ui-r1-06: N 을 받는 쪽이 거절(onPick false — 적용 안 한 획 확인 취소·적용 중)하면 자리·강조·메시지 그대로, 받으면 다음 이음매로 2:1 "
+              f"{vw.get('nRefused')} {vw.get('nTaken')}")
+    s1 = res.get("sessionR1") or {}
+    if "strokeOpen" in s1:
+        check(s1["strokeOpen"] == {"stroke": None, "move": None, "pending": 0, "same": True},
+              f"1차 리뷰 session-r1-01: 끄는 중 다른 대상을 열면 그 획은 버림(새 창에 옛 창 좌표·사본으로 이어 칠하거나 실행 취소가 깨지지 않게) {s1['strokeOpen']}")
+        check(s1["reopen"] == {"a1": False, "b": True, "busy": "load", "begin": None, "a2": True, "pending": 0, "busy2": "", "key": "r_61ba2d695f0f_0_0",
+                               "info": "r_61ba2d695f0f_0_0"},
+              f"1차 리뷰 session-r1-02: A → B → A 열기 — 앞 A 의 늦은 응답은 버리고 busy 도 풀지 않음(그 사이 칠한 획이 뒤 A 응답에 말없이 지워지지 않게) "
+              f"{s1['reopen']}")
+        check(s1["lateOther"] == {"loaded": False, "layers": None, "again": True, "box": [256, 1984, 1792, 3264]},
+              f"1차 리뷰 session-r1-03: 앞 대상의 3층이 새 대상의 GET /mask 보다 먼저 와도 버림(앞 대상 box 가 새 대상 겹침이 되지 않게) {s1['lateOther']}")
+        ef = doc["routes"]["GET /mask"]["ok"]["edit"]["file"]
+        check(s1["seen"] == {"reopened": False, "behind": True, "opened": ef, "sent": ef, "reason": "changed", "pending": 1, "file": ef},
+              f"1차 리뷰 tests-r1-01: 다른 창이 새 판을 저장한 뒤(세션은 적용 안 한 획 때문에 연 판) [적용]의 seen = 연 판 → 409 changed(다른 창 판을 덮지 않음) "
+              f"{s1['seen']}")
+        check(s1["slow"]["diff"] == 0 and s1["slow"]["mid"] == 0 and s1["slow"]["was"] > 0.5,
+              f"1차 리뷰 tests-r1-02: 천천히 끈 획(1px 이벤트 100번 < R/4 — carry 가 다음 이벤트로) = 한 번에 끈 획과 같은 도장(가운데까지 지워짐) {s1['slow']}")
+        check(s1["fadeWide"] == {k: {"worst": 0, "outside": 0} for k in ("top", "bottom", "left", "right", "top range")},
+              f"1차 리뷰 tests-r1-03: 창 ⊃ 크롭(실데이터 R1⁗ 꼴): 변 4개·구간 페이드 = 띠 안 기존 값 × fade(크롭 밖 줄·열 = 0 — PSD 그룹 마스크에 딱딱한 띠가 "
+              f"남지 않음), 띠 밖 그대로 {s1['fadeWide']}")
+        check(s1["opsCap"]["len"] == 200 and s1["opsCap"]["tail"] == "…" and s1["opsCap"]["sent"] and s1["opsCap"]["head"].startswith("구간 페이드 left 10–20 32"),
+              f"1차 리뷰 tests-r1-04: 단계가 많은 세션의 ops 요약 = 200자에서 자르고 '…'(서버 _check_ops 상한 — [적용]이 400 이 아님) {s1['opsCap']}")
+        check(len(s1["softTiles"]) == 2 and all(x["worst"] < 1e-6 and x["moved"] > 0.3 for x in s1["softTiles"]),
+              f"1차 리뷰 tests-r1-09·session-r1-04: 64px 칸을 넘는 여러 도장 부드럽게 획 = 획 시작 사본의 σ = R/4 흐림 쪽으로(창 전체 feather 오라클 — 가로 패스를 "
+              f"줄·칸 열마다 한 번만 해도 같음) {s1['softTiles']}")
+    p1 = res.get("panelR1") or {}
+    if "midGo" in p1:
+        check(p1["midGo"] == {"ok": False, "confirm": "적용 안 한 획 1(015_치마밑단_주름 · A · c01)을 버리고 014_치마원단_문양 · A · c02 를 편집할까요?",
+                              "pending": 1, "after": 1},
+              f"1차 리뷰 session-r1-01: 끄는 중 N(go) = 획을 끝내 확인 창에 셈(아니오 = 그대로 — 그 뒤 끌기는 칠하지 않음) {p1['midGo']}")
+        check(p1["alts"] == [["", "후보", "완료", "bad", "weak", "최악 p90", "바뀌는 크롭"],
+                             ["이 후보를 ★", "c02편집 기준 바뀜", "2026-10-15 18:25:00 run", "2", "0", "76.3", "014_치마원단_문양"],
+                             ["이 후보를 ★", "c03", "", "0", "0", "", ""]]
+              and len(p1["starAsk"]) == 2
+              and "c02 에 남아 있던 편집(10/19 18:11 · 편집 기준 바뀜)이 다시 쓰입니다(표 값도 그 편집으로 계산 — 지우려면 ★ 뒤 [편집 지우기])." in p1["starAsk"][0]
+              and "편집 없이" not in p1["starAsk"][0] and "새 ★ 는 편집 없이 기준 마스크로 시작합니다." in p1["starAsk"][1],
+              f"1차 리뷰 apply-r1-02·analysis-r1-04: 대안 표 후보 칸 칩 = 예전 ★ 때 남긴 편집, [이 후보를 ★] 확인 = 남은 편집이 다시 쓰임 / 없으면 편집 없이 기준 "
+              f"{p1['alts']} {p1['starAsk']}")
+        check(p1["altsOld"] == {"table": False, "row": "★ 합성이 바뀌어 표가 낡음 — 다시 계산하세요", "button": True, "refetch": 1},
+              f"1차 리뷰 ui-r1-02: 표를 계산한 뒤 ★ 합성 서명이 바뀌면(적용·되돌리기·다른 창) 낡은 표 대신 안내 + [다른 후보로] 다시 계산 {p1['altsOld']}")
+        check(p1.get("altsSet") == {"table": False, "row": "후보가(새 후보·탈락·편집) 바뀌어 표가 낡음 — 다시 계산하세요", "button": True},
+              f"Codex 5차: 서명은 그대로인데 대안 후보가 바뀜(다른 창의 탈락·Run 의 새 후보) → 낡은 표 대신 안내 + [다른 후보로] {p1.get('altsSet')}")
+        check(p1.get("altsEdit") == {"back": True, "was": None, "table": False, "row": "후보가(새 후보·탈락·편집) 바뀌어 표가 낡음 — 다시 계산하세요"},
+              f"Codex 6차: 탈락이 풀려 후보가 표를 계산할 때와 같으면 표가 다시 보이고, 다른 창에서 대안 후보의 저장된 편집 판이 바뀌면(다시 ★ 하면 쓰일 "
+              f"편집 — 가정 합성이 바뀜, ★ 합성 서명·후보 key 는 그대로) 표 낡음 {p1.get('altsEdit')}")
+        check(p1["gone"] == {"hint": "이 후보는 이제 ★ 가 아님(검토에서 ★ 해제·탈락) — 적용할 수 없음: 왼쪽 목록에서 크롭을 누르면 지금 ★ 로(적용 안 한 획은 확인 뒤 버림)",
+                             "ok": False, "confirm": "적용 안 한 획 1(015_치마밑단_주름 · A · c01 — 이제 ★ 가 아니라 적용할 수 없음)을 버리고 "
+                                                     "015_치마밑단_주름 · A · c02 를 편집할까요?"},
+              f"1차 리뷰 ui-r1-03: 편집 중인 세션 후보가 ★ 해제됨(검토·다른 창) — 패널 대상 칸에 나갈 길, 다른 후보로 갈 때 확인 문구에 이유 {p1['gone']}")
+        check(p1["loading"] == {"rows": ["014_치마원단_문양 · A · c02 불러오는 중…", "보기: 편집"], "list": ["014_치마원단_문양이음매 1"], "late": None,
+                                "layer": [256, 1984, 1792, 3264]},
+              f"1차 리뷰 session-r1-05·03: 다른 대상을 여는 동안 대상 줄 = 새 대상 '불러오는 중'만(옛 c·창·z·편집을 섞지 않음)·목록 선택 = 새 크롭, 앞 대상의 늦은 "
+              f"3층은 붙이지 않음(새 대상 3층이 오면 그 box) {p1['loading']}")
+        check(p1["shift"] == {"ring": "mbrush soft", "same": True, "pending": 1, "erase": True},
+              f"1차 리뷰 tests-r1-08: Shift 누른 채 끌기 = 부드럽게(붓 원 점선 · 균일한 곳 합성 그대로) — 고른 도구(지우기)는 그 자리 합성을 바꿈 {p1['shift']}")
+        check(p1["clamp"] == {"up": ["크기512px", "경도0.50"], "ring": "256", "down": "크기4px", "hardUp": "경도1.00", "hardDown": "경도0.00"},
+              f"1차 리뷰 tests-r1-10: ] 25번 = 크기 512 에서 멈춤(붓 원 r 256), [ 40번 = 4, Shift+] = 경도 1.00, Shift+[ = 0.00 {p1['clamp']}")
+    bk = res.get("boardKeys") or {}
+    if "mask" in bk:
+        mk = bk["mask"]
+        check(all(mk[x] == {"calls": [], "prevented": True} for x in ("Space", "KeyR", "ArrowDown", "KeyE", "KeyT", "KeyG"))
+              and [mk[x]["calls"] for x in ("KeyX", "KeyQ", "Escape", "KeyK", "KeyB", "KeyN")]
+              == [["maskKey:KeyX"], ["maskKey:KeyQ"], ["maskKey:Escape"], ["setMask:false"], ["setBg:base"], ["nextSeam"]]
+              and bk["review"]["KeyK"]["calls"] == ["setMask:true"],
+              f"board.js K 모드: 검토 키(Space·R·화살표)·E·T·G 끔, 마스크 키(X·Q·Esc)는 편집기가 먼저, K 토글, 뷰어 키(B·N) 그대로 {mk}")
+    bm = res.get("boardMask") or {}
+    if "star" in bm:
+        enter = lambda x: [y for y in x["log"] if y[0] == "enter"]
+        check(bm["noStar"]["ret"] is False and bm["noStar"]["log"][0][1].startswith("★ 를 먼저 고르세요") and not bm["noStar"]["on"]
+              and bm["star"]["ret"] and bm["star"]["log"][0] == ["setPipe", False] and enter(bm["star"])[0][2] == {"key": "k15", "seam": None}
+              and bm["star"]["panel"] is False and enter(bm["slice"])[0][2]["key"] == "k15s" and enter(bm["left"])[0][2]["key"] == "kL"
+              and enter(bm["to"])[0][2]["key"] == "k9",
+              "setMask(true): ★ 없으면 '★ 를 먼저', 진행 모드면 먼저 나감, 대상 = 지정 > 이 창의 적용 안 한 세션 후보 > 고른 후보가 ★·slice 면 그것 > 타깃 첫 ★")
+        check(bm["old"]["log"] == [["toast", "ComfyUI 를 재시작해야 마스크 편집(K)을 쓸 수 있습니다(서버가 옛 버전)", "warn"]]
+              and bm["noMod"]["log"][0][1].startswith("Studio 창을 새로고침해야 마스크 편집(K)")
+              and bm["leaveNo"] == {"ret": False, "log": [["leave"]], "on": True, "panel": None}
+              and bm["leaveYes"]["ret"] and not bm["leaveYes"]["on"] and ["setMaskLeft", {"key": "kL", "n": 2}] in bm["leaveYes"]["log"]
+              and bm["guardNo"]["ret"] is False and bm["guardOff"]["ret"] is True,
+              "옛 서버(크롭 요약에 mask_edits 없음) = 재시작 안내, 모듈 없음 = 창 새로고침, 나가기 확인 아니오 = 그대로, 나가면 적용 안 한 세션을 진행 ★ 점검으로, "
+              "다른 모드 단추 앞 leaveMask")
+        check(enter(bm["goCrop"])[0][2] == {"key": "k15", "seam": {"crop_id": "015_d556f2", "key": "k15", "side": "top"}}
+              and enter(bm["goKey"])[0][2] == {"key": "kS", "seam": None} and bm["goOld"]["log"] == [["goTarget", "015_d556f2/A"]]
+              and bm["pickN"]["log"] == [["go", {"key": "k15", "seam": {"side": "top"}}]],
+              "★ 점검 S4 줄 → K 모드(크롭 = 그 크롭의 가장 나쁜 이음매를 만든 ★·구간), 옛 서버는 검토로, K 모드의 N = 편집기 go(확인 창은 편집기)")
+        check(bm["seen"] == [[False, False], [True, True]],
+              f"markSeen: K 모드는 검토 화면을 보이지 않아 편집 대상을 '본 후보'로 하지 않음(나올 때 seeCurrent) {bm['seen']}")
+        check(bm.get("unload") == [0, 1, 1, 0],
+              f"U3 2차 검증: 새로고침·닫기(beforeunload) = 적용 안 한 마스크 획(K 모드 밖 포함)이 있을 때만 확인 창, 모듈 없으면 그대로 {bm.get('unload')}")
+        check(bm.get("leftGone") == ["k15", "k15"],
+              f"1차 리뷰 ui-r1-03: 세션 후보가 검토에서 ★ 해제·탈락되면 K 는 그 후보(GET /mask 409 not_picked — 막다른 상태)가 아니라 검토의 ★ 로 "
+              f"(버릴지는 편집기 go 확인 창) {bm.get('leftGone')}")
+        check([y[2] for y in enter(bm["goNoSeams"])] == [{"key": "k15", "seam": None}] and not any(y[0] == "goTarget" for y in bm["goNoSeams"]["log"]),
+              f"1차 리뷰 ui-r1-07: 이음매를 다시 받는 중(viewer.seams() null — 적용 직후)이면 ★ 점검 이음매 줄 = 그 크롭 첫 ★ 로 K(검토로 가지 않음) "
+              f"{bm.get('goNoSeams')}")
+        check(bm.get("noCrops") == [False, "Import PSD 로 크롭이 생기고 ★ 를 고른 뒤 마스크 편집(K)을 쓸 수 있습니다"],
+              f"1차 리뷰 ui-r1-08: 크롭이 없는 프로젝트(Import 전)는 '서버가 옛 버전'이 아니라 Import 안내 {bm.get('noCrops')}")
+        check(bm.get("pickRefused") is False,
+              f"1차 리뷰 ui-r1-06: K 모드의 N(pickCrop)은 편집기 go 의 결과를 뷰어에 돌려줌(거절 = false — 뷰어가 제자리) {bm.get('pickRefused')}")
+        check(bm.get("select") == {"same": [2, {"cell": "c"}], "other": [0, None, "014_0f9cc5/A", "k14"]},
+              f"1차 리뷰 ui-r1-01: K 의 대상 선택(maskSelect)이 타깃을 바꾸면 레퍼런스 번호·R 연타 대기를 처음으로(같은 타깃이면 그대로 — K 를 나온 검토 "
+              f"화면이 앞 타깃의 번호로 '레퍼런스 없음'을 보이지 않게) {bm.get('select')}")
+
+    section("S4-J-K4 진행(G) ★ 점검 S4 줄·Export 결과 '그룹 마스크 n (편집 k)'·이전 목록 '편집 k'")
+    ck = res.get("checks") or {}
+    if "pure" in ck:
+        s4 = [x for x in ck["pure"] if "mask" in x]
+        check(s4 == [{"text": "001_머리 · A — 마스크 편집 기준 바뀜(c01 — 기준으로 다시 시작 또는 그대로)", "key": "001_38a818/A", "mask": {"key": "k0"}},
+                     {"text": "003_리본 · A — 적용 안 한 마스크 편집 3획(이 창 — Export 에 들어가지 않음)", "key": None, "mask": {"key": "k2"}},
+                     {"text": "003_리본 — 이음매 bad 1", "key": "003_2f8f50/A", "mask": {"crop": "003_2f8f50"}}],
+              f"starChecks S4 줄: 편집 기준 바뀜(★ 만 — 옛 ★ 의 stale 편집·stale 아닌 편집은 줄 없음)·이 창의 적용 안 한 편집·이음매 bad(→ K 모드 그 자리) {s4}")
+        check(ck["go"] == {"mask": [[{"key": "k0"}, "001_38a818/A"], [{"crop": "003_2f8f50"}, "003_2f8f50/A"], [{"key": "k2"}, None]], "target": []}
+              and all(c.endswith("link") for t, c in ck["panel"] if "마스크" in t or "이음매" in t) and ck["cleared"] is False,
+              f"★ 점검 S4 줄을 누르면 goMask(마스크 모드 그 자리 — 옛 서버면 board.js 가 검토로), setMaskLeft(null) 이면 줄 없음 {ck['go']}")
+        check(ck.get("gone") == [{"text": "008_치마금속장식 · A — 적용 안 한 마스크 편집 2획(이 창 — 편집하던 후보가 이제 ★ 가 아니라 적용할 수 없음: "
+                                          "다시 ★ 하거나 K 에서 버리기)", "key": "008_e1d4cc/A"}],
+              f"1차 리뷰 ui-r1-03: 세션 후보가 ★ 가 아님(검토에서 ★ 해제·탈락) — 그 줄은 이유를 적고 K(409 막다른 상태) 대신 그 타깃을 검토로 {ck.get('gone')}")
+    ex = res.get("exportEdits") or {}
+    if "row" in ex:
+        check(ex["row"] == f"새 PSD r{ex['rev']}: {ex['psd']} · 레이어 55 · 그룹 마스크 18 (편집 3) · 문제 0 · {ex['bytes'] / 1e6:.1f}MB"
+              and ex["list"][0] == f"r{ex['rev']} · 2026-10-15 16:11:56 · 편집 3 · 문제 0 · {ex['bytes'] / 1e6:.1f}MB"
+              and ex["list"][2] == "r74 · 2026-10-15 15:41:31 · 문제 0 · 218.7MB",
+              f"Export 결과 줄 = 그 rev 의 exports(GET /pipeline) mask_groups·mask_edits, 이전 목록 '편집 k'(S4 전 기록 null = 줄에서 뺌) {ex}")
+
+    section("S4-J-K5 3층 합성(§2.4) = 같은 식(Python), 바뀐 사각형만 다시 그려도 전체와 같음")
+    cp = res.get("compose") or {}
+    if "full" in cp:
+        lay = {k: np.array(cp[k], np.float64).reshape(5, 7, 4) for k in ("under", "patch", "over")}
+
+        def want(m):
+            w = np.zeros((5, 7, 3))
+            for y in range(5):
+                for x in range(7):
+                    wx, wy = 10 + x - 12, 20 + y - 21
+                    mv = math.floor(min(1.0, max(0.0, m[wy * 7 + wx])) * 255 + 0.5) / 255 if 0 <= wx < 7 and 0 <= wy < 3 else 0.0
+                    pa = lay["patch"][y, x, 3] / 255 * mv
+                    oa = lay["over"][y, x, 3] / 255
+                    w[y, x] = lay["over"][y, x, :3] * oa + (lay["under"][y, x, :3] + (lay["patch"][y, x, :3] - lay["under"][y, x, :3]) * pa) * (1 - oa)
+            return w
+
+        got = {k: np.array(cp[k], np.float64).reshape(5, 7, 4) for k in ("full", "again", "baseView")}
+        d = [float(np.abs(got[k][..., :3] - want(m)).max()) for k, m in (("full", cp["mask"]), ("again", cp["mask2"]), ("baseView", cp["base"]))]
+        check(max(d) <= 0.5 + 1e-6 and all((got[k][..., 3] == 255).all() for k in got),
+              f"compose = over·a + (under + (patch − under)·patch.a·quant(mask)/255)·(1 − over.a)(창 밖 0, 8비트 반올림 ≤ 0.5 — 보이는 창에 범위 밖·"
+              f"반올림 경계 값) — 편집·Q 기준 {d}")
+        check(cp["partSame"] and cp["partDiff"] and cp["splitOk"] and cp["markOnlyPatch"] and cp["markChanged"],
+              "바뀐 사각형만 다시 = 전체 다시와 같음, S 슬라이더 = 왼쪽 기준·오른쪽 편집, M 표시는 패치가 있는 곳만")
+
+    section("S4 2차 리뷰(JS): 받는 동안 단계·다시 받기 가드·redo·[버리기]·화면 다시 맞추기·보드 연결(keyup·pick·이음매·칩)")
+    K14, K15 = "r_d9b7ffb9fb7c_0_1", "r_61ba2d695f0f_0_0"
+    ef = doc["routes"]["GET /mask"]["ok"]["edit"]["file"]
+    s2 = res.get("sessionR2") or {}
+    if "loading" in s2:
+        check(s2["loading"] == {"pending": 0, "undo": 0, "redo": 0, "busy": "load", "opened": True},
+              f"2차 리뷰 session-r2-01: 다른 대상을 받는 동안 단계 0(이미 버리기를 확인한 획을 새 대상 이름으로 세지 않음) {s2['loading']}")
+        check(s2["midStroke"] == {"reopened": False, "stroke": True, "behind": True, "pending": 1}
+              and s2["moved"] == {"reopened": False, "key": K14, "info": K14, "gets": [K15, K14]},
+              f"2차 리뷰 session-r2-02: 다시 받기 GET 이 끄는 중에 옴 = 다시 열지 않음(끌던 획 유지), A 의 다시 받기가 B 로 옮긴 뒤 옴 = 버림(세션·info 는 B) "
+              f"{s2['midStroke']} {s2['moved']}")
+        check(s2["afterApply"] == {"ok": True, "reopened": False, "info": "masks/r_61ba2d69_e_00000000dddd.png", "file": "masks/r_61ba2d69_e_00000000dddd.png",
+                                   "behind": False, "pending": 1}
+              and s2["twoRefresh"] == {"first": False, "second": False, "info": "masks/r_61ba2d69_e_00000000eeee.png"},
+              f"2차 리뷰 session-r2-04: [적용]보다 먼저 나간 다시 받기 GET(옛 판)·먼저 나간 다시 받기가 늦게 옴 = 버림(behind 가 거짓으로 켜지지 않음) "
+              f"{s2['afterApply']} {s2['twoRefresh']}")
+        check(s2["redoCut"] == {"step": None, "redo": 0, "a": True, "a0": True, "same": True, "pending": 1},
+              f"2차 리뷰 tests-r2-01: 실행 취소 → 새 획 → 다시 = 없음(되돌린 획이 새 획 뒤에 되살아나지 않음) {s2['redoCut']}")
+        check(s2["discard"] == {"open": True, "pending": 0, "applied": True, "kept": 0, "was": True},
+              f"2차 리뷰 tests-r2-02: [버리기] = 연 판으로, [적용] 뒤의 [버리기] = 적용한 판으로(적용 전 판으로 돌아가지 않음) {s2['discard']}")
+    p2 = res.get("panelR2") or {}
+    if "loading" in p2:
+        bline = ["서버 판이 바뀜(다른 창·노드) — 이 세션·미리보기는 연 판(적용하면 거절) 다시 받기"]
+        check(p2["loading"] == {"pending": None, "marks": ["mbrush"], "second": True, "left": True, "after": None,
+                                "confirms": ["적용 안 한 획 1(015_치마밑단_주름 · A · c01)을 버리고 014_치마원단_문양 · A · c02 를 편집할까요?"]},
+              f"2차 리뷰 session-r2-01·ui-r2-01·ui-r2-04: 확인하고 다른 대상을 받는 동안 획 수 없음(다시 다른 대상·나가기 = 확인 없이, 진행 ★ 점검에 줄 없음), "
+              f"앞 대상의 편집 창·크롭 테두리를 그리지 않음 {p2['loading']}")
+        check(p2["reenter"] == {"gets": 1, "head": "015_치마밑단_주름 · A · c01 ★ — 기준 자동 마스크 1280×768 (z: 아래 0 · 위 4)"}
+              and p2["strokeState"] == {"during": 0, "after": 1, "warn": bline},
+              f"2차 리뷰 session-r2-03: 나갔다 다시 들어오기 = GET /mask 다시·패널 줄, 끄는 중 새 state = 획을 끝내면 바로 다시 받기·경고 "
+              f"{p2['reenter']} {p2['strokeState']}")
+        ask = "적용 안 한 획 1 을 버리고 서버 판을 다시 받을까요?"
+        check(p2["reload"] == {"no": {"confirm": ask, "pending": 1, "gets": 0, "conflict": True}, "yes": {"confirm": ask, "pending": None, "conflict": False}},
+              f"2차 리뷰 session-r2-02·03·tests-r2-03: 획이 있는 세션의 409 뒤 [다시 받기] = 확인 창(아니오 = 세션·충돌 줄 그대로), 예 = 다시 열고 충돌 줄 없음 "
+              f"{p2['reload']}")
+        check(p2["viewKeys"] == {"on": "보기: 기준|편집 슬라이더(S — 왼쪽 = 기준) · 마스크(M)", "off": "보기: 편집"}
+              and p2["esc"] == {"ret": True, "exit": 1},
+              f"2차 리뷰 tests-r2-07: S·M 두 번째 = 끔, Esc = K 모드 나가기(opts.exit) {p2['viewKeys']} {p2['esc']}")
+        check(p2["deferred"] == {"load": 2, "apply": [0, 1]},
+              f"2차 리뷰 session-r2-03: 받는 중·적용 중 새 state = 미뤘다가 끝난 뒤 GET /mask 다시(다음 rev 까지 낡은 판으로 두지 않음) {p2['deferred']}")
+        check(p2["altsRace"] == {"table": False, "row": "계산 중 — 후보 2 × ≈ 2.5초(한 번에 하나 — 다른 합성이 돌면 기다림)", "after": True},
+              f"2차 리뷰 tests-r2-12: 앞 대상의 늦은 대안 표 응답은 새 대상 표에 넣지 않음 {p2['altsRace']}")
+        st = p2["starStroke"]
+        check(st["pick"] == 0 and st["pending"] == 1 and (st["confirm"] or "").endswith("\n적용 안 한 획 1 은 버립니다.\n계속할까요?"),
+              f"2차 리뷰 tests-r2-03: 획이 있을 때 [이 후보를 ★] 확인 = 그 획을 버린다고 알림(아니오 = 그대로) {st}")
+        check(p2["seamClick"] == {"look": [[956, 2560, 2]], "sel": ["top 575–1337 · 762px · p90 43.3 bad"], "fade": [False, "top 575–1337 ± 64px 테이퍼"]},
+              f"2차 리뷰 tests-r2-05: 패널 6 이음매 줄 누르기 = 그 구간으로 2:1·선택 구간(줄 강조·[선택 이음매 구간 페이드] 켬) {p2['seamClick']}")
+        check(p2["layerFail"] == {"before": None, "enter": None, "after": None, "row": True},
+              f"2차 리뷰 session-r2-03: 대상을 바꾼 뒤 3층을 받지 못함 → 다시 들어와도 앞 대상 3층을 붙이지 않음 {p2['layerFail']}")
+        check(p2["diffPair"] == ["적용 전후 bad 2 → 1", "적용 전후 top 200–300 p90 40 → 없음", "적용 전후 top 900–1000 p90 30 → 31.5 bad"],
+              f"2차 리뷰 tests-r2-06: 적용 전후 = 같은 변·같은 ★ 라도 구간이 겹치는 것끼리만 짝 {p2['diffPair']}")
+        check(p2["staleChip"] == "015_치마밑단_주름편집 1편집 기준 바뀜이음매 2", f"2차 리뷰 tests-r2-09: 마스크 목록 크롭 칩 '편집 기준 바뀜' {p2['staleChip']}")
+    ch2 = res.get("composeHatch") or {}
+    if "mark" in ch2:
+        check(ch2 == {"plain": [100] * 8, "mark": [135, 135, 135, 100, 100, 100, 100, 100]},
+              f"2차 리뷰 tests-r2-07: M 보기 = 기준보다 지운 곳에 회색 빗금((x + y) & 7 < 3 — 0.3·값 + 105) {ch2}")
+    check((res.get("viewerMask") or {}).get("order") == ["mask", "marks"],
+          f"2차 리뷰 tests-r2-08: 3층 캔버스는 marks(붓 원·편집 창·이음매 선) 앞(DOM 순서 = 쌓임) {(res.get('viewerMask') or {}).get('order')}")
+    b2 = res.get("boardR2") or {}
+    if "keyUp" in b2:
+        check(b2["keyUp"] == ["KeyQ"] and b2["pick"] == [["pick", {"crop_id": "014_0f9cc5", "tid": "A", "key": "r_d9b7ffb9fb7c_0_0", "mode": "set"},
+                                                          "★ 바꿈 — 014_치마원단_문양 · A"]],
+              f"2차 리뷰 tests-r2-07·04: board keyup → 마스크 편집기(Q 떼기), [이 후보를 ★] = POST /pick mode set(검토의 Space) {b2['keyUp']} {b2['pick']}")
+        sm = [["015_d556f2", {"n": 1, "bad": 1}]]
+        check(b2["onSeams"] == [{"log": ["renderTargets", "tabChanged"], "map": sm}, {"log": ["renderTargets"], "map": sm}]
+              and b2["checksNull"] == ["이음매 재는 중(★ 합성이 바뀜) — 끝나면 이 점검에 새 bad 수"] and b2["checksMap"] == ["003_리본 — 이음매 bad 1"],
+              f"2차 리뷰 ui-r2-02: 새 이음매 → 진행 모드면 패널 다시(★ 점검 이음매 bad), 재는 중(null) = 옛 bad 수 대신 그 한 줄 {b2['onSeams']} {b2['checksNull']}")
+        check(b2["cropChips"] == ["편집 2|b-reg", "편집 기준 바뀜|b-bad"] and b2["badges"] == [["편집 기준 바뀜|badge b-bad"], ["편집|badge b-reg"], []],
+              f"2차 리뷰 tests-r2-09: 검토 크롭 목록 칩·후보 배지 '편집 기준 바뀜' {b2['cropChips']} {b2['badges']}")
+    if "star" in bm:
+        check(["setViewFlags", {"slider": False, "raw": False}] in bm["star"]["log"],
+              f"2차 리뷰 ui-r2-03: K 진입 = 검토의 S·M 보기를 끔(뷰어 머리줄 안내가 K 에서 남지 않게) {bm['star']['log']}")
+
+    section("S4 3차 리뷰(JS): 끄는 중 화면 이동·[이 후보를 ★] 잠금·세션 가드·K 진입 대상·목록 하위 행·보기 재설정·누르는 동안 다시 그리기·N 구간 맞춤")
+    K15B, KB = "r_61ba2d695f0f_0_1", "r_7e8f9a0b1c2d_0_0"
+    lock = "warn:적용·되돌리기·★ 바꾸기를 처리하는 중 — 끝난 뒤 "
+    s3 = res.get("sessionR3") or {}
+    if "lateFail" in s3:
+        check(s3["lateFail"] == {"a": False, "b": True, "key": K14, "m": True, "win": [512, 2240, 1536, 3008], "err": None, "busy": ""}
+              and s3["lateRefreshErr"] == {"first": False, "second": False, "err": None},
+              f"3차 session-r3-03 (1)(2): A → B 에서 A 래스터의 늦은 실패·버린 다시 받기의 늦은 실패는 지금 세션을 지우거나 오류 줄을 띄우지 않음 "
+              f"{s3['lateFail']} {s3['lateRefreshErr']}")
+        check(s3["discard55"] == {"before": 55, "after": 0, "ops": "", "same": True} and s3["altsMoved"] == {"result": None, "asks": 1},
+              f"3차 session-r3-03 (6)(7): 50단계를 넘긴 세션의 [버리기] = 버린 단계까지 비움(적용 안 한 획 0 — [적용]·beforeunload 꺼짐), 대안 표 202 사이에 "
+              f"대상이 바뀌면 옛 대상 계산을 더 묻지 않음 {s3['discard55']} {s3['altsMoved']}")
+    p3 = res.get("panelR3") or {}
+    if "seamMid" in p3:
+        check(p3["seamMid"] == {"ok": True, "n": 1, "looks": [[956, 2560, 2]], "puts": [], "after": 1}
+              and p3["viewKeys"] == [[k, False, 1, 0] for k in ("KeyF", "Digit0", "Digit1", "Digit2")],
+              f"3차 session-r3-02: 끄는 중 같은 ★ 의 이음매(N·이음매 줄)·F·0·1·2(커서 기준이 아닌 화면 이동) = 옮기기 전에 획을 끝냄(F·0·1·2 는 board 로 넘김) — "
+              f"옮긴 화면의 먼 커서 점과 앞 점을 잇는 지우기 띠가 없음 {p3['seamMid']} {p3['viewKeys']}")
+        check(p3["pickFail"] == {"pick": 1, "confirms": 1, "gets": [], "n": 1, "head": "015_치마밑단_주름 · A · c01 ★ — 기준 자동 마스크 1280×768 (z: 아래 0 · 위 4)",
+                                 "on": True},
+              f"3차 tests-r3-02: [이 후보를 ★] 의 보드 쓰기 실패(null — 다른 쓰기 중·409·네트워크) = 대상·세션 그대로(GET /mask 없음·획 남음·단추 다시 켬) "
+              f"{p3['pickFail']}")
+        check(p3["pickHold"] == {"brush": False, "enter": True, "undo": True, "go": False, "leave": False, "n": 1, "off": [True] * 4, "saves": 0,
+                                 "toasts": [lock + "바꾸세요", lock + "나가세요"], "confirms": 1, "editor": True,
+                                 "after": {"n": 0, "gets": [K15B], "saves": 0, "select": [K15B, False]}},
+              f"3차 session-r3-01: [이 후보를 ★] 의 보드 쓰기(POST /pick + state) 동안 세션 잠금 — 붓(왼쪽 끌기 = 화면 이동)·Enter·실행 취소·대상 바꾸기·나가기 "
+              f"거절(버리기로 한 옛 ★ 저장·새 대상 세션에 남는 획 없음), 끝나면 새 ★ 를 엶 {p3['pickHold']}")
+    p3b = res.get("panelR3b") or {}
+    if "reenterSeam" in p3b:
+        check(p3b["reenterSeam"] == {"looks": [[956, 2560, 2]], "sel": ["top 575–1337 · 762px · p90 43.3 bad"], "fade": "top 575–1337 ± 64px 테이퍼",
+                                     "select": [K15, False]},
+              f"3차 tests-r3-03: 나갔던 같은 ★ 의 다른 구간으로 다시 들어오기(진행 ★ 점검 이음매 줄) = 그 구간 선택·2:1(앞서 고른 구간에 페이드가 들어가지 않게) "
+              f"{p3b['reenterSeam']}")
+        js = lambda v: str(int(v)) if float(v).is_integer() else str(v)
+        along = lambda x: (x["x0"], x["x1"]) if x["side"] in ("top", "bottom") else (x["y0"], x["y1"])
+        k15seams = [f"{x['side']} {js(along(x)[0])}–{js(along(x)[1])} · {js(x['length'])}px · p90 {js(x['diff_p90'])} {x['severity']}"
+                    for x in doc["routes"]["GET /mask"]["ok"]["seams"]]
+        check(p3b["seamsErr"] == {"k14": ["계산 중…"], "oldSig": ["계산 중…"], "k15": k15seams},
+              f"3차 tests-r3-06: 뷰어 이음매가 실패(서명 없는 빈 목록)·옛 서명이면 패널 6 은 쓰지 않음 — GET /mask 의 이음매(같은 서명)나 '계산 중…'"
+              f"('이음매 없음'으로 해결된 것처럼 보이지 않게) {p3b['seamsErr']}")
+        ls = p3b["listSubs"]
+        check(ls["rows"] == [["A · c01 ★편집", "sub sel"], ["B · c01 ★편집 기준 바뀜", "sub"]] and ls["gets"] == [KB]
+              and (ls["head"] or "").startswith("015_치마밑단_주름 · B · c01 ★") and ls["after"] == [["A · c01 ★편집", "sub"], ["B · c01 ★편집 기준 바뀜", "sub sel"]],
+              f"3차 tests-r3-07: ★ 둘인 크롭(타깃 여럿·slice) = 목록에 ★ 마다 하위 행(편집 칩), 두 번째 행 = 그 ★ 편집 {ls}")
+        check(p3b["viewReset"] == ["보기: 기준(Q 누르는 중)", "보기: 편집", "보기: 기준(Q 누르는 중) · 마스크(M)", "보기: 편집"],
+              f"3차 tests-r3-08: Q 를 누른 채 창 blur = 떼기(keyup 없음), Q·M·S 를 켠 채 나갔다 다시 들어오기 = 보기 처음으로 {p3b['viewReset']}")
+        check(p3b["editHold"] == {"go": False, "leave": False, "toasts": [lock + "바꾸세요", lock + "나가세요"], "editor": True, "k14": 0},
+              f"3차 session-r3-03 (4)(5): [이전 판으로] 처리 중 대상 바꾸기·나가기 거절 {p3b['editHold']}")
+        fl = p3b["flushLost"]
+        check(fl["queued"] > 0 and {k: v for k, v in fl.items() if k != "queued"} == {"threw": None, "layer": None, "err": True},
+              f"3차 session-r3-03 (8): 되돌린 뒤 다시 열기가 래스터를 못 받음(세션 없음) — 3층을 다시 받는 사이 rAF 가 돌아도 합성하지 않음(예외 없음), 겹침 뗌 {fl}")
+        check(p3b["held"] == {"kept": True, "listDuring": "015_치마밑단_주름편집 1이음매 2", "list": "015_치마밑단_주름편집 1이음매 3", "tool": ["살리기", "폭 64"],
+                              "missedUp": False},
+              f"3차 ui-r3-01: 포인터가 눌린 동안 새 이음매·state 로 목록·패널을 다시 만들지 않음(누른 단추가 그대로 — click 이 감), 놓은 뒤 그림, pointerup 을 놓치면 "
+              f"버튼 없는 pointermove 가 놓은 것으로 {p3b['held']}")
+        check(p3b.get("unusable") == {"ok": [True], "gone": [False]},
+              f"3차 통합: GET /mask edit.url = base.url(_plan 이 편집 파일을 쓰지 못함 — 경고 줄·state '편집 기준 바뀜')이면 패널의 편집 줄을 초록으로 두지 않음 "
+              f"{p3b.get('unusable')}")
+    if "altPick" in bm:
+        check(bm["altPick"] == "k15",
+              f"3차 tests-r3-04: 검토에서 고른 후보가 ★ 가 아니면(대안을 보다가 K) 타깃 첫 ★ 로(비★ 후보 = 409 not_picked 오류 화면) {bm['altPick']}")
+        check(bm["goneOnly"] == [[True, "kA", None], [False, None, "★ 를 먼저 고르세요 — 마스크 편집(K)은 지금 ★ 후보의 최종 마스크(Export 그룹 마스크)를 손질합니다"]],
+              f"3차 ui-r3-02: 세션 후보가 ★ 를 잃고 그 타깃에 ★ 가 없으면 그 타깃의 K = 세션으로(패널 '이제 ★ 가 아님'·[버리기] — 진행 ★ 점검 'K 에서 버리기'), "
+              f"다른 타깃이면 '★ 를 먼저' {bm['goneOnly']}")
+        check(bm["nSeam"] == [{"key": "k15", "seam": {"key": "k15", "side": "top"}}, {"key": "k15", "seam": None}, {"key": "k15", "seam": None}],
+              f"3차 ui-r3-03: K 진입 = 검토의 N 이 가리키는 이음매가 그 ★ 의 것이면 그 구간 선택(아니면 없이, 지정 대상이면 지정 구간) {bm['nSeam']}")
+    check((res.get("viewerMask") or {}).get("showSeam") == {"msg": True, "cur": 1, "curSeam": True, "next": [True, True], "miss": {"cur": 0, "curSeam": None}},
+          f"3차 ui-r3-03: viewer showSeam(편집기의 선택 구간 — 사본이어도 같은 구간) = N 의 자리·강조·메시지도 그 구간(다음 N 은 그다음)·curSeam, 목록에 없으면 자리 없음 "
+          f"{(res.get('viewerMask') or {}).get('showSeam')}")
+    mk = html[html.index("<h3>마스크 (<kbd>K</kbd>)</h3>"):]
+    check("<tr><td><kbd>Space</kbd>+끌기 · 가운데 버튼</td><td>화면 이동(마스크 모드의 왼쪽 끌기는 붓 — 캔버스의 크롭을 눌러 고르지 않음" in mk[:mk.index("</table>")],
+          "3차 ui-r3-04: 도움말 '마스크 (K)' 표 = 화면 이동(Space+끌기·가운데 버튼 — 왼쪽 끌기는 붓, 캔버스 크롭 클릭 선택 없음)")
+
+
+# ═════════════════════════════════════════════════════════════════
 def want(name: str) -> bool:
     return not ONLY or name in ONLY
 
@@ -38332,6 +43351,8 @@ if __name__ == "__main__":
         pipeline_unit()
     if want("pipeline_vlm_unit"):
         pipeline_vlm_unit()
+    if want("mask_unit"):
+        mask_unit()
     if want("prompt_unit"):
         prompt_unit()
     if want("analysis_unit"):
@@ -38350,6 +43371,8 @@ if __name__ == "__main__":
         pipeline_board_unit()
     if want("paid_board_unit"):
         paid_board_unit()
+    if want("mask_board_unit"):
+        mask_board_unit()
     if want("vlm_unit"):
         vlm_unit()  # M3: torch·comfy 를 import 하지 않음(V18 은 가짜 libs)
     if not QUICK and want("vlm_comfy"):
@@ -38371,6 +43394,8 @@ if __name__ == "__main__":
             _paid_js_e2e()
     if want("studio_ux_unit"):
         studio_ux_unit()
+    if want("mask_js_unit"):
+        mask_js_unit()
     print(f"\n단위 테스트 {time.time() - T0:.1f}s (PASS {PASSES} FAIL {len(FAILS)})")
     if QUICK:
         print("\n--quick: 회귀·노드 생략")
@@ -38410,6 +43435,10 @@ if __name__ == "__main__":
             t_r = time.time()
             paid_node_unit()
             print(f"\nS3b 유료 노드 {time.time() - t_r:.1f}s")
+        if want("mask_node_unit"):
+            t_r = time.time()
+            mask_node_unit()
+            print(f"\nS4 마스크 노드 {time.time() - t_r:.1f}s")
         if want("vlm_node_unit"):
             t_r = time.time()
             vlm_node_unit()

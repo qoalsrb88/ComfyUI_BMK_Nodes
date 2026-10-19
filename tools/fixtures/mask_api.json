@@ -1,0 +1,731 @@
+{
+ "schema": "bmk.design_patch.mask_api/1",
+ "_doc": {
+  "목적": "Design Patch Studio S4 마스크 라우트 5개(STUDIO_S4_SPEC §4)의 응답 모양 정본 — U1 이 병렬 착수 전에 쓴다. U2 의 B39–B44 는 실제 응답을 이 예시와 대조하고(키 집합·JSON 타입 — 대조기는 시험의 _pl_shape, 규칙은 pipeline_api.json _doc '대조 규칙' 1–7 그대로), U3 의 J-K 가짜 서버는 이 예시를 그대로 돌려준다. 값은 261014_Test 꼴(보드 키 fe410d7f025d, 015_치마밑단_주름 ★ r_61ba2d695f0f_0_0 — STUDIO_S4_SPEC §2·§8 의 장면)이고 수치는 문구 예시다(한 응답 안의 값들이 서로 맞는 장면일 필요는 없음). 매니페스트 기록(mask_edits·exports·사이드카)은 manifest 절 — U1 의 bmk_design_patch_mask.check_record 와 노드 Export 가 그 꼴을 지킨다(mask_unit·mask_node_unit 이 대조).",
+  "구조": {
+   "routes.\"<METHOD> <경로>\"": "경로는 /bmk/design_patch/ 아래. request = 요청 예시(GET 은 query, POST 는 query·body) · ok = 정상 200 본문 · alt = {이름: 다른 200 본문(같은 대조 규칙)} · errors = {HTTP 상태: [본문 예시 …]}(202 busy 포함) · nullable · optional · maps · any · opaque = 그 응답의 경로 목록(pipeline_api.json 과 같은 경로 문법). 예외: GET /mask/img 의 ok 는 JSON 본문이 아니라 응답 설명(content_type·kind 별 PNG 모드·크기) — 대조 대상이 아니다(B40 이 헤더·PNG 를 본다). POST /mask/save 의 request.body 도 설명(본문 = PNG 바이트).",
+   "state": "기존 GET /state 응답에 더하는 것: cand = targets[].candidates[] 항목에 더하는 키, crop = crops[] 크롭 요약에 더하는 키. 대조 = _pl_shape({\"cand\": state.cand}, {\"cand\": {키: 후보[키] for 키 in state.cand}}, state) · _pl_shape({\"crop\": state.crop}, {\"crop\": {키: 크롭 요약[키] for 키 in state.crop}}, state). flags = state 최상위 플래그(unchanged 응답에도): pref_v = board_pref.json 지문(store.board_pref_v, 없으면 null) — 분석·Export 설정이 바뀌어도 매니페스트 rev 는 그대로라 보드는 pref_v 가 바뀌면 since_rev 없이 다시 받고 마스크 편집기는 GET /mask 를 다시 받는다(편집 쓰기는 매니페스트 rev 를 올림 — 보통 폴링으로 반영).",
+   "manifest": "매니페스트·Export 기록(라우트 밖, 노드·mask 모듈이 씀): mask_edits = {후보 key: 기록}(bmk_design_patch_mask.check_record — 키 집합 고정), exports_item = exports[] 항목에 더한 키, export_layers_item = 사이드카 <stem>.json 의 export_layers[] 항목에 더한 키(mask_edit 은 mask_src 가 \"edit\" 일 때만 있음)."
+  },
+  "대조 규칙": "tools/fixtures/pipeline_api.json _doc '대조 규칙' 1–7 과 같다(시험 대조기 _pl_shape 공용). 오류 본문은 늘 error(한국어 문자열) + 그 예시의 다른 키(reason·rect). 202 는 {busy: true} 하나뿐(GET /mask/alts).",
+  "열거": {
+   "base.src": {
+    "auto": "Analyze 자동 마스크(분석 항목 automask — 기준 file = 그 derived 경로)",
+    "hand": "손 마스크(수확 PSD 의 레이어/그룹 마스크 — 기준 file = hand_mask.file)",
+    "none": "마스크 없음(분석 없는 ★ 등 — 기준 래스터 = 창 전체 255, file null)"
+   },
+   "GET /mask/img kind": [
+    "base",
+    "edit",
+    "under",
+    "patch",
+    "over"
+   ],
+   "POST /mask/edit op": {
+    "undo": "hist 첫 판으로(hist 가 비면 기록 지움 = 기준으로)",
+    "reset": "기록 지움(hist 도) — 확인 창은 Studio"
+   },
+   "409 reason": {
+    "not_picked": "지금 ★ 가 아님(★ 해제·탈락·크롭/타깃에서 빠짐) — GET /mask·/mask/img·/mask/save·/mask/alts",
+    "stale": "GET /mask/img 의 v 가 지금 서명과 다름 — 낡은 요청에 계산하지 않음(다시 GET /mask)",
+    "rect_changed": "POST /mask/save: 올린 PNG 크기 또는 쿼리 rect(Studio 가 세션을 연 창) ≠ 지금 편집 창(정합·quad·Compose use_registration 이 바뀌어 창이 달라짐 — 같은 크기로 옮겨진 창은 rect 로만 잡힘) — rect = 지금 창. Studio 는 세션을 남기고 GET /mask 를 다시 받는다",
+    "changed": "POST /mask/save·/mask/edit: seen ≠ 지금 기록 file(다른 창에서 바뀜 — 다시 받기, 세션은 남김)"
+   },
+   "save 판정 순서": [
+    "404 root·key",
+    "not_picked(지금 ★ 아님)",
+    "400 본문(PNG·모드 L·투명 없음·4096² 이하 — mask.validate_png(data))",
+    "400 rect 형식(없음 포함 — 정수 4개 'x0,y0,x1,y1')",
+    "rect_changed(PNG 크기 또는 rect ≠ 지금 편집 창)",
+    "400 ops·seen 형식",
+    "changed(seen ≠ 지금 기록 file — mask.save_edit 이 잠금 안에서)"
+   ],
+   "seams[].severity": [
+    "bad",
+    "weak"
+   ]
+  },
+  "값 메모": [
+   "key = 후보 key, crop_id·tid = 그 ★ 의 크롭·타깃, c = 타깃 안 등록 순서 번호(state candidates[].n 과 같은 규칙 — 탈락 후보도 셈. Export 레이어명 c<번호> 는 PSD 에 넣은 후보만 세므로 탈락이 앞에 있거나 alternates none 이면 다를 수 있음), picked = 지금 ★(200 이면 늘 true). rect = 편집 창 = 그 ★ 항목의 실효 quad bbox(정합 반영, 바깥으로 정수 올림) ∩ 캔버스 — mask.edit_rect(dpsd.quad_bbox(_plan 항목 quad), canvas). base·edit PNG 크기 = rect 크기.",
+   "composite_sig = 지금 ★ 합성 서명(state canvas.composite_sig 와 같은 값 — 편집이 있으면 그 file 이 서명에 들어감). seams = 이 크롭의 이음매(지금 ★ 합성 seams.segments 중 crop_id 가 이 크롭 — 원소 = board._seam_segment 출력 그대로), 그 서명의 이음매가 아직 없으면 null(계산 중 — 뷰어가 받는 이음매가 생긴 뒤 다시 GET).",
+   "mask_source = 기준을 고른 Compose mask_source(board._compose_settings — store.last_export 의 compose = 마지막 Export 가 낸 PSD('변경 없음' 포함 — board_pref.json 의 export 해시), 없으면 hand_else_auto). base = {src(열거), sig(기준 래스터 서명 — /mask/img kind=base 의 v), url}. edit = 기록이 있으면 {file, at, ops, hist(이전 판 수), stale(board._edit_stale = mask.is_stale(기록, mask.base_fp(후보, 분석 항목, mask_source)) 또는 기록 rect ≠ 지금 편집 창 — 창만 바뀌어도 노드는 기록 창 그대로 적용해 패치와 어긋날 수 있음), url(kind=edit, v = board._edit_sig(기록 file·기록 rect·지금 창) 16자)}, 없으면 null. 편집 파일이 없거나 깨졌으면(_plan 이 경고하고 기준을 씀 — 잠김·권한은 기준으로 떨어뜨리지 않고 422 '편집 대상을 계산할 수 없습니다: [Errno 13] …') edit 는 그대로 두고 url = base.url — Studio 가 _plan 이 쓰는 마스크로 열고 [적용]·[이전 판으로]·[편집 지우기]로 나간다.",
+   "layers = 브러시 미리보기 3층(§2.4): box = 영역(board._region_rect(크롭 rect) — 크롭 + 변마다 긴 변 1/4·64–256px, 캔버스 안) ∪ 편집 창 rect(board._layers_box — 패치가 크롭 + 패드를 넘는 ★ 도 창 전체가 미리보기에 들어감), sig = 3층 서명(box·이 후보 + 편집 창이 box ±2 와 만나는 ★ 가 있는 크롭의 ★ 만의 합성 서명, 이 후보의 편집은 뺌 — board._layers_sig. 3층은 자기 마스크를 쓰지 않고 z 도 기준 넓이라(D5) [적용]이 다시 계산시키지 않고, 그 밖 크롭의 [적용]·★ 변경도 마찬가지), under_url·patch_url·over_url = /mask/img kind=under·patch·over(v = sig). 공식 out = over.rgb·over.a + (under + (patch.rgb − under)·patch.a·mask)·(1 − over.a) — mask = 세션 마스크를 box 좌표로(창 밖 0).",
+   "z = 이 ★ 와 겹치는(quad bbox 가 layers.box 와 만나는) 다른 ★ 의 이름 '<크롭 이름> · <타깃>' — below = 이 ★ 보다 아래(합성 순서), above = 위. 순서는 아래 → 위.",
+   "warnings = 사람이 읽는 문구 목록: 분석 없는 ★ '분석 없음 — 반영(Analyze) 뒤 편집 권장', 편집 파일을 읽지 못함(_plan 경고와 같은 문구), 편집 기준 바뀜(_plan 경고 '<key> (<크롭>): 마스크 편집 기준 바뀜(창 기록 → 지금 · 분석 항목) → 편집 그대로 씀 …' — 창·분석 항목 ph 만 보므로 edit.stale 보다 좁다) 등. 쓰지 않는 GET 이라 매니페스트·파일을 바꾸지 않는다(3층 캐시 derived/thumbs/mask<kind>_<sig>.* 만).",
+   "POST /mask/save: 본문 = image/png(≤ 4 MiB, content_length 먼저·다 읽은 뒤 다시 — 413), 다른 Content-Type 415. 쿼리 seen = 지금 기록 file 또는 \"\"(기록 없음 — 형식이 깨진 기록도 없음으로 본다: mask._expect, [적용]이 hist 없이 덮고 POST /mask/edit 은 지움), ops = 사람이 읽는 요약(≤ 200자 한 줄 — 서버는 내용 검사만), rect = Studio 가 세션을 연 편집 창 'x0,y0,x1,y1'(필수 — 서버는 세션이 본 창을 모르므로, 같은 크기로 옮겨진 창은 이것으로만 409 rect_changed). 응답 edit = GET /mask 의 edit 꼴(방금 쓴 기록 — stale false), rev = 쓴 뒤 매니페스트 rev, composite_sig = 쓴 뒤 ★ 합성 서명(이음매는 새 서명으로 다시 계산됨).",
+   "POST /mask/edit: JSON 본문 {root, key, seen, op}(16KB·application/json — 기존 _body). 응답 edit = 되돌린 뒤 기록(GET /mask 의 edit 꼴) 또는 null(기록 지움 = 기준). 기록이 없을 때 undo·reset(seen \"\")은 바꾸는 것 없이 edit null 로 200.",
+   "GET /mask/alts: 그 ★ 의 타깃에서 탈락 아닌 다른 후보마다 board._compose_full(swap) 의 이음매. sig = 지금 ★ 합성 서명, now = 지금 ★ 의 이 크롭 {bad, worst(p90 최대 — 이음매 없으면 null)}. rows[] = {key, c(GET /mask 의 c 와 같은 규칙), ran({done: 원장 calls finished 'YYYY-MM-DD HH:MM:SS', via: state via 와 같은 값 run|reroll|retry|null} — 원장에 없는 후보(수확·폴더)는 null), bad·weak = 이 크롭의 이음매 수(그 후보를 ★ 로 바꾼 가정), worst_p90(이 크롭 최대, 없으면 null), this_crop = 이 크롭의 이음매(seams[] 와 같은 원소), changed_crops = 이 크롭 밖에서 이음매 목록이 지금과 달라지는 크롭 crop_id}. 후보당 ≈ 2.5초·한 번에 하나 — 다른 /mask/alts 가 계산 중이면 202 {busy: true}(_ALTS_LOCK — 캐시만으로 답하면 잠금 없이). 후보마다 _composite 가 _COMPOSE_LOCK 을 잡으므로 뷰어 ★ 합성·3층 계산 중에는 202 가 아니라 기다린다. swap 서명별 composite_<sig>.jpg·seams_<sig>.json 캐시를 다시 씀(그 후보를 실제로 ★ 하면 같은 서명).",
+   "state: cand.mask_edit = 그 후보의 기록이 있으면 {at, stale}(★ 가 아니어도 기록이 있으면 — 다시 ★ 하면 살아남, stale 은 GET /mask 의 edit.stale 과 같은 규칙 — 편집 창은 계획 없이 board._edit_window. 더해 _plan 이 편집 파일을 쓰지 못하면(없음·깨진 PNG·크기 ≠ 기록 창 — board._edit_usable) 도 true: GET /mask 는 그때 edit.stale 을 그대로 두고 edit.url = base.url·경고로 보인다), 없으면 null. 형식이 깨진 기록(손으로 고친 매니페스트 — mask.check_record 실패, board._edit_rec)은 state mask_edit·GET /mask edit 모두 null(_plan 처럼 편집 없음). crop.mask_edits = 그 크롭의 지금 ★ 가운데 편집이 있는 수, crop.mask_stale = 그 가운데 stale 수.",
+   "exports_item: Export 노드가 exports[] 에 더 남기는 키 — mask_groups = 그룹 마스크 수(보고서 '그룹 마스크 n'), mask_edits = 그 가운데 ★ 마스크 편집(보고서 '(편집 k)'). S4 전 Export 기록에는 없다. Studio 결과 줄('그룹 마스크 n (편집 k)')·이전 Export 목록(편집 수)은 GET /pipeline 의 exports[](pipeline.recent_exports)에서 읽는다 — 그 항목도 이 두 키를 싣고 기록에 없으면 null(읽는 쪽 '?'), pipeline_api.json GET /pipeline exports[] 예시·nullable 에도 있다. ui bmk_dp_export 는 {outcome, psd, rev} 그대로 — 결과 줄은 그 rev 로 exports[] 항목을 찾는다(지금 레이어·문제·크기처럼).",
+   "409 본문: mask.MaskConflict 는 .extra = {reason} 를 싣는다 — 기존 _guard 의 _conflicts() 갈래는 {error} 만 돌려주므로 라우트(또는 _guard)가 {error: str(e), **e.extra} 로 바꿔 돌려줄 것(mask_unit 이 그 꼴 = 이 정본의 409 예시임을 본다). rect_changed·stale 은 보드가 만드는 409 — 같은 꼴(_Reject(409, error, reason=…, rect=…)). 409 는 늘 reason 이 있다 — 다시 받아도 그대로인 것(패치가 캔버스 밖이라 편집 창 없음·편집 대상/3층/대안 계산 실패 — 편집 대상은 ★ 계획 전체라 다른 ★ 의 마스크 파일 문제도)은 422 {error}."
+  ]
+ },
+ "routes": {
+  "GET /mask": {
+   "request": {
+    "query": {
+     "root": "fe410d7f025d",
+     "key": "r_61ba2d695f0f_0_0"
+    }
+   },
+   "ok": {
+    "key": "r_61ba2d695f0f_0_0",
+    "crop_id": "015_d556f2",
+    "tid": "A",
+    "c": 1,
+    "picked": true,
+    "rect": [
+     128,
+     2560,
+     1408,
+     3328
+    ],
+    "composite_sig": "5d1f0c9a3be27741",
+    "mask_source": "hand_else_auto",
+    "base": {
+     "src": "auto",
+     "sig": "9a0b1c2d3e4f5061",
+     "url": "mask/img?root=fe410d7f025d&key=r_61ba2d695f0f_0_0&kind=base&v=9a0b1c2d3e4f5061"
+    },
+    "edit": {
+     "file": "masks/r_61ba2d69_e_3f2a9c01b7d4.png",
+     "at": "2026-10-19 18:20:41",
+     "ops": "변 페이드 top 64 · 붓 12획",
+     "hist": 1,
+     "stale": false,
+     "url": "mask/img?root=fe410d7f025d&key=r_61ba2d695f0f_0_0&kind=edit&v=b81e4c0f3a92d765"
+    },
+    "layers": {
+     "box": [
+      0,
+      2304,
+      1664,
+      3584
+     ],
+     "sig": "7c41aa0e92b3d5f8",
+     "under_url": "mask/img?root=fe410d7f025d&key=r_61ba2d695f0f_0_0&kind=under&v=7c41aa0e92b3d5f8",
+     "patch_url": "mask/img?root=fe410d7f025d&key=r_61ba2d695f0f_0_0&kind=patch&v=7c41aa0e92b3d5f8",
+     "over_url": "mask/img?root=fe410d7f025d&key=r_61ba2d695f0f_0_0&kind=over&v=7c41aa0e92b3d5f8"
+    },
+    "seams": [
+     {
+      "crop_id": "015_d556f2",
+      "tid": "A",
+      "key": "r_61ba2d695f0f_0_0",
+      "side": "left",
+      "x0": 128,
+      "y0": 2718,
+      "x1": 128,
+      "y1": 2758,
+      "length": 40,
+      "diff_med": 41.2,
+      "diff_p90": 73.5,
+      "severity": "bad"
+     },
+     {
+      "crop_id": "015_d556f2",
+      "tid": "A",
+      "key": "r_61ba2d695f0f_0_0",
+      "side": "top",
+      "x0": 575,
+      "y0": 2560,
+      "x1": 1337,
+      "y1": 2560,
+      "length": 762,
+      "diff_med": 21.4,
+      "diff_p90": 43.3,
+      "severity": "bad"
+     }
+    ],
+    "z": {
+     "below": [],
+     "above": [
+      "014_치마원단_문양 · A",
+      "008_치마금속장식 · A",
+      "018_겉옷안감_왼쪽 · A",
+      "007_허리벨트 · A"
+     ]
+    },
+    "warnings": []
+   },
+   "alt": {
+    "no_edit": {
+     "key": "r_d9b7ffb9fb7c_0_1",
+     "crop_id": "014_0f9cc5",
+     "tid": "A",
+     "c": 2,
+     "picked": true,
+     "rect": [
+      512,
+      2240,
+      1536,
+      3008
+     ],
+     "composite_sig": "5d1f0c9a3be27741",
+     "mask_source": "hand_else_auto",
+     "base": {
+      "src": "auto",
+      "sig": "0e7d3a91c4b2f655",
+      "url": "mask/img?root=fe410d7f025d&key=r_d9b7ffb9fb7c_0_1&kind=base&v=0e7d3a91c4b2f655"
+     },
+     "edit": null,
+     "layers": {
+      "box": [
+       256,
+       1984,
+       1792,
+       3264
+      ],
+      "sig": "a1f2e3d4c5b60718",
+      "under_url": "mask/img?root=fe410d7f025d&key=r_d9b7ffb9fb7c_0_1&kind=under&v=a1f2e3d4c5b60718",
+      "patch_url": "mask/img?root=fe410d7f025d&key=r_d9b7ffb9fb7c_0_1&kind=patch&v=a1f2e3d4c5b60718",
+      "over_url": "mask/img?root=fe410d7f025d&key=r_d9b7ffb9fb7c_0_1&kind=over&v=a1f2e3d4c5b60718"
+     },
+     "seams": null,
+     "z": {
+      "below": [
+       "015_치마밑단_주름 · A"
+      ],
+      "above": [
+       "008_치마금속장식 · A",
+       "007_허리벨트 · A"
+      ]
+     },
+     "warnings": []
+    },
+    "unanalyzed": {
+     "key": "r_b7a67c9d5802_1_0",
+     "crop_id": "001_5f2c1a",
+     "tid": "A",
+     "c": 3,
+     "picked": true,
+     "rect": [
+      1792,
+      384,
+      2176,
+      768
+     ],
+     "composite_sig": "5d1f0c9a3be27741",
+     "mask_source": "hand_else_auto",
+     "base": {
+      "src": "none",
+      "sig": "33c0aa71d2e4b9f0",
+      "url": "mask/img?root=fe410d7f025d&key=r_b7a67c9d5802_1_0&kind=base&v=33c0aa71d2e4b9f0"
+     },
+     "edit": null,
+     "layers": {
+      "box": [
+       1696,
+       288,
+       2272,
+       864
+      ],
+      "sig": "c0ffee1234567890",
+      "under_url": "mask/img?root=fe410d7f025d&key=r_b7a67c9d5802_1_0&kind=under&v=c0ffee1234567890",
+      "patch_url": "mask/img?root=fe410d7f025d&key=r_b7a67c9d5802_1_0&kind=patch&v=c0ffee1234567890",
+      "over_url": "mask/img?root=fe410d7f025d&key=r_b7a67c9d5802_1_0&kind=over&v=c0ffee1234567890"
+     },
+     "seams": [],
+     "z": {
+      "below": [],
+      "above": []
+     },
+     "warnings": [
+      "분석 없음 — 반영(Analyze) 뒤 편집 권장"
+     ]
+    }
+   },
+   "errors": {
+    "400": [
+     {
+      "error": "key 형식이 잘못되었습니다"
+     }
+    ],
+    "404": [
+     {
+      "error": "등록되지 않은 프로젝트 키입니다 — Review 노드를 실행한 뒤 노드의 Open Board 로 여세요"
+     },
+     {
+      "error": "후보가 없습니다: r_000000000000_0_0"
+     }
+    ],
+    "409": [
+     {
+      "error": "지금 ★ 후보가 아닙니다(★ 해제·탈락·크롭에서 빠짐) — 다시 받기",
+      "reason": "not_picked"
+     }
+    ],
+    "422": [
+     {
+      "error": "이 ★ 의 패치가 캔버스 밖에 있어 편집할 창이 없습니다"
+     },
+     {
+      "error": "편집 대상을 계산할 수 없습니다: [Errno 2] No such file or directory: 'derived/automask_0b1c2d3e4f506172.png'"
+     },
+     {
+      "error": "편집 창 4608x3840 가 4096² 픽셀을 넘어 Studio 에서 편집할 수 없습니다 — PS 그룹 마스크로"
+     }
+    ]
+   },
+   "nullable": [
+    "edit",
+    "seams"
+   ],
+   "optional": [],
+   "maps": [],
+   "any": [],
+   "opaque": []
+  },
+  "GET /mask/img": {
+   "request": {
+    "query": {
+     "root": "fe410d7f025d",
+     "key": "r_61ba2d695f0f_0_0",
+     "kind": "under",
+     "v": "7c41aa0e92b3d5f8"
+    }
+   },
+   "ok": {
+    "content_type": "image/png",
+    "kinds": {
+     "base": {
+      "mode": "L",
+      "size": "rect"
+     },
+     "edit": {
+      "mode": "L",
+      "size": "rect"
+     },
+     "under": {
+      "mode": "RGB",
+      "size": "layers.box"
+     },
+     "patch": {
+      "mode": "RGBA",
+      "size": "layers.box"
+     },
+     "over": {
+      "mode": "RGBA",
+      "size": "layers.box"
+     }
+    },
+    "notes": "PNG compress_level 1(under 를 JPEG 로 주면 손실로 3층 공식의 '최대 1' 이 깨짐). base = 기준 마스크를 창(rect)으로(src none 이면 전부 255), edit = _plan 이 쓰는 편집 래스터(기록 file 을 기록 rect 의 캔버스 자리에)를 지금 창(rect)으로 옮긴 것(창이 그대로면 기록 file 과 같은 픽셀, v = _edit_sig — 창이 바뀌면 v 도 바뀜, 파일을 읽지 못하면 404), under = 베이스 + 이 패치보다 아래 ★ 합성 RGB, patch = 이 후보 RGB + SO 캐시 알파(마스크 곱하지 않음), over = 위 ★ 들을 투명 위에 차례로 얹은 것(색 = 프리멀티를 알파로 나눈 값, a = 1 − Π(1 − a)). 영역 3층은 한 번에 계산·캐시 derived/thumbs/mask<kind>_<sig>.png(_COMPOSE_LOCK 공유)."
+   },
+   "alt": {},
+   "errors": {
+    "400": [
+     {
+      "error": "kind 는 base · edit · under · patch · over 중 하나여야 합니다"
+     },
+     {
+      "error": "v 형식이 잘못되었습니다"
+     }
+    ],
+    "404": [
+     {
+      "error": "등록되지 않은 프로젝트 키입니다 — Review 노드를 실행한 뒤 노드의 Open Board 로 여세요"
+     },
+     {
+      "error": "후보가 없습니다: r_000000000000_0_0"
+     },
+     {
+      "error": "마스크 편집이 없습니다"
+     },
+     {
+      "error": "마스크 편집 파일을 읽지 못했습니다: masks/r_61ba2d69_e_3f2a9c01b7d4.png"
+     }
+    ],
+    "409": [
+     {
+      "error": "★ 합성·마스크가 그 사이 바뀌었습니다 — 다시 받기",
+      "reason": "stale"
+     },
+     {
+      "error": "지금 ★ 후보가 아닙니다(★ 해제·탈락·크롭에서 빠짐) — 다시 받기",
+      "reason": "not_picked"
+     }
+    ],
+    "422": [
+     {
+      "error": "이 ★ 의 패치가 캔버스 밖에 있어 편집할 창이 없습니다"
+     },
+     {
+      "error": "편집 대상을 계산할 수 없습니다: [Errno 2] No such file or directory: 'derived/automask_0b1c2d3e4f506172.png'"
+     },
+     {
+      "error": "브러시 미리보기 층을 만들 수 없습니다:[Errno 2] No such file or directory: 'cands/r_61ba2d695f0f_0_0.png'"
+     },
+     {
+      "error": "편집 창 4608x3840 가 4096² 픽셀을 넘어 Studio 에서 편집할 수 없습니다 — PS 그룹 마스크로"
+     }
+    ]
+   },
+   "nullable": [],
+   "optional": [],
+   "maps": [],
+   "any": [],
+   "opaque": []
+  },
+  "POST /mask/save": {
+   "request": {
+    "query": {
+     "root": "fe410d7f025d",
+     "key": "r_61ba2d695f0f_0_0",
+     "seen": "",
+     "ops": "변 페이드 top 64 · 붓 12획",
+     "rect": "128,2560,1408,3328"
+    },
+    "body": {
+     "content_type": "image/png",
+     "mode": "L",
+     "size": [
+      1280,
+      768
+     ]
+    }
+   },
+   "ok": {
+    "ok": true,
+    "edit": {
+     "file": "masks/r_61ba2d69_e_3f2a9c01b7d4.png",
+     "at": "2026-10-19 18:20:41",
+     "ops": "변 페이드 top 64 · 붓 12획",
+     "hist": 0,
+     "stale": false,
+     "url": "mask/img?root=fe410d7f025d&key=r_61ba2d695f0f_0_0&kind=edit&v=b81e4c0f3a92d765"
+    },
+    "rev": 137,
+    "composite_sig": "e8a90b7c6d5f4e31"
+   },
+   "alt": {},
+   "errors": {
+    "400": [
+     {
+      "error": "마스크 본문이 PNG 가 아닙니다"
+     },
+     {
+      "error": "마스크 PNG 는 8비트 회색조(L, 투명 없음)여야 합니다: RGBA"
+     },
+     {
+      "error": "마스크 PNG 가 너무 큽니다: 5000x4000 (최대 4096² 픽셀)"
+     },
+     {
+      "error": "깨진 PNG 입니다: image file is truncated"
+     },
+     {
+      "error": "rect 는 정수 4개(쉼표로 구분)여야 합니다"
+     },
+     {
+      "error": "ops 는 200자 이하 한 줄 문자열이어야 합니다: '…'"
+     },
+     {
+      "error": "seen 형식이 잘못되었습니다"
+     }
+    ],
+    "404": [
+     {
+      "error": "등록되지 않은 프로젝트 키입니다 — Review 노드를 실행한 뒤 노드의 Open Board 로 여세요"
+     },
+     {
+      "error": "후보가 없습니다: r_000000000000_0_0"
+     }
+    ],
+    "409": [
+     {
+      "error": "지금 ★ 후보가 아닙니다(★ 해제·탈락·크롭에서 빠짐) — 다시 받기",
+      "reason": "not_picked"
+     },
+     {
+      "error": "편집 창이 바뀌었습니다(정합·배치 변경) — 다시 받기",
+      "reason": "rect_changed",
+      "rect": [
+       126,
+       2558,
+       1410,
+       3330
+      ]
+     },
+     {
+      "error": "마스크 편집이 다른 창에서 바뀌었습니다(없음 → masks/r_61ba2d69_e_3f2a9c01b7d4.png) — 다시 받기",
+      "reason": "changed"
+     }
+    ],
+    "413": [
+     {
+      "error": "요청 본문이 너무 큽니다"
+     }
+    ],
+    "415": [
+     {
+      "error": "Content-Type 은 image/png 이어야 합니다"
+     }
+    ],
+    "422": [
+     {
+      "error": "이 ★ 의 패치가 캔버스 밖에 있어 편집할 창이 없습니다"
+     },
+     {
+      "error": "편집 대상을 계산할 수 없습니다: [Errno 2] No such file or directory: 'derived/automask_0b1c2d3e4f506172.png'"
+     }
+    ]
+   },
+   "nullable": [],
+   "optional": [],
+   "maps": [],
+   "any": [],
+   "opaque": []
+  },
+  "POST /mask/edit": {
+   "request": {
+    "body": {
+     "root": "fe410d7f025d",
+     "key": "r_61ba2d695f0f_0_0",
+     "seen": "masks/r_61ba2d69_e_3f2a9c01b7d4.png",
+     "op": "undo"
+    }
+   },
+   "ok": {
+    "ok": true,
+    "edit": {
+     "file": "masks/r_61ba2d69_e_0b9e2d4471ac.png",
+     "at": "2026-10-19 18:11:05",
+     "ops": "변 페이드 top 64",
+     "hist": 0,
+     "stale": false,
+     "url": "mask/img?root=fe410d7f025d&key=r_61ba2d695f0f_0_0&kind=edit&v=6d02f7a9c1e4b358"
+    },
+    "rev": 138,
+    "composite_sig": "41c7d09e2b8a6f53"
+   },
+   "alt": {
+    "cleared": {
+     "ok": true,
+     "edit": null,
+     "rev": 139,
+     "composite_sig": "5d1f0c9a3be27741"
+    }
+   },
+   "errors": {
+    "400": [
+     {
+      "error": "op 는 undo · reset 중 하나여야 합니다"
+     },
+     {
+      "error": "seen 형식이 잘못되었습니다"
+     },
+     {
+      "error": "JSON 본문을 읽을 수 없습니다"
+     }
+    ],
+    "404": [
+     {
+      "error": "등록되지 않은 프로젝트 키입니다 — Review 노드를 실행한 뒤 노드의 Open Board 로 여세요"
+     },
+     {
+      "error": "후보가 없습니다: r_000000000000_0_0"
+     }
+    ],
+    "409": [
+     {
+      "error": "마스크 편집이 다른 창에서 바뀌었습니다(masks/r_61ba2d69_e_3f2a9c01b7d4.png → masks/r_61ba2d69_e_77d0c3a1e5f2.png) — 다시 받기",
+      "reason": "changed"
+     }
+    ],
+    "413": [
+     {
+      "error": "요청 본문이 너무 큽니다"
+     }
+    ],
+    "415": [
+     {
+      "error": "Content-Type 은 application/json 이어야 합니다"
+     }
+    ]
+   },
+   "nullable": [
+    "edit"
+   ],
+   "optional": [],
+   "maps": [],
+   "any": [],
+   "opaque": []
+  },
+  "GET /mask/alts": {
+   "request": {
+    "query": {
+     "root": "fe410d7f025d",
+     "key": "r_61ba2d695f0f_0_0"
+    }
+   },
+   "ok": {
+    "sig": "5d1f0c9a3be27741",
+    "now": {
+     "bad": 5,
+     "worst": 73.5
+    },
+    "rows": [
+     {
+      "key": "r_61ba2d695f0f_0_1",
+      "c": 2,
+      "ran": {
+       "done": "2026-10-15 18:25:00",
+       "via": "run"
+      },
+      "bad": 2,
+      "weak": 0,
+      "worst_p90": 76.3,
+      "this_crop": [
+       {
+        "crop_id": "015_d556f2",
+        "tid": "A",
+        "key": "r_61ba2d695f0f_0_1",
+        "side": "top",
+        "x0": 1056,
+        "y0": 2560,
+        "x1": 1335,
+        "y1": 2560,
+        "length": 279,
+        "diff_med": 40.8,
+        "diff_p90": 76.3,
+        "severity": "bad"
+       }
+      ],
+      "changed_crops": [
+       "014_0f9cc5"
+      ]
+     },
+     {
+      "key": "h_3c5e7a9b1d2f",
+      "c": 3,
+      "ran": null,
+      "bad": 0,
+      "weak": 0,
+      "worst_p90": null,
+      "this_crop": [],
+      "changed_crops": []
+     }
+    ]
+   },
+   "alt": {
+    "no_alternatives": {
+     "sig": "5d1f0c9a3be27741",
+     "now": {
+      "bad": 0,
+      "worst": null
+     },
+     "rows": []
+    }
+   },
+   "errors": {
+    "202": [
+     {
+      "busy": true
+     }
+    ],
+    "404": [
+     {
+      "error": "등록되지 않은 프로젝트 키입니다 — Review 노드를 실행한 뒤 노드의 Open Board 로 여세요"
+     },
+     {
+      "error": "후보가 없습니다: r_000000000000_0_0"
+     }
+    ],
+    "409": [
+     {
+      "error": "지금 ★ 후보가 아닙니다(★ 해제·탈락·크롭에서 빠짐) — 다시 받기",
+      "reason": "not_picked"
+     }
+    ],
+    "422": [
+     {
+      "error": "대안 이음매를 계산할 수 없습니다: [Errno 2] No such file or directory: 'cands/r_61ba2d695f0f_0_1.png'"
+     }
+    ]
+   },
+   "nullable": [
+    "now.worst",
+    "rows[].ran",
+    "rows[].ran.via",
+    "rows[].worst_p90"
+   ],
+   "optional": [],
+   "maps": [],
+   "any": [],
+   "opaque": []
+  }
+ },
+ "state": {
+  "cand": {
+   "mask_edit": {
+    "at": "2026-10-19 18:20:41",
+    "stale": false
+   }
+  },
+  "crop": {
+   "mask_edits": 1,
+   "mask_stale": 0
+  },
+  "flags": {
+   "pref_v": "4f1c2a9be0d3"
+  },
+  "nullable": [
+   "cand.mask_edit",
+   "flags.pref_v"
+  ]
+ },
+ "manifest": {
+  "mask_edits": {
+   "r_61ba2d695f0f_0_0": {
+    "file": "masks/r_61ba2d69_e_3f2a9c01b7d4.png",
+    "rect": [
+     128,
+     2560,
+     1408,
+     3328
+    ],
+    "base": {
+     "src": "auto",
+     "file": "derived/r_61ba2d69_9f8e2a_am_5a7c0e3b9d11.png",
+     "ph": "9f8e2a6b4c1d0e37",
+     "ms": "hand_else_auto"
+    },
+    "ops": "변 페이드 top 64 · 붓 12획",
+    "at": "2026-10-19 18:20:41",
+    "hist": [
+     {
+      "file": "masks/r_61ba2d69_e_0b9e2d4471ac.png",
+      "rect": [
+       128,
+       2560,
+       1408,
+       3328
+      ],
+      "base": {
+       "src": "auto",
+       "file": "derived/r_61ba2d69_9f8e2a_am_5a7c0e3b9d11.png",
+       "ph": "9f8e2a6b4c1d0e37",
+       "ms": "hand_else_auto"
+      },
+      "at": "2026-10-19 18:11:05",
+      "ops": "변 페이드 top 64"
+     }
+    ]
+   }
+  },
+  "exports_item": {
+   "mask_groups": 18,
+   "mask_edits": 3
+  },
+  "export_layers_item": {
+   "mask_src": "edit",
+   "mask_edit": "masks/r_61ba2d69_e_3f2a9c01b7d4.png"
+  },
+  "nullable": [
+   "mask_edits.*.base.file",
+   "mask_edits.*.base.ph"
+  ],
+  "maps": [
+   "mask_edits"
+  ]
+ }
+}

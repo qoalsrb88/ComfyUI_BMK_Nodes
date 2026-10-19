@@ -55,9 +55,10 @@ pipeline.json
       manifest_rev}
 유도·갈라짐·경고
 - derive(root, m, *, deep=False) -> {"settings", "from": {"절.키": "manifest"|"jobs"|"spec_draft"|"default"}, "confirm": [키 경로], "notes"}
-      매니페스트와 specs/<crop_id>.json(store.load_spec_override)만 읽는다(vlm 원장 아님). deep 이면 마지막 절 검사가 vlm 선택지·모델별
-      effort 까지 본다(vlm 지연 import — view·update·current(deep=True) 가 씀). deep=False 는 그것을 보지 않아 draft.vlm 이 선택지 밖일
-      수 있다. 검사를 통과하지 못한 절은 노드 기본값 + 그 절 확인 — draft 는 vlm·effort·image_detail 만(draft_round·credit_cap 그대로)
+      매니페스트와 specs/<crop_id>.json(store.load_spec_override)·board_pref.json(analyze — 마지막 Analyze·Review 설정, 없으면 후보별
+      마지막 분석 항목의 최다값 / export — compose·export 절은 store.last_export = 마지막 Export 가 낸 PSD 의 기록)만 읽는다
+      (vlm 원장 아님). deep 이면 마지막 절 검사가 vlm 선택지·모델별 effort 까지 본다(vlm 지연 import — view·update·current(deep=True)
+      가 씀). deep=False 는 그것을 보지 않아 draft.vlm 이 선택지 밖일 수 있다. 검사를 통과하지 못한 절은 노드 기본값 + 그 절 확인 — draft 는 vlm·effort·image_detail 만(draft_round·credit_cap 그대로)
 - drift(settings, m) -> [{"section", "field", "manifest", "settings", "kind"}]   kind = "import"(마지막 Import 와 다름 — 대소문자 구분) |
       "cell"(마지막 Prepare 와 모델·품질·크기 규칙·변형 토큰 집합·ref_style 이 다름 — 셀이 바뀌어 다시 과금 대상) |
       "calls"(calls_per_cell 을 늘림 — 완료된 셀에도 빠진 rep 이 새 유료 호출) | "cost"(n 이 다름·calls_per_cell 을 줄임 — 셀 그대로)
@@ -65,7 +66,7 @@ pipeline.json
       없음)는 derive 와 같은 jobs 최다값의 model·quality·size_rule·n·calls_per_cell(variants·ref_style 은 기록이 없어 없음)
 - path_warnings(settings) -> [{"field", "reason": "no_psd"|"missing_path", "msg"}]   field = import.* | cand.path(켠 후보 등록 —
       source 에 맞게 psd_harvest = 파일, folder = 폴더)
-- recent_exports(m, n=10) -> [{"rev", "psd", "time", "layers", "problems", "bytes"}]   최근 것 먼저
+- recent_exports(m, n=10) -> [{"rev", "psd", "time", "layers", "problems", "bytes", "mask_groups", "mask_edits"}]   최근 것 먼저
 템플릿
 - prompt_gate(root, stage, m=None, *, cur=None) -> None | {"error", "reason", "fields"?, "field"?}   cur = 템플릿을 만들 current() 값
       reason = pipeline_broken | confirm_settings(fields — 파일 없음이거나 confirm 에 prepare.*·import.* 남음) | no_psd | missing_path(field, fields).
@@ -673,7 +674,15 @@ def _derive_draft(root: str, m: dict, out: dict, frm: dict, conf: set, notes: li
     conf.add("draft.apply")  # apply 는 스펙에 기록되지 않음
 
 
-def _derive_analyze(m: dict, out: dict, frm: dict, conf: set, notes: list) -> None:
+def _derive_analyze(root: str, m: dict, out: dict, frm: dict, conf: set, notes: list) -> None:
+    pref = store.load_board_pref(root)
+    if pref is not None and all(k in pref for k in _ANALYZE_PARAMS):
+        # 마지막 Analyze·Review 설정(board_pref.json — 보드가 ★ 합성·마스크 편집 기준으로 고르는 항목의 설정). 후보의 마지막 삽입 항목은
+        # 설정을 A→B→A 로 되돌리면 B 다
+        for k in _ANALYZE_PARAMS:
+            out[k] = pref[k]
+            frm[f"analyze.{k}"] = "manifest"
+        return
     latest = []
     for per in (m.get("analysis") or {}).values() if isinstance(m.get("analysis"), dict) else ():
         if not isinstance(per, dict):
@@ -696,14 +705,14 @@ def _derive_analyze(m: dict, out: dict, frm: dict, conf: set, notes: list) -> No
         notes.append("analyze: 후보마다 마지막 분석 설정이 다름 — 가장 많은 것")
 
 
-def _derive_export(m: dict, s: dict, frm: dict, conf: set, notes: list) -> None:
-    exports = [e for e in m.get("exports") or [] if isinstance(e, dict)]
-    if not exports:
+def _derive_export(root: str, m: dict, s: dict, frm: dict, conf: set, notes: list) -> None:
+    # 마지막 Export 가 낸 PSD 의 기록('변경 없음'으로 끝난 Export 포함 — 보드 ★ 합성·마스크 편집 창과 같은 Compose 설정)
+    last = store.last_export(root, m)
+    if last is None:
         conf.update(f"compose.{k}" for k in section_keys("compose"))
         conf.update(f"export.{k}" for k in section_keys("export"))
         notes.append("export: Export 기록이 없음 — 노드 기본값(filename_prefix = 프로젝트 폴더 이름)")
         return
-    last = exports[-1]
     comp = last.get("compose") if isinstance(last.get("compose"), dict) else {}
     for k in section_keys("compose"):
         if k in comp:
@@ -718,7 +727,7 @@ def _derive_export(m: dict, s: dict, frm: dict, conf: set, notes: list) -> None:
 
 
 def derive(root: str, m: dict, *, deep: bool = False) -> dict:
-    """처음 값 유도(§2.2) → {"settings", "from", "confirm", "notes"}. 매니페스트와 스펙만 읽는다(vlm 원장 아님, 쓰기 없음).
+    """처음 값 유도(§2.2) → {"settings", "from", "confirm", "notes"}. 매니페스트·스펙·board_pref.json 만 읽는다(vlm 원장 아님, 쓰기 없음).
     절마다 유도한 값이 검사를 통과하지 못하면 그 절은 노드 기본값 + 전부 확인 필요 — draft 는 스펙 출처 조합(vlm·effort·image_detail)만
     (draft_round 는 스펙 출처 그대로(0–99 로 정리됨 — 읽기 전용이라 Studio 에서 되돌릴 수 없음), credit_cap 은 권장값 그대로).
     deep = 그 검사가 vlm 선택지·모델별 effort 까지(vlm 지연 import — 라우트 경로). deep=False 면 선택지에서 빠진 옛 초안 모델도
@@ -730,8 +739,8 @@ def derive(root: str, m: dict, *, deep: bool = False) -> dict:
     _derive_import(m, s["import"], frm, conf, notes)
     _derive_prepare(m, s["prepare"], frm, conf, notes)
     _derive_draft(root, m, s["draft"], frm, conf, notes)
-    _derive_analyze(m, s["analyze"], frm, conf, notes)
-    _derive_export(m, s, frm, conf, notes)
+    _derive_analyze(root, m, s["analyze"], frm, conf, notes)
+    _derive_export(root, m, s, frm, conf, notes)
     base = defaults(root)
     for sec in SECTIONS:
         try:
@@ -825,9 +834,11 @@ def path_warnings(settings: dict) -> list[dict]:
 
 
 def recent_exports(m: dict, n: int = 10) -> list[dict]:
-    """최근 Export n개(최근 것 먼저) [{"rev", "psd", "time", "layers", "problems", "bytes"}] — layers = Export 가 쓴 레이어 수(§3.6 new)."""
+    """최근 Export n개(최근 것 먼저) [{"rev", "psd", "time", "layers", "problems", "bytes", "mask_groups", "mask_edits"}] — layers = Export 가
+    쓴 레이어 수(§3.6 new), mask_groups·mask_edits = 그룹 마스크 수·그 가운데 ★ 마스크 편집 수(S4 결과 줄 '그룹 마스크 n (편집 k)').
+    기록에 없는 키는 null(옛 Export)."""
     rows = [e for e in m.get("exports") or [] if isinstance(e, dict)]
-    return [{k: e.get(k) for k in ("rev", "psd", "time", "layers", "problems", "bytes")} for e in reversed(rows[-n:])]
+    return [{k: e.get(k) for k in ("rev", "psd", "time", "layers", "problems", "bytes", "mask_groups", "mask_edits")} for e in reversed(rows[-n:])]
 
 
 def view(root: str, m: dict | None = None) -> dict:

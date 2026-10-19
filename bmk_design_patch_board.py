@@ -13,7 +13,7 @@ Review 노드를 부분 실행한다(대체 경로). 인증 토큰은 그 경로
 라우트 (register_routes — 모든 root 파라미터 = store 레지스트리 키(소문자 hex 12자), 경로 금지)
 -------------------------------------------------------------------------------------------
 - GET  /bmk/design_patch/board/            board.html (web_design_patch/ 의 board.html·board.js·viewer.js·layout_geom.js·
-                                            layout_edit.js·ref_edit.js·pipeline.js·board.css 만)
+                                            layout_edit.js·ref_edit.js·pipeline.js·mask_edit.js·board.css 만)
 - GET  /bmk/design_patch/state?root=&since_rev=
        보드 요약(JSON). since_rev 가 지금 rev 와 같으면 {"unchanged": true, rev, running, drain, layout_rev, refs_rev, refs_files_v,
        pipeline_rev, plan_v}.
@@ -70,7 +70,19 @@ Review 노드를 부분 실행한다(대체 경로). 인증 토큰은 그 경로
                                                        seen·crop_sig·value 경합 409)
   라우트는 큐에 넣지 않는다: 무료 템플릿(Run·Spec Draft 없음)은 Studio 가 /api/prompt 로, 유료 템플릿(S3b)은 Studio 의 승인 메시지를
   받은 ComfyUI 탭이 검사한 뒤 app.queuePrompt 로 큐에 넣는다(인증 토큰은 그 경로로만 붙음 — 서버는 템플릿과 해시 대조만).
-POST 는 Content-Type application/json 만 받는다(다른 사이트의 단순 폼 POST 차단). 오류는 4xx + {"error": 한국어}
+- GET  /bmk/design_patch/mask?root=&key=               ★ 후보의 마스크 편집 대상(STUDIO_S4_SPEC §4, mask_view — 편집 창·기준·편집·3층 URL·
+                                                       이 크롭 이음매·z). ★ 아님 409 {reason: not_picked}. 파일을 쓰지 않는다
+- GET  /bmk/design_patch/mask/img?root=&key=&kind=base|edit|under|patch|over&v=   PNG — base·edit = 지금 편집 창 L(edit = 기록 래스터를
+                                                       그 창으로 옮김 = _plan), under = 영역 RGB, patch·over = 영역 RGBA(3층은 한 번에
+                                                       계산·캐시). v ≠ 지금 서명 409 {reason: stale}
+- POST /bmk/design_patch/mask/save?root=&key=&seen=&ops=&rect=   본문 image/png(≤ 4 MiB) = 편집 래스터(dmask.save_edit). PNG 크기
+                                                       또는 rect(세션을 연 창 x0,y0,x1,y1) ≠ 지금 편집 창 409 {reason: rect_changed, rect},
+                                                       seen ≠ 지금 기록 409 {reason: changed}
+- POST /bmk/design_patch/mask/edit {root, key, seen, op: undo|reset}   [이전 판으로]·[편집 지우기](seen 다름 409 changed)
+- GET  /bmk/design_patch/mask/alts?root=&key=          그 타깃의 다른 후보마다 "★ 로 바꾸면" 이음매(_compose_full(swap) — swap 서명별
+                                                       캐시), 다른 대안 계산 중 202 busy
+  응답 모양 정본 = tools/fixtures/mask_api.json. 마스크 편집 쓰기는 모두 dmask(store.update_manifest — seen 대조는 잠금 안).
+POST 는 Content-Type application/json 만 받는다(다른 사이트의 단순 폼 POST 차단 — /mask/save 는 image/png). 오류는 4xx + {"error": 한국어}
 (레퍼런스: 목록 밖 시트·없는 파일 404, 같은 이름이 있음 409).
 CPU·파일 작업은 asyncio.to_thread 로 돌려 aiohttp 루프를 막지 않는다. 시트 디코드·PSD 합성·컷·변환은 _REF_SLOTS 로 한 번에 하나.
 
@@ -87,7 +99,7 @@ CPU·파일 작업은 asyncio.to_thread 로 돌려 aiohttp 루프를 막지 않�
 - context = 베이스 위에 최종 마스크로 합성한 크롭 rect 1.5배 영역 + 크롭 외곽선(주황). 마스크·정합·톤은 마지막 export 의
   Compose 설정(없으면 기본 hand_else_auto = 손 마스크가 있으면 손, 없으면 자동 마스크) — 바탕 ★ 합성과 같게.
 - 원해상도(size 0): 초점 자르기·축소 없이 크롭 해상도 그대로(JPEG q95) — Studio 캔버스 뷰어의 1:1·2:1 겹침(Before·M 원본)용.
-- 분석 항목 선택: prebuild_thumbs(analyze_params) 로 받은 설정과 params 가 같은 항목, 없으면 가장 최근 항목.
+- 분석 항목 선택: prebuild_thumbs(analyze_params)·Analyze 노드가 넣은 설정(_PREF)과 params 가 같은 항목, 없으면 가장 최근 항목.
 
 ★ 합성·이음매 (Studio 캔버스 뷰어, derived/thumbs/composite_<서명>.jpg + seams_<서명>.json)
 -------------------------------------------------------------------------------------------
@@ -174,6 +186,15 @@ v7 (2026-10-19, Studio 사용성 — _proto/STUDIO_S3_SPEC.md §12)
 - state 후보 done(원장 calls finished)·via(run·reroll·retry)·old_cell(지금 jobs 에 없는 셀), 셀 pre(그 셀 사전 승인 대기 — 키보드 R 거절),
   크롭 요약 layout_diff(바뀐 크롭의 레이아웃 name·rect·대상), 최상위 layout_added(레이아웃에만 있는 크롭).
 - POST /layout/crop update 의 restore_manifest — 마지막 반영 값으로 되돌림(진행(G) 반영 칸의 [되돌리기]).
+v8 (2026-10-19, Studio S4 — _proto/STUDIO_S4_SPEC.md §4·§6.2)
+- mask 라우트 5종(편집 대상·래스터/3층 PNG·저장·되돌리기·대안 이음매 — 37 RouteDef, 경로 36), 정적 mask_edit.js. 기록·검사·쓰기는
+  bmk_design_patch_mask(dmask), 대상·편집 창·기준·z·3층은 Compose 계획(_star_plan → 노드 _plan — 편집 적용도 그 한 곳).
+  3층(§2.4 under·patch·over)과 대안 이음매는 _COMPOSE_LOCK 을 함께 쓰고, 대안은 swap 서명별 composite·seams 캐시(대안끼리만 _ALTS_LOCK 202).
+- ★ 합성 서명·context 서명·context 썸네일 마스크에 마스크 편집(file·창 — 있을 때만, 편집 없는 프로젝트의 서명 그대로).
+  보드는 형식이 맞는 기록만 읽는다(_edit_rec — 깨진 기록은 _plan 처럼 편집 없음).
+- state: 후보 mask_edit {at, stale}, 크롭 요약 mask_edits·mask_stale. _guard 409 에 MaskConflict {error, reason}.
+  stale = 기준 지문(dmask.is_stale) 또는 편집 창 ≠ 기록 창(_edit_stale — state·/mask/edit 은 계획 없이 _edit_window).
+  state 의 stale 은 _plan 이 편집 파일을 쓰지 못할 때도(_edit_usable — 없음·깨짐·크기 다름).
 """
 
 from __future__ import annotations
@@ -203,6 +224,7 @@ from PIL import Image
 
 try:
     from . import bmk_design_patch_analysis as an
+    from . import bmk_design_patch_mask as dmask
     from . import bmk_design_patch_pipeline as pl
     from . import bmk_design_patch_prompt as dprompt
     from . import bmk_design_patch_psd as dpsd
@@ -210,6 +232,7 @@ try:
     from . import bmk_design_patch_store as store
 except ImportError:  # 단독 실행/테스트
     import bmk_design_patch_analysis as an
+    import bmk_design_patch_mask as dmask
     import bmk_design_patch_pipeline as pl
     import bmk_design_patch_prompt as dprompt
     import bmk_design_patch_psd as dpsd
@@ -224,7 +247,7 @@ API = "/bmk/design_patch"
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web_design_patch")
 _STATIC = {"board.html": "text/html", "board.js": "text/javascript", "viewer.js": "text/javascript",
            "layout_geom.js": "text/javascript", "layout_edit.js": "text/javascript", "ref_edit.js": "text/javascript",
-           "pipeline.js": "text/javascript", "board.css": "text/css"}
+           "pipeline.js": "text/javascript", "mask_edit.js": "text/javascript", "board.css": "text/css"}
 
 THUMB_KINDS = ("cand", "before", "ref", "delta", "context")
 THUMB_SIZES = (128, 192, 256, 384, 512, 768, 1024)
@@ -249,6 +272,7 @@ _GRAY = 96                 # 크롭 소스의 투명(캔버스 밖) 부분 바�
 _FILE_DIRS = ("cands", "inputs", "derived", "masks")
 _IMG_EXTS = (".png", ".jpg", ".jpeg", ".webp")
 _MAX_BODY = 16 * 1024
+_MAX_PNG_BODY = 4 * 1024 * 1024  # POST /mask/save 편집 래스터(L PNG — 실데이터 63–83KB)
 _MAX_REROLL_COUNT = 4      # 요청 하나에 더할 수 있는 호출 수
 _MAX_CELL_PENDING = 16     # 재굴림 후 셀의 대기 호출 상한(키 반복·버그로 인한 과금 폭주 방지, Run 이 소화하면 다시 가능)
 
@@ -264,20 +288,27 @@ _DRAFT_KEY_RE = re.compile(r"[0-9a-f]{24}")   # Spec Draft 초안 키(vlm 원장
 _SNAPSHOT_KEYS = ("psd", "fingerprint", "crop_group", "crop_pixels_group")  # 노드 _SNAPSHOT_KEYS 와 같음(스냅숏을 믿는 조건)
 _SNAP_UNTRUSTED = "믿을 수 있는 PSD 스냅숏이 없습니다(마지막 Import 와 다름)"
 _FILE_ORIGINS = ("folder", "psd_harvest")      # 파일·그룹 이름 앞부분 = 크롭 이름으로 찾는 후보 출처(STUDIO_S1_SPEC §5)
+_MASK_V_RE = re.compile(r"[0-9a-f]{16}")                      # /mask/img v = 서명 16자(edit 도 — 기록 file·창·지금 창, _edit_sig)
+_MASK_KINDS = ("base", "edit", "under", "patch", "over")
+_LAYER_KINDS = ("under", "patch", "over")                     # 브러시 미리보기 3층(§2.4) — 한 번에 계산
+_NOT_PICKED = "지금 ★ 후보가 아닙니다(★ 해제·탈락·크롭에서 빠짐) — 다시 받기"  # dmask.save_edit 의 not_picked 와 같은 문구
 
 _RENDER_SLOTS = threading.BoundedSemaphore(3)                 # 동시에 도는 썸네일 계산 수(라우트 + 미리 생성)
 _COMPOSE_LOCK = threading.Lock()                              # ★ 합성(풀해상도 float32 캔버스)은 한 번에 하나
+_ALTS_LOCK = threading.Lock()                                 # /mask/alts 계산은 한 번에 하나 — 못 잡으면 202 busy(캐시만이면 잠금 없이). _COMPOSE_LOCK 과
+                                                              # 따로: 뷰어 ★ 합성·3층이 그 잠금을 잡고 있으면 202 가 아니라 기다림(후보마다 _composite 가 잡음)
 _COMPOSE_DEFAULTS = {"mask_source": "hand_else_auto", "use_registration": True, "use_tone": True,
                      "zorder": "auto_small_on_top"}  # bmk_design_patch._COMPOSE_DEFAULTS 와 같음(노드 모듈은 torch 를 불러서 복사)
 _PATH_LOCKS = [threading.Lock() for _ in range(32)]           # 같은 캐시 파일을 두 번 만들지 않게(중첩 금지)
 _FOCUS_MEMO: dict[tuple, list[int]] = {}
 _FOCUS_LOCK = threading.Lock()
+_EDIT_OK: dict[tuple, bool] = {}   # (편집 파일 경로, mtime_ns, 크기, 기록 창) → _plan 이 그 래스터를 쓰나(_edit_usable)
 _FLAGS_LOCK = threading.Lock()
 _DRAIN: dict[str, float] = {}      # root_key → 요청 시각
 _RUNNING: dict[str, int] = {}      # root_key → 진행 중인 Run 수
 _DRAFTS: dict[str, list[float]] = {}  # root_key → 진행 중인 Spec Draft 시작 시각(draft_active)
 _STARTS: dict[str, list[int]] = {}    # root_key → [Run 시작 수, Spec Draft 시작 수] — 계획 계산 중 시작한 실행(끝났어도)을 알아챔
-_PREF: dict[str, dict] = {}        # root_key → 보드가 쓸 분석 설정(prebuild_thumbs)
+_PREF: dict[str, dict] = {}        # root_key → 보드가 쓸 분석 설정(prebuild_thumbs·Analyze 노드가 넣고, 재시작 뒤 노드가 board_pref.json 에서 되살림)
 _PLAN_WARNED: set[str] = set()
 _REFS_MEMO: dict[str, tuple] = {}  # refs_dir → (파일 이름 목록, {(nnn, part): match_refs 결과}) — 이름 목록이 바뀌면 버림
 _REFS_LOCK = threading.Lock()
@@ -409,8 +440,9 @@ def _analyzable(crop: dict, cand: dict) -> bool:
 
 def _entry_for(m: dict, key: str, pref: dict | None) -> dict | None:
     """후보의 분석 항목: pref(분석 설정)와 params 가 같은 항목 중 seq 가 가장 큰(같으면 마지막) 것 = Analyze 가 그 설정으로
-    지금 쓰는 항목(bmk_design_patch._ensure_analysis 가 seq 를 맞춤), 없으면 가장 최근 항목. pref 를 모르면(재시작 뒤
-    Review 전) 가장 최근 항목의 설정으로 같은 규칙."""
+    지금 쓰는 항목(bmk_design_patch._ensure_analysis 가 seq 를 맞춤), 없으면 가장 최근 항목. pref 를 모르면(board_pref.json 이
+    없는 옛 프로젝트·미등록 루트에서 Review·Analyze 전 — 재시작 뒤엔 노드 모듈이 board_pref.json 에서 되살림) 가장 최근 항목의 설정으로
+    같은 규칙."""
     per = (m.get("analysis") or {}).get(key)
     if not isinstance(per, dict) or not per:
         return None
@@ -724,10 +756,20 @@ def _placed_parts(crop: dict, cand: dict, entry: dict | None, reg: bool = True, 
             entry.get("params_hash") if _usable(entry) else None, reg, tone]
 
 
-def _mask_parts(cand: dict, entry: dict | None) -> list:
+def _mask_parts(cand: dict, entry: dict | None, edit: list | None = None) -> list:
+    """마스크 서명 재료. edit = S4 마스크 편집의 서명 재료(_edit_part) — 있을 때만 덧붙인다(편집 없는 후보의 서명 그대로)."""
     hm = cand.get("hand_mask") or {}
     auto = entry.get("automask") if _usable(entry) else None
-    return [hm.get("file"), hm.get("rect"), int(hm.get("bg", 0)) if hm else None, auto]
+    parts = [hm.get("file"), hm.get("rect"), int(hm.get("bg", 0)) if hm else None, auto]
+    return parts + [edit] if edit else parts
+
+
+def _affine_quad(quad: list[float], src_size) -> list[float]:
+    """원근(Distort) quad → Compose 와 같은 평행사변형 근사(노드 _plan — 쓰기·캐시 렌더는 affine 만)."""
+    if dpsd.quad_kind(quad) != "perspective":
+        return quad
+    sw, sh = src_size
+    return an.quad_from_matrix(an.matrix_from_quad(quad, [0, 0, sw, sh]), [0, 0, sw, sh])
 
 
 def _make_placed(root: str, crop: dict, cand: dict, entry: dict | None, reg: bool = True,
@@ -764,10 +806,7 @@ def _make_placed(root: str, crop: dict, cand: dict, entry: dict | None, reg: boo
             if applied:
                 delta = an.warp_affine(delta, entry["reg"]["matrix"], inverse=True)
             pix = an.apply_delta(pix, delta, out_size=(pix.shape[1], pix.shape[0]))
-    if dpsd.quad_kind(quad) == "perspective":  # Compose 와 같은 평행사변형 근사
-        sw, sh = cand["src_size"]
-        quad = an.quad_from_matrix(an.matrix_from_quad(quad, [0, 0, sw, sh]), [0, 0, sw, sh])
-    rgb, alpha, left, top = dpsd.render_so_cache(pix, quad)
+    rgb, alpha, left, top = dpsd.render_so_cache(pix, _affine_quad(quad, cand["src_size"]))
     out = np.zeros((h, w, 3), np.uint8)
     cov = np.zeros((h, w), np.float32)
     a = np.ones(rgb.shape[:2], np.float32) if alpha is None else alpha.astype(np.float32) / 255.0
@@ -885,9 +924,15 @@ def _automask_local(root: str, entry: dict | None, crop: dict) -> np.ndarray | N
 
 
 def _final_mask_local(root: str, crop: dict, cand: dict, entry: dict | None,
-                      mask_source: str = "hand_else_auto") -> np.ndarray | None:
+                      mask_source: str = "hand_else_auto", edit: dict | None = None) -> np.ndarray | None:
     """Compose 의 최종 마스크(bmk_design_patch._final_mask 와 같은 규칙): hand = 손 마스크(없으면 None), hand_else_auto = 손 마스크가
-    있으면 손, auto·hand_else_auto = 자동 마스크, 자동 마스크가 없으면 손 마스크. None = 마스크 없음(전체 보임)."""
+    있으면 손, auto·hand_else_auto = 자동 마스크, 자동 마스크가 없으면 손 마스크. None = 마스크 없음(전체 보임).
+    edit = S4 마스크 편집 기록 — 쓸 수 있으면 mask_source 와 상관없이 그 래스터(노드 _plan 처럼 기준 대신, 못 읽으면 기준). 노드는 ★ 에만
+    적용하지만 context 는 ★ 가 아닌 후보의 기록도 적용한다 — "★ 하면" 미리보기(다시 ★ 하면 기록이 살아남, 명세 §3.1)."""
+    if edit is not None:
+        em, _why = dmask.edit_mask(root, edit)
+        if em is not None:
+            return _mask_region(em, *crop["rect"])
     hm = cand.get("hand_mask")
     hand = None
     if hm:
@@ -958,7 +1003,7 @@ def _render_context(root, m, crop, cand, entry, placed, size) -> bytes:
     base = _read_rgb(_open_rel(root, m["base"]))
     region = base[ry0:ry1, rx0:rx1].astype(np.float32)
     rgb, cov = placed
-    mask = _final_mask_local(root, crop, cand, entry, _compose_settings(m)["mask_source"])
+    mask = _final_mask_local(root, crop, cand, entry, _compose_settings(root, m)["mask_source"], _edit_rec(m, cand["key"]))
     eff = np.ones((h, w), np.float32) if cov is None else cov
     if mask is not None:
         eff = eff * mask
@@ -980,16 +1025,16 @@ def _target_ctx(root: str, m: dict, crop: dict, tid: str, pref: dict | None) -> 
     return {"cands": cands, "entries": entries, "focus": focus_box(root, crop, entries.values())}
 
 
-def _view_flags(m: dict, kind: str) -> tuple[bool, bool]:
+def _view_flags(root: str, m: dict, kind: str) -> tuple[bool, bool]:
     """배치의 (정합, 톤): context 는 베이스 위 합성이라 export 의 Compose 설정, 나머지는 Analyze 와 같게 둘 다 켬."""
     if kind != "context":
         return True, True
-    cs = _compose_settings(m)
+    cs = _compose_settings(root, m)
     return bool(cs["use_registration"]), bool(cs["use_tone"])
 
 
-def _cand_sig(kind: str, size: int, m: dict, crop: dict, cand: dict, entry: dict | None, focus: list[int]) -> str:
-    parts = _placed_parts(crop, cand, entry, *_view_flags(m, kind))
+def _cand_sig(root: str, kind: str, size: int, m: dict, crop: dict, cand: dict, entry: dict | None, focus: list[int]) -> str:
+    parts = _placed_parts(crop, cand, entry, *_view_flags(root, m, kind))
     if size == FULL_SIZE:
         focus = None
     if kind == "cand":
@@ -997,8 +1042,9 @@ def _cand_sig(kind: str, size: int, m: dict, crop: dict, cand: dict, entry: dict
     if kind == "delta":
         dE = ((entry or {}).get("params") or {}).get("dE") if _usable(entry) else None
         return _sig("delta", size, parts, crop["source"], focus, _mask_parts(cand, entry)[3], dE)
-    ms = _compose_settings(m)["mask_source"]
-    return _sig("context", size, parts, _mask_parts(cand, entry), ms, m.get("base"), m.get("canvas"))
+    ms = _compose_settings(root, m)["mask_source"]
+    rec = _edit_rec(m, cand["key"])
+    return _sig("context", size, parts, _mask_parts(cand, entry, _edit_part(root, rec) if rec else None), ms, m.get("base"), m.get("canvas"))
 
 
 def _thumb_job(root: str, m: dict, kind: str, key: str, size: int,
@@ -1016,8 +1062,8 @@ def _thumb_job(root: str, m: dict, kind: str, key: str, size: int,
             raise _Reject(404, f"후보의 크롭이 매니페스트에 없습니다: {cand['crop_id']}")
         ctx = _target_ctx(root, m, crop, cand["tid"], pref)
         entry, focus = ctx["entries"][key], ctx["focus"]
-        sig = _cand_sig(kind, size, m, crop, cand, entry, focus)
-        flags = _view_flags(m, kind)
+        sig = _cand_sig(root, kind, size, m, crop, cand, entry, focus)
+        flags = _view_flags(root, m, kind)
 
         def prepare():
             return _placed(root, crop, cand, entry, *flags)
@@ -1089,12 +1135,11 @@ def _base_sig(m: dict) -> str:
     return _sig("canvas_base", CANVAS_PREVIEW, m["base"], m["canvas"])
 
 
-def _compose_settings(m: dict) -> dict:
-    """★ 합성·context 가 쓰는 Compose 설정 = 마지막 export 의 compose(Export 와 같은 배치), 없으면 Compose 기본값."""
-    for e in reversed(m.get("exports") or []):
-        if isinstance(e, dict) and isinstance(e.get("compose"), dict):
-            return dict(_COMPOSE_DEFAULTS, **e["compose"])
-    return dict(_COMPOSE_DEFAULTS)
+def _compose_settings(root: str, m: dict) -> dict:
+    """★ 합성·context 가 쓰는 Compose 설정 = 마지막 Export 가 낸 PSD 의 compose(store.last_export — '변경 없음'으로 끝난 Export 포함,
+    Export 와 같은 배치), 없으면 Compose 기본값."""
+    comp = (store.last_export(root, m) or {}).get("compose")
+    return dict(_COMPOSE_DEFAULTS, **comp) if isinstance(comp, dict) else dict(_COMPOSE_DEFAULTS)
 
 
 def _composite_picks(m: dict, swap: tuple[str, str, str] | None = None) -> list[dict]:
@@ -1113,15 +1158,19 @@ def _composite_picks(m: dict, swap: tuple[str, str, str] | None = None) -> list[
     return out
 
 
-def _composite_sig(m: dict, pref: dict | None, swap: tuple[str, str, str] | None = None) -> str:
-    """★ 합성이 읽는 것: 설정·베이스·★ 후보(크롭·타깃 = Compose 의 묶음, 파일·quad·손 마스크·z·크롭 rect·분석 항목)."""
+def _composite_sig(root: str, m: dict, pref: dict | None, swap: tuple[str, str, str] | None = None) -> str:
+    """★ 합성이 읽는 것: 설정·베이스·★ 후보(크롭·타깃 = Compose 의 묶음, 파일·quad·손 마스크·z·크롭 rect·분석 항목)와
+    S4 마스크 편집(_edit_part — 편집이 있는 ★ 만 덧붙여 편집 없는 프로젝트의 서명 그대로. _plan 이 ★ 에 적용하는 기록과 같음 — 형식이 깨진
+    기록은 뺌, _edit_rec)."""
     crops = {c.get("id"): c for c in m["crops"]}
     parts = []
     for c in _composite_picks(m, swap):
         e = _entry_for(m, c["key"], pref)
-        parts.append([c["key"], c["crop_id"], c["tid"], c["file"], c["quad"], c.get("hand_mask"), c.get("z"),
-                      crops[c["crop_id"]]["rect"], e.get("params_hash") if e else None])
-    return _sig("composite", CANVAS_PREVIEW, m.get("base"), m.get("canvas"), _compose_settings(m), parts)
+        part = [c["key"], c["crop_id"], c["tid"], c["file"], c["quad"], c.get("hand_mask"), c.get("z"),
+                crops[c["crop_id"]]["rect"], e.get("params_hash") if e else None]
+        rec = _edit_rec(m, c["key"])
+        parts.append(part + [_edit_part(root, rec)] if rec else part)
+    return _sig("composite", CANVAS_PREVIEW, m.get("base"), m.get("canvas"), _compose_settings(root, m), parts)
 
 
 def _runs(hit: np.ndarray) -> list[tuple[int, int]]:
@@ -1171,12 +1220,11 @@ def _seam_segment(out: np.ndarray, base: np.ndarray, crop_id: str, rect: list[in
             "severity": "bad" if p90 >= _SEAM_BAD else "weak"}
 
 
-def _compose_full(root: str, m: dict, pref: dict | None, swap: tuple[str, str, str] | None = None,
-                  box: list[int] | None = None) -> tuple[np.ndarray, dict]:
-    """Compose 노드와 같은 계산(_plan → _cand_pixels → _render → _paste)으로 ★ 합성 uint8 과 요약. 분석은 하지 않는다(보드가
-    고르는 기존 항목만). swap = _composite_picks 의 ★ 교체 가정, box = 그 창만 합성(뷰어 영역 — 이음매는 보지 않음)."""
-    node = _node()
-    cs = _compose_settings(m)
+def _star_plan(root: str, m: dict, pref: dict | None,
+               swap: tuple[str, str, str] | None = None) -> tuple[list[dict], list[dict], dict, dict, list[str]]:
+    """Compose 의 합성 계획(노드 _plan — 마스크 편집 적용·z 순서 포함) → (plan, picks, entries, 설정, 경고). 분석은 하지 않는다
+    (보드가 고르는 기존 항목만). swap = _composite_picks 의 ★ 교체 가정. ★ 합성·마스크 편집 라우트가 함께 쓴다."""
+    cs = _compose_settings(root, m)
     picks = _composite_picks(m, swap)
     keys = {c["key"] for c in picks}
     # _plan 은 매니페스트의 picked·rejects 를 읽는다 — 가정한 ★ 집합으로 바꾼 사본을 준다(swap 이 없으면 지금과 같음)
@@ -1184,7 +1232,16 @@ def _compose_full(root: str, m: dict, pref: dict | None, swap: tuple[str, str, s
               rejects={k: v for k, v in (m.get("rejects") or {}).items() if k not in keys})
     entries = {c["key"]: e for c in picks if (e := _entry_for(m, c["key"], pref)) is not None}
     warns: list[str] = []
-    plan = node._plan(root, mv, entries, cs["mask_source"], bool(cs["use_registration"]), cs["zorder"], False, warns)
+    plan = _node()._plan(root, mv, entries, cs["mask_source"], bool(cs["use_registration"]), cs["zorder"], False, warns)
+    return plan, picks, entries, cs, warns
+
+
+def _compose_full(root: str, m: dict, pref: dict | None, swap: tuple[str, str, str] | None = None,
+                  box: list[int] | None = None) -> tuple[np.ndarray, dict]:
+    """Compose 노드와 같은 계산(_plan → _cand_pixels → _render → _paste)으로 ★ 합성 uint8 과 요약(_star_plan).
+    swap = _composite_picks 의 ★ 교체 가정, box = 그 창만 합성(뷰어 영역 — 이음매는 보지 않음)."""
+    node = _node()
+    plan, picks, entries, cs, warns = _star_plan(root, m, pref, swap)
     base = node._load_rgb(root, m["base"])
     H, W = base.shape[:2]
     bx0, by0, bx1, by1 = box or [0, 0, W, H]
@@ -1210,8 +1267,10 @@ def _compose_full(root: str, m: dict, pref: dict | None, swap: tuple[str, str, s
                  "warnings": warns, "settings": cs, "segments": segs}
 
 
-def _composite(root: str, m: dict, pref: dict | None, sig: str) -> tuple[bytes, dict]:
-    """composite_<sig>.jpg + seams_<sig>.json — 둘 다 있으면 읽고, 없으면 한 번 계산해 둘 다 쓴다(JSON 먼저)."""
+def _composite(root: str, m: dict, pref: dict | None, sig: str,
+               swap: tuple[str, str, str] | None = None) -> tuple[bytes, dict]:
+    """composite_<sig>.jpg + seams_<sig>.json — 둘 다 있으면 읽고, 없으면 한 번 계산해 둘 다 쓴다(JSON 먼저).
+    swap = ★ 교체 가정(sig 는 그 가정의 서명 — /mask/alts. 그 후보를 실제로 ★ 하면 같은 서명이라 캐시를 그대로 쓴다)."""
     jpg = _thumb_path(root, f"composite_{sig}.jpg")
     js = _thumb_path(root, f"seams_{sig}.json")
     data, raw = _read_bytes(jpg), _read_bytes(js)
@@ -1221,7 +1280,7 @@ def _composite(root: str, m: dict, pref: dict | None, sig: str) -> tuple[bytes, 
             if data is None or raw is None:
                 t0 = time.time()
                 with _RENDER_SLOTS:
-                    out, info = _compose_full(root, m, pref)
+                    out, info = _compose_full(root, m, pref, swap)
                     data = _jpeg(Image.fromarray(_preview(out)))
                 info.update(sig=sig, seconds=round(time.time() - t0, 2))
                 raw = json.dumps(info, ensure_ascii=False).encode("utf-8")
@@ -1264,7 +1323,7 @@ def render_region(root: str, crop_id: str, key: str | None = None, v: str | None
             raise _Reject(404, f"이 크롭의 후보가 아닙니다: {key}")
         swap = (crop_id, cand["tid"], key)
     pref = _PREF.get(store.root_key(root))
-    rsig = _region_sig(_composite_sig(m, pref, swap), box)
+    rsig = _region_sig(_composite_sig(root, m, pref, swap), box)
     if v not in (None, "", rsig):
         raise _Reject(409, "★ 나 크롭이 바뀌어 영역 서명이 달라졌습니다 — 새 상태로 다시 요청하세요")
 
@@ -1281,7 +1340,7 @@ def _composite_for(root: str, v: str | None) -> tuple[bytes, dict, str]:
     m = store.load_manifest(root)
     _canvas_wh(m)
     pref = _PREF.get(store.root_key(root))
-    sig = _composite_sig(m, pref)
+    sig = _composite_sig(root, m, pref)
     if v not in (None, "", sig):
         raise _Reject(409, "★ 가 바뀌어 합성 서명이 달라졌습니다 — 새 상태로 다시 요청하세요")
     try:
@@ -1311,6 +1370,379 @@ def render_canvas(root: str, kind: str, v: str | None = None) -> tuple[bytes, st
 def seams_state(root: str, v: str | None = None) -> dict:
     """★ 합성의 이음매 요약(composite 와 같은 계산·캐시)."""
     return _composite_for(root, v)[1]
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 마스크 편집 (Studio S4 — _proto/STUDIO_S4_SPEC.md §4·§6.2, 응답 모양 정본 tools/fixtures/mask_api.json)
+# 기록·검사·쓰기는 dmask. 대상·편집 창·기준·z·3층은 Compose 계획(_star_plan → 노드 _plan) 그대로 — 편집 창 = Export 그룹 마스크 창.
+# ══════════════════════════════════════════════════════════════════════
+def _mask_cand(m: dict, key) -> dict:
+    """마스크 라우트의 대상: key 형식 400 · 후보 없음 404 · 지금 ★ 아님 409 not_picked(dmask.star_cand = _composite_picks 의 규칙)."""
+    if not isinstance(key, str) or not _KEY_RE.fullmatch(key):
+        raise _Reject(400, "key 형식이 잘못되었습니다")
+    cand = _cand(m, key)
+    if cand is None:
+        raise _Reject(404, f"후보가 없습니다: {key}")
+    if dmask.star_cand(m, key) is None:
+        raise _Reject(409, _NOT_PICKED, reason="not_picked")
+    return cand
+
+
+def _seen(v) -> str:
+    """마스크 편집 seen = 지금 기록 file(dmask 기록의 file 꼴) 또는 ""(기록 없음) — 아니면 400."""
+    if not isinstance(v, str) or not (v == "" or dmask._FILE_RE.fullmatch(v)):
+        raise _Reject(400, "seen 형식이 잘못되었습니다")
+    return v
+
+
+def _mask_target(root: str, m: dict, cand: dict, pref: dict | None) -> dict:
+    """★ cand 의 계획 항목(Compose 순서 order[i])·편집 창(실효 quad bbox ∩ 캔버스)·기준 지문·기준 래스터 서명."""
+    W, H = _canvas_wh(m)
+    try:
+        plan, _picks, _entries, cs, warns = _star_plan(root, m, pref)
+    except (OSError, ValueError) as e:  # 다른 ★ 의 마스크 파일 문제도 여기서 — 404(없는 후보처럼)·날 errno 대신 ★ 합성과 같은 422
+        raise _Reject(422, f"편집 대상을 계산할 수 없습니다: {e}") from e
+    order = list(_node()._slices_in_order(plan))
+    i = next(j for j, (_p, _t, it) in enumerate(order) if it["cand"]["key"] == cand["key"])
+    it = order[i][2]
+    rect = dmask.edit_rect(dpsd.quad_bbox(it["quad"]), (W, H))
+    if rect is None:
+        raise _Reject(422, "이 ★ 의 패치가 캔버스 밖에 있어 편집할 창이 없습니다")
+    w, h = rect[2] - rect[0], rect[3] - rect[1]
+    if w * h > dmask.MAX_PIXELS:  # 저장(validate_png)이 늘 거절할 창 — 칠하기 전에 알린다
+        raise _Reject(422, f"편집 창 {w}x{h} 가 4096² 픽셀을 넘어 Studio 에서 편집할 수 없습니다 — PS 그룹 마스크로")
+    fp = dmask.base_fp(cand, it["entry"], cs["mask_source"])
+    bm = it["base_mask"]
+    return {"order": order, "i": i, "it": it, "cs": cs, "warns": warns, "wh": (W, H), "rect": rect, "fp": fp,
+            "base_sig": _sig("maskbase", rect, fp, None if bm is None else [bm["left"], bm["top"], bm["bg"]])}
+
+
+def _window_l(mask: dict | None, rect: list[int]) -> np.ndarray:
+    """노드 마스크 dict(캔버스 좌표)를 편집 창으로(L uint8, 마스크 없음 = 전부 255) — /mask/img base·edit."""
+    x0, y0, x1, y1 = rect
+    reg = _mask_region(mask, x0, y0, x1, y1)
+    return np.full((y1 - y0, x1 - x0), 255, np.uint8) if reg is None else np.rint(reg * 255.0).astype(np.uint8)
+
+
+def _edit_window(m: dict, cand: dict, entry: dict | None, use_registration: bool) -> list[int] | None:
+    """노드 _plan 항목의 편집 창(실효 quad — _eff_quad·원근 근사 — bbox ∩ 캔버스)을 노드·마스크를 읽지 않고: state·/mask/edit 의 stale·
+    edit url 용. GET /mask·save 는 계획 항목에서(_mask_target — 같은 값, mask_board_unit 이 대조)."""
+    if not m.get("base") or not m.get("canvas"):
+        return None
+    reg = use_registration and _usable(entry) and entry["reg"].get("applied")
+    quad = _affine_quad([float(v) for v in (entry["quad_reg"] if reg else cand["quad"])], cand.get("src_size"))
+    return dmask.edit_rect(dpsd.quad_bbox(quad), [int(v) for v in m["canvas"]])
+
+
+def _layers_box(crop_rect: list[int], win: list[int] | None, W: int, H: int) -> list[int]:
+    """3층 영역 = 크롭 영역(_region_rect) ∪ 편집 창(캔버스 안) — 패치가 크롭 + 패드를 넘는 ★(수확·옮긴 SO·옛 크롭 ★)도 붓·페이드·페더가
+    닿는 창 전체가 미리보기에 그려지게(D2). win None = 패치가 캔버스 밖(GET /mask 는 422)."""
+    box = _region_rect(crop_rect, W, H)
+    if win is None:
+        return box
+    return [min(box[0], win[0]), min(box[1], win[1]), max(box[2], win[2]), max(box[3], win[3])]
+
+
+def _layers_sig(root: str, m: dict, pref: dict | None, key: str, box: list[int]) -> str:
+    """3층 서명 = box·후보 + 3층이 읽는 ★ 만의 합성 서명(이 후보의 편집은 뺌 — 3층은 자기 마스크를 쓰지 않고 z 도 기준 넓이라(D5) [적용]이
+    다시 계산시키지 않는다). 읽는 ★ = 편집 창이 box ±2(_mask_layers 가 건너뛰지 않는 범위)와 만나는 ★ 가 있는 크롭의 ★ 전부 — z 는 크롭·타깃
+    넓이 합으로 정해져 같은 크롭의 떨어진 ★ 도 위아래를 바꾼다. 그 밖 크롭의 [적용]·★ 변경은 3층을 다시 계산·저장시키지 않는다."""
+    use_reg = bool(_compose_settings(root, m)["use_registration"])
+    bx0, by0, bx1, by1 = box
+    near = set()
+    for c in _composite_picks(m):
+        r = _edit_window(m, c, _entry_for(m, c["key"], pref), use_reg)
+        if r is not None and r[2] >= bx0 - 2 and r[3] >= by0 - 2 and r[0] <= bx1 + 2 and r[1] <= by1 + 2:
+            near.add(c["crop_id"])
+    mv = dict(m, candidates=[c for c in m["candidates"] if c.get("crop_id") in near],
+              mask_edits={k: v for k, v in (m.get("mask_edits") or {}).items() if k != key})
+    return _sig("masklayers", _composite_sig(root, mv, pref), box, key)
+
+
+def _murl(rk: str, key: str, kind: str, v: str) -> str:
+    return "mask/img?" + urlencode({"root": rk, "key": key, "kind": kind, "v": v})
+
+
+def _edit_sig(rec: dict, rect: list[int] | None) -> str:
+    """/mask/img kind=edit 의 v — 기록 래스터(file 내용 주소·기록 창)를 지금 편집 창 rect 로 옮긴 PNG 의 서명."""
+    return _sig("maskedit", rec["file"], rec["rect"], rect)
+
+
+def _edit_stale(rec: dict, fp: dict, rect: list[int] | None) -> bool:
+    """편집 기준 바뀜 = 기준 지문(dmask.is_stale) 또는 편집 창이 기록 창과 다름(정합·Compose use_registration·quad·캔버스가 바뀜 — 노드는
+    기록 창 그대로 적용하므로 패치와 어긋났을 수 있음)."""
+    return dmask.is_stale(rec, fp) or rec["rect"] != rect
+
+
+def _edit_rec(m: dict, key: str) -> dict | None:
+    """보드가 읽는 마스크 편집 기록 = dmask.check_record 를 통과한 것만. 형식이 깨진 기록(손으로 고친 매니페스트 — save_edit 은 쓰지 않음)은
+    _plan 이 경고하고 기준을 쓰므로(dmask.edit_mask) 보드도 편집 없음으로 본다(서명·state·GET /mask — 날 KeyError 500 대신)."""
+    rec = dmask.edit_record(m, key)
+    if rec is None:
+        return None
+    try:
+        return dmask.check_record(rec)
+    except ValueError:
+        return None
+
+
+def _edit_part(root: str, rec: dict) -> list:
+    """서명에 넣는 편집 재료 [file, 기록 창] — _plan 이 그 래스터를 쓰지 못하면(없음·깨짐·크기 다름 — _edit_usable) 표시를 덧붙여 기준으로 그린
+    ★ 합성·이음매·context 캐시와 편집으로 그린 캐시가 갈리게(파일이 돌아오면 원래 서명 — 그때 캐시가 맞다)."""
+    part = [rec["file"], rec["rect"]]
+    return part if _edit_usable(root, rec) else part + ["unusable"]
+
+
+def _edit_usable(root: str, rec: dict) -> bool:
+    """_plan 이 이 기록의 래스터를 쓰나 — dmask.edit_mask 와 같은 판정(파일 없음·깨진 PNG·크기 ≠ 기록 창이면 기준). state 의 stale 용이라
+    디코드는 파일(mtime·크기)·기록 창이 바뀔 때만. 잠김·권한(errno)은 _plan 이 기준으로 떨어뜨리지 않고 실패하므로 쓰는 것으로 본다."""
+    path = store.resolve_path(root, rec["file"])
+    try:
+        s = os.stat(path)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    memo_key = (path, s.st_mtime_ns, s.st_size, tuple(rec["rect"]))
+    ok = _EDIT_OK.get(memo_key)
+    if ok is None:
+        try:
+            ok = dmask.edit_mask(root, rec)[0] is not None
+        except OSError:
+            return True
+        if len(_EDIT_OK) > 2048:
+            _EDIT_OK.clear()
+        _EDIT_OK[memo_key] = ok
+    return ok
+
+
+def _edit_view(rk: str, key: str, rec: dict | None, fp: dict, rect: list[int] | None) -> dict | None:
+    """GET /mask·save·edit 응답의 edit — 기록이 없으면 None. rect = 지금 편집 창, fp = 지금 기준 지문."""
+    if rec is None:
+        return None
+    return {"file": rec["file"], "at": rec["at"], "ops": rec["ops"], "hist": len(rec["hist"]),
+            "stale": _edit_stale(rec, fp, rect), "url": _murl(rk, key, "edit", _edit_sig(rec, rect))}
+
+
+def mask_view(root: str, key) -> dict:
+    """GET /mask — 편집 대상·기준·편집·3층 URL·이 크롭 이음매(지금 ★ 합성 캐시가 있을 때만, 없으면 null)·z(layers.box 와 겹치는 다른 ★,
+    합성 순서 아래 → 위)·경고(이 후보의 _plan 경고 + 분석 없음). 파일을 쓰지 않는다. 편집 파일을 읽지 못하면(_plan 이 경고하고 기준을 씀)
+    edit.url = 기준 url — Studio 가 _plan 이 쓰는 마스크로 열고 [적용]·[편집 지우기]로 나갈 수 있게. 형식이 깨진 기록은 edit null(_edit_rec)."""
+    m = store.load_manifest(root)
+    rk = store.root_key(root)
+    pref = _PREF.get(rk)
+    cand = _mask_cand(m, key)
+    t = _mask_target(root, m, cand, pref)
+    crop = t["order"][t["i"]][0]["crop"]
+    box = _layers_box(crop["rect"], t["rect"], *t["wh"])
+    csig, lsig = _composite_sig(root, m, pref), _layers_sig(root, m, pref, key, box)
+    z = {"below": [], "above": []}
+    for j, (p, tg, it) in enumerate(t["order"]):
+        qx0, qy0, qx1, qy1 = dpsd.quad_bbox(it["quad"])
+        if j != t["i"] and qx0 < box[2] and qx1 > box[0] and qy0 < box[3] and qy1 > box[1]:
+            z["below" if j < t["i"] else "above"].append(f"{p['crop']['name']} · {tg['tid']}")
+    raw = _read_bytes(_thumb_path(root, f"seams_{csig}.json"))
+    warns = [w for w in t["warns"] if w.startswith(f"{key} (")]
+    if t["it"]["entry"] is None:
+        warns.insert(0, "분석 없음 — 반영(Analyze) 뒤 편집 권장")
+    base = {"src": t["it"]["base_msrc"], "sig": t["base_sig"], "url": _murl(rk, key, "base", t["base_sig"])}
+    edit = _edit_view(rk, key, _edit_rec(m, key), t["fp"], t["rect"])
+    if edit is not None and t["it"]["mask_edit"] is None:
+        edit["url"] = base["url"]
+    return {"key": key, "crop_id": crop["id"], "tid": cand["tid"],
+            "c": next(n for n, c in enumerate(_target_members(m, crop["id"], cand["tid"]), 1) if c["key"] == key),
+            "picked": True, "rect": t["rect"], "composite_sig": csig, "mask_source": t["cs"]["mask_source"],
+            "base": base, "edit": edit,
+            "layers": {"box": box, "sig": lsig, **{f"{k}_url": _murl(rk, key, k, lsig) for k in _LAYER_KINDS}},
+            "seams": None if raw is None else [s for s in json.loads(raw)["segments"] if s["crop_id"] == crop["id"]],
+            "z": z, "warnings": warns}
+
+
+def _mask_layers(root: str, m: dict, pref: dict | None, key: str, box: list[int]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """브러시 미리보기 3층(§2.4, box 창): under = 베이스 + 이 ★ 보다 아래 ★ 합성(RGB), patch = 이 후보 RGB + SO 캐시 알파(마스크 없음),
+    over = 위 ★ 들을 투명 위에 차례로(색 = 프리멀티 ÷ a, a = 1 − Π(1 − a)). Compose 와 같은 계획·렌더라
+    over.rgb·over.a + (under + (patch.rgb − under)·patch.a·mask)·(1 − over.a) = 그 마스크로 합성한 ★ 합성(8비트 반올림 차)."""
+    node = _node()
+    plan, _picks, _entries, cs, _warns = _star_plan(root, m, pref)
+    bx0, by0, bx1, by1 = box
+    under = node._load_rgb(root, m["base"])[by0:by1, bx0:bx1].astype(np.float32)
+    prem = np.zeros_like(under)
+    keep = np.ones(under.shape[:2], np.float32)   # 위 ★ 들의 Π(1 − a)
+    union = np.zeros(under.shape[:2], np.float32)
+    patch = np.zeros((*under.shape[:2], 4), np.uint8)
+    above = False
+    for _p, _t, it in node._slices_in_order(plan):
+        me = it["cand"]["key"] == key
+        qx0, qy0, qx1, qy1 = dpsd.quad_bbox(it["quad"])
+        if not me and (qx1 < bx0 - 2 or qy1 < by0 - 2 or qx0 > bx1 + 2 or qy0 > by1 + 2):
+            continue  # _compose_full(box) 와 같이 창 밖 패치는 읽지 않는다
+        pix, _toned = node._cand_pixels(root, it, bool(cs["use_tone"]))
+        rgb, _alpha, eff, left, top = node._render(pix, it["quad"], None if me else it["mask"])
+        x0, y0, x1, y1 = max(bx0, left), max(by0, top), min(bx1, left + eff.shape[1]), min(by1, top + eff.shape[0])
+        win, src = np.s_[y0 - by0:y1 - by0, x0 - bx0:x1 - bx0], np.s_[y0 - top:y1 - top, x0 - left:x1 - left]
+        if me:
+            above = True
+            if x1 > x0 and y1 > y0:
+                patch[win] = np.dstack([rgb[src], np.rint(eff[src] * 255.0).astype(np.uint8)])
+        elif not above:
+            node._paste(under, union, rgb, eff, left - bx0, top - by0)
+        else:
+            node._paste(prem, union, rgb, eff, left - bx0, top - by0)
+            if x1 > x0 and y1 > y0:
+                keep[win] *= 1.0 - eff[src]
+    a = 1.0 - keep
+    color = np.divide(prem, a[..., None], out=np.zeros_like(prem), where=a[..., None] > 0)
+    over = np.dstack([np.clip(np.rint(color), 0, 255), np.rint(a * 255.0)]).astype(np.uint8)
+    return np.clip(np.rint(under), 0, 255).astype(np.uint8), patch, over
+
+
+def _layer_png(root: str, m: dict, pref: dict | None, key: str, box: list[int], sig: str, kind: str) -> bytes:
+    """3층 PNG(compress 1 — under 도 무손실이어야 공식이 Compose 와 1 이내) — 셋을 한 번에 계산해 derived/thumbs/mask<kind>_<sig>.png
+    로 캐시. ★ 합성과 같은 _COMPOSE_LOCK(풀해상도 베이스·패치 렌더는 한 번에 하나)."""
+    paths = {k: _thumb_path(root, f"mask{k}_{sig}.png") for k in _LAYER_KINDS}
+    data = _read_bytes(paths[kind])
+    if data is None:
+        with _COMPOSE_LOCK:
+            data = _read_bytes(paths[kind])
+            if data is None:
+                with _RENDER_SLOTS:
+                    out = dict(zip(_LAYER_KINDS, (_png(a) for a in _mask_layers(root, m, pref, key, box))))
+                for k in _LAYER_KINDS:
+                    store._atomic_write_bytes(paths[k], out[k])
+                data = out[kind]
+    return data
+
+
+def mask_image(root: str, key, kind, v) -> tuple[bytes, str]:
+    """GET /mask/img → (PNG, 서명). v ≠ 지금 서명이면 409 stale(낡은 요청에 계산하지 않음). base = 기준 마스크(편집 창 L), edit = _plan 이
+    쓰는 편집 래스터(기록 창의 캔버스 자리)를 지금 편집 창으로 옮긴 L(v = _edit_sig — 창이 그대로면 기록 파일과 같은 픽셀. 정합·
+    use_registration 이 바뀌어 창이 달라져도 미리보기 = Compose·PSD), under·patch·over = 3층(v = layers.sig — 계획 없이 서명만 보고, 없을 때만 계산)."""
+    if kind not in _MASK_KINDS:
+        raise _Reject(400, f"kind 는 {' · '.join(_MASK_KINDS)} 중 하나여야 합니다")
+    if not isinstance(v, str) or not _MASK_V_RE.fullmatch(v):
+        raise _Reject(400, "v 형식이 잘못되었습니다")
+    m = store.load_manifest(root)
+    pref = _PREF.get(store.root_key(root))
+    cand = _mask_cand(m, key)
+
+    def fresh(sig: str) -> str:
+        if v != sig:
+            raise _Reject(409, "★ 합성·마스크가 그 사이 바뀌었습니다 — 다시 받기", reason="stale")
+        return sig
+
+    if kind == "edit":
+        rec = _edit_rec(m, key)
+        if rec is None:
+            raise _Reject(404, "마스크 편집이 없습니다")
+        t = _mask_target(root, m, cand, pref)
+        sig = fresh(_edit_sig(rec, t["rect"]))
+        if t["it"]["mask_edit"] is None:  # _plan 이 편집을 읽지 못해 기준을 씀(GET /mask 의 edit.url 은 그때 기준 url)
+            raise _Reject(404, f"마스크 편집 파일을 읽지 못했습니다: {rec['file']}")
+        return _png(_window_l(t["it"]["mask"], t["rect"])), sig
+    if kind == "base":
+        t = _mask_target(root, m, cand, pref)
+        sig = fresh(t["base_sig"])
+        return _cached(root, f"maskbase_{sig}.png", lambda: _png(_window_l(t["it"]["base_mask"], t["rect"]))), sig
+    W, H = _canvas_wh(m)
+    win = _edit_window(m, cand, _entry_for(m, key, pref), bool(_compose_settings(root, m)["use_registration"]))
+    box = _layers_box(_crop(m, cand["crop_id"])["rect"], win, W, H)
+    sig = fresh(_layers_sig(root, m, pref, key, box))
+    try:
+        return _layer_png(root, m, pref, key, box, sig, kind), sig
+    except (OSError, ValueError) as e:
+        raise _Reject(422, f"브러시 미리보기 층을 만들 수 없습니다: {e}") from e
+
+
+def mask_save(root: str, key, data: bytes, seen, ops, rect) -> dict:
+    """POST /mask/save — 판정 순서(mask_api.json '_doc 열거 save 판정 순서'): key 400·404 → ★ 아님 409 not_picked → 본문·rect 형식 400
+    (dmask.validate_png, rect 없음도) → PNG 크기 ≠ 지금 편집 창 또는 rect(Studio 가 세션을 연 창 "x0,y0,x1,y1") ≠ 지금 창 409 rect_changed {rect}
+    (같은 크기로 옮겨진 창 — 순수 이동 정합·use_registration — 은 rect 로만 잡힌다. 그래서 rect 는 필수) →
+    seen·ops 400 → seen ≠ 지금 기록 409 changed(dmask.save_edit 이 잠금 안에서). 편집 창·기준 지문은 지금 계획에서."""
+    m = store.load_manifest(root)
+    rk = store.root_key(root)
+    pref = _PREF.get(rk)
+    cand = _mask_cand(m, key)
+    arr = dmask.validate_png(data)
+    win = _int_list(rect, 4, "rect")
+    t = _mask_target(root, m, cand, pref)
+    x0, y0, x1, y1 = t["rect"]
+    if arr.shape != (y1 - y0, x1 - x0) or win != t["rect"]:
+        raise _Reject(409, "편집 창이 바뀌었습니다(정합·배치 변경) — 다시 받기", reason="rect_changed", rect=t["rect"])
+
+    def placed(mm):  # 잠근 매니페스트로 창을 다시(_mask_target 뒤 잠그기 전에 Analyze 가 정합을 바꿨으면 409 rect_changed — 옛 좌표로 저장 안 함)
+        return _edit_window(mm, _cand(mm, key), _entry_for(mm, key, _PREF.get(rk)), bool(_compose_settings(root, mm)["use_registration"]))
+
+    rec, rev = dmask.save_edit(root, key, data, seen=_seen(seen), rect=t["rect"], base=t["fp"], ops=ops, placed=placed)
+    return {"ok": True, "edit": _edit_view(rk, key, rec, t["fp"], t["rect"]), "rev": rev,
+            "composite_sig": _composite_sig(root, store.load_manifest(root), pref)}
+
+
+def mask_edit(root: str, data: dict) -> dict:
+    """POST /mask/edit — undo = hist 첫 판으로(비면 기록 지움 = 기준), reset = 기록 지움(hist 도). ★ 여부는 보지 않는다(dmask).
+    기록이 없을 때(seen "")는 바꾸지 않고 edit null(형식이 깨진 기록은 없음으로 보고 지움 — dmask._expect)."""
+    key = _field(data, "key", _KEY_RE)
+    seen = _seen(data.get("seen"))
+    op = data.get("op")
+    if op not in ("undo", "reset"):
+        raise _Reject(400, "op 는 undo · reset 중 하나여야 합니다")
+    if _cand(store.load_manifest(root), key) is None:
+        raise _Reject(404, f"후보가 없습니다: {key}")
+    rec, rev = (dmask.undo_edit if op == "undo" else dmask.reset_edit)(root, key, seen=seen)
+    m = store.load_manifest(root)
+    rk = store.root_key(root)
+    pref = _PREF.get(rk)
+    edit = None
+    if rec is not None:  # 편집 창은 계획 없이(_edit_window — ★ 가 아닌 후보의 기록도 되돌릴 수 있음)
+        c, e, cs = _cand(m, key), _entry_for(m, key, pref), _compose_settings(root, m)
+        edit = _edit_view(rk, key, rec, dmask.base_fp(c, e, cs["mask_source"]), _edit_window(m, c, e, bool(cs["use_registration"])))
+    return {"ok": True, "edit": edit, "rev": rev, "composite_sig": _composite_sig(root, m, pref)}
+
+
+def mask_alts(root: str, key) -> dict | None:
+    """GET /mask/alts(§6.2) — 그 ★ 타깃의 탈락 아닌 다른 후보마다 "★ 로 바꾸면"(그 타깃 ★ 를 그 후보 하나로 — 보드 Space) 전체 ★ 합성의
+    이음매. swap 서명별 composite·seams 캐시(_composite). 계산할 것이 남았는데 다른 대안 계산이 돌고 있으면 None(202 busy).
+    changed_crops = 이 크롭 밖에서 이음매 집합이 지금과 달라지는 크롭(매니페스트 크롭 순서)."""
+    m = store.load_manifest(root)
+    cand = _mask_cand(m, key)
+    _canvas_wh(m)
+    pref = _PREF.get(store.root_key(root))
+    cid, tid = cand["crop_id"], cand["tid"]
+    rejects = m.get("rejects") or {}
+    alts = [(n, c, (cid, tid, c["key"])) for n, c in enumerate(_target_members(m, cid, tid), 1)
+            if c["key"] != key and c["key"] not in rejects]
+    jobs = [(None, _composite_sig(root, m, pref))] + [(swap, _composite_sig(root, m, pref, swap)) for _n, _c, swap in alts]
+    cached = all(os.path.isfile(_thumb_path(root, f"composite_{s}.jpg")) and os.path.isfile(_thumb_path(root, f"seams_{s}.json"))
+                 for _swap, s in jobs)
+    if not cached and not _ALTS_LOCK.acquire(blocking=False):
+        return None
+    try:
+        segs = [_composite(root, m, pref, s, swap)[1]["segments"] for swap, s in jobs]
+    except (OSError, ValueError) as e:
+        raise _Reject(422, f"대안 이음매를 계산할 수 없습니다: {e}") from e
+    finally:
+        if not cached:
+            _ALTS_LOCK.release()
+
+    def rest(ss):  # 크롭별 이음매 집합(순서 무관 — 가정한 ★ 가 z 를 바꾸면 같은 등급·p90 끼리 순서가 바뀔 수 있음)
+        out: dict[str, list] = {}
+        for s in ss:
+            if s["crop_id"] != cid:
+                out.setdefault(s["crop_id"], []).append(json.dumps(s, sort_keys=True))
+        return {k: sorted(v) for k, v in out.items()}
+
+    now, now_rest = [s for s in segs[0] if s["crop_id"] == cid], rest(segs[0])
+    calls = {x.get("call_id"): x for x in m.get("calls") or [] if isinstance(x, dict)}
+    rows = []
+    for (n, c, _swap), ss in zip(alts, segs[1:]):
+        mine, other = [s for s in ss if s["crop_id"] == cid], rest(ss)
+        call_id = _cell_of(c)[1]
+        call = calls.get(call_id) if call_id else None
+        rows.append({"key": c["key"], "c": n, "ran": {"done": call.get("finished"), "via": _call_via(call)} if call else None,
+                     "bad": sum(s["severity"] == "bad" for s in mine), "weak": sum(s["severity"] == "weak" for s in mine),
+                     "worst_p90": max((s["diff_p90"] for s in mine), default=None), "this_crop": mine,
+                     "changed_crops": [x["id"] for x in m["crops"] if x["id"] != cid and now_rest.get(x["id"]) != other.get(x["id"])]})
+    return {"sig": jobs[0][1], "now": {"bad": sum(s["severity"] == "bad" for s in now),
+                                        "worst": max((s["diff_p90"] for s in now), default=None)}, "rows": rows}
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1354,7 +1786,10 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
     응답에도) = 보드가 기억한 only 없는 계획(pipeline_plan)의 서명이 지금 서명(_plan_sigs — 파일 stat 만(스펙 JSON 은 specs/ 목록이 바뀔 때만 파싱), vlm 없음)과 같고 계산 오류가 없으면 그 서명, 다르거나 오류거나
     계획이 없으면 null — 보드는 둘 중 하나가 바뀌면 since_rev 없이 다시 받는다. 크롭 요약의 draft_chip = 기억한 계획의 {wait, refresh,
     adopt, run_need, running(지금 Run·Spec Draft 실행 중)}(계획이 없으면 null), plan_stale = 기억한 계획이 지금과 다르거나 오류(칩을
-    흐리게 — §3.7)."""
+    흐리게 — §3.7). S4: 후보 mask_edit = 마스크 편집 기록이 있으면 {at, stale}(★ 가 아니어도 — stale 은 _plan 이 편집 파일을 쓰지 못할 때도,
+    형식이 깨진 기록은 null), 크롭 요약 mask_edits·mask_stale = 지금 ★ 의 편집 수·그중 stale — 편집 쓰기는 매니페스트 rev 를 올리므로 보통
+    폴링으로 반영된다. pref_v(unchanged 응답에도) = board_pref.json 지문(store.board_pref_v) — 분석·Export 설정이 바뀌면(편집 창·기준·★ 합성의
+    재료, 매니페스트 rev 는 그대로) 보드는 since_rev 없이 다시 받는다."""
     m = store.load_manifest(root)
     rk = store.root_key(root)
     running, drafting = is_running(root), draft_since(root) is not None
@@ -1362,7 +1797,7 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
     doc = _refs_doc(root)[0]
     flags = {"running": running, "drain": running and drain_requested(root), "drafting": drafting,
              "layout_rev": lay["rev"] if lay else None, "refs_rev": doc["rev"] if doc else None, "refs_files_v": _refs_files_v(_refs_dir(m)),
-             "pipeline_rev": pl.pipeline_rev(root), "plan_v": None}
+             "pipeline_rev": pl.pipeline_rev(root), "plan_v": None, "pref_v": store.board_pref_v(root)}
     plan = _plan_free(root)
     if plan is not None:
         r_sig, d_sig = _plan_sigs(root, m, (running, drafting), flags["refs_files_v"])
@@ -1373,6 +1808,7 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
     rejects = m.get("rejects") or {}
     picks = m.get("picks") or {}
     rerolls = m.get("rerolls") or {}
+    cs = _compose_settings(root, m)
     pending, pre_cells = _pending_cells(root, m)
     calls = [x for x in m.get("calls") or [] if isinstance(x, dict)]
     call_by_id = {x.get("call_id"): x for x in calls}
@@ -1406,6 +1842,7 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
                 if len(jt) > 1:
                     first = next((x["tid"] for x in crop.get("targets") or [] if x.get("tid") in jt), None)
                     joint = {"tids": jt, "first": first, "first_key": by_file.get((crop["id"], c["file"], first))}
+                edit = _edit_rec(m, c["key"])
                 cands.append({
                     "key": c["key"], "n": n, "origin": c.get("origin"), "backend": info.get("backend"),
                     "mock": info.get("backend") == "mock", "src_size": c.get("src_size"),
@@ -1422,20 +1859,25 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
                                                          else "skipped" if e and e.get("skipped") else "none"),
                     "gates": gates, "reg": reg, "reframed": bool(reg and reg.get("applied")),
                     "hand_mask": bool(c.get("hand_mask")),
+                    # S4 마스크 편집(★ 가 아니어도 기록이 있으면 — 다시 ★ 하면 살아남): stale = 기록의 기준 ≠ 지금 기준 지문 또는 편집 창이 바뀜
+                    # 또는 _plan 이 편집 파일을 쓰지 못함(없음·깨짐·크기 다름 — Export 는 기준 마스크, 까닭은 K 의 경고)
+                    "mask_edit": None if edit is None else {"at": edit["at"], "stale": _edit_stale(
+                        edit, dmask.base_fp(c, e, cs["mask_source"]), _edit_window(m, c, e, bool(cs["use_registration"])))
+                        or not _edit_usable(root, edit)},
                     "stale_rect": c.get("origin") in ("run", "folder") and dpsd.quad_bbox(c["quad"]) != crop["rect"],
                     "joint": joint,
                     "thumb_url": _turl(rk, "cand", c["key"], GRID_SIZE,
-                                       _cand_sig("cand", GRID_SIZE, m, crop, c, e, focus)),
-                    "big_url": _turl(rk, "cand", c["key"], BIG_SIZE, _cand_sig("cand", BIG_SIZE, m, crop, c, e, focus)),
+                                       _cand_sig(root, "cand", GRID_SIZE, m, crop, c, e, focus)),
+                    "big_url": _turl(rk, "cand", c["key"], BIG_SIZE, _cand_sig(root, "cand", BIG_SIZE, m, crop, c, e, focus)),
                     "delta_url": _turl(rk, "delta", c["key"], BIG_SIZE,
-                                       _cand_sig("delta", BIG_SIZE, m, crop, c, e, focus)),
+                                       _cand_sig(root, "delta", BIG_SIZE, m, crop, c, e, focus)),
                     "context_url": _turl(rk, "context", c["key"], BIG_SIZE,
-                                         _cand_sig("context", BIG_SIZE, m, crop, c, e, focus)),
-                    "full_url": _turl(rk, "cand", c["key"], FULL_SIZE, _cand_sig("cand", FULL_SIZE, m, crop, c, e, focus)),
+                                         _cand_sig(root, "context", BIG_SIZE, m, crop, c, e, focus)),
+                    "full_url": _turl(rk, "cand", c["key"], FULL_SIZE, _cand_sig(root, "cand", FULL_SIZE, m, crop, c, e, focus)),
                     # "이 후보를 ★ 하면": 그 타깃의 ★ 를 이 후보로 바꾼 가정의 원해상도 영역(뷰어 겹침)
                     "pick_url": None if box is None else "canvas?" + urlencode(
                         {"root": rk, "kind": "region", "crop": crop["id"], "key": c["key"],
-                         "v": _region_sig(_composite_sig(m, pref, (crop["id"], tid, c["key"])), box)}),
+                         "v": _region_sig(_composite_sig(root, m, pref, (crop["id"], tid, c["key"])), box)}),
                     "file_url": _furl(rk, c["file"]),
                 })
             cells = []
@@ -1485,6 +1927,10 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
             "wait": list(d.get("wait") or []), "refresh": bool(d.get("refresh")), "adopt": d.get("adopt"),
             "run_need": int((run_rows.get(c["id"]) or {}).get("need") or 0), "running": busy}
         c["plan_stale"] = plan is not None and flags["plan_v"] is None
+        # 지금 ★ 의 마스크 편집 수·그중 기준 바뀜(S4 크롭 칩)
+        edits = [x["mask_edit"] for t in targets if t["crop_id"] == c["id"] for x in t["candidates"]
+                 if x["mask_edit"] and x["picked"] and not x["rejected"]]
+        c["mask_edits"], c["mask_stale"] = len(edits), sum(1 for x in edits if x["stale"])
         r = drefs.resolve_refs(refs_dir, mc, doc) if refs_ok else None
         # none = 의도한 '레퍼런스 없음' 고정(files [] — 부수 효과 아님) — 연결한 파일이 모두 사라진 고정(n 0)과 칩을 가른다.
         # auto = 다른 크롭의 동작이 함께 '없음'으로 고정함(files [] + fixed.auto — 칩 '레퍼런스 없음(자동 고정)')
@@ -1494,7 +1940,7 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
     canvas = None
     if m.get("base") and m.get("canvas"):
         W, H = (int(v) for v in m["canvas"])
-        csig = _composite_sig(m, pref)
+        csig = _composite_sig(root, m, pref)
         canvas = {"size": [W, H], "preview": list(_preview_wh(W, H)), "composite_sig": csig,
                   "picks": len(_composite_picks(m)),
                   "base_url": "canvas?" + urlencode({"root": rk, "kind": "base", "v": _base_sig(m)}),
@@ -3938,6 +4384,8 @@ def _guard(fn):
             return await fn(request)
         except _Reject as e:
             return _json({"error": e.message, **e.extra}, status=e.status)
+        except dmask.MaskConflict as e:  # 마스크 편집 seen·★ 경합 — 409 본문에 reason(changed·not_picked)을 싣는다(mask_api.json)
+            return _json({"error": str(e), **e.extra}, status=409)
         except _conflicts() as e:  # rev·지문이 요청과 다름(다른 창·노드에서 바뀜)·이미 있음·없음 — 새로고침
             return _json({"error": str(e)}, status=409)
         except ValueError as e:  # store·refs 검증(매니페스트가 사라짐·형식 오류 등)
@@ -3974,6 +4422,18 @@ async def _body(request: web.Request) -> dict:
     if not isinstance(data, dict):
         raise _Reject(400, "JSON 본문은 객체여야 합니다")
     return data
+
+
+async def _png_body(request: web.Request) -> bytes:
+    """POST /mask/save 본문 — image/png 만(415), _MAX_PNG_BODY 이하(content_length 먼저, 다 읽은 뒤 다시 — 413)."""
+    if request.content_type != "image/png":
+        raise _Reject(415, "Content-Type 은 image/png 이어야 합니다")
+    if request.content_length is not None and request.content_length > _MAX_PNG_BODY:
+        raise _Reject(413, "요청 본문이 너무 큽니다")
+    raw = await request.read()
+    if len(raw) > _MAX_PNG_BODY:
+        raise _Reject(413, "요청 본문이 너무 큽니다")
+    return raw
 
 
 def _field(data: dict, name: str, rx: re.Pattern, required: bool = True) -> str | None:
@@ -4314,6 +4774,42 @@ async def draft_adopt_handler(request: web.Request) -> web.StreamResponse:
     return _json(await asyncio.to_thread(draft_adopt, root, data))
 
 
+@_guard
+async def mask_handler(request: web.Request) -> web.StreamResponse:
+    root = _root_param(request.query.get("root"))
+    return _json(await asyncio.to_thread(mask_view, root, request.query.get("key")))
+
+
+@_guard
+async def mask_img_handler(request: web.Request) -> web.StreamResponse:
+    q = request.query
+    root = _root_param(q.get("root"))
+    data, sig = await asyncio.to_thread(mask_image, root, q.get("key"), q.get("kind"), q.get("v"))
+    return _image_response(data, "image/png", sig, q.get("v"))
+
+
+@_guard
+async def mask_save_handler(request: web.Request) -> web.StreamResponse:
+    data = await _png_body(request)
+    q = request.query
+    root = _root_param(q.get("root"))
+    return _json(await asyncio.to_thread(mask_save, root, q.get("key"), data, q.get("seen"), q.get("ops"), q.get("rect")))
+
+
+@_guard
+async def mask_edit_handler(request: web.Request) -> web.StreamResponse:
+    data = await _body(request)
+    root = _root_param(data.get("root"))
+    return _json(await asyncio.to_thread(mask_edit, root, data))
+
+
+@_guard
+async def mask_alts_handler(request: web.Request) -> web.StreamResponse:
+    root = _root_param(request.query.get("root"))
+    res = await asyncio.to_thread(mask_alts, root, request.query.get("key"))
+    return _json({"busy": True}, status=202) if res is None else _json(res)
+
+
 _ROUTES = (
     ("GET", f"{API}/board", board_redirect),
     ("GET", f"{API}/board/", board_static),
@@ -4347,6 +4843,11 @@ _ROUTES = (
     ("GET", f"{API}/pipeline/progress", pipeline_progress_handler),
     ("GET", f"{API}/draft", draft_handler),
     ("POST", f"{API}/draft/adopt", draft_adopt_handler),
+    ("GET", f"{API}/mask", mask_handler),
+    ("GET", f"{API}/mask/img", mask_img_handler),
+    ("POST", f"{API}/mask/save", mask_save_handler),
+    ("POST", f"{API}/mask/edit", mask_edit_handler),
+    ("GET", f"{API}/mask/alts", mask_alts_handler),
 )
 
 

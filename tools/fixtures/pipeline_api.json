@@ -399,7 +399,9 @@
       "time": "2026-10-15 16:11:56",
       "layers": 36,
       "problems": 0,
-      "bytes": 218794770
+      "bytes": 218794770,
+      "mask_groups": 18,
+      "mask_edits": 3
      },
      {
       "rev": 74,
@@ -407,7 +409,9 @@
       "time": "2026-10-15 15:41:31",
       "layers": 36,
       "problems": 0,
-      "bytes": 218654925
+      "bytes": 218654925,
+      "mask_groups": null,
+      "mask_edits": null
      },
      {
       "rev": 69,
@@ -415,7 +419,9 @@
       "time": "2026-10-15 15:33:44",
       "layers": 36,
       "problems": 0,
-      "bytes": 218800817
+      "bytes": 218800817,
+      "mask_groups": null,
+      "mask_edits": null
      },
      {
       "rev": 29,
@@ -423,7 +429,9 @@
       "time": "2026-10-15 15:07:20",
       "layers": 30,
       "problems": 0,
-      "bytes": 192809453
+      "bytes": 192809453,
+      "mask_groups": null,
+      "mask_edits": null
      }
     ],
     "widgets": {
@@ -1010,7 +1018,9 @@
        "time": "2026-10-15 16:11:56",
        "layers": 36,
        "problems": 0,
-       "bytes": 218794770
+       "bytes": 218794770,
+       "mask_groups": 18,
+       "mask_edits": 3
       },
       {
        "rev": 74,
@@ -1018,7 +1028,9 @@
        "time": "2026-10-15 15:41:31",
        "layers": 36,
        "problems": 0,
-       "bytes": 218654925
+       "bytes": 218654925,
+       "mask_groups": null,
+       "mask_edits": null
       },
       {
        "rev": 69,
@@ -1026,7 +1038,9 @@
        "time": "2026-10-15 15:33:44",
        "layers": 36,
        "problems": 0,
-       "bytes": 218800817
+       "bytes": 218800817,
+       "mask_groups": null,
+       "mask_edits": null
       },
       {
        "rev": 29,
@@ -1034,7 +1048,9 @@
        "time": "2026-10-15 15:07:20",
        "layers": 30,
        "problems": 0,
-       "bytes": 192809453
+       "bytes": 192809453,
+       "mask_groups": null,
+       "mask_edits": null
       }
      ],
      "widgets": {
@@ -1545,7 +1561,9 @@
        "time": "2026-10-15 16:11:56",
        "layers": 36,
        "problems": 0,
-       "bytes": 218794770
+       "bytes": 218794770,
+       "mask_groups": 18,
+       "mask_edits": 3
       },
       {
        "rev": 74,
@@ -1553,7 +1571,9 @@
        "time": "2026-10-15 15:41:31",
        "layers": 36,
        "problems": 0,
-       "bytes": 218654925
+       "bytes": 218654925,
+       "mask_groups": null,
+       "mask_edits": null
       },
       {
        "rev": 69,
@@ -1561,7 +1581,9 @@
        "time": "2026-10-15 15:33:44",
        "layers": 36,
        "problems": 0,
-       "bytes": 218800817
+       "bytes": 218800817,
+       "mask_groups": null,
+       "mask_edits": null
       },
       {
        "rev": 29,
@@ -1569,7 +1591,9 @@
        "time": "2026-10-15 15:07:20",
        "layers": 30,
        "problems": 0,
-       "bytes": 192809453
+       "bytes": 192809453,
+       "mask_groups": null,
+       "mask_edits": null
       }
      ],
      "widgets": {
@@ -1941,7 +1965,9 @@
     "confirm",
     "exports[].layers",
     "exports[].problems",
-    "exports[].bytes"
+    "exports[].bytes",
+    "exports[].mask_groups",
+    "exports[].mask_edits"
    ],
    "optional": [],
    "maps": [],
@@ -4034,7 +4060,8 @@
    "refs_rev": 4,
    "refs_files_v": "a3f09c1d77e2b450",
    "pipeline_rev": 3,
-   "plan_v": "r:5c0e4f1a9b23d7e8|d:41b0c2aa7e9d3f10"
+   "plan_v": "r:5c0e4f1a9b23d7e8|d:41b0c2aa7e9d3f10",
+   "pref_v": "4f1c2a9be0d3"
   },
   "nullable": [
    "flags.pipeline_rev",
@@ -4045,7 +4072,8 @@
    "unchanged.refs_rev",
    "unchanged.refs_files_v",
    "unchanged.pipeline_rev",
-   "unchanged.plan_v"
+   "unchanged.plan_v",
+   "unchanged.pref_v"
   ]
  },
  "history": {

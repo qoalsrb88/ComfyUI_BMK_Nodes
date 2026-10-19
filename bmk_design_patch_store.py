@@ -18,6 +18,7 @@ torch / comfy / folder_paths 를 import 하지 않는다(numpy·PIL + 표준 라
       derived/...             분석 산출(재생성 가능)
       specs/<crop_id>.json    사람이 편집하는 스펙 오버라이드(선택)
       glossary.json           한→영 용어집(선택)
+      board_pref.json         보드가 고를 분석 설정(마지막 Analyze·Review — save_board_pref)·마지막 Export 해시(save_board_export)
 
 공개 함수 (예외는 모두 ValueError + 한국어 메시지)
 ---------------------------------------------------
@@ -38,6 +39,8 @@ M2 (명세 M2_SPEC.md §1)
 - merge_manifest / commit_merge              3-way 병합(컬렉션은 id 단위) / 노드 _commit 대체(잠금 + 병합 저장)
 - root_key / register_root / known_roots / resolve_board_root / load_root_registry
                                              보드 URL 용 루트 레지스트리(키 = sha1(정규화 경로)[:12], 임의 경로 금지)
+- save_board_pref / load_board_pref          <root>/board_pref.json — 보드가 고를 분석 설정(마지막 Analyze·Review)을 재시작 너머로(S4)
+- save_board_export / last_export            같은 파일 — 마지막 Export 가 낸 PSD 의 해시 / 그 exports[] 기록('변경 없음' 포함, 없으면 마지막 기록)
 - estimate_usd                               내장 GPT Image 노드 price_badge 표 복제 + Custom 크기 근사
 S1 레이아웃 (명세 STUDIO_S1_SPEC.md §1.3·§3.6·§3.7)
 - load_layout / update_layout / validate_layout  <root>/layout.json 읽기·낙관적 동시성 쓰기(rev 단조 증가, 이력 50)·구조 검사
@@ -1062,7 +1065,7 @@ _MERGE_ID_LISTS = {
     "exports": ("rev", "psd"),
     "calls": ("call_id",),
 }
-_MERGE_KEYED_DICTS = ("picks", "rejects", "rerolls", "approvals")
+_MERGE_KEYED_DICTS = ("picks", "rejects", "rerolls", "approvals", "mask_edits")  # mask_edits = S4 마스크 편집(후보 key 단위)
 _MISSING = object()
 
 
@@ -1205,7 +1208,7 @@ def merge_manifest(base: dict, ours: dict, theirs: dict) -> tuple[dict, list[str
 
     최상위 키마다: ours == base → theirs, theirs == base → ours, 둘이 같게 바뀜 → 그 값.
     둘 다 다르게 바뀌었으면 컬렉션은 항목 단위로 같은 규칙을 적용하고(crops.id, candidates.key, jobs.cell_key,
-    exports.(rev, psd), calls.call_id / picks·rejects·rerolls·approvals 의 키 / analysis 의 (후보, params_hash)),
+    exports.(rev, psd), calls.call_id / picks·rejects·rerolls·approvals·mask_edits 의 키 / analysis 의 (후보, params_hash)),
     그 밖의 키나 같은 항목이 양쪽에서 다르게 바뀐 경우는 ours 를 쓰고 conflicts 에 경로를 적는다
     (예: "source", "candidates/h_abc", "picks/002_1a2b3c/A", "analysis/h_abc/9f8e"). 삭제도 변경으로 본다.
     항목 단위로 합칠 수 없는 컬렉션(id 없음·중복 등)은 통째로 ours + 충돌.
@@ -1355,6 +1358,73 @@ def resolve_board_root(param: Any) -> str | None:
     if e is None or not os.path.isfile(os.path.join(e["root"], MANIFEST_NAME)):
         return None
     return e["root"]
+
+
+BOARD_PREF_NAME = "board_pref.json"
+
+
+def _board_pref_file(root: str) -> dict:
+    """board_pref.json 의 객체 {"analyze": 분석 설정, "export": export 해시}. 없거나 읽지 못하거나 객체가 아니면 {}."""
+    path = os.path.join(root, BOARD_PREF_NAME)
+    if not os.path.isfile(path):
+        return {}
+    try:
+        d = _read_json(path, "보드 설정")
+    except ValueError:
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
+def _save_board_pref_key(root: str, key: str, value: Any, lost: str) -> None:
+    """board_pref.json 의 한 키만 바꿔 원자 저장(같으면 쓰지 않음, 다른 키는 그대로). 쓰지 못하면 경고만(lost = 그 때문에 생기는 일)."""
+    cur = _board_pref_file(root)
+    if cur.get(key) == value:
+        return
+    try:
+        write_json_atomic(os.path.join(root, BOARD_PREF_NAME), dict(cur, **{key: value}))
+    except OSError as e:
+        logger.warning(f"{_TAG} 보드 설정을 저장하지 못함({e}) — {lost}")
+
+
+def save_board_pref(root: str, analyze: dict) -> None:
+    """보드가 고를 분석 설정(board._PREF 에 넣는 마지막 Analyze·Review 설정)을 <root>/board_pref.json 에 남긴다.
+    재시작 뒤 노드 모듈이 등록된 프로젝트마다 되살린다 — 설정을 A→B→A 로 되돌린 프로젝트에서 보드가 마지막 삽입 항목(B)으로 ★ 합성·
+    마스크 편집 기준을 잡지 않게. 매니페스트 밖이라 rev·Project 지문이 그대로다(Analyze 가지 둘을 번갈아 돌려도 하류가 다시 돌지 않음,
+    DP-INT-3)."""
+    _save_board_pref_key(root, "analyze", analyze, "재시작 뒤 보드는 가장 최근 분석 항목을 봄")
+
+
+def load_board_pref(root: str) -> dict | None:
+    """save_board_pref 의 분석 설정. 없거나 읽지 못하거나 모양이 틀리면 None(보드는 가장 최근 분석 항목)."""
+    a = _board_pref_file(root).get("analyze")
+    ok = isinstance(a, dict) and a and all(isinstance(k, str) and isinstance(v, (str, int, float)) for k, v in a.items())
+    return a if ok else None
+
+
+def save_board_export(root: str, export_hash: str) -> None:
+    """Export 가 낸 PSD(새 파일·'변경 없음'으로 다시 낸 기존 파일)의 export 해시를 board_pref.json 에 남긴다(last_export).
+    '변경 없음'은 exports[] 에 아무것도 더하지 않으므로 설정을 켬→끔→켬으로 돌리면 exports[-1] 은 끔 기록인데 최신 PSD 는 켬이다
+    (리뷰 analysis-r3-01). 매니페스트에 쓰면 rev·Project 지문이 바뀌어 가지를 번갈아 돌릴 때마다 하류가 다시 돈다(DP-INT-3)."""
+    _save_board_pref_key(root, "export", export_hash, "보드 편집 창·★ 합성과 Studio 처음 값이 이전 Export 기록의 설정을 따름")
+
+
+def last_export(root: str, m: dict) -> dict | None:
+    """마지막 Export 가 낸 PSD 의 exports[] 기록 = save_board_export 해시와 같은 마지막 항목, 없으면(해시를 남기기 전 프로젝트·매니페스트를
+    다시 만듦) exports[] 의 마지막 항목, 기록이 없으면 None. 보드 ★ 합성·마스크 편집 창의 Compose 설정과 Studio 처음 값이 이것을 따른다."""
+    rows = [e for e in m.get("exports") or [] if isinstance(e, dict)]
+    h = _board_pref_file(root).get("export")
+    hit = [e for e in rows if isinstance(h, str) and e.get("hash") == h]
+    return (hit or rows or [None])[-1]
+
+
+def board_pref_v(root: str) -> str | None:
+    """board_pref.json 내용 지문(sha1 12자), 없거나 읽지 못하면 None. 보드 state 플래그 pref_v(unchanged 응답에도) — 분석·Export 설정이
+    바뀌어도(save_board_pref·save_board_export) 매니페스트 rev 는 그대로라, Studio 는 이것으로 편집 창·★ 합성·stale 을 다시 받는다."""
+    try:
+        with open(os.path.join(root, BOARD_PREF_NAME), "rb") as f:
+            return hashlib.sha1(f.read()).hexdigest()[:12]
+    except OSError:
+        return None
 
 
 # ══════════════════════════════════════════════════════════════════════

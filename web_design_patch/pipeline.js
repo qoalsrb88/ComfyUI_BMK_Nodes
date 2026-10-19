@@ -272,16 +272,35 @@ window.DPPipeline = (() => {
     return `${d.section}.${d.field}: 마지막 ${d.kind === "import" ? "Import" : "Prepare"} ${shown(d.manifest)} · Studio ${shown(d.settings)} — ${DRIFT[d.kind] || d.kind}`;
   }
 
-  function starChecks(S, seams, pending) {
-    // §3.6 Export 전 점검(정보·경고 — 막지 않음) → [{text, key}] key = 누르면 갈 타깃(없으면 null).
-    // pending = 반영 필요 사유(export 템플릿에는 Import 가 없어 미반영은 반영 뒤 Export) — 크롭 줄로 나온 레이아웃 미반영은 다시 적지 않음
+  function starChecks(S, seams, pending, maskLeft = null) {
+    // §3.6 Export 전 점검(정보·경고 — 막지 않음) → [{text, key, mask}] key = 누르면 갈 타깃(없으면 null), mask = 누르면 갈 마스크 모드(K) 자리
+    // (S4 §7 — {key: ★ 후보} | {crop: 그 크롭의 가장 나쁜 이음매}, 없으면 검토로). pending = 반영 필요 사유(export 템플릿에는 Import 가 없어 미반영은
+    // 반영 뒤 Export) — 크롭 줄로 나온 레이아웃 미반영은 다시 적지 않음. maskLeft = 이 창의 적용 안 한 마스크 편집 {key, n, name} | null(board.js —
+    // 다른 창의 세션은 모름). 이음매는 편집 뒤 다시 잰 값(지금 ★ 합성) — seams null = 다시 재는 중(board.js — 옛 bad 수 대신 그 한 줄)
     const out = [];
     let lay = false;
     for (const t of S.targets) {
       const name = `${t.crop_name || t.crop_id} · ${t.tid}`;
       if (!t.pick_keys.length) out.push({ text: `${name} — ★ 없음`, key: t.key });
       else if (t.candidates.some((c) => c.picked && c.analysis === "none")) out.push({ text: `${name} — 분석 없는 ★(반영 필요 — Analyze)`, key: t.key });
+      for (const c of t.candidates) {
+        if (c.picked && c.mask_edit && c.mask_edit.stale) {
+          out.push({ text: `${name} — 마스크 편집 기준 바뀜(c${String(c.n).padStart(2, "0")} — 기준으로 다시 시작 또는 그대로)`, key: t.key, mask: { key: c.key } });
+        }
+      }
     }
+    if (maskLeft) {
+      // 세션 후보가 그 뒤 검토에서 ★ 해제·탈락되면 그 획은 적용할 수 없다(409) — K 대신 그 타깃을 검토로(다시 ★ 하면 K 에서 이어서, K 는 새 ★ 로 — 버릴지 확인)
+      const t = S.targets.find((x) => x.candidates.some((c) => c.key === maskLeft.key));
+      const c = t ? t.candidates.find((x) => x.key === maskLeft.key) : null;
+      if (c && c.picked && !c.rejected) {
+        out.push({ text: `${maskLeft.name} — 적용 안 한 마스크 편집 ${maskLeft.n}획(이 창 — Export 에 들어가지 않음)`, key: null, mask: { key: maskLeft.key } });
+      } else {
+        out.push({ text: `${maskLeft.name} — 적용 안 한 마스크 편집 ${maskLeft.n}획(이 창 — 편집하던 후보가 이제 ★ 가 아니라 적용할 수 없음: 다시 ★ 하거나 K 에서 버리기)`,
+          key: t ? t.key : null });
+      }
+    }
+    if (!seams) out.push({ text: "이음매 재는 중(★ 합성이 바뀜) — 끝나면 이 점검에 새 bad 수", key: null });
     for (const c of S.crops) {
       const t0 = S.targets.find((t) => t.crop_id === c.id);
       const key = t0 ? t0.key : null;
@@ -289,7 +308,7 @@ window.DPPipeline = (() => {
       for (const d of c.dup_picks) out.push({ text: `${name} · ${d.tid} — 중복 ★(같은 이미지는 ${d.same_as} 에만)`, key: `${c.id}/${d.tid}` });
       if (c.stale_picked.length) out.push({ text: `${name} — 옛 크롭 ★ ${c.stale_picked.length}`, key });
       const sm = seams && seams.get(c.id);
-      if (sm && sm.bad) out.push({ text: `${name} — 이음매 bad ${sm.bad}`, key });
+      if (sm && sm.bad) out.push({ text: `${name} — 이음매 bad ${sm.bad}`, key, mask: { crop: c.id } });
       if (LAYOUT_PENDING.includes(c.layout_status)) {
         lay = true;
         out.push({ text: `${name} — ${LAYOUT_REASON}(반영 뒤 Export)`, key });
@@ -838,7 +857,8 @@ window.DPPipeline = (() => {
   // ── 화면 ──
   function create(hosts, opts) {
     // opts: apiUrl·comfyUrl·root·toast, refresh(보드 state 전체 다시), select(crop_id — 뷰어 맞춤), goTarget(타깃 키 — 검토로),
-    // seams() → 크롭별 이음매, drain(), enter()(진행 모드로), link(이 창의 link — 유료 승인 메시지·wave. 없으면 유료 단추 끔)
+    // goMask(mask, 타깃 키)(★ 점검 S4 줄 — 마스크 모드 그 자리), seams() → 크롭별 이음매, drain(), enter()(진행 모드로),
+    // link(이 창의 link — 유료 승인 메시지·wave. 없으면 유료 단추 끔)
     const { list, panel, head } = hosts;
     const L = opts.link || null;
     let store = null;
@@ -876,7 +896,7 @@ window.DPPipeline = (() => {
     let composing = false;
     let pendingPanel = false; // 다시 그리기를 미룸(입력 중이면 패널만, 포인터가 눌린 동안이면 전부) — focusout·pointerup 뒤에 그림
     let held = false; // 포인터가 눌린 동안
-    let seenLoad = null; // GET /pipeline 을 맞춘 매니페스트 rev — 그래프 Prepare·Import 는 pipeline_rev 를 두고 매니페스트(prepare_settings·source)만 바꿈
+    let seenLoad = null; // GET /pipeline 을 맞춘 판(loadKey — 매니페스트 rev·pref_v) — 그래프 Prepare·Import 는 pipeline_rev 를 두고 매니페스트(prepare_settings·source)만 바꿈
     let warned = []; // 마지막 확인 창에 보인 갈라짐 줄(applyWarn)
     let asking = false; // 확인 창을 만드는 동작(once — 반영·매니페스트 값으로 다시)이 도는 중(연타 막음)
     let retried; // 받은 계획이 이미 낡아 한 번 더 부른 state plan_v(planNow — 같은 값에 되풀이하지 않음)
@@ -893,6 +913,7 @@ window.DPPipeline = (() => {
     const asked = {};
     const ASK_KEY = "bmk-dp-ask:" + opts.root;
     let ask = null; // mock 확인 상자 {box, close}(열려 있을 때)
+    let maskLeft = null; // 이 창의 적용 안 한 마스크 편집(board.js 가 K 모드를 나올 때 setMaskLeft — ★ 점검 줄)
 
     function el(tag, cls, txt) {
       const e = document.createElement(tag);
@@ -1997,12 +2018,13 @@ window.DPPipeline = (() => {
 
       // ★ 점검
       s = section("★ 점검");
-      const checks = starChecks(S, opts.seams(), pend);
+      const checks = starChecks(S, opts.seams(), pend, maskLeft);
       if (unsure) checks.push({ text: `반영 상태를 확인하지 못함(${unsure}) — 계획을 다시 계산한 뒤 Export`, key: null });
       if (!checks.length) line(s, "점검 통과 — 모든 타깃에 ★, 미반영 없음", "ok");
       for (const c of checks) {
-        const r = line(s, c.text, "warn" + (c.key ? " link" : ""));
-        if (c.key) r.addEventListener("click", () => opts.goTarget(c.key));
+        const r = line(s, c.text, "warn" + (c.key || c.mask ? " link" : ""));
+        if (c.mask) r.addEventListener("click", () => opts.goMask(c.mask, c.key));
+        else if (c.key) r.addEventListener("click", () => opts.goTarget(c.key));
       }
 
       // Export
@@ -2087,7 +2109,8 @@ window.DPPipeline = (() => {
         else if (!o) line(s, `이 Studio 의 마지막 Export: ${ex.at} 끝 — 결과 판정 없음(노드가 옛 버전 — ComfyUI 재시작)`, "warn");
         else if (o.outcome === "new") {
           const e = P0 && P0.exports.find((x) => x.rev === o.rev);
-          line(s, `새 PSD r${o.rev}: ${o.psd}` + (e ? ` · 레이어 ${e.layers ?? "?"} · 문제 ${e.problems ?? "?"} · ${mb(e.bytes)}` : ""), "ok");
+          line(s, `새 PSD r${o.rev}: ${o.psd}` + (e ? ` · 레이어 ${e.layers ?? "?"} · 그룹 마스크 ${e.mask_groups ?? "?"} (편집 ${e.mask_edits ?? "?"})`
+            + ` · 문제 ${e.problems ?? "?"} · ${mb(e.bytes)}` : ""), "ok");
           btns(s, button("경로 복사", o.psd, () => copy(o.psd)));
         } else if (o.outcome === "unchanged") {
           line(s, `변경 없음 — 기존 파일 r${o.rev}: ${o.psd}`, "dim");
@@ -2096,7 +2119,9 @@ window.DPPipeline = (() => {
         }
       }
       for (const x of (P0 && P0.exports) || []) {
-        const r = line(s, `r${x.rev} · ${x.time} · 문제 ${x.problems ?? "?"} · ${mb(x.bytes)}`, "dim link");
+        // 편집 수는 S4 Export 기록만(그 전 기록 null — 편집이 없던 때라 줄에서 뺌)
+        const k = x.mask_edits ?? null;
+        const r = line(s, `r${x.rev} · ${x.time}` + (k === null ? "" : ` · 편집 ${k}`) + ` · 문제 ${x.problems ?? "?"} · ${mb(x.bytes)}`, "dim link");
         r.title = `${x.psd} — 눌러 경로 복사`;
         r.addEventListener("click", () => copy(x.psd));
       }
@@ -2331,9 +2356,19 @@ window.DPPipeline = (() => {
       PS.load().then(render);
     };
 
+    function setMaskLeft(v) {
+      maskLeft = v;
+      if (on) render();
+    }
+
+    function loadKey(st) {
+      // GET /pipeline 을 다시 받을 판: 매니페스트 rev + board_pref.json 지문(Studio 처음 값이 마지막 Export·분석 설정을 따름 — store.last_export)
+      return `${st.rev}|${st.pref_v}`;
+    }
+
     function stateChanged(st) {
       // 보드 state 를 받을 때마다(2초 폴링 — unchanged 응답이면 같은 S). 다시 그리기는 state·진행 수가 바뀐 때만(누르는 중인 단추를 갈지 않게)
-      const k = [st.rev, st.running, st.drain, st.pipeline_rev, st.plan_v].join("|");
+      const k = [st.rev, st.running, st.drain, st.pipeline_rev, st.plan_v, st.pref_v].join("|");
       const changed = st !== S || k !== seenKey;
       seenKey = k;
       S = st;
@@ -2351,7 +2386,7 @@ window.DPPipeline = (() => {
       if (st.pipeline_rev !== seenPl) {
         const first = seenPl === undefined;
         seenPl = st.pipeline_rev;
-        seenLoad = st.rev;
+        seenLoad = loadKey(st);
         const loaded = PS.load();
         if (first) {
           loaded.then(render);
@@ -2360,10 +2395,11 @@ window.DPPipeline = (() => {
         } else {
           loaded.then(planNow); // 설정이 저장됨(다른 창 포함) — 새 설정(초안 apply·화풍 포함)으로 계획을 다시
         }
-      } else if (st.rev !== seenLoad) {
-        // 매니페스트가 바뀜(그래프 Prepare·Import 는 pipeline.json 을 두고 prepare_settings·source 만 바꿈) — 갈라짐·유도값·Export 목록을 다시
-        // (확인 창 맨 앞 줄·[매니페스트 값으로 다시]·설정 칸이 이 값을 쓴다. 편집기 확인 창도 — 진행 모드가 아니어도)
-        seenLoad = st.rev;
+      } else if (loadKey(st) !== seenLoad) {
+        // 매니페스트가 바뀜(그래프 Prepare·Import 는 pipeline.json 을 두고 prepare_settings·source 만 바꿈) 또는 board_pref.json(pref_v — 분석·Export
+        // 설정, rev 그대로)이 바뀜 — 갈라짐·유도값·Export 목록을 다시(확인 창 맨 앞 줄·[매니페스트 값으로 다시]·설정 칸이 이 값을 쓴다. 편집기 확인 창도 —
+        // 진행 모드가 아니어도)
+        seenLoad = loadKey(st);
         PS.load().then(render);
       } else if (PS.err || (PS.P && !("manifest_rev" in PS.P))) {
         // 앞 GET /pipeline 이 실패함(잠김·재시작 중) 또는 옛 서버(S3a 판 — manifest_rev 없음: 새 JS 를 받은 뒤 ComfyUI 재시작 전) — rev 가 그대로여도
@@ -2421,9 +2457,9 @@ window.DPPipeline = (() => {
     }
 
     // tabChanged = link 상태가 바뀜(board.js 가 부름 — 승인 단추 켜짐·제목), reroll = board.js queueReroll 의 유료 가능 탭 갈래, paidWhy·paidLock·side =
-    // board.js tabWay·R 확인 문구(유료 탭 길을 쓰나·지금은 예약만인가·그 길의 부수 효과 줄)
+    // board.js tabWay·R 확인 문구(유료 탭 길을 쓰나·지금은 예약만인가·그 길의 부수 효과 줄), setMaskLeft = 적용 안 한 마스크 편집(★ 점검 줄)
     return { stateChanged, enter, leave, select, queue: boardQueue, applyWarn, recalc: planNow, openSettings, reroll, tabChanged: render, paidWhy, paidLock,
-      side: SIDE };
+      side: SIDE, setMaskLeft };
   }
 
   return { create, session, link, checkPrompt, freeBody, endOf, adoptState, runText, draftText, approveText, paidReport, starChecks, layoutLines };

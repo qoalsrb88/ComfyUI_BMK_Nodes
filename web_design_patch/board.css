@@ -460,6 +460,33 @@ svg.marks .rpt.auto.approx { fill: none; stroke: #9aa0a6; stroke-dasharray: 3 2;
 svg.marks .rpoly { fill: rgba(255, 201, 64, .12); stroke: var(--star); stroke-width: 1.5px; vector-effect: non-scaling-stroke; }
 svg.marks .rvtx { fill: #fff; stroke: var(--star); stroke-width: 1px; vector-effect: non-scaling-stroke; }
 
+/* ── 마스크 편집 모드 (mask_edit.js) ─────── */
+#mask-list { display: none; }
+body.mask #target-list, body.mask #center { display: none; }
+body.mask #mask-list, body.mask #mask-panel { display: block; }
+body.mask #viewer { display: flex; }
+#btn-mask.on { border-color: var(--accent); color: #fff; background: #22314a; }
+body.mask #top button { flex: none; white-space: nowrap; }
+body.mask .proj { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#mask-list { list-style: none; margin: 0; padding: 4px; }
+#mask-list li { padding: 6px 8px; border-radius: 6px; cursor: pointer; border: 1px solid transparent; }
+#mask-list li:hover { background: var(--panel2); }
+#mask-list li.sel { background: #22314a; border-color: var(--accent); }
+#mask-list li.empty .tname { color: var(--dim); }
+#mask-list li.sub { margin-left: 12px; padding: 3px 8px; display: flex; gap: 6px; align-items: center; }
+#mask-list .chips { margin-top: 3px; }
+#mask-panel { flex: none; width: clamp(360px, 30vw, 520px); overflow-y: auto; padding: 8px 12px; background: var(--panel); }
+#mask-panel .pp-row.sel { background: #22314a; }
+#mask-panel .pp-table td.wrap { white-space: normal; text-align: left; }
+#mask-panel .pp-table .chip { margin-left: 4px; }
+.stage canvas.ov-mask { position: absolute; display: block; }
+.stage.px canvas.ov-mask { image-rendering: pixelated; }
+svg.marks .mwin { fill: none; stroke: rgba(227, 230, 236, .5); stroke-width: 1px; stroke-dasharray: 6 4; vector-effect: non-scaling-stroke; }
+svg.marks .mcrop { fill: none; stroke: var(--accent); stroke-width: 2px; vector-effect: non-scaling-stroke; }
+svg.marks .mseam { stroke: #fff; stroke-opacity: .45; stroke-width: 14px; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+svg.marks .mbrush { fill: none; stroke: #fff; stroke-width: 1.5px; vector-effect: non-scaling-stroke; mix-blend-mode: difference; }
+svg.marks .mbrush.soft { stroke-dasharray: 4 3; }
+
 /* ── 진행 모드 (pipeline.js) ─────────────── */
 #pipe-list { display: none; }
 body.pipe #target-list, body.pipe #center { display: none; }

@@ -5,6 +5,8 @@
 // ed.draw(svg, z) 가 사각형·이름을 그린다(뷰어는 크롭 사각형·이름을 그리지 않음). 화면 이동 = Space 를 누른 채 끌기·가운데 버튼 끌기.
 // 시트 원천 훅(S2, ref_edit.js — 두 번째 인스턴스): setSheet(sh) — 바탕 = 시트 미리보기를 시트 원크기로 늘여 놓음(크롭·이음매·★ 합성 없음),
 // 확대가 미리보기 배율의 1.5배를 넘으면 멈춘 뒤 보이는 영역 + 25% 를 원해상도로 받아(sh.region) 겹친다.
+// 마스크 겹침 훅(S4, mask_edit.js): setMaskLayer({canvas, box}) — 영역 box 에 3층 실시간 합성 캔버스(선택 크롭 겹침 대신), 붓은 setEditor 그대로.
+// showSeam(seg) = 그 이음매로 2:1(N 의 자리·강조도 — 편집기의 선택 구간), curSeam() = N 이 가리키는 이음매, N 은 onPick 에 그 이음매 구간도 넘긴다(편집 대상·선택 구간).
 "use strict";
 
 window.DPViewer = (() => {
@@ -104,12 +106,13 @@ window.DPViewer = (() => {
     let seamSig = null;
     let seamIdx = -1;
     let drag = null;
-    let editor = null; // 레이아웃 편집기(setEditor)
+    let editor = null; // 레이아웃·마스크 편집기(setEditor)
     let edit = null; // 편집기가 잡은 pointerId
     let space = false; // Space 를 누르고 있음(편집 모드 화면 이동)
     let sheet = null; // 시트 원천(setSheet) {size, kind, preview_url, region(rect, max), view}
     let hi = null; // 지금 겹친 원해상도 창 {rect, res(시트 px 당 창 px)}
     let hiTimer = null;
+    let maskCv = null; // 마스크 편집 3층 합성 캔버스(setMaskLayer)
     const loadTok = new WeakMap();
 
     // ── 이미지: 다 받은 뒤 바꿔 끼워 깜빡이지 않게 ──
@@ -267,7 +270,7 @@ window.DPViewer = (() => {
       const crop = sel && sel.crop;
       const t = sel && sel.target;
       const c = sel && sel.cand;
-      if (!crop || !t || !crop.region) {
+      if (maskCv || !crop || !t || !crop.region) {
         ov.hidden = true;
         return;
       }
@@ -360,14 +363,31 @@ window.DPViewer = (() => {
     function nextSeam() {
       const list = (seams && seams.segments) || [];
       if (!list.length) return;
+      const prev = seamIdx;
       seamIdx = (seamIdx + 1) % list.length;
       const s = list[seamIdx];
-      if (opts.onPick) opts.onPick(s.crop_id, s.tid, s.key); // 이음매를 만든 ★ 후보로 — 겹침이 지금 ★ 합성과 같게
+      // 이음매를 만든 ★ 후보로 — 겹침이 지금 ★ 합성과 같게(마스크 모드 = 편집 대상·선택 구간). false = 마스크 편집기가 거절(적용 안 한 획 확인 취소·
+      // 적용 중) — 자리·강조·메시지를 편집 대상 그대로 둠
+      if (opts.onPick && opts.onPick(s.crop_id, s.tid, s.key, s) === false) {
+        seamIdx = prev;
+        return;
+      }
+      showSeam(s);
+    }
+
+    function showSeam(s) {
+      // 이음매 s 로 2:1. 지금 목록의 같은 구간이면 N 의 자리·강조·메시지도 그 구간(다음 N 은 그다음) — 마스크 편집기가 고른 구간(패널 이음매 줄·
+      // 진행 ★ 점검)도 이리로 와서 편집기의 선택 구간과 뷰어 N 위치가 따로 놀지 않게. 목록에 없으면(GET /mask 의 이음매 — 뷰어가 다시 재는 중) 자리 없음
+      const list = (seams && seams.segments) || [];
+      seamIdx = list.findIndex((x) => x.key === s.key && x.side === s.side && x.x0 === s.x0 && x.y0 === s.y0 && x.x1 === s.x1 && x.y1 === s.y1);
       setView(2 / dpr(), (s.x0 + s.x1) / 2, (s.y0 + s.y1) / 2);
       fitMode = "manual";
       drawMarks();
-      setMsg(`이음매 ${seamIdx + 1}/${list.length} · ${s.crop_id} ${s.tid} ${s.side} · ${s.length}px · 색차 p90 ${s.diff_p90}`,
-        s.severity === "bad" ? "err" : "warn");
+      if (seamIdx < 0) describeSeams();
+      else {
+        setMsg(`이음매 ${seamIdx + 1}/${list.length} · ${s.crop_id} ${s.tid} ${s.side} · ${s.length}px · 색차 p90 ${s.diff_p90}`,
+          s.severity === "bad" ? "err" : "warn");
+      }
     }
 
     // ── 시트(S2) ──
@@ -515,6 +535,19 @@ window.DPViewer = (() => {
       if (!space) port.style.cursor = c || "";
     }
 
+    function setMaskLayer(layer) {
+      // S4 마스크 편집: layer = {canvas, box(캔버스 px)} — 그 자리에 늘여 둔다(확대하면 px 단위로 보이게). null = 뗌
+      if (maskCv && (!layer || layer.canvas !== maskCv)) maskCv.remove();
+      maskCv = layer ? layer.canvas : null;
+      if (maskCv) {
+        const [x0, y0, x1, y1] = layer.box;
+        maskCv.className = "ov-mask";
+        Object.assign(maskCv.style, { left: `${x0}px`, top: `${y0}px`, width: `${x1 - x0}px`, height: `${y1 - y0}px` });
+        if (maskCv.parentNode !== stage) stage.insertBefore(maskCv, marks);
+      }
+      drawOverlay();
+    }
+
     // ── 입력 ──
     port.addEventListener("wheel", (e) => {
       if (!canvas) return;
@@ -629,7 +662,8 @@ window.DPViewer = (() => {
     bRects.classList.add("on");
     drawSeamButton();
     return { setState, setSelection, setFlags, flags, setBg, toggleRects, fitCanvas, fitCrop, zoomTo, nextSeam,
-      seams: () => seams, setEditor, setCursor, canvasPoint: toCanvas, scale: () => z, redraw: drawMarks, setSheet };
+      seams: () => seams, setEditor, setCursor, canvasPoint: toCanvas, scale: () => z, redraw: drawMarks, setSheet, setMaskLayer,
+      showSeam, curSeam: () => (seamIdx >= 0 ? seams.segments[seamIdx] : null) };
   }
 
   return { create, svg };

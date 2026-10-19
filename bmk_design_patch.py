@@ -24,6 +24,8 @@ M3 는 Spec Draft(VLM 이 specs/<crop_id>.json 초안을 씀)를 더한다.
                              local_qwen / mock)·JSON 추출·정규화·3-way 스펙 병합·렌더 점검·보고서
 - bmk_design_patch_refs      Studio S2 레퍼런스 연결(refs.json)·이름 규칙·시트 캐시·컷 요청/결과·변환·파일 동작
                              (SAM3 자체는 bmk_sam3_mask_layers.segment — 불러온 모델 한 벌을 그 노드와 같이 씀)
+- bmk_design_patch_mask      Studio S4 마스크 편집: 매니페스트 mask_edits(★ 후보의 최종 마스크 래스터)·기준 지문·PNG 검사·
+                             저장/되돌리기(보드 라우트)·_plan 이 쓰는 적용 규칙
 이 파일은 노드와 노드 경계 변환(텐서 ↔ numpy, MASK 의미 반전), 보드 라우트 등록만 담는다.
 
 동시 쓰기 (M2)
@@ -82,7 +84,8 @@ M3 는 Spec Draft(VLM 이 specs/<crop_id>.json 초안을 씀)를 더한다.
                  'Import 가 반영할 차이'로 건너뛴 크롭이 있으면 지문은 그대로 둔다(문법 오류는 제외).
 - Analyze      : 후보마다 배치(LANCZOS) → 가드 정합(손 마스크가 있으면 정합 제외 영역) → ΔE 자동 마스크 →
                  저주파 톤 보정장 → 게이트. 결과는 analysis[key][params_hash] (같은 설정이면 건너뜀, 후보마다 최근
-                 설정 4개까지 보관하고 밀려난 항목의 derived 파일은 지움).
+                 설정 4개까지 보관하고 밀려난 항목의 derived 파일은 지움). 보드가 고르는 분석 설정도 이 설정으로 바꾼다
+                 (Review 와 같게 — Review 없는 Studio Export 템플릿에서도 보드 ★ 합성·편집 stale 이 Export 와 같은 항목).
 - Compose      : pick 을 z순으로 베이스 위에 합성한 평탄화 미리보기 + 마스크 합집합. 설정(정합 사용, z순서)은
                  핸들 compose 로 하류 Export 에 넘어가 같은 배치로 쓰인다(미리보기 = PSD). 상류 Analyze 설정의 분석을 쓴다.
 - Export PSD   : 00.Base / 02.크롭영역(외곽선, 숨김) / 03.수정 > 크롭 그룹 > 타깃 그룹(그룹 마스크 = 최종 마스크)
@@ -91,6 +94,11 @@ M3 는 Spec Draft(VLM 이 specs/<crop_id>.json 초안을 씀)를 더한다.
                  이미 있는 파일은 덮어쓰지 않는다(<prefix>_r<rev>_2 …). 병합 프리뷰는 레이어와 같은 순서로 직접 합성.
                  정합·z순서는 상류 Compose 설정(핸들), 없으면 기본값. ui bmk_dp_export = 결과 하나
                  {outcome: new(새 파일) | unchanged(같은 내용의 기존 파일) | empty(넣을 후보 없음 — 쓰지 않음), psd, rev}.
+                 new·unchanged 는 그 PSD 의 export 해시를 board_pref.json 에 남긴다(store.save_board_export — unchanged 는 exports[] 에
+                 아무것도 더하지 않으므로 보드 ★ 합성·마스크 편집 창과 Studio 처음 값이 store.last_export 로 최신 PSD 의 설정을 따름).
+                 ★ 의 마스크 편집(S4)은 그룹 마스크로 들어가고 exports[] 기록 mask_groups·mask_edits(그 가운데 편집 수)·보고서
+                 '그룹 마스크 n (편집 k)'·사이드카 export_layers[].mask_src "edit" + mask_edit 로 남는다(실제로 적용한 편집이 있을 때만
+                 해시에 들어감 — 파일이 없어 기준으로 떨어진 기록·★ 아닌 후보의 기록은 빠짐).
 - Run (M2)     : jobs 를 comfy.org GPT Image(/proxy/openai/images/edits)로 실행(async, 출력 노드). 과금 대상 =
                  보드 재굴림(사전 승인) + approve == 현재 pending_hash 일 때 나머지. 승인이 없으면 과금 없이 드라이런
                  보고와 ui bmk_dp_run(해시·개수·예상 USD)만 낸다. 원장(cands/<cell_key>/)에 먼저 쓰고 결과는 도착하는 대로
@@ -114,6 +122,9 @@ M3 는 Spec Draft(VLM 이 specs/<crop_id>.json 초안을 씀)를 더한다.
 - 정합 행렬은 cand → base 정방향(크롭 로컬, 픽셀 중심). SO quad = analysis.quad_from_matrix(M, rect).
 - 손 마스크(hand) = 수확한 PSD 의 레이어/부모 그룹 마스크. auto = Analyze 의 ΔE 자동 마스크(grow·feather 굽기).
   hand_else_auto = 손 마스크가 있으면 손, 없으면 auto. hand 인데 손 마스크가 없으면 마스크 없음(SO 전체 보임).
+- 마스크 편집(S4, 매니페스트 mask_edits — Studio 마스크 모드가 씀)이 있는 ★ 는 mask_source 와 상관없이 그 래스터가 최종 마스크
+  (보고서·사이드카 msrc "edit"). z 순서 넓이는 편집 전(기준) 마스크로, 분석은 편집을 모른다(bmk_design_patch_mask).
+  편집은 기록한 창 그대로 쓰므로 이번 Compose·Export 의 패치 창(정합 사용·재분석)이나 분석 항목이 편집할 때와 다르면 보고서에 경고한다.
 - 크롭과 맞지 않는 부분 패치 SO(quad 와 crop rect IoU < 0.5, 예: 생성형 채우기, 손으로 옮긴 조각)는 분석하지
   않고 수확한 quad·마스크 그대로 쓴다.
 - Run·폴더 후보는 만들 때의 크롭 기준으로 분석한다(_gen_frame): PS 에서 크롭 rect 를 옮긴 뒤에도 자기 quad +
@@ -234,6 +245,7 @@ import folder_paths
 try:
     from . import bmk_design_patch_analysis as an
     from . import bmk_design_patch_board as board
+    from . import bmk_design_patch_mask as dmask
     from . import bmk_design_patch_prompt as dprompt
     from . import bmk_design_patch_psd as dpsd
     from . import bmk_design_patch_refs as refs
@@ -244,6 +256,7 @@ try:
 except ImportError:  # 단독 실행/테스트
     import bmk_design_patch_analysis as an
     import bmk_design_patch_board as board
+    import bmk_design_patch_mask as dmask
     import bmk_design_patch_prompt as dprompt
     import bmk_design_patch_psd as dpsd
     import bmk_design_patch_refs as refs
@@ -778,15 +791,13 @@ def _auto_mask_dict(root: str, entry: dict | None, crop: dict) -> dict | None:
 
 
 def _final_mask(root: str, cand: dict, entry: dict | None, crop: dict, mask_source: str) -> tuple[dict | None, str]:
-    hand = _hand_mask(root, cand)
-    if mask_source == "hand":
-        return hand, ("hand" if hand is not None else "none")
-    if mask_source == "hand_else_auto" and hand is not None:
-        return hand, "hand"
-    auto = _auto_mask_dict(root, entry, crop)
-    if auto is not None:
-        return auto, "auto"
-    return hand, ("hand" if hand is not None else "none")
+    """편집 전(기준) 최종 마스크. 고르는 규칙은 dmask.base_source 하나(S4 편집의 기준 지문과 같게)."""
+    src, _file = dmask.base_source(cand, entry, mask_source)
+    if src == "hand":
+        return _hand_mask(root, cand), "hand"
+    if src == "auto":
+        return _auto_mask_dict(root, entry, crop), "auto"
+    return None, "none"
 
 
 def _eff_quad(cand: dict, entry: dict | None, use_registration: bool) -> list[float]:
@@ -813,9 +824,12 @@ def _target_label(crop: dict, tid: str) -> str:
 
 def _plan(root: str, m: dict, entries: dict, mask_source: str, use_registration: bool, zorder: str, alternates: bool,
           warns: list[str]) -> list[dict]:
-    """[{crop, targets: [{tid, label, slices: [{cand, entry, quad, mask, msrc, area}], alts: [...]}]}] (아래 → 위).
-    entries = _ensure_analysis 가 돌려준 {key: 분석 항목}(분석이 필요 없는 설정이면 {}). 보드에서 탈락시킨 후보(rejects)는
-    pick 이든 대안이든 넣지 않는다. 크롭이나 타깃(tid)이 매니페스트에서 사라진 후보도 경고하고 뺀다(보드와 같게)."""
+    """[{crop, targets: [{tid, label, slices: [{cand, entry, quad, mask, msrc, area, base_mask, base_msrc, mask_edit}], alts: [...]}]}]
+    (아래 → 위). entries = _ensure_analysis 가 돌려준 {key: 분석 항목}(분석이 필요 없는 설정이면 {}). 보드에서 탈락시킨 후보(rejects)는
+    pick 이든 대안이든 넣지 않는다. 크롭이나 타깃(tid)이 매니페스트에서 사라진 후보도 경고하고 뺀다(보드와 같게).
+    ★ 에 마스크 편집(S4 mask_edits)이 있으면 mask = 그 래스터·msrc "edit"·mask_edit = 파일(mask_source 와 상관없이 — D4),
+    base_mask·base_msrc = 편집 전 기준(지금 편집 창·분석 항목 ph 가 기록과 다르면 '마스크 편집 기준 바뀜' 경고). area(z 순서)는 기준 마스크로
+    잰다 — 편집이 다른 패치와의 위아래를 바꾸지 않게(D5)."""
     crops = _crop_map(m)
     rejects = m.get("rejects") or {}
     groups: dict[tuple[str, str], dict] = {}
@@ -832,6 +846,14 @@ def _plan(root: str, m: dict, entries: dict, mask_source: str, use_registration:
             continue
         entry = entries.get(c["key"])
         mask, msrc = _final_mask(root, c, entry, crop, mask_source)
+        base_mask, base_msrc, mask_edit = mask, msrc, None
+        rec = dmask.edit_record(m, c["key"]) if c.get("picked") else None
+        if rec is not None:
+            em, why = dmask.edit_mask(root, rec)
+            if em is None:
+                warns.append(f"{c['key']} ({crop['name']}): {why}")
+            else:
+                mask, msrc, mask_edit = em, "edit", rec["file"]
         if mask_source != "hand" and msrc == "none":
             warns.append(f"{c['key']} ({crop['name']}): 손 마스크도 자동 마스크도 없음"
                          + (" (만들 때의 크롭 소스를 찾지 못함)" if (entry or {}).get("no_source") else "")
@@ -843,10 +865,23 @@ def _plan(root: str, m: dict, entries: dict, mask_source: str, use_registration:
             warns.append(f"{c['key']} ({(c.get('origin_info') or {}).get('layer') or crop['name']}): 원근(Distort) quad 는 "
                          f"지원하지 않아 가장 가까운 평행사변형으로 근사")
         bb = dpsd.quad_bbox(quad)
-        reg_m = _mask_region(mask, *bb)
+        if mask_edit is not None:
+            # 편집은 기록 창 그대로 쓴다(D4) — 이번 계획의 패치 창·분석 항목이 편집할 때와 다르면 알린다. 보드 stale 은 마지막 Export 의
+            # compose 로 보므로 이번 Compose·Export 의 정합 사용이 바뀐 것은 여기서만 보인다. mask_source 는 Export 가 따로 가져 보지 않는다
+            why = []
+            now = dmask.edit_rect(bb, m["canvas"])
+            if now != rec["rect"]:
+                why.append(f"창 {rec['rect']} → {now}")
+            if entry is not None and dmask.base_fp(c, entry, mask_source)["ph"] != rec["base"]["ph"]:
+                why.append("분석 항목")
+            if why:
+                warns.append(f"{c['key']} ({crop['name']}): 마스크 편집 기준 바뀜({' · '.join(why)}) → 편집 그대로 씀"
+                             " — 어긋났으면 마스크 편집 [기준으로 다시 시작]")
+        reg_m = _mask_region(base_mask, *bb)
         area = float(reg_m.sum()) if reg_m is not None else float((bb[2] - bb[0]) * (bb[3] - bb[1]))
         z = c.get("z")
         item = {"cand": c, "entry": entry, "quad": quad, "mask": mask, "msrc": msrc, "area": area,
+                "base_mask": base_mask, "base_msrc": base_msrc, "mask_edit": mask_edit,
                 "z": (0, int(z)) if z is not None else (1, order_idx[c["key"]])}
         g = groups.setdefault((c["crop_id"], c["tid"]), {"slices": [], "alts": []})
         g["slices" if c.get("picked") else "alts"].append(item)
@@ -1609,6 +1644,7 @@ class BMKDesignPatchCandidateIn:
         m["candidates"] = _plain(merged)
         for k in removed:
             m["analysis"].pop(k, None)
+            (m.get("mask_edits") or {}).pop(k, None)  # S4 마스크 편집도(탈락·★ 해제는 기록을 둠 — 사라진 후보만)
         if source == "folder":
             self._autopick(m, {c["key"] for c in new}, warns)
         _sync_picks(m)
@@ -2005,6 +2041,11 @@ class BMKDesignPatchAnalyze:
         pbar = comfy.utils.ProgressBar(max(1, len(cands)))
         entries, done, hit, warns = _ensure_analysis(root, m, cands, prm, pbar=pbar)
         handle, conflicts = _commit(root, m, before, project, analyze=prm)
+        # 보드가 고르는 분석 항목(★ 합성·편집 기준 stale)도 이 설정으로 — Review(prebuild_thumbs)와 같은 일. Review 없는 Studio Export
+        # 템플릿(Analyze → Compose → Export)으로 설정을 바꿔 재분석해도 보드가 옛 항목을 보며 '편집 기준 바뀜'을 놓치지 않게.
+        # board_pref.json 에도 남겨 재시작 뒤 되살린다(_restore_board_prefs)
+        board._PREF[store.root_key(root)] = dict(prm)
+        store.save_board_pref(root, prm)
         crops = _crop_map(m)
         tiles, lines = [], []
         n_reg = n_fail = n_skip = n_nosrc = 0
@@ -2139,13 +2180,16 @@ def _outline(w: int, h: int, px: int = 4, color=(255, 64, 64)) -> np.ndarray:
     return o
 
 
-def _export_hash(m: dict, entries: dict, comp: dict, opts: dict) -> str:
+def _export_hash(m: dict, entries: dict, comp: dict, opts: dict, edits: dict | None = None) -> str:
+    """edits = {★ 후보 key: [편집 file, rect]} — _plan 이 그룹 마스크로 적용한 ★ 의 마스크 편집(S4)."""
     payload = {"v": _EXPORT_VERSION, "opts": opts, "base": m["base"], "canvas": m["canvas"], "work_rect": m["work_rect"],
                "crops": [[c["id"], c["name"], c["rect"], c["targets"]] for c in m["crops"]],
                "cands": m["candidates"], "compose": comp,
                "analysis": {k: e.get("params_hash") for k, e in entries.items()}}
     if m["rejects"]:  # 탈락 후보는 PSD 에서 빠진다(없을 때는 키를 넣지 않아 M1 export 해시 그대로)
         payload["rejects"] = sorted(m["rejects"])
+    if edits:  # 그룹 마스크가 바뀐다(없을 때는 키를 넣지 않아 S3 export 해시 그대로 — '변경 없음' 판정 유지)
+        payload["mask_edits"] = edits
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
 
 
@@ -2242,12 +2286,19 @@ class BMKDesignPatchExportPSD:
             warns += w2
             if done:
                 warns.append(f"상류 Analyze 설정(없으면 기본값)의 분석이 없던 후보 {done}개를 분석함")
-        eh = _export_hash(m, entries, comp, opts)
+        plan = _plan(root, m, entries, mask_source, use_reg, zorder, alternates == "hidden_all", warns)
+        # 해시의 편집 = _plan 이 실제로 그룹 마스크로 쓴 것(★ 만, 파일을 못 읽어 기준으로 떨어진 기록은 빠짐 — 보이는 것 = PSD)
+        edits = {it["cand"]["key"]: [it["mask_edit"], dmask.edit_record(m, it["cand"]["key"])["rect"]]
+                 for _p, _t, it in _slices_in_order(plan) if it["mask_edit"]}
+        eh = _export_hash(m, entries, comp, opts, edits)
         last = next((e for e in reversed(m["exports"]) if e.get("hash") == eh), None)
         if last and os.path.isfile(last["psd"]) and _sidecar_hash(last["psd"]) == eh:  # 다른 export 가 덮어쓴 파일은 재사용 안 함
             _h, conflicts = _commit(root, m, before)
+            store.save_board_export(root, eh)  # exports[] 는 그대로 — 보드·Studio 가 이 PSD 의 설정을 따르게(store.last_export)
             logger.info("%s Export: 바뀐 것 없음 → 기존 파일 %s", _TAG, last["psd"])
-            return {"ui": {"text": [f"변경 없음: {last['psd']}"] + conflicts,
+            for wmsg in warns:  # 편집 파일을 못 읽어 기준으로 떨어진 경고 등 — 기존 PSD 를 돌려줄 때도 알린다
+                logger.warning("%s Export: %s", _TAG, wmsg)
+            return {"ui": {"text": [f"변경 없음: {last['psd']}"] + warns + conflicts,
                            _EXPORT_UI: [{"outcome": "unchanged", "psd": last["psd"], "rev": last["rev"]}]},
                     "result": (last["psd"],)}
 
@@ -2259,7 +2310,6 @@ class BMKDesignPatchExportPSD:
             k += 1  # 같은 이름(다른 base_dir·다시 만든·복사한) 프로젝트의 파일이나 PS 에서 고친 파일을 덮어쓰지 않는다
             stem = f"{prefix}_r{rev}_{k}"
         psd_path = os.path.join(out_dir, stem + ".psd")
-        plan = _plan(root, m, entries, mask_source, use_reg, zorder, alternates == "hidden_all", warns)
         W, H = m["canvas"]
         wr = dpsd.PSDWriter((W, H))
         base = _load_rgb(root, m["base"])
@@ -2282,7 +2332,7 @@ class BMKDesignPatchExportPSD:
         pbar = comfy.utils.ProgressBar(max(1, total) + 1)
         reg_order = {c["key"]: i for i, c in enumerate(m["candidates"])}  # c<번호> = 타깃 안 등록 순서
         written: list[dict] = []
-        n_toned = n_groups = 0
+        n_toned = n_groups = n_edit = 0
 
         def add_cand(parent, crop, it, num, visible):
             nonlocal n_toned
@@ -2307,6 +2357,8 @@ class BMKDesignPatchExportPSD:
                             "src_size": [int(pix.shape[1]), int(pix.shape[0])], "visible": visible,
                             "toned": bool(is_toned), "mask_src": it["msrc"], "mask_rect": None if mk is None else
                             [mk["left"], mk["top"], mk["left"] + mk["arr"].shape[1], mk["top"] + mk["arr"].shape[0]]})
+            if it["mask_edit"]:
+                written[-1]["mask_edit"] = it["mask_edit"]
             pbar.update(1)
 
         for p in plan:
@@ -2319,6 +2371,7 @@ class BMKDesignPatchExportPSD:
                     first = t["slices"][0] if t["slices"] else None
                     tg = wr.add_group(cg, t["label"], mask=None if first is None else first["mask"])
                     n_groups += first is not None and first["mask"] is not None
+                    n_edit += first is not None and first["msrc"] == "edit"
                     for it in t["slices"]:
                         add_cand(tg, crop, it, num[it["cand"]["key"]], True)
                     for it in t["alts"]:
@@ -2328,6 +2381,7 @@ class BMKDesignPatchExportPSD:
                     for k, it in enumerate(t["slices"], 1):
                         sg = wr.add_group(tg, f"{t['label']} · slice {k}", mask=it["mask"])
                         n_groups += it["mask"] is not None
+                        n_edit += it["msrc"] == "edit"
                         add_cand(sg, crop, it, num[it["cand"]["key"]], True)
                         if k == 1:
                             for alt in t["alts"]:
@@ -2339,13 +2393,15 @@ class BMKDesignPatchExportPSD:
         snap = os.path.join(out_dir, stem + ".json")
         rec = {"rev": rev, "psd": psd_path.replace("\\", "/"), "time": time.strftime("%Y-%m-%d %H:%M:%S"), "hash": eh,
                "options": opts, "compose": comp, "bytes": res["bytes"], "smart_objects": res["smart_objects"],
-               "layers": len(written), "problems": len(res["problems"]), "mask": mask_png.replace("\\", "/")}
+               "layers": len(written), "problems": len(res["problems"]), "mask": mask_png.replace("\\", "/"),
+               "mask_groups": n_groups, "mask_edits": n_edit}
         m["exports"].append(_plain(rec))
         store.write_json_atomic(snap, dict(m, export_layers=written))
         _h, conflicts = _commit(root, m, before)
+        store.save_board_export(root, eh)
         warns += conflicts
         head = (f"Export PSD: {psd_path} | 레이어 {len(written)} (pick {sum(w['visible'] for w in written)}) · "
-                f"그룹 마스크 {n_groups} · 톤 {n_toned} · {layer_mode} · {res['bytes'] / 1e6:.1f}MB · 검사 문제 {len(res['problems'])} "
+                f"그룹 마스크 {n_groups} (편집 {n_edit}) · 톤 {n_toned} · {layer_mode} · {res['bytes'] / 1e6:.1f}MB · 검사 문제 {len(res['problems'])} "
                 f"| 정합 {'사용' if use_reg else '안 씀'} · z {zorder} | rev {m['rev']} | {time.time() - t0:.1f}s")
         for p_ in res["problems"]:
             warns.append(f"검사: {p_}")
@@ -2606,6 +2662,7 @@ class BMKDesignPatchReview:
         key = store.register_root(root)
         prm = project.get("analyze") or dict(_ANALYZE_DEFAULTS)  # Compose 와 같은 분석 설정의 항목을 보드가 보여 준다
         thumbs = await asyncio.to_thread(board.prebuild_thumbs, root, prm)
+        store.save_board_pref(root, prm)  # prebuild_thumbs 가 넣은 보드 분석 설정을 재시작 너머로(Analyze 와 같게)
         st = await asyncio.to_thread(board.build_state, root)
         url = board.board_url(key)
         c = st["counts"]
@@ -3263,7 +3320,18 @@ def _register_board_routes() -> None:
         board.register_routes(srv.routes, base_dir=folder_paths.get_input_directory())
 
 
+def _restore_board_prefs() -> None:
+    """재시작 뒤 등록된 프로젝트마다 보드 분석 설정(board._PREF)을 board_pref.json(마지막 Analyze·Review)에서 되살린다 — 비어 있으면
+    보드는 후보의 마지막 삽입 항목을 보는데, 설정을 A→B→A 로 되돌린 프로젝트에서는 그것이 B 라 Analyze·Review 전에 연 Studio 가
+    '마스크 편집 기준 바뀜'을 잘못 띄우고 편집을 B 기준으로 기록했다(리뷰 analysis-r2-01). 이미 들어 있으면 두지 않는다."""
+    for r in store.known_roots():
+        prm = store.load_board_pref(r["root"])
+        if prm is not None:
+            board._PREF.setdefault(r["key"], prm)
+
+
 _register_board_routes()
+_restore_board_prefs()
 board.set_sam3_ckpts(_sam3_ckpt_names())  # 보드는 folder_paths 를 import 하지 않는다(B0) — 재시작 전 새로 넣은 파일은 안 보임
 board.set_qwen_dir(os.path.join(folder_paths.models_dir, *_QWEN_DIR))  # Studio Draft 계획의 local_qwen 키(Spec Draft 와 같은 경로)
 

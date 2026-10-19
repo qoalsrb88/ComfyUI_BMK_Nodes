@@ -4,7 +4,8 @@
 // (pipeline.js — 재굴림은 reroll stage), 옛 확장의 opener 탭이면 Review 노드 부분 실행.
 // 캔버스 뷰어는 viewer.js(DPViewer) — 이 파일이 선택·키 입력을 넘긴다. 레이아웃 편집 모드(E)는 layout_edit.js(DPLayoutEdit),
 // 레퍼런스 모드(T)는 ref_edit.js(DPRefEdit — 시트 뷰어 = DPViewer 두 번째 인스턴스), 진행 모드(G)는 pipeline.js(DPPipeline — 실행 설정·
-// 무료 반영·계획/비용·채택·★ 점검·Export, 머리줄 한 줄·ComfyUI 탭 hello 표시). 세 모드와 검토는 서로 배타.
+// 무료 반영·계획/비용·채택·★ 점검·Export, 머리줄 한 줄·ComfyUI 탭 hello 표시), 마스크 모드(K)는 mask_edit.js(DPMaskEdit — ★ 후보의 최종 마스크
+// 손질·이음매 페이드·다른 후보 표, 세션은 모드를 나가도 이 창에 남음). 네 모드와 검토는 서로 배타.
 // 편집기의 "반영(큐)"는 무료 반영(apply 템플릿 — 탭 불필요)이고, 옛 서버(재시작 전)면 ComfyUI 탭의 Review 부분 실행으로 대신한다.
 "use strict";
 
@@ -26,6 +27,8 @@
   const REFS_OFF = new Set([...EDIT_OFF, "KeyE", "KeyB", "KeyO", "KeyN"]);
   // 진행 모드에서 끄는 키: 검토 키 + 편집(E)·레퍼런스(T). 뷰어 키(B·O·N·0·F·1·2)는 그대로(가운데 = 캔버스 뷰어)
   const PIPE_OFF = new Set([...EDIT_OFF, "KeyE", "KeyT"]);
+  // 마스크 모드에서 끄는 키: 검토 키 + E·T·G(G 로 바로 가지 않게 — 적용 안 한 획 확인은 K·Esc·머리줄 단추가 함). X·Q·S·M 은 mask_edit.js 가 먼저 받는다
+  const MASK_OFF = new Set([...EDIT_OFF, "KeyE", "KeyT", "KeyG"]);
   const LAYOUT_STATUS = { changed: "레이아웃 바뀜(미반영)", removed: "레이아웃에서 지움(미반영)" }; // state 크롭의 layout_status
   // ComfyUI 탭 hello(DPPipeline.link) 상태 → 배지. 키 = tabKey: 유료 승인을 받는 탭(확장 판 3 이상·submit ok)은 길마다 ok(opener)·channel —
   // 승인·재굴림·ComfyUI 큐가 그 탭으로(계약 §5). 판 2(S3a 확장)는 s3a, 판 3 인데 제출을 못 함은 nosubmit — 유료 승인 끔(R·ComfyUI 큐는 opener 만).
@@ -67,6 +70,8 @@
   let pipe = null; // DPPipeline 패널 — 옛 서버는 pipeline.js 를 주지 않아 null
   let pipeOn = false;
   let tabLink = null; // DPPipeline.link — ComfyUI 탭 hello 상태
+  let maskEd = null; // DPMaskEdit — 옛 서버는 mask_edit.js 를 주지 않아 null
+  let maskOn = false;
   let seen = null; // Set — 본 후보 key(syncSeen 이 첫 state 에서 채움)
 
   const $ = (id) => document.getElementById(id);
@@ -198,6 +203,8 @@
         // applyFree·진행 패널이 옛 서버로 판정(탭 반영 대체)
         if (!("pipeline_rev" in d) && "pipeline_rev" in S) pollAgain = true;
         if ("plan_v" in d && d.plan_v !== S.plan_v) pollAgain = true;
+        // S4: 분석·Export 설정(board_pref.json)이 바뀜 — 매니페스트 rev 는 그대로라 편집 창·★ 합성·stale 을 새 S 로
+        if ("pref_v" in d && d.pref_v !== S.pref_v) pollAgain = true;
         renderHeader();
       } else if (!d.unchanged) {
         S = d;
@@ -324,9 +331,9 @@
   }
 
   function markSeen(key) {
-    // 검토 화면(후보 큰 화면·그리드)이 보일 때만 — 진행(G)·편집(E)·레퍼런스(T)의 크롭 선택은 후보를 보여 주지 않는다(모드를 나올 때 그 후보를 표시).
+    // 검토 화면(후보 큰 화면·그리드)이 보일 때만 — 진행(G)·편집(E)·레퍼런스(T)·마스크(K)의 크롭 선택은 후보를 보여 주지 않는다(모드를 나올 때 그 후보를 표시).
     // → 새로 본 것으로 표시했는가
-    if (!seen || !key || seen.has(key) || editing || refsOn || pipeOn) return false;
+    if (!seen || !key || seen.has(key) || editing || refsOn || pipeOn || maskOn) return false;
     seen.add(key);
     saveSeen();
     return true;
@@ -366,9 +373,11 @@
     syncViewer(false);
   }
 
-  function pickCrop(cropId, tid, candKey) {
-    // 캔버스에서 크롭을 누름(tid 없음): 같은 크롭이면 다음 타깃, 아니면 첫 타깃. 이음매 이동은 tid·그 ★ 후보 키를 준다.
+  function pickCrop(cropId, tid, candKey, seam) {
+    // 캔버스에서 크롭을 누름(tid 없음): 같은 크롭이면 다음 타깃, 아니면 첫 타깃. 이음매 이동은 tid·그 ★ 후보 키·구간을 준다 —
+    // 마스크 모드면 그 ★ 후보가 편집 대상(적용 안 한 획 확인)·그 구간이 선택 구간 → 편집기가 거절(확인 취소·적용 중)하면 false(뷰어 N 이 제자리)
     if (!S) return;
+    if (maskOn) return candKey ? maskEd.go({ key: candKey, seam: seam || null }) : undefined;
     const ts = S.targets.filter((t) => t.crop_id === cropId);
     if (!ts.length) return;
     let t = tid ? ts.find((x) => x.tid === tid) : null;
@@ -621,6 +630,111 @@
       : `${why} — 무료 반영을 쓸 수 없어 ComfyUI 탭에서 큐에 넣어야 반영됩니다`, "warn");
   }
 
+  function maskReady() {
+    // 서버가 S4 이전 버전이면 state 크롭 요약에 mask_edits 가 없다(마스크 라우트도 없음)
+    return !!maskEd && !!S && S.crops.some((c) => "mask_edits" in c);
+  }
+
+  function maskWhy() {
+    // notReady 와 같은 갈래 — S4 표지는 state 최상위가 아니라 크롭 요약에 있다(크롭이 없으면 서버 버전을 알 수 없음 — Import 가 먼저)
+    if (S && !S.crops.length) return "Import PSD 로 크롭이 생기고 ★ 를 고른 뒤 마스크 편집(K)을 쓸 수 있습니다";
+    return S && S.crops.some((c) => "mask_edits" in c) && !maskEd
+      ? "Studio 창을 새로고침해야 마스크 편집(K)을 쓸 수 있습니다(이 창이 ComfyUI 재시작 전에 열려 모듈이 없음)"
+      : "ComfyUI 를 재시작해야 마스크 편집(K)을 쓸 수 있습니다(서버가 옛 버전)";
+  }
+
+  function setMask(on, to) {
+    // 마스크 모드(K). to = {key, seam} — 편집 대상 ★ 후보·선택 이음매(없으면 이 창의 적용 안 한 세션 후보가 아직 ★ 면 그것, 아니면 검토에서 고른 타깃의 ★ —
+    // 고른 후보가 ★·slice 면 그것. 세션 후보가 검토에서 ★ 해제·탈락되면 그 획은 적용할 수 없어(409) 새 ★ 로 — 버릴지는 편집기 확인 창. 그 타깃에 ★ 가
+    // 남지 않았으면 세션으로 — 패널이 '이제 ★ 가 아님' 줄과 [버리기]를 보임: 진행 ★ 점검 줄의 'K 에서 버리기'). 선택 이음매가 없으면 검토의 N 이 가리키는
+    // 이음매(그 ★ 의 것이면). 나갈 때 적용 안 한 획이 있으면 확인(세션은 이 창에 남음 — 진행(G) ★ 점검 줄). → 바꿨는가
+    if (!on) {
+      if (!maskEd.leave()) return false;
+      maskOn = false;
+      document.body.classList.remove("mask");
+      $("mask-panel").hidden = true; // onKeyDown 의 마스크 모드 판정(진행 패널과 같은 꼴)
+      $("btn-mask").classList.remove("on");
+      if (pipe) pipe.setMaskLeft(maskEd.pending());
+      renderAll(false);
+      setTimeout(seeCurrent);
+      return true;
+    }
+    if (!maskReady()) {
+      toast(maskWhy(), "warn");
+      return false;
+    }
+    const left = maskEd.pending();
+    const t = curTarget();
+    const c = curCand();
+    const star = (k) => S.targets.some((x) => x.candidates.some((y) => y.key === k && y.picked && !y.rejected));
+    const key = to ? to.key : left && star(left.key) ? left.key : c && c.picked ? c.key : t && t.pick_keys.length ? t.pick_keys[0]
+      : left && t && t.candidates.some((x) => x.key === left.key) ? left.key : null;
+    if (!key) {
+      toast("★ 를 먼저 고르세요 — 마스크 편집(K)은 지금 ★ 후보의 최종 마스크(Export 그룹 마스크)를 손질합니다", "warn");
+      return false;
+    }
+    if (editing) setEditing(false);
+    if (refsOn) setRefs(false);
+    if (pipeOn) setPipe(false);
+    setViewFlags({ slider: false, raw: false }); // 검토의 S·M 보기(뷰어 머리줄 안내) — K 에서는 같은 글자가 편집기 보기라 검토 쪽은 끈다(검토 Esc 와 같음)
+    maskOn = true;
+    document.body.classList.add("mask");
+    $("mask-panel").hidden = false;
+    $("btn-mask").classList.add("on");
+    const vs = !to && viewer ? viewer.curSeam() : null;
+    maskEd.enter(S, { key, seam: to ? to.seam : vs && vs.key === key ? vs : null });
+    return true;
+  }
+
+  function leaveMask() {
+    // 머리줄 편집·레퍼런스·진행 단추·진행 설정 열기 앞 — 마스크 모드면 먼저 나감(적용 안 한 획 확인). → 계속해도 되는가
+    return !maskOn || setMask(false);
+  }
+
+  function onUnload(e) {
+    // 새로고침·닫기·다른 주소 — 적용 안 한 마스크 획은 이 창에만 있다(모드를 나가도 남음): 브라우저 확인 창
+    if (maskEd && maskEd.pending()) e.preventDefault();
+  }
+
+  function maskSelect(key, follow) {
+    // 마스크 편집 대상 = 보드 선택(뷰어 선택 크롭·F·1·2 의 초점). K 모드는 검토 화면을 보이지 않아 '새' 표시는 나올 때(seeCurrent).
+    // 타깃이 바뀌면 selectTarget 처럼 레퍼런스 번호·R 연타 대기를 처음으로(K 를 나온 검토 화면이 앞 타깃의 번호를 쓰지 않게)
+    const t = S ? S.targets.find((x) => x.candidates.some((c) => c.key === key)) : null;
+    if (!t) return;
+    if (t.key !== tKey) {
+      refIdx = 0;
+      rerollArm = null;
+    }
+    tKey = t.key;
+    cKey = key;
+    syncViewer(follow);
+  }
+
+  function maskPick(t, key) {
+    // 마스크 편집기 대안 표 [이 후보를 ★] = 검토의 Space(그 타깃의 ★ 를 이 후보 하나로 — 표가 잰 합성과 같은 교체)
+    return write("pick", { crop_id: t.crop_id, tid: t.tid, key, mode: "set" }, `★ 바꿈 — ${t.crop_name || t.crop_id} · ${t.tid}`);
+  }
+
+  function goMask(m, tkey) {
+    // 진행(G) ★ 점검의 S4 줄 → 마스크 모드: m.key = 그 ★ 후보, m.crop = 그 크롭의 가장 나쁜 이음매(뷰어 목록은 bad 먼저·p90 큰 순)를 만든 ★ 후보와
+    // 그 구간 — 이음매를 다시 받는 중(적용 직후 ≈ 2.5초)이면 그 크롭 첫 ★(구간 없이). 옛 서버·창이면 그 타깃을 검토에서
+    const segs = (viewer && viewer.seams() && viewer.seams().segments) || [];
+    const sg = m.crop ? segs.find((s) => s.crop_id === m.crop) || null : null;
+    const t0 = m.crop && !sg && S ? S.targets.find((t) => t.crop_id === m.crop && t.pick_keys.length) : null;
+    const key = m.key || (sg && sg.key) || (t0 && t0.pick_keys[0]);
+    if (!maskReady() || !key) {
+      goTarget(tkey);
+      return;
+    }
+    setMask(true, { key, seam: sg });
+  }
+
+  function renderMaskButton() {
+    const b = $("btn-mask");
+    b.disabled = !maskReady();
+    b.title = maskReady() ? "마스크 (K) — ★ 후보의 최종 마스크(Export 그룹 마스크) 손질·이음매 페이드·다른 후보 비교(무료)" : maskWhy();
+  }
+
   function goTarget(key) {
     // 진행 패널 ★ 점검의 줄 → 그 타깃을 검토 모드에서
     if (!S || !S.targets.some((t) => t.key === key)) return;
@@ -856,6 +970,9 @@
     if (c.calls) ch.append(chip(credits(c.credits, c.credits_unknown), "b-cost"));
     if (c.dup_picks.length) ch.append(chip(`중복 ★ ${c.dup_picks.length}`, "b-bad"));
     if (c.stale_picked.length) ch.append(chip("옛 크롭 ★", "b-bad"));
+    // S4 마스크 편집: 이 크롭의 지금 ★ 가운데 편집이 있는 수·그 가운데 기준이 바뀐 것(state 크롭 요약 — 옛 서버엔 키 없음)
+    if (c.mask_edits) ch.append(chip(`편집 ${c.mask_edits}`, "b-reg"));
+    if (c.mask_stale) ch.append(chip("편집 기준 바뀜", "b-bad"));
     const s = seamsByCrop.get(c.id);
     if (s) ch.append(chip(`이음매 ${s.n}`, s.bad ? "b-bad" : "b-wait"));
     if (c.warnings.length) {
@@ -1071,6 +1188,7 @@
     if (oldCell(c)) b.append(el("span", "badge b-wait", "옛 셀"));
     if (c.reframed) b.append(el("span", "badge b-reg", "reframed"));
     if (c.rejected) b.append(el("span", "badge b-rej", "탈락"));
+    if (c.mask_edit) b.append(el("span", "badge " + (c.mask_edit.stale ? "b-bad" : "b-reg"), c.mask_edit.stale ? "편집 기준 바뀜" : "편집"));
     return b;
   }
 
@@ -1128,16 +1246,20 @@
       seamsByCrop.set(s.crop_id, v);
     }
     renderTargets();
+    if (maskOn) maskEd.seamsChanged();
+    if (pipeOn) pipe.tabChanged(); // ★ 점검의 '이음매 bad n' — 진행 패널은 state 가 바뀐 때만 다시 그려 새 이음매(적용·반영 뒤 ≈ 2.5초)를 놓친다
   }
 
   function renderAll(follow) {
     renderHeader();
+    renderMaskButton();
     renderTargets();
     renderCompare();
     renderDetail();
     renderGrid();
     if (viewer) viewer.setState(S);
     syncViewer(follow);
+    if (maskOn) maskEd.stateChanged(S); // 새 state 만(편집 대상 정보를 다시 받음) — 매니페스트 rev 가 그대로인 폴링은 바뀔 것이 없다
     setConn("");
   }
 
@@ -1155,11 +1277,16 @@
     if (e.target instanceof Element && e.target.closest('[data-keys="board"]') && !e.ctrlKey && !e.metaKey && e.key !== "Tab") e.preventDefault();
     const helpOpen = !$("help").hidden;
     const pipeShown = !$("pipe-panel").hidden; // 진행 모드(G) — setPipe 가 패널의 hidden 을 함께 바꾼다
+    const maskShown = !$("mask-panel").hidden; // 마스크 모드(K) — setMask 가 패널의 hidden 을 함께 바꾼다
     if (editing && !helpOpen && editor.onKey(e)) {
       e.preventDefault();
       return;
     }
     if (refsOn && !helpOpen && refEd.onKey(e)) { // Esc·Enter·[ ]·H·Backspace·0·1·2·F(시트 뷰어)
+      e.preventDefault();
+      return;
+    }
+    if (maskShown && !helpOpen && maskEd.onKey(e)) { // Esc·Enter·X·[ ]·Q·S·M·Ctrl+Z/Y
       e.preventDefault();
       return;
     }
@@ -1189,6 +1316,10 @@
       e.preventDefault();
       return;
     }
+    if (maskShown && MASK_OFF.has(e.code)) {
+      e.preventDefault();
+      return;
+    }
     switch (e.code) {
       case "KeyE":
         if (!e.repeat) setEditing(!editing);
@@ -1198,6 +1329,9 @@
         break;
       case "KeyG":
         if (!e.repeat) setPipe(!pipeShown);
+        break;
+      case "KeyK":
+        if (!e.repeat) setMask(!maskShown);
         break;
       case "ArrowUp": moveTarget(-1); break;
       case "ArrowDown": moveTarget(1); break;
@@ -1273,6 +1407,7 @@
   }
 
   function onKeyUp(e) {
+    if (maskOn) maskEd.onKeyUp(e);
     if (e.code === "KeyQ" && qHeld) {
       qHeld = false;
       renderCompare();
@@ -1294,9 +1429,10 @@
     on("btn-drain", drain);
     on("btn-viewer", () => toggleViewer());
     on("btn-help", () => help());
-    on("btn-edit", () => setEditing(!editing));
-    on("btn-refs", () => setRefs(!refsOn));
-    on("btn-pipe", () => setPipe(!pipeOn));
+    on("btn-edit", () => leaveMask() && setEditing(!editing));
+    on("btn-refs", () => leaveMask() && setRefs(!refsOn));
+    on("btn-pipe", () => leaveMask() && setPipe(!pipeOn));
+    on("btn-mask", () => setMask(!maskOn));
     $("ref-frame").addEventListener("click", () => {
       const t = curTarget();
       if (t && t.refs.length > 1) {
@@ -1341,21 +1477,32 @@
         pipe.tabChanged();
       });
       pipe = window.DPPipeline.create({ list: $("pipe-list"), panel: $("pipe-panel"), head: $("pipe-head") }, {
-        apiUrl, comfyUrl, root: ROOT, toast, drain, goTarget, link: tabLink,
+        apiUrl, comfyUrl, root: ROOT, toast, drain, goTarget, goMask, link: tabLink,
         refresh: () => refresh(true),
         select: (id) => {
           const t = S ? S.targets.find((x) => x.crop_id === id) : null;
           if (t) selectTarget(t.key);
         },
-        seams: () => seamsByCrop,
-        enter: () => setPipe(true),
+        seams: () => (S && S.canvas && !viewer.seams() ? null : seamsByCrop), // 이음매를 다시 재는 중이면 null(★ 점검이 옛 bad 수 대신 '재는 중')
+        enter: () => leaveMask() && setPipe(true),
         layoutWrote: (from, to) => editor && editor.ownWrite(from, to), // 반영 칸 [되돌리기] — 이 창 편집기의 Ctrl+Z 기록을 남김
+      });
+    }
+    if (window.DPMaskEdit) {
+      maskEd = window.DPMaskEdit.create({ list: $("mask-list"), panel: $("mask-panel") }, {
+        apiUrl, root: ROOT, viewer, toast, ranText,
+        exit: () => setMask(false),
+        refresh: () => refresh(true),
+        seams: () => viewer.seams(),
+        select: maskSelect,
+        pick: maskPick,
       });
     }
     wireButtons();
     document.addEventListener("keydown", onKeyDown);
     document.addEventListener("keyup", onKeyUp);
     window.addEventListener("storage", onSeenStorage);
+    window.addEventListener("beforeunload", onUnload);
     window.addEventListener("blur", () => {
       if (qHeld) {
         qHeld = false;
