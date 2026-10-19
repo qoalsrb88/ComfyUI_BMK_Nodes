@@ -3367,6 +3367,24 @@ def _strip_adopted(spec: Any) -> dict:
 _UNWRITTEN_WHY = "원장 초안이 아직 스펙에 안 쓰임 — 그래프 Spec Draft 를 한 번 큐(0 호출)"
 
 
+def _drop_stale(spec: dict, crop: dict, nxt: dict) -> list[str]:
+    """채택이 새로 더하는 tid(다음 반영 타깃 중 출처 adopt 이고 지금 크롭에 없음)의 사람 항목(스펙 targets — 그 tid 의
+    _draft.written 기록 없음)을 spec 에서 빼고 → 버린 항목 ["B(mode·refs)", …]. 초안 때 paste_layer_name 은 스펙 항목이 있는 글자를
+    제안에 주지 않으므로 그런 항목은 초안 뒤 생긴 것(손으로 씀·해제한 옛 타깃의 사람 값)이고, 두면 다음 반영에서 그 mode·refs 가 새
+    제안 파츠에 붙는다. 노드 Spec Draft 는 다시 정규화해 다른 글자를 주므로(새 파츠에 옛 값 없음) 그 결과에 맞춘다. 레이아웃·PSD 문구가
+    이기는 tid 는 출처가 adopt 가 아니라 남고, written 기록이 있는 tid(초안 때 타깃 — 제안이 받지 않는 글자)는 ⑦ crop' 점검에 맡긴다."""
+    merged, _w = store.merge_adopted(nxt, store.parse_crop_layer_name(nxt["layer_name"]), spec)
+    d = spec.get("_draft") if isinstance(spec.get("_draft"), dict) else {}
+    written = d.get("written") if isinstance(d.get("written"), dict) else {}
+    new = {t["tid"] for t in merged["targets"] if t.get("origin") == "adopt"} - {t["tid"] for t in crop["targets"]} - set(written)
+    ts = spec.get("targets")
+    if not new or not isinstance(ts, list):
+        return []
+    gone = [t for t in ts if isinstance(t, dict) and str(t.get("id")) in new]
+    spec["targets"] = [t for t in ts if not any(t is g for g in gone)]
+    return [f"{t.get('id')}({'·'.join(str(k) for k in t if k != 'id')})" if len(t) > 1 else str(t.get("id")) for t in gone]
+
+
 def _targets_error(spec: Any) -> str | None:
     """채택 경계의 스펙 형식 검사(깨진 JSON 과 같이 다룸): targets 가 있는데 목록이 아니면 문구 — 병합·렌더 점검·Prepare 가 목록으로
     순회한다(사람이 손으로 고친 파일)."""
@@ -3547,7 +3565,9 @@ def adopt_write(root: str, m: dict, crop_id: str, op: str, text: str | None = No
     - op="adopt": 노드 adopt 와 같은 merge_crop(fill, 초안 없음, adopt=True — 원장 초안은 병합하지 않음). write_spec 잠금 안에서
       ① seen·crop_sig ② adopt_check(지금 파일, family) — 이유가 있으면 AdoptRefused(reason) ③ kind(_merge_path fill) ≠ add 면
       AdoptRefused(reason — 해제 뒤 채택이 _draft.deleted 기록만 쓰지 않게) ④ value ≠ 다시 계산한 값이면 SpecConflict ⑤ 병합
-      ⑥ 내용 보호: _layer_targets 자리·_draft.adopted·pending/deleted 기록 밖이 바뀌거나 render_changed 면 AdoptRefused(rows)
+      ⑥ 내용 보호: _layer_targets 자리·_draft.adopted·pending/deleted 기록 밖이 바뀌거나 render_changed 면 AdoptRefused(rows — 문구는
+      원인별: 병합 행 = apply·화풍, render_fallback 뿐 = 렌더 안 되는 노드 값, 행 없음 = _draft 기록 정리) ⑥′ 채택이 새로 더하는 tid 의
+      스펙 항목은 지움(_drop_stale — 응답 warnings 맨 앞 '버린 항목' 줄)
       ⑦ 렌더 점검(지금 크롭 + 수정과 같은 반영 뒤 크롭 crop') 실패면 AdoptRefused. ②③ 은 GET /draft 와 같은 adopt_state(표식 없는
       도착 초안 _arrived·⑥ 을 늘 거절할 노드 값 양보 _yield_paths 도 거절 이유). 원장 초안이 아직 스펙에 안 쓰인 크롭
       (unwritten_specs·도착분)은 AdoptRefused — 수정·해제는 허용하고 영향에 그 초안을 반영.
@@ -3598,6 +3618,7 @@ def adopt_write(root: str, m: dict, crop_id: str, op: str, text: str | None = No
     path = _spec_path(root, crop_id)
     seen_cur: list = []   # decide 가 본 지금 파일(영향의 '반영 전')
     flags: list[str] = []
+    dropped: list[str] = []   # 채택이 지운 스펙 항목(_drop_stale)
 
     def check_next(spec: dict) -> list[str]:
         """렌더 점검을 반영 뒤 크롭(crop' — 타깃 = 다음 Import 의 new_targets)으로(채택·수정 공용, 검증 D-7: 지금 크롭에는 _layer_targets
@@ -3629,12 +3650,19 @@ def adopt_write(root: str, m: dict, crop_id: str, op: str, text: str | None = No
         chk = out["check"]
         if not chk.ok:
             raise AdoptRefused("렌더 점검 실패 — 쓰지 않음: " + "; ".join(chk.problems))
-        rows = [f"{r.path}: {r.kind}" for r in res.rows if r.path != "crop._layer_targets" and r.kind not in _INFO_ROWS]
-        rows += [f"{p}: render_fallback" for p in chk.dropped]
+        moved = [f"{r.path}: {r.kind}" for r in res.rows if r.path != "crop._layer_targets" and r.kind not in _INFO_ROWS]
+        rows = moved + [f"{p}: render_fallback" for p in chk.dropped]
         after = res.spec if res.spec is not None else cur
         if rows or res.render_changed or not _eq(_strip_adopted(after), _strip_adopted(cur)):
-            raise AdoptRefused("Studio 초안 설정(apply·화풍)이 이 스펙을 마지막으로 쓴 Spec Draft 와 달라 채택 외 필드가 바뀜 — "
-                               "설정 확인 또는 그래프 Spec Draft 로 채택", rows=rows)
+            if moved:  # 병합 행 = 이번 apply·화풍이 노드 값을 바꿈
+                why = "Studio 초안 설정(apply·화풍)이 이 스펙을 마지막으로 쓴 Spec Draft 와 달라 채택 외 필드가 바뀜 — 설정 확인 또는 그래프 Spec Draft 로 채택"
+            elif chk.dropped or res.render_changed:
+                why = "노드가 쓴 필드가 지금 렌더되지 않아 빼고 써야 해 채택 외 필드가 바뀜(render_fallback) — 그래프 Spec Draft 로 채택"
+            else:  # 행 없이 병합이 고쳐 쓰는 _draft(손으로 고친 written 등)
+                why = "병합이 스펙 _draft 기록(손으로 고친 written 등)을 정리해 채택 외 필드가 바뀜 — 그래프 Spec Draft 로 채택"
+            raise AdoptRefused(why, rows=rows)
+        if res.spec is not None:
+            dropped.extend(_drop_stale(res.spec, crop, nxt))
         check_next(after)  # 채택이 더하는 tid 의 스펙 항목(사람 값)이 다음 Prepare 를 멈추지 않게 — 플래그는 노드 adopt 처럼 싣지 않음
         return res
 
@@ -3679,6 +3707,9 @@ def adopt_write(root: str, m: dict, crop_id: str, op: str, text: str | None = No
     arrived = op != "adopt" and _arrived(root, m, crop, ctx, cur, family=family, memo=memo)
     effects, warns = _adopt_effects(crop, nxt, ctx, cur, after, layout_text, glossary=glossary, family=family,
                                     apply_mode=apply_mode, arrived=arrived)
+    if dropped:
+        warns = [f"버린 항목: {', '.join(dropped)} — 지금 크롭에 없는 글자의 스펙 항목이라 새 제안 파츠에 붙이지 않고 지움"
+                 "(그 값을 쓰려면 [수정]으로 같은 문구)"] + warns
     return {"ok": True, "seen": new_seen, "layer_targets": _lt_view(after), "targets_after": effects["targets_after"],
             "effects": effects, "warnings": warns + flags}
 

@@ -263,6 +263,12 @@ async function queueOnly(nodes, what) {
         notify("warn", `${what}: Studio 승인을 제출하는 중입니다. 잠시 뒤 다시 큐에 넣으세요.`);
         return false;
     }
+    const aq = autoQueueMode();
+    if (aq) {
+        // Studio 승인과 같은 판정(autoQueueWhy) — 이 큐가 끝난 뒤 프론트가 사용자 그래프 전체를 다시 큐해 사전 승인 재굴림이 예상 밖에 돈다
+        notify("warn", `${what}: ComfyUI 탭의 자동 큐(${aq})가 켜져 있어 큐에 넣지 않았습니다 — 넣으면 실행이 끝난 뒤 그래프 전체가 자동으로 다시 큐됩니다(사전 승인한 재굴림 과금). Run 단추 모드를 Run 으로 바꾼 뒤 다시 하세요.`, 10000);
+        return false;
+    }
     try {
         await app.queuePrompt(0, 1, { queueNodeIds: ids });
         return true;
@@ -931,16 +937,21 @@ function rerollWhy(reason, error) {
 // 프론트 자동 큐가 켜져 있으면 승인을 받지 않는 이유 | "". 켜져 있으면 승인 제출의 부수 효과(시드 afterQueued 가 그래프를 바꿔 promptQueued
 // 뒤 'change' 판정, 처리 시작의 clearRunErrors 가 오류로 멈춘 Instant 를 풂)로 템플릿 실행이 끝난 뒤 프론트가 사용자 그래프 전체를
 // app.queuePrompt(셋째 인자 없음)로 다시 큐한다 — 무장이 풀린 뒤라 토큰과 함께 나가고 시드가 randomize 면 되풀이된다.
-// instant-idle(Instant 를 골랐지만 멈춤)은 사용자가 Run 을 눌러야 돈다
+// S3a 길(보드 큐·승인 버튼·자동 이어가기 — queueOnly)도 같은 판정(autoQueueMode)으로 거절한다
 function autoQueueWhy() {
-    const mode = app.extensionManager?.queueSettings?.mode;
-    let on = typeof mode === "string" && mode !== "disabled" && mode !== "instant-idle" ? (AUTO_QUEUE[mode] ?? mode) : "";
-    if (!on && app.ui?.autoQueueEnabled === true) on = "Auto Queue"; // 옛 메뉴
+    const on = autoQueueMode();
     if (!on) return "";
     return (
         `ComfyUI 탭의 자동 큐(${on})가 켜져 있음 — 승인 제출 뒤 사용자 그래프 전체가 토큰과 함께 자동으로 큐될 수 있어 받지 않음: ` +
         "ComfyUI 탭의 Run 단추 모드를 Run 으로 바꾼 뒤 다시 승인"
     );
+}
+
+// 켜진 프론트 자동 큐의 Run 단추 이름 | "". instant-idle(Instant 를 골랐지만 멈춤)은 사용자가 Run 을 눌러야 돈다
+function autoQueueMode() {
+    const mode = app.extensionManager?.queueSettings?.mode;
+    const on = typeof mode === "string" && mode !== "disabled" && mode !== "instant-idle" ? (AUTO_QUEUE[mode] ?? mode) : "";
+    return on || (app.ui?.autoQueueEnabled === true ? "Auto Queue" : ""); // 옛 메뉴
 }
 
 function helloReply(d) {

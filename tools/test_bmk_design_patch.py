@@ -10105,6 +10105,47 @@ await scenario("j9", async () => {  // 이 Draft 가 빠진 부분 실행은 ado
     return { unrelated, otherApprove, viaRun, submitted: env.submitted, subOther, subSecond: sa.value };
 });
 
+// S3c B3: 프론트 자동 큐(Run (On Change)·Run (Instant) 실행 중·옛 메뉴 Auto Queue)면 S3a 길(승인 버튼·드라이런·보드 큐·자동 이어가기)도
+// 큐에 넣지 않음(Studio 승인과 같은 판정) — 넣으면 끝난 뒤 프론트가 그래프 전체를 다시 큐해 사전 승인 재굴림이 돈다. instant-idle 은 정상
+await scenario("aq3a", async () => {
+    const env = await setup("aq3a");
+    const app = globalThis.__bmk.app;
+    const run = env.add("BMKDesignPatchRun", 4);  // env.wave 는 nodes[0](Run)에 결과를 준다
+    const draft = env.add("BMKDesignPatchSpecDraft", 3);
+    const rev = env.add("BMKDesignPatchReview", 6);
+    rev.onExecuted({ bmk_dp_board: [{ root_key: ROOT_KEY, url: "/x" }] });
+    const qs = (app.extensionManager.queueSettings = { mode: "change", batchCount: 1 });
+    const res = {};
+    const step = async (k, fn) => {
+        const n = env.toasts.length;
+        await fn();
+        await flush();
+        res[k] = { queued: env.queued.length, toasts: env.toasts.slice(n) };
+    };
+    env.exec(run, entry({ pending_hash: "A1aaaaaaaaaa", pending: 2 }));
+    await step("button", () => env.click(run, "bmk_dp_approve"));
+    res.button.approve = env.approve(run).value;
+    await step("dryRun", () => env.btn(draft).callback());
+    env.approve(draft).value = "PASTEDHASH00";  // 손으로 붙여 넣은 승인 — 거절된 보드 큐도 비움(B4)
+    await step("board", async () => {
+        for (const fn of windowListeners.message) fn({ origin: window.location.origin, data: { type: "bmk-dp-queue", rootKey: ROOT_KEY } });
+        await sleep(950);
+    });
+    res.board.pasted = env.approve(draft).value;
+    env.click(run, "bmk_dp_auto");
+    qs.mode = "instant-running";
+    env.emit("execution_start", { prompt_id: "P1" });
+    await step("cont", () => env.wave("P1", 2, entry({ pending_hash: "C2aaaaaaaaaa", pending: 2, continuation_hash: "C2aaaaaaaaaa" })));
+    qs.mode = "disabled";
+    app.ui = { autoQueueEnabled: true };
+    await step("legacy", () => env.click(run, "bmk_dp_approve"));
+    app.ui = { autoQueueEnabled: false };
+    qs.mode = "instant-idle";
+    await step("idle", () => env.click(run, "bmk_dp_approve"));
+    res.idle.last = env.queued.at(-1)?.approve["4"] ?? null;
+    return res;
+});
+
 console.log(JSON.stringify(out));
 """
 
@@ -10211,6 +10252,18 @@ def m2_js_unit():
           f"TO-J9 adopt: 이 Draft 가 빠진 부분 실행(다른 가지·다른 Draft 의 승인 버튼)은 남기고, 조상으로 실리는 Run 부분 실행은 비움 {j9}")
     check(j9.get("subOther") == "all" and j9.get("subSecond") == "",
           f"TO-J9 공유 서브그래프: 두 번째 인스턴스(20:3)만 부분 실행해도 비움(실행 ID 전부 대조) {j9}")
+    aq = res.get("aq3a") or {}
+    why = ("ComfyUI 탭의 자동 큐({})가 켜져 있어 큐에 넣지 않았습니다 — 넣으면 실행이 끝난 뒤 그래프 전체가 자동으로 다시 큐됩니다"
+           "(사전 승인한 재굴림 과금). Run 단추 모드를 Run 으로 바꾼 뒤 다시 하세요.")
+    want = {"button": ("Run", "Run (On Change)"), "dryRun": ("Spec Draft", "Run (On Change)"), "board": ("보드 요청", "Run (On Change)"),
+            "cont": ("자동 이어가기", "Run (Instant)"), "legacy": ("Run", "Auto Queue")}
+    check("error" not in aq and all(aq[k]["queued"] == 0 and f"warn: {w}: {why.format(mode)}" in aq[k]["toasts"] for k, (w, mode) in want.items())
+          and aq["button"]["approve"] == "" and not any("드라이런 보고" in t for t in aq["dryRun"]["toasts"])
+          and aq["idle"]["queued"] == 1 and aq["idle"]["last"] == "C2aaaaaaaaaa",
+          f"S3c B3: 자동 큐(On Change·Instant 실행 중·옛 Auto Queue)면 승인 버튼·드라이런·보드 큐·자동 이어가기도 큐 0 + 이유(Studio 승인과 같은 "
+          f"판정), instant-idle 은 정상 {aq}")
+    check("error" not in aq and aq["board"]["pasted"] == "",
+          f"S3c B4: 거절된 보드 큐도 넣기 전에 붙여 넣은 approve 를 비움(무장 중 거절과 같은 보수적 부수 효과 — 문서) {aq.get('board')}")
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -25313,16 +25366,19 @@ def pipeline_vlm_unit():
             check(e is not None and str(e).startswith("렌더 점검 실패 — 쓰지 않음") and "mode '5'" in str(e) and e.extra == {},
                   f"렌더 점검 실패 문구(사람 값 때문에 Prepare 가 멈춤) {e}")
         # 채택이 더하는 tid(B)의 스펙 항목은 지금 크롭(B 없음)에서 렌더되지 않음 — 렌더 점검은 수정처럼 반영 뒤 크롭(crop')으로도.
-        # 지금 크롭으로만 보면 써 버리고 다음 반영 뒤 Prepare 가 그 크롭에서 멈춘다(리뷰 3차 r3-14)
+        # 지금 크롭으로만 보면 써 버리고 다음 반영 뒤 Prepare 가 그 크롭에서 멈춘다(리뷰 3차 r3-14). S3c A2 부터 사람 항목(written 기록
+        # 없음)은 새 제안 파츠에 붙이지 않고 버리므로 깨진 사람 값(mode 5)도 점검 전에 빠져 채택 됨 — crop' 점검은 노드가 쓴 항목(아래)이 거름
         rb, cb, _ = drafted("render_next")
         db = spec(rb, cb)
         db["targets"].append({"id": "B", "mode": 5})  # 사람 값(unknown_target 정보 행 — 내용 보호 사유 아님)
         put(rb, cb, db)
         check(view(rb, cb)["adopt"]["kind"] == "add", "시험 전제: 지금 크롭에 없는 B 의 사람 항목이 있어도 채택 값·kind add")
-        for pv in (False, True):
-            e = refused(rb, cb, lambda: write(rb, cb, preview=pv), f"채택 뒤 crop'(B 추가) 렌더 점검 실패 → 400(preview={pv}, 쓰지 않음)")
-            check(e is not None and str(e).startswith("렌더 점검 실패 — 쓰지 않음") and "B: mode '5'" in str(e) and e.extra == {},
-                  f"crop' 렌더 점검 실패 문구 = 수정과 같음(B 의 사람 값) {e}")
+        pv = write(rb, cb, preview=True)
+        wb = write(rb, cb)
+        drop_b = "버린 항목: B(mode) — 지금 크롭에 없는 글자의 스펙 항목이라 새 제안 파츠에 붙이지 않고 지움(그 값을 쓰려면 [수정]으로 같은 문구)"
+        check(pv["warnings"] == wb["warnings"] == [drop_b] and [t.get("id") for t in spec(rb, cb)["targets"]] == ["A"]
+              and spec(rb, cb)["_layer_targets"] == VAL,
+              f"S3c A2: crop'(B 추가)에 붙을 깨진 사람 항목 B 는 버리고 채택(미리보기·쓰기 같은 '버린 항목' 줄) {wb['warnings']}")
         db["targets"][-1] = {"id": "B", "text": 5}
         db["_draft"]["written"]["B"] = {"text": 5}  # 노드가 쓴 그대로(C == B) — crop' 에서는 빼야 렌더됨
         put(rb, cb, db)
@@ -25752,6 +25808,92 @@ def pipeline_vlm_unit():
         arrive(rm_, cm_, "mock", "mock", rnd=1)
         check(view(rm_, cm_, "mock")["adopt"]["kind"] == "add", "mock 스펙의 mock 도착분이 키만 다름 → 채택 가능(노드 mock fill 도 적용 안 함)")
 
+    def t_s3c():
+        section("S3c A2·A3 — 채택이 새 제안 파츠에 붙일 사람 항목(지금 크롭에 없는 tid)은 버리고 '버린 항목' 줄(노드 재정규화와 같은 결과), "
+                "⑥ 내용 보호 400 문구를 원인별로(apply·화풍 / render_fallback 뿐 / 행 없는 _draft 정리)")
+        drop = ("버린 항목: B(mode·refs·detail) — 지금 크롭에 없는 글자의 스펙 항목이라 새 제안 파츠에 붙이지 않고 지움"
+                "(그 값을 쓰려면 [수정]으로 같은 문구)")
+        old = {"id": "B", "mode": "self_restore", "refs": [], "detail": "old ribbon tails"}  # 초안 뒤 사람이 쓴 B 항목(지금 크롭은 A 뿐)
+        r, c, nd = drafted("s3c_stale")
+        base = spec(r, c)
+        d = copy.deepcopy(base)
+        d["targets"].append(dict(old))
+        put(r, c, d)
+        # 노드 보통 흐름: 사람 B 항목은 요청 키를 바꾸지 않아 같은 원장 초안을 지금 스펙으로 다시 정규화 → 제안이 B 대신 C(새 제안 — 이번엔
+        # 채택 안 함), B 항목은 unknown_target 으로 남음 = 새 파츠에 옛 값이 붙지 않음
+        m = store.load_manifest(r)
+        cx = dvlm.build_crop_ctx(r, m, m["crops"][0], refs_dir=m["source"]["refs_dir"], glossary=store.project_glossary(r, m),
+                                 backend="openai", memo={})
+        rq = dvlm.build_request(cx, backend="openai", model="gpt-6-sol", effort="xhigh", image_detail="high", draft_round=0, model_dir="")
+        node_write(r, m, cx, rq, nd["done"], nd["prov"], adopt=True)
+        dn = spec(r, c)
+        check(rq.key == nd["req"].key and "_layer_targets" not in dn and dn["targets"][-1] == old
+              and dn["_draft"]["suggestions"]["layer_name"].endswith(f"A: mock part A; C: {FIT}"),
+              f"시험 전제(노드 재정규화): 같은 키 → 제안 글자 C·이번 채택 없음·B 항목 그대로 {dn['_draft']['suggestions'].get('layer_name')}")
+        # Studio: 보인 글자(B) 그대로 채택하고 B 사람 항목은 버림 — 미리보기(확인 창)·쓰기 응답 warnings 맨 앞 '버린 항목' 줄
+        put(r, c, d)
+        v = view(r, c)
+        pv = write(r, c, preview=True)
+        w = write(r, c)
+        dw = spec(r, c)
+        check(v["adopt"] == {"value": VAL, "kind": "add", "reason": ""} and pv["warnings"] == w["warnings"] == [drop]
+              and [t.get("id") for t in dw["targets"]] == ["A"] and dw["_layer_targets"] == VAL
+              and [(t["tid"], t["origin"]) for t in w["targets_after"]] == [("A", "adopt"), ("B", "adopt")]
+              and _pl_shape(POST["ok"], w, POST) == [] and _pl_shape(POST["ok"], pv, POST) == [],
+              f"A2 Studio 채택: B 사람 항목을 새 제안 파츠에 붙이지 않고 지움 + '버린 항목' 줄(미리보기·쓰기 같음) {w['warnings']}")
+        put(r, c, base)
+        write(r, c)
+        check(spec(r, c) == dw, "A2 버린 항목 밖은 그 항목이 없을 때의 채택과 같은 스펙(채택 밖 필드 그대로)")
+        # [수정]으로 같은 문구 = 사람이 고른 문구 — 항목을 남겨 붙임(버리지 않음)
+        put(r, c, d)
+        ws = write(r, c, "set", VAL)
+        check(not any(x.startswith("버린 항목") for x in ws["warnings"]) and spec(r, c)["targets"][-1] == old
+              and ws["layer_targets"] == {"value": VAL, "owner": "human"},
+              f"A2 [수정] 으로 같은 문구는 B 항목을 남김(사람이 고른 문구) {ws['warnings']}")
+        # 레이아웃 문구가 이기는 tid(다음 반영 출처 layout)의 항목은 그 레이아웃 타깃 것 — 버리지 않음
+        rl, cl, _ = drafted("s3c_layout")
+        lay = store.layout_from_manifest(store.load_manifest(rl))
+        lay["crops"][0]["targets"] = [{"tid": "A", "text": "", "box": None}, {"tid": "B", "text": "레이아웃 문구", "box": None}]
+        store.update_layout(rl, lambda doc: doc.update(lay), expect_rev=None, create=True)
+        dl = spec(rl, cl)
+        dl["targets"].append(dict(old))
+        put(rl, cl, dl)
+        wl = write(rl, cl)
+        check(wl["warnings"] == ["레이아웃 문구가 이김(B) — 편집 모드에서 고치세요"] and spec(rl, cl)["targets"][-1] == old,
+              f"A2 레이아웃 문구가 이기는 tid 의 항목은 버리지 않음(출처 layout) {wl['warnings']}")
+        # A3: ⑥ 400 문구를 원인별로 — 병합 행(apply·화풍)만 Studio 설정을 가리킴. 본문 모양 {error, rows} 는 그대로
+        apply_why = POST["errors"]["400"][2]["error"]
+        fb_why = "노드가 쓴 필드가 지금 렌더되지 않아 빼고 써야 해 채택 외 필드가 바뀜(render_fallback) — 그래프 Spec Draft 로 채택"
+        junk_why = "병합이 스펙 _draft 기록(손으로 고친 written 등)을 정리해 채택 외 필드가 바뀜 — 그래프 Spec Draft 로 채택"
+        got = {}
+        rp, cp, _ = drafted("s3c_style")
+        store.write_json_atomic(os.path.join(rp, "specs", f"{dvlm.PROJECT_SPEC_ID}.json"), {"style_note": "flat thin lines"})
+        got["style"] = refused(rp, cp, lambda: write(rp, cp), "A3 화풍 차이 → 400")
+        rf, cf, _ = drafted("s3c_fallback", apply_mode="full")
+        df = spec(rf, cf)
+        next(t for t in df["targets"] if t.get("id") == "A")["text"] = df["_draft"]["written"]["A"]["text"] = 5  # 노드가 쓴 그대로 — 렌더를 깸
+        put(rf, cf, df)
+        got["fallback"] = refused(rf, cf, lambda: write(rf, cf, apply_mode="full"), "A3 render_fallback 뿐 → 400")
+        rj, cj, _ = drafted("s3c_junk")
+        dj = spec(rj, cj)
+        dj["_draft"]["written"]["Z"] = "손으로 쓴 값"
+        put(rj, cj, dj)
+        got["junk"] = refused(rj, cj, lambda: write(rj, cj), "A3 행 없는 _draft 정리 → 400")
+        got = {k: (str(e), e.extra) if e else None for k, e in got.items()}
+        check(got == {"style": (apply_why, {"rows": ["crop.style_note: add"]}), "fallback": (fb_why, {"rows": ["A.text: render_fallback"]}),
+                      "junk": (junk_why, {"rows": []})}
+              and all(_pl_shape(POST["errors"]["400"][2], {"error": s, **x}, POST) == [] for s, x in got.values())
+              and all("apply·화풍" not in got[k][0] for k in ("fallback", "junk")),
+              f"A3 ⑥ 문구: 병합 행 = Studio 설정(apply·화풍), render_fallback 뿐·행 없는 _draft 정리는 설정을 가리키지 않음, 본문 모양 그대로 {got}")
+        done_ = []
+        for r_, c_, am in ((rf, cf, "full"), (rj, cj, "targets")):  # 문구의 할 일 = 그래프 Spec Draft 의 adopt(노드 채택은 그 정리를 함께 씀)
+            m_ = store.load_manifest(r_)
+            cx_ = dvlm.build_crop_ctx(r_, m_, m_["crops"][0], refs_dir=m_["source"]["refs_dir"], glossary=store.project_glossary(r_, m_),
+                                      backend="openai", memo={})
+            node_write(r_, m_, cx_, None, None, {}, apply_mode=am, adopt=True)
+            done_.append(spec(r_, c_).get("_layer_targets"))
+        check(done_ == [VAL, VAL], f"A3 render_fallback·_draft 정리 크롭은 그래프 Spec Draft adopt 로 채택 됨 {done_}")
+
     try:
         _guarded("V-S1a", t_pure)
         _guarded("V-S1b", t_store)
@@ -25762,6 +25904,7 @@ def pipeline_vlm_unit():
         _guarded("V-S1g", t_conflict)
         _guarded("V-S1h", t_shape)
         _guarded("V-S1i", t_arrived)
+        _guarded("S3c", t_s3c)
     finally:
         if env_mock is not None:
             os.environ[runner.MOCK_ENV] = env_mock
@@ -34472,15 +34615,16 @@ await scenario("x2g", async () => {  // 대상을 하나 덧붙이는 app.queueP
   return { tab: env.tab, final: finalOf(src.got), bodies: env.bodies.length, dialogs: env.dialogs, log: env.log.filter((x) => x[0] === "queue").map((x) => x.join(" ")) };
 });
 
-await scenario("x2h", async () => {  // 무장 중에 보드 큐(bmk-dp-queue 0.8초 타이머)가 끼어듦 → 넣지 않고 경고(넣었다는 토스트 없음), 템플릿만 나감
-  const env = await tab("x2h");
+await scenario("x2h", async () => {  // 무장 중에 보드 큐(bmk-dp-queue 0.8초 타이머)가 끼어듦 → 넣지 않고 경고(넣었다는 토스트 없음), 템플릿만 나감.
+  // 거절된 보드 큐도 넣기 전에 사용자가 붙여 넣은 approve 를 비움(S3c B4 — 문서로 남긴 보수적 부수 효과)
+  const env = await tab("x2h", { approve: USER_APPROVE });
   env.app.rootGraph.nodes.push({ id: 9, comfyClass: "BMKDesignPatchReview", mode: 0, properties: { bmk_dp_root_key: KEY }, widgets: [] });
   env.tokenMs = 1200;
   env.post({ type: "bmk-dp-queue", rootKey: KEY }, env.src());
   await sleep(10);
   const src = await env.send(approveMsg(env, "run"));
   return { final: finalOf(src.got), bodies: env.bodies.map((b) => Object.keys(b.body.prompt)), log: env.log.filter((x) => x[0] === "queue").map((x) => x.join(" ")),
-    dialogs: env.dialogs, toasts: env.toasts };
+    dialogs: env.dialogs, toasts: env.toasts, approve: env.userApprove() };
 });
 
 await scenario("x2c", async () => {  // workflow 를 만지는 안쪽 api 감싸개(inspire 흉내 — {output, workflow} 새 객체, api 로 부름)
@@ -35141,6 +35285,8 @@ def _paid_js_tab():
               and h2["toasts"] == ["warn: 보드 요청: Studio 승인을 제출하는 중입니다. 잠시 뒤 다시 큐에 넣으세요.",
                                    "success: Studio 승인으로 Run 큐 — Run 승인 4건 ≈ $2.40–3.16"],
               f"J-X2 무장 중 끼어든 보드 큐(queueOnly)는 넣지 않고 경고 — '넣었습니다' 토스트 없음(넣었으면 감싸개에 막혀 나가지 않음), 템플릿만 {h2}")
+        check(h2.get("approve") == ["", ""],
+              f"S3c B4: 무장 중 거절된 보드 큐도 넣기 전에 붙여 넣은 Draft·Run approve 를 비움(Studio 승인 자체는 그 위젯을 건드리지 않음) {h2.get('approve')}")
     c2 = res.get("x2c") or {}
     if "final" in c2:
         check((c2["final"] or {}).get("ok") is True and c2["n"] == 1 and c2.get("prompt") == tpl and c2.get("sameWorkflow") is True
