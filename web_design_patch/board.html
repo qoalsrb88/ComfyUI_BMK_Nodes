@@ -99,7 +99,7 @@
       <tr><td><kbd>Q</kbd> 누르는 동안</td><td>Before 로(깜빡임 비교 — 오른쪽 큰 화면과 캔버스 겹침 모두)</td></tr>
       <tr><td><kbd>D</kbd></td><td>ΔE 히트맵 토글(청록 선 = 자동 마스크)</td></tr>
       <tr><td><kbd>C</kbd></td><td>컨텍스트 뷰 토글(베이스 위에 현재 마스크로 합성, 크롭 1.5배 영역)</td></tr>
-      <tr><td><kbd>R</kbd> <kbd>R</kbd></td><td>재굴림 +1 호출(같은 셀, 유료·사전 승인) — 2.5초 안에 두 번 → ComfyUI 탭에 큐 요청(탭이 없으면 예약만 — 다음 Run 때 과금)</td></tr>
+      <tr><td><kbd>R</kbd> <kbd>R</kbd></td><td>재굴림 +1 호출(같은 셀, 유료·사전 승인) — 2.5초 안에 두 번 → ComfyUI 탭에 큐 요청(탭이 없으면 예약만 — 다음 Run 때 과금). 그 셀의 재굴림 대기가 아직 돌지 않았거나 Run·재굴림이 실행 중이면 R 은 무시 — 더 넣으려면 [재굴림 +1] 단추(확인 창에 누적 건수)</td></tr>
       <tr><td><kbd>Esc</kbd></td><td>보기 모드 해제(히트맵·컨텍스트·슬라이더·원본) / 도움말 닫기</td></tr>
       <tr><td><kbd>?</kbd></td><td>이 도움말</td></tr>
     </table>
@@ -144,7 +144,7 @@
     <table>
       <tr><td>왼쪽 체크</td><td>계획·해시의 대상 크롭(only) — 전체 · 없음 · 승인 필요만. 크롭을 누르면 오른쪽 아래 채택 패널</td></tr>
       <tr><td>설정</td><td>실행 설정(pipeline.json — 노드 위젯 그대로). "확인 필요"가 남으면 반영·Export 를 막음(추정한 Prepare 설정으로 셀이 뒤집히지 않게)</td></tr>
-      <tr><td>반영 · Export</td><td>무료 템플릿(Run·Spec Draft 없음)을 ComfyUI 에 직접 큐 — 탭 불필요. 반영 = Import → Prepare → Analyze → Review(대기열 앞), Export = Analyze → Compose → Export(대기열 뒤)</td></tr>
+      <tr><td>반영 · Export</td><td>무료 템플릿(Run·Spec Draft 없음)을 ComfyUI 에 직접 큐 — 탭 불필요. 반영 = Import → Prepare → Analyze → Review(대기열 앞), Export = Analyze → Compose → Export(대기열 뒤). 반영 칸·확인 창에 레이아웃 미반영 크롭별 줄(무엇이 바뀌었나) — 이름·위치가 바뀐 줄은 [되돌리기](마지막 반영 값으로, 레이아웃만)</td></tr>
       <tr><td>계획</td><td>Run·초안의 승인 필요 수·비용·해시(노드와 같은 계산). [초안 승인]·[Run 승인] = 확인 창 뒤 ComfyUI 탭이 서버 템플릿을 큐에 넣음(유료 승인을 받는 탭 — 상단 "ComfyUI 탭 연결"), wave 로 멈추면 [남은 N건 이어서 승인]. 해시 복사는 그래프 노드의 approve·only 에</td></tr>
       <tr><td>채택 · 수정 · 해제</td><td>스펙 _layer_targets 를 씀(미리보기 → 확인). 반영은 다음 무료 반영</td></tr>
     </table>
@@ -160,6 +160,7 @@
       <li>★ 합성은 Compose 와 같은 계산(마지막 Export 설정)입니다. 분석 없는 ★ 은 마스크 없이 합성됩니다 — Analyze 뒤에 다시 보세요.</li>
       <li>여러 타깃을 한 번에 고친 결과(공동)는 첫 타깃(보통 A)에만 ★ 하세요. 같은 이미지를 여러 타깃에 ★ 하면 "중복 ★" 경고가 뜹니다.</li>
       <li>"옛 크롭" = 크롭 사각형을 옮기기 전에 만든 후보입니다. ★ 하면 그때 크롭 크기 그대로 붙습니다.</li>
+      <li>"옛 셀" = 지금 jobs 에 없는 셀(Prepare 설정·입력 이미지가 바뀌기 전)로 만든 후보, "새" = 이 브라우저에서 아직 고르지 않은 후보(고르면 사라짐). 후보 캡션의 시각 = 그 호출이 끝난 시각과 종류(Run·재굴림·재시도 — 다운로드 복구는 원래 종류).</li>
     </ul>
     <p class="dim">닫기: <kbd>Esc</kbd> 또는 <kbd>?</kbd></p>
   </div>

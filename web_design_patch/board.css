@@ -79,6 +79,7 @@ button:disabled { opacity: .45; cursor: default; }
 .b-bad { background: #4a1f22; border-color: var(--bad); color: #ffd0d0; }
 .b-reg { background: #173d44; border-color: var(--reg); color: #c4f4fb; }
 .b-star { background: #45391a; border-color: var(--star); color: #ffe9a8; }
+.b-new { background: #1d3550; border-color: var(--accent); color: #cfe3ff; }
 .b-rej { background: #3b2326; border-color: #a04a52; color: #e6b0b5; }
 .b-cost, .b-dim { color: var(--dim); }
 

@@ -35,7 +35,7 @@ Review 노드를 부분 실행한다(대체 경로). 인증 토큰은 그 경로
 - GET  /bmk/design_patch/layout/refs?root=&name=[&id=] 그 이름이면 고를 레퍼런스 {n, first[, fixed]} | null(refs_dir 없음) — 이름 바꾸기
                                                        미리보기. id 를 주면 고정된·이름 바꾸기가 고정할 크롭은 지금 레퍼런스(연결 유지)
 - POST /bmk/design_patch/layout/start {root}           매니페스트 크롭 → layout.json(이관, 있으면 409)
-- POST /bmk/design_patch/layout/crop  {root, rev, op: add|update|delete, …, restore_rev?, index?}
+- POST /bmk/design_patch/layout/crop  {root, rev, op: add|update|delete, …, restore_rev?, index?, restore_manifest?}
        update 가 이름을 바꾸면 먼저 refs.json 에 그 크롭을 바꾸기 전 이름으로 고정(S2 §2.6 — 실패하면 이름도 안 바꿈)
 - POST /bmk/design_patch/layout/psd   {root, rev, op: take|ack, names?, snapshot?}   PSD 스냅숏과 갈라졌을 때(고른 이름만 기준점 갱신 —
                                                        남은 갈라짐은 계속 경고, S1-a)
@@ -170,6 +170,10 @@ v6 (2026-10-18, Studio S3b — _proto/s3b/S3B_CONTRACT.md §1·§2)
   15초) 안에서 기억값 없이 선택 계획 → 해시 대조 순으로 판정하고 통과하면 템플릿. 응답 키는 stage 와 무관하게 하나(무료 hash·only "").
 - /pipeline/plan draft 확인 창 필드(orphan_retries·est_usd·reasons·free · pending_style·mock_forced — 노드 Spec Draft ui·가지와 같은 식),
   GET /pipeline manifest_rev. local_qwen 모델 폴더 미설정은 _draft_cfg 의 오류 하나로(계획·prompt 같은 문구).
+v7 (2026-10-19, Studio 사용성 — _proto/STUDIO_S3_SPEC.md §12)
+- state 후보 done(원장 calls finished)·via(run·reroll·retry)·old_cell(지금 jobs 에 없는 셀), 셀 pre(그 셀 사전 승인 대기 — 키보드 R 거절),
+  크롭 요약 layout_diff(바뀐 크롭의 레이아웃 name·rect·대상), 최상위 layout_added(레이아웃에만 있는 크롭).
+- POST /layout/crop update 의 restore_manifest — 마지막 반영 값으로 되돌림(진행(G) 반영 칸의 [되돌리기]).
 """
 
 from __future__ import annotations
@@ -458,6 +462,24 @@ def _target_refs(m: dict, crop_id: str, tid: str) -> list[str]:
     return out
 
 
+# 원장 calls approved_by 의 앞부분("hash:<h>" | "board") → 후보 캡션의 실행 종류. 다시 과금한 재시도(kind retry_failed·retry_orphan)는 "retry" —
+# 다운로드 복구(approved_by "retry")는 req.json 을 다시 쓰지 않아 calls 에 나오지 않는다(원래 종류·복구 시각으로 보임)
+_VIA = {"hash": "run", "board": "reroll"}
+
+
+def _call_via(call: dict | None) -> str | None:
+    if not call:
+        return None
+    if str(call.get("kind") or "").startswith("retry"):
+        return "retry"
+    return _VIA.get(str(call.get("approved_by") or "").split(":")[0])
+
+
+def _name_fold(name: str) -> str:
+    """크롭 이름 비교 키(store.check_crop_name 의 중복 판정과 같은 NFC·casefold)."""
+    return unicodedata.normalize("NFC", name).strip().casefold()
+
+
 def _cell_of(cand: dict) -> tuple[str | None, str | None, int | None]:
     """run 후보의 (cell_key, call_id, rep). call_id = f"{cell_key}_r{rep}"."""
     info = cand.get("origin_info") or {}
@@ -536,8 +558,8 @@ def _ledger_pending(root: str, m: dict) -> dict[str, int]:
     return out
 
 
-def _pending(root: str, m: dict) -> tuple[dict[str, int], int]:
-    """({cell_key: 대기 호출 수}, 그중 보드 사전 승인 수). runner.plan_calls 가 있으면 그것(Run 과 같은 판단:
+def _pending_cells(root: str, m: dict) -> tuple[dict[str, int], dict[str, int]]:
+    """({cell_key: 대기 호출 수}, {cell_key: 그중 보드 사전 승인 수}). runner.plan_calls 가 있으면 그것(Run 과 같은 판단:
     다운로드 복구 포함), 없으면 _ledger_pending(사전 승인 = 셀마다 min(rerolls, 대기))."""
     runner = _runner()
     if runner is not None:
@@ -550,15 +572,22 @@ def _pending(root: str, m: dict) -> tuple[dict[str, int], int]:
                 logger.warning(f"{_TAG} Board: runner.plan_calls 실패 → 원장 파일로 대기 호출 계산 ({e})")
         else:
             out: dict[str, int] = {}
-            pre = 0
+            pre: dict[str, int] = {}
             for it in plan.get("pending") or []:
-                ck = it.get("cell_key") if isinstance(it, dict) else str(it).rsplit("_r", 1)[0]
-                out[str(ck)] = out.get(str(ck), 0) + 1
-                pre += bool(isinstance(it, dict) and it.get("preapproved"))
+                ck = str(it.get("cell_key") if isinstance(it, dict) else str(it).rsplit("_r", 1)[0])
+                out[ck] = out.get(ck, 0) + 1
+                if isinstance(it, dict) and it.get("preapproved"):
+                    pre[ck] = pre.get(ck, 0) + 1
             return out, pre
     out = _ledger_pending(root, m)
     rerolls = m.get("rerolls") or {}
-    return out, sum(min(int(rerolls.get(ck) or 0), n) for ck, n in out.items())
+    return out, {ck: k for ck, n in out.items() if (k := min(int(rerolls.get(ck) or 0), n))}
+
+
+def _pending(root: str, m: dict) -> tuple[dict[str, int], int]:
+    """({cell_key: 대기 호출 수}, 그중 보드 사전 승인 수 합) — _pending_cells 의 합."""
+    out, pre = _pending_cells(root, m)
+    return out, sum(pre.values())
 
 
 def _est_usd(job: dict):
@@ -1344,7 +1373,9 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
     rejects = m.get("rejects") or {}
     picks = m.get("picks") or {}
     rerolls = m.get("rerolls") or {}
-    pending, preapproved = _pending(root, m)
+    pending, pre_cells = _pending_cells(root, m)
+    calls = [x for x in m.get("calls") or [] if isinstance(x, dict)]
+    call_by_id = {x.get("call_id"): x for x in calls}
     crop_ids = {c.get("id") for c in m["crops"]}
     by_file = {(c.get("crop_id"), c.get("file"), c.get("tid")): c["key"] for c in m["candidates"]}
     wh = [int(v) for v in m["canvas"]] if m.get("base") and m.get("canvas") else None
@@ -1360,11 +1391,14 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
             members = {c["key"] for c in ctx["cands"]}
             pick_keys = [k for k in picks.get(tkey) or [] if k in members]
             pick_keys += [c["key"] for c in ctx["cands"] if c.get("picked") and c["key"] not in pick_keys]
+            jobs = _target_jobs(m, crop["id"], tid)
+            cur_cells = {j.get("cell_key") for j in jobs}
             cands = []
             for n, c in enumerate(ctx["cands"], 1):
                 e = ctx["entries"][c["key"]]
                 info = c.get("origin_info") or {}
                 ck, call_id, rep = _cell_of(c)
+                call = call_by_id.get(call_id) if call_id else None
                 gates = _gates_out(e)
                 reg = _reg_out(e)
                 joint = None  # 다중 타깃 작업의 결과 = 같은 이미지가 타깃마다 후보로 등록됨 → ★ 는 첫 타깃에만
@@ -1381,6 +1415,9 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
                     "rejected": bool(rejects.get(c["key"])),
                     "cell_key": ck, "call_id": call_id, "rep": rep, "variant": info.get("variant"),
                     "model": info.get("model"), "quality": info.get("quality"),
+                    # 원장 calls 의 완료 시각·승인 종류(후보 캡션), 지금 jobs 에 없는 셀(설정·입력이 바뀌기 전 셀 — 옛 셀)
+                    "done": call.get("finished") if call else None, "via": _call_via(call),
+                    "old_cell": bool(ck and cur_cells and ck not in cur_cells),
                     "analysis": "ok" if _usable(e) else ("nosrc" if e and e.get("no_source")
                                                          else "skipped" if e and e.get("skipped") else "none"),
                     "gates": gates, "reg": reg, "reframed": bool(reg and reg.get("applied")),
@@ -1402,11 +1439,11 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
                     "file_url": _furl(rk, c["file"]),
                 })
             cells = []
-            for j in _target_jobs(m, crop["id"], tid):
+            for j in jobs:
                 ck = j["cell_key"]
                 cells.append({"cell_key": ck, "variant": j.get("variant"), "tids": _job_tids(j),
                               "reps": int(j.get("reps") or 1), "rerolls": int(rerolls.get(ck) or 0),
-                              "pending": pending.get(ck, 0), "model": j.get("model"), "quality": j.get("quality"),
+                              "pending": pending.get(ck, 0), "pre": pre_cells.get(ck, 0), "model": j.get("model"), "quality": j.get("quality"),
                               "size": j.get("size"), "n": j.get("n"), "est_usd": _est_usd(j)})
             refs = [{"index": i, "file": r, "thumb_url": _turl(rk, "ref", f"{tkey}/{i}", BIG_SIZE, _sig("ref", BIG_SIZE, r)),
                      "file_url": _furl(rk, r)} for i, r in enumerate(_target_refs(m, crop["id"], tid))]
@@ -1427,7 +1464,6 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
                           "mock": sum(1 for c in cands if c["mock"]), "rejected": len(cands) - len(live)},
                 "warnings": list(crop.get("warnings") or []),
             })
-    calls = [x for x in m.get("calls") or [] if isinstance(x, dict)]
     crops = _crop_summaries(m, targets, calls)
     by_id = {c["id"]: c for c in lay["crops"]} if lay else {}
     refs_dir = _refs_dir(m)
@@ -1436,8 +1472,14 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
     draft_rows = (plan or {}).get("draft", {}).get("by_crop") or {}
     busy = running or drafting
     for c, mc in zip(crops, m["crops"]):  # 레이아웃 대 매니페스트(검토 모드 목록의 "미반영" 칩)
-        c["layout_status"] = (None if lay is None else "removed" if c["id"] not in by_id
-                              else _layout_status(by_id[c["id"]], mc)[0])
+        status, changed = (None, []) if lay is None else ("removed", []) if c["id"] not in by_id else _layout_status(by_id[c["id"]], mc)
+        c["layout_status"] = status
+        # 바뀐 크롭의 레이아웃 값(요약의 name·rect 는 마지막 반영 = 매니페스트 값) — 진행(G) 반영 칸의 크롭별 줄·[되돌리기]
+        lc = by_id.get(c["id"])
+        c["layout_diff"] = None if status != "changed" else {
+            "fields": changed, "name": lc["name"], "rect": lc["rect"],
+            "targets": _targets_text(lc["targets"]) if "targets" in changed else None,
+            "targets_was": _targets_text(store.parse_crop_layer_name(mc.get("layer_name") or "")["targets"]) if "targets" in changed else None}
         d = draft_rows.get(c["id"]) or {}
         c["draft_chip"] = None if plan is None else {
             "wait": list(d.get("wait") or []), "refresh": bool(d.get("refresh")), "adopt": d.get("adopt"),
@@ -1466,12 +1508,15 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
     return {
         "rev": m["rev"], "project": m.get("project"), "root_key": rk, "backend_mock": _mock_active(root),
         **flags, "time": time.strftime("%H:%M:%S"),
-        "pending_calls": sum(pending.values()), "pending_preapproved": preapproved, "rerolls_total": sum(int(v or 0) for v in rerolls.values()),
+        "pending_calls": sum(pending.values()), "pending_preapproved": sum(pre_cells.values()), "rerolls_total": sum(int(v or 0) for v in rerolls.values()),
         "counts": {"targets": len(targets), "candidates": len(m["candidates"]), "rejected": len(rejects),
                    "picks": sum(len(t["pick_keys"]) for t in targets)},
         "orphan_candidates": sum(1 for c in m["candidates"] if c.get("crop_id") not in crop_ids),
         "cost": _cost(calls),
         "canvas": canvas,
+        # 레이아웃에만 있는 크롭(다음 반영에서 새로 생김 — 크롭 요약에는 없음). 레이아웃이 없으면 null
+        "layout_added": None if lay is None else [{"id": x["id"], "name": x["name"], "rect": x["rect"]}
+                                                  for x in lay["crops"] if x["id"] not in crop_ids],
         "crops": crops,
         "targets": targets,
     }
@@ -1668,6 +1713,11 @@ def _layout_or_none(root: str) -> dict | None:
         return store.load_layout(root)
     except ValueError:
         return None
+
+
+def _targets_text(targets: list[dict]) -> list[str]:
+    """대상 목록 → 크롭별 줄의 문구("A: 문구", 빈 문구는 tid 만)."""
+    return [f"{t['tid']}: {t['text']}" if t["text"] else t["tid"] for t in targets]
 
 
 def _layout_status(crop: dict, mc: dict | None) -> tuple[str, list[str]]:
@@ -2035,15 +2085,16 @@ def _fix_before_rename(root: str, rev: int, crop_id: str, name) -> bool:
     return bool(made)
 
 
-def _unpin_rename(root: str, crop_id: str) -> None:
+def _unpin_rename(root: str, crop_id: str, name: str | None = None) -> None:
     """레이아웃 쓰기가 거절된 이름 바꾸기의 고정(_fix_before_rename 이 만든 것)을 되돌린다 — layout_crop 의 _refs_write_lock 안이라 그 사이 다른
     창의 레퍼런스 쓰기·이름 바꾸기는 끼지 않는다(why rename·auto 가 아니면 그대로). 만든 refs.json 은 남는다(빈 links = 연결 없음과 같음).
+    name = restore_manifest 로 되돌린 이름 — 고정이 그 이름(바꾸기 전 이름)으로 만든 것일 때만 푼다.
     다른 프로세스의 refs.json 쓰기와 겹치면 지금 판에 한 번 더."""
     refs_dir = _refs_dir(store.load_manifest(root))
 
     def undo(d):
         fx = (d["links"].get(crop_id) or {}).get("fixed") or {}
-        if fx.get("why") == "rename" and fx.get("auto"):
+        if fx.get("why") == "rename" and fx.get("auto") and (name is None or fx.get("name") == name):
             del d["links"][crop_id]
 
     for _ in range(2):
@@ -2068,6 +2119,9 @@ def layout_crop(root: str, rev: int, op: str, data: dict) -> dict:
     건너뛴다 — 이관된 비정상 값(규칙 밖 이름·이름 중복·캔버스 밖·비 > 3·긴 문구)도 되돌릴 수 있게(구조는 validate_layout,
     이름 중복은 그 경고). add 의 위치 = index(선택, 넘으면 끝), 없으면 그 판의 위치, 그것도 없으면 끝 — crops 순서 = 매니페스트
     순서(§1.2)라 되살린 크롭이 화풍 초안·보고서 순서를 바꾸지 않게.
+    restore_manifest(선택, update 만 — 진행(G) 반영 칸의 [되돌리기]) = restore_rev 대신 마지막 반영(매니페스트)의 같은 id 크롭을 되돌릴
+    판으로: 보낸 name·rect 는 그 값과 같아야 하고(다르면 409 — 그 사이 반영으로 매니페스트가 바뀜) 값 규칙 검사를 건너뛴다. 이름 유일성은
+    검사(이관 중복만 허용), 이름 되돌리기는 레퍼런스를 새로 고정하지 않고 그 이름의 자동 고정을 푼다(매니페스트에 그 크롭이 없으면 404).
     반환 {ok, rev, crop: 그 크롭의 /layout 행 | null(delete), checks: {crop_id: 검사}} — 겹침 등 다른 크롭의 검사도 바뀐다. delete 는
     + index(지운 위치). 쓰기 뒤 응답을 만들지 못하면(쓰기는 됨) crop null·checks {}·warning."""
     if op not in ("add", "update", "delete"):
@@ -2079,9 +2133,13 @@ def layout_crop(root: str, rev: int, op: str, data: dict) -> dict:
     if op == "update" and not fields:
         raise _Reject(400, "update 에 바꿀 것(name·rect·targets·note)이 없습니다")
     restore_rev = _opt_count(data, "restore_rev")
+    restore_manifest = data.get("restore_manifest", False)
+    if not isinstance(restore_manifest, bool) or (restore_manifest and (op != "update" or restore_rev is not None)):
+        raise _Reject(400, "restore_manifest 는 true·false — update 에만, restore_rev 와 함께 쓰지 않음")
     index = _opt_count(data, "index") if op == "add" else None
     targets = _targets_in(data["targets"]) if "targets" in data and op != "delete" else None
     rename = op == "update" and "name" in data
+    restored: list[str] = []  # restore_manifest 로 되돌린 이름(쓰기가 커밋되면 이름 바꾸기 자동 고정을 푼다)
 
     def mutate(lay):
         crops = lay["crops"]
@@ -2090,11 +2148,34 @@ def layout_crop(root: str, rev: int, op: str, data: dict) -> dict:
             del crops[at]
             return None, at
         pos, old = _restore_point(root, restore_rev, crop_id)
+        mnames: dict = {}  # 매니페스트 crop id → 이름(되돌리는 이름이 지금 다른 크롭과 겹치는지)
+        if restore_manifest:
+            mcrops = store.load_manifest(root)["crops"]
+            mc = next((c for c in mcrops if c.get("id") == crop_id), None)
+            if mc is None:
+                raise _Reject(404, f"마지막 반영(매니페스트)에 크롭이 없습니다: {crop_id}")
+            old = {"name": mc.get("name"), "rect": list(mc["rect"]), "targets": []}
+            mnames = {c.get("id"): c.get("name") or "" for c in mcrops}
+            # 보낸 이름·사각형 = 지금 마지막 반영 값이어야 함 — 줄을 그린 뒤 다른 창의 반영이 매니페스트를 바꿨으면(layout_rev 는 그대로) 옛 값으로
+            # 이미 반영된 크롭을 다시 바꾸지 않게(Codex 2차)
+            moved = [f for f in ("name", "rect") if f in data and data[f] != old[f]]
+            if moved:
+                raise _Reject(409, f"마지막 반영 값이 바뀌었습니다({'·'.join(moved)}) — 다른 창의 반영 등. 다시 그린 줄에서 다시")
         crop = {"id": None, "name": None, "rect": None, "targets": [{"tid": "A", "text": "", "box": None}],
                 "psd_name": data.get("psd_name"), "note": ""} if op == "add" else _crop_in_layout(lay, crop_id)
         if "name" in data:
             name = (data["name"] if old and data["name"] == old["name"]
                     else store.check_crop_name(data["name"], [c["name"] for c in crops if c is not crop])["name"])
+            if restore_manifest and name == old["name"]:
+                # 되돌리기는 값 규칙(이관된 규칙 밖 이름)만 건너뛴다 — 지금 다른 크롭이 그 이름이면 거절(그 크롭도 마지막 반영에서 같은 이름이던
+                # 이관 중복은 그대로 둠). 이름을 맞바꾼 두 크롭은 다른 쪽을 먼저 되돌리면 됨
+                key = _name_fold(name)
+                clash = [c for c in crops if c is not crop and _name_fold(c["name"]) == key and _name_fold(mnames.get(c["id"], "")) != key]
+                if clash:
+                    o = clash[0]
+                    raise _Reject(400, f"다른 크롭(ID {o['id']}" + (f", 마지막 반영 이름 {mnames[o['id']]}" if o["id"] in mnames else ", 새 크롭")
+                                  + f")이 지금 {name} 이름을 씀 — 그 크롭을 먼저 되돌리거나 편집(E)에서 이름을 바꾼 뒤 다시")
+                restored.append(name)
             if op == "update" and crop.get("psd_name") is None and name != crop["name"]:
                 crop["psd_name"] = crop["name"]  # Studio 에서 만든 크롭(psd_name 없음 = 이름으로 찾음)도 이름을 바꾸면 사전 편집은 처음 이름으로(D3)
             crop["name"] = name
@@ -2115,7 +2196,8 @@ def layout_crop(root: str, rev: int, op: str, data: dict) -> dict:
     # 이름 바꾸기 = 고정 → 레이아웃 쓰기 → (거절이면) 되돌리기를 레퍼런스 쓰기 잠금 하나 안에서 — 두 창이 같은 크롭 이름을 같은 rev 에서 동시에
     # 바꾸면 실패한 쪽의 되돌리기가 성공한 쪽에 필요한 고정을 지울 수 있었다(codex13). 잠금 순서 = 이것 → manifest_lock(_write_refs 와 같음)
     with _refs_write_lock(root) if rename else contextlib.nullcontext():
-        pinned = rename and _fix_before_rename(root, rev, crop_id, data["name"])
+        # 마지막 반영 이름으로 되돌리기는 고정하지 않는다 — 이름 매칭이 반영 때와 같아지는 것이 되돌리기
+        pinned = rename and not restore_manifest and _fix_before_rename(root, rev, crop_id, data["name"])
         try:
             (cid, gone_at), new_rev = store.update_layout(root, mutate, expect_rev=rev)
         except Exception:
@@ -2125,6 +2207,11 @@ def layout_crop(root: str, rev: int, op: str, data: dict) -> dict:
                 except Exception:  # 되돌리기 실패가 원래 거절(400·409)을 가리지 않게
                     logger.exception(f"{_TAG} Board: 거절된 이름 바꾸기의 레퍼런스 고정을 되돌리지 못함 {crop_id}")
             raise
+        if restored:  # 이름을 마지막 반영 값으로 되돌림 — 실수 이름 바꾸기가 남긴 자동 고정(그 이름 기준)도 풀어 이름 매칭으로(되돌리기 전과 같게)
+            try:
+                _unpin_rename(root, crop_id, restored[0])
+            except Exception:  # 레이아웃 쓰기는 커밋됨 — 고정이 남으면 '레퍼런스 미반영'으로 보일 뿐
+                logger.exception(f"{_TAG} Board: 되돌린 이름의 레퍼런스 자동 고정을 풀지 못함 {crop_id}")
     out = {"ok": True, "rev": new_rev}
     if op == "delete":
         out["index"] = gone_at

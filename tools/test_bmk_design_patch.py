@@ -15010,6 +15010,61 @@ await scenario("head", async () => {  // 깨진 layout.json = 오류만 · 반�
     confirm: [broken, applied, stale].flatMap((e) => e.confirms).at(-1) ?? "" };  // window.confirm 은 마지막 editor() 의 것
 });
 
+await scenario("applyLines", async () => {  // 사용성 §12: 반영(큐) 확인 창(applyWarn 다음) = 이 반영에 들어가는 크롭별 바뀜(바뀜·새·지움) 한 줄, 없으면 줄 없음 ·
+  // 같은 창 진행(G) [되돌리기](ownWrite: 이 창이 맞춘 판에서 쓴 것)는 Ctrl+Z 기록을 남기고, 다른 판에서 온 것은 그대로 비움
+  const env = await editor([crop("005_aaaaaa", "005_장식", [0, 0, 512, 512], { status: "changed", changed: ["rect"] }),
+    crop("006_bbbbbb", "006_띠", [512, 0, 1024, 512], { status: "changed", changed: ["name", "targets"] }), crop("007_n1", "007_새", [0, 512, 512, 1024], { status: "new" }), C1()],
+    { removed: [{ id: "008_cccccc", name: "008_끈", rect: [0, 0, 256, 256], candidates: 2, picks: 1 }] });
+  env.button(env.head, "반영(큐)").fire("click");
+  await sleep(30);
+  const first = env.confirms.at(-1).split("\n")[0];
+  const clean = await editor([C1()]);
+  clean.button(clean.head, "반영(큐)").fire("click");
+  await sleep(30);
+  const plain = clean.confirms.at(-1).split("\n")[0];
+  // Ctrl+Z 기록: 지우기 1단계(rev 0 → 1) 뒤 같은 창 G 가 rev 1 → 2 로 씀(ownWrite) → 다시 들어와도 기록 남음, 다른 창이 2 → 3 으로 쓰면 비움
+  const own = await editor([C1(), crop("002_bbbbbb", "002_눈", [512, 0, 1024, 512])]);
+  await own.pick("002_눈");
+  own.key("Delete");
+  await sleep(60);
+  const undo0 = own.toasts.filter((t) => t.includes("Ctrl+Z")).length;
+  own.srv.lay.rev += 1;  // G [되돌리기] 쓰기(서버 rev 1 → 2)
+  own.ed.ownWrite(1, 2);
+  own.ed.leave();
+  own.ed.enter({ rev: 1, layout_rev: 2, canvas: [3072, 4096], crops: [] });
+  await sleep(40);
+  const kept = { toasts: own.toasts.slice(), undoBtn: !own.button(own.head, "되돌리기").disabled };
+  own.srv.lay.rev += 1;  // 다른 창의 쓰기(2 → 3) — ownWrite 없음
+  own.ed.ownWrite(1, 2); // 맞춘 판(2)이 아닌 from 은 무시
+  own.ed.leave();
+  own.ed.enter({ rev: 1, layout_rev: 3, canvas: [3072, 4096], crops: [] });
+  await sleep(40);
+  // Codex 3차: [되돌리기](ownWrite) 전에 보낸 읽기(옛 판)의 늦은 응답은 기록을 비우지 않음 — ownWrite 가 쓰기 세대를 올려 그 응답을 버림
+  const srvR = server([C1()]);
+  let gate = null;
+  const sess = E.session(API, "abcdef012345", async (u, o) => {
+    const r = await srvR.fetch(u, o);  // 응답은 요청 순간의 판
+    if (gate && (!o || !o.method)) await gate;
+    return r;
+  });
+  await sess.load();
+  sess.undo.push({ fwd: {}, inv: {} });
+  let release = null;
+  gate = new Promise((r) => { release = r; });
+  const late = sess.load();
+  await sleep(5);
+  srvR.lay.rev = 1;  // G [되돌리기] 쓰기
+  sess.ownWrite(0, 1);
+  release();
+  await late;
+  gate = null;
+  const race = { afterLate: sess.undo.length, rev: sess.L.rev };
+  await sess.load();
+  race.afterFresh = sess.undo.length;
+  return { first, plain, undo0, kept, race, cleared: { undoBtn: !own.button(own.head, "되돌리기").disabled, notice: own.panel.textContent.includes("실행 취소 기록을 비웠습니다")
+    || own.head.textContent.includes("실행 취소 기록을 비웠습니다") || own.toasts.some((t) => t.includes("실행 취소 기록을 비웠습니다")) } };
+});
+
 await scenario("refs", async () => {  // 이름을 바꾸는 중: 멈춘 뒤 GET layout/refs 한 번 → 바꾼 뒤 레퍼런스·새 셀 경고·옛 이름 파일 경고
   const env = await editor([crop("009_c0ffee", "009_휘장", [0, 0, 512, 512],
     { refs: { n: 1, first: "009_휘장_t.png" }, history: { candidates: 3, picks: 1, spec: true, by_file: 2 } })], { refs_dir: true });
@@ -15391,6 +15446,17 @@ def layout_js_unit():
           and "대기 재굴림" not in hc and "함께 돕니다" not in hc and "원장에만 남은 초안" in hc
           and hc.split("\n")[0] == "prepare.model: 마지막 Prepare a · Studio b — 그래프와 Studio 를 번갈아 돌리면 셀이 바뀌어 다시 과금 대상",
           f"J-L3 S3 반영(큐) 확인 창 = Prepare 갈라짐(applyWarn) 줄 맨 앞·무료 반영·재굴림은 돌지 않음(과금 줄 없음)·초안 병합 정보 줄 {hc!r}")
+    al = ej.get("applyLines") or {}
+    check(al.get("first") == "이 반영에 들어가는 레이아웃 바뀜 4건: 005_장식(사각형) · 006_띠(이름·대상) · 007_새(새 크롭) · 008_끈(지움) — 실수면 취소 → "
+                             "Ctrl+Z(이 창의 편집) 또는 진행(G) 반영 칸 [되돌리기]"
+          and (al.get("plain") or "").startswith("반영(큐): 무료 반영"),
+          f"§12 편집(E) 반영(큐) 확인 창 = 크롭별 바뀜 한 줄(바뀐 필드·새 크롭·지움), 바뀜이 없으면 그 줄 없음 {al}")
+    kp, cl = al.get("kept") or {}, al.get("cleared") or {}
+    check(al.get("undo0") == 1 and kp.get("undoBtn") is True and not any("실행 취소 기록을 비웠습니다" in t for t in kp.get("toasts", []))
+          and cl.get("undoBtn") is False,
+          f"§12 리뷰 pipeline-01: 같은 창 G [되돌리기](ownWrite — 맞춘 판에서 씀)는 편집기 Ctrl+Z 기록(지운 크롭 같은 ID 되살리기)을 남기고, 다른 창의 쓰기는 비움 {al}")
+    check(al.get("race") == {"afterLate": 1, "rev": 0, "afterFresh": 1},
+          f"Codex 3차: [되돌리기] 전에 보낸 읽기(옛 판 rev 0)의 늦은 응답은 버림(기록 남음), 다음 읽기(rev 1 = 맞춘 판)도 남김 {al.get('race')}")
     rf = ej["refs"]
     check(rf.get("gets") == ["009_모자", "009_모자장식"] and "레퍼런스가 바뀌어" in rf["note"] and "mapping_json" in rf["note"]
           and "없음" in (rf["after"] or ""), f"J-L3 이름을 바꾸는 중: 멈춘 뒤 refs 한 번 → 바꾼 뒤 레퍼런스·새 셀·옛 이름 파일 경고 {rf}")
@@ -22205,7 +22271,7 @@ await scenario("c6cBoardPoll", async () => {
   const full = () => Object.assign({}, env.st, { running: false, drain: false, layout_rev: null, refs_files_v: bs.files_v,
     crops: [{ id: "009_f21344", name: "009_모자본체_휘장", layout_status: null, refs: bs.refs, calls: 0, dup_picks: [], stale_picked: [], warnings: [] }] });
   const renders = [];
-  const bctx = vm.createContext({ URLSearchParams, URL, Error, ROOT: KEY, S: null, polling: false, pollAgain: false, editing: false, editor: null,
+  const bctx = vm.createContext({ URLSearchParams, URL, Error, ROOT: KEY, S: null, polling: false, pollAgain: false, cycle: null, editing: false, editor: null,
     refsOn: true, refEd: env.ed, apiUrl: API, readJson: (r) => r.json(), reconcile: () => {}, renderHeader: () => {}, setConn: () => {},
     LAYOUT_STATUS: {}, credits: () => "", seamsByCrop: new Map(), chip: (text) => text,
     fetch: async (u) => {
@@ -22216,7 +22282,7 @@ await scenario("c6cBoardPoll", async () => {
         refs_files_v: d.refs_files_v } : d;
       return { ok: true, status: 200, json: async () => JSON.parse(JSON.stringify(body)) };
     } });
-  vm.runInContext([c6cFn(src, "getState"), c6cFn(src, "refresh"), c6cFn(src, "cropChips")].join("\n"), bctx);
+  vm.runInContext([c6cFn(src, "getState"), c6cFn(src, "refresh"), c6cFn(src, "pollState"), c6cFn(src, "cropChips")].join("\n"), bctx);
   bctx.renderAll = () => renders.push(bctx.S.crops.map((c) => {
     const ch = [];
     bctx.cropChips({ append: (...x) => ch.push(...x) }, c);
@@ -27711,6 +27777,7 @@ function server() {
     } else if (path === "pipeline/progress") r = pick(srv.route.progress) || [200, R["GET /pipeline/progress"].alt.idle];
     else if (path === "draft") r = pick(srv.route.draft) || [200, R["GET /draft"].ok];
     else if (path === "draft/adopt") r = srv.adopt.length ? srv.adopt.shift() : pick(srv.route.adopt) || [200, R["POST /draft/adopt"].ok];
+    else if (path === "layout/crop") r = pick(srv.route.layoutCrop) || [200, { ok: true, rev: (body.rev || 0) + 1, crop: null, checks: {} }];  // 반영 칸 [되돌리기](§12)
     else if (path === "api/prompt") {
       if (srv.promptDelay) await sleep(srv.promptDelay);
       srv.n += 1;
@@ -28124,6 +28191,7 @@ await scenario("rerollTab", async () => {  // board.js reroll(r1-04·S3b 계약 
       pipe: { applyWarn: () => ["prepare.n: 마지막 Prepare 4 · Studio 2 — 갈라짐 줄"], paidWhy: () => "ComfyUI 탭이 큐를 처리하는 중",
         paidLock: () => lock, side: "부수 효과 줄" },
       write: async (path) => { c.writes.push(path); return { variant: "V1", cell_pending: 1, pending_calls: 1 }; }, queueReroll: (...a) => c.queued.push(a) });
+    vm.runInContext(`busy = false; rerollSent = null; cellPre = ${boardFn("cellPre")}; rerollHold = ${boardFn("rerollHold")}`, rc); // 키보드 R 거절(사용성 §12 — 이 셀 대기·실행 중·이 Studio 유료 요청 중)
     return [c, vm.runInContext(`(${src})`, rc)];
   };
   const one = async (way, fromButton, lock = "") => {
@@ -28711,6 +28779,71 @@ await scenario("panelDim", async () => {  // 해시 흐림·복사 끔(§3.3): �
     layoutDup: await scene({ S: (S) => { same(S); S.crops[2].layout_status = "changed"; },
       plan: (p) => { p.draft.import_pending = ["레이아웃 미반영(rev 7)", "레퍼런스 미반영(2크롭)"]; } }),
   };
+});
+
+await scenario("layoutBack", async () => {  // 사용성 §12 반영 칸 [되돌리기]: 줄을 그린 state 의 layout_rev 로 보냄(그 뒤 새 state 가 와도 남은 옛 단추는 옛 rev — 서버 409),
+  // body = update + 바뀐 이름·사각형의 매니페스트 값 + restore_manifest, 확인 창 취소 = 보내지 않음, 409 = 오류 토스트 + state 다시
+  const srv = server();
+  srv.route.pipeline = [200, Object.assign(clone(R["GET /pipeline"].ok), { confirm: [], drift: [] })];
+  srv.route.plan = (q) => {
+    const p = clone(q.only ? R["GET /pipeline/plan"].ok : R["GET /pipeline/plan"].alt.no_selection);
+    Object.assign(p, { notes: [], apply_pending: [] });
+    p.draft.import_pending = [];
+    return [200, p];
+  };
+  const env = mkPanel(srv);
+  const st = (rev, rect) => {
+    const S = boardState();
+    S.crops.forEach((c) => { c.layout_status = "same"; c.layout_diff = null; });
+    const c = S.crops[2];  // state 크롭 요약의 rect = 마지막 반영(매니페스트) 값 — 대역 boardState 에는 없어 넣음
+    Object.assign(c, { rect: [0, 384, 384, 768], layout_status: "changed",
+      layout_diff: { fields: ["name", "rect"], name: "003_새이름", rect, targets: null } });
+    return Object.assign(S, { layout_rev: rev });
+  };
+  const S7 = st(7, [128, 0, 512, 384]);
+  env.pipe.stateChanged(S7);
+  await sleep(30);
+  env.pipe.enter(S7, "001_38a818");
+  await sleep(60);
+  const old = env.B("되돌리기");
+  const row = old ? old.parent.own : null;
+  env.pipe.stateChanged(st(8, [256, 0, 640, 384]));  // 다른 창이 그 크롭을 또 옮김 — 패널은 다시 그려지고 옛 단추는 떨어져 남음
+  await sleep(40);
+  const fresh = env.B("되돌리기");
+  const posts = () => srv.log.filter((x) => x.path === "layout/crop").map((x) => x.body);
+  old.fire("click");
+  await sleep(30);
+  fresh.fire("click");
+  await sleep(30);
+  const sent = posts();
+  const n0 = env.confirms.length;
+  const r0 = env.refresh;
+  srv.route.layoutCrop = [409, { error: "레이아웃이 다른 창에서 바뀌었습니다(rev 8 → 9) — 새로고침" }];
+  env.B("되돌리기").fire("click");
+  await sleep(30);
+  const conflict = { toast: env.toasts.at(-1), refresh: env.refresh - r0, posts: posts().length };
+  ctx.window.confirm = (m) => { env.confirms.push(m); return false; };
+  env.B("되돌리기").fire("click");
+  await sleep(30);
+  const declined = { posts: posts().length, confirms: env.confirms.length - n0 };
+  // 리뷰 tests-07: 왼쪽 목록 '레이아웃 미반영' 칩 마우스 = 그 크롭 줄, [반영] 확인 창 = 레이아웃 줄(크롭별) → 무료 반영 줄(취소 — 큐 없음)
+  const chipEl = env.list.all().find((e) => e.classList && e.classList.contains("chip") && e.textContent === "레이아웃 미반영");
+  env.B("반영").fire("click");
+  await sleep(60);
+  const apply = env.confirms.at(-1).split("\n");
+  // Codex 3차: 같은 크롭의 대상 문구도 바뀌었으면 [되돌리기] 확인 창이 '새 셀 안 생김'을 단정하지 않음(대상 문구는 남음)
+  const S9 = st(9, [256, 0, 640, 384]);
+  S9.crops[2].layout_diff.fields = ["name", "rect", "targets"];
+  Object.assign(S9.crops[2].layout_diff, { targets: ["A: 새 문구"], targets_was: ["A"] });
+  env.pipe.stateChanged(S9);
+  await sleep(40);
+  env.B("되돌리기").fire("click");
+  await sleep(30);
+  const restConfirm = env.confirms.at(-1);
+  env.pipe.leave();
+  return { found: !!old, row, sent, confirm: env.confirms[0], toast: env.toasts.find((t) => t.startsWith(":되돌림")), conflict, declined,
+    chipTitle: chipEl ? chipEl.title : null, apply: apply.slice(0, 3), prompts: srv.count("api/prompt"), restConfirm,
+    crop: { id: S7.crops[2].id, name: S7.crops[2].name, rect: S7.crops[2].rect } };
 });
 
 function mkPanel(srv, store = mem()) {
@@ -30490,10 +30623,11 @@ await scenario("pollOld", async () => {  // r3-16: board.js 폴링 — unchanged
   const one = async (unchanged) => {
     const c = { gets: [], piped: [] };
     const S0 = { rev: 5, running: false, drain: false, layout_rev: 1, refs_rev: 1, refs_files_v: "v1", pipeline_rev: 3, plan_v: "r:a|d:b", crops: [], targets: [] };
-    const vctx = vm.createContext({ polling: false, pollAgain: false, S: S0, editing: false, refsOn: false, editor: null, refEd: null,
+    const vctx = vm.createContext({ polling: false, pollAgain: false, cycle: null, S: S0, editing: false, refsOn: false, editor: null, refEd: null,
       getState: async (force) => { c.gets.push(!!force); return force ? { rev: 5, running: false, drain: false, crops: [], targets: [] } : clone(unchanged); },
       reconcile() {}, renderAll() {}, renderHeader() {}, setConn() {}, pipe: { stateChanged: (st) => c.piped.push("pipeline_rev" in st) } });
-    await vm.runInContext(`(${src})`, vctx)(false);
+    vm.runInContext(`pollState = ${boardFn("pollState")}; refresh = ${src};`, vctx); // 사용성 §12: refresh = 도는 폴링의 약속 + pollState(다시 받기는 refresh)
+    await vctx.refresh(false);
     return Object.assign(c, { pipelineRev: "pipeline_rev" in vctx.S });
   };
   const base = { unchanged: true, rev: 5, running: false, drain: false, layout_rev: 1, refs_rev: 1, refs_files_v: "v1" };
@@ -31074,10 +31208,11 @@ def pipeline_js_unit():
         check("ComfyUI 탭에 큐 요청을 보냅니다" not in conf["lock"] and "부수 효과 줄" not in conf["lock"]
               and conf["lock"].endswith("유료 호출이 사전 승인됩니다 — 지금은 큐를 보내지 않음(Run 승인 요청을 처리하는 중): 재굴림은 예약만 되고 머리줄 'ComfyUI 큐'로 "
                                         "보내거나 다음 Run 때(선택과 무관) 함께 과금됩니다. 계속할까요?")
-              and any("지금은 예약만(Run 승인 요청을 처리하는 중 — 머리줄 'ComfyUI 큐' 또는 다음 Run 때 과금)" in t for t in rt["lockKey"]["toasts"])
+              and rt["lockKey"]["toasts"] == ["warn:R 무시 — Run 승인 요청을 처리하는 중. 더 넣으려면 [재굴림 +1] 단추(확인 창에 누적 건수)"]
               and rt["lockKey"]["writes"] == [],
-              f"r1-25 유료 탭 길인데 이 Studio 가 유료 요청·실행·무료 큐 중(pipe.paidLock — pipe.reroll 이 보내지 않고 예약만)이면 R 확인 창·첫 R 토스트 = "
-              f"'지금은 큐를 보내지 않음(이유) — 예약만'(큐 요청을 보낸다·부수 효과 줄 없음) {conf['lock']!r} {rt['lockKey']['toasts']}")
+              f"r1-25 유료 탭 길인데 이 Studio 가 유료 요청·실행·무료 큐 중(pipe.paidLock — pipe.reroll 이 보내지 않고 예약만)이면 R 확인 창 = "
+              f"'지금은 큐를 보내지 않음(이유) — 예약만'(큐 요청을 보낸다·부수 효과 줄 없음), 키보드 R 은 무장하지 않음(사용성 §12 rerollHold) "
+              f"{conf['lock']!r} {rt['lockKey']['toasts']}")
         check("ComfyUI 탭에 큐 요청을 보냅니다" not in conf["lockOpener"]
               and "지금은 큐를 보내지 않음(Run 승인 요청을 처리하는 중): 재굴림은 예약만 되고 머리줄 'ComfyUI 큐'로" in conf["lockOpener"]
               and no_tab in conf["lockNoTab"] and "지금은 큐를 보내지 않음(Run" not in conf["lockNoTab"],
@@ -31283,7 +31418,7 @@ def pipeline_js_unit():
     pn = res.get("panel") or {}
     if "head" in pn:
         check(all(x in pn["head"] for x in ("반영 필요 2", "설정 확인 필요", "Run 승인 필요(전체) 4건 $2.4", "초안 1", "★ 3/5", "Export r76"))
-              and pn["headTitle"] == "레이아웃 미반영 1\nPrepare 입력이 바뀜(마지막 Prepare 뒤 스펙·레이아웃·레퍼런스·용어집)"
+              and pn["headTitle"] == "레이아웃 미반영 1\n · 003_리본 — 레이아웃 미반영\nPrepare 입력이 바뀜(마지막 Prepare 뒤 스펙·레이아웃·레퍼런스·용어집)"
               and pn["firstPlan"] == [{"root": "fe410d7f025d"}],
               f"패널 머리줄(모든 모드) = 반영 필요(state 미반영 크롭과 계획 apply_pending·import_pending 의 '레이아웃 미반영(rev 7)'은 한 번만 + "
               f"apply_pending 의 Prepare 입력 바뀜)·설정 확인·Run 승인 필요(전체 — only 없는 계획)·"
@@ -31390,16 +31525,36 @@ def pipeline_js_unit():
         ls, lc, ln, lu = pd["layoutSame"], pd["layoutChanged"], pd["layoutNew"], pd["layoutDup"]
         check(ls["copy"] == [False, False] and ls["dimRow"] is False and ls["head"] == "반영됨" and ls["chip"] is False and ls["checks"] == [],
               f"layout_status 'same'(반영됨) = 미반영 아님 — 머리줄 반영됨·칩 없음·★ 점검 줄 없음·해시 복사 켬 {ls}")
-        check(lc["head"] == "반영 필요 1" and lc["headTitle"] == "레이아웃 미반영 1" and lc["chip"] is True
-              and lc["checks"] == ["003_리본 — 레이아웃 미반영(반영 뒤 Export)"],
-              f"layout_status 'changed' = 미반영 1(칩·★ 크롭 줄) {lc}")
+        check(lc["head"] == "반영 필요 1" and lc["headTitle"] == "레이아웃 미반영 1\n · 003_리본 — 레이아웃 미반영" and lc["chip"] is True
+              and lc["checks"] == ["003_리본 — 레이아웃 미반영(반영 뒤 Export)"]
+              and lc["apply"][:2] == ["레이아웃 미반영 1", " · 003_리본 — 레이아웃 미반영"] and lc["apply"][2].startswith("반영하면 이 크롭들은 새 셀"),
+              f"layout_status 'changed' = 미반영 1(칩·★ 크롭 줄·머리줄 제목과 반영 칸의 크롭별 줄 — layout_diff 없는 옛 서버는 사유만) {lc}")
         check(ln["head"] == "반영 필요 1" and ln["headTitle"] == "레이아웃 미반영(rev 8)" and ln["chip"] is False
               and ln["checks"] == ["반영 필요: 레이아웃 미반영(rev 8) — 반영 뒤 Export"],
               f"state 미반영 크롭 0 이면 계획의 레이아웃 사유(layout.json 에만 있는 새 크롭 등)를 그대로 셈 {ln}")
-        check(lu["head"] == "반영 필요 2" and lu["headTitle"] == "레이아웃 미반영 1\n레퍼런스 미반영(2크롭)"
+        check(lu["head"] == "반영 필요 2" and lu["headTitle"] == "레이아웃 미반영 1\n · 003_리본 — 레이아웃 미반영\n레퍼런스 미반영(2크롭)"
               and lu["checks"] == ["003_리본 — 레이아웃 미반영(반영 뒤 Export)", "반영 필요: 레퍼런스 미반영(2크롭) — 반영 뒤 Export"]
               and pd["pending"]["checks"] == ["반영 필요: 레퍼런스 미반영(2크롭) — 반영 뒤 Export"],
               f"같은 레이아웃 원인은 한 번만(state 크롭 수 + 계획의 다른 사유), ★ 점검 '반영 필요' 줄 = 크롭 줄에 없는 사유 {lu}")
+    lb = res.get("layoutBack") or {}
+    if "found" in lb:
+        cp = lb["crop"]
+        want_body = lambda rev: {"root": "fe410d7f025d", "rev": rev, "op": "update", "id": cp["id"], "restore_manifest": True,
+                                 "name": cp["name"], "rect": cp["rect"]}
+        check(lb["found"] and lb["row"].startswith(f" · {cp['name']} — 이름 → 003_새이름 · 위치 [") and lb["sent"] == [want_body(7), want_body(8)]
+              and "되돌린 뒤에도 '반영 필요(Prepare 입력이 바뀜)'는 남으니 무료 [반영]을 한 번" in lb["confirm"]
+              and lb["toast"] == f":되돌림: {cp['name']} → 이름 {cp['name']} · 위치 [{', '.join(map(str, cp['rect']))}]"
+              and lb["conflict"] == {"toast": "err:레이아웃이 다른 창에서 바뀌었습니다(rev 8 → 9) — 새로고침 — 다시 그린 줄에서 다시", "refresh": 1, "posts": 3}
+              and lb["declined"] == {"posts": 3, "confirms": 2},
+              f"§12 [되돌리기]: 본문 = update·바뀐 이름·사각형의 매니페스트 값·restore_manifest, rev = 그 줄을 그린 state 의 layout_rev(새 state 뒤 남은 옛 단추는 "
+              f"옛 rev 7 — 서버 409 로 그 사이 편집을 덮지 않음, Codex 1차), 409 = 오류 토스트 + state 다시, 확인 창 취소 = 보내지 않음 {lb}")
+        line8 = f"{cp['name']} — 이름 → 003_새이름 · 위치 [0, 384, 384, 768] → [256, 0, 640, 384] (이동 오른쪽 256·위 384)"
+        check(lb["chipTitle"] == line8 and lb["apply"] == ["레이아웃 미반영 1건 — 이 반영에 들어감(아니면 취소 → 반영 칸 [되돌리기] 또는 편집(E)):", f" · {line8}",
+                                                          "무료 반영(Import → Prepare → Analyze → Review 템플릿, 탭 불필요)을 ComfyUI 대기열 앞에 넣습니다."]
+              and lb["prompts"] == 0 and "이 크롭의 이름·위치는 마지막 반영 그대로라 그것 때문에 새 셀(Run 승인)이 생기지는 않음." in lb["confirm"]
+              and "이 크롭의 대상 문구 바뀜은 남음 — 반영하면 새 셀(Run 승인 대상)이 될 수 있음" in (lb.get("restConfirm") or "")
+              and "그것 때문에 새 셀" not in (lb.get("restConfirm") or ""),
+              f"리뷰 tests-07: 왼쪽 '레이아웃 미반영' 칩 마우스 = 그 크롭 줄, [반영] 확인 창 = 크롭별 레이아웃 줄 → 무료 반영 줄(취소하면 큐 없음) {lb.get('chipTitle')!r} {lb.get('apply')}")
     ps = res.get("panelStyle") or {}
     if "plain" in ps:
         check(ps["box"] is True and ps["plain"]["q"] == {"root": "fe410d7f025d", "only": allids, "style": "0"} and ps["plain"]["copies"] == [[False, d_title], [False, r_title]],
@@ -35993,6 +36148,7 @@ await scenario("gate", async () => {  // r1-09: 서버가 유료 템플릿을 �
         window: { confirm: (m) => { calls.confirms.push(m); return true; } }, toast: c.toast, rerollCell: () => ({ cell_key: "abcdef0123456789", variant: "V1" }),
         usd: () => " ≈ $0.62", curTarget: () => ({ crop_id: "001_38a818" }), tabWay: c.tabWay, tabLink: env.link, pipe: env.pipe,
         write: async () => ({}), queueReroll: c.queueReroll });
+      vm.runInContext(`cellPre = ${boardFn("cellPre")}`, rc); // 단추 확인 창 누적 줄(사용성 §12)
       await vm.runInContext(`(${boardFn("reroll")})`, rc)(true);
       c.queueReroll();
       c.comfyConnected = () => true;
@@ -36064,6 +36220,7 @@ await scenario("rerollHeld", async () => {  // r2-01·r2-09: R 확인 때 이 St
       window: { confirm: (m) => { k.confirms.push(m); return true; } }, toast: c.toast, rerollCell: () => ({ cell_key: "abcdef0123456789", variant: "V1" }),
       usd: () => " ≈ $0.62", curTarget: () => ({ crop_id: "001_38a818" }), tabWay: c.tabWay, tabLink: env.link, pipe: env.pipe,
       write: async () => ({}), queueReroll: c.queueReroll });
+    vm.runInContext(`busy = false; rerollSent = null; cellPre = ${boardFn("cellPre")}; rerollHold = ${boardFn("rerollHold")}`, rc); // 키보드 R 거절(사용성 §12)
     return Object.assign(k, { c, reroll: vm.runInContext(`(${boardFn("reroll")})`, rc) });
   };
   const r = {};
@@ -36571,10 +36728,10 @@ def _paid_js_studio():
         bt, ky = rd["button"], rd["key"]
         check(bt["at"] == {"way": "paid", "lock": lk_} and bt["freed"] == {"way": "paid", "lock": ""} and bt["timers"] == 1 and bt["confirm"] == conf_
               and bt["side"] is False and bt["sent"] == ["run"] and bt["toasts"][-1:] == [agreed]
-              and ky["at"] == bt["at"] and ky["freed"] == bt["freed"] and ky["timers"] == 1 and ky["sent"] == ["run"] and ky["toasts"][-1:] == [agreed]
-              and any(f"지금은 예약만({lk_} — 머리줄 'ComfyUI 큐' 또는 다음 Run 때 과금)" in t for t in ky["toasts"]),
+              and ky["at"] == bt["at"] and ky["freed"] == bt["freed"] and ky["timers"] == 0 and ky["sent"] == ["run"]
+              and ky["toasts"][:2] == [f"warn:R 무시 — {lk_}. 더 넣으려면 [재굴림 +1] 단추(확인 창에 누적 건수)"] * 2 and agreed not in ky["toasts"],
               f"r2-01 R 확인 때 이 Studio 가 Run 승인 응답을 기다림(lock) = '지금은 예약만'(부수 효과 줄 없음)에 동의 → 탭이 확정 거절(busy)로 lock 이 풀린 뒤 "
-              f"0.6초 큐 = 재굴림 메시지 0·'예약됨(동의함)' 토스트(버튼·키보드 R R) {bt} {ky}")
+              f"0.6초 큐 = 재굴림 메시지 0·'예약됨(동의함)' 토스트(버튼), 키보드 R R 은 그동안 무장하지 않음(사용성 §12 rerollHold — 쓰기·큐 0) {bt} {ky}")
         op = rd["opener"]
         mid, aft = op["mid"], op["after"]
         ot_ = "Open Board 로 연 ComfyUI 탭(확장 판 3): ComfyUI 탭이 큐를 처리하는 중. 재굴림·ComfyUI 큐는 지금은 예약만({} — 머리줄 'ComfyUI 큐' 또는 다음 Run 때 과금)"
@@ -37043,6 +37200,7 @@ await scenario("rerollMoved", async () => {
     window: { confirm: () => true }, toast: b.toast, rerollCell: () => ({ cell_key: "abcdef0123456789", variant: "V1" }), usd: () => " ≈ $0.62",
     curTarget: () => ({ crop_id: "001_38a818" }), tabWay: b.tabWay, tabLink: w.link, pipe: w.pipe,
     write: async (path) => { writes.push(path); return {}; }, queueReroll: (x) => { planned.push(x); b.queueReroll(x); } });
+  vm.runInContext(`busy = false; rerollSent = null; cellPre = ${boardFn("cellPre")}; rerollHold = ${boardFn("rerollHold")}`, rc); // 키보드 R 거절(사용성 §12)
   const reroll = vm.runInContext(`(${boardFn("reroll")})`, rc);
   await reroll(false);
   await busy(true);
@@ -37603,6 +37761,557 @@ def paid_node_unit():
 
 
 # ═════════════════════════════════════════════════════════════════
+# Studio 사용성(10/19 유료 스모크 메모 — STUDIO_S3_SPEC §12): 후보 완료 시각·옛 셀·안 본 후보 '새', 진행(G) 반영 칸의 크롭별 줄·
+# [되돌리기](restore_manifest), 키보드 R 연타 거절. --quick 포함, torch·comfy 없음
+# ═════════════════════════════════════════════════════════════════
+_UX_JS_HARNESS = r"""
+import fs from "node:fs";
+import vm from "node:vm";
+
+const IN = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const boardSrc = fs.readFileSync(IN.boardJs, "utf8");
+const boardFn = (name) => {
+  const m = new RegExp(`\n  (?:async )?function ${name}\\([^)]*\\) \\{[\\s\\S]*?\n  \\}\n`).exec(boardSrc);
+  if (!m) throw new Error(`board.js 에 ${name} 없음`);
+  return m[0].trim();
+};
+const boardConst = (name) => {
+  const m = new RegExp(`\n  const ${name} = [^\n]*;`).exec(boardSrc);
+  if (!m) throw new Error(`board.js 에 const ${name} 없음`);
+  return m[0].trim();
+};
+const out = {};
+async function scenario(name, fn) {
+  try {
+    out[name] = await fn();
+  } catch (e) {
+    out[name] = { error: String((e && e.stack) || e).slice(0, 800) };
+  }
+}
+function mem(init, broken) {
+  const m = new Map(Object.entries(init || {}));
+  const no = () => { throw new Error("저장소 막힘"); };
+  return { m, getItem: broken ? no : (k) => (m.has(k) ? m.get(k) : null), setItem: broken ? no : (k, v) => m.set(k, String(v)) };
+}
+
+// U-J1 pipeline.js layoutLines(크롭별 줄·되돌리기 값)
+await scenario("layoutLines", async () => {
+  const ctx = vm.createContext({ window: {}, URLSearchParams, setTimeout, clearTimeout, setInterval, clearInterval, console });
+  vm.runInContext(fs.readFileSync(IN.pipelineJs, "utf8"), ctx, { filename: "pipeline.js" });
+  const S = { crops: [
+    { id: "005_a", name: "005_장식", rect: [1248, 1120, 1760, 1760], layout_status: "changed", candidates: 2, picked_targets: 1,
+      layout_diff: { fields: ["rect"], name: "005_장식", rect: [1536, 1360, 2048, 2000], targets: null } },
+    { id: "006_b", name: "006_띠", rect: [512, 512, 1024, 1024], layout_status: "changed", candidates: 0, picked_targets: 0,
+      layout_diff: { fields: ["name", "rect"], name: "006_허리띠", rect: [384, 512, 1152, 896], targets: null } },
+    { id: "007_c", name: "007_손", rect: [0, 0, 256, 256], layout_status: "changed", candidates: 1, picked_targets: 0,
+      layout_diff: { fields: ["targets"], name: "007_손", rect: [0, 0, 256, 256], targets: ["A: 장갑", "B: 반지"] } },
+    { id: "008_d", name: "008_발", rect: [0, 0, 256, 256], layout_status: "removed", layout_diff: null, candidates: 4, picked_targets: 1 },
+    { id: "009_e", name: "009_옛", rect: [0, 0, 256, 256], layout_status: "changed", candidates: 0, picked_targets: 0 },
+    { id: "010_f", name: "010_같음", rect: [0, 0, 256, 256], layout_status: "same", layout_diff: null, candidates: 0, picked_targets: 0 },
+    { id: "012_h", name: "012_장갑", rect: [0, 0, 256, 256], layout_status: "changed", candidates: 0, picked_targets: 0,
+      layout_diff: { fields: ["targets"], name: "012_장갑", rect: [0, 0, 256, 256], targets: ["A: 왼손 장갑", "B"], targets_was: ["A"] } },
+  ], layout_added: [{ id: "011_g", name: "011_새", rect: [0, 640, 256, 896] }] };
+  return { lines: JSON.parse(JSON.stringify(ctx.window.DPPipeline.layoutLines(S))),
+    none: ctx.window.DPPipeline.layoutLines({ crops: S.crops.slice(5, 6), layout_added: null }), old: ctx.window.DPPipeline.layoutLines({ crops: [] }) };
+});
+
+// U-J2 board.js ranText·oldCell(후보 캡션·배지)
+await scenario("ranText", async () => {
+  const c = vm.createContext({});
+  vm.runInContext(`${boardConst("VIA")}; ranText = ${boardFn("ranText")}; oldCell = ${boardFn("oldCell")};`, c);
+  const r = (done, via) => c.ranText({ done, via });
+  return { reroll: r("2026-10-19 14:18:41", "reroll"), run: r("2026-10-15 14:57:01", "run"), retry: r("2026-10-15 15:30:10", "retry"),
+    none: r(null, null), noVia: r("2026-10-19 13:07:14", null), odd: r("어제", "run"),
+    oldCell: c.oldCell({ old_cell: true, stale_rect: false }), stale: c.oldCell({ old_cell: true, stale_rect: true }), cur: c.oldCell({ old_cell: false }) };
+});
+
+// U-J3 board.js 안 본 후보(syncSeen·saveSeen·markSeen·isNew — localStorage bmk-dp-seen:<root>)
+await scenario("seen", async () => {
+  const KEY = "bmk-dp-seen:fe410d7f025d";
+  const state = (...keys) => ({ targets: [{ candidates: keys.map((k) => ({ key: k })) }] });
+  const mk = (store, S) => {
+    const c = vm.createContext({ ROOT: "fe410d7f025d", S, seen: null, localStorage: store, JSON, editing: false, refsOn: false, pipeOn: false,
+      cKey: null, renders: 0 });
+    vm.runInContext(`${boardConst("SEEN_KEY")}; syncSeen = ${boardFn("syncSeen")}; saveSeen = ${boardFn("saveSeen")}; `
+      + `markSeen = ${boardFn("markSeen")}; isNew = ${boardFn("isNew")}; seeCurrent = ${boardFn("seeCurrent")}; `
+      + "renderTargets = () => { renders += 1; }; renderGrid = () => { renders += 1; };", c);
+    return c;
+  };
+  // Codex 1차: 진행(G)·편집(E)·레퍼런스(T) 모드의 크롭 선택은 후보를 보여 주지 않으므로 본 것으로 하지 않음 — 모드를 나와 검토 화면이 보일 때 지금 후보만(seeCurrent)
+  const g = mk(mem(), state("k1"));
+  g.syncSeen();
+  g.S = state("k1", "k2", "k3");
+  const gated = {};
+  for (const flag of ["pipeOn", "editing", "refsOn"]) {
+    g[flag] = true;
+    gated[flag] = { mark: g.markSeen("k2"), new2: g.isNew({ key: "k2" }) };
+    g.cKey = "k2";
+    g.seeCurrent();
+    gated[flag].renders = g.renders;
+    g[flag] = false;
+  }
+  g.seeCurrent();
+  gated.left = { new2: g.isNew({ key: "k2" }), new3: g.isNew({ key: "k3" }), renders: g.renders };
+  g.seeCurrent();
+  gated.again = g.renders;
+  const read = (st) => JSON.parse(st.m.get(KEY) || "null");
+  const first = mem();
+  const a = mk(first, state("k1", "k2"));
+  a.syncSeen();
+  const f = { saved: read(first), new1: a.isNew({ key: "k1" }) };
+  a.S = state("k1", "k2", "k3", "k4");
+  a.syncSeen(); // 두 번째 state — 기준을 다시 잡지 않음
+  f.new3 = a.isNew({ key: "k3" });
+  first.m.set(KEY, JSON.stringify(["k1", "k2", "k4", "k9"])); // 다른 창이 그 사이 본 것(k4) + 지금 없는 후보(k9)
+  a.markSeen("k3");
+  f.after = { new3: a.isNew({ key: "k3" }), new4: a.isNew({ key: "k4" }), saved: read(first) };
+  first.m.set(KEY, JSON.stringify(["k1", "k2", "k3", "k4", "k8"])); // 지운 후보 k8 이 남은 저장값 — 다음에 연 창이 지운다(리뷰 board-03)
+  const again = mk(first, state("k1", "k2", "k3", "k4", "k5"));
+  again.syncSeen();
+  const reopen = { new5: again.isNew({ key: "k5" }), new1: again.isNew({ key: "k1" }), saved: read(first) };
+  // 다른 창이 본 후보(storage 이벤트) — 이 창 '새'에서도 빠지고 다시 그림(리뷰 board-04), 다른 키·깨진 값은 무시
+  vm.runInContext(`onSeenStorage = ${boardFn("onSeenStorage")};`, again);
+  again.onSeenStorage({ key: "bmk-dp-seen:000000000000", newValue: JSON.stringify(["k5"]) });
+  again.onSeenStorage({ key: KEY, newValue: "{" });
+  reopen.ignored = { new5: again.isNew({ key: "k5" }), renders: again.renders };
+  again.onSeenStorage({ key: KEY, newValue: JSON.stringify(["k1", "k5"]) });
+  reopen.storage = { new5: again.isNew({ key: "k5" }), renders: again.renders };
+  const broken = mem({}, true);
+  const b = mk(broken, state("k1"));
+  b.syncSeen();
+  b.S = state("k1", "k2");
+  const blocked = { new1: b.isNew({ key: "k1" }), new2: b.isNew({ key: "k2" }) };
+  b.markSeen("k2");
+  blocked.after = b.isNew({ key: "k2" });
+  const before = mk(mem(), state("k1"));
+  return { f, reopen, blocked, gated, beforeSync: before.isNew({ key: "k1" }), emptyFirst: (() => {
+    const st = mem();
+    const e = mk(st, state());
+    e.syncSeen();
+    e.S = state("k5");
+    return { saved: read(st), new5: e.isNew({ key: "k5" }) };
+  })() };
+});
+
+// U-J4 board.js 키보드 R 거절(rerollHold)·버튼 누적 줄
+await scenario("rerollHold", async () => {
+  const run = async (o, ...seq) => {
+    // seq = 차례로: "R" = 키보드 R(사용자), "B" = [재굴림 +1] 단추, 함수 = 그 사이 state 가 바뀜(ctx, cell). write = 서버처럼 매니페스트 rev + 1 을
+    // 돌려주고, o.stale 이 아니면 state 다시 받기도 흉내(S.rev·셀 pre) — stale = 폴링이 돌던 중이라 S 가 낡은 채 busy 가 풀린 경우(리뷰 server-01)
+    const c = { confirms: [], toasts: [], writes: 0, queued: [] };
+    const cell = Object.assign({ cell_key: "abcdef0123456789", variant: "V1", est_usd: [0.62, 0.62] }, o.cell || {});
+    const S = Object.assign({ crops: [], running: false, rev: 10 }, o.S || {});
+    let serverRev = S.rev;
+    const ctx = vm.createContext({ S, LAYOUT_STATUS: {}, REROLL_CONFIRM_MS: 2500,
+      rerollArm: null, rerollSent: o.sent || null, busy: !!o.busy, Date, setTimeout: (fn) => { fn(); return 0; },
+      window: { confirm: (m) => { c.confirms.push(m); return true; } }, toast: (m, k) => c.toasts.push(`${k || ""}:${m}`),
+      rerollCell: () => cell, curTarget: () => ({ crop_id: "001_38a818" }), tabWay: () => "paid",
+      pipe: { applyWarn: () => [], paidWhy: () => "", paidLock: () => o.lock || "", side: "부수 효과 줄" },
+      write: async () => {
+        c.writes += 1;
+        serverRev += 1;
+        if (!o.stale) {
+          S.rev = serverRev;
+          cell.pre = (cell.pre || 0) + 1;
+        }
+        return { rev: serverRev, variant: "V1", cell_pending: 1, pending_calls: 1 };
+      },
+      queueReroll: (...a) => c.queued.push(a) });
+    vm.runInContext(`usd = ${boardFn("usd")}; cellPre = ${boardFn("cellPre")}; rerollHold = ${boardFn("rerollHold")}; reroll = ${boardFn("reroll")};`, ctx);
+    for (const k of seq) {
+      if (typeof k === "function") k(ctx, cell, () => serverRev);
+      else await ctx.reroll(k === "B", false);
+    }
+    return Object.assign(c, { pre: cell.pre || 0 });
+  };
+  const caught = (pre) => (x, cell, rev) => { x.S.rev = rev(); cell.pre = pre; };  // state 가 그 쓰기를 담아 옴(그 셀 대기 pre)
+  return { smoke: await run({}, "R", "R", "R", "R"), fresh: await run({}, "R", "R"), pre: await run({ cell: { pre: 1 } }, "R", "R"),
+    running: await run({ S: { running: true } }, "R", "R"), busy: await run({ busy: true }, "R", "R"),
+    lock: await run({ lock: "재굴림 큐 요청을 처리하는 중" }, "R", "R"),
+    button: await run({ cell: { pre: 2 } }, "B"), buttonFresh: await run({}, "B"), afterRun: await run({ cell: { pre: 0 } }, "R", "R", "B"),
+    stale: await run({ stale: true }, "R", "R", "R", "R", caught(1), "R", caught(0), "R", "R"),
+    oldServer: await run({ cell: { rerolls: 2, pending: 1 } }, "R", "R"), oldServerFree: await run({ cell: { rerolls: 2, pending: 0 } }, "R", "R"),
+    oldServerButton: await run({ cell: { rerolls: 3, pending: 2 } }, "B"),
+    armReset: await run({}, "R", (x, cell) => { cell.pre = 1; }, "R", (x, cell) => { cell.pre = 0; }, "R"),
+    order: [await run({ busy: true, sent: { cell: "abcdef0123456789", rev: 11 }, cell: { pre: 1 }, S: { running: true }, lock: "L" }, "R"),
+      await run({ sent: { cell: "abcdef0123456789", rev: 11 }, cell: { pre: 1 }, S: { running: true }, lock: "L" }, "R"),
+      await run({ sent: { cell: "다른셀", rev: 11 }, cell: { pre: 1 }, S: { running: true }, lock: "L" }, "R"),
+      await run({ S: { running: true }, lock: "L" }, "R"), await run({ lock: "L" }, "R")].map((x) => x.toasts[0]) };
+});
+
+// U-J5 board.js refresh: 도는 폴링이 있으면 그 폴링(뒤따르는 다시 받기 포함)이 끝날 때 끝나는 약속(리뷰 server-01 — write 의 busy 가 낡은 S 로 풀리지 않게)
+await scenario("refreshCycle", async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const calls = [];
+  let rev = 0;
+  const c = vm.createContext({ S: null, polling: false, pollAgain: false, cycle: null, editing: false, refsOn: false, pipe: null, editor: null, refEd: null,
+    getState: async (force) => { calls.push(force); await sleep(30); rev += 1; return { rev, targets: [], crops: [] }; },
+    reconcile() {}, renderAll() {}, renderHeader() {}, setConn() {} });
+  vm.runInContext(`refresh = ${boardFn("refresh")}; pollState = ${boardFn("pollState")};`, c);
+  const first = c.refresh(false);
+  await sleep(5);
+  const forced = c.refresh(true);
+  const same = forced === first;
+  await forced;
+  const atForced = { calls: calls.slice(), rev: c.S && c.S.rev, polling: c.polling };
+  await first;
+  const idle = c.refresh(true);
+  await idle;
+  return { same, atForced, idle: { calls: calls.slice(), rev: c.S.rev } };
+});
+
+// U-J6 board.js 그리기 연결(리뷰 tests-02): reconcile·selectCand·selectTarget·setPipe → tileBadges('새'·'옛 셀')·타일 캡션(완료 시각)·targetChips('새 N')·
+// 큰 화면 제목·상세 줄 — 실제 함수들을 작은 DOM 대역 위에서
+await scenario("renderWiring", async () => {
+  const mkEl = (tag, cls, text) => ({ tag, className: cls || "", textContent: text === undefined || text === null ? "" : String(text), title: "", hidden: false,
+    children: [], append(...xs) { this.children.push(...xs); }, replaceChildren(...xs) { this.children = xs; }, addEventListener() {},
+    querySelector() { return null; }, scrollIntoView() {}, classList: { toggle() {}, contains() { return false; } } });
+  const els = {};
+  const timers = [];
+  const store = mem();
+  const cand = (key, n, o = {}) => Object.assign({ key, n, origin: "run", variant: "V1", rep: 0, label: key, picked: false, slice_index: null, rejected: false,
+    mock: false, stale_rect: false, old_cell: false, done: null, via: null, gates: null, reg: null, reframed: false, analysis: "ok", hand_mask: false,
+    joint: null, backend: "comfy_org", src_size: [64, 64], thumb_url: null, big_url: null, cell_key: "abcdef0123456789" }, o);
+  const target = (key, crop_id, cands, pick = []) => ({ key, crop_id, tid: "A", label: "A", part: "A", crop_name: crop_id, name_en: "", size: [64, 64],
+    focus_box: [0, 0, 64, 64], cells: [], refs: [], before_url: null, pick_keys: pick, candidates: cands, pending_calls: 0,
+    chips: { n: cands.length, picked: 0, gate_fail: 0, reframed: 0, mock: 0, rejected: 0 } });
+  const crop = (id) => ({ id, name: id, calls: 0, dup_picks: [], stale_picked: [], pending: 0 });
+  const c = vm.createContext({ ROOT: "fe410d7f025d", S: null, tKey: null, cKey: null, refIdx: 0, rerollArm: null, seen: null, editing: false, refsOn: false,
+    pipeOn: false, qHeld: false, view: "cand", localStorage: store, JSON, GATE_NAMES: {}, document: { body: { classList: { toggle() {} } }, createTextNode: (t) => ({ textContent: t }) },
+    $: (id) => (els[id] = els[id] || mkEl("div", "", "")), el: mkEl, chip: (text, cls = "") => mkEl("span", "chip " + cls, text), setImg() {},
+    setTimeout: (fn) => timers.push(fn), pipeReady: () => true, syncViewer() {}, preloadAround() {}, usd: () => "", credits: () => "", rowButton() {},
+    pipe: { enter() {}, leave() {}, select() {} }, chipsLog: [] });
+  vm.runInContext(["VIA", "SEEN_KEY"].map(boardConst).join("\n") + ";\n" + ["curTarget", "curCand", "cropOf", "defaultCand", "reconcile", "selectTarget", "selectCand",
+    "syncSeen", "saveSeen", "markSeen", "seeCurrent", "isNew", "ranText", "oldCell", "tileBadges", "targetChips", "renderGrid", "renderCompare", "renderDetail",
+    "row", "pad", "targetTitle", "setPipe"].map((n) => `${n} = ${boardFn(n)};`).join("\n")
+    + "\nrenderTargets = () => { chipsLog = S.targets.map((t) => { const ch = []; targetChips({ append: (...x) => ch.push(...x) }, t); return ch.map((x) => x.textContent); }); };"
+    + "\nrenderAll = () => { renderTargets(); renderCompare(); renderDetail(); renderGrid(); };", c);
+  const grid = () => els.grid.children.map((t) => ({ badges: t.children[1].children.map((b) => b.textContent), cap: t.children[2].textContent, title: t.children[2].title }));
+  const detail = () => els.detail.children.map((r) => r.children.map((x) => x.textContent).join(""));
+  const st = (t1, t2) => ({ targets: [target("c1/A", "c1", t1), target("c2/A", "c2", t2, ["k5"])], crops: [crop("c1"), crop("c2")] });
+  const k1 = cand("k1", 1, { rep: 1, done: "2026-10-19 14:18:41", via: "reroll" });
+  const k2 = cand("k2", 2, { old_cell: true, done: "2026-10-15 14:57:01", via: "run", label: "r_7f671605253e_0_1" });
+  const k3 = cand("k3", 1, { old_cell: true, stale_rect: true });
+  const k4 = cand("k4", 3, { done: "2026-10-19 15:00:00", via: "run" });
+  const k5 = cand("k5", 2, { origin: "folder", done: null });
+  const r = {};
+  c.S = st([k1, k2], [k3]);
+  c.reconcile();
+  c.renderAll();
+  r.first = { grid: grid(), chips: c.chipsLog, saved: JSON.parse(store.getItem("bmk-dp-seen:fe410d7f025d")) };
+  c.selectCand("k2");
+  r.k2 = { caption: els["cand-caption"].textContent, detail: detail().filter((x) => /^(c02|옛 셀)/.test(x)) };
+  c.S = st([k1, k2, k4], [k3, k5]);
+  c.reconcile();
+  c.renderAll();
+  r.arrived = { grid: grid().map((x) => x.badges), chips: c.chipsLog };
+  c.selectCand("k4");
+  r.picked = { grid: grid().map((x) => x.badges), chips: c.chipsLog };
+  c.setPipe(true);
+  c.selectTarget("c2/A");  // 진행 모드의 크롭 선택(opts.select) — 기본 후보 k5(★)는 보이지 않으므로 '새' 그대로
+  r.inPipe = { cKey: c.cKey, chips: c.chipsLog, timers: timers.length };
+  c.setPipe(false);
+  r.leftBeforeTimer = c.isNew({ key: "k5" });
+  timers.splice(0).forEach((fn) => fn());
+  r.left = { new5: c.isNew({ key: "k5" }), chips: c.chipsLog, saved: JSON.parse(store.getItem("bmk-dp-seen:fe410d7f025d")).sort() };
+  return r;
+});
+
+console.log(JSON.stringify(out));
+"""
+
+
+def _ux_project(base_dir):
+    """사용성 합성 프로젝트(_layout_board_project 위): 001 에 run 후보 5개 — 옛 셀(10/15 Run·복구 — 복구는 옛 크롭 위치), 지금 셀(10/19 Run·
+    재굴림), 원장에 없는 rep — 와 원장 calls(finished·approved_by). 지금 셀 rerolls 2(픽스처). → (root, ids, {이름: 후보 key}, old_ck, new_ck)"""
+    root = _layout_board_project(base_dir, "ux")
+    m = store.load_manifest(root)
+    ids = [c["id"] for c in m["crops"]]
+    new_ck = m["jobs"][0]["cell_key"]
+    old_ck = "0123456789abcdef01234567"
+    quad = [0.0, 0.0, 384.0, 0.0, 384.0, 384.0, 0.0, 384.0]
+    moved = [10.0, 0.0, 394.0, 0.0, 394.0, 384.0, 10.0, 384.0]
+    nojob_ck = "fedcba9876543210fedcba98"
+    # 이름: (셀, rep, 완료, approved_by, kind, quad, 크롭 번호) — old1 = 실패를 다시 과금한 재시도(kind retry_failed), recov = 다운로드 복구 꼴의
+    # approved_by "retry"(runner 는 calls 에 쓰지 않지만 들어와도 종류 없음), nojob = jobs 가 없는 크롭(Prepare 전)의 run 후보 — 옛 셀 아님
+    rows = {"old0": (old_ck, 0, "2026-10-15 15:30:10", "hash:99e5ca61ae80", "new", quad, 0),
+            "new0": (new_ck, 0, "2026-10-19 13:07:14", "hash:f557afd32e00", "new", quad, 0),
+            "new1": (new_ck, 1, "2026-10-19 14:18:41", "board", "new", quad, 0),
+            "old1": (old_ck, 1, "2026-10-15 15:31:00", "hash:99e5ca61ae80", "retry_failed", moved, 0),
+            "recov": (old_ck, 2, "2026-10-19 15:00:00", "retry", "new", quad, 0),
+            "nocall": (new_ck, 7, None, None, None, quad, 0),
+            "nojob": (nojob_ck, 0, "2026-10-15 16:00:00", "hash:99e5ca61ae80", "new", [0.0, 384.0, 384.0, 384.0, 384.0, 768.0, 0.0, 768.0], 2)}
+    keys, cands, calls = {}, [], []
+    for i, (name, (ck, rep, fin, ab, kind, q, ci)) in enumerate(rows.items()):
+        rel = store.save_bytes_ca(root, "cands", png_bytes(texture(64, 64, 30 + i)), "png", prefix="f_")
+        keys[name] = f"r_{ck[:12]}_{rep}_0"
+        cands.append({"key": keys[name], "crop_id": ids[ci], "tid": "A", "file": rel, "src_size": [64, 64], "origin": "run",
+                      "origin_info": {"call_id": f"{ck}_r{rep}", "cell_key": ck, "rep": rep, "slot": 0, "variant": "V1",
+                                      "model": "gpt-image-2.5-sunburst", "quality": "max", "backend": "comfy_org", "tids": ["A"]},
+                      "quad": q, "picked": False, "z": None, "hand_mask": None})
+        if fin:
+            calls.append({"call_id": f"{ck}_r{rep}", "cell_key": ck, "rep": rep, "status": "done", "crop_id": ids[ci], "tid": "A",
+                          "started": fin, "finished": fin, "approved_by": ab, "kind": kind, "credits": 92.3, "n": 1})
+
+    def upd(mm):
+        mm["candidates"] += cands
+        mm["calls"] = calls
+
+    store.update_manifest(root, upd)
+    return root, ids, keys, old_ck, new_ck
+
+
+def studio_ux_unit():
+    section("UX studio_ux_unit — 후보 완료 시각·옛 셀·'새', 반영 칸 크롭별 줄·되돌리기(restore_manifest), 키보드 R 연타 거절")
+    import bmk_design_patch_board as board
+    OUT = OUT_ROOT / "studio_ux"
+    shutil.rmtree(OUT, ignore_errors=True)
+    OUT.mkdir(parents=True)
+    root, ids, keys, old_ck, new_ck = _ux_project(OUT / "base")
+
+    section("UX-B1 state 후보 done·via·old_cell, 셀 pre(사전 승인 대기 — runner 와 원장 대체 계산), 레이아웃 없음 = layout_added null")
+    st = board.build_state(root)
+    t = next(x for x in st["targets"] if x["key"] == f"{ids[0]}/A")
+    by = {c["key"]: c for x in st["targets"] for c in x["candidates"]}
+    got = {n: (by[k]["done"], by[k]["via"], by[k]["old_cell"], by[k]["stale_rect"]) for n, k in keys.items()}
+    check(got == {"old0": ("2026-10-15 15:30:10", "run", True, False), "new0": ("2026-10-19 13:07:14", "run", False, False),
+                  "new1": ("2026-10-19 14:18:41", "reroll", False, False), "old1": ("2026-10-15 15:31:00", "retry", True, True),
+                  "recov": ("2026-10-19 15:00:00", None, True, False), "nocall": (None, None, False, False),
+                  "nojob": ("2026-10-15 16:00:00", "run", False, False)},
+          f"후보 done = 원장 calls finished, via = approved_by(hash → run·board → reroll), kind retry_* → retry, 그 밖(복구 'retry' 등) 없음, "
+          f"old_cell = 지금 jobs 에 없는 셀(옛 크롭이어도 서버는 true — 그 타깃에 jobs 가 없으면 false) {got}")
+    folder = [c for c in t["candidates"] if c["origin"] == "folder"]
+    check(folder and all(c["done"] is None and c["via"] is None and not c["old_cell"] for c in folder),
+          f"폴더 후보(원장 밖)는 done·via 없음·옛 셀 아님 {[(c['done'], c['via'], c['old_cell']) for c in folder]}")
+    m = store.load_manifest(root)
+    plan = board._runner().plan_calls(m, root)
+    pre_rn = sum(1 for it in plan["pending"] if isinstance(it, dict) and it.get("preapproved") and it.get("cell_key") == new_ck)
+    cell = next(c for c in t["cells"] if c["cell_key"] == new_ck)
+    check(cell["pre"] == pre_rn and pre_rn >= 1 and st["pending_preapproved"] == board._pending(root, m)[1]
+          and st["pending_preapproved"] == sum(board._pending_cells(root, m)[1].values()),
+          f"셀 pre = runner.plan_calls 의 그 셀 사전 승인 대기, pending_preapproved = 셀 pre 합(_pending 그대로) {cell} {pre_rn} {st['pending_preapproved']}")
+    orig_runner = board._runner
+    board._runner = lambda: None
+    try:
+        pend, pre_c = board._pending_cells(root, m)
+        st0 = board.build_state(root)
+    finally:
+        board._runner = orig_runner
+    cell0 = next(c for x in st0["targets"] if x["key"] == f"{ids[0]}/A" for c in x["cells"] if c["cell_key"] == new_ck)
+    check(cell0["pre"] == min(2, pend[new_ck]) == pre_c[new_ck] and cell0["pending"] == pend[new_ck],
+          f"runner 없음(원장 대체 계산): 셀 pre = min(rerolls, 대기) {cell0} {pend} {pre_c}")
+    check(st["layout_added"] is None and all(c["layout_diff"] is None and c["layout_status"] is None for c in st["crops"]),
+          "layout.json 없음 = layout_added null·layout_diff null")
+
+    section("UX-B2 state 크롭 layout_diff(이름·사각형·대상 — 요약 name·rect 는 마지막 반영)·layout_added·지움")
+    board.layout_start(root)
+    rev = store.load_layout(root)["rev"]
+    ops = (("update", {"id": ids[0], "rect": [128, 0, 512, 384]}), ("update", {"id": ids[1], "name": "002_눈매"}),
+           ("update", {"id": ids[2], "targets": [{"tid": "A", "text": "왼손 장갑", "box": None}]}), ("delete", {"id": ids[3]}),
+           ("add", {"name": "007_새띠", "rect": [0, 640, 256, 896]}))
+    new_id = None
+    for op, data in ops:
+        r = board.layout_crop(root, rev, op, data)
+        rev = r["rev"]
+        if op == "add":
+            new_id = r["crop"]["id"]
+    st = board.build_state(root)
+    cs = {c["id"]: c for c in st["crops"]}
+    check(cs[ids[0]]["layout_status"] == "changed" and cs[ids[0]]["rect"] == [0, 0, 384, 384]
+          and cs[ids[0]]["layout_diff"] == {"fields": ["rect"], "name": "001_머리", "rect": [128, 0, 512, 384], "targets": None, "targets_was": None}
+          and cs[ids[1]]["layout_diff"] == {"fields": ["name"], "name": "002_눈매", "rect": [384, 0, 768, 384], "targets": None, "targets_was": None}
+          and cs[ids[2]]["layout_diff"] == {"fields": ["targets"], "name": "003_손_왼쪽", "rect": [0, 384, 384, 768], "targets": ["A: 왼손 장갑"],
+                                            "targets_was": ["A"]}
+          and cs[ids[3]]["layout_status"] == "removed" and cs[ids[3]]["layout_diff"] is None
+          and cs[ids[4]]["layout_status"] == "same" and cs[ids[4]]["layout_diff"] is None,
+          f"layout_diff = 바뀐 크롭만 {{fields, 레이아웃 name·rect, 대상(바뀐 때만)}} — 요약 name·rect 는 매니페스트 값 {[(c['id'], c['layout_status'], c['layout_diff']) for c in st['crops']]}")
+    check(st["layout_added"] == [{"id": new_id, "name": "007_새띠", "rect": [0, 640, 256, 896]}],
+          f"layout_added = 레이아웃에만 있는 크롭 {st['layout_added']}")
+
+    section("UX-B3 POST /layout/crop restore_manifest — 마지막 반영 값과 같은 이름·사각형은 규칙 검사를 건너뜀, 다르면 검사, update 만")
+
+    def outcome(op, data, at=None):
+        try:
+            r = board.layout_crop(root, rev if at is None else at, op, data)
+        except board._Reject as e:
+            return e.status, e.message
+        except store.LayoutConflict as e:  # ValueError 의 하위 — 먼저
+            return 409, str(e)
+        except ValueError as e:
+            return 400, str(e)
+        return 200, r["rev"]
+
+    s, rev = outcome("update", {"id": ids[0], "rect": [0, 0, 384, 384], "restore_manifest": True})
+    st = board.build_state(root)
+    check(s == 200 and next(c for c in st["crops"] if c["id"] == ids[0])["layout_status"] == "same",
+          f"001 사각형 되돌리기 → 반영됨(same) {s}")
+    long_id = ids[4]  # 9_긴띠 [0, 896, 768, 1024] — 이관된 규칙 밖 값(비 6:1·이름 번호 한 자리)
+    s1, rev = outcome("update", {"id": long_id, "rect": [0, 768, 384, 1024]})
+    s2, rev = outcome("update", {"id": long_id, "name": "009_긴띠"})
+    plain_rect = outcome("update", {"id": long_id, "rect": [0, 896, 768, 1024]})
+    plain_name = outcome("update", {"id": long_id, "name": "9_긴띠"})
+    other = outcome("update", {"id": long_id, "rect": [0, 900, 768, 1024], "restore_manifest": True})
+    s3, rev = outcome("update", {"id": long_id, "rect": [0, 896, 768, 1024], "name": "9_긴띠", "restore_manifest": True})
+    st = board.build_state(root)
+    lc = next(c for c in store.load_layout(root)["crops"] if c["id"] == long_id)
+    check(s1 == s2 == s3 == 200 and plain_rect[0] == 400 and plain_name[0] == 400 and other[0] == 409 and "마지막 반영 값이 바뀌었습니다(rect)" in other[1]
+          and lc["rect"] == [0, 896, 768, 1024] and lc["name"] == "9_긴띠"
+          and next(c for c in st["crops"] if c["id"] == long_id)["layout_status"] == "same",
+          f"규칙 밖 매니페스트 값(비 6:1·한 자리 번호)도 restore_manifest 면 되돌림, 플래그 없으면 400, 지금 매니페스트와 다른 값에 플래그면 409(Codex 2차) "
+          f"{plain_rect} {plain_name} {other} {s3}")
+    bad = {"add": outcome("add", {"name": "008_x", "rect": [0, 0, 256, 256], "restore_manifest": True}),
+           "rev": outcome("update", {"id": ids[1], "name": "002_눈", "restore_manifest": True, "restore_rev": 0}),
+           "str": outcome("update", {"id": ids[1], "name": "002_눈", "restore_manifest": "yes"}),
+           "new": outcome("update", {"id": new_id, "rect": [0, 640, 256, 896], "restore_manifest": True}),
+           "stale": outcome("update", {"id": ids[1], "name": "002_눈", "restore_manifest": True}, at=rev - 1)}
+    check([bad[k][0] for k in ("add", "rev", "str", "new", "stale")] == [400, 400, 400, 404, 409]
+          and "매니페스트" in bad["new"][1],
+          f"restore_manifest: add·restore_rev 와 함께·bool 아님 = 400, 매니페스트에 없는 크롭(새 크롭) = 404, 낡은 rev = 409 {bad}")
+    s4, rev = outcome("update", {"id": ids[1], "name": "002_눈", "restore_manifest": True})
+    st = board.build_state(root)
+    import bmk_design_patch_refs as drefs
+    links = lambda: (drefs.load_refs(root) or {"links": {}})["links"]
+    check(s4 == 200 and next(c for c in st["crops"] if c["id"] == ids[1])["layout_status"] == "same" and ids[1] not in links(),
+          f"이름 되돌리기 → 반영됨, B2 의 이름 바꾸기가 남긴 자동 고정(why rename·auto, 바꾸기 전 이름)도 풀림(리뷰 server-03) {s4} {links().get(ids[1])}")
+    s5, rev = outcome("update", {"id": ids[0], "name": "001_임시"})
+    pin = (links().get(ids[0]) or {}).get("fixed") or {}
+    s6, rev = outcome("update", {"id": ids[1], "name": "001_머리"})
+    swap = outcome("update", {"id": ids[0], "name": "001_머리", "restore_manifest": True})
+    s7, rev = outcome("update", {"id": ids[1], "name": "002_눈", "restore_manifest": True})
+    s8, rev = outcome("update", {"id": ids[0], "name": "001_머리", "restore_manifest": True})
+    names = {c["id"]: c["name"] for c in store.load_layout(root)["crops"]}
+    rule = outcome("update", {"id": ids[1], "name": "2_눈", "restore_manifest": True})
+    check(s5 == s6 == s7 == s8 == 200 and pin.get("why") == "rename" and pin.get("auto") and pin.get("name") == "001_머리"
+          and swap[0] == 400 and f"ID {ids[1]}, 마지막 반영 이름 002_눈" in swap[1] and "001_머리 이름을 씀" in swap[1]
+          and names[ids[0]] == "001_머리" and names[ids[1]] == "002_눈" and ids[0] not in links() and rule[0] == 409,
+          f"리뷰 server-02: 이름을 맞바꾼 두 크롭 — 되돌리는 이름을 지금 다른 크롭이 쓰면 400(그 크롭 ID·마지막 반영 이름), 그 크롭을 먼저 되돌리면 됨 · "
+          f"자동 고정 풀림 · 지금 매니페스트와 다른 이름에 플래그면 409 {swap} {rule} {pin}")
+    # Codex 2차: 줄을 그린 뒤 다른 창의 반영이 매니페스트를 바꿈(layout_rev 그대로) — 옛 마지막 반영 값으로 되돌리면 409, 이미 반영된 크롭을 바꾸지 않음
+    s9, rev = outcome("update", {"id": ids[0], "rect": [128, 0, 512, 384]})
+    store.update_manifest(root, lambda mm: next(c for c in mm["crops"] if c["id"] == ids[0]).__setitem__("rect", [128, 0, 512, 384]))
+    lay_rev = store.load_layout(root)["rev"]
+    late = outcome("update", {"id": ids[0], "rect": [0, 0, 384, 384], "restore_manifest": True})
+    after = next(c for c in store.load_layout(root)["crops"] if c["id"] == ids[0])
+    check(s9 == 200 and late[0] == 409 and "마지막 반영 값이 바뀌었습니다(rect)" in late[1] and after["rect"] == [128, 0, 512, 384]
+          and store.load_layout(root)["rev"] == lay_rev,
+          f"Codex 2차: 다른 창의 반영으로 마지막 반영 값이 바뀐 뒤 옛 줄의 [되돌리기] = 409(레이아웃 그대로) {late} {after['rect']}")
+
+    section("UX-J pipeline.js layoutLines · board.js ranText·oldCell·안 본 후보·키보드 R 거절 (node)")
+    node = shutil.which("node")
+    if not node:
+        skip("node 없음 → UX JS 생략")
+        return
+    web = PKG / "web_design_patch"
+    (OUT / "harness.mjs").write_text(_UX_JS_HARNESS, encoding="utf-8")
+    (OUT / "in.json").write_text(json.dumps({"boardJs": str(web / "board.js"), "pipelineJs": str(web / "pipeline.js")}), encoding="utf-8")
+    r = subprocess.run([node, str(OUT / "harness.mjs"), str(OUT / "in.json")], capture_output=True, text=True, encoding="utf-8", timeout=60)
+    if r.returncode != 0 or not r.stdout.strip():
+        check(False, f"UX node 하네스 실패({r.returncode}): {r.stderr.strip()[-800:]}")
+        return
+    res = json.loads(r.stdout.strip().splitlines()[-1])
+    for k, v in res.items():
+        if isinstance(v, dict) and "error" in v:
+            check(False, f"UX {k} 시나리오 예외: {v['error']}")
+    ll = res.get("layoutLines") or {}
+    if "lines" in ll:
+        want_lines = [
+            {"id": "005_a", "text": "005_장식 — 위치 [1248, 1120, 1760, 1760] → [1536, 1360, 2048, 2000] (이동 오른쪽 288·아래 240)",
+             "back": {"rect": [1248, 1120, 1760, 1760]}, "rest": False},
+            {"id": "006_b", "text": "006_띠 — 이름 → 006_허리띠 · 위치 [512, 512, 1024, 1024] → [384, 512, 1152, 896] (이동 왼쪽 128 · 크기 512×512 → 768×384)",
+             "back": {"name": "006_띠", "rect": [512, 512, 1024, 1024]}, "rest": False},
+            {"id": "007_c", "text": "007_손 — 대상 문구 바뀜(A: 장갑; B: 반지)", "back": None, "rest": True},
+            {"id": "008_d", "text": "008_발 — 레이아웃에서 지움(후보 4 · ★ 1) — 다음 반영에서 빠짐", "back": None},
+            {"id": "009_e", "text": "009_옛 — 레이아웃 미반영", "back": None},
+            {"id": "012_h", "text": "012_장갑 — 대상 문구 A → A: 왼손 장갑; B", "back": None, "rest": True},
+            {"id": "011_g", "text": "011_새 — 새 크롭 [0, 640, 256, 896] — 다음 반영에서 생김(초안·Run 승인 대상)", "back": None}]
+        check(ll["lines"] == want_lines and ll["none"] == [] and ll["old"] == [],
+              f"layoutLines: 크롭별 줄(사각형 = 값·이동·크기, 이름, 대상, 지움, 옛 서버 = 사유만, 새 크롭) + 되돌리기 값(바뀐 이름·사각형만 — 매니페스트 값) {ll}")
+    rt = res.get("ranText") or {}
+    if "reroll" in rt:
+        check(rt == {"reroll": "10/19 14:18 재굴림", "run": "10/15 14:57 Run", "retry": "10/15 15:30 재시도", "none": "", "noVia": "10/19 13:07",
+                     "odd": "어제 Run", "oldCell": True, "stale": False, "cur": False},
+              f"ranText = 'MM/DD HH:MM 종류'(원장 밖 = ''), oldCell = 옛 셀이고 옛 크롭 아님 {rt}")
+    se = res.get("seen") or {}
+    if "f" in se:
+        f = se["f"]
+        ro = se["reopen"]
+        check(f["saved"] == ["k1", "k2"] and f["new1"] is False and f["new3"] is True and f["after"]["new3"] is False and f["after"]["new4"] is False
+              and sorted(f["after"]["saved"]) == ["k1", "k2", "k3", "k4", "k9"]
+              and ro["new5"] is True and ro["new1"] is False and sorted(ro["saved"]) == ["k1", "k2", "k3", "k4"] and se["beforeSync"] is False
+              and ro["ignored"] == {"new5": True, "renders": 0} and ro["storage"] == {"new5": False, "renders": 2}
+              and se["emptyFirst"] == {"saved": [], "new5": True},
+              f"안 본 후보: 처음 연 프로젝트 = 그때 후보 모두 본 것(저장), 뒤에 생긴 후보 = 새, 고르면 저장(다른 창이 본 것과 합침 — 이 창 S 에 아직 없는 후보 k9 도 지우지 않음, Codex 2차), "
+              f"다시 열면 저장값 기준(지운 후보 정리), 다른 창이 본 후보는 storage 이벤트로 바로 빠짐, 후보 없이 처음 열면 첫 후보부터 새 {se}")
+        check(se["blocked"] == {"new1": False, "new2": True, "after": False},
+              f"저장소 막힘: 이 창에서만(처음 후보 = 본 것, 새 후보 = 새, 고르면 사라짐) {se['blocked']}")
+        gd = se.get("gated") or {}
+        check(all(gd.get(k) == {"mark": False, "new2": True, "renders": 0} for k in ("pipeOn", "editing", "refsOn"))
+              and gd.get("left") == {"new2": False, "new3": True, "renders": 2} and gd.get("again") == 2,
+              f"Codex 1차: 진행·편집·레퍼런스 모드의 선택(markSeen·seeCurrent)은 본 것으로 하지 않음, 모드를 나오면 지금 후보만 본 것(다시 그림 1번 — "
+              f"이미 본 것이면 다시 그리지 않음) {gd}")
+    rh = res.get("rerollHold") or {}
+    if "smoke" in rh:
+        ign = "R 무시 — "
+        hint = "더 넣으려면 [재굴림 +1] 단추(확인 창에 누적 건수)"
+        sm = rh["smoke"]
+        check(sm["writes"] == 1 and sm["pre"] == 1 and len(sm["queued"]) == 1
+              and sum(ign in t and "이 셀 재굴림 대기 1건(사전 승인)이 아직 돌지 않음" in t and hint in t for t in sm["toasts"]) == 2,
+              f"10/19 스모크 R R R R: 첫 R R 만 +1(쓰기 1·큐 1), 셋째·넷째 R 은 그 셀 대기 1건으로 무시(무장 안 함) {sm}")
+        check(rh["fresh"]["writes"] == 1 and all(rh[k]["writes"] == 0 and rh[k]["queued"] == [] and len(rh[k]["toasts"]) == 2
+                                                 and all(t.startswith("warn:" + ign) for t in rh[k]["toasts"])
+                                                 for k in ("pre", "running", "busy", "lock"))
+              and "이 셀 재굴림 대기 1건" in rh["pre"]["toasts"][0] and "Run(재굴림 포함) 실행 중" in rh["running"]["toasts"][0]
+              and "앞 요청을 처리하는 중" in rh["busy"]["toasts"][0] and "재굴림 큐 요청을 처리하는 중" in rh["lock"]["toasts"][0],
+              f"키보드 R 거절: 그 셀 사전 승인 대기·Run 실행 중·앞 쓰기 처리 중·이 Studio 유료 요청 중이면 첫 R 부터 무시(쓰기 0) {rh}")
+        bt, bf, ar = rh["button"], rh["buttonFresh"], rh["afterRun"]
+        check(bt["writes"] == 1 and len(bt["confirms"]) == 1 and bt["confirms"][0].split("\n")[1] == "이 셀 재굴림 대기 2건(사전 승인) → 3건 ≈ $1.86"
+              and bf["writes"] == 1 and "이 셀 재굴림 대기" not in bf["confirms"][0]
+              and ar["writes"] == 2 and "이 셀 재굴림 대기 1건(사전 승인) → 2건 ≈ $1.24" in ar["confirms"][0],
+              f"[재굴림 +1] 단추는 대기 중에도 됨 — 확인 창 둘째 줄 = 누적 건수·금액(대기 없으면 줄 없음) {bt['confirms']} {ar['confirms']}")
+        sl = rh["stale"]
+        wait_ = "R 무시 — 앞 재굴림 쓰기를 아직 state 로 받지 못함."
+        check(sl["writes"] == 2 and sum(wait_ in t for t in sl["toasts"]) == 2 and sum("이 셀 재굴림 대기 1건" in t for t in sl["toasts"]) == 1,
+              f"리뷰 server-01(must): 폴링이 돌던 중이라 쓰기 뒤 S 가 낡은 채 busy 가 풀려도 그 셀 R 은 응답 rev 를 state 가 담을 때까지 거절 — R R R R = 1건, "
+              f"state 가 오면 대기 pre 로 거절, 재굴림이 돈 뒤(pre 0) R R = 다음 1건 {sl}")
+        ob, of, obb = rh["oldServer"], rh["oldServerFree"], rh["oldServerButton"]
+        check(ob["writes"] == 0 and "이 셀 재굴림 대기 1건" in ob["toasts"][0] and of["writes"] == 1
+              and obb["confirms"][0].split("\n")[1] == "이 셀 재굴림 대기 2건(사전 승인) → 3건 ≈ $1.86",
+              f"리뷰 board-02: 옛 서버(셀 pre 없음)는 min(누적 재굴림, 대기)로 — 거절·단추 누적 줄 {ob['toasts']} {of['writes']} {obb['confirms']}")
+        rs = rh["armReset"]
+        check(rs["writes"] == 0 and len(rs["toasts"]) == 3 and rs["toasts"][0].startswith("warn:R 을 한 번 더") and rs["toasts"][1].startswith("warn:R 무시")
+              and rs["toasts"][2].startswith("warn:R 을 한 번 더"),
+              f"리뷰 tests-03: 거절하면 무장도 풂 — 'R 무시' 뒤 R 한 번은 다시 무장만(쓰기 0) {rs['toasts']}")
+        check(rh["order"] == ["warn:R 무시 — 앞 요청을 처리하는 중. 더 넣으려면 [재굴림 +1] 단추(확인 창에 누적 건수)",
+                              f"warn:{wait_} 더 넣으려면 [재굴림 +1] 단추(확인 창에 누적 건수)",
+                              "warn:R 무시 — 이 셀 재굴림 대기 1건(사전 승인)이 아직 돌지 않음. 더 넣으려면 [재굴림 +1] 단추(확인 창에 누적 건수)",
+                              "warn:R 무시 — Run(재굴림 포함) 실행 중. 더 넣으려면 [재굴림 +1] 단추(확인 창에 누적 건수)",
+                              "warn:R 무시 — L. 더 넣으려면 [재굴림 +1] 단추(확인 창에 누적 건수)"],
+              f"리뷰 tests-08: rerollHold 사유 순서 = 앞 쓰기 처리 중 → 그 셀 쓰기 미반영 state(다른 셀 쓰기는 무관) → 그 셀 대기 → Run 실행 중 → 이 Studio 유료 요청 {rh['order']}")
+    rc = res.get("refreshCycle") or {}
+    if "same" in rc:
+        check(rc["same"] is True and rc["atForced"] == {"calls": [False, True], "rev": 2, "polling": False}
+              and rc["idle"] == {"calls": [False, True, True], "rev": 3},
+              f"리뷰 server-01: 폴링이 도는 중 refresh(true) = 그 폴링의 약속 — 뒤따르는 강제 다시 받기까지 끝난 뒤 풀림(write 의 busy 가 쓰기를 담은 S 뒤에 풀림), "
+              f"쉬는 중이면 새로 받음 {rc}")
+    rw = res.get("renderWiring") or {}
+    if "first" in rw:
+        f0 = rw["first"]
+        check(f0["grid"] == [{"badges": [], "cap": "c01 · V1 · r1 · 10/19 14:18 재굴림", "title": "k1 · 10/19 14:18 재굴림 완료"},
+                             {"badges": ["옛 셀"], "cap": "c02 · V1 · r0 · 10/15 14:57 Run", "title": "r_7f671605253e_0_1 · 10/15 14:57 Run 완료"}]
+              and f0["chips"] == [["후보 2"], ["후보 1"]] and f0["saved"] == ["k1", "k2", "k3"]
+              and rw["k2"] == {"caption": "후보 c02 · 옛 셀 · 10/15 14:57 Run",
+                               "detail": ["c02r_7f671605253e_0_1 · run · comfy_org · V1 · r0 · 64×64 · 10/15 14:57 Run 완료",
+                                          "옛 셀지금 jobs 에 없는 셀(Prepare 설정·입력이 바뀌기 전)로 만든 후보 — 재굴림(R)은 지금 셀로"]},
+              f"리뷰 tests-02: 첫 state = 기준(저장, 새 없음), 타일 캡션 = 완료 시각·종류(마우스 = 레이어명), '옛 셀' 배지·큰 화면 제목·상세 줄 {rw.get('first')} {rw.get('k2')}")
+        check(rw["arrived"] == {"grid": [[], ["옛 셀"], ["새"]], "chips": [["후보 3", "새 1"], ["후보 2", "새 1"]]}
+              and rw["picked"] == {"grid": [[], ["옛 셀"], []], "chips": [["후보 3"], ["후보 2", "새 1"]]}
+              and rw["inPipe"] == {"cKey": "k5", "chips": [["후보 3"], ["후보 2", "새 1"]], "timers": 0} and rw["leftBeforeTimer"] is True
+              and rw["left"] == {"new5": False, "chips": [["후보 3"], ["후보 2"]], "saved": ["k1", "k2", "k3", "k4", "k5"]},
+              f"리뷰 tests-02: 새 후보 = 타일 '새'·타깃 칩 '새 N'(reconcile 연결), 고르면 사라짐(selectCand), 진행(G)의 크롭 선택은 '새' 유지, 진행을 나오면 "
+              f"지금 후보만 본 것(setPipe → seeCurrent) {rw}")
+
+
+# ═════════════════════════════════════════════════════════════════
 def want(name: str) -> bool:
     return not ONLY or name in ONLY
 
@@ -37660,6 +38369,8 @@ if __name__ == "__main__":
             _paid_js_studio()
         if want("paid_js_unit") or "paid_js_e2e" in ONLY:
             _paid_js_e2e()
+    if want("studio_ux_unit"):
+        studio_ux_unit()
     print(f"\n단위 테스트 {time.time() - T0:.1f}s (PASS {PASSES} FAIL {len(FAILS)})")
     if QUICK:
         print("\n--quick: 회귀·노드 생략")

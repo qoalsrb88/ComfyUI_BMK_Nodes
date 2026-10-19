@@ -121,6 +121,14 @@ window.DPLayoutEdit = (() => {
 
     s.crop = (id) => (s.L && s.L.crops.find((c) => c.id === id)) || null;
 
+    s.ownWrite = (from, to) => {
+      // 같은 창 진행(G) [되돌리기]의 쓰기(from → to) — 이 창이 맞춘 판(from)에서 쓴 것이면 이 창의 쓰기로(실행 취소 기록을 남김). 쓰기 세대를 올려
+      // 그 전에 보낸 읽기(옛 판)의 늦은 응답이 기록을 비우지 않게(load 가 버림)
+      if (s.ownRev !== from) return;
+      s.ownRev = to;
+      writes += 1;
+    };
+
     function run(fn) {
       // 쓰기는 큐로 하나씩 — 각 작업은 실행할 때의 rev 로 POST 하고, 끝나면 GET 으로 다시 맞춘다. 409 = 다른 창에서 바뀜 → 스택을 비운다
       queued += 1;
@@ -932,8 +940,12 @@ window.DPLayoutEdit = (() => {
       await flushNudge();
       await S.idle(); // 저장 중인 이름·대상 편집이 끝난 뒤 — 그 전에 큐에 넣으면 Import 가 옛 판을 반영한다
       const n = S.L.pending_rerolls || 0;
+      // 이 반영에 들어가는 크롭별 바뀜(실수로 끈 크롭이 확인 창에서 보이게 — 진행(G) 반영 칸에도 크롭별 줄·[되돌리기])
+      const ch = S.L.crops.filter((c) => STATUS[c.status]).map((c) => `${c.name}(${c.status === "new" ? "새 크롭" : fieldNames(c.changed)})`)
+        .concat(S.L.removed.map((c) => `${c.name || c.id}(지움)`));
       const lines = (opts.applyWarn ? opts.applyWarn() : [])
-        .concat("반영(큐): 무료 반영(Import → Prepare → Analyze → Review 템플릿, 탭 불필요)으로 레이아웃을 매니페스트에 반영합니다.");
+        .concat(ch.length ? [`이 반영에 들어가는 레이아웃 바뀜 ${ch.length}건: ${ch.join(" · ")} — 실수면 취소 → Ctrl+Z(이 창의 편집) 또는 진행(G) 반영 칸 [되돌리기]`] : [],
+          "반영(큐): 무료 반영(Import → Prepare → Analyze → Review 템플릿, 탭 불필요)으로 레이아웃을 매니페스트에 반영합니다.");
       if (n) lines.push(`재굴림 대기 ${n}건(사전 승인)은 이 반영에서 돌지 않음 — R·ComfyUI 큐·그래프 Run 에서 과금`);
       if (!window.confirm(lines.concat(APPLY_NOTE, "계속할까요?").join("\n"))) return;
       opts.queue(true);
@@ -1488,7 +1500,9 @@ window.DPLayoutEdit = (() => {
       if (kind) reload(kind === "manifest");
     }
 
-    return { enter, leave, onKey, stateChanged };
+    // 진행(G) 반영 칸 [되돌리기]가 쓴 판 — 다른 창의 쓰기로 보지 않아 실행 취소 기록을 남긴다(지운 크롭을 같은 ID 로 되살리는 길은 Ctrl+Z 뿐).
+    // 그 사이 다른 창이 썼으면(from ≠ ownRev) 다음 읽기가 기록을 비운다
+    return { enter, leave, onKey, stateChanged, ownWrite: S.ownWrite };
   }
 
   return { create, session, reloadKind, renameNote };

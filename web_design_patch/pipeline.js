@@ -299,6 +299,55 @@ window.DPPipeline = (() => {
     return out;
   }
 
+  function rectText(a, b) {
+    // 크롭 사각형 [x0, y0, x1, y1] 마지막 반영 a → 레이아웃 b: 값 + 이동(오른쪽·아래가 +)·크기 바뀜
+    const [dx, dy] = [b[0] - a[0], b[1] - a[1]];
+    const mv = [dx ? `${dx > 0 ? "오른쪽" : "왼쪽"} ${Math.abs(dx)}` : "", dy ? `${dy > 0 ? "아래" : "위"} ${Math.abs(dy)}` : ""].filter(Boolean).join("·");
+    const [wa, ha, wb, hb] = [a[2] - a[0], a[3] - a[1], b[2] - b[0], b[3] - b[1]];
+    const sz = wa !== wb || ha !== hb ? `크기 ${wa}×${ha} → ${wb}×${hb}` : "";
+    const why = [mv ? `이동 ${mv}` : "", sz].filter(Boolean).join(" · ");
+    return `위치 [${a.join(", ")}] → [${b.join(", ")}]` + (why ? ` (${why})` : "");
+  }
+
+  function layoutLines(S) {
+    // 레이아웃 미반영 크롭별 줄(진행(G) 반영 칸·반영 확인 창·머리줄 제목) → [{id, text, back}]. state 크롭 요약의 name·rect = 마지막 반영(매니페스트),
+    // layout_diff = 바뀐 크롭의 레이아웃 값, layout_added = 레이아웃에만 있는 크롭. back = [되돌리기]가 보낼 update 값(바뀐 이름·사각형을 마지막
+    // 반영 값으로) — 대상 문구만 바뀐 크롭·지운 크롭·새 크롭은 null(편집(E)에서). layout_diff 가 없는 옛 서버는 사유만
+    const out = [];
+    for (const c of S.crops) {
+      const name = c.name || c.id;
+      if (c.layout_status === "removed") {
+        out.push({ id: c.id, text: `${name} — 레이아웃에서 지움(후보 ${c.candidates} · ★ ${c.picked_targets}) — 다음 반영에서 빠짐`, back: null });
+      }
+      if (c.layout_status !== "changed") continue;
+      const d = c.layout_diff;
+      if (!d) {
+        out.push({ id: c.id, text: `${name} — ${LAYOUT_REASON}`, back: null });
+        continue;
+      }
+      const parts = [];
+      const back = {};
+      if (d.fields.includes("name")) {
+        parts.push(`이름 → ${d.name}`);
+        back.name = c.name;
+      }
+      if (d.fields.includes("rect")) {
+        parts.push(rectText(c.rect, d.rect));
+        back.rect = c.rect;
+      }
+      if (d.fields.includes("targets")) {
+        const now = (d.targets || []).join("; "); // 마지막 반영 문구 → 새 문구(targets_was 없는 판은 새 문구만)
+        parts.push(d.targets_was ? `대상 문구 ${d.targets_was.join("; ")} → ${now}` : `대상 문구 바뀜(${now})`);
+      }
+      // rest = [되돌리기](이름·사각형)가 되돌리지 않는 이 크롭의 바뀜(대상 문구)이 남는가
+      out.push({ id: c.id, text: `${name} — ${parts.join(" · ")}`, back: Object.keys(back).length ? back : null, rest: d.fields.includes("targets") });
+    }
+    for (const a of S.layout_added || []) {
+      out.push({ id: a.id, text: `${a.name} — 새 크롭 [${a.rect.join(", ")}] — 다음 반영에서 생김(초안·Run 승인 대상)`, back: null });
+    }
+    return out;
+  }
+
   // ── 서버 세션: 설정(P)·계획·Studio 가 낸 프롬프트(job)·채택. DOM 을 쓰지 않는다(J-P1·J-P2 가 node 에서 가짜 fetch 로 돈다) ──
   function session(apiUrl, comfyUrl, root, fetchFn, store, pollMs = POLL_MS) {
     // P = 마지막 GET /pipeline, plan = 받아들인 마지막 계획(planOnly·planStyle = 그 계획을 요청한 정규 only·화풍 — null·false = only 없음),
@@ -634,6 +683,20 @@ window.DPPipeline = (() => {
           }
         }
         throw e;
+      } finally {
+        s.busy = false;
+      }
+    };
+
+    s.layoutBack = async (rev, id, back) => {
+      // 반영 칸 [되돌리기]: 그 크롭의 바뀐 이름·사각형(back)을 마지막 반영 값으로 — 레이아웃 쓰기(POST /layout/crop update + restore_manifest:
+      // 매니페스트 값과 같은 이름·사각형은 규칙 검사를 건너뜀). rev = state layout_rev(그 사이 다른 창·편집기가 쓰면 409)
+      if (s.busy) throw new Error("앞 저장을 처리하는 중입니다 — 끝난 뒤 다시 하세요");
+      s.busy = true;
+      try {
+        const r = await call("layout/crop", Object.assign({ rev, op: "update", id, restore_manifest: true }, back));
+        s.onWrite();
+        return r;
       } finally {
         s.busy = false;
       }
@@ -1086,13 +1149,37 @@ window.DPPipeline = (() => {
     }
 
     async function applyNow() {
+      await opts.refresh(); // 크롭별 레이아웃 줄을 지금 state 로(편집(E) 직후 G 로 와 다음 폴링 전이어도 — 보드 refresh 는 도는 폴링을 기다림)
       if (!(await reload())) return; // 확인 창을 만들기 전에(state 폴링이 그래프 Prepare 를 알기 전이어도 지금 갈라짐으로)
       const n = S ? S.pending_preapproved || 0 : 0;
-      const lines = applyWarn().concat("무료 반영(Import → Prepare → Analyze → Review 템플릿, 탭 불필요)을 ComfyUI 대기열 앞에 넣습니다.");
+      const lays = S ? layoutLines(S) : [];
+      const back = lays.some((x) => x.back) ? "반영 칸 [되돌리기] 또는 " : "";
+      const lines = applyWarn().concat(lays.length ? [`${LAYOUT_REASON} ${lays.length}건 — 이 반영에 들어감(아니면 취소 → ${back}편집(E)):`,
+        ...lays.map((x) => ` · ${x.text}`)] : [], "무료 반영(Import → Prepare → Analyze → Review 템플릿, 탭 불필요)을 ComfyUI 대기열 앞에 넣습니다.");
       if (n) lines.push(`재굴림 대기 ${n}건(사전 승인)은 이 반영에서 돌지 않음 — R·ComfyUI 큐·그래프 Run 에서 과금`);
       if (!window.confirm(lines.concat(DRAFT_NOTE, "계속할까요?").join("\n"))) return;
       const ok = await checkWarn();
       if (ok) await queueHere("apply", ok.sig);
+    }
+
+    async function layoutBack(x, rev) {
+      // 반영 칸 [되돌리기](layoutLines 의 back 이 있는 줄): 바뀐 이름·사각형을 마지막 반영 값으로 — 레이아웃만 쓰고 큐는 없음. rev = 그 줄을 그린 state 의
+      // layout_rev(누르는 동안·입력 중 다시 그리기가 미뤄져 줄이 낡았으면 서버가 409 — 지금 rev 로 보내면 그 사이 편집을 덮음)
+      const to = [x.back.name ? `이름 ${x.back.name}` : "", x.back.rect ? `위치 [${x.back.rect.join(", ")}]` : ""].filter(Boolean).join(" · ");
+      // layout.json 을 다시 쓰므로 Prepare 입력 지문(파일 mtime)이 바뀌어 '반영 필요(Prepare 입력이 바뀜)'는 남는다 — 무료 반영 한 번. 이 크롭의 대상 문구
+      // 바뀜(x.rest)은 되돌리지 않으므로 그때는 새 셀이 될 수 있다고(그 밖의 미반영 — 다른 크롭·채택 등 — 은 이 단추와 무관)
+      const after = x.rest ? "이 크롭의 대상 문구 바뀜은 남음 — 반영하면 새 셀(Run 승인 대상)이 될 수 있음(대상 문구는 편집(E)에서)."
+        : "이 크롭의 이름·위치는 마지막 반영 그대로라 그것 때문에 새 셀(Run 승인)이 생기지는 않음.";
+      if (!window.confirm(`${x.text}\n\n${to} 으로 되돌립니다(마지막 반영 값 — 레이아웃만 쓰고 무료). ${after} 되돌린 뒤에도 '반영 필요(Prepare 입력이 바뀜)'는 `
+        + "남으니 무료 [반영]을 한 번. 계속할까요?")) return;
+      try {
+        const r = await PS.layoutBack(rev, x.id, x.back);
+        if (opts.layoutWrote) opts.layoutWrote(rev, r.rev); // 같은 창 편집기(E)의 Ctrl+Z 기록을 남김
+        opts.toast(`되돌림: ${x.text.split(" — ")[0]} → ${to}`);
+      } catch (e) {
+        opts.toast(e.status === 409 ? `${e.message} — 다시 그린 줄에서 다시` : e.message, "err");
+        opts.refresh();
+      }
     }
 
     async function cancelJob() {
@@ -1667,7 +1754,10 @@ window.DPPipeline = (() => {
       const pend = pendingApply();
       const unk = unsureWhy();
       const st = el("span", pend.length || unk ? "lh-wait" : "lh-ok", pend.length ? `반영 필요 ${pend.length}` : unk ? "반영 상태 확인 못 함" : "반영됨");
-      st.title = pend.concat(unk ? [`레퍼런스·채택·Import 설정 미반영 확인 못 함 — ${unk}`] : []).join("\n")
+      // 크롭별 레이아웃 줄은 레이아웃 사유 바로 아래(없으면 끝)
+      const lays = layoutLines(S).map((x) => ` · ${x.text}`);
+      const at = pend.findIndex((r) => r.startsWith(LAYOUT_REASON)) + 1 || pend.length;
+      st.title = pend.slice(0, at).concat(lays, pend.slice(at), unk ? [`레퍼런스·채택·Import 설정 미반영 확인 못 함 — ${unk}`] : []).join("\n")
         || "레이아웃·레퍼런스·채택·Import 설정 미반영·Prepare 입력 바뀜 없음";
       head.append(st);
       if (confirmOf(PS.P).length) {
@@ -1726,6 +1816,7 @@ window.DPPipeline = (() => {
         button("없음", "선택 해제 — 계획·승인 끔", () => setSel([])),
         button("승인 필요만", "Run 승인 필요·초안 대기가 있는 크롭", () => setSel(needIds())));
       list.append(bar);
+      const lays = new Map(layoutLines(S).map((x) => [x.id, x.text]));
       for (const c of S.crops) {
         const li = el("li", c.id === cur ? "sel" : "");
         const top = el("div", "pl-top");
@@ -1747,7 +1838,11 @@ window.DPPipeline = (() => {
         const ch = el("div", "chips");
         const r = p && p.run.by_crop ? p.run.by_crop[c.id] : null;
         const d = p && p.draft.by_crop ? p.draft.by_crop[c.id] : null;
-        if (LAYOUT_PENDING.includes(c.layout_status)) ch.append(chip(LAYOUT_REASON, "b-wait"));
+        if (LAYOUT_PENDING.includes(c.layout_status)) {
+          const lc = chip(LAYOUT_REASON, "b-wait");
+          lc.title = lays.get(c.id) || "";
+          ch.append(lc);
+        }
         if (r && r.need) ch.append(chip(`승인 필요 ${r.need}`, "b-wait"));
         if (r && r.pre) ch.append(chip(`재굴림 ${r.pre}`, "b-wait"));
         if (r && r.inflight) ch.append(chip(`진행 ${r.inflight}`, "b-run"));
@@ -1809,6 +1904,21 @@ window.DPPipeline = (() => {
       // 반영
       s = section("반영");
       if (pend.length) line(s, pend.join(" · "), "warn");
+      // 레이아웃 미반영 크롭별 줄(편집(E)의 실수 끌기가 여기서 보이게) — 이름·사각형이 바뀐 줄은 [되돌리기](마지막 반영 값으로)
+      const lays = S ? layoutLines(S) : [];
+      const layRev = S ? S.layout_rev : null;
+      for (const x of lays) {
+        const r = line(s, ` · ${x.text}`, "warn");
+        if (!x.back) continue;
+        // 이 Studio 의 실행(반영 큐 — Import 가 layout.json 을 읽음)·유료 요청 중에는 끔(반영 단추와 같은 판정)
+        const b = button("되돌리기", "이 크롭의 바뀐 이름·위치를 마지막 반영 값으로(레이아웃만 — 무료)", once(() => layoutBack(x, layRev)), "inline");
+        b.disabled = !!PS.job || !!paying;
+        r.append(b);
+      }
+      if (lays.length) {
+        line(s, "반영하면 이 크롭들은 새 셀(Run 승인 대상)이 될 수 있음. 실수면 "
+          + (lays.some((x) => x.back) ? "이름·위치는 [되돌리기], " : "") + "대상 문구·지움·새 크롭은 편집(E)에서 Ctrl+Z(그 창의 편집 기록) 또는 직접", "dim");
+      }
       if (unsure) line(s, `레퍼런스·채택·Import 설정 미반영을 확인하지 못함(${unsure}) — 계획을 다시 계산`, "warn");
       else if (!pend.length) line(s, "반영됨 — 레이아웃·레퍼런스·채택·Import 설정 미반영·Prepare 입력 바뀜 없음", "ok");
       lastRow(s, "apply");
@@ -2316,5 +2426,5 @@ window.DPPipeline = (() => {
       side: SIDE };
   }
 
-  return { create, session, link, checkPrompt, freeBody, endOf, adoptState, runText, draftText, approveText, paidReport, starChecks };
+  return { create, session, link, checkPrompt, freeBody, endOf, adoptState, runText, draftText, approveText, paidReport, starChecks, layoutLines };
 })();

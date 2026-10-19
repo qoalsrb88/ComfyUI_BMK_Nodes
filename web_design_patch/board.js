@@ -17,6 +17,8 @@
   const REROLL_CONFIRM_MS = 2500;
   const GATE_NAMES = { outside_mad: "마스크 밖 MAD", outside_frac_gt24: "마스크 밖 큰 차이", black_band: "검은 띠" };
   const PREF_KEY = "bmk-dp-studio";
+  const SEEN_KEY = "bmk-dp-seen:"; // + 보드 키 — 이 브라우저에서 고른 적 있는 후보 key(그 밖 = 안 본 후보 '새')
+  const VIA = { run: "Run", reroll: "재굴림", retry: "재시도" }; // 후보를 만든 호출의 승인 종류(state via — 원장 approved_by)
   // 편집 모드에서 끄는 검토 키: ★(Space)·탈락(X)·재굴림(R, 유료)·타깃/후보 이동·비교 보기. Space 는 viewer.js 가 화면 이동에 쓴다
   const EDIT_OFF = new Set(["Space", "KeyX", "KeyR", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "KeyQ", "KeyD", "KeyC",
     "KeyS", "KeyM", "KeyV"]);
@@ -49,8 +51,10 @@
   let busy = false;
   let polling = false;
   let pollAgain = false;
+  let cycle = null; // 도는 refresh 의 약속(뒤따르는 다시 받기 포함)
   let pollTimer = null;
   let rerollArm = null; // {cell, way, until} — way = 첫 R 토스트를 만든 판정(tabWay)
+  let rerollSent = null; // {cell, rev} — 마지막 재굴림 쓰기(응답 매니페스트 rev) — rerollHold
   let toastTimer = null;
   let viewer = null;
   let slider = false;
@@ -63,6 +67,7 @@
   let pipe = null; // DPPipeline 패널 — 옛 서버는 pipeline.js 를 주지 않아 null
   let pipeOn = false;
   let tabLink = null; // DPPipeline.link — ComfyUI 탭 hello 상태
+  let seen = null; // Set — 본 후보 key(syncSeen 이 첫 state 에서 채움)
 
   const $ = (id) => document.getElementById(id);
 
@@ -163,11 +168,18 @@
     return data;
   }
 
-  async function refresh(force = false) {
+  function refresh(force = false) {
+    // 도는 폴링이 있으면 다시 받기(force)만 걸고 그 폴링 — 뒤따르는 다시 받기까지 — 이 끝날 때 끝나는 약속을 돌려준다. 쓰기 뒤 refresh(true)를
+    // 기다리는 곳(write — busy 가 풀리기 전에 그 쓰기를 반영한 S: 키보드 R 거절의 셀 pre, 진행 [반영] 확인 창의 크롭별 줄)이 낡은 S 로 넘어가지 않게
     if (polling) {
       pollAgain = pollAgain || force;
-      return;
+      return cycle;
     }
+    cycle = pollState(force);
+    return cycle;
+  }
+
+  async function pollState(force) {
     polling = true;
     try {
       const d = await getState(force);
@@ -254,6 +266,7 @@
   }
 
   function reconcile() {
+    syncSeen();
     if (!S.targets.length) {
       tKey = cKey = null;
       return;
@@ -265,13 +278,77 @@
       cKey = null;
     }
     if (!t.candidates.some((c) => c.key === cKey)) cKey = defaultCand(t);
+    markSeen(cKey);
     if (refIdx >= t.refs.length) refIdx = 0;
+  }
+
+  function syncSeen() {
+    // 처음 받은 state: 이 브라우저에 저장한 본 후보가 없으면(처음 연 프로젝트·저장소 막힘) 지금 후보를 모두 본 것으로 — 그 뒤 생기는 후보가 '새'
+    if (seen) return;
+    let saved = null;
+    try {
+      saved = JSON.parse(localStorage.getItem(SEEN_KEY + ROOT) || "null");
+    } catch (e) {
+      saved = null;
+    }
+    seen = new Set(Array.isArray(saved) ? saved : S.targets.flatMap((t) => t.candidates.map((c) => c.key)));
+    saveSeen(true); // 처음이면 기준을, 아니면 지금 없는 후보를 뺀 목록을 저장
+  }
+
+  function saveSeen(prune = false) {
+    // 다른 창이 그 사이 본 후보와 합쳐 저장(못 쓰면 이번 창에서만). prune = 창을 연 첫 state 일 때만 지금 없는 후보를 뺌(지운 후보·같은 경로에
+    // 다시 만든 프로젝트의 옛 키가 쌓이지 않게) — 그 뒤의 S 는 폴링이 늦을 수 있어, 다른 창이 본 더 새 후보를 지우지 않게 빼지 않는다
+    try {
+      const old = JSON.parse(localStorage.getItem(SEEN_KEY + ROOT) || "[]");
+      for (const k of Array.isArray(old) ? old : []) seen.add(k);
+      const now = prune ? new Set(S.targets.flatMap((t) => t.candidates.map((c) => c.key))) : null;
+      localStorage.setItem(SEEN_KEY + ROOT, JSON.stringify(now ? [...seen].filter((k) => now.has(k)) : [...seen]));
+    } catch (e) {
+      // 저장소를 못 씀 — 이번 창에서만
+    }
+  }
+
+  function onSeenStorage(e) {
+    // 다른 창(같은 프로젝트 Studio)이 본 후보 — 이 창의 '새' 표시에서도 뺀다
+    if (e.key !== SEEN_KEY + ROOT || !seen || !e.newValue) return;
+    let keys = null;
+    try {
+      keys = JSON.parse(e.newValue);
+    } catch (x) {
+      return;
+    }
+    if (!Array.isArray(keys)) return;
+    for (const k of keys) seen.add(k);
+    renderTargets();
+    renderGrid();
+  }
+
+  function markSeen(key) {
+    // 검토 화면(후보 큰 화면·그리드)이 보일 때만 — 진행(G)·편집(E)·레퍼런스(T)의 크롭 선택은 후보를 보여 주지 않는다(모드를 나올 때 그 후보를 표시).
+    // → 새로 본 것으로 표시했는가
+    if (!seen || !key || seen.has(key) || editing || refsOn || pipeOn) return false;
+    seen.add(key);
+    saveSeen();
+    return true;
+  }
+
+  function seeCurrent() {
+    // 모드를 나와 검토 화면이 다시 보임 — 지금 후보를 본 것으로 하고 '새' 표시를 다시 그림
+    if (markSeen(cKey)) {
+      renderTargets();
+      renderGrid();
+    }
+  }
+
+  function isNew(c) {
+    return !!seen && !seen.has(c.key);
   }
 
   function selectTarget(key) {
     if (key === tKey) return;
     tKey = key;
     cKey = defaultCand(curTarget());
+    markSeen(cKey);
     refIdx = 0;
     rerollArm = null;
     if (pipeOn) pipe.select(curTarget().crop_id); // 진행 모드: 채택 패널도 그 크롭(캔버스 클릭)
@@ -280,6 +357,7 @@
 
   function selectCand(key) {
     cKey = key;
+    markSeen(key);
     rerollArm = null;
     renderTargets();
     renderCompare();
@@ -412,22 +490,31 @@
       : "금액은 지금 jobs(마지막 Prepare — Studio 반영 포함) 기준: 큐·Run 은 그래프 Prepare(그래프 위젯 값)를 다시 돌린 뒤 과금하므로 "
         + "그래프 Prepare 값이 Studio 설정과 다르면 장 수·비용이 바뀌거나(n·셀당 호출) 셀이 바뀌어 이 재굴림이 미뤄짐(모델·품질·변형 등)";
     if (fromButton) {
-      // 유료 탭 길은 승인 제출이라 사용자 그래프 부수 효과 줄(pipe.side — §10.7 보정 4)을 붙임(지금 보내지 않으면 없음)
-      if (!window.confirm(`${what}\n${graphPrep}\n` + (lock ? `유료 호출이 사전 승인됩니다 — 지금은 큐를 보내지 않음(${lock}): 재굴림은 예약만 되고 `
+      // 유료 탭 길은 승인 제출이라 사용자 그래프 부수 효과 줄(pipe.side — §10.7 보정 4)을 붙임(지금 보내지 않으면 없음). 이 셀에 아직 돌지 않은
+      // 사전 승인 재굴림이 있으면 누적 건수·금액을 맨 앞에(키보드 R 은 그때 거절 — rerollHold)
+      const pre = cellPre(cell);
+      const stack = pre ? `이 셀 재굴림 대기 ${pre}건(사전 승인) → ${pre + 1}건${usd(cell.est_usd ? { est_usd: cell.est_usd.map((v) => v * (pre + 1)) } : null)}\n` : "";
+      if (!window.confirm(`${what}\n${stack}${graphPrep}\n` + (lock ? `유료 호출이 사전 승인됩니다 — 지금은 큐를 보내지 않음(${lock}): 재굴림은 예약만 되고 `
         + "머리줄 'ComfyUI 큐'로 보내거나 다음 Run 때(선택과 무관) 함께 과금됩니다. 계속할까요?"
         : tab ? (way === "paid" ? `${pipe.side}\n` : "") + "유료 호출이 사전 승인되고 ComfyUI 탭에 큐 요청을 보냅니다. 계속할까요?"
           : `유료 호출이 사전 승인됩니다 — 지금 큐를 보내지 않음(${why}): 재굴림은 예약만 되고 다음 Run 때(선택과 무관) 함께 과금됩니다. 계속할까요?`))) {
         return;
       }
     } else {
+      // 키보드 R 은 R R 마다 +1 — 앞 R R 이 아직 처리·실행 중이면 무장하지 않는다(rerollHold — 첫 R·둘째 R 모두). 그래서 여기서 lock 은 늘 ""
+      const hold = rerollHold(cell);
+      if (hold) {
+        rerollArm = null;
+        toast(`R 무시 — ${hold}. 더 넣으려면 [재굴림 +1] 단추(확인 창에 누적 건수)`, "warn");
+        return;
+      }
       const now = Date.now();
-      if (!rerollArm || rerollArm.cell !== cell.cell_key || rerollArm.way !== way || rerollArm.lock !== lock || now > rerollArm.until) {
-        rerollArm = { cell: cell.cell_key, way, lock, until: now + REROLL_CONFIRM_MS };
+      if (!rerollArm || rerollArm.cell !== cell.cell_key || rerollArm.way !== way || now > rerollArm.until) {
+        rerollArm = { cell: cell.cell_key, way, until: now + REROLL_CONFIRM_MS };
         // 유료 탭 길로 지금 보내면 승인 제출 — 버튼 R 확인 창의 부수 효과 줄(pipe.side)을 짧게
         toast(`R 을 한 번 더 누르면 ${what} — 유료`
           + (tab ? "" : ` · 지금 큐를 보내지 않음(${scripted ? "스크립트 키 — 큐는 사용자 키 입력만, " : ""}예약만 — 다음 Run 때 과금)`)
-          + (lock ? ` · 지금은 예약만(${lock} — 머리줄 'ComfyUI 큐' 또는 다음 Run 때 과금)` : "")
-          + (way === "paid" && !lock ? " · 승인 제출이라 ComfyUI 탭 그래프의 시드 제어 등 실행마다 바뀌는 값이 한 번 진행됨(그래프는 실행 안 함)" : "")
+          + (way === "paid" ? " · 승인 제출이라 ComfyUI 탭 그래프의 시드 제어 등 실행마다 바뀌는 값이 한 번 진행됨(그래프는 실행 안 함)" : "")
           + (way === "paid" ? " · 금액은 지금 jobs 기준(Prepare 갈라짐 — Studio 실행 설정이 마지막 Prepare 와 다르면 바뀜)"
             : " · 금액은 지금 jobs 기준(그래프 Prepare 값이 Studio 와 다르면 바뀜)"), "warn");
         return;
@@ -443,7 +530,26 @@
     const r = await write("reroll", { cell_key: cell.cell_key, count: 1 },
       (x) => `재굴림 +1 → ${x.variant || ""} 셀 대기 ${x.cell_pending} · 전체 대기 ${x.pending_calls}`
         + (pend.length && !mine ? ` · 미반영 레이아웃 ${pend.length}건 함께 반영` : ""));
+    // write 가 돌려준 뒤 다른 키 입력보다 먼저(같은 마이크로태스크 사슬) — 다시 받기가 실패해 S 가 낡아도 이 셀 R 은 그 rev 를 받을 때까지 거절
+    if (r) rerollSent = { cell: cell.cell_key, rev: r.rev };
     if (r && !scripted) setTimeout(() => queueReroll(way, !!lock), 600);
+  }
+
+  function cellPre(cell) {
+    // 그 셀의 아직 돌지 않은 사전 승인 재굴림 수(state 셀 pre). 옛 서버(키 없음)는 서버 원장 대체 계산과 같은 min(누적 재굴림, 대기) — 넘쳐 세면 R 만 막힘
+    return "pre" in cell ? cell.pre : Math.min(cell.rerolls || 0, cell.pending || 0);
+  }
+
+  function rerollHold(cell) {
+    // 키보드 R 을 무장하지 않는 이유("" = 무장 — 10/19 스모크에서 R 연타가 의도 1건을 2건으로 넣음): 앞 쓰기 처리 중, 이 셀의 마지막 재굴림 쓰기를
+    // state 가 아직 담지 않음(rerollSent — 다시 받기가 실패해 S 가 낡은 채 busy 가 풀린 경우), 이 셀의 사전 승인 재굴림이 아직 돌지 않음,
+    // Run(재굴림 템플릿 포함) 실행 중, 이 Studio 의 유료 요청·실행·무료 큐 중(paidLock)
+    if (busy) return "앞 요청을 처리하는 중";
+    if (rerollSent && rerollSent.cell === cell.cell_key && S.rev < rerollSent.rev) return "앞 재굴림 쓰기를 아직 state 로 받지 못함";
+    const pre = cellPre(cell);
+    if (pre) return `이 셀 재굴림 대기 ${pre}건(사전 승인)이 아직 돌지 않음`;
+    if (S.running) return "Run(재굴림 포함) 실행 중";
+    return pipe ? pipe.paidLock() : "";
   }
 
   function tabWay() {
@@ -567,6 +673,7 @@
     } else {
       editor.leave();
       syncViewer(false);
+      setTimeout(seeCurrent); // 다른 모드로 바꾸는 중이면(그 모드가 켜진 뒤라) 표시하지 않음
     }
   }
 
@@ -590,6 +697,7 @@
     } else {
       refEd.leave();
       syncViewer(false);
+      setTimeout(seeCurrent);
     }
   }
 
@@ -615,6 +723,7 @@
     } else {
       pipe.leave();
       syncViewer(false);
+      setTimeout(seeCurrent);
     }
   }
 
@@ -724,6 +833,8 @@
   function targetChips(ch, t) {
     const k = t.chips;
     ch.append(chip(`후보 ${k.n}`));
+    const fresh = t.candidates.filter(isNew).length;
+    if (fresh) ch.append(chip(`새 ${fresh}`, "b-new"));
     if (k.picked) ch.append(chip(`★ ${k.picked}`, "b-star"));
     if (k.gate_fail) ch.append(chip(`게이트 ✕${k.gate_fail}`, "b-bad"));
     if (k.reframed) ch.append(chip(`reframed ${k.reframed}`, "b-reg"));
@@ -848,7 +959,8 @@
     } else if (c) {
       url = c.big_url;
       caption = `후보 c${pad(c.n)}` + (c.picked ? (c.slice_index === 1 ? " ★" : ` slice ${c.slice_index}`) : "")
-        + (c.rejected ? " · 탈락" : "") + (c.mock ? " · MOCK" : "") + (c.stale_rect ? " · 옛 크롭" : "");
+        + (c.rejected ? " · 탈락" : "") + (c.mock ? " · MOCK" : "") + (c.stale_rect ? " · 옛 크롭" : "") + (oldCell(c) ? " · 옛 셀" : "")
+        + (ranText(c) ? ` · ${ranText(c)}` : "");
     }
     panel.className = "panel mode-" + mode;
     $("cand-caption").textContent = caption;
@@ -907,12 +1019,14 @@
     }
     const src = [c.origin, c.backend, c.variant, c.rep !== null && c.rep !== undefined ? `r${c.rep}` : null]
       .filter((x) => x !== null && x !== undefined && x !== "").join(" · ");
-    row(d, `c${pad(c.n)}`, `${c.label} · ${src}` + (c.src_size ? ` · ${c.src_size[0]}×${c.src_size[1]}` : ""));
+    row(d, `c${pad(c.n)}`, `${c.label} · ${src}` + (c.src_size ? ` · ${c.src_size[0]}×${c.src_size[1]}` : "")
+      + (ranText(c) ? ` · ${ranText(c)} 완료` : ""));
     if (c.joint && c.joint.first && c.joint.first !== t.tid) {
       const r = row(d, "공동", `${c.joint.tids.join("·")} 를 한 번에 고친 결과 — ★ 는 ${c.joint.first} 에만 `, "warn");
       if (c.joint.first_key) rowButton(r, `${c.joint.first} 에 ★`, starOnFirst);
     }
     if (c.stale_rect) row(d, "옛 크롭", "크롭 rect 를 옮기기 전에 만든 후보 — 지금 크롭과 위치·크기가 다름", "warn");
+    if (oldCell(c)) row(d, "옛 셀", "지금 jobs 에 없는 셀(Prepare 설정·입력이 바뀌기 전)로 만든 후보 — 재굴림(R)은 지금 셀로", "warn");
     let an = "분석 없음 (Analyze 전)";
     let cls = "";
     if (c.analysis === "skipped") an = "분석 생략(부분 패치)";
@@ -934,13 +1048,27 @@
     row(d, "분석", an, cls);
   }
 
+  function ranText(c) {
+    // 후보를 만든 호출의 완료 시각(state done = 원장 calls finished "YYYY-MM-DD HH:MM:SS" → "MM/DD HH:MM")·승인 종류 — 원장에 없는 후보는 ""
+    if (!c.done) return "";
+    const m = /^\d{4}-(\d\d)-(\d\d) (\d\d:\d\d)/.exec(c.done);
+    return (m ? `${m[1]}/${m[2]} ${m[3]}` : c.done) + (VIA[c.via] ? ` ${VIA[c.via]}` : "");
+  }
+
+  function oldCell(c) {
+    // 지금 jobs 에 없는 셀의 후보(Prepare 설정·입력이 바뀌기 전) — 옛 크롭(rect 를 옮기기 전)이면 그쪽 표시만
+    return !!c.old_cell && !c.stale_rect;
+  }
+
   function tileBadges(c) {
     const b = el("div", "tb");
+    if (isNew(c)) b.append(el("span", "badge b-new", "새"));
     if (c.picked) b.append(el("span", "badge b-star", c.slice_index === 1 ? "★" : `S${c.slice_index}`));
     if (c.mock) b.append(el("span", "badge b-mock", "MOCK"));
     if (c.gates && c.gates.fails.length) b.append(el("span", "badge b-bad", "게이트"));
     if (c.analysis === "nosrc" && !c.hand_mask) b.append(el("span", "badge b-bad", "마스크 없음"));
     if (c.stale_rect) b.append(el("span", "badge b-bad", "옛 크롭"));
+    if (oldCell(c)) b.append(el("span", "badge b-wait", "옛 셀"));
     if (c.reframed) b.append(el("span", "badge b-reg", "reframed"));
     if (c.rejected) b.append(el("span", "badge b-rej", "탈락"));
     return b;
@@ -970,7 +1098,10 @@
       tile.append(box, tileBadges(c));
       const meta = [c.origin === "run" ? c.variant : c.origin, c.rep !== null && c.rep !== undefined ? `r${c.rep}` : null]
         .filter(Boolean).join(" · ");
-      tile.append(el("div", "cap", `c${pad(c.n)} · ${meta} · ${c.label}`));
+      // 원장 호출의 후보는 레이어명(셀 키) 대신 완료 시각·종류 — 레이어명은 제목·상세 줄에
+      const cap = el("div", "cap", `c${pad(c.n)} · ${meta} · ${ranText(c) || c.label}`);
+      cap.title = [c.label, ranText(c) && `${ranText(c)} 완료`].filter(Boolean).join(" · ");
+      tile.append(cap);
       tile.addEventListener("click", () => selectCand(c.key));
       tile.addEventListener("dblclick", () => {
         selectCand(c.key);
@@ -1218,11 +1349,13 @@
         },
         seams: () => seamsByCrop,
         enter: () => setPipe(true),
+        layoutWrote: (from, to) => editor && editor.ownWrite(from, to), // 반영 칸 [되돌리기] — 이 창 편집기의 Ctrl+Z 기록을 남김
       });
     }
     wireButtons();
     document.addEventListener("keydown", onKeyDown);
     document.addEventListener("keyup", onKeyUp);
+    window.addEventListener("storage", onSeenStorage);
     window.addEventListener("blur", () => {
       if (qHeld) {
         qHeld = false;
