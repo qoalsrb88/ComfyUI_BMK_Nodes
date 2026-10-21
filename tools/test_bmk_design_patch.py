@@ -4074,7 +4074,7 @@ def m2_runner_unit(with_comfy: bool):
         ids = [e["call_id"] for e in p["pending"]]
         check(ids == [f"{ck}_r0" for ck in cks] + [f"{ck}_r1" for ck in cks], f"breadth-first 순서 {ids}")
         check(all(e["kind"] == "new" and e["billable"] and not e["preapproved"] for e in p["pending"]), "새 호출 = 과금·승인 필요")
-        check(all(e["reason"].startswith("새 셀") for e in p["pending"]), "사유: 새 셀")
+        check(all(e["reason"].startswith("새 생성 조건") for e in p["pending"]), "사유: 새 셀")
         aids = [runner.approval_id(e) for e in p["pending"]]
         check(aids == [f"{i}:n2" for i in ids], f"approval_id = call_id + n {aids[:1]}")
         h0 = runner.pending_hash(aids)
@@ -10179,7 +10179,7 @@ def m2_js_unit():
           f"S5: 보드 큐 요청은 Run 의 남은 approve 를 비우고 Review 만 큐 {res['s5']}")
     w1 = res["wsu1"]
     check(w1["probe"] == [""] and w1["queued"] == 1 and w1["approve"] == "",
-          f"WSU-1: 무승인 이어가기 큐가 취소돼도 나중 Run 실행이 새 해시를 자동 승인하지 않음 {w1}")
+          f"WSU-1: 무승인 이어가기 큐가 취소돼도 나중 Run 실행이 새 승인 코드를 자동 승인하지 않음 {w1}")
     check(res["wsu1c"]["queued"] == 1 and res["wsu1c"]["warns"] == [], f"WSU-1: 이어가기가 정상으로 끝나면 거짓 경고 없음 {res['wsu1c']}")
     a, b, c, d = (res["wsu3"][k] for k in "abcd")
     check(a["queued"] == ["H1aaaaaaaaaa"] and a["after"] == "" and not a["hookLeft"] and a["confirms"] == 0,
@@ -10216,7 +10216,7 @@ def m2_js_unit():
           f"J7: 보고 없는 Run 버튼도 같은 규칙 {j7r}")
     j2 = res.get("j2") or {}
     check(j2.get("queued") == [{"ids": ["4"], "d": "", "r": "R1aaaaaaaaaa"}] and j2.get("dAfter") == "",
-          f"J2: Run 승인 큐가 Draft 의 approve 를 비움 {j2}")
+          f"J2: 생성 승인 큐가 Draft 의 approve 를 비움 {j2}")
     j3 = res.get("j3") or {}
     check(j3.get("queued") == [{"ids": ["6"], "d": "", "r": ""}] and j3.get("dAfter") == "",
           f"J3: 보드 큐(queueReview)가 Run·Draft 의 approve 를 모두 비움 {j3}")
@@ -10254,7 +10254,7 @@ def m2_js_unit():
           f"TO-J9 공유 서브그래프: 두 번째 인스턴스(20:3)만 부분 실행해도 비움(실행 ID 전부 대조) {j9}")
     aq = res.get("aq3a") or {}
     why = ("ComfyUI 탭의 자동 큐({})가 켜져 있어 큐에 넣지 않았습니다 — 넣으면 실행이 끝난 뒤 그래프 전체가 자동으로 다시 큐됩니다"
-           "(사전 승인한 재굴림 과금). Run 단추 모드를 Run 으로 바꾼 뒤 다시 하세요.")
+           "(사전 승인한 다시 생성 과금). Run 단추 모드를 Run 으로 바꾼 뒤 다시 하세요.")
     want = {"button": ("Run", "Run (On Change)"), "dryRun": ("Spec Draft", "Run (On Change)"), "board": ("보드 요청", "Run (On Change)"),
             "cont": ("자동 이어가기", "Run (Instant)"), "legacy": ("Run", "Auto Queue")}
     check("error" not in aq and all(aq[k]["queued"] == 0 and f"warn: {w}: {why.format(mode)}" in aq[k]["toasts"] for k, (w, mode) in want.items())
@@ -14857,7 +14857,7 @@ await scenario("nudgeEnter", async () => {  // 화살표 → 상자에 맞춤 �
   const env = await editor([C1(), C2()]);
   await env.pick("002_눈");
   env.key("ArrowDown");
-  env.button(env.panel, "상자에 맞춤").fire("click");
+  env.button(env.panel, "상자에 크롭 맞추기").fire("click");
   env.key("Enter");
   await sleep(500);
   return { log: env.srv.log.map((x) => x.rect), final: env.srv.lay.crops[1].rect, want: G.suggest([[1100, 100, 1300, 300]], [3072, 4096], true) };
@@ -14910,7 +14910,7 @@ await scenario("applyWaits", async () => {  // 저장 중인 대상 문구가 �
   await env.pick("001_모자");
   env.srv.delay = 40;
   env.type("t-A", "hat").fire("change");
-  env.button(env.head, "반영(큐)").fire("click");
+  env.button(env.head, "반영 (무료)").fire("click");
   await sleep(200);
   return { queued: env.queued, revAtQueue: env.queuedRev, text: env.srv.lay.crops[0].targets[0].text };
 });
@@ -15053,24 +15053,24 @@ await scenario("take", async () => {  // 갈라짐 3(005·009 바뀜, 새 019): 
   const one = { label, confirm: env.confirms.at(-1), body: env.srv.log.at(-1), toast: env.toasts.at(-1), headBefore, headAfter: env.head.textContent };
   const all = await editor([crop("005_aaaaaa", "005_모자", [0, 0, 512, 512])], { psd_diff: DIFF() });
   all.srv.psdResp = { taken: [{ id: "005_aaaaaa", name: "005_모자", fields: ["rect"] }], added: ["019_n9"], skipped: ["009_휘장"] };
-  const takeTitle = all.button(all.head, "PSD 값 가져오기").title;
-  all.button(all.head, "PSD 값 가져오기").fire("click");
+  const takeTitle = all.button(all.head, "모두 PSD 값으로").title;
+  all.button(all.head, "모두 PSD 값으로").fire("click");
   await sleep(50);
   // S1-a ack 이름별: 사라진 shape(007_끈)가 있는 크롭 패널의 '이 shape 경고 끄기' = ack names [그 이름] — 다른 갈라짐은 그대로
   const d2 = Object.assign(DIFF(), { removed: [{ name: "007_끈", layer_name: "007_끈", rect: [2048, 0, 2304, 512] }] });
   const ack = await editor([crop("005_aaaaaa", "005_모자", [0, 0, 512, 512]), crop("007_cccccc", "007_끈", [2048, 0, 2304, 512])], { psd_diff: d2 });
   await ack.pick("007_끈");
   const noTake = !ack.button(ack.panel, "PSD 값으로");
-  ack.button(ack.panel, "이 shape 경고 끄기").fire("click");
+  ack.button(ack.panel, "이 사각형 경고 끄기").fire("click");
   await sleep(50);
   // 옛 서버(ComfyUI 재시작 전 — board 가 psdPartial false, r1-13): take·ack 가 기준점을 통째로 바꿔 다른 갈라짐 경고도 꺼짐 — 라벨·확인 창·툴팁이 그렇게
   // 말하고 '이 shape 경고 끄기'(이름별 ack)는 없음
   const old = await editor([crop("005_aaaaaa", "005_모자", [0, 0, 512, 512]), crop("007_cccccc", "007_끈", [2048, 0, 2304, 512])], { psd_diff: d2 }, {},
     { psdPartial: () => false });
-  const oldTitle = old.button(old.head, "PSD 값 가져오기").title;
+  const oldTitle = old.button(old.head, "모두 PSD 값으로").title;
   await old.pick("005_모자");
   const oldLabel = old.button(old.panel, "PSD 값으로").textContent;
-  const oldAck = !!old.button(old.panel, "이 shape 경고 끄기");
+  const oldAck = !!old.button(old.panel, "이 사각형 경고 끄기");
   old.srv.psdResp = { taken: [{ id: "005_aaaaaa", name: "005_모자", fields: ["rect"] }], added: [], skipped: [] };
   old.button(old.panel, "PSD 값으로").fire("click");
   await sleep(50);
@@ -15078,23 +15078,23 @@ await scenario("take", async () => {  // 갈라짐 3(005·009 바뀜, 새 019): 
   await old.pick("007_끈");
   return { one, all: { confirm: all.confirms.at(-1), names: all.srv.log.at(-1).names, toast: all.toasts.at(-1), takeTitle },
     ack: { noTake, confirm: ack.confirms.at(-1), body: ack.srv.log.at(-1), head: ack.head.textContent },
-    old: { title: oldTitle, label: oldLabel, ack: oldAck || !!old.button(old.panel, "이 shape 경고 끄기"), confirm: oldConfirm } };
+    old: { title: oldTitle, label: oldLabel, ack: oldAck || !!old.button(old.panel, "이 사각형 경고 끄기"), confirm: oldConfirm } };
 });
 
 await scenario("start", async () => {  // 시작이 막히면 그 이유를 보이고 버튼을 끔
   const why = "레이아웃 모드 결과 매니페스트에 믿을 수 있는 PSD 스냅숏이 없습니다(시험)";
   const no = await editor([], { exists: false, rev: null, start_blocked: why }, { layout_rev: null, crops: [{}, {}] });
   const ok = await editor([], { exists: false, rev: null, start_blocked: null }, { layout_rev: null, crops: [{}, {}] });
-  const b = (env) => env.button(env.panel, "레이아웃 편집 시작");
+  const b = (env) => env.button(env.panel, "크롭 편집 시작");
   return { why, no: { disabled: b(no).disabled, text: no.panel.textContent }, ok: { disabled: b(ok).disabled, text: ok.panel.textContent } };
 });
 
 await scenario("head", async () => {  // 깨진 layout.json = 오류만 · 반영됨 = 서버 applied(sig) · 반영(큐) = 확인 창(S3 무료 반영) 뒤 queue 콜백
   const broken = await editor([], { exists: true, error: "layout.json 형식 오류(시험)", rev: null, applied_rev: null, editable: false }, { layout_rev: null });
   const applied = await editor([C1()], { applied: true, applied_rev: 7, pending_rerolls: 2 }, {},
-    { applyWarn: () => ["prepare.model: 마지막 Prepare a · Studio b — 그래프와 Studio 를 번갈아 돌리면 셀이 바뀌어 다시 과금 대상"] });
+    { applyWarn: () => ["prepare.model: 마지막 Prepare a · Studio b — 그래프와 Studio 를 번갈아 돌리면 생성 조건이 바뀌어 다시 과금 대상"] });
   const stale = await editor([C1()], { applied: false, applied_rev: 0 });
-  applied.button(applied.head, "반영(큐)").fire("click");
+  applied.button(applied.head, "반영 (무료)").fire("click");
   await sleep(30);
   return { broken: broken.head.textContent, applied: applied.head.textContent, stale: stale.head.textContent, queued: applied.queued,
     confirm: [broken, applied, stale].flatMap((e) => e.confirms).at(-1) ?? "" };  // window.confirm 은 마지막 editor() 의 것
@@ -15105,11 +15105,11 @@ await scenario("applyLines", async () => {  // 사용성 §12: 반영(큐) 확�
   const env = await editor([crop("005_aaaaaa", "005_장식", [0, 0, 512, 512], { status: "changed", changed: ["rect"] }),
     crop("006_bbbbbb", "006_띠", [512, 0, 1024, 512], { status: "changed", changed: ["name", "targets"] }), crop("007_n1", "007_새", [0, 512, 512, 1024], { status: "new" }), C1()],
     { removed: [{ id: "008_cccccc", name: "008_끈", rect: [0, 0, 256, 256], candidates: 2, picks: 1 }] });
-  env.button(env.head, "반영(큐)").fire("click");
+  env.button(env.head, "반영 (무료)").fire("click");
   await sleep(30);
   const first = env.confirms.at(-1).split("\n")[0];
   const clean = await editor([C1()]);
-  clean.button(clean.head, "반영(큐)").fire("click");
+  clean.button(clean.head, "반영 (무료)").fire("click");
   await sleep(30);
   const plain = clean.confirms.at(-1).split("\n")[0];
   // Ctrl+Z 기록: 지우기 1단계(rev 0 → 1) 뒤 같은 창 G 가 rev 1 → 2 로 씀(ownWrite) → 다시 들어와도 기록 남음, 다른 창이 2 → 3 으로 쓰면 비움
@@ -15293,7 +15293,7 @@ def layout_js_unit():
     check(re.findall(r'<script src="([^"]+)" defer></script>', html)
           == ["layout_geom.js", "viewer.js", "layout_edit.js", "ref_edit.js", "pipeline.js", "mask_edit.js", "board.js"],
           "board.html script 순서 layout_geom → viewer → layout_edit → ref_edit → pipeline → mask_edit → board")
-    check(all(f'id="{i}"' in html for i in ("btn-edit", "layout-head", "layout-list", "layout-panel")), "board.html 편집 모드 요소 4개")
+    check(all(f'id="{i}"' in html for i in ("btn-edit", "layout-head", "layout-list", "layout-panel")), "board.html 크롭 편집 모드 요소 4개")
     vj = code["viewer.js"]
     vret = vj[vj.rindex("return { setState"):]
     check(all(k in vret for k in ("setEditor", "setCursor", "canvasPoint", "scale", "redraw")) and "return { create, svg };" in vj,
@@ -15307,25 +15307,25 @@ def layout_js_unit():
     ty = _layout_js_fn(bj, "typing")
     check(all(x in ty for x in ("input", "textarea", "select", "contenteditable")), "typing() = input·textarea·select·contenteditable")
     off = re.search(r"const EDIT_OFF = new Set\(\[([^\]]*)\]\)", bj)
-    check(bool(off) and {"Space", "KeyX", "KeyR"} <= set(re.findall(r'"(\w+)"', off.group(1))), "EDIT_OFF 에 Space(★)·X(탈락)·R(재굴림)")
+    check(bool(off) and {"Space", "KeyX", "KeyR"} <= set(re.findall(r'"(\w+)"', off.group(1))), "EDIT_OFF 에 Space(★)·X(제외)·R(다시 생성)")
     i_ed, i_mod, i_off, i_sw = (kd.find(s) for s in ("editor.onKey(e)", "e.ctrlKey || e.metaKey || e.altKey",
                                                      "editing && EDIT_OFF.has(e.code)", "switch (e.code)"))
-    check(0 < i_ed < i_mod < i_off < i_sw, "onKeyDown 순서: 편집기 키(Ctrl+Z 등) → Ctrl 거름 → 편집 모드 Space·X·R 끔 → 검토 키")
+    check(0 < i_ed < i_mod < i_off < i_sw, "onKeyDown 순서: 편집기 키(Ctrl+Z 등) → Ctrl 거름 → 크롭 편집 모드 Space·X·R 끔 → 검토 키")
     check('"layout_rev" in S' in bj and "if (window.DPLayoutEdit)" in bj, "옛 서버(state 에 layout_rev 없음·layout_*.js 없음)면 편집 버튼 끔")
     rp = _layout_js_fn(ed, "renderPanel", "    ")
     check("textField(a)" in rp and "textField(e)" in ed and '"TEXTAREA"' in ed and "SELECT" not in ed,
           "renderPanel 포커스 복원 = 글자 입력칸만(좌우 select 제외 — 화살표가 크롭을 움직이게)")
     rr = bj[bj.index("async function reroll("):bj.index("function comfyConnected(")]
-    check(all(x in rr for x in ("LAYOUT_STATUS[c.layout_status]", "window.confirm(", "재굴림이 실행되지 않습니다", "함께 반영")),
-          "검토 재굴림: 이 크롭의 레이아웃이 미반영이면 확인 창(셀이 바뀌어 안 돎), 다른 크롭만이면 토스트로 함께 반영 알림")
-    check("다음 큐(반영(무료 — 탭 불필요)·재굴림·ComfyUI 큐 모두)의 Import 에서 매니페스트에 반영" in html
+    check(all(x in rr for x in ("LAYOUT_STATUS[c.layout_status]", "window.confirm(", "다시 생성이 실행되지 않습니다", "함께 반영")),
+          "검토 다시 생성: 이 크롭의 레이아웃이 미반영이면 확인 창(생성 조건이 바뀌어 안 돎), 다른 크롭만이면 토스트로 함께 반영 알림")
+    check("다음 큐(반영(무료 — 탭 불필요)·다시 생성(R)·[다시 생성 보내기] 모두)의 Import 에서 프로젝트 기록에 반영" in html
           and "이름을 바꾼 크롭은 같은 이름으로 다시 만들어도 새 ID" in html, "board.html 도움말: 반영 시점(S3 무료 반영)·지우기 되살리기")
     ext = (PKG / "js" / "bmk_design_patch.js").read_text(encoding="utf-8")
     check('postMessage({ type: "bmk-dp-queue", rootKey: ROOT, layout }, location.origin)' in bj and "opts.queue(true)" in ed
           and "queueInComfy(true)" in bj[bj.index("async function applyFree("):bj.index("function goTarget(")]
           and "if (d.layout === true) boardLayout.add(key);" in ext and "queueReview(key, boardLayout.delete(key))" in ext
           and "importUpstream(prompt, targets.map(execIdOf)" in ext[ext.index("async function queueReview("):ext.index("function onBoardMessage(")],
-          "반영(큐) = applyFree(무료 반영), 옛 서버 대체(재시작 전) = 탭 layout 요청 → ComfyUI 탭은 Review 상류에 Import 가 있을 때만 큐(아니면 알림)")
+          "반영 (무료) = applyFree(무료 반영), 옛 서버 대체(재시작 전) = 탭 layout 요청 → ComfyUI 탭은 Review 상류에 Import 가 있을 때만 큐(아니면 알림)")
     node = shutil.which("node")
     if not node:
         skip("node 없음 → node --check·J-L1·J-L2·J-L3 생략")
@@ -15451,7 +15451,7 @@ def layout_js_unit():
     check(pure.get("reload") == {"stale": None, "newer": "layout", "afterErr": "layout", "manifest": "manifest", "same": None,
                                  "created": "layout", "broken": "layout", "restored": "layout"},
           f"J-L2 reloadKind: 낡은 state(직전 state 와 같음)는 다시 받지 않음 · 새 layout_rev·되돌려 낮아진 판·읽기 실패 뒤는 다시 받음 · "
-          f"매니페스트만 = 부드럽게 {pure}")
+          f"프로젝트 기록만 = 흐리기 {pure}")
     rn = pure.get("rename", {})
     check("레퍼런스가 바뀌어" in rn.get("moved", "") and "부위 라벨" in rn.get("same", "") and "mapping_json" not in rn.get("same", "")
           and "mapping_json" in rn.get("files", ""), f"J-L2 이름 바꾸기 경고 고르기 {rn}")
@@ -15467,7 +15467,7 @@ def layout_js_unit():
           f"J-L3 001 이동 → 002 화살표 → 400ms 안 Ctrl+Z = POST 없이 미세 이동 취소, 다음 Ctrl+Z = 001 이동 되돌림 {nu}")
     ne = ej["nudgeEnter"]
     check(ne.get("log") == [[1024, 16, 1536, 528], ne["want"]] and ne["final"] == ne["want"],
-          f"J-L3 화살표 → 상자에 맞춤 → Enter = 미세 이동 먼저, 최종 = 제안 {ne}")
+          f"J-L3 화살표 → 상자에 크롭 맞추기 → Enter = 미세 이동 먼저, 최종 = 제안 {ne}")
     check(ej["pending"] == [["001_aaaaaa", "update", ["gold hat"]], ["002_bbbbbb", "update", ["blue eye"]]],
           f"J-L3 입력 중 다른 크롭 선택 = 그 크롭에 한 번 저장(늦은 change·먼저 온 change) {ej['pending']}")
     sd = ej["side"]
@@ -15489,7 +15489,7 @@ def layout_js_unit():
     check(ej["renameScope"] == {"part": "눈동자", "log": [["update", "001_aaaaaa", "001_모자장식"]]},
           f"J-L3 이름 적용 응답 전에 다른 크롭으로 옮겨 쓰기 시작한 이름은 남음(Codex 3차) {ej['renameScope']}")
     check(ej["applyWaits"] == {"queued": [True], "revAtQueue": [1], "text": "hat"},
-          f"J-L3 반영(큐) 는 저장 중인 대상 문구가 서버에 닿은 뒤 요청(Codex) {ej['applyWaits']}")
+          f"J-L3 반영 (무료) 는 저장 중인 대상 문구가 서버에 닿은 뒤 요청(Codex) {ej['applyWaits']}")
     im = ej["ime"]
     check(im == {"mid": [True, 0], "midText": [True, 1], "log": [["update", "001_모자장식"]]},
           f"J-L3 IME 조합 확정 Enter 는 입력칸에 남고 보내지 않음, 조합 밖 Enter 는 적용(Codex) {im}")
@@ -15503,44 +15503,44 @@ def layout_js_unit():
     check(ej["addTarget"] == [["A", "C"]], f"J-L3 + 대상 = 채택 글자(B) 건너뛰고 C {ej['addTarget']}")
     one, whole, ack = (ej["take"].get(k, {}) for k in ("one", "all", "ack"))
     check(one.get("label") == "PSD 값으로"
-          and all(x in one["confirm"] for x in ("005_모자 — 사각형", "009_휘장", "019_새", "나머지 갈라짐 2건은 가져오지 않고 그대로 경고"))
+          and all(x in one["confirm"] for x in ("005_모자 — 사각형", "009_휘장", "019_새", "나머지 다른 곳 2건은 가져오지 않고 그대로 경고"))
           and "경고만 꺼" not in one["confirm"] and "새 크롭으로 더함" not in one["confirm"]
           and one["body"]["names"] == ["005_모자"] and one["body"]["snapshot"] == {"token": "tok-10"}
           and all(x in one["toast"] for x in ("005_모자(사각형)", "새 크롭 0", "건너뜀 0")),
-          f"J-L3 S1-a 크롭 하나 PSD 값으로 = 그 이름만(라벨에 나머지 수 없음), 확인 창 = 나머지 갈라짐은 그대로 경고, 토스트 = 가져옴·새 크롭·건너뜀 {one}")
-    check("PSD 갈라짐 3" in one.get("headBefore", "") and "PSD 갈라짐 2" in one.get("headAfter", ""),
-          f"J-L3 S1-a take 뒤 머리줄 PSD 갈라짐 3 → 2(고른 이름만 빠짐) {one.get('headBefore')!r} → {one.get('headAfter')!r}")
+          f"J-L3 S1-a 크롭 하나 PSD 값으로 = 그 이름만(라벨에 나머지 수 없음), 확인 창 = 나머지 다른 곳은 그대로 경고, 토스트 = 가져옴·새 크롭·건너뜀 {one}")
+    check("PSD 와 다름 3" in one.get("headBefore", "") and "PSD 와 다름 2" in one.get("headAfter", ""),
+          f"J-L3 S1-a take 뒤 머리줄 PSD 와 다름 3 → 2(고른 이름만 빠짐) {one.get('headBefore')!r} → {one.get('headAfter')!r}")
     check("새 크롭으로 더함" in whole.get("confirm", "") and whole["names"] == ["005_모자", "009_휘장", "019_새"]
           and all(x in whole["toast"] for x in ("새 크롭 1: 019_n9", "건너뜀 1", "레이아웃에서 지운 크롭이라 건너뜀"))
-          and "사라진 shape 는 경고 끄기로" in whole.get("takeTitle", ""),
-          f"J-L3 머리줄 PSD 값 가져오기 = 새 shape 는 새 크롭, 지운 크롭은 건너뜀, 툴팁 '사라진 shape 는 경고 끄기로' {whole}")
+          and "사라진 사각형은 경고 끄기로" in whole.get("takeTitle", ""),
+          f"J-L3 머리줄 모두 PSD 값으로 = 새 사각형은 새 크롭, 지운 크롭은 건너뜀, 툴팁 '사라진 사각형은 경고 끄기로' {whole}")
     check(ack.get("noTake") is True and (ack.get("body") or {}).get("op") == "ack" and ack["body"].get("names") == ["007_끈"]
-          and "나머지 갈라짐 3건은 그대로 경고" in (ack.get("confirm") or "") and "PSD 갈라짐 3" in ack.get("head", ""),
-          f"J-L3 S1-a 사라진 shape 크롭 = 'PSD 값으로' 없음, '이 shape 경고 끄기' = ack names [그 이름]·나머지는 그대로 경고(4 → 3) {ack}")
+          and "나머지 다른 곳 3건은 그대로 경고" in (ack.get("confirm") or "") and "PSD 와 다름 3" in ack.get("head", ""),
+          f"J-L3 S1-a 사라진 사각형 크롭 = 'PSD 값으로' 없음, '이 사각형 경고 끄기' = ack names [그 이름]·나머지는 그대로 경고(4 → 3) {ack}")
     od = ej["take"].get("old") or {}
     check(od.get("label") == "PSD 값으로(나머지 3건 경고 끔)" and od.get("ack") is False
-          and "나머지 갈라짐 3건은 가져오지 않고 경고만 꺼집니다" in (od.get("confirm") or "") and "그대로 경고" not in (od.get("confirm") or "")
-          and "007_끈 — 사라진 shape: 레이아웃 그대로, 경고만 꺼짐" in (od.get("confirm") or "") and "사라진 shape 는 경고만 꺼짐" in (od.get("title") or ""),
+          and "나머지 다른 곳 3건은 가져오지 않고 경고만 꺼집니다" in (od.get("confirm") or "") and "그대로 경고" not in (od.get("confirm") or "")
+          and "007_끈 — 사라진 사각형: 레이아웃 그대로, 경고만 꺼짐" in (od.get("confirm") or "") and "사라진 사각형은 경고만 꺼짐" in (od.get("title") or ""),
           f"r1-13 옛 서버(재시작 전 — psdPartial false: take·ack 가 기준점을 통째로 바꿈) = 라벨 '나머지 N건 경고 끔'·확인 창 '경고만 꺼집니다'·툴팁, "
-          f"'이 shape 경고 끄기' 없음('그대로 경고'라 말하지 않음) {od}")
+          f"'이 사각형 경고 끄기' 없음('그대로 경고'라 말하지 않음) {od}")
     sb = ej["start"]
-    check(sb.get("no", {}).get("disabled") is True and sb["why"] in sb["no"]["text"] and "매니페스트 크롭" not in sb["no"]["text"]
-          and sb["ok"]["disabled"] is False and "매니페스트 크롭 2개" in sb["ok"]["text"],
+    check(sb.get("no", {}).get("disabled") is True and sb["why"] in sb["no"]["text"] and "프로젝트 기록 크롭" not in sb["no"]["text"]
+          and sb["ok"]["disabled"] is False and "프로젝트 기록 크롭 2개" in sb["ok"]["text"],
           f"J-L3 시작이 막히면(start_blocked) 이유를 보이고 시작 버튼을 끔 {sb}")
     hd = ej["head"]
-    check("layout.json 오류" in hd.get("broken", "") and "반영됨" not in hd["broken"] and "반영(큐)" not in hd["broken"]
+    check("layout.json 오류" in hd.get("broken", "") and "반영됨" not in hd["broken"] and "반영 (무료)" not in hd["broken"]
           and "반영됨" in hd["applied"] and "반영됨" not in hd["stale"] and "미반영" in hd["stale"] and hd["queued"] == [True],
-          f"J-L3 머리줄: 깨진 layout.json = 오류만, 반영됨 = 서버 applied, 반영(큐) = 넘겨받은 queue 콜백(apply) {hd}")
+          f"J-L3 머리줄: 깨진 layout.json = 오류만, 반영됨 = 서버 applied, 반영 (무료) = 넘겨받은 queue 콜백(apply) {hd}")
     hc = hd.get("confirm") or ""
-    check("무료 반영(Import → Prepare → Analyze → Review 템플릿, 탭 불필요)" in hc and "재굴림 대기 2건(사전 승인)은 이 반영에서 돌지 않음" in hc
-          and "대기 재굴림" not in hc and "함께 돕니다" not in hc and "원장에만 남은 초안" in hc
-          and hc.split("\n")[0] == "prepare.model: 마지막 Prepare a · Studio b — 그래프와 Studio 를 번갈아 돌리면 셀이 바뀌어 다시 과금 대상",
-          f"J-L3 S3 반영(큐) 확인 창 = Prepare 갈라짐(applyWarn) 줄 맨 앞·무료 반영·재굴림은 돌지 않음(과금 줄 없음)·초안 병합 정보 줄 {hc!r}")
+    check("무료 반영(Import → Prepare → Analyze → Review 템플릿, 탭 불필요)" in hc and "다시 생성 대기 2건(사전 승인)은 이 반영에서 돌지 않음" in hc
+          and "대기 다시" not in hc and "함께 돕니다" not in hc and "원장에만 남은 초안" in hc
+          and hc.split("\n")[0] == "prepare.model: 마지막 Prepare a · Studio b — 그래프와 Studio 를 번갈아 돌리면 생성 조건이 바뀌어 다시 과금 대상",
+          f"J-L3 S3 반영 (무료) 확인 창 = Prepare 갈라짐(applyWarn) 줄 맨 앞·무료 반영·다시 생성은 돌지 않음(과금 줄 없음)·초안 병합 정보 줄 {hc!r}")
     al = ej.get("applyLines") or {}
     check(al.get("first") == "이 반영에 들어가는 레이아웃 바뀜 4건: 005_장식(사각형) · 006_띠(이름·대상) · 007_새(새 크롭) · 008_끈(지움) — 실수면 취소 → "
-                             "Ctrl+Z(이 창의 편집) 또는 진행(G) 반영 칸 [되돌리기]"
-          and (al.get("plain") or "").startswith("반영(큐): 무료 반영"),
-          f"§12 편집(E) 반영(큐) 확인 창 = 크롭별 바뀜 한 줄(바뀐 필드·새 크롭·지움), 바뀜이 없으면 그 줄 없음 {al}")
+                             "Ctrl+Z(이 창의 편집) 또는 실행(G) 반영 칸 [되돌리기]"
+          and (al.get("plain") or "").startswith("반영 (무료): 무료 반영"),
+          f"§12 크롭 편집(E) 반영 (무료) 확인 창 = 크롭별 바뀜 한 줄(바뀐 필드·새 크롭·지움), 바뀜이 없으면 그 줄 없음 {al}")
     kp, cl = al.get("kept") or {}, al.get("cleared") or {}
     check(al.get("undo0") == 1 and kp.get("undoBtn") is True and not any("실행 취소 기록을 비웠습니다" in t for t in kp.get("toasts", []))
           and cl.get("undoBtn") is False,
@@ -15549,9 +15549,9 @@ def layout_js_unit():
           f"Codex 3차: [되돌리기] 전에 보낸 읽기(옛 판 rev 0)의 늦은 응답은 버림(기록 남음), 다음 읽기(rev 1 = 맞춘 판)도 남김 {al.get('race')}")
     rf = ej["refs"]
     check(rf.get("gets") == ["009_모자", "009_모자장식"] and "레퍼런스가 바뀌어" in rf["note"] and "mapping_json" in rf["note"]
-          and "없음" in (rf["after"] or ""), f"J-L3 이름을 바꾸는 중: 멈춘 뒤 refs 한 번 → 바꾼 뒤 레퍼런스·새 셀·옛 이름 파일 경고 {rf}")
+          and "없음" in (rf["after"] or ""), f"J-L3 이름을 바꾸는 중: 멈춘 뒤 refs 한 번 → 바꾼 뒤 레퍼런스·새 생성 조건·옛 이름 파일 경고 {rf}")
     check(rf.get("ids") == ["009_c0ffee", "009_c0ffee"] and "연결 유지(ID)" in rf["fixedAfter"] and "레퍼런스가 바뀌어" not in rf["fixedNote"],
-          f"J-L3 이름 바꾸기 미리보기는 크롭 id 를 함께 보냄 · 고정 응답(fixed) = '연결 유지(ID)', 새 셀 경고 없음(S2 §2.6) {rf}")
+          f"J-L3 이름 바꾸기 미리보기는 크롭 id 를 함께 보냄 · 고정 응답(fixed) = '연결 유지(ID)', 새 생성 조건 경고 없음(S2 §2.6) {rf}")
     pl = ej["poll"]
     check(pl.get("typing") == {"gets": 1, "kept": True, "focus": True} and pl["blurred"] is False and pl["stale"] == 0 and pl["newer"] == 1
           and any("다른 창에서 레이아웃이 바뀌어" in t for t in pl["toasts"]),
@@ -20208,7 +20208,7 @@ async function screen(o = {}) {
 }
 
 await scenario("ui", async () => {
-  const env = await screen({ applyWarn: () => ["prepare.ref_style: 마지막 Prepare at · Studio sheet — 그래프와 Studio 를 번갈아 돌리면 셀이 바뀌어 다시 과금 대상"] });
+  const env = await screen({ applyWarn: () => ["prepare.ref_style: 마지막 Prepare at · Studio sheet — 그래프와 Studio 를 번갈아 돌리면 생성 조건이 바뀌어 다시 과금 대상"] });
   const { hosts, viewer, srv, all } = env;
   const r = {};
   r.list = all(hosts.list).filter((e) => e.tagName === "LI").map((li) => [li.children[0].textContent, li.children[1].children.map((c) => c.textContent)]);
@@ -20228,7 +20228,7 @@ await scenario("ui", async () => {
   env.drag(400, 500, 100, 100); // 거꾸로 끌어도 [x0, y0, x1, y1]
   r.rect = viewer.sel && viewer.sel.crop.rect;
   r.sizeRow = hosts.panel.textContent.includes("300×400 · SAM 1008² (×2.52)");
-  env.button(hosts.panel, "SAM3 시도").fire("click");
+  env.button(hosts.panel, "자동 오리기(SAM3)").fire("click");
   r.auto = env.marks("auto").length;
   r.win = env.marks("rwin").map((e) => [e.attrs.x, e.attrs.y, e.attrs.width, e.attrs.height].map(Number));
   env.tap(200, 300);
@@ -20319,7 +20319,7 @@ await scenario("ui", async () => {
     outside: hosts.panel.textContent.includes("바깥에서 바뀜") };
   await env.press(hosts.panel, "보류로");
   r.hold = { body: posts(srv, "refs/link").at(-1) ?? null, confirm: env.confirms.at(-1) ?? null };
-  await env.press(hosts.head, "반영(큐)");
+  await env.press(hosts.head, "반영 (무료)");
   r.queued = env.queued.slice();
   r.queueConfirm = env.confirms.at(-1) ?? null;
   // 다각형: Alt+Enter = 앞 결과에서 빼기(base), 같은 자리 두 번 = 닫기(새 선택), grow 바꿈 = 다듬기
@@ -20364,7 +20364,7 @@ await scenario("blocked", async () => { // refs_dir 없음 → 저장·연결 �
   await sleep(10);
   return { msg: hosts.panel.textContent.includes("refs_dir 가 비었습니다"), path: hosts.panel.textContent.includes("경로C:/p/project/refs복사"),
     fix: env.button(hosts.panel, "고정", true).disabled, copy: !!env.button(hosts.panel, "복사", true),
-    sam: env.button(hosts.panel, "SAM3 시도").disabled };
+    sam: env.button(hosts.panel, "자동 오리기(SAM3)").disabled };
 });
 
 await scenario("broken", async () => { // 깨진 refs.json(error) → 머리줄 오류·저장·연결 막음(크롭은 이름 매칭으로 보임)
@@ -20449,7 +20449,7 @@ async function cutOn(env, crop, rect = [100, 100, 400, 500]) { // 시트 열기 
 }
 const NONE = () => ({ id: "003_00aa11", name: "003_손", fixed: true, status: "same", files: [],
   unlinked: [{ name: "003_손_t.png", size: [64, 64], bytes: 900 }], held: [{ name: "003_손_옛_t.png", image: true }], explicit: [],
-  manifest: { refs_auto: [], refs_main: null }, jobs_ref_sha: null, checks: [{ code: "R-none", level: "info", msg: "레퍼런스 없음(자체 복원)으로 고정" }] });
+  manifest: { refs_auto: [], refs_main: null }, jobs_ref_sha: null, checks: [{ code: "R-none", level: "info", msg: "레퍼런스 없이 고치기로 고정" }] });
 
 await scenario("f02", async () => { // 레퍼런스 없는 크롭에 보조 저장·연결·되살리기 = 그 파일이 대표(새 셀) — 영향 줄·확인 창
   const R = R0();
@@ -20553,7 +20553,7 @@ await scenario("f09", async () => { // SAM3 대기 폴링이 패널을 다시 �
   const env = await screen();
   const { hosts } = env;
   await cutOn(env, "009_모자본체_휘장");
-  env.button(hosts.panel, "SAM3 시도").fire("click");
+  env.button(hosts.panel, "자동 오리기(SAM3)").fire("click");
   env.srv.waits = -1;
   env.srv.queue = [QWAIT];
   const proto = Object.getPrototypeOf(hosts.list);
@@ -20686,7 +20686,7 @@ await scenario("f22", async () => { // 자동 양점: 결과 전 = 상자 가운
   await sleep(10);
   env.li("009_모자본체_휘장").fire("click");
   env.drag(100, 100, 400, 500);
-  env.button(hosts.panel, "SAM3 시도").fire("click");
+  env.button(hosts.panel, "자동 오리기(SAM3)").fire("click");
   const mark = () => env.marks("auto").map((e) => [Number(e.attrs.cx), Number(e.attrs.cy), e.attrs.class]);
   const r = { before: mark() };
   env.srv.waits = 0;
@@ -20790,7 +20790,7 @@ await scenario("r22chain", async () => { // F22-R1·N5: SAM3 결과를 다듬어
     await sleep(10);
     env.li("009_모자본체_휘장").fire("click");
     env.drag(100, 100, 400, 500);
-    env.button(hosts.panel, "SAM3 시도").fire("click");
+    env.button(hosts.panel, "자동 오리기(SAM3)").fire("click");
     const mark = () => env.marks("auto").map((e) => [Number(e.attrs.cx), Number(e.attrs.cy), e.attrs.class]);
     env.srv.waits = 0;
     env.srv.queue = [QWAIT];
@@ -20814,7 +20814,7 @@ await scenario("r22chain", async () => { // F22-R1·N5: SAM3 결과를 다듬어
     await sleep(40);
     const pp = posts(env.srv, "refs/cut").at(-1) || {};
     r.polyPost = { method: pp.method, base: pp.base, op: pp.polys && pp.polys[0].op };
-    env.button(hosts.panel, "SAM3 시도").fire("click");
+    env.button(hosts.panel, "자동 오리기(SAM3)").fire("click");
     r.poly = mark();
     out[k] = r;
   }
@@ -20825,7 +20825,7 @@ await scenario("n2samGrow", async () => { // N2: SAM3 대기 중 grow → 다듬
   const env = await screen();
   const { hosts } = env;
   await cutOn(env, "009_모자본체_휘장");
-  env.button(hosts.panel, "SAM3 시도").fire("click");
+  env.button(hosts.panel, "자동 오리기(SAM3)").fire("click");
   env.srv.waits = 1;
   env.srv.queue = [QWAIT];
   env.key("Enter");
@@ -20978,8 +20978,8 @@ await scenario("r1auto", async () => { // R1: 자동 고정된 빈 연결(auto) 
   const li = env.li("013_손");
   r.chip = li.children[1].children.map((x) => x.textContent);
   li.fire("click");
-  r.panelWarn = hosts.panel.textContent.includes("의도한 자체 복원 아님");
-  r.noneBtn = !!env.button(hosts.panel, "레퍼런스 없음(자체 복원)으로 고정", true);
+  r.panelWarn = hosts.panel.textContent.includes("의도한 '레퍼런스 없이 고치기' 아님");
+  r.noneBtn = !!env.button(hosts.panel, "레퍼런스 없이 고치기로 고정", true);
   await cutOn(env, "009_모자본체_휘장");
   env.button(hosts.panel, "보조", true).fire("click");
   typeDesc(env, "정면2");
@@ -20996,7 +20996,7 @@ await scenario("f23", async () => { // refs.json 의 refs_dir 불일치 → 서�
   const env = await screen({ R });
   const { hosts } = env;
   await cutOn(env, "009_모자본체_휘장");
-  const labels = ["보류로", "대표로", "연결 끊기", "연결", "되살리기", "레퍼런스 없음(자체 복원)으로 고정", "고정 풀기"];
+  const labels = ["보류로", "대표로", "연결 끊기", "연결", "되살리기", "레퍼런스 없이 고치기로 고정", "고정 풀기"];
   const r = { off: labels.map((l) => { const b = env.button(hosts.panel, l, true); return b ? b.disabled : null; }) };
   const sb = env.button(hosts.panel, "저장");
   r.save = { disabled: sb.disabled, dir: sb.title.includes("C:/old/refs") };
@@ -21070,7 +21070,7 @@ await scenario("boardFns", async () => { // board.js typing()(F25)·cropChips(F1
   R.sam3.ckpts = ["sam3_a.safetensors", "sam3_b.safetensors"];
   const env = await screen({ R });
   await cutOn(env, "009_모자본체_휘장");
-  env.button(env.hosts.panel, "SAM3 시도").fire("click");
+  env.button(env.hosts.panel, "자동 오리기(SAM3)").fire("click");
   const ctl = () => env.all(env.hosts.panel).filter((e) => e.tagName === "SELECT" || (e.tagName === "INPUT" && (e.type === "range" || e.type === "checkbox")));
   r.marked = ctl().map((e) => `${e.tagName}:${e.type}:${e.dataset.keys}`);
   env.all(env.hosts.list).find((e) => e.tagName === "LI" && e.classList.contains("gone")).fire("click");
@@ -21230,16 +21230,16 @@ def _f4_checks(res, refs, f21):
     f2 = res.get("f02") or {}
     if "error" not in f2:
         imp = f2["impact"] or [""]
-        check(imp[0].startswith("warn:") and "새 셀" in imp[0] and "대표가 됨" in imp[0]
+        check(imp[0].startswith("warn:") and "새 생성 조건" in imp[0] and "대표가 됨" in imp[0]
               and [t.split("(")[0] for t in f2["titles"]] == ["대표로 연결", "refs 로 되살려 대표로 연결"],
-              f"F02 레퍼런스 없는 크롭: 보조 영향 줄 = 첫 레퍼런스 → 대표(새 셀), 연결·되살리기 단추도 '대표로' {imp} {f2['titles']}")
+              f"F02 레퍼런스 없는 크롭: 보조 영향 줄 = 첫 레퍼런스 → 대표(새 생성 조건), 연결·되살리기 단추도 '대표로' {imp} {f2['titles']}")
         ad, rs, ctl = f2["add"], f2["restore"], f2["ctl"]
-        check(ad["op"] == "add" and len(ad["confirms"]) == 1 and "새 셀" in ad["confirms"][0] and "대표로 연결(첫 레퍼런스)" in (ad["toast"] or "")
-              and rs["op"] == "restore" and len(rs["confirms"]) == 1 and "새 셀" in rs["confirms"][0]
+        check(ad["op"] == "add" and len(ad["confirms"]) == 1 and "새 생성 조건" in ad["confirms"][0] and "대표로 연결(첫 레퍼런스)" in (ad["toast"] or "")
+              and rs["op"] == "restore" and len(rs["confirms"]) == 1 and "새 생성 조건" in rs["confirms"][0]
               and "되살려 대표로 연결(첫 레퍼런스)" in (rs["toast"] or ""),
-              f"F02 [연결]·[되살리기] = 확인 창(새 셀) 뒤 쓰기, 토스트 = 대표가 됨 {ad} {rs}")
+              f"F02 [연결]·[되살리기] = 확인 창(새 생성 조건) 뒤 쓰기, 토스트 = 대표가 됨 {ad} {rs}")
         check(any(x.startswith("info:Prepare 선택 그대로") for x in f2["ctlImpact"] or []) and ctl["op"] == "add" and ctl["confirms"] == 0
-              and (ctl["toast"] or "").startswith(":보조로 연결"), f"F02 대조: 대표가 있는 크롭은 셀 그대로·확인 창 없음 {f2['ctlImpact']} {ctl}")
+              and (ctl["toast"] or "").startswith(":보조로 연결"), f"F02 대조: 대표가 있는 크롭은 생성 조건 그대로·확인 창 없음 {f2['ctlImpact']} {ctl}")
     f4 = res.get("f04") or {}
     check(f4.get("same") == 0 and f4.get("after") == 1 and f4.get("since") is None and f4.get("list") is True,
           f"F04 layout_rev 만 바뀜(S1 이름 바꾸기) → GET /refs since 없이 다시, 목록 = 새 이름 {f4}")
@@ -21268,12 +21268,12 @@ def _f4_checks(res, refs, f21):
           f"F14 실행 기록은 대기열에서 빠진 것을 본 뒤 지움(5번 넘게 남으면 그냥) {f14.get('forget')} {f14.get('giveUp')}")
     f16 = res.get("f16") or {}
     cf = f16.get("confirm") or ""
-    check(f16.get("op") == "hold" and "마지막 레퍼런스" in cf and "자체 복원" in cf and "이름 규칙" not in cf,
+    check(f16.get("op") == "hold" and "마지막 레퍼런스" in cf and "레퍼런스 없이 고치기" in cf and "이름 규칙" not in cf,
           f"F16 하나 남은 대표 보류 = '레퍼런스 없음 고정' 확인 문구 {cf!r}")
     f17 = res.get("f17") or {}
     ch, sm, od = (f17.get(k) or "" for k in ("changes", "same", "old"))
-    check("대표 009_모자본체_휘장_t.png → 009_모자본체_휘장_뒤_t.png" in ch and "새 셀" in ch and "이름 매칭 결과: 009_모자본체_휘장_뒤_t.png" in ch
-          and "Prepare 선택 그대로" in sm and "새 셀" not in sm and "대표가 바뀌면 다음 Run 에서 새 셀" in od,
+    check("대표 009_모자본체_휘장_t.png → 009_모자본체_휘장_뒤_t.png" in ch and "새 생성 조건" in ch and "이름 매칭 결과: 009_모자본체_휘장_뒤_t.png" in ch
+          and "Prepare 선택 그대로" in sm and "새 생성 조건" not in sm and "대표가 바뀌면 다음 Run 에서 새 생성 조건" in od,
           f"F17 고정 풀기 확인 창 = 풀고 난 뒤의 선택(match_pick — 없으면 일반 문구) {f17}")
     f19 = res.get("f19") or {}
     check(f19.get("busyGets") == 0 and f19.get("after") == 1 and f19.get("since") is None,
@@ -21303,7 +21303,7 @@ def _f4_checks(res, refs, f21):
     if "error" not in f7:
         sm, chg = f7["same"], f7["changed"]
         rq = ["a" * 32, "b" * 32]
-        check(sm["gets"] == [rq[1]] and sm["result"] is True and sm["rect"] == [300, 200, 700, 600] and "SAM3 시도" in sm["on"]
+        check(sm["gets"] == [rq[1]] and sm["result"] is True and sm["rect"] == [300, 200, 700, 600] and "자동 오리기(SAM3)" in sm["on"]
               and sm["ckpt"] == "sam3_b.safetensors" and sm["pts"] == 1 and sm["saveOn"] is True,
               f"F07 다시 열기: 기록 steps 의 마지막 요청을 GET refs/cut 으로 되살림(결과·저장 켬), 방법 sam3·점·체크포인트 = 첫 컷 {sm}")
         check((sm["save"] or {}).get("req") == rq[1] and (sm["save"] or {}).get("transform") == {"rotate": 12.5, "flip_h": True, "scale": 0.5}
@@ -21322,14 +21322,14 @@ def _f4_checks(res, refs, f21):
         sc = (f3["suffixed"] or [""])[0]
         check(len(f3["plain"]["confirms"]) == 1 and f3["plain"]["op"] == "restore" and "보조로 연결합니다" in pc and "Prepare 선택 그대로" in pc
               and "스펙 009_f21344 B 가 _보류/009_모자본체_휘장_옛_t.png 를 이름으로 가리킴 — 되살리면 그 타깃은 파일을 못 읽어" in pc
-              and "매니페스트 009_f21344 C 가 009_모자본체_휘장_옛_t.png 를 이름으로 가리킴 — 되살린 그림이 들어감" in pc
+              and "프로젝트 기록 009_f21344 C 가 009_모자본체_휘장_옛_t.png 를 이름으로 가리킴 — 되살린 그림이 들어감" in pc
               and "같은 번호 크롭 009_모자챙 는 레퍼런스 없음으로 고정됨" in pc and "[연결]해야 쓰임" in pc and "(이름 " not in pc,
-              f"F03 되살리기 확인 창(대표가 있어도): 셀 그대로·보류 파일을 가리키는 스펙(못 읽음)·되살릴 이름을 가리키는 곳·함께 고정(F01) {pc!r}")
+              f"F03 되살리기 확인 창(대표가 있어도): 생성 조건 그대로·보류 파일을 가리키는 스펙(못 읽음)·되살릴 이름을 가리키는 곳·함께 고정(F01) {pc!r}")
         check(len(f3["suffixed"]) == 1 and "(이름 009_모자본체_휘장_옛_t.png)" in sc and "되살린 그림이 들어감" in sc and "되살리면 그 타깃은" not in sc,
               f"F03 시각 접미 보류 파일: 되살릴 이름(접미 뗌)·그 이름을 가리키는 곳 {sc!r}")
         mi, ai = f3["mainImpact"] or [], f3["auxImpact"] or []
         check(not any("같은 번호 크롭" in x for x in mi)
-              and "info:같은 번호 크롭 009_모자챙 는 레퍼런스 없음으로 고정됨(이 파일을 이름 매칭으로 받지 않게 — 셀 그대로) — 이후 PS 로 넣는 같은 번호 "
+              and "info:같은 번호 크롭 009_모자챙 는 레퍼런스 없음으로 고정됨(이 파일을 이름 매칭으로 받지 않게 — 생성 조건 그대로) — 이후 PS 로 넣는 같은 번호 "
                   "새 파일은 그 크롭에 [연결]해야 쓰임" in ai,
               f"F01·R1 영향 줄: 새 이름(보조) 저장 = 고정 안 된 같은 번호 크롭이 함께 고정됨(빈 seed = '레퍼런스 없음으로', 이후 PS 파일은 연결 필요), "
               f"같은 이름 대표(옛 파일 보류)는 그 줄 없음 {mi} {ai}")
@@ -21364,30 +21364,30 @@ def _f4_checks(res, refs, f21):
         rc1 = (n1["remove"]["confirms"] or [""])[0]
         hm = (n1["holdMain"] or [""])[0]
         pr = (n1["pickRemove"]["confirms"] or [""])[0]
-        check(n1["hold"]["op"] == "hold" and "모두 사라져 Prepare 는 레퍼런스 없이" in hc and "새 셀" in hc and "선택 그대로" not in hc
+        check(n1["hold"]["op"] == "hold" and "모두 사라져 Prepare 는 레퍼런스 없이" in hc and "새 생성 조건" in hc and "선택 그대로" not in hc
               and len(n1["remove"]["confirms"]) == 1 and "연결을 끊습니다" in rc1 and "모두 사라져 Prepare 는 레퍼런스 없이" in rc1
               and n1["remove"]["posts"] == 1,
-              f"N1 [M(사라짐), A]: 보조 A 보류·연결 끊기 = 레퍼런스 없이(self_restore — 새 셀) 확인 창 뒤 쓰기 {hc!r} {rc1!r} {n1['remove']}")
-        check(len(n1["pickRemove"]["confirms"]) == 1 and "Prepare 가 지금 이 파일을 고릅니다" in pr and "새 셀" in pr
+              f"N1 [M(사라짐), A]: 보조 A 보류·연결 끊기 = 레퍼런스 없이(self_restore — 새 생성 조건) 확인 창 뒤 쓰기 {hc!r} {rc1!r} {n1['remove']}")
+        check(len(n1["pickRemove"]["confirms"]) == 1 and "Prepare 가 지금 이 파일을 고릅니다" in pr and "새 생성 조건" in pr
               and n1["otherRemove"] == {"confirms": 0, "posts": 2},
               f"N1 [M(사라짐), A, B] Prepare 가 A 를 고름: A 끊기 = 선택이 바뀐다는 확인 창, B 끊기 = 그대로라 확인 없음 {pr!r} {n1['otherRemove']}")
-        check("모두 사라져 Prepare 는 레퍼런스 없이" in hm and "새 셀" in hm and "이름 규칙으로 고릅니다" not in hm,
+        check("모두 사라져 Prepare 는 레퍼런스 없이" in hm and "새 생성 조건" in hm and "이름 규칙으로 고릅니다" not in hm,
               f"N1 대표를 빼면 남는 연결 파일이 모두 사라짐 = '레퍼런스 없이(self_restore)' 확인 문구 {hm!r}")
         check(n1["ctl"] == {"confirms": 0, "posts": 1}, f"N1 대조: 대표가 있는 크롭의 보조 끊기 = 확인 없이 바로 {n1['ctl']}")
     n4 = res.get("n4allMissing") or {}
     if "error" not in n4:
         cf4 = (n4.get("confirm") or [""])[0]
-        check(n4.get("title") == "보조로 연결" and "보조로 연결합니다" in cf4 and "Prepare 가 이 파일을 고름" in cf4 and "새 셀" in cf4
-              and (n4.get("toast") or "").startswith(":보조로 연결 — 대표 파일이 없어 Prepare 가 이것을 고름(새 셀)"),
+        check(n4.get("title") == "보조로 연결" and "보조로 연결합니다" in cf4 and "Prepare 가 이 파일을 고름" in cf4 and "새 생성 조건" in cf4
+              and (n4.get("toast") or "").startswith(":보조로 연결 — 대표 파일이 없어 Prepare 가 이것을 고름(새 생성 조건)"),
               f"N4 연결 파일이 모두 사라진 고정: 단추·확인 창·토스트가 같은 말(보조로 — Prepare 가 고름) {n4}")
     r1 = res.get("r1auto") or {}
     if "error" not in r1:
         imp1 = r1.get("impact") or []
         rs1 = (r1.get("restore") or [""])[0]
-        sib = ("같은 번호 크롭 009_모자끈 는 지금 레퍼런스로 고정됨(ID — 이 파일을 이름 매칭으로 받지 않게, 선택·셀 그대로) · 같은 번호 크롭 009_모자챙 는 "
-               "레퍼런스 없음으로 고정됨(이 파일을 이름 매칭으로 받지 않게 — 셀 그대로) — 이후 PS 로 넣는 같은 번호 새 파일은 그 크롭에 [연결]해야 쓰임")
+        sib = ("같은 번호 크롭 009_모자끈 는 지금 레퍼런스로 고정됨(ID — 이 파일을 이름 매칭으로 받지 않게, 선택·생성 조건 그대로) · 같은 번호 크롭 009_모자챙 는 "
+               "레퍼런스 없음으로 고정됨(이 파일을 이름 매칭으로 받지 않게 — 생성 조건 그대로) — 이후 PS 로 넣는 같은 번호 새 파일은 그 크롭에 [연결]해야 쓰임")
         check("없음(자동 고정)" in (r1.get("chip") or []) and r1.get("panelWarn") is True and r1.get("noneBtn") is True,
-              f"R1 자동 고정된 빈 연결: 목록 칩 '없음(자동 고정)'·패널 경고(의도한 자체 복원 아님)·'없음으로 고정' 단추 남음 {r1.get('chip')}")
+              f"R1 자동 고정된 빈 연결: 목록 칩 '없음(자동 고정)'·패널 경고(의도한 '레퍼런스 없이 고치기' 아님)·'없음으로 고정' 단추 남음 {r1.get('chip')}")
         check(f"info:{sib}" in imp1 and sib in rs1,
               f"R1 형제 영향 줄·되살리기 확인 창: 레퍼런스 있는 형제·없는 형제(레퍼런스 없음으로 고정) + 이후 PS 파일은 연결 필요 {imp1} {rs1!r}")
         check(any(x.startswith("warn:크롭 005_소매 가 연결해 두었는데 없던 009_모자본체_휘장_정면2_t.png — 새 그림이 그 크롭에 들어감") for x in imp1)
@@ -21406,9 +21406,9 @@ def _f4_checks(res, refs, f21):
               f"F25 board.js typing(): data-keys=board(슬라이더·select·체크박스)는 보드 키를 받음, 글자 입력칸·다른 select 는 그대로 거름 {bf['typing']}")
         check(len(bf["marked"]) == 6 and all(x.endswith(":board") for x in bf["marked"]) and bf["orphan"] == ["board", "board"],  # 고아 다시 연결 + 체크포인트
               f"F25 레퍼런스 패널의 range·checkbox·select(체크포인트·고아 다시 연결) 모두 data-keys=board {bf['marked']} {bf['orphan']}")
-        check(bf["chips"] == {"lost": [["레퍼런스 없음(연결 파일 사라짐)", "b-bad"]], "none": [["자체 복원(고정)", ""]], "old": [["자체 복원(고정)", ""]],
+        check(bf["chips"] == {"lost": [["레퍼런스 없음(연결 파일 사라짐)", "b-bad"]], "none": [["레퍼런스 없이(고정)", ""]], "old": [["레퍼런스 없이(고정)", ""]],
                               "free": [["레퍼런스 없음", "b-wait"]], "some": [], "auto": [["레퍼런스 없음(자동 고정)", "b-wait"]]},
-              f"F18·R1 검토 칩: 연결 파일이 모두 사라진 고정(none false) = 경고, 의도한 없음 고정·옛 서버 = 자체 복원(고정), "
+              f"F18·R1 검토 칩: 연결 파일이 모두 사라진 고정(none false) = 경고, 의도한 없음 고정·옛 서버 = 레퍼런스 없이(고정), "
               f"자동 고정된 빈 연결(auto) = '레퍼런스 없음(자동 고정)' 대기 {bf['chips']}")
         check(bf["keys"] == {"rangeHome": True, "rangePageDown": True, "rangeEnd": True, "selectLetter": True, "rangeTab": False, "rangeCtrlC": False,
                              "bodyHome": False, "textHome": False},
@@ -21568,11 +21568,11 @@ def refs_js_unit():
           "onKeyDown 순서: 레퍼런스 키(Esc·Enter·[ ]·Ctrl) → Ctrl 거름 → 레퍼런스 모드 검토 키·E 끔 → T 토글")
     check('"refs_rev" in S' in bj and "if (window.DPRefEdit)" in bj and "refEd.stateChanged(S)" in bj
           and '"refs_rev" in d && d.refs_rev !== S.refs_rev' in bj, "옛 서버(state 에 refs_rev 없음)면 T 끔, 폴링이 refs_rev 를 따라감")
-    check("if (on && editing) setEditing(false);" in bj and "if (on && refsOn) setRefs(false);" in bj, "레퍼런스(T)·편집(E) 모드는 배타")
+    check("if (on && editing) setEditing(false);" in bj and "if (on && refsOn) setRefs(false);" in bj, "레퍼런스(T)·크롭 편집(E) 모드는 배타")
     check("comfyUrl" in bj and "u.origin === location.origin ? u.href : null" in _layout_js_fn(bj, "comfyUrl"),
           "board.js comfyUrl = 같은 출처만")
     check("if (c.refs && !c.refs.n)" in _layout_js_fn(bj, "cropChips"),
-          "검토 모드 크롭 칩: state 크롭 요약 refs 가 비면 '레퍼런스 없음'(고정이면 '자체 복원(고정)', §5.8)")
+          "검토 모드 크롭 칩: state 크롭 요약 refs 가 비면 '레퍼런스 없음'(고정이면 '레퍼런스 없이(고정)', §5.8)")
     vj = code["viewer.js"]
     vret = vj[vj.rindex("return { setState"):]
     ls = _layout_js_fn(vj, "loadHi", "    ")
@@ -21688,7 +21688,7 @@ def refs_js_unit():
         return
     check(ui["list"][:2] == [["009_모자본체_휘장", ["대표", "보조 1", "고정(ID)", "미반영"]], ["011_소매끈_오른쪽", ["대표", "이름 매칭", "미반영", "경고 1"]]]
           and ui["list"][2] == ["005_리본", ["크롭 없는 연결", "파일 1"]], f"왼쪽 목록 번호순·칩(대표·보조·고정/이름 매칭·미반영·경고)·고아 {ui['list']}")
-    check("레퍼런스 rev 3" in ui["head"] and "미반영 2" in ui["head"] and "반영(큐)" in ui["head"], f"머리줄 {ui['head']}")
+    check("레퍼런스 rev 3" in ui["head"] and "미반영 2" in ui["head"] and "반영 (무료)" in ui["head"], f"머리줄 {ui['head']}")
     check(len(ui["sheetItems"]) == 2 and ui["sheetItems"][0].startswith("00_원본/refer_total.png") and "최근" in ui["sheetItems"][0]
           and ui["hiddenBefore"] == [False, True] and ui["noSheet"], f"시트 목록(최근 먼저) — 시트를 열기 전 뷰어 숨김 {ui['sheetItems']}")
     sh = ui["sheet"]
@@ -21730,7 +21730,7 @@ def refs_js_unit():
           and "'_t' 표지" in (ui["tmark"] or "") and ui["name"] == "009_모자본체_휘장_정면_t.png" and ui["saveOn"],
           f"저장 이름 미리보기: 같은 설명 = 저장 끔, _t 표지 거절 {ui['dup']} {ui['tmark']}")
     check(any("Prepare 선택 그대로" in x for x in ui["impact"]) and any("스펙 009_f21344 A 가 009_모자본체_휘장_정면_t.png" in x for x in ui["impact"]),
-          f"영향 줄: 보조 = 셀 그대로·명시 참조 {ui['impact']}")
+          f"영향 줄: 보조 = 생성 조건 그대로·명시 참조 {ui['impact']}")
     check(ui["typing"] == {"same": True, "focus": True, "gets": 1}, f"입력 중 폴링: 다시 읽되 패널·포커스 유지 {ui['typing']}")
     sv = ui["saves"]
     check(ui["imeSaves"] == 0 and len(sv) == 2 and sv[0]["desc"] == "정면" and sv[0]["role"] == "aux" and sv[0]["crop_id"] == "009_f21344"
@@ -21741,12 +21741,12 @@ def refs_js_unit():
           f"고정 안 된 크롭 '고정' = link fix(확인 창 없음) {ui['fix']}")
     check(all(ui["manage"].values()), f"레퍼런스 관리: 보류(PSD 이름만·되살리기)·연결 안 된 파일·명시 참조·바깥에서 바뀜 {ui['manage']}")
     check(ui["hold"]["body"] == {"root": "abcdef012345", "rev": 5, "op": "hold", "crop_id": "009_f21344", "name": "009_모자본체_휘장_t.png"}
-          and "_보류" in (ui["hold"]["confirm"] or "") and "새 셀일 수 있음" in (ui["hold"]["confirm"] or ""), f"대표 보류 = 확인 창(영향 줄) 뒤 link hold {ui['hold']}")
+          and "_보류" in (ui["hold"]["confirm"] or "") and "새 생성 조건일 수 있음" in (ui["hold"]["confirm"] or ""), f"대표 보류 = 확인 창(영향 줄) 뒤 link hold {ui['hold']}")
     qc = ui["queueConfirm"] or ""
-    check(ui["queued"] == [True] and "무료 반영" in qc and "탭 불필요" in qc and "재굴림 대기 1건(사전 승인)은 이 반영에서 돌지 않음" in qc
-          and "대기 재굴림" not in qc and "원장에만 남은 초안" in qc
-          and qc.split("\n")[0] == "prepare.ref_style: 마지막 Prepare at · Studio sheet — 그래프와 Studio 를 번갈아 돌리면 셀이 바뀌어 다시 과금 대상",
-          f"반영(큐) = 확인 창(S3 무료 반영 — Prepare 갈라짐 줄(applyWarn) 맨 앞·대기 재굴림 과금 줄 없음·초안 병합 정보 줄) 뒤 넘겨받은 queue 콜백(apply) "
+    check(ui["queued"] == [True] and "무료 반영" in qc and "탭 불필요" in qc and "다시 생성 대기 1건(사전 승인)은 이 반영에서 돌지 않음" in qc
+          and "대기 다시" not in qc and "원장에만 남은 초안" in qc
+          and qc.split("\n")[0] == "prepare.ref_style: 마지막 Prepare at · Studio sheet — 그래프와 Studio 를 번갈아 돌리면 생성 조건이 바뀌어 다시 과금 대상",
+          f"반영 (무료) = 확인 창(S3 무료 반영 — Prepare 갈라짐 줄(applyWarn) 맨 앞·대기 다시 생성 과금 줄 없음·초안 병합 정보 줄) 뒤 넘겨받은 queue 콜백(apply) "
           f"{ui['queued']} {qc!r}")
     check(ui["polyMarks"] == 1 and ui["polySub"] == {"root": "abcdef012345", "sheet": "00_원본/refer_total.png", "grow": 0, "feather": 0,
                                                      "method": "poly", "rect": [100, 100, 400, 500], "base": req1,
@@ -21892,7 +21892,7 @@ await scenario("c3aReopen", async () => { // 다각형을 기다리는 사이 Sh
 await scenario("c3aSamCancel", async () => { // SAM3 다시 컷 대기 중 Shift 다각형(기다림) → 취소 → 화면의 결과(req 1)에 더하기
   const env = await screen();
   await c3aStart(env);
-  c3aMethod(env, "SAM3 시도");
+  c3aMethod(env, "자동 오리기(SAM3)");
   env.srv.waits = -1;
   env.srv.queue = [QWAIT];
   env.key("Enter");
@@ -21906,7 +21906,7 @@ await scenario("c3aSamCancel", async () => { // SAM3 다시 컷 대기 중 Shift
 await scenario("c3aSamPoly", async () => { // SAM3 다시 컷 대기 중 Shift 다각형 → 거절 없이 기다렸다가 SAM3 결과(req 2)에 더하기
   const env = await screen();
   await c3aStart(env);
-  c3aMethod(env, "SAM3 시도");
+  c3aMethod(env, "자동 오리기(SAM3)");
   env.srv.waits = 0;
   env.srv.queue = [QWAIT];
   env.key("Enter");
@@ -21920,7 +21920,7 @@ await scenario("c3aSamNew", async () => { // 대조: Shift 다각형을 기다�
   env.srv.cutDelays = [100];
   c3aPoly(env, { shiftKey: true });
   await sleep(10);
-  c3aMethod(env, "SAM3 시도");
+  c3aMethod(env, "자동 오리기(SAM3)");
   env.srv.waits = 0;
   env.srv.queue = [QWAIT];
   env.key("Enter");
@@ -22219,7 +22219,7 @@ await scenario("c5bPoll", async () => { // GET /refs 최근 시트 행 v: 늦게
         check(False, f"_c5b_sheet_v 예외:\n{traceback.format_exc()}")
 
     def _c6b_files_v():
-        """Codex 6차: 편집기를 연 채 바깥(포토샵·탐색기)에서 refs_dir 파일을 더함·고침·지움 — 매니페스트 rev·refs.json rev·layout_rev 는
+        """Codex 6차: 편집기를 연 채 바깥(포토샵·탐색기)에서 refs_dir 파일을 더함·고침·지움 — 프로젝트 기록 rev·refs.json rev·layout_rev 는
         그대로, state 의 refs_files_v(파일 지문)만 바뀜. 바뀌면 since 없이 GET /refs 를 다시 받아 연결 안 된 새 파일 행·사라짐 표시·썸네일
         서명 v 를 새로 그림, 같은 값이면 다시 받지 않음. 필드가 없으면(옛 서버) 지금처럼 — 같은 state 는 그대로, refs_rev 만 = since."""
         h = _f4_harness()
@@ -22421,7 +22421,7 @@ await scenario("c6cBoardPoll", async () => {
             sc, rcc, oc = ((v["confirms"] or [""])[0] for v in (s, rc, od))
             check(s["title"] == "refs 로 되살려 보조로 연결(같은 이름이 있으면 409)" and len(s["confirms"]) == 1
                   and sc.startswith(f"{suf} 을 refs 로 되살려 보조로 연결합니다.")
-                  and f"매니페스트 009_f21344 C 가 {suf} 를 이름으로 가리킴 — 되살린 그림이 들어감" in sc
+                  and f"프로젝트 기록 009_f21344 C 가 {suf} 를 이름으로 가리킴 — 되살린 그림이 들어감" in sc
                   and "009_모자본체_휘장_옛_t.png" not in sc and (s["body"] or {}).get("name") == suf,
                   f"C6c 접미 꼴 원래 이름(restore_as = 이름 그대로): 확인 창·title 에 접미를 뗀 이름이 없음, 영향 줄 = 그 이름을 가리키는 곳 {s}")
             check("(이름 009_모자본체_휘장_앞_t.png)" in (rc["title"] or "") and "(이름 009_모자본체_휘장_앞_t.png)" in rcc
@@ -27269,7 +27269,7 @@ def pipeline_board_unit():
               f"다음 요청은 새 설정으로 다시 계산 {d1['run']['need']} {s1['plan_v']} {d2['run']['need']}")
         store.update_manifest(root, lambda mm: mm.update(prepare_settings=dict(cur(root)["settings"]["prepare"], n=4)))
         st, d = await plan(h, key, [ids[1]])
-        check(any(x.startswith("Prepare 설정 갈라짐: n(매니페스트 4 · Studio 2) — 셀은 그대로") for x in d["notes"])
+        check(any(x.startswith("Prepare 설정 갈라짐: n(매니페스트 4 · Studio 2) — 생성 조건은 그대로") for x in d["notes"])
               and d["draft"]["import_pending"] == [],
               f"prepare_settings 와 n 만 다름 → notes 비용 갈라짐, Draft import_pending 에는 없음(Import 설정 갈라짐만 초안 키를 바꿈) "
               f"{d['notes']} {d['draft'].get('import_pending')}")
@@ -27293,10 +27293,10 @@ def pipeline_board_unit():
         mj = store.load_manifest(root)
         store.update_manifest(root, lambda mm: [j.update(reps=2) for j in mm["jobs"]])
         try:
-            more = [c["cell_key"] for c in run_ap(root)[0]["pending"] if c["billable"] and c["reason"].startswith("셀당 호출 수 증가")]
+            more = [c["cell_key"] for c in run_ap(root)[0]["pending"] if c["billable"] and c["reason"].startswith("생성 조건마다 호출 수 증가")]
         finally:
             store.update_manifest(root, lambda mm: mm.update(jobs=mj["jobs"]))
-        calls_w = "셀당 호출을 늘리면 완료된 셀마다 새 호출이 생겨 다시 과금 대상(Run 승인 필요)"
+        calls_w = "생성 조건마다 호출을 늘리면 완료된 생성 조건마다 새 호출이 생겨 다시 과금 대상(생성 승인 필요)"
 
         def pre_notes(d_):
             return [x for x in d_["notes"] if x.startswith("Prepare 설정 갈라짐")]
@@ -27304,8 +27304,8 @@ def pipeline_board_unit():
         check(pl.prepare_record(mj)[0] == "jobs" and (base_p["calls_per_cell"], base_p["n"]) == (1, 2) and pre_notes(e0) == []
               and pre_notes(e1) == [f"Prepare 설정 갈라짐: calls_per_cell(jobs 추정 1 · Studio 2) — {calls_w}"]
               and pre_notes(e2) == ["Prepare 설정 갈라짐: model(jobs 추정 gpt-image-2.5-sunburst · Studio gpt-image-2.5-flare), "
-                                    "n(jobs 추정 2 · Studio 4), calls_per_cell(jobs 추정 1 · Studio 2) — 그래프와 Studio 를 번갈아 돌리면 셀이 "
-                                    f"바뀌어 다시 과금 대상(model); {calls_w}(calls_per_cell); 셀은 그대로, 승인 해시·비용이 바뀜(n)"]
+                                    "n(jobs 추정 2 · Studio 4), calls_per_cell(jobs 추정 1 · Studio 2) — 그래프와 Studio 를 번갈아 돌리면 생성 조건이 "
+                                    f"바뀌어 다시 과금 대상(model); {calls_w}(calls_per_cell); 생성 조건은 그대로, 승인 코드·비용이 바뀜(n)"]
               and mj["jobs"][0]["cell_key"] in more,
               f"옛 프로젝트 notes = jobs 와 비교(유도값 그대로면 없음), calls_per_cell 늘림 = 완료된 셀마다 새 호출 문구, 여러 종류 = 종류마다 필드, "
               f"reps 2 반영 뒤 완료된 셀에 새 유료 호출 {pre_notes(e0)} {pre_notes(e1)} {pre_notes(e2)} {more}")
@@ -28362,7 +28362,7 @@ await scenario("applyFree", async () => {  // board.js applyFree: 옛 서버(sta
   const neu = { pipeline_rev: 3, pending_preapproved: 2 };
   // board.js notReady(r1-14): state 에 키가 있는데 모듈이 없음 = 이 창이 재시작 전에 열림(새로고침), 키 없음 = 옛 서버(재시작)
   const nr = boardFn("notReady");
-  const why = (S, mod) => (nr ? vm.runInContext(`(${nr})`, vm.createContext({ S }))("진행(G)", "pipeline_rev", mod) : null);
+  const why = (S, mod) => (nr ? vm.runInContext(`(${nr})`, vm.createContext({ S }))("실행(G)", "pipeline_rev", mod) : null);
   return { found: !!src, oldState: await one({ pending_preapproved: 2 }, null), route404: await one(neu, { old: true }),
     normal: await one(neu, null), noPipe: await one(neu, undefined), noRerolls: await one({ pending_preapproved: 0 }, null),
     oldNo: await one({ pending_preapproved: 2 }, null, false), route404No: await one(neu, { old: true }, false), noPipeNo: await one(neu, undefined, false),
@@ -28421,7 +28421,7 @@ await scenario("rerollQueue", async () => {  // board.js queueReroll(planned, he
     heldOpener: one({ args: ["opener", true], why: busy, opener: true }),
     opener: one({ args: ["opener", false], why: busy, opener: true }), openerLock: one({ args: ["opener", false], why: busy, opener: true, lock: "Run 승인 요청을 처리하는 중" }),
     headLock: one({ args: [], why: busy, opener: true, lock: "이 Studio 의 Run(run) 이 끝난 뒤" }), headOpener: one({ args: [], why: busy, opener: true }),
-    headPaidLock: one({ args: [], lock: "재굴림 큐 요청을 처리하는 중" }),
+    headPaidLock: one({ args: [], lock: "다시 생성 큐 요청을 처리하는 중" }),
     gone: one({ args: ["opener", false], pipe: null }), goneWhy: one({ args: ["opener", false], why: "ComfyUI 탭 연결 없음 — 시험" }),
     nowPaid: one({ args: ["opener", false], opener: true }), noneNow: one({ args: [], why: "ComfyUI 탭 연결 없음 — 시험" }) };
 });
@@ -28780,14 +28780,14 @@ await scenario("panel", async () => {
   await sleep(60);
   const text = hosts.panel.textContent;
   r.enterPlan = planQ().at(-1);
-  r.sections = Object.fromEntries(["설정", "반영", "계획", "★ 점검", "Export", "채택 — 008_치마금속장식", "확인 필요: draft.apply", "prepare.n: 마지막 Prepare 4 · Studio 2",
+  r.sections = Object.fromEntries(["실행 설정", "반영", "비용·승인", "★ 점검", "Export", "채택 — 008_치마금속장식", "확인 필요: draft.apply", "prepare.n: 마지막 Prepare 4 · Studio 2",
     "반영 뒤 다시 계산", "레이아웃 미반영 1", "새 PSD", "r76", "Run: 승인 필요(선택 1크롭) 4건", "대기 승인분(전체) 9"].map((x) => [x, text.includes(x)]));
   // r1-19: 해시 안내 = Run 해시를 바꾸는 Run 위젯(retry_failed·retry_orphans)과 Studio 값
-  r.hashNote = hosts.panel.all().filter((e) => e.classList.contains("pp-row") && e.own.startsWith("해시는 ")).map((e) => e.own);
-  const ra = B("Run 승인");
+  r.hashNote = hosts.panel.all().filter((e) => e.classList.contains("pp-row") && e.own.startsWith("승인 코드는 ")).map((e) => e.own);
+  const ra = B("생성 승인");
   const da = B("초안 승인");
   r.approve = { run: ra && [ra.disabled, ra.title, ra.textContent], draft: da && [da.disabled, da.title, da.textContent] };
-  r.copy = hosts.panel.all().filter((e) => e.tagName === "BUTTON" && e.textContent === "해시 복사").map((e) => e.disabled);
+  r.copy = hosts.panel.all().filter((e) => e.tagName === "BUTTON" && e.textContent === "승인 코드 복사").map((e) => e.disabled);
   const links = hosts.panel.all().filter((e) => e.classList.contains("link") && e.classList.contains("warn")).map((e) => e.textContent);
   r.checks = links;
   for (const head of ["008_치마금속장식 · A — ★ 없음", "002_눈 · B — 중복 ★", "002_눈 — 옛 크롭 ★"]) {
@@ -28844,7 +28844,7 @@ await scenario("panel", async () => {
       kept, saveLeft, again, focus: doc.activeElement === inp, closed: !hosts.panel.all().some((e) => e.classList.contains("pp-text")) };
   }
   // 설정: 위젯 표(GET /pipeline widgets)로 그림 → prepare.n = 3 저장(숫자)
-  B("설정").fire("click");
+  B("실행 설정 열기").fire("click");
   await sleep(10);
   const boxes = hosts.panel.children.filter((e) => e.classList.contains("pp-sec"));
   const fields = hosts.panel.all().filter((e) => e.classList.contains("pp-field"));
@@ -28862,7 +28862,7 @@ await scenario("panel", async () => {
     const sv = srv.log.filter((x) => x.path === "pipeline/settings").at(-1);
     r.settings.saved = sv ? sv.body : null;
   }
-  B("← 진행").fire("click");
+  B("← 실행").fire("click");
   await sleep(10);
   // 선택: 없음 → 계획 끔(only 없는 계획), 승인 필요만 → Run 승인 필요·초안 대기 크롭
   B("없음", hosts.list).fire("click");
@@ -28875,13 +28875,13 @@ await scenario("panel", async () => {
   answer = false;
   const nd = srv.log.length;
   const td = toasts.length;
-  B("반영").fire("click");
+  B("반영 (무료)").fire("click");
   await sleep(30);
   r.applyDeclined = { confirm: confirms.at(-1), paths: srv.paths().slice(nd), toasts: toasts.slice(td), head: hosts.head.textContent };
   answer = true;
   // 반영(무료 큐) → 확인 창 → /api/prompt(front true) → 머리줄 실행 중 → 끝 = 토스트·state 재요청(패널 세션 폴링 = 1초)
   const refreshBefore = calls.refresh;
-  B("반영").fire("click");
+  B("반영 (무료)").fire("click");
   await sleep(30);
   r.apply = { confirm: confirms.at(-1), body: (srv.log.filter((x) => x.path === "api/prompt").at(-1) || {}).body, head: hosts.head.textContent };
   hist["pid-1"] = OK_H;
@@ -28930,7 +28930,7 @@ await scenario("panelDim", async () => {  // 해시 흐림·복사 끔(§3.3): �
     await sleep(30);
     pipe.enter(S, "001_38a818");
     await sleep(60);
-    const copies = hosts.panel.all().filter((e) => e.tagName === "BUTTON" && e.textContent === "해시 복사");
+    const copies = hosts.panel.all().filter((e) => e.tagName === "BUTTON" && e.textContent === "승인 코드 복사");
     const text = hosts.panel.textContent;
     const star = hosts.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent === "★ 점검");
     const apply = hosts.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent === "반영");
@@ -28938,7 +28938,7 @@ await scenario("panelDim", async () => {  // 해시 흐림·복사 끔(§3.3): �
       runBusy: text.includes("Run 실행 중 — 끝난 뒤 다시 계산"), draftBusy: text.includes("초안: Spec Draft 실행 중"),
       head: hosts.head.children[0] ? hosts.head.children[0].textContent : null, headTitle: hosts.head.children[0] ? hosts.head.children[0].title : null,
       chip: hosts.list.textContent.includes("레이아웃 미반영"),
-      checks: star ? star.children.slice(1).map((e) => e.own).filter((t) => /레이아웃|반영 필요:/.test(t)) : null,
+      checks: star ? star.children.slice(1).map((e) => e.own).filter((t) => /레이아웃|미반영:/.test(t)) : null,
       star: star ? star.children.slice(1).map((e) => e.own) : null,
       apply: apply ? apply.children.filter((e) => e.classList.contains("pp-row")).map((e) => e.own) : null };
     pipe.leave();
@@ -29019,7 +29019,7 @@ await scenario("layoutBack", async () => {  // 사용성 §12 반영 칸 [되돌
   const declined = { posts: posts().length, confirms: env.confirms.length - n0 };
   // 리뷰 tests-07: 왼쪽 목록 '레이아웃 미반영' 칩 마우스 = 그 크롭 줄, [반영] 확인 창 = 레이아웃 줄(크롭별) → 무료 반영 줄(취소 — 큐 없음)
   const chipEl = env.list.all().find((e) => e.classList && e.classList.contains("chip") && e.textContent === "레이아웃 미반영");
-  env.B("반영").fire("click");
+  env.B("반영 (무료)").fire("click");
   await sleep(60);
   const apply = env.confirms.at(-1).split("\n");
   // Codex 3차: 같은 크롭의 대상 문구도 바뀌었으면 [되돌리기] 확인 창이 '새 셀 안 생김'을 단정하지 않음(대상 문구는 남음)
@@ -29053,7 +29053,7 @@ function mkPanel(srv, store = mem()) {
       if (env.refreshState) setTimeout(() => env.pipe.stateChanged(env.refreshState()), 0);
     }, select() {}, goTarget: (k) => env.goTarget.push(k), seams: () => new Map(), drain() {}, enter() {} });
   env.B = (label, root = hosts.panel) => root.all().find((e) => e.tagName === "BUTTON" && e.textContent.startsWith(label)) || null;
-  env.copies = () => hosts.panel.all().filter((e) => e.tagName === "BUTTON" && e.textContent === "해시 복사").map((e) => [e.disabled, e.title]);
+  env.copies = () => hosts.panel.all().filter((e) => e.tagName === "BUTTON" && e.textContent === "승인 코드 복사").map((e) => [e.disabled, e.title]);
   env.input = () => hosts.panel.all().find((e) => e.tagName === "INPUT" && e.classList.contains("pp-text")) || null;
   return env;
 }
@@ -29263,11 +29263,11 @@ await scenario("panelSync", async () => {  // 화면이 세션 결과를 씀: �
   env.pipe.enter(S, "001_38a818");
   await sleep(60);
   srv.route.prompt = [409, R["GET /pipeline/prompt"].errors["409"][0]];
-  env.B("반영").fire("click");
+  env.B("반영 (무료)").fire("click");
   await sleep(40);
   r.confirm409 = { settings: env.panel.textContent.includes("실행 설정 — pipeline.json"), posts: srv.count("api/prompt") };
   const s0 = srv.count("pipeline/settings");
-  const reset = env.B("매니페스트 값으로 다시");
+  const reset = env.B("마지막 실행 값으로 채우기");
   // 확인 창에서 취소 = 저장 없음(POST /pipeline/settings 0회)
   const yes = ctx.window.confirm;
   ctx.window.confirm = (m) => { env.confirms.push(m); return false; };
@@ -29278,10 +29278,10 @@ await scenario("panelSync", async () => {  // 화면이 세션 결과를 씀: �
   if (reset) reset.fire("click");
   await sleep(80);
   r.reset = { bodies: srv.log.filter((x) => x.path === "pipeline/settings").slice(s0).map((x) => x.body), confirm: env.confirms.at(-1) || "" };
-  env.B("← 진행").fire("click");
+  env.B("← 실행").fire("click");
   await sleep(10);
   srv.route.prompt = [409, R["GET /pipeline/prompt"].errors["409"].find((x) => x.reason === "pipeline_broken")];
-  env.B("반영").fire("click");
+  env.B("반영 (무료)").fire("click");
   await sleep(40);
   r.broken409 = { settings: env.panel.textContent.includes("실행 설정 — pipeline.json"), posts: srv.count("api/prompt") };
   env.pipe.leave();
@@ -29381,7 +29381,7 @@ await scenario("panelFresh", async () => {  // 진행 모드의 낡은 계획(§
   const runS = Object.assign({}, st, { running: true, plan_v: null });
   env.pipe.stateChanged(runS);
   await sleep(40);
-  const d1 = env.B("Drain");
+  const d1 = env.B("새 호출 멈춤");
   const h1 = env.head.children[0];
   const g0 = srv.count("pipeline/progress");
   for (let i = 0; i < 3; i++) {
@@ -29389,7 +29389,7 @@ await scenario("panelFresh", async () => {  // 진행 모드의 낡은 계획(§
     await sleep(40);
   }
   r.run = { live: live(), dimLine: has("Run 실행 중 — 끝난 뒤 다시 계산"), drain: !!d1 && !d1.disabled,
-    same: env.B("Drain") === d1 && env.head.children[0] === h1, progress: srv.count("pipeline/progress") - g0, headSt: headSt() };
+    same: env.B("새 호출 멈춤") === d1 && env.head.children[0] === h1, progress: srv.count("pipeline/progress") - g0, headSt: headSt() };
   await sleep(350);
   r.run.plans = plans() - p0;
   base = "r:aaaa5555bbbb6666|d:9999aaaa0000bbbb";  // Run 끝(쉬는 중으로) — 계획 한 번 다시
@@ -29461,9 +29461,9 @@ await scenario("panelView", async () => {  // §3.4 채택 패널 표시(owner·
     await sleep(40);
     r.adopt[id] = rows(sec("채택 — "));
   }
-  r.plan = rows(sec("계획"));
-  r.settings = rows(sec("설정"));
-  env.B("설정").fire("click");
+  r.plan = rows(sec("비용·승인"));
+  r.settings = rows(sec("실행 설정"));
+  env.B("실행 설정 열기").fire("click");
   await sleep(10);
   const box = (name) => env.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent === name);
   const field = (b, k) => b.children.find((e) => e.classList.contains("pp-field") && e.children[0].textContent === k).children[1];
@@ -29535,7 +29535,7 @@ await scenario("panelClick", async () => {  // §5.4·§5.6 입력 중 미뤄 �
   r.row = { clicked: await mouse(env.list.children.find((e) => e.textContent.includes("012_소매"))) };
   await sleep(60);
   r.row.title = title();
-  env.B("설정").fire("click");
+  env.B("실행 설정 열기").fire("click");
   await sleep(10);
   const prep = () => env.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent === "Prepare");
   const nIn = prep().children.find((e) => e.classList.contains("pp-field") && e.children[0].textContent === "n").children[1];
@@ -29549,16 +29549,16 @@ await scenario("panelClick", async () => {  // §5.4·§5.6 입력 중 미뤄 �
   await sleep(60);
   r.settings.posts = srv.log.filter((x) => x.path === "pipeline/settings").slice(s0).map((x) => [x.body.section, x.body.values.n]);
   // 누르는 동안 온 state(그래프 Run 시작)는 그리지 않고, pointerup 을 놓쳐도 버튼 없이 움직이면 그때 그림
-  env.B("← 진행").fire("click");
+  env.B("← 실행").fire("click");
   await sleep(10);
   env.panel.fire("pointerdown", { buttons: 1 });
   env.pipe.stateChanged(Object.assign({}, S, { rev: 81, running: true }));
   await sleep(20);
-  const dr = env.B("Drain");
+  const dr = env.B("새 호출 멈춤");
   r.held = { during: dr ? dr.disabled : null };
   env.panel.fire("pointermove", { buttons: 0 });
   await sleep(20);
-  r.held.after = env.B("Drain") ? env.B("Drain").disabled : null;
+  r.held.after = env.B("새 호출 멈춤") ? env.B("새 호출 멈춤").disabled : null;
   env.pipe.leave();
   return r;
 });
@@ -29668,7 +29668,7 @@ await scenario("panelDrift", async () => {  // r1-01: 그래프 Prepare(매니�
   await sleep(60);
   srv.route.pipeline = at("high", [cell("ref_style", "plain", "at")]);
   const c1 = env.confirms.length;
-  env.B("반영").fire("click");
+  env.B("반영 (무료)").fire("click");
   await sleep(60);
   r.panelApply = { first: (env.confirms[c1] || "").split("\n")[0], asked: env.confirms.length - c1, posts: srv.count("api/prompt") };
   await until(() => env.toasts.some((t) => t.includes("반영 끝")), 3000);
@@ -29677,11 +29677,11 @@ await scenario("panelDrift", async () => {  // r1-01: 그래프 Prepare(매니�
   env.pipe.stateChanged(Object.assign({}, S, { rev: 81 }));
   await sleep(30);
   srv.route.pipeline = at("high", [cell("quality", "high", "max")]);
-  env.B("설정").fire("click");
+  env.B("실행 설정 열기").fire("click");
   await sleep(10);
   const s0 = srv.count("pipeline/settings");
   const t0 = env.toasts.length;
-  env.B("매니페스트 값으로 다시").fire("click");
+  env.B("마지막 실행 값으로 채우기").fire("click");
   await sleep(80);
   r.reset = { bodies: srv.log.filter((x) => x.path === "pipeline/settings").slice(s0).map((x) => [x.body.section, x.body.values.quality]),
     confirm: env.confirms.at(-1) || "", toasts: env.toasts.slice(t0) };
@@ -29689,9 +29689,9 @@ await scenario("panelDrift", async () => {  // r1-01: 그래프 Prepare(매니�
   srv.delay["pipeline/settings"] = [60];
   const c2 = env.confirms.length;
   const s1 = srv.count("pipeline/settings");
-  env.B("매니페스트 값으로 다시").fire("click");
+  env.B("마지막 실행 값으로 채우기").fire("click");
   await sleep(20);
-  env.B("매니페스트 값으로 다시").fire("click");
+  env.B("마지막 실행 값으로 채우기").fire("click");
   await sleep(150);
   r.twice = { asked: env.confirms.length - c2, posts: srv.count("pipeline/settings") - s1 };
   env.pipe.leave();
@@ -29726,10 +29726,10 @@ await scenario("panelReset", async () => {  // r1-05: pipeline.json 없음(정�
   await sleep(30);
   env.pipe.enter(S, "001_38a818");
   await sleep(40);
-  env.B("설정").fire("click");
+  env.B("실행 설정 열기").fire("click");
   await sleep(10);
   const s0 = srv.count("pipeline/settings");
-  env.B("매니페스트 값으로 다시").fire("click");
+  env.B("마지막 실행 값으로 채우기").fire("click");
   await sleep(80);
   const r = { confirm: env.confirms.at(-1) || "", sections: srv.log.filter((x) => x.path === "pipeline/settings").slice(s0).map((x) => x.body.section) };
   env.pipe.leave();
@@ -29853,7 +29853,7 @@ await scenario("panelForm", async () => {  // r1-27: 설정 절 [저장] 응답�
   await sleep(30);
   env.pipe.enter(S, "001_38a818");
   await sleep(40);
-  env.B("설정").fire("click");
+  env.B("실행 설정 열기").fire("click");
   await sleep(10);
   const prep = () => env.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent === "Prepare");
   const fld = (k) => prep().children.find((e) => e.classList.contains("pp-field") && e.children[0].textContent === k).children[1];
@@ -29966,7 +29966,7 @@ await scenario("tabBadge", async () => {  // board.js 머리줄 탭 배지(§3.8
     s3aOpener: show("ok", "opener", 2, "unsupported"), nosubmit: show("ok", "opener", 3, "unsupported"), old: show("old", "opener", 1), silent: show("old", "opener"),
     none: show("none"), many: show("many"), wait: show("wait", null) };
   // r2-05: 진행 패널(pipe)이 있으면 연결된 탭의 이유 = pipe.paidWhy(탭 + 서버 템플릿 게이트 — tabWay 와 같은 판정). 대역 = link 이유 뒤 서버 이유
-  const gate = "실행 설정 확인 필요(prepare.variants) — 진행(G) [설정]에서 확인·저장";
+  const gate = "실행 설정 확인 필요(prepare.variants) — 실행(G) [실행 설정 열기]에서 확인·저장";
   bc.pipe = { paidWhy: () => lk.paidWhy() || gate, paidLock: () => "" };
   Object.assign(r, { gateOpener: show("ok", "opener"), gateChannel: show("ok"), gateBusy: show("ok", "channel", 3, "ok", true), gateOld: show("old", "opener", 1) });
   bc.pipe = { paidWhy: () => lk.paidWhy(), paidLock: () => "" };
@@ -30014,14 +30014,14 @@ await scenario("panelBroken", async () => {  // r2-01: 깨진 pipeline.json(GET 
   env.pipe.enter(S, "001_38a818");
   await sleep(40);
   r.panel = env.panel.all().filter((e) => e.classList.contains("pp-row") && e.own.startsWith("확인 필요: ")).map((e) => e.own);
-  env.B("설정").fire("click");
+  env.B("실행 설정 열기").fire("click");
   await sleep(10);
   const boxes = env.panel.children.filter((e) => e.classList.contains("pp-sec"));
   r.marked = env.panel.all().filter((e) => e.classList.contains("pp-field") && e.children[0].textContent.endsWith(" (확인 필요)"))
     .map((e) => e.children[0].textContent);
   r.buttons = Object.fromEntries(boxes.map((b) => [b.children[0].textContent, (b.all().find((e) => e.tagName === "BUTTON") || {}).textContent]));
   const s0 = srv.count("pipeline/settings");
-  env.B("매니페스트 값으로 다시").fire("click");
+  env.B("마지막 실행 값으로 채우기").fire("click");
   await sleep(150);
   r.confirm = env.confirms.at(-1) || "";
   r.posts = srv.log.filter((x) => x.path === "pipeline/settings").slice(s0).map((x) => [x.body.section, x.body.rev]);
@@ -30067,7 +30067,7 @@ await scenario("applyRace", async () => {  // r2-02: [반영] — 확인 창이 
     let res;
     if (editor) res = await env.pipe.queue("apply");
     else {
-      env.B("반영").fire("click");
+      env.B("반영 (무료)").fire("click");
       await sleep(150);
     }
     const r = { asked: env.confirms.slice(c0).map((c) => c.split("\n")), posts: srv.count("api/prompt"), toasts: env.toasts.slice(t0),
@@ -30117,7 +30117,7 @@ await scenario("panelConflict", async () => {  // r2-03: 설정 패널 — 편�
   await sleep(30);
   env.pipe.enter(st, "001_38a818");
   await sleep(40);
-  env.B("설정").fire("click");
+  env.B("실행 설정 열기").fire("click");
   await sleep(10);
   // ① 이 창이 n 2→3 을 친 뒤 다른 창이 n 4 저장 → 백그라운드 다시 읽기(rev 4): 칸 옆 다른 창 값, [저장] = 덮어쓸지 확인(거절 = POST 없음)
   let inp = fld("n").children[1];
@@ -30191,7 +30191,7 @@ await scenario("panelHashClick", async () => {  // r2-07: [수정] 입력 중(�
   const env = mkPanel(srv);
   const copied = [];
   ctx.navigator = { clipboard: { writeText: async (t) => { copied.push(t); } } };
-  const runCopy = () => env.panel.all().filter((e) => e.tagName === "BUTTON" && e.textContent === "해시 복사")[1] || null;
+  const runCopy = () => env.panel.all().filter((e) => e.tagName === "BUTTON" && e.textContent === "승인 코드 복사")[1] || null;
   const at = () => (runCopy() ? [runCopy().disabled, runCopy().title] : null);
   const typing = async () => {
     if (!env.input()) {
@@ -30329,7 +30329,7 @@ await scenario("planWait", async () => {  // r2-10: 이 Studio 의 무료 프롬
   await mouse(env.list.all().find((e) => e.tagName === "INPUT" && e.type === "checkbox"));
   await until(() => env.head.textContent.includes("대기 — 앞 1"), 2500);
   await sleep(400);
-  const plan = env.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent === "계획");
+  const plan = env.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent === "비용·승인");
   const rb = env.B("다시 계산");
   const r = { plans: srv.count("pipeline/plan") - p0, first: plan && plan.children[1] ? plan.children[1].own : null, btn: rb ? [rb.disabled, rb.title] : null };
   env.refreshState = () => Object.assign({}, S);  // 끝 → 보드 refresh(true) → state(r3-07: 계획은 그 state 뒤 — 디바운스 300ms)
@@ -30455,7 +30455,7 @@ await scenario("ownSave", async () => {  // r3-05: 다른 창 없이 이 창의 
     await sleep(30);
     env.pipe.enter(st, "001_38a818");
     await sleep(40);
-    env.B("설정").fire("click");
+    env.B("실행 설정 열기").fire("click");
     await sleep(10);
     return env;
   };
@@ -30642,7 +30642,7 @@ await scenario("doneSel", async () => {  // r3-07: 진행 모드 [반영] 끝 �
   env.pipe.enter(S, "001_38a818");
   await sleep(60);
   const p0 = srv.count("pipeline/plan");
-  env.B("반영").fire("click");
+  env.B("반영 (무료)").fire("click");
   await sleep(40);
   removed = true;  // 반영의 Import 가 레이아웃에서 지운 크롭 003 을 매니페스트에서 뺌
   env.refreshState = () => S2;  // 끝 → 보드 refresh(true) → 반영 뒤 state
@@ -30723,7 +30723,7 @@ await scenario("pipelineRetry", async () => {  // r3-09: 첫 GET /pipeline 이 �
   await sleep(30);
   e2.pipe.enter(S, "001_38a818");
   await sleep(40);
-  e2.B("설정").fire("click");
+  e2.B("실행 설정 열기").fire("click");
   await sleep(10);
   const panelErr = () => e2.panel.children.some((e) => e.classList.contains("pp-row") && e.own.startsWith("읽기 오류"));
   r.panel = { failed: panelErr() };
@@ -30789,7 +30789,7 @@ await scenario("doubleClicks", async () => {  // r3-11: [Export]·[채택]·설�
   b.fire("click");
   await sleep(150);
   r.adopt = { posts: srv.count("draft/adopt") - a0, errs: errs() };
-  env.B("설정").fire("click");
+  env.B("실행 설정 열기").fire("click");
   await sleep(10);
   const prep = env.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent === "Prepare");
   const nIn = prep.children.find((e) => e.classList.contains("pp-field") && e.children[0].textContent === "n").children[1];
@@ -30803,7 +30803,7 @@ await scenario("doubleClicks", async () => {  // r3-11: [Export]·[채택]·설�
   b.fire("click");
   await sleep(150);
   r.save = { posts: srv.count("pipeline/settings") - s0, errs: errs() };
-  env.B("← 진행").fire("click");
+  env.B("← 실행").fire("click");
   await sleep(10);
   env.B("수정").fire("click");
   await sleep(10);
@@ -30863,7 +30863,7 @@ await scenario("driftCalls", async () => {  // r3-02(화면): Prepare 갈라짐 
     env.pipe.enter(S, "001_38a818");
     await sleep(40);
     r.panel = rows(env.panel);
-    const sb = env.B("설정");
+    const sb = env.B("실행 설정 열기");
     if (sb) sb.fire("click");
     await sleep(10);
     r.settings = rows(env.panel);
@@ -30903,10 +30903,10 @@ await scenario("resetRace", async () => {  // Codex 1차 c1-1: [매니페스트 
     await sleep(30);
     env.pipe.enter(S, "001_38a818");
     await sleep(40);
-    env.B("설정").fire("click");
+    env.B("실행 설정 열기").fire("click");
     await sleep(10);
     const t0 = env.toasts.length;
-    env.B("매니페스트 값으로 다시").fire("click");
+    env.B("마지막 실행 값으로 채우기").fire("click");
     await sleep(120);
     ctx.window.confirm = (m) => { env.confirms.push(m); return true; };
     const r = { posts: srv.log.filter((x) => x.path === "pipeline/settings").map((x) => [x.body.section, x.body.rev]), toasts: env.toasts.slice(t0),
@@ -31003,7 +31003,7 @@ await scenario("planAfterSave", async () => {  // Codex 1차 c1-2(화면): 계�
   env.pipe.enter(state(), "001_38a818");
   await sleep(60);
   const r = { entered: env.copies().map((x) => !x[0]) };
-  env.B("설정").fire("click");
+  env.B("실행 설정 열기").fire("click");
   await sleep(10);
   const runBox = env.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent === "Run");
   const rf = runBox.children.find((e) => e.classList.contains("pp-field") && e.children[0].textContent === "retry_failed").children[1];
@@ -31020,7 +31020,7 @@ await scenario("planAfterSave", async () => {  // Codex 1차 c1-2(화면): 계�
     env.pipe.stateChanged(state());
     await sleep(60);
   }
-  env.B("← 진행").fire("click");
+  env.B("← 실행").fire("click");
   await sleep(10);
   Object.assign(r, { live: env.copies().map((x) => !x[0]), planV: state().plan_v, plans: srv.count("pipeline/plan") - p0,
     stale: env.panel.textContent.includes("계획이 지금 파일 상태와 다름") });
@@ -31037,7 +31037,7 @@ await scenario("draftBusy", async () => {  // Codex 1차 b-3: 계획을 받은 �
   const env = mkPanel(srv);
   const S = quietState();
   const draftRow = () => {
-    const sec = env.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent === "계획");
+    const sec = env.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent === "비용·승인");
     const row = sec && sec.children.find((e) => e.classList.contains("pp-row") && e.own.startsWith("초안: "));
     return row ? [row.own, row.className] : null;
   };
@@ -31089,7 +31089,7 @@ await scenario("resetTyped", async () => {  // Codex 2차 c2-1: [매니페스트
     await sleep(30);
     env.pipe.enter(S, "001_38a818");
     await sleep(40);
-    env.B("설정").fire("click");
+    env.B("실행 설정 열기").fire("click");
     await sleep(10);
     const prep = () => env.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent === "Prepare");
     const row = (k) => prep().children.find((e) => e.classList.contains("pp-field") && e.children[0].textContent === k);
@@ -31104,7 +31104,7 @@ await scenario("resetTyped", async () => {  // Codex 2차 c2-1: [매니페스트
     }
     srv.delay["pipeline/settings"] = mode === "two" ? [200, 0] : [200];
     const c0 = env.confirms.length;
-    env.B("매니페스트 값으로 다시").fire("click");
+    env.B("마지막 실행 값으로 채우기").fire("click");
     await sleep(60);  // 확인 창 OK 뒤·첫 POST 응답(200ms) 전
     const n = fld("n");
     const r = { disabled: n.disabled };
@@ -31146,7 +31146,7 @@ await scenario("confirmGate", async () => {  // m-1: 진행 설정 칸 '확인 �
     const hb = env.head.children.find((e) => e.textContent === "설정 확인 필요");
     env.pipe.enter(S, "001_38a818");
     await sleep(40);
-    const sec = env.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent === "설정");
+    const sec = env.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent === "실행 설정");
     const r = { head: hb ? hb.className : null,
       rows: sec.children.filter((e) => e.classList.contains("pp-row") && /^(확인 필요: |pipeline\.json 없음)/.test(e.own)).map((e) => [e.own, e.className]) };
     env.pipe.leave();
@@ -31173,7 +31173,7 @@ process.exit(0);
 def pipeline_js_unit():
     """S3a J-P1·J-P2·J-P4·B12″(JS)·P5(U4): pipeline.js 세션(가짜 fetch = pipeline_api.json)·채택 패널·탭 확장 hello·정적 검사·
     S1-b 공용 표 새 행(--quick 포함)."""
-    section("S3a pipeline_js_unit — Studio 진행 모드(G)·무료 큐·채택·hello JS(U4)")
+    section("S3a pipeline_js_unit — Studio 실행 모드(G)·무료 큐·채택·hello JS(U4)")
     web = PKG / "web_design_patch"
     pj = (web / "pipeline.js").read_text(encoding="utf-8")
     bj = (web / "board.js").read_text(encoding="utf-8")
@@ -31215,8 +31215,8 @@ def pipeline_js_unit():
     ab = _layout_js_fn(pcode, "approveButton", "    ")
     check("S3b 전" not in pj and 'approveButton("draft", dt.label, hc.draft)' in pcode and 'approveButton("run", ' in pcode
           and "b.disabled = !!why;" in ab and "(e) => approve(e, kind, label, pair)" in ab,
-          "S3b 승인 단추 = approveButton(초안·Run — 그린 해시·only 짝, 꺼진 이유는 제목, 누르면 이벤트째 approve), 'S3b 전' 고정 꺼짐 없음")
-    check("approve: ${hash}  only: ${only}" in pcode, "해시 복사 = approve·only 한 줄(§3.3 — 'approve=' 문자열은 쓰지 않음)")
+          "S3b 승인 단추 = approveButton(초안·Run — 그린 승인 코드·only 짝, 꺼진 이유는 제목, 누르면 이벤트째 approve), 'S3b 전' 고정 꺼짐 없음")
+    check("approve: ${hash}  only: ${only}" in pcode, "승인 코드 복사 = approve·only 한 줄(§3.3 — 'approve=' 문자열은 쓰지 않음)")
     check("apply: { front: true" in pcode and "export: { front: false" in pcode, "apply = 대기열 앞(front true), export = 뒤(front false)")
     check(re.search(r"widgets\[sec\]|P0\.widgets", pcode) is not None and "COMBO" in pcode and "choices" in pcode
           and not re.search(r'"(?:gpt-image-2\.5-sunburst|guarded_affine|hand_else_auto)"', pcode),
@@ -31228,9 +31228,9 @@ def pipeline_js_unit():
     kd = _layout_js_fn(bcode, "onKeyDown")
     i_ref, i_pipe, i_sw = (kd.find(s) for s in ("refsOn && REFS_OFF.has(e.code)", "pipeShown && PIPE_OFF.has(e.code)", "switch (e.code)"))
     check(0 < i_ref < i_pipe < i_sw and 'case "KeyG":' in kd and "setPipe(!pipeShown)" in kd and "pipeOn" not in kd,
-          "onKeyDown: 레퍼런스 끔 → 진행 모드 끔(검토 키·E·T) → G 토글, 진행 판정은 패널 hidden(떼어 돌리는 하네스에 새 전역 없음)")
+          "onKeyDown: 레퍼런스 끔 → 실행 모드 끔(검토 키·E·T) → G 토글, 진행 판정은 패널 hidden(떼어 돌리는 하네스에 새 전역 없음)")
     check("if (on && pipeOn) setPipe(false);" in bcode and bcode.count("if (on && pipeOn) setPipe(false);") == 2
-          and "if (on && editing) setEditing(false);" in _layout_js_fn(bcode, "setPipe"), "진행(G)·편집(E)·레퍼런스(T) 모드는 배타")
+          and "if (on && editing) setEditing(false);" in _layout_js_fn(bcode, "setPipe"), "실행(G)·크롭 편집(E)·레퍼런스(T) 모드는 배타")
     check(_layout_js_fn(bcode, "renderTargets").count("draftChips(ch, c);") == 2 and "draftChips" not in _layout_js_fn(bcode, "cropChips")
           and "c.draft_chip" in _layout_js_fn(bcode, "draftChips"),
           "검토 모드 크롭 칩 = state draft_chip(§3.7 — 크롭 머리 줄·한 줄 타깃 둘 다, cropChips 와 따로)")
@@ -31238,8 +31238,8 @@ def pipeline_js_unit():
           and "if (pipe && S) pipe.stateChanged(S);" in bcode, "폴링: pipeline_rev·plan_v 가 바뀌면 전체 state, 진행 패널은 모든 모드에서 state 를 받음")
     check(all(f'id="{i}"' in html for i in ("btn-pipe", "pipe-head", "pipe-list", "pipe-panel")) and 'id="pipe-panel" aria-label' in html
           and re.search(r'<section id="pipe-panel"[^>]*hidden>', html) is not None and "실행 (<kbd>G</kbd>)" in html,
-          "board.html 진행 모드 요소 4개(패널은 처음 hidden)·도움말")
-    check("body.pipe #pipe-panel" in css and "body.pipe #target-list, body.pipe #center" in css and ".chip.stale" in css, "board.css 진행 모드 3분할·흐린 칩")
+          "board.html 실행 모드 요소 4개(패널은 처음 hidden)·도움말")
+    check("body.pipe #pipe-panel" in css and "body.pipe #target-list, body.pipe #center" in css and ".chip.stale" in css, "board.css 실행 모드 3분할·흐린 칩")
 
     # P5 S1-b: 공용 표 suggest 새 행 4개(값은 S1-L4 = 오라클, J-L1 = JS 가 모든 행에서 다시 본다)
     table = json.loads(_LAYOUT_RULES.read_text(encoding="utf-8"))
@@ -31352,7 +31352,7 @@ def pipeline_js_unit():
         check(pl.get("jobMid") == {"ok": False, "gets": 1, "job": True, "kept": True},
               f"r1-09 202 로 다시 묻기를 기다리는 사이 이 Studio 의 무료 큐(반영)가 시작되면 그만둠(반쪽 상태 계획을 받지 않음 — 앞 계획 유지) {pl.get('jobMid')}")
         check(pl["chip"] == {"ok": True, "q": {"root": "fe410d7f025d"}, "only": None, "hash": ""},
-              f"J-P1 only 없는 계획(칩용) = only·style 쿼리 없음, 선택 해시 '' {pl['chip']}")
+              f"J-P1 only 없는 계획(칩용) = only·style 쿼리 없음, 선택 승인 코드 '' {pl['chip']}")
         check(pl["superseded"] == {"a1": False, "a2": True, "gets": 2, "only": "002_d98f99"},
               f"J-P1 202 로 기다리는 동안 새 계획 요청이 오면 앞 요청은 다시 묻지 않음(GET 2회) {pl['superseded']}")
     sg = res.get("settings") or {}
@@ -31381,28 +31381,28 @@ def pipeline_js_unit():
     af = res.get("applyFree") or {}
     if "found" in af:
         old, r404, nrm, npipe, nre = (af[k] for k in ("oldState", "route404", "normal", "noPipe", "noRerolls"))
-        check(af["found"] and old["comfy"] == [True] and old["pipe"] == 0 and len(old["confirms"]) == 1 and "대기 재굴림 2건" in old["confirms"][0]
+        check(af["found"] and old["comfy"] == [True] and old["pipe"] == 0 and len(old["confirms"]) == 1 and "대기 다시 생성 2건" in old["confirms"][0]
               and any("ComfyUI 재시작 필요" in t for t in old["toasts"]),
-              f"J-P1 옛 서버(state 에 pipeline_rev 없음) → queueInComfy(true) 대체 + 재굴림 과금 확인 + 'ComfyUI 재시작 필요' {old}")
+              f"J-P1 옛 서버(state 에 pipeline_rev 없음) → queueInComfy(true) 대체 + 다시 생성 과금 확인 + 'ComfyUI 재시작 필요' {old}")
         check(r404["pipe"] == 1 and r404["stage"] == "apply" and r404["comfy"] == [True] and nrm["pipe"] == 1 and nrm["comfy"] == [] and nrm["confirms"] == []
               and npipe["comfy"] == [True] and nre["confirms"] == [] and nre["comfy"] == [True],
-              f"J-P1 /pipeline/prompt 404 → 탭 반영, 정상 = 무료 반영만(탭 요청 없음), pipeline.js 없음 → 탭 반영, 재굴림 0 = 확인 없음 {r404} {nrm}")
+              f"J-P1 /pipeline/prompt 404 → 탭 반영, 정상 = 무료 반영만(탭 요청 없음), pipeline.js 없음 → 탭 반영, 다시 생성 0 = 확인 없음 {r404} {nrm}")
         ono, rno, pno = af["oldNo"], af["route404No"], af["noPipeNo"]
-        check(all(x["comfy"] == [] and x["toasts"] == [] and len(x["confirms"]) == 1 and "대기 재굴림 2건" in x["confirms"][0] for x in (ono, rno, pno))
+        check(all(x["comfy"] == [] and x["toasts"] == [] and len(x["confirms"]) == 1 and "대기 다시 생성 2건" in x["confirms"][0] for x in (ono, rno, pno))
               and ono["pipe"] == 0 and rno["pipe"] == 1 and pno["pipe"] == 0,
-              f"J-P1 탭 Review 부분 실행 대체(옛 state·/pipeline/prompt 404·pipeline.js 없음 — 대기 재굴림 과금) 확인 창에서 취소 = queueInComfy 없음·"
+              f"J-P1 탭 Review 부분 실행 대체(옛 state·/pipeline/prompt 404·pipeline.js 없음 — 대기 다시 생성 과금) 확인 창에서 취소 = queueInComfy 없음·"
               f"'보냈습니다' 토스트 없음 {ono} {rno} {pno}")
         nr = af.get("notReady") or {}
-        check(len(npipe["confirms"]) == 1 and "Studio 창 새로고침 필요" in npipe["confirms"][0] and "새로고침하면 무료 반영(재굴림 과금 없음)" in npipe["confirms"][0]
+        check(len(npipe["confirms"]) == 1 and "Studio 창 새로고침 필요" in npipe["confirms"][0] and "새로고침하면 무료 반영(다시 생성 과금 없음)" in npipe["confirms"][0]
               and any("Studio 창 새로고침 필요" in t for t in npipe["toasts"]) and not any("ComfyUI 재시작 필요" in t for t in npipe["toasts"] + npipe["confirms"])
               and not any("새로고침" in t for t in old["toasts"] + old["confirms"] + r404["toasts"] + r404["confirms"])
-              and (nr.get("stale") or "").startswith("Studio 창을 새로고침해야 진행(G)을") and (nr.get("old") or "").startswith("ComfyUI 를 재시작해야 진행(G)을")
+              and (nr.get("stale") or "").startswith("Studio 창을 새로고침해야 실행(G)을") and (nr.get("old") or "").startswith("ComfyUI 를 재시작해야 실행(G)을")
               and (nr.get("loaded") or "").startswith("ComfyUI 를 재시작해야"),
               f"r1-14 서버는 S3(state pipeline_rev)인데 이 창에 pipeline.js 가 없음(재시작 전에 연 창) = 'Studio 창 새로고침 필요'(재시작 아님) — 반영 확인 창·토스트·"
               f"모드 단추 안내(notReady), 옛 서버·라우트 404 는 그대로 '재시작' {npipe} {nr}")
     rt = res.get("rerollTab") or {}
     if "found" in rt:
-        no_tab = "지금 큐를 보내지 않음(ComfyUI 탭이 큐를 처리하는 중): 재굴림은 예약만 되고 다음 Run 때(선택과 무관) 함께 과금"
+        no_tab = "지금 큐를 보내지 않음(ComfyUI 탭이 큐를 처리하는 중): 다시 생성은 예약만 되고 다음 Run 때(선택과 무관) 함께 과금"
         conf = {k: rt[k]["confirms"][0] if len(rt[k]["confirms"]) == 1 else "" for k in ("noTab", "tab", "paid", "lock", "lockOpener", "lockNoTab")}
         check(rt["found"] and no_tab in conf["noTab"] and "ComfyUI 탭에 큐 요청을 보냅니다" not in conf["noTab"]
               and all("ComfyUI 탭에 큐 요청을 보냅니다" in conf[k] and no_tab not in conf[k] for k in ("tab", "paid"))
@@ -31411,19 +31411,19 @@ def pipeline_js_unit():
                                          ("lockOpener", "opener", True), ("lockNoTab", "", False)))
               and any("지금 큐를 보내지 않음(예약만 — 다음 Run 때 과금)" in t for t in rt["noTabKey"]["toasts"])
               and not any("큐를 보내지 않음" in t or "예약만" in t for t in rt["tabKey"]["toasts"] + rt["paidKey"]["toasts"]) and rt["noTabKey"]["writes"] == [],
-              f"r1-04·S3b R(재굴림): 쓰기 성공 뒤 0.6초에 queueReroll(확인 때의 판정 — '예약만'에 동의했으면 그 사이 탭이 생겨도 보내지 않음), "
+              f"r1-04·S3b R(다시 생성): 쓰기 성공 뒤 0.6초에 queueReroll(확인 때의 판정 — '예약만'에 동의했으면 그 사이 탭이 생겨도 보내지 않음), "
               f"길(tabWay — 유료 탭 길·opener)이 없으면 확인 창 = '지금 큐를 보내지 않음(그 이유 — pipe.paidWhy: 탭·서버 게이트) — 예약만, 다음 Run 때 과금'·"
               f"첫 R 토스트 {rt}")
         check("ComfyUI 탭에 큐 요청을 보냅니다" not in conf["lock"] and "부수 효과 줄" not in conf["lock"]
-              and conf["lock"].endswith("유료 호출이 사전 승인됩니다 — 지금은 큐를 보내지 않음(Run 승인 요청을 처리하는 중): 재굴림은 예약만 되고 머리줄 'ComfyUI 큐'로 "
+              and conf["lock"].endswith("유료 호출이 사전 승인됩니다 — 지금은 큐를 보내지 않음(Run 승인 요청을 처리하는 중): 다시 생성은 예약만 되고 머리줄 [다시 생성 보내기]로 "
                                         "보내거나 다음 Run 때(선택과 무관) 함께 과금됩니다. 계속할까요?")
-              and rt["lockKey"]["toasts"] == ["warn:R 무시 — Run 승인 요청을 처리하는 중. 더 넣으려면 [재굴림 +1] 단추(확인 창에 누적 건수)"]
+              and rt["lockKey"]["toasts"] == ["warn:R 무시 — Run 승인 요청을 처리하는 중. 더 넣으려면 [다시 생성 +1] 단추(확인 창에 누적 건수)"]
               and rt["lockKey"]["writes"] == [],
               f"r1-25 유료 탭 길인데 이 Studio 가 유료 요청·실행·무료 큐 중(pipe.paidLock — pipe.reroll 이 보내지 않고 예약만)이면 R 확인 창 = "
               f"'지금은 큐를 보내지 않음(이유) — 예약만'(큐 요청을 보낸다·부수 효과 줄 없음), 키보드 R 은 무장하지 않음(사용성 §12 rerollHold) "
               f"{conf['lock']!r} {rt['lockKey']['toasts']}")
         check("ComfyUI 탭에 큐 요청을 보냅니다" not in conf["lockOpener"]
-              and "지금은 큐를 보내지 않음(Run 승인 요청을 처리하는 중): 재굴림은 예약만 되고 머리줄 'ComfyUI 큐'로" in conf["lockOpener"]
+              and "지금은 큐를 보내지 않음(Run 승인 요청을 처리하는 중): 다시 생성은 예약만 되고 머리줄 [다시 생성 보내기]로" in conf["lockOpener"]
               and no_tab in conf["lockNoTab"] and "지금은 큐를 보내지 않음(Run" not in conf["lockNoTab"],
               f"r2-09 lock 은 길과 무관(자기 승인을 처리하는 탭은 hello busy 라 opener 길): opener 길이어도 이 Studio 가 바쁘면 R 확인 창 = '지금은 예약만'"
               f"(Review 부분 실행 요청 아님)·큐에 held, 탭 없음은 그대로(탭 없음 이유) {conf['lockOpener']!r} {conf['lockNoTab']!r}")
@@ -31437,22 +31437,22 @@ def pipeline_js_unit():
               f"'스크립트 키 — 큐는 사용자 키 입력만', 사용자 R 로 무장한 뒤 합성 R = 다시 무장(쓰기 0) {up} {sp_} {so_} {mx_}")
     rq = res.get("rerollQueue") or {}
     if "found" in rq:
-        held_ = "warn:재굴림 예약됨 — 지금 보내지 않음({}): 머리줄 'ComfyUI 큐'로 보내거나 다음 Run 때 과금"
-        moved_ = "warn:재굴림 예약됨 — R 확인 뒤 ComfyUI 탭 상태가 바뀌어 지금 보내지 않음({}): 머리줄 'ComfyUI 큐'로 보내거나 다음 Run 때 과금"
+        held_ = "warn:다시 생성 예약됨 — 지금 보내지 않음({}): 머리줄 [다시 생성 보내기]로 보내거나 다음 Run 때 과금"
+        moved_ = "warn:다시 생성 예약됨 — R 확인 뒤 ComfyUI 탭 상태가 바뀌어 지금 보내지 않음({}): 머리줄 [다시 생성 보내기]로 보내거나 다음 Run 때 과금"
         agreed = "R 확인 때 '지금은 예약만'에 동의함"
         q = lambda way, reroll=0, comfy=0, toasts=(): {"reroll": reroll, "comfy": comfy, "toasts": list(toasts), "way": way}
         want = {"paid": q("paid", reroll=1), "heldFreed": q("paid", toasts=[held_.format(agreed)]),
                 "heldStill": q("paid", toasts=[held_.format("Run 승인 요청을 처리하는 중")]), "heldOpener": q("opener", toasts=[held_.format(agreed)]),
                 "opener": q("opener", comfy=1), "openerLock": q("opener", toasts=[held_.format("Run 승인 요청을 처리하는 중")]),
                 "headLock": q("opener", toasts=[held_.format("이 Studio 의 Run(run) 이 끝난 뒤")]), "headOpener": q("opener", comfy=1),
-                "headPaidLock": q("paid", toasts=[held_.format("재굴림 큐 요청을 처리하는 중")]),
+                "headPaidLock": q("paid", toasts=[held_.format("다시 생성 큐 요청을 처리하는 중")]),
                 "gone": q("", toasts=[moved_.format("이 창을 연 ComfyUI 탭 없음")]), "goneWhy": q("", toasts=[moved_.format("ComfyUI 탭 연결 없음 — 시험")]),
                 "nowPaid": q("paid", toasts=[moved_.format("탭이 이제 유료 승인을 받음 — 확인한 Review 부분 실행과 과금 기준이 다름")]),
-                "noneNow": q("", toasts=["warn:재굴림 예약됨 — Run 실행 때 과금(ComfyUI 탭 연결 없음 — 시험)"])}
+                "noneNow": q("", toasts=["warn:다시 생성 예약됨 — Run 실행 때 과금(ComfyUI 탭 연결 없음 — 시험)"])}
         bad = {k: rq[k] for k in want if rq[k] != want[k]}
         check(rq["found"] and not bad,
-              f"r2-01·r2-09·r2-14 board.js queueReroll(planned, held): R 확인 때 lock(held)이면 그 뒤 풀려도 예약만(재굴림 메시지·Review 부분 실행 0), "
-              f"지금 이 Studio 가 바쁘면(paidLock) 길과 무관하게 예약만(머리줄 'ComfyUI 큐' 포함 — opener 길 Review 부분 실행으로 새지 않음), 길이 바뀐 "
+              f"r2-01·r2-09·r2-14 board.js queueReroll(planned, held): R 확인 때 lock(held)이면 그 뒤 풀려도 예약만(다시 생성 메시지·Review 부분 실행 0), "
+              f"지금 이 Studio 가 바쁘면(paidLock) 길과 무관하게 예약만(머리줄 [다시 생성 보내기] 포함 — opener 길 Review 부분 실행으로 새지 않음), 길이 바뀐 "
               f"이유는 지금 길로(pipe 없는 창에서 opener 닫힘 = '이 창을 연 ComfyUI 탭 없음' — '탭이 이제 유료 승인을 받음' 아님) {bad}")
         side_key = "승인 제출이라 ComfyUI 탭 그래프의 시드 제어 등 실행마다 바뀌는 값이 한 번 진행됨(그래프는 실행 안 함)"
         check(any(side_key in t for t in rt["paidKey"]["toasts"])
@@ -31491,16 +31491,16 @@ def pipeline_js_unit():
               f"J-P2 kind 별 채택 단추: add 만 켬, 거절 이유·keep_human·keep_deleted·이미 채택·노드 값·unwritten·스펙 오류 {a_s}")
     tx = res.get("texts") or {}
     if "run" in tx:
-        check("Run: 승인 필요(선택 1크롭) 4건 ≈ $2.40–3.16(≈ 506–667 크레딧)" in tx["run"]["line"] and "재굴림(사전 승인) 1건 ≈ $0.62 도 함께 과금(선택과 무관)" in tx["run"]["line"]
-              and "해시 3f9a1c2b7d10" in tx["run"]["line"] and tx["run"]["rows"] == ["새 셀 — 이전 셀 대비 변경: 프롬프트 × 2", "새 셀(처음 실행) × 2"]
-              and tx["mock"].endswith("[MOCK]") and tx["running"]["dim"] is True and "실행 중" in tx["running"]["line"] and "해시 없음" in tx["nosel"]
+        check("Run: 승인 필요(선택 1크롭) 4건 ≈ $2.40–3.16(≈ 506–667 크레딧)" in tx["run"]["line"] and "다시 생성(사전 승인) 1건 ≈ $0.62 도 함께 과금(선택과 무관)" in tx["run"]["line"]
+              and "승인 코드 3f9a1c2b7d10" in tx["run"]["line"] and tx["run"]["rows"] == ["새 생성 조건 — 이전 생성 조건 대비 변경: 프롬프트 × 2", "새 생성 조건(처음 실행) × 2"]
+              and tx["mock"].endswith("[MOCK]") and tx["running"]["dim"] is True and "실행 중" in tx["running"]["line"] and "승인 코드 없음" in tx["nosel"]
               and tx["runErr"]["dim"] is True and "계산하지 못함" in tx["runErr"]["line"],
-              f"J-P1 §3.3 Run 줄(승인 필요(선택 n크롭 — C13)·재굴림 함께 과금·해시·MOCK·실행 중 흐림) {tx['run']['line']}")
+              f"J-P1 §3.3 Run 줄(승인 필요(선택 n크롭 — C13)·다시 생성 함께 과금·승인 코드·MOCK·실행 중 흐림) {tx['run']['line']}")
         check(tx["draft"]["line"].startswith("초안: 승인 필요 1크롭 ≈ 27(최대 47) 크레딧 · 약 5분") and "갱신 가능 1" in tx["draft"]["line"]
-              and "해시 b21c09e4f7a3" in tx["draft"]["line"] and any("못 쓴 스펙 1(004_90a231)" in x for x in tx["draft"]["rows"])
+              and "승인 코드 b21c09e4f7a3" in tx["draft"]["line"] and any("못 쓴 스펙 1(004_90a231)" in x for x in tx["draft"]["rows"])
               and tx["draftRun"]["dim"] and tx["draftErr"]["dim"] and "용어집 형식 오류" in tx["draftErr"]["line"]
               and "로컬 Qwen 약 5분" in tx["qwen"] and tx["style"] == "1크롭 + 화풍",
-              f"J-P1 §3.3 초안 줄(크레딧·분·갱신 가능·해시·못 쓴 스펙·로컬 Qwen·화풍) {tx['draft']['line']}")
+              f"J-P1 §3.3 초안 줄(크레딧·분·갱신 가능·승인 코드·못 쓴 스펙·로컬 Qwen·화풍) {tx['draft']['line']}")
         vram = "(ComfyUI 모델을 VRAM 에서 내림 — 과금 없음)"
         check(tx.get("qwenMin") == [[f"로컬 Qwen 약 2분{vram}", "초안 승인 로컬 1건 ≈ 2분"], [f"로컬 Qwen 약 3분{vram}", "초안 승인 로컬 1건 ≈ 3분"]],
               f"r2-13 local_qwen 분 = 노드 확인 창·노드 UI 와 같은 올림(65초 = 2분, 140초 = 3분 — 반올림 1·2분이면 같은 계획에 노드와 다른 분) "
@@ -31513,7 +31513,7 @@ def pipeline_js_unit():
               f"r1-02 화풍 단위 crop_id = vlm.STYLE_ID('_style' — 서버 실제 값): 크롭으로 세지 않음('2크롭 + 화풍'), 행 이름 '화풍', 갱신 가능·선택 밖·건너뜀도 "
               f"따로 셈 {sa} {so}")
         sf = tx.get("styleFix") or {}
-        check(sf.get("what") == "1크롭 + 화풍" and "화풍: 화풍 신규" in (sf.get("rows") or []) and "해시 7d2e94b1c0a5" in (sf.get("line") or ""),
+        check(sf.get("what") == "1크롭 + 화풍" and "화풍: 화풍 신규" in (sf.get("rows") or []) and "승인 코드 7d2e94b1c0a5" in (sf.get("line") or ""),
               f"r1-02 정본 alt.style(서버 화풍 단위 '_style') → 초안 줄 '1크롭 + 화풍'·'화풍:' 행 {sf}")
     import bmk_design_patch_vlm as dvlm
     su = re.search(r'const STYLE_UNIT = "([^"]*)";', pcode)
@@ -31524,17 +31524,17 @@ def pipeline_js_unit():
         pk = ky["pipe"]
         check(all(pk[k] == {"calls": [], "prevented": True} for k in ("Space", "KeyR", "KeyX", "ArrowDown", "KeyE", "KeyT"))
               and pk["KeyB"]["calls"] == [["setBg", "base"]] and pk["KeyG"]["calls"] == [["setPipe", False]],
-              f"J-P2 진행 모드: 검토 키(Space·R·X·화살표)·E·T 끔, 뷰어 키(B)·G 는 듦 {pk}")
+              f"J-P2 실행 모드: 검토 키(Space·R·X·화살표)·E·T 끔, 뷰어 키(B)·G 는 듦 {pk}")
         rv, ty = ky["review"], ky["typing"]
         check(rv["Space"]["calls"] == [["setStar"]] and rv["KeyG"]["calls"] == [["setPipe", True]] and rv["KeyR"]["calls"] == [["reroll", False, False]]
               and all(ty[k] == {"calls": [], "prevented": False} for k in ("r", "g", "ime")),
-              f"J-P2 입력칸 포커스(IME 조합 포함)면 보드 키 무시, 검토 모드 G = 진행 모드로 {ty} {rv}")
+              f"J-P2 입력칸 포커스(IME 조합 포함)면 보드 키 무시, 검토 모드 G = 실행 모드로 {ty} {rv}")
         check(ky.get("scriptedR") == {"calls": [["reroll", False, True]], "prevented": True},
               f"r3-13 합성 키 R(isTrusted 아님) = reroll(키보드, scripted) — 사전 승인(예약)만, 지금 보내는 큐 없음(rerollTab scripted) {ky.get('scriptedR')}")
     qc_ = res.get("queueClick") or {}
-    check(qc_.get("found") is True and qc_.get("scripted") == [["toast", "머리줄 'ComfyUI 큐'는 사용자 클릭만 — 스크립트 클릭은 큐를 보내지 않음", "warn"]]
+    check(qc_.get("found") is True and qc_.get("scripted") == [["toast", "머리줄 [다시 생성 보내기]는 사용자 클릭만 — 스크립트 클릭은 큐를 보내지 않음", "warn"]]
           and qc_.get("user") == [["queueReroll"]] and qc_.get("reroll") == [["reroll", True]],
-          f"r3-13 머리줄 'ComfyUI 큐'(확인 창 없이 지금 큐 — 유료 탭 길 승인 제출·opener Review 부분 실행)는 사용자 클릭(isTrusted)만: 스크립트 클릭 = 큐 0·경고, "
+          f"r3-13 머리줄 [다시 생성 보내기](확인 창 없이 지금 큐 — 유료 탭 길 승인 제출·opener Review 부분 실행)는 사용자 클릭(isTrusted)만: 스크립트 클릭 = 큐 0·경고, "
           f"R 단추는 확인 창이 동의 {qc_}")
 
     # J-P4 hello
@@ -31570,15 +31570,15 @@ def pipeline_js_unit():
               f"J-P4 주기적인 다시 hello(§4.2 — 2초): 탭이 닫히면 none, 새로고침(새 tab ID)으로 다시 붙으면 ok — 첫 판정에서 굳지 않음 {he.get('periodic')}")
     tb = res.get("tabBadge") or {}
     if "found" in tb:
-        paid = "초안·Run 승인·재굴림·ComfyUI 큐가 이 탭으로"
+        paid = "초안·생성 승인·다시 생성(R)·[다시 생성 보내기]가 이 탭으로"
         check(tb["found"] and tb["ok"][:2] == ["ComfyUI 탭 연결", "badge b-run"] and tb["ok"][2].startswith("Open Board 로 연 ComfyUI 탭(확장 판 3)") and paid in tb["ok"][2]
               and tb["channel"][:2] == ["ComfyUI 탭 연결(채널)", "badge b-run"] and tb["channel"][2].startswith("채널로 찾은 ComfyUI 탭(확장 판 3)") and paid in tb["channel"][2]
               and tb["busy"][:2] == tb["channel"][:2] and ": ComfyUI 탭이 큐를 처리하는 중. " in tb["busy"][2] and paid not in tb["busy"][2]
-              and "재굴림·ComfyUI 큐는 그 탭에서 직접(R 은 사전 승인만 되고 다음 Run 때 과금)" in tb["busy"][2]
-              and tb["busyOpener"][:2] == tb["ok"][:2] and paid not in tb["busyOpener"][2] and "재굴림·ComfyUI 큐는 이 탭의 Review 부분 실행으로" in tb["busyOpener"][2]
+              and "다시 생성(R)·[다시 생성 보내기]는 그 탭에서 직접(R 은 사전 승인만 되고 다음 Run 때 과금)" in tb["busy"][2]
+              and tb["busyOpener"][:2] == tb["ok"][:2] and paid not in tb["busyOpener"][2] and "다시 생성(R)·[다시 생성 보내기]는 이 탭의 Review 부분 실행으로" in tb["busyOpener"][2]
               and tb["s3a"][:2] == tb["s3aOpener"][:2] == ["탭 확장이 옛 판(S3a) — 유료 승인은 ComfyUI 탭 새로고침 뒤", "badge b-wait"]
-              and "재굴림·ComfyUI 큐는 그 탭에서 직접(R 은 사전 승인만 되고 다음 Run 때 과금)" in tb["s3a"][2]
-              and "재굴림·ComfyUI 큐는 이 탭의 Review 부분 실행으로" in tb["s3aOpener"][2]
+              and "다시 생성(R)·[다시 생성 보내기]는 그 탭에서 직접(R 은 사전 승인만 되고 다음 Run 때 과금)" in tb["s3a"][2]
+              and "다시 생성(R)·[다시 생성 보내기]는 이 탭의 Review 부분 실행으로" in tb["s3aOpener"][2]
               and tb["nosubmit"][:2] == ["ComfyUI 탭이 승인 제출을 못 함 — 유료 승인 끔", "badge b-wait"] and "submit unsupported" in tb["nosubmit"][2]
               and tb["old"][:2] == ["탭 확장이 옛 판 — ComfyUI 탭 새로고침", "badge b-wait"]
               and (tb.get("silent") or [None, None])[:2] == ["ComfyUI 탭 응답 없음 — 탭 새로고침 또는 Open Board 로 다시 열기", "badge b-wait"]
@@ -31586,32 +31586,32 @@ def pipeline_js_unit():
               and tb["many"][1] == "badge b-wait" and "Open Board 로 다시 여세요" in tb["many"][0] and tb["wait"][1] == "badge b-dim"
               and len({tb[k][0] for k in ("ok", "channel", "s3a", "nosubmit", "old", "silent", "none", "many", "wait")}) == 9,
               f"§3.8·S3b 계약 §5 머리줄 탭 배지(board.js renderHeader·TAB_BADGE): 유료 승인을 받는 탭(ext 3·submit ok) = opener 'ComfyUI 탭 연결'·채널 "
-              f"'ComfyUI 탭 연결(채널)'(초록 — 승인·R·ComfyUI 큐가 그 탭으로 — 큐 처리 중이면 제목 끝 = 유료 승인을 못 받는 탭의 길), "
+              f"'ComfyUI 탭 연결(채널)'(초록 — 승인·R·[다시 생성 보내기]가 그 탭으로 — 큐 처리 중이면 제목 끝 = 유료 승인을 못 받는 탭의 길), "
               f"S3a 확장(ext 2) = '옛 판(S3a) — 유료 승인은 새로고침 뒤'(R·큐는 opener 만), "
               f"제출 못 함 = 유료 승인 끔, opener 무응답 = '응답 없음'(r1-28)·none·many·wait 아홉 문구가 다름 {tb}")
     if "found" in tb:
         nopaid = ("busy", "busyOpener", "s3a", "s3aOpener", "nosubmit", "old", "silent")
         check(all(len(tb[k]) == 4 and tb[k][3] and tb[k][3] in tb[k][2] for k in nopaid) and tb["old"][2] == tb["old"][3] and tb["silent"][2] == tb["silent"][3]
               and not tb["ok"][3] and not tb["channel"][3] and "다른 주소·페이지로 옮겨 감" in tb["silent"][3],
-              f"r1-26 유료 승인을 못 받는 이유 문장은 link.paidWhy 한 곳 — 배지 제목(tabTitle)은 그 문장 + 길(opener·채널)·그동안 R·ComfyUI 큐의 길만 "
+              f"r1-26 유료 승인을 못 받는 이유 문장은 link.paidWhy 한 곳 — 배지 제목(tabTitle)은 그 문장 + 길(opener·채널)·그동안 R·[다시 생성 보내기]의 길만 "
               f"덧붙임(silent·old 는 그 문장 그대로, 승인 단추 제목·R 확인 문구와 같은 말) {[(k, tb[k][2:]) for k in nopaid]}")
-        gate_ = "실행 설정 확인 필요(prepare.variants) — 진행(G) [설정]에서 확인·저장"
-        paid_ = "초안·Run 승인·재굴림·ComfyUI 큐가 이 탭으로(탭이 서버 템플릿을 큐에 넣음)"
+        gate_ = "실행 설정 확인 필요(prepare.variants) — 실행(G) [실행 설정 열기]에서 확인·저장"
+        paid_ = "초안·생성 승인·다시 생성(R)·[다시 생성 보내기]가 이 탭으로(탭이 서버 템플릿을 큐에 넣음)"
         go, gc, gb = (tb.get(k) or [None] * 4 for k in ("gateOpener", "gateChannel", "gateBusy"))
-        check(go[:2] == tb["ok"][:2] and go[2] == f"Open Board 로 연 ComfyUI 탭(확장 판 3): {gate_}. 재굴림·ComfyUI 큐는 이 탭의 Review 부분 실행으로(그래프 Prepare 위젯 값으로 과금)"
-              and gc[2] == (f"채널로 찾은 ComfyUI 탭(확장 판 3): {gate_}. 이 창은 Open Board 로 열리지 않아 재굴림·ComfyUI 큐는 그 탭에서 직접(R 은 사전 승인만 되고 "
+        check(go[:2] == tb["ok"][:2] and go[2] == f"Open Board 로 연 ComfyUI 탭(확장 판 3): {gate_}. 다시 생성(R)·[다시 생성 보내기]는 이 탭의 Review 부분 실행으로(그래프 Prepare 위젯 값으로 과금)"
+              and gc[2] == (f"채널로 찾은 ComfyUI 탭(확장 판 3): {gate_}. 이 창은 Open Board 로 열리지 않아 다시 생성(R)·[다시 생성 보내기]는 그 탭에서 직접(R 은 사전 승인만 되고 "
                             "다음 Run 때 과금)")
               and gb[2] == tb["busy"][2] and (tb.get("gateOld") or [None] * 3)[2] == tb["old"][2]
               and (tb.get("pipeOk") or [None] * 3)[2] == tb["ok"][2] and paid_ in tb["ok"][2],
               f"r2-05 연결된 탭인데 서버가 템플릿을 낼 수 없음(pipe.paidWhy — 실행 설정 확인 필요 등: tabWay 가 opener·예약만으로 감) = 배지 제목도 그 이유 + "
-              f"R·ComfyUI 큐의 실제 길(opener = Review 부분 실행 — 그래프 위젯 값, 채널 = 그 탭에서 직접) — '서버 템플릿을 큐에 넣음' 아님, 탭 이유(busy)가 "
+              f"R·[다시 생성 보내기]의 실제 길(opener = Review 부분 실행 — 그래프 위젯 값, 채널 = 그 탭에서 직접) — '서버 템플릿을 큐에 넣음' 아님, 탭 이유(busy)가 "
               f"먼저, 연결 안 된 상태(old)는 link 문장 그대로 {go[2:3]} {gc[2:3]} {gb[2:3]}")
-        lock_ = "재굴림·ComfyUI 큐는 지금은 예약만(Run 승인 요청을 처리하는 중 — 머리줄 'ComfyUI 큐' 또는 다음 Run 때 과금)"
+        lock_ = "다시 생성(R)·[다시 생성 보내기]는 지금은 예약만(Run 승인 요청을 처리하는 중 — 머리줄 [다시 생성 보내기] 또는 다음 Run 때 과금)"
         lo, lc, lbo, lbc = (tb.get(k) or [None] * 4 for k in ("lockOk", "lockChannel", "lockBusyOpener", "lockBusyChannel"))
         check(lo[2] == f"Open Board 로 연 ComfyUI 탭(확장 판 3) — {paid_}. {lock_}" and lc[2] == f"채널로 찾은 ComfyUI 탭(확장 판 3) — {paid_}. {lock_}"
               and lbo[2] == f"Open Board 로 연 ComfyUI 탭(확장 판 3): ComfyUI 탭이 큐를 처리하는 중. {lock_}" and lbc[2] == tb["busy"][2]
               and "Review 부분 실행으로" not in lbo[2],
-              f"r3-11 이 Studio 가 유료 요청·실행·무료 큐 중(paidLock)이면 배지 제목의 R·ComfyUI 큐 길 = '지금은 예약만(이유)'(queueReroll 과 같은 판정 순서 — "
+              f"r3-11 이 Studio 가 유료 요청·실행·무료 큐 중(paidLock)이면 배지 제목의 R·[다시 생성 보내기] 길 = '지금은 예약만(이유)'(queueReroll 과 같은 판정 순서 — "
               f"자기 승인을 처리하는 탭은 hello busy 라 opener 길이어도 Review 부분 실행이 아님), 채널로만 찾은 탭의 막힌 길은 그대로 {lo[2:3]} {lc[2:3]} {lbo[2:3]} "
               f"{lbc[2:3]}")
     check("tabLink = window.DPPipeline.link(window, () => {\n        renderHeader();\n        pipe.tabChanged();\n      });" in bcode
@@ -31621,47 +31621,47 @@ def pipeline_js_unit():
     if "found" in bg:
         check(bg == {"found": True, "unknown": [], "known": [["setPipe", False], ["selectTarget", "002_d98f99/A"]],
                      "select": [["selectTarget", "008_e1d4cc/A"]], "selectNone": []},
-              f"§3.6 ★ 점검 줄 = board.js goTarget(진행 모드를 끈 뒤 그 타깃 — 없는 키는 아무것도 안 함), 진행 목록 선택 = select 콜백(뷰어를 그 크롭 첫 타깃으로) {bg}")
+              f"§3.6 ★ 점검 줄 = board.js goTarget(실행 모드를 끈 뒤 그 타깃 — 없는 키는 아무것도 안 함), 진행 목록 선택 = select 콜백(뷰어를 그 크롭 첫 타깃으로) {bg}")
 
     # 패널(작은 DOM 대역)
     pn = res.get("panel") or {}
     if "head" in pn:
-        check(all(x in pn["head"] for x in ("반영 필요 2", "설정 확인 필요", "Run 승인 필요(전체) 4건 $2.4", "초안 1", "★ 3/5", "Export r76"))
+        check(all(x in pn["head"] for x in ("미반영 2", "설정 확인 필요", "생성 승인 필요(전체) 4건 $2.4", "초안 1", "★ 3/5", "Export r76"))
               and pn["headTitle"] == "레이아웃 미반영 1\n · 003_리본 — 레이아웃 미반영\nPrepare 입력이 바뀜(마지막 Prepare 뒤 스펙·레이아웃·레퍼런스·용어집)"
               and pn["firstPlan"] == [{"root": "fe410d7f025d"}],
-              f"패널 머리줄(모든 모드) = 반영 필요(state 미반영 크롭과 계획 apply_pending·import_pending 의 '레이아웃 미반영(rev 7)'은 한 번만 + "
-              f"apply_pending 의 Prepare 입력 바뀜)·설정 확인·Run 승인 필요(전체 — only 없는 계획)·"
+              f"패널 머리줄(모든 모드) = 미반영(state 미반영 크롭과 계획 apply_pending·import_pending 의 '레이아웃 미반영(rev 7)'은 한 번만 + "
+              f"apply_pending 의 Prepare 입력 바뀜)·설정 확인·생성 승인 필요(전체 — only 없는 계획)·"
               f"초안·★·Export, Studio 를 연 뒤 only 없는 계획 한 번 {pn['head']!r} {pn['headTitle']!r}")
         gl = R["GET /pipeline"]["ok"]["settings"]["import"]["glossary_path"]
-        check(pn["applyWarn"] == ["prepare.n: 마지막 Prepare 4 · Studio 2 — 셀은 그대로, 대기 호출의 장 수·비용·승인 해시가 바뀜",
+        check(pn["applyWarn"] == ["prepare.n: 마지막 Prepare 4 · Studio 2 — 생성 조건은 그대로, 대기 호출의 장 수·비용·승인 코드가 바뀜",
                                   f'import.glossary_path: 마지막 Import "" · Studio {gl} — 마지막 Import 와 다름 — 다음 반영이 크롭 소스·레퍼런스를 바꿀 수 있음'],
               f"편집기 반영 확인 창 맨 앞 줄 = Prepare 갈라짐(applyWarn), 그 뒤 Import 갈라짐(r1-01 권고 — 다음 반영이 크롭 소스·레퍼런스·cell_key 를 바꿈) "
               f"{pn['applyWarn']}")
         check(pn["enterPlan"] == {"root": "fe410d7f025d", "only": "001_38a818,002_d98f99,003_2f8f50,008_e1d4cc,012_93661a", "style": "0"}
               and all(pn["sections"][k] for k in pn["sections"] if k not in ("새 PSD",)) and not pn["sections"]["새 PSD"],
-              f"진행 모드 진입 = 지금 선택(기본 전부, 정규 only)의 계획, 패널 칸 {pn['sections']}")
-        check(pn.get("hashNote") == ["해시는 그래프 Import PSD 위젯(같은 큐에서 먼저 돎)·Run·Draft 노드의 only·Prepare·초안 설정과 Run 노드의 "
+              f"실행 모드 진입 = 지금 선택(기본 전부, 정규 only)의 계획, 패널 칸 {pn['sections']}")
+        check(pn.get("hashNote") == ["승인 코드는 그래프 Import PSD 위젯(같은 큐에서 먼저 돎)·Run·Draft 노드의 only·Prepare·초안 설정과 Run 노드의 "
                                      "retry_failed·retry_orphans(Studio false·false) 가 Studio 와 같을 때만 같습니다 — 다르면 과금 없이 드라이런"],
-              f"r1-19·r3-13 해시 안내 = Run 해시를 바꾸는 Run 위젯 retry_failed·retry_orphans 와 지금 Studio 값, 같은 큐에서 먼저 도는 그래프 Import PSD 위젯"
+              f"r1-19·r3-13 승인 코드 안내 = 생성 승인 코드를 바꾸는 Run 위젯 retry_failed·retry_orphans 와 지금 Studio 값, 같은 큐에서 먼저 도는 그래프 Import PSD 위젯"
               f"(Studio 는 그래프 위젯을 모름 — 다르면 드라이런) {pn.get('hashNote')}")
-        nohash = "승인할 해시 없음(승인할 것 없음·반영 필요·흐림·낡음·실행 중)"
-        check(pn["approve"]["run"] and pn["approve"]["run"] == [True, nohash, "Run 승인 4건 ≈ $2.40–3.16"]
+        nohash = "승인 코드 없음(승인할 것 없음·미반영·흐림·낡음·실행 중)"
+        check(pn["approve"]["run"] and pn["approve"]["run"] == [True, nohash, "생성 승인 4건 ≈ $2.40–3.16"]
               and pn["approve"]["draft"] == [True, nohash, "초안 승인 1크롭 ≈ 27(최대 47) 크레딧"] and pn["copy"] == [True, True],
-              f"S3b 승인 단추 라벨(계약 §5) · 반영 필요(흐림)면 해시 복사와 함께 꺼짐 — 제목에 이유 {pn['approve']} {pn['copy']}")
+              f"S3b 승인 단추 라벨(계약 §5) · 미반영(흐림)면 승인 코드 복사와 함께 꺼짐 — 제목에 이유 {pn['approve']} {pn['copy']}")
         check(any("008_치마금속장식 · A — ★ 없음" in x for x in pn["checks"]) and any("002_눈 · A — 분석 없는 ★" in x for x in pn["checks"])
               and any("이음매 bad 1" in x for x in pn["checks"]) and any("003_리본 — 레이아웃 미반영(반영 뒤 Export)" in x for x in pn["checks"])
               and "002_눈 · B — 중복 ★(같은 이미지는 A 에만)" in pn["checks"] and "002_눈 — 옛 크롭 ★ 1" in pn["checks"]
-              and not any(x.startswith("반영 필요: 레이아웃 미반영") for x in pn["checks"])
+              and not any(x.startswith("미반영: 레이아웃 미반영") for x in pn["checks"])
               and pn["goTarget"] == ["008_e1d4cc/A", "002_d98f99/B", "002_d98f99/A"],
-              f"★ 점검(§3.6): ★ 없음·분석 없는 ★·중복 ★·옛 크롭 ★·이음매 bad·레이아웃 미반영(크롭 줄로만 — 반영 필요 줄로 다시 적지 않음), "
+              f"★ 점검(§3.6): ★ 없음·분석 없는 ★·중복 ★·옛 크롭 ★·이음매 bad·레이아웃 미반영(크롭 줄로만 — 미반영 줄로 다시 적지 않음), "
               f"누르면 그 타깃(중복 ★ = 그 tid) {pn['checks']} {pn['goTarget']}")
         check(pn["list"]["boxes"] == [True] * 5 and pn["list"]["chips"], f"왼쪽 목록 = 선택 체크(기본 전부)·계획 칩 {pn['list']}")
         ad0 = pn.get("adoptDeclined") or {}
-        check(ad0.get("flags") == [True] and ad0.get("refresh") == 0 and ad0.get("toasts") == [] and "다음 반영에서 이 크롭 새 셀" in (ad0.get("confirm") or ""),
+        check(ad0.get("flags") == [True] and ad0.get("refresh") == 0 and ad0.get("toasts") == [] and "다음 반영에서 이 크롭 새 생성 조건" in (ad0.get("confirm") or ""),
               f"패널 [채택] 확인 창에서 취소 = 미리보기(preview true)만 — 쓰기(preview false)·state 재요청·토스트 없음 {ad0}")
         a = pn["adopt"]
         check(a["paths"][:3] == ["POST draft/adopt", "POST draft/adopt", "GET draft"] and a["previewFlags"] == [True, False]
-              and "다음 반영에서 이 크롭 새 셀" in (a["confirm"] or "") and a["toast"] and a["refresh"] >= 1 and a["winsLines"] == 1,
+              and "다음 반영에서 이 크롭 새 생성 조건" in (a["confirm"] or "") and a["toast"] and a["refresh"] >= 1 and a["winsLines"] == 1,
               f"패널 [채택] = 미리보기 → 확인(영향 줄 — '레이아웃 문구가 이김'은 서버 warnings 한 줄만) → 쓰기 → 다시 읽기·state 재요청 {a}")
         e = pn.get("edit") or {}
         check(pn["editStart"] == R["GET /draft"]["ok"]["adopt"]["value"] and e.get("pv", {}).get("op") == "set" and e.get("pv", {}).get("preview") is True
@@ -31680,16 +31680,16 @@ def pipeline_js_unit():
               f"설정 저장 = 절 통째(키 전부)·숫자 타입 {sv}")
         check(pn["none"] == {"q": {"root": "fe410d7f025d"}, "text": True}
               and pn["need"] == {"root": "fe410d7f025d", "only": "001_38a818,003_2f8f50,012_93661a", "style": "0"},
-              f"선택 없음 = 계획·승인 끔(only 없는 계획만), 승인 필요만 = Run 승인 필요·초안 대기 크롭 {pn['none']} {pn['need']}")
+              f"선택 없음 = 계획·승인 끔(only 없는 계획만), 승인 필요만 = 생성 승인 필요·초안 대기 크롭 {pn['none']} {pn['need']}")
         dc = pn["applyDeclined"]
-        check("재굴림 대기 1건(사전 승인)은 이 반영에서 돌지 않음" in dc["confirm"] and dc["toasts"] == [] and "실행 중:" not in dc["head"]
+        check("다시 생성 대기 1건(사전 승인)은 이 반영에서 돌지 않음" in dc["confirm"] and dc["toasts"] == [] and "실행 중:" not in dc["head"]
               and not {"GET pipeline/prompt", "POST api/prompt"} & set(dc["paths"]),
-              f"패널 [반영] 확인 창에서 취소 = GET /pipeline/prompt·POST /api/prompt 0회, 토스트·머리줄 실행 중 없음 {dc}")
+              f"패널 [반영 (무료)] 확인 창에서 취소 = GET /pipeline/prompt·POST /api/prompt 0회, 토스트·머리줄 실행 중 없음 {dc}")
         ap = pn["apply"]
         check(ap["confirm"].startswith("prepare.n: 마지막 Prepare 4") and "무료 반영(Import → Prepare → Analyze → Review 템플릿, 탭 불필요)" in ap["confirm"]
-              and "재굴림 대기 1건(사전 승인)은 이 반영에서 돌지 않음" in ap["confirm"] and "원장에만 남은 초안" in ap["confirm"]
+              and "다시 생성 대기 1건(사전 승인)은 이 반영에서 돌지 않음" in ap["confirm"] and "원장에만 남은 초안" in ap["confirm"]
               and ap["body"] == {"prompt": R["GET /pipeline/prompt"]["ok"]["prompt"], "front": True} and "실행 중: 반영(apply)" in ap["head"],
-              f"패널 [반영] = 확인 창(갈라짐 줄 먼저·재굴림은 돌지 않음) → 무료 큐(front true) → 머리줄 실행 중 {ap}")
+              f"패널 [반영 (무료)] = 확인 창(갈라짐 줄 먼저·다시 생성은 돌지 않음) → 무료 큐(front true) → 머리줄 실행 중 {ap}")
         check(pn["applyDone"]["toast"] and pn["applyDone"]["refresh"] >= 1 and "실행 중" not in pn["applyDone"]["head"]
               and pn["exportBody"] == {"prompt": R["GET /pipeline/prompt"]["alt"]["export"]["prompt"], "front": False}
               and pn["exportDone"]["toast"] and pn["exportDone"]["panel"] and pn["copied"] == hx[0]["psd"] and pn["errors"] == [] and pn["left"] == 0,
@@ -31700,26 +31700,26 @@ def pipeline_js_unit():
     if "clean" in pd:
         check(pd["clean"]["copy"] == [False, False] and pd["clean"]["dimRow"] is False and pd["clean"]["titles"] == [d_title, r_title]
               and pd["clean"]["head"] == "반영됨",
-              f"§3.3 흐림 조건이 하나도 없으면 초안·Run 해시 복사 = approve·only 한 줄, 머리줄 반영됨 {pd['clean']}")
+              f"§3.3 흐림 조건이 하나도 없으면 초안·생성 승인 코드 복사 = approve·only 한 줄, 머리줄 반영됨 {pd['clean']}")
         dims = {k: pd[k] for k in ("pending", "confirm", "drift", "notes", "applyPending", "applyDup", "layoutChanged", "layoutNew", "layoutDup")}
         check(all(v["copy"] == [True, True] and v["dimRow"] is True for v in dims.values()),
-              f"§3.3 '반영 뒤 다시 계산' 조건 하나씩(반영 필요 import_pending · confirm 남음 · Prepare 갈라짐 · 계획 notes(설정 쪽) · "
-              f"apply_pending(prepare_inputs 불일치) · 레이아웃 미반영) = 두 해시 복사 끔·흐림 줄 "
+              f"§3.3 '반영 뒤 다시 계산' 조건 하나씩(미반영 import_pending · confirm 남음 · Prepare 갈라짐 · 계획 notes(설정 쪽) · "
+              f"apply_pending(prepare_inputs 불일치) · 레이아웃 미반영) = 두 승인 코드 복사 끔·흐림 줄 "
               f"{ {k: (v['copy'], v['dimRow']) for k, v in dims.items()} }")
         ap_, ad_ = pd["applyPending"], pd["applyDup"]
         fp_r = "Prepare 입력이 바뀜(마지막 Prepare 뒤 스펙·레이아웃·레퍼런스·용어집)"
-        check(ap_["head"] == "반영 필요 1" and ap_["headTitle"] == fp_r and ap_["apply"][0] == fp_r
-              and ap_["star"] == [f"반영 필요: {fp_r} — 반영 뒤 Export"]
-              and ad_["head"] == "반영 필요 2" and ad_["headTitle"] == "레퍼런스 미반영(2크롭)\nPrepare 입력 지문 없음(지문을 남기기 전 Prepare)",
-              f"§5.1·§5.2·§3.6 계획 apply_pending(서버의 '반영 필요' 판정 — prepare_inputs 불일치)이 머리줄 '반영 필요'·반영 칸·★ 점검에 "
+        check(ap_["head"] == "미반영 1" and ap_["headTitle"] == fp_r and ap_["apply"][0] == fp_r
+              and ap_["star"] == [f"미반영: {fp_r} — 반영 뒤 Export"]
+              and ad_["head"] == "미반영 2" and ad_["headTitle"] == "레퍼런스 미반영(2크롭)\nPrepare 입력 지문 없음(지문을 남기기 전 Prepare)",
+              f"§5.1·§5.2·§3.6 계획 apply_pending(서버의 '미반영' 판정 — prepare_inputs 불일치)이 머리줄 '미반영'·반영 칸·★ 점검에 "
               f"나옴(import_pending 과 같은 사유는 한 번) {ap_} {ad_['head']} {ad_['headTitle']!r}")
         rr, dr = pd["runRunning"], pd["draftRunning"]
         check(rr["copy"] == [False, True] and rr["runBusy"] is True and rr["dimRow"] is False and dr["draftBusy"] is True,
-              f"§2.4 Run 실행 중 = Run 줄만 흐림·Run 해시 복사 끔, Spec Draft 실행 중 = 초안 줄 '실행 중' {rr} {dr}")
+              f"§2.4 Run 실행 중 = Run 줄만 흐림·생성 승인 코드 복사 끔, Spec Draft 실행 중 = 초안 줄 '실행 중' {rr} {dr}")
         sc = pd["starClean"]
         check(sc["head"] == "반영됨" and (sc["apply"] or [""])[0].startswith("반영됨 — ") and sc["star"] == ["점검 통과 — 모든 타깃에 ★, 미반영 없음"]
               and sc["copy"] == [False, False],
-              f"대조: import_pending [] · 모든 타깃 분석 있는 ★ = 머리줄·반영 칸 반영됨, ★ 점검 통과, 해시 복사 켬 {sc}")
+              f"대조: import_pending [] · 모든 타깃 분석 있는 ★ = 머리줄·반영 칸 반영됨, ★ 점검 통과, 승인 코드 복사 켬 {sc}")
         unk = {k: pd[k] for k in ("draftRunning", "draftError", "qwenNodir", "planFail")}
         check(all(v["head"] == "반영 상태 확인 못 함" and not any(x.startswith("반영됨") for x in v["apply"])
                   and any(x.startswith("레퍼런스·채택·Import 설정 미반영을 확인하지 못함(") for x in v["apply"])
@@ -31730,46 +31730,46 @@ def pipeline_js_unit():
               and "local_qwen 모델 경로 미설정" in unk["qwenNodir"]["headTitle"] and "계획 오류" in unk["planFail"]["headTitle"]
               and unk["planFail"]["copy"] == [] and all(unk[k]["dimRow"] and unk[k]["copy"] == [True, True] for k in ("draftRunning", "draftError", "qwenNodir")),
               f"§3.6·§5 정본 alt draft_running·draft_error·draft_qwen_nodir(import_pending 없음)·계획 실패 = 반영 상태 모름 — 머리줄 '반영됨'·반영 칸 "
-              f"'미반영 없음'·★ '점검 통과'를 내지 않고 확인 못 함 줄, 두 해시 복사 끔(보수) { {k: (v['head'], v['apply'], v['star'], v['copy']) for k, v in unk.items()} }")
+              f"'미반영 없음'·★ '점검 통과'를 내지 않고 확인 못 함 줄, 두 승인 코드 복사 끔(보수) { {k: (v['head'], v['apply'], v['star'], v['copy']) for k, v in unk.items()} }")
         ls, lc, ln, lu = pd["layoutSame"], pd["layoutChanged"], pd["layoutNew"], pd["layoutDup"]
         check(ls["copy"] == [False, False] and ls["dimRow"] is False and ls["head"] == "반영됨" and ls["chip"] is False and ls["checks"] == [],
-              f"layout_status 'same'(반영됨) = 미반영 아님 — 머리줄 반영됨·칩 없음·★ 점검 줄 없음·해시 복사 켬 {ls}")
-        check(lc["head"] == "반영 필요 1" and lc["headTitle"] == "레이아웃 미반영 1\n · 003_리본 — 레이아웃 미반영" and lc["chip"] is True
+              f"layout_status 'same'(반영됨) = 미반영 아님 — 머리줄 반영됨·칩 없음·★ 점검 줄 없음·승인 코드 복사 켬 {ls}")
+        check(lc["head"] == "미반영 1" and lc["headTitle"] == "레이아웃 미반영 1\n · 003_리본 — 레이아웃 미반영" and lc["chip"] is True
               and lc["checks"] == ["003_리본 — 레이아웃 미반영(반영 뒤 Export)"]
-              and lc["apply"][:2] == ["레이아웃 미반영 1", " · 003_리본 — 레이아웃 미반영"] and lc["apply"][2].startswith("반영하면 이 크롭들은 새 셀"),
+              and lc["apply"][:2] == ["레이아웃 미반영 1", " · 003_리본 — 레이아웃 미반영"] and lc["apply"][2].startswith("반영하면 이 크롭들은 새 생성 조건"),
               f"layout_status 'changed' = 미반영 1(칩·★ 크롭 줄·머리줄 제목과 반영 칸의 크롭별 줄 — layout_diff 없는 옛 서버는 사유만) {lc}")
-        check(ln["head"] == "반영 필요 1" and ln["headTitle"] == "레이아웃 미반영(rev 8)" and ln["chip"] is False
-              and ln["checks"] == ["반영 필요: 레이아웃 미반영(rev 8) — 반영 뒤 Export"],
+        check(ln["head"] == "미반영 1" and ln["headTitle"] == "레이아웃 미반영(rev 8)" and ln["chip"] is False
+              and ln["checks"] == ["미반영: 레이아웃 미반영(rev 8) — 반영 뒤 Export"],
               f"state 미반영 크롭 0 이면 계획의 레이아웃 사유(layout.json 에만 있는 새 크롭 등)를 그대로 셈 {ln}")
-        check(lu["head"] == "반영 필요 2" and lu["headTitle"] == "레이아웃 미반영 1\n · 003_리본 — 레이아웃 미반영\n레퍼런스 미반영(2크롭)"
-              and lu["checks"] == ["003_리본 — 레이아웃 미반영(반영 뒤 Export)", "반영 필요: 레퍼런스 미반영(2크롭) — 반영 뒤 Export"]
-              and pd["pending"]["checks"] == ["반영 필요: 레퍼런스 미반영(2크롭) — 반영 뒤 Export"],
-              f"같은 레이아웃 원인은 한 번만(state 크롭 수 + 계획의 다른 사유), ★ 점검 '반영 필요' 줄 = 크롭 줄에 없는 사유 {lu}")
+        check(lu["head"] == "미반영 2" and lu["headTitle"] == "레이아웃 미반영 1\n · 003_리본 — 레이아웃 미반영\n레퍼런스 미반영(2크롭)"
+              and lu["checks"] == ["003_리본 — 레이아웃 미반영(반영 뒤 Export)", "미반영: 레퍼런스 미반영(2크롭) — 반영 뒤 Export"]
+              and pd["pending"]["checks"] == ["미반영: 레퍼런스 미반영(2크롭) — 반영 뒤 Export"],
+              f"같은 레이아웃 원인은 한 번만(state 크롭 수 + 계획의 다른 사유), ★ 점검 '미반영' 줄 = 크롭 줄에 없는 사유 {lu}")
     lb = res.get("layoutBack") or {}
     if "found" in lb:
         cp = lb["crop"]
         want_body = lambda rev: {"root": "fe410d7f025d", "rev": rev, "op": "update", "id": cp["id"], "restore_manifest": True,
                                  "name": cp["name"], "rect": cp["rect"]}
         check(lb["found"] and lb["row"].startswith(f" · {cp['name']} — 이름 → 003_새이름 · 위치 [") and lb["sent"] == [want_body(7), want_body(8)]
-              and "되돌린 뒤에도 '반영 필요(Prepare 입력이 바뀜)'는 남으니 무료 [반영]을 한 번" in lb["confirm"]
+              and "되돌린 뒤에도 '미반영(Prepare 입력이 바뀜)'은 남으니 [반영 (무료)]을 한 번" in lb["confirm"]
               and lb["toast"] == f":되돌림: {cp['name']} → 이름 {cp['name']} · 위치 [{', '.join(map(str, cp['rect']))}]"
               and lb["conflict"] == {"toast": "err:레이아웃이 다른 창에서 바뀌었습니다(rev 8 → 9) — 새로고침 — 다시 그린 줄에서 다시", "refresh": 1, "posts": 3}
               and lb["declined"] == {"posts": 3, "confirms": 2},
-              f"§12 [되돌리기]: 본문 = update·바뀐 이름·사각형의 매니페스트 값·restore_manifest, rev = 그 줄을 그린 state 의 layout_rev(새 state 뒤 남은 옛 단추는 "
+              f"§12 [되돌리기]: 본문 = update·바뀐 이름·사각형의 프로젝트 기록 값·restore_manifest, rev = 그 줄을 그린 state 의 layout_rev(새 state 뒤 남은 옛 단추는 "
               f"옛 rev 7 — 서버 409 로 그 사이 편집을 덮지 않음, Codex 1차), 409 = 오류 토스트 + state 다시, 확인 창 취소 = 보내지 않음 {lb}")
         line8 = f"{cp['name']} — 이름 → 003_새이름 · 위치 [0, 384, 384, 768] → [256, 0, 640, 384] (이동 오른쪽 256·위 384)"
-        check(lb["chipTitle"] == line8 and lb["apply"] == ["레이아웃 미반영 1건 — 이 반영에 들어감(아니면 취소 → 반영 칸 [되돌리기] 또는 편집(E)):", f" · {line8}",
+        check(lb["chipTitle"] == line8 and lb["apply"] == ["레이아웃 미반영 1건 — 이 반영에 들어감(아니면 취소 → 반영 칸 [되돌리기] 또는 크롭 편집(E)):", f" · {line8}",
                                                           "무료 반영(Import → Prepare → Analyze → Review 템플릿, 탭 불필요)을 ComfyUI 대기열 앞에 넣습니다."]
-              and lb["prompts"] == 0 and "이 크롭의 이름·위치는 마지막 반영 그대로라 그것 때문에 새 셀(Run 승인)이 생기지는 않음." in lb["confirm"]
-              and "이 크롭의 대상 문구 바뀜은 남음 — 반영하면 새 셀(Run 승인 대상)이 될 수 있음" in (lb.get("restConfirm") or "")
-              and "그것 때문에 새 셀" not in (lb.get("restConfirm") or ""),
-              f"리뷰 tests-07: 왼쪽 '레이아웃 미반영' 칩 마우스 = 그 크롭 줄, [반영] 확인 창 = 크롭별 레이아웃 줄 → 무료 반영 줄(취소하면 큐 없음) {lb.get('chipTitle')!r} {lb.get('apply')}")
+              and lb["prompts"] == 0 and "이 크롭의 이름·위치는 마지막 반영 그대로라 그것 때문에 새 생성 조건(생성 승인)이 생기지는 않음." in lb["confirm"]
+              and "이 크롭의 대상 문구 바뀜은 남음 — 반영하면 새 생성 조건(생성 승인 대상)이 될 수 있음" in (lb.get("restConfirm") or "")
+              and "그것 때문에 새 생성 조건" not in (lb.get("restConfirm") or ""),
+              f"리뷰 tests-07: 왼쪽 '레이아웃 미반영' 칩 마우스 = 그 크롭 줄, [반영 (무료)] 확인 창 = 크롭별 레이아웃 줄 → 무료 반영 줄(취소하면 큐 없음) {lb.get('chipTitle')!r} {lb.get('apply')}")
     ps = res.get("panelStyle") or {}
     if "plain" in ps:
         check(ps["box"] is True and ps["plain"]["q"] == {"root": "fe410d7f025d", "only": allids, "style": "0"} and ps["plain"]["copies"] == [[False, d_title], [False, r_title]],
               f"apply = full: 화풍 체크 칸, 처음 계획 style 0 · 복사 only = 정규 only {ps['plain']}")
         check(ps["failed"]["q"]["style"] == "1" and ps["failed"]["copies"] == [] and ps["failed"]["err"] is True and ps["failed"]["box"] is True,
-              f"화풍 체크 뒤 계획이 202 두 번으로 실패 = style 0 계획의 해시를 'only …,style' 로 복사하지 않음(복사 칸 없음), 체크 칸은 남음(풀 수 있게) "
+              f"화풍 체크 뒤 계획이 202 두 번으로 실패 = style 0 계획의 승인 코드를 'only …,style' 로 복사하지 않음(복사 칸 없음), 체크 칸은 남음(풀 수 있게) "
               f"{ps['failed']}")
         check(ps["styled"]["q"]["style"] == "1" and ps["styled"]["copies"] == [[False, d_title + ",style"], [False, r_title]],
               f"style 1 계획을 받으면 초안 복사 only 에 style(계획 요청과 같은 문자열), Run 은 style 없이 {ps['styled']}")
@@ -31810,20 +31810,20 @@ def pipeline_js_unit():
         check("레퍼런스·채택·Import 설정 미반영 확인 못 함 — 계획이 지금 파일 상태와 다름" in rcl.get("title", ""),
               f"§5.1·§3.7 검토·T 모드(계획을 스스로 다시 받지 않음)에서 계획이 낡으면 머리줄이 옛 계획을 '미반영 없음'으로 읽지 않음 {rcl.get('title')!r}")
         check(sy["confirm409"] == {"settings": True, "posts": 0} and sy.get("broken409") == {"settings": True, "posts": 0},
-              f"[반영] 409 confirm_settings·pipeline_broken → 큐 없음·설정 패널을 엶 {sy['confirm409']} {sy.get('broken409')}")
+              f"[반영 (무료)] 409 confirm_settings·pipeline_broken → 큐 없음·설정 패널을 엶 {sy['confirm409']} {sy.get('broken409')}")
         dset = R["GET /pipeline"]["ok"]["derived"]["settings"]
         rd = sy.get("resetDeclined") or {}
-        check(rd.get("posts") == 0 and "매니페스트 값으로 다시" in rd.get("confirm", ""),
-              f"[매니페스트 값으로 다시] 확인 창에서 취소 = 저장 없음(POST /pipeline/settings 0회) {rd}")
+        check(rd.get("posts") == 0 and "마지막 실행 값으로 채우기" in rd.get("confirm", ""),
+              f"[마지막 실행 값으로 채우기] 확인 창에서 취소 = 저장 없음(POST /pipeline/settings 0회) {rd}")
         rb = sy["reset"]["bodies"]
         check([b["section"] for b in rb] == ["import", "draft"] and all(b["values"] == dset[b["section"]] for b in rb) and rb[0]["rev"] == 3
               and "Import PSD, Spec Draft" in sy["reset"]["confirm"],
-              f"[매니페스트 값으로 다시] = 다른 절(import)·확인 필요 절(draft)만 GET /pipeline derived.settings 그대로 절마다 POST {rb}")
+              f"[마지막 실행 값으로 채우기] = 다른 절(import)·확인 필요 절(draft)만 GET /pipeline derived.settings 그대로 절마다 POST {rb}")
         sset = R["GET /pipeline"]["ok"]["settings"]
         check(f" · draft.apply = {dset['draft']['apply']} (기록 없음 — 노드 기본값)" in sy["reset"]["confirm"]
               and f" · import.glossary_path: {sset['import']['glossary_path']} → \"\"" in sy["reset"]["confirm"]
               and "확인 필요 항목을 아래 값으로 확인한 것으로 저장합니다" in sy["reset"]["confirm"],
-              f"r1-05 [매니페스트 값으로 다시] 확인 창 = 확인됨으로 바꿀 확인 필요 항목의 값·출처, 저장값에서 바뀌는 키(저장값 → 유도값) {sy['reset']['confirm']!r}")
+              f"r1-05 [마지막 실행 값으로 채우기] 확인 창 = 확인됨으로 바꿀 확인 필요 항목의 값·출처, 저장값에서 바뀌는 키(저장값 → 유도값) {sy['reset']['confirm']!r}")
     hc = res.get("headCancel") or {}
     if "sent" in hc:
         check("실행 중: Export(export) 보냄" in hc["sent"]["head"] and hc["sent"]["cancel"] is False
@@ -31843,12 +31843,12 @@ def pipeline_js_unit():
         w, rn = fr["write"], fr["run"]
         check(fr["enter"]["live"] == [True, True] and w["now"] == [False, False] and w["staleRow"] and w["head"] and w["plans"] == 1
               and w["waiting"] == [False, False] and w["again"] == 1 and w["fresh"] == [True, True] and w["final"] == 1 and w["headAfter"] is False,
-              f"§2.4 진행 모드에서 다른 창의 쓰기(plan_v null) = 두 해시 복사 바로 끔 → 계획 한 번 다시(같은 null 이 다시 와도 1번) → 새 plan_v 가 오면 켬 "
+              f"§2.4 실행 모드에서 다른 창의 쓰기(plan_v null) = 두 승인 코드 복사 바로 끔 → 계획 한 번 다시(같은 null 이 다시 와도 1번) → 새 plan_v 가 오면 켬 "
               f"{fr['enter']} {w}")
         check(rn["live"] == [False, False] and rn["dimLine"] and rn["drain"] and rn["plans"] == 0 and rn["after"] == 1 and rn["fresh"] == [True, True],
               f"§2.4 계획을 받은 뒤 그래프가 Run 시작(state running) = Run 줄 '실행 중'·두 복사 끔, 실행 중엔 계획을 다시 받지 않고 끝나면 한 번 {rn}")
         check(rn["same"] is True and rn["progress"] == 3,
-              f"진행 모드 + 실행 중: 같은 state 폴링 = 진행 수만 다시 읽고 같으면 다시 그리지 않음(Drain·머리줄 단추 그대로) {rn}")
+              f"실행 모드 + 실행 중: 같은 state 폴링 = 진행 수만 다시 읽고 같으면 다시 그리지 않음(Drain·머리줄 단추 그대로) {rn}")
         check(w.get("headSt") == "반영 상태 확인 못 함" and rn.get("headSt") == "반영 상태 확인 못 함" and w.get("headFresh") == "반영됨",
               f"§5.1 머리줄 = 반영 칸과 같은 판정: 계획이 지금 파일과 다르면(다른 창의 쓰기·그래프 Run) '반영됨'이 아니라 '반영 상태 확인 못 함', 새 계획이면 반영됨 "
               f"{w.get('headSt')} {rn.get('headSt')} {w.get('headFresh')}")
@@ -31857,7 +31857,7 @@ def pipeline_js_unit():
         check(ad == {"plans": 1, "only": allids + ",019_aaaaaa", "computing": False, "live": [True, True]}
               and rm == {"plans": 1, "only": allids.replace("002_d98f99,", "") + ",019_aaaaaa", "computing": False, "live": [True, True]},
               f"§2.4 state 에 크롭이 더해지거나 빠져 선택이 바뀌면 계획 한 번(멈춘 '계산 중…' 없음) {ad} {rm}")
-        check(fr["failed"] == {"copies": 0, "err": True}, f"같은 선택으로 다시 계산이 실패(409) = 오류 줄만, 옛 해시 복사 없음 {fr['failed']}")
+        check(fr["failed"] == {"copies": 0, "err": True}, f"같은 선택으로 다시 계산이 실패(409) = 오류 줄만, 옛 승인 코드 복사 없음 {fr['failed']}")
         check(fr["old"] == {"res": {"old": True}, "toasts": [], "panel": ["warn:ComfyUI 재시작 필요 — 서버에 무료 템플릿 라우트가 없습니다(옛 버전)"]},
               f"§3.2 옛 서버: 보드에 넘긴 queue 는 {{old}} 만(알림은 applyFree 한 번), 패널 [Export] 는 한 번 알림 {fr['old']}")
     pv = res.get("panelView") or {}
@@ -31889,11 +31889,11 @@ def pipeline_js_unit():
               f"§3.5 진행에 draft 가 있으면(Spec Draft 실행 중) 초안 진행 줄 {{inflight, created, done, failed}} {pl}")
         sw = {x[0]: x[1] for x in pv["settings"]}
         imsg = R["GET /pipeline"]["ok"]["warnings"][0]["msg"]
-        cmsg = "후보 폴더가 없음: G:/AI_output/_Input/x/03 — 반영을 막음(Export 는 됨): [설정]에서 경로를 고치거나 후보 등록을 끔"
+        cmsg = "후보 폴더가 없음: G:/AI_output/_Input/x/03 — 반영을 막음(Export 는 됨): [실행 설정 열기]에서 경로를 고치거나 후보 등록을 끔"
         check(sw.get(imsg) == "pp-row bad" and sw.get(cmsg) == "pp-row bad" and "후보 폴더가 없음: G:/AI_output/_Input/x/03" not in sw,
               f"설정 칸 경로 경고 = 모두 막힘(bad — 서버 prompt 409): import.* 는 문구 그대로(반영·Export), cand.path 는 '반영을 막음(Export 는 됨)'"
               f"(r2-06 — dp_cand 를 담는 템플릿만 막음, 정본 _doc warnings) {pv['settings']}")
-        warn = {"Import PSD": "다음 반영에서 크롭 소스·타깃·레퍼런스가 바뀌면 새 셀(유료 대상)", "Prepare": "다음 반영에서 jobs 가 바뀌어 새 셀이 될 수 있음(유료 대상)",
+        warn = {"Import PSD": "다음 반영에서 크롭 소스·타깃·레퍼런스가 바뀌면 새 생성 조건(유료 대상)", "Prepare": "다음 반영에서 jobs 가 바뀌어 새 생성 조건이 될 수 있음(유료 대상)",
                 "Spec Draft": "초안 키가 바뀜 — fill 은 갱신 가능 표시만, refresh 면 전 크롭 재초안(유료)"}
         check(pv["warn"] == {k: ([[warn[k], "pp-row dim"]] if k in warn else []) for k in pv["warn"]} and len(pv["warn"]) == 8,
               f"§5.6 설정 패널 절별 경고(import·prepare·draft — 유료 대상 안내, 다른 절 없음) {pv['warn']}")
@@ -31922,14 +31922,14 @@ def pipeline_js_unit():
         check(hr.get("auto") == {"plans": 1, "head": "반영됨", "btn": False},
               f"r1-09 계획을 한 번도 받지 못한 채(202·오류) 서버에 새 계획이 생기면(state plan_v 바뀜) 누르지 않아도 한 번 다시 받음 {hr.get('auto')}")
     # 리뷰 1차 수정(r1-01·05·09·10·24·26·27) — 패널
-    cell_w = "그래프와 Studio 를 번갈아 돌리면 셀이 바뀌어 다시 과금 대상"
+    cell_w = "그래프와 Studio 를 번갈아 돌리면 생성 조건이 바뀌어 다시 과금 대상"
     check(res.get("panelPref") == {"gets": 1},
-          f"Codex 4차: 매니페스트 rev 그대로 pref_v(board_pref.json — 분석·Export 설정)만 바뀐 state = GET /pipeline 한 번 다시(처음 값이 마지막 "
+          f"Codex 4차: 프로젝트 기록 rev 그대로 pref_v(board_pref.json — 분석·Export 설정)만 바뀐 state = GET /pipeline 한 번 다시(처음 값이 마지막 "
           f"Export·분석 설정을 따름), 같은 state 폴링은 다시 읽지 않음 {res.get('panelPref')}")
     dd = res.get("panelDrift") or {}
     if "before" in dd:
         check(dd["before"] == [] and dd["reload"] == {"gets": 1, "warn": [f"prepare.quality: 마지막 Prepare high · Studio max — {cell_w}"]},
-              f"r1-01 그래프 Prepare 뒤(state 매니페스트 rev 만 바뀜 — pipeline_rev 그대로) GET /pipeline 을 한 번 다시 읽어 편집기·[반영] 확인 창 맨 앞 줄이 "
+              f"r1-01 그래프 Prepare 뒤(state 프로젝트 기록 rev 만 바뀜 — pipeline_rev 그대로) GET /pipeline 을 한 번 다시 읽어 편집기·[반영 (무료)] 확인 창 맨 앞 줄이 "
               f"새 갈라짐(같은 state 폴링은 다시 읽지 않음) {dd['before']} {dd['reload']}")
         en = dd.get("editorNo") or {}
         ask = (en.get("asked") or [""])[0]
@@ -31938,13 +31938,13 @@ def pipeline_js_unit():
               f"r1-01 편집기 확인 창(동기 applyWarn) 뒤 state 폴링 전에 생긴 갈라짐 = 큐 직전에 새 줄만 한 번 더 묻고, 거절하면 /api/prompt 없음 {en}")
         pa_ = dd.get("panelApply") or {}
         check(pa_.get("first") == f"prepare.ref_style: 마지막 Prepare plain · Studio at — {cell_w}" and pa_.get("asked") == 1 and pa_.get("posts") == 1,
-              f"r1-01 진행 [반영] = 확인 창을 만들기 전에 GET /pipeline 을 다시 읽음(state 폴링 전에 생긴 갈라짐이 맨 앞), 확인 뒤 새 줄이 없으면 다시 묻지 않고 큐 {pa_}")
+              f"r1-01 진행 [반영 (무료)] = 확인 창을 만들기 전에 GET /pipeline 을 다시 읽음(state 폴링 전에 생긴 갈라짐이 맨 앞), 확인 뒤 새 줄이 없으면 다시 묻지 않고 큐 {pa_}")
         rs_ = dd.get("reset") or {}
         check(rs_.get("bodies") == [["prepare", "high"]] and " · prepare.quality: max → high" in rs_.get("confirm", "")
               and not any("유도값과 같습니다" in t for t in rs_.get("toasts", [])),
-              f"r1-01 [매니페스트 값으로 다시] = 다시 읽은 유도값(high — 패널이 가진 낡은 max 가 아님)으로 저장, 확인 창에 저장값 → 유도값 {rs_}")
+              f"r1-01 [마지막 실행 값으로 채우기] = 다시 읽은 유도값(high — 패널이 가진 낡은 max 가 아님)으로 저장, 확인 창에 저장값 → 유도값 {rs_}")
         check(dd.get("twice") == {"asked": 1, "posts": 1},
-              f"r1-01 다시 읽기가 끼어든 확인 창 동작(반영·매니페스트 값으로 다시)은 한 번에 하나 — 저장을 기다리는 사이 연타 = 확인 창·POST 하나 {dd.get('twice')}")
+              f"r1-01 다시 읽기가 끼어든 확인 창 동작(반영·마지막 실행 값으로 채우기)은 한 번에 하나 — 저장을 기다리는 사이 연타 = 확인 창·POST 하나 {dd.get('twice')}")
     rz = res.get("panelReset") or {}
     if "confirm" in rz:
         mi = R["GET /pipeline"]["alt"]["missing"]
@@ -31954,16 +31954,16 @@ def pipeline_js_unit():
         secs = [s for s in mi["widgets"] if mi["settings"][s] != md[s] or any(c.startswith(s + ".") for c in mi["confirm"])]
         check(all(w in rz["confirm"] for w in want) and "확인 필요 항목을 아래 값으로 확인한 것으로 저장합니다" in rz["confirm"] and rz["sections"] == secs
               and len(want) == 3,
-              f"r1-05 pipeline.json 없음(추정값 확인 필요 {mi['confirm']}) [매니페스트 값으로 다시] 확인 창 = 확인됨으로 바꿀 추정값·출처(jobs 에서 추정·노드 기본값) "
+              f"r1-05 pipeline.json 없음(추정값 확인 필요 {mi['confirm']}) [마지막 실행 값으로 채우기] 확인 창 = 확인됨으로 바꿀 추정값·출처(jobs 에서 추정·노드 기본값) "
               f"{rz['confirm']!r} {rz['sections']}")
     co = res.get("panelCold") or {}
     if "busy" in co:
         check(co["busy"] >= 2 and co["err"] is False and co["live"] == [True, True] and co["only"] == allids and co["head"] == "반영됨",
-              f"r1-09 재시작 직후 차가운 계획(1.5초)이 잠금을 쥔 동안 G = 새 요청 202 를 0.5초 간격으로 다시 물어 받음(오류로 멈추지 않음 — 해시 복사 켬) {co}")
+              f"r1-09 재시작 직후 차가운 계획(1.5초)이 잠금을 쥔 동안 G = 새 요청 202 를 0.5초 간격으로 다시 물어 받음(오류로 멈추지 않음 — 승인 코드 복사 켬) {co}")
     ds = res.get("panelDraftSync") or {}
     if "before" in ds:
         check(ds["before"] is True and ds["spec"] == {"gets": 1, "adopt": False, "sugg": True} and ds["running"] == 0,
-              f"r1-10 스펙만 바뀐 쓰기(매니페스트 rev 그대로 — plan_v 만 바뀜) 뒤 채택 패널 GET /draft 다시 한 번 → 새 제안·[채택] 켬, 실행 중(plan_v 가 폴링마다 "
+              f"r1-10 스펙만 바뀐 쓰기(프로젝트 기록 rev 그대로 — plan_v 만 바뀜) 뒤 채택 패널 GET /draft 다시 한 번 → 새 제안·[채택] 켬, 실행 중(plan_v 가 폴링마다 "
               f"바뀜)에는 다시 읽지 않음 {ds}")
     check(ds.get("drafting") == {"gets": 0, "plans": 0} and ds.get("drafted") == {"gets": 1, "plans": 1},
           f"r1-10 그래프 Spec Draft 실행 중(state running false·진행 수 아직 안 읽음)도 state drafting 으로 미룸 — plan_v 가 폴링마다 바뀌어도 "
@@ -31990,7 +31990,7 @@ def pipeline_js_unit():
               and not any("취소" in t for t in hd["toasts"]),
               f"r1-25 머리줄 [취소] 사이 실행을 시작해 끝남 = 기록의 끝 알림(Export 결과)이 마지막 — '취소됨'·'취소하지 않음' 토스트로 덮지 않음 {hd}")
     check('psdPartial: () => !!S && "pipeline_rev" in S' in bcode,
-          "r1-13 board.js: 레이아웃 편집기에 서버의 S1-a 지원 여부(psdPartial — S3 서버 = state pipeline_rev) — 재시작 전 옛 서버는 옛 PSD 문구")
+          "r1-13 board.js: 크롭 편집기에 서버의 S1-a 지원 여부(psdPartial — S3 서버 = state pipeline_rev) — 재시작 전 옛 서버는 옛 PSD 문구")
     dcs = res.get("draftChips") or {}
     if "all" in dcs:
         names = ["실행 중", "초안 대기", "초안 갱신 가능", "채택 가능", "승인 필요 2"]
@@ -32017,17 +32017,17 @@ def pipeline_js_unit():
         check(all(w in bk["confirm"] for w in want) and "확인 필요 항목을 아래 값으로 확인한 것으로 저장합니다" in bk["confirm"]
               and [s for s, _ in bk["posts"]] == list(b0["widgets"]) and bk["posts"][0][1] is None
               and all(rv == R["POST /pipeline/settings"]["ok"]["rev"] for _, rv in bk["posts"][1:]),
-              f"r2-01 깨진 파일에서 [매니페스트 값으로 다시] 확인 창 = 확인됨으로 바꿀 추정값·출처(jobs 에서 추정·노드 기본값), 덮어쓰기 = 첫 절 rev null, "
+              f"r2-01 깨진 파일에서 [마지막 실행 값으로 채우기] 확인 창 = 확인됨으로 바꿀 추정값·출처(jobs 에서 추정·노드 기본값), 덮어쓰기 = 첫 절 rev null, "
               f"다음 절은 앞 저장 응답 rev(c1-1 — 덮어쓴 뒤 파일은 그 rev) {bk['confirm']!r} {bk['posts']}")
     ar = res.get("applyRace") or {}
     if "twice" in ar:
         tw = ar["twice"]
-        q_line = "prepare.quality: 마지막 Prepare high · Studio max — 그래프와 Studio 를 번갈아 돌리면 셀이 바뀌어 다시 과금 대상"
-        m_line = "prepare.model: 마지막 Prepare gpt-image-2 · Studio gpt-image-2.5-flare — 그래프와 Studio 를 번갈아 돌리면 셀이 바뀌어 다시 과금 대상"
+        q_line = "prepare.quality: 마지막 Prepare high · Studio max — 그래프와 Studio 를 번갈아 돌리면 생성 조건이 바뀌어 다시 과금 대상"
+        m_line = "prepare.model: 마지막 Prepare gpt-image-2 · Studio gpt-image-2.5-flare — 그래프와 Studio 를 번갈아 돌리면 생성 조건이 바뀌어 다시 과금 대상"
         head2 = "확인 창을 띄운 뒤 설정 갈라짐이 새로 생겼습니다(그래프 Prepare·Import):"
         check(len(tw["asked"]) == 3 and tw["asked"][1][:2] == [head2, q_line] and tw["asked"][2][:2] == [head2, m_line] and q_line not in tw["asked"][2]
               and tw["posts"] == 1,
-              f"r2-02 [반영] 두 번째 확인 창이 떠 있는 동안 또 생긴 갈라짐(다른 창이 prepare.model 저장) = 새 줄로 한 번 더 묻고(새 줄이 없을 때까지) 큐 "
+              f"r2-02 [반영 (무료)] 두 번째 확인 창이 떠 있는 동안 또 생긴 갈라짐(다른 창이 prepare.model 저장) = 새 줄로 한 번 더 묻고(새 줄이 없을 때까지) 큐 "
               f"{[a[:2] for a in tw['asked']]} {tw['posts']}")
         rd = "err:실행 설정(GET /pipeline)을 다시 읽지 못해 멈춤 — pipeline.json 을 읽지 못함(잠김)"
         rf_, ff, sm, ef = ar["reloadFail"], ar["firstFail"], ar["sigMoved"], ar["editorFail"]
@@ -32040,12 +32040,12 @@ def pipeline_js_unit():
               and any(t.startswith("err:큐에 넣지 않음 — 확인한 뒤 실행 설정이 바뀜(pipeline rev 3 → 5") for t in sm["toasts"]),
               f"r2-02 마지막 확인 뒤 템플릿 sig 의 pipeline rev 가 다름(그 사이 다른 창이 저장) = /api/prompt 없음 {sm}")
         ss, mm, em = ar["sameSig"], ar["manifestMoved"], ar["editorMoved"]
-        moved_t = "err:큐에 넣지 않음 — 확인한 뒤 실행 설정·매니페스트가 바뀜(3:79 → 3:80, 다른 창의 저장·그래프 실행): 다시 [반영]해 새 설정으로 확인하세요"
+        moved_t = "err:큐에 넣지 않음 — 확인한 뒤 실행 설정·프로젝트 기록이 바뀜(3:79 → 3:80, 다른 창의 저장·그래프 실행): 다시 [반영 (무료)]해 새 설정으로 확인하세요"
         check(ss["expect"] == ["3:79"] and ss["posts"] == 1
               and mm["expect"] == ["3:79"] and mm["posts"] == 0 and moved_t in mm["toasts"]
               and em["expect"] == ["3:79"] and em["posts"] == 0 and em["res"] is None and moved_t in em["toasts"],
-              f"S3b r2-02 남은 틈: [반영]·편집기 반영(큐)은 마지막 갈라짐 점검의 GET /pipeline '<rev>:<manifest_rev>' 를 expect 로 — 같으면 큐, 그 뒤 "
-              f"그래프 실행이 매니페스트를 바꿔 서버 409 stale_settings 면 /api/prompt 없음·다시 [반영] 안내 {ss} {mm} {em}")
+              f"S3b r2-02 남은 틈: [반영 (무료)]·편집기 반영 (무료)은 마지막 갈라짐 점검의 GET /pipeline '<rev>:<manifest_rev>' 를 expect 로 — 같으면 큐, 그 뒤 "
+              f"그래프 실행이 프로젝트 기록을 바꿔 서버 409 stale_settings 면 /api/prompt 없음·다시 [반영 (무료)] 안내 {ss} {mm} {em}")
     cf = res.get("panelConflict") or {}
     if "declined" in cf:
         over_l = " · prepare.n: 다른 창이 쓴 4 을 이 창 값 3 로 덮어씀"
@@ -32066,11 +32066,11 @@ def pipeline_js_unit():
     if "v1" in hk:
         t_old = f"approve: 3f9a1c2b7d10  only: {allids}"
         t_new = f"approve: bbbbbbbbbbbb  only: {allids}"
-        stale_t = "warn:계획이 바뀜(다른 창·그래프의 쓰기·실행) — 해시를 복사하지 않음: 다시 그린 계획 칸을 보고 다시 누르세요"
+        stale_t = "warn:계획이 바뀜(다른 창·그래프의 쓰기·실행) — 승인 코드를 복사하지 않음: 다시 그린 「비용·승인」 칸을 보고 다시 누르세요"
         v1, v2, ok_ = hk["v1"], hk["v2"], hk["ok"]
         check(hk["before"] == [False, t_old] and v1["old"] == [False, t_old] and v1["clicked"] and v1["copied"] == [] and v1["toasts"] == [stale_t]
               and v1["now"] == [False, t_new],
-              f"r2-07 [수정] 입력 중 다른 창의 쓰기로 새 계획(해시 bbbb)이 와도 미뤄진 패널의 옛 [해시 복사](3f9a) 클릭 = 복사 없음·다시 그림 {v1}")
+              f"r2-07 [수정] 입력 중 다른 창의 쓰기로 새 계획(승인 코드 bbbb)이 와도 미뤄진 패널의 옛 [승인 코드 복사](3f9a) 클릭 = 복사 없음·다시 그림 {v1}")
         check(v2["old"] == [False, t_new] and v2["clicked"] and v2["copied"] == [] and v2["toasts"] == [stale_t] and v2["now"][0] is True
               and ok_["clicked"] and ok_["copied"] == [t_new],
               f"r2-07 [수정] 입력 중 그래프 Run 시작(state running) 뒤 켜진 채 남은 옛 단추 클릭 = 복사 없음, Run 이 끝나 지금 판정으로 그린 단추 = 복사 {v2} {ok_}")
@@ -32086,13 +32086,13 @@ def pipeline_js_unit():
     pt = res.get("planTransient") or {}
     if "once" in pt:
         check(pt["once"] == {"plans": 2, "live": [True, True], "stale": False} and pt["stuck"] == {"plans": 2, "live": [False, False], "stale": True},
-              f"r2-09 계산 중 실행이 시작했다 끝난 계획(서명 ≠ 그대로인 plan_v) = 쉬는 중이면 한 번 더 받아 해시 복사가 풀림, 다시 받아도 낡으면 되풀이 없음 {pt}")
+              f"r2-09 계산 중 실행이 시작했다 끝난 계획(서명 ≠ 그대로인 plan_v) = 쉬는 중이면 한 번 더 받아 승인 코드 복사가 풀림, 다시 받아도 낡으면 되풀이 없음 {pt}")
     pw = res.get("planWait") or {}
     if "first" in pw:
         check(pw["plans"] == 0 and (pw["first"] or "").startswith("계산 대기 — 이 Studio 의 Export(export) 대기 — 앞 1 이 끝난 뒤 계산")
               and pw["btn"] and pw["btn"][0] is True and pw["btn"][1].startswith("이 Studio 의 Export(export) 대기 — 앞 1 이 끝난 뒤 계산")
               and pw["after"]["plans"] >= 1 and pw["after"]["waiting"] is False and pw["after"]["btn"] is False,
-              f"r2-10 이 Studio 의 Export 가 대기 중이면 계획을 부르지 않음 = 계획 칸에 그 이유·[다시 계산] 끔('계산 중…' 아님), 끝나면 계산 {pw}")
+              f"r2-10 이 Studio 의 Export 가 대기 중이면 계획을 부르지 않음 = 「비용·승인」 칸에 그 이유·[다시 계산] 끔('계산 중…' 아님), 끝나면 계산 {pw}")
     ek = res.get("editKept") or {}
     if "writes" in ek:
         check(ek["writes"] == ["A: metal skirt"] and ek["first"] == ["A: metal skirt", True] and ek["later"] and set(ek["later"]) == {"A: metal skirt plaque"}
@@ -32115,22 +32115,22 @@ def pipeline_js_unit():
     if "found" in rr2:
         gp = "금액은 지금 jobs(마지막 Prepare — Studio 반영 포함) 기준: 큐·Run 은 그래프 Prepare(그래프 위젯 값)를 다시 돌린 뒤 과금"
         drift_ = "prepare.n: 마지막 Prepare 4 · Studio 2 — 갈라짐 줄"
-        paid_ = ["재굴림 +1 호출 (V1 ≈ $0.62)", drift_,
-                 "금액은 지금 jobs(마지막 Prepare) 기준: 재굴림 템플릿은 Studio 실행 설정(pipeline.json)으로 Import·Prepare 를 다시 돈 뒤 과금하므로 Prepare 갈라짐이 "
-                 "있으면 장 수·비용이 바뀌거나(n·셀당 호출) 셀이 바뀌어 이 재굴림이 미뤄짐(모델·품질·변형 등)",
+        paid_ = ["다시 생성 +1 호출 (V1 ≈ $0.62)", drift_,
+                 "금액은 지금 jobs(마지막 Prepare) 기준: 다시 생성 템플릿은 Studio 실행 설정(pipeline.json)으로 Import·Prepare 를 다시 돈 뒤 과금하므로 Prepare 갈라짐이 "
+                 "있으면 장 수·비용이 바뀌거나(n·생성 조건마다 호출) 생성 조건이 바뀌어 이 다시 생성이 미뤄짐(모델·품질·변형 등)",
                  "부수 효과 줄", "유료 호출이 사전 승인되고 ComfyUI 탭에 큐 요청을 보냅니다. 계속할까요?"]
         check(all(gp in rr2[k]["confirms"][0] and drift_ not in rr2[k]["confirms"][0] and "부수 효과 줄" not in rr2[k]["confirms"][0] for k in ("tab", "noTab"))
               and all(any("금액은 지금 jobs 기준(그래프 Prepare 값이 Studio 와 다르면 바뀜)" in t for t in rr2[k]["toasts"]) for k in ("tabKey", "noTabKey"))
               and rr2["paid"]["confirms"][0].split("\n") == paid_
               and any("금액은 지금 jobs 기준(Prepare 갈라짐 — Studio 실행 설정이 마지막 Prepare 와 다르면 바뀜)" in t for t in rr2["paidKey"]["toasts"])
               and not any("그래프 Prepare" in t for t in rr2["paidKey"]["toasts"]),
-              f"r2-05·S3b R 확인 창·첫 R 토스트 = 금액은 지금 jobs 기준 — 유료 가능한 탭(재굴림 템플릿)은 Studio 실행 설정으로 Import·Prepare 를 다시 돈 뒤 과금"
+              f"r2-05·S3b R 확인 창·첫 R 토스트 = 금액은 지금 jobs 기준 — 유료 가능한 탭(다시 생성 템플릿)은 Studio 실행 설정으로 Import·Prepare 를 다시 돈 뒤 과금"
               f"(반영 확인 창처럼 갈라짐 줄을 앞에 — r1-11 승인 제출이라 끝에 부수 효과 줄 pipe.side), 옛 탭(opener)·탭 없음은 그래프 Prepare 를 다시 돌린 뒤 "
-              f"과금(장 수·비용·셀이 바뀔 수 있음 — 그래프를 실행하는 길이라 부수 효과 줄 없음) {rr2}")
-    check(pn.get("headDrift") == ["Prepare 갈라짐", "lh-wait", "prepare.n: 마지막 Prepare 4 · Studio 2 — 셀은 그대로, 대기 호출의 장 수·비용·승인 해시가 바뀜\n"
-                                  "R·ComfyUI 큐(유료 승인 탭 — 재굴림 템플릿)는 Studio 실행 설정으로 Prepare 를 다시 돌려 이 갈라짐을 반영한 뒤 과금(셀이 바뀌면 "
-                                  "재굴림이 미뤄짐), 그래프 Run·옛 탭의 Review 부분 실행은 그래프 Prepare(그래프 위젯 값)로 jobs 를 다시 쓴 뒤 과금"],
-          f"r2-05 머리줄(모든 모드) Prepare 갈라짐 배지 — 셀 갈라짐이면 빨강, 장 수·비용만이면 노랑, 제목에 갈라짐 줄·R·큐 과금 안내 {pn.get('headDrift')}")
+              f"과금(장 수·비용·생성 조건이 바뀔 수 있음 — 그래프를 실행하는 길이라 부수 효과 줄 없음) {rr2}")
+    check(pn.get("headDrift") == ["Prepare 갈라짐", "lh-wait", "prepare.n: 마지막 Prepare 4 · Studio 2 — 생성 조건은 그대로, 대기 호출의 장 수·비용·승인 코드가 바뀜\n"
+                                  "R·[다시 생성 보내기](유료 승인 탭 — 다시 생성 템플릿)는 Studio 실행 설정으로 Prepare 를 다시 돌려 이 갈라짐을 반영한 뒤 과금(생성 조건이 바뀌면 "
+                                  "다시 생성이 미뤄짐), 그래프 Run·옛 탭의 Review 부분 실행은 그래프 Prepare(그래프 위젯 값)로 jobs 를 다시 쓴 뒤 과금"],
+          f"r2-05 머리줄(모든 모드) Prepare 갈라짐 배지 — 생성 조건 갈라짐이면 빨강, 장 수·비용만이면 노랑, 제목에 갈라짐 줄·R·큐 과금 안내 {pn.get('headDrift')}")
     # 리뷰 3차 수정(r3-05·06·07·08·09·10·11·16 — r3-13·15 는 위 hashNote·clearToast)
     os_ = res.get("ownSave") or {}
     if "typed" in os_:
@@ -32167,7 +32167,7 @@ def pipeline_js_unit():
     if "onlys" in ds:
         check(ds["posts"] == 1 and ds["bad"] == 0 and ds["errs"] == [] and ds["onlys"] == ["001_38a818,002_d98f99,008_e1d4cc,012_93661a"]
               and ds["live"] == [True, True],
-              f"r3-07 진행 모드 [반영] 끝 = 다시 받은 state(지운 크롭 003 을 선택에서 뺌) 뒤 계획 한 번 — 003 이 only 에 실리지 않음(400 '매니페스트에 없는 크롭' "
+              f"r3-07 실행 모드 [반영 (무료)] 끝 = 다시 받은 state(지운 크롭 003 을 선택에서 뺌) 뒤 계획 한 번 — 003 이 only 에 실리지 않음(400 '프로젝트 기록에 없는 크롭' "
               f"없음) {ds}")
     cl = res.get("cancelLost") or {}
     if "end" in cl:
@@ -32196,7 +32196,7 @@ def pipeline_js_unit():
         check(bw["posts"] == [["import", 3], ["prepare", 4]] and bw["n"] == 5 and bw["quality"] == "high" and bw["rev"] == 5
               and len(bw["toasts"]) == 1 and bw["toasts"][0].startswith("err:Prepare: 실행 설정이 다른 창에서 바뀌었습니다(rev 4 → 5)")
               and "앞 절(Import PSD)은 저장됨" in bw["toasts"][0],
-              f"c1-1 [매니페스트 값으로 다시] 두 절 사이에 다른 창이 저장 = 다음 절은 이 창의 앞 저장 응답 rev(4)로 → 409 로 멈춤(다른 창 값 n 5 그대로 — "
+              f"c1-1 [마지막 실행 값으로 채우기] 두 절 사이에 다른 창이 저장 = 다음 절은 이 창의 앞 저장 응답 rev(4)로 → 409 로 멈춤(다른 창 값 n 5 그대로 — "
               f"다시 읽은 rev 5 로 덮지 않음), 토스트에 저장된 앞 절 {bw}")
         check(dg["posts"] == [["import", 3]] and dg["n"] == 5 and not any("앞 절" in t for t in dg["toasts"])
               and no == {"posts": [["import", 3], ["prepare", 4]], "toasts": [], "n": 2, "quality": "max", "rev": 5},
@@ -32211,7 +32211,7 @@ def pipeline_js_unit():
     pas = res.get("planAfterSave") or {}
     check(pas.get("entered") == [True, True] and pas.get("live") == [True, True] and pas.get("planV") == "r:R1|d:D1" and pas.get("plans") == 1
           and pas.get("stale") is False,
-          f"c1-2 계획 요청 A(저장 전 서명)가 계산 중일 때 설정 저장 = A 뒤 한 번 더 받아 새 서명 기억·해시 복사 켬([다시 계산] 없이 — 낡은 A 로 멈추지 않음) {pas}")
+          f"c1-2 계획 요청 A(저장 전 서명)가 계산 중일 때 설정 저장 = A 뒤 한 번 더 받아 새 서명 기억·승인 코드 복사 켬([다시 계산] 없이 — 낡은 A 로 멈추지 않음) {pas}")
     dbz = res.get("draftBusy") or {}
     if "during" in dbz:
         busy_l = ["초안: Spec Draft 실행 중 — 끝난 뒤 다시 계산", "pp-row dim"]
@@ -32219,7 +32219,7 @@ def pipeline_js_unit():
               and dbz["during"] == {"row": busy_l, "live": [False, False], "plans": 0},
               f"b-3 계획을 받은 뒤 그래프 Spec Draft 시작(state drafting·plan_v null — 계획은 다시 받지 않음) = 초안 줄 '실행 중'·흐림(Run 줄처럼) {dbz}")
         check(dbz["same"] == {"row": busy_l, "live": [False, True]} and dbz["after"]["row"] == dbz["before"]["row"] and dbz["after"]["live"] == [True, True],
-              f"b-3 초안 해시 복사도 같은 판정(낡음이 아니어도 drafting 이면 초안만 끔 — 그리기·누르기 같음), 끝나면 원래 줄 {dbz['same']} {dbz['after']}")
+              f"b-3 초안 승인 코드 복사도 같은 판정(낡음이 아니어도 drafting 이면 초안만 끔 — 그리기·누르기 같음), 끝나면 원래 줄 {dbz['same']} {dbz['after']}")
     else:
         check(False, f"draftBusy 시나리오 결과 없음 {dbz}")
     dc = res.get("doubleClicks") or {}
@@ -32234,16 +32234,16 @@ def pipeline_js_unit():
           f"그대로면 다시 받지 않음 {po}")
     dk = res.get("driftCalls") or {}
     if "calls" in dk:
-        cpc_l = "prepare.calls_per_cell: 마지막 Prepare 1 · Studio 3 — 셀은 그대로지만 완료된 셀마다 새 호출이 생겨 다시 과금 대상(Run 승인 필요)"
-        n_l = "prepare.n: 마지막 Prepare 4 · Studio 2 — 셀은 그대로, 대기 호출의 장 수·비용·승인 해시가 바뀜"
+        cpc_l = "prepare.calls_per_cell: 마지막 Prepare 1 · Studio 3 — 생성 조건은 그대로지만 완료된 생성 조건마다 새 호출이 생겨 다시 과금 대상(생성 승인 필요)"
+        n_l = "prepare.n: 마지막 Prepare 4 · Studio 2 — 생성 조건은 그대로, 대기 호출의 장 수·비용·승인 코드가 바뀜"
         imp_l = "import.refs_dir: 마지막 Import D:/a · Studio D:/b — 마지막 Import 와 다름 — 다음 반영이 크롭 소스·레퍼런스를 바꿀 수 있음"
-        r_note = ("R·ComfyUI 큐(유료 승인 탭 — 재굴림 템플릿)는 Studio 실행 설정으로 Prepare 를 다시 돌려 이 갈라짐을 반영한 뒤 과금(셀이 바뀌면 재굴림이 미뤄짐), "
+        r_note = ("R·[다시 생성 보내기](유료 승인 탭 — 다시 생성 템플릿)는 Studio 실행 설정으로 Prepare 를 다시 돌려 이 갈라짐을 반영한 뒤 과금(생성 조건이 바뀌면 다시 생성이 미뤄짐), "
                   "그래프 Run·옛 탭의 Review 부분 실행은 그래프 Prepare(그래프 위젯 값)로 jobs 를 다시 쓴 뒤 과금")
         ca, co = dk["calls"], dk["cost"]
         want_rows = [[imp_l, "pp-row warn"], [n_l, "pp-row warn"], [cpc_l, "pp-row bad"]]
         check(ca["warn"] == [cpc_l, n_l, imp_l] and ca["head"] == ["lh-bad", [n_l, cpc_l, r_note]]
               and ca["panel"] == want_rows and ca["settings"] == want_rows,
-              f"r3-02 갈라짐 kind calls(calls_per_cell 늘림 — 완료된 셀마다 새 유료 호출) = cell 처럼 다시 과금 대상: 반영 확인 창 맨 앞(cost·import 앞)·"
+              f"r3-02 갈라짐 kind calls(calls_per_cell 늘림 — 완료된 생성 조건마다 새 유료 호출) = cell 처럼 다시 과금 대상: 반영 확인 창 맨 앞(cost·import 앞)·"
               f"머리줄 배지 빨강·진행 설정 칸·설정 패널 줄 'bad', 문구 DRIFT.calls {ca}")
         check(co["warn"] == [n_l] and co["head"] == ["lh-wait", [n_l, r_note]] and co["panel"] == [[n_l, "pp-row warn"]]
               and co["settings"] == [[n_l, "pp-row warn"]],
@@ -32255,7 +32255,7 @@ def pipeline_js_unit():
     if "blur" in rt:
         bl, sv, tw, pr = rt["blur"], rt["save"], rt["two"], rt["pre"]
         check(bl == {"disabled": False, "shown": "7", "moved": False, "posts": [["prepare", 3, 2]], "fileN": 2, "dialogs": 1, "toasts": []},
-              f"c2-1 [매니페스트 값으로 다시] 저장을 기다리는 사이(칸 켜짐) n 에 7 을 친 뒤 blur = 칸에 7 이 남음(보내지 않은 새 편집 — 저장값 2 로 "
+              f"c2-1 [마지막 실행 값으로 채우기] 저장을 기다리는 사이(칸 켜짐) n 에 7 을 친 뒤 blur = 칸에 7 이 남음(보내지 않은 새 편집 — 저장값 2 로 "
               f"돌아가지 않음), 남긴 편집의 기준값 = 이 창이 저장한 값('다른 창이 바꿈' 표시 없음) {bl}")
         check(sv == {"disabled": False, "clicked": True, "shown": "7", "moved": False, "posts": [["prepare", 3, 2], ["prepare", 4, 7]], "fileN": 7,
                      "dialogs": 1, "toasts": [":Prepare 설정 저장 — rev 5"]},
@@ -32270,7 +32270,7 @@ def pipeline_js_unit():
         check(False, f"resetTyped 시나리오 결과 없음 {rt}")
     cgt = res.get("confirmGate") or {}
     if "draftOnly" in cgt:
-        soft = "— 반영·Export 는 막지 않음(확인(저장) 전에는 계획 해시를 흐림)"
+        soft = "— 반영·Export 는 막지 않음(확인(저장) 전에는 승인 코드를 흐림)"
         hard = "— 확인(저장) 전에는 반영·Export 를 막음"
         mc = R["GET /pipeline"]["alt"]["missing"]["confirm"]
         bc = R["GET /pipeline"]["alt"]["broken"]["derived"]["confirm"]
@@ -32278,7 +32278,7 @@ def pipeline_js_unit():
         check(cgt["draftOnly"] == {"head": "lh-wait", "rows": [[f"확인 필요: draft.apply {soft}", "pp-row warn"]]}
               and cgt["rest"] == {"head": "lh-wait", "rows": [[f"확인 필요: draft.apply, analyze.register, compose.zorder, export.filename_prefix {soft}",
                                                                 "pp-row warn"]]},
-              f"m-1 정본 ok(저장됨, confirm [draft.apply])·기록 없는 analyze·compose·export 만 남음 = 서버 prompt_gate 통과 → '막지 않음(해시만 흐림)' "
+              f"m-1 정본 ok(저장됨, confirm [draft.apply])·기록 없는 analyze·compose·export 만 남음 = 서버 prompt_gate 통과 → '막지 않음(승인 코드만 흐림)' "
               f"노랑 줄·머리줄 배지 노랑('반영·Export 를 막음'이라 하지 않음) {cgt['draftOnly']} {cgt['rest']}")
         check(cgt["mixed"] == {"head": "lh-bad", "rows": [[f"확인 필요: prepare.variants, import.refs_dir {hard}", "pp-row bad"],
                                                          [f"확인 필요: draft.apply, export.filename_prefix {soft}", "pp-row warn"]]},
@@ -35181,7 +35181,7 @@ def _paid_js_tab():
         check(rr.get("get") == "/bmk/design_patch/pipeline/prompt?root=fe410d7f025d&stage=reroll" and rr.get("prompt") == R["alt"]["reroll"]["prompt"]
               and rr.get("targets") == ["dp_review"] and len(rr["got"]) == 2
               and rr["got"][1:] == [approved(dr["tab"], rr["got"][0], "reroll", ok=True, prompt_id="pid-2")]
-              and rr.get("toast") == "success: Studio 승인으로 재굴림 큐 — " + "x" * 200,
+              and rr.get("toast") == "success: Studio 승인으로 다시 생성 큐 — " + "x" * 200,
               f"J-X1 reroll: approve·only 없이 GET → 템플릿 alt.reroll(dp_run approve \"\"), what 은 200자까지만 표시 {rr.get('get')}")
         check(d.get("approve") == ua and rr.get("approve") == ua,
               f"J-X1 P3: draft·reroll 승인 뒤에도 사용자 Draft·Run approve(보초 해시) 그대로 {d.get('approve')} {rr.get('approve')}")
@@ -35464,9 +35464,9 @@ def _paid_js_tab():
               f"J-X4 hello ext 3·submit ok(감싸개 설치 && app.queuePrompt 함수 — 함수가 아니면 unsupported) {x4['hello']} {res.get('x4u')}")
     x4r = res.get("x4r") or {}
     check(x4r.get("ids") == ["pid-1", "pid-2"]
-          and x4r.get("toasts") == ["info: wave 종료(남은 3건) — 사전 승인 재굴림이라 Studio 머리줄 'ComfyUI 큐'(또는 다음 Run)로 이어서",
+          and x4r.get("toasts") == ["info: wave 종료(남은 3건) — 사전 승인 다시 생성이라 Studio 머리줄 [다시 생성 보내기](또는 다음 Run)로 이어서",
                                     "info: wave 종료(남은 3건) — Studio 에서 이어서 승인"],
-          f"J-X4 재굴림 템플릿 실행의 wave(Run 과 같은 dp_run) → 사전 승인분 문구(Studio 의 재굴림 wave 안내와 같게 — 새 승인 아님), Run 은 그대로 {x4r}")
+          f"J-X4 다시 생성 템플릿 실행의 wave(Run 과 같은 dp_run) → 사전 승인분 문구(Studio 의 다시 생성 wave 안내와 같게 — 새 승인 아님), Run 은 그대로 {x4r}")
     xl = res.get("x3L") or {}
     bad_l = {k: v for k, v in xl.items()
              if not (v.get("user") is False
@@ -35490,20 +35490,20 @@ def _paid_js_tab():
           f"인자를 버리는 감싸개면 우리 항목인지 몰라도 무장 동안 쌓였으니 빼고 '직접 누른 큐였다면 다시', 인자를 넘기면 우리 항목으로 앎 — 다음 사용자 Queue 는 "
           f"사용자 그래프 하나만(남은 항목이 토큰과 함께 사용자 그래프 전체로 또 나가지 않음) {bad_a or xa}")
     xr = res.get("xrr") or {}
-    kept = (" · 사전 승인한 재굴림은 예약된 채 남음(다음 Run·ComfyUI 큐 때 과금): 지금 보내려면 Studio 머리줄 'ComfyUI 큐' — R 을 다시 누르면 +1 호출이 "
+    kept = (" · 사전 승인한 다시 생성은 예약된 채 남음(다음 Run·[다시 생성 보내기] 때 과금): 지금 보내려면 Studio 머리줄 [다시 생성 보내기] — R 을 다시 누르면 +1 호출이 "
             "더 승인됨")
-    head = "Studio 머리줄 'ComfyUI 큐'"
+    head = "Studio 머리줄 [다시 생성 보내기]"
     busy_err = "ComfyUI 탭이 큐를 처리하는 중 — 잠시 뒤 다시 승인"
     aq_on = aq_why.format("Run (On Change)")
     want_r = {  # 경우 → (reason, Studio 로 가는 error = 그대로, 탭 토스트)
-        "busy": ("busy", busy_err, "warn: Studio 승인(재굴림) 안 됨: ComfyUI 탭이 큐를 처리하는 중" + kept),
-        "autoQueue": ("busy", aq_on, "warn: Studio 승인(재굴림) 안 됨: " + aq_on.removesuffix("다시 승인") + head + kept),
-        "noAuth": ("not_submitted", not_sent, "warn: Studio 승인(재굴림) 안 됨: " + not_sent.removesuffix(" — 승인은 Studio 에서 다시") + kept),
-        "g2p": ("not_submitted", not_g2p, "warn: Studio 승인(재굴림) 안 됨: " + not_g2p.removesuffix("다시 승인") + head + kept),
-        "deno": ("not_submitted", deno_why, "warn: Studio 승인(재굴림) 안 됨: " + deno_why.removesuffix("Studio 에서 다시 승인") + head + kept),
-        "unknown": ("unknown", unk.format("Failed to fetch"), "warn: Studio 승인(재굴림): " + unk.format("Failed to fetch") + " · 큐에 들어가지 않았으면 " + kept[3:]),
+        "busy": ("busy", busy_err, "warn: Studio 승인(다시 생성) 안 됨: ComfyUI 탭이 큐를 처리하는 중" + kept),
+        "autoQueue": ("busy", aq_on, "warn: Studio 승인(다시 생성) 안 됨: " + aq_on.removesuffix("다시 승인") + head + kept),
+        "noAuth": ("not_submitted", not_sent, "warn: Studio 승인(다시 생성) 안 됨: " + not_sent.removesuffix(" — 승인은 Studio 에서 다시") + kept),
+        "g2p": ("not_submitted", not_g2p, "warn: Studio 승인(다시 생성) 안 됨: " + not_g2p.removesuffix("다시 승인") + head + kept),
+        "deno": ("not_submitted", deno_why, "warn: Studio 승인(다시 생성) 안 됨: " + deno_why.removesuffix("Studio 에서 다시 승인") + head + kept),
+        "unknown": ("unknown", unk.format("Failed to fetch"), "warn: Studio 승인(다시 생성): " + unk.format("Failed to fetch") + " · 큐에 들어가지 않았으면 " + kept[3:]),
         "left": ("not_submitted", not_g2p + " — 남은 승인 항목은 큐에서 뺌",
-                 "warn: Studio 승인(재굴림) 안 됨: " + not_g2p.removesuffix("다시 승인") + head + " — 남은 승인 항목은 큐에서 뺌" + kept),
+                 "warn: Studio 승인(다시 생성) 안 됨: " + not_g2p.removesuffix("다시 승인") + head + " — 남은 승인 항목은 큐에서 뺌" + kept),
     }
     bad_r = {k: xr.get(k) for k, (reason, err, toast) in want_r.items()
              if not ((xr.get(k) or {}).get("final") == approved(xr.get("tab"), xr[k].get("final"), "reroll", ok=False, reason=reason, error=err)
@@ -35511,8 +35511,8 @@ def _paid_js_tab():
     br = xr.get("busyRun") or {}
     check(set(want_r) <= set(xr) and not bad_r and xr.get("bodies") == 1 and br.get("toast") == f"warn: Studio 승인(Run) 안 됨: {busy_err}"
           and br.get("final") == approved(xr.get("tab"), br.get("final"), "run", ok=False, reason="busy", error=busy_err),
-          f"J-X3 r3-02 재굴림 승인이 탭에서 안 됨(큐 처리 중·자동 큐·제출 안 됨·변환 실패·deno 사전 점검·결과 모름·남은 항목 뺌) → 탭 토스트의 할 일 '(잠시 뒤·"
-          f"Studio 에서) 다시 승인'은 빼거나 Studio 머리줄 'ComfyUI 큐'로(R 재누름 = +1 사전 승인으로 읽히지 않게) + 사전 승인분이 예약된 채 남는다는 안내"
+          f"J-X3 r3-02 다시 생성 승인이 탭에서 안 됨(큐 처리 중·자동 큐·제출 안 됨·변환 실패·deno 사전 점검·결과 모름·남은 항목 뺌) → 탭 토스트의 할 일 '(잠시 뒤·"
+          f"Studio 에서) 다시 승인'은 빼거나 Studio 머리줄 [다시 생성 보내기]로(R 재누름 = +1 사전 승인으로 읽히지 않게) + 사전 승인분이 예약된 채 남는다는 안내"
           f"(Studio refusal()·paidResult 와 같게), Studio 로 가는 error 는 그대로, Run 토스트는 그대로 {bad_r or xr}")
     xq = res.get("xaq") or {}
     if "modes" in xq:
@@ -35654,27 +35654,27 @@ async function mkStudio(o = {}) {
 // ── J-P3 승인 단추: 사용자 클릭 · 네이티브 confirm · 메시지 · 이 Studio 의 실행 · 끝 ──
 await scenario("approve", async () => {  // opener 길: isTrusted 아님 = 아무것도 안 함, confirm 취소 = 보내지 않음, 확인 = 메시지 → ack → approved ok → 실행 → Run 보고 한 줄
   const env = await mkStudio({ opener: true });
-  const r = { via: env.link.via, drawn: env.btn("Run 승인"), label: (env.B("Run 승인") || {}).textContent, draft: env.btn("초안 승인") };
-  env.B("Run 승인").fire("click");
+  const r = { via: env.link.via, drawn: env.btn("생성 승인"), label: (env.B("생성 승인") || {}).textContent, draft: env.btn("초안 승인") };
+  env.B("생성 승인").fire("click");
   await sleep(30);
   r.untrusted = { confirms: env.confirms.length, sent: env.tab.got.length };
   env.answer = false;
-  env.click(env.B("Run 승인"));
+  env.click(env.B("생성 승인"));
   await sleep(30);
-  r.declined = { confirm: env.confirms.at(-1) || null, sent: env.tab.got.length, again: env.btn("Run 승인") };
+  r.declined = { confirm: env.confirms.at(-1) || null, sent: env.tab.got.length, again: env.btn("생성 승인") };
   env.answer = true;
-  env.click(env.B("Run 승인"));
-  r.during = { run: env.btn("Run 승인"), draft: env.btn("초안 승인"), apply: env.btn("반영")[0], head: env.head.textContent };
+  env.click(env.B("생성 승인"));
+  r.during = { run: env.btn("생성 승인"), draft: env.btn("초안 승인"), apply: env.btn("반영 (무료)")[0], head: env.head.textContent };
   await until(() => env.toast("Run 큐에 들어감"));
   r.msgs = env.tab.got;
-  r.ok = { toast: env.toast("Run 큐에 들어감"), stored: JSON.parse(env.store.getItem(JOB) || "null"), head: env.head.textContent, run: env.btn("Run 승인") };
+  r.ok = { toast: env.toast("Run 큐에 들어감"), stored: JSON.parse(env.store.getItem(JOB) || "null"), head: env.head.textContent, run: env.btn("생성 승인") };
   await env.finish("pid-run", RUN_H({}), "Run 끝");
   await sleep(20);
   const p0 = env.srv.count("pipeline/plan");
   env.pipe.stateChanged(env.S);  // onDone 의 refresh 로 보드가 다시 받은 state
   await sleep(450);
   r.done = { toast: env.toast("Run 끝"), refresh: env.refresh, stored: env.store.getItem(JOB), row: env.rows("이 Studio 의 마지막 Run"),
-    replan: env.srv.count("pipeline/plan") - p0, run: env.btn("Run 승인")[0], toasts: env.toasts.filter((t) => t.startsWith("err:")) };
+    replan: env.srv.count("pipeline/plan") - p0, run: env.btn("생성 승인")[0], toasts: env.toasts.filter((t) => t.startsWith("err:")) };
   env.stop();
   return r;
 });
@@ -35688,7 +35688,7 @@ await scenario("draftStyle", async () => {  // 채널 길 · 초안 apply full +
   await until(() => (env.B("초안 승인") || {}).textContent === "초안 승인 1크롭 + 화풍 ≈ 36(최대 61) 크레딧" && !env.B("초안 승인").disabled, 2000);
   const r = { via: env.link.via, label: env.B("초안 승인").textContent, title: env.B("초안 승인").title };
   env.answer = false;
-  env.click(env.B("Run 승인"));
+  env.click(env.B("생성 승인"));
   r.runConfirm = env.confirms.at(-1) || null;
   env.answer = true;
   env.click(env.B("초안 승인"));
@@ -35705,18 +35705,18 @@ await scenario("draftStyle", async () => {  // 채널 길 · 초안 apply full +
 
 await scenario("mock", async () => {  // mock 백엔드 = 페이지 안 상자(네이티브 confirm 아님): 상자 단추도 사용자 클릭만, [취소]·Esc = 보내지 않음, 열린 동안 보드 키 막음, [승인] = 메시지
   const env = await mkStudio({ plan: (p) => { p.run.backend = "mock"; p.draft.backend = "vlm_mock"; p.draft.mock_forced = true; } });
-  const r = { labels: [env.B("Run 승인").textContent, env.B("초안 승인").textContent] };
+  const r = { labels: [env.B("생성 승인").textContent, env.B("초안 승인").textContent] };
   env.click(env.B("초안 승인"));
   await sleep(10);
   r.draftBox = env.box() ? env.box().textContent : null;
   env.click(env.B("취소", env.box()));
   await sleep(10);
   r.cancel = { box: !!env.box(), sent: env.tab.got.length, confirms: env.confirms.length, draft: env.btn("초안 승인")[0] };
-  env.click(env.B("Run 승인"));
+  env.click(env.B("생성 승인"));
   await sleep(10);
   const box = env.box();
   r.runBox = box ? box.textContent : null;
-  r.during = env.btn("Run 승인");
+  r.during = env.btn("생성 승인");
   env.B("승인", box).fire("click");
   env.B("취소", box).fire("click");
   await sleep(10);
@@ -35724,9 +35724,9 @@ await scenario("mock", async () => {  // mock 백엔드 = 페이지 안 상자(�
   r.keyOpen = env.key("r");
   r.esc = env.key("Escape");
   await sleep(10);
-  r.afterEsc = { box: !!env.box(), sent: env.tab.got.length, run: env.btn("Run 승인")[0] };
+  r.afterEsc = { box: !!env.box(), sent: env.tab.got.length, run: env.btn("생성 승인")[0] };
   r.keyClosed = env.key("r");
-  env.click(env.B("Run 승인"));
+  env.click(env.B("생성 승인"));
   await sleep(10);
   env.click(env.B("승인", env.box()));
   await until(() => env.toast("Run 큐에 들어감"));
@@ -35745,7 +35745,7 @@ await scenario("mockMix", async () => {  // P7: 페이지 상자(Claude 가 누�
     const env = await mkStudio({ plan: (p) => { p.run.backend = run; p.draft.backend = draft; } });
     env.answer = false;
     const r = {};
-    for (const [k, label] of [["run", "Run 승인"], ["draft", "초안 승인"]]) {
+    for (const [k, label] of [["run", "생성 승인"], ["draft", "초안 승인"]]) {
       const n = env.confirms.length;
       env.click(env.B(label));
       await sleep(10);
@@ -35762,8 +35762,8 @@ await scenario("mockMix", async () => {  // P7: 페이지 상자(Claude 가 누�
 
 await scenario("recheck", async () => {  // r2-07: 누를 때와 mock 상자 확인 뒤 지금 판정(해시·only·탭)이 그린 값과 다르면 보내지 않고 다시 그림
   const env = await mkStudio({ plan: (p) => { p.run.backend = "mock"; } });
-  const warn = "warn:계획·탭 상태가 바뀜 — 승인하지 않음: 다시 그린 계획 칸을 보고 다시 누르세요";
-  const old = env.B("Run 승인");
+  const warn = "warn:계획·탭 상태가 바뀜 — 승인하지 않음: 다시 그린 「비용·승인」 칸을 보고 다시 누르세요";
+  const old = env.B("생성 승인");
   for (const fn of env.doc.on.pointerdown) fn({});  // 포인터가 눌린 동안은 다시 그리지 않음 — 옛 단추가 남음
   env.pipe.stateChanged(Object.assign(clone(env.S), { plan_v: "r:aaaaaaaaaaaaaaaa|d:bbbbbbbbbbbbbbbb" }));  // 다른 창·그래프의 쓰기 = 계획이 낡음
   env.click(old);
@@ -35771,22 +35771,22 @@ await scenario("recheck", async () => {  // r2-07: 누를 때와 mock 상자 확
   const r = { stale: { box: !!env.box(), sent: env.tab.got.length, toast: env.toasts.at(-1) || null } };
   for (const fn of env.doc.on.pointerup) fn({});
   await sleep(20);
-  r.redrawn = env.btn("Run 승인");
+  r.redrawn = env.btn("생성 승인");
   env.pipe.stateChanged(env.S);
-  await until(() => env.B("Run 승인") && !env.B("Run 승인").disabled, 2000);
-  env.click(env.B("Run 승인"));
+  await until(() => env.B("생성 승인") && !env.B("생성 승인").disabled, 2000);
+  env.click(env.B("생성 승인"));
   await sleep(10);
   env.tab.ext = 2;  // 상자를 띄운 사이 탭이 S3a 판으로 새로고침
   await until(() => env.link.ext === 2);
   env.click(env.B("승인", env.box()));
   await sleep(20);
-  r.tab = { box: !!env.box(), sent: env.tab.got.length, toast: env.toasts.at(-1) || null, run: env.btn("Run 승인") };
+  r.tab = { box: !!env.box(), sent: env.tab.got.length, toast: env.toasts.at(-1) || null, run: env.btn("생성 승인") };
   r.warn = warn;
   env.stop();
   // 다른 유효 해시: 포인터가 눌린 동안 다시 받은 계획이 다른 해시 → 옛 단추(그린 해시)는 지금 해시를 보내지 않음(확인 창·메시지 없음)
   let hash = "3f9a1c2b7d10";
   const e2 = await mkStudio({ plan: (p) => { p.run.hash = hash; } });
-  const old2 = e2.B("Run 승인");
+  const old2 = e2.B("생성 승인");
   for (const fn of e2.doc.on.pointerdown) fn({});
   hash = "c0ffee123456";
   const c0 = e2.srv.count("pipeline/plan");
@@ -35798,21 +35798,21 @@ await scenario("recheck", async () => {  // r2-07: 누를 때와 mock 상자 확
   r.newHash = { title: old2.title, confirms: e2.confirms.length, box: !!e2.box(), sent: e2.tab.got.length, toast: e2.toasts.at(-1) || null };
   for (const fn of e2.doc.on.pointerup) fn({});
   await sleep(20);
-  r.newHash.redrawn = e2.btn("Run 승인");
+  r.newHash.redrawn = e2.btn("생성 승인");
   e2.stop();
   return r;
 });
 
 await scenario("busy", async () => {  // 단계당 하나(이 Studio 의 유료 요청은 하나씩): 결과를 기다리는 사이 다시 누름·다른 단계 단추·재굴림 = 보내지 않음, 실행 중 = 끔
   const env = await mkStudio({ tab: { reply: (m) => [[0, ACK], [600, ok(m)]] } });
-  const run = env.B("Run 승인");
+  const run = env.B("생성 승인");
   const draft = env.B("초안 승인");
   env.click(run);
   env.click(run);
   env.click(draft);
   env.pipe.reroll();
   await sleep(30);
-  const r = { mid: { sent: env.tab.got.length, confirms: env.confirms.length, toasts: env.toasts.slice(), run: env.btn("Run 승인"), draft: env.btn("초안 승인"),
+  const r = { mid: { sent: env.tab.got.length, confirms: env.confirms.length, toasts: env.toasts.slice(), run: env.btn("생성 승인"), draft: env.btn("초안 승인"),
     exp: env.btn("Export")[0] } };
   await until(() => env.toast("Run 큐에 들어감"));
   r.after = { sent: env.tab.got.length, draft: env.btn("초안 승인") };
@@ -35829,24 +35829,24 @@ await scenario("refuse", async () => {  // 실패 사유마다: 계획 다시(st
   for (const reason of ["stale", "apply_needed", "nothing_to_approve", "running", "stale_settings", "busy", "template", "not_submitted", "rejected", "http",
     "bad_request", "confirm_settings"]) {
     env.tab.reply = () => [[0, ACK], [5, FAIL(reason)]];
-    await until(() => env.B("Run 승인") && !env.B("Run 승인").disabled, 1000);
+    await until(() => env.B("생성 승인") && !env.B("생성 승인").disabled, 1000);
     const n = env.toasts.length;
     const p0 = env.srv.count("pipeline/plan");
-    env.click(env.B("Run 승인"));
+    env.click(env.B("생성 승인"));
     await until(() => env.toasts.length > n);
     await sleep(60);
-    r[reason] = { toasts: env.toasts.slice(n), replan: env.srv.count("pipeline/plan") - p0, run: env.btn("Run 승인")[0] };
+    r[reason] = { toasts: env.toasts.slice(n), replan: env.srv.count("pipeline/plan") - p0, run: env.btn("생성 승인")[0] };
   }
   for (const [name, fix] of [["noPid", (x) => { delete x.prompt_id; }], ["emptyPid", (x) => { x.prompt_id = ""; }]]) {
     // ok 인데 prompt_id 없음·빈 문자열 = 성공 아님(계약 §4 6 — 탭은 used && prompt_id 만 ok): 이 Studio 의 실행으로 이어 받지 않고 단추 다시 켬
     env.tab.reply = (m) => { const x = ok(m); fix(x); return [[0, ACK], [5, x]]; };
-    await until(() => env.B("Run 승인") && !env.B("Run 승인").disabled, 1000);
+    await until(() => env.B("생성 승인") && !env.B("생성 승인").disabled, 1000);
     const n = env.toasts.length;
     const p0 = env.srv.count("pipeline/plan");
-    env.click(env.B("Run 승인"));
+    env.click(env.B("생성 승인"));
     await until(() => env.toasts.length > n);
     await sleep(60);
-    r[name] = { toasts: env.toasts.slice(n), replan: env.srv.count("pipeline/plan") - p0, run: env.btn("Run 승인")[0], stored: env.store.getItem(JOB),
+    r[name] = { toasts: env.toasts.slice(n), replan: env.srv.count("pipeline/plan") - p0, run: env.btn("생성 승인")[0], stored: env.store.getItem(JOB),
       job: env.head.textContent.includes("실행 중") };
   }
   r.sent = env.tab.got.length;
@@ -35859,9 +35859,9 @@ await scenario("timeouts", async () => {  // ack·최종 시간(짧게 주입): 
   const r = {};
   let env = await mkStudio({ ack: 60, end: 300, tab: { reply: (m) => [[150, ok(m)]] } });
   let p0 = env.srv.count("pipeline/plan");
-  env.click(env.B("Run 승인"));
+  env.click(env.B("생성 승인"));
   await until(() => env.toast("ComfyUI 탭 응답 없음"));
-  r.noAck = { toasts: env.toasts.slice(), sent: env.tab.got.length, run: env.btn("Run 승인")[0] };
+  r.noAck = { toasts: env.toasts.slice(), sent: env.tab.got.length, run: env.btn("생성 승인")[0] };
   await until(() => env.toast("늦게 온 결과"));
   await sleep(20);
   r.lateOk = { toast: env.toast("늦게 온 결과"), head: env.head.textContent, stored: JSON.parse(env.store.getItem(JOB) || "null"),
@@ -35871,22 +35871,22 @@ await scenario("timeouts", async () => {  // ack·최종 시간(짧게 주입): 
 
   env = await mkStudio({ ack: 60, end: 200, tab: { reply: () => [[0, ACK]] } });
   p0 = env.srv.count("pipeline/plan");
-  env.click(env.B("Run 승인"));
+  env.click(env.B("생성 승인"));
   await until(() => env.toast("결과를 받지 못함"));
   await sleep(250);
-  r.timeout = { toasts: env.toasts.slice(), sent: env.tab.got.length, replan: env.srv.count("pipeline/plan") - p0, run: env.btn("Run 승인")[0],
+  r.timeout = { toasts: env.toasts.slice(), sent: env.tab.got.length, replan: env.srv.count("pipeline/plan") - p0, run: env.btn("생성 승인")[0],
     job: env.head.textContent.includes("실행 중"), row: env.rows("앞서 보낸 Run 승인") };
   env.stop();
 
   env = await mkStudio({ tab: { reply: () => [[0, ACK]] } });
   p0 = env.srv.count("pipeline/plan");
-  env.click(env.B("Run 승인"));
+  env.click(env.B("생성 승인"));
   await sleep(30);
   const m0 = env.tab.got[0];
   env.tab.id = "newtab0000000000";  // 새로고침 = 새 tab ID
   await until(() => env.toast("ComfyUI 탭이 바뀜"));
   await sleep(20);
-  r.changed = { toasts: env.toasts.slice(), linkTab: env.link.tab, replan: env.srv.count("pipeline/plan") - p0, run: env.btn("Run 승인")[0] };
+  r.changed = { toasts: env.toasts.slice(), linkTab: env.link.tab, replan: env.srv.count("pipeline/plan") - p0, run: env.btn("생성 승인")[0] };
   env.tab.post(Object.assign(ok(m0), { id: m0.id, tab: TAB }));  // 옛 탭이 낸 결과(같은 id·옛 tab·같은 길)
   await until(() => env.toast("늦게 온 결과"));
   r.changedLate = { toast: env.toast("늦게 온 결과"), head: env.head.textContent };
@@ -35896,14 +35896,14 @@ await scenario("timeouts", async () => {  // ack·최종 시간(짧게 주입): 
   // 연결이 끊김(채널 탭이 hello 에 답하지 않음 — 연결된 탭 없음)도 '결과 모름' + 계획 다시, 다시 붙은 같은 탭의 늦은 ok 는 이어 받음
   env = await mkStudio({ tab: { reply: () => [[0, ACK]] } });
   p0 = env.srv.count("pipeline/plan");
-  env.click(env.B("Run 승인"));
+  env.click(env.B("생성 승인"));
   await sleep(30);
   const m1 = env.tab.got[0];
   bus.delete(env.tab.ch);
   await until(() => env.toast("ComfyUI 탭이 바뀜"));
   await until(() => env.srv.count("pipeline/plan") > p0);
   await sleep(20);
-  r.gone = { toasts: env.toasts.slice(), state: env.link.state, replan: env.srv.count("pipeline/plan") - p0, run: env.btn("Run 승인") };
+  r.gone = { toasts: env.toasts.slice(), state: env.link.state, replan: env.srv.count("pipeline/plan") - p0, run: env.btn("생성 승인") };
   bus.add(env.tab.ch);
   await until(() => env.link.state === "ok");
   env.tab.post(Object.assign(ok(m1), { id: m1.id, tab: TAB }));
@@ -35913,7 +35913,7 @@ await scenario("timeouts", async () => {  // ack·최종 시간(짧게 주입): 
   env.stop();
 
   env = await mkStudio({ opener: true, tab: { reply: () => [[0, ACK]] } });  // opener 가 닫힘 → 채널로 물어도 답 없음
-  env.click(env.B("Run 승인"));
+  env.click(env.B("생성 승인"));
   await sleep(30);
   env.tab.op.closed = true;
   await until(() => env.toast("ComfyUI 탭이 바뀜"));
@@ -35924,11 +35924,11 @@ await scenario("timeouts", async () => {  // ack·최종 시간(짧게 주입): 
   // 탭이 결과를 모름(unknown — 바꿔치기한 본문을 보낸 뒤 응답을 잃음): '결과 모름' + 계획 다시 + 진행 패널 줄, 보낸 승인 기록(새로고침 뒤 결과 모름)을 남김
   env = await mkStudio({ tab: { reply: () => [[0, ACK], [5, FAIL("unknown")]] } });
   p0 = env.srv.count("pipeline/plan");
-  env.click(env.B("Run 승인"));
+  env.click(env.B("생성 승인"));
   await until(() => env.toast("결과 모름"));
   await until(() => env.srv.count("pipeline/plan") > p0);
   await sleep(20);
-  r.tabUnknown = { toasts: env.toasts.slice(), sent: env.tab.got.length, replan: env.srv.count("pipeline/plan") - p0, run: env.btn("Run 승인")[0],
+  r.tabUnknown = { toasts: env.toasts.slice(), sent: env.tab.got.length, replan: env.srv.count("pipeline/plan") - p0, run: env.btn("생성 승인")[0],
     row: env.rows("앞서 보낸 Run 승인"), kept: Object.keys(JSON.parse(env.store.getItem(`bmk-dp-ask:${KEY}`) || "{}")) };
   env.stop();
   return r;
@@ -35937,7 +35937,7 @@ await scenario("timeouts", async () => {  // ack·최종 시간(짧게 주입): 
 await scenario("match", async () => {  // 답은 같은 id·같은 tab·같은 길만: 다른 id·다른 tab·다른 길(opener 로 보냈는데 채널)의 approved 는 버림 → 끝 시간, 진짜 답 = 늦은 결과
   const env = await mkStudio({ opener: true, end: 300, tab: { reply: (m) => [[0, ACK], [5, Object.assign(ok(m), { id: "otherid", tab: TAB }), true],
     [10, Object.assign(ok(m), { id: m.id, tab: "othertab00000000" }), true]] } });
-  env.click(env.B("Run 승인"));
+  env.click(env.B("생성 승인"));
   await sleep(30);
   const m0 = env.tab.got[0];
   env.tab.ch.postMessage(Object.assign(ok(m0), { id: m0.id, tab: TAB }));
@@ -35959,7 +35959,7 @@ await scenario("wave", async () => {  // D9: 이 Studio 의 유료 Run 의 wave(
   let hash = "3f9a1c2b7d10";
   const env = await mkStudio({ opener: true, plan: (p) => { p.run.hash = hash; } });
   const W = (o) => Object.assign(clone(M["bmk-dp-wave"].examples[0]), { tab: TAB, rootKey: KEY, prompt_id: "pid-run", remaining: 5 }, o);
-  const rb = () => env.panel.all().find((e) => e.tagName === "BUTTON" && /^(Run 승인|남은)/.test(e.textContent));  // Run 줄 승인 단추
+  const rb = () => env.panel.all().find((e) => e.tagName === "BUTTON" && /^(생성 승인|남은)/.test(e.textContent));  // Run 줄 승인 단추
   env.click(rb());
   await until(() => env.toast("Run 큐에 들어감"));
   env.tab.post(W({ tab: "othertab00000000" }));
@@ -35967,23 +35967,23 @@ await scenario("wave", async () => {  // D9: 이 Studio 의 유료 Run 의 wave(
   env.tab.post(W({ rootKey: "000000000000" }));
   await env.finish("pid-run", RUN_H({ pending: 4 }), "Run 끝");
   await sleep(20);
-  const r = { other: { toast: env.toast("Run 끝"), row: env.rows("wave 로 멈춤"), label: rb().textContent } };
+  const r = { other: { toast: env.toast("Run 끝"), row: env.rows("시간 상한으로 멈춤"), label: rb().textContent } };
   env.toasts.length = 0;
   env.click(rb());
   await until(() => env.toast("Run 큐에 들어감"));
   env.tab.post(W({}));
   env.tab.ch.postMessage(W({}));  // 채널 방송으로도 같은 wave(탭은 둘 다 보냄)
   await sleep(20);
-  r.midRow = env.rows("wave 로 멈춤");
+  r.midRow = env.rows("시간 상한으로 멈춤");
   r.midBtn = rb().textContent;  // 실행 중에는 '이어서 승인' 라벨도 아님
   await env.finish("pid-run", RUN_H({ pending: 4 }), "Run 끝");
   hash = "c0ffee123456";
   env.pipe.stateChanged(env.S);
   await until(() => rb().textContent.startsWith("남은") && rb().title.includes(hash), 2000);
-  r.after = { toast: env.toast("Run 끝"), row: env.rows("wave 로 멈춤"), btn: [rb().textContent, rb().disabled], sent: env.tab.got.length };
+  r.after = { toast: env.toast("Run 끝"), row: env.rows("시간 상한으로 멈춤"), btn: [rb().textContent, rb().disabled], sent: env.tab.got.length };
   env.click(rb());
   await until(() => env.tab.got.length === 3);
-  r.cont = { confirm: env.confirms.at(-1), msg: env.tab.got[2], row: env.rows("wave 로 멈춤") };
+  r.cont = { confirm: env.confirms.at(-1), msg: env.tab.got[2], row: env.rows("시간 상한으로 멈춤") };
   await until(() => env.toasts.filter((t) => t.includes("Run 큐에 들어감")).length === 2);
   await env.finish("pid-run", RUN_H({}), "Run 끝 — 승인분 실행 · 남은 승인 필요 0건");
   env.stop();
@@ -35994,7 +35994,7 @@ await scenario("disabled", async () => {  // 승인 단추 꺼짐(계약 §5 —
   const scene = async (o, act) => {
     const env = await mkStudio(o);
     const after = act ? await act(env) : null;
-    const res = { run: env.btn("Run 승인"), draft: env.btn("초안 승인") };
+    const res = { run: env.btn("생성 승인"), draft: env.btn("초안 승인") };
     if (after) await after();
     env.stop();
     return res;
@@ -36019,7 +36019,7 @@ await scenario("disabled", async () => {  // 승인 단추 꺼짐(계약 §5 —
     nothing: await scene({ plan: (p) => { p.run.hash = ""; p.run.need = 0; } }),
     none: await scene({}, async (env) => { env.B("없음", env.list).fire("click"); await sleep(400); }),
     job: await scene({}, async (env) => {  // 이 Studio 의 무료 반영이 대기 중
-      env.B("반영").fire("click");
+      env.B("반영 (무료)").fire("click");
       await until(() => env.head.textContent.includes("실행 중"));
       return () => env.finish("pid-1", OK_H, "반영 끝");
     }),
@@ -36030,20 +36030,20 @@ await scenario("noSettings", async () => {  // 실행 설정(GET /pipeline)을 �
   // 단추·해시 복사 끔(눌러도 확인 창·메시지 없음), 다시 읽히면 켬, 읽은 뒤 다음 읽기가 실패해도 옛 설정으로 켜 두지 않음
   let fail = true;
   const env = await mkStudio({ pipeline: () => (fail ? [500, { error: "잠김" }] : quietPipeline()) });
-  const copies = () => env.panel.all().filter((e) => e.tagName === "BUTTON" && e.textContent === "해시 복사").map((b) => b.disabled);
-  const r = { run: env.btn("Run 승인"), draft: env.btn("초안 승인"), copy: copies(), row: env.rows("반영 뒤 다시 계산"), settings: env.rows("읽기 오류") };
-  env.click(env.B("Run 승인"));
+  const copies = () => env.panel.all().filter((e) => e.tagName === "BUTTON" && e.textContent === "승인 코드 복사").map((b) => b.disabled);
+  const r = { run: env.btn("생성 승인"), draft: env.btn("초안 승인"), copy: copies(), row: env.rows("반영 뒤 다시 계산"), settings: env.rows("읽기 오류") };
+  env.click(env.B("생성 승인"));
   env.click(env.B("초안 승인"));
   await sleep(30);
   r.clicked = { confirms: env.confirms.length, sent: env.tab.got.length };
   fail = false;
   env.pipe.stateChanged(env.S);  // 폴링 — 앞 읽기가 실패했으면 rev 가 그대로여도 다시 읽음
-  await until(() => env.B("Run 승인") && !env.B("Run 승인").disabled, 2000);
-  r.back = { run: env.btn("Run 승인"), draft: env.btn("초안 승인"), copy: copies() };
+  await until(() => env.B("생성 승인") && !env.B("생성 승인").disabled, 2000);
+  r.back = { run: env.btn("생성 승인"), draft: env.btn("초안 승인"), copy: copies() };
   fail = true;
   env.pipe.stateChanged(Object.assign(clone(env.S), { rev: env.S.rev + 1 }));  // 매니페스트가 바뀌어 다시 읽음 → 실패
-  await until(() => env.B("Run 승인") && env.B("Run 승인").disabled, 2000);
-  r.failAgain = { run: env.btn("Run 승인"), draft: env.btn("초안 승인"), copy: copies() };
+  await until(() => env.B("생성 승인") && env.B("생성 승인").disabled, 2000);
+  r.failAgain = { run: env.btn("생성 승인"), draft: env.btn("초안 승인"), copy: copies() };
   env.stop();
   return r;
 });
@@ -36058,10 +36058,10 @@ await scenario("reroll", async () => {  // board.js queueReroll(R 뒤·머리줄
   const r = { way: way.tabWay() };
   way.queueReroll();
   r.paying = { head: env.head.textContent, lock: env.pipe.paidLock() };  // r2-15 탭 응답을 기다리는 동안(확인 창 없음 — '승인 — 확인' 아님)
-  await until(() => env.toast("재굴림 큐에 들어감"));
+  await until(() => env.toast("다시 생성 큐에 들어감"));
   r.sent = { msgs: env.tab.got, confirms: env.confirms.length, head: env.head.textContent };
-  await env.finish("pid-reroll", RUN_H({ approved_now: false, pending: 4 }), "재굴림 끝");
-  r.done = { toast: env.toast("재굴림 끝"), row: env.rows("이 Studio 의 마지막 재굴림") };
+  await env.finish("pid-reroll", RUN_H({ approved_now: false, pending: 4 }), "다시 생성 끝");
+  r.done = { toast: env.toast("다시 생성 끝"), row: env.rows("이 Studio 의 마지막 다시 생성") };
   way.queueReroll("");  // R 확인 때 '예약만'(탭 없음)에 동의한 큐(board.js reroll 이 0.6초 뒤 넘김) — 그 사이 유료 가능한 탭이 생겨도 보내지 않음
   r.planned = { sent: env.tab.got.length, toast: calls.toasts.shift() || null };
   env.tab.ext = 2;
@@ -36094,7 +36094,7 @@ await scenario("resume", async () => {  // 다시 연 창: sessionStorage 의 �
 await scenario("freeWhilePaying", async () => {  // 유료 승인 결과를 기다리는 사이 무료 큐(board.js 편집기 반영(큐) = pipe.queue — 패널 단추 밖의 길)는 보내지 않고 탭의 ok 를
   // 이 Studio 의 실행으로 이어 받음. 반영 확인(once — GET /pipeline 다시 읽기)·템플릿 요청(PS.sending) 중에는 승인·재굴림을 보내지 않음
   let env = await mkStudio({ tab: { reply: (m) => [[0, ACK], [300, ok(m)]] } });
-  env.click(env.B("Run 승인"));
+  env.click(env.B("생성 승인"));
   await sleep(30);
   const q = await env.pipe.queue("apply");
   const r = { paying: { r: q === undefined, prompts: env.srv.count("api/prompt"), toast: env.toasts.at(-1) || null } };
@@ -36105,12 +36105,12 @@ await scenario("freeWhilePaying", async () => {  // 유료 승인 결과를 기�
   const held = async (start, done, end = "반영 끝") => {  // env 에서 start = 무료 큐를 시작해 다시 읽기·템플릿 요청에서 멈춘 사이 → 승인 단추 모양(r3-12 —
     // 그 사이 다시 그려 꺼진 모양), 그래도 누름(옛 단추)·재굴림
     await start();
-    const drawn = env.btn("Run 승인");
+    const drawn = env.btn("생성 승인");
     const n = env.toasts.length;
-    env.click(env.B("Run 승인"));
+    env.click(env.B("생성 승인"));
     env.pipe.reroll();
     await sleep(10);
-    const res = { drawn, confirms: env.confirms.length, sent: env.tab.got.length, toasts: env.toasts.slice(n), run: env.btn("Run 승인") };
+    const res = { drawn, confirms: env.confirms.length, sent: env.tab.got.length, toasts: env.toasts.slice(n), run: env.btn("생성 승인") };
     await done();
     await env.finish("pid-1", OK_H, end);
     env.stop();
@@ -36119,7 +36119,7 @@ await scenario("freeWhilePaying", async () => {  // 유료 승인 결과를 기�
   env = await mkStudio();
   r.asking = await held(async () => {
     env.srv.delay.pipeline = [200];
-    env.B("반영").fire("click");  // once(applyNow): GET /pipeline 다시 읽기(200ms) → 확인 창 → 큐
+    env.B("반영 (무료)").fire("click");  // once(applyNow): GET /pipeline 다시 읽기(200ms) → 확인 창 → 큐
     await sleep(30);
   }, () => until(() => env.head.textContent.includes("실행 중")));
   env = await mkStudio();
@@ -36138,12 +36138,12 @@ await scenario("freeWhilePaying", async () => {  // 유료 승인 결과를 기�
   env = await mkStudio();  // [반영] 확인 창을 취소 = 큐 없음 → 승인 단추 다시 켬(끈 모양으로 남지 않음)
   env.answer = false;
   env.srv.delay.pipeline = [200];
-  env.B("반영").fire("click");
+  env.B("반영 (무료)").fire("click");
   await sleep(30);
-  r.cancel = { drawn: env.btn("Run 승인") };
+  r.cancel = { drawn: env.btn("생성 승인") };
   await until(() => env.confirms.length === 1);
   await sleep(20);
-  Object.assign(r.cancel, { run: env.btn("Run 승인"), prompts: env.srv.count("api/prompt") });
+  Object.assign(r.cancel, { run: env.btn("생성 승인"), prompts: env.srv.count("api/prompt") });
   env.stop();
   return r;
 });
@@ -36151,9 +36151,9 @@ await scenario("freeWhilePaying", async () => {  // 유료 승인 결과를 기�
 await scenario("lateWhileFree", async () => {  // 결과를 모르고 끝낸 승인(ack 없음) 뒤 이 Studio 가 무료 반영을 냄 → 늦게 온 ok 는 그 실행(끝 판정·이어 받기)을 덮지 않고
   // 토스트에 prompt_id 만
   const env = await mkStudio({ ack: 60, end: 4000, tab: { reply: (m) => [[300, ok(m)]] } });
-  env.click(env.B("Run 승인"));
+  env.click(env.B("생성 승인"));
   await until(() => env.toast("ComfyUI 탭 응답 없음"));
-  env.B("반영").fire("click");
+  env.B("반영 (무료)").fire("click");
   await until(() => env.head.textContent.includes("실행 중"));
   await until(() => env.toast("늦게 온 결과"), 1000);
   const r = { toast: env.toast("늦게 온 결과"), head: env.head.textContent.includes("실행 중: 반영(apply)"), stored: JSON.parse(env.store.getItem(JOB) || "null") };
@@ -36163,22 +36163,22 @@ await scenario("lateWhileFree", async () => {  // 결과를 모르고 끝낸 승
 });
 
 const WV = (o) => Object.assign(clone(M["bmk-dp-wave"].examples[0]), { tab: TAB, rootKey: KEY, prompt_id: "pid-run", remaining: 5 }, o);
-const runBtn = (env) => env.panel.all().find((e) => e.tagName === "BUTTON" && /^(Run 승인|남은)/.test(e.textContent));  // Run 줄 승인 단추
+const runBtn = (env) => env.panel.all().find((e) => e.tagName === "BUTTON" && /^(생성 승인|남은)/.test(e.textContent));  // Run 줄 승인 단추
 
 await scenario("waveLate", async () => {  // D9: 끝난 Run(PS.last.run)에 늦게 온 wave 도 받음 → Run 줄 '남은 N건' + '남은 N건 이어서 승인'
   const env = await mkStudio();
-  env.click(env.B("Run 승인"));
+  env.click(env.B("생성 승인"));
   await until(() => env.toast("Run 큐에 들어감"));
   await env.finish("pid-run", RUN_H({ pending: 4 }), "Run 끝");
   await sleep(20);
   env.tab.post(WV({ remaining: 2 }));
   await sleep(20);
-  const r = { row: env.rows("wave 로 멈춤"), label: runBtn(env).textContent };
+  const r = { row: env.rows("시간 상한으로 멈춤"), label: runBtn(env).textContent };
   env.click(env.B("초안 승인"));  // 초안 승인은 Run wave 를 지우지 않음(초안 템플릿은 Run 을 쏘지 않음)
   await until(() => env.toast("Spec Draft 큐에 들어감"));
   await env.finish("pid-draft", DRAFT_H({}), "Spec Draft 끝");
   await sleep(20);
-  r.afterDraft = env.rows("wave 로 멈춤");
+  r.afterDraft = env.rows("시간 상한으로 멈춤");
   env.stop();
   return r;
 });
@@ -36186,16 +36186,16 @@ await scenario("waveLate", async () => {  // D9: 끝난 Run(PS.last.run)에 늦�
 await scenario("rerollWave", async () => {  // 재굴림 실행의 wave → 끝난 뒤 '재굴림 wave 로 멈춤 — 남은 N건'(사전 승인분 — 'ComfyUI 큐'로, Run 승인 라벨은 그대로), 다음 Run 승인을 보내면 지움
   const env = await mkStudio();
   env.pipe.reroll();
-  await until(() => env.toast("재굴림 큐에 들어감"));
+  await until(() => env.toast("다시 생성 큐에 들어감"));
   env.tab.post(WV({ prompt_id: "pid-reroll", remaining: 3 }));
   await sleep(20);
-  const r = { mid: env.rows("재굴림 wave") };
-  await env.finish("pid-reroll", RUN_H({ approved_now: false, pending: 4 }), "재굴림 끝");
+  const r = { mid: env.rows("다시 생성 시간 상한으로") };
+  await env.finish("pid-reroll", RUN_H({ approved_now: false, pending: 4 }), "다시 생성 끝");
   await sleep(20);
-  Object.assign(r, { toast: env.toast("재굴림 끝"), row: env.rows("재굴림 wave"), runRow: env.rows("wave 로 멈춤"), label: runBtn(env).textContent });
+  Object.assign(r, { toast: env.toast("다시 생성 끝"), row: env.rows("다시 생성 시간 상한으로"), runRow: env.rows("시간 상한으로 멈춤"), label: runBtn(env).textContent });
   env.click(runBtn(env));
   await until(() => env.toast("Run 큐에 들어감"));
-  r.cleared = env.rows("재굴림 wave");
+  r.cleared = env.rows("다시 생성 시간 상한으로");
   await env.finish("pid-run", RUN_H({}), "Run 끝");
   env.stop();
   return r;
@@ -36204,7 +36204,7 @@ await scenario("rerollWave", async () => {  // 재굴림 실행의 wave → 끝�
 await scenario("endRows", async () => {  // 유료 실행이 오류·취소로 끝남 → '마지막 Run' 줄 = 오류 문구(+ Run 보고가 있으면 그 한 줄) — '노드가 옛 버전'은 성공인데 보고가 없을 때만
   const one = async (h) => {
     const env = await mkStudio();
-    env.click(env.B("Run 승인"));
+    env.click(env.B("생성 승인"));
     await until(() => env.toast("Run 큐에 들어감"));
     env.hist["pid-run"] = h;
     await until(() => env.rows("이 Studio 의 마지막 Run").length, 4000);
@@ -36224,15 +36224,15 @@ await scenario("replan", async () => {  // '계획 다시' 결과(stale 등) 뒤
   const env = await mkStudio();
   env.tab.reply = () => [[0, ACK], [5, FAIL("stale")]];
   env.srv.planDelay = [300];
-  env.click(env.B("Run 승인"));
+  env.click(env.B("생성 승인"));
   await until(() => env.toast("계획이 바뀜"));
   await sleep(20);
-  const r = { during: env.btn("Run 승인"), draft: env.btn("초안 승인") };
-  env.click(env.B("Run 승인"));
+  const r = { during: env.btn("생성 승인"), draft: env.btn("초안 승인") };
+  env.click(env.B("생성 승인"));
   await sleep(20);
   r.again = { confirms: env.confirms.length, sent: env.tab.got.length };
-  await until(() => env.B("Run 승인") && !env.B("Run 승인").disabled, 2000);
-  r.after = env.btn("Run 승인");
+  await until(() => env.B("생성 승인") && !env.B("생성 승인").disabled, 2000);
+  r.after = env.btn("생성 승인");
   env.stop();
   return r;
 });
@@ -36240,31 +36240,31 @@ await scenario("replan", async () => {  // '계획 다시' 결과(stale 등) 뒤
 await scenario("again", async () => {  // 결과를 모르고 끝낸 승인(ack 없음·최종 시간·탭 바뀜) 뒤 같은 해시로 다시 승인 = 확인 창에 '앞서 보낸 같은 승인의 결과를
   // 모름' 한 줄(다른 단계는 없음). 결과를 알게 되면 지움 — 그 단계의 다음 결과, 그 요청의 늦은 결과(이어 받은 실행이 Run 앞에서 오류로 끝남 — 해시 그대로)
   let env = await mkStudio({ ack: 60, end: 4000, tab: { reply: () => [] } });
-  env.click(env.B("Run 승인"));
+  env.click(env.B("생성 승인"));
   const r = { first: env.confirms.at(-1) || null };
   await until(() => env.toast("ComfyUI 탭 응답 없음"));
   env.answer = false;
-  env.click(env.B("Run 승인"));
+  env.click(env.B("생성 승인"));
   r.same = env.confirms.at(-1) || null;
   env.click(env.B("초안 승인"));
   r.draft = env.confirms.at(-1) || null;
   r.sent = env.tab.got.length;
   env.tab.reply = () => [[0, ACK], [5, FAIL("busy")]];
   env.answer = true;
-  env.click(env.B("Run 승인"));
+  env.click(env.B("생성 승인"));
   await until(() => env.toast("큐를 처리하는 중"));
   await sleep(20);
   env.answer = false;
-  env.click(env.B("Run 승인"));
+  env.click(env.B("생성 승인"));
   r.known = env.confirms.at(-1) || null;
   env.stop();
   const lost = async (o, cut) => {  // cut(env) = 결과를 모르고 끝남 → 다시 받은 계획으로 단추가 켜진 뒤 같은 해시 확인 창(취소)
     env = await mkStudio(o);
-    env.click(env.B("Run 승인"));
+    env.click(env.B("생성 승인"));
     await cut(env);
-    await until(() => env.B("Run 승인") && !env.B("Run 승인").disabled, 2000);
+    await until(() => env.B("생성 승인") && !env.B("생성 승인").disabled, 2000);
     env.answer = false;
-    env.click(env.B("Run 승인"));
+    env.click(env.B("생성 승인"));
     const c = env.confirms.at(-1) || null;
     env.stop();
     return c;
@@ -36282,21 +36282,21 @@ await scenario("again", async () => {  // 결과를 모르고 끝낸 승인(ack 
     env.hist["pid-run"] = importErr;
     await until(() => env.rows("이 Studio 의 마지막 Run").length, 4000);
     env.pipe.stateChanged(env.S);
-    await until(() => env.B("Run 승인") && !env.B("Run 승인").disabled, 2000);
+    await until(() => env.B("생성 승인") && !env.B("생성 승인").disabled, 2000);
     env.answer = false;
-    env.click(env.B("Run 승인"));
+    env.click(env.B("생성 승인"));
     return env.confirms.at(-1) || null;
   };
   env = await mkStudio({ ack: 60, end: 4000, tab: { reply: (m) => [[150, ok(m)]] } });
-  env.click(env.B("Run 승인"));
+  env.click(env.B("생성 승인"));
   await until(() => env.toast("늦게 온 결과"));
   const c = await endErr();
   r.lateErr = { row: env.rows("이 Studio 의 마지막 Run"), confirm: c };
   env.stop();
   env = await mkStudio({ ack: 60, end: 4000, tab: { reply: () => [] } });  // 결과 모름 두 번 → 첫 요청의 늦은 ok 는 둘째의 표시를 지우지 않음
-  env.click(env.B("Run 승인"));
+  env.click(env.B("생성 승인"));
   await until(() => env.toast("ComfyUI 탭 응답 없음"));
-  env.click(env.B("Run 승인"));
+  env.click(env.B("생성 승인"));
   await until(() => env.toasts.filter((t) => t.includes("ComfyUI 탭 응답 없음")).length === 2);
   const m1 = env.tab.got[0];
   env.tab.post(Object.assign(ok(m1), { id: m1.id, tab: TAB }));
@@ -36342,7 +36342,7 @@ await scenario("rerollRefuse", async () => {  // r1-08: 재굴림(R·머리줄 '
   e2.pipe.reroll();
   await until(() => e2.toast("ComfyUI 탭 응답 없음"));
   await sleep(20);
-  r.noAck = { toasts: e2.toasts.slice(), row: e2.rows("앞서 보낸 재굴림") };
+  r.noAck = { toasts: e2.toasts.slice(), row: e2.rows("앞서 보낸 다시 생성") };
   e2.stop();
   return r;
 });
@@ -36356,7 +36356,7 @@ await scenario("gate", async () => {  // r1-09: 서버가 유료 템플릿을 �
       toast: (m, k) => calls.toasts.push(`${k || ""}:${m}`) });
     vm.runInContext(`tabWay = ${boardFn("tabWay")}; queueReroll = ${boardFn("queueReroll")}; tabTitle = ${boardFn("tabTitle")};`, c);
     // r2-05 머리줄 탭 배지 제목(tabTitle)도 이 판정(실제 link·pipe — 서버 템플릿 게이트)
-    const r = { why: env.pipe.paidWhy(), none: c.tabWay(), run: env.btn("Run 승인"), title: c.tabTitle(env.link) };
+    const r = { why: env.pipe.paidWhy(), none: c.tabWay(), run: env.btn("생성 승인"), title: c.tabTitle(env.link) };
     if (send) {
       // R(버튼): 확인 창 = 그 이유 → 0.6초 뒤 큐는 확인 때 판정(예약만), 머리줄 'ComfyUI 큐'(지금 판정 — opener 없음 = 예약만·있음 = Review 부분 실행)
       const rc = vm.createContext({ S: { crops: [] }, LAYOUT_STATUS: {}, REROLL_CONFIRM_MS: 2500, rerollArm: null, Date, setTimeout: (fn) => fn(),
@@ -36388,7 +36388,7 @@ await scenario("gate", async () => {  // r1-09: 서버가 유료 템플릿을 �
 await scenario("login", async () => {  // r1-15: 노드 보고의 인증 중지(Run stopped_reason auth — 로그인 없음·401/402/403)면 끝 토스트·마지막 줄이 '승인분 실행'이 아니라
   // 'comfy.org 로그인 필요 — 호출을 보내지 않음'(경고)
   const env = await mkStudio();
-  env.click(env.B("Run 승인"));
+  env.click(env.B("생성 승인"));
   await until(() => env.toast("Run 큐에 들어감"));
   await env.finish("pid-run", RUN_H({ stopped_reason: "auth", pending: 4 }), "Run 끝");
   await sleep(20);
@@ -36403,7 +36403,7 @@ await scenario("refresh", async () => {  // r1-13: 승인을 보내고 결과를
   const ASK = `bmk-dp-ask:${KEY}`;
   const store = mem();
   const env1 = await mkStudio({ store, tab: { reply: () => [[0, ACK]] } });
-  env1.click(env1.B("Run 승인"));
+  env1.click(env1.B("생성 승인"));
   await sleep(30);
   const m0 = env1.tab.got[0];
   const r = { id: m0.id, kept: JSON.parse(store.getItem(ASK) || "null") };
@@ -36411,7 +36411,7 @@ await scenario("refresh", async () => {  // r1-13: 승인을 보내고 결과를
   const env = await mkStudio({ store });
   r.row = env.rows("앞서 보낸 Run 승인");
   env.answer = false;
-  env.click(env.B("Run 승인"));
+  env.click(env.B("생성 승인"));
   r.confirm = (env.confirms.at(-1) || "").split("\n").slice(-2);
   env.tab.post(Object.assign(ok(m0), { id: m0.id, tab: TAB }));
   await until(() => env.toast("늦게 온 결과"));
@@ -36443,10 +36443,10 @@ await scenario("rerollHeld", async () => {  // r2-01·r2-09: R 확인 때 이 St
   const env = await mkStudio({ tab: { reply: (m) => (m.stage === "run" ? [[0, ACK], [150, FAIL("busy")]] : [[0, ACK], [5, ok(m)]]) } });
   for (const key of [false, true]) {
     const b = boardR(env, false);
-    await until(() => env.B("Run 승인") && !env.B("Run 승인").disabled, 2000);
+    await until(() => env.B("생성 승인") && !env.B("생성 승인").disabled, 2000);
     const n = env.toasts.length;
     const g = env.tab.got.length;
-    env.click(env.B("Run 승인"));
+    env.click(env.B("생성 승인"));
     const at = { way: b.c.tabWay(), lock: env.pipe.paidLock() };
     if (key) {
       await b.reroll(false);
@@ -36465,7 +36465,7 @@ await scenario("rerollHeld", async () => {  // r2-01·r2-09: R 확인 때 이 St
   const e2 = await mkStudio({ opener: true, tab: { reply: (m) => [[0, ACK], [400, ok(m)]] } });
   const b2 = boardR(e2, true);
   const n2 = e2.toasts.length;
-  e2.click(e2.B("Run 승인"));
+  e2.click(e2.B("생성 승인"));
   e2.tab.busy = true;
   await until(() => e2.link.busy === true);
   const mid = { way: b2.c.tabWay(), lock: e2.pipe.paidLock(), title: b2.c.tabTitle(e2.link) };  // r3-11 머리줄 배지 제목도 '지금은 예약만'
@@ -36488,19 +36488,19 @@ await scenario("lateUnknown", async () => {  // r3-03: Studio 가 먼저 끝낸 
   // 본문을 보낸 뒤 응답을 잃음) = 여전히 결과 모름 — 진행 패널 줄·보낸 승인 기록·같은 해시 재승인 확인 창 줄이 남음(늦은 토스트는 뜸)
   const ASK = `bmk-dp-ask:${KEY}`;
   let env = await mkStudio({ ack: 60, end: 200, tab: { reply: () => [[0, ACK], [400, FAIL("unknown")]] } });
-  env.click(env.B("Run 승인"));
+  env.click(env.B("생성 승인"));
   await until(() => env.toast("결과를 받지 못함"));
   await until(() => env.toast("늦게 온 결과"), 2000);
   await sleep(20);
-  await until(() => env.B("Run 승인") && !env.B("Run 승인").disabled, 2000);
+  await until(() => env.B("생성 승인") && !env.B("생성 승인").disabled, 2000);
   env.answer = false;
-  env.click(env.B("Run 승인"));
+  env.click(env.B("생성 승인"));
   const r = { late: { toast: env.toast("늦게 온 결과"), row: env.rows("앞서 보낸 Run 승인"), kept: Object.keys(JSON.parse(env.store.getItem(ASK) || "{}")),
     confirm: (env.confirms.at(-1) || "").split("\n").at(-2) } };
   env.stop();
   const store = mem();
   const env1 = await mkStudio({ store, tab: { reply: () => [[0, ACK]] } });
-  env1.click(env1.B("Run 승인"));
+  env1.click(env1.B("생성 승인"));
   await sleep(30);
   const m0 = env1.tab.got[0];
   env1.stop();
@@ -36518,18 +36518,18 @@ await scenario("lostKept", async () => {  // r3-09: 결과 모름 A 뒤 같은 �
   const ASK = `bmk-dp-ask:${KEY}`;
   const store = mem();
   let env = await mkStudio({ store, ack: 60, end: 4000, tab: { reply: () => [] } });
-  env.click(env.B("Run 승인"));
+  env.click(env.B("생성 승인"));
   await until(() => env.toast("ComfyUI 탭 응답 없음"));
   const mA = env.tab.got[0];
-  await until(() => env.B("Run 승인") && !env.B("Run 승인").disabled, 2000);
+  await until(() => env.B("생성 승인") && !env.B("생성 승인").disabled, 2000);
   env.tab.reply = () => [[0, ACK], [5, FAIL("busy")]];
-  env.click(env.B("Run 승인"));
+  env.click(env.B("생성 승인"));
   await until(() => env.toast("큐를 처리하는 중"));
   await sleep(20);
   const r = { busy: { row: env.rows("앞서 보낸 Run 승인"), kept: (JSON.parse(store.getItem(ASK) || "{}").run || []).map((a) => a.id === mA.id) } };
-  await until(() => env.B("Run 승인") && !env.B("Run 승인").disabled, 2000);
+  await until(() => env.B("생성 승인") && !env.B("생성 승인").disabled, 2000);
   env.answer = false;
-  env.click(env.B("Run 승인"));
+  env.click(env.B("생성 승인"));
   r.busy.confirm = (env.confirms.at(-1) || "").split("\n").at(-2);
   env.stop();
   env = await mkStudio({ store });
@@ -36542,18 +36542,18 @@ await scenario("lostKept", async () => {  // r3-09: 결과 모름 A 뒤 같은 �
   await env.finish("pid-run", RUN_H({}), "Run 끝");
   env.stop();
   env = await mkStudio({ ack: 60, end: 4000, tab: { reply: () => [] } });
-  env.click(env.B("Run 승인"));
+  env.click(env.B("생성 승인"));
   await until(() => env.toast("ComfyUI 탭 응답 없음"));
-  await until(() => env.B("Run 승인") && !env.B("Run 승인").disabled, 2000);
+  await until(() => env.B("생성 승인") && !env.B("생성 승인").disabled, 2000);
   env.tab.reply = okReply;
-  env.click(env.B("Run 승인"));
+  env.click(env.B("생성 승인"));
   await until(() => env.toast("Run 큐에 들어감"));
   r.submitted = { row: env.rows("앞서 보낸 Run 승인"), kept: env.store.getItem(ASK) };
   await env.finish("pid-run", RUN_H({}), "Run 끝");
   env.pipe.stateChanged(env.S);
-  await until(() => env.B("Run 승인") && !env.B("Run 승인").disabled, 2000);
+  await until(() => env.B("생성 승인") && !env.B("생성 승인").disabled, 2000);
   env.answer = false;
-  env.click(env.B("Run 승인"));
+  env.click(env.B("생성 승인"));
   r.submitted.confirm = (env.confirms.at(-1) || "").split("\n").at(-2);
   env.stop();
   return r;
@@ -36564,16 +36564,16 @@ await scenario("restart", async () => {  // r3-05: 새 JS + 옛 서버(S3a — G
   let restarted = false;
   const env = await mkStudio({ opener: true, pipeline: () => { const [s, b] = quietPipeline(); if (!restarted) delete b.manifest_rev; return [s, b]; } });
   const gets = () => env.srv.count("pipeline");
-  const b0 = env.B("Run 승인");
-  const r = { before: env.btn("Run 승인") };
+  const b0 = env.B("생성 승인");
+  const r = { before: env.btn("생성 승인") };
   const g0 = gets();
   env.pipe.stateChanged(env.S);
   await sleep(40);
-  r.oldPoll = { gets: gets() - g0, same: env.B("Run 승인") === b0 };
+  r.oldPoll = { gets: gets() - g0, same: env.B("생성 승인") === b0 };
   restarted = true;
   env.pipe.stateChanged(env.S);
-  await until(() => env.B("Run 승인") && !env.B("Run 승인").disabled, 2000);
-  r.after = env.btn("Run 승인");
+  await until(() => env.B("생성 승인") && !env.B("생성 승인").disabled, 2000);
+  r.after = env.btn("생성 승인");
   const g1 = gets();
   for (let i = 0; i < 3; i++) {
     env.pipe.stateChanged(env.S);
@@ -36638,7 +36638,7 @@ def _paid_js_studio():
     # r2-06 할 일은 단계마다: Run·Spec Draft = 다시 승인, 재굴림 = 머리줄 'ComfyUI 큐'(사전 승인분이 남음 — '다시 승인'은 R 재누름 +1 로 읽힘)
     login_ = "comfy.org 로그인 필요 — 로그인·API 키가 없거나 인증이 거부돼 남은 호출을 보내지 않음(그 호출은 과금 없음)"
     login = f"{login_}: ComfyUI 탭에서 로그인한 뒤 다시 승인"
-    login_rr = (f"{login_}: ComfyUI 탭에서 로그인한 뒤 머리줄 'ComfyUI 큐'(사전 승인한 재굴림은 예약된 채 남음 — R 을 다시 누르면 +1 호출이 더 "
+    login_rr = (f"{login_}: ComfyUI 탭에서 로그인한 뒤 머리줄 [다시 생성 보내기](사전 승인한 다시 생성은 예약된 채 남음 — R 을 다시 누르면 +1 호출이 더 "
                 "승인됨)")
 
     def part(src, a, b):
@@ -36670,16 +36670,16 @@ def _paid_js_studio():
     check('on("btn-queue", (e) => (e.isTrusted ? queueReroll() : toast(' in bcode and "      fn(e);\n" in bcode
           and "setTimeout(() => queueReroll(way, !!lock), 600)" in bcode and "bmk-dp-approve" not in bj
           and "pipe.reroll()" in part(bcode, "  function queueReroll(", "\n  }\n") and "!pipe.paidWhy()" in part(bcode, "  function tabWay(", "\n  }\n"),
-          "board.js: R 뒤 큐·머리줄 'ComfyUI 큐' = queueReroll 하나(유료 가능한 탭 → pipe.reroll, 그 밖 opener·예약 — R 확인 때의 판정(길·lock)을 넘김), "
-          "r3-13 머리줄 'ComfyUI 큐'는 사용자 클릭(isTrusted)만, 승인 메시지는 board.js 에 없음")
-    check(side.split("은 ", 1)[1] in html and "승인 제출(초안·Run 승인, 그 탭으로 가는 재굴림·ComfyUI 큐)은" in html,
+          "board.js: R 뒤 큐·머리줄 [다시 생성 보내기] = queueReroll 하나(유료 가능한 탭 → pipe.reroll, 그 밖 opener·예약 — R 확인 때의 판정(길·lock)을 넘김), "
+          "r3-13 머리줄 [다시 생성 보내기]는 사용자 클릭(isTrusted)만, 승인 메시지는 board.js 에 없음")
+    check(side.split("은 ", 1)[1] in html and "승인 제출(초안·생성 승인, 그 탭으로 가는 다시 생성(R)·[다시 생성 보내기])은" in html,
           "§10.7 보정 4: board.html 도움말(알아 둘 것)에 승인 제출의 부수 효과 한 줄(확인 창·mock 상자와 같은 말)")
     qb = re.search(r'<button type="button" id="btn-queue"[^>]*title="([^"]*)"', html)
     blocked_ = "그 길이 막히면(옛 확장·탭이 큐 처리 중·실행 설정 미저장·확인 필요·경로 경고·옛 서버) Open Board 탭의 Review"
     check(bool(qb) and "승인 제출이라 ComfyUI 탭 그래프의 시드 제어 등 실행마다 바뀌는 값이 한 번 진행됨(그래프는 실행 안 함)" in qb.group(1)
           and "확인 창 없음 — 사용자 클릭만" in qb.group(1) and "그래프 Prepare 위젯 값으로 과금" in qb.group(1) and blocked_ in qb.group(1)
           and "옛 확장의 opener 탭이면" not in html and blocked_ in html.split('id="help"', 1)[-1],
-          f"r2-10 머리줄 'ComfyUI 큐'(확인 창 없음)도 유료 탭 길이면 승인 제출 — 단추 제목에 부수 효과 짧은 줄(키보드 첫 R 토스트와 같은 말)·opener 길 과금 기준, "
+          f"r2-10 머리줄 [다시 생성 보내기](확인 창 없음)도 유료 탭 길이면 승인 제출 — 단추 제목에 부수 효과 짧은 줄(키보드 첫 R 토스트와 같은 말)·opener 길 과금 기준, "
           f"r3-14 opener 길(Review 부분 실행)은 옛 확장만이 아니라 유료 탭 길이 막힌 모든 경우(tabWay — 단추 제목·도움말) {qb and qb.group(1)!r}")
     node = shutil.which("node")
     if not node:
@@ -36718,7 +36718,7 @@ def _paid_js_studio():
     key, tab = "fe410d7f025d", M["bmk-dp-approve"]["examples"][0]["tab"]
     allids = "001_38a818,002_d98f99,003_2f8f50,008_e1d4cc,012_93661a"
     head = "GPT Image 호출 4건(예상 $2.40–3.16 ≈ 506–667 크레딧)을 승인하고 과금합니다. 대상: "
-    pre = "재굴림(사전 승인) 1건 ≈ $0.62 도 함께 과금 — 선택과 무관(다른 크롭 포함)."
+    pre = "다시 생성(사전 승인) 1건 ≈ $0.62 도 함께 과금 — 선택과 무관(다른 크롭 포함)."
     dry = "드라이런 이후 대기 목록이 바뀌었으면 서버가 과금 없이 드라이런만 다시 합니다."
     wait1 = "주의: 스펙 초안 대기 1크롭(Spec Draft 미승인) — 지금 승인하면 초안 없는 프롬프트로 과금합니다."
     unw = "주의: 스펙 파일 1개에 초안·화풍 변경을 아직 못 씀(잠김) — 지금 승인하면 그 변경 없이 과금합니다."
@@ -36727,8 +36727,8 @@ def _paid_js_studio():
     late = ":늦게 온 결과 — Run 큐에 들어감 — ComfyUI 탭이 승인 템플릿을 제출함(진행은 머리줄)"
     # r1-14 Studio 가 결과를 모르고 끝냄(no_ack·timeout·tab_changed) = 머리 '결과 모름'·경고(큐에 들어갔을 수 있음 — '승인 안 됨'·빨강 아님)
     lost = "warn:Run 결과 모름 — ComfyUI 탭에서 결과를 받지 못함 — 이미 큐에 들어갔을 수 있으니 ComfyUI 큐를 확인(다시 보내지 않음)"
-    lost_row = ("앞서 보낸 Run 승인(해시 3f9a1c2b7d10)의 결과를 모름 — 이미 ComfyUI 큐에 들어갔을 수 있음: 다시 보내기 전에 ComfyUI 큐 확인")
-    reserved = (" · 사전 승인한 재굴림은 예약된 채 남음(다음 Run·ComfyUI 큐 때 선택과 무관하게 과금): 지금 보내려면 머리줄 'ComfyUI 큐' — "
+    lost_row = ("앞서 보낸 Run 승인(승인 코드 3f9a1c2b7d10)의 결과를 모름 — 이미 ComfyUI 큐에 들어갔을 수 있음: 다시 보내기 전에 ComfyUI 큐 확인")
+    reserved = (" · 사전 승인한 다시 생성은 예약된 채 남음(다음 Run·[다시 생성 보내기] 때 선택과 무관하게 과금): 지금 보내려면 머리줄 [다시 생성 보내기] — "
                 "R 을 다시 누르면 +1 호출이 더 승인됨")
 
     def shape(m):
@@ -36752,18 +36752,18 @@ def _paid_js_studio():
           f"J-P3 시나리오 서른 {sorted(res)}")
     a = res.get("approve") or {}
     if "drawn" in a:
-        check(a["via"] == "opener" and a["drawn"] == on_("3f9a1c2b7d10") and a["label"] == "Run 승인 4건 ≈ $2.40–3.16" and a["draft"] == on_("b21c09e4f7a3")
+        check(a["via"] == "opener" and a["drawn"] == on_("3f9a1c2b7d10") and a["label"] == "생성 승인 4건 ≈ $2.40–3.16" and a["draft"] == on_("b21c09e4f7a3")
               and a["untrusted"] == {"confirms": 0, "sent": 0},
-              f"J-P3 유료 가능한 탭(opener — ext 3·submit ok)·지금 해시 = 승인 단추 켜짐(라벨 계약 §5, 제목 approve·only), 스크립트 클릭(isTrusted 아님) = "
+              f"J-P3 유료 가능한 탭(opener — ext 3·submit ok)·지금 승인 코드 = 승인 단추 켜짐(라벨 계약 §5, 제목 approve·only), 스크립트 클릭(isTrusted 아님) = "
               f"확인 창·메시지 없음 {a['drawn']} {a['untrusted']}")
         check((a["declined"]["confirm"] or "").split("\n") == [head + allids.replace(",", ", "), pre, dry, wait1, unw, side, "계속할까요?"]
               and a["declined"]["sent"] == 0 and a["declined"]["again"] == on_("3f9a1c2b7d10"),
-              f"J-P3 유료 확인 = 네이티브 confirm(§4.4 + 계약 §5 — 재굴림 함께 과금·초안 대기·못 쓴 스펙·부수 효과 줄), false = 메시지 안 보냄·단추 다시 켬 "
+              f"J-P3 유료 확인 = 네이티브 confirm(§4.4 + 계약 §5 — 다시 생성 함께 과금·초안 대기·못 쓴 스펙·부수 효과 줄), false = 메시지 안 보냄·단추 다시 켬 "
               f"{a['declined']}")
         check(a["during"]["run"] == busy_ and a["during"]["draft"] == busy_ and a["during"]["apply"] is True
               and "Run 승인 — 확인·ComfyUI 탭 응답 기다리는 중" in a["during"]["head"],
               f"결과를 기다리는 동안 두 승인 단추·반영을 끔(이 Studio 의 유료 요청은 하나씩), 머리줄에 기다림 {a['during']}")
-        check(len(a["msgs"]) == 1 and sent(a["msgs"][0], "run", "3f9a1c2b7d10", allids, "Run 승인 4건 ≈ $2.40–3.16"),
+        check(len(a["msgs"]) == 1 and sent(a["msgs"][0], "run", "3f9a1c2b7d10", allids, "생성 승인 4건 ≈ $2.40–3.16"),
               f"승인 메시지 = 정본 messages bmk-dp-approve 모양(_pl_shape)·hash·only = 지금 계획 값·prompt 없음 {a['msgs']} {[shape(m) for m in a['msgs']]}")
         check(a["ok"]["toast"] == ":Run 큐에 들어감 — ComfyUI 탭이 승인 템플릿을 제출함(진행은 머리줄)"
               and a["ok"]["stored"] == {"stage": "run", "pid": "pid-run", "number": None} and "실행 중: Run(run)" in a["ok"]["head"]
@@ -36782,14 +36782,14 @@ def _paid_js_studio():
                                                          "드라이런 이후 대기 목록이 바뀌었으면 서버가 호출 없이 드라이런만 다시 합니다.", side, "계속할까요?"]
               and "주의: 스펙 초안 대기 1크롭 + 화풍(Spec Draft 미승인)" in (ds["runConfirm"] or "") and "실행 중: Spec Draft(draft)" in ds["head"]
               and ds["done"] == ":Spec Draft 끝 — 승인분 실행 · 남은 초안 대기 0건" and ds["row"] == ["이 Studio 의 마지막 Spec Draft: T 끝 — 승인분 실행 · 남은 초안 대기 0건"],
-              f"J-P3 채널 길·초안 apply full + 화풍: 초안 승인 = 그 계획의 해시·only(',style'), 확인 창 = VLM 초안 문구(크레딧·사유), Run 확인 창은 화풍 대기, "
+              f"J-P3 채널 길·초안 apply full + 화풍: 초안 승인 = 그 계획의 승인 코드·only(',style'), 확인 창 = VLM 초안 문구(크레딧·사유), Run 확인 창은 화풍 대기, "
               f"끝 = dp_draft.bmk_dp_draft[0] 한 줄 {ds}")
     mo = res.get("mock") or {}
     if "labels" in mo:
-        check(mo["labels"] == ["Run 승인 4건 ≈ $2.40–3.16 [MOCK]", "초안 승인 1크롭 [MOCK]"]
+        check(mo["labels"] == ["생성 승인 4건 ≈ $2.40–3.16 [MOCK]", "초안 승인 1크롭 [MOCK]"]
               and (mo["draftBox"] or "").startswith("[MOCK] 과금 없음 — 초안 승인 1크롭mock 백엔드 — ")
               and "mock 스위치(_MOCK_API)로 mock" in mo["draftBox"] and side in mo["draftBox"]
-              and (mo["runBox"] or "").startswith("[MOCK] 과금 없음 — Run 승인 4건mock 백엔드 — ") and "mock 스위치" not in mo["runBox"]
+              and (mo["runBox"] or "").startswith("[MOCK] 과금 없음 — 생성 승인 4건mock 백엔드 — ") and "mock 스위치" not in mo["runBox"]
               and "≈" not in mo["draftBox"] + mo["runBox"] and (mo["draftBox"] + mo["runBox"]).count("[MOCK]") == 2
               and mo["cancel"] == {"box": False, "sent": 0, "confirms": 0, "draft": False} and mo["during"] == busy_
               and mo["untrusted"] == {"box": True, "sent": 0},
@@ -36798,7 +36798,7 @@ def _paid_js_studio():
         check(mo["keyOpen"] == [True, False] and mo["esc"] == [True, True] and mo["afterEsc"] == {"box": False, "sent": 0, "run": False}
               and mo["keyClosed"] == [False, False],
               f"mock 상자가 열린 동안 보드 키를 막음, Esc = 취소(보내지 않음·단추 다시 켬), 닫힌 뒤엔 막지 않음 {mo['keyOpen']} {mo['esc']} {mo['afterEsc']}")
-        check(len(mo["msgs"]) == 1 and sent(mo["msgs"][0], "run", "3f9a1c2b7d10", allids, "Run 승인 4건 ≈ $2.40–3.16 [MOCK]") and mo["box"] is False
+        check(len(mo["msgs"]) == 1 and sent(mo["msgs"][0], "run", "3f9a1c2b7d10", allids, "생성 승인 4건 ≈ $2.40–3.16 [MOCK]") and mo["box"] is False
               and mo["confirms"] == 0 and mo["done"] == ":Run 끝 — 승인분 실행 · 남은 승인 필요 0건 [MOCK]",
               f"mock 상자 [승인](사용자 클릭) = 메시지 하나 → 실행 → 끝 보고 [MOCK] {mo['msgs']} {mo['done']}")
     mx = res.get("mockMix") or {}
@@ -36809,34 +36809,34 @@ def _paid_js_studio():
     rc = res.get("recheck") or {}
     if "stale" in rc:
         check(rc["stale"] == {"box": False, "sent": 0, "toast": rc["warn"]}
-              and rc["redrawn"] == [True, "승인할 해시 없음(승인할 것 없음·반영 필요·흐림·낡음·실행 중)"]
+              and rc["redrawn"] == [True, "승인 코드 없음(승인할 것 없음·미반영·흐림·낡음·실행 중)"]
               and rc["tab"] == {"box": False, "sent": 0, "toast": rc["warn"], "run": [True, "ComfyUI 탭의 확장이 옛 판(S3a — 판 2) — 그 탭을 새로고침한 뒤 유료 승인"]},
               f"r2-07 다시 대조: 다시 그리기를 미룬 사이 계획이 낡은 옛 단추 = 확인 창 없이 멈춤, mock 상자를 띄운 사이 탭이 바뀌면 [승인]해도 보내지 않음 — "
               f"다시 그린 단추는 꺼짐(이유) {rc}")
         nh = rc["newHash"]
         check(str(nh["title"]).endswith(f"approve: 3f9a1c2b7d10  only: {allids}") and nh["confirms"] == 0 and nh["box"] is False and nh["sent"] == 0
               and nh["toast"] == rc["warn"] and nh["redrawn"] == on_("c0ffee123456"),
-              f"r2-07 다시 받은 계획이 다른 유효 해시인데 옛 단추(그린 해시)가 남음 → 누르면 확인 창·메시지 없음(지금 해시를 대신 보내지 않음), 다시 그린 단추 = 새 해시 {nh}")
+              f"r2-07 다시 받은 계획이 다른 유효 승인 코드인데 옛 단추(그린 승인 코드)가 남음 → 누르면 확인 창·메시지 없음(지금 승인 코드를 대신 보내지 않음), 다시 그린 단추 = 새 승인 코드 {nh}")
     bu = res.get("busy") or {}
     if "mid" in bu:
-        held_ = ": 머리줄 'ComfyUI 큐'로 보내거나 다음 Run 때 과금"
-        check(bu["mid"] == {"sent": 1, "confirms": 1, "toasts": [f"warn:재굴림 예약됨 — 지금 보내지 않음(Run 승인 요청을 처리하는 중){held_}"],
+        held_ = ": 머리줄 [다시 생성 보내기]로 보내거나 다음 Run 때 과금"
+        check(bu["mid"] == {"sent": 1, "confirms": 1, "toasts": [f"warn:다시 생성 예약됨 — 지금 보내지 않음(Run 승인 요청을 처리하는 중){held_}"],
                             "run": busy_, "draft": busy_, "exp": True}
               and bu["after"]["sent"] == 1 and off(bu["after"]["draft"], "이 Studio 의 Run(run)")
-              and str(bu["rerollJob"]).startswith("warn:재굴림 예약됨 — 지금 보내지 않음(이 Studio 의 Run(run)")
+              and str(bu["rerollJob"]).startswith("warn:다시 생성 예약됨 — 지금 보내지 않음(이 Studio 의 Run(run)")
               and str(bu["rerollJob"]).endswith(f" 이 끝난 뒤){held_}"),
-              f"J-P3 단계당 하나(§4.6 — 이 Studio 의 유료 요청은 하나씩): 결과를 기다리는 사이 같은 단추 다시·다른 단계의 옛 단추·재굴림 = 보내지 않음"
-              f"(메시지 1·확인 창 1), 실행 중엔 승인 끄고 재굴림은 예약만 {bu}")
+              f"J-P3 단계당 하나(§4.6 — 이 Studio 의 유료 요청은 하나씩): 결과를 기다리는 사이 같은 단추 다시·다른 단계의 옛 단추·다시 생성 = 보내지 않음"
+              f"(메시지 1·확인 창 1), 실행 중엔 승인 끄고 다시 생성은 예약만 {bu}")
     rf = res.get("refuse") or {}
     if "stale" in rf:
         ex = {e.get("reason"): e for e in M["bmk-dp-approved"]["examples"]}
-        want = {"stale": "계획이 바뀜(지금 해시 5e81d07c2a94) — 다시 받은 계획을 보고 다시 승인",
-                "apply_needed": "반영 필요 — 먼저 [반영](레이아웃 미반영(rev 7), Prepare 입력이 바뀜(마지막 Prepare 뒤 스펙·레이아웃·레퍼런스·용어집))"}
+        want = {"stale": "계획이 바뀜(지금 승인 코드 5e81d07c2a94) — 다시 받은 계획을 보고 다시 승인",
+                "apply_needed": "미반영 — 먼저 [반영 (무료)](레이아웃 미반영(rev 7), Prepare 입력이 바뀜(마지막 Prepare 뒤 스펙·레이아웃·레퍼런스·용어집))"}
         bad = {k: v for k, v in rf.items() if k in ex and v != {
             "toasts": [f"{'warn' if k == 'busy' else 'err'}:Run 승인 안 됨 — {want.get(k) or ex[k]['error']}"],
             "replan": int(k in ("stale", "apply_needed", "nothing_to_approve", "running", "stale_settings")), "run": False}}
         check(len(rf) == 15 and rf["sent"] == 14 and not bad,
-              f"J-P3 실패 사유(정본 approved 예시): stale·apply_needed('먼저 [반영]')·nothing_to_approve·running·stale_settings = 토스트 + 계획 다시, busy = "
+              f"J-P3 실패 사유(정본 approved 예시): stale·apply_needed('먼저 [반영 (무료)]')·nothing_to_approve·running·stale_settings = 토스트 + 계획 다시, busy = "
               f"경고 토스트(탭의 이유·할 일 그대로 — '잠시 뒤 다시(…)'로 감싸지 않음), 그 밖(template·not_submitted·rejected·http·bad_request·409 게이트) = "
               f"오류 그대로 — 모두 단추 다시 켬 {bad}")
         nopid = {"toasts": ["err:Run 승인 안 됨 — ComfyUI 탭 응답 모양이 잘못됨"], "replan": 0, "run": False, "stored": None, "job": False}
@@ -36874,19 +36874,19 @@ def _paid_js_studio():
               f"한 번만 {mt}")
     wv = res.get("wave") or {}
     if "other" in wv:
-        check(wv["other"] == {"toast": ":Run 끝 — 승인분 실행 · 남은 승인 필요 4건", "row": [], "label": "Run 승인 4건 ≈ $2.40–3.16"} and wv["midRow"] == []
-              and wv["midBtn"] == "Run 승인 4건 ≈ $2.40–3.16"
-              and wv["after"] == {"toast": "warn:Run 끝 — 승인분 실행 · 남은 승인 필요 4건 · wave 로 멈춤(남은 5건) — Run 줄에서 이어서 승인",
-                                  "row": ["wave 로 멈춤 — 멈출 때 남은 5건: 새 계획(단추의 건수)으로 이어서 승인(클릭만 — 자동 이어가기 없음)"],
+        check(wv["other"] == {"toast": ":Run 끝 — 승인분 실행 · 남은 승인 필요 4건", "row": [], "label": "생성 승인 4건 ≈ $2.40–3.16"} and wv["midRow"] == []
+              and wv["midBtn"] == "생성 승인 4건 ≈ $2.40–3.16"
+              and wv["after"] == {"toast": "warn:Run 끝 — 승인분 실행 · 남은 승인 필요 4건 · 시간 상한으로 멈춤(남은 5건) — Run 줄에서 이어서 승인",
+                                  "row": ["시간 상한으로 멈춤 — 멈출 때 남은 5건: 새 계획(단추의 건수)으로 이어서 승인(클릭만 — 자동 이어가기 없음)"],
                                   "btn": ["남은 4건 이어서 승인 ≈ $2.40–3.16", False], "sent": 2},
               f"D9 wave: 다른 탭·다른 실행·다른 프로젝트의 wave 는 무시, 이 Studio 의 유료 Run 의 wave(두 길로 와도 하나) = 실행 중엔 줄·라벨 그대로, 끝난 뒤 "
               f"Run 줄 '멈출 때 남은 N건'(wave 의 수) + '남은 M건 이어서 승인 ≈ $X'(새 계획의 수 — 자동으로 보내지 않음) {wv}")
         check(sent(wv["cont"]["msg"], "run", "c0ffee123456", allids, "남은 4건 이어서 승인 ≈ $2.40–3.16")
               and (wv["cont"]["confirm"] or "").startswith(head) and wv["cont"]["row"] == [],
-              f"이어서 승인 = 새 계획의 새 해시·확인 창(클릭만), 보낸 뒤 wave 줄 지움 {wv['cont']}")
+              f"이어서 승인 = 새 계획의 새 승인 코드·확인 창(클릭만), 보낸 뒤 wave 줄 지움 {wv['cont']}")
     di = res.get("disabled") or {}
     if "ok" in di:
-        nohash = [True, "승인할 해시 없음(승인할 것 없음·반영 필요·흐림·낡음·실행 중)"]
+        nohash = [True, "승인 코드 없음(승인할 것 없음·미반영·흐림·낡음·실행 중)"]
         both = lambda t: {"run": [True, t], "draft": [True, t]}
         jb = di["job"]
         check(di["ok"] == {"run": on_("3f9a1c2b7d10"), "draft": on_("b21c09e4f7a3")}
@@ -36897,7 +36897,7 @@ def _paid_js_studio():
               and di["dim"] == di["stale"] == {"run": nohash, "draft": nohash} and di["running"] == di["nothing"] == {"run": nohash, "draft": on_("b21c09e4f7a3")}
               and di["none"] == {"run": None, "draft": None}
               and jb["run"] == jb["draft"] and off(jb["run"], "이 Studio 의 반영(apply)"),
-              f"계약 §5 승인 단추 꺼짐(제목에 이유): 탭 ext 2·submit unsupported·탭 큐 처리 중·탭 없음(link.paidWhy), 흐림·낡음(해시 복사 꺼짐 조건), "
+              f"계약 §5 승인 단추 꺼짐(제목에 이유): 탭 ext 2·submit unsupported·탭 큐 처리 중·탭 없음(link.paidWhy), 흐림·낡음(승인 코드 복사 꺼짐 조건), "
               f"Run 실행 중·승인할 것 없음(그 단계만), 선택 0(단추 없음), 이 Studio 의 실행 {di}")
         check(di["silent"] == both("이 창을 연 ComfyUI 탭이 hello 에 답하지 않음(확장이 옛 판·새로고침 중, 또는 그 탭이 다른 주소·페이지로 옮겨 감) — "
                                    "그 탭을 새로고침하거나 Open Board 로 다시 열기")
@@ -36905,77 +36905,77 @@ def _paid_js_studio():
               f"link.paidWhy opener 가 답하지 않음(silent)·확장 판 < 2(old) = 머리줄 배지와 같은 안내('Open Board 로 열거나'가 아님) {di['silent']} {di['old1']}")
     ns = res.get("noSettings") or {}
     if "run" in ns:
-        nohash = [True, "승인할 해시 없음(승인할 것 없음·반영 필요·흐림·낡음·실행 중)"]
-        check(ns["run"] == ns["draft"] == nohash and ns["copy"] == [True, True] and ns["row"] == ["반영 뒤 다시 계산 — 지금 해시는 반영 뒤 달라질 수 있음(실행 설정을 읽지 못함 — 잠김)"]
+        nohash = [True, "승인 코드 없음(승인할 것 없음·미반영·흐림·낡음·실행 중)"]
+        check(ns["run"] == ns["draft"] == nohash and ns["copy"] == [True, True] and ns["row"] == ["반영 뒤 다시 계산 — 지금 승인 코드는 반영 뒤 달라질 수 있음(실행 설정을 읽지 못함 — 잠김)"]
               and ns["settings"] == ["읽기 오류: 잠김"] and ns["clicked"] == {"confirms": 0, "sent": 0}
               and ns["back"] == {"run": on_("3f9a1c2b7d10"), "draft": on_("b21c09e4f7a3"), "copy": [False, False]}
               and ns["failAgain"] == {"run": nohash, "draft": nohash, "copy": [True, True]},
-              f"실행 설정(GET /pipeline)을 읽지 못함 = 확인 필요·Prepare 갈라짐을 모름 → 해시 흐림(두 승인 단추·해시 복사 끔 — 눌러도 확인 창·메시지 없음, 흐림 줄에 "
+              f"실행 설정(GET /pipeline)을 읽지 못함 = 확인 필요·Prepare 갈라짐을 모름 → 승인 코드 흐림(두 승인 단추·승인 코드 복사 끔 — 눌러도 확인 창·메시지 없음, 흐림 줄에 "
               f"이유), 다시 읽히면 켬, 읽은 뒤 다시 읽기가 실패하면 옛 설정으로 켜 두지 않음 {ns}")
     else:
         check(False, f"noSettings 시나리오 결과 없음 {ns}")
     rr = res.get("reroll") or {}
     if "sent" in rr:
-        check(rr["way"] == "paid" and len(rr["sent"]["msgs"]) == 1 and sent(rr["sent"]["msgs"][0], "reroll", "", "", "재굴림(사전 승인) 1건")
-              and rr["sent"]["confirms"] == 0 and "실행 중: 재굴림(reroll)" in rr["sent"]["head"]
-              and rr["done"] == {"toast": ":재굴림 끝 — 재굴림(사전 승인)·복구만 실행 · 승인 필요 4건 남음",
-                                 "row": ["이 Studio 의 마지막 재굴림: T 끝 — 재굴림(사전 승인)·복구만 실행 · 승인 필요 4건 남음"]},
+        check(rr["way"] == "paid" and len(rr["sent"]["msgs"]) == 1 and sent(rr["sent"]["msgs"][0], "reroll", "", "", "다시 생성(사전 승인) 1건")
+              and rr["sent"]["confirms"] == 0 and "실행 중: 다시 생성(reroll)" in rr["sent"]["head"]
+              and rr["done"] == {"toast": ":다시 생성 끝 — 다시 생성(사전 승인)·복구만 실행 · 승인 필요 4건 남음",
+                                 "row": ["이 Studio 의 마지막 다시 생성: T 끝 — 다시 생성(사전 승인)·복구만 실행 · 승인 필요 4건 남음"]},
               f"R·'ComfyUI 큐'(board.js queueReroll) + 유료 가능한 탭 = reroll stage 메시지(hash·only '' — 확인 창 없음, R 의 확인이 동의) → 이 Studio 의 실행 → "
               f"Run 보고 한 줄 {rr['sent']} {rr['done']}")
         check(rr["oldOpener"] == "opener" and rr["oldNone"] == ""
               and rr["old"] == {"comfy": 1, "sent": 1,
-                                "toasts": ["warn:재굴림 예약됨 — Run 실행 때 과금(ComfyUI 탭의 확장이 옛 판(S3a — 판 2) — 그 탭을 새로고침한 뒤 유료 승인)"]},
-              f"탭이 S3a 판(유료 승인 못 받음): opener 가 있으면 지금의 Review 부분 실행(옛 확장 대체), 없으면 '재굴림 예약됨 — Run 실행 때 과금(못 받는 이유)' "
+                                "toasts": ["warn:다시 생성 예약됨 — Run 실행 때 과금(ComfyUI 탭의 확장이 옛 판(S3a — 판 2) — 그 탭을 새로고침한 뒤 유료 승인)"]},
+              f"탭이 S3a 판(유료 승인 못 받음): opener 가 있으면 지금의 Review 부분 실행(옛 확장 대체), 없으면 '다시 생성 예약됨 — Run 실행 때 과금(못 받는 이유)' "
               f"{rr['old']}")
-        check(rr["planned"] == {"sent": 1, "toast": "warn:재굴림 예약됨 — R 확인 때 큐를 보낼 탭이 없어 지금 보내지 않음: 머리줄 'ComfyUI 큐'로 보내거나 다음 Run 때 과금"},
-              f"R 확인 때 '예약만'(탭 없음)에 동의한 큐(queueReroll(\"\")) = 그 사이 유료 가능한 탭이 생겨도 보내지 않음(머리줄 'ComfyUI 큐' 안내) {rr['planned']}")
+        check(rr["planned"] == {"sent": 1, "toast": "warn:다시 생성 예약됨 — R 확인 때 큐를 보낼 탭이 없어 지금 보내지 않음: 머리줄 [다시 생성 보내기]로 보내거나 다음 Run 때 과금"},
+              f"R 확인 때 '예약만'(탭 없음)에 동의한 큐(queueReroll(\"\")) = 그 사이 유료 가능한 탭이 생겨도 보내지 않음(머리줄 [다시 생성 보내기] 안내) {rr['planned']}")
         pg = rr.get("paying") or {}
-        check("재굴림 큐 — ComfyUI 탭 응답 기다리는 중" in str(pg.get("head")) and "승인 — 확인" not in str(pg.get("head"))
-              and pg.get("lock") == "재굴림 큐 요청을 처리하는 중",
-              f"r2-15 재굴림 큐는 확인 창 없음(R 의 확인이 동의) — 탭 응답을 기다리는 머리줄·paidLock 문구가 '재굴림 승인 — 확인'이 아님 {pg}")
+        check("다시 생성 큐 — ComfyUI 탭 응답 기다리는 중" in str(pg.get("head")) and "승인 — 확인" not in str(pg.get("head"))
+              and pg.get("lock") == "다시 생성 큐 요청을 처리하는 중",
+              f"r2-15 다시 생성 큐는 확인 창 없음(R 의 확인이 동의) — 탭 응답을 기다리는 머리줄·paidLock 문구가 '다시 생성 승인 — 확인'이 아님 {pg}")
     rd = res.get("rerollHeld") or {}
     if "button" in rd:
         lk_ = "Run 승인 요청을 처리하는 중"
-        held_ = "warn:재굴림 예약됨 — 지금 보내지 않음({}): 머리줄 'ComfyUI 큐'로 보내거나 다음 Run 때 과금"
+        held_ = "warn:다시 생성 예약됨 — 지금 보내지 않음({}): 머리줄 [다시 생성 보내기]로 보내거나 다음 Run 때 과금"
         agreed = held_.format("R 확인 때 '지금은 예약만'에 동의함")
-        conf_ = (f"유료 호출이 사전 승인됩니다 — 지금은 큐를 보내지 않음({lk_}): 재굴림은 예약만 되고 머리줄 'ComfyUI 큐'로 보내거나 다음 Run 때(선택과 무관) "
+        conf_ = (f"유료 호출이 사전 승인됩니다 — 지금은 큐를 보내지 않음({lk_}): 다시 생성은 예약만 되고 머리줄 [다시 생성 보내기]로 보내거나 다음 Run 때(선택과 무관) "
                  "함께 과금됩니다. 계속할까요?")
         bt, ky = rd["button"], rd["key"]
         check(bt["at"] == {"way": "paid", "lock": lk_} and bt["freed"] == {"way": "paid", "lock": ""} and bt["timers"] == 1 and bt["confirm"] == conf_
               and bt["side"] is False and bt["sent"] == ["run"] and bt["toasts"][-1:] == [agreed]
               and ky["at"] == bt["at"] and ky["freed"] == bt["freed"] and ky["timers"] == 0 and ky["sent"] == ["run"]
-              and ky["toasts"][:2] == [f"warn:R 무시 — {lk_}. 더 넣으려면 [재굴림 +1] 단추(확인 창에 누적 건수)"] * 2 and agreed not in ky["toasts"],
-              f"r2-01 R 확인 때 이 Studio 가 Run 승인 응답을 기다림(lock) = '지금은 예약만'(부수 효과 줄 없음)에 동의 → 탭이 확정 거절(busy)로 lock 이 풀린 뒤 "
-              f"0.6초 큐 = 재굴림 메시지 0·'예약됨(동의함)' 토스트(버튼), 키보드 R R 은 그동안 무장하지 않음(사용성 §12 rerollHold — 쓰기·큐 0) {bt} {ky}")
+              and ky["toasts"][:2] == [f"warn:R 무시 — {lk_}. 더 넣으려면 [다시 생성 +1] 단추(확인 창에 누적 건수)"] * 2 and agreed not in ky["toasts"],
+              f"r2-01 R 확인 때 이 Studio 가 생성 승인 응답을 기다림(lock) = '지금은 예약만'(부수 효과 줄 없음)에 동의 → 탭이 확정 거절(busy)로 lock 이 풀린 뒤 "
+              f"0.6초 큐 = 다시 생성 메시지 0·'예약됨(동의함)' 토스트(버튼), 키보드 R R 은 그동안 무장하지 않음(사용성 §12 rerollHold — 쓰기·큐 0) {bt} {ky}")
         op = rd["opener"]
         mid, aft = op["mid"], op["after"]
-        ot_ = "Open Board 로 연 ComfyUI 탭(확장 판 3): ComfyUI 탭이 큐를 처리하는 중. 재굴림·ComfyUI 큐는 지금은 예약만({} — 머리줄 'ComfyUI 큐' 또는 다음 Run 때 과금)"
+        ot_ = "Open Board 로 연 ComfyUI 탭(확장 판 3): ComfyUI 탭이 큐를 처리하는 중. 다시 생성(R)·[다시 생성 보내기]는 지금은 예약만({} — 머리줄 [다시 생성 보내기] 또는 다음 Run 때 과금)"
         check(mid == {"way": "opener", "lock": lk_, "comfy": 0, "confirm": conf_, "title": ot_.format(lk_)}
               and aft.get("way") == "opener" and str(aft.get("lock")).startswith("이 Studio 의 Run(run)") and aft.get("comfy") == 0 and op["sent"] == ["run"]
               and op["toasts"].count(held_.format(lk_)) == 2 and held_.format(aft.get("lock")) in op["toasts"] and aft.get("title") == ot_.format(aft.get("lock")),
-              f"r2-09 탭이 이 Studio 의 Run 승인을 처리하는 동안 hello busy(studioBusy) → 길 opener 여도 이 Studio 가 바쁘면(paidLock — 길과 무관) R 확인 창 = "
-              f"'지금은 예약만'·큐·머리줄 'ComfyUI 큐' 모두 Review 부분 실행 0, 승인 결과 뒤 낡은 busy(이 Studio 의 Run 실행 중)에도 0 — r3-11 머리줄 배지 제목도 "
+              f"r2-09 탭이 이 Studio 의 생성 승인을 처리하는 동안 hello busy(studioBusy) → 길 opener 여도 이 Studio 가 바쁘면(paidLock — 길과 무관) R 확인 창 = "
+              f"'지금은 예약만'·큐·머리줄 [다시 생성 보내기] 모두 Review 부분 실행 0, 승인 결과 뒤 낡은 busy(이 Studio 의 Run 실행 중)에도 0 — r3-11 머리줄 배지 제목도 "
               f"'Review 부분 실행으로'가 아니라 '지금은 예약만(이유)' {op}")
     rs = res.get("resume") or {}
     if "head" in rs:
         check("실행 중: Run(run) 대기 — 앞 2" in rs["head"] and rs["plan"] is True and rs["cancel"] is True
-              and rs["done"] == ":Run 끝 — 승인 안 됨 — 승인 해시가 실행 전 계획과 달라 드라이런(승인 필요분 과금 없음) · 남은 승인 필요 4건" and rs["stored"] is None,
+              and rs["done"] == ":Run 끝 — 승인 안 됨 — 승인 코드가 실행 전 계획과 달라 드라이런(승인 필요분 과금 없음) · 남은 승인 필요 4건" and rs["stored"] is None,
               f"다시 연 창: sessionStorage 의 유료 실행(stage run)을 무료 큐와 같이 이어 받음(대기열 번호로 앞 작업 수·[취소]·계획 미룸), 끝 = Run 보고(드라이런) {rs}")
     fw = res.get("freeWhilePaying") or {}
     if "paying" in fw:
         held_off = [True, "반영 확인·큐 요청을 처리하는 중"]
         hold = {"drawn": held_off, "confirms": 0, "sent": 0, "run": held_off,
-                "toasts": ["warn:계획·탭 상태가 바뀜 — 승인하지 않음: 다시 그린 계획 칸을 보고 다시 누르세요",
-                           "warn:재굴림 예약됨 — 지금 보내지 않음(반영 확인·큐 요청을 처리하는 중): 머리줄 'ComfyUI 큐'로 보내거나 다음 Run 때 과금"]}
+                "toasts": ["warn:계획·탭 상태가 바뀜 — 승인하지 않음: 다시 그린 「비용·승인」 칸을 보고 다시 누르세요",
+                           "warn:다시 생성 예약됨 — 지금 보내지 않음(반영 확인·큐 요청을 처리하는 중): 머리줄 [다시 생성 보내기]로 보내거나 다음 Run 때 과금"]}
         check(fw["paying"] == {"r": True, "prompts": 0, "toast": "warn:반영: Run 승인 응답을 기다리는 중 — 끝난 뒤 다시"}
               and fw["tracked"] == {"stored": {"stage": "run", "pid": "pid-run", "number": None}, "head": True},
-              f"계약 §5 유료 승인 결과를 기다리는 사이 무료 큐(board.js 편집기 반영(큐) = pipe.queue — 패널 단추 밖의 길)는 보내지 않음 → 탭의 ok 를 이 Studio 의 "
+              f"계약 §5 유료 승인 결과를 기다리는 사이 무료 큐(board.js 편집기 반영 (무료) = pipe.queue — 패널 단추 밖의 길)는 보내지 않음 → 탭의 ok 를 이 Studio 의 "
               f"실행으로 이어 받음 {fw['paying']} {fw['tracked']}")
         check(fw["asking"] == hold and fw["sending"] == hold and fw.get("exporting") == hold
               and fw.get("cancel") == {"drawn": held_off, "run": [False, f"확인 창 뒤 ComfyUI 탭이 승인 템플릿을 큐에 넣음 — approve: 3f9a1c2b7d10  only: {allids}"],
                                       "prompts": 0},
               f"무료 큐를 만드는 중(반영 확인 — GET /pipeline 다시 읽기·템플릿 요청 PS.sending, [Export] 포함)에는 승인 단추를 그 이유로 끈 모양으로 다시 그림(r3-12 — "
-              f"켜진 채 남아 누르면 '계획·탭 상태가 바뀜'이 뜨지 않게), 옛 단추를 눌러도·재굴림도 보내지 않음, 확인 창을 취소하면 다시 켬 "
+              f"켜진 채 남아 누르면 '계획·탭 상태가 바뀜'이 뜨지 않게), 옛 단추를 눌러도·다시 생성도 보내지 않음, 확인 창을 취소하면 다시 켬 "
               f"{fw['asking']} {fw['sending']} {fw.get('exporting')} {fw.get('cancel')}")
     lw = res.get("lateWhileFree") or {}
     if "toast" in lw:
@@ -36984,16 +36984,16 @@ def _paid_js_studio():
               f"결과를 모르고 끝낸 승인 뒤 이 Studio 가 무료 반영을 냄 → 늦게 온 ok 는 그 실행(머리줄·이어 받기)을 덮지 않고 토스트에 prompt_id {lw}")
     wl = res.get("waveLate") or {}
     if "row" in wl:
-        row_ = ["wave 로 멈춤 — 멈출 때 남은 2건: 새 계획(단추의 건수)으로 이어서 승인(클릭만 — 자동 이어가기 없음)"]
+        row_ = ["시간 상한으로 멈춤 — 멈출 때 남은 2건: 새 계획(단추의 건수)으로 이어서 승인(클릭만 — 자동 이어가기 없음)"]
         check(wl == {"row": row_, "label": "남은 4건 이어서 승인 ≈ $2.40–3.16", "afterDraft": row_},
               f"D9 끝난 Run(PS.last.run)에 늦게 온 wave 도 받음 → Run 줄 '남은 N건' + 이어서 승인 라벨, 초안 승인을 보내고 끝나도 Run wave 줄은 남음 {wl}")
     rw = res.get("rerollWave") or {}
     if "mid" in rw:
-        check(rw == {"mid": [], "toast": "warn:재굴림 끝 — 재굴림(사전 승인)·복구만 실행 · 승인 필요 4건 남음 · wave 로 멈춤(남은 3건) — 머리줄 'ComfyUI 큐'로 이어서",
-                     "row": ["재굴림 wave 로 멈춤 — 남은 3건: 사전 승인분이라 머리줄 'ComfyUI 큐'(또는 다음 Run)로 이어서"], "runRow": [],
-                     "label": "Run 승인 4건 ≈ $2.40–3.16", "cleared": []},
-              f"재굴림 실행의 wave(탭 토스트가 Studio 를 가리킴) = 끝난 뒤 '재굴림 wave 로 멈춤 — 남은 N건'(사전 승인분 — 'ComfyUI 큐'로, Run 승인 라벨은 그대로), "
-              f"다음 Run 승인을 보내면 지움 {rw}")
+        check(rw == {"mid": [], "toast": "warn:다시 생성 끝 — 다시 생성(사전 승인)·복구만 실행 · 승인 필요 4건 남음 · 시간 상한으로 멈춤(남은 3건) — 머리줄 [다시 생성 보내기]로 이어서",
+                     "row": ["다시 생성 시간 상한으로 멈춤 — 남은 3건: 사전 승인분이라 머리줄 [다시 생성 보내기](또는 다음 Run)로 이어서"], "runRow": [],
+                     "label": "생성 승인 4건 ≈ $2.40–3.16", "cleared": []},
+              f"다시 생성 실행의 wave(탭 토스트가 Studio 를 가리킴) = 끝난 뒤 '다시 생성 시간 상한으로 멈춤 — 남은 N건'(사전 승인분 — 'ComfyUI 큐'로, 생성 승인 라벨은 그대로), "
+              f"다음 생성 승인을 보내면 지움 {rw}")
     er = res.get("endRows") or {}
     if "importErr" in er:
         check(er == {"importErr": {"row": ["이 Studio 의 마지막 Run: T 오류 — BMKDesignPatchImportPSD: PSD 파일이 없습니다"],
@@ -37007,23 +37007,23 @@ def _paid_js_studio():
     if "during" in rp:
         wait_ = [True, "앞 승인 결과로 계획을 다시 받는 중"]
         check(rp == {"during": wait_, "draft": wait_, "again": {"confirms": 1, "sent": 1}, "after": on_("3f9a1c2b7d10")},
-              f"'계획 다시' 결과(409 stale 등) 뒤 다시 받은 계획이 올 때까지 그 계획의 해시로 승인 끔(같은 낡은 해시로 확인 창·메시지 다시 없음), 새 계획 = 다시 켬 {rp}")
+              f"'계획 다시' 결과(409 stale 등) 뒤 다시 받은 계획이 올 때까지 그 계획의 승인 코드로 승인 끔(같은 낡은 승인 코드로 확인 창·메시지 다시 없음), 새 계획 = 다시 켬 {rp}")
     ag = res.get("again") or {}
     if "same" in ag:
-        lost_ = ("앞서 보낸 같은 승인(해시 3f9a1c2b7d10)의 결과를 모름 — 첫 승인이 ComfyUI 큐에 있으면 둘째는 그 실행이 승인분을 소화한 뒤라 과금 없이 드라이런, "
+        lost_ = ("앞서 보낸 같은 승인(승인 코드 3f9a1c2b7d10)의 결과를 모름 — 첫 승인이 ComfyUI 큐에 있으면 둘째는 그 실행이 승인분을 소화한 뒤라 과금 없이 드라이런, "
                  "큐에 없으면(또는 첫 실행이 Run 앞에서 멈추면) 이 승인이 과금합니다 — 보내기 전에 ComfyUI 큐 확인.")
         tail = lambda c: str(c).split("\n")[-2:]
         check(tail(ag["same"]) == [lost_, "계속할까요?"] and lost_ not in str(ag["first"]) and lost_ not in str(ag["draft"])
               and str(ag["draft"]).startswith("VLM 초안") and ag["sent"] == 1 and tail(ag["known"]) == [lost_, "계속할까요?"],
-              f"결과를 모르고 끝낸 승인(ack 없음) 뒤 같은 해시로 다시 승인 = 확인 창에 '앞서 보낸 같은 승인의 결과를 모름' 한 줄(첫 승인이 큐에 있으면 드라이런·"
+              f"결과를 모르고 끝낸 승인(ack 없음) 뒤 같은 승인 코드로 다시 승인 = 확인 창에 '앞서 보낸 같은 승인의 결과를 모름' 한 줄(첫 승인이 큐에 있으면 드라이런·"
               f"없으면 과금 — 조건부), 첫 승인·다른 단계는 없음, r3-09 같은 단계 다음 요청의 확정 거절(탭이 바쁨 — 앞 요청에 대해 아무것도 말하지 않음) 뒤에도 "
               f"남음 {ag}")
         check(tail(ag.get("unknown")) == [lost_, "계속할까요?"],
-              f"r2-03 탭이 결과를 모름(unknown) 뒤 같은 해시로 다시 승인 = 확인 창에 같은 한 줄(ack 없음·최종 시간·탭 바뀜과 같음) {ag.get('unknown')}")
+              f"r2-03 탭이 결과를 모름(unknown) 뒤 같은 승인 코드로 다시 승인 = 확인 창에 같은 한 줄(ack 없음·최종 시간·탭 바뀜과 같음) {ag.get('unknown')}")
         check(tail(ag["timeout"]) == [lost_, "계속할까요?"] and tail(ag["changed"]) == [lost_, "계속할까요?"]
               and ag["lateErr"]["row"] == ["이 Studio 의 마지막 Run: T 오류 — BMKDesignPatchImportPSD: PSD 파일이 없습니다"]
               and tail(ag["lateErr"]["confirm"]) == [side, "계속할까요?"] and tail(ag["twoLost"]) == [lost_, "계속할까요?"],
-              f"최종 시간·탭 바뀜으로 끝낸 승인 뒤에도 그 한 줄, 늦게 온 ok 로 결과를 안 뒤(이어 받은 실행이 Run 앞 Import 오류로 끝남 — 해시 그대로라 이번 승인이 "
+              f"최종 시간·탭 바뀜으로 끝낸 승인 뒤에도 그 한 줄, 늦게 온 ok 로 결과를 안 뒤(이어 받은 실행이 Run 앞 Import 오류로 끝남 — 승인 코드 그대로라 이번 승인이 "
               f"과금)에는 없음(거짓 '드라이런' 안내 없음), 결과 모름이 둘이면 첫 요청의 늦은 결과는 둘째의 표시를 지우지 않음 "
               f"{ag['timeout']} {ag['changed']} {ag['lateErr']} {ag['twoLost']}")
         unk_ = next(e for e in M["bmk-dp-approved"]["examples"] if e.get("reason") == "unknown")["error"]
@@ -37031,53 +37031,53 @@ def _paid_js_studio():
         check(lu.get("late") == {"toast": f"warn:늦게 온 결과 — Run 결과 모름 — {unk_}", "row": [lost_row], "kept": ["run"], "confirm": lost_}
               and lu.get("resumed") == {"toast": f"warn:늦게 온 결과 — Run 결과 모름 — {unk_}", "row": [lost_row], "kept": ["run"]},
               f"r3-03 Studio 가 먼저 끝낸 요청(최종 시간)·새로 연 창이 이어 받은 요청에 늦게 온 approved unknown = 여전히 결과 모름: 늦은 토스트는 뜨고 진행 패널 "
-              f"줄·보낸 승인 기록(새로고침 뒤에도)·같은 해시 재승인 확인 창 줄이 남음 {lu}")
+              f"줄·보낸 승인 기록(새로고침 뒤에도)·같은 승인 코드 재승인 확인 창 줄이 남음 {lu}")
         lk = res.get("lostKept") or {}
         check(lk.get("busy") == {"row": [lost_row], "kept": [True], "confirm": lost_}
               and lk.get("reopened") == {"row": [lost_row], "late": {"toast": late, "head": True, "kept": None, "row": []}}
               and lk.get("submitted") == {"row": [], "kept": None, "confirm": side},
-              f"r3-09 결과 모름 A 뒤 같은 단계 B 의 확정 거절(busy)은 A 의 줄·기록(B 것만 지움)·같은 해시 확인 창 줄을 지우지 않음, 그 창 세션을 새로 열어도 A 줄 + "
+              f"r3-09 결과 모름 A 뒤 같은 단계 B 의 확정 거절(busy)은 A 의 줄·기록(B 것만 지움)·같은 승인 코드 확인 창 줄을 지우지 않음, 그 창 세션을 새로 열어도 A 줄 + "
               f"A 의 늦은 ok 이어 받음(받은 뒤 기록·줄 지움), B 가 제출되면(ok — 대기열은 차례대로) A 도 지움 {lk}")
     rsv = res.get("restart") or {}
     check(rsv.get("before") == [True, "ComfyUI 재시작 필요 — 서버가 S3a 판(유료 템플릿 없음)"] and rsv.get("oldPoll") == {"gets": 1, "same": True}
           and rsv.get("after") == on_("3f9a1c2b7d10") and rsv.get("settled") == 0,
-          f"r3-05 새 JS + 옛 서버(GET /pipeline 에 manifest_rev 없음)로 연 창: 승인 단추 '재시작 필요', ComfyUI 재시작 뒤(pipeline_rev·매니페스트 rev 그대로) 같은 "
+          f"r3-05 새 JS + 옛 서버(GET /pipeline 에 manifest_rev 없음)로 연 창: 승인 단추 '재시작 필요', ComfyUI 재시작 뒤(pipeline_rev·프로젝트 기록 rev 그대로) 같은 "
           f"state 폴링에서 GET /pipeline 을 다시 읽어 켬 — 옛 서버인 동안 폴링은 다시 읽되 다시 그리지 않음, 새 판이 된 뒤엔 다시 읽지 않음 {rsv}")
     tx = res.get("texts") or {}
     if "run" in tx:
         ids3 = "001_38a818, 002_d98f99, 003_2f8f50"
         wait_s = "주의: 스펙 초안 대기 1크롭 + 화풍(Spec Draft 미승인) — 지금 승인하면 초안 없는 프롬프트로 과금합니다."
         # r1-22 보류 줄 = Studio 에서 고칠 곳(계획 칸 체크) — 그래프 Spec Draft 노드의 only 위젯 말이 아님
-        held = "주의: 화풍 단위를 고르지 않아(계획 칸 '화풍 단위 포함' 끔) 화풍 초안 대기가 보류됨 — 지금 승인하면 화풍 초안 없는 프롬프트로 과금합니다."
+        held = "주의: 화풍 단위를 고르지 않아(「비용·승인」 칸 '화풍 단위 포함' 끔) 화풍 초안 대기가 보류됨 — 지금 승인하면 화풍 초안 없는 프롬프트로 과금합니다."
         mock2 = "주의: 스펙 2개가 mock 초안(자리표시 문구) — 지금 승인하면 그 문구로 과금합니다."
         check(tx["run"] == [head + ids3, pre, dry, wait1, unw, side] and wait_s in tx["runStyle"] and held not in tx["runStyle"]
               and wait1 in tx["runHeld"] and held in tx["runHeld"] and wait1 in tx["runNoFull"] and held not in tx["runNoFull"]
               and not any(x.startswith("주의: 스펙 초안 대기") for x in tx["runOther"]) and mock2 in tx["runMockSpecs"] and mock2 not in tx["runMockBackend"]
               and tx["runBare"] == [head + "001_38a818", dry, side],
-              f"§4.4·계약 §5 Run 확인 창: 재굴림(사전 승인) 함께 과금, 선택 크롭의 초안 대기와 화풍(골랐으면 대기·apply full 인데 안 골랐으면 보류), 못 쓴 스펙, "
+              f"§4.4·계약 §5 Run 확인 창: 다시 생성(사전 승인) 함께 과금, 선택 크롭의 초안 대기와 화풍(골랐으면 대기·apply full 인데 안 골랐으면 보류), 못 쓴 스펙, "
               f"mock 초안 스펙(Run 백엔드가 mock 이면 0), 끝 줄 = 부수 효과 {tx['run']}")
-        check(tx["draft"] == ["VLM 초안 1크롭(보통 ≈ 27, 최대 47 크레딧)을 승인하고 과금합니다. orphan 재시도 2건 포함(과금됐을 수 있음).", "사유: 타깃 추가 × 1",
+        check(tx["draft"] == ["VLM 초안 1크롭(보통 ≈ 27, 최대 47 크레딧)을 승인하고 과금합니다. 결과 못 받음 재시도 2건 포함(과금됐을 수 있음).", "사유: 타깃 추가 × 1",
                               "드라이런 이후 대기 목록이 바뀌었으면 서버가 호출 없이 드라이런만 다시 합니다.", side]
               and tx["draftStyle"][0] == "VLM 초안 1크롭 + 화풍(보통 ≈ 36, 최대 61 크레딧)을 승인하고 과금합니다."
               and tx["qwen"] == ["로컬 Qwen 으로 1건(≈ 5분). ComfyUI 모델을 VRAM 에서 내립니다(과금 없음).", side]
               and tx.get("qwen65") == ["로컬 Qwen 으로 1건(≈ 2분). ComfyUI 모델을 VRAM 에서 내립니다(과금 없음).", side],
               f"§4.4 초안 확인 창: openai = 크롭 + 화풍·보통/최대 크레딧·orphan 재시도(과금됐을 수 있음)·사유, local_qwen = 분·VRAM 내림(과금 없음) — 분은 노드 "
               f"확인 창과 같은 올림(r2-13: 65초 = 2분) {tx['draft']} {tx['qwen']} {tx.get('qwen65')}")
-        check(tx["labels"] == {"run": "Run 승인 4건 ≈ $2.40–3.16", "mock": "Run 승인 4건 ≈ $2.40–3.16 [MOCK]", "none": "Run 승인 0건", "err": "Run 승인",
+        check(tx["labels"] == {"run": "생성 승인 4건 ≈ $2.40–3.16", "mock": "생성 승인 4건 ≈ $2.40–3.16 [MOCK]", "none": "생성 승인 0건", "err": "생성 승인",
                                "draft": "초안 승인 1크롭 ≈ 27(최대 47) 크레딧", "style": "초안 승인 1크롭 + 화풍 ≈ 36(최대 61) 크레딧", "qwen": "초안 승인 로컬 1건 ≈ 5분",
                                "vmock": "초안 승인 1크롭 [MOCK]", "derr": "초안 승인", "drun": "초안 승인"},
               f"계약 §5 승인 단추 라벨(runText·draftText label — mock 초안은 크레딧 추정 없이 건수만, 노드 단추와 같게) {tx['labels']}")
         check(tx["report"] == {"run": "승인분 실행 · 남은 승인 필요 0건",
-                               "dry": "승인 안 됨 — 승인 해시가 실행 전 계획과 달라 드라이런(승인 필요분 과금 없음) · 남은 승인 필요 4건",
+                               "dry": "승인 안 됨 — 승인 코드가 실행 전 계획과 달라 드라이런(승인 필요분 과금 없음) · 남은 승인 필요 4건",
                                "mock": "승인분 실행 · 남은 승인 필요 0건 [MOCK]", "draft": "승인분 실행 · 남은 초안 대기 1건",
-                               "reroll": "재굴림(사전 승인)·복구만 실행 · 승인 필요 4건 남음", "none": "보고 없음(노드가 옛 버전 — ComfyUI 재시작)",
+                               "reroll": "다시 생성(사전 승인)·복구만 실행 · 승인 필요 4건 남음", "none": "보고 없음(노드가 옛 버전 — ComfyUI 재시작)",
                                "error": "", "login": f"승인했지만 중지 — {login} · 남은 승인 필요 4건", "wave": "승인분 실행 · 남은 승인 필요 4건",
                                "draftLogin": f"승인했지만 중지 — {login} · 남은 초안 대기 3건", "draftHeld0": "승인분 실행 · 남은 초안 대기 1건",
                                "draft401": f"승인했지만 중지 — {login} · 남은 초안 대기 2건", "draftCap": "승인분 실행 · 남은 초안 대기 2건",
-                               "rerollLogin": f"재굴림 중지 — {login_rr} · 승인 필요 4건 남음"},
+                               "rerollLogin": f"다시 생성 중지 — {login_rr} · 승인 필요 4건 남음"},
               f"끝 보고 한 줄(paidReport — history dp_run.bmk_dp_run[0]·dp_draft.bmk_dp_draft[0] 의 approved_now·pending, 보고 없음 = 성공이면 옛 노드·"
               f"오류면 \"\", r1-15 인증 중지(stopped_reason auth — Run·Spec Draft 실행 중 401/402/403, Spec Draft auth_held > 0)면 '승인분 실행'이 아니라 "
-              f"로그인 필요, 다른 중지(credit_cap)는 그대로 — r2-06 재굴림은 '다시 승인'(R 재누름 +1)이 아니라 머리줄 'ComfyUI 큐') {tx['report']}")
+              f"로그인 필요, 다른 중지(credit_cap)는 그대로 — r2-06 다시 생성은 '다시 승인'(R 재누름 +1)이 아니라 머리줄 [다시 생성 보내기]) {tx['report']}")
     lg = res.get("login") or {}
     check(lg.get("toast") == f"warn:Run 끝 — 승인했지만 중지 — {login} · 남은 승인 필요 4건"
           and lg.get("row") == [f"이 Studio 의 마지막 Run: T 끝 — 승인했지만 중지 — {login} · 남은 승인 필요 4건"] and "warn" in str(lg.get("cls")).split(),
@@ -37088,61 +37088,61 @@ def _paid_js_studio():
         # 탭 문구의 할 일 '잠시 뒤 다시 승인'·'승인은 Studio 에서 다시'(not_submitted 정본 예시 끝)는 빼고 이유만 — 할 일은 뒤의 머리줄 큐 안내
         why_rr = {"busy": "ComfyUI 탭이 큐를 처리하는 중", "not_submitted": ex["not_submitted"]["error"].removesuffix(" — 승인은 Studio 에서 다시")}
         bad = {k: rx[k] for k in ("busy", "http", "not_submitted", "confirm_settings")
-               if rx[k] != [f"err:재굴림 큐 안 됨 — {why_rr.get(k) or ex[k]['error']}{reserved}"]}
+               if rx[k] != [f"err:다시 생성 큐 안 됨 — {why_rr.get(k) or ex[k]['error']}{reserved}"]}
         left_ = " — 남은 승인 항목은 큐에서 뺌"
         stray_ = " — 무장 중 쌓여 남은 큐 항목(승인 항목인지 모름)은 큐에서 뺌"
-        redo = {"aq": "이유 aq: ComfyUI 탭의 Run 단추 모드를 Run 으로 바꾼 뒤 머리줄 'ComfyUI 큐'",
-                "g2p": "이유 g2p: 그 탭에서 다른 워크플로로 바꾼 뒤 머리줄 'ComfyUI 큐'", "deno": "이유 deno: Director 가 없는 워크플로로 바꾼 뒤 머리줄 'ComfyUI 큐'",
-                "g2pL": f"이유 g2pL: 그 탭에서 다른 워크플로로 바꾼 뒤 머리줄 'ComfyUI 큐'{left_}",
-                "denoL": f"이유 denoL: Director 가 없는 워크플로로 바꾼 뒤 머리줄 'ComfyUI 큐'{left_}",
+        redo = {"aq": "이유 aq: ComfyUI 탭의 Run 단추 모드를 Run 으로 바꾼 뒤 머리줄 [다시 생성 보내기]",
+                "g2p": "이유 g2p: 그 탭에서 다른 워크플로로 바꾼 뒤 머리줄 [다시 생성 보내기]", "deno": "이유 deno: Director 가 없는 워크플로로 바꾼 뒤 머리줄 [다시 생성 보내기]",
+                "g2pL": f"이유 g2pL: 그 탭에서 다른 워크플로로 바꾼 뒤 머리줄 [다시 생성 보내기]{left_}",
+                "denoL": f"이유 denoL: Director 가 없는 워크플로로 바꾼 뒤 머리줄 [다시 생성 보내기]{left_}",
                 "leftL": f"이유 leftL: ComfyUI 탭의 큐 처리가 승인 항목을 꺼내기 전에 끝남{left_}",
-                "g2pS": f"이유 g2pS: 그 탭에서 다른 워크플로로 바꾼 뒤 머리줄 'ComfyUI 큐'{stray_}",
-                "denoLS": f"이유 denoLS: Director 가 없는 워크플로로 바꾼 뒤 머리줄 'ComfyUI 큐'{left_}{stray_}"}
-        bad.update({k: rx["redo"].get(k) for k, v in redo.items() if rx["redo"].get(k) != [f"err:재굴림 큐 안 됨 — {v}{reserved}"]})
+                "g2pS": f"이유 g2pS: 그 탭에서 다른 워크플로로 바꾼 뒤 머리줄 [다시 생성 보내기]{stray_}",
+                "denoLS": f"이유 denoLS: Director 가 없는 워크플로로 바꾼 뒤 머리줄 [다시 생성 보내기]{left_}{stray_}"}
+        bad.update({k: rx["redo"].get(k) for k, v in redo.items() if rx["redo"].get(k) != [f"err:다시 생성 큐 안 됨 — {v}{reserved}"]})
         # 꼬리 두 문구는 탭(js/bmk_design_patch.js studioApprove 의 gone)이 실제로 붙이는 말 그대로 — 탭이 바꾸면 Studio 정규식도 함께
         tab_js = (PKG / "js" / "bmk_design_patch.js").read_text(encoding="utf-8")
         if not (f'"{left_}"' in tab_js and f'"{stray_}"' in tab_js):
             bad["tabTails"] = "탭 not_submitted 꼬리 문구가 이 시험(=Studio refusal 정규식)과 다름"
         check(not bad and rx["sent"] == ["reroll"] * 12 and ex["not_submitted"]["error"].endswith(" — 승인은 Studio 에서 다시"),
-              f"r1-08 재굴림 큐(유료 탭 길)가 안 됨 = '재굴림 큐 안 됨 — 이유 · 사전 승인한 재굴림은 예약된 채 남음(다음 Run·ComfyUI 큐 때 과금) — 머리줄 큐·R 재누름 +1 "
+              f"r1-08 다시 생성 큐(유료 탭 길)가 안 됨 = '다시 생성 큐 안 됨 — 이유 · 사전 승인한 다시 생성은 예약된 채 남음(다음 Run·[다시 생성 보내기] 때 과금) — 머리줄 큐·R 재누름 +1 "
               f"경고'('승인 안 됨'·busy '잠시 뒤 다시' 아님 — 6초 오류 토스트), r2-06 탭 문구 끝의 '(Studio 에서) 다시 승인'·'승인은 Studio 에서 다시'는 "
-              f"재굴림이면 머리줄 큐로(R 재누름 +1 로 읽히지 않게) — r3-08 남은 승인 항목을 뺀 꼬리가 붙어도(꼬리는 그대로 끝에), 무장 중 쌓인 모르는 "
+              f"다시 생성이면 머리줄 큐로(R 재누름 +1 로 읽히지 않게) — r3-08 남은 승인 항목을 뺀 꼬리가 붙어도(꼬리는 그대로 끝에), 무장 중 쌓인 모르는 "
               f"항목을 뺀 꼬리(홀로·둘 다)도 같음(탭 문구와 같은 말) {bad}")
-        check(rx["noAck"] == {"toasts": ["warn:재굴림 결과 모름 — ComfyUI 탭 응답 없음 — ComfyUI 탭 새로고침(결과가 늦게 오면 이어서 봄) · 큐에 들어가지 않았으면 "
+        check(rx["noAck"] == {"toasts": ["warn:다시 생성 결과 모름 — ComfyUI 탭 응답 없음 — ComfyUI 탭 새로고침(결과가 늦게 오면 이어서 봄) · 큐에 들어가지 않았으면 "
                                          + reserved[3:]],
-                              "row": ["앞서 보낸 재굴림 승인의 결과를 모름 — 이미 ComfyUI 큐에 들어갔을 수 있음: 다시 보내기 전에 ComfyUI 큐 확인"]},
-              f"r1-08·r1-14 재굴림 결과 모름 = '재굴림 결과 모름'(들어가지 않았으면 예약된 채 남음) + 진행 패널 줄 {rx['noAck']}")
+                              "row": ["앞서 보낸 다시 생성 승인의 결과를 모름 — 이미 ComfyUI 큐에 들어갔을 수 있음: 다시 보내기 전에 ComfyUI 큐 확인"]},
+              f"r1-08·r1-14 다시 생성 결과 모름 = '다시 생성 결과 모름'(들어가지 않았으면 예약된 채 남음) + 진행 패널 줄 {rx['noAck']}")
     gt = res.get("gate") or {}
     if "noFile" in gt:
-        nohash = [True, "승인할 해시 없음(승인할 것 없음·반영 필요·흐림·낡음·실행 중)"]
-        whys = {"noFile": "실행 설정(pipeline.json) 없음 — 진행(G) [설정]에서 한 번 저장",
-                "path": "PSD 파일이 없음: G:/x.psd — 진행(G) [설정]에서 경로를 고침", "oldServer": "ComfyUI 재시작 필요 — 서버가 S3a 판(유료 템플릿 없음)"}
+        nohash = [True, "승인 코드 없음(승인할 것 없음·미반영·흐림·낡음·실행 중)"]
+        whys = {"noFile": "실행 설정(pipeline.json) 없음 — 실행(G) [실행 설정 열기]에서 한 번 저장",
+                "path": "PSD 파일이 없음: G:/x.psd — 실행(G) [실행 설정 열기]에서 경로를 고침", "oldServer": "ComfyUI 재시작 필요 — 서버가 S3a 판(유료 템플릿 없음)"}
         # r2-05 머리줄 탭 배지 제목도 같은 판정: 서버가 템플릿을 낼 수 없으면 '서버 템플릿을 큐에 넣음'이 아니라 그 이유 + R·ComfyUI 큐의 실제 길
-        ch_t = "채널로 찾은 ComfyUI 탭(확장 판 3): {}. 이 창은 Open Board 로 열리지 않아 재굴림·ComfyUI 큐는 그 탭에서 직접(R 은 사전 승인만 되고 다음 Run 때 과금)"
-        cf_why = "실행 설정 확인 필요(prepare.variants) — 진행(G) [설정]에서 확인·저장"
+        ch_t = "채널로 찾은 ComfyUI 탭(확장 판 3): {}. 이 창은 Open Board 로 열리지 않아 다시 생성(R)·[다시 생성 보내기]는 그 탭에서 직접(R 은 사전 승인만 되고 다음 Run 때 과금)"
+        cf_why = "실행 설정 확인 필요(prepare.variants) — 실행(G) [실행 설정 열기]에서 확인·저장"
         bad = {}
         for k, why in whys.items():
             g = gt[k]
             want = {"why": why, "none": "", "run": nohash if k == "noFile" else [True, why], "opener": "opener", "comfy": 1, "sent": 0,
-                    "toasts": [f"warn:재굴림 예약됨 — Run 실행 때 과금({why})"] * 2, "title": ch_t.format(why),
-                    "confirm": f"유료 호출이 사전 승인됩니다 — 지금 큐를 보내지 않음({why}): 재굴림은 예약만 되고 다음 Run 때(선택과 무관) 함께 과금됩니다. 계속할까요?"}
+                    "toasts": [f"warn:다시 생성 예약됨 — Run 실행 때 과금({why})"] * 2, "title": ch_t.format(why),
+                    "confirm": f"유료 호출이 사전 승인됩니다 — 지금 큐를 보내지 않음({why}): 다시 생성은 예약만 되고 다음 Run 때(선택과 무관) 함께 과금됩니다. 계속할까요?"}
             if g != want:
                 bad[k] = g
         check(not bad and gt["confirm"] == {"why": cf_why, "none": "", "run": nohash, "title": ch_t.format(cf_why)}
               and gt["confirmOpener"] == {"why": cf_why, "none": "", "run": nohash,
-                                          "title": f"Open Board 로 연 ComfyUI 탭(확장 판 3): {cf_why}. 재굴림·ComfyUI 큐는 이 탭의 Review 부분 실행으로(그래프 Prepare 위젯 값으로 과금)"}
+                                          "title": f"Open Board 로 연 ComfyUI 탭(확장 판 3): {cf_why}. 다시 생성(R)·[다시 생성 보내기]는 이 탭의 Review 부분 실행으로(그래프 Prepare 위젯 값으로 과금)"}
               and gt["ok"] == {"why": "", "none": "paid", "run": on_("3f9a1c2b7d10"),
-                               "title": "채널로 찾은 ComfyUI 탭(확장 판 3) — 초안·Run 승인·재굴림·ComfyUI 큐가 이 탭으로(탭이 서버 템플릿을 큐에 넣음)"},
+                               "title": "채널로 찾은 ComfyUI 탭(확장 판 3) — 초안·생성 승인·다시 생성(R)·[다시 생성 보내기]가 이 탭으로(탭이 서버 템플릿을 큐에 넣음)"},
               f"r1-09 서버가 유료 템플릿을 내주지 않을 상태(GET /pipeline — 파일 없음·확인 필요·경로 경고·옛 서버(manifest_rev 없음)) = 유료 탭 길 아님: R 확인 창 "
               f"'지금 큐를 보내지 않음(그 이유)'·큐 = 예약만, opener 가 있으면 Review 부분 실행(S3a 와 같음), 승인 단추 꺼짐(그 이유) — 탭에 승인 메시지 0, "
               f"r2-05 머리줄 배지 제목도 그 이유·실제 길(실제 link·pipe) {bad} {gt.get('confirm')} {gt.get('confirmOpener')} {gt.get('ok')}")
     rh = res.get("refresh") or {}
     if "kept" in rh:
         check(rh["kept"] == {"run": [{"hash": "3f9a1c2b7d10", "id": rh["id"], "tab": tab, "via": "channel"}]} and rh["row"] == [lost_row]
-              and rh["confirm"] == [("앞서 보낸 같은 승인(해시 3f9a1c2b7d10)의 결과를 모름 — 첫 승인이 ComfyUI 큐에 있으면 둘째는 그 실행이 승인분을 소화한 뒤라 과금 "
+              and rh["confirm"] == [("앞서 보낸 같은 승인(승인 코드 3f9a1c2b7d10)의 결과를 모름 — 첫 승인이 ComfyUI 큐에 있으면 둘째는 그 실행이 승인분을 소화한 뒤라 과금 "
                                      "없이 드라이런, 큐에 없으면(또는 첫 실행이 Run 앞에서 멈추면) 이 승인이 과금합니다 — 보내기 전에 ComfyUI 큐 확인."), "계속할까요?"]
               and rh["late"] == {"toast": late, "head": True, "job": {"stage": "run", "pid": "pid-run", "number": None}, "kept": None, "row": []},
-              f"r1-13 승인을 보내고 결과를 기다리는 사이 Studio 창을 새로 엶 = 보낸 요청(sessionStorage — hash·id·tab·길)으로 결과 모름 줄·같은 해시 재승인 확인 창 "
+              f"r1-13 승인을 보내고 결과를 기다리는 사이 Studio 창을 새로 엶 = 보낸 요청(sessionStorage — hash·id·tab·길)으로 결과 모름 줄·같은 승인 코드 재승인 확인 창 "
               f"줄, 탭이 그 뒤 보낸 approved(같은 id) = 늦게 온 결과로 이어 받음(이 Studio 의 실행·이어 받기), 받은 뒤 기록·줄 지움 {rh}")
 
 
@@ -37279,7 +37279,7 @@ const seen = (w) => ({ tab: w.t.tab, wire: w.wire.slice(), q: w.srv.log.filter((
 // ── 채널 길: Run 승인(사용자 클릭·confirm) → 탭 ack → 서버 템플릿 → 바닥 제출(템플릿·토큰 자리·사용자 workflow) → approved → Studio 실행 → 끝 ──
 await scenario("channel", async () => {
   const w = await world("e2e-ch");
-  const r = { link: [w.link.state, w.link.via, w.link.ext, w.link.submit, w.link.tab], btn: w.btn("Run 승인") };
+  const r = { link: [w.link.state, w.link.via, w.link.ext, w.link.submit, w.link.tab], btn: w.btn("생성 승인") };
   // 001 체크를 껐다 켬 → 선택 삽입 순서 002,003,001(정렬과 다름): 계획 요청·승인의 only 는 정렬한 정규 only 라야 서버 only_canon(응답 only — 탭이
   // 보낸 only 와 대조)과 같다
   const p0 = w.srv.count("pipeline/plan");
@@ -37288,9 +37288,9 @@ await scenario("channel", async () => {
     cb.checked = on;
     cb.fire("change");
   }
-  await until(() => w.srv.count("pipeline/plan") > p0 && (w.btn("Run 승인") || [true])[0] === false);
+  await until(() => w.srv.count("pipeline/plan") > p0 && (w.btn("생성 승인") || [true])[0] === false);
   r.planOnly = w.srv.log.filter((x) => x.path === "pipeline/plan").at(-1).q.only;
-  w.click(w.B("Run 승인"));
+  w.click(w.B("생성 승인"));
   await until(() => w.toast("Run 큐에 들어감"));
   Object.assign(r, seen(w), { toast: w.toast("Run 큐에 들어감"), stored: JSON.parse(w.store.getItem(JOB) || "null"), head: w.head.textContent,
     jobs: w.t.jobs.slice(), seed: w.t.seed.value, adopt: w.t.adopt.value, approve: w.t.userApprove(), confirm: (w.confirms[0] || "").split("\n")[0] });
@@ -37318,11 +37318,11 @@ await scenario("stale", async () => {
   const w = await world("e2e-stale");
   w.stale = true;
   const p0 = w.srv.count("pipeline/plan");
-  w.click(w.B("Run 승인"));
+  w.click(w.B("생성 승인"));
   w.hash = STALE.hash;  // 서버의 지금 계획 — 다시 받은 계획이 이 해시
   await until(() => w.toast("Run 승인 안 됨"));
-  await until(() => String((w.btn("Run 승인") || [])[1]).includes(STALE.hash), 2000);
-  const r = Object.assign(seen(w), { toast: w.toast("Run 승인 안 됨"), replan: w.srv.count("pipeline/plan") - p0, btn: w.btn("Run 승인"),
+  await until(() => String((w.btn("생성 승인") || [])[1]).includes(STALE.hash), 2000);
+  const r = Object.assign(seen(w), { toast: w.toast("Run 승인 안 됨"), replan: w.srv.count("pipeline/plan") - p0, btn: w.btn("생성 승인"),
     queued: w.t.log.filter((x) => x[0] === "queue").length });
   w.stop();
   return r;
@@ -37332,11 +37332,11 @@ await scenario("stale", async () => {
 await scenario("busy", async () => {
   const w = await world("e2e-busy");
   w.t.app.processingQueue = true;  // 다음 hello 전 — Studio 는 아직 유료 가능으로 앎
-  w.click(w.B("Run 승인"));
+  w.click(w.B("생성 승인"));
   await until(() => w.toast("Run 승인 안 됨"));
   w.t.app.processingQueue = false;
   await sleep(1700);  // ack 시간(1500ms) 뒤
-  const r = Object.assign(seen(w), { toasts: w.toasts.slice(), run: w.btn("Run 승인") });
+  const r = Object.assign(seen(w), { toasts: w.toasts.slice(), run: w.btn("생성 승인") });
   w.stop();
   return r;
 });
@@ -37346,7 +37346,7 @@ await scenario("busy", async () => {
 await scenario("autoQueue", async () => {
   const w = await world("e2e-aq");
   w.t.app.extensionManager.queueSettings = { mode: "change", batchCount: 1 };
-  w.click(w.B("Run 승인"));
+  w.click(w.B("생성 승인"));
   await until(() => w.toast("Run 승인 안 됨"));
   const n = w.toasts.length;
   board(w).queueReroll();
@@ -37360,8 +37360,8 @@ await scenario("autoQueue", async () => {
 // ── 탭 확장이 옛 판(ext 2 — 판만 고친 사본): 두 승인 단추 꺼짐(이유), 눌러도·R 도 탭에 승인 메시지 없음 → R 은 예약만 ──
 await scenario("old", async () => {
   const w = await world("e2e-old", { ext: IN.ext2Mjs });
-  const r = { link: [w.link.state, w.link.ext], run: w.btn("Run 승인"), draft: w.btn("초안 승인") };
-  w.click(w.B("Run 승인"));
+  const r = { link: [w.link.state, w.link.ext], run: w.btn("생성 승인"), draft: w.btn("초안 승인") };
+  w.click(w.B("생성 승인"));
   w.click(w.B("초안 승인"));
   const b = board(w);
   r.way = b.tabWay();
@@ -37379,12 +37379,12 @@ await scenario("reroll", async () => {
   const b = board(w);
   const r = { way: b.tabWay() };
   b.queueReroll(r.way);
-  await until(() => w.toast("재굴림 큐에 들어감"));
-  Object.assign(r, seen(w), { toast: w.toast("재굴림 큐에 들어감") });
-  await w.finish("pid-1", paidH("reroll", { approved_now: false, pending: 4, pending_hash: "3f9a1c2b7d10" }), "재굴림 끝");
-  r.done = w.toast("재굴림 끝");
+  await until(() => w.toast("다시 생성 큐에 들어감"));
+  Object.assign(r, seen(w), { toast: w.toast("다시 생성 큐에 들어감") });
+  await w.finish("pid-1", paidH("reroll", { approved_now: false, pending: 4, pending_hash: "3f9a1c2b7d10" }), "다시 생성 끝");
+  r.done = w.toast("다시 생성 끝");
   b.queueReroll();
-  await until(() => w.toasts.filter((t) => t.includes("재굴림 큐에 들어감")).length === 2);
+  await until(() => w.toasts.filter((t) => t.includes("다시 생성 큐에 들어감")).length === 2);
   const s = seen(w);
   r.head = Object.assign(s, { wire: s.wire.slice(r.wire.length), q: s.q.slice(r.q.length), bodies: s.bodies.slice(r.bodies.length) });
   w.stop();
@@ -37438,8 +37438,8 @@ await scenario("oldPlan", async () => {
   w.click(w.B("초안 승인"));
   await until(() => w.toast("Spec Draft 승인 안 됨"));
   await sleep(20);
-  Object.assign(r, seen(w), { toasts: w.toasts.slice(), after: [w.btn("초안 승인"), w.btn("Run 승인")], head: w.head.textContent });
-  w.click(w.B("Run 승인"));
+  Object.assign(r, seen(w), { toasts: w.toasts.slice(), after: [w.btn("초안 승인"), w.btn("생성 승인")], head: w.head.textContent });
+  w.click(w.B("생성 승인"));
   await until(() => w.toast("Run 큐에 들어감"));
   r.run = w.toast("Run 큐에 들어감");
   w.stop();
@@ -37449,7 +37449,7 @@ await scenario("oldPlan", async () => {
 // ── D9: 템플릿 Run 의 wave(node dp_run) → 탭이 승인을 보낸 창(opener)·채널로 → 끝난 뒤 Studio Run 줄 '남은 N건 이어서 승인'(새 해시 — 자동 없음) ──
 await scenario("wave", async () => {
   const w = await world("e2e-wave", { opener: true });
-  const rb = () => w.panel.all().find((e) => e.tagName === "BUTTON" && /^(Run 승인|남은)/.test(e.textContent)) || null;
+  const rb = () => w.panel.all().find((e) => e.tagName === "BUTTON" && /^(생성 승인|남은)/.test(e.textContent)) || null;
   w.click(rb());
   await until(() => w.toast("Run 큐에 들어감"));
   w.t.emit("execution_start", { prompt_id: "pid-1" });
@@ -37462,7 +37462,7 @@ await scenario("wave", async () => {
   await w.finish("pid-1", paidH("run", { approved_now: true, pending: 4, pending_hash: "c0ffee123456" }), "Run 끝");
   w.pipe.stateChanged(w.S);  // 끝 뒤 보드 폴링 — 계획 다시
   await until(() => rb().textContent.startsWith("남은") && rb().title.includes("c0ffee123456"), 3000);
-  Object.assign(r, { done: w.toast("Run 끝"), row: w.rows("wave 로 멈춤"), btn: [rb().textContent, rb().disabled, rb().title],
+  Object.assign(r, { done: w.toast("Run 끝"), row: w.rows("시간 상한으로 멈춤"), btn: [rb().textContent, rb().disabled, rb().title],
     approves: w.wire.filter(([, m]) => m.type === "bmk-dp-approve").length });
   w.stop();
   return r;
@@ -37472,7 +37472,7 @@ await scenario("wave", async () => {
 await scenario("intrude", async () => {
   const w = await world("e2e-in");
   w.t.tokenMs = 150;
-  w.click(w.B("Run 승인"));
+  w.click(w.B("생성 승인"));
   await until(() => w.t.log.some((x) => x[0] === "queue"));
   const user = await w.t.app.queuePrompt(0, 1);
   await until(() => w.toast("Run 큐에 들어감"));
@@ -37489,14 +37489,14 @@ await scenario("unknown", async () => {
   const w = await world("e2e-unk");
   w.t.fault = () => new TypeError("Failed to fetch");
   const p0 = w.srv.count("pipeline/plan");
-  w.click(w.B("Run 승인"));
+  w.click(w.B("생성 승인"));
   await until(() => w.toast("Run 결과 모름"));
-  await until(() => w.srv.count("pipeline/plan") > p0 && (w.btn("Run 승인") || [true])[0] === false, 3000);
+  await until(() => w.srv.count("pipeline/plan") > p0 && (w.btn("생성 승인") || [true])[0] === false, 3000);
   const r = Object.assign(seen(w), { toasts: w.toasts.slice(), row: w.rows("앞서 보낸 Run 승인"), armed: "authToken" in w.t.api || "apiKey" in w.t.api,
     kept: Object.keys(JSON.parse(w.store.getItem(`bmk-dp-ask:${KEY}`) || "{}")), approve: w.t.userApprove() });
   w.t.fault = null;
   w.answer = false;
-  w.click(w.B("Run 승인"));
+  w.click(w.B("생성 승인"));
   r.again = (w.confirms.at(-1) || "").split("\n").at(-2);
   r.sentAgain = w.wire.filter(([, m]) => m.type === "bmk-dp-approve").length;
   w.stop();
@@ -37510,7 +37510,7 @@ process.exit(0);
 
 def _paid_js_e2e():
     """S3b U4: 실제 pipeline.js link·승인 ↔ 실제 탭 확장 ↔ 가짜 서버(정본) 왕복 — 채널·opener 길(선택 순서 ≠ 정렬 → 정규 only), 409 stale → 계획 다시,
-    받을 때 busy(ack 없음), 옛 판 탭 → 단추 꺼짐, R·머리줄 'ComfyUI 큐' → reroll 템플릿, R 확인 뒤 길이 바뀜 → 예약만(같으면 그 길), wave →
+    받을 때 busy(ack 없음), 옛 판 탭 → 단추 꺼짐, R·머리줄 [다시 생성 보내기] → reroll 템플릿, R 확인 뒤 길이 바뀜 → 예약만(같으면 그 길), wave →
     이어서 승인 라벨, 무장 중 끼어든 사용자 큐 막힘, 확인 창을 못 만듦(옛 서버 계획) → 잠금 풀림, 제출 뒤 응답을 잃음(unknown) → 결과 모름·계획 다시.
     메시지는 정본 messages 와 _pl_shape 로 대조."""
     section("S3b paid_js_e2e — Studio(pipeline.js link·승인 단추) ↔ 탭 확장(bmk_design_patch.js·가짜 1.53.10 app/api) ↔ 가짜 서버(정본) 왕복(U4)")
@@ -37552,7 +37552,7 @@ def _paid_js_e2e():
           f"왕복 장면 열둘 {sorted(res)}")
     key, only = "fe410d7f025d", R["alt"]["run"]["only"]
     ua = ["deadbeef0000"] * 2  # world() 의 사용자 Draft·Run approve 보초
-    run_what, draft_what = "Run 승인 4건 ≈ $2.40–3.16", "초안 승인 1크롭 ≈ 27(최대 47) 크레딧"
+    run_what, draft_what = "생성 승인 4건 ≈ $2.40–3.16", "초안 승인 1크롭 ≈ 27(최대 47) 크레딧"
     stale = next(e for e in R["errors"]["409"] if e["reason"] == "stale")
     queued = ":{} 큐에 들어감 — ComfyUI 탭이 승인 템플릿을 제출함(진행은 머리줄)"
     blocked = "Studio 승인을 제출하는 중이라 이 큐 제출을 막았습니다(과금 없음) — 다시 큐에 넣으세요"
@@ -37600,16 +37600,16 @@ def _paid_js_e2e():
     if "wire" in ch:
         bad = trip(ch, "channel", "run", run_what, ok=True, prompt_id="pid-1")
         check(ch["link"] == ["ok", "channel", 3, "ok", ch["tab"]] and ch["btn"] == [False, title.format(R["alt"]["run"]["hash"])] and ch["planOnly"] == only,
-              f"채널 길 연결: Studio link = hello 답(ext 3·submit ok)의 그 탭, Run 승인 단추 = 정본 run 해시·only(크롭 3 선택), 체크를 껐다 켠 뒤(선택 순서 "
+              f"채널 길 연결: Studio link = hello 답(ext 3·submit ok)의 그 탭, 생성 승인 단추 = 정본 run 승인 코드·only(크롭 3 선택), 체크를 껐다 켠 뒤(선택 순서 "
               f"002,003,001)의 계획 요청 only = 정렬한 정규 only {ch['link']} {ch['btn']} {ch['planOnly']}")
         check(not bad and ch["q"] == [{"root": key, "stage": "run", "approve": R["alt"]["run"]["hash"], "only": only}] and ch["confirms"] == 1
               and ch["confirm"].startswith("GPT Image 호출 4건"),
-              f"Run 승인(사용자 클릭·네이티브 confirm 하나) → 채널로 approve → 탭 ack → 서버 GET 하나(stage·approve = 계획 해시·only = Studio 정규 only — "
+              f"생성 승인(사용자 클릭·네이티브 confirm 하나) → 채널로 approve → 탭 ack → 서버 GET 하나(stage·approve = 승인 코드·only = Studio 정규 only — "
               f"선택 순서가 정렬과 달라도 서버 only_canon 과 바이트 같음) → approved ok(prompt_id) — 같은 id·hello 의 tab·정본 messages 모양 {bad} {ch['q']}")
         check(sent(ch, "run") and ch["dialogs"] == [] and ch["seed"] == 101 and ch["adopt"] == "001_38a818" and ch["jobs"] == ["pid-1"]
               and ch.get("approve") == ua,
               "바닥 api.queuePrompt 본문 = 서버 템플릿(정본 alt.run)·대상 dp_review·토큰 자리·사용자 workflow 객체 그대로, 사용자 그래프는 시드 "
-              f"afterQueued 한 번·Spec Draft adopt 남음(대상 밖)·Draft·Run approve(보초 해시) 그대로(P3) {ch.get('approve')}")
+              f"afterQueued 한 번·Spec Draft adopt 남음(대상 밖)·Draft·Run approve(보초 승인 코드) 그대로(P3) {ch.get('approve')}")
         check(ch["toast"] == queued.format("Run") and ch["stored"] == {"stage": "run", "pid": "pid-1", "number": None} and "실행 중: Run(run)" in ch["head"]
               and ch["tabToasts"] == [f"success: Studio 승인으로 Run 큐 — {run_what}"]
               and ch["done"] == {"toast": ":Run 끝 — 승인분 실행 · 남은 승인 필요 0건", "row": ["이 Studio 의 마지막 Run: T 끝 — 승인분 실행 · 남은 승인 필요 0건"],
@@ -37623,7 +37623,7 @@ def _paid_js_e2e():
               and op["q"] == [{"root": key, "stage": "draft", "approve": R["alt"]["draft"]["hash"], "only": only}] and sent(op, "draft")
               and op["adopt"] == "001_38a818" and op["confirms"] == 1 and op.get("approve") == ua,
               f"opener 길(Open Board 로 연 창): 초안 승인 → window postMessage(답 = ev.source — 채널엔 없음) → GET stage=draft → 템플릿 alt.draft·대상 "
-              f"dp_draft, 사용자 Spec Draft adopt·Draft·Run approve(보초 해시) 남음 {bad} {op['q']} {op.get('approve')}")
+              f"dp_draft, 사용자 Spec Draft adopt·Draft·Run approve(보초 승인 코드) 남음 {bad} {op['q']} {op.get('approve')}")
         check(op["toast"] == queued.format("Spec Draft") and op["tabToasts"] == [f"success: Studio 승인으로 Spec Draft 큐 — {draft_what}"]
               and op["done"] == {"toast": ":Spec Draft 끝 — 승인분 실행 · 남은 초안 대기 0건",
                                  "row": ["이 Studio 의 마지막 Spec Draft: T 끝 — 승인분 실행 · 남은 초안 대기 0건"]},
@@ -37634,9 +37634,9 @@ def _paid_js_e2e():
         check(not bad and sl["q"] == [{"root": key, "stage": "run", "approve": R["alt"]["run"]["hash"], "only": only}] and sl["bodies"] == []
               and sl["queued"] == 0 and sl["tabToasts"] == [f"warn: Studio 승인(Run) 안 됨: {stale['error']}"],
               f"서버 409 stale → 탭은 큐에 넣지 않고 approved stale(error·지금 hash 그대로 — 정본 모양) {bad}")
-        check(sl["toast"] == f"err:Run 승인 안 됨 — 계획이 바뀜(지금 해시 {stale['hash']}) — 다시 받은 계획을 보고 다시 승인" and sl["replan"] >= 1
+        check(sl["toast"] == f"err:Run 승인 안 됨 — 계획이 바뀜(지금 승인 코드 {stale['hash']}) — 다시 받은 계획을 보고 다시 승인" and sl["replan"] >= 1
               and sl["btn"] == [False, title.format(stale["hash"])],
-              f"Studio: stale = 토스트(지금 해시) + 계획 다시 → 승인 단추가 새 해시로 {sl['toast']} {sl['btn']}")
+              f"Studio: stale = 토스트(지금 승인 코드) + 계획 다시 → 승인 단추가 새 승인 코드로 {sl['toast']} {sl['btn']}")
     bz = res.get("busy") or {}
     if "wire" in bz:
         busy = "ComfyUI 탭이 큐를 처리하는 중 — 잠시 뒤 다시 승인"
@@ -37651,36 +37651,36 @@ def _paid_js_e2e():
     if "wire" in aq:
         why = ("ComfyUI 탭의 자동 큐(Run (On Change))가 켜져 있음 — 승인 제출 뒤 사용자 그래프 전체가 토큰과 함께 자동으로 큐될 수 있어 받지 않음: "
                "ComfyUI 탭의 Run 단추 모드를 Run 으로 바꾼 뒤 다시 승인")
-        kept = (" · 사전 승인한 재굴림은 예약된 채 남음(다음 Run·ComfyUI 큐 때 선택과 무관하게 과금): 지금 보내려면 머리줄 'ComfyUI 큐' — "
+        kept = (" · 사전 승인한 다시 생성은 예약된 채 남음(다음 Run·[다시 생성 보내기] 때 선택과 무관하게 과금): 지금 보내려면 머리줄 [다시 생성 보내기] — "
                 "R 을 다시 누르면 +1 호출이 더 승인됨")
         fins = [m for _p, m in aq["wire"] if m.get("type") == "bmk-dp-approved"]
         check([(m.get("stage"), m.get("reason"), m.get("error")) for m in fins] == [("run", "busy", why), ("reroll", "busy", why)]
               and not any(shape(m) for m in fins) and aq["q"] == [] and aq["bodies"] == []
-              and aq["toasts"] == [f"warn:Run 승인 안 됨 — {why}", f"err:재굴림 큐 안 됨 — {why.removesuffix(' 다시 승인')} 머리줄 'ComfyUI 큐'{kept}"],
-              f"탭 자동 큐(Run (On Change)) → 탭이 Run·재굴림 모두 busy + 이유(서버·큐 0) → Studio 토스트는 그 이유 그대로('잠시 뒤 다시(…)' 아님 — "
-              f"재굴림도 '큐 처리 중'으로 바꾸지 않음 — 다만 할 일 끝의 '다시 승인'은 R 재누름 +1 로 읽히므로 머리줄 'ComfyUI 큐'로, r2-06) {fins} {aq['toasts']}")
+              and aq["toasts"] == [f"warn:Run 승인 안 됨 — {why}", f"err:다시 생성 큐 안 됨 — {why.removesuffix(' 다시 승인')} 머리줄 [다시 생성 보내기]{kept}"],
+              f"탭 자동 큐(Run (On Change)) → 탭이 Run·다시 생성 모두 busy + 이유(서버·큐 0) → Studio 토스트는 그 이유 그대로('잠시 뒤 다시(…)' 아님 — "
+              f"다시 생성도 '큐 처리 중'으로 바꾸지 않음 — 다만 할 일 끝의 '다시 승인'은 R 재누름 +1 로 읽히므로 머리줄 [다시 생성 보내기]로, r2-06) {fins} {aq['toasts']}")
     od = res.get("old") or {}
     if "run" in od:
         why = "ComfyUI 탭의 확장이 옛 판(S3a — 판 2) — 그 탭을 새로고침한 뒤 유료 승인"
         check(od["link"] == ["ok", 2] and od["run"] == [True, why] and od["draft"] == [True, why] and od["way"] == "" and od["wire"] == []
-              and od["q"] == [] and od["confirms"] == 0 and od["toasts"][-1:] == [f"warn:재굴림 예약됨 — Run 실행 때 과금({why})"],
+              and od["q"] == [] and od["confirms"] == 0 and od["toasts"][-1:] == [f"warn:다시 생성 예약됨 — Run 실행 때 과금({why})"],
               f"탭 확장 옛 판(hello ext 2): 두 승인 단추 꺼짐(제목 = 이유), 눌러도 확인 창·메시지 없음, R 은 예약만 — 탭에 승인·서버 GET 0 {od}")
     rr = res.get("reroll") or {}
     if "wire" in rr:
-        bad = trip(rr, "channel", "reroll", "재굴림(사전 승인) 1건", ok=True, prompt_id="pid-1")
+        bad = trip(rr, "channel", "reroll", "다시 생성(사전 승인) 1건", ok=True, prompt_id="pid-1")
         check(rr["way"] == "paid" and not bad and rr["q"] == [{"root": key, "stage": "reroll"}] and sent(rr, "reroll") and rr["confirms"] == 0
-              and rr["toast"] == queued.format("재굴림") and rr["done"] == ":재굴림 끝 — 재굴림(사전 승인)·복구만 실행 · 승인 필요 4건 남음",
+              and rr["toast"] == queued.format("다시 생성") and rr["done"] == ":다시 생성 끝 — 다시 생성(사전 승인)·복구만 실행 · 승인 필요 4건 남음",
               f"R(board.js reroll → queueReroll(확인 때 판정 paid — 지금도 paid)) + 유료 가능한 탭 → reroll 승인(hash·only \"\" — 확인 창 없음) → "
               f"GET stage=reroll(approve·only 없음) → 템플릿 alt.reroll(dp_run approve \"\") → 끝 {bad} {rr['q']} {rr['done']}")
         hd = rr.get("head") or {}
-        bad = trip(hd, "channel", "reroll", "재굴림(사전 승인) 1건", ok=True, prompt_id="pid-2")
+        bad = trip(hd, "channel", "reroll", "다시 생성(사전 승인) 1건", ok=True, prompt_id="pid-2")
         check(not bad and hd.get("q") == [{"root": key, "stage": "reroll"}] and sent(hd, "reroll") and hd.get("confirms") == 0,
-              f"이어서 머리줄 'ComfyUI 큐'(queueReroll() — 지금 판정 paid)도 같은 왕복(승인 메시지·GET stage=reroll·템플릿 한 번) {bad} {hd.get('q')}")
+              f"이어서 머리줄 [다시 생성 보내기](queueReroll() — 지금 판정 paid)도 같은 왕복(승인 메시지·GET stage=reroll·템플릿 한 번) {bad} {hd.get('q')}")
     rm = res.get("rerollMoved") or {}
     if "wire" in rm:
         # 예약 토스트 = pipe.reroll 의 lock 예약과 같은 꼴(r1-08 — 이유를 겹친 줄표 안에 넣지 않고, 탭 큐 처리 중 이유에 '잠시 뒤 다시'(R 재누름 = +1)가 없음)
-        moved = "warn:재굴림 예약됨 — R 확인 뒤 ComfyUI 탭 상태가 바뀌어 지금 보내지 않음({}): 머리줄 'ComfyUI 큐'로 보내거나 다음 Run 때 과금"
-        arm = "warn:R 을 한 번 더 누르면 재굴림 +1 호출 (V1 ≈ $0.62) — 유료{} · 금액은 지금 jobs 기준({})"
+        moved = "warn:다시 생성 예약됨 — R 확인 뒤 ComfyUI 탭 상태가 바뀌어 지금 보내지 않음({}): 머리줄 [다시 생성 보내기]로 보내거나 다음 Run 때 과금"
+        arm = "warn:R 을 한 번 더 누르면 다시 생성 +1 호출 (V1 ≈ $0.62) — 유료{} · 금액은 지금 jobs 기준({})"
         side = " · 승인 제출이라 ComfyUI 탭 그래프의 시드 제어 등 실행마다 바뀌는 값이 한 번 진행됨(그래프는 실행 안 함)"
         check(rm["ways"] == ["paid", "opener", "paid"] and rm["review"][0] == 0 and rm["wire"] == [] and rm["q"] == [] and rm["bodies"] == []
               and rm["toasts"][:2] == [moved.format("ComfyUI 탭이 큐를 처리하는 중"),
@@ -37699,10 +37699,10 @@ def _paid_js_e2e():
         check(sorted(p for p, _m in wv["waves"]) == ["channel", "window"] and all(m == want and not shape(m) for _p, m in wv["waves"])
               and wv["tabToast"] == "info: wave 종료(남은 5건) — Studio 에서 이어서 승인" and not wv["mid"].startswith("남은"),
               f"템플릿 Run 의 wave(node dp_run) → 탭이 채널과 승인을 보낸 창(opener)에 bmk-dp-wave(정본 모양), 실행 중엔 이어서 승인 아님 {wv['waves']}")
-        check(wv["done"] == "warn:Run 끝 — 승인분 실행 · 남은 승인 필요 4건 · wave 로 멈춤(남은 5건) — Run 줄에서 이어서 승인"
-              and wv["row"] == ["wave 로 멈춤 — 멈출 때 남은 5건: 새 계획(단추의 건수)으로 이어서 승인(클릭만 — 자동 이어가기 없음)"]
+        check(wv["done"] == "warn:Run 끝 — 승인분 실행 · 남은 승인 필요 4건 · 시간 상한으로 멈춤(남은 5건) — Run 줄에서 이어서 승인"
+              and wv["row"] == ["시간 상한으로 멈춤 — 멈출 때 남은 5건: 새 계획(단추의 건수)으로 이어서 승인(클릭만 — 자동 이어가기 없음)"]
               and wv["btn"] == ["남은 4건 이어서 승인 ≈ $2.40–3.16", False, title.format("c0ffee123456")] and wv["approves"] == 1,
-              f"D9: 끝난 뒤 Run 줄 'wave 로 멈춤' + 단추 '남은 N건 이어서 승인'(새 계획 해시 — 자동으로 보내지 않음) {wv['done']} {wv['btn']}")
+              f"D9: 끝난 뒤 Run 줄 '시간 상한으로 멈춤' + 단추 '남은 N건 이어서 승인'(새 승인 코드 — 자동으로 보내지 않음) {wv['done']} {wv['btn']}")
     it = res.get("intrude") or {}
     if "wire" in it:
         bad = trip(it, "channel", "run", run_what, ok=True, prompt_id="pid-1")
@@ -37720,7 +37720,7 @@ def _paid_js_e2e():
               and t0.startswith("err:Spec Draft 승인 안 됨 — 확인 창을 만들지 못함(") and t0.endswith("): 서버가 옛 판이면 ComfyUI 재시작")
               and ol["after"] == on and "승인 — 확인" not in ol["head"] and ol["run"] == queued.format("Run"),
               f"확인 창 문구를 못 만듦(S3a 모양 초안 계획 — reasons 등 없음, 새 JS + 재시작 전 옛 서버): 오류 토스트·확인 창·메시지 0, 잠금이 풀려 두 승인 "
-              f"단추 다시 켬·이어서 Run 승인 왕복 {ol['toasts']} {ol['after']} {ol['run']}")
+              f"단추 다시 켬·이어서 생성 승인 왕복 {ol['toasts']} {ol['after']} {ol['run']}")
     uk = res.get("unknown") or {}
     if "wire" in uk:
         unk = "제출 결과 모름(응답 오류: Failed to fetch) — 이미 큐에 들어갔을 수 있음: ComfyUI 큐를 확인"
@@ -37728,10 +37728,10 @@ def _paid_js_e2e():
         h0 = R["alt"]["run"]["hash"]
         check(not bad and sent(uk, "run") and uk["armed"] is False and uk["tabToasts"] == [f"warn: Studio 승인(Run): {unk}"]
               and uk["toasts"] == [f"warn:Run 결과 모름 — {unk}"] and uk["kept"] == ["run"] and uk.get("approve") == ua
-              and uk["row"] == [f"앞서 보낸 Run 승인(해시 {h0})의 결과를 모름 — 이미 ComfyUI 큐에 들어갔을 수 있음: 다시 보내기 전에 ComfyUI 큐 확인"]
-              and str(uk.get("again")).startswith(f"앞서 보낸 같은 승인(해시 {h0})의 결과를 모름") and uk["sentAgain"] == 1,
+              and uk["row"] == [f"앞서 보낸 Run 승인(승인 코드 {h0})의 결과를 모름 — 이미 ComfyUI 큐에 들어갔을 수 있음: 다시 보내기 전에 ComfyUI 큐 확인"]
+              and str(uk.get("again")).startswith(f"앞서 보낸 같은 승인(승인 코드 {h0})의 결과를 모름") and uk["sentAgain"] == 1,
               f"r2-03 왕복: 탭이 바꿔치기한 본문을 보낸 뒤 응답을 잃음(TypeError) → approved unknown(정본 예시 모양 — 탭 토스트 '안 됨' 없음, 토큰 지움) → "
-              f"Studio '결과 모름'(경고)·계획 다시·결과 모름 줄·보낸 승인 기록, 같은 해시 재승인 확인 창에 결과 모름 한 줄(취소 — 메시지 1) {bad} {uk.get('toasts')} "
+              f"Studio '결과 모름'(경고)·계획 다시·결과 모름 줄·보낸 승인 기록, 같은 승인 코드 재승인 확인 창에 결과 모름 한 줄(취소 — 메시지 1) {bad} {uk.get('toasts')} "
               f"{uk.get('row')} {uk.get('again')}")
 
 
@@ -38142,7 +38142,7 @@ await scenario("rerollHold", async () => {
   const caught = (pre) => (x, cell, rev) => { x.S.rev = rev(); cell.pre = pre; };  // state 가 그 쓰기를 담아 옴(그 셀 대기 pre)
   return { smoke: await run({}, "R", "R", "R", "R"), fresh: await run({}, "R", "R"), pre: await run({ cell: { pre: 1 } }, "R", "R"),
     running: await run({ S: { running: true } }, "R", "R"), busy: await run({ busy: true }, "R", "R"),
-    lock: await run({ lock: "재굴림 큐 요청을 처리하는 중" }, "R", "R"),
+    lock: await run({ lock: "다시 생성 큐 요청을 처리하는 중" }, "R", "R"),
     button: await run({ cell: { pre: 2 } }, "B"), buttonFresh: await run({}, "B"), afterRun: await run({ cell: { pre: 0 } }, "R", "R", "B"),
     stale: await run({ stale: true }, "R", "R", "R", "R", caught(1), "R", caught(0), "R", "R"),
     oldServer: await run({ cell: { rerolls: 2, pending: 1 } }, "R", "R"), oldServerFree: await run({ cell: { rerolls: 2, pending: 0 } }, "R", "R"),
@@ -38215,7 +38215,7 @@ await scenario("renderWiring", async () => {
   c.renderAll();
   r.first = { grid: grid(), chips: c.chipsLog, saved: JSON.parse(store.getItem("bmk-dp-seen:fe410d7f025d")) };
   c.selectCand("k2");
-  r.k2 = { caption: els["cand-caption"].textContent, detail: detail().filter((x) => /^(c02|옛 셀)/.test(x)) };
+  r.k2 = { caption: els["cand-caption"].textContent, detail: detail().filter((x) => /^(c02|옛 조건)/.test(x)) };
   c.S = st([k1, k2, k4], [k3, k5]);
   c.reconcile();
   c.renderAll();
@@ -38277,14 +38277,14 @@ def _ux_project(base_dir):
 
 
 def studio_ux_unit():
-    section("UX studio_ux_unit — 후보 완료 시각·옛 셀·'새', 반영 칸 크롭별 줄·되돌리기(restore_manifest), 키보드 R 연타 거절")
+    section("UX studio_ux_unit — 후보 완료 시각·옛 조건·'새', 반영 칸 크롭별 줄·되돌리기(restore_manifest), 키보드 R 연타 거절")
     import bmk_design_patch_board as board
     OUT = OUT_ROOT / "studio_ux"
     shutil.rmtree(OUT, ignore_errors=True)
     OUT.mkdir(parents=True)
     root, ids, keys, old_ck, new_ck = _ux_project(OUT / "base")
 
-    section("UX-B1 state 후보 done·via·old_cell, 셀 pre(사전 승인 대기 — runner 와 원장 대체 계산), 레이아웃 없음 = layout_added null")
+    section("UX-B1 state 후보 done·via·old_cell, 생성 조건 pre(사전 승인 대기 — runner 와 원장 대체 계산), 레이아웃 없음 = layout_added null")
     st = board.build_state(root)
     t = next(x for x in st["targets"] if x["key"] == f"{ids[0]}/A")
     by = {c["key"]: c for x in st["targets"] for c in x["candidates"]}
@@ -38294,17 +38294,17 @@ def studio_ux_unit():
                   "recov": ("2026-10-19 15:00:00", None, True, False), "nocall": (None, None, False, False),
                   "nojob": ("2026-10-15 16:00:00", "run", False, False)},
           f"후보 done = 원장 calls finished, via = approved_by(hash → run·board → reroll), kind retry_* → retry, 그 밖(복구 'retry' 등) 없음, "
-          f"old_cell = 지금 jobs 에 없는 셀(옛 크롭이어도 서버는 true — 그 타깃에 jobs 가 없으면 false) {got}")
+          f"old_cell = 지금 jobs 에 없는 생성 조건(옛 크롭이어도 서버는 true — 그 타깃에 jobs 가 없으면 false) {got}")
     folder = [c for c in t["candidates"] if c["origin"] == "folder"]
     check(folder and all(c["done"] is None and c["via"] is None and not c["old_cell"] for c in folder),
-          f"폴더 후보(원장 밖)는 done·via 없음·옛 셀 아님 {[(c['done'], c['via'], c['old_cell']) for c in folder]}")
+          f"폴더 후보(원장 밖)는 done·via 없음·옛 조건 아님 {[(c['done'], c['via'], c['old_cell']) for c in folder]}")
     m = store.load_manifest(root)
     plan = board._runner().plan_calls(m, root)
     pre_rn = sum(1 for it in plan["pending"] if isinstance(it, dict) and it.get("preapproved") and it.get("cell_key") == new_ck)
     cell = next(c for c in t["cells"] if c["cell_key"] == new_ck)
     check(cell["pre"] == pre_rn and pre_rn >= 1 and st["pending_preapproved"] == board._pending(root, m)[1]
           and st["pending_preapproved"] == sum(board._pending_cells(root, m)[1].values()),
-          f"셀 pre = runner.plan_calls 의 그 셀 사전 승인 대기, pending_preapproved = 셀 pre 합(_pending 그대로) {cell} {pre_rn} {st['pending_preapproved']}")
+          f"생성 조건 pre = runner.plan_calls 의 그 생성 조건 사전 승인 대기, pending_preapproved = 생성 조건 pre 합(_pending 그대로) {cell} {pre_rn} {st['pending_preapproved']}")
     orig_runner = board._runner
     board._runner = lambda: None
     try:
@@ -38314,7 +38314,7 @@ def studio_ux_unit():
         board._runner = orig_runner
     cell0 = next(c for x in st0["targets"] if x["key"] == f"{ids[0]}/A" for c in x["cells"] if c["cell_key"] == new_ck)
     check(cell0["pre"] == min(2, pend[new_ck]) == pre_c[new_ck] and cell0["pending"] == pend[new_ck],
-          f"runner 없음(원장 대체 계산): 셀 pre = min(rerolls, 대기) {cell0} {pend} {pre_c}")
+          f"runner 없음(원장 대체 계산): 생성 조건 pre = min(rerolls, 대기) {cell0} {pend} {pre_c}")
     check(st["layout_added"] is None and all(c["layout_diff"] is None and c["layout_status"] is None for c in st["crops"]),
           "layout.json 없음 = layout_added null·layout_diff null")
 
@@ -38339,7 +38339,7 @@ def studio_ux_unit():
                                             "targets_was": ["A"]}
           and cs[ids[3]]["layout_status"] == "removed" and cs[ids[3]]["layout_diff"] is None
           and cs[ids[4]]["layout_status"] == "same" and cs[ids[4]]["layout_diff"] is None,
-          f"layout_diff = 바뀐 크롭만 {{fields, 레이아웃 name·rect, 대상(바뀐 때만)}} — 요약 name·rect 는 매니페스트 값 {[(c['id'], c['layout_status'], c['layout_diff']) for c in st['crops']]}")
+          f"layout_diff = 바뀐 크롭만 {{fields, 레이아웃 name·rect, 대상(바뀐 때만)}} — 요약 name·rect 는 프로젝트 기록 값 {[(c['id'], c['layout_status'], c['layout_diff']) for c in st['crops']]}")
     check(st["layout_added"] == [{"id": new_id, "name": "007_새띠", "rect": [0, 640, 256, 896]}],
           f"layout_added = 레이아웃에만 있는 크롭 {st['layout_added']}")
 
@@ -38372,7 +38372,7 @@ def studio_ux_unit():
     check(s1 == s2 == s3 == 200 and plain_rect[0] == 400 and plain_name[0] == 400 and other[0] == 409 and "마지막 반영 값이 바뀌었습니다(rect)" in other[1]
           and lc["rect"] == [0, 896, 768, 1024] and lc["name"] == "9_긴띠"
           and next(c for c in st["crops"] if c["id"] == long_id)["layout_status"] == "same",
-          f"규칙 밖 매니페스트 값(비 6:1·한 자리 번호)도 restore_manifest 면 되돌림, 플래그 없으면 400, 지금 매니페스트와 다른 값에 플래그면 409(Codex 2차) "
+          f"규칙 밖 프로젝트 기록 값(비 6:1·한 자리 번호)도 restore_manifest 면 되돌림, 플래그 없으면 400, 지금 프로젝트 기록과 다른 값에 플래그면 409(Codex 2차) "
           f"{plain_rect} {plain_name} {other} {s3}")
     bad = {"add": outcome("add", {"name": "008_x", "rect": [0, 0, 256, 256], "restore_manifest": True}),
            "rev": outcome("update", {"id": ids[1], "name": "002_눈", "restore_manifest": True, "restore_rev": 0}),
@@ -38381,7 +38381,7 @@ def studio_ux_unit():
            "stale": outcome("update", {"id": ids[1], "name": "002_눈", "restore_manifest": True}, at=rev - 1)}
     check([bad[k][0] for k in ("add", "rev", "str", "new", "stale")] == [400, 400, 400, 404, 409]
           and "매니페스트" in bad["new"][1],
-          f"restore_manifest: add·restore_rev 와 함께·bool 아님 = 400, 매니페스트에 없는 크롭(새 크롭) = 404, 낡은 rev = 409 {bad}")
+          f"restore_manifest: add·restore_rev 와 함께·bool 아님 = 400, 프로젝트 기록에 없는 크롭(새 크롭) = 404, 낡은 rev = 409 {bad}")
     s4, rev = outcome("update", {"id": ids[1], "name": "002_눈", "restore_manifest": True})
     st = board.build_state(root)
     import bmk_design_patch_refs as drefs
@@ -38400,7 +38400,7 @@ def studio_ux_unit():
           and swap[0] == 400 and f"ID {ids[1]}, 마지막 반영 이름 002_눈" in swap[1] and "001_머리 이름을 씀" in swap[1]
           and names[ids[0]] == "001_머리" and names[ids[1]] == "002_눈" and ids[0] not in links() and rule[0] == 409,
           f"리뷰 server-02: 이름을 맞바꾼 두 크롭 — 되돌리는 이름을 지금 다른 크롭이 쓰면 400(그 크롭 ID·마지막 반영 이름), 그 크롭을 먼저 되돌리면 됨 · "
-          f"자동 고정 풀림 · 지금 매니페스트와 다른 이름에 플래그면 409 {swap} {rule} {pin}")
+          f"자동 고정 풀림 · 지금 프로젝트 기록과 다른 이름에 플래그면 409 {swap} {rule} {pin}")
     # Codex 2차: 줄을 그린 뒤 다른 창의 반영이 매니페스트를 바꿈(layout_rev 그대로) — 옛 마지막 반영 값으로 되돌리면 409, 이미 반영된 크롭을 바꾸지 않음
     s9, rev = outcome("update", {"id": ids[0], "rect": [128, 0, 512, 384]})
     store.update_manifest(root, lambda mm: next(c for c in mm["crops"] if c["id"] == ids[0]).__setitem__("rect", [128, 0, 512, 384]))
@@ -38438,14 +38438,14 @@ def studio_ux_unit():
             {"id": "008_d", "text": "008_발 — 레이아웃에서 지움(후보 4 · ★ 1) — 다음 반영에서 빠짐", "back": None},
             {"id": "009_e", "text": "009_옛 — 레이아웃 미반영", "back": None},
             {"id": "012_h", "text": "012_장갑 — 대상 문구 A → A: 왼손 장갑; B", "back": None, "rest": True},
-            {"id": "011_g", "text": "011_새 — 새 크롭 [0, 640, 256, 896] — 다음 반영에서 생김(초안·Run 승인 대상)", "back": None}]
+            {"id": "011_g", "text": "011_새 — 새 크롭 [0, 640, 256, 896] — 다음 반영에서 생김(초안·생성 승인 대상)", "back": None}]
         check(ll["lines"] == want_lines and ll["none"] == [] and ll["old"] == [],
-              f"layoutLines: 크롭별 줄(사각형 = 값·이동·크기, 이름, 대상, 지움, 옛 서버 = 사유만, 새 크롭) + 되돌리기 값(바뀐 이름·사각형만 — 매니페스트 값) {ll}")
+              f"layoutLines: 크롭별 줄(사각형 = 값·이동·크기, 이름, 대상, 지움, 옛 서버 = 사유만, 새 크롭) + 되돌리기 값(바뀐 이름·사각형만 — 프로젝트 기록 값) {ll}")
     rt = res.get("ranText") or {}
     if "reroll" in rt:
-        check(rt == {"reroll": "10/19 14:18 재굴림", "run": "10/15 14:57 Run", "retry": "10/15 15:30 재시도", "none": "", "noVia": "10/19 13:07",
+        check(rt == {"reroll": "10/19 14:18 다시 생성", "run": "10/15 14:57 Run", "retry": "10/15 15:30 재시도", "none": "", "noVia": "10/19 13:07",
                      "odd": "어제 Run", "oldCell": True, "stale": False, "cur": False},
-              f"ranText = 'MM/DD HH:MM 종류'(원장 밖 = ''), oldCell = 옛 셀이고 옛 크롭 아님 {rt}")
+              f"ranText = 'MM/DD HH:MM 종류'(원장 밖 = ''), oldCell = 옛 조건이고 옛 크롭 아님 {rt}")
     se = res.get("seen") or {}
     if "f" in se:
         f = se["f"]
@@ -38467,41 +38467,41 @@ def studio_ux_unit():
     rh = res.get("rerollHold") or {}
     if "smoke" in rh:
         ign = "R 무시 — "
-        hint = "더 넣으려면 [재굴림 +1] 단추(확인 창에 누적 건수)"
+        hint = "더 넣으려면 [다시 생성 +1] 단추(확인 창에 누적 건수)"
         sm = rh["smoke"]
         check(sm["writes"] == 1 and sm["pre"] == 1 and len(sm["queued"]) == 1
-              and sum(ign in t and "이 셀 재굴림 대기 1건(사전 승인)이 아직 돌지 않음" in t and hint in t for t in sm["toasts"]) == 2,
-              f"10/19 스모크 R R R R: 첫 R R 만 +1(쓰기 1·큐 1), 셋째·넷째 R 은 그 셀 대기 1건으로 무시(무장 안 함) {sm}")
+              and sum(ign in t and "이 생성 조건 다시 생성 대기 1건(사전 승인)이 아직 돌지 않음" in t and hint in t for t in sm["toasts"]) == 2,
+              f"10/19 스모크 R R R R: 첫 R R 만 +1(쓰기 1·큐 1), 셋째·넷째 R 은 그 생성 조건 대기 1건으로 무시(무장 안 함) {sm}")
         check(rh["fresh"]["writes"] == 1 and all(rh[k]["writes"] == 0 and rh[k]["queued"] == [] and len(rh[k]["toasts"]) == 2
                                                  and all(t.startswith("warn:" + ign) for t in rh[k]["toasts"])
                                                  for k in ("pre", "running", "busy", "lock"))
-              and "이 셀 재굴림 대기 1건" in rh["pre"]["toasts"][0] and "Run(재굴림 포함) 실행 중" in rh["running"]["toasts"][0]
-              and "앞 요청을 처리하는 중" in rh["busy"]["toasts"][0] and "재굴림 큐 요청을 처리하는 중" in rh["lock"]["toasts"][0],
-              f"키보드 R 거절: 그 셀 사전 승인 대기·Run 실행 중·앞 쓰기 처리 중·이 Studio 유료 요청 중이면 첫 R 부터 무시(쓰기 0) {rh}")
+              and "이 생성 조건 다시 생성 대기 1건" in rh["pre"]["toasts"][0] and "Run(다시 생성 포함) 실행 중" in rh["running"]["toasts"][0]
+              and "앞 요청을 처리하는 중" in rh["busy"]["toasts"][0] and "다시 생성 큐 요청을 처리하는 중" in rh["lock"]["toasts"][0],
+              f"키보드 R 거절: 그 생성 조건 사전 승인 대기·Run 실행 중·앞 쓰기 처리 중·이 Studio 유료 요청 중이면 첫 R 부터 무시(쓰기 0) {rh}")
         bt, bf, ar = rh["button"], rh["buttonFresh"], rh["afterRun"]
-        check(bt["writes"] == 1 and len(bt["confirms"]) == 1 and bt["confirms"][0].split("\n")[1] == "이 셀 재굴림 대기 2건(사전 승인) → 3건 ≈ $1.86"
-              and bf["writes"] == 1 and "이 셀 재굴림 대기" not in bf["confirms"][0]
-              and ar["writes"] == 2 and "이 셀 재굴림 대기 1건(사전 승인) → 2건 ≈ $1.24" in ar["confirms"][0],
-              f"[재굴림 +1] 단추는 대기 중에도 됨 — 확인 창 둘째 줄 = 누적 건수·금액(대기 없으면 줄 없음) {bt['confirms']} {ar['confirms']}")
+        check(bt["writes"] == 1 and len(bt["confirms"]) == 1 and bt["confirms"][0].split("\n")[1] == "이 생성 조건 다시 생성 대기 2건(사전 승인) → 3건 ≈ $1.86"
+              and bf["writes"] == 1 and "이 생성 조건 다시 생성 대기" not in bf["confirms"][0]
+              and ar["writes"] == 2 and "이 생성 조건 다시 생성 대기 1건(사전 승인) → 2건 ≈ $1.24" in ar["confirms"][0],
+              f"[다시 생성 +1] 단추는 대기 중에도 됨 — 확인 창 둘째 줄 = 누적 건수·금액(대기 없으면 줄 없음) {bt['confirms']} {ar['confirms']}")
         sl = rh["stale"]
-        wait_ = "R 무시 — 앞 재굴림 쓰기를 아직 state 로 받지 못함."
-        check(sl["writes"] == 2 and sum(wait_ in t for t in sl["toasts"]) == 2 and sum("이 셀 재굴림 대기 1건" in t for t in sl["toasts"]) == 1,
-              f"리뷰 server-01(must): 폴링이 돌던 중이라 쓰기 뒤 S 가 낡은 채 busy 가 풀려도 그 셀 R 은 응답 rev 를 state 가 담을 때까지 거절 — R R R R = 1건, "
-              f"state 가 오면 대기 pre 로 거절, 재굴림이 돈 뒤(pre 0) R R = 다음 1건 {sl}")
+        wait_ = "R 무시 — 앞 다시 생성 쓰기를 아직 state 로 받지 못함."
+        check(sl["writes"] == 2 and sum(wait_ in t for t in sl["toasts"]) == 2 and sum("이 생성 조건 다시 생성 대기 1건" in t for t in sl["toasts"]) == 1,
+              f"리뷰 server-01(must): 폴링이 돌던 중이라 쓰기 뒤 S 가 낡은 채 busy 가 풀려도 그 생성 조건 R 은 응답 rev 를 state 가 담을 때까지 거절 — R R R R = 1건, "
+              f"state 가 오면 대기 pre 로 거절, 다시 생성이 돈 뒤(pre 0) R R = 다음 1건 {sl}")
         ob, of, obb = rh["oldServer"], rh["oldServerFree"], rh["oldServerButton"]
-        check(ob["writes"] == 0 and "이 셀 재굴림 대기 1건" in ob["toasts"][0] and of["writes"] == 1
-              and obb["confirms"][0].split("\n")[1] == "이 셀 재굴림 대기 2건(사전 승인) → 3건 ≈ $1.86",
-              f"리뷰 board-02: 옛 서버(셀 pre 없음)는 min(누적 재굴림, 대기)로 — 거절·단추 누적 줄 {ob['toasts']} {of['writes']} {obb['confirms']}")
+        check(ob["writes"] == 0 and "이 생성 조건 다시 생성 대기 1건" in ob["toasts"][0] and of["writes"] == 1
+              and obb["confirms"][0].split("\n")[1] == "이 생성 조건 다시 생성 대기 2건(사전 승인) → 3건 ≈ $1.86",
+              f"리뷰 board-02: 옛 서버(생성 조건 pre 없음)는 min(누적 다시 생성, 대기)로 — 거절·단추 누적 줄 {ob['toasts']} {of['writes']} {obb['confirms']}")
         rs = rh["armReset"]
         check(rs["writes"] == 0 and len(rs["toasts"]) == 3 and rs["toasts"][0].startswith("warn:R 을 한 번 더") and rs["toasts"][1].startswith("warn:R 무시")
               and rs["toasts"][2].startswith("warn:R 을 한 번 더"),
               f"리뷰 tests-03: 거절하면 무장도 풂 — 'R 무시' 뒤 R 한 번은 다시 무장만(쓰기 0) {rs['toasts']}")
-        check(rh["order"] == ["warn:R 무시 — 앞 요청을 처리하는 중. 더 넣으려면 [재굴림 +1] 단추(확인 창에 누적 건수)",
-                              f"warn:{wait_} 더 넣으려면 [재굴림 +1] 단추(확인 창에 누적 건수)",
-                              "warn:R 무시 — 이 셀 재굴림 대기 1건(사전 승인)이 아직 돌지 않음. 더 넣으려면 [재굴림 +1] 단추(확인 창에 누적 건수)",
-                              "warn:R 무시 — Run(재굴림 포함) 실행 중. 더 넣으려면 [재굴림 +1] 단추(확인 창에 누적 건수)",
-                              "warn:R 무시 — L. 더 넣으려면 [재굴림 +1] 단추(확인 창에 누적 건수)"],
-              f"리뷰 tests-08: rerollHold 사유 순서 = 앞 쓰기 처리 중 → 그 셀 쓰기 미반영 state(다른 셀 쓰기는 무관) → 그 셀 대기 → Run 실행 중 → 이 Studio 유료 요청 {rh['order']}")
+        check(rh["order"] == ["warn:R 무시 — 앞 요청을 처리하는 중. 더 넣으려면 [다시 생성 +1] 단추(확인 창에 누적 건수)",
+                              f"warn:{wait_} 더 넣으려면 [다시 생성 +1] 단추(확인 창에 누적 건수)",
+                              "warn:R 무시 — 이 생성 조건 다시 생성 대기 1건(사전 승인)이 아직 돌지 않음. 더 넣으려면 [다시 생성 +1] 단추(확인 창에 누적 건수)",
+                              "warn:R 무시 — Run(다시 생성 포함) 실행 중. 더 넣으려면 [다시 생성 +1] 단추(확인 창에 누적 건수)",
+                              "warn:R 무시 — L. 더 넣으려면 [다시 생성 +1] 단추(확인 창에 누적 건수)"],
+              f"리뷰 tests-08: rerollHold 사유 순서 = 앞 쓰기 처리 중 → 그 생성 조건 쓰기 미반영 state(다른 생성 조건 쓰기는 무관) → 그 생성 조건 대기 → Run 실행 중 → 이 Studio 유료 요청 {rh['order']}")
     rc = res.get("refreshCycle") or {}
     if "same" in rc:
         check(rc["same"] is True and rc["atForced"] == {"calls": [False, True], "rev": 2, "polling": False}
@@ -38511,18 +38511,18 @@ def studio_ux_unit():
     rw = res.get("renderWiring") or {}
     if "first" in rw:
         f0 = rw["first"]
-        check(f0["grid"] == [{"badges": [], "cap": "c01 · V1 · r1 · 10/19 14:18 재굴림", "title": "k1 · 10/19 14:18 재굴림 완료"},
-                             {"badges": ["옛 셀"], "cap": "c02 · V1 · r0 · 10/15 14:57 Run", "title": "r_7f671605253e_0_1 · 10/15 14:57 Run 완료"}]
+        check(f0["grid"] == [{"badges": [], "cap": "c01 · V1 · r1 · 10/19 14:18 다시 생성", "title": "k1 · 10/19 14:18 다시 생성 완료"},
+                             {"badges": ["옛 조건"], "cap": "c02 · V1 · r0 · 10/15 14:57 Run", "title": "r_7f671605253e_0_1 · 10/15 14:57 Run 완료"}]
               and f0["chips"] == [["후보 2"], ["후보 1"]] and f0["saved"] == ["k1", "k2", "k3"]
-              and rw["k2"] == {"caption": "후보 c02 · 옛 셀 · 10/15 14:57 Run",
+              and rw["k2"] == {"caption": "후보 c02 · 옛 조건 · 10/15 14:57 Run",
                                "detail": ["c02r_7f671605253e_0_1 · run · comfy_org · V1 · r0 · 64×64 · 10/15 14:57 Run 완료",
-                                          "옛 셀지금 jobs 에 없는 셀(Prepare 설정·입력이 바뀌기 전)로 만든 후보 — 재굴림(R)은 지금 셀로"]},
-              f"리뷰 tests-02: 첫 state = 기준(저장, 새 없음), 타일 캡션 = 완료 시각·종류(마우스 = 레이어명), '옛 셀' 배지·큰 화면 제목·상세 줄 {rw.get('first')} {rw.get('k2')}")
-        check(rw["arrived"] == {"grid": [[], ["옛 셀"], ["새"]], "chips": [["후보 3", "새 1"], ["후보 2", "새 1"]]}
-              and rw["picked"] == {"grid": [[], ["옛 셀"], []], "chips": [["후보 3"], ["후보 2", "새 1"]]}
+                                          "옛 조건지금 jobs 에 없는 생성 조건(Prepare 설정·입력이 바뀌기 전)으로 만든 후보 — 다시 생성(R)은 지금 생성 조건으로"]},
+              f"리뷰 tests-02: 첫 state = 기준(저장, 새 없음), 타일 캡션 = 완료 시각·종류(마우스 = 레이어명), '옛 조건' 배지·큰 화면 제목·상세 줄 {rw.get('first')} {rw.get('k2')}")
+        check(rw["arrived"] == {"grid": [[], ["옛 조건"], ["새"]], "chips": [["후보 3", "새 1"], ["후보 2", "새 1"]]}
+              and rw["picked"] == {"grid": [[], ["옛 조건"], []], "chips": [["후보 3"], ["후보 2", "새 1"]]}
               and rw["inPipe"] == {"cKey": "k5", "chips": [["후보 3"], ["후보 2", "새 1"]], "timers": 0} and rw["leftBeforeTimer"] is True
               and rw["left"] == {"new5": False, "chips": [["후보 3"], ["후보 2"]], "saved": ["k1", "k2", "k3", "k4", "k5"]},
-              f"리뷰 tests-02: 새 후보 = 타일 '새'·타깃 칩 '새 N'(reconcile 연결), 고르면 사라짐(selectCand), 진행(G)의 크롭 선택은 '새' 유지, 진행을 나오면 "
+              f"리뷰 tests-02: 새 후보 = 타일 '새'·타깃 칩 '새 N'(reconcile 연결), 고르면 사라짐(selectCand), 실행(G)의 크롭 선택은 '새' 유지, 진행을 나오면 "
               f"지금 후보만 본 것(setPipe → seeCurrent) {rw}")
 
 
@@ -41756,7 +41756,7 @@ await scenario("panel", async () => {
   key("Enter");
   await sleep(10);
   r.applying = { row: rows().find((t) => t.startsWith("적용 중")) || null,
-    disabled: ["실행 취소", "적용", "버리기", "위 변 페이드", "전체 페더", "이전 판으로"].map((l) => (B(l) ? B(l).disabled : null)),
+    disabled: ["실행 취소", "적용", "버리기", "위 가장자리 페이드", "전체 페더", "이전 버전으로"].map((l) => (B(l) ? B(l).disabled : null)),
     brush: viewer.ed.pointerdown({ cx: 600, cy: 2900, shiftKey: false }), undoKey: key("KeyZ", { ctrlKey: true }), pending: ed.pending() };
   // 적용 중 대상 바꾸기(N·목록) 거절 — 받으면 적용 성공 길이 옛 대상의 값·file 을 새 대상 세션에 씀
   Object.assign(r.applying, { go: ed.go({ key: K14, seam: null }), goToast: toasts.at(-1), confirms: confirms.length });
@@ -41790,7 +41790,7 @@ await scenario("panel", async () => {
   await until(() => P.count("mask/img", "under") > g0[1]);
   await sleep(5);
   r.diff = { gets: [P.count("mask") - g0[0], P.count("mask/img", "under") - g0[1]], rows: rows().filter((t) => t.startsWith("적용 전후")),
-    edit: rows().find((t) => t.startsWith("편집 ")) || null, hist: rows().find((t) => t.startsWith("이전 판")) || null, list: list.children.map((e) => e.textContent) };
+    edit: rows().find((t) => t.startsWith("편집 ")) || null, hist: rows().find((t) => t.startsWith("이전 버전")) || null, list: list.children.map((e) => e.textContent) };
   // 그 뒤 다른 쓰기(다른 창·노드)로 ★ 합성이 적용 전도 뒤도 아닌 서명이 되면 전후 줄을 지움('적용 뒤 … 다시 계산 중'이 남지 않음)
   const SIG3 = "0f1e2d3c4b5a6978";
   const S2b = Object.assign(maskState(), { rev: 138 });
@@ -41826,7 +41826,7 @@ await scenario("panel", async () => {
   Object.assign(r.again, { after: P.count("mask") - g1, pending: ed.pending(), edit: rows().find((t) => t.startsWith("편집 ")) || null });
   // U3 2차 검증: 세션이 연 판 뒤(다른 창의 새 판)면 세션 칸에 경고 + [다시 받기] — Ctrl+Z 로 0 이 돼도(다시 Ctrl+Y 할 수 있게 세션은 그대로), [버리기]는
   // 서버 판으로 다시 염(미리보기 = Compose·Export 가 쓰는 판)
-  const behindRow = () => rows().filter((t) => t.startsWith("서버 판이 바뀜"));
+  const behindRow = () => rows().filter((t) => t.startsWith("서버 버전이 바뀜"));
   r.again.behind = behindRow();
   key("KeyZ", { ctrlKey: true });
   r.again.zero = { pending: ed.pending(), behind: behindRow(), button: !!B("다시 받기"), gets: P.count("mask") - g1 };
@@ -41844,7 +41844,7 @@ await scenario("panel", async () => {
   // [편집 지우기] = 확인 창(이전 판 수·버릴 획) → reset → 기준 마스크로
   srv.info[K15] = i2;
   const e0 = [P.count("mask"), confirms.length, calls.refresh];
-  B("이전 판으로").fire("click");
+  B("이전 버전으로").fire("click");
   await until(() => toasts.some((t) => t.startsWith(":이전 판으로")));
   r.undo2 = { body: srv.log.filter((x) => x.path === "mask/edit").pop().body, confirms: confirms.length - e0[1], gets: P.count("mask") - e0[0],
     refresh: calls.refresh - e0[2], toast: toasts.pop() };
@@ -41852,12 +41852,12 @@ await scenario("panel", async () => {
   viewer.ed.pointerup({});
   P.answer = false;
   const nEdit = P.count("mask/edit");
-  B("이전 판으로").fire("click");
+  B("이전 버전으로").fire("click");
   r.undoAsk = { confirm: confirms.pop(), posts: P.count("mask/edit") - nEdit, pending: ed.pending() && ed.pending().n };
   P.answer = true;
   srv.edit.push([200, MA["POST /mask/edit"].alt.cleared]);
   srv.info[K15] = Object.assign(clone(i2), { edit: null });
-  B("편집 지우기").fire("click");
+  B("편집 모두 지우기").fire("click");
   await until(() => toasts.some((t) => t.startsWith(":마스크 편집 지움")) && rows().includes("저장된 편집 없음"));
   r.reset = { confirm: confirms.pop(), body: srv.log.filter((x) => x.path === "mask/edit").pop().body, pending: ed.pending(), toast: toasts.pop(),
     rows: rows().filter((t) => t.startsWith("편집 없음") || t === "저장된 편집 없음") };
@@ -41866,19 +41866,19 @@ await scenario("panel", async () => {
   r.goSeam = { ok: ed.go({ key: K14, seam: seams.segments[2] }), confirms: confirms.length - n14, look: viewer.looks.pop() };
   await until(() => rows().some((t) => t.includes("c02 ★")));
   r.goSeam.rows = rows().slice(0, 3);  // 대상 · 자동 마스크 설명(10/21 U-2) · 편집 줄
-  r.goSeam.fade = B("선택 이음매 구간 페이드") ? B("선택 이음매 구간 페이드").disabled : null;
+  r.goSeam.fade = B("이음매 구간 페이드") ? B("이음매 구간 페이드").disabled : null;
   // 이 크롭 이음매 목록 = 뷰어 이음매(지금 서명)에서 이 크롭만 · 누르면 그 구간
   r.seamRows = rows().filter((t) => / · p90 /.test(t));
   // [선택 이음매 구간 페이드] = 구간 끝을 크롭 rect 기준으로(왼·오른 변은 y0, 위·아래 변은 x0) — 014 왼변 2604–2694 → 364–454(U0 §2.2), 바뀐 띠만 다시 그림
   await until(() => viewer.layer && viewer.layer.box[0] === 256);
   raf();
   const p0 = puts.length;
-  B("선택 이음매 구간 페이드").fire("click");
+  B("이음매 구간 페이드").fire("click");
   raf();
   r.range = { row: rows().find((t) => t.startsWith("적용 안 한 획")) || null, puts: puts.slice(p0) };
   ed.go({ key: K14, seam: { crop_id: "014_0f9cc5", tid: "A", key: K14, side: "top", x0: 700, y0: 2240, x1: 800, y1: 2240, length: 100, diff_med: 20, diff_p90: 40,
     severity: "bad" } });
-  B("선택 이음매 구간 페이드").fire("click");
+  B("이음매 구간 페이드").fire("click");
   r.range.top = rows().find((t) => t.startsWith("적용 안 한 획")) || null;
   key("KeyZ", { ctrlKey: true });
   key("KeyZ", { ctrlKey: true });
@@ -42033,8 +42033,8 @@ await scenario("panelR1", async () => {
 // [기준으로 다시 시작]·[이전 판으로]·[편집 지우기], 붓 → [적용] = 지금 창 크기 PNG(seen = 기록 file). 편집 래스터를 못 받아도(404 등) 같은 줄·단추가
 // 남고(세션·겹침만 없음) [다시 받기]가 다시 연다
 await scenario("panelStale", async () => {
-  const states = (P) => ({ rows: P.rows().slice(0, 4), restart: P.panel.all().filter((e) => e.tagName === "BUTTON" && e.textContent === "기준으로 다시 시작").length,
-    on: ["기준으로 다시 시작", "이전 판으로", "편집 지우기", "위 변 페이드"].map((l) => (P.B(l) ? !P.B(l).disabled : null)), layer: P.viewer.layer && P.viewer.layer.box });
+  const states = (P) => ({ rows: P.rows().slice(0, 4), restart: P.panel.all().filter((e) => e.tagName === "BUTTON" && e.textContent === "처음 마스크로 다시 시작").length,
+    on: ["처음 마스크로 다시 시작", "이전 버전으로", "편집 모두 지우기", "위 가장자리 페이드"].map((l) => (P.B(l) ? !P.B(l).disabled : null)), layer: P.viewer.layer && P.viewer.layer.box });
   const stale = () => {
     const mv = Object.assign(maskInfo(K15), { rect: [126, 2558, 1410, 3330] });
     mv.edit.stale = true;
@@ -42047,7 +42047,7 @@ await scenario("panelStale", async () => {
   P.raf();
   const r = { open: states(P) };
   P.answer = false;
-  P.B("기준으로 다시 시작").fire("click");
+  P.B("처음 마스크로 다시 시작").fire("click");
   r.restartAsk = { confirm: P.confirms.pop(), posts: P.count("mask/edit") };
   P.answer = true;
   P.viewer.ed.pointerdown({ cx: 600, cy: 2900, shiftKey: false });
@@ -42067,7 +42067,7 @@ await scenario("panelStale", async () => {
   Q.srv.imgFail = null;
   Q.B("다시 받기").fire("click");
   await until(() => Q.viewer.layer);
-  r.lost.again = { on: Q.B("위 변 페이드") && !Q.B("위 변 페이드").disabled, layer: Q.viewer.layer.box, err: Q.rows().some((t) => t.includes("없습니다")) };
+  r.lost.again = { on: Q.B("위 가장자리 페이드") && !Q.B("위 가장자리 페이드").disabled, layer: Q.viewer.layer.box, err: Q.rows().some((t) => t.includes("없습니다")) };
   // 새 state(서버 판이 바뀜)의 다시 열기가 래스터를 못 받으면 옛 세션 겹침을 뗌(패널 = 오류 줄 + [다시 받기])
   const mv2 = stale();
   mv2.edit.file = "masks/r_61ba2d69_e_0000000000cc.png";
@@ -42105,8 +42105,8 @@ await scenario("panelLife", async () => {
   moved.base.sig = "0a1b2c3d4e5f6071";
   P.srv.info[K15] = moved;
   ed.stateChanged(Object.assign(maskState(), { rev: 137 }));
-  await until(() => rows().some((t) => t.startsWith("기준 마스크가 바뀜")));
-  r.sigOnly = { rows: rows().filter((t) => t.startsWith("기준 마스크가 바뀜") || t.startsWith("서버 판이 바뀜")) };
+  await until(() => rows().some((t) => t.startsWith("처음 마스크가 바뀜")));
+  r.sigOnly = { rows: rows().filter((t) => t.startsWith("처음 마스크가 바뀜") || t.startsWith("서버 버전이 바뀜")) };
   P.key("Enter");
   await until(() => P.calls.refresh === 1);
   r.sigOnly.save = { rect: P.srv.log.filter((x) => x.path === "mask/save").pop()?.q.rect ?? null, pending: ed.pending() };
@@ -42367,7 +42367,7 @@ await scenario("checks", async () => {
   await sleep(40);
   const star = hosts.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent === "★ 점검");
   const lines = star ? star.children.slice(1) : [];
-  for (const head of ["001_머리 · A — 마스크 편집 기준 바뀜", "003_리본 — 이음매 bad", "003_리본 · A — 적용 안 한 마스크 편집"]) {
+  for (const head of ["001_머리 · A — 처음 마스크가 바뀜", "003_리본 — 이음매 bad", "003_리본 · A — 적용 안 한 마스크 편집"]) {
     const row = lines.find((e) => e.textContent.startsWith(head));
     if (row) row.fire("click");
   }
@@ -42548,8 +42548,8 @@ await scenario("panelR2", async () => {
   await sleep(10);
   const during = P.count("mask") - n2;
   viewer.ed.pointerup({});
-  await until(() => rows().some((t) => t.startsWith("서버 판이 바뀜")));
-  r.strokeState = { during, after: P.count("mask") - n2, warn: rows().filter((t) => t.startsWith("서버 판이 바뀜")) };
+  await until(() => rows().some((t) => t.startsWith("서버 버전이 바뀜")));
+  r.strokeState = { during, after: P.count("mask") - n2, warn: rows().filter((t) => t.startsWith("서버 버전이 바뀜")) };
   // session-r2-02·03·tests-r2-03: 획이 있는 세션의 409 뒤 [다시 받기] = 확인 창(아니오 = 세션·충돌 줄 그대로), 예 = 서버 판으로 다시 열고 충돌 줄 없음
   srv.save.push([409, MA["POST /mask/save"].errors["409"][2]]);
   key("Enter");
@@ -42614,7 +42614,7 @@ await scenario("panelR2", async () => {
   // tests-r2-05: 패널 6 이음매 줄 누르기(지금 대상) = 그 구간으로 2:1·선택 구간(줄 강조·구간 페이드 켬)
   const nLook = viewer.looks.length;
   panel.all().find((e) => e.classList.contains("pp-row") && e.textContent.startsWith("top 575–1337")).fire("click");
-  const fadeB = B("선택 이음매 구간 페이드");
+  const fadeB = B("이음매 구간 페이드");
   r.seamClick = { look: viewer.looks.slice(nLook), sel: panel.all().filter((e) => e.classList.contains("pp-row") && e.classList.contains("sel")).map((e) => e.textContent),
     fade: fadeB ? [fadeB.disabled, fadeB.title] : null };
   // session-r2-03: 적용 중 새 state = 미룸 → 적용 뒤 다시 받기
@@ -42847,7 +42847,7 @@ await scenario("panelR3b", async () => {
   const l0 = E.viewer.looks.length;
   E.ed.enter(maskState(), { key: K15, seam: top });
   await sleep(10);
-  const fb = E.B("선택 이음매 구간 페이드");
+  const fb = E.B("이음매 구간 페이드");
   r.reenterSeam = { looks: E.viewer.looks.slice(l0), sel: selRows(E), fade: fb ? fb.title : null, select: E.calls.select.at(-1) };
   E.ed.leave();
   // tests-r3-06: 뷰어 이음매가 실패(서명 없는 {segments: [], error})·옛 서명이면 쓰지 않음 — GET /mask 의 이음매(같은 서명)나 '계산 중…'
@@ -42908,7 +42908,7 @@ await scenario("panelR3b", async () => {
   await ready(Ep);
   const ge = gate();
   Ep.srv.wait = (path) => (path === "mask/edit" ? ge.p : null);
-  Ep.B("이전 판으로").fire("click");
+  Ep.B("이전 버전으로").fire("click");
   await sleep(5);
   r.editHold = { go: Ep.ed.go({ key: K14, seam: null }), leave: Ep.ed.leave(), toasts: Ep.toasts.slice(), editor: !!Ep.viewer.ed,
     k14: Ep.srv.log.filter((x) => x.path === "mask" && x.q.key === K14).length };
@@ -42927,7 +42927,7 @@ await scenario("panelR3b", async () => {
   F.srv.imgFail = "edit";
   const gl = gate();
   F.srv.wait = (path, q) => (path === "mask/img" && ["under", "patch", "over"].includes(q.kind) ? gl.p : null);
-  F.B("이전 판으로").fire("click");
+  F.B("이전 버전으로").fire("click");
   await until(() => F.toasts.some((t) => t.startsWith(":이전 판으로")));
   await sleep(5);
   const queued = F.rafQ.length;
@@ -43005,7 +43005,7 @@ await scenario("panelR3b", async () => {
               f"smoothstep·fade(변 4 × 폭 3 × 거리, 구간 테이퍼)·kernel(반경 ceil(3σ))·feather(분리·가장자리 복제)·stamp·ops·quant 모든 행 ≤ tol "
               f"{ru['worst']} {ru['n']}")
 
-    section("S4-J-K2 세션: 획·실행 취소/다시·페이드·[적용](L PNG·seen·ops)·409·적용 중 막힘·저장된 판·대안 202·다시 받기")
+    section("S4-J-K2 세션: 획·실행 취소/다시·페이드·[적용](L PNG·seen·ops)·409·적용 중 막힘·저장된 버전·대안 202·다시 받기")
     pg = res.get("png") or {}
     if "b64" in pg:
         im = Image.open(io.BytesIO(base64.b64decode(pg["b64"])))
@@ -43023,7 +43023,7 @@ await scenario("panelR3b", async () => {
         check(se["strokeRect"] == [404, 2836, 452, 2884] and se["mid"] == [410, 2836, 548, 2884] and se["busyBegin"] is None
               and st["line"] == [0, 0, 0, 0] and abs(st["out"][0] - 182 / 255) < 1e-6 and st["out"][1] == 0 and st["pending"] == 1 and st["ops"] == "붓 1획"
               and st["undoRect"] == [276, 276, 420, 324],
-              f"획(지우기 경도 1·세기 1·R 24): 마우스 사이 R/4 간격 도장, 반지름 안 0·밖 그대로, 바뀐 사각형만 실행 취소 값, 획 중 새 획 없음 {st}")
+              f"획(지우기 경도 1·흐름 1·R 24): 마우스 사이 R/4 간격 도장, 반지름 안 0·밖 그대로, 바뀐 사각형만 실행 취소 값, 획 중 새 획 없음 {st}")
         check(se["undo"] == {"same": True, "pending": 0, "redo": 1} and se["redo"] == {"same": True, "pending": 1},
               f"Ctrl+Z·Y = 획 단위로 정확히 되돌림·다시 {se['undo']} {se['redo']}")
         ft, fr = se["fadeTop"], se["fadeRange"]
@@ -43031,11 +43031,11 @@ await scenario("panelR3b", async () => {
               and abs(ft["d63"][0] - ft["d63"][1]) < 1e-6 and ft["d64same"]
               and fr["undoRect"] == [0, 94, 64, 263] and abs(fr["inside"][0] - fr["inside"][1]) < 1e-6 and fr["outside"],
               f"변 페이드 top 64 = 안쪽 64줄만(m·fade), 구간 페이드 left 158–198 ± 64 = 그 띠만 {ft} {fr}")
-        check(se["chain"] == {"ops": "붓 1획 · 변 페이드 top 64 · 구간 페이드 left 158–198 64 · 페더 σ2 · 기준으로", "pending": 5, "base": True},
-              f"한 번에 하는 연산도 단계 하나씩, ops 요약 = 차례대로(이어진 붓은 '붓 n획'), [기준으로] = 기준 마스크 {se['chain']}")
+        check(se["chain"] == {"ops": "붓 1획 · 가장자리 페이드 top 64 · 구간 페이드 left 158–198 64 · 페더 2px · 처음 마스크로", "pending": 5, "base": True},
+              f"한 번에 하는 연산도 단계 하나씩, ops 요약 = 차례대로(이어진 붓은 '붓 n획'), [처음 마스크로] = 처음 마스크 {se['chain']}")
         so = se["soften"]
         check(so["was"] == 0 and abs(so["at"] - so["blur"]) < 1e-6 and so["at"] > 0.3,
-              f"부드럽게(세기 1·도장 중심) = 획 시작 때 사본의 σ = R/4 가우시안 값 {so}")
+              f"흐리기(흐름 1·도장 중심) = 획 시작 때 사본의 σ = R/4 가우시안 값 {so}")
         check(se["cap"] == {"undo": 50, "dropped": 5, "pending": 55, "ops": "붓 55획"}, f"실행 취소 최근 50 — 넘으면 오래된 것부터 버림, 적용 요약에는 남김 {se['cap']}")
         ap = se["applying"]
         check(ap == {"busy": "apply", "begin": None, "step": None, "again": None, "fade": None}, f"적용 중: 붓·실행 취소·다시 적용·페이드 막힘 {ap}")
@@ -43047,7 +43047,7 @@ await scenario("panelR3b", async () => {
               and hashlib.sha256(im.tobytes()).hexdigest() == a["sha"]
               and a["q"] == {"root": "fe410d7f025d", "key": "r_61ba2d695f0f_0_0", "seen": doc["routes"]["GET /mask"]["ok"]["edit"]["file"], "ops": "붓 55획",
                              "rect": "128,2560,1408,3328"},
-              f"[적용] = POST /mask/save?root·key·seen(연 판 file)·ops·rect(세션 창 x0,y0,x1,y1), 본문 image/png = 창 크기 L PNG(값 = quant(m)) "
+              f"[적용] = POST /mask/save?root·key·seen(연 버전 file)·ops·rect(세션 창 x0,y0,x1,y1), 본문 image/png = 창 크기 L PNG(값 = quant(m)) "
               f"{a['q']} {im.mode} {im.size}")
         check(a.get("ok") and a["pending"] == 0 and a["file"] == sv["edit"]["file"] and a["quant"] and a.get("seams") is None and a.get("sig") == sv["composite_sig"]
               and a.get("edit") == sv["edit"],
@@ -43068,14 +43068,14 @@ await scenario("panelR3b", async () => {
         check(se["refreshClean"] == {"reopened": True, "file": "masks/r_61ba2d69_e_77d0c3a1e5f2.png", "imgs": 2}
               and se["refreshDirty"] == {"reopened": False, "file": "masks/r_61ba2d69_e_77d0c3a1e5f2.png", "info": "masks/r_61ba2d69_e_0000000000aa.png",
                                          "same": True, "pending": 1},
-              f"다시 받기: 세션이 비었으면 서버 판(기록 file)이 바뀐 때 래스터를 다시, 적용 안 한 획이 있으면 세션 그대로(seen 은 연 판 — 적용하면 409) "
+              f"다시 받기: 세션이 비었으면 서버 버전(기록 file)이 바뀐 때 래스터를 다시, 적용 안 한 획이 있으면 세션 그대로(seen 은 연 버전 — 적용하면 409) "
               f"{se['refreshClean']} {se['refreshDirty']}")
         bh = se.get("behind") or {}
         check(bh.get("dirty") is True
               and bh.get("clean") == {"behind": True, "reopened": True, "file": "masks/r_61ba2d69_e_0000000000aa.png", "after": False, "imgs": 2}
               and bh.get("sig") == {"kept": False, "behind": True, "reopened": True, "sig": "0a1b2c3d4e5f6071", "after": False},
-              f"U3 2차 검증: behind = 세션을 연 판(기록 file·기준 서명·창) ≠ 마지막 GET /mask — 획을 버린 뒤 다시 받기가 서버 판으로 다시 염, "
-              f"기준 서명만 바뀐 것(획이 있는 동안 받은 판)도 연 판과 비교 {bh}")
+              f"U3 2차 검증: behind = 세션을 연 버전(기록 file·기준 서명·창) ≠ 마지막 GET /mask — 획을 버린 뒤 다시 받기가 서버 버전으로 다시 염, "
+              f"기준 서명만 바뀐 것(획이 있는 동안 받은 판)도 연 버전과 비교 {bh}")
         check(se["layers"] == {"first": True, "again": False, "box": [0, 2304, 1664, 3584], "n": 1664 * 1280 * 4}
               and se["oldServer"] == {"opened": False, "err": "마스크 라우트가 없습니다 — ComfyUI 를 재시작해야 마스크 편집(K)을 쓸 수 있습니다"},
               f"3층은 서명이 바뀐 때만 받음, 옛 서버(JSON 아닌 404) = 재시작 안내 {se['layers']} {se['oldServer']}")
@@ -43085,7 +43085,7 @@ await scenario("panelR3b", async () => {
         check(se["moved"] == {"opened": False, "info": True, "file": ef, "m": None, "err": "이미지 크기 1280×768 ≠ 1284×772 — 다시 받기"}
               and se["lost"] == {"opened": False, "info": True, "file": ef, "m": None, "err": f"마스크 편집 파일이 없습니다: {ef}",
                                  "again": {"reopened": True, "m": True, "win": [126, 2558, 1410, 3330], "err": None}},
-              f"U3 리뷰 must: 편집 래스터를 못 받아도(기록 창 크기 PNG·404) info·seen 남김(세션 없음 — 편집 기준 바뀜 줄·되돌리기·지우기 길), "
+              f"U3 리뷰 must: 편집 래스터를 못 받아도(기록 창 크기 PNG·404) info·seen 남김(세션 없음 — 처음 마스크가 바뀜 줄·되돌리기·지우기 길), "
               f"다시 받기가 다시 염 {se['moved']} {se['lost']}")
         check(se.get("race") == {"a": False, "b": True, "key": "r_d9b7ffb9fb7c_0_1", "info": "r_d9b7ffb9fb7c_0_1", "file": "",
                                  "win": [512, 2240, 1536, 3008], "busy": ""},
@@ -43096,14 +43096,14 @@ await scenario("panelR3b", async () => {
     if "enter" in pn:
         e = pn["enter"]
         check(e["editor"] and e["layerBox"] == [0, 2304, 1664, 3584] and e["put"] == [0, 0, 1664, 1280] and e["select"] == ["r_61ba2d695f0f_0_0", True]
-              and e["rows"] == ["015_치마밑단_주름 · A · c01 ★ — 기준 자동 마스크 1280×768 (z: 아래 0 · 위 4)", MASK_AUTO_ROW,
+              and e["rows"] == ["015_치마밑단_주름 · A · c01 ★ — 처음 마스크 자동 마스크 1280×768 (z: 아래 0 · 위 4)", MASK_AUTO_ROW,
                                 "편집 10/19 18:20 · 변 페이드 top 64 · 붓 12획", "보기: 편집"]
               and e["list"] == ["015_치마밑단_주름편집 1이음매 2", "014_치마원단_문양이음매 1"]
               and e["paths"] == ["mask", "mask/img:base", "mask/img:edit", "mask/img:under", "mask/img:patch", "mask/img:over"],
               f"K 진입: 뷰어 편집기 훅·겹침 캔버스(box)·전체 합성 한 번, 보드 선택 = 편집 대상, 대상 줄(크롭·타깃·c·★·기준·창·z)·편집 줄, 왼쪽 크롭 칩 {e}")
         k = pn["keys"]
-        check(k["x"] is True and k["tool"] == ["살리기", "폭 64"] and k["sliders"] == ["크기58px", "경도0.40", "세기1.00", "페더 σ4"]
-              and k["q"] == "보기: 기준(Q 누르는 중)" and k["view"] == "보기: 기준|편집 슬라이더(S — 왼쪽 = 기준) · 마스크(M)" and k["review"] == [False] * 7,
+        check(k["x"] is True and k["tool"] == ["살리기", "폭 64"] and k["sliders"] == ["크기58px", "경도0.40", "흐름1.00", "페더 (px)4"]
+              and k["q"] == "보기: 처음 마스크(Q 누르는 중)" and k["view"] == "보기: 처음|편집 슬라이더(S — 왼쪽 = 처음 마스크) · 마스크(M)" and k["review"] == [False] * 7,
               f"키: X 지우기 ↔ 살리기, ] 크기 ×1.2, Shift+[ 경도 −0.1, Q 누르는 동안 기준, M·S 보기, 검토·뷰어 키는 받지 않음(board.js 가 끔·뷰어로) {k}")
         sk = pn["stroke"]
         check(sk["pd"] is True and sk["pending"] == {"key": "r_61ba2d695f0f_0_0", "n": 1, "name": "015_치마밑단_주름 · A"}
@@ -43117,12 +43117,12 @@ await scenario("panelR3b", async () => {
         ap = pn["applying"]
         check(ap["row"] == "적용 중… (획 1)" and ap["disabled"] == [True] * 6 and ap["brush"] is False and ap["undoKey"] is True and ap["pending"]["n"] == 1
               and ap["go"] is False and ap["goToast"] == "warn:적용·되돌리기·★ 바꾸기를 처리하는 중 — 끝난 뒤 바꾸세요" and ap["confirms"] == 0,
-              f"적용 중: 실행 취소·적용·버리기·페이드·페더·이전 판 단추 끔, 붓 안 됨(왼쪽 끌기는 화면 이동), Ctrl+Z 무시, 대상 바꾸기 거절(확인 창 없이) {ap}")
+              f"적용 중: 실행 취소·적용·버리기·페이드·페더·이전 버전 단추 끔, 붓 안 됨(왼쪽 끌기는 화면 이동), Ctrl+Z 무시, 대상 바꾸기 거절(확인 창 없이) {ap}")
         check(ap.get("leave") is False and ap.get("leaveToast") == "warn:적용·되돌리기·★ 바꾸기를 처리하는 중 — 끝난 뒤 나가세요" and ap.get("leaveConfirms") == 0
               and ap.get("editor") is True,
               f"U3 3차 검증: 적용 중 나가기(K·Esc·다른 모드 단추)도 거절 — 나가면 진행 ★ 점검에 낡은 '적용 안 한 편집' 줄이 남음 {ap}")
         cf = pn["conflict"]
-        check(len(cf["rows"]) == 1 and "세션은 남김" in cf["rows"][0] and cf["again"] and cf["pending"]["n"] == 1 and cf["toast"].startswith("warn:적용 안 됨 — "),
+        check(len(cf["rows"]) == 1 and "적용 전 획은 남김" in cf["rows"][0] and cf["again"] and cf["pending"]["n"] == 1 and cf["toast"].startswith("warn:적용 안 됨 — "),
               f"409 = '다른 창에서 바뀜 — 다시 받기'(세션 남김 · [다시 받기]) {cf}")
         check(pn["applied"]["pending"] is None and pn["applied"]["toast"].startswith(":마스크 편집 적용 — 015_치마밑단_주름 · A · c01")
               and len(pn["applied"]["q"]) == 2,
@@ -43132,41 +43132,41 @@ await scenario("panelR3b", async () => {
               and df["rows"] == ["적용 전후 bad 2 → 1", "적용 전후 left 2718–2758 p90 73.5 → 없음", "적용 전후 top 575–1337 p90 43.3 → 12.1 weak",
                                  "적용 전후 bottom 300–340 p90 35 bad — 새로 생김", "적용 전후 right 2600–2700 p90 9.5 weak — 새로 생김",
                                  "적용 전후 left 2720–2750 p90 20 weak — 새로 생김"]
-              and df["edit"] == "편집 10/19 18:20 · 붓 1획" and df["hist"] == "이전 판 1"
+              and df["edit"] == "편집 10/19 18:20 · 붓 1획" and df["hist"] == "이전 버전 1"
               and df["list"] == ["015_치마밑단_주름편집 1이음매 4", "014_치마원단_문양이음매 1"],
               f"적용 전후(패널 6): 새 서명 이음매 전엔 '다시 계산 중', 새 state(rev) = GET /mask 다시(편집 판·3층 서명 → 3층 다시) · 새 이음매 = 전후 줄"
               f"(bad n → m · 'p90 → 없음' · 새로 생김 — 같은 변이라도 다른 ★ 의 구간은 짝이 아님)·왼쪽 칩 {pn['diffWait']} {df}")
         check(pn["diffGone"] == [], f"U3 2차 검증: 그 뒤 다른 쓰기로 ★ 합성 서명이 적용 전·뒤 둘 다 아니면 전후 줄을 지움('다시 계산 중' 이 남지 않음) {pn['diffGone']}")
         check(pn["pref"] == 1, f"Codex 2차: 같은 rev 에 pref_v(분석·Export 설정)만 바뀐 state = GET /mask 한 번 더(같은 판은 다시 받지 않음) {pn['pref']}")
         ag = pn["again"]
-        bline = ["서버 판이 바뀜(다른 창·노드) — 이 세션·미리보기는 연 판(적용하면 거절) 다시 받기"]
+        bline = ["서버 버전이 바뀜(다른 창·노드) — 적용 전 획·미리보기는 연 버전(적용하면 거절) 다시 받기"]
         check(ag["during"] == 0 and ag["after"] == 1 and ag["pending"]["n"] == 1 and ag["edit"] == "편집 10/19 18:20 · 다른 창의 붓 2획",
               f"획 중의 새 state = 받기를 미룸 → 획이 끝나면 GET /mask 한 번(적용 안 한 획 — 세션 그대로·편집 줄만 새 판), 같은 rev 는 다시 받지 않음 {ag}")
         check(ag["behind"] == bline and ag["zero"] == {"pending": None, "behind": bline, "button": True, "gets": 1}
               and ag["discard"] == {"confirm": "적용 안 한 획 1 을 모두 버릴까요?", "pending": None, "gets": [2, 1], "behind": [], "reput": [[0, 0, 1664, 1280]]},
-              f"U3 2차 검증: 세션이 연 판 뒤(다른 창의 새 판)면 세션 칸 경고 + [다시 받기](Ctrl+Z 로 0 이어도 — 세션은 Ctrl+Y 할 수 있게 그대로), "
-              f"[버리기] = 서버 판으로 다시 열기(GET /mask·편집 래스터 — 미리보기 = Compose·Export 의 판, 3차: 다시 연 뒤 겹침 전체 다시 그림 — "
-              f"[버리기]의 rAF 가 먼저 돌아도 연 판 합성이 남지 않게) {ag}")
+              f"U3 2차 검증: 세션이 연 버전 뒤(다른 창의 새 판)면 세션 칸 경고 + [다시 받기](Ctrl+Z 로 0 이어도 — 세션은 Ctrl+Y 할 수 있게 그대로), "
+              f"[버리기] = 서버 버전으로 다시 열기(GET /mask·편집 래스터 — 미리보기 = Compose·Export 의 판, 3차: 다시 연 뒤 겹침 전체 다시 그림 — "
+              f"[버리기]의 rAF 가 먼저 돌아도 연 버전 합성이 남지 않게) {ag}")
         sv0 = doc["routes"]["POST /mask/save"]["ok"]["edit"]["file"]
         u2 = pn["undo2"]
         check(u2 == {"body": {"root": "fe410d7f025d", "key": "r_61ba2d695f0f_0_0", "seen": "masks/r_61ba2d69_e_0000000000bb.png", "op": "undo"},
                      "confirms": 0, "gets": 1, "refresh": 1,
-                     "toast": ":이전 판으로 — 015_치마밑단_주름 · A · c01"}
-              and pn["undoAsk"] == {"confirm": "적용 안 한 획 1 을 버리고 이전 판으로 돌아갈까요?", "posts": 0, "pending": 1}
-              and pn["reset"] == {"confirm": "015_치마밑단_주름 · A · c01 의 마스크 편집 기록(이전 판 1 포함)을 지우고 기준 마스크로 돌아갑니다. 적용 안 한 획 1 도 버립니다. 계속할까요?",
+                     "toast": ":이전 버전으로 — 015_치마밑단_주름 · A · c01"}
+              and pn["undoAsk"] == {"confirm": "적용 안 한 획 1 을 버리고 이전 버전으로 돌아갈까요?", "posts": 0, "pending": 1}
+              and pn["reset"] == {"confirm": "015_치마밑단_주름 · A · c01 의 마스크 편집 기록(이전 버전 1 포함)을 지우고 처음 마스크로 돌아갑니다. 적용 안 한 획 1 도 버립니다. 계속할까요?",
                                   "body": {"root": "fe410d7f025d", "key": "r_61ba2d695f0f_0_0", "seen": sv0, "op": "reset"}, "pending": None,
-                                  "toast": ":마스크 편집 지움 — 015_치마밑단_주름 · A · c01 은 기준 마스크로", "rows": ["편집 없음 — 기준 마스크 그대로", "저장된 편집 없음"]},
-              f"저장된 판(패널 5): [이전 판으로] = 획 없으면 확인 없이 POST /mask/edit undo → 다시 열기·보드 다시, 획이 있으면 확인(아니오 = 그대로), "
-              f"[편집 지우기] = 확인 창(이전 판 수·버릴 획) → reset → 기준 마스크 {u2} {pn['undoAsk']} {pn['reset']}")
+                                  "toast": ":마스크 편집 지움 — 015_치마밑단_주름 · A · c01 은 처음 마스크로", "rows": ["편집 없음 — 처음 마스크 그대로", "저장된 편집 없음"]},
+              f"저장된 버전(패널 5): [이전 버전으로] = 획 없으면 확인 없이 POST /mask/edit undo → 다시 열기·보드 다시, 획이 있으면 확인(아니오 = 그대로), "
+              f"[편집 모두 지우기] = 확인 창(이전 버전 수·버릴 획) → reset → 처음 마스크 {u2} {pn['undoAsk']} {pn['reset']}")
         gs = pn["goSeam"]
         check(gs["ok"] and gs["confirms"] == 0 and gs["look"] == [512, 2649, 2]
-              and gs["rows"] == ["014_치마원단_문양 · A · c02 ★ — 기준 자동 마스크 1024×768 (z: 아래 1 · 위 2)", MASK_AUTO_ROW, "편집 없음 — 기준 마스크 그대로"]
+              and gs["rows"] == ["014_치마원단_문양 · A · c02 ★ — 처음 마스크 자동 마스크 1024×768 (z: 아래 1 · 위 2)", MASK_AUTO_ROW, "편집 없음 — 처음 마스크 그대로"]
               and gs["fade"] is False and pn["seamRows"] == ["left 2604–2694 · 40px · p90 38.4 bad"],
               f"이음매(N·목록) = 그 구간을 만든 ★ 후보를 편집 대상(획 없으면 확인 없음)·2:1·구간 페이드 켬, 이 크롭 이음매 = 뷰어 이음매(지금 서명) 중 이 크롭 {gs} {pn['seamRows']}")
         rg = pn["range"]
         check(rg["row"] == "적용 안 한 획 1 — 구간 페이드 left 364–454 64" and rg["puts"] == [[256, 556, 64, 219]]
               and rg["top"] == "적용 안 한 획 2 — 구간 페이드 left 364–454 64 · 구간 페이드 top 188–288 64" and rg["undone"] is None,
-              f"[선택 이음매 구간 페이드] = 구간 끝 − 크롭 rect y0(왼·오른 변)·x0(위·아래 변) ± 폭 — 014 왼변 2604–2694 = 364–454(U0 §2.2), 바뀐 띠만 다시 그림 {rg}")
+              f"[이음매 구간 페이드] = 구간 끝 − 크롭 rect y0(왼·오른 변)·x0(위·아래 변) ± 폭 — 014 왼변 2604–2694 = 364–454(U0 §2.2), 바뀐 띠만 다시 그림 {rg}")
         check(pn["alts"]["now"] == "지금 c02 ★ · 이 크롭 bad 1 · 최악 p90 38.4"
               and pn["alts"]["rows"] == [["", "후보", "완료", "bad", "weak", "최악 p90", "바뀌는 크롭"],
                                          ["이 후보를 ★", "c01", "2026-10-15 18:25:00 run", "0", "1", "14.9", "015_치마밑단_주름"],
@@ -43174,28 +43174,28 @@ await scenario("panelR3b", async () => {
               f"[다른 후보로] 표: 지금 행 + 후보마다 [이 후보를 ★](첫 열 — 좁은 패널에서도 보임)·완료·bad·weak·최악 p90·바뀌는 크롭 이름 {pn['alts']}")
         st = pn["star"]
         check(st["no"] == {"confirm": "c01 를 014_치마원단_문양 · A 의 ★ 로 바꿉니다(검토의 Space 와 같음).\n이 크롭의 마스크 편집은 옛 ★ c02 에 남고(다시 ★ 하면 살아남) "
-                                      "새 ★ 는 편집 없이 기준 마스크로 시작합니다.\n계속할까요?", "pick": 0}
+                                      "새 ★ 는 편집 없이 처음 마스크로 시작합니다.\n계속할까요?", "pick": 0}
               and st["yes"] == {"pick": [["014_0f9cc5/A", "r_d9b7ffb9fb7c_0_0"]], "select": ["r_d9b7ffb9fb7c_0_0", False], "get": "r_d9b7ffb9fb7c_0_0",
-                                "row": "014_치마원단_문양 · A · c01 ★ — 기준 자동 마스크 1024×768 (z: 아래 1 · 위 2)"},
+                                "row": "014_치마원단_문양 · A · c01 ★ — 처음 마스크 자동 마스크 1024×768 (z: 아래 1 · 위 2)"},
               f"[이 후보를 ★] = 확인 창(편집은 옛 ★ 에 남음 — 아니오면 그대로) → 보드 pick(타깃, 그 후보) → 새 ★ 를 편집 대상으로 열기 {st}")
         check(pn["leave"] == {"ok": True, "confirms": 0, "editor": None, "layer": None, "panel": 0, "pending": None},
               f"나가기(획 없음) = 확인 없이 뷰어 훅·겹침을 뗌 {pn['leave']}")
     pm = res.get("panelStale") or {}
     if "open" in pm:
         ef = doc["routes"]["GET /mask"]["ok"]["edit"]["file"]
-        head = ["015_치마밑단_주름 · A · c01 ★ — 기준 자동 마스크 1284×772 (z: 아래 0 · 위 4)", MASK_AUTO_ROW, "편집 10/19 18:20 · 변 페이드 top 64 · 붓 12획"]
+        head = ["015_치마밑단_주름 · A · c01 ★ — 처음 마스크 자동 마스크 1284×772 (z: 아래 0 · 위 4)", MASK_AUTO_ROW, "편집 10/19 18:20 · 변 페이드 top 64 · 붓 12획"]
         # 1차 리뷰 analysis-r1-07: stale 은 기준 지문 또는 편집 창(정합 켬/끔·quad)으로 켜짐 — 문구가 둘 다 말함
-        stale = lambda t: t.startswith("편집 기준 바뀜 — 기준 마스크(재분석·마스크 출처)나 편집 창(정합 켬/끔·quad)이 ") and t.endswith("기준으로 다시 시작")
+        stale = lambda t: t.startswith("처음 마스크가 바뀜 — 처음 마스크(재분석·마스크 출처)나 편집 창(위치 맞춤 켬/끔·quad)이 ") and t.endswith("처음 마스크로 다시 시작")
         o, lo = pm["open"], pm["lost"]
         check(o["rows"][:3] == head and stale(o["rows"][3]) and o["restart"] == 1 and o["on"] == [True] * 4 and o["layer"] == [0, 2304, 1664, 3584]
-              and pm["restartAsk"] == {"confirm": "015_치마밑단_주름 · A · c01 의 마스크 편집 기록(이전 판 1 포함)을 지우고 기준 마스크로 돌아갑니다. 계속할까요?", "posts": 0}
+              and pm["restartAsk"] == {"confirm": "015_치마밑단_주름 · A · c01 의 마스크 편집 기록(이전 버전 1 포함)을 지우고 처음 마스크로 돌아갑니다. 계속할까요?", "posts": 0}
               and pm["save"] == {"seen": ef, "wh": [1284, 772]},
-              f"D4 편집 창이 바뀐 ★(stale): K 로 열림 — 경고 줄 + [기준으로 다시 시작](reset 확인 창)·[이전 판으로]·[편집 지우기]·붓, [적용] = 지금 창 크기 PNG·"
+              f"D4 편집 창이 바뀐 ★(stale): K 로 열림 — 경고 줄 + [처음 마스크로 다시 시작](reset 확인 창)·[이전 버전으로]·[편집 모두 지우기]·붓, [적용] = 지금 창 크기 PNG·"
               f"seen = 기록 file {pm['open']} {pm['restartAsk']} {pm['save']}")
         check(lo["rows"][:3] == head and stale(lo["rows"][3]) and lo["restart"] == 1 and lo["on"] == [True, True, True, False] and lo["layer"] is None
               and (lo["err"] or "").startswith(f"마스크 편집 파일이 없습니다: {ef}") and (lo["err"] or "").endswith("다시 받기")
               and lo["again"] == {"on": True, "layer": [0, 2304, 1664, 3584], "err": False},
-              f"U3 리뷰 must: 편집 래스터를 못 받아도 대상·편집 기준 바뀜 줄·[기준으로 다시 시작]·[이전 판으로]·[편집 지우기]는 남음(붓·페이드·겹침만 없음), "
+              f"U3 리뷰 must: 편집 래스터를 못 받아도 대상·처음 마스크가 바뀜 줄·[처음 마스크로 다시 시작]·[이전 버전으로]·[편집 모두 지우기]는 남음(붓·페이드·겹침만 없음), "
               f"[다시 받기] = 다시 열어 붓·겹침 {lo}")
         check(lo.get("refail") == {"layer": None, "err": "마스크 편집 파일이 없습니다: masks/r_61ba2d69_e_0000000000cc.png 다시 받기"},
               f"U3 2차 검증 nit: 새 state 의 다시 열기가 래스터를 못 받으면 옛 세션 겹침을 뗌(오류 줄 + [다시 받기]) {lo.get('refail')}")
@@ -43208,8 +43208,8 @@ await scenario("panelR3b", async () => {
         check(pl["reenter"] == {"layer": [0, 2304, 1664, 3584], "puts": [[0, 0, 1664, 1280]], "pending": 1},
               f"U3 3차 검증: K 를 나갔다 같은 대상으로 다시 들어오기(세션 유지) = 겹침 캔버스를 다시 붙이고 전체 다시 그림(붓이 숨은 캔버스에 칠해지지 않게) "
               f"{pl['reenter']}")
-        check(pl["sigOnly"] == {"rows": ["기준 마스크가 바뀜(재분석·마스크 출처) — 이 세션·미리보기는 연 판의 기준(적용하면 지금 기준의 편집으로 저장 — "
-                                         "'편집 기준 바뀜' 표시 사라짐) 다시 받기"],
+        check(pl["sigOnly"] == {"rows": ["처음 마스크가 바뀜(재분석·마스크 출처) — 적용 전 획·미리보기는 연 버전의 처음 마스크(적용하면 지금 처음 마스크의 편집으로 저장 — "
+                                         "'처음 마스크가 바뀜' 표시 사라짐) 다시 받기"],
                                 "save": {"rect": "128,2560,1408,3328", "pending": None}},
               f"U3 3차 검증 nit: 기준 서명만 바뀐 세션(같은 창·같은 기록)은 서버가 받음 — '적용하면 거절'이 아니라 지금 기준의 편집으로 저장된다고 알림 {pl['sigOnly']}")
     vw = res.get("viewerMask") or {}
@@ -43235,7 +43235,7 @@ await scenario("panelR3b", async () => {
               f"1차 리뷰 session-r1-03: 앞 대상의 3층이 새 대상의 GET /mask 보다 먼저 와도 버림(앞 대상 box 가 새 대상 겹침이 되지 않게) {s1['lateOther']}")
         ef = doc["routes"]["GET /mask"]["ok"]["edit"]["file"]
         check(s1["seen"] == {"reopened": False, "behind": True, "opened": ef, "sent": ef, "reason": "changed", "pending": 1, "file": ef},
-              f"1차 리뷰 tests-r1-01: 다른 창이 새 판을 저장한 뒤(세션은 적용 안 한 획 때문에 연 판) [적용]의 seen = 연 판 → 409 changed(다른 창 판을 덮지 않음) "
+              f"1차 리뷰 tests-r1-01: 다른 창이 새 판을 저장한 뒤(세션은 적용 안 한 획 때문에 연 버전) [적용]의 seen = 연 버전 → 409 changed(다른 창 판을 덮지 않음) "
               f"{s1['seen']}")
         check(s1["slow"]["diff"] == 0 and s1["slow"]["mid"] == 0 and s1["slow"]["was"] > 0.5,
               f"1차 리뷰 tests-r1-02: 천천히 끈 획(1px 이벤트 100번 < R/4 — carry 가 다음 이벤트로) = 한 번에 끈 획과 같은 도장(가운데까지 지워짐) {s1['slow']}")
@@ -43245,7 +43245,7 @@ await scenario("panelR3b", async () => {
         check(s1["opsCap"]["len"] == 200 and s1["opsCap"]["tail"] == "…" and s1["opsCap"]["sent"] and s1["opsCap"]["head"].startswith("구간 페이드 left 10–20 32"),
               f"1차 리뷰 tests-r1-04: 단계가 많은 세션의 ops 요약 = 200자에서 자르고 '…'(서버 _check_ops 상한 — [적용]이 400 이 아님) {s1['opsCap']}")
         check(len(s1["softTiles"]) == 2 and all(x["worst"] < 1e-6 and x["moved"] > 0.3 for x in s1["softTiles"]),
-              f"1차 리뷰 tests-r1-09·session-r1-04: 64px 칸을 넘는 여러 도장 부드럽게 획 = 획 시작 사본의 σ = R/4 흐림 쪽으로(창 전체 feather 오라클 — 가로 패스를 "
+              f"1차 리뷰 tests-r1-09·session-r1-04: 64px 칸을 넘는 여러 도장 흐리기 획 = 획 시작 사본의 σ = R/4 흐림 쪽으로(창 전체 feather 오라클 — 가로 패스를 "
               f"줄·칸 열마다 한 번만 해도 같음) {s1['softTiles']}")
     p1 = res.get("panelR1") or {}
     if "midGo" in p1:
@@ -43253,21 +43253,21 @@ await scenario("panelR3b", async () => {
                               "pending": 1, "after": 1},
               f"1차 리뷰 session-r1-01: 끄는 중 N(go) = 획을 끝내 확인 창에 셈(아니오 = 그대로 — 그 뒤 끌기는 칠하지 않음) {p1['midGo']}")
         check(p1["alts"] == [["", "후보", "완료", "bad", "weak", "최악 p90", "바뀌는 크롭"],
-                             ["이 후보를 ★", "c02편집 기준 바뀜", "2026-10-15 18:25:00 run", "2", "0", "76.3", "014_치마원단_문양"],
+                             ["이 후보를 ★", "c02처음 마스크가 바뀜", "2026-10-15 18:25:00 run", "2", "0", "76.3", "014_치마원단_문양"],
                              ["이 후보를 ★", "c03", "", "0", "0", "", ""]]
               and len(p1["starAsk"]) == 2
-              and "c02 에 남아 있던 편집(10/19 18:11 · 편집 기준 바뀜)이 다시 쓰입니다(표 값도 그 편집으로 계산 — 지우려면 ★ 뒤 [편집 지우기])." in p1["starAsk"][0]
-              and "편집 없이" not in p1["starAsk"][0] and "새 ★ 는 편집 없이 기준 마스크로 시작합니다." in p1["starAsk"][1],
+              and "c02 에 남아 있던 편집(10/19 18:11 · 처음 마스크가 바뀜)이 다시 쓰입니다(표 값도 그 편집으로 계산 — 지우려면 ★ 뒤 [편집 모두 지우기])." in p1["starAsk"][0]
+              and "편집 없이" not in p1["starAsk"][0] and "새 ★ 는 편집 없이 처음 마스크로 시작합니다." in p1["starAsk"][1],
               f"1차 리뷰 apply-r1-02·analysis-r1-04: 대안 표 후보 칸 칩 = 예전 ★ 때 남긴 편집, [이 후보를 ★] 확인 = 남은 편집이 다시 쓰임 / 없으면 편집 없이 기준 "
               f"{p1['alts']} {p1['starAsk']}")
         check(p1["altsOld"] == {"table": False, "row": "★ 합성이 바뀌어 표가 낡음 — 다시 계산하세요", "button": True, "refetch": 1},
               f"1차 리뷰 ui-r1-02: 표를 계산한 뒤 ★ 합성 서명이 바뀌면(적용·되돌리기·다른 창) 낡은 표 대신 안내 + [다른 후보로] 다시 계산 {p1['altsOld']}")
-        check(p1.get("altsSet") == {"table": False, "row": "후보가(새 후보·탈락·편집) 바뀌어 표가 낡음 — 다시 계산하세요", "button": True},
-              f"Codex 5차: 서명은 그대로인데 대안 후보가 바뀜(다른 창의 탈락·Run 의 새 후보) → 낡은 표 대신 안내 + [다른 후보로] {p1.get('altsSet')}")
-        check(p1.get("altsEdit") == {"back": True, "was": None, "table": False, "row": "후보가(새 후보·탈락·편집) 바뀌어 표가 낡음 — 다시 계산하세요"},
-              f"Codex 6차: 탈락이 풀려 후보가 표를 계산할 때와 같으면 표가 다시 보이고, 다른 창에서 대안 후보의 저장된 편집 판이 바뀌면(다시 ★ 하면 쓰일 "
+        check(p1.get("altsSet") == {"table": False, "row": "후보가(새 후보·제외·편집) 바뀌어 표가 낡음 — 다시 계산하세요", "button": True},
+              f"Codex 5차: 서명은 그대로인데 대안 후보가 바뀜(다른 창의 제외·Run 의 새 후보) → 낡은 표 대신 안내 + [다른 후보로] {p1.get('altsSet')}")
+        check(p1.get("altsEdit") == {"back": True, "was": None, "table": False, "row": "후보가(새 후보·제외·편집) 바뀌어 표가 낡음 — 다시 계산하세요"},
+              f"Codex 6차: 제외이 풀려 후보가 표를 계산할 때와 같으면 표가 다시 보이고, 다른 창에서 대안 후보의 저장된 편집 판이 바뀌면(다시 ★ 하면 쓰일 "
               f"편집 — 가정 합성이 바뀜, ★ 합성 서명·후보 key 는 그대로) 표 낡음 {p1.get('altsEdit')}")
-        check(p1["gone"] == {"hint": "이 후보는 이제 ★ 가 아님(검토에서 ★ 해제·탈락) — 적용할 수 없음: 왼쪽 목록에서 크롭을 누르면 지금 ★ 로(적용 안 한 획은 확인 뒤 버림)",
+        check(p1["gone"] == {"hint": "이 후보는 이제 ★ 가 아님(검토에서 ★ 해제·제외) — 적용할 수 없음: 왼쪽 목록에서 크롭을 누르면 지금 ★ 로(적용 안 한 획은 확인 뒤 버림)",
                              "ok": False, "confirm": "적용 안 한 획 1(015_치마밑단_주름 · A · c01 — 이제 ★ 가 아니라 적용할 수 없음)을 버리고 "
                                                      "015_치마밑단_주름 · A · c02 를 편집할까요?"},
               f"1차 리뷰 ui-r1-03: 편집 중인 세션 후보가 ★ 해제됨(검토·다른 창) — 패널 대상 칸에 나갈 길, 다른 후보로 갈 때 확인 문구에 이유 {p1['gone']}")
@@ -43276,7 +43276,7 @@ await scenario("panelR3b", async () => {
               f"1차 리뷰 session-r1-05·03: 다른 대상을 여는 동안 대상 줄 = 새 대상 '불러오는 중'만(옛 c·창·z·편집을 섞지 않음)·목록 선택 = 새 크롭, 앞 대상의 늦은 "
               f"3층은 붙이지 않음(새 대상 3층이 오면 그 box) {p1['loading']}")
         check(p1["shift"] == {"ring": "mbrush soft", "same": True, "pending": 1, "erase": True},
-              f"1차 리뷰 tests-r1-08: Shift 누른 채 끌기 = 부드럽게(붓 원 점선 · 균일한 곳 합성 그대로) — 고른 도구(지우기)는 그 자리 합성을 바꿈 {p1['shift']}")
+              f"1차 리뷰 tests-r1-08: Shift 누른 채 끌기 = 흐리기(붓 원 점선 · 균일한 곳 합성 그대로) — 고른 도구(지우기)는 그 자리 합성을 바꿈 {p1['shift']}")
         check(p1["clamp"] == {"up": ["크기512px", "경도0.50"], "ring": "256", "down": "크기4px", "hardUp": "경도1.00", "hardDown": "경도0.00"},
               f"1차 리뷰 tests-r1-10: ] 25번 = 크기 512 에서 멈춤(붓 원 r 256), [ 40번 = 4, Shift+] = 경도 1.00, Shift+[ = 0.00 {p1['clamp']}")
     bk = res.get("boardKeys") or {}
@@ -43294,7 +43294,7 @@ await scenario("panelR3b", async () => {
               and bm["star"]["ret"] and bm["star"]["log"][0] == ["setPipe", False] and enter(bm["star"])[0][2] == {"key": "k15", "seam": None}
               and bm["star"]["panel"] is False and enter(bm["slice"])[0][2]["key"] == "k15s" and enter(bm["left"])[0][2]["key"] == "kL"
               and enter(bm["to"])[0][2]["key"] == "k9",
-              "setMask(true): ★ 없으면 '★ 를 먼저', 진행 모드면 먼저 나감, 대상 = 지정 > 이 창의 적용 안 한 세션 후보 > 고른 후보가 ★·slice 면 그것 > 타깃 첫 ★")
+              "setMask(true): ★ 없으면 '★ 를 먼저', 실행 모드면 먼저 나감, 대상 = 지정 > 이 창의 적용 안 한 세션 후보 > 고른 후보가 ★·slice 면 그것 > 타깃 첫 ★")
         check(bm["old"]["log"] == [["toast", "ComfyUI 를 재시작해야 마스크 편집(K)을 쓸 수 있습니다(서버가 옛 버전)", "warn"]]
               and bm["noMod"]["log"][0][1].startswith("Studio 창을 새로고침해야 마스크 편집(K)")
               and bm["leaveNo"] == {"ret": False, "log": [["leave"]], "on": True, "panel": None}
@@ -43311,7 +43311,7 @@ await scenario("panelR3b", async () => {
         check(bm.get("unload") == [0, 1, 1, 0],
               f"U3 2차 검증: 새로고침·닫기(beforeunload) = 적용 안 한 마스크 획(K 모드 밖 포함)이 있을 때만 확인 창, 모듈 없으면 그대로 {bm.get('unload')}")
         check(bm.get("leftGone") == ["k15", "k15"],
-              f"1차 리뷰 ui-r1-03: 세션 후보가 검토에서 ★ 해제·탈락되면 K 는 그 후보(GET /mask 409 not_picked — 막다른 상태)가 아니라 검토의 ★ 로 "
+              f"1차 리뷰 ui-r1-03: 세션 후보가 검토에서 ★ 해제·제외되면 K 는 그 후보(GET /mask 409 not_picked — 막다른 상태)가 아니라 검토의 ★ 로 "
               f"(버릴지는 편집기 go 확인 창) {bm.get('leftGone')}")
         check([y[2] for y in enter(bm["goNoSeams"])] == [{"key": "k15", "seam": None}] and not any(y[0] == "goTarget" for y in bm["goNoSeams"]["log"]),
               f"1차 리뷰 ui-r1-07: 이음매를 다시 받는 중(viewer.seams() null — 적용 직후)이면 ★ 점검 이음매 줄 = 그 크롭 첫 ★ 로 K(검토로 가지 않음) "
@@ -43324,20 +43324,20 @@ await scenario("panelR3b", async () => {
               f"1차 리뷰 ui-r1-01: K 의 대상 선택(maskSelect)이 타깃을 바꾸면 레퍼런스 번호·R 연타 대기를 처음으로(같은 타깃이면 그대로 — K 를 나온 검토 "
               f"화면이 앞 타깃의 번호로 '레퍼런스 없음'을 보이지 않게) {bm.get('select')}")
 
-    section("S4-J-K4 진행(G) ★ 점검 S4 줄·Export 결과 '그룹 마스크 n (편집 k)'·이전 목록 '편집 k'")
+    section("S4-J-K4 실행(G) ★ 점검 S4 줄·Export 결과 '그룹 마스크 n (편집 k)'·이전 목록 '편집 k'")
     ck = res.get("checks") or {}
     if "pure" in ck:
         s4 = [x for x in ck["pure"] if "mask" in x]
-        check(s4 == [{"text": "001_머리 · A — 마스크 편집 기준 바뀜(c01 — 기준으로 다시 시작 또는 그대로)", "key": "001_38a818/A", "mask": {"key": "k0"}},
+        check(s4 == [{"text": "001_머리 · A — 처음 마스크가 바뀜(c01 — 처음 마스크로 다시 시작 또는 그대로)", "key": "001_38a818/A", "mask": {"key": "k0"}},
                      {"text": "003_리본 · A — 적용 안 한 마스크 편집 3획(이 창 — Export 에 들어가지 않음)", "key": None, "mask": {"key": "k2"}},
                      {"text": "003_리본 — 이음매 bad 1", "key": "003_2f8f50/A", "mask": {"crop": "003_2f8f50"}}],
-              f"starChecks S4 줄: 편집 기준 바뀜(★ 만 — 옛 ★ 의 stale 편집·stale 아닌 편집은 줄 없음)·이 창의 적용 안 한 편집·이음매 bad(→ K 모드 그 자리) {s4}")
+              f"starChecks S4 줄: 처음 마스크가 바뀜(★ 만 — 옛 ★ 의 stale 편집·stale 아닌 편집은 줄 없음)·이 창의 적용 안 한 편집·이음매 bad(→ K 모드 그 자리) {s4}")
         check(ck["go"] == {"mask": [[{"key": "k0"}, "001_38a818/A"], [{"crop": "003_2f8f50"}, "003_2f8f50/A"], [{"key": "k2"}, None]], "target": []}
               and all(c.endswith("link") for t, c in ck["panel"] if "마스크" in t or "이음매" in t) and ck["cleared"] is False,
               f"★ 점검 S4 줄을 누르면 goMask(마스크 모드 그 자리 — 옛 서버면 board.js 가 검토로), setMaskLeft(null) 이면 줄 없음 {ck['go']}")
         check(ck.get("gone") == [{"text": "008_치마금속장식 · A — 적용 안 한 마스크 편집 2획(이 창 — 편집하던 후보가 이제 ★ 가 아니라 적용할 수 없음: "
                                           "다시 ★ 하거나 K 에서 버리기)", "key": "008_e1d4cc/A"}],
-              f"1차 리뷰 ui-r1-03: 세션 후보가 ★ 가 아님(검토에서 ★ 해제·탈락) — 그 줄은 이유를 적고 K(409 막다른 상태) 대신 그 타깃을 검토로 {ck.get('gone')}")
+              f"1차 리뷰 ui-r1-03: 세션 후보가 ★ 가 아님(검토에서 ★ 해제·제외) — 그 줄은 이유를 적고 K(409 막다른 상태) 대신 그 타깃을 검토로 {ck.get('gone')}")
     ex = res.get("exportEdits") or {}
     if "row" in ex:
         check(ex["row"] == f"새 PSD r{ex['rev']}: {ex['psd']} · 레이어 55 · 그룹 마스크 18 (편집 3) · 문제 0 · {ex['bytes'] / 1e6:.1f}MB"
@@ -43388,23 +43388,23 @@ await scenario("panelR3b", async () => {
         check(s2["redoCut"] == {"step": None, "redo": 0, "a": True, "a0": True, "same": True, "pending": 1},
               f"2차 리뷰 tests-r2-01: 실행 취소 → 새 획 → 다시 = 없음(되돌린 획이 새 획 뒤에 되살아나지 않음) {s2['redoCut']}")
         check(s2["discard"] == {"open": True, "pending": 0, "applied": True, "kept": 0, "was": True},
-              f"2차 리뷰 tests-r2-02: [버리기] = 연 판으로, [적용] 뒤의 [버리기] = 적용한 판으로(적용 전 판으로 돌아가지 않음) {s2['discard']}")
+              f"2차 리뷰 tests-r2-02: [버리기] = 연 버전으로, [적용] 뒤의 [버리기] = 적용한 판으로(적용 전 판으로 돌아가지 않음) {s2['discard']}")
     p2 = res.get("panelR2") or {}
     if "loading" in p2:
-        bline = ["서버 판이 바뀜(다른 창·노드) — 이 세션·미리보기는 연 판(적용하면 거절) 다시 받기"]
+        bline = ["서버 버전이 바뀜(다른 창·노드) — 적용 전 획·미리보기는 연 버전(적용하면 거절) 다시 받기"]
         check(p2["loading"] == {"pending": None, "marks": ["mbrush"], "second": True, "left": True, "after": None,
                                 "confirms": ["적용 안 한 획 1(015_치마밑단_주름 · A · c01)을 버리고 014_치마원단_문양 · A · c02 를 편집할까요?"]},
               f"2차 리뷰 session-r2-01·ui-r2-01·ui-r2-04: 확인하고 다른 대상을 받는 동안 획 수 없음(다시 다른 대상·나가기 = 확인 없이, 진행 ★ 점검에 줄 없음), "
               f"앞 대상의 편집 창·크롭 테두리를 그리지 않음 {p2['loading']}")
-        check(p2["reenter"] == {"gets": 1, "head": "015_치마밑단_주름 · A · c01 ★ — 기준 자동 마스크 1280×768 (z: 아래 0 · 위 4)"}
+        check(p2["reenter"] == {"gets": 1, "head": "015_치마밑단_주름 · A · c01 ★ — 처음 마스크 자동 마스크 1280×768 (z: 아래 0 · 위 4)"}
               and p2["strokeState"] == {"during": 0, "after": 1, "warn": bline},
               f"2차 리뷰 session-r2-03: 나갔다 다시 들어오기 = GET /mask 다시·패널 줄, 끄는 중 새 state = 획을 끝내면 바로 다시 받기·경고 "
               f"{p2['reenter']} {p2['strokeState']}")
-        ask = "적용 안 한 획 1 을 버리고 서버 판을 다시 받을까요?"
+        ask = "적용 안 한 획 1 을 버리고 서버 버전을 다시 받을까요?"
         check(p2["reload"] == {"no": {"confirm": ask, "pending": 1, "gets": 0, "conflict": True}, "yes": {"confirm": ask, "pending": None, "conflict": False}},
               f"2차 리뷰 session-r2-02·03·tests-r2-03: 획이 있는 세션의 409 뒤 [다시 받기] = 확인 창(아니오 = 세션·충돌 줄 그대로), 예 = 다시 열고 충돌 줄 없음 "
               f"{p2['reload']}")
-        check(p2["viewKeys"] == {"on": "보기: 기준|편집 슬라이더(S — 왼쪽 = 기준) · 마스크(M)", "off": "보기: 편집"}
+        check(p2["viewKeys"] == {"on": "보기: 처음|편집 슬라이더(S — 왼쪽 = 처음 마스크) · 마스크(M)", "off": "보기: 편집"}
               and p2["esc"] == {"ret": True, "exit": 1},
               f"2차 리뷰 tests-r2-07: S·M 두 번째 = 끔, Esc = K 모드 나가기(opts.exit) {p2['viewKeys']} {p2['esc']}")
         check(p2["deferred"] == {"load": 2, "apply": [0, 1]},
@@ -43415,16 +43415,16 @@ await scenario("panelR3b", async () => {
         check(st["pick"] == 0 and st["pending"] == 1 and (st["confirm"] or "").endswith("\n적용 안 한 획 1 은 버립니다.\n계속할까요?"),
               f"2차 리뷰 tests-r2-03: 획이 있을 때 [이 후보를 ★] 확인 = 그 획을 버린다고 알림(아니오 = 그대로) {st}")
         check(p2["seamClick"] == {"look": [[956, 2560, 2]], "sel": ["top 575–1337 · 762px · p90 43.3 bad"], "fade": [False, "top 575–1337 ± 64px 테이퍼"]},
-              f"2차 리뷰 tests-r2-05: 패널 6 이음매 줄 누르기 = 그 구간으로 2:1·선택 구간(줄 강조·[선택 이음매 구간 페이드] 켬) {p2['seamClick']}")
+              f"2차 리뷰 tests-r2-05: 패널 6 이음매 줄 누르기 = 그 구간으로 2:1·선택 구간(줄 강조·[이음매 구간 페이드] 켬) {p2['seamClick']}")
         check(p2["layerFail"] == {"before": None, "enter": None, "after": None, "row": True},
               f"2차 리뷰 session-r2-03: 대상을 바꾼 뒤 3층을 받지 못함 → 다시 들어와도 앞 대상 3층을 붙이지 않음 {p2['layerFail']}")
         check(p2["diffPair"] == ["적용 전후 bad 2 → 1", "적용 전후 top 200–300 p90 40 → 없음", "적용 전후 top 900–1000 p90 30 → 31.5 bad"],
               f"2차 리뷰 tests-r2-06: 적용 전후 = 같은 변·같은 ★ 라도 구간이 겹치는 것끼리만 짝 {p2['diffPair']}")
-        check(p2["staleChip"] == "015_치마밑단_주름편집 1편집 기준 바뀜이음매 2", f"2차 리뷰 tests-r2-09: 마스크 목록 크롭 칩 '편집 기준 바뀜' {p2['staleChip']}")
+        check(p2["staleChip"] == "015_치마밑단_주름편집 1처음 마스크가 바뀜이음매 2", f"2차 리뷰 tests-r2-09: 마스크 목록 크롭 칩 '처음 마스크가 바뀜' {p2['staleChip']}")
     ch2 = res.get("composeHatch") or {}
     if "mark" in ch2:
         check(ch2 == {"plain": [100] * 8, "mark": [135, 135, 135, 100, 100, 100, 100, 100]},
-              f"2차 리뷰 tests-r2-07: M 보기 = 기준보다 지운 곳에 회색 빗금((x + y) & 7 < 3 — 0.3·값 + 105) {ch2}")
+              f"2차 리뷰 tests-r2-07: M 보기 = 처음 마스크보다 지운 곳에 회색 빗금((x + y) & 7 < 3 — 0.3·값 + 105) {ch2}")
     check((res.get("viewerMask") or {}).get("order") == ["mask", "marks"],
           f"2차 리뷰 tests-r2-08: 3층 캔버스는 marks(붓 원·편집 창·이음매 선) 앞(DOM 순서 = 쌓임) {(res.get('viewerMask') or {}).get('order')}")
     b2 = res.get("boardR2") or {}
@@ -43435,9 +43435,9 @@ await scenario("panelR3b", async () => {
         sm = [["015_d556f2", {"n": 1, "bad": 1}]]
         check(b2["onSeams"] == [{"log": ["renderTargets", "tabChanged"], "map": sm}, {"log": ["renderTargets"], "map": sm}]
               and b2["checksNull"] == ["이음매 재는 중(★ 합성이 바뀜) — 끝나면 이 점검에 새 bad 수"] and b2["checksMap"] == ["003_리본 — 이음매 bad 1"],
-              f"2차 리뷰 ui-r2-02: 새 이음매 → 진행 모드면 패널 다시(★ 점검 이음매 bad), 재는 중(null) = 옛 bad 수 대신 그 한 줄 {b2['onSeams']} {b2['checksNull']}")
-        check(b2["cropChips"] == ["편집 2|b-reg", "편집 기준 바뀜|b-bad"] and b2["badges"] == [["편집 기준 바뀜|badge b-bad"], ["편집|badge b-reg"], []],
-              f"2차 리뷰 tests-r2-09: 검토 크롭 목록 칩·후보 배지 '편집 기준 바뀜' {b2['cropChips']} {b2['badges']}")
+              f"2차 리뷰 ui-r2-02: 새 이음매 → 실행 모드면 패널 다시(★ 점검 이음매 bad), 재는 중(null) = 옛 bad 수 대신 그 한 줄 {b2['onSeams']} {b2['checksNull']}")
+        check(b2["cropChips"] == ["편집 2|b-reg", "처음 마스크가 바뀜|b-bad"] and b2["badges"] == [["처음 마스크가 바뀜|badge b-bad"], ["편집|badge b-reg"], []],
+              f"2차 리뷰 tests-r2-09: 검토 크롭 목록 칩·후보 배지 '처음 마스크가 바뀜' {b2['cropChips']} {b2['badges']}")
     if "star" in bm:
         check(["setViewFlags", {"slider": False, "raw": False}] in bm["star"]["log"],
               f"2차 리뷰 ui-r2-03: K 진입 = 검토의 S·M 보기를 끔(뷰어 머리줄 안내가 K 에서 남지 않게) {bm['star']['log']}")
@@ -43460,7 +43460,7 @@ await scenario("panelR3b", async () => {
               and p3["viewKeys"] == [[k, False, 1, 0] for k in ("KeyF", "Digit0", "Digit1", "Digit2")],
               f"3차 session-r3-02: 끄는 중 같은 ★ 의 이음매(N·이음매 줄)·F·0·1·2(커서 기준이 아닌 화면 이동) = 옮기기 전에 획을 끝냄(F·0·1·2 는 board 로 넘김) — "
               f"옮긴 화면의 먼 커서 점과 앞 점을 잇는 지우기 띠가 없음 {p3['seamMid']} {p3['viewKeys']}")
-        check(p3["pickFail"] == {"pick": 1, "confirms": 1, "gets": [], "n": 1, "head": "015_치마밑단_주름 · A · c01 ★ — 기준 자동 마스크 1280×768 (z: 아래 0 · 위 4)",
+        check(p3["pickFail"] == {"pick": 1, "confirms": 1, "gets": [], "n": 1, "head": "015_치마밑단_주름 · A · c01 ★ — 처음 마스크 자동 마스크 1280×768 (z: 아래 0 · 위 4)",
                                  "on": True},
               f"3차 tests-r3-02: [이 후보를 ★] 의 보드 쓰기 실패(null — 다른 쓰기 중·409·네트워크) = 대상·세션 그대로(GET /mask 없음·획 남음·단추 다시 켬) "
               f"{p3['pickFail']}")
@@ -43483,13 +43483,13 @@ await scenario("panelR3b", async () => {
               f"3차 tests-r3-06: 뷰어 이음매가 실패(서명 없는 빈 목록)·옛 서명이면 패널 6 은 쓰지 않음 — GET /mask 의 이음매(같은 서명)나 '계산 중…'"
               f"('이음매 없음'으로 해결된 것처럼 보이지 않게) {p3b['seamsErr']}")
         ls = p3b["listSubs"]
-        check(ls["rows"] == [["A · c01 ★편집", "sub sel"], ["B · c01 ★편집 기준 바뀜", "sub"]] and ls["gets"] == [KB]
-              and (ls["head"] or "").startswith("015_치마밑단_주름 · B · c01 ★") and ls["after"] == [["A · c01 ★편집", "sub"], ["B · c01 ★편집 기준 바뀜", "sub sel"]],
+        check(ls["rows"] == [["A · c01 ★편집", "sub sel"], ["B · c01 ★처음 마스크가 바뀜", "sub"]] and ls["gets"] == [KB]
+              and (ls["head"] or "").startswith("015_치마밑단_주름 · B · c01 ★") and ls["after"] == [["A · c01 ★편집", "sub"], ["B · c01 ★처음 마스크가 바뀜", "sub sel"]],
               f"3차 tests-r3-07: ★ 둘인 크롭(타깃 여럿·slice) = 목록에 ★ 마다 하위 행(편집 칩), 두 번째 행 = 그 ★ 편집 {ls}")
-        check(p3b["viewReset"] == ["보기: 기준(Q 누르는 중)", "보기: 편집", "보기: 기준(Q 누르는 중) · 마스크(M)", "보기: 편집"],
+        check(p3b["viewReset"] == ["보기: 처음 마스크(Q 누르는 중)", "보기: 편집", "보기: 처음 마스크(Q 누르는 중) · 마스크(M)", "보기: 편집"],
               f"3차 tests-r3-08: Q 를 누른 채 창 blur = 떼기(keyup 없음), Q·M·S 를 켠 채 나갔다 다시 들어오기 = 보기 처음으로 {p3b['viewReset']}")
         check(p3b["editHold"] == {"go": False, "leave": False, "toasts": [lock + "바꾸세요", lock + "나가세요"], "editor": True, "k14": 0},
-              f"3차 session-r3-03 (4)(5): [이전 판으로] 처리 중 대상 바꾸기·나가기 거절 {p3b['editHold']}")
+              f"3차 session-r3-03 (4)(5): [이전 버전으로] 처리 중 대상 바꾸기·나가기 거절 {p3b['editHold']}")
         fl = p3b["flushLost"]
         check(fl["queued"] > 0 and {k: v for k, v in fl.items() if k != "queued"} == {"threw": None, "layer": None, "err": True},
               f"3차 session-r3-03 (8): 되돌린 뒤 다시 열기가 래스터를 못 받음(세션 없음) — 3층을 다시 받는 사이 rAF 가 돌아도 합성하지 않음(예외 없음), 겹침 뗌 {fl}")
@@ -43498,7 +43498,7 @@ await scenario("panelR3b", async () => {
               f"3차 ui-r3-01: 포인터가 눌린 동안 새 이음매·state 로 목록·패널을 다시 만들지 않음(누른 단추가 그대로 — click 이 감), 놓은 뒤 그림, pointerup 을 놓치면 "
               f"버튼 없는 pointermove 가 놓은 것으로 {p3b['held']}")
         check(p3b.get("unusable") == {"ok": [True], "gone": [False]},
-              f"3차 통합: GET /mask edit.url = base.url(_plan 이 편집 파일을 쓰지 못함 — 경고 줄·state '편집 기준 바뀜')이면 패널의 편집 줄을 초록으로 두지 않음 "
+              f"3차 통합: GET /mask edit.url = base.url(_plan 이 편집 파일을 쓰지 못함 — 경고 줄·state '처음 마스크가 바뀜')이면 패널의 편집 줄을 초록으로 두지 않음 "
               f"{p3b.get('unusable')}")
     if "altPick" in bm:
         check(bm["altPick"] == "k15",
@@ -43618,18 +43618,18 @@ def polish1_unit():
           and 'el("span", "vbusy", "후보 불러오는 중")' in vj and ".ov.loading .ov-comp { visibility: hidden; }" in bc,
           "F29 후보 칸·뷰어 영역을 받는 동안 앞 그림을 숨기고 로딩 표시(흐린 겹침 아님)")
     check('cb.checked = alt !== "none"' in pj and 'alternates: cb.checked ? "hidden_all" : "none"' in pj and 'PS.save("export", Object.assign({}, PS.P.settings.export' in pj
-          and 'el("label", "pp-opt")' in pj and "★ 아닌 후보 레이어도 넣기" in pj and "탈락(X) 후보는 어느 쪽이든 넣지 않음" in pj,
-          "F27 Export 칸 '★ 아닌 후보 레이어도 넣기'(탈락은 늘 빠짐) = 누를 때의 Export 절 alternates(hidden_all ↔ none) 저장")
+          and 'el("label", "pp-opt")' in pj and "★ 아닌 후보 레이어도 넣기" in pj and "제외(X) 후보는 어느 쪽이든 넣지 않음" in pj,
+          "F27 Export 칸 '★ 아닌 후보 레이어도 넣기'(제외은 늘 빠짐) = 누를 때의 Export 절 alternates(hidden_all ↔ none) 저장")
     check("!S.targets.some((t) => t.pick_keys.length) && !window.confirm(`★ 가 하나도 없습니다" in pj and "넣을 후보 없음(★ 도 숨김 후보도 없음)" in pj,
           "U-8 ★ 0 Export 는 확인 창, empty 문구")
     eb = pj[pj.index('const eb = button("Export"'):pj.index("btns(s, eb);")]
     check("if (asking || PS.busy) return;" in eb and "eb.disabled = !!PS.job || !!paying || asking || PS.busy;" in eb,
           "F27 체크(alternates) 저장 중에는 [Export] 끔·눌러도 내지 않음 — 옛 설정으로 큐되지 않게(Codex 2차)")
     check('svg("circle", { class: "mbrush" })' in mj and '(soft || tool === "soften" ? " soft" : tool === "revive" ? " revive" : "")' in mj
-          and "svg.marks .mbrush.revive { stroke: #63e07a; }" in bc, "F33 붓 원: 지우기 빨강·살리기 초록(revive)·부드럽게 흰 점선")
+          and "svg.marks .mbrush.revive { stroke: #63e07a; }" in bc, "F33 붓 원: 지우기 빨강·살리기 초록(revive)·흐리기 흰 점선")
     check("function paintPreview()" in mj and 'preview = el("canvas", "mpreview")' in mj and "stamp(R, hard, Math.hypot(" in mj
           and "const R = Math.max(1.5, Math.min(PREVIEW / 2 - 2, size / 2));" in mj,
-          "F36 붓 미리보기(도장 한 번 = stamp × 세기, 반지름 = 붓 크기 — 68px 까지, Codex 4차)")
+          "F36 붓 미리보기(도장 한 번 = stamp × 흐름, 반지름 = 붓 크기 — 68px 까지, Codex 4차)")
     check('case "KeyW":' in mj and "view.orig ? 0 :" in mj and 'button("원본 보기 (W)"' in mj and "<kbd>W</kbd> 누르는 동안" in bh,
           "F35 원본 보기(W 누르는 동안·단추 켜고 끄기)")
     dr = mj[mj.index("    function draw(root) {"):mj.index("    // ── 연산 ──")]
@@ -43659,7 +43659,7 @@ def polish1_unit():
     res = json.loads(r.stdout.strip().splitlines()[-1])
     check(res["joint"] == [{"text": "002_눈동자 · B — ★ 없음(공동 결과 — ★ 는 A 에만, 정상)", "key": None, "info": True},
                            {"text": "002_눈동자 · C — ★ 없음(공동 결과 — ★ 는 A 에만, 정상)", "key": None, "info": True}],
-          f"U-1 공동 결과 뒤 타깃(탈락 후보는 빼고 판정) = 정보 줄·링크 없음 {res['joint']}")
+          f"U-1 공동 결과 뒤 타깃(제외 후보는 빼고 판정) = 정보 줄·링크 없음 {res['joint']}")
     check([x for x in res["noFirst"] if not x["info"]] == [{"text": f"002_눈동자 · {t} — ★ 없음", "info": False} for t in "ABC"],
           f"U-1 첫 타깃에도 ★ 가 없으면 셋 다 경고(할 일) {res['noFirst']}")
     check(res["soloFirst"] == [{"text": f"002_눈동자 · {t} — ★ 없음", "info": False} for t in "BC"],
@@ -43924,7 +43924,7 @@ def polish2_unit():
           f"[검토] 탭 = 켜진 모드를 끔(마스크는 나가기 한 번), ★ 없어 마스크 못 켜면 검토 그대로 "
           f"{res['toReview']['log']} {res['maskToReview']['log']} {res['maskBlocked']}")
     check(res["editChips"][0] == "info:끌기 새 크롭·이동·크기" and "P" in res["editChips"] and "Ctrl+Z" in res["editChips"]
-          and res["pipeChips"] == ["B", "O", "N", "F", "0", "1", "2", "G"] and res["maskChips"][:3] == ["info:끌기 붓", "info:⇧끌기 부드럽게", "X"]
+          and res["pipeChips"] == ["B", "O", "N", "F", "0", "1", "2", "G"] and res["maskChips"][:3] == ["info:끌기 붓", "info:⇧끌기 흐리기", "X"]
           and "W" in res["maskChips"] and "H" in res["refsChips"],
           f"모드마다 칩 줄이 바뀜(설명만인 줄은 칩이 아님) {res['editChips']} {res['pipeChips']} {res['maskChips']} {res['refsChips']}")
     check(res["space"] == [["down", "Space", " ", False, False, True], ["up", "Space", " ", False, False, True]]

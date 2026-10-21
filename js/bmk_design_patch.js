@@ -108,7 +108,7 @@ const ONLY_RE = /^[A-Za-z0-9_, -]+$/; // only = crop_id·style 토큰(쉼표·�
 const STUDIO_STAGES = {
     run: { target: "dp_review", paid: "dp_run", cls: RUN_NODE, label: "Run" },
     draft: { target: "dp_draft", paid: "dp_draft", cls: DRAFT_NODE, label: "Spec Draft" },
-    reroll: { target: "dp_review", paid: "dp_run", cls: RUN_NODE, label: "재굴림" },
+    reroll: { target: "dp_review", paid: "dp_run", cls: RUN_NODE, label: "다시 생성" },
 };
 const TAB_ID = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
 const MODE_NEVER = 2;
@@ -266,7 +266,7 @@ async function queueOnly(nodes, what) {
     const aq = autoQueueMode();
     if (aq) {
         // Studio 승인과 같은 판정(autoQueueWhy) — 이 큐가 끝난 뒤 프론트가 사용자 그래프 전체를 다시 큐해 사전 승인 재굴림이 예상 밖에 돈다
-        notify("warn", `${what}: ComfyUI 탭의 자동 큐(${aq})가 켜져 있어 큐에 넣지 않았습니다 — 넣으면 실행이 끝난 뒤 그래프 전체가 자동으로 다시 큐됩니다(사전 승인한 재굴림 과금). Run 단추 모드를 Run 으로 바꾼 뒤 다시 하세요.`, 10000);
+        notify("warn", `${what}: ComfyUI 탭의 자동 큐(${aq})가 켜져 있어 큐에 넣지 않았습니다 — 넣으면 실행이 끝난 뒤 그래프 전체가 자동으로 다시 큐됩니다(사전 승인한 다시 생성 과금). Run 단추 모드를 Run 으로 바꾼 뒤 다시 하세요.`, 10000);
         return false;
     }
     try {
@@ -927,10 +927,10 @@ function queueLoopEnd() {
 function rerollWhy(reason, error) {
     const why = error
         .replace(/ — (잠시 뒤 다시 승인|승인은 Studio 에서 다시)(?= — |$)/, "")
-        .replace(/(Studio 에서 )?다시 승인(?= — |$)/, "Studio 머리줄 'ComfyUI 큐'");
+        .replace(/(Studio 에서 )?다시 승인(?= — |$)/, "Studio 머리줄 [다시 생성 보내기]");
     return (
-        `${why} · ${reason === "unknown" ? "큐에 들어가지 않았으면 " : ""}사전 승인한 재굴림은 예약된 채 남음(다음 Run·ComfyUI 큐 때 과금): ` +
-        "지금 보내려면 Studio 머리줄 'ComfyUI 큐' — R 을 다시 누르면 +1 호출이 더 승인됨"
+        `${why} · ${reason === "unknown" ? "큐에 들어가지 않았으면 " : ""}사전 승인한 다시 생성은 예약된 채 남음(다음 Run·[다시 생성 보내기] 때 과금): ` +
+        "지금 보내려면 Studio 머리줄 [다시 생성 보내기] — R 을 다시 누르면 +1 호출이 더 승인됨"
     );
 }
 
@@ -1124,7 +1124,7 @@ function studioWave(detail, node) {
     studioChannel?.postMessage(msg);
     for (const w of waveTo.get(rootKey) ?? []) w.postMessage(msg, window.location.origin);
     // 재굴림 템플릿도 Run 노드 키가 dp_run — 남은 것은 사전 승인분이라 새 승인 없이 이어 감(Studio 의 재굴림 wave 안내와 같게)
-    const go = studioRuns.get(runningPromptId) === "reroll" ? "사전 승인 재굴림이라 Studio 머리줄 'ComfyUI 큐'(또는 다음 Run)로 이어서" : "Studio 에서 이어서 승인";
+    const go = studioRuns.get(runningPromptId) === "reroll" ? "사전 승인 다시 생성이라 Studio 머리줄 [다시 생성 보내기](또는 다음 Run)로 이어서" : "Studio 에서 이어서 승인";
     notify("info", `wave 종료(남은 ${remaining}건) — ${go}`, 10000);
 }
 

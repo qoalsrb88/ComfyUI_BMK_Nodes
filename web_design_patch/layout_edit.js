@@ -22,7 +22,7 @@ window.DPLayoutEdit = (() => {
   const SERVER_CODES = /^[RDH]-/; // 서버만 아는 검사(레퍼런스·PSD·옛 기록) — 끄는 동안에도 서버 값 그대로
   const RECT_MSGS = { error: "사각형이 비었거나 잘못되었습니다", outside: "사각형이 캔버스 밖으로 나갑니다", ratio: "사각형 비가 3:1 을 넘습니다" };
   // 반영(큐) 확인 창의 정보 줄(S3 §3.2 — 무료 반영은 Spec Draft 를 돌리지 않는다)
-  const APPLY_NOTE = "원장에만 남은 초안(받았지만 스펙에 못 쓴 것)은 이 반영이 병합하지 않음 — 진행(G) 초안 줄의 '못 쓴 스펙'으로 보이고, "
+  const APPLY_NOTE = "원장에만 남은 초안(받았지만 스펙에 못 쓴 것)은 이 반영이 병합하지 않음 — 실행(G) 초안 줄의 '못 쓴 스펙'으로 보이고, "
     + "그래프 Spec Draft 를 승인 없이 한 번 큐하면 병합";
 
   function sameRect(a, b) {
@@ -56,7 +56,7 @@ window.DPLayoutEdit = (() => {
     // 이름을 바꿀 때 다음 Run 이 새 셀인지(§5): 바꾼 뒤 레퍼런스(개수·첫 파일)가 다르면 확정, 같으면(또는 아직 모름) 부위 라벨(문구 없는
     // 타깃)이 프롬프트에 쓰일 때만. 폴더·PSD 수확 후보는 파일 이름이 옛 이름이라 이어지지 않는다
     const moved = !!(cur && after) && (cur.n !== after.n || cur.first !== after.first);
-    return (moved ? "레퍼런스가 바뀌어 다음 Run 은 새 셀(초안 갱신 대기)" : "부위 라벨이 프롬프트에 쓰이면 다음 Run 은 새 셀일 수 있음")
+    return (moved ? "레퍼런스가 바뀌어 다음 Run 은 새 생성 조건(초안 갱신 대기)" : "부위 라벨이 프롬프트에 쓰이면 다음 Run 은 새 생성 조건일 수 있음")
       + (byFile ? ` · 폴더·PSD 수확 후보(${byFile})는 옛 이름 파일 — mapping_json 에 ID 로` : "") + " — Enter 로 적용";
   }
 
@@ -86,7 +86,7 @@ window.DPLayoutEdit = (() => {
       }
       if (!r.ok || !data) {
         const msg = data && data.error ? data.error
-          : r.status === 404 ? "레이아웃 라우트가 없습니다 — ComfyUI 를 재시작해야 레이아웃 편집을 쓸 수 있습니다"
+          : r.status === 404 ? "레이아웃 라우트가 없습니다 — ComfyUI 를 재시작해야 크롭 편집을 쓸 수 있습니다"
             : `응답을 읽을 수 없습니다 (HTTP ${r.status})`;
         throw Object.assign(new Error(msg), { status: r.status });
       }
@@ -241,7 +241,7 @@ window.DPLayoutEdit = (() => {
       // 본 스냅숏(seen = 확인 창을 띄울 때의 psd_diff, 없으면 지금 것)의 token 을 싣는다 — 큐에서 기다리는 사이 Import 가
       // 스냅숏을 바꿨으면 서버가 409(새로고침)
       const d = seen || s.L.psd_diff;
-      if (!d) throw new Error("PSD 갈라짐이 없습니다(새로고침됨)");
+      if (!d) throw new Error("PSD 와 다른 곳이 없습니다(새로고침됨)");
       const r = await call("layout/psd", { rev: s.L.rev, op, names, snapshot: { token: d.token } }); // 지문 숫자는 JS 에서 반올림됨 — 문자열 token
       s.ownRev = r.rev;
       writes += 1;
@@ -781,7 +781,7 @@ window.DPLayoutEdit = (() => {
       const h = c.history || {};
       const what = [`후보 ${h.candidates || 0}`, `★ ${h.picks || 0}`].concat(h.spec ? ["스펙 있음"] : []).join(" · ");
       if (!window.confirm(`${c.name} 크롭을 레이아웃에서 지웁니다.\n${what} — ${againText(c)}\n`
-        + "매니페스트에는 다음 큐의 Import 에서 반영됩니다. 계속할까요?")) return;
+        + "프로젝트 기록에는 다음 큐의 Import 에서 반영됩니다. 계속할까요?")) return;
       if (await act(S.remove(c.id))) opts.toast(`지움: ${c.name} (Ctrl+Z 로 되살림)`);
     }
 
@@ -900,12 +900,12 @@ window.DPLayoutEdit = (() => {
         else rest.push(`${x.name} — 바뀜(${fieldNames(x.fields)})`);
       }
       for (const x of d.added) {
-        if (names.includes(x.name)) take.push(`${x.name} — PSD 에만 있는 shape 는 새 크롭으로 더함`);
-        else rest.push(`${x.name} — 새 shape`);
+        if (names.includes(x.name)) take.push(`${x.name} — PSD 에만 있는 사각형은 새 크롭으로 더함`);
+        else rest.push(`${x.name} — 새 사각형`);
       }
       for (const x of d.removed) {
-        if (part && names.includes(x.name)) take.push(`${x.name} — 사라진 shape: 레이아웃 그대로, 경고만 꺼짐`);
-        else rest.push(`${x.name} — 사라진 shape` + (part ? "(경고 끄기로)" : ": 레이아웃 그대로, 경고만 꺼짐"));
+        if (part && names.includes(x.name)) take.push(`${x.name} — 사라진 사각형: 레이아웃 그대로, 경고만 꺼짐`);
+        else rest.push(`${x.name} — 사라진 사각형` + (part ? "(경고 끄기로)" : ": 레이아웃 그대로, 경고만 꺼짐"));
       }
       return { take, rest };
     }
@@ -915,10 +915,10 @@ window.DPLayoutEdit = (() => {
       const seen = S.L.psd_diff; // 미세 이동을 보낸 뒤 다시 읽은 갈라짐 — 확인 창과 서버에 보낼 스냅숏이 이것(그 사이 사라졌으면 끝)
       if (!seen) return;
       const { take, rest } = psdSplit(names);
-      const lines = ["PSD 값 가져오기(실행 취소로 되돌릴 수 없음):", ...take.map((x) => ` · ${x}`)];
+      const lines = ["모두 PSD 값으로(실행 취소로 되돌릴 수 없음):", ...take.map((x) => ` · ${x}`)];
       if (rest.length) {
-        lines.push(partial() ? `나머지 갈라짐 ${rest.length}건은 가져오지 않고 그대로 경고:`
-          : `나머지 갈라짐 ${rest.length}건은 가져오지 않고 경고만 꺼집니다(기준점이 지금 PSD 로 바뀜 — ComfyUI 재시작 전 서버):`, ...rest.map((x) => ` · ${x}`));
+        lines.push(partial() ? `나머지 다른 곳 ${rest.length}건은 가져오지 않고 그대로 경고:`
+          : `나머지 다른 곳 ${rest.length}건은 가져오지 않고 경고만 꺼집니다(기준점이 지금 PSD 로 바뀜 — ComfyUI 재시작 전 서버):`, ...rest.map((x) => ` · ${x}`));
       }
       if (!window.confirm(lines.concat("계속할까요?").join("\n"))) return;
       const r = await act(S.psd("take", names, seen));
@@ -936,9 +936,9 @@ window.DPLayoutEdit = (() => {
       const seen = S.L.psd_diff;
       if (!seen) return;
       const rest = names ? psdSplit(names).rest.length : 0;
-      if (!window.confirm(names ? `${names.join(", ")} 의 갈라짐 경고만 끕니다(레이아웃 그대로, 그 shape 의 PSD 기준점만 지금 PSD 로)`
-        + (rest ? ` — 나머지 갈라짐 ${rest}건은 그대로 경고` : "") + ". 계속할까요?"
-        : "레이아웃은 그대로 두고 PSD 기준점만 지금 PSD 로 바꿉니다(갈라짐 경고를 모두 끔). 계속할까요?")) return;
+      if (!window.confirm(names ? `${names.join(", ")} 의 PSD 와 다름 경고만 끕니다(레이아웃 그대로, 그 사각형의 PSD 기준점만 지금 PSD 로)`
+        + (rest ? ` — 나머지 다른 곳 ${rest}건은 그대로 경고` : "") + ". 계속할까요?"
+        : "레이아웃은 그대로 두고 PSD 기준점만 지금 PSD 로 바꿉니다(PSD 와 다름 경고를 모두 끔). 계속할까요?")) return;
       if (await act(S.psd("ack", names, seen))) opts.toast(names ? `PSD 기준점 갱신: ${names.join(", ")}` : "PSD 기준점을 갱신했습니다");
     }
 
@@ -950,9 +950,9 @@ window.DPLayoutEdit = (() => {
       const ch = S.L.crops.filter((c) => STATUS[c.status]).map((c) => `${c.name}(${c.status === "new" ? "새 크롭" : fieldNames(c.changed)})`)
         .concat(S.L.removed.map((c) => `${c.name || c.id}(지움)`));
       const lines = (opts.applyWarn ? opts.applyWarn() : [])
-        .concat(ch.length ? [`이 반영에 들어가는 레이아웃 바뀜 ${ch.length}건: ${ch.join(" · ")} — 실수면 취소 → Ctrl+Z(이 창의 편집) 또는 진행(G) 반영 칸 [되돌리기]`] : [],
-          "반영(큐): 무료 반영(Import → Prepare → Analyze → Review 템플릿, 탭 불필요)으로 레이아웃을 매니페스트에 반영합니다.");
-      if (n) lines.push(`재굴림 대기 ${n}건(사전 승인)은 이 반영에서 돌지 않음 — R·ComfyUI 큐·그래프 Run 에서 과금`);
+        .concat(ch.length ? [`이 반영에 들어가는 레이아웃 바뀜 ${ch.length}건: ${ch.join(" · ")} — 실수면 취소 → Ctrl+Z(이 창의 편집) 또는 실행(G) 반영 칸 [되돌리기]`] : [],
+          "반영 (무료): 무료 반영(Import → Prepare → Analyze → Review 템플릿, 탭 불필요)으로 레이아웃을 프로젝트 기록에 반영합니다.");
+      if (n) lines.push(`다시 생성 대기 ${n}건(사전 승인)은 이 반영에서 돌지 않음 — R·[다시 생성 보내기]·그래프 Run 에서 과금`);
       if (!window.confirm(lines.concat(APPLY_NOTE, "계속할까요?").join("\n"))) return;
       opts.queue(true);
     }
@@ -1063,31 +1063,31 @@ window.DPLayoutEdit = (() => {
       head.replaceChildren();
       const L = S.L;
       if (!L || !L.exists) {
-        head.append(el("span", "lh-title", "레이아웃 편집"));
+        head.append(el("span", "lh-title", "크롭 편집"));
       } else if (L.error) {
         // 깨진 layout.json: 판·반영·실행 취소가 없다(이유는 속성 패널)
         const b = el("span", "lh-bad", "layout.json 오류");
         b.title = L.error;
-        head.append(el("span", "lh-title", "레이아웃 편집"), b);
+        head.append(el("span", "lh-title", "크롭 편집"), b);
       } else {
         const k = L.crops.filter((c) => c.status !== "same").length + L.removed.length;
         // 반영됨 = 마지막 Import 가 읽은 판의 sig 가 지금과 같음(서버 applied — 메모·상자만 고친 판도 반영된 것), 옛 서버는 rev 비교
         const applied = "applied" in L ? L.applied : L.applied_rev === L.rev;
         head.append(el("span", "lh-title", `레이아웃 rev ${L.rev}`));
         const st = el("span", applied ? "lh-ok" : "lh-wait", applied ? "반영됨" : `미반영 ${k}`);
-        st.title = applied ? "마지막 Import 가 이 판을 읽었습니다" : `매니페스트 반영 rev ${L.applied_rev ?? "없음"} — 다음 큐의 Import 에서 반영`;
-        head.append(st, button("반영(큐)", "무료 반영(Import → Prepare → Analyze → Review 템플릿, 탭 불필요) — 레이아웃을 매니페스트에 반영",
+        st.title = applied ? "마지막 Import 가 이 판을 읽었습니다" : `프로젝트 기록 반영 rev ${L.applied_rev ?? "없음"} — 다음 큐의 Import 에서 반영`;
+        head.append(st, button("반영 (무료)", "무료 반영(Import → Prepare → Analyze → Review 템플릿, 탭 불필요) — 레이아웃을 프로젝트 기록에 반영",
           applyQueue));
         const d = L.psd_diff;
         const nd = d ? d.changed.length + d.added.length + d.removed.length : 0;
         if (nd) {
-          const p = el("span", "lh-bad", `PSD 갈라짐 ${nd}`);
-          p.title = [...d.changed.map((x) => `바뀜 ${x.name} [${x.from.rect}]→[${x.to.rect}]`), ...d.added.map((x) => `새 shape ${x.name}`),
-            ...d.removed.map((x) => `사라진 shape ${x.name}`)].join("\n");
+          const p = el("span", "lh-bad", `PSD 와 다름 ${nd}`);
+          p.title = [...d.changed.map((x) => `바뀜 ${x.name} [${x.from.rect}]→[${x.to.rect}]`), ...d.added.map((x) => `새 사각형 ${x.name}`),
+            ...d.removed.map((x) => `사라진 사각형 ${x.name}`)].join("\n");
           head.append(p);
           const names = [...psdShapes(["changed", "added"])];
           if (names.length) {
-            head.append(button("PSD 값 가져오기", "갈라진 shape 의 PSD 값(바뀐 필드만)을 레이아웃으로 · 새 shape 는 새 크롭 — 사라진 shape 는 "
+            head.append(button("모두 PSD 값으로", "PSD 와 다른 사각형의 PSD 값(바뀐 필드만)을 레이아웃으로 · 새 사각형은 새 크롭 — 사라진 사각형은 "
               + (partial() ? "경고 끄기로" : "경고만 꺼짐"), () => takePsd(names)));
           }
           head.append(button("경고 끄기", "레이아웃은 그대로, PSD 기준점만 지금 PSD 로", ackPsd));
@@ -1113,10 +1113,10 @@ window.DPLayoutEdit = (() => {
         const ch = el("div", "chips");
         if (STATUS[c.status]) {
           const x = chip(STATUS[c.status] + (c.changed && c.changed.length ? " " + fieldNames(c.changed) : ""), "b-wait");
-          x.title = "매니페스트와 다름 — 다음 큐의 Import 에서 반영";
+          x.title = "프로젝트 기록과 다름 — 다음 큐의 Import 에서 반영";
           ch.append(x);
         }
-        if (split.has(c.psd_name || c.name)) ch.append(chip("PSD 갈라짐", "b-bad"));
+        if (split.has(c.psd_name || c.name)) ch.append(chip("PSD 와 다름", "b-bad"));
         for (const [lv, cls] of [["error", "b-bad"], ["warn", "b-wait"]]) {
           const rows = (c.checks || []).filter((x) => x.level === lv);
           if (rows.length) {
@@ -1145,7 +1145,7 @@ window.DPLayoutEdit = (() => {
     }
 
     function blocked() {
-      if (!state || !state.canvas) return "베이스가 없습니다 — Import PSD 를 먼저 실행하세요(레이아웃 편집 불가).";
+      if (!state || !state.canvas) return "베이스가 없습니다 — Import PSD 를 먼저 실행하세요(크롭 편집 불가).";
       if (!S.L) return S.err ? `레이아웃을 읽지 못했습니다: ${S.err}` : "불러오는 중…";
       if (S.L.error) return `layout.json 을 읽을 수 없어 편집할 수 없습니다: ${S.L.error}`;
       if (S.L.exists && !S.L.editable) return "이 레이아웃은 편집할 수 없습니다(베이스·캔버스 확인).";
@@ -1173,13 +1173,13 @@ window.DPLayoutEdit = (() => {
     function renderStart() {
       // start_blocked = 서버가 이관을 거절하는 이유(레이아웃 모드 결과 매니페스트에 믿을 수 있는 PSD 스냅숏이 없음 등)
       const why = S.L.start_blocked;
-      panel.append(el("h3", "lp-title", "레이아웃 편집 시작"));
+      panel.append(el("h3", "lp-title", "크롭 편집 시작"));
       if (why) panel.append(el("p", "warn", why));
-      else panel.append(el("p", "", `매니페스트 크롭 ${state.crops.length}개(마지막 PSD 가져오기 결과)를 layout.json 으로 옮깁니다 — ID·사각형·이름·대상 문구 그대로.`));
-      panel.append(el("p", "warn", "이후 크롭의 사각형·이름·대상은 Studio 가 원천입니다. PS 에서 사각형을 옮겨도 반영되지 않고 경고만 납니다('PSD 값 가져오기'로 맞춤)."));
+      else panel.append(el("p", "", `프로젝트 기록 크롭 ${state.crops.length}개(마지막 PSD 가져오기 결과)를 layout.json 으로 옮깁니다 — ID·사각형·이름·대상 문구 그대로.`));
+      panel.append(el("p", "warn", "이후 크롭의 사각형·이름·대상은 Studio 가 원천입니다. PS 에서 사각형을 옮겨도 반영되지 않고 경고만 납니다([모두 PSD 값으로]·[PSD 값으로] 단추로 맞춤)."));
       panel.append(el("p", "dim", "PS 만 쓰려면 시작하지 마세요 — 지금처럼 동작합니다. 크롭이 없어도(빈 시작) 여기서 새로 그릴 수 있습니다."));
       const b = el("div", "lp-btns");
-      const go = button("레이아웃 편집 시작", "POST layout/start — 매니페스트 크롭을 layout.json 으로 이관", start, "primary");
+      const go = button("크롭 편집 시작", "POST layout/start — 프로젝트 기록 크롭을 layout.json 으로 이관", start, "primary");
       go.disabled = !!why;
       b.append(go);
       panel.append(b);
@@ -1197,7 +1197,7 @@ window.DPLayoutEdit = (() => {
 
     function renderNone() {
       const L = S.L;
-      panel.append(el("h3", "lp-title", "레이아웃"));
+      panel.append(el("h3", "lp-title", "크롭"));
       const bb = el("div", "lp-btns");
       bb.append(boxButton());
       panel.append(bb);
@@ -1208,7 +1208,7 @@ window.DPLayoutEdit = (() => {
         "빈 곳에서 끌기 = 새 크롭 · 몸통 끌기 = 이동 · 핸들 = 크기(Shift = 비율 유지)",
         "Ctrl 을 누른 채 끌기 = 스냅 없음(1px) · 크기 128 배수·위치 16px 격자 · 비 3:1 이하·캔버스 안",
         "Space 를 누른 채 끌기·가운데 버튼 = 화면 이동 · 화살표 16px · Shift 128px · Ctrl 1px",
-        "Delete = 지우기 · Ctrl+Z / Ctrl+Y = 실행 취소·다시 · Esc = 취소 → 선택 해제 → 편집 모드 나가기"]) {
+        "Delete = 지우기 · Ctrl+Z / Ctrl+Y = 실행 취소·다시 · Esc = 취소 → 선택 해제 → 크롭 편집 모드 나가기"]) {
         panel.append(el("p", "dim", t));
       }
     }
@@ -1326,7 +1326,7 @@ window.DPLayoutEdit = (() => {
         row("레퍼런스", f.n ? `${f.n}개 · 첫 ${f.first}` : "없음", f.n ? "" : "warn");
         panel.append(after);
       }
-      if (c.manifest && c.status === "changed") row("매니페스트", `${c.manifest.name} [${c.manifest.rect.join(", ")}]`, "dim");
+      if (c.manifest && c.status === "changed") row("프로젝트 기록", `${c.manifest.name} [${c.manifest.rect.join(", ")}]`, "dim");
       targetsBlock(c);
       const note = el("textarea", "lp-memo");
       note.dataset.k = "note";
@@ -1346,7 +1346,7 @@ window.DPLayoutEdit = (() => {
       checks.append(...checkRows(c));
       if (proposal && proposal.id === c.id) row("제안", `[${proposal.rect.join(", ")}] ${sizeText(proposal.rect)} — Enter 적용 · Esc 취소`, "warn");
       const b = el("div", "lp-btns");
-      b.append(button("상자에 맞춤", "부품 상자 합집합 ÷ 0.7 → 128 배수 → 비 ≤ 3 → 캔버스 안(미리보기, Enter 적용)", propose));
+      b.append(button("상자에 크롭 맞추기", "부품 상자 합집합 ÷ 0.7 → 128 배수 → 비 ≤ 3 → 캔버스 안(미리보기, Enter 적용)", propose));
       if (proposal && proposal.id === c.id) b.append(button("제안 적용", "Enter", applyProposal, "primary"));
       const pn = c.psd_name || c.name;
       const part = partial();
@@ -1354,11 +1354,11 @@ window.DPLayoutEdit = (() => {
         // S1-a: 이 이름의 기준점만 지금 PSD 값으로 — 다른 갈라짐은 그대로 경고. 옛 서버는 기준점이 통째로 바뀌어 다른 갈라짐 경고도 꺼짐(라벨에 그 수)
         const rest = part ? 0 : psdSplit([pn]).rest.length;
         b.append(button(rest ? `PSD 값으로(나머지 ${rest}건 경고 끔)` : "PSD 값으로", "이 크롭의 PSD 에서 바뀐 필드(사각형·대상)를 지금 PSD 값으로 — "
-          + (part ? "다른 갈라짐은 그대로 경고" : rest ? `나머지 갈라짐 ${rest}건은 가져오지 않고 경고만 꺼짐(ComfyUI 재시작 전 서버)` : "갈라짐은 이것뿐"),
+          + (part ? "다른 곳은 그대로 경고" : rest ? `나머지 다른 곳 ${rest}건은 가져오지 않고 경고만 꺼짐(ComfyUI 재시작 전 서버)` : "다른 곳은 이것뿐"),
         () => takePsd([pn])));
       }
       if (part && psdShapes(["changed", "removed"]).has(pn)) {
-        b.append(button("이 shape 경고 끄기", "레이아웃은 그대로, 이 shape 의 PSD 기준점만 지금 PSD 로(다른 갈라짐은 그대로 경고)",
+        b.append(button("이 사각형 경고 끄기", "레이아웃은 그대로, 이 사각형의 PSD 기준점만 지금 PSD 로(다른 곳은 그대로 경고)",
           () => ackPsd([pn])));
       }
       b.append(boxButton(), button("지우기", "Delete", removeSel, "danger"));
@@ -1374,7 +1374,7 @@ window.DPLayoutEdit = (() => {
         const r = el("div", "lt");
         const tag = el("span", "lt-tid", t.tid);
         tag.style.borderColor = boxColor(t.tid, i);
-        const inp = input(k, t.text, adopted[t.tid] ? `채택: ${adopted[t.tid]}` : "문구(영문 name_en 또는 한글 라벨)");
+        const inp = input(k, t.text, adopted[t.tid] ? `채택: ${adopted[t.tid]}` : "대상 이름(예: 머리 리본)");
         const mark = () => {
           const v = G.checkText(inp.value);
           inp.classList.toggle("bad", !!v.err);
@@ -1424,7 +1424,7 @@ window.DPLayoutEdit = (() => {
         r.title = "스펙 _layer_targets 채택 문구(레이아웃 대상 아님) — 같은 글자로 대상을 더하면 레이아웃 문구가 이김";
         tb.append(r);
       }
-      panel.append(el("div", "lp-k", "대상 (문구 · 부품 상자 · 채택)"), tb);
+      panel.append(el("div", "lp-k", "대상 (이름 · 부품 상자)"), tb);
       const b = el("div", "lp-btns");
       b.append(button("+ 대상", "다음 빈 글자(채택된 글자 제외)로 대상을 더함", () => addTarget(c)));
       const d = c.draft_boxes;

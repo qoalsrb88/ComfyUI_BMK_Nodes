@@ -402,11 +402,11 @@ def _board_spent(files: dict) -> bool:
 
 def _change_reason(job: dict, prior: dict | None) -> str:
     if not prior:
-        return "새 셀(처음 실행)"
+        return "새 생성 조건(처음 실행)"
     diffs = [label for key, label in _CHANGE_FIELDS
              if (prior.get(key) if key != "inputs" else [i.get("sha") for i in prior.get("inputs") or []])
              != (job.get(key) if key != "inputs" else [i.get("sha") for i in job.get("inputs") or []])]
-    return "새 셀 — 이전 셀 대비 변경: " + (", ".join(diffs) if diffs else "변형/기타")
+    return "새 생성 조건 — 이전 생성 조건 대비 변경: " + (", ".join(diffs) if diffs else "변형/기타")
 
 
 def plan_calls(m: dict, ledger_root: str, *, retry_failed: bool = False, retry_orphans: bool = False,
@@ -489,7 +489,7 @@ def plan_calls(m: dict, ledger_root: str, *, retry_failed: bool = False, retry_o
                             (view.get("crop_id"), view.get("tid"), view.get("variant"))))
                     reason = new_cell_reason
                 else:  # 재굴림 몫은 모두 사전 승인으로 배정되므로 나머지는 기본 호출 수(reps) 몫
-                    reason = "셀당 호출 수 증가(또는 비어 있는 rep)"
+                    reason = "생성 조건마다 호출 수 증가(또는 비어 있는 rep)"
                 cell_pending.append(entry(ck, rep, "pending", view, files, kind="new", billable=True, pre=pre,
                                           reason=reason))
             elif st == "recoverable":
@@ -512,7 +512,7 @@ def plan_calls(m: dict, ledger_root: str, *, retry_failed: bool = False, retry_o
             st = _rep_state(files, _is_active(rid, call_id_for(ck, rep)))
             rview = _job_view(files["req"]) if isinstance(files.get("req"), dict) else {"cell_key": ck}
             if st == "recoverable":
-                recover.append(entry(ck, rep, st, rview, files, kind="recover", reason="옛 셀 — 다운로드만 다시",
+                recover.append(entry(ck, rep, st, rview, files, kind="recover", reason="옛 조건 — 다운로드만 다시",
                                      stale=True))
             elif st in ("orphaned", "inflight"):
                 out[st].append(entry(ck, rep, st, rview, files, stale=True))

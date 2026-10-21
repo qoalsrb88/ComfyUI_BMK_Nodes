@@ -49,18 +49,18 @@ window.DPRefEdit = (() => {
   };
   const METHODS = [
     ["rect", "사각형", "선택 안의 시트 알파 그대로 자르기(기본) — 떨어진 부품은 이것으로 끝, 붙은 부품은 다각형으로 다듬기"],
-    ["sam3", "SAM3 시도", "붙은 장식용: 창 = 선택 + 12% · 상자 + 자동 양점 — ComfyUI 대기열 앞에서 돎. 첫 컷은 SAM3 를 VRAM 에 올려 "
+    ["sam3", "자동 오리기(SAM3)", "붙은 장식용: 창 = 선택 + 12% · 상자 + 자동 양점 — ComfyUI 대기열 앞에서 돎. 첫 컷은 SAM3 를 VRAM 에 올려 "
       + "ComfyUI 가 다른 모델을 내릴 수 있음(다음 생성에서 그 모델을 다시 올리는 시간)"],
     ["poly", "다각형", "클릭 = 꼭짓점 · 더블클릭·Enter = 닫기 · Shift = 앞 결과에 더하기 · Alt = 빼기"],
   ];
   const MATTES = [["white", "흰"], ["gray", "#808080"], ["check", "체크"]];
-  const LINK_DONE = { fix: "고정(지금 이름 매칭 결과 그대로)", none: "레퍼런스 없음(자체 복원)으로 고정", unfix: "고정 풀기 — 이름 매칭으로",
+  const LINK_DONE = { fix: "고정(지금 이름 매칭 결과 그대로)", none: "레퍼런스 없이 고치기로 고정", unfix: "고정 풀기 — 이름 매칭으로",
     add: "보조로 연결", main: "대표로", move: "순서 바꿈", remove: "연결 끊음(파일은 그대로)", hold: "_보류 로 옮김", restore: "되살려 보조로 연결",
     relink: "다른 크롭에 다시 연결" };
   // 이름으로 가리키는 곳(explicit 행 where): 스펙·매니페스트 타깃(D5) · 다른 크롭의 고정 연결 · 다른 크롭의 이름 매칭
-  const WHERE = { spec: "스펙", manifest: "매니페스트", link: "연결", match: "이름 매칭" };
+  const WHERE = { spec: "스펙", manifest: "프로젝트 기록", link: "연결", match: "이름 매칭" };
   // 반영(큐) 확인 창의 정보 줄(S3 §3.2 — 무료 반영은 Spec Draft 를 돌리지 않는다)
-  const APPLY_NOTE = "원장에만 남은 초안(받았지만 스펙에 못 쓴 것)은 이 반영이 병합하지 않음 — 진행(G) 초안 줄의 '못 쓴 스펙'으로 보이고, "
+  const APPLY_NOTE = "원장에만 남은 초안(받았지만 스펙에 못 쓴 것)은 이 반영이 병합하지 않음 — 실행(G) 초안 줄의 '못 쓴 스펙'으로 보이고, "
     + "그래프 Spec Draft 를 승인 없이 한 번 큐하면 병합";
 
   // ── 이름·변환 규칙(공용 표 refs_rules.json — refs.check_desc·ref_file_name·transform_rgba 크기) ──
@@ -978,7 +978,7 @@ window.DPRefEdit = (() => {
     function explicitText(e, ex) {
       // 이름으로 직접 가리키는 파일을 옮기거나 그 이름에 새 그림을 씀(D5) — 무엇이 바뀌는지
       const lines = ex.map((x) => ` · ${whereText(x)} → ${x.file}`);
-      return [e.message, ...lines, "이 이름을 쓰는 곳은 새 그림으로 바뀌거나 파일이 옮겨집니다(스펙·매니페스트 타깃은 Prepare 가 연결 대신 이 이름을 씀).",
+      return [e.message, ...lines, "이 이름을 쓰는 곳은 새 그림으로 바뀌거나 파일이 옮겨집니다(스펙·프로젝트 기록 타깃은 Prepare 가 연결 대신 이 이름을 씀).",
         ...(S.R && S.R.outside_project ? ["refs_dir 가 프로젝트 밖 — 다른 프로젝트에도 보입니다."] : []), "계속할까요?"].join("\n");
     }
 
@@ -1022,10 +1022,10 @@ window.DPRefEdit = (() => {
       const k = auxShift(c);
       if (k === "first") {
         return ["warn", c.files.length
-          ? "다음 Run 에서 이 크롭은 새 셀(유료 대상) — 연결 파일이 모두 사라져 Prepare 가 이 파일을 고름(대표 칸은 사라진 파일 그대로)"
-          : "다음 Run 에서 이 크롭은 새 셀(유료 대상) — 지금 레퍼런스가 없어 이 파일이 대표가 됨(Prepare 가 고름)"];
+          ? "다음 Run 에서 이 크롭은 새 생성 조건(유료 대상) — 연결 파일이 모두 사라져 Prepare 가 이 파일을 고름(대표 칸은 사라진 파일 그대로)"
+          : "다음 Run 에서 이 크롭은 새 생성 조건(유료 대상) — 지금 레퍼런스가 없어 이 파일이 대표가 됨(Prepare 가 고름)"];
       }
-      if (k === "maybe") return ["warn", "대표 파일이 없어 Prepare 가 이름 규칙으로 고름 — 이 파일이 골라지면 다음 Run 에서 새 셀(유료 대상)"];
+      if (k === "maybe") return ["warn", "대표 파일이 없어 Prepare 가 이름 규칙으로 고름 — 이 파일이 골라지면 다음 Run 에서 새 생성 조건(유료 대상)"];
       return ["info", "Prepare 선택 그대로(cell_key 그대로), Spec Draft 는 refresh 가능"];
     }
 
@@ -1040,8 +1040,8 @@ window.DPRefEdit = (() => {
       if (!sib.length) return null;
       const kept = sib.filter((o) => o.files.length);
       const empty = sib.filter((o) => !o.files.length); // 빈 seed — '레퍼런스 없음'으로 고정(자동, board fixed.auto)
-      return [kept.length ? `같은 번호 크롭 ${kept.map((o) => o.name).join(", ")} 는 지금 레퍼런스로 고정됨(ID — 이 파일을 이름 매칭으로 받지 않게, 선택·셀 그대로)` : null,
-        empty.length ? `같은 번호 크롭 ${empty.map((o) => o.name).join(", ")} 는 레퍼런스 없음으로 고정됨(이 파일을 이름 매칭으로 받지 않게 — 셀 그대로)` : null]
+      return [kept.length ? `같은 번호 크롭 ${kept.map((o) => o.name).join(", ")} 는 지금 레퍼런스로 고정됨(ID — 이 파일을 이름 매칭으로 받지 않게, 선택·생성 조건 그대로)` : null,
+        empty.length ? `같은 번호 크롭 ${empty.map((o) => o.name).join(", ")} 는 레퍼런스 없음으로 고정됨(이 파일을 이름 매칭으로 받지 않게 — 생성 조건 그대로)` : null]
         .filter(Boolean).join(" · ") + " — 이후 PS 로 넣는 같은 번호 새 파일은 그 크롭에 [연결]해야 쓰임";
     }
 
@@ -1050,7 +1050,7 @@ window.DPRefEdit = (() => {
       // board._missing_holders, 같은 이름 = casefold)
       const k = G.fold(name);
       return crops().filter((o) => o.id !== c.id && o.fixed && o.files.some((f) => f.missing && G.fold(f.name) === k))
-        .map((o) => `크롭 ${o.name} 가 연결해 두었는데 없던 ${name} — 새 그림이 그 크롭에 들어감(그 크롭 레퍼런스가 바뀌어 다음 Run 에서 새 셀일 수 있음)`);
+        .map((o) => `크롭 ${o.name} 가 연결해 두었는데 없던 ${name} — 새 그림이 그 크롭에 들어감(그 크롭 레퍼런스가 바뀌어 다음 Run 에서 새 생성 조건일 수 있음)`);
     }
 
     function impactLines(c, name) {
@@ -1060,7 +1060,7 @@ window.DPRefEdit = (() => {
       const same = sameNamed(c, name);
       if (role === "main") {
         const m = c.files.find((f) => f.role === "main");
-        out.push(["warn", "다음 Run 에서 이 크롭은 새 셀(유료 대상)"
+        out.push(["warn", "다음 Run 에서 이 크롭은 새 생성 조건(유료 대상)"
           + (same ? ` — 같은 이름의 지금 파일 ${same.name} 은 _보류 로` : m ? ` — 지금 대표 ${m.name} 은 보조로` : "")]);
         if (same && S.R.outside_project) out.push(["warn", "refs_dir 가 프로젝트 밖 — 다른 프로젝트에도 보입니다"]);
       } else {
@@ -1125,7 +1125,7 @@ window.DPRefEdit = (() => {
         const asMain = adds && r.crop.files.some((f) => f.role === "main" && f.name === added);
         const picked = adds && !asMain && r.crop.pick === added;
         opts.toast((asMain ? (op === "add" ? "대표로 연결(첫 레퍼런스)" : "되살려 대표로 연결(첫 레퍼런스)")
-          : picked ? `${op === "add" ? "보조로 연결" : "되살려 보조로 연결"} — 대표 파일이 없어 Prepare 가 이것을 고름(새 셀)` : LINK_DONE[op])
+          : picked ? `${op === "add" ? "보조로 연결" : "되살려 보조로 연결"} — 대표 파일이 없어 Prepare 가 이것을 고름(새 생성 조건)` : LINK_DONE[op])
           + (r.held ? `: _보류/${r.held}` : r.file ? `: ${r.file}` : ""));
       } catch (e) {
         const ex = explicitOf(e);
@@ -1146,16 +1146,16 @@ window.DPRefEdit = (() => {
       // (c.pick = 지금 고르는 파일 — 대표가 사라진 고정(R-main)에서는 보조일 수 있음)
       const left = c.files.filter((x) => x !== f);
       if (!left.length) {
-        return [true, "마지막 레퍼런스 — 이 크롭은 레퍼런스 없음(자체 복원)으로 고정됩니다. 다음 Run 에서 새 셀(유료 대상). "
+        return [true, "마지막 레퍼런스 — 이 크롭은 레퍼런스 없이 고치기로 고정됩니다. 다음 Run 에서 새 생성 조건(유료 대상). "
           + "같은 번호의 새 파일은 [연결]해야 쓰입니다(이름 매칭으로 돌아가려면 고정 풀기)."];
       }
       if (!f.missing && !left.some((x) => !x.missing)) {
         return [true, `남는 연결 파일(${left.map((x) => x.name).join(", ")})이 모두 사라져 Prepare 는 레퍼런스 없이 합니다(self_restore) — `
-          + "다음 Run 에서 새 셀(유료 대상)."];
+          + "다음 Run 에서 새 생성 조건(유료 대상)."];
       }
-      if (f.role === "main" && !f.missing) return [true, "대표가 없어져 Prepare 가 이름 규칙으로 고릅니다 — 다음 Run 에서 새 셀일 수 있음(유료 대상)."];
+      if (f.role === "main" && !f.missing) return [true, "대표가 없어져 Prepare 가 이름 규칙으로 고릅니다 — 다음 Run 에서 새 생성 조건일 수 있음(유료 대상)."];
       if (f.name === c.pick) {
-        return [true, "대표 파일이 사라져 Prepare 가 지금 이 파일을 고릅니다 — 빼면 남은 것 중 이름 규칙으로 다시 골라 다음 Run 에서 새 셀일 수 "
+        return [true, "대표 파일이 사라져 Prepare 가 지금 이 파일을 고릅니다 — 빼면 남은 것 중 이름 규칙으로 다시 골라 다음 Run 에서 새 생성 조건일 수 "
           + "있음(유료 대상)."];
       }
       return [false, "Prepare 선택 그대로(cell_key 그대로), Spec Draft 는 refresh 가능."];
@@ -1190,7 +1190,7 @@ window.DPRefEdit = (() => {
       const k = G.fold(back);
       const lines = [`${f.name} 을 refs 로 되살려${back !== f.name ? `(이름 ${back})` : ""} ${asWhat(c)} 연결합니다.`,
         `${auxLine(c)[1]}.`,
-        ...heldNamed(c, f).map((x) => `${whereText(x)} 가 ${x.file} 를 이름으로 가리킴 — 되살리면 그 타깃은 파일을 못 읽어 레퍼런스 없이(self_restore — 새 셀)`),
+        ...heldNamed(c, f).map((x) => `${whereText(x)} 가 ${x.file} 를 이름으로 가리킴 — 되살리면 그 타깃은 파일을 못 읽어 레퍼런스 없이(self_restore — 새 생성 조건)`),
         ...c.explicit.filter((x) => G.fold(x.file) === k).map((x) => `${whereText(x)} 가 ${x.file} 를 이름으로 가리킴 — 되살린 그림이 들어감`)];
       const sib = siblingLine(c, back);
       if (sib) lines.push(sib);
@@ -1202,11 +1202,11 @@ window.DPRefEdit = (() => {
       // 고정 풀기 확인 창(§5.7 — 바뀌는 선택을 보임). 고정된 크롭 행의 match_files·match_pick = 고정을 풀면 쓰일 이름 매칭 결과·그 대표
       // (서버가 실을 때만 — 없으면 일반 문구)
       const head = `고정을 풀고 이름 매칭으로 돌아갑니다 — 지금 연결(${c.files.map((f) => f.name).join(", ") || "없음"}) 대신 이름 매칭 결과를 씀.\n`;
-      if (!("match_pick" in c)) return `${head}대표가 바뀌면 다음 Run 에서 새 셀(유료 대상). 계속할까요?`;
-      const now = c.pick || "없음(자체 복원)";
+      if (!("match_pick" in c)) return `${head}대표가 바뀌면 다음 Run 에서 새 생성 조건(유료 대상). 계속할까요?`;
+      const now = c.pick || "없음(레퍼런스 없이)";
       return `${head}이름 매칭 결과: ${c.match_files.join(", ") || "없음"}\n`
         + (c.match_pick === c.pick ? `Prepare 선택 그대로(대표 ${now} — cell_key 그대로), Spec Draft 는 refresh 가능.`
-          : `대표 ${now} → ${c.match_pick || "없음(자체 복원)"} — 다음 Run 에서 이 크롭은 새 셀(유료 대상).`) + "\n계속할까요?";
+          : `대표 ${now} → ${c.match_pick || "없음(레퍼런스 없이)"} — 다음 Run 에서 이 크롭은 새 생성 조건(유료 대상).`) + "\n계속할까요?";
     }
 
     async function reopen(f) {
@@ -1514,8 +1514,8 @@ window.DPRefEdit = (() => {
       }
       const n = S.R ? S.R.pending_rerolls || 0 : 0;
       const lines = (opts.applyWarn ? opts.applyWarn() : [])
-        .concat("반영(큐): 무료 반영(Import → Prepare → Analyze → Review 템플릿, 탭 불필요)으로 레퍼런스 연결을 매니페스트에 반영합니다.");
-      if (n) lines.push(`재굴림 대기 ${n}건(사전 승인)은 이 반영에서 돌지 않음 — R·ComfyUI 큐·그래프 Run 에서 과금`);
+        .concat("반영 (무료): 무료 반영(Import → Prepare → Analyze → Review 템플릿, 탭 불필요)으로 레퍼런스 연결을 프로젝트 기록에 반영합니다.");
+      if (n) lines.push(`다시 생성 대기 ${n}건(사전 승인)은 이 반영에서 돌지 않음 — R·[다시 생성 보내기]·그래프 Run 에서 과금`);
       if (!window.confirm(lines.concat(APPLY_NOTE, "계속할까요?").join("\n"))) return;
       opts.queue(true);
     }
@@ -1527,8 +1527,8 @@ window.DPRefEdit = (() => {
       if (R) {
         const k = R.crops.filter((c) => c.status !== "same").length;
         const st = el("span", k ? "lh-wait" : "lh-ok", k ? `미반영 ${k}` : "반영됨");
-        st.title = k ? "매니페스트 refs_auto·refs_main 이 지금 연결과 다름 — 다음 큐의 Import 에서 반영" : "매니페스트가 지금 연결과 같음";
-        head.append(st, button("반영(큐)", "무료 반영(Import → Prepare → Analyze → Review 템플릿, 탭 불필요) — 연결을 매니페스트에 반영", applyQueue));
+        st.title = k ? "프로젝트 기록 refs_auto·refs_main 이 지금 연결과 다름 — 다음 큐의 Import 에서 반영" : "프로젝트 기록이 지금 연결과 같음";
+        head.append(st, button("반영 (무료)", "무료 반영(Import → Prepare → Analyze → Review 템플릿, 탭 불필요) — 연결을 프로젝트 기록에 반영", applyQueue));
         if (R.doc_dir_match === false) {
           const b = el("span", "lh-bad", "연결 무시 중");
           b.title = "refs.json 의 refs_dir 가 지금 Import 의 refs_dir 와 다름(R-dir) — 이름 매칭으로 동작";
@@ -1680,29 +1680,29 @@ window.DPRefEdit = (() => {
       const noneFixed = c.fixed && !files.length && !c.auto; // 의도한 '없음' 고정
       if (!c.fixed) {
         const r = row("이름 매칭 중", `지금 결과: ${files.length ? files.map((f) => f.name).join(", ") : "없음"}`, "warn");
-        const fx = button("고정", "지금 결과 그대로 크롭 ID 에 고정(선택·셀 그대로)", () => link("fix", { crop_id: c.id }), "inline");
+        const fx = button("고정", "지금 결과 그대로 크롭 ID 에 고정(선택·생성 조건 그대로)", () => link("fix", { crop_id: c.id }), "inline");
         fx.disabled = off;
         r.append(fx);
       }
       const main = files.find((f) => f.role === "main");
-      panel.append(el("div", "lp-k", "대표 ★ (Prepare 가 고르는 1장)"));
+      panel.append(el("div", "lp-k", "대표 ★ (GPT 에 보내는 1장)"));
       if (main) {
         fileRow(main, "★ 대표", [
           ...(main.record ? [["다시 열기", "S2 기록(시트·영역·컷·변환)으로 다시 열기", () => reopen(main), false]] : []),
           ["보류로", "_보류 로 옮김(모든 크롭 연결에서 뺌)", () => link("hold", { crop_id: c.id, name: main.name }, holdAsk(c, main)), true]]);
       } else {
         // c.auto = 다른 크롭의 저장·보류나 이름 바꾸기가 함께 고정한 연결(board._auto_fixed) — 빈 files 여도 이 크롭이 고른 '없음'이 아님
-        panel.append(el("p", noneFixed ? "dim" : "warn", noneFixed ? "레퍼런스 없음(자체 복원)으로 고정"
-          : c.fixed && !files.length ? "레퍼런스 없음 — 다른 크롭의 동작이 함께 '없음'으로 고정함(의도한 자체 복원 아님). 같은 번호 파일은 [연결]해야 쓰임"
+        panel.append(el("p", noneFixed ? "dim" : "warn", noneFixed ? "레퍼런스 없이 고치기로 고정"
+          : c.fixed && !files.length ? "레퍼런스 없음 — 다른 크롭의 동작이 함께 '없음'으로 고정함(의도한 '레퍼런스 없이 고치기' 아님). 같은 번호 파일은 [연결]해야 쓰임"
             : files.length ? "대표 파일 없음 — Prepare 가 이름 규칙으로 고름(R-main)" : "레퍼런스 없음(R-none)"));
       }
       const aux = files.filter((f) => f !== main);
-      if (aux.length) panel.append(el("div", "lp-k", "보조 (Spec Draft 가 보는 순서)"));
+      if (aux.length) panel.append(el("div", "lp-k", "보조 (AI 초안만 봄)"));
       // ↑↓ = 보이는 보조 목록의 이웃과 자리 바꿈(to = 그 이웃의 files 색인 — 대표는 files 어디에 있어도 건너뜀)
       aux.forEach((f, k) => {
         fileRow(f, null, [
           ["대표로", "이 파일을 대표로(맨 앞)", () => link("main", { crop_id: c.id, name: f.name },
-            `대표를 ${f.name} 으로 바꿉니다 — 다음 Run 에서 이 크롭은 새 셀(유료 대상).\n계속할까요?`), true],
+            `대표를 ${f.name} 으로 바꿉니다 — 다음 Run 에서 이 크롭은 새 생성 조건(유료 대상).\n계속할까요?`), true],
           ...(k > 0 ? [["↑", "앞으로", () => link("move", { crop_id: c.id, name: f.name, to: files.indexOf(aux[k - 1]) }), true]] : []),
           ...(k < aux.length - 1 ? [["↓", "뒤로", () => link("move", { crop_id: c.id, name: f.name, to: files.indexOf(aux[k + 1]) }), true]] : []),
           ["연결 끊기", "이 크롭 연결에서만 뺌(파일은 그대로)", () => link("remove", { crop_id: c.id, name: f.name }, removeAsk(c, f)), true],
@@ -1714,14 +1714,14 @@ window.DPRefEdit = (() => {
       const shift = auxShift(c);
       const addAsk = (what) => (shift ? `${what}\n${auxLine(c)[1]}.\n계속할까요?` : null);
       const as = asWhat(c);
-      if (c.unlinked.length) panel.append(el("div", "lp-k", "연결 안 된 파일 (같은 번호, refs_dir 바로 아래)"));
+      if (c.unlinked.length) panel.append(el("div", "lp-k", "연결 안 된 파일 (같은 번호 — refs 폴더)"));
       for (const f of c.unlinked) {
         fileRow(f, null, [["연결", `${as} 연결`, () => link("add", { crop_id: c.id, name: f.name }, addAsk(`${f.name} 을 ${as} 연결합니다.`)), true]]);
       }
       // 보류는 이름 매칭·연결이 보지 않는다 — 단 스펙·매니페스트가 "_보류/<이름>" 으로 가리키면 Prepare 가 그 파일을 읽는다
       if (c.held.length) {
         panel.append(el("div", "lp-k", c.held.some((f) => heldNamed(c, f).length)
-          ? "보류 (_보류 — 이름 매칭·연결은 보지 않음, 스펙·매니페스트가 이름으로 가리키는 파일은 Prepare 가 읽음)" : "보류 (_보류 — 파이프라인이 보지 않음)"));
+          ? "보류 (_보류 — 이름 매칭·연결은 보지 않음, 스펙·프로젝트 기록이 이름으로 가리키는 파일은 Prepare 가 읽음)" : "보류 (_보류 — 파이프라인이 보지 않음)"));
       }
       for (const f of c.held) {
         const named = heldNamed(c, f);
@@ -1731,13 +1731,13 @@ window.DPRefEdit = (() => {
           () => link("restore", { crop_id: c.id, name: f.name }, restoreAsk(c, f)), true]] : []);
       }
       if (c.explicit.length) {
-        panel.append(el("div", "lp-k", "이름으로 직접 가리킴 (R-explicit — 그 타깃은 연결 대신 이것)"));
+        panel.append(el("div", "lp-k", "스펙이 이름으로 지정 (그 대상은 연결 대신 이 파일)"));
         for (const x of c.explicit) panel.append(el("p", "dim", `${whereText(x)} → ${x.file}`));
       }
       const b = el("div", "lp-btns");
       if (!noneFixed) {
-        b.append(button("레퍼런스 없음(자체 복원)으로 고정", "files = [] — Prepare 가 레퍼런스 없이", () => link("none", { crop_id: c.id },
-          "레퍼런스 없음(자체 복원)으로 고정합니다 — 다음 Run 에서 이 크롭은 새 셀(유료 대상)일 수 있음.\n계속할까요?")));
+        b.append(button("레퍼런스 없이 고치기로 고정", "files = [] — Prepare 가 레퍼런스 없이", () => link("none", { crop_id: c.id },
+          "레퍼런스 없이 고치기로 고정합니다 — 다음 Run 에서 이 크롭은 새 생성 조건(유료 대상)일 수 있음.\n계속할까요?")));
       }
       if (c.fixed) b.append(button("고정 풀기", "이름 매칭으로 돌아감", () => link("unfix", { crop_id: c.id }, unfixAsk(c))));
       for (const x of b.children) x.disabled = off;
@@ -1774,7 +1774,7 @@ window.DPRefEdit = (() => {
       const go = button("이 크롭에 다시 연결", "relink — 고르는 크롭이 고정돼 있으면 409", () => {
         const to = crops().find((c) => c.id === pick.value);
         link("relink", { crop_id: o.id, to: pick.value },
-          `${o.id} 의 연결(${o.files.join(", ")})을 ${to ? to.name : pick.value} 에 다시 연결합니다 — 그 크롭의 레퍼런스가 바뀌면 다음 Run 에서 새 셀.\n계속할까요?`);
+          `${o.id} 의 연결(${o.files.join(", ")})을 ${to ? to.name : pick.value} 에 다시 연결합니다 — 그 크롭의 레퍼런스가 바뀌면 다음 Run 에서 새 생성 조건.\n계속할까요?`);
       }, "primary");
       go.disabled = !!refsBlock() || S.busy;
       b.append(pick, go);
@@ -2001,7 +2001,7 @@ window.DPRefEdit = (() => {
         return;
       }
       const rb = el("div", "lp-btns");
-      rb.append(button("대표", "<크롭 이름>_t.png — Prepare 가 고르는 1장", () => {
+      rb.append(button("대표", "<크롭 이름>_t.png — GPT 에 보내는 1장", () => {
         role = "main";
         render();
       }, role === "main" ? "on" : ""), button("보조", "<크롭 이름>_<설명>_t.png — Spec Draft 가 함께 봄", () => {

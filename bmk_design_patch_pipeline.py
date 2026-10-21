@@ -208,7 +208,7 @@ _IMPORT_SOURCE = (("psd_path", "psd"), ("crop_group", "crop_group"), ("clean_pla
                   ("glossary_path", "glossary"))
 _PREPARE_CELL = ("model", "quality", "size_rule", "variants", "ref_style")  # cell_key 에 들어가는 설정(다르면 새 셀)
 # n·calls_per_cell 은 셀이 그대로 — n 은 장 수·비용·승인 해시만. calls_per_cell 을 늘리면 jobs[].reps 가 늘어 완료된 셀에도 빠진 rep 이
-# 새 유료 호출(runner.plan_calls '셀당 호출 수 증가')이 되므로 갈라짐 kind "calls"(줄이면 "cost")
+# 새 유료 호출(runner.plan_calls '생성 조건마다 호출 수 증가')이 되므로 갈라짐 kind "calls"(줄이면 "cost")
 _REV_MAX = 2 ** 53 - 1  # 브라우저 JSON 수(Number.MAX_SAFE_INTEGER) — 넘는 rev 는 반올림돼 rev·sig 대조가 늘 어긋나므로 깨진 파일로 본다
 _ANALYZE_PARAMS = ("register", "tone", "tone_sigma", "dE", "grow", "feather_sigma", "roi_prior")
 _QWEN_CHOICE = "local_qwen/Qwen3-VL-8B-Instruct"
@@ -870,7 +870,7 @@ def prompt_gate(root: str, stage: str, m: dict | None = None, *, cur: dict | Non
                 "reason": "pipeline_broken"}
     need = [f for f in cur["confirm"] if f.split(".", 1)[0] in ("prepare", "import")]
     if not cur["saved"] or need:
-        return {"error": "실행 설정 확인 필요 — 추정한 Import·Prepare 설정으로 반영하면 셀이 바뀌어 다시 과금 대상이 될 수 있음"
+        return {"error": "실행 설정 확인 필요 — 추정한 Import·Prepare 설정으로 반영하면 생성 조건이 바뀌어 다시 과금 대상이 될 수 있음"
                          + ("" if cur["saved"] else "(설정을 한 번 저장하세요)"),
                 "reason": "confirm_settings", "fields": need}
     blocks = ("import.", "cand.") if "cand" in STAGE_NODES[stage] else ("import.",)  # cand.path 는 cand.enabled 일 때만 나온다

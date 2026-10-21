@@ -291,7 +291,7 @@ _FILE_ORIGINS = ("folder", "psd_harvest")      # 파일·그룹 이름 앞부분
 _MASK_V_RE = re.compile(r"[0-9a-f]{16}")                      # /mask/img v = 서명 16자(edit 도 — 기록 file·창·지금 창, _edit_sig)
 _MASK_KINDS = ("base", "edit", "under", "patch", "over")
 _LAYER_KINDS = ("under", "patch", "over")                     # 브러시 미리보기 3층(§2.4) — 한 번에 계산
-_NOT_PICKED = "지금 ★ 후보가 아닙니다(★ 해제·탈락·크롭에서 빠짐) — 다시 받기"  # dmask.save_edit 의 not_picked 와 같은 문구
+_NOT_PICKED = "지금 ★ 후보가 아닙니다(★ 해제·제외·크롭에서 빠짐) — 다시 받기"  # dmask.save_edit 의 not_picked 와 같은 문구
 
 _RENDER_SLOTS = threading.BoundedSemaphore(3)                 # 동시에 도는 썸네일 계산 수(라우트 + 미리 생성)
 _COMPOSE_LOCK = threading.Lock()                              # ★ 합성(풀해상도 float32 캔버스)은 한 번에 하나
@@ -2142,7 +2142,7 @@ def apply_reroll(root: str, count: int, cell_key: str | None = None, crop_id: st
         cur = int(m["rerolls"].get(ck) or 0)
         waiting = _pending(root, m)[0].get(ck, 0)  # 원장 폴더 몇 개를 훑는 정도(잠금 안에서도 짧다)
         if waiting + count > _MAX_CELL_PENDING:
-            raise _Reject(409, f"이 셀에 대기 호출이 이미 {waiting}개입니다(상한 {_MAX_CELL_PENDING}) — Run 으로 소화한 뒤 다시")
+            raise _Reject(409, f"이 생성 조건에 대기 호출이 이미 {waiting}개입니다(상한 {_MAX_CELL_PENDING}) — Run 으로 소화한 뒤 다시")
         m["rerolls"][ck] = cur + count
         return {"cell_key": ck, "variant": job.get("variant"), "rerolls": cur + count, "est_usd": _est_usd(job)}
 
@@ -4058,9 +4058,9 @@ def _draft_sel(root: str, m: dict, settings: dict, only: str, mock: bool | None 
 
 
 # Prepare 설정 갈라짐(pl.drift kind) → 계획 notes 의 이유(앞이 무거운 것 — 한 종류면 문구만, 여럿이면 종류마다 필드)
-_PREPARE_DRIFT_WHY = (("cell", "그래프와 Studio 를 번갈아 돌리면 셀이 바뀌어 다시 과금 대상"),
-                      ("calls", "셀당 호출을 늘리면 완료된 셀마다 새 호출이 생겨 다시 과금 대상(Run 승인 필요)"),
-                      ("cost", "셀은 그대로, 승인 해시·비용이 바뀜"))
+_PREPARE_DRIFT_WHY = (("cell", "그래프와 Studio 를 번갈아 돌리면 생성 조건이 바뀌어 다시 과금 대상"),
+                      ("calls", "생성 조건마다 호출을 늘리면 완료된 생성 조건마다 새 호출이 생겨 다시 과금 대상(생성 승인 필요)"),
+                      ("cost", "생성 조건은 그대로, 승인 코드·비용이 바뀜"))
 
 
 def _plan_notes(root: str, m: dict, settings: dict, confirm) -> list[str]:
@@ -4290,9 +4290,9 @@ def pipeline_prompt(root: str, stage, approve=None, only=None, expect=None) -> d
         if "error" in sel:
             raise _Reject(409, sel["error"], reason="plan_error")
         if not sel["hash"]:
-            raise _Reject(409, "승인할 것이 없습니다 — 지금 계획의 승인 대상 0건(사전 승인 재굴림은 R)", reason="nothing_to_approve")
+            raise _Reject(409, "승인할 것이 없습니다 — 지금 계획의 승인 대상 0건(사전 승인 다시 생성은 R)", reason="nothing_to_approve")
         if sel["hash"] != approve:
-            raise _Reject(409, f"승인한 계획이 지금과 다릅니다 — 계획을 다시 받아 승인(지금 해시 {sel['hash']})", reason="stale",
+            raise _Reject(409, f"승인한 계획이 지금과 다릅니다 — 계획을 다시 받아 승인(지금 승인 코드 {sel['hash']})", reason="stale",
                           stale=True, hash=sel["hash"])
     return {"stage": stage, "prompt": pl.build_prompt(stage, settings, root, approve=approve, only=only),
             "targets": None if stage in pl.FREE_STAGES else [pl.OUTPUT_KEY[stage]], "hash": approve, "only": only, "sig": sig}

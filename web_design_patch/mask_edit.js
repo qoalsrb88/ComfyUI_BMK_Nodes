@@ -21,7 +21,7 @@ window.DPMaskEdit = (() => {
   const TILE = 64; // 부드럽게 붓의 흐림 사본을 이 칸 단위로 필요할 때만 계산
   const LOCKED = ["apply", "edit", "pick"]; // 대상 바꾸기·나가기를 거절하는 busy — 끝나면 세션이 바뀜(나갈 때 진행 ★ 점검에 넘기는 획 수가 낡지 않게)
   const SIDES = { top: "위", bottom: "아래", left: "왼", right: "오른" };
-  const TOOLS = { erase: "지우기", revive: "살리기", soften: "부드럽게" };
+  const TOOLS = { erase: "지우기", revive: "살리기", soften: "흐리기" };
   const SRC = { auto: "자동 마스크", hand: "손 마스크", none: "마스크 없음(창 전체)" };
 
   // ── 식(§3.5 — 마스크 m ∈ [0, 1], 크롭 해상도. J-K1 이 mask_rules.json 의 모든 행과 맞춰 본다) ──
@@ -452,7 +452,7 @@ window.DPMaskEdit = (() => {
         : side === "left" ? [-Infinity, y0 + lo, x0 + w, y0 + hi] : [x1 - w, y0 + lo, Infinity, y0 + hi];
       const [W, H] = size();
       const r = [Math.max(0, c[0] - s.win[0]), Math.max(0, c[1] - s.win[1]), Math.min(W, c[2] - s.win[0]), Math.min(H, c[3] - s.win[1])];
-      return whole(a === null ? `변 페이드 ${side} ${w}` : `구간 페이드 ${side} ${a}–${b} ${w}`, r, () => {
+      return whole(a === null ? `가장자리 페이드 ${side} ${w}` : `구간 페이드 ${side} ${a}–${b} ${w}`, r, () => {
         for (let y = r[1]; y < r[3]; y++) for (let x = r[0]; x < r[2]; x++) s.m[y * W + x] *= fade(side, crop, w, x + s.win[0], y + s.win[1], a, b);
       });
     };
@@ -460,13 +460,13 @@ window.DPMaskEdit = (() => {
     s.feather = (sigma) => {
       if (!s.m) return null;
       const [w, h] = size();
-      return whole(`페더 σ${sigma}`, [0, 0, w, h], () => s.m.set(feather(s.m, w, h, sigma)));
+      return whole(`페더 ${sigma}px`, [0, 0, w, h], () => s.m.set(feather(s.m, w, h, sigma)));
     };
 
     s.toBase = () => {
       if (!s.m) return null;
       const [w, h] = size();
-      return whole("기준으로", [0, 0, w, h], () => s.m.set(s.base));
+      return whole("처음 마스크로", [0, 0, w, h], () => s.m.set(s.base));
     };
 
     s.step = (back) => {
@@ -813,7 +813,7 @@ window.DPMaskEdit = (() => {
     function reload() {
       // [다시 받기](409·읽기 실패): 서버 판으로 다시 연다 — 적용 안 한 획은 확인 뒤 버림
       const n = M.pending();
-      if (n && !window.confirm(`적용 안 한 획 ${n} 을 버리고 서버 판을 다시 받을까요?`)) return;
+      if (n && !window.confirm(`적용 안 한 획 ${n} 을 버리고 서버 버전을 다시 받을까요?`)) return;
       open(M.key, seam, false);
     }
 
@@ -943,9 +943,9 @@ window.DPMaskEdit = (() => {
       const n = M.pending();
       const ed = M.info && M.info.edit;
       const ask = kind === "reset"
-        ? `${label(M.key)} 의 마스크 편집 기록(이전 판 ${ed ? ed.hist : 0} 포함)을 지우고 기준 마스크로 돌아갑니다.` + (n ? ` 적용 안 한 획 ${n} 도 버립니다.` : "")
+        ? `${label(M.key)} 의 마스크 편집 기록(이전 버전 ${ed ? ed.hist : 0} 포함)을 지우고 처음 마스크로 돌아갑니다.` + (n ? ` 적용 안 한 획 ${n} 도 버립니다.` : "")
           + " 계속할까요?"
-        : n ? `적용 안 한 획 ${n} 을 버리고 이전 판으로 돌아갈까요?` : "";
+        : n ? `적용 안 한 획 ${n} 을 버리고 이전 버전으로 돌아갈까요?` : "";
       if (ask && !window.confirm(ask)) return;
       const p = M.edit(kind);
       render();
@@ -957,7 +957,7 @@ window.DPMaskEdit = (() => {
       }
       if (d && d.ok) {
         applied = null;
-        opts.toast(kind === "reset" ? `마스크 편집 지움 — ${label(M.key)} 은 기준 마스크로` : `이전 판으로 — ${label(M.key)}`);
+        opts.toast(kind === "reset" ? `마스크 편집 지움 — ${label(M.key)} 은 처음 마스크로` : `이전 버전으로 — ${label(M.key)}`);
         repaintAll();
         opts.refresh();
       } else if (d) {
@@ -999,8 +999,8 @@ window.DPMaskEdit = (() => {
       const n = M.pending();
       if (!window.confirm(`c${pad(r.c)} 를 ${x.t.crop_name || x.t.crop_id} · ${x.t.tid} 의 ★ 로 바꿉니다(검토의 Space 와 같음).\n`
         + `이 크롭의 마스크 편집은 옛 ★ c${pad(x.c.n)} 에 남고(다시 ★ 하면 살아남) `
-        + (ed ? `c${pad(r.c)} 에 남아 있던 편집(${when(ed.at)}${ed.stale ? " · 편집 기준 바뀜" : ""})이 다시 쓰입니다(표 값도 그 편집으로 계산 — `
-          + "지우려면 ★ 뒤 [편집 지우기])." : "새 ★ 는 편집 없이 기준 마스크로 시작합니다.")
+        + (ed ? `c${pad(r.c)} 에 남아 있던 편집(${when(ed.at)}${ed.stale ? " · 처음 마스크가 바뀜" : ""})이 다시 쓰입니다(표 값도 그 편집으로 계산 — `
+          + "지우려면 ★ 뒤 [편집 모두 지우기])." : "새 ★ 는 편집 없이 처음 마스크로 시작합니다.")
         + (n ? `\n적용 안 한 획 ${n} 은 버립니다.` : "") + "\n계속할까요?")) return;
       // 보드 ★ 쓰기(POST /pick + state 다시 — 수백 ms) 동안 세션을 잠근다(붓·Enter·실행 취소·대상 바꾸기·나가기 거절): 확인한 뒤의 획·적용이 버리기로 한
       // 옛 ★ 에 들어가거나 새 대상 세션에 남지 않게. 쓰기가 실패하면(보드가 다른 쓰기 중·409·네트워크 — null) 대상·세션 그대로
@@ -1064,7 +1064,7 @@ window.DPMaskEdit = (() => {
         li.append(el("div", "tname", c.name || c.id));
         const ch = el("div", "chips");
         if (c.mask_edits) ch.append(chip(`편집 ${c.mask_edits}`, "b-reg"));
-        if (c.mask_stale) ch.append(chip("편집 기준 바뀜", "b-bad"));
+        if (c.mask_stale) ch.append(chip("처음 마스크가 바뀜", "b-bad"));
         const mine = segs.filter((x) => x.crop_id === c.id);
         if (mine.length) ch.append(chip(`이음매 ${mine.length}`, mine.some((x) => x.severity === "bad") ? "b-bad" : "b-wait"));
         if (!stars.length) ch.append(chip("★ 없음", "b-dim"));
@@ -1074,8 +1074,8 @@ window.DPMaskEdit = (() => {
         if (stars.length < 2) continue;
         for (const x of stars) {
           const sub = el("li", "sub" + (x.c.key === M.key ? " sel" : ""));
-          sub.append(el("div", "tname", `${x.t.tid} · c${pad(x.c.n)} ${x.c.slice_index > 1 ? `slice ${x.c.slice_index}` : "★"}`));
-          if (x.c.mask_edit) sub.append(chip(x.c.mask_edit.stale ? "편집 기준 바뀜" : "편집", x.c.mask_edit.stale ? "b-bad" : "b-reg"));
+          sub.append(el("div", "tname", `${x.t.tid} · c${pad(x.c.n)} ${x.c.slice_index > 1 ? `조각 ${x.c.slice_index}` : "★"}`));
+          if (x.c.mask_edit) sub.append(chip(x.c.mask_edit.stale ? "처음 마스크가 바뀜" : "편집", x.c.mask_edit.stale ? "b-bad" : "b-reg"));
           sub.addEventListener("click", (e) => {
             e.stopPropagation();
             go({ key: x.c.key }, true);
@@ -1100,8 +1100,8 @@ window.DPMaskEdit = (() => {
       let s = section("대상");
       if (info) {
         const [w, h] = [info.rect[2] - info.rect[0], info.rect[3] - info.rect[1]];
-        const star = x && x.c.slice_index > 1 ? `slice ${x.c.slice_index}` : "★";
-        const r = line(s, `${x ? x.t.crop_name || x.t.crop_id : info.crop_id} · ${info.tid} · c${pad(info.c)} ${star} — 기준 ${SRC[info.base.src] || info.base.src} `
+        const star = x && x.c.slice_index > 1 ? `조각 ${x.c.slice_index}` : "★";
+        const r = line(s, `${x ? x.t.crop_name || x.t.crop_id : info.crop_id} · ${info.tid} · c${pad(info.c)} ${star} — 처음 마스크 ${SRC[info.base.src] || info.base.src} `
           + `${w}×${h} (z: 아래 ${info.z.below.length} · 위 ${info.z.above.length})`);
         r.title = `아래: ${info.z.below.join(", ") || "없음"}\n위: ${info.z.above.join(", ") || "없음"}`;
         if (info.base.src === "auto") {
@@ -1109,14 +1109,14 @@ window.DPMaskEdit = (() => {
           line(s, "자동 마스크 = Analyze 가 후보와 원본 크롭의 색 차이(ΔE)로 만든 영역 — 대상인지와 무관: 엉뚱하게 바뀐 곳은 [지우기], 대상 안 구멍은 [살리기]", "dim");
         }
         const ed = info.edit;
-        if (!ed) line(s, "편집 없음 — 기준 마스크 그대로", "dim");
+        if (!ed) line(s, "편집 없음 — 처음 마스크 그대로", "dim");
         else {
           // url = 기준 url 이면 _plan 이 편집 파일을 쓰지 못함(없음·깨짐 — 경고 줄) — state 칩('편집 기준 바뀜')처럼 초록으로 두지 않음
           line(s, `편집 ${when(ed.at)} · ${ed.ops || "요약 없음"}`, ed.stale || ed.url === info.base.url ? "" : "ok");
           if (ed.stale) {
-            line(s, "편집 기준 바뀜 — 기준 마스크(재분석·마스크 출처)나 편집 창(정합 켬/끔·quad)이 편집을 시작한 때와 다름(편집은 그대로 쓰임 — "
+            line(s, "처음 마스크가 바뀜 — 처음 마스크(재분석·마스크 출처)나 편집 창(위치 맞춤 켬/끔·quad)이 편집을 시작한 때와 다름(편집은 그대로 쓰임 — "
               + "패치와 어긋났을 수 있음) ", "bad")
-              .append(off(button("기준으로 다시 시작", "편집(이전 판 포함)을 지우고 지금 기준 마스크로 — 확인 창", () => serverEdit("reset"), "inline"), busy));
+              .append(off(button("처음 마스크로 다시 시작", "편집(이전 버전 포함)을 지우고 지금 처음 마스크로 — 확인 창", () => serverEdit("reset"), "inline"), busy));
           }
         }
         for (const wn of info.warnings) line(s, wn, "warn");
@@ -1125,18 +1125,18 @@ window.DPMaskEdit = (() => {
       }
       if (x && (!x.c.picked || x.c.rejected)) {
         // 검토(다른 창 포함)에서 ★ 해제·탈락 — 서버가 409 not_picked 로 거절하고 [다시 받기]도 같은 거절이라 나갈 길을 적음
-        line(s, "이 후보는 이제 ★ 가 아님(검토에서 ★ 해제·탈락) — 적용할 수 없음: 왼쪽 목록에서 크롭을 누르면 지금 ★ 로(적용 안 한 획은 확인 뒤 버림)", "bad");
+        line(s, "이 후보는 이제 ★ 가 아님(검토에서 ★ 해제·제외) — 적용할 수 없음: 왼쪽 목록에서 크롭을 누르면 지금 ★ 로(적용 안 한 획은 확인 뒤 버림)", "bad");
       }
       if (M.err) line(s, `${M.err} `, "bad").append(off(button("다시 받기", "GET /mask 다시", reload, "inline"), busy));
       if (layerErr) line(s, `미리보기 3층을 받지 못함: ${layerErr} `, "warn").append(off(button("다시 받기", "GET /mask·3층 다시", refreshInfo, "inline"), busy));
-      line(s, `보기: ${view.orig ? "원본 — 이 패치 없이(W)" : view.base ? "기준(Q 누르는 중)" : slider ? "기준|편집 슬라이더(S — 왼쪽 = 기준)" : "편집"}`
+      line(s, `보기: ${view.orig ? "원본 — 이 패치 없이(W)" : view.base ? "처음 마스크(Q 누르는 중)" : slider ? "처음|편집 슬라이더(S — 왼쪽 = 처음 마스크)" : "편집"}`
         + `${view.mark ? " · 마스크(M)" : ""}${viewer.flags().rectsOn ? "" : " · 사각형 숨김(O)"}`, "dim");
       const ob = button("원본 보기 (W)", "이 패치를 뺀 그림(아래·위 ★ 만 — 고치기 전) ↔ 지금 결과. W 는 누르는 동안만", () => {
         origKey = false;
         setView("orig");
       });
       ob.classList.toggle("on", view.orig);
-      const mb = button("마스크 (M)", "빨강 = 보이는 패치, 회색 빗금 = 기준보다 지운 곳", () => setView("mark"));
+      const mb = button("마스크 (M)", "빨강 = 보이는 패치, 회색 빗금 = 처음 마스크보다 지운 곳", () => setView("mark"));
       mb.classList.toggle("on", view.mark);
       const rb = button("선 숨기기 (O)", "크롭·편집 창 사각형 선을 숨김/보임 — 경계를 선 없이 눈으로 볼 때(뷰어 [사각형]과 같음)", () => {
         viewer.toggleRects();
@@ -1148,7 +1148,7 @@ window.DPMaskEdit = (() => {
       // 2 붓
       s = section("붓 (왼쪽 끌기 · Space+끌기 = 화면 이동)");
       btns(s, ...Object.keys(TOOLS).map((k) => {
-        const b = button(TOOLS[k], k === "soften" ? "부드럽게 — Shift 를 누른 채 끌어도(붓 원 흰 점선)" : `X: 지우기 ↔ 살리기(붓 원 ${k === "erase" ? "빨강" : "초록"})`,
+        const b = button(TOOLS[k], k === "soften" ? "흐리기 — Shift 를 누른 채 끌어도(붓 원 흰 점선)" : `X: 지우기 ↔ 살리기(붓 원 ${k === "erase" ? "빨강" : "초록"})`,
           () => setTool(k), `mt-${k}`);
         b.classList.toggle("on", tool === k);
         return b;
@@ -1162,7 +1162,7 @@ window.DPMaskEdit = (() => {
         hard = v;
         paintPreview();
       });
-      slide(s, "세기", FLOW[0], FLOW[1], 0.05, flow, (v) => v.toFixed(2), (v) => {
+      slide(s, "흐름", FLOW[0], FLOW[1], 0.05, flow, (v) => v.toFixed(2), (v) => {
         flow = v;
         paintPreview();
       });
@@ -1172,13 +1172,13 @@ window.DPMaskEdit = (() => {
       paintPreview();
 
       // 3 한 번에
-      s = section("한 번에");
+      s = section("자동 손질");
       const can = !!M.m && !busy;
       const rect = cropRect();
-      btns(s, ...Object.keys(SIDES).map((k) => off(button(`${SIDES[k]} 변 페이드`, `크롭 ${k} 변 전체 — 경계 0 → 안쪽 ${width}px 에서 1(smoothstep)`,
+      btns(s, ...Object.keys(SIDES).map((k) => off(button(`${SIDES[k]} 가장자리 페이드`, `크롭 ${k} 가장자리 전체 — 경계 0 → 안쪽 ${width}px 에서 1(smoothstep)`,
         () => once(M.fade(k, width, rect))), !can || !rect)));
       const sg = seam && info && seam.crop_id === info.crop_id ? seam : null;
-      btns(s, off(button("선택 이음매 구간 페이드", sg ? `${seamName(sg)} ± ${width}px 테이퍼` : "아래 이음매 목록이나 N 으로 구간을 고르세요", rangeFade),
+      btns(s, off(button("이음매 구간 페이드", sg ? `${seamName(sg)} ± ${width}px 테이퍼` : "아래 이음매 목록이나 N 으로 구간을 고르세요", rangeFade),
         !can || !rect || !sg), ...WIDTHS.map((v) => {
         const b = button(`폭 ${v}`, "경계 페이드 폭(32 = 짧은 띠 · 64 = 기본 · 128 = 넓은 띠에서 이중 윤곽 주의)", () => {
           width = v;
@@ -1187,39 +1187,39 @@ window.DPMaskEdit = (() => {
         b.classList.toggle("on", width === v);
         return b;
       }));
-      slide(s, "페더 σ", SIGMA[0], SIGMA[1], 1, sigma, (v) => `${v}`, (v) => { sigma = v; });
+      slide(s, "페더 (px)", SIGMA[0], SIGMA[1], 1, sigma, (v) => `${v}`, (v) => { sigma = v; });
       btns(s, off(button("전체 페더", "창 전체를 가우시안 σ 로 흐림(한 단계)", () => once(M.feather(sigma))), !can),
-        off(button("기준으로", "세션 마스크를 기준 마스크로(한 단계 — Ctrl+Z 로 되돌림)", () => once(M.toBase())), !can));
+        off(button("처음 마스크로", "편집 중 마스크를 처음 마스크로(한 단계 — Ctrl+Z 로 되돌림)", () => once(M.toBase())), !can));
 
       // 4 세션
-      s = section("세션");
+      s = section("적용 전 획");
       const n = M.pending();
       line(s, M.busy === "apply" ? `적용 중… (획 ${n})` : n ? `적용 안 한 획 ${n} — ${M.ops()}` : "적용 안 한 획 0", n ? "warn" : "dim");
-      btns(s, off(button("실행 취소", "Ctrl+Z — 세션 안 획 단위(최근 50)", () => step(true)), busy || !M.undo.length),
+      btns(s, off(button("실행 취소", "Ctrl+Z — 획 단위(최근 50)", () => step(true)), busy || !M.undo.length),
         off(button("다시", "Ctrl+Y · Ctrl+Shift+Z", () => step(false)), busy || !M.redo.length),
         off(button("적용", "Enter — 편집 창 크기 8비트 PNG 저장(무료) · Compose·Export·★ 합성이 이 마스크를 씀", apply, "primary"), busy || !n),
         off(button("버리기", "적용 안 한 획을 모두 버림(확인 창)", discard), busy || !n));
       if (M.conflict) {
-        line(s, `${M.conflict.error} — 세션은 남김(새 판 위에 다시 할지 정하세요) `, "bad")
-          .append(off(button("다시 받기", "서버 판으로 다시 열기 — 적용 안 한 획은 버림(확인 창)", reload, "inline"), busy));
+        line(s, `${M.conflict.error} — 적용 전 획은 남김(새 버전 위에 다시 할지 정하세요) `, "bad")
+          .append(off(button("다시 받기", "서버 버전으로 다시 열기 — 적용 안 한 획은 버림(확인 창)", reload, "inline"), busy));
       } else if (info && M.behind()) {
         // 실행 취소로 0 이 돼도 세션(다시 Ctrl+Y)은 연 판 그대로 — 미리보기 ≠ Compose·Export 임을 알림. 기록 file·창이 바뀌었으면 서버가 거절(409 changed·
         // rect_changed), 기준 서명만 바뀌었으면(같은 창·같은 기록 — 재분석·마스크 출처) 받아서 지금 기준의 편집으로 저장한다
         const refused = (info.edit ? info.edit.file : "") !== M.file || info.rect.join() !== M.win.join();
-        line(s, refused ? "서버 판이 바뀜(다른 창·노드) — 이 세션·미리보기는 연 판(적용하면 거절) "
-          : "기준 마스크가 바뀜(재분석·마스크 출처) — 이 세션·미리보기는 연 판의 기준(적용하면 지금 기준의 편집으로 저장 — '편집 기준 바뀜' 표시 사라짐) ",
-        "warn").append(off(button("다시 받기", "서버 판으로 다시 열기 — 적용 안 한 획은 버림(확인 창)", reload, "inline"), busy));
+        line(s, refused ? "서버 버전이 바뀜(다른 창·노드) — 적용 전 획·미리보기는 연 버전(적용하면 거절) "
+          : "처음 마스크가 바뀜(재분석·마스크 출처) — 적용 전 획·미리보기는 연 버전의 처음 마스크(적용하면 지금 처음 마스크의 편집으로 저장 — '처음 마스크가 바뀜' 표시 사라짐) ",
+        "warn").append(off(button("다시 받기", "서버 버전으로 다시 열기 — 적용 안 한 획은 버림(확인 창)", reload, "inline"), busy));
       }
 
       // 5 저장된 판
-      s = section("저장된 판");
+      s = section("저장된 버전");
       const ed = info && info.edit;
-      line(s, ed ? `이전 판 ${ed.hist}` : "저장된 편집 없음", "dim");
-      btns(s, off(button("이전 판으로", "기록의 이전 판으로(없으면 기록 지움 = 기준으로)", () => serverEdit("undo")), busy || !ed),
-        off(button("편집 지우기", "기록(이전 판 포함)을 지우고 기준 마스크로 — 확인 창", () => serverEdit("reset"), "danger"), busy || !ed));
+      line(s, ed ? `이전 버전 ${ed.hist}` : "저장된 편집 없음", "dim");
+      btns(s, off(button("이전 버전으로", "기록의 이전 버전으로(없으면 기록 지움 = 처음 마스크로)", () => serverEdit("undo")), busy || !ed),
+        off(button("편집 모두 지우기", "기록(이전 버전 포함)을 지우고 처음 마스크로 — 확인 창", () => serverEdit("reset"), "danger"), busy || !ed));
 
       // 6 이 크롭 이음매
-      s = section("이 크롭 이음매(지금 ★ 합성)");
+      s = section("이 크롭 이음매");
       const cs = cropSeams();
       const now = S && S.canvas ? S.canvas.composite_sig : null;
       if (applied && now !== applied.from && now !== applied.sig) applied = null; // 그 뒤 다른 쓰기(다른 창·노드)로 합성이 바뀜
@@ -1241,7 +1241,7 @@ window.DPMaskEdit = (() => {
       // 표를 계산한 뒤 ★ 합성이 바뀜(적용·되돌리기·다른 창) 또는 후보가 바뀜(Run 의 새 후보·다른 창의 탈락·대안 편집 — 탈락 행의 [이 후보를 ★]가
       // 탈락을 풀지 않게, 낡은 수치로 고르지 않게)
       const mine = !!alts && alts.key === M.key && !!alts.data;
-      const old = mine && alts.data.sig !== now ? "★ 합성이" : mine && alts.set !== altSet(M.key).join(",") ? "후보가(새 후보·탈락·편집)" : "";
+      const old = mine && alts.data.sig !== now ? "★ 합성이" : mine && alts.set !== altSet(M.key).join(",") ? "후보가(새 후보·제외·편집)" : "";
       if (!alts || alts.key !== M.key || old) {
         if (old) line(s, `${old} 바뀌어 표가 낡음 — 다시 계산하세요`, "dim");
         btns(s, off(button("다른 후보로", "같은 타깃의 다른 후보를 ★ 로 바꾸면 이음매가 어떻게 되나(후보당 ≈ 2.5초 — 겹친 크롭 영향 포함)", loadAlts), !info));
@@ -1269,7 +1269,7 @@ window.DPMaskEdit = (() => {
         }
       }
       g.putImageData(im, 0, 0);
-      preview.title = `크기 ${size}px${size > PREVIEW - 4 ? `(칸보다 커서 ${PREVIEW - 4}px 로 줄여 보임)` : "(실제 크기)"} · 경도 ${hard.toFixed(2)} · 세기 ${flow.toFixed(2)}`
+      preview.title = `크기 ${size}px${size > PREVIEW - 4 ? `(칸보다 커서 ${PREVIEW - 4}px 로 줄여 보임)` : "(실제 크기)"} · 경도 ${hard.toFixed(2)} · 흐름 ${flow.toFixed(2)}`
         + " — 흰 = 한 번 찍을 때 바뀌는 양(같은 곳을 여러 번 지나가면 쌓임)";
     }
 
@@ -1304,7 +1304,7 @@ window.DPMaskEdit = (() => {
       const x = candOf(M.key);
       line(s, `지금 c${pad(x ? x.c.n : 0)} ★ · 이 크롭 bad ${d.now.bad} · 최악 p90 ${d.now.worst ?? "없음"}`);
       if (!d.rows.length) {
-        line(s, "다른 후보 없음(탈락 제외)", "dim");
+        line(s, "다른 후보 없음(제외한 후보는 빼고)", "dim");
         return;
       }
       // 단추가 첫 열 — 패널이 좁아 표가 가로로 넘쳐도 보이게(완료·바뀌는 크롭은 줄바꿈). 후보 칸 칩 = 예전 ★ 때 남긴 편집(★ 하면 다시 쓰임)
@@ -1318,7 +1318,7 @@ window.DPMaskEdit = (() => {
         td.append(off(button("이 후보를 ★", "검토의 Space 와 같음(확인 창) — 이 크롭 편집은 옛 ★ 에 남음", () => starAlt(r), "inline"), !!M.busy));
         const c = el("td", "", `c${pad(r.c)}`);
         const ed = (candOf(r.key) || { c: {} }).c.mask_edit;
-        if (ed) c.append(chip(ed.stale ? "편집 기준 바뀜" : "편집", ed.stale ? "b-bad" : "b-reg"));
+        if (ed) c.append(chip(ed.stale ? "처음 마스크가 바뀜" : "편집", ed.stale ? "b-bad" : "b-reg"));
         const changed = r.changed_crops.map((id) => (cropOf(id) || { name: id }).name || id).join(", ");
         tr.append(td, c, el("td", "wrap", r.ran ? opts.ranText(r.ran) : ""), ...[r.bad, r.weak, r.worst_p90 ?? ""].map((v) => el("td", "", v)),
           el("td", "wrap", changed));
