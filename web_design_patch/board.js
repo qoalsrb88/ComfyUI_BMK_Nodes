@@ -701,6 +701,28 @@
     return true;
   }
 
+  function curMode() {
+    return maskOn ? "mask" : editing ? "edit" : refsOn ? "refs" : pipeOn ? "pipe" : null;
+  }
+
+  function goMode(m) {
+    // 탭: 그 모드로(null = 검토). 마스크 모드는 먼저 나감(적용 안 한 획 확인), 켜는 쪽 set* 이 다른 모드를 끈다
+    if (m === curMode()) return;
+    if (m === "mask") {
+      setMask(true);
+      return;
+    }
+    if (!leaveMask()) return;
+    if (m === "edit") setEditing(true);
+    else if (m === "refs") setRefs(true);
+    else if (m === "pipe") setPipe(true);
+    else {
+      if (editing) setEditing(false);
+      if (refsOn) setRefs(false);
+      if (pipeOn) setPipe(false);
+    }
+  }
+
   function leaveMask() {
     // 머리줄 편집·레퍼런스·진행 단추·진행 설정 열기 앞 — 마스크 모드면 먼저 나감(적용 안 한 획 확인). → 계속해도 되는가
     return !maskOn || setMask(false);
@@ -1448,10 +1470,17 @@
     on("btn-drain", drain);
     on("btn-viewer", () => toggleViewer());
     on("btn-help", () => help());
-    on("btn-edit", () => leaveMask() && setEditing(!editing));
-    on("btn-refs", () => leaveMask() && setRefs(!refsOn));
-    on("btn-pipe", () => leaveMask() && setPipe(!pipeOn));
-    on("btn-mask", () => setMask(!maskOn));
+    // 모드 탭(배치 2a): 누른 모드로 — 이미 그 모드면 그대로(예전 단추는 다시 누르면 꺼져 검토로 돌아갔음). 키 E·T·G·K 는 그대로 켜고 끄기
+    on("btn-review", () => goMode(null));
+    on("btn-edit", () => goMode("edit"));
+    on("btn-refs", () => goMode("refs"));
+    on("btn-pipe", () => goMode("pipe"));
+    on("btn-mask", () => goMode("mask"));
+    on("btn-keys", () => {
+      const off = !document.body.classList.contains("no-keys");
+      document.body.classList.toggle("no-keys", off);
+      savePref({ keys: !off });
+    });
     $("ref-frame").addEventListener("click", () => {
       const t = curTarget();
       if (t && t.refs.length > 1) {
@@ -1466,15 +1495,106 @@
 
   // 머리줄의 지금 모드 이름 + 한 줄 설명(F12) — 모드는 body 클래스(setMask·setPipe·setRefs·setEditing)로 정해지므로 그것을 지켜봄
   const MODES = [["mask", "마스크", "★ 후보의 최종 마스크(Export 그룹 마스크)를 붓·페이드로 손질"],
-    ["pipe", "진행", "실행 설정 · 무료 반영 · 계획·비용 · 초안·Run 승인 · ★ 점검 · Export"],
+    ["pipe", "실행", "실행 설정 · 무료 반영 · 계획·비용 · 초안·Run 승인 · ★ 점검 · Export"],
     ["refs", "레퍼런스", "시트에서 부품을 오려 refs 에 저장하고 크롭에 연결"],
-    ["editing", "레이아웃 편집", "크롭 사각형·이름·대상 문구·부품 상자"]];
+    ["editing", "크롭 편집", "크롭 사각형·이름·대상 문구·부품 상자"]];
+
+  // 이 모드의 단축키 칩(F13·F14): [키, 하는 일, (선택) {code, shift, ctrl, hold}] — 칩을 누르면 그 키를 누른 것과 같음(hold = 누르는 동안).
+  // code 없는 줄은 설명만(끌기 등). R(다시 생성)은 넣지 않음 — 스크립트 키는 예약만이라 칩으로는 큐가 가지 않아 헷갈림([재굴림 +1] 단추가 그 길)
+  const VIEW_KEYS = [["N", "이음매", { code: "KeyN" }], ["F", "크롭 맞춤", { code: "KeyF" }], ["0", "전체", { code: "Digit0" }], ["1", "1:1", { code: "Digit1" }],
+    ["2", "2:1", { code: "Digit2" }]];
+  const KEYS = {
+    review: [["Space", "★ 선택·해제", { code: "Space" }], ["⇧Space", "slice ±", { code: "Space", shift: true }], ["X", "탈락", { code: "KeyX" }],
+      ["←", "후보", { code: "ArrowLeft" }], ["→", "후보", { code: "ArrowRight" }], ["↑", "타깃", { code: "ArrowUp" }], ["↓", "타깃", { code: "ArrowDown" }],
+      ["Q", "Before(누름)", { code: "KeyQ", hold: true }], ["S", "전/후 슬라이더", { code: "KeyS" }], ["M", "마스크 없이", { code: "KeyM" }],
+      ["D", "ΔE 히트맵", { code: "KeyD" }], ["C", "컨텍스트", { code: "KeyC" }], ["Esc", "보기 해제", { code: "Escape" }], ["B", "바탕", { code: "KeyB" }],
+      ["O", "사각형", { code: "KeyO" }], ...VIEW_KEYS, ["?", "도움말", { code: "Slash", shift: true }]],
+    edit: [["끌기", "새 크롭·이동·크기"], ["P", "부품 상자", { code: "KeyP" }], ["Enter", "만들기·제안 적용", { code: "Enter" }],
+      ["Tab", "다음 크롭", { code: "Tab" }], ["⇧Tab", "이전 크롭", { code: "Tab", shift: true }], ["←→↑↓", "미세 이동"],
+      ["Del", "크롭 지우기", { code: "Delete" }],
+      ["Ctrl+Z", "되돌리기", { code: "KeyZ", ctrl: true }], ["Ctrl+Y", "다시", { code: "KeyY", ctrl: true }], ["Esc", "취소·나가기", { code: "Escape" }],
+      ["Space+끌기", "화면 이동"], ["F", "크롭 맞춤", { code: "KeyF" }], ["0", "전체", { code: "Digit0" }], ["E", "나가기", { code: "KeyE" }]],
+    refs: [["끌기", "영역"], ["Enter", "컷", { code: "Enter" }], ["T", "나가기", { code: "KeyT" }], ["[", "회전 −0.5°", { code: "BracketLeft" }], ["]", "회전 +0.5°", { code: "BracketRight" }],
+      ["H", "좌우 반전", { code: "KeyH" }], ["⌫", "마지막 점 지우기", { code: "Backspace" }], ["F", "영역 맞춤", { code: "KeyF" }], ["0", "시트 전체", { code: "Digit0" }],
+      ["Esc", "취소·나가기", { code: "Escape" }]],
+    pipe: [["B", "바탕", { code: "KeyB" }], ["O", "사각형", { code: "KeyO" }], ...VIEW_KEYS, ["G", "나가기", { code: "KeyG" }]],
+    mask: [["끌기", "붓"], ["⇧끌기", "부드럽게"], ["X", "지우기 ↔ 살리기", { code: "KeyX" }], ["[", "붓 작게", { code: "BracketLeft" }], ["]", "붓 크게", { code: "BracketRight" }],
+      ["⇧[", "경도 −", { code: "BracketLeft", shift: true }], ["⇧]", "경도 +", { code: "BracketRight", shift: true }], ["Q", "기준(누름)", { code: "KeyQ", hold: true }],
+      ["W", "원본(누름)", { code: "KeyW", hold: true }], ["S", "기준/편집 슬라이더", { code: "KeyS" }], ["M", "마스크 보기", { code: "KeyM" }],
+      ["O", "선 숨기기", { code: "KeyO" }],
+      ["N", "이음매", { code: "KeyN" }], ["Enter", "적용", { code: "Enter" }], ["Ctrl+Z", "되돌리기", { code: "KeyZ", ctrl: true }], ["Ctrl+Y", "다시", { code: "KeyY", ctrl: true }],
+      ["Esc", "나가기", { code: "Escape" }]],
+  };
+
+  const CHIP_KEY = { Slash: "?", Space: " ", BracketLeft: "[", BracketRight: "]" };
+  let chipUp = null; // 누르고 있는 칩(Q·W)의 떼기 — 그 채로 모드가 바뀌어 칩 줄을 다시 그리면 지운 칩은 pointerup 을 못 받으니 먼저 뗀다
+
+  function sendKey(type, k) {
+    // 칩 = 그 키: body 에서 키 이벤트(문서로 올라가 보드·편집기 처리기가 받음 — 처리기는 e.code 를 봄. target 이 요소여야 viewer.js 의
+    // 입력칸 판정(closest)이 됨). key 는 참고용(글자 키 소문자, ? = Shift+/)
+    const key = CHIP_KEY[k.code] || (k.code.startsWith("Key") ? k.code.slice(3).toLowerCase() : k.code.startsWith("Digit") ? k.code.slice(5) : k.code);
+    document.body.dispatchEvent(new KeyboardEvent(type, { code: k.code, key, shiftKey: !!k.shift, ctrlKey: !!k.ctrl, bubbles: true, cancelable: true }));
+  }
+
+  function renderKeys(mode) {
+    if (chipUp) chipUp();
+    const bar = $("keybar");
+    bar.replaceChildren();
+    for (const [label, what, k] of KEYS[mode] || []) {
+      if (!k) {
+        bar.append(el("span", "kinfo", `${label} ${what}`));
+        continue;
+      }
+      const b = el("button", "kchip");
+      b.type = "button";
+      b.tabIndex = -1;
+      b.append(el("kbd", "", label), document.createTextNode(what));
+      b.title = `${label} — ${what}${k.hold ? " — 누르고 있는 동안만" : ""}`;
+      if (k.hold) {
+        // 누르는 동안 키(Q·W): 누르면 keydown, 떼거나 칩 밖으로 나가면 keyup
+        let down = false;
+        const up = () => {
+          if (!down) return;
+          down = false;
+          chipUp = null;
+          b.classList.remove("held");
+          sendKey("keyup", k);
+        };
+        b.addEventListener("pointerdown", (e) => {
+          e.preventDefault();
+          down = true;
+          chipUp = up;
+          b.classList.add("held");
+          sendKey("keydown", k);
+        });
+        b.addEventListener("pointerup", up);
+        b.addEventListener("pointerleave", up);
+      } else {
+        b.addEventListener("click", (e) => {
+          e.currentTarget.blur();
+          sendKey("keydown", k);
+          sendKey("keyup", k);
+        });
+      }
+      bar.append(b);
+    }
+  }
 
   function renderMode() {
     const m = MODES.find(([cls]) => document.body.classList.contains(cls)) || [null, "검토", "후보를 원해상도로 비교하고 ★ 를 고름 · 이음매 확인"];
     const d = $("mode-title");
-    d.replaceChildren(el("b", "", m[1]), el("span", "dim", ` — ${m[2]}`));
-    d.title = `${m[1]} 모드 — ${m[2]}`;
+    d.textContent = m[2]; // 이름은 탭이 보임(배치 2a)
+    d.title = `${m[1]} — ${m[2]}`;
+    const tab = { mask: "btn-mask", pipe: "btn-pipe", refs: "btn-refs", editing: "btn-edit" }[m[0]] || "btn-review";
+    for (const id of ["btn-review", "btn-edit", "btn-refs", "btn-pipe", "btn-mask"]) {
+      $(id).classList.toggle("on", id === tab);
+      $(id).setAttribute("aria-selected", String(id === tab));
+    }
+    const key = { mask: "mask", pipe: "pipe", refs: "refs", editing: "edit" }[m[0]] || "review";
+    if (renderMode.key !== key) {
+      renderMode.key = key;
+      renderKeys(key);
+    }
   }
 
   function fatal(msg) {
@@ -1488,6 +1608,7 @@
       return;
     }
     if (loadPref().viewer === false) document.body.classList.add("no-viewer");
+    if (loadPref().keys === false) document.body.classList.add("no-keys");
     renderMode();
     new MutationObserver(renderMode).observe(document.body, { attributes: true, attributeFilter: ["class"] });
     viewer = window.DPViewer.create($("viewer"), { apiUrl, onPick: pickCrop, onSeams });

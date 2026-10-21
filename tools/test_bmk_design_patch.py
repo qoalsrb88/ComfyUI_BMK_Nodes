@@ -31237,7 +31237,7 @@ def pipeline_js_unit():
     check('"pipeline_rev" in d && d.pipeline_rev !== S.pipeline_rev' in bcode and '"plan_v" in d && d.plan_v !== S.plan_v' in bcode
           and "if (pipe && S) pipe.stateChanged(S);" in bcode, "폴링: pipeline_rev·plan_v 가 바뀌면 전체 state, 진행 패널은 모든 모드에서 state 를 받음")
     check(all(f'id="{i}"' in html for i in ("btn-pipe", "pipe-head", "pipe-list", "pipe-panel")) and 'id="pipe-panel" aria-label' in html
-          and re.search(r'<section id="pipe-panel"[^>]*hidden>', html) is not None and "진행 (<kbd>G</kbd>)" in html,
+          and re.search(r'<section id="pipe-panel"[^>]*hidden>', html) is not None and "실행 (<kbd>G</kbd>)" in html,
           "board.html 진행 모드 요소 4개(패널은 처음 hidden)·도움말")
     check("body.pipe #pipe-panel" in css and "body.pipe #target-list, body.pipe #center" in css and ".chip.stale" in css, "board.css 진행 모드 3분할·흐린 칩")
 
@@ -41080,7 +41080,8 @@ def mask_js_unit():
           f"onKeyDown 순서: 레퍼런스 키 → 마스크 키(Esc·Enter·X·[ ]·Q·S·M·Ctrl+Z/Y) → Ctrl 거름 → 진행 끔 → 마스크 끔 → K 토글, 판정은 패널 hidden {idx}")
     check('"pref_v" in d && d.pref_v !== S.pref_v' in bj, "Codex 2차: board.js 폴링이 unchanged 응답의 pref_v(분석·Export 설정)가 바뀌면 since_rev 없이 다시 받음")
     check("if (window.DPMaskEdit)" in bj and '"mask_edits" in c' in _layout_js_fn(bj, "maskReady") and "if (maskOn) maskEd.stateChanged(S);" in bj
-          and bj.count("leaveMask() && set") == 4 and 'on("btn-mask", () => setMask(!maskOn));' in bj and "goMask," in bj
+          and bj.count("leaveMask() && set") == 1 and "if (!leaveMask()) return;" in _layout_js_fn(bj, "goMode")
+          and 'on("btn-mask", () => goMode("mask"));' in bj and "goMask," in bj
           and "if (maskOn) maskEd.seamsChanged();" in bj and "pipe.setMaskLeft(maskEd.pending())" in bj
           and 'window.addEventListener("beforeunload", onUnload);' in bj,
           "board.js: DPMaskEdit 판별·옛 서버(크롭 요약에 mask_edits 없음)면 K 끔, 머리줄 편집·레퍼런스·진행 단추·진행 설정 열기 앞에 마스크 모드 나가기, "
@@ -43669,6 +43670,280 @@ def polish1_unit():
           f"F35 원본 보기 = 이 패치 없이(아래·위 ★ 만), 평소 합성과 다름, 마스크 보기(M)를 켜도 빨강·빗금 없이 원본(Codex 4차) {res}")
 
 
+_POLISH2_JS = r"""
+import fs from "node:fs";
+import vm from "node:vm";
+
+const IN = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const src = fs.readFileSync(IN.boardJs, "utf8");
+const fn = (name) => {
+  const m = new RegExp(`\n  function ${name}\\([^)]*\\) \\{[\\s\\S]*?\n  \\}\n`).exec(src);
+  if (!m) throw new Error(`board.js 에 ${name} 없음`);
+  return m[0];
+};
+const offSets = ["EDIT_OFF", "REFS_OFF", "PIPE_OFF", "MASK_OFF"].map((n) => {
+  const m = new RegExp(`\n  const ${n} = new Set\\(\\[[\\s\\S]*?\\]\\);`).exec(src);
+  if (!m) throw new Error(`board.js 에 ${n} 없음`);
+  return m[0];
+}).join("\n");
+const a = src.indexOf("\n  const MODES = [");
+const r0 = src.indexOf("\n  function renderMode() {");
+const b = src.indexOf("\n  }\n", r0) + 4;
+if (a < 0 || r0 < a) throw new Error("board.js MODES … renderMode 구간 없음");
+const block = src.slice(a, b);
+
+// 작은 DOM: classList·속성·자식·리스너·버블(요소 → body → document)
+class CL {
+  constructor() { this.s = new Set(); }
+  add(...c) { c.forEach((x) => this.s.add(x)); }
+  remove(...c) { c.forEach((x) => this.s.delete(x)); }
+  contains(c) { return this.s.has(c); }
+  toggle(c, on) { if (on === undefined) on = !this.s.has(c); if (on) this.s.add(c); else this.s.delete(c); return on; }
+}
+class Node_ {
+  constructor(tag) { this.tagName = tag; this.classList = new CL(); this.children = []; this.attrs = {}; this.ls = {}; this.parent = null; this.title = ""; this._t = ""; }
+  set className(v) { this.classList = new CL(); String(v).split(/\s+/).filter(Boolean).forEach((c) => this.classList.add(c)); }
+  get className() { return [...this.classList.s].join(" "); }
+  set textContent(v) { this._t = String(v); this.children = []; }
+  get textContent() { return this._t + this.children.map((c) => c.textContent).join(""); }
+  append(...n) { for (const x of n) { x.parent = this; this.children.push(x); } }
+  replaceChildren(...n) { this.children = []; this._t = ""; this.append(...n); }
+  setAttribute(k, v) { this.attrs[k] = String(v); }
+  addEventListener(t, f) { (this.ls[t] = this.ls[t] || []).push(f); }
+  dispatchEvent(ev) {
+    ev.target = ev.target || this;
+    for (let n = this; n; n = n.parent) for (const f of n.ls[ev.type] || []) f(Object.assign(ev, { currentTarget: n }));
+    return true;
+  }
+  blur() {}
+}
+class Text_ { constructor(t) { this.textContent = t; } }
+const ids = {};
+const document = new Node_("#document");
+document.body = new Node_("body");
+document.body.parent = document;
+document.createElement = (t) => new Node_(t);
+document.createTextNode = (t) => new Text_(t);
+document.getElementById = (id) => ids[id];
+for (const id of ["mode-title", "keybar", "btn-review", "btn-edit", "btn-refs", "btn-pipe", "btn-mask"]) {
+  ids[id] = new Node_(id === "keybar" || id === "mode-title" ? "div" : "button");
+  document.body.append(ids[id]);
+}
+class KeyboardEvent {
+  constructor(type, init) { Object.assign(this, { type, isTrusted: false, shiftKey: false, ctrlKey: false }, init); }
+}
+const got = [];
+document.addEventListener("keydown", (e) => got.push(["down", e.code, e.key, e.shiftKey, e.ctrlKey, e.target === document.body]));
+document.addEventListener("keyup", (e) => got.push(["up", e.code, e.key, e.shiftKey, e.ctrlKey, e.target === document.body]));
+
+const ctx = vm.createContext({ document, KeyboardEvent, got, console });
+vm.runInContext(`
+const $ = (id) => document.getElementById(id);
+${fn("el")}
+${offSets}
+${block}
+let maskOn = false, editing = false, refsOn = false, pipeOn = false, allowLeave = true, maskOk = true;
+const log = [];
+const cls = { editing: "editing", refs: "refs", pipe: "pipe", mask: "mask" };
+function body(c, on) { document.body.classList.toggle(c, on); }
+function setEditing(on) { log.push("setEditing:" + on); if (on && refsOn) setRefs(false); if (on && pipeOn) setPipe(false); editing = on; body("editing", on); }
+function setRefs(on) { log.push("setRefs:" + on); if (on && editing) setEditing(false); if (on && pipeOn) setPipe(false); refsOn = on; body("refs", on); }
+function setPipe(on) { log.push("setPipe:" + on); if (on && editing) setEditing(false); if (on && refsOn) setRefs(false); pipeOn = on; body("pipe", on); }
+function setMask(on) {
+  log.push("setMask:" + on);
+  if (!on) { if (!allowLeave) return false; maskOn = false; body("mask", false); return true; }
+  if (!maskOk) return false;
+  if (editing) setEditing(false); if (refsOn) setRefs(false); if (pipeOn) setPipe(false);
+  maskOn = true; body("mask", true); return true;
+}
+${fn("curMode")}
+${fn("goMode")}
+${fn("leaveMask")}
+`, ctx);
+
+const out = {};
+const run = (code) => vm.runInContext(code, ctx);
+function tabs() {
+  return ["btn-review", "btn-edit", "btn-refs", "btn-pipe", "btn-mask"].filter((i) => ids[i].classList.contains("on"))
+    .concat(["btn-review", "btn-edit", "btn-refs", "btn-pipe", "btn-mask"].filter((i) => ids[i].attrs["aria-selected"] === "true").map((i) => "aria:" + i));
+}
+function chips() {
+  return ids.keybar.children.map((c) => c.tagName === "button" ? c.children[0].textContent : "info:" + c.textContent);
+}
+function step(m) {
+  run("log.length = 0");
+  run(`goMode(${m === null ? "null" : JSON.stringify(m)})`);
+  run("renderMode()");
+  return { log: run("log.slice()"), mode: run("curMode()"), tabs: tabs(), title: ids["mode-title"].textContent };
+}
+try {
+  run("renderMode()");
+  out.start = { tabs: tabs(), chips: chips(), title: ids["mode-title"].textContent };
+  out.toEdit = step("edit");
+  const firstChip = ids.keybar.children[0];
+  out.editAgain = step("edit");
+  out.sameChips = ids.keybar.children[0] === firstChip; // 같은 모드면 칩 줄을 다시 만들지 않음
+  out.editChips = chips();
+  out.toPipe = step("pipe");
+  out.pipeChips = chips();
+  out.toMask = step("mask");
+  out.maskChips = chips();
+  run("allowLeave = false");
+  out.maskRefuse = step("refs");
+  run("allowLeave = true");
+  out.maskToRefs = step("refs");
+  out.refsChips = chips();
+  out.toReview = step(null);
+  out.reviewAgain = step(null);
+  run("goMode('mask')"); run("renderMode()");
+  out.maskToReview = step(null);
+  run("maskOk = false");
+  out.maskBlocked = step("mask");
+  run("maskOk = true");
+
+  // 칩 누르기 = 그 키(target = body, 문서로 버블). 검토 칩
+  const chip = (label) => ids.keybar.children.find((c) => c.tagName === "button" && c.children[0].textContent === label);
+  const click = (label) => { got.length = 0; chip(label).dispatchEvent({ type: "click" }); return got.slice(); };
+  out.space = click("Space");
+  out.shiftSpace = click("⇧Space");
+  out.help = click("?");
+  out.arrow = click("←");
+  // 누르는 동안(Q): 누르면 down, 나가면 up 한 번(두 번째 떼기는 무시)
+  got.length = 0;
+  const q = chip("Q");
+  q.dispatchEvent({ type: "pointerdown", preventDefault() {} });
+  out.qHeld = q.classList.contains("held");
+  q.dispatchEvent({ type: "pointerleave" });
+  out.qLeave = [got.length, q.classList.contains("held")];
+  q.dispatchEvent({ type: "pointerup" });
+  out.qEvents = got.slice();
+  out.qAfter = q.classList.contains("held");
+  // 칩을 누른 채 모드가 바뀌면(E 키 등) 칩 줄을 다시 그리기 전에 뗌(Codex 2차 — 지운 칩은 pointerup 을 못 받아 Before 로 남았음)
+  got.length = 0;
+  chip("Q").dispatchEvent({ type: "pointerdown", preventDefault() {} });
+  run("goMode('edit')"); run("renderMode()");
+  out.qModeSwitch = got.slice();
+  run("goMode('mask')"); run("renderMode()");
+  out.bracket = click("[");
+  out.shiftBracket = click("⇧]");
+  out.undo = click("Ctrl+Z");
+  out.w = (() => { got.length = 0; const w = chip("W"); w.dispatchEvent({ type: "pointerdown", preventDefault() {} }); w.dispatchEvent({ type: "pointerup" }); return got.slice(); })();
+
+  // 모든 칩 키가 그 모드에서 처리됨: 편집기가 먼저 받는 키이거나, 그 모드의 끄는 키(…_OFF)가 아님 — 눌러도 아무 일 없는 칩이 없게
+  const EAT = {
+    edit: ["Tab", "Delete", "Backspace", "Enter", "KeyP", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "KeyZ", "KeyY"],
+    refs: ["Escape", "Enter", "Backspace", "BracketLeft", "BracketRight", "KeyH", "Digit0", "Digit1", "Digit2", "KeyF"],
+    mask: ["Escape", "Enter", "KeyX", "BracketLeft", "BracketRight", "KeyQ", "KeyS", "KeyM", "KeyW", "KeyZ", "KeyY"],
+    pipe: [], review: [],
+  };
+  const OFF = run("({ edit: [...EDIT_OFF], refs: [...REFS_OFF], pipe: [...PIPE_OFF], mask: [...MASK_OFF], review: [] })");
+  const BOARD = ["KeyE", "KeyT", "KeyG", "KeyK", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space", "KeyX", "KeyQ", "KeyD", "KeyC",
+    "KeyB", "KeyO", "Digit0", "KeyF", "Digit1", "Digit2", "KeyS", "KeyM", "KeyN", "KeyV", "Escape", "Slash"];
+  out.dead = [];
+  const KEYS = run("KEYS");
+  for (const [m, rows] of Object.entries(KEYS)) {
+    for (const [label, , k] of rows) {
+      if (!k) continue;
+      const eaten = EAT[m].includes(k.code);
+      const board = !OFF[m].includes(k.code) && BOARD.includes(k.code);
+      if (!eaten && !board) out.dead.push(`${m}:${label}`);
+    }
+  }
+  out.modes = Object.keys(KEYS);
+  out.hasR = Object.values(KEYS).some((rows) => rows.some((x) => x[2] && x[2].code === "KeyR"));
+} catch (e) {
+  out.error = String(e && e.stack || e);
+}
+console.log(JSON.stringify(out));
+"""
+
+
+def polish2_unit():
+    """다듬기 배치 2(10/21 — _proto/STUDIO_POLISH_PLAN_2610.md §2·용어표 _proto/STUDIO_TERMS_2610.md): 모드 탭(검토 포함)·모드 설명·단축키 칩 줄.
+    정적 + node vm(goMode·renderMode·칩 = 그 키). --quick 포함."""
+    section("다듬기 배치 2 — 모드 탭(F24)·단축키 칩(F13·F14 — 눌러도 그 키)·용어표 A")
+    web = PKG / "web_design_patch"
+    bj = (web / "board.js").read_text(encoding="utf-8")
+    bh = (web / "board.html").read_text(encoding="utf-8")
+    bc = (web / "board.css").read_text(encoding="utf-8")
+    head = bh[bh.index('<header id="top">'):bh.index("</header>")]
+    nav = bh[bh.index('<nav id="modebar"'):bh.index("</nav>")]
+    tabs = re.findall(r'<button type="button" role="tab" id="(btn-[a-z]+)" class="tab"[^>]*>([^<]+)</button>', nav)
+    check(tabs == [("btn-review", "검토"), ("btn-edit", "크롭 편집"), ("btn-refs", "레퍼런스"), ("btn-pipe", "실행"), ("btn-mask", "마스크")]
+          and bh.index("</header>") < bh.index('<nav id="modebar"') < bh.index("<main"),
+          f"F24 둘째 줄 탭 5개(용어표 A1–A5 — 검토도 탭), 머리줄 아래·본문 위 {tabs}")
+    check(not any(f'id="{i}"' in head for i in ("btn-edit", "btn-refs", "btn-pipe", "btn-mask", "mode-title"))
+          and 'id="mode-title"' in nav and 'id="btn-keys"' in nav
+          and bh.index("</nav>") < bh.index('<div id="keybar"') < bh.index("<main")
+          and re.search(r'id="btn-viewer"[^>]*>뷰어 ▣</button>', head) is not None,
+          "머리줄에는 모드 단추가 없고(탭 줄로), 모드 설명·⌨ 는 탭 줄에, 칩 줄은 그 아래 자기 줄, [뷰어 ▣](A6)는 머리줄 오른쪽 그대로")
+    check(all(f'on("btn-{a}", () => goMode({b}));' in bj for a, b in (("review", "null"), ("edit", '"edit"'), ("refs", '"refs"'),
+                                                                     ("pipe", '"pipe"'), ("mask", '"mask"')))
+          and "setEditing(!editing)" in bj and "setMask(!maskShown)" in bj,
+          "탭 = 그 모드로(다시 눌러도 그대로), 키 E·T·G·K 는 그대로 켜고 끄기")
+    check('savePref({ keys: !off });' in bj and 'if (loadPref().keys === false) document.body.classList.add("no-keys");' in bj
+          and "body.no-keys .keybar { display: none; }" in bc and ".tabs .tab.on {" in bc and "#btn-edit.on" not in bc
+          and "flex-wrap: wrap" in bc[bc.index(".keybar {"):] and "#top button { flex: none; white-space: nowrap; }" in bc,
+          "⌨ 칩 줄 접기는 이 브라우저에 기억, 탭 켜짐 모양은 .tab.on 하나")
+    check("document.body.dispatchEvent(new KeyboardEvent(type" in bj and "[⌨ 단축키] = 칩 줄 접기/펴기" in bh
+          and "크롭 편집 (<kbd>E</kbd>)" in bh and "실행 (<kbd>G</kbd>)" in bh,
+          "칩 키 이벤트는 body 에서(viewer.js Space 처리기의 closest), 도움말 둘째 줄 설명·제목(용어표 A2·A4)")
+
+    node = shutil.which("node")
+    if not node:
+        skip("node 없음 → 배치 2 JS(vm) 생략")
+        return
+    out = OUT_ROOT / "polish2_js"
+    shutil.rmtree(out, ignore_errors=True)
+    out.mkdir(parents=True)
+    (out / "in.json").write_text(json.dumps({"boardJs": str(web / "board.js")}), encoding="utf-8")
+    (out / "harness.mjs").write_text(_POLISH2_JS, encoding="utf-8")
+    r = subprocess.run([node, str(out / "harness.mjs"), str(out / "in.json")], capture_output=True, text=True, encoding="utf-8", timeout=120)
+    if r.returncode != 0 or not r.stdout.strip():
+        check(False, f"배치 2 node 하네스 실패({r.returncode}): {r.stderr.strip()[-800:]}")
+        return
+    res = json.loads(r.stdout.strip().splitlines()[-1])
+    if "error" in res:
+        check(False, f"배치 2 하네스 예외: {res['error']}")
+        return
+    st = res["start"]
+    check(st["tabs"] == ["btn-review", "aria:btn-review"] and st["title"].startswith("후보를 원해상도로") and st["chips"][:3] == ["Space", "⇧Space", "X"],
+          f"처음 = [검토] 탭 켜짐(aria-selected), 설명, 검토 칩 {st}")
+    check(res["toEdit"]["log"] == ["setEditing:true"] and res["toEdit"]["tabs"] == ["btn-edit", "aria:btn-edit"]
+          and res["editAgain"]["log"] == [] and res["editAgain"]["mode"] == "edit" and res["sameChips"] is True,
+          f"[크롭 편집] 탭 = 편집 켬, 다시 눌러도 그대로(예전 단추는 꺼졌음)·칩 줄 그대로 {res['toEdit']} {res['editAgain']}")
+    check(res["toPipe"]["log"] == ["setPipe:true", "setEditing:false"] and res["toPipe"]["tabs"] == ["btn-pipe", "aria:btn-pipe"]
+          and res["toMask"]["log"] == ["setMask:true", "setPipe:false"] and res["toMask"]["mode"] == "mask",
+          f"탭끼리 바꾸기: 켜는 쪽 set* 이 다른 모드를 끔 {res['toPipe']['log']} {res['toMask']['log']}")
+    check(res["maskRefuse"]["log"] == ["setMask:false"] and res["maskRefuse"]["mode"] == "mask" and res["maskRefuse"]["tabs"] == ["btn-mask", "aria:btn-mask"]
+          and res["maskToRefs"]["log"] == ["setMask:false", "setRefs:true"] and res["maskToRefs"]["mode"] == "refs",
+          f"마스크에서 다른 탭: 먼저 나가기(적용 안 한 획 확인 — 취소하면 그대로 마스크) {res['maskRefuse']} {res['maskToRefs']['log']}")
+    check(res["toReview"]["log"] == ["setRefs:false"] and res["toReview"]["mode"] is None and res["toReview"]["tabs"] == ["btn-review", "aria:btn-review"]
+          and res["reviewAgain"]["log"] == [] and res["maskToReview"]["log"] == ["setMask:false"] and res["maskToReview"]["mode"] is None
+          and res["maskBlocked"]["log"] == ["setMask:true"] and res["maskBlocked"]["mode"] is None,
+          f"[검토] 탭 = 켜진 모드를 끔(마스크는 나가기 한 번), ★ 없어 마스크 못 켜면 검토 그대로 "
+          f"{res['toReview']['log']} {res['maskToReview']['log']} {res['maskBlocked']}")
+    check(res["editChips"][0] == "info:끌기 새 크롭·이동·크기" and "P" in res["editChips"] and "Ctrl+Z" in res["editChips"]
+          and res["pipeChips"] == ["B", "O", "N", "F", "0", "1", "2", "G"] and res["maskChips"][:3] == ["info:끌기 붓", "info:⇧끌기 부드럽게", "X"]
+          and "W" in res["maskChips"] and "H" in res["refsChips"],
+          f"모드마다 칩 줄이 바뀜(설명만인 줄은 칩이 아님) {res['editChips']} {res['pipeChips']} {res['maskChips']} {res['refsChips']}")
+    check(res["space"] == [["down", "Space", " ", False, False, True], ["up", "Space", " ", False, False, True]]
+          and res["shiftSpace"][0] == ["down", "Space", " ", True, False, True] and res["help"][0] == ["down", "Slash", "?", True, False, True]
+          and res["arrow"][0] == ["down", "ArrowLeft", "ArrowLeft", False, False, True],
+          f"칩 누르기 = 그 키 keydown·keyup(target body — 문서로 버블) {res['space']} {res['shiftSpace']} {res['help']}")
+    check(res["qHeld"] is True and res["qEvents"] == [["down", "KeyQ", "q", False, False, True], ["up", "KeyQ", "q", False, False, True]]
+          and res["qLeave"] == [2, False] and res["qAfter"] is False
+          and res["qModeSwitch"] == [["down", "KeyQ", "q", False, False, True], ["up", "KeyQ", "q", False, False, True]]
+          and res["w"] == [["down", "KeyW", "w", False, False, True], ["up", "KeyW", "w", False, False, True]],
+          f"Q·W 칩 = 누르는 동안(누르면 down, 칩 밖으로 나가면 바로 up, 그 뒤 떼기는 무시 — up 한 번) {res['qEvents']} {res['qLeave']} {res['w']}")
+    check(res["bracket"][0] == ["down", "BracketLeft", "[", False, False, True] and res["shiftBracket"][0] == ["down", "BracketRight", "]", True, False, True]
+          and res["undo"][0] == ["down", "KeyZ", "z", False, True, True],
+          f"마스크 칩 [ · ⇧] · Ctrl+Z {res['bracket']} {res['shiftBracket']} {res['undo']}")
+    check(res["dead"] == [] and res["modes"] == ["review", "edit", "refs", "pipe", "mask"] and res["hasR"] is False,
+          f"모든 칩 키가 그 모드에서 처리됨(편집기가 받거나 그 모드의 끄는 키가 아님), R(유료 다시 생성) 칩 없음 {res['dead']}")
+
+
+
 def polish1_node_unit():
     """다듬기 배치 1 — B-1 Export 레이어 c 번호 = Studio 후보 번호(탈락 포함 등록 순서). 노드는 _dp_package(mock — 유료 0)."""
     section("다듬기 배치 1 — B-1 Export 레이어 c 번호 = Studio 번호(탈락 후보가 앞에 있어도)")
@@ -43776,6 +44051,8 @@ if __name__ == "__main__":
         mask_js_unit()
     if want("polish1_unit"):
         polish1_unit()
+    if want("polish2_unit"):
+        polish2_unit()
     print(f"\n단위 테스트 {time.time() - T0:.1f}s (PASS {PASSES} FAIL {len(FAILS)})")
     if QUICK:
         print("\n--quick: 회귀·노드 생략")
