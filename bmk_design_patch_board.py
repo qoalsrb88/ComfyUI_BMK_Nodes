@@ -31,6 +31,11 @@ Review 노드를 부분 실행한다(대체 경로). 인증 토큰은 그 경로
 - POST /bmk/design_patch/reject  {root, key, value: bool}
 - POST /bmk/design_patch/reroll  {root, cell_key | (crop_id, tid[, variant]), count}
 - POST /bmk/design_patch/drain   {root}   진행 중인 Run 이 있을 때만 플래그를 건다(없으면 drain false 로 응답)
+- GET  /bmk/design_patch/mask/unused?root=   masks/ 의 편집기 PNG(<key>_e_<sha>.png) 중 매니페스트 어디서도 가리키지 않는 것(편집 기록·이전 버전·
+                                       후보 hand_mask 등 — ★ 아닌 후보 포함) {files: [{file, bytes, at}], bytes, recent}(배치 3-6 — 10분 안에 쓴 것은 recent 로만)
+- POST /bmk/design_patch/mask/cleanup {root, files}   그 목록 중 지금도 안 쓰는 것만 지움(매니페스트 잠금 안에서 다시 판정) → {ok, deleted, bytes, kept}
+- POST /bmk/design_patch/open_folder {root}   Export 출력 폴더를 탐색기로(배치 3-5a — 마지막 Export PSD 를 고른 채, 없으면
+                                       output/design_patch/<프로젝트 폴더>). ComfyUI output 밖이거나 폴더가 없으면 열지 않음 → {ok, path, selected}
 - GET  /bmk/design_patch/layout?root=&since=           레이아웃 편집기 상태(STUDIO_S1_SPEC §4.1, layout_state)
 - GET  /bmk/design_patch/layout/refs?root=&name=[&id=] 그 이름이면 고를 레퍼런스 {n, first[, fixed]} | null(refs_dir 없음) — 이름 바꾸기
                                                        미리보기. id 를 주면 고정된·이름 바꾸기가 고정할 크롭은 지금 레퍼런스(연결 유지)
@@ -120,6 +125,7 @@ CPU·파일 작업은 asyncio.to_thread 로 돌려 aiohttp 루프를 막지 않�
 - layout_state(root, since=None) -> dict           GET /layout 과 같은 레이아웃 편집기 상태(S1).
 - refs_state(root, since=None) -> dict             GET /refs 와 같은 레퍼런스 편집기 상태(S2).
 - set_sam3_ckpts(names) -> None                    SAM3 체크포인트 이름(노드 모듈이 import 때 — 보드는 folder_paths 를 import 하지 않음).
+- set_output_dir(path) -> None                     ComfyUI output 폴더(노드 모듈이 import 때) — POST /open_folder 가 이 안만 연다.
 - prebuild_thumbs(root, analyze_params=None, size=256) -> dict
                                                     분석 설정 기억 + 후보 그리드·Before 썸네일 미리 생성(캐시).
 - board_url(key) -> str                            "/bmk/design_patch/board/?root=<key>"
@@ -211,6 +217,8 @@ import logging
 import math
 import os
 import re
+import subprocess
+import sys
 import threading
 import time
 import unicodedata
@@ -1677,6 +1685,73 @@ def mask_save(root: str, key, data: bytes, seen, ops, rect) -> dict:
             "composite_sig": _composite_sig(root, store.load_manifest(root), pref)}
 
 
+_MASK_CLEAN_AGE = 600  # 초 — 막 저장 중인 편집 PNG(save_edit 은 파일을 쓴 뒤 매니페스트에 기록)를 지우지 않게 이보다 새 파일은 남김
+
+
+_MASK_EDIT_FILE_RE = re.compile(r"[A-Za-z0-9_\-]{0,10}_e_[0-9a-f]{12}\.png")  # 편집기 파일(dmask.save_edit 의 이름) — 손 마스크(_hand_) 등은 정리하지 않음
+
+
+def _mask_refs(v, out: set) -> set:
+    """매니페스트 안 어디든 'masks/…' 를 가리키는 글(편집 기록·이전 버전·후보 hand_mask.file 등 — Codex 3a 1차)."""
+    if isinstance(v, str):
+        if v.startswith(dmask.MASKS_DIR + "/"):
+            out.add(v)
+    elif isinstance(v, dict):
+        for x in v.values():
+            _mask_refs(x, out)
+    elif isinstance(v, list):
+        for x in v:
+            _mask_refs(x, out)
+    return out
+
+
+def _mask_unused(root: str, m: dict, now: float) -> tuple[list[dict], int]:
+    """masks/ 의 편집기 PNG 중 매니페스트 어디서도 가리키지 않는 것 [{file, bytes, at}](이름순)과 너무 새로워 뺀 수."""
+    used = _mask_refs(m, set())
+    d = os.path.join(root, dmask.MASKS_DIR)
+    real_root = os.path.realpath(root)
+    if not os.path.isdir(d) or os.path.commonpath([real_root, os.path.realpath(d)]) != real_root:
+        return [], 0  # 없거나 프로젝트 밖을 가리키는 링크(심볼릭·junction — Codex 3a 2차)
+    out, recent = [], 0
+    for name in sorted(os.listdir(d)):
+        rel = f"{dmask.MASKS_DIR}/{name}"
+        p = os.path.join(d, name)
+        if not _MASK_EDIT_FILE_RE.fullmatch(name) or rel in used or not os.path.isfile(p):
+            continue
+        st = os.stat(p)
+        if now - st.st_mtime < _MASK_CLEAN_AGE:
+            recent += 1
+            continue
+        out.append({"file": rel, "bytes": st.st_size, "at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(st.st_mtime))})
+    return out, recent
+
+
+def mask_unused(root: str) -> dict:
+    """GET /mask/unused(배치 3-6) — 지우지 않는 읽기."""
+    files, recent = _mask_unused(root, store.load_manifest(root), time.time())
+    return {"files": files, "bytes": sum(f["bytes"] for f in files), "recent": recent}
+
+
+def mask_cleanup(root: str, data: dict) -> dict:
+    """POST /mask/cleanup(배치 3-6): 보낸 목록 중 지금도 안 쓰는 파일만 지운다 — 매니페스트 잠금 안에서 다시 판정(그 사이 [이전 버전으로]·
+    다른 창 저장이 다시 쓰게 된 파일은 남김 → kept)."""
+    files = data.get("files")
+    if not isinstance(files, list) or not files or len(files) > 500 or not all(isinstance(f, str) and dmask._FILE_RE.fullmatch(f) for f in files):
+        raise _Reject(400, "files 는 masks/<이름>.png 목록이어야 합니다")
+    with store.manifest_lock(root):
+        unused = {f["file"]: f for f in _mask_unused(root, store.load_manifest(root), time.time())[0]}
+        deleted, kept = [], []
+        for f in dict.fromkeys(files):
+            if f in unused:
+                os.remove(os.path.join(root, *f.split("/")))  # _mask_unused 가 masks/ 실제 경로를 프로젝트 안으로 확인함
+                deleted.append(f)
+            else:
+                kept.append(f)
+    if deleted:
+        logger.info(f"{_TAG} Board: masks/ 안 쓰는 편집 파일 {len(deleted)}개 지움 {os.path.basename(root)}")
+    return {"ok": True, "deleted": len(deleted), "bytes": sum(unused[f]["bytes"] for f in deleted), "kept": kept}
+
+
 def mask_edit(root: str, data: dict) -> dict:
     """POST /mask/edit — undo = hist 첫 판으로(비면 기록 지움 = 기준), reset = 기록 지움(hist 도). ★ 여부는 보지 않는다(dmask).
     기록이 없을 때(seen "")는 바꾸지 않고 edit null(형식이 깨진 기록은 없음으로 보고 지움 — dmask._expect)."""
@@ -2802,6 +2877,7 @@ _REF_SLOTS = threading.BoundedSemaphore(1)   # 시트 디코드·PSD 합성·컷
 _REFS_WRITE_LOCKS: dict[str, threading.RLock] = {}  # root_key → 레퍼런스 쓰기 잠금(_refs_write_lock)
 _SAM3_CKPTS: list[str] = []                  # set_sam3_ckpts — 노드 모듈이 import 때 넘긴 SAM3 체크포인트 이름
 _QWEN_DIR: list[str] = []                    # set_qwen_dir — 노드 모듈이 import 때 넘긴 local_qwen 모델 폴더(비면 미설정)
+_OUTPUT_DIR: list[str] = []                  # set_output_dir — 노드 모듈이 import 때 넘긴 ComfyUI output 폴더(비면 미설정)
 _REF_IMG_WHERE = ("refs", "held", "cut", "cutmask")
 _REF_IMG_SIZES = (0, 128, 256, 512)
 _REF_BGS = {"gray": 128, "white": 255, "check": None}   # GPT 가 받는 매트 #808080 · 흰 · 체크(8px)
@@ -2831,6 +2907,51 @@ def set_qwen_dir(path) -> None:
 
 def _qwen_dir() -> str:
     return _QWEN_DIR[0] if _QWEN_DIR else ""
+
+
+def set_output_dir(path) -> None:
+    """ComfyUI output 폴더(노드 모듈이 import 때 — 보드는 folder_paths 를 import 하지 않음). Export 는 그 아래
+    design_patch/<프로젝트 폴더>에 쓰고(노드 _output_dir), POST /open_folder 는 이 안의 경로만 연다."""
+    _OUTPUT_DIR[:] = [os.path.abspath(str(path))] if path else []
+
+
+def _reveal(path: str, select: bool) -> None:
+    """탐색기로 열기 — select = 그 파일을 고른 채(Windows explorer /select). 기다리지 않음(explorer 는 성공해도 1 을 돌려줌).
+    시험은 이 함수를 바꿔 끼운다."""
+    if os.name == "nt":
+        subprocess.Popen(f'explorer /select,"{path}"' if select else f'explorer "{path}"')
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", "-R", path] if select else ["open", path])
+    else:
+        subprocess.Popen(["xdg-open", os.path.dirname(path) if select else path])
+
+
+def open_export_folder(root: str) -> dict:
+    """POST /open_folder(배치 3-5a): 마지막 Export PSD 가 있으면 그것을 고른 채, 없으면 그 프로젝트의 출력 폴더를 연다.
+    ComfyUI output 밖(손으로 고친 매니페스트의 다른 경로)은 열지 않는다."""
+    if not _OUTPUT_DIR:
+        raise _Reject(409, "ComfyUI 를 재시작해야 출력 폴더를 열 수 있습니다(서버가 출력 폴더를 모름)")
+    base = os.path.realpath(_OUTPUT_DIR[0])
+
+    def inside(p: str) -> bool:
+        # 실제 경로로(junction·심볼릭이 output 밖을 가리키면 밖 — Codex 3a 3차)
+        try:
+            return os.path.normcase(os.path.commonpath([base, os.path.realpath(p)])) == os.path.normcase(base)
+        except ValueError:  # 다른 드라이브
+            return False
+
+    last = (store.last_export(root, store.load_manifest(root)) or {}).get("psd")  # 캐시 재사용 Export 도(exports 끝이 아닐 수 있음 — Codex 3a 2차)
+    psd = os.path.abspath(last) if isinstance(last, str) and last else None
+    if psd and inside(psd) and os.path.isfile(psd):
+        _reveal(psd, True)
+        return {"ok": True, "path": psd, "selected": True}
+    folder = os.path.join(base, "design_patch", os.path.basename(os.path.normpath(root)))
+    if not os.path.isdir(folder):
+        raise _Reject(404, f"출력 폴더가 아직 없습니다(Export 를 한 번 하면 생김): {folder}")
+    if not inside(folder):
+        raise _Reject(400, f"출력 폴더가 ComfyUI output 밖을 가리킵니다(링크) — 열지 않음: {folder}")
+    _reveal(folder, False)
+    return {"ok": True, "path": folder, "selected": False}
 
 
 def _refs_doc(root: str) -> tuple[dict | None, str | None]:
@@ -4597,6 +4718,13 @@ async def drain_handler(request: web.Request) -> web.StreamResponse:
     return _json({"ok": True, "drain": True, "running": True})
 
 
+@_guard
+async def open_folder_handler(request: web.Request) -> web.StreamResponse:
+    data = await _body(request)
+    root = _root_param(data.get("root"))
+    return _json(await asyncio.to_thread(open_export_folder, root))
+
+
 def _rev(data: dict) -> int:
     rev = data.get("rev")
     if isinstance(rev, bool) or not isinstance(rev, int) or rev < 0:
@@ -4804,6 +4932,19 @@ async def mask_edit_handler(request: web.Request) -> web.StreamResponse:
 
 
 @_guard
+async def mask_unused_handler(request: web.Request) -> web.StreamResponse:
+    root = _root_param(request.query.get("root"))
+    return _json(await asyncio.to_thread(mask_unused, root))
+
+
+@_guard
+async def mask_cleanup_handler(request: web.Request) -> web.StreamResponse:
+    data = await _body(request)
+    root = _root_param(data.get("root"))
+    return _json(await asyncio.to_thread(mask_cleanup, root, data))
+
+
+@_guard
 async def mask_alts_handler(request: web.Request) -> web.StreamResponse:
     root = _root_param(request.query.get("root"))
     res = await asyncio.to_thread(mask_alts, root, request.query.get("key"))
@@ -4823,6 +4964,7 @@ _ROUTES = (
     ("POST", f"{API}/reject", reject_handler),
     ("POST", f"{API}/reroll", reroll_handler),
     ("POST", f"{API}/drain", drain_handler),
+    ("POST", f"{API}/open_folder", open_folder_handler),
     ("GET", f"{API}/layout", layout_handler),
     ("GET", f"{API}/layout/refs", layout_refs_handler),
     ("POST", f"{API}/layout/start", layout_start_handler),
@@ -4848,6 +4990,8 @@ _ROUTES = (
     ("POST", f"{API}/mask/save", mask_save_handler),
     ("POST", f"{API}/mask/edit", mask_edit_handler),
     ("GET", f"{API}/mask/alts", mask_alts_handler),
+    ("GET", f"{API}/mask/unused", mask_unused_handler),
+    ("POST", f"{API}/mask/cleanup", mask_cleanup_handler),
 )
 
 

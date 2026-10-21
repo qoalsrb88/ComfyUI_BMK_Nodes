@@ -416,6 +416,8 @@ window.DPPipeline = (() => {
       return data;
     }
 
+    s.openFolder = () => call("open_folder", {}); // Export 출력 폴더를 탐색기로(배치 3-5a — 서버 PC)
+
     function comfy(path, body) {
       return fetchFn(comfyUrl(path), body === undefined ? { cache: "no-store" } : postOpts(body));
     }
@@ -2079,7 +2081,16 @@ window.DPPipeline = (() => {
         queueHere("export");
       }, "primary");
       eb.disabled = !!PS.job || !!paying || asking || PS.busy;
-      btns(s, eb);
+      const ob = button("출력 폴더 열기", "탐색기로 Export 출력 폴더를 엶 — 마지막 Export PSD 를 고른 채(ComfyUI 가 도는 PC). 위치: ComfyUI output/design_patch/<프로젝트 폴더>",
+        async () => {
+          try {
+            const d = await PS.openFolder();
+            opts.toast(`출력 폴더를 열었습니다${d.selected ? "(마지막 Export PSD 고름)" : ""}: ${d.path}`);
+          } catch (e) {
+            opts.toast(e.message, "err");
+          }
+        });
+      btns(s, eb, ob);
 
       renderAdopt();
     }

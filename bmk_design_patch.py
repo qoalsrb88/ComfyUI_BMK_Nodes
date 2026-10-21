@@ -3337,6 +3337,7 @@ _register_board_routes()
 _restore_board_prefs()
 board.set_sam3_ckpts(_sam3_ckpt_names())  # 보드는 folder_paths 를 import 하지 않는다(B0) — 재시작 전 새로 넣은 파일은 안 보임
 board.set_qwen_dir(os.path.join(folder_paths.models_dir, *_QWEN_DIR))  # Studio Draft 계획의 local_qwen 키(Spec Draft 와 같은 경로)
+board.set_output_dir(folder_paths.get_output_directory())  # Studio [출력 폴더 열기](배치 3-5a)가 이 안만 연다
 
 
 # ══════════════════════════════════════════════════════════════════════

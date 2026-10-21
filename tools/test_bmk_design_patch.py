@@ -5638,7 +5638,9 @@ def m2_board_unit():
                        ("POST", "/bmk/design_patch/draft/adopt"),
                        ("GET", "/bmk/design_patch/mask"), ("GET", "/bmk/design_patch/mask/img"),  # S4 §4(라우트 5)
                        ("POST", "/bmk/design_patch/mask/save"), ("POST", "/bmk/design_patch/mask/edit"),
-                       ("GET", "/bmk/design_patch/mask/alts")})
+                       ("GET", "/bmk/design_patch/mask/alts"),
+                       ("POST", "/bmk/design_patch/open_folder"),  # 배치 3a(3-5a 출력 폴더 열기 · 3-6 masks/ 정리)
+                       ("GET", "/bmk/design_patch/mask/unused"), ("POST", "/bmk/design_patch/mask/cleanup")})
         check(paths == want, f"라우트 목록 {paths}")
         # 재시작 흉내: 메모리 레지스트리에서 지움 → base_dir 로 다시 등록하면 _roots.json 에서 복구
         with store._ROOTS_LOCK:
@@ -10402,12 +10404,12 @@ def m2_node_unit():
             n1 = len(fake.routes)
             dp._register_board_routes()
         paths = {r.path for r in fake.routes}
-        check(n1 == 37 and len(fake.routes) == 37 and {"/bmk/design_patch/state", "/bmk/design_patch/drain",
+        check(n1 == 40 and len(fake.routes) == 40 and {"/bmk/design_patch/state", "/bmk/design_patch/drain",
                                                        "/bmk/design_patch/board/", "/bmk/design_patch/canvas",
                                                        "/bmk/design_patch/layout", "/bmk/design_patch/layout/refs",
                                                        "/bmk/design_patch/refs", "/bmk/design_patch/refs/cut",
                                                        "/bmk/design_patch/pipeline/plan", "/bmk/design_patch/draft/adopt"} <= paths,
-              f"보드 라우트 37개(S1 레이아웃 5·S2 레퍼런스 8·S3 파이프라인 7·S4 마스크 5 포함), 두 번 불러도 한 번 ({n1}, {len(fake.routes)})")
+              f"보드 라우트 40개(S1 레이아웃 5·S2 레퍼런스 8·S3 파이프라인 7·S4 마스크 5·배치 3a 3 포함), 두 번 불러도 한 번 ({n1}, {len(fake.routes)})")
         check(dp._server() is None, "가짜 서버는 블록 밖에서 되돌림")
 
         section("M2-N1 Prepare calls_per_cell · Run 과 같은 승인 해시")
@@ -12249,7 +12251,7 @@ def vlm_node_unit():
         fake = _FakeServer(web.RouteTableDef())
         with _prompt_server(fake):
             dp._register_board_routes()
-        check(len(fake.routes) == 37, f"보드 라우트 {len(fake.routes)}")
+        check(len(fake.routes) == 40, f"보드 라우트 {len(fake.routes)}(배치 3a 3 포함)")
 
     def t_n9():
         section("M3-N9 평가 도구의 순수 복제 new_targets == main._new_targets (표본 레이어명 6 + 채택 origin 3)")
@@ -14085,7 +14087,7 @@ def layout_board_unit():
         paths = {(r.method, r.path) for r in routes}
         want = {("GET", f"{API}/layout"), ("GET", f"{API}/layout/refs"), ("POST", f"{API}/layout/start"),
                 ("POST", f"{API}/layout/crop"), ("POST", f"{API}/layout/psd")}
-        check(want <= paths and len(routes) == 37, f"레이아웃 라우트 5개 등록(모두 37 — S2 레퍼런스 8·S3 파이프라인 7·S4 마스크 5 포함) {len(routes)}")
+        check(want <= paths and len(routes) == 40, f"레이아웃 라우트 5개 등록(모두 40 — S2 레퍼런스 8·S3 파이프라인 7·S4 마스크 5·배치 3a 3 포함) {len(routes)}")
         for name in ("layout_geom.js", "layout_edit.js"):
             st, hd, body = await h.get(f"{API}/board/{name}")
             f = PKG / "web_design_patch" / name
@@ -14607,20 +14609,20 @@ async function editor(crops, L = {}, st = {}, more = {}) {  // more = 편집기 
   const doc = new Doc();
   const confirms = [];
   Object.assign(ctx, { document: doc, fetch: srv.fetch });
-  Object.assign(ctx.window, { confirm: (m) => { confirms.push(m); return true; }, DPViewer: { svg: (tag) => new El(doc, tag) } });
+  Object.assign(ctx.window, { confirm: (m) => { confirms.push(m); return true; }, DPViewer: { svg: (tag, attrs) => Object.assign(new El(doc, tag), { attrs }) } });
   const hosts = { list: doc.createElement("ol"), panel: doc.createElement("section"), head: doc.createElement("div") };
   doc.body.append(hosts.list, hosts.panel, hosts.head);
   const toasts = [];
   const queued = [];
   const queuedRev = []; // 반영(큐) 를 요청한 순간 서버 레이아웃 판(저장이 끝난 뒤였는지)
-  const viewer = { setEditor() {}, setSelection() {}, setCursor() {}, redraw() {}, flags: () => ({ rectsOn: true }), scale: () => 1,
-    canvasPoint: (e) => [e.x, e.y] };
+  const viewer = { setEditor(h) { viewer.h = h; }, setSelection() {}, setCursor() {}, redraw() {}, flags: () => ({ rectsOn: true }), scale: () => 1,
+    canvasPoint: (e) => [e.x, e.y] };  // h = 편집기 마우스 처리기(pointerdown·move·up·draw)
   const ed = E.create(hosts, Object.assign({ apiUrl: API, root: "abcdef012345", viewer, toast: (m, k) => toasts.push(`${k || ""}:${m}`),
     queue: (layout) => { queued.push(layout); queuedRev.push(srv.lay.rev); }, exit() {} }, more));
   ed.enter(Object.assign({ rev: 1, layout_rev: 0, canvas: [3072, 4096], crops: [] }, st));
   await sleep(30);
   const find = (root, pred) => root.all().find(pred) || null;
-  const env = { srv, doc, ed, toasts, queued, queuedRev, confirms, ...hosts, find,
+  const env = { srv, doc, ed, toasts, queued, queuedRev, confirms, ...hosts, find, viewer,
     key: (code, m = {}) => ed.onKey(Object.assign({ code, key: code, repeat: false, ctrlKey: false, metaKey: false, shiftKey: false, altKey: false }, m)),
     pick: async (name) => {
       find(hosts.list, (e) => e.tagName === "LI" && e.children[0].textContent === name).fire("click");
@@ -14642,6 +14644,127 @@ async function editor(crops, L = {}, st = {}, more = {}) {  // more = 편집기 
 
 const C1 = () => crop("001_aaaaaa", "001_모자", [0, 0, 512, 512]);
 const C2 = () => crop("002_bbbbbb", "002_눈", [1024, 0, 1536, 512], { targets: [{ tid: "A", text: "", box: [1100, 100, 1300, 300] }] });
+
+// 배치 3-1(F17): 새 크롭 초안 — 핸들 = 크기, 안쪽 끌기 = 이동(만들기 전), 이름 입력칸은 다시 그리지 않음, Enter = 고친 사각형으로 add
+await scenario("draftEdit", async () => {
+  const env = await editor([C1()]);
+  const h = env.viewer.h;
+  const ev = (x, y) => ({ x, y, clientX: x, clientY: y, shiftKey: false, ctrlKey: false, metaKey: false });
+  const drag = async (a, b) => {
+    h.pointerdown(ev(...a));
+    h.pointermove(ev(...b));
+    h.pointerup(ev(...b));
+    await sleep(10);
+  };
+  const size = () => (env.panel.all().find((e) => e.classList.contains("lp-row") && e.children[0].textContent === "크기·GPT") || { children: [0, { textContent: null }] }).children[1].textContent;
+  const handles = () => {
+    const g = new El(env.doc, "g");
+    h.draw(g, 1);
+    return g.all().filter((e) => (e.attrs || {}).class === "handle").length;
+  };
+  await drag([1024, 1024], [1536, 1536]);  // 빈 곳 = 새 초안 512²
+  const r = { first: size(), handles: handles() };
+  const part = env.type("part", "새것");
+  await drag([1536, 1536], [1664, 1664]);  // se 핸들 = 640²
+  r.resized = size();
+  await drag([1200, 1200], [1328, 1200]);  // 안쪽 = 이동 +128
+  r.moved = size();
+  await drag([1792, 1664], [1794, 1665]);  // se 핸들을 손떨림만큼(끌기 아님) = 그대로
+  r.kept = size();
+  r.handlesAfter = handles();
+  h.pointerdown(ev(1792, 1664));  // se 핸들을 끌다가
+  h.pointermove(ev(1920, 1792));
+  r.dragging = size();
+  h.cancel();  // Esc·pointercancel = 끌기 전 크기(Codex 3a 2차)
+  r.canceled = size();
+  r.sameField = env.field("part") === part && part.value === "새것";
+  env.key("Enter");
+  await sleep(40);
+  const c = env.srv.lay.crops.at(-1);
+  r.created = c && { name: c.name, rect: c.rect };
+  r.toasts = env.toasts.slice();
+  return r;
+});
+
+// 배치 3-2(F19): 선택 크롭의 부품 상자를 한 번 누르면 고름(핸들 8) → se 핸들 = 크기 · 안쪽 끌기 = 이동(1px) · Esc = 상자 선택 풂 ·
+// 고르지 않은 상자 위 끌기 = 크롭 이동(지금처럼) · 다시 고르고 Delete = 그 상자만 지움(크롭 그대로)
+await scenario("boxEdit", async () => {
+  const env = await editor([C1(), C2()]);
+  await env.pick("002_눈");
+  const h = env.viewer.h;
+  const ev = (x, y) => ({ x, y, clientX: x, clientY: y, shiftKey: false, ctrlKey: false, metaKey: false });
+  const drag = async (a, b) => {
+    h.pointerdown(ev(...a));
+    if (b) h.pointermove(ev(...b));
+    h.pointerup(ev(...(b || a)));
+    await sleep(30);
+  };
+  const handles = () => {
+    const g = new El(env.doc, "g");
+    h.draw(g, 1);
+    return g.all().filter((e) => (e.attrs || {}).class === "handle pboxh").length;
+  };
+  const c2 = () => env.srv.lay.crops.find((c) => c.id === "002_bbbbbb");
+  const r = { before: handles() };
+  await drag([1200, 200]);  // 상자 안 누름(끌지 않음) = 고름
+  r.picked = handles();
+  await drag([1300, 300], [1350, 340]);  // se 핸들
+  r.resized = c2().targets[0].box;
+  env.button(env.panel, "상자에 크롭 맞추기").fire("click");  // 제안을 띄운 뒤 상자를 옮기면 옛 제안은 버림(Codex 3a 4차)
+  await sleep(10);
+  const props = () => {
+    const g = new El(env.doc, "g");
+    h.draw(g, 1);
+    return g.all().filter((e) => (e.attrs || {}).class === "prop").length;
+  };
+  r.propBefore = props();
+  await drag([1200, 200], [1220, 210]);  // 안쪽 = 이동
+  r.moved = c2().targets[0].box;
+  r.propAfter = props();
+  r.cropAfterBox = c2().rect;
+  env.key("Escape");
+  await sleep(10);
+  r.afterEsc = handles();
+  await drag([1200, 200], [1232, 200]);  // 고르지 않은 상자 위 끌기 = 크롭 이동(16px 격자)
+  r.cropMoved = c2().rect;
+  r.boxAfterCropMove = c2().targets[0].box;
+  await drag([1250, 250]);  // 다시 고름
+  r.reselect = handles();
+  await drag([1250, 250], [1750, 250]);  // 고른 상자를 크롭 밖으로
+  r.outsideBox = c2().targets[0].box;
+  env.key("Escape");
+  await sleep(10);
+  await drag([1700, 200]);  // 크롭 밖 상자를 누름 = 고름(크롭 선택은 그대로 — Codex 3a 1차)
+  r.outsidePick = [handles(), env.panel.all().find((e) => e.tagName === "H3").textContent];
+  await env.pick("001_모자");
+  await env.pick("002_눈");  // 다른 크롭에 갔다 오면 상자 선택은 풀림
+  r.afterSwitch = handles();
+  await drag([1700, 200]);
+  env.key("Delete");
+  await sleep(40);
+  r.deleted = { box: c2().targets[0].box, crops: env.srv.lay.crops.length, confirms: env.confirms.length };
+  return r;
+});
+
+// Codex 3a 1차: 상자를 끄는 사이 다른 창이 레이아웃을 쓰면(폴링이 새 판을 읽음) 옛 상자 기준 값은 보내지 않고 409 — 다른 창 값이 남음
+await scenario("boxRemote", async () => {
+  const env = await editor([C1(), C2()]);
+  await env.pick("002_눈");
+  const h = env.viewer.h;
+  const ev = (x, y) => ({ x, y, clientX: x, clientY: y, shiftKey: false, ctrlKey: false, metaKey: false });
+  h.pointerdown(ev(1200, 200));
+  h.pointerup(ev(1200, 200));
+  await sleep(20);
+  h.pointerdown(ev(1200, 200));  // 고른 상자 끌기 시작
+  h.pointermove(ev(1260, 200));
+  env.srv.lay.rev += 1;
+  env.srv.lay.crops.find((c) => c.id === "002_bbbbbb").targets[0].box = [1000, 100, 1200, 300];  // 다른 창이 옮김
+  env.state(2, 1);
+  await sleep(40);
+  h.pointerup(ev(1260, 200));
+  await sleep(40);
+  return { box: env.srv.lay.crops.find((c) => c.id === "002_bbbbbb").targets[0].box, toasts: env.toasts.slice() };
+});
 
 // ── 세션(J-L2) ──
 await scenario("queue", async () => {  // 응답이 느릴 때 쓰기 둘을 연달아 → 큐로 차례대로(rev 이어짐), 둘 다 결과
@@ -15523,6 +15646,24 @@ def layout_js_unit():
           and "007_끈 — 사라진 사각형: 레이아웃 그대로, 경고만 꺼짐" in (od.get("confirm") or "") and "사라진 사각형은 경고만 꺼짐" in (od.get("title") or ""),
           f"r1-13 옛 서버(재시작 전 — psdPartial false: take·ack 가 기준점을 통째로 바꿈) = 라벨 '나머지 N건 경고 끔'·확인 창 '경고만 꺼집니다'·툴팁, "
           f"'이 사각형 경고 끄기' 없음('그대로 경고'라 말하지 않음) {od}")
+    br = ej.get("boxRemote") or {}
+    check(br.get("box") == [1000, 100, 1200, 300] and any("다른 창에서 레이아웃이 바뀌어" in t for t in br.get("toasts") or []),
+          f"Codex 3a 1차: 상자를 끄는 사이 다른 창이 쓰면 옛 기준 값은 보내지 않음(409 토스트, 다른 창 값 남음) {br}")
+    be = ej.get("boxEdit") or {}
+    check(be.get("before") == 0 and be.get("picked") == 8 and be.get("resized") == [1100, 100, 1350, 340] and be.get("moved") == [1120, 110, 1370, 350]
+          and be.get("cropAfterBox") == [1024, 0, 1536, 512] and be.get("afterEsc") == 0 and be.get("cropMoved") == [1056, 0, 1568, 512]
+          and be.get("reselect") == 8 and be.get("outsideBox") == [1620, 110, 1870, 350] and be.get("outsidePick") == [8, "002_눈"]
+          and be.get("propBefore") == 1 and be.get("propAfter") == 0
+          and be.get("afterSwitch") == 0
+          and be.get("deleted") == {"box": None, "crops": 2, "confirms": 0},
+          f"배치 3-2(F19): 상자를 누르면 고름(핸들 8) · se 핸들 = 크기 · 안쪽 = 이동(1px, 크롭 그대로) · Esc = 풂 · 고르지 않은 상자 위 끌기 = 크롭 이동 · "
+          f"고르고 Delete = 상자만 지움(확인 창 없음 — Ctrl+Z 로 되돌림) {be}")
+    de = ej.get("draftEdit") or {}
+    check(de.get("handles") == 8 and de.get("handlesAfter") == 8 and de.get("first", "").startswith("512×512")
+          and de.get("resized", "").startswith("640×640") and de.get("moved", "").startswith("640×640") and de.get("kept") == de.get("moved")
+          and de.get("dragging", "").startswith("768×768") and de.get("canceled") == de.get("moved")
+          and de.get("sameField") is True and de.get("created") == {"name": "002_새것", "rect": [1152, 1024, 1792, 1664]},
+          f"배치 3-1(F17): 새 크롭 초안 핸들 8 · se 핸들 = 크기 · 안쪽 끌기 = 이동 · 손떨림은 그대로 · 이름칸 그대로(다시 그리지 않음) · Enter = 고친 사각형으로 add {de}")
     sb = ej["start"]
     check(sb.get("no", {}).get("disabled") is True and sb["why"] in sb["no"]["text"] and "프로젝트 기록 크롭" not in sb["no"]["text"]
           and sb["ok"]["disabled"] is False and "프로젝트 기록 크롭 2개" in sb["ok"]["text"],
@@ -18791,8 +18932,8 @@ def refs_board_unit():
         paths = {(r.method, r.path) for r in routes}
         want = {("GET", f"{API}/refs"), ("GET", f"{API}/refs/sheets"), ("GET", f"{API}/refs/sheet"), ("GET", f"{API}/refs/img"),
                 ("POST", f"{API}/refs/cut"), ("GET", f"{API}/refs/cut"), ("POST", f"{API}/refs/save"), ("POST", f"{API}/refs/link")}
-        check(want <= paths and len(routes) == 37 and len({p for _m, p in paths}) == 36,
-              f"레퍼런스 라우트 7개(cut 은 GET·POST) — RouteDef 37·경로 36(S3 파이프라인 7·S4 마스크 5 포함) {len(routes)}")
+        check(want <= paths and len(routes) == 40 and len({p for _m, p in paths}) == 39,
+              f"레퍼런스 라우트 7개(cut 은 GET·POST) — RouteDef 40·경로 39(S3 파이프라인 7·S4 마스크 5·배치 3a 3 포함) {len(routes)}")
         st, hd, body = await h.get(f"{API}/board/ref_edit.js")
         f = PKG / "web_design_patch" / "ref_edit.js"
         if f.is_file():
@@ -27754,8 +27895,8 @@ def pipeline_board_unit():
         paths = {(r.method, r.path) for r in routes}
         want = {("GET", f"{API}/pipeline"), ("POST", f"{API}/pipeline/settings"), ("GET", f"{API}/pipeline/prompt"),
                 ("GET", f"{API}/pipeline/plan"), ("GET", f"{API}/pipeline/progress"), ("GET", f"{API}/draft"), ("POST", f"{API}/draft/adopt")}
-        check(want <= paths and len(routes) == 37 and len({p for _m, p in paths}) == 36,
-              f"파이프라인 라우트 7개 — RouteDef 37·경로 36 {len(routes)}")
+        check(want <= paths and len(routes) == 40 and len({p for _m, p in paths}) == 39,
+              f"파이프라인 라우트 7개 — RouteDef 40·경로 39(배치 3a 3 포함) {len(routes)}")
         st, hd, body = await h.get(f"{API}/board/pipeline.js")
         f = PKG / "web_design_patch" / "pipeline.js"
         if f.is_file():
@@ -38891,14 +39032,15 @@ def mask_unit():
               and conf2 == [] and merged2["mask_edits"] == {"kz": rec["b"], "ky": rec["c"]},
               f"같은 키 양쪽 변경 = ours + 충돌 경로 mask_edits/<key>, 다른 키는 둘 다 {conf} {conf2}")
         # 같은 key 동시 save(두 창이 같은 기준 seen "" 에서 [적용]) — update_manifest 앞에서 Barrier 로 두 스레드를 맞춘다(결정적).
-        # seen 대조가 잠금(mutate) 안이어야 하나만 기록되고 다른 하나는 409 changed — 잠금 밖이면 둘 다 성공하고 뒤 판이 앞 판을 hist 로 민다
+        # seen 대조가 잠금(mutate) 안이어야 하나만 기록되고 다른 하나는 409 changed — 잠금 밖이면 둘 다 성공하고 뒤 판이 앞 판을 hist 로 민다.
+        # 장벽 = 잠금 앞 단계(PNG 검사): 배치 3-6 부터 파일 쓰기부터 기록까지 한 잠금이라 잠금 안에서는 둘이 만날 수 없음
         kr = "r_aaaaaaaaaaaa_0_0"
         rootr = project("k2race", [kr])
-        bar, orig, res = threading.Barrier(2), dm.store.update_manifest, {}
+        bar, orig, res = threading.Barrier(2), dm.validate_png, {}
 
-        def gated(root_, mutate):
+        def gated(data_, rect_):
             bar.wait(timeout=10)
-            return orig(root_, mutate)
+            return orig(data_, rect_)
 
         def racer(i):
             try:
@@ -38908,7 +39050,7 @@ def mask_unit():
             except Exception as e:  # noqa: BLE001 — 시험이 보고(Barrier 시간 넘김 포함)
                 res[i] = f"{type(e).__name__} {e}"
 
-        dm.store.update_manifest = gated
+        dm.validate_png = gated
         try:
             racers = [threading.Thread(target=racer, args=(i,)) for i in range(2)]
             for t in racers:
@@ -38916,7 +39058,7 @@ def mask_unit():
             for t in racers:
                 t.join()
         finally:
-            dm.store.update_manifest = orig
+            dm.validate_png = orig
         rr = dm.edit_record(store.load_manifest(rootr), kr)
         check(rr is not None and sorted(res.values()) == ["409 changed", rr["file"]] and rr["hist"] == [],
               f"같은 key·같은 seen 동시 save = 하나만 기록(hist 0)·다른 하나 409 changed(seen 대조가 update_manifest 잠금 안) {res}")
@@ -40416,7 +40558,7 @@ def mask_board_unit():
         paths = {(r.method, r.path) for r in routes}
         want = {("GET", f"{API}/mask"), ("GET", f"{API}/mask/img"), ("POST", f"{API}/mask/save"), ("POST", f"{API}/mask/edit"),
                 ("GET", f"{API}/mask/alts")}
-        check(want <= paths and len(routes) == 37 and len({p for _m, p in paths}) == 36, f"마스크 라우트 5개 — RouteDef 37·경로 36 {len(routes)}")
+        check(want <= paths and len(routes) == 40 and len({p for _m, p in paths}) == 39, f"마스크 라우트 5개 — RouteDef 40·경로 39(배치 3a 3 포함) {len(routes)}")
         st_, hd, body = await h.get(f"{API}/board/mask_edit.js")
         f = PKG / "web_design_patch" / "mask_edit.js"
         if f.is_file():
@@ -41064,9 +41206,9 @@ def mask_js_unit():
     check("textContent" in mj and "replaceChildren" in mj, "mask_edit.js textContent·replaceChildren")
     check(re.findall(r"window\.(\w+)\s*=(?!=)", mj) == ["DPMaskEdit"], f"mask_edit.js 가 정의하는 전역은 window.DPMaskEdit 하나 {re.findall(r'window.(\w+)\s*=(?!=)', mj)}")
     paths = set(re.findall(r'"(mask(?:/\w+)?)[?"]', mj))
-    check(paths == {"mask", "mask/save", "mask/edit", "mask/alts"} and mj.count("fetchFn(apiUrl(") == 4 and mj.count("fetch(") == 1
+    check(paths == {"mask", "mask/save", "mask/edit", "mask/alts", "mask/unused", "mask/cleanup"} and mj.count("fetchFn(apiUrl(") == 4 and mj.count("fetch(") == 1
           and "(u, o) => fetch(u, o)" in mj,
-          f"mask_edit.js 보드 주소 = apiUrl 상대 경로(mask·mask/save·mask/edit·mask/alts + GET /mask 가 준 mask/img url) — 세션의 fetchFn 만 {sorted(paths)}")
+          f"mask_edit.js 보드 주소 = apiUrl 상대 경로(mask·mask/save·mask/edit·mask/alts·mask/unused·mask/cleanup(배치 3-6) + GET /mask 가 준 mask/img url) — 세션의 fetchFn 만 {sorted(paths)}")
     check('headers: { "Content-Type": "image/png" }' in mj and 'new CompressionStream("deflate")' in mj and "head[8] = 8;" in mj
           and "toBlob" not in mj and "toDataURL" not in mj,
           "[적용] 본문 = 직접 만든 L 8비트 PNG(IHDR 비트 8·색 형식 0, zlib = CompressionStream deflate — canvas.toBlob 의 RGBA 아님)")
@@ -43622,7 +43764,7 @@ def polish1_unit():
           "F27 Export 칸 '★ 아닌 후보 레이어도 넣기'(제외은 늘 빠짐) = 누를 때의 Export 절 alternates(hidden_all ↔ none) 저장")
     check("!S.targets.some((t) => t.pick_keys.length) && !window.confirm(`★ 가 하나도 없습니다" in pj and "넣을 후보 없음(★ 도 숨김 후보도 없음)" in pj,
           "U-8 ★ 0 Export 는 확인 창, empty 문구")
-    eb = pj[pj.index('const eb = button("Export"'):pj.index("btns(s, eb);")]
+    eb = pj[pj.index('const eb = button("Export"'):pj.index("btns(s, eb, ob);")]
     check("if (asking || PS.busy) return;" in eb and "eb.disabled = !!PS.job || !!paying || asking || PS.busy;" in eb,
           "F27 체크(alternates) 저장 중에는 [Export] 끔·눌러도 내지 않음 — 옛 설정으로 큐되지 않게(Codex 2차)")
     check('svg("circle", { class: "mbrush" })' in mj and '(soft || tool === "soften" ? " soft" : tool === "revive" ? " revive" : "")' in mj
@@ -43944,6 +44086,194 @@ def polish2_unit():
 
 
 
+def polish3_unit():
+    """다듬기 배치 3(10/21 — _proto/STUDIO_POLISH_PLAN_2610.md §3·§11): 서버 함수·라우트·정적. 3-1·3-2 끌기는 layout_js_unit(draftEdit·boxEdit)."""
+    section("다듬기 배치 3 — 3-5a Export [출력 폴더 열기](ComfyUI output 안만, 마지막 Export PSD 고름)")
+    import bmk_design_patch_board as board
+    import bmk_design_patch_store as store
+    web = PKG / "web_design_patch"
+    out = OUT_ROOT / "polish3"
+    shutil.rmtree(out, ignore_errors=True)
+    base = out / "comfy_output"
+    proj = out / "projects" / "p3open"
+    proj.mkdir(parents=True)
+    store.save_manifest(str(proj), store.new_manifest("p3open"))
+    seen = []
+    orig_reveal, orig_dir = board._reveal, list(board._OUTPUT_DIR)
+    board._reveal = lambda path, select: seen.append((path, select))
+
+    def call():
+        try:
+            return board.open_export_folder(str(proj))
+        except board._Reject as e:
+            return (e.status, str(e))
+    try:
+        board._OUTPUT_DIR[:] = []
+        r_unset = call()
+        board.set_output_dir(str(base))
+        r_none = call()
+        folder = base / "design_patch" / "p3open"
+        folder.mkdir(parents=True)
+        r_folder = call()
+        psd = folder / "p3open_r1.psd"
+        psd.write_bytes(b"8BPS")
+        m = store.load_manifest(str(proj))
+        m["exports"].append({"psd": str(psd).replace("\\", "/")})
+        store.save_manifest(str(proj), m)
+        r_psd = call()
+        psd_b = folder / "p3open_r2.psd"
+        psd_b.write_bytes(b"8BPS")
+        m = store.load_manifest(str(proj))
+        m["exports"][-1]["hash"] = "ha"
+        m["exports"].append({"psd": str(psd_b).replace("\\", "/"), "hash": "hb"})
+        store.save_manifest(str(proj), m)
+        store.save_board_export(str(proj), "ha")  # A → B → A: '변경 없음'은 exports 에 더하지 않고 해시만(Codex 3a 2차)
+        r_cache = call()
+        store.save_board_export(str(proj), "hb")
+        outside = out / "elsewhere.psd"
+        outside.write_bytes(b"8BPS")
+        m = store.load_manifest(str(proj))
+        m["exports"].append({"psd": str(outside).replace("\\", "/"), "hash": "hc"})
+        store.save_manifest(str(proj), m)
+        store.save_board_export(str(proj), "hc")
+        r_out = call()
+        # 출력 폴더가 output 밖을 가리키는 링크면(그 안 PSD 도) 열지 않음 — 실제 경로로 판정(Codex 3a 3차)
+        lp = out / "projects" / "p3link"
+        lp.mkdir(parents=True)
+        store.save_manifest(str(lp), store.new_manifest("p3link"))
+        far = out / "far_dir"
+        far.mkdir()
+        (far / "x.psd").write_bytes(b"8BPS")
+        r_link = None
+        try:
+            import _winapi
+            _winapi.CreateJunction(str(far), str(base / "design_patch" / "p3link"))
+        except (ImportError, OSError):
+            try:
+                os.symlink(far, base / "design_patch" / "p3link", target_is_directory=True)
+            except OSError:
+                r_link = "nolink"
+        if r_link is None:
+            m = store.load_manifest(str(lp))
+            m["exports"].append({"psd": str(base / "design_patch" / "p3link" / "x.psd").replace("\\", "/"), "hash": "hl"})
+            store.save_manifest(str(lp), m)
+            try:
+                r_link = board.open_export_folder(str(lp))
+            except board._Reject as e:
+                r_link = (e.status, str(e))
+    finally:
+        board._reveal = orig_reveal
+        board._OUTPUT_DIR[:] = orig_dir
+    check(r_unset[0] == 409 and "재시작" in r_unset[1] and r_none[0] == 404 and "출력 폴더가 아직 없습니다" in r_none[1],
+          f"3-5a 출력 폴더를 모르면 409(재시작 안내), 폴더가 없으면 404 {r_unset} {r_none}")
+    check(r_folder == {"ok": True, "path": str(folder), "selected": False} and r_psd == {"ok": True, "path": str(psd), "selected": True}
+          and r_out == {"ok": True, "path": str(folder), "selected": False}
+          and r_cache == {"ok": True, "path": str(psd), "selected": True}
+          and (r_link == "nolink" or (r_link[0] == 400 and "output 밖을 가리킵니다" in r_link[1]))
+          and seen == [(str(folder), False), (str(psd), True), (str(psd), True), (str(folder), False)],
+          f"3-5a Export 없음 = 폴더 열기 · 마지막 Export PSD = 그 파일을 고른 채(캐시 재사용 A→B→A 면 A — store.last_export) · "
+          f"output 밖 PSD(손으로 고친 기록)는 열지 않고 폴더 · output 밖을 가리키는 링크 폴더(그 안 PSD 도)는 400 {r_folder} {r_psd} {r_cache} {r_out} {r_link} {seen}")
+    check(("POST", f"{board.API}/open_folder", board.open_folder_handler) in board._ROUTES
+          and "board.set_output_dir(folder_paths.get_output_directory())" in (PKG / "bmk_design_patch.py").read_text(encoding="utf-8"),
+          "3-5a 라우트 POST /open_folder · 노드 모듈이 import 때 output 폴더를 넘김")
+    pj = (web / "pipeline.js").read_text(encoding="utf-8")
+    check('s.openFolder = () => call("open_folder", {});' in pj and 'button("출력 폴더 열기"' in pj and "btns(s, eb, ob);" in pj,
+          "3-5a 「Export」 칸 [출력 폴더 열기] = POST /open_folder, 결과 토스트")
+
+    section("다듬기 배치 3 — 3-6 masks/ 안 쓰는 편집 PNG 정리(기록·이전 버전이 쓰는 것·10분 안 새 파일은 남김, 잠금 안에서 다시 판정)")
+    mp = out / "projects" / "p3mask"
+    (mp / "masks").mkdir(parents=True)
+    m = store.new_manifest("p3mask")
+    store.save_manifest(str(mp), m)
+    F = {n: f"k_e_{i:012x}.png" for i, n in enumerate(("used", "hist", "orphan", "fresh", "elsewhere"), 1)}
+    for n, name in F.items():
+        (mp / "masks" / name).write_bytes(b"\x89PNG" + n.encode())
+    (mp / "masks" / "c_hand_0123456789ab.png").write_bytes(b"\x89PNGhand")  # 수확 손 마스크(이름 꼴이 편집기 파일이 아님)
+    (mp / "masks" / "note.txt").write_text("x", encoding="utf-8")
+    old = time.time() - 3600
+    for n in ("used", "hist", "orphan", "elsewhere"):
+        os.utime(mp / "masks" / F[n], (old, old))
+    os.utime(mp / "masks" / "c_hand_0123456789ab.png", (old, old))
+    m = store.load_manifest(str(mp))
+    m["mask_edits"] = {"k1": {"file": f"masks/{F['used']}", "hist": [{"file": f"masks/{F['hist']}"}]}}
+    m["exports"].append({"note": [{"deep": f"masks/{F['elsewhere']}"}]})  # 매니페스트 어디든 가리키면 쓰임(후보 hand_mask.file 등 — Codex 3a 1차)
+    store.save_manifest(str(mp), m)
+    un = board.mask_unused(str(mp))
+    check([f["file"] for f in un["files"]] == [f"masks/{F['orphan']}"] and un["recent"] == 1 and un["bytes"] == len(b"\x89PNGorphan"),
+          f"3-6 목록 = 편집기 파일 꼴(<key>_e_<sha12>.png) 중 매니페스트 어디서도(기록·이전 버전·그 밖 깊은 곳) 안 가리키는 것만 — 손 마스크·txt 아님, "
+          f"10분 안 새 파일은 recent 로만 셈 {un}")
+    cl = board.mask_cleanup(str(mp), {"files": [f"masks/{F['orphan']}", f"masks/{F['used']}", f"masks/{F['fresh']}", f"masks/{F['orphan']}",
+                                                "masks/c_hand_0123456789ab.png"]})
+    left = sorted(p.name for p in (mp / "masks").iterdir())
+    check(cl == {"ok": True, "deleted": 1, "bytes": len(b"\x89PNGorphan"), "kept": [f"masks/{F['used']}", f"masks/{F['fresh']}", "masks/c_hand_0123456789ab.png"]}
+          and left == sorted(["c_hand_0123456789ab.png", "note.txt", F["used"], F["hist"], F["fresh"], F["elsewhere"]]),
+          f"3-6 지우기 = 보낸 것 중 지금도 안 쓰는 편집기 파일만(쓰는 파일·새 파일·손 마스크는 kept, 같은 이름 두 번은 한 번) {cl} {left}")
+    bad = []
+    for files in (None, [], ["../x.png"], ["masks/a/b.png"], [1], [f"masks/k_e_{i:012x}.png" for i in range(501)]):
+        try:
+            board.mask_cleanup(str(mp), {"files": files})
+            bad.append("ok")
+        except board._Reject as e:
+            bad.append(e.status)
+    jp = out / "projects" / "p3junction"
+    jp.mkdir(parents=True)
+    store.save_manifest(str(jp), store.new_manifest("p3junction"))
+    ext = out / "outside_masks"
+    ext.mkdir()
+    (ext / "k_e_aaaaaaaaaaaa.png").write_bytes(b"\x89PNGext")
+    os.utime(ext / "k_e_aaaaaaaaaaaa.png", (old, old))
+    linked = False
+    try:
+        import _winapi
+        _winapi.CreateJunction(str(ext), str(jp / "masks"))
+        linked = True
+    except (ImportError, OSError):
+        try:
+            os.symlink(ext, jp / "masks", target_is_directory=True)
+            linked = True
+        except OSError:
+            pass
+    if linked:
+        ju = board.mask_unused(str(jp))
+        try:
+            jc = board.mask_cleanup(str(jp), {"files": ["masks/k_e_aaaaaaaaaaaa.png"]})
+        except board._Reject as e:
+            jc = e.status
+        check(ju == {"files": [], "bytes": 0, "recent": 0} and jc == {"ok": True, "deleted": 0, "bytes": 0, "kept": ["masks/k_e_aaaaaaaaaaaa.png"]}
+              and (ext / "k_e_aaaaaaaaaaaa.png").exists(),
+              f"3-6 masks/ 가 프로젝트 밖을 가리키는 링크(junction·심볼릭)면 고르지도 지우지도 않음(Codex 3a 2차) {ju} {jc}")
+    else:
+        skip("3-6 링크를 만들 수 없음 — 프로젝트 밖 masks/ 시험 생략")
+    check(bad == [400] * 6, f"3-6 files 는 masks/<이름>.png 목록 500개까지(경로 밖·하위 폴더·빈 목록·숫자·501개 = 400) {bad}")
+    import bmk_design_patch_mask as dmask
+    tp = out / "projects" / "p3touch"
+    (tp / "masks").mkdir(parents=True)
+    names = [f"k_e_{i:012x}.png" for i in range(1, 5)]
+    for n in names:
+        (tp / "masks" / n).write_bytes(b"x")
+        os.utime(tp / "masks" / n, (old, old))
+    rec = lambda f, hist: {"file": f"masks/{f}", "hist": [{"file": f"masks/{h}"} for h in hist]}  # noqa: E731
+    dmask._touch_dropped(str(tp), rec(names[0], names[1:3]), rec(names[1], [names[2]]))  # 되돌리기: 지금 판(0)이 빠짐
+    dmask._touch_dropped(str(tp), rec(names[3], []), None)  # 지우기: 3 이 빠짐
+    dmask._touch_dropped(str(tp), None, None)
+    fresh = [time.time() - (tp / "masks" / n).stat().st_mtime < 60 for n in names]
+    check(fresh == [True, False, False, True] and [f["file"] for f in board._mask_unused(str(tp), {"mask_edits": {}}, time.time())[0]]
+          == [f"masks/{names[1]}", f"masks/{names[2]}"],
+          f"3-6 기록에서 빠지는 편집 파일(되돌리기·지우기·hist 밀려남)은 수정 시각을 지금으로 → 정리가 10분 동안 남김(읽어 간 Export·Compose 보호 — Codex 3a 5차) {fresh}")
+    mk = (PKG / "bmk_design_patch_mask.py").read_text(encoding="utf-8")
+    check(mk.count("_touch_dropped(root, old, ") == 4, "3-6 save_edit(hist 밀려남)·undo_edit(둘)·reset_edit 가 빠지는 파일을 _touch_dropped")
+    se = mk[mk.index("def save_edit("):mk.index("def _touch_dropped(")]
+    check(se.index("with store.manifest_lock(root):") < se.index("rel = store.save_png_ca(") < se.index("return store.update_manifest(root, mutate)"),
+          "3-6 편집 저장은 파일 쓰기(같은 내용이면 옛 파일 재사용)부터 기록까지 매니페스트 잠금 — 정리가 그 사이 지우지 않게(Codex 3a 1차)")
+    check(("GET", f"{board.API}/mask/unused", board.mask_unused_handler) in board._ROUTES
+          and ("POST", f"{board.API}/mask/cleanup", board.mask_cleanup_handler) in board._ROUTES, "3-6 라우트 GET /mask/unused · POST /mask/cleanup")
+    mj = (web / "mask_edit.js").read_text(encoding="utf-8")
+    check('s.unused = () => call("mask/unused?" + qs({}));' in mj and 's.cleanup = (files) => call("mask/cleanup", { files });' in mj
+          and 'button("안 쓰는 편집 파일 정리"' in mj and "await M.cleanup(d.files.slice(i, i + 200).map((f) => f.file))" in mj
+          and "window.confirm(" in mj[mj.index("async function cleanupFiles"):],
+          "3-6 마스크 「저장된 버전」 칸 [안 쓰는 편집 파일 정리] = 목록 → 확인 창 → 200개씩 지우기(서버 본문 상한 — Codex 3a 1차) → 토스트")
+
+
 def polish1_node_unit():
     """다듬기 배치 1 — B-1 Export 레이어 c 번호 = Studio 후보 번호(탈락 포함 등록 순서). 노드는 _dp_package(mock — 유료 0)."""
     section("다듬기 배치 1 — B-1 Export 레이어 c 번호 = Studio 번호(탈락 후보가 앞에 있어도)")
@@ -44053,6 +44383,8 @@ if __name__ == "__main__":
         polish1_unit()
     if want("polish2_unit"):
         polish2_unit()
+    if want("polish3_unit"):
+        polish3_unit()
     print(f"\n단위 테스트 {time.time() - T0:.1f}s (PASS {PASSES} FAIL {len(FAILS)})")
     if QUICK:
         print("\n--quick: 회귀·노드 생략")

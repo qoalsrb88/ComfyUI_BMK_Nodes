@@ -418,6 +418,8 @@ svg.marks .ovl { fill: url(#dp-hatch); opacity: .45; }
 svg.marks .ovl.on { opacity: 1; }
 svg.marks .guide { fill: none; stroke: var(--reg); stroke-width: 1px; stroke-dasharray: 4 4; vector-effect: non-scaling-stroke; }
 svg.marks .pbox { fill: none; stroke-width: 2px; vector-effect: non-scaling-stroke; }
+svg.marks .pbox.on { stroke-width: 3px; } /* 고른 부품 상자(F19) — 핸들 = 크기 · 안쪽 끌기 = 이동 */
+#layout-panel button.sel { border-color: var(--accent); }
 svg.marks .handle { fill: #fff; stroke: var(--accent); stroke-width: 1px; vector-effect: non-scaling-stroke; }
 svg.marks .prop { fill: rgba(255, 201, 64, .08); stroke: var(--star); stroke-width: 2px; stroke-dasharray: 8 4; vector-effect: non-scaling-stroke; }
 svg.marks .draft { fill: rgba(77, 163, 255, .08); stroke: var(--accent); stroke-width: 2px; stroke-dasharray: 6 3; vector-effect: non-scaling-stroke; }

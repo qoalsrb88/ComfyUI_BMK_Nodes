@@ -43,6 +43,7 @@ torch·comfy·vlm·노드 모듈을 import 하지 않는다(store·numpy·PIL �
 from __future__ import annotations
 
 import io
+import os
 import re
 import time
 from typing import Callable
@@ -242,7 +243,6 @@ def save_edit(root: str, key: str, data, *, seen: str, rect: list[int], base: di
     _check_base(base)
     _check_ops(ops)
     arr = validate_png(data, rect)
-    rel = store.save_png_ca(root, MASKS_DIR, arr, prefix=re.sub(r"[^A-Za-z0-9_\-]", "", key)[:10] + "_e_")
 
     def mutate(m):
         if star_cand(m, key) is None:
@@ -254,9 +254,24 @@ def save_edit(root: str, key: str, data, *, seen: str, rect: list[int], base: di
         rec = check_record({"file": rel, "rect": list(rect), "base": dict(base), "ops": ops,
                             "at": time.strftime("%Y-%m-%d %H:%M:%S"), "hist": hist[:HIST_KEEP]})
         m["mask_edits"] = {**(m.get("mask_edits") or {}), key: rec}
+        _touch_dropped(root, old, rec)  # HIST_KEEP 을 넘어 밀려난 판
         return rec
 
-    return store.update_manifest(root, mutate)
+    # 파일 쓰기(같은 내용이면 옛 파일을 그대로 씀 — mtime 그대로)부터 기록까지 한 잠금: 보드 masks/ 정리(board.mask_cleanup, 같은 잠금)가 그 사이 지우지 않게
+    with store.manifest_lock(root):
+        rel = store.save_png_ca(root, MASKS_DIR, arr, prefix=re.sub(r"[^A-Za-z0-9_\-]", "", key)[:10] + "_e_")
+        return store.update_manifest(root, mutate)
+
+
+def _touch_dropped(root: str, before: dict | None, after: dict | None) -> None:
+    """기록에서 빠지는 편집 파일(되돌리기·지우기·hist 밀려남)의 수정 시각을 지금으로 — 보드 masks/ 정리는 10분 안에 바뀐 파일을 남기므로,
+    빠지기 전에 매니페스트를 읽어 간 실행(Export·Compose)이 쓰는 동안 지우지 않는다(Codex 3a 5차)."""
+    files = lambda r: {x["file"] for x in [r, *r["hist"]]} if r else set()  # noqa: E731
+    for f in files(before) - files(after):
+        try:
+            os.utime(store.resolve_path(root, f))
+        except (OSError, ValueError):
+            pass  # 이미 없는 파일·폴더 밖 이름 — 지킬 것 없음
 
 
 def _drop(m: dict, key: str) -> None:
@@ -270,8 +285,10 @@ def undo_edit(root: str, key: str, *, seen: str) -> tuple[dict | None, int]:
         old = _expect(m, key, seen)
         if old is None or not old["hist"]:
             _drop(m, key)
+            _touch_dropped(root, old, None)
             return None
         rec = m["mask_edits"][key] = check_record(dict(old["hist"][0], hist=old["hist"][1:]))
+        _touch_dropped(root, old, rec)
         return rec
 
     return store.update_manifest(root, mutate)
@@ -279,7 +296,8 @@ def undo_edit(root: str, key: str, *, seen: str) -> tuple[dict | None, int]:
 
 def reset_edit(root: str, key: str, *, seen: str) -> tuple[None, int]:
     def mutate(m):
-        _expect(m, key, seen)
+        old = _expect(m, key, seen)
         _drop(m, key)
+        _touch_dropped(root, old, None)
 
     return store.update_manifest(root, mutate)

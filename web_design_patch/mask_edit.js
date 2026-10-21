@@ -246,6 +246,9 @@ window.DPMaskEdit = (() => {
       return d;
     }
 
+    s.unused = () => call("mask/unused?" + qs({})); // masks/ 안 쓰는 편집 PNG(배치 3-6)
+    s.cleanup = (files) => call("mask/cleanup", { files });
+
     async function image(rel, w, h) {
       // GET /mask/img → RGBA 바이트(크기가 기대와 다르면 오류 — 그 사이 바뀐 판)
       const r = await fetchFn(apiUrl(rel), {});
@@ -939,6 +942,39 @@ window.DPMaskEdit = (() => {
       if (again) refreshInfo();
     }
 
+    async function cleanupFiles() {
+      // 배치 3-6: 목록을 받아 확인 창 → 서버가 잠금 안에서 다시 판정해 지움(그 사이 다시 쓰이게 된 파일은 남김)
+      let d;
+      try {
+        d = await M.unused();
+      } catch (e) {
+        opts.toast(e.message, "err");
+        return;
+      }
+      const mb = (b) => `${(b / 1048576).toFixed(1)}MB`;
+      const recent = d.recent ? ` · 10분 안에 쓴 ${d.recent}개는 남김` : "";
+      if (!d.files.length) {
+        opts.toast(`지울 편집 파일 없음${recent}`);
+        return;
+      }
+      const names = d.files.slice(0, 8).map((f) => ` · ${f.file} (${f.at})`).concat(d.files.length > 8 ? [` · … 외 ${d.files.length - 8}개`] : []);
+      if (!window.confirm([`masks/ 에서 어떤 편집 기록도 쓰지 않는 PNG ${d.files.length}개(${mb(d.bytes)})를 지웁니다 — 되돌릴 수 없음${recent}.`,
+        ...names, "계속할까요?"].join("\n"))) return;
+      const sum = { deleted: 0, bytes: 0, kept: 0 };
+      try {
+        // 서버 본문 상한(16KB)·목록 상한(500) 아래로 200개씩(Codex 3a 1차)
+        for (let i = 0; i < d.files.length; i += 200) {
+          const r = await M.cleanup(d.files.slice(i, i + 200).map((f) => f.file));
+          sum.deleted += r.deleted;
+          sum.bytes += r.bytes;
+          sum.kept += r.kept.length;
+        }
+        opts.toast(`편집 파일 ${sum.deleted}개 지움(${mb(sum.bytes)})${sum.kept ? ` · 그 사이 다시 쓰여 ${sum.kept}개 남김` : ""}`);
+      } catch (e) {
+        opts.toast(`${e.message}${sum.deleted ? ` — 앞서 ${sum.deleted}개는 지움` : ""}`, "err");
+      }
+    }
+
     async function serverEdit(kind) {
       const n = M.pending();
       const ed = M.info && M.info.edit;
@@ -1217,6 +1253,8 @@ window.DPMaskEdit = (() => {
       line(s, ed ? `이전 버전 ${ed.hist}` : "저장된 편집 없음", "dim");
       btns(s, off(button("이전 버전으로", "기록의 이전 버전으로(없으면 기록 지움 = 처음 마스크로)", () => serverEdit("undo")), busy || !ed),
         off(button("편집 모두 지우기", "기록(이전 버전 포함)을 지우고 처음 마스크로 — 확인 창", () => serverEdit("reset"), "danger"), busy || !ed));
+      btns(s, off(button("안 쓰는 편집 파일 정리", "프로젝트 masks/ 에서 어떤 편집 기록(★ 아닌 후보·이전 버전 포함)도 쓰지 않는 PNG 를 지움 — 목록 확인 창, "
+        + "10분 안에 쓴 파일은 남김", cleanupFiles), busy));
 
       // 6 이 크롭 이음매
       s = section("이 크롭 이음매");

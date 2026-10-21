@@ -97,7 +97,7 @@
 
   <section id="layout-panel" aria-label="크롭 속성"></section>
   <section id="ref-panel" aria-label="레퍼런스 관리·컷"></section>
-  <section id="pipe-panel" aria-label="진행 — 설정·반영·계획·★ 점검·Export·채택" hidden></section>
+  <section id="pipe-panel" aria-label="실행 — 실행 설정·반영·비용·승인·★ 점검·Export·채택" hidden></section>
   <section id="mask-panel" aria-label="마스크 편집 — 대상·붓·자동 손질·적용 전 획·이음매·다른 후보" hidden></section>
 </main>
 
@@ -138,6 +138,7 @@
       <tr><td><kbd>←</kbd><kbd>→</kbd><kbd>↑</kbd><kbd>↓</kbd></td><td>미세 이동 16px · <kbd>Shift</kbd> 128px · <kbd>Ctrl</kbd> 1px</td></tr>
       <tr><td><kbd>Tab</kbd> · <kbd>Shift</kbd>+<kbd>Tab</kbd></td><td>다음 · 이전 크롭</td></tr>
       <tr><td><kbd>P</kbd> · <kbd>Enter</kbd></td><td>부품 상자 그리기 · 제안 적용 / 새 크롭 만들기. [상자: 선택 크롭 / 모두 / 숨김] = 부품 상자 보기</td></tr>
+      <tr><td>끌기(초안·상자)</td><td>새 크롭 초안도 만들기 전에 핸들 = 크기 · 안쪽 끌기 = 이동. 선택 크롭의 부품 상자를 한 번 누르면 고름 → 핸들 = 크기 · 안쪽 끌기 = 이동 · <kbd>Delete</kbd> = 그 상자 지우기 · <kbd>Esc</kbd> = 상자 선택 풀기</td></tr>
       <tr><td><kbd>Delete</kbd></td><td>크롭 지우기(확인 창 — 파일은 남음 · 되살리기는 Ctrl+Z · 이름을 바꾼 크롭은 같은 이름으로 다시 만들어도 새 ID)</td></tr>
       <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd> · <kbd>Ctrl</kbd>+<kbd>Y</kbd></td><td>실행 취소 · 다시(이 창의 편집만 — 다른 창에서 바뀌면 기록을 비움)</td></tr>
       <tr><td><kbd>Esc</kbd></td><td>끌기 취소 → 선택 해제 → 크롭 편집 모드 나가기</td></tr>
@@ -159,7 +160,7 @@
     <table>
       <tr><td>왼쪽 체크</td><td>계획·승인 코드의 대상 크롭(only) — 전체 · 없음 · 승인 필요만. 크롭을 누르면 오른쪽 아래 채택 패널</td></tr>
       <tr><td>실행 설정</td><td>실행 설정(pipeline.json — 노드 위젯 그대로). "확인 필요"가 남으면 반영·Export 를 막음(추정한 Prepare 설정으로 생성 조건이 뒤집히지 않게)</td></tr>
-      <tr><td>반영 · Export</td><td>무료 템플릿(Run·Spec Draft 없음)을 ComfyUI 에 직접 큐 — 탭 불필요. 반영 = Import → Prepare → Analyze → Review(대기열 앞), Export = Analyze → Compose → Export(대기열 뒤). 반영 칸·확인 창에 레이아웃 미반영 크롭별 줄(무엇이 바뀌었나) — 이름·위치가 바뀐 줄은 [되돌리기](마지막 반영 값으로, 레이아웃만)</td></tr>
+      <tr><td>반영 · Export</td><td>무료 템플릿(Run·Spec Draft 없음)을 ComfyUI 에 직접 큐 — 탭 불필요. 반영 = Import → Prepare → Analyze → Review(대기열 앞), Export = Analyze → Compose → Export(대기열 뒤). 반영 칸·확인 창에 레이아웃 미반영 크롭별 줄(무엇이 바뀌었나) — 이름·위치가 바뀐 줄은 [되돌리기](마지막 반영 값으로, 레이아웃만). [출력 폴더 열기] = 탐색기로 Export 출력 폴더(ComfyUI output/design_patch/&lt;프로젝트 폴더&gt; — 마지막 Export PSD 를 고른 채)</td></tr>
       <tr><td>비용·승인</td><td>Run·초안의 승인 필요 수·비용·승인 코드(노드와 같은 계산). [초안 승인]·[생성 승인] = 확인 창 뒤 ComfyUI 탭이 서버 템플릿을 큐에 넣음(유료 승인을 받는 탭 — 상단 "ComfyUI 탭 연결"), 시간 상한으로 멈추면 [남은 N건 이어서 승인]. 승인 코드 복사는 그래프 노드의 approve·only 에</td></tr>
       <tr><td>채택 · 수정 · 해제</td><td>스펙 _layer_targets 를 씀(미리보기 → 확인). 반영은 다음 무료 반영</td></tr>
     </table>
@@ -170,7 +171,7 @@
       <tr><td><kbd>Space</kbd>+끌기 · 가운데 버튼</td><td>화면 이동(마스크 모드의 왼쪽 끌기는 붓 — 캔버스의 크롭을 눌러 고르지 않음: 왼쪽 목록·<kbd>N</kbd>·이음매 목록으로)</td></tr>
       <tr><td><kbd>[</kbd> <kbd>]</kbd> · <kbd>Shift</kbd>+<kbd>[</kbd> <kbd>]</kbd></td><td>붓 크기(지름, 크롭 px) · 경도</td></tr>
       <tr><td>자동 손질</td><td>가장자리 페이드(위·아래·왼·오른 — 폭 32·64·128, 기본 64) · 이음매 구간 페이드(± 폭 테이퍼) · 전체 페더 (px) · 처음 마스크로</td></tr>
-      <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd> · <kbd>Ctrl</kbd>+<kbd>Y</kbd> · <kbd>Enter</kbd></td><td>실행 취소 · 다시(이 창 — 획 단위 최근 50) · 적용(편집 창 크기 8비트 PNG 저장 — 무료). 저장된 버전은 [이전 버전으로]·[편집 모두 지우기]</td></tr>
+      <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd> · <kbd>Ctrl</kbd>+<kbd>Y</kbd> · <kbd>Enter</kbd></td><td>실행 취소 · 다시(이 창 — 획 단위 최근 50) · 적용(편집 창 크기 8비트 PNG 저장 — 무료). 저장된 버전은 [이전 버전으로]·[편집 모두 지우기]. [안 쓰는 편집 파일 정리] = 프로젝트 masks/ 에서 어떤 편집 기록도 쓰지 않는 PNG 를 지움(목록 확인 창 — 10분 안에 쓴 파일은 남김)</td></tr>
       <tr><td><kbd>Q</kbd> 누르는 동안 · <kbd>S</kbd> · <kbd>M</kbd></td><td>처음 마스크로(편집 전) · 처음/편집 슬라이더(마우스 왼쪽 = 처음 마스크) · 마스크 보기(빨강 = 보이는 패치, 회색 빗금 = 처음 마스크보다 지운 곳)</td></tr>
       <tr><td><kbd>W</kbd> 누르는 동안 · <kbd>O</kbd></td><td>원본 — 이 패치 없이(고치기 전 그림, [원본 보기]는 켜고 끄기) · 크롭·편집 창 선 보이기/숨기기(경계를 선 없이 볼 때)</td></tr>
       <tr><td><kbd>N</kbd> · 이음매 목록</td><td>다음 이음매로 2:1 + 그 구간을 만든 ★ 후보를 편집 대상으로 + 그 구간 선택(구간 페이드 범위)</td></tr>

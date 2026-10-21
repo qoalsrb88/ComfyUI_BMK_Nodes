@@ -277,11 +277,13 @@ window.DPLayoutEdit = (() => {
     let drag = null; // {kind: move|resize|new|box, id, handle, tid, start, x, y, rect0, rect, moved, next}
     let draft = null; // 새 크롭 초안 {rect} — 이름을 넣고 만들기(Enter) = add 한 번
     let boxTid = null; // 상자를 그릴 대상(P·상자 버튼)
+    let boxSel = null; // 고른 부품 상자의 tid(선택 크롭 안 — F19): 핸들 = 크기, 안쪽 끌기 = 이동, Delete = 지우기
     let proposal = null; // 상자에 맞춘 크롭 제안 {id, rect} — Enter 적용
     let nudge = null; // 화살표 미세 이동 {id, rect, timer}
     let sent = null; // 놓은 뒤 응답 전까지 보이는 {id, rect} — 그것을 놓은 쓰기가 끝날 때만 지운다
     let edits = {}; // 속성 패널에서 입력 중인 값(data-k → 값) — 다시 그려도 남는다
     let live = null; // 끄는 동안 고치는 패널 칸 {gpt, checks}
+    let draftSize = null; // 새 크롭 패널의 '크기·GPT' 칸 — 초안을 끌면 패널을 다시 그리지 않고 이것만(이름 입력이 끊기지 않게)
     let composing = false; // 패널 입력칸에서 한글 조합 중
     let pendingPanel = false; // 입력 중이라 미룬 패널 다시 그리기(폴링·저장 응답)
     let refsAt = { name: null, id: null, refs: undefined, timer: null }; // 바꾸는 중인 이름의 레퍼런스(GET layout/refs)
@@ -343,7 +345,7 @@ window.DPLayoutEdit = (() => {
 
     function rectOf(c) {
       // 끄는 중·미세 이동·응답 대기 사각형이 서버 값보다 먼저
-      if (drag && drag.id === c.id && drag.rect && drag.kind !== "box") return drag.rect;
+      if (drag && drag.id === c.id && drag.rect && (drag.kind === "move" || drag.kind === "resize")) return drag.rect;
       if (nudge && nudge.id === c.id) return nudge.rect;
       if (sent && sent.id === c.id) return sent.rect;
       return c.rect;
@@ -453,7 +455,8 @@ window.DPLayoutEdit = (() => {
       for (const bc of boxView === "all" ? L.crops : boxView === "sel" && cur ? [cur] : []) {
         bc.targets.forEach((t, i) => {
           if (!t.box) return;
-          box(t.box, "pbox", { stroke: boxColor(t.tid, i) });
+          if (drag && drag.kind === "pbox" && drag.rect && bc === cur && drag.tid === t.tid) return; // 끄는 중 — 아래에서 새 자리로
+          box(t.box, "pbox" + (bc === cur && boxSel === t.tid ? " on" : ""), { stroke: boxColor(t.tid, i) });
           label(t.box[0] + 2 * u, t.box[1] + 12 * u, bc === cur || boxView !== "all" ? t.tid : `${bc.name.split("_")[0]} ${t.tid}`, "ptid");
         });
       }
@@ -471,11 +474,25 @@ window.DPLayoutEdit = (() => {
         box(proposal.rect, "prop");
         label(proposal.rect[0], proposal.rect[3] + 14 * u, `제안 ${sizeText(proposal.rect)} — Enter 적용 · Esc 취소`, "linfo");
       }
-      if (draft) box(draft.rect, "draft");
+      const sb = cur && boxShown() && boxOf(cur, boxSel);
+      if (drag && drag.kind === "pbox" && drag.rect) {
+        box(drag.rect, "pbox on", { stroke: boxColor(drag.tid, cur ? cur.targets.findIndex((t) => t.tid === drag.tid) : 0) });
+        label(drag.rect[0], drag.rect[3] + 14 * u, `${drag.tid} 상자 ${drag.rect[2] - drag.rect[0]}×${drag.rect[3] - drag.rect[1]}`, "linfo");
+      } else if (sb && !drag) {
+        const pts = handlePoints(sb);
+        for (const h of HANDLES) box([pts[h][0] - 3 * u, pts[h][1] - 3 * u, pts[h][0] + 3 * u, pts[h][1] + 3 * u], "handle pboxh");
+      }
+      if (draft && !(drag && drag.kind === "draft" && drag.rect)) {
+        box(draft.rect, "draft");
+        if (!drag) {
+          const pts = handlePoints(draft.rect);
+          for (const h of HANDLES) box([pts[h][0] - 4 * u, pts[h][1] - 4 * u, pts[h][0] + 4 * u, pts[h][1] + 4 * u], "handle");
+        }
+      }
       if (drag && drag.rect && drag.kind === "box") box(drag.rect, "pbox", { stroke: boxColor(drag.tid, 0) });
-      const moving = drag && drag.rect && drag.kind !== "box" ? drag.rect : nudge ? nudge.rect : null;
+      const moving = drag && drag.rect && drag.kind !== "box" && drag.kind !== "pbox" ? drag.rect : nudge ? nudge.rect : null;
       if (moving) {
-        if (drag && drag.kind === "new") box(moving, "draft");
+        if (drag && (drag.kind === "new" || drag.kind === "draft")) box(moving, "draft");
         label(moving[0], moving[3] + 14 * u, sizeText(moving), "linfo");
       }
     }
@@ -491,6 +508,40 @@ window.DPLayoutEdit = (() => {
       const d = HANDLE_PX / viewer.scale();
       const pts = handlePoints(r);
       return HANDLES.find((h) => Math.abs(pt[0] - pts[h][0]) <= d && Math.abs(pt[1] - pts[h][1]) <= d) || null;
+    }
+
+    function boxShown() {
+      return boxView !== "none"; // 숨긴 상자는 고르거나 끌지 않음
+    }
+
+    function boxOf(c, tid) {
+      const t = c && tid && c.targets.find((x) => x.tid === tid);
+      return t && t.box ? t.box : null;
+    }
+
+    function boxAt(c, pt) {
+      // 그 크롭의 부품 상자 중 pt 를 품은 가장 작은 것의 tid
+      const area = (r) => (r[2] - r[0]) * (r[3] - r[1]);
+      const ts = c.targets.filter((t) => t.box && pt[0] >= t.box[0] && pt[0] < t.box[2] && pt[1] >= t.box[1] && pt[1] < t.box[3]);
+      return ts.length ? ts.sort((a, b) => area(a.box) - area(b.box))[0].tid : null;
+    }
+
+    function boxDrag(r0, h, dx, dy, C) {
+      // 부품 상자 끌기(F19) — 1px 단위, 캔버스 안: 핸들 없음 = 이동(크기 그대로), 핸들 = 그 변만(2px 아래로 줄지 않음)
+      const rd = Math.round;
+      if (!h) {
+        const w = r0[2] - r0[0];
+        const hh = r0[3] - r0[1];
+        const x = Math.min(Math.max(rd(r0[0] + dx), 0), C[0] - w);
+        const y = Math.min(Math.max(rd(r0[1] + dy), 0), C[1] - hh);
+        return [x, y, x + w, y + hh];
+      }
+      let [x0, y0, x1, y1] = r0;
+      if (h.includes("w")) x0 = Math.min(Math.max(rd(x0 + dx), 0), x1 - 2);
+      if (h.includes("e")) x1 = Math.max(Math.min(rd(x1 + dx), C[0]), x0 + 2);
+      if (h.includes("n")) y0 = Math.min(Math.max(rd(y0 + dy), 0), y1 - 2);
+      if (h.includes("s")) y1 = Math.max(Math.min(rd(y1 + dy), C[1]), y0 + 2);
+      return [x0, y0, x1, y1];
     }
 
     function hits(pt) {
@@ -513,9 +564,33 @@ window.DPLayoutEdit = (() => {
         drag = Object.assign(base, { kind: "box", id: cur.id, tid: boxTid });
         return true;
       }
+      if (draft) {
+        // 새 크롭 초안(F17): 핸들 = 크기, 안쪽 = 이동 — 밖을 누르면 지금처럼 새로 그림·크롭 고르기
+        const dh = handleAt(pt, draft.rect);
+        const r = draft.rect;
+        if (dh || (pt[0] >= r[0] && pt[0] < r[2] && pt[1] >= r[1] && pt[1] < r[3])) {
+          drag = Object.assign(base, { kind: "draft", handle: dh, rect0: r });
+          return true;
+        }
+      }
+      const sb = cur && boxShown() && boxOf(cur, boxSel);
+      if (sb) {
+        const bh = handleAt(pt, sb);
+        if (bh || (pt[0] >= sb[0] && pt[0] < sb[2] && pt[1] >= sb[1] && pt[1] < sb[3])) {
+          drag = Object.assign(base, { kind: "pbox", id: cur.id, tid: boxSel, handle: bh, rect0: sb });
+          return true;
+        }
+      }
       const h = cur && handleAt(pt, cur.rect);
       if (h) {
         drag = Object.assign(base, { kind: "resize", id: cur.id, handle: h, rect0: cur.rect });
+        return true;
+      }
+      const ob = cur && boxShown() ? boxAt(cur, pt) : null;
+      const r0 = cur && rectOf(cur);
+      if (ob && !(pt[0] >= r0[0] && pt[0] < r0[2] && pt[1] >= r0[1] && pt[1] < r0[3])) {
+        boxSel = ob;
+        drag = Object.assign(base, { kind: "pbox", id: cur.id, tid: ob, handle: null, rect0: boxOf(cur, ob) });
         return true;
       }
       const hs = hits(pt);
@@ -524,7 +599,8 @@ window.DPLayoutEdit = (() => {
         const i = hs.findIndex((c) => c.id === sel);
         const c = i >= 0 ? hs[i] : hs[0];
         if (i < 0) select(c.id, false);
-        drag = Object.assign(base, { kind: "move", id: c.id, rect0: c.rect, next: i >= 0 ? hs[(i + 1) % hs.length].id : null });
+        const bt = i >= 0 && boxShown() ? boxAt(c, pt) : null; // 고른 크롭의 상자 위: 안 끌고 놓으면 그 상자를 고름(F19)
+        drag = Object.assign(base, { kind: "move", id: c.id, rect0: c.rect, next: i >= 0 && !bt ? hs[(i + 1) % hs.length].id : null, boxHit: bt });
         return true;
       }
       drag = Object.assign(base, { kind: "new" });
@@ -537,7 +613,15 @@ window.DPLayoutEdit = (() => {
       if (!drag) {
         const cur = sel && S.crop(sel);
         const h = cur && !boxTid && handleAt(pt, cur.rect);
-        viewer.setCursor(h ? CURSORS[h] : !boxTid && hits(pt).length ? "move" : "");
+        const dh = draft && !boxTid && handleAt(pt, draft.rect);
+        const sb = cur && !boxTid && boxShown() && boxOf(cur, boxSel);
+        const bh = sb && handleAt(pt, sb);
+        if (bh || (sb && pt[0] >= sb[0] && pt[0] < sb[2] && pt[1] >= sb[1] && pt[1] < sb[3])) {
+          viewer.setCursor(bh ? CURSORS[bh] : "move");
+          return false;
+        }
+        const inDraft = draft && pt[0] >= draft.rect[0] && pt[0] < draft.rect[2] && pt[1] >= draft.rect[1] && pt[1] < draft.rect[3];
+        viewer.setCursor(dh ? CURSORS[dh] : h ? CURSORS[h] : !boxTid && (inDraft || hits(pt).length) ? "move" : "");
         return false;
       }
       if (!drag.moved && Math.hypot(e.clientX - drag.x, e.clientY - drag.y) < CLICK_PX) return true;
@@ -549,6 +633,11 @@ window.DPLayoutEdit = (() => {
       if (drag.kind === "move") drag.rect = G.move(drag.rect0, dx, dy, C, snap);
       else if (drag.kind === "resize") drag.rect = G.resize(drag.rect0, drag.handle, dx, dy, C, snap, e.shiftKey);
       else if (drag.kind === "new") drag.rect = G.newRect(drag.start[0], drag.start[1], dx, dy, C, snap, e.shiftKey);
+      else if (drag.kind === "pbox") drag.rect = boxDrag(drag.rect0, drag.handle, dx, dy, C);
+      else if (drag.kind === "draft") {
+        drag.rect = drag.handle ? G.resize(drag.rect0, drag.handle, dx, dy, C, snap, e.shiftKey) : G.move(drag.rect0, dx, dy, C, snap);
+        if (draftSize) draftSize.textContent = sizeText(drag.rect);
+      }
       else {
         const cl = (v, m) => Math.min(Math.max(G.rnd(v, 1), 0), m);
         drag.rect = [cl(Math.min(drag.start[0], pt[0]), C[0]), cl(Math.min(drag.start[1], pt[1]), C[1]),
@@ -564,9 +653,28 @@ window.DPLayoutEdit = (() => {
       drag = null;
       if (!d) return;
       if (!d.moved) {
-        if (d.kind === "move" && d.next) select(d.next, false);
+        if (d.kind === "move" && d.boxHit) {
+          boxSel = d.boxHit;
+          render();
+        } else if (d.kind === "pbox") render(); // 크롭 밖 상자를 누름 = 고름(패널 단추 표시)
+        else if (d.kind === "move" && d.next) select(d.next, false);
         else if (d.kind === "new") select(null, false);
         else viewer.redraw();
+        return;
+      }
+      if (d.kind === "pbox") {
+        const pc = S.crop(d.id);
+        if (pc && !sameRect(d.rect, boxOf(pc, d.tid) || [])) {
+          proposal = null; // 상자가 바뀌면 [상자에 크롭 맞추기] 제안은 옛 상자 기준 — 버림(Codex 3a 4차)
+          setBox(pc, d.tid, d.rect, d.since);
+        } else render();
+        return;
+      }
+      if (d.kind === "draft") {
+        // 초안 고침: 패널은 그대로(이름 입력 중일 수 있음) — 크기 칸만. 규칙에 어긋나면 앞 초안 그대로
+        if (draft && !badRect(d.rect)) draft.rect = d.rect;
+        if (draftSize && draft) draftSize.textContent = sizeText(draft.rect);
+        viewer.redraw();
         return;
       }
       if (d.kind === "new") {
@@ -597,6 +705,7 @@ window.DPLayoutEdit = (() => {
     function cancel() {
       drag = null;
       liveUpdate();
+      if (draftSize && draft) draftSize.textContent = sizeText(draft.rect); // 초안을 끌다 취소 = 끌기 전 크기
       viewer.redraw();
     }
 
@@ -654,20 +763,21 @@ window.DPLayoutEdit = (() => {
       return act(S.update(c.id, { rect }, since), sent);
     }
 
-    async function commitTargets(c, mutate) {
-      // mutate(ts) 는 큐에서 실행할 때의 최신 대상 목록에 적용한다(저장 응답 전에 다른 대상을 고쳐도 앞 변경이 남음)
+    async function commitTargets(c, mutate, since) {
+      // mutate(ts) 는 큐에서 실행할 때의 최신 대상 목록에 적용한다(저장 응답 전에 다른 대상을 고쳐도 앞 변경이 남음).
+      // since = 끌기를 시작할 때의 remote(상자 끌기 — 그 사이 다른 창이 쓰면 덮지 않고 409)
       await flushNudge();
       return act(S.update(c.id, (cur) => {
         const ts = plainTargets(cur);
         mutate(ts, cur);
         return JSON.stringify(ts) === JSON.stringify(plainTargets(cur)) ? null : { targets: ts };
-      }));
+      }, since));
     }
 
-    function setBox(c, tid, b) {
+    function setBox(c, tid, b, since) {
       return commitTargets(c, (ts) => {
         ts.find((t) => t.tid === tid).box = b;
-      });
+      }, since);
     }
 
     async function commitName(c) {
@@ -980,6 +1090,7 @@ window.DPLayoutEdit = (() => {
         commitPending();
         edits = {};
       }
+      if (id !== sel) boxSel = null;
       sel = id;
       boxTid = null;
       proposal = null;
@@ -1001,6 +1112,9 @@ window.DPLayoutEdit = (() => {
         cancel();
       } else if (boxTid || proposal || draft) {
         boxTid = proposal = draft = null;
+        render();
+      } else if (boxSel) {
+        boxSel = null;
         render();
       } else if (nudge) {
         dropNudge();
@@ -1035,7 +1149,12 @@ window.DPLayoutEdit = (() => {
           return true;
         case "Delete":
         case "Backspace":
-          if (!e.repeat) removeSel();
+          if (e.repeat) return true;
+          if (boxSel && boxShown() && boxOf(S.crop(sel), boxSel)) {
+            const t = boxSel;
+            boxSel = proposal = null;
+            setBox(S.crop(sel), t, null);
+          } else removeSel();
           return true;
         case "Enter":
           if (draft) createDraft();
@@ -1159,6 +1278,7 @@ window.DPLayoutEdit = (() => {
       pendingPanel = false;
       panel.replaceChildren();
       live = null;
+      draftSize = null;
       nameShow = null;
       const msg = blocked();
       if (msg) panel.append(el("p", "lp-msg", msg));
@@ -1305,7 +1425,8 @@ window.DPLayoutEdit = (() => {
     function renderDraft() {
       panel.append(el("h3", "lp-title", "새 크롭"));
       nameBlock(null);
-      row("크기·GPT", sizeText(draft.rect));
+      draftSize = row("크기·GPT", sizeText(draft.rect));
+      panel.append(el("p", "dim", "초안 사각형: 핸들 = 크기 · 안쪽 끌기 = 이동(만들기 전에도) · 바깥에서 끌기 = 다시 그리기"));
       const b = el("div", "lp-btns");
       b.append(button("만들기 (Enter)", "이름으로 크롭을 만듦(add)", createDraft, "primary"), button("취소 (Esc)", "", () => {
         draft = null;
@@ -1400,7 +1521,8 @@ window.DPLayoutEdit = (() => {
         });
         r.append(tag, inp);
         const bx = t.box ? `상자 ${t.box[2] - t.box[0]}×${t.box[3] - t.box[1]}` : "상자";
-        r.append(button(bx, "부품 상자 그리기 — 크롭 안에서 끌기 (P)", () => armBox(t.tid), boxTid === t.tid ? "on" : ""));
+        r.append(button(bx, "부품 상자 그리기 — 크롭 안에서 끌기 (P). 뷰어에서 상자를 한 번 누르면 고름 → 핸들 = 크기 · 안쪽 끌기 = 이동 · Delete = 상자 지우기",
+          () => armBox(t.tid), boxTid === t.tid ? "on" : boxSel === t.tid ? "sel" : ""));
         if (t.box) r.append(button("✕", `${t.tid} 상자 지우기`, () => setBox(c, t.tid, null)));
         if (adopted[t.tid]) {
           const a = chip("채택", "b-dim");
