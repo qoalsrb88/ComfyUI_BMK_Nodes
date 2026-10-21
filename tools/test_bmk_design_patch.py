@@ -13402,6 +13402,32 @@ def layout_store_unit():
               "002: 끝 ';' 는 합성에서 빠짐(타깃은 같음)")
         check(store.validate_layout(lay) == [] and lay["psd"]["path"] == m["source"]["psd"], "실데이터 이관: 경고 0, 기준점 = source.psd")
 
+    def l8_locked():
+        section("배치 3-3 크롭 locked(bool, 없으면 false) — 검사·보존, layout_sig·layout_parsed 는 보지 않음")
+        doc = _layout_doc([_layout_crop("001_모자", [0, 0, 512, 512]), _layout_crop("002_눈", [512, 0, 1024, 512])])
+        on = copy.deepcopy(doc)
+        on["crops"][0]["locked"] = True
+        on["crops"][1]["locked"] = False
+        check(store.validate_layout(doc) == [] and store.validate_layout(on) == [] and store.layout_sig(on) == store.layout_sig(doc)
+              and [store.layout_parsed(c) for c in on["crops"]] == [store.layout_parsed(c) for c in doc["crops"]],
+              "locked 없음·true·false 허용, layout_sig·layout_parsed(Import 가 읽는 값) 그대로")
+        for bad in (1, 0, "true", None, [True]):
+            d = copy.deepcopy(doc)
+            d["crops"][1]["locked"] = bad
+            expect_raises(lambda: store.validate_layout(d), f"locked={bad!r} → ValueError", contains="locked")
+        root = str(OUT / "l8" / "p")
+        os.makedirs(root)
+        store.update_layout(root, lambda d: d.update(copy.deepcopy(doc)), expect_rev=None, create=True)
+        _r, rev = store.update_layout(root, lambda d: d["crops"][0].update(locked=True), expect_rev=0)
+        _r, rev2 = store.update_layout(root, lambda d: d["crops"][1].update(note="메모"), expect_rev=rev)
+        lay = store.load_layout(root)
+        check((rev, rev2) == (1, 2) and lay["crops"][0]["locked"] is True and "locked" not in lay["crops"][1]
+              and json.loads(Path(root, store.LAYOUT_NAME).read_text(encoding="utf-8"))["crops"][0]["locked"] is True,
+              "locked true 를 쓰면 다른 쓰기 뒤에도 그대로(파일·load_layout)")
+        expect_raises(lambda: store.update_layout(root, lambda d: d["crops"][0].update(locked="yes"), expect_rev=rev2),
+                      "update_layout 이 비 bool locked 를 저장하지 않음", contains="locked")
+        check(store.load_layout(root)["rev"] == rev2, "거절된 쓰기 → rev 그대로")
+
     l1_schema()
     l2_update()
     l3_ids()
@@ -13409,6 +13435,7 @@ def layout_store_unit():
     l5_checks()
     l6_psd_diff()
     l7_migrate()
+    l8_locked()
 
 
 # ── U3 도우미: 보드 레이아웃 라우트용 합성 프로젝트(캔버스 768×1024, 크롭 5). 001 레거시 + 채택 스펙·믿을 초안(mock 원장 꼴),
@@ -14342,6 +14369,115 @@ def layout_board_unit():
         st, g = await h.jget(f"{API}/layout", root=key2)
         check(not any(g["psd_diff"][k] for k in ("changed", "added", "removed")), "기준점 = 스냅숏 → 갈라짐 0")
 
+    async def b25_lock(h):
+        section("배치 3-3 크롭 잠금(layout.json locked): 잠긴 크롭은 locked 만 바꾸는 update 만 · 그 밖 update·delete 423(파일·refs.json 그대로) · "
+                "PSD take 은 건너뜀(기준점 그대로 — 경고 남음) · ack 허용 · /layout·state 행")
+        root = _layout_board_project(BASE, "lock")
+        key = store.register_root(root)
+        st, _d = await h.post(f"{API}/layout/start", {"root": key})
+        ids = [c["id"] for c in lay(root)["crops"]]
+        a, b = ids[0], ids[1]
+        lpath, rpath = Path(root, store.LAYOUT_NAME), Path(root, board.drefs.REFS_NAME)
+        st, g = await h.jget(f"{API}/layout", root=key)
+        check(st == 200 and [c["locked"] for c in g["crops"]] == [False] * 5, f"/layout 크롭 행 locked(없으면 false) {st}")
+        for body, what in (({"op": "update", "id": a, "locked": "yes"}, "문자열"), ({"op": "update", "id": a, "locked": 1}, "숫자"),
+                           ({"op": "delete", "id": a, "locked": True}, "delete 에"),
+                           ({"op": "add", "name": "020_새", "rect": [0, 512, 384, 896], "locked": True}, "add 에")):
+            st, d = await crop_op(h, key, root, **body)
+            check(st == 400 and "locked" in d.get("error", "") and "locked" not in lay(root)["crops"][0] and len(lay(root)["crops"]) == 5,
+                  f"locked {what} → 400 {st} {d}")
+        rev0 = lay(root)["rev"]
+        st, d = await crop_op(h, key, root, op="update", id=a, locked=True)
+        check(st == 200 and d["rev"] == rev0 + 1 and d["crop"]["locked"] is True and lay(root)["crops"][0]["locked"] is True
+              and all("locked" not in c for c in lay(root)["crops"][1:]),
+              f"locked 만 update → 200(이름·사각형 규칙 검사 없음), 파일 locked true·응답 크롭 행 locked {st} {d.get('error')}")
+        raw, rev1 = lpath.read_bytes(), lay(root)["rev"]
+        mname = store.load_manifest(root)["crops"][0]["name"]
+        cases = [({"name": "001_머리띠"}, "이름 바꾸기"), ({"rect": [0, 0, 512, 512]}, "사각형"),
+                 ({"targets": [{"tid": "A", "text": "x", "box": None}]}, "대상"), ({"note": "메모"}, "메모"),
+                 ({"restore_manifest": True, "name": mname}, "restore_manifest(진행 [되돌리기])"),
+                 ({"rect": [0, 0, 384, 384], "restore_rev": rev0}, "restore_rev(실행 취소)"), ({"locked": False, "restore_rev": rev0}, "locked + restore_rev"),
+                 ({"locked": False, "note": "x"}, "locked + 메모")]
+        for extra, what in cases:
+            st, d = await crop_op(h, key, root, op="update", id=a, **extra)
+            check(st == 423 and d.get("error") == "잠긴 크롭(001_머리) — 잠금을 풀고 다시" and lpath.read_bytes() == raw and lay(root)["rev"] == rev1,
+                  f"잠긴 크롭 update {what} → 423, layout.json 그대로 {st} {d}")
+        st, d = await crop_op(h, key, root, op="delete", id=a)
+        check(st == 423 and lpath.read_bytes() == raw and len(lay(root)["crops"]) == 5, f"잠긴 크롭 delete → 423 그대로 {st} {d}")
+        check(not rpath.exists(), "잠긴 크롭 이름 바꾸기 거절 → 레퍼런스 고정(refs.json)도 만들지 않음")
+        st, d = await crop_op(h, key, root, op="update", id=a, locked=True)
+        check(st == 200 and d["rev"] == rev1 and lpath.read_bytes() == raw, f"이미 잠긴 크롭에 locked true = 바뀜 없음(rev 그대로) {st} {d.get('rev')}")
+        st, d = await crop_op(h, key, root, op="update", id=b, note="안 잠긴 크롭")
+        check(st == 200 and lay(root)["crops"][1]["note"] == "안 잠긴 크롭", "다른 크롭은 그대로 고침")
+
+        # 그 사이 잠긴 꼴: 고정 쪽(_fix_before_rename)은 잠금을 못 보고 고정 → 레이아웃 쓰기 423 → 고정을 되돌림(codex12 경로)
+        orig_load = board.store.load_layout
+
+        def unlocked(r):
+            d_ = orig_load(r)
+            for c in d_["crops"]:
+                c.pop("locked", None)
+            return d_
+
+        orig_fix = board._fix_before_rename
+
+        def fix_blind(*args):
+            board.store.load_layout = unlocked
+            try:
+                return orig_fix(*args)
+            finally:
+                board.store.load_layout = orig_load
+
+        board._fix_before_rename = fix_blind
+        try:
+            raw2 = lpath.read_bytes()
+            st, d = await crop_op(h, key, root, op="update", id=a, name="001_머리띠")
+        finally:
+            board._fix_before_rename = orig_fix
+        doc = board.drefs.load_refs(root)
+        check(st == 423 and lpath.read_bytes() == raw2 and doc is not None and a not in doc["links"],
+              f"고정 뒤 잠금 거절 → 고정을 되돌림(refs.json links 에 그 크롭 없음), 레이아웃 그대로 {st} {doc and doc['links']}")
+
+        section("배치 3-3 PSD take: 잠긴 크롭 이름은 건너뜀(locked) — 크롭·기준점 그대로라 D-psd 경고 남음, ack 는 허용")
+        base = copy.deepcopy(lay(root)["psd"]["crops"])
+        snap = [dict(c) for c in base]
+        snap[0]["rect"] = [0, 64, 384, 448]  # 001_머리(잠김)
+        snap[1]["rect"] = [384, 16, 768, 400]  # 002_눈
+        _layout_board_snap(root, snap, [5, 6])
+        st, g = await h.jget(f"{API}/layout", root=key)
+        token = {"token": g["psd_diff"]["token"]}
+        rev = lay(root)["rev"]
+        st, d = await h.post(f"{API}/layout/psd", {"root": key, "rev": rev, "op": "take", "names": ["001_머리", "002_눈"], "snapshot": token})
+        L = lay(root)
+        check(st == 200 and d == {"ok": True, "rev": rev + 1, "taken": [{"id": b, "name": "002_눈", "fields": ["rect"]}], "added": [], "skipped": [],
+                                  "locked": ["001_머리"]}
+              and L["crops"][0]["rect"] == [0, 0, 384, 384] and L["crops"][1]["rect"] == [384, 16, 768, 400]
+              and [c for c in L["psd"]["crops"] if c["name"] == "001_머리"] == [c for c in base if c["name"] == "001_머리"]
+              and [c for c in L["psd"]["crops"] if c["name"] == "002_눈"] == [c for c in snap if c["name"] == "002_눈"],
+              f"take [001(잠김), 002] → 002 만 가져옴·locked [001], 001 크롭·기준점 그대로 {st} {d}")
+        st, g = await h.jget(f"{API}/layout", root=key)
+        dp_ = sorted(cid for cid, c in rows(g).items() if "D-psd" in codes(c))
+        check([x["name"] for x in g["psd_diff"]["changed"]] == ["001_머리"] and dp_ == [a],
+              f"잠긴 001 의 'PSD 와 다름'(D-psd) 경고가 남음 {g['psd_diff']['changed']} {dp_}")
+        rev = lay(root)["rev"]
+        st, d = await h.post(f"{API}/layout/psd", {"root": key, "rev": rev, "op": "take", "snapshot": token})
+        check(st == 200 and d == {"ok": True, "rev": rev, "taken": [], "added": [], "skipped": [], "locked": ["001_머리"]} and lay(root)["rev"] == rev,
+              f"take 전부(names 없음)도 잠긴 이름은 건너뜀 — 바뀜 없음(rev 그대로) {st} {d}")
+        st, d = await h.post(f"{API}/layout/psd", {"root": key, "rev": rev, "op": "ack", "names": ["001_머리"], "snapshot": token})
+        st2, g = await h.jget(f"{API}/layout", root=key)
+        check(st == 200 and d == {"ok": True, "rev": rev + 1, "taken": [], "added": [], "skipped": []} and lay(root)["crops"][0]["rect"] == [0, 0, 384, 384]
+              and lay(root)["crops"][0]["locked"] is True and not any("D-psd" in codes(c) for c in g["crops"]),
+              f"잠긴 크롭의 이 사각형 경고 끄기(ack) = 허용 — 크롭 그대로, 경고만 꺼짐 {st} {d}")
+
+        section("배치 3-3 state 크롭 요약 locked(진행 [되돌리기]) · 풀기 = layout.json 에서 키를 뺌")
+        st, s = await h.jget(f"{API}/state", root=key)
+        check(st == 200 and {c["id"]: c["locked"] for c in s["crops"]} == {cid: cid == a for cid in ids},
+              f"state 크롭 요약 locked = 잠긴 크롭만 true {[(c['id'], c.get('locked')) for c in s['crops']]}")
+        st, d = await crop_op(h, key, root, op="update", id=a, locked=False)
+        st2, d2 = await crop_op(h, key, root, op="update", id=a, note="풀고 메모")
+        check(st == st2 == 200 and d["crop"]["locked"] is False and "locked" not in lay(root)["crops"][0]
+              and lay(root)["crops"][0]["note"] == "풀고 메모", f"locked false = 키를 뺌, 풀린 뒤 편집 됨 {st} {st2}")
+
     async def run_all():
         b0_pure()
         root = _layout_board_project(BASE, "lb")
@@ -14364,6 +14500,7 @@ def layout_board_unit():
             await b12_server(h)
             await b19_real(h)
             await b24_review(h)
+            await b25_lock(h)
 
     asyncio.run(run_all())
 
@@ -14558,8 +14695,8 @@ function server(crops, L = {}) {
   // noView = 보드 layout_crop 이 쓰기 뒤 응답(크롭 행)을 만들지 못한 꼴: 200 + crop null + warning
   const view = (c) => (srv.noView ? { crop: null, checks: {}, warning: "응답 구성 실패: 시험" } : { crop: row(c), checks: {} });
   const row = (c) => Object.assign({ status: "same", changed: [], checks: [], adopted_only: [], refs: null, manifest: null,
-    history: { candidates: 0, picks: 0, spec: false, by_file: 0 }, draft_boxes: { trusted: false, boxes: {}, n: 0 }, same_name_continues: true },
-    JSON.parse(JSON.stringify(c)));
+    history: { candidates: 0, picks: 0, spec: false, by_file: 0 }, draft_boxes: { trusted: false, boxes: {}, n: 0 }, same_name_continues: true,
+    locked: false }, JSON.parse(JSON.stringify(c)));
   srv.fetch = async (url, o) => {
     const u = new URL(url);
     const path = u.pathname.replace("/bmk/design_patch/", "");
@@ -14577,6 +14714,11 @@ function server(crops, L = {}) {
       return resp(400, { error: "규칙 위반(시험)" });
     }
     if (b.rev !== srv.lay.rev) return resp(409, { error: "레이아웃이 다른 창에서 바뀌었습니다 — 새로고침" });
+    // 배치 3-3: 잠긴 크롭은 locked 만 바꾸는 update 만(보드 layout_crop 처럼 그 밖 update·delete 423 — 저장 안 함)
+    const held = path === "layout/crop" && srv.lay.crops.find((x) => x.id === b.id && x.locked);
+    if (held && (b.op === "delete" || ["name", "rect", "targets", "note", "restore_rev", "restore_manifest"].some((k) => k in b))) {
+      return resp(423, { error: `잠긴 크롭(${held.name}) — 잠금을 풀고 다시` });
+    }
     srv.lay.rev += 1;
     if (path === "layout/psd") {  // S1-a: 고른 이름(names)만 갈라짐에서 빠짐 — names 없음 = 전부
       const d = srv.psd_diff;
@@ -14598,7 +14740,7 @@ function server(crops, L = {}) {
       cs.splice(cs.indexOf(c), 1);
       return resp(200, { ok: true, rev: srv.lay.rev, crop: null, checks: {} });
     }
-    for (const k of ["name", "rect", "targets", "note"]) if (k in b) c[k] = b[k];
+    for (const k of ["name", "rect", "targets", "note", "locked"]) if (k in b) c[k] = b[k];
     return resp(200, Object.assign({ ok: true, rev: srv.lay.rev }, view(c)));
   };
   return srv;
@@ -14624,8 +14766,8 @@ async function editor(crops, L = {}, st = {}, more = {}) {  // more = 편집기 
   const find = (root, pred) => root.all().find(pred) || null;
   const env = { srv, doc, ed, toasts, queued, queuedRev, confirms, ...hosts, find, viewer,
     key: (code, m = {}) => ed.onKey(Object.assign({ code, key: code, repeat: false, ctrlKey: false, metaKey: false, shiftKey: false, altKey: false }, m)),
-    pick: async (name) => {
-      find(hosts.list, (e) => e.tagName === "LI" && e.children[0].textContent === name).fire("click");
+    pick: async (name, m = {}) => {  // m = 수정키({shiftKey}·{ctrlKey} — 배치 3-3 복수 선택)
+      find(hosts.list, (e) => e.tagName === "LI" && e.children[0].textContent === name).fire("click", m);
       await sleep(30);
     },
     button: (root, label) => find(root, (e) => e.tagName === "BUTTON" && e.textContent.startsWith(label)),
@@ -14764,6 +14906,278 @@ await scenario("boxRemote", async () => {
   h.pointerup(ev(1260, 200));
   await sleep(40);
   return { box: env.srv.lay.crops.find((c) => c.id === "002_bbbbbb").targets[0].box, toasts: env.toasts.slice() };
+});
+
+// 배치 3-3(F18) 잠금: [잠금] = locked 만 update(restore_rev 없음) · 잠긴 크롭은 핸들 없이·이름표 (잠김)·목록 칩 · 패널 칸·단추 끔(잠금 풀기·상자 보기 남음) ·
+// 끌기·핸들 자리·화살표·Delete·P·Enter·이름·대상·메모·상자에 맞추기·+ 대상·지우기 = POST 없음 + 알림 · Ctrl+Z = 풀기 한 걸음 · Ctrl+Y = 다시 잠금
+await scenario("lockEdit", async () => {
+  const env = await editor([C1(), C2()]);
+  const h = env.viewer.h;
+  const ev = (x, y) => ({ x, y, clientX: x, clientY: y, shiftKey: false, ctrlKey: false, metaKey: false });
+  const drag = async (a, b) => {
+    h.pointerdown(ev(...a));
+    h.pointermove(ev(...b));
+    h.pointerup(ev(...b));
+    await sleep(20);
+  };
+  const drawn = () => {
+    const g = new El(env.doc, "g");
+    h.draw(g, 1);
+    return g.all();
+  };
+  const cls = (e) => ((e.attrs || {}).class || "").split(" ");
+  await env.pick("001_모자");
+  const r = { before: drawn().filter((e) => cls(e).includes("handle")).length, lockTitle: env.button(env.panel, "잠금").title };
+  env.button(env.panel, "잠금").fire("click");
+  await sleep(40);
+  r.body = env.srv.log.at(-1);
+  r.toast = env.toasts.at(-1);
+  const g = drawn();
+  r.canvas = { handles: g.filter((e) => cls(e).includes("handle")).length, locked: g.filter((e) => cls(e).includes("locked")).length,
+    label: g.some((e) => e.textContent === "001_모자 (잠김)") };
+  r.chip = env.list.all().filter((e) => e.classList.contains("chip") && e.textContent === "잠김").length;
+  const btn = (t) => env.find(env.panel, (e) => e.tagName === "BUTTON" && e.textContent === t);
+  r.panel = { unlock: btn("잠금 풀기") && btn("잠금 풀기").disabled, view: btn("상자: 선택 크롭").disabled,
+    fields: ["nnn", "part", "side", "t-A", "note"].map((k) => env.field(k).disabled),
+    btns: ["상자", "+ 대상", "상자에 크롭 맞추기", "지우기"].map((t) => btn(t).disabled) };
+  const n0 = env.srv.log.length;
+  const t0 = env.toasts.length;
+  env.key("ArrowRight");
+  await sleep(450);
+  env.key("Delete");
+  env.key("KeyP");
+  r.enter = env.key("Enter");  // 제안·초안 없음 = 키를 넘김
+  await drag([300, 300], [420, 300]);  // 몸통 끌기
+  await drag([508, 508], [640, 640]);  // se 핸들 자리(잠긴 크롭은 핸들 없음 — 몸통 누르기)
+  btn("상자에 크롭 맞추기").fire("click");
+  btn("+ 대상").fire("click");
+  btn("지우기").fire("click");
+  await sleep(30);
+  env.type("part", "새이름").fire("keydown", { key: "Enter", keyCode: 13 });
+  await sleep(30);
+  env.type("t-A", "hat").fire("change");
+  await sleep(30);
+  env.type("note", "메모").fire("change");
+  await sleep(30);
+  env.doc.activeElement.blur();
+  await sleep(20);
+  const c1 = env.srv.lay.crops[0];
+  r.blocked = { posts: env.srv.log.length - n0, confirms: env.confirms.length, toasts: env.toasts.slice(t0), crop: [c1.rect, c1.name, c1.note, c1.targets.length] };
+  env.key("KeyZ", { ctrlKey: true });
+  await sleep(40);
+  r.undo = { body: env.srv.log.at(-1), locked: !!env.srv.lay.crops[0].locked, lockBtn: !!btn("잠금") };
+  env.key("KeyY", { ctrlKey: true });
+  await sleep(40);
+  r.redo = { body: env.srv.log.at(-1), locked: !!env.srv.lay.crops[0].locked };
+  // 상자: 고른 상자가 있는 002 를 L 로 잠그면 상자 선택이 풀리고, 잠긴 뒤 상자를 눌러도 고르지 않음(상자 핸들 없음)
+  await env.pick("002_눈");
+  const pboxh = () => drawn().filter((e) => cls(e).includes("pboxh")).length;
+  h.pointerdown(ev(1200, 200));
+  h.pointerup(ev(1200, 200));
+  await sleep(20);
+  const picked0 = pboxh();
+  env.key("KeyL");
+  await sleep(40);
+  const afterLock = pboxh();
+  h.pointerdown(ev(1200, 200));
+  h.pointerup(ev(1200, 200));
+  await sleep(20);
+  r.box = { picked0, afterLock, locked: !!env.srv.lay.crops[1].locked, pboxh: pboxh(), toast: env.toasts.at(-1) };
+  return r;
+});
+
+// 배치 3-3 다른 창이 잠금: state 폴링이 새 판을 읽으면 잠금 표시·막기가 바로(패널 [잠금 풀기]·칸 끔, 화살표 = POST 없음)
+await scenario("lockRemote", async () => {
+  const env = await editor([C1(), C2()]);
+  await env.pick("001_모자");
+  const r = { before: [!!env.find(env.panel, (e) => e.tagName === "BUTTON" && e.textContent === "잠금"), env.field("part").disabled] };
+  env.srv.lay.rev += 1;
+  env.srv.lay.crops[0].locked = true;
+  env.state(1, 1);
+  await sleep(40);
+  r.after = [!!env.find(env.panel, (e) => e.tagName === "BUTTON" && e.textContent === "잠금 풀기"), env.field("part").disabled];
+  const n0 = env.srv.log.length;
+  env.key("ArrowRight");
+  await sleep(450);
+  r.posts = env.srv.log.length - n0;
+  r.toast = env.toasts.at(-1);
+  return r;
+});
+
+// 배치 3-3 실행 취소 단계가 잠긴 크롭에 막힘(423) = 그 단계는 버림(스택이 그 자리에서 멈추지 않음) · 잠금 토글의 역연산 = locked 만(restore_rev 없음)
+await scenario("undo423", async () => {
+  const srv = server([C1(), C2()]);
+  const s = E.session(API, "abcdef012345", srv.fetch);
+  await s.load();
+  await s.update("001_aaaaaa", { note: "가" });
+  await s.update("002_bbbbbb", (c) => (c.locked ? null : { locked: true }));
+  const lock = JSON.parse(JSON.stringify(s.undo.at(-1)));
+  srv.lay.crops[0].locked = true;  // 판은 그대로 — 서버만 잠김(423 길)
+  await s.undoStep();  // 002 잠금 풀기 — 됨
+  let err = null;
+  try {
+    await s.undoStep();  // 001 메모 되돌리기 — 423
+  } catch (e) {
+    err = [e.status, String(e.message)];
+  }
+  return { lock, err, depth: [s.undo.length, s.redo.length], note: srv.lay.crops[0].note, b: !!srv.lay.crops[1].locked };
+});
+
+// 배치 3-3 복수 선택: 캔버스 Shift+클릭(움직이지 않고 놓음)·목록 Ctrl/Shift+클릭 = 더하기·빼기 · 패널 '크롭 n개 선택' · 화살표 = 알림만 ·
+// [모두 잠금] = 크롭마다 POST(locked 만) · L = 모두 풀기 · 지우기 = 확인 창(잠긴 것 건너뜀) → 크롭마다 delete · Esc = 풂 · Shift+끌기 = 지금처럼 이동
+await scenario("multiSel", async () => {
+  const C3 = () => crop("003_cccccc", "003_끈", [2048, 0, 2560, 512]);
+  const env = await editor([C1(), C2(), C3()]);
+  const h = env.viewer.h;
+  const ev = (x, y, m = {}) => Object.assign({ x, y, clientX: x, clientY: y, shiftKey: false, ctrlKey: false, metaKey: false }, m);
+  const click = async (x, y, m) => {
+    h.pointerdown(ev(x, y, m));
+    h.pointerup(ev(x, y, m));
+    await sleep(20);
+  };
+  const title = () => env.panel.all().find((e) => e.tagName === "H3").textContent;
+  const sels = () => env.list.all().filter((e) => e.tagName === "LI" && e.classList.contains("sel")).map((e) => e.children[0].textContent);
+  const lit = () => {
+    const g = new El(env.doc, "g");
+    h.draw(g, 1);
+    return g.all().filter((e) => /^lc( |$)/.test((e.attrs || {}).class || "") && e.attrs.class.split(" ").includes("sel")).length;
+  };
+  const log = () => env.srv.log.map((x) => [x.op, x.id, x.locked ?? null, "restore_rev" in x]);
+  await env.pick("001_모자");
+  await click(1400, 400, { shiftKey: true });  // 002 를 더함
+  const r = { two: [title(), sels(), lit()] };
+  await env.pick("003_끈", { ctrlKey: true });  // 목록 Ctrl+클릭 = 더함
+  r.three = [title(), sels(), env.panel.textContent.includes("Shift/Ctrl+클릭으로 더하기·빼기 · 이동은 하나씩")];
+  await click(1400, 400, { shiftKey: true });  // 002 를 뺌
+  r.minus = [title(), sels()];
+  await click(2900, 3000, { shiftKey: true });  // Shift+빈 곳 = 선택 그대로
+  r.empty = title();
+  await click(1400, 400, { ctrlKey: true });  // 다시 더함(Ctrl)
+  env.key("ArrowRight");
+  await sleep(450);
+  r.arrow = { posts: env.srv.log.length, toast: env.toasts.at(-1) };
+  env.button(env.panel, "모두 잠금").fire("click");
+  await sleep(150);
+  r.lockAll = { log: log(), locked: env.srv.lay.crops.map((c) => !!c.locked), title: title(),
+    btns: ["모두 잠금", "모두 잠금 풀기", "지우기"].map((l) => [env.button(env.panel, l).textContent, env.button(env.panel, l).disabled]),
+    lit: lit(), toast: env.toasts.at(-1) };
+  env.key("KeyL");  // 모두 잠겼으면 모두 풀기
+  await sleep(150);
+  r.unlockAll = env.srv.lay.crops.map((c) => !!c.locked);
+  await env.pick("001_모자");
+  env.key("KeyL");
+  await sleep(40);
+  await click(1400, 400, { shiftKey: true });
+  await env.pick("003_끈", { shiftKey: true });
+  r.delBtn = env.button(env.panel, "지우기").textContent;
+  const n0 = env.srv.log.length;
+  env.key("Delete");
+  await sleep(150);
+  r.del = { confirm: env.confirms.at(-1), posts: env.srv.log.slice(n0).map((x) => [x.op, x.id]), left: env.srv.lay.crops.map((c) => c.id),
+    title: title(), toast: env.toasts.at(-1) };
+  env.key("Escape");
+  await sleep(20);
+  r.esc = title();
+  // Shift+끌기 = 지금처럼 크롭 이동(복수 선택 아님)
+  const mv = await editor([C1(), C2()]);
+  await mv.pick("001_모자");
+  mv.viewer.h.pointerdown(ev(1400, 400, { shiftKey: true }));
+  mv.viewer.h.pointermove(ev(1464, 400, { shiftKey: true }));
+  mv.viewer.h.pointerup(ev(1464, 400, { shiftKey: true }));
+  await sleep(40);
+  r.shiftDrag = { log: mv.srv.log.map((x) => [x.op, x.id, x.rect]), title: mv.panel.all().find((e) => e.tagName === "H3").textContent };
+  return r;
+});
+
+// 배치 3-3 리뷰 L1: 고른 바깥 크롭 안의 작은 크롭을 Shift+클릭 = 그 작은 크롭을 더함(바깥이 빠지지 않음), 같은 자리 다시 = 뺌 · Esc(복수) = 풂만(나가지 않음)
+await scenario("multiNest", async () => {
+  const OUTER = crop("004_dddddd", "004_큰", [0, 1024, 1024, 2048]);
+  const INNER = crop("005_eeeeee", "005_안", [256, 1280, 512, 1536]);
+  const exits = [];
+  const env = await editor([C1(), OUTER, INNER], {}, {}, { exit: () => exits.push(1) });
+  const h = env.viewer.h;
+  const ev = (x, y, m = {}) => Object.assign({ x, y, clientX: x, clientY: y, shiftKey: false, ctrlKey: false, metaKey: false }, m);
+  const click = async (x, y, m) => {
+    h.pointerdown(ev(x, y, m));
+    h.pointerup(ev(x, y, m));
+    await sleep(20);
+  };
+  const title = () => env.panel.all().find((e) => e.tagName === "H3").textContent;
+  const sels = () => env.list.all().filter((e) => e.tagName === "LI" && e.classList.contains("sel")).map((e) => e.children[0].textContent);
+  await env.pick("004_큰");
+  await click(300, 1300, { shiftKey: true });
+  const r = { added: [title(), sels()] };
+  await click(300, 1300, { shiftKey: true });
+  r.removed = [title(), sels()];
+  await click(300, 1300, { ctrlKey: true });
+  env.key("Escape");
+  await sleep(20);
+  r.esc = [title(), exits.length];
+  env.key("Escape");
+  r.exits = exits.length;
+  return r;
+});
+
+// 배치 3-3 리뷰 L5①·L6: 화살표 직후(미세 이동 대기 중) L = 미세 이동을 먼저 보내고 잠금(늦은 이동이 423 으로 사라지지 않게) · 잠긴 크롭 위 커서 = pointer
+await scenario("lockFlush", async () => {
+  const env = await editor([C1(), C2()]);
+  const cursors = [];
+  env.viewer.setCursor = (c) => cursors.push(c);
+  const h = env.viewer.h;
+  await env.pick("001_모자");
+  env.key("ArrowRight");
+  env.key("KeyL");
+  await sleep(500);
+  const c1 = env.srv.lay.crops[0];
+  const r = { log: env.srv.log.map((x) => [x.op, x.id, "rect" in x ? x.rect : null, x.locked ?? null]), rect: c1.rect, locked: !!c1.locked,
+    toasts: env.toasts.filter((t) => t.startsWith("err:")) };
+  for (const [x, y] of [[300, 300], [1200, 300], [2900, 3000]]) h.pointermove({ x, y, clientX: x, clientY: y, shiftKey: false, ctrlKey: false, metaKey: false });
+  r.cursors = cursors.slice(-3);
+  return r;
+});
+
+// 배치 3-3 리뷰 L5③: 메모 입력 중 다른 창이 잠금 → 다른 크롭으로 옮겨도 메모를 보내지 않음(POST 0·알림)
+await scenario("lockNote", async () => {
+  const env = await editor([C1(), C2()]);
+  await env.pick("001_모자");
+  env.type("note", "메모");
+  env.srv.lay.rev += 1;
+  env.srv.lay.crops[0].locked = true;
+  env.state(1, 1);
+  await sleep(40);
+  const n0 = env.srv.log.length;
+  const t0 = env.toasts.length;
+  await env.pick("002_눈");
+  await sleep(30);
+  return { posts: env.srv.log.length - n0, toasts: env.toasts.slice(t0), note: env.srv.lay.crops[0].note };
+});
+
+// 배치 3-3 리뷰 L2: 여러 크롭 잠금·지우기가 중간에 실패(다른 창이 씀 — 409)하면 멈춤 알림에 실패 이유를 붙임, 크롭 하나면 act 의 오류 알림 그대로
+await scenario("lockFail", async () => {
+  const C3 = () => crop("003_cccccc", "003_끈", [2048, 0, 2560, 512]);
+  const env = await editor([C1(), C2(), C3()]);
+  const h = env.viewer.h;
+  await env.pick("002_눈");
+  h.pointerdown({ x: 2200, y: 300, clientX: 2200, clientY: 300, shiftKey: true });
+  h.pointerup({ x: 2200, y: 300, clientX: 2200, clientY: 300, shiftKey: true });
+  await sleep(20);
+  env.srv.lay.rev += 1;  // 다른 창이 씀(판만) — 이 창의 다음 쓰기는 409
+  env.button(env.panel, "모두 잠금").fire("click");
+  await sleep(150);
+  const r = { lock: env.toasts.slice(-2), locked: env.srv.lay.crops.map((c) => !!c.locked) };
+  await sleep(20);
+  env.srv.lay.rev += 1;
+  env.key("Delete");
+  await sleep(150);
+  r.del = env.toasts.slice(-2);
+  r.left = env.srv.lay.crops.length;
+  await env.pick("001_모자");
+  env.srv.lay.rev += 1;
+  const t0 = env.toasts.length;
+  env.key("KeyL");
+  await sleep(80);
+  r.one = env.toasts.slice(t0);
+  return r;
 });
 
 // ── 세션(J-L2) ──
@@ -15202,6 +15616,33 @@ await scenario("take", async () => {  // 갈라짐 3(005·009 바뀜, 새 019): 
   return { one, all: { confirm: all.confirms.at(-1), names: all.srv.log.at(-1).names, toast: all.toasts.at(-1), takeTitle },
     ack: { noTake, confirm: ack.confirms.at(-1), body: ack.srv.log.at(-1), head: ack.head.textContent },
     old: { title: oldTitle, label: oldLabel, ack: oldAck || !!old.button(old.panel, "이 사각형 경고 끄기"), confirm: oldConfirm } };
+});
+
+// 배치 3-3 잠긴 크롭의 PSD: 패널 [PSD 값으로] 끔(title 안내)·[이 사각형 경고 끄기]는 됨, 머리줄 [모두 PSD 값으로] = 잠긴 크롭 이름을 빼고 확인 창·토스트에
+// '잠금으로 건너뜀', 가져올 것이 잠긴 것뿐이면 확인 창 없이 알림
+await scenario("lockPsd", async () => {
+  const env = await editor([crop("005_aaaaaa", "005_모자", [0, 0, 512, 512], { locked: true }), crop("009_bbbbbb", "009_휘장", [1024, 0, 1536, 512])],
+    { psd_diff: DIFF() });
+  await env.pick("005_모자");
+  const one = env.button(env.panel, "PSD 값으로");
+  const r = { one: [one.disabled, one.title], ack: env.button(env.panel, "이 사각형 경고 끄기").disabled };
+  env.srv.psdResp = { taken: [{ id: "009_bbbbbb", name: "009_휘장", fields: ["rect", "layer_name"] }], added: ["019_n9"], skipped: [] };
+  env.button(env.head, "모두 PSD 값으로").fire("click");
+  await sleep(50);
+  r.all = { confirm: env.confirms.at(-1), names: env.srv.log.at(-1).names, toast: env.toasts.at(-1) };
+  const n0 = env.srv.log.length;
+  one.fire("click");  // 끈 단추의 처리기도 막음
+  await sleep(30);
+  r.oneClick = { posts: env.srv.log.length - n0, confirms: env.confirms.length, toast: env.toasts.at(-1) };
+  env.button(env.panel, "이 사각형 경고 끄기").fire("click");
+  await sleep(40);
+  r.ackBody = env.srv.log.length - n0 === 1 ? [env.srv.log.at(-1).op, env.srv.log.at(-1).names] : null;
+  const only = await editor([crop("005_aaaaaa", "005_모자", [0, 0, 512, 512], { locked: true })],
+    { psd_diff: Object.assign(DIFF(), { changed: DIFF().changed.slice(0, 1), added: [] }) });
+  only.button(only.head, "모두 PSD 값으로").fire("click");
+  await sleep(30);
+  r.only = { confirms: only.confirms.length, posts: only.srv.log.length, toast: only.toasts.at(-1) };
+  return r;
 });
 
 await scenario("start", async () => {  // 시작이 막히면 그 이유를 보이고 버튼을 끔
@@ -15664,6 +16105,89 @@ def layout_js_unit():
           and de.get("dragging", "").startswith("768×768") and de.get("canceled") == de.get("moved")
           and de.get("sameField") is True and de.get("created") == {"name": "002_새것", "rect": [1152, 1024, 1792, 1664]},
           f"배치 3-1(F17): 새 크롭 초안 핸들 8 · se 핸들 = 크기 · 안쪽 끌기 = 이동 · 손떨림은 그대로 · 이름칸 그대로(다시 그리지 않음) · Enter = 고친 사각형으로 add {de}")
+    LOCK = "warn:잠긴 크롭 — [잠금 풀기] 뒤에"
+    lk = ej.get("lockEdit") or {}
+    lb_, bl_ = lk.get("blocked") or {}, lk.get("body") or {}
+    check(bl_.get("op") == "update" and bl_.get("id") == "001_aaaaaa" and bl_.get("locked") is True and "restore_rev" not in bl_
+          and not {"name", "rect", "targets", "note"} & set(bl_) and lk.get("toast") == ":잠금: 001_모자 (Ctrl+Z 로 되돌림)"
+          and lk.get("before") == 8 and lk.get("canvas") == {"handles": 0, "locked": 1, "label": True} and lk.get("chip") == 1,
+          f"배치 3-3 [잠금] = update locked 만(restore_rev 없음) · 캔버스 핸들 없음·점선(locked)·이름표 '(잠김)' · 목록 칩 '잠김' {lk.get('body')} {lk.get('canvas')}")
+    check(lk.get("lockTitle") == "L — 끌기·화살표·Delete·이름·대상·메모·PSD 값으로를 막음(실수 이동 방지 — Ctrl+Z 로 되돌림) — layout.json 을 다시 써 "
+                                 "실행(G) 반영 칸에 'Prepare 입력이 바뀜'(유료 전 [반영 (무료)] 한 번)",
+          f"배치 3-3 리뷰 L3: [잠금] 설명에 반영 영향(layout.json 을 다시 써 Prepare 입력이 바뀜 — 유료 전 무료 반영 한 번) {lk.get('lockTitle')!r}")
+    check(lk.get("panel") == {"unlock": False, "view": False, "fields": [True] * 5, "btns": [True] * 4},
+          f"배치 3-3 잠긴 크롭 패널: 번호·부위·좌우·대상 문구·메모 칸과 [상자]·[+ 대상]·[상자에 크롭 맞추기]·[지우기] 끔, [잠금 풀기]·[상자: 선택 크롭] 남음 {lk.get('panel')}")
+    check(lb_.get("posts") == 0 and lb_.get("confirms") == 0 and lb_.get("toasts") == [LOCK] * 11 and lk.get("enter") is False
+          and lb_.get("crop") == [[0, 0, 512, 512], "001_모자", "", 1],
+          f"배치 3-3 잠긴 크롭: 화살표·Delete·P·몸통 끌기·핸들 자리 끌기·[상자에 크롭 맞추기]·[+ 대상]·[지우기]·이름 Enter·대상 문구·메모 = POST 없음·확인 창 없음·"
+          f"알림 '{LOCK[5:]}'(11), Enter 는 넘김 {lb_} enter={lk.get('enter')}")
+    ud, rd = lk.get("undo") or {}, lk.get("redo") or {}
+    check({k: (ud.get("body") or {}).get(k) for k in ("op", "id", "locked")} == {"op": "update", "id": "001_aaaaaa", "locked": False}
+          and "restore_rev" not in (ud.get("body") or {}) and ud.get("locked") is False and ud.get("lockBtn") is True
+          and (rd.get("body") or {}).get("locked") is True and rd.get("locked") is True,
+          f"배치 3-3 잠금 토글 = 실행 취소 한 걸음(Ctrl+Z = locked false, Ctrl+Y = 다시 잠금 — restore_rev 없음) {ud} {rd}")
+    bx = lk.get("box") or {}
+    check(bx.get("picked0") == 8 and bx.get("afterLock") == 0 and bx.get("locked") is True and bx.get("pboxh") == 0
+          and (bx.get("toast") or "").startswith(":잠금: 002_눈"),
+          f"배치 3-3 L = 잠금 — 고른 상자 선택이 풀림(핸들 8 → 0), 잠긴 크롭의 부품 상자를 눌러도 고르지 않음 {bx}")
+    lr = ej.get("lockRemote") or {}
+    check(lr.get("before") == [True, False] and lr.get("after") == [True, True] and lr.get("posts") == 0 and lr.get("toast") == LOCK,
+          f"배치 3-3 다른 창이 잠금 → 다시 읽은 뒤 바로 [잠금 풀기]·칸 끔, 화살표 = POST 없음·알림 {lr}")
+    u4 = ej.get("undo423") or {}
+    check(u4.get("lock") == {"fwd": {"op": "update", "id": "002_bbbbbb", "locked": True}, "inv": {"op": "update", "id": "002_bbbbbb", "locked": False}}
+          and u4.get("err") == [423, "잠긴 크롭(001_모자) — 잠금을 풀고 다시 — 이 실행 취소 기록은 버렸습니다"] and u4.get("depth") == [0, 1]
+          and u4.get("note") == "가" and u4.get("b") is False,
+          f"배치 3-3 잠금 토글의 역연산 = locked 만 · 실행 취소가 잠긴 크롭에 막힘(423) = 그 단계는 버림(스택이 멈추지 않음) {u4}")
+    lp = ej.get("lockPsd") or {}
+    al_ = lp.get("all") or {}
+    check(lp.get("one") == [True, "잠긴 크롭 — 잠금을 풀고"] and lp.get("ack") is False
+          and al_.get("names") == ["009_휘장", "019_새"]
+          and (al_.get("confirm") or "").split("\n") == ["모두 PSD 값으로(실행 취소로 되돌릴 수 없음):", " · 009_휘장 — 사각형·대상",
+                                                         " · 019_새 — PSD 에만 있는 사각형은 새 크롭으로 더함",
+                                                         "잠금으로 건너뜀 1: 005_모자 — 가져오지 않고 그대로 경고", "계속할까요?"]
+          and al_.get("toast") == "warn:PSD 값 1: 009_휘장(사각형·대상) · 새 크롭 1: 019_n9 · 건너뜀 0 · 잠금으로 건너뜀 1: 005_모자",
+          f"배치 3-3 잠긴 크롭 PSD: 패널 [PSD 값으로] 끔(title)·[이 사각형 경고 끄기] 남음, [모두 PSD 값으로] = 잠긴 이름 빼고 보냄·확인 창·토스트 '잠금으로 건너뜀' {lp}")
+    check(lp.get("oneClick") == {"posts": 0, "confirms": 1, "toast": "warn:잠금으로 건너뜀 1: 005_모자 — 잠긴 크롭은 [잠금 풀기] 뒤에"}
+          and lp.get("ackBody") == ["ack", ["005_모자"]] and lp.get("only") == {"confirms": 0, "posts": 0,
+                                                                              "toast": "warn:잠금으로 건너뜀 1: 005_모자 — 잠긴 크롭은 [잠금 풀기] 뒤에"},
+          f"배치 3-3 가져올 것이 잠긴 크롭뿐 = 확인 창 없이 알림(끈 단추의 처리기도), 잠긴 크롭의 경고 끄기(ack)는 보냄 {lp}")
+    ms = ej.get("multiSel") or {}
+    la = ms.get("lockAll") or {}
+    check(ms.get("two") == ["크롭 2개 선택", ["001_모자", "002_눈"], 2] and (ms.get("three") or [None])[:2] == ["크롭 3개 선택", ["001_모자", "002_눈", "003_끈"]]
+          and (ms.get("three") or [0, 0, 0])[2] is True and ms.get("minus") == ["크롭 2개 선택", ["001_모자", "003_끈"]] and ms.get("empty") == "크롭 2개 선택"
+          and ms.get("arrow") == {"posts": 0, "toast": "warn:이동은 하나씩 — 크롭 하나만 고르세요"},
+          f"배치 3-3 복수 선택: 캔버스 Shift+클릭·목록 Ctrl+클릭 = 더하기, 다시 = 빼기, Shift+빈 곳 = 그대로, 캔버스 강조 2, 화살표 = 알림만 {ms}")
+    check(la.get("log") == [["update", i, True, False] for i in ("001_aaaaaa", "003_cccccc", "002_bbbbbb")] and la.get("locked") == [True] * 3
+          and la.get("title") == "크롭 3개 선택" and la.get("btns") == [["모두 잠금", True], ["모두 잠금 풀기", False], ["지우기 0", True]] and la.get("lit") == 3
+          and la.get("toast") == ":잠금 3개 (Ctrl+Z 로 하나씩 되돌림)" and ms.get("unlockAll") == [False] * 3,
+          f"배치 3-3 [모두 잠금] = 크롭마다 update(locked 만) 차례로, 패널 단추 상태, L = 모두 잠겼으면 모두 풀기 {la} {ms.get('unlockAll')}")
+    dl = ms.get("del") or {}
+    check(ms.get("delBtn") == "지우기 2" and dl.get("posts") == [["delete", "002_bbbbbb"], ["delete", "003_cccccc"]] and dl.get("left") == ["001_aaaaaa"]
+          and (dl.get("confirm") or "").split("\n")[:4] == ["크롭 2개를 레이아웃에서 지웁니다:", " · 002_눈 — 후보 0 · ★ 0", " · 003_끈 — 후보 0 · ★ 0",
+                                                            "잠금으로 건너뜀 1: 001_모자"]
+          and dl.get("title") == "001_모자" and dl.get("toast") == ":지움 2개 (Ctrl+Z 로 하나씩 되살림) · 잠금으로 건너뜀 1" and ms.get("esc") == "크롭",
+          f"배치 3-3 복수 지우기 = 확인 창(이름 목록·잠금으로 건너뜀) → 크롭마다 delete, 남은 하나 = 단일 선택, Esc = 풂 {dl} {ms.get('esc')}")
+    check(ms.get("shiftDrag") == {"log": [["update", "002_bbbbbb", [1088, 0, 1600, 512]]], "title": "002_눈"},
+          f"배치 3-3 Shift+끌기 = 지금처럼 크롭 이동(움직이면 복수 선택 아님) {ms.get('shiftDrag')}")
+    mn = ej.get("multiNest") or {}
+    check(mn.get("added") == ["크롭 2개 선택", ["004_큰", "005_안"]] and mn.get("removed") == ["004_큰", ["004_큰"]]
+          and mn.get("esc") == ["크롭", 0] and mn.get("exits") == 1,
+          f"배치 3-3 리뷰 L1: 고른 바깥 크롭 안의 작은 크롭 Shift+클릭 = 작은 크롭을 더함(포인터 아래 가장 작은 크롭), 같은 자리 다시 = 뺌, "
+          f"복수 선택 Esc = 풂만(나가지 않음) → 다음 Esc = 나가기 {mn}")
+    lf = ej.get("lockFlush") or {}
+    check(lf.get("log") == [["update", "001_aaaaaa", [16, 0, 528, 512], None], ["update", "001_aaaaaa", None, True]]
+          and lf.get("rect") == [16, 0, 528, 512] and lf.get("locked") is True and lf.get("toasts") == []
+          and lf.get("cursors") == ["pointer", "move", ""],
+          f"배치 3-3 리뷰 L5①: 화살표 직후 L = 미세 이동을 먼저 보내고 잠금(늦은 이동 423 없음) · L6 잠긴 크롭 위 커서 pointer(안 잠긴 크롭 move) {lf}")
+    ln_ = ej.get("lockNote") or {}
+    check(ln_ == {"posts": 0, "toasts": [LOCK], "note": ""},
+          f"배치 3-3 리뷰 L5③: 메모 입력 중 다른 창이 잠금 → 다른 크롭으로 옮겨도 메모 POST 없음·알림 {ln_}")
+    lfl = ej.get("lockFail") or {}
+    e409 = "err:레이아웃이 다른 창에서 바뀌었습니다 — 새로고침 (실행 취소 기록을 비웠습니다)"
+    check(lfl.get("lock") == [e409, f"err:2개 중 0개 잠금 뒤 멈춤 — {e409[4:]}"] and lfl.get("locked") == [False] * 3
+          and lfl.get("del") == [e409, f"err:2개 중 0개를 지운 뒤 멈춤 — {e409[4:]}"] and lfl.get("left") == 3
+          and lfl.get("one") == [e409],
+          f"배치 3-3 리뷰 L2: 여러 크롭 잠금·지우기가 중간에 실패하면 멈춤 알림에 이유(마지막 토스트가 이유를 덮지 않게), 크롭 하나면 오류 알림 그대로 {lfl}")
     sb = ej["start"]
     check(sb.get("no", {}).get("disabled") is True and sb["why"] in sb["no"]["text"] and "프로젝트 기록 크롭" not in sb["no"]["text"]
           and sb["ok"]["disabled"] is False and "프로젝트 기록 크롭 2개" in sb["ok"]["text"],
@@ -15977,6 +16501,20 @@ def layout_node_unit():
         rep, n_open = imp(h, psd)
         check("캐시 적중" in rep and "레이아웃 rev 1 · " in rep and st.load_manifest(root)["source"]["layout"]["rev"] == 1
               and core(root) == before, "메모만 바꿈(지문 밖) = 캐시 적중, source.layout.rev 만 따라감")
+
+        section("배치 3-3 잠금(layout.json 크롭 locked — 보드 라우트)은 지문 밖: Import 캐시 적중·crops·jobs(cell_key)·Run 승인 해시·초안 키·layout_sig 같음")
+        sig0, m0 = st.layout_sig(st.load_layout(root)), {c["id"]: c for c in st.load_manifest(root)["crops"]}
+        s_l, r_l = edit(root, op="update", id=ids["001_왼쪽"], locked=True)
+        rep, n_open = imp(h, psd)
+        m1 = {c["id"]: c for c in st.load_manifest(root)["crops"]}
+        check(s_l == 200 and r_l["crop"]["locked"] is True and "캐시 적중" in rep and n_open == 0 and core(root) == before and m1 == m0
+              and st.layout_sig(st.load_layout(root)) == sig0 and st.load_manifest(root)["source"]["layout"]["sig"] == sig0
+              and all("locked" not in c for c in m1.values()),
+              f"잠금 → Import = 캐시 적중(PSD 안 엶), 매니페스트 crops 바이트 같음(locked 키 없음), layout_sig 그대로 {s_l} {rep.splitlines()[:2]}")
+        check(prep(h) == jobs0 and run_hash(h) == hash0 and draft_keys(root) == keys0 and _ledger_reqs(root) == 0,
+              "잠금 뒤 Prepare jobs(cell_key 포함)·Run 승인 해시·Spec Draft 초안 키 같음(0 호출)")
+        s_u, _r = edit(root, op="update", id=ids["001_왼쪽"], locked=False)
+        check(s_u == 200 and "locked" not in crop_of(st.load_layout(root), "001_왼쪽"), "풀기(뒤 절은 잠기지 않은 레이아웃으로)")
 
         section("M2-N14 a 한 크롭 이동 → 그 크롭만 source·cell_key 바뀜(스냅숏이 없으면 PSD 를 한 번 엶)")
         jb0 = jobs_by_crop(root)
@@ -20310,7 +20848,8 @@ async function screen(o = {}) {
   Object.assign(ctx, { document: doc, fetch: srv.fetch, Image: class { constructor() { imgs.push(this); this.naturalWidth = 0; this.naturalHeight = 0; } } });
   Object.assign(ctx.window, { confirm: (m) => { confirms.push(m); return true; },
     DPViewer: { svg: (tag, attrs) => { const e = new El(doc, tag); for (const [k, v] of Object.entries(attrs || {})) e.setAttribute(k, String(v)); return e; } } });
-  const hosts = { list: new El(doc, "ol"), panel: new El(doc, "section"), head: new El(doc, "div"), sheets: new El(doc, "div"), view: new El(doc, "div") };
+  const hosts = { list: new El(doc, "ol"), panel: new El(doc, "section"), head: new El(doc, "div"), tabs: new El(doc, "div"), sheets: new El(doc, "div"),
+    view: new El(doc, "div"), grid: new El(doc, "div") };
   doc.body.append(...Object.values(hosts));
   const viewer = { ed: null, sheets: [], sel: null, svg: new El(doc, "svg"), zoom: [],
     setEditor(ed) { this.ed = ed; }, setSheet(sh) { this.sheets.push(sh); },
@@ -20321,13 +20860,15 @@ async function screen(o = {}) {
   const toasts = [];
   const queued = [];
   const exits = [];
+  const tabSaves = []; // 가운데 탭 알림(board.js tabChanged 대역 — 3-4): 기억하는 전환 = 탭, 기억하지 않는 전환 = "~탭"
   const ed = E.create(hosts, { apiUrl: API, comfyUrl: COMFY, root: KEY, viewer, toast: (m, k) => toasts.push(`${k || ""}:${m}`),
-    queue: (l) => queued.push(l), applyWarn: o.applyWarn, exit: () => exits.push(true) });
-  const st = { rev: 10, refs_rev: 3, targets: [{ crop_id: "009_f21344", before_full_url: `thumb?root=${KEY}&kind=before&key=009_f21344%2FA&size=0` }] };
+    queue: (l) => queued.push(l), applyWarn: o.applyWarn, tab: o.tab, tabChanged: (t, keep) => tabSaves.push(keep ? t : `~${t}`),
+    exit: () => exits.push(true) });
+  const st = o.st || { rev: 10, refs_rev: 3, targets: [{ crop_id: "009_f21344", before_full_url: `thumb?root=${KEY}&kind=before&key=009_f21344%2FA&size=0` }] };
   ed.enter(st);
   await sleep(30);
   const all = (root) => root.all();
-  const env = { srv, doc, ed, viewer, hosts, toasts, queued, exits, confirms, imgs, st, all,
+  const env = { srv, doc, ed, viewer, hosts, toasts, queued, exits, confirms, imgs, st, all, tabSaves,
     button: (root, label, exact) => all(root).find((e) => e.tagName === "BUTTON" && (exact ? e.textContent === label : e.textContent.startsWith(label))) || null,
     press: async (root, label, exact) => {
       const b = env.button(root, label, exact);
@@ -21238,7 +21779,8 @@ await scenario("f27", async () => { // 실제 viewer.js: 같은 시트 '다시 �
       Image: class { constructor() { imgs.push(this); this.naturalWidth = 0; this.naturalHeight = 0; } } });
     Object.assign(ctx.window, { devicePixelRatio: 1, addEventListener() {}, confirm: () => true });
     vm.runInContext(fs.readFileSync(IN.viewerJs, "utf8"), ctx, { filename: "viewer.js" });
-    const hosts = { list: new El(doc, "ol"), panel: new El(doc, "section"), head: new El(doc, "div"), sheets: new El(doc, "div"), view: new El(doc, "div") };
+    const hosts = { list: new El(doc, "ol"), panel: new El(doc, "section"), head: new El(doc, "div"), tabs: new El(doc, "div"), sheets: new El(doc, "div"),
+      view: new El(doc, "div"), grid: new El(doc, "div") };
     doc.body.append(...Object.values(hosts));
     const viewer = ctx.window.DPViewer.create(hosts.view, { apiUrl: API });
     const ed = E.create(hosts, { apiUrl: API, comfyUrl: COMFY, root: KEY, viewer, toast: () => {}, queue: () => {}, exit: () => {} });
@@ -21649,6 +22191,383 @@ await scenario("c1bAux", async () => { // A 보조 저장 409 를 기다리는 �
           and ax["toasts"] and ax["toasts"][0].startswith(":저장: 009_모자본체_휘장_정면_t.png"),
           f"C1b: 보조 저장 확인 뒤 다시 보내기 = 처음 설명·변환(기다리는 사이 회전·크롭·설명을 바꿔도) {sv} {ax['toasts']} {ax['hint']!r}")
     check(ax["desc"] == "측면", f"C1b: A 보조 저장이 끝나도 옮겨 간 B 의 설명은 그대로 {ax['desc']!r}")
+
+
+def _p3_ref_grid(node, web, out):
+    """다듬기 3-4(F22) 레퍼런스 그리드: 가운데 탭 [시트]/[그리드](시트를 연 채 갔다 와도 그대로 · 바뀌면 tabChanged 로 알림 — 고른 탭만 기억 ·
+    처음 탭 = opts.tab), 크롭마다 카드(왼쪽 목록 순서·같은 칩 · 크롭 소스 = 초점 박스가 크롭 전체인 타깃 Before 또는 캔버스 미리보기를 rect 로 자름
+    + 미반영 · 대표 · 보조 n · 검사 줄), 빨강 = 경고·대표 없음 · 주황 = 연결 안 된 파일, 고아 연결 묶음, 카드 = 고르기만, 그리드 탭의 시트 키
+    (Enter·Backspace·[ ]·H·0·1·2·F)는 삼킴·Esc 는 선택 해제 → 나가기, R·state 가 그대로면 카드 그대로.
+    _f4_harness 의 화면 대역만 떼어(세션·화면 시나리오는 빼고) 따로 돌린다."""
+    h = _f4_harness()
+    marks = ("// ── J-R2 세션 ──", "// ── 화면: ", 'await scenario("ui"', "console.log(JSON.stringify(out));")
+    if not all(h.count(m) == 1 for m in marks):
+        check(False, f"3-4: 하네스를 자를 표지가 없음 {[h.count(m) for m in marks]}")
+        return
+    i_sess, i_scr, i_ui, i_tail = (h.index(m) for m in marks)
+    scen = r"""
+// ── 3-4 레퍼런스 그리드(F22) ──
+const P3_BEFORE = (id) => `thumb?root=${KEY}&kind=before&key=${id}%2FA&size=512`;
+const P3_BASE = `canvas?root=${KEY}&kind=base&v=b1`;
+const p3f = (name, role, n, extra = {}) => Object.assign({ name, role, size: [64, 64], bytes: 900, origin: "ps", thumb_url: `refs/img?root=${KEY}&name=${n}` }, extra);
+const p3crop = (id, name, o) => Object.assign({ id, name, fixed: true, status: "same", files: [], unlinked: [], held: [], explicit: [], manifest: null,
+  jobs_ref_sha: null, checks: [] }, o);
+function p3R() { // R0(011 이름 매칭·경고 · 009 고정·보조·연결 안 된 파일 · 고아 005) + 없음 고정 · 레이아웃에만 · 보조 5 · 이름 매칭만 · 대표 없음만
+  const R = R0();
+  R.crops.push(
+    p3crop("003_00aa11", "003_손", { unlinked: [{ name: "003_손_t.png", size: [64, 64], bytes: 900 }],
+      checks: [{ code: "R-none", level: "info", msg: "레퍼런스 없이 고치기로 고정" }] }),
+    p3crop("012_new000", "012_<b>새</b>", { fixed: false, status: "new", checks: [
+      { code: "R-none", level: "info", msg: "미반영 — 반영(큐) 뒤 Import 가 이 레퍼런스를 씀" },
+      { code: "R-none", level: "warn", msg: "<img src=x onerror=alert(1)> 레퍼런스 없음" },
+      { code: "R-big", level: "info", msg: "큰 레퍼런스 — 축소 권장" }, { code: "R-side", level: "info", msg: "좌우가 크롭과 반대" }] }),
+    p3crop("013_aux555", "013_리본", { files: [p3f("013_리본_t.png", "main", "013"), ...["a", "b", "c", "d", "e"].map((k) => p3f(`013_리본_${k}_t.png`, "aux", `013${k}`))] }),
+    p3crop("014_aaa014", "014_끈", { fixed: false, files: [p3f("014_끈_t.png", "main", "014")] }),
+    p3crop("016_aaa016", "016_장식", { files: [p3f("016_장식_옆_t.png", "aux", "016", { missing: true, thumb_url: null })] }));
+  return R;
+}
+const P3ST = () => ({ rev: 10, refs_rev: 3, canvas: { size: [1024, 768], base_url: P3_BASE },
+  layout_added: [{ id: "012_new000", name: "012_<b>새</b>", rect: [256, 128, 512, 384] }],
+  crops: [{ id: "003_00aa11", rect: [0, 0, 128, 128], layout_diff: null },
+    { id: "009_f21344", rect: [0, 0, 256, 256], layout_diff: { fields: ["name"], name: "009_모자본체_휘장", rect: [0, 0, 256, 256] } },
+    { id: "011_a1b2c3", rect: [512, 0, 768, 256], layout_diff: { fields: ["rect"], name: "011_소매끈_오른쪽", rect: [528, 0, 784, 256] } },
+    { id: "013_aux555", rect: [0, 512, 128, 640], layout_diff: null },
+    { id: "014_aaa014", rect: [768, 512, 1024, 768], layout_diff: { fields: ["rect"], name: "014_끈", rect: [640, 384, 1024, 768] } },
+    { id: "016_aaa016", rect: [128, 128, 256, 256], layout_diff: null }],
+  targets: ["009_f21344", "011_a1b2c3", "016_aaa016"].map((id) => ({ crop_id: id, before_url: P3_BEFORE(id), before_full_url: `${P3_BEFORE(id)}&full=1` })) });
+const p3cards = (env) => env.all(env.hosts.grid).filter((e) => e.classList.contains("rg-card") || e.classList.contains("rg-group"));
+function p3card(e) {
+  if (e.classList.contains("rg-group")) return { group: e.textContent };
+  const fig = (f) => {
+    const fr = f.children[1];
+    const k = fr.all();
+    const one = (c) => k.find((x) => x.classList.contains(c)) || null;
+    return { cap: f.children[0].textContent, frame: fr.className, imgs: k.filter((x) => x.tagName === "IMG").map((x) => [x.src, x.title, x.loading, x.decoding]),
+      none: k.filter((x) => x.classList.contains("rg-none")).map((x) => `${x.className}|${x.own}`), more: (one("rg-more") || { own: null }).own,
+      tag: one("rg-tag") ? one("rg-tag").own : null, tagTitle: one("rg-tag") ? one("rg-tag").title : null, cut: one("rg-cut") ? plain(one("rg-cut").style) : null,
+      aux: one("rg-aux") ? one("rg-aux").className : null };
+  };
+  const ck = e.children.find((x) => x.classList.contains("rg-checks"));
+  return { cls: e.className.split(" ").sort(), name: e.children[0].children[0].own, chips: e.children[0].children[1].children.map((c) => c.textContent),
+    figs: e.all().filter((x) => x.tagName === "FIGURE").map(fig), checks: ck ? { lines: ck.children.map((x) => `${x.className}|${x.own}`), title: ck.title } : null,
+    files: (e.children.find((x) => x.classList.contains("rg-files")) || { own: null }).own, title: e.title || null };
+}
+const p3vis = (env) => [env.hosts.sheets.hidden, env.hosts.view.hidden, env.hosts.grid.hidden,
+  env.hosts.tabs.children.map((b) => `${b.textContent}:${b.classList.contains("on")}:${b.getAttribute("aria-selected")}:${b.getAttribute("role")}`)];
+const p3named = (env, name) => p3cards(env).find((e) => e.classList.contains("rg-card") && e.children[0].children[0].own === name);
+
+await scenario("p3grid", async () => { // 시트를 열고 영역·SAM 점을 둔 채 [그리드] → 카드 → 카드 클릭 → 그리드의 시트 키 → [시트](그대로) → 다시 읽기
+  const env = await screen({ R: p3R(), st: P3ST() });
+  const { hosts, viewer } = env;
+  const r = { start: p3vis(env) };
+  env.all(hosts.sheets).find((e) => e.tagName === "LI").fire("click");
+  await sleep(10);
+  env.li("009_모자본체_휘장").fire("click");
+  env.drag(100, 100, 400, 500);
+  env.button(hosts.panel, "자동 오리기(SAM3)").fire("click");
+  env.tap(200, 300);
+  r.opened = p3vis(env);
+  r.hiddenGrid = hosts.grid.children.length; // [시트] 탭에서는 그리드를 만들지 않음
+  r.ptsBefore = env.marks("pos").length;
+  await env.press(hosts.tabs, "그리드", true);
+  r.grid = p3vis(env);
+  r.saves1 = env.tabSaves.slice();
+  r.list = env.all(hosts.list).filter((e) => e.tagName === "LI").map((li) => [li.children[0].textContent, li.children[1].children.map((c) => c.textContent)]);
+  r.cards = p3cards(env).map(p3card);
+  r.noTags = env.all(hosts.grid).filter((e) => e.tagName === "B" || (e.tagName === "IMG" && e.src === "x")).length;
+  r.gridText = hosts.grid.textContent;
+  const before = p3cards(env);
+  p3named(env, "011_소매끈_오른쪽").all().find((e) => e.tagName === "IMG").fire("click"); // 카드 안 그림을 눌러도 카드(거품)
+  await sleep(10);
+  r.click = { list: env.cls(hosts.list, "sel").children[0].textContent, panel: env.cls(hosts.panel, "lp-title").own,
+    sel: p3cards(env).filter((e) => e.classList.contains("sel")).map((e) => e.children[0].children[0].own),
+    same: p3cards(env).length === before.length && p3cards(env).every((e, i) => e === before[i]) };
+  const cuts0 = posts(env.srv, "refs/cut").length;
+  const zoom0 = viewer.zoom.length;
+  r.keys = [env.key("Enter"), env.key("Backspace"), env.key("Digit0"), env.key("Digit1"), env.key("KeyF"), env.key("Digit0", { ctrlKey: true })];
+  await sleep(20);
+  viewer.redraw();
+  r.keyEffects = { cuts: posts(env.srv, "refs/cut").length - cuts0, zoom: viewer.zoom.length - zoom0, pts: env.marks("pos").length };
+  await env.press(hosts.tabs, "시트", true);
+  r.back = p3vis(env);
+  r.backSheet = { setSheets: viewer.sheets.length, rect: viewer.sel && viewer.sel.crop.rect, pts: env.marks("pos").length };
+  r.saves2 = env.tabSaves.slice();
+  // 그리드에서 다시 읽기(패널 입력칸에 포커스 — renderSoon 길): 011 경고가 풀림 → 빨강 아님(이름 매칭은 강조 없음)
+  await env.press(hosts.tabs, "그리드", true);
+  hosts.panel.querySelector('[data-k="text"]').focus();
+  env.srv.R.crops[0].checks = [];
+  env.srv.rev = 4;
+  const st2 = Object.assign(P3ST(), { refs_rev: 4 });
+  env.ed.stateChanged(st2);
+  await sleep(30);
+  r.reread = p3card(p3named(env, "011_소매끈_오른쪽"));
+  // 같은 판(rev·refs_rev·layout_rev·refs_files_v 그대로)의 새 state — 크롭 소스 주소만 바뀜 → GET /refs 없이 카드를 다시
+  const g0 = gets(env.srv, "/refs").length;
+  const st3 = Object.assign(P3ST(), { refs_rev: 4 });
+  st3.targets[0].before_url = `${P3_BEFORE("009_f21344")}&v=2`;
+  env.ed.stateChanged(st3);
+  await sleep(20);
+  r.newState = { src: p3card(p3named(env, "009_모자본체_휘장")).figs[0].imgs.map((x) => x[0]), gets: gets(env.srv, "/refs").length - g0 };
+  const keep = p3cards(env);
+  env.ed.stateChanged(st3); // 같은 state = 카드 그대로
+  await sleep(10);
+  r.sameState = p3cards(env).every((e, i) => e === keep[i]);
+  return r;
+});
+
+await scenario("p3pref", async () => { // 기억한 탭 = 그리드로 시작(저장 안 함) · 캔버스 미리보기 없음 = 자리표시 · 목록 클릭 = 카드 선택 표시·그 카드로 스크롤(바뀐 때만)
+  const scrolled = [];
+  El.prototype.scrollIntoView = function () { if (this.classList.contains("rg-card")) scrolled.push(this.children[0].children[0].own); };
+  const env = await screen({ R: p3R(), st: Object.assign(P3ST(), { canvas: null }), tab: "grid" });
+  const r = { start: p3vis(env), saves: env.tabSaves.slice() };
+  r.src = Object.fromEntries(p3cards(env).filter((e) => e.classList.contains("rg-card") && !e.classList.contains("gone"))
+    .map((e) => [e.children[0].children[0].own, (({ imgs, none, tag }) => ({ imgs: imgs.length, none, tag }))(p3card(e).figs[0])]));
+  env.li("013_리본").fire("click");
+  env.li("013_리본").fire("click");
+  r.scrolled = scrolled.slice();
+  r.sel = p3cards(env).filter((e) => e.classList.contains("sel")).map((e) => e.children[0].children[0].own);
+  env.all(env.hosts.list).find((e) => e.tagName === "LI" && e.classList.contains("gone")).fire("click");
+  r.selOrphan = { cards: p3cards(env).filter((e) => e.classList.contains("sel")).map((e) => e.children[0].children[0].own),
+    panel: env.hosts.panel.textContent.includes("005_리본") };
+  El.prototype.scrollIntoView = function () {};
+  return r;
+});
+
+await scenario("p3many", async () => { // 크롭 24 — 카드 24, 선택·같은 state 에서는 카드를 다시 만들지 않음
+  const R = R0();
+  R.crops = Array.from({ length: 24 }, (_, i) => p3crop(`${String(100 + i)}_c${i}`, `${String(100 + i)}_부위${i}`, { files: [p3f(`${100 + i}_부위${i}_t.png`, "main", `m${i}`)] }));
+  R.orphans = [];
+  const st = Object.assign(P3ST(), { layout_added: null, crops: [], targets: [] });
+  const env = await screen({ R, st, tab: "grid" });
+  const a = p3cards(env);
+  for (const k of [3, 17, 23]) env.li(`${100 + k}_부위${k}`).fire("click");
+  env.ed.stateChanged(st);
+  await sleep(10);
+  const b = p3cards(env);
+  return { n: a.length, group: a.some((e) => e.classList.contains("rg-group")), same: a.every((e, i) => e === b[i]),
+    sel: b.filter((e) => e.classList.contains("sel")).map((e) => e.children[0].children[0].own) };
+});
+
+await scenario("p3empty", async () => { // 크롭·고아 없음 / 라우트 없음(재시작 전) = 그리드 안내
+  const e1 = await screen({ R: Object.assign(R0(), { crops: [], orphans: [] }), st: P3ST(), tab: "grid" });
+  const e2 = await screen({ refs404: true, st: P3ST(), tab: "grid" });
+  return { none: e1.hosts.grid.textContent, old: e2.hosts.grid.textContent };
+});
+
+await scenario("p3reopen", async () => { // 그리드 탭에서 오른쪽 패널 [다시 열기] = 시트 탭으로(숨은 뷰어에 시트를 열지 않음)
+  const REQ = "e".repeat(32);
+  const R = R0();
+  R.crops[1].files[1].record = { sheet: { path: SHEET, layer: null, size: [3927, 7583], changed: false }, rect: [300, 200, 700, 600],
+    cut: { method: "rect", points: [], text: "", ckpt: null, polys: [], grow: 0, feather: 0, mask: `derived/refcut/${REQ}_mask.png`,
+      steps: [REQ], step_polys: [[]] }, transform: { rotate: 0, flip_h: false, scale: 1, pad: 8 } };
+  const env = await screen({ R, st: P3ST(), tab: "grid" });
+  env.srv.cuts[REQ] = { body: { rect: [300, 200, 700, 600] }, waits: 0 };
+  p3named(env, "009_모자본체_휘장").fire("click");
+  await sleep(10);
+  const before = p3vis(env);
+  await env.press(env.hosts.panel, "다시 열기", true);
+  await sleep(60);
+  return { before, after: p3vis(env), saves: env.tabSaves.slice(), sheets: env.viewer.sheets.length };
+});
+
+await scenario("p3keys", async () => { // 그리드 탭: [ ] H 는 숨은 컷 결과를 돌리지 않음 · Esc = 크롭 선택만 풂(숨은 영역·결과 그대로) → 다음 Esc = 나가기 · 패널 컷 단추에 (Enter) 없음
+  const REQ = "e".repeat(32);
+  const R = R0();
+  R.crops[1].files[1].record = { sheet: { path: SHEET, layer: null, size: [3927, 7583], changed: false }, rect: [300, 200, 700, 600],
+    cut: { method: "rect", points: [], text: "", ckpt: null, polys: [], grow: 0, feather: 0, mask: `derived/refcut/${REQ}_mask.png`,
+      steps: [REQ], step_polys: [[]] }, transform: { rotate: 0, flip_h: false, scale: 1, pad: 8 } };
+  const env = await screen({ R, st: P3ST() });
+  const { hosts } = env;
+  env.srv.cuts[REQ] = { body: { rect: [300, 200, 700, 600] }, waits: 0 };
+  env.li("009_모자본체_휘장").fire("click");
+  await env.press(hosts.panel, "다시 열기", true);
+  await sleep(60);
+  const text = () => hosts.panel.textContent;
+  const cutBtns = () => ["컷 (Enter)", "컷"].map((l) => !!env.button(hosts.panel, l, true));
+  const r = { p0: text(), cut0: cutBtns(), result0: text().includes("면적 ") };
+  await env.press(hosts.tabs, "그리드", true);
+  r.gridCut = cutBtns().concat(text().includes("그리드 탭 — 영역·점·Enter 컷은 [시트] 탭에서(그리드에서는 시트 키가 꺼짐)"));
+  r.keys = [env.key("BracketRight"), env.key("BracketLeft", { shiftKey: true }), env.key("BracketRight", { ctrlKey: true }), env.key("KeyH"),
+    env.key("KeyH", { ctrlKey: true })];
+  await env.press(hosts.tabs, "시트", true);
+  r.same = text() === r.p0;
+  await env.press(hosts.tabs, "그리드", true);
+  r.esc1 = env.key("Escape");
+  r.after1 = { exits: env.exits.length, sel: p3cards(env).filter((e) => e.classList.contains("sel")).length, area: text().includes("영역400×400"),
+    result: text().includes("면적 "), rect: env.viewer.sel && env.viewer.sel.crop.rect };
+  env.key("Escape");
+  r.exits2 = env.exits.length;
+  return r;
+});
+
+await scenario("p3ext", async () => { // 그리드 탭에서 연 시트가 바깥에서 저장됨(GET /refs 최근 시트 v) → 시트 탭으로 다시 열되 그 전환은 기억하지 않음(~sheets)
+  const V = (v, w) => SHEETS.map((s) => Object.assign({}, s, { v: `${v}-${s.kind}`, size: [w, 7583] }));
+  const env = await screen({ R: p3R(), st: P3ST(), sheets: V("v1", 3927) });
+  env.all(env.hosts.sheets).find((e) => e.tagName === "LI").fire("click");
+  await sleep(10);
+  await env.press(env.hosts.tabs, "그리드", true);
+  const n = env.viewer.sheets.length;
+  env.srv.sheets = V("v2", 4000);
+  env.srv.R.sheets[0].v = "v2-image";
+  env.srv.rev = 5;
+  env.ed.stateChanged(Object.assign(P3ST(), { refs_rev: 5 }));
+  await sleep(40);
+  return { opened: env.viewer.sheets.length - n, vis: p3vis(env), saves: env.tabSaves.slice(), toast: env.toasts.at(-1) ?? null };
+});
+
+await scenario("p3focus", async () => { // Analyze 뒤 Before(512)는 초점 박스로 잘림 → 초점 박스가 크롭 전체일 때만 Before(512), 아니면 원해상도 Before(크롭 source — PSD 선편집 포함, Codex 3b 1차), 옮긴 크롭만 캔버스 미리보기를 잘라 보임
+  const st = P3ST();
+  const full = (id) => `${P3_BEFORE(id)}&full=1`;
+  st.targets = [
+    { crop_id: "009_f21344", tid: "A", size: [256, 256], focus_box: [0, 0, 256, 256], before_url: P3_BEFORE("009_f21344"), before_full_url: full("009_f21344") },
+    { crop_id: "011_a1b2c3", tid: "A", size: [256, 256], focus_box: [40, 40, 200, 200], before_url: P3_BEFORE("011_a1b2c3"), before_full_url: full("011_a1b2c3") },
+    { crop_id: "016_aaa016", tid: "B", size: [128, 128], focus_box: [16, 16, 96, 112], before_url: P3_BEFORE("016_aaa016"), before_full_url: full("016_aaa016") }];
+  const e1 = await screen({ R: p3R(), st, tab: "grid" });
+  const f1 = (n) => p3card(p3named(e1, n)).figs[0];
+  const r = { whole: f1("009_모자본체_휘장"), moved: f1("011_소매끈_오른쪽"), part: f1("016_장식") };
+  const e2 = await screen({ R: p3R(), st: Object.assign({}, st, { canvas: null }), tab: "grid" });
+  const f2 = (n) => p3card(p3named(e2, n)).figs[0];
+  return Object.assign(r, { noCanvas: f2("016_장식"), noCanvasMoved: f2("011_소매끈_오른쪽") });
+});
+"""
+    shutil.rmtree(out, ignore_errors=True)
+    out.mkdir(parents=True)
+    (out / "harness.mjs").write_text(h[:i_sess] + h[i_scr:i_ui] + scen + "\n" + h[i_tail:], encoding="utf-8")
+    (out / "in.json").write_text(json.dumps({"rows": [], "side": [], "hint": [], "bases": [], "comfyRe": "x"}), encoding="utf-8")
+    r = subprocess.run([node, str(out / "harness.mjs"), str(web / "layout_geom.js"), str(web / "ref_edit.js"), str(out / "in.json")],
+                       capture_output=True, text=True, encoding="utf-8", timeout=120)
+    if r.returncode != 0 or not r.stdout.strip():
+        check(False, f"3-4 node 하네스 실패({r.returncode}): {r.stderr.strip()[-800:]}")
+        return
+    res = json.loads(r.stdout.strip().splitlines()[-1])
+    for k in ("p3grid", "p3pref", "p3many", "p3empty", "p3reopen", "p3keys", "p3ext", "p3focus"):
+        if "error" in res.get(k, {"error": "없음"}):
+            check(False, f"3-4 시나리오 {k} 예외: {res.get(k)}")
+            return
+    api = "http://127.0.0.1:8189/bmk/design_patch/"
+    key = "abcdef012345"
+    tabs_on = lambda g: [f"시트:{str(not g).lower()}:{str(not g).lower()}:tab", f"그리드:{str(g).lower()}:{str(g).lower()}:tab"]  # noqa: E731
+    g = res["p3grid"]
+    check(g["start"] == [False, True, True, tabs_on(False)] and g["opened"] == [True, False, True, tabs_on(False)]
+          and g["grid"] == [True, True, False, tabs_on(True)] and g["saves1"] == ["grid"] and g["hiddenGrid"] == 0,
+          f"3-4 가운데 탭: 처음 [시트](시트 목록 — 숨은 그리드는 만들지 않음) → 시트 열기(뷰어) → [그리드] = 그리드만·탭 기억(saveTab) "
+          f"{g['start']} {g['opened']} {g['grid']} {g['saves1']} {g['hiddenGrid']}")
+    cards = {c.get("name") or c.get("group"): c for c in g["cards"]}
+    order = [c.get("name") or c.get("group") for c in g["cards"]]
+    check(order == ["003_손", "009_모자본체_휘장", "011_소매끈_오른쪽", "012_<b>새</b>", "013_리본", "014_끈", "016_장식", "크롭 없는 연결 1", "005_리본"]
+          and [x[0] for x in g["list"]] == order[:7] + order[8:],
+          f"3-4 카드 = 크롭 수(왼쪽 목록 순서) + 맨 뒤 '크롭 없는 연결 n' 묶음 {order}")
+    check(all(cards[n]["chips"] == ch for n, ch in g["list"]),
+          f"3-4 카드 머리 칩 = 왼쪽 목록 칩(같은 계산) {[(n, cards[n]['chips']) for n, _ in g['list']]}")
+    want_cls = {"003_손": ["rg-card", "warn"], "009_모자본체_휘장": ["rg-card", "sel", "warn"], "011_소매끈_오른쪽": ["bad", "rg-card"],
+                "012_<b>새</b>": ["bad", "rg-card"], "013_리본": ["rg-card"], "014_끈": ["rg-card"], "016_장식": ["bad", "rg-card"],
+                "005_리본": ["gone", "rg-card"]}
+    check({n: cards[n]["cls"] for n in want_cls} == want_cls,
+          f"3-4 강조: 경고(011·012)·대표 없음(016) = 빨강, 연결 안 된 파일(003·009) = 주황, 이름 매칭(014 — 대표 있음)은 강조 없음(목록 칩처럼), "
+          f"없음 고정은 빨강 아님(003), 선택 카드 표시 "
+          f"{ {n: cards[n]['cls'] for n in want_cls} }")
+    fig = lambda n, i: cards[n]["figs"][i]  # noqa: E731
+    img = lambda rel, title="": [api + rel, title, "lazy", "async"]  # noqa: E731
+    before = lambda cid: f"thumb?root={key}&kind=before&key={cid}%2FA&size=512"  # noqa: E731
+    check([f["cap"] for f in cards["013_리본"]["figs"]] == ["크롭 소스", "대표", "보조 5"]
+          and fig("009_모자본체_휘장", 0)["imgs"] == [img(before("009_f21344"))] and fig("009_모자본체_휘장", 0)["tag"] is None
+          and fig("009_모자본체_휘장", 1)["imgs"] == [img(f"refs/img?root={key}&name=009", "009_모자본체_휘장_t.png")]
+          and fig("009_모자본체_휘장", 2)["cap"] == "보조 1" and fig("009_모자본체_휘장", 2)["imgs"] == [img(f"refs/img?root={key}&name=009s", "009_모자본체_휘장_측면_t.png")]
+          and fig("011_소매끈_오른쪽", 0)["imgs"] == [img(before("011_a1b2c3"))] and fig("011_소매끈_오른쪽", 0)["tag"] == "미반영 (옛 자리)"
+          and "마지막 반영 자리" in fig("011_소매끈_오른쪽", 0)["tagTitle"],
+          f"3-4 카드 몸: 크롭 소스 = 타깃 Before(이름만 바뀐 009 는 표시 없음, 옮긴 011 = '미반영 (옛 자리)') · 대표 · 보조 n — 그림은 서버 주소를 apiUrl 로, "
+          f"lazy·async {cards['009_모자본체_휘장']['figs']} {fig('011_소매끈_오른쪽', 0)}")
+
+    def cut(n):
+        c = fig(n, 0)["cut"] or {}
+        num = [float(v) for v in re.findall(r"-?[\d.]+", c.get("backgroundSize", "") + " " + c.get("backgroundPosition", ""))]
+        return c, num
+    c12, n12 = cut("012_<b>새</b>")
+    c13, n13 = cut("013_리본")
+    c14, n14 = cut("014_끈")
+    c03, n03 = cut("003_손")
+    close = lambda a, b: len(a) == len(b) and all(abs(x - y) < 1e-6 for x, y in zip(a, b))  # noqa: E731
+    check(c12.get("backgroundImage") == f'url("{api}canvas?root={key}&kind=base&v=b1")' and close(n12, [400, 300, 100 / 3, 25])
+          and c12.get("aspectRatio") == "256 / 256" and c12.get("width") == "min(100%, calc(var(--rg-h) * 1))"
+          and fig("012_<b>새</b>", 0)["tag"] == "미반영 (새 크롭)" and fig("012_<b>새</b>", 0)["imgs"] == []
+          and close(n13, [800, 600, 0, 80]) and fig("013_리본", 0)["tag"] is None and c13.get("aspectRatio") == "128 / 128"
+          and close(n14, [100 * 1024 / 384, 200, 100, 100]) and fig("014_끈", 0)["tag"] == "미반영 (새 자리)"
+          and close(n03, [800, 600, 0, 0]) and fig("003_손", 0)["tag"] is None,
+          f"3-4 타깃 없는 크롭 = 캔버스 미리보기(base_url)를 rect 로 잘라 보임(배경 크기 = 캔버스/rect, 위치 = 시작/(캔버스 − rect), 칸 비율 = rect): "
+          f"레이아웃에만 있는 012 = '미반영 (새 크롭)', 옮긴 014 = 새 자리 + '미반영 (새 자리)', 대상 없는 013·003 = 표시 없음 {c12} {n13} {n14} {n03}")
+    check(fig("012_<b>새</b>", 1)["frame"] == "rg-frame miss" and fig("012_<b>새</b>", 1)["none"] == ["rg-none bad|대표 없음"]
+          and fig("016_장식", 1)["frame"] == "rg-frame miss" and fig("016_장식", 2)["none"] == ["rg-none|사라짐"]
+          and fig("003_손", 1)["frame"] == "rg-frame" and fig("003_손", 1)["none"] == ["rg-none|레퍼런스 없이(고정)"]
+          and fig("012_<b>새</b>", 2)["cap"] == "보조 0" and fig("012_<b>새</b>", 2)["none"] == ["rg-none|없음"]
+          and len(fig("013_리본", 2)["imgs"]) == 3 and fig("013_리본", 2)["more"] == "+2"
+          and fig("013_리본", 2)["aux"] == "rg-aux c4" and fig("009_모자본체_휘장", 2)["aux"] == "rg-aux c1",
+          f"3-4 대표 없음 = 빨간 칸(012·016), 의도한 없음 고정 = 흐린 칸(003), 보조 0 = 없음, 보조 5 = 그림 3 + '+2'(2×2), 보조 1 = 한 칸 크게, 사라진 보조 = 이름만 "
+          f"{[fig(n, i) for n, i in (('012_<b>새</b>', 1), ('016_장식', 2), ('003_손', 1), ('013_리본', 2))]}")
+    ck12 = cards["012_<b>새</b>"]["checks"] or {}
+    check(ck12.get("lines") == ["warn|<img src=x onerror=alert(1)> 레퍼런스 없음", "dim|미반영 — 반영(큐) 뒤 Import 가 이 레퍼런스를 씀",
+                                "dim|큰 레퍼런스 — 축소 권장", "dim|… 외 1"]
+          and ck12.get("title", "").split("\n")[0] == "<img src=x onerror=alert(1)> 레퍼런스 없음" and len(ck12.get("title", "").split("\n")) == 4
+          and cards["011_소매끈_오른쪽"]["checks"]["lines"] == ["warn|레퍼런스 이름 좌우가 크롭과 반대"] and cards["013_리본"]["checks"] is None
+          and g["noTags"] == 0 and "012_<b>새</b>" in g["gridText"] and "<img src=x onerror=alert(1)>" in g["gridText"],
+          f"3-4 검사 줄: 경고 먼저(강조)·정보 흐리게, 3줄 + '… 외 k'(전체는 마우스 설명), 이름·메시지는 textContent(태그 글자 그대로) {ck12}")
+    oc = cards.get("005_리본") or {}
+    check(cards.get("크롭 없는 연결 1") == {"group": "크롭 없는 연결 1"} and oc.get("chips") == ["크롭 없는 연결", "파일 1"]
+          and oc.get("files") == "005_리본_t.png" and oc.get("title") == "옛 크롭 ID 005_dead00",
+          f"3-4 고아 연결 = 맨 뒤 묶음(목록과 같은 칩·파일 이름) {oc}")
+    check(g["click"] == {"list": "011_소매끈_오른쪽", "panel": "011_소매끈_오른쪽", "sel": ["011_소매끈_오른쪽"], "same": True},
+          f"3-4 카드(안 그림) 클릭 = 왼쪽 목록 클릭과 같은 선택 → 오른쪽 관리 패널·카드 선택 표시, 카드는 다시 만들지 않음 {g['click']}")
+    check(g["keys"] == [True, True, True, True, True, False] and g["keyEffects"] == {"cuts": 0, "zoom": 0, "pts": 1} and g["ptsBefore"] == 1,
+          f"3-4 그리드 탭: Enter·Backspace·0·1·F 는 삼키기만(숨은 시트 컷·점 지우기·화면 맞춤 없음), Ctrl+0 은 넘김 {g['keys']} {g['keyEffects']}")
+    check(g["back"] == [True, False, True, tabs_on(False)] and g["backSheet"] == {"setSheets": 1, "rect": [100, 100, 400, 500], "pts": 1}
+          and g["saves2"] == ["grid", "sheets"],
+          f"3-4 시트를 연 채 그리드로 갔다 [시트] = 열던 시트·영역·점 그대로(다시 열지 않음) {g['back']} {g['backSheet']} {g['saves2']}")
+    rr = g["reread"]
+    check(rr["cls"] == ["rg-card", "sel"] and "경고 1" not in rr["chips"] and rr["checks"] is None,
+          f"3-4 그리드에서 R 을 다시 읽으면(패널 입력 중 — renderSoon) 카드도 다시: 011 경고 풀림 → 빨강 아님(이름 매칭은 강조 없음) {rr['cls']} {rr['chips']}")
+    check(g["newState"] == {"src": [api + before("009_f21344") + "&v=2"], "gets": 0} and g["sameState"] is True,
+          f"3-4 같은 판의 새 state = GET /refs 없이 크롭 소스 다시, 같은 state = 카드 그대로 {g['newState']} {g['sameState']}")
+    p = res["p3pref"]
+    none_src = {"imgs": 0, "none": ["rg-none|그림 없음"], "tag": None}
+    check(p["start"] == [True, True, False, tabs_on(True)] and p["saves"] == []
+          and p["src"]["003_손"] == none_src and p["src"]["013_리본"] == none_src and p["src"]["012_<b>새</b>"] == dict(none_src, tag="미반영 (새 크롭)")
+          and p["src"]["014_끈"] == dict(none_src, tag="미반영 (새 자리)") and p["src"]["009_모자본체_휘장"] == {"imgs": 1, "none": [], "tag": None},
+          f"3-4 기억한 탭 = 그리드로 시작(저장 안 함), 캔버스 미리보기 없음 = '그림 없음' 자리표시(미반영 표시는 그대로) {p['start']} {p['saves']} {p['src']}")
+    check(p["sel"] == ["013_리본"] and p["selOrphan"] == {"cards": ["005_리본"], "panel": True} and p["scrolled"] == ["013_리본"],
+          f"3-4 왼쪽 목록 클릭 = 그 카드 선택 표시(고아 연결도)·그 카드로 스크롤(선택이 바뀐 때만 — 같은 크롭을 다시 눌러도 한 번) "
+          f"{p['sel']} {p['selOrphan']} {p['scrolled']}")
+    m = res["p3many"]
+    check(m == {"n": 24, "group": False, "same": True, "sel": ["123_부위23"]}, f"3-4 크롭 24: 카드 24, 선택·같은 state 는 카드를 다시 만들지 않음 {m}")
+    e = res["p3empty"]
+    check(e["none"] == "크롭이 없습니다(Import 전) — [시트] 에서 시트 보기·컷만 됩니다" and e["old"].startswith("레퍼런스를 읽지 못했습니다") and "재시작" in e["old"],
+          f"3-4 그리드 안내: 크롭 없음 · 라우트 없음(재시작 전) {e}")
+    ro = res["p3reopen"]
+    check(ro["before"] == [True, True, False, tabs_on(True)] and ro["after"] == [True, False, True, tabs_on(False)] and ro["saves"] == ["sheets"]
+          and ro["sheets"] == 1,
+          f"3-4 그리드 탭에서 [다시 열기] = 시트 탭으로 바꿔 시트를 엶(숨은 뷰어에 열면 맞춤 크기 0) {ro}")
+    pk = res["p3keys"]
+    check(pk["result0"] is True and pk["cut0"] == [True, False] and pk["gridCut"] == [False, True, True]
+          and pk["keys"] == [True, True, True, True, False] and pk["same"] is True,
+          f"3-4 그리드 탭: [ ]·⇧[·Ctrl+]·H 는 삼키기만(숨은 컷 결과의 회전·반전 그대로 — [시트]로 돌아와 패널이 같음), Ctrl+H 는 넘김, "
+          f"패널 컷 단추 = '컷'((Enter) 없음)·안내 '[시트] 탭에서' {pk['cut0']} {pk['gridCut']} {pk['keys']} {pk['same']}")
+    check(pk["esc1"] is True and pk["after1"] == {"exits": 0, "sel": 0, "area": True, "result": True, "rect": [300, 200, 700, 600]} and pk["exits2"] == 1,
+          f"3-4 그리드 탭 Esc = 크롭 선택만 풂(숨은 시트의 영역·컷 결과 그대로, 나가지 않음) → 다음 Esc = 레퍼런스 모드 나가기 {pk['after1']} {pk['exits2']}")
+    px = res["p3ext"]
+    check(px["opened"] == 1 and px["vis"] == [True, False, True, tabs_on(False)] and px["saves"] == ["grid", "~sheets"]
+          and px["toast"] == "warn:시트가 바깥에서 바뀌어 다시 열었습니다 — 새 그림에서 영역을 확인하고 다시 컷",
+          f"3-4 그리드 탭에서 연 시트가 바깥에서 저장됨 = 시트 탭으로 다시 엶(알림), 그 전환은 기억하지 않음(tabChanged keep false) {px}")
+    pf = res["p3focus"]
+    pfc = lambda f: [float(v) for v in re.findall(r"-?[\d.]+", (f.get("cut") or {}).get("backgroundSize", "") + " "  # noqa: E731
+                                                   + (f.get("cut") or {}).get("backgroundPosition", ""))]
+    check(pf["whole"]["imgs"] == [img(before("009_f21344"))] and pf["whole"]["cap"] == "크롭 소스" and pf["whole"]["cut"] is None
+          and pf["moved"]["imgs"] == [] and close(pfc(pf["moved"]), [400, 300, 100 * 528 / 768, 0]) and pf["moved"]["tag"] == "미반영 (새 자리)"
+          and pf["part"]["imgs"] == [img(before("016_aaa016") + "&full=1", "첫 타깃 B 의 Before 원해상도 — 크롭 전체(512 는 초점 박스로 잘림)")]
+          and pf["part"]["cut"] is None and pf["part"]["tag"] is None and pf["part"]["cap"] == "크롭 소스",
+          f"3-4 크롭 소스: 초점 박스 = 크롭 전체면 Before(512), 아니면(Analyze 뒤 첫 타깃 초점) 원해상도 Before — 캔버스 미리보기(base)는 PSD 선편집이 빠져 "
+          f"쓰지 않음(Codex 3b 1차), 옮긴 크롭만 새 자리를 잘라 보임 {pf['whole']} {pf['moved']} {pf['part']}")
+    nc, ncm = pf["noCanvas"], pf["noCanvasMoved"]
+    check(nc["cap"] == "크롭 소스" and [x[0] for x in nc["imgs"]] == [api + before("016_aaa016") + "&full=1"] and nc["tag"] is None
+          and ncm["cap"] == "크롭 소스" and [x[0] for x in ncm["imgs"]] == [api + before("011_a1b2c3") + "&full=1"] and ncm["tag"] == "미반영 (옛 자리)",
+          f"3-4 캔버스 미리보기가 없으면 원해상도 Before(옮긴 크롭은 '미반영 (옛 자리)') {nc} {ncm}")
 
 
 def refs_js_unit():
@@ -22893,6 +23812,10 @@ await scenario("c11aCrop", async () => { // 다시 열기를 기다리는 사이
         _c11a_reopen_race()
     except Exception:
         check(False, f"_c11a_reopen_race 예외:\n{traceback.format_exc()}")
+    try:
+        _p3_ref_grid(node, web, OUT_ROOT / "refs_js_p3grid")
+    except Exception:
+        check(False, f"_p3_ref_grid 예외:\n{traceback.format_exc()}")
     note(f"S2-J 공용 표 {len(table['rows'])}행(변환 최대 차이 {worst}px) · 세션 시나리오 10 · 화면 시나리오 {len(ui)}")
 
 
@@ -23822,7 +24745,7 @@ def pipeline_unit():
                              roi_prior="hand_bbox", only_picked=True)
         s0["compose"].update(mask_source="auto", use_registration=False, use_tone=False, zorder="harvest")
         s0["export"].update(filename_prefix="p1_접두", layer_mode="pixel", alternates="none", color="raw", mask_source="auto",
-                            include_base=False, include_crop_outlines=False, skip_empty=False)
+                            include_base=False, include_crop_outlines=False, skip_empty=False, subfolder="p1_하위")
         base = pl.defaults(root)
         check(all(s0[x][k] != base[x][k] for x in pl.SECTIONS for k in pl.section_keys(x) if (x, k) != ("cand", "enabled"))
               and all(pl.validate_section(x, s0[x]) == s0[x] for x in pl.SECTIONS),
@@ -23945,7 +24868,7 @@ def pipeline_unit():
         expect_raises(lambda: pl.section_keys("review"), "모르는 절 ValueError")
         keys = {s: pl.section_keys(s) for s in pl.SECTIONS}
         check(keys["cand"][0] == "enabled" and len(keys["import"]) == 7 and len(keys["prepare"]) == 7 and len(keys["draft"]) == 8
-              and len(keys["run"]) == 5 and len(keys["analyze"]) == 8 and len(keys["compose"]) == 4 and len(keys["export"]) == 8
+              and len(keys["run"]) == 5 and len(keys["analyze"]) == 8 and len(keys["compose"]) == 4 and len(keys["export"]) == 9
               and not any(k in pl.NOT_STORED for ks in keys.values() for k in ks),
               f"절 키 = 노드 위젯 − {{project, approve, only, adopt, keep_loaded}} (+ cand.enabled) {[len(v) for v in keys.values()]}")
         d0 = pl.defaults()
@@ -24058,7 +24981,8 @@ def pipeline_unit():
         check(v["rev"] == 0 and v["saved"] is False and v["error"] is None and v["settings"] == der["settings"]
               and v["confirm"] == der["confirm"] == ["prepare.variants", "prepare.ref_style", "draft.apply"] and v["drift"] == []
               and v["warnings"] == [] and len(v["exports"]) == 1 and v["widgets"] == sw and v["manifest_rev"] == m["rev"]
-              and set(v) == {"rev", "saved", "error", "settings", "confirm", "derived", "drift", "warnings", "exports", "widgets", "manifest_rev"},
+              and set(v) == {"rev", "saved", "error", "settings", "confirm", "derived", "drift", "warnings", "exports", "widgets", "manifest_rev",
+                             "folder"} and v["folder"] == os.path.basename(root),
               f"파일 없음: rev 0·saved false·유도값·confirm(추정 variants·ref_style·draft.apply) {v['confirm']}")
         g = pl.prompt_gate(root, "apply", m)
         check(pl.pipeline_rev(root) is None and pl.load(root) is None and g["reason"] == "confirm_settings"
@@ -24381,8 +25305,9 @@ def pipeline_unit():
               "A→B→A 로 되돌리면 B — 보드가 재시작 뒤 되살리는 설정과 같게), 키가 빠졌으면 매니페스트 최다값")
         check(s["compose"] == {"mask_source": "hand", "use_registration": False, "use_tone": False, "zorder": "harvest"}
               and s["export"] == {"filename_prefix": "새_접두", "layer_mode": "pixel", "alternates": "none", "color": "raw",
-                                  "mask_source": "auto", "include_base": False, "include_crop_outlines": False, "skip_empty": True}
-              and frm["export.filename_prefix"] == "manifest" and frm["export.skip_empty"] == "default",
+                                  "mask_source": "auto", "include_base": False, "include_crop_outlines": False, "skip_empty": True,
+                                  "subfolder": ""}
+              and frm["export.filename_prefix"] == "manifest" and frm["export.skip_empty"] == "default" and frm["export.subfolder"] == "manifest",
               f"compose = exports[-1].compose, export = exports[-1].options(prefix → filename_prefix, skip_empty 기본 true) {s['export']}")
         check(s["run"] == pl.defaults()["run"] and s["cand"] == pl.defaults()["cand"] and d["confirm"] == ["draft.apply"],
               f"run·cand = 노드 기본값, confirm = draft.apply 뿐 {d['confirm']}")
@@ -24807,7 +25732,8 @@ def pipeline_unit():
         # §6 밖에서 더한 키: 설정 패널 선택지(settings_widgets), Export 레이어 수(§3.6 new 가 보이는 값 — §6 exports 모양엔 빠짐),
         # 무료 반영 expect 를 만드는 매니페스트 rev(S3b 계약 §1), Draft 확인 창 필드(§4.4 확인 창 — S3b 계약 §2),
         # Export 그룹 마스크·편집 수(S4 §7 결과 줄 '그룹 마스크 n (편집 k)')
-        six_extra = {"GET /pipeline": {"widgets", "exports[].layers", "manifest_rev", "exports[].mask_groups", "exports[].mask_edits"},
+        six_extra = {"GET /pipeline": {"widgets", "exports[].layers", "manifest_rev", "exports[].mask_groups", "exports[].mask_edits",
+                                       "folder"},  # 프로젝트 폴더 이름(Studio 출력 폴더 미리 보기 — 다듬기 3-5b)
                      "GET /pipeline/plan": {"draft.orphan_retries", "draft.est_usd", "draft.reasons", "draft.reasons[].reason", "draft.reasons[].n",
                                             "draft.free", "draft.pending_style", "draft.mock_forced"}}
 
@@ -29178,6 +30104,33 @@ await scenario("layoutBack", async () => {  // 사용성 §12 반영 칸 [되돌
     crop: { id: S7.crops[2].id, name: S7.crops[2].name, rect: S7.crops[2].rect } };
 });
 
+await scenario("layoutBackLocked", async () => {  // 배치 3-3: 잠긴 크롭(state 크롭 요약 locked) 줄의 [되돌리기]는 끔 + 안내 — 다른 줄은 그대로, 눌러도 보내지 않음
+  const srv = server();
+  srv.route.pipeline = [200, Object.assign(clone(R["GET /pipeline"].ok), { confirm: [], drift: [] })];
+  srv.route.plan = (q) => {
+    const p = clone(q.only ? R["GET /pipeline/plan"].ok : R["GET /pipeline/plan"].alt.no_selection);
+    Object.assign(p, { notes: [], apply_pending: [] });
+    p.draft.import_pending = [];
+    return [200, p];
+  };
+  const env = mkPanel(srv);
+  const S = boardState();
+  S.crops.forEach((c) => { c.layout_status = "same"; c.layout_diff = null; });
+  for (const [i, locked] of [[1, true], [2, false]]) {
+    Object.assign(S.crops[i], { rect: [0, 384, 384, 768], layout_status: "changed", locked,
+      layout_diff: { fields: ["rect"], name: S.crops[i].name, rect: [16, 384, 400, 768], targets: null } });
+  }
+  Object.assign(S, { layout_rev: 5 });
+  env.pipe.stateChanged(S);
+  await sleep(30);
+  env.pipe.enter(S, "001_38a818");
+  await sleep(60);
+  const rows = env.panel.all().filter((e) => e.tagName === "BUTTON" && e.textContent === "되돌리기")
+    .map((b) => ({ row: b.parent.own.split(" — ")[0], disabled: b.disabled, title: b.title }));
+  env.pipe.leave();
+  return { rows };
+});
+
 function mkPanel(srv, store = mem()) {
   // 패널 하나(작은 DOM 대역) — env.B(라벨, 뿌리) = 그 라벨로 시작하는 단추, env.input() = [수정] 입력칸.
   // env.refreshState = () => state 를 두면 refresh(보드 refresh(true))가 그 state 로 stateChanged 를 부른다(보드처럼 — 없으면 세기만)
@@ -31306,6 +32259,48 @@ await scenario("confirmGate", async () => {  // m-1: 진행 설정 칸 '확인 �
   };
 });
 
+await scenario("exportFolder", async () => {  // 배치 3-5b: [출력 폴더 열기] 제목 = 저장된 하위 폴더의 다음 Export 위치 · 실행 설정 Export 절 subfolder 칸 =
+  // 라벨 '출력 하위 폴더' + 칸 아래 실제 출력 폴더(입력 중인 값 — 앞뒤 공백 뗌, 비우면 GET /pipeline folder) · 저장 = 절 통째, 서버 400 문구 그대로 토스트
+  const srv = server();
+  const pv = Object.assign(clone(R["GET /pipeline"].ok), { confirm: [], drift: [] });
+  pv.settings.export.subfolder = "외주_B";
+  srv.route.pipeline = [200, pv];
+  srv.route.plan = (q) => [200, Object.assign(clone(q.only ? R["GET /pipeline/plan"].ok : R["GET /pipeline/plan"].alt.no_selection), { notes: [] })];
+  const env = mkPanel(srv);
+  const S = boardState();
+  env.pipe.stateChanged(S);
+  await sleep(30);
+  env.pipe.enter(S, "001_38a818");
+  await sleep(60);
+  const ob = env.B("출력 폴더 열기");
+  const r = { title: ob ? ob.title : null };
+  env.B("실행 설정 열기").fire("click");
+  await sleep(10);
+  const exp = env.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent === "Export");
+  const rows = exp.children.filter((e) => e.classList.contains("pp-field"));
+  const row = rows.find((e) => e.children[0].textContent === "출력 하위 폴더");
+  r.labels = rows.map((e) => e.children[0].textContent);
+  if (!row) return r;
+  const [lab, inp, hint] = row.children;
+  Object.assign(r, { labTitle: lab.title, cls: row.className, value: inp.value, hint0: hint.textContent });
+  inp.value = "";
+  inp.fire("input");
+  r.hint1 = hint.textContent;
+  inp.value = "  외주 C ";
+  inp.fire("input");
+  r.hint2 = hint.textContent;
+  inp.value = "a/b";
+  inp.fire("input");
+  r.hint3 = hint.textContent;
+  srv.route.settings = [400, { error: IN.subfolderError }];
+  env.B("저장", exp).fire("click");
+  await sleep(40);
+  r.sent = (srv.log.filter((x) => x.path === "pipeline/settings").at(-1) || {}).body || null;
+  r.toasts = env.toasts.slice();
+  env.pipe.leave();
+  return r;
+});
+
 console.log(JSON.stringify(out));
 process.exit(0);
 """
@@ -31404,8 +32399,14 @@ def pipeline_js_unit():
     esrc, n_imp = re.subn(r'^import \{ (app|api) \} from "\.\./\.\./scripts/(app|api)\.js";\r?\n', "", ext, flags=re.M)
     check(n_imp == 2, f"탭 확장 import 두 줄(app·api)만 바꿈 ({n_imp})")
     (out / "ext.mjs").write_text("const { app, api } = globalThis.__bmk;\n" + esrc, encoding="utf-8")
+    import bmk_design_patch_pipeline as dpl
+    try:  # 장면 exportFolder 의 가짜 서버 400 = 실제 서버가 'a/b' 에 내는 문구(배치 3-5b)
+        dpl.validate_section("export", dict(api["routes"]["GET /pipeline"]["ok"]["settings"]["export"], subfolder="a/b"))
+        sub_err = None
+    except ValueError as e:
+        sub_err = str(e)
     (out / "in.json").write_text(json.dumps({"api": api, "pipelineJs": str(web / "pipeline.js"), "boardJs": str(web / "board.js"),
-                                             "extMjs": str(out / "ext.mjs")}, ensure_ascii=False), encoding="utf-8")
+                                             "extMjs": str(out / "ext.mjs"), "subfolderError": sub_err}, ensure_ascii=False), encoding="utf-8")
     (out / "harness.mjs").write_text(_PL_JS_HARNESS, encoding="utf-8")
     r = subprocess.run([node, str(out / "harness.mjs"), str(out / "in.json")], capture_output=True, text=True, encoding="utf-8", timeout=180)
     if r.returncode != 0 or not r.stdout.strip():
@@ -31905,6 +32906,27 @@ def pipeline_js_unit():
               and "이 크롭의 대상 문구 바뀜은 남음 — 반영하면 새 생성 조건(생성 승인 대상)이 될 수 있음" in (lb.get("restConfirm") or "")
               and "그것 때문에 새 생성 조건" not in (lb.get("restConfirm") or ""),
               f"리뷰 tests-07: 왼쪽 '레이아웃 미반영' 칩 마우스 = 그 크롭 줄, [반영 (무료)] 확인 창 = 크롭별 레이아웃 줄 → 무료 반영 줄(취소하면 큐 없음) {lb.get('chipTitle')!r} {lb.get('apply')}")
+    bl = res.get("layoutBackLocked") or {}
+    check(bl.get("rows") == [{"row": " · 002_눈", "disabled": True, "title": "잠긴 크롭 — 크롭 편집(E)에서 잠금을 풀고"},
+                             {"row": " · 003_리본", "disabled": False, "title": "이 크롭의 바뀐 이름·위치를 마지막 반영 값으로(레이아웃만 — 무료)"}],
+          f"배치 3-3 진행(G) 반영 칸: 잠긴 크롭(state locked) 줄의 [되돌리기]는 끔·title '잠긴 크롭 — 크롭 편집(E)에서 잠금을 풀고', 다른 줄은 그대로 {bl}")
+    ef = res.get("exportFolder") or {}
+    ex_keys = list(R["GET /pipeline"]["ok"]["widgets"]["export"])
+    check(ex_keys[-2:] == ["skip_empty", "subfolder"]
+          and ef.get("labels") == [("출력 하위 폴더" if k == "subfolder" else k) for k in ex_keys]
+          and ef.get("labTitle") == "Export 노드 subfolder · 처음 값 출처: manifest" and ef.get("cls") == "lp-row pp-field pp-sub"
+          and ef.get("value") == "외주_B" and ef.get("hint0") == "비우면 프로젝트 폴더 이름 — output/design_patch/외주_B"
+          and ef.get("hint1") == "비우면 프로젝트 폴더 이름 — output/design_patch/261014_Test"
+          and ef.get("hint2") == "비우면 프로젝트 폴더 이름 — output/design_patch/외주 C"
+          and ef.get("hint3") == "폴더 이름 하나만 — 경로 구분자(/ \\ :)·.. 는 저장되지 않음",
+          f"배치 3-5b 실행 설정 Export 절: subfolder 칸(맨 뒤) 라벨 '출력 하위 폴더'(제목 = 노드 위젯 이름·처음 값 출처), 칸 아래 = 입력 중인 값의 실제 출력 폴더"
+          f"(앞뒤 공백 뗌 · 비우면 GET /pipeline folder · 경로 구분자면 경로 대신 '저장되지 않음' — 8189) {ef}")
+    check("다음 Export 위치: ComfyUI output/design_patch/외주_B([실행 설정 열기] Export 절 '출력 하위 폴더' — 비우면 프로젝트 폴더 이름)" in (ef.get("title") or "")
+          and isinstance(sub_err, str) and sub_err.startswith("export.subfolder 에는 ")
+          and (ef.get("sent") or {}).get("section") == "export" and (ef.get("sent") or {}).get("values", {}).get("subfolder") == "a/b"
+          and set((ef.get("sent") or {}).get("values") or {}) == set(ex_keys) and ef.get("toasts") == [f"err:{sub_err}"],
+          f"배치 3-5b 「Export」 칸 [출력 폴더 열기] 제목 = 저장된 하위 폴더의 다음 Export 위치, 잘못된 이름 저장 = 절 통째로 보내고 서버 400 문구 그대로 토스트 "
+          f"{ef.get('title')!r} {ef.get('sent')} {ef.get('toasts')}")
     ps = res.get("panelStyle") or {}
     if "plain" in ps:
         check(ps["box"] is True and ps["plain"]["q"] == {"root": "fe410d7f025d", "only": allids, "style": "0"} and ps["plain"]["copies"] == [[False, d_title], [False, r_title]],
@@ -43884,7 +44906,7 @@ const $ = (id) => document.getElementById(id);
 ${fn("el")}
 ${offSets}
 ${block}
-let maskOn = false, editing = false, refsOn = false, pipeOn = false, allowLeave = true, maskOk = true;
+let maskOn = false, editing = false, refsOn = false, pipeOn = false, allowLeave = true, maskOk = true, refTab = "sheets";
 const log = [];
 const cls = { editing: "editing", refs: "refs", pipe: "pipe", mask: "mask" };
 function body(c, on) { document.body.classList.toggle(c, on); }
@@ -43935,6 +44957,10 @@ try {
   run("allowLeave = true");
   out.maskToRefs = step("refs");
   out.refsChips = chips();
+  run('refTab = "grid"'); run("renderMode()");  // 배치 3-4: 레퍼런스 [그리드] 탭(ref_edit.js tabChanged → renderMode) = 그리드 칩 줄
+  out.refsGridChips = chips();
+  run('refTab = "sheets"'); run("renderMode()");
+  out.refsBack = chips();
   out.toReview = step(null);
   out.reviewAgain = step(null);
   run("goMode('mask')"); run("renderMode()");
@@ -43973,12 +44999,13 @@ try {
 
   // 모든 칩 키가 그 모드에서 처리됨: 편집기가 먼저 받는 키이거나, 그 모드의 끄는 키(…_OFF)가 아님 — 눌러도 아무 일 없는 칩이 없게
   const EAT = {
-    edit: ["Tab", "Delete", "Backspace", "Enter", "KeyP", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "KeyZ", "KeyY"],
+    edit: ["Tab", "Delete", "Backspace", "Enter", "KeyP", "KeyL", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "KeyZ", "KeyY"],
     refs: ["Escape", "Enter", "Backspace", "BracketLeft", "BracketRight", "KeyH", "Digit0", "Digit1", "Digit2", "KeyF"],
+    refsGrid: ["Escape"],
     mask: ["Escape", "Enter", "KeyX", "BracketLeft", "BracketRight", "KeyQ", "KeyS", "KeyM", "KeyW", "KeyZ", "KeyY"],
     pipe: [], review: [],
   };
-  const OFF = run("({ edit: [...EDIT_OFF], refs: [...REFS_OFF], pipe: [...PIPE_OFF], mask: [...MASK_OFF], review: [] })");
+  const OFF = run("({ edit: [...EDIT_OFF], refs: [...REFS_OFF], refsGrid: [...REFS_OFF], pipe: [...PIPE_OFF], mask: [...MASK_OFF], review: [] })");
   const BOARD = ["KeyE", "KeyT", "KeyG", "KeyK", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space", "KeyX", "KeyQ", "KeyD", "KeyC",
     "KeyB", "KeyO", "Digit0", "KeyF", "Digit1", "Digit2", "KeyS", "KeyM", "KeyN", "KeyV", "Escape", "Slash"];
   out.dead = [];
@@ -44081,8 +45108,11 @@ def polish2_unit():
     check(res["bracket"][0] == ["down", "BracketLeft", "[", False, False, True] and res["shiftBracket"][0] == ["down", "BracketRight", "]", True, False, True]
           and res["undo"][0] == ["down", "KeyZ", "z", False, True, True],
           f"마스크 칩 [ · ⇧] · Ctrl+Z {res['bracket']} {res['shiftBracket']} {res['undo']}")
-    check(res["dead"] == [] and res["modes"] == ["review", "edit", "refs", "pipe", "mask"] and res["hasR"] is False,
+    check(res["dead"] == [] and res["modes"] == ["review", "edit", "refs", "refsGrid", "pipe", "mask"] and res["hasR"] is False,
           f"모든 칩 키가 그 모드에서 처리됨(편집기가 받거나 그 모드의 끄는 키가 아님), R(유료 다시 생성) 칩 없음 {res['dead']}")
+    check(res["refsGridChips"] == ["info:카드 클릭 크롭 고르기", "T", "Esc"] and res["refsBack"] == res["refsChips"],
+          f"배치 3-4 레퍼런스 [그리드] 탭 = 칩 줄 '카드 클릭 크롭 고르기 · T 나가기 · Esc 선택 해제·나가기'(시트 키 칩 없음), [시트]로 돌아오면 시트 칩 줄 "
+          f"{res['refsGridChips']} {res['refsBack']}")
 
 
 
@@ -44273,6 +45303,189 @@ def polish3_unit():
           and "window.confirm(" in mj[mj.index("async function cleanupFiles"):],
           "3-6 마스크 「저장된 버전」 칸 [안 쓰는 편집 파일 정리] = 목록 → 확인 창 → 200개씩 지우기(서버 본문 상한 — Codex 3a 1차) → 토스트")
 
+    section("다듬기 배치 3 — 3-4 레퍼런스 그리드(T 가운데 탭 [시트]/[그리드] — 정적, 장면은 refs_js_unit '3-4')")
+    bh = (web / "board.html").read_text(encoding="utf-8")
+    bj = (web / "board.js").read_text(encoding="utf-8")
+    bc = (web / "board.css").read_text(encoding="utf-8")
+    rj = _r4_code((web / "ref_edit.js").read_text(encoding="utf-8"))
+    i_rv = bh.index('<section id="ref-view"')
+    rv = bh[i_rv:bh.index("</section>", i_rv)]
+    ids = re.findall(r'<div id="([\w-]+)"', rv)
+    check(ids == ["ref-tabs", "ref-sheets", "ref-viewer", "ref-grid"] and 'class="tabs ref-tabs" role="tablist"' in rv
+          and re.search(r'<div id="ref-grid" hidden[ >]', rv) is not None and bh.count('id="grid"') == 1,
+          f"3-4 #ref-view = 탭 줄 → 시트 목록 → 시트 뷰어 → 그리드(#ref-grid — 검토 모드의 #grid 와 다른 호스트, 처음 숨김) {ids}")
+    tc = bj[bj.index("tab: refTab, tabChanged: (t, keep) => {"):]
+    check('tabs: $("ref-tabs")' in bj and 'grid: $("ref-grid")' in bj and 'refTab = loadPref().refTab === "grid" ? "grid" : "sheets";' in bj
+          and tc[:tc.index("exit: () => setRefs(false)")].split() == "tab: refTab, tabChanged: (t, keep) => { refTab = t; if (keep) savePref({ refTab: t }); renderMode(); },".split()
+          and "localStorage" not in rj and "opts.saveTab" not in rj,
+          "3-4 고른 탭 = board.js loadPref/savePref(bmk-dp-studio — try/catch)의 refTab(기억하지 않는 전환은 keep false), 바뀌면 renderMode(칩 줄), "
+          "ref_edit.js 는 저장소를 직접 쓰지 않음")
+    check('refsGrid: [["카드 클릭", "크롭 고르기"], ["T", "나가기", { code: "KeyT" }], ["Esc", "선택 해제·나가기", { code: "Escape" }]],' in bj
+          and 'const key = m[0] === "refs" && refTab === "grid" ? "refsGrid" :' in bj,
+          "3-4 [그리드] 탭 칩 줄 = 카드 클릭·T·Esc(시트 키 칩 없음 — 장면 polish2_unit refsGrid)")
+    gr = rj[rj.index("    function renderGrid("):rj.index("    function renderPanel(")]
+    check("fetch" not in gr and re.search(r'"refs', gr) is None and gr.count("opts.apiUrl(") == 2 and "innerHTML" not in gr
+          and 'img.loading = "lazy";' in gr and 'img.decoding = "async";' in gr and "function refChips(c)" in rj and rj.count("refChips(c)") == 3,
+          "3-4 그리드 그림 = 서버가 준 주소(thumb_url·before_url·base_url)를 opts.apiUrl 로만(새 경로·fetch 없음, lazy·async), 칩은 목록과 같은 refChips")
+    check(".rg-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr));" in bc
+          and ".rg-card.bad {" in bc and ".rg-card.warn {" in bc and ".ref-tabs { align-self: stretch;" in bc and "#ref-grid {" in bc and "--rg-h:" in bc,
+          "3-4 board.css: 카드 auto-fill 격자(좁은 창도 가로 스크롤 없음)·빨강/주황 테두리·탭 줄은 .tabs/.tab.on 재사용")
+    check("<td>[시트] · [그리드]</td>" in bh and "· [그리드] = 크롭별 매칭을 한눈에\"]" in bj,
+          "3-4 도움말(?) 레퍼런스 표·모드 한 줄 설명에 [시트]/[그리드]")
+
+    section("다듬기 배치 3 — 3-3 크롭 잠금·복수 선택(정적 — 장면은 layout_js_unit lockEdit·multiSel·lockPsd, 서버는 layout_board_unit b25)")
+    lj = (web / "layout_edit.js").read_text(encoding="utf-8")
+    kd = bj[bj.index("  function onKeyDown(e) {"):bj.index("  function onKeyUp(e) {")]
+    check('["L", "잠금", { code: "KeyL" }]' in bj and '"KeyL"' not in kd and "KeyL" not in bj[bj.index("const EDIT_OFF"):bj.index("const LAYOUT_STATUS")]
+          and 'case "KeyL": // 잠금 토글' in lj,
+          "3-3 L = 크롭 편집(E) 모드 칩 'L 잠금' — 보드 전역 키·모드 끄는 키에 L 없음(편집기 onKey 가 먼저 받음)")
+    check("<td><kbd>L</kbd> · [잠금]</td>" in bh and "<td><kbd>Shift</kbd>/<kbd>Ctrl</kbd>+클릭</td>" in bh
+          and bh.index("<td><kbd>L</kbd> · [잠금]</td>") < bh.index("<h3>레퍼런스 (<kbd>T</kbd>)</h3>")
+          and "svg.marks .lc.locked { stroke-dasharray: 6 3; }" in bc,
+          "3-3 도움말(?) 크롭 편집 표에 L·[잠금]·Shift/Ctrl+클릭 줄, 잠긴 크롭 사각형 점선")
+    check(lj.count("lockedNow(c.id)") >= 9 and "if (lockedNow(c.id)) return null; // 대상 문구·상자" in lj
+          and "const LOCK_MSG = \"잠긴 크롭 — [잠금 풀기] 뒤에\";" in lj,
+          "3-3 편집기 쓰기 입구(대상·이름·메모·지우기·화살표·제안·상자)마다 잠금 판정(lockedNow) — 끈 단추·키·다른 창이 잠근 뒤의 입력도")
+    check("#layout-list li { user-select: none; }" in bc and "#ref-list li { user-select" not in bc,
+          "3-3 리뷰 L4: 크롭 편집 왼쪽 목록 Shift/Ctrl+클릭이 글자 선택 넓히기로 칠해지지 않게 user-select: none(레퍼런스 목록은 그대로) — 실브라우저 확인 목록")
+    lrow = bh[bh.index("<td><kbd>L</kbd> · [잠금]</td>"):]
+    lrow = lrow[:lrow.index("</tr>")]
+    check("실행(G) 반영 칸에 'Prepare 입력이 바뀜' — 유료 전 [반영 (무료)] 한 번" in lrow and "[PSD 값으로]가 막히고 [모두 PSD 값으로]에서 빠짐" in lrow
+          and lj.count("+ LOCK_APPLY") == 3,
+          "3-3 리뷰 L3·L6: 도움말 L 줄 = 반영 영향(Prepare 입력이 바뀜 — 유료 전 무료 반영 한 번)·[모두 PSD 값으로]에서 빠짐, [잠금]·[모두 잠금]·[모두 잠금 풀기]·[잠금 풀기] 설명에도")
+
+    section("다듬기 배치 3 — 3-5b Export 출력 하위 폴더(이름만 — store.check_export_subfolder 를 노드·pipeline·보드가 같이 씀, 노드는 polish3_node_unit)")
+    import bmk_design_patch_pipeline as pl
+    good = {"": "", "  ": "", " 외주_A ": "외주_A", "sub-1.v2": "sub-1.v2", "a b": "a b", ".hidden": ".hidden", "x" * 64: "x" * 64}
+    got = {k: store.check_export_subfolder(k) for k in good}
+    bad = ["a/b", "a\\b", "/a", "C:x", "C:", "..", "a..b", ".", "끝.", "x. ", "CON", "con", "nul.txt", "Com1", "lpt9.psd", "aux.tar.gz",
+           "a\tb", "a\x00b", "a\nb", "a\x1fb", 'a"b', "a<b", "a>b", "a|b", "a?b", "a*b", "x" * 65, None, 3]
+    rej = []
+    for b in bad:
+        try:
+            rej.append(("통과", store.check_export_subfolder(b)))
+        except ValueError as e:
+            rej.append(str(e).startswith("subfolder "))
+    check(got == good and rej == [True] * len(bad),
+          f"3-5b 이름 검사: 앞뒤 공백 뗌·빈 값 = 기본, 구분자(/ \\)·드라이브 콜론·..·.·끝 점·예약 이름(대소문자·확장자 무관)·제어 문자·<>\"|?*·64자 초과·"
+          f"문자열 아님 거절(문구는 'subfolder …' — 노드·pipeline 이 앞에 태그·절을 붙임) {got} {list(zip(bad, rej))}")
+    wx = pl.WIDGETS["BMKDesignPatchExportPSD"]
+    check(list(wx)[-2:] == ["skip_empty", "subfolder"] and wx["subfolder"] == {"type": "STRING", "default": ""}
+          and pl.section_keys("export")[-2:] == ("skip_empty", "subfolder") and pl.defaults()["export"]["subfolder"] == "",
+          f"3-5b pipeline 위젯 표: Export subfolder = skip_empty 뒤(노드 optional 맨 뒤 — P2 가 노드와 대조), STRING 기본 \"\" {list(wx)}")
+    sroot = store.project_root(str(out / "subbase"), "p3sub")
+    os.makedirs(sroot)
+    m = store.new_manifest("p3sub")
+    store.save_manifest(sroot, m)
+    ex0 = pl.defaults(sroot)["export"]
+    vbad = []
+    for v in ("a/b", "..", "CON", "x."):
+        try:
+            pl.validate_section("export", dict(ex0, subfolder=v))
+            vbad.append("통과")
+        except ValueError as e:
+            vbad.append(str(e).startswith("export.subfolder ") and str(e).endswith(" (Studio 칸 '출력 하위 폴더')"))
+    check(pl.validate_section("export", dict(ex0, subfolder="  외주_A "))["subfolder"] == "외주_A" and vbad == [True] * 4,
+          f"3-5b export 절 검사 = 같은 함수(앞뒤 공백 뗀 이름으로 저장, 잘못된 이름은 'export.subfolder … (Studio 칸 '출력 하위 폴더')' 400 — "
+          f"토스트가 화면 라벨을 가리킴) {vbad}")
+    old_doc = {"schema": pl.SCHEMA, "rev": 4, "confirm": [], **pl.defaults(sroot)}
+    del old_doc["export"]["subfolder"]
+    Path(sroot, pl.PIPELINE_NAME).write_text(json.dumps(old_doc, ensure_ascii=False), encoding="utf-8")
+    cur_old = pl.current(sroot)
+    reals, newer = [], []
+    for name in ("261014_Test", "Test_261019"):  # 실제 옛 파일(배치 3b 전 — 읽기만). 사용자가 Studio 에서 Export 절을 저장해 키가 생겼으면 옛 파일이 아님 — 건너뜀
+        rp = Path("G:/AI_output/_Input/bmk_design_patch") / name / pl.PIPELINE_NAME
+        if not rp.is_file():
+            continue
+        raw = rp.read_bytes()
+        try:
+            has_key = "subfolder" in (json.loads(raw.decode("utf-8-sig")).get("export") or {})
+        except (ValueError, AttributeError):
+            has_key = False  # 깨진 파일 — 아래 _parse 의 오류가 결과에 남음
+        if has_key:
+            newer.append(name)
+            continue
+        try:
+            d = pl._parse(raw)
+            reals.append((name, d["rev"], d["export"]["subfolder"], list(d["export"])[-1]))
+        except ValueError as e:
+            reals.append((name, None, str(e), None))
+    check(cur_old["error"] is None and cur_old["rev"] == 4 and cur_old["settings"]["export"]["subfolder"] == ""
+          and all(r[2:] == ("", "subfolder") for r in reals),
+          f"3-5b 옛 pipeline.json(export.subfolder 없음)은 깨진 파일이 아님 — subfolder \"\"(기본 폴더)로 읽음, 실제 옛 파일 {reals}")
+    if newer:
+        note(f"3-5b 실제 pipeline.json 중 export.subfolder 키가 생긴 것(Studio 에서 저장 — 옛 파일 아님)은 건너뜀: {newer}")
+    if not reals:
+        skip("3-5b G:/AI_output/_Input/bmk_design_patch 의 옛 pipeline.json(subfolder 키 없음) 없음 — 실제 파일 읽기 생략")
+    os.remove(Path(sroot, pl.PIPELINE_NAME))
+    d_none = pl.derive(sroot, m)
+    m["exports"] = [{"rev": 3, "psd": "x.psd", "hash": "h3", "options": {"prefix": "p3sub", "layer_mode": "pixel"}}]
+    d_old = pl.derive(sroot, m)
+    m["exports"].append({"rev": 4, "psd": "y.psd", "hash": "h4", "options": {"prefix": "p3sub", "subfolder": "외주_A"}})
+    d_sub = pl.derive(sroot, m)
+    check(d_none["settings"]["export"]["subfolder"] == "" and "export.subfolder" in d_none["confirm"]
+          and d_old["settings"]["export"]["subfolder"] == "" and d_old["from"]["export.subfolder"] == "manifest"
+          and not any(c.startswith("export.") for c in d_old["confirm"])
+          and d_sub["settings"]["export"]["subfolder"] == "외주_A" and d_sub["from"]["export.subfolder"] == "manifest",
+          f"3-5b 유도: Export 기록 없음 = 기본값(확인 필요 — 지금처럼 export 절 전부), 옛 기록(options 에 subfolder 없음) = \"\"·출처 manifest·확인 필요 아님, "
+          f"기록에 subfolder = 그 값 {d_old['from']['export.subfolder']} {d_sub['settings']['export']}")
+    st_all = pl.defaults(sroot)
+    st_all["export"]["subfolder"] = "외주_A"
+    pe = pl.build_prompt("export", st_all, sroot)["dp_export"]["inputs"]
+    check(list(pe)[-2:] == ["skip_empty", "subfolder"] and pe["subfolder"] == "외주_A"
+          and pl.build_prompt("export", pl.defaults(sroot), sroot)["dp_export"]["inputs"]["subfolder"] == "",
+          f"3-5b Export 템플릿 입력에 subfolder(노드 입력 순서 — 맨 뒤) {list(pe)}")
+    seen.clear()
+    orig_reveal, orig_dir = board._reveal, list(board._OUTPUT_DIR)
+    board._reveal = lambda path, select: seen.append((path, select))
+
+    def call_s():
+        try:
+            return board.open_export_folder(sroot)
+        except board._Reject as e:
+            return (e.status, str(e))
+        except (KeyError, TypeError, ValueError) as e:  # 실행 설정을 읽다 난 예외도 결과로(500 이 아니라 기본 폴더여야 함)
+            return ("예외", repr(e))
+    try:
+        board.set_output_dir(str(base))
+        f_def, f_sub = base / "design_patch" / "p3sub", base / "design_patch" / "외주_A"
+        f_def.mkdir(parents=True)
+        o_def = call_s()  # 실행 설정 없음 = 유도값(기록 없음 → 기본 폴더)
+        m = store.new_manifest("p3sub")
+        store.save_manifest(sroot, m)
+        pl.update(sroot, 0, "export", dict(pl.defaults(sroot)["export"], subfolder="외주_A"))
+        o_missing = call_s()
+        f_sub.mkdir()
+        o_sub = call_s()
+        rec = f_def / "p3sub_r1.psd"
+        rec.write_bytes(b"8BPS")
+        m = store.load_manifest(sroot)
+        m["exports"].append({"psd": str(rec).replace("\\", "/"), "hash": "hs"})
+        store.save_manifest(sroot, m)
+        o_rec = call_s()
+        rec.unlink()
+        o_gone = call_s()
+        Path(sroot, pl.PIPELINE_NAME).write_text("{", encoding="utf-8")
+        o_broken = call_s()
+    finally:
+        board._reveal = orig_reveal
+        board._OUTPUT_DIR[:] = orig_dir
+    check(o_def == {"ok": True, "path": str(f_def), "selected": False} and isinstance(o_missing, tuple) and o_missing[0] == 404
+          and str(f_sub) in o_missing[1]
+          and o_sub == {"ok": True, "path": str(f_sub), "selected": False} and o_rec == {"ok": True, "path": str(rec), "selected": True}
+          and o_gone == {"ok": True, "path": str(f_sub), "selected": False} and o_broken == {"ok": True, "path": str(f_def), "selected": False}
+          and seen == [(str(f_def), False), (str(f_sub), False), (str(rec), True), (str(f_sub), False), (str(f_def), False)],
+          f"3-5b [출력 폴더 열기]: 기록이 없으면(PSD 가 없어졌을 때도) 실행 설정 export.subfolder 폴더(없으면 404 그 경로), 기록이 있으면 기록 경로 그대로"
+          f"(옛 하위 폴더), 실행 설정이 깨졌으면 기본 폴더 {o_def} {o_missing} {o_sub} {o_rec} {o_gone} {o_broken}")
+    pj = (web / "pipeline.js").read_text(encoding="utf-8")
+    bh = (web / "board.html").read_text(encoding="utf-8")
+    check('const lab = el("span", "k", (sub ? "출력 하위 폴더" : k) + (confirm ? " (확인 필요)" : ""));' in pj
+          and ": `비우면 프로젝트 폴더 이름 — ${exportDir(PS.P, inp.value)}`;" in pj
+          and "return `output/design_patch/${v || (P0 && P0.folder) || \"<프로젝트 폴더>\"}`;" in pj
+          and "ComfyUI output/design_patch/&lt;출력 하위 폴더 — 비우면 프로젝트 폴더&gt;" in bh
+          and ".pp-sub .pp-hint {" in (web / "board.css").read_text(encoding="utf-8"),
+          "3-5b Studio: 실행 설정 Export 절 칸 라벨 '출력 하위 폴더' + 칸 아래 실제 경로(장면 pipeline_js_unit exportFolder), 도움말(?) 반영·Export 줄")
+
 
 def polish1_node_unit():
     """다듬기 배치 1 — B-1 Export 레이어 c 번호 = Studio 후보 번호(탈락 포함 등록 순서). 노드는 _dp_package(mock — 유료 0)."""
@@ -44312,6 +45525,76 @@ def polish1_node_unit():
         mock_file.unlink(missing_ok=True)
         if env_mock is not None:
             os.environ[rn.MOCK_ENV] = env_mock
+
+
+def polish3_node_unit():
+    """다듬기 배치 3b — 3-5b Export PSD subfolder(노드, _dp_package — 유료 0): optional 맨 뒤 위젯, 기본값(빈 값·프로젝트 폴더 이름)이면
+    경로·해시·기록이 그 전과 같음, 하위 폴더 = 그 폴더에 새로 씀('변경 없음' 아님), 잘못된 이름은 prefix 오류처럼 실패."""
+    section("다듬기 배치 3 — 3-5b Export PSD subfolder(노드 — 위젯 자리·경로·'변경 없음'·기록 options·잘못된 이름)")
+    dp = _dp_package()
+    import folder_paths  # noqa: E402
+    st = dp.store
+    OUT = OUT_ROOT / "polish3_node"
+    shutil.rmtree(OUT, ignore_errors=True)
+    OUT.mkdir(parents=True)
+    folder_paths.set_output_directory(str(OUT / "output"))
+    EXP = dp.BMKDesignPatchExportPSD()
+    it = dp.BMKDesignPatchExportPSD.INPUT_TYPES()
+    sf = it["optional"].get("subfolder") or ("", {})
+    names = [k for k in list(it["required"]) + list(it["optional"]) if k != "project"]
+    wvs = [n["widgets_values"] for f in sorted((PKG / "guide").glob("bmk_design_patch*_workflow.json"))
+           for n in json.loads(f.read_text(encoding="utf-8"))["nodes"] if n.get("type") == "BMKDesignPatchExportPSD"]
+    check(list(it["optional"]) == ["skip_empty", "subfolder"] and sf[0] == "STRING" and sf[1].get("default") == ""
+          and sf[1].get("tooltip") == "ComfyUI output/design_patch/ 아래 하위 폴더 이름 — 비우면 프로젝트 폴더 이름(지금과 같음). 이름만(경로 구분자·.. 불가)"
+          and inspect.signature(EXP.run).parameters["subfolder"].default == "" and names[-2:] == ["skip_empty", "subfolder"]
+          and len(wvs) == 3 and all(len(v) == 7 for v in wvs),
+          f"3-5b subfolder = optional 맨 뒤(STRING 기본 \"\", run 키워드 기본값) — 저장된 워크플로 widgets_values(예제 3개 7값·skip_empty 뒤 8값)가 "
+          f"앞 위젯부터 그대로 맞고 새 위젯은 기본값 {list(it['optional'])} {[len(v) for v in wvs]}")
+    h, root = _fx_project(dp, OUT, "p3sub", [("001_하나", [32, 32, 160, 160])], texture(256, 320, 73))
+    out_dp = Path(folder_paths.get_output_directory()) / "design_patch"
+
+    def ex(*sub):
+        r = EXP.run(h, "p3", "pixel", "hidden_all", "raw", "auto", True, False, skip_empty=False, **({"subfolder": sub[0]} if sub else {}))
+        e = st.load_manifest(root)["exports"]
+        return r["result"][0], r["ui"]["bmk_dp_export"][0]["outcome"], len(e), e[-1]
+
+    p0, o0, n0, rec0 = ex()
+    nocase = os.path.normcase("A") == "a"  # Windows — 폴더 이름 대소문자 무시(노드가 os.path.normcase 로 비교)
+    rows = [ex(""), ex("  "), ex("p3sub"), ex(" p3sub ")] + ([ex("P3SUB")] if nocase else [])
+    check(o0 == "new" and Path(p0).parent == out_dp / "p3sub" and set(rec0["options"]) == {"layer_mode", "alternates", "color", "mask_source",
+                                                                                            "include_base", "include_crop_outlines", "prefix"}
+          and all(r[:3] == (p0, "unchanged", n0) for r in rows) and len(rows) == (5 if nocase else 4),
+          f"3-5b 기본(위젯 없음·빈 값·공백·프로젝트 폴더 이름 — Windows 는 대소문자만 다른 'P3SUB' 도) = output/design_patch/<프로젝트 폴더>, "
+          f"기록 options 에 subfolder 없음(그 전 해시 그대로) → 같은 PSD '변경 없음' {p0} {sorted(rec0['options'])} {[r[:3] for r in rows]}")
+    if not nocase:
+        skip("3-5b 대소문자 무시 폴더 비교(P3SUB·외주_a)는 Windows 에서만")
+    pa, oa, na, reca = ex("외주_A")
+    pa2, oa2, na2, _r = ex(" 외주_A ")
+    if nocase:  # 리뷰 OD-3: 대소문자만 바꾼 하위 폴더 = 같은 폴더 → '변경 없음'(해시는 normcase, 기록 options 는 처음 입력 그대로)
+        pa3, oa3, na3, reca3 = ex("외주_a")
+        check((pa3, oa3, na3) == (pa, "unchanged", na) and reca3["options"].get("subfolder") == "외주_A",
+              f"3-5b Windows 에서 대소문자만 바꾼 하위 폴더(외주_A → 외주_a)는 같은 폴더 — 새 PSD 를 쓰지 않고 '변경 없음' {pa3} {oa3} {na3}")
+    pb, ob, nb, recb = ex("외주_B")
+    pd, od, nd, _r = ex("")
+    check(oa == "new" and Path(pa).parent == out_dp / "외주_A" and Path(pa).name == f"p3_r{reca['rev']}.psd"
+          and reca["options"].get("subfolder") == "외주_A" and reca["hash"] != rec0["hash"] and reca["psd"] == pa
+          and (pa2, oa2, na2) == (pa, "unchanged", na)
+          and ob == "new" and Path(pb).parent == out_dp / "외주_B" and recb["options"].get("subfolder") == "외주_B" and nb == na + 1
+          and (pd, od, nd) == (p0, "unchanged", nb),
+          f"3-5b 하위 폴더 = output/design_patch/<이름>/ 에 새로 씀(기록 options.subfolder, 해시 다름), 같은 이름(앞뒤 공백)은 '변경 없음', "
+          f"하위 폴더만 바꾸면 '변경 없음' 아님 → 새 폴더, 다시 비우면 처음 PSD '변경 없음' {pa} {pb} {pd} {[oa, oa2, ob, od]}")
+    before = sorted(str(p.relative_to(out_dp)) for p in out_dp.rglob("*"))
+    errs = []
+    for v in ("a/b", "a\\b", "..", ".", "끝.", "CON", "nul.txt", "C:x", "a\x01b", "x" * 65):
+        try:
+            EXP.run(h, "p3", "pixel", "hidden_all", "raw", "auto", True, False, skip_empty=False, subfolder=v)
+            errs.append(("통과", v))
+        except ValueError as e:
+            errs.append(str(e).startswith(f"{dp._TAG} subfolder "))
+    check(errs == [True] * 10 and sorted(str(p.relative_to(out_dp)) for p in out_dp.rglob("*")) == before
+          and len(st.load_manifest(root)["exports"]) == nd,
+          f"3-5b 잘못된 이름(구분자·..·.·끝 점·CON·nul.txt·콜론·제어 문자·64자 초과) = filename_prefix 처럼 노드 태그 + 'subfolder …' ValueError, "
+          f"폴더·파일·기록 없음 {errs}")
 
 
 def want(name: str) -> bool:
@@ -44415,6 +45698,8 @@ if __name__ == "__main__":
             print(f"\nS2 레퍼런스 노드 {time.time() - t_r:.1f}s")
         if want("polish1_node_unit"):
             polish1_node_unit()
+        if want("polish3_node_unit"):
+            polish3_node_unit()
         if want("pipeline_node_unit") or {"pipeline_node_u2b", "pipeline_node_u3"} & ONLY:
             t_r = time.time()
             if want("pipeline_node_unit") or "pipeline_node_u2b" in ONLY:

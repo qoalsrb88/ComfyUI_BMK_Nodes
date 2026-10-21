@@ -55,9 +55,11 @@
 
   <section id="viewer" aria-label="캔버스 뷰어"></section>
 
-  <section id="ref-view" aria-label="시트">
+  <section id="ref-view" aria-label="시트·그리드">
+    <div id="ref-tabs" class="tabs ref-tabs" role="tablist" aria-label="가운데 보기"></div>
     <div id="ref-sheets"></div>
     <div id="ref-viewer" hidden></div>
+    <div id="ref-grid" hidden aria-label="크롭별 레퍼런스 그리드"></div>
   </section>
 
   <section id="center">
@@ -140,12 +142,15 @@
       <tr><td><kbd>P</kbd> · <kbd>Enter</kbd></td><td>부품 상자 그리기 · 제안 적용 / 새 크롭 만들기. [상자: 선택 크롭 / 모두 / 숨김] = 부품 상자 보기</td></tr>
       <tr><td>끌기(초안·상자)</td><td>새 크롭 초안도 만들기 전에 핸들 = 크기 · 안쪽 끌기 = 이동. 선택 크롭의 부품 상자를 한 번 누르면 고름 → 핸들 = 크기 · 안쪽 끌기 = 이동 · <kbd>Delete</kbd> = 그 상자 지우기 · <kbd>Esc</kbd> = 상자 선택 풀기</td></tr>
       <tr><td><kbd>Delete</kbd></td><td>크롭 지우기(확인 창 — 파일은 남음 · 되살리기는 Ctrl+Z · 이름을 바꾼 크롭은 같은 이름으로 다시 만들어도 새 ID)</td></tr>
+      <tr><td><kbd>L</kbd> · [잠금]</td><td>잠금·풀기(실수 이동 방지 — layout.json 에 저장. 크롭 편집의 '반영됨'은 그대로지만 실행(G) 반영 칸에 'Prepare 입력이 바뀜' — 유료 전 [반영 (무료)] 한 번, 메모·상자 편집과 같음). 잠긴 크롭은 끌기·핸들·화살표·<kbd>Delete</kbd>·이름·대상·메모·[PSD 값으로]가 막히고 [모두 PSD 값으로]에서 빠짐 — 누르면 고르기만, [이 사각형 경고 끄기]는 됨</td></tr>
+      <tr><td><kbd>Shift</kbd>/<kbd>Ctrl</kbd>+클릭</td><td>여러 크롭 고르기(캔버스·왼쪽 목록 — 더하기·빼기, 끌면 지금처럼 비율·스냅 끔). 여럿이면 [모두 잠금] [모두 잠금 풀기] [지우기 n]만 — 이동은 하나씩 · <kbd>Esc</kbd> = 풂</td></tr>
       <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd> · <kbd>Ctrl</kbd>+<kbd>Y</kbd></td><td>실행 취소 · 다시(이 창의 편집만 — 다른 창에서 바뀌면 기록을 비움)</td></tr>
       <tr><td><kbd>Esc</kbd></td><td>끌기 취소 → 선택 해제 → 크롭 편집 모드 나가기</td></tr>
     </table>
     <p class="dim">크롭 편집 모드에서는 ★(Space)·제외(X)·다시 생성(R)이 꺼집니다. 편집은 layout.json 에만 쓰고, 다음 큐(반영(무료 — 탭 불필요)·다시 생성(R)·[다시 생성 보내기] 모두)의 Import 에서 프로젝트 기록에 반영합니다.</p>
     <h3>레퍼런스 (<kbd>T</kbd>)</h3>
     <table>
+      <tr><td>[시트] · [그리드]</td><td>가운데 탭 — 시트 목록 ↔ 시트 뷰어(오리기) · 크롭마다 카드(크롭 소스 · 대표 · 보조 n · 검사 줄 — 빨강 = 경고·대표 없음, 주황 = 연결 안 된 파일(같은 번호 — refs 폴더) — 이름 매칭은 강조 없음). 카드를 누르면 그 크롭을 고름(편집은 오른쪽 패널). 그리드에서는 시트 키(Enter·Backspace·[ ]·H·0·1·2·F)가 꺼지고 <kbd>Esc</kbd> = 크롭 선택 해제 → 나가기(숨은 시트의 영역·점·컷 결과는 그대로). 고른 탭은 이 브라우저에 기억</td></tr>
       <tr><td>빈 곳 끌기 · 핸들</td><td>영역(선택은 부품에 바짝 — 넉넉하면 옆 부품이 들어옴) · 고치기</td></tr>
       <tr><td>방법</td><td>사각형(기본, 시트 알파 그대로) · 자동 오리기(SAM3 — 붙은 장식 — ComfyUI 대기열 앞에서 돎) · 다각형</td></tr>
       <tr><td>SAM3: 클릭 · <kbd>Alt</kbd>+클릭</td><td>양(+) · 음(−) 점. 자동 양점(회색)은 늘 함께</td></tr>
@@ -160,7 +165,7 @@
     <table>
       <tr><td>왼쪽 체크</td><td>계획·승인 코드의 대상 크롭(only) — 전체 · 없음 · 승인 필요만. 크롭을 누르면 오른쪽 아래 채택 패널</td></tr>
       <tr><td>실행 설정</td><td>실행 설정(pipeline.json — 노드 위젯 그대로). "확인 필요"가 남으면 반영·Export 를 막음(추정한 Prepare 설정으로 생성 조건이 뒤집히지 않게)</td></tr>
-      <tr><td>반영 · Export</td><td>무료 템플릿(Run·Spec Draft 없음)을 ComfyUI 에 직접 큐 — 탭 불필요. 반영 = Import → Prepare → Analyze → Review(대기열 앞), Export = Analyze → Compose → Export(대기열 뒤). 반영 칸·확인 창에 레이아웃 미반영 크롭별 줄(무엇이 바뀌었나) — 이름·위치가 바뀐 줄은 [되돌리기](마지막 반영 값으로, 레이아웃만). [출력 폴더 열기] = 탐색기로 Export 출력 폴더(ComfyUI output/design_patch/&lt;프로젝트 폴더&gt; — 마지막 Export PSD 를 고른 채)</td></tr>
+      <tr><td>반영 · Export</td><td>무료 템플릿(Run·Spec Draft 없음)을 ComfyUI 에 직접 큐 — 탭 불필요. 반영 = Import → Prepare → Analyze → Review(대기열 앞), Export = Analyze → Compose → Export(대기열 뒤). 반영 칸·확인 창에 레이아웃 미반영 크롭별 줄(무엇이 바뀌었나) — 이름·위치가 바뀐 줄은 [되돌리기](마지막 반영 값으로, 레이아웃만). [출력 폴더 열기] = 탐색기로 Export 출력 폴더(ComfyUI output/design_patch/&lt;출력 하위 폴더 — 비우면 프로젝트 폴더&gt; — 마지막 Export PSD 를 고른 채). 출력 하위 폴더 = [실행 설정 열기] Export 절</td></tr>
       <tr><td>비용·승인</td><td>Run·초안의 승인 필요 수·비용·승인 코드(노드와 같은 계산). [초안 승인]·[생성 승인] = 확인 창 뒤 ComfyUI 탭이 서버 템플릿을 큐에 넣음(유료 승인을 받는 탭 — 상단 "ComfyUI 탭 연결"), 시간 상한으로 멈추면 [남은 N건 이어서 승인]. 승인 코드 복사는 그래프 노드의 approve·only 에</td></tr>
       <tr><td>채택 · 수정 · 해제</td><td>스펙 _layer_targets 를 씀(미리보기 → 확인). 반영은 다음 무료 반영</td></tr>
     </table>

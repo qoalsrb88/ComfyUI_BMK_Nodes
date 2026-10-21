@@ -56,6 +56,8 @@ S3 Studio 파이프라인 (명세 STUDIO_S3_SPEC.md §2.2·§2.4 — 노드에�
 - prepare_inputs_fp(root, m)                 Prepare 입력 지문(스펙·참조 파일·specs/·refs.json·layout.json·용어집·refs_dir·source.layout.rev)
 - 보조: _file_fp / _dir_fp / _spec_files_fp  노드 Project 지문·Import IS_CHANGED 와 같은 파일·폴더 지문(없으면 None)
 - 보조: _spec_paths(root, refs_dir)          스펙이 가리키는 파일 경로(_spec_files_fp 의 스펙 쪽 — 보드 계획 서명이 기억해 stat 만)
+다듬기 배치 3b (_proto/STUDIO_POLISH_PLAN_2610.md §11)
+- check_export_subfolder(name)               Export 출력 하위 폴더 이름(output/design_patch/<이름> — "" = 프로젝트 폴더 이름) — 노드·pipeline·보드
 
 규칙 메모
 ---------
@@ -142,6 +144,8 @@ _SEGMENT_RE = re.compile(r"^[A-Za-z0-9_\-.]+$")
 _EXT_RE = re.compile(r"^[a-z0-9]{1,8}$")
 _PREFIX_RE = re.compile(r"^[A-Za-z0-9_\-.]*$")
 _CROP_ID_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
+_SUBFOLDER_RE = re.compile(r"[\w\-.가-힣 ]+")  # Export 하위 폴더(배치 3-5b) — 노드 Export filename_prefix(_SAFE_PREFIX_RE)와 같은 글자
+_SUBFOLDER_MAX = 64
 
 # 레이어명 구분자 관용: | ｜ │ ¦ / ; ； / : ：
 _PIPE_CHARS = "|\uFF5C\u2502\u00A6"
@@ -319,6 +323,27 @@ def project_root(base_dir: str, project: str) -> str:
     if not isinstance(base_dir, str) or not base_dir.strip():
         raise ValueError("base_dir 가 비어 있습니다(노드에서 ComfyUI input 디렉터리로 결정해 넘길 것).")
     return os.path.normpath(os.path.join(os.path.abspath(base_dir.strip()), PROJECTS_DIRNAME, name))
+
+
+def check_export_subfolder(name: Any) -> str:
+    """Export 출력 하위 폴더 이름(배치 3-5b — ComfyUI output/design_patch/<이름>) → 앞뒤 공백을 뗀 이름, "" = 기본(프로젝트 폴더 이름).
+    폴더 이름 하나만: filename_prefix 와 같은 글자(영문·숫자·한글·_ - . 공백 — 경로 구분자·드라이브 콜론·<>"|?*·제어 문자 없음)이고
+    '..'·'.' 로 끝나는 이름('.' 포함)·Windows 예약 이름(CON·NUL·COM1 … — 확장자·대소문자 무관)·64자 초과는 ValueError.
+    노드 Export·pipeline export 절·보드가 같이 쓴다."""
+    if not isinstance(name, str):
+        raise ValueError(f"subfolder 는 문자열이어야 합니다: {name!r}")
+    s = name.strip()
+    if not s:
+        return ""
+    if not _SUBFOLDER_RE.fullmatch(s):
+        raise ValueError(f"subfolder 에는 폴더 이름 하나만 — 경로 구분자 없이 영문·숫자·한글·_ - . 공백만 쓸 수 있습니다: {name!r}")
+    if ".." in s or s.endswith("."):
+        raise ValueError(f"subfolder 에 '..' 이나 '.' 로 끝나는 이름은 쓸 수 없습니다: {name!r}")
+    if _WIN_RESERVED_RE.match(s):
+        raise ValueError(f"subfolder 에 Windows 예약 이름(CON·NUL·COM1 …)은 쓸 수 없습니다: {name!r}")
+    if len(s) > _SUBFOLDER_MAX:
+        raise ValueError(f"subfolder 는 {_SUBFOLDER_MAX}자 이하여야 합니다: {len(s)}자")
+    return s
 
 
 def _skeleton(project: str) -> dict:
@@ -1696,7 +1721,7 @@ def new_layout_id(name: str, taken: Iterable[str]) -> str:
 
 def layout_sig(lay: dict) -> str:
     """Import 가 읽는 크롭 정의의 지문(sha256 앞 16자): 순서대로 id·name·rect·합성 레이어명(대상 문구)·psd_name(없으면 name).
-    box·note·psd 기준점·rev 는 넣지 않는다 — Import 캐시와 '반영됨' 표시용(매니페스트 source.layout.sig)."""
+    box·note·locked·psd 기준점·rev 는 넣지 않는다 — Import 캐시와 '반영됨' 표시용(매니페스트 source.layout.sig)."""
     rows = [[c["id"], c["name"], list(c["rect"]), layout_layer_name(c), c.get("psd_name") or c["name"]] for c in lay["crops"]]
     return hashlib.sha256(json.dumps(rows, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()[:16]
 
@@ -1704,7 +1729,8 @@ def layout_sig(lay: dict) -> str:
 def validate_layout(lay: Any) -> list[str]:
     """layout.json 구조 검사. 구조 오류는 ValueError: schema·rev(0 이상 정수)·canvas([W, H] 양의 정수)·psd(crops: name·layer_name·rect)·
     crops[](id 형식·유일, name = NFC·앞뒤 공백 없음·'|' 계열 없음, rect, targets ≤26(tid A–Z 유일·text 문자열·box null 또는 rect),
-    psd_name 문자열/null, note ≤500) 그리고 합성 레이어명을 다시 읽으면 같은 대상이 나와야 한다.
+    psd_name 문자열/null, note ≤500, locked bool — 없으면 false, Studio 잠금(배치 3-3)이라 Import·layout_sig 는 보지 않음)
+    그리고 합성 레이어명을 다시 읽으면 같은 대상이 나와야 한다.
     반환 = 경고(이관된 값이 편집기 규칙 밖인 것): 캔버스 밖·비 3:1 초과·이름 규칙·이름 중복(NFC·casefold)·대상 문구 규칙, 그리고
     PSD 레이어명이 '|' 뒤가 비어 레거시(이름만)로 바뀐 크롭. 알 수 없는 키는 그대로 둔다(검사만 함)."""
     if not isinstance(lay, dict):
@@ -1763,6 +1789,8 @@ def validate_layout(lay: Any) -> list[str]:
         note = c.get("note", "")
         if not isinstance(note, str) or len(note) > _LAYOUT_NOTE_MAX:
             raise ValueError(f"크롭 {cid} note 는 {_LAYOUT_NOTE_MAX}자 이하 문자열이어야 합니다.")
+        if not isinstance(c.get("locked", False), bool):
+            raise ValueError(f"크롭 {cid} locked 는 true·false 여야 합니다: {c['locked']!r}")
         want = [{"tid": t["tid"], "text": t["text"]} for t in targets] or [{"tid": "A", "text": ""}]
         if layout_parsed(c)["targets"] != want:
             raise ValueError(f"크롭 {cid} 대상 문구를 레이어명으로 합치면 다르게 읽힙니다: {layout_layer_name(c)!r}")

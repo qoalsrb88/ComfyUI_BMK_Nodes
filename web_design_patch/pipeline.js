@@ -1952,7 +1952,10 @@ window.DPPipeline = (() => {
         if (!x.back) continue;
         // 이 Studio 의 실행(반영 큐 — Import 가 layout.json 을 읽음)·유료 요청 중에는 끔(반영 단추와 같은 판정)
         const b = button("되돌리기", "이 크롭의 바뀐 이름·위치를 마지막 반영 값으로(레이아웃만 — 무료)", once(() => layoutBack(x, layRev)), "inline");
-        b.disabled = !!PS.job || !!paying;
+        // 잠긴 크롭(배치 3-3 — state 크롭 요약 locked)도 끔 — 서버도 423
+        const locked = S.crops.some((c) => c.id === x.id && c.locked);
+        b.disabled = !!PS.job || !!paying || locked;
+        if (locked) b.title = "잠긴 크롭 — 크롭 편집(E)에서 잠금을 풀고";
         r.append(b);
       }
       if (lays.length) {
@@ -2081,7 +2084,8 @@ window.DPPipeline = (() => {
         queueHere("export");
       }, "primary");
       eb.disabled = !!PS.job || !!paying || asking || PS.busy;
-      const ob = button("출력 폴더 열기", "탐색기로 Export 출력 폴더를 엶 — 마지막 Export PSD 를 고른 채(ComfyUI 가 도는 PC). 위치: ComfyUI output/design_patch/<프로젝트 폴더>",
+      const ob = button("출력 폴더 열기", "탐색기로 Export 출력 폴더를 엶 — 마지막 Export PSD 를 고른 채(ComfyUI 가 도는 PC). "
+        + `다음 Export 위치: ComfyUI ${exportDir(P0)}([실행 설정 열기] Export 절 '출력 하위 폴더' — 비우면 프로젝트 폴더 이름)`,
         async () => {
           try {
             const d = await PS.openFolder();
@@ -2183,6 +2187,13 @@ window.DPPipeline = (() => {
         r.title = `${x.psd} — 눌러 경로 복사`;
         r.addEventListener("click", () => copy(x.psd));
       }
+    }
+
+    function exportDir(P0, sub) {
+      // Export 출력 폴더(노드 _output_dir — 배치 3-5b): sub = 입력 중인 칸 값(없으면 실행 설정 값), 비면 프로젝트 폴더 이름(GET /pipeline folder)
+      const saved = P0 && P0.settings ? P0.settings.export.subfolder : "";
+      const v = String(sub ?? saved ?? "").trim(); // saved 없음 = 옛 서버
+      return `output/design_patch/${v || (P0 && P0.folder) || "<프로젝트 폴더>"}`;
     }
 
     function mb(bytes) {
@@ -2304,10 +2315,13 @@ window.DPPipeline = (() => {
       // 손댄 칸인데 편집을 시작한 뒤 다른 창이 그 키를 저장함(moved) = 그 값을 칸 옆에 — 저장하면 확인 창이 덮어쓸지 묻는다
       const mine = !!form[sec] && k in form[sec];
       const moved = mine && !!edits[sec] && k in edits[sec] && !same(edits[sec][k], value);
-      const r = el("div", "lp-row pp-field" + (confirm ? " bad" : moved ? " warn" : ""));
+      // Export 하위 폴더(배치 3-5b)만 위젯 이름 대신 뜻을 라벨로 + 칸 아래 실제 출력 폴더(지금 칸 값)
+      const sub = sec === "export" && k === "subfolder";
+      const r = el("div", "lp-row pp-field" + (sub ? " pp-sub" : "") + (confirm ? " bad" : moved ? " warn" : ""));
       const from = PS.P.derived.from[`${sec}.${k}`];
-      const lab = el("span", "k", k + (confirm ? " (확인 필요)" : ""));
+      const lab = el("span", "k", (sub ? "출력 하위 폴더" : k) + (confirm ? " (확인 필요)" : ""));
       if (from) lab.title = `처음 값 출처: ${from}`;
+      if (sub) lab.title = `Export 노드 subfolder${from ? ` · 처음 값 출처: ${from}` : ""}`;
       const cur0 = mine ? form[sec][k] : value;
       const set = (v) => {
         // 첫 편집 기준값 = 지금 화면 기준값(drawn — 이 창이 저장한 뒤 다시 그리기가 미뤄졌으면 그 저장값, 그리던 때의 value 가 아님)
@@ -2346,6 +2360,18 @@ window.DPPipeline = (() => {
       inp.disabled = !!spec.readonly;
       if (spec.readonly) inp.title = "읽기 전용(그래프에서 바꿈)";
       r.append(lab, inp);
+      if (sub) {
+        // 이름 검사는 저장할 때 서버(400 문구 그대로 토스트) — 여기는 앞뒤 공백만 떼어 보임(서버와 같음). 경로 구분자·'..' 는
+        // 하위 폴더처럼 보이는 경로를 미리 보이지 않고 저장 안 됨을 먼저 알림(8189 — 'a/b' 가 output/design_patch/a/b 로 보였음)
+        const hint = el("span", "dim pp-hint");
+        const show = () => {
+          hint.textContent = /[\\/:]|\.\./.test(inp.value) ? "폴더 이름 하나만 — 경로 구분자(/ \\ :)·.. 는 저장되지 않음"
+            : `비우면 프로젝트 폴더 이름 — ${exportDir(PS.P, inp.value)}`;
+        };
+        show();
+        inp.addEventListener("input", show);
+        r.append(hint);
+      }
       if (moved) r.append(el("span", "dim", `다른 창이 ${shown(value)}(으)로 바꿈`));
       return r;
     }

@@ -24,6 +24,9 @@ window.DPLayoutEdit = (() => {
   // 반영(큐) 확인 창의 정보 줄(S3 §3.2 — 무료 반영은 Spec Draft 를 돌리지 않는다)
   const APPLY_NOTE = "원장에만 남은 초안(받았지만 스펙에 못 쓴 것)은 이 반영이 병합하지 않음 — 실행(G) 초안 줄의 '못 쓴 스펙'으로 보이고, "
     + "그래프 Spec Draft 를 승인 없이 한 번 큐하면 병합";
+  const LOCK_MSG = "잠긴 크롭 — [잠금 풀기] 뒤에"; // 잠긴 크롭(F18)에서 막힌 끌기·키·패널 단추의 알림(서버는 423)
+  // 잠금·풀기 단추 설명 끝(F18): 반영 표시(layout_sig)는 그대로지만 layout.json 을 다시 써 Prepare 입력 지문이 바뀜 — 메모·상자 편집과 같음
+  const LOCK_APPLY = " — layout.json 을 다시 써 실행(G) 반영 칸에 'Prepare 입력이 바뀜'(유료 전 [반영 (무료)] 한 번)";
 
   function sameRect(a, b) {
     return a.every((v, i) => v === b[i]);
@@ -187,9 +190,10 @@ window.DPLayoutEdit = (() => {
         changes = changes(c);
         if (!changes) return { ok: true, skipped: true };
       }
-      // restore_rev = 되돌릴 값이 맞던 판 — 서버가 그 판과 같은 값은 규칙 검사를 건너뛴다(이관된 규칙 밖 값도 되돌림)
-      const before = { restore_rev: s.L.rev };
-      for (const k of Object.keys(changes)) before[k] = k === "targets" ? plainTargets(c) : c[k];
+      // restore_rev = 되돌릴 값이 맞던 판 — 서버가 그 판과 같은 값은 규칙 검사를 건너뛴다(이관된 규칙 밖 값도 되돌림).
+      // 잠금 토글(locked 만)에는 싣지 않는다 — 잠긴 크롭은 locked 만 바꾸는 update 만 받는다(F18, 그 밖 423)
+      const before = "locked" in changes ? {} : { restore_rev: s.L.rev };
+      for (const k of Object.keys(changes)) before[k] = k === "targets" ? plainTargets(c) : k === "locked" ? !!c.locked : c[k];
       const r = await post(Object.assign({ op: "update", id }, changes));
       record(Object.assign({ op: "update", id }, changes), Object.assign({ op: "update", id }, before));
       return r;
@@ -213,8 +217,8 @@ window.DPLayoutEdit = (() => {
     }
 
     function step(back) {
-      // 한 단계 = POST 하나(rev = 이 창의 판 — 사이에 다른 창이 썼으면 409 로 두 스택을 비움). 다른 실패면 그 단계를 스택에 되돌려 둔다.
-      // 스택은 실행할 때 고른다(큐에서 기다리는 사이 비워졌을 수 있음)
+      // 한 단계 = POST 하나(rev = 이 창의 판 — 사이에 다른 창이 썼으면 409 로 두 스택을 비움). 423(잠긴 크롭)이면 그 단계는 버림 — 되돌려 두면
+      // 스택이 그 자리에서 멈춘다. 다른 실패면 그 단계를 스택에 되돌려 둔다. 스택은 실행할 때 고른다(큐에서 기다리는 사이 비워졌을 수 있음)
       return run(async () => {
         const [from, to, side] = back ? [s.undo, s.redo, "inv"] : [s.redo, s.undo, "fwd"];
         const e = from.pop();
@@ -223,7 +227,8 @@ window.DPLayoutEdit = (() => {
         try {
           r = await post(Object.assign({ rev: s.ownRev }, e[side]));
         } catch (err) {
-          if (err.status !== 409) from.push(e);
+          if (err.status === 423) err.message += " — 이 실행 취소 기록은 버렸습니다";
+          else if (err.status !== 409) from.push(e);
           throw err;
         }
         to.push(e);
@@ -274,6 +279,8 @@ window.DPLayoutEdit = (() => {
     let seenLr = null; // 직전 state 의 layout_rev(reloadKind — 이 창의 쓰기 직후에 오는 낡은 state 를 거름)
     let seenRf = null; // 직전 state 의 [refs_rev, refs_files_v] — S2 연결·바깥 파일 변경은 두 판을 그대로 두지만 크롭 행의 레퍼런스 줄을 바꿈
     let sel = null; // 선택 크롭 id
+    let multi = null; // 복수 선택(F18 — Shift/Ctrl+클릭) 크롭 id 둘 이상 — 있으면 sel = null(잠금·지우기만, 이동은 하나씩)
+    let actErr = null; // act 의 마지막 실패 문구 — 여러 크롭 쓰기의 멈춤 알림에 붙임(토스트 칸은 하나라 뒤 알림이 앞 오류를 덮음)
     let drag = null; // {kind: move|resize|new|box, id, handle, tid, start, x, y, rect0, rect, moved, next}
     let draft = null; // 새 크롭 초안 {rect} — 이름을 넣고 만들기(Enter) = add 한 번
     let boxTid = null; // 상자를 그릴 대상(P·상자 버튼)
@@ -353,6 +360,23 @@ window.DPLayoutEdit = (() => {
 
     function overridden() {
       return !!((drag && drag.rect && (drag.kind === "move" || drag.kind === "resize")) || nudge || sent);
+    }
+
+    function isPicked(id) {
+      return id === sel || (!!multi && multi.includes(id));
+    }
+
+    function picked() {
+      // 지금 선택(하나·여럿)의 id
+      return multi ? multi.slice() : sel ? [sel] : [];
+    }
+
+    function lockedNow(id) {
+      // 잠긴 크롭(F18)의 편집 — 보내지 않고 알림(서버도 423 으로 다시 막음). 판정은 지금 받은 레이아웃(다른 창이 잠갔으면 다시 읽은 값)
+      const c = id && S.crop(id);
+      if (!c || !c.locked) return false;
+      opts.toast(LOCK_MSG, "warn");
+      return true;
     }
 
     function byName(a, b) {
@@ -447,8 +471,10 @@ window.DPLayoutEdit = (() => {
       const named = viewer.flags().rectsOn;
       for (const { c, r } of crops) {
         const bad = (c.checks || []).some((x) => x.code === "L-ratio" || x.code === "L-outside");
-        box(r, "lc" + (c.id === sel ? " sel" : "") + (c.status === "new" ? " new" : c.status === "changed" ? " changed" : "") + (bad ? " bad" : ""));
-        if (named && (r[2] - r[0]) * z >= 18) label(r[0] + 2 * u, r[1] - 4 * u, c.name, "lname" + (c.id === sel ? " sel" : ""));
+        const on = isPicked(c.id); // 복수 선택도 같은 강조(F18)
+        box(r, "lc" + (on ? " sel" : "") + (c.status === "new" ? " new" : c.status === "changed" ? " changed" : "") + (bad ? " bad" : "")
+          + (c.locked ? " locked" : ""));
+        if (named && (r[2] - r[0]) * z >= 18) label(r[0] + 2 * u, r[1] - 4 * u, c.locked ? `${c.name} (잠김)` : c.name, "lname" + (on ? " sel" : ""));
       }
       const cur = sel && S.crop(sel);
       // 부품 상자(F20): 선택 크롭만(기본) · 모든 크롭 · 숨김 — [상자: …] 단추
@@ -465,7 +491,7 @@ window.DPLayoutEdit = (() => {
         const gx = (r[2] - r[0]) * 0.15;
         const gy = (r[3] - r[1]) * 0.15;
         box([r[0] + gx, r[1] + gy, r[2] - gx, r[3] - gy], "guide"); // 70% 가이드: 부품이 이 안에 들어오게
-        if (!drag || drag.kind === "box") {
+        if (!cur.locked && (!drag || drag.kind === "box")) { // 잠긴 크롭은 핸들 없이(F18)
           const pts = handlePoints(r);
           for (const h of HANDLES) box([pts[h][0] - 4 * u, pts[h][1] - 4 * u, pts[h][0] + 4 * u, pts[h][1] + 4 * u], "handle");
         }
@@ -558,8 +584,11 @@ window.DPLayoutEdit = (() => {
       flushNudge();
       if (S.busy) return true; // 응답 전에는 다음 끌기를 막는다(쓰기는 rev 순서대로 하나씩)
       const pt = viewer.canvasPoint(e);
-      const base = { start: pt, x: e.clientX, y: e.clientY, rect: null, moved: false, since: S.remote };
+      // mod·prev = Shift/Ctrl+클릭(F18): 움직이지 않고 놓으면 누르기 전 선택(prev)에 더하기·빼기 — 끌면 지금처럼(Shift 비율·Ctrl 스냅 끔)
+      const base = { start: pt, x: e.clientX, y: e.clientY, rect: null, moved: false, since: S.remote,
+        mod: !!(e.shiftKey || e.ctrlKey || e.metaKey), prev: picked() };
       const cur = sel && S.crop(sel);
+      const free = cur && !cur.locked; // 잠긴 크롭은 핸들·상자를 잡지 않음 — 그 자리 누르기는 아래 크롭 고르기로
       if (boxTid && cur) {
         drag = Object.assign(base, { kind: "box", id: cur.id, tid: boxTid });
         return true;
@@ -573,7 +602,7 @@ window.DPLayoutEdit = (() => {
           return true;
         }
       }
-      const sb = cur && boxShown() && boxOf(cur, boxSel);
+      const sb = free && boxShown() && boxOf(cur, boxSel);
       if (sb) {
         const bh = handleAt(pt, sb);
         if (bh || (pt[0] >= sb[0] && pt[0] < sb[2] && pt[1] >= sb[1] && pt[1] < sb[3])) {
@@ -581,12 +610,12 @@ window.DPLayoutEdit = (() => {
           return true;
         }
       }
-      const h = cur && handleAt(pt, cur.rect);
+      const h = free && handleAt(pt, cur.rect);
       if (h) {
         drag = Object.assign(base, { kind: "resize", id: cur.id, handle: h, rect0: cur.rect });
         return true;
       }
-      const ob = cur && boxShown() ? boxAt(cur, pt) : null;
+      const ob = free && boxShown() ? boxAt(cur, pt) : null;
       const r0 = cur && rectOf(cur);
       if (ob && !(pt[0] >= r0[0] && pt[0] < r0[2] && pt[1] >= r0[1] && pt[1] < r0[3])) {
         boxSel = ob;
@@ -599,8 +628,11 @@ window.DPLayoutEdit = (() => {
         const i = hs.findIndex((c) => c.id === sel);
         const c = i >= 0 ? hs[i] : hs[0];
         if (i < 0) select(c.id, false);
-        const bt = i >= 0 && boxShown() ? boxAt(c, pt) : null; // 고른 크롭의 상자 위: 안 끌고 놓으면 그 상자를 고름(F19)
-        drag = Object.assign(base, { kind: "move", id: c.id, rect0: c.rect, next: i >= 0 && !bt ? hs[(i + 1) % hs.length].id : null, boxHit: bt });
+        const bt = i >= 0 && !c.locked && boxShown() ? boxAt(c, pt) : null; // 고른 크롭의 상자 위: 안 끌고 놓으면 그 상자를 고름(F19)
+        // lock = 잠긴 크롭(F18): 누르기는 지금처럼 고르기(겹친 다음 크롭 돌기 포함)만, 끌면 움직이지 않고 알림.
+        // modId = Shift/Ctrl+클릭이 더하고 빼는 크롭 = 포인터 아래 가장 작은 크롭(고른 바깥 크롭 안의 작은 크롭을 눌러도 그 작은 크롭)
+        drag = Object.assign(base, { kind: "move", id: c.id, rect0: c.rect, next: i >= 0 && !bt ? hs[(i + 1) % hs.length].id : null, boxHit: bt,
+          lock: !!c.locked, modId: hs[0].id });
         return true;
       }
       drag = Object.assign(base, { kind: "new" });
@@ -612,7 +644,7 @@ window.DPLayoutEdit = (() => {
       const pt = viewer.canvasPoint(e);
       if (!drag) {
         const cur = sel && S.crop(sel);
-        const h = cur && !boxTid && handleAt(pt, cur.rect);
+        const h = cur && !cur.locked && !boxTid && handleAt(pt, cur.rect);
         const dh = draft && !boxTid && handleAt(pt, draft.rect);
         const sb = cur && !boxTid && boxShown() && boxOf(cur, boxSel);
         const bh = sb && handleAt(pt, sb);
@@ -621,11 +653,14 @@ window.DPLayoutEdit = (() => {
           return false;
         }
         const inDraft = draft && pt[0] >= draft.rect[0] && pt[0] < draft.rect[2] && pt[1] >= draft.rect[1] && pt[1] < draft.rect[3];
-        viewer.setCursor(dh ? CURSORS[dh] : h ? CURSORS[h] : !boxTid && (inDraft || hits(pt).length) ? "move" : "");
+        const hs = hits(pt);
+        const g = hs.find((x) => x.id === sel) || hs[0]; // 끌면 움직일 크롭(pointerdown 과 같은 고르기) — 잠겼으면 누르기 = 고르기만(pointer)
+        viewer.setCursor(dh ? CURSORS[dh] : h ? CURSORS[h] : boxTid ? "" : inDraft || (g && !g.locked) ? "move" : g ? "pointer" : "");
         return false;
       }
       if (!drag.moved && Math.hypot(e.clientX - drag.x, e.clientY - drag.y) < CLICK_PX) return true;
       drag.moved = true;
+      if (drag.lock) return true; // 잠긴 크롭 — 사각형 그대로(놓을 때 알림)
       const dx = pt[0] - drag.start[0];
       const dy = pt[1] - drag.start[1];
       const snap = !(e.ctrlKey || e.metaKey); // Ctrl = 스냅 없음(1px)
@@ -653,13 +688,19 @@ window.DPLayoutEdit = (() => {
       drag = null;
       if (!d) return;
       if (!d.moved) {
-        if (d.kind === "move" && d.boxHit) {
+        if (d.mod && d.kind === "move") toggleSel(d.modId, d.prev);
+        else if (d.kind === "move" && d.boxHit) {
           boxSel = d.boxHit;
           render();
         } else if (d.kind === "pbox") render(); // 크롭 밖 상자를 누름 = 고름(패널 단추 표시)
         else if (d.kind === "move" && d.next) select(d.next, false);
-        else if (d.kind === "new") select(null, false);
+        else if (d.kind === "new" && !d.mod) select(null, false); // Shift/Ctrl+빈 곳 누르기는 선택 그대로
         else viewer.redraw();
+        return;
+      }
+      if (d.lock) {
+        opts.toast(LOCK_MSG, "warn");
+        render();
         return;
       }
       if (d.kind === "pbox") {
@@ -719,6 +760,7 @@ window.DPLayoutEdit = (() => {
         return r;
       } catch (e) {
         opts.toast(e.message, "err");
+        actErr = e.message;
         return null;
       } finally {
         if (sent === mine) sent = null;
@@ -767,6 +809,7 @@ window.DPLayoutEdit = (() => {
       // mutate(ts) 는 큐에서 실행할 때의 최신 대상 목록에 적용한다(저장 응답 전에 다른 대상을 고쳐도 앞 변경이 남음).
       // since = 끌기를 시작할 때의 remote(상자 끌기 — 그 사이 다른 창이 쓰면 덮지 않고 409)
       await flushNudge();
+      if (lockedNow(c.id)) return null; // 대상 문구·상자·✕·−·+ 대상·초안 상자 가져오기
       return act(S.update(c.id, (cur) => {
         const ts = plainTargets(cur);
         mutate(ts, cur);
@@ -787,6 +830,7 @@ window.DPLayoutEdit = (() => {
       const sent = {};
       for (const k of ["nnn", "part", "side"]) if (k in edits) sent[k] = edits[k];
       await flushNudge();
+      if (lockedNow(c.id)) return;
       const issue = nameIssue(name, c.id);
       if (issue.msg) {
         opts.toast(issue.msg, "err");
@@ -813,7 +857,7 @@ window.DPLayoutEdit = (() => {
     }
 
     async function commitNote(c, value) {
-      if (!("note" in edits)) return;
+      if (!("note" in edits) || lockedNow(c.id)) return; // 잠긴 크롭 — 입력값은 남김
       delete edits.note;
       await flushNudge();
       if (!(await act(S.update(c.id, (cur) => (cur.note === value ? null : { note: value })))) && sel === c.id) edits.note = value;
@@ -832,6 +876,7 @@ window.DPLayoutEdit = (() => {
         if (r.err) opts.toast(`${c.name} ${t.tid}: ${G.TEXT_MSGS[r.err]} — 저장하지 않음`, "err");
         else texts[t.tid] = r.text;
       }
+      if ((Object.keys(texts).length || "note" in edits) && lockedNow(c.id)) return; // 입력 중 다른 창이 잠금 — 보내지 않음
       if (Object.keys(texts).length) {
         commitTargets(c, (ts) => {
           for (const t of ts) if (t.tid in texts) t.text = texts[t.tid];
@@ -886,13 +931,77 @@ window.DPLayoutEdit = (() => {
 
     async function removeSel() {
       await flushNudge();
+      if (multi) {
+        removeMany(multi);
+        return;
+      }
       const c = sel && S.crop(sel);
-      if (!c) return;
+      if (!c || lockedNow(c.id)) return;
       const h = c.history || {};
       const what = [`후보 ${h.candidates || 0}`, `★ ${h.picks || 0}`].concat(h.spec ? ["스펙 있음"] : []).join(" · ");
       if (!window.confirm(`${c.name} 크롭을 레이아웃에서 지웁니다.\n${what} — ${againText(c)}\n`
         + "프로젝트 기록에는 다음 큐의 Import 에서 반영됩니다. 계속할까요?")) return;
       if (await act(S.remove(c.id))) opts.toast(`지움: ${c.name} (Ctrl+Z 로 되살림)`);
+    }
+
+    async function removeMany(ids) {
+      // 복수 선택 [지우기 n](F18): 확인 창에 이름 목록(잠긴 크롭은 건너뜀) → 크롭마다 delete 하나(일괄 op 없음 — 쓰기 큐), 실패하면 멈춤
+      const cs = ids.map((id) => S.crop(id)).filter(Boolean);
+      const go = cs.filter((c) => !c.locked);
+      const held = cs.filter((c) => c.locked).map((c) => c.name);
+      if (!go.length) {
+        opts.toast(LOCK_MSG, "warn");
+        return;
+      }
+      const lines = [`크롭 ${go.length}개를 레이아웃에서 지웁니다:`, ...go.map((c) => {
+        const h = c.history || {};
+        return ` · ${c.name} — 후보 ${h.candidates || 0} · ★ ${h.picks || 0}` + (h.spec ? " · 스펙 있음" : "");
+      })];
+      if (held.length) lines.push(`잠금으로 건너뜀 ${held.length}: ${held.join(", ")}`);
+      lines.push("파일은 남습니다. 되살리려면 Ctrl+Z(이 창에서만 — 크롭마다 한 번). 프로젝트 기록에는 다음 큐의 Import 에서 반영됩니다. 계속할까요?");
+      if (!window.confirm(lines.join("\n"))) return;
+      let done = 0;
+      for (const c of go) {
+        if (!(await act(S.remove(c.id)))) break;
+        done += 1;
+      }
+      // 멈춤 = 실패 이유(act 의 오류 토스트)를 덮지 않게 — 하나뿐이면 그 토스트 그대로, 여럿이면 이유를 붙여
+      if (done < go.length) {
+        if (go.length > 1) opts.toast(`${go.length}개 중 ${done}개를 지운 뒤 멈춤 — ${actErr}`, "err");
+        return;
+      }
+      opts.toast(`지움 ${done}개 (Ctrl+Z 로 하나씩 되살림)` + (held.length ? ` · 잠금으로 건너뜀 ${held.length}` : ""));
+    }
+
+    async function setLock(ids, to) {
+      // 잠금·풀기(F18 — [잠금]·[모두 잠금]·L): 크롭마다 locked 만 바꾸는 update 하나 = 실행 취소 한 걸음(일괄 op 없음 — 쓰기 큐로 차례로),
+      // 실패하면 멈추고 몇 개 했는지. 바뀔 것인지는 큐에서 실행할 때의 크롭으로(다른 창이 먼저 바꿨으면 보내지 않음)
+      await flushNudge();
+      const todo = ids.filter((id) => S.crop(id) && !!S.crop(id).locked !== to);
+      let done = 0;
+      for (const id of todo) {
+        if (!(await act(S.update(id, (cur) => (!!cur.locked === to ? null : { locked: to }))))) break;
+        done += 1;
+      }
+      const what = to ? "잠금" : "잠금 풀기";
+      if (done < todo.length) {
+        if (todo.length > 1) opts.toast(`${todo.length}개 중 ${done}개 ${what} 뒤 멈춤 — ${actErr}`, "err"); // 하나뿐이면 act 의 오류 토스트 그대로
+      } else if (todo.length === 1) opts.toast(`${what}: ${(S.crop(todo[0]) || { name: todo[0] }).name} (Ctrl+Z 로 되돌림)`);
+      else if (todo.length) opts.toast(`${what} ${done}개 (Ctrl+Z 로 하나씩 되돌림)`);
+    }
+
+    function toggleLock() {
+      // L: 선택(하나·여럿) 잠금 토글 — 여럿이면 하나라도 안 잠겼으면 모두 잠금, 모두 잠겼으면 모두 풀기
+      const cs = picked().map((id) => S.crop(id)).filter(Boolean);
+      if (!cs.length) {
+        opts.toast("크롭을 먼저 고르세요", "warn");
+        return;
+      }
+      if (!cs.every((c) => "locked" in c)) {
+        opts.toast("잠금은 ComfyUI 재시작 뒤에 — 서버가 아직 옛 판입니다", "warn");
+        return;
+      }
+      setLock(cs.map((c) => c.id), !cs.every((c) => c.locked));
     }
 
     function flushNudge() {
@@ -917,9 +1026,13 @@ window.DPLayoutEdit = (() => {
     }
 
     function nudgeBy(e) {
-      // 화살표 16px · Shift 128px · Ctrl 1px(스냅 없음). 연달아 누르면 멈춘 뒤 POST 한 번
+      // 화살표 16px · Shift 128px · Ctrl 1px(스냅 없음). 연달아 누르면 멈춘 뒤 POST 한 번. 복수 선택·잠긴 크롭은 움직이지 않음(F18)
+      if (multi) {
+        opts.toast("이동은 하나씩 — 크롭 하나만 고르세요", "warn");
+        return;
+      }
       const c = sel && S.crop(sel);
-      if (!c || S.busy) return;
+      if (!c || S.busy || lockedNow(c.id)) return;
       const step = e.ctrlKey || e.metaKey ? 1 : e.shiftKey ? 128 : G.POS;
       const d = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[e.code];
       const rect = G.move(nudge ? nudge.rect : c.rect, d[0], d[1], S.L.canvas, step !== 1);
@@ -959,6 +1072,7 @@ window.DPLayoutEdit = (() => {
 
     function propose() {
       const c = S.crop(sel);
+      if (lockedNow(c.id)) return;
       const boxes = c.targets.filter((t) => t.box).map((t) => t.box);
       if (!boxes.length) {
         opts.toast("부품 상자가 없습니다 — 대상 줄의 '상자'(P)로 먼저 그리세요", "warn");
@@ -973,7 +1087,7 @@ window.DPLayoutEdit = (() => {
       proposal = null;
       await flushNudge();
       const c = S.crop(p.id);
-      if (!c || sameRect(c.rect, p.rect)) {
+      if (!c || sameRect(c.rect, p.rect) || lockedNow(c.id)) {
         render();
         return;
       }
@@ -986,6 +1100,7 @@ window.DPLayoutEdit = (() => {
         opts.toast("크롭을 먼저 고르세요", "warn");
         return;
       }
+      if (lockedNow(c.id)) return;
       const ts = plainTargets(c);
       boxTid = tid || (ts.find((t) => !t.box) || ts[0]).tid;
       proposal = null;
@@ -998,20 +1113,25 @@ window.DPLayoutEdit = (() => {
       return !opts.psdPartial || opts.psdPartial();
     }
 
-    function psdSplit(names) {
+    function lockedShapes() {
+      // 잠긴 크롭(F18)의 PSD 이름(psd_name, 없으면 name) — PSD 값으로 가져오지 않음(서버 take 도 건너뛰고 기준점 그대로 — 경고가 남음)
+      return new Set(S.L.crops.filter((c) => c.locked).map((c) => c.psd_name || c.name));
+    }
+
+    function psdSplit(names, held = new Set()) {
       // take(names) 가 가져올 shape 와 나머지 — S1-a: 기준점은 고른 이름만 지금 PSD 값으로 바뀌어(같은 이름의 사라진 shape 도 경고만 꺼짐)
-      // 나머지 갈라짐은 그대로 경고(옛 서버: 나머지는 가져오지 않고 경고만 꺼짐). 확인 창 줄
+      // 나머지 갈라짐은 그대로 경고(옛 서버: 나머지는 가져오지 않고 경고만 꺼짐). 확인 창 줄. held = 잠금으로 건너뛰는 이름(나머지에서 뺌 — 따로 한 줄)
       const d = S.L.psd_diff;
       const part = partial();
       const take = [];
       const rest = [];
       for (const x of d.changed) {
         if (names.includes(x.name)) take.push(`${x.name} — ${fieldNames(x.fields)}`);
-        else rest.push(`${x.name} — 바뀜(${fieldNames(x.fields)})`);
+        else if (!held.has(x.name)) rest.push(`${x.name} — 바뀜(${fieldNames(x.fields)})`);
       }
       for (const x of d.added) {
         if (names.includes(x.name)) take.push(`${x.name} — PSD 에만 있는 사각형은 새 크롭으로 더함`);
-        else rest.push(`${x.name} — 새 사각형`);
+        else if (!held.has(x.name)) rest.push(`${x.name} — 새 사각형`);
       }
       for (const x of d.removed) {
         if (part && names.includes(x.name)) take.push(`${x.name} — 사라진 사각형: 레이아웃 그대로, 경고만 꺼짐`);
@@ -1020,24 +1140,36 @@ window.DPLayoutEdit = (() => {
       return { take, rest };
     }
 
-    async function takePsd(names) {
+    async function takePsd(want) {
       await flushNudge();
       const seen = S.L.psd_diff; // 미세 이동을 보낸 뒤 다시 읽은 갈라짐 — 확인 창과 서버에 보낼 스냅숏이 이것(그 사이 사라졌으면 끝)
       if (!seen) return;
-      const { take, rest } = psdSplit(names);
+      // 잠긴 크롭(F18)의 이름은 보내지 않음 — 확인 창·토스트에 '잠금으로 건너뜀', 가져올 것이 그것뿐이면 확인 창 없이 알림
+      const lk = lockedShapes();
+      const held = want.filter((n) => lk.has(n));
+      const names = want.filter((n) => !lk.has(n));
+      const heldText = (xs) => `잠금으로 건너뜀 ${xs.length}: ${xs.join(", ")}`;
+      if (!names.length) {
+        opts.toast(`${heldText(held)} — 잠긴 크롭은 [잠금 풀기] 뒤에`, "warn");
+        return;
+      }
+      const { take, rest } = psdSplit(names, new Set(held));
       const lines = ["모두 PSD 값으로(실행 취소로 되돌릴 수 없음):", ...take.map((x) => ` · ${x}`)];
       if (rest.length) {
         lines.push(partial() ? `나머지 다른 곳 ${rest.length}건은 가져오지 않고 그대로 경고:`
           : `나머지 다른 곳 ${rest.length}건은 가져오지 않고 경고만 꺼집니다(기준점이 지금 PSD 로 바뀜 — ComfyUI 재시작 전 서버):`, ...rest.map((x) => ` · ${x}`));
       }
+      if (held.length) lines.push(`${heldText(held)} — 가져오지 않고 그대로 경고`);
       if (!window.confirm(lines.concat("계속할까요?").join("\n"))) return;
       const r = await act(S.psd("take", names, seen));
       if (!r) return;
       const added = r.added.map((id) => (S.crop(id) || { name: id }).name);
+      const skippedLock = held.concat(r.locked || []); // 서버가 건너뛴 이름(그 사이 잠긴 크롭)도
       opts.toast([`PSD 값 ${r.taken.length}` + r.taken.map((x, i) => `${i ? ", " : ": "}${x.name}(${fieldNames(x.fields)})`).join(""),
         `새 크롭 ${added.length}` + (added.length ? `: ${added.join(", ")}` : ""),
-        `건너뜀 ${r.skipped.length}` + (r.skipped.length ? `: ${r.skipped.join(", ")} — 레이아웃에서 지운 크롭이라 건너뜀` : "")].join(" · "),
-      r.skipped.length ? "warn" : "");
+        `건너뜀 ${r.skipped.length}` + (r.skipped.length ? `: ${r.skipped.join(", ")} — 레이아웃에서 지운 크롭이라 건너뜀` : "")]
+        .concat(skippedLock.length ? [heldText(skippedLock)] : []).join(" · "),
+      r.skipped.length || skippedLock.length ? "warn" : "");
     }
 
     async function ackPsd(names) {
@@ -1080,8 +1212,18 @@ window.DPLayoutEdit = (() => {
       // 뷰어의 선택(F = 선택 크롭 맞춤)을 지금 레이아웃 사각형으로. 사라진 크롭이면 선택 해제. 검토 모드의 선택은 건드리지 않는다
       if (!on) return;
       if (sel && !S.crop(sel)) sel = null;
+      if (multi) {
+        // 복수 선택에서 사라진 크롭은 뺌 — 하나만 남으면 그 크롭 하나 선택으로
+        multi = multi.filter((id) => S.crop(id));
+        if (multi.length < 2) [sel, multi] = [multi[0] || null, null];
+      }
       const c = sel && S.crop(sel);
-      viewer.setSelection(c ? { crop: { id: c.id, rect: c.rect } } : null, follow);
+      if (c && c.locked) boxSel = boxTid = proposal = null; // 잠긴 크롭(다른 창이 잠금 포함) — 상자 고르기·그리기·제안을 풂
+      // 복수 선택 = 고른 크롭을 모두 품는 사각형(F = 맞춤)
+      const ms = multi && multi.map((id) => S.crop(id).rect);
+      const all = ms && [Math.min(...ms.map((r) => r[0])), Math.min(...ms.map((r) => r[1])), Math.max(...ms.map((r) => r[2])),
+        Math.max(...ms.map((r) => r[3]))];
+      viewer.setSelection(c ? { crop: { id: c.id, rect: c.rect } } : all ? { crop: { id: null, rect: all } } : null, follow);
     }
 
     function select(id, follow) {
@@ -1092,10 +1234,27 @@ window.DPLayoutEdit = (() => {
       }
       if (id !== sel) boxSel = null;
       sel = id;
+      multi = null;
       boxTid = null;
       proposal = null;
       if (id) draft = null;
       syncSel(follow);
+      render();
+    }
+
+    function toggleSel(id, prev) {
+      // Shift/Ctrl+클릭(F18 — 캔버스는 움직이지 않고 놓은 클릭만): prev(누르기 전 선택)에 더하기·빼기. 둘 이상 = 복수 선택(잠금·지우기만)
+      const ids = (prev.includes(id) ? prev.filter((x) => x !== id) : prev.concat(id)).filter((x) => S.crop(x));
+      if (ids.length < 2) {
+        select(ids[0] || null, false);
+        return;
+      }
+      flushNudge();
+      commitPending();
+      edits = {};
+      sel = boxSel = boxTid = proposal = draft = null;
+      multi = ids;
+      syncSel(false);
       render();
     }
 
@@ -1107,7 +1266,7 @@ window.DPLayoutEdit = (() => {
     }
 
     function escape() {
-      // Esc 차례: 끌기 취소 → 상자·제안·초안·미세 이동 취소 → 선택 해제 → 편집 모드 나가기
+      // Esc 차례: 끌기 취소 → 상자·제안·초안·미세 이동 취소 → 선택 해제(복수 선택 포함) → 편집 모드 나가기
       if (drag) {
         cancel();
       } else if (boxTid || proposal || draft) {
@@ -1118,7 +1277,7 @@ window.DPLayoutEdit = (() => {
         render();
       } else if (nudge) {
         dropNudge();
-      } else if (sel) {
+      } else if (sel || multi) {
         select(null, false);
       } else {
         opts.exit();
@@ -1163,6 +1322,9 @@ window.DPLayoutEdit = (() => {
           return true;
         case "KeyP":
           if (!e.repeat) armBox(null);
+          return true;
+        case "KeyL": // 잠금 토글(F18 — 하나·여럿)
+          if (!e.repeat) toggleLock();
           return true;
         default:
           return false;
@@ -1227,9 +1389,14 @@ window.DPLayoutEdit = (() => {
       if (!L || !L.exists) return;
       const split = psdShapes(["changed", "removed"]);
       for (const c of L.crops.slice().sort(byName)) {
-        const li = el("li", "lcrop" + (c.id === sel ? " sel" : ""));
+        const li = el("li", "lcrop" + (isPicked(c.id) ? " sel" : ""));
         li.append(el("div", "tname", c.name));
         const ch = el("div", "chips");
+        if (c.locked) {
+          const x = chip("잠김", "b-dim");
+          x.title = "잠긴 크롭 — 끌기·화살표·Delete·이름·대상·메모·PSD 값으로가 막힘([잠금 풀기]·L 로 풂)";
+          ch.append(x);
+        }
         if (STATUS[c.status]) {
           const x = chip(STATUS[c.status] + (c.changed && c.changed.length ? " " + fieldNames(c.changed) : ""), "b-wait");
           x.title = "프로젝트 기록과 다름 — 다음 큐의 Import 에서 반영";
@@ -1247,7 +1414,8 @@ window.DPLayoutEdit = (() => {
         const h = c.history;
         if (h && (h.candidates || h.picks)) ch.append(chip(`후보 ${h.candidates}` + (h.picks ? ` · ★ ${h.picks}` : ""), h.picks ? "b-star" : ""));
         li.append(ch);
-        li.addEventListener("click", () => select(c.id, true));
+        // Shift/Ctrl+클릭 = 선택에 더하기·빼기(F18), 그냥 클릭 = 그 크롭 하나
+        li.addEventListener("click", (e) => (e.shiftKey || e.ctrlKey || e.metaKey ? toggleSel(c.id, picked()) : select(c.id, true)));
         list.append(li);
       }
       for (const g of L.removed) {
@@ -1284,6 +1452,7 @@ window.DPLayoutEdit = (() => {
       if (msg) panel.append(el("p", "lp-msg", msg));
       else if (!S.L.exists) renderStart();
       else if (draft) renderDraft();
+      else if (multi) renderMulti();
       else if (sel && S.crop(sel)) renderCrop(S.crop(sel));
       else renderNone();
       const f = fk && panel.querySelector(`[data-k="${fk}"]`);
@@ -1328,9 +1497,31 @@ window.DPLayoutEdit = (() => {
         "빈 곳에서 끌기 = 새 크롭 · 몸통 끌기 = 이동 · 핸들 = 크기(Shift = 비율 유지)",
         "Ctrl 을 누른 채 끌기 = 스냅 없음(1px) · 크기 128 배수·위치 16px 격자 · 비 3:1 이하·캔버스 안",
         "Space 를 누른 채 끌기·가운데 버튼 = 화면 이동 · 화살표 16px · Shift 128px · Ctrl 1px",
-        "Delete = 지우기 · Ctrl+Z / Ctrl+Y = 실행 취소·다시 · Esc = 취소 → 선택 해제 → 크롭 편집 모드 나가기"]) {
+        "Delete = 지우기 · Ctrl+Z / Ctrl+Y = 실행 취소·다시 · Esc = 취소 → 선택 해제 → 크롭 편집 모드 나가기",
+        "Shift/Ctrl+클릭 = 여러 크롭 고르기(잠금·지우기만) · L = 잠금·풀기(잠긴 크롭은 끌기·화살표·Delete·이름·대상이 막힘)"]) {
         panel.append(el("p", "dim", t));
       }
+    }
+
+    function renderMulti() {
+      // 복수 선택(F18): 잠금·풀기·지우기만 — 크롭마다 쓰기 하나(실행 취소도 하나씩), 이동·크기·제안은 하나씩
+      const cs = multi.map((id) => S.crop(id)).filter(Boolean);
+      const n = cs.filter((c) => c.locked).length;
+      panel.append(el("h3", "lp-title", `크롭 ${cs.length}개 선택`));
+      row("크롭", cs.map((c) => (c.locked ? `${c.name}(잠김)` : c.name)).join(", "));
+      row("잠금", `잠김 ${n} · 안 잠김 ${cs.length - n}`);
+      const b = el("div", "lp-btns");
+      if (cs.every((c) => "locked" in c)) { // 옛 서버(ComfyUI 재시작 전)는 잠금을 모름 — 단추 없음
+        const lb = button("모두 잠금", "L — 고른 크롭을 모두 잠금(크롭마다 Ctrl+Z 한 번)" + LOCK_APPLY, () => setLock(multi, true));
+        lb.disabled = n === cs.length;
+        const ub = button("모두 잠금 풀기", "L — 고른 크롭의 잠금을 모두 풂(크롭마다 Ctrl+Z 한 번)" + LOCK_APPLY, () => setLock(multi, false));
+        ub.disabled = !n;
+        b.append(lb, ub);
+      }
+      const db = button(`지우기 ${cs.length - n}`, "Delete — 확인 창(이름 목록 — 잠긴 크롭은 건너뜀)", () => removeMany(multi), "danger");
+      db.disabled = n === cs.length;
+      b.append(db);
+      panel.append(b, el("p", "dim", "Shift/Ctrl+클릭으로 더하기·빼기 · 이동은 하나씩"));
     }
 
     function nameBlock(c) {
@@ -1439,6 +1630,16 @@ window.DPLayoutEdit = (() => {
       const title = el("h3", "lp-title", c.name);
       title.title = `ID ${c.id} — 이름을 바꿔도 유지(스펙·후보·★ 가 이어짐). 다른 부품으로 바꾸려면 지우고 새로 만드세요.`;
       panel.append(title);
+      // 잠금(F18): 옛 서버(ComfyUI 재시작 전 — 행에 locked 없음)는 단추 없음. 잠긴 크롭은 아래 칸·단추를 끔(freeze)
+      const lock = "locked" in c ? button(c.locked ? "잠금 풀기" : "잠금", (c.locked ? "L — 잠금을 풂(Ctrl+Z 로 되돌림)"
+        : "L — 끌기·화살표·Delete·이름·대상·메모·PSD 값으로를 막음(실수 이동 방지 — Ctrl+Z 로 되돌림)") + LOCK_APPLY, () => setLock([c.id], !c.locked),
+      c.locked ? "on" : "") : null;
+      if (lock) {
+        const lb = el("div", "lp-btns");
+        lb.append(lock);
+        if (c.locked) lb.append(el("span", "warn", "잠긴 크롭 — [잠금 풀기] 뒤에 편집([이 사각형 경고 끄기]는 됨)"));
+        panel.append(lb);
+      }
       const after = nameBlock(c);
       const id = row("ID", c.id, "dim");
       id.title = "이름을 바꿔도 유지";
@@ -1474,16 +1675,29 @@ window.DPLayoutEdit = (() => {
       if (psdShapes(["changed"]).has(pn)) {
         // S1-a: 이 이름의 기준점만 지금 PSD 값으로 — 다른 갈라짐은 그대로 경고. 옛 서버는 기준점이 통째로 바뀌어 다른 갈라짐 경고도 꺼짐(라벨에 그 수)
         const rest = part ? 0 : psdSplit([pn]).rest.length;
-        b.append(button(rest ? `PSD 값으로(나머지 ${rest}건 경고 끔)` : "PSD 값으로", "이 크롭의 PSD 에서 바뀐 필드(사각형·대상)를 지금 PSD 값으로 — "
+        const tb = button(rest ? `PSD 값으로(나머지 ${rest}건 경고 끔)` : "PSD 값으로", "이 크롭의 PSD 에서 바뀐 필드(사각형·대상)를 지금 PSD 값으로 — "
           + (part ? "다른 곳은 그대로 경고" : rest ? `나머지 다른 곳 ${rest}건은 가져오지 않고 경고만 꺼짐(ComfyUI 재시작 전 서버)` : "다른 곳은 이것뿐"),
-        () => takePsd([pn])));
+        () => takePsd([pn]));
+        if (c.locked) tb.title = "잠긴 크롭 — 잠금을 풀고";
+        b.append(tb);
       }
+      let ack = null;
       if (part && psdShapes(["changed", "removed"]).has(pn)) {
-        b.append(button("이 사각형 경고 끄기", "레이아웃은 그대로, 이 사각형의 PSD 기준점만 지금 PSD 로(다른 곳은 그대로 경고)",
-          () => ackPsd([pn])));
+        ack = button("이 사각형 경고 끄기", "레이아웃은 그대로, 이 사각형의 PSD 기준점만 지금 PSD 로(다른 곳은 그대로 경고)", () => ackPsd([pn]));
+        b.append(ack);
       }
-      b.append(boxButton(), button("지우기", "Delete", removeSel, "danger"));
+      const view = boxButton();
+      b.append(view, button("지우기", "Delete", removeSel, "danger"));
       panel.append(b);
+      if (c.locked) freeze(panel, [lock, ack, view]); // 잠긴 크롭 — 보기·잠금 풀기·경고 끄기만
+    }
+
+    function freeze(root, keep) {
+      // 잠긴 크롭 패널(F18): 입력칸·단추를 끔(keep 만 남김). 끈 칸의 처리기도 lockedNow 로 다시 막음(키·다른 창이 잠근 뒤의 입력)
+      for (const e of root.children) {
+        if (["input", "textarea", "select", "button"].includes(e.tagName.toLowerCase()) && !keep.includes(e)) e.disabled = true;
+        freeze(e, keep);
+      }
     }
 
     function targetsBlock(c) {

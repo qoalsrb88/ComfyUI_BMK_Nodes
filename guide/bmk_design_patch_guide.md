@@ -28,7 +28,7 @@ PS 에서 **크롭 사각형과 클린플레이트만 그려 저장**하면, 노
 ```
 Project ─▶ Import PSD ─▶ (Candidate In) ─▶ (Spec Draft) ─▶ Prepare ─▶ Run ─▶ Analyze ─▶ Review ─▶ Compose ─▶ Export PSD
             (03 PSD)      (수확·폴더,       (VLM 스펙 초안,  (무료:      (유료,   (정합·톤·   (보드    (미리보기   (output/design_patch/
-                           선택)            승인제, M3)      jobs·해시)   승인제)  마스크)     등록)    + MASK)     <project>/…psd)
+                           선택)            승인제, M3)      jobs·해시)   승인제)  마스크)     등록)    + MASK)     <subfolder|project>/…psd)
 ```
 
 | 노드 | 입력(위젯) | 출력 | 하는 일 |
@@ -42,7 +42,7 @@ Project ─▶ Import PSD ─▶ (Candidate In) ─▶ (Spec Draft) ─▶ Prepa
 | Analyze | register, tone, tone_sigma, dE, grow, feather_sigma, roi_prior, only_picked | project, contact_sheet, report | 정합·자동 마스크·톤 보정장·게이트 → `analysis[]` |
 | **Review** (M2) | (위젯 없음) | project, report | 보드 등록·썸네일 미리 생성(출력 노드). Open Board 버튼(JS) |
 | Compose | mask_source, use_registration, use_tone, zorder | project, image, mask, report | pick 을 베이스 위에 합성한 미리보기 |
-| Export PSD | filename_prefix, layer_mode, alternates, color, mask_source, include_base, include_crop_outlines | psd_path | SO PSD 쓰기(출력 노드) |
+| Export PSD | filename_prefix, layer_mode, alternates, color, mask_source, include_base, include_crop_outlines, skip_empty, subfolder | psd_path | SO PSD 쓰기(출력 노드) |
 
 모든 노드는 `project` 핸들(BMK_DP_PROJECT)을 받아 일하고, **바뀐 것이 있을 때만** 매니페스트를 저장한 뒤 같은 핸들을 넘깁니다.
 같은 입력으로 다시 실행하면 디스크 캐시로 바로 끝나고 rev 도 그대로입니다(멱등). Project 노드는 매니페스트·`specs/`·`glossary.json`,
@@ -212,8 +212,10 @@ Project ─▶ Import PSD ─▶ (Candidate In) ─▶ (Spec Draft) ─▶ Prepa
 - 마스크는 **그룹**이 가지므로 PS 에서 후보를 바꿔 켜도 다듬은 마스크가 유지됩니다.
 - Studio 마무리 편집(S4, `K`)으로 손질한 ★ 는 그 편집 마스크가 그룹 마스크가 됩니다(mask_source 와 상관없이 — 보고서 `그룹 마스크 n (편집 k)`, 사이드카
   `mask_src: "edit"`). 페더는 래스터에 구워져 있습니다(PS 마스크 속성 페더는 쓰지 않음).
-- 출력: `ComfyUI/output/design_patch/<project>/<prefix>_r<rev>.psd` + 같은 이름의 `.json`(매니페스트 스냅샷 + 레이어 목록),
-  `_mask.png`(보이는 패치의 최종 마스크 합집합, L). `<project>` 는 프로젝트 폴더 이름입니다.
+- 출력: `ComfyUI/output/design_patch/<subfolder>/<prefix>_r<rev>.psd` + 같은 이름의 `.json`(매니페스트 스냅샷 + 레이어 목록),
+  `_mask.png`(보이는 패치의 최종 마스크 합집합, L). `subfolder`(optional 맨 뒤 위젯, 기본 빈 값)는 폴더 이름 하나(경로 구분자·`..` 불가)이고,
+  비우면(또는 프로젝트 폴더 이름과 같으면) 프로젝트 폴더 이름입니다. 하위 폴더를 바꾸면 그 폴더에 새로 씁니다(옛 폴더의 같은 PSD 를 '변경 없음'으로 돌려주지 않음 —
+  Windows 에서 대소문자만 바꾼 이름은 같은 폴더라 바꾼 것으로 보지 않음).
   바뀐 것이 없고 그 파일을 이 export 가 썼으면(스냅샷 해시 일치) 다시 쓰지 않고 기존 경로를 돌려줍니다.
 - **덮어쓰지 않습니다.** 같은 이름의 파일이 이미 있으면(다른 base_dir 의 같은 이름 프로젝트, 지우고 다시 만든 프로젝트, PS 에서 고쳐
   저장한 파일) `<prefix>_r<rev>_2.psd`, `_3` … 으로 씁니다.
@@ -1001,11 +1003,33 @@ ComfyUI 재시작(Run 보고·Export 레이어 이름·레이아웃 검사) 뒤 
 - **크롭 편집(E) — 부품 상자**: 선택 크롭의 상자(색 사각형)를 **한 번 누르면 고름**(굵게 + 작은 핸들 8). 핸들 = 크기 · 안쪽 끌기 = 이동(1px 단위, 캔버스 안) ·
   `Delete` = 그 상자만 지움(크롭은 그대로 — `Ctrl+Z` 로 되돌림) · `Esc` = 상자 선택 풂. 고르지 않은 상자 위에서 끌면 지금처럼 크롭이 움직임(크롭 밖으로 나간 상자는 누르면 고르고 바로 끌림).
   [상자: 숨김] 이면 고르지 않음. 끄는 사이 다른 창이 레이아웃을 쓰면 보내지 않음(다시 하세요 토스트). 상자를 고치거나 지우면 띄워 둔 [상자에 크롭 맞추기] 제안은 버림.
-- **실행(G) 「Export」 칸 `[출력 폴더 열기]`**: ComfyUI 가 도는 PC 의 탐색기로 Export 출력 폴더(`ComfyUI output/design_patch/<프로젝트 폴더>`)를 엶 — 마지막 Export PSD 가 있으면 그 파일을 고른 채.
+- **실행(G) 「Export」 칸 `[출력 폴더 열기]`**: ComfyUI 가 도는 PC 의 탐색기로 Export 출력 폴더(`ComfyUI output/design_patch/<출력 하위 폴더 — 비우면 프로젝트 폴더>`)를 엶 — 마지막 Export PSD 가 있으면 그 파일을 고른 채.
   ComfyUI output 밖 경로는 열지 않음. 아직 Export 하지 않아 폴더가 없으면 오류 토스트.
 - **마스크(K) 「저장된 버전」 칸 `[안 쓰는 편집 파일 정리]`**: 프로젝트 `masks/` 의 편집기 파일(`<key>_e_<12자>.png`) 중 매니페스트 어디서도 가리키지 않는 것(적용이 거절된 저장 등 —
   ★ 아닌 후보·이전 버전이 쓰는 것, PSD 에서 가져온 손 마스크는 남음)을 목록 확인 창 뒤 지움. 10분 안에 쓴 파일은 남김. 지우는 순간 서버가 잠금 안에서 다시 판정해
   그 사이 다시 쓰이게 된 파일은 남김(편집 저장도 같은 잠금). [이전 버전으로]·[편집 모두 지우기]로 기록에서 빠진 파일은 그때부터 10분 남김(이미 읽어 간 Export 보호). 많으면 200개씩.
+
+### 다듬기 배치 3b (2026-10-22)
+
+실사용 피드백 F22·F18·F26(계획 `_proto\STUDIO_POLISH_PLAN_2610.md` §3·§11.2). ComfyUI 재시작(Export 노드 새 위젯·서버 잠금 검사) 뒤 Studio 창 새로고침. 보드 라우트 수는 그대로(40).
+
+- **레퍼런스(T) — 가운데 `[시트]` · `[그리드]` 탭**: `[그리드]` = 크롭마다 카드 하나(왼쪽 목록 순서) — 「크롭 소스」(첫 타깃 Before. Analyze 뒤 초점 박스로 잘린 크롭은
+  원해상도 Before, 레이아웃에만 있는 새 크롭·옮긴 크롭은 캔버스 미리보기를 잘라 보이고 노란 `미반영 (새 크롭)`·`미반영 (새 자리)`·`미반영 (옛 자리)`) · 「대표」(없으면 빨간
+  `대표 없음`) · 「보조 n」(작은 그림, 넘치면 `+k`) · 검사 줄(경고 먼저, 앞 3줄 + `… 외 k`). 테두리 빨강 = 경고·대표 없음, 주황 = 연결 안 된 파일(이름 매칭은 강조 없음).
+  맨 뒤 `크롭 없는 연결 n`. 카드를 누르면 그 크롭을 고름(편집은 오른쪽 패널). 그리드에서는 시트 키(Enter·Backspace·`[` `]`·H·0·1·2·F)가 꺼지고 `Esc` = 크롭 선택 해제
+  → 다시 누르면 나가기. 시트를 연 채 탭을 오가도 시트·영역·점은 그대로. 고른 탭은 이 브라우저에 기억.
+- **크롭 편집(E) — 잠금**: 크롭 패널 `[잠금]` / `[잠금 풀기]`, 키 `L`(칩 `L 잠금`). layout.json 크롭 `locked` 에 저장(`Ctrl+Z` 한 걸음). 잠긴 크롭은 점선·핸들 없음·이름표
+  `(잠김)`·목록 칩 `잠김`. 끌기·핸들·부품 상자·P·화살표·Delete·이름·대상·메모·[상자에 크롭 맞추기]·제안 적용·[PSD 값으로]·[지우기]가 막힘(누르면 고르기만, 토스트
+  `잠긴 크롭 — [잠금 풀기] 뒤에`). `[이 사각형 경고 끄기]`는 됨. 머리줄 `[모두 PSD 값으로]`는 잠긴 크롭을 빼고 확인 창·토스트에 `잠금으로 건너뜀 n: …`(그 크롭의 PSD
+  다름 경고는 남음). 실행(G) 반영 칸 `[되돌리기]`도 잠긴 크롭은 꺼짐. 서버도 같은 검사(423 `잠긴 크롭(<이름>) — 잠금을 풀고 다시`)라 다른 창·옛 화면의 쓰기도 막힘.
+  잠금·풀기도 layout.json 을 다시 쓰므로 실행(G) 반영 칸에 `Prepare 입력이 바뀜` → 유료 전 `[반영 (무료)]` 한 번(메모·상자 편집과 같음). 생성 조건·승인 코드는 그대로.
+- **크롭 편집(E) — 여러 크롭 고르기**: 캔버스·왼쪽 목록에서 `Shift`/`Ctrl`+클릭 = 더하기·빼기(움직이지 않고 놓은 클릭만 — 끌면 지금처럼 비율 유지·스냅 끔). 둘 이상이면 패널
+  `크롭 n개 선택` + `[모두 잠금]` `[모두 잠금 풀기]` `[지우기 n]`(확인 창에 이름 목록, 잠긴 크롭은 건너뜀). 이동·크기는 하나씩. 크롭마다 따로 써서 `Ctrl+Z` 도 크롭마다 한 번.
+  `Esc` = 풂, `F` = 고른 크롭 모두에 맞춤.
+- **Export 출력 하위 폴더**: Export PSD 노드 맨 아래 새 위젯 `subfolder`(기본 비움) = Studio 실행(G) `[실행 설정 열기]` → Export 절 `출력 하위 폴더` 칸(아래 줄에 실제 경로).
+  출력 = `ComfyUI output/design_patch/<출력 하위 폴더 — 비우면 프로젝트 폴더 이름>`. 폴더 이름 하나만(경로 구분자·`..`·끝 점·CON 같은 Windows 예약 이름·65자 이상은 저장 때
+  오류 토스트). 하위 폴더를 바꾸면 '변경 없음'이 아니라 새 폴더에 새 PSD(Windows 에서 대소문자만 다른 이름은 같은 폴더). 옛 워크플로(위젯 7·8값)·옛 pipeline.json 은
+  비운 값(지금 폴더)으로 열림. `[출력 폴더 열기]`는 마지막 Export 파일의 폴더, Export 전이면 이 칸의 폴더.
 
 ## M2 — 동시 쓰기와 탈락(rejects)
 

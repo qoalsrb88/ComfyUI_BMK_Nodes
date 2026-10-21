@@ -37,10 +37,12 @@ current(deep=True)·derive(deep=True)·view·update·build_prompt("draft")·widg
 - validate_section(section, values, *, draft_rounds=None) -> 정규화한 값
       키 집합이 정확히 같아야 함(빠짐·모르는 키 400), 타입 엄격(INT = JSON 정수(bool 아님), FLOAT = 정수·실수 → float, BOOLEAN = bool,
       STRING·COMBO = str), 선택지·min/max, 절 규칙(import 경로 정규화, cand.enabled + 빈 path, mapping_json, prepare.variants,
-      draft = vlm.check_widgets(모델별 effort)·write_mode fill|refresh, export.filename_prefix). draft_rounds 가 있으면 draft_round ∈ 그 집합.
+      draft = vlm.check_widgets(모델별 effort)·write_mode fill|refresh, export.filename_prefix, export.subfolder = store.check_export_subfolder
+      (앞뒤 공백을 뗀 폴더 이름 하나 — 배치 3-5b)). draft_rounds 가 있으면 draft_round ∈ 그 집합.
 pipeline.json
 - load(root) -> doc | None                 없으면 None, 깨졌으면(읽을 수 없음 포함) ValueError(JSON·schema·구조·값 — rev 는 1 이상
       2^53−1 이하: 넘으면 브라우저가 반올림해 rev 대조가 늘 어긋남). manifest_lock 안에서 읽음. 파일을 쓰지 않음
+      배치 3b 전 파일(export.subfolder 없음)은 subfolder ""(기본 폴더)로 읽는다 — 깨진 파일 아님
 - pipeline_rev(root) -> int | None         state 플래그(없거나 깨졌으면 None)
 - current(root, m=None, *, deep=False, derived=None) -> {"rev", "saved", "error", "settings", "confirm"}
       있음 = 파일 값 / 없음 = rev 0·saved False·유도값(derive(deep) — derived 를 주면 그것) / 깨짐 = rev None·error·settings None·
@@ -52,7 +54,7 @@ pipeline.json
       절 하나를 통째 교체하고 confirm 의 그 절 항목을 지운다. 바뀐 것이 없으면 쓰지 않음(rev 그대로). 잠금 = store.manifest_lock.
       draft.draft_round 는 지금 유도값 또는 저장값만 받는다(바꾸면 400 — 다시 초안은 그래프)
 - view(root, m=None) -> GET /pipeline 응답 {rev, saved, error, settings, confirm, derived(deep), drift, warnings, exports, widgets,
-      manifest_rev}
+      manifest_rev, folder}
 유도·갈라짐·경고
 - derive(root, m, *, deep=False) -> {"settings", "from": {"절.키": "manifest"|"jobs"|"spec_draft"|"default"}, "confirm": [키 경로], "notes"}
       매니페스트와 specs/<crop_id>.json(store.load_spec_override)·board_pref.json(analyze — 마지막 Analyze·Review 설정, 없으면 후보별
@@ -86,6 +88,7 @@ pipeline.json
 v1 (2026-10)
 - S3a U1 최초 구현(STUDIO_S3_SPEC §2.1–§2.3·§6).
 - S3b(10/18): view 에 manifest_rev(무료 반영 expect — _proto/s3b/S3B_CONTRACT.md §1).
+- 다듬기 배치 3b(10/22): export.subfolder(Export 노드 optional 맨 뒤 — 3-5b), view 에 folder(프로젝트 폴더 이름 — Studio 출력 폴더 미리 보기).
 """
 
 from __future__ import annotations
@@ -196,7 +199,7 @@ WIDGETS = {
         "project": _LINK, "filename_prefix": _s("design_patch"), "layer_mode": _c(_LAYER_MODES, "smart_object"),
         "alternates": _c(_ALTERNATES, "hidden_all"), "color": _c(_COLORS, "toned"),
         "mask_source": _c(_EXPORT_MASK_SOURCES, "hand_else_auto"), "include_base": _b(True),
-        "include_crop_outlines": _b(True), "skip_empty": _b(True)},  # skip_empty 는 optional
+        "include_crop_outlines": _b(True), "skip_empty": _b(True), "subfolder": _s("")},  # skip_empty·subfolder 는 optional
 }
 NODE_INPUTS = {cls: tuple(spec) for cls, spec in WIDGETS.items()}
 _CONTROL_SPECS = {("cand", "enabled"): _b(False)}
@@ -398,6 +401,10 @@ def _check_section(section: str, values: Any, *, deep: bool, draft_rounds=None) 
         prefix = out["filename_prefix"].strip() or "design_patch"  # 노드 Export 와 같은 해석
         if not _SAFE_PREFIX_RE.match(prefix) or ".." in prefix:
             raise ValueError(f"export.filename_prefix 에는 경로 구분자 없이 영문·숫자·한글·_ - . 만 쓸 수 있습니다: {prefix!r}")
+        try:
+            out["subfolder"] = store.check_export_subfolder(out["subfolder"])  # 노드 Export 와 같은 검사(앞뒤 공백을 뗀 이름)
+        except ValueError as e:  # Studio 칸 라벨은 위젯 이름이 아님 — 문구에 라벨을 붙임
+            raise ValueError(f"export.{e} (Studio 칸 '출력 하위 폴더')") from e
     return out
 
 
@@ -452,8 +459,11 @@ def _parse(raw: bytes) -> dict:
     for sec in SECTIONS:
         if sec not in doc:
             raise ValueError(f"{PIPELINE_NAME} 에 {sec} 절이 없습니다")
+        vals = doc[sec]
+        if sec == "export" and isinstance(vals, dict) and "subfolder" not in vals:
+            vals = dict(vals, subfolder="")  # 배치 3b 전 파일(키 없음) = 기본 폴더(노드 기본값) — 깨진 파일 아님
         try:
-            out[sec] = _check_section(sec, doc[sec], deep=False)
+            out[sec] = _check_section(sec, vals, deep=False)
         except ValueError as e:
             raise ValueError(f"{PIPELINE_NAME} {e}") from e
     return out
@@ -724,6 +734,8 @@ def _derive_export(root: str, m: dict, s: dict, frm: dict, conf: set, notes: lis
         if ok in opts:
             s["export"][k] = opts[ok]
             frm[f"export.{k}"] = "manifest"
+    if "subfolder" not in opts:  # 기본 폴더로 쓴 Export(배치 3-5b 전 기록 포함)는 options 에 subfolder 를 남기지 않음 = "" 그대로
+        frm["export.subfolder"] = "manifest"
 
 
 def derive(root: str, m: dict, *, deep: bool = False) -> dict:
@@ -842,15 +854,17 @@ def recent_exports(m: dict, n: int = 10) -> list[dict]:
 
 
 def view(root: str, m: dict | None = None) -> dict:
-    """GET /pipeline 응답 {rev, saved, error, settings, confirm, derived, drift, warnings, exports, widgets, manifest_rev}. 유도는
+    """GET /pipeline 응답 {rev, saved, error, settings, confirm, derived, drift, warnings, exports, widgets, manifest_rev, folder}. 유도는
     deep(설정 패널의 [매니페스트 값으로 다시]가 그대로 저장되게), widgets = settings_widgets(), manifest_rev = 매니페스트 rev(Studio 가
-    GET /pipeline/prompt 의 expect '<rev>:<manifest_rev>' 를 만듦 — S3b 계약 §1). 파일을 쓰지 않는다."""
+    GET /pipeline/prompt 의 expect '<rev>:<manifest_rev>' 를 만듦 — S3b 계약 §1), folder = 프로젝트 폴더 이름(export.subfolder 를
+    비웠을 때의 출력 폴더 — Studio 가 output/design_patch/<…> 를 미리 보임, 배치 3-5b). 파일을 쓰지 않는다."""
     m = m if m is not None else store.load_manifest(root)
     der = derive(root, m, deep=True)
     cur = current(root, m, derived=der)
     st = cur["settings"]
     return {**cur, "derived": der, "drift": drift(st, m) if st else [], "warnings": path_warnings(st) if st else [],
-            "exports": recent_exports(m), "widgets": settings_widgets(), "manifest_rev": m["rev"]}
+            "exports": recent_exports(m), "widgets": settings_widgets(), "manifest_rev": m["rev"],
+            "folder": os.path.basename(os.path.normpath(root))}
 
 
 # ══════════════════════════════════════════════════════════════════════

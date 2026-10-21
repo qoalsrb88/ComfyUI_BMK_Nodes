@@ -224,7 +224,8 @@
       "mask_source": "hand_else_auto",
       "include_base": true,
       "include_crop_outlines": true,
-      "skip_empty": true
+      "skip_empty": true,
+      "subfolder": ""
      }
     },
     "confirm": [
@@ -300,7 +301,8 @@
        "mask_source": "hand_else_auto",
        "include_base": true,
        "include_crop_outlines": true,
-       "skip_empty": true
+       "skip_empty": true,
+       "subfolder": ""
       }
      },
      "from": {
@@ -357,7 +359,8 @@
       "export.mask_source": "manifest",
       "export.include_base": "manifest",
       "export.include_crop_outlines": "manifest",
-      "export.skip_empty": "default"
+      "export.skip_empty": "default",
+      "export.subfolder": "manifest"
      },
      "confirm": [
       "prepare.variants",
@@ -783,10 +786,15 @@
       "skip_empty": {
        "type": "BOOLEAN",
        "default": true
+      },
+      "subfolder": {
+       "type": "STRING",
+       "default": ""
       }
      }
     },
-    "manifest_rev": 79
+    "manifest_rev": 79,
+    "folder": "261014_Test"
    },
    "alt": {
     "missing": {
@@ -862,7 +870,8 @@
        "mask_source": "hand_else_auto",
        "include_base": true,
        "include_crop_outlines": true,
-       "skip_empty": true
+       "skip_empty": true,
+       "subfolder": ""
       }
      },
      "confirm": [
@@ -940,7 +949,8 @@
         "mask_source": "hand_else_auto",
         "include_base": true,
         "include_crop_outlines": true,
-        "skip_empty": true
+        "skip_empty": true,
+        "subfolder": ""
        }
       },
       "from": {
@@ -997,7 +1007,8 @@
        "export.mask_source": "manifest",
        "export.include_base": "manifest",
        "export.include_crop_outlines": "manifest",
-       "export.skip_empty": "default"
+       "export.skip_empty": "default",
+       "export.subfolder": "manifest"
       },
       "confirm": [
        "prepare.variants",
@@ -1402,10 +1413,15 @@
        "skip_empty": {
         "type": "BOOLEAN",
         "default": true
+       },
+       "subfolder": {
+        "type": "STRING",
+        "default": ""
        }
       }
      },
-     "manifest_rev": 79
+     "manifest_rev": 79,
+     "folder": "261014_Test"
     },
     "broken": {
      "rev": null,
@@ -1483,7 +1499,8 @@
         "mask_source": "hand_else_auto",
         "include_base": true,
         "include_crop_outlines": true,
-        "skip_empty": true
+        "skip_empty": true,
+        "subfolder": ""
        }
       },
       "from": {
@@ -1540,7 +1557,8 @@
        "export.mask_source": "manifest",
        "export.include_base": "manifest",
        "export.include_crop_outlines": "manifest",
-       "export.skip_empty": "default"
+       "export.skip_empty": "default",
+       "export.subfolder": "manifest"
       },
       "confirm": [
        "prepare.variants",
@@ -1945,10 +1963,15 @@
        "skip_empty": {
         "type": "BOOLEAN",
         "default": true
+       },
+       "subfolder": {
+        "type": "STRING",
+        "default": ""
        }
       }
      },
-     "manifest_rev": 79
+     "manifest_rev": 79,
+     "folder": "261014_Test"
     }
    },
    "errors": {
@@ -2066,7 +2089,8 @@
       "mask_source": "hand_else_auto",
       "include_base": true,
       "include_crop_outlines": true,
-      "skip_empty": true
+      "skip_empty": true,
+      "subfolder": ""
      }
     },
     "confirm": [
@@ -2292,7 +2316,8 @@
         "mask_source": "hand_else_auto",
         "include_base": true,
         "include_crop_outlines": true,
-        "skip_empty": true
+        "skip_empty": true,
+        "subfolder": ""
        }
       }
      },

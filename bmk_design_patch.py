@@ -89,7 +89,9 @@ M3 는 Spec Draft(VLM 이 specs/<crop_id>.json 초안을 씀)를 더한다.
 - Compose      : pick 을 z순으로 베이스 위에 합성한 평탄화 미리보기 + 마스크 합집합. 설정(정합 사용, z순서)은
                  핸들 compose 로 하류 Export 에 넘어가 같은 배치로 쓰인다(미리보기 = PSD). 상류 Analyze 설정의 분석을 쓴다.
 - Export PSD   : 00.Base / 02.크롭영역(외곽선, 숨김) / 03.수정 > 크롭 그룹 > 타깃 그룹(그룹 마스크 = 최종 마스크)
-                 > 후보 SO(pick 보임·녹색, 대안 숨김·빨강) 구조의 PSD 를 output/design_patch/<project 폴더 이름>/ 에 쓴다.
+                 > 후보 SO(pick 보임·녹색, 대안 숨김·빨강) 구조의 PSD 를 output/design_patch/<subfolder>/ 에 쓴다(subfolder =
+                 optional 맨 뒤 위젯 — 폴더 이름 하나(store.check_export_subfolder), 비우거나 project 폴더 이름이면 project 폴더 이름 —
+                 그때는 export 해시·기록 options 에 subfolder 를 넣지 않아 그 전과 같음).
                  정합은 SO quad 에 affine 으로(비파괴), color=toned 면 톤 보정한 풀해상도 PNG 를 임베드.
                  이미 있는 파일은 덮어쓰지 않는다(<prefix>_r<rev>_2 …). 병합 프리뷰는 레이어와 같은 순서로 직접 합성.
                  정합·z순서는 상류 Compose 설정(핸들), 없으면 기본값. ui bmk_dp_export = 결과 하나
@@ -216,6 +218,9 @@ v6 (2026-10, Studio S3a — STUDIO_S3_SPEC §2.4·§2.5)
   재실행은 바이트·rev 그대로, 채택 가드가 Import 미반영 크롭을 건너뛰면 지문은 그대로). Export ui 에 bmk_dp_export(§3.6 — 보고서
   문구는 그대로). Spec Draft run 의 _open 뒤 전체(예외·인터럽트·취소·finally 포함 — 핸들을 못 열면 루트를 몰라 표시하지 않음)를
   board.draft_active(root) 로 감쌈(§2.4). 모듈 import 때 board.set_qwen_dir(Spec Draft 와 같은 Qwen 모델 폴더).
+v7 (2026-10, Studio 다듬기 배치 3 — _proto/STUDIO_POLISH_PLAN_2610.md §11)
+- 모듈 import 때 board.set_output_dir(Studio [출력 폴더 열기] — 3-5a). Export PSD optional 맨 뒤 subfolder(3-5b — 출력
+  output/design_patch/<subfolder>, 비우면 지금처럼 project 폴더 이름. 기본값이면 export 해시·기록 그대로).
 """
 
 from __future__ import annotations
@@ -2193,8 +2198,9 @@ def _export_hash(m: dict, entries: dict, comp: dict, opts: dict, edits: dict | N
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
 
 
-def _output_dir(project: str) -> str:
-    return os.path.join(folder_paths.get_output_directory(), "design_patch", project)
+def _output_dir(name: str) -> str:
+    """output/design_patch/<name> — name = Export 하위 폴더(배치 3-5b), 비우면 프로젝트 폴더 이름."""
+    return os.path.join(folder_paths.get_output_directory(), "design_patch", name)
 
 
 def _sidecar_hash(psd_path: str):
@@ -2215,7 +2221,7 @@ class BMKDesignPatchExportPSD:
             "required": {
                 "project": (PROJECT_TYPE, {"tooltip": "BMK Design Patch Project 출력."}),
                 "filename_prefix": ("STRING", {"default": "design_patch",
-                                               "tooltip": "파일 이름 앞부분. output/design_patch/<project>/<prefix>_r<rev>.psd "
+                                               "tooltip": "파일 이름 앞부분. output/design_patch/<subfolder — 비우면 project 폴더>/<prefix>_r<rev>.psd "
                                                           "(이미 있으면 _r<rev>_2 … — 덮어쓰지 않음)"}),
                 "layer_mode": (_LAYER_MODES, {"default": "smart_object",
                                               "tooltip": "smart_object = 풀해상도 원본 임베드(PS 에서 재변형 가능), pixel = 배치된 픽셀."}),
@@ -2233,6 +2239,10 @@ class BMKDesignPatchExportPSD:
                 "skip_empty": ("BOOLEAN", {"default": True,
                                            "tooltip": "넣을 후보가 하나도 없으면(pick 0, hidden_all 이면 후보 0) PSD 를 쓰지 않음 — "
                                                       "Run 드라이런 직후의 전체 큐가 베이스만 든 빈 PSD(수십 MB)를 남기지 않게."}),
+                # 맨 뒤(배치 3-5b) — 저장된 워크플로 widgets_values(skip_empty 전 7값·뒤 8값)가 밀리지 않게
+                "subfolder": ("STRING", {"default": "",
+                                         "tooltip": "ComfyUI output/design_patch/ 아래 하위 폴더 이름 — 비우면 프로젝트 폴더 이름(지금과 같음). "
+                                                    "이름만(경로 구분자·.. 불가)"}),
             },
         }
 
@@ -2250,13 +2260,20 @@ class BMKDesignPatchExportPSD:
     SEARCH_ALIASES = _ALIASES + ["export psd", "smart object", "psd 출력", "스마트 오브젝트", "레이어 출력"]
 
     def run(self, project, filename_prefix, layer_mode, alternates, color, mask_source, include_base,
-            include_crop_outlines, skip_empty=True):
+            include_crop_outlines, skip_empty=True, subfolder=""):
         t0 = time.time()
         root, m = _open(project)
         before = _snapshot(m)
         prefix = str(filename_prefix or "").strip() or "design_patch"
         if not _SAFE_PREFIX_RE.match(prefix) or ".." in prefix:
             raise ValueError(f"{_TAG} filename_prefix 에는 경로 구분자 없이 영문·숫자·한글·_ - . 만 쓸 수 있습니다: {prefix!r}")
+        folder = os.path.basename(os.path.normpath(root))  # 폴더 이름(복사한 매니페스트의 project 값 아님)
+        try:
+            sub = store.check_export_subfolder(subfolder)
+        except ValueError as e:
+            raise ValueError(f"{_TAG} {e}") from e
+        if os.path.normcase(sub) == os.path.normcase(folder):
+            sub = ""  # 프로젝트 폴더 이름 = 기본 — 해시·기록이 비운 것과 같게
         for v, allowed, nm in ((layer_mode, _LAYER_MODES, "layer_mode"), (alternates, _ALTERNATES, "alternates"),
                                (color, _COLORS, "color"), (mask_source, _EXPORT_MASK_SOURCES, "mask_source")):
             if v not in allowed:
@@ -2269,6 +2286,8 @@ class BMKDesignPatchExportPSD:
         opts = {"layer_mode": layer_mode, "alternates": alternates, "color": color, "mask_source": mask_source,
                 "include_base": bool(include_base), "include_crop_outlines": bool(include_crop_outlines),
                 "prefix": prefix}
+        if sub:  # 하위 폴더(배치 3-5b)를 바꾸면 새 폴더에 새로 씀 — 기본(빈 값)은 키를 넣지 않아 그 전 export 해시·'변경 없음' 그대로
+            opts["subfolder"] = sub
         warns: list[str] = []
         crops = _crop_map(m)
         want = [c for c in m["candidates"] if (c.get("picked") or alternates == "hidden_all") and c["key"] not in m["rejects"]]
@@ -2290,7 +2309,8 @@ class BMKDesignPatchExportPSD:
         # 해시의 편집 = _plan 이 실제로 그룹 마스크로 쓴 것(★ 만, 파일을 못 읽어 기준으로 떨어진 기록은 빠짐 — 보이는 것 = PSD)
         edits = {it["cand"]["key"]: [it["mask_edit"], dmask.edit_record(m, it["cand"]["key"])["rect"]]
                  for _p, _t, it in _slices_in_order(plan) if it["mask_edit"]}
-        eh = _export_hash(m, entries, comp, opts, edits)
+        # 해시의 하위 폴더 = 이 OS 의 폴더 같음(Windows 는 대소문자 무시 — 외주_A·외주_a 는 같은 폴더라 '변경 없음'), 기록 options 는 입력 그대로
+        eh = _export_hash(m, entries, comp, dict(opts, subfolder=os.path.normcase(sub)) if sub else opts, edits)
         last = next((e for e in reversed(m["exports"]) if e.get("hash") == eh), None)
         if last and os.path.isfile(last["psd"]) and _sidecar_hash(last["psd"]) == eh:  # 다른 export 가 덮어쓴 파일은 재사용 안 함
             _h, conflicts = _commit(root, m, before)
@@ -2303,7 +2323,7 @@ class BMKDesignPatchExportPSD:
                     "result": (last["psd"],)}
 
         rev = int(m["rev"])
-        out_dir = _output_dir(os.path.basename(os.path.normpath(root)))  # 폴더 이름(복사한 매니페스트의 project 값 아님)
+        out_dir = _output_dir(sub or folder)
         os.makedirs(out_dir, exist_ok=True)
         stem, k = f"{prefix}_r{rev}", 1
         while any(os.path.exists(os.path.join(out_dir, stem + ext)) for ext in (".psd", "_mask.png", ".json")):

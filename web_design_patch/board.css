@@ -354,6 +354,7 @@ body.editing .proj { min-width: 0; overflow: hidden; text-overflow: ellipsis; wh
 #layout-list li, #ref-list li { padding: 6px 8px; border-radius: 6px; cursor: pointer; border: 1px solid transparent; }
 #layout-list li:hover, #ref-list li:hover { background: var(--panel2); }
 #layout-list li.sel, #ref-list li.sel { background: #22314a; border-color: var(--accent); }
+#layout-list li { user-select: none; }  /* Shift/Ctrl+클릭 = 선택에 더하기(배치 3-3) — 브라우저 글자 선택 넓히기로 칠해지지 않게 */
 #layout-list li.gone { cursor: default; opacity: .6; }
 #layout-list li.gone .tname { text-decoration: line-through; }
 #ref-list li.gone { opacity: .75; }
@@ -411,6 +412,7 @@ svg.marks .lc.new { stroke: var(--ok); }
 svg.marks .lc.changed { stroke: var(--wait); }
 svg.marks .lc.bad { stroke: var(--bad); }
 svg.marks .lc.sel { stroke: var(--accent); stroke-width: 2.5px; }
+svg.marks .lc.locked { stroke-dasharray: 6 3; }
 svg.marks .ghost { fill: none; stroke: rgba(227, 230, 236, .45); stroke-width: 1.5px; stroke-dasharray: 6 4; vector-effect: non-scaling-stroke; }
 svg.marks .ghost.gone { stroke: rgba(255, 93, 93, .55); }
 svg.marks .hatch { fill: rgba(255, 162, 77, .35); }
@@ -448,6 +450,42 @@ body.refs .proj { min-width: 0; overflow: hidden; text-overflow: ellipsis; white
 .rs-list li:hover { background: var(--panel2); border-color: var(--line); }
 .rs-path { font-weight: 600; overflow-wrap: anywhere; }
 #ref-sheets .warn { color: var(--slice); }
+
+/* 가운데 탭 [시트] [그리드](3-4) — 그리드 = 크롭마다 카드(auto-fill, 좁은 창에서도 가로 스크롤 없음) */
+.ref-tabs { align-self: stretch; padding: 4px 10px 0; background: var(--panel); border-bottom: 1px solid var(--line); }
+#ref-grid { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 14px; --rg-h: 110px; }
+.rg-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); gap: 8px; }
+.rg-card { min-width: 0; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); cursor: pointer; }
+.rg-card:hover { background: var(--panel2); }
+.rg-card.warn { border-color: var(--slice); }
+.rg-card.bad { border-color: var(--bad); }
+.rg-card.sel { outline: 2px solid var(--accent); outline-offset: 1px; }
+.rg-card.gone { opacity: .75; }
+.rg-head { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 8px; margin-bottom: 4px; }
+.rg-head .tname { min-width: 0; max-width: 100%; }
+.rg-body { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.rg-fig { margin: 0; min-width: 0; }
+.rg-fig figcaption { color: var(--dim); font-size: 11.5px; margin-bottom: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rg-frame { position: relative; height: calc(var(--rg-h) + 2px); display: flex; align-items: center; justify-content: center; overflow: hidden;
+  background: #0e0f12; border: 1px solid var(--line); border-radius: 4px; }
+.rg-frame.miss { border: 1px dashed var(--bad); background: #2a1416; }
+.rg-img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.rg-cut { flex: none; background-repeat: no-repeat; }
+.rg-none { color: var(--dim); font-size: 12px; text-align: center; padding: 2px; overflow-wrap: anywhere; }
+.rg-none.bad { color: #ffd0d0; }
+.rg-aux { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); gap: 2px; width: 100%; height: 100%; }
+.rg-aux.c1 { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+.rg-aux.c2 { grid-template-rows: minmax(0, 1fr); }
+.rg-aux > * { min-width: 0; min-height: 0; }
+.rg-aux .rg-img { width: 100%; height: 100%; }
+.rg-more { display: flex; align-items: center; justify-content: center; color: var(--dim); }
+.rg-tag { position: absolute; left: 2px; bottom: 2px; padding: 0 4px; border-radius: 3px; font-size: 11px;
+  background: #3e3818; border: 1px solid var(--wait); color: #fff1b0; }
+.rg-checks { margin-top: 4px; font-size: 12px; }
+.rg-checks > div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rg-checks .warn { color: var(--bad); }
+.rg-group { grid-column: 1 / -1; margin-top: 6px; color: var(--dim); font-weight: 600; }
+.rg-files { font-size: 12px; overflow-wrap: anywhere; }
 
 .rf-sec { margin-top: 16px; padding-top: 8px; border-top: 1px solid var(--line); }
 .rf-file { display: flex; gap: 8px; align-items: flex-start; margin: 4px 0; }
@@ -551,6 +589,8 @@ body.pipe .proj { min-width: 0; overflow: hidden; text-overflow: ellipsis; white
 .pp-field .k { width: 11em; flex: none; color: var(--dim); }
 .pp-field.bad .k { color: var(--bad); }
 .pp-field input[type="text"], .pp-field input[type="number"], .pp-field select { flex: 1; min-width: 0; }
+.pp-field.pp-sub { flex-wrap: wrap; row-gap: 2px; }
+.pp-sub .pp-hint { flex-basis: 100%; padding-left: calc(11em + 14px); overflow-wrap: anywhere; }  /* 출력 하위 폴더 칸 아래 실제 경로(배치 3-5b) — 들여쓰기 = .k 11em + margin-right 6px + gap 8px */
 #pipe-panel input[type="text"], #pipe-panel input[type="number"], #pipe-panel select {
   background: #0e0f12;
   color: var(--text);

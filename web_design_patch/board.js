@@ -67,6 +67,7 @@
   let editing = false;
   let refEd = null; // DPRefEdit — 옛 서버는 ref_edit.js 를 주지 않아 null
   let refsOn = false;
+  let refTab = "sheets"; // 레퍼런스 가운데 탭(3-4 — ref_edit.js 가 바꿀 때 알림, 단축키 칩 줄이 따름)
   let pipe = null; // DPPipeline 패널 — 옛 서버는 pipeline.js 를 주지 않아 null
   let pipeOn = false;
   let tabLink = null; // DPPipeline.link — ComfyUI 탭 hello 상태
@@ -1496,7 +1497,7 @@
   // 머리줄의 지금 모드 이름 + 한 줄 설명(F12) — 모드는 body 클래스(setMask·setPipe·setRefs·setEditing)로 정해지므로 그것을 지켜봄
   const MODES = [["mask", "마스크", "★ 후보의 최종 마스크(Export 그룹 마스크)를 붓·페이드로 손질"],
     ["pipe", "실행", "실행 설정 · 무료 반영 · 계획·비용 · 초안·생성 승인 · ★ 점검 · Export"],
-    ["refs", "레퍼런스", "시트에서 부품을 오려 refs 에 저장하고 크롭에 연결"],
+    ["refs", "레퍼런스", "시트에서 부품을 오려 refs 에 저장하고 크롭에 연결 · [그리드] = 크롭별 매칭을 한눈에"],
     ["editing", "크롭 편집", "크롭 사각형·이름·대상 문구·부품 상자"]];
 
   // 이 모드의 단축키 칩(F13·F14): [키, 하는 일, (선택) {code, shift, ctrl, hold}] — 칩을 누르면 그 키를 누른 것과 같음(hold = 누르는 동안).
@@ -1511,12 +1512,14 @@
       ["O", "사각형", { code: "KeyO" }], ...VIEW_KEYS, ["?", "도움말", { code: "Slash", shift: true }]],
     edit: [["끌기", "새 크롭·이동·크기"], ["P", "부품 상자", { code: "KeyP" }], ["Enter", "만들기·제안 적용", { code: "Enter" }],
       ["Tab", "다음 크롭", { code: "Tab" }], ["⇧Tab", "이전 크롭", { code: "Tab", shift: true }], ["←→↑↓", "미세 이동"],
-      ["Del", "크롭 지우기", { code: "Delete" }],
+      ["Del", "크롭 지우기", { code: "Delete" }], ["L", "잠금", { code: "KeyL" }],
       ["Ctrl+Z", "되돌리기", { code: "KeyZ", ctrl: true }], ["Ctrl+Y", "다시", { code: "KeyY", ctrl: true }], ["Esc", "취소·나가기", { code: "Escape" }],
       ["Space+끌기", "화면 이동"], ["F", "크롭 맞춤", { code: "KeyF" }], ["0", "전체", { code: "Digit0" }], ["E", "나가기", { code: "KeyE" }]],
     refs: [["끌기", "영역"], ["Enter", "컷", { code: "Enter" }], ["T", "나가기", { code: "KeyT" }], ["[", "회전 −0.5°", { code: "BracketLeft" }], ["]", "회전 +0.5°", { code: "BracketRight" }],
       ["H", "좌우 반전", { code: "KeyH" }], ["⌫", "마지막 점 지우기", { code: "Backspace" }], ["F", "영역 맞춤", { code: "KeyF" }], ["0", "시트 전체", { code: "Digit0" }],
       ["Esc", "취소·나가기", { code: "Escape" }]],
+    // 레퍼런스 [그리드] 탭(3-4): 시트가 숨어 시트 키가 꺼짐 — 카드 고르기와 나가기만
+    refsGrid: [["카드 클릭", "크롭 고르기"], ["T", "나가기", { code: "KeyT" }], ["Esc", "선택 해제·나가기", { code: "Escape" }]],
     pipe: [["B", "바탕", { code: "KeyB" }], ["O", "사각형", { code: "KeyO" }], ...VIEW_KEYS, ["G", "나가기", { code: "KeyG" }]],
     mask: [["끌기", "붓"], ["⇧끌기", "흐리기"], ["X", "지우기 ↔ 살리기", { code: "KeyX" }], ["[", "붓 작게", { code: "BracketLeft" }], ["]", "붓 크게", { code: "BracketRight" }],
       ["⇧[", "경도 −", { code: "BracketLeft", shift: true }], ["⇧]", "경도 +", { code: "BracketRight", shift: true }], ["Q", "처음 마스크(누름)", { code: "KeyQ", hold: true }],
@@ -1590,7 +1593,7 @@
       $(id).classList.toggle("on", id === tab);
       $(id).setAttribute("aria-selected", String(id === tab));
     }
-    const key = { mask: "mask", pipe: "pipe", refs: "refs", editing: "edit" }[m[0]] || "review";
+    const key = m[0] === "refs" && refTab === "grid" ? "refsGrid" : { mask: "mask", pipe: "pipe", refs: "refs", editing: "edit" }[m[0]] || "review";
     if (renderMode.key !== key) {
       renderMode.key = key;
       renderKeys(key);
@@ -1622,8 +1625,15 @@
     }
     if (window.DPRefEdit) {
       const sheetViewer = window.DPViewer.create($("ref-viewer"), { apiUrl });
-      refEd = window.DPRefEdit.create({ list: $("ref-list"), panel: $("ref-panel"), head: $("ref-head"), sheets: $("ref-sheets"),
-        view: $("ref-viewer") }, { apiUrl, comfyUrl, root: ROOT, viewer: sheetViewer, toast, queue: applyFree, applyWarn, exit: () => setRefs(false) });
+      refTab = loadPref().refTab === "grid" ? "grid" : "sheets";
+      // 가운데 탭 [시트]/[그리드](3-4)는 이 브라우저에 기억(refTab — 저장소를 못 쓰면 이번 창만, 처음은 시트), 바뀌면 단축키 칩 줄도
+      refEd = window.DPRefEdit.create({ list: $("ref-list"), panel: $("ref-panel"), head: $("ref-head"), tabs: $("ref-tabs"), sheets: $("ref-sheets"),
+        view: $("ref-viewer"), grid: $("ref-grid") }, { apiUrl, comfyUrl, root: ROOT, viewer: sheetViewer, toast, queue: applyFree, applyWarn,
+        tab: refTab, tabChanged: (t, keep) => {
+          refTab = t;
+          if (keep) savePref({ refTab: t });
+          renderMode();
+        }, exit: () => setRefs(false) });
     }
     if (window.DPPipeline) {
       // 탭 연결이 바뀌면 머리줄 배지와 진행 패널의 승인 단추를 다시 그림(첫 판정은 hello 응답을 모은 뒤 — 그때는 pipe 가 있음)

@@ -35,7 +35,8 @@ Review 노드를 부분 실행한다(대체 경로). 인증 토큰은 그 경로
                                        후보 hand_mask 등 — ★ 아닌 후보 포함) {files: [{file, bytes, at}], bytes, recent}(배치 3-6 — 10분 안에 쓴 것은 recent 로만)
 - POST /bmk/design_patch/mask/cleanup {root, files}   그 목록 중 지금도 안 쓰는 것만 지움(매니페스트 잠금 안에서 다시 판정) → {ok, deleted, bytes, kept}
 - POST /bmk/design_patch/open_folder {root}   Export 출력 폴더를 탐색기로(배치 3-5a — 마지막 Export PSD 를 고른 채, 없으면
-                                       output/design_patch/<프로젝트 폴더>). ComfyUI output 밖이거나 폴더가 없으면 열지 않음 → {ok, path, selected}
+                                       output/design_patch/<실행 설정 export.subfolder — 비면 프로젝트 폴더>(3-5b)). ComfyUI output 밖이거나
+                                       폴더가 없으면 열지 않음 → {ok, path, selected}
 - GET  /bmk/design_patch/layout?root=&since=           레이아웃 편집기 상태(STUDIO_S1_SPEC §4.1, layout_state)
 - GET  /bmk/design_patch/layout/refs?root=&name=[&id=] 그 이름이면 고를 레퍼런스 {n, first[, fixed]} | null(refs_dir 없음) — 이름 바꾸기
                                                        미리보기. id 를 주면 고정된·이름 바꾸기가 고정할 크롭은 지금 레퍼런스(연결 유지)
@@ -201,6 +202,10 @@ v8 (2026-10-19, Studio S4 — _proto/STUDIO_S4_SPEC.md §4·§6.2)
 - state: 후보 mask_edit {at, stale}, 크롭 요약 mask_edits·mask_stale. _guard 409 에 MaskConflict {error, reason}.
   stale = 기준 지문(dmask.is_stale) 또는 편집 창 ≠ 기록 창(_edit_stale — state·/mask/edit 은 계획 없이 _edit_window).
   state 의 stale 은 _plan 이 편집 파일을 쓰지 못할 때도(_edit_usable — 없음·깨짐·크기 다름).
+v9 (2026-10-21, 다듬기 배치 3b — 3-3 크롭 잠금)
+- layout.json 크롭 locked(bool, 없으면 false) — /layout 크롭 행·state 크롭 요약 locked. POST /layout/crop update 의 locked, 잠긴 크롭은
+  locked 만 바꾸는 update 만(그 밖 update·delete 423). POST /layout/psd take 은 잠긴 크롭의 PSD 이름을 건너뛰고 locked 로 보고.
+- 3-5b: POST /open_folder 가 Export 기록이 없을 때(PSD 가 없어졌을 때도) 여는 폴더 = 실행 설정 export.subfolder(비면 프로젝트 폴더).
 """
 
 from __future__ import annotations
@@ -1997,6 +2002,7 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
             "fields": changed, "name": lc["name"], "rect": lc["rect"],
             "targets": _targets_text(lc["targets"]) if "targets" in changed else None,
             "targets_was": _targets_text(store.parse_crop_layer_name(mc.get("layer_name") or "")["targets"]) if "targets" in changed else None}
+        c["locked"] = bool(lc and lc.get("locked"))  # 잠긴 크롭(배치 3-3) — 반영 칸 [되돌리기]를 끔(서버도 423)
         d = draft_rows.get(c["id"]) or {}
         c["draft_chip"] = None if plan is None else {
             "wait": list(d.get("wait") or []), "refresh": bool(d.get("refresh")), "adopt": d.get("adopt"),
@@ -2407,7 +2413,7 @@ def layout_state(root: str, since: int | None = None) -> dict:
     — 레이아웃 모드 결과 매니페스트에 믿을 수 있는 스냅숏이 없음), 깨졌으면 error + editable false.
     applied = 매니페스트 source.layout.sig(Import 가 마지막에 읽은 판)가 지금 layout_sig 와 같음(메모·상자만 고친 것은 반영된 것).
     psd_diff = 믿을 수 있는 스냅숏(_read_snapshot)의 지문·at + 기준점과의 차이(없으면 null).
-    크롭 행 = 레이아웃 크롭 + 대 매니페스트 상태·GPT 출력 크기·레퍼런스·기록(by_file = 폴더·PSD 수확 후보 수)·초안 상자·
+    크롭 행 = 레이아웃 크롭(locked — 없으면 false) + 대 매니페스트 상태·GPT 출력 크기·레퍼런스·기록(by_file = 폴더·PSD 수확 후보 수)·초안 상자·
     same_name_continues(_name_continues)·검사(store.layout_geom_checks + R-none·D-psd·D-pname·H-orphan).
     레퍼런스는 refs.json 에 고정된 크롭이면 연결 해석(_linked_refs — 이름을 바꿔도 같음, 행에 fixed), 아니면 이름 매칭(S2 §2.6).
     removed = 매니페스트에만 있는 크롭(레이아웃에서 지움, 미반영). 문자열은 그대로(보드는 textContent)."""
@@ -2488,7 +2494,7 @@ def layout_state(root: str, since: int | None = None) -> dict:
             "targets": [{"tid": t["tid"], "text": t["text"], "box": t.get("box"), "adopted": adopted.get(t["tid"])}
                         for t in crop["targets"]],
             "adopted_only": [{"tid": tid, "text": x} for tid, x in adopted.items() if tid not in tids],
-            "psd_name": crop.get("psd_name"), "note": crop.get("note", ""), "status": status, "changed": changed,
+            "psd_name": crop.get("psd_name"), "note": crop.get("note", ""), "locked": crop.get("locked", False), "status": status, "changed": changed,
             "manifest": None if mc is None else {"name": mc.get("name"), "rect": mc["rect"]},
             "gpt": {"size": [gw, gh], "k": ginfo["k"]},
             "refs": None if refs is None else _refs_row(refs, linked is not None),
@@ -2580,7 +2586,7 @@ def _fix_before_rename(root: str, rev: int, crop_id: str, name) -> bool:
     if not _refs_dir_ok(refs_dir) or lay is None or lay["rev"] != rev:
         return False
     crop = next((c for c in lay["crops"] if c["id"] == crop_id), None)
-    if crop is None:
+    if crop is None or crop.get("locked"):  # 잠긴 크롭은 update_layout 이 423 으로 거절 — refs.json 을 건드리지 않게 먼저 뺀다
         return False
     try:
         new = store.check_crop_name(name, [c["name"] for c in lay["crops"] if c is not crop])["name"]
@@ -2630,7 +2636,7 @@ def _unpin_rename(root: str, crop_id: str, name: str | None = None) -> None:
 
 
 def layout_crop(root: str, rev: int, op: str, data: dict) -> dict:
-    """POST /layout/crop(§4.4): add {name, rect, targets?, note?, id?, psd_name?, index?} · update {id + 바꿀 것만(name·rect·targets·note)} ·
+    """POST /layout/crop(§4.4): add {name, rect, targets?, note?, id?, psd_name?, index?} · update {id + 바꿀 것만(name·rect·targets·note·locked)} ·
     delete {id}. 바꾸는 필드만 검사한다 — 이관된 비정상 rect(캔버스 밖·비 > 3)·옛 이름을 가진 크롭도 다른 칸은 고칠 수 있다.
     이름 = store.check_crop_name(레이아웃 안에서 유일), rect = store.check_layout_rect, targets 는 통째로 바꾼다(문구는 _target_text).
     새 크롭 id = store.new_layout_id(이후 이름을 바꿔도 유지), psd_name 은 없음(= 이름으로 PSD 사전 편집 그룹을 찾음).
@@ -2643,6 +2649,8 @@ def layout_crop(root: str, rev: int, op: str, data: dict) -> dict:
     restore_manifest(선택, update 만 — 진행(G) 반영 칸의 [되돌리기]) = restore_rev 대신 마지막 반영(매니페스트)의 같은 id 크롭을 되돌릴
     판으로: 보낸 name·rect 는 그 값과 같아야 하고(다르면 409 — 그 사이 반영으로 매니페스트가 바뀜) 값 규칙 검사를 건너뛴다. 이름 유일성은
     검사(이관 중복만 허용), 이름 되돌리기는 레퍼런스를 새로 고정하지 않고 그 이름의 자동 고정을 푼다(매니페스트에 그 크롭이 없으면 404).
+    locked(선택, update 만 — 배치 3-3) = 크롭 잠금(true 면 layout.json 에 locked true, false 면 키를 뺌). 잠긴 크롭(디스크의 지금 값)에는
+    locked 만 바꾸는 update 만 받는다 — 다른 필드·restore_rev·restore_manifest 가 섞인 update 와 delete 는 423(오래된 화면의 쓰기도).
     반환 {ok, rev, crop: 그 크롭의 /layout 행 | null(delete), checks: {crop_id: 검사}} — 겹침 등 다른 크롭의 검사도 바뀐다. delete 는
     + index(지운 위치). 쓰기 뒤 응답을 만들지 못하면(쓰기는 됨) crop null·checks {}·warning."""
     if op not in ("add", "update", "delete"):
@@ -2651,8 +2659,11 @@ def layout_crop(root: str, rev: int, op: str, data: dict) -> dict:
     fields = [f for f in ("name", "rect", "targets", "note") if f in data]
     if op == "add" and not {"name", "rect"} <= set(fields):
         raise _Reject(400, "add 에는 name 과 rect 가 있어야 합니다")
-    if op == "update" and not fields:
-        raise _Reject(400, "update 에 바꿀 것(name·rect·targets·note)이 없습니다")
+    locked = data.get("locked")
+    if locked is not None and (not isinstance(locked, bool) or op != "update"):
+        raise _Reject(400, "locked 는 true·false — update 에만")
+    if op == "update" and not fields and locked is None:
+        raise _Reject(400, "update 에 바꿀 것(name·rect·targets·note·locked)이 없습니다")
     restore_rev = _opt_count(data, "restore_rev")
     restore_manifest = data.get("restore_manifest", False)
     if not isinstance(restore_manifest, bool) or (restore_manifest and (op != "update" or restore_rev is not None)):
@@ -2664,6 +2675,10 @@ def layout_crop(root: str, rev: int, op: str, data: dict) -> dict:
 
     def mutate(lay):
         crops = lay["crops"]
+        # 잠긴 크롭(3-3)은 디스크의 지금 값으로 판정 — 저장 안 함(이름 바꾸기 고정은 아래 except 가 되돌림)
+        cur = None if op == "add" else _crop_in_layout(lay, crop_id)
+        if cur and cur.get("locked") and (op == "delete" or fields or restore_rev is not None or restore_manifest):
+            raise _Reject(423, f"잠긴 크롭({cur['name']}) — 잠금을 풀고 다시")
         if op == "delete":
             at = crops.index(_crop_in_layout(lay, crop_id))
             del crops[at]
@@ -2707,6 +2722,10 @@ def layout_crop(root: str, rev: int, op: str, data: dict) -> dict:
             crop["targets"] = [dict(t, text=_target_text(t, keep)) for t in targets]
         if "note" in data:
             crop["note"] = data["note"]
+        if locked:
+            crop["locked"] = True
+        elif locked is False:
+            crop.pop("locked", None)
         if op == "add":
             taken = [c["id"] for c in crops]
             crop["id"] = crop_id if crop_id and crop_id not in taken else store.new_layout_id(crop["name"], taken)
@@ -2768,7 +2787,9 @@ def layout_psd(root: str, rev: int, op: str, names: list[str] | None, seen: str 
     스냅숏을 잃었을 때 PSD 를 다시 열게).
     seen = 사용자가 본 스냅숏의 token(GET /layout 의 psd_diff.token) — 지금 스냅숏과 다르면 LayoutConflict(409, 새로고침). 기준점이
     아니라 스냅숏의 표시라 부분 갱신 뒤에도 같은 token 으로 다시 쓸 수 있다.
-    스냅숏이 없거나 믿을 수 없거나 차이가 없으면 400. → {ok, rev, taken: [{id, name, fields}], added, skipped}"""
+    take 은 잠긴 크롭(locked — 배치 3-3)이 쓰는 PSD 이름(psd_name, 없으면 name)을 고른 이름에서 뺀다: 크롭도 기준점도 그대로라 그 크롭의
+    D-psd 경고가 남고, 뺀 이름은 locked(있을 때만)로 보고. ack 는 크롭을 바꾸지 않아 잠금과 무관.
+    스냅숏이 없거나 믿을 수 없거나 차이가 없으면 400. → {ok, rev, taken: [{id, name, fields}], added, skipped, locked?}"""
     if op not in ("take", "ack"):
         raise _Reject(400, "op 는 take, ack 중 하나여야 합니다")
     if names is not None and not names:
@@ -2793,6 +2814,9 @@ def layout_psd(root: str, rev: int, op: str, names: list[str] | None, seen: str 
             raise _Reject(400, f"PSD 차이에 없는 shape 입니다: {sorted(want - set(avail))}")
         if names is None:  # 전부 = 지금처럼 기준점 = 스냅숏 통째(take 도 사라진 shape 경고를 끔 — §0 S1-a), 크롭 쪽은 바뀐·새 shape 만
             want |= set(gone)
+        # 잠긴 크롭(3-3)의 PSD 이름(psd_name, 없으면 name)은 가져오지 않는다 — 기준점 갱신 전에 빼서 그 크롭의 'PSD 와 다름' 경고가 남게
+        held = sorted(want & {c.get("psd_name") or c["name"] for c in lay["crops"] if c.get("locked")}) if op == "take" else []
+        want -= set(held)
         taken, added, skipped = [], [], []
         if op == "take":
             for ch in diff["changed"]:
@@ -2835,7 +2859,7 @@ def layout_psd(root: str, rev: int, op: str, names: list[str] | None, seen: str 
         if not any(store.psd_diff(lay["psd"], snap).values()):
             lay["psd"] = {"path": snap.get("psd"), "fingerprint": snap.get("fingerprint"), "crop_group": snap.get("crop_group"),
                           "at": snap.get("at"), "crops": [_shape(c) for c in snap["crops"]]}
-        return {"taken": taken, "added": added, "skipped": skipped}
+        return {"taken": taken, "added": added, "skipped": skipped, **({"locked": held} if held else {})}
 
     res, new_rev = store.update_layout(root, mutate, expect_rev=rev)
     return {"ok": True, "rev": new_rev, **res}
@@ -2911,7 +2935,7 @@ def _qwen_dir() -> str:
 
 def set_output_dir(path) -> None:
     """ComfyUI output 폴더(노드 모듈이 import 때 — 보드는 folder_paths 를 import 하지 않음). Export 는 그 아래
-    design_patch/<프로젝트 폴더>에 쓰고(노드 _output_dir), POST /open_folder 는 이 안의 경로만 연다."""
+    design_patch/<하위 폴더 — 비면 프로젝트 폴더>에 쓰고(노드 _output_dir — 배치 3-5b), POST /open_folder 는 이 안의 경로만 연다."""
     _OUTPUT_DIR[:] = [os.path.abspath(str(path))] if path else []
 
 
@@ -2927,7 +2951,8 @@ def _reveal(path: str, select: bool) -> None:
 
 
 def open_export_folder(root: str) -> dict:
-    """POST /open_folder(배치 3-5a): 마지막 Export PSD 가 있으면 그것을 고른 채, 없으면 그 프로젝트의 출력 폴더를 연다.
+    """POST /open_folder(배치 3-5a): 마지막 Export PSD 가 있으면 그것을 고른 채(기록 경로 그대로 — 그때의 하위 폴더), 없으면 다음
+    Export 가 쓸 출력 폴더(output/design_patch/<실행 설정 export.subfolder — 비면 프로젝트 폴더 이름>, 배치 3-5b)를 연다.
     ComfyUI output 밖(손으로 고친 매니페스트의 다른 경로)은 열지 않는다."""
     if not _OUTPUT_DIR:
         raise _Reject(409, "ComfyUI 를 재시작해야 출력 폴더를 열 수 있습니다(서버가 출력 폴더를 모름)")
@@ -2940,12 +2965,15 @@ def open_export_folder(root: str) -> dict:
         except ValueError:  # 다른 드라이브
             return False
 
-    last = (store.last_export(root, store.load_manifest(root)) or {}).get("psd")  # 캐시 재사용 Export 도(exports 끝이 아닐 수 있음 — Codex 3a 2차)
+    m = store.load_manifest(root)
+    last = (store.last_export(root, m) or {}).get("psd")  # 캐시 재사용 Export 도(exports 끝이 아닐 수 있음 — Codex 3a 2차)
     psd = os.path.abspath(last) if isinstance(last, str) and last else None
     if psd and inside(psd) and os.path.isfile(psd):
         _reveal(psd, True)
         return {"ok": True, "path": psd, "selected": True}
-    folder = os.path.join(base, "design_patch", os.path.basename(os.path.normpath(root)))
+    settings = pl.current(root, m)["settings"]  # 파일이 없으면 유도값, 깨졌으면 None(기본 폴더) — 값은 pipeline 이 이름 검사를 마친 것
+    sub = settings["export"]["subfolder"] if settings else ""
+    folder = os.path.join(base, "design_patch", sub or os.path.basename(os.path.normpath(root)))
     if not os.path.isdir(folder):
         raise _Reject(404, f"출력 폴더가 아직 없습니다(Export 를 한 번 하면 생김): {folder}")
     if not inside(folder):
