@@ -55,9 +55,11 @@ window.DPViewer = (() => {
     btn("2:1", "원해상도 2배 (2)", () => zoomTo(2));
     const bSeam = btn("이음매 -", "★ 합성에서 마스크가 크롭 경계에 닿아 잘린 곳 — 클릭: 다음 이음매로 (N)", () => nextSeam());
     const zoomLabel = el("span", "vzoom");
+    const busy = el("span", "vbusy", "후보 불러오는 중");
+    busy.hidden = true; // 선택 크롭 영역(ov)을 새로 받는 동안(F29)
     const hint = el("span", "vhint");
     const msg = el("span", "vmsg");
-    bar.append(zoomLabel, hint, msg);
+    bar.append(zoomLabel, busy, hint, msg);
 
     const port = el("div", "vport");
     const stage = el("div", "stage");
@@ -272,6 +274,7 @@ window.DPViewer = (() => {
       const c = sel && sel.cand;
       if (maskCv || !crop || !t || !crop.region) {
         ov.hidden = true;
+        busy.hidden = true;
         return;
       }
       if (ovCropId !== crop.id) { // 다른 크롭: 이전 크롭 이미지를 새 자리·크기로 늘여 보이지 않게 비운다
@@ -283,9 +286,13 @@ window.DPViewer = (() => {
       ov.hidden = false;
       Object.assign(ov.style, { left: `${rx0}px`, top: `${ry0}px`, width: `${rx1 - rx0}px`, height: `${ry1 - ry0}px` });
       Object.assign(ovCrop.style, { left: `${x0 - rx0}px`, top: `${y0 - ry0}px`, width: `${x1 - x0}px`, height: `${y1 - y0}px` });
-      ov.classList.add("loading"); // 후보를 바꾸는 동안 이전 영역을 흐리게(새 영역을 다 받으면 해제)
+      ov.classList.add("loading"); // 후보를 바꾸는 동안 이전 영역을 숨기고 툴바에 로딩 표시(새 영역을 다 받으면 해제)
+      busy.hidden = false;
       // 이미 ★·slice 인 후보는 지금 합성 그대로(교체 가정은 그 타깃을 후보 하나로 만들어 다른 slice 를 뺀다)
-      loadInto(ovComp, c && !raw && !c.picked ? c.pick_url : crop.region_url, () => ov.classList.remove("loading"));
+      loadInto(ovComp, c && !raw && !c.picked ? c.pick_url : crop.region_url, () => {
+        ov.classList.remove("loading");
+        busy.hidden = true;
+      });
       loadInto(ovBefore, t.before_full_url);
       loadInto(ovAfter, c && raw ? c.full_url : null);
       const cut = `${(splitAt * 100).toFixed(2)}%`;

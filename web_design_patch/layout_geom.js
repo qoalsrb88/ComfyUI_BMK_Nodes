@@ -142,9 +142,35 @@ window.DPLayoutGeom = (() => {
     h = Math.min(h, canvas[1]);
     if (w > RATIO * h) w = down(RATIO * h);
     else if (h > RATIO * w) h = down(RATIO * w);
+    // 위치: 축마다 상자 여백이 15%(20m ≥ 3·크기 — 검사 P-70 과 같음)인 격자 값 중 가운데에 가장 가까운 것. 상자에서 캔버스 끝까지가 15% 보다
+    // 가까운 쪽은 크롭 변을 캔버스 끝에 붙임(그 쪽 여백은 검사가 보지 않음 — P-canvas). 반올림으로 그런 값이 없으면 그 축만 한 칸(스냅 128,
+    // 끔 1px) 키워 두 번까지(캔버스·비 3 안), 그래도 없으면 가운데
     const q = snap ? POS : 1;
-    const x0 = Math.min(Math.max(rnd((ux0 + ux1) / 2 - w / 2, q), 0), canvas[0] - w);
-    const y0 = Math.min(Math.max(rnd((uy0 + uy1) / 2 - h / 2, q), 0), canvas[1] - h);
+    const step = snap ? SIZE : 1;
+    const center = (u0, u1, s, lim) => Math.min(Math.max(rnd((u0 + u1) / 2 - s / 2, q), 0), lim - s);
+    const fit = (u0, u1, s, lim) => {
+      const need = Math.ceil(3 * s / 20);
+      const lo = Math.max(u1 + need > lim ? lim - s : u1 + need - s, 0);
+      const hi = Math.min(u0 - need < 0 ? 0 : u0 - need, lim - s);
+      const c = center(u0, u1, s, lim);
+      if (c >= lo && c <= hi) return c; // 예전 가운데 자리(캔버스 끝에 밀린 격자 밖 값 포함)가 여백을 지키면 그대로
+      const a = Math.ceil(lo / q) * q;
+      const b = Math.floor(hi / q) * q;
+      if (a <= b) return Math.min(Math.max(c, a), b);
+      return lim - s >= lo && lim - s <= hi ? lim - s : null; // 16 배수가 아닌 캔버스의 끝 자리(격자 밖)도 받음
+    };
+    let x0 = fit(ux0, ux1, w, canvas[0]);
+    let y0 = fit(uy0, uy1, h, canvas[1]);
+    for (let k = 0; k < 2 && (x0 === null || y0 === null); k++) {
+      const w2 = x0 === null ? w + step : w;
+      const h2 = y0 === null ? h + step : h;
+      if (w2 > canvas[0] || h2 > canvas[1] || Math.max(w2, h2) > RATIO * Math.min(w2, h2)) break;
+      [w, h] = [w2, h2];
+      x0 = fit(ux0, ux1, w, canvas[0]);
+      y0 = fit(uy0, uy1, h, canvas[1]);
+    }
+    if (x0 === null) x0 = center(ux0, ux1, w, canvas[0]);
+    if (y0 === null) y0 = center(uy0, uy1, h, canvas[1]);
     return [x0, y0, x0 + w, y0 + h];
   }
 
@@ -343,11 +369,15 @@ window.DPLayoutGeom = (() => {
           rows.push({ code: "P-out", level: "warn", msg: `${t.tid} 상자가 크롭 밖으로 나감`, tid: t.tid });
           continue;
         }
-        const margins = [[bx0 - x0, w], [x1 - bx1, w], [by0 - y0, h], [y1 - by1, h]];
+        // 크롭 변이 캔버스 끝인 쪽은 여백을 만들 수 없음 — 경고에서 빼고, 거기만 좁으면 정보 P-canvas(store 와 같음)
+        const sides = [[bx0 - x0, w, x0 <= 0], [x1 - bx1, w, x1 >= W], [by0 - y0, h, y0 <= 0], [y1 - by1, h, y1 >= H]];
+        const margins = sides.filter(([, , edge]) => !edge);
         if (margins.some(([m, s]) => m < 8 || 50 * m < s)) {
           rows.push({ code: "P-edge", level: "warn", msg: `${t.tid} 부품이 경계에 닿음`, tid: t.tid });
         } else if (margins.some(([m, s]) => 20 * m < 3 * s)) {
           rows.push({ code: "P-70", level: "warn", msg: `${t.tid} 상자가 70% 가이드 밖 — 크롭을 키우세요(여백 15%)`, tid: t.tid });
+        } else if (sides.some(([m, s, edge]) => edge && 20 * m < 3 * s)) {
+          rows.push({ code: "P-canvas", level: "info", msg: `${t.tid} 부품이 그림 끝에 닿음 — 크롭으로 피할 수 없음`, tid: t.tid });
         }
       }
       out[c.id] = rows;

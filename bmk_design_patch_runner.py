@@ -1281,6 +1281,9 @@ class RunReport:
         lines = [head] + ([f"중지: {why}"] if why else [])
         for c in self.calls:
             tail = (f"{c.get('slots') or 0}장" if c["status"] == "done" else _short(c.get("error") or "", 160))
+            got = (c.get("slots") or 0) + len(c.get("missing") or [])
+            if c["status"] == "done" and isinstance(c.get("asked"), int) and got < c["asked"]:
+                tail += f"(요청 {c['asked']}장 — API 가 {got}장만 줌)"
             cc = "" if c.get("credits") is None else f" · 크레딧 {float(c['credits']):,.2f}"
             lines.append(f"  {c['call_id']} {c.get('crop_id') or ''}/{c.get('tid') or ''} {c.get('variant') or ''} "
                          f"[{c['kind']}] {c['status']}: {tail}{cc} · {float(c.get('elapsed_s') or 0):.1f}s")
@@ -1674,7 +1677,7 @@ async def _collect(root, e, files, resp_rec, b64, ctx, backend, state: _RunState
     files.pop("failed", None)
     report.done += 1
     report.recovered += int(recovered)
-    report.calls.append(_summary(e, "done", slots=len(slots), missing=missing, credits=resp_rec.get("credits")
+    report.calls.append(_summary(e, "done", slots=len(slots), missing=missing, asked=e.get("n"), credits=resp_rec.get("credits")
                                  if not recovered else None, elapsed_s=round(time.monotonic() - t0, 2),
                                  files=[s["file"] for s in slots]))
     if missing:

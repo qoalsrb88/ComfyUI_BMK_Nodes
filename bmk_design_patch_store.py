@@ -1939,7 +1939,9 @@ def layout_geom_checks(lay: dict) -> dict[str, list[dict]]:
       N-name error 이름 규칙 위반 · N-dup error NFC·casefold 이름이 같음(상대마다) · N-nnn info 앞자리 숫자(parse 의 nnn)가 같은 크롭이 있음
       N-side info 이름 끝 _왼쪽/_left 인데 3(x0+x1) > 4W, _오른쪽/_right 인데 3(x0+x1) < 2W(가운데가 반대쪽 1/3)
       P-out / P-edge / P-70 warn (상자가 있는 대상마다 하나, 이 순서로 첫 번째): 상자가 크롭 밖으로 나감 / 크롭 변까지 여백 m 이
-        m < 8 또는 50m < 변 방향 크기(왼·오른쪽 여백은 폭, 위·아래는 높이) / 20m < 3 × 변 방향 크기(70% 가이드 밖)."""
+        m < 8 또는 50m < 변 방향 크기(왼·오른쪽 여백은 폭, 위·아래는 높이) / 20m < 3 × 변 방향 크기(70% 가이드 밖).
+        크롭 변이 캔버스 끝인 쪽(x0 ≤ 0·x1 ≥ W·y0 ≤ 0·y1 ≥ H)의 여백은 셋 다 보지 않고, 셋이 없을 때 그쪽 여백이 20m < 3 × 크기면
+        P-canvas info(부품이 그림 끝에 닿음 — 크롭으로 피할 수 없음)."""
     W, H = lay["canvas"]
     crops = lay["crops"]
     keys = [c["name"].casefold() for c in crops]
@@ -1992,11 +1994,16 @@ def layout_geom_checks(lay: dict) -> dict[str, list[dict]]:
             if bx0 < x0 or by0 < y0 or bx1 > x1 or by1 > y1:
                 rows.append({"code": "P-out", "level": "warn", "msg": f"{t['tid']} 상자가 크롭 밖으로 나감", "tid": t["tid"]})
                 continue
-            margins = ((bx0 - x0, w), (x1 - bx1, w), (by0 - y0, h), (y1 - by1, h))
+            # 크롭 변이 캔버스 끝인 쪽은 크롭으로 여백을 만들 수 없다(부품이 그림 끝에서 잘림) — 경고에서 빼고, 거기만 좁으면 정보 P-canvas
+            sides = ((bx0 - x0, w, x0 <= 0), (x1 - bx1, w, x1 >= W), (by0 - y0, h, y0 <= 0), (y1 - by1, h, y1 >= H))
+            margins = [(m, size) for m, size, edge in sides if not edge]
             if any(m < 8 or 50 * m < size for m, size in margins):
                 rows.append({"code": "P-edge", "level": "warn", "msg": f"{t['tid']} 부품이 경계에 닿음", "tid": t["tid"]})
             elif any(20 * m < 3 * size for m, size in margins):
                 rows.append({"code": "P-70", "level": "warn", "msg": f"{t['tid']} 상자가 70% 가이드 밖 — 크롭을 키우세요(여백 15%)",
+                             "tid": t["tid"]})
+            elif any(edge and 20 * m < 3 * size for m, size, edge in sides):
+                rows.append({"code": "P-canvas", "level": "info", "msg": f"{t['tid']} 부품이 그림 끝에 닿음 — 크롭으로 피할 수 없음",
                              "tid": t["tid"]})
         out[c["id"]] = rows
     return out

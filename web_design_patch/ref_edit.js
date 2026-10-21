@@ -1397,6 +1397,7 @@ window.DPRefEdit = (() => {
     function select(id) {
       if (id !== sel) {
         desc = "";
+        text = ""; // SAM3 텍스트는 그 부품의 것 — 다른 크롭에 남으면 엉뚱한 부위를 잡음(10/21 실사용: 002 'Bangle' 이 003 부츠에, U-4)
         overlay = null;
         Object.assign(cutCanvas.style, { left: "", top: "", opacity: "", width: "", height: "" });
       }

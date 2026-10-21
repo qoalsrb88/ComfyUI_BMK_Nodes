@@ -12570,6 +12570,10 @@ _LAYOUT_G = {"size": 128, "pos": 16, "ratio": 3, "min": 128, "guide": 0.7, "smal
 _S0_261014 = Path(r"C:\Users\SHIFTUP\AppData\Local\Temp\claude\H--ComfyUI-Easy-Install\comfy8189\input\bmk_design_patch\s0_261014")
 
 
+# 마스크 모드 「대상」 둘째 줄(기준이 자동 마스크일 때 — 10/21 실사용 U-2)
+MASK_AUTO_ROW = "자동 마스크 = Analyze 가 후보와 원본 크롭의 색 차이(ΔE)로 만든 영역 — 대상인지와 무관: 엉뚱하게 바뀐 곳은 [지우기], 대상 안 구멍은 [살리기]"
+
+
 def _layout_rnd(v, q):
     """언어 차이 없는 반올림 floor(v / q + 0.5) * q."""
     return math.floor(v / q + 0.5) * q
@@ -12670,7 +12674,9 @@ def _layout_suggest(boxes, canvas, snap):
     """G4 상자에 맞춘 크롭 제안(§3.4): 합집합 축마다 need = ceil(크기 × 10 / 7)(÷ 0.7) → 스냅이면 128 단위 올림, 최소 128 → 비 > 3 이면
     짧은 축 = 긴/3 올림(스냅이면 128 단위) → 캔버스보다 크면 그 축 = 캔버스 → 그래서 비 > 3 이면(4096×1000 같은 넓은 캔버스)
     긴 축 = down(3·짧은)(S1-b — place 의 down 과 같음: 스냅이면 128 내림, 그것이 0 이면 1px 내림) → 합집합 가운데에 왼쪽 위를
-    16px 격자로(끔 = 1px — 줄인 크기로 가운데 유지) → 캔버스 안으로 밀기."""
+    16px 격자로(끔 = 1px — 줄인 크기로 가운데 유지) → 캔버스 안으로 밀기. B-2(10/21): 축마다 상자 여백 15%(20m ≥ 3·크기)를 만족하는
+    격자 값 중 가운데에 가장 가까운 것(상자에서 캔버스 끝까지가 15% 보다 가까운 쪽은 크롭 변을 캔버스 끝에 붙임 — 검사가 그 쪽을 안 봄) —
+    없으면 그 축만 한 칸(스냅 128·끔 1) 키워 두 번까지(캔버스·비 3 안), 그래도 없으면 가운데."""
     S, R = _LAYOUT_G["size"], _LAYOUT_G["ratio"]
     up = (lambda v: math.ceil(v / S) * S) if snap else math.ceil
     down = (lambda v: math.floor(v / S) * S or math.floor(v)) if snap else math.floor
@@ -12688,8 +12694,36 @@ def _layout_suggest(boxes, canvas, snap):
     elif h > R * w:
         h = down(R * w)
     q = _LAYOUT_G["pos"] if snap else 1
-    x0, y0 = _layout_rnd((ux0 + ux1) / 2 - w / 2, q), _layout_rnd((uy0 + uy1) / 2 - h / 2, q)
-    x0, y0 = min(max(x0, 0), canvas[0] - w), min(max(y0, 0), canvas[1] - h)
+    step = S if snap else 1
+
+    def center(u0, u1, s, lim):
+        return min(max(_layout_rnd((u0 + u1) / 2 - s / 2, q), 0), lim - s)
+
+    def fit(u0, u1, s, lim):
+        need = math.ceil(3 * s / 20)
+        lo = max(lim - s if u1 + need > lim else u1 + need - s, 0)
+        hi = min(0 if u0 - need < 0 else u0 - need, lim - s)
+        c = center(u0, u1, s, lim)
+        if lo <= c <= hi:
+            return c
+        a, b = math.ceil(lo / q) * q, math.floor(hi / q) * q
+        if a <= b:
+            return min(max(c, a), b)
+        return lim - s if lo <= lim - s <= hi else None
+
+    x0, y0 = fit(ux0, ux1, w, canvas[0]), fit(uy0, uy1, h, canvas[1])
+    for _ in range(2):
+        if x0 is not None and y0 is not None:
+            break
+        w2, h2 = (w + step if x0 is None else w), (h + step if y0 is None else h)
+        if w2 > canvas[0] or h2 > canvas[1] or max(w2, h2) > R * min(w2, h2):
+            break
+        w, h = w2, h2
+        x0, y0 = fit(ux0, ux1, w, canvas[0]), fit(uy0, uy1, h, canvas[1])
+    if x0 is None:
+        x0 = center(ux0, ux1, w, canvas[0])
+    if y0 is None:
+        y0 = center(uy0, uy1, h, canvas[1])
     return [x0, y0, x0 + w, y0 + h]
 
 
@@ -13177,7 +13211,7 @@ def layout_store_unit():
         check(methods == {"square_preset", "k", "int_k", "floor16", "nearest"}, f"gpt_size 경로 5가지 모두 {sorted(methods)}")
         codes = {c for r in rows if r["fn"] == "geom_checks" for _cid, c in r["out"]}
         check(codes == {"L-ratio", "L-outside", "L-128", "L-small", "L-gptk", "L-same", "L-overlap", "N-name", "N-dup", "N-nnn", "N-side",
-                        "P-edge", "P-70", "P-out"}, f"geom_checks 코드 14개 모두 {sorted(codes)}")
+                        "P-edge", "P-70", "P-out", "P-canvas"}, f"geom_checks 코드 15개 모두 {sorted(codes)}")
         # 기하 결과의 성질(오라클이 규칙을 지키는지): 정수 · 크기 > 0 · 비 ≤ 3 · 캔버스 안(캔버스보다 큰 사각형 이동 제외) ·
         # 스냅이고 캔버스 변에 닿지 않으면 resize·new 크기 = 128 배수, move 위치 = 16 배수
         prop = []
@@ -31212,8 +31246,8 @@ def pipeline_js_unit():
     sug = [(r["in"]["boxes"], r["in"]["canvas"], r["in"]["snap"], r["out"]) for r in table["rows"] if r["fn"] == "suggest"]
     want4 = [([[500, 400, 3300, 700]], [4096, 1000], True, [432, 0, 3376, 1000]), ([[500, 400, 3300, 700]], [4096, 1000], False, [400, 0, 3400, 1000]),
              ([[400, 500, 700, 3300]], [1000, 4096], True, [0, 432, 1000, 3376]), ([[100, 5, 3000, 30]], [4096, 40], True, [1488, 0, 1608, 40])]
-    check(len(sug) == 14 and all(w in sug for w in want4) and all(_layout_suggest(b, c, s) == o for b, c, s, o in want4),
-          f"P5 S1-b suggest 새 행 4개(기존 10 + 4) = 오라클 down(3·짧은) {len(sug)}")
+    check(len(sug) == 18 and all(w in sug for w in want4) and all(_layout_suggest(b, c, s) == o for b, c, s, o in want4),
+          f"P5 S1-b suggest 새 행 4개(기존 10 + 4, 10/21 배치 1 B-2·Codex 4행 더 = 18) = 오라클 down(3·짧은) {len(sug)}")
     check("down(3h)" in table["fns"]["suggest"]["rule"] and "128 단위 없이" not in table["fns"]["suggest"]["rule"]
           and "down(RATIO * h)" in (web / "layout_geom.js").read_text(encoding="utf-8"), "P5 규칙 문구·layout_geom.js = down(3·짧은)")
 
@@ -41611,7 +41645,12 @@ function maskState() {
 }
 
 function maskViewer(seams) {
-  const v = { ed: null, layer: null, looks: [], redraws: 0, marks: [], seamsObj: seams };
+  const v = { ed: null, layer: null, looks: [], redraws: 0, marks: [], seamsObj: seams, rectsOn: true };
+  v.flags = () => ({ rectsOn: v.rectsOn });  // 실제 viewer 의 [사각형](O) — K 의 창·크롭 선(10/21 F37)
+  v.toggleRects = () => {
+    v.rectsOn = !v.rectsOn;
+    v.redraw();
+  };
   v.setEditor = (ed) => { v.ed = ed; };
   v.setMaskLayer = (l) => { v.layer = l; };
   v.showSeam = (s) => v.looks.push([(s.x0 + s.x1) / 2, (s.y0 + s.y1) / 2, 2]);
@@ -41825,7 +41864,7 @@ await scenario("panel", async () => {
   const n14 = confirms.length;
   r.goSeam = { ok: ed.go({ key: K14, seam: seams.segments[2] }), confirms: confirms.length - n14, look: viewer.looks.pop() };
   await until(() => rows().some((t) => t.includes("c02 ★")));
-  r.goSeam.rows = rows().slice(0, 2);
+  r.goSeam.rows = rows().slice(0, 3);  // 대상 · 자동 마스크 설명(10/21 U-2) · 편집 줄
   r.goSeam.fade = B("선택 이음매 구간 페이드") ? B("선택 이음매 구간 페이드").disabled : null;
   // 이 크롭 이음매 목록 = 뷰어 이음매(지금 서명)에서 이 크롭만 · 누르면 그 구간
   r.seamRows = rows().filter((t) => / · p90 /.test(t));
@@ -43056,8 +43095,8 @@ await scenario("panelR3b", async () => {
     if "enter" in pn:
         e = pn["enter"]
         check(e["editor"] and e["layerBox"] == [0, 2304, 1664, 3584] and e["put"] == [0, 0, 1664, 1280] and e["select"] == ["r_61ba2d695f0f_0_0", True]
-              and e["rows"] == ["015_치마밑단_주름 · A · c01 ★ — 기준 자동 마스크 1280×768 (z: 아래 0 · 위 4)", "편집 10/19 18:20 · 변 페이드 top 64 · 붓 12획",
-                                "보기: 편집", "적용 안 한 획 0"]
+              and e["rows"] == ["015_치마밑단_주름 · A · c01 ★ — 기준 자동 마스크 1280×768 (z: 아래 0 · 위 4)", MASK_AUTO_ROW,
+                                "편집 10/19 18:20 · 변 페이드 top 64 · 붓 12획", "보기: 편집"]
               and e["list"] == ["015_치마밑단_주름편집 1이음매 2", "014_치마원단_문양이음매 1"]
               and e["paths"] == ["mask", "mask/img:base", "mask/img:edit", "mask/img:under", "mask/img:patch", "mask/img:over"],
               f"K 진입: 뷰어 편집기 훅·겹침 캔버스(box)·전체 합성 한 번, 보드 선택 = 편집 대상, 대상 줄(크롭·타깃·c·★·기준·창·z)·편집 줄, 왼쪽 크롭 칩 {e}")
@@ -43067,8 +43106,8 @@ await scenario("panelR3b", async () => {
               f"키: X 지우기 ↔ 살리기, ] 크기 ×1.2, Shift+[ 경도 −0.1, Q 누르는 동안 기준, M·S 보기, 검토·뷰어 키는 받지 않음(board.js 가 끔·뷰어로) {k}")
         sk = pn["stroke"]
         check(sk["pd"] is True and sk["pending"] == {"key": "r_61ba2d695f0f_0_0", "n": 1, "name": "015_치마밑단_주름 · A"}
-              and sk["puts"] == [[571, 567, 95, 58]] and sk["ring"] == {"class": "mbrush", "cx": "640", "cy": "2900", "r": "29"}
-              and sk["row"] == "적용 안 한 획 1 — 붓 1획" and sk["marks"] == ["mwin", "mcrop", "mbrush"] and pn["undo"] is None and pn["redo"]["n"] == 1
+              and sk["puts"] == [[571, 567, 95, 58]] and sk["ring"] == {"class": "mbrush revive", "cx": "640", "cy": "2900", "r": "29"}
+              and sk["row"] == "적용 안 한 획 1 — 붓 1획" and sk["marks"] == ["mwin", "mcrop", "mbrush revive"] and pn["undo"] is None and pn["redo"]["n"] == 1
               and (pn.get("redoShift") or {}).get("n") == 1,
               f"붓: 끌기 = 한 획, 바뀐 사각형만 다시 합성(rAF 한 번), 붓 원 = 크롭 px 반지름, Ctrl+Z·Y·Ctrl+Shift+Z(다시) {sk} {pn.get('redoShift')}")
         check(pn["goNo"] == {"ok": False, "confirm": "적용 안 한 획 1(015_치마밑단_주름 · A · c01)을 버리고 014_치마원단_문양 · A · c02 를 편집할까요?", "gets": 1}
@@ -43120,7 +43159,7 @@ await scenario("panelR3b", async () => {
               f"[편집 지우기] = 확인 창(이전 판 수·버릴 획) → reset → 기준 마스크 {u2} {pn['undoAsk']} {pn['reset']}")
         gs = pn["goSeam"]
         check(gs["ok"] and gs["confirms"] == 0 and gs["look"] == [512, 2649, 2]
-              and gs["rows"] == ["014_치마원단_문양 · A · c02 ★ — 기준 자동 마스크 1024×768 (z: 아래 1 · 위 2)", "편집 없음 — 기준 마스크 그대로"]
+              and gs["rows"] == ["014_치마원단_문양 · A · c02 ★ — 기준 자동 마스크 1024×768 (z: 아래 1 · 위 2)", MASK_AUTO_ROW, "편집 없음 — 기준 마스크 그대로"]
               and gs["fade"] is False and pn["seamRows"] == ["left 2604–2694 · 40px · p90 38.4 bad"],
               f"이음매(N·목록) = 그 구간을 만든 ★ 후보를 편집 대상(획 없으면 확인 없음)·2:1·구간 페이드 켬, 이 크롭 이음매 = 뷰어 이음매(지금 서명) 중 이 크롭 {gs} {pn['seamRows']}")
         rg = pn["range"]
@@ -43143,16 +43182,16 @@ await scenario("panelR3b", async () => {
     pm = res.get("panelStale") or {}
     if "open" in pm:
         ef = doc["routes"]["GET /mask"]["ok"]["edit"]["file"]
-        head = ["015_치마밑단_주름 · A · c01 ★ — 기준 자동 마스크 1284×772 (z: 아래 0 · 위 4)", "편집 10/19 18:20 · 변 페이드 top 64 · 붓 12획"]
+        head = ["015_치마밑단_주름 · A · c01 ★ — 기준 자동 마스크 1284×772 (z: 아래 0 · 위 4)", MASK_AUTO_ROW, "편집 10/19 18:20 · 변 페이드 top 64 · 붓 12획"]
         # 1차 리뷰 analysis-r1-07: stale 은 기준 지문 또는 편집 창(정합 켬/끔·quad)으로 켜짐 — 문구가 둘 다 말함
         stale = lambda t: t.startswith("편집 기준 바뀜 — 기준 마스크(재분석·마스크 출처)나 편집 창(정합 켬/끔·quad)이 ") and t.endswith("기준으로 다시 시작")
         o, lo = pm["open"], pm["lost"]
-        check(o["rows"][:2] == head and stale(o["rows"][2]) and o["restart"] == 1 and o["on"] == [True] * 4 and o["layer"] == [0, 2304, 1664, 3584]
+        check(o["rows"][:3] == head and stale(o["rows"][3]) and o["restart"] == 1 and o["on"] == [True] * 4 and o["layer"] == [0, 2304, 1664, 3584]
               and pm["restartAsk"] == {"confirm": "015_치마밑단_주름 · A · c01 의 마스크 편집 기록(이전 판 1 포함)을 지우고 기준 마스크로 돌아갑니다. 계속할까요?", "posts": 0}
               and pm["save"] == {"seen": ef, "wh": [1284, 772]},
               f"D4 편집 창이 바뀐 ★(stale): K 로 열림 — 경고 줄 + [기준으로 다시 시작](reset 확인 창)·[이전 판으로]·[편집 지우기]·붓, [적용] = 지금 창 크기 PNG·"
               f"seen = 기록 file {pm['open']} {pm['restartAsk']} {pm['save']}")
-        check(lo["rows"][:2] == head and stale(lo["rows"][2]) and lo["restart"] == 1 and lo["on"] == [True, True, True, False] and lo["layer"] is None
+        check(lo["rows"][:3] == head and stale(lo["rows"][3]) and lo["restart"] == 1 and lo["on"] == [True, True, True, False] and lo["layer"] is None
               and (lo["err"] or "").startswith(f"마스크 편집 파일이 없습니다: {ef}") and (lo["err"] or "").endswith("다시 받기")
               and lo["again"] == {"on": True, "layer": [0, 2304, 1664, 3584], "err": False},
               f"U3 리뷰 must: 편집 래스터를 못 받아도 대상·편집 기준 바뀜 줄·[기준으로 다시 시작]·[이전 판으로]·[편집 지우기]는 남음(붓·페이드·겹침만 없음), "
@@ -43477,6 +43516,199 @@ await scenario("panelR3b", async () => {
 
 
 # ═════════════════════════════════════════════════════════════════
+_POLISH1_JS = r"""
+import fs from "fs";
+import vm from "vm";
+const IN = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const out = {};
+// U-1: 공동 결과의 뒤 타깃 ★ 없음 = 정보 줄(링크 없음), 공동이 아니거나 첫 타깃에 ★ 가 없으면 지금처럼 경고 줄
+{
+  const c = vm.createContext({ window: {}, console });
+  vm.runInContext(fs.readFileSync(IN.pipelineJs, "utf8"), c, { filename: "pipeline.js" });
+  const P = c.window.DPPipeline;
+  const J = { tids: ["A", "B", "C"], first: "A", first_key: "k_A" };
+  const cand = (key, o) => Object.assign({ key, picked: false, rejected: false, joint: null, analysis: "ok", mask_edit: null }, o || {});
+  const tgt = (tid, picks, cands) => ({ key: `002_x/${tid}`, crop_id: "002_x", crop_name: "002_눈동자", tid, pick_keys: picks, candidates: cands });
+  const S = { crops: [{ id: "002_x", name: "002_눈동자", dup_picks: [], stale_picked: [], layout_status: "same" }],
+    targets: [tgt("A", ["k_A"], [cand("k_A", { picked: true, joint: J })]), tgt("B", [], [cand("k_B", { joint: J })]),
+      tgt("C", [], [cand("k_C", { joint: J }), cand("k_C2", { rejected: true })])] };
+  out.joint = P.starChecks(S, new Map(), [], null).map((x) => ({ text: x.text, key: x.key, info: !!x.info }));
+  S.targets[0].pick_keys = [];
+  S.targets[0].candidates[0].picked = false;
+  out.noFirst = P.starChecks(S, new Map(), [], null).map((x) => ({ text: x.text, info: !!x.info }));
+  S.targets[0].candidates.push(cand("k_A_solo"));
+  S.targets[0].pick_keys = ["k_A_solo"];
+  out.soloFirst = P.starChecks(S, new Map(), [], null).map((x) => ({ text: x.text, info: !!x.info }));
+  S.targets[0].pick_keys = ["k_A"];
+  S.targets[2].candidates.push(cand("k_C3"));
+  out.mixed = P.starChecks(S, new Map(), [], null).filter((x) => x.text.startsWith("002_눈동자 · C")).map((x) => ({ text: x.text, info: !!x.info }));
+}
+// F35: 원본 보기(orig) = 이 패치 없이 — 출력 = over·oa + under·(1 − oa), 마스크·기준과 무관
+{
+  const c = vm.createContext({ window: { DPViewer: { svg: () => ({ setAttribute() {} }) } }, console });
+  vm.runInContext(fs.readFileSync(IN.maskJs, "utf8"), c, { filename: "mask_edit.js" });
+  const D = c.window.DPMaskEdit;
+  const n = 6;
+  const L = { box: [0, 0, 3, 2], under: new Uint8ClampedArray(n * 4), patch: new Uint8ClampedArray(n * 4), over: new Uint8ClampedArray(n * 4) };
+  for (let i = 0; i < n; i++) {
+    L.under.set([10 * i, 20, 30, 255], i * 4);
+    L.patch.set([200, 100 + i, 50, 255], i * 4);
+    L.over.set([0, 0, 255, i === 4 ? 128 : 0], i * 4);
+  }
+  const m = new Float32Array(n).fill(1);
+  const o1 = new Uint8ClampedArray(n * 4);
+  D.compose(L, [0, 0, 3, 2], m, m, o1, 0, 0, 3, 2, { base: false, split: null, mark: false, orig: true });
+  const want = [];
+  for (let i = 0; i < n; i++) {
+    const oa = L.over[i * 4 + 3] / 255;
+    for (let k = 0; k < 3; k++) want.push(Math.round(L.over[i * 4 + k] * oa + L.under[i * 4 + k] * (1 - oa)));
+    want.push(255);
+  }
+  out.orig = Array.from(o1).every((v, i) => Math.abs(v - want[i]) <= 1);
+  // 원본 보기 + 마스크 보기(M) + 지운 곳(기준 1 > 편집 0): 빗금·빨강 없이 원본 그대로(Codex 4차)
+  const o3 = new Uint8ClampedArray(n * 4);
+  D.compose(L, [0, 0, 3, 2], new Float32Array(n), m, o3, 0, 0, 3, 2, { base: false, split: null, mark: true, orig: true });
+  out.origMark = Array.from(o3).every((v, i) => Math.abs(v - want[i]) <= 1);
+  const o2 = new Uint8ClampedArray(n * 4);
+  D.compose(L, [0, 0, 3, 2], m, m, o2, 0, 0, 3, 2, { base: false, split: null, mark: false });
+  out.normalDiffers = Array.from(o2).some((v, i) => Math.abs(v - want[i]) > 1);
+}
+console.log(JSON.stringify(out));
+"""
+
+
+def polish1_unit():
+    """다듬기 배치 1(10/21 실사용 피드백 — _proto/STUDIO_POLISH_PLAN_2610.md §1). 순수 Python·정적·node vm(--quick 포함).
+    B-2·U-5 는 공용 표(layout_rules.json — S1-L4·S1-J), B-1 Export 번호는 polish1_node_unit."""
+    section("다듬기 배치 1 — U-7 Run 보고 요청>받음 · U-1 공동 ★ 없음 = 정보 · F35 원본 보기 · 정적(F12·F20·F27·F29·F30·F33·F36·F37·U-2·U-4·U-8)")
+    import bmk_design_patch_runner as runner
+    web = PKG / "web_design_patch"
+
+    # U-7: API 가 n 보다 적게 준 호출은 보고 줄에 '요청 n장 — API 가 k장만 줌'(내려받기 실패 missing 은 받은 것으로 셈 — 따로 경고)
+    def call(cid, slots, asked, missing=()):
+        return {"call_id": cid, "crop_id": "003_x", "tid": "A", "variant": "V1_standard", "kind": "new", "status": "done",
+                "slots": slots, "missing": list(missing), "asked": asked, "credits": 133.89, "elapsed_s": 1.0}
+    rep = runner.RunReport(backend="comfy_org", done=4, calls=[call("c_short", 1, 2), call("c_full", 2, 2), call("c_miss", 1, 2, [1]),
+                                                                call("c_old", 1, None)])
+    lines = rep.text().splitlines()
+    got = {c: next(x for x in lines if c in x) for c in ("c_short", "c_full", "c_miss", "c_old")}
+    check("done: 1장(요청 2장 — API 가 1장만 줌) · 크레딧 133.89" in got["c_short"] and "done: 2장 · 크레딧" in got["c_full"]
+          and "done: 1장 · 크레딧" in got["c_miss"] and "done: 1장 · 크레딧" in got["c_old"],
+          f"U-7 Run 보고: 요청 2 → 받음 1 만 '요청 2장 — API 가 1장만 줌'(다 받음·내려받기 실패·asked 없는 옛 요약은 그대로) {got}")
+    rsrc = (PKG / "bmk_design_patch_runner.py").read_text(encoding="utf-8")
+    check('asked=e.get("n")' in rsrc, "U-7 done 요약에 asked = 그 job 의 n")
+
+    # 정적: 화면 문구·연결(실브라우저는 8189 — 배치 1 기록)
+    bj = (web / "board.js").read_text(encoding="utf-8")
+    bh = (web / "board.html").read_text(encoding="utf-8")
+    bc = (web / "board.css").read_text(encoding="utf-8")
+    pj = (web / "pipeline.js").read_text(encoding="utf-8")
+    mj = (web / "mask_edit.js").read_text(encoding="utf-8")
+    lj = (web / "layout_edit.js").read_text(encoding="utf-8")
+    rj = (web / "ref_edit.js").read_text(encoding="utf-8")
+    vj = (web / "viewer.js").read_text(encoding="utf-8")
+    check('id="mode-title"' in bh and "new MutationObserver(renderMode)" in bj and '["mask", "마스크",' in bj and '"검토", "후보를' in bj,
+          "F12 머리줄 모드 이름·설명(body 클래스를 지켜봄)")
+    sb = bj[bj.index("function setStar()"):bj.index("function toggleSlice()")]
+    check('if (c.picked) {' in sb and 'mode: "remove" }, `★ 해제' in sb and 'sb.textContent = on ? "★ 해제" : "★ 선택"' in bj
+          and "이미 ★ 인 후보면 ★ 해제" in bh, "F30 Space·[★ 선택] = 이미 ★ 면 해제, 단추 문구 ★ 해제/★ 선택, 도움말")
+    si = bj[bj.index("function setImg(img, rel)"):bj.index("function toast(")]
+    check('fr.classList.add("loading")' in si and 'fr.classList.remove("loading")' in si and ".frame.loading img { visibility: hidden; }" in bc
+          and 'el("span", "vbusy", "후보 불러오는 중")' in vj and ".ov.loading .ov-comp { visibility: hidden; }" in bc,
+          "F29 후보 칸·뷰어 영역을 받는 동안 앞 그림을 숨기고 로딩 표시(흐린 겹침 아님)")
+    check('cb.checked = alt !== "none"' in pj and 'alternates: cb.checked ? "hidden_all" : "none"' in pj and 'PS.save("export", Object.assign({}, PS.P.settings.export' in pj
+          and 'el("label", "pp-opt")' in pj and "★ 아닌 후보 레이어도 넣기" in pj and "탈락(X) 후보는 어느 쪽이든 넣지 않음" in pj,
+          "F27 Export 칸 '★ 아닌 후보 레이어도 넣기'(탈락은 늘 빠짐) = 누를 때의 Export 절 alternates(hidden_all ↔ none) 저장")
+    check("!S.targets.some((t) => t.pick_keys.length) && !window.confirm(`★ 가 하나도 없습니다" in pj and "넣을 후보 없음(★ 도 숨김 후보도 없음)" in pj,
+          "U-8 ★ 0 Export 는 확인 창, empty 문구")
+    eb = pj[pj.index('const eb = button("Export"'):pj.index("btns(s, eb);")]
+    check("if (asking || PS.busy) return;" in eb and "eb.disabled = !!PS.job || !!paying || asking || PS.busy;" in eb,
+          "F27 체크(alternates) 저장 중에는 [Export] 끔·눌러도 내지 않음 — 옛 설정으로 큐되지 않게(Codex 2차)")
+    check('svg("circle", { class: "mbrush" })' in mj and '(soft || tool === "soften" ? " soft" : tool === "revive" ? " revive" : "")' in mj
+          and "svg.marks .mbrush.revive { stroke: #63e07a; }" in bc, "F33 붓 원: 지우기 빨강·살리기 초록(revive)·부드럽게 흰 점선")
+    check("function paintPreview()" in mj and 'preview = el("canvas", "mpreview")' in mj and "stamp(R, hard, Math.hypot(" in mj
+          and "const R = Math.max(1.5, Math.min(PREVIEW / 2 - 2, size / 2));" in mj,
+          "F36 붓 미리보기(도장 한 번 = stamp × 세기, 반지름 = 붓 크기 — 68px 까지, Codex 4차)")
+    check('case "KeyW":' in mj and "view.orig ? 0 :" in mj and 'button("원본 보기 (W)"' in mj and "<kbd>W</kbd> 누르는 동안" in bh,
+          "F35 원본 보기(W 누르는 동안·단추 켜고 끄기)")
+    dr = mj[mj.index("    function draw(root) {"):mj.index("    // ── 연산 ──")]
+    check("if (viewer.flags().rectsOn) {" in dr and 'box(M.win, "mwin")' in dr and 'button("선 숨기기 (O)"' in mj,
+          "F37 마스크 모드 창·크롭 선 = 뷰어 [사각형](O) — 패널 [선 숨기기 (O)]")
+    check('if (info.base.src === "auto")' in mj and "자동 마스크 = Analyze 가 후보와 원본 크롭의 색 차이(ΔE)로 만든 영역" in mj,
+          "U-2 「대상」 자동 마스크 설명 줄")
+    check('let boxView = "sel"' in lj and 'boxView === "all" ? L.crops : boxView === "sel" && cur ? [cur] : []' in lj
+          and "function boxButton()" in lj, "F20 부품 상자 보기: 선택 크롭 → 모두 → 숨김")
+    sel = rj[rj.index("    function select(id) {"):rj.index("    function syncSel()")]
+    check('text = "";' in sel, "U-4 크롭을 바꾸면 SAM3 텍스트를 비움")
+    check("function jointFirst(S, t)" in pj and "(+공동 ${joint})" in pj, "U-1 머리줄 ★ a/b 는 공동 결과 뒤 타깃을 분모에서 빼고 따로")
+
+    node = shutil.which("node")
+    if not node:
+        skip("node 없음 → 배치 1 JS(vm) 생략")
+        return
+    out = OUT_ROOT / "polish1_js"
+    shutil.rmtree(out, ignore_errors=True)
+    out.mkdir(parents=True)
+    (out / "in.json").write_text(json.dumps({"pipelineJs": str(web / "pipeline.js"), "maskJs": str(web / "mask_edit.js")}), encoding="utf-8")
+    (out / "harness.mjs").write_text(_POLISH1_JS, encoding="utf-8")
+    r = subprocess.run([node, str(out / "harness.mjs"), str(out / "in.json")], capture_output=True, text=True, encoding="utf-8", timeout=120)
+    if r.returncode != 0 or not r.stdout.strip():
+        check(False, f"배치 1 node 하네스 실패({r.returncode}): {r.stderr.strip()[-800:]}")
+        return
+    res = json.loads(r.stdout.strip().splitlines()[-1])
+    check(res["joint"] == [{"text": "002_눈동자 · B — ★ 없음(공동 결과 — ★ 는 A 에만, 정상)", "key": None, "info": True},
+                           {"text": "002_눈동자 · C — ★ 없음(공동 결과 — ★ 는 A 에만, 정상)", "key": None, "info": True}],
+          f"U-1 공동 결과 뒤 타깃(탈락 후보는 빼고 판정) = 정보 줄·링크 없음 {res['joint']}")
+    check([x for x in res["noFirst"] if not x["info"]] == [{"text": f"002_눈동자 · {t} — ★ 없음", "info": False} for t in "ABC"],
+          f"U-1 첫 타깃에도 ★ 가 없으면 셋 다 경고(할 일) {res['noFirst']}")
+    check(res["soloFirst"] == [{"text": f"002_눈동자 · {t} — ★ 없음", "info": False} for t in "BC"],
+          f"U-1 첫 타깃이 공동 결과가 아닌 후보를 ★ 하면 뒤 타깃 결과는 합성에 없음 → 경고(Codex 1차) {res['soloFirst']}")
+    check(res["mixed"] == [{"text": "002_눈동자 · C — ★ 없음", "info": False}],
+          f"U-1 공동 아닌 후보가 섞인 타깃은 경고 그대로 {res['mixed']}")
+    check(res["orig"] is True and res["normalDiffers"] is True and res["origMark"] is True,
+          f"F35 원본 보기 = 이 패치 없이(아래·위 ★ 만), 평소 합성과 다름, 마스크 보기(M)를 켜도 빨강·빗금 없이 원본(Codex 4차) {res}")
+
+
+def polish1_node_unit():
+    """다듬기 배치 1 — B-1 Export 레이어 c 번호 = Studio 후보 번호(탈락 포함 등록 순서). 노드는 _dp_package(mock — 유료 0)."""
+    section("다듬기 배치 1 — B-1 Export 레이어 c 번호 = Studio 번호(탈락 후보가 앞에 있어도)")
+    dp = _dp_package()
+    import folder_paths  # noqa: E402
+    st, rn, bd = dp.store, dp.runner, dp.board
+    OUT = OUT_ROOT / "polish1_node"
+    shutil.rmtree(OUT, ignore_errors=True)
+    OUT.mkdir(parents=True)
+    folder_paths.set_output_directory(str(OUT / "output"))
+    mock_file = OUT / "bmk_design_patch" / "_MOCK_API"
+    env_mock = os.environ.pop(rn.MOCK_ENV, None)
+    try:
+        mock_file.parent.mkdir(parents=True, exist_ok=True)
+        mock_file.write_text(json.dumps({"delay_s": 0.0}), encoding="utf-8")
+        PRE, RUN_, EXP = dp.BMKDesignPatchPrepare(), dp.BMKDesignPatchRun(), dp.BMKDesignPatchExportPSD()
+        base = texture(384, 512, 61)
+        h, root = _fx_project(dp, OUT, "b1num", [("001_하나", [64, 64, 192, 192])], base)
+        h, _s, _r = PRE.run(h, MODEL25, "high", "user_k", "V1", 3, "at", 1)
+        ph = rn.split_approval(rn.plan_calls(st.load_manifest(root), root), "", backend=rn.BACKEND_MOCK)["pending_hash"]
+        out = asyncio.run(RUN_.run(h, ph, unique_id="91", max_new_calls=64, concurrency=4, wave_minutes=25, retry_failed=False,
+                                   retry_orphans=False, only=""))
+        h = out["result"][0]
+        m = st.load_manifest(root)
+        cands = [c for c in m["candidates"] if c["tid"] == "A"]
+        check(len(cands) == 3, f"준비: mock Run 후보 3(과금 없음) {len(cands)}")
+        bd.apply_reject(root, cands[0]["key"], True)   # c01 탈락
+        bd.apply_pick(root, cands[0]["crop_id"], "A", cands[2]["key"], "set")  # c03 ★, c02 = 대안
+        ex_out = EXP.run(h, "b1num", "pixel", "hidden_all", "raw", "auto", True, False)
+        psd = ex_out["result"][0]
+        side = json.loads(Path(os.path.splitext(psd)[0] + ".json").read_text(encoding="utf-8"))
+        names = sorted(e["name"] for e in side["export_layers"])
+        check(names == ["001_하나 · A · c02", "001_하나 · A · c03 ★"],
+              f"B-1 탈락 c01 이 앞에 있어도 PSD 레이어 번호 = Studio 번호(c02 대안·c03 ★ — 빈칸 c01) {names}")
+    finally:
+        mock_file.unlink(missing_ok=True)
+        if env_mock is not None:
+            os.environ[rn.MOCK_ENV] = env_mock
+
+
 def want(name: str) -> bool:
     return not ONLY or name in ONLY
 
@@ -43542,6 +43774,8 @@ if __name__ == "__main__":
         studio_ux_unit()
     if want("mask_js_unit"):
         mask_js_unit()
+    if want("polish1_unit"):
+        polish1_unit()
     print(f"\n단위 테스트 {time.time() - T0:.1f}s (PASS {PASSES} FAIL {len(FAILS)})")
     if QUICK:
         print("\n--quick: 회귀·노드 생략")
@@ -43570,6 +43804,8 @@ if __name__ == "__main__":
             t_r = time.time()
             refs_node_unit()
             print(f"\nS2 레퍼런스 노드 {time.time() - t_r:.1f}s")
+        if want("polish1_node_unit"):
+            polish1_node_unit()
         if want("pipeline_node_unit") or {"pipeline_node_u2b", "pipeline_node_u3"} & ONLY:
             t_r = time.time()
             if want("pipeline_node_unit") or "pipeline_node_u2b" in ONLY:

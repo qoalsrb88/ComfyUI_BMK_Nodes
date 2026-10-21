@@ -272,8 +272,19 @@ window.DPPipeline = (() => {
     return `${d.section}.${d.field}: 마지막 ${d.kind === "import" ? "Import" : "Prepare"} ${shown(d.manifest)} · Studio ${shown(d.settings)} — ${DRIFT[d.kind] || d.kind}`;
   }
 
+  function jointFirst(S, t) {
+    // ★ 없는 타깃이 공동 결과(여러 타깃을 한 번에 고친 후보)만 가졌고 그 첫 타깃(보통 A)이 그 공동 결과(first_key)를 ★ 했으면 그 첫 tid —
+    // ★ 는 첫 타깃에만이라 이 타깃의 ★ 없음은 정상(S0 중복 ★). 첫 타깃이 따로 고친 후보를 ★ 했으면 이 타깃의 결과는 합성에 없음 → null(경고)
+    const live = t.candidates.filter((c) => !c.rejected);
+    if (!live.length || !live.every((c) => c.joint && c.joint.first && c.joint.first !== t.tid)) return null;
+    const first = live[0].joint.first;
+    const ft = S.targets.find((x) => x.crop_id === t.crop_id && x.tid === first);
+    return ft && live.some((c) => ft.pick_keys.includes(c.joint.first_key)) ? first : null;
+  }
+
   function starChecks(S, seams, pending, maskLeft = null) {
-    // §3.6 Export 전 점검(정보·경고 — 막지 않음) → [{text, key, mask}] key = 누르면 갈 타깃(없으면 null), mask = 누르면 갈 마스크 모드(K) 자리
+    // §3.6 Export 전 점검(정보·경고 — 막지 않음) → [{text, key, mask, info}] key = 누르면 갈 타깃(없으면 null), mask = 누르면 갈 마스크 모드(K) 자리,
+    // info = 할 일이 아닌 정보 줄(공동 결과의 뒤 타깃 ★ 없음 — 10/21 실사용에서 경고색 줄을 할 일로 읽고 중복 ★ 를 만듦)
     // (S4 §7 — {key: ★ 후보} | {crop: 그 크롭의 가장 나쁜 이음매}, 없으면 검토로). pending = 반영 필요 사유(export 템플릿에는 Import 가 없어 미반영은
     // 반영 뒤 Export) — 크롭 줄로 나온 레이아웃 미반영은 다시 적지 않음. maskLeft = 이 창의 적용 안 한 마스크 편집 {key, n, name} | null(board.js —
     // 다른 창의 세션은 모름). 이음매는 편집 뒤 다시 잰 값(지금 ★ 합성) — seams null = 다시 재는 중(board.js — 옛 bad 수 대신 그 한 줄)
@@ -281,7 +292,9 @@ window.DPPipeline = (() => {
     let lay = false;
     for (const t of S.targets) {
       const name = `${t.crop_name || t.crop_id} · ${t.tid}`;
-      if (!t.pick_keys.length) out.push({ text: `${name} — ★ 없음`, key: t.key });
+      const jf = t.pick_keys.length ? null : jointFirst(S, t);
+      if (jf) out.push({ text: `${name} — ★ 없음(공동 결과 — ★ 는 ${jf} 에만, 정상)`, key: null, info: true });
+      else if (!t.pick_keys.length) out.push({ text: `${name} — ★ 없음`, key: t.key });
       else if (t.candidates.some((c) => c.picked && c.analysis === "none")) out.push({ text: `${name} — 분석 없는 ★(반영 필요 — Analyze)`, key: t.key });
       for (const c of t.candidates) {
         if (c.picked && c.mask_edit && c.mask_edit.stale) {
@@ -1808,8 +1821,12 @@ window.DPPipeline = (() => {
         const n = Object.values(p.draft.by_crop).filter((x) => x.wait.length).length;
         if (n) head.append(el("span", "", `초안 ${n}`));
       }
+      // 공동 결과의 뒤 타깃(★ 는 첫 타깃에만 — 정상)은 분모에서 빼고 따로
       const picked = S.targets.filter((t) => t.pick_keys.length).length;
-      head.append(el("span", "", `★ ${picked}/${S.targets.length}`));
+      const joint = S.targets.filter((t) => !t.pick_keys.length && jointFirst(S, t)).length;
+      const hs = el("span", "", `★ ${picked}/${S.targets.length - joint}` + (joint ? ` (+공동 ${joint})` : ""));
+      if (joint) hs.title = `공동 결과의 뒤 타깃 ${joint}개 — ★ 는 첫 타깃(보통 A)에만이라 ★ 없음이 정상`;
+      head.append(hs);
       const ex = PS.P && PS.P.exports && PS.P.exports[0];
       if (ex) head.append(el("span", "", `Export r${ex.rev}`));
       if (PS.job) {
@@ -2020,9 +2037,9 @@ window.DPPipeline = (() => {
       s = section("★ 점검");
       const checks = starChecks(S, opts.seams(), pend, maskLeft);
       if (unsure) checks.push({ text: `반영 상태를 확인하지 못함(${unsure}) — 계획을 다시 계산한 뒤 Export`, key: null });
-      if (!checks.length) line(s, "점검 통과 — 모든 타깃에 ★, 미반영 없음", "ok");
+      if (!checks.some((c) => !c.info)) line(s, "점검 통과 — 모든 타깃에 ★, 미반영 없음", "ok");
       for (const c of checks) {
-        const r = line(s, c.text, "warn" + (c.key || c.mask ? " link" : ""));
+        const r = line(s, c.text, (c.info ? "dim" : "warn") + (c.key || c.mask ? " link" : ""));
         if (c.mask) r.addEventListener("click", () => opts.goMask(c.mask, c.key));
         else if (c.key) r.addEventListener("click", () => opts.goTarget(c.key));
       }
@@ -2030,8 +2047,38 @@ window.DPPipeline = (() => {
       // Export
       s = section("Export");
       exportRows(s, P0);
-      const eb = button("Export", "무료 Export 템플릿(Analyze → Compose → Export — Import 없음, ComfyUI 대기열 뒤)", () => queueHere("export"), "primary");
-      eb.disabled = !!PS.job || !!paying;
+      const alt = P0 && P0.settings && !P0.error ? P0.settings.export.alternates : null;
+      if (alt) {
+        // F27: ★ 아닌 후보 레이어를 넣을지 = Export 노드 alternates(hidden_all ↔ none) — 실행 설정 Export 절에 저장
+        const lb = el("label", "pp-opt");
+        const cb = el("input");
+        cb.type = "checkbox";
+        cb.checked = alt !== "none";
+        cb.disabled = !!PS.job || !!paying || PS.busy;
+        cb.dataset.keys = "board";
+        cb.addEventListener("change", once(async () => {
+          cb.blur();
+          try {
+            // 누를 때의 실행 설정(그린 뒤 폴링이 다시 읽었을 수 있음) — 다른 Export 칸 값을 옛 값으로 덮지 않게
+            await PS.save("export", Object.assign({}, PS.P.settings.export, { alternates: cb.checked ? "hidden_all" : "none" }));
+          } catch (e) {
+            opts.toast(`Export 설정을 저장하지 못함 — ${e.message}`, "bad");
+          }
+        }));
+        lb.append(cb, document.createTextNode(" ★ 아닌 후보 레이어도 넣기(숨김·빨강 라벨 — 끄면 ★ 만)"));
+        lb.title = `Export 노드 alternates — 켬 = hidden_all(★ 아닌 후보도 숨김·빨강 라벨로), 끔 = none(★ 만). 탈락(X) 후보는 어느 쪽이든 넣지 않음. `
+          + `지금 ${alt} · 실행 설정(pipeline.json) Export 절에 저장`;
+        s.append(lb);
+      }
+      const eb = button("Export", "무료 Export 템플릿(Analyze → Compose → Export — Import 없음, ComfyUI 대기열 뒤)", () => {
+        // 위 체크(alternates)를 저장하는 동안은 내지 않음 — 옛 설정으로 큐되지 않게(Codex 2차). 단추도 그동안 끔
+        if (asking || PS.busy) return;
+        // ★ 가 하나도 없으면 숨김 후보만 담긴 PSD(또는 ★ 만이면 PSD 없음)가 되므로 한 번 묻는다(10/21 실사용 r14)
+        if (!S.targets.some((t) => t.pick_keys.length) && !window.confirm(`★ 가 하나도 없습니다 — ${alt === "none" ? "넣을 후보가 없어 PSD 를 쓰지 않습니다"
+          : "★ 없이 숨김 후보 레이어만 담긴 PSD 가 만들어집니다"}.\n그래도 Export 할까요?`)) return;
+        queueHere("export");
+      }, "primary");
+      eb.disabled = !!PS.job || !!paying || asking || PS.busy;
       btns(s, eb);
 
       renderAdopt();
@@ -2115,7 +2162,7 @@ window.DPPipeline = (() => {
         } else if (o.outcome === "unchanged") {
           line(s, `변경 없음 — 기존 파일 r${o.rev}: ${o.psd}`, "dim");
         } else {
-          line(s, "PSD 를 쓰지 않음 — 넣을 후보 없음(★ 없음)", "warn");
+          line(s, "PSD 를 쓰지 않음 — 넣을 후보 없음(★ 도 숨김 후보도 없음)", "warn");
         }
       }
       for (const x of (P0 && P0.exports) || []) {
@@ -2349,7 +2396,7 @@ window.DPPipeline = (() => {
       else if (job.stage !== "export") opts.toast(`${label} 끝 — 새 상태·계획을 다시 받습니다`);
       else if (!o) opts.toast("Export 끝 — 결과 판정 없음(노드가 옛 버전 — ComfyUI 재시작)", "warn");
       else opts.toast(o.outcome === "new" ? `Export: 새 PSD r${o.rev} — ${o.psd}` : o.outcome === "unchanged" ? `Export: 변경 없음 — 기존 파일 ${o.psd}`
-        : "Export: PSD 를 쓰지 않음 — 넣을 후보 없음(★ 없음)", o.outcome === "empty" ? "warn" : "");
+        : "Export: PSD 를 쓰지 않음 — 넣을 후보 없음(★ 도 숨김 후보도 없음)", o.outcome === "empty" ? "warn" : "");
       // 계획은 다시 받은 state 뒤에(§3.1): 반영이 지운 크롭이 아직 선택(only)에 남아 서버가 400('매니페스트에 없는 크롭')을 내지 않게
       doneReplan = true;
       opts.refresh();

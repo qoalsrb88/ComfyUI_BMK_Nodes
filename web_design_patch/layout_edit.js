@@ -411,6 +411,9 @@ window.DPLayoutEdit = (() => {
     }
 
     // ── 그리기(뷰어 svg, 캔버스 좌표) ──
+    let boxView = "sel"; // 부품 상자 보기: sel = 선택 크롭만 · all = 모든 크롭 · none = 숨김
+    const BOX_VIEW = { sel: "선택 크롭", all: "모두", none: "숨김" };
+
     function draw(root, z) {
       const L = S.L;
       if (!on || !L || !L.exists) return;
@@ -446,16 +449,19 @@ window.DPLayoutEdit = (() => {
         if (named && (r[2] - r[0]) * z >= 18) label(r[0] + 2 * u, r[1] - 4 * u, c.name, "lname" + (c.id === sel ? " sel" : ""));
       }
       const cur = sel && S.crop(sel);
+      // 부품 상자(F20): 선택 크롭만(기본) · 모든 크롭 · 숨김 — [상자: …] 단추
+      for (const bc of boxView === "all" ? L.crops : boxView === "sel" && cur ? [cur] : []) {
+        bc.targets.forEach((t, i) => {
+          if (!t.box) return;
+          box(t.box, "pbox", { stroke: boxColor(t.tid, i) });
+          label(t.box[0] + 2 * u, t.box[1] + 12 * u, bc === cur || boxView !== "all" ? t.tid : `${bc.name.split("_")[0]} ${t.tid}`, "ptid");
+        });
+      }
       if (cur) {
         const r = rectOf(cur);
         const gx = (r[2] - r[0]) * 0.15;
         const gy = (r[3] - r[1]) * 0.15;
         box([r[0] + gx, r[1] + gy, r[2] - gx, r[3] - gy], "guide"); // 70% 가이드: 부품이 이 안에 들어오게
-        cur.targets.forEach((t, i) => {
-          if (!t.box) return;
-          box(t.box, "pbox", { stroke: boxColor(t.tid, i) });
-          label(t.box[0] + 2 * u, t.box[1] + 12 * u, t.tid, "ptid");
-        });
         if (!drag || drag.kind === "box") {
           const pts = handlePoints(r);
           for (const h of HANDLES) box([pts[h][0] - 4 * u, pts[h][1] - 4 * u, pts[h][0] + 4 * u, pts[h][1] + 4 * u], "handle");
@@ -1179,9 +1185,22 @@ window.DPLayoutEdit = (() => {
       panel.append(b);
     }
 
+    function boxButton() {
+      // 부품 상자 보기 차례: 선택 크롭만 → 모든 크롭 → 숨김(F20 — 상자에 맞춤 뒤 전체를 한눈에 확인)
+      const b = button(`상자: ${BOX_VIEW[boxView]}`, "부품 상자 보기 — 누를 때마다 선택 크롭만 → 모든 크롭 → 숨김", () => {
+        boxView = boxView === "sel" ? "all" : boxView === "all" ? "none" : "sel";
+        render();
+      });
+      b.classList.toggle("on", boxView !== "sel");
+      return b;
+    }
+
     function renderNone() {
       const L = S.L;
       panel.append(el("h3", "lp-title", "레이아웃"));
+      const bb = el("div", "lp-btns");
+      bb.append(boxButton());
+      panel.append(bb);
       row("크롭", `${L.crops.length}개 · 캔버스 ${L.canvas[0]}×${L.canvas[1]}`);
       const all = L.crops.flatMap((c) => c.checks || []);
       row("검사", ["error", "warn", "info"].map((lv) => `${LEVELS[lv]} ${all.filter((x) => x.level === lv).length}`).join(" · "));
@@ -1342,7 +1361,7 @@ window.DPLayoutEdit = (() => {
         b.append(button("이 shape 경고 끄기", "레이아웃은 그대로, 이 shape 의 PSD 기준점만 지금 PSD 로(다른 갈라짐은 그대로 경고)",
           () => ackPsd([pn])));
       }
-      b.append(button("지우기", "Delete", removeSel, "danger"));
+      b.append(boxButton(), button("지우기", "Delete", removeSel, "danger"));
       panel.append(b);
     }
 

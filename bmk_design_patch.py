@@ -2330,7 +2330,12 @@ class BMKDesignPatchExportPSD:
         union = np.zeros((H, W), np.float32)
         total = sum(len(t["slices"]) + len(t["alts"]) for p in plan for t in p["targets"])
         pbar = comfy.utils.ProgressBar(max(1, total) + 1)
-        reg_order = {c["key"]: i for i, c in enumerate(m["candidates"])}  # c<번호> = 타깃 안 등록 순서
+        # c<번호> = 타깃 안 등록 순서, 탈락 후보도 센다 — Studio 후보 번호(board._target_members)와 같게(PSD 번호에 빈칸이 생길 수 있음)
+        num: dict[str, int] = {}
+        seen_tid: dict[tuple, int] = {}
+        for c in m["candidates"]:
+            k = (c.get("crop_id"), c.get("tid"))
+            seen_tid[k] = num[c["key"]] = seen_tid.get(k, 0) + 1
         written: list[dict] = []
         n_toned = n_groups = n_edit = 0
 
@@ -2365,8 +2370,6 @@ class BMKDesignPatchExportPSD:
             crop = p["crop"]
             cg = wr.add_group(g_fix, crop["name"])
             for t in p["targets"]:
-                members = sorted(t["slices"] + t["alts"], key=lambda it: reg_order[it["cand"]["key"]])
-                num = {it["cand"]["key"]: i + 1 for i, it in enumerate(members)}
                 if len(t["slices"]) <= 1:
                     first = t["slices"][0] if t["slices"] else None
                     tg = wr.add_group(cg, t["label"], mask=None if first is None else first["mask"])

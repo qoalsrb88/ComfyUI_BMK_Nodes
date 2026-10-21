@@ -56,6 +56,10 @@ button:disabled { opacity: .45; cursor: default; }
   flex: none;
 }
 .brand { font-weight: 700; letter-spacing: .2px; }
+/* 모드 이름(F12): 머리줄이 붐비면 설명부터 줄어듦(flex-shrink 큼 — 이름 정도는 남김, 전체 문구는 마우스) */
+.mode-title { flex: 0 1000 auto; min-width: 6em; max-width: 30vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 2px 8px;
+  border-left: 3px solid var(--reg); background: rgba(255, 255, 255, .04); border-radius: 3px; }
+.mode-title b { color: #fff; }
 .proj { color: var(--text); }
 .badges, .chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .status { color: var(--dim); white-space: nowrap; }
@@ -220,7 +224,18 @@ body.no-viewer #viewer { display: none; }
 .stage .ov-crop { position: absolute; }
 .stage .ov img { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
 .stage.px .ov img { image-rendering: pixelated; }
-.ov.loading .ov-comp { opacity: .45; }
+/* 새 영역·후보 그림을 받는 동안: 앞 그림을 흐리게 겹치지 않고 숨긴 뒤 가운데에 로딩 표시(F29 — 10/21 '알파처럼 겹쳐 보임') */
+.ov.loading .ov-comp { visibility: hidden; }
+.frame.loading::after {
+  content: ""; position: absolute; left: 50%; top: 50%; width: 28px; height: 28px; margin: -17px 0 0 -17px;
+  border: 3px solid #d7dde8; border-right-color: transparent; border-radius: 50%; animation: dp-spin .8s linear infinite;
+  box-shadow: 0 0 0 3px rgba(0, 0, 0, .35); pointer-events: none;
+}
+.frame.loading img { visibility: hidden; }
+@keyframes dp-spin { to { transform: rotate(360deg); } }
+.vbusy { color: #d7dde8; white-space: nowrap; }
+.vbusy::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 5px; vertical-align: -1px;
+  border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: dp-spin .8s linear infinite; }
 .ov-split { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px solid #fff; mix-blend-mode: difference; pointer-events: none; }
 svg.marks { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
 svg.marks .crop { fill: none; stroke: rgba(227, 230, 236, .5); stroke-width: 1.5px; vector-effect: non-scaling-stroke; }
@@ -434,7 +449,7 @@ body.refs .proj { min-width: 0; overflow: hidden; text-overflow: ellipsis; white
 .rf-slider .k { color: var(--dim); width: 4.5em; flex: none; }
 .rf-slider input { flex: 1; min-width: 0; }
 .rf-val { width: 4.5em; flex: none; text-align: right; font-variant-numeric: tabular-nums; }
-.rf-check { display: inline-flex; align-items: center; color: var(--dim); }
+.rf-check, .pp-opt { display: inline-flex; align-items: center; color: var(--dim); }
 #ref-panel input.rf-desc { width: 100%; margin-top: 6px; }
 #ref-panel input.rf-text { flex: 1; }
 .rf-hint { font-size: 12px; color: var(--reg); }
@@ -484,8 +499,13 @@ body.mask .proj { min-width: 0; overflow: hidden; text-overflow: ellipsis; white
 svg.marks .mwin { fill: none; stroke: rgba(227, 230, 236, .5); stroke-width: 1px; stroke-dasharray: 6 4; vector-effect: non-scaling-stroke; }
 svg.marks .mcrop { fill: none; stroke: var(--accent); stroke-width: 2px; vector-effect: non-scaling-stroke; }
 svg.marks .mseam { stroke: #fff; stroke-opacity: .45; stroke-width: 14px; stroke-linecap: round; vector-effect: non-scaling-stroke; }
-svg.marks .mbrush { fill: none; stroke: #fff; stroke-width: 1.5px; vector-effect: non-scaling-stroke; mix-blend-mode: difference; }
-svg.marks .mbrush.soft { stroke-dasharray: 4 3; }
+/* 붓 원(F33): 지우기 빨강 · 살리기 초록 · 부드럽게 흰 점선(어두운 그림자로 어느 바탕에서도 보이게) — 「붓」 도구 단추도 같은 색 */
+svg.marks .mbrush { fill: none; stroke: #ff6b6b; stroke-width: 1.5px; vector-effect: non-scaling-stroke; filter: drop-shadow(0 0 1px #000) drop-shadow(0 0 1px #000); }
+svg.marks .mbrush.revive { stroke: #63e07a; }
+svg.marks .mbrush.soft { stroke: #fff; stroke-dasharray: 4 3; }
+#mask-panel button.mt-erase.on { border-color: #ff6b6b; }
+#mask-panel button.mt-revive.on { border-color: #63e07a; }
+.mpreview { display: block; width: 72px; height: 72px; margin: 4px 0 2px; border: 1px solid #333a46; border-radius: 4px; background: #000; }
 
 /* ── 진행 모드 (pipeline.js) ─────────────── */
 #pipe-list { display: none; }

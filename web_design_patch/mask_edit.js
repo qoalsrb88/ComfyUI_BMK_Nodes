@@ -13,6 +13,7 @@ window.DPMaskEdit = (() => {
   const WIDTHS = [32, 64, 128]; // 경계 페이드 폭 — 기본 64(U0 §2.2: 32 는 끊김이 짧은 띠로 남고 128 은 넓은 띠에서 이중 윤곽)
   const SIZE = [4, 512]; // 붓 크기(지름 — 크롭 px, 도장 반지름 R = 크기 / 2)
   const FLOW = [0.05, 1]; // 붓 세기
+  const PREVIEW = 72; // 붓 미리보기 캔버스 한 변(px)
   const SIGMA = [1, 32]; // 전체 페더 σ
   const OPS_MAX = 200; // 기록 ops(서버 검사 — 200자 한 줄)
   const BUSY_MS = 1000; // GET /mask/alts 202(다른 합성 계산 중) 뒤 다시 묻는 간격
@@ -111,7 +112,7 @@ window.DPMaskEdit = (() => {
     // §2.4: out = over.rgb·over.a + (under + (patch.rgb − under)·patch.a·mask)·(1 − over.a). L = 영역 3층 {box, under, patch, over}(RGBA 바이트,
     // box 크기 — under 는 a 255), win = 마스크 창(캔버스), mask·base = 창 크기 세션·기준 마스크 — 올리는 8비트 값으로 합성(보이는 것 = 저장되는 것),
     // 창 밖 0. [x0, x1) × [y0, y1) = 다시 그릴 곳(box 좌표). view = {base: Q(기준으로), split: 이 box x 왼쪽은 기준(S) | null, mark: M(빨강 = 보이는
-    // 패치, 회색 빗금 = 기준보다 지운 곳)}
+    // 패치, 회색 빗금 = 기준보다 지운 곳), orig: W(이 패치 없이 — F35)}
     const bw = L.box[2] - L.box[0];
     const ww = win[2] - win[0];
     const wh = win[3] - win[1];
@@ -126,12 +127,12 @@ window.DPMaskEdit = (() => {
         const j = wy * ww + wx;
         const inWin = wx >= 0 && wx < ww && wy >= 0 && wy < wh;
         const mv = !inWin ? 0 : quant(view.base || (view.split !== null && x < view.split) ? base[j] : mask[j]) / 255;
-        const pa = (p[i + 3] / 255) * mv;
+        const pa = view.orig ? 0 : (p[i + 3] / 255) * mv; // orig(W) = 이 패치 없이(아래·위 ★ 만 — 고치기 전 그림)
         const oa = o[i + 3] / 255;
         let r = o[i] * oa + (u[i] + (p[i] - u[i]) * pa) * (1 - oa);
         let g = o[i + 1] * oa + (u[i + 1] + (p[i + 1] - u[i + 1]) * pa) * (1 - oa);
         let b = o[i + 2] * oa + (u[i + 2] + (p[i + 2] - u[i + 2]) * pa) * (1 - oa);
-        if (view.mark && p[i + 3]) {
+        if (view.mark && !view.orig && p[i + 3]) { // 원본 보기(W) 동안은 원본 그대로(빗금 없이 — Codex 4차)
           const a = 0.5 * pa;
           r = r * (1 - a) + 255 * a;
           g *= 1 - a;
@@ -583,8 +584,10 @@ window.DPMaskEdit = (() => {
     let width = 64;
     let sigma = 4;
     let seam = null; // 선택 이음매 구간(목록·N) — 구간 페이드의 a·b
-    const view = { base: false, split: null, mark: false };
+    const view = { base: false, split: null, mark: false, orig: false };
     let slider = false;
+    let preview = null; // 붓 미리보기 캔버스(패널을 다시 그릴 때마다 새로)
+    let origKey = false; // view.orig 를 W 를 누른 동안만 켰는가(놓으면 끔) — [원본 보기] 단추로 켠 것은 W 를 놓아도 그대로
     let cursor = null; // 붓 원 자리(캔버스) | null
     let soft = false; // 붓 원 = 부드럽게(Shift)
     let dirty = null; // 다시 그릴 곳(box 좌표)
@@ -599,7 +602,7 @@ window.DPMaskEdit = (() => {
     const cv = document.createElement("canvas");
     const g2 = cv.getContext("2d");
     let img = null;
-    const ring = svg("circle", { class: "mbrush" });
+    const ring = svg("circle", { class: "mbrush" }); // 붓 원(F33): 지우기 빨강 · 살리기 초록(revive) · 부드럽게 흰 점선(soft)
 
     function el(tag, cls, txt) {
       const e = document.createElement(tag);
@@ -744,7 +747,8 @@ window.DPMaskEdit = (() => {
       const d = dirty;
       dirty = null;
       if (!d || !M.layers || !img || !M.m) return;
-      compose(M.layers, M.win, M.m, M.base, img.data, d[0], d[1], d[2], d[3], { base: view.base, split: slider ? view.split : null, mark: view.mark });
+      compose(M.layers, M.win, M.m, M.base, img.data, d[0], d[1], d[2], d[3],
+        { base: view.base, split: slider ? view.split : null, mark: view.mark, orig: view.orig });
       g2.putImageData(img, 0, 0, d[0], d[1], d[2] - d[0], d[3] - d[1]);
     }
 
@@ -863,7 +867,7 @@ window.DPMaskEdit = (() => {
       ring.setAttribute("cx", cursor[0]);
       ring.setAttribute("cy", cursor[1]);
       ring.setAttribute("r", size / 2);
-      ring.setAttribute("class", "mbrush" + (soft ? " soft" : ""));
+      ring.setAttribute("class", "mbrush" + (soft || tool === "soften" ? " soft" : tool === "revive" ? " revive" : ""));
       if (!ring.parentNode) viewer.redraw();
     }
 
@@ -874,8 +878,10 @@ window.DPMaskEdit = (() => {
       const box = (r, cls) => root.append(svg("rect", { x: r[0], y: r[1], width: r[2] - r[0], height: r[3] - r[1], class: cls }));
       const info = cur();
       const crop = info && cropOf(info.crop_id);
-      if (info && M.win) box(M.win, "mwin");
-      if (crop) box(crop.rect, "mcrop");
+      if (viewer.flags().rectsOn) { // 뷰어 [사각형](O)으로 숨김 — 경계를 선 없이 눈으로 볼 때(F37)
+        if (info && M.win) box(M.win, "mwin");
+        if (crop) box(crop.rect, "mcrop");
+      }
       if (seam) root.append(svg("line", { x1: seam.x0, y1: seam.y0, x2: seam.x1, y2: seam.y1, class: "mseam" }));
       if (cursor) root.append(ring);
     }
@@ -1011,6 +1017,7 @@ window.DPMaskEdit = (() => {
 
     function setTool(k) {
       tool = k;
+      moveRing();
       renderPanel();
     }
 
@@ -1097,6 +1104,10 @@ window.DPMaskEdit = (() => {
         const r = line(s, `${x ? x.t.crop_name || x.t.crop_id : info.crop_id} · ${info.tid} · c${pad(info.c)} ${star} — 기준 ${SRC[info.base.src] || info.base.src} `
           + `${w}×${h} (z: 아래 ${info.z.below.length} · 위 ${info.z.above.length})`);
         r.title = `아래: ${info.z.below.join(", ") || "없음"}\n위: ${info.z.above.join(", ") || "없음"}`;
+        if (info.base.src === "auto") {
+          // 자동 마스크는 대상을 알아보는 것이 아님(10/21 실사용 — '프롬프트로 대상을 찾은 영역'으로 읽힘, U-2)
+          line(s, "자동 마스크 = Analyze 가 후보와 원본 크롭의 색 차이(ΔE)로 만든 영역 — 대상인지와 무관: 엉뚱하게 바뀐 곳은 [지우기], 대상 안 구멍은 [살리기]", "dim");
+        }
         const ed = info.edit;
         if (!ed) line(s, "편집 없음 — 기준 마스크 그대로", "dim");
         else {
@@ -1118,21 +1129,47 @@ window.DPMaskEdit = (() => {
       }
       if (M.err) line(s, `${M.err} `, "bad").append(off(button("다시 받기", "GET /mask 다시", reload, "inline"), busy));
       if (layerErr) line(s, `미리보기 3층을 받지 못함: ${layerErr} `, "warn").append(off(button("다시 받기", "GET /mask·3층 다시", refreshInfo, "inline"), busy));
-      line(s, `보기: ${view.base ? "기준(Q 누르는 중)" : slider ? "기준|편집 슬라이더(S — 왼쪽 = 기준)" : "편집"}${view.mark ? " · 마스크(M)" : ""}`, "dim");
+      line(s, `보기: ${view.orig ? "원본 — 이 패치 없이(W)" : view.base ? "기준(Q 누르는 중)" : slider ? "기준|편집 슬라이더(S — 왼쪽 = 기준)" : "편집"}`
+        + `${view.mark ? " · 마스크(M)" : ""}${viewer.flags().rectsOn ? "" : " · 사각형 숨김(O)"}`, "dim");
+      const ob = button("원본 보기 (W)", "이 패치를 뺀 그림(아래·위 ★ 만 — 고치기 전) ↔ 지금 결과. W 는 누르는 동안만", () => {
+        origKey = false;
+        setView("orig");
+      });
+      ob.classList.toggle("on", view.orig);
+      const mb = button("마스크 (M)", "빨강 = 보이는 패치, 회색 빗금 = 기준보다 지운 곳", () => setView("mark"));
+      mb.classList.toggle("on", view.mark);
+      const rb = button("선 숨기기 (O)", "크롭·편집 창 사각형 선을 숨김/보임 — 경계를 선 없이 눈으로 볼 때(뷰어 [사각형]과 같음)", () => {
+        viewer.toggleRects();
+        renderPanel();
+      });
+      rb.classList.toggle("on", !viewer.flags().rectsOn);
+      btns(s, ob, mb, rb);
 
       // 2 붓
       s = section("붓 (왼쪽 끌기 · Space+끌기 = 화면 이동)");
       btns(s, ...Object.keys(TOOLS).map((k) => {
-        const b = button(TOOLS[k], k === "soften" ? "부드럽게 — Shift 를 누른 채 끌어도" : "X: 지우기 ↔ 살리기", () => setTool(k));
+        const b = button(TOOLS[k], k === "soften" ? "부드럽게 — Shift 를 누른 채 끌어도(붓 원 흰 점선)" : `X: 지우기 ↔ 살리기(붓 원 ${k === "erase" ? "빨강" : "초록"})`,
+          () => setTool(k), `mt-${k}`);
         b.classList.toggle("on", tool === k);
         return b;
       }));
       slide(s, "크기", SIZE[0], SIZE[1], 1, size, (v) => `${v}px`, (v) => {
         size = v;
         moveRing();
+        paintPreview();
       });
-      slide(s, "경도", 0, 1, 0.05, hard, (v) => v.toFixed(2), (v) => { hard = v; });
-      slide(s, "세기", FLOW[0], FLOW[1], 0.05, flow, (v) => v.toFixed(2), (v) => { flow = v; });
+      slide(s, "경도", 0, 1, 0.05, hard, (v) => v.toFixed(2), (v) => {
+        hard = v;
+        paintPreview();
+      });
+      slide(s, "세기", FLOW[0], FLOW[1], 0.05, flow, (v) => v.toFixed(2), (v) => {
+        flow = v;
+        paintPreview();
+      });
+      preview = el("canvas", "mpreview");
+      preview.width = preview.height = PREVIEW;
+      s.append(preview);
+      paintPreview();
 
       // 3 한 번에
       s = section("한 번에");
@@ -1216,6 +1253,24 @@ window.DPMaskEdit = (() => {
       } else {
         altsTable(s, alts.data);
       }
+    }
+
+    function paintPreview() {
+      // 붓 미리보기(F36 — 포토샵 브러시 칸처럼): 도장 한 번에 바뀌는 양(흰 = 많이) — 원 = 크기(크롭 px 1:1, 68 까지), 안쪽 단단한 곳 = 경도, 밝기 = 세기
+      if (!preview || !preview.isConnected) return;
+      const g = preview.getContext("2d");
+      const im = g.createImageData(PREVIEW, PREVIEW);
+      const R = Math.max(1.5, Math.min(PREVIEW / 2 - 2, size / 2)); // 붓 크기 그대로(지름 68px 까지 — 더 크면 칸에 꽉, Codex 4차)
+      for (let y = 0; y < PREVIEW; y++) {
+        for (let x = 0; x < PREVIEW; x++) {
+          const i = (y * PREVIEW + x) * 4;
+          im.data[i] = im.data[i + 1] = im.data[i + 2] = Math.round(stamp(R, hard, Math.hypot(x + 0.5 - PREVIEW / 2, y + 0.5 - PREVIEW / 2)) * flow * 255);
+          im.data[i + 3] = 255;
+        }
+      }
+      g.putImageData(im, 0, 0);
+      preview.title = `크기 ${size}px${size > PREVIEW - 4 ? `(칸보다 커서 ${PREVIEW - 4}px 로 줄여 보임)` : "(실제 크기)"} · 경도 ${hard.toFixed(2)} · 세기 ${flow.toFixed(2)}`
+        + " — 흰 = 한 번 찍을 때 바뀌는 양(같은 곳을 여러 번 지나가면 쌓임)";
     }
 
     function slide(s, k, min, max, stepV, val, fmt, set) {
@@ -1305,6 +1360,12 @@ window.DPMaskEdit = (() => {
         case "KeyM":
           if (!e.repeat) setView("mark");
           return true;
+        case "KeyW":
+          if (!view.orig) {
+            origKey = true;
+            setView("orig");
+          }
+          return true;
         case "KeyF":
         case "Digit0":
         case "Digit1":
@@ -1318,9 +1379,16 @@ window.DPMaskEdit = (() => {
 
     function onKeyUp(e) {
       if (e.code === "KeyQ" && view.base) setView("base");
+      if (e.code === "KeyW" && view.orig && origKey) {
+        origKey = false;
+        setView("orig");
+      }
     }
 
-    window.addEventListener("blur", () => onKeyUp({ code: "KeyQ" }));
+    window.addEventListener("blur", () => {
+      onKeyUp({ code: "KeyQ" });
+      onKeyUp({ code: "KeyW" });
+    });
 
     function flushLater() {
       if (!later || held) return;
@@ -1368,7 +1436,7 @@ window.DPMaskEdit = (() => {
         return false;
       }
       on = false;
-      view.base = view.mark = slider = false;
+      view.base = view.mark = view.orig = slider = false;
       view.split = cursor = null;
       cancelAnimationFrame(raf);
       raf = 0;

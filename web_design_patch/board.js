@@ -94,11 +94,21 @@
   }
 
   function setImg(img, rel) {
+    // 새 그림을 다 받기 전에는 칸(.frame)에 로딩 표시만 — 덜 받은 그림·앞 그림이 겹쳐 보이지 않게(F29)
     const u = rel ? apiUrl(rel) : null;
+    const fr = img.closest(".frame");
     if (u) {
-      if (img.getAttribute("src") !== u) img.src = u;
+      if (img.getAttribute("src") !== u) {
+        if (fr) fr.classList.add("loading");
+        img.onload = img.onerror = () => {
+          if (fr && img.getAttribute("src") === u) fr.classList.remove("loading");
+        };
+        img.src = u;
+        if (img.complete && fr) fr.classList.remove("loading");
+      }
       img.hidden = false;
     } else {
+      if (fr) fr.classList.remove("loading");
       img.removeAttribute("src");
       img.hidden = true;
     }
@@ -423,6 +433,11 @@
     const t = curTarget();
     const c = curCand();
     if (!t || !c) return;
+    if (c.picked) {
+      // 이미 ★(또는 slice)인 후보에서 한 번 더 = 해제(F30 — 토글). 다른 slice 는 그대로
+      write("pick", { crop_id: t.crop_id, tid: t.tid, key: c.key, mode: "remove" }, `★ 해제 c${pad(c.n)} — ${t.key}`);
+      return;
+    }
     const j = c.joint;
     const warn = j && j.first && j.first !== t.tid
       ? ` — 공동 결과(${j.tids.join("·")})는 보통 ${j.first} 에만 ★ (상세의 "${j.first} 에 ★")` : "";
@@ -1106,6 +1121,10 @@
   function renderDetail() {
     const d = $("detail");
     d.replaceChildren();
+    const sb = $("btn-star");
+    const on = !!(curCand() && curCand().picked);
+    sb.textContent = on ? "★ 해제" : "★ 선택";
+    sb.title = on ? "Space — 이 후보의 ★ 를 풂(다시 누르면 ★)" : "Space — 이 후보 하나로 ★(그 타깃의 ★ 를 바꿈)";
     const t = curTarget();
     if (!t) {
       d.append(el("div", "row", S ? "타깃이 없습니다 — Import PSD 를 먼저 실행하세요" : "불러오는 중…"));
@@ -1445,6 +1464,19 @@
     });
   }
 
+  // 머리줄의 지금 모드 이름 + 한 줄 설명(F12) — 모드는 body 클래스(setMask·setPipe·setRefs·setEditing)로 정해지므로 그것을 지켜봄
+  const MODES = [["mask", "마스크", "★ 후보의 최종 마스크(Export 그룹 마스크)를 붓·페이드로 손질"],
+    ["pipe", "진행", "실행 설정 · 무료 반영 · 계획·비용 · 초안·Run 승인 · ★ 점검 · Export"],
+    ["refs", "레퍼런스", "시트에서 부품을 오려 refs 에 저장하고 크롭에 연결"],
+    ["editing", "레이아웃 편집", "크롭 사각형·이름·대상 문구·부품 상자"]];
+
+  function renderMode() {
+    const m = MODES.find(([cls]) => document.body.classList.contains(cls)) || [null, "검토", "후보를 원해상도로 비교하고 ★ 를 고름 · 이음매 확인"];
+    const d = $("mode-title");
+    d.replaceChildren(el("b", "", m[1]), el("span", "dim", ` — ${m[2]}`));
+    d.title = `${m[1]} 모드 — ${m[2]}`;
+  }
+
   function fatal(msg) {
     const app = $("app");
     app.replaceChildren(el("p", "fatal", msg));
@@ -1456,6 +1488,8 @@
       return;
     }
     if (loadPref().viewer === false) document.body.classList.add("no-viewer");
+    renderMode();
+    new MutationObserver(renderMode).observe(document.body, { attributes: true, attributeFilter: ["class"] });
     viewer = window.DPViewer.create($("viewer"), { apiUrl, onPick: pickCrop, onSeams });
     // 편집기 "반영(큐)" = 무료 반영(applyFree), 확인 창 맨 앞 줄 = Prepare 설정 갈라짐(진행 패널이 읽은 GET /pipeline)
     const applyWarn = () => (pipe ? pipe.applyWarn() : []);

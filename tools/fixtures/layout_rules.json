@@ -31,7 +31,7 @@
   "suggest": {
    "in": "{boxes:[[x0,y0,x1,y1],…], canvas, snap}",
    "out": "[x0,y0,x1,y1]",
-   "rule": "G4: U = 상자 합집합. 축마다 need = ceil(크기*10/7) (÷0.7 을 정수 식으로). w = max(128, snap ? ceilq(need,128) : need) (h 도). w > 3h 이면 h = up(w/3), 아니고 h > 3w 이면 w = up(h/3) (up = snap ? ceilq(.,128) : ceil). w = min(w, W), h = min(h, H). 그래서 w > 3h 이면 w = down(3h), 아니고 h > 3w 이면 h = down(3w) (4096×1000 같은 넓은 캔버스 — S1-b: down = snap ? 128 내림, 그것이 0 이면 1px 내림 : 내림 — place 의 down 과 같음). q = snap ? 16 : 1. x0 = rnd((ux0+ux1)/2 - w/2, q), y0 도(줄인 크기로 가운데). x0 = min(max(x0,0), W-w), y0 도."
+   "rule": "G4: U = 상자 합집합. 축마다 need = ceil(크기*10/7) (÷0.7 을 정수 식으로). w = max(128, snap ? ceilq(need,128) : need) (h 도). w > 3h 이면 h = up(w/3), 아니고 h > 3w 이면 w = up(h/3) (up = snap ? ceilq(.,128) : ceil). w = min(w, W), h = min(h, H). 그래서 w > 3h 이면 w = down(3h), 아니고 h > 3w 이면 h = down(3w) (4096×1000 같은 넓은 캔버스 — S1-b: down = snap ? 128 내림, 그것이 0 이면 1px 내림 : 내림 — place 의 down 과 같음). q = snap ? 16 : 1. x0 = rnd((ux0+ux1)/2 - w/2, q), y0 도(줄인 크기로 가운데). x0 = min(max(x0,0), W-w), y0 도. B-2(10/21): 그다음 축마다 need = ceil(3·크기/20)(여백 15% — P-70 과 같음), lo = 상자 끝 + need > 캔버스 끝이면 캔버스 끝 − 크기 아니면 상자 끝 + need − 크기, hi = 상자 시작 − need < 0 이면 0 아니면 상자 시작 − need(캔버스 끝까지 15% 가 안 되는 쪽은 크롭 변을 캔버스 끝에 붙임 — 검사가 그 쪽을 안 봄), lo = max(lo, 0), hi = min(hi, 캔버스 − 크기), 위 가운데 값이 [lo, hi] 안이면 그대로(캔버스 끝에 밀린 격자 밖 값 포함), 아니면 [ceil(lo/q)q, floor(hi/q)q] 가 비지 않을 때 그 안에서 가운데 값에 가장 가까운 값, 그것도 비면 캔버스 끝 − 크기가 [lo, hi] 안일 때 그 값. 어느 축이든 비면 그 축만 크기 + (snap ? 128 : 1) 로 두 번까지 다시(캔버스보다 크거나 비 > 3 이면 멈춤), 끝까지 비면 그 축은 위 가운데 값."
   },
   "validate_rect": {
    "in": "{rect: 아무 값, canvas}",
@@ -56,7 +56,7 @@
   "geom_checks": {
    "in": "{layout:{canvas, crops:[{id, name, rect, targets:[{tid, text, box}], psd_name, note}]}}",
    "out": "[[crop_id, code], …] (중복 없이 정렬 — 크롭마다 같은 코드가 여럿이어도 한 번)",
-   "rule": "G7: store.layout_geom_checks 의 docstring 규칙(정수 식). L-ratio max>3*min · L-outside · L-128 w%128||h%128 · L-small min<384 · L-gptk gpt_size 의 W<2w||H<2h · L-same rect 같음 · L-overlap 겹친 폭·높이>0(같은 rect 제외) · N-name 이름 규칙 위반 · N-dup NFC·casefold 같은 이름 · N-nnn 앞자리 숫자가 같은 다른 크롭 · N-side 좌우 토큰 left 인데 3(x0+x1)>4W, right 인데 3(x0+x1)<2W · 상자(box 있는 대상마다 하나, 이 순서로 첫 번째): P-out 상자가 크롭 밖, P-edge 크롭 변까지 여백 m 중 m<8 || 50m<그 방향 크기(왼·오른쪽 = 폭, 위·아래 = 높이), P-70 20m<3*그 방향 크기."
+   "rule": "G7: store.layout_geom_checks 의 docstring 규칙(정수 식). L-ratio max>3*min · L-outside · L-128 w%128||h%128 · L-small min<384 · L-gptk gpt_size 의 W<2w||H<2h · L-same rect 같음 · L-overlap 겹친 폭·높이>0(같은 rect 제외) · N-name 이름 규칙 위반 · N-dup NFC·casefold 같은 이름 · N-nnn 앞자리 숫자가 같은 다른 크롭 · N-side 좌우 토큰 left 인데 3(x0+x1)>4W, right 인데 3(x0+x1)<2W · 상자(box 있는 대상마다 하나, 이 순서로 첫 번째): P-out 상자가 크롭 밖, P-edge 크롭 변까지 여백 m 중 m<8 || 50m<그 방향 크기(왼·오른쪽 = 폭, 위·아래 = 높이), P-70 20m<3*그 방향 크기. U-5(10/21): 크롭 변이 캔버스 끝인 쪽(x0≤0·x1≥W·y0≤0·y1≥H)의 여백은 P-edge·P-70 에서 빼고, 둘 다 없을 때 그 쪽 여백이 20m<3*크기면 P-canvas info."
   },
   "name_dup": {
    "in": "{a, b}",
@@ -1723,8 +1723,8 @@
     "snap": false
    },
    "out": [
-    1298,
-    451,
+    1297,
+    450,
     1513,
     580
    ]
@@ -2033,6 +2033,106 @@
     0,
     1608,
     40
+   ]
+  },
+  {
+   "fn": "suggest",
+   "note": "실사용 003 상자(447px ÷ 0.7 = 639 → 640, 격자 반올림이면 아래 여백 91 < 96) → 15% 맞는 자리(10/21 B-2)",
+   "in": {
+    "boxes": [
+     [
+      764,
+      3494,
+      1256,
+      3941
+     ]
+    ],
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true
+   },
+   "out": [
+    624,
+    3328,
+    1392,
+    4096
+   ]
+  },
+  {
+   "fn": "suggest",
+   "note": "실사용 001 상자(캔버스 위 끝에 닿음) → 크롭 위 변을 캔버스 끝에",
+   "in": {
+    "boxes": [
+     [
+      1529,
+      0,
+      2026,
+      630
+     ]
+    ],
+    "canvas": [
+     3072,
+     4096
+    ],
+    "snap": true
+   },
+   "out": [
+    1392,
+    0,
+    2160,
+    1024
+   ]
+  },
+  {
+   "fn": "suggest",
+   "note": "16 배수가 아닌 캔버스(3000) 끝 자리 2616(격자 밖)도 그대로 — 384 그대로, 키우지 않음(Codex 1차)",
+   "in": {
+    "boxes": [
+     [
+      2800,
+      500,
+      2990,
+      690
+     ]
+    ],
+    "canvas": [
+     3000,
+     2000
+    ],
+    "snap": true
+   },
+   "out": [
+    2616,
+    400,
+    3000,
+    784
+   ]
+  },
+  {
+   "fn": "suggest",
+   "note": "가운데·격자 자리가 여백을 못 지키고 캔버스 끝 자리 2872(격자 밖)만 맞음 → 그 자리, 128 그대로(Codex 1차 — 마지막 갈래)",
+   "in": {
+    "boxes": [
+     [
+      2893,
+      500,
+      2973,
+      580
+     ]
+    ],
+    "canvas": [
+     3000,
+     2000
+    ],
+    "snap": true
+   },
+   "out": [
+    2872,
+    480,
+    3000,
+    608
    ]
   },
   {
@@ -5038,7 +5138,7 @@
   },
   {
    "fn": "geom_checks",
-   "note": "상자 여백 경계(512): 10 → P-edge, 11 → P-70, 76 → P-70, 77 → 없음, 오른쪽 0 → P-edge, -1 → P-out",
+   "note": "상자 여백 경계(512): 왼쪽 10 → P-canvas(크롭 왼변 = 캔버스 끝 — 10/21 U-5), 11 → P-70, 76 → P-70, 77 → 없음, 오른쪽 0 → P-edge, -1 → P-out",
    "in": {
     "layout": {
      "canvas": [
@@ -5196,7 +5296,7 @@
    "out": [
     [
      "030_688c2c",
-     "P-edge"
+     "P-canvas"
     ],
     [
      "031_90fc21",
@@ -5218,7 +5318,7 @@
   },
   {
    "fn": "geom_checks",
-   "note": "작은 크롭(128): 여백 7 → P-edge(8px), 8 → P-70",
+   "note": "작은 크롭(128): 왼쪽 여백 7 → P-canvas(크롭 왼변 = 캔버스 끝 — 10/21 U-5), 8 → P-70",
    "in": {
     "layout": {
      "canvas": [
@@ -5284,7 +5384,7 @@
     ],
     [
      "036_e04257",
-     "P-edge"
+     "P-canvas"
     ],
     [
      "037_518379",
@@ -5293,6 +5393,142 @@
     [
      "037_518379",
      "P-70"
+    ]
+   ]
+  },
+  {
+   "fn": "geom_checks",
+   "note": "상자 여백 10(캔버스 끝 아닌 크롭 — 크롭 x 128) → P-edge(10/21 U-5 뒤에도 그대로)",
+   "in": {
+    "layout": {
+     "canvas": [
+      3072,
+      4096
+     ],
+     "crops": [
+      {
+       "id": "030_688c2c",
+       "name": "030_가",
+       "rect": [
+        128,
+        0,
+        640,
+        512
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": [
+          138,
+          150,
+          428,
+          362
+         ]
+        }
+       ],
+       "psd_name": "030_가",
+       "note": ""
+      }
+     ]
+    }
+   },
+   "out": [
+    [
+     "030_688c2c",
+     "P-edge"
+    ]
+   ]
+  },
+  {
+   "fn": "geom_checks",
+   "note": "작은 크롭(128) 여백 7(캔버스 끝 아닌 크롭 — x 128) → P-edge(8px)",
+   "in": {
+    "layout": {
+     "canvas": [
+      3072,
+      4096
+     ],
+     "crops": [
+      {
+       "id": "036_e04257",
+       "name": "036_작음",
+       "rect": [
+        128,
+        1024,
+        256,
+        1152
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": [
+          135,
+          1060,
+          228,
+          1100
+         ]
+        }
+       ],
+       "psd_name": "036_작음",
+       "note": ""
+      }
+     ]
+    }
+   },
+   "out": [
+    [
+     "036_e04257",
+     "L-small"
+    ],
+    [
+     "036_e04257",
+     "P-edge"
+    ]
+   ]
+  },
+  {
+   "fn": "geom_checks",
+   "note": "부품이 캔버스 위 끝에 닿음(실사용 001_머리리본 꼴) → P-canvas, 경고 없음",
+   "in": {
+    "layout": {
+     "canvas": [
+      3072,
+      4096
+     ],
+     "crops": [
+      {
+       "id": "040_0a0a0a",
+       "name": "040_머리리본",
+       "rect": [
+        1392,
+        0,
+        2160,
+        1024
+       ],
+       "targets": [
+        {
+         "tid": "A",
+         "text": "",
+         "box": [
+          1529,
+          0,
+          2026,
+          630
+         ]
+        }
+       ],
+       "psd_name": "040_머리리본",
+       "note": ""
+      }
+     ]
+    }
+   },
+   "out": [
+    [
+     "040_0a0a0a",
+     "P-canvas"
     ]
    ]
   },
