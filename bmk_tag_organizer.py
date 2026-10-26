@@ -35,51 +35,77 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import logging
 import os
+from types import ModuleType
 from typing import Any, Dict, List
-
-try:
-    from . import bmk_tag_organizer_core as core
-except ImportError:  # 패키지 밖에서 단독으로 불러올 때(점검용)
-    import bmk_tag_organizer_core as core
 
 logger = logging.getLogger(__name__)
 _TAG = "[ComfyUI_BMK_Nodes::TagOrganizer]"
 
-_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tag_organizer_data")
-_PACK_PATH = os.path.join(_DATA_DIR, "tagpack.json.gz")
-_INFO_PATH = os.path.join(_DATA_DIR, "pack_info.json")
+_CORE_MODULE = "bmk_tag_organizer_core"
+_PACK_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tag_organizer_data", "tagpack.json.gz")
+_SYNC_HINT = "TagOrganizer 저장소에서 `python tagorg.py sync --to <이 노드 팩 폴더>` 를 실행하세요."
 
 _RATINGS = ["e", "q", "s", "g"]
 _RULE_MODES = ["remove", "report", "off"]
 _DIALECTS = ["comfyui", "nai", "anima"]
 
 
+def _core() -> ModuleType:
+    """코어 모듈을 실행 시점에 불러온다. 코어가 없어도 노드 등록은 막지 않는다.
+
+    패키지 안에서는 같은 폴더의 코어만 쓴다(다른 경로의 같은 이름 모듈을 잡지 않게).
+    """
+    try:
+        if __package__:
+            return importlib.import_module(f".{_CORE_MODULE}", __package__)
+        return importlib.import_module(_CORE_MODULE)   # 패키지 밖에서 단독으로 불러올 때(점검용)
+    except ImportError as e:
+        raise RuntimeError(f"{_TAG} 코어 파일({_CORE_MODULE}.py)이 없습니다. {_SYNC_HINT}") from e
+
+
 def _pack_path() -> str:
     return os.environ.get("TAGORG_PACK") or _PACK_PATH
 
 
-def _read_info() -> Dict[str, Any]:
-    """콤보 목록용 작은 정보 파일. 없거나 깨졌으면 빈 dict(노드 로딩은 막지 않는다)."""
+def _as_labels(value: Any) -> Dict[str, str]:
+    return {str(k): str(v) for k, v in value.items()} if isinstance(value, dict) else {}
+
+
+def _read_info() -> Dict[str, Dict[str, str]]:
+    """콤보 목록(presets·layouts → 표시명). 실제로 쓸 팩 옆의 pack_info.json 을 읽고,
+    없거나 깨졌으면 팩에서 직접 읽는다. 둘 다 안 되면 빈 목록(노드 로딩은 막지 않는다)."""
+    pack_path = _pack_path()
+    info: Dict[str, Any] = {}
     try:
-        with open(_INFO_PATH, encoding="utf-8") as f:
-            info = json.load(f)
-        return info if isinstance(info, dict) else {}
+        with open(os.path.join(os.path.dirname(pack_path), "pack_info.json"), encoding="utf-8") as f:
+            raw = json.load(f)
+        if isinstance(raw, dict):
+            info = raw
     except (OSError, ValueError):
-        return {}
+        pass
+    labels = {key: _as_labels(info.get(key)) for key in ("presets", "layouts")}
+    if not (labels["presets"] and labels["layouts"]) and os.path.isfile(pack_path):
+        try:
+            pack = _core().load_pack(pack_path)
+            labels = {
+                "presets": {k: str(v.get("label", k)) for k, v in pack.presets.items()},
+                "layouts": {k: str(v.get("label", k)) for k, v in pack.layouts.items()},
+            }
+        except Exception:  # 콤보 목록 때문에 노드 정의가 깨지지 않게 기본값으로 둔다
+            logger.warning("%s 팩에서 콤보 목록을 읽지 못했습니다: %s", _TAG, pack_path, exc_info=True)
+    return labels
 
 
-def _choices(info: Dict[str, Any], key: str, default: str) -> List[str]:
-    ids = [str(k) for k in (info.get(key) or {})]
-    if default in ids:
-        ids.remove(default)
-    return [default] + ids
+def _choices(labels: Dict[str, str], default: str) -> List[str]:
+    return [default] + [k for k in labels if k != default]
 
 
-def _labels(info: Dict[str, Any], key: str) -> str:
-    return "\n".join(f"  {k} = {v}" for k, v in (info.get(key) or {}).items())
+def _tooltip(labels: Dict[str, str]) -> str:
+    return "\n".join(f"  {k} = {v}" for k, v in labels.items())
 
 
 class BMKTagOrganizer:
@@ -109,8 +135,8 @@ class BMKTagOrganizer:
     @classmethod
     def INPUT_TYPES(cls):
         info = _read_info()
-        presets = _choices(info, "presets", "sort_only")
-        layouts = _choices(info, "layouts", "default")
+        presets = _choices(info["presets"], "sort_only")
+        layouts = _choices(info["layouts"], "default")
         return {
             "required": {
                 "text": (
@@ -123,7 +149,7 @@ class BMKTagOrganizer:
                 ),
                 "preset": (
                     presets,
-                    {"default": "sort_only", "tooltip": "필터 프리셋\n" + _labels(info, "presets")},
+                    {"default": "sort_only", "tooltip": "필터 프리셋\n" + _tooltip(info["presets"])},
                 ),
                 "exclude": (
                     "STRING",
@@ -156,7 +182,7 @@ class BMKTagOrganizer:
                 ),
                 "layout": (
                     layouts,
-                    {"default": "default", "tooltip": "줄(섹션) 순서\n" + _labels(info, "layouts")},
+                    {"default": "default", "tooltip": "줄(섹션) 순서\n" + _tooltip(info["layouts"])},
                 ),
                 "input_dialect": (_DIALECTS, {"default": "comfyui", "tooltip": "입력 프롬프트 문법"}),
                 "output_dialect": (
@@ -198,12 +224,10 @@ class BMKTagOrganizer:
         trailing_comma: bool,
         dedupe: bool,
     ):
+        core = _core()
         path = _pack_path()
         if not os.path.isfile(path):
-            raise RuntimeError(
-                f"{_TAG} 태그 팩이 없습니다: {path}\n"
-                "TagOrganizer 저장소에서 `python tagorg.py sync --to <이 노드 팩 폴더>` 를 실행하세요."
-            )
+            raise RuntimeError(f"{_TAG} 태그 팩이 없습니다: {path}\n{_SYNC_HINT}")
         pack = core.load_pack(path)
         options = core.Options(
             preset=preset,
