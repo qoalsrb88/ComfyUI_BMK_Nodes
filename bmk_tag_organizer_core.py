@@ -20,6 +20,7 @@ ComfyUI 노드, BMK AI Studio, CLI가 함께 쓰는 단일 파일 코어다. 표
 
 버전 이력:
 - v1: M0 — 최초 구현.
+- v1.1: 명시 규칙에 multi_subject_exempt(여러 명이면 적용 안 함) 추가.
 """
 
 from __future__ import annotations
@@ -688,6 +689,8 @@ def _apply_rules(tokens: List[Token], pack: TagPack, opts: Options) -> None:
         if mode == "off":
             continue
         if not present & set(rule.get("when_any", ())) or present & set(rule.get("unless_any", ())):
+            continue
+        if multi and rule.get("multi_subject_exempt"):   # 여러 명이면 누구에게 해당하는지 알 수 없다
             continue
         targets = set(rule.get("remove", ()))
         sels = parse_selectors(rule.get("remove_selectors", ()))
