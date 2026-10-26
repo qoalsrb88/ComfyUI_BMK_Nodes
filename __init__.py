@@ -91,6 +91,7 @@ _NODE_MODULES = (
     "bmk_scale_to_target",
     "bmk_segs_core_mask",
     "bmk_tabbed_notes",
+    "bmk_tag_organizer",
     "bmk_tag_subtractor",
     "bmk_text_viewer_tabs",
     "bmk_upscale_with_model_tiled",
