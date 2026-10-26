@@ -1,0 +1,29 @@
+{
+  "format": "tagorg-pack-info",
+  "pack_version": "2026.10.01+ff0c6f0a",
+  "source": {
+    "file": "danbooru_2026-10-01_pt20-ia-dd.csv",
+    "date": "2026-10-01",
+    "rows": 220510
+  },
+  "presets": {
+    "sort_only": "정렬만",
+    "character_swap": "캐릭터 교체 (외형만)",
+    "character_outfit_swap": "캐릭터 교체 (외형+의상)",
+    "outfit_swap": "의상 교체",
+    "pose_reference": "포즈만 참고"
+  },
+  "layouts": {
+    "default": "기본",
+    "compact": "간단히(6줄)"
+  },
+  "synced_from": {
+    "repo": "TagOrganizer",
+    "commit": "79cdb42760e70a4da3d1a2fefbd0c8f4a9a590b7",
+    "dirty": false
+  },
+  "files": {
+    "bmk_tag_organizer_core.py": "2ab9e55e808473a27fd34f3a4be797db22990603ae9d78c67a7bc4e27bf2aa11",
+    "tag_organizer_data/tagpack.json.gz": "f56ad9614663a4c04a84b53409fd1e92e27294455083a0f75b69eb37526677d6"
+  }
+}
