@@ -1,6 +1,6 @@
 {
   "format": "tagorg-pack-info",
-  "pack_version": "2026.10.01+d159c5cc",
+  "pack_version": "2026.10.01+9df8ab89",
   "source": {
     "file": "danbooru_2026-10-01_pt20-ia-dd.csv",
     "date": "2026-10-01",
@@ -19,11 +19,11 @@
   },
   "synced_from": {
     "repo": "TagOrganizer",
-    "commit": "366af648db0619b505da1b16c9be0b6e5b74bd04",
+    "commit": "4925865f1c8c4496a3f84c2a4f0d4b7532131827",
     "dirty": false
   },
   "files": {
     "bmk_tag_organizer_core.py": "f6057318b94780644f5baf3b7b6ca828e1b7933582109f0d11de9333d0f06496",
-    "tag_organizer_data/tagpack.json.gz": "08744397749b318304db669fed7b18cb7a50103498fa417336b4918bf85cd930"
+    "tag_organizer_data/tagpack.json.gz": "74ed33ab6b24b07586b1446fbee650ca48f1853d65a2629f8d712ca620a2557d"
   }
 }
