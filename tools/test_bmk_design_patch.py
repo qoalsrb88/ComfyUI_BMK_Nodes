@@ -47378,6 +47378,12 @@ def polish5_z_unit():
     same_order["analysis"][keys[1]]["params_hash"] = "far-analysis-only"
     check(bd._layers_sig(root, distant, None, keys[0], box) == bd._layers_sig(root, same_order, None, keys[0], box),
           "영역 밖 분석이 바뀌어도 영역 안 실효 순서가 같으면 3층 서명 유지")
+    for mm in (m, distant, changed):
+        order = list(dp._slices_in_order(bd._star_plan(root, mm, None)[0]))
+        expected = bd._layers_sig(root, mm, None, keys[0], box)
+        with patch.object(bd, "_star_plan", side_effect=AssertionError("이미 계산한 순서를 다시 계산함")):
+            check(bd._layers_sig(root, mm, None, keys[0], box, order=order) == expected,
+                  "Z8: 넘긴 순서의 3층 서명 = 전체 계획을 다시 계산한 서명")
 
     # 함수 경로로 경합·인자 검증(네트워크·TestServer 를 열지 않는다).
     def reset(mm=m):
@@ -47434,6 +47440,49 @@ def polish5_z_unit():
     control = view["z"]["controls"][0]
     check(view["z"]["rev"] == st.load_manifest(root)["rev"] and not control["blocked"]["up"] and control["blocked"]["down"],
           "GET /mask 범위·위치·경합 rev·단추 끔 이유")
+
+    # Z8: 캐시된 PNG 세 장의 동시 요청은 서명 검증용 전체 계획을 한 번만 계산한다.
+    import concurrent.futures
+    import threading
+
+    reset(distant)
+    with patch.object(bd, "_star_plan", wraps=bd._star_plan) as plans:
+        view = bd.mask_view(root, keys[0])
+        check(plans.call_count == 1, "Z8: 수동 순서 GET /mask 계획 1회")
+    now = st.load_manifest(root)
+    box, sig = view["layers"]["box"], view["layers"]["sig"]
+    pngs = {kind: bd._layer_png(root, now, None, keys[0], box, sig, kind) for kind in bd._LAYER_KINDS}
+    gate = threading.Barrier(3)
+
+    def get_layer(kind):
+        gate.wait(timeout=10)
+        return bd.mask_image(root, keys[0], kind, sig)
+
+    with patch.dict(bd._LAYER_ORDER_MEMO, {}, clear=True), patch.object(bd, "_star_plan", wraps=bd._star_plan) as plans:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+            images = list(pool.map(get_layer, bd._LAYER_KINDS))
+        check(plans.call_count == 1 and images == [(pngs[k], sig) for k in bd._LAYER_KINDS],
+              "Z8: 같은 rev 3층 동시 요청 계획 1회·PNG와 서명 유지")
+        st.update_manifest(root, lambda mm: mm.update(notes="새 rev"))
+        check(bd.mask_image(root, keys[0], "under", sig) == (pngs["under"], sig) and plans.call_count == 2,
+              "Z8: 매니페스트 rev 변경 시 순서 재계산")
+        with patch.object(st, "board_pref_v", return_value="new-pref"):
+            check(bd.mask_image(root, keys[0], "under", sig) == (pngs["under"], sig) and plans.call_count == 3,
+                  "Z8: pref_v 변경 시 순서 재계산")
+        now = st.load_manifest(root)
+        with patch.object(bd, "_compose_settings", return_value=dict(cs, zorder="harvest")):
+            expected = bd._layers_sig(root, now, None, keys[0], box)
+            calls = plans.call_count
+            check(bd._layers_sig(root, now, None, keys[0], box, memo_order=True) == expected and plans.call_count == calls + 1,
+                  "Z8: Compose 설정 변경 시 순서 재계산·서명 유지")
+        calls = plans.call_count
+        with patch.object(bd.time, "monotonic", return_value=bd.time.monotonic() + 6):
+            check(bd.mask_image(root, keys[0], "under", sig) == (pngs["under"], sig) and plans.call_count == calls + 1,
+                  "Z8: 짧은 캐시 수명이 지나면 순서 재계산")
+        for rev in range(now["rev"] + 1, now["rev"] + 19):
+            bd._layers_sig(root, dict(now, rev=rev), None, keys[0], box, memo_order=True)
+        check(len(bd._LAYER_ORDER_MEMO) <= 16, "Z8: 영역 순서 캐시 크기 제한")
+    reset()
 
     # Compose 와 Export 출력 마스크가 달라도 순서는 같음. 실제 PSD/사이드카·3층 픽셀을 대조한다.
     import folder_paths
@@ -47569,6 +47618,25 @@ await scenario("z", async () => {
   finishLoad();
   await loading;
   result.loadDone = session.busy === "" && session.info.key === K14;
+  // Z7: 마스크 적용으로 오른 rev 도 새 GET /mask 가 올 때까지 순서 쓰기를 막는다.
+  const saved = maskPanel();
+  const savedInfo = maskInfo(K15);
+  savedInfo.z.rev = 200;
+  savedInfo.z.controls = [make("crops", savedInfo.crop_id, [savedInfo.crop_id, "other"], 0)];
+  saved.srv.info[K15] = savedInfo;
+  saved.srv.save.push([200, Object.assign(clone(MA["POST /mask/save"].ok), { rev: 201 })]);
+  saved.ed.enter(maskState(), { key: K15, seam: null });
+  await until(() => saved.viewer.layer && saved.B("위로"));
+  saved.viewer.ed.pointerdown({ cx: 600, cy: 2900, shiftKey: false });
+  saved.viewer.ed.pointerup({});
+  saved.B("적용").fire("click");
+  await until(() => saved.calls.refresh === 1 && !saved.ed.pending());
+  const applyingWait = saved.B("위로").disabled && saved.B("위로").title.includes("순서 정보를 다시 받는 중");
+  saved.B("위로").fire("click");
+  result.applyWaitInfo = applyingWait && saved.count("zorder") === 0;
+  savedInfo.z.rev = 201;
+  saved.ed.stateChanged(Object.assign(maskState(), { rev: 201 }));
+  await until(() => !saved.B("위로").disabled);
   return result;
 });
 console.log(JSON.stringify(out));

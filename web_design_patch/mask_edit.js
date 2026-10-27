@@ -588,7 +588,7 @@ window.DPMaskEdit = (() => {
     let on = false;
     let S = null;
     let seenRev = null; // 마지막으로 GET /mask 를 맞춘 state 판(stateVer — rev·pref_v)
-    let zRev = null; // 이 창의 마지막 순서 쓰기 rev — 그보다 옛 GET /mask 로 다시 쓰지 않음
+    let zRev = null; // 이 창의 마지막 순서·마스크 쓰기 rev — 그보다 옛 GET /mask 로 다시 쓰지 않음
     let again = false; // 받는 중·획 중에 state 가 바뀜 — 끝나면 다시 받기
     let tool = "erase";
     let size = 48;
@@ -941,6 +941,7 @@ window.DPMaskEdit = (() => {
         opts.toast(`적용하지 못함: ${e.message}`, "err");
       }
       if (d && d.ok) {
+        zRev = Math.max(zRev ?? 0, d.rev);
         applied = { key, from, sig: d.composite_sig, before: before ? before.list : null };
         opts.toast(`마스크 편집 적용 — ${label(key)} · 이음매를 다시 잽니다`);
         repaintAll();

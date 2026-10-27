@@ -1468,12 +1468,19 @@ def _layers_box(crop_rect: list[int], win: list[int] | None, W: int, H: int) -> 
     return [min(box[0], win[0]), min(box[1], win[1]), max(box[2], win[2]), max(box[3], win[3])]
 
 
-def _layers_sig(root: str, m: dict, pref: dict | None, key: str, box: list[int]) -> str:
+_LAYER_ORDER_MEMO: dict[tuple, tuple[float, list]] = {}  # 영역 안 순서 ID 만, 래스터·계획은 보관하지 않음(최대 16개·5초)
+_LAYER_ORDER_LOCK = threading.Lock()                    # 같은 판의 3층 요청이 동시에 와도 순서 계산은 한 번
+
+
+def _layers_sig(root: str, m: dict, pref: dict | None, key: str, box: list[int],
+                order: list[tuple] | None = None, *, memo_order: bool = False) -> str:
     """3층 서명 = box·후보 + 3층이 읽는 ★ 만의 합성 서명(이 후보의 편집은 뺌 — 3층은 자기 마스크를 쓰지 않고 z 도 기준 넓이라(D5) [적용]이
     다시 계산시키지 않는다). 읽는 ★ = 편집 창이 box ±2(_mask_layers 가 건너뛰지 않는 범위)와 만나는 ★ 가 있는 크롭의 ★ 전부 — z 는 크롭·타깃
     넓이 합으로 정해져 같은 크롭의 떨어진 ★ 도 위아래를 바꾼다. 수동 순서가 있으면 전체 계획에서 near 의 실효 순서도 넣는다 —
-    영역 밖 크롭의 자동 넓이가 수동 슬롯의 자리를 바꿀 수 있다. 수동 순서가 없으면 기존 서명을 유지한다."""
-    use_reg = bool(_compose_settings(root, m)["use_registration"])
+    영역 밖 크롭의 자동 넓이가 수동 슬롯의 자리를 바꿀 수 있다. 수동 순서가 없으면 기존 서명을 유지한다.
+    order 는 _mask_target 에서 이미 계산한 순서. /mask/img 는 memo_order 로 같은 rev·설정의 영역 안 순서를 잠깐 재사용한다."""
+    cs = _compose_settings(root, m)
+    use_reg = bool(cs["use_registration"])
     bx0, by0, bx1, by1 = box
     near = set()
     for c in _composite_picks(m):
@@ -1484,9 +1491,25 @@ def _layers_sig(root: str, m: dict, pref: dict | None, key: str, box: list[int])
               mask_edits={k: v for k, v in (m.get("mask_edits") or {}).items() if k != key})
     order_args = []
     if store.z_order(m):
-        plan = _star_plan(root, m, pref)[0]
-        order_args.append([[p["crop"]["id"], t["tid"], it["cand"]["key"]]
-                           for p, t, it in _node()._slices_in_order(plan) if p["crop"]["id"] in near])
+        def effective_order():
+            items = order if order is not None else _node()._slices_in_order(_star_plan(root, m, pref)[0])
+            return [[p["crop"]["id"], t["tid"], it["cand"]["key"]] for p, t, it in items if p["crop"]["id"] in near]
+
+        if order is None and memo_order:
+            memo_key = (store.root_key(root), m["rev"], store.board_pref_v(root), _sig(cs, pref), tuple(sorted(near)))
+            with _LAYER_ORDER_LOCK:
+                cached = _LAYER_ORDER_MEMO.get(memo_key)
+                if cached is None or time.monotonic() - cached[0] >= 5:
+                    effective = effective_order()
+                    _LAYER_ORDER_MEMO.pop(memo_key, None)
+                    while len(_LAYER_ORDER_MEMO) >= 16:
+                        _LAYER_ORDER_MEMO.pop(next(iter(_LAYER_ORDER_MEMO)))
+                    _LAYER_ORDER_MEMO[memo_key] = (time.monotonic(), effective)
+                else:
+                    effective = cached[1]
+        else:
+            effective = effective_order()
+        order_args.append(effective)
     return _sig("masklayers", _composite_sig(root, mv, pref), box, key, *order_args)
 
 
@@ -1566,7 +1589,7 @@ def mask_view(root: str, key) -> dict:
     t = _mask_target(root, m, cand, pref)
     crop = t["order"][t["i"]][0]["crop"]
     box = _layers_box(crop["rect"], t["rect"], *t["wh"])
-    csig, lsig = _composite_sig(root, m, pref), _layers_sig(root, m, pref, key, box)
+    csig, lsig = _composite_sig(root, m, pref), _layers_sig(root, m, pref, key, box, order=t["order"])
     z = {"below": [], "above": []}
     for j, (p, tg, it) in enumerate(t["order"]):
         qx0, qy0, qx1, qy1 = dpsd.quad_bbox(it["quad"])
@@ -1681,7 +1704,7 @@ def mask_image(root: str, key, kind, v) -> tuple[bytes, str]:
     W, H = _canvas_wh(m)
     win = _edit_window(m, cand, _entry_for(m, key, pref), bool(_compose_settings(root, m)["use_registration"]))
     box = _layers_box(_crop(m, cand["crop_id"])["rect"], win, W, H)
-    sig = fresh(_layers_sig(root, m, pref, key, box))
+    sig = fresh(_layers_sig(root, m, pref, key, box, memo_order=True))
     try:
         return _layer_png(root, m, pref, key, box, sig, kind), sig
     except (OSError, ValueError) as e:
