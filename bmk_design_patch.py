@@ -1675,6 +1675,7 @@ class BMKDesignPatchCandidateIn:
         for k in removed:
             m["analysis"].pop(k, None)
             (m.get("mask_edits") or {}).pop(k, None)  # S4 마스크 편집도(탈락·★ 해제는 기록을 둠 — 사라진 후보만)
+            (m.get("cand_adjust") or {}).pop(k, None)
         if source == "folder":
             self._autopick(m, {c["key"] for c in new}, warns)
         _sync_picks(m)

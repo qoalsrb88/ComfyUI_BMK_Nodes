@@ -446,15 +446,28 @@ def adjust_candidate(pixels, blur, invert, src_size, quad):
         width, height = np.linalg.norm(q[1] - q[0]), np.linalg.norm(q[3] - q[0])
         if width > 0 and height > 0:
             sx, sy = float(blur * src_size[0] / width), float(blur * src_size[1] / height)
+            h, w = out.shape[:2]
+            small = (max(1, round(w * 2 / sx)), max(1, round(h * 2 / sy))) if min(sx, sy) >= 8 else None
+
+            def blurred(value):
+                if small is None:
+                    return cv2.GaussianBlur(value, (0, 0), sx, sigmaY=sy)
+                # 큰 커널은 축마다 σ≈2인 해상도로 줄여 계산. 가중 RGB와 알파도 같은 격자·필터를 쓴다.
+                reduced = cv2.resize(value.astype(np.float32, copy=False), small, interpolation=cv2.INTER_AREA)
+                # 면적 평균의 중심은 원본 가장자리보다 반 칸 안쪽: 축소본에서는 칸 경계를 반사해야 경계 색이 밀리지 않는다.
+                reduced = cv2.GaussianBlur(reduced, (0, 0), sx * small[0] / w, sigmaY=sy * small[1] / h,
+                                           borderType=cv2.BORDER_REFLECT)
+                return cv2.resize(reduced, (w, h), interpolation=cv2.INTER_LINEAR)
+
             if out.shape[2] == 4:
                 rgb = out[..., :3].astype(np.float32)
                 alpha = out[..., 3].astype(np.float32) / 255.0
-                weighted = cv2.GaussianBlur(rgb * alpha[..., None], (0, 0), sx, sigmaY=sy)
-                weight = cv2.GaussianBlur(alpha, (0, 0), sx, sigmaY=sy)[..., None]
+                weighted = blurred(rgb * alpha[..., None])
+                weight = blurred(alpha)[..., None]
                 color = np.divide(weighted, weight, out=rgb, where=weight > 1e-6)
                 out[..., :3] = np.clip(np.rint(color), 0, 255).astype(np.uint8)
             else:
-                out[..., :3] = cv2.GaussianBlur(out[..., :3], (0, 0), sx, sigmaY=sy)
+                out[..., :3] = np.clip(np.rint(blurred(out[..., :3])), 0, 255).astype(np.uint8)
     if invert:
         out[..., :3] = 255 - out[..., :3]
     return out

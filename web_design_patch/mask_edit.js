@@ -605,6 +605,7 @@ window.DPMaskEdit = (() => {
     let zRev = null; // 이 창의 마지막 순서·마스크 쓰기 rev — 그보다 옛 GET /mask 로 다시 쓰지 않음
     let adjustTimer = null;
     let adjustDraft = null; // 디바운스 동안의 값·key·seen을 함께 보존
+    let adjustSaving = null; // 저장 중 입력은 보내는 값 위에 합쳐 다음 요청으로 이어 보냄
     let adjustButtons = []; // 대기 중에는 단추만 잠가 끌고 있는 슬라이더 DOM을 보존
     let again = false; // 받는 중·획 중에 state 가 바뀜 — 끝나면 다시 받기
     let tool = "erase";
@@ -1054,6 +1055,10 @@ window.DPMaskEdit = (() => {
     }
 
     async function starAlt(r) {
+      if (M.busy) {
+        if (M.busy === "adjust_wait" || M.busy === "adjust") opts.toast("보정을 먼저 저장한 뒤 ★를 바꾸세요", "warn");
+        return;
+      }
       // [이 후보를 ★] = 검토의 Space(POST /pick set) — 이 크롭 편집은 옛 ★ 에 남는다. 새 ★ 가 예전 ★ 일 때 남긴 편집 기록이 있으면 그 편집이 바로
       // 다시 쓰이고(§3.1 다시 ★ 하면 살아남 — 표 값도 그 편집으로 계산), 없으면 기준 마스크로 시작
       const x = candOf(M.key);
@@ -1190,30 +1195,39 @@ window.DPMaskEdit = (() => {
     function queueAdjust(values) {
       const info = cur();
       const x = candOf(M.key);
-      if (!info || (M.busy && M.busy !== "adjust_wait") || M.stroke || M.pending() || M.err
+      if (!info || (M.busy && M.busy !== "adjust_wait" && M.busy !== "adjust") || M.stroke || M.pending() || M.err
+        || (M.busy === "adjust" && !adjustSaving)
+        || (adjustSaving && adjustSaving.key !== M.key)
         || (x && (!x.c.picked || x.c.rejected))) return;
-      const rec = info.adjust;
-      adjustDraft = Object.assign(adjustDraft || { key: M.key, seen: rec ? rec.at : "", blur: rec ? rec.blur : 0,
+      const rec = adjustSaving || info.adjust;
+      adjustDraft = Object.assign(adjustDraft && adjustDraft.key === M.key ? adjustDraft : { key: M.key, seen: info.adjust ? info.adjust.at : "", blur: rec ? rec.blur : 0,
         invert: rec ? rec.invert : false }, values);
-      M.busy = "adjust_wait"; // 대기 중에도 대상 변경·붓을 잠그고 이 후보의 입력만 모음
       for (const b of adjustButtons) b.disabled = true;
       clearTimeout(adjustTimer);
+      if (adjustSaving) return; // 응답의 새 at를 받은 뒤에 예약
+      M.busy = "adjust_wait"; // 대기 중에도 대상 변경·붓을 잠그고 이 후보의 입력만 모음
       adjustTimer = setTimeout(() => saveAdjust("set"), 300);
     }
 
     async function saveAdjust(op) {
+      if (adjustSaving) return;
       clearTimeout(adjustTimer);
       adjustTimer = null;
       const draft = adjustDraft;
       adjustDraft = null;
+      let saved = null;
+      const key = M.key;
       try {
         if ((M.busy && (op !== "set" || M.busy !== "adjust_wait")) || M.stroke || M.pending()) return;
         if (draft && draft.key !== M.key) return;
+        const rec = cur() && cur().adjust;
+        adjustSaving = Object.assign({ key, blur: 0, invert: false }, op === "set" ? draft || rec : op === "undo" ? rec && rec.hist[0] : null);
         const p = M.adjust(op, op === "set" && draft ? { blur: draft.blur, invert: draft.invert } : {}, draft ? draft.seen : undefined);
         renderPanel();
         const d = await p;
         if (!d) return;
         if (d && d.ok) {
+          saved = d;
           zRev = Math.max(zRev ?? 0, d.rev);
           alts = applied = null;
           opts.toast("후보 보정 적용 — 이음매를 다시 잽니다");
@@ -1224,7 +1238,18 @@ window.DPMaskEdit = (() => {
         if (e.status === 409) opts.refresh();
         await refreshInfo();
       } finally {
+        adjustSaving = null;
         if (M.busy === "adjust_wait") M.busy = "";
+        if (adjustDraft) {
+          if (saved && adjustDraft.key === key && M.key === key && !M.busy && !M.stroke && !M.pending()) {
+            adjustDraft.seen = saved.adjust ? saved.adjust.at : "";
+            M.busy = "adjust_wait";
+            adjustTimer = setTimeout(() => saveAdjust("set"), 300);
+          } else {
+            adjustDraft = null;
+            opts.toast("저장하지 못해 대기 중 보정 입력을 버렸습니다. 값을 확인하고 다시 입력하세요", "warn");
+          }
+        }
         renderPanel();
       }
       render();
@@ -1236,9 +1261,9 @@ window.DPMaskEdit = (() => {
       const s = section("후보 보정");
       s.classList.add("mc-adjust");
       const rec = info.adjust;
-      const values = adjustDraft || rec || { blur: 0, invert: false };
+      const values = adjustDraft || adjustSaving || rec || { blur: 0, invert: false };
       const x = candOf(M.key);
-      const disabled = (!!M.busy && M.busy !== "adjust_wait") || !!M.stroke || !!M.pending() || !!M.err
+      const disabled = (!!M.busy && M.busy !== "adjust_wait" && M.busy !== "adjust") || !!M.stroke || !!M.pending() || !!M.err
         || !!(x && (!x.c.picked || x.c.rejected));
       off(slide(s, "블러", 0, 20, 0.5, values.blur, (v) => `σ ${v} px`, (v) => queueAdjust({ blur: v })), disabled);
       const label = el("label", "mc-invert");

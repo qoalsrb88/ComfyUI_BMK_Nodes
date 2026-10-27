@@ -1181,6 +1181,7 @@ def _composite_sig(root: str, m: dict, pref: dict | None, swap: tuple[str, str, 
     기록은 뺌, _edit_rec). 동률 기준인 크롭·타깃 목록 순서가 후보 첫 등장 순서와 다를 때만 덧붙인다."""
     crops = {c.get("id"): c for c in m["crops"]}
     parts = []
+    adjustments = {}
     first = {}
     for c in _composite_picks(m, swap):
         tids = first.setdefault(c["crop_id"], [])
@@ -1191,9 +1192,11 @@ def _composite_sig(root: str, m: dict, pref: dict | None, swap: tuple[str, str, 
                 crops[c["crop_id"]]["rect"], e.get("params_hash") if e else None]
         rec = _edit_rec(m, c["key"])
         parts.append(part + [_edit_part(root, rec)] if rec else part)
+        adj = store.cand_adjust(m, c["key"])
+        if adj:
+            adjustments[c["key"]] = {k: adj[k] for k in ("blur", "invert")}
     manual = store.z_order(m)
     extra = [{"z_order": manual}] if manual else []
-    adjustments = store.picked_adjustments(m, {c["key"] for c in _composite_picks(m, swap)})
     if adjustments:
         extra.append({"cand_adjust": adjustments})
     tie_order = [[cid, [t["tid"] for t in crop["targets"] if t["tid"] in first[cid]]]
