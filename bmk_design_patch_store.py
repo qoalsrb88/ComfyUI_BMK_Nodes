@@ -1433,6 +1433,25 @@ def save_board_export(root: str, export_hash: str) -> None:
     _save_board_pref_key(root, "export", export_hash, "보드 편집 창·★ 합성과 Studio 처음 값이 이전 Export 기록의 설정을 따름")
 
 
+def export_state_sig(m: dict) -> str:
+    """점검표의 Export 이후 사용자 변경 지문(파일 I/O 없음). Export 내용 해시와 별개이며 분석·Export 설정은 제외한다.
+    ★ 순서(슬라이스 순서)·제외·크롭과 지금 ★ 의 편집 file/rect 만 읽는다. 옛 매니페스트의 후보 picked 도 보드처럼 합친다.
+    """
+    picks = {k: list(v) for k, v in (m.get("picks") or {}).items() if v}
+    for c in m.get("candidates") or []:
+        if c.get("picked"):
+            keys = picks.setdefault(f"{c['crop_id']}/{c['tid']}", [])
+            if c["key"] not in keys:
+                keys.append(c["key"])
+    rejects = m.get("rejects") or {}
+    picked = {k for keys in picks.values() for k in keys if k not in rejects}
+    edits = {k: [v.get("file"), v.get("rect")] for k, v in (m.get("mask_edits") or {}).items()
+             if k in picked and isinstance(v, dict)}
+    payload = {"crops": [[c.get(k) for k in ("id", "name", "rect", "targets")] for c in m.get("crops") or []],
+               "picks": picks, "rejects": sorted(rejects), "edits": edits}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
+
+
 def last_export(root: str, m: dict) -> dict | None:
     """마지막 Export 가 낸 PSD 의 exports[] 기록 = save_board_export 해시와 같은 마지막 항목, 없으면(해시를 남기기 전 프로젝트·매니페스트를
     다시 만듦) exports[] 의 마지막 항목, 기록이 없으면 None. 보드 ★ 합성·마스크 편집 창의 Compose 설정과 Studio 처음 값이 이것을 따른다."""

@@ -1916,6 +1916,19 @@ window.DPPipeline = (() => {
       const stale = planStale();
       const unsure = unsureWhy();
 
+      if (window.DPChecklist) {
+        const host = el("div");
+        panel.append(host);
+        window.DPChecklist.render(host, window.DPChecklist.rows({ S, P0, plan: p, pending: pend, unsure,
+          dim: !planOk || !only || planDim() || stale, selectedCount: sel.size, maskLeft, progress: PS.progress }), {
+          memory: panel, goMode: opts.goMode, goTarget: opts.goTarget, goMask: opts.goMask,
+          goSection: (title) => {
+            const sec = [...panel.querySelectorAll(".pp-sec")].find((x) => x.firstElementChild && x.firstElementChild.textContent === title);
+            if (sec) sec.scrollIntoView({ block: "start", behavior: "smooth" });
+          },
+        });
+      }
+
       // 설정
       let s = section("실행 설정");
       if (!P0) line(s, PS.err ? `읽기 오류: ${PS.err}` : "불러오는 중…", PS.err ? "bad" : "dim");

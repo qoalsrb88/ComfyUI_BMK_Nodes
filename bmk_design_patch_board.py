@@ -13,7 +13,7 @@ Review 노드를 부분 실행한다(대체 경로). 인증 토큰은 그 경로
 라우트 (register_routes — 모든 root 파라미터 = store 레지스트리 키(소문자 hex 12자), 경로 금지)
 -------------------------------------------------------------------------------------------
 - GET  /bmk/design_patch/board/            board.html (web_design_patch/ 의 board.html·board.js·viewer.js·layout_geom.js·
-                                            layout_edit.js·ref_edit.js·pipeline.js·mask_edit.js·board.css 만)
+                                            layout_edit.js·ref_edit.js·checklist.js·pipeline.js·mask_edit.js·board.css 만)
 - GET  /bmk/design_patch/state?root=&since_rev=
        보드 요약(JSON). since_rev 가 지금 rev 와 같으면 {"unchanged": true, rev, running, drain, layout_rev, refs_rev, refs_files_v,
        pipeline_rev, plan_v}.
@@ -260,7 +260,7 @@ API = "/bmk/design_patch"
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web_design_patch")
 _STATIC = {"board.html": "text/html", "board.js": "text/javascript", "viewer.js": "text/javascript",
            "layout_geom.js": "text/javascript", "layout_edit.js": "text/javascript", "ref_edit.js": "text/javascript",
-           "pipeline.js": "text/javascript", "mask_edit.js": "text/javascript", "board.css": "text/css"}
+           "checklist.js": "text/javascript", "pipeline.js": "text/javascript", "mask_edit.js": "text/javascript", "board.css": "text/css"}
 
 THUMB_KINDS = ("cand", "before", "ref", "delta", "context")
 THUMB_SIZES = (128, 192, 256, 384, 512, 768, 1024)
@@ -1869,15 +1869,21 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
     흐리게 — §3.7). S4: 후보 mask_edit = 마스크 편집 기록이 있으면 {at, stale}(★ 가 아니어도 — stale 은 _plan 이 편집 파일을 쓰지 못할 때도,
     형식이 깨진 기록은 null), 크롭 요약 mask_edits·mask_stale = 지금 ★ 의 편집 수·그중 stale — 편집 쓰기는 매니페스트 rev 를 올리므로 보통
     폴링으로 반영된다. pref_v(unchanged 응답에도) = board_pref.json 지문(store.board_pref_v) — 분석·Export 설정이 바뀌면(편집 창·기준·★ 합성의
-    재료, 매니페스트 rev 는 그대로) 보드는 since_rev 없이 다시 받는다."""
+    재료, 매니페스트 rev 는 그대로) 보드는 since_rev 없이 다시 받는다.
+    export_state(unchanged 응답에도) = 마지막 Export 뒤 사용자 입력 서명 same·changed·unknown(옛 기록)·null(Export 없음).
+    export_last = 그 기록의 rev·time('변경 없음'으로 재사용한 옛 PSD 도 last_export 기준)."""
     m = store.load_manifest(root)
     rk = store.root_key(root)
     running, drafting = is_running(root), draft_since(root) is not None
     lay = _layout_or_none(root)
     doc = _refs_doc(root)[0]
+    ex = store.last_export(root, m)
+    export_state = (None if ex is None else "unknown" if not ex.get("state_sig")
+                    else "same" if ex["state_sig"] == store.export_state_sig(m) else "changed")
     flags = {"running": running, "drain": running and drain_requested(root), "drafting": drafting,
              "layout_rev": lay["rev"] if lay else None, "refs_rev": doc["rev"] if doc else None, "refs_files_v": _refs_files_v(_refs_dir(m)),
-             "pipeline_rev": pl.pipeline_rev(root), "plan_v": None, "pref_v": store.board_pref_v(root)}
+             "pipeline_rev": pl.pipeline_rev(root), "plan_v": None, "pref_v": store.board_pref_v(root),
+             "export_state": export_state, "export_last": {k: ex.get(k) for k in ("rev", "time")} if ex is not None else None}
     plan = _plan_free(root)
     if plan is not None:
         r_sig, d_sig = _plan_sigs(root, m, (running, drafting), flags["refs_files_v"])

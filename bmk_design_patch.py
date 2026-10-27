@@ -2313,8 +2313,9 @@ class BMKDesignPatchExportPSD:
         eh = _export_hash(m, entries, comp, dict(opts, subfolder=os.path.normcase(sub)) if sub else opts, edits)
         last = next((e for e in reversed(m["exports"]) if e.get("hash") == eh), None)
         if last and os.path.isfile(last["psd"]) and _sidecar_hash(last["psd"]) == eh:  # 다른 export 가 덮어쓴 파일은 재사용 안 함
+            last["state_sig"] = store.export_state_sig(m)  # 옛 기록도 보완 — 출력 파일·사이드카는 그대로
             _h, conflicts = _commit(root, m, before)
-            store.save_board_export(root, eh)  # exports[] 는 그대로 — 보드·Studio 가 이 PSD 의 설정을 따르게(store.last_export)
+            store.save_board_export(root, eh)  # 새 항목은 더하지 않음 — 보드·Studio 가 이 PSD 의 설정을 따르게(store.last_export)
             logger.info("%s Export: 바뀐 것 없음 → 기존 파일 %s", _TAG, last["psd"])
             for wmsg in warns:  # 편집 파일을 못 읽어 기준으로 떨어진 경고 등 — 기존 PSD 를 돌려줄 때도 알린다
                 logger.warning("%s Export: %s", _TAG, wmsg)
@@ -2417,7 +2418,7 @@ class BMKDesignPatchExportPSD:
         rec = {"rev": rev, "psd": psd_path.replace("\\", "/"), "time": time.strftime("%Y-%m-%d %H:%M:%S"), "hash": eh,
                "options": opts, "compose": comp, "bytes": res["bytes"], "smart_objects": res["smart_objects"],
                "layers": len(written), "problems": len(res["problems"]), "mask": mask_png.replace("\\", "/"),
-               "mask_groups": n_groups, "mask_edits": n_edit}
+               "mask_groups": n_groups, "mask_edits": n_edit, "state_sig": store.export_state_sig(m)}
         m["exports"].append(_plain(rec))
         store.write_json_atomic(snap, dict(m, export_layers=written))
         _h, conflicts = _commit(root, m, before)

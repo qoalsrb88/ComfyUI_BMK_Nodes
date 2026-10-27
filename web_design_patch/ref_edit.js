@@ -2317,7 +2317,10 @@ window.DPRefEdit = (() => {
       reload(!prev || prev[0] !== st.rev || prev[2] !== st.layout_rev || prev[3] !== st.refs_files_v);
     }
 
-    return { enter, leave, onKey, stateChanged };
+    return { enter, leave, onKey, stateChanged, select: (cropId) => {
+      // 처음 진입해 /refs 를 읽는 중에도 보드에 있는 크롭은 선택해 둔다. reload 가 사라진 선택을 정리한다.
+      if ((state && state.crops || crops()).some((c) => c.id === cropId)) select(cropId);
+    } };
   }
 
   return { create, session, checkDesc, refFileName, transformSize, sideOf, hintText };

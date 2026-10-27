@@ -203,6 +203,8 @@
         S.running = d.running;
         S.drain = d.drain;
         S.drafting = d.drafting; // S3: Spec Draft 실행 중(옛 서버 = undefined)
+        S.export_state = d.export_state;
+        S.export_last = d.export_last;
         // 레이아웃·레퍼런스 쓰기는 매니페스트 rev 를 올리지 않는다 — layout_rev·refs_rev 가 바뀌면 크롭 요약을 새로 받는다.
         // refs_files_v = 바깥(PS·탐색기)에서 refs_dir 파일이 바뀜 — 새 S 가 있어야 크롭 요약 칩·레퍼런스 편집기(since 없이 GET /refs)가 따라온다
         if ("layout_rev" in d && d.layout_rev !== S.layout_rev) pollAgain = true;
@@ -1643,6 +1645,12 @@
       });
       pipe = window.DPPipeline.create({ list: $("pipe-list"), panel: $("pipe-panel"), head: $("pipe-head") }, {
         apiUrl, comfyUrl, root: ROOT, toast, drain, goTarget, goMask, link: tabLink,
+        goMode: (mode, cropId) => {
+          const t = S && cropId ? S.targets.find((x) => x.crop_id === cropId) : null;
+          if (t) selectTarget(t.key);
+          goMode(mode);
+          if (mode === "refs" && refsOn && cropId) refEd.select(cropId);
+        },
         refresh: () => refresh(true),
         select: (id) => {
           const t = S ? S.targets.find((x) => x.crop_id === id) : null;

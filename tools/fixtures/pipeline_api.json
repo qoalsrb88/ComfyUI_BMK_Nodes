@@ -4061,7 +4061,9 @@
   "flags": {
    "drafting": false,
    "pipeline_rev": 3,
-   "plan_v": "r:5c0e4f1a9b23d7e8|d:41b0c2aa7e9d3f10"
+   "plan_v": "r:5c0e4f1a9b23d7e8|d:41b0c2aa7e9d3f10",
+   "export_state": "same",
+   "export_last": {"rev": 46, "time": "2026-10-27 12:00:00"}
   },
   "crop": {
    "draft_chip": {
@@ -4086,11 +4088,17 @@
    "refs_files_v": "a3f09c1d77e2b450",
    "pipeline_rev": 3,
    "plan_v": "r:5c0e4f1a9b23d7e8|d:41b0c2aa7e9d3f10",
-   "pref_v": "4f1c2a9be0d3"
+   "pref_v": "4f1c2a9be0d3",
+   "export_state": "same",
+   "export_last": {"rev": 46, "time": "2026-10-27 12:00:00"}
   },
   "nullable": [
    "flags.pipeline_rev",
    "flags.plan_v",
+   "flags.export_state",
+   "flags.export_last",
+   "flags.export_last.rev",
+   "flags.export_last.time",
    "crop.draft_chip",
    "crop.draft_chip.adopt",
    "unchanged.layout_rev",
@@ -4098,7 +4106,11 @@
    "unchanged.refs_files_v",
    "unchanged.pipeline_rev",
    "unchanged.plan_v",
-   "unchanged.pref_v"
+   "unchanged.pref_v",
+   "unchanged.export_state",
+   "unchanged.export_last",
+   "unchanged.export_last.rev",
+   "unchanged.export_last.time"
   ]
  },
  "history": {
