@@ -45503,6 +45503,11 @@ console.log(JSON.stringify(out));
             check(ok is True, f"후보 보정 UI: {label}")
 
 
+def polish5_xform_unit():
+    """다듬기 배치 5-2b-1(10/28 — _proto/STUDIO_POLISH5B_SPEC.md §2 D30–D44): 후보 변형(이동·회전·배율·뒤집기) 서버 + 「후보 보정」 숫자 입력."""
+    section("다듬기 배치 5-2b-1 — 후보 변형(서버·숫자 입력)")
+
+
 def polish5_grow_unit():
     """다듬기 배치 5-4(10/27 — _proto/STUDIO_POLISH5_SPEC.md §5·§8): 크롭 넓히기 제안(이음매 신호 → 크롭 편집 제안)."""
     section("다듬기 배치 5-4 — 크롭 넓히기 제안")
@@ -49801,6 +49806,8 @@ if __name__ == "__main__":
         polish5_adjust_unit()
     if want("polish5_grow_unit"):
         polish5_grow_unit()
+    if want("polish5_xform_unit"):
+        polish5_xform_unit()
     print(f"\n단위 테스트 {time.time() - T0:.1f}s (PASS {PASSES} FAIL {len(FAILS)})")
     if QUICK:
         print("\n--quick: 회귀·노드 생략")
