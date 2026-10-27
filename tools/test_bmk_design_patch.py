@@ -25763,11 +25763,11 @@ def pipeline_unit():
         un = dict(st["unchanged"], pipeline_rev=None, plan_v=None, layout_rev=None, refs_rev=None, refs_files_v=None)
         bad_st = (_pl_shape({"unchanged": st["unchanged"]}, {"unchanged": un}, st)
                   + _pl_shape({"unchanged": st["unchanged"]}, {"unchanged": dict(st["unchanged"], layout_rev=5, refs_rev=9)}, st)
-                  + _pl_shape({"flags": st["flags"]}, {"flags": {"drafting": True, "pipeline_rev": None, "plan_v": None}}, st)
+                  + _pl_shape({"flags": st["flags"]}, {"flags": {"drafting": True, "pipeline_rev": None, "plan_v": None, "export_state": None, "export_last": None}}, st)
                   + _pl_shape({"crop": st["crop"]}, {"crop": dict(st["crop"], draft_chip=dict(st["crop"]["draft_chip"], adopt=None))}, st)
                   + _pl_shape({"crop": st["crop"]}, {"crop": {"draft_chip": None, "plan_stale": False}}, st))
         check(not bad_st and isinstance(st["unchanged"]["layout_rev"], int)
-              and _pl_shape({"flags": st["flags"]}, {"flags": {"drafting": False, "pipeline_rev": "3", "plan_v": None}}, st) == ["flags.pipeline_rev: str ≠ 예시 num"],
+              and _pl_shape({"flags": st["flags"]}, {"flags": {"drafting": False, "pipeline_rev": "3", "plan_v": None, "export_state": None, "export_last": None}}, st) == ["flags.pipeline_rev: str ≠ 예시 num"],
               f"state: unchanged 의 pipeline_rev·plan_v·layout_rev·refs_rev·refs_files_v null, draft_chip(.adopt) null 통과, 타입은 대조 {bad_st}")
         # plan: 채택할 제안 없는 크롭(adopt null), only 빈 값 = alt.no_selection(칩용 — 선택 필드 빈 값, 해시 "")
         pp = routes["GET /pipeline/plan"]
