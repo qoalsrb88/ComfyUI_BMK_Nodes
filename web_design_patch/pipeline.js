@@ -1919,7 +1919,8 @@ window.DPPipeline = (() => {
       if (window.DPChecklist) {
         const host = el("div");
         panel.append(host);
-        window.DPChecklist.render(host, window.DPChecklist.rows({ S, P0, plan: p, pending: pend, unsure,
+        const prepareDrift = P0 && !P0.error ? (P0.drift || []).filter((x) => x.section === "prepare") : [];
+        window.DPChecklist.render(host, window.DPChecklist.rows({ S, P0, plan: p, pending: pend, prepareDrift, unsure,
           planOk, planErr: PS.planErr, stale, selectedCount: sel.size, maskLeft, progress: PS.progress }), {
           memory: panel, goMode: opts.goMode, goTarget: opts.goTarget, goMask: opts.goMask,
           goSection: (title) => {

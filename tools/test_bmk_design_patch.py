@@ -44839,6 +44839,31 @@ test("C2 미반영·불확실·초안 대기·계산 중·오류·낡은 계획�
   stale.S.drafting = true;
   assert.equal(D.rows(stale)[4].state, "todo"); assert.equal(D.rows(stale)[4].value, "초안 진행 중");
 });
+test("C15 Prepare 설정 갈라짐은 반영·생성 미완료, 다른 반영 사유도 보존", () => {
+  const i = base(); i.prepareDrift = [{ field: "quality" }, { field: "n" }];
+  let r = D.rows(i);
+  assert.equal(r[3].state, "todo"); assert.equal(r[3].value, "Prepare 설정 갈라짐 2");
+  assert.equal(r[3].go.section, "반영"); assert.equal(r[5].state, "todo"); assert.equal(r[4].state, "done");
+  i.pending = ["레이아웃 미반영 1"]; i.unsure = "계획 낡음";
+  assert.equal(D.rows(i)[3].value, "레이아웃 미반영 1 · Prepare 설정 갈라짐 2 · 확인 필요: 계획 낡음");
+  i.prepareDrift = []; i.pending = []; i.unsure = ""; r = D.rows(i);
+  assert.equal(r[3].state, "done"); assert.equal(r[5].state, "done");
+});
+test("C16 초안 복구·못 쓴 스펙·full 화풍 대기는 미완료, targets는 화풍 대기 무관", () => {
+  const i = base(); i.plan.draft.free = 2;
+  assert.equal(D.rows(i)[4].state, "todo"); assert.equal(D.rows(i)[4].value, "초안 복구 대기 2");
+  i.selectedCount = 1; assert.equal(D.rows(i)[4].value, "초안 복구 대기 2");
+  i.selectedCount = 2; i.plan.draft.free = 0; i.plan.draft.warnings = { unwritten: ["c1"] };
+  assert.equal(D.rows(i)[4].state, "warn"); assert.equal(D.rows(i)[4].value, "못 쓴 스펙 1");
+  i.planOk = false; assert.equal(D.rows(i)[4].state, "todo"); assert.equal(D.rows(i)[4].value, "계산 중");
+  i.planOk = true; i.plan.draft.warnings.unwritten = [];
+  i.P0 = { settings: { draft: { apply: "full" } } }; i.plan.draft.pending_style = 1;
+  assert.equal(D.rows(i)[4].state, "todo"); assert.equal(D.rows(i)[4].value, "화풍 초안 대기 1");
+  i.P0.settings.draft.apply = "targets"; assert.equal(D.rows(i)[4].state, "done");
+  assert.equal(D.rows(i)[4].value, "초안 승인 필요 0");
+  i.P0.settings.draft.apply = "full"; i.plan.draft.pending_style = 0;
+  assert.equal(D.rows(i)[4].state, "done");
+});
 test("생성 승인·진행·크롭 전체 완료·빈 계획·부분 계획", () => {
   const i = base(); i.plan.run.need = 3;
   assert.equal(D.rows(i)[5].value, "생성 승인 필요 3"); assert.equal(D.rows(i)[5].state, "todo");
@@ -44850,7 +44875,7 @@ test("생성 승인·진행·크롭 전체 완료·빈 계획·부분 계획", (
   delete i.plan.run.by_crop.c2; assert.equal(D.rows(i)[5].state, "todo");
   i.plan.run = {}; assert.equal(D.rows(i)[5].value, "계산 중");
 });
-test("C7 승인 필요 0·완료 결과·최신 계획이어도 생성/초안 실행 중에는 할 일", () => {
+test("C7/C17 승인 필요 0·완료 결과·최신 계획이어도 생성/초안 실행 중에는 할 일", () => {
   const cases = [
     [5, (i) => { i.S.running = true; }, "진행 0"],
     [5, (i) => { i.plan.run.running = true; }, "진행 0"],
@@ -44863,7 +44888,8 @@ test("C7 승인 필요 0·완료 결과·최신 계획이어도 생성/초안 �
     const i = base(); start(i);
     const r = D.rows(i), host = new E("div");
     assert.equal(r[n].state, "todo"); assert.equal(r[n].value, value);
-    D.render(host, r); assert.equal(host.children[0].children[0].textContent, "작업 점검표 (7/8)");
+    if (n === 4) assert.equal(r[5].state, "todo"); // S.drafting·draft.running 모두 생성 완료도 막음
+    D.render(host, r); assert.equal(host.children[0].children[0].textContent, `작업 점검표 (${n === 4 ? 6 : 7}/8)`);
   }
 });
 test("C8 사전 승인한 다시 생성 대기: 기존 완료 결과가 있어도 할 일·비용/승인 이동", () => {
@@ -44995,6 +45021,18 @@ test("renderPanel 삽입 블록: 실제 opts·섹션 이동·설정 분기 뒤",
     assert(failed[n].className.includes("warn"));
     assert.equal(failed[n].children[2].textContent, "계획 오류 — 다시 계산 · 계획 요청 실패");
   }
+  ctx.planOk = true; ctx.PS.planErr = null;
+  ctx.P0.drift = [{ section: "prepare", field: "quality" }, { section: "draft", field: "apply" }, { section: "prepare", field: "n" }];
+  vm.runInContext(block, ctx);
+  const drifted = panel.children[panel.children.length - 1].children[0].children;
+  assert(drifted[4].className.includes("todo")); assert.equal(drifted[4].children[2].textContent, "Prepare 설정 갈라짐 2");
+  assert(drifted[6].className.includes("todo"));
+  ctx.P0.error = "pipeline.json 오류"; vm.runInContext(block, ctx);
+  const broken = panel.children[panel.children.length - 1].children[0].children;
+  assert.equal(broken[4].children[2].textContent, "미반영 없음"); // 깨진 파일의 갈라짐 목록은 전달하지 않음
+  ctx.P0 = { drift: [{ section: "draft", field: "apply" }] }; vm.runInContext(block, ctx);
+  const other = panel.children[panel.children.length - 1].children[0].children;
+  assert(other[4].className.includes("done")); assert(other[6].className.includes("done"));
 });
 test("F6 실제 보드 콜백→refs 진입→내부 선택: 첫 로드·없는 크롭·전환 실패", () => {
   const bsrc = fs.readFileSync(process.argv[4], "utf8"), rsrc = fs.readFileSync(process.argv[5], "utf8");

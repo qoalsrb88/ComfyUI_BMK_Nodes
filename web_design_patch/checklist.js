@@ -9,6 +9,7 @@ window.DPChecklist = (() => {
     const crops = S.crops || [];
     const targets = S.targets || [];
     const pending = input.pending || [];
+    const prepareDrift = input.prepareDrift || [];
     const plan = input.plan;
     const draft = plan && plan.draft;
     const run = plan && plan.run;
@@ -24,6 +25,10 @@ window.DPChecklist = (() => {
     const missingRef = crops.find((c) => !hasRefs(c));
     const noRefsDir = crops.some((c) => c.refs === null);
     const draftNeed = draft && Array.isArray(draft.units) ? draft.units.length : null;
+    const draftFree = draft && Number.isFinite(draft.free) ? draft.free : 0;
+    const draftUnwritten = draft && draft.warnings && Array.isArray(draft.warnings.unwritten) ? draft.warnings.unwritten.length : 0;
+    const draftSettings = input.P0 && !input.P0.error && input.P0.settings && input.P0.settings.draft;
+    const draftStyle = draftSettings && draftSettings.apply === "full" && draft && Number.isFinite(draft.pending_style) ? draft.pending_style : 0;
     const runNeed = run && Number.isFinite(run.need) ? run.need : null;
     const runPre = run && Number.isFinite(run.pre) ? run.pre : 0;
     const runFree = run && Number.isFinite(run.free) ? run.free : 0;
@@ -32,11 +37,14 @@ window.DPChecklist = (() => {
     const inflight = progress && Number.isFinite(progress.inflight) ? progress.inflight
       : crops.reduce((v, c) => v + ((runCrops[c.id] || {}).inflight || 0), 0);
     const running = !!S.running || !!(run && run.running) || inflight > 0;
+    const drafting = !!S.drafting || !!(draft && draft.running);
     const complete = n > 0 && crops.every((c) => (runCrops[c.id] || {}).done > 0);
     const draftError = planError || (planOk && draft && draft.error);
     const runError = planError || (planOk && run && run.error);
     const draftValue = draftError ? draftError : !planOk || !draft ? "계산 중"
-      : draft.running || S.drafting ? "초안 진행 중" : draftNeed === null ? "계산 중" : `초안 승인 필요 ${draftNeed}${selectionNote}`;
+      : draftUnwritten > 0 ? `못 쓴 스펙 ${draftUnwritten}` : drafting ? "초안 진행 중"
+        : draftFree > 0 ? `초안 복구 대기 ${draftFree}` : draftStyle > 0 ? `화풍 초안 대기 ${draftStyle}`
+          : draftNeed === null ? "계산 중" : `초안 승인 필요 ${draftNeed}${selectionNote}`;
     const runValue = runError ? runError : !planOk || !run ? "계산 중"
       : running ? `진행 ${inflight}` : runPre > 0 ? `다시 생성 대기 ${runPre}`
         : runFree > 0 ? `복구 대기 ${runFree}` : runNeed === null ? "계산 중" : `생성 승인 필요 ${runNeed}${selectionNote}`;
@@ -63,13 +71,16 @@ window.DPChecklist = (() => {
       row(2, "크롭", n ? "done" : "todo", `크롭 ${n}`, "크롭 편집(E)에서 고칠 영역을 확인하세요.", { mode: "edit" }),
       row(3, "레퍼런스", n && linked === n ? "done" : "todo", `크롭 ${linked}/${n}${noRefsDir ? " · refs 폴더 없음" : ""}`,
         "레퍼런스(T)에서 각 크롭에 참고 이미지를 연결하세요.", { mode: "refs", cropId: missingRef ? missingRef.id : null }),
-      row(4, "반영", !pending.length && !input.unsure ? "done" : "todo",
-        pending.concat(input.unsure ? [`확인 필요: ${input.unsure}`] : []).join(" · ") || "미반영 없음",
+      row(4, "반영", !pending.length && !prepareDrift.length && !input.unsure ? "done" : "todo",
+        pending.concat(prepareDrift.length ? [`Prepare 설정 갈라짐 ${prepareDrift.length}`] : [],
+          input.unsure ? [`확인 필요: ${input.unsure}`] : []).join(" · ") || "미반영 없음",
         "크롭·레퍼런스를 바꾼 뒤 반영(무료)을 눌러 생성 입력을 갱신하세요.", { section: "반영" }),
-      row(5, "초안", draftError ? "warn" : n > 0 && allSelected && ready && draftNeed === 0 && !(draft.running || S.drafting) ? "done" : "todo",
+      row(5, "초안", draftError || (planOk && draftUnwritten > 0) ? "warn"
+        : n > 0 && allSelected && ready && draftNeed === 0 && draftFree === 0 && draftStyle === 0 && !drafting ? "done" : "todo",
         draftValue,
         "비용·승인에서 초안 계획과 비용을 확인한 뒤 승인하세요.", { section: "비용·승인" }),
-      row(6, "생성", runError ? "warn" : allSelected && ready && runNeed === 0 && runPre === 0 && runFree === 0 && complete && !running ? "done" : "todo",
+      row(6, "생성", runError ? "warn"
+        : allSelected && ready && runNeed === 0 && runPre === 0 && runFree === 0 && complete && !running && !drafting && !prepareDrift.length ? "done" : "todo",
         runValue,
         "비용·승인에서 생성 계획을 확인하세요. 모든 크롭에 완료 결과가 있어야 끝납니다.", { section: "비용·승인" }),
       row(7, "★", targets.length && !missingStar ? "done" : "todo", `타깃 ${stars}/${targets.length}`,
