@@ -579,6 +579,14 @@ body.pipe .proj { min-width: 0; overflow: hidden; text-overflow: ellipsis; white
 
 #pipe-panel { flex: none; width: clamp(380px, 34vw, 600px); overflow-y: auto; padding: 8px 12px; background: var(--panel); }
 .pp-sec { margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+.dp-checklist > summary { cursor: pointer; padding: 4px 0; }
+.dp-check-row { display: grid; grid-template-columns: 2.3em 7.8em minmax(0, 1fr); align-items: center; gap: 5px;
+  width: 100%; margin-top: 3px; text-align: left; font: inherit; }
+.dp-check-state { text-align: center; font-size: 11px; color: var(--dim); }
+.dp-check-row.done .dp-check-state { color: var(--ok); }
+.dp-check-row.warn .dp-check-state { color: var(--slice); }
+.dp-check-value { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--dim); }
+.dp-check-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .pp-row { margin: 2px 0; overflow-wrap: anywhere; }
 .pp-row.ok { color: var(--ok); }
 .pp-row.warn { color: var(--slice); }

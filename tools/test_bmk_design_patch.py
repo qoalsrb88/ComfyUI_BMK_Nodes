@@ -5722,7 +5722,8 @@ def m2_board_unit():
         (BASE / "bmk_design_patch" / "_MOCK_API").unlink()
         st, u = await h.jget("/bmk/design_patch/state", root=key, since_rev=str(s["rev"]))
         check(st == 200 and u == {"unchanged": True, "rev": s["rev"], "running": False, "drain": False, "drafting": False, "layout_rev": None,
-                                  "refs_rev": None, "refs_files_v": None, "pipeline_rev": None, "plan_v": None, "pref_v": None}
+                                  "refs_rev": None, "refs_files_v": None, "pipeline_rev": None, "plan_v": None, "pref_v": None,
+                                  "export_state": None, "export_last": None}
               and s.get("refs_files_v", "없음") is None,
               f"since_rev 같음 → unchanged(레이아웃·refs.json·refs_dir·pipeline.json·기억한 계획 없음 → layout_rev·refs_rev·refs_files_v·"
               f"pipeline_rev·plan_v null, S1 §4.2·S2 §5.8·S3 §6) {u}")
@@ -6163,10 +6164,10 @@ def m2_board_unit():
                   f"{name} 외부 URL·CDN 없음")
             check(not any(ord(ch) >= 0x1F000 or ch == "\ufe0f" for ch in text), f"{name} 이모지 없음")
         check(re.findall(r'<script src="([^"]+)" defer></script>', html)
-              == ["layout_geom.js", "viewer.js", "layout_edit.js", "ref_edit.js", "pipeline.js", "mask_edit.js", "board.js"]
-              and not re.search(r"<script(?![^>]*\bsrc=\"(?:layout_geom|viewer|layout_edit|ref_edit|pipeline|mask_edit|board)\.js\")", html)
+              == ["layout_geom.js", "viewer.js", "layout_edit.js", "ref_edit.js", "checklist.js", "pipeline.js", "mask_edit.js", "board.js"]
+              and not re.search(r"<script(?![^>]*\bsrc=\"(?:layout_geom|viewer|layout_edit|ref_edit|checklist|pipeline|mask_edit|board)\.js\")", html)
               and "on" + "click=" not in html.lower(),
-              "html 에 인라인 스크립트·이벤트 속성 없음, layout_geom → viewer → layout_edit → ref_edit → pipeline → mask_edit → board 순서")
+              "html 에 인라인 스크립트·이벤트 속성 없음, layout_geom → viewer → layout_edit → ref_edit → checklist → pipeline → mask_edit → board 순서")
         check('postMessage({ type: "bmk-dp-queue", rootKey: ROOT, layout }, location.origin)' in js,
               "opener postMessage 형식(명세 §4.2, layout = 옛 서버 대체(재시작 전) — 탭 layout 요청)")
         check("POLL_MS = 2000" in js and "since_rev" in js, "2초 폴링 + since_rev")
@@ -14032,7 +14033,7 @@ def layout_board_unit():
         st, u = await h.jget(f"{API}/state", root=key, since_rev=str(s["rev"]))
         refs_rev = (board.drefs.load_refs(root) or {}).get("rev")  # B21 이름 바꾸기가 고정(S2 §2.6)해 refs.json 이 있음
         check(u == {"unchanged": True, "rev": s["rev"], "running": False, "drain": False, "drafting": False, "layout_rev": L["rev"],
-                    "refs_rev": refs_rev, "refs_files_v": s.get("refs_files_v"), "pipeline_rev": None, "plan_v": None, "pref_v": None}
+                    "refs_rev": refs_rev, "refs_files_v": s.get("refs_files_v"), "pipeline_rev": None, "plan_v": None, "pref_v": None, "export_state": None, "export_last": None}
               and refs_rev is not None and isinstance(s.get("refs_files_v"), str),
               f"unchanged 응답에도 layout_rev·refs_rev·refs_files_v(S3 drafting false, pipeline_rev·plan_v 는 파일·계획이 없어 null) {u}")
         mrev = store.load_manifest(root)["rev"]
@@ -15856,7 +15857,7 @@ def layout_js_unit():
           f"layout_edit.js 서버 주소 = apiUrl 상대 경로 5개뿐 {sorted(paths)}")
     check("textContent" in ed and "replaceChildren" in ed, "layout_edit.js textContent·replaceChildren")
     check(re.findall(r'<script src="([^"]+)" defer></script>', html)
-          == ["layout_geom.js", "viewer.js", "layout_edit.js", "ref_edit.js", "pipeline.js", "mask_edit.js", "board.js"],
+          == ["layout_geom.js", "viewer.js", "layout_edit.js", "ref_edit.js", "checklist.js", "pipeline.js", "mask_edit.js", "board.js"],
           "board.html script 순서 layout_geom → viewer → layout_edit → ref_edit → pipeline → mask_edit → board")
     check(all(f'id="{i}"' in html for i in ("btn-edit", "layout-head", "layout-list", "layout-panel")), "board.html 크롭 편집 모드 요소 4개")
     vj = code["viewer.js"]
@@ -22610,7 +22611,7 @@ def refs_js_unit():
     check("textField(a)" in rp and '"TEXTAREA"' in rj and "renderSoon" in rj, "패널 다시 그리기 = 글자 입력칸 포커스 복원, 입력 중이면 미룸")
     # board.html·board.js·viewer.js·board.css 연결
     scripts = re.findall(r'<script src="([^"]+)" defer></script>', html)
-    check(scripts == ["layout_geom.js", "viewer.js", "layout_edit.js", "ref_edit.js", "pipeline.js", "mask_edit.js", "board.js"],
+    check(scripts == ["layout_geom.js", "viewer.js", "layout_edit.js", "ref_edit.js", "checklist.js", "pipeline.js", "mask_edit.js", "board.js"],
           f"board.html script 순서 layout_geom → viewer → layout_edit → ref_edit → pipeline → mask_edit → board {scripts}")
     check(all(f'id="{i}"' in html for i in ("btn-refs", "ref-head", "ref-list", "ref-view", "ref-sheets", "ref-viewer", "ref-panel"))
           and "레퍼런스 (<kbd>T</kbd>)" in html, "board.html 레퍼런스 모드 요소 7개·도움말")
@@ -25762,11 +25763,11 @@ def pipeline_unit():
         un = dict(st["unchanged"], pipeline_rev=None, plan_v=None, layout_rev=None, refs_rev=None, refs_files_v=None)
         bad_st = (_pl_shape({"unchanged": st["unchanged"]}, {"unchanged": un}, st)
                   + _pl_shape({"unchanged": st["unchanged"]}, {"unchanged": dict(st["unchanged"], layout_rev=5, refs_rev=9)}, st)
-                  + _pl_shape({"flags": st["flags"]}, {"flags": {"drafting": True, "pipeline_rev": None, "plan_v": None}}, st)
+                  + _pl_shape({"flags": st["flags"]}, {"flags": {"drafting": True, "pipeline_rev": None, "plan_v": None, "export_state": None, "export_last": None}}, st)
                   + _pl_shape({"crop": st["crop"]}, {"crop": dict(st["crop"], draft_chip=dict(st["crop"]["draft_chip"], adopt=None))}, st)
                   + _pl_shape({"crop": st["crop"]}, {"crop": {"draft_chip": None, "plan_stale": False}}, st))
         check(not bad_st and isinstance(st["unchanged"]["layout_rev"], int)
-              and _pl_shape({"flags": st["flags"]}, {"flags": {"drafting": False, "pipeline_rev": "3", "plan_v": None}}, st) == ["flags.pipeline_rev: str ≠ 예시 num"],
+              and _pl_shape({"flags": st["flags"]}, {"flags": {"drafting": False, "pipeline_rev": "3", "plan_v": None, "export_state": None, "export_last": None}}, st) == ["flags.pipeline_rev: str ≠ 예시 num"],
               f"state: unchanged 의 pipeline_rev·plan_v·layout_rev·refs_rev·refs_files_v null, draft_chip(.adopt) null 통과, 타입은 대조 {bad_st}")
         # plan: 채택할 제안 없는 크롭(adopt null), only 빈 값 = alt.no_selection(칩용 — 선택 필드 빈 값, 해시 "")
         pp = routes["GET /pipeline/plan"]
@@ -42256,7 +42257,7 @@ def mask_js_unit():
           and "if (maskCv || !crop" in vj,
           "viewer.js 마스크 겹침 훅(setMaskLayer — 선택 크롭 겹침 대신)·showSeam·curSeam(3차 ui-r3-03)·N 이 onPick 에 구간을 넘김")
     check(re.findall(r'<script src="([^"]+)" defer></script>', html)
-          == ["layout_geom.js", "viewer.js", "layout_edit.js", "ref_edit.js", "pipeline.js", "mask_edit.js", "board.js"]
+          == ["layout_geom.js", "viewer.js", "layout_edit.js", "ref_edit.js", "checklist.js", "pipeline.js", "mask_edit.js", "board.js"]
           and all(f'id="{i}"' in html for i in ("btn-mask", "mask-list", "mask-panel")) and re.search(r'<section id="mask-panel"[^>]*hidden>', html)
           and "마스크 (<kbd>K</kbd>)" in html,
           "board.html: mask_edit.js 가 pipeline 뒤·board 앞, 마스크 모드 요소 3개(패널은 처음 hidden)·도움말 '마스크 (K)' 표")
@@ -44746,6 +44747,684 @@ console.log(JSON.stringify(out));
 def polish4_check_unit():
     """다듬기 배치 4-2(10/27 — _proto/STUDIO_POLISH_PLAN_2610.md §4·§12): [실행] 작업 점검표."""
     section("다듬기 배치 4-2 — [실행] 작업 점검표")
+    import copy
+    import subprocess
+    from unittest.mock import patch
+    import bmk_design_patch_board as board
+    web = PKG / "web_design_patch"
+    out = OUT_ROOT / "polish4_check"
+    out.mkdir(parents=True, exist_ok=True)
+    source = (web / "checklist.js").read_text(encoding="utf-8")
+    for bad in ("innerHTML", "outerHTML", "insertAdjacentHTML", "localStorage", "sessionStorage", "fetch("):
+        check(bad not in source, f"점검표: {bad} 없음")
+    check(not re.search(r"https?://", source), "점검표: 외부 URL 없음")
+    check(re.findall(r"window\.(\w+)\s*=(?!=)", source) == ["DPChecklist"], "점검표 전역은 DPChecklist 하나")
+    html = (web / "board.html").read_text(encoding="utf-8")
+    check(html.index('src="checklist.js" defer') < html.index('src="pipeline.js" defer'), "점검표가 pipeline 앞에서 로드됨")
+    static = asyncio.run(board.board_static(types.SimpleNamespace(match_info={"name": "checklist.js"})))
+    check(static.status == 200 and static.content_type == "text/javascript" and static.body == (web / "checklist.js").read_bytes(),
+          "정적 라우트: checklist.js 실제 내용 제공(소켓 없는 핸들러 직접 호출)")
+    forbidden = asyncio.run(board.board_static(types.SimpleNamespace(match_info={"name": "../bmk_design_patch_store.py"})))
+    check(forbidden.status == 404, "정적 라우트: 허용 목록 밖 경로는 그대로 404")
+    node = shutil.which("node") or r"C:\Program Files\nodejs\node.exe"
+    js = r'''
+const fs = require("fs"), vm = require("vm"), assert = require("assert");
+class E {
+  constructor(tag) { this.tagName = tag; this.children = []; this.events = {}; this.attrs = {}; this.open = false; }
+  replaceChildren(...children) { this.children = children; }
+  append(...children) { this.children.push(...children); }
+  addEventListener(name, fn) { this.events[name] = fn; }
+  setAttribute(name, value) { this.attrs[name] = value; }
+  contains(e) { return this.children.includes(e) || this.children.some((c) => c.contains(e)); }
+  get firstElementChild() { return this.children[0]; }
+  querySelectorAll() { return this.children.filter((c) => c.className === "pp-sec"); }
+  scrollIntoView() { this.scrolled = true; }
+}
+const ctx = { window: {}, document: { createElement: (tag) => new E(tag) } };
+vm.createContext(ctx);
+vm.runInContext(fs.readFileSync(process.argv[2], "utf8"), ctx);
+vm.runInContext(fs.readFileSync(process.argv[3], "utf8"), ctx);
+const D = ctx.window.DPChecklist, out = [];
+const test = (name, fn) => { try { fn(); out.push([name, true]); } catch (e) { out.push([name, false, e.message]); } };
+const clone = (v) => JSON.parse(JSON.stringify(v));
+const base = () => ({ S: { crops: [{ id: "c1", refs: { n: 1 }, mask_edits: 0 }, { id: "c2", refs: { n: 1 }, mask_edits: 1 }],
+  canvas: { size: [64, 64] }, targets: [{ key: "c1/A", crop_id: "c1", tid: "A", pick_keys: ["a"], candidates: [] }],
+  export_state: "same", export_last: { rev: 46, time: "12:00:00" } }, pending: [], unsure: "", planOk: true, stale: false,
+  plan: { draft: { units: [] }, run: { need: 0, by_crop: { c1: { done: 1 }, c2: { done: 1 } } } } });
+test("빈 프로젝트: PSD·크롭·레퍼런스·★·Export 할 일, 계획 계산 중", () => {
+  const r = D.rows({ S: { crops: [], targets: [], export_state: null }, unsure: "계획을 받는 중" });
+  assert.equal(r.length, 9);
+  for (const n of [0, 1, 2, 3, 4, 5, 6, 8]) assert.equal(r[n].state, "todo");
+  assert.equal(r[4].value, "계산 중"); assert.equal(r[5].value, "계산 중"); assert.equal(r[7].state, "optional");
+});
+test("C3 크롭 없는 Import: 캔버스가 있으면 가져옴, 크롭은 별도 할 일", () => {
+  const r = D.rows({ S: { crops: [], targets: [], canvas: { size: [64, 64] } } });
+  assert.equal(r[0].state, "done"); assert.equal(r[0].value, "가져옴");
+  assert.equal(r[1].state, "todo"); assert.equal(r[1].value, "크롭 0");
+});
+test("C13 크롭 0 + 최신 초안 계획 units [] 도 초안은 할 일", () => {
+  const i = base(); i.S.crops = []; i.S.targets = [];
+  const r = D.rows(i);
+  assert.equal(r[4].state, "todo"); assert.equal(r[4].value, "초안 승인 필요 0");
+  assert.equal(r[5].state, "todo");
+});
+test("크롭만·refs 폴더 없음·부분 연결·첫 미연결 크롭", () => {
+  const i = base(); i.plan = null; i.S.crops.forEach((c) => c.refs = null);
+  let r = D.rows(i); assert.equal(r[0].state, "done"); assert.equal(r[1].value, "크롭 2");
+  assert.equal(r[2].value, "크롭 0/2 · refs 폴더 없음");
+  i.S.crops[0].refs = { n: 2 }; i.S.crops[1].refs = { n: 0 };
+  r = D.rows(i); assert.equal(r[2].value, "크롭 1/2"); assert.equal(r[2].go.cropId, "c2");
+});
+test("C4 레퍼런스 없이 수동 고정은 연결, 자동 고정·사라진 파일은 미연결", () => {
+  const i = base(); i.S.crops[0].refs = { n: 0, fixed: true, none: true, auto: false };
+  assert.equal(D.rows(i)[2].state, "done"); assert.equal(D.rows(i)[2].value, "크롭 2/2");
+  assert.equal(D.rows(i)[2].go.cropId, null);
+  i.S.crops[1].refs = { n: 0, fixed: true, none: true, auto: true };
+  assert.equal(D.rows(i)[2].value, "크롭 1/2"); assert.equal(D.rows(i)[2].go.cropId, "c2");
+  i.S.crops[0].refs.none = false;
+  assert.equal(D.rows(i)[2].value, "크롭 0/2"); assert.equal(D.rows(i)[2].go.cropId, "c1");
+  i.S.crops[0].refs = { n: 0, fixed: false, none: true, auto: false };
+  assert.equal(D.rows(i)[2].state, "todo"); assert.equal(D.rows(i)[2].value, "크롭 0/2");
+});
+test("C2 미반영·불확실·초안 대기·계산 중·오류·낡은 계획을 구분", () => {
+  const i = base(); i.pending = ["레이아웃 미반영 1"]; i.unsure = "계획 낡음";
+  let r = D.rows(i); assert.equal(r[3].state, "todo"); assert(r[3].value.includes("레이아웃 미반영 1"));
+  i.plan.draft.units = [{ crop_id: "c1" }, { crop_id: "c2" }];
+  assert.equal(D.rows(i)[4].value, "초안 승인 필요 2");
+  i.planOk = false; assert.equal(D.rows(i)[4].value, "계산 중"); assert.equal(D.rows(i)[5].state, "todo");
+  i.planOk = true; i.plan.draft = { error: "초안 계획 실패" }; i.plan.run = { error: "생성 계획 실패" };
+  assert.equal(D.rows(i)[4].state, "warn"); assert.equal(D.rows(i)[4].value, "초안 계획 실패");
+  assert.equal(D.rows(i)[5].state, "warn"); assert.equal(D.rows(i)[5].value, "생성 계획 실패");
+  const stale = base(); stale.stale = true;
+  for (const n of [4, 5]) { assert.equal(D.rows(stale)[n].state, "todo"); assert(D.rows(stale)[n].value.endsWith("승인 필요 0")); }
+  stale.S.drafting = true;
+  assert.equal(D.rows(stale)[4].state, "todo"); assert.equal(D.rows(stale)[4].value, "초안 진행 중");
+});
+test("C15 Prepare 설정 갈라짐은 반영·생성 미완료, 다른 반영 사유도 보존", () => {
+  const i = base(); i.prepareDrift = [{ field: "quality" }, { field: "n" }];
+  let r = D.rows(i);
+  assert.equal(r[3].state, "todo"); assert.equal(r[3].value, "Prepare 설정 갈라짐 2");
+  assert.equal(r[3].go.section, "반영"); assert.equal(r[5].state, "todo"); assert.equal(r[4].state, "done");
+  assert.equal(r[5].value, "반영 뒤 다시 계산"); assert.equal(r[5].go.section, "반영");
+  i.pending = ["레이아웃 미반영 1"]; i.unsure = "계획 낡음";
+  assert.equal(D.rows(i)[3].value, "레이아웃 미반영 1 · Prepare 설정 갈라짐 2 · 확인 필요: 계획 낡음");
+  i.prepareDrift = []; i.pending = []; i.unsure = ""; r = D.rows(i);
+  assert.equal(r[3].state, "done"); assert.equal(r[5].state, "done");
+});
+test("C18 미반영 입력은 생성 완료 제외, Import 미반영은 초안도 제외·반영으로 이동", () => {
+  const i = base();
+  for (const reason of ["레이아웃 미반영 1", "레퍼런스 미반영", "Prepare 입력 바뀜"]) {
+    i.pending = [reason];
+    const r = D.rows(i); assert.equal(r[5].state, "todo"); assert.equal(r[5].value, "반영 뒤 다시 계산");
+    assert.equal(r[5].go.section, "반영"); assert.equal(r[4].state, "done");
+  }
+  i.plan.draft.import_pending = ["레퍼런스 미반영"];
+  let r = D.rows(i); assert.equal(r[4].state, "todo"); assert.equal(r[4].value, "반영 뒤 다시 계산");
+  const host = new E("div"), calls = [];
+  D.render(host, r, { goSection: (title) => calls.push(title) });
+  for (const n of [5, 6]) host.children[0].children[n].events.click();
+  assert.deepEqual(calls, ["반영", "반영"]);
+  i.pending = []; i.plan.draft.import_pending = []; r = D.rows(i);
+  assert.equal(r[4].state, "done"); assert.equal(r[5].state, "done");
+});
+test("C19 승인 필요 0·완료 결과 없는 크롭 수와 실패/결과 못 받음 합·비용/승인 이동", () => {
+  const i = base();
+  i.plan.run.by_crop = { c1: { done: 0, failed: 2, orphaned: 1 }, c2: { done: 0, failed: 3, orphaned: 2 } };
+  let r = D.rows(i)[5]; assert.equal(r.state, "todo");
+  assert.equal(r.value, "완료 결과 없는 크롭 2 (실패 5 · 결과 못 받음 3)");
+  assert.equal(r.go.section, "비용·승인");
+  i.selectedCount = 1; assert.equal(D.rows(i)[5].value, r.value); // 전체 by_crop 현황에는 선택 범위를 붙이지 않음
+  delete i.plan.run.by_crop.c2;
+  assert.equal(D.rows(i)[5].value, "완료 결과 없는 크롭 2 (실패 2 · 결과 못 받음 1)");
+  i.plan.run.need = 1; assert.equal(D.rows(i)[5].value, "생성 승인 필요 1 (선택 1/2 크롭 기준)");
+});
+test("C16 초안 복구·못 쓴 스펙·full 화풍 대기는 미완료, targets는 화풍 대기 무관", () => {
+  const i = base(); i.plan.draft.free = 2;
+  assert.equal(D.rows(i)[4].state, "todo"); assert.equal(D.rows(i)[4].value, "초안 복구 대기 2");
+  i.selectedCount = 1; assert.equal(D.rows(i)[4].value, "초안 복구 대기 2");
+  i.selectedCount = 2; i.plan.draft.free = 0; i.plan.draft.warnings = { unwritten: ["c1"] };
+  assert.equal(D.rows(i)[4].state, "warn"); assert.equal(D.rows(i)[4].value, "못 쓴 스펙 1");
+  i.planOk = false; assert.equal(D.rows(i)[4].state, "todo"); assert.equal(D.rows(i)[4].value, "계산 중");
+  i.planOk = true; i.plan.draft.warnings.unwritten = [];
+  i.P0 = { settings: { draft: { apply: "full" } } }; i.plan.draft.pending_style = 1;
+  assert.equal(D.rows(i)[4].state, "todo"); assert.equal(D.rows(i)[4].value, "화풍 초안 대기 1");
+  i.P0.settings.draft.apply = "targets"; assert.equal(D.rows(i)[4].state, "done");
+  assert.equal(D.rows(i)[4].value, "초안 승인 필요 0");
+  i.P0.settings.draft.apply = "full"; i.plan.draft.pending_style = 0;
+  assert.equal(D.rows(i)[4].state, "done");
+});
+test("C21 못 쓴 스펙이 남은 이전 계획보다 초안 실행 중 표시 우선", () => {
+  for (const source of ["state", "plan"]) {
+    const i = base(); i.plan.draft.warnings = { unwritten: ["c1"] };
+    const flag = source === "state" ? i.S : i.plan.draft, key = source === "state" ? "drafting" : "running";
+    flag[key] = true;
+    assert.equal(D.rows(i)[4].state, "todo"); assert.equal(D.rows(i)[4].value, "초안 진행 중");
+    flag[key] = false;
+    assert.equal(D.rows(i)[4].state, "warn"); assert.equal(D.rows(i)[4].value, "못 쓴 스펙 1");
+  }
+});
+test("생성 승인·진행·크롭 전체 완료·빈 계획·부분 계획", () => {
+  const i = base(); i.plan.run.need = 3;
+  assert.equal(D.rows(i)[5].value, "생성 승인 필요 3"); assert.equal(D.rows(i)[5].state, "todo");
+  i.S.running = true; i.progress = { run: { inflight: 2 } };
+  assert.equal(D.rows(i)[5].value, "진행 2");
+  i.S.running = false; delete i.progress; i.plan.run.need = 0;
+  assert.equal(D.rows(i)[5].state, "done");
+  i.plan.run.by_crop.c2.done = 0; assert.equal(D.rows(i)[5].state, "todo");
+  delete i.plan.run.by_crop.c2; assert.equal(D.rows(i)[5].state, "todo");
+  i.plan.run = {}; assert.equal(D.rows(i)[5].value, "계산 중");
+});
+test("C7/C17 승인 필요 0·완료 결과·최신 계획이어도 생성/초안 실행 중에는 할 일", () => {
+  const cases = [
+    [5, (i) => { i.S.running = true; }, "진행 0"],
+    [5, (i) => { i.plan.run.running = true; }, "진행 0"],
+    [5, (i) => { i.progress = { run: { inflight: 1 } }; }, "진행 1"],
+    [5, (i) => { i.plan.run.by_crop.c2.inflight = 1; }, "진행 1"],
+    [4, (i) => { i.plan.draft.running = true; }, "초안 진행 중"],
+    [4, (i) => { i.S.drafting = true; }, "초안 진행 중"],
+  ];
+  for (const [n, start, value] of cases) {
+    const i = base(); start(i);
+    const r = D.rows(i), host = new E("div");
+    assert.equal(r[n].state, "todo"); assert.equal(r[n].value, value);
+    if (n === 4) { // S.drafting·draft.running 모두 생성 완료도 막고 이유를 표시
+      assert.equal(r[5].state, "todo"); assert.equal(r[5].value, "초안 진행 중 — 끝난 뒤");
+      assert.equal(r[5].go.section, "비용·승인");
+    }
+    D.render(host, r); assert.equal(host.children[0].children[0].textContent, `작업 점검표 (${n === 4 ? 6 : 7}/8)`);
+  }
+});
+test("C8 사전 승인한 다시 생성 대기: 기존 완료 결과가 있어도 할 일·비용/승인 이동", () => {
+  const i = base(); i.plan.run.pre = 2;
+  const r = D.rows(i), host = new E("div"), calls = [];
+  assert.equal(r[5].state, "todo"); assert.equal(r[5].value, "다시 생성 대기 2");
+  D.render(host, r, { goSection: (title) => calls.push(title) });
+  assert.equal(host.children[0].children[0].textContent, "작업 점검표 (7/8)");
+  host.children[0].children[6].events.click(); assert.deepEqual(calls, ["비용·승인"]);
+  i.selectedCount = 1; assert.equal(D.rows(i)[5].value, "다시 생성 대기 2");
+  i.selectedCount = 2; i.plan.run.pre = 0; assert.equal(D.rows(i)[5].state, "done");
+});
+test("C12 다운로드 복구 대기: 기존 완료 결과가 있어도 할 일·비용/승인 이동", () => {
+  const i = base(); i.plan.run.free = 2;
+  const r = D.rows(i), host = new E("div"), calls = [];
+  assert.equal(r[5].state, "todo"); assert.equal(r[5].value, "복구 대기 2");
+  D.render(host, r, { goSection: (title) => calls.push(title) });
+  assert.equal(host.children[0].children[0].textContent, "작업 점검표 (7/8)");
+  host.children[0].children[6].events.click(); assert.deepEqual(calls, ["비용·승인"]);
+  i.selectedCount = 1; assert.equal(D.rows(i)[5].value, "복구 대기 2");
+  i.selectedCount = 2; i.plan.run.free = 0; assert.equal(D.rows(i)[5].state, "done");
+});
+test("C9 계획 요청 실패: 첫 계획 없음·옛 완료 계획 모두 초안/생성 경고, 복구 뒤 완료", () => {
+  for (const oldPlan of [false, true]) {
+    const i = base(); if (!oldPlan) i.plan = null;
+    i.planErr = "503: 계획 응답 실패";
+    for (const planOk of [false, true]) {
+      i.planOk = planOk;
+      for (const n of [4, 5]) {
+        const r = D.rows(i)[n]; assert.equal(r.state, "warn");
+        assert.equal(r.value, "계획 오류 — 다시 계산 · 503: 계획 응답 실패");
+        assert.equal(r.go.section, "비용·승인");
+      }
+    }
+    i.planErr = "오류 <연결> ".repeat(40);
+    assert.equal(D.rows(i)[4].value, "계획 오류 — 다시 계산 · " + i.planErr.slice(0, 120));
+    i.planErr = null; i.plan = base().plan;
+    for (const n of [4, 5]) assert.equal(D.rows(i)[n].state, "done");
+  }
+});
+test("F3/C14 일부·0개 선택은 완료 아님, 승인 필요 값에만 선택 수 표시", () => {
+  const i = base();
+  for (const k of [0, 1]) {
+    i.selectedCount = k;
+    for (const n of [4, 5]) {
+      const r = D.rows(i)[n]; assert.equal(r.state, "todo"); assert(r.value.endsWith(` (선택 ${k}/2 크롭 기준)`));
+    }
+  }
+  i.selectedCount = 1; i.planOk = false;
+  for (const n of [4, 5]) { assert.equal(D.rows(i)[n].value, "계산 중"); assert.equal(D.rows(i)[n].state, "todo"); }
+  i.planOk = true; i.S.running = true; i.progress = { run: { inflight: 1 } };
+  assert.equal(D.rows(i)[5].value, "진행 1");
+  i.S.drafting = true; assert.equal(D.rows(i)[4].value, "초안 진행 중");
+  i.planErr = "요청 실패";
+  for (const n of [4, 5]) {
+    assert.equal(D.rows(i)[n].value, "계획 오류 — 다시 계산 · 요청 실패"); assert.equal(D.rows(i)[n].state, "warn");
+  }
+  i.planErr = null; i.plan.draft.error = "초안 계획 실패"; i.plan.run.error = "생성 계획 실패";
+  assert.equal(D.rows(i)[4].value, "초안 계획 실패"); assert.equal(D.rows(i)[5].value, "생성 계획 실패");
+  delete i.plan.draft.error; delete i.plan.run.error;
+  i.selectedCount = 2; i.S.running = false; i.S.drafting = false; delete i.progress;
+  for (const n of [4, 5]) { assert.equal(D.rows(i)[n].state, "done"); assert(!D.rows(i)[n].value.includes("크롭 기준")); }
+});
+test("★ 일부·공동 B/C = starChecks 정보·다른 ★ 로 바꾸면 미완료", () => {
+  const i = base();
+  i.S.targets.push(...["B", "C"].map((tid) => ({ key: `c1/${tid}`, crop_id: "c1", tid, pick_keys: [],
+    candidates: [{ joint: { first: "A", first_key: "a" } }] })));
+  i.S.crops.forEach((c) => Object.assign(c, { dup_picks: [], stale_picked: [] }));
+  let r = D.rows(i); assert.equal(r[6].state, "done"); assert.equal(r[6].value, "타깃 3/3");
+  const infos = ctx.window.DPPipeline.starChecks(i.S, new Map(), []).filter((c) => c.info);
+  assert.equal(infos.length, 2);
+  i.S.targets[0].pick_keys = ["other"]; r = D.rows(i);
+  assert.equal(r[6].state, "todo"); assert.equal(r[6].go.target, "c1/B"); assert.equal(r[6].value, "타깃 1/3");
+});
+test("마스크 선택·미적용 경고·Export 네 상태", () => {
+  const i = base(); let r = D.rows(i);
+  assert.equal(r[7].state, "optional"); assert.equal(r[7].value, "편집 1 · 선택");
+  i.maskLeft = { key: "a", n: 3 }; r = D.rows(i);
+  assert.equal(r[7].state, "warn"); assert(r[7].value.includes("적용 안 한 편집 3획"));
+  assert.equal(r[8].state, "done"); assert.equal(r[8].value, "r46 · 12:00:00");
+  i.S.export_state = "changed"; assert.equal(D.rows(i)[8].value, "다시 Export 필요");
+  i.S.export_state = "unknown"; assert.equal(D.rows(i)[8].state, "warn"); assert(D.rows(i)[8].value.includes("확인 불가"));
+  i.S.export_state = null; i.S.export_last = null; i.P0 = { exports: [{ rev: 1 }] };
+  assert.equal(D.rows(i)[8].state, "todo");
+});
+test("순수 판정·힌트·DOM 이동 인자·접힘 메모리·선택 단계는 끝난 수 제외", () => {
+  const i = base(), before = JSON.stringify(i), r = D.rows(i), calls = [], memory = {};
+  assert.equal(JSON.stringify(i), before); assert(r.every((x) => x.hint.startsWith("처음이면:")));
+  const opts = { memory, goMode: (...a) => calls.push(["mode", ...a]), goMask: (...a) => calls.push(["mask", ...a]),
+    goTarget: (...a) => calls.push(["target", ...a]), goSection: (...a) => calls.push(["section", ...a]) };
+  const host = new E("div"); D.render(host, r, opts);
+  let details = host.children[0]; assert.equal(details.children[0].textContent, "작업 점검표 (8/8)");
+  assert.equal(details.children[0].title, "마스크 다듬기는 선택 — 끝난 수에는 포함하지 않습니다.");
+  assert(details.open); details.open = false; details.events.toggle();
+  const next = new E("div"); D.render(next, r, opts); assert.equal(next.children[0].open, false);
+  const fresh = new E("div"); D.render(fresh, r); assert.equal(fresh.children[0].open, true);
+  i.S.crops[1].refs.n = 0; i.S.targets[0].pick_keys = []; i.maskLeft = { key: "a", n: 2 };
+  D.render(host, D.rows(i), opts); details = host.children[0];
+  assert.equal(details.children[0].textContent, "작업 점검표 (6/8)");
+  for (const b of details.children.slice(1)) { assert(b.title.startsWith("처음이면:")); b.events.click(); }
+  assert.deepEqual(calls.slice(0, 7), [["section", "실행 설정"], ["mode", "edit", null], ["mode", "refs", "c2"],
+    ["section", "반영"], ["section", "비용·승인"], ["section", "비용·승인"], ["target", "c1/A"]]);
+  assert.equal(calls[7][0], "mask"); assert.equal(calls[7][1].key, "a"); assert.deepEqual(calls[8], ["section", "Export"]);
+});
+// 실제 renderPanel 의 유일한 삽입 블록을 실행해 연결·스크롤도 확인(기존 비용/승인 UI 의 하네스와 독립).
+test("renderPanel 삽입 블록: 실제 opts·섹션 이동·설정 분기 뒤", () => {
+  const src = fs.readFileSync(process.argv[3], "utf8"), start = src.indexOf("      if (window.DPChecklist) {");
+  const end = src.indexOf("      // 설정", start), block = src.slice(start, end);
+  assert(start > src.indexOf("if (settingsOn)", src.indexOf("function renderPanel")));
+  const gateStart = src.indexOf("    function confirmOf(P0) {"), gateEnd = src.indexOf("    function busyNow()", gateStart);
+  vm.runInContext(src.match(/  const GATE_SECTIONS = .*;/)[0] + "\n" + src.slice(gateStart, gateEnd), ctx);
+  const panel = new E("div"), calls = [], i = base();
+  Object.assign(ctx, { panel, S: i.S, P0: { saved: true, confirm: ["draft.apply"] }, p: i.plan, pend: [], unsure: "", planOk: true, only: "c1,c2", sel: new Set(["c1", "c2"]),
+    planDim: () => { throw new Error("점검표는 해시 복사 흐림 판정을 부르면 안 됨"); }, stale: false, maskLeft: null, PS: { progress: null }, el: (tag) => new E(tag),
+    opts: { goMode: (...a) => calls.push(a) } });
+  vm.runInContext(block, ctx);
+  const host = panel.children[0], sec = new E("div"); sec.className = "pp-sec";
+  assert.equal(host.children[0].children[0].textContent, "작업 점검표 (8/8)");
+  const heading = new E("div"); heading.textContent = "반영"; sec.append(heading); panel.append(sec);
+  host.children[0].children[2].events.click(); assert.deepEqual(calls, [["edit", null]]);
+  host.children[0].children[4].events.click(); assert(sec.scrolled);
+  ctx.sel.delete("c2"); vm.runInContext(block, ctx);
+  const partial = panel.children[2].children[0].children;
+  for (const n of [5, 6]) {
+    assert(partial[n].className.includes("todo")); assert(partial[n].children[2].textContent.endsWith(" (선택 1/2 크롭 기준)"));
+  }
+  ctx.sel.add("c2"); ctx.planOk = false; ctx.PS.planErr = "계획 요청 실패";
+  vm.runInContext(block, ctx);
+  const failed = panel.children[3].children[0].children;
+  for (const n of [5, 6]) {
+    assert(failed[n].className.includes("warn"));
+    assert.equal(failed[n].children[2].textContent, "계획 오류 — 다시 계산 · 계획 요청 실패");
+  }
+  ctx.planOk = true; ctx.PS.planErr = null;
+  ctx.P0.drift = [{ section: "prepare", field: "quality" }, { section: "draft", field: "apply" }, { section: "prepare", field: "n" }];
+  vm.runInContext(block, ctx);
+  const drifted = panel.children[panel.children.length - 1].children[0].children;
+  assert(drifted[4].className.includes("todo")); assert.equal(drifted[4].children[2].textContent, "Prepare 설정 갈라짐 2");
+  assert(drifted[6].className.includes("todo"));
+  ctx.P0.error = "pipeline.json 오류"; vm.runInContext(block, ctx);
+  const broken = panel.children[panel.children.length - 1].children[0].children;
+  assert(broken[4].className.includes("todo"));
+  assert.equal(broken[4].children[2].textContent, "실행 설정 확인 필요 (pipeline.json 오류)"); // C22: 깨진 파일은 반영 완료 아님
+  ctx.P0 = { saved: true, confirm: [], drift: [{ section: "draft", field: "apply" }] }; vm.runInContext(block, ctx);
+  const other = panel.children[panel.children.length - 1].children[0].children;
+  assert(other[4].className.includes("done")); assert(other[6].className.includes("done"));
+  const settings = new E("div"), settingsHeading = new E("div"); settings.className = "pp-sec";
+  settingsHeading.textContent = "실행 설정"; settings.append(settingsHeading); panel.append(settings);
+  const good = { saved: true, confirm: ["draft.apply", "analyze.method", "export.color"] };
+  for (const [P0, err, reason] of [
+    [null, null, "불러오는 중"], [good, "읽기 실패", "읽기 오류"],
+    [{ ...good, error: "깨진 JSON" }, null, "pipeline.json 오류"],
+    [{ saved: false, confirm: [] }, null, "파일 없음"],
+    [{ ...good, confirm: ["prepare.model"] }, null, "필수 항목 미확인"],
+    [{ ...good, confirm: ["import.psd_path"] }, null, "필수 항목 미확인"],
+  ]) {
+    ctx.P0 = P0; ctx.PS.err = err; ctx.pend = ["레이아웃 미반영 1"]; settings.scrolled = false;
+    vm.runInContext(block, ctx);
+    const row = panel.children[panel.children.length - 1].children[0].children[4];
+    assert(row.className.includes("todo")); assert.equal(row.children[2].textContent, `실행 설정 확인 필요 (${reason})`);
+    row.events.click(); assert(settings.scrolled);
+  }
+  ctx.P0 = good; ctx.PS.err = null; ctx.pend = []; vm.runInContext(block, ctx);
+  const restored = panel.children[panel.children.length - 1].children[0].children[4];
+  assert(restored.className.includes("done")); assert.equal(restored.children[2].textContent, "미반영 없음");
+});
+test("F6 실제 보드 콜백→refs 진입→내부 선택: 첫 로드·없는 크롭·전환 실패", () => {
+  const bsrc = fs.readFileSync(process.argv[4], "utf8"), rsrc = fs.readFileSync(process.argv[5], "utf8");
+  const selectStart = rsrc.indexOf("    function select(id) {"), selectEnd = rsrc.indexOf("    function syncSel()", selectStart);
+  const boundary = rsrc.lastIndexOf("    return { enter, leave, onKey, stateChanged");
+  const end = rsrc.indexOf("\n  }", boundary);
+  const noop = () => {}, events = [];
+  const rc = { state: { crops: [{ id: "c1" }, { id: "c2" }] }, crops: () => [], sel: null,
+    desc: "옛 설명", text: "옛 SAM 설명", overlay: {}, cutCanvas: { style: {} }, render: () => events.push("render"),
+    enter: noop, leave: noop, onKey: noop, stateChanged: noop };
+  vm.createContext(rc);
+  const refEd = vm.runInContext(`(function() { ${rsrc.slice(selectStart, selectEnd)}\n${rsrc.slice(boundary, end)} })()`, rc);
+  const bc = { S: { targets: [{ key: "c2/A", crop_id: "c2" }] }, refsOn: false, refEd,
+    selectTarget: (key) => events.push(key), goMode: (mode) => { events.push(mode); assert.equal(rc.sel, null); bc.refsOn = mode === "refs"; } };
+  vm.createContext(bc);
+  const callback = bsrc.match(/goMode: (\(mode, cropId\) => \{[\s\S]*?\n        \}),\n        refresh:/)[1];
+  const goMode = vm.runInContext(`(${callback})`, bc), host = new E("div"), i = base();
+  i.S.crops[1].refs.n = 0;
+  D.render(host, D.rows(i), { goMode }); host.children[0].children[3].events.click();
+  assert.equal(rc.sel, "c2"); assert.deepEqual(events, ["c2/A", "refs", "render"]);
+  assert.equal(rc.desc, ""); assert.equal(rc.text, ""); assert.equal(rc.overlay, null);
+  refEd.select("missing"); assert.equal(rc.sel, "c2"); assert.equal(events.length, 3);
+  rc.state.crops = [{ id: "c1" }]; rc.crops = () => [{ id: "c2" }];
+  refEd.select("c2"); assert.equal(events.length, 3); // 낡은 /refs 목록에만 남은 크롭도 무시
+  bc.goMode = () => { bc.refsOn = false; };
+  goMode("refs", "c1"); assert.equal(rc.sel, "c2");
+});
+(async () => {
+  const name = "C11 실제 pollState: 옛 서버 전체→키 없는 unchanged·새 서버 상태/명시적 null";
+  try {
+    const src = fs.readFileSync(process.argv[4], "utf8"), start = src.indexOf("  async function pollState(force) {");
+    const end = src.indexOf("  function schedule()", start), errors = [], noop = () => {};
+    let reply = base().S;
+    const bc = { S: null, polling: false, pollAgain: false, editing: false, refsOn: false, pipe: null,
+      getState: async () => reply, reconcile: noop, renderAll: noop, renderHeader: noop,
+      setConn: (msg) => { if (msg) errors.push(msg); }, refresh: () => { throw new Error("불필요한 재폴링"); } };
+    vm.createContext(bc); vm.runInContext(src.slice(start, end), bc);
+    const poll = () => vm.runInContext("pollState(false)", bc);
+    const row = () => D.rows({ S: bc.S, P0: { exports: [{ rev: 46 }] } })[8];
+    await poll(); assert.equal(row().state, "done");
+    reply = { unchanged: true, running: false, drafting: false, drain: false };
+    await poll(); assert.equal(row().state, "done"); assert.equal(bc.S.export_last.rev, 46);
+    reply = { rev: 46, crops: [], targets: [] }; // 옛 서버의 전체 응답으로 전환(키를 delete 하지 않음)
+    await poll(); assert.equal(row().state, "warn");
+    reply = { unchanged: true, running: false, drafting: false, drain: false };
+    await poll(); assert(!("export_state" in bc.S)); assert(!("export_last" in bc.S));
+    assert.equal(row().state, "warn"); assert(row().value.includes("변경 여부 확인 불가"));
+    reply = { ...reply, export_state: "same", export_last: { rev: 47, time: "13:00:00" } };
+    await poll(); assert.equal(row().state, "done"); assert.equal(row().value, "r47 · 13:00:00");
+    reply = { ...reply, export_state: null, export_last: null };
+    await poll(); assert.equal(row().state, "todo"); assert.equal(row().value, "Export 없음");
+    assert.deepEqual(errors, []); out.push([name, true]);
+  } catch (e) { out.push([name, false, e.message]); }
+  console.log(JSON.stringify(out));
+})();
+'''
+    script = out / "checklist.cjs"
+    script.write_text(js, encoding="utf-8", newline="\n")
+    proc = subprocess.run([node, str(script), str(web / "checklist.js"), str(web / "pipeline.js"), str(web / "board.js"), str(web / "ref_edit.js")],
+                          capture_output=True, text=True, encoding="utf-8", timeout=30)
+    check(proc.returncode == 0, f"점검표 node 실행 {proc.stderr}")
+    if proc.returncode == 0:
+        for name, ok, *err in json.loads(proc.stdout):
+            check(ok, f"점검표 JS: {name} {err}")
+
+    # 상태 서명은 원래 Export 내용 해시와 독립. 분석·설정·편집 이력의 시간만 바뀌면 같다.
+    m = store.new_manifest("sig")
+    m.update(base="base/original.png", canvas=[32, 32], work_rect=[0, 0, 32, 32])
+    m["rejects"] = {}
+    m["crops"] = [{"id": "c1", "name": "크롭", "rect": [0, 0, 32, 32], "targets": [{"tid": "A", "label": "파트"}]}]
+    m["picks"] = {"c1/A": ["a"]}
+    m["candidates"] = [{"key": k, "crop_id": "c1", "tid": "A", "file": f"cands/{k}.png", "src_size": [32, 32],
+                        "quad": [0, 0, 32, 0, 32, 32, 0, 32], "z": 0, "picked": False,
+                        "hand_mask": {"file": f"masks/{k}_hand.png", "rect": [0, 0, 32, 32], "bg": 0, "owner": "layer"}}
+                       for k in ("a", "b")]
+    m["mask_edits"] = {"a": {"file": "masks/a.png", "rect": [0, 0, 32, 32], "at": "old"}}
+    sig = store.export_state_sig(m)
+    mutations = [
+        ("★", lambda x: x["picks"].update({"c1/A": ["b"]})),
+        ("제외", lambda x: x["rejects"].update({"a": True})),
+        ("크롭 rect", lambda x: x["crops"][0].update(rect=[1, 0, 33, 32])),
+        ("크롭 이름", lambda x: x["crops"][0].update(name="새 이름")),
+        ("크롭 타깃", lambda x: x["crops"][0]["targets"].append({"tid": "B"})),
+        ("마스크 file", lambda x: x["mask_edits"]["a"].update(file="masks/b.png")),
+        ("마스크 rect", lambda x: x["mask_edits"]["a"].update(rect=[1, 0, 33, 32])),
+        ("C10 베이스", lambda x: x.update(base="base/changed.png")),
+        ("C10 캔버스", lambda x: x.update(canvas=[64, 32])),
+        ("C10 작업 영역", lambda x: x.update(work_rect=[1, 0, 32, 32])),
+    ]
+    cand_changes = {"file": "cands/changed.png", "quad": [1, 0, 33, 0, 33, 32, 1, 32], "z": 1,
+                    "src_size": [64, 64], "crop_id": "c2", "tid": "B"}
+    hand_changes = {"file": "masks/changed.png", "rect": [1, 0, 33, 32], "bg": 255}
+    for field, value in cand_changes.items():
+        mutations.append((f"C10 ★ 후보 {field}", lambda x, k=field, v=value: x["candidates"][0].update({k: v})))
+    for field, value in hand_changes.items():
+        mutations.append((f"C10 ★ 후보 hand_mask.{field}", lambda x, k=field, v=value: x["candidates"][0]["hand_mask"].update({k: v})))
+    for name, mutate in mutations:
+        changed = copy.deepcopy(m)
+        mutate(changed)
+        check(store.export_state_sig(changed) != sig, f"상태 서명: {name} 바뀜")
+    same = copy.deepcopy(m)
+    same.update(rev=99, analysis={"a": {"params_hash": "new"}}, exports=[{"options": {"alternates": "none"}}])
+    same["mask_edits"]["a"].update(at="new", hist=[{"file": "old.png"}])
+    same["mask_edits"]["unpicked"] = {"file": "masks/unused.png", "rect": [0, 0, 1, 1]}
+    check(store.export_state_sig(same) == sig, "상태 서명: 분석·Export 설정·rev·편집 시간/이력·★ 아닌 마스크는 무관")
+    same["candidates"][1].update(cand_changes)
+    same["candidates"][1]["hand_mask"].update(hand_changes)
+    same["candidates"][0].update(origin_info={"layer": "출처 이름만 변경"})
+    same["candidates"][0]["hand_mask"]["owner"] = "group"
+    check(store.export_state_sig(same) == sig, "C10 ★ 아닌 후보 출력 필드·★ 후보 출처/마스크 owner만 바뀌면 같음")
+    rejected = copy.deepcopy(m)
+    rejected["rejects"]["a"] = True
+    rejected_sig = store.export_state_sig(rejected)
+    rejected["candidates"][0].update(cand_changes)
+    rejected["candidates"][0]["hand_mask"].update(hand_changes)
+    check(store.export_state_sig(rejected) == rejected_sig, "C10 제외한 ★ 후보 출력 필드만 바뀌면 같음")
+    legacy = copy.deepcopy(m)
+    legacy["picks"] = {}
+    legacy["candidates"][0]["picked"] = True
+    check(store.export_state_sig(legacy) == sig, "상태 서명: 옛 후보 picked 와 picks 호환")
+    ordered = copy.deepcopy(m)
+    ordered["picks"]["c1/A"] = ["b", "a"]
+    ordered_sig = store.export_state_sig(ordered)
+    ordered["picks"]["c1/A"].reverse()
+    check(store.export_state_sig(ordered) == ordered_sig, "C6 상태 서명: picks 순서만 바뀌면 같음")
+    ordered["candidates"].reverse()
+    check(store.export_state_sig(ordered) == ordered_sig, "C10 ★ 후보는 key 순 직렬화: 후보 목록 순서만 바뀌면 같음")
+    ordered["picks"] = {}
+    for c in ordered["candidates"]:
+        c["picked"] = True
+    check(store.export_state_sig(ordered) == ordered_sig, "C6 옛 후보 picked 병합 뒤에도 ★ 집합으로 정렬")
+    for field, empty, bad_values in (
+        ("mask_edits", {}, (["bad"], "bad", 1)),
+        ("picks", {}, (["a"], "bad", 1)),
+        ("candidates", [], ({"bad": True}, "bad", 1)),
+        ("crops", [], ({"bad": True}, "bad", 1)),
+    ):
+        clean = copy.deepcopy(m)
+        clean[field] = empty
+        for bad_value in bad_values:
+            malformed = copy.deepcopy(m)
+            malformed[field] = bad_value
+            untouched = copy.deepcopy(malformed)
+            check(store.export_state_sig(malformed) == store.export_state_sig(clean) and malformed == untouched,
+                  f"C20 서명: {field} {type(bad_value).__name__} 형식은 빈 값, 원본 불변")
+    malformed = copy.deepcopy(m)
+    malformed["picks"] = {"c1/A": ["a", [], {}], "bad": 1}
+    malformed["candidates"] += [None, "bad", {"key": []}, {"picked": True}]
+    malformed["crops"] += [None, "bad"]
+    check(store.export_state_sig(malformed) == sig, "C20 서명: 컬렉션 안의 잘못된 항목도 무시")
+
+    root = str(out / "state")
+    Path(root).mkdir(exist_ok=True)
+    m = store.new_manifest("state")
+    m["rejects"] = {}
+    store.save_manifest(root, m)
+    check(board.build_state(root)["export_state"] is None, "state: Export 없음 = null")
+    m["exports"] = [{"rev": 46, "time": "12:00:00", "psd": "old.psd", "hash": "old"}]
+    store.save_manifest(root, m)
+    check(board.build_state(root)["export_state"] == "unknown", "state: 옛 서명 없는 Export = unknown")
+    m["exports"][-1]["state_sig"] = store.export_state_sig(m)
+    store.save_manifest(root, m)
+    same_state = board.build_state(root)
+    check(same_state["export_state"] == "same" and same_state["export_last"] == {"rev": 46, "time": "12:00:00"},
+          "state: 서명 일치 = same + 마지막 시각")
+    unchanged = board.build_state(root, since_rev=m["rev"])
+    check(all(unchanged[k] == same_state[k] for k in ("export_state", "export_last")), "F4 전체·unchanged state 모두 최상위 Export 상태/기록 포함")
+    state_bytes = (Path(root) / store.MANIFEST_NAME).read_bytes()
+    with patch.object(board.store, "export_state_sig", side_effect=RuntimeError("test signature failure")):
+        for since in (None, m["rev"]):
+            failed_sig_state = board.build_state(root, since_rev=since)
+            check(failed_sig_state["export_state"] == "unknown" and failed_sig_state["export_last"] == same_state["export_last"]
+                  and failed_sig_state["rev"] == m["rev"] and failed_sig_state.get("unchanged", False) == (since is not None),
+                  f"C20 서명 예외: {'unchanged' if since is not None else '전체'} state 응답 계속 + unknown")
+    check(state_bytes == (Path(root) / store.MANIFEST_NAME).read_bytes(), "C20 state 서명 예외는 매니페스트를 수정하지 않음")
+    spec = _pl_api()["state"]
+    check(not _pl_shape(spec["unchanged"], unchanged, spec, "unchanged"), "state unchanged 응답 = 정본 모양")
+    m["rejects"]["a"] = True
+    store.save_manifest(root, m)
+    check(board.build_state(root)["export_state"] == "changed", "state: 제외 뒤 changed")
+    m["exports"].append({"rev": 47, "time": "13:00:00", "psd": "new.psd", "hash": "new", "state_sig": store.export_state_sig(m)})
+    store.save_manifest(root, m)
+    store.save_board_export(root, "old")
+    check(board.build_state(root)["export_state"] == "changed" and board.build_state(root)["export_last"]["rev"] == 46,
+          "state: A→B→A 캐시 재사용 시 exports[-1] 대신 last_export 를 따름")
+
+    # 실제 Export 노드(합성 입력, 유료 생성/서버/네트워크 없음), 출력은 DP_TEST_OUT 안.
+    dp = _dp_package()
+    import folder_paths
+    old_output = folder_paths.get_output_directory()
+    try:
+        folder_paths.set_output_directory(str(out / "output"))
+        h, project_root = _fx_project(dp, out, "check_export", [("001_크롭", [0, 0, 32, 32])], np.zeros((32, 32, 3), dtype=np.uint8))
+        before = dp.store.load_manifest(project_root)
+        options = {"layer_mode": "pixel", "alternates": "hidden_all", "color": "raw", "mask_source": "auto",
+                   "include_base": True, "include_crop_outlines": False, "prefix": "check"}
+        # 변경 전 _export_hash 의 payload(편집 없는 입력). 기록 state_sig 가 내용 해시에 들어가면 실패한다.
+        payload = {"v": dp._EXPORT_VERSION, "opts": options, "base": before["base"], "canvas": before["canvas"],
+                   "work_rect": before["work_rect"], "crops": [[c[k] for k in ("id", "name", "rect", "targets")] for c in before["crops"]],
+                   "cands": before["candidates"], "compose": dict(dp._COMPOSE_DEFAULTS), "analysis": {}}
+        expected = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
+        exp = dp.BMKDesignPatchExportPSD()
+        first = exp.run(h, "check", "pixel", "hidden_all", "raw", "auto", True, False, skip_empty=False)
+        rec = dp.store.load_manifest(project_root)["exports"][-1]
+        paths = [Path(rec["psd"]), Path(rec["mask"]), Path(rec["psd"]).with_suffix(".json")]
+        bytes_before = [p.read_bytes() for p in paths]
+        check(rec["hash"] == expected and rec["state_sig"] == dp.store.export_state_sig(before),
+              "Export 노드: 기존 내용 해시 그대로 + state_sig 기록")
+        check(json.loads(bytes_before[2])["exports"][-1]["state_sig"] == rec["state_sig"], "Export 사이드카에도 state_sig 기록")
+        second = exp.run(h, "check", "pixel", "hidden_all", "raw", "auto", True, False, skip_empty=False)
+        check(first["ui"]["bmk_dp_export"][0]["outcome"] == "new" and second["ui"]["bmk_dp_export"][0]["outcome"] == "unchanged"
+              and first["result"] == second["result"] and len(dp.store.load_manifest(project_root)["exports"]) == 1
+              and bytes_before == [p.read_bytes() for p in paths], "Export 재실행: 변경 없음, PSD·mask·사이드카 바이트·기록 수 유지")
+        check(dp.board.build_state(project_root)["export_state"] == "same", "실제 Export → build_state same")
+        # F1: 이전 버전 Export(매니페스트·사이드카 모두 서명 없음)를 같은 입력으로 재사용한다.
+        legacy = dp.store.load_manifest(project_root)
+        legacy["exports"][-1].pop("state_sig")
+        dp.store.save_manifest(project_root, legacy)
+        side = json.loads(paths[2].read_bytes())
+        side["exports"][-1].pop("state_sig")
+        paths[2].write_text(json.dumps(side, ensure_ascii=False), encoding="utf-8", newline="\n")
+        legacy_bytes = [p.read_bytes() for p in paths]
+        check(dp.board.build_state(project_root)["export_state"] == "unknown", "F1 준비: 서명 없는 옛 Export = unknown")
+        upgraded = exp.run(h, "check", "pixel", "hidden_all", "raw", "auto", True, False, skip_empty=False)
+        upgraded_m = dp.store.load_manifest(project_root)
+        check(upgraded["ui"]["bmk_dp_export"][0]["outcome"] == "unchanged"
+              and upgraded_m["exports"][-1]["state_sig"] == dp.store.export_state_sig(upgraded_m)
+              and dp.board.build_state(project_root)["export_state"] == "same", "F1 옛 Export 재사용: 기록 서명 보완 + same")
+        again = exp.run(h, "check", "pixel", "hidden_all", "raw", "auto", True, False, skip_empty=False)
+        check(again["ui"]["bmk_dp_export"][0]["outcome"] == "unchanged" and dp.store.load_manifest(project_root)["rev"] == upgraded_m["rev"]
+              and legacy_bytes == [p.read_bytes() for p in paths] and upgraded["result"] == again["result"] == first["result"],
+              "F1 같은 입력 재사용 반복: rev·PSD·mask png·옛 사이드카 바이트 불변")
+        for field, bad_value in (("mask_edits", ["bad"]), ("mask_edits", "bad"), ("picks", ["bad"])):
+            malformed = copy.deepcopy(upgraded_m)
+            malformed[field] = bad_value
+            dp.store.save_manifest(project_root, malformed)
+            clean = copy.deepcopy(malformed)
+            clean[field] = {}
+            check(dp.store.export_state_sig(malformed) == dp.store.export_state_sig(clean),
+                  f"C20 실제 프로젝트: {field} {type(bad_value).__name__} 서명 안전")
+            for since in (None, malformed["rev"]):
+                safe_state = dp.board.build_state(project_root, since_rev=since)
+                check(safe_state["export_state"] == "same" and safe_state["rev"] == malformed["rev"],
+                      f"C20 {field} {type(bad_value).__name__}: {'unchanged' if since is not None else '전체'} state 정상")
+            reused_bad = exp.run(h, "check", "pixel", "hidden_all", "raw", "auto", True, False, skip_empty=False)
+            check(reused_bad["ui"]["bmk_dp_export"][0]["outcome"] == "unchanged"
+                  and reused_bad["result"] == first["result"] and legacy_bytes == [p.read_bytes() for p in paths]
+                  and dp.store.load_manifest(project_root)[field] == bad_value,
+                  f"C20 {field} {type(bad_value).__name__}: 실제 Export 재사용·출력/손상 필드 원본 보존")
+        # 새 서명을 계산하지 못하면 이전 서명도 남기지 않는다. 실패 중 반복은 rev 불변.
+        with patch.object(dp.store, "export_state_sig", side_effect=RuntimeError("test signature failure")):
+            no_sig = exp.run(h, "check", "pixel", "hidden_all", "raw", "auto", True, False, skip_empty=False)
+            no_sig_m = dp.store.load_manifest(project_root)
+            check(no_sig["ui"]["bmk_dp_export"][0]["outcome"] == "unchanged" and "state_sig" not in no_sig_m["exports"][-1]
+                  and dp.board.build_state(project_root)["export_state"] == "unknown", "C20 서명 예외: 재사용 성공·옛 서명 제거·unknown")
+            exp.run(h, "check", "pixel", "hidden_all", "raw", "auto", True, False, skip_empty=False)
+            check(dp.store.load_manifest(project_root)["rev"] == no_sig_m["rev"] and legacy_bytes == [p.read_bytes() for p in paths],
+                  "C20 서명 실패 중 재사용 반복: rev·기존 PSD·mask·사이드카 바이트 불변")
+            new_unsigned = exp.run(h, "check_unsigned", "pixel", "hidden_all", "raw", "auto", True, False, skip_empty=False)
+            unsigned_rec = dp.store.load_manifest(project_root)["exports"][-1]
+            unsigned_side = json.loads(Path(unsigned_rec["psd"]).with_suffix(".json").read_bytes())
+            check(new_unsigned["ui"]["bmk_dp_export"][0]["outcome"] == "new" and Path(unsigned_rec["psd"]).is_file()
+                  and "state_sig" not in unsigned_rec and "state_sig" not in unsigned_side["exports"][-1]
+                  and dp.board.build_state(project_root)["export_state"] == "unknown", "C20 서명 예외: 새 PSD 출력 성공·서명 없는 기록·unknown")
+        recovered = exp.run(h, "check_unsigned", "pixel", "hidden_all", "raw", "auto", True, False, skip_empty=False)
+        check(recovered["ui"]["bmk_dp_export"][0]["outcome"] == "unchanged"
+              and dp.board.build_state(project_root)["export_state"] == "same", "C20 서명 계산 복구: 기존 PSD 재사용 + same")
+
+        # C5: 후보 등록·★ 두 개(slice)·실제 마스크 저장·Export·보드까지 한 경로(모두 합성 파일, 외부 API 없음).
+        base = texture(64, 64, 83)
+        rect = [8, 8, 40, 40]
+        sh, sr = _fx_project(dp, out, "check_slices", [("001_크롭", rect)], base)
+        cand_dir = out / "slice_inputs"
+        cand_dir.mkdir(exist_ok=True)
+        for index, scale in enumerate((1, 2)):
+            Image.fromarray(_fx_cand(base, rect, scale=scale)).save(cand_dir / f"001_크롭_{index}.png")
+        sh, _report = dp.BMKDesignPatchCandidateIn().run(sh, "folder", str(cand_dir), "", "", True, True)
+        sm = dp.store.load_manifest(sr)
+        c0, c1 = sm["candidates"]
+        dp.board.apply_pick(sr, c0["crop_id"], c0["tid"], c0["key"], "set")
+        dp.board.apply_pick(sr, c1["crop_id"], c1["tid"], c1["key"], "add")
+        mask = np.full((32, 32), 255, dtype=np.uint8)
+        mask[:, -8:] = 0
+        dp.dmask.save_edit(sr, c0["key"], png_bytes(mask), seen="", rect=rect,
+                           base=dp.dmask.base_fp(c0, None, "hand"), ops="붓 1")
+        sh = dict(sh, compose=dict(dp._COMPOSE_DEFAULTS, mask_source="hand", use_registration=False, use_tone=False))
+        exported = exp.run(sh, "slices", "pixel", "hidden_all", "raw", "hand", True, False)
+        sm = dp.store.load_manifest(sr)
+        sex = sm["exports"][-1]
+        side = json.loads(Path(sex["psd"]).with_suffix(".json").read_bytes())
+        check(len(sm["picks"][f"{c0['crop_id']}/{c0['tid']}"]) == 2 and sex["mask_edits"] == 1
+              and len(side["export_layers"]) == 2 and all(x["visible"] for x in side["export_layers"])
+              and dp.board.build_state(sr)["export_state"] == "same", "C5 실제 Export: ★ 두 slice·편집 마스크 1개 적용 + same")
+        slice_paths = [Path(sex["psd"]), Path(sex["mask"]), Path(sex["psd"]).with_suffix(".json")]
+        slice_bytes = [p.read_bytes() for p in slice_paths]
+        sm["mask_edits"][c0["key"]]["rect"] = [9, 8, 41, 40]
+        dp.store.save_manifest(sr, sm)
+        check(dp.board.build_state(sr)["export_state"] == "changed", "C5 ★ 마스크 편집 rect 바뀜 → changed")
+        sm["mask_edits"][c0["key"]]["rect"] = list(rect)
+        dp.store.save_manifest(sr, sm)
+        reused = exp.run(sh, "slices", "pixel", "hidden_all", "raw", "hand", True, False)
+        check(reused["ui"]["bmk_dp_export"][0]["outcome"] == "unchanged" and reused["result"] == exported["result"]
+              and dp.board.build_state(sr)["export_state"] == "same" and slice_bytes == [p.read_bytes() for p in slice_paths],
+              "C5 마스크 rect 복원 → 같은 PSD 변경 없음 재사용·same·출력 바이트 유지")
+        sm = dp.store.load_manifest(sr)
+        sm["picks"][f"{c0['crop_id']}/{c0['tid']}"].reverse()
+        dp.store.save_manifest(sr, sm)
+        check(dp.board.build_state(sr)["export_state"] == "same", "C6 실제 Export 뒤 ★ 선택 순서만 바뀌어도 same")
+        new_base = dp.store.save_png_ca(sr, "base", 255 - base, prefix="changed_")
+        export_changes = [
+            ("베이스", lambda x: x.update(base=new_base)),
+            ("★ 후보 quad", lambda x: x["candidates"][1].update(quad=[9, 8, 41, 8, 41, 40, 9, 40])),
+            ("★ 후보 손 마스크", lambda x: x["candidates"][1].update(
+                hand_mask={"file": x["mask_edits"][c0["key"]]["file"], "rect": list(rect), "bg": 0})),
+            ("★ 후보 z", lambda x: x["candidates"][1].update(z=1)),
+        ]
+        for name, mutate in export_changes:
+            sm = dp.store.load_manifest(sr)
+            prev_psd = sm["exports"][-1]["psd"]
+            mutate(sm)
+            dp.store.save_manifest(sr, sm)
+            check(dp.board.build_state(sr)["export_state"] == "changed", f"C10 실제 Export 뒤 {name} 변경 → changed")
+            fresh = exp.run(sh, "slices", "pixel", "hidden_all", "raw", "hand", True, False)
+            check(fresh["ui"]["bmk_dp_export"][0]["outcome"] == "new" and fresh["result"][0] != prev_psd
+                  and dp.board.build_state(sr)["export_state"] == "same", f"C10 {name} 변경 뒤 새 Export → same")
+        check(slice_bytes == [p.read_bytes() for p in slice_paths], "C10 새 Export 뒤에도 기존 PSD·mask·사이드카 바이트 보존")
+    finally:
+        folder_paths.set_output_directory(old_output)
 
 
 def polish1_unit():
