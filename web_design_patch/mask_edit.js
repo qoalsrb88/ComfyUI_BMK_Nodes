@@ -19,7 +19,7 @@ window.DPMaskEdit = (() => {
   const BUSY_MS = 1000; // GET /mask/alts 202(다른 합성 계산 중) 뒤 다시 묻는 간격
   const ALT_SEC = 2.5; // 대안 표 후보당 합성 시간(U0 §2.3 — 기다리는 동안의 어림)
   const TILE = 64; // 부드럽게 붓의 흐림 사본을 이 칸 단위로 필요할 때만 계산
-  const LOCKED = ["apply", "edit", "pick", "zorder"]; // 대상 바꾸기·나가기를 거절하는 busy — 끝나면 세션이 바뀜(나갈 때 진행 ★ 점검에 넘기는 획 수가 낡지 않게)
+  const LOCKED = ["apply", "edit", "pick", "zorder", "adjust_wait", "adjust"]; // 대상 바꾸기·나가기를 거절하는 busy
   const SIDES = { top: "위", bottom: "아래", left: "왼", right: "오른" };
   const TOOLS = { erase: "지우기", revive: "살리기", soften: "흐리기" };
   const SRC = { auto: "자동 마스크", hand: "손 마스크", none: "마스크 없음(창 전체)" };
@@ -248,6 +248,20 @@ window.DPMaskEdit = (() => {
 
     s.unused = () => call("mask/unused?" + qs({})); // masks/ 안 쓰는 편집 PNG(배치 3-6)
     s.cleanup = (files) => call("mask/cleanup", { files });
+    s.adjust = async (op, values = {}, seen = (s.info && s.info.adjust ? s.info.adjust.at : "")) => {
+      if (!s.key || !s.info || s.info.key !== s.key || (s.busy && s.busy !== "adjust_wait") || s.stroke || s.pending()) return null;
+      s.busy = "adjust";
+      ++s.rseq; // 보정 쓰기 전에 나간 GET이 응답을 덮지 않게
+      try {
+        const d = await call("mask/adjust", Object.assign({ key: s.key, op, seen }, values));
+        ++s.rseq;
+        s.info = Object.assign({}, s.info, { adjust: d.adjust, composite_sig: d.composite_sig, seams: null });
+        await s.refresh();
+        return d;
+      } finally {
+        if (s.busy === "adjust") s.busy = "";
+      }
+    };
     s.zorder = async (scope, item, op, seen) => {
       if (s.busy || s.stroke) return null;
       s.busy = "zorder";
@@ -589,6 +603,9 @@ window.DPMaskEdit = (() => {
     let S = null;
     let seenRev = null; // 마지막으로 GET /mask 를 맞춘 state 판(stateVer — rev·pref_v)
     let zRev = null; // 이 창의 마지막 순서·마스크 쓰기 rev — 그보다 옛 GET /mask 로 다시 쓰지 않음
+    let adjustTimer = null;
+    let adjustDraft = null; // 디바운스 동안의 값·key·seen을 함께 보존
+    let adjustButtons = []; // 대기 중에는 단추만 잠가 끌고 있는 슬라이더 DOM을 보존
     let again = false; // 받는 중·획 중에 state 가 바뀜 — 끝나면 다시 받기
     let tool = "erase";
     let size = 48;
@@ -1111,6 +1128,7 @@ window.DPMaskEdit = (() => {
         li.append(el("div", "tname", c.name || c.id));
         const ch = el("div", "chips");
         if (c.mask_edits) ch.append(chip(`편집 ${c.mask_edits}`, "b-reg"));
+        if (c.cand_adjust) ch.append(chip("보정", "b-reg"));
         if (c.mask_stale) ch.append(chip("처음 마스크가 바뀜", "b-bad"));
         const mine = segs.filter((x) => x.crop_id === c.id);
         if (mine.length) ch.append(chip(`이음매 ${mine.length}`, mine.some((x) => x.severity === "bad") ? "b-bad" : "b-wait"));
@@ -1123,6 +1141,7 @@ window.DPMaskEdit = (() => {
           const sub = el("li", "sub" + (x.c.key === M.key ? " sel" : ""));
           sub.append(el("div", "tname", `${x.t.tid} · c${pad(x.c.n)} ${x.c.slice_index > 1 ? `조각 ${x.c.slice_index}` : "★"}`));
           if (x.c.mask_edit) sub.append(chip(x.c.mask_edit.stale ? "처음 마스크가 바뀜" : "편집", x.c.mask_edit.stale ? "b-bad" : "b-reg"));
+          if (x.c.adjust) sub.append(chip("보정", "b-reg"));
           sub.addEventListener("click", (e) => {
             e.stopPropagation();
             go({ key: x.c.key }, true);
@@ -1168,12 +1187,82 @@ window.DPMaskEdit = (() => {
       }
     }
 
+    function queueAdjust(values) {
+      const info = cur();
+      const x = candOf(M.key);
+      if (!info || (M.busy && M.busy !== "adjust_wait") || M.stroke || M.pending() || M.err
+        || (x && (!x.c.picked || x.c.rejected))) return;
+      const rec = info.adjust;
+      adjustDraft = Object.assign(adjustDraft || { key: M.key, seen: rec ? rec.at : "", blur: rec ? rec.blur : 0,
+        invert: rec ? rec.invert : false }, values);
+      M.busy = "adjust_wait"; // 대기 중에도 대상 변경·붓을 잠그고 이 후보의 입력만 모음
+      for (const b of adjustButtons) b.disabled = true;
+      clearTimeout(adjustTimer);
+      adjustTimer = setTimeout(() => saveAdjust("set"), 300);
+    }
+
+    async function saveAdjust(op) {
+      clearTimeout(adjustTimer);
+      adjustTimer = null;
+      const draft = adjustDraft;
+      adjustDraft = null;
+      try {
+        if ((M.busy && (op !== "set" || M.busy !== "adjust_wait")) || M.stroke || M.pending()) return;
+        if (draft && draft.key !== M.key) return;
+        const p = M.adjust(op, op === "set" && draft ? { blur: draft.blur, invert: draft.invert } : {}, draft ? draft.seen : undefined);
+        renderPanel();
+        const d = await p;
+        if (!d) return;
+        if (d && d.ok) {
+          zRev = Math.max(zRev ?? 0, d.rev);
+          alts = applied = null;
+          opts.toast("후보 보정 적용 — 이음매를 다시 잽니다");
+          opts.refresh();
+        }
+      } catch (e) {
+        opts.toast(`보정하지 못함: ${e.message}`, e.status === 409 ? "warn" : "err");
+        if (e.status === 409) opts.refresh();
+        await refreshInfo();
+      } finally {
+        if (M.busy === "adjust_wait") M.busy = "";
+        renderPanel();
+      }
+      render();
+      await layers();
+      if (again) refreshInfo();
+    }
+
+    function adjustControls(info) {
+      const s = section("후보 보정");
+      s.classList.add("mc-adjust");
+      const rec = info.adjust;
+      const values = adjustDraft || rec || { blur: 0, invert: false };
+      const x = candOf(M.key);
+      const disabled = (!!M.busy && M.busy !== "adjust_wait") || !!M.stroke || !!M.pending() || !!M.err
+        || !!(x && (!x.c.picked || x.c.rejected));
+      off(slide(s, "블러", 0, 20, 0.5, values.blur, (v) => `σ ${v} px`, (v) => queueAdjust({ blur: v })), disabled);
+      const label = el("label", "mc-invert");
+      const invert = el("input");
+      Object.assign(invert, { type: "checkbox", checked: values.invert, disabled });
+      invert.addEventListener("change", () => queueAdjust({ invert: invert.checked }));
+      label.append(invert, el("span", "", "색반전"));
+      s.append(label);
+      const buttons = [];
+      if (rec && rec.hist.length) buttons.push(off(button("되돌리기", "이 후보의 이전 보정 값으로", () => saveAdjust("undo")), disabled || !!M.busy));
+      if (rec) buttons.push(off(button("보정 없음", "블러·색반전과 이전 보정 기록을 지움", () => saveAdjust("reset")), disabled || !!M.busy));
+      adjustButtons = buttons;
+      if (buttons.length) btns(s, ...buttons);
+      if (M.pending()) line(s, "적용 안 한 획을 적용하거나 버린 뒤 보정하세요", "dim");
+      else if (M.busy === "adjust") line(s, "보정 저장·미리보기 받는 중…", "dim");
+    }
+
     function renderPanel() {
       if (held) {
         later = true;
         return;
       }
       panel.replaceChildren();
+      adjustButtons = [];
       if (!on) return;
       const info = cur();
       const x = candOf(M.key);
@@ -1228,6 +1317,8 @@ window.DPMaskEdit = (() => {
       });
       rb.classList.toggle("on", !viewer.flags().rectsOn);
       btns(s, ob, mb, rb);
+
+      if (info) adjustControls(info);
 
       // 2 붓
       s = section("붓 (왼쪽 끌기 · Space+끌기 = 화면 이동)");
@@ -1372,6 +1463,7 @@ window.DPMaskEdit = (() => {
       inp.addEventListener("change", () => inp.blur());
       row.append(el("span", "k", k), inp, v);
       s.append(row);
+      return inp;
     }
 
     function diffLines(before, after) {

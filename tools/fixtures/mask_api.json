@@ -87,6 +87,12 @@
      "sig": "9a0b1c2d3e4f5061",
      "url": "mask/img?root=fe410d7f025d&key=r_61ba2d695f0f_0_0&kind=base&v=9a0b1c2d3e4f5061"
     },
+    "adjust": {
+     "blur": 1.5,
+     "invert": false,
+     "at": "2026-10-27 12:00:00.123456789",
+     "hist": []
+    },
     "edit": {
      "file": "masks/r_61ba2d69_e_3f2a9c01b7d4.png",
      "at": "2026-10-19 18:20:41",
@@ -216,6 +222,7 @@
       "sig": "0e7d3a91c4b2f655",
       "url": "mask/img?root=fe410d7f025d&key=r_d9b7ffb9fb7c_0_1&kind=base&v=0e7d3a91c4b2f655"
      },
+     "adjust": null,
      "edit": null,
      "layers": {
       "box": [
@@ -308,6 +315,7 @@
       "sig": "33c0aa71d2e4b9f0",
       "url": "mask/img?root=fe410d7f025d&key=r_b7a67c9d5802_1_0&kind=base&v=33c0aa71d2e4b9f0"
      },
+     "adjust": null,
      "edit": null,
      "layers": {
       "box": [
@@ -413,6 +421,7 @@
    },
    "nullable": [
     "edit",
+    "adjust",
     "seams"
    ],
    "optional": [],

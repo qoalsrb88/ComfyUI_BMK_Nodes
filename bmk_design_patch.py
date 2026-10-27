@@ -891,6 +891,8 @@ def _plan(root: str, m: dict, entries: dict, mask_source: str, use_registration:
         item = {"cand": c, "entry": entry, "quad": quad, "mask": mask, "msrc": msrc, "area": area,
                 "base_mask": base_mask, "base_msrc": base_msrc, "mask_edit": mask_edit,
                 "z": (0, int(z)) if z is not None else (1, order_idx[c["key"]])}
+        if c.get("picked") and (adjust := store.cand_adjust(m, c["key"])):
+            item["adjust"] = {k: adjust[k] for k in ("blur", "invert")}
         g = groups.setdefault((c["crop_id"], c["tid"]), {"slices": [], "alts": []})
         g["slices" if c.get("picked") else "alts"].append(item)
 
@@ -931,19 +933,26 @@ def _plan(root: str, m: dict, entries: dict, mask_source: str, use_registration:
 
 
 def _cand_pixels(root: str, item: dict, toned: bool) -> tuple[np.ndarray, bool]:
-    """후보 풀해상도 픽셀(RGB 또는 RGBA uint8). toned 이고 톤 보정장이 있으면 적용(원본 좌표로 되돌려서)."""
+    """풀해상도 픽셀: 톤(캐시 포함) 뒤 ★ 후보 보정. 보정 결과는 분석 항목·tone.full에 쓰지 않는다."""
     c, entry = item["cand"], item["entry"]
     tone = (entry or {}).get("tone") or {}
+
+    def adjusted(pix, is_toned):
+        adj = item.get("adjust")
+        if adj:
+            pix = an.adjust_candidate(pix, adj["blur"], adj["invert"], c["src_size"], item["quad"])
+        return pix, is_toned
+
     if toned and entry is not None and not entry.get("skipped") and tone.get("full") \
             and os.path.isfile(_abs(root, tone["full"])):
-        return _decode(_read(_abs(root, tone["full"]))), True
+        return adjusted(_decode(_read(_abs(root, tone["full"]))), True)
     full = _decode(_read(_abs(root, c["file"])))
     if not toned or entry is None or entry.get("skipped") or not tone.get("delta"):
-        return full, False
+        return adjusted(full, False)
     delta = _load_delta(root, tone)
     if entry["reg"]["applied"]:
         delta = an.warp_affine(delta, entry["reg"]["matrix"], inverse=True)
-    return an.apply_delta(full, delta, out_size=(full.shape[1], full.shape[0])), True
+    return adjusted(an.apply_delta(full, delta, out_size=(full.shape[1], full.shape[0])), True)
 
 
 def _render(pix: np.ndarray, quad, mask: dict | None):
@@ -2213,6 +2222,8 @@ def _export_hash(m: dict, entries: dict, comp: dict, opts: dict, edits: dict | N
         payload["mask_edits"] = edits
     if manual := store.z_order(m):
         payload["z_order"] = manual
+    if adjustments := store.picked_adjustments(m):
+        payload["cand_adjust"] = adjustments
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
 
 
@@ -2395,6 +2406,8 @@ class BMKDesignPatchExportPSD:
             rgb, alpha, eff, left, top = _render(pix, it["quad"], it["mask"])
             cache = rgb if alpha is None else np.dstack([rgb, alpha])
             name = f"{crop['name']} · {_target_label(crop, c['tid'])} · c{num:02d}" + (" ★" if c.get("picked") else "")
+            if it.get("adjust"):
+                name += " · 보정"
             label = "green" if c.get("picked") else "red"
             if layer_mode == "smart_object":
                 data, ft = self._so_bytes(root, it, pix, is_toned)
@@ -2413,6 +2426,8 @@ class BMKDesignPatchExportPSD:
                             [mk["left"], mk["top"], mk["left"] + mk["arr"].shape[1], mk["top"] + mk["arr"].shape[0]]})
             if it["mask_edit"]:
                 written[-1]["mask_edit"] = it["mask_edit"]
+            if it.get("adjust"):
+                written[-1]["adjust"] = dict(it["adjust"])
             pbar.update(1)
 
         for p in plan:
@@ -2470,6 +2485,9 @@ class BMKDesignPatchExportPSD:
     def _so_bytes(root: str, it: dict, pix: np.ndarray, is_toned: bool) -> tuple[bytes, str]:
         """SO 임베드 bytes: 원본 파일 그대로, 톤 보정이면 풀해상도 PNG(derived 에 캐시)."""
         c, entry = it["cand"], it["entry"]
+        if it.get("adjust"):
+            rel = store.save_png_ca(root, "derived", pix, prefix="adjust_")
+            return _read(_abs(root, rel)), "png"
         if not is_toned:
             ext = os.path.splitext(c["file"])[1].lower().lstrip(".")
             return _read(_abs(root, c["file"])), ("jpg" if ext == "jpeg" else ext)

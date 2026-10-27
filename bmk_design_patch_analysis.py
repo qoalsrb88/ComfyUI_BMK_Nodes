@@ -436,6 +436,30 @@ def color_match(base, cand, sample_mask=None):
     return _like(cand, lab_to_rgb(_match_lab(rgb_to_lab(b), rgb_to_lab(c), valid, sample_mask)))
 
 
+def adjust_candidate(pixels, blur, invert, src_size, quad):
+    """톤 뒤 후보 RGB만 보정(알파 보존). 캔버스 σ를 회전에도 불변인 quad 변 길이로 원본 해상도에 환산."""
+    if not blur and not invert:
+        return pixels
+    out = pixels.copy()
+    if blur:
+        q = np.asarray(quad, dtype=np.float64).reshape(4, 2)
+        width, height = np.linalg.norm(q[1] - q[0]), np.linalg.norm(q[3] - q[0])
+        if width > 0 and height > 0:
+            sx, sy = float(blur * src_size[0] / width), float(blur * src_size[1] / height)
+            if out.shape[2] == 4:
+                rgb = out[..., :3].astype(np.float32)
+                alpha = out[..., 3].astype(np.float32) / 255.0
+                weighted = cv2.GaussianBlur(rgb * alpha[..., None], (0, 0), sx, sigmaY=sy)
+                weight = cv2.GaussianBlur(alpha, (0, 0), sx, sigmaY=sy)[..., None]
+                color = np.divide(weighted, weight, out=rgb, where=weight > 1e-6)
+                out[..., :3] = np.clip(np.rint(color), 0, 255).astype(np.uint8)
+            else:
+                out[..., :3] = cv2.GaussianBlur(out[..., :3], (0, 0), sx, sigmaY=sy)
+    if invert:
+        out[..., :3] = 255 - out[..., :3]
+    return out
+
+
 def _blur3(x, s):
     return cv2.GaussianBlur(x, (0, 0), s) if s > 0 else x
 

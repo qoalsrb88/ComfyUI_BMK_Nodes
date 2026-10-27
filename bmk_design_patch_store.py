@@ -1090,8 +1090,69 @@ _MERGE_ID_LISTS = {
     "exports": ("rev", "psd"),
     "calls": ("call_id",),
 }
-_MERGE_KEYED_DICTS = ("picks", "rejects", "rerolls", "approvals", "mask_edits", "z_order")  # z_order = 범위 단위
+_MERGE_KEYED_DICTS = ("picks", "rejects", "rerolls", "approvals", "mask_edits", "z_order", "cand_adjust")  # z_order = 범위 단위
 _MISSING = object()
+
+
+def cand_adjust_values(blur, invert) -> dict:
+    """후보 보정 입력 검사. bool을 숫자로, 문자열을 bool로 바꾸지 않는다."""
+    if isinstance(blur, bool) or not isinstance(blur, (int, float)) or not 0 <= blur <= 20:
+        raise ValueError("블러는 0 이상 20 이하의 숫자여야 합니다")
+    if not isinstance(invert, bool):
+        raise ValueError("색반전은 참 또는 거짓이어야 합니다")
+    return {"blur": float(blur), "invert": invert}
+
+
+def cand_adjust(m: dict, key: str) -> dict | None:
+    """유효한 후보 보정 기록의 사본. 깨진 기록·이력과 효과 없는 값은 보정 없음으로 읽는다."""
+    raw = m.get("cand_adjust")
+    rec = raw.get(key) if isinstance(raw, dict) else None
+    if not isinstance(rec, dict) or set(rec) != {"blur", "invert", "at", "hist"}:
+        return None
+    hist = rec["hist"]
+    if not isinstance(hist, list) or len(hist) > 20:
+        return None
+    versions = []
+    for v in [rec, *hist]:
+        if not isinstance(v, dict) or set(v) != ({"blur", "invert", "at", "hist"} if v is rec else {"blur", "invert", "at"}):
+            return None
+        if not isinstance(v["at"], str) or not re.fullmatch(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(?:\.\d{1,9})?", v["at"]):
+            return None
+        try:
+            values = cand_adjust_values(v["blur"], v["invert"])
+        except ValueError:
+            return None
+        versions.append(dict(values, at=v["at"]))
+    if not versions[0]["blur"] and not versions[0]["invert"]:
+        return None
+    return dict(versions[0], hist=versions[1:])
+
+
+def picked_adjustments(m: dict, keys=None) -> dict:
+    """실제로 합성하는 ★의 값만(시각·이력 제외). keys는 보드의 가상 ★ 집합에도 쓰인다."""
+    if not isinstance(m.get("cand_adjust"), dict) or not m["cand_adjust"]:
+        return {}
+    raw_candidates = m.get("candidates") if isinstance(m.get("candidates"), list) else []
+    candidates = [c for c in raw_candidates if isinstance(c, dict) and isinstance(c.get("key"), str)]
+    if keys is None:
+        picks = m.get("picks") if isinstance(m.get("picks"), dict) else {}
+        keys = {k for v in picks.values() if isinstance(v, list) for k in v if isinstance(k, str)}
+        keys.update(c["key"] for c in candidates if c.get("picked"))
+    raw_crops = m.get("crops") if isinstance(m.get("crops"), list) else []
+    crops = {c["id"]: c for c in raw_crops if isinstance(c, dict) and isinstance(c.get("id"), str)}
+    rejects = m.get("rejects") if isinstance(m.get("rejects"), dict) else {}
+    out = {}
+    for c in candidates:
+        if c["key"] not in keys or c["key"] in rejects or not isinstance(c.get("crop_id"), str):
+            continue
+        crop = crops.get(c.get("crop_id"))
+        targets = crop.get("targets") if crop and isinstance(crop.get("targets"), list) else []
+        if not any(isinstance(t, dict) and t.get("tid") == c.get("tid") for t in targets):
+            continue
+        rec = cand_adjust(m, c["key"])
+        if rec:
+            out[c["key"]] = {k: rec[k] for k in ("blur", "invert")}
+    return out
 
 
 def z_order(m: dict) -> dict:
@@ -1481,6 +1542,8 @@ def export_state_sig(m: dict) -> str:
                "picks": {k: sorted(set(v)) for k, v in picks.items()}, "rejects": sorted(rejects), "edits": edits}
     if manual := z_order(m):
         payload["z_order"] = manual
+    if adjustments := picked_adjustments(m):
+        payload["cand_adjust"] = adjustments
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
 
 
