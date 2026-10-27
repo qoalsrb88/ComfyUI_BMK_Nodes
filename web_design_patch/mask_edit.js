@@ -1033,11 +1033,12 @@ window.DPMaskEdit = (() => {
     }
 
     function altSet(key) {
-      // 대안 표의 후보 집합(그 타깃의 탈락 아닌 다른 후보 key + 그 후보의 저장된 편집 판 — 다시 ★ 하면 쓰이는 편집이라 가정 합성의 재료) — ★ 합성
-      // 서명이 그대로여도 Run 의 새 후보·다른 창의 탈락·대안 편집 되돌림·지움이면 표가 낡음
+      // 대안 표의 후보 집합(key + 마스크 편집 판 + 효과 있는 보정 값 — 다시 ★ 하면 쓰이는 가정 합성의 재료).
+      // ★ 합성 서명이 그대로여도 Run 의 새 후보·다른 창의 탈락·대안 편집·보정 값이 바뀌면 표가 낡음
       const x = candOf(key);
       const ed = (c) => (c.mask_edit ? `${c.mask_edit.at}${c.mask_edit.stale ? "!" : ""}` : "");
-      return x ? x.t.candidates.filter((c) => c.key !== key && !c.rejected).map((c) => `${c.key}@${ed(c)}`) : [];
+      const adj = (c) => (c.adjust ? `${c.adjust.blur}:${c.adjust.invert}` : "");
+      return x ? x.t.candidates.filter((c) => c.key !== key && !c.rejected).map((c) => `${c.key}@${ed(c)}#${adj(c)}`) : [];
     }
 
     async function loadAlts() {

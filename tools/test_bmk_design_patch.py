@@ -44803,6 +44803,24 @@ def polish5_adjust_unit():
         return dp._export_hash(mm, entries, cs, {}), bd._composite_sig(root, mm, None), st.export_state_sig(mm)
 
     baseline = signatures(m)
+    # F1: state 후보는 효과 값만 노출한다. 대안 보정이 달라도 현재 ★ 서명·크롭 보정 개수는 같음.
+    alt_states = []
+    for values in (None, {"blur": 0, "invert": False}, {"blur": 2, "invert": False},
+                   {"blur": 3, "invert": False}, {"blur": 0, "invert": True}):
+        state_manifest = dict(m, cand_adjust={key: record})
+        if values is not None:
+            state_manifest["cand_adjust"][alt] = dict(record, **values)
+        st.save_manifest(root, state_manifest)
+        state = bd.build_state(root)
+        rows = {cc["key"]: cc for t in state["targets"] for cc in t["candidates"]}
+        effect = values if values and (values["blur"] or values["invert"]) else None
+        check(rows[key]["adjust"] == {"blur": 1.5, "invert": True} and rows[alt]["adjust"] == effect,
+              f"F1: build_state 후보 adjust는 blur·invert 객체 또는 null({values})")
+        check(state["crops"][0]["cand_adjust"] == 1, "F1: 크롭 보정 개수는 효과 있는 ★만 세고 대안은 제외")
+        alt_states.append(state)
+    check(len({state["canvas"]["composite_sig"] for state in alt_states}) == 1,
+          "F1: 대안 보정 2→3·반전·없음 변화에도 현재 ★ 합성 서명은 같음")
+    st.save_manifest(root, m)
     for broken in (None, [], "bad", {key: None}, {key: {}}, {key: dict(record, blur=-1)}, {key: dict(record, blur=21)},
                    {key: dict(record, blur=float("nan"))}, {key: dict(record, blur=float("inf"))},
                    {key: dict(record, blur=True)}, {key: dict(record, invert=1)}, {key: dict(record, hist=[{}])},
@@ -45061,7 +45079,7 @@ def polish5_adjust_unit():
     check(zero_view["adjust"] == zero_record and not _pl_shape(doc["ok"], zero_view, doc),
           "E2: GET /mask는 0 기록·이력을 기존 fixture 형식 그대로 반환")
     zero_state = bd.build_state(root)
-    check(all(not cc["adjust"] for t in zero_state["targets"] for cc in t["candidates"])
+    check(all(cc["adjust"] is None for t in zero_state["targets"] for cc in t["candidates"])
           and all(cr["cand_adjust"] == 0 for cr in zero_state["crops"]), "E2: 0 기록 후보·크롭 보정 칩 없음")
     status, error = post(op="set", blur=2, invert=False, seen="")
     check(status == 409 and error["reason"] == "changed", "E2: 0 기록도 기존 at를 요구하므로 빈 seen은 409")
@@ -45267,7 +45285,7 @@ await scenario("adjust", async () => {
     && info.adjust.hist.length === 1 && controls().textContent.includes("σ 0 px");
   const zeroState = maskState(); zeroState.rev++;
   zeroState.crops[0].cand_adjust = 0;
-  for (const t of zeroState.targets) for (const c of t.candidates) c.adjust = false;
+  for (const t of zeroState.targets) for (const c of t.candidates) c.adjust = null;
   ed.stateChanged(zeroState);
   result.E2_zeroChip = !P.list.textContent.includes("보정");
   B("되돌리기").fire("click");
@@ -45301,6 +45319,7 @@ await scenario("adjust", async () => {
   await until(() => P.toasts.some((t) => t.includes("다른 창")) && !ed._test.M.busy);
   result.conflict = info.adjust === null && Number(slider().value) === 0;
   const state = maskState(); state.rev += 10; state.crops[0].cand_adjust = 1;
+  state.targets[0].candidates[0].adjust = { blur: 2, invert: false };
   ed.stateChanged(state);
   result.chip = P.list.textContent.includes("보정");
   const brushSlider = (name) => P.panel.all().find((e) => e.classList.contains("rf-slider") && e.children[0].textContent === name);
@@ -45421,6 +45440,39 @@ await scenario("adjust", async () => {
         && Number(range().value) === 0 && !inv().checked && Q.ed.go({ key: K14 });
       await until(() => M.info && M.info.key === K14 && !M.busy);
     }
+    Q.ed.leave();
+  }
+  // F1: 다른 창에서 대안을 잠깐 ★로 보정한 뒤 원래 ★로 복원 — 현재 합성·마스크 편집은 그대로.
+  {
+    const Q = maskPanel();
+    let state = maskState();
+    state.targets[0].candidates.find((c) => c.key === K15B).adjust = { blur: 2, invert: false };
+    Q.ed.enter(state, { key: K15, seam: null });
+    await until(() => Q.viewer.layer && Q.ed._test.M.info);
+    const stale = () => Q.rows().some((t) => t.includes("표가 낡음"));
+    const table = () => Q.panel.all().find((e) => e.tagName === "TABLE");
+    const reloadTable = async () => {
+      Q.srv.alts.push([200, { sig: state.canvas.composite_sig, now: { bad: 1, worst: 38.4 },
+        rows: [Object.assign(clone(MA["GET /mask/alts"].ok.rows[0]), { key: K15B, c: 2 })] }]);
+      Q.B("다른 후보로").fire("click");
+      return await until(() => !!table() && !stale());
+    };
+    result.F1_initial = await reloadTable();
+    state = clone(state); state.rev++;
+    state.targets[0].candidates.find((c) => c.key === K15B).adjust = { invert: false, blur: 2 };
+    Q.ed.stateChanged(state);
+    result.F1_equalValues = !!table() && !stale() && Q.count("mask/alts") === 1;
+    const originalSig = state.canvas.composite_sig;
+    for (const [label, adjust] of [["blur", { blur: 3, invert: false }], ["invert", { blur: 3, invert: true }],
+      ["none", null], ["added", { blur: 2, invert: false }]]) {
+      state = clone(state); state.rev++;
+      state.targets[0].candidates.find((c) => c.key === K15B).adjust = adjust;
+      Q.ed.stateChanged(state);
+      result[`F1_${label}`] = await until(stale) && !table() && !!Q.B("다른 후보로")
+        && state.canvas.composite_sig === originalSig && Q.ed._test.M.key === K15;
+      result[`F1_${label}_recalculated`] = await reloadTable();
+    }
+    result.F1_readOnly = Q.count("mask/alts") === 5 && Q.count("mask/adjust") === 0 && Q.calls.pick.length === 0;
     Q.ed.leave();
   }
   return result;

@@ -2270,6 +2270,7 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
                     first = next((x["tid"] for x in crop.get("targets") or [] if x.get("tid") in jt), None)
                     joint = {"tids": jt, "first": first, "first_key": by_file.get((crop["id"], c["file"], first))}
                 edit = _edit_rec(m, c["key"])
+                adjust = store.cand_adjust(m, c["key"])
                 cands.append({
                     "key": c["key"], "n": n, "origin": c.get("origin"), "backend": info.get("backend"),
                     "mock": info.get("backend") == "mock", "src_size": c.get("src_size"),
@@ -2286,7 +2287,7 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
                                                          else "skipped" if e and e.get("skipped") else "none"),
                     "gates": gates, "reg": reg, "reframed": bool(reg and reg.get("applied")),
                     "hand_mask": bool(c.get("hand_mask")),
-                    "adjust": bool(store.cand_adjust(m, c["key"])),
+                    "adjust": {k: adjust[k] for k in ("blur", "invert")} if adjust else None,
                     # S4 마스크 편집(★ 가 아니어도 기록이 있으면 — 다시 ★ 하면 살아남): stale = 기록의 기준 ≠ 지금 기준 지문 또는 편집 창이 바뀜
                     # 또는 _plan 이 편집 파일을 쓰지 못함(없음·깨짐·크기 다름 — Export 는 기준 마스크, 까닭은 K 의 경고)
                     "mask_edit": None if edit is None else {"at": edit["at"], "stale": _edit_stale(
