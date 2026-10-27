@@ -45649,6 +45649,23 @@ def polish5_grow_unit():
     st._atomic_write_bytes(str(js), json.dumps(previous).encode())
     check(bd._read_seams(root, sig) == previous and bd._read_seams(root, sig, current=True) is None,
           "H3 예전 beside 2판 캐시는 읽되 현재 판정 캐시로 재사용하지 않음")
+    for cached_format in (None, 2, 3):
+        cached = copy.deepcopy(info)  # 문자열 beside 와 null 을 모두 가진 이음매.
+        if cached_format is None:
+            cached.pop("seam_format")
+        else:
+            cached["seam_format"] = cached_format
+        raw_cache = json.dumps(cached).encode()
+        st._atomic_write_bytes(str(js), raw_cache)
+        view = bd.mask_view(root, m["candidates"][0]["key"])
+        expected = [dict(s) for s in cached["segments"] if s["crop_id"] == cid]
+        if cached_format != 3:
+            for segment in expected:
+                segment.pop("beside")
+        check(view["seams"] == expected and _pl_shape(g["ok"]["seams"], view["seams"], g, "seams") == []
+              and js.read_bytes() == raw_cache,
+              f"K4 GET /mask 형식 {cached_format}: 3판만 beside 유지, 나머지 수치·캐시 파일 보존")
+    st._atomic_write_bytes(str(js), json.dumps(previous).encode())
     with patch.object(bd, "_compose_full", wraps=bd._compose_full) as compose:
         data, fresh = bd._composite(root, m, None, sig)
         check(compose.call_count == 1 and fresh["seam_format"] == 3
@@ -45893,6 +45910,74 @@ await scenario("grow", async () => {
   r.H1_newProposalAfterNudge = nudged.srv.log.length === 2 && eq(nudged.srv.log[0].rect,[256,272,512,528])
     && eq(nudged.srv.lay.crops[0].rect,fitRect) && nudged.confirms.length === 0;
   nudged.ed.leave();
+  // K1 제안을 만든 기준과 같은 미세 이동의 저장은 제안을 유지한다(타이머·다른 flush 경로).
+  for (const via of ["timer","canvas","note","psd"]) {
+    const L = via === "psd" ? {psd_diff:{token:"nudge-test",changed:[{name:c.name,fields:["targets"],
+      from:{rect:[256,256,512,512]},to:{rect:[256,256,512,512]}}],added:[],removed:[]}} : {};
+    const pending = await open([editableCrop()],L); await pending.pick(c.name);
+    pending.srv.psdResp = {taken:[{name:c.name,fields:["targets"]}],added:[],skipped:[]};
+    pending.key("ArrowDown"); pending.button(pending.panel,"상자에 크롭 맞추기").fire("click");
+    if (via === "canvas") {
+      const ev = {x:400,y:400,clientX:400,clientY:400,shiftKey:false,ctrlKey:false,metaKey:false};
+      pending.viewer.h.pointerdown(ev); pending.viewer.h.pointerup(ev);
+    } else if (via === "note") {
+      pending.type("note","미세 이동 뒤 메모").fire("change"); pending.doc.activeElement.blur();
+    } else if (via === "psd") pending.button(pending.panel,"PSD 값으로").fire("click");
+    await sleep(via === "timer" ? 450 : 30);
+    const writes = via === "note" || via === "psd" ? 2 : 1;
+    r[`K1_keeps_${via}`] = pending.srv.log.length === writes && eq(pending.srv.log[0].rect,[256,272,512,528])
+      && eq(pending.srv.lay.crops[0].rect,[256,272,512,528]) && !!pending.button(pending.panel,"제안 적용");
+    pending.key("Enter"); await sleep(30);
+    r[`K1_applies_${via}`] = pending.srv.log.length === writes + 1 && eq(pending.srv.log.at(-1).rect,fitRect)
+      && eq(pending.srv.lay.crops[0].rect,fitRect) && pending.confirms.length === (via === "psd" ? 1 : 0);
+    pending.ed.leave();
+  }
+  // K2 다른 창에서 다른 크롭만 바뀌어 base 는 같아도, since 가 낡았으면 확인 창 전에 폐기.
+  const remote = await open([editableCrop(),C2()]); await remote.ed.proposeGrow(c.id,["left"]);
+  remote.srv.lay.crops[1].note = "다른 창 메모"; remote.srv.lay.rev++;
+  await reflect(remote);
+  r.K2_sincePreview = !!remote.button(remote.panel,"제안 적용") && eq(remote.srv.lay.crops[0].rect,[256,256,512,512]);
+  remote.key("Enter"); await sleep(30);
+  r.K2_sinceBeforeConfirm = !remote.button(remote.panel,"제안 적용") && remote.srv.log.length === 0 && remote.confirms.length === 0
+    && eq(remote.srv.lay.crops[0].rect,[256,256,512,512])
+    && remote.toasts.at(-1).includes("크롭이 바뀌어 제안을 버렸습니다 — 다시 제안");
+  remote.ed.leave();
+  // K3 앞 요청 완료 뒤 큐에서 고르는 실제 undo/redo 는 메모. 누른 순간 rect 항목으로 미리 폐기하면 안 된다.
+  for (const kind of ["grow","fit"]) {
+    const busyUndo = await open([editableCrop()]); await busyUndo.pick(c.name);
+    dragRight(busyUndo,busyUndo.srv.lay.crops[0].rect); await sleep(30); await reflect(busyUndo);
+    await preview(busyUndo,kind); busyUndo.srv.delay = 60;
+    busyUndo.type("note","저장 중 메모").fire("change"); busyUndo.doc.activeElement.blur(); await sleep(5);
+    busyUndo.key("KeyZ",{ctrlKey:true}); await sleep(160);
+    r[`K3_busyUndoKeeps_${kind}`] = busyUndo.srv.log.length === 3 && busyUndo.srv.log[2].note === "" && !busyUndo.srv.log[2].rect
+      && eq(busyUndo.srv.lay.crops[0].rect,[256,256,640,512]) && !!busyUndo.button(busyUndo.panel,"제안 적용");
+    busyUndo.srv.delay = 0; busyUndo.key("Enter"); await sleep(30);
+    r[`K3_busyUndoApplies_${kind}`] = busyUndo.srv.log.length === 4
+      && eq(busyUndo.srv.lay.crops[0].rect,kind === "grow" ? [128,256,640,512] : fitRect);
+    busyUndo.ed.leave();
+    const busyRedo = await open([editableCrop()]); await busyRedo.pick(c.name);
+    busyRedo.type("note","되살릴 메모").fire("change"); busyRedo.doc.activeElement.blur(); await sleep(30);
+    dragRight(busyRedo,busyRedo.srv.lay.crops[0].rect); await sleep(30);
+    busyRedo.key("KeyZ",{ctrlKey:true}); await sleep(30); await reflect(busyRedo);
+    await preview(busyRedo,kind); busyRedo.srv.delay = 60;
+    busyRedo.key("KeyZ",{ctrlKey:true}); await sleep(5); busyRedo.key("KeyY",{ctrlKey:true}); await sleep(160);
+    r[`K3_busyRedoKeeps_${kind}`] = busyRedo.srv.log.length === 5 && busyRedo.srv.log[3].note === ""
+      && busyRedo.srv.log[4].note === "되살릴 메모" && !busyRedo.srv.log[4].rect
+      && eq(busyRedo.srv.lay.crops[0].rect,[256,256,512,512]) && !!busyRedo.button(busyRedo.panel,"제안 적용");
+    busyRedo.srv.delay = 0; busyRedo.key("Enter"); await sleep(30);
+    r[`K3_busyRedoApplies_${kind}`] = busyRedo.srv.log.length === 6
+      && eq(busyRedo.srv.lay.crops[0].rect,kind === "grow" ? [128,256,512,512] : fitRect);
+    busyRedo.ed.leave();
+    const changedUndo = await open([editableCrop()]); await changedUndo.pick(c.name);
+    dragRight(changedUndo,changedUndo.srv.lay.crops[0].rect); await sleep(30); await reflect(changedUndo);
+    await preview(changedUndo,kind); changedUndo.srv.delay = 60;
+    changedUndo.type("note","메모 뒤 rect 되돌리기").fire("change"); changedUndo.doc.activeElement.blur(); await sleep(5);
+    changedUndo.key("KeyZ",{ctrlKey:true}); changedUndo.key("KeyZ",{ctrlKey:true}); await sleep(230);
+    changedUndo.key("Enter"); await sleep(30);
+    r[`K3_busyRectDrops_${kind}`] = changedUndo.srv.log.length === 4 && eq(changedUndo.srv.lay.crops[0].rect,[256,256,512,512])
+      && !changedUndo.button(changedUndo.panel,"제안 적용") && changedUndo.confirms.length === 0;
+    changedUndo.ed.leave();
+  }
   for (const kind of ["grow","fit"]) {
     const psd = await open([editableCrop()],{psd_diff:{token:"rect-test",changed:[{name:c.name,fields:["rect"],
       from:{rect:[256,256,512,512]},to:{rect:[256,256,640,512]}}],added:[],removed:[]}});

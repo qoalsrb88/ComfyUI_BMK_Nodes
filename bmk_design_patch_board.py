@@ -1654,6 +1654,9 @@ def mask_view(root: str, key) -> dict:
     z["controls"] = [_zorder_control(m, scopes, boxes, scope, item) for scope, item in (
         ("crops", crop["id"]), (f"t:{crop['id']}", cand["tid"]), (f"s:{crop['id']}/{cand['tid']}", key))]
     seams = _read_seams(root, csig)
+    if seams is not None and seams.get("seam_format") != 3:
+        for segment in seams["segments"]:
+            segment.pop("beside", None)  # 옛 판정은 알 수 없음 — 재계산 전 넓히기 신호로 내보내지 않는다.
     warns = [w for w in t["warns"] if w.startswith(f"{key} (")]
     if t["it"]["entry"] is None:
         warns.insert(0, "분석 없음 — 반영(Analyze) 뒤 편집 권장")

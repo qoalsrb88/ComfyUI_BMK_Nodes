@@ -804,7 +804,7 @@ window.DPLayoutEdit = (() => {
         render();
         return null;
       }
-      if (proposal && proposal.id === c.id && !sameRect(c.rect, rect)) proposal = null;
+      if (proposal && proposal.id === c.id && !sameRect(proposal.base, rect)) proposal = null;
       sent = { id: c.id, rect };
       return act(S.update(c.id, base ? (cur) => {
         // 상자 맞춤은 저장 큐를 기다릴 수 있음 — 그 사이 같은 크롭의 rect 쓰기가 끝났으면 옛 제안으로 덮지 않는다.
@@ -1081,6 +1081,7 @@ window.DPLayoutEdit = (() => {
     }
 
     function discardHistoryProposal(op) {
+      if (S.busy) return; // 앞 쓰기가 스택을 바꿀 수 있음 — 실제 쓰기 뒤 act 가 base 와 비교한다.
       // 응답을 기다리는 동안 Enter 로 역연산 뒤에 옛 제안을 큐하지 못하게, 같은 크롭의 rect 쓰기 전에 버린다.
       const c = proposal && proposal.id === op.id && S.crop(op.id);
       if (c && (op.op === "delete" || (op.rect && !sameRect(c.rect, op.rect)))) proposal = null;
@@ -1138,7 +1139,7 @@ window.DPLayoutEdit = (() => {
     async function applyProposal() {
       const p = proposal;
       if (!p) return;
-      if (p.grow && (!S.crop(p.id) || !sameRect(S.crop(p.id).rect, p.base))) {
+      if (p.grow && (p.since !== S.remote || !S.crop(p.id) || !sameRect(S.crop(p.id).rect, p.base))) {
         proposal = null;
         opts.toast("크롭이 바뀌어 제안을 버렸습니다 — 다시 제안", "warn");
         render();
