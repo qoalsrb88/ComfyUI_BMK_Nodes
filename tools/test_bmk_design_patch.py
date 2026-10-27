@@ -40005,7 +40005,7 @@ def mask_unit():
 
     def k2():
         section("S4-K2 병합: mask_edits 키 단위 3-way — 노드 커밋 ∥ 보드 save·pick·reject(스레드 4 × 25)")
-        check(store._MERGE_KEYED_DICTS == ("picks", "rejects", "rerolls", "approvals", "mask_edits", "z_order"), "store 병합 키 단위 dict 에 mask_edits(+ 배치 5-1 z_order)")
+        check(store._MERGE_KEYED_DICTS == ("picks", "rejects", "rerolls", "approvals", "mask_edits", "z_order", "cand_adjust"), "store 병합 키 단위 dict 에 mask_edits·z_order·cand_adjust")
         keys = [f"r_{i:012d}_0_0" for i in range(4)]
         root = project("k2", keys)
 
@@ -42238,9 +42238,9 @@ def mask_js_unit():
     check("textContent" in mj and "replaceChildren" in mj, "mask_edit.js textContent·replaceChildren")
     check(re.findall(r"window\.(\w+)\s*=(?!=)", mj) == ["DPMaskEdit"], f"mask_edit.js 가 정의하는 전역은 window.DPMaskEdit 하나 {re.findall(r'window.(\w+)\s*=(?!=)', mj)}")
     paths = set(re.findall(r'"(mask(?:/\w+)?)[?"]', mj))
-    check(paths == {"mask", "mask/save", "mask/edit", "mask/alts", "mask/unused", "mask/cleanup"} and mj.count("fetchFn(apiUrl(") == 4 and mj.count("fetch(") == 1
+    check(paths == {"mask", "mask/save", "mask/edit", "mask/alts", "mask/unused", "mask/cleanup", "mask/adjust"} and mj.count("fetchFn(apiUrl(") == 4 and mj.count("fetch(") == 1
           and "(u, o) => fetch(u, o)" in mj,
-          f"mask_edit.js 보드 주소 = apiUrl 상대 경로(mask·mask/save·mask/edit·mask/alts·mask/unused·mask/cleanup(배치 3-6) + GET /mask 가 준 mask/img url) — 세션의 fetchFn 만 {sorted(paths)}")
+          f"mask_edit.js 보드 주소 = apiUrl 상대 경로(mask·mask/save·mask/edit·mask/alts·mask/unused·mask/cleanup·mask/adjust + GET /mask 가 준 mask/img url) — 세션의 fetchFn 만 {sorted(paths)}")
     check('headers: { "Content-Type": "image/png" }' in mj and 'new CompressionStream("deflate")' in mj and "head[8] = 8;" in mj
           and "toBlob" not in mj and "toDataURL" not in mj,
           "[적용] 본문 = 직접 만든 L 8비트 PNG(IHDR 비트 8·색 형식 0, zlib = CompressionStream deflate — canvas.toBlob 의 RGBA 아님)")
@@ -42891,7 +42891,8 @@ await scenario("panel", async () => {
   r.keys = { x: key("KeyX"), tool: panel.all().filter((e) => e.tagName === "BUTTON" && e.classList.contains("on")).map((e) => e.textContent) };
   key("BracketRight");
   key("BracketLeft", { shiftKey: true });
-  r.keys.sliders = panel.all().filter((e) => e.classList.contains("rf-slider")).map((e) => e.textContent);
+  r.keys.sliders = ["크기", "경도", "흐름", "페더 (px)"].map((name) => panel.all()
+    .find((e) => e.classList.contains("rf-slider") && e.children[0].textContent === name)?.textContent);
   key("KeyQ");
   r.keys.q = rows().find((t) => t.startsWith("보기")) || null;
   ed.onKeyUp({ code: "KeyQ" });
@@ -42909,7 +42910,7 @@ await scenario("panel", async () => {
   viewer.ed.pointerup({});
   raf();
   const ring = viewer.marks.find((m) => m.tag === "circle");
-  r.stroke = { pd, pending: ed.pending(), puts: puts.slice(n0), ring: ring && clone(ring.attrs), row: rows().find((t) => t.startsWith("적용 안 한 획")) || null,
+  r.stroke = { pd, pending: ed.pending(), puts: puts.slice(n0), ring: ring && clone(ring.attrs), row: rows().find((t) => /^적용 안 한 획 \d+ — /.test(t)) || null,
     marks: viewer.marks.map((m) => m.attrs.class) };
   key("KeyZ", { ctrlKey: true });
   r.undo = ed.pending();
@@ -43049,11 +43050,11 @@ await scenario("panel", async () => {
   const p0 = puts.length;
   B("이음매 구간 페이드").fire("click");
   raf();
-  r.range = { row: rows().find((t) => t.startsWith("적용 안 한 획")) || null, puts: puts.slice(p0) };
+  r.range = { row: rows().find((t) => /^적용 안 한 획 \d+ — /.test(t)) || null, puts: puts.slice(p0) };
   ed.go({ key: K14, seam: { crop_id: "014_0f9cc5", tid: "A", key: K14, side: "top", x0: 700, y0: 2240, x1: 800, y1: 2240, length: 100, diff_med: 20, diff_p90: 40,
     severity: "bad" } });
   B("이음매 구간 페이드").fire("click");
-  r.range.top = rows().find((t) => t.startsWith("적용 안 한 획")) || null;
+  r.range.top = rows().find((t) => /^적용 안 한 획 \d+ — /.test(t)) || null;
   key("KeyZ", { ctrlKey: true });
   key("KeyZ", { ctrlKey: true });
   r.range.undone = ed.pending();
@@ -43190,15 +43191,15 @@ await scenario("panelR1", async () => {
   V.raf();
   r.shift.erase = px() !== before;
   // tests-r1-10: [ ] 크기 4–512, Shift+[ ] 경도 0–1 — 범위 끝에서 멈춤(슬라이더·붓 원)
-  const sl = () => V.panel.all().filter((e) => e.classList.contains("rf-slider")).map((e) => e.textContent).slice(0, 2);
+  const sl = (name) => V.panel.all().find((e) => e.classList.contains("rf-slider") && e.children[0].textContent === name)?.textContent;
   for (let i = 0; i < 25; i++) V.key("BracketRight");
-  r.clamp = { up: sl(), ring: (V.viewer.marks.find((m) => m.tag === "circle") || { attrs: {} }).attrs.r };
+  r.clamp = { up: [sl("크기"), sl("경도")], ring: (V.viewer.marks.find((m) => m.tag === "circle") || { attrs: {} }).attrs.r };
   for (let i = 0; i < 40; i++) V.key("BracketLeft");
-  r.clamp.down = sl()[0];
+  r.clamp.down = sl("크기");
   for (let i = 0; i < 12; i++) V.key("BracketRight", { shiftKey: true });
-  r.clamp.hardUp = sl()[1];
+  r.clamp.hardUp = sl("경도");
   for (let i = 0; i < 14; i++) V.key("BracketLeft", { shiftKey: true });
-  r.clamp.hardDown = sl()[1];
+  r.clamp.hardDown = sl("경도");
   V.ed.leave();
   return r;
 });
@@ -44758,6 +44759,745 @@ console.log(JSON.stringify(out));
 def polish5_adjust_unit():
     """다듬기 배치 5-2a(10/27 — _proto/STUDIO_POLISH5_SPEC.md §3·§8): 후보 간단 편집(블러·색반전)."""
     section("다듬기 배치 5-2a — 후보 보정(블러·색반전)")
+    import ast
+    import copy
+    import inspect
+    import tempfile
+    from unittest.mock import patch
+
+    dp = _dp_package()
+    st, bd = dp.store, dp.board
+    out = (OUT_ROOT / "polish5_adjust").resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    run = Path(tempfile.mkdtemp(prefix="run_", dir=out))
+    _h, root = _fx_project(dp, run, "adjust", [("001_보정", [4, 4, 20, 20])], np.full((24, 24, 3), 80, np.uint8))
+    m = st.load_manifest(root)
+    crop = m["crops"][0]
+    key, alt = "h_000000000001", "h_000000000002"
+    rng = np.random.default_rng(52)
+    raw = rng.integers(0, 256, (16, 32, 4), dtype=np.uint8)
+    toned = raw.copy()
+    toned[..., :3] //= 2
+    c = {"key": key, "crop_id": crop["id"], "tid": "A", "picked": True, "origin": "psd_harvest",
+         "file": st.save_png_ca(root, "candidates", raw), "src_size": [32, 16],
+         "quad": [4, 4, 20, 4, 20, 20, 4, 20], "hand_mask": None}
+    m["candidates"] = [c, dict(c, key=alt, picked=False)]
+    full = st.save_png_ca(root, "derived", toned, prefix="fixture_toned_")
+    entry = {"params_hash": "adjust-fixture", "params": {}, "rect": crop["rect"], "reg": {"applied": False},
+             "tone": {"full": full}}
+    entries = {key: entry, alt: copy.deepcopy(entry)}
+    m["analysis"] = copy.deepcopy(entries)
+    cs = dict(dp._COMPOSE_DEFAULTS, mask_source="hand", use_registration=False, use_tone=True)
+    m["exports"] = [{"compose": cs}]
+    st.save_manifest(root, m)
+    rk = st.register_root(root)
+    record = {"blur": 1.5, "invert": True, "at": "2026-10-27 12:00:00", "hist": []}
+
+    def plan(mm):
+        return dp._plan(root, mm, entries, "hand", False, "auto_small_on_top", True, [])
+
+    def first(mm):
+        return next(dp._slices_in_order(plan(mm)))[2]
+
+    def signatures(mm):
+        return dp._export_hash(mm, entries, cs, {}), bd._composite_sig(root, mm, None), st.export_state_sig(mm)
+
+    baseline = signatures(m)
+    # F1: state 후보는 효과 값만 노출한다. 대안 보정이 달라도 현재 ★ 서명·크롭 보정 개수는 같음.
+    alt_states = []
+    for values in (None, {"blur": 0, "invert": False}, {"blur": 2, "invert": False},
+                   {"blur": 3, "invert": False}, {"blur": 0, "invert": True}):
+        state_manifest = dict(m, cand_adjust={key: record})
+        if values is not None:
+            state_manifest["cand_adjust"][alt] = dict(record, **values)
+        st.save_manifest(root, state_manifest)
+        state = bd.build_state(root)
+        rows = {cc["key"]: cc for t in state["targets"] for cc in t["candidates"]}
+        effect = values if values and (values["blur"] or values["invert"]) else None
+        check(rows[key]["adjust"] == {"blur": 1.5, "invert": True} and rows[alt]["adjust"] == effect,
+              f"F1: build_state 후보 adjust는 blur·invert 객체 또는 null({values})")
+        check(state["crops"][0]["cand_adjust"] == 1, "F1: 크롭 보정 개수는 효과 있는 ★만 세고 대안은 제외")
+        alt_states.append(state)
+    check(len({state["canvas"]["composite_sig"] for state in alt_states}) == 1,
+          "F1: 대안 보정 2→3·반전·없음 변화에도 현재 ★ 합성 서명은 같음")
+    st.save_manifest(root, m)
+    for broken in (None, [], "bad", {key: None}, {key: {}}, {key: dict(record, blur=-1)}, {key: dict(record, blur=21)},
+                   {key: dict(record, blur=float("nan"))}, {key: dict(record, blur=float("inf"))},
+                   {key: dict(record, blur=True)}, {key: dict(record, invert=1)}, {key: dict(record, hist=[{}])},
+                   {key: dict(record, at=12)}, {key: dict(record, hist="bad")}):
+        mm = dict(m, cand_adjust=broken)
+        check(st.cand_adjust_record(mm, key) is None and st.cand_adjust(mm, key) is None and signatures(mm) == baseline
+              and np.array_equal(dp._cand_pixels(root, first(mm), True)[0], toned), "깨진/빈 보정은 픽셀·해시 모두 기존과 같음")
+    adjusted = dict(m, cand_adjust={key: record, alt: record})
+    for field in ("candidates", "crops", "picks", "rejects"):
+        for broken in (17, "bad", None):
+            malformed = dict(adjusted, **{field: broken})
+            check(isinstance(st.export_state_sig(malformed), str), f"보정이 있어도 깨진 {field}는 안전하게 읽음")
+    it = first(adjusted)
+    expected = toned.copy()
+    a = toned[..., 3].astype(np.float32) / 255
+    weighted = cv2.GaussianBlur(toned[..., :3].astype(np.float32) * a[..., None], (0, 0), 3.0, sigmaY=1.5)
+    expected[..., :3] = 255 - np.rint(weighted / cv2.GaussianBlur(a, (0, 0), 3.0, sigmaY=1.5)[..., None]).astype(np.uint8)
+    pix, is_toned = dp._cand_pixels(root, it, True)
+    check(is_toned and np.array_equal(pix, expected), "톤 캐시 뒤 σ 환산(x2/y1) 블러·반전 적용")
+    check(np.array_equal(pix[..., 3], raw[..., 3]), "블러·반전은 알파 보존")
+    check(np.array_equal(dp.an.adjust_candidate(raw, 0, True, c["src_size"], c["quad"])[..., :3], 255 - raw[..., :3]),
+          "색반전은 RGB만 255 - 값")
+    check(dp.an.adjust_candidate(raw, 0, False, c["src_size"], c["quad"]) is raw, "0/false 보정은 복사·반올림 없음")
+    rotated = [20, 4, 20, 20, 4, 20, 4, 4]
+    check(np.array_equal(dp.an.adjust_candidate(toned, 1.5, True, c["src_size"], rotated), expected), "σ 환산은 quad 회전에 불변")
+    # R3: 숨겨진 검정 RGB가 불투명 경계의 밝은 색으로 번지면 안 된다.
+    edge = np.zeros((32, 32, 4), np.uint8)
+    bright = [240, 210, 180]
+    edge[8:24, 8:24, :3], edge[8:24, 8:24, 3] = bright, 255
+    edge_out = dp.an.adjust_candidate(edge, 2, False, [32, 32], [0, 0, 32, 0, 32, 32, 0, 32])
+    check(np.all(edge_out[edge[..., 3] == 255, :3] == bright) and np.array_equal(edge_out[..., 3], edge[..., 3]),
+          "R3: 알파 가중 블러는 밝은 경계 색·원래 알파 보존")
+    transparent = rng.integers(0, 256, (16, 32, 4), dtype=np.uint8)
+    transparent[..., 3] = 0
+    check(np.array_equal(dp.an.adjust_candidate(transparent, 2, False, c["src_size"], c["quad"]), transparent),
+          "R3: 블러한 알파가 0이면 원래 RGB 보존")
+    check(np.array_equal(dp.an.adjust_candidate(raw[..., :3], 1.5, False, c["src_size"], c["quad"]),
+                         cv2.GaussianBlur(raw[..., :3], (0, 0), 3.0, sigmaY=1.5)), "R3: RGB 후보의 기존 블러 유지")
+
+    # C5: 정확한 원해상도 가우시안을 독립 기준으로 RGB·알파 가중 경로의 근사 오차를 측정.
+    def exact_blur(pixels, sx, sy):
+        result = pixels.copy()
+        if pixels.shape[2] == 3:
+            return cv2.GaussianBlur(pixels, (0, 0), sx, sigmaY=sy)
+        rgb = pixels[..., :3].astype(np.float32)
+        alpha = pixels[..., 3].astype(np.float32) / 255
+        weight = cv2.GaussianBlur(alpha, (0, 0), sx, sigmaY=sy)[..., None]
+        weighted = cv2.GaussianBlur(rgb * alpha[..., None], (0, 0), sx, sigmaY=sy)
+        result[..., :3] = np.clip(np.rint(np.divide(weighted, weight, out=rgb, where=weight > 1e-6)), 0, 255).astype(np.uint8)
+        return result
+
+    def fast_blur(pixels, sx, sy):
+        h, w = pixels.shape[:2]
+        qw, qh = 20 * w / sx, 20 * h / sy
+        return dp.an.adjust_candidate(pixels, 20, False, [w, h], [0, 0, qw, 0, qw, qh, 0, qh])
+
+    yy, xx = np.indices((384, 512))
+    large = np.stack([20 + xx * 200 / 511, 40 + yy * 180 / 383, ((xx // 60 + yy // 80) % 2) * 255,
+                      np.clip(xx * 255 / 320 - 30, 0, 255)], axis=-1).astype(np.uint8)
+    large[100:220, 150:350, :3] = [230, 30, 90]
+    large[large[..., 3] == 0, :3] = 0
+    errors = []
+    for channels in (3, 4):
+        sample = large[..., :channels].copy()
+        if channels == 4:
+            # 전체 RGB 오차는 모든 픽셀이 보이는 반투명 표본으로 잰다. 알파 0의 경계·fallback은 별도 검사.
+            sample[..., 3] = np.maximum(sample[..., 3], 32)
+        for sx, sy in ((8, 12), (40, 24), (160, 160)):
+            fast, exact = fast_blur(sample, sx, sy), exact_blur(sample, sx, sy)
+            diff = np.abs(fast[..., :3].astype(np.float32) - exact[..., :3])
+            mean, worst = float(diff.mean()), int(diff.max())
+            errors.append({"channels": channels, "sigma": [sx, sy], "mae": mean, "max": worst})
+            check(mean <= 1.5 and worst <= 8, f"C5: {channels}채널 σ={sx}/{sy} 근사 오차 MAE={mean:.3f} 최대={worst}")
+            if channels == 4:
+                check(np.array_equal(fast[..., 3], sample[..., 3]), "C5: 큰 σ 알파 가중 근사도 원래 알파 보존")
+        for sx, sy in ((3, 1.5), (7.5, 12), (16, 4)):
+            check(np.array_equal(fast_blur(sample, sx, sy), exact_blur(sample, sx, sy)),
+                  f"C5: 작은 축 σ<8({sx}/{sy}, {channels}채널)는 정확한 기존 블러")
+    small_edge = fast_blur(edge, 160, 160)
+    check(np.all(small_edge[edge[..., 3] == 255, :3] == bright) and np.array_equal(small_edge[..., 3], edge[..., 3]),
+          "C5: 최소 1px 축소에서도 밝은 경계 색·알파 보존")
+    check(np.array_equal(fast_blur(transparent, 160, 160), transparent), "C5: 큰 σ·알파 0은 원래 숨은 RGB 보존")
+    # 워밍업 후 번갈아 3회, 중앙값 비교. 큰 차이가 나는 σ160·1024×768 RGBA로 스케줄링 잡음에 여유를 둔다.
+    perf_pixels = cv2.resize(large, (1024, 768), interpolation=cv2.INTER_NEAREST)
+    fast_blur(perf_pixels, 160, 160)
+    exact_blur(perf_pixels, 160, 160)
+    timings = {"approx": [], "exact": []}
+    for _ in range(3):
+        for name, fn in (("approx", fast_blur), ("exact", exact_blur)):
+            started = time.perf_counter()
+            fn(perf_pixels, 160, 160)
+            timings[name].append(time.perf_counter() - started)
+    fast_time, exact_time = (float(np.median(timings[name])) for name in ("approx", "exact"))
+    check(fast_time < exact_time * 0.8, f"C5: 큰 σ 처리 중앙값 근사 {fast_time:.4f}s < 정확 {exact_time:.4f}s × 0.8")
+    (run / "blur_metrics.json").write_text(json.dumps({"errors": errors, "seconds": timings}, indent=2), encoding="utf-8")
+    alt_item = plan(adjusted)[0]["targets"][0]["alts"][0]
+    check("adjust" not in alt_item and np.array_equal(dp._cand_pixels(root, alt_item, True)[0], toned), "숨김 대안에는 보정 없음")
+    changed_sigs = signatures(adjusted)
+    check(all(a != b for a, b in zip(baseline, changed_sigs)), "보정은 Export·합성·점검표 서명 모두 변경")
+    check(signatures(dict(m, cand_adjust={alt: record})) == baseline, "★ 아닌 후보의 보정은 모든 서명에서 제외")
+    stamp_only = dict(adjusted, cand_adjust={key: dict(record, at="2026-10-27 12:00:01", hist=[{k: record[k] for k in ("blur", "invert", "at")}])})
+    check(signatures(stamp_only) == changed_sigs, "보정 시각·이력은 픽셀 서명에서 제외")
+    gone = copy.deepcopy(adjusted)
+    gone["candidates"][0]["picked"] = False
+    check("adjust" not in plan(gone)[0]["targets"][0]["alts"][0], "★ 해제하면 적용 안 함")
+    gone["candidates"][0]["picked"] = True
+    check(first(gone)["adjust"] == it["adjust"], "다시 ★ 하면 저장한 보정 복원")
+    phantom = dict(m, cand_adjust={alt: record})
+    swap = (crop["id"], "A", alt)
+    check(bd._composite_sig(root, phantom, None, swap) != bd._composite_sig(root, m, None, swap), "가상 ★ 교체에도 그 후보의 보정 서명 적용")
+
+    # C1: swap은 탈락을 풀어 합성하므로 보정 서명도 같은 후보 집합을 읽어야 한다.
+    rejected = dict(phantom, rejects={alt: True})
+    rejected_plain = dict(rejected, cand_adjust={})
+    check(bd._composite_sig(root, rejected, None, swap) != bd._composite_sig(root, rejected_plain, None, swap)
+          and bd._composite_sig(root, rejected, None, swap) == bd._composite_sig(root, phantom, None, swap),
+          "C1: 탈락 후보 swap도 보정 값에 따라 서명이 다르고 탈락 해제 뒤와 같음")
+    swapped_pixels = bd._compose_full(root, rejected, None, swap)[0]
+    check(np.array_equal(swapped_pixels, bd._compose_full(root, adjusted, None)[0])
+          and not np.array_equal(swapped_pixels, bd._compose_full(root, rejected_plain, None, swap)[0]),
+          "C1: 탈락 후보 swap의 실제 합성 픽셀은 보정된 ★와 같고 보정 없는 합성과 다름")
+    box = [4, 4, 20, 20]
+    check(np.array_equal(bd._compose_full(root, rejected, None, swap, box)[0], swapped_pixels[4:20, 4:20]),
+          "C1: 탈락 후보 swap의 영역 합성도 보정된 전체 합성과 일치")
+
+    # C4: 수확 결과만 대역으로 주고 실제 Candidate In의 제거·병합·저장을 실행.
+    harvested = copy.deepcopy(adjusted)
+    source_psd = str(run / "harvest.psd")
+    for cc in harvested["candidates"]:
+        cc["origin_info"] = {"psd": source_psd}
+    other = dict(copy.deepcopy(harvested["candidates"][1]), key="h_000000000003", origin_info={"psd": str(run / "other.psd")})
+    harvested["candidates"].append(other)
+    harvested["cand_adjust"][other["key"]] = copy.deepcopy(record)
+    harvested["rejects"] = {alt: True}
+    st.save_manifest(root, harvested)
+    with patch.object(dp.BMKDesignPatchCandidateIn, "_harvest", return_value=[copy.deepcopy(harvested["candidates"][1])]):
+        dp.BMKDesignPatchCandidateIn().run(dp._handle(root, harvested), "psd_harvest", source_psd, "", "", True, True)
+    reharvested = st.load_manifest(root)
+    check(key not in reharvested["cand_adjust"] and key not in reharvested["analysis"]
+          and key not in {cc["key"] for cc in reharvested["candidates"]}, "C4: 재수확에서 사라진 후보의 보정·분석 기록 제거")
+    check(reharvested["cand_adjust"] == {alt: record, other["key"]: record},
+          "C4: 남아 있는 탈락·★ 해제 후보와 다른 출처 후보의 보정 기록 보존")
+    # E1: 두 필드 각각 문자열·비어 있지 않은 목록·숫자인 9조합에서도 사라진 레이어를 제거할 수 있다.
+    for bad_mask in ("broken", [1], 7):
+        for bad_adjust in ("broken", [1], 7):
+            broken = dict(copy.deepcopy(harvested), mask_edits=bad_mask, cand_adjust=bad_adjust)
+            st.save_manifest(root, broken)
+            with patch.object(dp.BMKDesignPatchCandidateIn, "_harvest", return_value=[copy.deepcopy(broken["candidates"][1])]):
+                dp.BMKDesignPatchCandidateIn().run(dp._handle(root, broken), "psd_harvest", source_psd, "", "", True, True)
+            after = st.load_manifest(root)
+            check({cc["key"] for cc in after["candidates"]} == {alt, other["key"]} and key not in after["analysis"],
+                  f"E1: 깨진 mask_edits={type(bad_mask).__name__}·cand_adjust={type(bad_adjust).__name__} 재수확 성공")
+    st.save_manifest(root, m)
+
+    analysis_before = copy.deepcopy(entries)
+    frame = (crop["rect"], crop["source"], None)
+    ph = dp._params_hash(c, frame, dp._ANALYZE_DEFAULTS)
+    fp = dp.dmask.base_fp(c, entry, "hand")
+    tone_path = Path(st.resolve_path(root, full))
+    tone_bytes, tone_mtime = tone_path.read_bytes(), tone_path.stat().st_mtime_ns
+    embedded, ft = dp.BMKDesignPatchExportPSD._so_bytes(root, it, pix, True)
+    check(ft == "png" and np.array_equal(np.array(Image.open(io.BytesIO(embedded))), expected), "SO 파생 PNG에 보정 픽셀")
+    derived = list(Path(root, "derived").glob("adjust_*.png"))
+    dp.BMKDesignPatchExportPSD._so_bytes(root, it, pix, True)
+    check(len(derived) == 1 and list(Path(root, "derived").glob("adjust_*.png")) == derived, "보정 PNG 내용 주소 재사용")
+    nofull = copy.deepcopy(it)
+    nofull["entry"]["tone"] = {"delta": "fixture", "size": [32, 16]}
+    with patch.object(dp, "_load_delta", return_value=np.full((16, 32, 3), 0.02, np.float32)):
+        unadjusted = dict(nofull)
+        unadjusted.pop("adjust")
+        tone_pixels = dp._cand_pixels(root, unadjusted, True)[0]
+        fresh, flag = dp._cand_pixels(root, nofull, True)
+    dp.BMKDesignPatchExportPSD._so_bytes(root, nofull, fresh, flag)
+    check(np.array_equal(fresh, dp.an.adjust_candidate(tone_pixels, 1.5, True, c["src_size"], c["quad"]))
+          and "full" not in nofull["entry"]["tone"], "새 톤 계산 뒤 보정·Export도 tone.full에 보정 픽셀을 기록하지 않음")
+    check(entries == analysis_before and dp._params_hash(c, frame, dp._ANALYZE_DEFAULTS) == ph
+          and dp.dmask.base_fp(c, entry, "hand") == fp and tone_path.read_bytes() == tone_bytes
+          and tone_path.stat().st_mtime_ns == tone_mtime, "분석 항목·키·S4 기준·tone.full 파일 불변")
+
+    # 기록 단위 병합(서로 다른 후보, 삭제와 추가, 같은 후보 충돌).
+    base = st.new_manifest("adjustmerge")
+    ours, theirs = dict(base, cand_adjust={key: record}), dict(base, cand_adjust={alt: record})
+    merged, conflicts = st.merge_manifest(base, ours, theirs)
+    check(not conflicts and set(merged["cand_adjust"]) == {key, alt}, "서로 다른 후보 3-way 병합")
+    before = copy.deepcopy(merged)
+    ours, theirs = copy.deepcopy(before), copy.deepcopy(before)
+    ours["cand_adjust"].pop(key)
+    theirs["cand_adjust"][alt] = dict(record, blur=2)
+    merged, conflicts = st.merge_manifest(before, ours, theirs)
+    check(not conflicts and key not in merged["cand_adjust"] and merged["cand_adjust"][alt]["blur"] == 2, "reset과 다른 후보 저장 병합")
+    ours, theirs = copy.deepcopy(before), copy.deepcopy(before)
+    ours["cand_adjust"][key] = dict(record, blur=2)
+    theirs["cand_adjust"][key] = dict(record, blur=3)
+    merged, conflicts = st.merge_manifest(before, ours, theirs)
+    check(bool(conflicts) and merged["cand_adjust"][key]["blur"] == 2, "같은 후보 충돌은 기존 ours 규칙")
+
+    # 소켓을 열지 않고 실제 _guard·JSON 핸들러를 대조한다.
+    class Request:
+        content_type = "application/json"
+
+        def __init__(self, data):
+            self.raw = json.dumps(dict(root=rk, **data)).encode("utf-8")
+            self.content_length = len(self.raw)
+
+        async def read(self):
+            return self.raw
+
+    def post(**values):
+        response = asyncio.run(bd.mask_adjust_handler(Request(dict(key=key, **values))))
+        return response.status, json.loads(response.text)
+
+    status, a = post(op="set", blur=1.5, invert=True, seen="")
+    check(status == 200 and a["adjust"]["blur"] == 1.5 and a["rev"] > m["rev"] and a["composite_sig"] != baseline[1], "라우트 set·rev·합성 서명")
+    before_undo = st.load_manifest(root)
+    status, error = post(op="undo", seen=a["adjust"]["at"])
+    check(status == 400 and error["error"] == "되돌릴 이전 보정이 없습니다" and st.load_manifest(root) == before_undo,
+          "R4: 빈 이력 undo는 한국어 400·현재 보정과 rev 보존")
+    view = bd.mask_view(root, key)
+    doc = json.loads(_MASK_API.read_text(encoding="utf-8"))["routes"]["GET /mask"]
+    check(view["adjust"] == a["adjust"] and not _pl_shape(doc["ok"], view, doc), "GET /mask 보정 기록·fixture 일치")
+    info_base = view["base"]["sig"]
+    seen = a["adjust"]["at"]
+    status, b = post(op="set", blur=2, invert=False, seen=seen)
+    check(status == 200 and b["adjust"]["at"] != seen and len(b["adjust"]["hist"]) == 1, "연속 저장 시각 구별·이전 판 쌓기")
+    status, error = post(op="reset", seen=seen)
+    check(status == 409 and error["reason"] == "changed", "옛 seen은 409 changed")
+    status, undo = post(op="undo", seen=b["adjust"]["at"])
+    check(status == 200 and undo["adjust"]["blur"] == 1.5 and undo["adjust"]["invert"] and not undo["adjust"]["hist"]
+          and undo["adjust"]["at"] not in (seen, b["adjust"]["at"]), "undo 첫 판 복원·새 seen(ABA 방지)")
+    for i in range(23):
+        status, undo = post(op="set", blur=i % 2 + 2, invert=False, seen=undo["adjust"]["at"])
+    check(status == 200 and len(undo["adjust"]["hist"]) == 20, "이력 최근 20판 제한")
+    status, reset = post(op="reset", seen=undo["adjust"]["at"])
+    check(status == 200 and reset["adjust"] is None and key not in st.load_manifest(root)["cand_adjust"], "reset은 기록 삭제")
+    before_undo = st.load_manifest(root)
+    status, error = post(op="undo", seen="")
+    check(status == 400 and error["error"] == "되돌릴 이전 보정이 없습니다" and st.load_manifest(root) == before_undo,
+          "R4: 기록 없는 undo도 한국어 400·매니페스트 불변")
+    post(op="set", blur=1, invert=False, seen="")
+    seen = st.cand_adjust(st.load_manifest(root), key)["at"]
+    status, zero = post(op="set", blur=0, invert=False, seen=seen)
+    zero_record = zero["adjust"]
+    zero_manifest = st.load_manifest(root)
+    check(status == 200 and zero_record["blur"] == 0 and zero_record["invert"] is False
+          and zero_manifest["cand_adjust"][key] == zero_record and len(zero_record["hist"]) == 1
+          and zero_record["hist"][0] == {"blur": 1, "invert": False, "at": seen}, "E2: 0/false set도 기록·직전 보정 이력을 보존")
+    check(st.cand_adjust_record(zero_manifest, key) == zero_record and st.cand_adjust(zero_manifest, key) is None
+          and signatures(zero_manifest) == baseline and zero["composite_sig"] == baseline[1], "E2: 원 기록은 유지·효과 조회는 None·모든 서명은 보정 없음과 같음")
+    zero_copy = st.cand_adjust_record(zero_manifest, key)
+    zero_copy["hist"][0]["blur"] = 19
+    check(zero_manifest["cand_adjust"][key] == zero_record, "E2: 원 기록 조회의 사본을 바꿔도 매니페스트·이력 불변")
+    check("adjust" not in first(zero_manifest) and np.array_equal(dp._cand_pixels(root, first(zero_manifest), True)[0], toned)
+          and np.array_equal(bd._compose_full(root, zero_manifest, None)[0], bd._compose_full(root, m, None)[0]),
+          "E2: 0 기록은 계획·톤 뒤 픽셀·전체 합성에 효과 없음")
+    zero_view = bd.mask_view(root, key)
+    check(zero_view["adjust"] == zero_record and not _pl_shape(doc["ok"], zero_view, doc),
+          "E2: GET /mask는 0 기록·이력을 기존 fixture 형식 그대로 반환")
+    zero_state = bd.build_state(root)
+    check(all(cc["adjust"] is None for t in zero_state["targets"] for cc in t["candidates"])
+          and all(cr["cand_adjust"] == 0 for cr in zero_state["crops"]), "E2: 0 기록 후보·크롭 보정 칩 없음")
+    status, error = post(op="set", blur=2, invert=False, seen="")
+    check(status == 409 and error["reason"] == "changed", "E2: 0 기록도 기존 at를 요구하므로 빈 seen은 409")
+    status, restored = post(op="undo", seen=zero_record["at"])
+    check(status == 200 and restored["adjust"]["blur"] == 1 and not restored["adjust"]["hist"], "E2: 0 기록에서 undo로 직전 보정 복원")
+    status, zero_again = post(op="set", blur=0, invert=False, seen=restored["adjust"]["at"])
+    status, nonzero = post(op="set", blur=2, invert=False, seen=zero_again["adjust"]["at"])
+    status, undo_zero = post(op="undo", seen=nonzero["adjust"]["at"])
+    check(status == 200 and undo_zero["adjust"]["blur"] == 0 and not undo_zero["adjust"]["invert"]
+          and len(undo_zero["adjust"]["hist"]) == 1 and signatures(st.load_manifest(root)) == baseline,
+          "E2: 이력 첫 판이 0이어도 undo가 그 기록과 남은 이력을 복원")
+    for i in range(23):
+        status, undo_zero = post(op="set", blur=1 if i % 2 == 0 else 0, invert=False, seen=undo_zero["adjust"]["at"])
+    check(status == 200 and len(undo_zero["adjust"]["hist"]) == 20
+          and any(h["blur"] == 0 for h in undo_zero["adjust"]["hist"]), "E2: 0 값도 이력에 포함해 최근 20판 제한")
+    status, reset = post(op="reset", seen=undo_zero["adjust"]["at"])
+    check(status == 200 and reset["adjust"] is None and key not in st.load_manifest(root)["cand_adjust"], "E2: reset은 기록·이력 삭제")
+    status, initial_zero = post(op="set", blur=0, invert=False, seen="")
+    check(status == 200 and initial_zero["adjust"]["blur"] == 0 and not initial_zero["adjust"]["hist"], "E2: 최초 0 set도 이력 없는 기록을 생성")
+    before_zero_repeat = st.load_manifest(root)
+    status, repeated_zero = post(op="set", blur=0, invert=False, seen=initial_zero["adjust"]["at"])
+    check(status == 200 and repeated_zero == initial_zero and st.load_manifest(root) == before_zero_repeat,
+          "E2: 같은 0 값 재저장은 at·rev·이력을 중복 생성하지 않음")
+    status, error = post(op="undo", seen=initial_zero["adjust"]["at"])
+    check(status == 400 and error["error"] == "되돌릴 이전 보정이 없습니다" and st.load_manifest(root) == before_zero_repeat,
+          "E2: 이력 없는 0 기록 undo도 한국어 400·기록 보존")
+    status, reset = post(op="reset", seen=initial_zero["adjust"]["at"])
+    check(status == 200 and reset["adjust"] is None and key not in st.load_manifest(root)["cand_adjust"]
+          and signatures(st.load_manifest(root)) == baseline, "E2: 0 기록도 reset으로만 삭제·보정 없는 서명 유지")
+    for fields in ({"blur": -1}, {"blur": 21}, {"blur": True}, {"blur": "2"}, {"blur": float("nan")},
+                   {"invert": "false"}, {"invert": 0}, {"seen": None}, {"op": []}):
+        values = dict(op="set", blur=1, invert=False, seen="")
+        values.update(fields)
+        status, error = post(**values)
+        check(status == 400 and any("가" <= ch <= "힣" for ch in error["error"]), "잘못된 보정 입력은 한국어 400")
+    for op in ("set", "undo", "reset"):
+        response = asyncio.run(bd.mask_adjust_handler(Request({"key": alt, "op": op, "blur": 1, "invert": False, "seen": ""})))
+        check(response.status == 409 and json.loads(response.text)["reason"] == "not_picked", f"{op}: ★ 아니면 409 not_picked")
+    update = st.update_manifest
+
+    def racing(root_, mutate):
+        update(root_, lambda mm: mm["candidates"][0].update(picked=False))
+        return update(root_, mutate)
+
+    with patch.object(st, "update_manifest", side_effect=racing):
+        status, error = post(op="set", blur=1, invert=False, seen="")
+    check(status == 409 and error["reason"] == "not_picked", "잠금 직전 ★ 해제도 거절")
+    st.save_manifest(root, m)
+    edit, _rev = dp.dmask.save_edit(root, key, png_bytes(np.full((16, 16), 128, np.uint8)), seen="",
+                                   rect=[4, 4, 20, 20], base=fp, ops="보정 전 마스크")
+    mask_before = bd.mask_view(root, key)
+    post(op="set", blur=2, invert=False, seen="")
+    mask_after = bd.mask_view(root, key)
+    check(mask_before["base"] == mask_after["base"] and mask_before["edit"] == mask_after["edit"]
+          and not mask_after["edit"]["stale"] and st.load_manifest(root)["mask_edits"][key] == edit,
+          "기존 S4 마스크 편집·기준·stale은 후보 보정 뒤에도 그대로")
+    st.save_manifest(root, m)
+    status, a = post(op="set", blur=1.5, invert=True, seen="")
+    view = bd.mask_view(root, key)
+    check(view["base"]["sig"] == info_base and view["edit"] is None and st.load_manifest(root)["analysis"] == m["analysis"],
+          "라우트 저장 후에도 마스크 기준·분석 불변")
+
+    # 실제 PSD 재개방: smart_object/pixel 모두 보이는 합성과 같고 SO 원본에도 보정이 들어간다.
+    import folder_paths
+    old_output = folder_paths.get_output_directory()
+    old_board_output = bd._OUTPUT_DIR[:]
+    exported_names = []
+    try:
+        folder_paths.set_output_directory(str(run / "output"))
+        bd.set_output_dir(str(run / "output"))
+        for mode in ("smart_object", "pixel"):
+            mm = st.load_manifest(root)
+            hh = dp._handle(root, mm, compose=cs)
+            with patch.object(dp, "_ensure_analysis", return_value=(entries, 0, 2, [])):
+                result = dp.BMKDesignPatchExportPSD().run(hh, "adjust", mode, "hidden_all", "toned", "hand", True, False)
+            path = Path(result["result"][0])
+            side = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
+            rows = side["export_layers"]
+            exported_names.append([r["name"] for r in rows])
+            check(next(r for r in rows if r["key"] == key)["adjust"] == {"blur": 1.5, "invert": True}
+                  and "adjust" not in next(r for r in rows if r["key"] == alt), f"{mode}: 사이드카 ★에만 보정 값")
+            psd = PSDImage.open(path)
+            full_pixels = bd._compose_full(root, st.load_manifest(root), None)[0]
+            check(np.array_equal(np.array(psd.topil()), full_pixels), f"{mode}: PSD 병합 픽셀 = ★ 합성")
+            if mode == "smart_object":
+                so_path = path
+                objects = {x.name: x for x in psd.descendants() if x.kind == "smartobject"}
+                for row in rows:
+                    data = objects[row["name"]].smart_object.data
+                    check(np.array_equal(np.array(Image.open(io.BytesIO(data))), expected if row["key"] == key else toned),
+                          f"PSD SO 임베드 보정 픽셀/대안 원본 {row['key']}")
+            check(st.load_manifest(root)["analysis"] == m["analysis"] and tone_path.read_bytes() == tone_bytes, f"{mode}: Export 분석·톤 원본 유지")
+        check(exported_names[0] == exported_names[1] == [f"{crop['name']} · A · c01 ★ · 보정", f"{crop['name']} · A · c02"],
+              "R1: 보정 ★에만 이름 접미사·PSD와 사이드카 이름 일치·숨김 대안 이름 유지")
+        now = st.load_manifest(root)
+        under, patch_pixels, over = bd._mask_layers(root, now, None, key, view["layers"]["box"])
+        alpha = patch_pixels[..., 3:4].astype(np.float32) / 255
+        combined = np.rint(under + (patch_pixels[..., :3].astype(np.float32) - under) * alpha).astype(np.uint8)
+        check(not over.any() and np.array_equal(combined, bd._compose_full(root, now, None)[0]), "3층도 보정된 ★ 합성과 일치")
+        # R1: 보정 ★ 이름을 가진 실제 Export PSD에서 그룹 마스크를 바꾼 뒤 가져오기까지 왕복.
+        document = PSDImage.open(so_path)
+        owner = next(x for x in document.descendants() if x.name == exported_names[0][0]).parent
+        owner.create_mask(Image.new("L", (16, 16), 64), left=4, top=4)
+        document.save(so_path)
+        with patch.object(dp.dmask, "import_ps_masks", wraps=dp.dmask.import_ps_masks) as importing:
+            preview = bd.mask_ps_import(root, {"psd": str(so_path), "dry_run": True})
+            check(importing.call_count == 1 and not preview["skipped"] and len(preview["changed"]) == 1
+                  and preview["changed"][0]["key"] == key and preview["changed"][0]["label"] == exported_names[0][0],
+                  "R1: import_ps_masks가 보정 ★ 레이어를 사이드카 name과 정확히 짝지음")
+            imported = bd.mask_ps_import(root, {"psd": str(so_path), "dry_run": False, "seen": preview["seen"]})
+        saved_edit = st.load_manifest(root)["mask_edits"][key]
+        check([r["key"] for r in imported["imported"]] == [key] and not imported["failed"]
+              and np.all(np.array(Image.open(st.resolve_path(root, saved_edit["file"]))) == 64), "R1: 보정 ★의 PS 그룹 마스크 실제 가져오기 성공")
+        # E2: 효과 없는 0 기록·이력이 있어도 Export는 보정 없는 ★ 이름·사이드카를 쓴다.
+        st.update_manifest(root, lambda mm: mm["cand_adjust"].update({key: zero_record}))
+        mm = st.load_manifest(root)
+        with patch.object(dp, "_ensure_analysis", return_value=(entries, 0, 2, [])):
+            plain = dp.BMKDesignPatchExportPSD().run(dp._handle(root, mm, compose=cs), "plain", "smart_object", "hidden_all", "toned", "hand", True, False)
+        plain_path = Path(plain["result"][0])
+        plain_rows = json.loads(plain_path.with_suffix(".json").read_text(encoding="utf-8"))["export_layers"]
+        plain_names = [r["name"] for r in plain_rows]
+        check(plain_names == [f"{crop['name']} · A · c01 ★", f"{crop['name']} · A · c02"]
+              and set(plain_names) == {x.name for x in PSDImage.open(plain_path).descendants() if x.kind == "smartobject"},
+              "R1: 보정 없는 ★·대안의 PSD 및 사이드카 이름 유지")
+        check(all("adjust" not in row for row in plain_rows) and st.cand_adjust_record(st.load_manifest(root), key) == zero_record,
+              "E2: 0 기록은 Export 사이드카 보정 표시 없이 원 기록·이력 보존")
+    finally:
+        folder_paths.set_output_directory(old_output)
+        bd._OUTPUT_DIR[:] = old_board_output
+
+    node = shutil.which("node")
+    if not node:
+        skip("node 없음: 후보 보정 UI 하네스 미실행")
+        return
+    tree = ast.parse(inspect.getsource(mask_js_unit))
+    harness = next(n.value.value for n in ast.walk(tree) if isinstance(n, ast.Assign)
+                   and any(isinstance(t, ast.Name) and t.id == "harness" for t in n.targets) and isinstance(n.value, ast.Constant))
+    cut = [_PL_JS_HARNESS[_PL_JS_HARNESS.index(a):_PL_JS_HARNESS.index(b, _PL_JS_HARNESS.index(a))]
+           for a, b in (("import fs", "async function run("), ("class El {", "async function mouse("))]
+    cut += [harness[:harness.index('// J-K1 공용 표')], harness[harness.index('function maskState()'):harness.index('await scenario("panel",')]]
+    test_js = r'''
+await scenario("adjust", async () => {
+  const P = maskPanel(), { srv, ed, viewer, B } = P;
+  const info = maskInfo(K15);
+  info.adjust = null;
+  srv.info[K15] = info;
+  let rev = info.z.rev, release;
+  srv.adjustReply = async (body) => {
+    if (srv.hold) await srv.hold;
+    if (srv.fail) return { ok: false, status: 409, json: async () => ({ error: "다른 창에서 바뀜", reason: "changed" }) };
+    const old = info.adjust;
+    rev++;
+    if (body.op === "reset") info.adjust = null;
+    else if (body.op === "undo") info.adjust = Object.assign({}, old.hist[0], { at: `at${rev}`, hist: old.hist.slice(1) });
+    else info.adjust = { blur: body.blur, invert: body.invert, at: `at${rev}`, hist: old ? [old, ...old.hist] : [] };
+    info.z.rev = rev;
+    info.composite_sig = info.layers.sig = `adjust${rev}`;
+    for (const k of ["under", "patch", "over"]) info.layers[`${k}_url`] = info.layers[`${k}_url`].replace(/v=[^&]+/, `v=adjust${rev}`);
+    return { ok: true, status: 200, json: async () => ({ ok: true, adjust: clone(info.adjust), rev, composite_sig: info.composite_sig }) };
+  };
+  ed.enter(maskState(), { key: K15, seam: null });
+  const controls = () => P.panel.all().find((e) => e.classList.contains("mc-adjust"));
+  const slider = () => controls().all().find((e) => e.type === "range");
+  const invert = () => controls().all().find((e) => e.type === "checkbox");
+  await until(() => viewer.layer && controls());
+  const result = {};
+  result.controls = Number(slider().min) === 0 && Number(slider().max) === 20 && Number(slider().step) === 0.5
+    && controls().textContent.includes("σ 0 px") && controls().textContent.includes("색반전") && !B("보정 없음") && !B("되돌리기");
+  slider().value = 1; slider().fire("input");
+  slider().value = 2.5; slider().fire("input");
+  invert().checked = true; invert().fire("change");
+  result.debounce = P.count("mask/adjust") === 0;
+  result.waitLocked = ed.go({ key: K14 }) === false && ed.leave() === false && !viewer.ed.pointerdown({ cx: 600, cy: 2900 });
+  srv.hold = new Promise((r) => { release = r; });
+  await until(() => P.count("mask/adjust") === 1);
+  result.busy = !slider().disabled && !invert().disabled && ed.leave() === false;
+  const body = srv.log.find((r) => r.path === "mask/adjust").body;
+  result.request = body.root === KEY && body.key === K15 && body.op === "set" && body.seen === "" && body.blur === 2.5 && body.invert === true;
+  const layersBefore = P.count("mask/img", "patch");
+  release(); srv.hold = null;
+  await until(() => B("보정 없음") && !ed._test.M.busy && P.count("mask/img", "patch") > layersBefore);
+  result.refresh = P.calls.refresh === 1 && !B("되돌리기");
+  slider().value = 3; slider().fire("input");
+  await until(() => B("되돌리기") && !ed._test.M.busy);
+  const requests = srv.log.filter((r) => r.path === "mask/adjust");
+  result.seen = requests[1].body.seen === `at${rev - 1}`;
+  const dragged = slider(), undoButton = B("되돌리기"), resetButton = B("보정 없음");
+  dragged.value = 4; dragged.fire("input");
+  result.R2_waitButtons = undoButton.disabled && resetButton.disabled;
+  result.R2_dragPreserved = slider() === dragged && !dragged.disabled;
+  await until(() => Number(slider().value) === 4 && !ed._test.M.busy && P.count("mask/adjust") === 3);
+  B("되돌리기").fire("click");
+  await until(() => Number(slider().value) === 3 && !ed._test.M.busy);
+  B("되돌리기").fire("click");
+  await until(() => !B("되돌리기") && !ed._test.M.busy);
+  result.undo = Number(slider().value) === 2.5 && invert().checked;
+  const beforeZero = clone(info.adjust);
+  slider().value = 0; slider().fire("input");
+  invert().checked = false; invert().fire("change");
+  await until(() => !ed._test.M.busy && info.adjust && info.adjust.blur === 0 && !info.adjust.invert);
+  const zeroAt = info.adjust.at;
+  result.E2_zeroButtons = !!B("되돌리기") && !B("되돌리기").disabled && !!B("보정 없음") && !B("보정 없음").disabled
+    && info.adjust.hist.length === 1 && controls().textContent.includes("σ 0 px");
+  const zeroState = maskState(); zeroState.rev++;
+  zeroState.crops[0].cand_adjust = 0;
+  for (const t of zeroState.targets) for (const c of t.candidates) c.adjust = null;
+  ed.stateChanged(zeroState);
+  result.E2_zeroChip = !P.list.textContent.includes("보정");
+  B("되돌리기").fire("click");
+  await until(() => !ed._test.M.busy && info.adjust.blur === beforeZero.blur && info.adjust.invert === beforeZero.invert);
+  const undoZero = srv.log.filter((r) => r.path === "mask/adjust").at(-1).body;
+  result.E2_zeroUndo = Number(slider().value) === beforeZero.blur && invert().checked === beforeZero.invert
+    && undoZero.op === "undo" && undoZero.seen === zeroAt && !B("되돌리기");
+  B("보정 없음").fire("click");
+  await until(() => !B("보정 없음") && !ed._test.M.busy);
+  result.reset = Number(slider().value) === 0 && !invert().checked;
+  slider().value = 0; slider().fire("input");
+  await until(() => !!B("보정 없음") && !ed._test.M.busy);
+  result.E2_initialZero = !!info.adjust && info.adjust.blur === 0 && !info.adjust.invert && !info.adjust.hist.length
+    && !!B("보정 없음") && !B("되돌리기");
+  const initialZeroAt = info.adjust.at;
+  B("보정 없음").fire("click");
+  await until(() => !B("보정 없음") && !ed._test.M.busy);
+  const resetZero = srv.log.filter((r) => r.path === "mask/adjust").at(-1).body;
+  result.E2_zeroReset = info.adjust === null && !B("되돌리기") && resetZero.op === "reset" && resetZero.seen === initialZeroAt;
+  viewer.ed.pointerdown({ cx: 600, cy: 2900, shiftKey: false }); viewer.ed.pointerup({});
+  const n = P.count("mask/adjust");
+  result.pending = !!ed.pending() && slider().disabled && invert().disabled && controls().textContent.includes("적용 안 한 획");
+  result.R5_summaryByName = P.rows().find((t) => /^적용 안 한 획 \d+ — /.test(t))?.startsWith("적용 안 한 획 1 — 붓") === true;
+  slider().value = 4; slider().fire("input");
+  await new Promise((r) => setTimeout(r, 350));
+  result.pendingNoWrite = P.count("mask/adjust") === n;
+  B("버리기").fire("click");
+  await until(() => !ed.pending() && !ed._test.M.busy);
+  srv.fail = true;
+  slider().value = 4; slider().fire("input");
+  await until(() => P.toasts.some((t) => t.includes("다른 창")) && !ed._test.M.busy);
+  result.conflict = info.adjust === null && Number(slider().value) === 0;
+  const state = maskState(); state.rev += 10; state.crops[0].cand_adjust = 1;
+  state.targets[0].candidates[0].adjust = { blur: 2, invert: false };
+  ed.stateChanged(state);
+  result.chip = P.list.textContent.includes("보정");
+  const brushSlider = (name) => P.panel.all().find((e) => e.classList.contains("rf-slider") && e.children[0].textContent === name);
+  P.key("BracketRight"); P.key("BracketLeft", { shiftKey: true });
+  result.R5_slidersByName = brushSlider("크기").textContent === "크기58px" && brushSlider("경도").textContent === "경도0.40"
+    && brushSlider("블러").textContent === "블러σ 0 px";
+  // R2: 제품에는 노출하지 않는 시험 사본의 훅으로 null·조기 반환 조건을 주입한다.
+  for (const reason of ["null", "noInfo", "wrongInfo", "noKey", "wrongKey", "stroke", "pending", "resetWait", "otherBusy"]) {
+    const Q = maskPanel();
+    Q.ed.enter(maskState(), { key: K15, seam: null });
+    await until(() => Q.viewer.layer && Q.ed._test.M.info);
+    const { M, saveAdjust } = Q.ed._test;
+    const panelBefore = Q.panel.children[0];
+    const savedInfo = M.info;
+    const input = Q.panel.all().find((e) => e.classList.contains("mc-adjust")).all().find((e) => e.type === "range");
+    input.value = 4; input.fire("input");
+    if (reason === "null") M.adjust = async () => null;
+    if (reason === "noInfo") M.info = null;
+    if (reason === "wrongInfo") M.info = Object.assign({}, M.info, { key: K14 });
+    if (reason === "noKey") M.key = null;
+    if (reason === "wrongKey") M.key = K14;
+    if (reason === "stroke") M.stroke = {};
+    if (reason === "pending") M.undo.push({ label: "시험 획" });
+    if (reason === "otherBusy") M.busy = "pick";
+    await saveAdjust(reason === "resetWait" ? "reset" : "set");
+    const released = M.busy === (reason === "otherBusy" ? "pick" : "");
+    const redrawn = Q.panel.children[0] !== panelBefore;
+    M.info = savedInfo; M.key = K15; M.stroke = null; M.undo = []; M.busy = "";
+    result[`R2_${reason}`] = released && redrawn && Q.count("mask/adjust") === 0 && Q.ed.go({ key: K14 });
+    await until(() => M.info && M.info.key === K14 && !M.busy);
+    result[`R2_${reason}`] = result[`R2_${reason}`] && Q.ed.leave();
+  }
+  // C2·C3: 응답을 붙잡아 저장 중 실제 입력·대안 ★ 클릭을 재현한다(소켓 없는 서버 대역).
+  for (const failure of [0, 409, 500]) {
+    const Q = maskPanel(), qi = maskInfo(K15);
+    qi.adjust = null;
+    Q.srv.info[K15] = qi;
+    const gates = [], releases = [];
+    for (let i = 0; i < 2; i++) gates.push(new Promise((resolve) => releases.push(resolve)));
+    let nreply = 0;
+    Q.srv.adjustReply = async (body) => {
+      const n = nreply++;
+      if (gates[n]) await gates[n];
+      if (failure) return { ok: false, status: failure, json: async () => ({ error: "저장 실패", reason: "changed" }) };
+      const old = qi.adjust;
+      qi.adjust = { blur: body.blur, invert: body.invert, at: `saved${n + 1}`, hist: old ? [old] : [] };
+      qi.z.rev++;
+      qi.composite_sig = qi.layers.sig = `queued${n + 1}`;
+      return { ok: true, status: 200, json: async () => ({ ok: true, adjust: clone(qi.adjust), rev: qi.z.rev, composite_sig: qi.composite_sig }) };
+    };
+    Q.ed.enter(maskState(), { key: K15, seam: null });
+    const adj = () => Q.panel.all().find((e) => e.classList.contains("mc-adjust"));
+    const range = () => adj().all().find((e) => e.type === "range");
+    const inv = () => adj().all().find((e) => e.type === "checkbox");
+    const M = Q.ed._test.M;
+    const altTable = () => Q.srv.alts.push([200, { sig: maskState().canvas.composite_sig, now: { bad: 1, worst: 38.4 },
+      rows: [Object.assign(clone(MA["GET /mask/alts"].ok.rows[0]), { key: K15B, c: 2 })] }]);
+    await until(() => Q.viewer.layer && adj());
+    let star;
+    if (!failure) {
+      altTable(); Q.B("다른 후보로").fire("click");
+      await until(() => Q.B("이 후보를 ★"));
+      star = Q.B("이 후보를 ★");
+    }
+    range().value = 4; range().fire("input");
+    inv().checked = true; inv().fire("change");
+    if (!failure) {
+      star.fire("click");
+      result.C3_wait = M.busy === "adjust_wait" && Q.calls.pick.length === 0 && Q.confirms.length === 0
+        && Q.toasts.some((t) => t.includes("보정을 먼저 저장"));
+    }
+    await until(() => Q.count("mask/adjust") === 1);
+    if (!failure) {
+      star.fire("click");
+      result.C3_saving = M.busy === "adjust" && Q.calls.pick.length === 0 && Q.confirms.length === 0;
+      result.C2_inputsEnabled = !range().disabled && !inv().disabled && Number(range().value) === 4 && inv().checked;
+    }
+    // 체크만 바꿔도 아직 응답하지 않은 첫 blur=4를 보존해야 한다.
+    inv().checked = false; inv().fire("change");
+    // 대상을 강제로 바꿔 옛 슬라이더 이벤트를 보내도 다른 후보의 초안으로 합치면 안 된다.
+    if (!failure) {
+      const oldInfo = M.info, oldRange = range();
+      M.key = K14; M.info = maskInfo(K14);
+      oldRange.value = 16; oldRange.fire("input");
+      M.key = K15; M.info = oldInfo;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    result[`C2_serial_${failure}`] = Q.count("mask/adjust") === 1 && M.busy === "adjust";
+    releases[0]();
+    if (!failure) {
+      await until(() => Q.count("mask/adjust") === 2);
+      const sent = Q.srv.log.filter((r) => r.path === "mask/adjust").map((r) => r.body);
+      result.C2_followup = sent[1].key === K15 && sent[1].op === "set" && sent[1].blur === 4
+        && sent[1].invert === false && sent[1].seen === "saved1";
+      releases[1]();
+      await until(() => !M.busy && qi.adjust.at === "saved2");
+      result.C2_final = Number(range().value) === 4 && !inv().checked && qi.adjust.blur === 4 && !qi.adjust.invert;
+      // 두 번째 저장 중 슬라이더 입력도 다음 요청으로 이어져야 한다: 별도 저장으로 한 번 더 확인.
+      gates[2] = new Promise((resolve) => { releases[2] = resolve; });
+      range().value = 6; range().fire("input");
+      await until(() => Q.count("mask/adjust") === 3);
+      range().value = 7; range().fire("input");
+      range().value = 8; range().fire("input");
+      releases[2]();
+      await until(() => Q.count("mask/adjust") === 4 && !M.busy);
+      const last = Q.srv.log.filter((r) => r.path === "mask/adjust").at(-1).body;
+      result.C2_slider = last.blur === 8 && !last.invert && last.seen === "saved3" && Number(range().value) === 8;
+      altTable(); Q.B("다른 후보로").fire("click");
+      await until(() => Q.B("이 후보를 ★"));
+      Q.pick = async () => null;
+      Q.B("이 후보를 ★").fire("click");
+      await until(() => Q.calls.pick.length === 1 && !M.busy);
+      result.C3_afterSave = Q.confirms.length === 1 && Q.calls.pick[0][1] === K15B;
+    } else {
+      await until(() => Q.toasts.some((t) => t.includes("대기 중 보정 입력을 버렸습니다")) && !M.busy);
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      result[`C2_discard_${failure}`] = Q.count("mask/adjust") === 1 && qi.adjust === null
+        && Number(range().value) === 0 && !inv().checked && Q.ed.go({ key: K14 });
+      await until(() => M.info && M.info.key === K14 && !M.busy);
+    }
+    Q.ed.leave();
+  }
+  // F1: 다른 창에서 대안을 잠깐 ★로 보정한 뒤 원래 ★로 복원 — 현재 합성·마스크 편집은 그대로.
+  {
+    const Q = maskPanel();
+    let state = maskState();
+    state.targets[0].candidates.find((c) => c.key === K15B).adjust = { blur: 2, invert: false };
+    Q.ed.enter(state, { key: K15, seam: null });
+    await until(() => Q.viewer.layer && Q.ed._test.M.info);
+    const stale = () => Q.rows().some((t) => t.includes("표가 낡음"));
+    const table = () => Q.panel.all().find((e) => e.tagName === "TABLE");
+    const reloadTable = async () => {
+      Q.srv.alts.push([200, { sig: state.canvas.composite_sig, now: { bad: 1, worst: 38.4 },
+        rows: [Object.assign(clone(MA["GET /mask/alts"].ok.rows[0]), { key: K15B, c: 2 })] }]);
+      Q.B("다른 후보로").fire("click");
+      return await until(() => !!table() && !stale());
+    };
+    result.F1_initial = await reloadTable();
+    state = clone(state); state.rev++;
+    state.targets[0].candidates.find((c) => c.key === K15B).adjust = { invert: false, blur: 2 };
+    Q.ed.stateChanged(state);
+    result.F1_equalValues = !!table() && !stale() && Q.count("mask/alts") === 1;
+    const originalSig = state.canvas.composite_sig;
+    for (const [label, adjust] of [["blur", { blur: 3, invert: false }], ["invert", { blur: 3, invert: true }],
+      ["none", null], ["added", { blur: 2, invert: false }]]) {
+      state = clone(state); state.rev++;
+      state.targets[0].candidates.find((c) => c.key === K15B).adjust = adjust;
+      Q.ed.stateChanged(state);
+      result[`F1_${label}`] = await until(stale) && !table() && !!Q.B("다른 후보로")
+        && state.canvas.composite_sig === originalSig && Q.ed._test.M.key === K15;
+      result[`F1_${label}_recalculated`] = await reloadTable();
+    }
+    result.F1_readOnly = Q.count("mask/alts") === 5 && Q.count("mask/adjust") === 0 && Q.calls.pick.length === 0;
+    Q.ed.leave();
+  }
+  return result;
+});
+console.log(JSON.stringify(out));
+'''
+    js = "".join(cut).replace('if (path === "mask") return resp(200, info);',
+                             'if (path === "mask/adjust") return await srv.adjustReply(rec.body);\n    if (path === "mask") return resp(200, info);') + test_js
+    (run / "adjust.mjs").write_text(js, encoding="utf-8", newline="\n")
+    mask_js = (PKG / "web_design_patch" / "mask_edit.js").read_text(encoding="utf-8")
+    public_api = "return { enter, leave, go, onKey, onKeyUp, stateChanged, seamsChanged, pending }"
+    assert mask_js.count(public_api) == 1
+    test_mask = run / "mask_adjust_test.js"
+    test_mask.write_text(mask_js.replace(public_api, public_api[:-2] + ", _test: { M, saveAdjust } }"), encoding="utf-8", newline="\n")
+    (run / "in.json").write_text(json.dumps({"api": _pl_api(), "mask": json.loads(_MASK_API.read_text(encoding="utf-8")),
+                                             "rules": {}, "maskJs": str(test_mask),
+                                             "pipelineJs": str(PKG / "web_design_patch" / "pipeline.js"),
+                                             "boardJs": str(PKG / "web_design_patch" / "board.js")}), encoding="utf-8")
+    result = subprocess.run([node, str(run / "adjust.mjs"), str(run / "in.json")], capture_output=True, text=True, encoding="utf-8", timeout=60)
+    check(result.returncode == 0, f"후보 보정 node 종료 {result.stderr[:500]}")
+    ui = json.loads(result.stdout).get("adjust", {}) if result.returncode == 0 else {}
+    check(bool(ui) and "error" not in ui, f"후보 보정 UI 하네스 {ui}")
+    for label, ok in ui.items():
+        if label != "error":
+            check(ok is True, f"후보 보정 UI: {label}")
 
 
 def polish5_psmask_unit():

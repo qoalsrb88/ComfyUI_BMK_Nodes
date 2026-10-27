@@ -542,6 +542,8 @@ body.mask .proj { min-width: 0; overflow: hidden; text-overflow: ellipsis; white
 #mask-panel .pp-row.sel { background: #22314a; }
 #mask-panel .pp-table td.wrap { white-space: normal; text-align: left; }
 #mask-panel .pp-table .chip { margin-left: 4px; }
+#mask-panel .mc-adjust .rf-val { min-width: 66px; }
+#mask-panel .mc-invert { display: flex; align-items: center; gap: 6px; margin: 6px 0; }
 .stage canvas.ov-mask { position: absolute; display: block; }
 .stage.px canvas.ov-mask { image-rendering: pixelated; }
 svg.marks .mwin { fill: none; stroke: rgba(227, 230, 236, .5); stroke-width: 1px; stroke-dasharray: 6 4; vector-effect: non-scaling-stroke; }

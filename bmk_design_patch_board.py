@@ -36,6 +36,7 @@ Review 노드를 부분 실행한다(대체 경로). 인증 토큰은 그 경로
 - POST /bmk/design_patch/mask/cleanup {root, files}   그 목록 중 지금도 안 쓰는 것만 지움(매니페스트 잠금 안에서 다시 판정) → {ok, deleted, bytes, kept}
 - GET  /bmk/design_patch/mask/ps_list?root=   output 안의 이 프로젝트 Export PSD·사이드카 목록(최근 것부터)
 - POST /bmk/design_patch/mask/ps_import {root, psd, dry_run, seen}   PS 그룹 마스크 미리보기·S4 새 판 저장(무료, seen은 미리보기 응답)
+- POST /bmk/design_patch/mask/adjust {root, key, op, blur, invert, seen}   ★ 후보 보정 set·undo·reset(seen = 기록 at)
 - POST /bmk/design_patch/open_folder {root}   Export 출력 폴더를 탐색기로(배치 3-5a — 마지막 Export PSD 를 고른 채, 없으면
                                        output/design_patch/<실행 설정 export.subfolder — 비면 프로젝트 폴더>(3-5b)). ComfyUI output 밖이거나
                                        폴더가 없으면 열지 않음 → {ok, path, selected}
@@ -1180,6 +1181,7 @@ def _composite_sig(root: str, m: dict, pref: dict | None, swap: tuple[str, str, 
     기록은 뺌, _edit_rec). 동률 기준인 크롭·타깃 목록 순서가 후보 첫 등장 순서와 다를 때만 덧붙인다."""
     crops = {c.get("id"): c for c in m["crops"]}
     parts = []
+    adjustments = {}
     first = {}
     for c in _composite_picks(m, swap):
         tids = first.setdefault(c["crop_id"], [])
@@ -1190,8 +1192,13 @@ def _composite_sig(root: str, m: dict, pref: dict | None, swap: tuple[str, str, 
                 crops[c["crop_id"]]["rect"], e.get("params_hash") if e else None]
         rec = _edit_rec(m, c["key"])
         parts.append(part + [_edit_part(root, rec)] if rec else part)
+        adj = store.cand_adjust(m, c["key"])
+        if adj:
+            adjustments[c["key"]] = {k: adj[k] for k in ("blur", "invert")}
     manual = store.z_order(m)
     extra = [{"z_order": manual}] if manual else []
+    if adjustments:
+        extra.append({"cand_adjust": adjustments})
     tie_order = [[cid, [t["tid"] for t in crop["targets"] if t["tid"] in first[cid]]]
                  for cid, crop in crops.items() if cid in first]
     if tie_order != [[cid, tids] for cid, tids in first.items()]:
@@ -1612,7 +1619,7 @@ def mask_view(root: str, key) -> dict:
     return {"key": key, "crop_id": crop["id"], "tid": cand["tid"],
             "c": next(n for n, c in enumerate(_target_members(m, crop["id"], cand["tid"]), 1) if c["key"] == key),
             "picked": True, "rect": t["rect"], "composite_sig": csig, "mask_source": t["cs"]["mask_source"],
-            "base": base, "edit": edit,
+            "base": base, "edit": edit, "adjust": store.cand_adjust_record(m, key),
             "layers": {"box": box, "sig": lsig, **{f"{k}_url": _murl(rk, key, k, lsig) for k in _LAYER_KINDS}},
             "seams": None if raw is None else [s for s in json.loads(raw)["segments"] if s["crop_id"] == crop["id"]],
             "z": z, "warnings": warns}
@@ -1981,6 +1988,48 @@ def mask_edit(root: str, data: dict) -> dict:
     return {"ok": True, "edit": edit, "rev": rev, "composite_sig": _composite_sig(root, m, pref)}
 
 
+def mask_adjust(root: str, data: dict) -> dict:
+    """후보 보정 쓰기. ★·seen 검사는 같은 매니페스트 잠금 안에서 하며 분석·마스크 기록은 건드리지 않는다."""
+    key = _field(data, "key", _KEY_RE)
+    op, seen = data.get("op"), data.get("seen")
+    if op not in ("set", "undo", "reset"):
+        raise _Reject(400, "op 는 set · undo · reset 중 하나여야 합니다")
+    if not isinstance(seen, str) or not (seen == "" or re.fullmatch(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(?:\.\d{1,9})?", seen)):
+        raise _Reject(400, "seen 은 이 창에서 받은 보정 시각 또는 빈 문자열이어야 합니다")
+    values = store.cand_adjust_values(data.get("blur"), data.get("invert")) if op == "set" else None
+
+    def mutate(m):
+        _mask_cand(m, key)
+        old = store.cand_adjust_record(m, key)
+        if seen != (old["at"] if old else ""):
+            raise _Reject(409, "후보 보정이 다른 창에서 바뀌었습니다 — 다시 받기", reason="changed")
+        hist = old["hist"] if old else []
+        if op == "undo" and not hist:
+            raise _Reject(400, "되돌릴 이전 보정이 없습니다")
+        new = values if op == "set" else (hist[0] if op == "undo" and hist else None)
+        if new is None:
+            if isinstance(m.get("cand_adjust"), dict):
+                m["cand_adjust"].pop(key, None)
+            return None
+        if op == "set" and old and all(new[k] == old[k] for k in ("blur", "invert")):
+            return old
+        if op == "set":
+            hist = ([{k: old[k] for k in ("blur", "invert", "at")}] + hist)[:20] if old else []
+        else:
+            hist = hist[1:]
+        # 초 안의 연속 저장·undo도 서로 다른 seen으로 구별한다(옛 at로 되돌리지 않음).
+        ns = time.time_ns()
+        at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ns // 1_000_000_000)) + f".{ns % 1_000_000_000:09d}"
+        rec = {"blur": new["blur"], "invert": new["invert"], "at": at, "hist": hist}
+        records = m.get("cand_adjust") if isinstance(m.get("cand_adjust"), dict) else {}
+        m["cand_adjust"] = {**records, key: rec}
+        return rec
+
+    rec, rev = store.update_manifest(root, mutate)
+    return {"ok": True, "adjust": rec, "rev": rev,
+            "composite_sig": _composite_sig(root, store.load_manifest(root), _PREF.get(store.root_key(root)))}
+
+
 def mask_alts(root: str, key) -> dict | None:
     """GET /mask/alts(§6.2) — 그 ★ 타깃의 탈락 아닌 다른 후보마다 "★ 로 바꾸면"(그 타깃 ★ 를 그 후보 하나로 — 보드 Space) 전체 ★ 합성의
     이음매. swap 서명별 composite·seams 캐시(_composite). 계산할 것이 남았는데 다른 대안 계산이 돌고 있으면 None(202 busy).
@@ -2221,6 +2270,7 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
                     first = next((x["tid"] for x in crop.get("targets") or [] if x.get("tid") in jt), None)
                     joint = {"tids": jt, "first": first, "first_key": by_file.get((crop["id"], c["file"], first))}
                 edit = _edit_rec(m, c["key"])
+                adjust = store.cand_adjust(m, c["key"])
                 cands.append({
                     "key": c["key"], "n": n, "origin": c.get("origin"), "backend": info.get("backend"),
                     "mock": info.get("backend") == "mock", "src_size": c.get("src_size"),
@@ -2237,6 +2287,7 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
                                                          else "skipped" if e and e.get("skipped") else "none"),
                     "gates": gates, "reg": reg, "reframed": bool(reg and reg.get("applied")),
                     "hand_mask": bool(c.get("hand_mask")),
+                    "adjust": {k: adjust[k] for k in ("blur", "invert")} if adjust else None,
                     # S4 마스크 편집(★ 가 아니어도 기록이 있으면 — 다시 ★ 하면 살아남): stale = 기록의 기준 ≠ 지금 기준 지문 또는 편집 창이 바뀜
                     # 또는 _plan 이 편집 파일을 쓰지 못함(없음·깨짐·크기 다름 — Export 는 기준 마스크, 까닭은 K 의 경고)
                     "mask_edit": None if edit is None else {"at": edit["at"], "stale": _edit_stale(
@@ -2310,6 +2361,8 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
         edits = [x["mask_edit"] for t in targets if t["crop_id"] == c["id"] for x in t["candidates"]
                  if x["mask_edit"] and x["picked"] and not x["rejected"]]
         c["mask_edits"], c["mask_stale"] = len(edits), sum(1 for x in edits if x["stale"])
+        c["cand_adjust"] = sum(1 for t in targets if t["crop_id"] == c["id"] for x in t["candidates"]
+                               if x["adjust"] and x["picked"] and not x["rejected"])
         r = drefs.resolve_refs(refs_dir, mc, doc) if refs_ok else None
         # none = 의도한 '레퍼런스 없음' 고정(files [] — 부수 효과 아님) — 연결한 파일이 모두 사라진 고정(n 0)과 칩을 가른다.
         # auto = 다른 크롭의 동작이 함께 '없음'으로 고정함(files [] + fixed.auto — 칩 '레퍼런스 없음(자동 고정)')
@@ -5279,7 +5332,9 @@ async def mask_alts_handler(request: web.Request) -> web.StreamResponse:
 
 @_guard
 async def mask_adjust_handler(request: web.Request) -> web.StreamResponse:
-    raise _Reject(501, "후보 보정은 아직 없습니다(다듬기 배치 5-2a)")
+    data = await _body(request)
+    root = _root_param(data.get("root"))
+    return _json(await asyncio.to_thread(mask_adjust, root, data))
 
 
 @_guard
