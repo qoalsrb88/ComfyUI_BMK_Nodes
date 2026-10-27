@@ -1920,7 +1920,7 @@ window.DPPipeline = (() => {
         const host = el("div");
         panel.append(host);
         window.DPChecklist.render(host, window.DPChecklist.rows({ S, P0, plan: p, pending: pend, unsure,
-          dim: !planOk || !only || planDim() || stale, selectedCount: sel.size, maskLeft, progress: PS.progress }), {
+          planOk, stale, selectedCount: sel.size, maskLeft, progress: PS.progress }), {
           memory: panel, goMode: opts.goMode, goTarget: opts.goTarget, goMask: opts.goMask,
           goSection: (title) => {
             const sec = [...panel.querySelectorAll(".pp-sec")].find((x) => x.firstElementChild && x.firstElementChild.textContent === title);

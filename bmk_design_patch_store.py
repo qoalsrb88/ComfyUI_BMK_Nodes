@@ -1435,7 +1435,7 @@ def save_board_export(root: str, export_hash: str) -> None:
 
 def export_state_sig(m: dict) -> str:
     """점검표의 Export 이후 사용자 변경 지문(파일 I/O 없음). Export 내용 해시와 별개이며 분석·Export 설정은 제외한다.
-    ★ 순서(슬라이스 순서)·제외·크롭과 지금 ★ 의 편집 file/rect 만 읽는다. 옛 매니페스트의 후보 picked 도 보드처럼 합친다.
+    ★ 집합(선택 순서 무관)·제외·크롭과 지금 ★ 의 편집 file/rect 만 읽는다. 옛 매니페스트의 후보 picked 도 보드처럼 합친다.
     """
     picks = {k: list(v) for k, v in (m.get("picks") or {}).items() if v}
     for c in m.get("candidates") or []:
@@ -1448,7 +1448,7 @@ def export_state_sig(m: dict) -> str:
     edits = {k: [v.get("file"), v.get("rect")] for k, v in (m.get("mask_edits") or {}).items()
              if k in picked and isinstance(v, dict)}
     payload = {"crops": [[c.get(k) for k in ("id", "name", "rect", "targets")] for c in m.get("crops") or []],
-               "picks": picks, "rejects": sorted(rejects), "edits": edits}
+               "picks": {k: sorted(set(v)) for k, v in picks.items()}, "rejects": sorted(rejects), "edits": edits}
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
 
 

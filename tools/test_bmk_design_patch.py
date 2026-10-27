@@ -14033,7 +14033,7 @@ def layout_board_unit():
         st, u = await h.jget(f"{API}/state", root=key, since_rev=str(s["rev"]))
         refs_rev = (board.drefs.load_refs(root) or {}).get("rev")  # B21 이름 바꾸기가 고정(S2 §2.6)해 refs.json 이 있음
         check(u == {"unchanged": True, "rev": s["rev"], "running": False, "drain": False, "drafting": False, "layout_rev": L["rev"],
-                    "refs_rev": refs_rev, "refs_files_v": s.get("refs_files_v"), "pipeline_rev": None, "plan_v": None, "pref_v": None}
+                    "refs_rev": refs_rev, "refs_files_v": s.get("refs_files_v"), "pipeline_rev": None, "plan_v": None, "pref_v": None, "export_state": None, "export_last": None}
               and refs_rev is not None and isinstance(s.get("refs_files_v"), str),
               f"unchanged 응답에도 layout_rev·refs_rev·refs_files_v(S3 drafting false, pipeline_rev·plan_v 는 파일·계획이 없어 null) {u}")
         mrev = store.load_manifest(root)["rev"]
@@ -44788,13 +44788,18 @@ const test = (name, fn) => { try { fn(); out.push([name, true]); } catch (e) { o
 const clone = (v) => JSON.parse(JSON.stringify(v));
 const base = () => ({ S: { crops: [{ id: "c1", refs: { n: 1 }, mask_edits: 0 }, { id: "c2", refs: { n: 1 }, mask_edits: 1 }],
   canvas: { size: [64, 64] }, targets: [{ key: "c1/A", crop_id: "c1", tid: "A", pick_keys: ["a"], candidates: [] }],
-  export_state: "same", export_last: { rev: 46, time: "12:00:00" } }, pending: [], unsure: "", dim: false,
+  export_state: "same", export_last: { rev: 46, time: "12:00:00" } }, pending: [], unsure: "", planOk: true, stale: false,
   plan: { draft: { units: [] }, run: { need: 0, by_crop: { c1: { done: 1 }, c2: { done: 1 } } } } });
 test("빈 프로젝트: PSD·크롭·레퍼런스·★·Export 할 일, 계획 계산 중", () => {
   const r = D.rows({ S: { crops: [], targets: [], export_state: null }, unsure: "계획을 받는 중" });
   assert.equal(r.length, 9);
   for (const n of [0, 1, 2, 3, 4, 5, 6, 8]) assert.equal(r[n].state, "todo");
   assert.equal(r[4].value, "계산 중"); assert.equal(r[5].value, "계산 중"); assert.equal(r[7].state, "optional");
+});
+test("C3 크롭 없는 Import: 캔버스가 있으면 가져옴, 크롭은 별도 할 일", () => {
+  const r = D.rows({ S: { crops: [], targets: [], canvas: { size: [64, 64] } } });
+  assert.equal(r[0].state, "done"); assert.equal(r[0].value, "가져옴");
+  assert.equal(r[1].state, "todo"); assert.equal(r[1].value, "크롭 0");
 });
 test("크롭만·refs 폴더 없음·부분 연결·첫 미연결 크롭", () => {
   const i = base(); i.plan = null; i.S.crops.forEach((c) => c.refs = null);
@@ -44803,13 +44808,30 @@ test("크롭만·refs 폴더 없음·부분 연결·첫 미연결 크롭", () =>
   i.S.crops[0].refs = { n: 2 }; i.S.crops[1].refs = { n: 0 };
   r = D.rows(i); assert.equal(r[2].value, "크롭 1/2"); assert.equal(r[2].go.cropId, "c2");
 });
-test("미반영·불확실·초안 대기·흐린 계획·오류", () => {
+test("C4 레퍼런스 없이 수동 고정은 연결, 자동 고정·사라진 파일은 미연결", () => {
+  const i = base(); i.S.crops[0].refs = { n: 0, fixed: true, none: true, auto: false };
+  assert.equal(D.rows(i)[2].state, "done"); assert.equal(D.rows(i)[2].value, "크롭 2/2");
+  assert.equal(D.rows(i)[2].go.cropId, null);
+  i.S.crops[1].refs = { n: 0, fixed: true, none: true, auto: true };
+  assert.equal(D.rows(i)[2].value, "크롭 1/2"); assert.equal(D.rows(i)[2].go.cropId, "c2");
+  i.S.crops[0].refs.none = false;
+  assert.equal(D.rows(i)[2].value, "크롭 0/2"); assert.equal(D.rows(i)[2].go.cropId, "c1");
+  i.S.crops[0].refs = { n: 0, fixed: false, none: true, auto: false };
+  assert.equal(D.rows(i)[2].state, "todo"); assert.equal(D.rows(i)[2].value, "크롭 0/2");
+});
+test("C2 미반영·불확실·초안 대기·계산 중·오류·낡은 계획을 구분", () => {
   const i = base(); i.pending = ["레이아웃 미반영 1"]; i.unsure = "계획 낡음";
   let r = D.rows(i); assert.equal(r[3].state, "todo"); assert(r[3].value.includes("레이아웃 미반영 1"));
   i.plan.draft.units = [{ crop_id: "c1" }, { crop_id: "c2" }];
   assert.equal(D.rows(i)[4].value, "초안 승인 필요 2");
-  i.dim = true; assert.equal(D.rows(i)[4].value, "계산 중"); assert.equal(D.rows(i)[5].state, "todo");
-  i.dim = false; i.plan.draft = { error: "실패" }; assert.equal(D.rows(i)[4].state, "todo");
+  i.planOk = false; assert.equal(D.rows(i)[4].value, "계산 중"); assert.equal(D.rows(i)[5].state, "todo");
+  i.planOk = true; i.plan.draft = { error: "초안 계획 실패" }; i.plan.run = { error: "생성 계획 실패" };
+  assert.equal(D.rows(i)[4].state, "warn"); assert.equal(D.rows(i)[4].value, "초안 계획 실패");
+  assert.equal(D.rows(i)[5].state, "warn"); assert.equal(D.rows(i)[5].value, "생성 계획 실패");
+  const stale = base(); stale.stale = true;
+  for (const n of [4, 5]) { assert.equal(D.rows(stale)[n].state, "todo"); assert(D.rows(stale)[n].value.endsWith("승인 필요 0")); }
+  stale.S.drafting = true;
+  assert.equal(D.rows(stale)[4].state, "todo"); assert.equal(D.rows(stale)[4].value, "초안 진행 중");
 });
 test("생성 승인·진행·크롭 전체 완료·빈 계획·부분 계획", () => {
   const i = base(); i.plan.run.need = 3;
@@ -44830,11 +44852,11 @@ test("F3 일부·0개 선택은 완료 아님, 선택 수를 표시하고 전체
       const r = D.rows(i)[n]; assert.equal(r.state, "todo"); assert(r.value.endsWith(` (선택 ${k}/2 크롭 기준)`));
     }
   }
-  i.selectedCount = 1; i.dim = true;
+  i.selectedCount = 1; i.planOk = false;
   assert.equal(D.rows(i)[4].value, "계산 중 (선택 1/2 크롭 기준)");
-  i.S.running = true; i.progress = { run: { inflight: 1 } };
+  i.planOk = true; i.S.running = true; i.progress = { run: { inflight: 1 } };
   assert.equal(D.rows(i)[5].value, "진행 1 (선택 1/2 크롭 기준)");
-  i.selectedCount = 2; i.dim = false; i.S.running = false; delete i.progress;
+  i.selectedCount = 2; i.S.running = false; delete i.progress;
   for (const n of [4, 5]) { assert.equal(D.rows(i)[n].state, "done"); assert(!D.rows(i)[n].value.includes("크롭 기준")); }
 });
 test("★ 일부·공동 B/C = starChecks 정보·다른 ★ 로 바꾸면 미완료", () => {
@@ -44885,11 +44907,12 @@ test("renderPanel 삽입 블록: 실제 opts·섹션 이동·설정 분기 뒤",
   const end = src.indexOf("      // 설정", start), block = src.slice(start, end);
   assert(start > src.indexOf("if (settingsOn)", src.indexOf("function renderPanel")));
   const panel = new E("div"), calls = [], i = base();
-  Object.assign(ctx, { panel, S: i.S, P0: {}, p: i.plan, pend: [], unsure: "", planOk: true, only: "c1,c2", sel: new Set(["c1", "c2"]),
-    planDim: () => false, stale: false, maskLeft: null, PS: { progress: null }, el: (tag) => new E(tag),
+  Object.assign(ctx, { panel, S: i.S, P0: { confirm: ["draft.apply"] }, p: i.plan, pend: [], unsure: "", planOk: true, only: "c1,c2", sel: new Set(["c1", "c2"]),
+    planDim: () => { throw new Error("점검표는 해시 복사 흐림 판정을 부르면 안 됨"); }, stale: false, maskLeft: null, PS: { progress: null }, el: (tag) => new E(tag),
     opts: { goMode: (...a) => calls.push(a) } });
   vm.runInContext(block, ctx);
   const host = panel.children[0], sec = new E("div"); sec.className = "pp-sec";
+  assert.equal(host.children[0].children[0].textContent, "작업 점검표 (8/8)");
   const heading = new E("div"); heading.textContent = "반영"; sec.append(heading); panel.append(sec);
   host.children[0].children[2].events.click(); assert.deepEqual(calls, [["edit", null]]);
   host.children[0].children[4].events.click(); assert(sec.scrolled);
@@ -44965,6 +44988,14 @@ console.log(JSON.stringify(out));
     legacy["picks"] = {}
     legacy["candidates"] = [{"key": "a", "crop_id": "c1", "tid": "A", "picked": True}]
     check(store.export_state_sig(legacy) == sig, "상태 서명: 옛 후보 picked 와 picks 호환")
+    ordered = copy.deepcopy(m)
+    ordered["picks"]["c1/A"] = ["b", "a"]
+    ordered_sig = store.export_state_sig(ordered)
+    ordered["picks"]["c1/A"].reverse()
+    check(store.export_state_sig(ordered) == ordered_sig, "C6 상태 서명: picks 순서만 바뀌면 같음")
+    ordered["picks"] = {}
+    ordered["candidates"] = [{"key": k, "crop_id": "c1", "tid": "A", "picked": True} for k in ("b", "a")]
+    check(store.export_state_sig(ordered) == ordered_sig, "C6 옛 후보 picked 병합 뒤에도 ★ 집합으로 정렬")
 
     root = str(out / "state")
     Path(root).mkdir(exist_ok=True)
@@ -45039,6 +45070,47 @@ console.log(JSON.stringify(out));
         check(again["ui"]["bmk_dp_export"][0]["outcome"] == "unchanged" and dp.store.load_manifest(project_root)["rev"] == upgraded_m["rev"]
               and legacy_bytes == [p.read_bytes() for p in paths] and upgraded["result"] == again["result"] == first["result"],
               "F1 같은 입력 재사용 반복: rev·PSD·mask png·옛 사이드카 바이트 불변")
+
+        # C5: 후보 등록·★ 두 개(slice)·실제 마스크 저장·Export·보드까지 한 경로(모두 합성 파일, 외부 API 없음).
+        base = texture(64, 64, 83)
+        rect = [8, 8, 40, 40]
+        sh, sr = _fx_project(dp, out, "check_slices", [("001_크롭", rect)], base)
+        cand_dir = out / "slice_inputs"
+        cand_dir.mkdir(exist_ok=True)
+        for index, scale in enumerate((1, 2)):
+            Image.fromarray(_fx_cand(base, rect, scale=scale)).save(cand_dir / f"001_크롭_{index}.png")
+        sh, _report = dp.BMKDesignPatchCandidateIn().run(sh, "folder", str(cand_dir), "", "", True, True)
+        sm = dp.store.load_manifest(sr)
+        c0, c1 = sm["candidates"]
+        dp.board.apply_pick(sr, c0["crop_id"], c0["tid"], c0["key"], "set")
+        dp.board.apply_pick(sr, c1["crop_id"], c1["tid"], c1["key"], "add")
+        mask = np.full((32, 32), 255, dtype=np.uint8)
+        mask[:, -8:] = 0
+        dp.dmask.save_edit(sr, c0["key"], png_bytes(mask), seen="", rect=rect,
+                           base=dp.dmask.base_fp(c0, None, "hand"), ops="붓 1")
+        sh = dict(sh, compose=dict(dp._COMPOSE_DEFAULTS, mask_source="hand", use_registration=False, use_tone=False))
+        exported = exp.run(sh, "slices", "pixel", "hidden_all", "raw", "hand", True, False)
+        sm = dp.store.load_manifest(sr)
+        sex = sm["exports"][-1]
+        side = json.loads(Path(sex["psd"]).with_suffix(".json").read_bytes())
+        check(len(sm["picks"][f"{c0['crop_id']}/{c0['tid']}"]) == 2 and sex["mask_edits"] == 1
+              and len(side["export_layers"]) == 2 and all(x["visible"] for x in side["export_layers"])
+              and dp.board.build_state(sr)["export_state"] == "same", "C5 실제 Export: ★ 두 slice·편집 마스크 1개 적용 + same")
+        slice_paths = [Path(sex["psd"]), Path(sex["mask"]), Path(sex["psd"]).with_suffix(".json")]
+        slice_bytes = [p.read_bytes() for p in slice_paths]
+        sm["mask_edits"][c0["key"]]["rect"] = [9, 8, 41, 40]
+        dp.store.save_manifest(sr, sm)
+        check(dp.board.build_state(sr)["export_state"] == "changed", "C5 ★ 마스크 편집 rect 바뀜 → changed")
+        sm["mask_edits"][c0["key"]]["rect"] = list(rect)
+        dp.store.save_manifest(sr, sm)
+        reused = exp.run(sh, "slices", "pixel", "hidden_all", "raw", "hand", True, False)
+        check(reused["ui"]["bmk_dp_export"][0]["outcome"] == "unchanged" and reused["result"] == exported["result"]
+              and dp.board.build_state(sr)["export_state"] == "same" and slice_bytes == [p.read_bytes() for p in slice_paths],
+              "C5 마스크 rect 복원 → 같은 PSD 변경 없음 재사용·same·출력 바이트 유지")
+        sm = dp.store.load_manifest(sr)
+        sm["picks"][f"{c0['crop_id']}/{c0['tid']}"].reverse()
+        dp.store.save_manifest(sr, sm)
+        check(dp.board.build_state(sr)["export_state"] == "same", "C6 실제 Export 뒤 ★ 선택 순서만 바뀌어도 same")
     finally:
         folder_paths.set_output_directory(old_output)
 
