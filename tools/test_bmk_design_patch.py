@@ -108,6 +108,11 @@ REF = Path(r"H:\BmkNodeDesign\MultiLayerCropEdit")
 # DP_TEST_OUT = 다른 출력 폴더(두 실행이 같은 폴더를 rmtree 하지 않게), --only=a,b = 그 묶음만(__main__ 의 이름)
 OUT_ROOT = Path(os.environ["DP_TEST_OUT"]) if os.environ.get("DP_TEST_OUT") else REF / "_proto" / "m2_test_out"
 ONLY = {s for a in sys.argv if a.startswith("--only=") for s in a[len("--only="):].split(",") if s}
+
+
+def _zba(d):
+    """GET /mask 의 z 에서 아래·위 목록만(배치 5-1 이 rev·controls 를 더함)."""
+    return {k: d["z"][k] for k in ("below", "above")}
 PSD03 = REF / "03.크롭영역+크롭이미지.psd"
 PSD05 = REF / "05.디자인보정 결과.psd"
 CROPS03_JSON = REF / "_proto" / "work_photoshop" / "crops_03.json"
@@ -39999,7 +40004,7 @@ def mask_unit():
 
     def k2():
         section("S4-K2 병합: mask_edits 키 단위 3-way — 노드 커밋 ∥ 보드 save·pick·reject(스레드 4 × 25)")
-        check(store._MERGE_KEYED_DICTS == ("picks", "rejects", "rerolls", "approvals", "mask_edits"), "store 병합 키 단위 dict 에 mask_edits")
+        check(store._MERGE_KEYED_DICTS == ("picks", "rejects", "rerolls", "approvals", "mask_edits", "z_order"), "store 병합 키 단위 dict 에 mask_edits(+ 배치 5-1 z_order)")
         keys = [f"r_{i:012d}_0_0" for i in range(4)]
         root = project("k2", keys)
 
@@ -40487,8 +40492,8 @@ def mask_node_unit():
               dp._export_hash(dict(mfix, rejects={"f_k2": {}}), efix, comp, opts),
               dp._export_hash(mfix, efix, comp, opts, {"f_k1": ["masks/f_k1_e_000000000000.png", [0, 0, 32, 32]]}),
               dp._export_hash(mfix, efix, comp, opts, {"f_k1": ["masks/f_k1_e_000000000000.png", [1, 0, 33, 32]]})]
-        check(hs[:3] == ["2d5d9b737e610c61", "2d5d9b737e610c61", "daf2ce4764d77e75"] and len(set(hs)) == 4,
-              f"_export_hash: 편집 없음 = S3(3216d98) 고정값(빈 mask_edits 도), 탈락 = 고정값, 편집(file·창)이 들어가면 다름 {hs}")
+        check(hs[:3] == ["466521e1a16f7fcf", "466521e1a16f7fcf", "1b4b464fbb6c1c51"] and len(set(hs)) == 4,
+              f"_export_hash: 편집 없음 = dp-export/4(배치 5-1 — 버전을 올려 S3 3216d98 고정값에서 바뀜) 고정값(빈 mask_edits 도), 탈락 = 고정값, 편집(file·창)이 들어가면 다름 {hs}")
         bd.apply_pick(root, idB, cB2["tid"], cB2["key"], "add")  # B 타깃 ★ 둘 = 슬라이스마다 그룹·마스크(편집은 cB 만)
         r8, t8 = export(hc)
         ex8 = st.load_manifest(root)["exports"][-1]
@@ -41084,8 +41089,8 @@ def mask_board_unit():
               and q_of(dB["base"]["url"]) == {"root": key, "key": kB, "kind": "base", "v": dB["base"]["sig"]}
               and all(q_of(dB["layers"][f"{k}_url"]) == {"root": key, "key": kB, "kind": k, "v": dB["layers"]["sig"]} for k in ("under", "patch", "over")),
               f"B ★: 편집 창 = Compose 계획 항목의 실효 quad bbox ∩ 캔버스 {dB['rect']}·c {dB['c']}·기준 auto·layers.box = 크롭 영역·URL v = 서명")
-        check(dA["z"] == {"below": [], "above": ["002_작은 · A"]} and dB["z"] == {"below": ["001_큰 · A"], "above": []}
-              and dC["z"] == {"below": [], "above": []}, f"z: layers.box 와 겹치는 다른 ★(합성 순서 아래 → 위) {dA['z']} {dB['z']} {dC['z']}")
+        check(_zba(dA) == {"below": [], "above": ["002_작은 · A"]} and _zba(dB) == {"below": ["001_큰 · A"], "above": []}
+              and _zba(dC) == {"below": [], "above": []}, f"z: layers.box 와 겹치는 다른 ★(합성 순서 아래 → 위) {dA['z']} {dB['z']} {dC['z']}")
         check(dC["base"]["src"] == "none" and dC["rect"] == RC and dC["layers"]["box"] == bd._region_rect(RC2, W, H)
               and len(dC["warnings"]) == 2 and dC["warnings"][0] == "분석 없음 — 반영(Analyze) 뒤 편집 권장"
               and dC["warnings"][1].startswith(f"{kC} (") and "마스크 없이" in dC["warnings"][1],
@@ -41851,8 +41856,8 @@ def mask_board_unit():
             rows[k] = (float(np.abs(formula(lays[k], window(decode(body)[1], d[k]["rect"], bx)) - ref).max()), float(lays[k][2][..., 3].max()))
         sib = "002_작은 · A"
         bd.apply_pick(root, ids[1], "A", kB2, "remove")
-        check(d[lo]["z"] == {"below": ["001_큰 · A"], "above": [sib]} and d[hi]["z"] == {"below": ["001_큰 · A", sib], "above": []}
-              and d[kA]["z"] == {"below": [], "above": [sib, sib]}
+        check(_zba(d[lo]) == {"below": ["001_큰 · A"], "above": [sib]} and _zba(d[hi]) == {"below": ["001_큰 · A", sib], "above": []}
+              and _zba(d[kA]) == {"below": [], "above": [sib, sib]}
               and all(mx <= 1 for mx, _oa in rows.values()) and rows[lo][1] > 128 and rows[hi][1] == 0 and rows[kA][1] > 128
               and not np.array_equal(lays[lo][0], lays[hi][0]),
               f"z 에 형제 슬라이스(아래 {lo[:8]} → 위 {hi[:8]})·3층 공식 = Compose(아래 슬라이스의 over = 위 슬라이스, 위 슬라이스의 under 에 아래 슬라이스, "
@@ -41963,7 +41968,7 @@ def mask_board_unit():
         finally:
             st.update_manifest(root, drop_far)
         check(order.index(kB) < order.index(kA) and box5 == dA4["layers"]["box"] and win_f[1] > box5[3] + 2
-              and dA4["z"] == {"below": [], "above": ["002_작은 · A"]} and dA5["z"] == {"below": ["002_작은 · A"], "above": []}
+              and _zba(dA4) == {"below": [], "above": ["002_작은 · A"]} and _zba(dA5) == {"below": ["002_작은 · A"], "above": []}
               and dA5["layers"]["sig"] != dA4["layers"]["sig"] and lay5[2][..., 3].max() == 0 and mx5 <= 1,
               f"같은 크롭의 떨어진 ★(창 {win_f} — box {box5} 와 만나지 않음)가 z 를 뒤집음 → A 3층 서명 바뀜·over 비움(B 가 아래로)·공식 = Compose "
               f"최대 {mx5}(옛 캐시 3층이면 B 가 A 위로 보임) {[k[-6:] for k in order]}")
@@ -42184,7 +42189,7 @@ def mask_board_unit():
                     "_layers_sig", "_edit_view", "_mask_layers", "_layer_png", "_star_plan", "_png_body", "mask_handler", "mask_img_handler",
                     "mask_save_handler", "mask_edit_handler", "mask_alts_handler")
         light = ("build_state", "_crop_summaries", "mask_edit", "_mask_cand", "_edit_view", "_edit_window", "_edit_stale", "_edit_sig",
-                 "_edit_rec", "_edit_usable", "_layers_sig", "_composite_sig", "_cand_sig")
+                 "_edit_rec", "_edit_usable", "_composite_sig", "_cand_sig")  # _layers_sig 는 배치 5-1 부터 수동 순서가 있을 때 그리는 라우트에서만 계획(5초 기억)
         check(all(f in fns for f in mask_fns + light) and not any("_vlm" in names_in(f) for f in mask_fns)
               and not any(n in names_in(f) for f in light for n in ("_node", "_star_plan")),
               f"마스크 라우트 함수는 _vlm() 을 쓰지 않고, state·/mask/edit·서명 경로는 _node()·_star_plan 을 쓰지 않음 "
@@ -42879,7 +42884,7 @@ await scenario("panel", async () => {
   ed.enter(S, { key: K15, seam: null });
   await until(() => viewer.layer && !rows().some((t) => t.includes("불러오는 중")));
   raf();
-  r.enter = { editor: !!viewer.ed, layerBox: viewer.layer && viewer.layer.box, put: puts[0], select: calls.select[0], rows: rows().slice(0, 4),
+  r.enter = { editor: !!viewer.ed, layerBox: viewer.layer && viewer.layer.box, put: puts[0], select: calls.select[0], rows: rows().slice(0, 5),
     list: list.children.map((e) => e.textContent), paths: srv.log.map((x) => `${x.path}${x.q.kind ? ":" + x.q.kind : ""}`) };
   // 키: X·[ ]·Shift+[ ]·Q(누르는 동안)·M·S, 검토 키는 받지 않음(board.js MASK_OFF 가 끔)
   r.keys = { x: key("KeyX"), tool: panel.all().filter((e) => e.tagName === "BUTTON" && e.classList.contains("on")).map((e) => e.textContent) };
@@ -43033,7 +43038,7 @@ await scenario("panel", async () => {
   const n14 = confirms.length;
   r.goSeam = { ok: ed.go({ key: K14, seam: seams.segments[2] }), confirms: confirms.length - n14, look: viewer.looks.pop() };
   await until(() => rows().some((t) => t.includes("c02 ★")));
-  r.goSeam.rows = rows().slice(0, 3);  // 대상 · 자동 마스크 설명(10/21 U-2) · 편집 줄
+  r.goSeam.rows = rows().slice(0, 4);  // 대상 · 크롭 순서 · 자동 마스크 설명(10/21 U-2) · 편집 줄
   r.goSeam.fade = B("이음매 구간 페이드") ? B("이음매 구간 페이드").disabled : null;
   // 이 크롭 이음매 목록 = 뷰어 이음매(지금 서명)에서 이 크롭만 · 누르면 그 구간
   r.seamRows = rows().filter((t) => / · p90 /.test(t));
@@ -43201,7 +43206,7 @@ await scenario("panelR1", async () => {
 // [기준으로 다시 시작]·[이전 판으로]·[편집 지우기], 붓 → [적용] = 지금 창 크기 PNG(seen = 기록 file). 편집 래스터를 못 받아도(404 등) 같은 줄·단추가
 // 남고(세션·겹침만 없음) [다시 받기]가 다시 연다
 await scenario("panelStale", async () => {
-  const states = (P) => ({ rows: P.rows().slice(0, 4), restart: P.panel.all().filter((e) => e.tagName === "BUTTON" && e.textContent === "처음 마스크로 다시 시작").length,
+  const states = (P) => ({ rows: P.rows().slice(0, 5), restart: P.panel.all().filter((e) => e.tagName === "BUTTON" && e.textContent === "처음 마스크로 다시 시작").length,
     on: ["처음 마스크로 다시 시작", "이전 버전으로", "편집 모두 지우기", "위 가장자리 페이드"].map((l) => (P.B(l) ? !P.B(l).disabled : null)), layer: P.viewer.layer && P.viewer.layer.box });
   const stale = () => {
     const mv = Object.assign(maskInfo(K15), { rect: [126, 2558, 1410, 3330] });
@@ -44264,7 +44269,8 @@ await scenario("panelR3b", async () => {
     if "enter" in pn:
         e = pn["enter"]
         check(e["editor"] and e["layerBox"] == [0, 2304, 1664, 3584] and e["put"] == [0, 0, 1664, 1280] and e["select"] == ["r_61ba2d695f0f_0_0", True]
-              and e["rows"] == ["015_치마밑단_주름 · A · c01 ★ — 처음 마스크 자동 마스크 1280×768 (z: 아래 0 · 위 4)", MASK_AUTO_ROW,
+              and e["rows"] == ["015_치마밑단_주름 · A · c01 ★ — 처음 마스크 자동 마스크 1280×768 (z: 아래 0 · 위 4)",
+                                "크롭 순서 1/1 (아래 → 위)맨 위로위로아래로맨 아래로", MASK_AUTO_ROW,
                                 "편집 10/19 18:20 · 변 페이드 top 64 · 붓 12획", "보기: 편집"]
               and e["list"] == ["015_치마밑단_주름편집 1이음매 2", "014_치마원단_문양이음매 1"]
               and e["paths"] == ["mask", "mask/img:base", "mask/img:edit", "mask/img:under", "mask/img:patch", "mask/img:over"],
@@ -44328,7 +44334,8 @@ await scenario("panelR3b", async () => {
               f"[편집 모두 지우기] = 확인 창(이전 버전 수·버릴 획) → reset → 처음 마스크 {u2} {pn['undoAsk']} {pn['reset']}")
         gs = pn["goSeam"]
         check(gs["ok"] and gs["confirms"] == 0 and gs["look"] == [512, 2649, 2]
-              and gs["rows"] == ["014_치마원단_문양 · A · c02 ★ — 처음 마스크 자동 마스크 1024×768 (z: 아래 1 · 위 2)", MASK_AUTO_ROW, "편집 없음 — 처음 마스크 그대로"]
+              and gs["rows"] == ["014_치마원단_문양 · A · c02 ★ — 처음 마스크 자동 마스크 1024×768 (z: 아래 1 · 위 2)",
+                                 "크롭 순서 1/1 (아래 → 위)맨 위로위로아래로맨 아래로", MASK_AUTO_ROW, "편집 없음 — 처음 마스크 그대로"]
               and gs["fade"] is False and pn["seamRows"] == ["left 2604–2694 · 40px · p90 38.4 bad"],
               f"이음매(N·목록) = 그 구간을 만든 ★ 후보를 편집 대상(획 없으면 확인 없음)·2:1·구간 페이드 켬, 이 크롭 이음매 = 뷰어 이음매(지금 서명) 중 이 크롭 {gs} {pn['seamRows']}")
         rg = pn["range"]
@@ -44351,16 +44358,17 @@ await scenario("panelR3b", async () => {
     pm = res.get("panelStale") or {}
     if "open" in pm:
         ef = doc["routes"]["GET /mask"]["ok"]["edit"]["file"]
-        head = ["015_치마밑단_주름 · A · c01 ★ — 처음 마스크 자동 마스크 1284×772 (z: 아래 0 · 위 4)", MASK_AUTO_ROW, "편집 10/19 18:20 · 변 페이드 top 64 · 붓 12획"]
+        head = ["015_치마밑단_주름 · A · c01 ★ — 처음 마스크 자동 마스크 1284×772 (z: 아래 0 · 위 4)",
+                "크롭 순서 1/1 (아래 → 위)맨 위로위로아래로맨 아래로", MASK_AUTO_ROW, "편집 10/19 18:20 · 변 페이드 top 64 · 붓 12획"]
         # 1차 리뷰 analysis-r1-07: stale 은 기준 지문 또는 편집 창(정합 켬/끔·quad)으로 켜짐 — 문구가 둘 다 말함
         stale = lambda t: t.startswith("처음 마스크가 바뀜 — 처음 마스크(재분석·마스크 출처)나 편집 창(위치 맞춤 켬/끔·quad)이 ") and t.endswith("처음 마스크로 다시 시작")
         o, lo = pm["open"], pm["lost"]
-        check(o["rows"][:3] == head and stale(o["rows"][3]) and o["restart"] == 1 and o["on"] == [True] * 4 and o["layer"] == [0, 2304, 1664, 3584]
+        check(o["rows"][:4] == head and stale(o["rows"][4]) and o["restart"] == 1 and o["on"] == [True] * 4 and o["layer"] == [0, 2304, 1664, 3584]
               and pm["restartAsk"] == {"confirm": "015_치마밑단_주름 · A · c01 의 마스크 편집 기록(이전 버전 1 포함)을 지우고 처음 마스크로 돌아갑니다. 계속할까요?", "posts": 0}
               and pm["save"] == {"seen": ef, "wh": [1284, 772]},
               f"D4 편집 창이 바뀐 ★(stale): K 로 열림 — 경고 줄 + [처음 마스크로 다시 시작](reset 확인 창)·[이전 버전으로]·[편집 모두 지우기]·붓, [적용] = 지금 창 크기 PNG·"
               f"seen = 기록 file {pm['open']} {pm['restartAsk']} {pm['save']}")
-        check(lo["rows"][:3] == head and stale(lo["rows"][3]) and lo["restart"] == 1 and lo["on"] == [True, True, True, False] and lo["layer"] is None
+        check(lo["rows"][:4] == head and stale(lo["rows"][4]) and lo["restart"] == 1 and lo["on"] == [True, True, True, False] and lo["layer"] is None
               and (lo["err"] or "").startswith(f"마스크 편집 파일이 없습니다: {ef}") and (lo["err"] or "").endswith("다시 받기")
               and lo["again"] == {"on": True, "layer": [0, 2304, 1664, 3584], "err": False},
               f"U3 리뷰 must: 편집 래스터를 못 받아도 대상·처음 마스크가 바뀜 줄·[처음 마스크로 다시 시작]·[이전 버전으로]·[편집 모두 지우기]는 남음(붓·페이드·겹침만 없음), "
@@ -47183,6 +47191,475 @@ await scenario("setup:inputDeferred", async () => {
 def polish5_z_unit():
     """다듬기 배치 5-1(10/27 — _proto/STUDIO_POLISH5_SPEC.md §2·§8): 패치 겹침 순서(z) 직접 지정."""
     section("다듬기 배치 5-1 — 패치 겹침 순서(z) 직접 지정")
+    import ast
+    import copy
+    import inspect
+    import tempfile
+    from unittest.mock import patch
+
+    for auto, manual, expected in [
+        (list("ABC"), None, list("ABC")),
+        (list("ABC"), ["C", "A"], list("CBA")),
+        (list("AXBC"), ["C", "A", "B"], list("CXAB")),
+        (list("ABC"), ["gone", "C", "A"], list("CBA")),
+        (list("ABC"), ["gone"], list("ABC")),
+        (list("CBA"), ["A", "C", "B"], list("ACB")),
+        (list("ABC"), ["A", "A"], list("ABC")),
+        (list("ABC"), [[], "A"], list("ABC")),
+    ]:
+        check(an.zorder_manual(auto, manual) == expected, f"안정 병합 {auto} + {manual} → {expected}")
+    for broken in (None, [], "bad", {"crops": "bad"}, {"crops": ["a", "a"]}, {"crops": [None]}, {"crops": [[]]},
+                   {"bad": ["a"]}, {"s:crop/": ["a"]}, {"crops": []}):
+        check(store.z_order({"z_order": broken}) == {}, f"손상된 z_order 는 빈 값: {broken}")
+    base = store.new_manifest("zmerge")
+    ours = dict(base, z_order={"crops": ["c2", "c1"]})
+    theirs = dict(base, z_order={"t:c1": ["B", "A"]})
+    merged, conflicts = store.merge_manifest(base, ours, theirs)
+    check(not conflicts and merged["z_order"] == {**ours["z_order"], **theirs["z_order"]}, "범위 단위 3-way 병합")
+    before = copy.deepcopy(merged)
+    ours = copy.deepcopy(before)
+    ours["z_order"].pop("crops")
+    theirs = copy.deepcopy(before)
+    theirs["z_order"]["s:c1/A"] = ["k2", "k1"]
+    merged, conflicts = store.merge_manifest(before, ours, theirs)
+    check(not conflicts and "crops" not in merged["z_order"] and "s:c1/A" in merged["z_order"], "reset 삭제와 다른 범위 쓰기 병합")
+
+    dp = _dp_package()
+    st, bd = dp.store, dp.board
+    out = (OUT_ROOT / "polish5_z").resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    run = Path(tempfile.mkdtemp(prefix="run_", dir=out))  # 시험 결과를 남긴다(재실행도 기존 결과 보존)
+    h, root = _fx_project(dp, run, "zorder", [("001_아래", [0, 0, 16, 16]), ("002_멀리", [160, 0, 176, 16]),
+                                            ("003_겹침", [8, 0, 24, 16])], np.zeros((32, 256, 3), np.uint8))
+    m = st.load_manifest(root)
+    ids = [c["id"] for c in m["crops"]]
+    cs = dict(dp._COMPOSE_DEFAULTS, mask_source="hand", use_registration=False, use_tone=False)
+    entries = {}
+    for i, crop in enumerate(m["crops"]):
+        cid, rect = crop["id"], crop["rect"]
+        key = f"h_{i + 1:012x}"
+        mask = st.save_png_ca(root, "masks", np.full((16, 16), 255, np.uint8))
+        am = np.zeros((16, 16), np.uint8)
+        am[:(8, 1, 4)[i]] = 255  # Compose auto: 001 → 003 → 002, Export hand: 모두 같은 넓이
+        entries[key] = {"params_hash": f"z{i}", "params": {}, "rect": rect, "reg": {"applied": False},
+                        "automask": st.save_png_ca(root, "derived", am), "tone": {}}
+        m["candidates"].append({"key": key, "crop_id": cid, "tid": "A", "picked": True, "origin": "psd_harvest",
+                                "file": st.save_png_ca(root, "candidates", np.full((16, 16, 3), (40, 90, 180)[i], np.uint8)),
+                                "src_size": [16, 16], "quad": [rect[0], rect[1], rect[2], rect[1], rect[2], rect[3], rect[0], rect[3]],
+                                "hand_mask": {"file": mask, "rect": rect, "bg": 0}})
+    keys = [c["key"] for c in m["candidates"]]
+    m["analysis"] = entries
+    m["candidates"].reverse()  # 넓이 동률일 때 후보 등록 순서와 크롭 목록 순서를 일부러 다르게
+    m["exports"] = [{"compose": cs}]
+    st.save_manifest(root, m)
+
+    def plan(mm=m, mode="auto_small_on_top", source="hand", area_source=None, alternates=False):
+        return dp._plan(root, mm, entries, source, False, mode, alternates, [], area_mask_source=area_source)
+
+    def crop_order(p):
+        return [x["crop"]["id"] for x in p]
+
+    def slice_order(p):
+        return [it["cand"]["key"] for _c, _t, it in dp._slices_in_order(p)]
+
+    check(crop_order(plan()) == ids, "D7 넓이 동률만 기존 후보 순서에서 매니페스트 크롭 순서로 변경")
+    harvest = copy.deepcopy(m)
+    for c in harvest["candidates"]:
+        c["z"] = -ids.index(c["crop_id"])
+    check(crop_order(plan(harvest, "harvest")) == ids[::-1], "harvest 자동 z 유지")
+    harvest["z_order"] = {"crops": ids}
+    check(crop_order(plan(harvest, "harvest")) == ids, "harvest 보다 수동 순서 우선")
+    mixed = copy.deepcopy(m)
+    mixed["z_order"] = {"crops": [ids[2], ids[0]]}
+    check(crop_order(plan(mixed)) == [ids[2], ids[1], ids[0]], "크롭 부분 수동 목록의 자리만 교환")
+    # 타깃은 targets 순서, slice 는 후보 등록 순서. 계층 밖으로 끼워 쌓지 않는다.
+    layered = copy.deepcopy(m)
+    layered["crops"][0]["targets"] = [{"tid": "B", "label": "B"}, {"tid": "A", "label": "A"}]
+    a = next(c for c in layered["candidates"] if c["crop_id"] == ids[0])
+    a2 = dict(a, key="h_000000000004")
+    b = dict(a, key="h_000000000005", tid="B")
+    layered["candidates"] += [a2, b]
+    # A 에 조각 둘(각 128), B 는 256 → 타깃 넓이 동률.
+    half = st.save_png_ca(root, "masks", np.vstack([np.full((8, 16), 255, np.uint8), np.zeros((8, 16), np.uint8)]))
+    a["hand_mask"] = dict(a["hand_mask"], file=half)
+    a2["hand_mask"] = dict(a2["hand_mask"], file=half)
+    lp = next(p for p in plan(layered) if p["crop"]["id"] == ids[0])
+    check([t["tid"] for t in lp["targets"]] == ["B", "A"] and
+          [it["cand"]["key"] for it in lp["targets"][1]["slices"]] == [a["key"], a2["key"]], "타깃·slice 동률 기준")
+    layered["z_order"] = {f"t:{ids[0]}": ["A", "B"], f"s:{ids[0]}/A": [a2["key"], a["key"]]}
+    lp = next(p for p in plan(layered) if p["crop"]["id"] == ids[0])
+    check([t["tid"] for t in lp["targets"]] == ["A", "B"] and
+          [it["cand"]["key"] for it in lp["targets"][0]["slices"]] == [a2["key"], a["key"]], "타깃·slice 수동 순서가 각 계층 안에만 적용")
+
+    # Z3: 별 해제된 항목은 수동 목록에 남아 있고, 새 별은 수동 목록에 없음.
+    hidden_crop = copy.deepcopy(m)
+    hidden_crop["z_order"] = {"crops": [ids[2], ids[0]]}
+    for c in hidden_crop["candidates"]:
+        c["z"] = ids.index(c["crop_id"])
+        c["picked"] = c["crop_id"] != ids[2]
+    hidden_target = copy.deepcopy(m)
+    hidden_target["crops"][0]["targets"] = [{"tid": tid, "label": tid} for tid in "ABC"]
+    ta = next(c for c in hidden_target["candidates"] if c["crop_id"] == ids[0])
+    ta["z"] = 0
+    tb = dict(ta, key="h_000000000006", tid="B", z=1)
+    tc = dict(ta, key="h_000000000007", tid="C", z=2, picked=False)
+    hidden_target["candidates"] += [tb, tc]
+    hidden_target["z_order"] = {f"t:{ids[0]}": ["C", "A"]}
+    for mode in ("auto_small_on_top", "harvest"):
+        for label, mm, hidden_key in (("크롭", hidden_crop, keys[2]), ("타깃", hidden_target, tc["key"])):
+            compose_plan, export_plan = plan(mm, mode), plan(mm, mode, alternates=True)
+            alts = [it["cand"]["key"] for p in export_plan for t in p["targets"] for it in t["alts"]]
+            check(slice_order(compose_plan) == slice_order(export_plan) and hidden_key in alts
+                  and hidden_key not in slice_order(export_plan), f"Z3 {label}/{mode}: hidden_all 숨김 대안 보존·새 별의 Compose/Export 순서 일치")
+
+    # 변경 전 payload 를 고정해서 빈 수동 순서의 해시 호환을 검증한다.
+    import subprocess
+    digest = lambda p: hashlib.sha256(json.dumps(p, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
+    crops = {c["id"]: c for c in m["crops"]}
+    parts = [[c["key"], c["crop_id"], c["tid"], c["file"], c["quad"], c.get("hand_mask"), c.get("z"),
+              crops[c["crop_id"]]["rect"], entries[c["key"]]["params_hash"]] for c in m["candidates"]]
+    old_composite = bd._sig("composite", bd.CANVAS_PREVIEW, m["base"], m["canvas"], cs, parts)
+    first_order = dict(m, crops=list(reversed(m["crops"])))
+    composite = bd._composite_sig(root, m, None)
+    check(bd._composite_sig(root, first_order, None) == old_composite, "Z4 크롭·타깃 목록 순서가 후보 첫 등장과 같으면 기존 서명 유지")
+    check(composite != old_composite and slice_order(plan(m)) != slice_order(plan(first_order)),
+          "Z4 같은 넓이 크롭의 목록 순서가 달라지면 ★ 순서와 합성 서명 변경")
+    check(bd._layers_sig(root, m, None, keys[0], [0, 0, 64, 32]) != bd._layers_sig(root, first_order, None, keys[0], [0, 0, 64, 32]),
+          "Z4 크롭 목록 순서 변경이 3층 서명에도 반영")
+    target_order = copy.deepcopy(layered)
+    target_order.pop("z_order")
+    target_swap = copy.deepcopy(target_order)
+    target_swap["crops"][0]["targets"].reverse()
+    check(slice_order(plan(target_order)) != slice_order(plan(target_swap))
+          and bd._composite_sig(root, target_order, None) != bd._composite_sig(root, target_swap, None)
+          and bd._layers_sig(root, target_order, None, keys[0], [0, 0, 64, 32]) != bd._layers_sig(root, target_swap, None, keys[0], [0, 0, 64, 32]),
+          "Z4 같은 넓이 타깃의 목록 순서 변경이 ★ 순서·합성·3층 서명에 반영")
+    hidden_order = copy.deepcopy(hidden_target)
+    hidden_order["crops"][0]["targets"] = list(reversed(hidden_order["crops"][0]["targets"]))
+    hidden_order["crops"][0]["targets"][1:] = list(reversed(hidden_order["crops"][0]["targets"][1:]))
+    check(bd._composite_sig(root, hidden_target, None) == bd._composite_sig(root, hidden_order, None),
+          "Z4 별 없는 타깃만 이동하면 합성 서명 유지")
+    crop_fields = [[c[k] for k in ("id", "name", "rect", "targets")] for c in m["crops"]]
+    old_state = digest({"base": m["base"], "canvas": m["canvas"], "work_rect": m["work_rect"], "crops": crop_fields,
+                        "candidates": {c["key"]: {k: c.get(k) for k in ("crop_id", "tid", "file", "src_size", "quad", "z", "hand_mask")}
+                                       for c in m["candidates"]},
+                        "picks": {f"{c['crop_id']}/{c['tid']}": [c["key"]] for c in m["candidates"]}, "rejects": [], "edits": {}})
+    old_export = {"v": "dp-export/2", "opts": {}, "base": m["base"], "canvas": m["canvas"], "work_rect": m["work_rect"],
+                  "crops": crop_fields, "cands": m["candidates"], "compose": cs,
+                  "analysis": {k: e["params_hash"] for k, e in entries.items()}}
+    eh = dp._export_hash(m, entries, cs, {})
+    check(dp._EXPORT_VERSION != "dp-export/2", "Export 버전 올림")
+    check(eh != digest(old_export), "버전 올림으로 다음 Export 해시 변경")
+    check(eh != digest(dict(old_export, v="dp-export/3")), "Z3 수정 전 dp-export/3 PSD 캐시를 재사용하지 않음")
+    check(eh == digest(dict(old_export, v=dp._EXPORT_VERSION)), "수동 없음: 버전 외 Export 해시 재료 유지")
+    for empty in (None, {}, {"crops": []}, {"crops": [None]}, []):
+        mm = dict(m, z_order=empty)
+        check(bd._composite_sig(root, mm, None) == composite and st.export_state_sig(mm) == old_state
+              and dp._export_hash(mm, entries, cs, {}) == eh, f"빈/손상 순서 해시 유지 {empty}")
+    check(bd._composite_sig(root, mixed, None) != composite and st.export_state_sig(mixed) != old_state
+          and dp._export_hash(mixed, entries, cs, {}) != eh, "수동 순서가 세 해시 모두 변경")
+    check(bd._layers_sig(root, mixed, None, keys[0], [0, 0, 64, 32]) != bd._layers_sig(root, m, None, keys[0], [0, 0, 64, 32]),
+          "수동 순서가 3층 서명 변경")
+    old_layers_box = [0, 0, 64, 32]
+    near_m = dict(m, candidates=[c for c in m["candidates"] if c["crop_id"] != ids[1]], mask_edits={})
+    check(bd._layers_sig(root, m, None, keys[0], old_layers_box) ==
+          bd._sig("masklayers", bd._composite_sig(root, near_m, None), old_layers_box, keys[0]), "수동 순서 없음: 기존 3층 서명 유지")
+    # _layers_sig 의 근처 후보 필터만으로는 수동 슬롯 병합의 전역 의존성을 잡을 수 없는 회귀 재현.
+    distant = copy.deepcopy(m)
+    distant["exports"][-1]["compose"]["mask_source"] = "auto"
+    distant["z_order"] = {"crops": [ids[1], ids[0]]}
+    changed = copy.deepcopy(distant)
+    far = next(c for c in changed["candidates"] if c["key"] == keys[1])
+    changed["analysis"][keys[1]]["automask"] = far["hand_mask"]["file"]
+    changed["analysis"][keys[1]]["params_hash"] = "far-area-changed"
+    rect = m["crops"][0]["rect"]
+    box = bd._layers_box(rect, rect, *m["canvas"])
+    near_orders = [[p["crop"]["id"] for p in bd._star_plan(root, mm, None)[0] if p["crop"]["id"] != ids[1]]
+                   for mm in (distant, changed)]
+    check(box[2] < far["quad"][0] and near_orders[0] != near_orders[1], "영역 밖 크롭 넓이가 수동 슬롯을 통해 영역 안 순서를 바꾸는 장면")
+    check(bd._layers_sig(root, distant, None, keys[0], box) != bd._layers_sig(root, changed, None, keys[0], box),
+          "D6 회귀: 영역 밖 자동 넓이로 실효 순서가 바뀌면 3층 서명도 변경되어야 함")
+    same_order = copy.deepcopy(distant)
+    same_order["analysis"][keys[1]]["params_hash"] = "far-analysis-only"
+    check(bd._layers_sig(root, distant, None, keys[0], box) == bd._layers_sig(root, same_order, None, keys[0], box),
+          "영역 밖 분석이 바뀌어도 영역 안 실효 순서가 같으면 3층 서명 유지")
+    for mm in (m, distant, changed):
+        order = list(dp._slices_in_order(bd._star_plan(root, mm, None)[0]))
+        expected = bd._layers_sig(root, mm, None, keys[0], box)
+        with patch.object(bd, "_star_plan", side_effect=AssertionError("이미 계산한 순서를 다시 계산함")):
+            check(bd._layers_sig(root, mm, None, keys[0], box, order=order) == expected,
+                  "Z8: 넘긴 순서의 3층 서명 = 전체 계획을 다시 계산한 서명")
+
+    # 함수 경로로 경합·인자 검증(네트워크·TestServer 를 열지 않는다).
+    def reset(mm=m):
+        st.save_manifest(root, copy.deepcopy(mm))
+
+    def move(scope, item, op, seen=None):
+        return bd.zorder_write(root, {"scope": scope, "item": item, "op": op,
+                                      "seen": st.load_manifest(root)["rev"] if seen is None else seen})
+
+    for op, item, expected in [("top", ids[0], [ids[1], ids[2], ids[0]]), ("bottom", ids[2], [ids[2], ids[0], ids[1]]),
+                               ("up", ids[0], [ids[1], ids[2], ids[0]]), ("down", ids[2], [ids[2], ids[0], ids[1]])]:
+        reset()
+        r = move("crops", item, op)
+        check(r["order"] == expected == r["effective"] == st.z_order(st.load_manifest(root))["crops"], f"라우트 {op}: 전체 순서 저장 {expected}")
+    r = move("crops", ids[0], "reset")
+    check(r["order"] == [] and r["effective"] == ids and not st.z_order(st.load_manifest(root)), "라우트 reset = 해당 범위 키 삭제·자동 복귀")
+    reset(layered)
+    check(move(f"t:{ids[0]}", "A", "up")["effective"] == ["B", "A"], "타깃 up = 바로 옆")
+    check(move(f"s:{ids[0]}/A", a["key"], "down")["effective"] == [a["key"], a2["key"]], "slice down = 바로 옆")
+    move(f"t:{ids[0]}", "A", "reset")
+    check(f"s:{ids[0]}/A" in st.z_order(st.load_manifest(root)), "reset 은 다른 범위 보존")
+    reset()
+
+    def reject(fn, status, label):
+        try:
+            fn()
+        except bd._Reject as e:
+            check(e.status == status and any("가" <= ch <= "힣" for ch in str(e)), f"{label}: 한국어 {status}")
+        else:
+            check(False, f"{label}: {status} 거절 없음")
+
+    for scope, item, op, seen in [("bad", ids[0], "up", None), ("t:missing", "A", "top", None), ("crops", "missing", "up", None),
+                                 ([], ids[0], "up", None), ("crops", [], "top", None), ("crops", ids[0], [], None),
+                                 ("crops", ids[0], "bad", None), ("crops", ids[0], "up", True), ("crops", ids[0], "up", "1")]:
+        reject(lambda: move(scope, item, op, seen), 400, "잘못된 scope/item/op/seen")
+    reject(lambda: move("crops", ids[1], "up"), 400, "겹치는 위 크롭 없음")
+    reject(lambda: move("crops", ids[0], "down"), 400, "겹치는 아래 크롭 없음")
+    reject(lambda: move("crops", ids[0], "top", -1), 400, "음수 seen")
+    reject(lambda: move("crops", ids[0], "top", 0), 409, "다른 seen")
+    original_update = st.update_manifest
+
+    def racing_update(root_, mutate):
+        original_update(root_, lambda mm: mm.update(notes="다른 창"))
+        return original_update(root_, mutate)
+
+    with patch.object(st, "update_manifest", side_effect=racing_update):
+        reject(lambda: move("crops", ids[0], "top"), 409, "계획 후 잠금 직전 경합")
+    check(not st.z_order(st.load_manifest(root)), "경합 거절은 수동 순서를 저장하지 않음")
+    reset()
+    view = bd.mask_view(root, keys[0])
+    doc = json.loads(_MASK_API.read_text(encoding="utf-8"))["routes"]["GET /mask"]
+    shape_errors = _pl_shape(doc["ok"], view, doc)
+    check(not shape_errors, f"GET /mask 응답 fixture 일치 {shape_errors}")
+    control = view["z"]["controls"][0]
+    check(view["z"]["rev"] == st.load_manifest(root)["rev"] and not control["blocked"]["up"] and control["blocked"]["down"],
+          "GET /mask 범위·위치·경합 rev·단추 끔 이유")
+
+    # Z8: 캐시된 PNG 세 장의 동시 요청은 서명 검증용 전체 계획을 한 번만 계산한다.
+    import concurrent.futures
+    import threading
+
+    reset(distant)
+    with patch.object(bd, "_star_plan", wraps=bd._star_plan) as plans:
+        view = bd.mask_view(root, keys[0])
+        check(plans.call_count == 1, "Z8: 수동 순서 GET /mask 계획 1회")
+    now = st.load_manifest(root)
+    box, sig = view["layers"]["box"], view["layers"]["sig"]
+    pngs = {kind: bd._layer_png(root, now, None, keys[0], box, sig, kind) for kind in bd._LAYER_KINDS}
+    gate = threading.Barrier(3)
+
+    def get_layer(kind):
+        gate.wait(timeout=10)
+        return bd.mask_image(root, keys[0], kind, sig)
+
+    with patch.dict(bd._LAYER_ORDER_MEMO, {}, clear=True), patch.object(bd, "_star_plan", wraps=bd._star_plan) as plans:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+            images = list(pool.map(get_layer, bd._LAYER_KINDS))
+        check(plans.call_count == 1 and images == [(pngs[k], sig) for k in bd._LAYER_KINDS],
+              "Z8: 같은 rev 3층 동시 요청 계획 1회·PNG와 서명 유지")
+        st.update_manifest(root, lambda mm: mm.update(notes="새 rev"))
+        check(bd.mask_image(root, keys[0], "under", sig) == (pngs["under"], sig) and plans.call_count == 2,
+              "Z8: 매니페스트 rev 변경 시 순서 재계산")
+        with patch.object(st, "board_pref_v", return_value="new-pref"):
+            check(bd.mask_image(root, keys[0], "under", sig) == (pngs["under"], sig) and plans.call_count == 3,
+                  "Z8: pref_v 변경 시 순서 재계산")
+        now = st.load_manifest(root)
+        with patch.object(bd, "_compose_settings", return_value=dict(cs, zorder="harvest")):
+            expected = bd._layers_sig(root, now, None, keys[0], box)
+            calls = plans.call_count
+            check(bd._layers_sig(root, now, None, keys[0], box, memo_order=True) == expected and plans.call_count == calls + 1,
+                  "Z8: Compose 설정 변경 시 순서 재계산·서명 유지")
+        calls = plans.call_count
+        with patch.object(bd.time, "monotonic", return_value=bd.time.monotonic() + 6):
+            check(bd.mask_image(root, keys[0], "under", sig) == (pngs["under"], sig) and plans.call_count == calls + 1,
+                  "Z8: 짧은 캐시 수명이 지나면 순서 재계산")
+        for rev in range(now["rev"] + 1, now["rev"] + 19):
+            bd._layers_sig(root, dict(now, rev=rev), None, keys[0], box, memo_order=True)
+        check(len(bd._LAYER_ORDER_MEMO) <= 16, "Z8: 영역 순서 캐시 크기 제한")
+    reset()
+
+    # Compose 와 Export 출력 마스크가 달라도 순서는 같음. 실제 PSD/사이드카·3층 픽셀을 대조한다.
+    import folder_paths
+    original_output = folder_paths.get_output_directory()
+    try:
+        folder_paths.set_output_directory(str(run / "output"))
+        for source in ("hand", "auto"):
+            for manual in ({}, {"crops": ids[::-1]}):
+                mm = copy.deepcopy(m)
+                mm["exports"] = []
+                mm["z_order"] = manual
+                st.save_manifest(root, mm)
+                comp = dict(cs, mask_source=source)
+                hh = dp._handle(root, mm, compose=comp)
+                # 이미 준비한 분석만 사용 — 분석의 입력 선택과 출력 마스크 선택을 분리 검증.
+                with patch.object(dp, "_ensure_analysis", return_value=(entries, 0, 3, [])):
+                    result = dp.BMKDesignPatchExportPSD().run(hh, "z", "pixel", "hidden_all", "raw", "hand", True, False)
+                exported = json.loads(Path(result["result"][0]).with_suffix(".json").read_text(encoding="utf-8"))
+                now = st.load_manifest(root)
+                bp = bd._star_plan(root, now, None)[0]
+                exported_order = [x["key"] for x in exported["export_layers"] if x["visible"]]
+                check(exported_order == slice_order(bp), f"Export/보드 ★ 순서 일치 Compose={source}, Export=hand, 수동={bool(manual)}")
+                if source == "auto" and not manual:
+                    check(crop_order(bp) == [ids[0], ids[2], ids[1]], "Export hand 넓이 대신 Compose auto 넓이 사용")
+                check(all(x["mask_src"] == "hand" for x in exported["export_layers"]), "Export 출력 마스크는 위젯 hand 유지")
+                full = bd._compose_full(root, now, None)[0]
+                for key in keys:
+                    info = bd.mask_view(root, key)
+                    box = info["layers"]["box"]
+                    under, patch_rgba, over = bd._mask_layers(root, now, None, key, box)
+                    item = next(it for _p, _t, it in dp._slices_in_order(bp) if it["cand"]["key"] == key)
+                    mask = bd._window_l(item["mask"], box).astype(np.float32) / 255
+                    alpha = patch_rgba[..., 3].astype(np.float32) / 255 * mask
+                    over_a = over[..., 3:4].astype(np.float32) / 255
+                    reconstructed = (under + (patch_rgba[..., :3].astype(np.float32) - under) * alpha[..., None]) * (1 - over_a) + over[..., :3] * over_a
+                    bx, by, ex, ey = box
+                    check(np.max(np.abs(np.rint(reconstructed) - full[by:ey, bx:ex])) <= 1, f"3층/보드 ★ 픽셀 일치 {source}/{bool(manual)}/{key}")
+                if source == "hand":
+                    check(np.array_equal(np.array(PSDImage.open(result["result"][0]).topil()), full), "같은 출력 마스크: PSD 병합 픽셀 = ★ 합성")
+    finally:
+        folder_paths.set_output_directory(original_output)
+
+    # 기존 mask_js_unit 의 DOM·가짜 이미지/서버 하네스만 재사용(그 묶음과 기대값은 수정하지 않음).
+    node = shutil.which("node")
+    if not node:
+        skip("node 없음: z 단추 하네스 미실행")
+        return
+    tree = ast.parse(inspect.getsource(mask_js_unit))
+    harness = next(n.value.value for n in ast.walk(tree) if isinstance(n, ast.Assign)
+                   and any(isinstance(t, ast.Name) and t.id == "harness" for t in n.targets) and isinstance(n.value, ast.Constant))
+    cut = [_PL_JS_HARNESS[_PL_JS_HARNESS.index(a):_PL_JS_HARNESS.index(b, _PL_JS_HARNESS.index(a))]
+           for a, b in (("import fs", "async function run("), ("class El {", "async function mouse("))]
+    cut += [harness[:harness.index('// J-K1 공용 표')], harness[harness.index('function maskState()'):harness.index('await scenario("panel",')]]
+    test_js = r'''
+await scenario("z", async () => {
+  const P = maskPanel();
+  const { srv, ed, viewer, B } = P;
+  const info = maskInfo(K15);
+  const make = (scope, item, ids, index, manual = false) => ({ scope, item, order: ids, index, manual,
+    blocked: { top: index === ids.length - 1 ? "이미 맨 위입니다" : "", bottom: index === 0 ? "이미 맨 아래입니다" : "",
+      up: index === ids.length - 1 ? "겹치는 위 크롭이 없습니다" : "", down: index === 0 ? "겹치는 아래 크롭이 없습니다" : "" } });
+  info.z.rev = 136;
+  info.z.controls = [make("crops", info.crop_id, [info.crop_id, "other"], 0),
+    make(`t:${info.crop_id}`, "A", ["A", "B"], 0), make(`s:${info.crop_id}/A`, K15, [K15, K15B], 0)];
+  srv.info[K15] = info;
+  // maskPanel 이 캡처하는 가짜 서버에 zorder 분기를 추가(아래 문자열 치환).
+  srv.zreply = async (body) => {
+    if (srv.hold) await srv.hold;
+    if (srv.fail) return { ok: false, status: 409, json: async () => ({ error: "다른 창에서 바뀜" }) };
+    const c = info.z.controls.find((c) => c.scope === body.scope);
+    c.manual = body.op !== "reset";
+    c.index = body.op === "reset" ? 0 : c.order.length - 1;
+    c.blocked.top = c.blocked.up = c.index ? "겹치는 위 크롭이 없습니다" : "";
+    c.blocked.bottom = c.blocked.down = c.index ? "" : "겹치는 아래 크롭이 없습니다";
+    info.z.rev += 1;
+    info.composite_sig = `z${info.z.rev}`;
+    info.layers.sig = `z${info.z.rev}`;
+    for (const kind of ["under", "patch", "over"]) info.layers[`${kind}_url`] = info.layers[`${kind}_url`].replace(/v=[^&]+/, `v=z${info.z.rev}`);
+    return { ok: true, status: 200, json: async () => ({ ok: true, rev: info.z.rev }) };
+  };
+  ed.enter(maskState(), { key: K15, seam: null });
+  await until(() => viewer.layer && B("위로"));
+  const result = {};
+  result.levels = P.panel.all().filter((e) => e.classList.contains("mz-order")).length === 3;
+  result.disabled = B("아래로").disabled && B("아래로").title.includes("겹치는 아래") && !B("위로").disabled;
+  result.noReset = !B("자동으로");
+  viewer.ed.pointerdown({ cx: 600, cy: 2900, shiftKey: false });
+  viewer.ed.pointerup({});
+  const pending = ed.pending().n;
+  const layersBefore = P.count("mask/img", "under");
+  let release;
+  srv.hold = new Promise((r) => { release = r; });
+  B("위로").fire("click");
+  result.busy = B("위로").disabled && B("위로").title.includes("작업 중");
+  const beforeGo = P.count("mask");
+  result.locked = ed.go({ key: K14, seam: null }) === false && ed.leave() === false && P.count("mask") === beforeGo;
+  let releaseInfo;
+  const infoHold = new Promise((r) => { releaseInfo = r; });
+  srv.wait = (path) => path === "mask" ? infoHold : null;
+  release();
+  await until(() => P.calls.refresh === 1 && P.count("mask") > beforeGo);
+  ed.stateChanged(Object.assign(maskState(), { rev: 137 })); // POST 는 끝났지만 GET /mask 는 아직 옛 판
+  result.waitInfo = B("위로").disabled && B("위로").title.includes("다시 받는 중");
+  B("위로").fire("click"); // 작은 DOM 은 disabled 여도 이벤트를 보내므로 moveZ 의 가드까지 검증
+  result.noSelfConflict = P.count("zorder") === 1;
+  releaseInfo();
+  srv.wait = null;
+  await until(() => B("자동으로") && P.count("mask/img", "under") > layersBefore);
+  const req = srv.log.find((r) => r.path === "zorder");
+  result.request = JSON.stringify(req.body) === JSON.stringify({ root: KEY, scope: "crops", item: info.crop_id, op: "up", seen: 136 }) && req.ctype === "application/json";
+  result.refresh = P.calls.refresh === 1 && ed.pending().n === pending && info.layers.sig === "z137";
+  B("자동으로").fire("click");
+  await until(() => !B("자동으로") && P.count("zorder") === 2);
+  result.reset = srv.log.filter((r) => r.path === "zorder")[1].body.op === "reset";
+  srv.fail = true;
+  B("위로").fire("click");
+  await until(() => P.toasts.some((t) => t.includes("다른 창")));
+  result.conflict = P.calls.refresh === 3 && ed.pending().n === pending;
+  // Z6: 이전 순서 요청이 늦게 끝나도 그 사이 시작한 다른 대상의 load busy 를 지우지 않음.
+  const server = maskServer();
+  const session = maskCtx().window.DPMaskEdit.session(A, KEY, server.fetch, async (b) => fakeImage(b.fake));
+  await session.open(K15);
+  let finishZ, finishLoad;
+  const zHold = new Promise((r) => { finishZ = r; });
+  const loadHold = new Promise((r) => { finishLoad = r; });
+  server.zreply = async () => { await zHold; return { ok: true, status: 200, json: async () => ({ ok: true, rev: 137 }) }; };
+  const changing = session.zorder("crops", info.crop_id, "top", 136);
+  server.wait = (path) => path === "mask" ? loadHold : null;
+  const loading = session.open(K14);
+  finishZ();
+  await changing;
+  result.preserveLoad = session.busy === "load" && session.key === K14;
+  finishLoad();
+  await loading;
+  result.loadDone = session.busy === "" && session.info.key === K14;
+  // Z7: 마스크 적용으로 오른 rev 도 새 GET /mask 가 올 때까지 순서 쓰기를 막는다.
+  const saved = maskPanel();
+  const savedInfo = maskInfo(K15);
+  savedInfo.z.rev = 200;
+  savedInfo.z.controls = [make("crops", savedInfo.crop_id, [savedInfo.crop_id, "other"], 0)];
+  saved.srv.info[K15] = savedInfo;
+  saved.srv.save.push([200, Object.assign(clone(MA["POST /mask/save"].ok), { rev: 201 })]);
+  saved.ed.enter(maskState(), { key: K15, seam: null });
+  await until(() => saved.viewer.layer && saved.B("위로"));
+  saved.viewer.ed.pointerdown({ cx: 600, cy: 2900, shiftKey: false });
+  saved.viewer.ed.pointerup({});
+  saved.B("적용").fire("click");
+  await until(() => saved.calls.refresh === 1 && !saved.ed.pending());
+  const applyingWait = saved.B("위로").disabled && saved.B("위로").title.includes("순서 정보를 다시 받는 중");
+  saved.B("위로").fire("click");
+  result.applyWaitInfo = applyingWait && saved.count("zorder") === 0;
+  savedInfo.z.rev = 201;
+  saved.ed.stateChanged(Object.assign(maskState(), { rev: 201 }));
+  await until(() => !saved.B("위로").disabled);
+  return result;
+});
+console.log(JSON.stringify(out));
+'''
+    js = "".join(cut).replace('if (path === "mask") return resp(200, info);',
+                             'if (path === "zorder") return await srv.zreply(rec.body);\n    if (path === "mask") return resp(200, info);') + test_js
+    (run / "z.mjs").write_text(js, encoding="utf-8", newline="\n")
+    (run / "in.json").write_text(json.dumps({"api": _pl_api(), "mask": json.loads(_MASK_API.read_text(encoding="utf-8")),
+                                             "rules": {}, "maskJs": str(PKG / "web_design_patch" / "mask_edit.js"),
+                                             "pipelineJs": str(PKG / "web_design_patch" / "pipeline.js"),
+                                             "boardJs": str(PKG / "web_design_patch" / "board.js")}), encoding="utf-8")
+    r = subprocess.run([node, str(run / "z.mjs"), str(run / "in.json")], capture_output=True, text=True, encoding="utf-8", timeout=60)
+    check(r.returncode == 0, f"z 단추 node 하네스 종료 {r.stderr[:300]}")
+    result = json.loads(r.stdout)["z"] if r.returncode == 0 else {}
+    check("error" not in result and bool(result), f"z 단추 하네스 오류 없음 {result}")
+    for label, ok in result.items():
+        if label != "error":
+            check(ok is True, f"z UI: {label}")
 
 
 def want(name: str) -> bool:

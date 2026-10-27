@@ -1090,8 +1090,19 @@ _MERGE_ID_LISTS = {
     "exports": ("rev", "psd"),
     "calls": ("call_id",),
 }
-_MERGE_KEYED_DICTS = ("picks", "rejects", "rerolls", "approvals", "mask_edits")  # mask_edits = S4 마스크 편집(후보 key 단위)
+_MERGE_KEYED_DICTS = ("picks", "rejects", "rerolls", "approvals", "mask_edits", "z_order")  # z_order = 범위 단위
 _MISSING = object()
+
+
+def z_order(m: dict) -> dict:
+    """유효한 수동 순서만 복사해서 읽는다. 깨진 범위·빈 목록은 없는 것으로 본다."""
+    raw = m.get("z_order")
+    if not isinstance(raw, dict):
+        return {}
+    return {scope: list(ids) for scope, ids in raw.items()
+            if isinstance(scope, str) and re.fullmatch(r"crops|t:[^\s/:]+|s:[^\s/:]+/[^\s/:]+", scope)
+            and isinstance(ids, list) and ids and all(isinstance(k, str) and k.strip() for k in ids)
+            and len(set(ids)) == len(ids)}
 
 
 def _root_id(root: str) -> str:
@@ -1468,6 +1479,8 @@ def export_state_sig(m: dict) -> str:
     payload = {"base": m.get("base"), "canvas": m.get("canvas"), "work_rect": m.get("work_rect"), "candidates": candidates,
                "crops": [[c.get(k) for k in ("id", "name", "rect", "targets")] for c in crops if isinstance(c, dict)],
                "picks": {k: sorted(set(v)) for k, v in picks.items()}, "rejects": sorted(rejects), "edits": edits}
+    if manual := z_order(m):
+        payload["z_order"] = manual
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
 
 

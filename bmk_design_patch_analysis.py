@@ -646,6 +646,19 @@ def zorder(entries):
     return [entries[i]["key"] for i in idx]
 
 
+def zorder_manual(keys, manual):
+    """자동 순서에서 수동 목록의 살아 있는 항목 자리만 다시 채운다(아래 → 위)."""
+    keys = list(keys)
+    if (not isinstance(manual, list) or not all(isinstance(k, str) and k for k in manual)
+            or len(set(manual)) != len(manual)):
+        return keys
+    present = set(keys)
+    chosen = [k for k in manual if k in present]
+    slots = set(chosen)
+    fill = iter(chosen)
+    return [next(fill) if k in slots else k for k in keys]
+
+
 def _pair(a, b, valid):
     a = np.asarray(a, np.float32)
     b = np.asarray(b, np.float32)

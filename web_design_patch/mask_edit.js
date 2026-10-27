@@ -19,7 +19,7 @@ window.DPMaskEdit = (() => {
   const BUSY_MS = 1000; // GET /mask/alts 202(다른 합성 계산 중) 뒤 다시 묻는 간격
   const ALT_SEC = 2.5; // 대안 표 후보당 합성 시간(U0 §2.3 — 기다리는 동안의 어림)
   const TILE = 64; // 부드럽게 붓의 흐림 사본을 이 칸 단위로 필요할 때만 계산
-  const LOCKED = ["apply", "edit", "pick"]; // 대상 바꾸기·나가기를 거절하는 busy — 끝나면 세션이 바뀜(나갈 때 진행 ★ 점검에 넘기는 획 수가 낡지 않게)
+  const LOCKED = ["apply", "edit", "pick", "zorder"]; // 대상 바꾸기·나가기를 거절하는 busy — 끝나면 세션이 바뀜(나갈 때 진행 ★ 점검에 넘기는 획 수가 낡지 않게)
   const SIDES = { top: "위", bottom: "아래", left: "왼", right: "오른" };
   const TOOLS = { erase: "지우기", revive: "살리기", soften: "흐리기" };
   const SRC = { auto: "자동 마스크", hand: "손 마스크", none: "마스크 없음(창 전체)" };
@@ -248,6 +248,15 @@ window.DPMaskEdit = (() => {
 
     s.unused = () => call("mask/unused?" + qs({})); // masks/ 안 쓰는 편집 PNG(배치 3-6)
     s.cleanup = (files) => call("mask/cleanup", { files });
+    s.zorder = async (scope, item, op, seen) => {
+      if (s.busy || s.stroke) return null;
+      s.busy = "zorder";
+      try {
+        return await call("zorder", { scope, item, op, seen });
+      } finally {
+        if (s.busy === "zorder") s.busy = "";
+      }
+    };
 
     async function image(rel, w, h) {
       // GET /mask/img → RGBA 바이트(크기가 기대와 다르면 오류 — 그 사이 바뀐 판)
@@ -579,6 +588,7 @@ window.DPMaskEdit = (() => {
     let on = false;
     let S = null;
     let seenRev = null; // 마지막으로 GET /mask 를 맞춘 state 판(stateVer — rev·pref_v)
+    let zRev = null; // 이 창의 마지막 순서·마스크 쓰기 rev — 그보다 옛 GET /mask 로 다시 쓰지 않음
     let again = false; // 받는 중·획 중에 state 가 바뀜 — 끝나면 다시 받기
     let tool = "erase";
     let size = 48;
@@ -931,6 +941,7 @@ window.DPMaskEdit = (() => {
         opts.toast(`적용하지 못함: ${e.message}`, "err");
       }
       if (d && d.ok) {
+        zRev = Math.max(zRev ?? 0, d.rev);
         applied = { key, from, sig: d.composite_sig, before: before ? before.list : null };
         opts.toast(`마스크 편집 적용 — ${label(key)} · 이음매를 다시 잽니다`);
         repaintAll();
@@ -1121,6 +1132,42 @@ window.DPMaskEdit = (() => {
       }
     }
 
+    async function moveZ(control, op) {
+      const info = cur();
+      if (!info || M.busy || M.stroke || (zRev !== null && info.z.rev < zRev)) return;
+      const p = M.zorder(control.scope, control.item, op, info.z.rev);
+      renderPanel();
+      try {
+        const d = await p;
+        if (d && d.ok) {
+          zRev = d.rev;
+          alts = null;
+          opts.toast("겹침 순서 적용 — 이음매를 다시 잽니다");
+          opts.refresh();
+        }
+      } catch (e) {
+        opts.toast(`순서를 바꾸지 못함: ${e.message}`, e.status === 409 ? "warn" : "err");
+        if (e.status === 409) opts.refresh();
+      }
+      await refreshInfo(); // 획은 보존하고 바뀐 서명의 마스크 정보·3층을 다시 받음
+    }
+
+    function zControls(parent, info, busy) {
+      const refreshing = zRev !== null && info.z.rev < zRev;
+      for (const c of info.z.controls || []) {
+        if (c.scope !== "crops" && c.order.length < 2 && !c.manual) continue;
+        const level = c.scope === "crops" ? "크롭" : c.scope.startsWith("t:") ? "타깃" : "조각";
+        const row = line(parent, `${level} 순서 ${c.index + 1}/${c.order.length} (아래 → 위)`, "mz-order");
+        const buttons = [["top", "맨 위로"], ["up", "위로"], ["down", "아래로"], ["bottom", "맨 아래로"]].map(([op, label]) => {
+          const why = refreshing ? "순서 정보를 다시 받는 중입니다" : busy ? "마스크 작업 중입니다" : c.blocked[op];
+          return off(button(label, why || `${level}을 ${label}`, () => moveZ(c, op)), !!why);
+        });
+        if (c.manual) buttons.push(off(button("자동으로", refreshing ? "순서 정보를 다시 받는 중입니다" : busy ? "마스크 작업 중입니다" : `${level} 수동 순서를 지우고 자동 순서로`,
+          () => moveZ(c, "reset")), busy || refreshing));
+        btns(row, ...buttons);
+      }
+    }
+
     function renderPanel() {
       if (held) {
         later = true;
@@ -1140,6 +1187,7 @@ window.DPMaskEdit = (() => {
         const r = line(s, `${x ? x.t.crop_name || x.t.crop_id : info.crop_id} · ${info.tid} · c${pad(info.c)} ${star} — 처음 마스크 ${SRC[info.base.src] || info.base.src} `
           + `${w}×${h} (z: 아래 ${info.z.below.length} · 위 ${info.z.above.length})`);
         r.title = `아래: ${info.z.below.join(", ") || "없음"}\n위: ${info.z.above.join(", ") || "없음"}`;
+        zControls(s, info, busy);
         if (info.base.src === "auto") {
           // 자동 마스크는 대상을 알아보는 것이 아님(10/21 실사용 — '프롬프트로 대상을 찾은 영역'으로 읽힘, U-2)
           line(s, "자동 마스크 = Analyze 가 후보와 원본 크롭의 색 차이(ΔE)로 만든 영역 — 대상인지와 무관: 엉뚱하게 바뀐 곳은 [지우기], 대상 안 구멍은 [살리기]", "dim");
