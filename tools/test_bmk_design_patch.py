@@ -40252,8 +40252,10 @@ def mask_unit():
               f"예시 URL 의 v = 보드 /mask/img 형식(서명 16자 — edit 도 _edit_sig)·save 쿼리에 rect(세션 창, 필수) {sorted(set(map(len, vs)))}")
         img0 = np.zeros((40, 40, 3), np.uint8)
         seg = board._seam_segment(img0, img0, "c", [0, 0, 20, 40], "A", "k", "right", 0, 40)
-        check(list(g["ok"]["seams"][0]) == list(seg) and list(al["ok"]["rows"][0]["this_crop"][0]) == list(seg)
-              and _pl_shape(g["ok"]["seams"][0], seg, {}) == [], "seams·this_crop 원소 = board._seam_segment 출력 그대로(키·타입)")
+        seg["beside"] = ""  # _compose_full 이 끝에 덧붙이는 크롭 id(str) 또는 null
+        examples = [*g["ok"]["seams"], *(s for row in al["ok"]["rows"] for s in row["this_crop"])]
+        check(all(list(s) == list(seg) and _pl_shape(seg, s, {"nullable": ["beside"]}) == [] for s in examples),
+              "seams·this_crop 원소 = board._seam_segment 출력 + beside(str|null), 키 순서·타입")
         root = project("api", ["r_aaaaaaaaaaaa_0_0", "r_bbbbbbbbbbbb_0_0"])
         store.update_manifest(root, lambda mm: mm["candidates"][1].update(picked=False))
         rec, _ = save(root, "r_aaaaaaaaaaaa_0_0", raster(1), "")
@@ -44592,7 +44594,7 @@ await scenario("panelR3b", async () => {
         st = p2["starStroke"]
         check(st["pick"] == 0 and st["pending"] == 1 and (st["confirm"] or "").endswith("\n적용 안 한 획 1 은 버립니다.\n계속할까요?"),
               f"2차 리뷰 tests-r2-03: 획이 있을 때 [이 후보를 ★] 확인 = 그 획을 버린다고 알림(아니오 = 그대로) {st}")
-        check(p2["seamClick"] == {"look": [[956, 2560, 2]], "sel": ["top 575–1337 · 762px · p90 43.3 bad"], "fade": [False, "top 575–1337 ± 64px 테이퍼"]},
+        check(p2["seamClick"] == {"look": [[956, 2560, 2]], "sel": ["top 575–1337 · 762px · p90 43.3 bad · 옆 크롭 014_치마원단_문양 ★ 와 맞닿음"], "fade": [False, "top 575–1337 ± 64px 테이퍼"]},
               f"2차 리뷰 tests-r2-05: 패널 6 이음매 줄 누르기 = 그 구간으로 2:1·선택 구간(줄 강조·[이음매 구간 페이드] 켬) {p2['seamClick']}")
         check(p2["layerFail"] == {"before": None, "enter": None, "after": None, "row": True},
               f"2차 리뷰 session-r2-03: 대상을 바꾼 뒤 3층을 받지 못함 → 다시 들어와도 앞 대상 3층을 붙이지 않음 {p2['layerFail']}")
@@ -44649,13 +44651,14 @@ await scenario("panelR3b", async () => {
               f"거절(버리기로 한 옛 ★ 저장·새 대상 세션에 남는 획 없음), 끝나면 새 ★ 를 엶 {p3['pickHold']}")
     p3b = res.get("panelR3b") or {}
     if "reenterSeam" in p3b:
-        check(p3b["reenterSeam"] == {"looks": [[956, 2560, 2]], "sel": ["top 575–1337 · 762px · p90 43.3 bad"], "fade": "top 575–1337 ± 64px 테이퍼",
+        check(p3b["reenterSeam"] == {"looks": [[956, 2560, 2]], "sel": ["top 575–1337 · 762px · p90 43.3 bad · 옆 크롭 014_치마원단_문양 ★ 와 맞닿음"], "fade": "top 575–1337 ± 64px 테이퍼",
                                      "select": [K15, False]},
               f"3차 tests-r3-03: 나갔던 같은 ★ 의 다른 구간으로 다시 들어오기(진행 ★ 점검 이음매 줄) = 그 구간 선택·2:1(앞서 고른 구간에 페이드가 들어가지 않게) "
               f"{p3b['reenterSeam']}")
         js = lambda v: str(int(v)) if float(v).is_integer() else str(v)
         along = lambda x: (x["x0"], x["x1"]) if x["side"] in ("top", "bottom") else (x["y0"], x["y1"])
         k15seams = [f"{x['side']} {js(along(x)[0])}–{js(along(x)[1])} · {js(x['length'])}px · p90 {js(x['diff_p90'])} {x['severity']}"
+                    + (" · 옆 크롭 014_치마원단_문양 ★ 와 맞닿음" if x.get("beside") else "")  # 배치 5-4: beside = 픽스처의 014 크롭
                     for x in doc["routes"]["GET /mask"]["ok"]["seams"]]
         check(p3b["seamsErr"] == {"k14": ["계산 중…"], "oldSig": ["계산 중…"], "k15": k15seams},
               f"3차 tests-r3-06: 뷰어 이음매가 실패(서명 없는 빈 목록)·옛 서명이면 패널 6 은 쓰지 않음 — GET /mask 의 이음매(같은 서명)나 '계산 중…'"
@@ -45503,6 +45506,274 @@ console.log(JSON.stringify(out));
 def polish5_grow_unit():
     """다듬기 배치 5-4(10/27 — _proto/STUDIO_POLISH5_SPEC.md §5·§8): 크롭 넓히기 제안(이음매 신호 → 크롭 편집 제안)."""
     section("다듬기 배치 5-4 — 크롭 넓히기 제안")
+    import ast
+    import copy
+    import inspect
+    import tempfile
+    from unittest.mock import patch
+
+    dp = _dp_package()
+    st, bd = dp.store, dp.board
+    out = (OUT_ROOT / "polish5_grow").resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    run = Path(tempfile.mkdtemp(prefix="run_", dir=out))
+    _h, root = _fx_project(dp, run, "grow", [("001_문양", [8, 8, 40, 40]), ("002_옆", [40, 8, 56, 40])],
+                           np.zeros((64, 64, 3), np.uint8))
+    m = st.load_manifest(root)
+    cs = dict(dp._COMPOSE_DEFAULTS, mask_source="hand", use_registration=False, use_tone=False)
+    entries = {}
+    for i, c in enumerate(m["crops"]):
+        x0, y0, x1, y1 = c["rect"]
+        key = f"h_{i + 1:012x}"
+        m["candidates"].append({"key": key, "crop_id": c["id"], "tid": "A", "picked": True, "origin": "psd_harvest",
+                                "file": st.save_png_ca(root, "candidates", np.full((y1 - y0, x1 - x0, 3), 200 - i * 100, np.uint8)),
+                                "src_size": [x1 - x0, y1 - y0], "quad": [x0, y0, x1, y0, x1, y1, x0, y1], "hand_mask": None})
+        entries[key] = {"params_hash": f"grow{i}", "params": {}, "rect": c["rect"], "reg": {"applied": False}, "tone": {}}
+    m["analysis"], m["exports"] = entries, [{"compose": cs}]
+    st.save_manifest(root, m)
+    cid, neighbor = [c["id"] for c in m["crops"]]
+    sig = bd._composite_sig(root, m, None)
+    export_sig = dp._export_hash(m, entries, cs, {})
+    state_sig = st.export_state_sig(m)
+    pixels, info = bd._compose_full(root, m, None)
+    mine = [s for s in info["segments"] if s["crop_id"] == cid]
+    check(next(s for s in mine if s["side"] == "right")["beside"] == neighbor, "D25 맞닿은 다른 크롭 ★ id")
+    check(all(s["beside"] is None for s in mine if s["side"] != "right"), "D25 바깥이 베이스뿐이면 null")
+    check(np.array_equal(pixels, bd._compose_full(root, m, None, box=[0, 0, 64, 64])[0]), "beside 측정 전후 합성 픽셀 동일")
+    base = dp._load_rgb(root, m["base"])
+    for s in info["segments"]:
+        rect = next(c["rect"] for c in m["crops"] if c["id"] == s["crop_id"])
+        vertical = s["side"] in ("left", "right")
+        a, b = (s["y0"] - rect[1], s["y1"] - rect[1]) if vertical else (s["x0"] - rect[0], s["x1"] - rect[0])
+        expected = bd._seam_segment(pixels, base, s["crop_id"], rect, s["tid"], s["key"], s["side"], a, b)
+        check(expected == {k: v for k, v in s.items() if k != "beside"}, "기존 이음매 수치·bad/weak 보존")
+    parts = [[c["key"], c["crop_id"], c["tid"], c["file"], c["quad"], c.get("hand_mask"), c.get("z"),
+              m["crops"][i]["rect"], entries[c["key"]]["params_hash"]] for i, c in enumerate(m["candidates"])]
+    check(sig == bd._sig("composite", bd.CANVAS_PREVIEW, m["base"], m["canvas"], cs, parts), "형식 표시는 기존 합성 서명 재료에 들어가지 않음")
+
+    # _render 의 실제 출력 계약(eff·left·top)으로 임계값·여러 ★ 합집합·캔버스 자르기를 독립 검사.
+    def coverage_case(others, rect=(8, 8, 40, 40), side="right"):
+        x0, y0, x1, y1 = rect
+        masks = [("self", np.ones((y1 - y0, x1 - x0), np.float32), x0, y0), *others]
+        slices, renders = [], []
+        for i, (crop_id, eff, left, top) in enumerate(masks):
+            h, w = eff.shape
+            q = [left, top, left + w, top, left + w, top + h, left, top + h]
+            slices.append(({"crop": {"id": crop_id, "rect": list(rect) if i == 0 else [left, top, left + w, top + h]}},
+                           {"tid": "A"}, {"quad": q, "mask": None, "cand": {"key": str(i)}}))
+            renders.append((np.full((h, w, 3), 200 if i == 0 else 80, np.float32), eff, eff, left, top))
+        with patch.object(bd, "_star_plan", return_value=([], [], {}, cs, [])), \
+                patch.object(dp, "_slices_in_order", return_value=iter(slices)), \
+                patch.object(dp, "_cand_pixels", return_value=(None, False)), patch.object(dp, "_render", side_effect=renders):
+            ss = bd._compose_full(root, m, None)[1]["segments"]
+        return next(s["beside"] for s in ss if s["key"] == "0" and s["side"] == side)
+
+    half = np.zeros((32, 4), np.float32)
+    half[:16] = 0.5
+    under = half.copy()
+    under[15, 3] = 0.499
+    check(coverage_case([("other", half, 40, 8)]) == "other", "덮임 50%·실효 알파 0.5 경계 포함")
+    check(coverage_case([("other", under, 40, 8)]) is None, "덮임 50% 미만은 null")
+    check(coverage_case([("self", np.ones((32, 4)), 40, 8)]) is None, "같은 크롭의 다른 ★ 는 제외")
+    check(coverage_case([("half", half, 40, 8), ("full", np.ones((32, 4)), 40, 8)]) == "full", "가장 많이 덮은 크롭 선택")
+    quarter = half.copy()
+    quarter[8:] = 0
+    check(coverage_case([("other", quarter, 40, 8), ("other", quarter, 40, 16)]) == "other", "옆 크롭의 여러 ★ 합집합")
+    check(coverage_case([("other", quarter, 40, 8), ("other", quarter, 40, 8)]) is None, "같은 픽셀 중복 집계 없음")
+    check(coverage_case([("other", np.ones((32, 1)), 1, 8)], rect=(2, 8, 34, 40), side="left") == "other",
+          "캔버스 밖 띠는 분모에서도 제외(남은 2px 중 1px)")
+    for side, left, top in (("top", 8, 4), ("bottom", 8, 40)):
+        check(coverage_case([("other", np.ones((4, 32)), left, top)], side=side) == "other", f"{side} 바깥 띠 좌표")
+
+    legacy = copy.deepcopy(info)
+    legacy.pop("seam_format")
+    for s in legacy["segments"]:
+        s.pop("beside")
+    js = Path(bd._thumb_path(root, f"seams_{sig}.json"))
+    jpg = Path(bd._thumb_path(root, f"composite_{sig}.jpg"))
+    st._atomic_write_bytes(str(js), json.dumps(legacy).encode())
+    st._atomic_write_bytes(str(jpg), b"old-jpeg")
+    check(bd.mask_view(root, m["candidates"][0]["key"])["seams"] == [s for s in legacy["segments"] if s["crop_id"] == cid],
+          "GET /mask 는 옛 캐시에서 beside 를 null 로 발명하지 않음")
+    bd._ALTS_LOCK.acquire()
+    try:
+        check(bd.mask_alts(root, m["candidates"][0]["key"]) is None, "대안 표 옛 캐시는 재계산 잠금 필요(202)")
+    finally:
+        bd._ALTS_LOCK.release()
+    with patch.object(bd, "_compose_full", wraps=bd._compose_full) as compose:
+        data, fresh = bd._composite(root, m, None, sig)
+        check(compose.call_count == 1 and fresh["seam_format"] == 2 and data != b"old-jpeg", "옛 캐시 두 파일을 같은 이름으로 갱신")
+        check(bd._composite(root, m, None, sig) == (data, fresh) and compose.call_count == 1, "형식 표시 있는 캐시는 다시 계산 안 함")
+    bd._ALTS_LOCK.acquire()
+    try:
+        check(bd.mask_alts(root, m["candidates"][0]["key"]) is not None, "새 캐시 대안 표는 잠금 없이 읽음")
+    finally:
+        bd._ALTS_LOCK.release()
+    check(bd._composite_sig(root, m, None) == sig and dp._export_hash(m, entries, cs, {}) == export_sig
+          and st.export_state_sig(m) == state_sig, "이음매 형식 갱신은 합성·Export·상태 해시 불변")
+
+    node = shutil.which("node")
+    if not node:
+        skip("node 없음: 크롭 넓히기 JS 하네스 미실행")
+        return
+    web = PKG / "web_design_patch"
+    board_src = (web / "board.js").read_text(encoding="utf-8")
+    board_functions = {}
+    for name in ("goGrow", "goMode", "leaveMask", "onSeams"):
+        start = board_src.index(f"  {'async ' if name == 'goGrow' else ''}function {name}(")
+        board_functions[name] = board_src[start:board_src.index("\n  }\n", start) + 4]
+    layout_js = _LAYOUT_EDIT_HARNESS[:_LAYOUT_EDIT_HARNESS.index('await scenario("draftEdit",')]
+    layout_js += r'''
+await scenario("grow", async () => {
+  const r = {}, eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  const cases = [
+    [[256,256,512,512], ["left"], [1024,1024], true, [128,256,512,512]],
+    [[256,256,512,512], ["left","right","top","bottom","left"], [1024,1024], true, [128,128,640,640]],
+    [[0,0,256,256], ["left","top"], [1024,1024], true, null],
+    [[256,256,640,384], ["right"], [1024,1024], true, null],
+    [[256,256,512,512], ["right"], [600,1024], true, [256,256,600,512]],
+    [[17,19,317,319], ["left"], [1024,1024], true, [0,19,317,319]],
+    [[256,256,556,556], ["right"], [1024,1024], true, [256,256,640,556]],
+    [[256,256,556,556], ["right"], [1024,1024], false, [256,256,684,556]],
+    [[256,256,512,512], [], [1024,1024], true, null],
+  ];
+  cases.forEach(([rect,sides,canvas,snap,want], i) => { const before = [...rect]; r[`geometry${i}`] = eq(G.grow(rect,sides,canvas,snap),want) && eq(rect,before); });
+  const c = crop("001_aaaaaa", "001_문양", [256,256,512,512]);
+  const env = await editor([c]);
+  const bc = vm.createContext({ busy: false, pipe: { paidLock: () => "" }, maskEd: { pending: () => null }, editor: env.ed,
+    editing: false, refsOn: false, pipeOn: true, maskOn: false, layoutReady: () => true, notReady: () => "not ready",
+    toast: (s) => env.toasts.push(s), curMode() { return bc.editing ? "edit" : "pipe"; },
+    setEditing: (on) => { bc.editing = on; if (on) env.ed.enter({ rev: 1, layout_rev: 0, canvas: [3072,4096], crops: [] }); },
+    setMask: () => false });
+  for (const n of ["goGrow","goMode","leaveMask"]) vm.runInContext(`${n} = ${IN.boardFunctions[n]}`, bc);
+  await bc.goGrow(c.id, ["left"]);
+  const label = () => env.panel.textContent;
+  const draw = () => { const g = new El(env.doc,"g"); env.viewer.h.draw(g,1); return g.all(); };
+  r.modePreview = bc.editing && env.srv.log.length === 0 && label().includes("넓히기 제안 왼 +128px")
+    && draw().some((e) => e.textContent.includes("넓히기 제안 왼 +128px — Enter 적용 · Esc 취소"));
+  ctx.window.confirm = (s) => { env.confirms.push(s); return false; };
+  env.key("Enter"); await sleep(10);
+  r.cancelKeeps = env.srv.log.length === 0 && !!env.button(env.panel,"제안 적용") && label().includes("넓히기 제안 왼 +128px");
+  const ask = env.confirms[0];
+  r.confirmText = ["레이아웃만", "무료", "[반영]", "새 생성 조건", "유료", "169", "21", "10/23", "옛 크롭 ★"].every((s) => ask.includes(s));
+  ctx.window.confirm = () => true;
+  env.button(env.panel,"제안 적용").fire("click"); await sleep(30);
+  const req = env.srv.log[0];
+  r.applies = env.srv.log.length === 1 && req.path === "layout/crop" && req.op === "update" && req.id === c.id
+    && eq(req.rect,[128,256,512,512]) && req.rev === 0 && req.root === "abcdef012345" && env.queued.length === 0;
+  await env.ed.proposeGrow(c.id,["right"]); env.key("Escape");
+  r.escape = !env.button(env.panel,"제안 적용") && env.srv.log.length === 1;
+  bc.busy = true; await bc.goGrow(c.id,["right"]); bc.busy = false;
+  r.busy = env.toasts.at(-1).includes("앞 요청") && !env.button(env.panel,"제안 적용");
+  bc.pipe.paidLock = () => "running"; await bc.goGrow(c.id,["right"]); bc.pipe.paidLock = () => "";
+  r.paidBusy = env.toasts.at(-1).includes("앞 요청") && !env.button(env.panel,"제안 적용");
+  bc.maskEd.pending = () => ({n:1}); await bc.goGrow(c.id,["right"]); bc.maskEd.pending = () => null;
+  r.maskPending = env.toasts.at(-1).includes("적용 안 한 마스크 획") && !env.button(env.panel,"제안 적용");
+  bc.editing = false; bc.maskOn = true; await bc.goGrow(c.id,["right"]);
+  r.modeRefused = !bc.editing && !env.button(env.panel,"제안 적용");
+  env.ed.leave();
+  const locked = await editor([Object.assign(C1(),{locked:true})]);
+  r.locked = !await locked.ed.proposeGrow("001_aaaaaa",["right"]) && locked.toasts.at(-1).includes("잠긴")
+    && locked.srv.log.length === 0 && !locked.button(locked.panel,"제안 적용");
+  locked.ed.leave();
+  const edge = await editor([C1()]);
+  r.noRoom = !await edge.ed.proposeGrow("001_aaaaaa",["left"]) && edge.toasts.at(-1).includes("캔버스 끝·비율 한도");
+  edge.ed.leave();
+  const fit = await editor([C2()]); await fit.pick("002_눈");
+  fit.button(fit.panel,"상자에 크롭 맞추기").fire("click");
+  r.fitLabel = !fit.panel.textContent.includes("넓히기 제안") && !!fit.button(fit.panel,"제안 적용");
+  fit.key("Enter"); await sleep(30);
+  r.fitNoConfirm = fit.confirms.length === 0 && fit.srv.log.length === 1;
+  fit.ed.leave();
+  return r;
+});
+console.log(JSON.stringify(out));
+'''
+    (run / "layout.mjs").write_text(layout_js, encoding="utf-8", newline="\n")
+    (run / "layout.json").write_text(json.dumps({"boardFunctions": board_functions}), encoding="utf-8")
+    result = subprocess.run([node, str(run / "layout.mjs"), str(web / "layout_geom.js"), str(web / "layout_edit.js"), str(run / "layout.json")],
+                            capture_output=True, text=True, encoding="utf-8", timeout=60)
+    check(result.returncode == 0, f"넓히기 레이아웃 node 종료 {result.stderr[:500]}")
+    ui = json.loads(result.stdout).get("grow", {}) if result.returncode == 0 else {}
+    check(bool(ui) and "error" not in ui, f"넓히기 레이아웃 하네스 {ui}")
+    for name, ok in ui.items():
+        check(ok is True, f"넓히기 레이아웃 {name}: {ok}")
+
+    tree = ast.parse(inspect.getsource(mask_js_unit))
+    harness = next(n.value.value for n in ast.walk(tree) if isinstance(n, ast.Assign)
+                   and any(isinstance(t, ast.Name) and t.id == "harness" for t in n.targets) and isinstance(n.value, ast.Constant))
+    cut = [_PL_JS_HARNESS[_PL_JS_HARNESS.index(a):_PL_JS_HARNESS.index(b, _PL_JS_HARNESS.index(a))]
+           for a, b in (("import fs", "async function run("), ("class El {", "async function mouse("))]
+    cut += [harness[:harness.index('// J-K1 공용 표')], harness[harness.index('function maskState()'):harness.index('await scenario("panel",')]]
+    panel_js = "".join(cut).replace('ranText: (x) =>', 'goGrow: (...a) => { P.grow = a; }, ranText: (x) =>')
+    panel_js += _layout_js_fn(_PL_JS_HARNESS, "boardState", indent="") + "\n}\n"
+    panel_js += r'''
+await scenario("grow", async () => {
+  const r = {}, Q = maskPanel();
+  const mine = Q.seams.segments.filter((s) => s.crop_id === "015_d556f2");
+  mine[0].beside = null; mine[1].beside = "014_0f9cc5";
+  Q.ed.enter(maskState(), {key:K15,seam:null});
+  await until(() => Q.viewer.layer && Q.B("크롭 넓히기 제안"));
+  r.maskButton = Q.panel.all().filter((e) => e.tagName === "BUTTON" && e.textContent === "크롭 넓히기 제안").length === 1;
+  r.besideLabel = Q.rows().some((s) => s.includes("옆 크롭 014_치마원단_문양 ★ 와 맞닿음"));
+  Q.B("크롭 넓히기 제안").fire("click");
+  r.maskCallback = JSON.stringify(Q.grow) === JSON.stringify(["015_d556f2",[mine[0].side]]);
+  mine[0].beside = "014_0f9cc5"; Q.ed.seamsChanged();
+  r.onlyNeighbors = !Q.B("크롭 넓히기 제안") && Q.rows().includes("옆 크롭 ★ 와 맞닿은 이음매뿐 — 넓힐 곳 없음");
+  mine.forEach((s) => delete s.beside); Q.ed.seamsChanged();
+  r.legacy = !Q.B("크롭 넓히기 제안") && !Q.rows().includes("옆 크롭 ★ 와 맞닿은 이음매뿐 — 넓힐 곳 없음");
+  Q.ed.leave();
+  const S = boardState(); S.crops.forEach((c) => { c.layout_status = null; });
+  const cid = S.crops[0].id;
+  const bc = vm.createContext({ seamsByCrop:new Map(),maskOn:false,pipeOn:false,renderTargets() {} });
+  vm.runInContext(`onSeams = ${IN.boardFunctions.onSeams}`,bc);
+  bc.onSeams({segments:[{crop_id:cid,side:"left",severity:"bad",beside:null}, {crop_id:cid,side:"left",severity:"weak",beside:null},
+    {crop_id:cid,side:"right",severity:"weak",beside:"other"}, {crop_id:cid,side:"top",severity:"weak"}]});
+  const summary = bc.seamsByCrop.get(cid);
+  r.summary = summary.n === 4 && summary.bad === 1 && JSON.stringify(summary.growSides) === '["left"]';
+  const sm = bc.seamsByCrop;
+  r.checks = P.starChecks(S,sm,[]).some((x) => x.grow && x.grow.crop === cid && x.grow.sides[0] === "left"
+    && x.text === `${S.crops[0].name} — 이음매 bad 1`);
+  r.weak = P.starChecks(S,new Map([[cid,{n:2,bad:0,growSides:["left"]}]]),[]).some((x) => x.grow && x.grow.crop === cid
+    && x.text === `${S.crops[0].name} — 이음매 weak 2`);
+  r.oldChecks = !P.starChecks(S,new Map([[cid,{n:1,bad:1}]]),[]).some((x) => !!x.grow);
+  const srv = server(); srv.route.pipeline = [200,Object.assign(clone(R["GET /pipeline"].ok),{confirm:[],drift:[]})];
+  const doc = new Doc(); Object.assign(ctx,{document:doc,fetch:srv.fetch,navigator:{clipboard:{writeText:async()=>{}}}});
+  Object.assign(ctx.window,{confirm:()=>true,sessionStorage:mem()});
+  const hosts = {list:doc.createElement("ol"),panel:doc.createElement("section"),head:doc.createElement("div")};
+  doc.body.append(hosts.list,hosts.panel,hosts.head);
+  const calls = [], maskCalls = [];
+  const pipe = P.create(hosts,{apiUrl:A,comfyUrl:C,root:KEY,toast(){},refresh(){},select(){},goTarget(){},
+    goMask:(...a)=>maskCalls.push(a),goGrow:(...a)=>calls.push(a),seams:()=>sm,drain(){},enter(){}});
+  pipe.stateChanged(S); await sleep(30); pipe.enter(S,cid); await sleep(40);
+  const b = hosts.panel.all().find((e)=>e.tagName === "BUTTON" && e.textContent === "크롭 넓히기 제안");
+  r.pipelineButton = !!b;
+  let stopped = false;
+  if (b) { b.fire("click"); stopped = maskCalls.length === 0; b.parent.fire("click"); }
+  r.pipelineCallbacks = stopped && calls.length === 1 && calls[0][0] === cid && calls[0][1][0] === "left"
+    && maskCalls.length === 1 && maskCalls[0][0].crop === cid || JSON.stringify({stopped,calls,maskCalls});
+  sm.set(cid,{n:2,bad:0,growSides:["left"]}); pipe.tabChanged();
+  const weakRow = hosts.panel.all().find((e) => e.classList.contains("pp-row") && e.own === `${S.crops[0].name} — 이음매 weak 2`);
+  const weakButton = weakRow && weakRow.all().find((e) => e.tagName === "BUTTON" && e.textContent === "크롭 넓히기 제안");
+  r.weakRow = !!weakRow && !hosts.panel.textContent.includes("이음매 bad 0");
+  if (weakButton) weakButton.fire("click");
+  r.weakButton = !!weakButton && calls.length === 2 && calls[1][0] === cid && calls[1][1][0] === "left" && maskCalls.length === 1;
+  pipe.leave();
+  return r;
+});
+console.log(JSON.stringify(out));
+'''
+    (run / "panels.mjs").write_text(panel_js, encoding="utf-8", newline="\n")
+    (run / "panels.json").write_text(json.dumps({"api": _pl_api(), "mask": json.loads(_MASK_API.read_text(encoding="utf-8")),
+                                               "rules": {}, "maskJs": str(web / "mask_edit.js"), "pipelineJs": str(web / "pipeline.js"),
+                                               "boardJs": str(web / "board.js"), "boardFunctions": board_functions}), encoding="utf-8")
+    result = subprocess.run([node, str(run / "panels.mjs"), str(run / "panels.json")],
+                            capture_output=True, text=True, encoding="utf-8", timeout=60)
+    check(result.returncode == 0, f"넓히기 패널 node 종료 {result.stderr[:500]}")
+    ui = json.loads(result.stdout).get("grow", {}) if result.returncode == 0 else {}
+    check(bool(ui) and "error" not in ui, f"넓히기 패널 하네스 {ui}")
+    for name, ok in ui.items():
+        check(ok is True, f"넓히기 패널 {name}: {ok}")
 
 
 def polish5_psmask_unit():

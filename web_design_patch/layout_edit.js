@@ -285,7 +285,8 @@ window.DPLayoutEdit = (() => {
     let draft = null; // 새 크롭 초안 {rect} — 이름을 넣고 만들기(Enter) = add 한 번
     let boxTid = null; // 상자를 그릴 대상(P·상자 버튼)
     let boxSel = null; // 고른 부품 상자의 tid(선택 크롭 안 — F19): 핸들 = 크기, 안쪽 끌기 = 이동, Delete = 지우기
-    let proposal = null; // 상자에 맞춘 크롭 제안 {id, rect} — Enter 적용
+    let proposal = null; // 크롭 제안 {id, rect, since, grow?, note?} — Enter 적용
+    let opening = null; // 모드 진입 때 레이아웃을 받은 뒤 외부 넓히기 제안을 세움
     let nudge = null; // 화살표 미세 이동 {id, rect, timer}
     let sent = null; // 놓은 뒤 응답 전까지 보이는 {id, rect} — 그것을 놓은 쓰기가 끝날 때만 지운다
     let edits = {}; // 속성 패널에서 입력 중인 값(data-k → 값) — 다시 그려도 남는다
@@ -498,7 +499,7 @@ window.DPLayoutEdit = (() => {
       }
       if (proposal) {
         box(proposal.rect, "prop");
-        label(proposal.rect[0], proposal.rect[3] + 14 * u, `제안 ${sizeText(proposal.rect)} — Enter 적용 · Esc 취소`, "linfo");
+        label(proposal.rect[0], proposal.rect[3] + 14 * u, `${proposal.note || `제안 ${sizeText(proposal.rect)}`} — Enter 적용 · Esc 취소`, "linfo");
       }
       const sb = cur && boxShown() && boxOf(cur, boxSel);
       if (drag && drag.kind === "pbox" && drag.rect) {
@@ -1082,8 +1083,43 @@ window.DPLayoutEdit = (() => {
       render();
     }
 
+    async function proposeGrow(cropId, sides) {
+      await opening;
+      if (!on) return false;
+      if (!editable() || S.err || S.stale || S.busy || drag || nudge) {
+        opts.toast("레이아웃을 편집할 수 없거나 앞 요청을 처리하는 중입니다", "warn");
+        return false;
+      }
+      const c = S.crop(cropId);
+      if (!c) {
+        opts.toast("레이아웃에 이 크롭이 없습니다", "warn");
+        return false;
+      }
+      if (lockedNow(c.id)) return false;
+      const rect = G.grow(c.rect, sides, S.L.canvas, true);
+      if (!rect) {
+        opts.toast("캔버스 끝·비율 한도라 넓힐 수 없습니다", "warn");
+        return false;
+      }
+      const deltas = [c.rect[0] - rect[0], rect[2] - c.rect[2], c.rect[1] - rect[1], rect[3] - c.rect[3]];
+      const note = "넓히기 제안 " + deltas.map((n, i) => n ? `${["왼", "오른", "위", "아래"][i]} ${n > 0 ? "+" : ""}${n}px` : "").filter(Boolean).join(" · ");
+      select(cropId, true);
+      if (S.busy) {
+        opts.toast("앞 레이아웃 편집을 저장하는 중입니다 — 끝난 뒤 다시 하세요", "warn");
+        return false;
+      }
+      proposal = { id: cropId, rect, since: S.remote, grow: true, note };
+      render();
+      return true;
+    }
+
     async function applyProposal() {
       const p = proposal;
+      if (!p || S.busy) return;
+      if (lockedNow(p.id)) return;
+      if (p.grow && !window.confirm("크롭 넓히기 제안을 적용할까요?\n적용은 레이아웃만 바꿉니다(무료).\n"
+        + "[반영] 뒤 이 크롭은 새 생성 조건이라 다시 생성 대상입니다(유료 — 평균 ≈ 169 크레딧/호출, 초안 갱신 ≈ 21 — 10/23 원장 평균).\n"
+        + "지금 ★ 는 옛 크롭 기준으로 남습니다(옛 크롭 ★).")) return;
       proposal = null;
       await flushNudge();
       const c = S.crop(p.id);
@@ -1666,7 +1702,7 @@ window.DPLayoutEdit = (() => {
       panel.append(el("div", "lp-k", "검사"), checks);
       live = { gpt, checks };
       checks.append(...checkRows(c));
-      if (proposal && proposal.id === c.id) row("제안", `[${proposal.rect.join(", ")}] ${sizeText(proposal.rect)} — Enter 적용 · Esc 취소`, "warn");
+      if (proposal && proposal.id === c.id) row("제안", `${proposal.note ? proposal.note + " · " : ""}[${proposal.rect.join(", ")}] ${sizeText(proposal.rect)} — Enter 적용 · Esc 취소`, "warn");
       const b = el("div", "lp-btns");
       b.append(button("상자에 크롭 맞추기", "부품 상자 합집합 ÷ 0.7 → 128 배수 → 비 ≤ 3 → 캔버스 안(미리보기, Enter 적용)", propose));
       if (proposal && proposal.id === c.id) b.append(button("제안 적용", "Enter", applyProposal, "primary"));
@@ -1831,7 +1867,7 @@ window.DPLayoutEdit = (() => {
       viewer.setEditor({ pointerdown, pointermove, pointerup, cancel, draw });
       syncSel(false);
       render();
-      reload(false);
+      opening = reload(false);
     }
 
     function leave() {
@@ -1857,7 +1893,7 @@ window.DPLayoutEdit = (() => {
 
     // 진행(G) 반영 칸 [되돌리기]가 쓴 판 — 다른 창의 쓰기로 보지 않아 실행 취소 기록을 남긴다(지운 크롭을 같은 ID 로 되살리는 길은 Ctrl+Z 뿐).
     // 그 사이 다른 창이 썼으면(from ≠ ownRev) 다음 읽기가 기록을 비운다
-    return { enter, leave, onKey, stateChanged, ownWrite: S.ownWrite };
+    return { enter, leave, onKey, stateChanged, ownWrite: S.ownWrite, proposeGrow };
   }
 
   return { create, session, reloadKind, renameNote };

@@ -108,6 +108,16 @@ window.DPLayoutGeom = (() => {
     return place(mx < 0 ? x1 : x0, my < 0 ? y1 : y0, mx, my, w, h, canvas, snap);
   }
 
+  function grow(rect, sides, canvas, snap) {
+    // 변마다 바깥으로 SIZE 만큼 끌기와 동일. 여러 구간의 같은 변은 한 번만, 순서는 왼·오른·위·아래.
+    let next = rect.slice();
+    for (const [side, handle, dx, dy] of [["left", "w", -SIZE, 0], ["right", "e", SIZE, 0],
+      ["top", "n", 0, -SIZE], ["bottom", "s", 0, SIZE]]) {
+      if (sides.includes(side)) next = resize(next, handle, dx, dy, canvas, snap);
+    }
+    return next.every((v, i) => v === rect[i]) ? null : next;
+  }
+
   function newRect(sx, sy, dx, dy, canvas, snap, keep) {
     // G3 빈 곳에서 끌기: 시작점 격자 → 캔버스 안 → 끈 방향 모서리(keep = 큰 쪽 정사각) → 끄는 쪽 캔버스 변까지 여유가 128 미만인 축은
     // 방향을 안쪽으로 뒤집음(변에서 바깥으로 끌어도 폭 0·아주 작은 사각형이 아님)
@@ -385,6 +395,6 @@ window.DPLayoutGeom = (() => {
     return out;
   }
 
-  return { SIZE, POS, RATIO, NAME_MSGS, TEXT_MSGS, rnd, move, resize, newRect, suggest, rectProblem, gptSize,
+  return { SIZE, POS, RATIO, NAME_MSGS, TEXT_MSGS, rnd, move, resize, grow, newRect, suggest, rectProblem, gptSize,
     splitNnn, nameSide, checkName, checkText, fold, geomChecks };
 })();

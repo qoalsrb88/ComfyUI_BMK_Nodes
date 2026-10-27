@@ -126,7 +126,8 @@
       "length": 40,
       "diff_med": 41.2,
       "diff_p90": 73.5,
-      "severity": "bad"
+      "severity": "bad",
+      "beside": null
      },
      {
       "crop_id": "015_d556f2",
@@ -140,7 +141,8 @@
       "length": 762,
       "diff_med": 21.4,
       "diff_p90": 43.3,
-      "severity": "bad"
+      "severity": "bad",
+      "beside": "014_0f9cc5"
      }
     ],
     "z": {
@@ -422,7 +424,8 @@
    "nullable": [
     "edit",
     "adjust",
-    "seams"
+    "seams",
+    "seams[].beside"
    ],
    "optional": [],
    "maps": [],
@@ -740,7 +743,8 @@
         "length": 279,
         "diff_med": 40.8,
         "diff_p90": 76.3,
-        "severity": "bad"
+        "severity": "bad",
+        "beside": "014_0f9cc5"
        }
       ],
       "changed_crops": [
@@ -799,7 +803,8 @@
     "now.worst",
     "rows[].ran",
     "rows[].ran.via",
-    "rows[].worst_p90"
+    "rows[].worst_p90",
+    "rows[].this_crop[].beside"
    ],
    "optional": [],
    "maps": [],

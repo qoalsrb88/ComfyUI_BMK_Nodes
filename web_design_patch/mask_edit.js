@@ -1429,9 +1429,19 @@ window.DPMaskEdit = (() => {
       if (!cs) line(s, "계산 중…", "dim");
       else if (!cs.list.length) line(s, "이음매 없음", "ok");
       for (const y of (cs && cs.list) || []) {
-        const r = line(s, `${seamName(y)} · ${y.length}px · p90 ${y.diff_p90} ${y.severity}` + (y.key !== M.key ? ` · ${y.tid} ★` : ""),
+        const beside = y.beside && S.crops.find((c) => c.id === y.beside);
+        const r = line(s, `${seamName(y)} · ${y.length}px · p90 ${y.diff_p90} ${y.severity}` + (y.key !== M.key ? ` · ${y.tid} ★` : "")
+          + (y.beside ? ` · 옆 크롭 ${beside ? beside.name : y.beside} ★ 와 맞닿음` : ""),
           (y.severity === "bad" ? "bad" : "warn") + " link" + (seam && seam.key === y.key && seamName(seam) === seamName(y) ? " sel" : ""));
         r.addEventListener("click", () => go({ key: y.key, seam: y }));
+      }
+      const growSides = [...new Set(((cs && cs.list) || []).filter((y) => y.beside === null).map((y) => y.side))];
+      if (growSides.length && opts.goGrow) btns(s, button("크롭 넓히기 제안", "크롭 편집에서 넓힐 영역 미리보기 — Enter 적용", () => {
+        if (M.busy || M.stroke) opts.toast("마스크 요청을 처리하는 중입니다 — 끝난 뒤 다시 하세요", "warn");
+        else opts.goGrow(info.crop_id, growSides);
+      }));
+      else if (cs && cs.list.length && cs.list.every((y) => y.beside)) {
+        line(s, "옆 크롭 ★ 와 맞닿은 이음매뿐 — 넓힐 곳 없음", "dim");
       }
       if (applied && applied.key === M.key && applied.before) {
         if (!cs || cs.sig !== applied.sig) line(s, "적용 뒤 이음매 다시 계산 중…", "dim");

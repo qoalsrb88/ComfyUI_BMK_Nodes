@@ -321,7 +321,11 @@ window.DPPipeline = (() => {
       for (const d of c.dup_picks) out.push({ text: `${name} · ${d.tid} — 중복 ★(같은 이미지는 ${d.same_as} 에만)`, key: `${c.id}/${d.tid}` });
       if (c.stale_picked.length) out.push({ text: `${name} — 옛 크롭 ★ ${c.stale_picked.length}`, key });
       const sm = seams && seams.get(c.id);
-      if (sm && sm.bad) out.push({ text: `${name} — 이음매 bad ${sm.bad}`, key, mask: { crop: c.id } });
+      if (sm && (sm.bad || (sm.growSides && sm.growSides.length))) {
+        const row = { text: `${name} — 이음매 ${sm.bad ? `bad ${sm.bad}` : `weak ${sm.n}`}`, key, mask: { crop: c.id } };
+        if (sm.growSides && sm.growSides.length) row.grow = { crop: c.id, sides: sm.growSides };
+        out.push(row);
+      }
       if (LAYOUT_PENDING.includes(c.layout_status)) {
         lay = true;
         out.push({ text: `${name} — ${LAYOUT_REASON}(반영 뒤 Export)`, key });
@@ -2224,6 +2228,11 @@ window.DPPipeline = (() => {
         const r = line(s, c.text, (c.info ? "dim" : "warn") + (c.key || c.mask ? " link" : ""));
         if (c.mask) r.addEventListener("click", () => opts.goMask(c.mask, c.key));
         else if (c.key) r.addEventListener("click", () => opts.goTarget(c.key));
+        if (c.grow && opts.goGrow) r.append(button("크롭 넓히기 제안", "크롭 편집에서 넓힐 영역 미리보기 — Enter 적용", (e) => {
+          e.stopPropagation(); // 같은 줄의 이음매 클릭(마스크 모드)과 분리
+          if (setupBusy()) opts.toast("앞 요청을 처리하는 중입니다 — 끝난 뒤 다시 하세요", "warn");
+          else opts.goGrow(c.grow.crop, c.grow.sides);
+        }));
       }
 
       // Export
