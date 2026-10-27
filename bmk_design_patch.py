@@ -2407,6 +2407,7 @@ class BMKDesignPatchExportPSD:
                 _paste(flat, union, rgb, eff, left, top)
             mk = it["mask"]
             written.append({"name": name, "key": c["key"], "quad": [float(v) for v in it["quad"]],
+                            "params_hash": (it["entry"] or {}).get("params_hash"),
                             "src_size": [int(pix.shape[1]), int(pix.shape[0])], "visible": visible,
                             "toned": bool(is_toned), "mask_src": it["msrc"], "mask_rect": None if mk is None else
                             [mk["left"], mk["top"], mk["left"] + mk["arr"].shape[1], mk["top"] + mk["arr"].shape[0]]})

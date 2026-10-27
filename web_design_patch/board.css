@@ -614,6 +614,9 @@ body.pipe .proj { min-width: 0; overflow: hidden; text-overflow: ellipsis; white
 .pp-table th:first-child, .pp-table td:first-child { text-align: left; max-width: 12em; overflow: hidden; text-overflow: ellipsis; }
 .pp-table th { color: var(--dim); font-weight: normal; }
 .pp-table tr.sel td:first-child { color: #9ccbff; }
+#pipe-panel select.pp-psmask-picker { width: 100%; max-width: 100%; margin-top: 6px; }
+.pp-table.pp-psmask { width: 100%; table-layout: fixed; }
+.pp-table.pp-psmask th, .pp-table.pp-psmask td { white-space: normal; text-align: left; overflow-wrap: anywhere; }
 
 .fatal { margin: 40px; font-size: 15px; color: var(--bad); }
 body.busy { cursor: progress; }

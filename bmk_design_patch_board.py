@@ -34,6 +34,8 @@ Review 노드를 부분 실행한다(대체 경로). 인증 토큰은 그 경로
 - GET  /bmk/design_patch/mask/unused?root=   masks/ 의 편집기 PNG(<key>_e_<sha>.png) 중 매니페스트 어디서도 가리키지 않는 것(편집 기록·이전 버전·
                                        후보 hand_mask 등 — ★ 아닌 후보 포함) {files: [{file, bytes, at}], bytes, recent}(배치 3-6 — 10분 안에 쓴 것은 recent 로만)
 - POST /bmk/design_patch/mask/cleanup {root, files}   그 목록 중 지금도 안 쓰는 것만 지움(매니페스트 잠금 안에서 다시 판정) → {ok, deleted, bytes, kept}
+- GET  /bmk/design_patch/mask/ps_list?root=   output 안의 이 프로젝트 Export PSD·사이드카 목록(최근 것부터)
+- POST /bmk/design_patch/mask/ps_import {root, psd, dry_run, seen}   PS 그룹 마스크 미리보기·S4 새 판 저장(무료, seen은 미리보기 응답)
 - POST /bmk/design_patch/open_folder {root}   Export 출력 폴더를 탐색기로(배치 3-5a — 마지막 Export PSD 를 고른 채, 없으면
                                        output/design_patch/<실행 설정 export.subfolder — 비면 프로젝트 폴더>(3-5b)). ComfyUI output 밖이거나
                                        폴더가 없으면 열지 않음 → {ok, path, selected}
@@ -1800,6 +1802,162 @@ def mask_cleanup(root: str, data: dict) -> dict:
     if deleted:
         logger.info(f"{_TAG} Board: masks/ 안 쓰는 편집 파일 {len(deleted)}개 지움 {os.path.basename(root)}")
     return {"ok": True, "deleted": len(deleted), "bytes": sum(unused[f]["bytes"] for f in deleted), "kept": kept}
+
+
+def _ps_export_paths(path, original=None, *, require_psd=True) -> tuple[str, str]:
+    """output 안의 PSD·원래 Export의 사이드카만. junction·심볼릭 링크도 실제 경로로 검사."""
+    if not _OUTPUT_DIR:
+        raise _Reject(409, "ComfyUI 출력 폴더를 알 수 없습니다 — ComfyUI 재시작 필요")
+    if not isinstance(path, str) or not path or os.path.splitext(path)[1].lower() != ".psd":
+        raise _Reject(400, "Export PSD 경로가 필요합니다")
+    base = os.path.realpath(_OUTPUT_DIR[0])
+    psd = os.path.abspath(path)
+    side = os.path.splitext(os.path.abspath(original) if original else psd)[0] + ".json"
+    for p in (psd, side):
+        try:
+            inside = os.path.normcase(os.path.commonpath([base, os.path.realpath(p)])) == os.path.normcase(base)
+        except ValueError:
+            inside = False
+        if not inside:
+            raise _Reject(400, "PSD·사이드카는 ComfyUI output 안이어야 합니다")
+        if (p == side or require_psd) and not os.path.isfile(p):
+            raise _Reject(404, "Export PSD 또는 옆 사이드카가 없습니다")
+    return psd, side
+
+
+def _ps_export_match(path, exports: list[dict]) -> tuple[str, str, str, dict]:
+    """같은 폴더의 가장 긴 Export stem 접두사로 연결. 더 긴 기록의 사이드카가 없다고 짧은 것에 붙이지 않는다."""
+    if not isinstance(path, str) or not path or os.path.splitext(path)[1].lower() != ".psd":
+        raise _Reject(400, "Export PSD 경로가 필요합니다")
+    psd = os.path.abspath(path)
+    folder = os.path.normcase(os.path.dirname(psd))
+    stem = os.path.splitext(os.path.basename(psd))[0].casefold()
+    matches = []
+    for index, rec in enumerate(exports):
+        origin = rec.get("psd") if isinstance(rec, dict) else None
+        if not isinstance(origin, str) or not origin or os.path.splitext(origin)[1].lower() != ".psd":
+            continue
+        origin = os.path.abspath(origin)
+        prefix = os.path.splitext(os.path.basename(origin))[0].casefold()
+        if (os.path.normcase(os.path.dirname(origin)) == folder and stem.startswith(prefix)
+                and (len(stem) > len(prefix) or os.path.normcase(psd) == os.path.normcase(origin))):
+            matches.append((len(prefix), index, origin, rec))
+    if not matches:
+        raise _Reject(400, "이 프로젝트 Export PSD와 같은 폴더·원래 이름 접두사인 파일만 가져올 수 있습니다")
+    _length, _index, original, rec = max(matches, key=lambda x: x[:2])
+    if os.path.normcase(psd) != os.path.normcase(original):
+        suffix = stem[_length:]
+        if suffix[0].isdigit() or re.search(r"^_\d+(?=\D|$)|_\d+$", suffix) or os.path.lexists(os.path.splitext(psd)[0] + ".json"):
+            raise _Reject(400, "다른 Export 자동 이름 또는 자체 사이드카가 있는 PSD는 PS 사본으로 가져올 수 없습니다")
+    psd, side = _ps_export_paths(psd, original)
+    if (os.path.normcase(psd) != os.path.normcase(original)
+            and os.path.normcase(os.path.dirname(os.path.realpath(psd))) != os.path.normcase(os.path.realpath(os.path.dirname(original)))):
+        raise _Reject(400, "PS 사본은 원래 Export PSD와 같은 폴더 안이어야 합니다(다른 폴더 링크 거절)")
+    return psd, side, original, rec
+
+
+def mask_ps_list(root: str) -> list[dict]:
+    if not _OUTPUT_DIR:
+        raise _Reject(409, "ComfyUI 출력 폴더를 알 수 없습니다 — ComfyUI 재시작 필요")
+    exports = store.load_manifest(root).get("exports") or []
+    folders = {}
+    for rec in exports:
+        try:
+            original, _side = _ps_export_paths(rec.get("psd"), require_psd=False)
+            folder = os.path.dirname(original)
+            folders.setdefault(os.path.normcase(folder), folder)
+        except (_Reject, OSError, ValueError, AttributeError):
+            continue
+    groups = {}
+    for folder in sorted(folders.values()):
+        try:
+            with os.scandir(folder) as entries:
+                paths = [e.path for e in entries if os.path.splitext(e.name)[1].lower() == ".psd"]
+        except OSError:
+            continue
+        for path in paths:
+            try:
+                psd, _side, original, rec = _ps_export_match(path, exports)
+                stat = os.stat(psd)
+                at = time.mktime(time.strptime(rec["time"], "%Y-%m-%d %H:%M:%S"))
+                copy_of = original if os.path.normcase(psd) != os.path.normcase(original) else None
+                row = {"psd": psd, "rev": rec.get("rev"), "time": rec["time"], "exported_at": at, "copy_of": copy_of,
+                       "modified": int(stat.st_mtime) > int(at), "bytes": stat.st_size}
+                groups.setdefault(os.path.normcase(original), []).append((row, stat.st_mtime))
+            except (_Reject, OSError, ValueError, KeyError, TypeError):
+                continue
+    ordered = sorted(groups.values(), key=lambda g: (g[0][0]["exported_at"], g[0][0]["rev"] or 0), reverse=True)
+    # Export는 최근 것부터, 그 원본 바로 아래에는 사본을 수정 시각 역순으로 둔다.
+    return [row for group in ordered for row, _mtime in sorted(
+        group, key=lambda pair: (pair[0]["copy_of"] is not None, -pair[1], pair[0]["psd"].casefold()))]
+
+
+def mask_ps_import(root: str, data: dict) -> dict:
+    m = store.load_manifest(root)
+    psd, side, _original, export = _ps_export_match(data.get("psd"), m.get("exports") or [])
+    dry = data.get("dry_run")
+    if not isinstance(dry, bool):
+        raise _Reject(400, "dry_run 은 true 또는 false 여야 합니다")
+
+    def source():
+        paths = _ps_export_match(psd, m.get("exports") or [])[:2]
+        # ns는 JS 안전 정수 범위를 넘는다. 브라우저 JSON 왕복에서도 같은 불투명 문자열로 대조한다.
+        return {p: f"{s.st_mtime_ns}:{s.st_size}:{s.st_ctime_ns}" for p in paths for s in [os.stat(p)]}
+
+    stamp = source()
+    with open(side, encoding="utf-8") as f:
+        snapshot = json.load(f)
+    if not isinstance(snapshot, dict):
+        raise _Reject(400, "Export 사이드카가 객체가 아닙니다")
+    rk = store.root_key(root)
+    plans = []
+    plan_error = None
+
+    def target(cand, row):
+        nonlocal plan_error
+        if plan_error is not None:
+            raise ValueError(plan_error)
+        if not plans:
+            try:
+                plan, _picks, _entries, cs, _warns = _star_plan(root, m, _PREF.get(rk))
+            except (ValueError, OSError, AttributeError, TypeError, KeyError, IndexError) as e:
+                plan_error = str(e)  # 예외 traceback이 계획·배열을 붙잡지 않게 메시지만 기억한다.
+                raise ValueError(plan_error) from None
+            plans.append(({it["cand"]["key"]: (p, it, t["label"] if len(t["slices"]) == 1 else f"{t['label']} · slice {i}")
+                           for p in plan for t in p["targets"] for i, it in enumerate(t["slices"], 1)}, cs))
+        items, cs = plans[0]
+        p, it, group = items[cand["key"]]
+        rect = dmask.edit_rect(dpsd.quad_bbox(it["quad"]), _canvas_wh(m))
+        dmask._check_rect(rect)
+        old_mask = dmask.export_mask(root, snapshot, row, (export.get("options") or {}).get("mask_source"),
+                                     use_registration=bool((export.get("compose") or {}).get("use_registration", True)))
+        return {"rect": rect, "quad": it["quad"], "fp": dmask.base_fp(cand, it["entry"], cs["mask_source"]),
+                "mask": _window_l(it["mask"], rect), "export_mask": _window_l(old_mask, rect),
+                "crop": p["crop"]["name"], "group": group}
+
+    def placed(mm, key, fp):
+        cand = dmask.star_cand(mm, key)
+        if cand is None:
+            raise dmask.MaskConflict("지금 ★ 후보가 아닙니다 — 다시 미리 보기", "not_picked")
+        entry, cs = _entry_for(mm, key, _PREF.get(rk)), _compose_settings(root, mm)
+        try:
+            current_source = source()
+        except (_Reject, OSError) as e:
+            raise dmask.MaskConflict(f"PSD·사이드카를 다시 확인할 수 없습니다 — 다시 미리 보기: {e}", "changed") from e
+        if dmask.base_fp(cand, entry, cs["mask_source"]) != fp or current_source != stamp:
+            raise dmask.MaskConflict("기준 마스크 또는 PSD가 바뀌었습니다 — 다시 미리 보기", "changed")
+        return _edit_window(mm, cand, entry, bool(cs["use_registration"]))
+
+    if source() != stamp:
+        raise dmask.MaskConflict("사이드카가 바뀌었습니다 — 다시 미리 보기", "changed")
+    try:
+        result = dmask.import_ps_masks(root, psd, snapshot, manifest=m, target=target, placed=placed,
+                                      source=source, dry_run=dry, seen=data.get("seen"))
+    except dmask.PSDReadError as e:
+        raise _Reject(422, str(e)) from e
+    if any(f["conflict"] for f in result.get("failed", [])):
+        raise _Reject(409, "일부 마스크가 다른 창에서 바뀌었습니다 — 결과 확인 후 다시 미리 보기", reason="changed", **result)
+    return result
 
 
 def mask_edit(root: str, data: dict) -> dict:
@@ -5128,12 +5286,15 @@ async def zorder_handler(request: web.Request) -> web.StreamResponse:
 
 @_guard
 async def mask_ps_list_handler(request: web.Request) -> web.StreamResponse:
-    raise _Reject(501, "PS 마스크 가져오기는 아직 없습니다(다듬기 배치 5-3)")
+    root = _root_param(request.query.get("root"))
+    return _json(await asyncio.to_thread(mask_ps_list, root))
 
 
 @_guard
 async def mask_ps_import_handler(request: web.Request) -> web.StreamResponse:
-    raise _Reject(501, "PS 마스크 가져오기는 아직 없습니다(다듬기 배치 5-3)")
+    data = await _body(request)
+    root = _root_param(data.get("root"))
+    return _json(await asyncio.to_thread(mask_ps_import, root, data))
 
 
 _ROUTES = (
