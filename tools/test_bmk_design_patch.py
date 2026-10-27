@@ -45500,6 +45500,11 @@ console.log(JSON.stringify(out));
             check(ok is True, f"후보 보정 UI: {label}")
 
 
+def polish5_grow_unit():
+    """다듬기 배치 5-4(10/27 — _proto/STUDIO_POLISH5_SPEC.md §5·§8): 크롭 넓히기 제안(이음매 신호 → 크롭 편집 제안)."""
+    section("다듬기 배치 5-4 — 크롭 넓히기 제안")
+
+
 def polish5_psmask_unit():
     """다듬기 배치 5-3(10/27 — _proto/STUDIO_POLISH5_SPEC.md §4·§8): PS 에서 고친 그룹 마스크 되가져오기."""
     section("다듬기 배치 5-3 — PS 그룹 마스크 되가져오기")
@@ -49207,6 +49212,8 @@ if __name__ == "__main__":
         polish5_psmask_unit()
     if want("polish5_adjust_unit"):
         polish5_adjust_unit()
+    if want("polish5_grow_unit"):
+        polish5_grow_unit()
     print(f"\n단위 테스트 {time.time() - T0:.1f}s (PASS {PASSES} FAIL {len(FAILS)})")
     if QUICK:
         print("\n--quick: 회귀·노드 생략")
