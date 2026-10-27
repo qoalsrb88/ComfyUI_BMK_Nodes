@@ -45636,14 +45636,27 @@ await scenario("grow", async () => {
     [[256,256,556,556], ["right"], [1024,1024], true, [256,256,640,556]],
     [[256,256,556,556], ["right"], [1024,1024], false, [256,256,684,556]],
     [[256,256,512,512], [], [1024,1024], true, null],
+    [[256,256,956,496], ["right"], [2048,2048], true, null], // G1 700×240: 640 으로 줄이는 resize 결과는 버림
+    [[256,256,956,496], ["right","bottom"], [2048,2048], true, [256,256,1024,640]],
+    [[256,256,956,496], ["bottom","right","bottom"], [2048,2048], true, [256,256,1024,640]],
+    [[256,256,1024,456], ["right"], [2048,2048], true, null], // 이미 3:1 초과
+    [[256,256,1024,456], ["right","bottom"], [2048,2048], true, [256,256,1152,640]],
+    [[256,256,1024,456], ["bottom","right"], [2048,2048], true, [256,256,1152,640]],
   ];
   cases.forEach(([rect,sides,canvas,snap,want], i) => { const before = [...rect]; r[`geometry${i}`] = eq(G.grow(rect,sides,canvas,snap),want) && eq(rect,before); });
+  const permutations = (xs) => xs.length ? xs.flatMap((x,i) => permutations(xs.filter((_,j) => j !== i)).map((rest) => [x,...rest])) : [[]];
+  const original = [256,256,956,496], allSides = ["left","right","top","bottom"];
+  const expanded = G.grow(original,allSides,[2048,2048],true);
+  r.G1_orderIndependent = permutations(allSides).every((sides) => eq(G.grow(original,sides,[2048,2048],true),expanded));
+  r.G1_containsOriginal = expanded[0] <= original[0] && expanded[1] <= original[1] && expanded[2] >= original[2] && expanded[3] >= original[3];
+  const open = (crops,L={},st={}) => editor(crops,L,Object.assign({crops:JSON.parse(JSON.stringify(crops))},st));
   const c = crop("001_aaaaaa", "001_문양", [256,256,512,512]);
-  const env = await editor([c]);
+  const measured = JSON.parse(JSON.stringify([c]));
+  const env = await open([c]);
   const bc = vm.createContext({ busy: false, pipe: { paidLock: () => "" }, maskEd: { pending: () => null }, editor: env.ed,
     editing: false, refsOn: false, pipeOn: true, maskOn: false, layoutReady: () => true, notReady: () => "not ready",
     toast: (s) => env.toasts.push(s), curMode() { return bc.editing ? "edit" : "pipe"; },
-    setEditing: (on) => { bc.editing = on; if (on) env.ed.enter({ rev: 1, layout_rev: 0, canvas: [3072,4096], crops: [] }); },
+    setEditing: (on) => { bc.editing = on; if (on) env.ed.enter({ rev: 1, layout_rev: 0, canvas: [3072,4096], crops: measured }); },
     setMask: () => false });
   for (const n of ["goGrow","goMode","leaveMask"]) vm.runInContext(`${n} = ${IN.boardFunctions[n]}`, bc);
   await bc.goGrow(c.id, ["left"]);
@@ -45661,7 +45674,12 @@ await scenario("grow", async () => {
   const req = env.srv.log[0];
   r.applies = env.srv.log.length === 1 && req.path === "layout/crop" && req.op === "update" && req.id === c.id
     && eq(req.rect,[128,256,512,512]) && req.rev === 0 && req.root === "abcdef012345" && env.queued.length === 0;
-  await env.ed.proposeGrow(c.id,["right"]); env.key("Escape");
+  await bc.goGrow(c.id,["right"]);
+  r.G2_repeatBeforeApply = !env.button(env.panel,"제안 적용") && env.srv.log.length === 1
+    && env.toasts.at(-1).includes("레이아웃이 반영 전입니다 — 반영 뒤 이음매를 다시 재서 제안");
+  env.ed.stateChanged({rev:2,layout_rev:1,canvas:[3072,4096],crops:JSON.parse(JSON.stringify(env.srv.lay.crops))}); await sleep(30);
+  r.G2_afterApply = await env.ed.proposeGrow(c.id,["right"]);
+  env.key("Escape");
   r.escape = !env.button(env.panel,"제안 적용") && env.srv.log.length === 1;
   bc.busy = true; await bc.goGrow(c.id,["right"]); bc.busy = false;
   r.busy = env.toasts.at(-1).includes("앞 요청") && !env.button(env.panel,"제안 적용");
@@ -45672,11 +45690,11 @@ await scenario("grow", async () => {
   bc.editing = false; bc.maskOn = true; await bc.goGrow(c.id,["right"]);
   r.modeRefused = !bc.editing && !env.button(env.panel,"제안 적용");
   env.ed.leave();
-  const locked = await editor([Object.assign(C1(),{locked:true})]);
+  const locked = await open([Object.assign(C1(),{locked:true})]);
   r.locked = !await locked.ed.proposeGrow("001_aaaaaa",["right"]) && locked.toasts.at(-1).includes("잠긴")
     && locked.srv.log.length === 0 && !locked.button(locked.panel,"제안 적용");
   locked.ed.leave();
-  const edge = await editor([C1()]);
+  const edge = await open([C1()]);
   r.noRoom = !await edge.ed.proposeGrow("001_aaaaaa",["left"]) && edge.toasts.at(-1).includes("캔버스 끝·비율 한도");
   edge.ed.leave();
   const fit = await editor([C2()]); await fit.pick("002_눈");
@@ -45685,6 +45703,46 @@ await scenario("grow", async () => {
   fit.key("Enter"); await sleep(30);
   r.fitNoConfirm = fit.confirms.length === 0 && fit.srv.log.length === 1;
   fit.ed.leave();
+  // G2 이동만 했고 state 폴링에는 아직 미반영 표시가 없어도 마지막 반영 rect 와 비교한다.
+  const moved = await open([crop(c.id,c.name,[272,256,528,512])],{}, {crops:measured});
+  r.G2_moved = !await moved.ed.proposeGrow(c.id,["right"]) && moved.toasts.at(-1).includes("레이아웃이 반영 전입니다")
+    && !moved.button(moved.panel,"제안 적용") && moved.srv.log.length === 0 && moved.confirms.length === 0;
+  moved.ed.leave();
+  for (const status of ["changed","removed"]) {
+    const pending = await open(JSON.parse(JSON.stringify(measured)),{}, {crops:measured.map((x) => Object.assign({},x,{layout_status:status}))});
+    r[`G2_pending_${status}`] = !await pending.ed.proposeGrow(c.id,["right"]) && pending.toasts.at(-1).includes("레이아웃이 반영 전입니다")
+      && !pending.button(pending.panel,"제안 적용") && pending.confirms.length === 0;
+    pending.ed.leave();
+  }
+  const outside = await open([crop(c.id,c.name,[-64,256,256,512])]);
+  r.G3_outside = !await outside.ed.proposeGrow(c.id,["right"]) && outside.toasts.at(-1).includes("사각형이 캔버스 밖으로 나갑니다")
+    && !outside.button(outside.panel,"제안 적용") && outside.confirms.length === 0 && outside.srv.log.length === 0;
+  outside.ed.leave();
+  // G4 상자 맞춤은 다른 저장 뒤 큐에 들어가야 한다(Enter 와 단추 모두). 넓히기만 저장 중 토스트로 거절.
+  for (const via of ["Enter","button"]) {
+    const queued = await editor([C2()]); await queued.pick("002_눈");
+    queued.button(queued.panel,"상자에 크롭 맞추기").fire("click");
+    const expected = G.suggest([queued.srv.lay.crops[0].targets[0].box],[3072,4096],true);
+    queued.srv.delay = 60;
+    queued.type("note","먼저 저장").fire("change"); queued.doc.activeElement.blur(); await sleep(5);
+    r[`G4_busy_${via}`] = queued.srv.log.length === 1 && queued.srv.lay.rev === 0;
+    if (via === "Enter") queued.key("Enter"); else queued.button(queued.panel,"제안 적용").fire("click");
+    await sleep(160);
+    r[`G4_queued_${via}`] = queued.srv.log.length === 2 && queued.srv.log[0].note === "먼저 저장"
+      && queued.srv.log[1].rev === 1 && eq(queued.srv.log[1].rect,expected) && eq(queued.srv.lay.crops[0].rect,expected)
+      && queued.srv.lay.crops[0].note === "먼저 저장" && queued.confirms.length === 0;
+    queued.ed.leave();
+  }
+  const growBusy = await open(JSON.parse(JSON.stringify(measured)));
+  await growBusy.ed.proposeGrow(c.id,["right"]);
+  growBusy.srv.delay = 60;
+  growBusy.type("note","저장 중").fire("change"); growBusy.doc.activeElement.blur(); await sleep(5);
+  growBusy.key("Enter");
+  r.G4_growBusyToast = growBusy.toasts.at(-1).includes("저장하는 중입니다 — 끝난 뒤 제안을 적용하세요")
+    && !!growBusy.button(growBusy.panel,"제안 적용") && growBusy.confirms.length === 0;
+  await sleep(80);
+  r.G4_growNotQueued = growBusy.srv.log.length === 1 && !growBusy.srv.log[0].rect;
+  growBusy.ed.leave();
   return r;
 });
 console.log(JSON.stringify(out));
@@ -45733,11 +45791,15 @@ await scenario("grow", async () => {
   r.summary = summary.n === 4 && summary.bad === 1 && JSON.stringify(summary.growSides) === '["left"]';
   const sm = bc.seamsByCrop;
   r.checks = P.starChecks(S,sm,[]).some((x) => x.grow && x.grow.crop === cid && x.grow.sides[0] === "left"
-    && x.text === `${S.crops[0].name} — 이음매 bad 1`);
+    && x.text === `${S.crops[0].name} — 이음매 bad 1` && !x.info);
   r.weak = P.starChecks(S,new Map([[cid,{n:2,bad:0,growSides:["left"]}]]),[]).some((x) => x.grow && x.grow.crop === cid
-    && x.text === `${S.crops[0].name} — 이음매 weak 2`);
+    && x.text === `${S.crops[0].name} — 이음매 weak 2` && x.info);
   r.oldChecks = !P.starChecks(S,new Map([[cid,{n:1,bad:1}]]),[]).some((x) => !!x.grow);
+  S.targets.forEach((t) => { t.pick_keys = [t.candidates[0].key]; t.candidates[0].picked = true; t.candidates[0].analysis = "ok"; });
   const srv = server(); srv.route.pipeline = [200,Object.assign(clone(R["GET /pipeline"].ok),{confirm:[],drift:[]})];
+  const cleanPlan = clone(R["GET /pipeline/plan"].ok);
+  cleanPlan.apply_pending = []; cleanPlan.draft.import_pending = []; cleanPlan.notes = [];
+  srv.route.plan = [200,cleanPlan]; S.plan_v = cleanPlan.sig.split("|o:")[0];
   const doc = new Doc(); Object.assign(ctx,{document:doc,fetch:srv.fetch,navigator:{clipboard:{writeText:async()=>{}}}});
   Object.assign(ctx.window,{confirm:()=>true,sessionStorage:mem()});
   const hosts = {list:doc.createElement("ol"),panel:doc.createElement("section"),head:doc.createElement("div")};
@@ -45748,6 +45810,7 @@ await scenario("grow", async () => {
   pipe.stateChanged(S); await sleep(30); pipe.enter(S,cid); await sleep(40);
   const b = hosts.panel.all().find((e)=>e.tagName === "BUTTON" && e.textContent === "크롭 넓히기 제안");
   r.pipelineButton = !!b;
+  r.G5_badWarn = !!b && b.parent.classList.contains("warn") && !hosts.panel.textContent.includes("점검 통과 — 모든 타깃에 ★, 미반영 없음");
   let stopped = false;
   if (b) { b.fire("click"); stopped = maskCalls.length === 0; b.parent.fire("click"); }
   r.pipelineCallbacks = stopped && calls.length === 1 && calls[0][0] === cid && calls[0][1][0] === "left"
@@ -45758,6 +45821,8 @@ await scenario("grow", async () => {
   r.weakRow = !!weakRow && !hosts.panel.textContent.includes("이음매 bad 0");
   if (weakButton) weakButton.fire("click");
   r.weakButton = !!weakButton && calls.length === 2 && calls[1][0] === cid && calls[1][1][0] === "left" && maskCalls.length === 1;
+  r.G5_weakPass = !!weakButton && weakRow.classList.contains("dim") && !weakRow.classList.contains("warn")
+    && hosts.panel.textContent.includes("점검 통과 — 모든 타깃에 ★, 미반영 없음");
   pipe.leave();
   return r;
 });

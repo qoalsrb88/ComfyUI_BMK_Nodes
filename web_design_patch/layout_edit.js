@@ -1096,11 +1096,18 @@ window.DPLayoutEdit = (() => {
         return false;
       }
       if (lockedNow(c.id)) return false;
+      const measured = state.crops.find((x) => x.id === cropId);
+      if (!measured || !sameRect(c.rect, measured.rect) || ["changed", "removed"].includes(measured.layout_status)
+        || ["new", "changed"].includes(c.status)) {
+        opts.toast("레이아웃이 반영 전입니다 — 반영 뒤 이음매를 다시 재서 제안", "warn");
+        return false;
+      }
       const rect = G.grow(c.rect, sides, S.L.canvas, true);
       if (!rect) {
         opts.toast("캔버스 끝·비율 한도라 넓힐 수 없습니다", "warn");
         return false;
       }
+      if (badRect(rect)) return false;
       const deltas = [c.rect[0] - rect[0], rect[2] - c.rect[2], c.rect[1] - rect[1], rect[3] - c.rect[3]];
       const note = "넓히기 제안 " + deltas.map((n, i) => n ? `${["왼", "오른", "위", "아래"][i]} ${n > 0 ? "+" : ""}${n}px` : "").filter(Boolean).join(" · ");
       select(cropId, true);
@@ -1115,7 +1122,11 @@ window.DPLayoutEdit = (() => {
 
     async function applyProposal() {
       const p = proposal;
-      if (!p || S.busy) return;
+      if (!p) return;
+      if (p.grow && S.busy) {
+        opts.toast("앞 레이아웃 편집을 저장하는 중입니다 — 끝난 뒤 제안을 적용하세요", "warn");
+        return;
+      }
       if (lockedNow(p.id)) return;
       if (p.grow && !window.confirm("크롭 넓히기 제안을 적용할까요?\n적용은 레이아웃만 바꿉니다(무료).\n"
         + "[반영] 뒤 이 크롭은 새 생성 조건이라 다시 생성 대상입니다(유료 — 평균 ≈ 169 크레딧/호출, 초안 갱신 ≈ 21 — 10/23 원장 평균).\n"

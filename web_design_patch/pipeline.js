@@ -323,6 +323,7 @@ window.DPPipeline = (() => {
       const sm = seams && seams.get(c.id);
       if (sm && (sm.bad || (sm.growSides && sm.growSides.length))) {
         const row = { text: `${name} — 이음매 ${sm.bad ? `bad ${sm.bad}` : `weak ${sm.n}`}`, key, mask: { crop: c.id } };
+        if (!sm.bad) row.info = true;
         if (sm.growSides && sm.growSides.length) row.grow = { crop: c.id, sides: sm.growSides };
         out.push(row);
       }
