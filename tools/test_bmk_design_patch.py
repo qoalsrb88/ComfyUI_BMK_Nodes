@@ -45641,7 +45641,7 @@ function setupEnv(cfg = {}) {
   const doc = new Doc();
   const hosts = { list: doc.createElement("ol"), panel: doc.createElement("section"), head: doc.createElement("div") };
   doc.body.append(hosts.list, hosts.panel, hosts.head);
-  const env = { srv, S, hosts, confirms: [], toasts: [], shown: [], panels: [], initial, reads: 0, events: [] };
+  const env = { srv, S, doc, hosts, confirms: [], toasts: [], shown: [], panels: [], initial, reads: 0, events: [] };
   srv.route.pipeline = () => {
     env.reads += 1;
     if (cfg.read) {
@@ -45814,8 +45814,7 @@ await scenario("setup:reread", async () => {
     } });
     env.pipe.enter(env.S, null);
     await sleep(70);
-    result[`확인 직전 다시 읽기 ${name}: 질문·저장 없음`] = env.reads === 2 && !env.confirms.length && !env.posts().length &&
-      (name === "error" ? env.toasts.length === 1 && env.toasts[0].includes("다시 읽지 못해 멈춤") : env.toasts.length === 0);
+    result[`확인 직전 다시 읽기 ${name}: 질문·저장·토스트 없음`] = env.reads === 2 && !env.confirms.length && !env.posts().length && !env.toasts.length;
     const deferred = ["running", "leave", "error"].includes(name);
     if (name === "running") env.S.running = false;
     if (name === "leave") env.pipe.enter(env.S, null);
@@ -45864,7 +45863,7 @@ await scenario("setup:firstReadRetry", async () => {
 
 await scenario("setup:confirmRace", async () => {
   const result = {};
-  for (const change of ["prepare", "import", "saved", "unreadable"]) {
+  for (const change of ["prepare", "import", "saved", "unreadable", "warning", "gate", "warningGate", "leave", "settings", "broken"]) {
     const env = setupEnv({ read(e, p) {
       if (!e.confirms.length || e.changed) return;
       e.changed = true; // confirm 이 닫힌 뒤 첫 GET: 파일 없음의 rev 는 그대로, 그래프 기록만 변경
@@ -45872,11 +45871,21 @@ await scenario("setup:confirmRace", async () => {
       if (change === "import") p.derived.settings.import.psd_path = "Z:/graph/new.psd";
       if (change === "saved") { p.saved = true; p.rev = 1; }
       if (change === "unreadable") return [500, { error: "확인 뒤 읽기 실패" }];
+      if (["warning", "warningGate"].includes(change)) p.warnings.push({ field: "import.psd_path", msg: "PSD 경로를 찾을 수 없음(시험)" });
+      if (["gate", "warningGate"].includes(change)) p.derived.confirm.push("prepare.n");
+      if (change === "leave") e.pipe.leave();
+      if (change === "settings") e.pipe.openSettings();
+      if (change === "broken") { p.saved = true; p.error = "깨진 설정(시험)"; }
     } });
     env.pipe.enter(env.S, null);
     await until(() => env.toasts.length > 0);
+    const why = { unreadable: "다시 읽지 못해 멈춤", saved: "다른 창이 먼저 실행 설정을 저장했습니다 — 저장하지 않음",
+      warning: "PSD 경로를 찾을 수 없음(시험)", gate: "확인 필요: prepare.n", warningGate: "PSD 경로를 찾을 수 없음(시험); 확인 필요: prepare.n",
+      leave: "실행 설정을 저장하지 않았습니다 — [실행 설정 열기]에서 확인", settings: "실행 설정을 저장하지 않았습니다 — [실행 설정 열기]에서 확인",
+      broken: "실행 설정 파일이 깨져 저장하지 않았습니다 — 깨진 설정(시험)" };
     result[`확인 직후 ${change}: POST 0·토스트 1`] = env.confirms.length === 1 && env.changed === true && !env.posts().length &&
-      env.toasts.length === 1 && env.toasts[0].includes(change === "unreadable" ? "다시 읽지 못해 멈춤" : "그래프 기록이 바뀌어 저장하지 않았습니다");
+      env.toasts.length === 1 && env.toasts[0].includes(why[change] || "그래프 기록이 바뀌어 저장하지 않았습니다");
+    if (why[change]) result[`${change}: 그래프 기록 변경으로 잘못 안내하지 않음`] = !env.toasts[0].includes("그래프 기록이 바뀌어");
     if (["prepare", "import"].includes(change)) result[`${change} 그래프 변경은 rev 0 그대로`] = env.current().rev === 0 && !env.current().saved;
     await env.repeat();
     result[`확인 직후 ${change} 중단 뒤 질문·저장 재시도 없음`] = env.confirms.length === 1 && !env.posts().length && env.toasts.length === 1;
@@ -45886,18 +45895,22 @@ await scenario("setup:confirmRace", async () => {
 
 await scenario("setup:importRace", async () => {
   const result = {};
-  for (const change of ["derivedAtSave", "afterImportRead", "prepareAndRev", "unreadable"]) {
+  for (const change of ["derivedAtSave", "afterImportRead", "prepareAndRev", "unreadable", "importAtSave", "importDerived", "importDrift"]) {
     const env = setupEnv({ beforeSave(e, p, body) {
       if (change === "derivedAtSave" && body.section === "import") {
         p.derived.settings.prepare.n += 1; // 최종 GET 과 import POST 사이 그래프 실행: rev 0 update 가 새 Prepare 를 파일에 넣음
         p.derived.settings.export.subfolder = "fresh-derived";
       }
+      if (change === "importAtSave" && body.section === "import") p.derived.settings.import.psd_path = "Z:/graph/import-later.psd";
     }, read(e, p) {
       if (e.srv.count("pipeline/settings") !== 1 || e.changed) return;
       e.changed = true;
       if (["afterImportRead", "prepareAndRev"].includes(change)) p.settings.prepare.n += 1;
       if (change === "prepareAndRev") p.rev = 9;
       if (change === "unreadable") return [500, { error: "import 뒤 읽기 실패" }];
+      if (change === "importDerived") p.derived.settings.import.psd_path = "Z:/graph/import-later.psd";
+      if (change === "importDrift") p.drift.push({ kind: "import", section: "import", field: "psd_path",
+        manifest: "Z:/graph/import-later.psd", settings: p.settings.import.psd_path });
     } });
     env.pipe.enter(env.S, null);
     await until(() => env.toasts.length > 0);
@@ -45905,7 +45918,9 @@ await scenario("setup:importRace", async () => {
     const saved = env.current();
     result[`import 뒤 ${change}: import POST 한 번·부분 저장 안내`] = env.confirms.length === 1 && posts.length === 1 &&
       posts[0].section === "import" && posts[0].rev === 0 && env.toasts.length === 1 && env.toasts[0].includes("앞 절(Import PSD)만 저장됨");
-    if (change !== "unreadable") result[`${change}: 창의 옛 Prepare 로 되돌리지 않음`] =
+    if (change.startsWith("import")) result[`${change}: Import 만 갈라져도 Prepare POST 없음`] = saved.rev === 1 &&
+      saved.settings.prepare.n === env.shown[0].settings.prepare.n && !posts.some((p) => p.section === "prepare");
+    else if (change !== "unreadable") result[`${change}: 창의 옛 Prepare 로 되돌리지 않음`] =
       saved.settings.prepare.n === env.shown[0].settings.prepare.n + 1 && saved.rev === (change === "prepareAndRev" ? 9 : 1);
     if (change === "derivedAtSave") result["rev 0 첫 저장은 저장 시점 유도값 전체·보낸 import 절만 덮음·다른 확인 유지"] =
       saved.settings.export.subfolder === "fresh-derived" && JSON.stringify(saved.settings.import) === JSON.stringify(posts[0].values) &&
@@ -46012,7 +46027,7 @@ await scenario("setup:progressRetry", async () => {
 await scenario("setup:busyAfterConfirm", async () => {
   const result = {};
   for (const kind of ["queueRun", "queuePending", "queueError", "queueJson", "queueShape", "progressError", "progressRun", "progressDraft",
-    "stateRun", "stateDraft", "tab", "refreshThrow", "refreshMissing"]) {
+    "stateRun", "stateDraft", "tab", "refreshThrow", "refreshMissing", "screenLeave", "screenSettings"]) {
     const env = setupEnv({ link: true, async refresh(e) {
       await sleep(15); // refresh 완료를 기다린 뒤 progress·queue 를 읽어야 함
       if (kind === "queueRun") e.srv.queue.queue_running = [[1, "graph"]];
@@ -46027,6 +46042,8 @@ await scenario("setup:busyAfterConfirm", async () => {
       if (kind === "stateRun") e.S.running = true;
       if (kind === "stateDraft") e.S.drafting = true;
       if (kind === "tab") e.link.busy = true;
+      if (kind === "screenLeave") e.pipe.leave();
+      if (kind === "screenSettings") e.pipe.openSettings();
       if (kind === "refreshThrow") throw new Error("state failed");
       return kind !== "refreshMissing"; // 보드 refresh 가 오류를 삼키고 stateChanged 없이 끝나는 실제 경로
     } });
@@ -46040,6 +46057,8 @@ await scenario("setup:busyAfterConfirm", async () => {
       after.some((p) => p.endsWith("/pipeline/progress")) && after.includes("/api/queue");
     result[`확인 후 ${kind}: POST 0·warn 한 번`] = env.confirms.length === 1 && !env.posts().length && env.toasts.length === 1 &&
       env.toasts[0].startsWith("warn:") && env.toasts[0].includes("저장하지 않았습니다") && env.toasts[0].includes("[실행 설정 열기]");
+    if (kind.startsWith("screen")) result[`${kind}: 화면 이동 안내`] =
+      env.toasts[0] === "warn:실행 설정을 저장하지 않았습니다 — [실행 설정 열기]에서 확인";
     env.S.running = false;
     env.S.drafting = false;
     env.srv.queue = { queue_running: [], queue_pending: [] };
@@ -46094,6 +46113,87 @@ await scenario("setup:decided", async () => {
   }
   return result;
 });
+
+await scenario("setup:concurrentReadFailure", async () => {
+  const env = setupEnv({ answer: false, read(e) {
+    if (e.reads === 3) return [500, { error: "겹친 폴링 읽기 실패" }];
+  } });
+  env.srv.delay["api/queue"] = [150];
+  env.pipe.enter(env.S, null);
+  await until(() => env.reads === 2);
+  await sleep(20); // once 의 reload 는 성공, 대기열 응답만 아직 기다리는 중
+  await env.nextLoad(); // 더 늦게 보낸 PS.load 가 실패하여 PS.err 가 섬
+  await sleep(100);
+  const deferred = env.reads === 3 && !env.confirms.length && !env.posts().length && !env.toasts.length;
+  await env.nextLoad();
+  const retried = env.confirms.length === 1;
+  await env.repeat();
+  return { "once reload 성공 뒤 겹친 폴링 실패: 질문·토스트 없이 기회 유지": deferred,
+    "겹친 읽기 실패가 풀린 다음 로드에서 한 번만 질문": retried && env.confirms.length === 1 && !env.posts().length && !env.toasts.length };
+});
+
+await scenario("setup:silentAutoRead", async () => {
+  const env = setupEnv({ answer: false, read(e) {
+    if ([2, 4].includes(e.reads) || e.manualFail) return [500, { error: "설정 다시 읽기 실패" }];
+  } });
+  env.pipe.enter(env.S, null);
+  await sleep(50);
+  await env.nextLoad();
+  const silent = env.reads === 4 && !env.confirms.length && !env.posts().length && !env.toasts.length;
+  await env.nextLoad();
+  const recovered = env.confirms.length === 1 && !env.posts().length && !env.toasts.length;
+  env.pipe.openSettings();
+  const reset = env.hosts.panel.all().find((e) => e.tagName === "BUTTON" && e.textContent === "마지막 실행 값으로 채우기");
+  if (!reset) throw new Error("수동 설정 다시 읽기 단추 없음");
+  env.manualFail = true;
+  reset.fire("click");
+  await until(() => env.toasts.length > 0);
+  env.pipe.leave();
+  return { "자동 reload 가 반복 실패해도 조용히 보류": silent,
+    "자동 읽기 복구 후 질문 기회 유지": recovered,
+    "수동 [마지막 실행 값으로 채우기]의 읽기 실패 토스트는 유지": env.toasts.length === 1 && env.toasts[0].startsWith("err:") &&
+      env.toasts[0].includes("다시 읽지 못해 멈춤") && env.confirms.length === 1 && !env.posts().length };
+});
+
+await scenario("setup:inputDeferred", async () => {
+  const result = {};
+  for (const phase of ["before", "during"]) for (const kind of ["input", "composing", "pointer"]) {
+    const env = setupEnv({ answer: false });
+    env.pipe.stateChanged(env.S);
+    await sleep(25);
+    let input;
+    const begin = () => {
+      if (kind === "input") {
+        input = env.doc.createElement("input");
+        input.value = "편집 중인 문구";
+        env.hosts.panel.append(input);
+        input.focus();
+      } else if (kind === "composing") env.hosts.panel.fire("compositionstart");
+      else env.doc.body.fire("pointerdown", { buttons: 1 });
+    };
+    if (phase === "before") begin();
+    else env.srv.delay.pipeline = [80];
+    env.pipe.enter(env.S, null);
+    if (phase === "during") { await sleep(10); begin(); }
+    await sleep(100);
+    await env.nextLoad();
+    result[`${phase} ${kind}: 입력·포인터 중 폴링은 질문·쓰기 없이 보류`] = !env.confirms.length && !env.posts().length && !env.toasts.length &&
+      (!input || (env.doc.activeElement === input && input.value === "편집 중인 문구"));
+    if (kind === "input") input.blur();
+    else if (kind === "composing") env.hosts.panel.fire("compositionend");
+    else env.doc.body.fire("pointerup", { buttons: 0 });
+    await sleep(20);
+    await env.nextLoad();
+    result[`${phase} ${kind}: 입력 종료 후에도 폴링으로 모달을 띄우지 않음`] = !env.confirms.length && !env.posts().length;
+    env.pipe.leave();
+    env.pipe.enter(env.S, null);
+    await until(() => env.confirms.length > 0);
+    await env.repeat();
+    result[`${phase} ${kind}: 다음 enter 에서 한 번 질문하고 취소 뒤 다시 묻지 않음`] =
+      env.confirms.length === 1 && !env.posts().length && !env.toasts.length;
+  }
+  return result;
+});
 """
     harness = harness.replace("console.log(JSON.stringify(out));\nprocess.exit(0);", cases + "\nconsole.log(JSON.stringify(out));\nprocess.exit(0);")
     (out / "harness.mjs").write_text(harness, encoding="utf-8")
@@ -46102,7 +46202,7 @@ await scenario("setup:decided", async () => {
         check(False, f"배치 4-1 node 하네스 실패({r.returncode}): {r.stderr.strip()[-1200:]}")
         return
     res = json.loads(r.stdout.strip().splitlines()[-1])
-    check(len(res) == 15, f"배치 4-1 시나리오 15개 실행: {list(res)}")
+    check(len(res) == 18, f"배치 4-1 시나리오 18개 실행: {list(res)}")
     for name, checks in res.items():
         if "error" in checks:
             check(False, f"{name} 하네스 예외: {checks['error']}")

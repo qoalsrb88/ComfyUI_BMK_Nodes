@@ -905,6 +905,7 @@ window.DPPipeline = (() => {
     let planTimer = null;
     let settingsOn = false;
     let setupPending = null; // null = 첫 진입 전, true = 판정 가능할 때까지 기다림, false = 판정했거나 이미 물음
+    let setupInputWait = false; // 입력·포인터 동작 때문에 보류한 질문은 다음 enter 에서만 재개
     let form = {}; // 설정 패널에서 고치는 중인 값 {절: {키: 값}} — 다시 그려도 남는다
     // 다른 창의 저장 알아보기(state pipeline_rev 로 다시 읽으면 PS.P·rev 가 새 판이 되어 저장이 409 없이 통과): edits = 손댄 키를 처음 고칠 때 화면의 값
     // {절: {키: 값}}, drawn = 설정 패널을 마지막으로 그린(또는 저장한) 절 값 {절: 값}(입력 중이면 다시 그리기가 미뤄져 화면이 옛 값)
@@ -1082,11 +1083,11 @@ window.DPPipeline = (() => {
       return warned;
     }
 
-    async function reload() {
+    async function reload(quiet = false) {
       // GET /pipeline 을 다시 읽음 → 지금 PS.P 가 이 읽기 뒤의 값인가(늦게 보낸 읽기가 먼저 받아진 것도 됨). 읽지 못하면 토스트·false — 옛 PS.P 로
       // 확인 창을 만들거나 '새 갈라짐 없음'으로 판정하지 않게(반영·매니페스트 값으로 다시)
       if ((await PS.load()) || !PS.err) return true;
-      opts.toast(`실행 설정(GET /pipeline)을 다시 읽지 못해 멈춤 — ${PS.err}`, "err");
+      if (!quiet) opts.toast(`실행 설정(GET /pipeline)을 다시 읽지 못해 멈춤 — ${PS.err}`, "err");
       return false;
     }
 
@@ -1155,11 +1156,13 @@ window.DPPipeline = (() => {
         return;
       }
       // 검토 모드의 옛 gate·경고·읽기 오류로 기회를 소진하지 않음 — 파일 있음과 이 페이지의 동작 상태만 먼저 본다.
-      if (asking || paying || PS.busy || PS.sending || PS.job || (L && L.busy)) return;
+      if (held || panelBusy()) setupInputWait = true;
+      if (setupInputWait || asking || paying || PS.busy || PS.sending || PS.job || (L && L.busy)) return;
       once(async () => {
         // 보류 뒤에는 앞 progress 가 실행 중이어도 새 값으로 판정. 실패·실행 중이면 다음 pipelineLoaded 에 기회를 남긴다.
-        const [loaded, , idle] = await Promise.all([reload(), PS.loadProgress(), setupQueueIdle()]);
-        if (!setupPending || !on || !loaded || !PS.progress || !idle || setupBusy()) return;
+        const [loaded, , idle] = await Promise.all([reload(true), PS.loadProgress(), setupQueueIdle()]);
+        if (held || panelBusy()) setupInputWait = true;
+        if (!setupPending || !on || !loaded || PS.err || !PS.progress || !idle || setupBusy() || setupInputWait) return;
         setupPending = false; // 파일·gate·경고 판정 또는 실제 확인 창부터는 이 페이지에서 다시 묻지 않음
         if (!setupReady(PS.P)) return;
         const P0 = PS.P;
@@ -1177,6 +1180,7 @@ window.DPPipeline = (() => {
         if (rest.length) lines.push(`확인 필요로 남음(반영·Export 는 막지 않음): ${rest.join(", ")}`);
         lines.push("저장하면 pipeline.json 이 만들어져 [반영 (무료)]·Export 를 쓸 수 있습니다. 나중에 [실행 설정 열기]에서 바꿀 수 있습니다.");
         if (!window.confirm(lines.join("\n"))) return;
+        const notSaved = "실행 설정을 저장하지 않았습니다 — [실행 설정 열기]에서 확인";
         const before = stateReads;
         let refreshed = false;
         try {
@@ -1186,14 +1190,31 @@ window.DPPipeline = (() => {
           // 보드 state 를 못 읽으면 아래에서 큐·진행 읽기 실패와 같은 안내
         }
         const [, stillIdle] = await Promise.all([PS.loadProgress(), setupQueueIdle()]);
+        if (!on || settingsOn) {
+          opts.toast(notSaved, "warn");
+          return;
+        }
         if (!refreshed || !PS.progress || !stillIdle || setupBusy()) {
           opts.toast("ComfyUI 가 큐를 처리 중이거나 상태를 읽지 못해 저장하지 않았습니다 — 끝난 뒤 [실행 설정 열기]에서 확인", "warn");
           return;
         }
         // confirm 동안 그래프 Import·Prepare 가 돈 경우 rev 0 은 그대로여도 유도값은 달라진다.
         if (!(await reload())) return;
-        if (!setupReady(PS.P) || !same(PS.P.settings.import, values.import) || !same(PS.P.settings.prepare, values.prepare)) {
-          opts.toast("확인 창을 띄운 동안 그래프 기록이 바뀌어 저장하지 않았습니다 — [실행 설정 열기]에서 확인", "warn");
+        const current = PS.P;
+        let stopped = "";
+        if (!on || settingsOn) stopped = notSaved;
+        else if (current.error) stopped = `실행 설정 파일이 깨져 저장하지 않았습니다 — ${current.error}`;
+        else if (current.saved) stopped = "다른 창이 먼저 실행 설정을 저장했습니다 — 저장하지 않음";
+        else if (current.warnings.length || confirmGate(current).gate.length) {
+          const reasons = current.warnings.map((w) => w.msg);
+          const gate = confirmGate(current).gate;
+          if (gate.length) reasons.push(`확인 필요: ${gate.join(", ")}`);
+          stopped = `실행 설정을 저장하지 않았습니다 — ${reasons.join("; ")} — [실행 설정 열기]에서 확인`;
+        } else if (!same(current.settings.import, values.import) || !same(current.settings.prepare, values.prepare)) {
+          stopped = "확인 창을 띄운 동안 그래프 기록이 바뀌어 저장하지 않았습니다 — [실행 설정 열기]에서 확인";
+        } else if (!setupReady(current)) stopped = notSaved;
+        if (stopped) {
+          opts.toast(stopped, "warn");
           return;
         }
         let rev = 0;
@@ -1203,9 +1224,10 @@ window.DPPipeline = (() => {
             const r = await PS.save(sec, values[sec], rev);
             rev = r.rev; // PS.save 뒤 GET /pipeline 의 rev 가 아니라 이 창의 저장 응답 rev
             saved.push(SECTIONS[sec]);
-            // rev 0 저장은 그때의 유도값 전체로 파일을 만든다. 그 사이 바뀐 Prepare 를 창의 옛 값으로 되돌리지 않음.
-            if (sec === "import" && (PS.err || !PS.P || PS.P.error || !PS.P.saved || !same(PS.P.settings.prepare, values.prepare))) {
-              opts.toast("Prepare: 확인 창의 값과 지금 설정이 다르거나 다시 읽지 못해 멈춤 — 앞 절(Import PSD)만 저장됨, [실행 설정 열기]에서 확인", "warn");
+            // rev 0 저장 뒤 그래프 Import·Prepare 도 다시 대조 — 그 사이 끝난 그래프와 갈라진 채 다음 절을 쓰지 않음.
+            if (sec === "import" && (PS.err || !PS.P || PS.P.error || !PS.P.saved || !same(PS.P.settings.prepare, values.prepare)
+              || PS.P.drift.some((d) => d.kind === "import") || !same(PS.P.derived.settings.import, values.import))) {
+              opts.toast("Import·Prepare: 확인 창의 값과 지금 설정이 다르거나 다시 읽지 못해 멈춤 — 앞 절(Import PSD)만 저장됨, [실행 설정 열기]에서 확인", "warn");
               planNow();
               return;
             }
@@ -2619,6 +2641,7 @@ window.DPPipeline = (() => {
     function enter(st, cropId) {
       // 진행 모드 진입: 채택 패널 = 보드가 고른 크롭, 계획(지금 선택)·진행 수를 받는다
       if (setupPending === null) setupPending = !settingsOn;
+      setupInputWait = false;
       on = true;
       ticks = 0;
       S = st;
