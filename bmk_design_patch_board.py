@@ -81,6 +81,7 @@ Review 노드를 부분 실행한다(대체 경로). 인증 토큰은 그 경로
   받은 ComfyUI 탭이 검사한 뒤 app.queuePrompt 로 큐에 넣는다(인증 토큰은 그 경로로만 붙음 — 서버는 템플릿과 해시 대조만).
 - GET  /bmk/design_patch/mask?root=&key=               ★ 후보의 마스크 편집 대상(STUDIO_S4_SPEC §4, mask_view — 편집 창·기준·편집·3층 URL·
                                                        이 크롭 이음매·z). ★ 아님 409 {reason: not_picked}. 파일을 쓰지 않는다
+  이음매 beside = 다른 크롭 ★ 합집합이 바깥 4px 띠를 절반 이상 덮으면 가장 많이 덮은 크롭 id, 아니면 null(옛 캐시의 필드 없음은 알 수 없음).
 - GET  /bmk/design_patch/mask/img?root=&key=&kind=base|edit|under|patch|over&v=   PNG — base·edit = 지금 편집 창 L(edit = 기록 래스터를
                                                        그 창으로 옮김 = _plan), under = 영역 RGB, patch·over = 영역 RGBA(3층은 한 번에
                                                        계산·캐시). v ≠ 지금 서명 409 {reason: stale}
@@ -1282,6 +1283,7 @@ def _compose_full(root: str, m: dict, pref: dict | None, swap: tuple[str, str, s
     canvas = base[by0:by1, bx0:bx1].astype(np.float32)
     union = np.zeros(canvas.shape[:2], np.float32)
     touches = []
+    coverage = []
     for p, t, it in node._slices_in_order(plan):
         qx0, qy0, qx1, qy1 = dpsd.quad_bbox(it["quad"])
         if qx1 < bx0 - 2 or qy1 < by0 - 2 or qx0 > bx1 + 2 or qy0 > by1 + 2:
@@ -1289,6 +1291,8 @@ def _compose_full(root: str, m: dict, pref: dict | None, swap: tuple[str, str, s
         pix, _toned = node._cand_pixels(root, it, bool(cs["use_tone"]))
         rgb, _alpha, eff, left, top = node._render(pix, it["quad"], it["mask"])
         node._paste(canvas, union, rgb, eff, left - bx0, top - by0)
+        if box is None:
+            coverage.append((p["crop"]["id"], eff >= 0.5, left, top))
         x0, y0, x1, y1 = p["crop"]["rect"]
         rect = [max(0, x0), max(0, y0), min(W, x1), min(H, y1)]
         if box is None and rect[2] > rect[0] and rect[3] > rect[1]:
@@ -1297,30 +1301,71 @@ def _compose_full(root: str, m: dict, pref: dict | None, swap: tuple[str, str, s
     out = np.clip(np.rint(canvas), 0, 255).astype(np.uint8)
     segs = [s for s in (_seam_segment(out, base, *t) for t in touches) if s["diff_p90"] >= _SEAM_MIN_DIFF]
     segs.sort(key=lambda s: (s["severity"] != "bad", -s["diff_p90"]))
+    for s in segs:
+        x0, y0, x1, y1 = (s[k] for k in ("x0", "y0", "x1", "y1"))
+        if s["side"] == "left":
+            x0 = max(0, x0 - 4)
+        elif s["side"] == "right":
+            x1 = min(W, x1 + 4)
+        elif s["side"] == "top":
+            y0 = max(0, y0 - 4)
+        else:
+            y1 = min(H, y1 + 4)
+        # 크롭별 전체 캔버스 대신 이 구간의 4px 띠만 합집합(같은 크롭의 여러 ★ 를 중복 세지 않음).
+        strips = {}
+        for cid, hit, left, top in coverage:
+            if cid == s["crop_id"]:
+                continue
+            a, b = max(x0, left), max(y0, top)
+            c, d = min(x1, left + hit.shape[1]), min(y1, top + hit.shape[0])
+            if a >= c or b >= d:
+                continue
+            if cid not in strips:
+                strips[cid] = np.zeros((y1 - y0, x1 - x0), bool)
+            strips[cid][b - y0:d - y0, a - x0:c - x0] |= hit[b - top:d - top, a - left:c - left]
+        counts = [(cid, int(hit.sum())) for cid, hit in strips.items()]
+        cid, count = max(counts, key=lambda v: v[1], default=(None, 0))
+        covered = np.zeros((y1 - y0, x1 - x0), bool)
+        for hit in strips.values():
+            covered |= hit
+        s["beside"] = cid if count and 2 * int(covered.sum()) >= covered.size else None
     return out, {"picks": len(picks), "unanalyzed": [c["key"] for c in picks if c["key"] not in entries],
-                 "warnings": warns, "settings": cs, "segments": segs}
+                 "warnings": warns, "settings": cs, "segments": segs, "seam_format": 3}
+
+
+def _read_seams(root: str, sig: str, current: bool = False) -> dict | None:
+    """옛 이음매도 읽되, 캐시 적중에는 다른 크롭 합집합으로 판정한 beside(3판)가 필요하다(합성 서명은 그대로)."""
+    try:
+        raw = _read_bytes(_thumb_path(root, f"seams_{sig}.json"))
+        info = json.loads(raw) if raw is not None else None
+    except (OSError, ValueError, UnicodeError):
+        return None
+    if not isinstance(info, dict) or not isinstance(info.get("segments"), list):
+        return None
+    return info if not current or info.get("seam_format") == 3 else None
 
 
 def _composite(root: str, m: dict, pref: dict | None, sig: str,
                swap: tuple[str, str, str] | None = None) -> tuple[bytes, dict]:
-    """composite_<sig>.jpg + seams_<sig>.json — 둘 다 있으면 읽고, 없으면 한 번 계산해 둘 다 쓴다(JSON 먼저).
+    """composite_<sig>.jpg + seams_<sig>.json — 이음매 형식이 옛 판이면 재계산하되 읽히는 같은 서명 JPG 는 보존한다.
     swap = ★ 교체 가정(sig 는 그 가정의 서명 — /mask/alts. 그 후보를 실제로 ★ 하면 같은 서명이라 캐시를 그대로 쓴다)."""
     jpg = _thumb_path(root, f"composite_{sig}.jpg")
     js = _thumb_path(root, f"seams_{sig}.json")
-    data, raw = _read_bytes(jpg), _read_bytes(js)
-    if data is None or raw is None:
+    data, info = _read_bytes(jpg), _read_seams(root, sig, current=True)
+    if data is None or info is None:
         with _COMPOSE_LOCK:
-            data, raw = _read_bytes(jpg), _read_bytes(js)
-            if data is None or raw is None:
+            data, info = _read_bytes(jpg), _read_seams(root, sig, current=True)
+            if data is None or info is None:
                 t0 = time.time()
                 with _RENDER_SLOTS:
                     out, info = _compose_full(root, m, pref, swap)
-                    data = _jpeg(Image.fromarray(_preview(out)))
                 info.update(sig=sig, seconds=round(time.time() - t0, 2))
                 raw = json.dumps(info, ensure_ascii=False).encode("utf-8")
                 store._atomic_write_bytes(js, raw)
-                store._atomic_write_bytes(jpg, data)
-    return data, json.loads(raw)
+                if data is None:
+                    data = _jpeg(Image.fromarray(_preview(out)))
+                    store._atomic_write_bytes(jpg, data)
+    return data, info
 
 
 def _region_rect(rect: list[int], W: int, H: int) -> list[int]:
@@ -1608,7 +1653,10 @@ def mask_view(root: str, key) -> dict:
     z["rev"] = m["rev"]
     z["controls"] = [_zorder_control(m, scopes, boxes, scope, item) for scope, item in (
         ("crops", crop["id"]), (f"t:{crop['id']}", cand["tid"]), (f"s:{crop['id']}/{cand['tid']}", key))]
-    raw = _read_bytes(_thumb_path(root, f"seams_{csig}.json"))
+    seams = _read_seams(root, csig)
+    if seams is not None and seams.get("seam_format") != 3:
+        for segment in seams["segments"]:
+            segment.pop("beside", None)  # 옛 판정은 알 수 없음 — 재계산 전 넓히기 신호로 내보내지 않는다.
     warns = [w for w in t["warns"] if w.startswith(f"{key} (")]
     if t["it"]["entry"] is None:
         warns.insert(0, "분석 없음 — 반영(Analyze) 뒤 편집 권장")
@@ -1621,7 +1669,7 @@ def mask_view(root: str, key) -> dict:
             "picked": True, "rect": t["rect"], "composite_sig": csig, "mask_source": t["cs"]["mask_source"],
             "base": base, "edit": edit, "adjust": store.cand_adjust_record(m, key),
             "layers": {"box": box, "sig": lsig, **{f"{k}_url": _murl(rk, key, k, lsig) for k in _LAYER_KINDS}},
-            "seams": None if raw is None else [s for s in json.loads(raw)["segments"] if s["crop_id"] == crop["id"]],
+            "seams": None if seams is None else [s for s in seams["segments"] if s["crop_id"] == crop["id"]],
             "z": z, "warnings": warns}
 
 
@@ -2043,7 +2091,7 @@ def mask_alts(root: str, key) -> dict | None:
     alts = [(n, c, (cid, tid, c["key"])) for n, c in enumerate(_target_members(m, cid, tid), 1)
             if c["key"] != key and c["key"] not in rejects]
     jobs = [(None, _composite_sig(root, m, pref))] + [(swap, _composite_sig(root, m, pref, swap)) for _n, _c, swap in alts]
-    cached = all(os.path.isfile(_thumb_path(root, f"composite_{s}.jpg")) and os.path.isfile(_thumb_path(root, f"seams_{s}.json"))
+    cached = all(os.path.isfile(_thumb_path(root, f"composite_{s}.jpg")) and _read_seams(root, s, current=True) is not None
                  for _swap, s in jobs)
     if not cached and not _ALTS_LOCK.acquire(blocking=False):
         return None
@@ -2059,7 +2107,7 @@ def mask_alts(root: str, key) -> dict | None:
         out: dict[str, list] = {}
         for s in ss:
             if s["crop_id"] != cid:
-                out.setdefault(s["crop_id"], []).append(json.dumps(s, sort_keys=True))
+                out.setdefault(s["crop_id"], []).append(json.dumps({k: v for k, v in s.items() if k != "beside"}, sort_keys=True))
         return {k: sorted(v) for k, v in out.items()}
 
     now, now_rest = [s for s in segs[0] if s["crop_id"] == cid], rest(segs[0])

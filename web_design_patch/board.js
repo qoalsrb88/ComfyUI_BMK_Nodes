@@ -62,7 +62,7 @@
   let viewer = null;
   let slider = false;
   let raw = false;
-  let seamsByCrop = new Map(); // crop_id → {n, bad}
+  let seamsByCrop = new Map(); // crop_id → {n, bad, growSides?}(beside 없는 옛 캐시는 후보 없음)
   let editor = null; // DPLayoutEdit — 옛 서버(ComfyUI 재시작 전)는 layout_*.js 를 주지 않아 null
   let editing = false;
   let refEd = null; // DPRefEdit — 옛 서버는 ref_edit.js 를 주지 않아 null
@@ -777,6 +777,23 @@
     b.title = maskReady() ? "마스크 (K) — ★ 후보의 최종 마스크(Export 그룹 마스크) 손질·이음매 페이드·다른 후보 비교(무료)" : maskWhy();
   }
 
+  async function goGrow(cropId, sides) {
+    if (busy || (pipe && pipe.paidLock())) {
+      toast("앞 요청을 처리하는 중입니다 — 끝난 뒤 다시 하세요", "warn");
+      return;
+    }
+    if (maskEd && maskEd.pending()) {
+      toast("적용 안 한 마스크 획이 있습니다 — 적용하거나 버린 뒤 크롭을 넓히세요", "warn");
+      return;
+    }
+    if (!layoutReady() || !editor.proposeGrow) {
+      toast(notReady("크롭 편집", "layout_rev", editor), "warn");
+      return;
+    }
+    goMode("edit");
+    if (editing) await editor.proposeGrow(cropId, sides);
+  }
+
   function goTarget(key) {
     // 진행 패널 ★ 점검의 줄 → 그 타깃을 검토 모드에서
     if (!S || !S.targets.some((t) => t.key === key)) return;
@@ -1289,6 +1306,10 @@
       const v = seamsByCrop.get(s.crop_id) || { n: 0, bad: 0 };
       v.n += 1;
       v.bad += s.severity === "bad" ? 1 : 0;
+      if (s.beside === null) {
+        if (!v.growSides) v.growSides = [];
+        if (!v.growSides.includes(s.side)) v.growSides.push(s.side);
+      }
       seamsByCrop.set(s.crop_id, v);
     }
     renderTargets();
@@ -1646,7 +1667,7 @@
         pipe.tabChanged();
       });
       pipe = window.DPPipeline.create({ list: $("pipe-list"), panel: $("pipe-panel"), head: $("pipe-head") }, {
-        apiUrl, comfyUrl, root: ROOT, toast, drain, goTarget, goMask, link: tabLink,
+        apiUrl, comfyUrl, root: ROOT, toast, drain, goTarget, goMask, goGrow, link: tabLink,
         goMode: (mode, cropId) => {
           const t = S && cropId ? S.targets.find((x) => x.crop_id === cropId) : null;
           if (t) selectTarget(t.key);
@@ -1665,7 +1686,7 @@
     }
     if (window.DPMaskEdit) {
       maskEd = window.DPMaskEdit.create({ list: $("mask-list"), panel: $("mask-panel") }, {
-        apiUrl, root: ROOT, viewer, toast, ranText,
+        apiUrl, root: ROOT, viewer, toast, ranText, goGrow,
         exit: () => setMask(false),
         refresh: () => refresh(true),
         seams: () => viewer.seams(),

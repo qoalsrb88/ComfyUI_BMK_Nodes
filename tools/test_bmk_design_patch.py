@@ -40252,8 +40252,10 @@ def mask_unit():
               f"예시 URL 의 v = 보드 /mask/img 형식(서명 16자 — edit 도 _edit_sig)·save 쿼리에 rect(세션 창, 필수) {sorted(set(map(len, vs)))}")
         img0 = np.zeros((40, 40, 3), np.uint8)
         seg = board._seam_segment(img0, img0, "c", [0, 0, 20, 40], "A", "k", "right", 0, 40)
-        check(list(g["ok"]["seams"][0]) == list(seg) and list(al["ok"]["rows"][0]["this_crop"][0]) == list(seg)
-              and _pl_shape(g["ok"]["seams"][0], seg, {}) == [], "seams·this_crop 원소 = board._seam_segment 출력 그대로(키·타입)")
+        seg["beside"] = ""  # _compose_full 이 끝에 덧붙이는 크롭 id(str) 또는 null
+        examples = [*g["ok"]["seams"], *(s for row in al["ok"]["rows"] for s in row["this_crop"])]
+        check(all(list(s) == list(seg) and _pl_shape(seg, s, {"nullable": ["beside"]}) == [] for s in examples),
+              "seams·this_crop 원소 = board._seam_segment 출력 + beside(str|null), 키 순서·타입")
         root = project("api", ["r_aaaaaaaaaaaa_0_0", "r_bbbbbbbbbbbb_0_0"])
         store.update_manifest(root, lambda mm: mm["candidates"][1].update(picked=False))
         rec, _ = save(root, "r_aaaaaaaaaaaa_0_0", raster(1), "")
@@ -44592,7 +44594,7 @@ await scenario("panelR3b", async () => {
         st = p2["starStroke"]
         check(st["pick"] == 0 and st["pending"] == 1 and (st["confirm"] or "").endswith("\n적용 안 한 획 1 은 버립니다.\n계속할까요?"),
               f"2차 리뷰 tests-r2-03: 획이 있을 때 [이 후보를 ★] 확인 = 그 획을 버린다고 알림(아니오 = 그대로) {st}")
-        check(p2["seamClick"] == {"look": [[956, 2560, 2]], "sel": ["top 575–1337 · 762px · p90 43.3 bad"], "fade": [False, "top 575–1337 ± 64px 테이퍼"]},
+        check(p2["seamClick"] == {"look": [[956, 2560, 2]], "sel": ["top 575–1337 · 762px · p90 43.3 bad · 옆 크롭 014_치마원단_문양 ★ 와 맞닿음"], "fade": [False, "top 575–1337 ± 64px 테이퍼"]},
               f"2차 리뷰 tests-r2-05: 패널 6 이음매 줄 누르기 = 그 구간으로 2:1·선택 구간(줄 강조·[이음매 구간 페이드] 켬) {p2['seamClick']}")
         check(p2["layerFail"] == {"before": None, "enter": None, "after": None, "row": True},
               f"2차 리뷰 session-r2-03: 대상을 바꾼 뒤 3층을 받지 못함 → 다시 들어와도 앞 대상 3층을 붙이지 않음 {p2['layerFail']}")
@@ -44649,13 +44651,14 @@ await scenario("panelR3b", async () => {
               f"거절(버리기로 한 옛 ★ 저장·새 대상 세션에 남는 획 없음), 끝나면 새 ★ 를 엶 {p3['pickHold']}")
     p3b = res.get("panelR3b") or {}
     if "reenterSeam" in p3b:
-        check(p3b["reenterSeam"] == {"looks": [[956, 2560, 2]], "sel": ["top 575–1337 · 762px · p90 43.3 bad"], "fade": "top 575–1337 ± 64px 테이퍼",
+        check(p3b["reenterSeam"] == {"looks": [[956, 2560, 2]], "sel": ["top 575–1337 · 762px · p90 43.3 bad · 옆 크롭 014_치마원단_문양 ★ 와 맞닿음"], "fade": "top 575–1337 ± 64px 테이퍼",
                                      "select": [K15, False]},
               f"3차 tests-r3-03: 나갔던 같은 ★ 의 다른 구간으로 다시 들어오기(진행 ★ 점검 이음매 줄) = 그 구간 선택·2:1(앞서 고른 구간에 페이드가 들어가지 않게) "
               f"{p3b['reenterSeam']}")
         js = lambda v: str(int(v)) if float(v).is_integer() else str(v)
         along = lambda x: (x["x0"], x["x1"]) if x["side"] in ("top", "bottom") else (x["y0"], x["y1"])
         k15seams = [f"{x['side']} {js(along(x)[0])}–{js(along(x)[1])} · {js(x['length'])}px · p90 {js(x['diff_p90'])} {x['severity']}"
+                    + (" · 옆 크롭 014_치마원단_문양 ★ 와 맞닿음" if x.get("beside") else "")  # 배치 5-4: beside = 픽스처의 014 크롭
                     for x in doc["routes"]["GET /mask"]["ok"]["seams"]]
         check(p3b["seamsErr"] == {"k14": ["계산 중…"], "oldSig": ["계산 중…"], "k15": k15seams},
               f"3차 tests-r3-06: 뷰어 이음매가 실패(서명 없는 빈 목록)·옛 서명이면 패널 6 은 쓰지 않음 — GET /mask 의 이음매(같은 서명)나 '계산 중…'"
@@ -45503,6 +45506,590 @@ console.log(JSON.stringify(out));
 def polish5_grow_unit():
     """다듬기 배치 5-4(10/27 — _proto/STUDIO_POLISH5_SPEC.md §5·§8): 크롭 넓히기 제안(이음매 신호 → 크롭 편집 제안)."""
     section("다듬기 배치 5-4 — 크롭 넓히기 제안")
+    import ast
+    import copy
+    import inspect
+    import tempfile
+    from unittest.mock import patch
+
+    dp = _dp_package()
+    st, bd = dp.store, dp.board
+    out = (OUT_ROOT / "polish5_grow").resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    run = Path(tempfile.mkdtemp(prefix="run_", dir=out))
+    _h, root = _fx_project(dp, run, "grow", [("001_문양", [8, 8, 40, 40]), ("002_옆", [40, 8, 56, 40])],
+                           np.zeros((64, 64, 3), np.uint8))
+    m = st.load_manifest(root)
+    cs = dict(dp._COMPOSE_DEFAULTS, mask_source="hand", use_registration=False, use_tone=False)
+    entries = {}
+    for i, c in enumerate(m["crops"]):
+        x0, y0, x1, y1 = c["rect"]
+        key = f"h_{i + 1:012x}"
+        m["candidates"].append({"key": key, "crop_id": c["id"], "tid": "A", "picked": True, "origin": "psd_harvest",
+                                "file": st.save_png_ca(root, "candidates", np.full((y1 - y0, x1 - x0, 3), 200 - i * 100, np.uint8)),
+                                "src_size": [x1 - x0, y1 - y0], "quad": [x0, y0, x1, y0, x1, y1, x0, y1], "hand_mask": None})
+        entries[key] = {"params_hash": f"grow{i}", "params": {}, "rect": c["rect"], "reg": {"applied": False}, "tone": {}}
+    m["analysis"], m["exports"] = entries, [{"compose": cs}]
+    st.save_manifest(root, m)
+    cid, neighbor = [c["id"] for c in m["crops"]]
+    sig = bd._composite_sig(root, m, None)
+    export_sig = dp._export_hash(m, entries, cs, {})
+    state_sig = st.export_state_sig(m)
+    pixels, info = bd._compose_full(root, m, None)
+    mine = [s for s in info["segments"] if s["crop_id"] == cid]
+    check(next(s for s in mine if s["side"] == "right")["beside"] == neighbor, "D25 맞닿은 다른 크롭 ★ id")
+    check(all(s["beside"] is None for s in mine if s["side"] != "right"), "D25 바깥이 베이스뿐이면 null")
+    check(np.array_equal(pixels, bd._compose_full(root, m, None, box=[0, 0, 64, 64])[0]), "beside 측정 전후 합성 픽셀 동일")
+    base = dp._load_rgb(root, m["base"])
+    for s in info["segments"]:
+        rect = next(c["rect"] for c in m["crops"] if c["id"] == s["crop_id"])
+        vertical = s["side"] in ("left", "right")
+        a, b = (s["y0"] - rect[1], s["y1"] - rect[1]) if vertical else (s["x0"] - rect[0], s["x1"] - rect[0])
+        expected = bd._seam_segment(pixels, base, s["crop_id"], rect, s["tid"], s["key"], s["side"], a, b)
+        check(expected == {k: v for k, v in s.items() if k != "beside"}, "기존 이음매 수치·bad/weak 보존")
+    parts = [[c["key"], c["crop_id"], c["tid"], c["file"], c["quad"], c.get("hand_mask"), c.get("z"),
+              m["crops"][i]["rect"], entries[c["key"]]["params_hash"]] for i, c in enumerate(m["candidates"])]
+    check(sig == bd._sig("composite", bd.CANVAS_PREVIEW, m["base"], m["canvas"], cs, parts), "형식 표시는 기존 합성 서명 재료에 들어가지 않음")
+
+    # _render 의 실제 출력 계약(eff·left·top)으로 임계값·여러 ★ 합집합·캔버스 자르기를 독립 검사.
+    def coverage_case(others, rect=(8, 8, 40, 40), side="right"):
+        x0, y0, x1, y1 = rect
+        masks = [("self", np.ones((y1 - y0, x1 - x0), np.float32), x0, y0), *others]
+        slices, renders = [], []
+        for i, (crop_id, eff, left, top) in enumerate(masks):
+            h, w = eff.shape
+            q = [left, top, left + w, top, left + w, top + h, left, top + h]
+            slices.append(({"crop": {"id": crop_id, "rect": list(rect) if i == 0 else [left, top, left + w, top + h]}},
+                           {"tid": "A"}, {"quad": q, "mask": None, "cand": {"key": str(i)}}))
+            renders.append((np.full((h, w, 3), 200 if i == 0 else 80, np.float32), eff, eff, left, top))
+        with patch.object(bd, "_star_plan", return_value=([], [], {}, cs, [])), \
+                patch.object(dp, "_slices_in_order", return_value=iter(slices)), \
+                patch.object(dp, "_cand_pixels", return_value=(None, False)), patch.object(dp, "_render", side_effect=renders):
+            ss = bd._compose_full(root, m, None)[1]["segments"]
+        return next(s["beside"] for s in ss if s["key"] == "0" and s["side"] == side)
+
+    half = np.zeros((32, 4), np.float32)
+    half[:16] = 0.5
+    under = half.copy()
+    under[15, 3] = 0.499
+    check(coverage_case([("other", half, 40, 8)]) == "other", "덮임 50%·실효 알파 0.5 경계 포함")
+    check(coverage_case([("other", under, 40, 8)]) is None, "덮임 50% 미만은 null")
+    check(coverage_case([("self", np.ones((32, 4)), 40, 8)]) is None, "같은 크롭의 다른 ★ 는 제외")
+    check(coverage_case([("half", half, 40, 8), ("full", np.ones((32, 4)), 40, 8)]) == "full", "가장 많이 덮은 크롭 선택")
+    quarter = half.copy()
+    quarter[8:] = 0
+    check(coverage_case([("other", quarter, 40, 8), ("other", quarter, 40, 16)]) == "other", "옆 크롭의 여러 ★ 합집합")
+    check(coverage_case([("other", quarter, 40, 8), ("other", quarter, 40, 8)]) is None, "같은 픽셀 중복 집계 없음")
+    split_a, split_b = np.zeros((32, 4), np.float32), np.zeros((32, 4), np.float32)
+    split_a.flat[:60] = 1
+    split_b.flat[60:121] = 1
+    check(coverage_case([("a", split_a, 40, 8), ("b", split_b, 40, 8)]) == "b",
+          "H3 두 크롭이 각각 약 47% 덮으면 합집합으로 beside 판정, 더 많이 덮은 id")
+    check(coverage_case([("b", split_b, 40, 8), ("a", split_a, 40, 8)]) == "b", "H3 다른 크롭 합집합은 합성 순서 무관")
+    check(coverage_case([("a", quarter, 40, 8), ("b", quarter, 40, 8)]) is None,
+          "H3 다른 크롭도 겹친 픽셀 중복 없이 합집합이 절반 미만이면 null")
+    short = quarter.copy()
+    short[7, 3] = 0
+    check(coverage_case([("a", quarter, 40, 8), ("b", short, 40, 16)]) is None,
+          "H3 나눠 덮어도 합집합 63/128 이면 null")
+    check(coverage_case([("other", np.ones((32, 1)), 1, 8)], rect=(2, 8, 34, 40), side="left") == "other",
+          "캔버스 밖 띠는 분모에서도 제외(남은 2px 중 1px)")
+    for side, left, top in (("top", 8, 4), ("bottom", 8, 40)):
+        check(coverage_case([("other", np.ones((4, 32)), left, top)], side=side) == "other", f"{side} 바깥 띠 좌표")
+
+    legacy = copy.deepcopy(info)
+    legacy.pop("seam_format")
+    for s in legacy["segments"]:
+        s.pop("beside")
+    js = Path(bd._thumb_path(root, f"seams_{sig}.json"))
+    jpg = Path(bd._thumb_path(root, f"composite_{sig}.jpg"))
+    st._atomic_write_bytes(str(js), json.dumps(legacy).encode())
+    original_jpg = bd._jpeg(Image.fromarray(bd._preview(pixels)))
+    st._atomic_write_bytes(str(jpg), original_jpg)
+    os.utime(jpg, ns=(1000000000000000000, 1000000000000000000))
+    jpg_mtime = jpg.stat().st_mtime_ns
+    legacy_view = bd.mask_view(root, m["candidates"][0]["key"])
+    check(legacy_view["seams"] == [s for s in legacy["segments"] if s["crop_id"] == cid],
+          "GET /mask 는 옛 캐시에서 beside 를 null 로 발명하지 않음")
+    routes = json.loads(_MASK_API.read_text(encoding="utf-8"))["routes"]
+    g, al = routes["GET /mask"], routes["GET /mask/alts"]
+    check("seams[].beside" in g["optional"] and "seams[].beside" in g["nullable"]
+          and _pl_shape(g["ok"]["seams"], legacy_view["seams"], g, "seams") == [],
+          "H2 GET /mask 옛 캐시의 beside 키 없음도 픽스처 계약에 맞음(nullable 유지)")
+    old_al = copy.deepcopy(al["ok"])
+    for row in old_al["rows"]:
+        for s in row["this_crop"]:
+            s.pop("beside")
+    check("rows[].this_crop[].beside" in al["optional"] and "rows[].this_crop[].beside" in al["nullable"]
+          and _pl_shape(al["ok"], old_al, al) == [], "H2 GET /mask/alts 옛 형식도 픽스처 계약에 맞음(nullable 유지)")
+    for route, sample, path in ((g, g["ok"]["seams"], "seams"), (al, al["ok"]["rows"][0]["this_crop"], "rows[].this_crop")):
+        for value in (None, "neighbor", 1):
+            actual = copy.deepcopy(sample)
+            actual[0]["beside"] = value
+            check(bool(_pl_shape(sample, actual, route, path)) == (value == 1),
+                  f"H2 {path} beside 는 누락·null·문자열만 허용({value!r})")
+    bd._ALTS_LOCK.acquire()
+    try:
+        check(bd.mask_alts(root, m["candidates"][0]["key"]) is None, "대안 표 옛 캐시는 재계산 잠금 필요(202)")
+    finally:
+        bd._ALTS_LOCK.release()
+    with patch.object(bd, "_compose_full", wraps=bd._compose_full) as compose, \
+            patch.object(st, "_atomic_write_bytes", wraps=st._atomic_write_bytes) as write, \
+            patch.object(bd, "_jpeg", side_effect=AssertionError("기존 JPG 재인코딩 금지")):
+        data, fresh = bd._composite(root, m, None, sig)
+        check(compose.call_count == 1 and fresh["seam_format"] == 3 and json.loads(js.read_bytes()) == fresh
+              and [Path(call.args[0]) for call in write.call_args_list] == [js], "H5 옛 캐시는 JSON 만 새 형식으로 갱신")
+        check(data == original_jpg == jpg.read_bytes() and jpg.stat().st_mtime_ns == jpg_mtime,
+              "H5 옛 캐시 갱신 때 JPG 바이트·mtime 보존")
+        check(bd._composite(root, m, None, sig) == (data, fresh) and compose.call_count == 1, "형식 표시 있는 캐시는 다시 계산 안 함")
+    previous = copy.deepcopy(fresh)
+    previous["seam_format"] = 2  # 이전 크롭별 최대 덮임 방식 캐시도 합집합 판정으로 다시 잰다.
+    for s in previous["segments"]:
+        s["beside"] = None
+    st._atomic_write_bytes(str(js), json.dumps(previous).encode())
+    check(bd._read_seams(root, sig) == previous and bd._read_seams(root, sig, current=True) is None,
+          "H3 예전 beside 2판 캐시는 읽되 현재 판정 캐시로 재사용하지 않음")
+    for cached_format in (None, 2, 3):
+        cached = copy.deepcopy(info)  # 문자열 beside 와 null 을 모두 가진 이음매.
+        if cached_format is None:
+            cached.pop("seam_format")
+        else:
+            cached["seam_format"] = cached_format
+        raw_cache = json.dumps(cached).encode()
+        st._atomic_write_bytes(str(js), raw_cache)
+        view = bd.mask_view(root, m["candidates"][0]["key"])
+        expected = [dict(s) for s in cached["segments"] if s["crop_id"] == cid]
+        if cached_format != 3:
+            for segment in expected:
+                segment.pop("beside")
+        check(view["seams"] == expected and _pl_shape(g["ok"]["seams"], view["seams"], g, "seams") == []
+              and js.read_bytes() == raw_cache,
+              f"K4 GET /mask 형식 {cached_format}: 3판만 beside 유지, 나머지 수치·캐시 파일 보존")
+    st._atomic_write_bytes(str(js), json.dumps(previous).encode())
+    with patch.object(bd, "_compose_full", wraps=bd._compose_full) as compose:
+        data, fresh = bd._composite(root, m, None, sig)
+        check(compose.call_count == 1 and fresh["seam_format"] == 3
+              and next(s for s in fresh["segments"] if s["crop_id"] == cid and s["side"] == "right")["beside"] == neighbor
+              and data == original_jpg == jpg.read_bytes() and jpg.stat().st_mtime_ns == jpg_mtime,
+              "H3/H5 예전 beside 판정도 JSON 만 재계산, JPG 보존")
+    with patch.object(bd, "_read_bytes", side_effect=PermissionError("시험: 교체 중")):
+        check(bd._read_seams(root, sig) is None and bd._read_seams(root, sig, current=True) is None,
+              "H5 _read_seams PermissionError 는 읽을 수 없음(None)")
+    read_bytes = bd._read_bytes
+    for failures in (1, 2):
+        reads = []
+
+        def contested_read(path):
+            if Path(path) == js:
+                reads.append(path)
+                if len(reads) <= failures:
+                    raise PermissionError("시험: JSON 교체 중")
+            return read_bytes(path)
+
+        with patch.object(bd, "_read_bytes", side_effect=contested_read), \
+                patch.object(bd, "_compose_full", wraps=bd._compose_full) as compose:
+            data, fresh = bd._composite(root, m, None, sig)
+            check(len(reads) == 2 and compose.call_count == failures - 1 and fresh["seam_format"] == 3
+                  and data == original_jpg and jpg.stat().st_mtime_ns == jpg_mtime,
+                  f"H5 JSON 읽기 경합 {failures}회: 잠금 안 재독 후 필요할 때만 재계산, JPG 보존")
+    bd._ALTS_LOCK.acquire()
+    try:
+        check(bd.mask_alts(root, m["candidates"][0]["key"]) is not None, "새 캐시 대안 표는 잠금 없이 읽음")
+    finally:
+        bd._ALTS_LOCK.release()
+    check(bd._composite_sig(root, m, None) == sig and dp._export_hash(m, entries, cs, {}) == export_sig
+          and st.export_state_sig(m) == state_sig, "이음매 형식 갱신은 합성·Export·상태 해시 불변")
+
+    node = shutil.which("node")
+    if not node:
+        skip("node 없음: 크롭 넓히기 JS 하네스 미실행")
+        return
+    web = PKG / "web_design_patch"
+    board_src = (web / "board.js").read_text(encoding="utf-8")
+    board_functions = {}
+    for name in ("goGrow", "goMode", "leaveMask", "onSeams"):
+        start = board_src.index(f"  {'async ' if name == 'goGrow' else ''}function {name}(")
+        board_functions[name] = board_src[start:board_src.index("\n  }\n", start) + 4]
+    layout_js = _LAYOUT_EDIT_HARNESS[:_LAYOUT_EDIT_HARNESS.index('await scenario("draftEdit",')]
+    layout_js += r'''
+await scenario("grow", async () => {
+  const r = {}, eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  const cases = [
+    [[256,256,512,512], ["left"], [1024,1024], true, [128,256,512,512]],
+    [[256,256,512,512], ["left","right","top","bottom","left"], [1024,1024], true, [128,128,640,640]],
+    [[0,0,256,256], ["left","top"], [1024,1024], true, null],
+    [[256,256,640,384], ["right"], [1024,1024], true, null],
+    [[256,256,512,512], ["right"], [600,1024], true, [256,256,600,512]],
+    [[17,19,317,319], ["left"], [1024,1024], true, [0,19,317,319]],
+    [[256,256,556,556], ["right"], [1024,1024], true, [256,256,640,556]],
+    [[256,256,556,556], ["right"], [1024,1024], false, [256,256,684,556]],
+    [[256,256,512,512], [], [1024,1024], true, null],
+    [[256,256,956,496], ["right"], [2048,2048], true, null], // G1 700×240: 640 으로 줄이는 resize 결과는 버림
+    [[256,256,956,496], ["right","bottom"], [2048,2048], true, [256,256,1024,640]],
+    [[256,256,956,496], ["bottom","right","bottom"], [2048,2048], true, [256,256,1024,640]],
+    [[256,256,1024,456], ["right"], [2048,2048], true, null], // 이미 3:1 초과
+    [[256,256,1024,456], ["right","bottom"], [2048,2048], true, [256,256,1152,640]],
+    [[256,256,1024,456], ["bottom","right"], [2048,2048], true, [256,256,1152,640]],
+  ];
+  cases.forEach(([rect,sides,canvas,snap,want], i) => { const before = [...rect]; r[`geometry${i}`] = eq(G.grow(rect,sides,canvas,snap),want) && eq(rect,before); });
+  const permutations = (xs) => xs.length ? xs.flatMap((x,i) => permutations(xs.filter((_,j) => j !== i)).map((rest) => [x,...rest])) : [[]];
+  const original = [256,256,956,496], allSides = ["left","right","top","bottom"];
+  const expanded = G.grow(original,allSides,[2048,2048],true);
+  r.G1_orderIndependent = permutations(allSides).every((sides) => eq(G.grow(original,sides,[2048,2048],true),expanded));
+  r.G1_containsOriginal = expanded[0] <= original[0] && expanded[1] <= original[1] && expanded[2] >= original[2] && expanded[3] >= original[3];
+  const open = (crops,L={},st={}) => editor(crops,L,Object.assign({crops:JSON.parse(JSON.stringify(crops))},st));
+  const c = crop("001_aaaaaa", "001_문양", [256,256,512,512]);
+  const measured = JSON.parse(JSON.stringify([c]));
+  const env = await open([c]);
+  const bc = vm.createContext({ busy: false, pipe: { paidLock: () => "" }, maskEd: { pending: () => null }, editor: env.ed,
+    editing: false, refsOn: false, pipeOn: true, maskOn: false, layoutReady: () => true, notReady: () => "not ready",
+    toast: (s) => env.toasts.push(s), curMode() { return bc.editing ? "edit" : "pipe"; },
+    setEditing: (on) => { bc.editing = on; if (on) env.ed.enter({ rev: 1, layout_rev: 0, canvas: [3072,4096], crops: measured }); },
+    setMask: () => false });
+  for (const n of ["goGrow","goMode","leaveMask"]) vm.runInContext(`${n} = ${IN.boardFunctions[n]}`, bc);
+  await bc.goGrow(c.id, ["left"]);
+  const label = () => env.panel.textContent;
+  const draw = () => { const g = new El(env.doc,"g"); env.viewer.h.draw(g,1); return g.all(); };
+  r.modePreview = bc.editing && env.srv.log.length === 0 && label().includes("넓히기 제안 왼 +128px")
+    && draw().some((e) => e.textContent.includes("넓히기 제안 왼 +128px — Enter 적용 · Esc 취소"));
+  ctx.window.confirm = (s) => { env.confirms.push(s); return false; };
+  env.key("Enter"); await sleep(10);
+  r.cancelKeeps = env.srv.log.length === 0 && !!env.button(env.panel,"제안 적용") && label().includes("넓히기 제안 왼 +128px");
+  const ask = env.confirms[0];
+  r.H4_confirmText = ask === "크롭 넓히기 제안을 적용할까요?\n적용은 레이아웃만 바꿉니다(무료).\n"
+    + "[반영 (무료)] 뒤 이 크롭은 새 생성 조건이 되어, 실행(G)에서 생성을 승인할 때만 유료(평균 ≈ 169 크레딧/호출, 초안 갱신 ≈ 21 — 10/23 원장 평균).\n"
+    + "지금 ★ 는 옛 크롭 기준으로 남습니다(옛 크롭 ★).";
+  ctx.window.confirm = () => true;
+  env.button(env.panel,"제안 적용").fire("click"); await sleep(30);
+  const req = env.srv.log[0];
+  r.applies = env.srv.log.length === 1 && req.path === "layout/crop" && req.op === "update" && req.id === c.id
+    && eq(req.rect,[128,256,512,512]) && req.rev === 0 && req.root === "abcdef012345" && env.queued.length === 0;
+  await bc.goGrow(c.id,["right"]);
+  r.G2_repeatBeforeApply = !env.button(env.panel,"제안 적용") && env.srv.log.length === 1
+    && env.toasts.at(-1).includes("레이아웃이 반영 전입니다 — 반영 뒤 이음매를 다시 재서 제안");
+  env.ed.stateChanged({rev:2,layout_rev:1,canvas:[3072,4096],crops:JSON.parse(JSON.stringify(env.srv.lay.crops))}); await sleep(30);
+  r.G2_afterApply = await env.ed.proposeGrow(c.id,["right"]);
+  env.key("Escape");
+  r.escape = !env.button(env.panel,"제안 적용") && env.srv.log.length === 1;
+  bc.busy = true; await bc.goGrow(c.id,["right"]); bc.busy = false;
+  r.busy = env.toasts.at(-1).includes("앞 요청") && !env.button(env.panel,"제안 적용");
+  bc.pipe.paidLock = () => "running"; await bc.goGrow(c.id,["right"]); bc.pipe.paidLock = () => "";
+  r.paidBusy = env.toasts.at(-1).includes("앞 요청") && !env.button(env.panel,"제안 적용");
+  bc.maskEd.pending = () => ({n:1}); await bc.goGrow(c.id,["right"]); bc.maskEd.pending = () => null;
+  r.maskPending = env.toasts.at(-1).includes("적용 안 한 마스크 획") && !env.button(env.panel,"제안 적용");
+  bc.editing = false; bc.maskOn = true; await bc.goGrow(c.id,["right"]);
+  r.modeRefused = !bc.editing && !env.button(env.panel,"제안 적용");
+  env.ed.leave();
+  const locked = await open([Object.assign(C1(),{locked:true})]);
+  r.locked = !await locked.ed.proposeGrow("001_aaaaaa",["right"]) && locked.toasts.at(-1).includes("잠긴")
+    && locked.srv.log.length === 0 && !locked.button(locked.panel,"제안 적용");
+  locked.ed.leave();
+  const edge = await open([C1()]);
+  r.noRoom = !await edge.ed.proposeGrow("001_aaaaaa",["left"]) && edge.toasts.at(-1).includes("캔버스 끝·비율 한도");
+  edge.ed.leave();
+  const fit = await editor([C2()]); await fit.pick("002_눈");
+  fit.button(fit.panel,"상자에 크롭 맞추기").fire("click");
+  r.fitLabel = !fit.panel.textContent.includes("넓히기 제안") && !!fit.button(fit.panel,"제안 적용");
+  fit.key("Enter"); await sleep(30);
+  r.fitNoConfirm = fit.confirms.length === 0 && fit.srv.log.length === 1;
+  fit.ed.leave();
+  // G2 이동만 했고 state 폴링에는 아직 미반영 표시가 없어도 마지막 반영 rect 와 비교한다.
+  const moved = await open([crop(c.id,c.name,[272,256,528,512])],{}, {crops:measured});
+  r.G2_moved = !await moved.ed.proposeGrow(c.id,["right"]) && moved.toasts.at(-1).includes("레이아웃이 반영 전입니다")
+    && !moved.button(moved.panel,"제안 적용") && moved.srv.log.length === 0 && moved.confirms.length === 0;
+  moved.ed.leave();
+  for (const status of ["changed","removed"]) {
+    const pending = await open(JSON.parse(JSON.stringify(measured)),{}, {crops:measured.map((x) => Object.assign({},x,{layout_status:status}))});
+    r[`G2_pending_${status}`] = !await pending.ed.proposeGrow(c.id,["right"]) && pending.toasts.at(-1).includes("레이아웃이 반영 전입니다")
+      && !pending.button(pending.panel,"제안 적용") && pending.confirms.length === 0;
+    pending.ed.leave();
+  }
+  const outside = await open([crop(c.id,c.name,[-64,256,256,512])]);
+  r.G3_outside = !await outside.ed.proposeGrow(c.id,["right"]) && outside.toasts.at(-1).includes("사각형이 캔버스 밖으로 나갑니다")
+    && !outside.button(outside.panel,"제안 적용") && outside.confirms.length === 0 && outside.srv.log.length === 0;
+  outside.ed.leave();
+  // G4 상자 맞춤은 다른 저장 뒤 큐에 들어가야 한다(Enter 와 단추 모두). 넓히기만 저장 중 토스트로 거절.
+  for (const via of ["Enter","button"]) {
+    const queued = await editor([C2()]); await queued.pick("002_눈");
+    queued.button(queued.panel,"상자에 크롭 맞추기").fire("click");
+    const expected = G.suggest([queued.srv.lay.crops[0].targets[0].box],[3072,4096],true);
+    queued.srv.delay = 60;
+    queued.type("note","먼저 저장").fire("change"); queued.doc.activeElement.blur(); await sleep(5);
+    r[`G4_busy_${via}`] = queued.srv.log.length === 1 && queued.srv.lay.rev === 0;
+    if (via === "Enter") queued.key("Enter"); else queued.button(queued.panel,"제안 적용").fire("click");
+    await sleep(160);
+    r[`G4_queued_${via}`] = queued.srv.log.length === 2 && queued.srv.log[0].note === "먼저 저장"
+      && queued.srv.log[1].rev === 1 && eq(queued.srv.log[1].rect,expected) && eq(queued.srv.lay.crops[0].rect,expected)
+      && queued.srv.lay.crops[0].note === "먼저 저장" && queued.confirms.length === 0;
+    queued.ed.leave();
+  }
+  const growBusy = await open(JSON.parse(JSON.stringify(measured)));
+  await growBusy.ed.proposeGrow(c.id,["right"]);
+  growBusy.srv.delay = 60;
+  growBusy.type("note","저장 중").fire("change"); growBusy.doc.activeElement.blur(); await sleep(5);
+  growBusy.key("Enter");
+  r.G4_growBusyToast = growBusy.toasts.at(-1).includes("저장하는 중입니다 — 끝난 뒤 제안을 적용하세요")
+    && !!growBusy.button(growBusy.panel,"제안 적용") && growBusy.confirms.length === 0;
+  await sleep(80);
+  r.G4_growNotQueued = growBusy.srv.log.length === 1 && !growBusy.srv.log[0].rect;
+  growBusy.ed.leave();
+  // H1 같은 크롭의 rect 쓰기는 두 종류 제안을 모두 버린다. 다른 크롭의 undo/redo 는 그대로 둔다.
+  const editableCrop = () => crop(c.id,c.name,[256,256,512,512],{targets:[{tid:"A",text:"",box:[300,300,420,420]}]});
+  const dragRight = (e, rect) => {
+    const ev = (x,y) => ({x,y,clientX:x,clientY:y,shiftKey:false,ctrlKey:false,metaKey:false});
+    const x = rect[2], y = (rect[1]+rect[3])/2;
+    e.viewer.h.pointerdown(ev(x,y)); e.viewer.h.pointermove(ev(x+128,y)); e.viewer.h.pointerup(ev(x+128,y));
+  };
+  const reflect = async (e) => {
+    e.ed.stateChanged({rev:10+e.srv.lay.rev,layout_rev:e.srv.lay.rev,canvas:[3072,4096],crops:JSON.parse(JSON.stringify(e.srv.lay.crops))});
+    await sleep(30);
+  };
+  const preview = async (e, kind) => {
+    if (kind === "grow") return e.ed.proposeGrow(c.id,["left"]);
+    await e.pick(c.name); e.button(e.panel,"상자에 크롭 맞추기").fire("click");
+    return !!e.button(e.panel,"제안 적용");
+  };
+  for (const kind of ["grow","fit"]) {
+    const dragged = await open([editableCrop()]);
+    r[`H1_dragPreview_${kind}`] = await preview(dragged,kind);
+    dragged.srv.delay = 40;
+    dragRight(dragged,dragged.srv.lay.crops[0].rect);
+    dragged.key("Enter"); await sleep(80); dragged.key("Enter"); await sleep(10);
+    r[`H1_dragDrops_${kind}`] = dragged.srv.log.length === 1 && eq(dragged.srv.lay.crops[0].rect,[256,256,640,512])
+      && !dragged.button(dragged.panel,"제안 적용") && dragged.confirms.length === 0;
+    dragged.ed.leave();
+    const history = await open([editableCrop()]); await history.pick(c.name);
+    dragRight(history,history.srv.lay.crops[0].rect); await sleep(30); await reflect(history);
+    r[`H1_undoPreview_${kind}`] = await preview(history,kind);
+    history.srv.delay = 40;
+    history.key("KeyZ",{ctrlKey:true}); history.key("Enter"); await sleep(80);
+    history.key("Enter"); await sleep(10);
+    r[`H1_undoDrops_${kind}`] = history.srv.log.length === 2 && eq(history.srv.lay.crops[0].rect,[256,256,512,512])
+      && !history.button(history.panel,"제안 적용") && history.confirms.length === 0;
+    await reflect(history); r[`H1_redoPreview_${kind}`] = await preview(history,kind);
+    history.key("KeyY",{ctrlKey:true}); await sleep(5); history.key("Enter"); await sleep(80);
+    history.key("Enter"); await sleep(10);
+    r[`H1_redoDrops_${kind}`] = history.srv.log.length === 3 && eq(history.srv.lay.crops[0].rect,[256,256,640,512])
+      && !history.button(history.panel,"제안 적용") && history.confirms.length === 0;
+    history.ed.leave();
+    const other = await open([editableCrop(),C2()]); await other.pick("002_눈");
+    dragRight(other,other.srv.lay.crops[1].rect); await sleep(30);
+    r[`H1_otherPreview_${kind}`] = await preview(other,kind);
+    other.key("KeyZ",{ctrlKey:true}); await sleep(30);
+    r[`H1_otherUndoKeeps_${kind}`] = !!other.button(other.panel,"제안 적용") && other.srv.log.length === 2
+      && eq(other.srv.lay.crops[0].rect,[256,256,512,512]) && eq(other.srv.lay.crops[1].rect,C2().rect);
+    other.key("KeyY",{ctrlKey:true}); await sleep(30);
+    r[`H1_otherRedoKeeps_${kind}`] = !!other.button(other.panel,"제안 적용") && other.srv.log.length === 3;
+    other.key("Enter"); await sleep(30);
+    const want = kind === "grow" ? [128,256,512,512] : G.suggest([[300,300,420,420]],[3072,4096],true);
+    r[`H1_otherStillApplies_${kind}`] = other.srv.log.length === 4 && eq(other.srv.lay.crops[0].rect,want)
+      && other.srv.log[3].id === c.id && eq(other.srv.lay.crops[1].rect,[1024,0,1664,512]);
+    other.ed.leave();
+  }
+  const changedBase = await open([editableCrop()]); await changedBase.ed.proposeGrow(c.id,["left"]);
+  changedBase.srv.lay.crops[0].rect = [256,256,640,512]; changedBase.srv.lay.rev++;
+  await reflect(changedBase);
+  r.H1_basePreview = !!changedBase.button(changedBase.panel,"제안 적용");
+  changedBase.key("Enter"); await sleep(30);
+  r.H1_baseGuard = !changedBase.button(changedBase.panel,"제안 적용") && changedBase.srv.log.length === 0
+    && changedBase.confirms.length === 0 && eq(changedBase.srv.lay.crops[0].rect,[256,256,640,512])
+    && changedBase.toasts.at(-1).includes("크롭이 바뀌어 제안을 버렸습니다 — 다시 제안");
+  changedBase.ed.leave();
+  const queuedRect = await open([editableCrop()]); await queuedRect.pick(c.name);
+  queuedRect.srv.delay = 50;
+  dragRight(queuedRect,queuedRect.srv.lay.crops[0].rect);
+  queuedRect.button(queuedRect.panel,"상자에 크롭 맞추기").fire("click");
+  queuedRect.key("Enter"); await sleep(130);
+  const fitRect = G.suggest([[300,300,420,420]],[3072,4096],true);
+  r.H1_newProposalAfterPendingRect = queuedRect.srv.log.length === 2 && eq(queuedRect.srv.log[0].rect,[256,256,640,512])
+    && eq(queuedRect.srv.lay.crops[0].rect,fitRect) && !queuedRect.button(queuedRect.panel,"제안 적용") && queuedRect.confirms.length === 0;
+  queuedRect.ed.leave();
+  const nudged = await open([editableCrop()]); await nudged.pick(c.name);
+  nudged.key("ArrowDown"); nudged.button(nudged.panel,"상자에 크롭 맞추기").fire("click");
+  nudged.key("Enter"); await sleep(30);
+  r.H1_newProposalAfterNudge = nudged.srv.log.length === 2 && eq(nudged.srv.log[0].rect,[256,272,512,528])
+    && eq(nudged.srv.lay.crops[0].rect,fitRect) && nudged.confirms.length === 0;
+  nudged.ed.leave();
+  // K1 제안을 만든 기준과 같은 미세 이동의 저장은 제안을 유지한다(타이머·다른 flush 경로).
+  for (const via of ["timer","canvas","note","psd"]) {
+    const L = via === "psd" ? {psd_diff:{token:"nudge-test",changed:[{name:c.name,fields:["targets"],
+      from:{rect:[256,256,512,512]},to:{rect:[256,256,512,512]}}],added:[],removed:[]}} : {};
+    const pending = await open([editableCrop()],L); await pending.pick(c.name);
+    pending.srv.psdResp = {taken:[{name:c.name,fields:["targets"]}],added:[],skipped:[]};
+    pending.key("ArrowDown"); pending.button(pending.panel,"상자에 크롭 맞추기").fire("click");
+    if (via === "canvas") {
+      const ev = {x:400,y:400,clientX:400,clientY:400,shiftKey:false,ctrlKey:false,metaKey:false};
+      pending.viewer.h.pointerdown(ev); pending.viewer.h.pointerup(ev);
+    } else if (via === "note") {
+      pending.type("note","미세 이동 뒤 메모").fire("change"); pending.doc.activeElement.blur();
+    } else if (via === "psd") pending.button(pending.panel,"PSD 값으로").fire("click");
+    await sleep(via === "timer" ? 450 : 30);
+    const writes = via === "note" || via === "psd" ? 2 : 1;
+    r[`K1_keeps_${via}`] = pending.srv.log.length === writes && eq(pending.srv.log[0].rect,[256,272,512,528])
+      && eq(pending.srv.lay.crops[0].rect,[256,272,512,528]) && !!pending.button(pending.panel,"제안 적용");
+    pending.key("Enter"); await sleep(30);
+    r[`K1_applies_${via}`] = pending.srv.log.length === writes + 1 && eq(pending.srv.log.at(-1).rect,fitRect)
+      && eq(pending.srv.lay.crops[0].rect,fitRect) && pending.confirms.length === (via === "psd" ? 1 : 0);
+    pending.ed.leave();
+  }
+  // K2 다른 창에서 다른 크롭만 바뀌어 base 는 같아도, since 가 낡았으면 확인 창 전에 폐기.
+  const remote = await open([editableCrop(),C2()]); await remote.ed.proposeGrow(c.id,["left"]);
+  remote.srv.lay.crops[1].note = "다른 창 메모"; remote.srv.lay.rev++;
+  await reflect(remote);
+  r.K2_sincePreview = !!remote.button(remote.panel,"제안 적용") && eq(remote.srv.lay.crops[0].rect,[256,256,512,512]);
+  remote.key("Enter"); await sleep(30);
+  r.K2_sinceBeforeConfirm = !remote.button(remote.panel,"제안 적용") && remote.srv.log.length === 0 && remote.confirms.length === 0
+    && eq(remote.srv.lay.crops[0].rect,[256,256,512,512])
+    && remote.toasts.at(-1).includes("크롭이 바뀌어 제안을 버렸습니다 — 다시 제안");
+  remote.ed.leave();
+  // K3 앞 요청 완료 뒤 큐에서 고르는 실제 undo/redo 는 메모. 누른 순간 rect 항목으로 미리 폐기하면 안 된다.
+  for (const kind of ["grow","fit"]) {
+    const busyUndo = await open([editableCrop()]); await busyUndo.pick(c.name);
+    dragRight(busyUndo,busyUndo.srv.lay.crops[0].rect); await sleep(30); await reflect(busyUndo);
+    await preview(busyUndo,kind); busyUndo.srv.delay = 60;
+    busyUndo.type("note","저장 중 메모").fire("change"); busyUndo.doc.activeElement.blur(); await sleep(5);
+    busyUndo.key("KeyZ",{ctrlKey:true}); await sleep(160);
+    r[`K3_busyUndoKeeps_${kind}`] = busyUndo.srv.log.length === 3 && busyUndo.srv.log[2].note === "" && !busyUndo.srv.log[2].rect
+      && eq(busyUndo.srv.lay.crops[0].rect,[256,256,640,512]) && !!busyUndo.button(busyUndo.panel,"제안 적용");
+    busyUndo.srv.delay = 0; busyUndo.key("Enter"); await sleep(30);
+    r[`K3_busyUndoApplies_${kind}`] = busyUndo.srv.log.length === 4
+      && eq(busyUndo.srv.lay.crops[0].rect,kind === "grow" ? [128,256,640,512] : fitRect);
+    busyUndo.ed.leave();
+    const busyRedo = await open([editableCrop()]); await busyRedo.pick(c.name);
+    busyRedo.type("note","되살릴 메모").fire("change"); busyRedo.doc.activeElement.blur(); await sleep(30);
+    dragRight(busyRedo,busyRedo.srv.lay.crops[0].rect); await sleep(30);
+    busyRedo.key("KeyZ",{ctrlKey:true}); await sleep(30); await reflect(busyRedo);
+    await preview(busyRedo,kind); busyRedo.srv.delay = 60;
+    busyRedo.key("KeyZ",{ctrlKey:true}); await sleep(5); busyRedo.key("KeyY",{ctrlKey:true}); await sleep(160);
+    r[`K3_busyRedoKeeps_${kind}`] = busyRedo.srv.log.length === 5 && busyRedo.srv.log[3].note === ""
+      && busyRedo.srv.log[4].note === "되살릴 메모" && !busyRedo.srv.log[4].rect
+      && eq(busyRedo.srv.lay.crops[0].rect,[256,256,512,512]) && !!busyRedo.button(busyRedo.panel,"제안 적용");
+    busyRedo.srv.delay = 0; busyRedo.key("Enter"); await sleep(30);
+    r[`K3_busyRedoApplies_${kind}`] = busyRedo.srv.log.length === 6
+      && eq(busyRedo.srv.lay.crops[0].rect,kind === "grow" ? [128,256,512,512] : fitRect);
+    busyRedo.ed.leave();
+    const changedUndo = await open([editableCrop()]); await changedUndo.pick(c.name);
+    dragRight(changedUndo,changedUndo.srv.lay.crops[0].rect); await sleep(30); await reflect(changedUndo);
+    await preview(changedUndo,kind); changedUndo.srv.delay = 60;
+    changedUndo.type("note","메모 뒤 rect 되돌리기").fire("change"); changedUndo.doc.activeElement.blur(); await sleep(5);
+    changedUndo.key("KeyZ",{ctrlKey:true}); changedUndo.key("KeyZ",{ctrlKey:true}); await sleep(230);
+    changedUndo.key("Enter"); await sleep(30);
+    r[`K3_busyRectDrops_${kind}`] = changedUndo.srv.log.length === 4 && eq(changedUndo.srv.lay.crops[0].rect,[256,256,512,512])
+      && !changedUndo.button(changedUndo.panel,"제안 적용") && changedUndo.confirms.length === 0;
+    changedUndo.ed.leave();
+  }
+  for (const kind of ["grow","fit"]) {
+    const psd = await open([editableCrop()],{psd_diff:{token:"rect-test",changed:[{name:c.name,fields:["rect"],
+      from:{rect:[256,256,512,512]},to:{rect:[256,256,640,512]}}],added:[],removed:[]}});
+    psd.srv.psdResp = {taken:[{name:c.name,fields:["rect"]}],added:[],skipped:[]};
+    ctx.fetch = async (u,o) => {
+      const res = await psd.srv.fetch(u,o);
+      if (u.endsWith("layout/psd") && JSON.parse(o.body).op === "take") psd.srv.lay.crops[0].rect = [256,256,640,512];
+      return res;
+    };
+    await preview(psd,kind); psd.srv.delay = 40;
+    psd.button(psd.panel,"PSD 값으로").fire("click"); await sleep(5); psd.key("Enter"); await sleep(80);
+    psd.key("Enter"); await sleep(10);
+    r[`H1_panelRectDrops_${kind}`] = psd.srv.log.length === 1 && psd.srv.log[0].path === "layout/psd"
+      && eq(psd.srv.lay.crops[0].rect,[256,256,640,512]) && !psd.button(psd.panel,"제안 적용") && psd.confirms.length === 1;
+    psd.ed.leave();
+  }
+  return r;
+});
+console.log(JSON.stringify(out));
+'''
+    (run / "layout.mjs").write_text(layout_js, encoding="utf-8", newline="\n")
+    (run / "layout.json").write_text(json.dumps({"boardFunctions": board_functions}), encoding="utf-8")
+    result = subprocess.run([node, str(run / "layout.mjs"), str(web / "layout_geom.js"), str(web / "layout_edit.js"), str(run / "layout.json")],
+                            capture_output=True, text=True, encoding="utf-8", timeout=60)
+    check(result.returncode == 0, f"넓히기 레이아웃 node 종료 {result.stderr[:500]}")
+    ui = json.loads(result.stdout).get("grow", {}) if result.returncode == 0 else {}
+    check(bool(ui) and "error" not in ui, f"넓히기 레이아웃 하네스 {ui}")
+    for name, ok in ui.items():
+        check(ok is True, f"넓히기 레이아웃 {name}: {ok}")
+
+    tree = ast.parse(inspect.getsource(mask_js_unit))
+    harness = next(n.value.value for n in ast.walk(tree) if isinstance(n, ast.Assign)
+                   and any(isinstance(t, ast.Name) and t.id == "harness" for t in n.targets) and isinstance(n.value, ast.Constant))
+    cut = [_PL_JS_HARNESS[_PL_JS_HARNESS.index(a):_PL_JS_HARNESS.index(b, _PL_JS_HARNESS.index(a))]
+           for a, b in (("import fs", "async function run("), ("class El {", "async function mouse("))]
+    cut += [harness[:harness.index('// J-K1 공용 표')], harness[harness.index('function maskState()'):harness.index('await scenario("panel",')]]
+    panel_js = "".join(cut).replace('ranText: (x) =>', 'goGrow: (...a) => { P.grow = a; }, ranText: (x) =>')
+    panel_js += _layout_js_fn(_PL_JS_HARNESS, "boardState", indent="") + "\n}\n"
+    panel_js += r'''
+await scenario("grow", async () => {
+  const r = {}, Q = maskPanel();
+  const mine = Q.seams.segments.filter((s) => s.crop_id === "015_d556f2");
+  mine[0].beside = null; mine[1].beside = "014_0f9cc5";
+  Q.ed.enter(maskState(), {key:K15,seam:null});
+  await until(() => Q.viewer.layer && Q.B("크롭 넓히기 제안"));
+  r.maskButton = Q.panel.all().filter((e) => e.tagName === "BUTTON" && e.textContent === "크롭 넓히기 제안").length === 1;
+  r.besideLabel = Q.rows().some((s) => s.includes("옆 크롭 014_치마원단_문양 ★ 와 맞닿음"));
+  Q.B("크롭 넓히기 제안").fire("click");
+  r.maskCallback = JSON.stringify(Q.grow) === JSON.stringify(["015_d556f2",[mine[0].side]]);
+  mine[0].beside = "014_0f9cc5"; Q.ed.seamsChanged();
+  r.onlyNeighbors = !Q.B("크롭 넓히기 제안") && Q.rows().includes("옆 크롭 ★ 와 맞닿은 이음매뿐 — 넓힐 곳 없음");
+  mine.forEach((s) => delete s.beside); Q.ed.seamsChanged();
+  r.legacy = !Q.B("크롭 넓히기 제안") && !Q.rows().includes("옆 크롭 ★ 와 맞닿은 이음매뿐 — 넓힐 곳 없음");
+  Q.ed.leave();
+  const S = boardState(); S.crops.forEach((c) => { c.layout_status = null; });
+  const cid = S.crops[0].id;
+  const bc = vm.createContext({ seamsByCrop:new Map(),maskOn:false,pipeOn:false,renderTargets() {} });
+  vm.runInContext(`onSeams = ${IN.boardFunctions.onSeams}`,bc);
+  bc.onSeams({segments:[{crop_id:cid,side:"left",severity:"bad",beside:null}, {crop_id:cid,side:"left",severity:"weak",beside:null},
+    {crop_id:cid,side:"right",severity:"weak",beside:"other"}, {crop_id:cid,side:"top",severity:"weak"}]});
+  const summary = bc.seamsByCrop.get(cid);
+  r.summary = summary.n === 4 && summary.bad === 1 && JSON.stringify(summary.growSides) === '["left"]';
+  const sm = bc.seamsByCrop;
+  r.checks = P.starChecks(S,sm,[]).some((x) => x.grow && x.grow.crop === cid && x.grow.sides[0] === "left"
+    && x.text === `${S.crops[0].name} — 이음매 bad 1` && !x.info);
+  r.weak = P.starChecks(S,new Map([[cid,{n:2,bad:0,growSides:["left"]}]]),[]).some((x) => x.grow && x.grow.crop === cid
+    && x.text === `${S.crops[0].name} — 이음매 weak 2` && x.info);
+  r.oldChecks = !P.starChecks(S,new Map([[cid,{n:1,bad:1}]]),[]).some((x) => !!x.grow);
+  S.targets.forEach((t) => { t.pick_keys = [t.candidates[0].key]; t.candidates[0].picked = true; t.candidates[0].analysis = "ok"; });
+  const srv = server(); srv.route.pipeline = [200,Object.assign(clone(R["GET /pipeline"].ok),{confirm:[],drift:[]})];
+  const cleanPlan = clone(R["GET /pipeline/plan"].ok);
+  cleanPlan.apply_pending = []; cleanPlan.draft.import_pending = []; cleanPlan.notes = [];
+  srv.route.plan = [200,cleanPlan]; S.plan_v = cleanPlan.sig.split("|o:")[0];
+  const doc = new Doc(); Object.assign(ctx,{document:doc,fetch:srv.fetch,navigator:{clipboard:{writeText:async()=>{}}}});
+  Object.assign(ctx.window,{confirm:()=>true,sessionStorage:mem()});
+  const hosts = {list:doc.createElement("ol"),panel:doc.createElement("section"),head:doc.createElement("div")};
+  doc.body.append(hosts.list,hosts.panel,hosts.head);
+  const calls = [], maskCalls = [];
+  const pipe = P.create(hosts,{apiUrl:A,comfyUrl:C,root:KEY,toast(){},refresh(){},select(){},goTarget(){},
+    goMask:(...a)=>maskCalls.push(a),goGrow:(...a)=>calls.push(a),seams:()=>sm,drain(){},enter(){}});
+  pipe.stateChanged(S); await sleep(30); pipe.enter(S,cid); await sleep(40);
+  const b = hosts.panel.all().find((e)=>e.tagName === "BUTTON" && e.textContent === "크롭 넓히기 제안");
+  r.pipelineButton = !!b;
+  r.G5_badWarn = !!b && b.parent.classList.contains("warn") && !hosts.panel.textContent.includes("점검 통과 — 모든 타깃에 ★, 미반영 없음");
+  let stopped = false;
+  if (b) { b.fire("click"); stopped = maskCalls.length === 0; b.parent.fire("click"); }
+  r.pipelineCallbacks = stopped && calls.length === 1 && calls[0][0] === cid && calls[0][1][0] === "left"
+    && maskCalls.length === 1 && maskCalls[0][0].crop === cid || JSON.stringify({stopped,calls,maskCalls});
+  sm.set(cid,{n:2,bad:0,growSides:["left"]}); pipe.tabChanged();
+  const weakRow = hosts.panel.all().find((e) => e.classList.contains("pp-row") && e.own === `${S.crops[0].name} — 이음매 weak 2`);
+  const weakButton = weakRow && weakRow.all().find((e) => e.tagName === "BUTTON" && e.textContent === "크롭 넓히기 제안");
+  r.weakRow = !!weakRow && !hosts.panel.textContent.includes("이음매 bad 0");
+  if (weakButton) weakButton.fire("click");
+  r.weakButton = !!weakButton && calls.length === 2 && calls[1][0] === cid && calls[1][1][0] === "left" && maskCalls.length === 1;
+  r.G5_weakPass = !!weakButton && weakRow.classList.contains("dim") && !weakRow.classList.contains("warn")
+    && hosts.panel.textContent.includes("점검 통과 — 모든 타깃에 ★, 미반영 없음");
+  pipe.leave();
+  return r;
+});
+console.log(JSON.stringify(out));
+'''
+    (run / "panels.mjs").write_text(panel_js, encoding="utf-8", newline="\n")
+    (run / "panels.json").write_text(json.dumps({"api": _pl_api(), "mask": json.loads(_MASK_API.read_text(encoding="utf-8")),
+                                               "rules": {}, "maskJs": str(web / "mask_edit.js"), "pipelineJs": str(web / "pipeline.js"),
+                                               "boardJs": str(web / "board.js"), "boardFunctions": board_functions}), encoding="utf-8")
+    result = subprocess.run([node, str(run / "panels.mjs"), str(run / "panels.json")],
+                            capture_output=True, text=True, encoding="utf-8", timeout=60)
+    check(result.returncode == 0, f"넓히기 패널 node 종료 {result.stderr[:500]}")
+    ui = json.loads(result.stdout).get("grow", {}) if result.returncode == 0 else {}
+    check(bool(ui) and "error" not in ui, f"넓히기 패널 하네스 {ui}")
+    for name, ok in ui.items():
+        check(ok is True, f"넓히기 패널 {name}: {ok}")
 
 
 def polish5_psmask_unit():
