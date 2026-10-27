@@ -44801,6 +44801,12 @@ test("C3 크롭 없는 Import: 캔버스가 있으면 가져옴, 크롭은 별�
   assert.equal(r[0].state, "done"); assert.equal(r[0].value, "가져옴");
   assert.equal(r[1].state, "todo"); assert.equal(r[1].value, "크롭 0");
 });
+test("C13 크롭 0 + 최신 초안 계획 units [] 도 초안은 할 일", () => {
+  const i = base(); i.S.crops = []; i.S.targets = [];
+  const r = D.rows(i);
+  assert.equal(r[4].state, "todo"); assert.equal(r[4].value, "초안 승인 필요 0");
+  assert.equal(r[5].state, "todo");
+});
 test("크롭만·refs 폴더 없음·부분 연결·첫 미연결 크롭", () => {
   const i = base(); i.plan = null; i.S.crops.forEach((c) => c.refs = null);
   let r = D.rows(i); assert.equal(r[0].state, "done"); assert.equal(r[1].value, "크롭 2");
@@ -44870,6 +44876,16 @@ test("C8 사전 승인한 다시 생성 대기: 기존 완료 결과가 있어�
   i.selectedCount = 1; assert.equal(D.rows(i)[5].value, "다시 생성 대기 2 (선택 1/2 크롭 기준)");
   i.selectedCount = 2; i.plan.run.pre = 0; assert.equal(D.rows(i)[5].state, "done");
 });
+test("C12 다운로드 복구 대기: 기존 완료 결과가 있어도 할 일·비용/승인 이동", () => {
+  const i = base(); i.plan.run.free = 2;
+  const r = D.rows(i), host = new E("div"), calls = [];
+  assert.equal(r[5].state, "todo"); assert.equal(r[5].value, "복구 대기 2");
+  D.render(host, r, { goSection: (title) => calls.push(title) });
+  assert.equal(host.children[0].children[0].textContent, "작업 점검표 (7/8)");
+  host.children[0].children[6].events.click(); assert.deepEqual(calls, ["비용·승인"]);
+  i.selectedCount = 1; assert.equal(D.rows(i)[5].value, "복구 대기 2 (선택 1/2 크롭 기준)");
+  i.selectedCount = 2; i.plan.run.free = 0; assert.equal(D.rows(i)[5].state, "done");
+});
 test("C9 계획 요청 실패: 첫 계획 없음·옛 완료 계획 모두 초안/생성 경고, 복구 뒤 완료", () => {
   for (const oldPlan of [false, true]) {
     const i = base(); if (!oldPlan) i.plan = null;
@@ -44914,7 +44930,7 @@ test("★ 일부·공동 B/C = starChecks 정보·다른 ★ 로 바꾸면 미�
   i.S.targets[0].pick_keys = ["other"]; r = D.rows(i);
   assert.equal(r[6].state, "todo"); assert.equal(r[6].go.target, "c1/B"); assert.equal(r[6].value, "타깃 1/3");
 });
-test("마스크 선택·미적용 경고·Export 네 상태·옛 서버", () => {
+test("마스크 선택·미적용 경고·Export 네 상태", () => {
   const i = base(); let r = D.rows(i);
   assert.equal(r[7].state, "optional"); assert.equal(r[7].value, "편집 1 · 선택");
   i.maskLeft = { key: "a", n: 3 }; r = D.rows(i);
@@ -44924,7 +44940,6 @@ test("마스크 선택·미적용 경고·Export 네 상태·옛 서버", () => 
   i.S.export_state = "unknown"; assert.equal(D.rows(i)[8].state, "warn"); assert(D.rows(i)[8].value.includes("확인 불가"));
   i.S.export_state = null; i.S.export_last = null; i.P0 = { exports: [{ rev: 1 }] };
   assert.equal(D.rows(i)[8].state, "todo");
-  delete i.S.export_state; delete i.S.export_last; assert.equal(D.rows(i)[8].state, "warn");
 });
 test("순수 판정·힌트·DOM 이동 인자·접힘 메모리·선택 단계는 끝난 수 제외", () => {
   const i = base(), before = JSON.stringify(i), r = D.rows(i), calls = [], memory = {};
@@ -44999,7 +45014,34 @@ test("F6 실제 보드 콜백→refs 진입→내부 선택: 첫 로드·없는 
   bc.goMode = () => { bc.refsOn = false; };
   goMode("refs", "c1"); assert.equal(rc.sel, "c2");
 });
-console.log(JSON.stringify(out));
+(async () => {
+  const name = "C11 실제 pollState: 옛 서버 전체→키 없는 unchanged·새 서버 상태/명시적 null";
+  try {
+    const src = fs.readFileSync(process.argv[4], "utf8"), start = src.indexOf("  async function pollState(force) {");
+    const end = src.indexOf("  function schedule()", start), errors = [], noop = () => {};
+    let reply = base().S;
+    const bc = { S: null, polling: false, pollAgain: false, editing: false, refsOn: false, pipe: null,
+      getState: async () => reply, reconcile: noop, renderAll: noop, renderHeader: noop,
+      setConn: (msg) => { if (msg) errors.push(msg); }, refresh: () => { throw new Error("불필요한 재폴링"); } };
+    vm.createContext(bc); vm.runInContext(src.slice(start, end), bc);
+    const poll = () => vm.runInContext("pollState(false)", bc);
+    const row = () => D.rows({ S: bc.S, P0: { exports: [{ rev: 46 }] } })[8];
+    await poll(); assert.equal(row().state, "done");
+    reply = { unchanged: true, running: false, drafting: false, drain: false };
+    await poll(); assert.equal(row().state, "done"); assert.equal(bc.S.export_last.rev, 46);
+    reply = { rev: 46, crops: [], targets: [] }; // 옛 서버의 전체 응답으로 전환(키를 delete 하지 않음)
+    await poll(); assert.equal(row().state, "warn");
+    reply = { unchanged: true, running: false, drafting: false, drain: false };
+    await poll(); assert(!("export_state" in bc.S)); assert(!("export_last" in bc.S));
+    assert.equal(row().state, "warn"); assert(row().value.includes("변경 여부 확인 불가"));
+    reply = { ...reply, export_state: "same", export_last: { rev: 47, time: "13:00:00" } };
+    await poll(); assert.equal(row().state, "done"); assert.equal(row().value, "r47 · 13:00:00");
+    reply = { ...reply, export_state: null, export_last: null };
+    await poll(); assert.equal(row().state, "todo"); assert.equal(row().value, "Export 없음");
+    assert.deepEqual(errors, []); out.push([name, true]);
+  } catch (e) { out.push([name, false, e.message]); }
+  console.log(JSON.stringify(out));
+})();
 '''
     script = out / "checklist.cjs"
     script.write_text(js, encoding="utf-8", newline="\n")
@@ -45012,9 +45054,14 @@ console.log(JSON.stringify(out));
 
     # 상태 서명은 원래 Export 내용 해시와 독립. 분석·설정·편집 이력의 시간만 바뀌면 같다.
     m = store.new_manifest("sig")
+    m.update(base="base/original.png", canvas=[32, 32], work_rect=[0, 0, 32, 32])
     m["rejects"] = {}
     m["crops"] = [{"id": "c1", "name": "크롭", "rect": [0, 0, 32, 32], "targets": [{"tid": "A", "label": "파트"}]}]
     m["picks"] = {"c1/A": ["a"]}
+    m["candidates"] = [{"key": k, "crop_id": "c1", "tid": "A", "file": f"cands/{k}.png", "src_size": [32, 32],
+                        "quad": [0, 0, 32, 0, 32, 32, 0, 32], "z": 0, "picked": False,
+                        "hand_mask": {"file": f"masks/{k}_hand.png", "rect": [0, 0, 32, 32], "bg": 0, "owner": "layer"}}
+                       for k in ("a", "b")]
     m["mask_edits"] = {"a": {"file": "masks/a.png", "rect": [0, 0, 32, 32], "at": "old"}}
     sig = store.export_state_sig(m)
     mutations = [
@@ -45025,7 +45072,17 @@ console.log(JSON.stringify(out));
         ("크롭 타깃", lambda x: x["crops"][0]["targets"].append({"tid": "B"})),
         ("마스크 file", lambda x: x["mask_edits"]["a"].update(file="masks/b.png")),
         ("마스크 rect", lambda x: x["mask_edits"]["a"].update(rect=[1, 0, 33, 32])),
+        ("C10 베이스", lambda x: x.update(base="base/changed.png")),
+        ("C10 캔버스", lambda x: x.update(canvas=[64, 32])),
+        ("C10 작업 영역", lambda x: x.update(work_rect=[1, 0, 32, 32])),
     ]
+    cand_changes = {"file": "cands/changed.png", "quad": [1, 0, 33, 0, 33, 32, 1, 32], "z": 1,
+                    "src_size": [64, 64], "crop_id": "c2", "tid": "B"}
+    hand_changes = {"file": "masks/changed.png", "rect": [1, 0, 33, 32], "bg": 255}
+    for field, value in cand_changes.items():
+        mutations.append((f"C10 ★ 후보 {field}", lambda x, k=field, v=value: x["candidates"][0].update({k: v})))
+    for field, value in hand_changes.items():
+        mutations.append((f"C10 ★ 후보 hand_mask.{field}", lambda x, k=field, v=value: x["candidates"][0]["hand_mask"].update({k: v})))
     for name, mutate in mutations:
         changed = copy.deepcopy(m)
         mutate(changed)
@@ -45035,17 +45092,31 @@ console.log(JSON.stringify(out));
     same["mask_edits"]["a"].update(at="new", hist=[{"file": "old.png"}])
     same["mask_edits"]["unpicked"] = {"file": "masks/unused.png", "rect": [0, 0, 1, 1]}
     check(store.export_state_sig(same) == sig, "상태 서명: 분석·Export 설정·rev·편집 시간/이력·★ 아닌 마스크는 무관")
+    same["candidates"][1].update(cand_changes)
+    same["candidates"][1]["hand_mask"].update(hand_changes)
+    same["candidates"][0].update(origin_info={"layer": "출처 이름만 변경"})
+    same["candidates"][0]["hand_mask"]["owner"] = "group"
+    check(store.export_state_sig(same) == sig, "C10 ★ 아닌 후보 출력 필드·★ 후보 출처/마스크 owner만 바뀌면 같음")
+    rejected = copy.deepcopy(m)
+    rejected["rejects"]["a"] = True
+    rejected_sig = store.export_state_sig(rejected)
+    rejected["candidates"][0].update(cand_changes)
+    rejected["candidates"][0]["hand_mask"].update(hand_changes)
+    check(store.export_state_sig(rejected) == rejected_sig, "C10 제외한 ★ 후보 출력 필드만 바뀌면 같음")
     legacy = copy.deepcopy(m)
     legacy["picks"] = {}
-    legacy["candidates"] = [{"key": "a", "crop_id": "c1", "tid": "A", "picked": True}]
+    legacy["candidates"][0]["picked"] = True
     check(store.export_state_sig(legacy) == sig, "상태 서명: 옛 후보 picked 와 picks 호환")
     ordered = copy.deepcopy(m)
     ordered["picks"]["c1/A"] = ["b", "a"]
     ordered_sig = store.export_state_sig(ordered)
     ordered["picks"]["c1/A"].reverse()
     check(store.export_state_sig(ordered) == ordered_sig, "C6 상태 서명: picks 순서만 바뀌면 같음")
+    ordered["candidates"].reverse()
+    check(store.export_state_sig(ordered) == ordered_sig, "C10 ★ 후보는 key 순 직렬화: 후보 목록 순서만 바뀌면 같음")
     ordered["picks"] = {}
-    ordered["candidates"] = [{"key": k, "crop_id": "c1", "tid": "A", "picked": True} for k in ("b", "a")]
+    for c in ordered["candidates"]:
+        c["picked"] = True
     check(store.export_state_sig(ordered) == ordered_sig, "C6 옛 후보 picked 병합 뒤에도 ★ 집합으로 정렬")
 
     root = str(out / "state")
@@ -45162,6 +45233,24 @@ console.log(JSON.stringify(out));
         sm["picks"][f"{c0['crop_id']}/{c0['tid']}"].reverse()
         dp.store.save_manifest(sr, sm)
         check(dp.board.build_state(sr)["export_state"] == "same", "C6 실제 Export 뒤 ★ 선택 순서만 바뀌어도 same")
+        new_base = dp.store.save_png_ca(sr, "base", 255 - base, prefix="changed_")
+        export_changes = [
+            ("베이스", lambda x: x.update(base=new_base)),
+            ("★ 후보 quad", lambda x: x["candidates"][1].update(quad=[9, 8, 41, 8, 41, 40, 9, 40])),
+            ("★ 후보 손 마스크", lambda x: x["candidates"][1].update(
+                hand_mask={"file": x["mask_edits"][c0["key"]]["file"], "rect": list(rect), "bg": 0})),
+            ("★ 후보 z", lambda x: x["candidates"][1].update(z=1)),
+        ]
+        for name, mutate in export_changes:
+            sm = dp.store.load_manifest(sr)
+            prev_psd = sm["exports"][-1]["psd"]
+            mutate(sm)
+            dp.store.save_manifest(sr, sm)
+            check(dp.board.build_state(sr)["export_state"] == "changed", f"C10 실제 Export 뒤 {name} 변경 → changed")
+            fresh = exp.run(sh, "slices", "pixel", "hidden_all", "raw", "hand", True, False)
+            check(fresh["ui"]["bmk_dp_export"][0]["outcome"] == "new" and fresh["result"][0] != prev_psd
+                  and dp.board.build_state(sr)["export_state"] == "same", f"C10 {name} 변경 뒤 새 Export → same")
+        check(slice_bytes == [p.read_bytes() for p in slice_paths], "C10 새 Export 뒤에도 기존 PSD·mask·사이드카 바이트 보존")
     finally:
         folder_paths.set_output_directory(old_output)
 

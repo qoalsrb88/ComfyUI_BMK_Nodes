@@ -1435,7 +1435,8 @@ def save_board_export(root: str, export_hash: str) -> None:
 
 def export_state_sig(m: dict) -> str:
     """점검표의 Export 이후 사용자 변경 지문(파일 I/O 없음). Export 내용 해시와 별개이며 분석·Export 설정은 제외한다.
-    ★ 집합(선택 순서 무관)·제외·크롭과 지금 ★ 의 편집 file/rect 만 읽는다. 옛 매니페스트의 후보 picked 도 보드처럼 합친다.
+    베이스·캔버스·작업 영역·크롭·★ 집합(선택 순서 무관)·제외와 지금 ★ 의 출력 필드·편집 file/rect 를 읽는다.
+    옛 매니페스트의 후보 picked 도 보드처럼 합친다. 후보 출처·분석 이력은 제외하고 후보 key 순으로 직렬화한다.
     """
     picks = {k: list(v) for k, v in (m.get("picks") or {}).items() if v}
     for c in m.get("candidates") or []:
@@ -1447,7 +1448,15 @@ def export_state_sig(m: dict) -> str:
     picked = {k for keys in picks.values() for k in keys if k not in rejects}
     edits = {k: [v.get("file"), v.get("rect")] for k, v in (m.get("mask_edits") or {}).items()
              if k in picked and isinstance(v, dict)}
-    payload = {"crops": [[c.get(k) for k in ("id", "name", "rect", "targets")] for c in m.get("crops") or []],
+    candidates = {}
+    for c in m.get("candidates") or []:
+        if c.get("key") not in picked:
+            continue
+        hand = c.get("hand_mask") or {}
+        candidates[c["key"]] = {k: c.get(k) for k in ("crop_id", "tid", "file", "src_size", "quad", "z")}
+        candidates[c["key"]]["hand_mask"] = {k: hand.get(k) for k in ("file", "rect", "bg")} if hand else None
+    payload = {"base": m.get("base"), "canvas": m.get("canvas"), "work_rect": m.get("work_rect"), "candidates": candidates,
+               "crops": [[c.get(k) for k in ("id", "name", "rect", "targets")] for c in m.get("crops") or []],
                "picks": {k: sorted(set(v)) for k, v in picks.items()}, "rejects": sorted(rejects), "edits": edits}
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
 

@@ -26,6 +26,7 @@ window.DPChecklist = (() => {
     const draftNeed = draft && Array.isArray(draft.units) ? draft.units.length : null;
     const runNeed = run && Number.isFinite(run.need) ? run.need : null;
     const runPre = run && Number.isFinite(run.pre) ? run.pre : 0;
+    const runFree = run && Number.isFinite(run.free) ? run.free : 0;
     const runCrops = (run && run.by_crop) || {};
     const progress = input.progress && input.progress.run;
     const inflight = progress && Number.isFinite(progress.inflight) ? progress.inflight
@@ -38,7 +39,7 @@ window.DPChecklist = (() => {
       : draft.running || S.drafting ? "초안 진행 중" : draftNeed === null ? "계산 중" : `초안 승인 필요 ${draftNeed}`;
     const runValue = runError ? runError : !planOk || !run ? "계산 중"
       : running ? `진행 ${inflight}` : runPre > 0 ? `다시 생성 대기 ${runPre}`
-        : runNeed === null ? "계산 중" : `생성 승인 필요 ${runNeed}`;
+        : runFree > 0 ? `복구 대기 ${runFree}` : runNeed === null ? "계산 중" : `생성 승인 필요 ${runNeed}`;
     // starChecks 의 공동 결과 판정과 같은 조건: 뒤 타깃은 첫 타깃의 공동 ★ 를 공유한다.
     const hasStar = (t) => {
       if ((t.pick_keys || []).length) return true;
@@ -65,10 +66,10 @@ window.DPChecklist = (() => {
       row(4, "반영", !pending.length && !input.unsure ? "done" : "todo",
         pending.concat(input.unsure ? [`확인 필요: ${input.unsure}`] : []).join(" · ") || "미반영 없음",
         "크롭·레퍼런스를 바꾼 뒤 반영(무료)을 눌러 생성 입력을 갱신하세요.", { section: "반영" }),
-      row(5, "초안", draftError ? "warn" : allSelected && ready && draftNeed === 0 && !(draft.running || S.drafting) ? "done" : "todo",
+      row(5, "초안", draftError ? "warn" : n > 0 && allSelected && ready && draftNeed === 0 && !(draft.running || S.drafting) ? "done" : "todo",
         draftValue + selectionNote,
         "비용·승인에서 초안 계획과 비용을 확인한 뒤 승인하세요.", { section: "비용·승인" }),
-      row(6, "생성", runError ? "warn" : allSelected && ready && runNeed === 0 && runPre === 0 && complete && !running ? "done" : "todo",
+      row(6, "생성", runError ? "warn" : allSelected && ready && runNeed === 0 && runPre === 0 && runFree === 0 && complete && !running ? "done" : "todo",
         runValue + selectionNote,
         "비용·승인에서 생성 계획을 확인하세요. 모든 크롭에 완료 결과가 있어야 끝납니다.", { section: "비용·승인" }),
       row(7, "★", targets.length && !missingStar ? "done" : "todo", `타깃 ${stars}/${targets.length}`,
