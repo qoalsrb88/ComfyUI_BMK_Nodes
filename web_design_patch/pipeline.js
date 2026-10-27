@@ -1257,9 +1257,11 @@ window.DPPipeline = (() => {
               return;
             }
           } catch (e) {
+            const importCreated = sec === "import" && PS.P && PS.P.saved;
             opts.toast(`${SECTIONS[sec]}: ${e.message}`
-              + (saved.length ? ` — 앞 절(${saved.join(", ")})은 저장됨, 남은 절은 [실행 설정 열기]에서 다시 확인` : ""), "err");
-            if (saved.length) planNow();
+              + (saved.length ? ` — 앞 절(${saved.join(", ")})은 저장됨, 남은 절은 [실행 설정 열기]에서 다시 확인` : "")
+              + (importCreated ? " — Import 저장 응답을 받지 못했지만 pipeline.json 이 만들어짐 — [실행 설정 열기]에서 확인" : ""), "err");
+            if (saved.length || importCreated) planNow();
             return;
           }
         }

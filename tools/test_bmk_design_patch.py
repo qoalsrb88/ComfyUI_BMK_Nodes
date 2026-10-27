@@ -45675,6 +45675,10 @@ function setupEnv(cfg = {}) {
     pv.settings = settings;
     pv.confirm = confirm;
     pv.saved = true;
+    if (cfg.lostImportResponse && body.section === "import") {
+      if (cfg.lostImportResponse === "network") throw new Error("Import 응답 연결 끊김(시험)");
+      return [500, { error: "Import 저장 뒤 응답 실패(시험)" }];
+    }
     return [200, { ok: true, rev: pv.rev, settings: clone(pv.settings), confirm: pv.confirm.slice(), drift: clone(pv.drift) }];
   };
   if (cfg.progress) srv.route.progress = [200, Object.assign(clone(R["GET /pipeline/progress"].alt.idle), cfg.progress)];
@@ -45848,7 +45852,8 @@ await scenario("setup:failures", async () => {
     await env.repeat();
     result[`${fail}번째 저장 ${status}: 오류 토스트 한 번·재시도 없음·부분 저장 안내`] = env.confirms.length === 1 &&
       env.posts().length === fail && env.toasts.length === 1 && env.toasts[0].startsWith("err:") &&
-      env.toasts[0].includes("설정 저장 실패") && (fail === 1 || env.toasts[0].includes("앞 절(Import PSD)은 저장됨"));
+      env.toasts[0].includes("설정 저장 실패") && (fail === 1 ? !env.toasts[0].includes("pipeline.json 이 만들어짐") :
+        env.toasts[0].includes("앞 절(Import PSD)은 저장됨"));
   }
   const env = setupEnv({ read(e, p) {
     if (e.srv.count("pipeline/settings") === 1) { p.rev = 9; p.settings.export.subfolder = "other-window"; }
@@ -45860,6 +45865,27 @@ await scenario("setup:failures", async () => {
     posts[1].values.n === env.shown[0].settings.prepare.n && env.toasts.length === 1 && env.toasts[0].includes("앞 절(Import PSD)은 저장됨");
   await env.repeat();
   result["둘째 저장 409 뒤에도 질문·POST 재시도 없음"] = env.confirms.length === 1 && env.posts().length === 2;
+  return result;
+});
+
+await scenario("setup:lostImportResponse", async () => {
+  const result = {};
+  for (const kind of ["http", "network"]) {
+    const env = setupEnv({ lostImportResponse: kind, beforeSave(e) { e.afterPost = e.srv.log.length; } });
+    env.pipe.enter(env.S, null);
+    await until(() => env.toasts.length > 0);
+    const posts = env.posts(), after = env.srv.log.slice(env.afterPost);
+    result[`${kind}: import rev 0 파일 생성 뒤 응답 유실, prepare POST 없음`] = env.confirms.length === 1 && env.current().saved &&
+      env.current().rev === 1 && posts.length === 1 && posts[0].section === "import" && posts[0].rev === 0 &&
+      JSON.stringify(env.current().settings.import) === JSON.stringify(env.shown[0].settings.import);
+    result[`${kind}: 오류 토스트 끝에 파일 생성·수동 확인 안내`] = env.toasts.length === 1 && env.toasts[0].startsWith("err:") &&
+      env.toasts[0].endsWith("Import 저장 응답을 받지 못했지만 pipeline.json 이 만들어짐 — [실행 설정 열기]에서 확인");
+    result[`${kind}: finally 다시 읽기 뒤 계획 요청 한 번`] = after.filter((x) => x.path === "pipeline").length === 1 &&
+      after.filter((x) => x.path === "pipeline/plan").length === 1 &&
+      after.findIndex((x) => x.path === "pipeline/plan") > after.findIndex((x) => x.path === "pipeline");
+    await env.repeat();
+    result[`${kind}: 질문·import·prepare 재시도 없음`] = env.confirms.length === 1 && env.posts().length === 1 && env.toasts.length === 1;
+  }
   return result;
 });
 
@@ -46382,12 +46408,16 @@ await scenario("setup:inputDeferred", async () => {
 """
     harness = harness.replace("console.log(JSON.stringify(out));\nprocess.exit(0);", cases + "\nconsole.log(JSON.stringify(out));\nprocess.exit(0);")
     (out / "harness.mjs").write_text(harness, encoding="utf-8")
-    r = subprocess.run([node, str(out / "harness.mjs"), str(out / "in.json")], capture_output=True, text=True, encoding="utf-8", timeout=60)
+    try:
+        r = subprocess.run([node, str(out / "harness.mjs"), str(out / "in.json")], capture_output=True, text=True, encoding="utf-8", timeout=180)
+    except subprocess.TimeoutExpired:
+        check(False, "배치 4-1 node 하네스가 180초 안에 끝나지 않음(장면의 until 대기가 쌓임)")
+        return
     if r.returncode != 0 or not r.stdout.strip():
         check(False, f"배치 4-1 node 하네스 실패({r.returncode}): {r.stderr.strip()[-1200:]}")
         return
     res = json.loads(r.stdout.strip().splitlines()[-1])
-    check(len(res) == 22, f"배치 4-1 시나리오 22개 실행: {list(res)}")
+    check(len(res) == 23, f"배치 4-1 시나리오 23개 실행: {list(res)}")
     for name, checks in res.items():
         if "error" in checks:
             check(False, f"{name} 하네스 예외: {checks['error']}")
