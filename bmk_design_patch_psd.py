@@ -397,22 +397,19 @@ def group_mask_window(group, rect, canvas) -> tuple[np.ndarray, int, list[str]]:
     win = Image.new("L", (x1 - x0, y1 - y0), bg)
     raw = mk.topil(real=False)
     outside = 0
-    covered = 0
     if raw is not None:
         raw = raw.convert("L")
         left, top = int(data.left), int(data.top)
         win.paste(raw, (left - x0, top - y0))
         arr = np.asarray(raw)
-        outside = int(np.count_nonzero(arr > 2))
-        ax0, ay0 = max(x0, left), max(y0, top)
-        ax1, ay1 = min(x1, left + raw.width), min(y1, top + raw.height)
-        inside = max(0, ax1 - ax0) * max(0, ay1 - ay0)
-        if inside:
+        cx0, cy0 = max(0, left), max(0, top)
+        cx1, cy1 = min(canvas[0], left + raw.width), min(canvas[1], top + raw.height)
+        if cx1 > cx0 and cy1 > cy0:
+            outside = int(np.count_nonzero(arr[cy0 - top:cy1 - top, cx0 - left:cx1 - left] > 2))
+        ax0, ay0 = max(x0, cx0), max(y0, cy0)
+        ax1, ay1 = min(x1, cx1), min(y1, cy1)
+        if ax1 > ax0 and ay1 > ay0:
             outside -= int(np.count_nonzero(arr[ay0 - top:ay1 - top, ax0 - left:ax1 - left] > 2))
-        covered = (max(0, min(canvas[0], left + raw.width) - max(0, left))
-                   * max(0, min(canvas[1], top + raw.height) - max(0, top)) - inside)
-    if bg > 2:
-        outside += canvas[0] * canvas[1] - (x1 - x0) * (y1 - y0) - covered
     warnings = []
     params = mk.parameters
     if params is not None:

@@ -221,7 +221,7 @@ def validate_png(data, rect=None) -> np.ndarray:
 # ══════════════════════════════════════════════════════════════════════
 # 쓰기 (보드 라우트 — 잠금 안에서 seen 대조)
 # ══════════════════════════════════════════════════════════════════════
-def export_mask(root: str, snapshot: dict, row: dict, mask_source: str) -> dict | None:
+def export_mask(root: str, snapshot: dict, row: dict, mask_source: str, *, use_registration=False) -> dict | None:
     """Export 사이드카의 실제 mask_src를 복원한다. 파일 없음·모호한 자동 마스크는 현재 기준으로 대체하지 않는다."""
     try:
         if mask_source not in MASK_SOURCES:
@@ -259,6 +259,15 @@ def export_mask(root: str, snapshot: dict, row: dict, mask_source: str) -> dict 
         for entry in entries:
             if not isinstance(entry, dict) or base_source(cand, entry, mask_source)[0] != "auto":
                 continue
+            if "params_hash" in row:
+                if not row["params_hash"] or entry.get("params_hash") != row["params_hash"]:
+                    continue
+            elif use_registration:
+                # 옛 사이드카는 정합 결과로 후보를 좁힌다. 정합 미적용 항목은 원래 후보 quad로 대조한다.
+                quad = entry.get("quad_reg") if (entry.get("reg") or {}).get("applied") else cand.get("quad")
+                quad, expected = np.asarray(quad, dtype=float), np.asarray(row.get("quad"), dtype=float)
+                if quad.shape != (8,) or expected.shape != (8,) or not np.allclose(quad, expected, rtol=0, atol=1e-4):
+                    continue
             left, top = (entry.get("rect") or crop["rect"])[:2]
             if [left, top] == rect[:2]:
                 sources.add((entry["automask"], left, top))
@@ -270,6 +279,10 @@ def export_mask(root: str, snapshot: dict, row: dict, mask_source: str) -> dict 
         return masks[0]
     except (OSError, ValueError, KeyError, TypeError, IndexError, StopIteration) as e:
         raise ValueError(f"Export 때 마스크를 다시 만들 수 없음: {e or '후보·크롭 기록 없음'}") from e
+
+
+class PSDReadError(ValueError):
+    """PS 가져오기에서 PSD 전체를 읽지 못함 — 보드는 422로 전달한다."""
 
 
 def import_ps_masks(root: str, psd_path: str, sidecar: dict, *, manifest: dict, target: Callable,
@@ -295,10 +308,13 @@ def import_ps_masks(root: str, psd_path: str, sidecar: dict, *, manifest: dict, 
     rows = sidecar.get("export_layers")
     if not isinstance(rows, list):
         raise ValueError("Export 사이드카에 export_layers 목록이 없습니다")
-    psd = dpsd.open_psd(psd_path)
-    layers = {}
-    for layer in psd.descendants():
-        layers.setdefault(layer.name, []).append(layer)
+    try:
+        psd = dpsd.open_psd(psd_path)
+        layers = {}
+        for layer in psd.descendants():
+            layers.setdefault(layer.name, []).append(layer)
+    except Exception as e:  # psd-tools의 파싱·압축 오류 종류는 파일의 손상 위치에 따라 다르다.
+        raise PSDReadError("PSD 를 읽을 수 없습니다(저장 중이거나 손상) — 잠시 뒤 다시") from e
     result = {"changed": [], "skipped": [], "warnings": [], "seen": {"source": stamp, "edits": {}, "targets": {}}}
     pending = []
     counts, group_counts, counted_layers = {}, {}, set()
@@ -338,21 +354,35 @@ def import_ps_masks(root: str, psd_path: str, sidecar: dict, *, manifest: dict, 
             if (quad.shape != (8,) or expected.shape != (8,) or not np.isfinite(quad).all()
                     or not np.isfinite(expected).all() or not np.allclose(quad, expected, rtol=0, atol=1e-4)):
                 raise ValueError("SO 변환(quad)이 Export 때와 다름 — 패치를 옮겼다면 Candidate In 수확 이용")
-            if group is None or group is psd or not group.is_group() or not group.has_mask() or group.mask.disabled:
+            if group is None or group is psd or not group.is_group():
+                raise ValueError("그룹 마스크 없음·꺼짐")
+            try:
+                if layer.has_mask() or layer.has_vector_mask() or group.has_vector_mask():
+                    result["warnings"].append(f"{name}: SO 레이어 마스크·벡터 마스크는 가져오지 않음 — 그룹 마스크로 옮겨 저장")
+                enabled = group.has_mask() and not group.mask.disabled
+            except Exception as e:
+                raise ValueError(f"마스크를 읽지 못함: {e}") from e
+            if not enabled:
                 raise ValueError("그룹 마스크 없음·꺼짐")
             t = target(cand, row)
+            current_quad = np.asarray(t["quad"], dtype=float)
+            if current_quad.shape != (8,) or not np.allclose(current_quad, expected, rtol=0, atol=1e-4):
+                raise ValueError("Export 뒤 패치 위치(정합·quad)가 바뀜 — 마스크 모드에서 직접")
             if group.name != t["group"]:
                 raise ValueError(f"부모 그룹 이름이 지금 계획과 다름({group.name} ≠ {t['group']}) — 매핑 불가")
             _check_rect(t["rect"])
             if not np.array_equal(t["export_mask"], t["mask"]):
                 raise ValueError("Export 뒤 Studio 에서 이 마스크가 바뀜 — 마스크 모드에서 직접")
-            arr, outside, warnings = dpsd.group_mask_window(group, t["rect"], manifest["canvas"])
+            try:
+                arr, outside, warnings = dpsd.group_mask_window(group, t["rect"], manifest["canvas"])
+            except Exception as e:
+                raise ValueError(f"마스크를 읽지 못함: {e}") from e
             result["warnings"].extend(warnings)
-            if outside:
-                result["warnings"].append(f"{group.name}: 편집 창 밖 보이는 픽셀 {outside}개 — 창 안만 가져옴")
             diff = int(np.count_nonzero(np.abs(arr.astype(np.int16) - t["export_mask"].astype(np.int16)) > 2))
             if not diff:
                 continue
+            if outside:
+                result["warnings"].append(f"{group.name}: 편집 창 밖 보이는 픽셀 {outside}개 — 창 안만 가져옴")
             record = edit_record(manifest, key)
             try:
                 record = check_record(record) if record is not None else None

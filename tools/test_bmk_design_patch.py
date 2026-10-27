@@ -44751,6 +44751,8 @@ def polish5_psmask_unit():
     section("다듬기 배치 5-3 — PS 그룹 마스크 되가져오기")
     from unittest.mock import patch
     from psd_tools.psd.layer_and_mask import MaskParameters
+    import struct
+    import zlib
 
     out = (OUT_ROOT / "polish5_psmask").resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -44810,6 +44812,19 @@ def polish5_psmask_unit():
             dry0 = bd.mask_ps_import(root, dict(psd=str(psd), dry_run=True))
         check(not dry0["changed"] and not dry0["skipped"] and opened.call_count == 1,
               "그대로 왕복 = 차이 0·숨김 제외·PSD 한 번만 열기")
+
+        # P11: 실제 마스크가 캔버스를 넘어도 창 안이 그대로면 창 밖 경고를 붙이지 않는다.
+        document = PSDImage.open(psd)
+        owner = next(x for x in document.descendants() if x.name == names[keys[0]]).parent
+        owner.remove_mask()
+        owner.create_mask(Image.new("L", (76, 76), 255), left=-6, top=-6)
+        window, outside, _ = bd.dpsd.group_mask_window(owner, rect, [64, 64])
+        check(np.all(window == 255) and outside == 64 * 64 - 32 * 32,
+              "P11 창 밖 집계는 bbox ∩ 캔버스 안만: 음수 좌표·오른쪽/아래 넘친 픽셀 제외")
+        with patch.object(bd.dpsd, "open_psd", return_value=document):
+            unchanged = bd.mask_ps_import(root, dict(psd=str(psd), dry_run=True))
+        check(not unchanged["changed"] and not any("창 밖" in w for w in unchanged["warnings"]),
+              "P11 창 안 diff=0이면 창 밖 픽셀이 있어도 가져오기 경고 없음")
 
         document = PSDImage.open(psd)
         layers = {x.name: x for x in document.descendants() if x.kind == "smartobject"}
@@ -44980,6 +44995,51 @@ def polish5_psmask_unit():
         check(psd.read_bytes() == original_bytes and side.read_bytes() == side_bytes,
               "사본 가져오기·되돌리기는 원래 Export PSD·사이드카를 바꾸지 않음")
 
+        # P12: PSD 전체 파싱·지연 순회는 422, 한 그룹 디코드 실패는 다른 행의 저장을 막지 않는다.
+        before_bad = st.load_manifest(root)
+        for error in (AssertionError, zlib.error, struct.error, EOFError):
+            with patch.object(bd.dpsd, "open_psd", side_effect=error("시험: 깨진 PSD")):
+                status, result = response(dict(psd=str(psd), dry_run=True))
+            check(status == 422 and result["error"] == "PSD 를 읽을 수 없습니다(저장 중이거나 손상) — 잠시 뒤 다시",
+                  "P12 PSD open 오류 → 422 " + error.__name__)
+            def broken_layers():
+                yield types.SimpleNamespace(name="먼저 읽힌 레이어")
+                raise error("시험: 순회 중 손상")
+            with patch.object(bd.dpsd, "open_psd", return_value=types.SimpleNamespace(descendants=broken_layers)):
+                status, result = response(dict(psd=str(psd), dry_run=True))
+            check(status == 422 and "잠시 뒤 다시" in result["error"], "P12 레이어 순회 오류 → 422 " + error.__name__)
+        check(st.load_manifest(root) == before_bad, "P12 PSD 파싱·순회 실패 때 편집 저장 없음")
+        document = PSDImage.open(psd)
+        owner = next(x for x in document.descendants() if x.name == names[keys[0]]).parent
+        mask_type, topil = type(owner.mask), type(owner.mask).topil
+        for error in (AssertionError, zlib.error, struct.error):
+            def bad_mask(mask, *args, **kwargs):
+                if mask._layer.name == owner.name:
+                    raise error("시험: 채널 디코드 실패")
+                return topil(mask, *args, **kwargs)
+            with patch.object(mask_type, "topil", bad_mask):
+                status, result = response(dict(psd=str(psd), dry_run=True))
+                check(status == 200 and {r["key"] for r in result["changed"]} == {keys[1]}
+                      and any(r["key"] == keys[0] and "마스크를 읽지 못함" in r["reason"] for r in result["skipped"]),
+                      "P12 행별 마스크 디코드 실패만 건너뜀 " + error.__name__)
+                status, imported = response(dict(psd=str(psd), dry_run=False, seen=result["seen"]))
+                check(status == 200 and [r["key"] for r in imported["imported"]] == [keys[1]],
+                      "P12 읽을 수 있는 다른 행은 가져오기 성공 " + error.__name__)
+            dm.undo_edit(root, keys[1], seen=imported["imported"][0]["file"])
+
+        # P13: 실제 PSD에 SO user mask·그룹 vector mask를 각각 넣고 다시 열어 경고한다.
+        extra_masks = psd.with_name(psd.stem + "_extra_masks.psd")
+        document = PSDImage.open(psd)
+        sos = {x.name: x for x in document.descendants() if x.kind == "smartobject"}
+        sos[names[keys[0]]].create_mask(Image.new("L", (32, 32), 0), left=8, top=8)
+        sos[names[keys[1]]].parent.tagged_blocks.set_data(Tag.VECTOR_MASK_SETTING1)
+        with patch.object(document, "is_updated", return_value=False):  # 채널만 검사하므로 선택 의존성인 벡터 프리뷰 렌더는 생략.
+            document.save(extra_masks)
+        status, result = response(dict(psd=str(extra_masks), dry_run=True))
+        check(status == 200 and {r["key"]: r["diff_px"] for r in result["changed"]} == {keys[0]: 512, keys[1]: 1}
+              and all(any(names[k] in w and "SO 레이어 마스크·벡터 마스크는 가져오지 않음" in w for w in result["warnings"])
+                      for k in keys[:2]), "P13 SO 레이어·그룹 벡터 마스크는 행별 경고하고 그룹 user mask만 비교")
+
         # P6: PS가 별 SO를 다른 그룹으로 옮겼다면 행 순서와 무관하게 관련 별을 모두 거절.
         shared = psd.with_name(psd.stem + "_shared.psd")
         document = PSDImage.open(psd)
@@ -45066,15 +45126,15 @@ def polish5_psmask_unit():
         pixel_path = pixel["ui"]["bmk_dp_export"][0]["psd"]
         pixel_result = bd.mask_ps_import(root, dict(psd=pixel_path, dry_run=True))
         check(not pixel_result["changed"] and all("pixel" in r["reason"] for r in pixel_result["skipped"]), "pixel 모드 매핑 불가")
-        # bbox 밖 흰 background도 창 안에 정확히 채우고 창 밖을 캔버스 크기로 센다.
+        # bbox 밖 흰 background는 창 안에 채우되 bbox 밖 영역은 경고 집계에서 뺀다.
         document = PSDImage.open(psd)
         group = next(x for x in document.descendants() if x.name == names[keys[0]]).parent
         group.remove_mask()
         group.create_mask(Image.new("L", (2, 2), 0), left=12, top=12)
         group.mask.data.background_color = 255
         window, outside, _ = bd.dpsd.group_mask_window(group, rect, [64, 64])
-        check(window[4:6, 4:6].sum() == 0 and np.count_nonzero(window == 255) == 1020 and outside == 3072,
-              "mask bbox 밖 background_color 255·창 밖 픽셀 집계")
+        check(window[4:6, 4:6].sum() == 0 and np.count_nonzero(window == 255) == 1020 and outside == 0,
+              "P11 mask bbox 밖 background_color 255는 편집 창에 보존·창 밖 집계는 bbox 안만")
 
         # P5: 실제 Export의 mask_source와 Compose 설정이 다른 경우, PS 무수정을 변경으로 오인하지 않는다.
         bh, br = _fx_project(dp, out, "psmask_baseline", [("001_크롭", rect)], base)
@@ -45133,6 +45193,7 @@ def polish5_psmask_unit():
         saved_side = bside.read_bytes()
         try:
             ambiguous = json.loads(saved_side)
+            ambiguous["export_layers"][0].pop("params_hash", None)
             ambiguous["analysis"][bc["key"]] = {"first": entry, "other": dict(entry, params_hash="other", automask=hand_file)}
             bside.write_text(json.dumps(ambiguous, ensure_ascii=False), encoding="utf-8")
             baseline = bd.mask_ps_import(br, dict(psd=str(auto_copy), dry_run=True))
@@ -45140,6 +45201,78 @@ def polish5_psmask_unit():
                   "P5 자동 마스크 기록이 모호하면 임의로 현재 기준을 고르지 않음")
         finally:
             bside.write_bytes(saved_side)
+
+        # P9/P10: 기본 hand_else_auto + 분석 기록 두 개. Export 때 선택한 항목을 사이드카가 식별한다.
+        bm = st.load_manifest(br)
+        bm["candidates"][0]["hand_mask"] = None
+        bc = bm["candidates"][0]
+        registered_quad = [v + (1 if i % 2 == 0 else 0) for i, v in enumerate(bc["quad"])]
+        entry = dict(entry, quad_reg=registered_quad, reg={"applied": True}, seq=2)
+        other = dict(entry, params_hash="other", automask=hand_file, seq=1)
+        bm["analysis"][bc["key"]] = {"other": other, entry["params_hash"]: entry}
+        st.save_manifest(br, bm)
+        comp = dict(comp_auto, mask_source="hand_else_auto", use_registration=True)
+        with patch.object(dp, "_ensure_analysis", return_value=({bc["key"]: entry}, 0, 1, [])):
+            bx = exp.run(dict(bh, compose=comp), "baseline_multi", "smart_object", "none", "raw", "hand_else_auto", True, False)
+            again = exp.run(dict(bh, compose=comp), "baseline_multi", "smart_object", "none", "raw", "hand_else_auto", True, False)
+        bp = Path(bx["ui"]["bmk_dp_export"][0]["psd"])
+        bside = bp.with_suffix(".json")
+        saved_side = bside.read_bytes()
+        snapshot = json.loads(saved_side)
+        check(snapshot["export_layers"][0]["params_hash"] == entry["params_hash"]
+              and len(snapshot["analysis"][bc["key"]]) == 2 and "export_layers" not in st.load_manifest(br)
+              and again["ui"]["bmk_dp_export"][0]["outcome"] == "unchanged",
+              "P10 실제 분석 params_hash는 사이드카 행에만 기록·분석 2개·Export 재실행 변경 없음")
+        auto_copy = bp.with_name(bp.stem + "_ps.psd")
+        document = PSDImage.open(bp)
+        owner = next(x for x in document.descendants() if x.kind == "smartobject").parent
+        owner.remove_mask()
+        owner.create_mask(Image.fromarray(edited_auto), left=rect[0], top=rect[1])
+        owner.mask.data.background_color = 0
+        document.save(auto_copy)
+        def import_baseline(label):
+            preview = bd.mask_ps_import(br, dict(psd=str(auto_copy), dry_run=True))
+            result = bd.mask_ps_import(br, dict(psd=str(auto_copy), dry_run=False, seen=preview["seen"]))
+            check(len(preview["changed"]) == len(result["imported"]) == 1 and preview["changed"][0]["diff_px"] == 1
+                  and not preview["skipped"] and not result["failed"], label)
+            if result["imported"]:
+                dm.undo_edit(br, bc["key"], seen=result["imported"][0]["file"])
+        import_baseline("P10 새 사이드카 + 같은 quad인 분석 2개 → params_hash로 정확한 마스크 왕복 가져오기")
+        try:
+            legacy = json.loads(saved_side)
+            legacy["export_layers"][0].pop("params_hash")
+            legacy["analysis"][bc["key"]]["other"]["quad_reg"] = [v + 1 for v in registered_quad]
+            bside.write_text(json.dumps(legacy, ensure_ascii=False), encoding="utf-8")
+            import_baseline("P10 옛 사이드카 + 정합 quad로 분석 1개 특정 → 왕복 가져오기")
+            legacy["analysis"][bc["key"]]["other"]["quad_reg"] = registered_quad
+            bside.write_text(json.dumps(legacy, ensure_ascii=False), encoding="utf-8")
+            result = bd.mask_ps_import(br, dict(psd=str(auto_copy), dry_run=True))
+            check(not result["changed"] and "확정할 수 없음" in result["skipped"][0]["reason"],
+                  "P10 옛 사이드카 + 정합 quad도 같은 서로 다른 마스크 2개 → 모호함으로 건너뜀")
+            missing = json.loads(saved_side)
+            missing["export_layers"][0]["params_hash"] = "사라진 분석"
+            bside.write_text(json.dumps(missing, ensure_ascii=False), encoding="utf-8")
+            result = bd.mask_ps_import(br, dict(psd=str(auto_copy), dry_run=True))
+            check(not result["changed"] and "자동 마스크 기록 없음" in result["skipped"][0]["reason"],
+                  "P10 기록된 params_hash가 없으면 다른 분석으로 대체하지 않음")
+        finally:
+            bside.write_bytes(saved_side)
+        before_move = st.load_manifest(br)
+        try:
+            for kind in ("분석", "정합 끔"):
+                moved = copy.deepcopy(before_move)
+                if kind == "분석":
+                    # bbox가 그대로여도 quad만 달라진 배치는 가져오지 않는다.
+                    moved["analysis"][bc["key"]][entry["params_hash"]]["quad_reg"][0] += 0.5
+                else:
+                    moved["exports"][-1]["compose"]["use_registration"] = False
+                st.save_manifest(br, moved)
+                result = bd.mask_ps_import(br, dict(psd=str(auto_copy), dry_run=True))
+                check(not result["changed"] and result["skipped"][0]["reason"] ==
+                      "Export 뒤 패치 위치(정합·quad)가 바뀜 — 마스크 모드에서 직접"
+                      and st.load_manifest(br) == moved, "P9 현재 실효 quad 변경 → 저장 없이 건너뜀: " + kind)
+        finally:
+            st.save_manifest(br, before_move)
 
         # 경로 검사는 파일이 실제로 있어도 output 경계를 먼저 검사한다.
         outside_psd = out / "outside.psd"

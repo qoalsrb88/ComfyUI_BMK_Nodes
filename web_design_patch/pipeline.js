@@ -2398,6 +2398,7 @@ window.DPPipeline = (() => {
       const state = psMask;
       line(s, "PS 에서 같은 이름으로 덮어 저장하거나, 같은 폴더에 원래 이름으로 시작하는 다른 이름(예: 원래이름_ps.psd)으로 저장하면 목록에 나옵니다.", "dim");
       line(s, "같은 이름으로 덮어쓰면 다음 Export에서 바뀐 것이 없을 때 그 파일을 '변경 없음'으로 돌려줍니다.", "dim");
+      line(s, "그룹 마스크만 가져옵니다. SO 레이어 마스크·벡터 마스크는 그룹 마스크로 옮겨 저장하세요.", "dim");
       if (state.error) line(s, state.error, "bad");
       if (state.busy) line(s, "PS 마스크를 읽고 있습니다…", "dim");
       if (!state.rows.length) {

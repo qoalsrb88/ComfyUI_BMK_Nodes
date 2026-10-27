@@ -1876,8 +1876,9 @@ def mask_ps_import(root: str, data: dict) -> dict:
         p, it, group = items[cand["key"]]
         rect = dmask.edit_rect(dpsd.quad_bbox(it["quad"]), _canvas_wh(m))
         dmask._check_rect(rect)
-        old_mask = dmask.export_mask(root, snapshot, row, (export.get("options") or {}).get("mask_source"))
-        return {"rect": rect, "fp": dmask.base_fp(cand, it["entry"], cs["mask_source"]),
+        old_mask = dmask.export_mask(root, snapshot, row, (export.get("options") or {}).get("mask_source"),
+                                     use_registration=bool((export.get("compose") or {}).get("use_registration", True)))
+        return {"rect": rect, "quad": it["quad"], "fp": dmask.base_fp(cand, it["entry"], cs["mask_source"]),
                 "mask": _window_l(it["mask"], rect), "export_mask": _window_l(old_mask, rect),
                 "crop": p["crop"]["name"], "group": group}
 
@@ -1896,8 +1897,11 @@ def mask_ps_import(root: str, data: dict) -> dict:
 
     if source() != stamp:
         raise dmask.MaskConflict("사이드카가 바뀌었습니다 — 다시 미리 보기", "changed")
-    result = dmask.import_ps_masks(root, psd, snapshot, manifest=m, target=target, placed=placed,
-                                  source=source, dry_run=dry, seen=data.get("seen"))
+    try:
+        result = dmask.import_ps_masks(root, psd, snapshot, manifest=m, target=target, placed=placed,
+                                      source=source, dry_run=dry, seen=data.get("seen"))
+    except dmask.PSDReadError as e:
+        raise _Reject(422, str(e)) from e
     if any(f["conflict"] for f in result.get("failed", [])):
         raise _Reject(409, "일부 마스크가 다른 창에서 바뀌었습니다 — 결과 확인 후 다시 미리 보기", reason="changed", **result)
     return result
