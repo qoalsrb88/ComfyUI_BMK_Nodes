@@ -4989,6 +4989,21 @@ async def mask_alts_handler(request: web.Request) -> web.StreamResponse:
     return _json({"busy": True}, status=202) if res is None else _json(res)
 
 
+@_guard
+async def zorder_handler(request: web.Request) -> web.StreamResponse:
+    raise _Reject(501, "z 순서 지정은 아직 없습니다(다듬기 배치 5-1)")
+
+
+@_guard
+async def mask_ps_list_handler(request: web.Request) -> web.StreamResponse:
+    raise _Reject(501, "PS 마스크 가져오기는 아직 없습니다(다듬기 배치 5-3)")
+
+
+@_guard
+async def mask_ps_import_handler(request: web.Request) -> web.StreamResponse:
+    raise _Reject(501, "PS 마스크 가져오기는 아직 없습니다(다듬기 배치 5-3)")
+
+
 _ROUTES = (
     ("GET", f"{API}/board", board_redirect),
     ("GET", f"{API}/board/", board_static),
@@ -5030,6 +5045,9 @@ _ROUTES = (
     ("GET", f"{API}/mask/alts", mask_alts_handler),
     ("GET", f"{API}/mask/unused", mask_unused_handler),
     ("POST", f"{API}/mask/cleanup", mask_cleanup_handler),
+    ("POST", f"{API}/zorder", zorder_handler),
+    ("GET", f"{API}/mask/ps_list", mask_ps_list_handler),
+    ("POST", f"{API}/mask/ps_import", mask_ps_import_handler),
 )
 
 

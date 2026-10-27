@@ -5641,7 +5641,9 @@ def m2_board_unit():
                        ("POST", "/bmk/design_patch/mask/save"), ("POST", "/bmk/design_patch/mask/edit"),
                        ("GET", "/bmk/design_patch/mask/alts"),
                        ("POST", "/bmk/design_patch/open_folder"),  # 배치 3a(3-5a 출력 폴더 열기 · 3-6 masks/ 정리)
-                       ("GET", "/bmk/design_patch/mask/unused"), ("POST", "/bmk/design_patch/mask/cleanup")})
+                       ("GET", "/bmk/design_patch/mask/unused"), ("POST", "/bmk/design_patch/mask/cleanup"),
+                       ("POST", "/bmk/design_patch/zorder"),  # 배치 5 묶음 1(5-1 z 순서 · 5-3 PS 마스크 가져오기)
+                       ("GET", "/bmk/design_patch/mask/ps_list"), ("POST", "/bmk/design_patch/mask/ps_import")})
         check(paths == want, f"라우트 목록 {paths}")
         # 재시작 흉내: 메모리 레지스트리에서 지움 → base_dir 로 다시 등록하면 _roots.json 에서 복구
         with store._ROOTS_LOCK:
@@ -10406,7 +10408,7 @@ def m2_node_unit():
             n1 = len(fake.routes)
             dp._register_board_routes()
         paths = {r.path for r in fake.routes}
-        check(n1 == 40 and len(fake.routes) == 40 and {"/bmk/design_patch/state", "/bmk/design_patch/drain",
+        check(n1 == 43 and len(fake.routes) == 43 and {"/bmk/design_patch/state", "/bmk/design_patch/drain",
                                                        "/bmk/design_patch/board/", "/bmk/design_patch/canvas",
                                                        "/bmk/design_patch/layout", "/bmk/design_patch/layout/refs",
                                                        "/bmk/design_patch/refs", "/bmk/design_patch/refs/cut",
@@ -12253,7 +12255,7 @@ def vlm_node_unit():
         fake = _FakeServer(web.RouteTableDef())
         with _prompt_server(fake):
             dp._register_board_routes()
-        check(len(fake.routes) == 40, f"보드 라우트 {len(fake.routes)}(배치 3a 3 포함)")
+        check(len(fake.routes) == 43, f"보드 라우트 {len(fake.routes)}(배치 3a 3·배치 5 묶음 1 3 포함)")
 
     def t_n9():
         section("M3-N9 평가 도구의 순수 복제 new_targets == main._new_targets (표본 레이어명 6 + 채택 origin 3)")
@@ -14116,7 +14118,7 @@ def layout_board_unit():
         paths = {(r.method, r.path) for r in routes}
         want = {("GET", f"{API}/layout"), ("GET", f"{API}/layout/refs"), ("POST", f"{API}/layout/start"),
                 ("POST", f"{API}/layout/crop"), ("POST", f"{API}/layout/psd")}
-        check(want <= paths and len(routes) == 40, f"레이아웃 라우트 5개 등록(모두 40 — S2 레퍼런스 8·S3 파이프라인 7·S4 마스크 5·배치 3a 3 포함) {len(routes)}")
+        check(want <= paths and len(routes) == 43, f"레이아웃 라우트 5개 등록(모두 43 — S2 레퍼런스 8·S3 파이프라인 7·S4 마스크 5·배치 3a 3·배치 5 묶음 1 3 포함) {len(routes)}")
         for name in ("layout_geom.js", "layout_edit.js"):
             st, hd, body = await h.get(f"{API}/board/{name}")
             f = PKG / "web_design_patch" / name
@@ -19472,8 +19474,8 @@ def refs_board_unit():
         paths = {(r.method, r.path) for r in routes}
         want = {("GET", f"{API}/refs"), ("GET", f"{API}/refs/sheets"), ("GET", f"{API}/refs/sheet"), ("GET", f"{API}/refs/img"),
                 ("POST", f"{API}/refs/cut"), ("GET", f"{API}/refs/cut"), ("POST", f"{API}/refs/save"), ("POST", f"{API}/refs/link")}
-        check(want <= paths and len(routes) == 40 and len({p for _m, p in paths}) == 39,
-              f"레퍼런스 라우트 7개(cut 은 GET·POST) — RouteDef 40·경로 39(S3 파이프라인 7·S4 마스크 5·배치 3a 3 포함) {len(routes)}")
+        check(want <= paths and len(routes) == 43 and len({p for _m, p in paths}) == 42,
+              f"레퍼런스 라우트 7개(cut 은 GET·POST) — RouteDef 43·경로 42(배치 5 묶음 1 3·S3 파이프라인 7·S4 마스크 5·배치 3a 3 포함) {len(routes)}")
         st, hd, body = await h.get(f"{API}/board/ref_edit.js")
         f = PKG / "web_design_patch" / "ref_edit.js"
         if f.is_file():
@@ -28823,8 +28825,8 @@ def pipeline_board_unit():
         paths = {(r.method, r.path) for r in routes}
         want = {("GET", f"{API}/pipeline"), ("POST", f"{API}/pipeline/settings"), ("GET", f"{API}/pipeline/prompt"),
                 ("GET", f"{API}/pipeline/plan"), ("GET", f"{API}/pipeline/progress"), ("GET", f"{API}/draft"), ("POST", f"{API}/draft/adopt")}
-        check(want <= paths and len(routes) == 40 and len({p for _m, p in paths}) == 39,
-              f"파이프라인 라우트 7개 — RouteDef 40·경로 39(배치 3a 3 포함) {len(routes)}")
+        check(want <= paths and len(routes) == 43 and len({p for _m, p in paths}) == 42,
+              f"파이프라인 라우트 7개 — RouteDef 43·경로 42(배치 5 묶음 1 3·배치 3a 3 포함) {len(routes)}")
         st, hd, body = await h.get(f"{API}/board/pipeline.js")
         f = PKG / "web_design_patch" / "pipeline.js"
         if f.is_file():
@@ -41582,7 +41584,7 @@ def mask_board_unit():
         paths = {(r.method, r.path) for r in routes}
         want = {("GET", f"{API}/mask"), ("GET", f"{API}/mask/img"), ("POST", f"{API}/mask/save"), ("POST", f"{API}/mask/edit"),
                 ("GET", f"{API}/mask/alts")}
-        check(want <= paths and len(routes) == 40 and len({p for _m, p in paths}) == 39, f"마스크 라우트 5개 — RouteDef 40·경로 39(배치 3a 3 포함) {len(routes)}")
+        check(want <= paths and len(routes) == 43 and len({p for _m, p in paths}) == 42, f"마스크 라우트 5개 — RouteDef 43·경로 42(배치 5 묶음 1 3·배치 3a 3 포함) {len(routes)}")
         st_, hd, body = await h.get(f"{API}/board/mask_edit.js")
         f = PKG / "web_design_patch" / "mask_edit.js"
         if f.is_file():
@@ -44744,6 +44746,11 @@ console.log(JSON.stringify(out));
 """
 
 
+def polish5_psmask_unit():
+    """다듬기 배치 5-3(10/27 — _proto/STUDIO_POLISH5_SPEC.md §4·§8): PS 에서 고친 그룹 마스크 되가져오기."""
+    section("다듬기 배치 5-3 — PS 그룹 마스크 되가져오기")
+
+
 def polish4_check_unit():
     """다듬기 배치 4-2(10/27 — _proto/STUDIO_POLISH_PLAN_2610.md §4·§12): [실행] 작업 점검표."""
     section("다듬기 배치 4-2 — [실행] 작업 점검표")
@@ -47173,6 +47180,11 @@ await scenario("setup:inputDeferred", async () => {
             check(ok is True, f"{name}: {label}")
 
 
+def polish5_z_unit():
+    """다듬기 배치 5-1(10/27 — _proto/STUDIO_POLISH5_SPEC.md §2·§8): 패치 겹침 순서(z) 직접 지정."""
+    section("다듬기 배치 5-1 — 패치 겹침 순서(z) 직접 지정")
+
+
 def want(name: str) -> bool:
     return not ONLY or name in ONLY
 
@@ -47248,6 +47260,10 @@ if __name__ == "__main__":
         polish4_setup_unit()
     if want("polish4_check_unit"):
         polish4_check_unit()
+    if want("polish5_z_unit"):
+        polish5_z_unit()
+    if want("polish5_psmask_unit"):
+        polish5_psmask_unit()
     print(f"\n단위 테스트 {time.time() - T0:.1f}s (PASS {PASSES} FAIL {len(FAILS)})")
     if QUICK:
         print("\n--quick: 회귀·노드 생략")
