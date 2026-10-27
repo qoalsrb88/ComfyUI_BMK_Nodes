@@ -382,6 +382,48 @@ def _mask_window(layer, rect) -> np.ndarray | None:
     return np.asarray(win).astype(np.uint16)
 
 
+def group_mask_window(group, rect, canvas) -> tuple[np.ndarray, int, list[str]]:
+    """PS 되가져오기: 농도·페더를 굽지 않은 user mask(L8), 창 밖 보이는 픽셀 수, 속성 경고.
+
+    _mask_window 와 같은 bbox 밖 background 규칙. real mask 는 PS 가 속성을 구운 채널일 수 있어
+    원래 user 채널·좌표를 명시적으로 읽는다. 창 밖 집계는 캔버스와 저장된 mask bbox 안에서만 한다.
+    """
+    mk = group.mask
+    if mk is None or mk.disabled:
+        raise ValueError("그룹 마스크 없음·꺼짐")
+    data = mk.data
+    x0, y0, x1, y1 = rect
+    bg = int(data.background_color)
+    win = Image.new("L", (x1 - x0, y1 - y0), bg)
+    raw = mk.topil(real=False)
+    outside = 0
+    covered = 0
+    if raw is not None:
+        raw = raw.convert("L")
+        left, top = int(data.left), int(data.top)
+        win.paste(raw, (left - x0, top - y0))
+        arr = np.asarray(raw)
+        outside = int(np.count_nonzero(arr > 2))
+        ax0, ay0 = max(x0, left), max(y0, top)
+        ax1, ay1 = min(x1, left + raw.width), min(y1, top + raw.height)
+        inside = max(0, ax1 - ax0) * max(0, ay1 - ay0)
+        if inside:
+            outside -= int(np.count_nonzero(arr[ay0 - top:ay1 - top, ax0 - left:ax1 - left] > 2))
+        covered = (max(0, min(canvas[0], left + raw.width) - max(0, left))
+                   * max(0, min(canvas[1], top + raw.height) - max(0, top)) - inside)
+    if bg > 2:
+        outside += canvas[0] * canvas[1] - (x1 - x0) * (y1 - y0) - covered
+    warnings = []
+    params = mk.parameters
+    if params is not None:
+        density = getattr(params, "user_mask_density", None)
+        feather = getattr(params, "user_mask_feather", None)
+        # 명시된 농도는 0(완전 해제)도 포함해 알린다. 저장된 기본값 255도 정보로만 보고한다.
+        if density is not None or feather not in (None, 0):
+            warnings.append(f"{group.name}: PS 마스크 농도 {density}, 페더 {feather} — 속성을 굽지 않고 원본 마스크만 가져옴")
+    return np.asarray(win, dtype=np.uint8), outside, warnings
+
+
 def _layer_window(layer, rect) -> np.ndarray | None:
     """비그룹 레이어의 픽셀을 rect 창 RGBA uint8 로. 마스크/불투명도는 알파에 곱한다(정수, 시제품 group_comp2 와 동일)."""
     x0, y0, x1, y1 = rect

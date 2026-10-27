@@ -44749,6 +44749,352 @@ console.log(JSON.stringify(out));
 def polish5_psmask_unit():
     """다듬기 배치 5-3(10/27 — _proto/STUDIO_POLISH5_SPEC.md §4·§8): PS 에서 고친 그룹 마스크 되가져오기."""
     section("다듬기 배치 5-3 — PS 그룹 마스크 되가져오기")
+    from unittest.mock import patch
+    from psd_tools.psd.layer_and_mask import MaskParameters
+
+    out = (OUT_ROOT / "polish5_psmask").resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    dp = _dp_package()
+    st, bd, dm = dp.store, dp.board, dp.dmask
+    import folder_paths
+    old_output, old_board_output = folder_paths.get_output_directory(), list(bd._OUTPUT_DIR)
+    # 이전 실행의 접두사 사본을 이번 목록 시험이 다시 줍지 않게 출력만 실행마다 분리한다.
+    output = out / f"output_{time.time_ns()}"
+    output.mkdir(exist_ok=True)
+
+    def req(body):
+        async def read():
+            return json.dumps(body).encode("utf-8")
+        return types.SimpleNamespace(content_type="application/json", content_length=None, read=read,
+                                     path="/bmk/design_patch/mask/ps_import")
+
+    def response(body):
+        result = asyncio.run(bd.mask_ps_import_handler(req(dict(root=st.root_key(root), **body))))
+        return result.status, json.loads(result.body)
+
+    try:
+        folder_paths.set_output_directory(str(output))
+        bd.set_output_dir(str(output))
+        rect = [8, 8, 40, 40]
+        base = texture(64, 64, 853)
+        h, root = _fx_project(dp, out, "psmask", [("001_크롭", rect)], base)
+        st.register_root(root)
+        inputs = out / "inputs"
+        inputs.mkdir(exist_ok=True)
+        for i in range(7):
+            Image.fromarray(np.full((32, 32, 3), 60 + i * 20, np.uint8)).save(inputs / f"001_크롭_{i}.png")
+        h, _ = dp.BMKDesignPatchCandidateIn().run(h, "folder", str(inputs), "", "", True, True)
+        candidates = st.load_manifest(root)["candidates"]
+        check(len(candidates) == 7, "PS fixture: ★ slice 6개·숨김 후보 1개")
+        for i, c in enumerate(candidates[:6]):
+            bd.apply_pick(root, c["crop_id"], c["tid"], c["key"], "set" if i == 0 else "add")
+            dm.save_edit(root, c["key"], png_bytes(np.full((32, 32), 255, np.uint8)), seen="", rect=rect,
+                         base=dm.base_fp(c, None, "hand"), ops="가져오기 전")
+        h = dict(h, compose=dict(dp._COMPOSE_DEFAULTS, mask_source="hand", use_registration=False, use_tone=False))
+        exp = dp.BMKDesignPatchExportPSD()
+        ex = exp.run(h, "psmask", "smart_object", "hidden_all", "raw", "hand", True, False)
+        psd = Path(ex["ui"]["bmk_dp_export"][0]["psd"])
+        side = psd.with_suffix(".json")
+        side_bytes = side.read_bytes()
+        rows = json.loads(side_bytes)["export_layers"]
+        names = {r["key"]: r["name"] for r in rows}
+        keys = [c["key"] for c in candidates]
+        exported = st.load_manifest(root)["exports"][-1]
+        at = time.mktime(time.strptime(exported["time"], "%Y-%m-%d %H:%M:%S"))
+        os.utime(psd, (at + 0.25, at + 0.25))
+        listed = bd.mask_ps_list(root)
+        check(len(listed) == 1 and not listed[0]["modified"] and listed[0]["bytes"] == psd.stat().st_size,
+              "ps_list: 이번 Export는 초 단위 기록 오차로 modified 오탐하지 않음")
+        with patch.object(bd.dpsd, "open_psd", wraps=bd.dpsd.open_psd) as opened:
+            dry0 = bd.mask_ps_import(root, dict(psd=str(psd), dry_run=True))
+        check(not dry0["changed"] and not dry0["skipped"] and opened.call_count == 1,
+              "그대로 왕복 = 차이 0·숨김 제외·PSD 한 번만 열기")
+
+        document = PSDImage.open(psd)
+        layers = {x.name: x for x in document.descendants() if x.kind == "smartobject"}
+        groups = [layers[names[k]].parent for k in keys[:6]]
+        arr = np.full((36, 36), 255, np.uint8)
+        arr[2:34, 2:18] = 0
+        groups[0].remove_mask()
+        groups[0].create_mask(Image.fromarray(arr), left=6, top=6)
+        groups[0].mask.data.background_color = 0
+        groups[0].mask.data.parameters = MaskParameters(user_mask_density=128, user_mask_feather=2.0)
+        groups[0].mask.data.flags.parameters_applied = True
+        near = np.full((32, 32), 255, np.uint8)
+        near[0, 0], near[0, 1] = 253, 252
+        groups[1].remove_mask()
+        groups[1].create_mask(Image.fromarray(near), left=8, top=8)
+        groups[1].mask.data.background_color = 0
+        layers[names[keys[2]]].name = "PS에서 바꾼 이름"
+        moved = layers[names[keys[4]]].smart_object._placed_layer
+        moved.transform = tuple(v + (1 if i % 2 == 0 else 0) for i, v in enumerate(moved.transform))
+        groups[5].mask.disabled = True
+        document.save(psd)
+        os.utime(psd, (at + 5, at + 5))
+        bd.apply_pick(root, candidates[3]["crop_id"], candidates[3]["tid"], keys[3], "remove")
+        before = st.load_manifest(root)
+        before_files = {str(p): p.read_bytes() for p in Path(root).rglob("*.png")}
+        old_edits = copy.deepcopy(before["mask_edits"])
+        status, preview = response(dict(psd=str(psd), dry_run=True))
+        if status != 200:
+            raise AssertionError(f"PS 미리보기 HTTP {status}: {preview}")
+        changes = {r["key"]: r for r in preview["changed"]}
+        check(status == 200 and set(changes) == set(keys[:2]) and changes[keys[0]]["diff_px"] == 512
+              and changes[keys[0]]["outside_px"] == 272 and changes[keys[1]]["diff_px"] == 1,
+              f"PS 실제 수정: L8 차이 >2·1픽셀부터, 창 밖 272px {preview['changed']}")
+        reasons = "\n".join(r["reason"] for r in preview["skipped"])
+        check(len(preview["skipped"]) == 4 and all(x in reasons for x in ("이름", "★", "quad", "마스크 없음·꺼짐")),
+              "건너뜀 각각: 이름 없음·현재 ★ 아님·SO 이동(Candidate In 안내)·마스크 꺼짐")
+        check(any("농도 128" in w and "페더 2" in w and groups[0].name in w for w in preview["warnings"])
+              and any("창 밖" in w for w in preview["warnings"]), "농도·페더·그룹 이름·창 밖 경고")
+        check(st.load_manifest(root) == before and before_files == {str(p): p.read_bytes() for p in Path(root).rglob("*.png")}
+              and side.read_bytes() == side_bytes, "dry_run: 매니페스트·PNG·사이드카 바이트 불변")
+        check(bd.mask_ps_list(root)[0]["modified"], "ps_list: PSD 수정 시각이 Export 이후면 modified")
+        bad = copy.deepcopy(preview["seen"])
+        bad["edits"][keys[0]] = ""
+        status, conflict = response(dict(psd=str(psd), dry_run=False, seen=bad))
+        check(status == 409 and conflict["reason"] == "changed" and st.load_manifest(root) == before, "seen 불일치 → 409·저장 없음")
+        status, imported = response(dict(psd=str(psd), dry_run=False, seen=preview["seen"]))
+        after = st.load_manifest(root)
+        check(status == 200 and len(imported["imported"]) == 2 and not imported["failed"], "PS 그룹 마스크 2개 S4 새 판 저장")
+        for key, expected in ((keys[0], arr[2:34, 2:34]), (keys[1], near)):
+            record = dm.check_record(after["mask_edits"][key])
+            raster = dm.validate_png(Path(st.resolve_path(root, record["file"])).read_bytes(), rect)
+            check(np.array_equal(raster, expected) and record["hist"][0]["file"] == old_edits[key]["file"]
+                  and record["base"] == dm.base_fp(candidates[keys.index(key)], None, "hand")
+                  and record["ops"] == f"PS 그룹 마스크 {psd.name}", "래스터 원본값·현재 기준·hist·ops 보존 " + key)
+        check({k: v for k, v in before.items() if k not in ("mask_edits", "rev")} ==
+              {k: v for k, v in after.items() if k not in ("mask_edits", "rev")},
+              "편집·rev 외 매니페스트 불변(후보·분석·cell_key·jobs·calls·초안·승인 입력)")
+        again = bd.mask_ps_import(root, dict(psd=str(psd), dry_run=True))
+        check(not again["changed"], "가져온 뒤 동일 PSD 재미리보기 = 변경 없음")
+        new_export = exp.run(h, "psmask", "smart_object", "hidden_all", "raw", "hand", True, False)
+        check(new_export["ui"]["bmk_dp_export"][0]["outcome"] == "new"
+              and new_export["ui"]["bmk_dp_export"][0]["psd"] != str(psd).replace("\\", "/"), "가져온 편집 → 다음 Export 새 PSD")
+        for key in keys[:2]:
+            old, _ = dm.undo_edit(root, key, seen=after["mask_edits"][key]["file"])
+            check(old == old_edits[key], "이전 판으로: 원래 편집 기록·래스터 복구 " + key)
+
+        # 다른 이름으로 저장한 PS 사본: 자체 사이드카 없이 원래 Export의 사이드카로 왕복.
+        original_bytes = psd.read_bytes()
+        ps_copy = psd.with_name(psd.stem + "_ps.psd")
+        case_copy = psd.with_name(psd.stem.swapcase() + " copy.PSD")
+        PSDImage.open(psd).save(ps_copy)
+        case_copy.write_bytes(ps_copy.read_bytes())
+        os.utime(ps_copy, (at + 20, at + 20))
+        os.utime(case_copy, (at + 15, at + 15))
+        # 자체 사이드카가 있어도 원래 Export의 export_layers만 읽는다.
+        case_copy.with_suffix(".json").write_text('{"export_layers": []}', encoding="utf-8")
+        longer = psd.with_name(psd.stem + "0.psd")
+        longer_copy = psd.with_name(psd.stem + "0_ps.psd")
+        longer.write_bytes(original_bytes)
+        longer_copy.write_bytes(original_bytes)
+        longer_side = json.loads(side_bytes)
+        for row in longer_side["export_layers"]:
+            if row["key"] == keys[0]:
+                row["name"] = "더 긴 Export만의 이름 ★"
+        longer.with_suffix(".json").write_text(json.dumps(longer_side, ensure_ascii=False), encoding="utf-8")
+        missing_longer = psd.with_name(psd.stem + "00.psd")
+        missing_longer_copy = psd.with_name(psd.stem + "00_ps.psd")
+        missing_longer.write_bytes(original_bytes)
+        missing_longer_copy.write_bytes(original_bytes)
+        m = st.load_manifest(root)
+        m["exports"].extend([dict(exported, psd=str(longer), hash="psmask-long-prefix"),
+                             dict(exported, psd=str(missing_longer), hash="psmask-no-sidecar")])
+        st.save_manifest(root, m)
+        listed = bd.mask_ps_list(root)
+        by_path = {os.path.normcase(r["psd"]): r for r in listed}
+        row_for = lambda p: by_path[os.path.normcase(str(p))]
+        check(row_for(ps_copy)["copy_of"] == str(psd) and row_for(case_copy)["copy_of"] == str(psd)
+              and row_for(ps_copy)["modified"] and row_for(case_copy)["modified"]
+              and not ps_copy.with_suffix(".json").exists(), "사본: 접두사 일치·대소문자 무시·여러 사본·원래 사이드카 사용·modified")
+        index = next(i for i, r in enumerate(listed) if os.path.normcase(r["psd"]) == os.path.normcase(str(psd)))
+        check([os.path.normcase(r["psd"]) for r in listed[index:index + 3]] ==
+              [os.path.normcase(str(p)) for p in (psd, ps_copy, case_copy)], "원본 바로 아래에 같은 Export의 사본을 수정 시각 역순으로 묶음")
+        check(row_for(longer)["copy_of"] is None and row_for(longer_copy)["copy_of"] == str(longer)
+              and os.path.normcase(str(missing_longer_copy)) not in by_path,
+              "겹치는 Export: 가장 긴 stem에 매핑·정확한 원본을 사본 취급 안 함·긴 기록의 사이드카 없으면 제외")
+        status, long_preview = response(dict(psd=str(longer_copy), dry_run=True))
+        check(status == 200 and any(r["key"] == keys[0] and "이름" in r["reason"] for r in long_preview["skipped"])
+              and {r["key"] for r in long_preview["changed"]} == {keys[1]}, "가져오기도 가장 긴 Export의 export_layers로 매핑")
+        status, _ = response(dict(psd=str(missing_longer_copy), dry_run=True))
+        check(status == 404, "긴 Export 사이드카 없음: 가져오기에서 짧은 Export로 대체하지 않음")
+        other_folder = output / "other_folder"
+        other_folder.mkdir(exist_ok=True)
+        elsewhere_copy = other_folder / ps_copy.name
+        elsewhere_copy.write_bytes(original_bytes)
+        unrelated = psd.with_name("unrelated_copy.psd")
+        unrelated.write_bytes(original_bytes)
+        for rejected in (elsewhere_copy, unrelated):
+            rejected.with_suffix(".json").write_bytes(side_bytes)
+            status, _ = response(dict(psd=str(rejected), dry_run=True))
+            check(status == 400, "사본 경로 거절: 다른 폴더·접두사 불일치 " + str(rejected))
+        check(all(os.path.normcase(r["psd"]) not in {os.path.normcase(str(p)) for p in (elsewhere_copy, unrelated)}
+                  for r in bd.mask_ps_list(root)), "다른 폴더·접두사 불일치는 목록에서도 제외")
+        status, case_preview = response(dict(psd=str(case_copy), dry_run=True))
+        check(status == 200 and {r["key"] for r in case_preview["changed"]} == set(keys[:2]),
+              "대소문자가 다른 사본 가져오기: 자체 사이드카 대신 원래 사이드카 사용")
+        status, copy_preview = response(dict(psd=str(ps_copy), dry_run=True))
+        status2, copy_import = response(dict(psd=str(ps_copy), dry_run=False, seen=copy_preview["seen"]))
+        copy_edits = st.load_manifest(root)["mask_edits"]
+        check(status == status2 == 200 and len(copy_import["imported"]) == 2 and not copy_import["failed"],
+              "사본 PSD → 미리보기 → 마스크 편집 왕복 성공")
+        for key, expected in ((keys[0], arr[2:34, 2:34]), (keys[1], near)):
+            record = copy_edits[key]
+            check(record["ops"] == f"PS 그룹 마스크 {ps_copy.name}" and record["hist"][0]["file"] == old_edits[key]["file"]
+                  and np.array_equal(dm.validate_png(Path(st.resolve_path(root, record["file"])).read_bytes(), rect), expected),
+                  "사본 래스터·hist·사본 파일 이름 ops " + key)
+            restored, _ = dm.undo_edit(root, key, seen=record["file"])
+            check(restored == old_edits[key], "사본 가져오기 되돌리기 " + key)
+        check(psd.read_bytes() == original_bytes and side.read_bytes() == side_bytes,
+              "사본 가져오기·되돌리기는 원래 Export PSD·사이드카를 바꾸지 않음")
+
+        preview = bd.mask_ps_import(root, dict(psd=str(psd), dry_run=True))
+        save = dm.save_edit
+        def fail_one(root, key, *args, **kwargs):
+            if key == keys[0]:
+                raise OSError("시험: 첫 파일 잠김")
+            return save(root, key, *args, **kwargs)
+        with patch.object(dm, "save_edit", side_effect=fail_one):
+            partial = bd.mask_ps_import(root, dict(psd=str(psd), dry_run=False, seen=preview["seen"]))
+        check(len(partial["failed"]) == 1 and partial["imported"][0]["key"] == keys[1], "일부 저장 실패는 표에 담고 나머지 계속")
+        dm.undo_edit(root, keys[1], seen=partial["imported"][0]["file"])
+        preview = bd.mask_ps_import(root, dict(psd=str(psd), dry_run=True))
+        os.utime(psd, (at + 10, at + 10))
+        status, _ = response(dict(psd=str(psd), dry_run=False, seen=preview["seen"]))
+        check(status == 409, "미리보기 뒤 PSD 수정 → 409(확인하지 않은 파일 가져오지 않음)")
+
+        # 없는 마스크·pixel Export도 실제 PSD로 검사한다.
+        document = PSDImage.open(psd)
+        layer = next(x for x in document.descendants() if x.name == names[keys[5]])
+        layer.parent.remove_mask()
+        document.save(psd)
+        dry = bd.mask_ps_import(root, dict(psd=str(psd), dry_run=True))
+        check(any(s["key"] == keys[5] and "마스크 없음" in s["reason"] for s in dry["skipped"]), "그룹 마스크 없음 건너뜀")
+        pixel = exp.run(h, "psmask_pixel", "pixel", "hidden_all", "raw", "hand", True, False)
+        pixel_path = pixel["ui"]["bmk_dp_export"][0]["psd"]
+        pixel_result = bd.mask_ps_import(root, dict(psd=pixel_path, dry_run=True))
+        check(not pixel_result["changed"] and all("pixel" in r["reason"] for r in pixel_result["skipped"]), "pixel 모드 매핑 불가")
+        # bbox 밖 흰 background도 창 안에 정확히 채우고 창 밖을 캔버스 크기로 센다.
+        document = PSDImage.open(psd)
+        group = next(x for x in document.descendants() if x.name == names[keys[0]]).parent
+        group.remove_mask()
+        group.create_mask(Image.new("L", (2, 2), 0), left=12, top=12)
+        group.mask.data.background_color = 255
+        window, outside, _ = bd.dpsd.group_mask_window(group, rect, [64, 64])
+        check(window[4:6, 4:6].sum() == 0 and np.count_nonzero(window == 255) == 1020 and outside == 3072,
+              "mask bbox 밖 background_color 255·창 밖 픽셀 집계")
+
+        # 경로 검사는 파일이 실제로 있어도 output 경계를 먼저 검사한다.
+        outside_psd = out / "outside.psd"
+        outside_psd.write_bytes(psd.read_bytes())
+        outside_psd.with_suffix(".json").write_bytes(side_bytes)
+        missing_side = output / "missing_side.psd"
+        missing_side.write_bytes(psd.read_bytes())
+        m = st.load_manifest(root)
+        m["exports"].extend([dict(exported, psd=str(outside_psd), rev=999), dict(exported, psd=str(missing_side), rev=998)])
+        st.save_manifest(root, m)
+        listed = bd.mask_ps_list(root)
+        check(all(r["psd"] not in (str(outside_psd), str(missing_side)) for r in listed)
+              and listed[0]["psd"] == str(Path(pixel_path)), "ps_list: output 밖·사이드카 없음 제외·최신 기본 선택")
+        status, _ = response(dict(psd=str(outside_psd), dry_run=True))
+        check(status == 400, "output 밖 실제 PSD 경로 거절")
+        unrecorded = output / "unrecorded.psd"
+        unrecorded.write_bytes(psd.read_bytes())
+        unrecorded.with_suffix(".json").write_bytes(side_bytes)
+        status, _ = response(dict(psd=str(unrecorded), dry_run=True))
+        check(status == 400, "output 안이어도 이 프로젝트 exports 기록 없는 PSD 거절")
+        request = types.SimpleNamespace(query={"root": st.root_key(root)}, path="/mask/ps_list")
+        with patch.object(bd, "mask_ps_list", wraps=bd.mask_ps_list) as listed_fn:
+            answer = asyncio.run(bd.mask_ps_list_handler(request))
+        check(answer.status == 200 and isinstance(json.loads(answer.body), list) and listed_fn.call_count == 1,
+              "GET 처리기 응답 배열(포트·네트워크 없이 직접 호출)")
+    finally:
+        folder_paths.set_output_directory(old_output)
+        bd._OUTPUT_DIR[:] = old_board_output
+
+    node = shutil.which("node")
+    if not node:
+        skip("node 없음 → PS 마스크 Export UI 하네스 생략")
+        return
+    harness = _PL_JS_HARNESS
+    cuts = [harness[harness.index(a):harness.index(b, harness.index(a))] for a, b in (
+        ("import fs", "async function run("), ("class El {", "async function mouse("),
+        ("function boardState()", 'await scenario("panel"'), ("function mkPanel(", 'await scenario("panelStyle"'),
+        ("function quietPipeline(mod)", 'await scenario("panelDrift"'))]
+    scene = r'''
+await scenario("psMask", async () => {
+  const srv = server();
+  srv.route.pipeline = quietPipeline(); quietPlan(srv);
+  const fetch = srv.fetch, requests = [];
+  const preview = {changed: [{key: "a", crop: "크롭", label: "그룹 <b> ★", diff_px: 7, outside_px: 3}],
+    skipped: [{name: "이름 없음", reason: "레이어 이름을 찾을 수 없음"}], warnings: ["창 밖 3px"],
+    seen: {source: {file: [1,2,3]}, edits: {a: ""}, targets: {a: {rect: [0,0,2,2]}}}};
+  let conflict = false, empty = false;
+  srv.fetch = async (url, opt = {}) => {
+    const path = new URL(url).pathname;
+    if (path.endsWith("/mask/ps_list")) return {ok: true, status: 200, json: async () => empty ? [] : [
+      {psd: "new.psd", rev: 2, time: "최근", modified: true, copy_of: null},
+      {psd: "new_ps.psd", rev: 2, time: "최근", modified: true, copy_of: "new.psd"},
+      {psd: "new copy.psd", rev: 2, time: "최근", modified: false, copy_of: "new.psd"},
+      {psd: "old.psd", rev: 1, time: "이전", modified: false, copy_of: null}]};
+    if (path.endsWith("/mask/ps_import")) {
+      const body = JSON.parse(opt.body); requests.push(body);
+      if (conflict && !body.dry_run) return {ok: false, status: 409, json: async () => ({error: "다시 미리 보기"})};
+      return {ok: true, status: 200, json: async () => body.dry_run ? clone(preview) :
+        {...clone(preview), imported: [{key: "a"}], failed: []}};
+    }
+    return fetch(url, opt);
+  };
+  const env = mkPanel(srv), S = quietState();
+  env.pipe.stateChanged(S); env.pipe.enter(S, S.crops[0].id);
+  await until(() => !!env.B("PS 마스크 가져오기"));
+  env.B("PS 마스크 가져오기").fire("click");
+  await until(() => !!env.B("미리 보기"));
+  const select = () => env.panel.all().find(x => x.tagName === "SELECT" && x.title.startsWith("가져올 Export"));
+  const r = {default: select().value, modified: select().textContent.includes("PS 에서 고친 듯"),
+    note: env.panel.textContent.includes("원래이름_ps.psd") && env.panel.textContent.includes("같은 폴더")
+      && env.panel.textContent.includes("같은 이름으로 덮어쓰면") && env.panel.textContent.includes("'변경 없음'"),
+    disabled: env.B("가져오기 (무료)").disabled};
+  r.copies = select().children.map(x => x.value).join("|") === "new.psd|new_ps.psd|new copy.psd|old.psd"
+    && select().children[1].textContent.startsWith("\u00a0\u00a0↳ 사본") && select().children[2].textContent.startsWith("\u00a0\u00a0↳ 사본")
+    && select().children[1].title.includes("new.psd");
+  select().value = "new_ps.psd"; select().fire("change");
+  env.B("미리 보기").fire("click"); await until(() => !env.B("가져오기 (무료)").disabled);
+  r.preview = env.panel.textContent.includes("바뀐 그룹 1 · 건너뜀 1") && env.panel.textContent.includes("레이어 이름을 찾을 수 없음")
+    && env.panel.textContent.includes("그룹 <b> ★") && requests[0].psd === "new_ps.psd" && requests[0].root === KEY;
+  ctx.window.confirm = (text) => { env.confirms.push(text); return false; };
+  env.B("가져오기 (무료)").fire("click"); await sleep(10);
+  r.cancel = requests.length === 1 && env.confirms.at(-1).includes("그룹 <b> ★");
+  ctx.window.confirm = () => true;
+  env.B("가져오기 (무료)").fire("click"); await until(() => env.toasts.length > 0);
+  r.imported = requests[1].dry_run === false && requests[1].psd === "new_ps.psd" && JSON.stringify(requests[1].seen) === JSON.stringify(preview.seen)
+    && env.toasts.at(-1).includes("PS 마스크 1개를 마스크 편집으로 가져왔습니다 — 마스크 모드에서 확인·되돌리기") && env.refresh > 0;
+  env.B("미리 보기").fire("click"); await until(() => !env.B("가져오기 (무료)").disabled);
+  select().value = "old.psd"; select().fire("change");
+  r.selection = env.B("가져오기 (무료)").disabled;
+  env.B("미리 보기").fire("click"); await until(() => !env.B("가져오기 (무료)").disabled);
+  conflict = true; env.B("가져오기 (무료)").fire("click"); await until(() => env.panel.textContent.includes("다시 미리 보기"));
+  r.conflict = env.B("가져오기 (무료)").disabled;
+  empty = true; env.B("PS 마스크 가져오기").fire("click"); await until(() => env.panel.textContent.includes("가져올 Export PSD가 없습니다"));
+  r.empty = env.panel.textContent.includes("가져올 Export PSD가 없습니다");
+  r.noQueue = !srv.log.some(x => x.path === "prompt");
+  env.pipe.leave(); return r;
+});
+console.log(JSON.stringify(out));
+'''
+    (out / "harness.mjs").write_text("".join(cuts) + scene, encoding="utf-8", newline="\n")
+    (out / "in.json").write_text(json.dumps({"api": _pl_api(), "pipelineJs": str(PKG / "web_design_patch/pipeline.js"),
+                                            "boardJs": str(PKG / "web_design_patch/board.js")}), encoding="utf-8")
+    result = subprocess.run([node, str(out / "harness.mjs"), str(out / "in.json")], capture_output=True,
+                            text=True, encoding="utf-8", timeout=45)
+    check(result.returncode == 0 and bool(result.stdout.strip()), f"PS UI node 하네스 실행 {result.stderr[-500:]}")
+    if result.returncode == 0 and result.stdout.strip():
+        values = json.loads(result.stdout.strip().splitlines()[-1])["psMask"]
+        check("error" not in values, f"PS UI 하네스 예외 없음 {values.get('error', '')}")
+        for key, value in values.items():
+            if key != "error":
+                check(value == ("new.psd" if key == "default" else True), f"PS UI {key}: {value}")
 
 
 def polish4_check_unit():

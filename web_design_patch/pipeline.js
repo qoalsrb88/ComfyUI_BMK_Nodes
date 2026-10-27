@@ -417,6 +417,8 @@ window.DPPipeline = (() => {
     }
 
     s.openFolder = () => call("open_folder", {}); // Export 출력 폴더를 탐색기로(배치 3-5a — 서버 PC)
+    s.psList = () => call("mask/ps_list?" + qs({}));
+    s.psImport = (psd, dry_run, seen) => call("mask/ps_import", { psd, dry_run, seen });
 
     function comfy(path, body) {
       return fetchFn(comfyUrl(path), body === undefined ? { cache: "no-store" } : postOpts(body));
@@ -2270,6 +2272,7 @@ window.DPPipeline = (() => {
           }
         });
       btns(s, eb, ob);
+      psMaskPanel(s);
 
       renderAdopt();
     }
@@ -2335,6 +2338,109 @@ window.DPPipeline = (() => {
         t.append(tr);
       }
       return t;
+    }
+
+    let psMask = null; // Export 절의 선택·미리보기만 이 창에서 유지(폴링으로 패널을 다시 그려도 보존)
+
+    async function psMaskAction(kind) {
+      if (psMask && psMask.busy) return;
+      if (kind === "open") psMask = { rows: [], psd: "", preview: null, result: null, error: null, busy: false };
+      const state = psMask;
+      if (!state) return;
+      if (kind === "import" && (!state.preview || !state.preview.changed.length || !window.confirm(
+        `다음 그룹의 PS 마스크를 마스크 편집 새 판으로 가져옵니다(무료).\n${state.preview.changed.map((r) => r.label).join("\n")}\n마스크 모드에서 되돌릴 수 있습니다. 계속할까요?`))) return;
+      state.busy = true;
+      state.error = null;
+      state.result = null;
+      render();
+      try {
+        if (kind === "open") {
+          state.rows = await PS.psList();
+          state.psd = state.rows.length ? state.rows[0].psd : "";
+        } else if (kind === "preview") {
+          state.preview = null;
+          state.preview = await PS.psImport(state.psd, true, null);
+        } else {
+          const result = await PS.psImport(state.psd, false, state.preview.seen);
+          state.result = result;
+          state.preview = null;
+          opts.toast(`PS 마스크 ${result.imported.length}개를 마스크 편집으로 가져왔습니다 — 마스크 모드에서 확인·되돌리기`, result.failed.length ? "warn" : "");
+          await opts.refresh();
+        }
+      } catch (e) {
+        state.error = e.message;
+        state.preview = null;
+        if (e.data && e.data.imported) {
+          state.result = e.data;
+          opts.toast(`PS 마스크 ${e.data.imported.length}개를 마스크 편집으로 가져왔습니다 — 마스크 모드에서 확인·되돌리기`, "warn");
+          await opts.refresh();
+        }
+      } finally {
+        state.busy = false;
+        render();
+      }
+    }
+
+    function psMaskPanel(s) {
+      const open = button("PS 마스크 가져오기", "이 프로젝트에서 Export 한 PSD의 그룹 마스크를 마스크 편집으로 가져옴(무료)", () => psMaskAction("open"));
+      open.disabled = !!(psMask && psMask.busy);
+      btns(s, open);
+      if (!psMask) return;
+      const state = psMask;
+      line(s, "PS 에서 같은 이름으로 덮어 저장하거나, 같은 폴더에 원래 이름으로 시작하는 다른 이름(예: 원래이름_ps.psd)으로 저장하면 목록에 나옵니다.", "dim");
+      line(s, "같은 이름으로 덮어쓰면 다음 Export에서 바뀐 것이 없을 때 그 파일을 '변경 없음'으로 돌려줍니다.", "dim");
+      if (state.error) line(s, state.error, "bad");
+      if (state.busy) line(s, "PS 마스크를 읽고 있습니다…", "dim");
+      if (!state.rows.length) {
+        if (!state.busy && !state.error) line(s, "가져올 Export PSD가 없습니다(PSD와 옆 사이드카 필요)", "dim");
+        return;
+      }
+      const pick = el("select", "pp-psmask-picker");
+      pick.title = "가져올 Export PSD(최근 것부터)";
+      pick.dataset.keys = "board";
+      let originalShown = null;
+      for (const row of state.rows) {
+        if (row.copy_of && originalShown !== row.copy_of.toLowerCase()) {
+          const missing = el("option", "", `r${row.rev} · ${row.time} · ${row.copy_of} (원본 파일 없음)`);
+          missing.disabled = true;
+          pick.append(missing);
+        }
+        originalShown = (row.copy_of || row.psd).toLowerCase();
+        const option = el("option", "", `${row.copy_of ? "\u00a0\u00a0↳ 사본 · " : ""}r${row.rev} · ${row.time}${row.modified ? " · PS 에서 고친 듯" : ""} · ${row.psd}`);
+        option.value = row.psd;
+        if (row.copy_of) option.title = `원래 Export PSD: ${row.copy_of}`;
+        pick.append(option);
+      }
+      pick.value = state.psd;
+      pick.disabled = state.busy;
+      pick.addEventListener("change", () => {
+        state.psd = pick.value;
+        state.preview = state.result = state.error = null;
+        pick.blur();
+        render();
+      });
+      s.append(pick);
+      const preview = button("미리 보기", "저장하지 않고 바뀐 그룹과 건너뛸 이유 확인", () => psMaskAction("preview"));
+      const take = button("가져오기 (무료)", "미리 본 그룹을 마스크 편집 새 판으로 저장", () => psMaskAction("import"));
+      preview.disabled = state.busy || !state.psd;
+      take.disabled = state.busy || !state.preview || !state.preview.changed.length;
+      btns(s, preview, take);
+      const result = state.preview || state.result;
+      if (!result) return;
+      line(s, `바뀐 그룹 ${result.changed.length} · 건너뜀 ${result.skipped.length}`
+        + (result.imported ? ` · 가져옴 ${result.imported.length} · 실패 ${result.failed.length}` : ""));
+      const table = el("table", "pp-table pp-psmask");
+      const row = (values, tag = "td") => {
+        const tr = el("tr");
+        for (const value of values) tr.append(el(tag, "", value));
+        table.append(tr);
+      };
+      row(["그룹", "결과·이유"], "th");
+      for (const r of result.changed) row([r.label, `차이 ${r.diff_px} px · 창 밖 ${r.outside_px} px`]);
+      for (const r of result.skipped) row([r.name, `건너뜀 — ${r.reason}`]);
+      for (const r of result.failed || []) row([r.key, `실패 — ${r.reason}`]);
+      s.append(table);
+      for (const warning of result.warnings) line(s, warning, "warn");
     }
 
     function exportRows(s, P0) {
