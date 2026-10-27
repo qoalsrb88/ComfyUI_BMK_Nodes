@@ -277,6 +277,11 @@ for _module_name in _NODE_MODULES:
 #       BMKDesignPatchSpecDraft: 'VLM 초안 승인' 버튼(approve = pending_hash → Draft 만 부분 실행).
 #       Review: Open Board 버튼(별도 창 Review Board — web_design_patch/ 를 BMK route 로 서빙)과 보드의
 #       postMessage → Review 부분 실행 큐. 과금 판단은 서버(Run·Spec Draft)만 한다.
+#   - bmk_tag_organizer.js
+#       BMKTagOrganizer용 확장. 배열 세팅(arrangement) 청크 편집기 DOM 위젯: 줄마다 분류 색 청크를 끌어
+#       순서·줄을 바꾸고, 펼쳐서 서브(멤버) 순서 바꾸기·다른 청크로·밖으로 새 청크, 숨기기, 커스텀 청크
+#       (태그·패턴), 관리 툴 JSON 가져오기/내보내기. 결과는 숨긴 STRING 위젯 arrangement 에 JSON 으로
+#       쓰고, /bmk/tag_organizer/preview 로 남는 태그는 밝게·뺀 태그는 흐리게 미리 본다.
 # 새 JS 확장을 추가할 때는 ./js 폴더에 파일만 넣으면 됩니다.
 WEB_DIRECTORY = "./js"
 

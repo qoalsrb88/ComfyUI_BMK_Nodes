@@ -69,6 +69,10 @@ Impact Pack 의존 import는 전부 `try/except`로 격리돼 있어서, 없어�
 고치지 마세요(다음 동기화가 바뀐 파일을 감지하고 멈춥니다). 다른 위치의 팩을 쓰려면 환경
 변수 `TAGORG_PACK` 에 경로를 지정합니다.
 
+줄·청크 순서(배열 세팅)는 노드 안의 청크 편집기에서 끌어서 바꾸거나, TagOrganizer 관리 툴에서
+내보낸 JSON 을 **가져오기**로 넣습니다. 결과는 숨긴 `arrangement` 위젯에 저장되고, 비워 두면
+`layout` 을 씁니다. 형식은 TagOrganizer 저장소의 `docs/arrangement.md` 가 정본입니다.
+
 ## BMK Tabbed Notes — 노트 데이터 위치
 
 노트는 **이 저장소 안에 저장되지 않습니다.** 기본 위치는:

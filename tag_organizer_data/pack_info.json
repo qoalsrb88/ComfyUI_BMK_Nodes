@@ -1,6 +1,6 @@
 {
   "format": "tagorg-pack-info",
-  "pack_version": "2026.10.01+c3cb92e5",
+  "pack_version": "2026.10.01+503f42d0",
   "source": {
     "file": "danbooru_2026-10-01_pt20-ia-dd.csv",
     "date": "2026-10-01",
@@ -17,13 +17,35 @@
     "default": "기본",
     "compact": "간단히(6줄)"
   },
+  "quick": {
+    "framing": [
+      "portrait",
+      "close-up",
+      "upper body",
+      "cowboy shot",
+      "full body",
+      "lower body",
+      "feet out of frame",
+      "head out of frame"
+    ],
+    "view": [
+      "from behind",
+      "from side",
+      "from above",
+      "from below",
+      "straight-on",
+      "profile",
+      "pov",
+      "dutch angle"
+    ]
+  },
   "synced_from": {
     "repo": "TagOrganizer",
-    "commit": "fb518aef1c8dc86cabb687b64c0a9f00c5d62287",
+    "commit": "7164c1c6e518b0fc91a6e5d9d35c6fa1f2305a72",
     "dirty": false
   },
   "files": {
-    "bmk_tag_organizer_core.py": "f6057318b94780644f5baf3b7b6ca828e1b7933582109f0d11de9333d0f06496",
-    "tag_organizer_data/tagpack.json.gz": "12fe9e5a15afac49560e5969240e4f0ff2b95f10f39af78b5b16fc5f7bf95d95"
+    "bmk_tag_organizer_core.py": "78c349637ff9f094a4737119cc4ba3c675804108ba12838cbfbabb63a7afdc07",
+    "tag_organizer_data/tagpack.json.gz": "1cc66917abd1f948ddda6993a96c52c07bdbda4760fd53a342ed03e69578f54f"
   }
 }
