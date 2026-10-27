@@ -1094,42 +1094,82 @@ _MERGE_KEYED_DICTS = ("picks", "rejects", "rerolls", "approvals", "mask_edits", 
 _MISSING = object()
 
 
-def cand_adjust_values(blur, invert) -> dict:
+CAND_XFORM_DEFAULTS = {"dx": 0.0, "dy": 0.0, "rot": 0.0, "sx": 1.0, "sy": 1.0, "flip_h": False, "flip_v": False}
+
+
+def cand_adjust_values(blur, invert, **xform) -> dict:
     """후보 보정 입력 검사. bool을 숫자로, 문자열을 bool로 바꾸지 않는다."""
     if isinstance(blur, bool) or not isinstance(blur, (int, float)) or not 0 <= blur <= 20:
         raise ValueError("블러는 0 이상 20 이하의 숫자여야 합니다")
     if not isinstance(invert, bool):
         raise ValueError("색반전은 참 또는 거짓이어야 합니다")
-    return {"blur": float(blur), "invert": invert}
+    values = {"blur": float(blur), "invert": invert}
+    if set(xform) - CAND_XFORM_DEFAULTS.keys():
+        raise ValueError("알 수 없는 후보 변형 값입니다")
+    for k, default in CAND_XFORM_DEFAULTS.items():
+        v = xform.get(k, default)
+        if k in ("flip_h", "flip_v"):
+            if not isinstance(v, bool):
+                raise ValueError("뒤집기는 참 또는 거짓이어야 합니다")
+        else:
+            lo, hi = (-65536, 65536) if k in ("dx", "dy") else (-180, 180) if k == "rot" else (0.1, 4.0)
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not lo <= v <= hi:
+                raise ValueError(f"변형 {k} 는 {lo} 이상 {hi} 이하의 유한한 숫자여야 합니다")
+            v = float(v)
+        values[k] = v
+    return values
+
+
+def cand_adjust_effect(rec: dict | None) -> dict | None:
+    """픽셀·계획·서명·사이드카가 공유하는 효과 값. 옛 블러 보정의 직렬화 꼴을 유지한다."""
+    if rec is None:
+        return None
+    effect = {"blur": rec["blur"], "invert": rec["invert"]}
+    if rec.get("flip_h") or rec.get("flip_v"):
+        effect.update({k: rec.get(k, False) for k in ("flip_h", "flip_v")})
+    if any(rec.get(k, CAND_XFORM_DEFAULTS[k]) != CAND_XFORM_DEFAULTS[k] for k in ("dx", "dy", "rot", "sx", "sy")):
+        effect.update({k: rec.get(k, CAND_XFORM_DEFAULTS[k]) for k in ("dx", "dy", "rot", "sx", "sy")})
+    return effect if effect["blur"] or effect["invert"] or len(effect) > 2 else None
 
 
 def cand_adjust_record(m: dict, key: str) -> dict | None:
     """형식이 유효한 후보 보정 기록의 사본. 효과 없는 값도 seen·이력을 보존한다."""
     raw = m.get("cand_adjust")
     rec = raw.get(key) if isinstance(raw, dict) else None
-    if not isinstance(rec, dict) or set(rec) != {"blur", "invert", "at", "hist"}:
+    legacy = {"blur", "invert", "at"}
+    extended = legacy | CAND_XFORM_DEFAULTS.keys() | {"base_quad"}
+    if not isinstance(rec, dict) or set(rec) not in (legacy | {"hist"}, extended | {"hist"}):
         return None
     hist = rec["hist"]
     if not isinstance(hist, list) or len(hist) > 20:
         return None
     versions = []
     for v in [rec, *hist]:
-        if not isinstance(v, dict) or set(v) != ({"blur", "invert", "at", "hist"} if v is rec else {"blur", "invert", "at"}):
+        extra = {"hist"} if v is rec else set()
+        if not isinstance(v, dict) or set(v) not in (legacy | extra, extended | extra):
             return None
         if not isinstance(v["at"], str) or not re.fullmatch(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(?:\.\d{1,9})?", v["at"]):
             return None
         try:
-            values = cand_adjust_values(v["blur"], v["invert"])
+            values = cand_adjust_values(v["blur"], v["invert"], **{k: v[k] for k in CAND_XFORM_DEFAULTS if k in v})
         except ValueError:
             return None
-        versions.append(dict(values, at=v["at"]))
+        quad = v.get("base_quad")
+        if quad is not None:
+            try:
+                if not isinstance(quad, list) or len(quad) != 8 or any(
+                        isinstance(q, bool) or not isinstance(q, (int, float)) or not math.isfinite(q) for q in quad):
+                    return None
+            except OverflowError:
+                return None
+        versions.append(dict(values, base_quad=None if quad is None else [float(q) for q in quad], at=v["at"]))
     return dict(versions[0], hist=versions[1:])
 
 
 def cand_adjust(m: dict, key: str) -> dict | None:
-    """픽셀·서명·칩에 쓰는 효과 있는 보정만 읽는다(0/false 기록은 보정 없음)."""
+    """효과 있는 정규화 기록만 읽는다(항등 기록은 보정 없음)."""
     rec = cand_adjust_record(m, key)
-    return rec if rec and (rec["blur"] or rec["invert"]) else None
+    return rec if cand_adjust_effect(rec) else None
 
 
 def picked_adjustments(m: dict, keys=None) -> dict:
@@ -1155,7 +1195,7 @@ def picked_adjustments(m: dict, keys=None) -> dict:
             continue
         rec = cand_adjust(m, c["key"])
         if rec:
-            out[c["key"]] = {k: rec[k] for k in ("blur", "invert")}
+            out[c["key"]] = cand_adjust_effect(rec)
     return out
 
 

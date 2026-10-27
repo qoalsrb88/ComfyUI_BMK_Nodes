@@ -833,8 +833,8 @@ def _plan(root: str, m: dict, entries: dict, mask_source: str, use_registration:
     (아래 → 위). entries = _ensure_analysis 가 돌려준 {key: 분석 항목}(분석이 필요 없는 설정이면 {}). 보드에서 탈락시킨 후보(rejects)는
     pick 이든 대안이든 넣지 않는다. 크롭이나 타깃(tid)이 매니페스트에서 사라진 후보도 경고하고 뺀다(보드와 같게).
     ★ 에 마스크 편집(S4 mask_edits)이 있으면 mask = 그 래스터·msrc "edit"·mask_edit = 파일(mask_source 와 상관없이 — D4),
-    base_mask·base_msrc = 편집 전 기준(지금 편집 창·분석 항목 ph 가 기록과 다르면 '마스크 편집 기준 바뀜' 경고). area(z 순서)는 기준 마스크로
-    잰다 — 편집이 다른 패치와의 위아래를 바꾸지 않게(D5)."""
+    base_mask·base_msrc = 편집 전 기준(ph 가 기록과 다르면 '마스크 편집 기준 바뀜' 경고). 창 밖은 기준 마스크로 채운다.
+    area(z 순서)는 변형 전 quad·기준 마스크로 잰다 — 편집·변형이 위아래를 바꾸지 않게(D5·D42)."""
     crops = _crop_map(m)
     rejects = m.get("rejects") or {}
     groups: dict[tuple[str, str], dict] = {}
@@ -869,18 +869,18 @@ def _plan(root: str, m: dict, entries: dict, mask_source: str, use_registration:
             quad = an.quad_from_matrix(an.matrix_from_quad(quad, [0, 0, sw, sh]), [0, 0, sw, sh])
             warns.append(f"{c['key']} ({(c.get('origin_info') or {}).get('layer') or crop['name']}): 원근(Distort) quad 는 "
                          f"지원하지 않아 가장 가까운 평행사변형으로 근사")
-        bb = dpsd.quad_bbox(quad)
+        base_quad = quad
+        bb = dpsd.quad_bbox(base_quad)
+        adjust = store.cand_adjust_effect(store.cand_adjust(m, c["key"])) if c.get("picked") else None
+        if adjust:
+            quad = an.xform_quad(base_quad, **{k: adjust[k] for k in ("dx", "dy", "rot", "sx", "sy") if k in adjust})
+        mask_merged = False
         if mask_edit is not None:
-            # 편집은 기록 창 그대로 쓴다(D4) — 이번 계획의 패치 창·분석 항목이 편집할 때와 다르면 알린다. 보드 stale 은 마지막 Export 의
-            # compose 로 보므로 이번 Compose·Export 의 정합 사용이 바뀐 것은 여기서만 보인다. mask_source 는 Export 가 따로 가져 보지 않는다
-            why = []
-            now = dmask.edit_rect(bb, m["canvas"])
-            if now != rec["rect"]:
-                why.append(f"창 {rec['rect']} → {now}")
+            now = dmask.edit_rect(dpsd.quad_bbox(quad), m["canvas"])
+            merged = dmask.expand_edit_mask(mask, base_mask, now)
+            mask_merged, mask = merged is not mask, merged
             if entry is not None and dmask.base_fp(c, entry, mask_source)["ph"] != rec["base"]["ph"]:
-                why.append("분석 항목")
-            if why:
-                warns.append(f"{c['key']} ({crop['name']}): 마스크 편집 기준 바뀜({' · '.join(why)}) → 편집 그대로 씀"
+                warns.append(f"{c['key']} ({crop['name']}): 마스크 편집 기준 바뀜(분석 항목) → 편집 그대로 씀"
                              " — 어긋났으면 마스크 편집 [기준으로 다시 시작]")
         # Export 의 출력 마스크는 별도여도 쌓는 순서의 넓이는 Compose 기준(편집 전)으로 잰다.
         area_mask = base_mask if area_mask_source is None or area_mask_source == mask_source else _final_mask(
@@ -888,11 +888,13 @@ def _plan(root: str, m: dict, entries: dict, mask_source: str, use_registration:
         reg_m = _mask_region(area_mask, *bb)
         area = float(reg_m.sum()) if reg_m is not None else float((bb[2] - bb[0]) * (bb[3] - bb[1]))
         z = c.get("z")
-        item = {"cand": c, "entry": entry, "quad": quad, "mask": mask, "msrc": msrc, "area": area,
+        item = {"cand": c, "entry": entry, "quad": quad, "base_quad": base_quad, "mask": mask, "msrc": msrc, "area": area,
                 "base_mask": base_mask, "base_msrc": base_msrc, "mask_edit": mask_edit,
                 "z": (0, int(z)) if z is not None else (1, order_idx[c["key"]])}
-        if c.get("picked") and (adjust := store.cand_adjust(m, c["key"])):
-            item["adjust"] = {k: adjust[k] for k in ("blur", "invert")}
+        if mask_merged:
+            item["mask_merged"] = True
+        if adjust:
+            item["adjust"] = adjust
         g = groups.setdefault((c["crop_id"], c["tid"]), {"slices": [], "alts": []})
         g["slices" if c.get("picked") else "alts"].append(item)
 
@@ -940,7 +942,8 @@ def _cand_pixels(root: str, item: dict, toned: bool) -> tuple[np.ndarray, bool]:
     def adjusted(pix, is_toned):
         adj = item.get("adjust")
         if adj:
-            pix = an.adjust_candidate(pix, adj["blur"], adj["invert"], c["src_size"], item["quad"])
+            pix = an.adjust_candidate(pix, adj["blur"], adj["invert"], c["src_size"], item["quad"],
+                                      adj.get("flip_h", False), adj.get("flip_v", False))
         return pix, is_toned
 
     if toned and entry is not None and not entry.get("skipped") and tone.get("full") \
@@ -2342,6 +2345,10 @@ class BMKDesignPatchExportPSD:
         # 해시의 편집 = _plan 이 실제로 그룹 마스크로 쓴 것(★ 만, 파일을 못 읽어 기준으로 떨어진 기록은 빠짐 — 보이는 것 = PSD)
         edits = {it["cand"]["key"]: [it["mask_edit"], dmask.edit_record(m, it["cand"]["key"])["rect"]]
                  for _p, _t, it in _slices_in_order(plan) if it["mask_edit"]}
+        for _p, _t, it in _slices_in_order(plan):
+            if it.get("mask_merged"):
+                # 옛 정합으로 이미 창이 어긋난 편집도 새 채움 규칙으로 다시 Export 한다.
+                edits[it["cand"]["key"]].append({"outside_base": dmask.base_fp(it["cand"], it["entry"], mask_source)})
         # 해시의 하위 폴더 = 이 OS 의 폴더 같음(Windows 는 대소문자 무시 — 외주_A·외주_a 는 같은 폴더라 '변경 없음'), 기록 options 는 입력 그대로
         eh = _export_hash(m, entries, comp, dict(opts, subfolder=os.path.normcase(sub)) if sub else opts, edits)
         try:
@@ -2409,7 +2416,7 @@ class BMKDesignPatchExportPSD:
             rgb, alpha, eff, left, top = _render(pix, it["quad"], it["mask"])
             cache = rgb if alpha is None else np.dstack([rgb, alpha])
             name = f"{crop['name']} · {_target_label(crop, c['tid'])} · c{num:02d}" + (" ★" if c.get("picked") else "")
-            if it.get("adjust"):
+            if any((it.get("adjust") or {}).get(k) for k in ("blur", "invert", "flip_h", "flip_v")):
                 name += " · 보정"
             label = "green" if c.get("picked") else "red"
             if layer_mode == "smart_object":
@@ -2429,6 +2436,8 @@ class BMKDesignPatchExportPSD:
                             [mk["left"], mk["top"], mk["left"] + mk["arr"].shape[1], mk["top"] + mk["arr"].shape[0]]})
             if it["mask_edit"]:
                 written[-1]["mask_edit"] = it["mask_edit"]
+                if it.get("mask_merged"):
+                    written[-1]["mask_file"] = store.save_png_ca(root, "derived", mk["arr"], prefix="edit_fill_")
             if it.get("adjust"):
                 written[-1]["adjust"] = dict(it["adjust"])
             pbar.update(1)
@@ -2488,7 +2497,7 @@ class BMKDesignPatchExportPSD:
     def _so_bytes(root: str, it: dict, pix: np.ndarray, is_toned: bool) -> tuple[bytes, str]:
         """SO 임베드 bytes: 원본 파일 그대로, 톤 보정이면 풀해상도 PNG(derived 에 캐시)."""
         c, entry = it["cand"], it["entry"]
-        if it.get("adjust"):
+        if any((it.get("adjust") or {}).get(k) for k in ("blur", "invert", "flip_h", "flip_v")):
             rel = store.save_png_ca(root, "derived", pix, prefix="adjust_")
             return _read(_abs(root, rel)), "png"
         if not is_toned:

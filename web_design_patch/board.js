@@ -1549,7 +1549,7 @@
     mask: [["끌기", "붓"], ["⇧끌기", "흐리기"], ["X", "지우기 ↔ 살리기", { code: "KeyX" }], ["[", "붓 작게", { code: "BracketLeft" }], ["]", "붓 크게", { code: "BracketRight" }],
       ["⇧[", "경도 −", { code: "BracketLeft", shift: true }], ["⇧]", "경도 +", { code: "BracketRight", shift: true }], ["Q", "처음 마스크(누름)", { code: "KeyQ", hold: true }],
       ["W", "원본(누름)", { code: "KeyW", hold: true }], ["S", "처음/편집 슬라이더", { code: "KeyS" }], ["M", "마스크 보기", { code: "KeyM" }],
-      ["O", "선 숨기기", { code: "KeyO" }],
+      ["O", "선 숨기기", { code: "KeyO" }], ["←→↑↓", "패치 이동"], ["⇧←→↑↓", "10px"],
       ["N", "이음매", { code: "KeyN" }], ["Enter", "적용", { code: "Enter" }], ["Ctrl+Z", "되돌리기", { code: "KeyZ", ctrl: true }], ["Ctrl+Y", "다시", { code: "KeyY", ctrl: true }],
       ["Esc", "나가기", { code: "Escape" }]],
   };

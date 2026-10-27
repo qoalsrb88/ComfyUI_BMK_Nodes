@@ -7,7 +7,8 @@
 (msrc "edit"). 편집을 손 마스크(hand_mask)로 쓰지 않는다 — 손 마스크는 분석 해시·정합 제외·톤 제외에 들어가 편집 한 번에 재분석이 돌고
 패치가 움직인다(명세 §1.2). 그래서 매니페스트 최상위 mask_edits {후보 key: 기록} 에 두고(★·탈락처럼 보드가 update_manifest 로 씀,
 store 3-way 병합은 키 단위), 분석·z 순서(기준 마스크 넓이, D5)는 편집을 모른다. 편집은 mask_source 와 상관없이 이긴다(D4) — 기준이
-바뀌면 stale 로 알릴 뿐. ★ 가 아닌 후보(탈락·★ 해제·크롭에서 빠진 타깃)의 기록은 지우지 않고 쓰이지 않을 뿐이다(다시 ★ 하면 살아남).
+바뀌면 stale 로 알릴 뿐. 변형으로 창이 넓어지면 기록 창 안은 편집, 밖은 기준 마스크를 쓴다(기록 원본 보존, 창 변화만으로 stale 아님).
+★ 가 아닌 후보(탈락·★ 해제·크롭에서 빠진 타깃)의 기록은 지우지 않고 쓰이지 않을 뿐이다(다시 ★ 하면 살아남).
 torch·comfy·vlm·노드 모듈을 import 하지 않는다(store·numpy·PIL 만) — 노드와 보드(라우트·state)가 같은 함수를 쓴다.
 명세: H:\\BmkNodeDesign\\MultiLayerCropEdit\\_proto\\STUDIO_S4_SPEC.md §3(데이터 모델)·§4(라우트), 응답 모양 정본 tools/fixtures/mask_api.json.
 
@@ -147,6 +148,32 @@ def edit_mask(root: str, rec: dict) -> tuple[dict | None, str | None]:
 
 
 # ══════════════════════════════════════════════════════════════════════
+def contains_rect(outer, inner) -> bool:
+    """빈 현재 창도 포함으로 본다 — 캔버스 밖 패치 때문에 편집 래스터를 다시 만들지 않는다."""
+    return inner is None or (outer[0] <= inner[0] and outer[1] <= inner[1] and outer[2] >= inner[2] and outer[3] >= inner[3])
+
+
+def expand_edit_mask(edit: dict, base: dict | None, rect: list[int] | None) -> dict:
+    """기록 창 밖에 드러난 패치에는 기준을 채운다. 포함이면 dict 자체를 돌려줘 기존 픽셀을 보존한다."""
+    old = [edit["left"], edit["top"], edit["left"] + edit["arr"].shape[1], edit["top"] + edit["arr"].shape[0]]
+    if contains_rect(old, rect):
+        return edit
+    x0, y0, x1, y1 = min(old[0], rect[0]), min(old[1], rect[1]), max(old[2], rect[2]), max(old[3], rect[3])
+    arr = np.full((y1 - y0, x1 - x0), 255 if base is None else base.get("bg", 0), np.uint8)
+
+    def paste(mask):
+        left, top = mask["left"], mask["top"]
+        h, w = mask["arr"].shape
+        a, b, c, d = max(x0, left), max(y0, top), min(x1, left + w), min(y1, top + h)
+        if a < c and b < d:
+            arr[b - y0:d - y0, a - x0:c - x0] = mask["arr"][b - top:d - top, a - left:c - left]
+
+    if base is not None:
+        paste(base)
+    paste(edit)
+    return {"arr": arr, "left": x0, "top": y0, "bg": 0}
+
+
 # 검사
 # ══════════════════════════════════════════════════════════════════════
 def _keys(d, keys, what: str) -> None:
@@ -244,8 +271,8 @@ def export_mask(root: str, snapshot: dict, row: dict, mask_source: str, *, use_r
             return {"arr": arr, "left": left, "top": top, "bg": bg}
 
         if src == "edit":
-            # mask_edits의 현재 판이 아닌 row에 남은 당시 파일·좌표. hist에서 빠졌어도 파일이 있으면 복원 가능.
-            return read(row["mask_edit"], rect[0], rect[1])
+            # 확장된 편집은 Export 때 굳힌 합친 래스터, 기존 행은 당시 편집 파일 그대로.
+            return read(row["mask_file"] if "mask_file" in row else row["mask_edit"], rect[0], rect[1])
         cand = next(c for c in snapshot.get("candidates") or [] if c.get("key") == row["key"])
         if src == "hand":
             hand = cand["hand_mask"]
