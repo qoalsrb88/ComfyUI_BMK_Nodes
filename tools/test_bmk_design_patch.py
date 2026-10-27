@@ -12579,7 +12579,7 @@ def m2_chain():
 #    좌표는 정수, rect = [x0, y0, x1, y1] 끝 배타. 상수 _LAYOUT_G = 표의 consts.
 _LAYOUT_RULES = _HERE.parent / "fixtures" / "layout_rules.json"
 _LAYOUT_G = {"size": 128, "pos": 16, "ratio": 3, "min": 128, "guide": 0.7, "small": 384, "coord_max": 65536}
-_S0_261014 = Path(r"C:\Users\SHIFTUP\AppData\Local\Temp\claude\H--ComfyUI-Easy-Install\comfy8189\input\bmk_design_patch\s0_261014")
+_S0_261014 = Path(r"H:\ComfyUI-Easy-Install\comfy8189\input\bmk_design_patch\s0_261014")
 
 
 # 마스크 모드 「대상」 둘째 줄(기준이 자동 마스크일 때 — 10/21 실사용 U-2)
@@ -39707,7 +39707,7 @@ def studio_ux_unit():
 #    mask_node_unit R1⁗ 이 실데이터 015 윗변 편집을 이것으로 만든다(그래서 mask_unit 안이 아니라 모듈 수준).
 _MASK_API = _HERE.parent / "fixtures" / "mask_api.json"
 _MASK_RULES = _HERE.parent / "fixtures" / "mask_rules.json"
-_UX1_261014 = Path(r"C:\Users\SHIFTUP\AppData\Local\Temp\claude\H--ComfyUI-Easy-Install\comfy8189\input\bmk_design_patch\ux1_261014")
+_UX1_261014 = Path(r"H:\ComfyUI-Easy-Install\comfy8189\input\bmk_design_patch\ux1_261014")
 
 
 def _mk_smooth(t):
