@@ -1132,11 +1132,13 @@ window.DPPipeline = (() => {
     }
 
     function firstSetup() {
-      if (!setupPending || !on || !PS.P || PS.err) return;
+      if (!setupPending || !on || !PS.P) return;
       setupPending = false; // 첫 응답에서 한 번만 판정 — 취소·오류·조건 불충족 뒤 폴링이나 재진입으로 다시 묻지 않음
-      if (!setupReady(PS.P) || asking) return;
+      // 검토 모드의 옛 gate·경고·읽기 오류로 기회를 소진하지 않음 — 파일 있음과 이 페이지의 동작 상태만 먼저 본다.
+      if (PS.P.saved || settingsOn || asking || busyNow() || paying || PS.busy || PS.sending) return;
       once(async () => {
-        if (!(await reload()) || !setupReady(PS.P)) return;
+        const [loaded] = await Promise.all([reload(), PS.progress === null ? PS.loadProgress() : null]);
+        if (!loaded || !PS.progress || !setupReady(PS.P)) return; // 옛 서버의 progress.draft 도 받은 뒤 판정
         const P0 = PS.P;
         // 저장 중 다시 읽기·다른 창의 변경과 무관하게 확인 창에 보인 값만 보냄(파일 없음의 settings = 유도값).
         const values = { import: Object.assign({}, P0.settings.import), prepare: Object.assign({}, P0.settings.prepare) };
@@ -1152,6 +1154,12 @@ window.DPPipeline = (() => {
         if (rest.length) lines.push(`확인 필요로 남음(반영·Export 는 막지 않음): ${rest.join(", ")}`);
         lines.push("저장하면 pipeline.json 이 만들어져 [반영 (무료)]·Export 를 쓸 수 있습니다. 나중에 [실행 설정 열기]에서 바꿀 수 있습니다.");
         if (!window.confirm(lines.join("\n"))) return;
+        // confirm 동안 그래프 Import·Prepare 가 돈 경우 rev 0 은 그대로여도 유도값은 달라진다.
+        if (!(await reload())) return;
+        if (!setupReady(PS.P) || !same(PS.P.settings.import, values.import) || !same(PS.P.settings.prepare, values.prepare)) {
+          opts.toast("확인 창을 띄운 동안 그래프 기록이 바뀌어 저장하지 않았습니다 — [실행 설정 열기]에서 확인", "warn");
+          return;
+        }
         let rev = 0;
         const saved = [];
         for (const sec of ["import", "prepare"]) {
@@ -1159,6 +1167,12 @@ window.DPPipeline = (() => {
             const r = await PS.save(sec, values[sec], rev);
             rev = r.rev; // PS.save 뒤 GET /pipeline 의 rev 가 아니라 이 창의 저장 응답 rev
             saved.push(SECTIONS[sec]);
+            // rev 0 저장은 그때의 유도값 전체로 파일을 만든다. 그 사이 바뀐 Prepare 를 창의 옛 값으로 되돌리지 않음.
+            if (sec === "import" && (PS.err || !PS.P || PS.P.error || !PS.P.saved || !same(PS.P.settings.prepare, values.prepare))) {
+              opts.toast("Prepare: 확인 창의 값과 지금 설정이 다르거나 다시 읽지 못해 멈춤 — 앞 절(Import PSD)만 저장됨, [실행 설정 열기]에서 확인", "warn");
+              planNow();
+              return;
+            }
           } catch (e) {
             opts.toast(`${SECTIONS[sec]}: ${e.message}`
               + (saved.length ? ` — 앞 절(${saved.join(", ")})은 저장됨, 남은 절은 [실행 설정 열기]에서 다시 확인` : ""), "err");

@@ -45626,8 +45626,11 @@ function setupEnv(cfg = {}) {
   let pv = Object.assign(clone(R["GET /pipeline"].alt.missing), {
     confirm: ["draft.apply", "analyze.register", "compose.zorder", "export.filename_prefix", "cand.path"], drift: [], warnings: [],
   });
-  pv.derived.confirm = pv.confirm.slice();
   if (cfg.pipeline) cfg.pipeline(pv);
+  if (!pv.saved && !pv.error) {
+    pv.derived.settings = clone(pv.settings);
+    pv.derived.confirm = pv.confirm.slice();
+  }
   const initial = clone(pv);
   const S = Object.assign(quietState(), { pipeline_rev: null }, cfg.state || {});
   const doc = new Doc();
@@ -45640,19 +45643,29 @@ function setupEnv(cfg = {}) {
       const reply = cfg.read(env, pv);
       if (reply) return reply;
     }
+    if (!pv.saved && !pv.error) { // current: 파일이 없으면 지금 유도값을 보여 준다.
+      pv.settings = clone(pv.derived.settings);
+      pv.confirm = pv.derived.confirm.slice();
+    }
     return [200, clone(pv)];
   };
   srv.route.settings = (q, body) => {
     const n = srv.count("pipeline/settings");
     if (cfg.fail === n) return [cfg.status || 409, { error: "설정 저장 실패(시험)" }];
+    if (cfg.beforeSave) cfg.beforeSave(env, pv, body);
     if (body.rev !== pv.rev) return [409, { error: "다른 창이 설정을 저장했습니다" }];
-    pv.settings[body.section] = clone(body.values);
-    pv.confirm = pv.confirm.filter((k) => !k.startsWith(body.section + "."));
+    // update(rev 0): 저장 시점 유도값 전체 + 보낸 절. 이미 파일이 있고 값·확인이 같으면 rev 도 그대로.
+    const settings = clone(pv.saved ? pv.settings : pv.derived.settings);
+    settings[body.section] = clone(body.values);
+    const confirm = (pv.saved ? pv.confirm : pv.derived.confirm).filter((k) => !k.startsWith(body.section + "."));
+    if (!pv.saved || JSON.stringify(settings) !== JSON.stringify(pv.settings) || JSON.stringify(confirm) !== JSON.stringify(pv.confirm)) pv.rev += 1;
+    pv.settings = settings;
+    pv.confirm = confirm;
     pv.saved = true;
-    pv.rev += 1;
     return [200, { ok: true, rev: pv.rev, settings: clone(pv.settings), confirm: pv.confirm.slice(), drift: [] }];
   };
   if (cfg.progress) srv.route.progress = [200, Object.assign(clone(R["GET /pipeline/progress"].alt.idle), cfg.progress)];
+  if (cfg.progressDelay) srv.delay["pipeline/progress"] = cfg.progressDelay.slice();
   if (cfg.delay) srv.delay.pipeline = cfg.delay.slice();
   srv.queue = { queue_running: [], queue_pending: [[1, "setup-job"]] };
   const store = mem(cfg.job ? { [JOB]: JSON.stringify({ stage: "apply", pid: "setup-job", number: 1 }) } : {});
@@ -45716,7 +45729,7 @@ await scenario("setup:accept", async () => {
     "확인 창 첫 줄·마지막 안내·남는 확인 항목": message.startsWith("그래프에서 마지막으로 돈 설정으로 시작할까요?\n") &&
       message.includes("확인 필요로 남음(반영·Export 는 막지 않음): " + env.initial.confirm.join(", ")) &&
       message.endsWith("저장하면 pipeline.json 이 만들어져 [반영 (무료)]·Export 를 쓸 수 있습니다. 나중에 [실행 설정 열기]에서 바꿀 수 있습니다."),
-    "성공 토스트 한 번·새 계획·남은 확인 표시 유지": env.toasts.length === 1 && env.toasts[0].includes("pipeline.json rev 2") &&
+    "성공 토스트 한 번·동일 Prepare 저장은 rev 1 유지·새 계획·남은 확인 표시 유지": env.toasts.length === 1 && env.toasts[0].includes("pipeline.json rev 1") &&
       env.toasts[0].includes("[반영 (무료)]") && lastPlan > lastPost && kept,
   };
 });
@@ -45772,7 +45785,7 @@ await scenario("setup:reread", async () => {
       if (e.reads !== 2) return;
       if (name === "saved") { p.saved = true; p.rev = 5; }
       if (name === "broken") p.error = "깨진 파일";
-      if (name === "gate") p.confirm.push("prepare.n");
+      if (name === "gate") p.derived.confirm.push("prepare.n");
       if (name === "warning") p.warnings.push({ field: "import.psd_path", msg: "경로 없음" });
       if (name === "running") { e.S.running = true; e.pipe.stateChanged(e.S); }
       if (name === "leave") e.pipe.leave();
@@ -45791,7 +45804,7 @@ await scenario("setup:reread", async () => {
 
 await scenario("setup:failures", async () => {
   const result = {};
-  for (const [fail, status] of [[1, 409], [1, 500], [2, 500]]) {
+  for (const [fail, status] of [[1, 409], [1, 500], [2, 409], [2, 500]]) {
     const env = setupEnv({ fail, status });
     env.pipe.enter(env.S, null);
     await until(() => env.toasts.length > 0);
@@ -45801,12 +45814,12 @@ await scenario("setup:failures", async () => {
       env.toasts[0].includes("설정 저장 실패") && (fail === 1 || env.toasts[0].includes("앞 절(Import PSD)은 저장됨"));
   }
   const env = setupEnv({ read(e, p) {
-    if (e.srv.count("pipeline/settings") === 1) { p.rev = 9; p.settings.prepare.n = 8; }
+    if (e.srv.count("pipeline/settings") === 1) { p.rev = 9; p.settings.export.subfolder = "other-window"; }
   } });
   env.pipe.enter(env.S, null);
   await until(() => env.toasts.length > 0);
   const posts = env.posts();
-  result["첫 저장 뒤 다른 창 rev를 읽어도 앞 응답 rev·확인한 값으로 보내고 409에서 멈춤"] = posts.length === 2 && posts[1].rev === 1 &&
+  result["첫 저장 뒤 Prepare 는 같고 다른 절·rev 만 바뀌면 앞 응답 rev·확인한 값으로 보내고 409에서 멈춤"] = posts.length === 2 && posts[1].rev === 1 &&
     posts[1].values.n === env.shown[0].settings.prepare.n && env.toasts.length === 1 && env.toasts[0].includes("앞 절(Import PSD)은 저장됨");
   await env.repeat();
   result["둘째 저장 409 뒤에도 질문·POST 재시도 없음"] = env.confirms.length === 1 && env.posts().length === 2;
@@ -45823,6 +45836,98 @@ await scenario("setup:firstReadRetry", async () => {
   await env.repeat();
   return { "첫 GET 실패 후 정상 응답을 처음 받으면 한 번만 질문": waiting && env.confirms.length === 1 && !env.posts().length };
 });
+
+await scenario("setup:confirmRace", async () => {
+  const result = {};
+  for (const change of ["prepare", "import", "saved", "unreadable"]) {
+    const env = setupEnv({ read(e, p) {
+      if (!e.confirms.length || e.changed) return;
+      e.changed = true; // confirm 이 닫힌 뒤 첫 GET: 파일 없음의 rev 는 그대로, 그래프 기록만 변경
+      if (change === "prepare") p.derived.settings.prepare.n += 1;
+      if (change === "import") p.derived.settings.import.psd_path = "Z:/graph/new.psd";
+      if (change === "saved") { p.saved = true; p.rev = 1; }
+      if (change === "unreadable") return [500, { error: "확인 뒤 읽기 실패" }];
+    } });
+    env.pipe.enter(env.S, null);
+    await until(() => env.toasts.length > 0);
+    result[`확인 직후 ${change}: POST 0·토스트 1`] = env.confirms.length === 1 && env.changed === true && !env.posts().length &&
+      env.toasts.length === 1 && env.toasts[0].includes(change === "unreadable" ? "다시 읽지 못해 멈춤" : "그래프 기록이 바뀌어 저장하지 않았습니다");
+    if (["prepare", "import"].includes(change)) result[`${change} 그래프 변경은 rev 0 그대로`] = env.current().rev === 0 && !env.current().saved;
+    await env.repeat();
+    result[`확인 직후 ${change} 중단 뒤 질문·저장 재시도 없음`] = env.confirms.length === 1 && !env.posts().length && env.toasts.length === 1;
+  }
+  return result;
+});
+
+await scenario("setup:importRace", async () => {
+  const result = {};
+  for (const change of ["derivedAtSave", "afterImportRead", "prepareAndRev", "unreadable"]) {
+    const env = setupEnv({ beforeSave(e, p, body) {
+      if (change === "derivedAtSave" && body.section === "import") {
+        p.derived.settings.prepare.n += 1; // 최종 GET 과 import POST 사이 그래프 실행: rev 0 update 가 새 Prepare 를 파일에 넣음
+        p.derived.settings.export.subfolder = "fresh-derived";
+      }
+    }, read(e, p) {
+      if (e.srv.count("pipeline/settings") !== 1 || e.changed) return;
+      e.changed = true;
+      if (["afterImportRead", "prepareAndRev"].includes(change)) p.settings.prepare.n += 1;
+      if (change === "prepareAndRev") p.rev = 9;
+      if (change === "unreadable") return [500, { error: "import 뒤 읽기 실패" }];
+    } });
+    env.pipe.enter(env.S, null);
+    await until(() => env.toasts.length > 0);
+    const posts = env.posts();
+    const saved = env.current();
+    result[`import 뒤 ${change}: import POST 한 번·부분 저장 안내`] = env.confirms.length === 1 && posts.length === 1 &&
+      posts[0].section === "import" && posts[0].rev === 0 && env.toasts.length === 1 && env.toasts[0].includes("앞 절(Import PSD)만 저장됨");
+    if (change !== "unreadable") result[`${change}: 창의 옛 Prepare 로 되돌리지 않음`] =
+      saved.settings.prepare.n === env.shown[0].settings.prepare.n + 1 && saved.rev === (change === "prepareAndRev" ? 9 : 1);
+    if (change === "derivedAtSave") result["rev 0 첫 저장은 저장 시점 유도값 전체·보낸 import 절만 덮음·다른 확인 유지"] =
+      saved.settings.export.subfolder === "fresh-derived" && JSON.stringify(saved.settings.import) === JSON.stringify(posts[0].values) &&
+      JSON.stringify(saved.confirm) === JSON.stringify(env.initial.confirm);
+    await env.repeat();
+    result[`import 뒤 ${change}: prepare POST·질문 재시도 없음`] = env.confirms.length === 1 && env.posts().length === 1 && env.toasts.length === 1;
+  }
+  return result;
+});
+
+await scenario("setup:staleEntry", async () => {
+  const result = {};
+  for (const stale of ["gate", "warning"]) {
+    const env = setupEnv({ answer: false, delay: [0, 100, 20], pipeline(p) {
+      if (stale === "gate") p.confirm.push("prepare.n");
+      else p.warnings.push({ field: "import.psd_path", msg: "옛 경로 경고" });
+    }, read(e, p) {
+      if (e.reads < 2) return;
+      p.derived.confirm = p.derived.confirm.filter((k) => k !== "prepare.n");
+      p.derived.settings.prepare.n = 4;
+      p.warnings = [];
+    } });
+    env.pipe.stateChanged(env.S);
+    await sleep(25); // 검토 모드의 옛 PS.P 를 먼저 받음
+    const freshState = Object.assign({}, env.S, { rev: env.S.rev + 1 });
+    env.pipe.stateChanged(freshState); // 새 GET 은 진행 중이지만 응답은 아직 안 옴
+    env.pipe.enter(freshState, null);
+    await sleep(10);
+    const waited = !env.confirms.length;
+    await sleep(120); // 늦은 앞 응답도 도착(세션은 더 새 읽기를 유지)
+    await env.repeat();
+    result[`옛 ${stale}·진입 때 새 GET 진행 중: 새 응답의 값으로 한 번만 질문`] = waited && env.confirms.length === 1 &&
+      env.confirms[0].includes("prepare.n = 4") && !env.posts().length && !env.toasts.length;
+  }
+  return result;
+});
+
+await scenario("setup:lateProgress", async () => {
+  const env = setupEnv({ progress: { draft: { done: 0, wait: 1 } }, progressDelay: [100, 100, 100] });
+  env.pipe.enter(env.S, null);
+  await sleep(25); // /pipeline 은 받았지만 progress.draft 는 아직 모름
+  const waited = !env.confirms.length;
+  await sleep(120);
+  await env.repeat();
+  return { "늦은 progress.draft 실행 중 응답까지 기다리고 질문·POST 없음": waited && env.srv.count("pipeline/progress") > 0 &&
+    !env.confirms.length && !env.posts().length && !env.toasts.length };
+});
 """
     harness = harness.replace("console.log(JSON.stringify(out));\nprocess.exit(0);", cases + "\nconsole.log(JSON.stringify(out));\nprocess.exit(0);")
     (out / "harness.mjs").write_text(harness, encoding="utf-8")
@@ -45831,7 +45936,7 @@ await scenario("setup:firstReadRetry", async () => {
         check(False, f"배치 4-1 node 하네스 실패({r.returncode}): {r.stderr.strip()[-1200:]}")
         return
     res = json.loads(r.stdout.strip().splitlines()[-1])
-    check(len(res) == 6, f"배치 4-1 시나리오 6개 실행: {list(res)}")
+    check(len(res) == 10, f"배치 4-1 시나리오 10개 실행: {list(res)}")
     for name, checks in res.items():
         if "error" in checks:
             check(False, f"{name} 하네스 예외: {checks['error']}")
