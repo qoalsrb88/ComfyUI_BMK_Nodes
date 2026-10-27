@@ -88,6 +88,7 @@ Review 노드를 부분 실행한다(대체 경로). 인증 토큰은 그 경로
 - GET  /bmk/design_patch/mask/alts?root=&key=          그 타깃의 다른 후보마다 "★ 로 바꾸면" 이음매(_compose_full(swap) — swap 서명별
                                                        캐시), 다른 대안 계산 중 202 busy
   응답 모양 정본 = tools/fixtures/mask_api.json. 마스크 편집 쓰기는 모두 dmask(store.update_manifest — seen 대조는 잠금 안).
+- POST /bmk/design_patch/zorder {root, scope, item, op, seen}   범위 안 쌓는 순서(아래 → 위), seen = 매니페스트 rev
 POST 는 Content-Type application/json 만 받는다(다른 사이트의 단순 폼 POST 차단 — /mask/save 는 image/png). 오류는 4xx + {"error": 한국어}
 (레퍼런스: 목록 밖 시트·없는 파일 404, 같은 이름이 있음 409).
 CPU·파일 작업은 asyncio.to_thread 로 돌려 aiohttp 루프를 막지 않는다. 시트 디코드·PSD 합성·컷·변환은 _REF_SLOTS 로 한 번에 하나.
@@ -1183,7 +1184,9 @@ def _composite_sig(root: str, m: dict, pref: dict | None, swap: tuple[str, str, 
                 crops[c["crop_id"]]["rect"], e.get("params_hash") if e else None]
         rec = _edit_rec(m, c["key"])
         parts.append(part + [_edit_part(root, rec)] if rec else part)
-    return _sig("composite", CANVAS_PREVIEW, m.get("base"), m.get("canvas"), _compose_settings(root, m), parts)
+    manual = store.z_order(m)
+    return _sig("composite", CANVAS_PREVIEW, m.get("base"), m.get("canvas"), _compose_settings(root, m), parts,
+                *([{"z_order": manual}] if manual else []))
 
 
 def _runs(hit: np.ndarray) -> list[tuple[int, int]]:
@@ -1459,7 +1462,8 @@ def _layers_box(crop_rect: list[int], win: list[int] | None, W: int, H: int) -> 
 def _layers_sig(root: str, m: dict, pref: dict | None, key: str, box: list[int]) -> str:
     """3층 서명 = box·후보 + 3층이 읽는 ★ 만의 합성 서명(이 후보의 편집은 뺌 — 3층은 자기 마스크를 쓰지 않고 z 도 기준 넓이라(D5) [적용]이
     다시 계산시키지 않는다). 읽는 ★ = 편집 창이 box ±2(_mask_layers 가 건너뛰지 않는 범위)와 만나는 ★ 가 있는 크롭의 ★ 전부 — z 는 크롭·타깃
-    넓이 합으로 정해져 같은 크롭의 떨어진 ★ 도 위아래를 바꾼다. 그 밖 크롭의 [적용]·★ 변경은 3층을 다시 계산·저장시키지 않는다."""
+    넓이 합으로 정해져 같은 크롭의 떨어진 ★ 도 위아래를 바꾼다. 수동 순서가 있으면 전체 계획에서 near 의 실효 순서도 넣는다 —
+    영역 밖 크롭의 자동 넓이가 수동 슬롯의 자리를 바꿀 수 있다. 수동 순서가 없으면 기존 서명을 유지한다."""
     use_reg = bool(_compose_settings(root, m)["use_registration"])
     bx0, by0, bx1, by1 = box
     near = set()
@@ -1469,7 +1473,12 @@ def _layers_sig(root: str, m: dict, pref: dict | None, key: str, box: list[int])
             near.add(c["crop_id"])
     mv = dict(m, candidates=[c for c in m["candidates"] if c.get("crop_id") in near],
               mask_edits={k: v for k, v in (m.get("mask_edits") or {}).items() if k != key})
-    return _sig("masklayers", _composite_sig(root, mv, pref), box, key)
+    order_args = []
+    if store.z_order(m):
+        plan = _star_plan(root, m, pref)[0]
+        order_args.append([[p["crop"]["id"], t["tid"], it["cand"]["key"]]
+                           for p, t, it in _node()._slices_in_order(plan) if p["crop"]["id"] in near])
+    return _sig("masklayers", _composite_sig(root, mv, pref), box, key, *order_args)
 
 
 def _murl(rk: str, key: str, kind: str, v: str) -> str:
@@ -1554,6 +1563,10 @@ def mask_view(root: str, key) -> dict:
         qx0, qy0, qx1, qy1 = dpsd.quad_bbox(it["quad"])
         if j != t["i"] and qx0 < box[2] and qx1 > box[0] and qy0 < box[3] and qy1 > box[1]:
             z["below" if j < t["i"] else "above"].append(f"{p['crop']['name']} · {tg['tid']}")
+    scopes, boxes = _zorder_scopes(t["order"])
+    z["rev"] = m["rev"]
+    z["controls"] = [_zorder_control(m, scopes, boxes, scope, item) for scope, item in (
+        ("crops", crop["id"]), (f"t:{crop['id']}", cand["tid"]), (f"s:{crop['id']}/{cand['tid']}", key))]
     raw = _read_bytes(_thumb_path(root, f"seams_{csig}.json"))
     warns = [w for w in t["warns"] if w.startswith(f"{key} (")]
     if t["it"]["entry"] is None:
@@ -1823,6 +1836,91 @@ def mask_alts(root: str, key) -> dict | None:
                      "changed_crops": [x["id"] for x in m["crops"] if x["id"] != cid and now_rest.get(x["id"]) != other.get(x["id"])]})
     return {"sig": jobs[0][1], "now": {"bad": sum(s["severity"] == "bad" for s in now),
                                         "worst": max((s["diff_p90"] for s in now), default=None)}, "rows": rows}
+
+
+def _zorder_scopes(order: list) -> tuple[dict, dict]:
+    """지금 보이는 계획의 세 계층 목록과 크롭별 실효 패치 bbox(마스크 넓이 아님)."""
+    scopes, boxes = {"crops": []}, {}
+    for p, t, it in order:
+        cid, tid = p["crop"]["id"], t["tid"]
+        for scope, item in (("crops", cid), (f"t:{cid}", tid), (f"s:{cid}/{tid}", it["cand"]["key"])):
+            ids = scopes.setdefault(scope, [])
+            if item not in ids:
+                ids.append(item)
+        boxes.setdefault(cid, []).append(dpsd.quad_bbox(it["quad"]))
+    return scopes, boxes
+
+
+def _zorder_neighbor(ids: list[str], item: str, step: int, boxes: dict | None) -> int | None:
+    i = ids.index(item)
+    for j in range(i + step, len(ids) if step > 0 else -1, step):
+        if boxes is None or any(a[0] < b[2] and a[2] > b[0] and a[1] < b[3] and a[3] > b[1]
+                                for a in boxes[item] for b in boxes[ids[j]]):
+            return j
+    return None
+
+
+def _zorder_control(m: dict, scopes: dict, boxes: dict, scope: str, item: str) -> dict:
+    ids = scopes[scope]
+    i = ids.index(item)
+    crop_boxes = boxes if scope == "crops" else None
+    blocked = {"top": "이미 맨 위입니다" if i == len(ids) - 1 else "",
+               "bottom": "이미 맨 아래입니다" if i == 0 else ""}
+    for op, step, label in (("up", 1, "위"), ("down", -1, "아래")):
+        blocked[op] = (f"겹치는 {label} 크롭이 없습니다" if crop_boxes is not None else f"{label} 항목이 없습니다") if (
+            _zorder_neighbor(ids, item, step, crop_boxes) is None) else ""
+    return {"scope": scope, "item": item, "order": ids, "index": i,
+            "manual": scope in store.z_order(m), "blocked": blocked}
+
+
+def zorder_write(root: str, data: dict) -> dict:
+    """POST /zorder — 계획은 잠금 밖, 저장 직전 rev 대조는 update_manifest 잠금 안에서."""
+    scope, item, op, seen = (data.get(k) for k in ("scope", "item", "op", "seen"))
+    if not isinstance(scope, str) or not re.fullmatch(r"crops|t:[^\s/:]+|s:[^\s/:]+/[^\s/:]+", scope):
+        raise _Reject(400, "scope 는 crops · t:크롭 · s:크롭/타깃 형식이어야 합니다")
+    if not isinstance(item, str) or not item:
+        raise _Reject(400, "순서를 바꿀 항목이 잘못되었습니다")
+    if op not in ("top", "up", "down", "bottom", "reset"):
+        raise _Reject(400, "op 는 top · up · down · bottom · reset 중 하나여야 합니다")
+    if type(seen) is not int or seen < 0:
+        raise _Reject(400, "seen 은 보드가 읽은 매니페스트 rev 정수여야 합니다")
+
+    def expect(m):
+        if m["rev"] != seen:
+            raise _Reject(409, "다른 창에서 순서나 프로젝트가 바뀌었습니다 — 다시 받기", reason="changed")
+
+    m = store.load_manifest(root)
+    expect(m)
+    pref = _PREF.get(store.root_key(root))
+    plan = _star_plan(root, m, pref)[0]
+    scopes, boxes = _zorder_scopes(list(_node()._slices_in_order(plan)))
+    if scope not in scopes or item not in scopes[scope]:
+        raise _Reject(400, "이 범위에 보이는 항목이 없습니다 — 다시 받기")
+    ids = list(scopes[scope])
+    manual = store.z_order(m)
+    if op == "reset":
+        manual.pop(scope, None)
+        auto = _star_plan(root, dict(m, z_order=manual), pref)[0]
+        ids = _zorder_scopes(list(_node()._slices_in_order(auto)))[0][scope]
+    else:
+        i = ids.index(item)
+        j = len(ids) - 1 if op == "top" else 0
+        if op in ("up", "down"):
+            j = _zorder_neighbor(ids, item, 1 if op == "up" else -1, boxes if scope == "crops" else None)
+            if j is None:
+                raise _Reject(400, _zorder_control(m, scopes, boxes, scope, item)["blocked"][op])
+        ids.insert(j, ids.pop(i))
+        manual[scope] = ids
+
+    def mutate(mm):
+        expect(mm)
+        if manual:
+            mm["z_order"] = manual
+        else:
+            mm.pop("z_order", None)
+
+    _result, rev = store.update_manifest(root, mutate)
+    return {"ok": True, "rev": rev, "scope": scope, "order": manual.get(scope, []), "effective": ids}
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -4991,7 +5089,9 @@ async def mask_alts_handler(request: web.Request) -> web.StreamResponse:
 
 @_guard
 async def zorder_handler(request: web.Request) -> web.StreamResponse:
-    raise _Reject(501, "z 순서 지정은 아직 없습니다(다듬기 배치 5-1)")
+    data = await _body(request)
+    root = _root_param(data.get("root"))
+    return _json(await asyncio.to_thread(zorder_write, root, data))
 
 
 @_guard

@@ -301,7 +301,7 @@ _COMPOSE_DEFAULTS = {"mask_source": "hand_else_auto", "use_registration": True, 
                      "zorder": "auto_small_on_top"}
 _TONE_CLAMP = 12.0
 _BACKGROUND = "opaque"  # cell_key 의 background (GPT 편집 결과는 불투명)
-_EXPORT_VERSION = "dp-export/2"
+_EXPORT_VERSION = "dp-export/3"
 _EXPORT_UI = "bmk_dp_export"  # Export ui 결과 [{outcome: new|unchanged|empty, psd, rev}] — Studio 가 /api/history 로 판정(exports 만으로는 못 앎)
 _MIN_CROP_IOU = 0.5  # 이보다 크롭과 덜 겹치는 SO 는 부분 패치로 보고 분석하지 않음
 _THUMB = 160
@@ -828,7 +828,7 @@ def _target_label(crop: dict, tid: str) -> str:
 
 
 def _plan(root: str, m: dict, entries: dict, mask_source: str, use_registration: bool, zorder: str, alternates: bool,
-          warns: list[str]) -> list[dict]:
+          warns: list[str], area_mask_source: str | None = None) -> list[dict]:
     """[{crop, targets: [{tid, label, slices: [{cand, entry, quad, mask, msrc, area, base_mask, base_msrc, mask_edit}], alts: [...]}]}]
     (아래 → 위). entries = _ensure_analysis 가 돌려준 {key: 분석 항목}(분석이 필요 없는 설정이면 {}). 보드에서 탈락시킨 후보(rejects)는
     pick 이든 대안이든 넣지 않는다. 크롭이나 타깃(tid)이 매니페스트에서 사라진 후보도 경고하고 뺀다(보드와 같게).
@@ -882,7 +882,10 @@ def _plan(root: str, m: dict, entries: dict, mask_source: str, use_registration:
             if why:
                 warns.append(f"{c['key']} ({crop['name']}): 마스크 편집 기준 바뀜({' · '.join(why)}) → 편집 그대로 씀"
                              " — 어긋났으면 마스크 편집 [기준으로 다시 시작]")
-        reg_m = _mask_region(base_mask, *bb)
+        # Export 의 출력 마스크는 별도여도 쌓는 순서의 넓이는 Compose 기준(편집 전)으로 잰다.
+        area_mask = base_mask if area_mask_source is None or area_mask_source == mask_source else _final_mask(
+            root, c, entry, crop, area_mask_source)[0]
+        reg_m = _mask_region(area_mask, *bb)
         area = float(reg_m.sum()) if reg_m is not None else float((bb[2] - bb[0]) * (bb[3] - bb[1]))
         z = c.get("z")
         item = {"cand": c, "entry": entry, "quad": quad, "mask": mask, "msrc": msrc, "area": area,
@@ -891,27 +894,33 @@ def _plan(root: str, m: dict, entries: dict, mask_source: str, use_registration:
         g = groups.setdefault((c["crop_id"], c["tid"]), {"slices": [], "alts": []})
         g["slices" if c.get("picked") else "alts"].append(item)
 
-    def order(items, area_of, z_of):
-        if zorder == "harvest":
-            return sorted(items, key=z_of)
-        keyed = {str(i): it for i, it in enumerate(items)}
-        return [keyed[k] for k in an.zorder([{"key": k, "area": area_of(it)} for k, it in keyed.items()])]
+    manual = store.z_order(m)
+
+    def order(items, area_of, z_of, scope, key_of):
+        auto = sorted(items, key=z_of if zorder == "harvest" else lambda it: -area_of(it))
+        keyed = {key_of(it): it for it in auto}
+        return [keyed[k] for k in an.zorder_manual(keyed, manual.get(scope))]
 
     by_crop: dict[str, list[dict]] = {}
     for (cid, tid), g in groups.items():
-        g["slices"] = order(g["slices"], lambda it: it["area"], lambda it: it["z"])
+        g["slices"] = order(g["slices"], lambda it: it["area"], lambda it: it["z"],
+                            f"s:{cid}/{tid}", lambda it: it["cand"]["key"])
         g["alts"] = sorted(g["alts"], key=lambda it: it["z"])
         members = g["slices"] or g["alts"]
         by_crop.setdefault(cid, []).append({
             "tid": tid, "label": _target_label(crops[cid], tid), "slices": g["slices"], "alts": g["alts"],
             "area": sum(it["area"] for it in g["slices"]), "z": min(it["z"] for it in members)})
     plan = []
-    for cid, targets in by_crop.items():
-        targets = order(targets, lambda t: t["area"], lambda t: t["z"])
+    for cid in crops:  # 같은 넓이 크롭 = 매니페스트 크롭 순서(후보가 들어온 순서가 아님)
+        if cid not in by_crop:
+            continue
+        target_idx = {t["tid"]: i for i, t in enumerate(crops[cid]["targets"])}
+        targets = sorted(by_crop[cid], key=lambda t: target_idx[t["tid"]])
+        targets = order(targets, lambda t: t["area"], lambda t: t["z"], f"t:{cid}", lambda t: t["tid"])
         shown = [t for t in targets if t["slices"]] or targets  # 숨김 대안만 있는 타깃이 크롭 순서를 바꾸지 않게(Compose = Export)
         plan.append({"crop": crops[cid], "targets": targets, "area": sum(t["area"] for t in targets),
                      "z": min(t["z"] for t in shown)})
-    return order(plan, lambda p: p["area"], lambda p: p["z"])
+    return order(plan, lambda p: p["area"], lambda p: p["z"], "crops", lambda p: p["crop"]["id"])
 
 
 def _cand_pixels(root: str, item: dict, toned: bool) -> tuple[np.ndarray, bool]:
@@ -2195,6 +2204,8 @@ def _export_hash(m: dict, entries: dict, comp: dict, opts: dict, edits: dict | N
         payload["rejects"] = sorted(m["rejects"])
     if edits:  # 그룹 마스크가 바뀐다(없을 때는 키를 넣지 않아 S3 export 해시 그대로 — '변경 없음' 판정 유지)
         payload["mask_edits"] = edits
+    if manual := store.z_order(m):
+        payload["z_order"] = manual
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
 
 
@@ -2300,12 +2311,13 @@ class BMKDesignPatchExportPSD:
             return {"ui": {"text": [msg] + conflicts, _EXPORT_UI: [{"outcome": "empty", "psd": None, "rev": None}]},
                     "result": ("",)}
         entries: dict = {}
-        if _needs_analysis(mask_source, use_reg, toned):
+        if _needs_analysis(mask_source, use_reg, toned) or _needs_analysis(comp["mask_source"], use_reg, toned):
             entries, done, _hit, w2 = _ensure_analysis(root, m, inc, project.get("analyze"))
             warns += w2
             if done:
                 warns.append(f"상류 Analyze 설정(없으면 기본값)의 분석이 없던 후보 {done}개를 분석함")
-        plan = _plan(root, m, entries, mask_source, use_reg, zorder, alternates == "hidden_all", warns)
+        plan = _plan(root, m, entries, mask_source, use_reg, zorder, alternates == "hidden_all", warns,
+                     area_mask_source=comp["mask_source"])
         # 해시의 편집 = _plan 이 실제로 그룹 마스크로 쓴 것(★ 만, 파일을 못 읽어 기준으로 떨어진 기록은 빠짐 — 보이는 것 = PSD)
         edits = {it["cand"]["key"]: [it["mask_edit"], dmask.edit_record(m, it["cand"]["key"])["rect"]]
                  for _p, _t, it in _slices_in_order(plan) if it["mask_edit"]}

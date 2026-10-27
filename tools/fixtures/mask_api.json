@@ -144,6 +144,54 @@
       "008_치마금속장식 · A",
       "018_겉옷안감_왼쪽 · A",
       "007_허리벨트 · A"
+     ],
+     "rev": 136,
+     "controls": [
+      {
+       "scope": "crops",
+       "item": "015_d556f2",
+       "order": [
+        "015_d556f2"
+       ],
+       "index": 0,
+       "manual": false,
+       "blocked": {
+        "top": "이미 맨 위입니다",
+        "bottom": "이미 맨 아래입니다",
+        "up": "겹치는 위 크롭이 없습니다",
+        "down": "겹치는 아래 크롭이 없습니다"
+       }
+      },
+      {
+       "scope": "t:015_d556f2",
+       "item": "A",
+       "order": [
+        "A"
+       ],
+       "index": 0,
+       "manual": false,
+       "blocked": {
+        "top": "이미 맨 위입니다",
+        "bottom": "이미 맨 아래입니다",
+        "up": "위 항목이 없습니다",
+        "down": "아래 항목이 없습니다"
+       }
+      },
+      {
+       "scope": "s:015_d556f2/A",
+       "item": "r_61ba2d695f0f_0_0",
+       "order": [
+        "r_61ba2d695f0f_0_0"
+       ],
+       "index": 0,
+       "manual": false,
+       "blocked": {
+        "top": "이미 맨 위입니다",
+        "bottom": "이미 맨 아래입니다",
+        "up": "위 항목이 없습니다",
+        "down": "아래 항목이 없습니다"
+       }
+      }
      ]
     },
     "warnings": []
@@ -189,6 +237,54 @@
       "above": [
        "008_치마금속장식 · A",
        "007_허리벨트 · A"
+      ],
+      "rev": 136,
+      "controls": [
+       {
+        "scope": "crops",
+        "item": "014_0f9cc5",
+        "order": [
+         "014_0f9cc5"
+        ],
+        "index": 0,
+        "manual": false,
+        "blocked": {
+         "top": "이미 맨 위입니다",
+         "bottom": "이미 맨 아래입니다",
+         "up": "겹치는 위 크롭이 없습니다",
+         "down": "겹치는 아래 크롭이 없습니다"
+        }
+       },
+       {
+        "scope": "t:014_0f9cc5",
+        "item": "A",
+        "order": [
+         "A"
+        ],
+        "index": 0,
+        "manual": false,
+        "blocked": {
+         "top": "이미 맨 위입니다",
+         "bottom": "이미 맨 아래입니다",
+         "up": "위 항목이 없습니다",
+         "down": "아래 항목이 없습니다"
+        }
+       },
+       {
+        "scope": "s:014_0f9cc5/A",
+        "item": "r_d9b7ffb9fb7c_0_1",
+        "order": [
+         "r_d9b7ffb9fb7c_0_1"
+        ],
+        "index": 0,
+        "manual": false,
+        "blocked": {
+         "top": "이미 맨 위입니다",
+         "bottom": "이미 맨 아래입니다",
+         "up": "위 항목이 없습니다",
+         "down": "아래 항목이 없습니다"
+        }
+       }
       ]
      },
      "warnings": []
@@ -228,7 +324,55 @@
      "seams": [],
      "z": {
       "below": [],
-      "above": []
+      "above": [],
+      "rev": 136,
+      "controls": [
+       {
+        "scope": "crops",
+        "item": "001_5f2c1a",
+        "order": [
+         "001_5f2c1a"
+        ],
+        "index": 0,
+        "manual": false,
+        "blocked": {
+         "top": "이미 맨 위입니다",
+         "bottom": "이미 맨 아래입니다",
+         "up": "겹치는 위 크롭이 없습니다",
+         "down": "겹치는 아래 크롭이 없습니다"
+        }
+       },
+       {
+        "scope": "t:001_5f2c1a",
+        "item": "A",
+        "order": [
+         "A"
+        ],
+        "index": 0,
+        "manual": false,
+        "blocked": {
+         "top": "이미 맨 위입니다",
+         "bottom": "이미 맨 아래입니다",
+         "up": "위 항목이 없습니다",
+         "down": "아래 항목이 없습니다"
+        }
+       },
+       {
+        "scope": "s:001_5f2c1a/A",
+        "item": "r_b7a67c9d5802_1_0",
+        "order": [
+         "r_b7a67c9d5802_1_0"
+        ],
+        "index": 0,
+        "manual": false,
+        "blocked": {
+         "top": "이미 맨 위입니다",
+         "bottom": "이미 맨 아래입니다",
+         "up": "위 항목이 없습니다",
+         "down": "아래 항목이 없습니다"
+        }
+       }
+      ]
      },
      "warnings": [
       "분석 없음 — 반영(Analyze) 뒤 편집 권장"

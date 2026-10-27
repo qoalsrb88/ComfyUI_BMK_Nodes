@@ -248,6 +248,15 @@ window.DPMaskEdit = (() => {
 
     s.unused = () => call("mask/unused?" + qs({})); // masks/ 안 쓰는 편집 PNG(배치 3-6)
     s.cleanup = (files) => call("mask/cleanup", { files });
+    s.zorder = async (scope, item, op, seen) => {
+      if (s.busy || s.stroke) return null;
+      s.busy = "zorder";
+      try {
+        return await call("zorder", { scope, item, op, seen });
+      } finally {
+        s.busy = "";
+      }
+    };
 
     async function image(rel, w, h) {
       // GET /mask/img → RGBA 바이트(크기가 기대와 다르면 오류 — 그 사이 바뀐 판)
@@ -1121,6 +1130,40 @@ window.DPMaskEdit = (() => {
       }
     }
 
+    async function moveZ(control, op) {
+      const info = cur();
+      if (!info || M.busy || M.stroke) return;
+      const p = M.zorder(control.scope, control.item, op, info.z.rev);
+      renderPanel();
+      try {
+        const d = await p;
+        if (d && d.ok) {
+          alts = null;
+          opts.toast("겹침 순서 적용 — 이음매를 다시 잽니다");
+          opts.refresh();
+        }
+      } catch (e) {
+        opts.toast(`순서를 바꾸지 못함: ${e.message}`, e.status === 409 ? "warn" : "err");
+        if (e.status === 409) opts.refresh();
+      }
+      await refreshInfo(); // 획은 보존하고 바뀐 서명의 마스크 정보·3층을 다시 받음
+    }
+
+    function zControls(parent, info, busy) {
+      for (const c of info.z.controls || []) {
+        if (c.scope !== "crops" && c.order.length < 2 && !c.manual) continue;
+        const level = c.scope === "crops" ? "크롭" : c.scope.startsWith("t:") ? "타깃" : "조각";
+        const row = line(parent, `${level} 순서 ${c.index + 1}/${c.order.length} (아래 → 위)`, "mz-order");
+        const buttons = [["top", "맨 위로"], ["up", "위로"], ["down", "아래로"], ["bottom", "맨 아래로"]].map(([op, label]) => {
+          const why = busy ? "마스크 작업 중입니다" : c.blocked[op];
+          return off(button(label, why || `${level}을 ${label}`, () => moveZ(c, op)), !!why);
+        });
+        if (c.manual) buttons.push(off(button("자동으로", busy ? "마스크 작업 중입니다" : `${level} 수동 순서를 지우고 자동 순서로`,
+          () => moveZ(c, "reset")), busy));
+        btns(row, ...buttons);
+      }
+    }
+
     function renderPanel() {
       if (held) {
         later = true;
@@ -1140,6 +1183,7 @@ window.DPMaskEdit = (() => {
         const r = line(s, `${x ? x.t.crop_name || x.t.crop_id : info.crop_id} · ${info.tid} · c${pad(info.c)} ${star} — 처음 마스크 ${SRC[info.base.src] || info.base.src} `
           + `${w}×${h} (z: 아래 ${info.z.below.length} · 위 ${info.z.above.length})`);
         r.title = `아래: ${info.z.below.join(", ") || "없음"}\n위: ${info.z.above.join(", ") || "없음"}`;
+        zControls(s, info, busy);
         if (info.base.src === "auto") {
           // 자동 마스크는 대상을 알아보는 것이 아님(10/21 실사용 — '프롬프트로 대상을 찾은 영역'으로 읽힘, U-2)
           line(s, "자동 마스크 = Analyze 가 후보와 원본 크롭의 색 차이(ΔE)로 만든 영역 — 대상인지와 무관: 엉뚱하게 바뀐 곳은 [지우기], 대상 안 구멍은 [살리기]", "dim");
