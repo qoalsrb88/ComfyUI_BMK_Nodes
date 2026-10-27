@@ -45845,7 +45845,7 @@ await scenario("setup:reread", async () => {
 
 await scenario("setup:failures", async () => {
   const result = {};
-  for (const [fail, status] of [[1, 409], [1, 500], [2, 409], [2, 500]]) {
+  for (const [fail, status] of [[1, 400], [1, 409], [1, 500], [2, 400], [2, 409], [2, 500]]) {
     const env = setupEnv({ fail, status });
     env.pipe.enter(env.S, null);
     await until(() => env.toasts.length > 0);
@@ -45855,6 +45855,19 @@ await scenario("setup:failures", async () => {
       env.toasts[0].includes("설정 저장 실패") && (fail === 1 ? !env.toasts[0].includes("pipeline.json 이 만들어짐") :
         env.toasts[0].includes("앞 절(Import PSD)은 저장됨"));
   }
+  const raced = setupEnv({ beforeSave(e, p) {
+    p.saved = true;
+    p.rev = 1; // POST 직전 다른 창이 파일을 만듦 → 가짜 서버의 실제 rev 비교가 409 를 반환
+    e.afterPost = e.srv.log.length;
+  } });
+  raced.pipe.enter(raced.S, null);
+  await until(() => raced.toasts.length > 0);
+  result["다른 창이 먼저 파일을 만든 409: Import 응답 유실로 안내하지 않음"] = raced.current().saved && raced.current().rev === 1 &&
+    raced.posts().length === 1 && raced.posts()[0].rev === 0 && raced.toasts.length === 1 &&
+    raced.toasts[0] === "err:Import PSD: 다른 창이 설정을 저장했습니다" &&
+    !raced.srv.log.slice(raced.afterPost).some((x) => x.path === "pipeline/plan");
+  await raced.repeat();
+  result["다른 창 저장 409 뒤 질문·prepare POST 재시도 없음"] = raced.confirms.length === 1 && raced.posts().length === 1 && raced.toasts.length === 1;
   const env = setupEnv({ read(e, p) {
     if (e.srv.count("pipeline/settings") === 1) { p.rev = 9; p.settings.export.subfolder = "other-window"; }
   } });
@@ -45870,21 +45883,26 @@ await scenario("setup:failures", async () => {
 
 await scenario("setup:lostImportResponse", async () => {
   const result = {};
-  for (const kind of ["http", "network"]) {
-    const env = setupEnv({ lostImportResponse: kind, beforeSave(e) { e.afterPost = e.srv.log.length; } });
+  for (const kind of ["http", "network"]) for (const readFailed of [false, true]) {
+    const label = kind + (readFailed ? "·다시 읽기 실패" : "");
+    const env = setupEnv({ lostImportResponse: kind, beforeSave(e) { e.afterPost = e.srv.log.length; }, read(e) {
+      if (readFailed && e.srv.count("pipeline/settings")) return [503, { error: "저장 뒤 다시 읽기 실패(시험)" }];
+    } });
     env.pipe.enter(env.S, null);
     await until(() => env.toasts.length > 0);
     const posts = env.posts(), after = env.srv.log.slice(env.afterPost);
-    result[`${kind}: import rev 0 파일 생성 뒤 응답 유실, prepare POST 없음`] = env.confirms.length === 1 && env.current().saved &&
+    result[`${label}: import rev 0 파일 생성 뒤 응답 유실, prepare POST 없음`] = env.confirms.length === 1 && env.current().saved &&
       env.current().rev === 1 && posts.length === 1 && posts[0].section === "import" && posts[0].rev === 0 &&
       JSON.stringify(env.current().settings.import) === JSON.stringify(env.shown[0].settings.import);
-    result[`${kind}: 오류 토스트 끝에 파일 생성·수동 확인 안내`] = env.toasts.length === 1 && env.toasts[0].startsWith("err:") &&
-      env.toasts[0].endsWith("Import 저장 응답을 받지 못했지만 pipeline.json 이 만들어짐 — [실행 설정 열기]에서 확인");
-    result[`${kind}: finally 다시 읽기 뒤 계획 요청 한 번`] = after.filter((x) => x.path === "pipeline").length === 1 &&
-      after.filter((x) => x.path === "pipeline/plan").length === 1 &&
-      after.findIndex((x) => x.path === "pipeline/plan") > after.findIndex((x) => x.path === "pipeline");
+    result[`${label}: 오류 토스트 끝에 ${readFailed ? "파일 생성 가능성" : "확인한 파일 생성"}·수동 확인 안내`] =
+      env.toasts.length === 1 && env.toasts[0].startsWith("err:") && env.toasts[0].endsWith(readFailed
+        ? "Import 저장 응답을 받지 못함 — pipeline.json 이 만들어졌을 수 있음, [실행 설정 열기]에서 확인"
+        : "Import 저장 응답을 받지 못했지만 pipeline.json 이 만들어짐 — [실행 설정 열기]에서 확인");
+    result[`${label}: finally 다시 읽기 ${readFailed ? "실패면 계획 요청 없음" : "성공 뒤 계획 요청 한 번"}`] =
+      after.filter((x) => x.path === "pipeline").length === 1 && after.filter((x) => x.path === "pipeline/plan").length === (readFailed ? 0 : 1) &&
+      (readFailed || after.findIndex((x) => x.path === "pipeline/plan") > after.findIndex((x) => x.path === "pipeline"));
     await env.repeat();
-    result[`${kind}: 질문·import·prepare 재시도 없음`] = env.confirms.length === 1 && env.posts().length === 1 && env.toasts.length === 1;
+    result[`${label}: 질문·import·prepare 재시도 없음`] = env.confirms.length === 1 && env.posts().length === 1 && env.toasts.length === 1;
   }
   return result;
 });
