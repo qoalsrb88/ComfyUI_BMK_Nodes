@@ -356,6 +356,8 @@ def import_ps_masks(root: str, psd_path: str, sidecar: dict, *, manifest: dict, 
                 raise ValueError("SO 변환(quad)이 Export 때와 다름 — 패치를 옮겼다면 Candidate In 수확 이용")
             if group is None or group is psd or not group.is_group():
                 raise ValueError("그룹 마스크 없음·꺼짐")
+            if not layer.is_visible() or any(child is not layer and child.kind == "smartobject" and child.is_visible() for child in group):
+                raise ValueError("PS 에서 별 레이어가 숨겨졌거나 대안이 보임 — 별 기준으로 고친 마스크만 가져옴")
             try:
                 if layer.has_mask() or layer.has_vector_mask() or group.has_vector_mask():
                     result["warnings"].append(f"{name}: SO 레이어 마스크·벡터 마스크는 가져오지 않음 — 그룹 마스크로 옮겨 저장")
@@ -391,9 +393,12 @@ def import_ps_masks(root: str, psd_path: str, sidecar: dict, *, manifest: dict, 
             result["seen"]["edits"][key] = record["file"] if record else ""
             result["seen"]["targets"][key] = {"rect": t["rect"], "base": t["fp"]}
             result["changed"].append({"key": key, "crop": t["crop"], "label": name, "diff_px": diff, "outside_px": outside})
-            pending.append((key, arr, t))
+            pending.append((key, arr, t["rect"], t["fp"]))
         except (ValueError, OSError, AttributeError, TypeError, KeyError, IndexError) as e:
             result["skipped"].append(dict(skipped, reason=str(e)))
+        finally:
+            t = None  # 비교용 마스크 창 두 장은 저장 대기열에 남기지 않는다.
+    psd = layers = layer = group = found = None  # 쓰기 전에 큰 PSD와 부모·자식 참조를 놓는다.
     if source() != stamp:
         raise MaskConflict("읽는 동안 PSD 또는 사이드카가 바뀌었습니다 — 다시 미리 보기", "changed")
     if dry_run:
@@ -401,13 +406,13 @@ def import_ps_masks(root: str, psd_path: str, sidecar: dict, *, manifest: dict, 
     if seen != result["seen"]:
         raise MaskConflict("미리 보기 뒤 가져올 대상·편집 창·기준이 바뀌었습니다 — 다시 미리 보기", "changed")
     result["imported"], result["failed"] = [], []
-    for key, arr, t in pending:
+    for key, arr, rect, fp in pending:
         try:
             data = io.BytesIO()
             Image.fromarray(arr).save(data, "PNG")
             ops = _CTRL_RE.sub(" ", f"PS 그룹 마스크 {os.path.basename(psd_path)}")[:OPS_MAX]
-            rec, rev = save_edit(root, key, data.getvalue(), seen=seen["edits"][key], rect=t["rect"], base=t["fp"], ops=ops,
-                                 placed=lambda m, k=key, fp=t["fp"]: placed(m, k, fp))
+            rec, rev = save_edit(root, key, data.getvalue(), seen=seen["edits"][key], rect=rect, base=fp, ops=ops,
+                                 placed=lambda m, k=key, fp=fp: placed(m, k, fp))
             result["imported"].append({"key": key, "file": rec["file"], "rev": rev})
         except (ValueError, OSError) as e:
             result["failed"].append({"key": key, "reason": str(e), "conflict": isinstance(e, MaskConflict)})

@@ -1802,7 +1802,7 @@ def _ps_export_match(path, exports: list[dict]) -> tuple[str, str, str, dict]:
     _length, _index, original, rec = max(matches, key=lambda x: x[:2])
     if os.path.normcase(psd) != os.path.normcase(original):
         suffix = stem[_length:]
-        if suffix[0].isdigit() or re.search(r"_\d+$", suffix) or os.path.lexists(os.path.splitext(psd)[0] + ".json"):
+        if suffix[0].isdigit() or re.search(r"^_\d+(?=\D|$)|_\d+$", suffix) or os.path.lexists(os.path.splitext(psd)[0] + ".json"):
             raise _Reject(400, "다른 Export 자동 이름 또는 자체 사이드카가 있는 PSD는 PS 사본으로 가져올 수 없습니다")
     psd, side = _ps_export_paths(psd, original)
     if (os.path.normcase(psd) != os.path.normcase(original)
@@ -1866,10 +1866,18 @@ def mask_ps_import(root: str, data: dict) -> dict:
         raise _Reject(400, "Export 사이드카가 객체가 아닙니다")
     rk = store.root_key(root)
     plans = []
+    plan_error = None
 
     def target(cand, row):
+        nonlocal plan_error
+        if plan_error is not None:
+            raise ValueError(plan_error)
         if not plans:
-            plan, _picks, _entries, cs, _warns = _star_plan(root, m, _PREF.get(rk))
+            try:
+                plan, _picks, _entries, cs, _warns = _star_plan(root, m, _PREF.get(rk))
+            except (ValueError, OSError, AttributeError, TypeError, KeyError, IndexError) as e:
+                plan_error = str(e)  # 예외 traceback이 계획·배열을 붙잡지 않게 메시지만 기억한다.
+                raise ValueError(plan_error) from None
             plans.append(({it["cand"]["key"]: (p, it, t["label"] if len(t["slices"]) == 1 else f"{t['label']} · slice {i}")
                            for p in plan for t in p["targets"] for i, it in enumerate(t["slices"], 1)}, cs))
         items, cs = plans[0]

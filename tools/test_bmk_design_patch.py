@@ -44751,7 +44751,9 @@ def polish5_psmask_unit():
     section("다듬기 배치 5-3 — PS 그룹 마스크 되가져오기")
     from unittest.mock import patch
     from psd_tools.psd.layer_and_mask import MaskParameters
+    import gc
     import struct
+    import weakref
     import zlib
 
     out = (OUT_ROOT / "polish5_psmask").resolve()
@@ -44970,7 +44972,7 @@ def polish5_psmask_unit():
         check(status == 200 and {r["key"] for r in case_preview["changed"]} == set(keys[:2]),
               "대소문자가 다른 사본 가져오기: 원래 사이드카 사용")
         foreign = []
-        for suffix in ("1", "1_ps", "_2", "_ps_2", "_foreign"):
+        for suffix in ("1", "1_ps", "_2", "_ps_2", "_2_ps", "_2 copy", "_23_ps", "_foreign"):
             path = psd.with_name(psd.stem + suffix + ".psd")
             path.write_bytes(original_bytes)
             if suffix == "_foreign":
@@ -44980,6 +44982,10 @@ def polish5_psmask_unit():
             check(status == 400, "P4 다른 Export 자동 이름·자체 사이드카 사본 거절 " + suffix)
         check(all(os.path.normcase(r["psd"]) not in {os.path.normcase(str(p)) for p in foreign} for r in bd.mask_ps_list(root)),
               "P4 자동 Export 이름·자체 사이드카 파일은 목록에서도 제외")
+        for accepted in (ps_copy, case_copy):
+            status, result = response(dict(psd=str(accepted), dry_run=True))
+            check(status == 200 and {r["key"] for r in result["changed"]} == set(keys[:2]),
+                  "P14 정상 _ps·copy 사본은 계속 허용 " + accepted.name)
         status, copy_preview = response(dict(psd=str(ps_copy), dry_run=True))
         status2, copy_import = response(dict(psd=str(ps_copy), dry_run=False, seen=copy_preview["seen"]))
         copy_edits = st.load_manifest(root)["mask_edits"]
@@ -44994,6 +45000,66 @@ def polish5_psmask_unit():
             check(restored == old_edits[key], "사본 가져오기 되돌리기 " + key)
         check(psd.read_bytes() == original_bytes and side.read_bytes() == side_bytes,
               "사본 가져오기·되돌리기는 원래 Export PSD·사이드카를 바꾸지 않음")
+
+        # P15: PS의 실제 보임 상태로 별 기준 그룹 마스크인지 확인한다(숨김 대안·다른 그룹은 별도).
+        visibility_reason = "PS 에서 별 레이어가 숨겨졌거나 대안이 보임 — 별 기준으로 고친 마스크만 가져옴"
+        before_visibility = st.load_manifest(root)
+        for mode in ("hidden_star", "hidden_group", "visible_alt", "hidden_alt", "other_group_alt"):
+            document = PSDImage.open(psd)
+            star = next(x for x in document.descendants() if x.name == names[keys[0]])
+            owner = star.parent
+            if mode == "hidden_star":
+                star.visible = False
+            elif mode == "hidden_group":
+                owner.visible = False
+            else:
+                if mode == "other_group_alt":
+                    owner = next(x for x in document.descendants() if x.name == names[keys[1]]).parent
+                alt = next(x for x in document.descendants() if x.name == names[keys[6]])
+                if alt.parent is not owner:
+                    owner.append(alt)
+                alt.visible = mode != "hidden_alt"
+            visibility_copy = psd.with_name(psd.stem + "_" + mode + ".psd")
+            document.save(visibility_copy)
+            status, result = response(dict(psd=str(visibility_copy), dry_run=True))
+            should_skip = mode in ("hidden_star", "hidden_group", "visible_alt")
+            check(status == 200 and (keys[0] in {r["key"] for r in result["changed"]}) != should_skip
+                  and (not should_skip or any(r["key"] == keys[0] and r["reason"] == visibility_reason for r in result["skipped"])),
+                  "P15 별·그룹 숨김 및 같은 그룹 대안 보임 판정 " + mode)
+        check(st.load_manifest(root) == before_visibility, "P15 보임 상태 미리보기는 편집을 저장하지 않음")
+
+        # P16: 실패한 전체 계획은 재시도하지 않고, 쓰기 전에 PSD와 비교 창을 해제한다.
+        for error in (ValueError, OSError):
+            with patch.object(bd, "_star_plan", side_effect=error("시험: 계획 실패")) as plan:
+                status, result = response(dict(psd=str(psd), dry_run=True))
+            check(status == 200 and plan.call_count == 1 and not result["changed"]
+                  and {r["key"] for r in result["skipped"] if "시험: 계획 실패" in r["reason"]} == set(keys[:2]),
+                  "P16 여러 별의 계획 실패도 한 번만 계산 " + error.__name__)
+        memory_refs, releases = [], []
+        open_psd, import_masks, save = bd.dpsd.open_psd, dm.import_ps_masks, dm.save_edit
+        def track_open(path):
+            doc = open_psd(path)
+            memory_refs.extend(weakref.ref(x) for x in [doc, *doc.descendants()])
+            return doc
+        def track_import(*args, **kwargs):
+            target = kwargs["target"]
+            def track_target(*args):
+                t = target(*args)
+                memory_refs.extend(weakref.ref(t[k]) for k in ("mask", "export_mask"))
+                return t
+            return import_masks(*args, **dict(kwargs, target=track_target))
+        def save_after_release(*args, **kwargs):
+            gc.collect()  # PSD 부모·자식 순환도 외부 참조가 없으면 수거 가능해야 한다.
+            releases.append(bool(memory_refs) and all(ref() is None for ref in memory_refs))
+            return save(*args, **kwargs)
+        preview = bd.mask_ps_import(root, dict(psd=str(psd), dry_run=True))
+        with patch.object(bd.dpsd, "open_psd", side_effect=track_open), patch.object(dm, "import_ps_masks", side_effect=track_import), \
+                patch.object(dm, "save_edit", side_effect=save_after_release), patch.object(bd, "_star_plan", wraps=bd._star_plan) as plan:
+            status, result = response(dict(psd=str(psd), dry_run=False, seen=preview["seen"]))
+        check(status == 200 and len(result["imported"]) == 2 and releases == [True, True] and plan.call_count == 1,
+              "P16 저장 전 PSD·레이어·비교 마스크 창 참조 해제·성공 계획 1회·수정 래스터 2개 정상 저장")
+        for imported in result["imported"]:
+            dm.undo_edit(root, imported["key"], seen=imported["file"])
 
         # P12: PSD 전체 파싱·지연 순회는 422, 한 그룹 디코드 실패는 다른 행의 저장을 막지 않는다.
         before_bad = st.load_manifest(root)
@@ -45157,12 +45223,15 @@ def polish5_psmask_unit():
         st.save_manifest(br, bm)
         comp_auto = dict(dp._COMPOSE_DEFAULTS, mask_source="auto", use_registration=False, use_tone=False)
         comp_hand = dict(comp_auto, mask_source="hand")
-        bx = exp.run(dict(bh, compose=comp_auto), "baseline_hand", "smart_object", "none", "raw", "hand", True, False)
+        # P17: Compose 기준으로도 분석하는 통합본에서 가짜 baseline 항목이 실제 분석으로 바뀌지 않게 한다.
+        with patch.object(dp, "_ensure_analysis", return_value=({bc["key"]: entry}, 0, 1, [])):
+            bx = exp.run(dict(bh, compose=comp_auto), "baseline_hand", "smart_object", "none", "raw", "hand", True, False)
         bp = bx["ui"]["bmk_dp_export"][0]["psd"]
         baseline = bd.mask_ps_import(br, dict(psd=bp, dry_run=True))
         check(not baseline["changed"] and len(baseline["skipped"]) == 1 and "Export 뒤 Studio" in baseline["skipped"][0]["reason"],
               "P5 Export=hand·Compose=auto: PS 무수정은 가져올 변경 아님·현재 값 차이는 건너뜀")
-        bx = exp.run(dict(bh, compose=comp_hand), "baseline_same", "smart_object", "none", "raw", "hand", True, False)
+        with patch.object(dp, "_ensure_analysis", return_value=({bc["key"]: entry}, 0, 1, [])):
+            bx = exp.run(dict(bh, compose=comp_hand), "baseline_same", "smart_object", "none", "raw", "hand", True, False)
         bp = bx["ui"]["bmk_dp_export"][0]["psd"]
         baseline = bd.mask_ps_import(br, dict(psd=bp, dry_run=True))
         check(not baseline["changed"] and not baseline["skipped"], "P5 hand Export 복원: 설정 일치·PS 무수정은 차이 없음")
