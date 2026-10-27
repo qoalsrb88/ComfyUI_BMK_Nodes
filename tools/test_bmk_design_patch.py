@@ -45684,7 +45684,7 @@ function setupEnv(cfg = {}) {
   if (cfg.progress) srv.route.progress = [200, Object.assign(clone(R["GET /pipeline/progress"].alt.idle), cfg.progress)];
   if (cfg.progressDelay) srv.delay["pipeline/progress"] = cfg.progressDelay.slice();
   if (cfg.delay) srv.delay.pipeline = cfg.delay.slice();
-  srv.queue = { queue_running: [], queue_pending: cfg.job ? [[1, "setup-job"]] : [] };
+  srv.queue = { queue_running: [], queue_pending: [] }; // job 사례도 빈 큐: 복원한 PS.job 가드만 검증
   const store = mem(cfg.job ? { [JOB]: JSON.stringify({ stage: "apply", pid: "setup-job", number: 1 }) } : {});
   Object.assign(ctx, { document: doc, fetch: (u, o) => { env.events.push(new URL(u).pathname); return srv.fetch(u, o); } });
   Object.assign(ctx.window, { sessionStorage: store, confirm: (m) => {
@@ -45801,6 +45801,11 @@ await scenario("setup:guards", async () => {
     env.pipe.enter(env.S, null);
     await sleep(60);
     const skipped = !env.confirms.length && !env.posts().length && !env.toasts.length;
+    if (name === "job") {
+      const apply = env.hosts.panel.all().find((e) => e.tagName === "BUTTON" && e.textContent === "반영 (무료)");
+      result["job: 빈 큐·복원된 PS.job 만으로 사전 큐 조회 없이 보류"] = !env.srv.queue.queue_running.length &&
+        !env.srv.queue.queue_pending.length && !!apply && apply.disabled && env.srv.count("api/queue") === 0;
+    }
     if (name === "settings") {
       const back = env.hosts.panel.all().find((e) => e.tagName === "BUTTON" && e.textContent === "← 실행");
       if (!back) throw new Error("설정 닫기 단추 [← 실행] 없음");
@@ -45811,6 +45816,7 @@ await scenario("setup:guards", async () => {
     }
     await env.repeat();
     result[`${name}: 자동 질문·저장 없음`] = skipped && !env.confirms.length && !env.posts().length;
+    if (name === "job") result["job: 재진입도 사전 api/queue 요청 0회(1초 job 감시 폴링 전)"] = env.srv.count("api/queue") === 0;
   }
   return result;
 });
@@ -46202,6 +46208,50 @@ await scenario("setup:hidden", async () => {
   return result;
 });
 
+await scenario("setup:checkRender", async () => {
+  const result = {};
+  for (const kind of ["errorGate", "errorDeferred", "progress", "unchanged"]) {
+    const recovering = kind.startsWith("error");
+    const env = setupEnv({ answer: false, pipeline(p) {
+      if (kind === "unchanged") p.confirm.push("prepare.n");
+    }, read(e, p) {
+      if (recovering && [2, 3].includes(e.reads)) return [500, { error: "복구 전 읽기 오류(시험)" }];
+      if (recovering && e.reads === 4) {
+        if (kind === "errorGate") p.derived.confirm.push("prepare.n");
+        else e.S.drafting = true; // 새 state 없이 사전 판정 안에서 실행 중을 알게 됨 → 보류
+      }
+    } });
+    env.srv.queue.queue_pending = [[1, "other-graph"]];
+    env.pipe.enter(env.S, null);
+    await sleep(60);
+    if (recovering) {
+      await env.nextLoad(); // 옛 오류를 화면에 표시. 이어지는 자동 판정은 아직 바쁜 큐 때문에 보류
+      result[`${kind}: 복구 전 오류 줄이 화면에 있음`] = env.hosts.panel.textContent.includes("복구 전 읽기 오류(시험)");
+    }
+    const before = { ...env.renders }, reads = env.reads;
+    env.srv.queue.queue_pending = [];
+    if (kind === "progress") {
+      const pg = clone(R["GET /pipeline/progress"].alt.idle);
+      pg.running = true;
+      pg.run.done = 73;
+      env.srv.route.progress = [200, pg];
+    }
+    await env.poll(10001); // 오류 재시도 GET 은 실패(read 3), 사전 reload 만 회복(read 4)
+    const count = kind === "unchanged" ? 0 : 1;
+    result[`${kind}: 질문 없이 끝난 사전 읽기 render ${count}회`] = Object.keys(before).every((k) => env.renders[k] - before[k] === count) &&
+      env.reads === reads + (recovering ? 2 : 1) && !env.confirms.length && !env.posts().length && !env.toasts.length;
+    if (recovering) result[`${kind}: 회복한 오류 줄을 즉시 지움`] = !env.hosts.panel.textContent.includes("복구 전 읽기 오류(시험)");
+    if (kind === "progress") {
+      result["진행 변경은 새 state 없이 화면에 반영"] = env.hosts.panel.textContent.includes("진행 — Run 실행 중 · 완료 73");
+      const drawn = JSON.stringify(env.renders);
+      await env.poll(10001);
+      result["같은 진행 값으로 다시 보류하면 render 0회"] = JSON.stringify(env.renders) === drawn && !env.confirms.length;
+    }
+    env.pipe.leave();
+  }
+  return result;
+});
+
 await scenario("setup:checking", async () => {
   const result = {};
   for (const phase of ["queue", "reads"]) {
@@ -46435,7 +46485,7 @@ await scenario("setup:inputDeferred", async () => {
         check(False, f"배치 4-1 node 하네스 실패({r.returncode}): {r.stderr.strip()[-1200:]}")
         return
     res = json.loads(r.stdout.strip().splitlines()[-1])
-    check(len(res) == 23, f"배치 4-1 시나리오 23개 실행: {list(res)}")
+    check(len(res) == 24, f"배치 4-1 시나리오 24개 실행: {list(res)}")
     for name, checks in res.items():
         if "error" in checks:
             check(False, f"{name} 하네스 예외: {checks['error']}")

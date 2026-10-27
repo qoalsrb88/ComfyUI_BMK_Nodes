@@ -1167,6 +1167,8 @@ window.DPPipeline = (() => {
       if (held || panelBusy()) setupInputWait = true;
       if (setupInputWait || asking || paying || PS.busy || PS.sending || PS.job || (L && L.busy)) return;
       setupChecking = true;
+      const errorBefore = PS.err, progressBefore = JSON.stringify(PS.progress);
+      let readyToAsk = false;
       try {
         // 바쁜 큐는 가벼운 읽기만으로 보류. 비었을 때만 깊은 유도(GET /pipeline)·progress 를 새로 받아 판정한다.
         const idle = await setupQueueIdle();
@@ -1183,8 +1185,11 @@ window.DPPipeline = (() => {
           setupPending = false; // 파일·gate·경고 판정은 기회 소진
           return;
         }
+        readyToAsk = true;
       } finally {
         setupChecking = false;
+        // 질문은 once 가 다시 그림. 보류·판정 종료는 오류 회복·진행 변경이 있을 때만 낡은 표시를 갱신한다.
+        if (!readyToAsk && ((errorBefore && !PS.err) || progressBefore !== JSON.stringify(PS.progress))) render();
       }
       return once(async () => {
         setupPending = false; // 실제 질문부터 사용자 동작을 잠그고 이 페이지에서 다시 묻지 않음
