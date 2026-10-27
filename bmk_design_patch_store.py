@@ -1103,8 +1103,8 @@ def cand_adjust_values(blur, invert) -> dict:
     return {"blur": float(blur), "invert": invert}
 
 
-def cand_adjust(m: dict, key: str) -> dict | None:
-    """유효한 후보 보정 기록의 사본. 깨진 기록·이력과 효과 없는 값은 보정 없음으로 읽는다."""
+def cand_adjust_record(m: dict, key: str) -> dict | None:
+    """형식이 유효한 후보 보정 기록의 사본. 효과 없는 값도 seen·이력을 보존한다."""
     raw = m.get("cand_adjust")
     rec = raw.get(key) if isinstance(raw, dict) else None
     if not isinstance(rec, dict) or set(rec) != {"blur", "invert", "at", "hist"}:
@@ -1123,9 +1123,13 @@ def cand_adjust(m: dict, key: str) -> dict | None:
         except ValueError:
             return None
         versions.append(dict(values, at=v["at"]))
-    if not versions[0]["blur"] and not versions[0]["invert"]:
-        return None
     return dict(versions[0], hist=versions[1:])
+
+
+def cand_adjust(m: dict, key: str) -> dict | None:
+    """픽셀·서명·칩에 쓰는 효과 있는 보정만 읽는다(0/false 기록은 보정 없음)."""
+    rec = cand_adjust_record(m, key)
+    return rec if rec and (rec["blur"] or rec["invert"]) else None
 
 
 def picked_adjustments(m: dict, keys=None) -> dict:

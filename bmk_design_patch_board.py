@@ -1619,7 +1619,7 @@ def mask_view(root: str, key) -> dict:
     return {"key": key, "crop_id": crop["id"], "tid": cand["tid"],
             "c": next(n for n, c in enumerate(_target_members(m, crop["id"], cand["tid"]), 1) if c["key"] == key),
             "picked": True, "rect": t["rect"], "composite_sig": csig, "mask_source": t["cs"]["mask_source"],
-            "base": base, "edit": edit, "adjust": store.cand_adjust(m, key),
+            "base": base, "edit": edit, "adjust": store.cand_adjust_record(m, key),
             "layers": {"box": box, "sig": lsig, **{f"{k}_url": _murl(rk, key, k, lsig) for k in _LAYER_KINDS}},
             "seams": None if raw is None else [s for s in json.loads(raw)["segments"] if s["crop_id"] == crop["id"]],
             "z": z, "warnings": warns}
@@ -2000,14 +2000,14 @@ def mask_adjust(root: str, data: dict) -> dict:
 
     def mutate(m):
         _mask_cand(m, key)
-        old = store.cand_adjust(m, key)
+        old = store.cand_adjust_record(m, key)
         if seen != (old["at"] if old else ""):
             raise _Reject(409, "후보 보정이 다른 창에서 바뀌었습니다 — 다시 받기", reason="changed")
         hist = old["hist"] if old else []
         if op == "undo" and not hist:
             raise _Reject(400, "되돌릴 이전 보정이 없습니다")
         new = values if op == "set" else (hist[0] if op == "undo" and hist else None)
-        if new is None or not (new["blur"] or new["invert"]):
+        if new is None:
             if isinstance(m.get("cand_adjust"), dict):
                 m["cand_adjust"].pop(key, None)
             return None

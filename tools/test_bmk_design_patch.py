@@ -44806,9 +44806,9 @@ def polish5_adjust_unit():
     for broken in (None, [], "bad", {key: None}, {key: {}}, {key: dict(record, blur=-1)}, {key: dict(record, blur=21)},
                    {key: dict(record, blur=float("nan"))}, {key: dict(record, blur=float("inf"))},
                    {key: dict(record, blur=True)}, {key: dict(record, invert=1)}, {key: dict(record, hist=[{}])},
-                   {key: dict(record, at=12)}, {key: dict(record, hist="bad")}, {key: dict(record, blur=0, invert=False)}):
+                   {key: dict(record, at=12)}, {key: dict(record, hist="bad")}):
         mm = dict(m, cand_adjust=broken)
-        check(st.cand_adjust(mm, key) is None and signatures(mm) == baseline
+        check(st.cand_adjust_record(mm, key) is None and st.cand_adjust(mm, key) is None and signatures(mm) == baseline
               and np.array_equal(dp._cand_pixels(root, first(mm), True)[0], toned), "깨진/빈 보정은 픽셀·해시 모두 기존과 같음")
     adjusted = dict(m, cand_adjust={key: record, alt: record})
     for field in ("candidates", "crops", "picks", "rejects"):
@@ -44945,6 +44945,16 @@ def polish5_adjust_unit():
           and key not in {cc["key"] for cc in reharvested["candidates"]}, "C4: 재수확에서 사라진 후보의 보정·분석 기록 제거")
     check(reharvested["cand_adjust"] == {alt: record, other["key"]: record},
           "C4: 남아 있는 탈락·★ 해제 후보와 다른 출처 후보의 보정 기록 보존")
+    # E1: 두 필드 각각 문자열·비어 있지 않은 목록·숫자인 9조합에서도 사라진 레이어를 제거할 수 있다.
+    for bad_mask in ("broken", [1], 7):
+        for bad_adjust in ("broken", [1], 7):
+            broken = dict(copy.deepcopy(harvested), mask_edits=bad_mask, cand_adjust=bad_adjust)
+            st.save_manifest(root, broken)
+            with patch.object(dp.BMKDesignPatchCandidateIn, "_harvest", return_value=[copy.deepcopy(broken["candidates"][1])]):
+                dp.BMKDesignPatchCandidateIn().run(dp._handle(root, broken), "psd_harvest", source_psd, "", "", True, True)
+            after = st.load_manifest(root)
+            check({cc["key"] for cc in after["candidates"]} == {alt, other["key"]} and key not in after["analysis"],
+                  f"E1: 깨진 mask_edits={type(bad_mask).__name__}·cand_adjust={type(bad_adjust).__name__} 재수확 성공")
     st.save_manifest(root, m)
 
     analysis_before = copy.deepcopy(entries)
@@ -45034,7 +45044,53 @@ def polish5_adjust_unit():
     post(op="set", blur=1, invert=False, seen="")
     seen = st.cand_adjust(st.load_manifest(root), key)["at"]
     status, zero = post(op="set", blur=0, invert=False, seen=seen)
-    check(status == 200 and zero["adjust"] is None and signatures(st.load_manifest(root)) == baseline, "0/false 저장은 삭제·원래 서명 복귀")
+    zero_record = zero["adjust"]
+    zero_manifest = st.load_manifest(root)
+    check(status == 200 and zero_record["blur"] == 0 and zero_record["invert"] is False
+          and zero_manifest["cand_adjust"][key] == zero_record and len(zero_record["hist"]) == 1
+          and zero_record["hist"][0] == {"blur": 1, "invert": False, "at": seen}, "E2: 0/false set도 기록·직전 보정 이력을 보존")
+    check(st.cand_adjust_record(zero_manifest, key) == zero_record and st.cand_adjust(zero_manifest, key) is None
+          and signatures(zero_manifest) == baseline and zero["composite_sig"] == baseline[1], "E2: 원 기록은 유지·효과 조회는 None·모든 서명은 보정 없음과 같음")
+    zero_copy = st.cand_adjust_record(zero_manifest, key)
+    zero_copy["hist"][0]["blur"] = 19
+    check(zero_manifest["cand_adjust"][key] == zero_record, "E2: 원 기록 조회의 사본을 바꿔도 매니페스트·이력 불변")
+    check("adjust" not in first(zero_manifest) and np.array_equal(dp._cand_pixels(root, first(zero_manifest), True)[0], toned)
+          and np.array_equal(bd._compose_full(root, zero_manifest, None)[0], bd._compose_full(root, m, None)[0]),
+          "E2: 0 기록은 계획·톤 뒤 픽셀·전체 합성에 효과 없음")
+    zero_view = bd.mask_view(root, key)
+    check(zero_view["adjust"] == zero_record and not _pl_shape(doc["ok"], zero_view, doc),
+          "E2: GET /mask는 0 기록·이력을 기존 fixture 형식 그대로 반환")
+    zero_state = bd.build_state(root)
+    check(all(not cc["adjust"] for t in zero_state["targets"] for cc in t["candidates"])
+          and all(cr["cand_adjust"] == 0 for cr in zero_state["crops"]), "E2: 0 기록 후보·크롭 보정 칩 없음")
+    status, error = post(op="set", blur=2, invert=False, seen="")
+    check(status == 409 and error["reason"] == "changed", "E2: 0 기록도 기존 at를 요구하므로 빈 seen은 409")
+    status, restored = post(op="undo", seen=zero_record["at"])
+    check(status == 200 and restored["adjust"]["blur"] == 1 and not restored["adjust"]["hist"], "E2: 0 기록에서 undo로 직전 보정 복원")
+    status, zero_again = post(op="set", blur=0, invert=False, seen=restored["adjust"]["at"])
+    status, nonzero = post(op="set", blur=2, invert=False, seen=zero_again["adjust"]["at"])
+    status, undo_zero = post(op="undo", seen=nonzero["adjust"]["at"])
+    check(status == 200 and undo_zero["adjust"]["blur"] == 0 and not undo_zero["adjust"]["invert"]
+          and len(undo_zero["adjust"]["hist"]) == 1 and signatures(st.load_manifest(root)) == baseline,
+          "E2: 이력 첫 판이 0이어도 undo가 그 기록과 남은 이력을 복원")
+    for i in range(23):
+        status, undo_zero = post(op="set", blur=1 if i % 2 == 0 else 0, invert=False, seen=undo_zero["adjust"]["at"])
+    check(status == 200 and len(undo_zero["adjust"]["hist"]) == 20
+          and any(h["blur"] == 0 for h in undo_zero["adjust"]["hist"]), "E2: 0 값도 이력에 포함해 최근 20판 제한")
+    status, reset = post(op="reset", seen=undo_zero["adjust"]["at"])
+    check(status == 200 and reset["adjust"] is None and key not in st.load_manifest(root)["cand_adjust"], "E2: reset은 기록·이력 삭제")
+    status, initial_zero = post(op="set", blur=0, invert=False, seen="")
+    check(status == 200 and initial_zero["adjust"]["blur"] == 0 and not initial_zero["adjust"]["hist"], "E2: 최초 0 set도 이력 없는 기록을 생성")
+    before_zero_repeat = st.load_manifest(root)
+    status, repeated_zero = post(op="set", blur=0, invert=False, seen=initial_zero["adjust"]["at"])
+    check(status == 200 and repeated_zero == initial_zero and st.load_manifest(root) == before_zero_repeat,
+          "E2: 같은 0 값 재저장은 at·rev·이력을 중복 생성하지 않음")
+    status, error = post(op="undo", seen=initial_zero["adjust"]["at"])
+    check(status == 400 and error["error"] == "되돌릴 이전 보정이 없습니다" and st.load_manifest(root) == before_zero_repeat,
+          "E2: 이력 없는 0 기록 undo도 한국어 400·기록 보존")
+    status, reset = post(op="reset", seen=initial_zero["adjust"]["at"])
+    check(status == 200 and reset["adjust"] is None and key not in st.load_manifest(root)["cand_adjust"]
+          and signatures(st.load_manifest(root)) == baseline, "E2: 0 기록도 reset으로만 삭제·보정 없는 서명 유지")
     for fields in ({"blur": -1}, {"blur": 21}, {"blur": True}, {"blur": "2"}, {"blur": float("nan")},
                    {"invert": "false"}, {"invert": 0}, {"seen": None}, {"op": []}):
         values = dict(op="set", blur=1, invert=False, seen="")
@@ -45119,8 +45175,8 @@ def polish5_adjust_unit():
         saved_edit = st.load_manifest(root)["mask_edits"][key]
         check([r["key"] for r in imported["imported"]] == [key] and not imported["failed"]
               and np.all(np.array(Image.open(st.resolve_path(root, saved_edit["file"]))) == 64), "R1: 보정 ★의 PS 그룹 마스크 실제 가져오기 성공")
-        # 보정 없는 ★는 원래 이름을 유지한다(숨김 대안은 위 두 Export에서도 확인).
-        st.update_manifest(root, lambda mm: mm["cand_adjust"].pop(key))
+        # E2: 효과 없는 0 기록·이력이 있어도 Export는 보정 없는 ★ 이름·사이드카를 쓴다.
+        st.update_manifest(root, lambda mm: mm["cand_adjust"].update({key: zero_record}))
         mm = st.load_manifest(root)
         with patch.object(dp, "_ensure_analysis", return_value=(entries, 0, 2, [])):
             plain = dp.BMKDesignPatchExportPSD().run(dp._handle(root, mm, compose=cs), "plain", "smart_object", "hidden_all", "toned", "hand", True, False)
@@ -45130,6 +45186,8 @@ def polish5_adjust_unit():
         check(plain_names == [f"{crop['name']} · A · c01 ★", f"{crop['name']} · A · c02"]
               and set(plain_names) == {x.name for x in PSDImage.open(plain_path).descendants() if x.kind == "smartobject"},
               "R1: 보정 없는 ★·대안의 PSD 및 사이드카 이름 유지")
+        check(all("adjust" not in row for row in plain_rows) and st.cand_adjust_record(st.load_manifest(root), key) == zero_record,
+              "E2: 0 기록은 Export 사이드카 보정 표시 없이 원 기록·이력 보존")
     finally:
         folder_paths.set_output_directory(old_output)
         bd._OUTPUT_DIR[:] = old_board_output
@@ -45200,9 +45258,35 @@ await scenario("adjust", async () => {
   B("되돌리기").fire("click");
   await until(() => !B("되돌리기") && !ed._test.M.busy);
   result.undo = Number(slider().value) === 2.5 && invert().checked;
+  const beforeZero = clone(info.adjust);
+  slider().value = 0; slider().fire("input");
+  invert().checked = false; invert().fire("change");
+  await until(() => !ed._test.M.busy && info.adjust && info.adjust.blur === 0 && !info.adjust.invert);
+  const zeroAt = info.adjust.at;
+  result.E2_zeroButtons = !!B("되돌리기") && !B("되돌리기").disabled && !!B("보정 없음") && !B("보정 없음").disabled
+    && info.adjust.hist.length === 1 && controls().textContent.includes("σ 0 px");
+  const zeroState = maskState(); zeroState.rev++;
+  zeroState.crops[0].cand_adjust = 0;
+  for (const t of zeroState.targets) for (const c of t.candidates) c.adjust = false;
+  ed.stateChanged(zeroState);
+  result.E2_zeroChip = !P.list.textContent.includes("보정");
+  B("되돌리기").fire("click");
+  await until(() => !ed._test.M.busy && info.adjust.blur === beforeZero.blur && info.adjust.invert === beforeZero.invert);
+  const undoZero = srv.log.filter((r) => r.path === "mask/adjust").at(-1).body;
+  result.E2_zeroUndo = Number(slider().value) === beforeZero.blur && invert().checked === beforeZero.invert
+    && undoZero.op === "undo" && undoZero.seen === zeroAt && !B("되돌리기");
   B("보정 없음").fire("click");
   await until(() => !B("보정 없음") && !ed._test.M.busy);
   result.reset = Number(slider().value) === 0 && !invert().checked;
+  slider().value = 0; slider().fire("input");
+  await until(() => !!B("보정 없음") && !ed._test.M.busy);
+  result.E2_initialZero = !!info.adjust && info.adjust.blur === 0 && !info.adjust.invert && !info.adjust.hist.length
+    && !!B("보정 없음") && !B("되돌리기");
+  const initialZeroAt = info.adjust.at;
+  B("보정 없음").fire("click");
+  await until(() => !B("보정 없음") && !ed._test.M.busy);
+  const resetZero = srv.log.filter((r) => r.path === "mask/adjust").at(-1).body;
+  result.E2_zeroReset = info.adjust === null && !B("되돌리기") && resetZero.op === "reset" && resetZero.seen === initialZeroAt;
   viewer.ed.pointerdown({ cx: 600, cy: 2900, shiftKey: false }); viewer.ed.pointerup({});
   const n = P.count("mask/adjust");
   result.pending = !!ed.pending() && slider().disabled && invert().disabled && controls().textContent.includes("적용 안 한 획");
