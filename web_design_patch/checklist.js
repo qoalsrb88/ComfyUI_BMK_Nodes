@@ -10,6 +10,7 @@ window.DPChecklist = (() => {
     const targets = S.targets || [];
     const pending = input.pending || [];
     const prepareDrift = input.prepareDrift || [];
+    const settingsBlock = input.settingsBlock || "";
     const plan = input.plan;
     const draft = plan && plan.draft;
     const run = plan && plan.run;
@@ -48,7 +49,7 @@ window.DPChecklist = (() => {
     const draftApply = planOk && draft && !draftError && !draftUnwritten && !drafting && draftPending.length > 0;
     const runApply = planOk && run && !runError && !drafting && !running && (pending.length > 0 || prepareDrift.length > 0);
     const draftValue = draftError ? draftError : !planOk || !draft ? "계산 중"
-      : draftUnwritten > 0 ? `못 쓴 스펙 ${draftUnwritten}` : drafting ? "초안 진행 중"
+      : drafting ? "초안 진행 중" : draftUnwritten > 0 ? `못 쓴 스펙 ${draftUnwritten}`
         : draftApply ? "반영 뒤 다시 계산" : draftFree > 0 ? `초안 복구 대기 ${draftFree}` : draftStyle > 0 ? `화풍 초안 대기 ${draftStyle}`
           : draftNeed === null ? "계산 중" : `초안 승인 필요 ${draftNeed}${selectionNote}`;
     const runValue = runError ? runError : !planOk || !run ? "계산 중"
@@ -79,11 +80,11 @@ window.DPChecklist = (() => {
       row(2, "크롭", n ? "done" : "todo", `크롭 ${n}`, "크롭 편집(E)에서 고칠 영역을 확인하세요.", { mode: "edit" }),
       row(3, "레퍼런스", n && linked === n ? "done" : "todo", `크롭 ${linked}/${n}${noRefsDir ? " · refs 폴더 없음" : ""}`,
         "레퍼런스(T)에서 각 크롭에 참고 이미지를 연결하세요.", { mode: "refs", cropId: missingRef ? missingRef.id : null }),
-      row(4, "반영", !pending.length && !prepareDrift.length && !input.unsure ? "done" : "todo",
-        pending.concat(prepareDrift.length ? [`Prepare 설정 갈라짐 ${prepareDrift.length}`] : [],
+      row(4, "반영", !settingsBlock && !pending.length && !prepareDrift.length && !input.unsure ? "done" : "todo",
+        settingsBlock ? `실행 설정 확인 필요 (${settingsBlock})` : pending.concat(prepareDrift.length ? [`Prepare 설정 갈라짐 ${prepareDrift.length}`] : [],
           input.unsure ? [`확인 필요: ${input.unsure}`] : []).join(" · ") || "미반영 없음",
-        "크롭·레퍼런스를 바꾼 뒤 반영(무료)을 눌러 생성 입력을 갱신하세요.", { section: "반영" }),
-      row(5, "초안", draftError || (planOk && draftUnwritten > 0) ? "warn"
+        "크롭·레퍼런스를 바꾼 뒤 반영(무료)을 눌러 생성 입력을 갱신하세요.", { section: settingsBlock ? "실행 설정" : "반영" }),
+      row(5, "초안", draftError || (planOk && !drafting && draftUnwritten > 0) ? "warn"
         : n > 0 && allSelected && ready && draftNeed === 0 && draftFree === 0 && draftStyle === 0 && !drafting && !draftPending.length ? "done" : "todo",
         draftValue,
         "비용·승인에서 초안 계획과 비용을 확인한 뒤 승인하세요.", { section: draftApply ? "반영" : "비용·승인" }),

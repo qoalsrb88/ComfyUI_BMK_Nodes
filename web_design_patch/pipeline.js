@@ -1920,7 +1920,9 @@ window.DPPipeline = (() => {
         const host = el("div");
         panel.append(host);
         const prepareDrift = P0 && !P0.error ? (P0.drift || []).filter((x) => x.section === "prepare") : [];
-        window.DPChecklist.render(host, window.DPChecklist.rows({ S, P0, plan: p, pending: pend, prepareDrift, unsure,
+        const settingsBlock = PS.err ? "읽기 오류" : !P0 ? "불러오는 중" : P0.error ? "pipeline.json 오류"
+          : !P0.saved ? "파일 없음" : confirmGate(P0).gate.length ? "필수 항목 미확인" : "";
+        window.DPChecklist.render(host, window.DPChecklist.rows({ S, P0, plan: p, pending: pend, prepareDrift, settingsBlock, unsure,
           planOk, planErr: PS.planErr, stale, selectedCount: sel.size, maskLeft, progress: PS.progress }), {
           memory: panel, goMode: opts.goMode, goTarget: opts.goTarget, goMask: opts.goMask,
           goSection: (title) => {

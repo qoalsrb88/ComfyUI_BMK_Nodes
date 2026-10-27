@@ -44893,6 +44893,16 @@ test("C16 초안 복구·못 쓴 스펙·full 화풍 대기는 미완료, target
   i.P0.settings.draft.apply = "full"; i.plan.draft.pending_style = 0;
   assert.equal(D.rows(i)[4].state, "done");
 });
+test("C21 못 쓴 스펙이 남은 이전 계획보다 초안 실행 중 표시 우선", () => {
+  for (const source of ["state", "plan"]) {
+    const i = base(); i.plan.draft.warnings = { unwritten: ["c1"] };
+    const flag = source === "state" ? i.S : i.plan.draft, key = source === "state" ? "drafting" : "running";
+    flag[key] = true;
+    assert.equal(D.rows(i)[4].state, "todo"); assert.equal(D.rows(i)[4].value, "초안 진행 중");
+    flag[key] = false;
+    assert.equal(D.rows(i)[4].state, "warn"); assert.equal(D.rows(i)[4].value, "못 쓴 스펙 1");
+  }
+});
 test("생성 승인·진행·크롭 전체 완료·빈 계획·부분 계획", () => {
   const i = base(); i.plan.run.need = 3;
   assert.equal(D.rows(i)[5].value, "생성 승인 필요 3"); assert.equal(D.rows(i)[5].state, "todo");
@@ -45031,8 +45041,10 @@ test("renderPanel 삽입 블록: 실제 opts·섹션 이동·설정 분기 뒤",
   const src = fs.readFileSync(process.argv[3], "utf8"), start = src.indexOf("      if (window.DPChecklist) {");
   const end = src.indexOf("      // 설정", start), block = src.slice(start, end);
   assert(start > src.indexOf("if (settingsOn)", src.indexOf("function renderPanel")));
+  const gateStart = src.indexOf("    function confirmOf(P0) {"), gateEnd = src.indexOf("    function busyNow()", gateStart);
+  vm.runInContext(src.match(/  const GATE_SECTIONS = .*;/)[0] + "\n" + src.slice(gateStart, gateEnd), ctx);
   const panel = new E("div"), calls = [], i = base();
-  Object.assign(ctx, { panel, S: i.S, P0: { confirm: ["draft.apply"] }, p: i.plan, pend: [], unsure: "", planOk: true, only: "c1,c2", sel: new Set(["c1", "c2"]),
+  Object.assign(ctx, { panel, S: i.S, P0: { saved: true, confirm: ["draft.apply"] }, p: i.plan, pend: [], unsure: "", planOk: true, only: "c1,c2", sel: new Set(["c1", "c2"]),
     planDim: () => { throw new Error("점검표는 해시 복사 흐림 판정을 부르면 안 됨"); }, stale: false, maskLeft: null, PS: { progress: null }, el: (tag) => new E(tag),
     opts: { goMode: (...a) => calls.push(a) } });
   vm.runInContext(block, ctx);
@@ -45061,10 +45073,30 @@ test("renderPanel 삽입 블록: 실제 opts·섹션 이동·설정 분기 뒤",
   assert(drifted[6].className.includes("todo"));
   ctx.P0.error = "pipeline.json 오류"; vm.runInContext(block, ctx);
   const broken = panel.children[panel.children.length - 1].children[0].children;
-  assert.equal(broken[4].children[2].textContent, "미반영 없음"); // 깨진 파일의 갈라짐 목록은 전달하지 않음
-  ctx.P0 = { drift: [{ section: "draft", field: "apply" }] }; vm.runInContext(block, ctx);
+  assert(broken[4].className.includes("todo"));
+  assert.equal(broken[4].children[2].textContent, "실행 설정 확인 필요 (pipeline.json 오류)"); // C22: 깨진 파일은 반영 완료 아님
+  ctx.P0 = { saved: true, confirm: [], drift: [{ section: "draft", field: "apply" }] }; vm.runInContext(block, ctx);
   const other = panel.children[panel.children.length - 1].children[0].children;
   assert(other[4].className.includes("done")); assert(other[6].className.includes("done"));
+  const settings = new E("div"), settingsHeading = new E("div"); settings.className = "pp-sec";
+  settingsHeading.textContent = "실행 설정"; settings.append(settingsHeading); panel.append(settings);
+  const good = { saved: true, confirm: ["draft.apply", "analyze.method", "export.color"] };
+  for (const [P0, err, reason] of [
+    [null, null, "불러오는 중"], [good, "읽기 실패", "읽기 오류"],
+    [{ ...good, error: "깨진 JSON" }, null, "pipeline.json 오류"],
+    [{ saved: false, confirm: [] }, null, "파일 없음"],
+    [{ ...good, confirm: ["prepare.model"] }, null, "필수 항목 미확인"],
+    [{ ...good, confirm: ["import.psd_path"] }, null, "필수 항목 미확인"],
+  ]) {
+    ctx.P0 = P0; ctx.PS.err = err; ctx.pend = ["레이아웃 미반영 1"]; settings.scrolled = false;
+    vm.runInContext(block, ctx);
+    const row = panel.children[panel.children.length - 1].children[0].children[4];
+    assert(row.className.includes("todo")); assert.equal(row.children[2].textContent, `실행 설정 확인 필요 (${reason})`);
+    row.events.click(); assert(settings.scrolled);
+  }
+  ctx.P0 = good; ctx.PS.err = null; ctx.pend = []; vm.runInContext(block, ctx);
+  const restored = panel.children[panel.children.length - 1].children[0].children[4];
+  assert(restored.className.includes("done")); assert.equal(restored.children[2].textContent, "미반영 없음");
 });
 test("F6 실제 보드 콜백→refs 진입→내부 선택: 첫 로드·없는 크롭·전환 실패", () => {
   const bsrc = fs.readFileSync(process.argv[4], "utf8"), rsrc = fs.readFileSync(process.argv[5], "utf8");
