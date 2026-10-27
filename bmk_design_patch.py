@@ -301,7 +301,7 @@ _COMPOSE_DEFAULTS = {"mask_source": "hand_else_auto", "use_registration": True, 
                      "zorder": "auto_small_on_top"}
 _TONE_CLAMP = 12.0
 _BACKGROUND = "opaque"  # cell_key 의 background (GPT 편집 결과는 불투명)
-_EXPORT_VERSION = "dp-export/3"
+_EXPORT_VERSION = "dp-export/4"
 _EXPORT_UI = "bmk_dp_export"  # Export ui 결과 [{outcome: new|unchanged|empty, psd, rev}] — Studio 가 /api/history 로 판정(exports 만으로는 못 앎)
 _MIN_CROP_IOU = 0.5  # 이보다 크롭과 덜 겹치는 SO 는 부분 패치로 보고 분석하지 않음
 _THUMB = 160
@@ -896,10 +896,15 @@ def _plan(root: str, m: dict, entries: dict, mask_source: str, use_registration:
 
     manual = store.z_order(m)
 
-    def order(items, area_of, z_of, scope, key_of):
+    def order(items, area_of, z_of, scope, key_of, live=None):
         auto = sorted(items, key=z_of if zorder == "harvest" else lambda it: -area_of(it))
         keyed = {key_of(it): it for it in auto}
-        return [keyed[k] for k in an.zorder_manual(keyed, manual.get(scope))]
+        selected = manual.get(scope)
+        if selected and live is not None:
+            # 숨김 대안만 남은 항목은 자동 자리에 둔다 — ★ 만의 Compose 와 같은 자리 채우기.
+            live_keys = {k for k, it in keyed.items() if live(it)}
+            selected = [k for k in selected if k in live_keys]
+        return [keyed[k] for k in an.zorder_manual(keyed, selected)]
 
     by_crop: dict[str, list[dict]] = {}
     for (cid, tid), g in groups.items():
@@ -916,11 +921,13 @@ def _plan(root: str, m: dict, entries: dict, mask_source: str, use_registration:
             continue
         target_idx = {t["tid"]: i for i, t in enumerate(crops[cid]["targets"])}
         targets = sorted(by_crop[cid], key=lambda t: target_idx[t["tid"]])
-        targets = order(targets, lambda t: t["area"], lambda t: t["z"], f"t:{cid}", lambda t: t["tid"])
+        targets = order(targets, lambda t: t["area"], lambda t: t["z"], f"t:{cid}", lambda t: t["tid"],
+                        live=lambda t: bool(t["slices"]))
         shown = [t for t in targets if t["slices"]] or targets  # 숨김 대안만 있는 타깃이 크롭 순서를 바꾸지 않게(Compose = Export)
         plan.append({"crop": crops[cid], "targets": targets, "area": sum(t["area"] for t in targets),
                      "z": min(t["z"] for t in shown)})
-    return order(plan, lambda p: p["area"], lambda p: p["z"], "crops", lambda p: p["crop"]["id"])
+    return order(plan, lambda p: p["area"], lambda p: p["z"], "crops", lambda p: p["crop"]["id"],
+                 live=lambda p: any(t["slices"] for t in p["targets"]))
 
 
 def _cand_pixels(root: str, item: dict, toned: bool) -> tuple[np.ndarray, bool]:

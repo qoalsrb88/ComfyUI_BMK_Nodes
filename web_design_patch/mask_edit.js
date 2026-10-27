@@ -19,7 +19,7 @@ window.DPMaskEdit = (() => {
   const BUSY_MS = 1000; // GET /mask/alts 202(다른 합성 계산 중) 뒤 다시 묻는 간격
   const ALT_SEC = 2.5; // 대안 표 후보당 합성 시간(U0 §2.3 — 기다리는 동안의 어림)
   const TILE = 64; // 부드럽게 붓의 흐림 사본을 이 칸 단위로 필요할 때만 계산
-  const LOCKED = ["apply", "edit", "pick"]; // 대상 바꾸기·나가기를 거절하는 busy — 끝나면 세션이 바뀜(나갈 때 진행 ★ 점검에 넘기는 획 수가 낡지 않게)
+  const LOCKED = ["apply", "edit", "pick", "zorder"]; // 대상 바꾸기·나가기를 거절하는 busy — 끝나면 세션이 바뀜(나갈 때 진행 ★ 점검에 넘기는 획 수가 낡지 않게)
   const SIDES = { top: "위", bottom: "아래", left: "왼", right: "오른" };
   const TOOLS = { erase: "지우기", revive: "살리기", soften: "흐리기" };
   const SRC = { auto: "자동 마스크", hand: "손 마스크", none: "마스크 없음(창 전체)" };
@@ -254,7 +254,7 @@ window.DPMaskEdit = (() => {
       try {
         return await call("zorder", { scope, item, op, seen });
       } finally {
-        s.busy = "";
+        if (s.busy === "zorder") s.busy = "";
       }
     };
 
@@ -588,6 +588,7 @@ window.DPMaskEdit = (() => {
     let on = false;
     let S = null;
     let seenRev = null; // 마지막으로 GET /mask 를 맞춘 state 판(stateVer — rev·pref_v)
+    let zRev = null; // 이 창의 마지막 순서 쓰기 rev — 그보다 옛 GET /mask 로 다시 쓰지 않음
     let again = false; // 받는 중·획 중에 state 가 바뀜 — 끝나면 다시 받기
     let tool = "erase";
     let size = 48;
@@ -1132,12 +1133,13 @@ window.DPMaskEdit = (() => {
 
     async function moveZ(control, op) {
       const info = cur();
-      if (!info || M.busy || M.stroke) return;
+      if (!info || M.busy || M.stroke || (zRev !== null && info.z.rev < zRev)) return;
       const p = M.zorder(control.scope, control.item, op, info.z.rev);
       renderPanel();
       try {
         const d = await p;
         if (d && d.ok) {
+          zRev = d.rev;
           alts = null;
           opts.toast("겹침 순서 적용 — 이음매를 다시 잽니다");
           opts.refresh();
@@ -1150,16 +1152,17 @@ window.DPMaskEdit = (() => {
     }
 
     function zControls(parent, info, busy) {
+      const refreshing = zRev !== null && info.z.rev < zRev;
       for (const c of info.z.controls || []) {
         if (c.scope !== "crops" && c.order.length < 2 && !c.manual) continue;
         const level = c.scope === "crops" ? "크롭" : c.scope.startsWith("t:") ? "타깃" : "조각";
         const row = line(parent, `${level} 순서 ${c.index + 1}/${c.order.length} (아래 → 위)`, "mz-order");
         const buttons = [["top", "맨 위로"], ["up", "위로"], ["down", "아래로"], ["bottom", "맨 아래로"]].map(([op, label]) => {
-          const why = busy ? "마스크 작업 중입니다" : c.blocked[op];
+          const why = refreshing ? "순서 정보를 다시 받는 중입니다" : busy ? "마스크 작업 중입니다" : c.blocked[op];
           return off(button(label, why || `${level}을 ${label}`, () => moveZ(c, op)), !!why);
         });
-        if (c.manual) buttons.push(off(button("자동으로", busy ? "마스크 작업 중입니다" : `${level} 수동 순서를 지우고 자동 순서로`,
-          () => moveZ(c, "reset")), busy));
+        if (c.manual) buttons.push(off(button("자동으로", refreshing ? "순서 정보를 다시 받는 중입니다" : busy ? "마스크 작업 중입니다" : `${level} 수동 순서를 지우고 자동 순서로`,
+          () => moveZ(c, "reset")), busy || refreshing));
         btns(row, ...buttons);
       }
     }

@@ -1175,18 +1175,27 @@ def _composite_picks(m: dict, swap: tuple[str, str, str] | None = None) -> list[
 def _composite_sig(root: str, m: dict, pref: dict | None, swap: tuple[str, str, str] | None = None) -> str:
     """★ 합성이 읽는 것: 설정·베이스·★ 후보(크롭·타깃 = Compose 의 묶음, 파일·quad·손 마스크·z·크롭 rect·분석 항목)와
     S4 마스크 편집(_edit_part — 편집이 있는 ★ 만 덧붙여 편집 없는 프로젝트의 서명 그대로. _plan 이 ★ 에 적용하는 기록과 같음 — 형식이 깨진
-    기록은 뺌, _edit_rec)."""
+    기록은 뺌, _edit_rec). 동률 기준인 크롭·타깃 목록 순서가 후보 첫 등장 순서와 다를 때만 덧붙인다."""
     crops = {c.get("id"): c for c in m["crops"]}
     parts = []
+    first = {}
     for c in _composite_picks(m, swap):
+        tids = first.setdefault(c["crop_id"], [])
+        if c["tid"] not in tids:
+            tids.append(c["tid"])
         e = _entry_for(m, c["key"], pref)
         part = [c["key"], c["crop_id"], c["tid"], c["file"], c["quad"], c.get("hand_mask"), c.get("z"),
                 crops[c["crop_id"]]["rect"], e.get("params_hash") if e else None]
         rec = _edit_rec(m, c["key"])
         parts.append(part + [_edit_part(root, rec)] if rec else part)
     manual = store.z_order(m)
+    extra = [{"z_order": manual}] if manual else []
+    tie_order = [[cid, [t["tid"] for t in crop["targets"] if t["tid"] in first[cid]]]
+                 for cid, crop in crops.items() if cid in first]
+    if tie_order != [[cid, tids] for cid, tids in first.items()]:
+        extra.append({"tie_order": tie_order})
     return _sig("composite", CANVAS_PREVIEW, m.get("base"), m.get("canvas"), _compose_settings(root, m), parts,
-                *([{"z_order": manual}] if manual else []))
+                *extra)
 
 
 def _runs(hit: np.ndarray) -> list[tuple[int, int]]:

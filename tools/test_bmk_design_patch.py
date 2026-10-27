@@ -47248,8 +47248,8 @@ def polish5_z_unit():
     m["exports"] = [{"compose": cs}]
     st.save_manifest(root, m)
 
-    def plan(mm=m, mode="auto_small_on_top", source="hand", area_source=None):
-        return dp._plan(root, mm, entries, source, False, mode, False, [], area_mask_source=area_source)
+    def plan(mm=m, mode="auto_small_on_top", source="hand", area_source=None, alternates=False):
+        return dp._plan(root, mm, entries, source, False, mode, alternates, [], area_mask_source=area_source)
 
     def crop_order(p):
         return [x["crop"]["id"] for x in p]
@@ -47286,6 +47286,27 @@ def polish5_z_unit():
     check([t["tid"] for t in lp["targets"]] == ["A", "B"] and
           [it["cand"]["key"] for it in lp["targets"][0]["slices"]] == [a2["key"], a["key"]], "타깃·slice 수동 순서가 각 계층 안에만 적용")
 
+    # Z3: 별 해제된 항목은 수동 목록에 남아 있고, 새 별은 수동 목록에 없음.
+    hidden_crop = copy.deepcopy(m)
+    hidden_crop["z_order"] = {"crops": [ids[2], ids[0]]}
+    for c in hidden_crop["candidates"]:
+        c["z"] = ids.index(c["crop_id"])
+        c["picked"] = c["crop_id"] != ids[2]
+    hidden_target = copy.deepcopy(m)
+    hidden_target["crops"][0]["targets"] = [{"tid": tid, "label": tid} for tid in "ABC"]
+    ta = next(c for c in hidden_target["candidates"] if c["crop_id"] == ids[0])
+    ta["z"] = 0
+    tb = dict(ta, key="h_000000000006", tid="B", z=1)
+    tc = dict(ta, key="h_000000000007", tid="C", z=2, picked=False)
+    hidden_target["candidates"] += [tb, tc]
+    hidden_target["z_order"] = {f"t:{ids[0]}": ["C", "A"]}
+    for mode in ("auto_small_on_top", "harvest"):
+        for label, mm, hidden_key in (("크롭", hidden_crop, keys[2]), ("타깃", hidden_target, tc["key"])):
+            compose_plan, export_plan = plan(mm, mode), plan(mm, mode, alternates=True)
+            alts = [it["cand"]["key"] for p in export_plan for t in p["targets"] for it in t["alts"]]
+            check(slice_order(compose_plan) == slice_order(export_plan) and hidden_key in alts
+                  and hidden_key not in slice_order(export_plan), f"Z3 {label}/{mode}: hidden_all 숨김 대안 보존·새 별의 Compose/Export 순서 일치")
+
     # 변경 전 payload 를 고정해서 빈 수동 순서의 해시 호환을 검증한다.
     import subprocess
     digest = lambda p: hashlib.sha256(json.dumps(p, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
@@ -47293,6 +47314,26 @@ def polish5_z_unit():
     parts = [[c["key"], c["crop_id"], c["tid"], c["file"], c["quad"], c.get("hand_mask"), c.get("z"),
               crops[c["crop_id"]]["rect"], entries[c["key"]]["params_hash"]] for c in m["candidates"]]
     old_composite = bd._sig("composite", bd.CANVAS_PREVIEW, m["base"], m["canvas"], cs, parts)
+    first_order = dict(m, crops=list(reversed(m["crops"])))
+    composite = bd._composite_sig(root, m, None)
+    check(bd._composite_sig(root, first_order, None) == old_composite, "Z4 크롭·타깃 목록 순서가 후보 첫 등장과 같으면 기존 서명 유지")
+    check(composite != old_composite and slice_order(plan(m)) != slice_order(plan(first_order)),
+          "Z4 같은 넓이 크롭의 목록 순서가 달라지면 ★ 순서와 합성 서명 변경")
+    check(bd._layers_sig(root, m, None, keys[0], [0, 0, 64, 32]) != bd._layers_sig(root, first_order, None, keys[0], [0, 0, 64, 32]),
+          "Z4 크롭 목록 순서 변경이 3층 서명에도 반영")
+    target_order = copy.deepcopy(layered)
+    target_order.pop("z_order")
+    target_swap = copy.deepcopy(target_order)
+    target_swap["crops"][0]["targets"].reverse()
+    check(slice_order(plan(target_order)) != slice_order(plan(target_swap))
+          and bd._composite_sig(root, target_order, None) != bd._composite_sig(root, target_swap, None)
+          and bd._layers_sig(root, target_order, None, keys[0], [0, 0, 64, 32]) != bd._layers_sig(root, target_swap, None, keys[0], [0, 0, 64, 32]),
+          "Z4 같은 넓이 타깃의 목록 순서 변경이 ★ 순서·합성·3층 서명에 반영")
+    hidden_order = copy.deepcopy(hidden_target)
+    hidden_order["crops"][0]["targets"] = list(reversed(hidden_order["crops"][0]["targets"]))
+    hidden_order["crops"][0]["targets"][1:] = list(reversed(hidden_order["crops"][0]["targets"][1:]))
+    check(bd._composite_sig(root, hidden_target, None) == bd._composite_sig(root, hidden_order, None),
+          "Z4 별 없는 타깃만 이동하면 합성 서명 유지")
     crop_fields = [[c[k] for k in ("id", "name", "rect", "targets")] for c in m["crops"]]
     old_state = digest({"base": m["base"], "canvas": m["canvas"], "work_rect": m["work_rect"], "crops": crop_fields,
                         "candidates": {c["key"]: {k: c.get(k) for k in ("crop_id", "tid", "file", "src_size", "quad", "z", "hand_mask")}
@@ -47304,12 +47345,13 @@ def polish5_z_unit():
     eh = dp._export_hash(m, entries, cs, {})
     check(dp._EXPORT_VERSION != "dp-export/2", "Export 버전 올림")
     check(eh != digest(old_export), "버전 올림으로 다음 Export 해시 변경")
+    check(eh != digest(dict(old_export, v="dp-export/3")), "Z3 수정 전 dp-export/3 PSD 캐시를 재사용하지 않음")
     check(eh == digest(dict(old_export, v=dp._EXPORT_VERSION)), "수동 없음: 버전 외 Export 해시 재료 유지")
     for empty in (None, {}, {"crops": []}, {"crops": [None]}, []):
         mm = dict(m, z_order=empty)
-        check(bd._composite_sig(root, mm, None) == old_composite and st.export_state_sig(mm) == old_state
+        check(bd._composite_sig(root, mm, None) == composite and st.export_state_sig(mm) == old_state
               and dp._export_hash(mm, entries, cs, {}) == eh, f"빈/손상 순서 해시 유지 {empty}")
-    check(bd._composite_sig(root, mixed, None) != old_composite and st.export_state_sig(mixed) != old_state
+    check(bd._composite_sig(root, mixed, None) != composite and st.export_state_sig(mixed) != old_state
           and dp._export_hash(mixed, entries, cs, {}) != eh, "수동 순서가 세 해시 모두 변경")
     check(bd._layers_sig(root, mixed, None, keys[0], [0, 0, 64, 32]) != bd._layers_sig(root, m, None, keys[0], [0, 0, 64, 32]),
           "수동 순서가 3층 서명 변경")
@@ -47486,7 +47528,19 @@ await scenario("z", async () => {
   srv.hold = new Promise((r) => { release = r; });
   B("위로").fire("click");
   result.busy = B("위로").disabled && B("위로").title.includes("작업 중");
+  const beforeGo = P.count("mask");
+  result.locked = ed.go({ key: K14, seam: null }) === false && ed.leave() === false && P.count("mask") === beforeGo;
+  let releaseInfo;
+  const infoHold = new Promise((r) => { releaseInfo = r; });
+  srv.wait = (path) => path === "mask" ? infoHold : null;
   release();
+  await until(() => P.calls.refresh === 1 && P.count("mask") > beforeGo);
+  ed.stateChanged(Object.assign(maskState(), { rev: 137 })); // POST 는 끝났지만 GET /mask 는 아직 옛 판
+  result.waitInfo = B("위로").disabled && B("위로").title.includes("다시 받는 중");
+  B("위로").fire("click"); // 작은 DOM 은 disabled 여도 이벤트를 보내므로 moveZ 의 가드까지 검증
+  result.noSelfConflict = P.count("zorder") === 1;
+  releaseInfo();
+  srv.wait = null;
   await until(() => B("자동으로") && P.count("mask/img", "under") > layersBefore);
   const req = srv.log.find((r) => r.path === "zorder");
   result.request = JSON.stringify(req.body) === JSON.stringify({ root: KEY, scope: "crops", item: info.crop_id, op: "up", seen: 136 }) && req.ctype === "application/json";
@@ -47498,6 +47552,23 @@ await scenario("z", async () => {
   B("위로").fire("click");
   await until(() => P.toasts.some((t) => t.includes("다른 창")));
   result.conflict = P.calls.refresh === 3 && ed.pending().n === pending;
+  // Z6: 이전 순서 요청이 늦게 끝나도 그 사이 시작한 다른 대상의 load busy 를 지우지 않음.
+  const server = maskServer();
+  const session = maskCtx().window.DPMaskEdit.session(A, KEY, server.fetch, async (b) => fakeImage(b.fake));
+  await session.open(K15);
+  let finishZ, finishLoad;
+  const zHold = new Promise((r) => { finishZ = r; });
+  const loadHold = new Promise((r) => { finishLoad = r; });
+  server.zreply = async () => { await zHold; return { ok: true, status: 200, json: async () => ({ ok: true, rev: 137 }) }; };
+  const changing = session.zorder("crops", info.crop_id, "top", 136);
+  server.wait = (path) => path === "mask" ? loadHold : null;
+  const loading = session.open(K14);
+  finishZ();
+  await changing;
+  result.preserveLoad = session.busy === "load" && session.key === K14;
+  finishLoad();
+  await loading;
+  result.loadDone = session.busy === "" && session.info.key === K14;
   return result;
 });
 console.log(JSON.stringify(out));
