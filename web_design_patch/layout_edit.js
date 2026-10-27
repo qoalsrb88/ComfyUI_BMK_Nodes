@@ -285,7 +285,7 @@ window.DPLayoutEdit = (() => {
     let draft = null; // 새 크롭 초안 {rect} — 이름을 넣고 만들기(Enter) = add 한 번
     let boxTid = null; // 상자를 그릴 대상(P·상자 버튼)
     let boxSel = null; // 고른 부품 상자의 tid(선택 크롭 안 — F19): 핸들 = 크기, 안쪽 끌기 = 이동, Delete = 지우기
-    let proposal = null; // 크롭 제안 {id, rect, since, grow?, note?} — Enter 적용
+    let proposal = null; // 크롭 제안 {id, rect, base, since, grow?, note?} — Enter 적용
     let opening = null; // 모드 진입 때 레이아웃을 받은 뒤 외부 넓히기 제안을 세움
     let nudge = null; // 화살표 미세 이동 {id, rect, timer}
     let sent = null; // 놓은 뒤 응답 전까지 보이는 {id, rect} — 그것을 놓은 쓰기가 끝날 때만 지운다
@@ -765,6 +765,8 @@ window.DPLayoutEdit = (() => {
         return null;
       } finally {
         if (sent === mine) sent = null;
+        // PSD 값 가져오기 등 사각형을 바꾸는 다른 쓰기도 옛 사각형 기준 제안을 남기지 않는다.
+        if (proposal && (!S.crop(proposal.id) || !sameRect(S.crop(proposal.id).rect, proposal.base))) proposal = null;
         if (S.err) seen = null; // 다시 읽기 실패 — 다음 state 에서 다시 받는다
         showNotice();
         syncSel(false);
@@ -796,14 +798,19 @@ window.DPLayoutEdit = (() => {
       return !!p;
     }
 
-    function sendRect(c, rect, since) {
+    function sendRect(c, rect, since, base) {
       // 사각형 update 하나 — 응답 전까지 놓은 사각형을 보인다
       if (badRect(rect)) {
         render();
         return null;
       }
+      if (proposal && proposal.id === c.id && !sameRect(c.rect, rect)) proposal = null;
       sent = { id: c.id, rect };
-      return act(S.update(c.id, { rect }, since), sent);
+      return act(S.update(c.id, base ? (cur) => {
+        // 상자 맞춤은 저장 큐를 기다릴 수 있음 — 그 사이 같은 크롭의 rect 쓰기가 끝났으면 옛 제안으로 덮지 않는다.
+        if (!cur || !sameRect(cur.rect, base)) throw new Error("크롭이 바뀌어 제안을 버렸습니다 — 다시 제안");
+        return { rect };
+      } : { rect }, since), sent);
     }
 
     async function commitTargets(c, mutate, since) {
@@ -1039,7 +1046,7 @@ window.DPLayoutEdit = (() => {
       const rect = G.move(nudge ? nudge.rect : c.rect, d[0], d[1], S.L.canvas, step !== 1);
       if (nudge) clearTimeout(nudge.timer);
       nudge = { id: c.id, rect, timer: setTimeout(flushNudge, NUDGE_MS), since: nudge ? nudge.since : S.remote };
-      if (proposal) {
+      if (proposal && proposal.id === c.id) {
         proposal = null; // 옛 사각형 기준 제안
         render();
       } else {
@@ -1059,6 +1066,7 @@ window.DPLayoutEdit = (() => {
         opts.toast("되돌릴 편집이 없습니다", "warn");
         return;
       }
+      discardHistoryProposal(S.undo[S.undo.length - 1].inv);
       if (await act(S.undoStep())) opts.toast(`실행 취소 (남은 ${S.undo.length} · 다시 ${S.redo.length})`);
     }
 
@@ -1068,7 +1076,14 @@ window.DPLayoutEdit = (() => {
         opts.toast("다시 할 편집이 없습니다", "warn");
         return;
       }
+      discardHistoryProposal(S.redo[S.redo.length - 1].fwd);
       if (await act(S.redoStep())) opts.toast(`다시 실행 (남은 ${S.redo.length})`);
+    }
+
+    function discardHistoryProposal(op) {
+      // 응답을 기다리는 동안 Enter 로 역연산 뒤에 옛 제안을 큐하지 못하게, 같은 크롭의 rect 쓰기 전에 버린다.
+      const c = proposal && proposal.id === op.id && S.crop(op.id);
+      if (c && (op.op === "delete" || (op.rect && !sameRect(c.rect, op.rect)))) proposal = null;
     }
 
     function propose() {
@@ -1079,7 +1094,7 @@ window.DPLayoutEdit = (() => {
         opts.toast("부품 상자가 없습니다 — 대상 줄의 '상자'(P)로 먼저 그리세요", "warn");
         return;
       }
-      proposal = { id: c.id, rect: G.suggest(boxes, S.L.canvas, true), since: S.remote };
+      proposal = { id: c.id, rect: G.suggest(boxes, S.L.canvas, true), base: rectOf(c).slice(), since: S.remote };
       render();
     }
 
@@ -1115,7 +1130,7 @@ window.DPLayoutEdit = (() => {
         opts.toast("앞 레이아웃 편집을 저장하는 중입니다 — 끝난 뒤 다시 하세요", "warn");
         return false;
       }
-      proposal = { id: cropId, rect, since: S.remote, grow: true, note };
+      proposal = { id: cropId, rect, base: c.rect.slice(), since: S.remote, grow: true, note };
       render();
       return true;
     }
@@ -1123,13 +1138,19 @@ window.DPLayoutEdit = (() => {
     async function applyProposal() {
       const p = proposal;
       if (!p) return;
+      if (p.grow && (!S.crop(p.id) || !sameRect(S.crop(p.id).rect, p.base))) {
+        proposal = null;
+        opts.toast("크롭이 바뀌어 제안을 버렸습니다 — 다시 제안", "warn");
+        render();
+        return;
+      }
       if (p.grow && S.busy) {
         opts.toast("앞 레이아웃 편집을 저장하는 중입니다 — 끝난 뒤 제안을 적용하세요", "warn");
         return;
       }
       if (lockedNow(p.id)) return;
       if (p.grow && !window.confirm("크롭 넓히기 제안을 적용할까요?\n적용은 레이아웃만 바꿉니다(무료).\n"
-        + "[반영] 뒤 이 크롭은 새 생성 조건이라 다시 생성 대상입니다(유료 — 평균 ≈ 169 크레딧/호출, 초안 갱신 ≈ 21 — 10/23 원장 평균).\n"
+        + "[반영 (무료)] 뒤 이 크롭은 새 생성 조건이 되어, 실행(G)에서 생성을 승인할 때만 유료(평균 ≈ 169 크레딧/호출, 초안 갱신 ≈ 21 — 10/23 원장 평균).\n"
         + "지금 ★ 는 옛 크롭 기준으로 남습니다(옛 크롭 ★).")) return;
       proposal = null;
       await flushNudge();
@@ -1138,7 +1159,7 @@ window.DPLayoutEdit = (() => {
         render();
         return;
       }
-      sendRect(c, p.rect, p.since);
+      sendRect(c, p.rect, p.since, p.base);
     }
 
     function armBox(tid) {
@@ -1208,6 +1229,10 @@ window.DPLayoutEdit = (() => {
       }
       if (held.length) lines.push(`${heldText(held)} — 가져오지 않고 그대로 경고`);
       if (!window.confirm(lines.concat("계속할까요?").join("\n"))) return;
+      const pc = proposal && S.crop(proposal.id);
+      if (pc && seen.changed.some((x) => names.includes(x.name) && x.name === (pc.psd_name || pc.name) && x.fields.includes("rect"))) {
+        proposal = null;
+      }
       const r = await act(S.psd("take", names, seen));
       if (!r) return;
       const added = r.added.map((id) => (S.crop(id) || { name: id }).name);

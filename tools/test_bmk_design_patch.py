@@ -45580,6 +45580,18 @@ def polish5_grow_unit():
     quarter[8:] = 0
     check(coverage_case([("other", quarter, 40, 8), ("other", quarter, 40, 16)]) == "other", "옆 크롭의 여러 ★ 합집합")
     check(coverage_case([("other", quarter, 40, 8), ("other", quarter, 40, 8)]) is None, "같은 픽셀 중복 집계 없음")
+    split_a, split_b = np.zeros((32, 4), np.float32), np.zeros((32, 4), np.float32)
+    split_a.flat[:60] = 1
+    split_b.flat[60:121] = 1
+    check(coverage_case([("a", split_a, 40, 8), ("b", split_b, 40, 8)]) == "b",
+          "H3 두 크롭이 각각 약 47% 덮으면 합집합으로 beside 판정, 더 많이 덮은 id")
+    check(coverage_case([("b", split_b, 40, 8), ("a", split_a, 40, 8)]) == "b", "H3 다른 크롭 합집합은 합성 순서 무관")
+    check(coverage_case([("a", quarter, 40, 8), ("b", quarter, 40, 8)]) is None,
+          "H3 다른 크롭도 겹친 픽셀 중복 없이 합집합이 절반 미만이면 null")
+    short = quarter.copy()
+    short[7, 3] = 0
+    check(coverage_case([("a", quarter, 40, 8), ("b", short, 40, 16)]) is None,
+          "H3 나눠 덮어도 합집합 63/128 이면 null")
     check(coverage_case([("other", np.ones((32, 1)), 1, 8)], rect=(2, 8, 34, 40), side="left") == "other",
           "캔버스 밖 띠는 분모에서도 제외(남은 2px 중 1px)")
     for side, left, top in (("top", 8, 4), ("bottom", 8, 40)):
@@ -45592,18 +45604,77 @@ def polish5_grow_unit():
     js = Path(bd._thumb_path(root, f"seams_{sig}.json"))
     jpg = Path(bd._thumb_path(root, f"composite_{sig}.jpg"))
     st._atomic_write_bytes(str(js), json.dumps(legacy).encode())
-    st._atomic_write_bytes(str(jpg), b"old-jpeg")
-    check(bd.mask_view(root, m["candidates"][0]["key"])["seams"] == [s for s in legacy["segments"] if s["crop_id"] == cid],
+    original_jpg = bd._jpeg(Image.fromarray(bd._preview(pixels)))
+    st._atomic_write_bytes(str(jpg), original_jpg)
+    os.utime(jpg, ns=(1000000000000000000, 1000000000000000000))
+    jpg_mtime = jpg.stat().st_mtime_ns
+    legacy_view = bd.mask_view(root, m["candidates"][0]["key"])
+    check(legacy_view["seams"] == [s for s in legacy["segments"] if s["crop_id"] == cid],
           "GET /mask 는 옛 캐시에서 beside 를 null 로 발명하지 않음")
+    routes = json.loads(_MASK_API.read_text(encoding="utf-8"))["routes"]
+    g, al = routes["GET /mask"], routes["GET /mask/alts"]
+    check("seams[].beside" in g["optional"] and "seams[].beside" in g["nullable"]
+          and _pl_shape(g["ok"]["seams"], legacy_view["seams"], g, "seams") == [],
+          "H2 GET /mask 옛 캐시의 beside 키 없음도 픽스처 계약에 맞음(nullable 유지)")
+    old_al = copy.deepcopy(al["ok"])
+    for row in old_al["rows"]:
+        for s in row["this_crop"]:
+            s.pop("beside")
+    check("rows[].this_crop[].beside" in al["optional"] and "rows[].this_crop[].beside" in al["nullable"]
+          and _pl_shape(al["ok"], old_al, al) == [], "H2 GET /mask/alts 옛 형식도 픽스처 계약에 맞음(nullable 유지)")
+    for route, sample, path in ((g, g["ok"]["seams"], "seams"), (al, al["ok"]["rows"][0]["this_crop"], "rows[].this_crop")):
+        for value in (None, "neighbor", 1):
+            actual = copy.deepcopy(sample)
+            actual[0]["beside"] = value
+            check(bool(_pl_shape(sample, actual, route, path)) == (value == 1),
+                  f"H2 {path} beside 는 누락·null·문자열만 허용({value!r})")
     bd._ALTS_LOCK.acquire()
     try:
         check(bd.mask_alts(root, m["candidates"][0]["key"]) is None, "대안 표 옛 캐시는 재계산 잠금 필요(202)")
     finally:
         bd._ALTS_LOCK.release()
+    with patch.object(bd, "_compose_full", wraps=bd._compose_full) as compose, \
+            patch.object(st, "_atomic_write_bytes", wraps=st._atomic_write_bytes) as write, \
+            patch.object(bd, "_jpeg", side_effect=AssertionError("기존 JPG 재인코딩 금지")):
+        data, fresh = bd._composite(root, m, None, sig)
+        check(compose.call_count == 1 and fresh["seam_format"] == 3 and json.loads(js.read_bytes()) == fresh
+              and [Path(call.args[0]) for call in write.call_args_list] == [js], "H5 옛 캐시는 JSON 만 새 형식으로 갱신")
+        check(data == original_jpg == jpg.read_bytes() and jpg.stat().st_mtime_ns == jpg_mtime,
+              "H5 옛 캐시 갱신 때 JPG 바이트·mtime 보존")
+        check(bd._composite(root, m, None, sig) == (data, fresh) and compose.call_count == 1, "형식 표시 있는 캐시는 다시 계산 안 함")
+    previous = copy.deepcopy(fresh)
+    previous["seam_format"] = 2  # 이전 크롭별 최대 덮임 방식 캐시도 합집합 판정으로 다시 잰다.
+    for s in previous["segments"]:
+        s["beside"] = None
+    st._atomic_write_bytes(str(js), json.dumps(previous).encode())
+    check(bd._read_seams(root, sig) == previous and bd._read_seams(root, sig, current=True) is None,
+          "H3 예전 beside 2판 캐시는 읽되 현재 판정 캐시로 재사용하지 않음")
     with patch.object(bd, "_compose_full", wraps=bd._compose_full) as compose:
         data, fresh = bd._composite(root, m, None, sig)
-        check(compose.call_count == 1 and fresh["seam_format"] == 2 and data != b"old-jpeg", "옛 캐시 두 파일을 같은 이름으로 갱신")
-        check(bd._composite(root, m, None, sig) == (data, fresh) and compose.call_count == 1, "형식 표시 있는 캐시는 다시 계산 안 함")
+        check(compose.call_count == 1 and fresh["seam_format"] == 3
+              and next(s for s in fresh["segments"] if s["crop_id"] == cid and s["side"] == "right")["beside"] == neighbor
+              and data == original_jpg == jpg.read_bytes() and jpg.stat().st_mtime_ns == jpg_mtime,
+              "H3/H5 예전 beside 판정도 JSON 만 재계산, JPG 보존")
+    with patch.object(bd, "_read_bytes", side_effect=PermissionError("시험: 교체 중")):
+        check(bd._read_seams(root, sig) is None and bd._read_seams(root, sig, current=True) is None,
+              "H5 _read_seams PermissionError 는 읽을 수 없음(None)")
+    read_bytes = bd._read_bytes
+    for failures in (1, 2):
+        reads = []
+
+        def contested_read(path):
+            if Path(path) == js:
+                reads.append(path)
+                if len(reads) <= failures:
+                    raise PermissionError("시험: JSON 교체 중")
+            return read_bytes(path)
+
+        with patch.object(bd, "_read_bytes", side_effect=contested_read), \
+                patch.object(bd, "_compose_full", wraps=bd._compose_full) as compose:
+            data, fresh = bd._composite(root, m, None, sig)
+            check(len(reads) == 2 and compose.call_count == failures - 1 and fresh["seam_format"] == 3
+                  and data == original_jpg and jpg.stat().st_mtime_ns == jpg_mtime,
+                  f"H5 JSON 읽기 경합 {failures}회: 잠금 안 재독 후 필요할 때만 재계산, JPG 보존")
     bd._ALTS_LOCK.acquire()
     try:
         check(bd.mask_alts(root, m["candidates"][0]["key"]) is not None, "새 캐시 대안 표는 잠금 없이 읽음")
@@ -45668,7 +45739,9 @@ await scenario("grow", async () => {
   env.key("Enter"); await sleep(10);
   r.cancelKeeps = env.srv.log.length === 0 && !!env.button(env.panel,"제안 적용") && label().includes("넓히기 제안 왼 +128px");
   const ask = env.confirms[0];
-  r.confirmText = ["레이아웃만", "무료", "[반영]", "새 생성 조건", "유료", "169", "21", "10/23", "옛 크롭 ★"].every((s) => ask.includes(s));
+  r.H4_confirmText = ask === "크롭 넓히기 제안을 적용할까요?\n적용은 레이아웃만 바꿉니다(무료).\n"
+    + "[반영 (무료)] 뒤 이 크롭은 새 생성 조건이 되어, 실행(G)에서 생성을 승인할 때만 유료(평균 ≈ 169 크레딧/호출, 초안 갱신 ≈ 21 — 10/23 원장 평균).\n"
+    + "지금 ★ 는 옛 크롭 기준으로 남습니다(옛 크롭 ★).";
   ctx.window.confirm = () => true;
   env.button(env.panel,"제안 적용").fire("click"); await sleep(30);
   const req = env.srv.log[0];
@@ -45743,6 +45816,99 @@ await scenario("grow", async () => {
   await sleep(80);
   r.G4_growNotQueued = growBusy.srv.log.length === 1 && !growBusy.srv.log[0].rect;
   growBusy.ed.leave();
+  // H1 같은 크롭의 rect 쓰기는 두 종류 제안을 모두 버린다. 다른 크롭의 undo/redo 는 그대로 둔다.
+  const editableCrop = () => crop(c.id,c.name,[256,256,512,512],{targets:[{tid:"A",text:"",box:[300,300,420,420]}]});
+  const dragRight = (e, rect) => {
+    const ev = (x,y) => ({x,y,clientX:x,clientY:y,shiftKey:false,ctrlKey:false,metaKey:false});
+    const x = rect[2], y = (rect[1]+rect[3])/2;
+    e.viewer.h.pointerdown(ev(x,y)); e.viewer.h.pointermove(ev(x+128,y)); e.viewer.h.pointerup(ev(x+128,y));
+  };
+  const reflect = async (e) => {
+    e.ed.stateChanged({rev:10+e.srv.lay.rev,layout_rev:e.srv.lay.rev,canvas:[3072,4096],crops:JSON.parse(JSON.stringify(e.srv.lay.crops))});
+    await sleep(30);
+  };
+  const preview = async (e, kind) => {
+    if (kind === "grow") return e.ed.proposeGrow(c.id,["left"]);
+    await e.pick(c.name); e.button(e.panel,"상자에 크롭 맞추기").fire("click");
+    return !!e.button(e.panel,"제안 적용");
+  };
+  for (const kind of ["grow","fit"]) {
+    const dragged = await open([editableCrop()]);
+    r[`H1_dragPreview_${kind}`] = await preview(dragged,kind);
+    dragged.srv.delay = 40;
+    dragRight(dragged,dragged.srv.lay.crops[0].rect);
+    dragged.key("Enter"); await sleep(80); dragged.key("Enter"); await sleep(10);
+    r[`H1_dragDrops_${kind}`] = dragged.srv.log.length === 1 && eq(dragged.srv.lay.crops[0].rect,[256,256,640,512])
+      && !dragged.button(dragged.panel,"제안 적용") && dragged.confirms.length === 0;
+    dragged.ed.leave();
+    const history = await open([editableCrop()]); await history.pick(c.name);
+    dragRight(history,history.srv.lay.crops[0].rect); await sleep(30); await reflect(history);
+    r[`H1_undoPreview_${kind}`] = await preview(history,kind);
+    history.srv.delay = 40;
+    history.key("KeyZ",{ctrlKey:true}); history.key("Enter"); await sleep(80);
+    history.key("Enter"); await sleep(10);
+    r[`H1_undoDrops_${kind}`] = history.srv.log.length === 2 && eq(history.srv.lay.crops[0].rect,[256,256,512,512])
+      && !history.button(history.panel,"제안 적용") && history.confirms.length === 0;
+    await reflect(history); r[`H1_redoPreview_${kind}`] = await preview(history,kind);
+    history.key("KeyY",{ctrlKey:true}); await sleep(5); history.key("Enter"); await sleep(80);
+    history.key("Enter"); await sleep(10);
+    r[`H1_redoDrops_${kind}`] = history.srv.log.length === 3 && eq(history.srv.lay.crops[0].rect,[256,256,640,512])
+      && !history.button(history.panel,"제안 적용") && history.confirms.length === 0;
+    history.ed.leave();
+    const other = await open([editableCrop(),C2()]); await other.pick("002_눈");
+    dragRight(other,other.srv.lay.crops[1].rect); await sleep(30);
+    r[`H1_otherPreview_${kind}`] = await preview(other,kind);
+    other.key("KeyZ",{ctrlKey:true}); await sleep(30);
+    r[`H1_otherUndoKeeps_${kind}`] = !!other.button(other.panel,"제안 적용") && other.srv.log.length === 2
+      && eq(other.srv.lay.crops[0].rect,[256,256,512,512]) && eq(other.srv.lay.crops[1].rect,C2().rect);
+    other.key("KeyY",{ctrlKey:true}); await sleep(30);
+    r[`H1_otherRedoKeeps_${kind}`] = !!other.button(other.panel,"제안 적용") && other.srv.log.length === 3;
+    other.key("Enter"); await sleep(30);
+    const want = kind === "grow" ? [128,256,512,512] : G.suggest([[300,300,420,420]],[3072,4096],true);
+    r[`H1_otherStillApplies_${kind}`] = other.srv.log.length === 4 && eq(other.srv.lay.crops[0].rect,want)
+      && other.srv.log[3].id === c.id && eq(other.srv.lay.crops[1].rect,[1024,0,1664,512]);
+    other.ed.leave();
+  }
+  const changedBase = await open([editableCrop()]); await changedBase.ed.proposeGrow(c.id,["left"]);
+  changedBase.srv.lay.crops[0].rect = [256,256,640,512]; changedBase.srv.lay.rev++;
+  await reflect(changedBase);
+  r.H1_basePreview = !!changedBase.button(changedBase.panel,"제안 적용");
+  changedBase.key("Enter"); await sleep(30);
+  r.H1_baseGuard = !changedBase.button(changedBase.panel,"제안 적용") && changedBase.srv.log.length === 0
+    && changedBase.confirms.length === 0 && eq(changedBase.srv.lay.crops[0].rect,[256,256,640,512])
+    && changedBase.toasts.at(-1).includes("크롭이 바뀌어 제안을 버렸습니다 — 다시 제안");
+  changedBase.ed.leave();
+  const queuedRect = await open([editableCrop()]); await queuedRect.pick(c.name);
+  queuedRect.srv.delay = 50;
+  dragRight(queuedRect,queuedRect.srv.lay.crops[0].rect);
+  queuedRect.button(queuedRect.panel,"상자에 크롭 맞추기").fire("click");
+  queuedRect.key("Enter"); await sleep(130);
+  const fitRect = G.suggest([[300,300,420,420]],[3072,4096],true);
+  r.H1_newProposalAfterPendingRect = queuedRect.srv.log.length === 2 && eq(queuedRect.srv.log[0].rect,[256,256,640,512])
+    && eq(queuedRect.srv.lay.crops[0].rect,fitRect) && !queuedRect.button(queuedRect.panel,"제안 적용") && queuedRect.confirms.length === 0;
+  queuedRect.ed.leave();
+  const nudged = await open([editableCrop()]); await nudged.pick(c.name);
+  nudged.key("ArrowDown"); nudged.button(nudged.panel,"상자에 크롭 맞추기").fire("click");
+  nudged.key("Enter"); await sleep(30);
+  r.H1_newProposalAfterNudge = nudged.srv.log.length === 2 && eq(nudged.srv.log[0].rect,[256,272,512,528])
+    && eq(nudged.srv.lay.crops[0].rect,fitRect) && nudged.confirms.length === 0;
+  nudged.ed.leave();
+  for (const kind of ["grow","fit"]) {
+    const psd = await open([editableCrop()],{psd_diff:{token:"rect-test",changed:[{name:c.name,fields:["rect"],
+      from:{rect:[256,256,512,512]},to:{rect:[256,256,640,512]}}],added:[],removed:[]}});
+    psd.srv.psdResp = {taken:[{name:c.name,fields:["rect"]}],added:[],skipped:[]};
+    ctx.fetch = async (u,o) => {
+      const res = await psd.srv.fetch(u,o);
+      if (u.endsWith("layout/psd") && JSON.parse(o.body).op === "take") psd.srv.lay.crops[0].rect = [256,256,640,512];
+      return res;
+    };
+    await preview(psd,kind); psd.srv.delay = 40;
+    psd.button(psd.panel,"PSD 값으로").fire("click"); await sleep(5); psd.key("Enter"); await sleep(80);
+    psd.key("Enter"); await sleep(10);
+    r[`H1_panelRectDrops_${kind}`] = psd.srv.log.length === 1 && psd.srv.log[0].path === "layout/psd"
+      && eq(psd.srv.lay.crops[0].rect,[256,256,640,512]) && !psd.button(psd.panel,"제안 적용") && psd.confirms.length === 1;
+    psd.ed.leave();
+  }
   return r;
 });
 console.log(JSON.stringify(out));

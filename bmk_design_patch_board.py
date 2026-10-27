@@ -81,7 +81,7 @@ Review 노드를 부분 실행한다(대체 경로). 인증 토큰은 그 경로
   받은 ComfyUI 탭이 검사한 뒤 app.queuePrompt 로 큐에 넣는다(인증 토큰은 그 경로로만 붙음 — 서버는 템플릿과 해시 대조만).
 - GET  /bmk/design_patch/mask?root=&key=               ★ 후보의 마스크 편집 대상(STUDIO_S4_SPEC §4, mask_view — 편집 창·기준·편집·3층 URL·
                                                        이 크롭 이음매·z). ★ 아님 409 {reason: not_picked}. 파일을 쓰지 않는다
-  이음매 beside = 바깥 4px 띠를 절반 이상 덮는 다른 크롭 ★ 의 id, null = 넓히기 후보(옛 캐시의 필드 없음은 알 수 없음).
+  이음매 beside = 다른 크롭 ★ 합집합이 바깥 4px 띠를 절반 이상 덮으면 가장 많이 덮은 크롭 id, 아니면 null(옛 캐시의 필드 없음은 알 수 없음).
 - GET  /bmk/design_patch/mask/img?root=&key=&kind=base|edit|under|patch|over&v=   PNG — base·edit = 지금 편집 창 L(edit = 기록 래스터를
                                                        그 창으로 옮김 = _plan), under = 영역 RGB, patch·over = 영역 RGBA(3층은 한 번에
                                                        계산·캐시). v ≠ 지금 서명 409 {reason: stale}
@@ -1325,26 +1325,29 @@ def _compose_full(root: str, m: dict, pref: dict | None, swap: tuple[str, str, s
             strips[cid][b - y0:d - y0, a - x0:c - x0] |= hit[b - top:d - top, a - left:c - left]
         counts = [(cid, int(hit.sum())) for cid, hit in strips.items()]
         cid, count = max(counts, key=lambda v: v[1], default=(None, 0))
-        s["beside"] = cid if count and 2 * count >= (x1 - x0) * (y1 - y0) else None
+        covered = np.zeros((y1 - y0, x1 - x0), bool)
+        for hit in strips.values():
+            covered |= hit
+        s["beside"] = cid if count and 2 * int(covered.sum()) >= covered.size else None
     return out, {"picks": len(picks), "unanalyzed": [c["key"] for c in picks if c["key"] not in entries],
-                 "warnings": warns, "settings": cs, "segments": segs, "seam_format": 2}
+                 "warnings": warns, "settings": cs, "segments": segs, "seam_format": 3}
 
 
 def _read_seams(root: str, sig: str, current: bool = False) -> dict | None:
-    """옛 이음매도 읽되, 합성·대안 캐시 적중에는 beside 형식이 필요하다(합성 서명은 그대로)."""
-    raw = _read_bytes(_thumb_path(root, f"seams_{sig}.json"))
+    """옛 이음매도 읽되, 캐시 적중에는 다른 크롭 합집합으로 판정한 beside(3판)가 필요하다(합성 서명은 그대로)."""
     try:
+        raw = _read_bytes(_thumb_path(root, f"seams_{sig}.json"))
         info = json.loads(raw) if raw is not None else None
-    except (ValueError, UnicodeError):
+    except (OSError, ValueError, UnicodeError):
         return None
     if not isinstance(info, dict) or not isinstance(info.get("segments"), list):
         return None
-    return info if not current or info.get("seam_format") == 2 else None
+    return info if not current or info.get("seam_format") == 3 else None
 
 
 def _composite(root: str, m: dict, pref: dict | None, sig: str,
                swap: tuple[str, str, str] | None = None) -> tuple[bytes, dict]:
-    """composite_<sig>.jpg + seams_<sig>.json — 둘 다 있고 이음매 형식이 지금 판이면 읽고, 아니면 둘 다 다시 쓴다(JSON 먼저).
+    """composite_<sig>.jpg + seams_<sig>.json — 이음매 형식이 옛 판이면 재계산하되 읽히는 같은 서명 JPG 는 보존한다.
     swap = ★ 교체 가정(sig 는 그 가정의 서명 — /mask/alts. 그 후보를 실제로 ★ 하면 같은 서명이라 캐시를 그대로 쓴다)."""
     jpg = _thumb_path(root, f"composite_{sig}.jpg")
     js = _thumb_path(root, f"seams_{sig}.json")
@@ -1356,11 +1359,12 @@ def _composite(root: str, m: dict, pref: dict | None, sig: str,
                 t0 = time.time()
                 with _RENDER_SLOTS:
                     out, info = _compose_full(root, m, pref, swap)
-                    data = _jpeg(Image.fromarray(_preview(out)))
                 info.update(sig=sig, seconds=round(time.time() - t0, 2))
                 raw = json.dumps(info, ensure_ascii=False).encode("utf-8")
                 store._atomic_write_bytes(js, raw)
-                store._atomic_write_bytes(jpg, data)
+                if data is None:
+                    data = _jpeg(Image.fromarray(_preview(out)))
+                    store._atomic_write_bytes(jpg, data)
     return data, info
 
 

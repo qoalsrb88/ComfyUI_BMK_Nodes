@@ -427,7 +427,9 @@
     "seams",
     "seams[].beside"
    ],
-   "optional": [],
+   "optional": [
+    "seams[].beside"
+   ],
    "maps": [],
    "any": [],
    "opaque": []
@@ -806,7 +808,9 @@
     "rows[].worst_p90",
     "rows[].this_crop[].beside"
    ],
-   "optional": [],
+   "optional": [
+    "rows[].this_crop[].beside"
+   ],
    "maps": [],
    "any": [],
    "opaque": []
