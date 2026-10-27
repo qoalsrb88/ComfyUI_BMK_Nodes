@@ -45641,9 +45641,15 @@ function setupEnv(cfg = {}) {
   const initial = clone(pv);
   const S = Object.assign(quietState(), { pipeline_rev: null }, cfg.state || {});
   const doc = new Doc();
+  doc.hidden = false;
   const hosts = { list: doc.createElement("ol"), panel: doc.createElement("section"), head: doc.createElement("div") };
   doc.body.append(hosts.list, hosts.panel, hosts.head);
-  const env = { srv, S, doc, hosts, confirms: [], toasts: [], shown: [], panels: [], initial, reads: 0, events: [] };
+  const env = { srv, S, doc, hosts, confirms: [], toasts: [], shown: [], panels: [], initial, reads: 0, events: [], renders: {} };
+  for (const [name, host] of Object.entries(hosts)) {
+    env.renders[name] = 0;
+    const replace = host.replaceChildren;
+    host.replaceChildren = (...children) => { env.renders[name] += 1; replace.apply(host, children); };
+  }
   srv.route.pipeline = () => {
     env.reads += 1;
     if (cfg.read) {
@@ -45669,7 +45675,7 @@ function setupEnv(cfg = {}) {
     pv.settings = settings;
     pv.confirm = confirm;
     pv.saved = true;
-    return [200, { ok: true, rev: pv.rev, settings: clone(pv.settings), confirm: pv.confirm.slice(), drift: [] }];
+    return [200, { ok: true, rev: pv.rev, settings: clone(pv.settings), confirm: pv.confirm.slice(), drift: clone(pv.drift) }];
   };
   if (cfg.progress) srv.route.progress = [200, Object.assign(clone(R["GET /pipeline/progress"].alt.idle), cfg.progress)];
   if (cfg.progressDelay) srv.delay["pipeline/progress"] = cfg.progressDelay.slice();
@@ -45947,6 +45953,33 @@ await scenario("setup:importRace", async () => {
   return result;
 });
 
+await scenario("setup:existingDrift", async () => {
+  const result = {};
+  for (const section of ["import", "prepare"]) for (const changed of [false, true]) {
+    const env = setupEnv({ pipeline(p) {
+      const field = section === "import" ? "crop_group" : "ref_style";
+      if (section === "import") p.settings.import.crop_group = "auto";
+      p.drift.push({ section, kind: section === "import" ? "import" : "cell", field, manifest: null, settings: p.settings[section][field] });
+    }, read(e, p) {
+      if (changed && e.srv.count("pipeline/settings") === 1) p.drift[0].manifest = "changed-after-import";
+    } });
+    env.pipe.enter(env.S, null);
+    await until(() => env.toasts.length > 0);
+    const posts = env.posts();
+    const label = `${section} 기존 drift ${changed ? "변경됨" : "그대로"}`;
+    result[`${label}: 확인 창부터 갈라짐이 있던 파일 없음 상태`] = env.confirms.length === 1 && !env.shown[0].saved &&
+      JSON.stringify(env.shown[0].drift) === JSON.stringify(env.initial.drift);
+    result[`${label}: ${changed ? "새 갈라짐으로 부분 저장 중단" : "두 절 정상 저장"}`] = posts.length === (changed ? 1 : 2) &&
+      posts[0].section === "import" && env.toasts.length === 1 &&
+      (changed ? env.toasts[0].includes("앞 절(Import PSD)만 저장됨") :
+        posts[1].section === "prepare" && posts[1].rev === 1 && env.toasts[0].includes("실행 설정을 저장했습니다") &&
+        JSON.stringify(env.current().drift) === JSON.stringify(env.initial.drift));
+    await env.repeat();
+    result[`${label}: 질문·저장 재시도 없음`] = env.confirms.length === 1 && env.posts().length === posts.length && env.toasts.length === 1;
+  }
+  return result;
+});
+
 await scenario("setup:staleEntry", async () => {
   const result = {};
   for (const stale of ["gate", "warning"]) {
@@ -46085,6 +46118,88 @@ await scenario("setup:pollRetry", async () => {
     await env.poll(10001);
     result[`${kind}: 답한 뒤 시간 경과·폴링에도 질문·읽기 재시도 없음`] = env.confirms.length === 1 &&
       env.srv.count("api/queue") === afterQueue && env.reads === afterReads && !env.posts().length && !env.toasts.length;
+    env.pipe.leave();
+  }
+  return result;
+});
+
+await scenario("setup:hidden", async () => {
+  const result = {};
+  for (const phase of ["before", "queue", "reads", "betweenPolls"]) {
+    const env = setupEnv({ answer: false });
+    const visible = (show) => { env.doc.hidden = !show; env.doc.body.fire("visibilitychange"); };
+    env.srv.queue.queue_pending = [[1, "other-graph"]];
+    env.pipe.enter(env.S, null);
+    await sleep(50);
+    const queued = env.srv.count("api/queue"), rev = env.S.rev;
+    env.srv.queue.queue_pending = [];
+    if (["queue", "reads"].includes(phase)) {
+      env.srv.delay[phase === "queue" ? "api/queue" : "pipeline"] = [100];
+      await env.poll(10001); // 사전 읽기가 진행되는 동안 다른 탭으로 이동
+      visible(false);
+      await sleep(120);
+    } else {
+      visible(false);
+      if (phase === "before") await env.poll(10001);
+      // betweenPolls: 숨은 동안 폴링조차 없었어도 visible 시 10초 대기를 해제해야 함
+    }
+    result[`${phase}: 숨은 탭에서 큐가 비어도 질문·쓰기·토스트 없이 보류`] = !env.confirms.length && !env.posts().length && !env.toasts.length;
+    if (phase === "before") result["숨은 탭 사전 판정은 큐 요청도 보내지 않음"] = env.srv.count("api/queue") === queued;
+    if (phase === "reads") result["질문 직전 숨김은 reload 완료 뒤에도 기회 유지"] = env.reads === 2;
+    visible(true);
+    await env.poll(); // board visibilitychange 의 refresh: rev·시계 그대로
+    result[`${phase}: 다시 보인 뒤 첫 폴링에서 한 번 질문`] = env.S.rev === rev && env.confirms.length === 1 && !env.posts().length && !env.toasts.length;
+    visible(false);
+    visible(true);
+    await env.poll(10001);
+    result[`${phase}: 취소 뒤 visibilitychange·폴링에도 다시 묻지 않음`] = env.confirms.length === 1;
+    env.pipe.leave();
+  }
+  return result;
+});
+
+await scenario("setup:checking", async () => {
+  const result = {};
+  for (const phase of ["queue", "reads"]) {
+    const env = setupEnv({ answer: false });
+    env.srv.queue.queue_pending = [[1, "other-graph"]];
+    env.pipe.enter(env.S, null);
+    await sleep(60);
+    const renders = () => JSON.stringify(env.renders);
+    const before = renders(), queued = env.srv.count("api/queue");
+    const apply = env.hosts.panel.all().find((e) => e.tagName === "BUTTON" && e.textContent === "반영 (무료)");
+    if (!apply || apply.disabled) throw new Error("재판정 전 [반영 (무료)] 없음·비활성");
+    if (phase === "queue") env.srv.delay["api/queue"] = [200];
+    else {
+      env.srv.queue.queue_pending = [];
+      env.srv.delay.pipeline = [100, 220]; // 자동 읽기가 먼저 끝나고, 수동 반영은 아직 asking 안에 있음
+    }
+    await env.poll(10001);
+    await env.poll(10001); // 10초 재시도 시각이 되어도 앞 사전 읽기가 남아 있으면 겹치지 않음
+    env.pipe.stateChanged(env.S);
+    result[`${phase}: 사전 읽기 중 중복 검사·화면 다시 그리기 없음`] = renders() === before &&
+      env.srv.count("api/queue") === queued + 1 && env.doc.body.contains(apply);
+    apply.fire("click");
+    await sleep(10);
+    result[`${phase}: 자동 사전 읽기 중 [반영] 클릭을 처리함`] = env.events.includes("refresh:start") && renders() !== before;
+    if (phase === "reads") {
+      const manualStart = renders();
+      await sleep(120); // 자동 판정은 끝났지만 수동 반영의 reload 는 아직 기다리는 중
+      result["사용자 asking 이 켜져 있으면 자동 질문 기회를 쓰지 않고 조용히 보류"] =
+        !env.confirms.length && !env.posts().length && !env.toasts.length && renders() === manualStart;
+    }
+    await until(() => env.confirms.length > 0);
+    await sleep(10);
+    result[`${phase}: [반영]의 확인 창이 실제로 열림`] = env.confirms.length === 1 && env.confirms[0].includes("무료 반영(Import → Prepare") &&
+      !env.confirms[0].startsWith("그래프에서 마지막으로 돈 설정");
+    const afterManual = renders();
+    await sleep(220);
+    result[`${phase}: 사전 읽기 종료는 추가 render·자동 질문·쓰기 없음`] = renders() === afterManual &&
+      env.confirms.length === 1 && !env.posts().length && !env.toasts.length;
+    env.srv.queue.queue_pending = [];
+    await env.poll(10001);
+    result[`${phase}: 사용자 동작 뒤 다음 판정에서 자동 질문 기회 유지`] = env.confirms.length === 2 &&
+      env.confirms[1].startsWith("그래프에서 마지막으로 돈 설정") && !env.posts().length && !env.toasts.length;
     env.pipe.leave();
   }
   return result;
@@ -46272,7 +46387,7 @@ await scenario("setup:inputDeferred", async () => {
         check(False, f"배치 4-1 node 하네스 실패({r.returncode}): {r.stderr.strip()[-1200:]}")
         return
     res = json.loads(r.stdout.strip().splitlines()[-1])
-    check(len(res) == 19, f"배치 4-1 시나리오 19개 실행: {list(res)}")
+    check(len(res) == 22, f"배치 4-1 시나리오 22개 실행: {list(res)}")
     for name, checks in res.items():
         if "error" in checks:
             check(False, f"{name} 하네스 예외: {checks['error']}")
