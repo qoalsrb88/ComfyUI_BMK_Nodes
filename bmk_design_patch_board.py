@@ -1800,6 +1800,10 @@ def _ps_export_match(path, exports: list[dict]) -> tuple[str, str, str, dict]:
     if not matches:
         raise _Reject(400, "이 프로젝트 Export PSD와 같은 폴더·원래 이름 접두사인 파일만 가져올 수 있습니다")
     _length, _index, original, rec = max(matches, key=lambda x: x[:2])
+    if os.path.normcase(psd) != os.path.normcase(original):
+        suffix = stem[_length:]
+        if suffix[0].isdigit() or re.search(r"_\d+$", suffix) or os.path.lexists(os.path.splitext(psd)[0] + ".json"):
+            raise _Reject(400, "다른 Export 자동 이름 또는 자체 사이드카가 있는 PSD는 PS 사본으로 가져올 수 없습니다")
     psd, side = _ps_export_paths(psd, original)
     if (os.path.normcase(psd) != os.path.normcase(original)
             and os.path.normcase(os.path.dirname(os.path.realpath(psd))) != os.path.normcase(os.path.realpath(os.path.dirname(original)))):
@@ -1845,14 +1849,15 @@ def mask_ps_list(root: str) -> list[dict]:
 
 def mask_ps_import(root: str, data: dict) -> dict:
     m = store.load_manifest(root)
-    psd, side, _original, _rec = _ps_export_match(data.get("psd"), m.get("exports") or [])
+    psd, side, _original, export = _ps_export_match(data.get("psd"), m.get("exports") or [])
     dry = data.get("dry_run")
     if not isinstance(dry, bool):
         raise _Reject(400, "dry_run 은 true 또는 false 여야 합니다")
 
     def source():
         paths = _ps_export_match(psd, m.get("exports") or [])[:2]
-        return {p: [s.st_mtime_ns, s.st_size, s.st_ctime_ns] for p in paths for s in [os.stat(p)]}
+        # ns는 JS 안전 정수 범위를 넘는다. 브라우저 JSON 왕복에서도 같은 불투명 문자열로 대조한다.
+        return {p: f"{s.st_mtime_ns}:{s.st_size}:{s.st_ctime_ns}" for p in paths for s in [os.stat(p)]}
 
     stamp = source()
     with open(side, encoding="utf-8") as f:
@@ -1862,23 +1867,30 @@ def mask_ps_import(root: str, data: dict) -> dict:
     rk = store.root_key(root)
     plans = []
 
-    def target(cand):
+    def target(cand, row):
         if not plans:
             plan, _picks, _entries, cs, _warns = _star_plan(root, m, _PREF.get(rk))
-            plans.append(({it["cand"]["key"]: (p, it) for p, _t, it in _node()._slices_in_order(plan)}, cs))
+            plans.append(({it["cand"]["key"]: (p, it, t["label"] if len(t["slices"]) == 1 else f"{t['label']} · slice {i}")
+                           for p in plan for t in p["targets"] for i, it in enumerate(t["slices"], 1)}, cs))
         items, cs = plans[0]
-        p, it = items[cand["key"]]
+        p, it, group = items[cand["key"]]
         rect = dmask.edit_rect(dpsd.quad_bbox(it["quad"]), _canvas_wh(m))
         dmask._check_rect(rect)
+        old_mask = dmask.export_mask(root, snapshot, row, (export.get("options") or {}).get("mask_source"))
         return {"rect": rect, "fp": dmask.base_fp(cand, it["entry"], cs["mask_source"]),
-                "mask": _window_l(it["mask"], rect), "crop": p["crop"]["name"]}
+                "mask": _window_l(it["mask"], rect), "export_mask": _window_l(old_mask, rect),
+                "crop": p["crop"]["name"], "group": group}
 
     def placed(mm, key, fp):
         cand = dmask.star_cand(mm, key)
         if cand is None:
             raise dmask.MaskConflict("지금 ★ 후보가 아닙니다 — 다시 미리 보기", "not_picked")
         entry, cs = _entry_for(mm, key, _PREF.get(rk)), _compose_settings(root, mm)
-        if dmask.base_fp(cand, entry, cs["mask_source"]) != fp or source() != stamp:
+        try:
+            current_source = source()
+        except (_Reject, OSError) as e:
+            raise dmask.MaskConflict(f"PSD·사이드카를 다시 확인할 수 없습니다 — 다시 미리 보기: {e}", "changed") from e
+        if dmask.base_fp(cand, entry, cs["mask_source"]) != fp or current_source != stamp:
             raise dmask.MaskConflict("기준 마스크 또는 PSD가 바뀌었습니다 — 다시 미리 보기", "changed")
         return _edit_window(mm, cand, entry, bool(cs["use_registration"]))
 

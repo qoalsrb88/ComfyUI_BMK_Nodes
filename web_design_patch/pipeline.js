@@ -2342,6 +2342,17 @@ window.DPPipeline = (() => {
 
     let psMask = null; // Export 절의 선택·미리보기만 이 창에서 유지(폴링으로 패널을 다시 그려도 보존)
 
+    async function psMaskResult(result) {
+      const imported = result.imported || [];
+      if (imported.length) {
+        opts.toast(`PS 마스크 ${imported.length}개를 마스크 편집으로 가져왔습니다 — 마스크 모드에서 확인·되돌리기`, (result.failed || []).length ? "warn" : "");
+        await opts.refresh();
+      } else {
+        const reasons = [...(result.failed || []), ...(result.skipped || [])].map((r) => r.reason).filter(Boolean);
+        opts.toast(`PS 마스크 가져오기 실패 — ${[...new Set(reasons)].slice(0, 3).join(" · ") || result.error || "가져온 마스크가 없습니다 — 다시 미리 보기"}`, "err");
+      }
+    }
+
     async function psMaskAction(kind) {
       if (psMask && psMask.busy) return;
       if (kind === "open") psMask = { rows: [], psd: "", preview: null, result: null, error: null, busy: false };
@@ -2364,16 +2375,14 @@ window.DPPipeline = (() => {
           const result = await PS.psImport(state.psd, false, state.preview.seen);
           state.result = result;
           state.preview = null;
-          opts.toast(`PS 마스크 ${result.imported.length}개를 마스크 편집으로 가져왔습니다 — 마스크 모드에서 확인·되돌리기`, result.failed.length ? "warn" : "");
-          await opts.refresh();
+          await psMaskResult(result);
         }
       } catch (e) {
         state.error = e.message;
         state.preview = null;
         if (e.data && e.data.imported) {
           state.result = e.data;
-          opts.toast(`PS 마스크 ${e.data.imported.length}개를 마스크 편집으로 가져왔습니다 — 마스크 모드에서 확인·되돌리기`, "warn");
-          await opts.refresh();
+          await psMaskResult(e.data);
         }
       } finally {
         state.busy = false;
