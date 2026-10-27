@@ -906,6 +906,7 @@ window.DPPipeline = (() => {
     let settingsOn = false;
     let setupPending = null; // null = 첫 진입 전, true = 판정 가능할 때까지 기다림, false = 판정했거나 이미 물음
     let setupInputWait = false; // 입력·포인터 동작 때문에 보류한 질문은 다음 enter 에서만 재개
+    let setupLastTry = -Infinity; // rev 가 그대로인 폴링에서 보류 사유를 다시 확인하는 간격(10초)
     let form = {}; // 설정 패널에서 고치는 중인 값 {절: {키: 값}} — 다시 그려도 남는다
     // 다른 창의 저장 알아보기(state pipeline_rev 로 다시 읽으면 PS.P·rev 가 새 판이 되어 저장이 409 없이 통과): edits = 손댄 키를 처음 고칠 때 화면의 값
     // {절: {키: 값}}, drawn = 설정 패널을 마지막으로 그린(또는 저장한) 절 값 {절: 값}(입력 중이면 다시 그리기가 미뤄져 화면이 옛 값)
@@ -1150,7 +1151,9 @@ window.DPPipeline = (() => {
     }
 
     function firstSetup() {
-      if (!setupPending || !on || !PS.P) return;
+      if (!setupPending || !on) return;
+      setupLastTry = Date.now();
+      if (!PS.P) return;
       if (PS.P.saved || settingsOn) {
         setupPending = false;
         return;
@@ -1159,10 +1162,13 @@ window.DPPipeline = (() => {
       if (held || panelBusy()) setupInputWait = true;
       if (setupInputWait || asking || paying || PS.busy || PS.sending || PS.job || (L && L.busy)) return;
       once(async () => {
-        // 보류 뒤에는 앞 progress 가 실행 중이어도 새 값으로 판정. 실패·실행 중이면 다음 pipelineLoaded 에 기회를 남긴다.
-        const [loaded, , idle] = await Promise.all([reload(true), PS.loadProgress(), setupQueueIdle()]);
+        // 바쁜 큐는 가벼운 읽기만으로 보류. 비었을 때만 깊은 유도(GET /pipeline)·progress 를 새로 받아 판정한다.
+        const idle = await setupQueueIdle();
         if (held || panelBusy()) setupInputWait = true;
-        if (!setupPending || !on || !loaded || PS.err || !PS.progress || !idle || setupBusy() || setupInputWait) return;
+        if (!setupPending || !on || !idle || setupInputWait) return;
+        const [loaded] = await Promise.all([reload(true), PS.loadProgress()]);
+        if (held || panelBusy()) setupInputWait = true;
+        if (!setupPending || !on || !loaded || PS.err || !PS.progress || setupBusy() || setupInputWait) return;
         setupPending = false; // 파일·gate·경고 판정 또는 실제 확인 창부터는 이 페이지에서 다시 묻지 않음
         if (!setupReady(PS.P)) return;
         const P0 = PS.P;
@@ -1226,7 +1232,8 @@ window.DPPipeline = (() => {
             saved.push(SECTIONS[sec]);
             // rev 0 저장 뒤 그래프 Import·Prepare 도 다시 대조 — 그 사이 끝난 그래프와 갈라진 채 다음 절을 쓰지 않음.
             if (sec === "import" && (PS.err || !PS.P || PS.P.error || !PS.P.saved || !same(PS.P.settings.prepare, values.prepare)
-              || PS.P.drift.some((d) => d.kind === "import") || !same(PS.P.derived.settings.import, values.import))) {
+              || PS.P.drift.some((d) => d.kind === "import" || d.section === "prepare") || !same(PS.P.derived.settings.import, values.import)
+              || !same(PS.P.derived.settings.prepare, values.prepare) || confirmGate(PS.P).gate.length)) {
               opts.toast("Import·Prepare: 확인 창의 값과 지금 설정이 다르거나 다시 읽지 못해 멈춤 — 앞 절(Import PSD)만 저장됨, [실행 설정 열기]에서 확인", "warn");
               planNow();
               return;
@@ -2634,6 +2641,7 @@ window.DPPipeline = (() => {
         if (cur && (text === null || dvErr) && (st.rev !== seenRev || moved)) loadDraft();
         ticks += 1;
         if (busy || ticks % PROGRESS_EVERY === 0) PS.loadProgress().then((ch) => ch && render());
+        if (setupPending && !setupInputWait && !asking && Date.now() - setupLastTry >= 10000) firstSetup();
       }
       if (changed) render();
     }

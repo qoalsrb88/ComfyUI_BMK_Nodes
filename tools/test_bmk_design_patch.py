@@ -45623,7 +45623,9 @@ def polish4_setup_unit():
     cases = r"""
 function setupEnv(cfg = {}) {
   // 큐를 이어 보는 다른 장면의 타이머가 이 장면의 fetch·DOM 을 쓰지 않도록 창마다 문맥을 분리한다.
-  const ctx = vm.createContext({ window: {}, URLSearchParams, setTimeout, clearTimeout, setInterval, clearInterval, console });
+  let clock = Date.now();
+  const ctx = vm.createContext({ window: {}, URLSearchParams, setTimeout, clearTimeout, setInterval, clearInterval, console,
+    Date: class extends Date { static now() { return clock; } } });
   vm.runInContext(fs.readFileSync(IN.pipelineJs, "utf8"), ctx);
   const P = ctx.window.DPPipeline;
   const srv = server();
@@ -45696,6 +45698,11 @@ function setupEnv(cfg = {}) {
     S.rev += 1;
     env.pipe.stateChanged(S);
     await sleep(70);
+  };
+  env.poll = async (ms = 0) => {
+    clock += ms;
+    env.pipe.stateChanged(S); // rev·객체 모두 그대로인 unchanged 응답
+    await sleep(30);
   };
   env.repeat = async () => {
     env.pipe.leave();
@@ -45895,13 +45902,15 @@ await scenario("setup:confirmRace", async () => {
 
 await scenario("setup:importRace", async () => {
   const result = {};
-  for (const change of ["derivedAtSave", "afterImportRead", "prepareAndRev", "unreadable", "importAtSave", "importDerived", "importDrift"]) {
+  for (const change of ["derivedAtSave", "afterImportRead", "prepareAndRev", "unreadable", "importAtSave", "importDerived", "importDrift",
+    "prepareDerived", "prepareDrift", "prepareGate"]) {
     const env = setupEnv({ beforeSave(e, p, body) {
       if (change === "derivedAtSave" && body.section === "import") {
         p.derived.settings.prepare.n += 1; // 최종 GET 과 import POST 사이 그래프 실행: rev 0 update 가 새 Prepare 를 파일에 넣음
         p.derived.settings.export.subfolder = "fresh-derived";
       }
       if (change === "importAtSave" && body.section === "import") p.derived.settings.import.psd_path = "Z:/graph/import-later.psd";
+      if (change === "prepareGate" && body.section === "import") p.derived.confirm.push("prepare.n");
     }, read(e, p) {
       if (e.srv.count("pipeline/settings") !== 1 || e.changed) return;
       e.changed = true;
@@ -45911,6 +45920,9 @@ await scenario("setup:importRace", async () => {
       if (change === "importDerived") p.derived.settings.import.psd_path = "Z:/graph/import-later.psd";
       if (change === "importDrift") p.drift.push({ kind: "import", section: "import", field: "psd_path",
         manifest: "Z:/graph/import-later.psd", settings: p.settings.import.psd_path });
+      if (change === "prepareDerived") p.derived.settings.prepare.n += 1;
+      if (change === "prepareDrift") p.drift.push({ kind: "calls", section: "prepare", field: "n",
+        manifest: p.settings.prepare.n + 1, settings: p.settings.prepare.n });
     } });
     env.pipe.enter(env.S, null);
     await until(() => env.toasts.length > 0);
@@ -45920,8 +45932,12 @@ await scenario("setup:importRace", async () => {
       posts[0].section === "import" && posts[0].rev === 0 && env.toasts.length === 1 && env.toasts[0].includes("앞 절(Import PSD)만 저장됨");
     if (change.startsWith("import")) result[`${change}: Import 만 갈라져도 Prepare POST 없음`] = saved.rev === 1 &&
       saved.settings.prepare.n === env.shown[0].settings.prepare.n && !posts.some((p) => p.section === "prepare");
+    else if (["prepareDerived", "prepareDrift", "prepareGate"].includes(change)) result[`${change}: 파일 Prepare 가 같아도 다음 절 저장 중단`] =
+      saved.rev === 1 && JSON.stringify(saved.settings.prepare) === JSON.stringify(env.shown[0].settings.prepare) &&
+      !posts.some((p) => p.section === "prepare");
     else if (change !== "unreadable") result[`${change}: 창의 옛 Prepare 로 되돌리지 않음`] =
       saved.settings.prepare.n === env.shown[0].settings.prepare.n + 1 && saved.rev === (change === "prepareAndRev" ? 9 : 1);
+    if (change === "prepareGate") result["rev 0 저장 시 새로 생긴 prepare 확인 항목을 지우지 않음"] = saved.confirm.includes("prepare.n");
     if (change === "derivedAtSave") result["rev 0 첫 저장은 저장 시점 유도값 전체·보낸 import 절만 덮음·다른 확인 유지"] =
       saved.settings.export.subfolder === "fresh-derived" && JSON.stringify(saved.settings.import) === JSON.stringify(posts[0].values) &&
       JSON.stringify(saved.confirm) === JSON.stringify(env.initial.confirm);
@@ -46024,6 +46040,56 @@ await scenario("setup:progressRetry", async () => {
   return result;
 });
 
+await scenario("setup:pollRetry", async () => {
+  const result = {};
+  for (const kind of ["running", "pending", "queueError", "tab", "progressError"]) {
+    const env = setupEnv({ answer: false, link: true, read(e, p) {
+      if (e.released) p.derived.settings.prepare.n = 4;
+    } });
+    if (kind === "running") env.srv.queue.queue_running = [[1, "unrelated-graph"]];
+    if (kind === "pending") env.srv.queue.queue_pending = [[1, "unrelated-graph"]];
+    if (kind === "queueError") env.srv.route.queue = [503, { error: "queue failed" }];
+    if (kind === "tab") env.link.busy = true;
+    if (kind === "progressError") env.srv.route.progress = [503, { error: "progress failed" }];
+    const rev = env.S.rev;
+    env.pipe.enter(env.S, null);
+    await sleep(50);
+    const initialQueue = env.srv.count("api/queue"), initialReads = env.reads;
+    result[`${kind}: 첫 보류까지 큐가 비었을 때만 pipeline 다시 읽기`] = initialQueue === (kind === "tab" ? 0 : 1) &&
+      initialReads === (kind === "progressError" ? 2 : 1) && !env.confirms.length;
+    for (const ms of [3000, 3000, 3000, 999]) await env.poll(ms);
+    result[`${kind}: rev 그대로 10초 안의 반복 폴링은 queue·pipeline 요청을 늘리지 않음`] =
+      env.srv.count("api/queue") === initialQueue && env.reads === initialReads && !env.confirms.length;
+    await env.poll(2); // 마지막 시도에서 10,001ms — 여전히 보류 사유가 있음
+    const waitingQueue = env.srv.count("api/queue"), waitingReads = env.reads;
+    result[`${kind}: 10초 뒤 재판정도 질문·토스트·POST 없이 보류`] = !env.confirms.length && !env.posts().length && !env.toasts.length &&
+      waitingQueue === initialQueue + (kind === "tab" ? 0 : 1);
+    result[`${kind}: 바쁜 큐·읽지 못한 큐·탭은 무거운 pipeline 읽기를 생략`] =
+      waitingReads === initialReads + (kind === "progressError" ? 1 : 0);
+    env.released = true;
+    env.srv.queue = { queue_running: [], queue_pending: [] };
+    env.srv.route.queue = null;
+    env.srv.route.progress = [200, clone(R["GET /pipeline/progress"].alt.idle)];
+    env.link.busy = false;
+    await env.poll(9999);
+    result[`${kind}: 보류 사유가 풀려도 다음 10초 전에는 추가 queue 요청 없음`] =
+      env.srv.count("api/queue") === waitingQueue && env.reads === waitingReads && !env.confirms.length;
+    const offset = env.srv.log.length;
+    await env.poll(2);
+    const resumed = env.srv.log.slice(offset).map((x) => x.path);
+    result[`${kind}: rev 변화·재진입 없이 큐 확인 후 최신 값으로 한 번 질문`] = env.S.rev === rev && env.confirms.length === 1 &&
+      env.confirms[0].includes("prepare.n = 4") && env.srv.count("api/queue") === waitingQueue + 1 && env.reads === waitingReads + 1 &&
+      resumed.indexOf("api/queue") >= 0 && resumed.indexOf("pipeline") > resumed.indexOf("api/queue");
+    const afterQueue = env.srv.count("api/queue"), afterReads = env.reads;
+    await env.poll(10001);
+    await env.poll(10001);
+    result[`${kind}: 답한 뒤 시간 경과·폴링에도 질문·읽기 재시도 없음`] = env.confirms.length === 1 &&
+      env.srv.count("api/queue") === afterQueue && env.reads === afterReads && !env.posts().length && !env.toasts.length;
+    env.pipe.leave();
+  }
+  return result;
+});
+
 await scenario("setup:busyAfterConfirm", async () => {
   const result = {};
   for (const kind of ["queueRun", "queuePending", "queueError", "queueJson", "queueShape", "progressError", "progressRun", "progressDraft",
@@ -46118,10 +46184,10 @@ await scenario("setup:concurrentReadFailure", async () => {
   const env = setupEnv({ answer: false, read(e) {
     if (e.reads === 3) return [500, { error: "겹친 폴링 읽기 실패" }];
   } });
-  env.srv.delay["api/queue"] = [150];
+  env.srv.delay["pipeline/progress"] = [0, 150];
   env.pipe.enter(env.S, null);
   await until(() => env.reads === 2);
-  await sleep(20); // once 의 reload 는 성공, 대기열 응답만 아직 기다리는 중
+  await sleep(20); // 큐는 비었고 once 의 reload 는 성공, progress 응답만 아직 기다리는 중
   await env.nextLoad(); // 더 늦게 보낸 PS.load 가 실패하여 PS.err 가 섬
   await sleep(100);
   const deferred = env.reads === 3 && !env.confirms.length && !env.posts().length && !env.toasts.length;
@@ -46184,7 +46250,11 @@ await scenario("setup:inputDeferred", async () => {
     else env.doc.body.fire("pointerup", { buttons: 0 });
     await sleep(20);
     await env.nextLoad();
+    const queueReads = env.srv.count("api/queue");
+    await env.poll(10001);
+    await env.poll(10001);
     result[`${phase} ${kind}: 입력 종료 후에도 폴링으로 모달을 띄우지 않음`] = !env.confirms.length && !env.posts().length;
+    result[`${phase} ${kind}: 입력 보류는 10초 재판정에서도 queue 읽기 없음`] = env.srv.count("api/queue") === queueReads;
     env.pipe.leave();
     env.pipe.enter(env.S, null);
     await until(() => env.confirms.length > 0);
@@ -46202,7 +46272,7 @@ await scenario("setup:inputDeferred", async () => {
         check(False, f"배치 4-1 node 하네스 실패({r.returncode}): {r.stderr.strip()[-1200:]}")
         return
     res = json.loads(r.stdout.strip().splitlines()[-1])
-    check(len(res) == 18, f"배치 4-1 시나리오 18개 실행: {list(res)}")
+    check(len(res) == 19, f"배치 4-1 시나리오 19개 실행: {list(res)}")
     for name, checks in res.items():
         if "error" in checks:
             check(False, f"{name} 하네스 예외: {checks['error']}")
