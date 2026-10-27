@@ -44873,7 +44873,7 @@ test("C8 사전 승인한 다시 생성 대기: 기존 완료 결과가 있어�
   D.render(host, r, { goSection: (title) => calls.push(title) });
   assert.equal(host.children[0].children[0].textContent, "작업 점검표 (7/8)");
   host.children[0].children[6].events.click(); assert.deepEqual(calls, ["비용·승인"]);
-  i.selectedCount = 1; assert.equal(D.rows(i)[5].value, "다시 생성 대기 2 (선택 1/2 크롭 기준)");
+  i.selectedCount = 1; assert.equal(D.rows(i)[5].value, "다시 생성 대기 2");
   i.selectedCount = 2; i.plan.run.pre = 0; assert.equal(D.rows(i)[5].state, "done");
 });
 test("C12 다운로드 복구 대기: 기존 완료 결과가 있어도 할 일·비용/승인 이동", () => {
@@ -44883,7 +44883,7 @@ test("C12 다운로드 복구 대기: 기존 완료 결과가 있어도 할 일�
   D.render(host, r, { goSection: (title) => calls.push(title) });
   assert.equal(host.children[0].children[0].textContent, "작업 점검표 (7/8)");
   host.children[0].children[6].events.click(); assert.deepEqual(calls, ["비용·승인"]);
-  i.selectedCount = 1; assert.equal(D.rows(i)[5].value, "복구 대기 2 (선택 1/2 크롭 기준)");
+  i.selectedCount = 1; assert.equal(D.rows(i)[5].value, "복구 대기 2");
   i.selectedCount = 2; i.plan.run.free = 0; assert.equal(D.rows(i)[5].state, "done");
 });
 test("C9 계획 요청 실패: 첫 계획 없음·옛 완료 계획 모두 초안/생성 경고, 복구 뒤 완료", () => {
@@ -44904,7 +44904,7 @@ test("C9 계획 요청 실패: 첫 계획 없음·옛 완료 계획 모두 초�
     for (const n of [4, 5]) assert.equal(D.rows(i)[n].state, "done");
   }
 });
-test("F3 일부·0개 선택은 완료 아님, 선택 수를 표시하고 전체 선택 때만 완료", () => {
+test("F3/C14 일부·0개 선택은 완료 아님, 승인 필요 값에만 선택 수 표시", () => {
   const i = base();
   for (const k of [0, 1]) {
     i.selectedCount = k;
@@ -44913,10 +44913,18 @@ test("F3 일부·0개 선택은 완료 아님, 선택 수를 표시하고 전체
     }
   }
   i.selectedCount = 1; i.planOk = false;
-  assert.equal(D.rows(i)[4].value, "계산 중 (선택 1/2 크롭 기준)");
+  for (const n of [4, 5]) { assert.equal(D.rows(i)[n].value, "계산 중"); assert.equal(D.rows(i)[n].state, "todo"); }
   i.planOk = true; i.S.running = true; i.progress = { run: { inflight: 1 } };
-  assert.equal(D.rows(i)[5].value, "진행 1 (선택 1/2 크롭 기준)");
-  i.selectedCount = 2; i.S.running = false; delete i.progress;
+  assert.equal(D.rows(i)[5].value, "진행 1");
+  i.S.drafting = true; assert.equal(D.rows(i)[4].value, "초안 진행 중");
+  i.planErr = "요청 실패";
+  for (const n of [4, 5]) {
+    assert.equal(D.rows(i)[n].value, "계획 오류 — 다시 계산 · 요청 실패"); assert.equal(D.rows(i)[n].state, "warn");
+  }
+  i.planErr = null; i.plan.draft.error = "초안 계획 실패"; i.plan.run.error = "생성 계획 실패";
+  assert.equal(D.rows(i)[4].value, "초안 계획 실패"); assert.equal(D.rows(i)[5].value, "생성 계획 실패");
+  delete i.plan.draft.error; delete i.plan.run.error;
+  i.selectedCount = 2; i.S.running = false; i.S.drafting = false; delete i.progress;
   for (const n of [4, 5]) { assert.equal(D.rows(i)[n].state, "done"); assert(!D.rows(i)[n].value.includes("크롭 기준")); }
 });
 test("★ 일부·공동 B/C = starChecks 정보·다른 ★ 로 바꾸면 미완료", () => {
