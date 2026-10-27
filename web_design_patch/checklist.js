@@ -25,6 +25,7 @@ window.DPChecklist = (() => {
     const missingRef = crops.find((c) => !hasRefs(c));
     const noRefsDir = crops.some((c) => c.refs === null);
     const draftNeed = draft && Array.isArray(draft.units) ? draft.units.length : null;
+    const draftPending = draft && Array.isArray(draft.import_pending) ? draft.import_pending : [];
     const draftFree = draft && Number.isFinite(draft.free) ? draft.free : 0;
     const draftUnwritten = draft && draft.warnings && Array.isArray(draft.warnings.unwritten) ? draft.warnings.unwritten.length : 0;
     const draftSettings = input.P0 && !input.P0.error && input.P0.settings && input.P0.settings.draft;
@@ -38,16 +39,23 @@ window.DPChecklist = (() => {
       : crops.reduce((v, c) => v + ((runCrops[c.id] || {}).inflight || 0), 0);
     const running = !!S.running || !!(run && run.running) || inflight > 0;
     const drafting = !!S.drafting || !!(draft && draft.running);
-    const complete = n > 0 && crops.every((c) => (runCrops[c.id] || {}).done > 0);
+    const missing = crops.filter((c) => !((runCrops[c.id] || {}).done > 0)).length;
+    const complete = n > 0 && missing === 0;
+    const failed = Object.values(runCrops).reduce((v, c) => v + (c.failed || 0), 0);
+    const orphaned = Object.values(runCrops).reduce((v, c) => v + (c.orphaned || 0), 0);
     const draftError = planError || (planOk && draft && draft.error);
     const runError = planError || (planOk && run && run.error);
+    const draftApply = planOk && draft && !draftError && !draftUnwritten && !drafting && draftPending.length > 0;
+    const runApply = planOk && run && !runError && !drafting && !running && (pending.length > 0 || prepareDrift.length > 0);
     const draftValue = draftError ? draftError : !planOk || !draft ? "계산 중"
       : draftUnwritten > 0 ? `못 쓴 스펙 ${draftUnwritten}` : drafting ? "초안 진행 중"
-        : draftFree > 0 ? `초안 복구 대기 ${draftFree}` : draftStyle > 0 ? `화풍 초안 대기 ${draftStyle}`
+        : draftApply ? "반영 뒤 다시 계산" : draftFree > 0 ? `초안 복구 대기 ${draftFree}` : draftStyle > 0 ? `화풍 초안 대기 ${draftStyle}`
           : draftNeed === null ? "계산 중" : `초안 승인 필요 ${draftNeed}${selectionNote}`;
     const runValue = runError ? runError : !planOk || !run ? "계산 중"
-      : running ? `진행 ${inflight}` : runPre > 0 ? `다시 생성 대기 ${runPre}`
-        : runFree > 0 ? `복구 대기 ${runFree}` : runNeed === null ? "계산 중" : `생성 승인 필요 ${runNeed}${selectionNote}`;
+      : drafting ? "초안 진행 중 — 끝난 뒤" : running ? `진행 ${inflight}` : runApply ? "반영 뒤 다시 계산"
+        : runPre > 0 ? `다시 생성 대기 ${runPre}` : runFree > 0 ? `복구 대기 ${runFree}`
+          : runNeed === 0 && missing > 0 ? `완료 결과 없는 크롭 ${missing} (실패 ${failed} · 결과 못 받음 ${orphaned})`
+            : runNeed === null ? "계산 중" : `생성 승인 필요 ${runNeed}${selectionNote}`;
     // starChecks 의 공동 결과 판정과 같은 조건: 뒤 타깃은 첫 타깃의 공동 ★ 를 공유한다.
     const hasStar = (t) => {
       if ((t.pick_keys || []).length) return true;
@@ -76,13 +84,13 @@ window.DPChecklist = (() => {
           input.unsure ? [`확인 필요: ${input.unsure}`] : []).join(" · ") || "미반영 없음",
         "크롭·레퍼런스를 바꾼 뒤 반영(무료)을 눌러 생성 입력을 갱신하세요.", { section: "반영" }),
       row(5, "초안", draftError || (planOk && draftUnwritten > 0) ? "warn"
-        : n > 0 && allSelected && ready && draftNeed === 0 && draftFree === 0 && draftStyle === 0 && !drafting ? "done" : "todo",
+        : n > 0 && allSelected && ready && draftNeed === 0 && draftFree === 0 && draftStyle === 0 && !drafting && !draftPending.length ? "done" : "todo",
         draftValue,
-        "비용·승인에서 초안 계획과 비용을 확인한 뒤 승인하세요.", { section: "비용·승인" }),
+        "비용·승인에서 초안 계획과 비용을 확인한 뒤 승인하세요.", { section: draftApply ? "반영" : "비용·승인" }),
       row(6, "생성", runError ? "warn"
-        : allSelected && ready && runNeed === 0 && runPre === 0 && runFree === 0 && complete && !running && !drafting && !prepareDrift.length ? "done" : "todo",
+        : allSelected && ready && runNeed === 0 && runPre === 0 && runFree === 0 && complete && !running && !drafting && !prepareDrift.length && !pending.length ? "done" : "todo",
         runValue,
-        "비용·승인에서 생성 계획을 확인하세요. 모든 크롭에 완료 결과가 있어야 끝납니다.", { section: "비용·승인" }),
+        "비용·승인에서 생성 계획을 확인하세요. 모든 크롭에 완료 결과가 있어야 끝납니다.", { section: runApply ? "반영" : "비용·승인" }),
       row(7, "★", targets.length && !missingStar ? "done" : "todo", `타깃 ${stars}/${targets.length}`,
         "검토에서 쓸 후보를 ★ 하세요. 공동 결과의 뒤 타깃은 첫 타깃의 ★ 를 공유합니다.",
         missingStar ? { target: missingStar.key } : { section: "★ 점검" }),

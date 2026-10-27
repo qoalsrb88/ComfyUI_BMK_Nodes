@@ -44749,6 +44749,7 @@ def polish4_check_unit():
     section("다듬기 배치 4-2 — [실행] 작업 점검표")
     import copy
     import subprocess
+    from unittest.mock import patch
     import bmk_design_patch_board as board
     web = PKG / "web_design_patch"
     out = OUT_ROOT / "polish4_check"
@@ -44844,10 +44845,38 @@ test("C15 Prepare 설정 갈라짐은 반영·생성 미완료, 다른 반영 �
   let r = D.rows(i);
   assert.equal(r[3].state, "todo"); assert.equal(r[3].value, "Prepare 설정 갈라짐 2");
   assert.equal(r[3].go.section, "반영"); assert.equal(r[5].state, "todo"); assert.equal(r[4].state, "done");
+  assert.equal(r[5].value, "반영 뒤 다시 계산"); assert.equal(r[5].go.section, "반영");
   i.pending = ["레이아웃 미반영 1"]; i.unsure = "계획 낡음";
   assert.equal(D.rows(i)[3].value, "레이아웃 미반영 1 · Prepare 설정 갈라짐 2 · 확인 필요: 계획 낡음");
   i.prepareDrift = []; i.pending = []; i.unsure = ""; r = D.rows(i);
   assert.equal(r[3].state, "done"); assert.equal(r[5].state, "done");
+});
+test("C18 미반영 입력은 생성 완료 제외, Import 미반영은 초안도 제외·반영으로 이동", () => {
+  const i = base();
+  for (const reason of ["레이아웃 미반영 1", "레퍼런스 미반영", "Prepare 입력 바뀜"]) {
+    i.pending = [reason];
+    const r = D.rows(i); assert.equal(r[5].state, "todo"); assert.equal(r[5].value, "반영 뒤 다시 계산");
+    assert.equal(r[5].go.section, "반영"); assert.equal(r[4].state, "done");
+  }
+  i.plan.draft.import_pending = ["레퍼런스 미반영"];
+  let r = D.rows(i); assert.equal(r[4].state, "todo"); assert.equal(r[4].value, "반영 뒤 다시 계산");
+  const host = new E("div"), calls = [];
+  D.render(host, r, { goSection: (title) => calls.push(title) });
+  for (const n of [5, 6]) host.children[0].children[n].events.click();
+  assert.deepEqual(calls, ["반영", "반영"]);
+  i.pending = []; i.plan.draft.import_pending = []; r = D.rows(i);
+  assert.equal(r[4].state, "done"); assert.equal(r[5].state, "done");
+});
+test("C19 승인 필요 0·완료 결과 없는 크롭 수와 실패/결과 못 받음 합·비용/승인 이동", () => {
+  const i = base();
+  i.plan.run.by_crop = { c1: { done: 0, failed: 2, orphaned: 1 }, c2: { done: 0, failed: 3, orphaned: 2 } };
+  let r = D.rows(i)[5]; assert.equal(r.state, "todo");
+  assert.equal(r.value, "완료 결과 없는 크롭 2 (실패 5 · 결과 못 받음 3)");
+  assert.equal(r.go.section, "비용·승인");
+  i.selectedCount = 1; assert.equal(D.rows(i)[5].value, r.value); // 전체 by_crop 현황에는 선택 범위를 붙이지 않음
+  delete i.plan.run.by_crop.c2;
+  assert.equal(D.rows(i)[5].value, "완료 결과 없는 크롭 2 (실패 2 · 결과 못 받음 1)");
+  i.plan.run.need = 1; assert.equal(D.rows(i)[5].value, "생성 승인 필요 1 (선택 1/2 크롭 기준)");
 });
 test("C16 초안 복구·못 쓴 스펙·full 화풍 대기는 미완료, targets는 화풍 대기 무관", () => {
   const i = base(); i.plan.draft.free = 2;
@@ -44888,7 +44917,10 @@ test("C7/C17 승인 필요 0·완료 결과·최신 계획이어도 생성/초�
     const i = base(); start(i);
     const r = D.rows(i), host = new E("div");
     assert.equal(r[n].state, "todo"); assert.equal(r[n].value, value);
-    if (n === 4) assert.equal(r[5].state, "todo"); // S.drafting·draft.running 모두 생성 완료도 막음
+    if (n === 4) { // S.drafting·draft.running 모두 생성 완료도 막고 이유를 표시
+      assert.equal(r[5].state, "todo"); assert.equal(r[5].value, "초안 진행 중 — 끝난 뒤");
+      assert.equal(r[5].go.section, "비용·승인");
+    }
     D.render(host, r); assert.equal(host.children[0].children[0].textContent, `작업 점검표 (${n === 4 ? 6 : 7}/8)`);
   }
 });
@@ -45164,6 +45196,25 @@ test("F6 실제 보드 콜백→refs 진입→내부 선택: 첫 로드·없는 
     for c in ordered["candidates"]:
         c["picked"] = True
     check(store.export_state_sig(ordered) == ordered_sig, "C6 옛 후보 picked 병합 뒤에도 ★ 집합으로 정렬")
+    for field, empty, bad_values in (
+        ("mask_edits", {}, (["bad"], "bad", 1)),
+        ("picks", {}, (["a"], "bad", 1)),
+        ("candidates", [], ({"bad": True}, "bad", 1)),
+        ("crops", [], ({"bad": True}, "bad", 1)),
+    ):
+        clean = copy.deepcopy(m)
+        clean[field] = empty
+        for bad_value in bad_values:
+            malformed = copy.deepcopy(m)
+            malformed[field] = bad_value
+            untouched = copy.deepcopy(malformed)
+            check(store.export_state_sig(malformed) == store.export_state_sig(clean) and malformed == untouched,
+                  f"C20 서명: {field} {type(bad_value).__name__} 형식은 빈 값, 원본 불변")
+    malformed = copy.deepcopy(m)
+    malformed["picks"] = {"c1/A": ["a", [], {}], "bad": 1}
+    malformed["candidates"] += [None, "bad", {"key": []}, {"picked": True}]
+    malformed["crops"] += [None, "bad"]
+    check(store.export_state_sig(malformed) == sig, "C20 서명: 컬렉션 안의 잘못된 항목도 무시")
 
     root = str(out / "state")
     Path(root).mkdir(exist_ok=True)
@@ -45181,6 +45232,14 @@ test("F6 실제 보드 콜백→refs 진입→내부 선택: 첫 로드·없는 
           "state: 서명 일치 = same + 마지막 시각")
     unchanged = board.build_state(root, since_rev=m["rev"])
     check(all(unchanged[k] == same_state[k] for k in ("export_state", "export_last")), "F4 전체·unchanged state 모두 최상위 Export 상태/기록 포함")
+    state_bytes = (Path(root) / store.MANIFEST_NAME).read_bytes()
+    with patch.object(board.store, "export_state_sig", side_effect=RuntimeError("test signature failure")):
+        for since in (None, m["rev"]):
+            failed_sig_state = board.build_state(root, since_rev=since)
+            check(failed_sig_state["export_state"] == "unknown" and failed_sig_state["export_last"] == same_state["export_last"]
+                  and failed_sig_state["rev"] == m["rev"] and failed_sig_state.get("unchanged", False) == (since is not None),
+                  f"C20 서명 예외: {'unchanged' if since is not None else '전체'} state 응답 계속 + unknown")
+    check(state_bytes == (Path(root) / store.MANIFEST_NAME).read_bytes(), "C20 state 서명 예외는 매니페스트를 수정하지 않음")
     spec = _pl_api()["state"]
     check(not _pl_shape(spec["unchanged"], unchanged, spec, "unchanged"), "state unchanged 응답 = 정본 모양")
     m["rejects"]["a"] = True
@@ -45238,6 +45297,41 @@ test("F6 실제 보드 콜백→refs 진입→내부 선택: 첫 로드·없는 
         check(again["ui"]["bmk_dp_export"][0]["outcome"] == "unchanged" and dp.store.load_manifest(project_root)["rev"] == upgraded_m["rev"]
               and legacy_bytes == [p.read_bytes() for p in paths] and upgraded["result"] == again["result"] == first["result"],
               "F1 같은 입력 재사용 반복: rev·PSD·mask png·옛 사이드카 바이트 불변")
+        for field, bad_value in (("mask_edits", ["bad"]), ("mask_edits", "bad"), ("picks", ["bad"])):
+            malformed = copy.deepcopy(upgraded_m)
+            malformed[field] = bad_value
+            dp.store.save_manifest(project_root, malformed)
+            clean = copy.deepcopy(malformed)
+            clean[field] = {}
+            check(dp.store.export_state_sig(malformed) == dp.store.export_state_sig(clean),
+                  f"C20 실제 프로젝트: {field} {type(bad_value).__name__} 서명 안전")
+            for since in (None, malformed["rev"]):
+                safe_state = dp.board.build_state(project_root, since_rev=since)
+                check(safe_state["export_state"] == "same" and safe_state["rev"] == malformed["rev"],
+                      f"C20 {field} {type(bad_value).__name__}: {'unchanged' if since is not None else '전체'} state 정상")
+            reused_bad = exp.run(h, "check", "pixel", "hidden_all", "raw", "auto", True, False, skip_empty=False)
+            check(reused_bad["ui"]["bmk_dp_export"][0]["outcome"] == "unchanged"
+                  and reused_bad["result"] == first["result"] and legacy_bytes == [p.read_bytes() for p in paths]
+                  and dp.store.load_manifest(project_root)[field] == bad_value,
+                  f"C20 {field} {type(bad_value).__name__}: 실제 Export 재사용·출력/손상 필드 원본 보존")
+        # 새 서명을 계산하지 못하면 이전 서명도 남기지 않는다. 실패 중 반복은 rev 불변.
+        with patch.object(dp.store, "export_state_sig", side_effect=RuntimeError("test signature failure")):
+            no_sig = exp.run(h, "check", "pixel", "hidden_all", "raw", "auto", True, False, skip_empty=False)
+            no_sig_m = dp.store.load_manifest(project_root)
+            check(no_sig["ui"]["bmk_dp_export"][0]["outcome"] == "unchanged" and "state_sig" not in no_sig_m["exports"][-1]
+                  and dp.board.build_state(project_root)["export_state"] == "unknown", "C20 서명 예외: 재사용 성공·옛 서명 제거·unknown")
+            exp.run(h, "check", "pixel", "hidden_all", "raw", "auto", True, False, skip_empty=False)
+            check(dp.store.load_manifest(project_root)["rev"] == no_sig_m["rev"] and legacy_bytes == [p.read_bytes() for p in paths],
+                  "C20 서명 실패 중 재사용 반복: rev·기존 PSD·mask·사이드카 바이트 불변")
+            new_unsigned = exp.run(h, "check_unsigned", "pixel", "hidden_all", "raw", "auto", True, False, skip_empty=False)
+            unsigned_rec = dp.store.load_manifest(project_root)["exports"][-1]
+            unsigned_side = json.loads(Path(unsigned_rec["psd"]).with_suffix(".json").read_bytes())
+            check(new_unsigned["ui"]["bmk_dp_export"][0]["outcome"] == "new" and Path(unsigned_rec["psd"]).is_file()
+                  and "state_sig" not in unsigned_rec and "state_sig" not in unsigned_side["exports"][-1]
+                  and dp.board.build_state(project_root)["export_state"] == "unknown", "C20 서명 예외: 새 PSD 출력 성공·서명 없는 기록·unknown")
+        recovered = exp.run(h, "check_unsigned", "pixel", "hidden_all", "raw", "auto", True, False, skip_empty=False)
+        check(recovered["ui"]["bmk_dp_export"][0]["outcome"] == "unchanged"
+              and dp.board.build_state(project_root)["export_state"] == "same", "C20 서명 계산 복구: 기존 PSD 재사용 + same")
 
         # C5: 후보 등록·★ 두 개(slice)·실제 마스크 저장·Export·보드까지 한 경로(모두 합성 파일, 외부 API 없음).
         base = texture(64, 64, 83)

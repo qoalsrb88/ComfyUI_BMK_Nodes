@@ -1878,8 +1878,12 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
     lay = _layout_or_none(root)
     doc = _refs_doc(root)[0]
     ex = store.last_export(root, m)
-    export_state = (None if ex is None else "unknown" if not ex.get("state_sig")
-                    else "same" if ex["state_sig"] == store.export_state_sig(m) else "changed")
+    export_state = None if ex is None else "unknown"
+    if ex is not None and ex.get("state_sig"):
+        try:
+            export_state = "same" if ex["state_sig"] == store.export_state_sig(m) else "changed"
+        except Exception:  # 점검표 서명 오류가 state 폴링을 중단시키지 않게
+            pass
     flags = {"running": running, "drain": running and drain_requested(root), "drafting": drafting,
              "layout_rev": lay["rev"] if lay else None, "refs_rev": doc["rev"] if doc else None, "refs_files_v": _refs_files_v(_refs_dir(m)),
              "pipeline_rev": pl.pipeline_rev(root), "plan_v": None, "pref_v": store.board_pref_v(root),
@@ -1892,7 +1896,7 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
         return {"unchanged": True, "rev": m["rev"], **flags}
     pref = _PREF.get(rk)
     rejects = m.get("rejects") or {}
-    picks = m.get("picks") or {}
+    picks = m.get("picks") if isinstance(m.get("picks"), dict) else {}
     rerolls = m.get("rerolls") or {}
     cs = _compose_settings(root, m)
     pending, pre_cells = _pending_cells(root, m)

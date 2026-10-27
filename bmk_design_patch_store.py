@@ -1437,26 +1437,36 @@ def export_state_sig(m: dict) -> str:
     """점검표의 Export 이후 사용자 변경 지문(파일 I/O 없음). Export 내용 해시와 별개이며 분석·Export 설정은 제외한다.
     베이스·캔버스·작업 영역·크롭·★ 집합(선택 순서 무관)·제외와 지금 ★ 의 출력 필드·편집 file/rect 를 읽는다.
     옛 매니페스트의 후보 picked 도 보드처럼 합친다. 후보 출처·분석 이력은 제외하고 후보 key 순으로 직렬화한다.
+    손상된 컬렉션 형식은 빈 값으로 읽으며 원본 매니페스트는 바꾸지 않는다.
     """
-    picks = {k: list(v) for k, v in (m.get("picks") or {}).items() if v}
-    for c in m.get("candidates") or []:
-        if c.get("picked"):
+    raw_picks = m.get("picks") if isinstance(m.get("picks"), dict) else {}
+    picks = {}
+    for k, v in raw_picks.items():
+        keys = [key for key in v if isinstance(key, str)] if isinstance(v, list) else []
+        if isinstance(k, str) and keys:
+            picks[k] = keys
+    raw_candidates = m.get("candidates") if isinstance(m.get("candidates"), list) else []
+    source_candidates = [c for c in raw_candidates if isinstance(c, dict) and isinstance(c.get("key"), str)]
+    crops = m.get("crops") if isinstance(m.get("crops"), list) else []
+    mask_edits = m.get("mask_edits") if isinstance(m.get("mask_edits"), dict) else {}
+    for c in source_candidates:
+        if c.get("picked") and isinstance(c.get("crop_id"), str) and isinstance(c.get("tid"), str):
             keys = picks.setdefault(f"{c['crop_id']}/{c['tid']}", [])
             if c["key"] not in keys:
                 keys.append(c["key"])
-    rejects = m.get("rejects") or {}
+    rejects = m.get("rejects") if isinstance(m.get("rejects"), dict) else {}
     picked = {k for keys in picks.values() for k in keys if k not in rejects}
-    edits = {k: [v.get("file"), v.get("rect")] for k, v in (m.get("mask_edits") or {}).items()
+    edits = {k: [v.get("file"), v.get("rect")] for k, v in mask_edits.items()
              if k in picked and isinstance(v, dict)}
     candidates = {}
-    for c in m.get("candidates") or []:
+    for c in source_candidates:
         if c.get("key") not in picked:
             continue
-        hand = c.get("hand_mask") or {}
+        hand = c.get("hand_mask") if isinstance(c.get("hand_mask"), dict) else {}
         candidates[c["key"]] = {k: c.get(k) for k in ("crop_id", "tid", "file", "src_size", "quad", "z")}
         candidates[c["key"]]["hand_mask"] = {k: hand.get(k) for k in ("file", "rect", "bg")} if hand else None
     payload = {"base": m.get("base"), "canvas": m.get("canvas"), "work_rect": m.get("work_rect"), "candidates": candidates,
-               "crops": [[c.get(k) for k in ("id", "name", "rect", "targets")] for c in m.get("crops") or []],
+               "crops": [[c.get(k) for k in ("id", "name", "rect", "targets")] for c in crops if isinstance(c, dict)],
                "picks": {k: sorted(set(v)) for k, v in picks.items()}, "rejects": sorted(rejects), "edits": edits}
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
 

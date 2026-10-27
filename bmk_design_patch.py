@@ -2311,9 +2311,17 @@ class BMKDesignPatchExportPSD:
                  for _p, _t, it in _slices_in_order(plan) if it["mask_edit"]}
         # 해시의 하위 폴더 = 이 OS 의 폴더 같음(Windows 는 대소문자 무시 — 외주_A·외주_a 는 같은 폴더라 '변경 없음'), 기록 options 는 입력 그대로
         eh = _export_hash(m, entries, comp, dict(opts, subfolder=os.path.normcase(sub)) if sub else opts, edits)
+        try:
+            state_sig = store.export_state_sig(m)
+        except Exception:  # 점검표 서명 실패는 PSD 출력·재사용을 막지 않는다
+            state_sig = None
+            warns.append("Export 변경 여부를 계산하지 못함 — 서명 없이 기록")
         last = next((e for e in reversed(m["exports"]) if e.get("hash") == eh), None)
         if last and os.path.isfile(last["psd"]) and _sidecar_hash(last["psd"]) == eh:  # 다른 export 가 덮어쓴 파일은 재사용 안 함
-            last["state_sig"] = store.export_state_sig(m)  # 옛 기록도 보완 — 출력 파일·사이드카는 그대로
+            if state_sig is None:
+                last.pop("state_sig", None)  # 계산하지 못했으면 옛 서명으로 완료 표시하지 않음
+            else:
+                last["state_sig"] = state_sig  # 옛 기록도 보완 — 출력 파일·사이드카는 그대로
             _h, conflicts = _commit(root, m, before)
             store.save_board_export(root, eh)  # 새 항목은 더하지 않음 — 보드·Studio 가 이 PSD 의 설정을 따르게(store.last_export)
             logger.info("%s Export: 바뀐 것 없음 → 기존 파일 %s", _TAG, last["psd"])
@@ -2418,7 +2426,9 @@ class BMKDesignPatchExportPSD:
         rec = {"rev": rev, "psd": psd_path.replace("\\", "/"), "time": time.strftime("%Y-%m-%d %H:%M:%S"), "hash": eh,
                "options": opts, "compose": comp, "bytes": res["bytes"], "smart_objects": res["smart_objects"],
                "layers": len(written), "problems": len(res["problems"]), "mask": mask_png.replace("\\", "/"),
-               "mask_groups": n_groups, "mask_edits": n_edit, "state_sig": store.export_state_sig(m)}
+               "mask_groups": n_groups, "mask_edits": n_edit}
+        if state_sig is not None:
+            rec["state_sig"] = state_sig
         m["exports"].append(_plain(rec))
         store.write_json_atomic(snap, dict(m, export_layers=written))
         _h, conflicts = _commit(root, m, before)
