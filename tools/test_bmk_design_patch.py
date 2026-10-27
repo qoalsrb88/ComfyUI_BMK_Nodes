@@ -44844,6 +44844,50 @@ test("생성 승인·진행·크롭 전체 완료·빈 계획·부분 계획", (
   delete i.plan.run.by_crop.c2; assert.equal(D.rows(i)[5].state, "todo");
   i.plan.run = {}; assert.equal(D.rows(i)[5].value, "계산 중");
 });
+test("C7 승인 필요 0·완료 결과·최신 계획이어도 생성/초안 실행 중에는 할 일", () => {
+  const cases = [
+    [5, (i) => { i.S.running = true; }, "진행 0"],
+    [5, (i) => { i.plan.run.running = true; }, "진행 0"],
+    [5, (i) => { i.progress = { run: { inflight: 1 } }; }, "진행 1"],
+    [5, (i) => { i.plan.run.by_crop.c2.inflight = 1; }, "진행 1"],
+    [4, (i) => { i.plan.draft.running = true; }, "초안 진행 중"],
+    [4, (i) => { i.S.drafting = true; }, "초안 진행 중"],
+  ];
+  for (const [n, start, value] of cases) {
+    const i = base(); start(i);
+    const r = D.rows(i), host = new E("div");
+    assert.equal(r[n].state, "todo"); assert.equal(r[n].value, value);
+    D.render(host, r); assert.equal(host.children[0].children[0].textContent, "작업 점검표 (7/8)");
+  }
+});
+test("C8 사전 승인한 다시 생성 대기: 기존 완료 결과가 있어도 할 일·비용/승인 이동", () => {
+  const i = base(); i.plan.run.pre = 2;
+  const r = D.rows(i), host = new E("div"), calls = [];
+  assert.equal(r[5].state, "todo"); assert.equal(r[5].value, "다시 생성 대기 2");
+  D.render(host, r, { goSection: (title) => calls.push(title) });
+  assert.equal(host.children[0].children[0].textContent, "작업 점검표 (7/8)");
+  host.children[0].children[6].events.click(); assert.deepEqual(calls, ["비용·승인"]);
+  i.selectedCount = 1; assert.equal(D.rows(i)[5].value, "다시 생성 대기 2 (선택 1/2 크롭 기준)");
+  i.selectedCount = 2; i.plan.run.pre = 0; assert.equal(D.rows(i)[5].state, "done");
+});
+test("C9 계획 요청 실패: 첫 계획 없음·옛 완료 계획 모두 초안/생성 경고, 복구 뒤 완료", () => {
+  for (const oldPlan of [false, true]) {
+    const i = base(); if (!oldPlan) i.plan = null;
+    i.planErr = "503: 계획 응답 실패";
+    for (const planOk of [false, true]) {
+      i.planOk = planOk;
+      for (const n of [4, 5]) {
+        const r = D.rows(i)[n]; assert.equal(r.state, "warn");
+        assert.equal(r.value, "계획 오류 — 다시 계산 · 503: 계획 응답 실패");
+        assert.equal(r.go.section, "비용·승인");
+      }
+    }
+    i.planErr = "오류 <연결> ".repeat(40);
+    assert.equal(D.rows(i)[4].value, "계획 오류 — 다시 계산 · " + i.planErr.slice(0, 120));
+    i.planErr = null; i.plan = base().plan;
+    for (const n of [4, 5]) assert.equal(D.rows(i)[n].state, "done");
+  }
+});
 test("F3 일부·0개 선택은 완료 아님, 선택 수를 표시하고 전체 선택 때만 완료", () => {
   const i = base();
   for (const k of [0, 1]) {
@@ -44920,6 +44964,13 @@ test("renderPanel 삽입 블록: 실제 opts·섹션 이동·설정 분기 뒤",
   const partial = panel.children[2].children[0].children;
   for (const n of [5, 6]) {
     assert(partial[n].className.includes("todo")); assert(partial[n].children[2].textContent.endsWith(" (선택 1/2 크롭 기준)"));
+  }
+  ctx.sel.add("c2"); ctx.planOk = false; ctx.PS.planErr = "계획 요청 실패";
+  vm.runInContext(block, ctx);
+  const failed = panel.children[3].children[0].children;
+  for (const n of [5, 6]) {
+    assert(failed[n].className.includes("warn"));
+    assert.equal(failed[n].children[2].textContent, "계획 오류 — 다시 계산 · 계획 요청 실패");
   }
 });
 test("F6 실제 보드 콜백→refs 진입→내부 선택: 첫 로드·없는 크롭·전환 실패", () => {
