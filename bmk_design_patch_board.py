@@ -5278,6 +5278,11 @@ async def mask_alts_handler(request: web.Request) -> web.StreamResponse:
 
 
 @_guard
+async def mask_adjust_handler(request: web.Request) -> web.StreamResponse:
+    raise _Reject(501, "후보 보정은 아직 없습니다(다듬기 배치 5-2a)")
+
+
+@_guard
 async def zorder_handler(request: web.Request) -> web.StreamResponse:
     data = await _body(request)
     root = _root_param(data.get("root"))
@@ -5341,6 +5346,7 @@ _ROUTES = (
     ("POST", f"{API}/zorder", zorder_handler),
     ("GET", f"{API}/mask/ps_list", mask_ps_list_handler),
     ("POST", f"{API}/mask/ps_import", mask_ps_import_handler),
+    ("POST", f"{API}/mask/adjust", mask_adjust_handler),
 )
 
 
