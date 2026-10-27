@@ -45619,8 +45619,13 @@ def polish4_setup_unit():
     # 기존 DOM·가짜 fetch·응답 정본을 재사용하되 기존 시나리오는 여기서 반복 실행하지 않는다.
     harness = _PL_JS_HARNESS.replace('async function scenario(name, fn) {',
                                     'async function scenario(name, fn) { if (!name.startsWith("setup:")) return;', 1)
+    harness = harness.replace('r = [200, cur()];', 'r = pick(srv.route.queue) || [200, cur()];', 1)
     cases = r"""
 function setupEnv(cfg = {}) {
+  // 큐를 이어 보는 다른 장면의 타이머가 이 장면의 fetch·DOM 을 쓰지 않도록 창마다 문맥을 분리한다.
+  const ctx = vm.createContext({ window: {}, URLSearchParams, setTimeout, clearTimeout, setInterval, clearInterval, console });
+  vm.runInContext(fs.readFileSync(IN.pipelineJs, "utf8"), ctx);
+  const P = ctx.window.DPPipeline;
   const srv = server();
   quietPlan(srv);
   let pv = Object.assign(clone(R["GET /pipeline"].alt.missing), {
@@ -45636,7 +45641,7 @@ function setupEnv(cfg = {}) {
   const doc = new Doc();
   const hosts = { list: doc.createElement("ol"), panel: doc.createElement("section"), head: doc.createElement("div") };
   doc.body.append(hosts.list, hosts.panel, hosts.head);
-  const env = { srv, S, hosts, confirms: [], toasts: [], shown: [], panels: [], initial, reads: 0 };
+  const env = { srv, S, hosts, confirms: [], toasts: [], shown: [], panels: [], initial, reads: 0, events: [] };
   srv.route.pipeline = () => {
     env.reads += 1;
     if (cfg.read) {
@@ -45667,20 +45672,31 @@ function setupEnv(cfg = {}) {
   if (cfg.progress) srv.route.progress = [200, Object.assign(clone(R["GET /pipeline/progress"].alt.idle), cfg.progress)];
   if (cfg.progressDelay) srv.delay["pipeline/progress"] = cfg.progressDelay.slice();
   if (cfg.delay) srv.delay.pipeline = cfg.delay.slice();
-  srv.queue = { queue_running: [], queue_pending: [[1, "setup-job"]] };
+  srv.queue = { queue_running: [], queue_pending: cfg.job ? [[1, "setup-job"]] : [] };
   const store = mem(cfg.job ? { [JOB]: JSON.stringify({ stage: "apply", pid: "setup-job", number: 1 }) } : {});
-  Object.assign(ctx, { document: doc, fetch: srv.fetch });
+  Object.assign(ctx, { document: doc, fetch: (u, o) => { env.events.push(new URL(u).pathname); return srv.fetch(u, o); } });
   Object.assign(ctx.window, { sessionStorage: store, confirm: (m) => {
     env.confirms.push(m);
     env.shown.push(clone(pv));
     env.panels.push(hosts.panel.textContent);
     return cfg.answer !== false;
   } });
-  const link = cfg.paying ? { paidWhy: () => "", onWave() {}, send: () => new Promise(() => {}) } : null;
+  const link = cfg.paying || cfg.link ? { busy: false, paidWhy: () => "", onWave() {}, send: () => new Promise(() => {}) } : null;
+  env.link = link;
   env.pipe = P.create(hosts, { apiUrl: A, comfyUrl: C, root: KEY, link, toast: (m, k) => env.toasts.push(`${k || ""}:${m}`),
-    refresh() {}, select() {}, goTarget() {}, seams: () => new Map(), drain() {}, enter() {} });
+    async refresh() {
+      env.events.push("refresh:start");
+      try {
+        if (!cfg.refresh || (await cfg.refresh(env)) !== false) env.pipe.stateChanged(S);
+      } finally { env.events.push("refresh:end"); }
+    }, select() {}, goTarget() {}, seams: () => new Map(), drain() {}, enter() {} });
   env.posts = () => srv.log.filter((x) => x.method === "POST").map((x) => ({ path: x.path, ...x.body }));
   env.current = () => clone(pv);
+  env.nextLoad = async () => {
+    S.rev += 1;
+    env.pipe.stateChanged(S);
+    await sleep(70);
+  };
   env.repeat = async () => {
     env.pipe.leave();
     env.pipe.enter(S, null);
@@ -45769,8 +45785,12 @@ await scenario("setup:guards", async () => {
     await sleep(60);
     const skipped = !env.confirms.length && !env.posts().length && !env.toasts.length;
     if (name === "settings") {
-      const back = env.hosts.panel.all().find((e) => e.tagName === "BUTTON" && e.textContent === "진행으로");
-      if (back) back.fire("click");
+      const back = env.hosts.panel.all().find((e) => e.tagName === "BUTTON" && e.textContent === "← 실행");
+      if (!back) throw new Error("설정 닫기 단추 [← 실행] 없음");
+      back.fire("click");
+      result["settings: 실제 [← 실행]을 눌러 설정 패널이 닫힘"] = !env.hosts.panel.textContent.includes("실행 설정 — pipeline.json") &&
+        env.hosts.panel.all().some((e) => e.tagName === "BUTTON" && e.textContent === "실행 설정 열기");
+      await env.nextLoad();
     }
     await env.repeat();
     result[`${name}: 자동 질문·저장 없음`] = skipped && !env.confirms.length && !env.posts().length;
@@ -45781,7 +45801,7 @@ await scenario("setup:guards", async () => {
 await scenario("setup:reread", async () => {
   const result = {};
   for (const name of ["saved", "broken", "gate", "warning", "running", "leave", "settings", "error"]) {
-    const env = setupEnv({ read(e, p) {
+    const env = setupEnv({ answer: false, read(e, p) {
       if (e.reads !== 2) return;
       if (name === "saved") { p.saved = true; p.rev = 5; }
       if (name === "broken") p.error = "깨진 파일";
@@ -45796,8 +45816,13 @@ await scenario("setup:reread", async () => {
     await sleep(70);
     result[`확인 직전 다시 읽기 ${name}: 질문·저장 없음`] = env.reads === 2 && !env.confirms.length && !env.posts().length &&
       (name === "error" ? env.toasts.length === 1 && env.toasts[0].includes("다시 읽지 못해 멈춤") : env.toasts.length === 0);
+    const deferred = ["running", "leave", "error"].includes(name);
+    if (name === "running") env.S.running = false;
+    if (name === "leave") env.pipe.enter(env.S, null);
+    await env.nextLoad();
     await env.repeat();
-    result[`다시 읽기 ${name} 뒤 재시도 없음`] = !env.confirms.length && !env.posts().length;
+    result[`다시 읽기 ${name}: ${deferred ? "일시 사유가 풀리면 한 번 질문" : "판정 뒤에는 다시 묻지 않음"}`] =
+      env.confirms.length === (deferred ? 1 : 0) && !env.posts().length;
   }
   return result;
 });
@@ -45928,6 +45953,147 @@ await scenario("setup:lateProgress", async () => {
   return { "늦은 progress.draft 실행 중 응답까지 기다리고 질문·POST 없음": waited && env.srv.count("pipeline/progress") > 0 &&
     !env.confirms.length && !env.posts().length && !env.toasts.length };
 });
+
+await scenario("setup:queueDeferred", async () => {
+  const result = {};
+  for (const kind of ["running", "pending", "http", "json", "shape", "network", "tab"]) {
+    const env = setupEnv({ answer: false, link: true, read(e, p) {
+      if (e.released) p.derived.settings.prepare.n = 4;
+    } });
+    if (kind === "running") env.srv.queue.queue_running = [[1, "graph-import-prepare"]];
+    if (kind === "pending") env.srv.queue.queue_pending = [[1, "graph-import-prepare"]];
+    if (kind === "http") env.srv.route.queue = [503, { error: "busy" }];
+    if (kind === "json") env.srv.route.queue = [200, undefined];
+    if (kind === "shape") env.srv.route.queue = [200, { queue_running: [] }];
+    if (kind === "network") env.srv.route.queue = () => { throw new Error("offline"); };
+    if (kind === "tab") env.link.busy = true;
+    env.pipe.enter(env.S, null); // board.running 은 false: Import 는 끝났고 Prepare 는 아직일 수 있음
+    await sleep(50);
+    await env.nextLoad();
+    result[`큐 ${kind}: board.running=false 여도 질문·POST 없이 보류`] = !env.S.running && !env.confirms.length &&
+      !env.posts().length && !env.toasts.length;
+    env.released = true;
+    env.srv.queue = { queue_running: [], queue_pending: [] };
+    env.srv.route.queue = null;
+    env.link.busy = false;
+    await env.nextLoad(); // 그래프 완료로 바뀐 매니페스트 → pipelineLoaded, 모드를 다시 열지 않음
+    result[`큐 ${kind}: 다음 로드에서 최신 Prepare 로 한 번 질문`] = env.confirms.length === 1 && env.confirms[0].includes("prepare.n = 4");
+    await env.repeat();
+    result[`큐 ${kind}: 취소 뒤 다시 묻지 않음`] = env.confirms.length === 1 && !env.posts().length && !env.toasts.length;
+  }
+  return result;
+});
+
+await scenario("setup:progressRetry", async () => {
+  const result = {};
+  for (const kind of ["http", "json", "progressRun", "progressDraft", "stateRun", "stateDraft"]) {
+    const env = setupEnv({ answer: false });
+    const idle = clone(R["GET /pipeline/progress"].alt.idle);
+    if (kind === "http") env.srv.route.progress = [500, { error: "진행 읽기 실패" }];
+    if (kind === "json") env.srv.route.progress = [200, undefined];
+    if (kind === "progressRun") env.srv.route.progress = [200, { ...idle, running: true }];
+    if (kind === "progressDraft") env.srv.route.progress = [200, { ...idle, draft: { done: 0, wait: 1 } }];
+    if (kind === "stateRun") env.S.running = true;
+    if (kind === "stateDraft") env.S.drafting = true;
+    env.pipe.enter(env.S, null);
+    await sleep(50);
+    result[`진행 ${kind}: 일시 상태에서 질문·쓰기 없음`] = !env.confirms.length && !env.posts().length && !env.toasts.length;
+    env.S.running = false;
+    env.S.drafting = false;
+    env.srv.route.progress = [200, idle];
+    await env.nextLoad();
+    result[`진행 ${kind}: 다음 pipelineLoaded 에서 다시 읽어 한 번 질문`] = env.confirms.length === 1 && !env.posts().length && !env.toasts.length;
+    await env.repeat();
+    result[`진행 ${kind}: 답한 뒤에는 기회 소진`] = env.confirms.length === 1;
+  }
+  return result;
+});
+
+await scenario("setup:busyAfterConfirm", async () => {
+  const result = {};
+  for (const kind of ["queueRun", "queuePending", "queueError", "queueJson", "queueShape", "progressError", "progressRun", "progressDraft",
+    "stateRun", "stateDraft", "tab", "refreshThrow", "refreshMissing"]) {
+    const env = setupEnv({ link: true, async refresh(e) {
+      await sleep(15); // refresh 완료를 기다린 뒤 progress·queue 를 읽어야 함
+      if (kind === "queueRun") e.srv.queue.queue_running = [[1, "graph"]];
+      if (kind === "queuePending") e.srv.queue.queue_pending = [[1, "graph"]];
+      if (kind === "queueError") e.srv.route.queue = [500, { error: "queue failed" }];
+      if (kind === "queueJson") e.srv.route.queue = [200, undefined];
+      if (kind === "queueShape") e.srv.route.queue = [200, {}];
+      if (kind === "progressError") e.srv.route.progress = [500, { error: "progress failed" }];
+      const idle = clone(R["GET /pipeline/progress"].alt.idle);
+      if (kind === "progressRun") e.srv.route.progress = [200, { ...idle, running: true }];
+      if (kind === "progressDraft") e.srv.route.progress = [200, { ...idle, draft: { done: 0, wait: 1 } }];
+      if (kind === "stateRun") e.S.running = true;
+      if (kind === "stateDraft") e.S.drafting = true;
+      if (kind === "tab") e.link.busy = true;
+      if (kind === "refreshThrow") throw new Error("state failed");
+      return kind !== "refreshMissing"; // 보드 refresh 가 오류를 삼키고 stateChanged 없이 끝나는 실제 경로
+    } });
+    env.pipe.enter(env.S, null);
+    await until(() => env.toasts.length > 0);
+    const start = env.events.indexOf("refresh:start");
+    const end = env.events.indexOf("refresh:end");
+    const after = env.events.slice(end + 1);
+    result[`확인 후 ${kind}: state 새로 읽기 완료 뒤 progress·queue 재확인`] = start >= 0 && end > start &&
+      !env.events.slice(start + 1, end).includes("/api/queue") && // stateChanged 의 기존 progress 폴링은 별도로 허용
+      after.some((p) => p.endsWith("/pipeline/progress")) && after.includes("/api/queue");
+    result[`확인 후 ${kind}: POST 0·warn 한 번`] = env.confirms.length === 1 && !env.posts().length && env.toasts.length === 1 &&
+      env.toasts[0].startsWith("warn:") && env.toasts[0].includes("저장하지 않았습니다") && env.toasts[0].includes("[실행 설정 열기]");
+    env.S.running = false;
+    env.S.drafting = false;
+    env.srv.queue = { queue_running: [], queue_pending: [] };
+    env.srv.route.queue = null;
+    env.srv.route.progress = [200, clone(R["GET /pipeline/progress"].alt.idle)];
+    env.link.busy = false;
+    await env.nextLoad();
+    await env.repeat();
+    result[`확인 후 ${kind}: 풀려도 질문·POST 재시도 없음`] = env.confirms.length === 1 && !env.posts().length && env.toasts.length === 1;
+  }
+  return result;
+});
+
+await scenario("setup:settingsDeferred", async () => {
+  const env = setupEnv({ answer: false });
+  env.srv.queue.queue_pending = [[1, "graph"]];
+  env.pipe.enter(env.S, null);
+  await sleep(50);
+  env.pipe.openSettings();
+  const back = env.hosts.panel.all().find((e) => e.tagName === "BUTTON" && e.textContent === "← 실행");
+  if (!back) throw new Error("보류 중 연 설정의 [← 실행] 없음");
+  back.fire("click");
+  const closed = !env.hosts.panel.textContent.includes("실행 설정 — pipeline.json");
+  env.srv.queue.queue_pending = [];
+  await env.nextLoad();
+  await env.repeat();
+  return { "큐 때문에 보류한 뒤 수동 설정 진입·실제 닫기: 큐가 끝나도 자동 제안 없음": closed && !env.confirms.length && !env.posts().length };
+});
+
+await scenario("setup:decided", async () => {
+  const result = {};
+  for (const kind of ["saved", "broken", "gate", "warning"]) {
+    const env = setupEnv({ answer: false, pipeline(p) {
+      if (kind === "saved") { p.saved = true; p.rev = 3; }
+      if (kind === "broken") p.error = "깨진 파일";
+      if (kind === "gate") p.confirm.push("prepare.n");
+      if (kind === "warning") p.warnings.push({ field: "import.psd_path", msg: "경로 없음" });
+    }, read(e, p) {
+      if (!e.released) return;
+      p.saved = false;
+      p.error = null;
+      p.rev = 0;
+      p.derived.confirm = ["draft.apply"];
+      p.warnings = [];
+    } });
+    env.pipe.enter(env.S, null);
+    await sleep(60);
+    env.released = true;
+    await env.nextLoad();
+    await env.repeat();
+    result[`${kind} 판정은 기회 소진: 조건이 바뀌어도 질문 없음`] = !env.confirms.length && !env.posts().length && !env.toasts.length;
+  }
+  return result;
+});
 """
     harness = harness.replace("console.log(JSON.stringify(out));\nprocess.exit(0);", cases + "\nconsole.log(JSON.stringify(out));\nprocess.exit(0);")
     (out / "harness.mjs").write_text(harness, encoding="utf-8")
@@ -45936,7 +46102,7 @@ await scenario("setup:lateProgress", async () => {
         check(False, f"배치 4-1 node 하네스 실패({r.returncode}): {r.stderr.strip()[-1200:]}")
         return
     res = json.loads(r.stdout.strip().splitlines()[-1])
-    check(len(res) == 10, f"배치 4-1 시나리오 10개 실행: {list(res)}")
+    check(len(res) == 15, f"배치 4-1 시나리오 15개 실행: {list(res)}")
     for name, checks in res.items():
         if "error" in checks:
             check(False, f"{name} 하네스 예외: {checks['error']}")

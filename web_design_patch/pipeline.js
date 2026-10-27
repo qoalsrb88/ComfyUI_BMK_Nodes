@@ -885,6 +885,7 @@ window.DPPipeline = (() => {
     const PS = session(opts.apiUrl, opts.comfyUrl, opts.root, (u, o) => fetch(u, o), store);
     let on = false;
     let S = null; // 보드 state
+    let stateReads = 0; // refresh 가 오류를 삼켜도 새 state 수신 여부로 확인(unchanged 응답도 stateChanged 를 부름)
     let seenPl; // 마지막으로 맞춘 state pipeline_rev(undefined = 아직)
     let seenRev = null; // 채택 패널을 맞춘 매니페스트 rev
     let seenKey = null; // 마지막으로 받은 state 의 rev·실행 중·Drain·설정 rev·계획 서명
@@ -903,7 +904,7 @@ window.DPPipeline = (() => {
     let pvTimer = null;
     let planTimer = null;
     let settingsOn = false;
-    let setupPending = null; // null = 아직 첫 진입 전, true = 첫 설정 응답 기다림, false = 이 페이지에서는 더 묻지 않음
+    let setupPending = null; // null = 첫 진입 전, true = 판정 가능할 때까지 기다림, false = 판정했거나 이미 물음
     let form = {}; // 설정 패널에서 고치는 중인 값 {절: {키: 값}} — 다시 그려도 남는다
     // 다른 창의 저장 알아보기(state pipeline_rev 로 다시 읽으면 PS.P·rev 가 새 판이 되어 저장이 409 없이 통과): edits = 손댄 키를 처음 고칠 때 화면의 값
     // {절: {키: 값}}, drawn = 설정 패널을 마지막으로 그린(또는 저장한) 절 값 {절: 값}(입력 중이면 다시 그리기가 미뤄져 화면이 옛 값)
@@ -1126,19 +1127,41 @@ window.DPPipeline = (() => {
       return !!((S && (S.running || S.drafting)) || PS.job || (p && (p.running || p.draft)));
     }
 
+    function setupBusy() {
+      return busyNow() || paying || PS.busy || PS.sending || (L && L.busy);
+    }
+
+    async function setupQueueIdle() {
+      // 세션의 comfy("queue")·place 와 같은 경로. Run 이 아닌 Import·Prepare 그래프도 대기열로 확인한다.
+      try {
+        const r = await fetch(opts.comfyUrl("queue"), { cache: "no-store" });
+        const q = r.ok ? await r.json() : null;
+        return !!q && Array.isArray(q.queue_running) && Array.isArray(q.queue_pending)
+          && !q.queue_running.length && !q.queue_pending.length;
+      } catch (e) {
+        return false; // 읽지 못함 = 아직 판정할 수 없음
+      }
+    }
+
     function setupReady(P0) {
       return on && !settingsOn && P0 && !PS.err && !P0.error && !P0.saved && !confirmGate(P0).gate.length
-        && !P0.warnings.length && !busyNow() && !PS.job && !paying && !PS.busy && !PS.sending;
+        && !P0.warnings.length && !setupBusy();
     }
 
     function firstSetup() {
       if (!setupPending || !on || !PS.P) return;
-      setupPending = false; // 첫 응답에서 한 번만 판정 — 취소·오류·조건 불충족 뒤 폴링이나 재진입으로 다시 묻지 않음
+      if (PS.P.saved || settingsOn) {
+        setupPending = false;
+        return;
+      }
       // 검토 모드의 옛 gate·경고·읽기 오류로 기회를 소진하지 않음 — 파일 있음과 이 페이지의 동작 상태만 먼저 본다.
-      if (PS.P.saved || settingsOn || asking || busyNow() || paying || PS.busy || PS.sending) return;
+      if (asking || paying || PS.busy || PS.sending || PS.job || (L && L.busy)) return;
       once(async () => {
-        const [loaded] = await Promise.all([reload(), PS.progress === null ? PS.loadProgress() : null]);
-        if (!loaded || !PS.progress || !setupReady(PS.P)) return; // 옛 서버의 progress.draft 도 받은 뒤 판정
+        // 보류 뒤에는 앞 progress 가 실행 중이어도 새 값으로 판정. 실패·실행 중이면 다음 pipelineLoaded 에 기회를 남긴다.
+        const [loaded, , idle] = await Promise.all([reload(), PS.loadProgress(), setupQueueIdle()]);
+        if (!setupPending || !on || !loaded || !PS.progress || !idle || setupBusy()) return;
+        setupPending = false; // 파일·gate·경고 판정 또는 실제 확인 창부터는 이 페이지에서 다시 묻지 않음
+        if (!setupReady(PS.P)) return;
         const P0 = PS.P;
         // 저장 중 다시 읽기·다른 창의 변경과 무관하게 확인 창에 보인 값만 보냄(파일 없음의 settings = 유도값).
         const values = { import: Object.assign({}, P0.settings.import), prepare: Object.assign({}, P0.settings.prepare) };
@@ -1154,6 +1177,19 @@ window.DPPipeline = (() => {
         if (rest.length) lines.push(`확인 필요로 남음(반영·Export 는 막지 않음): ${rest.join(", ")}`);
         lines.push("저장하면 pipeline.json 이 만들어져 [반영 (무료)]·Export 를 쓸 수 있습니다. 나중에 [실행 설정 열기]에서 바꿀 수 있습니다.");
         if (!window.confirm(lines.join("\n"))) return;
+        const before = stateReads;
+        let refreshed = false;
+        try {
+          await opts.refresh();
+          refreshed = stateReads !== before;
+        } catch (e) {
+          // 보드 state 를 못 읽으면 아래에서 큐·진행 읽기 실패와 같은 안내
+        }
+        const [, stillIdle] = await Promise.all([PS.loadProgress(), setupQueueIdle()]);
+        if (!refreshed || !PS.progress || !stillIdle || setupBusy()) {
+          opts.toast("ComfyUI 가 큐를 처리 중이거나 상태를 읽지 못해 저장하지 않았습니다 — 끝난 뒤 [실행 설정 열기]에서 확인", "warn");
+          return;
+        }
         // confirm 동안 그래프 Import·Prepare 가 돈 경우 rev 0 은 그대로여도 유도값은 달라진다.
         if (!(await reload())) return;
         if (!setupReady(PS.P) || !same(PS.P.settings.import, values.import) || !same(PS.P.settings.prepare, values.prepare)) {
@@ -1537,6 +1573,7 @@ window.DPPipeline = (() => {
 
     function openSettings() {
       settingsOn = true;
+      setupPending = false; // 수동 설정으로 진입하면 닫은 뒤에도 자동 제안을 다시 하지 않음
       if (on) render();
       else opts.enter();
     }
@@ -2517,6 +2554,7 @@ window.DPPipeline = (() => {
     }
 
     function stateChanged(st) {
+      stateReads += 1;
       // 보드 state 를 받을 때마다(2초 폴링 — unchanged 응답이면 같은 S). 다시 그리기는 state·진행 수가 바뀐 때만(누르는 중인 단추를 갈지 않게)
       const k = [st.rev, st.running, st.drain, st.pipeline_rev, st.plan_v, st.pref_v].join("|");
       const changed = st !== S || k !== seenKey;
