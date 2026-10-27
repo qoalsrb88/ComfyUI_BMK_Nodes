@@ -40474,15 +40474,15 @@ def mask_node_unit():
         g6 = g6[cB["key"]]
         dm.undo_edit(root, cB["key"], seen=rec6["file"])
         r7, _t = export(hc)
-        check(rec6["file"] == recB["file"] and r6["outcome"] == "new" and r6["psd"] not in (r1["psd"], r3["psd"]) and list(g6.mask.bbox) == sh
-              and lay6[cB["key"]]["mask_rect"] == sh and r7["outcome"] == "unchanged" and r7["psd"] == r1["psd"],
-              f"같은 file·다른 창 = 새 PSD(Export 해시에 창이 들어감 — 그룹 마스크 bbox·사이드카 mask_rect = 새 창 {sh}, 기준 마스크 창 아님) · "
-              f"되돌리면 그 판의 PSD(변경 없음) "
+        uni = [min(sh[0], rect[0]), min(sh[1], rect[1]), max(sh[2], rect[2]), max(sh[3], rect[3])]  # 5-2b D34: 기록 창 밖 = 기준으로 합침
+        check(rec6["file"] == recB["file"] and r6["outcome"] == "new" and r6["psd"] not in (r1["psd"], r3["psd"]) and list(g6.mask.bbox) == uni
+              and lay6[cB["key"]]["mask_rect"] == uni and lay6[cB["key"]].get("mask_file") and r7["outcome"] == "unchanged" and r7["psd"] == r1["psd"],
+              f"같은 file·다른 창 = 새 PSD(Export 해시에 창이 들어감 — 그룹 마스크 bbox·사이드카 mask_rect = 기록 창 ∪ 패치 창 {uni}·mask_file, "
+              f"5-2b D34 창 밖 = 기준) · 되돌리면 그 판의 PSD(변경 없음) "
               f"{r6['outcome']} {r7['outcome']}")
-        moved = f"{cB['key']} ({m0['crops'][1]['name']}): 마스크 편집 기준 바뀜(창 {sh} → {rect}) → 편집 그대로 씀"
-        check(moved in t6 and "마스크 편집 기준 바뀜" not in t1 and "마스크 편집 기준 바뀜" not in t3,
-              f"리뷰 analysis-r1-02: 기록 창 ≠ 이번 Export 의 패치 창 = 보고서에 '마스크 편집 기준 바뀜(창 기록 → 지금)'(조용히 어긋난 그룹 마스크를 "
-              f"알림), 창·분석 항목이 같으면 없음 {[x for x in t6.splitlines() if '기준 바뀜' in x]}")
+        check("마스크 편집 기준 바뀜" not in t6 and "마스크 편집 기준 바뀜" not in t1 and "마스크 편집 기준 바뀜" not in t3,
+              f"5-2b D34: 기록 창 ≠ 이번 Export 의 패치 창만으로는 '마스크 편집 기준 바뀜' 경고 없음(창 밖은 기준으로 채움 — 경고는 분석 항목이 바뀔 때만) "
+              f"{[x for x in t6.splitlines() if '기준 바뀜' in x]}")
         mfix = {"base": "inputs/b.png", "canvas": [64, 48], "work_rect": [0, 0, 64, 48],
                 "crops": [{"id": "001_aaaaaa", "name": "001_x", "rect": [0, 0, 32, 32], "targets": [{"tid": "A", "label": "A"}]}],
                 "candidates": [{"key": "f_k1", "crop_id": "001_aaaaaa", "tid": "A", "picked": True, "file": "cands/x.png"}],
@@ -41625,8 +41625,8 @@ def mask_board_unit():
                 next(c for c in s["crops"] if c["id"] == ids[1])["mask_stale"])
 
     async def b45(h):
-        section("S4-B45 편집 창이 바뀜(재분석 정합·Compose use_registration): kind=edit = 기록 래스터를 지금 창으로(= _plan — 3층 공식 = Compose)·"
-                "stale(GET /mask·state·/mask/edit — 창만 바뀌어도)·적용 = 새 창·옛 창 세션 적용 409 rect_changed(같은 크기)·다른 창 판으로 undo = stale·"
+        section("S4-B45 편집 창이 바뀜(재분석 정합·Compose use_registration): kind=edit = 기록 래스터 + 창 밖 기준을 지금 창으로(= _plan — 3층 공식 = Compose)·"
+                "창만 바뀌면 stale 아님·창 밖 = 기준(5-2b D34 — GET /mask·state·/mask/edit)·적용 = 새 창·옛 창 세션 적용 409 rect_changed(같은 크기)·다른 창 판으로 undo = stale 아님·"
                 "창 크기가 바뀌어도 열림·_edit_window = 계획 창(정합 끔·원근)·창이 바뀐 뒤 kind=base = 기준·정합 끔 + 창이 영역 밖 3층 200")
         m0 = st.load_manifest(root)
         keep = copy.deepcopy(m0["analysis"][kB]), copy.deepcopy(m0["mask_edits"][kB]), len(m0["exports"])
@@ -41667,19 +41667,24 @@ def mask_board_unit():
         _s, d2 = await h.jget(f"{API}/mask", root=key, key=kB)
         se, _he, be = await h.img(d2["edit"]["url"])
         mode_e, arr_e = decode(be)
-        want = np.rint(bd._mask_region({"arr": ea, "left": R1[0], "top": R1[1], "bg": 0}, *R0) * 255).astype(np.uint8)
+        inside = bd._mask_region({"arr": np.full(ea.shape, 255, np.uint8), "left": R1[0], "top": R1[1], "bg": 0}, *R0) > 0.5
+        base_r0 = bd._mask_region(it2["base_mask"], *R0)
+        want = np.rint(np.where(inside, bd._mask_region({"arr": ea, "left": R1[0], "top": R1[1], "bg": 0}, *R0),
+                                np.ones(inside.shape, np.float32) if base_r0 is None else base_r0) * 255).astype(np.uint8)
         box = d2["layers"]["box"]
         lay = await layers_of(h, d2)
         ref = bd._compose_full(root, m2, None, None, box)[0].astype(np.float32)
         mx, mx_asis = (float(np.abs(formula(lay, window(a, R0, box)) - ref).max()) for a in (arr_e, ea))
         sb2 = await star_b(h)
-        check(d2["rect"] == R0 and d2["edit"]["stale"] is True and d2["edit"]["file"] == rec1["file"] and shape("GET /mask", d2) == []
-              and q_of(d2["edit"]["url"])["v"] == bd._edit_sig(rec1, R0) != q_of(d1s["edit"]["url"])["v"]
-              and it2["msrc"] == "edit" and [it2["mask"]["left"], it2["mask"]["top"]] == R1[:2]
+        fp2 = dm.base_fp(cand(m2, kB), bd._entry_for(m2, kB, None), MS)
+        check(d2["rect"] == R0 and d2["edit"]["stale"] is False and d2["edit"]["file"] == rec1["file"] and shape("GET /mask", d2) == []
+              and q_of(d2["edit"]["url"])["v"] == bd._edit_sig(rec1, R0, fp2, bd._edit_placement(m2, cand(m2, kB), bd._entry_for(m2, kB, None), fp2))
+              != q_of(d1s["edit"]["url"])["v"]
+              and it2["msrc"] == "edit" and [it2["mask"]["left"], it2["mask"]["top"]] == [min(R0[0], R1[0]), min(R0[1], R1[1])]
               and se == 200 and mode_e == "L" and np.array_equal(arr_e, want) and not np.array_equal(arr_e, ea)
-              and mx <= 1 and mx_asis > 8 and sb2 == ({"at": rec1["at"], "stale": True}, 1),
-              f"Compose use_registration 끔(ph·ms 그대로) → 창 {R1} → {R0}(같은 크기): stale true(GET·state·크롭 mask_stale)·URL v 바뀜·"
-              f"kind=edit = _plan 이 기록 창 그대로 쓰는 편집을 지금 창으로 → 3층 공식 = Compose 최대 {mx}(기록을 지금 창에 그대로 놓으면 {mx_asis})")
+              and mx <= 1 and mx_asis > 8 and sb2 == ({"at": rec1["at"], "stale": False}, 0),
+              f"Compose use_registration 끔(ph·ms 그대로) → 창 {R1} → {R0}(같은 크기): 창만 바뀜 = stale false(GET·state·크롭 mask_stale — 5-2b D34)·URL v 바뀜·"
+              f"kind=edit = 기록 창 안은 편집·밖은 기준으로 합친 마스크를 지금 창으로 → 3층 공식 = Compose 최대 {mx}(기록을 지금 창에 그대로 놓으면 {mx_asis})")
         keep_rect, far = copy.deepcopy(m2["crops"][1]["rect"]), [32, 240, 128, 304]
         st.update_manifest(root, lambda mm: mm["crops"][1].update(rect=far))  # 크롭을 패드 너머로 → 계획 창(R0)이 영역 밖
         try:
@@ -41704,10 +41709,13 @@ def mask_board_unit():
               and sb3 == ({"at": rec2["at"], "stale": False}, 0), "연 그대로 [적용] = 지금 창으로 새 판(stale 풀림 — 이전 판은 옛 창 그대로 hist)")
         s3u, d3u = await h.edit(kB, rec2["file"], "undo")
         _s, d3g = await h.jget(f"{API}/mask", root=key, key=kB)
-        check(s3u == 200 and d3u["edit"]["file"] == rec1["file"] and d3u["edit"]["stale"] is True
-              and q_of(d3u["edit"]["url"])["v"] == bd._edit_sig(rec1, R0) and shape("POST /mask/edit", d3u) == []
+        m3u = st.load_manifest(root)
+        fp3 = dm.base_fp(cand(m3u, kB), bd._entry_for(m3u, kB, None), MS)
+        check(s3u == 200 and d3u["edit"]["file"] == rec1["file"] and d3u["edit"]["stale"] is False
+              and q_of(d3u["edit"]["url"])["v"] == bd._edit_sig(rec1, R0, fp3, bd._edit_placement(m3u, cand(m3u, kB), bd._entry_for(m3u, kB, None), fp3))
+              and shape("POST /mask/edit", d3u) == []
               and {k: d3u["edit"][k] for k in ("stale", "url")} == {k: d3g["edit"][k] for k in ("stale", "url")},
-              f"다른 창({R1})의 이전 판으로 undo(지금 창 {R0}) → /mask/edit 의 edit stale true·url v = _edit_sig(그 판, 지금 창) = GET /mask {d3u.get('edit')}")
+              f"다른 창({R1})의 이전 판으로 undo(지금 창 {R0}) → /mask/edit 의 edit stale false(창만 다름 — 5-2b D34)·url v = _edit_sig(그 판, 지금 창, 기준) = GET /mask {d3u.get('edit')}")
         _s, _d = await h.save(kB, png(arr_e), seen=rec1["file"], ops="새 창", rect=R0)
         rec2 = st.load_manifest(root)["mask_edits"][kB]
 
@@ -41715,9 +41723,9 @@ def mask_board_unit():
         m4 = st.load_manifest(root)
         _s, d4 = await h.jget(f"{API}/mask", root=key, key=kB)
         sb4 = await star_b(h)
-        check(d4["rect"] == R1 and d4["edit"]["stale"] is True and sb4 == ({"at": rec2["at"], "stale": True}, 1)
+        check(d4["rect"] == R1 and d4["edit"]["stale"] is False and sb4 == ({"at": rec2["at"], "stale": False}, 0)
               and not dm.is_stale(rec2, dm.base_fp(cand(m4, kB), bd._entry_for(m4, kB, None), MS)),
-              f"정합 다시 켬 → 창만 바뀜(기준 지문 같음) → stale true(state 는 계획 없이 _edit_window) {sb4}")
+              f"정합 다시 켬 → 창만 바뀜(기준 지문 같음) → stale false(5-2b D34 — state 는 계획 없이 _edit_window) {sb4}")
         s5, d5 = await h.edit(kB, rec2["file"], "undo")
         _s, d5g = await h.jget(f"{API}/mask", root=key, key=kB)
         sb5 = await star_b(h)
