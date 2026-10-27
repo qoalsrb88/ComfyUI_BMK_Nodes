@@ -108,6 +108,11 @@ REF = Path(r"H:\BmkNodeDesign\MultiLayerCropEdit")
 # DP_TEST_OUT = 다른 출력 폴더(두 실행이 같은 폴더를 rmtree 하지 않게), --only=a,b = 그 묶음만(__main__ 의 이름)
 OUT_ROOT = Path(os.environ["DP_TEST_OUT"]) if os.environ.get("DP_TEST_OUT") else REF / "_proto" / "m2_test_out"
 ONLY = {s for a in sys.argv if a.startswith("--only=") for s in a[len("--only="):].split(",") if s}
+
+
+def _zba(d):
+    """GET /mask 의 z 에서 아래·위 목록만(배치 5-1 이 rev·controls 를 더함)."""
+    return {k: d["z"][k] for k in ("below", "above")}
 PSD03 = REF / "03.크롭영역+크롭이미지.psd"
 PSD05 = REF / "05.디자인보정 결과.psd"
 CROPS03_JSON = REF / "_proto" / "work_photoshop" / "crops_03.json"
@@ -40487,8 +40492,8 @@ def mask_node_unit():
               dp._export_hash(dict(mfix, rejects={"f_k2": {}}), efix, comp, opts),
               dp._export_hash(mfix, efix, comp, opts, {"f_k1": ["masks/f_k1_e_000000000000.png", [0, 0, 32, 32]]}),
               dp._export_hash(mfix, efix, comp, opts, {"f_k1": ["masks/f_k1_e_000000000000.png", [1, 0, 33, 32]]})]
-        check(hs[:3] == ["2d5d9b737e610c61", "2d5d9b737e610c61", "daf2ce4764d77e75"] and len(set(hs)) == 4,
-              f"_export_hash: 편집 없음 = S3(3216d98) 고정값(빈 mask_edits 도), 탈락 = 고정값, 편집(file·창)이 들어가면 다름 {hs}")
+        check(hs[:3] == ["466521e1a16f7fcf", "466521e1a16f7fcf", "1b4b464fbb6c1c51"] and len(set(hs)) == 4,
+              f"_export_hash: 편집 없음 = dp-export/4(배치 5-1 — 버전을 올려 S3 3216d98 고정값에서 바뀜) 고정값(빈 mask_edits 도), 탈락 = 고정값, 편집(file·창)이 들어가면 다름 {hs}")
         bd.apply_pick(root, idB, cB2["tid"], cB2["key"], "add")  # B 타깃 ★ 둘 = 슬라이스마다 그룹·마스크(편집은 cB 만)
         r8, t8 = export(hc)
         ex8 = st.load_manifest(root)["exports"][-1]
@@ -41084,8 +41089,8 @@ def mask_board_unit():
               and q_of(dB["base"]["url"]) == {"root": key, "key": kB, "kind": "base", "v": dB["base"]["sig"]}
               and all(q_of(dB["layers"][f"{k}_url"]) == {"root": key, "key": kB, "kind": k, "v": dB["layers"]["sig"]} for k in ("under", "patch", "over")),
               f"B ★: 편집 창 = Compose 계획 항목의 실효 quad bbox ∩ 캔버스 {dB['rect']}·c {dB['c']}·기준 auto·layers.box = 크롭 영역·URL v = 서명")
-        check(dA["z"] == {"below": [], "above": ["002_작은 · A"]} and dB["z"] == {"below": ["001_큰 · A"], "above": []}
-              and dC["z"] == {"below": [], "above": []}, f"z: layers.box 와 겹치는 다른 ★(합성 순서 아래 → 위) {dA['z']} {dB['z']} {dC['z']}")
+        check(_zba(dA) == {"below": [], "above": ["002_작은 · A"]} and _zba(dB) == {"below": ["001_큰 · A"], "above": []}
+              and _zba(dC) == {"below": [], "above": []}, f"z: layers.box 와 겹치는 다른 ★(합성 순서 아래 → 위) {dA['z']} {dB['z']} {dC['z']}")
         check(dC["base"]["src"] == "none" and dC["rect"] == RC and dC["layers"]["box"] == bd._region_rect(RC2, W, H)
               and len(dC["warnings"]) == 2 and dC["warnings"][0] == "분석 없음 — 반영(Analyze) 뒤 편집 권장"
               and dC["warnings"][1].startswith(f"{kC} (") and "마스크 없이" in dC["warnings"][1],
@@ -41851,8 +41856,8 @@ def mask_board_unit():
             rows[k] = (float(np.abs(formula(lays[k], window(decode(body)[1], d[k]["rect"], bx)) - ref).max()), float(lays[k][2][..., 3].max()))
         sib = "002_작은 · A"
         bd.apply_pick(root, ids[1], "A", kB2, "remove")
-        check(d[lo]["z"] == {"below": ["001_큰 · A"], "above": [sib]} and d[hi]["z"] == {"below": ["001_큰 · A", sib], "above": []}
-              and d[kA]["z"] == {"below": [], "above": [sib, sib]}
+        check(_zba(d[lo]) == {"below": ["001_큰 · A"], "above": [sib]} and _zba(d[hi]) == {"below": ["001_큰 · A", sib], "above": []}
+              and _zba(d[kA]) == {"below": [], "above": [sib, sib]}
               and all(mx <= 1 for mx, _oa in rows.values()) and rows[lo][1] > 128 and rows[hi][1] == 0 and rows[kA][1] > 128
               and not np.array_equal(lays[lo][0], lays[hi][0]),
               f"z 에 형제 슬라이스(아래 {lo[:8]} → 위 {hi[:8]})·3층 공식 = Compose(아래 슬라이스의 over = 위 슬라이스, 위 슬라이스의 under 에 아래 슬라이스, "
@@ -41963,7 +41968,7 @@ def mask_board_unit():
         finally:
             st.update_manifest(root, drop_far)
         check(order.index(kB) < order.index(kA) and box5 == dA4["layers"]["box"] and win_f[1] > box5[3] + 2
-              and dA4["z"] == {"below": [], "above": ["002_작은 · A"]} and dA5["z"] == {"below": ["002_작은 · A"], "above": []}
+              and _zba(dA4) == {"below": [], "above": ["002_작은 · A"]} and _zba(dA5) == {"below": ["002_작은 · A"], "above": []}
               and dA5["layers"]["sig"] != dA4["layers"]["sig"] and lay5[2][..., 3].max() == 0 and mx5 <= 1,
               f"같은 크롭의 떨어진 ★(창 {win_f} — box {box5} 와 만나지 않음)가 z 를 뒤집음 → A 3층 서명 바뀜·over 비움(B 가 아래로)·공식 = Compose "
               f"최대 {mx5}(옛 캐시 3층이면 B 가 A 위로 보임) {[k[-6:] for k in order]}")
@@ -42184,7 +42189,7 @@ def mask_board_unit():
                     "_layers_sig", "_edit_view", "_mask_layers", "_layer_png", "_star_plan", "_png_body", "mask_handler", "mask_img_handler",
                     "mask_save_handler", "mask_edit_handler", "mask_alts_handler")
         light = ("build_state", "_crop_summaries", "mask_edit", "_mask_cand", "_edit_view", "_edit_window", "_edit_stale", "_edit_sig",
-                 "_edit_rec", "_edit_usable", "_layers_sig", "_composite_sig", "_cand_sig")
+                 "_edit_rec", "_edit_usable", "_composite_sig", "_cand_sig")  # _layers_sig 는 배치 5-1 부터 수동 순서가 있을 때 그리는 라우트에서만 계획(5초 기억)
         check(all(f in fns for f in mask_fns + light) and not any("_vlm" in names_in(f) for f in mask_fns)
               and not any(n in names_in(f) for f in light for n in ("_node", "_star_plan")),
               f"마스크 라우트 함수는 _vlm() 을 쓰지 않고, state·/mask/edit·서명 경로는 _node()·_star_plan 을 쓰지 않음 "
