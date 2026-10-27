@@ -420,7 +420,7 @@ def import_ps_masks(root: str, psd_path: str, sidecar: dict, *, manifest: dict, 
             result["seen"]["edits"][key] = record["file"] if record else ""
             result["seen"]["targets"][key] = {"rect": t["rect"], "base": t["fp"]}
             result["changed"].append({"key": key, "crop": t["crop"], "label": name, "diff_px": diff, "outside_px": outside})
-            pending.append((key, arr, t["rect"], t["fp"]))
+            pending.append((key, arr, t["rect"], t["fp"], t.get("preserve_mask")))
         except (ValueError, OSError, AttributeError, TypeError, KeyError, IndexError) as e:
             result["skipped"].append(dict(skipped, reason=str(e)))
         finally:
@@ -433,13 +433,13 @@ def import_ps_masks(root: str, psd_path: str, sidecar: dict, *, manifest: dict, 
     if seen != result["seen"]:
         raise MaskConflict("미리 보기 뒤 가져올 대상·편집 창·기준이 바뀌었습니다 — 다시 미리 보기", "changed")
     result["imported"], result["failed"] = [], []
-    for key, arr, rect, fp in pending:
+    for key, arr, rect, fp, preserve_mask in pending:
         try:
             data = io.BytesIO()
             Image.fromarray(arr).save(data, "PNG")
             ops = _CTRL_RE.sub(" ", f"PS 그룹 마스크 {os.path.basename(psd_path)}")[:OPS_MAX]
             rec, rev = save_edit(root, key, data.getvalue(), seen=seen["edits"][key], rect=rect, base=fp, ops=ops,
-                                 placed=lambda m, k=key, fp=fp: placed(m, k, fp))
+                                 placed=lambda m, k=key, fp=fp: placed(m, k, fp), preserve_mask=preserve_mask)
             result["imported"].append({"key": key, "file": rec["file"], "rev": rev})
         except (ValueError, OSError) as e:
             result["failed"].append({"key": key, "reason": str(e), "conflict": isinstance(e, MaskConflict)})
@@ -461,9 +461,10 @@ def _expect(m: dict, key: str, seen) -> dict | None:
 
 
 def save_edit(root: str, key: str, data, *, seen: str, rect: list[int], base: dict, ops: str,
-              placed: Callable[[dict], list[int] | None] | None = None) -> tuple[dict, int]:
+              placed: Callable[[dict], list[int] | None] | None = None, preserve_mask: dict | None = None) -> tuple[dict, int]:
     """placed(m) = 잠근 매니페스트로 다시 계산한 지금 편집 창 — rect 와 다르면 409 rect_changed {rect}(창을 고른 뒤 잠그기 전에 Analyze 가 정합을
-    바꾼 경우 옛 좌표로 저장하지 않게)."""
+    바꾼 경우 옛 좌표로 저장하지 않게). preserve_mask = 현재 계획의 합친 마스크. 창이 넓어졌으면 저장 창 밖을 보존하되
+    합집합이 MAX_PIXELS를 넘으면 저장 창만 쓴다. placed 검사는 합집합이 아닌 세션 rect 기준이다."""
     _check_rect(rect)
     _check_base(base)
     _check_ops(ops)
@@ -476,7 +477,7 @@ def save_edit(root: str, key: str, data, *, seen: str, rect: list[int], base: di
             raise MaskConflict("편집 창이 바뀌었습니다(정합·배치 변경) — 다시 받기", "rect_changed", rect=now)
         old = _expect(m, key, seen)
         hist = [{k: old[k] for k in _HIST_KEYS}] + old["hist"] if old else []
-        rec = check_record({"file": rel, "rect": list(rect), "base": dict(base), "ops": ops,
+        rec = check_record({"file": rel, "rect": saved_rect, "base": dict(base), "ops": ops,
                             "at": time.strftime("%Y-%m-%d %H:%M:%S"), "hist": hist[:HIST_KEEP]})
         m["mask_edits"] = {**(m.get("mask_edits") or {}), key: rec}
         _touch_dropped(root, old, rec)  # HIST_KEEP 을 넘어 밀려난 판
@@ -484,6 +485,19 @@ def save_edit(root: str, key: str, data, *, seen: str, rect: list[int], base: di
 
     # 파일 쓰기(같은 내용이면 옛 파일을 그대로 씀 — mtime 그대로)부터 기록까지 한 잠금: 보드 masks/ 정리(board.mask_cleanup, 같은 잠금)가 그 사이 지우지 않게
     with store.manifest_lock(root):
+        saved_rect = list(rect)
+        if preserve_mask is not None:
+            old = edit_record(store.load_manifest(root), key)
+            try:
+                old = check_record(old) if old else None
+            except ValueError:
+                old = None
+            if old and not contains_rect(old["rect"], rect):
+                r = old["rect"]
+                union = [min(r[0], rect[0]), min(r[1], rect[1]), max(r[2], rect[2]), max(r[3], rect[3])]
+                if (union[2] - union[0]) * (union[3] - union[1]) <= MAX_PIXELS:
+                    arr = expand_edit_mask({"arr": arr, "left": rect[0], "top": rect[1], "bg": 0}, preserve_mask, union)["arr"]
+                    saved_rect = union
         rel = store.save_png_ca(root, MASKS_DIR, arr, prefix=re.sub(r"[^A-Za-z0-9_\-]", "", key)[:10] + "_e_")
         return store.update_manifest(root, mutate)
 

@@ -220,7 +220,7 @@ window.DPMaskEdit = (() => {
     // seq = 마지막 열기의 차례(A → B → A 처럼 같은 대상을 다시 열면 key 로는 앞 응답을 가르지 못함), rseq = 마지막 다시 받기의 차례(적용 성공도 올림 —
     // 그 전에 나간 GET /mask 는 옛 판)
     const s = { info: null, err: null, key: null, win: null, base: null, m: null, start: null, file: "", sig: null, undo: [], redo: [], dropped: [],
-      layers: null, conflict: null, busy: "", stroke: null, seq: 0, rseq: 0 };
+      layers: null, conflict: null, recovery: null, busy: "", stroke: null, seq: 0, rseq: 0 };
     const qs = (o) => new URLSearchParams(Object.assign({ root }, o)).toString();
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -248,14 +248,15 @@ window.DPMaskEdit = (() => {
 
     s.unused = () => call("mask/unused?" + qs({})); // masks/ 안 쓰는 편집 PNG(배치 3-6)
     s.cleanup = (files) => call("mask/cleanup", { files });
-    s.adjust = async (op, values = {}, seen = (s.info && s.info.adjust ? s.info.adjust.at : "")) => {
-      if (!s.key || !s.info || s.info.key !== s.key || (s.busy && s.busy !== "adjust_wait") || s.stroke || s.pending()) return null;
+    s.adjust = async (op, values = {}, seen = (s.recovery ? s.recovery.adjust.at : s.info && s.info.adjust ? s.info.adjust.at : "")) => {
+      const target = s.recovery || s.info;
+      if (!s.key || !target || target.key !== s.key || (s.busy && s.busy !== "adjust_wait") || s.stroke || s.pending()) return null;
       s.busy = "adjust";
       ++s.rseq; // 보정 쓰기 전에 나간 GET이 응답을 덮지 않게
       try {
         const d = await call("mask/adjust", Object.assign({ key: s.key, op, seen }, values));
         ++s.rseq;
-        s.info = Object.assign({}, s.info, { adjust: d.adjust, composite_sig: d.composite_sig, seams: null });
+        if (s.info) s.info = Object.assign({}, s.info, { adjust: d.adjust, composite_sig: d.composite_sig, seams: null });
         await s.refresh();
         return d;
       } finally {
@@ -337,7 +338,7 @@ window.DPMaskEdit = (() => {
       // 단계는 받기 전에 비운다 — 부르는 쪽이 이미 버리기를 확인했다(받는 동안 pending 이 버린 획을 새 대상 이름으로 세지 않게: 확인 창·★ 점검 줄)
       const seq = ++s.seq;
       if (key !== s.key) s.layers = null;
-      Object.assign(s, { key, busy: "load", conflict: null, undo: [], redo: [], dropped: [], stroke: null });
+      Object.assign(s, { key, busy: "load", conflict: null, recovery: null, undo: [], redo: [], dropped: [], stroke: null });
       const clear = { win: null, base: null, m: null, start: null, file: "", sig: null };
       let info = null;
       try {
@@ -349,7 +350,8 @@ window.DPMaskEdit = (() => {
           file: info.edit ? info.edit.file : "", sig: info.base.sig });
         return true;
       } catch (e) {
-        if (s.seq === seq) Object.assign(s, clear, { info, err: e.message, file: info && info.edit ? info.edit.file : "" });
+        if (s.seq === seq) Object.assign(s, clear, { info, err: e.message, file: info && info.edit ? info.edit.file : "",
+          recovery: e.status === 422 && e.data && e.data.adjust ? { key, adjust: e.data.adjust } : null });
         return false;
       } finally {
         if (s.seq === seq) s.busy = "";
@@ -380,11 +382,12 @@ window.DPMaskEdit = (() => {
       try {
         info = await call("mask?" + qs({ key: s.key }));
       } catch (e) {
-        if (!late()) s.err = e.message;
+        if (!late()) Object.assign(s, { err: e.message,
+          recovery: e.status === 422 && e.data && e.data.adjust ? { key: s.key, adjust: e.data.adjust } : null });
         return false;
       }
       if (late()) return false;
-      Object.assign(s, { info, err: null });
+      Object.assign(s, { info, err: null, recovery: null });
       if (!s.behind() || s.pending() || s.stroke || s.busy) return false;
       return s.open(s.key);
     };
@@ -1244,7 +1247,7 @@ window.DPMaskEdit = (() => {
       try {
         if ((M.busy && (op !== "set" || M.busy !== "adjust_wait")) || M.stroke || M.pending()) return;
         if (draft && draft.key !== M.key) return;
-        const rec = cur() && cur().adjust;
+        const rec = M.recovery ? M.recovery.adjust : cur() && cur().adjust;
         adjustSaving = Object.assign({ key, blur: 0, invert: false }, xformDefault, op === "set" ? draft || rec : op === "undo" ? rec && rec.hist[0] : null);
         const values = Object.fromEntries(["blur", "invert", ...Object.keys(xformDefault)].map((k) => [k, adjustSaving[k]]));
         const p = M.adjust(op, op === "set" ? values : {}, draft ? draft.seen : undefined);
@@ -1265,7 +1268,7 @@ window.DPMaskEdit = (() => {
       } finally {
         if (M.busy === "adjust_wait") M.busy = "";
         // s.adjust의 refresh는 저장 잠금 중이라 창을 다시 열지 못한다. 획 없는 새 창을 여기서 받는다.
-        if (saved && M.key === key && !M.busy && !M.stroke && !M.pending() && M.behind()) {
+        if (saved && M.key === key && !M.busy && !M.stroke && !M.pending() && (M.err || M.behind())) {
           await M.open(key);
           repaintAll();
         }
@@ -1421,6 +1424,17 @@ window.DPMaskEdit = (() => {
         line(s, "이 후보는 이제 ★ 가 아님(검토에서 ★ 해제·제외) — 적용할 수 없음: 왼쪽 목록에서 크롭을 누르면 지금 ★ 로(적용 안 한 획은 확인 뒤 버림)", "bad");
       }
       if (M.err) line(s, `${M.err} `, "bad").append(off(button("다시 받기", "GET /mask 다시", reload, "inline"), busy));
+      if (M.err && M.recovery && M.recovery.key === M.key) {
+        const rec = M.recovery.adjust;
+        const locked = busy || !!adjustSaving || !!M.pending() || (x && (!x.c.picked || x.c.rejected));
+        const row = line(s, "후보 보정", "mc-adjust");
+        const buttons = [off(button("변형 없음", "블러·색반전은 유지하고 변형을 지워 편집 창 복구", () => {
+          adjustDraft = Object.assign({}, rec, xformDefault, { key: M.key, seen: rec.at });
+          saveAdjust("set");
+        }), locked), off(button("보정 없음", "후보 보정·이력을 지워 편집 창 복구", () => saveAdjust("reset")), locked)];
+        if (rec.hist.length) buttons.push(off(button("되돌리기", "이전 후보 보정으로 편집 창 복구", () => saveAdjust("undo")), locked));
+        btns(row, ...buttons);
+      }
       if (layerErr) line(s, `미리보기 3층을 받지 못함: ${layerErr} `, "warn").append(off(button("다시 받기", "GET /mask·3층 다시", refreshInfo, "inline"), busy));
       line(s, `보기: ${view.orig ? "원본 — 이 패치 없이(W)" : view.base ? "처음 마스크(Q 누르는 중)" : slider ? "처음|편집 슬라이더(S — 왼쪽 = 처음 마스크)" : "편집"}`
         + `${view.mark ? " · 마스크(M)" : ""}${viewer.flags().rectsOn ? "" : " · 사각형 숨김(O)"}`, "dim");
@@ -1438,7 +1452,7 @@ window.DPMaskEdit = (() => {
       rb.classList.toggle("on", !viewer.flags().rectsOn);
       btns(s, ob, mb, rb);
 
-      if (info) adjustControls(info);
+      if (info && !M.recovery) adjustControls(info);
 
       // 2 붓
       s = section("붓 (왼쪽 끌기 · Space+끌기 = 화면 이동)");
