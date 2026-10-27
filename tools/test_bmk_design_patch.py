@@ -92,7 +92,8 @@ from scipy import ndimage as ndi
 
 _HERE = Path(__file__).resolve()
 PKG = _HERE.parents[1]
-COMFY = _HERE.parents[3]
+# DP_COMFY_ROOT = ComfyUI 폴더(저장소가 custom_nodes 밖 — 오케스트레이션 worktree — 에서 돌릴 때)
+COMFY = Path(os.environ["DP_COMFY_ROOT"]) if os.environ.get("DP_COMFY_ROOT") else _HERE.parents[3]
 sys.path.insert(0, str(PKG))
 sys.path.insert(0, str(_HERE.parent))  # extract_design_patch_so_template
 
@@ -44742,6 +44743,11 @@ console.log(JSON.stringify(out));
 """
 
 
+def polish4_check_unit():
+    """다듬기 배치 4-2(10/27 — _proto/STUDIO_POLISH_PLAN_2610.md §4·§12): [실행] 작업 점검표."""
+    section("다듬기 배치 4-2 — [실행] 작업 점검표")
+
+
 def polish1_unit():
     """다듬기 배치 1(10/21 실사용 피드백 — _proto/STUDIO_POLISH_PLAN_2610.md §1). 순수 Python·정적·node vm(--quick 포함).
     B-2·U-5 는 공용 표(layout_rules.json — S1-L4·S1-J), B-1 Export 번호는 polish1_node_unit."""
@@ -45597,6 +45603,11 @@ def polish3_node_unit():
           f"폴더·파일·기록 없음 {errs}")
 
 
+def polish4_setup_unit():
+    """다듬기 배치 4-1(10/27 — _proto/STUDIO_POLISH_PLAN_2610.md §4·§12): [실행] 첫 진입 첫 설정 자동."""
+    section("다듬기 배치 4-1 — [실행] 첫 진입 첫 설정 자동")
+
+
 def want(name: str) -> bool:
     return not ONLY or name in ONLY
 
@@ -45668,6 +45679,10 @@ if __name__ == "__main__":
         polish2_unit()
     if want("polish3_unit"):
         polish3_unit()
+    if want("polish4_setup_unit"):
+        polish4_setup_unit()
+    if want("polish4_check_unit"):
+        polish4_check_unit()
     print(f"\n단위 테스트 {time.time() - T0:.1f}s (PASS {PASSES} FAIL {len(FAILS)})")
     if QUICK:
         print("\n--quick: 회귀·노드 생략")
