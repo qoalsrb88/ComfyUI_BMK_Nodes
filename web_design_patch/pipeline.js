@@ -903,6 +903,7 @@ window.DPPipeline = (() => {
     let pvTimer = null;
     let planTimer = null;
     let settingsOn = false;
+    let setupPending = null; // null = 아직 첫 진입 전, true = 첫 설정 응답 기다림, false = 이 페이지에서는 더 묻지 않음
     let form = {}; // 설정 패널에서 고치는 중인 값 {절: {키: 값}} — 다시 그려도 남는다
     // 다른 창의 저장 알아보기(state pipeline_rev 로 다시 읽으면 PS.P·rev 가 새 판이 되어 저장이 409 없이 통과): edits = 손댄 키를 처음 고칠 때 화면의 값
     // {절: {키: 값}}, drawn = 설정 패널을 마지막으로 그린(또는 저장한) 절 값 {절: 값}(입력 중이면 다시 그리기가 미뤄져 화면이 옛 값)
@@ -1123,6 +1124,57 @@ window.DPPipeline = (() => {
       // Spec Draft 실행 = state drafting(폴링마다 — unchanged 응답에도) 또는 progress.draft(옛 서버 — 쉬는 중엔 state 5번에 1번 읽음)
       const p = PS.progress;
       return !!((S && (S.running || S.drafting)) || PS.job || (p && (p.running || p.draft)));
+    }
+
+    function setupReady(P0) {
+      return on && !settingsOn && P0 && !PS.err && !P0.error && !P0.saved && !confirmGate(P0).gate.length
+        && !P0.warnings.length && !busyNow() && !PS.job && !paying && !PS.busy && !PS.sending;
+    }
+
+    function firstSetup() {
+      if (!setupPending || !on || !PS.P || PS.err) return;
+      setupPending = false; // 첫 응답에서 한 번만 판정 — 취소·오류·조건 불충족 뒤 폴링이나 재진입으로 다시 묻지 않음
+      if (!setupReady(PS.P) || asking) return;
+      once(async () => {
+        if (!(await reload()) || !setupReady(PS.P)) return;
+        const P0 = PS.P;
+        // 저장 중 다시 읽기·다른 창의 변경과 무관하게 확인 창에 보인 값만 보냄(파일 없음의 settings = 유도값).
+        const values = { import: Object.assign({}, P0.settings.import), prepare: Object.assign({}, P0.settings.prepare) };
+        const lines = ["그래프에서 마지막으로 돈 설정으로 시작할까요?"];
+        for (const sec of ["prepare", "import"]) {
+          lines.push(`${SECTIONS[sec]}:`);
+          for (const [k, v] of Object.entries(values[sec])) {
+            const from = P0.derived.from[`${sec}.${k}`];
+            lines.push(` · ${sec}.${k} = ${shown(v)} (${FROM[from] || from || "출처 모름"})`);
+          }
+        }
+        const rest = confirmGate(P0).rest;
+        if (rest.length) lines.push(`확인 필요로 남음(반영·Export 는 막지 않음): ${rest.join(", ")}`);
+        lines.push("저장하면 pipeline.json 이 만들어져 [반영 (무료)]·Export 를 쓸 수 있습니다. 나중에 [실행 설정 열기]에서 바꿀 수 있습니다.");
+        if (!window.confirm(lines.join("\n"))) return;
+        let rev = 0;
+        const saved = [];
+        for (const sec of ["import", "prepare"]) {
+          try {
+            const r = await PS.save(sec, values[sec], rev);
+            rev = r.rev; // PS.save 뒤 GET /pipeline 의 rev 가 아니라 이 창의 저장 응답 rev
+            saved.push(SECTIONS[sec]);
+          } catch (e) {
+            opts.toast(`${SECTIONS[sec]}: ${e.message}`
+              + (saved.length ? ` — 앞 절(${saved.join(", ")})은 저장됨, 남은 절은 [실행 설정 열기]에서 다시 확인` : ""), "err");
+            if (saved.length) planNow();
+            return;
+          }
+        }
+        opts.toast(`실행 설정을 저장했습니다(pipeline.json rev ${rev}) — [반영 (무료)]을 쓸 수 있습니다`);
+        planNow();
+        render();
+      })();
+    }
+
+    function pipelineLoaded() {
+      render();
+      firstSetup();
     }
 
     function jobText(job) {
@@ -2437,7 +2489,7 @@ window.DPPipeline = (() => {
       // 계획은 다시 받은 state 뒤에(§3.1): 반영이 지운 크롭이 아직 선택(only)에 남아 서버가 400('매니페스트에 없는 크롭')을 내지 않게
       doneReplan = true;
       opts.refresh();
-      PS.load().then(render);
+      PS.load().then(pipelineLoaded);
     };
 
     function setMaskLeft(v) {
@@ -2473,24 +2525,24 @@ window.DPPipeline = (() => {
         seenLoad = loadKey(st);
         const loaded = PS.load();
         if (first) {
-          loaded.then(render);
+          loaded.then(pipelineLoaded);
           PS.resume();
           planNow(); // Studio 를 연 뒤 한 번(진행 모드가 아니면 only 없음 — 검토 모드 칩용)
         } else {
-          loaded.then(planNow); // 설정이 저장됨(다른 창 포함) — 새 설정(초안 apply·화풍 포함)으로 계획을 다시
+          loaded.then(() => { firstSetup(); planNow(); }); // 설정이 저장됨(다른 창 포함) — 새 설정(초안 apply·화풍 포함)으로 계획을 다시
         }
       } else if (loadKey(st) !== seenLoad) {
         // 매니페스트가 바뀜(그래프 Prepare·Import 는 pipeline.json 을 두고 prepare_settings·source 만 바꿈) 또는 board_pref.json(pref_v — 분석·Export
         // 설정, rev 그대로)이 바뀜 — 갈라짐·유도값·Export 목록을 다시(확인 창 맨 앞 줄·[매니페스트 값으로 다시]·설정 칸이 이 값을 쓴다. 편집기 확인 창도 —
         // 진행 모드가 아니어도)
         seenLoad = loadKey(st);
-        PS.load().then(render);
+        PS.load().then(pipelineLoaded);
       } else if (PS.err || (PS.P && !("manifest_rev" in PS.P))) {
         // 앞 GET /pipeline 이 실패함(잠김·재시작 중) 또는 옛 서버(S3a 판 — manifest_rev 없음: 새 JS 를 받은 뒤 ComfyUI 재시작 전) — rev 가 그대로여도
         // 폴링마다 다시(머리줄 '설정 확인 필요'·'Prepare 갈라짐'·설정 칸이 '읽기 오류'·옛 값에, 승인 단추·R 길이 '재시작 필요'에 멈추지 않게 — 재시작해도
         // pipeline_rev·매니페스트 rev 는 그대로). 다시 그리기는 읽기가 돌아왔거나 서버가 새 판이 된 때만
         const failed = !!PS.err;
-        PS.load().then((ok) => ok && (failed || "manifest_rev" in PS.P) && render());
+        PS.load().then((ok) => ok && (failed || "manifest_rev" in PS.P) && pipelineLoaded());
       }
       // 계획을 한 번 다시(서버는 같은 서명·선택이면 계산 없이 기억값): 진행 모드에서 선택이 바뀜, 쉬는 중에 계획이 지금 파일과 달라짐(다른 창·그래프의
       // 쓰기 — plan_v)·실행이 끝남, 또는 계획을 한 번도 받지 못했는데(202·오류) 서버에 새 계획이 생김(모든 모드 — 머리줄). 실행 중에는 원장·초안 원장이
@@ -2514,6 +2566,7 @@ window.DPPipeline = (() => {
 
     function enter(st, cropId) {
       // 진행 모드 진입: 채택 패널 = 보드가 고른 크롭, 계획(지금 선택)·진행 수를 받는다
+      if (setupPending === null) setupPending = !settingsOn;
       on = true;
       ticks = 0;
       S = st;
@@ -2529,6 +2582,7 @@ window.DPPipeline = (() => {
       PS.loadProgress().then(render);
       planNow();
       clearTimeout(planTimer); // stateChanged 가 예약한 계획 요청 — 바로 위에서 지금 선택으로 받음
+      firstSetup();
     }
 
     function leave() {

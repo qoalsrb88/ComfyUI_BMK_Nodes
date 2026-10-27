@@ -45606,6 +45606,238 @@ def polish3_node_unit():
 def polish4_setup_unit():
     """다듬기 배치 4-1(10/27 — _proto/STUDIO_POLISH_PLAN_2610.md §4·§12): [실행] 첫 진입 첫 설정 자동."""
     section("다듬기 배치 4-1 — [실행] 첫 진입 첫 설정 자동")
+    web = PKG / "web_design_patch"
+    check("localStorage" not in (web / "pipeline.js").read_text(encoding="utf-8"), "첫 설정 질문은 페이지 메모리에만 기억")
+    node = shutil.which("node")
+    if not node:
+        skip("node 없음 → 배치 4-1 JS(vm) 생략")
+        return
+    out = OUT_ROOT / "polish4_setup_js"
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "in.json").write_text(json.dumps({"api": _pl_api(), "pipelineJs": str(web / "pipeline.js"),
+                                             "boardJs": str(web / "board.js")}, ensure_ascii=False), encoding="utf-8")
+    # 기존 DOM·가짜 fetch·응답 정본을 재사용하되 기존 시나리오는 여기서 반복 실행하지 않는다.
+    harness = _PL_JS_HARNESS.replace('async function scenario(name, fn) {',
+                                    'async function scenario(name, fn) { if (!name.startsWith("setup:")) return;', 1)
+    cases = r"""
+function setupEnv(cfg = {}) {
+  const srv = server();
+  quietPlan(srv);
+  let pv = Object.assign(clone(R["GET /pipeline"].alt.missing), {
+    confirm: ["draft.apply", "analyze.register", "compose.zorder", "export.filename_prefix", "cand.path"], drift: [], warnings: [],
+  });
+  pv.derived.confirm = pv.confirm.slice();
+  if (cfg.pipeline) cfg.pipeline(pv);
+  const initial = clone(pv);
+  const S = Object.assign(quietState(), { pipeline_rev: null }, cfg.state || {});
+  const doc = new Doc();
+  const hosts = { list: doc.createElement("ol"), panel: doc.createElement("section"), head: doc.createElement("div") };
+  doc.body.append(hosts.list, hosts.panel, hosts.head);
+  const env = { srv, S, hosts, confirms: [], toasts: [], shown: [], panels: [], initial, reads: 0 };
+  srv.route.pipeline = () => {
+    env.reads += 1;
+    if (cfg.read) {
+      const reply = cfg.read(env, pv);
+      if (reply) return reply;
+    }
+    return [200, clone(pv)];
+  };
+  srv.route.settings = (q, body) => {
+    const n = srv.count("pipeline/settings");
+    if (cfg.fail === n) return [cfg.status || 409, { error: "설정 저장 실패(시험)" }];
+    if (body.rev !== pv.rev) return [409, { error: "다른 창이 설정을 저장했습니다" }];
+    pv.settings[body.section] = clone(body.values);
+    pv.confirm = pv.confirm.filter((k) => !k.startsWith(body.section + "."));
+    pv.saved = true;
+    pv.rev += 1;
+    return [200, { ok: true, rev: pv.rev, settings: clone(pv.settings), confirm: pv.confirm.slice(), drift: [] }];
+  };
+  if (cfg.progress) srv.route.progress = [200, Object.assign(clone(R["GET /pipeline/progress"].alt.idle), cfg.progress)];
+  if (cfg.delay) srv.delay.pipeline = cfg.delay.slice();
+  srv.queue = { queue_running: [], queue_pending: [[1, "setup-job"]] };
+  const store = mem(cfg.job ? { [JOB]: JSON.stringify({ stage: "apply", pid: "setup-job", number: 1 }) } : {});
+  Object.assign(ctx, { document: doc, fetch: srv.fetch });
+  Object.assign(ctx.window, { sessionStorage: store, confirm: (m) => {
+    env.confirms.push(m);
+    env.shown.push(clone(pv));
+    env.panels.push(hosts.panel.textContent);
+    return cfg.answer !== false;
+  } });
+  const link = cfg.paying ? { paidWhy: () => "", onWave() {}, send: () => new Promise(() => {}) } : null;
+  env.pipe = P.create(hosts, { apiUrl: A, comfyUrl: C, root: KEY, link, toast: (m, k) => env.toasts.push(`${k || ""}:${m}`),
+    refresh() {}, select() {}, goTarget() {}, seams: () => new Map(), drain() {}, enter() {} });
+  env.posts = () => srv.log.filter((x) => x.method === "POST").map((x) => ({ path: x.path, ...x.body }));
+  env.current = () => clone(pv);
+  env.repeat = async () => {
+    env.pipe.leave();
+    env.pipe.enter(S, null);
+    env.pipe.stateChanged(Object.assign({}, S, { rev: S.rev + 1 }));
+    await sleep(50);
+    env.pipe.leave();
+  };
+  return env;
+}
+
+await scenario("setup:accept", async () => {
+  const env = setupEnv({ read(e, pv) {
+    if (e.reads === 2) {
+      Object.assign(pv.settings.prepare, { quality: "high", variants: "V2,V3", n: 4, ref_style: "plain", calls_per_cell: 2 });
+      pv.settings.import.psd_path = "Z:/fresh/새 원본.psd";
+      pv.derived.settings = clone(pv.settings);
+      pv.derived.from["prepare.quality"] = "manifest";
+      pv.derived.from["prepare.ref_style"] = "spec_draft";
+    }
+  } });
+  env.pipe.stateChanged(env.S);
+  await sleep(30);
+  const noEarly = !env.confirms.length && !env.posts().length;
+  env.pipe.enter(env.S, null);
+  await until(() => env.toasts.length > 0);
+  const posts = env.posts();
+  const beforeRepeat = env.confirms.length;
+  const message = env.confirms[0] || "";
+  const shown = env.shown[0];
+  const from = { manifest: "프로젝트 기록", jobs: "jobs 에서 추정", spec_draft: "스펙 초안 출처에서 추정", default: "기록 없음 — 노드 기본값" };
+  const allShown = shown && ["prepare", "import"].every((sec) => Object.entries(shown.settings[sec]).every(([k, v]) =>
+    message.includes(`${sec}.${k} = ${typeof v === "string" ? v || '\"\"' : JSON.stringify(v)} (${from[shown.derived.from[`${sec}.${k}`]]})`)));
+  const lastPlan = env.srv.log.findLastIndex((x) => x.path === "pipeline/plan");
+  const lastPost = env.srv.log.findLastIndex((x) => x.path === "pipeline/settings");
+  const kept = env.initial.confirm.every((k) => env.hosts.panel.textContent.includes(k)) &&
+    JSON.stringify(env.current().confirm) === JSON.stringify(env.initial.confirm) &&
+    ["draft", "analyze", "compose", "export", "cand", "run"].every((sec) =>
+      JSON.stringify(env.current().settings[sec]) === JSON.stringify(env.initial.settings[sec]));
+  await env.repeat();
+  return {
+    "진입 전 질문·쓰기 없음, 진입 후 확인 창 한 번": noEarly && beforeRepeat === 1 && env.confirms.length === 1,
+    "import rev 0 → prepare 앞 저장 rev, 두 절만 POST": JSON.stringify(posts.map((p) => [p.path, p.section, p.rev])) ===
+      JSON.stringify([["pipeline/settings", "import", 0], ["pipeline/settings", "prepare", 1]]) && env.posts().length === 2,
+    "다시 읽은 Prepare·Import 값과 출처가 모두 표시되고 그 값만 저장": !!allShown && posts.every((p) =>
+      JSON.stringify(p.values) === JSON.stringify(shown.settings[p.section])) && posts[1].values.n === 4 && posts[0].values.psd_path.includes("새 원본"),
+    "확인 창 첫 줄·마지막 안내·남는 확인 항목": message.startsWith("그래프에서 마지막으로 돈 설정으로 시작할까요?\n") &&
+      message.includes("확인 필요로 남음(반영·Export 는 막지 않음): " + env.initial.confirm.join(", ")) &&
+      message.endsWith("저장하면 pipeline.json 이 만들어져 [반영 (무료)]·Export 를 쓸 수 있습니다. 나중에 [실행 설정 열기]에서 바꿀 수 있습니다."),
+    "성공 토스트 한 번·새 계획·남은 확인 표시 유지": env.toasts.length === 1 && env.toasts[0].includes("pipeline.json rev 2") &&
+      env.toasts[0].includes("[반영 (무료)]") && lastPlan > lastPost && kept,
+  };
+});
+
+await scenario("setup:cancel", async () => {
+  const env = setupEnv({ answer: false, delay: [30] });
+  env.pipe.enter(env.S, null); // 첫 GET 을 아직 못 받은 진입
+  await sleep(10);
+  const waiting = !env.confirms.length;
+  await until(() => env.confirms.length > 0);
+  await sleep(20);
+  const unchanged = env.panels[0] === env.hosts.panel.textContent;
+  await env.repeat();
+  return { "첫 GET 뒤 취소: 화면·쓰기 유지, 재진입·폴링에도 다시 묻지 않음": waiting && unchanged && env.confirms.length === 1 &&
+    env.posts().length === 0 && env.toasts.length === 0 };
+});
+
+await scenario("setup:guards", async () => {
+  const result = {};
+  const cases = {
+    saved: { pipeline(p) { p.saved = true; p.rev = 3; } },
+    broken: { pipeline(p) { Object.assign(p, clone(R["GET /pipeline"].alt.broken)); } },
+    prepare: { pipeline(p) { p.confirm.push("prepare.variants"); } },
+    import: { pipeline(p) { p.confirm.push("import.psd_path"); } },
+    warning: { pipeline(p) { p.warnings.push({ field: "import.psd_path", reason: "missing_path", msg: "경로 없음" }); } },
+    running: { state: { running: true } }, drafting: { state: { drafting: true } },
+    progressRun: { progress: { running: true } }, progressDraft: { progress: { draft: { done: 0, wait: 1 } } },
+    job: { job: true }, paying: { paying: true }, settings: {},
+  };
+  for (const [name, cfg] of Object.entries(cases)) {
+    const env = setupEnv(cfg);
+    env.pipe.stateChanged(env.S);
+    await sleep(20);
+    if (name === "paying") env.pipe.reroll(); // 가짜 link 응답을 기다리는 실제 paying 흐름
+    if (name === "settings") env.pipe.openSettings();
+    env.pipe.enter(env.S, null);
+    await sleep(60);
+    const skipped = !env.confirms.length && !env.posts().length && !env.toasts.length;
+    if (name === "settings") {
+      const back = env.hosts.panel.all().find((e) => e.tagName === "BUTTON" && e.textContent === "진행으로");
+      if (back) back.fire("click");
+    }
+    await env.repeat();
+    result[`${name}: 자동 질문·저장 없음`] = skipped && !env.confirms.length && !env.posts().length;
+  }
+  return result;
+});
+
+await scenario("setup:reread", async () => {
+  const result = {};
+  for (const name of ["saved", "broken", "gate", "warning", "running", "leave", "settings", "error"]) {
+    const env = setupEnv({ read(e, p) {
+      if (e.reads !== 2) return;
+      if (name === "saved") { p.saved = true; p.rev = 5; }
+      if (name === "broken") p.error = "깨진 파일";
+      if (name === "gate") p.confirm.push("prepare.n");
+      if (name === "warning") p.warnings.push({ field: "import.psd_path", msg: "경로 없음" });
+      if (name === "running") { e.S.running = true; e.pipe.stateChanged(e.S); }
+      if (name === "leave") e.pipe.leave();
+      if (name === "settings") e.pipe.openSettings();
+      if (name === "error") return [500, { error: "새 설정 읽기 실패" }];
+    } });
+    env.pipe.enter(env.S, null);
+    await sleep(70);
+    result[`확인 직전 다시 읽기 ${name}: 질문·저장 없음`] = env.reads === 2 && !env.confirms.length && !env.posts().length &&
+      (name === "error" ? env.toasts.length === 1 && env.toasts[0].includes("다시 읽지 못해 멈춤") : env.toasts.length === 0);
+    await env.repeat();
+    result[`다시 읽기 ${name} 뒤 재시도 없음`] = !env.confirms.length && !env.posts().length;
+  }
+  return result;
+});
+
+await scenario("setup:failures", async () => {
+  const result = {};
+  for (const [fail, status] of [[1, 409], [1, 500], [2, 500]]) {
+    const env = setupEnv({ fail, status });
+    env.pipe.enter(env.S, null);
+    await until(() => env.toasts.length > 0);
+    await env.repeat();
+    result[`${fail}번째 저장 ${status}: 오류 토스트 한 번·재시도 없음·부분 저장 안내`] = env.confirms.length === 1 &&
+      env.posts().length === fail && env.toasts.length === 1 && env.toasts[0].startsWith("err:") &&
+      env.toasts[0].includes("설정 저장 실패") && (fail === 1 || env.toasts[0].includes("앞 절(Import PSD)은 저장됨"));
+  }
+  const env = setupEnv({ read(e, p) {
+    if (e.srv.count("pipeline/settings") === 1) { p.rev = 9; p.settings.prepare.n = 8; }
+  } });
+  env.pipe.enter(env.S, null);
+  await until(() => env.toasts.length > 0);
+  const posts = env.posts();
+  result["첫 저장 뒤 다른 창 rev를 읽어도 앞 응답 rev·확인한 값으로 보내고 409에서 멈춤"] = posts.length === 2 && posts[1].rev === 1 &&
+    posts[1].values.n === env.shown[0].settings.prepare.n && env.toasts.length === 1 && env.toasts[0].includes("앞 절(Import PSD)은 저장됨");
+  await env.repeat();
+  result["둘째 저장 409 뒤에도 질문·POST 재시도 없음"] = env.confirms.length === 1 && env.posts().length === 2;
+  return result;
+});
+
+await scenario("setup:firstReadRetry", async () => {
+  const env = setupEnv({ answer: false, read(e) { if (e.reads === 1) return [500, { error: "첫 읽기 실패" }]; } });
+  env.pipe.enter(env.S, null);
+  await sleep(30);
+  const waiting = !env.confirms.length && !env.posts().length;
+  env.pipe.stateChanged(env.S);
+  await until(() => env.confirms.length > 0);
+  await env.repeat();
+  return { "첫 GET 실패 후 정상 응답을 처음 받으면 한 번만 질문": waiting && env.confirms.length === 1 && !env.posts().length };
+});
+"""
+    harness = harness.replace("console.log(JSON.stringify(out));\nprocess.exit(0);", cases + "\nconsole.log(JSON.stringify(out));\nprocess.exit(0);")
+    (out / "harness.mjs").write_text(harness, encoding="utf-8")
+    r = subprocess.run([node, str(out / "harness.mjs"), str(out / "in.json")], capture_output=True, text=True, encoding="utf-8", timeout=60)
+    if r.returncode != 0 or not r.stdout.strip():
+        check(False, f"배치 4-1 node 하네스 실패({r.returncode}): {r.stderr.strip()[-1200:]}")
+        return
+    res = json.loads(r.stdout.strip().splitlines()[-1])
+    check(len(res) == 6, f"배치 4-1 시나리오 6개 실행: {list(res)}")
+    for name, checks in res.items():
+        if "error" in checks:
+            check(False, f"{name} 하네스 예외: {checks['error']}")
+            continue
+        for label, ok in checks.items():
+            check(ok is True, f"{name}: {label}")
 
 
 def want(name: str) -> bool:
