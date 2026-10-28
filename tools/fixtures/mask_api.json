@@ -57,7 +57,7 @@
    "GET /mask/alts: 그 ★ 의 타깃에서 탈락 아닌 다른 후보마다 board._compose_full(swap) 의 이음매. sig = 지금 ★ 합성 서명, now = 지금 ★ 의 이 크롭 {bad, worst(p90 최대 — 이음매 없으면 null)}. rows[] = {key, c(GET /mask 의 c 와 같은 규칙), ran({done: 원장 calls finished 'YYYY-MM-DD HH:MM:SS', via: state via 와 같은 값 run|reroll|retry|null} — 원장에 없는 후보(수확·폴더)는 null), bad·weak = 이 크롭의 이음매 수(그 후보를 ★ 로 바꾼 가정), worst_p90(이 크롭 최대, 없으면 null), this_crop = 이 크롭의 이음매(seams[] 와 같은 원소), changed_crops = 이 크롭 밖에서 이음매 목록이 지금과 달라지는 크롭 crop_id}. 후보당 ≈ 2.5초·한 번에 하나 — 다른 /mask/alts 가 계산 중이면 202 {busy: true}(_ALTS_LOCK — 캐시만으로 답하면 잠금 없이). 후보마다 _composite 가 _COMPOSE_LOCK 을 잡으므로 뷰어 ★ 합성·3층 계산 중에는 202 가 아니라 기다린다. swap 서명별 composite_<sig>.jpg·seams_<sig>.json 캐시를 다시 씀(그 후보를 실제로 ★ 하면 같은 서명).",
    "state: cand.mask_edit = 그 후보의 기록이 있으면 {at, stale}(★ 가 아니어도 기록이 있으면 — 다시 ★ 하면 살아남, stale 은 GET /mask 의 edit.stale 과 같은 규칙 — 편집 창은 계획 없이 board._edit_window. 더해 _plan 이 편집 파일을 쓰지 못하면(없음·깨진 PNG·크기 ≠ 기록 창 — board._edit_usable) 도 true: GET /mask 는 그때 edit.stale 을 그대로 두고 edit.url = base.url·경고로 보인다), 없으면 null. 형식이 깨진 기록(손으로 고친 매니페스트 — mask.check_record 실패, board._edit_rec)은 state mask_edit·GET /mask edit 모두 null(_plan 처럼 편집 없음). crop.mask_edits = 그 크롭의 지금 ★ 가운데 편집이 있는 수, crop.mask_stale = 그 가운데 stale 수.",
    "exports_item: Export 노드가 exports[] 에 더 남기는 키 — mask_groups = 그룹 마스크 수(보고서 '그룹 마스크 n'), mask_edits = 그 가운데 ★ 마스크 편집(보고서 '(편집 k)'). S4 전 Export 기록에는 없다. Studio 결과 줄('그룹 마스크 n (편집 k)')·이전 Export 목록(편집 수)은 GET /pipeline 의 exports[](pipeline.recent_exports)에서 읽는다 — 그 항목도 이 두 키를 싣고 기록에 없으면 null(읽는 쪽 '?'), pipeline_api.json GET /pipeline exports[] 예시·nullable 에도 있다. ui bmk_dp_export 는 {outcome, psd, rev} 그대로 — 결과 줄은 그 rev 로 exports[] 항목을 찾는다(지금 레이어·문제·크기처럼).",
-   "409 본문: mask.MaskConflict 는 .extra = {reason} 를 싣는다 — 기존 _guard 의 _conflicts() 갈래는 {error} 만 돌려주므로 라우트(또는 _guard)가 {error: str(e), **e.extra} 로 바꿔 돌려줄 것(mask_unit 이 그 꼴 = 이 정본의 409 예시임을 본다). rect_changed·stale 은 보드가 만드는 409 — 같은 꼴(_Reject(409, error, reason=…, rect=…)). 409 는 늘 reason 이 있다 — 다시 받아도 그대로인 것(패치가 캔버스 밖이라 편집 창 없음·편집 대상/3층/대안 계산 실패 — 편집 대상은 ★ 계획 전체라 다른 ★ 의 마스크 파일 문제도)은 422 {error}."
+   "409 본문: mask.MaskConflict 는 .extra = {reason} 를 싣는다 — 기존 _guard 의 _conflicts() 갈래는 {error} 만 돌려주므로 라우트(또는 _guard)가 {error: str(e), **e.extra} 로 바꿔 돌려줄 것(mask_unit 이 그 꼴 = 이 정본의 409 예시임을 본다). rect_changed·stale 은 보드가 만드는 409 — 같은 꼴(_Reject(409, error, reason=…, rect=…)). 409 는 늘 reason 이 있다 — 다시 받아도 그대로인 것(패치가 캔버스 밖이라 편집 창 없음·편집 대상/3층/대안 계산 실패 — 편집 대상은 ★ 계획 전체라 다른 ★ 의 마스크 파일 문제도)은 422 {error}. 예외: GET /mask 의 편집 창 없음·4096² 초과 422 는 그 후보의 정규화 보정 기록 adjust(| null)를 더 싣는다 — 변형 뒤 창이 그렇게 되면 마스크 모드 복구 줄([변형 없음]·[보정 없음]·[되돌리기])이 쓴다(5-2b)."
   ]
  },
  "routes": {
@@ -91,7 +91,47 @@
      "blur": 1.5,
      "invert": false,
      "at": "2026-10-27 12:00:00.123456789",
-     "hist": []
+     "hist": [
+      {
+       "blur": 1.5,
+       "invert": false,
+       "at": "2026-10-27 11:59:00.123456789",
+       "dx": 1.0,
+       "dy": 0.0,
+       "rot": 0.0,
+       "sx": 1.0,
+       "sy": 1.0,
+       "flip_h": false,
+       "flip_v": false,
+       "base_quad": [
+        126.0,
+        2560.0,
+        1406.0,
+        2560.0,
+        1406.0,
+        3328.0,
+        126.0,
+        3328.0
+       ]
+      }
+     ],
+     "dx": 2.0,
+     "dy": 0.0,
+     "rot": 0.0,
+     "sx": 1.0,
+     "sy": 1.0,
+     "flip_h": false,
+     "flip_v": false,
+     "base_quad": [
+      126.0,
+      2560.0,
+      1406.0,
+      2560.0,
+      1406.0,
+      3328.0,
+      126.0,
+      3328.0
+     ]
     },
     "edit": {
      "file": "masks/r_61ba2d69_e_3f2a9c01b7d4.png",
@@ -202,7 +242,28 @@
       }
      ]
     },
-    "warnings": []
+    "warnings": [],
+    "quad": [
+     128.0,
+     2560.0,
+     1408.0,
+     2560.0,
+     1408.0,
+     3328.0,
+     128.0,
+     3328.0
+    ],
+    "base_quad": [
+     126.0,
+     2560.0,
+     1406.0,
+     2560.0,
+     1406.0,
+     3328.0,
+     126.0,
+     3328.0
+    ],
+    "xform_stale": false
    },
    "alt": {
     "no_edit": {
@@ -296,7 +357,28 @@
        }
       ]
      },
-     "warnings": []
+     "warnings": [],
+     "quad": [
+      512.0,
+      2240.0,
+      1536.0,
+      2240.0,
+      1536.0,
+      3008.0,
+      512.0,
+      3008.0
+     ],
+     "base_quad": [
+      512.0,
+      2240.0,
+      1536.0,
+      2240.0,
+      1536.0,
+      3008.0,
+      512.0,
+      3008.0
+     ],
+     "xform_stale": false
     },
     "unanalyzed": {
      "key": "r_b7a67c9d5802_1_0",
@@ -386,7 +468,28 @@
      },
      "warnings": [
       "분석 없음 — 반영(Analyze) 뒤 편집 권장"
-     ]
+     ],
+     "quad": [
+      1792.0,
+      384.0,
+      2176.0,
+      384.0,
+      2176.0,
+      768.0,
+      1792.0,
+      768.0
+     ],
+     "base_quad": [
+      1792.0,
+      384.0,
+      2176.0,
+      384.0,
+      2176.0,
+      768.0,
+      1792.0,
+      768.0
+     ],
+     "xform_stale": false
     }
    },
    "errors": {
@@ -411,13 +514,15 @@
     ],
     "422": [
      {
-      "error": "이 ★ 의 패치가 캔버스 밖에 있어 편집할 창이 없습니다"
+      "error": "이 ★ 의 패치가 캔버스 밖에 있어 편집할 창이 없습니다",
+      "adjust": null
      },
      {
       "error": "편집 대상을 계산할 수 없습니다: [Errno 2] No such file or directory: 'derived/automask_0b1c2d3e4f506172.png'"
      },
      {
-      "error": "편집 창 4608x3840 가 4096² 픽셀을 넘어 Studio 에서 편집할 수 없습니다 — PS 그룹 마스크로"
+      "error": "편집 창 4608x3840 가 4096² 픽셀을 넘어 Studio 에서 편집할 수 없습니다 — PS 그룹 마스크로",
+      "adjust": null
      }
     ]
    },
@@ -425,7 +530,9 @@
     "edit",
     "adjust",
     "seams",
-    "seams[].beside"
+    "seams[].beside",
+    "adjust.base_quad",
+    "adjust.hist[].base_quad"
    ],
    "optional": [
     "seams[].beside"

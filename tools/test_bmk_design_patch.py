@@ -40229,14 +40229,14 @@ def mask_unit():
         check(reasons == {"GET /mask": ["not_picked"], "GET /mask/img": ["stale", "not_picked"],
                           "POST /mask/save": ["not_picked", "rect_changed", "changed"], "POST /mask/edit": ["changed"],
                           "GET /mask/alts": ["not_picked"]}
-              and all(isinstance(b.get("error"), str) and set(b) <= {"error", "reason", "rect"}
+              and all(isinstance(b.get("error"), str) and set(b) <= {"error", "reason", "rect", "adjust"}
                       for e in routes.values() for st_, bs in e["errors"].items() if st_ != "202" for b in bs)
               and [r for r, e in routes.items() if "202" in e["errors"]] == ["GET /mask/alts"]
               and routes["GET /mask/alts"]["errors"]["202"] == [{"busy": True}]
               and set(enum["409 reason"]) == {"not_picked", "stale", "rect_changed", "changed"}
               and enum["GET /mask/img kind"] == list(routes["GET /mask/img"]["ok"]["kinds"]) == ["base", "edit", "under", "patch", "over"]
               and list(enum["POST /mask/edit op"]) == ["undo", "reset"] and tuple(enum["base.src"]) == dm.BASE_SRCS,
-              f"409 사유(라우트별)·오류 본문 = error + reason·rect, 202 = alts 만 {{busy: true}}, 열거 = mask 모듈 {reasons}")
+              f"409 사유(라우트별)·오류 본문 = error + reason·rect(·GET /mask 422 복구 adjust — 5-2b), 202 = alts 만 {{busy: true}}, 열거 = mask 모듈 {reasons}")
         same = {f"{r} {n}": _pl_shape(e["ok"], b, e) for r, e in routes.items() if r != "GET /mask/img" for n, b in e["alt"].items()}
         miss = [f"{r} {p}" for r, e in routes.items() for p in e["nullable"] if p not in _pl_pool(e, e["ok"])]
         check(len(same) == 4 and all(v == [] for v in same.values()) and not miss,
@@ -40474,15 +40474,15 @@ def mask_node_unit():
         g6 = g6[cB["key"]]
         dm.undo_edit(root, cB["key"], seen=rec6["file"])
         r7, _t = export(hc)
-        check(rec6["file"] == recB["file"] and r6["outcome"] == "new" and r6["psd"] not in (r1["psd"], r3["psd"]) and list(g6.mask.bbox) == sh
-              and lay6[cB["key"]]["mask_rect"] == sh and r7["outcome"] == "unchanged" and r7["psd"] == r1["psd"],
-              f"같은 file·다른 창 = 새 PSD(Export 해시에 창이 들어감 — 그룹 마스크 bbox·사이드카 mask_rect = 새 창 {sh}, 기준 마스크 창 아님) · "
-              f"되돌리면 그 판의 PSD(변경 없음) "
+        uni = [min(sh[0], rect[0]), min(sh[1], rect[1]), max(sh[2], rect[2]), max(sh[3], rect[3])]  # 5-2b D34: 기록 창 밖 = 기준으로 합침
+        check(rec6["file"] == recB["file"] and r6["outcome"] == "new" and r6["psd"] not in (r1["psd"], r3["psd"]) and list(g6.mask.bbox) == uni
+              and lay6[cB["key"]]["mask_rect"] == uni and lay6[cB["key"]].get("mask_file") and r7["outcome"] == "unchanged" and r7["psd"] == r1["psd"],
+              f"같은 file·다른 창 = 새 PSD(Export 해시에 창이 들어감 — 그룹 마스크 bbox·사이드카 mask_rect = 기록 창 ∪ 패치 창 {uni}·mask_file, "
+              f"5-2b D34 창 밖 = 기준) · 되돌리면 그 판의 PSD(변경 없음) "
               f"{r6['outcome']} {r7['outcome']}")
-        moved = f"{cB['key']} ({m0['crops'][1]['name']}): 마스크 편집 기준 바뀜(창 {sh} → {rect}) → 편집 그대로 씀"
-        check(moved in t6 and "마스크 편집 기준 바뀜" not in t1 and "마스크 편집 기준 바뀜" not in t3,
-              f"리뷰 analysis-r1-02: 기록 창 ≠ 이번 Export 의 패치 창 = 보고서에 '마스크 편집 기준 바뀜(창 기록 → 지금)'(조용히 어긋난 그룹 마스크를 "
-              f"알림), 창·분석 항목이 같으면 없음 {[x for x in t6.splitlines() if '기준 바뀜' in x]}")
+        check("마스크 편집 기준 바뀜" not in t6 and "마스크 편집 기준 바뀜" not in t1 and "마스크 편집 기준 바뀜" not in t3,
+              f"5-2b D34: 기록 창 ≠ 이번 Export 의 패치 창만으로는 '마스크 편집 기준 바뀜' 경고 없음(창 밖은 기준으로 채움 — 경고는 분석 항목이 바뀔 때만) "
+              f"{[x for x in t6.splitlines() if '기준 바뀜' in x]}")
         mfix = {"base": "inputs/b.png", "canvas": [64, 48], "work_rect": [0, 0, 64, 48],
                 "crops": [{"id": "001_aaaaaa", "name": "001_x", "rect": [0, 0, 32, 32], "targets": [{"tid": "A", "label": "A"}]}],
                 "candidates": [{"key": "f_k1", "crop_id": "001_aaaaaa", "tid": "A", "picked": True, "file": "cands/x.png"}],
@@ -41625,8 +41625,8 @@ def mask_board_unit():
                 next(c for c in s["crops"] if c["id"] == ids[1])["mask_stale"])
 
     async def b45(h):
-        section("S4-B45 편집 창이 바뀜(재분석 정합·Compose use_registration): kind=edit = 기록 래스터를 지금 창으로(= _plan — 3층 공식 = Compose)·"
-                "stale(GET /mask·state·/mask/edit — 창만 바뀌어도)·적용 = 새 창·옛 창 세션 적용 409 rect_changed(같은 크기)·다른 창 판으로 undo = stale·"
+        section("S4-B45 편집 창이 바뀜(재분석 정합·Compose use_registration): kind=edit = 기록 래스터 + 창 밖 기준을 지금 창으로(= _plan — 3층 공식 = Compose)·"
+                "창만 바뀌면 stale 아님·창 밖 = 기준(5-2b D34 — GET /mask·state·/mask/edit)·적용 = 새 창·옛 창 세션 적용 409 rect_changed(같은 크기)·다른 창 판으로 undo = stale 아님·"
                 "창 크기가 바뀌어도 열림·_edit_window = 계획 창(정합 끔·원근)·창이 바뀐 뒤 kind=base = 기준·정합 끔 + 창이 영역 밖 3층 200")
         m0 = st.load_manifest(root)
         keep = copy.deepcopy(m0["analysis"][kB]), copy.deepcopy(m0["mask_edits"][kB]), len(m0["exports"])
@@ -41658,8 +41658,9 @@ def mask_board_unit():
         s1, d1s = await h.save(kB, png(ea), seen=keep[1]["file"], ops="왼쪽 40 지움", rect=R1)
         rec1 = st.load_manifest(root)["mask_edits"][kB]
         sb1 = await star_b(h)
-        check(s1 == 200 and rec1["rect"] == R1 and d1s["edit"]["stale"] is False and sb1 == ({"at": rec1["at"], "stale": False}, 0),
-              f"새 창에 저장 → stale false(GET·state) {sb1}")
+        U = [min(R0[0], R1[0]), min(R0[1], R1[1]), max(R0[2], R1[2]), max(R0[3], R1[3])]
+        check(s1 == 200 and rec1["rect"] == U and d1s["edit"]["stale"] is False and sb1 == ({"at": rec1["at"], "stale": False}, 0),
+              f"새 창에 저장 → stale false(GET·state)·기록 rect = 옛 기록 창 ∪ 저장 창 {U}(5-2b — 저장 창 밖 옛 편집 보존) {sb1}")
 
         st.update_manifest(root, lambda mm: mm["exports"].append({"rev": 1, "psd": "x.psd", "compose": {"use_registration": False}}))
         m2 = st.load_manifest(root)
@@ -41667,19 +41668,24 @@ def mask_board_unit():
         _s, d2 = await h.jget(f"{API}/mask", root=key, key=kB)
         se, _he, be = await h.img(d2["edit"]["url"])
         mode_e, arr_e = decode(be)
-        want = np.rint(bd._mask_region({"arr": ea, "left": R1[0], "top": R1[1], "bg": 0}, *R0) * 255).astype(np.uint8)
+        rec1_mask = dm.edit_mask(root, rec1)[0]  # 기록 창 U ⊇ 지금 창 R0 — 합치지 않고 기록 래스터 그대로(R1 안 = ea, R0 \ R1 = 옛 편집)
+        want = np.rint(bd._mask_region(rec1_mask, *R0) * 255).astype(np.uint8)
+        check(np.array_equal(want[R1[1] - R0[1]:, R1[0] - R0[0]:], ea[:R0[3] - R1[1], :R0[2] - R1[0]]),
+              "합집합 기록의 저장 창 안 = 올린 래스터 그대로")
         box = d2["layers"]["box"]
         lay = await layers_of(h, d2)
         ref = bd._compose_full(root, m2, None, None, box)[0].astype(np.float32)
         mx, mx_asis = (float(np.abs(formula(lay, window(a, R0, box)) - ref).max()) for a in (arr_e, ea))
         sb2 = await star_b(h)
-        check(d2["rect"] == R0 and d2["edit"]["stale"] is True and d2["edit"]["file"] == rec1["file"] and shape("GET /mask", d2) == []
-              and q_of(d2["edit"]["url"])["v"] == bd._edit_sig(rec1, R0) != q_of(d1s["edit"]["url"])["v"]
-              and it2["msrc"] == "edit" and [it2["mask"]["left"], it2["mask"]["top"]] == R1[:2]
+        fp2 = dm.base_fp(cand(m2, kB), bd._entry_for(m2, kB, None), MS)
+        check(d2["rect"] == R0 and d2["edit"]["stale"] is False and d2["edit"]["file"] == rec1["file"] and shape("GET /mask", d2) == []
+              and q_of(d2["edit"]["url"])["v"] == bd._edit_sig(rec1, R0, fp2, bd._edit_placement(m2, cand(m2, kB), bd._entry_for(m2, kB, None), fp2))
+              != q_of(d1s["edit"]["url"])["v"]
+              and it2["msrc"] == "edit" and [it2["mask"]["left"], it2["mask"]["top"]] == U[:2] and it2.get("mask_merged") is None
               and se == 200 and mode_e == "L" and np.array_equal(arr_e, want) and not np.array_equal(arr_e, ea)
-              and mx <= 1 and mx_asis > 8 and sb2 == ({"at": rec1["at"], "stale": True}, 1),
-              f"Compose use_registration 끔(ph·ms 그대로) → 창 {R1} → {R0}(같은 크기): stale true(GET·state·크롭 mask_stale)·URL v 바뀜·"
-              f"kind=edit = _plan 이 기록 창 그대로 쓰는 편집을 지금 창으로 → 3층 공식 = Compose 최대 {mx}(기록을 지금 창에 그대로 놓으면 {mx_asis})")
+              and mx <= 1 and mx_asis > 8 and sb2 == ({"at": rec1["at"], "stale": False}, 0),
+              f"Compose use_registration 끔(ph·ms 그대로) → 창 {R1} → {R0}(같은 크기): 창만 바뀜 = stale false(GET·state·크롭 mask_stale — 5-2b D34)·URL v 바뀜·"
+              f"kind=edit = 기록 래스터(기록 창 U ⊇ 지금 창)를 지금 창으로 → 3층 공식 = Compose 최대 {mx}(저장 창 래스터를 지금 창에 그대로 놓으면 {mx_asis})")
         keep_rect, far = copy.deepcopy(m2["crops"][1]["rect"]), [32, 240, 128, 304]
         st.update_manifest(root, lambda mm: mm["crops"][1].update(rect=far))  # 크롭을 패드 너머로 → 계획 창(R0)이 영역 밖
         try:
@@ -41700,14 +41706,17 @@ def mask_board_unit():
         s3, d3 = await h.save(kB, png(arr_e), seen=rec1["file"], ops="새 창", rect=R0)
         rec2 = st.load_manifest(root)["mask_edits"][kB]
         sb3 = await star_b(h)
-        check(s3 == 200 and rec2["rect"] == R0 and rec2["hist"][0]["rect"] == R1 and d3["edit"]["stale"] is False
-              and sb3 == ({"at": rec2["at"], "stale": False}, 0), "연 그대로 [적용] = 지금 창으로 새 판(stale 풀림 — 이전 판은 옛 창 그대로 hist)")
+        check(s3 == 200 and rec2["rect"] == U and rec2["hist"][0]["rect"] == U and d3["edit"]["stale"] is False
+              and sb3 == ({"at": rec2["at"], "stale": False}, 0), "연 그대로 [적용] = 기록 창 U 유지(저장 창 R0 밖 편집·이전 판 보존)")
         s3u, d3u = await h.edit(kB, rec2["file"], "undo")
         _s, d3g = await h.jget(f"{API}/mask", root=key, key=kB)
-        check(s3u == 200 and d3u["edit"]["file"] == rec1["file"] and d3u["edit"]["stale"] is True
-              and q_of(d3u["edit"]["url"])["v"] == bd._edit_sig(rec1, R0) and shape("POST /mask/edit", d3u) == []
+        m3u = st.load_manifest(root)
+        fp3 = dm.base_fp(cand(m3u, kB), bd._entry_for(m3u, kB, None), MS)
+        check(s3u == 200 and d3u["edit"]["file"] == rec1["file"] and d3u["edit"]["stale"] is False
+              and q_of(d3u["edit"]["url"])["v"] == bd._edit_sig(rec1, R0, fp3, bd._edit_placement(m3u, cand(m3u, kB), bd._entry_for(m3u, kB, None), fp3))
+              and shape("POST /mask/edit", d3u) == []
               and {k: d3u["edit"][k] for k in ("stale", "url")} == {k: d3g["edit"][k] for k in ("stale", "url")},
-              f"다른 창({R1})의 이전 판으로 undo(지금 창 {R0}) → /mask/edit 의 edit stale true·url v = _edit_sig(그 판, 지금 창) = GET /mask {d3u.get('edit')}")
+              f"다른 창({R1})의 이전 판으로 undo(지금 창 {R0}) → /mask/edit 의 edit stale false(창만 다름 — 5-2b D34)·url v = _edit_sig(그 판, 지금 창, 기준) = GET /mask {d3u.get('edit')}")
         _s, _d = await h.save(kB, png(arr_e), seen=rec1["file"], ops="새 창", rect=R0)
         rec2 = st.load_manifest(root)["mask_edits"][kB]
 
@@ -41715,9 +41724,9 @@ def mask_board_unit():
         m4 = st.load_manifest(root)
         _s, d4 = await h.jget(f"{API}/mask", root=key, key=kB)
         sb4 = await star_b(h)
-        check(d4["rect"] == R1 and d4["edit"]["stale"] is True and sb4 == ({"at": rec2["at"], "stale": True}, 1)
+        check(d4["rect"] == R1 and d4["edit"]["stale"] is False and sb4 == ({"at": rec2["at"], "stale": False}, 0)
               and not dm.is_stale(rec2, dm.base_fp(cand(m4, kB), bd._entry_for(m4, kB, None), MS)),
-              f"정합 다시 켬 → 창만 바뀜(기준 지문 같음) → stale true(state 는 계획 없이 _edit_window) {sb4}")
+              f"정합 다시 켬 → 창만 바뀜(기준 지문 같음) → stale false(5-2b D34 — state 는 계획 없이 _edit_window) {sb4}")
         s5, d5 = await h.edit(kB, rec2["file"], "undo")
         _s, d5g = await h.jget(f"{API}/mask", root=key, key=kB)
         sb5 = await star_b(h)
@@ -42903,7 +42912,7 @@ await scenario("panel", async () => {
   r.keys.view = rows().find((t) => t.startsWith("보기")) || null;
   key("KeyM");
   key("KeyS");
-  r.keys.review = ["Space", "KeyR", "ArrowDown", "KeyE", "KeyG", "KeyN", "KeyB"].map((k) => key(k));
+  r.keys.review = ["Space", "KeyR", "KeyE", "KeyG", "KeyN", "KeyB"].map((k) => key(k));
   // 붓(뷰어 편집기 훅): 끌기 = 한 획, 바뀐 사각형만 다시 그림, 붓 원
   raf();
   const n0 = puts.length;
@@ -44281,7 +44290,7 @@ await scenario("panelR3b", async () => {
               f"K 진입: 뷰어 편집기 훅·겹침 캔버스(box)·전체 합성 한 번, 보드 선택 = 편집 대상, 대상 줄(크롭·타깃·c·★·기준·창·z)·편집 줄, 왼쪽 크롭 칩 {e}")
         k = pn["keys"]
         check(k["x"] is True and k["tool"] == ["살리기", "폭 64"] and k["sliders"] == ["크기58px", "경도0.40", "흐름1.00", "페더 (px)4"]
-              and k["q"] == "보기: 처음 마스크(Q 누르는 중)" and k["view"] == "보기: 처음|편집 슬라이더(S — 왼쪽 = 처음 마스크) · 마스크(M)" and k["review"] == [False] * 7,
+              and k["q"] == "보기: 처음 마스크(Q 누르는 중)" and k["view"] == "보기: 처음|편집 슬라이더(S — 왼쪽 = 처음 마스크) · 마스크(M)" and k["review"] == [False] * 6,
               f"키: X 지우기 ↔ 살리기, ] 크기 ×1.2, Shift+[ 경도 −0.1, Q 누르는 동안 기준, M·S 보기, 검토·뷰어 키는 받지 않음(board.js 가 끔·뷰어로) {k}")
         sk = pn["stroke"]
         check(sk["pd"] is True and sk["pending"] == {"key": "r_61ba2d695f0f_0_0", "n": 1, "name": "015_치마밑단_주름 · A"}
@@ -45069,7 +45078,9 @@ def polish5_adjust_unit():
     zero_manifest = st.load_manifest(root)
     check(status == 200 and zero_record["blur"] == 0 and zero_record["invert"] is False
           and zero_manifest["cand_adjust"][key] == zero_record and len(zero_record["hist"]) == 1
-          and zero_record["hist"][0] == {"blur": 1, "invert": False, "at": seen}, "E2: 0/false set도 기록·직전 보정 이력을 보존")
+          and zero_record["hist"][0] == {"blur": 1, "invert": False, "at": seen, "dx": 0, "dy": 0, "rot": 0,
+                                         "sx": 1, "sy": 1, "flip_h": False, "flip_v": False, "base_quad": None},
+          "E2: 0/false set도 기록·직전 보정 이력을 보존")
     check(st.cand_adjust_record(zero_manifest, key) == zero_record and st.cand_adjust(zero_manifest, key) is None
           and signatures(zero_manifest) == baseline and zero["composite_sig"] == baseline[1], "E2: 원 기록은 유지·효과 조회는 None·모든 서명은 보정 없음과 같음")
     zero_copy = st.cand_adjust_record(zero_manifest, key)
@@ -45501,6 +45512,735 @@ console.log(JSON.stringify(out));
     for label, ok in ui.items():
         if label != "error":
             check(ok is True, f"후보 보정 UI: {label}")
+
+
+def polish5_xform_unit():
+    """다듬기 배치 5-2b-1(10/28 — _proto/STUDIO_POLISH5B_SPEC.md §2 D30–D44): 후보 변형(이동·회전·배율·뒤집기) 서버 + 「후보 보정」 숫자 입력."""
+    section("다듬기 배치 5-2b-1 — 후보 변형(서버·숫자 입력)")
+    import tempfile
+    from unittest.mock import patch
+
+    dp = _dp_package()
+    st, bd, mk = dp.store, dp.board, dp.dmask
+    out = (OUT_ROOT / "polish5_xform").resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    run = Path(tempfile.mkdtemp(prefix="run_", dir=out))
+    q = [8., 8., 24., 8., 24., 24., 8., 24.]
+    check(dp.an.xform_quad(q) is q, "X1: 항등은 입력 quad 자체·비트 보존")
+    check(np.array_equal(dp.an.xform_quad(q, dx=2, dy=-3), np.array(q) + [2, -3] * 4), "X1: 캔버스 이동")
+    check(np.allclose(dp.an.xform_quad(q, rot=90), [24, 8, 24, 24, 8, 24, 8, 8]), "X1: 양수 회전은 화면 시계 방향")
+    tilted = [5., 2., 13., 6., 11., 12., 3., 8.]
+    # 자기 축 (8,4),(-2,6)에 2/0.5 배율 → 90도 회전, 중심 (8,7)에 (3,-2) 이동.
+    want = [16.5, -2.5, 8.5, 13.5, 5.5, 12.5, 13.5, -3.5]
+    check(np.allclose(dp.an.xform_quad(tilted, 3, -2, 90, 2, .5), want), "X1: 기울어진 자기 축 배율·회전·이동 조합")
+    raw = np.random.default_rng(528).integers(0, 256, (16, 16, 4), dtype=np.uint8)
+    for fh, fv in ((True, False), (False, True), (True, True)):
+        got = dp.an.adjust_candidate(raw, 0, False, [16, 16], q, fh, fv)
+        expected = raw[::(-1 if fv else 1), ::(-1 if fh else 1)]
+        check(np.array_equal(got, expected) and got.flags.c_contiguous, f"X2: 뒤집기 RGB·알파 위치 보존 {fh}/{fv}")
+    transformed = np.asarray(dp.an.xform_quad(tilted, rot=-34, sx=.1, sy=4)).reshape(4, 2)
+    check(np.linalg.det(np.stack([transformed[1] - transformed[0], transformed[3] - transformed[0]])) > 0, "X2: quad 행렬식 양수")
+
+    legacy = {"blur": 1.5, "invert": False, "at": "2026-10-28 12:00:00", "hist": []}
+    defaults = {"dx": 0., "dy": 0., "rot": 0., "sx": 1., "sy": 1., "flip_h": False, "flip_v": False, "base_quad": None}
+    def record(**values):
+        return dict(legacy, blur=0., **defaults) | values
+
+    old = {"blur": 2., "invert": True, "at": "2026-10-27 12:00:00"}
+    mixed = record(dx=3, base_quad=q, hist=[old, {k: v for k, v in record(flip_h=True).items() if k != "hist"}])
+    snapshot = copy.deepcopy(mixed)
+    normalized = st.cand_adjust_record({"cand_adjust": {"k": mixed}}, "k")
+    check(normalized["hist"][0] == dict(old, **defaults) and mixed == snapshot, "X3: 옛·새 혼합 이력 정규화·원본 불변")
+    check(st.cand_adjust_record({"cand_adjust": {"k": legacy}}, "k") == dict(legacy, **defaults), "X3: 옛 기록 읽기 기본값")
+    check(st.cand_adjust_effect(dict(legacy, **defaults)) == {"blur": 1.5, "invert": False}
+          and st.cand_adjust_effect(record()) is None, "X3: 효과 dict는 옛 꼴·항등 None")
+    check(st.cand_adjust_effect(record(flip_h=True)) == {"blur": 0., "invert": False, "flip_h": True, "flip_v": False}, "X3: 뒤집기 효과 쌍")
+    check(set(st.cand_adjust_effect(record(dx=1))) == {"blur", "invert", "dx", "dy", "rot", "sx", "sy"}, "X3: 기하 효과 다섯 값만")
+    malformed = [dict(mixed, extra=1), dict(mixed, hist=[dict(old, dx=0)]), dict(mixed, hist=[old] * 21)]
+    malformed += [{k: v for k, v in mixed.items() if k != field} for field in defaults]
+    malformed += [dict(mixed, **{k: v}) for k, v in [
+        ("dx", True), ("dy", 65536.1), ("dx", float("inf")), ("rot", float("nan")), ("rot", -180.1),
+        ("sx", 0), ("sy", 4.1), ("sx", "1"), ("flip_h", 1), ("flip_v", None),
+        ("base_quad", [0] * 7), ("base_quad", [False] * 8), ("base_quad", [float("inf")] * 8), ("base_quad", [10 ** 1000] * 8)]]
+    check(all(st.cand_adjust_record({"cand_adjust": {"k": v}}, "k") is None for v in malformed), "X3: 빠진·모르는 키/범위/bool/깨진 이력 전체 무시")
+
+    _h, root = _fx_project(dp, run, "xform", [("001_변형", [4, 4, 28, 28])], np.full((32, 32, 3), 80, np.uint8))
+    m = st.load_manifest(root)
+    crop = m["crops"][0]
+    key, alt = "h_000000000001", "h_000000000002"
+    hand = np.tile(np.arange(32, dtype=np.uint8) * 5, (32, 1))
+    c = {"key": key, "crop_id": crop["id"], "tid": "A", "picked": True, "origin": "psd_harvest",
+         "file": st.save_png_ca(root, "candidates", raw), "src_size": [16, 16], "quad": q,
+         "hand_mask": {"file": st.save_png_ca(root, "masks", hand), "rect": [0, 0, 32, 32], "bg": 17}}
+    m["candidates"] = [c, dict(c, key=alt, picked=False)]
+    entry = {"params_hash": "xform-fixture", "params": {}, "rect": crop["rect"], "reg": {"applied": False}, "tone": {}}
+    entries = {key: entry, alt: copy.deepcopy(entry)}
+    m["analysis"] = copy.deepcopy(entries)
+    cs = dict(dp._COMPOSE_DEFAULTS, mask_source="hand", use_registration=False, use_tone=False)
+    m["exports"] = [{"compose": cs}]
+    st.save_manifest(root, m)
+    rk = st.register_root(root)
+
+    def plan(mm, warnings=None, ent=None):
+        return dp._plan(root, mm, entries if ent is None else ent, "hand", False, "auto_small_on_top", True,
+                        [] if warnings is None else warnings)
+
+    def first(mm, **kw):
+        return next(dp._slices_in_order(plan(mm, **kw)))[2]
+
+    def sigs(mm):
+        return dp._export_hash(mm, entries, cs, {}), bd._composite_sig(root, mm, None), st.export_state_sig(mm)
+
+    plain = first(m)
+    baseline = sigs(m)
+    for old_rec in (legacy, dict(legacy, blur=0)):
+        a = dict(m, cand_adjust={key: old_rec})
+        b = dict(m, cand_adjust={key: dict(old_rec, **defaults)})
+        check(sigs(a) == sigs(b), "X4: 옛 블러/항등 기록과 정규화 기록의 세 서명 동일")
+    moved = dict(m, cand_adjust={key: record(dx=8, base_quad=q), alt: record(dx=8, base_quad=q)})
+    it = first(moved)
+    check(it["quad"] == [16., 8., 32., 8., 32., 24., 16., 24.] and it["base_quad"] == q and it["area"] == plain["area"],
+          "X4: ★만 이동·기준 quad·자동 z 넓이 보존")
+    alt_it = plan(moved)[0]["targets"][0]["alts"][0]
+    check(alt_it["quad"] == q and "adjust" not in alt_it, "X4: 숨김 대안은 원래 자리·픽셀")
+    changed = sigs(moved)
+    check(all(a != b for a, b in zip(baseline, changed)), "X4: 기하 변형은 Export·합성·점검표 서명을 바꿈")
+    metadata = copy.deepcopy(moved)
+    metadata["cand_adjust"][key].update(at="2026-10-28 13:00:00", base_quad=[v + 1 for v in q], hist=[old])
+    check(sigs(metadata) == changed and sigs(dict(m, cand_adjust={alt: record(dx=1)})) == baseline, "X4: 시각·이력·기준 quad·대안은 서명 제외")
+    frame = (crop["rect"], crop["source"], None)
+    ph = dp._params_hash(c, frame, {})
+    check(dp._params_hash(it["cand"], frame, {}) == ph and m["analysis"] == moved["analysis"], "X4: 분석 키·항목 불변")
+    check(bd._edit_window(moved, c, entry, False) == [16, 8, 32, 24], "X4: 보드 편집 창 = 노드 변형 창")
+    st.save_manifest(root, moved)
+    state = bd.build_state(root)
+    check(state["crops"][0]["cand_adjust"] == 1 and state["targets"][0]["candidates"][0]["adjust"] == it["adjust"], "X4: 기하만 있어도 보정 칩·크롭 개수")
+    st.save_manifest(root, m)
+
+    painted = np.tile(np.arange(16, dtype=np.uint8) * 11, (16, 1))
+    fp = mk.base_fp(c, entry, "hand")
+    edit, _ = mk.save_edit(root, key, png_bytes(painted), seen="", rect=[8, 8, 24, 24], base=fp, ops="변형 전 붓")
+    with_edit = st.load_manifest(root)
+    edit_bytes = Path(st.resolve_path(root, edit["file"])).read_bytes()
+    original_mask, _ = mk.edit_mask(root, edit)
+    check(mk.expand_edit_mask(original_mask, plain["base_mask"], [10, 10, 22, 22]) is original_mask, "X5: 창 안이면 편집 dict 자체 보존")
+    inside = dict(with_edit, cand_adjust={key: record(sx=.5, sy=.5, base_quad=q)})
+    check(np.array_equal(first(inside)["mask"]["arr"], painted) and not first(inside).get("mask_merged"), "X5: 축소해도 기존 편집 래스터 그대로")
+    moved_edit = dict(with_edit, cand_adjust={key: record(dx=8, base_quad=q)})
+    warnings = []
+    moved_it = first(moved_edit, warnings=warnings)
+    want_mask = np.concatenate([painted, hand[8:24, 24:32]], axis=1)
+    check(moved_it.get("mask_merged") and np.array_equal(moved_it["mask"]["arr"], want_mask)
+          and not any("마스크 편집 기준 바뀜" in w for w in warnings), "X5: 기록 창 밖 = 기준, 창 변화는 stale 경고 없음")
+    check(not bd._edit_stale(edit, fp, [16, 8, 32, 24]) and bd._edit_stale(edit, dict(fp, ph="new"), [8, 8, 24, 24]), "X5: stale은 기준 지문만")
+    new_entries = {key: dict(entry, params_hash="new")}
+    warnings = []
+    first(moved_edit, warnings=warnings, ent=new_entries)
+    check(any("마스크 편집 기준 바뀜" in w for w in warnings), "X5: 노드 ph 변화 경고 유지")
+    filled_none = mk.expand_edit_mask(original_mask, None, [16, 8, 32, 24])
+    auto = {"arr": np.full((16, 20), 73, np.uint8), "left": 8, "top": 8, "bg": 0}
+    filled_auto = mk.expand_edit_mask(original_mask, auto, [16, 8, 32, 24])
+    check(np.all(filled_none["arr"][:, 16:] == 255) and np.all(filled_auto["arr"][:, 16:20] == 73)
+          and np.all(filled_auto["arr"][:, 20:] == 0), "X5: 없음 255·자동 마스크 값과 창 밖 배경")
+    check(np.array_equal(first(with_edit)["mask"]["arr"], painted) and Path(st.resolve_path(root, edit["file"])).read_bytes() == edit_bytes,
+          "X5: 변형을 되돌리면 편집 무손실·파일 보존")
+    check(bd._edit_sig(edit, [16, 8, 32, 24], fp) != bd._edit_sig(edit, [16, 8, 32, 24], dict(fp, ph="new"))
+          and bd._edit_sig(edit, [8, 8, 24, 24], fp) == bd._edit_sig(edit, [8, 8, 24, 24], dict(fp, ph="new")), "X5: 확장한 edit URL만 기준 지문 반영")
+    st.save_manifest(root, moved_edit)
+    view = bd.mask_view(root, key)
+    query = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(view["edit"]["url"]).query))
+    image, _sig = bd.mask_image(root, key, "edit", query["v"])
+    check(np.array_equal(np.array(Image.open(io.BytesIO(image))), want_mask[:, 8:]) and not view["edit"]["stale"], "X5: /mask/img edit의 새 영역 = 기준")
+    fixture = json.loads(_MASK_API.read_text(encoding="utf-8"))["routes"]["GET /mask"]
+    check(not _pl_shape(fixture["ok"], view, fixture) and view["quad"] == moved_it["quad"]
+          and view["base_quad"] == q and not view["xform_stale"], "X6: GET quad·base_quad·기록·fixture 일치")
+    relocated_hand = copy.deepcopy(moved_edit)
+    relocated_hand["candidates"][0]["hand_mask"].update(rect=[-1, 0, 31, 32], bg=73)
+    st.save_manifest(root, relocated_hand)
+    relocated_view = bd.mask_view(root, key)
+    check(relocated_view["edit"]["url"] != view["edit"]["url"]
+          and mk.base_fp(relocated_hand["candidates"][0], entry, "hand") == fp,
+          "X5: 기준 file·ph가 같아도 손 마스크 위치·배경 변화는 확장 edit URL 갱신")
+    try:
+        bd.mask_image(root, key, "edit", query["v"])
+        check(False, "X5: 옛 edit URL 거절")
+    except bd._Reject as e:
+        check(e.status == 409, "X5: 옛 edit URL 거절")
+    newer, _ = mk.save_edit(root, key, png_bytes(np.full((16, 16), 37, np.uint8)), seen=edit["file"],
+                            rect=[16, 8, 32, 24], base=fp, ops="옮긴 창의 붓")
+    undo_mask = bd.mask_edit(root, {"key": key, "seen": newer["file"], "op": "undo"})
+    check(undo_mask["edit"]["url"] == bd.mask_view(root, key)["edit"]["url"], "X5: 마스크 undo도 합친 래스터의 같은 URL")
+    stale_manifest = copy.deepcopy(moved_edit)
+    stale_manifest["candidates"][0]["quad"] = [v + 1 for v in q]
+    st.save_manifest(root, stale_manifest)
+    check(bd.mask_view(root, key)["xform_stale"], "X6: 재수확 기준 변화는 xform_stale")
+    st.save_manifest(root, dict(with_edit, cand_adjust={key: record(dx=8, base_quad=[v + .0005 for v in q])}))
+    check(not bd.mask_view(root, key)["xform_stale"], "X6: 기준 quad 허용 오차 1e-3")
+
+    class Request:
+        content_type = "application/json"
+        def __init__(self, data):
+            self.raw = json.dumps(dict(root=rk, **data)).encode("utf-8")
+            self.content_length = len(self.raw)
+        async def read(self):
+            return self.raw
+
+    def post(**fields):
+        current = st.cand_adjust_record(st.load_manifest(root), key)
+        data = dict(key=key, op="set", seen=current["at"] if current else "", blur=0., invert=False)
+        response = asyncio.run(bd.mask_adjust_handler(Request(data | fields)))
+        return response.status, json.loads(response.text)
+
+    def get_mask():
+        req = Request({})
+        req.query = {"root": rk, "key": key}
+        response = asyncio.run(bd.mask_handler(req))
+        return response.status, json.loads(response.text)
+
+    def save_mask(arr, win, seen):
+        req = Request({})
+        req.content_type = "image/png"
+        req.raw = png_bytes(arr)
+        req.content_length = len(req.raw)
+        req.query = {"root": rk, "key": key, "seen": seen, "ops": "옮긴 창 붓", "rect": ",".join(map(str, win))}
+        return asyncio.run(bd.mask_save_handler(req))
+
+    for dy in (0, 8):
+        st.save_manifest(root, dict(with_edit, cand_adjust={key: record(dx=8, dy=dy, base_quad=q)}))
+        win = [16, 8 + dy, 32, 24 + dy]
+        response = save_mask(np.full((16, 16), 37, np.uint8), win, edit["file"])
+        saved_mask = mk.edit_record(st.load_manifest(root), key)
+        raster = np.array(Image.open(st.resolve_path(root, saved_mask["file"])))
+        expected = hand[8:24 + dy, 8:32].copy()
+        expected[:16, :16] = painted
+        expected[dy:dy + 16, 8:24] = 37
+        check(response.status == 200 and saved_mask["rect"] == [8, 8, 32, 24 + dy]
+              and np.array_equal(raster, expected), f"X5: 옮긴 창 저장은 E1·E2·합집합 모서리 기준 보존 dy={dy}")
+        check(saved_mask["hist"] == [{k: v for k, v in edit.items() if k != "hist"}]
+              and Path(st.resolve_path(root, edit["file"])).read_bytes() == edit_bytes, "X5: 넓힌 새 판도 이전 판·파일 불변")
+        status, _ = post(**st.CAND_XFORM_DEFAULTS)
+        restored = bd._window_l(first(st.load_manifest(root))["mask"], [8, 8, 24, 24])
+        check(status == 200 and np.array_equal(restored, expected[:16, :16])
+              and np.array_equal(restored[:, :8], painted[:, :8]), "X5: 변형 없음 뒤 x8–16 열 E1·겹친 저장 창 E2 유지")
+
+    st.save_manifest(root, moved_edit)
+    response = save_mask(np.full((16, 16), 37, np.uint8), [8, 8, 24, 24], edit["file"])
+    check(response.status == 409 and json.loads(response.text).get("reason") == "rect_changed"
+          and mk.edit_record(st.load_manifest(root), key) == edit, "X5: 합집합 저장도 세션 창 409 검사는 원래 저장 창 기준")
+    st.save_manifest(root, inside)
+    response = save_mask(np.full((8, 8), 37, np.uint8), [12, 12, 20, 20], edit["file"])
+    shrunk_record = mk.edit_record(st.load_manifest(root), key)
+    shrunk_expected = painted.copy()
+    shrunk_expected[4:12, 4:12] = 37
+    check(response.status == 200 and shrunk_record["rect"] == [8, 8, 24, 24]
+          and shrunk_record["hist"][0] == {k: v for k, v in edit.items() if k != "hist"}
+          and np.array_equal(np.array(Image.open(st.resolve_path(root, shrunk_record["file"]))), shrunk_expected),
+          "X5: 축소 창 저장도 기록 rect·바깥 테두리 편집·hist 보존, 안쪽은 새 래스터")
+    status, _ = post(**st.CAND_XFORM_DEFAULTS)
+    check(status == 200 and np.array_equal(bd._window_l(first(st.load_manifest(root))["mask"], [8, 8, 24, 24]), shrunk_expected),
+          "X5: 축소 → 붓 적용 → 변형 없음 뒤 테두리 E1·중앙 E2 유지")
+    st.save_manifest(root, moved_edit)
+    update_save = st.update_manifest
+    def move_during_save(path, fn):
+        update_save(path, lambda mm: mm["cand_adjust"][key].update(dx=7))
+        return update_save(path, fn)
+    with patch.object(st, "update_manifest", side_effect=move_during_save):
+        response = save_mask(np.full((16, 16), 37, np.uint8), [16, 8, 32, 24], edit["file"])
+    check(response.status == 409 and json.loads(response.text).get("rect") == [15, 8, 31, 24]
+          and mk.edit_record(st.load_manifest(root), key) == edit, "X5: 저장 직전 placed 재검사도 합집합 아닌 현재 창으로 409")
+
+    st.save_manifest(root, m)
+    thin, _ = mk.save_edit(root, key, png_bytes(np.full((1, 4096), 91, np.uint8)), seen="", rect=[0, 0, 4096, 1], base=fp, ops="얇은 옛 창")
+    far = [4095, 4095, 8191, 4096]
+    capped, _ = mk.save_edit(root, key, png_bytes(np.full((1, 4096), 37, np.uint8)), seen=thin["file"], rect=far,
+                             base=fp, ops="큰 합집합", placed=lambda mm: far, preserve_mask=mk.edit_mask(root, thin)[0])
+    check(capped["rect"] == far and capped["hist"][0]["rect"] == thin["rect"]
+          and np.all(np.array(Image.open(st.resolve_path(root, capped["file"]))) == 37), "X5: 합집합 4096² 초과면 저장 창만·이전 판 보존")
+
+    st.save_manifest(root, with_edit)
+    newer, _ = mk.save_edit(root, key, png_bytes(np.full((16, 16), 37, np.uint8)), seen=edit["file"], rect=[8, 8, 24, 24], base=fp, ops="둘째 판")
+    orphan = st.load_manifest(root)
+    orphan["crops"] = []
+    orphan["exports"] = [{"compose": dict(cs, mask_source="auto")}]
+    orphan["analysis"][key]["automask"] = c["hand_mask"]["file"]
+    for has_rect in (True, False):
+        if not has_rect:
+            orphan["analysis"][key].pop("rect", None)
+        st.save_manifest(root, orphan)
+        response = asyncio.run(bd.mask_edit_handler(Request({"key": key, "op": "undo", "seen": newer["file"]})))
+        check(response.status == 200 and json.loads(response.text)["edit"]["file"] == edit["file"]
+              and mk.edit_record(st.load_manifest(root), key)["file"] == edit["file"], f"X5: 크롭 삭제 후보도 undo 쓰기 뒤 200, entry rect={has_rect}")
+
+    st.save_manifest(root, with_edit)
+    status, saved = post(dx=1.26, dy=-2.24, rot=5.26, sx=1.23456, sy=.87654, flip_h=True)
+    v = saved["adjust"]
+    check(status == 200 and [v[k] for k in ("dx", "dy", "rot", "sx", "sy")] == [1.3, -2.2, 5.3, 1.235, .877]
+          and v["base_quad"] == q and v["flip_h"], "X6: set은 잠금 안 현재 기준·반올림 저장")
+    status, kept = post(blur=1.5, invert=True)
+    check(status == 200 and all(kept["adjust"][k] == v[k] for k in defaults), "X6: 옛 클라이언트의 생략 변형은 현재 값 유지")
+    status, same = post(blur=1.5, invert=True)
+    check(same["rev"] == kept["rev"] and same["adjust"] == kept["adjust"], "X6: 같은 값은 rev·시각·기준 그대로")
+    status, undone = post(op="undo")
+    check(status == 200 and all(undone["adjust"][k] == v[k] for k in ("blur", "invert", *defaults))
+          and undone["adjust"]["at"] != v["at"], "X6: undo는 블러·변형·base_quad 함께 복원, 새 seen")
+    st.save_manifest(root, stale_manifest)
+    for fields in ({"blur": 1}, {"blur": 1, "invert": True}, {"blur": 1, "invert": True, "flip_h": True}):
+        status, saved = post(**fields)
+        check(status == 200 and saved["adjust"]["base_quad"] == q and bd.mask_view(root, key)["xform_stale"],
+              "X6: 기하 그대로인 블러·색반전·뒤집기 set은 옛 base_quad·변형 기준 바뀜 유지")
+    status, saved = post(dx=7)
+    check(status == 200 and saved["adjust"]["base_quad"] == [v + 1 for v in q]
+          and not bd.mask_view(root, key)["xform_stale"], "X6: 기하를 바꿀 때만 지금 base_quad 기록")
+    for fields in ({"dx": True}, {"dy": 65537}, {"rot": 181}, {"sx": 0}, {"sy": 4.01}, {"flip_h": 1},
+                   {"flip_v": "false"}, {"dx": float("nan")}, {"base_quad": "client ignored", "dx": 400}):
+        before = st.load_manifest(root)
+        status, error = post(**fields)
+        check(status == 400 and any("가" <= ch <= "힣" for ch in error["error"]) and st.load_manifest(root) == before,
+              f"X6: 잘못된 값·크롭 밖은 한국어 400·원본 불변 {fields}")
+    for previous in (None, record(dx=-1, base_quad=q)):
+        moved_crop = copy.deepcopy(with_edit)
+        moved_crop["crops"][0]["rect"] = [26, 4, 32, 28]
+        if previous is not None:
+            moved_crop["cand_adjust"] = {key: previous}
+        st.save_manifest(root, moved_crop)
+        status, blurred = post(blur=1)
+        check(status == 200 and blurred["adjust"]["blur"] == 1
+              and blurred["adjust"]["dx"] == (previous["dx"] if previous else 0),
+              "X6: 크롭을 옮긴 옛 ★도 기하 값 그대로면 블러 set 200")
+        status, flipped = post(blur=1, invert=True, flip_h=True)
+        check(status == 200 and flipped["adjust"]["invert"] and flipped["adjust"]["flip_h"],
+              "X6: 크롭 밖 옛 ★의 색반전·뒤집기도 set 200")
+        before = st.load_manifest(root)
+        status, error = post(dx=1)
+        check(status == 400 and "크롭 밖" in error["error"] and st.load_manifest(root) == before,
+              "X6: 같은 옛 ★라도 기하 값을 바꾸면 크롭 밖 검사 유지")
+    huge = copy.deepcopy(with_edit)
+    huge["canvas"] = [8192, 8192]
+    huge["crops"][0]["rect"] = [0, 0, 6000, 6000]
+    huge["candidates"][0]["quad"] = [0, 0, 2100, 0, 2100, 2100, 0, 2100]
+    st.save_manifest(root, huge)
+    status, error = post(sx=4, sy=4)
+    check(status == 400 and "4096" in error["error"], "X6: 4096² 초과는 렌더·마스크 읽기 전에 400")
+    huge["cand_adjust"] = {key: record(sx=4, sy=4, base_quad=huge["candidates"][0]["quad"])}
+    st.save_manifest(root, huge)
+    status, blurred = post(blur=1)
+    check(status == 200 and blurred["adjust"]["sx"] == blurred["adjust"]["sy"] == 4,
+          "X6: 이미 큰 편집 창도 기하 값 그대로면 블러 set 200")
+    status, error = post(sx=3.9)
+    check(status == 400 and "4096" in error["error"], "X6: 기존 큰 창의 기하 변경에는 4096² 검사 유지")
+    render_huge = copy.deepcopy(huge)
+    render_huge.pop("cand_adjust", None)
+    render_huge["candidates"][0]["quad"] = [0, 0, 2048, 0, 2048, 2048, 0, 2048]
+    oversized = record(sx=4, sy=4, dx=-1100, dy=-1100, base_quad=render_huge["candidates"][0]["quad"])
+    render_bbox = dp.dpsd.quad_bbox(dp.an.xform_quad(oversized["base_quad"], sx=4, sy=4, dx=-1100, dy=-1100))
+    check(render_bbox == [-4172, -4172, 4020, 4020]
+          and mk.edit_rect(render_bbox, render_huge["canvas"]) == [0, 0, 4020, 4020],
+          "X6: 2048² 패치 4배·(-1100,-1100) 이동 = 렌더 8192², 캔버스 안 편집 창은 상한 이하")
+    for op in ("set", "undo"):
+        before = copy.deepcopy(render_huge)
+        if op == "undo":
+            before["cand_adjust"] = {key: record(hist=[{k: v for k, v in oversized.items() if k != "hist"}])}
+        st.save_manifest(root, before)
+        status, error = post(op=op, sx=4, sy=4, dx=-1100, dy=-1100)
+        check(status == 400 and "렌더할 수 없습니다(4096² 픽셀 초과)" in error["error"]
+              and error["error"].startswith("되돌리면" if op == "undo" else "변형한") and st.load_manifest(root) == before,
+              f"X6: 잘리지 않은 렌더 bbox가 상한·기준 넓이를 모두 넘으면 {op} 400·이력 불변")
+    st.save_manifest(root, render_huge)
+    status, bounded = post(sx=2, sy=2, dx=-1100, dy=-1100)
+    check(status == 200 and bounded["adjust"]["sx"] == bounded["adjust"]["sy"] == 2, "X6: 렌더 bbox 정확히 4096²이면 허용")
+    large_base = copy.deepcopy(render_huge)
+    large_base["candidates"][0]["quad"] = [-4096, -4096, 4096, -4096, 4096, 4096, -4096, 4096]
+    for scale in (1, .75):
+        target = record(dx=-1, dy=-1, sx=scale, sy=scale, base_quad=large_base["candidates"][0]["quad"])
+        for op in ("set", "undo"):
+            before = copy.deepcopy(large_base)
+            if op == "undo":
+                before["cand_adjust"] = {key: record(dx=-2, dy=-2, base_quad=target["base_quad"],
+                    hist=[{k: v for k, v in target.items() if k != "hist"}])}
+            st.save_manifest(root, before)
+            status, accepted = post(op=op, dx=-1, dy=-1, sx=scale, sy=scale)
+            check(status == 200 and all(accepted["adjust"][k] == target[k] for k in ("dx", "dy", "sx", "sy")),
+                  f"X6: 원래 큰 수확 패치도 기준보다 커지지 않는 이동·축소 {op} 허용 scale={scale}")
+    for mode in ("outside", "large"):
+        invalid = copy.deepcopy(with_edit if mode == "outside" else huge)
+        previous = record(dx=40, base_quad=q) if mode == "outside" else record(sx=4, sy=4, base_quad=q)
+        invalid["cand_adjust"] = {key: record(hist=[{k: v for k, v in previous.items() if k != "hist"}])}
+        st.save_manifest(root, invalid)
+        status, error = post(op="undo")
+        check(status == 400 and "되돌리면" in error["error"] and ("크롭 밖" if mode == "outside" else "4096") in error["error"]
+              and st.load_manifest(root) == invalid, f"X6: undo 기하 검증·실패 시 이력 불변 {mode}")
+        invalid["cand_adjust"][key] = previous
+        st.save_manifest(root, invalid)
+        status, error = get_mask()
+        check(status == 422 and error["adjust"] == st.cand_adjust_record(invalid, key)
+              and not _pl_shape(fixture["errors"]["422"][0 if mode == "outside" else 2], error, fixture),
+              f"X6: GET /mask 422에 정규화 보정 기록·픽스처 일치 {mode}")
+        status, recovered = post(**st.CAND_XFORM_DEFAULTS)
+        check(status == 200 and get_mask()[0] == 200, f"X6: 편집 창 422도 변형 없음으로 복구 {mode}")
+    outside_plain = copy.deepcopy(with_edit)
+    outside_plain["candidates"][0]["quad"] = [v + 100 for v in q]
+    st.save_manifest(root, outside_plain)
+    status, error = get_mask()
+    check(status == 422 and "adjust" not in error, "X6: 보정 없는 편집 창 422는 adjust 키 없음")
+    for mode in ("outside", "large"):
+        bad_base = copy.deepcopy(outside_plain if mode == "outside" else huge)
+        if mode == "large":
+            bad_base["candidates"][0]["quad"] = [0, 0, 5000, 0, 5000, 5000, 0, 5000]
+        for rec in (legacy, record(flip_h=True), record(dx=1, base_quad=q)):
+            bad_base["cand_adjust"] = {key: rec}
+            st.save_manifest(root, bad_base)
+            status, error = get_mask()
+            check(status == 422 and "adjust" not in error, f"X6: 기준 창 자체가 잘못되면 복구 정보 없음 {mode}/{rec.get('dx', 0)}")
+        for op in ("set", "undo"):
+            identity = record(blur=2, invert=True, flip_h=True)
+            bad_base["cand_adjust"] = {key: record(dx=1, blur=2, invert=True, flip_h=True, base_quad=q,
+                hist=[{k: v for k, v in identity.items() if k != "hist"}])}
+            st.save_manifest(root, bad_base)
+            status, recovered = post(op=op, blur=2, invert=True, **{k: identity[k] for k in st.CAND_XFORM_DEFAULTS})
+            got = recovered.get("adjust")
+            check(status == 200 and all(got[k] == identity[k] for k in ("blur", "invert", *defaults))
+                  and get_mask()[0] == 422, f"X6: 기준 창이 {mode}여도 {op} 항등 복귀 허용·픽셀 보정 유지")
+    for op in ("set", "undo"):
+        off_crop = copy.deepcopy(with_edit)
+        off_crop["crops"][0]["rect"] = [26, 4, 32, 28]
+        off_crop["cand_adjust"] = {key: record(dx=-1, base_quad=q, hist=[{k: v for k, v in record().items() if k != "hist"}])}
+        st.save_manifest(root, off_crop)
+        status, recovered = post(op=op, **st.CAND_XFORM_DEFAULTS)
+        check(status == 200 and recovered["adjust"]["dx"] == 0 and recovered["adjust"]["base_quad"] is None,
+              f"X6: 옛 크롭 ★의 {op} 항등 복귀도 크롭 밖 검사 생략")
+    same_geometry = copy.deepcopy(with_edit)
+    same_geometry["crops"][0]["rect"] = [26, 4, 32, 28]
+    same_geometry["cand_adjust"] = {key: record(dx=-1, blur=2, base_quad=q, hist=[
+        {k: v for k, v in record(dx=-1, blur=1, base_quad=q).items() if k != "hist"}])}
+    st.save_manifest(root, same_geometry)
+    status, undone = post(op="undo")
+    check(status == 200 and undone["adjust"]["blur"] == 1, "X6: 크롭 밖이라도 기하가 같은 undo는 허용")
+    st.save_manifest(root, with_edit)
+    update = st.update_manifest
+    def race(path, fn):
+        update(path, lambda mm: mm["candidates"][0].update(quad=[v + 1 for v in q]))
+        return update(path, fn)
+    with patch.object(st, "update_manifest", side_effect=race):
+        status, raced = post(dx=1)
+    check(status == 200 and raced["adjust"]["base_quad"] == [v + 1 for v in q], "X6: 잠금 전 기준 변경도 최신 quad 사용")
+    status, cleared = post(op="reset")
+    check(status == 200 and cleared["adjust"] is None and key not in st.load_manifest(root)["cand_adjust"], "X6: reset 기록 전체 삭제")
+
+    import folder_paths
+    old_output, old_board_output = folder_paths.get_output_directory(), bd._OUTPUT_DIR[:]
+    try:
+        folder_paths.set_output_directory(str(run / "output"))
+        bd.set_output_dir(str(run / "output"))
+        for flip in (False, True):
+            exported = dict(with_edit, cand_adjust={key: record(dx=8, base_quad=q, flip_h=flip)})
+            st.save_manifest(root, exported)
+            with patch.object(dp, "_ensure_analysis", return_value=(entries, 0, 2, [])):
+                result = dp.BMKDesignPatchExportPSD().run(dp._handle(root, st.load_manifest(root), compose=cs),
+                    "flip" if flip else "move", "smart_object", "hidden_all", "raw", "hand", True, False)
+            path = Path(result["result"][0])
+            snap = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
+            row = next(r for r in snap["export_layers"] if r["key"] == key)
+            document = PSDImage.open(path)
+            so = next(x for x in document.descendants() if x.kind == "smartobject" and x.name == row["name"])
+            check(np.allclose(so.smart_object.transform_box, moved_it["quad"]) and row["quad"] == moved_it["quad"], "X7: PSD SO·사이드카 quad = 변형 quad")
+            check(row["name"].endswith(" · 보정") == flip and row["adjust"] == st.cand_adjust_effect(exported["cand_adjust"][key]), "X7: 기하만 이름 유지·뒤집기 보정 이름·효과 dict")
+            check(np.array_equal(np.array(Image.open(io.BytesIO(so.smart_object.data))), raw[:, ::-1] if flip else raw), "X7: 기하 SO 내용 그대로·뒤집기 픽셀 굽기")
+            check(bool(list(Path(root, "derived").glob("adjust_*.png"))) == flip, "X7: 뒤집기에만 derived/adjust PNG")
+            restored = mk.export_mask(root, snap, row, "hand")
+            check("mask_file" in row and np.array_equal(restored["arr"], want_mask) and row["mask_rect"] == [8, 8, 32, 24], "X7: 합친 마스크를 Export 사이드카로 완전 복원")
+            check(np.array_equal(np.array(document.topil()), bd._compose_full(root, st.load_manifest(root), None)[0]), "X7: PSD 병합 픽셀 = ★ 합성")
+            preview = bd.mask_ps_import(root, {"psd": str(path), "dry_run": True})
+            check(not preview["changed"] and not preview["skipped"], "X7: PS 미편집 마스크 가져오기는 변화 없음")
+            export_manifest = st.load_manifest(root)
+            so.parent.remove_mask()
+            so.parent.create_mask(Image.new("L", (16, 16), 37), left=16, top=8)
+            with patch.object(bd.dpsd, "open_psd", return_value=document):
+                preview = bd.mask_ps_import(root, {"psd": str(path), "dry_run": True})
+                imported = bd.mask_ps_import(root, {"psd": str(path), "dry_run": False, "seen": preview["seen"]})
+            rec = mk.edit_record(st.load_manifest(root), key)
+            check(len(imported["imported"]) == 1 and not imported["failed"] and rec["rect"] == [8, 8, 32, 24]
+                  and rec["hist"][0] == {k: v for k, v in edit.items() if k != "hist"}, "X7: PS 가져오기도 옮긴 창 합집합 저장·hist 보존")
+            post(**st.CAND_XFORM_DEFAULTS)
+            restored = bd._window_l(first(st.load_manifest(root))["mask"], [8, 8, 24, 24])
+            check(np.array_equal(restored[:, :8], painted[:, :8]) and np.all(restored[:, 8:] == 37), "X7: PS 가져온 뒤 변형 없음에도 E1·E2 유지")
+            st.save_manifest(root, export_manifest)
+            post(dx=7, flip_h=flip)
+            preview = bd.mask_ps_import(root, {"psd": str(path), "dry_run": True})
+            check(bool(preview["skipped"]) and "패치 위치" in str(preview["skipped"]), "X7: Export 후 변형 변경은 PS 가져오기 위치 다름으로 제외")
+
+        st.save_manifest(root, inside)
+        with patch.object(dp, "_ensure_analysis", return_value=(entries, 0, 2, [])):
+            result = dp.BMKDesignPatchExportPSD().run(dp._handle(root, st.load_manifest(root), compose=cs),
+                "shrink", "smart_object", "hidden_all", "raw", "hand", True, False)
+        path = Path(result["result"][0])
+        snap = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
+        row = next(r for r in snap["export_layers"] if r["key"] == key)
+        document = PSDImage.open(path)
+        so = next(x for x in document.descendants() if x.kind == "smartobject" and x.name == row["name"])
+        so.parent.remove_mask()
+        so.parent.create_mask(Image.new("L", (8, 8), 37), left=12, top=12)
+        with patch.object(bd.dpsd, "open_psd", return_value=document):
+            preview = bd.mask_ps_import(root, {"psd": str(path), "dry_run": True})
+            imported = bd.mask_ps_import(root, {"psd": str(path), "dry_run": False, "seen": preview["seen"]})
+        rec = mk.edit_record(st.load_manifest(root), key)
+        check(len(imported["imported"]) == 1 and not imported["failed"] and rec["rect"] == [8, 8, 24, 24]
+              and rec["hist"][0] == {k: v for k, v in edit.items() if k != "hist"}, "X7: 축소 창 PS 가져오기도 기록 창·hist 보존")
+        status, _ = post(**st.CAND_XFORM_DEFAULTS)
+        check(status == 200 and np.array_equal(bd._window_l(first(st.load_manifest(root))["mask"], [8, 8, 24, 24]), shrunk_expected),
+              "X7: 축소 → PS 가져오기 → 변형 없음 뒤 테두리 E1·중앙 E2 유지")
+
+        st.save_manifest(root, dict(m, candidates=[dict(c, hand_mask=None)]))
+        with patch.object(dp, "_ensure_analysis", return_value=(entries, 0, 1, [])):
+            result = dp.BMKDesignPatchExportPSD().run(dp._handle(root, st.load_manifest(root), compose=cs),
+                "harvest_seed", "smart_object", "none", "raw", "hand", True, False)
+        seed_path = result["result"][0]
+        st.save_manifest(root, dict(m, candidates=[], analysis={}))
+        cin = dp.BMKDesignPatchCandidateIn()
+        handle, _ = cin.run(dp._handle(root, st.load_manifest(root)), "psd_harvest", seed_path, "", "", True, False)
+        harvested = st.load_manifest(root)
+        hc = harvested["candidates"][0]
+        hk = hc["key"]
+        harvest_adj = record(dx=8, base_quad=q)
+        harvested["cand_adjust"] = {hk: harvest_adj}
+        st.save_manifest(root, harvested)
+        handle, report = cin.run(handle, "psd_harvest", seed_path, "", "", True, False)
+        check(st.load_manifest(root)["cand_adjust"][hk] == harvest_adj and "Studio 변형" not in report,
+              "X7: 같은 원본 PSD 재수확·quad 같음은 보정·시각·이력 그대로")
+        with patch.object(dp, "_ensure_analysis", return_value=({}, 0, 1, [])):
+            result = dp.BMKDesignPatchExportPSD().run(dp._handle(root, st.load_manifest(root), compose=cs),
+                "harvest_move", "smart_object", "none", "raw", "hand", True, False)
+        moved_path = result["result"][0]
+        handle, report = cin.run(handle, "psd_harvest", moved_path, "", "", True, False)
+        reharvested = st.load_manifest(root)
+        rec = st.cand_adjust_record(reharvested, hk)
+        check(len(reharvested["candidates"]) == 1 and reharvested["candidates"][0]["key"] == hk
+              and first(reharvested)["quad"] == dp.an.xform_quad(q, dx=8), "X7: 기하 Export PSD 재수확은 같은 내용 key·이동 한 번만")
+        check(rec is not None and st.cand_adjust_effect(rec) is None and rec["base_quad"] is None and rec["at"] != harvest_adj["at"]
+              and rec["hist"] == [{k: v for k, v in harvest_adj.items() if k != "hist"}]
+              and "다시 가져온 배치가 바뀌어 Studio 변형(이동·회전·배율)을 지움 — 블러·색반전·뒤집기는 유지" in report,
+              "X7: 재수확 기하 해제는 효과 0 기록·새 시각·이전 판·경고 유지")
+        for pixel_only in (False, True):
+            previous = record(blur=2, invert=True, flip_h=True, flip_v=True, dx=0 if pixel_only else 8, base_quad=None if pixel_only else q,
+                hist=[{k: v for k, v in record(blur=i / 2).items() if k != "hist"} for i in range(20)])
+            reharvested["cand_adjust"] = {hk: previous}
+            st.save_manifest(root, reharvested)
+            incoming = copy.deepcopy(reharvested["candidates"][0])
+            incoming["quad"] = [v + 1 for v in incoming["quad"]]
+            with patch.object(cin, "_harvest", return_value=[incoming]):
+                handle, report = cin.run(handle, "psd_harvest", moved_path, "", "", True, False)
+            rec = st.cand_adjust_record(st.load_manifest(root), hk)
+            check(all(rec[k] == previous[k] for k in ("blur", "invert", "flip_h", "flip_v"))
+                  and all(rec[k] == defaults[k] for k in ("dx", "dy", "rot", "sx", "sy", "base_quad")),
+                  f"X7: 기존 key 갱신은 블러·색반전·뒤집기 유지, 기하만 항등 pixel_only={pixel_only}")
+            check((rec == previous and "Studio 변형" not in report) if pixel_only else
+                  (rec["at"] != previous["at"] and rec["hist"] == [{k: v for k, v in previous.items() if k != "hist"}] + previous["hist"][:19]),
+                  f"X7: 픽셀 보정만이면 원본 기록 유지·기하 해제면 hist 20 유지 pixel_only={pixel_only}")
+    finally:
+        folder_paths.set_output_directory(old_output)
+        bd._OUTPUT_DIR[:] = old_board_output
+
+    node = shutil.which("node")
+    if not node:
+        skip("node 없음: 후보 변형 UI 하네스 미실행")
+        return
+    tree = ast.parse(inspect.getsource(mask_js_unit))
+    harness = next(n.value.value for n in ast.walk(tree) if isinstance(n, ast.Assign)
+                   and any(isinstance(t, ast.Name) and t.id == "harness" for t in n.targets) and isinstance(n.value, ast.Constant))
+    cut = [_PL_JS_HARNESS[_PL_JS_HARNESS.index(a):_PL_JS_HARNESS.index(b, _PL_JS_HARNESS.index(a))]
+           for a, b in (("import fs", "async function run("), ("class El {", "async function mouse("))]
+    cut += [harness[:harness.index('// J-K1 공용 표')], harness[harness.index('function maskState()'):harness.index('await scenario("panel",')]]
+    test_js = r'''
+await scenario("xform", async () => {
+  const P = maskPanel(), {srv, ed, viewer, B} = P, result = {};
+  const info = maskInfo(K15), S = maskState();
+  const zero = {blur: 0, invert: false, dx: 0, dy: 0, rot: 0, sx: 1, sy: 1, flip_h: false, flip_v: false, base_quad: null};
+  info.adjust = null;
+  srv.info[K15] = info;
+  let rev = info.z.rev;
+  srv.adjustReply = async (body) => {
+    if (srv.hold) await srv.hold;
+    if (srv.fail) return {ok: false, status: 409, json: async () => ({error: "다른 창에서 바뀜", reason: "changed"})};
+    const old = info.adjust;
+    rev++;
+    if (body.op === "reset") info.adjust = null;
+    else if (body.op === "undo") info.adjust = {...old.hist[0], at: `at${rev}`, hist: old.hist.slice(1)};
+    else info.adjust = {...zero, ...Object.fromEntries(Object.keys(zero).filter(k => k !== "base_quad").map(k => [k, body[k]])),
+      at: `at${rev}`, hist: old ? [old, ...old.hist] : []};
+    const v = info.adjust || zero;
+    info.rect = [128 + v.dx, 2560 + v.dy, 1408 + v.dx, 3328 + v.dy];
+    info.base.sig = `base${v.dx}:${v.dy}`;
+    info.z.rev = rev;
+    info.composite_sig = info.layers.sig = `xform${rev}`;
+    info.seams = null;
+    for (const k of ["under", "patch", "over"]) info.layers[`${k}_url`] = info.layers[`${k}_url`].replace(/v=[^&]+/, `v=xform${rev}`);
+    return {ok: true, status: 200, json: async () => ({ok: true, adjust: clone(info.adjust), rev, composite_sig: info.composite_sig})};
+  };
+  ed.enter(S, {key: K15, seam: null});
+  const input = k => P.panel.all().find(e => e.dataset.xform === k);
+  const idle = () => !ed._test.M.busy;
+  await until(() => viewer.layer && input("dx"));
+  result.inputs = ["dx", "dy", "rot", "sx", "sy"].every(k => input(k).type === "number" && Number(input(k).step) === .1)
+    && Number(input("rot").min) === -180 && Number(input("sx").max) === 400;
+  const change = (k, v) => { input(k).value = String(v); input(k).fire("change"); };
+  const save = async () => { await ed._test.saveAdjust("set"); await until(idle); };
+  change("rot", 200); change("dx", 1.26); change("sy", 50.04);
+  result.roundClamp = Number(input("rot").value) === 180 && Number(input("dx").value) === 1.3 && Number(input("sy").value) === 50;
+  B("비율 잠금").fire("click");
+  change("sx", 200);
+  result.ratio = Number(input("sx").value) === 200 && Number(input("sy").value) === 100 && B("비율 잠금").ariaPressed === "true";
+  B("좌우 뒤집기").fire("click"); B("상하 뒤집기").fire("click");
+  result.flipPressed = B("좌우 뒤집기").ariaPressed === "true" && B("상하 뒤집기").ariaPressed === "true";
+  result.debounce = P.count("mask/adjust") === 0 && !ed.leave();
+  const patchBefore = P.count("mask/img", "patch"), editBefore = P.count("mask/img", "edit");
+  await save();
+  const body = srv.log.find(r => r.path === "mask/adjust").body;
+  result.request = body.dx === 1.3 && body.rot === 180 && body.sx === 2 && body.sy === 1 && body.flip_h && body.flip_v
+    && body.dy === 0 && body.blur === 0 && body.invert === false && body.seen === "";
+  result.reopen = ed._test.M.win.join() === info.rect.join() && !ed._test.M.behind()
+    && P.count("mask/img", "patch") > patchBefore && P.count("mask/img", "edit") > editBefore && info.seams === null;
+  const controls = () => P.panel.all().find(e => e.classList.contains("mc-adjust"));
+  const blur = controls().all().find(e => e.type === "range");
+  blur.value = 2; blur.fire("input");
+  B("변형 없음").fire("click");
+  await save();
+  result.clearXform = info.adjust.blur === 2 && ["dx","dy","rot"].every(k => info.adjust[k] === 0)
+    && info.adjust.sx === 1 && info.adjust.sy === 1 && !info.adjust.flip_h && !info.adjust.flip_v;
+  result.arrows = P.key("ArrowLeft") && P.key("ArrowDown", {shiftKey: true});
+  await save();
+  result.arrows = result.arrows && info.adjust.dx === -1 && info.adjust.dy === 10;
+  B("되돌리기").fire("click");
+  await until(() => idle() && info.adjust.dx === 0 && info.adjust.dy === 0);
+  result.undoTogether = info.adjust.blur === 2 && !info.adjust.flip_h;
+  const focused = input("dx"); focused.focus(); focused.fire("focus");
+  focused.value = "2.34";
+  focused.fire("keydown", {code:"Enter", key:"Enter", stopPropagation() {}});
+  await save();
+  ed.stateChanged({...S, rev: S.rev + 1});
+  await sleep(20);
+  result.focus = input("dx") === focused && P.doc.activeElement === focused && info.adjust.dx === 2.3;
+  focused.fire("blur"); focused.blur();
+  await sleep(20);
+  info.xform_stale = true;
+  await ed._test.refreshInfo();
+  result.staleChip = P.panel.textContent.includes("변형 기준 바뀜");
+  const before = P.count("mask/adjust");
+  for (const busy of ["apply", "edit", "pick", "adjust", "load"]) {
+    ed._test.M.busy = busy;
+    result.locked = (result.locked ?? true) && P.key("ArrowRight") && P.count("mask/adjust") === before;
+  }
+  ed._test.M.busy = "";
+  viewer.ed.pointerdown({cx:600,cy:2900}); viewer.ed.pointerup({});
+  result.pending = P.key("ArrowRight") && P.count("mask/adjust") === before && ed._test.M.pending() > 0;
+  ed._test.M.discard();
+  const notPicked = clone(S); notPicked.targets[0].candidates[0].picked = false;
+  ed.stateChanged(notPicked);
+  result.notPicked = P.key("ArrowRight") && P.count("mask/adjust") === before;
+  ed.stateChanged(S); await sleep(20);
+  B("보정 없음").fire("click");
+  await until(() => idle() && info.adjust === null);
+  result.reset = info.adjust === null;
+  let release;
+  const inFlightStart = P.count("mask/adjust");
+  srv.hold = new Promise(r => { release = r; });
+  change("dx", 3);
+  const saving = ed._test.saveAdjust("set");
+  await until(() => ed._test.M.busy === "adjust");
+  change("dy", 6);
+  result.inFlightArrows = P.key("ArrowRight") && P.key("ArrowRight", {repeat: true}) && P.key("ArrowUp", {shiftKey: true})
+    && P.count("mask/adjust") === inFlightStart + 1;
+  result.inFlightLocked = !ed.go({key: K14}) && !ed.leave();
+  release(); srv.hold = null;
+  await saving;
+  await save();
+  result.inFlight = info.adjust.dx === 5 && info.adjust.dy === -4 && ed._test.M.win.join() === info.rect.join() && !ed._test.M.behind();
+  const writes = srv.log.filter(r => r.path === "mask/adjust");
+  result.inFlightSeen = writes[writes.length-1].body.seen === `at${rev-1}`;
+  result.inFlightMerged = writes.length === inFlightStart + 2 && writes[writes.length-1].body.dx === 5 && writes[writes.length-1].body.dy === -4;
+  const s1 = clone(S), s2 = clone(S);
+  s1.targets[0].candidates[1].adjust = {...zero, dx: 1};
+  s2.targets[0].candidates[1].adjust = {...zero, dx: 2};
+  ed.stateChanged(s1); const a = ed._test.altSet();
+  ed.stateChanged(s2); result.altSig = a !== ed._test.altSet();
+  ed.leave();
+  return result;
+});
+await scenario("xformRecovery", async () => {
+  const result = {};
+  const zero = {blur: 0, invert: false, dx: 0, dy: 0, rot: 0, sx: 1, sy: 1, flip_h: false, flip_v: false, base_quad: null};
+  for (const [op, label] of [["set", "변형 없음"], ["reset", "보정 없음"], ["undo", "되돌리기"]]) {
+    const P = maskPanel(), {srv, ed, B} = P, info = maskInfo(K15);
+    const old = {...zero, blur: 2, invert: true, dx: 65536, flip_h: true, at: "recover-at", hist: [{...zero, at: "old-at"}]};
+    info.adjust = clone(old);
+    srv.info[K15] = info;
+    const error = {error: op === "set" ? "편집 창이 4096² 픽셀을 넘습니다" : "패치가 캔버스 밖에 있어 편집할 창이 없습니다", adjust: old};
+    if (op !== "reset") srv.maskError = error;
+    ed.enter(maskState(), {key: K15});
+    const M = ed._test.M;
+    if (op === "reset") {
+      await until(() => M.m && !M.busy);
+      srv.maskError = error;
+      await ed._test.refreshInfo();
+    }
+    await until(() => !M.busy && M.recovery && B(label));
+    result[`${op}Controls`] = P.panel.textContent.includes(error.error) && !B(label).disabled
+      && !P.panel.all().some(e => e.dataset.xform);
+    let release;
+    srv.hold = new Promise(r => { release = r; });
+    srv.adjustReply = async body => {
+      await srv.hold;
+      if (srv.rejectUndo) return {ok: false, status: 400, json: async () => ({error: "되돌리면 패치가 크롭 밖으로 나갑니다"})};
+      info.adjust = op === "reset" ? null : {...zero, ...(op === "set" ? {blur: body.blur, invert: body.invert} : {}), at: "recovered-at", hist: []};
+      srv.maskError = null;
+      return {ok: true, status: 200, json: async () => ({ok: true, adjust: info.adjust, rev: 140, composite_sig: "recovered"})};
+    };
+    const beforeGet = P.count("mask");
+    if (op === "undo") srv.rejectUndo = true;
+    B(label).fire("click");
+    await until(() => M.busy === "adjust");
+    result[`${op}Locked`] = !ed.leave() && !ed.go({key: K14});
+    release();
+    if (op === "undo") {
+      await until(() => !M.busy && P.toasts.some(t => String(t).includes("되돌리면")));
+      result.undoRejected = M.recovery.adjust.at === old.at && !B(label).disabled;
+      srv.rejectUndo = false;
+      B(label).fire("click");
+    }
+    await until(() => !M.busy && !M.err && M.m && !M.recovery);
+    const body = srv.log.filter(r => r.path === "mask/adjust").pop().body;
+    result[`${op}Recovered`] = body.op === op && body.seen === old.at && P.count("mask") > beforeGet && (M.info.adjust === null) === (op === "reset");
+    if (op === "set") result.pixelsKept = body.blur === 2 && body.invert && ["dx","dy","rot"].every(k => body[k] === 0)
+      && body.sx === 1 && body.sy === 1 && !body.flip_h && !body.flip_v;
+    ed.leave();
+  }
+  const P = maskPanel();
+  P.srv.maskError = {error: "편집할 창 없음", adjust: null};
+  P.ed.enter(maskState(), {key: K15});
+  await until(() => !P.ed._test.M.busy && P.ed._test.M.err);
+  result.noRecord = !P.B("변형 없음") && !P.B("보정 없음") && !P.B("되돌리기");
+  P.ed.leave();
+  return result;
+});
+console.log(JSON.stringify(out));
+'''
+    js = "".join(cut).replace('if (path === "mask") return resp(200, info);',
+        'if (path === "mask/adjust") return await srv.adjustReply(rec.body);\n    if (path === "mask") return srv.maskError ? resp(422, srv.maskError) : resp(200, info);') + test_js
+    test_mask = run / "mask_xform_test.js"
+    source = (PKG / "web_design_patch" / "mask_edit.js").read_text(encoding="utf-8")
+    public_api = "return { enter, leave, go, onKey, onKeyUp, stateChanged, seamsChanged, pending }"
+    test_mask.write_text(source.replace(public_api, public_api[:-2] + ", _test: { M, saveAdjust, refreshInfo, altSet } }"), encoding="utf-8", newline="\n")
+    (run / "xform.mjs").write_text(js, encoding="utf-8", newline="\n")
+    (run / "in.json").write_text(json.dumps({"api": _pl_api(), "mask": json.loads(_MASK_API.read_text(encoding="utf-8")),
+        "rules": {}, "maskJs": str(test_mask), "pipelineJs": str(PKG / "web_design_patch" / "pipeline.js"),
+        "boardJs": str(PKG / "web_design_patch" / "board.js")}), encoding="utf-8")
+    result = subprocess.run([node, str(run / "xform.mjs"), str(run / "in.json")], capture_output=True, text=True, encoding="utf-8", timeout=60)
+    (run / "ui-result.txt").write_text(result.stdout + result.stderr, encoding="utf-8")
+    check(result.returncode == 0, f"X8: 변형 UI node 종료 {result.stderr[:500]}")
+    results = json.loads(result.stdout) if result.returncode == 0 else {}
+    ui = {f"{scene}:{k}": v for scene in ("xform", "xformRecovery") for k, v in results.get(scene, {}).items()}
+    check(bool(ui) and "error" not in ui, f"X8: 변형 UI 하네스 {ui}")
+    for label, ok in ui.items():
+        if label != "error":
+            check(ok is True, f"X8: 변형 UI {label}")
 
 
 def polish5_grow_unit():
@@ -49801,6 +50541,8 @@ if __name__ == "__main__":
         polish5_adjust_unit()
     if want("polish5_grow_unit"):
         polish5_grow_unit()
+    if want("polish5_xform_unit"):
+        polish5_xform_unit()
     print(f"\n단위 테스트 {time.time() - T0:.1f}s (PASS {PASSES} FAIL {len(FAILS)})")
     if QUICK:
         print("\n--quick: 회귀·노드 생략")

@@ -544,6 +544,10 @@ body.mask .proj { min-width: 0; overflow: hidden; text-overflow: ellipsis; white
 #mask-panel .pp-table .chip { margin-left: 4px; }
 #mask-panel .mc-adjust .rf-val { min-width: 66px; }
 #mask-panel .mc-invert { display: flex; align-items: center; gap: 6px; margin: 6px 0; }
+#mask-panel .mc-xform { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 10px; margin: 6px 0; }
+#mask-panel .mc-xform-value { display: flex; align-items: center; gap: 4px; font-size: 12px; }
+#mask-panel .mc-xform-value input { width: 76px; min-width: 0; margin-left: auto; }
+#mask-panel .mc-adjust button[aria-pressed="true"] { border-color: var(--accent); background: #22314a; }
 .stage canvas.ov-mask { position: absolute; display: block; }
 .stage.px canvas.ov-mask { image-rendering: pixelated; }
 svg.marks .mwin { fill: none; stroke: rgba(227, 230, 236, .5); stroke-width: 1px; stroke-dasharray: 6 4; vector-effect: non-scaling-stroke; }

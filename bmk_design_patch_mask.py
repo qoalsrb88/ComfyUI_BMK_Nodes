@@ -7,7 +7,8 @@
 (msrc "edit"). 편집을 손 마스크(hand_mask)로 쓰지 않는다 — 손 마스크는 분석 해시·정합 제외·톤 제외에 들어가 편집 한 번에 재분석이 돌고
 패치가 움직인다(명세 §1.2). 그래서 매니페스트 최상위 mask_edits {후보 key: 기록} 에 두고(★·탈락처럼 보드가 update_manifest 로 씀,
 store 3-way 병합은 키 단위), 분석·z 순서(기준 마스크 넓이, D5)는 편집을 모른다. 편집은 mask_source 와 상관없이 이긴다(D4) — 기준이
-바뀌면 stale 로 알릴 뿐. ★ 가 아닌 후보(탈락·★ 해제·크롭에서 빠진 타깃)의 기록은 지우지 않고 쓰이지 않을 뿐이다(다시 ★ 하면 살아남).
+바뀌면 stale 로 알릴 뿐. 변형으로 창이 넓어지면 기록 창 안은 편집, 밖은 기준 마스크를 쓴다(기록 원본 보존, 창 변화만으로 stale 아님).
+★ 가 아닌 후보(탈락·★ 해제·크롭에서 빠진 타깃)의 기록은 지우지 않고 쓰이지 않을 뿐이다(다시 ★ 하면 살아남).
 torch·comfy·vlm·노드 모듈을 import 하지 않는다(store·numpy·PIL 만) — 노드와 보드(라우트·state)가 같은 함수를 쓴다.
 명세: H:\\BmkNodeDesign\\MultiLayerCropEdit\\_proto\\STUDIO_S4_SPEC.md §3(데이터 모델)·§4(라우트), 응답 모양 정본 tools/fixtures/mask_api.json.
 
@@ -147,6 +148,32 @@ def edit_mask(root: str, rec: dict) -> tuple[dict | None, str | None]:
 
 
 # ══════════════════════════════════════════════════════════════════════
+def contains_rect(outer, inner) -> bool:
+    """빈 현재 창도 포함으로 본다 — 캔버스 밖 패치 때문에 편집 래스터를 다시 만들지 않는다."""
+    return inner is None or (outer[0] <= inner[0] and outer[1] <= inner[1] and outer[2] >= inner[2] and outer[3] >= inner[3])
+
+
+def expand_edit_mask(edit: dict, base: dict | None, rect: list[int] | None) -> dict:
+    """기록 창 밖에 드러난 패치에는 기준을 채운다. 포함이면 dict 자체를 돌려줘 기존 픽셀을 보존한다."""
+    old = [edit["left"], edit["top"], edit["left"] + edit["arr"].shape[1], edit["top"] + edit["arr"].shape[0]]
+    if contains_rect(old, rect):
+        return edit
+    x0, y0, x1, y1 = min(old[0], rect[0]), min(old[1], rect[1]), max(old[2], rect[2]), max(old[3], rect[3])
+    arr = np.full((y1 - y0, x1 - x0), 255 if base is None else base.get("bg", 0), np.uint8)
+
+    def paste(mask):
+        left, top = mask["left"], mask["top"]
+        h, w = mask["arr"].shape
+        a, b, c, d = max(x0, left), max(y0, top), min(x1, left + w), min(y1, top + h)
+        if a < c and b < d:
+            arr[b - y0:d - y0, a - x0:c - x0] = mask["arr"][b - top:d - top, a - left:c - left]
+
+    if base is not None:
+        paste(base)
+    paste(edit)
+    return {"arr": arr, "left": x0, "top": y0, "bg": 0}
+
+
 # 검사
 # ══════════════════════════════════════════════════════════════════════
 def _keys(d, keys, what: str) -> None:
@@ -244,8 +271,8 @@ def export_mask(root: str, snapshot: dict, row: dict, mask_source: str, *, use_r
             return {"arr": arr, "left": left, "top": top, "bg": bg}
 
         if src == "edit":
-            # mask_edits의 현재 판이 아닌 row에 남은 당시 파일·좌표. hist에서 빠졌어도 파일이 있으면 복원 가능.
-            return read(row["mask_edit"], rect[0], rect[1])
+            # 확장된 편집은 Export 때 굳힌 합친 래스터, 기존 행은 당시 편집 파일 그대로.
+            return read(row["mask_file"] if "mask_file" in row else row["mask_edit"], rect[0], rect[1])
         cand = next(c for c in snapshot.get("candidates") or [] if c.get("key") == row["key"])
         if src == "hand":
             hand = cand["hand_mask"]
@@ -393,7 +420,7 @@ def import_ps_masks(root: str, psd_path: str, sidecar: dict, *, manifest: dict, 
             result["seen"]["edits"][key] = record["file"] if record else ""
             result["seen"]["targets"][key] = {"rect": t["rect"], "base": t["fp"]}
             result["changed"].append({"key": key, "crop": t["crop"], "label": name, "diff_px": diff, "outside_px": outside})
-            pending.append((key, arr, t["rect"], t["fp"]))
+            pending.append((key, arr, t["rect"], t["fp"], t.get("preserve_mask")))
         except (ValueError, OSError, AttributeError, TypeError, KeyError, IndexError) as e:
             result["skipped"].append(dict(skipped, reason=str(e)))
         finally:
@@ -406,13 +433,13 @@ def import_ps_masks(root: str, psd_path: str, sidecar: dict, *, manifest: dict, 
     if seen != result["seen"]:
         raise MaskConflict("미리 보기 뒤 가져올 대상·편집 창·기준이 바뀌었습니다 — 다시 미리 보기", "changed")
     result["imported"], result["failed"] = [], []
-    for key, arr, rect, fp in pending:
+    for key, arr, rect, fp, preserve_mask in pending:
         try:
             data = io.BytesIO()
             Image.fromarray(arr).save(data, "PNG")
             ops = _CTRL_RE.sub(" ", f"PS 그룹 마스크 {os.path.basename(psd_path)}")[:OPS_MAX]
             rec, rev = save_edit(root, key, data.getvalue(), seen=seen["edits"][key], rect=rect, base=fp, ops=ops,
-                                 placed=lambda m, k=key, fp=fp: placed(m, k, fp))
+                                 placed=lambda m, k=key, fp=fp: placed(m, k, fp), preserve_mask=preserve_mask)
             result["imported"].append({"key": key, "file": rec["file"], "rev": rev})
         except (ValueError, OSError) as e:
             result["failed"].append({"key": key, "reason": str(e), "conflict": isinstance(e, MaskConflict)})
@@ -434,9 +461,10 @@ def _expect(m: dict, key: str, seen) -> dict | None:
 
 
 def save_edit(root: str, key: str, data, *, seen: str, rect: list[int], base: dict, ops: str,
-              placed: Callable[[dict], list[int] | None] | None = None) -> tuple[dict, int]:
+              placed: Callable[[dict], list[int] | None] | None = None, preserve_mask: dict | None = None) -> tuple[dict, int]:
     """placed(m) = 잠근 매니페스트로 다시 계산한 지금 편집 창 — rect 와 다르면 409 rect_changed {rect}(창을 고른 뒤 잠그기 전에 Analyze 가 정합을
-    바꾼 경우 옛 좌표로 저장하지 않게)."""
+    바꾼 경우 옛 좌표로 저장하지 않게). preserve_mask = 현재 계획의 합친 마스크. 기록 창이 저장 창 밖에 남으면 그 편집을 보존하되
+    합집합이 MAX_PIXELS를 넘으면 저장 창만 쓴다. placed 검사는 합집합이 아닌 세션 rect 기준이다."""
     _check_rect(rect)
     _check_base(base)
     _check_ops(ops)
@@ -449,7 +477,7 @@ def save_edit(root: str, key: str, data, *, seen: str, rect: list[int], base: di
             raise MaskConflict("편집 창이 바뀌었습니다(정합·배치 변경) — 다시 받기", "rect_changed", rect=now)
         old = _expect(m, key, seen)
         hist = [{k: old[k] for k in _HIST_KEYS}] + old["hist"] if old else []
-        rec = check_record({"file": rel, "rect": list(rect), "base": dict(base), "ops": ops,
+        rec = check_record({"file": rel, "rect": saved_rect, "base": dict(base), "ops": ops,
                             "at": time.strftime("%Y-%m-%d %H:%M:%S"), "hist": hist[:HIST_KEEP]})
         m["mask_edits"] = {**(m.get("mask_edits") or {}), key: rec}
         _touch_dropped(root, old, rec)  # HIST_KEEP 을 넘어 밀려난 판
@@ -457,6 +485,19 @@ def save_edit(root: str, key: str, data, *, seen: str, rect: list[int], base: di
 
     # 파일 쓰기(같은 내용이면 옛 파일을 그대로 씀 — mtime 그대로)부터 기록까지 한 잠금: 보드 masks/ 정리(board.mask_cleanup, 같은 잠금)가 그 사이 지우지 않게
     with store.manifest_lock(root):
+        saved_rect = list(rect)
+        if preserve_mask is not None:
+            old = edit_record(store.load_manifest(root), key)
+            try:
+                old = check_record(old) if old else None
+            except ValueError:
+                old = None
+            if old and not contains_rect(rect, old["rect"]):
+                r = old["rect"]
+                union = [min(r[0], rect[0]), min(r[1], rect[1]), max(r[2], rect[2]), max(r[3], rect[3])]
+                if (union[2] - union[0]) * (union[3] - union[1]) <= MAX_PIXELS:
+                    arr = expand_edit_mask({"arr": arr, "left": rect[0], "top": rect[1], "bg": 0}, preserve_mask, union)["arr"]
+                    saved_rect = union
         rel = store.save_png_ca(root, MASKS_DIR, arr, prefix=re.sub(r"[^A-Za-z0-9_\-]", "", key)[:10] + "_e_")
         return store.update_manifest(root, mutate)
 

@@ -436,9 +436,24 @@ def color_match(base, cand, sample_mask=None):
     return _like(cand, lab_to_rgb(_match_lab(rgb_to_lab(b), rgb_to_lab(c), valid, sample_mask)))
 
 
-def adjust_candidate(pixels, blur, invert, src_size, quad):
-    """톤 뒤 후보 RGB만 보정(알파 보존). 캔버스 σ를 회전에도 불변인 quad 변 길이로 원본 해상도에 환산."""
-    if not blur and not invert:
+def xform_quad(quad, dx=0, dy=0, rot=0, sx=1, sy=1):
+    """실효 평행사변형의 자기 축 배율 → 화면 시계 방향 회전 → 캔버스 이동. 뒤집기는 픽셀에서 한다."""
+    if dx == dy == rot == 0 and sx == sy == 1:
+        return quad
+    q = np.asarray(quad, dtype=np.float64).reshape(4, 2)
+    ex, ey = q[1] - q[0], q[3] - q[0]
+    center = q[0] + (ex + ey) / 2 + [dx, dy]
+    angle = np.deg2rad(rot)
+    co, si = np.cos(angle), np.sin(angle)
+    rotation = np.array([[co, -si], [si, co]])
+    ex, ey = rotation @ (sx * ex), rotation @ (sy * ey)
+    tl = center - (ex + ey) / 2
+    return np.array([tl, tl + ex, tl + ex + ey, tl + ey]).ravel().tolist()
+
+
+def adjust_candidate(pixels, blur, invert, src_size, quad, flip_h=False, flip_v=False):
+    """톤 뒤 RGB 보정(알파 값 보존)·후보 공간 뒤집기. 캔버스 σ는 변형 뒤 quad 변 길이로 환산."""
+    if not blur and not invert and not flip_h and not flip_v:
         return pixels
     out = pixels.copy()
     if blur:
@@ -470,6 +485,8 @@ def adjust_candidate(pixels, blur, invert, src_size, quad):
                 out[..., :3] = np.clip(np.rint(blurred(out[..., :3])), 0, 255).astype(np.uint8)
     if invert:
         out[..., :3] = 255 - out[..., :3]
+    if flip_h or flip_v:
+        out = np.ascontiguousarray(out[::(-1 if flip_v else 1), ::(-1 if flip_h else 1)])
     return out
 
 

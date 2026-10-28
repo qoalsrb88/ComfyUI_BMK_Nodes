@@ -36,7 +36,7 @@ Review 노드를 부분 실행한다(대체 경로). 인증 토큰은 그 경로
 - POST /bmk/design_patch/mask/cleanup {root, files}   그 목록 중 지금도 안 쓰는 것만 지움(매니페스트 잠금 안에서 다시 판정) → {ok, deleted, bytes, kept}
 - GET  /bmk/design_patch/mask/ps_list?root=   output 안의 이 프로젝트 Export PSD·사이드카 목록(최근 것부터)
 - POST /bmk/design_patch/mask/ps_import {root, psd, dry_run, seen}   PS 그룹 마스크 미리보기·S4 새 판 저장(무료, seen은 미리보기 응답)
-- POST /bmk/design_patch/mask/adjust {root, key, op, blur, invert, seen}   ★ 후보 보정 set·undo·reset(seen = 기록 at)
+- POST /bmk/design_patch/mask/adjust {root, key, op, seen, blur, invert, dx?, dy?, rot?, sx?, sy?, flip_h?, flip_v?}   ★ 후보 보정 set·undo·reset
 - POST /bmk/design_patch/open_folder {root}   Export 출력 폴더를 탐색기로(배치 3-5a — 마지막 Export PSD 를 고른 채, 없으면
                                        output/design_patch/<실행 설정 export.subfolder — 비면 프로젝트 폴더>(3-5b)). ComfyUI output 밖이거나
                                        폴더가 없으면 열지 않음 → {ok, path, selected}
@@ -1193,9 +1193,11 @@ def _composite_sig(root: str, m: dict, pref: dict | None, swap: tuple[str, str, 
                 crops[c["crop_id"]]["rect"], e.get("params_hash") if e else None]
         rec = _edit_rec(m, c["key"])
         parts.append(part + [_edit_part(root, rec)] if rec else part)
+        if rec and not dmask.contains_rect(rec["rect"], _edit_window(m, c, e, _compose_settings(root, m)["use_registration"], picked=True)):
+            parts[-1].append({"outside_base": dmask.base_fp(c, e, _compose_settings(root, m)["mask_source"])})
         adj = store.cand_adjust(m, c["key"])
         if adj:
-            adjustments[c["key"]] = {k: adj[k] for k in ("blur", "invert")}
+            adjustments[c["key"]] = store.cand_adjust_effect(adj)
     manual = store.z_order(m)
     extra = [{"z_order": manual}] if manual else []
     if adjustments:
@@ -1474,7 +1476,7 @@ def _seen(v) -> str:
     return v
 
 
-def _mask_target(root: str, m: dict, cand: dict, pref: dict | None) -> dict:
+def _mask_target(root: str, m: dict, cand: dict, pref: dict | None, *, recovery: bool = False) -> dict:
     """★ cand 의 계획 항목(Compose 순서 order[i])·편집 창(실효 quad bbox ∩ 캔버스)·기준 지문·기준 래스터 서명."""
     W, H = _canvas_wh(m)
     try:
@@ -1485,11 +1487,24 @@ def _mask_target(root: str, m: dict, cand: dict, pref: dict | None) -> dict:
     i = next(j for j, (_p, _t, it) in enumerate(order) if it["cand"]["key"] == cand["key"])
     it = order[i][2]
     rect = dmask.edit_rect(dpsd.quad_bbox(it["quad"]), (W, H))
+
+    def recovery_fields():
+        if recovery:
+            adjust = store.cand_adjust_record(m, cand["key"])
+            effect = store.cand_adjust_effect(adjust)
+            if effect and "dx" in effect:
+                base_rect = dmask.edit_rect(dpsd.quad_bbox(it["base_quad"]), (W, H))
+                if base_rect and (base_rect[2] - base_rect[0]) * (base_rect[3] - base_rect[1]) <= dmask.MAX_PIXELS:
+                    return {"adjust": adjust}
+        return {}
+
     if rect is None:
-        raise _Reject(422, "이 ★ 의 패치가 캔버스 밖에 있어 편집할 창이 없습니다")
+        raise _Reject(422, "이 ★ 의 패치가 캔버스 밖에 있어 편집할 창이 없습니다",
+                      **recovery_fields())
     w, h = rect[2] - rect[0], rect[3] - rect[1]
     if w * h > dmask.MAX_PIXELS:  # 저장(validate_png)이 늘 거절할 창 — 칠하기 전에 알린다
-        raise _Reject(422, f"편집 창 {w}x{h} 가 4096² 픽셀을 넘어 Studio 에서 편집할 수 없습니다 — PS 그룹 마스크로")
+        raise _Reject(422, f"편집 창 {w}x{h} 가 4096² 픽셀을 넘어 Studio 에서 편집할 수 없습니다 — PS 그룹 마스크로",
+                      **recovery_fields())
     fp = dmask.base_fp(cand, it["entry"], cs["mask_source"])
     bm = it["base_mask"]
     return {"order": order, "i": i, "it": it, "cs": cs, "warns": warns, "wh": (W, H), "rect": rect, "fp": fp,
@@ -1503,13 +1518,22 @@ def _window_l(mask: dict | None, rect: list[int]) -> np.ndarray:
     return np.full((y1 - y0, x1 - x0), 255, np.uint8) if reg is None else np.rint(reg * 255.0).astype(np.uint8)
 
 
-def _edit_window(m: dict, cand: dict, entry: dict | None, use_registration: bool) -> list[int] | None:
+def _adjust_base_quad(cand: dict, entry: dict | None, use_registration: bool) -> list[float]:
+    """변형 전 실효 quad — 노드 _eff_quad 뒤 원근 근사와 같은 규칙, 파일 I/O 없음."""
+    reg = use_registration and _usable(entry) and entry["reg"].get("applied")
+    return _affine_quad([float(v) for v in (entry["quad_reg"] if reg else cand["quad"])], cand.get("src_size"))
+
+
+def _edit_window(m: dict, cand: dict, entry: dict | None, use_registration: bool, *, picked=None) -> list[int] | None:
     """노드 _plan 항목의 편집 창(실효 quad — _eff_quad·원근 근사 — bbox ∩ 캔버스)을 노드·마스크를 읽지 않고: state·/mask/edit 의 stale·
     edit url 용. GET /mask·save 는 계획 항목에서(_mask_target — 같은 값, mask_board_unit 이 대조)."""
     if not m.get("base") or not m.get("canvas"):
         return None
-    reg = use_registration and _usable(entry) and entry["reg"].get("applied")
-    quad = _affine_quad([float(v) for v in (entry["quad_reg"] if reg else cand["quad"])], cand.get("src_size"))
+    quad = _adjust_base_quad(cand, entry, use_registration)
+    on = dmask.star_cand(m, cand["key"]) if picked is None else picked
+    adj = store.cand_adjust_effect(store.cand_adjust(m, cand["key"])) if on else None
+    if adj:
+        quad = an.xform_quad(quad, **{k: adj[k] for k in ("dx", "dy", "rot", "sx", "sy") if k in adj})
     return dmask.edit_rect(dpsd.quad_bbox(quad), [int(v) for v in m["canvas"]])
 
 
@@ -1571,15 +1595,27 @@ def _murl(rk: str, key: str, kind: str, v: str) -> str:
     return "mask/img?" + urlencode({"root": rk, "key": key, "kind": kind, "v": v})
 
 
-def _edit_sig(rec: dict, rect: list[int] | None) -> str:
+def _edit_placement(m: dict, cand: dict, entry: dict | None, fp: dict) -> list | None:
+    """기준 마스크의 캔버스 위치·배경. 파일·ph가 같아도 손 마스크 배치가 달라질 수 있다."""
+    if fp["src"] == "hand":
+        hand = cand["hand_mask"]
+        return [*hand["rect"][:2], int(hand.get("bg", 0))]
+    if fp["src"] == "auto":
+        crop = next((c for c in m["crops"] if c["id"] == cand["crop_id"]), None)
+        rect = entry.get("rect") or (crop["rect"] if crop else None)
+        return [*rect[:2], 0] if rect else None
+    return None
+
+
+def _edit_sig(rec: dict, rect: list[int] | None, fp: dict | None = None, placement=None) -> str:
     """/mask/img kind=edit 의 v — 기록 래스터(file 내용 주소·기록 창)를 지금 편집 창 rect 로 옮긴 PNG 의 서명."""
-    return _sig("maskedit", rec["file"], rec["rect"], rect)
+    extra = [{"outside_base": fp, "placement": placement}] if not dmask.contains_rect(rec["rect"], rect) else []
+    return _sig("maskedit", rec["file"], rec["rect"], rect, *extra)
 
 
 def _edit_stale(rec: dict, fp: dict, rect: list[int] | None) -> bool:
-    """편집 기준 바뀜 = 기준 지문(dmask.is_stale) 또는 편집 창이 기록 창과 다름(정합·Compose use_registration·quad·캔버스가 바뀜 — 노드는
-    기록 창 그대로 적용하므로 패치와 어긋났을 수 있음)."""
-    return dmask.is_stale(rec, fp) or rec["rect"] != rect
+    """창만 바뀌면 기준으로 채운다. stale은 편집 기준 지문이 바뀐 경우만."""
+    return dmask.is_stale(rec, fp)
 
 
 def _edit_rec(m: dict, key: str) -> dict | None:
@@ -1624,12 +1660,12 @@ def _edit_usable(root: str, rec: dict) -> bool:
     return ok
 
 
-def _edit_view(rk: str, key: str, rec: dict | None, fp: dict, rect: list[int] | None) -> dict | None:
+def _edit_view(rk: str, key: str, rec: dict | None, fp: dict, rect: list[int] | None, placement=None) -> dict | None:
     """GET /mask·save·edit 응답의 edit — 기록이 없으면 None. rect = 지금 편집 창, fp = 지금 기준 지문."""
     if rec is None:
         return None
     return {"file": rec["file"], "at": rec["at"], "ops": rec["ops"], "hist": len(rec["hist"]),
-            "stale": _edit_stale(rec, fp, rect), "url": _murl(rk, key, "edit", _edit_sig(rec, rect))}
+            "stale": _edit_stale(rec, fp, rect), "url": _murl(rk, key, "edit", _edit_sig(rec, rect, fp, placement))}
 
 
 def mask_view(root: str, key) -> dict:
@@ -1640,7 +1676,7 @@ def mask_view(root: str, key) -> dict:
     rk = store.root_key(root)
     pref = _PREF.get(rk)
     cand = _mask_cand(m, key)
-    t = _mask_target(root, m, cand, pref)
+    t = _mask_target(root, m, cand, pref, recovery=True)
     crop = t["order"][t["i"]][0]["crop"]
     box = _layers_box(crop["rect"], t["rect"], *t["wh"])
     csig, lsig = _composite_sig(root, m, pref), _layers_sig(root, m, pref, key, box, order=t["order"])
@@ -1661,13 +1697,19 @@ def mask_view(root: str, key) -> dict:
     if t["it"]["entry"] is None:
         warns.insert(0, "분석 없음 — 반영(Analyze) 뒤 편집 권장")
     base = {"src": t["it"]["base_msrc"], "sig": t["base_sig"], "url": _murl(rk, key, "base", t["base_sig"])}
-    edit = _edit_view(rk, key, _edit_rec(m, key), t["fp"], t["rect"])
+    edit = _edit_view(rk, key, _edit_rec(m, key), t["fp"], t["rect"], _edit_placement(m, cand, t["it"]["entry"], t["fp"]))
     if edit is not None and t["it"]["mask_edit"] is None:
         edit["url"] = base["url"]
+    adjust = store.cand_adjust_record(m, key)
+    effect = store.cand_adjust_effect(adjust)
+    base_quad = t["it"]["base_quad"]
+    xform_stale = bool(effect and "dx" in effect and (adjust["base_quad"] is None or not np.allclose(
+        adjust["base_quad"], base_quad, rtol=0, atol=1e-3)))
     return {"key": key, "crop_id": crop["id"], "tid": cand["tid"],
             "c": next(n for n, c in enumerate(_target_members(m, crop["id"], cand["tid"]), 1) if c["key"] == key),
             "picked": True, "rect": t["rect"], "composite_sig": csig, "mask_source": t["cs"]["mask_source"],
-            "base": base, "edit": edit, "adjust": store.cand_adjust_record(m, key),
+            "base": base, "edit": edit, "adjust": adjust,
+            "quad": t["it"]["quad"], "base_quad": base_quad, "xform_stale": xform_stale,
             "layers": {"box": box, "sig": lsig, **{f"{k}_url": _murl(rk, key, k, lsig) for k in _LAYER_KINDS}},
             "seams": None if seams is None else [s for s in seams["segments"] if s["crop_id"] == crop["id"]],
             "z": z, "warnings": warns}
@@ -1750,7 +1792,7 @@ def mask_image(root: str, key, kind, v) -> tuple[bytes, str]:
         if rec is None:
             raise _Reject(404, "마스크 편집이 없습니다")
         t = _mask_target(root, m, cand, pref)
-        sig = fresh(_edit_sig(rec, t["rect"]))
+        sig = fresh(_edit_sig(rec, t["rect"], t["fp"], _edit_placement(m, cand, t["it"]["entry"], t["fp"])))
         if t["it"]["mask_edit"] is None:  # _plan 이 편집을 읽지 못해 기준을 씀(GET /mask 의 edit.url 은 그때 기준 url)
             raise _Reject(404, f"마스크 편집 파일을 읽지 못했습니다: {rec['file']}")
         return _png(_window_l(t["it"]["mask"], t["rect"])), sig
@@ -1787,7 +1829,8 @@ def mask_save(root: str, key, data: bytes, seen, ops, rect) -> dict:
     def placed(mm):  # 잠근 매니페스트로 창을 다시(_mask_target 뒤 잠그기 전에 Analyze 가 정합을 바꿨으면 409 rect_changed — 옛 좌표로 저장 안 함)
         return _edit_window(mm, _cand(mm, key), _entry_for(mm, key, _PREF.get(rk)), bool(_compose_settings(root, mm)["use_registration"]))
 
-    rec, rev = dmask.save_edit(root, key, data, seen=_seen(seen), rect=t["rect"], base=t["fp"], ops=ops, placed=placed)
+    rec, rev = dmask.save_edit(root, key, data, seen=_seen(seen), rect=t["rect"], base=t["fp"], ops=ops, placed=placed,
+                              preserve_mask=t["it"]["mask"] if t["it"]["mask_edit"] else None)
     return {"ok": True, "edit": _edit_view(rk, key, rec, t["fp"], t["rect"]), "rev": rev,
             "composite_sig": _composite_sig(root, store.load_manifest(root), pref)}
 
@@ -1988,6 +2031,7 @@ def mask_ps_import(root: str, data: dict) -> dict:
                                      use_registration=bool((export.get("compose") or {}).get("use_registration", True)))
         return {"rect": rect, "quad": it["quad"], "fp": dmask.base_fp(cand, it["entry"], cs["mask_source"]),
                 "mask": _window_l(it["mask"], rect), "export_mask": _window_l(old_mask, rect),
+                "preserve_mask": it["mask"] if it["mask_edit"] else None,
                 "crop": p["crop"]["name"], "group": group}
 
     def placed(mm, key, fp):
@@ -2032,7 +2076,8 @@ def mask_edit(root: str, data: dict) -> dict:
     edit = None
     if rec is not None:  # 편집 창은 계획 없이(_edit_window — ★ 가 아닌 후보의 기록도 되돌릴 수 있음)
         c, e, cs = _cand(m, key), _entry_for(m, key, pref), _compose_settings(root, m)
-        edit = _edit_view(rk, key, rec, dmask.base_fp(c, e, cs["mask_source"]), _edit_window(m, c, e, bool(cs["use_registration"])))
+        fp = dmask.base_fp(c, e, cs["mask_source"])
+        edit = _edit_view(rk, key, rec, fp, _edit_window(m, c, e, bool(cs["use_registration"])), _edit_placement(m, c, e, fp))
     return {"ok": True, "edit": edit, "rev": rev, "composite_sig": _composite_sig(root, m, pref)}
 
 
@@ -2044,31 +2089,59 @@ def mask_adjust(root: str, data: dict) -> dict:
         raise _Reject(400, "op 는 set · undo · reset 중 하나여야 합니다")
     if not isinstance(seen, str) or not (seen == "" or re.fullmatch(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(?:\.\d{1,9})?", seen)):
         raise _Reject(400, "seen 은 이 창에서 받은 보정 시각 또는 빈 문자열이어야 합니다")
-    values = store.cand_adjust_values(data.get("blur"), data.get("invert")) if op == "set" else None
-
     def mutate(m):
-        _mask_cand(m, key)
+        cand = _mask_cand(m, key)
         old = store.cand_adjust_record(m, key)
         if seen != (old["at"] if old else ""):
             raise _Reject(409, "후보 보정이 다른 창에서 바뀌었습니다 — 다시 받기", reason="changed")
         hist = old["hist"] if old else []
         if op == "undo" and not hist:
             raise _Reject(400, "되돌릴 이전 보정이 없습니다")
-        new = values if op == "set" else (hist[0] if op == "undo" and hist else None)
+        if op == "set":
+            new = store.cand_adjust_values(data.get("blur"), data.get("invert"), **{
+                k: data.get(k, (old or store.CAND_XFORM_DEFAULTS)[k]) for k in store.CAND_XFORM_DEFAULTS})
+            for k in ("dx", "dy", "rot", "sx", "sy"):
+                new[k] = round(new[k], 3 if k in ("sx", "sy") else 1)
+            new["base_quad"] = old["base_quad"] if old else None
+        else:
+            new = hist[0] if op == "undo" and hist else None
+        if new is not None and any(new[k] != (old or store.CAND_XFORM_DEFAULTS)[k] for k in ("dx", "dy", "rot", "sx", "sy")):
+            # 항등 복귀는 기준 배치가 크롭 밖·상한 초과여도 허용한다. 픽셀 보정은 당시 변형 기준도 보존한다.
+            effect = store.cand_adjust_effect(new)
+            base_quad = None
+            if effect and "dx" in effect:
+                cs = _compose_settings(root, m)
+                base_quad = _adjust_base_quad(cand, _entry_for(m, key, _PREF.get(store.root_key(root))), cs["use_registration"])
+                quad = an.xform_quad(base_quad, **{k: new[k] for k in ("dx", "dy", "rot", "sx", "sy")})
+                bbox = dpsd.quad_bbox(quad)
+                crop = next(c for c in m["crops"] if c["id"] == cand["crop_id"])
+                cr = dmask.edit_rect(crop["rect"], m["canvas"])
+                if cr is None or bbox[0] >= cr[2] or bbox[2] <= cr[0] or bbox[1] >= cr[3] or bbox[3] <= cr[1]:
+                    raise _Reject(400, "되돌리면 패치가 크롭 밖으로 나갑니다" if op == "undo" else "변형한 패치가 크롭 밖으로 나갑니다")
+                rect = dmask.edit_rect(bbox, m["canvas"])
+                if (rect[2] - rect[0]) * (rect[3] - rect[1]) > dmask.MAX_PIXELS:
+                    raise _Reject(400, "되돌리면 패치의 편집 창이 4096² 픽셀을 넘습니다" if op == "undo" else "변형한 패치의 편집 창이 4096² 픽셀을 넘습니다")
+                base_bbox = dpsd.quad_bbox(base_quad)
+                render_area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+                if render_area > dmask.MAX_PIXELS and render_area > (base_bbox[2] - base_bbox[0]) * (base_bbox[3] - base_bbox[1]):
+                    subject = "되돌리면 패치가" if op == "undo" else "변형한 패치가"
+                    raise _Reject(400, f"{subject} 너무 커서 렌더할 수 없습니다(4096² 픽셀 초과) — 배율을 줄이세요")
+            if op == "set":
+                new["base_quad"] = base_quad
         if new is None:
             if isinstance(m.get("cand_adjust"), dict):
                 m["cand_adjust"].pop(key, None)
             return None
-        if op == "set" and old and all(new[k] == old[k] for k in ("blur", "invert")):
+        if op == "set" and old and all(new[k] == old[k] for k in ("blur", "invert", *store.CAND_XFORM_DEFAULTS)):
             return old
         if op == "set":
-            hist = ([{k: old[k] for k in ("blur", "invert", "at")}] + hist)[:20] if old else []
+            hist = ([{k: v for k, v in old.items() if k != "hist"}] + hist)[:20] if old else []
         else:
             hist = hist[1:]
         # 초 안의 연속 저장·undo도 서로 다른 seen으로 구별한다(옛 at로 되돌리지 않음).
         ns = time.time_ns()
         at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ns // 1_000_000_000)) + f".{ns % 1_000_000_000:09d}"
-        rec = {"blur": new["blur"], "invert": new["invert"], "at": at, "hist": hist}
+        rec = dict(new, at=at, hist=hist)
         records = m.get("cand_adjust") if isinstance(m.get("cand_adjust"), dict) else {}
         m["cand_adjust"] = {**records, key: rec}
         return rec
@@ -2335,7 +2408,7 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
                                                          else "skipped" if e and e.get("skipped") else "none"),
                     "gates": gates, "reg": reg, "reframed": bool(reg and reg.get("applied")),
                     "hand_mask": bool(c.get("hand_mask")),
-                    "adjust": {k: adjust[k] for k in ("blur", "invert")} if adjust else None,
+                    "adjust": store.cand_adjust_effect(adjust),
                     # S4 마스크 편집(★ 가 아니어도 기록이 있으면 — 다시 ★ 하면 살아남): stale = 기록의 기준 ≠ 지금 기준 지문 또는 편집 창이 바뀜
                     # 또는 _plan 이 편집 파일을 쓰지 못함(없음·깨짐·크기 다름 — Export 는 기준 마스크, 까닭은 K 의 경고)
                     "mask_edit": None if edit is None else {"at": edit["at"], "stale": _edit_stale(

@@ -220,7 +220,7 @@ window.DPMaskEdit = (() => {
     // seq = 마지막 열기의 차례(A → B → A 처럼 같은 대상을 다시 열면 key 로는 앞 응답을 가르지 못함), rseq = 마지막 다시 받기의 차례(적용 성공도 올림 —
     // 그 전에 나간 GET /mask 는 옛 판)
     const s = { info: null, err: null, key: null, win: null, base: null, m: null, start: null, file: "", sig: null, undo: [], redo: [], dropped: [],
-      layers: null, conflict: null, busy: "", stroke: null, seq: 0, rseq: 0 };
+      layers: null, conflict: null, recovery: null, busy: "", stroke: null, seq: 0, rseq: 0 };
     const qs = (o) => new URLSearchParams(Object.assign({ root }, o)).toString();
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -248,14 +248,15 @@ window.DPMaskEdit = (() => {
 
     s.unused = () => call("mask/unused?" + qs({})); // masks/ 안 쓰는 편집 PNG(배치 3-6)
     s.cleanup = (files) => call("mask/cleanup", { files });
-    s.adjust = async (op, values = {}, seen = (s.info && s.info.adjust ? s.info.adjust.at : "")) => {
-      if (!s.key || !s.info || s.info.key !== s.key || (s.busy && s.busy !== "adjust_wait") || s.stroke || s.pending()) return null;
+    s.adjust = async (op, values = {}, seen = (s.recovery ? s.recovery.adjust.at : s.info && s.info.adjust ? s.info.adjust.at : "")) => {
+      const target = s.recovery || s.info;
+      if (!s.key || !target || target.key !== s.key || (s.busy && s.busy !== "adjust_wait") || s.stroke || s.pending()) return null;
       s.busy = "adjust";
       ++s.rseq; // 보정 쓰기 전에 나간 GET이 응답을 덮지 않게
       try {
         const d = await call("mask/adjust", Object.assign({ key: s.key, op, seen }, values));
         ++s.rseq;
-        s.info = Object.assign({}, s.info, { adjust: d.adjust, composite_sig: d.composite_sig, seams: null });
+        if (s.info) s.info = Object.assign({}, s.info, { adjust: d.adjust, composite_sig: d.composite_sig, seams: null });
         await s.refresh();
         return d;
       } finally {
@@ -337,7 +338,7 @@ window.DPMaskEdit = (() => {
       // 단계는 받기 전에 비운다 — 부르는 쪽이 이미 버리기를 확인했다(받는 동안 pending 이 버린 획을 새 대상 이름으로 세지 않게: 확인 창·★ 점검 줄)
       const seq = ++s.seq;
       if (key !== s.key) s.layers = null;
-      Object.assign(s, { key, busy: "load", conflict: null, undo: [], redo: [], dropped: [], stroke: null });
+      Object.assign(s, { key, busy: "load", conflict: null, recovery: null, undo: [], redo: [], dropped: [], stroke: null });
       const clear = { win: null, base: null, m: null, start: null, file: "", sig: null };
       let info = null;
       try {
@@ -349,7 +350,8 @@ window.DPMaskEdit = (() => {
           file: info.edit ? info.edit.file : "", sig: info.base.sig });
         return true;
       } catch (e) {
-        if (s.seq === seq) Object.assign(s, clear, { info, err: e.message, file: info && info.edit ? info.edit.file : "" });
+        if (s.seq === seq) Object.assign(s, clear, { info, err: e.message, file: info && info.edit ? info.edit.file : "",
+          recovery: e.status === 422 && e.data && e.data.adjust ? { key, adjust: e.data.adjust } : null });
         return false;
       } finally {
         if (s.seq === seq) s.busy = "";
@@ -380,11 +382,12 @@ window.DPMaskEdit = (() => {
       try {
         info = await call("mask?" + qs({ key: s.key }));
       } catch (e) {
-        if (!late()) s.err = e.message;
+        if (!late()) Object.assign(s, { err: e.message,
+          recovery: e.status === 422 && e.data && e.data.adjust ? { key: s.key, adjust: e.data.adjust } : null });
         return false;
       }
       if (late()) return false;
-      Object.assign(s, { info, err: null });
+      Object.assign(s, { info, err: null, recovery: null });
       if (!s.behind() || s.pending() || s.stroke || s.busy) return false;
       return s.open(s.key);
     };
@@ -607,6 +610,13 @@ window.DPMaskEdit = (() => {
     let adjustDraft = null; // 디바운스 동안의 값·key·seen을 함께 보존
     let adjustSaving = null; // 저장 중 입력은 보내는 값 위에 합쳐 다음 요청으로 이어 보냄
     let adjustButtons = []; // 대기 중에는 단추만 잠가 끌고 있는 슬라이더 DOM을 보존
+    const xformDefault = { dx: 0, dy: 0, rot: 0, sx: 1, sy: 1, flip_h: false, flip_v: false };
+    const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
+    let ratioLock = false;
+    let adjustFocus = null; // 숫자를 쓰는 중 폴링·저장 응답이 입력 DOM·포커스를 버리지 않게
+    let adjustInputs = {};
+    let adjustFlips = {};
+    let clearXform = null;
     let again = false; // 받는 중·획 중에 state 가 바뀜 — 끝나면 다시 받기
     let tool = "erase";
     let size = 48;
@@ -820,7 +830,7 @@ window.DPMaskEdit = (() => {
 
     function go(to, follow = false) {
       // 편집 대상·선택 이음매(목록·N·진행 ★ 점검·이음매 목록): 다른 후보면 적용 안 한 획 확인 뒤 연다. → 그 대상인가
-      if (to.key !== M.key && LOCKED.includes(M.busy)) {
+      if (to.key !== M.key && (LOCKED.includes(M.busy) || adjustSaving)) {
         opts.toast("적용·되돌리기·★ 바꾸기를 처리하는 중 — 끝난 뒤 바꾸세요", "warn");
         return false;
       }
@@ -1037,7 +1047,7 @@ window.DPMaskEdit = (() => {
       // ★ 합성 서명이 그대로여도 Run 의 새 후보·다른 창의 탈락·대안 편집·보정 값이 바뀌면 표가 낡음
       const x = candOf(key);
       const ed = (c) => (c.mask_edit ? `${c.mask_edit.at}${c.mask_edit.stale ? "!" : ""}` : "");
-      const adj = (c) => (c.adjust ? `${c.adjust.blur}:${c.adjust.invert}` : "");
+      const adj = (c) => (c.adjust ? ["blur", "invert", "dx", "dy", "rot", "sx", "sy", "flip_h", "flip_v"].map((k) => c.adjust[k] ?? xformDefault[k]).join(":") : "");
       return x ? x.t.candidates.filter((c) => c.key !== key && !c.rejected).map((c) => `${c.key}@${ed(c)}#${adj(c)}`) : [];
     }
 
@@ -1193,6 +1203,22 @@ window.DPMaskEdit = (() => {
       }
     }
 
+    function adjustValues() {
+      return Object.assign({ blur: 0, invert: false }, xformDefault, adjustDraft || adjustSaving || (cur() && cur().adjust));
+    }
+
+    function syncAdjustControls() {
+      const v = adjustValues();
+      for (const [k, input] of Object.entries(adjustInputs)) {
+        if (input !== adjustFocus) input.value = Math.round(v[k] * (k === "sx" || k === "sy" ? 1000 : 10)) / 10;
+      }
+      for (const [k, b] of Object.entries(adjustFlips)) {
+        b.classList.toggle("sel", v[k]);
+        b.ariaPressed = String(v[k]);
+      }
+      if (clearXform) clearXform.disabled = !Object.keys(xformDefault).some((k) => v[k] !== xformDefault[k]);
+    }
+
     function queueAdjust(values) {
       const info = cur();
       const x = candOf(M.key);
@@ -1200,9 +1226,9 @@ window.DPMaskEdit = (() => {
         || (M.busy === "adjust" && !adjustSaving)
         || (adjustSaving && adjustSaving.key !== M.key)
         || (x && (!x.c.picked || x.c.rejected))) return;
-      const rec = adjustSaving || info.adjust;
-      adjustDraft = Object.assign(adjustDraft && adjustDraft.key === M.key ? adjustDraft : { key: M.key, seen: info.adjust ? info.adjust.at : "", blur: rec ? rec.blur : 0,
-        invert: rec ? rec.invert : false }, values);
+      adjustDraft = Object.assign(adjustDraft && adjustDraft.key === M.key ? adjustDraft
+        : Object.assign(adjustValues(), { key: M.key, seen: info.adjust ? info.adjust.at : "" }), values);
+      syncAdjustControls();
       for (const b of adjustButtons) b.disabled = true;
       clearTimeout(adjustTimer);
       if (adjustSaving) return; // 응답의 새 at를 받은 뒤에 예약
@@ -1221,9 +1247,10 @@ window.DPMaskEdit = (() => {
       try {
         if ((M.busy && (op !== "set" || M.busy !== "adjust_wait")) || M.stroke || M.pending()) return;
         if (draft && draft.key !== M.key) return;
-        const rec = cur() && cur().adjust;
-        adjustSaving = Object.assign({ key, blur: 0, invert: false }, op === "set" ? draft || rec : op === "undo" ? rec && rec.hist[0] : null);
-        const p = M.adjust(op, op === "set" && draft ? { blur: draft.blur, invert: draft.invert } : {}, draft ? draft.seen : undefined);
+        const rec = M.recovery ? M.recovery.adjust : cur() && cur().adjust;
+        adjustSaving = Object.assign({ key, blur: 0, invert: false }, xformDefault, op === "set" ? draft || rec : op === "undo" ? rec && rec.hist[0] : null);
+        const values = Object.fromEntries(["blur", "invert", ...Object.keys(xformDefault)].map((k) => [k, adjustSaving[k]]));
+        const p = M.adjust(op, op === "set" ? values : {}, draft ? draft.seen : undefined);
         renderPanel();
         const d = await p;
         if (!d) return;
@@ -1239,8 +1266,13 @@ window.DPMaskEdit = (() => {
         if (e.status === 409) opts.refresh();
         await refreshInfo();
       } finally {
-        adjustSaving = null;
         if (M.busy === "adjust_wait") M.busy = "";
+        // s.adjust의 refresh는 저장 잠금 중이라 창을 다시 열지 못한다. 획 없는 새 창을 여기서 받는다.
+        if (saved && M.key === key && !M.busy && !M.stroke && !M.pending() && (M.err || M.behind())) {
+          await M.open(key);
+          repaintAll();
+        }
+        adjustSaving = null;
         if (adjustDraft) {
           if (saved && adjustDraft.key === key && M.key === key && !M.busy && !M.stroke && !M.pending()) {
             adjustDraft.seen = saved.adjust ? saved.adjust.at : "";
@@ -1251,6 +1283,7 @@ window.DPMaskEdit = (() => {
             opts.toast("저장하지 못해 대기 중 보정 입력을 버렸습니다. 값을 확인하고 다시 입력하세요", "warn");
           }
         }
+        syncAdjustControls();
         renderPanel();
       }
       render();
@@ -1262,7 +1295,7 @@ window.DPMaskEdit = (() => {
       const s = section("후보 보정");
       s.classList.add("mc-adjust");
       const rec = info.adjust;
-      const values = adjustDraft || adjustSaving || rec || { blur: 0, invert: false };
+      const values = adjustValues();
       const x = candOf(M.key);
       const disabled = (!!M.busy && M.busy !== "adjust_wait" && M.busy !== "adjust") || !!M.stroke || !!M.pending() || !!M.err
         || !!(x && (!x.c.picked || x.c.rejected));
@@ -1273,9 +1306,70 @@ window.DPMaskEdit = (() => {
       invert.addEventListener("change", () => queueAdjust({ invert: invert.checked }));
       label.append(invert, el("span", "", "색반전"));
       s.append(label);
+      line(s, "변형", "k");
+      if (info.xform_stale) {
+        const stale = chip("변형 기준 바뀜", "b-warn");
+        stale.title = "변형을 저장한 뒤 정합·재분석·수확으로 패치 기준 자리가 바뀌었습니다. 변형은 새 자리 위에 그대로 얹힙니다.";
+        s.append(stale);
+      }
+      const grid = el("div", "mc-xform");
+      for (const [k, label, unit, min, max] of [["dx", "이동 x", "px", -65536, 65536], ["dy", "이동 y", "px", -65536, 65536],
+        ["rot", "회전", "°", -180, 180], ["sx", "배율 가로", "%", 10, 400], ["sy", "배율 세로", "%", 10, 400]]) {
+        const row = el("label", "mc-xform-value");
+        const input = el("input");
+        const scale = k === "sx" || k === "sy";
+        Object.assign(input, { type: "number", min, max, step: 0.1, value: Math.round(values[k] * (scale ? 1000 : 10)) / 10, disabled });
+        input.dataset.xform = k;
+        input.ariaLabel = `${label} ${unit}`;
+        adjustInputs[k] = input;
+        const change = () => {
+          const old = adjustValues();
+          const raw = Number(input.value);
+          if (!String(input.value).trim() || !Number.isFinite(raw)) {
+            input.value = Math.round(old[k] * (scale ? 1000 : 10)) / 10;
+            return;
+          }
+          const val = Math.round(clamp(raw, min, max) * 10) / (scale ? 1000 : 10);
+          const next = { [k]: val };
+          if (scale && ratioLock) {
+            const other = k === "sx" ? "sy" : "sx";
+            const ratio = clamp(val / old[k], Math.max(0.1 / old[k], 0.1 / old[other]), Math.min(4 / old[k], 4 / old[other]));
+            next[k] = Math.round(old[k] * ratio * 1000) / 1000;
+            next[other] = Math.round(old[other] * ratio * 1000) / 1000;
+          }
+          input.value = Math.round(next[k] * (scale ? 1000 : 10)) / 10;
+          queueAdjust(next);
+        };
+        input.addEventListener("change", change);
+        input.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.code === "Enter") { e.preventDefault(); e.stopPropagation(); change(); }
+        });
+        input.addEventListener("focus", () => { adjustFocus = input; });
+        input.addEventListener("blur", () => { if (adjustFocus === input) adjustFocus = null; setTimeout(flushLater, 0); });
+        row.append(el("span", "", label), input, el("span", "dim", unit));
+        grid.append(row);
+      }
+      s.append(grid);
+      const lock = off(button("비율 잠금", "한쪽 배율을 바꾸면 다른 쪽도 같은 비율로", () => {
+        ratioLock = !ratioLock;
+        lock.classList.toggle("sel", ratioLock);
+        lock.ariaPressed = String(ratioLock);
+      }), disabled);
+      lock.classList.toggle("sel", ratioLock);
+      lock.ariaPressed = String(ratioLock);
+      const flips = [["flip_h", "좌우 뒤집기"], ["flip_v", "상하 뒤집기"]].map(([k, label]) => {
+        const b = off(button(label, "후보 픽셀을 뒤집습니다", () => queueAdjust({ [k]: !adjustValues()[k] })), disabled);
+        b.classList.toggle("sel", values[k]);
+        b.ariaPressed = String(values[k]);
+        adjustFlips[k] = b;
+        return b;
+      });
+      clearXform = off(button("변형 없음", "이동·회전·배율·뒤집기를 지움 — 블러·색반전은 유지", () => queueAdjust(xformDefault)),
+        disabled || !Object.keys(xformDefault).some((k) => values[k] !== xformDefault[k]));
+      btns(s, lock, ...flips, clearXform);
       const buttons = [];
-      if (rec && rec.hist.length) buttons.push(off(button("되돌리기", "이 후보의 이전 보정 값으로", () => saveAdjust("undo")), disabled || !!M.busy));
-      if (rec) buttons.push(off(button("보정 없음", "블러·색반전과 이전 보정 기록을 지움", () => saveAdjust("reset")), disabled || !!M.busy));
+      if (rec && rec.hist.length) buttons.push(off(button("되돌리기", "블러·색반전·변형을 함께 이전 보정 값으로", () => saveAdjust("undo")), disabled || !!M.busy));
+      if (rec) buttons.push(off(button("보정 없음", "블러·색반전·변형과 이전 보정 기록을 지움", () => saveAdjust("reset")), disabled || !!M.busy));
       adjustButtons = buttons;
       if (buttons.length) btns(s, ...buttons);
       if (M.pending()) line(s, "적용 안 한 획을 적용하거나 버린 뒤 보정하세요", "dim");
@@ -1283,12 +1377,15 @@ window.DPMaskEdit = (() => {
     }
 
     function renderPanel() {
-      if (held) {
+      if (held || adjustFocus) {
         later = true;
         return;
       }
       panel.replaceChildren();
       adjustButtons = [];
+      adjustInputs = {};
+      adjustFlips = {};
+      clearXform = null;
       if (!on) return;
       const info = cur();
       const x = candOf(M.key);
@@ -1327,6 +1424,17 @@ window.DPMaskEdit = (() => {
         line(s, "이 후보는 이제 ★ 가 아님(검토에서 ★ 해제·제외) — 적용할 수 없음: 왼쪽 목록에서 크롭을 누르면 지금 ★ 로(적용 안 한 획은 확인 뒤 버림)", "bad");
       }
       if (M.err) line(s, `${M.err} `, "bad").append(off(button("다시 받기", "GET /mask 다시", reload, "inline"), busy));
+      if (M.err && M.recovery && M.recovery.key === M.key) {
+        const rec = M.recovery.adjust;
+        const locked = busy || !!adjustSaving || !!M.pending() || (x && (!x.c.picked || x.c.rejected));
+        const row = line(s, "후보 보정", "mc-adjust");
+        const buttons = [off(button("변형 없음", "블러·색반전은 유지하고 변형을 지워 편집 창 복구", () => {
+          adjustDraft = Object.assign({}, rec, xformDefault, { key: M.key, seen: rec.at });
+          saveAdjust("set");
+        }), locked), off(button("보정 없음", "후보 보정·이력을 지워 편집 창 복구", () => saveAdjust("reset")), locked)];
+        if (rec.hist.length) buttons.push(off(button("되돌리기", "이전 후보 보정으로 편집 창 복구", () => saveAdjust("undo")), locked));
+        btns(row, ...buttons);
+      }
       if (layerErr) line(s, `미리보기 3층을 받지 못함: ${layerErr} `, "warn").append(off(button("다시 받기", "GET /mask·3층 다시", refreshInfo, "inline"), busy));
       line(s, `보기: ${view.orig ? "원본 — 이 패치 없이(W)" : view.base ? "처음 마스크(Q 누르는 중)" : slider ? "처음|편집 슬라이더(S — 왼쪽 = 처음 마스크)" : "편집"}`
         + `${view.mark ? " · 마스크(M)" : ""}${viewer.flags().rectsOn ? "" : " · 사각형 숨김(O)"}`, "dim");
@@ -1344,7 +1452,7 @@ window.DPMaskEdit = (() => {
       rb.classList.toggle("on", !viewer.flags().rectsOn);
       btns(s, ob, mb, rb);
 
-      if (info) adjustControls(info);
+      if (info && !M.recovery) adjustControls(info);
 
       // 2 붓
       s = section("붓 (왼쪽 끌기 · Space+끌기 = 화면 이동)");
@@ -1552,6 +1660,15 @@ window.DPMaskEdit = (() => {
       }
       if (mod || e.altKey) return false;
       switch (e.code) {
+        case "ArrowLeft":
+        case "ArrowRight":
+        case "ArrowUp":
+        case "ArrowDown": {
+          const k = e.code === "ArrowLeft" || e.code === "ArrowRight" ? "dx" : "dy";
+          const sign = e.code === "ArrowLeft" || e.code === "ArrowUp" ? -1 : 1;
+          queueAdjust({ [k]: Math.round(clamp(adjustValues()[k] + sign * (e.shiftKey ? 10 : 1), -65536, 65536) * 10) / 10 });
+          return true;
+        }
         case "Escape":
           opts.exit();
           return true;
@@ -1605,7 +1722,7 @@ window.DPMaskEdit = (() => {
     });
 
     function flushLater() {
-      if (!later || held) return;
+      if (!later || held || adjustFocus) return;
       later = false;
       render();
     }
@@ -1640,7 +1757,7 @@ window.DPMaskEdit = (() => {
     function leave() {
       // K 모드 나가기 — 적용·되돌리기·★ 바꾸기 중이면 거절(go 와 같음 — 나갈 때 board 가 진행 ★ 점검에 넘기는 적용 안 한 획 수가 응답 뒤 낡음), 끌던 획은 먼저
       // 끝냄(setEditor(null) 뒤엔 pointerup 이 오지 않음 — 확인 창·★ 점검의 획 수에 들어가게), 적용 안 한 획이 있으면 확인(세션은 이 창에 남음). → 나갔는가
-      if (LOCKED.includes(M.busy)) {
+      if (LOCKED.includes(M.busy) || adjustSaving) {
         opts.toast("적용·되돌리기·★ 바꾸기를 처리하는 중 — 끝난 뒤 나가세요", "warn");
         return false;
       }
@@ -1650,6 +1767,7 @@ window.DPMaskEdit = (() => {
         return false;
       }
       on = false;
+      adjustFocus = null;
       view.base = view.mark = view.orig = slider = false;
       view.split = cursor = null;
       cancelAnimationFrame(raf);
