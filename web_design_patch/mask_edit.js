@@ -108,6 +108,86 @@ window.DPMaskEdit = (() => {
     return Math.floor(Math.min(1, Math.max(0, m)) * 255 + 0.5);
   }
 
+  // 서버 xform_quad와 같은 중심 기준 기하. 뒤집기는 픽셀 효과이므로 여기에 넣지 않는다.
+  function xformQuad(q, { dx = 0, dy = 0, rot = 0, sx = 1, sy = 1 } = {}) {
+    if (!dx && !dy && !rot && sx === 1 && sy === 1) return q.slice();
+    const a = rot * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
+    const ex = [q[2] - q[0], q[3] - q[1]], ey = [q[6] - q[0], q[7] - q[1]];
+    const cx = q[0] + (ex[0] + ey[0]) / 2 + dx, cy = q[1] + (ex[1] + ey[1]) / 2 + dy;
+    const x = [sx * (c * ex[0] - s * ex[1]), sx * (s * ex[0] + c * ex[1])];
+    const y = [sy * (c * ey[0] - s * ey[1]), sy * (s * ey[0] + c * ey[1])];
+    const tl = [cx - (x[0] + y[0]) / 2, cy - (x[1] + y[1]) / 2];
+    return [tl[0], tl[1], tl[0] + x[0], tl[1] + x[1], tl[0] + x[0] + y[0], tl[1] + x[1] + y[1], tl[0] + y[0], tl[1] + y[1]];
+  }
+
+  // Canvas 2D 순서 [a,b,c,d,e,f], M(to) M(from)^-1. 기울어진 평행사변형도 자기 축으로 푼다.
+  function relativeAffine(from, to) {
+    const x = from[2] - from[0], y = from[3] - from[1], u = from[6] - from[0], v = from[7] - from[1];
+    const det = x * v - y * u;
+    if (Math.abs(det) < 1e-10) return null;
+    const X = to[2] - to[0], Y = to[3] - to[1], U = to[6] - to[0], V = to[7] - to[1];
+    const a = (X * v - U * y) / det, b = (Y * v - V * y) / det;
+    const c = (U * x - X * u) / det, d = (V * x - Y * u) / det;
+    return [a, b, c, d, to[0] - a * from[0] - c * from[1], to[1] - b * from[0] - d * from[1]];
+  }
+
+  const XHANDLES = { nw: [-1, -1], n: [0, -1], ne: [1, -1], e: [1, 0], se: [1, 1], s: [0, 1], sw: [-1, 1], w: [-1, 0] };
+  const GEOMETRY = ["dx", "dy", "rot", "sx", "sy"];
+  const wrapAngle = (v) => ((v + 180) % 360 + 360) % 360 - 180;
+
+  function xformPoints(q, z) {
+    const ex = [q[2] - q[0], q[3] - q[1]], ey = [q[6] - q[0], q[7] - q[1]];
+    const center = [q[0] + (ex[0] + ey[0]) / 2, q[1] + (ex[1] + ey[1]) / 2];
+    const points = Object.fromEntries(Object.entries(XHANDLES).map(([k, [x, y]]) =>
+      [k, [center[0] + (x * ex[0] + y * ey[0]) / 2, center[1] + (x * ex[1] + y * ey[1]) / 2]]));
+    const len = Math.hypot(...ey) || 1;
+    points.rot = [points.n[0] - ey[0] / len * 24 / z, points.n[1] - ey[1] / len * 24 / z];
+    return { points, center };
+  }
+
+  function xformDrag(start, q, handle, origin, pt, e) {
+    const next = Object.fromEntries(GEOMETRY.map((k) => [k, start[k]]));
+    const dx = pt[0] - origin[0], dy = pt[1] - origin[1];
+    if (!dx && !dy) return next;
+    const fine = e.ctrlKey || e.metaKey;
+    const round = (v, step) => Math.round(v / step) * step;
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    if (handle === "move") {
+      next.dx = clamp(round(start.dx + dx, fine ? 0.1 : 1), -65536, 65536);
+      next.dy = clamp(round(start.dy + dy, fine ? 0.1 : 1), -65536, 65536);
+    } else if (handle === "rot") {
+      const { center: c } = xformPoints(q, 1);
+      const angle = Math.atan2(pt[1] - c[1], pt[0] - c[0]) - Math.atan2(origin[1] - c[1], origin[0] - c[0]);
+      next.rot = wrapAngle(round(start.rot + angle * 180 / Math.PI, e.shiftKey ? 15 : fine ? 0.1 : 1));
+    } else {
+      const [hx, hy] = XHANDLES[handle];
+      const ex = [q[2] - q[0], q[3] - q[1]], ey = [q[6] - q[0], q[7] - q[1]];
+      const det = ex[0] * ey[1] - ex[1] * ey[0];
+      if (Math.abs(det) < 1e-10) return next;
+      const mul = e.altKey ? 2 : 1, step = fine ? 0.001 : 0.01;
+      let fx = 1 + hx * mul * (dx * ey[1] - dy * ey[0]) / det;
+      let fy = 1 + hy * mul * (dy * ex[0] - dx * ex[1]) / det;
+      if (e.shiftKey) {
+        const axis = !hx ? "sy" : !hy || Math.abs(fx - 1) >= Math.abs(fy - 1) ? "sx" : "sy";
+        const f = round(start[axis] * (axis === "sx" ? fx : fy), step) / start[axis];
+        fx = fy = clamp(f, Math.max(0.1 / start.sx, 0.1 / start.sy), Math.min(4 / start.sx, 4 / start.sy));
+        next.sx = start.sx * fx;
+        next.sy = start.sy * fy;
+      } else {
+        if (hx) next.sx = clamp(round(start.sx * fx, step), 0.1, 4);
+        if (hy) next.sy = clamp(round(start.sy * fy, step), 0.1, 4);
+        fx = next.sx / start.sx;
+        fy = next.sy / start.sy;
+      }
+      // 잘린 배율로 중심 이동을 다시 계산해야 맞은편 변/꼭짓점이 그대로다.
+      if (!e.altKey) {
+        next.dx += (hx * ex[0] * (fx - 1) + hy * ey[0] * (fy - 1)) / 2;
+        next.dy += (hx * ex[1] * (fx - 1) + hy * ey[1] * (fy - 1)) / 2;
+      }
+    }
+    return next;
+  }
+
   function compose(L, win, mask, base, out, x0, y0, x1, y1, view) {
     // §2.4: out = over.rgb·over.a + (under + (patch.rgb − under)·patch.a·mask)·(1 − over.a). L = 영역 3층 {box, under, patch, over}(RGBA 바이트,
     // box 크기 — under 는 a 255), win = 마스크 창(캔버스), mask·base = 창 크기 세션·기준 마스크 — 올리는 8비트 값으로 합성(보이는 것 = 저장되는 것),
@@ -123,11 +203,16 @@ window.DPMaskEdit = (() => {
       const wy = y + dy;
       for (let x = x0; x < x1; x++) {
         const i = (y * bw + x) * 4;
+        if (view.diff) { // 맞추기: 마스크·위층·W/Q/S/M과 무관하게 원본 아래층과 비교
+          for (let c = 0; c < 3; c++) out[i + c] = p[i + 3] ? Math.abs(p[i + c] - u[i + c]) : u[i + c] * 0.4;
+          out[i + 3] = 255;
+          continue;
+        }
         const wx = x + dx;
         const j = wy * ww + wx;
         const inWin = wx >= 0 && wx < ww && wy >= 0 && wy < wh;
         const mv = !inWin ? 0 : quant(view.base || (view.split !== null && x < view.split) ? base[j] : mask[j]) / 255;
-        const pa = view.orig ? 0 : (p[i + 3] / 255) * mv; // orig(W) = 이 패치 없이(아래·위 ★ 만 — 고치기 전 그림)
+        const pa = view.orig ? 0 : (p[i + 3] / 255) * mv * (view.opacity ?? 1); // 보기 투명도는 저장 마스크에 넣지 않음
         const oa = o[i + 3] / 255;
         let r = o[i] * oa + (u[i] + (p[i] - u[i]) * pa) * (1 - oa);
         let g = o[i + 1] * oa + (u[i + 1] + (p[i + 1] - u[i + 1]) * pa) * (1 - oa);
@@ -362,12 +447,13 @@ window.DPMaskEdit = (() => {
       // 영역 3층(GET /mask/img under·patch·over — v = layers.sig). 같은 서명이면 그대로 → 바꿨는가. 받는 사이 대상이나 3층 서명이 바뀌면 버림(앞 대상의
       // 늦은 3층이 새 대상의 겹침이 되지 않게 — 새 대상의 GET /mask 가 오기 전이면 s.info 는 아직 앞 대상). 409 stale 등은 던짐(다시 받기)
       const key = s.key;
-      const L = s.info && s.info.key === key && s.info.layers;
+      const info = s.info;
+      const L = info && info.key === key && info.layers;
       if (!L || (s.layers && s.layers.sig === L.sig)) return false;
       const [w, h] = [L.box[2] - L.box[0], L.box[3] - L.box[1]];
       const [under, patch, over] = await Promise.all([L.under_url, L.patch_url, L.over_url].map((u) => image(u, w, h)));
       if (s.key !== key || !s.info || s.info.key !== key || s.info.layers.sig !== L.sig) return false;
-      s.layers = { box: L.box.slice(), sig: L.sig, under, patch, over };
+      s.layers = { box: L.box.slice(), sig: L.sig, quad: info.quad && info.quad.slice(), under, patch, over };
       return true;
     };
 
@@ -619,6 +705,11 @@ window.DPMaskEdit = (() => {
     let clearXform = null;
     let again = false; // 받는 중·획 중에 state 가 바뀜 — 끝나면 다시 받기
     let tool = "erase";
+    let editTool = "brush";
+    let xdrag = null;
+    let patchOpacity = 100;
+    let difference = false;
+    let previewRaster = null; // 현재 3층 원본 canvas와 마지막 affine 결과만 보관
     let size = 48;
     let hard = 0.5;
     let flow = 1;
@@ -753,6 +844,67 @@ window.DPMaskEdit = (() => {
     }
 
     // ── 겹침 캔버스(§2.4) ──
+    function currentDrag() {
+      if (xdrag && (xdrag.seq !== M.seq || xdrag.key !== M.key)) xdrag = null;
+      return xdrag;
+    }
+
+    function shownQuad() {
+      const info = cur();
+      if (!info || !info.base_quad) return info && info.quad;
+      return xformQuad(info.base_quad, currentDrag() ? xdrag.values : adjustValues());
+    }
+
+    function previewLayers() {
+      const L = M.layers, q = shownQuad();
+      if (previewRaster && previewRaster.layers !== L) previewRaster = null;
+      if (!L.quad || !q || q.every((v, i) => Math.abs(v - L.quad[i]) < 1e-7)) return L;
+      const a = relativeAffine(L.quad, q);
+      if (!a) return L;
+      const w = L.box[2] - L.box[0], h = L.box[3] - L.box[1];
+      if (!previewRaster || previewRaster.layers !== L) {
+        const source = document.createElement("canvas"), dest = document.createElement("canvas");
+        source.width = dest.width = w;
+        source.height = dest.height = h;
+        const ctx = source.getContext("2d"), data = ctx.createImageData(w, h);
+        data.data.set(L.patch);
+        ctx.putImageData(data, 0, 0);
+        previewRaster = { layers: L, source, dest, ctx: dest.getContext("2d", { willReadFrequently: true }), quad: null, patch: null };
+      }
+      const p = previewRaster;
+      if (!p.quad || q.some((v, i) => v !== p.quad[i])) {
+        const [bx, by] = L.box;
+        p.ctx.setTransform(1, 0, 0, 1, 0, 0);
+        p.ctx.clearRect(0, 0, w, h);
+        p.ctx.setTransform(a[0], a[1], a[2], a[3], a[4] + a[0] * bx + a[2] * by - bx, a[5] + a[1] * bx + a[3] * by - by);
+        // Canvas는 premultiplied alpha로 보간하고 getImageData는 straight RGBA를 돌려준다.
+        p.ctx.drawImage(p.source, 0, 0);
+        p.patch = p.ctx.getImageData(0, 0, w, h).data;
+        p.quad = q;
+      }
+      return Object.assign({}, L, { patch: p.patch });
+    }
+
+    function cancelXform() {
+      if (!xdrag) return;
+      xdrag = null;
+      viewer.setCursor("");
+      syncAdjustControls();
+      repaintAll();
+      viewer.redraw();
+    }
+
+    function setEditTool(k) {
+      cancelXform();
+      pointerup();
+      editTool = k;
+      if (k === "brush") difference = false;
+      cursor = null;
+      viewer.setCursor("");
+      repaintAll();
+      render();
+    }
+
     function attach() {
       const L = M.layers;
       if (!on || !L) return;
@@ -788,9 +940,11 @@ window.DPMaskEdit = (() => {
       const d = dirty;
       dirty = null;
       if (!d || !M.layers || !img || !M.m) return;
-      compose(M.layers, M.win, M.m, M.base, img.data, d[0], d[1], d[2], d[3],
-        { base: view.base, split: slider ? view.split : null, mark: view.mark, orig: view.orig });
+      compose(previewLayers(), M.win, M.m, M.base, img.data, d[0], d[1], d[2], d[3],
+        { base: view.base, split: slider ? view.split : null, mark: view.mark, orig: view.orig,
+          opacity: editTool === "xform" ? patchOpacity / 100 : 1, diff: editTool === "xform" && difference });
       g2.putImageData(img, 0, 0, d[0], d[1], d[2] - d[0], d[3] - d[1]);
+      if (editTool === "xform") viewer.redraw();
     }
 
     function repaintAll() {
@@ -812,6 +966,16 @@ window.DPMaskEdit = (() => {
     // ── 대상 ──
     async function open(key, sg, follow) {
       // 편집 대상을 연다(세션 버림 — 확인은 go): 래스터 → 3층(따로) → 다시 그림
+      cancelXform();
+      if (key !== M.key) {
+        if (editTool === "xform") {
+          cursor = null;
+          viewer.setCursor("");
+        }
+        editTool = "brush";
+        difference = false;
+        previewRaster = null;
+      }
       alts = null;
       applied = null;
       seam = sg || null;
@@ -836,6 +1000,7 @@ window.DPMaskEdit = (() => {
       }
       // N 은 끄는 중에도 온다(뷰어 포인터 캡처는 클릭만 막음) — 획을 끝낸다: 다른 후보면 확인 창에 세고(새 대상에 옛 창 좌표로 이어 칠하지 않게),
       // 같은 ★ 의 구간이면 2:1 로 옮긴 화면에서 커서가 가리키는 먼 점과 앞 점을 도장으로 잇지 않게
+      cancelXform();
       pointerup();
       if (to.key !== M.key) {
         const n = M.pending();
@@ -865,13 +1030,50 @@ window.DPMaskEdit = (() => {
       }
       again = false;
       seenRev = S ? stateVer(S) : seenRev;
-      if (await M.refresh()) repaintAll();
+      const seq = M.seq;
+      const reopened = await M.refresh();
+      if (M.seq !== seq) cancelXform();
+      if (reopened) repaintAll();
       render();
       await layers();
     }
 
     // ── 붓(뷰어가 왼쪽 버튼을 먼저 넘김 — true = 소비) ──
+    function xformHit(pt) {
+      const q = shownQuad();
+      if (!q) return null;
+      const z = viewer.scale(), { points } = xformPoints(q, z);
+      for (const k of ["rot", ...Object.keys(XHANDLES)]) {
+        if (Math.hypot(pt[0] - points[k][0], pt[1] - points[k][1]) <= 7 / z) return k;
+      }
+      const a = relativeAffine(q, [0, 0, 1, 0, 1, 1, 0, 1]);
+      if (!a) return null;
+      const x = a[0] * pt[0] + a[2] * pt[1] + a[4], y = a[1] * pt[0] + a[3] * pt[1] + a[5];
+      return x >= 0 && x <= 1 && y >= 0 && y <= 1 ? "move" : null;
+    }
+
+    function xformCursor(handle) {
+      if (!handle) return "";
+      if (handle === "move") return "move";
+      if (handle === "rot") return currentDrag() ? "grabbing" : "grab";
+      const { points, center } = xformPoints(shownQuad(), viewer.scale()), p = points[handle];
+      const dir = Math.round(Math.atan2(p[1] - center[1], p[0] - center[0]) / (Math.PI / 4));
+      return ["ew-resize", "nwse-resize", "ns-resize", "nesw-resize"][(dir % 4 + 4) % 4];
+    }
+
     function pointerdown(e) {
+      if (editTool === "xform") {
+        const pt = viewer.canvasPoint(e), handle = xformHit(pt);
+        if (!handle) return false; // 상자 밖 = 뷰어 화면 이동
+        if (!canAdjust() || !M.m || !cur().base_quad || layerErr) {
+          opts.toast(M.pending() ? "적용 안 한 획을 적용하거나 버린 뒤 보정하세요" : "지금은 변형할 수 없습니다 — 작업이 끝나거나 다시 받은 뒤 시도하세요", "warn");
+          return true;
+        }
+        const start = adjustValues();
+        xdrag = { key: M.key, seq: M.seq, handle, origin: pt, quad: shownQuad(), start, values: start };
+        viewer.setCursor(xformCursor(handle));
+        return true;
+      }
       if (!M.m || M.busy) return false; // 받는 중·적용 중 — 왼쪽 끌기는 화면 이동
       const pt = viewer.canvasPoint(e);
       soft = e.shiftKey;
@@ -883,6 +1085,19 @@ window.DPMaskEdit = (() => {
 
     function pointermove(e) {
       const pt = viewer.canvasPoint(e);
+      if (editTool === "xform") {
+        const d = currentDrag();
+        if (d) {
+          d.values = xformDrag(d.start, d.quad, d.handle, d.origin, pt, e);
+          syncAdjustControls();
+          repaintAll();
+        } else if (slider && M.layers) {
+          view.split = Math.round(pt[0] - M.layers.box[0]);
+          repaintAll();
+        }
+        viewer.setCursor(xformCursor(d ? d.handle : xformHit(pt)));
+        return true;
+      }
       cursor = pt;
       if (M.stroke) repaint(M.move(pt));
       else {
@@ -897,6 +1112,17 @@ window.DPMaskEdit = (() => {
     }
 
     function pointerup() {
+      const d = currentDrag();
+      if (d) {
+        xdrag = null;
+        if (GEOMETRY.some((k) => Math.abs(d.values[k] - d.start[k]) > 1e-8)) queueAdjust(d.values);
+        syncAdjustControls();
+        repaintAll();
+        viewer.setCursor("");
+        renderPanel();
+        if (again) refreshInfo();
+        return;
+      }
       if (!M.stroke) return;
       M.end();
       renderPanel();
@@ -904,7 +1130,7 @@ window.DPMaskEdit = (() => {
     }
 
     function moveRing() {
-      if (!cursor) return;
+      if (editTool !== "brush" || !cursor) return;
       ring.setAttribute("cx", cursor[0]);
       ring.setAttribute("cy", cursor[1]);
       ring.setAttribute("r", size / 2);
@@ -912,7 +1138,7 @@ window.DPMaskEdit = (() => {
       if (!ring.parentNode) viewer.redraw();
     }
 
-    function draw(root) {
+    function draw(root, z = 1) {
       // 뷰어 marks(크롭 사각형·이름은 뷰어가 그리지 않음 — 편집기 모드): 편집 창(점선)·이 크롭·선택 이음매·붓 원(화면 px 선, 크기 = 크롭 px).
       // 다른 대상을 받는 동안은 창·크롭을 그리지 않음(패널 대상 칸과 같음 — 앞 대상의 창이 새 대상의 '이 크롭'처럼 보이지 않게)
       if (!on) return;
@@ -924,7 +1150,18 @@ window.DPMaskEdit = (() => {
         if (crop) box(crop.rect, "mcrop");
       }
       if (seam) root.append(svg("line", { x1: seam.x0, y1: seam.y0, x2: seam.x1, y2: seam.y1, class: "mseam" }));
-      if (cursor) root.append(ring);
+      if (editTool === "brush" && cursor) root.append(ring);
+      const q = editTool === "xform" && shownQuad();
+      if (q) {
+        const u = 1 / z, { points, center: c } = xformPoints(q, z);
+        root.append(svg("polygon", { points: [0, 2, 4, 6].map((i) => `${q[i]},${q[i + 1]}`).join(" "), class: "mx-outline" }));
+        root.append(svg("line", { x1: points.n[0], y1: points.n[1], x2: points.rot[0], y2: points.rot[1], class: "mx-outline" }));
+        for (const [k, p] of Object.entries(points)) {
+          root.append(k === "rot" ? svg("circle", { cx: p[0], cy: p[1], r: 4 * u, class: "mx-handle", "data-handle": k })
+            : svg("rect", { x: p[0] - 4 * u, y: p[1] - 4 * u, width: 8 * u, height: 8 * u, class: "mx-handle", "data-handle": k }));
+        }
+        root.append(svg("path", { d: `M${c[0] - 4 * u},${c[1]}h${8 * u}M${c[0]},${c[1] - 4 * u}v${8 * u}`, class: "mx-outline" }));
+      }
     }
 
     // ── 연산 ──
@@ -1208,7 +1445,7 @@ window.DPMaskEdit = (() => {
     }
 
     function syncAdjustControls() {
-      const v = adjustValues();
+      const v = Object.assign(adjustValues(), currentDrag() && xdrag.values);
       for (const [k, input] of Object.entries(adjustInputs)) {
         if (input !== adjustFocus) input.value = Math.round(v[k] * (k === "sx" || k === "sy" ? 1000 : 10)) / 10;
       }
@@ -1219,16 +1456,22 @@ window.DPMaskEdit = (() => {
       if (clearXform) clearXform.disabled = !Object.keys(xformDefault).some((k) => v[k] !== xformDefault[k]);
     }
 
-    function queueAdjust(values) {
+    function canAdjust() {
       const info = cur();
       const x = candOf(M.key);
-      if (!info || (M.busy && M.busy !== "adjust_wait" && M.busy !== "adjust") || M.stroke || M.pending() || M.err
+      return !(!info || (M.busy && M.busy !== "adjust_wait" && M.busy !== "adjust") || M.stroke || M.pending() || M.err
         || (M.busy === "adjust" && !adjustSaving)
         || (adjustSaving && adjustSaving.key !== M.key)
-        || (x && (!x.c.picked || x.c.rejected))) return;
+        || (x && (!x.c.picked || x.c.rejected)));
+    }
+
+    function queueAdjust(values) {
+      if (!canAdjust()) return;
+      const info = cur();
       adjustDraft = Object.assign(adjustDraft && adjustDraft.key === M.key ? adjustDraft
         : Object.assign(adjustValues(), { key: M.key, seen: info.adjust ? info.adjust.at : "" }), values);
       syncAdjustControls();
+      repaintAll();
       for (const b of adjustButtons) b.disabled = true;
       clearTimeout(adjustTimer);
       if (adjustSaving) return; // 응답의 새 at를 받은 뒤에 예약
@@ -1262,6 +1505,12 @@ window.DPMaskEdit = (() => {
           opts.refresh();
         }
       } catch (e) {
+        xdrag = null;
+        if (adjustDraft) opts.toast("저장하지 못해 대기 중 보정 입력을 버렸습니다. 값을 확인하고 다시 입력하세요", "warn");
+        adjustDraft = null;
+        // 실패한 미리보기는 버리되, 오류 복구가 끝날 때까지 같은 저장 잠금은 유지한다.
+        adjustSaving = Object.assign({ key, blur: 0, invert: false }, xformDefault, cur() && cur().adjust);
+        repaintAll();
         opts.toast(`보정하지 못함: ${e.message}`, e.status === 409 ? "warn" : "err");
         if (e.status === 409) opts.refresh();
         await refreshInfo();
@@ -1269,6 +1518,7 @@ window.DPMaskEdit = (() => {
         if (M.busy === "adjust_wait") M.busy = "";
         // s.adjust의 refresh는 저장 잠금 중이라 창을 다시 열지 못한다. 획 없는 새 창을 여기서 받는다.
         if (saved && M.key === key && !M.busy && !M.stroke && !M.pending() && (M.err || M.behind())) {
+          cancelXform();
           await M.open(key);
           repaintAll();
         }
@@ -1284,6 +1534,7 @@ window.DPMaskEdit = (() => {
           }
         }
         syncAdjustControls();
+        repaintAll();
         renderPanel();
       }
       render();
@@ -1306,7 +1557,25 @@ window.DPMaskEdit = (() => {
       invert.addEventListener("change", () => queueAdjust({ invert: invert.checked }));
       label.append(invert, el("span", "", "색반전"));
       s.append(label);
-      line(s, "변형", "k");
+      const tools = line(s, "변형", "k mc-tools");
+      for (const [k, label] of [["brush", "붓"], ["xform", "변형"]]) {
+        const b = button(label, "V — 붓과 변형 도구 전환", () => setEditTool(k));
+        b.classList.toggle("sel", editTool === k);
+        b.ariaPressed = String(editTool === k);
+        tools.append(b);
+      }
+      if (editTool === "xform") {
+        slide(s, "패치 투명도", 0, 100, 5, patchOpacity, (v) => `${v}%`, (v) => { patchOpacity = v; repaintAll(); });
+        const diff = button("원본과 차이", "D — 패치와 원본 아래층의 색 차이(맞으면 검게)", () => {
+          difference = !difference;
+          repaintAll();
+          renderPanel();
+        });
+        diff.classList.toggle("sel", difference);
+        diff.ariaPressed = String(difference);
+        btns(s, diff);
+        line(s, "안쪽 이동 · 손잡이 배율/회전 · Shift 비율/15° · Alt 중심 · Ctrl 미세 조절 · Esc 끌기 취소", "dim");
+      }
       if (info.xform_stale) {
         const stale = chip("변형 기준 바뀜", "b-warn");
         stale.title = "변형을 저장한 뒤 정합·재분석·수확으로 패치 기준 자리가 바뀌었습니다. 변형은 새 자리 위에 그대로 얹힙니다.";
@@ -1314,7 +1583,7 @@ window.DPMaskEdit = (() => {
       }
       const grid = el("div", "mc-xform");
       for (const [k, label, unit, min, max] of [["dx", "이동 x", "px", -65536, 65536], ["dy", "이동 y", "px", -65536, 65536],
-        ["rot", "회전", "°", -180, 180], ["sx", "배율 가로", "%", 10, 400], ["sy", "배율 세로", "%", 10, 400]]) {
+        ["sx", "배율 가로", "%", 10, 400], ["sy", "배율 세로", "%", 10, 400], ["rot", "회전", "°", -180, 180]]) {
         const row = el("label", "mc-xform-value");
         const input = el("input");
         const scale = k === "sx" || k === "sy";
@@ -1653,6 +1922,10 @@ window.DPMaskEdit = (() => {
     // ── 키(board.js 가 K 모드에서 먼저 넘김 — 입력칸 포커스는 board.js 가 이미 거름). true = 소비 ──
     function onKey(e) {
       if (!on) return false;
+      if (e.code === "Escape" && currentDrag()) {
+        cancelXform();
+        return true;
+      }
       const mod = e.ctrlKey || e.metaKey;
       if (mod && (e.code === "KeyZ" || e.code === "KeyY")) {
         if (!e.repeat) step(e.code === "KeyZ" && !e.shiftKey);
@@ -1660,10 +1933,22 @@ window.DPMaskEdit = (() => {
       }
       if (mod || e.altKey) return false;
       switch (e.code) {
+        case "KeyV":
+          if (!e.repeat) setEditTool(editTool === "brush" ? "xform" : "brush");
+          return true;
+        case "KeyD":
+          if (editTool !== "xform") return false;
+          if (!e.repeat) {
+            difference = !difference;
+            repaintAll();
+            renderPanel();
+          }
+          return true;
         case "ArrowLeft":
         case "ArrowRight":
         case "ArrowUp":
         case "ArrowDown": {
+          if (currentDrag()) return true;
           const k = e.code === "ArrowLeft" || e.code === "ArrowRight" ? "dx" : "dy";
           const sign = e.code === "ArrowLeft" || e.code === "ArrowUp" ? -1 : 1;
           queueAdjust({ [k]: Math.round(clamp(adjustValues()[k] + sign * (e.shiftKey ? 10 : 1), -65536, 65536) * 10) / 10 });
@@ -1717,6 +2002,7 @@ window.DPMaskEdit = (() => {
     }
 
     window.addEventListener("blur", () => {
+      cancelXform();
       onKeyUp({ code: "KeyQ" });
       onKeyUp({ code: "KeyW" });
     });
@@ -1746,7 +2032,7 @@ window.DPMaskEdit = (() => {
       // K 모드 진입: to = {key, seam}. 세션이 있는 같은 후보면 이어서(선택 구간만), 다른 후보면 go(적용 안 한 획 확인 — 아니오면 세션 후보로 이어서)
       on = true;
       S = st;
-      viewer.setEditor({ pointerdown, pointermove, pointerup, cancel: pointerup, draw });
+      viewer.setEditor({ pointerdown, pointermove, pointerup, cancel: () => { cancelXform(); pointerup(); }, draw });
       if (to.key !== M.key && go(to, true)) return;
       if (to.key === M.key && to.seam) go(to);
       opts.select(M.key, !(to.key === M.key && to.seam));
@@ -1761,12 +2047,16 @@ window.DPMaskEdit = (() => {
         opts.toast("적용·되돌리기·★ 바꾸기를 처리하는 중 — 끝난 뒤 나가세요", "warn");
         return false;
       }
+      cancelXform();
       pointerup();
       const n = M.pending();
       if (n && !window.confirm(`적용 안 한 획 ${n}(${label(M.key)})은 이 창에만 남습니다 — Export·다른 창에는 들어가지 않음(K 로 돌아오면 이어서). 나갈까요?`)) {
         return false;
       }
       on = false;
+      editTool = "brush";
+      difference = false;
+      previewRaster = null;
       adjustFocus = null;
       view.base = view.mark = view.orig = slider = false;
       view.split = cursor = null;
@@ -1809,5 +2099,5 @@ window.DPMaskEdit = (() => {
     return { enter, leave, go, onKey, onKeyUp, stateChanged, seamsChanged, pending };
   }
 
-  return { create, session, smooth, fade, kernel, feather, stamp, op, quant, compose, pngL };
+  return { create, session, smooth, fade, kernel, feather, stamp, op, quant, compose, pngL, xformQuad, relativeAffine, xformPoints, xformDrag };
 })();

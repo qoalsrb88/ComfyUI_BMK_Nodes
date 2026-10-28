@@ -46246,6 +46246,272 @@ console.log(JSON.stringify(out));
 def polish5_xform2_unit():
     """다듬기 배치 5-2b-2(10/28 — _proto/STUDIO_POLISH5B_SPEC.md D36–D38): 캔버스 변형 상자·클라 미리보기·패치 투명도·[원본과 차이](JS 만)."""
     section("다듬기 배치 5-2b-2 — 변형 상자·미리보기")
+    node = shutil.which("node")
+    if not node:
+        skip("node 없음: 변형 상자 UI 하네스 미실행")
+        return
+    out_dir = OUT_ROOT / "polish5_xform2"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    tree = ast.parse(inspect.getsource(mask_js_unit))
+    harness = next(n.value.value for n in ast.walk(tree) if isinstance(n, ast.Assign)
+                   and any(isinstance(t, ast.Name) and t.id == "harness" for t in n.targets) and isinstance(n.value, ast.Constant))
+    cut = [_PL_JS_HARNESS[_PL_JS_HARNESS.index(a):_PL_JS_HARNESS.index(b, _PL_JS_HARNESS.index(a))]
+           for a, b in (("import fs", "async function run("), ("class El {", "async function mouse("))]
+    cut += [harness[:harness.index('// J-K1 공용 표')], harness[harness.index('function maskState()'):harness.index('await scenario("panel",')]]
+    js = "".join(cut).replace('if (path === "mask") return resp(200, info);',
+        'if (path === "mask/adjust") return await srv.adjustReply(rec.body);\n    if (path === "mask") return resp(200, info);')
+    # 기존 하네스는 픽셀 이동을 하지 않는 canvas 대역이다. 이 묶음에서만 독립적인 premultiplied 쌍선형 대역을 사용한다.
+    a = js.index('    return Object.assign(e, { width: 0, height: 0, getContext:')
+    b = js.index('\n  };', a)
+    js = js[:a] + '    return rasterCanvas(e, P);' + js[b:]
+    js = js.replace('  v.flags =', '  v.scale = () => v.zoom || 1; v.setCursor = c => { v.cursor = c; };\n  v.flags =')
+    js = js.replace('v.ed.draw(root, 1)', 'v.ed.draw(root, v.scale())')
+    js += r'''
+function rasterCanvas(e, P) {
+  e.width = e.height = 0;
+  const ctx = {
+    matrix: [1,0,0,1,0,0],
+    createImageData: (w,h) => ({width:w,height:h,data:new Uint8ClampedArray(w*h*4)}),
+    putImageData(im, x, y, ...rect) { e.pixels = im.data.slice(); P.img = im; P.puts.push(rect); },
+    getImageData() { return {data:e.pixels.slice()}; },
+    clearRect() { e.pixels = new Uint8ClampedArray(e.width*e.height*4); },
+    setTransform(...m) { this.matrix = m; },
+    drawImage(src) {
+      if (src.im) { e.pixels = src.im.data.slice(); return; }
+      P.resamples = (P.resamples || 0) + 1;
+      const [a,b,c,d,tx,ty] = this.matrix, det = a*d-b*c;
+      for (let y=0;y<e.height;y++) for (let x=0;x<e.width;x++) {
+        const px=x+.5-tx, py=y+.5-ty;
+        const sx=(d*px-c*py)/det-.5, sy=(-b*px+a*py)/det-.5;
+        const ix=Math.floor(sx), iy=Math.floor(sy), fx=sx-ix, fy=sy-iy;
+        const rgba=[0,0,0,0];
+        for (let j=0;j<2;j++) for (let i=0;i<2;i++) {
+          const xx=ix+i, yy=iy+j;
+          if (xx<0 || yy<0 || xx>=src.width || yy>=src.height) continue;
+          const off=(yy*src.width+xx)*4, w=(i?fx:1-fx)*(j?fy:1-fy), alpha=src.pixels[off+3]/255;
+          for (let k=0;k<3;k++) rgba[k]+=src.pixels[off+k]*alpha*w;
+          rgba[3]+=alpha*w;
+        }
+        const off=(y*e.width+x)*4;
+        for (let k=0;k<3;k++) e.pixels[off+k]=rgba[3]?rgba[k]/rgba[3]:0;
+        e.pixels[off+3]=rgba[3]*255;
+      }
+    }
+  };
+  e.getContext = () => ctx;
+  return e;
+}
+const D = maskCtx().window.DPMaskEdit;
+const near = (a,b,eps=1e-7) => a.length===b.length && a.every((v,i)=>Math.abs(v-b[i])<eps);
+const zero = {dx:0,dy:0,rot:0,sx:1,sy:1};
+const at = (q,x,y) => [q[0]+(q[2]-q[0])*x+(q[6]-q[0])*y,q[1]+(q[3]-q[1])*x+(q[7]-q[1])*y];
+await scenario("geometry", async () => {
+  const r = {};
+  r.python = IN.cases.every(t => near(D.xformQuad(t.q,t.v),t.want));
+  r.relative = IN.cases.every(t => {
+    const from=D.xformQuad(t.q,{dx:5,dy:-7,rot:31,sx:.8,sy:1.7}), A=D.relativeAffine(from,t.want);
+    return [0,2,4,6].every(i=>near([A[0]*from[i]+A[2]*from[i+1]+A[4],A[1]*from[i]+A[3]*from[i+1]+A[5]],t.want.slice(i,i+2)));
+  });
+  const base=[10,20,110,40,90,100,-10,80], v={dx:3,dy:7,rot:47,sx:1.2,sy:.8}, q=D.xformQuad(base,v);
+  const handles={nw:[0,0],n:[.5,0],ne:[1,0],e:[1,.5],se:[1,1],s:[.5,1],sw:[0,1],w:[0,.5]};
+  r.anchors = r.altCenter = r.shiftRatio = r.clamp = true;
+  for (const [h,[x,y]] of Object.entries(handles)) {
+    const p=at(q,x,y), to=[p[0]+4000,p[1]-2200];
+    for (const mods of [{},{shiftKey:true},{altKey:true},{shiftKey:true,altKey:true}]) {
+      const n=D.xformDrag(v,q,h,p,to,mods), nq=D.xformQuad(base,n);
+      r.clamp &&= n.sx>=.1-1e-9 && n.sy>=.1-1e-9 && n.sx<=4+1e-9 && n.sy<=4+1e-9;
+      if (mods.altKey) r.altCenter &&= near(at(nq,.5,.5),at(q,.5,.5));
+      else r.anchors &&= near(at(nq,1-x,1-y),at(q,1-x,1-y));
+      if (mods.shiftKey) r.shiftRatio &&= Math.abs(n.sx/n.sy-v.sx/v.sy)<1e-8;
+    }
+  }
+  const rect=[0,0,100,0,100,80,0,80];
+  const move=D.xformDrag(zero,rect,"move",[50,40],[52.36,36.72],{});
+  const fine=D.xformDrag(zero,rect,"move",[50,40],[52.36,36.72],{ctrlKey:true});
+  r.moveSnap=near([move.dx,move.dy],[2,-3]) && near([fine.dx,fine.dy],[2.4,-3.3]);
+  const scale=D.xformDrag(zero,rect,"e",[100,40],[112.34,40],{});
+  const sf=D.xformDrag(zero,rect,"e",[100,40],[112.34,40],{ctrlKey:true});
+  r.scaleSnap=near([scale.sx,sf.sx],[1.12,1.123]) && scale.sy===1;
+  const rotate = (angle, mods={}, start=zero) => D.xformDrag(start,rect,"rot",[50,-24],
+    [50+64*Math.sin(angle*Math.PI/180),40-64*Math.cos(angle*Math.PI/180)],mods).rot;
+  r.rotation=near([rotate(22.3),rotate(22.3,{ctrlKey:true}),rotate(22.3,{shiftKey:true}),rotate(20,{}, {...zero,rot:170})],[22,22.3,15,-170]);
+  r.noMotion=near(Object.values(D.xformDrag(v,q,"e",[1,2],[1,2],{})),Object.values(v));
+  const p1=D.xformPoints(q,1),p2=D.xformPoints(q,2);
+  r.rotationHandle=Math.abs(Math.hypot(p1.points.rot[0]-p1.points.n[0],p1.points.rot[1]-p1.points.n[1])-24)<1e-8
+    && Math.abs(Math.hypot(p2.points.rot[0]-p2.points.n[0],p2.points.rot[1]-p2.points.n[1])-12)<1e-8;
+  return r;
+});
+await scenario("compose", async () => {
+  const L={box:[0,0,3,1],under:new Uint8ClampedArray([100,80,60,255,100,80,60,255,100,80,60,255]),
+    patch:new Uint8ClampedArray([200,40,80,128,0,0,0,0,130,50,90,255]),over:new Uint8ClampedArray(12)};
+  const m=new Float32Array([1,0]), b=new Float32Array([1,1]), out=new Uint8ClampedArray(12);
+  D.compose(L,[0,0,2,1],m,b,out,0,0,3,1,{split:null,opacity:.5});
+  const r={alpha:near([...out.slice(0,3)],[125,70,65],1),outside:near([...out.slice(8,11)],[100,80,60])};
+  L.over.fill(255);
+  D.compose(L,[0,0,2,1],m,b,out,0,0,3,1,{diff:true,orig:true,mark:true,base:true,split:3,opacity:0});
+  r.diff=near([...out],[100,40,20,255,40,32,24,255,30,30,30,255]);
+  return r;
+});
+async function setup() {
+  const P=maskPanel(), info=maskInfo(K15);
+  Object.assign(info,{rect:[10,10,30,30],quad:[10,10,30,10,30,30,10,30],base_quad:[10,10,30,10,30,30,10,30],adjust:null,edit:null});
+  info.layers.box=[5,5,45,45]; info.base.sig="base0";
+  P.srv.info[K15]=info; P.info=info;
+  let rev=140;
+  P.srv.adjustReply=async body=>{
+    if (P.srv.hold) await P.srv.hold;
+    if (P.srv.fail) return {ok:false,status:400,json:async()=>({error:"크롭 밖"})};
+    info.adjust={...zero,...body,at:`at${++rev}`,hist:[]};
+    info.quad=D.xformQuad(info.base_quad,info.adjust);
+    info.layers.sig=info.composite_sig=`new${rev}`;
+    for (const k of ["under","patch","over"]) info.layers[`${k}_url`]=info.layers[`${k}_url`].replace(/v=[^&]+/,`v=new${rev}`);
+    return {ok:true,status:200,json:async()=>({ok:true,adjust:clone(info.adjust),rev,composite_sig:info.composite_sig})};
+  };
+  P.ed.enter(maskState(),{key:K15});
+  await until(()=>P.viewer.layer && !P.ed._test.M.busy);
+  const M=P.ed._test.M;
+  M.m.fill(1); M.base.fill(1); M.layers.over.fill(0); M.layers.patch.fill(0);
+  const i=((20-5)*40+20-5)*4; M.layers.patch.set([200,60,40,255],i);
+  P.raf();
+  P.input=k=>P.panel.all().find(e=>e.dataset.xform===k);
+  P.change=(k,v)=>{P.input(k).value=String(v);P.input(k).fire("change");};
+  P.pixel=(x,y)=>[...P.img.data.slice(((y-5)*40+x-5)*4,((y-5)*40+x-5)*4+3)];
+  P.down=(x,y)=>P.viewer.ed.pointerdown({cx:x,cy:y});
+  P.move=(x,y,mods={})=>P.viewer.ed.pointermove({cx:x,cy:y,...mods});
+  P.up=()=>P.viewer.ed.pointerup({});
+  return P;
+}
+await scenario("interaction",async()=>{
+  const P=await setup(),{ed,viewer,B}=P,M=ed._test.M,r={};
+  r.default=B("붓").ariaPressed==="true" && !B("원본과 차이");
+  r.grid=P.panel.all().filter(e=>e.dataset.xform).map(e=>e.dataset.xform).join()==="dx,dy,sx,sy,rot";
+  r.toggle=P.key("KeyV") && B("변형").ariaPressed==="true" && !!B("원본과 차이");
+  P.key("KeyV",{repeat:true}); r.repeat=B("변형").ariaPressed==="true";
+  viewer.zoom=2; viewer.redraw();
+  const hs=viewer.marks.filter(m=>m.attrs["data-handle"]);
+  r.svg=hs.length===9 && hs.filter(m=>m.tag==="rect").every(m=>Number(m.attrs.width)===4)
+    && Number(hs.find(m=>m.attrs["data-handle"]==="rot").attrs.r)===2;
+  viewer.zoom=1;
+  r.outside=P.down(100,100)===false;
+  P.move(20,20); r.cursor=viewer.cursor==="move";
+  P.down(20,20); P.move(22.3,20.1); P.move(23.3,20.1); P.move(24,20);
+  r.noBrush=!M.stroke && !M.pending() && !viewer.marks.some(m=>m.attrs.class==="mbrush");
+  r.noRequest=P.count("mask/adjust")===0;
+  P.raf();
+  r.livePixel=near(P.pixel(24,20),[200,60,40]) && !near(P.pixel(20,20),[200,60,40]);
+  r.oneFrame=P.resamples===1;
+  P.raf(); r.cached=P.resamples===1;
+  P.key("Escape"); P.raf(); P.up();
+  r.escape=P.calls.exit===0 && !ed._test.drag() && !ed._test.draft() && near(P.pixel(20,20),[200,60,40]);
+  P.down(30,20);P.move(40,20);P.raf();
+  r.edge=ed._test.drag().handle==="e" && near([ed._test.drag().values.sx,ed._test.drag().values.dx],[1.5,5]);
+  P.key("Escape");
+  P.down(30,30);P.move(36,34,{shiftKey:true,altKey:true});P.raf();
+  r.corner=ed._test.drag().handle==="se" && near([ed._test.drag().values.sx,ed._test.drag().values.sy,ed._test.drag().values.dx],[1.6,1.6,0]);
+  P.key("Escape");P.move(20,-14);r.rotateCursor=viewer.cursor==="grab";
+  P.down(20,-14);P.move(54,20,{shiftKey:true});P.raf();
+  r.rotateUI=ed._test.drag().handle==="rot" && ed._test.drag().values.rot===90 && viewer.cursor==="grabbing";
+  P.key("Escape");
+  P.down(20,20); P.up(); r.same=!ed._test.draft();
+  P.down(20,20); P.move(24,20); P.up();
+  r.release=ed._test.draft().dx===4 && M.busy==="adjust_wait" && P.count("mask/adjust")===0;
+  const saving=ed._test.saveAdjust("set"); await saving;
+  r.once=P.count("mask/adjust")===1;
+  for (const busy of ["apply","edit","load","pick","adjust"]) {
+    M.busy=busy; P.down(24,20);
+    r.locked=(r.locked??true)&&!ed._test.drag();
+  }
+  M.busy="";
+  M.undo.push({label:"획"}); P.down(24,20); r.pending=!ed._test.drag(); M.undo=[];
+  M.err="failed";P.down(24,20);r.errorLock=!ed._test.drag();M.err=null;
+  const S=maskState();S.targets[0].candidates[0].picked=false;ed.stateChanged(S);P.down(24,20);r.notStar=!ed._test.drag();
+  ed.stateChanged(maskState());
+  B("붓").fire("click");P.down(24,20);P.up();B("변형").fire("click");P.down(24,20);
+  r.pendingSwitch=B("변형").ariaPressed==="true" && M.pending()>0 && !ed._test.drag();M.discard();
+  P.down(24,20);P.move(26,20);viewer.ed.cancel();P.up();r.pointerCancel=!ed._test.draft();
+  P.down(24,20);P.move(26,20);M.seq++;P.up();r.reopen=!ed._test.draft();
+  P.down(24,20);P.move(26,20);ed.go({key:K14});
+  await until(()=>M.key===K14&&!M.busy);
+  r.target=B("붓").ariaPressed==="true"&&!ed._test.draft();
+  B("변형").fire("click");ed.leave();ed.enter(maskState(),{key:K14});
+  await until(()=>!M.busy&&B("붓"));r.leave=B("붓").ariaPressed==="true";
+  ed.leave();return r;
+});
+await scenario("preview",async()=>{
+  const P=await setup(),{ed,viewer,B,info}=P,M=ed._test.M,r={};
+  P.key("KeyV");
+  const opacity=()=>P.panel.all().find(e=>e.classList.contains("rf-slider")&&e.children[0].textContent==="패치 투명도").all().find(e=>e.type==="range");
+  const slider=opacity();slider.value=50;slider.fire("input");P.raf();
+  r.opacity=near(P.pixel(20,20),[108,38,84],1);
+  B("붓").fire("click");P.raf();r.brushAlpha=near(P.pixel(20,20),[200,60,40]);
+  B("변형").fire("click");r.remember=Number(opacity().value)===50;
+  P.key("KeyD");P.key("KeyW");P.key("KeyM");P.key("KeyS");P.raf();
+  r.diffPriority=near(P.pixel(20,20),[185,45,88]);
+  B("붓").fire("click");B("변형").fire("click");r.diffOff=B("원본과 차이").ariaPressed==="false";
+  ed.onKeyUp({code:"KeyW"});P.key("KeyM");P.key("KeyS");
+  opacity().value=100;opacity().fire("input");
+  P.change("dx",4);P.raf();r.numeric=near(P.pixel(24,20),[200,60,40]);
+  P.key("KeyD");P.raf();r.diffAffine=near(P.pixel(24,20),[181,45,88]);P.key("KeyD");
+  P.key("ArrowRight");P.raf();r.arrow=near(P.pixel(25,20),[200,60,40]);
+  P.change("dx",15);P.raf();r.windowZero=!near(P.pixel(35,20),[200,60,40]);
+  P.change("dx",4);P.raf();
+  let release; const gate=new Promise(r=>release=r);
+  P.srv.wait=(path,q)=>path==="mask/img"&&["under","patch","over"].includes(q.kind)?gate:null;
+  const old=M.layers, saving=ed._test.saveAdjust("set");
+  await until(()=>info.adjust&&info.adjust.dx===4&&!M.busy);
+  P.raf();r.retained=M.layers===old && near(P.pixel(24,20),[200,60,40]) && near(M.layers.quad,info.base_quad);
+  release();await saving;P.srv.wait=null;P.raf();
+  r.serverSwap=M.layers!==old&&near(M.layers.quad,info.quad)&&ed._test.previewLayers()===M.layers;
+  P.change("dx",4.5);P.raf();
+  const pp=ed._test.previewLayers().patch, edge=((20-5)*40+5-5)*4;
+  r.premultEdge=pp[edge]===200&&pp[edge+1]===60&&pp[edge+2]===40&&pp[edge+3]>0&&pp[edge+3]<255;
+  P.change("dx",4);
+  let finish;P.srv.hold=new Promise(r=>finish=r);
+  P.change("dx",6);const first=ed._test.saveAdjust("set");await until(()=>M.busy==="adjust");
+  P.down(26,20);P.move(29,20);P.up();
+  r.mergeDraft=ed._test.draft().dx===9;
+  finish();P.srv.hold=null;await first;await ed._test.saveAdjust("set");
+  const writes=P.srv.log.filter(x=>x.path==="mask/adjust");
+  r.mergeSaved=info.adjust.dx===9&&writes.length===3&&writes[2].body.seen===writes[1].body.seen.replace(/\d+/,v=>Number(v)+1);
+  P.srv.fail=true;P.change("dx",12);P.raf();await ed._test.saveAdjust("set");P.raf();
+  r.failure=!ed._test.draft()&&!ed._test.drag()&&ed._test.previewLayers()===M.layers&&P.toasts.some(t=>t.includes("보정하지 못함: 크롭 밖"));
+  ed.leave();return r;
+});
+await scenario("reopenDuringSave",async()=>{
+  const P=await setup(),{ed,info}=P,M=ed._test.M,r={};
+  P.key("KeyV");P.change("dx",4);
+  let release;P.srv.hold=new Promise(r=>release=r);
+  const saving=ed._test.saveAdjust("set");await until(()=>M.busy==="adjust");
+  P.down(24,20);P.move(26,20);const before=M.seq;
+  info.rect=[14,10,34,30];info.base.sig="moved-window";
+  release();P.srv.hold=null;await saving;P.up();
+  r.reopened=M.seq>before&&!ed._test.drag()&&!ed._test.draft()&&near(M.win,info.rect)&&info.adjust.dx===4;
+  ed.leave();return r;
+});
+console.log(JSON.stringify(out));
+'''
+    cases = []
+    for q in ([10, 20, 110, 20, 110, 80, 10, 80], [5, 2, 13, 6, 11, 12, 3, 8]):
+        for v in ({}, dict(dx=3, dy=-2, rot=90, sx=2, sy=.5), dict(dx=-17.3, dy=9.2, rot=-179.9, sx=.1, sy=4),
+                  dict(dx=12.4, dy=-6.7, rot=37, sx=1.234, sy=.891)):
+            cases.append(dict(q=q, v=v, want=an.xform_quad(q, **v)))
+    source = (PKG / "web_design_patch" / "mask_edit.js").read_text(encoding="utf-8")
+    api = "return { enter, leave, go, onKey, onKeyUp, stateChanged, seamsChanged, pending }"
+    test_mask = out_dir / "mask_xform2_test.js"
+    test_mask.write_text(source.replace(api, api[:-2] + ", _test: { M, saveAdjust, refreshInfo, previewLayers, drag: () => xdrag, draft: () => adjustDraft } }"), encoding="utf-8", newline="\n")
+    (out_dir / "xform2.mjs").write_text(js, encoding="utf-8", newline="\n")
+    (out_dir / "in.json").write_text(json.dumps({"api": _pl_api(), "mask": json.loads(_MASK_API.read_text(encoding="utf-8")),
+        "rules": {}, "maskJs": str(test_mask), "pipelineJs": str(PKG / "web_design_patch" / "pipeline.js"),
+        "boardJs": str(PKG / "web_design_patch" / "board.js"), "cases": cases}), encoding="utf-8")
+    result = subprocess.run([node, str(out_dir / "xform2.mjs"), str(out_dir / "in.json")], capture_output=True, text=True, encoding="utf-8", timeout=60)
+    (out_dir / "ui-result.txt").write_text(result.stdout + result.stderr, encoding="utf-8")
+    check(result.returncode == 0, f"X9: 변형 상자 node 종료 {result.stderr[:500]}")
+    scenes = json.loads(result.stdout) if result.returncode == 0 else {}
+    for name in ("geometry", "compose", "interaction", "preview", "reopenDuringSave"):
+        scene = scenes.get(name, {})
+        check(bool(scene) and "error" not in scene, f"X9: {name} 시나리오 {scene.get('error', '')}")
+        for label, ok in scene.items():
+            check(ok is True, f"X9: {name}:{label} {ok if ok is not True else ''}")
 
 
 def polish5_grow_unit():
