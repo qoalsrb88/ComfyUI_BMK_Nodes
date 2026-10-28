@@ -881,20 +881,21 @@ window.DPMaskEdit = (() => {
         const source = document.createElement("canvas"), dest = document.createElement("canvas");
         source.width = dest.width = w;
         source.height = dest.height = h;
-        const ctx = source.getContext("2d"), data = ctx.createImageData(w, h);
+        const ctx = source.getContext("2d", { willReadFrequently: true }), data = ctx.createImageData(w, h);
         data.data.set(L.patch);
         ctx.putImageData(data, 0, 0);
+        const bounds = quadBounds(L.quad), [bx, by] = L.box;
+        const sourceRect = [Math.max(0, bounds[0] - bx), Math.max(0, bounds[1] - by), Math.min(w, bounds[2] - bx), Math.min(h, bounds[3] - by)];
         previewRaster = { layers: L, source, dest, ctx: dest.getContext("2d", { willReadFrequently: true }), quad: null, rect: null,
-          patch: new Uint8ClampedArray(L.patch.length) };
+          sourceRect, patch: new Uint8ClampedArray(L.patch.length) };
       }
       const p = previewRaster;
       if (!p.quad || q.some((v, i) => v !== p.quad[i])) {
         const [bx, by] = L.box;
         p.ctx.setTransform(1, 0, 0, 1, 0, 0);
-        // 확대 보간은 읽을 사각형 밖에도 픽셀을 남길 수 있다. native canvas만 비우고 RGBA 읽기·합성은 영역으로 제한한다.
-        p.ctx.clearRect(0, 0, w, h);
         if (p.rect) {
           const [x0, y0, x1, y1] = p.rect;
+          p.ctx.clearRect(x0, y0, x1 - x0, y1 - y0);
           for (let y = y0; y < y1; y++) p.patch.fill(0, (y * w + x0) * 4, (y * w + x1) * 4);
         }
         const bounds = quadBounds(q);
@@ -902,9 +903,16 @@ window.DPMaskEdit = (() => {
           Math.min(w, bounds[2] - bx), Math.min(h, bounds[3] - by)];
         p.rect = x1 > x0 && y1 > y0 ? [x0, y0, x1, y1] : null;
         if (p.rect) {
+          // 읽는 범위로 그리기도 잘라 확대 보간 픽셀이 다음 clearRect 밖에 남지 않게 한다.
+          p.ctx.save();
+          p.ctx.beginPath();
+          p.ctx.rect(x0, y0, x1 - x0, y1 - y0);
+          p.ctx.clip();
           p.ctx.setTransform(a[0], a[1], a[2], a[3], a[4] + a[0] * bx + a[2] * by - bx, a[5] + a[1] * bx + a[3] * by - by);
           // Canvas는 premultiplied alpha로 보간한다. 읽기는 새 quad 영역만, compose용 전체 버퍼는 재사용한다.
-          p.ctx.drawImage(p.source, 0, 0);
+          const [sx0, sy0, sx1, sy1] = p.sourceRect, sw = sx1 - sx0, sh = sy1 - sy0;
+          if (sw > 0 && sh > 0) p.ctx.drawImage(p.source, sx0, sy0, sw, sh, sx0, sy0, sw, sh);
+          p.ctx.restore();
           const data = p.ctx.getImageData(x0, y0, x1 - x0, y1 - y0).data, stride = (x1 - x0) * 4;
           for (let y = y0; y < y1; y++) p.patch.set(data.subarray((y - y0) * stride, (y - y0 + 1) * stride), (y * w + x0) * 4);
         }
@@ -1071,10 +1079,11 @@ window.DPMaskEdit = (() => {
       }
       again = false;
       seenRev = S ? stateVer(S) : seenRev;
-      const seq = M.seq;
+      const seq = M.seq, before = shownQuad();
       const reopened = await M.refresh();
       if (M.seq !== seq) cancelXform();
       if (reopened) repaintAll();
+      else repaintXform(before);
       render();
       await layers();
     }
@@ -1084,20 +1093,33 @@ window.DPMaskEdit = (() => {
       const q = shownQuad();
       if (!q) return null;
       const z = viewer.scale(), { points } = xformPoints(q, z);
-      for (const k of ["rot", ...Object.keys(XHANDLES)]) {
-        if (Math.hypot(pt[0] - points[k][0], pt[1] - points[k][1]) <= 7 / z) return k;
-      }
+      const short = Math.min(Math.hypot(q[2] - q[0], q[3] - q[1]), Math.hypot(q[6] - q[0], q[7] - q[1])) * z;
       const a = relativeAffine(q, [0, 0, 1, 0, 1, 1, 0, 1]);
       if (!a) return null;
       const x = a[0] * pt[0] + a[2] * pt[1] + a[4], y = a[1] * pt[0] + a[3] * pt[1] + a[5];
+      const center = short <= 14 && x > 0.25 && x < 0.75 && y > 0.25 && y < 0.75;
+      let hit = null, nearest = Infinity;
+      for (const k of ["rot", ...Object.keys(XHANDLES)]) {
+        if (center && k !== "rot") continue; // 아주 작아 꼭짓점 반경도 겹치면 가운데는 이동에 남긴다.
+        const radius = Math.min(7, short / 4), corner = k === "rot" || (XHANDLES[k][0] && XHANDLES[k][1]);
+        const distance = Math.hypot(pt[0] - points[k][0], pt[1] - points[k][1]);
+        if (distance <= (corner ? Math.max(3, radius) : radius) / z && distance < nearest) { hit = k; nearest = distance; }
+      }
+      if (hit) return hit;
       return x >= 0 && x <= 1 && y >= 0 && y <= 1 ? "move" : null;
+    }
+
+    function warnXform() {
+      opts.toast(M.pending() ? "적용 안 한 획을 적용하거나 버린 뒤 보정하세요" : "지금은 변형할 수 없습니다 — 작업이 끝나거나 다시 받은 뒤 시도하세요", "warn");
     }
 
     function xformCursor(handle) {
       if (!handle) return "";
       if (handle === "move") return "move";
       if (handle === "rot") return currentDrag() ? "grabbing" : "grab";
-      const { points, center } = xformPoints(shownQuad(), viewer.scale()), p = points[handle];
+      const q = shownQuad();
+      if (!q) return ""; // 재열기 실패로 정보가 없더라도 놓기에서 잠금 안내까지 이어 간다.
+      const { points, center } = xformPoints(q, viewer.scale()), p = points[handle];
       const dir = Math.round(Math.atan2(p[1] - center[1], p[0] - center[0]) / (Math.PI / 4));
       return ["ew-resize", "nwse-resize", "ns-resize", "nesw-resize"][(dir % 4 + 4) % 4];
     }
@@ -1107,7 +1129,7 @@ window.DPMaskEdit = (() => {
         const pt = viewer.canvasPoint(e), handle = xformHit(pt);
         if (!handle) return false; // 상자 밖 = 뷰어 화면 이동
         if (!canAdjust() || !M.m || !cur().base_quad || layerErr) {
-          opts.toast(M.pending() ? "적용 안 한 획을 적용하거나 버린 뒤 보정하세요" : "지금은 변형할 수 없습니다 — 작업이 끝나거나 다시 받은 뒤 시도하세요", "warn");
+          warnXform();
           return true;
         }
         const start = adjustValues();
@@ -1163,8 +1185,11 @@ window.DPMaskEdit = (() => {
         const before = shownQuad(), values = roundGeometry(d.values);
         xdrag = null;
         if (GEOMETRY.some((k) => Math.abs(values[k] - d.start[k]) > 1e-8)) {
-          if (!adjustDraft && !adjustSaving) values.seen = d.seen;
-          queueAdjust(values);
+          if (!canAdjust()) warnXform();
+          else {
+            if (!adjustDraft && !adjustSaving) values.seen = d.seen;
+            queueAdjust(values);
+          }
         }
         syncAdjustControls();
         repaintXform(before);
@@ -1545,12 +1570,15 @@ window.DPMaskEdit = (() => {
         const rec = M.recovery ? M.recovery.adjust : cur() && cur().adjust;
         adjustSaving = Object.assign({ key, blur: 0, invert: false }, xformDefault, op === "set" ? draft || rec : op === "undo" ? rec && rec.hist[0] : null);
         const values = Object.fromEntries(["blur", "invert", ...Object.keys(xformDefault)].map((k) => [k, adjustSaving[k]]));
-        const p = M.adjust(op, op === "set" ? values : {}, draft ? draft.seen : undefined);
+        const seen = draft ? draft.seen : rec ? rec.at : "";
+        const p = M.adjust(op, op === "set" ? values : {}, seen);
         renderPanel();
         const d = await p;
         if (!d) return;
         if (d && d.ok) {
           saved = d;
+          const drag = currentDrag();
+          if (drag && drag.key === key && drag.seen === seen) drag.seen = d.adjust ? d.adjust.at : "";
           zRev = Math.max(zRev ?? 0, d.rev);
           alts = applied = null;
           opts.toast("후보 보정 적용 — 이음매를 다시 잽니다");
@@ -1570,8 +1598,12 @@ window.DPMaskEdit = (() => {
         if (M.busy === "adjust_wait") M.busy = "";
         // s.adjust의 refresh는 저장 잠금 중이라 창을 다시 열지 못한다. 획 없는 새 창을 여기서 받는다.
         if (saved && M.key === key && !M.busy && !M.stroke && !M.pending() && (M.err || M.behind())) {
-          cancelXform();
-          await M.open(key);
+          const drag = currentDrag();
+          const opening = M.open(key);
+          // 이 창 저장에 따른 새 마스크 창은 base_quad 기준 끌기에 영향을 주지 않는다.
+          // open은 첫 await 전에 seq를 올린다. 그 즉시 이어 줘 받는 동안 포인터 입력도 끊기지 않게 한다.
+          if (drag && xdrag === drag && M.key === key) drag.seq = M.seq;
+          await opening;
           repaintAll();
         }
         adjustSaving = null;
