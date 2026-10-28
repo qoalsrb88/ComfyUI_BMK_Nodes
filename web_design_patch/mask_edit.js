@@ -925,6 +925,7 @@ window.DPMaskEdit = (() => {
       if (!xdrag) return;
       const before = shownQuad();
       xdrag = null;
+      scheduleAdjust();
       viewer.setCursor("");
       syncAdjustControls();
       repaintXform(before);
@@ -1128,13 +1129,13 @@ window.DPMaskEdit = (() => {
       if (editTool === "xform") {
         const pt = viewer.canvasPoint(e), handle = xformHit(pt);
         if (!handle) return false; // 상자 밖 = 뷰어 화면 이동
-        if (!canAdjust() || !M.m || !cur().base_quad || layerErr) {
+        if (!canAdjust() || (adjustSaving && M.busy !== "adjust") || !M.m || !cur().base_quad || layerErr) {
           warnXform();
           return true;
         }
         const start = adjustValues();
         xdrag = { key: M.key, seq: M.seq, handle, origin: pt, quad: shownQuad(), start, values: start,
-          seen: cur().adjust ? cur().adjust.at : "" };
+          seen: adjustDraft ? adjustDraft.seen : adjustSaving ? adjustSaving.seen : start.at || "" };
         viewer.setCursor(xformCursor(handle));
         return true;
       }
@@ -1185,12 +1186,17 @@ window.DPMaskEdit = (() => {
         const before = shownQuad(), values = roundGeometry(d.values);
         xdrag = null;
         if (GEOMETRY.some((k) => Math.abs(values[k] - d.start[k]) > 1e-8)) {
-          if (!canAdjust()) warnXform();
-          else {
+          const x = candOf(M.key);
+          if (d.reopening && M.busy === "load" && adjustSaving && adjustSaving.key === d.key
+            && cur() && !M.err && !layerErr && !M.stroke && !M.pending() && !(x && (!x.c.picked || x.c.rejected))) {
+            // 자기 저장 성공 뒤 이어 받은 끌기만 새 창을 기다리는 동안 보관한다.
+            adjustDraft = Object.assign(adjustValues(), values, { key: d.key, seen: d.seen });
+          } else if (canAdjust()) {
             if (!adjustDraft && !adjustSaving) values.seen = d.seen;
             queueAdjust(values);
-          }
+          } else warnXform();
         }
+        scheduleAdjust();
         syncAdjustControls();
         repaintXform(before);
         viewer.redraw();
@@ -1550,8 +1556,13 @@ window.DPMaskEdit = (() => {
       syncAdjustControls();
       repaintXform(before);
       for (const b of adjustButtons) b.disabled = true;
+      scheduleAdjust();
+    }
+
+    function scheduleAdjust() {
       clearTimeout(adjustTimer);
-      if (adjustSaving) return; // 응답의 새 at를 받은 뒤에 예약
+      adjustTimer = null;
+      if (!adjustDraft || adjustSaving) return; // 응답의 새 at를 받은 뒤에 예약
       M.busy = "adjust_wait"; // 대기 중에도 대상 변경·붓을 잠그고 이 후보의 입력만 모음
       adjustTimer = setTimeout(() => saveAdjust("set"), 300);
     }
@@ -1560,6 +1571,8 @@ window.DPMaskEdit = (() => {
       if (adjustSaving) return;
       clearTimeout(adjustTimer);
       adjustTimer = null;
+      if (op === "set" && currentDrag()) return; // 끌기가 끝나면 놓기·취소에서 다시 예약한다.
+      const before = shownQuad();
       const draft = adjustDraft;
       adjustDraft = null;
       let saved = null;
@@ -1568,9 +1581,12 @@ window.DPMaskEdit = (() => {
         if ((M.busy && (op !== "set" || M.busy !== "adjust_wait")) || M.stroke || M.pending()) return;
         if (draft && draft.key !== M.key) return;
         const rec = M.recovery ? M.recovery.adjust : cur() && cur().adjust;
-        adjustSaving = Object.assign({ key, blur: 0, invert: false }, xformDefault, op === "set" ? draft || rec : op === "undo" ? rec && rec.hist[0] : null);
-        const values = Object.fromEntries(["blur", "invert", ...Object.keys(xformDefault)].map((k) => [k, adjustSaving[k]]));
         const seen = draft ? draft.seen : rec ? rec.at : "";
+        adjustSaving = Object.assign({ blur: 0, invert: false }, xformDefault,
+          op === "set" ? draft || rec : op === "undo" ? rec && rec.hist[0] : null, { key, seen });
+        repaintXform(before);
+        viewer.redraw();
+        const values = Object.fromEntries(["blur", "invert", ...Object.keys(xformDefault)].map((k) => [k, adjustSaving[k]]));
         const p = M.adjust(op, op === "set" ? values : {}, seen);
         renderPanel();
         const d = await p;
@@ -1594,6 +1610,9 @@ window.DPMaskEdit = (() => {
         opts.toast(`보정하지 못함: ${e.message}`, e.status === 409 ? "warn" : "err");
         if (e.status === 409) opts.refresh();
         await refreshInfo();
+        adjustSaving = Object.assign({ key, blur: 0, invert: false }, xformDefault, cur() && cur().adjust);
+        repaintAll();
+        viewer.redraw();
       } finally {
         if (M.busy === "adjust_wait") M.busy = "";
         // s.adjust의 refresh는 저장 잠금 중이라 창을 다시 열지 못한다. 획 없는 새 창을 여기서 받는다.
@@ -1602,16 +1621,16 @@ window.DPMaskEdit = (() => {
           const opening = M.open(key);
           // 이 창 저장에 따른 새 마스크 창은 base_quad 기준 끌기에 영향을 주지 않는다.
           // open은 첫 await 전에 seq를 올린다. 그 즉시 이어 줘 받는 동안 포인터 입력도 끊기지 않게 한다.
-          if (drag && xdrag === drag && M.key === key) drag.seq = M.seq;
+          if (drag && xdrag === drag && M.key === key) { drag.seq = M.seq; drag.reopening = true; }
           await opening;
+          if (drag) drag.reopening = false;
           repaintAll();
         }
         adjustSaving = null;
         if (adjustDraft) {
-          if (saved && adjustDraft.key === key && M.key === key && !M.busy && !M.stroke && !M.pending()) {
+          if (saved && adjustDraft.key === key && M.key === key && !M.busy && canAdjust()) {
             adjustDraft.seen = saved.adjust ? saved.adjust.at : "";
-            M.busy = "adjust_wait";
-            adjustTimer = setTimeout(() => saveAdjust("set"), 300);
+            scheduleAdjust();
           } else {
             adjustDraft = null;
             opts.toast("저장하지 못해 대기 중 보정 입력을 버렸습니다. 값을 확인하고 다시 입력하세요", "warn");

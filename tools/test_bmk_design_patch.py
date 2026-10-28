@@ -46406,8 +46406,9 @@ async function setup() {
       return {ok:false,status:409,json:async()=>({error:"다른 창에서 바뀜",reason:"changed"})};
     if (P.srv.fail) return {ok:false,status:400,json:async()=>({error:"크롭 밖"})};
     if ([body.sx,body.sy].some(v=>v<.1||v>4)) return {ok:false,status:400,json:async()=>({error:"배율 범위"})};
-    info.adjust={...zero,...body,at:`at${++rev}`,hist:[]};
-    info.quad=D.xformQuad(info.base_quad,info.adjust);
+    const target=body.op==="undo"?info.adjust?.hist[0]:body;
+    info.adjust=body.op==="reset"?null:{...zero,...target,at:`at${++rev}`,hist:[]};
+    info.quad=D.xformQuad(info.base_quad,info.adjust||zero);
     info.layers.sig=info.composite_sig=`new${rev}`;
     for (const k of ["under","patch","over"]) info.layers[`${k}_url`]=info.layers[`${k}_url`].replace(/v=[^&]+/,`v=new${rev}`);
     return {ok:true,status:200,json:async()=>({ok:true,adjust:clone(info.adjust),rev,composite_sig:info.composite_sig})};
@@ -46631,10 +46632,16 @@ await scenario("review2OwnSave",async()=>{
   for(const phase of ["waiting","saving"]) {
     const P=await setup(),{ed,info}=P,M=ed._test.M;
     P.srv.strictAdjustSeen=true;P.key("KeyV");P.change("dx",4);
+    if(phase==="waiting") {
+      P.down(24,20);P.move(26,20);await sleep(350);
+      r.waitingDeferred=P.count("mask/adjust")===0&&ed._test.draft().dx===4&&ed._test.drag().seen===""&&M.busy==="adjust_wait";
+      P.up();await until(()=>info.adjust?.dx===6&&!M.busy);
+      r.waitingSaved=P.count("mask/adjust")===1&&info.adjust.dx===6&&P.srv.log.find(x=>x.path==="mask/adjust").body.seen==="";
+      ed.leave();continue;
+    }
     let release;P.srv.hold=new Promise(r=>release=r);
-    if(phase==="waiting") P.down(24,20);
     const saving=ed._test.saveAdjust("set");await until(()=>M.busy==="adjust");
-    if(phase==="saving") P.down(24,20);
+    P.down(24,20);
     P.move(26,20);release();P.srv.hold=null;await saving;
     const savedAt=info.adjust.at;
     r[phase+"Seen"]=ed._test.drag().seen===savedAt;
@@ -46690,6 +46697,122 @@ await scenario("review2ReleaseLocked",async()=>{
   }
   return r;
 });
+await scenario("review3Timer",async()=>{
+  const r={};
+  for(const end of ["unchanged","escape","cancel"]) {
+    const P=await setup(),{ed,info}=P,M=ed._test.M;
+    P.key("KeyV");P.change("dx",4);P.down(24,20);
+    if(end!=="unchanged") P.move(26,20);
+    await sleep(350);
+    r[end+"Deferred"]=P.count("mask/adjust")===0&&M.busy==="adjust_wait"&&ed._test.draft().dx===4;
+    if(end==="escape") P.key("Escape");else if(end==="cancel") P.viewer.ed.cancel();else P.up();
+    await until(()=>info.adjust?.dx===4&&!M.busy);
+    r[end+"Resumed"]=P.count("mask/adjust")===1&&info.adjust.dx===4&&!ed._test.drag()&&!ed._test.draft();
+    ed.leave();
+  }
+  return r;
+});
+await scenario("review3ReleaseLoading",async()=>{
+  const r={};
+  for(const reason of ["ok","star","error","stroke","failedOpen","foreignLoad"]) {
+    const P=await setup(),{ed,info}=P,M=ed._test.M;
+    P.srv.strictAdjustSeen=true;P.key("KeyV");P.change("dx",4);
+    let release;P.srv.hold=new Promise(r=>release=r);
+    const saving=ed._test.saveAdjust("set");await until(()=>M.busy==="adjust");
+    P.down(24,20);P.move(27,20);const seq=M.seq;
+    info.rect=[14,10,34,30];info.base.sig="own-window";
+    let finish,fail;const gate=new Promise((r,j)=>{finish=r;fail=j;});
+    P.srv.wait=(path,q)=>path==="mask/img"&&q.kind==="base"?gate:null;
+    release();P.srv.hold=null;await until(()=>M.busy==="load"&&M.seq>seq);
+    const savedAt=info.adjust.at;
+    r[reason+"Inherited"]=ed._test.drag()?.reopening===true&&ed._test.drag().seen===savedAt;
+    if(reason==="star") {const S=maskState();S.targets[0].candidates[0].picked=false;ed.stateChanged(S);}
+    if(reason==="error") M.err="load failed";
+    if(reason==="stroke") M.undo.push({label:"획"});
+    if(reason==="foreignLoad") ed._test.drag().reopening=false;
+    const n=P.toasts.length;P.up();
+    const kept=reason==="ok"||reason==="failedOpen";
+    r[reason+"Released"]=!ed._test.drag()&&P.count("mask/adjust")===1&&(kept
+      ?ed._test.draft()?.dx===7&&ed._test.draft().seen===savedAt&&P.toasts.length===n
+      :!ed._test.draft()&&P.toasts.length===n+1&&P.toasts.at(-1).startsWith("warn:"));
+    if(reason==="failedOpen") fail(new Error("base failed"));else finish();
+    await saving;P.srv.wait=null;
+    if(reason==="ok") {
+      await until(()=>info.adjust?.dx===7&&!M.busy);await sleep(350);
+      const writes=P.srv.log.filter(x=>x.path==="mask/adjust");
+      r.savedOnce=writes.length===2&&writes[1].body.seen===savedAt&&info.adjust.dx===7&&!P.toasts.some(t=>t.includes("보정하지 못함"));
+    } else {
+      await sleep(350);r[reason+"NoWrite"]=P.count("mask/adjust")===1&&!ed._test.draft();
+    }
+    M.err=null;M.undo=[];ed.leave();
+  }
+  return r;
+});
+await scenario("review3Recovery",async()=>{
+  const P=await setup(),{ed,info}=P,M=ed._test.M,r={};
+  info.adjust={...zero,at:"old",hist:[]};M.info.adjust=clone(info.adjust);
+  P.srv.strictAdjustSeen=true;P.key("KeyV");P.change("dx",4);
+  let release;P.srv.hold=new Promise(r=>release=r);
+  const saving=ed._test.saveAdjust("set");await until(()=>M.busy==="adjust");
+  info.adjust={...zero,dx:8,at:"remote",hist:[]};info.quad=D.xformQuad(info.base_quad,info.adjust);info.layers.sig="remote";
+  let getDone,layersDone;const getGate=new Promise(r=>getDone=r),layersGate=new Promise(r=>layersDone=r);
+  P.srv.wait=(path,q)=>path==="mask"?getGate:path==="mask/img"&&["under","patch","over"].includes(q.kind)?layersGate:null;
+  release();P.srv.hold=null;await until(()=>P.toasts.some(t=>t.includes("보정하지 못함"))&&!M.busy);
+  let n=P.toasts.length;P.down(20,20);
+  r.beforeInfoLocked=!ed._test.drag()&&P.toasts.length===n+1&&P.toasts.at(-1).includes("지금은 변형할 수 없습니다");
+  getDone();await until(()=>M.info.adjust.at==="remote");n=P.toasts.length;P.down(20,20);
+  r.afterInfoLocked=!ed._test.drag()&&P.toasts.length===n+1;
+  layersDone();await saving;P.srv.wait=null;P.raf();
+  r.recovered=ed._test.previewLayers()===M.layers&&P.viewer.marks.some(m=>m.attrs.class==="mx-outline"&&m.attrs.points.startsWith("18,10 "));
+  P.down(28,20);r.freshStart=ed._test.drag().start.dx===8&&ed._test.drag().seen==="remote";
+  P.move(29,20);P.up();await ed._test.saveAdjust("set");
+  const writes=P.srv.log.filter(x=>x.path==="mask/adjust");
+  r.freshSave=writes.length===2&&writes[1].body.seen==="remote"&&info.adjust.dx===9;
+  ed.leave();return r;
+});
+await scenario("review3SeenSource",async()=>{
+  const r={};
+  for(const phase of ["draft","saving"]) {
+    const P=await setup(),{ed,info}=P,M=ed._test.M;
+    info.adjust={...zero,at:"old",hist:[]};M.info.adjust=clone(info.adjust);
+    P.srv.strictAdjustSeen=true;P.key("KeyV");P.change("dx",4);
+    if(phase==="draft") {
+      info.adjust={...zero,dx:8,at:"remote",hist:[]};M.info.adjust=clone(info.adjust);
+      P.down(24,20);r.draftSource=ed._test.drag().start.dx===4&&ed._test.drag().seen==="old";
+      P.move(26,20);P.up();await ed._test.saveAdjust("set");
+      r.draftRejected=info.adjust.at==="remote"&&P.toasts.some(t=>t.includes("보정하지 못함: 다른 창에서 바뀜"));
+    } else {
+      let release;const gate=new Promise(r=>release=r);P.srv.wait=path=>path==="mask"?gate:null;
+      const saving=ed._test.saveAdjust("set");await until(()=>M.info.adjust.at!=="old");
+      P.down(24,20);r.savingSource=ed._test.drag().start.dx===4&&ed._test.drag().seen==="old"&&M.info.adjust.at!=="old";
+      P.move(26,20);release();await saving;P.srv.wait=null;
+      const savedAt=info.adjust.at;r.advanced=ed._test.drag().seen===savedAt;
+      P.up();await ed._test.saveAdjust("set");
+      r.saved=info.adjust.dx===6&&P.srv.log.filter(x=>x.path==="mask/adjust").at(-1).body.seen===savedAt;
+    }
+    ed.leave();
+  }
+  return r;
+});
+await scenario("review3SavePreview",async()=>{
+  const r={};
+  for(const op of ["undo","reset","set"]) {
+    const P=await setup(),{ed,info}=P,M=ed._test.M;
+    info.adjust={...zero,dx:6,at:"current",hist:[{...zero,dx:2,at:"history"}]};info.quad=D.xformQuad(info.base_quad,info.adjust);
+    P.key("KeyV");await ed._test.refreshInfo();P.raf();
+    const dx=op==="undo"?2:op==="reset"?0:4;
+    if(op==="set") {P.change("dx",dx);P.raf();}
+    let release;P.srv.hold=new Promise(r=>release=r);const draws=P.viewer.redraws;
+    const saving=ed._test.saveAdjust(op);P.raf();
+    r[op+"Pixels"]=near(P.pixel(20+dx,20),[200,60,40])&&!near(P.pixel(26,20),[200,60,40]);
+    r[op+"Outline"]=P.viewer.redraws>draws&&P.viewer.marks.some(m=>m.attrs.class==="mx-outline"&&m.attrs.points.startsWith(`${10+dx},10 `));
+    P.down(20+dx,20);r[op+"Hit"]=ed._test.drag()?.handle==="move"&&ed._test.drag().start.dx===dx&&ed._test.drag().seen==="current";
+    P.key("Escape");release();P.srv.hold=null;await saving;
+    r[op+"Saved"]=P.count("mask/adjust")===1&&(info.adjust?.dx||0)===dx;
+    ed.leave();
+  }
+  return r;
+});
 console.log(JSON.stringify(out));
 '''
     cases = []
@@ -46710,7 +46833,8 @@ console.log(JSON.stringify(out));
     check(result.returncode == 0, f"X9: 변형 상자 node 종료 {result.stderr[:500]}")
     scenes = json.loads(result.stdout) if result.returncode == 0 else {}
     for name in ("geometry", "compose", "interaction", "preview", "reopenDuringSave", "reviewBounds", "reviewSeen", "reviewUndo", "reviewBeforeLayers", "reviewRepaint",
-                 "review2OwnSave", "review2Poll", "review2SmallPatch", "review2ReleaseLocked"):
+                 "review2OwnSave", "review2Poll", "review2SmallPatch", "review2ReleaseLocked", "review3Timer", "review3ReleaseLoading",
+                 "review3Recovery", "review3SeenSource", "review3SavePreview"):
         scene = scenes.get(name, {})
         check(bool(scene) and "error" not in scene, f"X9: {name} 시나리오 {scene.get('error', '')}")
         for label, ok in scene.items():
