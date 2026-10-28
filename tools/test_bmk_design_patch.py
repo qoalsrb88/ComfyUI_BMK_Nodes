@@ -48880,7 +48880,7 @@ try {
     edit: ["Tab", "Delete", "Backspace", "Enter", "KeyP", "KeyL", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "KeyZ", "KeyY"],
     refs: ["Escape", "Enter", "Backspace", "BracketLeft", "BracketRight", "KeyH", "Digit0", "Digit1", "Digit2", "KeyF"],
     refsGrid: ["Escape"],
-    mask: ["Escape", "Enter", "KeyX", "BracketLeft", "BracketRight", "KeyQ", "KeyS", "KeyM", "KeyW", "KeyZ", "KeyY"],
+    mask: ["Escape", "Enter", "KeyX", "BracketLeft", "BracketRight", "KeyQ", "KeyS", "KeyM", "KeyW", "KeyZ", "KeyY", "KeyV", "KeyD"],  // 5-2b-2 V·D
     pipe: [], review: [],
   };
   const OFF = run("({ edit: [...EDIT_OFF], refs: [...REFS_OFF], refsGrid: [...REFS_OFF], pipe: [...PIPE_OFF], mask: [...MASK_OFF], review: [] })");
@@ -48971,7 +48971,7 @@ def polish2_unit():
           f"[검토] 탭 = 켜진 모드를 끔(마스크는 나가기 한 번), ★ 없어 마스크 못 켜면 검토 그대로 "
           f"{res['toReview']['log']} {res['maskToReview']['log']} {res['maskBlocked']}")
     check(res["editChips"][0] == "info:끌기 새 크롭·이동·크기" and "P" in res["editChips"] and "Ctrl+Z" in res["editChips"]
-          and res["pipeChips"] == ["B", "O", "N", "F", "0", "1", "2", "G"] and res["maskChips"][:3] == ["info:끌기 붓", "info:⇧끌기 흐리기", "X"]
+          and res["pipeChips"] == ["B", "O", "N", "F", "0", "1", "2", "G"] and res["maskChips"][:5] == ["V", "D", "info:끌기 붓·변형", "info:⇧끌기 흐리기·비율/15°", "X"]
           and "W" in res["maskChips"] and "H" in res["refsChips"],
           f"모드마다 칩 줄이 바뀜(설명만인 줄은 칩이 아님) {res['editChips']} {res['pipeChips']} {res['maskChips']} {res['refsChips']}")
     check(res["space"] == [["down", "Space", " ", False, False, True], ["up", "Space", " ", False, False, True]]
