@@ -2121,6 +2121,11 @@ def mask_adjust(root: str, data: dict) -> dict:
                 rect = dmask.edit_rect(bbox, m["canvas"])
                 if (rect[2] - rect[0]) * (rect[3] - rect[1]) > dmask.MAX_PIXELS:
                     raise _Reject(400, "되돌리면 패치의 편집 창이 4096² 픽셀을 넘습니다" if op == "undo" else "변형한 패치의 편집 창이 4096² 픽셀을 넘습니다")
+                base_bbox = dpsd.quad_bbox(base_quad)
+                render_area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+                if render_area > dmask.MAX_PIXELS and render_area > (base_bbox[2] - base_bbox[0]) * (base_bbox[3] - base_bbox[1]):
+                    subject = "되돌리면 패치가" if op == "undo" else "변형한 패치가"
+                    raise _Reject(400, f"{subject} 너무 커서 렌더할 수 없습니다(4096² 픽셀 초과) — 배율을 줄이세요")
             if op == "set":
                 new["base_quad"] = base_quad
         if new is None:

@@ -45828,6 +45828,39 @@ def polish5_xform_unit():
           "X6: 이미 큰 편집 창도 기하 값 그대로면 블러 set 200")
     status, error = post(sx=3.9)
     check(status == 400 and "4096" in error["error"], "X6: 기존 큰 창의 기하 변경에는 4096² 검사 유지")
+    render_huge = copy.deepcopy(huge)
+    render_huge.pop("cand_adjust", None)
+    render_huge["candidates"][0]["quad"] = [0, 0, 2048, 0, 2048, 2048, 0, 2048]
+    oversized = record(sx=4, sy=4, dx=-1100, dy=-1100, base_quad=render_huge["candidates"][0]["quad"])
+    render_bbox = dp.dpsd.quad_bbox(dp.an.xform_quad(oversized["base_quad"], sx=4, sy=4, dx=-1100, dy=-1100))
+    check(render_bbox == [-4172, -4172, 4020, 4020]
+          and mk.edit_rect(render_bbox, render_huge["canvas"]) == [0, 0, 4020, 4020],
+          "X6: 2048² 패치 4배·(-1100,-1100) 이동 = 렌더 8192², 캔버스 안 편집 창은 상한 이하")
+    for op in ("set", "undo"):
+        before = copy.deepcopy(render_huge)
+        if op == "undo":
+            before["cand_adjust"] = {key: record(hist=[{k: v for k, v in oversized.items() if k != "hist"}])}
+        st.save_manifest(root, before)
+        status, error = post(op=op, sx=4, sy=4, dx=-1100, dy=-1100)
+        check(status == 400 and "렌더할 수 없습니다(4096² 픽셀 초과)" in error["error"]
+              and error["error"].startswith("되돌리면" if op == "undo" else "변형한") and st.load_manifest(root) == before,
+              f"X6: 잘리지 않은 렌더 bbox가 상한·기준 넓이를 모두 넘으면 {op} 400·이력 불변")
+    st.save_manifest(root, render_huge)
+    status, bounded = post(sx=2, sy=2, dx=-1100, dy=-1100)
+    check(status == 200 and bounded["adjust"]["sx"] == bounded["adjust"]["sy"] == 2, "X6: 렌더 bbox 정확히 4096²이면 허용")
+    large_base = copy.deepcopy(render_huge)
+    large_base["candidates"][0]["quad"] = [-4096, -4096, 4096, -4096, 4096, 4096, -4096, 4096]
+    for scale in (1, .75):
+        target = record(dx=-1, dy=-1, sx=scale, sy=scale, base_quad=large_base["candidates"][0]["quad"])
+        for op in ("set", "undo"):
+            before = copy.deepcopy(large_base)
+            if op == "undo":
+                before["cand_adjust"] = {key: record(dx=-2, dy=-2, base_quad=target["base_quad"],
+                    hist=[{k: v for k, v in target.items() if k != "hist"}])}
+            st.save_manifest(root, before)
+            status, accepted = post(op=op, dx=-1, dy=-1, sx=scale, sy=scale)
+            check(status == 200 and all(accepted["adjust"][k] == target[k] for k in ("dx", "dy", "sx", "sy")),
+                  f"X6: 원래 큰 수확 패치도 기준보다 커지지 않는 이동·축소 {op} 허용 scale={scale}")
     for mode in ("outside", "large"):
         invalid = copy.deepcopy(with_edit if mode == "outside" else huge)
         previous = record(dx=40, base_quad=q) if mode == "outside" else record(sx=4, sy=4, base_quad=q)
