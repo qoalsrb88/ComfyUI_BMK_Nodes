@@ -46266,18 +46266,45 @@ def polish5_xform2_unit():
     js = js[:a] + '    return rasterCanvas(e, P);' + js[b:]
     js = js.replace('  v.flags =', '  v.scale = () => v.zoom || 1; v.setCursor = c => { v.cursor = c; };\n  v.flags =')
     js = js.replace('v.ed.draw(root, 1)', 'v.ed.draw(root, v.scale())')
+    js = js.replace('{ kind: q.kind, w: r[2] - r[0], h: r[3] - r[1] }',
+                    '{ kind: q.kind, w: r[2] - r[0], h: r[3] - r[1], box: info.layers.box, quad: info.quad }')
     js += r'''
+// 실제 patch 층처럼 quad 바깥은 투명하다. 다른 묶음의 공용 대역은 바꾸지 않는다.
+const originalImage = fakeImage;
+fakeImage = f => {
+  const im = originalImage(f);
+  if (f.kind === "patch" && f.quad) {
+    const q=f.quad;
+    for (let y=0;y<f.h;y++) for (let x=0;x<f.w;x++) {
+      const px=x+f.box[0]+.5,py=y+f.box[1]+.5,signs=[];
+      for (let i=0;i<8;i+=2) {
+        const j=(i+2)%8;signs.push((q[j]-q[i])*(py-q[i+1])-(q[j+1]-q[i+1])*(px-q[i]));
+      }
+      if (!signs.every(v=>v>=0)&&!signs.every(v=>v<=0)) im.data.fill(0,(y*f.w+x)*4,(y*f.w+x+1)*4);
+    }
+  }
+  return im;
+};
 function rasterCanvas(e, P) {
   e.width = e.height = 0;
   const ctx = {
     matrix: [1,0,0,1,0,0],
     createImageData: (w,h) => ({width:w,height:h,data:new Uint8ClampedArray(w*h*4)}),
     putImageData(im, x, y, ...rect) { e.pixels = im.data.slice(); P.img = im; P.puts.push(rect); },
-    getImageData() { return {data:e.pixels.slice()}; },
-    clearRect() { e.pixels = new Uint8ClampedArray(e.width*e.height*4); },
+    getImageData(x,y,w,h) {
+      (P.reads??=[]).push([x,y,w,h]);
+      const data=new Uint8ClampedArray(w*h*4);
+      for (let j=0;j<h;j++) data.set(e.pixels.subarray(((y+j)*e.width+x)*4,((y+j)*e.width+x+w)*4),j*w*4);
+      return {data};
+    },
+    clearRect(x,y,w,h) {
+      if (!e.pixels) e.pixels=new Uint8ClampedArray(e.width*e.height*4);
+      for (let j=y;j<y+h;j++) e.pixels.fill(0,(j*e.width+x)*4,(j*e.width+x+w)*4);
+    },
     setTransform(...m) { this.matrix = m; },
     drawImage(src) {
       if (src.im) { e.pixels = src.im.data.slice(); return; }
+      if (!e.pixels) e.pixels=new Uint8ClampedArray(e.width*e.height*4);
       P.resamples = (P.resamples || 0) + 1;
       const [a,b,c,d,tx,ty] = this.matrix, det = a*d-b*c;
       for (let y=0;y<e.height;y++) for (let x=0;x<e.width;x++) {
@@ -46293,8 +46320,9 @@ function rasterCanvas(e, P) {
           rgba[3]+=alpha*w;
         }
         const off=(y*e.width+x)*4;
-        for (let k=0;k<3;k++) e.pixels[off+k]=rgba[3]?rgba[k]/rgba[3]:0;
-        e.pixels[off+3]=rgba[3]*255;
+        const destAlpha=e.pixels[off+3]/255,alpha=rgba[3]+destAlpha*(1-rgba[3]);
+        for (let k=0;k<3;k++) e.pixels[off+k]=alpha?(rgba[k]+e.pixels[off+k]*destAlpha*(1-rgba[3]))/alpha:0;
+        e.pixels[off+3]=alpha*255;
       }
     }
   };
@@ -46360,7 +46388,10 @@ async function setup() {
   let rev=140;
   P.srv.adjustReply=async body=>{
     if (P.srv.hold) await P.srv.hold;
+    if (P.srv.strictAdjustSeen && body.seen!==(info.adjust?info.adjust.at:""))
+      return {ok:false,status:409,json:async()=>({error:"다른 창에서 바뀜",reason:"changed"})};
     if (P.srv.fail) return {ok:false,status:400,json:async()=>({error:"크롭 밖"})};
+    if ([body.sx,body.sy].some(v=>v<.1||v>4)) return {ok:false,status:400,json:async()=>({error:"배율 범위"})};
     info.adjust={...zero,...body,at:`at${++rev}`,hist:[]};
     info.quad=D.xformQuad(info.base_quad,info.adjust);
     info.layers.sig=info.composite_sig=`new${rev}`;
@@ -46403,6 +46434,7 @@ await scenario("interaction",async()=>{
   P.raf(); r.cached=P.resamples===1;
   P.key("Escape"); P.raf(); P.up();
   r.escape=P.calls.exit===0 && !ed._test.drag() && !ed._test.draft() && near(P.pixel(20,20),[200,60,40]);
+  P.key("Escape",{repeat:true});P.key("Escape",{repeat:true});r.escapeRepeat=P.calls.exit===0;
   P.down(30,20);P.move(40,20);P.raf();
   r.edge=ed._test.drag().handle==="e" && near([ed._test.drag().values.sx,ed._test.drag().values.dx],[1.5,5]);
   P.key("Escape");
@@ -46463,7 +46495,7 @@ await scenario("preview",async()=>{
   release();await saving;P.srv.wait=null;P.raf();
   r.serverSwap=M.layers!==old&&near(M.layers.quad,info.quad)&&ed._test.previewLayers()===M.layers;
   P.change("dx",4.5);P.raf();
-  const pp=ed._test.previewLayers().patch, edge=((20-5)*40+5-5)*4;
+  const pp=ed._test.previewLayers().patch, edge=((20-5)*40+14-5)*4;
   r.premultEdge=pp[edge]===200&&pp[edge+1]===60&&pp[edge+2]===40&&pp[edge+3]>0&&pp[edge+3]<255;
   P.change("dx",4);
   let finish;P.srv.hold=new Promise(r=>finish=r);
@@ -46488,6 +46520,85 @@ await scenario("reopenDuringSave",async()=>{
   r.reopened=M.seq>before&&!ed._test.drag()&&!ed._test.draft()&&near(M.win,info.rect)&&info.adjust.dx===4;
   ed.leave();return r;
 });
+await scenario("reviewBounds",async()=>{
+  const P=await setup(),{ed,info,viewer}=P,r={};
+  P.change("sx",38);P.change("sy",50);await ed._test.saveAdjust("set");
+  P.key("KeyV");viewer.zoom=10;
+  P.down(info.quad[4],info.quad[5]);P.move(-100,-100,{shiftKey:true});
+  r.previewBoundary=ed._test.drag().values.sx===.1 && ed._test.drag().values.sy>=.1;
+  P.up();await ed._test.saveAdjust("set");
+  const b=P.srv.log.filter(x=>x.path==="mask/adjust").at(-1).body;
+  r.sentBoundary=b.sx===.1&&b.sy===.132&&info.adjust.sx===.1&&!P.toasts.some(t=>t.includes("배율 범위"));
+  r.precision=["dx","dy","rot","sx","sy"].every(k=>{
+    const n=b[k]*(k==="sx"||k==="sy"?1000:10);return Math.abs(n-Math.round(n))<1e-8;
+  });
+  ed.leave();return r;
+});
+await scenario("reviewSeen",async()=>{
+  const r={};
+  for (const initial of ["", "start-at"]) {
+    const P=await setup(),{ed,info}=P,M=ed._test.M;
+    info.adjust=initial?{...zero,at:initial,hist:[]}:null;M.info.adjust=clone(info.adjust);
+    P.srv.strictAdjustSeen=true;P.key("KeyV");P.down(20,20);P.move(22,20);
+    const seq=M.seq;
+    info.adjust={...zero,rot:.1,at:"remote-at",hist:[]};info.quad=D.xformQuad(info.base_quad,info.adjust);
+    await ed._test.refreshInfo();
+    P.up();await ed._test.saveAdjust("set");
+    const b=P.srv.log.filter(x=>x.path==="mask/adjust").at(-1).body;
+    r[initial||"noRecord"]=M.seq===seq&&b.seen===initial&&info.adjust.at==="remote-at"
+      &&P.toasts.some(t=>t.includes("보정하지 못함: 다른 창에서 바뀜"));
+    ed.leave();
+  }
+  return r;
+});
+await scenario("reviewUndo",async()=>{
+  const P=await setup(),{ed}=P,M=ed._test.M,r={};
+  P.down(20,20);P.up();P.key("KeyZ",{ctrlKey:true});
+  const before=M.m.slice(),redo=M.redo.length;
+  P.key("KeyV");P.down(20,20);P.move(22,20);
+  r.consumed=[["KeyZ",{}],["KeyY",{}],["KeyZ",{shiftKey:true}]].every(([code,mods])=>P.key(code,{ctrlKey:true,...mods}));
+  r.noStrokeChange=redo>0&&M.redo.length===redo&&M.undo.length===0&&near([...M.m],[...before]);
+  P.up();r.keptTransform=ed._test.draft().dx===2;
+  await ed._test.saveAdjust("set");ed.leave();return r;
+});
+await scenario("reviewBeforeLayers",async()=>{
+  const P=await setup(),{ed,viewer}=P,M=ed._test.M,r={};
+  let release;const gate=new Promise(r=>release=r);
+  P.srv.wait=(path,q)=>path==="mask/img"&&["under","patch","over"].includes(q.kind)?gate:null;
+  M.layers=null;
+  const opening=ed._test.open(K15,null,false);await until(()=>!M.busy&&!viewer.layer);
+  P.key("KeyV");P.down(20,20);P.move(24,20);
+  const outline=()=>viewer.marks.find(m=>m.attrs.class==="mx-outline"&&m.tag==="polygon").attrs.points;
+  r.move=outline().startsWith("14,10 ")&&!viewer.layer;
+  let n=viewer.redraws;P.up();r.release=viewer.redraws>n&&outline().startsWith("14,10 ");
+  P.down(24,20);P.move(26,20);n=viewer.redraws;P.key("Escape");
+  r.cancel=viewer.redraws>n&&outline().startsWith("14,10 ")&&P.calls.exit===0;
+  release();await opening;P.srv.wait=null;await ed._test.saveAdjust("set");ed.leave();return r;
+});
+await scenario("reviewRepaint",async()=>{
+  const P=await setup(),{ed}=P,M=ed._test.M,r={};
+  P.key("KeyV");P.raf();P.down(20,20);P.move(24,20);P.raf();
+  r.partial=near(P.puts.at(-1),[4,4,22,22]);
+  const buffer=ed._test.previewLayers().patch;
+  const matchesFull=diff=>{
+    const expected=new Uint8ClampedArray(P.img.data.length);
+    D.compose(ed._test.previewLayers(),M.win,M.m,M.base,expected,0,0,40,40,{split:null,diff});
+    return near([...expected],[...P.img.data]);
+  };
+  P.move(25,20);P.raf();r.bufferReuse=ed._test.previewLayers().patch===buffer;
+  r.smallRead=P.reads.at(-1)[2]*P.reads.at(-1)[3]<40*40;
+  const puts=P.puts.length,samples=P.resamples,draws=P.viewer.redraws;
+  P.move(25.1,20);P.move(25.2,20);P.raf();
+  r.sameSnap=P.puts.length===puts&&P.resamples===samples&&P.viewer.redraws===draws;
+  r.matchesFull=matchesFull(false)&&!near(P.pixel(24,20),[200,60,40]);
+  P.key("KeyD");P.raf();r.diffFull=near(P.puts.at(-1),[0,0,40,40]);
+  P.move(36,20);P.raf();r.diffOutside=matchesFull(true)&&near(P.pixel(36,20),[169,45,88]);
+  P.move(60,20);P.raf();r.offBoxCleared=matchesFull(true);
+  P.key("Escape");P.raf();r.cancelCleared=matchesFull(true);
+  const opacity=P.panel.all().find(e=>e.classList.contains("rf-slider")&&e.children[0].textContent==="패치 투명도").all().find(e=>e.type==="range");
+  opacity.value=50;opacity.fire("input");P.raf();r.opacityFull=near(P.puts.at(-1),[0,0,40,40]);
+  ed.leave();return r;
+});
 console.log(JSON.stringify(out));
 '''
     cases = []
@@ -46498,7 +46609,7 @@ console.log(JSON.stringify(out));
     source = (PKG / "web_design_patch" / "mask_edit.js").read_text(encoding="utf-8")
     api = "return { enter, leave, go, onKey, onKeyUp, stateChanged, seamsChanged, pending }"
     test_mask = out_dir / "mask_xform2_test.js"
-    test_mask.write_text(source.replace(api, api[:-2] + ", _test: { M, saveAdjust, refreshInfo, previewLayers, drag: () => xdrag, draft: () => adjustDraft } }"), encoding="utf-8", newline="\n")
+    test_mask.write_text(source.replace(api, api[:-2] + ", _test: { M, saveAdjust, refreshInfo, previewLayers, open, drag: () => xdrag, draft: () => adjustDraft } }"), encoding="utf-8", newline="\n")
     (out_dir / "xform2.mjs").write_text(js, encoding="utf-8", newline="\n")
     (out_dir / "in.json").write_text(json.dumps({"api": _pl_api(), "mask": json.loads(_MASK_API.read_text(encoding="utf-8")),
         "rules": {}, "maskJs": str(test_mask), "pipelineJs": str(PKG / "web_design_patch" / "pipeline.js"),
@@ -46507,7 +46618,7 @@ console.log(JSON.stringify(out));
     (out_dir / "ui-result.txt").write_text(result.stdout + result.stderr, encoding="utf-8")
     check(result.returncode == 0, f"X9: 변형 상자 node 종료 {result.stderr[:500]}")
     scenes = json.loads(result.stdout) if result.returncode == 0 else {}
-    for name in ("geometry", "compose", "interaction", "preview", "reopenDuringSave"):
+    for name in ("geometry", "compose", "interaction", "preview", "reopenDuringSave", "reviewBounds", "reviewSeen", "reviewUndo", "reviewBeforeLayers", "reviewRepaint"):
         scene = scenes.get(name, {})
         check(bool(scene) and "error" not in scene, f"X9: {name} 시나리오 {scene.get('error', '')}")
         for label, ok in scene.items():

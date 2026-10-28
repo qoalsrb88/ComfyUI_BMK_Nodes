@@ -171,14 +171,14 @@ window.DPMaskEdit = (() => {
         const axis = !hx ? "sy" : !hy || Math.abs(fx - 1) >= Math.abs(fy - 1) ? "sx" : "sy";
         const f = round(start[axis] * (axis === "sx" ? fx : fy), step) / start[axis];
         fx = fy = clamp(f, Math.max(0.1 / start.sx, 0.1 / start.sy), Math.min(4 / start.sx, 4 / start.sy));
-        next.sx = start.sx * fx;
-        next.sy = start.sy * fy;
+        next.sx = clamp(start.sx * fx, 0.1, 4);
+        next.sy = clamp(start.sy * fy, 0.1, 4);
       } else {
         if (hx) next.sx = clamp(round(start.sx * fx, step), 0.1, 4);
         if (hy) next.sy = clamp(round(start.sy * fy, step), 0.1, 4);
-        fx = next.sx / start.sx;
-        fy = next.sy / start.sy;
       }
+      fx = next.sx / start.sx;
+      fy = next.sy / start.sy;
       // 잘린 배율로 중심 이동을 다시 계산해야 맞은편 변/꼭짓점이 그대로다.
       if (!e.altKey) {
         next.dx += (hx * ex[0] * (fx - 1) + hy * ey[0] * (fy - 1)) / 2;
@@ -186,6 +186,21 @@ window.DPMaskEdit = (() => {
       }
     }
     return next;
+  }
+
+  function roundGeometry(values) {
+    // 서버는 반올림 전에 범위를 검사한다. 곱셈 오차로 10% 아래가 되지 않게 반올림 뒤에도 자른다.
+    return Object.fromEntries(GEOMETRY.map((k) => {
+      const scale = k === "sx" || k === "sy", precision = scale ? 1000 : 10;
+      const lo = scale ? 0.1 : k === "rot" ? -180 : -65536, hi = scale ? 4 : -lo;
+      return [k, Math.max(lo, Math.min(hi, Math.round(values[k] * precision) / precision))];
+    }));
+  }
+
+  function quadBounds(q) {
+    const xs = [q[0], q[2], q[4], q[6]], ys = [q[1], q[3], q[5], q[7]];
+    return [Math.floor(Math.min(...xs)) - 1, Math.floor(Math.min(...ys)) - 1,
+      Math.ceil(Math.max(...xs)) + 1, Math.ceil(Math.max(...ys)) + 1];
   }
 
   function compose(L, win, mask, base, out, x0, y0, x1, y1, view) {
@@ -869,17 +884,30 @@ window.DPMaskEdit = (() => {
         const ctx = source.getContext("2d"), data = ctx.createImageData(w, h);
         data.data.set(L.patch);
         ctx.putImageData(data, 0, 0);
-        previewRaster = { layers: L, source, dest, ctx: dest.getContext("2d", { willReadFrequently: true }), quad: null, patch: null };
+        previewRaster = { layers: L, source, dest, ctx: dest.getContext("2d", { willReadFrequently: true }), quad: null, rect: null,
+          patch: new Uint8ClampedArray(L.patch.length) };
       }
       const p = previewRaster;
       if (!p.quad || q.some((v, i) => v !== p.quad[i])) {
         const [bx, by] = L.box;
         p.ctx.setTransform(1, 0, 0, 1, 0, 0);
+        // 확대 보간은 읽을 사각형 밖에도 픽셀을 남길 수 있다. native canvas만 비우고 RGBA 읽기·합성은 영역으로 제한한다.
         p.ctx.clearRect(0, 0, w, h);
-        p.ctx.setTransform(a[0], a[1], a[2], a[3], a[4] + a[0] * bx + a[2] * by - bx, a[5] + a[1] * bx + a[3] * by - by);
-        // Canvas는 premultiplied alpha로 보간하고 getImageData는 straight RGBA를 돌려준다.
-        p.ctx.drawImage(p.source, 0, 0);
-        p.patch = p.ctx.getImageData(0, 0, w, h).data;
+        if (p.rect) {
+          const [x0, y0, x1, y1] = p.rect;
+          for (let y = y0; y < y1; y++) p.patch.fill(0, (y * w + x0) * 4, (y * w + x1) * 4);
+        }
+        const bounds = quadBounds(q);
+        const [x0, y0, x1, y1] = [Math.max(0, bounds[0] - bx), Math.max(0, bounds[1] - by),
+          Math.min(w, bounds[2] - bx), Math.min(h, bounds[3] - by)];
+        p.rect = x1 > x0 && y1 > y0 ? [x0, y0, x1, y1] : null;
+        if (p.rect) {
+          p.ctx.setTransform(a[0], a[1], a[2], a[3], a[4] + a[0] * bx + a[2] * by - bx, a[5] + a[1] * bx + a[3] * by - by);
+          // Canvas는 premultiplied alpha로 보간한다. 읽기는 새 quad 영역만, compose용 전체 버퍼는 재사용한다.
+          p.ctx.drawImage(p.source, 0, 0);
+          const data = p.ctx.getImageData(x0, y0, x1 - x0, y1 - y0).data, stride = (x1 - x0) * 4;
+          for (let y = y0; y < y1; y++) p.patch.set(data.subarray((y - y0) * stride, (y - y0 + 1) * stride), (y * w + x0) * 4);
+        }
         p.quad = q;
       }
       return Object.assign({}, L, { patch: p.patch });
@@ -887,10 +915,11 @@ window.DPMaskEdit = (() => {
 
     function cancelXform() {
       if (!xdrag) return;
+      const before = shownQuad();
       xdrag = null;
       viewer.setCursor("");
       syncAdjustControls();
-      repaintAll();
+      repaintXform(before);
       viewer.redraw();
     }
 
@@ -949,6 +978,18 @@ window.DPMaskEdit = (() => {
 
     function repaintAll() {
       repaint([-Infinity, -Infinity, Infinity, Infinity]);
+    }
+
+    function repaintXform(before) {
+      const after = shownQuad();
+      if (!before || !after) { repaintAll(); return; }
+      if (after.every((v, i) => Math.abs(v - before[i]) < 1e-8)) return;
+      let r = union(quadBounds(before), quadBounds(after));
+      if (M.win && !(editTool === "xform" && difference)) {
+        // 보통 보기는 마스크 창 밖에서 바뀌지 않는다. 경계 보간을 위해 1px 여유를 둔다.
+        r = [Math.max(r[0], M.win[0] - 1), Math.max(r[1], M.win[1] - 1), Math.min(r[2], M.win[2] + 1), Math.min(r[3], M.win[3] + 1)];
+      }
+      repaint(r);
     }
 
     async function layers() {
@@ -1070,7 +1111,8 @@ window.DPMaskEdit = (() => {
           return true;
         }
         const start = adjustValues();
-        xdrag = { key: M.key, seq: M.seq, handle, origin: pt, quad: shownQuad(), start, values: start };
+        xdrag = { key: M.key, seq: M.seq, handle, origin: pt, quad: shownQuad(), start, values: start,
+          seen: cur().adjust ? cur().adjust.at : "" };
         viewer.setCursor(xformCursor(handle));
         return true;
       }
@@ -1088,9 +1130,13 @@ window.DPMaskEdit = (() => {
       if (editTool === "xform") {
         const d = currentDrag();
         if (d) {
-          d.values = xformDrag(d.start, d.quad, d.handle, d.origin, pt, e);
+          const next = xformDrag(d.start, d.quad, d.handle, d.origin, pt, e);
+          if (GEOMETRY.every((k) => Math.abs(next[k] - d.values[k]) < 1e-8)) return true;
+          const before = shownQuad();
+          d.values = next;
           syncAdjustControls();
-          repaintAll();
+          repaintXform(before);
+          viewer.redraw(); // 3층을 아직 받지 못했어도 상자는 손을 따라간다.
         } else if (slider && M.layers) {
           view.split = Math.round(pt[0] - M.layers.box[0]);
           repaintAll();
@@ -1114,10 +1160,15 @@ window.DPMaskEdit = (() => {
     function pointerup() {
       const d = currentDrag();
       if (d) {
+        const before = shownQuad(), values = roundGeometry(d.values);
         xdrag = null;
-        if (GEOMETRY.some((k) => Math.abs(d.values[k] - d.start[k]) > 1e-8)) queueAdjust(d.values);
+        if (GEOMETRY.some((k) => Math.abs(values[k] - d.start[k]) > 1e-8)) {
+          if (!adjustDraft && !adjustSaving) values.seen = d.seen;
+          queueAdjust(values);
+        }
         syncAdjustControls();
-        repaintAll();
+        repaintXform(before);
+        viewer.redraw();
         viewer.setCursor("");
         renderPanel();
         if (again) refreshInfo();
@@ -1467,11 +1518,12 @@ window.DPMaskEdit = (() => {
 
     function queueAdjust(values) {
       if (!canAdjust()) return;
-      const info = cur();
+      const info = cur(), before = shownQuad();
       adjustDraft = Object.assign(adjustDraft && adjustDraft.key === M.key ? adjustDraft
         : Object.assign(adjustValues(), { key: M.key, seen: info.adjust ? info.adjust.at : "" }), values);
+      Object.assign(adjustDraft, roundGeometry(adjustDraft));
       syncAdjustControls();
-      repaintAll();
+      repaintXform(before);
       for (const b of adjustButtons) b.disabled = true;
       clearTimeout(adjustTimer);
       if (adjustSaving) return; // 응답의 새 at를 받은 뒤에 예약
@@ -1928,7 +1980,7 @@ window.DPMaskEdit = (() => {
       }
       const mod = e.ctrlKey || e.metaKey;
       if (mod && (e.code === "KeyZ" || e.code === "KeyY")) {
-        if (!e.repeat) step(e.code === "KeyZ" && !e.shiftKey);
+        if (!currentDrag() && !e.repeat) step(e.code === "KeyZ" && !e.shiftKey);
         return true;
       }
       if (mod || e.altKey) return false;
@@ -1955,7 +2007,7 @@ window.DPMaskEdit = (() => {
           return true;
         }
         case "Escape":
-          opts.exit();
+          if (!e.repeat) opts.exit();
           return true;
         case "Enter":
           if (!e.repeat) apply();
