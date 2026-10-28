@@ -48563,7 +48563,7 @@ def polish1_unit():
           "F36 붓 미리보기(도장 한 번 = stamp × 흐름, 반지름 = 붓 크기 — 68px 까지, Codex 4차)")
     check('case "KeyW":' in mj and "view.orig ? 0 :" in mj and 'button("원본 보기 (W)"' in mj and "<kbd>W</kbd> 누르는 동안" in bh,
           "F35 원본 보기(W 누르는 동안·단추 켜고 끄기)")
-    dr = mj[mj.index("    function draw(root) {"):mj.index("    // ── 연산 ──")]
+    dr = mj[mj.index("    function draw(root"):mj.index("    // ── 연산 ──")]  # 5-2b-2: draw(root, z)
     check("if (viewer.flags().rectsOn) {" in dr and 'box(M.win, "mwin")' in dr and 'button("선 숨기기 (O)"' in mj,
           "F37 마스크 모드 창·크롭 선 = 뷰어 [사각형](O) — 패널 [선 숨기기 (O)]")
     check('if (info.base.src === "auto")' in mj and "자동 마스크 = Analyze 가 후보와 원본 크롭의 색 차이(ΔE)로 만든 영역" in mj,
