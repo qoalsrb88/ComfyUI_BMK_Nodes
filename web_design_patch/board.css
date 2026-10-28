@@ -548,6 +548,9 @@ body.mask .proj { min-width: 0; overflow: hidden; text-overflow: ellipsis; white
 #mask-panel .mc-xform-value { display: flex; align-items: center; gap: 4px; font-size: 12px; }
 #mask-panel .mc-xform-value input { width: 76px; min-width: 0; margin-left: auto; }
 #mask-panel .mc-adjust button[aria-pressed="true"] { border-color: var(--accent); background: #22314a; }
+#mask-panel .mc-tools { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
+svg.marks .mx-outline { fill: none; stroke: #ffd477; stroke-width: 1.5px; vector-effect: non-scaling-stroke; }
+svg.marks .mx-handle { fill: #182332; stroke: #ffd477; stroke-width: 1.5px; vector-effect: non-scaling-stroke; }
 .stage canvas.ov-mask { position: absolute; display: block; }
 .stage.px canvas.ov-mask { image-rendering: pixelated; }
 svg.marks .mwin { fill: none; stroke: rgba(227, 230, 236, .5); stroke-width: 1px; stroke-dasharray: 6 4; vector-effect: non-scaling-stroke; }

@@ -1546,7 +1546,7 @@
     // 레퍼런스 [그리드] 탭(3-4): 시트가 숨어 시트 키가 꺼짐 — 카드 고르기와 나가기만
     refsGrid: [["카드 클릭", "크롭 고르기"], ["T", "나가기", { code: "KeyT" }], ["Esc", "선택 해제·나가기", { code: "Escape" }]],
     pipe: [["B", "바탕", { code: "KeyB" }], ["O", "사각형", { code: "KeyO" }], ...VIEW_KEYS, ["G", "나가기", { code: "KeyG" }]],
-    mask: [["끌기", "붓"], ["⇧끌기", "흐리기"], ["X", "지우기 ↔ 살리기", { code: "KeyX" }], ["[", "붓 작게", { code: "BracketLeft" }], ["]", "붓 크게", { code: "BracketRight" }],
+    mask: [["V", "붓 ↔ 변형", { code: "KeyV" }], ["D", "원본과 차이(변형)", { code: "KeyD" }], ["끌기", "붓·변형"], ["⇧끌기", "흐리기·비율/15°"], ["X", "지우기 ↔ 살리기", { code: "KeyX" }], ["[", "붓 작게", { code: "BracketLeft" }], ["]", "붓 크게", { code: "BracketRight" }],
       ["⇧[", "경도 −", { code: "BracketLeft", shift: true }], ["⇧]", "경도 +", { code: "BracketRight", shift: true }], ["Q", "처음 마스크(누름)", { code: "KeyQ", hold: true }],
       ["W", "원본(누름)", { code: "KeyW", hold: true }], ["S", "처음/편집 슬라이더", { code: "KeyS" }], ["M", "마스크 보기", { code: "KeyM" }],
       ["O", "선 숨기기", { code: "KeyO" }], ["←→↑↓", "패치 이동"], ["⇧←→↑↓", "10px"],
