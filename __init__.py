@@ -282,6 +282,10 @@ for _module_name in _NODE_MODULES:
 #       순서·줄을 바꾸고, 펼쳐서 서브(멤버) 순서 바꾸기·다른 청크로·밖으로 새 청크, 숨기기, 커스텀 청크
 #       (태그·패턴), 관리 툴 JSON 가져오기/내보내기. 결과는 숨긴 STRING 위젯 arrangement 에 JSON 으로
 #       쓰고, /bmk/tag_organizer/preview 로 남는 태그는 밝게·뺀 태그는 흐리게 미리 본다.
+#   - bmk_native_file_dialog.js
+#       워크플로 저장 파일명 입력창(ComfyWorkflow.promptSave)과 열기(app.ui.loadFile)를 윈도우 기본
+#       파일 창으로 바꾸는 패치. 창은 서버(bmk_native_file_dialog.py, /bmk/native_dialog/*)가 띄우고,
+#       고른 폴더·이름을 원래 저장·열기 흐름에 넘긴다. 같은 PC 접속에서만 동작, 설정으로 끌 수 있음.
 # 새 JS 확장을 추가할 때는 ./js 폴더에 파일만 넣으면 됩니다.
 WEB_DIRECTORY = "./js"
 
@@ -302,6 +306,21 @@ if os.environ.get("BMK_WILDCARD_AUTORELOAD", "1") != "0":
             "(node loading unaffected)."
         )
         traceback.print_exc()
+
+
+# ─── 윈도우 기본 파일 창 ─────────────────────────────────────────
+# 워크플로 저장·열기에 윈도우 파일 창을 띄우는 라우트(짝: js/bmk_native_file_dialog.js).
+# 서버의 add_routes 전에 등록해야 /api 사본도 생긴다. 부가 기능이므로 실패를 격리한다.
+try:
+    from . import bmk_native_file_dialog
+
+    bmk_native_file_dialog.register_routes()
+except Exception:
+    print(
+        "[ComfyUI_BMK_Nodes] Failed to register native file dialog routes "
+        "(node loading unaffected)."
+    )
+    traceback.print_exc()
 
 
 # ─── 로드 결과 안내 로그 ─────────────────────────────────────────
