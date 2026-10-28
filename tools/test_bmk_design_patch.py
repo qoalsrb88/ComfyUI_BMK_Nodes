@@ -46243,6 +46243,11 @@ console.log(JSON.stringify(out));
             check(ok is True, f"X8: 변형 UI {label}")
 
 
+def polish5_xform2_unit():
+    """다듬기 배치 5-2b-2(10/28 — _proto/STUDIO_POLISH5B_SPEC.md D36–D38): 캔버스 변형 상자·클라 미리보기·패치 투명도·[원본과 차이](JS 만)."""
+    section("다듬기 배치 5-2b-2 — 변형 상자·미리보기")
+
+
 def polish5_grow_unit():
     """다듬기 배치 5-4(10/27 — _proto/STUDIO_POLISH5_SPEC.md §5·§8): 크롭 넓히기 제안(이음매 신호 → 크롭 편집 제안)."""
     section("다듬기 배치 5-4 — 크롭 넓히기 제안")
@@ -50543,6 +50548,8 @@ if __name__ == "__main__":
         polish5_grow_unit()
     if want("polish5_xform_unit"):
         polish5_xform_unit()
+    if want("polish5_xform2_unit"):
+        polish5_xform2_unit()
     print(f"\n단위 테스트 {time.time() - T0:.1f}s (PASS {PASSES} FAIL {len(FAILS)})")
     if QUICK:
         print("\n--quick: 회귀·노드 생략")
