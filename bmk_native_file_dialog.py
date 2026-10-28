@@ -7,7 +7,8 @@
   Common Item Dialog(IFileSaveDialog / IFileOpenDialog)를 띄우고 고른 결과만 돌려준다.
   짝 JS: js/bmk_native_file_dialog.js
 
-라우트 (윈도우가 아니거나 루프백이 아닌 곳에서 온 요청은 {"status": "unsupported"} → 프론트엔드 기본 동작)
+라우트 (윈도우가 아니거나 이 PC 브라우저의 직접 연결이 아닌 요청 — 원격, 같은 PC의 프록시·터널 경유 — 은
+       {"status": "unsupported"} → 프론트엔드 기본 동작)
   POST /bmk/native_dialog/save  {directory, filename}
       → {"status": "ok", "directory": "workflows/…", "filename": "….json"} | cancelled | busy
       저장 자체는 프론트엔드가 기존 userdata API 로 한다(덮어쓰기 확인·탭 상태가 그대로 동작).
@@ -66,6 +67,7 @@ _MIME_BY_EXT = {
     ".webm": "video/webm",
 }
 _EXT_RE = re.compile(r"^\.[A-Za-z0-9]{1,10}$")
+_FORWARD_HEADERS = ("Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Real-IP")
 
 _ERROR_CANCELLED = 0x800704C7  # HRESULT_FROM_WIN32(ERROR_CANCELLED): 사용자가 창을 닫음
 
@@ -205,7 +207,8 @@ def _show(
         _method(dlg, _SET_CLIENT_GUID, ctypes.POINTER(_GUID))(ctypes.byref(_CLIENT_GUID))
         current = wintypes.DWORD()
         _method(dlg, _GET_OPTIONS, ctypes.POINTER(wintypes.DWORD))(ctypes.byref(current))
-        _method(dlg, _SET_OPTIONS, wintypes.DWORD)(current.value | options)
+        # 저장 창은 기본으로 덮어쓰기를 묻는다. 그 확인은 프론트엔드가 하므로(목록·열린 탭까지 맞춰 처리) 끈다.
+        _method(dlg, _SET_OPTIONS, wintypes.DWORD)((current.value | options) & ~_FOS_OVERWRITEPROMPT)
         specs = (_FILTERSPEC * len(filters))(*filters)
         _method(dlg, _SET_FILE_TYPES, ctypes.c_uint, ctypes.POINTER(_FILTERSPEC))(len(filters), specs)
         _method(dlg, _SET_TITLE, wintypes.LPCWSTR)(title)
@@ -287,7 +290,6 @@ def _pick_save(owner: int, root: str, folder: str, filename: str) -> str | None:
     while True:
         path = _show(
             _CLSID_FILE_SAVE_DIALOG, owner, "워크플로 저장", [("워크플로 (*.json)", "*.json")],
-            # 덮어쓰기 확인은 프론트엔드가 한다(라이브러리 목록·열린 탭까지 맞춰 처리).
             options=_FOS_FORCEFILESYSTEM | _FOS_PATHMUSTEXIST | _FOS_NOCHANGEDIR,
             folder=folder, filename=filename, default_ext="json",
         )
@@ -308,13 +310,23 @@ def _pick_open(owner: int, folder: str, extensions: list[str]) -> str | None:
     )
 
 
-def _is_local(request: web.Request) -> bool:
+def _is_loopback(host: str | None) -> bool:
+    if host == "localhost":
+        return True
     try:
-        ip = ipaddress.ip_address(request.remote or "")
+        ip = ipaddress.ip_address(host or "")
     except ValueError:
         return False
     mapped = getattr(ip, "ipv4_mapped", None)
     return ip.is_loopback or (mapped is not None and mapped.is_loopback)
+
+
+def _is_local(request: web.Request) -> bool:
+    """이 PC의 브라우저가 직접 연결한 요청인지. 같은 PC의 프록시·터널을 거친 원격 요청은 연결 상대가 루프백이어도
+    전달 헤더가 붙거나 Host 가 바깥 이름이므로 거른다(창이 서버 화면에 뜨고 고른 파일이 원격으로 가는 것을 막는다)."""
+    if any(h in request.headers for h in _FORWARD_HEADERS):
+        return False
+    return _is_loopback(request.remote) and _is_loopback(request.url.host)
 
 
 def _user_root(request: web.Request) -> str | None:
