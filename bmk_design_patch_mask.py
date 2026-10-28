@@ -463,7 +463,7 @@ def _expect(m: dict, key: str, seen) -> dict | None:
 def save_edit(root: str, key: str, data, *, seen: str, rect: list[int], base: dict, ops: str,
               placed: Callable[[dict], list[int] | None] | None = None, preserve_mask: dict | None = None) -> tuple[dict, int]:
     """placed(m) = 잠근 매니페스트로 다시 계산한 지금 편집 창 — rect 와 다르면 409 rect_changed {rect}(창을 고른 뒤 잠그기 전에 Analyze 가 정합을
-    바꾼 경우 옛 좌표로 저장하지 않게). preserve_mask = 현재 계획의 합친 마스크. 창이 넓어졌으면 저장 창 밖을 보존하되
+    바꾼 경우 옛 좌표로 저장하지 않게). preserve_mask = 현재 계획의 합친 마스크. 기록 창이 저장 창 밖에 남으면 그 편집을 보존하되
     합집합이 MAX_PIXELS를 넘으면 저장 창만 쓴다. placed 검사는 합집합이 아닌 세션 rect 기준이다."""
     _check_rect(rect)
     _check_base(base)
@@ -492,7 +492,7 @@ def save_edit(root: str, key: str, data, *, seen: str, rect: list[int], base: di
                 old = check_record(old) if old else None
             except ValueError:
                 old = None
-            if old and not contains_rect(old["rect"], rect):
+            if old and not contains_rect(rect, old["rect"]):
                 r = old["rect"]
                 union = [min(r[0], rect[0]), min(r[1], rect[1]), max(r[2], rect[2]), max(r[3], rect[3])]
                 if (union[2] - union[0]) * (union[3] - union[1]) <= MAX_PIXELS:

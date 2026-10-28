@@ -41706,8 +41706,8 @@ def mask_board_unit():
         s3, d3 = await h.save(kB, png(arr_e), seen=rec1["file"], ops="새 창", rect=R0)
         rec2 = st.load_manifest(root)["mask_edits"][kB]
         sb3 = await star_b(h)
-        check(s3 == 200 and rec2["rect"] == R0 and rec2["hist"][0]["rect"] == U and d3["edit"]["stale"] is False
-              and sb3 == ({"at": rec2["at"], "stale": False}, 0), "연 그대로 [적용] = 지금 창으로 새 판(stale 풀림 — 이전 판은 옛 창 그대로 hist)")
+        check(s3 == 200 and rec2["rect"] == U and rec2["hist"][0]["rect"] == U and d3["edit"]["stale"] is False
+              and sb3 == ({"at": rec2["at"], "stale": False}, 0), "연 그대로 [적용] = 기록 창 U 유지(저장 창 R0 밖 편집·이전 판 보존)")
         s3u, d3u = await h.edit(kB, rec2["file"], "undo")
         _s, d3g = await h.jget(f"{API}/mask", root=key, key=kB)
         m3u = st.load_manifest(root)
@@ -45727,6 +45727,19 @@ def polish5_xform_unit():
     response = save_mask(np.full((16, 16), 37, np.uint8), [8, 8, 24, 24], edit["file"])
     check(response.status == 409 and json.loads(response.text).get("reason") == "rect_changed"
           and mk.edit_record(st.load_manifest(root), key) == edit, "X5: 합집합 저장도 세션 창 409 검사는 원래 저장 창 기준")
+    st.save_manifest(root, inside)
+    response = save_mask(np.full((8, 8), 37, np.uint8), [12, 12, 20, 20], edit["file"])
+    shrunk_record = mk.edit_record(st.load_manifest(root), key)
+    shrunk_expected = painted.copy()
+    shrunk_expected[4:12, 4:12] = 37
+    check(response.status == 200 and shrunk_record["rect"] == [8, 8, 24, 24]
+          and shrunk_record["hist"][0] == {k: v for k, v in edit.items() if k != "hist"}
+          and np.array_equal(np.array(Image.open(st.resolve_path(root, shrunk_record["file"]))), shrunk_expected),
+          "X5: 축소 창 저장도 기록 rect·바깥 테두리 편집·hist 보존, 안쪽은 새 래스터")
+    status, _ = post(**st.CAND_XFORM_DEFAULTS)
+    check(status == 200 and np.array_equal(bd._window_l(first(st.load_manifest(root))["mask"], [8, 8, 24, 24]), shrunk_expected),
+          "X5: 축소 → 붓 적용 → 변형 없음 뒤 테두리 E1·중앙 E2 유지")
+    st.save_manifest(root, moved_edit)
     update_save = st.update_manifest
     def move_during_save(path, fn):
         update_save(path, lambda mm: mm["cand_adjust"][key].update(dx=7))
@@ -45835,7 +45848,33 @@ def polish5_xform_unit():
     outside_plain["candidates"][0]["quad"] = [v + 100 for v in q]
     st.save_manifest(root, outside_plain)
     status, error = get_mask()
-    check(status == 422 and "adjust" in error and error["adjust"] is None, "X6: 보정 없는 편집 창 422는 adjust null")
+    check(status == 422 and "adjust" not in error, "X6: 보정 없는 편집 창 422는 adjust 키 없음")
+    for mode in ("outside", "large"):
+        bad_base = copy.deepcopy(outside_plain if mode == "outside" else huge)
+        if mode == "large":
+            bad_base["candidates"][0]["quad"] = [0, 0, 5000, 0, 5000, 5000, 0, 5000]
+        for rec in (legacy, record(flip_h=True), record(dx=1, base_quad=q)):
+            bad_base["cand_adjust"] = {key: rec}
+            st.save_manifest(root, bad_base)
+            status, error = get_mask()
+            check(status == 422 and "adjust" not in error, f"X6: 기준 창 자체가 잘못되면 복구 정보 없음 {mode}/{rec.get('dx', 0)}")
+        for op in ("set", "undo"):
+            identity = record(blur=2, invert=True, flip_h=True)
+            bad_base["cand_adjust"] = {key: record(dx=1, blur=2, invert=True, flip_h=True, base_quad=q,
+                hist=[{k: v for k, v in identity.items() if k != "hist"}])}
+            st.save_manifest(root, bad_base)
+            status, recovered = post(op=op, blur=2, invert=True, **{k: identity[k] for k in st.CAND_XFORM_DEFAULTS})
+            got = recovered.get("adjust")
+            check(status == 200 and all(got[k] == identity[k] for k in ("blur", "invert", *defaults))
+                  and get_mask()[0] == 422, f"X6: 기준 창이 {mode}여도 {op} 항등 복귀 허용·픽셀 보정 유지")
+    for op in ("set", "undo"):
+        off_crop = copy.deepcopy(with_edit)
+        off_crop["crops"][0]["rect"] = [26, 4, 32, 28]
+        off_crop["cand_adjust"] = {key: record(dx=-1, base_quad=q, hist=[{k: v for k, v in record().items() if k != "hist"}])}
+        st.save_manifest(root, off_crop)
+        status, recovered = post(op=op, **st.CAND_XFORM_DEFAULTS)
+        check(status == 200 and recovered["adjust"]["dx"] == 0 and recovered["adjust"]["base_quad"] is None,
+              f"X6: 옛 크롭 ★의 {op} 항등 복귀도 크롭 밖 검사 생략")
     same_geometry = copy.deepcopy(with_edit)
     same_geometry["crops"][0]["rect"] = [26, 4, 32, 28]
     same_geometry["cand_adjust"] = {key: record(dx=-1, blur=2, base_quad=q, hist=[
@@ -45895,6 +45934,74 @@ def polish5_xform_unit():
             post(dx=7, flip_h=flip)
             preview = bd.mask_ps_import(root, {"psd": str(path), "dry_run": True})
             check(bool(preview["skipped"]) and "패치 위치" in str(preview["skipped"]), "X7: Export 후 변형 변경은 PS 가져오기 위치 다름으로 제외")
+
+        st.save_manifest(root, inside)
+        with patch.object(dp, "_ensure_analysis", return_value=(entries, 0, 2, [])):
+            result = dp.BMKDesignPatchExportPSD().run(dp._handle(root, st.load_manifest(root), compose=cs),
+                "shrink", "smart_object", "hidden_all", "raw", "hand", True, False)
+        path = Path(result["result"][0])
+        snap = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
+        row = next(r for r in snap["export_layers"] if r["key"] == key)
+        document = PSDImage.open(path)
+        so = next(x for x in document.descendants() if x.kind == "smartobject" and x.name == row["name"])
+        so.parent.remove_mask()
+        so.parent.create_mask(Image.new("L", (8, 8), 37), left=12, top=12)
+        with patch.object(bd.dpsd, "open_psd", return_value=document):
+            preview = bd.mask_ps_import(root, {"psd": str(path), "dry_run": True})
+            imported = bd.mask_ps_import(root, {"psd": str(path), "dry_run": False, "seen": preview["seen"]})
+        rec = mk.edit_record(st.load_manifest(root), key)
+        check(len(imported["imported"]) == 1 and not imported["failed"] and rec["rect"] == [8, 8, 24, 24]
+              and rec["hist"][0] == {k: v for k, v in edit.items() if k != "hist"}, "X7: 축소 창 PS 가져오기도 기록 창·hist 보존")
+        status, _ = post(**st.CAND_XFORM_DEFAULTS)
+        check(status == 200 and np.array_equal(bd._window_l(first(st.load_manifest(root))["mask"], [8, 8, 24, 24]), shrunk_expected),
+              "X7: 축소 → PS 가져오기 → 변형 없음 뒤 테두리 E1·중앙 E2 유지")
+
+        st.save_manifest(root, dict(m, candidates=[dict(c, hand_mask=None)]))
+        with patch.object(dp, "_ensure_analysis", return_value=(entries, 0, 1, [])):
+            result = dp.BMKDesignPatchExportPSD().run(dp._handle(root, st.load_manifest(root), compose=cs),
+                "harvest_seed", "smart_object", "none", "raw", "hand", True, False)
+        seed_path = result["result"][0]
+        st.save_manifest(root, dict(m, candidates=[], analysis={}))
+        cin = dp.BMKDesignPatchCandidateIn()
+        handle, _ = cin.run(dp._handle(root, st.load_manifest(root)), "psd_harvest", seed_path, "", "", True, False)
+        harvested = st.load_manifest(root)
+        hc = harvested["candidates"][0]
+        hk = hc["key"]
+        harvest_adj = record(dx=8, base_quad=q)
+        harvested["cand_adjust"] = {hk: harvest_adj}
+        st.save_manifest(root, harvested)
+        handle, report = cin.run(handle, "psd_harvest", seed_path, "", "", True, False)
+        check(st.load_manifest(root)["cand_adjust"][hk] == harvest_adj and "Studio 변형" not in report,
+              "X7: 같은 원본 PSD 재수확·quad 같음은 보정·시각·이력 그대로")
+        with patch.object(dp, "_ensure_analysis", return_value=({}, 0, 1, [])):
+            result = dp.BMKDesignPatchExportPSD().run(dp._handle(root, st.load_manifest(root), compose=cs),
+                "harvest_move", "smart_object", "none", "raw", "hand", True, False)
+        moved_path = result["result"][0]
+        handle, report = cin.run(handle, "psd_harvest", moved_path, "", "", True, False)
+        reharvested = st.load_manifest(root)
+        rec = st.cand_adjust_record(reharvested, hk)
+        check(len(reharvested["candidates"]) == 1 and reharvested["candidates"][0]["key"] == hk
+              and first(reharvested)["quad"] == dp.an.xform_quad(q, dx=8), "X7: 기하 Export PSD 재수확은 같은 내용 key·이동 한 번만")
+        check(rec is not None and st.cand_adjust_effect(rec) is None and rec["base_quad"] is None and rec["at"] != harvest_adj["at"]
+              and rec["hist"] == [{k: v for k, v in harvest_adj.items() if k != "hist"}]
+              and "다시 가져온 배치가 바뀌어 Studio 변형(이동·회전·배율)을 지움 — 블러·색반전·뒤집기는 유지" in report,
+              "X7: 재수확 기하 해제는 효과 0 기록·새 시각·이전 판·경고 유지")
+        for pixel_only in (False, True):
+            previous = record(blur=2, invert=True, flip_h=True, flip_v=True, dx=0 if pixel_only else 8, base_quad=None if pixel_only else q,
+                hist=[{k: v for k, v in record(blur=i / 2).items() if k != "hist"} for i in range(20)])
+            reharvested["cand_adjust"] = {hk: previous}
+            st.save_manifest(root, reharvested)
+            incoming = copy.deepcopy(reharvested["candidates"][0])
+            incoming["quad"] = [v + 1 for v in incoming["quad"]]
+            with patch.object(cin, "_harvest", return_value=[incoming]):
+                handle, report = cin.run(handle, "psd_harvest", moved_path, "", "", True, False)
+            rec = st.cand_adjust_record(st.load_manifest(root), hk)
+            check(all(rec[k] == previous[k] for k in ("blur", "invert", "flip_h", "flip_v"))
+                  and all(rec[k] == defaults[k] for k in ("dx", "dy", "rot", "sx", "sy", "base_quad")),
+                  f"X7: 기존 key 갱신은 블러·색반전·뒤집기 유지, 기하만 항등 pixel_only={pixel_only}")
+            check((rec == previous and "Studio 변형" not in report) if pixel_only else
+                  (rec["at"] != previous["at"] and rec["hist"] == [{k: v for k, v in previous.items() if k != "hist"}] + previous["hist"][:19]),
+                  f"X7: 픽셀 보정만이면 원본 기록 유지·기하 해제면 hist 20 유지 pixel_only={pixel_only}")
     finally:
         folder_paths.set_output_directory(old_output)
         bd._OUTPUT_DIR[:] = old_board_output

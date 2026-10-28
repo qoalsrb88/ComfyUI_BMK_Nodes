@@ -1487,13 +1487,24 @@ def _mask_target(root: str, m: dict, cand: dict, pref: dict | None, *, recovery:
     i = next(j for j, (_p, _t, it) in enumerate(order) if it["cand"]["key"] == cand["key"])
     it = order[i][2]
     rect = dmask.edit_rect(dpsd.quad_bbox(it["quad"]), (W, H))
+
+    def recovery_fields():
+        if recovery:
+            adjust = store.cand_adjust_record(m, cand["key"])
+            effect = store.cand_adjust_effect(adjust)
+            if effect and "dx" in effect:
+                base_rect = dmask.edit_rect(dpsd.quad_bbox(it["base_quad"]), (W, H))
+                if base_rect and (base_rect[2] - base_rect[0]) * (base_rect[3] - base_rect[1]) <= dmask.MAX_PIXELS:
+                    return {"adjust": adjust}
+        return {}
+
     if rect is None:
         raise _Reject(422, "이 ★ 의 패치가 캔버스 밖에 있어 편집할 창이 없습니다",
-                      **({"adjust": store.cand_adjust_record(m, cand["key"])} if recovery else {}))
+                      **recovery_fields())
     w, h = rect[2] - rect[0], rect[3] - rect[1]
     if w * h > dmask.MAX_PIXELS:  # 저장(validate_png)이 늘 거절할 창 — 칠하기 전에 알린다
         raise _Reject(422, f"편집 창 {w}x{h} 가 4096² 픽셀을 넘어 Studio 에서 편집할 수 없습니다 — PS 그룹 마스크로",
-                      **({"adjust": store.cand_adjust_record(m, cand["key"])} if recovery else {}))
+                      **recovery_fields())
     fp = dmask.base_fp(cand, it["entry"], cs["mask_source"])
     bm = it["base_mask"]
     return {"order": order, "i": i, "it": it, "cs": cs, "warns": warns, "wh": (W, H), "rect": rect, "fp": fp,
@@ -2095,21 +2106,23 @@ def mask_adjust(root: str, data: dict) -> dict:
         else:
             new = hist[0] if op == "undo" and hist else None
         if new is not None and any(new[k] != (old or store.CAND_XFORM_DEFAULTS)[k] for k in ("dx", "dy", "rot", "sx", "sy")):
-            # set·undo 모두 기하 값이 바뀔 때만 검사한다. 픽셀 보정은 당시 변형 기준도 보존한다.
-            cs = _compose_settings(root, m)
-            base_quad = _adjust_base_quad(cand, _entry_for(m, key, _PREF.get(store.root_key(root))), cs["use_registration"])
-            quad = an.xform_quad(base_quad, **{k: new[k] for k in ("dx", "dy", "rot", "sx", "sy")})
-            bbox = dpsd.quad_bbox(quad)
-            crop = next(c for c in m["crops"] if c["id"] == cand["crop_id"])
-            cr = dmask.edit_rect(crop["rect"], m["canvas"])
-            if cr is None or bbox[0] >= cr[2] or bbox[2] <= cr[0] or bbox[1] >= cr[3] or bbox[3] <= cr[1]:
-                raise _Reject(400, "되돌리면 패치가 크롭 밖으로 나갑니다" if op == "undo" else "변형한 패치가 크롭 밖으로 나갑니다")
-            rect = dmask.edit_rect(bbox, m["canvas"])
-            if (rect[2] - rect[0]) * (rect[3] - rect[1]) > dmask.MAX_PIXELS:
-                raise _Reject(400, "되돌리면 패치의 편집 창이 4096² 픽셀을 넘습니다" if op == "undo" else "변형한 패치의 편집 창이 4096² 픽셀을 넘습니다")
+            # 항등 복귀는 기준 배치가 크롭 밖·상한 초과여도 허용한다. 픽셀 보정은 당시 변형 기준도 보존한다.
+            effect = store.cand_adjust_effect(new)
+            base_quad = None
+            if effect and "dx" in effect:
+                cs = _compose_settings(root, m)
+                base_quad = _adjust_base_quad(cand, _entry_for(m, key, _PREF.get(store.root_key(root))), cs["use_registration"])
+                quad = an.xform_quad(base_quad, **{k: new[k] for k in ("dx", "dy", "rot", "sx", "sy")})
+                bbox = dpsd.quad_bbox(quad)
+                crop = next(c for c in m["crops"] if c["id"] == cand["crop_id"])
+                cr = dmask.edit_rect(crop["rect"], m["canvas"])
+                if cr is None or bbox[0] >= cr[2] or bbox[2] <= cr[0] or bbox[1] >= cr[3] or bbox[3] <= cr[1]:
+                    raise _Reject(400, "되돌리면 패치가 크롭 밖으로 나갑니다" if op == "undo" else "변형한 패치가 크롭 밖으로 나갑니다")
+                rect = dmask.edit_rect(bbox, m["canvas"])
+                if (rect[2] - rect[0]) * (rect[3] - rect[1]) > dmask.MAX_PIXELS:
+                    raise _Reject(400, "되돌리면 패치의 편집 창이 4096² 픽셀을 넘습니다" if op == "undo" else "변형한 패치의 편집 창이 4096² 픽셀을 넘습니다")
             if op == "set":
-                effect = store.cand_adjust_effect(new)
-                new["base_quad"] = base_quad if effect and "dx" in effect else None
+                new["base_quad"] = base_quad
         if new is None:
             if isinstance(m.get("cand_adjust"), dict):
                 m["cand_adjust"].pop(key, None)

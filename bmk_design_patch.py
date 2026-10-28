@@ -1673,6 +1673,17 @@ class BMKDesignPatchCandidateIn:
                 added += 1
             elif _snapshot(prev) != _snapshot(c):
                 updated += 1
+            if prev is not None and not np.array_equal(prev["quad"], c["quad"]):
+                adjust = store.cand_adjust_record(m, c["key"])
+                effect = store.cand_adjust_effect(adjust)
+                if effect and "dx" in effect:
+                    ns = time.time_ns()
+                    at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ns // 1_000_000_000)) + f".{ns % 1_000_000_000:09d}"
+                    hist = ([{k: v for k, v in adjust.items() if k != "hist"}] + adjust["hist"])[:20]
+                    geometry = {k: store.CAND_XFORM_DEFAULTS[k] for k in ("dx", "dy", "rot", "sx", "sy")}
+                    m["cand_adjust"][c["key"]] = dict(adjust, **geometry, base_quad=None, at=at, hist=hist)
+                    label = (c.get("origin_info") or {}).get("layer") or c["key"]
+                    warns.append(f"{label}: 다시 가져온 배치가 바뀌어 Studio 변형(이동·회전·배율)을 지움 — 블러·색반전·뒤집기는 유지")
             merged.append(c)
         m["candidates"] = _plain(merged)
         for k in removed:
