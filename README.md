@@ -73,6 +73,14 @@ Impact Pack 의존 import는 전부 `try/except`로 격리돼 있어서, 없어�
 내보낸 JSON 을 **가져오기**로 넣습니다. 결과는 숨긴 `arrangement` 위젯에 저장되고, 비워 두면
 `layout` 을 씁니다. 형식은 TagOrganizer 저장소의 `docs/arrangement.md` 가 정본입니다.
 
+입력 문법은 `input_dialect` 에서 고르거나 `auto` 로 프롬프트의 표기(NAI `1.2::x ::`·`{x}`, ComfyUI
+`(x:1.2)`·`\(`, Anima `@작가`)로 알아내게 합니다. 표기가 섞였거나 없으면 `dialect_priority` 순서(기본
+nai > comfyui > anima)를 따르고, 알아낸 문법과 근거는 편집기 상태 줄과 `report` 출력의 `dialect` 에
+나옵니다. `auto` 에 `output_dialect=same` 이면 알아낸 문법으로 내므로, ComfyUI 인코더로 보낼 때는 출력을
+`comfyui` 로 둡니다. `//` 주석은 기본으로 빼고(`comments=keep` 이면 구간 맨 위에 한 줄씩), 문장 끝 마침표는
+쉼표처럼 나눠 문장을 "자연어 문장" 줄에 입력 그대로 둡니다(`sentences`). NAI 숫자 강조는 `1.1::x ::` 처럼
+닫는 `::` 앞을 띄워 냅니다.
+
 ## BMK Tabbed Notes — 노트 데이터 위치
 
 노트는 **이 저장소 안에 저장되지 않습니다.** 기본 위치는:
