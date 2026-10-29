@@ -5,7 +5,9 @@ ComfyUI 노드, BMK AI Studio, CLI가 함께 쓰는 단일 파일 코어다. 표
 쓸 수 있다. 데이터는 빌드 도구가 만든 태그 팩(tagpack.json.gz)에서 읽는다.
 
 처리 순서:
-    parse    입력 문법(comfyui / nai / anima)에 맞춰 토큰으로 나눈다
+    comment  // 주석을 떼어 낸다(comments: 뺌 / 구간 맨 위에 한 줄씩 남김)
+    dialect  (input_dialect=auto) 표기로 입력 문법을 알아낸다(detect_dialect, dialect_priority)
+    parse    입력 문법(comfyui / nai / anima)에 맞춰 토큰으로 나눈다. 문장 끝 마침표도 나누고 문장은 자연어 토큰으로
     resolve  소문자·밑줄 정규화 후 이름 → 별칭 순으로 찾는다
     guess    (guess 옵션) 팩에 없는 토큰의 분류를 패턴·끝말로 추정한다
     override (framing·view 옵션) 프롬프트의 크롭·시점 태그를 고른 태그로 바꾼다
@@ -34,6 +36,12 @@ arrangement_from_layout(). 결과의 report["arranged"] 는 줄 → 청크 → �
         옛 코어는 이 칸을 무시하고, 새 코어는 이 칸이 없는 옛 팩을 전부 원본 태그로 읽는다.
 - v1.4: 팩의 두 번째 원본(site: 원본 ID(e621) → 키) — TagInfo.site, report 토큰의 site. v1.3 과 같은 방식으로
         옛 코어는 무시하고, 이 칸이 없는 팩은 전부 Danbooru·확장 DB 태그로 읽는다.
+- v1.5: 프롬프트 문법 — NAI 숫자 강조는 `1.1::x ::` 로 닫고 숫자 바로 뒤의 닫기를 바로 읽음(토큰 warning,
+        report warnings, warning_text), `//` 주석(kind=comment, comments), `__와일드카드__` 가 든 조각은 문법 토큰
+        (guess 면 남은 말로 자리 추정), 동적 프롬프트 `{a|b} x` 의 후보가 모두 같은 분류면 그 분류(guess=choice:…),
+        문장 끝 마침표(sentences, kind=natural·시스템 카테고리 natural), 입력 문법 자동 인식(input_dialect=auto,
+        detect_dialect, dialect_priority, report dialect.auto·evidence·conflict). 팩 스키마는 그대로 — 옛 팩에서는
+        자연어 문장이 rest 로 가고, 옛 코어는 새 팩의 natural 섹션을 빈 섹션으로 둔다.
 """
 
 from __future__ import annotations
@@ -44,8 +52,8 @@ import logging
 import os
 import re
 import threading
-from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
+from dataclasses import dataclass, field, replace
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 logger = logging.getLogger(__name__)
 _TAG = "[TagOrganizer]"
@@ -57,10 +65,14 @@ _DEFAULTS = (None, 0, 0, "etc", "", (), (), 0, "", None)
 
 RATINGS = ("g", "s", "q", "e")
 DIALECTS = ("comfyui", "nai", "anima")
+AUTO_DIALECT = "auto"                          # 입력 문법을 프롬프트에서 알아낸다(detect_dialect)
+INPUT_DIALECTS = (AUTO_DIALECT,) + DIALECTS
+DIALECT_PRIORITY = ("nai", "comfyui", "anima")  # 자동 인식: 신호가 섞였을 때·없을 때 앞의 것
+COMMENT_MODES = ("remove", "keep")
 RULE_GROUPS = ("framing", "view", "explicit")
 RULE_MODES = ("off", "report", "remove")
 ORDERS = ("input", "popular", "alpha")
-SYSTEM_CATEGORIES = ("etc", "unknown", "special")
+SYSTEM_CATEGORIES = ("etc", "unknown", "special", "natural")
 
 TYPE_CUSTOM = -1  # 팩의 확장 DB 태그(danbooru.csv에 없는 모델 전용·폐기·내 태그 — 어느 DB인지는 TagInfo.db)
 TYPE_GUESS = -2   # 추정한 토큰에 붙이는 임시 정보(팩에는 없음)
@@ -295,8 +307,11 @@ class Options:
     rules: Any = "remove"               # 모든 그룹에 같은 모드, 또는 {그룹: 모드}
     rule_overrides: Dict[str, str] = field(default_factory=dict)  # 명시 규칙 id → 모드
     layout: str = "default"
-    input_dialect: str = "comfyui"
-    output_dialect: str = ""            # 비우면 입력과 같음
+    input_dialect: str = "comfyui"      # comfyui / nai / anima / auto(프롬프트에서 알아냄)
+    output_dialect: str = ""            # 비우면 입력과 같음(auto 면 알아낸 문법)
+    dialect_priority: Any = ""          # auto 의 우선순위("nai, comfyui, anima" 또는 목록). 빠진 것은 기본 순서로 뒤에
+    comments: str = "remove"            # // 주석: remove(뺌) / keep(구간 맨 위에 한 줄씩)
+    sentences: bool = True              # 문장 끝 마침표(". ")를 쉼표처럼 나누고, 문장은 자연어 토큰(natural)으로
     line_per_section: bool = True
     trailing_comma: bool = True
     dedupe: bool = True
@@ -322,6 +337,20 @@ class Options:
             return cls(**known)
         raise TypeError("options 는 Options 또는 dict 여야 합니다.")
 
+    def priority(self) -> Tuple[str, ...]:
+        """자동 인식 우선순위. 적은 것을 앞에, 빠진 문법은 기본 순서(DIALECT_PRIORITY)로 뒤에 붙인다."""
+        raw = self.dialect_priority
+        if isinstance(raw, str):
+            items = [s.strip().lower() for s in raw.replace(">", ",").split(",")]
+        elif isinstance(raw, (list, tuple)):
+            items = [str(s).strip().lower() for s in raw]
+        else:
+            raise ValueError("dialect_priority 는 \"nai, comfyui, anima\" 같은 글이나 목록이어야 합니다.")
+        items = [s for s in items if s]
+        if any(s not in DIALECTS for s in items) or len(set(items)) != len(items):
+            raise ValueError(f"dialect_priority 는 {', '.join(DIALECTS)} 를 겹치지 않게 적습니다: {raw}")
+        return tuple(items) + tuple(d for d in DIALECT_PRIORITY if d not in items)
+
     def rule_modes(self) -> Dict[str, str]:
         if isinstance(self.rules, str):
             return {g: self.rules for g in RULE_GROUPS}
@@ -337,9 +366,13 @@ class Options:
             raise ValueError(f"알 수 없는 레이아웃: {self.layout} (가능: {', '.join(pack.layouts)})")
         if self.max_rating not in RATINGS:
             raise ValueError(f"max_rating 은 {'/'.join(RATINGS)} 중 하나여야 합니다.")
-        for d in (self.input_dialect, self.output_dialect or self.input_dialect):
-            if d not in DIALECTS:
-                raise ValueError(f"알 수 없는 문법: {d} (가능: {', '.join(DIALECTS)})")
+        if self.input_dialect not in INPUT_DIALECTS:
+            raise ValueError(f"알 수 없는 문법: {self.input_dialect} (가능: {', '.join(INPUT_DIALECTS)})")
+        if self.output_dialect and self.output_dialect not in DIALECTS:
+            raise ValueError(f"알 수 없는 출력 문법: {self.output_dialect} (가능: {', '.join(DIALECTS)})")
+        self.priority()
+        if self.comments not in COMMENT_MODES:
+            raise ValueError(f"comments 는 {'/'.join(COMMENT_MODES)} 중 하나여야 합니다.")
         if self.order not in ORDERS:
             raise ValueError(f"order 는 {'/'.join(ORDERS)} 중 하나여야 합니다.")
         for group, mode in self.rule_modes().items():
@@ -360,7 +393,7 @@ class Token:
     text: str                      # 가중치를 뗀 본문(이스케이프 해제)
     weight: float = 1.0
     verbatim: Optional[str] = None  # 입력에 적힌 그대로(혼자인 세그먼트일 때만)
-    kind: str = "tag"              # tag / unknown / special
+    kind: str = "tag"              # tag / unknown / special / comment(// 주석) / natural(마침표로 끝나는 문장)
     opaque: bool = False           # 해석하지 않고 통째로 보존(문장 중간 강조 등)
     prefix: str = ""               # artist / source# / target# / mutual#
     core: str = ""                 # 접두를 뗀 본문
@@ -375,6 +408,7 @@ class Token:
     order: int = 0
     guess: str = ""                # 추정 근거: pattern:<패턴> / head:<끝말 태그>
     injected: str = ""             # 덮어쓰기로 넣은 태그: framing / view
+    warning: str = ""              # 입력 문법 경고: nai_number:<숫자>(NAI 가 가중치로 읽는 숫자 닫기)
     slot: int = -1                 # 배치된 청크의 순번(줄 순서대로 펼친 번호)
     member: int = 0                # 청크 안 멤버 순번(서브 순서)
     index: int = 0                 # report["tokens"] 의 위치
@@ -419,8 +453,81 @@ def _escape_parens(s: str) -> str:
     return s.replace("(", "\\(").replace(")", "\\)")
 
 
-def _split_segments(text: str, dialect: str) -> List[str]:
-    """괄호 밖의 쉼표·줄바꿈으로 나눈다. 괄호가 안 맞으면 단순 분할로 물러난다."""
+def _nai_number_closes(text: str, end: int) -> bool:
+    """`N::` 뒤에 강조할 내용이 없으면(끝·쉼표·줄바꿈·닫는 괄호) 새 강조가 아니라 글자 N 과 닫는 `::` 다.
+
+    `1.1::year 2024::` 처럼 숫자로 끝나는 태그를 닫은 경우다(NAI 는 2024 를 가중치로 읽고 경고한다).
+    """
+    rest = text[end:].lstrip(" \t")
+    return not rest or rest[0] in ",\n}]"
+
+
+Known = Optional[Callable[[str], bool]]   # 글 → 팩에 있는 이름·별칭인지(정규화는 이 함수가)
+
+# 마침표 앞에 와도 문장 끝이 아닌 약어(st. louis, dr. stone, super smash bros. melee)
+_ABBREVIATIONS = frozenset(("mr", "mrs", "ms", "dr", "st", "jr", "sr", "inc", "ltd", "bros", "vs", "ver", "vol",
+                            "mt", "ft", "prof"))
+_SPAN_WORDS = 10    # 마침표를 사이에 둔 팩 이름을 찾을 때 양쪽으로 보는 단어 수
+_NUM_OPENERS = re.compile(r"-?\d+(?:\.\d+)?::")
+_COMFY_WEIGHT = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?"   # float() 가 읽는 가중치(.8, +1.2, 1e-1)
+_COMFY_WEIGHT_TAIL = re.compile(r":\s*" + _COMFY_WEIGHT + r"\s*$")
+
+
+def _name_forms(text: str) -> List[str]:
+    """팩 이름인지 볼 글의 모양들: 그대로, 이스케이프를 푼 것, 바깥 가중치를 한 겹씩 벗긴 것
+    ((x:1.2) → x, 1.2::x:: → x, {x}·[x] → x). 이름에 든 괄호(st. louis (azur lane))는 짝이 맞는 바깥 한 겹만 벗긴다."""
+    s = text.strip().replace("\\(", "(").replace("\\)", ")")
+    forms = [text.strip(), s]
+    for _ in range(4):
+        m = re.match(r"^-?\d+(?:\.\d+)?::(.*?)(?:\s*::)?$", s, re.DOTALL)
+        if m:
+            s = m.group(1).strip()
+        elif len(s) > 1 and s[0] == "(" and s[-1] == ")":
+            s = _COMFY_WEIGHT_TAIL.sub("", s[1:-1]).strip()
+        elif len(s) > 1 and (s[0], s[-1]) in (("{", "}"), ("[", "]")):
+            s = s[1:-1].strip()
+        else:
+            break
+        forms.append(s)
+    return forms
+
+
+def _sentence_end(text: str, i: int, left: str, known: Known) -> bool:
+    """text[i] 의 '.' 이 문장 끝(쉼표처럼 나눔)인지.
+
+    뒤가 빈칸·줄끝이고(1.5, a.i., ._. 는 아님) 앞이 글자일 때. 마침표를 사이에 둔 팩 이름(monkey d. luffy,
+    st. louis (azur lane) 등)이 있으면 나누지 않고, 마침표로 끝나는 팩 이름(super smash bros.)이면 그 뒤에서 나눈다.
+    팩 이름이 아니면 앞 단어가 이니셜·점 든 약어(u.a.)·_ABBREVIATIONS 일 때 나누지 않는다.
+    다른 문법의 가중치 표기(ComfyUI 입력의 `0.8::kaiboukan no. 30 (kancolle)::`, `{st. louis …}`)는 벗기고 본다.
+    """
+    nxt = text[i + 1] if i + 1 < len(text) else ""
+    if nxt and not nxt.isspace():
+        return False
+    prev = text[i - 1] if i else ""
+    if not (prev.isalnum() or prev in ")]}'\"" + _ESC_CLOSE):
+        return False
+    words = [w.lstrip("{[") for w in _NUM_OPENERS.sub(" ", _unescape(left)).split()]
+    words = [w for w in words if w]
+    if not words:
+        return False
+    if known is not None:
+        end = min([p for p in (text.find(",", i), text.find("\n", i)) if p >= 0] or [len(text)])
+        right = re.sub(r"::|[{}\[\]]", " ", _unescape(text[i + 1:end])).split()[:_SPAN_WORDS]
+        lw = words[-_SPAN_WORDS:]
+        heads = [" ".join(lw[-a:]) + "." for a in range(1, len(lw) + 1)]
+        if any(known(h + " " + " ".join(right[:b])) for h in heads for b in range(1, len(right) + 1)):
+            return False
+        if any(known(h) for h in heads):
+            return True
+    word = words[-1].lower().lstrip("([{\"'")
+    return not ((len(word) == 1 and word.isalpha()) or "." in word or word in _ABBREVIATIONS)
+
+
+def _split_segments(text: str, dialect: str, known: Known = None, sentences: bool = False) -> List[str]:
+    """괄호 밖의 쉼표·줄바꿈으로 나눈다. 괄호가 안 맞으면 단순 분할로 물러난다.
+
+    sentences 면 괄호 밖의 문장 끝 마침표(_sentence_end)에서도 나눈다. 마침표는 앞 조각 끝에 남는다.
+    """
     out: List[str] = []
     buf: List[str] = []
     depth = 0
@@ -428,6 +535,12 @@ def _split_segments(text: str, dialect: str) -> List[str]:
     i, n = 0, len(text)
     while i < n:
         ch = text[i]
+        if sentences and ch == "." and depth == 0 and num_open == 0 and _sentence_end(text, i, "".join(buf), known):
+            buf.append(ch)
+            out.append("".join(buf))
+            buf = []
+            i += 1
+            continue
         if dialect == "nai":
             if num_open and text.startswith("::", i):
                 num_open -= 1
@@ -436,7 +549,10 @@ def _split_segments(text: str, dialect: str) -> List[str]:
                 continue
             m = _NAI_NUM.match(text, i)
             if m and (i == 0 or text[i - 1] in " ,\n{["):
-                num_open += 1
+                if _nai_number_closes(text, m.end()):
+                    num_open = max(0, num_open - 1)
+                else:
+                    num_open += 1
                 buf.append(m.group(0))
                 i = m.end()
                 continue
@@ -504,8 +620,12 @@ def _comfy_weights(s: str, weight: float = 1.0, grouped: bool = False) -> List[T
     return out
 
 
-def _nai_weights(s: str) -> List[Tuple[str, float, bool]]:
-    """NovelAI: {x} ×1.05, [x] ÷1.05, 1.2::x:: 숫자 강조. 괄호 ()는 글자 그대로."""
+def _nai_weights(s: str, notes: Optional[Dict[int, str]] = None) -> List[Tuple[str, float, bool]]:
+    """NovelAI: {x} ×1.05, [x] ÷1.05, 1.2::x:: 숫자 강조. 괄호 ()는 글자 그대로.
+
+    숫자로 끝나는 태그를 빈칸 없이 닫으면(`as109::`, `year 2024::`) 닫기로 읽고, NAI 는 그 숫자를 가중치로 읽는다는
+    것을 notes[조각 번호] = "nai_number:<숫자>" 로 남긴다(출력은 `1.1::as109 ::` 처럼 띄운다).
+    """
     out: List[Tuple[str, float, bool]] = []
     stack: List[Tuple[str, float]] = []
     buf: List[str] = []
@@ -518,15 +638,32 @@ def _nai_weights(s: str) -> List[Tuple[str, float, bool]]:
             out.append(("".join(buf), w, bool(stack)))
             buf.clear()
 
+    def note(number: str) -> None:
+        if notes is not None and out:
+            notes[len(out) - 1] = "nai_number:" + number
+
     i, n = 0, len(s)
     while i < n:
         if stack and stack[-1][0] == "num" and s.startswith("::", i):
+            tail = re.search(r"-?\d+(?:\.\d+)?$", "".join(buf))
             flush()
+            if tail:
+                note(tail.group(0))
             stack.pop()
             i += 2
             continue
         m = _NAI_NUM.match(s, i)
         if m and (i == 0 or s[i - 1] in " ,{["):
+            if _nai_number_closes(s, m.end()):
+                if stack and stack[-1][0] == "num":       # "1.1::year 2024::" — 2024 는 글자, :: 는 닫기
+                    buf.append(m.group(1))
+                    flush()
+                    note(m.group(1))
+                    stack.pop()
+                else:                                     # 닫을 강조가 없으면 글자 그대로
+                    buf.append(m.group(0))
+                i = m.end()
+                continue
             flush()
             stack.append(("num", float(m.group(1))))
             i = m.end()
@@ -551,10 +688,41 @@ def _nai_weights(s: str) -> List[Tuple[str, float, bool]]:
     return out
 
 
+_COMMENT_START = re.compile(r"(?:^|(?<=[\s,]))//")
+_COMMENT_MARK = "\x03"      # 주석을 뗀 자리(BREAK 로 나눈 뒤 어느 구간의 주석인지 세는 데 쓰고 지운다)
+
+
+def _strip_comments(text: str, known: Known = None) -> Tuple[str, List[str]]:
+    """줄마다 `//` 부터 줄 끝까지를 주석으로 떼어 낸다 → (주석 자리에 _COMMENT_MARK 를 둔 글, 주석들).
+
+    `//` 가 줄 처음이거나 앞이 빈칸·쉼표일 때만(`.hack//`, `sp//dr`, `https://` 는 아님). 그 `//` 가 든 쉼표 사이
+    조각(또는 그 안의 문장 끝 ". " 뒤)이 팩 이름이면(`z.a.t.o. // i love the world and everything in it`) 주석이 아니다.
+    """
+    lines: List[str] = []
+    comments: List[str] = []
+    for line in text.split("\n"):
+        pos = -1
+        for m in _COMMENT_START.finditer(line):
+            start = line.rfind(",", 0, m.start()) + 1
+            end = line.find(",", m.end())
+            seg = line[start:end if end >= 0 else len(line)]
+            heads = [seg] + [seg[k + 2:] for k in range(m.start() - start) if seg.startswith(". ", k)]
+            if known is not None and any(known(f) for h in heads for f in _name_forms(h)):   # (이름:1.2) 도
+                continue
+            pos = m.start()
+            break
+        if pos < 0:
+            lines.append(line)
+            continue
+        comments.append(line[pos:].strip())
+        lines.append(line[:pos] + _COMMENT_MARK)
+    return "\n".join(lines), comments
+
+
 def _is_special(seg: str, dialect: str) -> bool:
     s = seg.strip()
     low = s.lower()
-    if _EXTRA_NET.fullmatch(s) or _WILDCARD.fullmatch(s) or low.startswith("embedding:"):
+    if _EXTRA_NET.fullmatch(s) or _WILDCARD.search(s) or low.startswith("embedding:"):   # __와일드카드__ 가 든 조각
         return True
     if dialect != "nai" and "{" in s and "|" in s:   # 동적 프롬프트 {a|b}
         return True
@@ -575,24 +743,64 @@ def _split_prefix(text: str, dialect: str, kaomoji: Iterable[str] = ()) -> Tuple
     return "", t
 
 
-def parse_prompt(text: str, dialect: str = "comfyui", pack: Optional[TagPack] = None) -> List[Token]:
-    """한 구간(BREAK 없음)을 토큰으로 나눈다. pack 이 있으면 괄호가 이름의 일부인 태그를 알아본다."""
+def _known_fn(pack: Optional[TagPack]) -> Known:
+    if pack is None:
+        return None
+    return lambda s: pack.is_known(normalize_key(s, pack.kaomoji))
+
+
+def _sentence(seg: str, known: Known) -> Optional[str]:
+    """마침표로 끝나는 조각 → 자연어 문장이면 None 이 아닌 글(입력 그대로).
+
+    팩 이름(super smash bros.)이면 태그, 마침표를 떼면 팩 이름이거나 한 단어면(smile.) 마침표만 떼고 태그로 —
+    그럴 때는 마침표를 뗀 조각을 돌려주지 않고 빈 글("")을 돌려준다. 두 단어 이상이고 팩에 없으면 문장.
+    """
+    s = seg.rstrip()
+    if len(s) < 2 or not s.endswith(".") or s.endswith("..") or not (s[-2].isalnum() or s[-2] in ")]}'\"" + _ESC_CLOSE):
+        return None
+    literal = _unescape(s)
+    if known is not None and known(literal):
+        return None
+    body = literal[:-1].strip()
+    if (known is not None and known(body)) or " " not in body:
+        return ""
+    return s
+
+
+def parse_prompt(text: str, dialect: str = "comfyui", pack: Optional[TagPack] = None,
+                 sentences: bool = False) -> List[Token]:
+    """한 구간(BREAK 없음)을 토큰으로 나눈다. pack 이 있으면 괄호가 이름의 일부인 태그를 알아본다.
+
+    sentences 면 문장 끝 마침표에서도 나누고, 마침표로 끝나는 두 단어 이상의 조각(팩 이름 제외)은 자연어 토큰
+    (kind=natural, 입력 그대로 출력)으로 둔다. 한 단어·팩 이름 + 마침표(smile.)는 마침표만 떼고 태그로 읽는다.
+    """
     kaomoji = pack.kaomoji if pack is not None else frozenset()
+    known = _known_fn(pack)
     text = _EXTRA_NET.sub(lambda m: "," + m.group(0) + ",", text)
     text = _protect(text)
     tokens: List[Token] = []
-    for seg in _split_segments(text, dialect):
+    for seg in _split_segments(text, dialect, known, sentences):
         raw = _restore(seg)
         if _is_special(raw, dialect):
             tokens.append(Token(text=raw, verbatim=raw, kind="special"))
             continue
+        if sentences:
+            natural = _sentence(seg, known)
+            if natural:
+                literal = _unescape(natural).strip()
+                tokens.append(Token(text=literal, verbatim=_restore(natural).strip(), kind="natural", primary="natural"))
+                continue
+            if natural == "":
+                seg = seg.rstrip()[:-1]
+                raw = _restore(seg)
         if dialect != "nai" and pack is not None:
             literal = _unescape(seg)
             _, core = _split_prefix(literal, dialect, kaomoji)
             if pack.is_known(normalize_key(core, kaomoji)):
                 tokens.append(Token(text=literal, verbatim=raw))
                 continue
-        pieces = _nai_weights(seg) if dialect == "nai" else _comfy_weights(seg)
+        notes: Dict[int, str] = {}
+        pieces = _nai_weights(seg, notes) if dialect == "nai" else _comfy_weights(seg)
         grouped = any(g for _, _, g in pieces)
         plain = any(p.strip() for p, _, g in pieces if not g)
         if grouped and plain:
@@ -600,23 +808,139 @@ def parse_prompt(text: str, dialect: str = "comfyui", pack: Optional[TagPack] = 
             tokens.append(Token(text=_unescape(seg), verbatim=raw, kind="unknown", opaque=True))
             continue
         sub: List[Token] = []
-        for ptext, weight, _ in pieces:
+        for pi, (ptext, weight, _) in enumerate(pieces):
+            before = len(sub)
             for part in ptext.split(","):
                 part = _unescape(part).strip()
                 if part:
                     sub.append(Token(text=part, weight=weight))
+            if pi in notes and len(sub) > before:
+                sub[-1].warning = notes[pi]
         if len(sub) == 1 and not grouped:
             sub[0].verbatim = raw
         tokens += sub
     return tokens
 
 
+def warning_text(reason: str) -> str:
+    """토큰 warning(report["warnings"] 의 reason) → 한 줄 설명(관리 툴·CLI·노드가 같이 쓴다)."""
+    kind, _, value = reason.partition(":")
+    if kind == "nai_number":
+        return f"NAI 는 '{value}::' 의 {value} 를 가중치로 읽습니다 — 닫기로 읽고, 출력은 '{value} ::' 로 띄웁니다"
+    return reason
+
+
+# 문법마다 그 문법에서만 뜻이 있는 표기. (이름, 식) — 숫자 없는 괄호 (cosplay) 는 어느 쪽이든 글자일 수 있어 보지 않는다
+_DIALECT_SIGNS: Dict[str, Tuple[Tuple[str, Any], ...]] = {
+    "nai": (
+        ("숫자 강조", re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?::")),
+        ("{강조}", re.compile(r"\{[^{}|\n]*[^\W\d_][^{}|\n]*\}")),
+        ("[약화]", re.compile(r"\[[^\[\]|:\n]*[^\W\d_][^\[\]|:\n]*\]")),
+        ("source#·target#·mutual#", re.compile(r"(?:^|[,\n])\s*(?:source|target|mutual)#", re.IGNORECASE)),
+        ("text:", re.compile(r"(?:^|[,\n])\s*text:", re.IGNORECASE)),
+    ),
+    "comfyui": (
+        ("(태그:가중치)", re.compile(r"\([^()\n]*:\s*" + _COMFY_WEIGHT + r"\s*\)")),
+        ("\\( 이스케이프", re.compile(r"\\[()]")),
+        ("<lora:…>", _EXTRA_NET),
+        ("embedding:", re.compile(r"\bembedding:", re.IGNORECASE)),
+        ("{a|b} 동적 프롬프트", re.compile(r"\{[^{}\n]*\|[^{}\n]*\}")),
+    ),
+}
+_ANIMA_ARTIST = re.compile(r"(?:^|[,\n])[\s(]*(@[^\s,()@][^,\n()]*)")
+_EVIDENCE_CHARS = 40        # 근거로 남기는 글자 수(한 표기당)
+
+
+def detect_dialect(text: str, priority: Sequence[str] = DIALECT_PRIORITY, kaomoji: Iterable[str] = (),
+                   known: Known = None) -> Dict[str, Any]:
+    """프롬프트의 문법을 알아낸다 → {"dialect", "evidence": {문법: [보기 글자…]}, "counts", "conflict"}.
+
+    Anima 는 가중치·이스케이프가 ComfyUI 와 같고 `@작가` 만 다르므로(상위 호환) `@작가` 가 있으면 ComfyUI 표기가
+    함께 있어도 anima 다. priority 는 NAI 표기와 ComfyUI·Anima 표기가 함께 있을 때(conflict), 그리고 아무 표기도
+    없을 때(첫 문법) 쓴다. BREAK 는 쉼표처럼 조각 경계로 본다. known 을 주면 `@` 로 시작하는 팩 이름(Danbooru
+    작가 `@ichigo`, `@ symbol` 등)은 Anima 표기로 세지 않는다.
+    """
+    kao = frozenset(kaomoji)
+    text = _BREAK.sub(",", text)
+    evidence: Dict[str, List[str]] = {}
+    for dialect, signs in _DIALECT_SIGNS.items():
+        for _, rx in signs:
+            for m in rx.finditer(text):
+                evidence.setdefault(dialect, []).append(m.group(0).strip(" ,\n")[:_EVIDENCE_CHARS])
+    for m in _ANIMA_ARTIST.finditer(text):
+        name = m.group(1).strip()
+        if name.lower() in kao or normalize_key(name, kao) in kao or (known is not None and known(name)):
+            continue
+        evidence.setdefault("anima", []).append(name[:_EVIDENCE_CHARS])
+    order = list(priority) + [d for d in DIALECT_PRIORITY if d not in priority]
+    comfy = "anima" if "anima" in evidence else "comfyui"
+    has_nai, has_comfy = "nai" in evidence, bool({"comfyui", "anima"} & set(evidence))
+    if has_nai and has_comfy:
+        dialect = min(("nai", comfy), key=order.index)
+    elif has_nai:
+        dialect = "nai"
+    elif has_comfy:
+        dialect = comfy
+    else:
+        dialect = order[0]
+    return {"dialect": dialect, "evidence": {d: v[:5] for d, v in evidence.items()},
+            "counts": {d: len(v) for d, v in evidence.items()}, "conflict": has_nai and has_comfy}
+
+
 # ─── 분류·필터·규칙 ───────────────────────────────────────────────
+
+_CHOICE = re.compile(r"\{([^{}]*)\}")
+_CHOICE_LIMIT = 64          # 동적 프롬프트를 펼쳐 볼 최대 경우 수
+
+
+def _choice_info(text: str, pack: TagPack) -> Optional[Tuple[TagInfo, str]]:
+    """동적 프롬프트 `{red|blue} eyes` 를 펼친 후보가 모두 팩 태그이고 분류·고유 외형·부위가 같으면 그 분류.
+
+    등급은 후보 중 가장 높은 것. `{2$$a|b}`·가중치·와일드카드가 섞였거나 후보가 너무 많으면 None(문법 토큰 그대로).
+    """
+    if "$$" in text or "::" in text or _WILDCARD.search(text):
+        return None
+    groups = _CHOICE.findall(text)
+    if not groups or any("|" not in g for g in groups):
+        return None
+    options = [g.split("|") for g in groups]
+    combos = 1
+    for o in options:
+        combos *= len(o)
+    if combos > _CHOICE_LIMIT:
+        return None
+    pieces = _CHOICE.split(text)        # 글, 묶음, 글, 묶음, … 글
+    names: List[str] = [""]
+    for k, piece in enumerate(pieces):
+        alts = options[k // 2] if k % 2 else [piece]
+        names = [n + a for n in names for a in alts]
+    infos: List[TagInfo] = []
+    for name in names:
+        info, _ = pack.resolve(normalize_key(_unescape(name), pack.kaomoji))
+        if info is None or info.main in SYSTEM_CATEGORIES:
+            return None
+        infos.append(info)
+    if len({(i.primary, i.identity, tuple(sorted(i.regions))) for i in infos}) != 1:
+        return None
+    rated = [i.rating for i in infos if i.rating in RATINGS]
+    rating = max(rated, key=RATINGS.index) if rated else ""
+    first = infos[0]
+    merged = TagInfo(key=normalize_key(text, pack.kaomoji), type=TYPE_GUESS, count=0, primary=first.primary,
+                     rating=rating, secondary=(), regions=first.regions, identity=first.identity, status="guess",
+                     display=text)
+    return merged, "choice:" + "|".join(i.key for i in infos)
+
 
 def _classify(tokens: List[Token], pack: TagPack, opts: Options) -> None:
     for t in tokens:
+        if t.kind in ("natural", "comment"):
+            continue
         if t.kind == "special":
             t.primary = "special"
+            hit = _choice_info(t.text, pack) if opts.input_dialect != "nai" else None
+            if hit is not None:
+                t.info, t.guess = hit
+                t.primary = t.info.primary
             continue
         if t.opaque:
             t.primary = "unknown"
@@ -642,7 +966,7 @@ def _classify(tokens: List[Token], pack: TagPack, opts: Options) -> None:
 def _dedupe(tokens: List[Token]) -> None:
     seen: Set[Tuple[str, str]] = set()
     for t in tokens:
-        if t.kind == "special":
+        if t.kind in ("special", "comment"):
             continue
         ident = (t.prefix, t.key) if t.kind == "tag" else ("?", t.text.strip().lower())
         if ident in seen:
@@ -663,6 +987,14 @@ class GuessRule:
     regions: Tuple[str, ...] = ()
     rating: str = ""
     identity: bool = False
+    suffix: str = ""        # `* hair` 처럼 앞이 * 하나인 패턴의 끝말(hair). 더 긴 끝말 태그(armpit hair)가 이 패턴을 이긴다
+
+
+def _pattern_suffix(pattern: str) -> str:
+    p = str(pattern).strip()
+    if p.lower().startswith("re:") or not p.startswith("*") or "*" in p[1:]:
+        return ""
+    return normalize_key(p[1:])
 
 
 def compile_pattern(pattern: str) -> Any:
@@ -714,7 +1046,7 @@ def compile_guess_rules(items: Iterable[Any], pack: "TagPack", where: str = "gue
         rating = str(item.get("rating", "") or "")
         if rating and rating not in RATINGS:
             errors.append(f"{where}[{i}] rating 은 g/s/q/e 중 하나여야 합니다: {rating}")
-        rules.append(GuessRule(text, regex, primary, regions, rating, bool(item.get("identity"))))
+        rules.append(GuessRule(text, regex, primary, regions, rating, bool(item.get("identity")), _pattern_suffix(text)))
     if errors:
         raise ValueError("; ".join(errors))
     return rules
@@ -726,32 +1058,79 @@ def _pack_guess_rules(pack: "TagPack") -> List[GuessRule]:
     return pack._guess_rules
 
 
+_Hit = Tuple[str, Tuple[str, ...], str, bool, str]   # (primary, regions, rating, identity, 근거)
+
+
+def _head_hit(words: Sequence[str], pack: TagPack, heads: Set[str]) -> Optional[Tuple[TagInfo, _Hit]]:
+    """끝말: 뒤쪽 단어들(가장 긴 것부터)이 head_categories 의 general·커스텀 태그면 그 분류."""
+    for i in range(1, len(words)):
+        info, _ = pack.resolve(" ".join(words[i:]))
+        if info is not None and info.type in (0, TYPE_CUSTOM) and info.main in heads:
+            return info, (info.primary, info.regions, info.rating, info.identity, "head:" + info.key)
+    return None
+
+
+def _species_hit(words: Sequence[str], pack: TagPack) -> Optional[_Hit]:
+    """종족 추정(data/guess.json 의 species): `[묘사] X girl|boy` 의 끝말 `X girl` 이 종족 태그면 그 분류
+    (russian blue cat girl → cat girl), 아니면 `<동물> girl|boy`(merino sheep girl → sheep 이 동물)면 종족.
+
+    종족 분류 전체를 끝말 대상으로 열지 않는 이유: 종족에 bat·seal·ghost 같은 한 단어 태그가 있어 baseball bat 이
+    종족이 된다(팩 기준 정답 26%). girl·boy 로 끝나는 경우만은 기존 태그로 잰 정답이 7/7·199/199 다.
+    """
+    cfg = pack.guess.get("species") or {}
+    primary = cfg.get("primary", "")
+    if not primary or len(words) < 2 or words[-1] not in cfg.get("suffixes", ()):
+        return None
+    for i in range(1, len(words) - 1):
+        info, _ = pack.resolve(" ".join(words[i:]))
+        if info is not None and info.type in (0, TYPE_CUSTOM) and info.primary == primary:
+            return info.primary, info.regions, info.rating, info.identity, "species:" + info.key
+    animals = set(cfg.get("animals", ()))
+    for i in range(len(words) - 1):
+        info, _ = pack.resolve(" ".join(words[i:-1]))
+        if info is not None and info.type in (0, TYPE_CUSTOM) and info.primary in animals:
+            return primary, (), "", True, "animal:" + info.key
+    return None
+
+
 def _guess(tokens: List[Token], pack: TagPack, rules: Sequence[GuessRule], heads: Set[str]) -> None:
-    """팩에 없는 토큰을 패턴(위에서부터) → 끝말(가장 긴 뒷부분이 팩의 general·커스텀 태그) 순으로 추정한다.
+    """팩에 없는 토큰을 패턴(위에서부터) → 끝말(가장 긴 뒷부분이 팩의 general·커스텀 태그) → 종족 순으로 추정한다.
+
+    `* hair` 처럼 끝말이 정해진 패턴보다 그 끝말로 끝나는 더 긴 태그가 맞으면 그 태그를 쓴다(thick armpit hair →
+    armpit hair, 패턴의 머리카락 아님). `holding *` 처럼 앞이 정해진 패턴은 끝말에 지지 않는다(holding chainsword).
 
     추정한 토큰은 kind=unknown 그대로(출력은 입력 글자 그대로)지만 분류·부위·등급을 얻어 제외·구도 규칙·배치에
-    쓰인다. 구도 규칙의 기준(gate) 태그로는 쓰지 않는다.
+    쓰인다. 구도 규칙의 기준(gate) 태그로는 쓰지 않는다. 와일드카드가 든 문법 토큰(`__haircolor__ hair`)도
+    와일드카드를 아무 말(`* hair`)로 보고 추정해 자리를 정한다(kind=special 그대로, 출력도 그대로).
     """
     for t in tokens:
-        if t.kind != "unknown" or t.opaque or not t.key:
+        key = t.key
+        if t.kind == "special":
+            if t.guess or not _WILDCARD.search(t.text):
+                continue
+            key = normalize_key(_WILDCARD.sub(" * ", t.text))
+            if not key.replace("*", "").strip():
+                continue
+        elif t.kind != "unknown" or t.opaque or not t.key:
             continue
-        hit: Optional[Tuple[str, Tuple[str, ...], str, bool, str]] = None
+        words = key.split(" ")
+        head = _head_hit(words, pack, heads)
+        hit: Optional[_Hit] = None
         for rule in rules:
-            if rule.regex.fullmatch(t.key):
+            if rule.regex.fullmatch(key):
                 hit = (rule.primary, rule.regions, rule.rating, rule.identity, "pattern:" + rule.text)
+                if rule.suffix and head is not None and head[0].key.endswith(" " + rule.suffix):
+                    hit = head[1]
                 break
+        if hit is None and head is not None:
+            hit = head[1]
         if hit is None:
-            words = t.key.split(" ")
-            for i in range(1, len(words)):
-                info, _ = pack.resolve(" ".join(words[i:]))
-                if info is not None and info.type in (0, TYPE_CUSTOM) and info.main in heads:
-                    hit = (info.primary, info.regions, info.rating, info.identity, "head:" + info.key)
-                    break
+            hit = _species_hit(words, pack)
         if hit is None:
             continue
         primary, regions, rating, identity, why = hit
         t.primary, t.guess = primary, why
-        t.info = TagInfo(key=t.key, type=TYPE_GUESS, count=0, primary=primary, rating=rating, secondary=(),
+        t.info = TagInfo(key=key, type=TYPE_GUESS, count=0, primary=primary, rating=rating, secondary=(),
                          regions=tuple(regions), identity=identity, status="guess", display=t.core or t.text)
 
 
@@ -898,17 +1277,23 @@ def _fmt_weight(w: float) -> str:
 
 
 def _nai_emphasis(body: str, w: float) -> str:
-    """1.05 거듭제곱이면 {…}/[…] 로, 아니면 숫자 강조(1.2::…::)로 쓴다."""
+    """1.05 거듭제곱이면 {…}/[…] 로, 아니면 숫자 강조(1.2::… ::)로 쓴다.
+
+    닫는 `::` 앞은 늘 띄운다 — 붙이면 NAI 가 `as109::`·`year 2024::` 의 숫자를 가중치로 읽는다.
+    """
     for k in range(1, 6):
         if abs(w - 1.05 ** k) < 1e-6:
             return "{" * k + body + "}" * k
         if abs(w - 1.05 ** -k) < 1e-6:
             return "[" * k + body + "]" * k
-    return f"{_fmt_weight(w)}::{body}::"
+    return f"{_fmt_weight(w)}::{body} ::"
+
+
+_VERBATIM_KINDS = ("special", "comment", "natural")     # 해석하지 않고 입력 글자 그대로 내보내는 토큰
 
 
 def _display(t: Token, opts: Options) -> str:
-    if t.kind == "special" or t.opaque:
+    if t.kind in _VERBATIM_KINDS or t.opaque:
         return t.verbatim or t.text
     if t.info is not None:
         if t.alias_of and not opts.resolve_aliases:
@@ -920,7 +1305,7 @@ def _display(t: Token, opts: Options) -> str:
 
 
 def _format_token(t: Token, opts: Options, out_dialect: str) -> str:
-    if t.kind == "special" or t.opaque:
+    if t.kind in _VERBATIM_KINDS or t.opaque:
         return t.verbatim or t.text
     if t.kind == "unknown" and t.verbatim is not None and out_dialect == opts.input_dialect:
         return t.verbatim
@@ -1177,18 +1562,34 @@ def _place(tokens: List[Token], plan: Plan, pack: TagPack) -> None:
 
 
 def _sorted_chunk(items: List[Token], plan: Plan, opts: Options) -> List[Token]:
-    if opts.order == "popular":
-        items = sorted(items, key=lambda x: -(x.info.count if x.info else -1))
-    elif opts.order == "alpha":
-        items = sorted(items, key=lambda x: _display(x, opts))
+    """청크 안 순서. 자연어 문장은 뜻이 이어지므로 정렬하지 않고 입력 순서 그대로 청크 끝에 둔다."""
+    if opts.order != "input":
+        sentences = [x for x in items if x.kind == "natural"]
+        items = [x for x in items if x.kind != "natural"]
+        if opts.order == "popular":
+            items = sorted(items, key=lambda x: -(x.info.count if x.info else -1))
+        elif opts.order == "alpha":
+            items = sorted(items, key=lambda x: _display(x, opts))
+        items += sentences
     if plan.sub_order:
         items = sorted(items, key=lambda x: x.member)      # 안정 정렬: 같은 서브 안은 위 순서 그대로
     return items
 
 
+def _join(parts: Sequence[Tuple[str, bool]], sep: str, after_sentence: str = " ") -> str:
+    """(글, 자연어 문장으로 끝나는지) 를 sep 로 잇는다. 문장 뒤에는 쉼표 대신 after_sentence(`rain., she` 가 되지 않게)."""
+    out = ""
+    for k, (text, _) in enumerate(parts):
+        if k:
+            out += after_sentence if parts[k - 1][1] else sep
+        out += text
+    return out
+
+
 def _render(tokens: List[Token], plan: Plan, opts: Options, out_dialect: str
-            ) -> Tuple[List[str], List[List[Dict[str, Any]]]]:
-    """(출력 줄, 줄 → 청크 구조). 줄 안의 청크는 ', ' 로 잇고 빈 청크·빈 줄은 건너뛴다. 구조에는 뺀 토큰도 넣는다."""
+            ) -> Tuple[List[Tuple[str, bool]], List[List[Dict[str, Any]]]]:
+    """((출력 줄, 문장으로 끝나는지), 줄 → 청크 구조). 줄 안의 청크는 ', ' 로 잇고(문장 뒤는 빈칸) 빈 청크·빈 줄은
+    건너뛴다. 구조에는 뺀 토큰도 넣는다."""
     by_slot: Dict[int, List[Token]] = {}
     for t in tokens:
         by_slot.setdefault(t.slot, []).append(t)
@@ -1198,10 +1599,10 @@ def _render(tokens: List[Token], plan: Plan, opts: Options, out_dialect: str
         rows.append([(start + k, c) for k, c in enumerate(row)])
         start += len(row)
     rows.append([(-1, plan.rest)])
-    lines: List[str] = []
+    lines: List[Tuple[str, bool]] = []
     arranged: List[List[Dict[str, Any]]] = []
     for row in rows:
-        parts: List[str] = []
+        parts: List[Tuple[str, bool]] = []
         chunks: List[Dict[str, Any]] = []
         for slot, c in row:
             items = by_slot.get(slot)
@@ -1210,11 +1611,12 @@ def _render(tokens: List[Token], plan: Plan, opts: Options, out_dialect: str
             items = _sorted_chunk(items, plan, opts)
             kept = [t for t in items if not t.removed]
             if kept:
-                parts.append(", ".join(_format_token(t, opts, out_dialect) for t in kept))
+                text = _join([(_format_token(t, opts, out_dialect), t.kind == "natural") for t in kept], ", ")
+                parts.append((text, kept[-1].kind == "natural"))
             chunks.append({"id": c.id, "label": c.label, "color": c.color, "hidden": c.hidden,
                            "custom": bool(c.tags or c.patterns), "tokens": [t.index for t in items]})
         if parts:
-            lines.append(", ".join(parts))
+            lines.append((_join(parts, ", "), parts[-1][1]))
         if chunks:
             arranged.append(chunks)
     return lines, arranged
@@ -1232,19 +1634,29 @@ def organize(text: str, pack: Optional[TagPack] = None, options: Any = None) -> 
     overrides = _overrides(pack, opts)
     guess_rules = plan.guess + _pack_guess_rules(pack) if opts.guess else []
     heads = set(pack.guess.get("head_categories", DEFAULT_GUESS_HEADS))
+    body, comments = _strip_comments(text.replace("\r\n", "\n"), _known_fn(pack))
+    detected: Optional[Dict[str, Any]] = None
+    if opts.input_dialect == AUTO_DIALECT:
+        detected = detect_dialect(body.replace(_COMMENT_MARK, ""), opts.priority(), pack.kaomoji, _known_fn(pack))
+        opts = replace(opts, input_dialect=detected["dialect"])
     out_dialect = opts.output_dialect or opts.input_dialect
 
     all_tokens: List[Token] = []
     chunk_texts: List[str] = []
     arranged: List[Dict[str, Any]] = []
-    for ci, chunk in enumerate(_BREAK.split(text.replace("\r\n", "\n"))):
-        tokens = parse_prompt(chunk, opts.input_dialect, pack)
+    taken = 0
+    for ci, chunk in enumerate(_BREAK.split(body)):
+        count = chunk.count(_COMMENT_MARK)
+        notes = [Token(text=c, verbatim=c, kind="comment", primary="comment", section="comment",
+                       removed="" if opts.comments == "keep" else "comment") for c in comments[taken:taken + count]]
+        taken += count
+        tokens = parse_prompt(chunk.replace(_COMMENT_MARK, ""), opts.input_dialect, pack, opts.sentences)
         _classify(tokens, pack, opts)
         if opts.guess:
             _guess(tokens, pack, guess_rules, heads)
         if overrides:
             tokens = _apply_overrides(tokens, overrides, inject=ci == 0)
-        for i, t in enumerate(tokens):
+        for i, t in enumerate(notes + tokens):
             t.chunk, t.order, t.index = ci, len(all_tokens) + i, len(all_tokens) + i
         if opts.dedupe:
             _dedupe(tokens)
@@ -1252,22 +1664,33 @@ def organize(text: str, pack: Optional[TagPack] = None, options: Any = None) -> 
         _apply_rules(tokens, pack, opts)
         _place(tokens, plan, pack)
         lines, rows = _render(tokens, plan, opts, out_dialect)
-        if lines:
-            sep = (",\n" if opts.trailing_comma else "\n") if opts.line_per_section else ", "
-            chunk_texts.append(sep.join(lines))
+        if opts.line_per_section:
+            out = _join(lines, ",\n" if opts.trailing_comma else "\n", "\n")
+        else:
+            out = _join(lines, ", ")
+        # 남긴 주석은 구간 맨 위에 한 줄씩 — 같은 줄에 두면 뒤 태그(한 줄로·BREAK 포함)까지 주석이 된다
+        kept = [t.text for t in notes if not t.removed]
+        if kept:
+            out = "\n".join(kept) + "\n" + out if out else "\n".join(kept) + ("" if opts.line_per_section else "\n")
+        if out:
+            chunk_texts.append(out)
+        if notes:
+            rows = [[{"id": "comment", "label": "주석", "color": "", "hidden": False, "custom": False,
+                      "tokens": [t.index for t in notes]}]] + rows
         arranged.append({"rows": rows})
-        all_tokens += tokens
+        all_tokens += notes + tokens
 
     joiner = "\nBREAK\n" if opts.line_per_section else " BREAK "
     removed = [t for t in all_tokens if t.removed]
     removed_text = "\n".join(f"{_display(t, opts)}  # {t.removed}" for t in removed)
-    report = _report(all_tokens, pack, opts, out_dialect)
+    report = _report(all_tokens, pack, opts, out_dialect, detected)
     report["arrangement"] = plan.label if _has_arrangement(opts.arrangement) else ""
     report["arranged"] = arranged
     return Result(joiner.join(chunk_texts), removed_text, report, all_tokens)
 
 
-def _report(tokens: List[Token], pack: TagPack, opts: Options, out_dialect: str) -> Dict[str, Any]:
+def _report(tokens: List[Token], pack: TagPack, opts: Options, out_dialect: str,
+            detected: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     rows = []
     for t in tokens:
         row: Dict[str, Any] = {
@@ -1285,7 +1708,7 @@ def _report(tokens: List[Token], pack: TagPack, opts: Options, out_dialect: str)
                 row["site"] = t.info.site
         if abs(t.weight - 1.0) > 1e-9:
             row["weight"] = round(t.weight, 4)
-        for name in ("prefix", "alias_of", "removed", "flagged", "guess", "injected"):
+        for name in ("prefix", "alias_of", "removed", "flagged", "guess", "injected", "warning"):
             if getattr(t, name):
                 row[name] = getattr(t, name)
         rows.append(row)
@@ -1295,7 +1718,8 @@ def _report(tokens: List[Token], pack: TagPack, opts: Options, out_dialect: str)
         "pack_version": pack.version,
         "preset": opts.preset,
         "layout": opts.layout,
-        "dialect": {"input": opts.input_dialect, "output": out_dialect},
+        "dialect": dict({"input": opts.input_dialect, "output": out_dialect, "auto": detected is not None},
+                        **({k: detected[k] for k in ("evidence", "counts", "conflict")} if detected else {})),
         "counts": {
             "total": len(rows),
             "kept": sum(1 for t in tokens if not t.removed),
@@ -1304,12 +1728,16 @@ def _report(tokens: List[Token], pack: TagPack, opts: Options, out_dialect: str)
             "unknown": len(unknown),
             "unclassified": len(unclassified),
             "guessed": sum(1 for t in tokens if t.guess),
+            "warnings": sum(1 for t in tokens if t.warning),
+            "comments": sum(1 for t in tokens if t.kind == "comment"),
+            "sentences": sum(1 for t in tokens if t.kind == "natural"),
         },
         "unknown": unknown,
         "unclassified": unclassified,
         "guessed": [{"tag": r["text"], "primary": r["primary"], "why": r["guess"]} for r in rows if "guess" in r],
         "removed": [{"tag": r["text"], "reason": r["removed"]} for r in rows if "removed" in r],
         "flagged": [{"tag": r["text"], "reason": r["flagged"]} for r in rows if "flagged" in r],
+        "warnings": [{"tag": r["text"], "reason": r["warning"]} for r in rows if "warning" in r],
         "tokens": rows,
     }
 

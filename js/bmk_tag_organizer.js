@@ -1,4 +1,4 @@
-// bmk_tag_organizer.js — BMKTagOrganizer 짝 JS 확장 (v1)
+// bmk_tag_organizer.js — BMKTagOrganizer 짝 JS 확장 (v2)
 //
 // 배열 세팅(arrangement) 청크 편집기. TagOrganizer 관리 툴 미리보기 탭의 청크 편집기(gui/chunks.py)와
 // 같은 조작을 DOM 위젯으로 한다. 형식·배치 규칙의 정본은 TagOrganizer docs/arrangement.md 이고,
@@ -17,6 +17,8 @@
 //   되돌리기는 워크플로 Ctrl+Z(편집마다 changeTracker 에 기록).
 // - 미리보기: 지금 위젯 값으로 서버 /bmk/tag_organizer/preview 를 불러(실행과 같은 옵션 함수) 남는 태그는
 //   밝게, 빼는 태그는 제자리에 흐리게 그린다. text 를 상류에 연결했으면 마지막 실행의 입력(ui.bmk_tag_input).
+//   주석은 구간 맨 위에 한 줄씩(빼면 흐리게), 자연어 문장 뒤는 쉼표 대신 빈칸(관리 툴 색 미리보기와 같게).
+//   상태 줄: 문장·주석 수, input_dialect=auto 로 알아낸 문법과 근거(표기가 섞였으면 노랑), 입력 문법 경고.
 // - 분류·색·레이아웃별 시작 배열은 /bmk/tag_organizer/palette 에서 한 번 받는다(⋯ → 팩 다시 읽기).
 //
 // 상태는 ArrangementEditor 객체에 두고 위젯에는 자체 필드를 얹지 않는다(프론트 1.53 이 위젯을
@@ -32,11 +34,14 @@ const PALETTE_URL = "/bmk/tag_organizer/palette";
 const PREVIEW_URL = "/bmk/tag_organizer/preview";
 const FORMAT = "tagorg-arrangement";
 const VERSION = 1;
-const SYSTEM = ["etc", "unknown", "special"];
+const SYSTEM = ["etc", "unknown", "special", "natural"];   // 코어 SYSTEM_CATEGORIES
 const OPTION_KEYS = [
   "preset", "exclude", "max_rating", "rules", "layout", "input_dialect", "output_dialect",
   "line_per_section", "trailing_comma", "dedupe", "framing", "view", "guess",
+  "dialect_priority", "comments", "sentences",
 ];
+const DIALECT_NAMES = { nai: "NAI", comfyui: "ComfyUI", anima: "Anima" };
+const WARN_COLOR = "#d4a017";
 const MIN_WIDTH = 560;
 const ADD_HEIGHT = 420;      // 처음 만들 때 편집기 몫으로 늘리는 높이
 const EDITOR_MIN_H = 300;
@@ -89,6 +94,8 @@ const STYLE = `
 .bmk-to-tok.gs{font-style:italic}
 .bmk-to-tok.inj{font-weight:700}
 .bmk-to-tok.fl{text-decoration:underline wavy #d4a017}
+.bmk-to-tok.cm{font-style:italic;color:var(--descrip-text,#999)}
+.bmk-to-tok.wn{border-bottom:1px dotted #d4a017}
 .bmk-to-status{flex:0 0 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--descrip-text,#999)}
 .bmk-to-ghost{position:fixed;z-index:10000;pointer-events:none;padding:1px 8px;border:1px solid var(--c);border-radius:6px;background:color-mix(in srgb,var(--c) 35%,#222);color:#eee;font:12px/18px Inter,Arial,sans-serif;white-space:nowrap;opacity:.92}
 .bmk-to-drop{position:fixed;z-index:9999;pointer-events:none;border-radius:2px;background:var(--p-primary-color,#5b8def)}
@@ -1156,32 +1163,42 @@ class ArrangementEditor {
       return;
     }
     const tokens = rep.tokens ?? [];
+    const warnText = new Map((rep.warnings ?? []).map((w) => [w.reason, w.text]));
     const out = [];
     (rep.arranged ?? []).forEach((section, si) => {
       if (si > 0) out.push(el("div", "bmk-to-line brk", "BREAK"));
       for (const row of section.rows ?? []) {
         const line = el("div", "bmk-to-line");
+        let prev = null; // 앞 토큰: 주석 뒤는 줄바꿈, 자연어 문장 뒤는 빈칸, 그 밖은 ", "
         row.forEach((chunk, ci) => {
-          if (ci) line.append(", ");
+          if (ci) line.append(prev?.kind === "natural" ? " " : ", ");
           const grp = el("span", "bmk-to-grp");
           grp.dataset.cid = chunk.id;
           grp.style.setProperty("--c", COLOR.test(chunk.color || "") ? chunk.color : this.tax?.defaultColor([]) ?? "#888888");
           chunk.tokens.forEach((ti, k) => {
             const t = tokens[ti];
             if (!t) return;
-            if (k) grp.append(", ");
+            if (k) {
+              if (prev?.kind === "comment") grp.append(el("br"));
+              else grp.append(prev?.kind === "natural" ? " " : ", ");
+            }
+            prev = t;
             const tok = el("span", "bmk-to-tok", t.out || t.text);
             tok.classList.toggle("rm", Boolean(t.removed));
             tok.classList.toggle("fl", Boolean(t.flagged) && !t.removed);
             tok.classList.toggle("gs", Boolean(t.guess));
             tok.classList.toggle("inj", Boolean(t.injected));
             tok.classList.toggle("unk", t.kind === "unknown" && !t.guess && !chunk.custom);
+            tok.classList.toggle("cm", t.kind === "comment");
+            tok.classList.toggle("wn", Boolean(t.warning));
             const tip = [t.text + (t.primary ? `  · ${t.primary}` : ""), `청크: ${chunk.label}`];
             if (t.removed) tip.push(`뺌: ${t.removed}`);
             if (t.flagged) tip.push(`표시: ${t.flagged}`);
             if (t.guess) tip.push(`추정: ${t.guess}`);
             if (t.injected) tip.push(`덮어씀: ${t.injected}`);
+            if (t.warning) tip.push(`경고: ${warnText.get(t.warning) || t.warning}`);
             if (t.kind === "unknown" && !t.guess) tip.push("팩에 없는 토큰");
+            if (t.kind === "natural") tip.push("자연어 문장(입력 그대로)");
             tok.title = tip.join("\n");
             grp.appendChild(tok);
           });
@@ -1202,13 +1219,41 @@ class ArrangementEditor {
       s.style.color = "#ff7b7b";
       return;
     }
-    s.style.color = "";
-    const c = this.report?.counts;
-    s.textContent = c
-      ? `토큰 ${c.total} · 남음 ${c.kept} · 뺌 ${c.removed} · 표시 ${c.flagged} · 미분류 ${c.unclassified} · 팩에 없음 ${c.unknown}` +
-        (this.widget("guess")?.value ? ` · 추정 ${c.guessed}` : "")
-      : "";
-    s.title = "미리보기: 밝게 = 남음 · 흐리게 = 뺌 · 빨강 = 팩에 없음 · 기울임 = 추정 · 굵게 = 덮어씀 · 물결 밑줄 = 표시만";
+    const rep = this.report;
+    const c = rep?.counts;
+    const legend = "미리보기: 밝게 = 남음 · 흐리게 = 뺌 · 빨강 = 팩에 없음 · 기울임 = 추정 · 굵게 = 덮어씀 · " +
+      "물결 밑줄 = 표시만 · 점선 밑줄 = 문법 경고";
+    if (!c) {
+      s.style.color = "";
+      s.textContent = "";
+      s.title = legend;
+      return;
+    }
+    const parts = [`토큰 ${c.total} · 남음 ${c.kept} · 뺌 ${c.removed} · 표시 ${c.flagged} · 미분류 ${c.unclassified} · 팩에 없음 ${c.unknown}`];
+    if (this.widget("guess")?.value) parts.push(`추정 ${c.guessed}`);
+    if (c.sentences) parts.push(`문장 ${c.sentences}`);
+    if (c.comments) parts.push(`주석 ${c.comments}`);
+    const tip = [legend];
+    const d = rep.dialect;
+    if (d?.auto) {
+      const name = DIALECT_NAMES[d.input] ?? d.input;
+      const signs = Object.entries(d.evidence ?? {}).filter(([, v]) => v?.length).map(([k, v]) => {
+        const n = d.counts?.[k] ?? v.length;
+        return `${DIALECT_NAMES[k] ?? k} ‘${v[0]}’` + (n > 1 ? ` 외 ${n - 1}` : "");
+      });
+      parts.push(`문법 자동 → ${name}` + (signs.length ? ` (${signs.join(", ")})` : " (표기 없음 — 우선순위 첫 문법)") +
+        (d.conflict ? " · 표기가 섞여 우선순위로 정함" : ""));
+      tip.push(`자동 인식: ${name}` + (d.conflict ? " — NAI 표기와 ComfyUI·Anima 표기가 섞여 dialect_priority 로 정함" : ""));
+      for (const [k, v] of Object.entries(d.evidence ?? {})) tip.push(`  ${DIALECT_NAMES[k] ?? k}: ${(v ?? []).join(" · ")}`);
+    }
+    const warnings = rep.warnings ?? [];
+    if (warnings.length) {
+      parts.push(`경고 ${warnings.length}: ${warnings[0].tag} — ${warnings[0].text || warnings[0].reason}`);
+      for (const w of warnings) tip.push(`경고: ${w.tag} — ${w.text || w.reason}`);
+    }
+    s.style.color = d?.conflict || warnings.length ? WARN_COLOR : "";
+    s.textContent = parts.join(" · ");
+    s.title = tip.join("\n");
   }
 
   highlight(cid, on) {

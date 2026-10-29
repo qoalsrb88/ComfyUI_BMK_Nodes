@@ -19,8 +19,10 @@
   - rules          : 구도 규칙(upper body 에서 신발 빼기, from behind 에서 배꼽 빼기 등).
                      remove = 빼기, report = 빼지 않고 report 에만 표시, off = 끄기.
   - layout         : 줄(섹션) 순서 프리셋. 배열 세팅(arrangement)이 있으면 쓰지 않는다.
-  - input_dialect  : 입력 문법(comfyui / nai / anima).
-  - output_dialect : 출력 문법. same = 입력과 같음.
+  - input_dialect  : 입력 문법(comfyui / nai / anima / auto). auto = 프롬프트의 표기로 알아낸다
+                     (NAI 1.2::x ::·{x}, ComfyUI (x:1.2)·\\(·<lora:>, Anima @작가).
+  - output_dialect : 출력 문법. same = 입력과 같음(auto 면 알아낸 문법). NAI 숫자 강조는 `1.1::x ::` 처럼
+                     닫는 :: 앞을 띄운다.
   - line_per_section / trailing_comma / dedupe : 출력 모양과 중복 제거.
   - framing / view : 크롭·시점 덮어쓰기. 프롬프트의 크롭(시점) 태그를 모두 빼고 고른 태그를
                      넣어, 구도 규칙이 바로 그 크롭(시점)으로 돈다. auto = 프롬프트 그대로.
@@ -28,6 +30,12 @@
   - arrangement    : 배열 세팅 JSON(숨김 위젯). 줄 → 청크 → 멤버(서브) 순서를 정한다.
                      JS 편집기(js/bmk_tag_organizer.js)가 쓰고, TagOrganizer 관리 툴에서 내보낸
                      파일을 가져올 수 있다. 비우면 layout. 형식은 TagOrganizer docs/arrangement.md.
+  - dialect_priority : auto 의 우선순위. NAI 표기와 ComfyUI·Anima 표기가 함께 있을 때, 그리고 표기가 없을 때
+                     앞의 문법을 쓴다. Anima 는 ComfyUI 의 상위 호환이라 @작가가 있으면 anima.
+  - comments       : // 주석(줄 처음이거나 앞이 빈칸·쉼표일 때 줄 끝까지). remove = 뺌(removed 에 comment),
+                     keep = 구간 맨 위에 한 줄씩. .hack//sign 처럼 // 가 든 태그는 주석이 아니다.
+  - sentences      : 문장 끝 마침표(". ")를 쉼표처럼 나누고, 마침표로 끝나는 문장은 "자연어 문장" 줄에
+                     입력 그대로 둔다. st. louis·monkey d. luffy 처럼 마침표가 든 태그는 그대로.
 
 동작 세부:
   - 입력은 고치지 않고 정리한 새 문자열을 낸다. removed 출력에 뺀 태그와 이유가 줄마다 나온다.
@@ -43,12 +51,16 @@
   - v1: 최초 구현(표준 위젯, TagOrganizer M1 데이터).
   - v2: 코어 v1.2. 배열 세팅(arrangement)과 JS 청크 편집기, 크롭·시점 덮어쓰기, 추정(guess),
         편집기용 서버 경로. 새 입력은 optional 이라 v1 워크플로·API 프롬프트는 결과가 같다.
+  - v3: 코어 v1.5. 입력 문법 auto 와 우선순위(dialect_priority), // 주석(comments), 마침표 문장(sentences).
+        새 입력은 optional 맨 뒤라 v2 워크플로가 그대로 열리고, 빠진 값은 코어 기본값(주석 뺌·문장 나누기 켬)이다.
+        편집기 미리보기에 자동 인식 결과(문법·근거·섞임)와 입력 문법 경고(warning_text)를 보인다.
 """
 
 from __future__ import annotations
 
 import asyncio
 import importlib
+import itertools
 import json
 import logging
 import os
@@ -69,6 +81,11 @@ _DIALECTS = ["comfyui", "nai", "anima"]
 _QUICK_GROUPS = ("framing", "view")
 _AUTO = "auto"
 _UI_INPUT = "bmk_tag_input"
+_COMMENT_MODES = ["remove", "keep"]
+# auto 의 우선순위 콤보: 세 문법의 순서 6가지. 처음 = 코어 기본(DIALECT_PRIORITY). 코어는 "a > b > c" 를 그대로 읽는다
+_DIALECT_PRIORITY = ("nai", "comfyui", "anima")
+_PRIORITIES = [" > ".join(o) for o in (
+    [_DIALECT_PRIORITY] + [o for o in itertools.permutations(_DIALECT_PRIORITY) if o != _DIALECT_PRIORITY])]
 
 # 위젯 이름 → 기본값(INPUT_TYPES 와 같음). 미리보기 경로가 빠진 값을 채울 때 쓴다.
 _DEFAULTS: Dict[str, Any] = {
@@ -86,6 +103,9 @@ _DEFAULTS: Dict[str, Any] = {
     "view": _AUTO,
     "guess": False,
     "arrangement": "",
+    "dialect_priority": _PRIORITIES[0],
+    "comments": "remove",
+    "sentences": True,
 }
 
 
@@ -171,6 +191,9 @@ def _options(core: ModuleType, values: Mapping[str, Any]) -> Any:
         layout=v["layout"],
         input_dialect=v["input_dialect"],
         output_dialect="" if v["output_dialect"] == "same" else v["output_dialect"],
+        dialect_priority=v["dialect_priority"],
+        comments=v["comments"],
+        sentences=v["sentences"],
         line_per_section=v["line_per_section"],
         trailing_comma=v["trailing_comma"],
         dedupe=v["dedupe"],
@@ -217,6 +240,7 @@ def _preview_payload(body: Mapping[str, Any]) -> Dict[str, Any]:
     text = body.get("text")
     result = _organize(text if isinstance(text, str) else "", _request_values(body))
     report = result.report
+    core = _core()
     return {
         "text": result.text,
         "removed": result.removed_text,
@@ -224,6 +248,9 @@ def _preview_payload(body: Mapping[str, Any]) -> Dict[str, Any]:
         "counts": report["counts"],
         "arranged": report["arranged"],
         "tokens": report["tokens"],
+        # 자동 인식 결과(input·output·auto, 자동이면 evidence·counts·conflict)와 입력 문법 경고(설명 글 포함)
+        "dialect": report["dialect"],
+        "warnings": [{**w, "text": core.warning_text(w["reason"])} for w in report["warnings"]],
     }
 
 
@@ -357,10 +384,26 @@ class BMKTagOrganizer:
                         "tooltip": "줄(섹션) 순서. 배열 세팅이 있으면 쓰지 않습니다.\n" + _tooltip(info["layouts"]),
                     },
                 ),
-                "input_dialect": (_DIALECTS, {"default": "comfyui", "tooltip": "입력 프롬프트 문법"}),
+                "input_dialect": (
+                    _DIALECTS + [_AUTO],
+                    {
+                        "default": "comfyui",
+                        "tooltip": (
+                            "입력 프롬프트 문법. auto = 표기로 알아냄 — NAI 1.2::x ::·{x}, ComfyUI (x:1.2)·\\(·<lora:>,\n"
+                            "Anima @작가. 섞였거나 없으면 dialect_priority 순서로. 결과는 편집기 상태 줄과 report.dialect\n"
+                            "auto 에 output_dialect=same 이면 알아낸 문법으로 내므로, ComfyUI 인코더로 보낼 땐 출력 comfyui"
+                        ),
+                    },
+                ),
                 "output_dialect": (
                     ["same"] + _DIALECTS,
-                    {"default": "same", "tooltip": "출력 문법. same = 입력과 같음"},
+                    {
+                        "default": "same",
+                        "tooltip": (
+                            "출력 문법. same = 입력과 같음(auto 면 알아낸 문법)\n"
+                            "NAI 숫자 강조는 1.1::x :: 처럼 닫는 :: 앞을 띄웁니다(붙이면 x 끝의 숫자를 가중치로 읽음)"
+                        ),
+                    },
                 ),
                 "line_per_section": (
                     "BOOLEAN",
@@ -410,6 +453,39 @@ class BMKTagOrganizer:
                         "tooltip": "배열 세팅 JSON(청크 편집기가 씀). 비우면 layout 을 씁니다.",
                     },
                 ),
+                # v3 입력. arrangement 뒤에 붙여 v2 워크플로의 widgets_values 가 밀리지 않는다
+                "dialect_priority": (
+                    _PRIORITIES,
+                    {
+                        "default": _PRIORITIES[0],
+                        "tooltip": (
+                            "input_dialect=auto 의 우선순위. NAI 표기와 ComfyUI·Anima 표기가 함께 있을 때,\n"
+                            "그리고 표기가 없을 때 앞의 문법을 씁니다. Anima 는 ComfyUI 의 상위 호환이라\n"
+                            "@작가가 있으면 Anima 입니다. auto 가 아니면 쓰지 않습니다."
+                        ),
+                    },
+                ),
+                "comments": (
+                    _COMMENT_MODES,
+                    {
+                        "default": "remove",
+                        "tooltip": (
+                            "// 부터 줄 끝까지의 주석(줄 처음이거나 앞이 빈칸·쉼표일 때)\n"
+                            "remove = 뺌(removed 에 comment), keep = 구간 맨 위에 한 줄씩\n"
+                            "(같은 줄에 두면 뒤 태그까지 주석이 됨). .hack//sign 같은 태그는 주석이 아닙니다."
+                        ),
+                    },
+                ),
+                "sentences": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "tooltip": (
+                            "문장 끝 마침표(. 뒤 빈칸)를 쉼표처럼 나누고, 마침표로 끝나는 문장은 '자연어 문장' 줄에\n"
+                            "입력 그대로 둡니다. st. louis·monkey d. luffy 처럼 마침표가 든 태그는 그대로입니다."
+                        ),
+                    },
+                ),
             },
         }
 
@@ -439,6 +515,9 @@ class BMKTagOrganizer:
         view: str = _AUTO,
         guess: bool = False,
         arrangement: str = "",
+        dialect_priority: str = _PRIORITIES[0],
+        comments: str = "remove",
+        sentences: bool = True,
     ):
         result = _organize(
             text,
@@ -457,13 +536,17 @@ class BMKTagOrganizer:
                 "view": view,
                 "guess": guess,
                 "arrangement": arrangement,
+                "dialect_priority": dialect_priority,
+                "comments": comments,
+                "sentences": sentences,
             },
         )
         counts = result.report["counts"]
         logger.debug(
-            "%s pack=%s total=%d removed=%d unknown=%d unclassified=%d arrangement=%s",
+            "%s pack=%s total=%d removed=%d unknown=%d unclassified=%d arrangement=%s dialect=%s warnings=%d",
             _TAG, result.report["pack_version"], counts["total"], counts["removed"], counts["unknown"],
-            counts["unclassified"], result.report.get("arrangement") or "-",
+            counts["unclassified"], result.report.get("arrangement") or "-", result.report["dialect"]["input"],
+            counts["warnings"],
         )
         return {
             "ui": {_UI_INPUT: [text]},
