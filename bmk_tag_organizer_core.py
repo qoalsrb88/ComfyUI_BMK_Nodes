@@ -30,6 +30,10 @@ arrangement_from_layout(). 결과의 report["arranged"] 는 줄 → 청크 → �
 - v1.1: 명시 규칙에 multi_subject_exempt(여러 명이면 적용 안 함) 추가.
 - v1.2: 배열 세팅(arrangement)·크롭/시점 덮어쓰기(framing·view)·팩에 없는 토큰 추정(guess),
         report 에 arranged(줄·청크 구조)와 토큰별 out(출력 문법 글자)·guess 추가.
+- v1.3: 팩의 확장 DB(extra: DB ID → 키) — TagInfo.db, report 토큰의 db. 팩 스키마는 그대로라
+        옛 코어는 이 칸을 무시하고, 새 코어는 이 칸이 없는 옛 팩을 전부 원본 태그로 읽는다.
+- v1.4: 팩의 두 번째 원본(site: 원본 ID(e621) → 키) — TagInfo.site, report 토큰의 site. v1.3 과 같은 방식으로
+        옛 코어는 무시하고, 이 칸이 없는 팩은 전부 Danbooru·확장 DB 태그로 읽는다.
 """
 
 from __future__ import annotations
@@ -58,7 +62,7 @@ RULE_MODES = ("off", "report", "remove")
 ORDERS = ("input", "popular", "alpha")
 SYSTEM_CATEGORIES = ("etc", "unknown", "special")
 
-TYPE_CUSTOM = -1  # 팩의 커스텀 태그(danbooru.csv에 없는 NAI·모델 전용 태그)
+TYPE_CUSTOM = -1  # 팩의 확장 DB 태그(danbooru.csv에 없는 모델 전용·폐기·내 태그 — 어느 DB인지는 TagInfo.db)
 TYPE_GUESS = -2   # 추정한 토큰에 붙이는 임시 정보(팩에는 없음)
 
 ARRANGEMENT_FORMAT = "tagorg-arrangement"
@@ -106,6 +110,8 @@ class TagInfo:
     identity: bool
     status: str
     display: str
+    db: str = ""        # 확장 DB ID(model·deprecated·user 등). 원본(Danbooru) 태그는 빈 값
+    site: str = ""      # 두 번째 원본 ID(e621) — 그 원본에만 있는 태그. Danbooru 와 같은 이름은 빈 값
 
     @property
     def main(self) -> str:
@@ -134,6 +140,12 @@ class TagPack:
         self._guess_rules: Optional[List["GuessRule"]] = None
         self._rows: Dict[str, Sequence[Any]] = {row[0]: row for row in data["tags"]}
         self._aliases: Dict[str, str] = dict(data.get("aliases", {}))
+        # 확장 DB {DB ID: [키]} — 옛 팩에는 없다(전부 원본 태그로 본다)
+        self.extra_dbs: Tuple[str, ...] = tuple(data.get("extra") or {})
+        self._db: Dict[str, str] = {key: db for db, keys in (data.get("extra") or {}).items() for key in keys}
+        # 두 번째 원본 {원본 ID: [키]} — 옛 팩에는 없다
+        self.sites: Tuple[str, ...] = tuple(data.get("site") or {})
+        self._site: Dict[str, str] = {key: s for s, keys in (data.get("site") or {}).items() for key in keys}
         self._infos: Dict[str, TagInfo] = {}
         self.categories: Dict[str, Set[str]] = {
             c["id"]: {s["id"] for s in c.get("subs", ())} for c in self.taxonomy["categories"]
@@ -163,6 +175,8 @@ class TagPack:
             identity=bool(vals[7]),
             status=vals[8] or "",
             display=vals[9] or vals[0],
+            db=self._db.get(key, ""),
+            site=self._site.get(key, ""),
         )
         self._infos[key] = info
         return info
@@ -1265,6 +1279,10 @@ def _report(tokens: List[Token], pack: TagPack, opts: Options, out_dialect: str)
         }
         if t.info is not None and not t.guess:
             row.update(key=t.key, rating=t.info.rating, status=t.info.status, count=t.info.count)
+            if t.info.db:
+                row["db"] = t.info.db
+            if t.info.site:
+                row["site"] = t.info.site
         if abs(t.weight - 1.0) > 1e-9:
             row["weight"] = round(t.weight, 4)
         for name in ("prefix", "alias_of", "removed", "flagged", "guess", "injected"):
