@@ -372,12 +372,12 @@
 
   function selectTarget(key) {
     if (key === tKey) return;
+    if (pipeOn && pipe.select(S.targets.find((t) => t.key === key).crop_id) === false) return false;
     tKey = key;
     cKey = defaultCand(curTarget());
     markSeen(cKey);
     refIdx = 0;
     rerollArm = null;
-    if (pipeOn) pipe.select(curTarget().crop_id); // 진행 모드: 채택 패널도 그 크롭(캔버스 클릭)
     renderAll(true);
   }
 
@@ -404,7 +404,7 @@
       const i = ts.findIndex((x) => x.key === tKey);
       t = ts[i >= 0 ? (i + 1) % ts.length : 0];
     }
-    selectTarget(t.key);
+    if (selectTarget(t.key) === false) return false;
     if (candKey && candKey !== cKey && t.candidates.some((c) => c.key === candKey)) selectCand(candKey);
     const li = document.querySelector("#target-list li.sel");
     if (li) li.scrollIntoView({ block: "nearest" });
@@ -732,6 +732,13 @@
 
   function goMode(m) {
     // 탭: 그 모드로(null = 검토). 마스크 모드는 먼저 나감(적용 안 한 획 확인), 켜는 쪽 set* 이 다른 모드를 끈다
+    if (typeof renderMode === "function") renderMode.initial = false;
+    if (["prepare", "prompt", "generate"].includes(m)) {
+      if (!leaveMask()) return;
+      if (!pipeOn) setPipe(true);
+      if (pipeOn) pipe.showTab(m);
+      return;
+    }
     if (m === curMode()) return;
     if (m === "mask") {
       setMask(true);
@@ -977,7 +984,7 @@
     $("btn-drain").disabled = !S.running;
     const pb = $("btn-pipe");
     pb.disabled = !pipeReady();
-    pb.title = pipeReady() ? "실행 (G) — 실행 설정·무료 반영·비용·승인·채택·★ 점검·Export(탭 불필요), 초안·생성 승인(ComfyUI 탭이 큐에 넣음)"
+    pb.title = pipeReady() ? "준비 (G) — 실행 설정·무료 반영·초안 승인·생성 승인·채택·★ 점검·Export"
       : notReady("진행", "pipeline_rev", pipe);
     const eb = $("btn-edit");
     eb.disabled = !layoutReady();
@@ -1362,6 +1369,7 @@
 
   function onKeyDown(e) {
     if (typing(e.target)) return; // 입력칸(편집기 속성 패널) 포커스: 보드 단축키를 모두 무시 — Enter·Esc 는 입력칸이 처리
+    if (typeof renderMode === "function" && ["KeyE", "KeyT", "KeyG", "KeyK"].includes(e.code)) renderMode.initial = false;
     // 포커스가 남은 data-keys="board" 칸은 키가 값을 바꾸지 않게 기본 동작을 막는다(Home·End·PageUp/Down·화살표·select 글자 찾기 — 바뀌면
     // change 로 회전 점프·다듬기 컷 요청이 말없이 감). 보드·레퍼런스 키 처리는 아래에서 그대로
     if (e.target instanceof Element && e.target.closest('[data-keys="board"]') && !e.ctrlKey && !e.metaKey && e.key !== "Tab") e.preventDefault();
@@ -1655,8 +1663,17 @@
     on("btn-review", () => goMode(null));
     on("btn-edit", () => goMode("edit"));
     on("btn-refs", () => goMode("refs"));
-    on("btn-pipe", () => goMode("pipe"));
+    on("btn-pipe", () => goMode("prepare"));
+    on("btn-prompt", () => goMode("prompt"));
+    on("btn-generate", () => goMode("generate"));
     on("btn-mask", () => goMode("mask"));
+    on("btn-export", () => pipe && pipe.exportNow());
+    const exportMenu = $("export-menu");
+    on("btn-export-folder", () => { exportMenu.open = false; if (pipe) pipe.openFolder(); });
+    on("btn-export-settings", () => { exportMenu.open = false; if (pipe) pipe.goSection({ tab: "generate", section: "Export" }); });
+    document.addEventListener("click", (e) => {
+      if (exportMenu.open && !exportMenu.contains(e.target)) exportMenu.open = false;
+    }, true);
     on("btn-keys", () => {
       const off = !document.body.classList.contains("no-keys");
       document.body.classList.toggle("no-keys", off);
@@ -1768,15 +1785,46 @@
     const d = $("mode-title");
     d.textContent = m[2]; // 이름은 탭이 보임(배치 2a)
     d.title = `${m[1]} — ${m[2]}`;
-    const tab = { mask: "btn-mask", pipe: "btn-pipe", refs: "btn-refs", editing: "btn-edit" }[m[0]] || "btn-review";
-    for (const id of ["btn-review", "btn-edit", "btn-refs", "btn-pipe", "btn-mask"]) {
+    const sub = pipe && pipe.tab ? pipe.tab() : "prepare";
+    const tab = { mask: "btn-mask", pipe: { prompt: "btn-prompt", generate: "btn-generate" }[sub] || "btn-pipe", refs: "btn-refs", editing: "btn-edit" }[m[0]] || "btn-review";
+    const ids = ["btn-pipe", "btn-edit", "btn-refs", "btn-prompt", "btn-generate", "btn-review", "btn-mask"];
+    const steps = pipe && pipe.steps ? pipe.steps() : null;
+    for (const id of ids) {
       $(id).classList.toggle("on", id === tab);
       $(id).setAttribute("aria-selected", String(id === tab));
+      const state = steps && steps.stages[ids.indexOf(id)];
+      const dot = $(id).querySelector(".step-state");
+      if (dot) {
+        const n = state && state.value.match(/(?:필요|대기|진행) (\d+)/);
+        dot.textContent = !state ? "?" : state.state === "done" ? "✓" : state.state === "warn" ? "경고"
+          : state.state === "unknown" ? "?" : state.state === "optional" ? "선택" : n && Number(n[1]) > 0 ? `대기 ${n[1]}` : "대기";
+        dot.className = `step-state ${state ? state.state : "unknown"}`;
+        dot.title = state ? `전체 기준 · ${state.value}` : "전체 기준 · 계획을 받는 중";
+      }
     }
+    for (const id of ["btn-prompt", "btn-generate"]) {
+      $(id).disabled = !pipeReady();
+      $(id).title = pipeReady() ? `${id === "btn-prompt" ? "프롬프트" : "생성"} — 실행 하위 탭` : notReady("실행", "pipeline_rev", pipe);
+    }
+    const ex = $("btn-export");
+    const why = pipe && pipe.exportWhy ? pipe.exportWhy() : "실행 설정을 받는 중";
+    ex.disabled = pipe && pipe.exportLocked ? pipe.exportLocked() : !!why;
+    ex.classList.toggle("export-settings-needed", !!why && !ex.disabled);
+    ex.title = why || "무료 Export — 마지막 반영으로 PSD 출력";
+    const last = S && S.export_last;
+    $("export-state").textContent = last ? `r${last.rev} · ${S.export_state === "same" ? "변경 없음" : "다시 Export 필요"}`
+      : steps && steps.export.state !== "todo" ? steps.export.value : "Export 없음";
     const key = m[0] === "refs" && refTab === "grid" ? "refsGrid" : { mask: "mask", pipe: "pipe", refs: "refs", editing: "edit" }[m[0]] || "review";
     if (renderMode.key !== key) {
       renderMode.key = key;
       renderKeys(key);
+      $("keybar").prepend(d);
+    }
+    if (renderMode.initial && curMode() !== null) renderMode.initial = false;
+    if (renderMode.initial && steps && steps.ready) {
+      renderMode.initial = false;
+      const first = steps.stages.slice(0, 3).findIndex((s) => s.state === "todo" || s.state === "warn");
+      if (first >= 0) goMode(["prepare", "edit", "refs"][first]);
     }
   }
 
@@ -1839,6 +1887,9 @@
           if (mode === "refs" && refsOn && cropId) refEd.select(cropId);
         },
         refresh: () => refresh(true),
+        stepsChanged: renderMode,
+        maskPending: () => maskEd && maskEd.pending(),
+        editPending: () => !!S && window.DPPipeline.layoutLines(S).length > 0,
         select: (id) => {
           const t = S ? S.targets.find((x) => x.crop_id === id) : null;
           if (t) selectTarget(t.key);
@@ -1882,6 +1933,12 @@
       fatal(s.textContent || "상태를 불러오지 못했습니다");
       schedule();
       return;
+    }
+    const requested = new URLSearchParams(location.search).get("mode");
+    if (["prepare", "prompt", "generate", "edit", "refs", "pipe", "mask", "review"].includes(requested)) goMode(requested === "review" ? null : requested);
+    else if (!S.targets.some((t) => (t.candidates || []).length)) {
+      renderMode.initial = true;
+      renderMode();
     }
     schedule();
   }

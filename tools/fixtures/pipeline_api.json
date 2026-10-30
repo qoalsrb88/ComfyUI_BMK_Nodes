@@ -2839,6 +2839,7 @@
       "레이아웃 미반영(rev 7)"
      ],
      "pending_style": 0,
+     "free_all": 0,
      "mock_forced": false
     }
    },
@@ -2936,6 +2937,7 @@
        "레이아웃 미반영(rev 7)"
       ],
       "pending_style": 0,
+      "free_all": 0,
       "mock_forced": false
      }
     },
@@ -3330,6 +3332,7 @@
        "레이아웃 미반영(rev 7)"
       ],
       "pending_style": 0,
+      "free_all": 0,
       "mock_forced": false
      }
     },
@@ -3515,6 +3518,7 @@
        "레이아웃 미반영(rev 7)"
       ],
       "pending_style": 1,
+      "free_all": 0,
       "mock_forced": false
      }
     }
