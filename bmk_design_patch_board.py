@@ -12,7 +12,7 @@ Review 노드를 부분 실행한다(대체 경로). 인증 토큰은 그 경로
 
 라우트 (register_routes — 모든 root 파라미터 = store 레지스트리 키(소문자 hex 12자), 경로 금지)
 -------------------------------------------------------------------------------------------
-- GET  /bmk/design_patch/board/            board.html (web_design_patch/ 의 board.html·board.js·viewer.js·layout_geom.js·
+- GET  /bmk/design_patch/board/            board.html (web_design_patch/ 의 board.html·board.js·viewer.js·layout_geom.js·rows.js·
                                             layout_edit.js·ref_edit.js·checklist.js·pipeline.js·mask_edit.js·board.css 만)
 - GET  /bmk/design_patch/state?root=&since_rev=
        보드 요약(JSON). since_rev 가 지금 rev 와 같으면 {"unchanged": true, rev, running, drain, layout_rev, refs_rev, refs_files_v,
@@ -93,6 +93,10 @@ Review 노드를 부분 실행한다(대체 경로). 인증 토큰은 그 경로
                                                        캐시), 다른 대안 계산 중 202 busy
   응답 모양 정본 = tools/fixtures/mask_api.json. 마스크 편집 쓰기는 모두 dmask(store.update_manifest — seen 대조는 잠금 안).
 - POST /bmk/design_patch/zorder {root, scope, item, op, seen}   범위 안 쌓는 순서(아래 → 위), seen = 매니페스트 rev
+- GET  /bmk/design_patch/projects                     프로젝트 목록(배치 7-A — _proto/STUDIO_BATCH7_SPEC.md D49–D52, root 없음)
+- POST /bmk/design_patch/projects/open {key}          목록의 프로젝트를 열기(미등록이면 등록 — D50)
+- GET  /bmk/design_patch/projects/thumb?key=          목록 카드 썸네일(D52)
+- GET  /bmk/design_patch/prompt?root=&crop=           그 크롭에 보낸 GPT 프롬프트와 한국어 풀이(배치 7-B — D59, 키·호출 없음)
 POST 는 Content-Type application/json 만 받는다(다른 사이트의 단순 폼 POST 차단 — /mask/save 는 image/png). 오류는 4xx + {"error": 한국어}
 (레퍼런스: 목록 밖 시트·없는 파일 404, 같은 이름이 있음 409).
 CPU·파일 작업은 asyncio.to_thread 로 돌려 aiohttp 루프를 막지 않는다. 시트 디코드·PSD 합성·컷·변환은 _REF_SLOTS 로 한 번에 하나.
@@ -264,7 +268,7 @@ _TAG = "[ComfyUI_BMK_Nodes::DesignPatch]"
 API = "/bmk/design_patch"
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web_design_patch")
 _STATIC = {"board.html": "text/html", "board.js": "text/javascript", "viewer.js": "text/javascript",
-           "layout_geom.js": "text/javascript", "layout_edit.js": "text/javascript", "ref_edit.js": "text/javascript",
+           "layout_geom.js": "text/javascript", "rows.js": "text/javascript", "layout_edit.js": "text/javascript", "ref_edit.js": "text/javascript",
            "checklist.js": "text/javascript", "pipeline.js": "text/javascript", "mask_edit.js": "text/javascript", "board.css": "text/css"}
 
 THUMB_KINDS = ("cand", "before", "ref", "delta", "context")
@@ -5478,6 +5482,27 @@ async def mask_ps_import_handler(request: web.Request) -> web.StreamResponse:
     return _json(await asyncio.to_thread(mask_ps_import, root, data))
 
 
+# ── 배치 7 공용 자리(감독관 — _proto/STUDIO_BATCH7_SPEC.md D70). 본문은 7-A(projects 셋, D49–D52)·7-B(prompt, D59)가 채운다. 그 전엔 501.
+@_guard
+async def projects_handler(request: web.Request) -> web.StreamResponse:
+    raise _Reject(501, "프로젝트 목록은 아직 준비 중입니다(배치 7-A)")
+
+
+@_guard
+async def projects_open_handler(request: web.Request) -> web.StreamResponse:
+    raise _Reject(501, "프로젝트 열기는 아직 준비 중입니다(배치 7-A)")
+
+
+@_guard
+async def projects_thumb_handler(request: web.Request) -> web.StreamResponse:
+    raise _Reject(501, "프로젝트 썸네일은 아직 준비 중입니다(배치 7-A)")
+
+
+@_guard
+async def prompt_handler(request: web.Request) -> web.StreamResponse:
+    raise _Reject(501, "프롬프트 보기는 아직 준비 중입니다(배치 7-B)")
+
+
 _ROUTES = (
     ("GET", f"{API}/board", board_redirect),
     ("GET", f"{API}/board/", board_static),
@@ -5523,6 +5548,10 @@ _ROUTES = (
     ("GET", f"{API}/mask/ps_list", mask_ps_list_handler),
     ("POST", f"{API}/mask/ps_import", mask_ps_import_handler),
     ("POST", f"{API}/mask/adjust", mask_adjust_handler),
+    ("GET", f"{API}/projects", projects_handler),
+    ("POST", f"{API}/projects/open", projects_open_handler),
+    ("GET", f"{API}/projects/thumb", projects_thumb_handler),
+    ("GET", f"{API}/prompt", prompt_handler),
 )
 
 

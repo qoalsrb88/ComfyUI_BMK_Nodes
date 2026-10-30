@@ -1482,6 +1482,10 @@
     }
   }
 
+  function goProjects() {
+    // 배치 7 공용 자리(감독관 — _proto/STUDIO_BATCH7_SPEC.md D48): 같은 창에서 프로젝트 목록으로. 본문은 7-A 가 채운다(pipe.canLeave 가드).
+  }
+
   function wireButtons() {
     const on = (id, fn) => $(id).addEventListener("click", (e) => {
       e.currentTarget.blur();
@@ -1496,6 +1500,7 @@
     on("btn-drain", drain);
     on("btn-viewer", () => toggleViewer());
     on("btn-help", () => help());
+    on("btn-projects", () => goProjects());
     // 모드 탭(배치 2a): 누른 모드로 — 이미 그 모드면 그대로(예전 단추는 다시 누르면 꺼져 검토로 돌아갔음). 키 E·T·G·K 는 그대로 켜고 끄기
     on("btn-review", () => goMode(null));
     on("btn-edit", () => goMode("edit"));
