@@ -4659,7 +4659,8 @@ def _draft_free(root: str, m: dict, settings: dict, mock: bool | None = None) ->
             "by_crop": {c["id"]: {"wait": waits.get(c["id"], []), "refresh": c["id"] in refresh, "adopt": adopt[c["id"]]}
                         for c in m["crops"]},
             "warnings": {"unwritten": unwritten, "mock_specs": mock_specs}, "import_pending": pending,
-            "pending_style": sum(1 for u in plan["units"] if u.crop_id == dvlm.STYLE_ID), "mock_forced": forced}
+            "pending_style": sum(1 for u in plan["units"] if u.crop_id == dvlm.STYLE_ID), "mock_forced": forced,
+            "free_all": len(plan["free"])}
 
 
 def _draft_sel(root: str, m: dict, settings: dict, only: str, mock: bool | None = None) -> dict:

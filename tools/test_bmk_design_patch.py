@@ -51190,6 +51190,50 @@ def batch7b_unit():
     check(manifest == before, "D59 매니페스트 불변")
     check(ko.explain(en, "future/2") == f"「{en}」", "D59 모르는 템플릿을 번역한 척하지 않음")
 
+    # 원장의 응답만 있는 크롭·화풍을 실제 계획 경로로 읽는다. 실행·API 호출은 없다.
+    import bmk_design_patch_pipeline as pl
+    import bmk_design_patch_vlm as dvlm
+    root, _, m = _vlm_project("batch7b_free_all", [("001_머리 | A: 리본", (128, 128), {})],
+                               refs=[("001_머리.png", (64, 64))])
+    settings = pl.defaults(root)
+    settings["draft"].update(apply="full", vlm="mock")
+    backend, cfg = board._draft_cfg(root, settings, False)
+    _, reqs, _, _, _ = dvlm.draft_plan(root, m, "", backend, only=[], memo={}, **cfg)
+    for cid, request in reqs.items():
+        dvlm.Ledger(root).write(cid, request.key, 1, "resp", {"output_text": "{}"})
+    free_fn = board._draft_free
+
+    def old_free(*args, **kwargs):
+        result = free_fn(*args, **kwargs)
+        result.pop("free_all", None)
+        return result
+
+    with patch.object(board, "_PLAN_MEMO", {}):
+        recovery_plan = board.pipeline_plan(root, settings, only_ids=[], style=False)
+        selected_plan = board.pipeline_plan(root, settings, only_ids=[m["crops"][0]["id"]], style=False)
+        recovery_state = board.build_state(root)
+    # 복구만 있는 계획의 빈 해시뿐 아니라 실제 승인 대상이 있는 해시도 대조한다.
+    cid = m["crops"][0]["id"]
+    m["jobs"] = [_pl_job(cid)]
+    store.save_manifest(root, m)
+    dvlm.Ledger(root).write(cid, reqs[cid].key, 1, "failed", {"error": "synthetic retry"})
+    with patch.object(board, "_PLAN_MEMO", {}):
+        hash_plan = board.pipeline_plan(root, settings, only_ids=[cid], style=False)
+        hash_state = board.build_state(root)
+    with patch.object(board, "_PLAN_MEMO", {}), patch.object(board, "_draft_free", old_free):
+        old_plan = board.pipeline_plan(root, settings, only_ids=[cid], style=False)
+        old_state = board.build_state(root)
+    check(set(reqs) == {m["crops"][0]["id"], dvlm.STYLE_ID} and recovery_plan["draft"]["free_all"] == 2
+          and recovery_plan["draft"]["free"] == 0 and selected_plan["draft"]["free_all"] == 2,
+          "D55 전체 복구 free_all 은 only·화풍 체크와 무관하게 크롭·_style 을 포함")
+    check(hash_plan["sig"] == old_plan["sig"] and all(
+        hash_plan[k]["hash"] == old_plan[k]["hash"] and re.fullmatch(r"[0-9a-f]{12}", hash_plan[k]["hash"])
+        for k in ("run", "draft")), "D55 free_all 응답 추가 전후 Run·Draft 승인 해시·서명 불변")
+    chips = [c["draft_chip"] for c in hash_state["crops"]]
+    check(chips == [c["draft_chip"] for c in old_state["crops"]] and all("free_all" not in c for c in chips)
+          and all("free_all" not in c for c in recovery_plan["draft"]["by_crop"].values()),
+          "D55 free_all 은 최상위 draft 필드만 — by_crop·draft_chip 불변")
+
     node = shutil.which("node")
     if not node:
         skip("node 없음 → 배치 7-B JS 생략")
@@ -51207,7 +51251,7 @@ vm.runInContext(fs.readFileSync(IN.checklistJs, "utf8"), ctx);
 await scenario("global", async () => {
   const D = ctx.window.DPChecklist;
   const i = {scope: "all", selectedCount: 1, S: {canvas: {}, crops: [{id: "c1", refs: {n: 1}}, {id: "c2", refs: {n: 1}}], targets: []},
-    P0: {settings: {draft: {apply: "full"}}}, plan: {draft: {units: [], free: 0, by_crop: {c1: {wait: []}, c2: {wait: ["missing"]}},
+    P0: {settings: {draft: {apply: "full"}}}, plan: {draft: {units: [], free: 0, free_all: 0, by_crop: {c1: {wait: []}, c2: {wait: ["missing"]}},
       pending_style: 0, warnings: {unwritten: []}, import_pending: []}, run: {need: 0, pre: 0, free: 0,
       by_crop: {c1: {need: 0, done: 1}, c2: {need: 3, done: 0, pre: 1}}}}};
   const r = {}, rows = () => D.rows(i);
@@ -51215,10 +51259,19 @@ await scenario("global", async () => {
   i.plan.draft.by_crop.c2.wait = []; i.plan.run.by_crop.c2 = {need: 0, done: 1};
   r.complete = rows()[4].state === "done" && rows()[5].state === "done";
   i.stale = true; r.stale = rows()[4].state === "unknown" && rows()[5].state === "unknown"; i.stale = false;
-  i.plan.draft.free = 7; r.free = rows()[4].state === "done"; i.plan.draft.free = 0;
+  i.plan.draft.free_all = 7; r.free = rows()[4].state === "todo"; i.plan.draft.free_all = 0;
+  delete i.plan.draft.free_all; r.oldServer = rows()[4].state === "unknown"; i.plan.draft.free_all = 0;
   i.plan.draft.pending_style = 1; r.style = rows()[4].state === "todo"; i.plan.draft.pending_style = 0;
   i.plan.draft.warnings.unwritten = ["c1"]; r.unwritten = rows()[4].state === "warn"; i.plan.draft.warnings.unwritten = [];
-  i.progress = {run: {failed: 1, orphaned: 1}}; r.failed = rows()[5].state === "warn"; delete i.progress;
+  i.plan.run.by_crop.c1.failed = 1; i.plan.run.by_crop.c2.orphaned = 1;
+  i.progress = {run: {failed: 1, orphaned: 1}};
+  r.failed = rows()[5].state === "done" && rows()[5].value.includes("실패 1") && rows()[5].value.includes("결과 못 받음 1");
+  i.plan.run.by_crop.c2.done = 0; r.failedMissing = rows()[5].state === "warn"; i.plan.run.by_crop.c2.done = 1;
+  delete i.plan.run.by_crop.c1.failed; delete i.plan.run.by_crop.c2.orphaned;
+  i.plan.run.by_crop._stale = {need: 3, pre: 2, free: 1, failed: 1, orphaned: 1, inflight: 1};
+  i.progress.run.inflight = 1;
+  r.removed = rows()[5].state === "done" && !/실패|결과 못 받음|복구|생성 대기|실행 중/.test(rows()[5].value);
+  delete i.progress; delete i.plan.run.by_crop._stale;
   i.plan = null; r.missing = rows()[4].state === "unknown" && rows()[5].state === "unknown";
   i.S.crops = []; r.empty = rows()[1].state === "todo" && rows()[5].state !== "done";
   return r;
@@ -51269,7 +51322,8 @@ await scenario("panel", async () => {
 await scenario("entry", async () => {
   const r = {}, doc = new Doc(), ids = {}, chosen = [];
   let data = {ready: false, stages: Array.from({length: 7}, () => ({state: "done", value: "끝"})), export: {state: "todo"}};
-  const bc = {document: doc, MODES: [], pipeReady: () => true, notReady: () => "", refTab: "sheets", renderKeys() {},
+  let mode = null;
+  const bc = {document: doc, MODES: [], curMode: () => mode, pipeReady: () => true, notReady: () => "", refTab: "sheets", renderKeys() {},
     URLSearchParams, location: {search: ""}, S: {targets: [], crops: []},
     pipe: {steps: () => data, tab: () => "prepare", exportWhy: () => ""}, goMode: m => chosen.push(m),
     $: id => {
@@ -51285,6 +51339,17 @@ await scenario("entry", async () => {
   bc.location.search = ""; bc.S.targets = []; data.stages[1].state = "unknown"; vm.runInContext(main, bc);
   r.unknown = chosen.length === 0;
   data.stages[2].state = "todo"; vm.runInContext(main, bc); r.refs = chosen.pop() === "refs";
+  // 상단 Export 와 Export 설정은 goMode 를 거치지 않고 실행 패널을 연다.
+  const srv = server(); srv.route.pipeline = quietPipeline(p => p.confirm = ["prepare.model"]); quietPlan(srv);
+  const env = mkPanel(srv, mem(), {enter: () => { mode = "pipe"; bc.renderMode(); }});
+  env.pipe.stateChanged(quietState()); await sleep(60);
+  for (const action of ["exportNow", "openSettings"]) {
+    mode = null; data.ready = false; bc.renderMode.initial = true;
+    await env.pipe[action]();
+    data.ready = true; bc.renderMode();
+    r[action + "Stay"] = mode === "pipe" && !bc.renderMode.initial && chosen.length === 0;
+  }
+  env.pipe.leave(); mode = null;
   const src = fs.readFileSync(IN.pipelineJs, "utf8");
   const inner = n => src.match(new RegExp(`    function ${n}\\([^)]*\\) \\{[\\s\\S]*?\\n    \\}`))[0];
   const pc = {PS: {P: {}, sending: false}, asking: false, paying: null, text: null, form: {}, opts: {}};
@@ -51299,17 +51364,18 @@ await scenario("entry", async () => {
 });
 await scenario("firstG", async () => {
   const r = {};
-  for (const kind of ["complete", "wait", "style", "unwritten", "import", "missing", "settings"]) {
+  for (const kind of ["complete", "wait", "style", "unwritten", "import", "missing", "oldServer", "settings"]) {
     const srv = server(), S = quietState(); S.canvas = {};
     srv.route.pipeline = quietPipeline(p => { p.settings.draft.apply = "full"; if (kind === "settings") p.saved = false; });
     quietPlan(srv); const route = srv.route.plan;
     srv.route.plan = q => {
       const [status, p] = route(q);
-      Object.assign(p.draft, {units: [], free: q.only ? 7 : 0, pending_style: kind === "style" ? 1 : 0,
+      Object.assign(p.draft, {units: [], free: q.only ? 7 : 0, free_all: 0, pending_style: kind === "style" ? 1 : 0,
         warnings: {unwritten: kind === "unwritten" ? [S.crops[0].id] : []},
         import_pending: kind === "import" ? ["refs changed"] : [],
         by_crop: Object.fromEntries(S.crops.map(c => [c.id, {wait: kind === "wait" ? ["spec"] : []}]))});
       if (kind === "missing") delete p.draft.by_crop;
+      if (kind === "oldServer") delete p.draft.free_all;
       return [status, p];
     };
     const env = mkPanel(srv);
@@ -51318,7 +51384,7 @@ await scenario("firstG", async () => {
     const before = env.pipe.steps().stages[3];
     env.pipe.enter(S, S.crops[0].id); await sleep(70);
     const after = env.pipe.steps().stages[3];
-    r[kind] = env.pipe.tab() === (kind === "complete" ? "generate" : kind === "missing" ? null : kind === "settings" ? "prepare" : "prompt");
+    r[kind] = env.pipe.tab() === (kind === "complete" ? "generate" : ["missing", "oldServer"].includes(kind) ? null : kind === "settings" ? "prepare" : "prompt");
     r[kind + "Stable"] = JSON.stringify(before) === JSON.stringify(after);
     if (kind === "complete") {
       const cb = env.panel.all().find(e => e.tagName === "INPUT" && e.parent.textContent.includes("화풍 단위 포함"));
@@ -51328,6 +51394,42 @@ await scenario("firstG", async () => {
     env.pipe.leave(); await sleep(350);
   }
   return r;
+});
+await scenario("recovery", async () => {
+  const srv = server(), S = clone(IN.recoveryState);
+  srv.route.pipeline = quietPipeline(p => p.settings = clone(IN.recoverySettings));
+  srv.route.plan = q => [200, clone(q.only ? IN.selectedPlan : IN.recoveryPlan)];
+  const env = mkPanel(srv);
+  ctx.window.confirm = () => false;
+  env.pipe.stateChanged(S); await sleep(70);
+  const before = env.pipe.steps().stages[3];
+  env.pipe.enter(S, S.crops[0].id); await sleep(70);
+  const after = env.pipe.steps().stages[3];
+  const r = {firstG: env.pipe.tab() === "prompt", global: before.state === "todo",
+    stable: after.state === "todo" && JSON.stringify(before) === JSON.stringify(after)};
+  env.pipe.leave(); await sleep(350); return r;
+});
+await scenario("selection", async () => {
+  const srv = server(), S = quietState(); srv.route.pipeline = quietPipeline(); quietPlan(srv);
+  const key = S.targets.find(t => t.crop_id === "008_e1d4cc").key, other = S.targets[0];
+  let moves = 0, candMoves = 0;
+  const bc = {S, tKey: key, cKey: "held", pipeOn: true, maskOn: false, defaultCand: () => null, markSeen() {},
+    document: {querySelector: () => null}, selectCand() { candMoves++; }, renderAll() { moves++; }};
+  bc.curTarget = () => S.targets.find(t => t.key === bc.tKey);
+  vm.createContext(bc); vm.runInContext(boardFn("selectTarget") + boardFn("pickCrop"), bc);
+  const env = mkPanel(srv, mem(), {select: id => bc.selectTarget(S.targets.find(t => t.crop_id === id).key)});
+  bc.pipe = env.pipe;
+  env.pipe.stateChanged(S); env.pipe.enter(S, "008_e1d4cc"); await sleep(70);
+  env.B("수정").fire("click"); env.input().value = "A: keep this input"; env.input().fire("input");
+  const selected = () => env.list.children.find(x => x.classList.contains("sel"));
+  const title = selected().textContent;
+  const picked = bc.pickCrop(other.crop_id, other.tid, other.candidates[0].key);
+  const r = {canvas: picked === false && bc.tKey === key && moves === 0 && candMoves === 0 && env.input().value === "A: keep this input" && selected().textContent === title};
+  env.list.children[1].fire("click");
+  r.list = bc.tKey === key && moves === 0 && env.input().value === "A: keep this input" && selected().textContent === title;
+  env.B("취소").fire("click"); bc.selectTarget(other.key); await sleep(70);
+  r.release = bc.tKey === other.key && moves === 1 && selected().textContent.includes(other.crop_id.slice(0, 3));
+  env.pipe.leave(); await sleep(350); return r;
 });
 await scenario("safety", async () => {
   const srv = server(), S = quietState(); srv.route.pipeline = quietPipeline(); quietPlan(srv);
@@ -51374,7 +51476,8 @@ process.exit(0);
     base_harness = base_harness.replace("seams: () => new Map(), drain() {}, enter() {} });", "seams: () => new Map(), drain() {}, enter() {}, ...extraOpts });")
     (out / "harness.mjs").write_text(base_harness + scene, encoding="utf-8")
     (out / "in.json").write_text(json.dumps({"api": json.loads((PKG / "tools/fixtures/pipeline_api.json").read_text(encoding="utf-8")),
-        "pipelineJs": str(web / "pipeline.js"), "boardJs": str(web / "board.js"), "checklistJs": str(web / "checklist.js")}), encoding="utf-8")
+        "pipelineJs": str(web / "pipeline.js"), "boardJs": str(web / "board.js"), "checklistJs": str(web / "checklist.js"),
+        "recoveryPlan": recovery_plan, "selectedPlan": selected_plan, "recoveryState": recovery_state, "recoverySettings": settings}), encoding="utf-8")
     result = subprocess.run([node, str(out / "harness.mjs"), str(out / "in.json")], capture_output=True, text=True, encoding="utf-8", timeout=45)
     check(result.returncode == 0 and bool(result.stdout.strip()), f"D54–D59 JS 실행 {result.stderr[-1200:]}")
     if result.returncode == 0 and result.stdout.strip():

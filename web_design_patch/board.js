@@ -368,12 +368,12 @@
 
   function selectTarget(key) {
     if (key === tKey) return;
+    if (pipeOn && pipe.select(S.targets.find((t) => t.key === key).crop_id) === false) return false;
     tKey = key;
     cKey = defaultCand(curTarget());
     markSeen(cKey);
     refIdx = 0;
     rerollArm = null;
-    if (pipeOn) pipe.select(curTarget().crop_id); // 진행 모드: 채택 패널도 그 크롭(캔버스 클릭)
     renderAll(true);
   }
 
@@ -400,7 +400,7 @@
       const i = ts.findIndex((x) => x.key === tKey);
       t = ts[i >= 0 ? (i + 1) % ts.length : 0];
     }
-    selectTarget(t.key);
+    if (selectTarget(t.key) === false) return false;
     if (candKey && candKey !== cKey && t.candidates.some((c) => c.key === candKey)) selectCand(candKey);
     const li = document.querySelector("#target-list li.sel");
     if (li) li.scrollIntoView({ block: "nearest" });
@@ -1666,6 +1666,7 @@
       renderKeys(key);
       $("keybar").prepend(d);
     }
+    if (renderMode.initial && curMode() !== null) renderMode.initial = false;
     if (renderMode.initial && steps && steps.ready) {
       renderMode.initial = false;
       const first = steps.stages.slice(0, 3).findIndex((s) => s.state === "todo" || s.state === "warn");

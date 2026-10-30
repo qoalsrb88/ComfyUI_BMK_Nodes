@@ -1665,18 +1665,17 @@ window.DPPipeline = (() => {
     }
 
     function pick(id) {
-      opts.select(id);
-      select(id);
+      if (select(id) !== false) opts.select(id);
     }
 
     function select(id) {
       if (id === cur) {
         if (on && dvErr) loadDraft(); // 읽지 못한 크롭 줄을 다시 누름 = 다시 읽기
-        return;
+        return true;
       }
       if (text !== null) {
         opts.toast("채택 [수정] 입력을 유지합니다 — 원래 크롭에서 저장하거나 취소하세요", "warn");
-        return;
+        return false;
       }
       cur = id;
       dv = null;
@@ -1684,6 +1683,7 @@ window.DPPipeline = (() => {
       closeEdit();
       if (on) loadDraft();
       render();
+      return true;
     }
 
     function closeEdit() {
@@ -2855,6 +2855,7 @@ window.DPPipeline = (() => {
       S = st;
       if (cropId && cropId !== cur && text !== null) {
         opts.toast("채택 [수정] 입력을 유지합니다 — 원래 크롭에서 저장하거나 취소하세요", "warn");
+        opts.select(cur);
       } else if (cropId && cropId !== cur) {
         cur = cropId;
         dv = null;

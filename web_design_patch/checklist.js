@@ -31,28 +31,31 @@ window.DPChecklist = (() => {
     const draftNeed = global ? draftKnown ? Object.values(draftCrops).filter((c) => (c.wait || []).length).length : null
       : draft && Array.isArray(draft.units) ? draft.units.length : null;
     const draftPending = draft && Array.isArray(draft.import_pending) ? draft.import_pending : [];
-    const draftFree = !global && draft && Number.isFinite(draft.free) ? draft.free : 0;
+    const draftFree = draft && Number.isFinite(draft[global ? "free_all" : "free"]) ? draft[global ? "free_all" : "free"] : 0;
     const draftUnwritten = draft && draft.warnings && Array.isArray(draft.warnings.unwritten) ? draft.warnings.unwritten.length : 0;
     const draftSettings = input.P0 && !input.P0.error && input.P0.settings && input.P0.settings.draft;
     const draftStyle = draftSettings && draftSettings.apply === "full" && draft && Number.isFinite(draft.pending_style) ? draft.pending_style : 0;
     const runCrops = (run && run.by_crop) || {};
-    const total = (k) => Object.values(runCrops).reduce((v, c) => v + (c[k] || 0), 0);
+    const liveRun = Object.entries(runCrops).filter(([id]) => id !== "_stale").map(([, c]) => c);
+    const total = (k) => liveRun.reduce((v, c) => v + (c[k] || 0), 0);
     const runKnown = run && run.by_crop && crops.every((c) => Number.isFinite((runCrops[c.id] || {}).need));
     const runNeed = global ? runKnown ? total("need") : null : run && Number.isFinite(run.need) ? run.need : null;
     const runPre = global ? total("pre") : run && Number.isFinite(run.pre) ? run.pre : 0;
     const runFree = global ? total("free") : run && Number.isFinite(run.free) ? run.free : 0;
     const progress = input.progress && input.progress.run;
-    const inflight = progress && Number.isFinite(progress.inflight) ? progress.inflight
+    const progressTotal = (k) => Math.max(0, (progress && progress[k] || 0) - (global ? (runCrops._stale || {})[k] || 0 : 0));
+    const inflight = progress && Number.isFinite(progress.inflight) ? progressTotal("inflight")
       : crops.reduce((v, c) => v + ((runCrops[c.id] || {}).inflight || 0), 0);
     const running = !!S.running || !!(run && run.running) || inflight > 0;
     const drafting = !!S.drafting || !!(draft && draft.running);
     const missing = crops.filter((c) => !((runCrops[c.id] || {}).done > 0)).length;
     const complete = n > 0 && missing === 0;
-    const failed = Math.max(total("failed"), global && progress ? progress.failed || 0 : 0);
-    const orphaned = Math.max(total("orphaned"), global && progress ? progress.orphaned || 0 : 0);
+    const failed = Math.max(total("failed"), global ? progressTotal("failed") : 0);
+    const orphaned = Math.max(total("orphaned"), global ? progressTotal("orphaned") : 0);
     const draftFailed = global && input.progress && input.progress.draft ? input.progress.draft.failed || 0 : 0;
-    // free 는 선택 전용 값이므로 전체 판정에서 제외한다. 전체 대기·미반영은 by_crop 등으로 판정한다.
+    // free 는 선택 전용이다. 전체 복구는 화풍까지 포함한 free_all 로만 판정한다(옛 서버면 확인 필요).
     const draftUnknown = global && (!ready || !draftKnown || !draftSettings || !draft
+      || !Number.isFinite(draft.free_all)
       || !Array.isArray(draft.import_pending) || !draft.warnings || !Array.isArray(draft.warnings.unwritten)
       || (draftSettings && draftSettings.apply === "full" && !Number.isFinite(draft.pending_style)));
     const runUnknown = global && (!ready || !runKnown);
@@ -100,7 +103,7 @@ window.DPChecklist = (() => {
         : n > 0 && allSelected && ready && draftNeed === 0 && draftFree === 0 && draftStyle === 0 && !drafting && !draftPending.length ? "done" : "todo",
         draftFailed ? `초안 실패 ${draftFailed}` : draftUnknown ? `전체 초안 확인 필요 · ${draftValue}` : draftValue,
         "초안 승인에서 초안 계획과 비용을 확인한 뒤 승인하세요.", { tab: "prompt", section: draftApply ? "반영" : "초안 승인" }),
-      row(6, "생성", runError || (global && (failed || orphaned)) ? "warn" : runUnknown ? "unknown"
+      row(6, "생성", runError || (global && missing > 0 && (failed || orphaned)) ? "warn" : runUnknown ? "unknown"
         : allSelected && ready && runNeed === 0 && runPre === 0 && runFree === 0 && complete && !running && !drafting && !prepareDrift.length && !pending.length ? "done" : "todo",
         global && (failed || orphaned) ? `실패 ${failed} · 결과 못 받음 ${orphaned} · ${runValue}` : runValue,
         "생성 승인에서 생성 계획을 확인하세요. 모든 크롭에 완료 결과가 있어야 끝납니다.", { tab: runApply ? "prompt" : "generate", section: runApply ? "반영" : "생성 승인" }),
