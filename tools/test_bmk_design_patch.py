@@ -15402,6 +15402,34 @@ await scenario("upstream", async () => {  // js/bmk_design_patch.js importUpstre
 });
 
 // ── 화면(J-L3): create() + 작은 DOM ──
+await scenario("projectNudge", async () => {
+  const result = {};
+  for (const alreadyWriting of [false, true]) {
+    const env = await editor([C1()]);
+    await env.pick("001_모자");
+    let release, posts = 0, detached = 0;
+    const gate = new Promise(resolve => { release = resolve; }), moves = [];
+    ctx.fetch = async (url, opts) => {
+      if (opts?.method === "POST") { posts++; await gate; }
+      return env.srv.fetch(url, opts);
+    };
+    const bc = vm.createContext({ editor: env.ed, maskEd: null, pipe: null, onUnload() {},
+      window: { removeEventListener() { detached++; } },
+      location: { pathname: "/board/", assign(path) { moves.push([path, env.srv.lay.rev]); } },
+      toast: m => env.toasts.push(m) });
+    const goProjects = vm.runInContext(`(${IN.goProjects})`, bc);
+    env.key("ArrowRight");
+    const prior = alreadyWriting ? env.ed.flush() : null;
+    const moving = goProjects(); // 400ms 디바운스 전 목록 이동, 또는 먼저 시작한 저장 응답 대기 중 이동
+    await sleep(20);
+    const waited = posts === 1 && moves.length === 0 && detached === 0;
+    release();
+    await Promise.all([prior, moving]);
+    result[alreadyWriting ? "writing" : "pending"] = { waited, posts, moves, detached, rect: env.srv.lay.crops[0].rect };
+  }
+  return result;
+});
+
 await scenario("nudgeUndo", async () => {  // 001 이동(POST) → 002 화살표 → 400ms 안 Ctrl+Z = 미세 이동 취소(POST 0) → Ctrl+Z = 001 이동 되돌림
   const env = await editor([C1(), C2()]);
   await env.pick("001_모자");
@@ -15997,7 +16025,8 @@ def layout_js_unit():
     # J-L2(이어서)·J-L3: 쓰기 큐·되살리기·다른 창·PSD 스냅숏, 순수 판정, 편집기 화면(작은 DOM 대역 + 가짜 서버)
     ext_fns = "\n".join([re.search(r'^const IMPORT_NODE = "\w+";$', ext, re.M).group(0)]
                         + [_layout_js_fn(ext, n, "") + "\n}" for n in ("partialRunIds", "importUpstream")])
-    (out / "edit_in.json").write_text(json.dumps({"ext": ext_fns}, ensure_ascii=False), encoding="utf-8")
+    (out / "edit_in.json").write_text(json.dumps({"ext": ext_fns, "goProjects": _layout_js_fn(src["board.js"], "goProjects") + "\n}"},
+                                               ensure_ascii=False), encoding="utf-8")
     (out / "editor.mjs").write_text(_LAYOUT_EDIT_HARNESS, encoding="utf-8")
     r = subprocess.run([node, str(out / "editor.mjs"), str(web / "layout_geom.js"), str(web / "layout_edit.js"), str(out / "edit_in.json")],
                        capture_output=True, text=True, encoding="utf-8", timeout=180)
@@ -16053,6 +16082,10 @@ def layout_js_unit():
           f"J-L1 4096×1024 캔버스 상자 맞춤 제안 비 ≤ 3 {sw}")
     check(bool(tn) and tn[2] > tn[0] and tn[3] > tn[1], f"J-L1 16×48 이관 크롭 변 핸들 → 폭·높이 0 아님 {tn}")
     check(ej["upstream"] == {"chain": True, "side": False, "sub": True}, f"J-L2 importUpstream(Review 조상에 Import) {ej['upstream']}")
+    pn = ej.get("projectNudge", {})
+    check(pn == {k: {"waited": True, "posts": 1, "moves": [["/board/", 1]], "detached": 1, "rect": [16, 0, 528, 512]}
+                 for k in ("pending", "writing")},
+          f"7A-R4-1 프로젝트 이동: 대기 미세 이동을 즉시 저장·이미 보낸 쓰기 응답까지 기다린 뒤 한 번 이동 {pn}")
     nu = ej["nudgeUndo"]
     check(nu.get("moved") == 1 and nu["cancelled"] == 1 and any(t.endswith("미세 이동 취소") for t in nu["toasts"])
           and nu["log"] == [["update", "001_aaaaaa", [16, 0, 528, 512], 0], ["update", "001_aaaaaa", [0, 0, 512, 512], 1]],
@@ -51193,11 +51226,16 @@ def batch7a_unit():
             board._project_summary(roots[0])
             check(load.call_count == 0, "7A manifest mtime·size 요약 memo")
         store.save_board_pref(roots[0], {"method": "saved", "amount": 2})
+        store.register_root(roots[1])
+        store.save_board_pref(roots[1], {"method": "sibling"})
+        store._ROOTS.pop(keys[1])  # 디스크 등록만 남은 형제를 다른 프로젝트의 목록 open 이 함께 올린다.
         opened = call(board.projects_open_handler, {"key": keys[0]})
         check(opened.status == 200 and json.loads(opened.text) == {"ok": True, "key": keys[0]}
               and board._PREF[keys[0]]["method"] == "saved", "7A open 등록·_PREF 복구")
-        store.register_root(roots[1])
-        store.save_board_pref(roots[1], {"method": "sibling"})
+        check(board._root_param(keys[1]) == roots[1] and board._PREF.get(keys[1]) == {"method": "sibling"}
+              and board.build_state(board._root_param(keys[1]))["root_key"] == keys[1],
+              "7A-R4-2 목록 open 등록으로 복구된 형제의 직접 URL: 별도 open 없이 _PREF 복구·state 조회")
+        board._PREF.pop(keys[1])
         call(board.projects_open_handler, {"key": keys[1]})
         check(board._PREF[keys[1]]["method"] == "sibling", "7A 이미 등록된 형제 open 도 _PREF 복구")
         board._PREF[keys[1]] = {"method": "live"}

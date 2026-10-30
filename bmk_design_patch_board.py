@@ -5593,8 +5593,11 @@ def _project_open(key) -> dict:
     _project_summary(r["root"])
     if store.resolve_board_root(key) is None:
         store.register_root(r["root"])
-    # register_root 가 형제 루트도 복구하므로 이미 등록된 키로 열 때도 필요하다.
-    _ensure_pref(key, r["root"])
+        # 등록 과정에서 함께 올라온 형제도 직접 보드 URL 로 열 수 있게 설정을 복구한다.
+        for row in store.known_roots():
+            _ensure_pref(row["key"], row["root"])
+    else:
+        _ensure_pref(key, r["root"])
     return {"ok": True, "key": key}
 
 

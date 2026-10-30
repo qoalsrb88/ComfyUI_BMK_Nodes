@@ -1521,9 +1521,13 @@
     const left = maskEd && maskEd.pending();
     if (left) notes.push(`적용 안 한 마스크 획 ${left.n}개는 버려집니다 — 이동한 뒤에는 이어서 편집할 수 없습니다.`);
     if (notes.length && !window.confirm(["프로젝트 목록으로 이동할까요?", ...notes].join("\n"))) return;
-    // 이동 전용 확인을 이미 받았으므로 마스크 beforeunload 확인을 중복으로 띄우지 않는다.
-    window.removeEventListener("beforeunload", onUnload);
-    location.assign(location.pathname);
+    const move = () => {
+      // 이동 전용 확인을 이미 받았으므로 마스크 beforeunload 확인을 중복으로 띄우지 않는다.
+      window.removeEventListener("beforeunload", onUnload);
+      location.assign(location.pathname);
+    };
+    if (editor && editor.flush) return editor.flush().then(move, (e) => toast(e.message, "err"));
+    move();
   }
 
   async function showProjects() {
