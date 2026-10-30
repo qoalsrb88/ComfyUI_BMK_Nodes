@@ -412,8 +412,11 @@
 
   function moveTarget(d) {
     if (!S || !S.targets.length) return;
-    const i = Math.max(0, S.targets.findIndex((t) => t.key === tKey));
-    selectTarget(S.targets[Math.min(S.targets.length - 1, Math.max(0, i + d))].key);
+    const targets = typeof window !== "undefined" && window.DPRows
+      ? window.DPRows.order(S).flatMap((c) => S.targets.filter((t) => t.crop_id === c.id)) : S.targets;
+    if (!targets.length) return;
+    const i = Math.max(0, targets.findIndex((t) => t.key === tKey));
+    selectTarget(targets[Math.min(targets.length - 1, Math.max(0, i + d))].key);
     const li = document.querySelector("#target-list li.sel");
     if (li) li.scrollIntoView({ block: "nearest" });
   }

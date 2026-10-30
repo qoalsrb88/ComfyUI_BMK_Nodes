@@ -984,20 +984,25 @@ window.DPLayoutEdit = (() => {
     let externalWrites = Promise.resolve();
     function lockExternal(ids, locked) {
       const work = externalWrites.then(async () => {
-        await flushNudge();
-        await S.idle();
-        if (!on || !S.L || S.stale) await S.load();
-        if (S.err) throw new Error(S.err);
-        if (!S.L || !S.L.exists) throw new Error("레이아웃이 없습니다");
-        for (const id of ids) {
-          if (window.DPRows && window.DPRows.blocked()) throw new Error("진행 중인 작업이 끝난 뒤 잠금을 바꾸세요");
-          if (!S.crop(id)) continue;
-          await S.update(id, (c) => !!c.locked === locked ? null : { locked });
+        try {
+          await flushNudge();
+          await S.idle();
+          if (!on || !S.L || S.stale) await S.load();
+          if (S.err) throw new Error(S.err);
+          if (!S.L || !S.L.exists) throw new Error("레이아웃이 없습니다");
+          let wrote = false;
+          for (const id of ids) {
+            if (window.DPRows && window.DPRows.blocked()) throw new Error("진행 중인 작업이 끝난 뒤 잠금을 바꾸세요");
+            if (!S.crop(id)) continue;
+            const result = await S.update(id, (c) => !!c.locked === locked ? null : { locked });
+            if (!result.skipped) wrote = true;
+          }
+          if (wrote) opts.toast("잠금 바뀜 — 반영 필요");
+        } finally {
+          showNotice();
+          syncSel(false);
+          renderKeepTyping();
         }
-        showNotice();
-        syncSel(false);
-        renderKeepTyping();
-        opts.toast("잠금 바뀜 — 반영 필요");
       });
       externalWrites = work.catch(() => {});
       return work;

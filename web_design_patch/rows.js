@@ -89,14 +89,13 @@ window.DPRows = (() => {
   }
 
   async function move(item, anchor, side) {
-    if (moving || blocked() || !config.move || !anchor || item === anchor) return;
+    if (moving || blocked() || !config.move || !anchor || (side !== "step" && item === anchor)) return;
     moving = true;
     try {
       const st = config.state();
       const d = await config.move({ scope: "crops", op: "move", item, [side]: anchor, seen: st.rev });
       if (!d || !d.ok) return;
       st.z = { crops: d.effective, manual: !!(d.order && d.order.length) };
-      st.rev = d.rev;
       movedZ = { rev: d.rev, pref: st.pref_v, z: st.z };
       tell(d.changed === false ? "겹치지 않는 크롭끼리는 결과가 같아 순서를 저장하지 않음(나중에 겹쳐도 이 순서는 기억 안 됨)" : "겹침 순서 적용 — 이음매를 다시 잽니다");
       await config.refresh();
@@ -112,6 +111,9 @@ window.DPRows = (() => {
   function closeMenu() { if (menu) menu.remove(); menu = null; }
 
   function context(e, c, opts, ids) {
+    const i = ids.indexOf(c.id);
+    const canRemove = !opts.remove && config.remove && opts.canLock !== false;
+    if (!canRemove && i < 0) return;
     e.preventDefault();
     e.stopPropagation();
     closeMenu();
@@ -128,11 +130,10 @@ window.DPRows = (() => {
       });
       menu.append(b);
     };
-    if (!opts.remove && config.remove && opts.canLock !== false) add("크롭 편집에서 지우기", () => config.remove(c.id), blocked() || c.locked);
-    const i = ids.indexOf(c.id);
+    if (canRemove) add("크롭 편집에서 지우기", () => config.remove(c.id), blocked() || c.locked);
     if (i >= 0) {
-      add("위로", () => move(c.id, ids[i + 1], "after"), blocked() || i === ids.length - 1);
-      add("아래로", () => move(c.id, ids[i - 1], "before"), blocked() || i === 0);
+      add("위로", () => move(c.id, "up", "step"), blocked() || i === ids.length - 1);
+      add("아래로", () => move(c.id, "down", "step"), blocked() || i === 0);
       add("맨 위로", () => move(c.id, ids[ids.length - 1], "after"), blocked() || i === ids.length - 1);
       add("맨 아래로", () => move(c.id, ids[0], "before"), blocked() || i === 0);
     }
@@ -166,9 +167,17 @@ window.DPRows = (() => {
       async () => {
         const b = controls.children[0];
         const next = b.getAttribute("aria-pressed") !== "true";
+        const request = b.lockRequest = (b.lockRequest || 0) + 1;
         b.setAttribute("aria-pressed", String(next));
         b.replaceChildren(icon(next ? "locked" : "unlocked"));
         try { await (opts.lock || config.lock)([c.id], next); }
+        catch (err) {
+          if (b.lockRequest === request) {
+            b.setAttribute("aria-pressed", String(!next));
+            b.replaceChildren(icon(next ? "unlocked" : "locked"));
+          }
+          throw err;
+        }
         finally { if (config.refresh) await config.refresh(); }
       }, false));
     if (available && controls.children[0]) controls.children[0].setAttribute("aria-pressed", String(locked));
@@ -194,8 +203,8 @@ window.DPRows = (() => {
         move(dragging.id, c.id, e.clientY < r.top + r.height / 2 ? "after" : "before");
         release();
       });
-      controls.append(grip, button("up", "위로", () => move(c.id, ids[at + 1], "after"), at === ids.length - 1),
-        button("down", "아래로", () => move(c.id, ids[at - 1], "before"), at === 0));
+      controls.append(grip, button("up", "위로", () => move(c.id, "up", "step"), at === ids.length - 1),
+        button("down", "아래로", () => move(c.id, "down", "step"), at === 0));
     }
     if (opts.z && !st.z) {
       const note = el("span", "dr-unknown");

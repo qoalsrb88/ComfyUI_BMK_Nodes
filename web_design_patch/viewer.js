@@ -123,6 +123,7 @@ window.DPViewer = (() => {
     let isolateSuppressed = false;
     let isolateInfo = null;
     let isolateNotify = null;
+    let isolateDrawing = null;
     const isolateId = `dp-isolate-${++isolateSerial}`;
     const loadTok = new WeakMap();
 
@@ -143,27 +144,56 @@ window.DPViewer = (() => {
       const active = isolation();
       stage.classList.toggle("dr-isolated", active && (mode === "review" || mode === "mask"));
       stage.classList.toggle("dr-isolated-review", active && mode === "review");
-      isolated.replaceChildren();
-      if (!active || !canvas || !["edit", "pipe"].includes(mode)) return;
+      const visible = active && canvas && ["edit", "pipe"].includes(mode);
+      isolated.style.display = visible ? "" : "none";
+      if (!visible) return;
       const [W, H] = canvas.size;
-      for (const [k, v] of Object.entries({ viewBox: `0 0 ${W} ${H}`, width: W, height: H })) isolated.setAttribute(k, v);
-      const defs = svg("defs");
-      const mask = svg("mask", { id: isolateId, maskUnits: "userSpaceOnUse", x: 0, y: 0, width: W, height: H, "mask-type": "luminance" });
-      mask.append(svg("rect", { width: W, height: H, fill: "white" }));
       const layers = info.crops || crops;
-      const rect = (c, attrs) => {
-        const [x, y, x1, y1] = c.rect;
-        return svg("rect", Object.assign({ x, y, width: x1 - x, height: y1 - y }, attrs));
+      if (!isolateDrawing || layers.length !== isolateDrawing.rows.length
+          || layers.some((c, i) => c.id !== isolateDrawing.rows[i].id)) {
+        const defs = svg("defs");
+        const mask = svg("mask", { id: isolateId, maskUnits: "userSpaceOnUse", x: 0, y: 0, "mask-type": "luminance" });
+        const whole = svg("rect", { fill: "white" });
+        mask.append(whole);
+        const rows = layers.map((c) => ({ id: c.id, cut: svg("rect", { fill: "black" }),
+          depth: svg("rect", { fill: "black", "fill-opacity": 0.12 }), rect: [] }));
+        for (const row of rows) mask.append(row.cut);
+        const pattern = svg("pattern", { id: `${isolateId}-check`, patternUnits: "userSpaceOnUse" });
+        pattern.append(svg("rect", { fill: "#171a20" }), svg("rect", { fill: "#292e38" }), svg("rect", { fill: "#292e38" }));
+        const outside = svg("rect", { fill: `url(#${isolateId}-check)`, mask: `url(#${isolateId})` });
+        const selected = svg("rect", { class: "dr-selected" });
+        defs.append(mask, pattern);
+        isolated.replaceChildren(defs, outside, ...rows.map((r) => r.depth), selected);
+        isolateDrawing = { mask, whole, rows, pattern, outside, selected, selectedRect: [] };
+      }
+      const cache = isolateDrawing;
+      const attrs = (node, values) => {
+        for (const [k, v] of Object.entries(values)) if (node.getAttribute(k) !== String(v)) node.setAttribute(k, v);
       };
-      for (const c of layers) mask.append(rect(c, { fill: "black" }));
-      const pattern = svg("pattern", { id: `${isolateId}-check`, patternUnits: "userSpaceOnUse", width: 16 / z, height: 16 / z });
-      pattern.append(svg("rect", { width: 16 / z, height: 16 / z, fill: "#171a20" }),
-        svg("rect", { width: 8 / z, height: 8 / z, fill: "#292e38" }),
-        svg("rect", { x: 8 / z, y: 8 / z, width: 8 / z, height: 8 / z, fill: "#292e38" }));
-      defs.append(mask, pattern);
-      isolated.append(defs, svg("rect", { width: W, height: H, fill: `url(#${isolateId}-check)`, mask: `url(#${isolateId})` }));
-      for (const c of layers) isolated.append(rect(c, { fill: "black", "fill-opacity": 0.12 }));
-      if (sel && sel.crop) isolated.append(rect(sel.crop, { class: "dr-selected" }));
+      if (cache.W !== W || cache.H !== H) {
+        attrs(isolated, { viewBox: `0 0 ${W} ${H}`, width: W, height: H });
+        for (const node of [cache.mask, cache.whole, cache.outside]) attrs(node, { width: W, height: H });
+        cache.W = W; cache.H = H;
+      }
+      if (cache.z !== z) {
+        for (const node of [cache.pattern, cache.pattern.children[0]]) attrs(node, { width: 16 / z, height: 16 / z });
+        for (const node of [cache.pattern.children[1], cache.pattern.children[2]]) attrs(node, { width: 8 / z, height: 8 / z });
+        attrs(cache.pattern.children[2], { x: 8 / z, y: 8 / z });
+        cache.z = z;
+      }
+      const updateRect = (nodes, rect, previous) => {
+        if (rect.every((v, i) => v === previous[i])) return previous;
+        const [x, y, x1, y1] = rect;
+        for (const node of nodes) attrs(node, { x, y, width: x1 - x, height: y1 - y });
+        return rect.slice();
+      };
+      for (let i = 0; i < layers.length; i++) {
+        const row = cache.rows[i];
+        row.rect = updateRect([row.cut, row.depth], layers[i].rect, row.rect);
+      }
+      const selectedCrop = sel && sel.crop && (layers.find((c) => c.id === sel.crop.id) || sel.crop);
+      cache.selected.style.display = selectedCrop ? "" : "none";
+      if (selectedCrop) cache.selectedRect = updateRect([cache.selected], selectedCrop.rect, cache.selectedRect);
     }
 
     function toggleIsolate() {
@@ -228,6 +258,7 @@ window.DPViewer = (() => {
       zoomLabel.textContent = `${Math.round(z * dpr() * 100)}%`;
       drawLabels();
       if (editor) drawMarks(); // 핸들·이름 글자 크기는 화면 px 기준
+      else drawIsolate();
       if (sheet) {
         clearTimeout(hiTimer);
         hiTimer = setTimeout(loadHi, HI_MS);

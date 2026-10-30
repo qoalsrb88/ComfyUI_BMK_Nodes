@@ -47084,7 +47084,8 @@ def polish5_grow_unit():
             patch.object(bd, "_jpeg", side_effect=AssertionError("기존 JPG 재인코딩 금지")):
         data, fresh = bd._composite(root, m, None, sig)
         check(compose.call_count == 1 and fresh["seam_format"] == 3 and json.loads(js.read_bytes()) == fresh
-              and [Path(call.args[0]) for call in write.call_args_list] == [js], "H5 옛 캐시는 JSON 만 새 형식으로 갱신")
+              and [Path(call.args[0]) for call in write.call_args_list] == [Path(bd._thumb_path(root, f"z_{sig}.json")), js]
+              and bd._read_z(root, sig) == info["z"], "H5 옛 캐시는 이음매·z JSON 만 새 형식으로 갱신")
         check(data == original_jpg == jpg.read_bytes() and jpg.stat().st_mtime_ns == jpg_mtime,
               "H5 옛 캐시 갱신 때 JPG 바이트·mtime 보존")
         check(bd._composite(root, m, None, sig) == (data, fresh) and compose.call_count == 1, "형식 표시 있는 캐시는 다시 계산 안 함")
@@ -49219,7 +49220,7 @@ try {
   };
   const OFF = run("({ edit: [...EDIT_OFF], refs: [...REFS_OFF], refsGrid: [...REFS_OFF], pipe: [...PIPE_OFF], mask: [...MASK_OFF], review: [] })");
   const BOARD = ["KeyE", "KeyT", "KeyG", "KeyK", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space", "KeyX", "KeyQ", "KeyD", "KeyC",
-    "KeyB", "KeyO", "Digit0", "KeyF", "Digit1", "Digit2", "KeyS", "KeyM", "KeyN", "KeyV", "Escape", "Slash"];
+    "KeyB", "KeyO", "Digit0", "KeyF", "Digit1", "Digit2", "KeyS", "KeyM", "KeyN", "KeyV", "KeyI", "Escape", "Slash"];
   out.dead = [];
   const KEYS = run("KEYS");
   for (const [m, rows] of Object.entries(KEYS)) {
@@ -49305,7 +49306,9 @@ def polish2_unit():
           f"[검토] 탭 = 켜진 모드를 끔(마스크는 나가기 한 번), ★ 없어 마스크 못 켜면 검토 그대로 "
           f"{res['toReview']['log']} {res['maskToReview']['log']} {res['maskBlocked']}")
     check(res["editChips"][0] == "info:끌기 새 크롭·이동·크기" and "P" in res["editChips"] and "Ctrl+Z" in res["editChips"]
-          and res["pipeChips"] == ["B", "O", "N", "F", "0", "1", "2", "G"] and res["maskChips"][:5] == ["V", "D", "info:끌기 붓·변형", "info:⇧끌기 흐리기·비율/15°", "X"]
+          and res["pipeChips"] == ["B", "O", "N", "F", "0", "1", "2", "I", "G"] and res["maskChips"][:5] == ["V", "D", "info:끌기 붓·변형", "info:⇧끌기 흐리기·비율/15°", "X"]
+          and all("I" in chips for chips in (res["start"]["chips"], res["editChips"], res["pipeChips"], res["maskChips"]))
+          and "I" not in res["refsChips"]
           and "W" in res["maskChips"] and "H" in res["refsChips"],
           f"모드마다 칩 줄이 바뀜(설명만인 줄은 칩이 아님) {res['editChips']} {res['pipeChips']} {res['maskChips']} {res['refsChips']}")
     check(res["space"] == [["down", "Space", " ", False, False, True], ["up", "Space", " ", False, False, True]]
@@ -51958,7 +51961,32 @@ def batch7c_unit():
     with patch.object(bd, "_read_bytes", side_effect=PermissionError("test")):
         check(bd._read_z(root, sig) is None, "D66 캐시 접근 실패 격리")
     zpath.unlink()
-    check(bd._composite(root, m, None, sig)[0] == jpg and zpath.read_bytes() == good, "D66 옛 JPG 보존하면서 누락 순서 캐시 복구")
+    js = Path(bd._thumb_path(root, f"seams_{sig}.json"))
+    jpgpath = Path(bd._thumb_path(root, f"composite_{sig}.jpg"))
+    cached = [(p.read_bytes(), p.stat().st_mtime_ns) for p in (jpgpath, js)]
+    for error in (OSError("missing mask"), ValueError("invalid plan")):
+        with patch.object(bd, "_star_plan", side_effect=error), \
+                patch.object(bd, "_compose_full", side_effect=AssertionError("z only must not render")):
+            check(bd._composite(root, m, None, sig) == (jpg, json.loads(js.read_bytes())) and state()["z"] is None
+                  and cached == [(p.read_bytes(), p.stat().st_mtime_ns) for p in (jpgpath, js)],
+                  f"D66 z 복구 {type(error).__name__} 에도 JPG·이음매 바이트·mtime 보존, z null")
+    bd._ALTS_LOCK.acquire()
+    try:
+        check(bd.mask_alts(root, m["candidates"][0]["key"]) is None, "D66 z 만 없는 대안 캐시도 계산 잠금이면 202")
+    finally:
+        bd._ALTS_LOCK.release()
+    with patch.object(st, "_atomic_write_bytes", side_effect=PermissionError("z write denied")):
+        check(bd._composite(root, m, None, sig)[0] == jpg and state()["z"] is None,
+              "D66 z 쓰기 실패도 기존 JPG·이음매를 반환")
+    with patch.object(bd, "_compose_full", side_effect=AssertionError("z only must not render")):
+        check(bd._composite(root, m, None, sig)[0] == jpg and zpath.read_bytes() == good
+              and cached == [(p.read_bytes(), p.stat().st_mtime_ns) for p in (jpgpath, js)],
+              "D66 전체 재합성 없이 누락 순서 캐시만 복구")
+    bd._ALTS_LOCK.acquire()
+    try:
+        check(bd.mask_alts(root, m["candidates"][0]["key"]) is not None, "D66 z 까지 있는 대안 캐시는 잠금 없이 읽기")
+    finally:
+        bd._ALTS_LOCK.release()
 
     def move(item, **kw):
         return bd.zorder_write(root, dict(scope="crops", op="move", item=item, seen=st.load_manifest(root)["rev"], **kw))
@@ -51978,7 +52006,8 @@ def batch7c_unit():
     bd._composite(root, mm, None, sig2)
     check(state()["z"] == {"crops": r["effective"], "manual": True}, "D66 수동 합성 순서 캐시")
     for extra in ({"scope": f"t:{ids[0]}", "before": "A"}, {"scope": f"s:{ids[0]}/A", "before": "k"},
-                  {}, {"before": ids[1], "after": ids[2]}, {"before": ids[0]}, {"before": []}, {"after": "missing"}):
+                  {}, {"before": ids[1], "after": ids[2]}, {"before": ids[0]}, {"before": []}, {"after": "missing"},
+                  {"step": "left"}, {"step": []}, {"step": "up", "after": ids[1]}, {"step": "down", "before": ids[1]}):
         body = dict(scope="crops", op="move", item=ids[0], seen=mm["rev"])
         body.update(extra)
         try:
@@ -51987,6 +52016,13 @@ def batch7c_unit():
         except bd._Reject as e:
             check(e.status == 400, f"D67 잘못된 move 거절 {extra}")
     st.save_manifest(root, copy.deepcopy(m))
+    check(move(ids[0], step="up")["effective"] == [ids[1], ids[2], ids[0]], "D67 위로는 겹치지 않는 이웃을 건너 다음 겹침 뒤로")
+    before_step = Path(root, "design_patch.json").read_bytes()
+    check(move(ids[1], step="up")["changed"] is False and Path(root, "design_patch.json").read_bytes() == before_step,
+          "D67 다음 겹침 없으면 step 도 파일·rev 불변")
+    st.save_manifest(root, copy.deepcopy(m))
+    check(move(ids[2], step="down")["effective"] == [ids[2], ids[0], ids[1]], "D67 아래로도 겹치지 않는 이웃을 건너뜀")
+    st.save_manifest(root, copy.deepcopy(m))
     actual_scopes = bd._zorder_scopes
     def touching(order):
         scopes, boxes = actual_scopes(order)
@@ -51994,6 +52030,8 @@ def batch7c_unit():
         return scopes, boxes
     with patch.object(bd, "_zorder_scopes", side_effect=touching):
         check(move(ids[0], after=ids[1])["changed"], "D67 quad bbox 2px 여유 접촉도 겹침")
+        st.save_manifest(root, copy.deepcopy(m))
+        check(move(ids[0], step="up")["effective"] == [ids[1], ids[0], ids[2]], "D67 step 도 2px 여유의 가장 가까운 겹침 사용")
     missing = copy.deepcopy(m)
     missing["base"] = "inputs/missing.png"
     st.save_manifest(root, missing)
@@ -52028,6 +52066,17 @@ await scenario("externalLock", async () => {
   ctx.window.DPRows = {blocked: () => true};
   try { await e.ed.lockExternal([C1().id], true); r.busy = false; } catch { r.busy = e.srv.log.length === 4; }
   delete ctx.window.DPRows;
+  const oldList=e.list.children[0], toastCount=e.toasts.length;
+  e.srv.fail400=true;
+  try { await e.ed.lockExternal([C1().id], true); r.failed=false; }
+  catch { r.failed=e.srv.lay.crops[0].locked===false && e.toasts.length===toastCount; }
+  r.failedRedraw=e.list.children[0]!==oldList;
+  await e.ed.lockExternal([C1().id], true);
+  r.retry=e.srv.lay.crops[0].locked===true && e.toasts.length===toastCount+1;
+  const posts=e.srv.log.length, notices=e.toasts.length;
+  await e.ed.lockExternal([C1().id], true);
+  r.skipped=e.srv.log.length===posts && e.toasts.length===notices;
+  r.keyPassThrough=e.key("KeyI")===false;
   e.ed.leave();
   return r;
 });
@@ -52078,8 +52127,8 @@ await scenario("rows",async()=>{
   r.held=Rows.defer(list,()=>renders++);
   li2.fire("drop",{clientY:1}); await sleep(5);
   r.move=posts.length===1 && posts[0].op==="move" && posts[0].after==="b" && renders===1 && st.z.crops.join()==="b,a";
-  const refreshed={...st,z:null}; Rows.order(refreshed);
-  r.immediate=refreshed.z?.crops.join()==="b,a" && refreshed.z.manual;
+  const refreshed={...st,rev:2,z:null}; Rows.order(refreshed);
+  r.immediate=st.rev===1 && refreshed.z?.crops.join()==="b,a" && refreshed.z.manual;
   const changedPref={...st,z:null,pref_v:"different"}; Rows.order(changedPref);
   r.prefChanged=changedPref.z===null;
   const beforeRefresh=refreshes;
@@ -52100,6 +52149,55 @@ await scenario("rows",async()=>{
   const lock=fresh.all().find(e=>e.tagName==="BUTTON");
   r.newLock=lock.getAttribute("aria-pressed")==="true" && fresh.all().find(e=>e.className==="dr-thumb").style.height==="40px";
   lock.fire("click"); await sleep(2); r.newUnlock=locks.at(-1)[1]===false;
+  let prevented=0;
+  const menuCount=doc.body.children.length;
+  for(const row of [gone,direct]) row.fire("contextmenu",{preventDefault(){prevented++;}});
+  r.emptyContext=prevented===0 && doc.body.children.length===menuCount;
+  bs.find(e=>e.title==="위로").fire("click"); await sleep(5);
+  r.step=posts.at(-1).step==="up" && !("after" in posts.at(-1));
+  li.fire("contextmenu",{clientX:10,clientY:10});
+  doc.body.children.at(-1).children.find(e=>e.textContent==="위로").fire("click"); await sleep(5);
+  r.contextStep=posts.at(-1).step==="up";
+  let fail=true, attempts=[], refreshFailures=0;
+  Rows.configure({state:()=>st,apiUrl:API,toast(){},lock:async(ids,to)=>{attempts.push(to);if(fail)throw Error("write failed");},
+    refresh:async()=>{refreshFailures++;throw Error("state unavailable");},move:async()=>({ok:true,rev:2,effective:["b","a"],order:["b","a"]})});
+  const failedRow=doc.createElement("li"); Rows.tail(failedRow,{crop:crops[0],state:st,z:true});
+  const failedLock=failedRow.all().find(e=>e.tagName==="BUTTON"), originalIcon=failedLock.children[0].children[0].getAttribute("d");
+  failedLock.fire("click");await sleep(5);
+  r.rollback=failedLock.getAttribute("aria-pressed")==="false" && failedLock.children[0].children[0].getAttribute("d")===originalIcon;
+  fail=false;failedLock.fire("click");await sleep(5);
+  r.lockRetry=attempts.join()==="true,true" && failedLock.getAttribute("aria-pressed")==="true";
+  bs.find(e=>e.title==="위로").fire("click");await sleep(5);
+  r.refreshFailure=refreshFailures>=4 && st.rev===1;
+  return r;
+});
+await scenario("navigation",async()=>{
+  const source=fs.readFileSync(IN.boardJs,"utf8");
+  const panels={help:{hidden:true},"pipe-panel":{hidden:true},"mask-panel":{hidden:true}};
+  let toggles=0, scrolls=0;
+  const nav=vm.createContext({window:{DPRows:Rows},document:{querySelector:()=>({scrollIntoView(){scrolls++;}})},
+    S:{crops:[{id:"a"},{id:"b"},{id:"c"}],targets:[{key:"a1",crop_id:"a"},{key:"a2",crop_id:"a"},{key:"b1",crop_id:"b"},{key:"c1",crop_id:"c"}],z:{crops:["a","b"]}},
+    tKey:"b1",selectTarget:k=>{nav.tKey=k;},typing:()=>false,Element:class{},$:id=>panels[id],editing:false,refsOn:false,
+    editor:{onKey:()=>false},refEd:{onKey:()=>false},maskEd:{onKey:()=>false},viewer:{toggleIsolate(){toggles++;}}});
+  vm.runInContext(source.slice(source.indexOf("  const EDIT_OFF"),source.indexOf("  const LAYOUT_STATUS"))
+    + source.slice(source.indexOf("  function moveTarget(d)"),source.indexOf("  function moveCand(d)"))
+    + source.slice(source.indexOf("  function onKeyDown(e)"),source.indexOf("  function onKeyUp(e)")),nav);
+  const r={};
+  vm.runInContext("moveTarget(1)",nav);r.zFirst=nav.tKey==="a1";
+  vm.runInContext("moveTarget(1)",nav);r.sameCrop=nav.tKey==="a2";
+  vm.runInContext("moveTarget(1)",nav);r.unstarred=nav.tKey==="c1";
+  vm.runInContext("moveTarget(-1)",nav);r.zBack=nav.tKey==="a2" && scrolls===4;
+  delete nav.window.DPRows;nav.tKey="a2";
+  vm.runInContext("moveTarget(1)",nav);r.fallback=nav.tKey==="b1";
+  for(const mode of ["review","edit","pipe","mask","refs"]){
+    nav.editing=mode==="edit";nav.refsOn=mode==="refs";
+    panels["pipe-panel"].hidden=mode!=="pipe";panels["mask-panel"].hidden=mode!=="mask";
+    const before=toggles;
+    vm.runInContext('onKeyDown({code:"KeyI",key:"i",target:{},preventDefault(){}})',nav);
+    r[mode]=toggles-before===(mode==="refs"?0:1);
+    vm.runInContext('onKeyDown({code:"KeyI",key:"i",repeat:true,target:{},preventDefault(){}})',nav);
+    r[mode+"Repeat"]=toggles-before===(mode==="refs"?0:1);
+  }
   return r;
 });
 await scenario("isolate",async()=>{
@@ -52116,8 +52214,22 @@ await scenario("isolate",async()=>{
   const r={union:mask.children.length===3 && mask.children[0].getAttribute("fill")==="white" && mask.children.slice(1).every(e=>e.getAttribute("fill")==="black"),
     depth:iso.children.filter(e=>e.getAttribute("fill-opacity")==="0.12").length===2,
     selected:iso.children.some(e=>e.getAttribute("class")==="dr-selected")};
+  const pattern=iso.all().find(e=>e.tagName==="PATTERN"), depth=iso.children.find(e=>e.getAttribute("fill-opacity")==="0.12");
+  let geometryWrites=0;
+  for(const node of iso.all()){
+    const set=node.setAttribute;
+    node.setAttribute=function(k,v){geometryWrites++;set.call(this,k,v);};
+  }
+  viewer.redraw();viewer.redraw();
+  r.cached=geometryWrites===0 && iso.all().includes(mask) && iso.all().includes(pattern);
+  crops[0].rect=[2,0,18,16];viewer.redraw();
+  r.dragCached=iso.all().includes(mask) && iso.children.includes(depth) && depth.getAttribute("x")==="2"
+    && mask.children[1].getAttribute("x")==="2" && mask.children[2].getAttribute("x")==="8" && geometryWrites===3;
+  viewer.zoomTo(2);
+  r.zoomCached=iso.all().includes(pattern) && pattern.getAttribute("width")==="8";
   const stage=host.all().find(e=>e.className.split(" ").includes("stage"));
   mode="review"; viewer.setSelection(selection,false);
+  r.cachedHidden=iso.style.display==="none" && iso.all().includes(mask);
   const after=host.all().find(e=>e.className==="ov-after");
   r.review=stage.classList.contains("dr-isolated-review") && after.src===API("raw") && after.style.visibility==="";
   viewer.setFlags({qHeld:true}); r.q=!stage.classList.contains("dr-isolated");
@@ -52144,7 +52256,7 @@ process.exit(0);
 '''
     (run / "harness.mjs").write_text(prefix + scene, encoding="utf-8", newline="\n")
     (run / "in.json").write_text(json.dumps({"rowsJs": str(web / "rows.js"), "viewerJs": str(web / "viewer.js"),
-                                            "maskJs": str(web / "mask_edit.js")}), encoding="utf-8")
+                                            "maskJs": str(web / "mask_edit.js"), "boardJs": str(web / "board.js")}), encoding="utf-8")
     result = subprocess.run([node, str(run / "harness.mjs"), str(web / "layout_geom.js"), str(web / "layout_edit.js"),
                              str(run / "in.json")], capture_output=True, text=True, encoding="utf-8", timeout=45)
     check(result.returncode == 0 and bool(result.stdout.strip()), f"D60–D68 JS 실행 {result.stderr[-1200:]}")

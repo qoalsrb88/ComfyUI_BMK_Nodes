@@ -1377,7 +1377,7 @@ def _composite(root: str, m: dict, pref: dict | None, sig: str,
     if data is None or info is None or _read_z(root, sig) is None:
         with _COMPOSE_LOCK:
             data, info = _read_bytes(jpg), _read_seams(root, sig, current=True)
-            if data is None or info is None or _read_z(root, sig) is None:
+            if data is None or info is None:
                 t0 = time.time()
                 with _RENDER_SLOTS:
                     out, info = _compose_full(root, m, pref, swap)
@@ -1389,6 +1389,16 @@ def _composite(root: str, m: dict, pref: dict | None, sig: str,
                 if data is None:
                     data = _jpeg(Image.fromarray(_preview(out)))
                     store._atomic_write_bytes(jpg, data)
+            elif _read_z(root, sig) is None:
+                # JPG·이음매는 유효하다. 순서만 복구하다 실패해도 기존 캐시는 제공한다.
+                try:
+                    with _RENDER_SLOTS:
+                        plan = _star_plan(root, m, pref, swap)[0]
+                        crops = _zorder_scopes(list(_node()._slices_in_order(plan)))[0]["crops"]
+                    z = {"crops": crops, "manual": "crops" in store.z_order(m)}
+                    store._atomic_write_bytes(_thumb_path(root, f"z_{sig}.json"), json.dumps(z).encode("utf-8"))
+                except (OSError, ValueError):
+                    pass
     return data, info
 
 
@@ -2187,6 +2197,7 @@ def mask_alts(root: str, key) -> dict | None:
             if c["key"] != key and c["key"] not in rejects]
     jobs = [(None, _composite_sig(root, m, pref))] + [(swap, _composite_sig(root, m, pref, swap)) for _n, _c, swap in alts]
     cached = all(os.path.isfile(_thumb_path(root, f"composite_{s}.jpg")) and _read_seams(root, s, current=True) is not None
+                 and _read_z(root, s) is not None
                  for _swap, s in jobs)
     if not cached and not _ALTS_LOCK.acquire(blocking=False):
         return None
@@ -2264,8 +2275,9 @@ def zorder_write(root: str, data: dict) -> dict:
         raise _Reject(400, "순서를 바꿀 항목이 잘못되었습니다")
     if op not in ("top", "up", "down", "bottom", "reset", "move"):
         raise _Reject(400, "op 는 top · up · down · bottom · reset · move 중 하나여야 합니다")
-    if op == "move" and (scope != "crops" or ("before" in data) == ("after" in data)):
-        raise _Reject(400, "move 는 crops 범위에서 before 또는 after 하나가 필요합니다")
+    if op == "move" and (scope != "crops" or sum(k in data for k in ("before", "after", "step")) != 1
+                         or ("step" in data and data["step"] not in ("up", "down"))):
+        raise _Reject(400, "move 는 crops 범위에서 before · after · step(up/down) 중 하나가 필요합니다")
     if type(seen) is not int or seen < 0:
         raise _Reject(400, "seen 은 보드가 읽은 매니페스트 rev 정수여야 합니다")
 
@@ -2283,17 +2295,27 @@ def zorder_write(root: str, data: dict) -> dict:
     ids = list(scopes[scope])
     manual = store.z_order(m)
     if op == "move":
-        anchor = data.get("before", data.get("after"))
-        if not isinstance(anchor, str) or anchor not in ids or anchor == item:
-            raise _Reject(400, "이동 기준 크롭이 잘못되었습니다")
+        def overlaps(a, b):
+            # 합성의 quad bbox 여유와 동일하게 2px 접촉까지 겹침으로 본다.
+            return any(not (x[2] < y[0] - 2 or x[3] < y[1] - 2 or x[0] > y[2] + 2 or x[1] > y[3] + 2)
+                       for x in boxes[a] for y in boxes[b])
+
         original = list(ids)
-        ids.remove(item)
-        ids.insert(ids.index(anchor) + (1 if "after" in data else 0), item)
+        if "step" in data:
+            i = ids.index(item)
+            step = 1 if data["step"] == "up" else -1
+            j = next((j for j in range(i + step, len(ids) if step > 0 else -1, step)
+                      if overlaps(item, ids[j])), None)
+            if j is not None:
+                ids.insert(j, ids.pop(i))
+        else:
+            anchor = data.get("before", data.get("after"))
+            if not isinstance(anchor, str) or anchor not in ids or anchor == item:
+                raise _Reject(400, "이동 기준 크롭이 잘못되었습니다")
+            ids.remove(item)
+            ids.insert(ids.index(anchor) + (1 if "after" in data else 0), item)
         pos = {cid: i for i, cid in enumerate(ids)}
-        # 합성의 quad bbox 여유와 동일하게 2px 접촉까지 겹침으로 본다.
-        changed = any(pos[a] > pos[b] and any(
-            not (x[2] < y[0] - 2 or x[3] < y[1] - 2 or x[0] > y[2] + 2 or x[1] > y[3] + 2)
-            for x in boxes[a] for y in boxes[b])
+        changed = any(pos[a] > pos[b] and overlaps(a, b)
             for i, a in enumerate(original) for b in original[i + 1:])
         if not changed:
             expect(store.load_manifest(root))
