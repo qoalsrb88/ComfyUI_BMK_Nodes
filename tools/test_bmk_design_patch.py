@@ -25747,7 +25747,7 @@ def pipeline_unit():
         six_extra = {"GET /pipeline": {"widgets", "exports[].layers", "manifest_rev", "exports[].mask_groups", "exports[].mask_edits",
                                        "folder"},  # 프로젝트 폴더 이름(Studio 출력 폴더 미리 보기 — 다듬기 3-5b)
                      "GET /pipeline/plan": {"draft.orphan_retries", "draft.est_usd", "draft.reasons", "draft.reasons[].reason", "draft.reasons[].n",
-                                            "draft.free", "draft.pending_style", "draft.mock_forced"}}
+                                            "draft.free", "draft.free_all", "draft.pending_style", "draft.mock_forced"}}
 
         def up(q):
             return q.rsplit(".", 1)[0] if "." in q else ""
@@ -29633,7 +29633,7 @@ await scenario("queueClick", async () => {  // r3-13 board.js wireButtons: 머�
   const wc = vm.createContext({ $: (id) => (els[id] ??= { on: {}, addEventListener(t, fn) { (this.on[t] ??= []).push(fn); } }),
     setStar: spy("setStar"), toggleSlice: spy("toggleSlice"), toggleReject: spy("toggleReject"), reroll: spy("reroll"), queueReroll: spy("queueReroll"),
     drain: spy("drain"), toggleViewer: spy("toggleViewer"), help: spy("help"), setEditing: spy("setEditing"), setRefs: spy("setRefs"), setPipe: spy("setPipe"),
-    toast: spy("toast"), editing: false, refsOn: false, pipeOn: false });
+    toast: spy("toast"), document: { addEventListener() {} }, editing: false, refsOn: false, pipeOn: false });
   const src = boardFn("wireButtons");
   if (src) vm.runInContext(`(${src})`, wc)();
   const click = (id, isTrusted) => {
@@ -51327,7 +51327,10 @@ await scenario("entry", async () => {
     URLSearchParams, location: {search: ""}, S: {targets: [], crops: []},
     pipe: {steps: () => data, tab: () => "prepare", exportWhy: () => ""}, goMode: m => chosen.push(m),
     $: id => {
-      if (!ids[id]) { const el = ids[id] = doc.createElement("div"); el.querySelector = () => null; el.prepend = n => el.children.unshift(n); }
+      if (!ids[id]) {
+        const el = ids[id] = doc.createElement("div"), dot = doc.createElement("span");
+        el.append(dot); el.querySelector = () => dot; el.prepend = n => el.children.unshift(n);
+      }
       return ids[id];
     }};
   vm.createContext(bc); vm.runInContext(boardFn("renderMode"), bc);
@@ -51360,6 +51363,26 @@ await scenario("entry", async () => {
   bc.pipe.exportWhy = () => "설정 확인"; bc.pipe.exportLocked = () => false; bc.renderMode();
   r.headerSettings = !ids["btn-export"].disabled && ids["btn-export"].classList.contains("export-settings-needed");
   bc.pipe.exportLocked = () => true; bc.renderMode(); r.headerLocked = ids["btn-export"].disabled;
+  data.stages[3] = {state: "todo", value: "레이아웃 미반영 · 초안 승인 필요 0"}; bc.renderMode();
+  r.zeroWait = ids["btn-prompt"].querySelector(".step-state").textContent === "대기";
+  data.stages[3].value = "초안 복구 대기 2"; bc.renderMode();
+  r.recoveryWait = ids["btn-prompt"].querySelector(".step-state").textContent === "대기 2";
+  return r;
+});
+await scenario("exportMenu", async () => {
+  const doc = new Doc(), ids = {}, calls = [];
+  const get = id => ids[id] ||= doc.createElement(id === "export-menu" ? "details" : "button");
+  const menu = get("export-menu"), inside = doc.createElement("span"), outside = doc.createElement("div");
+  menu.append(get("btn-export-folder"), get("btn-export-settings"), inside); doc.body.append(menu, outside);
+  const bc = {document: doc, $: get, setStar() {}, toggleSlice() {}, toggleReject() {}, drain() {}, pipe: {
+    openFolder: () => calls.push(["folder", menu.open]), goSection: go => calls.push([go.tab, go.section, menu.open])}};
+  vm.createContext(bc); vm.runInContext(boardFn("wireButtons"), bc); bc.wireButtons();
+  menu.open = true; inside.fire("click"); const r = {inside: menu.open};
+  outside.fire("click"); r.outside = !menu.open;
+  menu.open = true; get("btn-export-folder").fire("click");
+  r.folder = !menu.open && JSON.stringify(calls.at(-1)) === '["folder",false]';
+  menu.open = true; get("btn-export-settings").fire("click");
+  r.settings = !menu.open && JSON.stringify(calls.at(-1)) === '["generate","Export",false]';
   return r;
 });
 await scenario("firstG", async () => {
@@ -51407,6 +51430,12 @@ await scenario("recovery", async () => {
   const after = env.pipe.steps().stages[3];
   const r = {firstG: env.pipe.tab() === "prompt", global: before.state === "todo",
     stable: after.state === "todo" && JSON.stringify(before) === JSON.stringify(after)};
+  const guidance = "복구 대기 2건 (무료) — 그래프 Spec Draft 를 승인 없이 한 번 큐에 넣으세요.";
+  const draftSection = () => env.panel.children.find(e => e.firstElementChild && e.firstElementChild.textContent === "초안 승인");
+  r.guidance = draftSection().textContent.includes(guidance) && env.pipe.steps().rows[4].hint.includes(guidance);
+  env.B("없음", env.list).fire("click"); await sleep(400);
+  r.unselectedGuidance = draftSection().textContent.includes(guidance);
+  r.noRecoveryQueue = srv.count("pipeline/prompt") === 0 && srv.count("api/prompt", "POST") === 0;
   env.pipe.leave(); await sleep(350); return r;
 });
 await scenario("selection", async () => {

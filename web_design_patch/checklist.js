@@ -102,7 +102,8 @@ window.DPChecklist = (() => {
       row(5, "초안", draftError || draftFailed || (planOk && !drafting && draftUnwritten > 0) ? "warn" : draftUnknown ? "unknown"
         : n > 0 && allSelected && ready && draftNeed === 0 && draftFree === 0 && draftStyle === 0 && !drafting && !draftPending.length ? "done" : "todo",
         draftFailed ? `초안 실패 ${draftFailed}` : draftUnknown ? `전체 초안 확인 필요 · ${draftValue}` : draftValue,
-        "초안 승인에서 초안 계획과 비용을 확인한 뒤 승인하세요.", { tab: "prompt", section: draftApply ? "반영" : "초안 승인" }),
+        draftFree > 0 ? `복구 대기 ${draftFree}건 (무료) — 그래프 Spec Draft 를 승인 없이 한 번 큐에 넣으세요.`
+          : "초안 승인에서 초안 계획과 비용을 확인한 뒤 승인하세요.", { tab: "prompt", section: draftApply ? "반영" : "초안 승인" }),
       row(6, "생성", runError || (global && missing > 0 && (failed || orphaned)) ? "warn" : runUnknown ? "unknown"
         : allSelected && ready && runNeed === 0 && runPre === 0 && runFree === 0 && complete && !running && !drafting && !prepareDrift.length && !pending.length ? "done" : "todo",
         global && (failed || orphaned) ? `실패 ${failed} · 결과 못 받음 ${orphaned} · ${runValue}` : runValue,

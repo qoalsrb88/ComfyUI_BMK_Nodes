@@ -2192,6 +2192,9 @@ window.DPPipeline = (() => {
       if (!only) line(s, "선택한 크롭 없음 — 계획·승인을 끕니다(빈 only 는 '전부')", "warn");
       else if (PS.planErr) line(s, `계획: ${PS.planErr}`, "bad");
       else if (!planOk) line(s, PS.job ? `계산 대기 — 이 Studio 의 ${jobText(PS.job)} 이 끝난 뒤 계산(그동안 계획을 부르지 않음)` : "계산 중…", "dim");
+      if (planOk && !stale && p.draft.free_all > 0 && !p.draft.running && !(S && S.drafting)) {
+        line(s, `복구 대기 ${p.draft.free_all}건 (무료) — 그래프 Spec Draft 를 승인 없이 한 번 큐에 넣으세요.`, "warn");
+      }
       if (only && P0 && P0.settings && P0.settings.draft.apply === "full") {
         // 계획을 받는 중·실패해도 남김(체크를 풀 수 있게)
         const lb = el("label", "rf-check");

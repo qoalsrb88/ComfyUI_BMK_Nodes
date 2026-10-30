@@ -1518,8 +1518,12 @@
     on("btn-generate", () => goMode("generate"));
     on("btn-mask", () => goMode("mask"));
     on("btn-export", () => pipe && pipe.exportNow());
-    on("btn-export-folder", () => pipe && pipe.openFolder());
-    on("btn-export-settings", () => pipe && pipe.goSection({ tab: "generate", section: "Export" }));
+    const exportMenu = $("export-menu");
+    on("btn-export-folder", () => { exportMenu.open = false; if (pipe) pipe.openFolder(); });
+    on("btn-export-settings", () => { exportMenu.open = false; if (pipe) pipe.goSection({ tab: "generate", section: "Export" }); });
+    document.addEventListener("click", (e) => {
+      if (exportMenu.open && !exportMenu.contains(e.target)) exportMenu.open = false;
+    }, true);
     on("btn-keys", () => {
       const off = !document.body.classList.contains("no-keys");
       document.body.classList.toggle("no-keys", off);
@@ -1643,7 +1647,7 @@
       if (dot) {
         const n = state && state.value.match(/(?:필요|대기|진행) (\d+)/);
         dot.textContent = !state ? "?" : state.state === "done" ? "✓" : state.state === "warn" ? "경고"
-          : state.state === "unknown" ? "?" : state.state === "optional" ? "선택" : n ? `대기 ${n[1]}` : "대기";
+          : state.state === "unknown" ? "?" : state.state === "optional" ? "선택" : n && Number(n[1]) > 0 ? `대기 ${n[1]}` : "대기";
         dot.className = `step-state ${state ? state.state : "unknown"}`;
         dot.title = state ? `전체 기준 · ${state.value}` : "전체 기준 · 계획을 받는 중";
       }
