@@ -46813,6 +46813,42 @@ await scenario("review3SavePreview",async()=>{
   }
   return r;
 });
+// 배치 7-0(_proto/STUDIO_BATCH7_SPEC.md D45·D46): [비율 잠금] 이 크기 손잡이에도(Shift = 반대), '적용 안 한 획' 문구 옆 [적용 (Enter)]·[버리기]
+await scenario("b7Fixes",async()=>{
+  const P=await setup(),{ed,B}=P,M=ed._test.M,r={};
+  P.key("KeyV");
+  B("비율 잠금").fire("click");
+  P.down(30,20);P.move(40,20);P.raf();
+  r.lockEdge=ed._test.drag()?.handle==="e"&&near([ed._test.drag().values.sx,ed._test.drag().values.sy],[1.5,1.5]);
+  P.key("Escape");
+  P.down(30,30);P.move(36,34);P.raf();
+  r.lockCorner=ed._test.drag()?.handle==="se"&&Math.abs(ed._test.drag().values.sx-ed._test.drag().values.sy)<1e-9;
+  P.key("Escape");
+  P.down(30,20);P.move(40,20,{shiftKey:true});P.raf();
+  r.lockShiftFree=near([ed._test.drag().values.sx,ed._test.drag().values.sy],[1.5,1]);
+  P.key("Escape");
+  P.down(20,20);P.move(24,20);P.raf();
+  r.lockMove=ed._test.drag()?.handle==="move"&&near([ed._test.drag().values.dx,ed._test.drag().values.sx,ed._test.drag().values.sy],[4,1,1]);
+  P.key("Escape");
+  P.move(20,-14);P.down(20,-14);P.move(54,20);P.raf();
+  r.lockRotate=ed._test.drag()?.handle==="rot"&&ed._test.drag().values.rot===90&&near([ed._test.drag().values.sx,ed._test.drag().values.sy],[1,1]);
+  P.key("Escape");
+  B("비율 잠금").fire("click");
+  P.down(30,20);P.move(40,20);P.raf();
+  r.unlockedFree=near([ed._test.drag().values.sx,ed._test.drag().values.sy],[1.5,1]);
+  P.key("Escape");
+  B("붓").fire("click");P.down(24,20);P.up();
+  const buttons=()=>P.panel.all().filter(e=>e.tagName==="BUTTON");
+  r.pending=M.pending()>0;
+  r.inlineApply=buttons().filter(b=>b.textContent==="적용 (Enter)").length===1&&!buttons().find(b=>b.textContent==="적용 (Enter)").disabled;
+  r.inlineDiscard=buttons().filter(b=>b.textContent==="버리기").length===2;
+  r.hint=P.panel.all().some(e=>e.textContent==="자동 손질(가장자리 페이드·이음매 페이드·전체 페더·처음 마스크로)도 적용 전 획으로 셉니다");
+  B("변형").fire("click");const n=P.toasts.length;P.down(24,20);
+  r.toast=P.toasts.length===n+1&&P.toasts.at(-1).includes("「후보 보정」 칸 [적용 (Enter)]·[버리기]");
+  M.discard();B("붓").fire("click");P.raf();
+  r.cleared=!buttons().some(b=>b.textContent==="적용 (Enter)")&&buttons().filter(b=>b.textContent==="버리기").length===1;
+  ed.leave();return r;
+});
 console.log(JSON.stringify(out));
 '''
     cases = []
@@ -46834,7 +46870,7 @@ console.log(JSON.stringify(out));
     scenes = json.loads(result.stdout) if result.returncode == 0 else {}
     for name in ("geometry", "compose", "interaction", "preview", "reopenDuringSave", "reviewBounds", "reviewSeen", "reviewUndo", "reviewBeforeLayers", "reviewRepaint",
                  "review2OwnSave", "review2Poll", "review2SmallPatch", "review2ReleaseLocked", "review3Timer", "review3ReleaseLoading",
-                 "review3Recovery", "review3SeenSource", "review3SavePreview"):
+                 "review3Recovery", "review3SeenSource", "review3SavePreview", "b7Fixes"):
         scene = scenes.get(name, {})
         check(bool(scene) and "error" not in scene, f"X9: {name} 시나리오 {scene.get('error', '')}")
         for label, ok in scene.items():

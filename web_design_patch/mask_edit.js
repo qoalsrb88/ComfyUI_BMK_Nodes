@@ -1111,7 +1111,8 @@ window.DPMaskEdit = (() => {
     }
 
     function warnXform() {
-      opts.toast(M.pending() ? "적용 안 한 획을 적용하거나 버린 뒤 보정하세요" : "지금은 변형할 수 없습니다 — 작업이 끝나거나 다시 받은 뒤 시도하세요", "warn");
+      opts.toast(M.pending() ? "적용 안 한 획을 적용하거나 버린 뒤 보정하세요 — 「후보 보정」 칸 [적용 (Enter)]·[버리기] (자동 손질도 획으로 셉니다)"
+        : "지금은 변형할 수 없습니다 — 작업이 끝나거나 다시 받은 뒤 시도하세요", "warn");
     }
 
     function xformCursor(handle) {
@@ -1153,7 +1154,10 @@ window.DPMaskEdit = (() => {
       if (editTool === "xform") {
         const d = currentDrag();
         if (d) {
-          const next = xformDrag(d.start, d.quad, d.handle, d.origin, pt, e);
+          // [비율 잠금] 이면 크기 손잡이는 Shift 를 뒤집는다(포토샵 — 잠금 켬 = 비율 유지, Shift = 자유). 이동·회전은 그대로.
+          const mods = d.handle === "move" || d.handle === "rot" || !ratioLock ? e
+            : { shiftKey: !e.shiftKey, altKey: e.altKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey };
+          const next = xformDrag(d.start, d.quad, d.handle, d.origin, pt, mods);
           if (GEOMETRY.every((k) => Math.abs(next[k] - d.values[k]) < 1e-8)) return true;
           const before = shownQuad();
           d.values = next;
@@ -1677,7 +1681,7 @@ window.DPMaskEdit = (() => {
         diff.classList.toggle("sel", difference);
         diff.ariaPressed = String(difference);
         btns(s, diff);
-        line(s, "안쪽 이동 · 손잡이 배율/회전 · Shift 비율/15° · Alt 중심 · Ctrl 미세 조절 · Esc 끌기 취소", "dim");
+        line(s, "안쪽 이동 · 손잡이 배율/회전 · Shift 비율(비율 잠금이면 자유)/15° · Alt 중심 · Ctrl 미세 조절 · Esc 끌기 취소", "dim");
       }
       if (info.xform_stale) {
         const stale = chip("변형 기준 바뀜", "b-warn");
@@ -1722,7 +1726,7 @@ window.DPMaskEdit = (() => {
         grid.append(row);
       }
       s.append(grid);
-      const lock = off(button("비율 잠금", "한쪽 배율을 바꾸면 다른 쪽도 같은 비율로", () => {
+      const lock = off(button("비율 잠금", "한쪽 배율을 바꾸면 다른 쪽도 같은 비율로 — 캔버스 손잡이도(Shift 로 잠시 풂)", () => {
         ratioLock = !ratioLock;
         lock.classList.toggle("sel", ratioLock);
         lock.ariaPressed = String(ratioLock);
@@ -1744,8 +1748,14 @@ window.DPMaskEdit = (() => {
       if (rec) buttons.push(off(button("보정 없음", "블러·색반전·변형과 이전 보정 기록을 지움", () => saveAdjust("reset")), disabled || !!M.busy));
       adjustButtons = buttons;
       if (buttons.length) btns(s, ...buttons);
-      if (M.pending()) line(s, "적용 안 한 획을 적용하거나 버린 뒤 보정하세요", "dim");
-      else if (M.busy === "adjust") line(s, "보정 저장·미리보기 받는 중…", "dim");
+      if (M.pending()) {
+        // 막힘을 풀 단추를 문구 바로 옆에 — 아래 「적용 전 획」 칸의 것과 같은 동작
+        const busy = !!M.busy || !!M.stroke;
+        line(s, "적용 안 한 획을 적용하거나 버린 뒤 보정하세요 ", "warn").append(
+          off(button("적용 (Enter)", "적용 안 한 획을 저장(무료) — 그 뒤 보정할 수 있음", apply, "inline"), busy),
+          off(button("버리기", "적용 안 한 획을 모두 버림(확인 창)", discard, "inline"), busy));
+        line(s, "자동 손질(가장자리 페이드·이음매 페이드·전체 페더·처음 마스크로)도 적용 전 획으로 셉니다", "dim");
+      } else if (M.busy === "adjust") line(s, "보정 저장·미리보기 받는 중…", "dim");
     }
 
     function renderPanel() {
