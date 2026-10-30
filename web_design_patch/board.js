@@ -712,7 +712,7 @@
 
   function goMode(m) {
     // 탭: 그 모드로(null = 검토). 마스크 모드는 먼저 나감(적용 안 한 획 확인), 켜는 쪽 set* 이 다른 모드를 끈다
-    renderMode.initial = false;
+    if (typeof renderMode === "function") renderMode.initial = false;
     if (["prepare", "prompt", "generate"].includes(m)) {
       if (!leaveMask()) return;
       if (!pipeOn) setPipe(true);
@@ -1346,7 +1346,7 @@
 
   function onKeyDown(e) {
     if (typing(e.target)) return; // 입력칸(편집기 속성 패널) 포커스: 보드 단축키를 모두 무시 — Enter·Esc 는 입력칸이 처리
-    if (["KeyE", "KeyT", "KeyG", "KeyK"].includes(e.code)) renderMode.initial = false;
+    if (typeof renderMode === "function" && ["KeyE", "KeyT", "KeyG", "KeyK"].includes(e.code)) renderMode.initial = false;
     // 포커스가 남은 data-keys="board" 칸은 키가 값을 바꾸지 않게 기본 동작을 막는다(Home·End·PageUp/Down·화살표·select 글자 찾기 — 바뀌면
     // change 로 회전 점프·다듬기 컷 요청이 말없이 감). 보드·레퍼런스 키 처리는 아래에서 그대로
     if (e.target instanceof Element && e.target.closest('[data-keys="board"]') && !e.ctrlKey && !e.metaKey && e.key !== "Tab") e.preventDefault();
@@ -1654,7 +1654,8 @@
     }
     const ex = $("btn-export");
     const why = pipe && pipe.exportWhy ? pipe.exportWhy() : "실행 설정을 받는 중";
-    ex.disabled = !!why;
+    ex.disabled = pipe && pipe.exportLocked ? pipe.exportLocked() : !!why;
+    ex.classList.toggle("export-settings-needed", !!why && !ex.disabled);
     ex.title = why || "무료 Export — 마지막 반영으로 PSD 출력";
     const last = S && S.export_last;
     $("export-state").textContent = last ? `r${last.rev} · ${S.export_state === "same" ? "변경 없음" : "다시 Export 필요"}`
@@ -1724,7 +1725,7 @@
         refresh: () => refresh(true),
         stepsChanged: renderMode,
         maskPending: () => maskEd && maskEd.pending(),
-        editPending: () => !!S && S.crops.some((c) => ["changed", "new", "removed"].includes(c.layout_status)),
+        editPending: () => !!S && window.DPPipeline.layoutLines(S).length > 0,
         select: (id) => {
           const t = S ? S.targets.find((x) => x.crop_id === id) : null;
           if (t) selectTarget(t.key);

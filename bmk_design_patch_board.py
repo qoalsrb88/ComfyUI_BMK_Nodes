@@ -5510,7 +5510,10 @@ async def prompt_handler(request: web.Request) -> web.StreamResponse:
             from . import bmk_design_patch_prompt_ko as ko
         except ImportError:
             import bmk_design_patch_prompt_ko as ko
-        m = store.load_manifest(root)
+        try:
+            m = store.load_manifest(root)
+        except (ValueError, OSError):
+            raise _Reject(500, "프로젝트 기록을 읽지 못했습니다. 잠시 후 다시 시도하세요") from None
         crop = _crop(m, cid)
         if crop is None:
             raise _Reject(404, "크롭이 없습니다")

@@ -31,7 +31,7 @@ window.DPChecklist = (() => {
     const draftNeed = global ? draftKnown ? Object.values(draftCrops).filter((c) => (c.wait || []).length).length : null
       : draft && Array.isArray(draft.units) ? draft.units.length : null;
     const draftPending = draft && Array.isArray(draft.import_pending) ? draft.import_pending : [];
-    const draftFree = draft && Number.isFinite(draft.free) ? draft.free : 0;
+    const draftFree = !global && draft && Number.isFinite(draft.free) ? draft.free : 0;
     const draftUnwritten = draft && draft.warnings && Array.isArray(draft.warnings.unwritten) ? draft.warnings.unwritten.length : 0;
     const draftSettings = input.P0 && !input.P0.error && input.P0.settings && input.P0.settings.draft;
     const draftStyle = draftSettings && draftSettings.apply === "full" && draft && Number.isFinite(draft.pending_style) ? draft.pending_style : 0;
@@ -51,8 +51,8 @@ window.DPChecklist = (() => {
     const failed = Math.max(total("failed"), global && progress ? progress.failed || 0 : 0);
     const orphaned = Math.max(total("orphaned"), global && progress ? progress.orphaned || 0 : 0);
     const draftFailed = global && input.progress && input.progress.draft ? input.progress.draft.failed || 0 : 0;
-    // free 는 선택 전용 값이다. 전체 복구 건수로 추측하지 않는다.
-    const draftUnknown = global && (!ready || !draftKnown || !input.draftFreeKnown || !draft
+    // free 는 선택 전용 값이므로 전체 판정에서 제외한다. 전체 대기·미반영은 by_crop 등으로 판정한다.
+    const draftUnknown = global && (!ready || !draftKnown || !draftSettings || !draft
       || !Array.isArray(draft.import_pending) || !draft.warnings || !Array.isArray(draft.warnings.unwritten)
       || (draftSettings && draftSettings.apply === "full" && !Number.isFinite(draft.pending_style)));
     const runUnknown = global && (!ready || !runKnown);

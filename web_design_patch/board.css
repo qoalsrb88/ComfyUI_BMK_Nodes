@@ -646,3 +646,4 @@ body.busy { cursor: progress; }
 .export-menu { position: relative; }
 .export-menu summary { cursor: pointer; list-style: none; padding: 6px; }
 .export-menu > div { position: absolute; right: 0; top: 100%; z-index: 30; display: grid; gap: 5px; padding: 8px; min-width: 145px; background: #202832; border: 1px solid #536173; }
+button.export-settings-needed { opacity: .55; }

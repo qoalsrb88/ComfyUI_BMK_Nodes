@@ -1674,6 +1674,10 @@ window.DPPipeline = (() => {
         if (on && dvErr) loadDraft(); // 읽지 못한 크롭 줄을 다시 누름 = 다시 읽기
         return;
       }
+      if (text !== null) {
+        opts.toast("채택 [수정] 입력을 유지합니다 — 원래 크롭에서 저장하거나 취소하세요", "warn");
+        return;
+      }
       cur = id;
       dv = null;
       dvErr = null;
@@ -2299,7 +2303,8 @@ window.DPPipeline = (() => {
         s.append(lb);
       }
       const eb = button("Export", exportWhy() || "무료 Export 템플릿(Analyze → Compose → Export — Import 없음, ComfyUI 대기열 뒤)", exportNow, "primary");
-      eb.disabled = !!exportWhy();
+      eb.disabled = exportLocked();
+      eb.classList.toggle("export-settings-needed", !!exportWhy() && !eb.disabled);
       const ob = button("출력 폴더 열기", "탐색기로 Export 출력 폴더를 엶 — 마지막 Export PSD 를 고른 채(ComfyUI 가 도는 PC). "
         + `다음 Export 위치: ComfyUI ${exportDir(P0)}([실행 설정 열기] Export 절 '출력 하위 폴더' — 비우면 프로젝트 폴더 이름)`,
         openFolder);
@@ -2831,7 +2836,7 @@ window.DPPipeline = (() => {
       if (doneReplan || (on && onlyNow() !== was) || (moved && (planStale() || (!PS.plan && !!PS.planErr)))) schedulePlan();
       doneReplan = false;
       ticks += 1;
-      if (busy || ticks === 1 || ticks % PROGRESS_EVERY === 0) PS.loadProgress().then((ch) => ch && render());
+      if (busy || (!on && ticks === 1) || ticks % PROGRESS_EVERY === 0) PS.loadProgress().then((ch) => ch && render());
       if (on) {
         // 채택 패널: 매니페스트 rev, 또는 스펙만 바뀐 쓰기(그래프 Spec Draft·다른 창의 채택 — rev 그대로, plan_v 만 바뀜)면 GET /draft 다시.
         // [수정] 입력 중에는 미루되 앞 읽기가 실패했으면 다시
@@ -2868,7 +2873,6 @@ window.DPPipeline = (() => {
     function leave() {
       on = false;
       settingsOn = false;
-      clearTimeout(planTimer);
       list.replaceChildren();
       panel.replaceChildren();
     }
@@ -2888,9 +2892,11 @@ window.DPPipeline = (() => {
         : "★ 없이 숨김 후보 레이어만 담긴 PSD 가 만들어집니다"}.`);
       const mask = opts.maskPending ? opts.maskPending() : maskLeft;
       const pending = pendingApply();
-      if (mask || pending.length || (opts.editPending && opts.editPending())) {
+      const unsure = unsureWhy();
+      if (mask || pending.length || layoutLines(S).length || unsure || (opts.editPending && opts.editPending())) {
         lines.push("Export 템플릿엔 Import 가 없어 반영 전 크롭·레퍼런스와 적용 전 마스크 획은 PSD 에 안 들어갑니다.");
         if (pending.length) lines.push(pending.join(" · "));
+        if (unsure) lines.push(`미반영 확인 필요: ${unsure}`);
         if (mask) lines.push("마스크 적용 안 한 획이 있습니다.");
       }
       if (lines.length && !window.confirm(lines.concat("그래도 Export 할까요?").join("\n"))) return false;
@@ -2907,6 +2913,9 @@ window.DPPipeline = (() => {
       const warnings = (P0.warnings || []).filter((w) => !w.field.startsWith("cand."));
       return warnings.length ? `${warnings.map((w) => w.msg).join(" · ")} — 준비 탭` : "";
     }
+    function exportLocked() {
+      return !!paidLock() || PS.busy;
+    }
     async function openFolder() {
       try {
         const d = await PS.openFolder();
@@ -2921,8 +2930,6 @@ window.DPPipeline = (() => {
       if (!S || !window.DPChecklist) return null;
       const P0 = PS.P;
       const rows = window.DPChecklist.rows({ S, P0, scope: "all", plan: PS.plan, planErr: PS.planErr,
-        draftFreeKnown: PS.planOnly === S.crops.map((c) => c.id).sort().join(",")
-          && !!P0 && !!P0.settings && (P0.settings.draft.apply !== "full" || PS.planStyle),
         planOk: !!PS.plan && !PS.planErr, stale: planStale(), pending: pendingApply(), unsure: unsureWhy(),
         prepareDrift: P0 && P0.drift ? P0.drift.filter((x) => x.section === "prepare") : [],
         settingsBlock: !P0 || PS.err || P0.error || !P0.saved || confirmGate(P0).gate.length ? "준비 탭 확인 필요" : "",
@@ -2934,7 +2941,11 @@ window.DPPipeline = (() => {
     }
     function canLeave() {
       if (asking || paying || PS.sending) return { ok: false, why: "승인·반영 응답을 기다리는 중 — 끝난 뒤 프로젝트 이동" };
-      if (text !== null) return { ok: true, confirm: "채택 [수정] 입력을 저장하지 않았습니다. 프로젝트를 이동하면 이 입력이 사라집니다. 이동할까요?" };
+      const pending = [];
+      if (text !== null) pending.push("채택 [수정] 입력");
+      if (Object.keys(form).length) pending.push("저장하지 않은 실행 설정");
+      if (opts.maskPending && opts.maskPending()) pending.push("적용하지 않은 마스크 획");
+      if (pending.length) return { ok: true, confirm: `${pending.join(" · ")}이 있습니다. 프로젝트를 이동하면 저장하지 않은 내용이 사라집니다. 이동할까요?` };
       return { ok: true };
     }
 
@@ -2942,7 +2953,8 @@ window.DPPipeline = (() => {
       const s = steps();
       if (!s || !s.ready || !PS.P || PS.err) return null;
       if (s.rows[0].state !== "done" || s.rows[3].go.tab === "prepare") return "prepare";
-      if (s.rows[3].state !== "done" || s.rows[4].state !== "done") return "prompt";
+      if ([s.rows[3], s.rows[4]].some((r) => r.state === "todo" || r.state === "warn")) return "prompt";
+      if ([s.rows[3], s.rows[4]].some((r) => r.state === "unknown")) return null;
       return "generate";
     }
 
@@ -2969,7 +2981,12 @@ window.DPPipeline = (() => {
       try {
         const url = opts.apiUrl("prompt");
         const r = await fetch(`${url}?root=${encodeURIComponent(opts.root)}&crop=${encodeURIComponent(crop)}`, { cache: "no-store" });
-        const data = await r.json();
+        let data;
+        try {
+          data = await r.json();
+        } catch (e) {
+          throw new Error("ComfyUI 재시작 필요 — 프롬프트 보기 응답이 JSON이 아닙니다");
+        }
         if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
         if (seq !== promptSeq) return;
         promptView = data;
@@ -3016,7 +3033,7 @@ window.DPPipeline = (() => {
     // tabChanged = link 상태가 바뀜(board.js 가 부름 — 승인 단추 켜짐·제목), reroll = board.js queueReroll 의 유료 가능 탭 갈래, paidWhy·paidLock·side =
     // board.js tabWay·R 확인 문구(유료 탭 길을 쓰나·지금은 예약만인가·그 길의 부수 효과 줄), setMaskLeft = 적용 안 한 마스크 편집(★ 점검 줄)
     return { stateChanged, enter, leave, select, queue: boardQueue, applyWarn, recalc: planNow, openSettings, reroll, tabChanged: render, paidWhy, paidLock,
-      side: SIDE, setMaskLeft, exportNow, exportWhy, openFolder, steps, canLeave, showTab, goSection, tab: () => activeTab };
+      side: SIDE, setMaskLeft, exportNow, exportWhy, exportLocked, openFolder, steps, canLeave, showTab, goSection, tab: () => activeTab };
   }
 
   return { create, session, link, checkPrompt, freeBody, endOf, adoptState, runText, draftText, approveText, paidReport, starChecks, layoutLines };
