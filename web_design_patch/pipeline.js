@@ -228,7 +228,7 @@ window.DPPipeline = (() => {
           + "지금 승인하면 초안 없는 프롬프트로 과금합니다.");
       }
       if (d.pending_style && full && !style) {
-        out.push("주의: 화풍 단위를 고르지 않아(「비용·승인」 칸 '화풍 단위 포함' 끔) 화풍 초안 대기가 보류됨 — 지금 승인하면 화풍 초안 없는 프롬프트로 과금합니다.");
+        out.push("주의: 화풍 단위를 고르지 않아(「초안 승인」 칸 '화풍 단위 포함' 끔) 화풍 초안 대기가 보류됨 — 지금 승인하면 화풍 초안 없는 프롬프트로 과금합니다.");
       }
       const unw = d.warnings.unwritten.length;
       if (unw) out.push(`주의: 스펙 파일 ${unw}개에 초안·화풍 변경을 아직 못 씀(잠김) — 지금 승인하면 그 변경 없이 과금합니다.`);
@@ -748,7 +748,7 @@ window.DPPipeline = (() => {
 
   // ── ComfyUI 탭 연결(D6)·유료 승인 메시지(S3b 계약 §3·§5) ──
   function link(win, onChange, every = HELLO_MS, wait = REPLY_MS, ackMs = ACK_MS, endMs = END_MS) {
-    // every 마다 hello {type, id}: opener(Open Board 로 연 창)가 있으면 그 탭의 응답만, 없으면 BroadcastChannel("bmk-dp") 로 묻고 wait 동안 모은
+    // every 마다 hello {type, id}: opener(Open Board 또는 메뉴 BMK → Design Patch Studio 로 연 창)가 있으면 그 탭의 응답만, 없으면 BroadcastChannel("bmk-dp") 로 묻고 wait 동안 모은
     // 응답의 탭이 정확히 하나일 때만 연결. 같은 출처·이번 hello 의 id 만 받는다. state = wait(첫 판정 전)·ok·old(opener 가 답하지 않음 —
     // 옛 확장)·none·many. 응답 = {tab(탭 로드마다 새 ID), ext(확장 판), submit(승인 제출 가능 ok|unsupported), busy(탭이 큐 처리 중)}.
     // paidWhy() = 유료 승인을 못 하는 이유("" = 유료 가능: 연결·ext 3 이상·submit ok·busy 아님 — 머리줄 배지 제목(board.js tabTitle)도 이 문장).
@@ -757,7 +757,7 @@ window.DPPipeline = (() => {
     // 답은 같은 id·같은 tab·같은 길에서 온 것만. Studio 가 끝낸 요청에 늦게 온 approved 는 late(답) 으로 넘긴다(이미 큐에 들어간 실행을 놓치지 않게).
     // sent({id, tab, via}) = 보낸 직후(호출자가 창을 새로 열어도 이어 받게 남김), adopt({id, tab, via}, late) = 앞 창이 보내고 결과를 모르는 요청의
     // 늦은 approved 를 이 창에서 late 로 받음. onWave(fn) = 연결된 탭(tab 일치)이 보낸 wave
-    const st = { state: "wait", tab: null, ext: null, submit: null, busy: false, via: null };
+    const st = { state: "wait", tab: null, ext: null, submit: null, busy: false, via: null, reviewRoots: null };
     const Channel = win.BroadcastChannel;
     const ch = typeof Channel === "function" ? new Channel(CHANNEL) : null;
     let round = null;
@@ -799,9 +799,10 @@ window.DPPipeline = (() => {
     function settle(r) {
       const got = [...r.replies.values()];
       const d = got.length === 1 ? got[0] : null;
-      const next = d ? { state: d.ext >= 2 ? "ok" : "old", tab: d.tab, ext: d.ext, submit: d.submit, busy: !!d.busy, via: r.via }
-        : { state: r.via === "opener" ? "old" : got.length ? "many" : "none", tab: null, ext: null, submit: null, busy: false, via: r.via };
-      const changed = Object.keys(next).some((k) => st[k] !== next[k]);
+      const reviewRoots = d && Array.isArray(d.reviewRoots) ? [...new Set(d.reviewRoots.filter((k) => typeof k === "string" && /^[0-9a-f]{12}$/.test(k)))].sort() : null;
+      const next = d ? { state: d.ext >= 2 ? "ok" : "old", tab: d.tab, ext: d.ext, submit: d.submit, busy: !!d.busy, via: r.via, reviewRoots }
+        : { state: r.via === "opener" ? "old" : got.length ? "many" : "none", tab: null, ext: null, submit: null, busy: false, via: r.via, reviewRoots: null };
+      const changed = Object.keys(next).some((k) => k === "reviewRoots" ? JSON.stringify(st[k]) !== JSON.stringify(next[k]) : st[k] !== next[k]);
       Object.assign(st, next);
       // 기다리던 요청의 탭이 아니게 됨(새로고침 = 새 tab ID·닫힘·끊김) — 결과를 모름(이미 큐에 들어갔을 수 있음)
       for (const a of asks.values()) {
@@ -814,10 +815,10 @@ window.DPPipeline = (() => {
       // old = opener 가 있는데 답하지 않음(ext null — 옛 확장·새로고침 중·다른 주소로 옮겨 감) 또는 확장 판 < 2
       if (st.state === "old") {
         return st.ext === null ? "이 창을 연 ComfyUI 탭이 hello 에 답하지 않음(확장이 옛 판·새로고침 중, 또는 그 탭이 다른 주소·페이지로 옮겨 감) — "
-          + "그 탭을 새로고침하거나 Open Board 로 다시 열기"
+          + "그 탭을 새로고침하거나 Open Board 또는 메뉴 BMK → Design Patch Studio 로 다시 열기"
           : `이 창을 연 ComfyUI 탭의 확장이 옛 판(${st.ext}) — 그 탭을 새로고침한 뒤 유료 승인`;
       }
-      if (st.state !== "ok") return "ComfyUI 탭 연결 없음 — Review 노드의 Open Board 로 열거나 ComfyUI 탭을 하나만 열어 두기";
+      if (st.state !== "ok") return "ComfyUI 탭 연결 없음 — Review 노드의 Open Board 또는 메뉴 BMK → Design Patch Studio 로 열거나 ComfyUI 탭을 하나만 열어 두기";
       if (st.ext < 3) return `ComfyUI 탭의 확장이 옛 판(S3a — 판 ${st.ext}) — 그 탭을 새로고침한 뒤 유료 승인`;
       if (st.submit !== "ok") return "ComfyUI 탭이 승인 제출을 못 함(submit unsupported — ComfyUI 프론트가 바뀜) — 그래프의 승인 버튼 사용";
       // 할 일('잠시 뒤 다시')은 붙이지 않음 — 재굴림 확인 창·예약 토스트에도 실려 R 재누름(+1 사전 승인)으로 읽히지 않게(단추는 끝나면 저절로 켜짐)
@@ -911,6 +912,11 @@ window.DPPipeline = (() => {
     let pvTimer = null;
     let planTimer = null;
     let settingsOn = false;
+    let activeTab = null; // 첫 G 진입만 점검표로 선택하고 이후에는 마지막 하위 탭 유지
+    let promptView = null;
+    let promptKey = null;
+    let promptSeq = 0;
+    let promptLang = "ko";
     let setupPending = null; // null = 첫 진입 전, true = 판정 가능할 때까지 기다림, false = 판정했거나 이미 물음
     let setupChecking = false; // 자동 사전 읽기만 겹침 방지 — 사용자 동작의 asking·그리기는 건드리지 않음
     let setupInputWait = false; // 입력·포인터 동작 때문에 보류한 질문은 다음 enter 에서만 재개
@@ -980,6 +986,7 @@ window.DPPipeline = (() => {
 
     function section(title) {
       const s = el("div", "pp-sec");
+      s.dataset.tab = title === "실행 설정" ? "prepare" : ["생성 승인", "★ 점검", "Export"].includes(title) ? "generate" : "prompt";
       s.append(el("div", "lp-k", title));
       panel.append(s);
       return s;
@@ -1009,7 +1016,7 @@ window.DPPipeline = (() => {
       // Run·Spec Draft 가 시작했다 끝남 — 서버는 그 계획을 기억하지 않고 '실행 중' 서명을 줌, plan_v 는 그대로라 폴링이 다시 부르지 않음) 쉬는 중이면
       // 한 번 더 — 같은 plan_v 에 한 번만. plan_v null(기억 없음·계획 오류)은 다음 폴링의 plan_v 가 정한다
       return PS.loadPlan(on ? onlyNow() : null, styleNow()).then((ok) => {
-        if (ok && on) {
+        if (ok) {
           if (!planStale()) retried = undefined;
           else if (S.plan_v && !busyNow() && retried !== S.plan_v) {
             retried = S.plan_v;
@@ -1444,7 +1451,7 @@ window.DPPipeline = (() => {
       if (!e || !e.isTrusted || paying) return;
       const now = () => same(copyHashes()[kind], pair) && !approveWhy(pair[0]);
       const moved = () => {
-        opts.toast("계획·탭 상태가 바뀜 — 승인하지 않음: 다시 그린 「비용·승인」 칸을 보고 다시 누르세요", "warn");
+        opts.toast(`계획·탭 상태가 바뀜 — 승인하지 않음: 다시 그린 「${kind === "draft" ? "초안 승인" : "생성 승인"}」 칸을 보고 다시 누르세요`, "warn");
         render();
       };
       if (!now()) {
@@ -1636,6 +1643,7 @@ window.DPPipeline = (() => {
 
     function openSettings() {
       settingsOn = true;
+      activeTab = "prepare";
       setupPending = false; // 수동 설정으로 진입하면 닫은 뒤에도 자동 제안을 다시 하지 않음
       if (on) render();
       else opts.enter();
@@ -1658,14 +1666,17 @@ window.DPPipeline = (() => {
     }
 
     function pick(id) {
-      opts.select(id);
-      select(id);
+      if (select(id) !== false) opts.select(id);
     }
 
     function select(id) {
       if (id === cur) {
         if (on && dvErr) loadDraft(); // 읽지 못한 크롭 줄을 다시 누름 = 다시 읽기
-        return;
+        return true;
+      }
+      if (text !== null) {
+        opts.toast("채택 [수정] 입력을 유지합니다 — 원래 크롭에서 저장하거나 취소하세요", "warn");
+        return false;
       }
       cur = id;
       dv = null;
@@ -1673,6 +1684,7 @@ window.DPPipeline = (() => {
       closeEdit();
       if (on) loadDraft();
       render();
+      return true;
     }
 
     function closeEdit() {
@@ -1934,7 +1946,9 @@ window.DPPipeline = (() => {
         return;
       }
       pendingPanel = false;
+      if (on && !activeTab) activeTab = firstTab();
       renderHead();
+      if (opts.stepsChanged) opts.stepsChanged();
       if (!on) return;
       renderList();
       if (panelBusy()) {
@@ -2069,10 +2083,9 @@ window.DPPipeline = (() => {
 
     function renderPanel() {
       panel.replaceChildren();
-      if (settingsOn) {
-        renderSettings();
-        return;
-      }
+      if (!activeTab) activeTab = firstTab();
+      const shownTab = activeTab || "prepare";
+      panel.dataset.tab = shownTab;
       const P0 = PS.P;
       const p = PS.plan;
       const only = onlyNow();
@@ -2081,6 +2094,21 @@ window.DPPipeline = (() => {
       const unk = pendingUnknown();
       const stale = planStale();
       const unsure = unsureWhy();
+      const tabs = el("div", "pp-tabs");
+      tabs.setAttribute("role", "tablist");
+      for (const [id, label] of [["prepare", "준비"], ["prompt", "프롬프트"], ["generate", "생성"]]) {
+        const b = button(label, `${label} 탭`, () => showTab(id));
+        b.setAttribute("role", "tab");
+        b.setAttribute("aria-selected", String(id === shownTab));
+        b.className = id === shownTab ? "on" : "";
+        tabs.append(b);
+      }
+      panel.append(tabs);
+      const common = el("div", "pp-common");
+      common.append(el("span", "", `선택 ${sel.size}/${S ? S.crops.length : 0}`),
+        button(pend.length ? `미반영 ${pend.length}` : unsure ? "반영 상태 확인 필요" : "미반영 없음", pend.join(" · ") || unsure,
+          () => goSection({ tab: "prompt", section: "반영" })), el("span", "warn", paidLock()), recalcButton("지금 선택으로 다시 계산"));
+      panel.append(common);
 
       if (window.DPChecklist) {
         const host = el("div");
@@ -2091,37 +2119,42 @@ window.DPPipeline = (() => {
         window.DPChecklist.render(host, window.DPChecklist.rows({ S, P0, plan: p, pending: pend, prepareDrift, settingsBlock, unsure,
           planOk, planErr: PS.planErr, stale, selectedCount: sel.size, maskLeft, progress: PS.progress }), {
           memory: panel, goMode: opts.goMode, goTarget: opts.goTarget, goMask: opts.goMask,
-          goSection: (title) => {
-            const sec = [...panel.querySelectorAll(".pp-sec")].find((x) => x.firstElementChild && x.firstElementChild.textContent === title);
-            if (sec) sec.scrollIntoView({ block: "start", behavior: "smooth" });
-          },
+          goSection,
         });
       }
 
       // 설정
-      let s = section("실행 설정");
-      if (!P0) line(s, PS.err ? `읽기 오류: ${PS.err}` : "불러오는 중…", PS.err ? "bad" : "dim");
-      else {
-        if (P0.error) line(s, `pipeline.json 오류: ${P0.error} — [실행 설정 열기]에서 다시 저장(덮어쓰기)`, "bad");
-        else {
-          const pr = P0.settings.prepare;
-          const dr = P0.settings.draft;
-          line(s, `${P0.saved ? `rev ${P0.rev}` : "파일 없음(유도값)"} · Prepare ${pr.model} · ${pr.quality} · ${pr.size_rule} · ${pr.variants} · n ${pr.n} · `
-            + `${pr.ref_style} · ${pr.calls_per_cell} · 초안 ${dr.vlm} · ${dr.effort} · ${dr.write_mode} · ${dr.apply}`);
-        }
-        // 확인 필요 = 서버 prompt_gate 판정대로 두 줄: 막는 항목(prepare.*·import.* — 깨진 파일은 전부)은 빨강, 그 밖(늘 남는 draft.apply·기록 없는
-        // analyze·compose·export 등)은 반영·Export 를 막지 않고 계획 해시만 흐림(노랑). 파일 없음은 항목이 없어도 막는다(첫 저장이 파일을 만듦)
-        const cg = confirmGate(P0);
-        if (cg.gate.length) line(s, `확인 필요: ${cg.gate.join(", ")} — 확인(저장) 전에는 반영·Export 를 막음`, "bad");
-        else if (cg.noFile) line(s, "pipeline.json 없음 — 한 번 저장하기 전에는 반영·Export 를 막음", "bad");
-        if (cg.rest.length) line(s, `확인 필요: ${cg.rest.join(", ")} — 반영·Export 는 막지 않음(확인(저장) 전에는 승인 코드를 흐림)`, "warn");
-        for (const d of P0.drift) line(s, driftText(d), DRIFT_BILL.includes(d.kind) ? "bad" : "warn");
-        // 경로 경고는 모두 템플릿을 막는다(서버 prompt_gate 409): import.* = 반영·Export, cand.path = 반영만(export 템플릿에는 dp_cand 가 없음)
-        for (const w of P0.warnings) {
-          line(s, w.field.startsWith("cand.") ? `${w.msg} — 반영을 막음(Export 는 됨): [실행 설정 열기]에서 경로를 고치거나 후보 등록을 끔` : w.msg, "bad");
-        }
+      if (settingsOn) {
+        const before = new Set(panel.children);
+        renderSettings();
+        for (const child of panel.children) if (!before.has(child)) child.dataset.tab = "prepare";
       }
-      btns(s, button("실행 설정 열기", "실행 설정(pipeline.json) — 노드 위젯 그대로, 절마다 저장", openSettings));
+      let s;
+      if (!settingsOn) {
+        s = section("실행 설정");
+        if (!P0) line(s, PS.err ? `읽기 오류: ${PS.err}` : "불러오는 중…", PS.err ? "bad" : "dim");
+        else {
+          if (P0.error) line(s, `pipeline.json 오류: ${P0.error} — [실행 설정 열기]에서 다시 저장(덮어쓰기)`, "bad");
+          else {
+            const pr = P0.settings.prepare;
+            const dr = P0.settings.draft;
+            line(s, `${P0.saved ? `rev ${P0.rev}` : "파일 없음(유도값)"} · Prepare ${pr.model} · ${pr.quality} · ${pr.size_rule} · ${pr.variants} · n ${pr.n} · `
+              + `${pr.ref_style} · ${pr.calls_per_cell} · 초안 ${dr.vlm} · ${dr.effort} · ${dr.write_mode} · ${dr.apply}`);
+          }
+          // 확인 필요 = 서버 prompt_gate 판정대로 두 줄: 막는 항목(prepare.*·import.* — 깨진 파일은 전부)은 빨강, 그 밖(늘 남는 draft.apply·기록 없는
+          // analyze·compose·export 등)은 반영·Export 를 막지 않고 계획 해시만 흐림(노랑). 파일 없음은 항목이 없어도 막는다(첫 저장이 파일을 만듦)
+          const cg = confirmGate(P0);
+          if (cg.gate.length) line(s, `확인 필요: ${cg.gate.join(", ")} — 확인(저장) 전에는 반영·Export 를 막음`, "bad");
+          else if (cg.noFile) line(s, "pipeline.json 없음 — 한 번 저장하기 전에는 반영·Export 를 막음", "bad");
+          if (cg.rest.length) line(s, `확인 필요: ${cg.rest.join(", ")} — 반영·Export 는 막지 않음(확인(저장) 전에는 승인 코드를 흐림)`, "warn");
+          for (const d of P0.drift) line(s, driftText(d), DRIFT_BILL.includes(d.kind) ? "bad" : "warn");
+          // 경로 경고는 모두 템플릿을 막는다(서버 prompt_gate 409): import.* = 반영·Export, cand.path = 반영만(export 템플릿에는 dp_cand 가 없음)
+          for (const w of P0.warnings) {
+            line(s, w.field.startsWith("cand.") ? `${w.msg} — 반영을 막음(Export 는 됨): [실행 설정 열기]에서 경로를 고치거나 후보 등록을 끔` : w.msg, "bad");
+          }
+        }
+        btns(s, button("실행 설정 열기", "실행 설정(pipeline.json) — 노드 위젯 그대로, 절마다 저장", openSettings));
+      }
 
       // 반영
       s = section("반영");
@@ -2155,10 +2188,14 @@ window.DPPipeline = (() => {
       // 초안·Run(계획) — 흐림(planDim — 반영 뒤 다시 계산)·낡음(stale — 다시 받을 때까지)이면 해시 복사 끔(copyHashes)
       const dim = planDim();
       const hc = copyHashes();
-      s = section("비용·승인");
+      const why = pend.concat(unk ? [`반영 상태 확인 못 함 — ${unk}`] : [], !P0 || PS.err ? [`실행 설정을 읽지 못함 — ${PS.err || "불러오는 중"}`] : []);
+      s = section("초안 승인");
       if (!only) line(s, "선택한 크롭 없음 — 계획·승인을 끕니다(빈 only 는 '전부')", "warn");
       else if (PS.planErr) line(s, `계획: ${PS.planErr}`, "bad");
       else if (!planOk) line(s, PS.job ? `계산 대기 — 이 Studio 의 ${jobText(PS.job)} 이 끝난 뒤 계산(그동안 계획을 부르지 않음)` : "계산 중…", "dim");
+      if (planOk && !stale && p.draft.free_all > 0 && !p.draft.running && !(S && S.drafting)) {
+        line(s, `복구 대기 ${p.draft.free_all}건 (무료) — 그래프 Spec Draft 를 승인 없이 한 번 큐에 넣으세요.`, "warn");
+      }
       if (only && P0 && P0.settings && P0.settings.draft.apply === "full") {
         // 계획을 받는 중·실패해도 남김(체크를 풀 수 있게)
         const lb = el("label", "rf-check");
@@ -2175,7 +2212,6 @@ window.DPPipeline = (() => {
         s.append(lb);
       }
       if (planOk && only) {
-        const why = pend.concat(unk ? [`반영 상태 확인 못 함 — ${unk}`] : [], !P0 || PS.err ? [`실행 설정을 읽지 못함 — ${PS.err || "불러오는 중"}`] : []);
         if (stale) line(s, "계획이 지금 파일 상태와 다름(다른 창·그래프의 쓰기·실행) — 다시 받기 전에는 승인 코드 복사 끔", "warn");
         if (dim) line(s, `반영 뒤 다시 계산 — 지금 승인 코드는 반영 뒤 달라질 수 있음${why.length ? `(${why.join(", ")})` : ""}`, "warn");
         const dt = draftText(p.draft, p.draft.running || !!(S && S.drafting)); // 실행 중에는 계획을 다시 받지 않으므로 state 로 흐림(Run 줄과 같이)
@@ -2184,6 +2220,14 @@ window.DPPipeline = (() => {
         if ((p.draft.import_pending || []).length) line(s, `초안 승인 코드는 반영 뒤 확정: ${p.draft.import_pending.join(", ")}`, "warn");
         btns(s, approveButton("draft", dt.label, hc.draft), hashCopy("draft", hc.draft));
         lastRow(s, "draft");
+      }
+      s = section("생성 승인");
+      if (!only) line(s, "선택한 크롭 없음 — 계획·승인을 끕니다(빈 only 는 '전부')", "warn");
+      else if (PS.planErr) line(s, `계획: ${PS.planErr}`, "bad");
+      else if (!planOk) line(s, PS.job ? `계산 대기 — 이 Studio 의 ${jobText(PS.job)} 이 끝난 뒤 계산(그동안 계획을 부르지 않음)` : "계산 중…", "dim");
+      if (planOk && only) {
+        if (stale) line(s, "계획이 지금 파일 상태와 다름 — 다시 계산한 뒤 승인", "warn");
+        if (dim) line(s, `반영 뒤 다시 계산 — 지금 승인 코드는 반영 뒤 달라질 수 있음${why.length ? `(${why.join(", ")})` : ""}`, "warn");
         const rt = runText(p.run, p.run.running || !!(S && S.running));
         line(s, rt.line, rt.dim || dim ? "dim" : "");
         for (const r of rt.rows) line(s, `· ${r}`, "dim");
@@ -2262,29 +2306,17 @@ window.DPPipeline = (() => {
           + `지금 ${alt} · 실행 설정(pipeline.json) Export 절에 저장`;
         s.append(lb);
       }
-      const eb = button("Export", "무료 Export 템플릿(Analyze → Compose → Export — Import 없음, ComfyUI 대기열 뒤)", () => {
-        // 위 체크(alternates)를 저장하는 동안은 내지 않음 — 옛 설정으로 큐되지 않게(Codex 2차). 단추도 그동안 끔
-        if (asking || PS.busy) return;
-        // ★ 가 하나도 없으면 숨김 후보만 담긴 PSD(또는 ★ 만이면 PSD 없음)가 되므로 한 번 묻는다(10/21 실사용 r14)
-        if (!S.targets.some((t) => t.pick_keys.length) && !window.confirm(`★ 가 하나도 없습니다 — ${alt === "none" ? "넣을 후보가 없어 PSD 를 쓰지 않습니다"
-          : "★ 없이 숨김 후보 레이어만 담긴 PSD 가 만들어집니다"}.\n그래도 Export 할까요?`)) return;
-        queueHere("export");
-      }, "primary");
-      eb.disabled = !!PS.job || !!paying || asking || PS.busy;
+      const eb = button("Export", exportWhy() || "무료 Export 템플릿(Analyze → Compose → Export — Import 없음, ComfyUI 대기열 뒤)", exportNow, "primary");
+      eb.disabled = exportLocked();
+      eb.classList.toggle("export-settings-needed", !!exportWhy() && !eb.disabled);
       const ob = button("출력 폴더 열기", "탐색기로 Export 출력 폴더를 엶 — 마지막 Export PSD 를 고른 채(ComfyUI 가 도는 PC). "
         + `다음 Export 위치: ComfyUI ${exportDir(P0)}([실행 설정 열기] Export 절 '출력 하위 폴더' — 비우면 프로젝트 폴더 이름)`,
-        async () => {
-          try {
-            const d = await PS.openFolder();
-            opts.toast(`출력 폴더를 열었습니다${d.selected ? "(마지막 Export PSD 고름)" : ""}: ${d.path}`);
-          } catch (e) {
-            opts.toast(e.message, "err");
-          }
-        });
+        openFolder);
       btns(s, eb, ob);
       psMaskPanel(s);
 
       renderAdopt();
+      renderPrompt();
     }
 
     function lastRow(s, stage) {
@@ -2316,7 +2348,7 @@ window.DPPipeline = (() => {
       // 옛 단추 — 그 사이 계획이 낡거나 바뀜·Run 시작) 복사하지 않고 다시 그림
       const b = button("승인 코드 복사", hash ? `approve: ${hash}  only: ${only}` : "복사할 승인 코드 없음(승인할 것 없음·미반영·실행 중)", () => {
         if (!same(copyHashes()[kind], [hash, only])) {
-          opts.toast("계획이 바뀜(다른 창·그래프의 쓰기·실행) — 승인 코드를 복사하지 않음: 다시 그린 「비용·승인」 칸을 보고 다시 누르세요", "warn");
+          opts.toast(`계획이 바뀜(다른 창·그래프의 쓰기·실행) — 승인 코드를 복사하지 않음: 다시 그린 「${kind === "draft" ? "초안 승인" : "생성 승인"}」 칸을 보고 다시 누르세요`, "warn");
           render();
           return;
         }
@@ -2805,14 +2837,14 @@ window.DPPipeline = (() => {
       const moved = !busy && pk !== seenPlanKey;
       seenPlanKey = pk;
       // 이 Studio 의 무료 큐가 끝난 뒤 받은 state 도 — 끝 직후 폴링이 하나 더 오면(onDone 의 refresh) 디바운스가 그 선택으로 모은다
-      if (doneReplan || (on && onlyNow() !== was) || (moved && ((on && planStale()) || (!PS.plan && !!PS.planErr)))) schedulePlan();
+      if (doneReplan || (on && onlyNow() !== was) || (moved && (planStale() || (!PS.plan && !!PS.planErr)))) schedulePlan();
       doneReplan = false;
+      ticks += 1;
+      if (busy || (!on && ticks === 1) || ticks % PROGRESS_EVERY === 0) PS.loadProgress().then((ch) => ch && render());
       if (on) {
         // 채택 패널: 매니페스트 rev, 또는 스펙만 바뀐 쓰기(그래프 Spec Draft·다른 창의 채택 — rev 그대로, plan_v 만 바뀜)면 GET /draft 다시.
         // [수정] 입력 중에는 미루되 앞 읽기가 실패했으면 다시
         if (cur && (text === null || dvErr) && (st.rev !== seenRev || moved)) loadDraft();
-        ticks += 1;
-        if (busy || ticks % PROGRESS_EVERY === 0) PS.loadProgress().then((ch) => ch && render());
         if (setupPending && !setupInputWait && !asking && Date.now() - setupLastTry >= 10000) firstSetup();
       }
       if (changed) render();
@@ -2825,7 +2857,10 @@ window.DPPipeline = (() => {
       on = true;
       ticks = 0;
       S = st;
-      if (cropId && cropId !== cur) {
+      if (cropId && cropId !== cur && text !== null) {
+        opts.toast("채택 [수정] 입력을 유지합니다 — 원래 크롭에서 저장하거나 취소하세요", "warn");
+        opts.select(cur);
+      } else if (cropId && cropId !== cur) {
         cur = cropId;
         dv = null;
         dvErr = null;
@@ -2843,24 +2878,167 @@ window.DPPipeline = (() => {
     function leave() {
       on = false;
       settingsOn = false;
-      clearTimeout(planTimer);
-      closeEdit();
       list.replaceChildren();
       panel.replaceChildren();
     }
 
     // 배치 7 공용 자리(감독관 — _proto/STUDIO_BATCH7_SPEC.md D70): 본문은 7-B 가 채운다. exportNow·exportWhy·openFolder = 상단 [Export](D58),
     // steps = 단계 줄 상태(D55), canLeave = [프로젝트] 이동 가드(D48 — 7-A 의 board.js goProjects 가 부름)
-    function exportNow() { return false; }
-    function exportWhy() { return ""; }
-    function openFolder() { return false; }
-    function steps() { return null; }
-    function canLeave() { return { ok: true }; }
+    async function exportNow() {
+      const why = exportWhy();
+      if (why) {
+        opts.toast(why, "warn");
+        if (!paidLock() && !PS.busy) openSettings();
+        return false;
+      }
+      const lines = [];
+      const alt = PS.P.settings.export.alternates;
+      if (!S.targets.some((t) => t.pick_keys.length)) lines.push(`★ 가 하나도 없습니다 — ${alt === "none" ? "넣을 후보가 없어 PSD 를 쓰지 않습니다"
+        : "★ 없이 숨김 후보 레이어만 담긴 PSD 가 만들어집니다"}.`);
+      const mask = opts.maskPending ? opts.maskPending() : maskLeft;
+      const pending = pendingApply();
+      const unsure = unsureWhy();
+      if (mask || pending.length || layoutLines(S).length || unsure || (opts.editPending && opts.editPending())) {
+        lines.push("Export 템플릿엔 Import 가 없어 반영 전 크롭·레퍼런스와 적용 전 마스크 획은 PSD 에 안 들어갑니다.");
+        if (pending.length) lines.push(pending.join(" · "));
+        if (unsure) lines.push(`미반영 확인 필요: ${unsure}`);
+        if (mask) lines.push("마스크 적용 안 한 획이 있습니다.");
+      }
+      if (lines.length && !window.confirm(lines.concat("그래도 Export 할까요?").join("\n"))) return false;
+      if (exportWhy()) return false;
+      await queueHere("export");
+      return true;
+    }
+    function exportWhy() {
+      if (paidLock()) return paidLock();
+      if (PS.busy) return "실행 설정을 저장하는 중";
+      const P0 = PS.P;
+      if (!S || !P0 || PS.err) return "실행 설정을 읽지 못함 — 준비 탭에서 다시 확인";
+      if (P0.error || confirmGate(P0).gate.length || !P0.saved) return "실행 설정 확인·저장 필요 — 준비 탭";
+      const warnings = (P0.warnings || []).filter((w) => !w.field.startsWith("cand."));
+      return warnings.length ? `${warnings.map((w) => w.msg).join(" · ")} — 준비 탭` : "";
+    }
+    function exportLocked() {
+      return !!paidLock() || PS.busy;
+    }
+    async function openFolder() {
+      try {
+        const d = await PS.openFolder();
+        opts.toast(`출력 폴더를 열었습니다${d.selected ? "(마지막 Export PSD 고름)" : ""}: ${d.path}`);
+        return true;
+      } catch (e) {
+        opts.toast(e.message, "err");
+        return false;
+      }
+    }
+    function steps() {
+      if (!S || !window.DPChecklist) return null;
+      const P0 = PS.P;
+      const rows = window.DPChecklist.rows({ S, P0, scope: "all", plan: PS.plan, planErr: PS.planErr,
+        planOk: !!PS.plan && !PS.planErr, stale: planStale(), pending: pendingApply(), unsure: unsureWhy(),
+        prepareDrift: P0 && P0.drift ? P0.drift.filter((x) => x.section === "prepare") : [],
+        settingsBlock: !P0 || PS.err || P0.error || !P0.saved || confirmGate(P0).gate.length ? "준비 탭 확인 필요" : "",
+        maskLeft: opts.maskPending ? opts.maskPending() : maskLeft, progress: PS.progress });
+      const combined = [rows[3], rows[4]];
+      const state = ["warn", "unknown", "todo", "done"].find((k) => combined.some((r) => r.state === k));
+      const stages = [rows[0], rows[1], rows[2], { state, value: combined.map((r) => r.value).join(" · ") }, rows[5], rows[6], rows[7]];
+      return { rows, stages, ready: !!PS.plan && !PS.planErr && !planStale(), export: rows[8] };
+    }
+    function canLeave() {
+      if (asking || paying || PS.sending) return { ok: false, why: "승인·반영 응답을 기다리는 중 — 끝난 뒤 프로젝트 이동" };
+      const pending = [];
+      if (text !== null) pending.push("채택 [수정] 입력");
+      if (Object.keys(form).length) pending.push("저장하지 않은 실행 설정");
+      if (opts.maskPending && opts.maskPending()) pending.push("적용하지 않은 마스크 획");
+      if (pending.length) return { ok: true, confirm: `${pending.join(" · ")}이 있습니다. 프로젝트를 이동하면 저장하지 않은 내용이 사라집니다. 이동할까요?` };
+      return { ok: true };
+    }
+
+    function firstTab() {
+      const s = steps();
+      if (!s || !s.ready || !PS.P || PS.err) return null;
+      if (s.rows[0].state !== "done" || s.rows[3].go.tab === "prepare") return "prepare";
+      if ([s.rows[3], s.rows[4]].some((r) => r.state === "todo" || r.state === "warn")) return "prompt";
+      if ([s.rows[3], s.rows[4]].some((r) => r.state === "unknown")) return null;
+      return "generate";
+    }
+
+    function showTab(tab) {
+      if (!["prepare", "prompt", "generate"].includes(tab)) return;
+      activeTab = tab;
+      if (!on) opts.enter();
+      render();
+    }
+
+    function goSection(go) {
+      showTab(go.tab);
+      if (!on) return; // 마스크 이탈 확인을 취소한 경우
+      panel.dataset.tab = activeTab;
+      const sec = [...panel.querySelectorAll(".pp-sec")].find((x) => x.dataset.tab === go.tab
+        && x.firstElementChild && x.firstElementChild.textContent === go.section && !x.hidden);
+      if (sec) sec.scrollIntoView({ block: "start", behavior: "smooth" });
+    }
+
+    async function loadPrompt(key, crop) {
+      const seq = ++promptSeq;
+      promptKey = key;
+      promptView = null;
+      try {
+        const url = opts.apiUrl("prompt");
+        const r = await fetch(`${url}?root=${encodeURIComponent(opts.root)}&crop=${encodeURIComponent(crop)}`, { cache: "no-store" });
+        let data;
+        try {
+          data = await r.json();
+        } catch (e) {
+          throw new Error("ComfyUI 재시작 필요 — 프롬프트 보기 응답이 JSON이 아닙니다");
+        }
+        if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+        if (seq !== promptSeq) return;
+        promptView = data;
+      } catch (e) {
+        if (seq !== promptSeq) return;
+        promptView = { error: e.message };
+      }
+      render();
+    }
+
+    function renderPrompt() {
+      const crop = cur && S ? S.crops.find((c) => c.id === cur) : null;
+      const s = section(`프롬프트 보기 — ${crop ? crop.name || crop.id : "크롭 없음"}`);
+      if (!crop) { line(s, "왼쪽에서 크롭을 고르세요", "dim"); return; }
+      const key = `${cur}|${S.rev}|${S.plan_v}`;
+      if (promptKey !== key) loadPrompt(key, cur);
+      if (pendingApply().length || unsureWhy()) line(s, "다음 반영 뒤 바뀜 — 아래는 마지막 반영으로 기록된 프롬프트", "warn");
+      if (!promptView) { line(s, "불러오는 중…", "dim"); return; }
+      if (promptView.error) {
+        line(s, promptView.error, "bad");
+        btns(s, button("프롬프트 다시 읽기", "기록 다시 읽기", () => loadPrompt(key, cur)));
+        return;
+      }
+      if (promptView.spec_error) line(s, promptView.spec_error, "warn");
+      btns(s, button("영문 원문", "매니페스트에 기록된 원문", () => { promptLang = "en"; render(); }),
+        button("한국어 풀이", "고정 문장만 풀이, 자유 문장은 원문 유지", () => { promptLang = "ko"; render(); }));
+      if (!(promptView.jobs || []).length) line(s, "반영된 프롬프트 없음 — 반영 (무료) 뒤 확인", "dim");
+      for (const job of promptView.jobs || []) {
+        line(s, `${job.variant} · ${(job.tids || []).join(", ")} · ${job.template_version || "템플릿 미기록"}`);
+        const value = promptLang === "en" ? job.prompt : job.prompt_ko;
+        s.append(el("pre", "pp-prompt", value));
+        btns(s, button("프롬프트 복사", "지금 보이는 프롬프트 복사", async () => {
+          try {
+            await navigator.clipboard.writeText(value);
+            opts.toast("프롬프트를 복사했습니다");
+          } catch (e) {
+            opts.toast("복사하지 못함 — 프롬프트 본문을 선택해 직접 복사하세요", "warn");
+          }
+        }));
+      }
+      for (const t of promptView.targets || []) if (t.note) line(s, `${t.label || t.tid} · ${t.note}`, "dim");
+    }
 
     // tabChanged = link 상태가 바뀜(board.js 가 부름 — 승인 단추 켜짐·제목), reroll = board.js queueReroll 의 유료 가능 탭 갈래, paidWhy·paidLock·side =
     // board.js tabWay·R 확인 문구(유료 탭 길을 쓰나·지금은 예약만인가·그 길의 부수 효과 줄), setMaskLeft = 적용 안 한 마스크 편집(★ 점검 줄)
     return { stateChanged, enter, leave, select, queue: boardQueue, applyWarn, recalc: planNow, openSettings, reroll, tabChanged: render, paidWhy, paidLock,
-      side: SIDE, setMaskLeft, exportNow, exportWhy, openFolder, steps, canLeave };
+      side: SIDE, setMaskLeft, exportNow, exportWhy, exportLocked, openFolder, steps, canLeave, showTab, goSection, tab: () => activeTab };
   }
 
   return { create, session, link, checkPrompt, freeBody, endOf, adoptState, runText, draftText, approveText, paidReport, starChecks, layoutLines };

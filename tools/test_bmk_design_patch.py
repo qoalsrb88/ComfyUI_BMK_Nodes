@@ -10626,7 +10626,23 @@ def m2_node_unit():
         check("발사 1" in rep_f3 and len(list((Path(rootf) / "cands").glob("*/r0.done.json"))) == 1, "새 해시 승인 → 재시도 done")
 
         section("M2-N7 Review: 레지스트리·썸네일·ui")
+        sibling = st.project_root(str(NODES2), "review_pref_sibling")
+        st.save_manifest(sibling, st.new_manifest("review_pref_sibling"))
+        sibling_pref = dict(dp._ANALYZE_DEFAULTS, dE=3.0)
+        st.save_board_pref(sibling, sibling_pref)
+        sibling_key = st.register_root(sibling)
+        st._ROOTS.pop(sibling_key)
+        bd._PREF.pop(sibling_key, None)  # 디스크 등록만 남은 형제를 다른 프로젝트의 Review 가 다시 올리는 상황
         out = asyncio.run(REV_.run(h))
+        check(bd._root_param(sibling_key) == sibling and bd._PREF.get(sibling_key) == sibling_pref
+              and bd.build_state(bd._root_param(sibling_key))["root_key"] == sibling_key,
+              "7A-R6 Review 등록으로 복구된 형제의 직접 URL: 목록 open 없이 _PREF 복구·state 조회")
+        st._ROOTS.pop(st.root_key(root))
+        st._ROOTS.pop(sibling_key)
+        bd._PREF.pop(sibling_key)
+        check(dp._board_key(root) == st.root_key(root) and bd._root_param(sibling_key) == sibling
+              and bd._PREF.get(sibling_key) == sibling_pref,
+              "7A-R3-5 Run·Spec Draft 공용 _board_key 등록 분기도 형제 설정 복구")
         hb, rep_rv = out["result"]
         bu = out["ui"]["bmk_dp_board"][0]
         th_dir = Path(root) / "derived" / "thumbs"
@@ -15386,6 +15402,34 @@ await scenario("upstream", async () => {  // js/bmk_design_patch.js importUpstre
 });
 
 // ── 화면(J-L3): create() + 작은 DOM ──
+await scenario("projectNudge", async () => {
+  const result = {};
+  for (const alreadyWriting of [false, true]) {
+    const env = await editor([C1()]);
+    await env.pick("001_모자");
+    let release, posts = 0, detached = 0;
+    const gate = new Promise(resolve => { release = resolve; }), moves = [];
+    ctx.fetch = async (url, opts) => {
+      if (opts?.method === "POST") { posts++; await gate; }
+      return env.srv.fetch(url, opts);
+    };
+    const bc = vm.createContext({ editor: env.ed, maskEd: null, pipe: null, onUnload() {},
+      window: { removeEventListener() { detached++; } },
+      location: { pathname: "/board/", assign(path) { moves.push([path, env.srv.lay.rev]); } },
+      toast: m => env.toasts.push(m) });
+    const goProjects = vm.runInContext(`(${IN.goProjects})`, bc);
+    env.key("ArrowRight");
+    const prior = alreadyWriting ? env.ed.flush() : null;
+    const moving = goProjects(); // 400ms 디바운스 전 목록 이동, 또는 먼저 시작한 저장 응답 대기 중 이동
+    await sleep(20);
+    const waited = posts === 1 && moves.length === 0 && detached === 0;
+    release();
+    await Promise.all([prior, moving]);
+    result[alreadyWriting ? "writing" : "pending"] = { waited, posts, moves, detached, rect: env.srv.lay.crops[0].rect };
+  }
+  return result;
+});
+
 await scenario("nudgeUndo", async () => {  // 001 이동(POST) → 002 화살표 → 400ms 안 Ctrl+Z = 미세 이동 취소(POST 0) → Ctrl+Z = 001 이동 되돌림
   const env = await editor([C1(), C2()]);
   await env.pick("001_모자");
@@ -15981,7 +16025,8 @@ def layout_js_unit():
     # J-L2(이어서)·J-L3: 쓰기 큐·되살리기·다른 창·PSD 스냅숏, 순수 판정, 편집기 화면(작은 DOM 대역 + 가짜 서버)
     ext_fns = "\n".join([re.search(r'^const IMPORT_NODE = "\w+";$', ext, re.M).group(0)]
                         + [_layout_js_fn(ext, n, "") + "\n}" for n in ("partialRunIds", "importUpstream")])
-    (out / "edit_in.json").write_text(json.dumps({"ext": ext_fns}, ensure_ascii=False), encoding="utf-8")
+    (out / "edit_in.json").write_text(json.dumps({"ext": ext_fns, "goProjects": _layout_js_fn(src["board.js"], "goProjects") + "\n}"},
+                                               ensure_ascii=False), encoding="utf-8")
     (out / "editor.mjs").write_text(_LAYOUT_EDIT_HARNESS, encoding="utf-8")
     r = subprocess.run([node, str(out / "editor.mjs"), str(web / "layout_geom.js"), str(web / "layout_edit.js"), str(out / "edit_in.json")],
                        capture_output=True, text=True, encoding="utf-8", timeout=180)
@@ -16037,6 +16082,10 @@ def layout_js_unit():
           f"J-L1 4096×1024 캔버스 상자 맞춤 제안 비 ≤ 3 {sw}")
     check(bool(tn) and tn[2] > tn[0] and tn[3] > tn[1], f"J-L1 16×48 이관 크롭 변 핸들 → 폭·높이 0 아님 {tn}")
     check(ej["upstream"] == {"chain": True, "side": False, "sub": True}, f"J-L2 importUpstream(Review 조상에 Import) {ej['upstream']}")
+    pn = ej.get("projectNudge", {})
+    check(pn == {k: {"waited": True, "posts": 1, "moves": [["/board/", 1]], "detached": 1, "rect": [16, 0, 528, 512]}
+                 for k in ("pending", "writing")},
+          f"7A-R4-1 프로젝트 이동: 대기 미세 이동을 즉시 저장·이미 보낸 쓰기 응답까지 기다린 뒤 한 번 이동 {pn}")
     nu = ej["nudgeUndo"]
     check(nu.get("moved") == 1 and nu["cancelled"] == 1 and any(t.endswith("미세 이동 취소") for t in nu["toasts"])
           and nu["log"] == [["update", "001_aaaaaa", [16, 0, 528, 512], 0], ["update", "001_aaaaaa", [0, 0, 512, 512], 1]],
@@ -25747,7 +25796,7 @@ def pipeline_unit():
         six_extra = {"GET /pipeline": {"widgets", "exports[].layers", "manifest_rev", "exports[].mask_groups", "exports[].mask_edits",
                                        "folder"},  # 프로젝트 폴더 이름(Studio 출력 폴더 미리 보기 — 다듬기 3-5b)
                      "GET /pipeline/plan": {"draft.orphan_retries", "draft.est_usd", "draft.reasons", "draft.reasons[].reason", "draft.reasons[].n",
-                                            "draft.free", "draft.pending_style", "draft.mock_forced"}}
+                                            "draft.free", "draft.free_all", "draft.pending_style", "draft.mock_forced"}}
 
         def up(q):
             return q.rsplit(".", 1)[0] if "." in q else ""
@@ -29435,6 +29484,7 @@ await scenario("applyFree", async () => {  // board.js applyFree: 옛 서버(sta
     const vctx = vm.createContext({ S, pipe: pipeRes === undefined ? null : { queue: async (st) => { c.pipe += 1; c.stage = st; return pipeRes; } },
       window: { confirm: (m) => { c.confirms.push(m); return ok; } }, toast: (m, k) => c.toasts.push(`${k || ""}:${m}`),
       queueInComfy: (layout) => { c.comfy.push(layout); return true; } });
+    vm.runInContext(`reviewMissing = ${boardFn("reviewMissing")};`, vctx);
     await vm.runInContext(`(${src})`, vctx)();
     return c;
   };
@@ -29461,7 +29511,7 @@ await scenario("rerollTab", async () => {  // board.js reroll(r1-04·S3b 계약 
       pipe: { applyWarn: () => ["prepare.n: 마지막 Prepare 4 · Studio 2 — 갈라짐 줄"], paidWhy: () => "ComfyUI 탭이 큐를 처리하는 중",
         paidLock: () => lock, side: "부수 효과 줄" },
       write: async (path) => { c.writes.push(path); return { variant: "V1", cell_pending: 1, pending_calls: 1 }; }, queueReroll: (...a) => c.queued.push(a) });
-    vm.runInContext(`busy = false; rerollSent = null; cellPre = ${boardFn("cellPre")}; rerollHold = ${boardFn("rerollHold")}`, rc); // 키보드 R 거절(사용성 §12 — 이 셀 대기·실행 중·이 Studio 유료 요청 중)
+    vm.runInContext(`reviewMissing = ${boardFn("reviewMissing")}; busy = false; rerollSent = null; cellPre = ${boardFn("cellPre")}; rerollHold = ${boardFn("rerollHold")}`, rc); // 키보드 R 거절(사용성 §12 — 이 셀 대기·실행 중·이 Studio 유료 요청 중)
     return [c, vm.runInContext(`(${src})`, rc)];
   };
   const one = async (way, fromButton, lock = "") => {
@@ -29490,7 +29540,7 @@ await scenario("rerollQueue", async () => {  // board.js queueReroll(planned, he
     const pipe = o.pipe === null ? null : { paidWhy: () => o.why || "", paidLock: () => o.lock || "", reroll: () => { c.reroll += 1; } };
     const qc = vm.createContext({ pipe, comfyConnected: () => !!o.opener, queueInComfy: () => { c.comfy += 1; return true; },
       toast: (m, k) => c.toasts.push(`${k || ""}:${m}`) });
-    vm.runInContext(`tabWay = ${boardFn("tabWay")}; queueReroll = ${boardFn("queueReroll")};`, qc);
+    vm.runInContext(`reviewMissing = ${boardFn("reviewMissing")}; tabWay = ${boardFn("tabWay")}; queueReroll = ${boardFn("queueReroll")};`, qc);
     qc.queueReroll(...o.args);
     return Object.assign(c, { way: qc.tabWay() });
   };
@@ -29606,7 +29656,7 @@ await scenario("keys", async () => {  // board.js onKeyDown: 입력칸(IME 포�
   const press = (pipeOn, code, target, m = {}) => {
     const calls = [];
     const spy = (name) => (...a) => calls.push([name, ...a]);
-    const kc = vm.createContext({ Element, $: (id) => ({ hidden: id === "help" ? true : id === "pipe-panel" ? !pipeOn : true }),
+    const kc = vm.createContext({ renderMode() {}, Element, $: (id) => ({ hidden: id === "help" ? true : id === "pipe-panel" ? !pipeOn : true }),
       editing: false, editor: null, refsOn: false, refEd: null, help: spy("help"), setEditing: spy("setEditing"), setRefs: spy("setRefs"),
       setPipe: spy("setPipe"), setStar: spy("setStar"), toggleSlice: spy("toggleSlice"), toggleReject: spy("toggleReject"), reroll: spy("reroll"),
       moveTarget: spy("moveTarget"), viewer: { setBg: spy("setBg"), flags: () => ({ bg: "composite" }) } });
@@ -29633,7 +29683,7 @@ await scenario("queueClick", async () => {  // r3-13 board.js wireButtons: 머�
   const wc = vm.createContext({ $: (id) => (els[id] ??= { on: {}, addEventListener(t, fn) { (this.on[t] ??= []).push(fn); } }),
     setStar: spy("setStar"), toggleSlice: spy("toggleSlice"), toggleReject: spy("toggleReject"), reroll: spy("reroll"), queueReroll: spy("queueReroll"),
     drain: spy("drain"), toggleViewer: spy("toggleViewer"), help: spy("help"), setEditing: spy("setEditing"), setRefs: spy("setRefs"), setPipe: spy("setPipe"),
-    toast: spy("toast"), editing: false, refsOn: false, pipeOn: false });
+    toast: spy("toast"), document: { addEventListener() {} }, editing: false, refsOn: false, pipeOn: false });
   const src = boardFn("wireButtons");
   if (src) vm.runInContext(`(${src})`, wc)();
   const click = (id, isTrusted) => {
@@ -29786,6 +29836,11 @@ class El {
   blur() { if (this.doc.activeElement !== this) return; this.doc.activeElement = this.doc.body; this.fire("focusout"); }
   contains(x) { for (let n = x; n; n = n.parent) if (n === this) return true; return false; }
   all() { return this.children.flatMap((c) => [c, ...c.all()]); }
+  setAttribute(k, v) { (this.attrs ||= {})[k] = String(v); }
+  get firstElementChild() { return this.children[0]; }
+  querySelectorAll(selector) { return this.all().filter(e => selector === ".pp-sec" && e.classList.contains("pp-sec")); }
+  scrollIntoView() { this.scrolled = true; }
+
 }
 class Doc {
   constructor() { this.body = new El(this, "body"); this.activeElement = this.body; this.on = {}; }
@@ -29859,7 +29914,7 @@ await scenario("panel", async () => {
   await sleep(60);
   const text = hosts.panel.textContent;
   r.enterPlan = planQ().at(-1);
-  r.sections = Object.fromEntries(["실행 설정", "반영", "비용·승인", "★ 점검", "Export", "채택 — 008_치마금속장식", "확인 필요: draft.apply", "prepare.n: 마지막 Prepare 4 · Studio 2",
+  r.sections = Object.fromEntries(["실행 설정", "반영", "초안 승인", "생성 승인", "★ 점검", "Export", "채택 — 008_치마금속장식", "확인 필요: draft.apply", "prepare.n: 마지막 Prepare 4 · Studio 2",
     "반영 뒤 다시 계산", "레이아웃 미반영 1", "새 PSD", "r76", "Run: 승인 필요(선택 1크롭) 4건", "대기 승인분(전체) 9"].map((x) => [x, text.includes(x)]));
   // r1-19: 해시 안내 = Run 해시를 바꾸는 Run 위젯(retry_failed·retry_orphans)과 Studio 값
   r.hashNote = hosts.panel.all().filter((e) => e.classList.contains("pp-row") && e.own.startsWith("승인 코드는 ")).map((e) => e.own);
@@ -29925,7 +29980,7 @@ await scenario("panel", async () => {
   // 설정: 위젯 표(GET /pipeline widgets)로 그림 → prepare.n = 3 저장(숫자)
   B("실행 설정 열기").fire("click");
   await sleep(10);
-  const boxes = hosts.panel.children.filter((e) => e.classList.contains("pp-sec"));
+  const boxes = hosts.panel.children.filter((e) => e.classList.contains("pp-sec") && e.dataset.tab === "prepare");
   const fields = hosts.panel.all().filter((e) => e.classList.contains("pp-field"));
   const prep = boxes.find((b) => b.children[0].textContent === "Prepare");
   const draftBox = boxes.find((b) => b.children[0].textContent === "Spec Draft");
@@ -29967,6 +30022,7 @@ await scenario("panel", async () => {
   await until(() => toasts.some((t) => t.includes("반영 끝")));
   await sleep(20);
   r.applyDone = { toast: toasts.find((t) => t.includes("반영 끝")) || null, refresh: calls.refresh - refreshBefore, head: hosts.head.textContent };
+  srv.route.pipeline = quietPipeline(); pipe.stateChanged({...S, pipeline_rev: 90}); await sleep(40);
   B("Export").fire("click");
   await sleep(30);
   r.exportBody = (srv.log.filter((x) => x.path === "api/prompt").at(-1) || {}).body;
@@ -30309,7 +30365,7 @@ await scenario("panelAdopt", async () => {  // J-P2 화면: 낡은 GET /draft·�
   await sleep(60);
   r.race = { title: sec2 ? sec2.children[0].textContent : null, writes: bodies().slice(n).map((b) => [b.crop_id, b.preview]),
     confirm: (env.confirms.at(-1) || "").split("\n")[0] };
-  // [수정] 입력 400ms 안에 Esc·다른 크롭: 남은 미리보기 타이머를 버림(닫힌 뒤 text null 미리보기를 보내지 않음)
+  // Esc 는 미리보기를 취소한다. 다른 크롭 선택은 입력을 보호하여 원래 크롭의 미리보기만 이어간다.
   const quick = async (txt) => {
     env.B("수정").fire("click");
     await sleep(10);
@@ -30330,6 +30386,7 @@ await scenario("panelAdopt", async () => {  // J-P2 화면: 낡은 GET /draft·�
   env.pipe.select("001_38a818");
   await sleep(500);
   r.esc.select = bodies().slice(n).map((b) => [b.crop_id, b.text]);
+  r.esc.kept = env.input() && env.input().value === "A: other crop";
   env.pipe.leave();
   return r;
 });
@@ -30533,6 +30590,7 @@ await scenario("panelFresh", async () => {  // 진행 모드의 낡은 계획(§
   const t0 = env.toasts.length;
   const res = await env.pipe.queue("apply");
   r.old = { res: clone(res), toasts: env.toasts.slice(t0) };
+  srv.route.pipeline = quietPipeline(); env.pipe.stateChanged({...S, pipeline_rev: 90}); await sleep(40);
   env.B("Export").fire("click");
   await sleep(30);
   r.old.panel = env.toasts.slice(t0);
@@ -30567,13 +30625,13 @@ await scenario("panelView", async () => {  // §3.4 채택 패널 표시(owner·
     await sleep(40);
     r.adopt[id] = rows(sec("채택 — "));
   }
-  r.plan = rows(sec("비용·승인"));
+  r.plan = [...rows(sec("초안 승인")), ...rows(sec("생성 승인"))];
   r.settings = rows(sec("실행 설정"));
   env.B("실행 설정 열기").fire("click");
   await sleep(10);
   const box = (name) => env.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent === name);
   const field = (b, k) => b.children.find((e) => e.classList.contains("pp-field") && e.children[0].textContent === k).children[1];
-  r.warn = Object.fromEntries(env.panel.children.filter((e) => e.classList.contains("pp-sec"))
+  r.warn = Object.fromEntries(env.panel.children.filter((e) => e.classList.contains("pp-sec") && e.dataset.tab === "prepare")
     .map((b) => [b.children[0].textContent, rows(b).map((x) => [x[0], x[1]])]));
   const saved = async (name, edit) => {
     edit(box(name));
@@ -30641,6 +30699,7 @@ await scenario("panelClick", async () => {  // §5.4·§5.6 입력 중 미뤄 �
   r.row = { clicked: await mouse(env.list.children.find((e) => e.textContent.includes("012_소매"))) };
   await sleep(60);
   r.row.title = title();
+  r.row.kept = env.input() && env.input().value === "A: metal skirt plate 2";
   env.B("실행 설정 열기").fire("click");
   await sleep(10);
   const prep = () => env.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent === "Prepare");
@@ -31055,7 +31114,7 @@ await scenario("tabBadge", async () => {  // board.js 머리줄 탭 배지(§3.8
   const bc = vm.createContext({ document: doc, $: (id) => (els[id] ??= doc.createElement("div")), comfyConnected: () => true, credits: () => "",
     pipeReady: () => true, layoutReady: () => true, refsReady: () => true, tabLink: null, pipe: null,
     S: { project: "261014_Test", crops: [], counts: { targets: 0, candidates: 0, picks: 0 }, cost: { calls: 0 } } });
-  vm.runInContext(`el = ${boardFn("el")}; TAB_BADGE = ${m ? m[1] : "{}"}; tabTitle = ${boardFn("tabTitle")}; renderHeader = ${boardFn("renderHeader")};`
+  vm.runInContext(`reviewMissing = ${boardFn("reviewMissing")}; el = ${boardFn("el")}; TAB_BADGE = ${m ? m[1] : "{}"}; tabTitle = ${boardFn("tabTitle")}; renderHeader = ${boardFn("renderHeader")};`
     + ` tabKey = ${boardFn("tabKey") || "null"};`, bc);
   // 실제 link 객체(hello 를 보내지 않는 창 — 상태만 바꿔 씀): 제목의 이유 문장 = link.paidWhy(r1-26 — 승인 단추 제목과 같은 문장)
   const lk = P.link({ location: { origin: ORIGIN }, opener: null, addEventListener() {} }, () => {}, 1e9, 1e9);
@@ -31122,7 +31181,7 @@ await scenario("panelBroken", async () => {  // r2-01: 깨진 pipeline.json(GET 
   r.panel = env.panel.all().filter((e) => e.classList.contains("pp-row") && e.own.startsWith("확인 필요: ")).map((e) => e.own);
   env.B("실행 설정 열기").fire("click");
   await sleep(10);
-  const boxes = env.panel.children.filter((e) => e.classList.contains("pp-sec"));
+  const boxes = env.panel.children.filter((e) => e.classList.contains("pp-sec") && e.dataset.tab === "prepare");
   r.marked = env.panel.all().filter((e) => e.classList.contains("pp-field") && e.children[0].textContent.endsWith(" (확인 필요)"))
     .map((e) => e.children[0].textContent);
   r.buttons = Object.fromEntries(boxes.map((b) => [b.children[0].textContent, (b.all().find((e) => e.tagName === "BUTTON") || {}).textContent]));
@@ -31435,7 +31494,7 @@ await scenario("planWait", async () => {  // r2-10: 이 Studio 의 무료 프롬
   await mouse(env.list.all().find((e) => e.tagName === "INPUT" && e.type === "checkbox"));
   await until(() => env.head.textContent.includes("대기 — 앞 1"), 2500);
   await sleep(400);
-  const plan = env.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent === "비용·승인");
+  const plan = env.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent === "초안 승인");
   const rb = env.B("다시 계산");
   const r = { plans: srv.count("pipeline/plan") - p0, first: plan && plan.children[1] ? plan.children[1].own : null, btn: rb ? [rb.disabled, rb.title] : null };
   env.refreshState = () => Object.assign({}, S);  // 끝 → 보드 refresh(true) → state(r3-07: 계획은 그 state 뒤 — 디바운스 300ms)
@@ -32143,7 +32202,7 @@ await scenario("draftBusy", async () => {  // Codex 1차 b-3: 계획을 받은 �
   const env = mkPanel(srv);
   const S = quietState();
   const draftRow = () => {
-    const sec = env.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent === "비용·승인");
+    const sec = env.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent === "초안 승인");
     const row = sec && sec.children.find((e) => e.classList.contains("pp-row") && e.own.startsWith("초안: "));
     return row ? [row.own, row.className] : null;
   };
@@ -32352,9 +32411,9 @@ def pipeline_js_unit():
     check(pj.count('"bmk-dp-approve"') == 1 and "bmk-dp-approve" not in bj and pcode.count(".send(") == 1
           and "L.send({ type: APPROVE, rootKey: opts.root, stage, hash, only, what }" in pcode,
           "B12″(S3b): 승인 메시지를 보내는 곳은 pipeline.js sendPaid 하나(const APPROVE 한 번·link.send 한 곳 — stage·hash·only 만, prompt 없음), board.js 에는 없음")
-    check("const EXT_VERSION = 3;" in ext and 'const APPROVE = "bmk-dp-approve";' in ext
+    check("const EXT_VERSION = 4;" in ext and 'const APPROVE = "bmk-dp-approve";' in ext
           and 'submitHooked && typeof app.queuePrompt === "function" ? "ok" : "unsupported"' in ext,
-          "탭 확장 = S3b(ext 3 — Studio 승인 처리, submit = 감싸개 설치 && app.queuePrompt 함수, 동작은 paid_js_tab)")
+          "탭 확장 = 배치 7(ext 4 — Studio 승인·reviewRoots, submit = 감싸개 설치 && app.queuePrompt 함수, 동작은 paid_js_tab)")
     qf = pcode[pcode.index("s.queue = async"):pcode.index("s.resume = ")]
     check(0 < qf.index("checkPrompt(t.prompt)") < qf.index('comfy("prompt"') and "if (bad) throw" in qf,
           "보내기 전 검사(checkPrompt) 가 /api/prompt 앞 — 어긋나면 던지고 보내지 않음")
@@ -32696,13 +32755,13 @@ def pipeline_js_unit():
     if "reply" in he:
         rp = he["reply"]
         ok1 = len(rp) == 1 and rp[0][1] == "http://127.0.0.1:8189" and {k: v for k, v in rp[0][0].items() if k != "tab"} \
-            == {"type": "bmk-dp-hello", "id": "h1", "ext": 3, "submit": "ok", "busy": True} and isinstance(rp[0][0].get("tab"), str)
+            == {"type": "bmk-dp-hello", "id": "h1", "ext": 4, "submit": "ok", "busy": True, "reviewRoots": []} and isinstance(rp[0][0].get("tab"), str)
         check(ok1 and he["otherOrigin"] == 0 and he["otherTab"] == 0 and he["ownTab"] == 1 and he["badId"] == 0,
-              f"J-P4 탭 확장 hello(opener 길) = {{id, tab, ext 3, submit ok, busy}} 같은 출처로 · 다른 출처·다른 tab ID·id 없음 무시 {he['reply']}")
+              f"J-P4 탭 확장 hello(opener 길) = {{id, tab, ext 4, submit ok, busy, reviewRoots}} 같은 출처로 · 다른 출처·다른 tab ID·id 없음 무시 {he['reply']}")
         ch = he["channel"]
-        check(len(ch) == 1 and ch[0]["id"] == "c1" and ch[0]["ext"] == 3 and ch[0]["tab"] == rp[0][0]["tab"],
+        check(len(ch) == 1 and ch[0] == dict(rp[0][0], id="c1"),
               f"J-P4 채널(BroadcastChannel bmk-dp) hello = 채널로 답함, tab 지정·응답 모양 메시지는 답하지 않음 {ch}")
-        check(he["one"]["first"] == "wait" and he["one"]["state"] == "ok" and he["one"]["via"] == "channel" and he["one"]["ext"] == 3
+        check(he["one"]["first"] == "wait" and he["one"]["state"] == "ok" and he["one"]["via"] == "channel" and he["one"]["ext"] == 4
               and he["one"]["submit"] == "ok" and he["one"]["busy"] is True and he["one"]["changes"] == ["ok"],
               f"J-P4 Studio(opener 없음): 채널 응답 하나 = 연결 {he['one']}")
         check(he["many"]["state"] == "many" and he["many"]["tab"] is None and he["none"]["state"] == "none" and he["noChannel"]["state"] == "none",
@@ -32725,7 +32784,7 @@ def pipeline_js_unit():
     tb = res.get("tabBadge") or {}
     if "found" in tb:
         paid = "초안·생성 승인·다시 생성(R)·[다시 생성 보내기]가 이 탭으로"
-        check(tb["found"] and tb["ok"][:2] == ["ComfyUI 탭 연결", "badge b-run"] and tb["ok"][2].startswith("Open Board 로 연 ComfyUI 탭(확장 판 3)") and paid in tb["ok"][2]
+        check(tb["found"] and tb["ok"][:2] == ["ComfyUI 탭 연결", "badge b-run"] and tb["ok"][2].startswith("Open Board 또는 메뉴 BMK → Design Patch Studio 로 연 ComfyUI 탭(확장 판 3)") and paid in tb["ok"][2]
               and tb["channel"][:2] == ["ComfyUI 탭 연결(채널)", "badge b-run"] and tb["channel"][2].startswith("채널로 찾은 ComfyUI 탭(확장 판 3)") and paid in tb["channel"][2]
               and tb["busy"][:2] == tb["channel"][:2] and ": ComfyUI 탭이 큐를 처리하는 중. " in tb["busy"][2] and paid not in tb["busy"][2]
               and "다시 생성(R)·[다시 생성 보내기]는 그 탭에서 직접(R 은 사전 승인만 되고 다음 Run 때 과금)" in tb["busy"][2]
@@ -32735,9 +32794,9 @@ def pipeline_js_unit():
               and "다시 생성(R)·[다시 생성 보내기]는 이 탭의 Review 부분 실행으로" in tb["s3aOpener"][2]
               and tb["nosubmit"][:2] == ["ComfyUI 탭이 승인 제출을 못 함 — 유료 승인 끔", "badge b-wait"] and "submit unsupported" in tb["nosubmit"][2]
               and tb["old"][:2] == ["탭 확장이 옛 판 — ComfyUI 탭 새로고침", "badge b-wait"]
-              and (tb.get("silent") or [None, None])[:2] == ["ComfyUI 탭 응답 없음 — 탭 새로고침 또는 Open Board 로 다시 열기", "badge b-wait"]
-              and "Open Board 로 다시 열기" in tb["silent"][2] and tb["none"][:2] == ["ComfyUI 탭 없음", "badge b-dim"]
-              and tb["many"][1] == "badge b-wait" and "Open Board 로 다시 여세요" in tb["many"][0] and tb["wait"][1] == "badge b-dim"
+              and (tb.get("silent") or [None, None])[:2] == ["ComfyUI 탭 응답 없음 — 탭 새로고침 또는 Open Board 또는 메뉴 BMK → Design Patch Studio 로 다시 열기", "badge b-wait"]
+              and "Open Board 또는 메뉴 BMK → Design Patch Studio 로 다시 열기" in tb["silent"][2] and tb["none"][:2] == ["ComfyUI 탭 없음", "badge b-dim"]
+              and tb["many"][1] == "badge b-wait" and "Open Board 또는 메뉴 BMK → Design Patch Studio 로 다시 여세요" in tb["many"][0] and tb["wait"][1] == "badge b-dim"
               and len({tb[k][0] for k in ("ok", "channel", "s3a", "nosubmit", "old", "silent", "none", "many", "wait")}) == 9,
               f"§3.8·S3b 계약 §5 머리줄 탭 배지(board.js renderHeader·TAB_BADGE): 유료 승인을 받는 탭(ext 3·submit ok) = opener 'ComfyUI 탭 연결'·채널 "
               f"'ComfyUI 탭 연결(채널)'(초록 — 승인·R·[다시 생성 보내기]가 그 탭으로 — 큐 처리 중이면 제목 끝 = 유료 승인을 못 받는 탭의 길), "
@@ -32752,8 +32811,8 @@ def pipeline_js_unit():
         gate_ = "실행 설정 확인 필요(prepare.variants) — 실행(G) [실행 설정 열기]에서 확인·저장"
         paid_ = "초안·생성 승인·다시 생성(R)·[다시 생성 보내기]가 이 탭으로(탭이 서버 템플릿을 큐에 넣음)"
         go, gc, gb = (tb.get(k) or [None] * 4 for k in ("gateOpener", "gateChannel", "gateBusy"))
-        check(go[:2] == tb["ok"][:2] and go[2] == f"Open Board 로 연 ComfyUI 탭(확장 판 3): {gate_}. 다시 생성(R)·[다시 생성 보내기]는 이 탭의 Review 부분 실행으로(그래프 Prepare 위젯 값으로 과금)"
-              and gc[2] == (f"채널로 찾은 ComfyUI 탭(확장 판 3): {gate_}. 이 창은 Open Board 로 열리지 않아 다시 생성(R)·[다시 생성 보내기]는 그 탭에서 직접(R 은 사전 승인만 되고 "
+        check(go[:2] == tb["ok"][:2] and go[2] == f"Open Board 또는 메뉴 BMK → Design Patch Studio 로 연 ComfyUI 탭(확장 판 3): {gate_}. 다시 생성(R)·[다시 생성 보내기]는 이 탭의 Review 부분 실행으로(그래프 Prepare 위젯 값으로 과금)"
+              and gc[2] == (f"채널로 찾은 ComfyUI 탭(확장 판 3): {gate_}. 이 창은 Open Board 또는 메뉴 BMK → Design Patch Studio 로 열리지 않아 다시 생성(R)·[다시 생성 보내기]는 그 탭에서 직접(R 은 사전 승인만 되고 "
                             "다음 Run 때 과금)")
               and gb[2] == tb["busy"][2] and (tb.get("gateOld") or [None] * 3)[2] == tb["old"][2]
               and (tb.get("pipeOk") or [None] * 3)[2] == tb["ok"][2] and paid_ in tb["ok"][2],
@@ -32762,8 +32821,8 @@ def pipeline_js_unit():
               f"먼저, 연결 안 된 상태(old)는 link 문장 그대로 {go[2:3]} {gc[2:3]} {gb[2:3]}")
         lock_ = "다시 생성(R)·[다시 생성 보내기]는 지금은 예약만(Run 승인 요청을 처리하는 중 — 머리줄 [다시 생성 보내기] 또는 다음 Run 때 과금)"
         lo, lc, lbo, lbc = (tb.get(k) or [None] * 4 for k in ("lockOk", "lockChannel", "lockBusyOpener", "lockBusyChannel"))
-        check(lo[2] == f"Open Board 로 연 ComfyUI 탭(확장 판 3) — {paid_}. {lock_}" and lc[2] == f"채널로 찾은 ComfyUI 탭(확장 판 3) — {paid_}. {lock_}"
-              and lbo[2] == f"Open Board 로 연 ComfyUI 탭(확장 판 3): ComfyUI 탭이 큐를 처리하는 중. {lock_}" and lbc[2] == tb["busy"][2]
+        check(lo[2] == f"Open Board 또는 메뉴 BMK → Design Patch Studio 로 연 ComfyUI 탭(확장 판 3) — {paid_}. {lock_}" and lc[2] == f"채널로 찾은 ComfyUI 탭(확장 판 3) — {paid_}. {lock_}"
+              and lbo[2] == f"Open Board 또는 메뉴 BMK → Design Patch Studio 로 연 ComfyUI 탭(확장 판 3): ComfyUI 탭이 큐를 처리하는 중. {lock_}" and lbc[2] == tb["busy"][2]
               and "Review 부분 실행으로" not in lbo[2],
               f"r3-11 이 Studio 가 유료 요청·실행·무료 큐 중(paidLock)이면 배지 제목의 R·[다시 생성 보내기] 길 = '지금은 예약만(이유)'(queueReroll 과 같은 판정 순서 — "
               f"자기 승인을 처리하는 탭은 hello busy 라 opener 길이어도 Review 부분 실행이 아님), 채널로만 찾은 탭의 막힌 길은 그대로 {lo[2:3]} {lc[2:3]} {lbo[2:3]} "
@@ -32971,8 +33030,8 @@ def pipeline_js_unit():
         check(rc.get("title") == "채택 — 002_눈" and rc.get("writes") == [["002_d98f99", True], ["002_d98f99", False]]
               and (rc.get("confirm") or "").startswith("채택(002_눈): "),
               f"J-P2 채택 쓰기 409 응답 전에 다른 크롭을 고르면 다시 읽은 옛 크롭 GET /draft 는 버림 — 패널·다음 채택 쓰기 = 새 크롭, 확인 창에 크롭 이름 {rc}")
-        check(pa.get("esc") == {"posts": [], "open": False, "select": []},
-              f"J-P2 [수정] 입력 400ms 안에 Esc·다른 크롭 = 남은 미리보기 타이머를 버림(닫힌 뒤 text null 미리보기 POST 없음) {pa.get('esc')}")
+        check(pa.get("esc") == {"posts": [], "open": False, "select": [["002_d98f99", "A: other crop"]], "kept": True},
+              f"J-P2 Esc 는 미리보기를 취소하고, 다른 크롭 선택은 입력·원래 크롭 미리보기를 유지(text null·다른 크롭 POST 없음) {pa.get('esc')}")
     sy = res.get("panelSync") or {}
     if "resumed" in sy:
         rz = sy["resumed"]
@@ -33083,8 +33142,9 @@ def pipeline_js_unit():
         check(ck["save"] == {"clicked": True, "writes": [["set", "A: metal skirt plaque", True], ["set", "A: metal skirt plaque", False]]},
               f"§3.4 [수정] 입력 → 미리보기 응답(패널 다시 그리기 미룸) → [저장] 마우스 한 번 = 미리보기 → 쓰기(입력칸 focusout 이 mousedown·mouseup 사이에 "
               f"패널을 갈아 첫 클릭이 사라지지 않음) {ck['save']}")
-        check(ck["check"] == {"clicked": True, "plans": 1, "only": "002_d98f99,003_2f8f50,008_e1d4cc,012_93661a"} and ck["row"] == {"clicked": True, "title": "채택 — 012_소매"},
-              f"§5.1 입력 중 왼쪽 목록 체크·크롭 줄 마우스 한 번 = 선택 바뀜(계획 1회)·그 크롭 채택 패널 {ck['check']} {ck['row']}")
+        check(ck["check"] == {"clicked": True, "plans": 1, "only": "002_d98f99,003_2f8f50,008_e1d4cc,012_93661a"}
+              and ck["row"] == {"clicked": True, "title": "채택 — 008_치마금속장식", "kept": True},
+              f"§5.1 입력 중 목록 체크는 계획 선택을 바꾸고(1회), 다른 크롭 줄 클릭은 원래 채택 입력을 유지 {ck['check']} {ck['row']}")
         check(ck["settings"] == {"clicked": True, "posts": [["prepare", 3]]},
               f"§5.6 설정 입력 중 state 가 바뀌어 다시 그리기가 미뤄진 뒤 [저장] 마우스 한 번 = 저장 1회 {ck['settings']}")
         check(ck["held"] == {"during": True, "after": False},
@@ -33241,7 +33301,7 @@ def pipeline_js_unit():
     if "v1" in hk:
         t_old = f"approve: 3f9a1c2b7d10  only: {allids}"
         t_new = f"approve: bbbbbbbbbbbb  only: {allids}"
-        stale_t = "warn:계획이 바뀜(다른 창·그래프의 쓰기·실행) — 승인 코드를 복사하지 않음: 다시 그린 「비용·승인」 칸을 보고 다시 누르세요"
+        stale_t = "warn:계획이 바뀜(다른 창·그래프의 쓰기·실행) — 승인 코드를 복사하지 않음: 다시 그린 「생성 승인」 칸을 보고 다시 누르세요"
         v1, v2, ok_ = hk["v1"], hk["v2"], hk["ok"]
         check(hk["before"] == [False, t_old] and v1["old"] == [False, t_old] and v1["clicked"] and v1["copied"] == [] and v1["toasts"] == [stale_t]
               and v1["now"] == [False, t_new],
@@ -33267,7 +33327,7 @@ def pipeline_js_unit():
         check(pw["plans"] == 0 and (pw["first"] or "").startswith("계산 대기 — 이 Studio 의 Export(export) 대기 — 앞 1 이 끝난 뒤 계산")
               and pw["btn"] and pw["btn"][0] is True and pw["btn"][1].startswith("이 Studio 의 Export(export) 대기 — 앞 1 이 끝난 뒤 계산")
               and pw["after"]["plans"] >= 1 and pw["after"]["waiting"] is False and pw["after"]["btn"] is False,
-              f"r2-10 이 Studio 의 Export 가 대기 중이면 계획을 부르지 않음 = 「비용·승인」 칸에 그 이유·[다시 계산] 끔('계산 중…' 아님), 끝나면 계산 {pw}")
+              f"r2-10 이 Studio 의 Export 가 대기 중이면 계획을 부르지 않음 = 「생성 승인」 칸에 그 이유·[다시 계산] 끔('계산 중…' 아님), 끝나면 계산 {pw}")
     ek = res.get("editKept") or {}
     if "writes" in ek:
         check(ek["writes"] == ["A: metal skirt"] and ek["first"] == ["A: metal skirt", True] and ek["later"] and set(ek["later"]) == {"A: metal skirt plaque"}
@@ -36232,7 +36292,7 @@ console.log(JSON.stringify(out));
 
 
 def _paid_js_tab():
-    """S3b U1: J-X1–X4 — 탭 확장(js/bmk_design_patch.js)의 승인 메시지·서버 템플릿 검사·바꿔치기·무장 중 다른 제출 막기·wave 전달·hello ext 3."""
+    """S3b U1: J-X1–X4 — 탭 확장(js/bmk_design_patch.js)의 승인 메시지·서버 템플릿 검사·바꿔치기·무장 중 다른 제출 막기·wave 전달·hello ext 4."""
     section("S3b paid_js_tab — 탭 확장 Studio 승인 J-X1–X4(node + 가짜 window·채널·app·api, 정본 messages·routes)")
     ext = (PKG / "js" / "bmk_design_patch.js").read_text(encoding="utf-8")
     code = re.sub(r"//[^\n]*", "", ext)
@@ -36304,6 +36364,8 @@ def _paid_js_tab():
         # 정본 messages[key] 의 같은 경우 예시와 대조(_doc 구조.messages — approved 는 ok·reason 이 같은 예시)
         sp = M[key]
         ex = next((e for e in sp["examples"] if key != "bmk-dp-approved" or (e["ok"], e.get("reason")) == (m.get("ok"), m.get("reason"))), None)
+        if key == "bmk-dp-hello_reply" and ex is not None:
+            ex = dict(ex, ext=4, reviewRoots=[])  # 공용 정본은 판 3 호환 시험용으로 보존, 현재 확장 응답만 판 4 계약으로 대조
         return _pl_shape(ex, m, sp) if ex is not None else [f"{key}: 같은 경우의 예시 없음"]
 
     def approved(tab, m, stage, **kw):
@@ -36337,9 +36399,10 @@ def _paid_js_tab():
               and af["toasts"] == ["success: Studio 승인으로 Run 큐 — Run 승인 4건 ≈ $2.40–3.16"],
               f"J-X1 사용자 그래프: Spec Draft adopt 남음(partialRun 은 바꾼 본문으로 셈)·시드 afterQueued 한 번, 토스트 'Studio 승인으로 Run 큐 — <what>' {af}")
         hs = (x1["atAck"] or {}, x1.get("inSubmit") or {}, af["hello"] or {})
-        check([(h.get("ext"), h.get("submit"), h.get("busy")) for h in hs] == [(3, "ok", True), (3, "ok", True), (3, "ok", False)]
+        check([(h.get("ext"), h.get("submit"), h.get("busy"), h.get("reviewRoots")) for h in hs]
+              == [(4, "ok", True, []), (4, "ok", True, []), (4, "ok", False, [])]
               and shape("bmk-dp-hello_reply", af["hello"]) == [],
-              f"J-X4 hello ext 3·submit ok, busy = Studio 승인 처리 중(ack 뒤 큐 전)·제출 중 true, 끝나면 false {hs}")
+              f"J-X4 hello ext 4·submit ok·reviewRoots, busy = Studio 승인 처리 중(ack 뒤 큐 전)·제출 중 true, 끝나면 false {hs}")
         check(x1["next"] == {"keys": user3, "sameData": True, "sameOptions": True, "targets": ["dp_review"], "approve": ua},
               f"J-X1 무장은 finally 에서 풀림 — 다음 사용자 제출(대상이 같아도)은 받은 data·options 그대로 {x1['next']}")
         check(af["approve"] == ua and x1["g2pApprove"] == [ua, ua],
@@ -36448,7 +36511,7 @@ def _paid_js_tab():
         g = xc["got"]
         check(len(g) == 3 and g[0] == {"type": "bmk-dp-ack", "id": g[0].get("id"), "tab": xc["tab"]}
               and g[1] == approved(xc["tab"], g[0], "run", ok=True, prompt_id="pid-1")
-              and g[2] == {"type": "bmk-dp-hello", "id": "hc", "tab": xc["tab"], "ext": 3, "submit": "ok", "busy": False}
+              and g[2] == {"type": "bmk-dp-hello", "id": "hc", "tab": xc["tab"], "ext": 4, "submit": "ok", "busy": False, "reviewRoots": []}
               and xc["bodies"] == 1 and xc["prompt"] == tpl,
               f"채널 길(BroadcastChannel bmk-dp): 승인 → ack·approved 가 채널로, 다른 tab 의 승인은 답 없음, hello 도 채널로 {g}")
     a2 = res.get("x2a") or {}
@@ -36634,9 +36697,9 @@ def _paid_js_tab():
         check(x4["graph"] == {"win": 3, "heard": 1, "toast": "info: wave 시간 상한으로 멈췄습니다. 남은 호출 3건 — 이 실행이 끝나면 승인 버튼으로 이어서 실행하세요."}
               and x4["notMine"] == {"win": 3, "heard": 1, "toasts": 0},
               f"J-X4 그래프 Run 의 wave 는 지금 규칙(Studio 로 안 감), 이 탭이 큐에 넣은 실행이 아니면(runningPromptId 없음) 아무것도 안 함 {x4['graph']} {x4['notMine']}")
-        check(x4["hello"] == {"type": "bmk-dp-hello", "id": "h", "tab": x4["tab"], "ext": 3, "submit": "ok", "busy": False}
+        check(x4["hello"] == {"type": "bmk-dp-hello", "id": "h", "tab": x4["tab"], "ext": 4, "submit": "ok", "busy": False, "reviewRoots": []}
               and ((res.get("x4u") or {}).get("hello") or {}).get("submit") == "unsupported",
-              f"J-X4 hello ext 3·submit ok(감싸개 설치 && app.queuePrompt 함수 — 함수가 아니면 unsupported) {x4['hello']} {res.get('x4u')}")
+              f"J-X4 hello ext 4·reviewRoots·submit ok(감싸개 설치 && app.queuePrompt 함수 — 함수가 아니면 unsupported) {x4['hello']} {res.get('x4u')}")
     x4r = res.get("x4r") or {}
     check(x4r.get("ids") == ["pid-1", "pid-2"]
           and x4r.get("toasts") == ["info: wave 종료(남은 3건) — 사전 승인 다시 생성이라 Studio 머리줄 [다시 생성 보내기](또는 다음 Run)로 이어서",
@@ -36743,7 +36806,7 @@ const DRAFT_H = ui("bmk_dp_draft", { pending_hash: "", pending: 0, reasons: {}, 
   backend: "vlm_openai", model: "gpt-5", effort: "high", approved_now: true, root_key: KEY, refresh_available: 0 });
 
 function mkTab(win, t) {
-  // 가짜 ComfyUI 탭: hello = 정본 hello 답(ext·submit·busy·tab 을 바꿈), 이 탭 앞 승인 메시지 = got 에 쌓고 reply(msg) 의 [[ms, 답, raw], …]를 차례로
+  // 가짜 ComfyUI 탭: hello = 옛 판 3 정본 답(reviewRoots 없음, ext·submit·busy·tab 을 바꿈), 이 탭 앞 승인 메시지 = got 에 쌓고 reply(msg) 의 [[ms, 답, raw], …]를 차례로
   // (raw 가 아니면 id·tab 을 그 요청 것으로). win = 이 탭을 opener 로 둔 Studio 창(답 = window message, source = opener) | null(채널). post = 그 길로 그대로
   const tab = Object.assign({ id: TAB, ext: 3, submit: "ok", busy: false, got: [], reply: okReply }, t);
   tab.post = (d) => {
@@ -36937,7 +37000,7 @@ await scenario("mockMix", async () => {  // P7: 페이지 상자(Claude 가 누�
 
 await scenario("recheck", async () => {  // r2-07: 누를 때와 mock 상자 확인 뒤 지금 판정(해시·only·탭)이 그린 값과 다르면 보내지 않고 다시 그림
   const env = await mkStudio({ plan: (p) => { p.run.backend = "mock"; } });
-  const warn = "warn:계획·탭 상태가 바뀜 — 승인하지 않음: 다시 그린 「비용·승인」 칸을 보고 다시 누르세요";
+  const warn = "warn:계획·탭 상태가 바뀜 — 승인하지 않음: 다시 그린 「생성 승인」 칸을 보고 다시 누르세요";
   const old = env.B("생성 승인");
   for (const fn of env.doc.on.pointerdown) fn({});  // 포인터가 눌린 동안은 다시 그리지 않음 — 옛 단추가 남음
   env.pipe.stateChanged(Object.assign(clone(env.S), { plan_v: "r:aaaaaaaaaaaaaaaa|d:bbbbbbbbbbbbbbbb" }));  // 다른 창·그래프의 쓰기 = 계획이 낡음
@@ -37229,7 +37292,7 @@ await scenario("reroll", async () => {  // board.js queueReroll(R 뒤·머리줄
   const calls = { comfy: 0, toasts: [] };
   const way = vm.createContext({ tabLink: env.link, pipe: env.pipe, comfyConnected: () => false, queueInComfy: () => { calls.comfy += 1; return true; },
     toast: (m, k) => calls.toasts.push(`${k || ""}:${m}`) });
-  vm.runInContext(`tabWay = ${boardFn("tabWay")}; queueReroll = ${boardFn("queueReroll")};`, way);
+  vm.runInContext(`reviewMissing = ${boardFn("reviewMissing")}; tabWay = ${boardFn("tabWay")}; queueReroll = ${boardFn("queueReroll")};`, way);
   const r = { way: way.tabWay() };
   way.queueReroll();
   r.paying = { head: env.head.textContent, lock: env.pipe.paidLock() };  // r2-15 탭 응답을 기다리는 동안(확인 창 없음 — '승인 — 확인' 아님)
@@ -37529,7 +37592,7 @@ await scenario("gate", async () => {  // r1-09: 서버가 유료 템플릿을 �
     const calls = { comfy: 0, toasts: [], confirms: [] };
     const c = vm.createContext({ tabLink: env.link, pipe: env.pipe, comfyConnected: () => false, queueInComfy: () => { calls.comfy += 1; return true; },
       toast: (m, k) => calls.toasts.push(`${k || ""}:${m}`) });
-    vm.runInContext(`tabWay = ${boardFn("tabWay")}; queueReroll = ${boardFn("queueReroll")}; tabTitle = ${boardFn("tabTitle")};`, c);
+    vm.runInContext(`reviewMissing = ${boardFn("reviewMissing")}; tabWay = ${boardFn("tabWay")}; queueReroll = ${boardFn("queueReroll")}; tabTitle = ${boardFn("tabTitle")};`, c);
     // r2-05 머리줄 탭 배지 제목(tabTitle)도 이 판정(실제 link·pipe — 서버 템플릿 게이트)
     const r = { why: env.pipe.paidWhy(), none: c.tabWay(), run: env.btn("생성 승인"), title: c.tabTitle(env.link) };
     if (send) {
@@ -37538,7 +37601,7 @@ await scenario("gate", async () => {  // r1-09: 서버가 유료 템플릿을 �
         window: { confirm: (m) => { calls.confirms.push(m); return true; } }, toast: c.toast, rerollCell: () => ({ cell_key: "abcdef0123456789", variant: "V1" }),
         usd: () => " ≈ $0.62", curTarget: () => ({ crop_id: "001_38a818" }), tabWay: c.tabWay, tabLink: env.link, pipe: env.pipe,
         write: async () => ({}), queueReroll: c.queueReroll });
-      vm.runInContext(`cellPre = ${boardFn("cellPre")}`, rc); // 단추 확인 창 누적 줄(사용성 §12)
+      vm.runInContext(`reviewMissing = ${boardFn("reviewMissing")}; cellPre = ${boardFn("cellPre")}`, rc); // 단추 확인 창 누적 줄(사용성 §12)
       await vm.runInContext(`(${boardFn("reroll")})`, rc)(true);
       c.queueReroll();
       c.comfyConnected = () => true;
@@ -37605,12 +37668,12 @@ await scenario("rerollHeld", async () => {  // r2-01·r2-09: R 확인 때 이 St
     const k = { comfy: 0, timers: [], confirms: [] };
     const c = vm.createContext({ tabLink: env.link, pipe: env.pipe, comfyConnected: () => opener, queueInComfy: () => { k.comfy += 1; return true; },
       toast: (m, t) => env.toasts.push(`${t || ""}:${m}`) });
-    vm.runInContext(`tabWay = ${boardFn("tabWay")}; queueReroll = ${boardFn("queueReroll")}; tabTitle = ${boardFn("tabTitle")};`, c);
+    vm.runInContext(`reviewMissing = ${boardFn("reviewMissing")}; tabWay = ${boardFn("tabWay")}; queueReroll = ${boardFn("queueReroll")}; tabTitle = ${boardFn("tabTitle")};`, c);
     const rc = vm.createContext({ S: { crops: [] }, LAYOUT_STATUS: {}, REROLL_CONFIRM_MS: 2500, rerollArm: null, Date, setTimeout: (fn) => k.timers.push(fn),
       window: { confirm: (m) => { k.confirms.push(m); return true; } }, toast: c.toast, rerollCell: () => ({ cell_key: "abcdef0123456789", variant: "V1" }),
       usd: () => " ≈ $0.62", curTarget: () => ({ crop_id: "001_38a818" }), tabWay: c.tabWay, tabLink: env.link, pipe: env.pipe,
       write: async () => ({}), queueReroll: c.queueReroll });
-    vm.runInContext(`busy = false; rerollSent = null; cellPre = ${boardFn("cellPre")}; rerollHold = ${boardFn("rerollHold")}`, rc); // 키보드 R 거절(사용성 §12)
+    vm.runInContext(`reviewMissing = ${boardFn("reviewMissing")}; busy = false; rerollSent = null; cellPre = ${boardFn("cellPre")}; rerollHold = ${boardFn("rerollHold")}`, rc); // 키보드 R 거절(사용성 §12)
     return Object.assign(k, { c, reroll: vm.runInContext(`(${boardFn("reroll")})`, rc) });
   };
   const r = {};
@@ -37850,7 +37913,7 @@ def _paid_js_studio():
     check(side.split("은 ", 1)[1] in html and "승인 제출(초안·생성 승인, 그 탭으로 가는 다시 생성(R)·[다시 생성 보내기])은" in html,
           "§10.7 보정 4: board.html 도움말(알아 둘 것)에 승인 제출의 부수 효과 한 줄(확인 창·mock 상자와 같은 말)")
     qb = re.search(r'<button type="button" id="btn-queue"[^>]*title="([^"]*)"', html)
-    blocked_ = "그 길이 막히면(옛 확장·탭이 큐 처리 중·실행 설정 미저장·확인 필요·경로 경고·옛 서버) Open Board 탭의 Review"
+    blocked_ = "그 길이 막히면(옛 확장·탭이 큐 처리 중·실행 설정 미저장·확인 필요·경로 경고·옛 서버) Open Board 또는 메뉴 BMK → Design Patch Studio 로 연 탭의 Review"
     check(bool(qb) and "승인 제출이라 ComfyUI 탭 그래프의 시드 제어 등 실행마다 바뀌는 값이 한 번 진행됨(그래프는 실행 안 함)" in qb.group(1)
           and "확인 창 없음 — 사용자 클릭만" in qb.group(1) and "그래프 Prepare 위젯 값으로 과금" in qb.group(1) and blocked_ in qb.group(1)
           and "옛 확장의 opener 탭이면" not in html and blocked_ in html.split('id="help"', 1)[-1],
@@ -38034,7 +38097,7 @@ def _paid_js_studio():
               f"J-P3 기다리는 사이 탭이 바뀜(새 tab ID) = '결과 모름 — 큐 확인' + 계획 다시, 옛 탭이 낸 늦은 approved ok 도 이어서 {to['changed']} {to['changedLate']}")
         gone_ = ["warn:Run 결과 모름 — ComfyUI 탭이 바뀜(새로고침·닫힘·연결 끊김) — 결과 모름: ComfyUI 큐를 확인"]
         check(to["gone"] == {"toasts": gone_, "state": "none", "replan": 1,
-                             "run": [True, "ComfyUI 탭 연결 없음 — Review 노드의 Open Board 로 열거나 ComfyUI 탭을 하나만 열어 두기"]}
+                             "run": [True, "ComfyUI 탭 연결 없음 — Review 노드의 Open Board 또는 메뉴 BMK → Design Patch Studio 로 열거나 ComfyUI 탭을 하나만 열어 두기"]}
               and to["goneLate"] == {"toast": late, "head": True} and to["closed"] == {"toasts": gone_, "state": "none", "via": "channel"},
               f"계약 §5 연결이 끊김(채널 탭이 답하지 않음·opener 닫힘 — 연결된 탭 없음)도 '결과 모름' + 계획 다시(최종 시간까지 기다리지 않음), 다시 붙은 같은 탭의 "
               f"늦은 ok 는 이어 받음 {to['gone']} {to['goneLate']} {to['closed']}")
@@ -38068,20 +38131,20 @@ def _paid_js_studio():
               and di["ext2"] == both("ComfyUI 탭의 확장이 옛 판(S3a — 판 2) — 그 탭을 새로고침한 뒤 유료 승인")
               and di["unsupported"] == both("ComfyUI 탭이 승인 제출을 못 함(submit unsupported — ComfyUI 프론트가 바뀜) — 그래프의 승인 버튼 사용")
               and di["tabBusy"] == both("ComfyUI 탭이 큐를 처리하는 중")
-              and di["noTab"] == both("ComfyUI 탭 연결 없음 — Review 노드의 Open Board 로 열거나 ComfyUI 탭을 하나만 열어 두기")
+              and di["noTab"] == both("ComfyUI 탭 연결 없음 — Review 노드의 Open Board 또는 메뉴 BMK → Design Patch Studio 로 열거나 ComfyUI 탭을 하나만 열어 두기")
               and di["dim"] == di["stale"] == {"run": nohash, "draft": nohash} and di["running"] == di["nothing"] == {"run": nohash, "draft": on_("b21c09e4f7a3")}
               and di["none"] == {"run": None, "draft": None}
               and jb["run"] == jb["draft"] and off(jb["run"], "이 Studio 의 반영(apply)"),
               f"계약 §5 승인 단추 꺼짐(제목에 이유): 탭 ext 2·submit unsupported·탭 큐 처리 중·탭 없음(link.paidWhy), 흐림·낡음(승인 코드 복사 꺼짐 조건), "
               f"Run 실행 중·승인할 것 없음(그 단계만), 선택 0(단추 없음), 이 Studio 의 실행 {di}")
         check(di["silent"] == both("이 창을 연 ComfyUI 탭이 hello 에 답하지 않음(확장이 옛 판·새로고침 중, 또는 그 탭이 다른 주소·페이지로 옮겨 감) — "
-                                   "그 탭을 새로고침하거나 Open Board 로 다시 열기")
+                                   "그 탭을 새로고침하거나 Open Board 또는 메뉴 BMK → Design Patch Studio 로 다시 열기")
               and di["old1"] == both("이 창을 연 ComfyUI 탭의 확장이 옛 판(1) — 그 탭을 새로고침한 뒤 유료 승인"),
-              f"link.paidWhy opener 가 답하지 않음(silent)·확장 판 < 2(old) = 머리줄 배지와 같은 안내('Open Board 로 열거나'가 아님) {di['silent']} {di['old1']}")
+              f"link.paidWhy opener 가 답하지 않음(silent)·확장 판 < 2(old) = 머리줄 배지와 같은 안내('Open Board 또는 메뉴 BMK → Design Patch Studio 로 열거나'가 아님) {di['silent']} {di['old1']}")
     ns = res.get("noSettings") or {}
     if "run" in ns:
         nohash = [True, "승인 코드 없음(승인할 것 없음·미반영·흐림·낡음·실행 중)"]
-        check(ns["run"] == ns["draft"] == nohash and ns["copy"] == [True, True] and ns["row"] == ["반영 뒤 다시 계산 — 지금 승인 코드는 반영 뒤 달라질 수 있음(실행 설정을 읽지 못함 — 잠김)"]
+        check(ns["run"] == ns["draft"] == nohash and ns["copy"] == [True, True] and ns["row"] == ["반영 뒤 다시 계산 — 지금 승인 코드는 반영 뒤 달라질 수 있음(실행 설정을 읽지 못함 — 잠김)"] * 2
               and ns["settings"] == ["읽기 오류: 잠김"] and ns["clicked"] == {"confirms": 0, "sent": 0}
               and ns["back"] == {"run": on_("3f9a1c2b7d10"), "draft": on_("b21c09e4f7a3"), "copy": [False, False]}
               and ns["failAgain"] == {"run": nohash, "draft": nohash, "copy": [True, True]},
@@ -38124,7 +38187,7 @@ def _paid_js_studio():
               f"0.6초 큐 = 다시 생성 메시지 0·'예약됨(동의함)' 토스트(버튼), 키보드 R R 은 그동안 무장하지 않음(사용성 §12 rerollHold — 쓰기·큐 0) {bt} {ky}")
         op = rd["opener"]
         mid, aft = op["mid"], op["after"]
-        ot_ = "Open Board 로 연 ComfyUI 탭(확장 판 3): ComfyUI 탭이 큐를 처리하는 중. 다시 생성(R)·[다시 생성 보내기]는 지금은 예약만({} — 머리줄 [다시 생성 보내기] 또는 다음 Run 때 과금)"
+        ot_ = "Open Board 또는 메뉴 BMK → Design Patch Studio 로 연 ComfyUI 탭(확장 판 3): ComfyUI 탭이 큐를 처리하는 중. 다시 생성(R)·[다시 생성 보내기]는 지금은 예약만({} — 머리줄 [다시 생성 보내기] 또는 다음 Run 때 과금)"
         check(mid == {"way": "opener", "lock": lk_, "comfy": 0, "confirm": conf_, "title": ot_.format(lk_)}
               and aft.get("way") == "opener" and str(aft.get("lock")).startswith("이 Studio 의 Run(run)") and aft.get("comfy") == 0 and op["sent"] == ["run"]
               and op["toasts"].count(held_.format(lk_)) == 2 and held_.format(aft.get("lock")) in op["toasts"] and aft.get("title") == ot_.format(aft.get("lock")),
@@ -38140,7 +38203,7 @@ def _paid_js_studio():
     if "paying" in fw:
         held_off = [True, "반영 확인·큐 요청을 처리하는 중"]
         hold = {"drawn": held_off, "confirms": 0, "sent": 0, "run": held_off,
-                "toasts": ["warn:계획·탭 상태가 바뀜 — 승인하지 않음: 다시 그린 「비용·승인」 칸을 보고 다시 누르세요",
+                "toasts": ["warn:계획·탭 상태가 바뀜 — 승인하지 않음: 다시 그린 「생성 승인」 칸을 보고 다시 누르세요",
                            "warn:다시 생성 예약됨 — 지금 보내지 않음(반영 확인·큐 요청을 처리하는 중): 머리줄 [다시 생성 보내기]로 보내거나 다음 Run 때 과금"]}
         check(fw["paying"] == {"r": True, "prompts": 0, "toast": "warn:반영: Run 승인 응답을 기다리는 중 — 끝난 뒤 다시"}
               and fw["tracked"] == {"stored": {"stage": "run", "pid": "pid-run", "number": None}, "head": True},
@@ -38223,7 +38286,7 @@ def _paid_js_studio():
         ids3 = "001_38a818, 002_d98f99, 003_2f8f50"
         wait_s = "주의: 스펙 초안 대기 1크롭 + 화풍(Spec Draft 미승인) — 지금 승인하면 초안 없는 프롬프트로 과금합니다."
         # r1-22 보류 줄 = Studio 에서 고칠 곳(계획 칸 체크) — 그래프 Spec Draft 노드의 only 위젯 말이 아님
-        held = "주의: 화풍 단위를 고르지 않아(「비용·승인」 칸 '화풍 단위 포함' 끔) 화풍 초안 대기가 보류됨 — 지금 승인하면 화풍 초안 없는 프롬프트로 과금합니다."
+        held = "주의: 화풍 단위를 고르지 않아(「초안 승인」 칸 '화풍 단위 포함' 끔) 화풍 초안 대기가 보류됨 — 지금 승인하면 화풍 초안 없는 프롬프트로 과금합니다."
         mock2 = "주의: 스펙 2개가 mock 초안(자리표시 문구) — 지금 승인하면 그 문구로 과금합니다."
         check(tx["run"] == [head + ids3, pre, dry, wait1, unw, side] and wait_s in tx["runStyle"] and held not in tx["runStyle"]
               and wait1 in tx["runHeld"] and held in tx["runHeld"] and wait1 in tx["runNoFull"] and held not in tx["runNoFull"]
@@ -38293,7 +38356,7 @@ def _paid_js_studio():
         whys = {"noFile": "실행 설정(pipeline.json) 없음 — 실행(G) [실행 설정 열기]에서 한 번 저장",
                 "path": "PSD 파일이 없음: G:/x.psd — 실행(G) [실행 설정 열기]에서 경로를 고침", "oldServer": "ComfyUI 재시작 필요 — 서버가 S3a 판(유료 템플릿 없음)"}
         # r2-05 머리줄 탭 배지 제목도 같은 판정: 서버가 템플릿을 낼 수 없으면 '서버 템플릿을 큐에 넣음'이 아니라 그 이유 + R·ComfyUI 큐의 실제 길
-        ch_t = "채널로 찾은 ComfyUI 탭(확장 판 3): {}. 이 창은 Open Board 로 열리지 않아 다시 생성(R)·[다시 생성 보내기]는 그 탭에서 직접(R 은 사전 승인만 되고 다음 Run 때 과금)"
+        ch_t = "채널로 찾은 ComfyUI 탭(확장 판 3): {}. 이 창은 Open Board 또는 메뉴 BMK → Design Patch Studio 로 열리지 않아 다시 생성(R)·[다시 생성 보내기]는 그 탭에서 직접(R 은 사전 승인만 되고 다음 Run 때 과금)"
         cf_why = "실행 설정 확인 필요(prepare.variants) — 실행(G) [실행 설정 열기]에서 확인·저장"
         bad = {}
         for k, why in whys.items():
@@ -38305,7 +38368,7 @@ def _paid_js_studio():
                 bad[k] = g
         check(not bad and gt["confirm"] == {"why": cf_why, "none": "", "run": nohash, "title": ch_t.format(cf_why)}
               and gt["confirmOpener"] == {"why": cf_why, "none": "", "run": nohash,
-                                          "title": f"Open Board 로 연 ComfyUI 탭(확장 판 3): {cf_why}. 다시 생성(R)·[다시 생성 보내기]는 이 탭의 Review 부분 실행으로(그래프 Prepare 위젯 값으로 과금)"}
+                                          "title": f"Open Board 또는 메뉴 BMK → Design Patch Studio 로 연 ComfyUI 탭(확장 판 3): {cf_why}. 다시 생성(R)·[다시 생성 보내기]는 이 탭의 Review 부분 실행으로(그래프 Prepare 위젯 값으로 과금)"}
               and gt["ok"] == {"why": "", "none": "paid", "run": on_("3f9a1c2b7d10"),
                                "title": "채널로 찾은 ComfyUI 탭(확장 판 3) — 초안·생성 승인·다시 생성(R)·[다시 생성 보내기]가 이 탭으로(탭이 서버 템플릿을 큐에 넣음)"},
               f"r1-09 서버가 유료 템플릿을 내주지 않을 상태(GET /pipeline — 파일 없음·확인 필요·경로 경고·옛 서버(manifest_rev 없음)) = 유료 탭 길 아님: R 확인 창 "
@@ -38439,9 +38502,9 @@ async function world(name, o = {}) {
 function board(w) {
   // board.js tabWay·queueReroll(R 뒤 큐·머리줄 'ComfyUI 큐') — 이 Studio 의 link·pipe 로. w.review = queueInComfy(opener 길 Review 부분 실행) 부른 수
   w.review = 0;
-  const c = vm.createContext({ tabLink: w.link, pipe: w.pipe, comfyConnected: () => !!w.win.opener, queueInComfy: () => { w.review += 1; return true; },
+  const c = vm.createContext({ ROOT: KEY, tabLink: w.link, pipe: w.pipe, comfyConnected: () => !!w.win.opener, queueInComfy: () => { w.review += 1; return true; },
     toast: (m, k) => w.toasts.push(`${k || ""}:${m}`) });
-  vm.runInContext(`tabWay = ${boardFn("tabWay")}; queueReroll = ${boardFn("queueReroll")};`, c);
+  vm.runInContext(`reviewMissing = ${boardFn("reviewMissing")}; tabWay = ${boardFn("tabWay")}; queueReroll = ${boardFn("queueReroll")};`, c);
   return c;
 }
 
@@ -38475,7 +38538,7 @@ await scenario("channel", async () => {
   return r;
 });
 
-// ── opener 길(Open Board 로 연 창): 초안 승인 → 그 탭(window postMessage — 답은 ev.source) → 템플릿 alt.draft·대상 dp_draft → 끝 ──
+// ── opener 길(Open Board 또는 메뉴 BMK → Design Patch Studio 로 연 창): 초안 승인 → 그 탭(window postMessage — 답은 ev.source) → 템플릿 alt.draft·대상 dp_draft → 끝 ──
 await scenario("opener", async () => {
   const w = await world("e2e-op", { opener: true });
   const r = { link: [w.link.state, w.link.via, w.link.ext, w.link.submit, w.link.tab], btn: w.btn("초안 승인") };
@@ -38532,10 +38595,10 @@ await scenario("autoQueue", async () => {
   return r;
 });
 
-// ── 탭 확장이 옛 판(ext 2 — 판만 고친 사본): 두 승인 단추 꺼짐(이유), 눌러도·R 도 탭에 승인 메시지 없음 → R 은 예약만 ──
+// ── 탭 확장이 옛 판(ext 2·reviewRoots 없음): 두 승인 단추 꺼짐(이유), 눌러도·R 도 탭에 승인 메시지 없음 → R 은 예약만 ──
 await scenario("old", async () => {
   const w = await world("e2e-old", { ext: IN.ext2Mjs });
-  const r = { link: [w.link.state, w.link.ext], run: w.btn("생성 승인"), draft: w.btn("초안 승인") };
+  const r = { link: [w.link.state, w.link.ext], hello: w.t.hello(), run: w.btn("생성 승인"), draft: w.btn("초안 승인") };
   w.click(w.B("생성 승인"));
   w.click(w.B("초안 승인"));
   const b = board(w);
@@ -38571,6 +38634,8 @@ await scenario("reroll", async () => {
 // 사전 승인한 R 의 큐는 실제 queueReroll(확인 때 opener — 지금도 opener)로 Review 부분 실행 ──
 await scenario("rerollMoved", async () => {
   const w = await world("e2e-rm", { opener: true });
+  w.t.app.rootGraph.nodes.push({ id: 9, comfyClass: "BMKDesignPatchReview", mode: 0, properties: { bmk_dp_root_key: KEY }, widgets: [] });
+  await until(() => w.link.reviewRoots?.includes(KEY));  // Review 폴백을 시험하므로 판 4 hello 에 실제 켜진 Review 를 알린다.
   const b = board(w);
   const busy = async (on) => {
     w.t.app.processingQueue = on;
@@ -38586,11 +38651,11 @@ await scenario("rerollMoved", async () => {
   // 키보드 R(fromButton false): 첫 R = 무장(paid 문구) → 탭이 바빠진 두 번째 R = 다시 무장(opener 문구) → 세 번째 R = 사전 승인 → 큐는 opener 판정으로
   const writes = [];
   const planned = [];
-  const rc = vm.createContext({ S: { crops: [] }, LAYOUT_STATUS: {}, REROLL_CONFIRM_MS: 2500, rerollArm: null, Date, setTimeout: (fn) => fn(),
+  const rc = vm.createContext({ ROOT: KEY, S: { crops: [] }, LAYOUT_STATUS: {}, REROLL_CONFIRM_MS: 2500, rerollArm: null, Date, setTimeout: (fn) => fn(),
     window: { confirm: () => true }, toast: b.toast, rerollCell: () => ({ cell_key: "abcdef0123456789", variant: "V1" }), usd: () => " ≈ $0.62",
     curTarget: () => ({ crop_id: "001_38a818" }), tabWay: b.tabWay, tabLink: w.link, pipe: w.pipe,
     write: async (path) => { writes.push(path); return {}; }, queueReroll: (x) => { planned.push(x); b.queueReroll(x); } });
-  vm.runInContext(`busy = false; rerollSent = null; cellPre = ${boardFn("cellPre")}; rerollHold = ${boardFn("rerollHold")}`, rc); // 키보드 R 거절(사용성 §12)
+  vm.runInContext(`reviewMissing = ${boardFn("reviewMissing")}; busy = false; rerollSent = null; cellPre = ${boardFn("cellPre")}; rerollHold = ${boardFn("rerollHold")}`, rc); // 키보드 R 거절(사용성 §12)
   const reroll = vm.runInContext(`(${boardFn("reroll")})`, rc);
   await reroll(false);
   await busy(true);
@@ -38702,7 +38767,10 @@ def _paid_js_e2e():
     ext = "const { app, api } = globalThis.__bmk;\n" + re.sub(r'^import \{ (app|api) \} from "\.\./\.\./scripts/(app|api)\.js";\r?\n', "",
                                                               (PKG / "js" / "bmk_design_patch.js").read_text(encoding="utf-8"), flags=re.M)
     (out / "ext.mjs").write_text(ext, encoding="utf-8")
-    (out / "ext2.mjs").write_text(ext.replace("const EXT_VERSION = 3;", "const EXT_VERSION = 2;"), encoding="utf-8")  # 옛 판 탭(판 번호만)
+    old_ext, version_n = re.subn(r"const EXT_VERSION = \d+;", "const EXT_VERSION = 2;", ext)
+    old_ext, roots_n = re.subn(r", reviewRoots(?=\s*};)", "", old_ext)
+    check(version_n == roots_n == 1, "옛 판 2 하네스: 판 번호 교체·hello reviewRoots 제거 각각 한 곳")
+    (out / "ext2.mjs").write_text(old_ext, encoding="utf-8")
     h, t = _PL_JS_HARNESS, _PAID_TAB_JS_HARNESS
     cut = [s[s.index(a):s.index(b, s.index(a))] for s, a, b in (
         (h, "import fs", "async function run("), (h, "class El {", "async function mouse("), (h, "function boardState()", 'await scenario("panel"'),
@@ -38774,8 +38842,8 @@ def _paid_js_e2e():
     ch = res.get("channel") or {}
     if "wire" in ch:
         bad = trip(ch, "channel", "run", run_what, ok=True, prompt_id="pid-1")
-        check(ch["link"] == ["ok", "channel", 3, "ok", ch["tab"]] and ch["btn"] == [False, title.format(R["alt"]["run"]["hash"])] and ch["planOnly"] == only,
-              f"채널 길 연결: Studio link = hello 답(ext 3·submit ok)의 그 탭, 생성 승인 단추 = 정본 run 승인 코드·only(크롭 3 선택), 체크를 껐다 켠 뒤(선택 순서 "
+        check(ch["link"] == ["ok", "channel", 4, "ok", ch["tab"]] and ch["btn"] == [False, title.format(R["alt"]["run"]["hash"])] and ch["planOnly"] == only,
+              f"채널 길 연결: Studio link = hello 답(ext 4·submit ok)의 그 탭, 생성 승인 단추 = 정본 run 승인 코드·only(크롭 3 선택), 체크를 껐다 켠 뒤(선택 순서 "
               f"002,003,001)의 계획 요청 only = 정렬한 정규 only {ch['link']} {ch['btn']} {ch['planOnly']}")
         check(not bad and ch["q"] == [{"root": key, "stage": "run", "approve": R["alt"]["run"]["hash"], "only": only}] and ch["confirms"] == 1
               and ch["confirm"].startswith("GPT Image 호출 4건"),
@@ -38794,10 +38862,10 @@ def _paid_js_e2e():
     op = res.get("opener") or {}
     if "wire" in op:
         bad = trip(op, "window", "draft", draft_what, ok=True, prompt_id="pid-1")
-        check(op["link"] == ["ok", "opener", 3, "ok", op["tab"]] and op["btn"] == [False, title.format(R["alt"]["draft"]["hash"])] and not bad
+        check(op["link"] == ["ok", "opener", 4, "ok", op["tab"]] and op["btn"] == [False, title.format(R["alt"]["draft"]["hash"])] and not bad
               and op["q"] == [{"root": key, "stage": "draft", "approve": R["alt"]["draft"]["hash"], "only": only}] and sent(op, "draft")
               and op["adopt"] == "001_38a818" and op["confirms"] == 1 and op.get("approve") == ua,
-              f"opener 길(Open Board 로 연 창): 초안 승인 → window postMessage(답 = ev.source — 채널엔 없음) → GET stage=draft → 템플릿 alt.draft·대상 "
+              f"opener 길(Open Board 또는 메뉴 BMK → Design Patch Studio 로 연 창): 초안 승인 → window postMessage(답 = ev.source — 채널엔 없음) → GET stage=draft → 템플릿 alt.draft·대상 "
               f"dp_draft, 사용자 Spec Draft adopt·Draft·Run approve(보초 승인 코드) 남음 {bad} {op['q']} {op.get('approve')}")
         check(op["toast"] == queued.format("Spec Draft") and op["tabToasts"] == [f"success: Studio 승인으로 Spec Draft 큐 — {draft_what}"]
               and op["done"] == {"toast": ":Spec Draft 끝 — 승인분 실행 · 남은 초안 대기 0건",
@@ -38837,7 +38905,8 @@ def _paid_js_e2e():
     od = res.get("old") or {}
     if "run" in od:
         why = "ComfyUI 탭의 확장이 옛 판(S3a — 판 2) — 그 탭을 새로고침한 뒤 유료 승인"
-        check(od["link"] == ["ok", 2] and od["run"] == [True, why] and od["draft"] == [True, why] and od["way"] == "" and od["wire"] == []
+        check(od["link"] == ["ok", 2] and od["hello"]["ext"] == 2 and "reviewRoots" not in od["hello"]
+              and od["run"] == [True, why] and od["draft"] == [True, why] and od["way"] == "" and od["wire"] == []
               and od["q"] == [] and od["confirms"] == 0 and od["toasts"][-1:] == [f"warn:다시 생성 예약됨 — Run 실행 때 과금({why})"],
               f"탭 확장 옛 판(hello ext 2): 두 승인 단추 꺼짐(제목 = 이유), 눌러도 확인 창·메시지 없음, R 은 예약만 — 탭에 승인·서버 GET 0 {od}")
     rr = res.get("reroll") or {}
@@ -39307,7 +39376,7 @@ await scenario("rerollHold", async () => {
         return { rev: serverRev, variant: "V1", cell_pending: 1, pending_calls: 1 };
       },
       queueReroll: (...a) => c.queued.push(a) });
-    vm.runInContext(`usd = ${boardFn("usd")}; cellPre = ${boardFn("cellPre")}; rerollHold = ${boardFn("rerollHold")}; reroll = ${boardFn("reroll")};`, ctx);
+    vm.runInContext(`reviewMissing = ${boardFn("reviewMissing")}; usd = ${boardFn("usd")}; cellPre = ${boardFn("cellPre")}; rerollHold = ${boardFn("rerollHold")}; reroll = ${boardFn("reroll")};`, ctx);
     for (const k of seq) {
       if (typeof k === "function") k(ctx, cell, () => serverRev);
       else await ctx.reroll(k === "B", false);
@@ -48172,7 +48241,7 @@ await scenario("psMask", async () => {
   r.conflict = env.B("가져오기 (무료)").disabled;
   empty = true; env.B("PS 마스크 가져오기").fire("click"); await until(() => env.panel.textContent.includes("가져올 Export PSD가 없습니다"));
   r.empty = env.panel.textContent.includes("가져올 Export PSD가 없습니다");
-  r.noQueue = !srv.log.some(x => x.path === "prompt");
+  r.noQueue = !srv.log.some(x => x.method === "POST" && ["prompt", "api/prompt"].includes(x.path));
   env.pipe.leave(); return r;
 });
 console.log(JSON.stringify(out));
@@ -48310,7 +48379,7 @@ test("C18 미반영 입력은 생성 완료 제외, Import 미반영은 초안�
   const host = new E("div"), calls = [];
   D.render(host, r, { goSection: (title) => calls.push(title) });
   for (const n of [5, 6]) host.children[0].children[n].events.click();
-  assert.deepEqual(calls, ["반영", "반영"]);
+  assert.deepEqual(calls, [{tab: "prompt", section: "반영"}, {tab: "prompt", section: "반영"}]);
   i.pending = []; i.plan.draft.import_pending = []; r = D.rows(i);
   assert.equal(r[4].state, "done"); assert.equal(r[5].state, "done");
 });
@@ -48319,7 +48388,7 @@ test("C19 승인 필요 0·완료 결과 없는 크롭 수와 실패/결과 못 
   i.plan.run.by_crop = { c1: { done: 0, failed: 2, orphaned: 1 }, c2: { done: 0, failed: 3, orphaned: 2 } };
   let r = D.rows(i)[5]; assert.equal(r.state, "todo");
   assert.equal(r.value, "완료 결과 없는 크롭 2 (실패 5 · 결과 못 받음 3)");
-  assert.equal(r.go.section, "비용·승인");
+  assert.equal(r.go.section, r.n === 5 ? "초안 승인" : "생성 승인");
   i.selectedCount = 1; assert.equal(D.rows(i)[5].value, r.value); // 전체 by_crop 현황에는 선택 범위를 붙이지 않음
   delete i.plan.run.by_crop.c2;
   assert.equal(D.rows(i)[5].value, "완료 결과 없는 크롭 2 (실패 2 · 결과 못 받음 1)");
@@ -48376,9 +48445,9 @@ test("C7/C17 승인 필요 0·완료 결과·최신 계획이어도 생성/초�
     assert.equal(r[n].state, "todo"); assert.equal(r[n].value, value);
     if (n === 4) { // S.drafting·draft.running 모두 생성 완료도 막고 이유를 표시
       assert.equal(r[5].state, "todo"); assert.equal(r[5].value, "초안 진행 중 — 끝난 뒤");
-      assert.equal(r[5].go.section, "비용·승인");
+      assert.equal(r[5].go.section, "생성 승인");
     }
-    D.render(host, r); assert.equal(host.children[0].children[0].textContent, `작업 점검표 (${n === 4 ? 6 : 7}/8)`);
+    D.render(host, r); assert.equal(host.children[0].children[0].textContent, `작업 점검표 · 선택 기준 (${n === 4 ? 6 : 7}/8)`);
   }
 });
 test("C8 사전 승인한 다시 생성 대기: 기존 완료 결과가 있어도 할 일·비용/승인 이동", () => {
@@ -48386,8 +48455,8 @@ test("C8 사전 승인한 다시 생성 대기: 기존 완료 결과가 있어�
   const r = D.rows(i), host = new E("div"), calls = [];
   assert.equal(r[5].state, "todo"); assert.equal(r[5].value, "다시 생성 대기 2");
   D.render(host, r, { goSection: (title) => calls.push(title) });
-  assert.equal(host.children[0].children[0].textContent, "작업 점검표 (7/8)");
-  host.children[0].children[6].events.click(); assert.deepEqual(calls, ["비용·승인"]);
+  assert.equal(host.children[0].children[0].textContent, "작업 점검표 · 선택 기준 (7/8)");
+  host.children[0].children[6].events.click(); assert.deepEqual(calls, [{tab: "generate", section: "생성 승인"}]);
   i.selectedCount = 1; assert.equal(D.rows(i)[5].value, "다시 생성 대기 2");
   i.selectedCount = 2; i.plan.run.pre = 0; assert.equal(D.rows(i)[5].state, "done");
 });
@@ -48396,8 +48465,8 @@ test("C12 다운로드 복구 대기: 기존 완료 결과가 있어도 할 일�
   const r = D.rows(i), host = new E("div"), calls = [];
   assert.equal(r[5].state, "todo"); assert.equal(r[5].value, "복구 대기 2");
   D.render(host, r, { goSection: (title) => calls.push(title) });
-  assert.equal(host.children[0].children[0].textContent, "작업 점검표 (7/8)");
-  host.children[0].children[6].events.click(); assert.deepEqual(calls, ["비용·승인"]);
+  assert.equal(host.children[0].children[0].textContent, "작업 점검표 · 선택 기준 (7/8)");
+  host.children[0].children[6].events.click(); assert.deepEqual(calls, [{tab: "generate", section: "생성 승인"}]);
   i.selectedCount = 1; assert.equal(D.rows(i)[5].value, "복구 대기 2");
   i.selectedCount = 2; i.plan.run.free = 0; assert.equal(D.rows(i)[5].state, "done");
 });
@@ -48410,7 +48479,7 @@ test("C9 계획 요청 실패: 첫 계획 없음·옛 완료 계획 모두 초�
       for (const n of [4, 5]) {
         const r = D.rows(i)[n]; assert.equal(r.state, "warn");
         assert.equal(r.value, "계획 오류 — 다시 계산 · 503: 계획 응답 실패");
-        assert.equal(r.go.section, "비용·승인");
+        assert.equal(r.go.section, r.n === 5 ? "초안 승인" : "생성 승인");
       }
     }
     i.planErr = "오류 <연결> ".repeat(40);
@@ -48470,33 +48539,35 @@ test("순수 판정·힌트·DOM 이동 인자·접힘 메모리·선택 단계�
   const opts = { memory, goMode: (...a) => calls.push(["mode", ...a]), goMask: (...a) => calls.push(["mask", ...a]),
     goTarget: (...a) => calls.push(["target", ...a]), goSection: (...a) => calls.push(["section", ...a]) };
   const host = new E("div"); D.render(host, r, opts);
-  let details = host.children[0]; assert.equal(details.children[0].textContent, "작업 점검표 (8/8)");
+  let details = host.children[0]; assert.equal(details.children[0].textContent, "작업 점검표 · 선택 기준 (8/8)");
   assert.equal(details.children[0].title, "마스크 다듬기는 선택 — 끝난 수에는 포함하지 않습니다.");
-  assert(details.open); details.open = false; details.events.toggle();
-  const next = new E("div"); D.render(next, r, opts); assert.equal(next.children[0].open, false);
-  const fresh = new E("div"); D.render(fresh, r); assert.equal(fresh.children[0].open, true);
+  assert(!details.open); details.open = true; details.events.toggle();
+  const next = new E("div"); D.render(next, r, opts); assert.equal(next.children[0].open, true);
+  const fresh = new E("div"); D.render(fresh, r); assert.equal(fresh.children[0].open, false);
   i.S.crops[1].refs.n = 0; i.S.targets[0].pick_keys = []; i.maskLeft = { key: "a", n: 2 };
   D.render(host, D.rows(i), opts); details = host.children[0];
-  assert.equal(details.children[0].textContent, "작업 점검표 (6/8)");
+  assert.equal(details.children[0].textContent, "작업 점검표 · 선택 기준 (6/8)");
   for (const b of details.children.slice(1)) { assert(b.title.startsWith("처음이면:")); b.events.click(); }
-  assert.deepEqual(calls.slice(0, 7), [["section", "실행 설정"], ["mode", "edit", null], ["mode", "refs", "c2"],
-    ["section", "반영"], ["section", "비용·승인"], ["section", "비용·승인"], ["target", "c1/A"]]);
-  assert.equal(calls[7][0], "mask"); assert.equal(calls[7][1].key, "a"); assert.deepEqual(calls[8], ["section", "Export"]);
+  assert.deepEqual(calls.slice(0, 7), [["section", {tab: "prepare", section: "실행 설정"}], ["mode", "edit", null], ["mode", "refs", "c2"],
+    ["section", {tab: "prompt", section: "반영"}], ["section", {tab: "prompt", section: "초안 승인"}], ["section", {tab: "generate", section: "생성 승인"}], ["target", "c1/A"]]);
+  assert.equal(calls[7][0], "mask"); assert.equal(calls[7][1].key, "a"); assert.deepEqual(calls[8], ["section", {tab: "generate", section: "Export"}]);
 });
 // 실제 renderPanel 의 유일한 삽입 블록을 실행해 연결·스크롤도 확인(기존 비용/승인 UI 의 하네스와 독립).
 test("renderPanel 삽입 블록: 실제 opts·섹션 이동·설정 분기 뒤", () => {
   const src = fs.readFileSync(process.argv[3], "utf8"), start = src.indexOf("      if (window.DPChecklist) {");
   const end = src.indexOf("      // 설정", start), block = src.slice(start, end);
-  assert(start > src.indexOf("if (settingsOn)", src.indexOf("function renderPanel")));
+  assert(start > src.indexOf("function renderPanel"));
   const gateStart = src.indexOf("    function confirmOf(P0) {"), gateEnd = src.indexOf("    function busyNow()", gateStart);
   vm.runInContext(src.match(/  const GATE_SECTIONS = .*;/)[0] + "\n" + src.slice(gateStart, gateEnd), ctx);
-  const panel = new E("div"), calls = [], i = base();
+  const panel = new E("div"), calls = [], i = base(); panel.dataset = {};
   Object.assign(ctx, { panel, S: i.S, P0: { saved: true, confirm: ["draft.apply"] }, p: i.plan, pend: [], unsure: "", planOk: true, only: "c1,c2", sel: new Set(["c1", "c2"]),
     planDim: () => { throw new Error("점검표는 해시 복사 흐림 판정을 부르면 안 됨"); }, stale: false, maskLeft: null, PS: { progress: null }, el: (tag) => new E(tag),
-    opts: { goMode: (...a) => calls.push(a) } });
+    opts: { goMode: (...a) => calls.push(a) },
+    on: true, activeTab: "prompt", showTab: (tab) => { ctx.activeTab = tab; } });
+  vm.runInContext(src.match(/    function goSection\(go\) \{[\s\S]*?\n    \}/)[0], ctx);
   vm.runInContext(block, ctx);
-  const host = panel.children[0], sec = new E("div"); sec.className = "pp-sec";
-  assert.equal(host.children[0].children[0].textContent, "작업 점검표 (8/8)");
+  const host = panel.children[0], sec = new E("div"); sec.className = "pp-sec"; sec.dataset = {tab: "prompt"};
+  assert.equal(host.children[0].children[0].textContent, "작업 점검표 · 선택 기준 (8/8)");
   const heading = new E("div"); heading.textContent = "반영"; sec.append(heading); panel.append(sec);
   host.children[0].children[2].events.click(); assert.deepEqual(calls, [["edit", null]]);
   host.children[0].children[4].events.click(); assert(sec.scrolled);
@@ -48525,7 +48596,7 @@ test("renderPanel 삽입 블록: 실제 opts·섹션 이동·설정 분기 뒤",
   ctx.P0 = { saved: true, confirm: [], drift: [{ section: "draft", field: "apply" }] }; vm.runInContext(block, ctx);
   const other = panel.children[panel.children.length - 1].children[0].children;
   assert(other[4].className.includes("done")); assert(other[6].className.includes("done"));
-  const settings = new E("div"), settingsHeading = new E("div"); settings.className = "pp-sec";
+  const settings = new E("div"), settingsHeading = new E("div"); settings.className = "pp-sec"; settings.dataset = {tab: "prepare"};
   settingsHeading.textContent = "실행 설정"; settings.append(settingsHeading); panel.append(settings);
   const good = { saved: true, confirm: ["draft.apply", "analyze.method", "export.color"] };
   for (const [P0, err, reason] of [
@@ -48916,10 +48987,13 @@ def polish1_unit():
     check('cb.checked = alt !== "none"' in pj and 'alternates: cb.checked ? "hidden_all" : "none"' in pj and 'PS.save("export", Object.assign({}, PS.P.settings.export' in pj
           and 'el("label", "pp-opt")' in pj and "★ 아닌 후보 레이어도 넣기" in pj and "제외(X) 후보는 어느 쪽이든 넣지 않음" in pj,
           "F27 Export 칸 '★ 아닌 후보 레이어도 넣기'(제외은 늘 빠짐) = 누를 때의 Export 절 alternates(hidden_all ↔ none) 저장")
-    check("!S.targets.some((t) => t.pick_keys.length) && !window.confirm(`★ 가 하나도 없습니다" in pj and "넣을 후보 없음(★ 도 숨김 후보도 없음)" in pj,
+    export_now = pj[pj.index("    async function exportNow() {"):pj.index("    function exportWhy() {")]
+    check('if (!S.targets.some((t) => t.pick_keys.length)) lines.push(`★ 가 하나도 없습니다' in export_now
+          and 'if (lines.length && !window.confirm(' in export_now and "넣을 후보 없음(★ 도 숨김 후보도 없음)" in pj,
           "U-8 ★ 0 Export 는 확인 창, empty 문구")
     eb = pj[pj.index('const eb = button("Export"'):pj.index("btns(s, eb, ob);")]
-    check("if (asking || PS.busy) return;" in eb and "eb.disabled = !!PS.job || !!paying || asking || PS.busy;" in eb,
+    check("eb.disabled = exportLocked();" in eb and "return !!paidLock() || PS.busy;" in pj
+          and 'if (PS.busy) return "실행 설정을 저장하는 중";' in pj and "const why = exportWhy();" in export_now and "if (why) {" in export_now,
           "F27 체크(alternates) 저장 중에는 [Export] 끔·눌러도 내지 않음 — 옛 설정으로 큐되지 않게(Codex 2차)")
     check('svg("circle", { class: "mbrush" })' in mj and '(soft || tool === "soften" ? " soft" : tool === "revive" ? " revive" : "")' in mj
           and "svg.marks .mbrush.revive { stroke: #63e07a; }" in bc, "F33 붓 원: 지우기 빨강·살리기 초록(revive)·흐리기 흰 점선")
@@ -49012,6 +49086,8 @@ class Node_ {
     return true;
   }
   blur() {}
+  querySelector() { return null; }
+  prepend(n) { this.children = [n, ...this.children.filter(x => x !== n)]; }
 }
 class Text_ { constructor(t) { this.textContent = t; } }
 const ids = {};
@@ -49021,7 +49097,7 @@ document.body.parent = document;
 document.createElement = (t) => new Node_(t);
 document.createTextNode = (t) => new Text_(t);
 document.getElementById = (id) => ids[id];
-for (const id of ["mode-title", "keybar", "btn-review", "btn-edit", "btn-refs", "btn-pipe", "btn-mask"]) {
+for (const id of ["mode-title", "keybar", "btn-review", "btn-edit", "btn-refs", "btn-pipe", "btn-mask", "btn-prompt", "btn-generate", "btn-export", "export-state"]) {
   ids[id] = new Node_(id === "keybar" || id === "mode-title" ? "div" : "button");
   document.body.append(ids[id]);
 }
@@ -49040,6 +49116,9 @@ ${offSets}
 ${block}
 let maskOn = false, editing = false, refsOn = false, pipeOn = false, allowLeave = true, maskOk = true, refTab = "sheets";
 const log = [];
+const S = null, pipe = null;
+function pipeReady() { return false; }
+function notReady() { return "준비 안 됨"; }
 const cls = { editing: "editing", refs: "refs", pipe: "pipe", mask: "mask" };
 function body(c, on) { document.body.classList.toggle(c, on); }
 function setEditing(on) { log.push("setEditing:" + on); if (on && refsOn) setRefs(false); if (on && pipeOn) setPipe(false); editing = on; body("editing", on); }
@@ -49060,11 +49139,11 @@ ${fn("leaveMask")}
 const out = {};
 const run = (code) => vm.runInContext(code, ctx);
 function tabs() {
-  return ["btn-review", "btn-edit", "btn-refs", "btn-pipe", "btn-mask"].filter((i) => ids[i].classList.contains("on"))
-    .concat(["btn-review", "btn-edit", "btn-refs", "btn-pipe", "btn-mask"].filter((i) => ids[i].attrs["aria-selected"] === "true").map((i) => "aria:" + i));
+  return ["btn-review", "btn-edit", "btn-refs", "btn-pipe", "btn-mask", "btn-prompt", "btn-generate", "btn-export", "export-state"].filter((i) => ids[i].classList.contains("on"))
+    .concat(["btn-review", "btn-edit", "btn-refs", "btn-pipe", "btn-mask", "btn-prompt", "btn-generate", "btn-export", "export-state"].filter((i) => ids[i].attrs["aria-selected"] === "true").map((i) => "aria:" + i));
 }
 function chips() {
-  return ids.keybar.children.map((c) => c.tagName === "button" ? c.children[0].textContent : "info:" + c.textContent);
+  return ids.keybar.children.filter(c => c !== ids["mode-title"]).map((c) => c.tagName === "button" ? c.children[0].textContent : "info:" + c.textContent);
 }
 function step(m) {
   run("log.length = 0");
@@ -49169,17 +49248,17 @@ def polish2_unit():
     bc = (web / "board.css").read_text(encoding="utf-8")
     head = bh[bh.index('<header id="top">'):bh.index("</header>")]
     nav = bh[bh.index('<nav id="modebar"'):bh.index("</nav>")]
-    tabs = re.findall(r'<button type="button" role="tab" id="(btn-[a-z]+)" class="tab"[^>]*>([^<]+)</button>', nav)
-    check(tabs == [("btn-review", "검토"), ("btn-edit", "크롭 편집"), ("btn-refs", "레퍼런스"), ("btn-pipe", "실행"), ("btn-mask", "마스크")]
+    tabs = re.findall(r'<button type="button" role="tab" id="(btn-[a-z]+)" class="tab"[^>]*>([^<]+) <span class="step-state">', nav)
+    check(tabs == [("btn-pipe", "① 준비"), ("btn-edit", "② 크롭"), ("btn-refs", "③ 레퍼런스"), ("btn-prompt", "④ 프롬프트"), ("btn-generate", "⑤ 생성"), ("btn-review", "⑥ 검토"), ("btn-mask", "⑦ 마스크")]
           and bh.index("</header>") < bh.index('<nav id="modebar"') < bh.index("<main"),
-          f"F24 둘째 줄 탭 5개(용어표 A1–A5 — 검토도 탭), 머리줄 아래·본문 위 {tabs}")
+          f"D54 둘째 줄 단계 7개(용어표 A1–A5 — 검토도 탭), 머리줄 아래·본문 위 {tabs}")
     check(not any(f'id="{i}"' in head for i in ("btn-edit", "btn-refs", "btn-pipe", "btn-mask", "mode-title"))
-          and 'id="mode-title"' in nav and 'id="btn-keys"' in nav
+          and 'id="mode-title"' in bh[bh.index('<div id="keybar"'):] and 'id="btn-keys"' in nav
           and bh.index("</nav>") < bh.index('<div id="keybar"') < bh.index("<main")
           and re.search(r'id="btn-viewer"[^>]*>뷰어 ▣</button>', head) is not None,
           "머리줄에는 모드 단추가 없고(탭 줄로), 모드 설명·⌨ 는 탭 줄에, 칩 줄은 그 아래 자기 줄, [뷰어 ▣](A6)는 머리줄 오른쪽 그대로")
     check(all(f'on("btn-{a}", () => goMode({b}));' in bj for a, b in (("review", "null"), ("edit", '"edit"'), ("refs", '"refs"'),
-                                                                     ("pipe", '"pipe"'), ("mask", '"mask"')))
+                                                                     ("pipe", '"prepare"'), ("mask", '"mask"')))
           and "setEditing(!editing)" in bj and "setMask(!maskShown)" in bj,
           "탭 = 그 모드로(다시 눌러도 그대로), 키 E·T·G·K 는 그대로 켜고 끄기")
     check('savePref({ keys: !off });' in bj and 'if (loadPref().keys === false) document.body.classList.add("no-keys");' in bj
@@ -49254,7 +49333,7 @@ def polish3_unit():
     import bmk_design_patch_board as board
     import bmk_design_patch_store as store
     web = PKG / "web_design_patch"
-    out = OUT_ROOT / "polish3"
+    out = (OUT_ROOT / "polish3").resolve()
     shutil.rmtree(out, ignore_errors=True)
     base = out / "comfy_output"
     proj = out / "projects" / "p3open"
@@ -49816,7 +49895,7 @@ function setupEnv(cfg = {}) {
   Object.assign(ctx.window, { sessionStorage: store, confirm: (m) => {
     env.confirms.push(m);
     env.shown.push(clone(pv));
-    env.panels.push(hosts.panel.textContent);
+    env.panels.push(hosts.panel.children.filter(e => e.classList.contains("pp-sec")).map(e => e.textContent).join(""));
     return cfg.answer !== false;
   } });
   const link = cfg.paying || cfg.link ? { busy: false, paidWhy: () => "", onWave() {}, send: () => new Promise(() => {}) } : null;
@@ -49900,7 +49979,8 @@ await scenario("setup:cancel", async () => {
   const waiting = !env.confirms.length;
   await until(() => env.confirms.length > 0);
   await sleep(20);
-  const unchanged = env.panels[0] === env.hosts.panel.textContent;
+  // 공통 머리의 잠금 안내는 확인 창을 닫으면 사라진다. 실제 설정·작업 절의 내용은 그대로여야 한다.
+  const unchanged = env.panels[0] === env.hosts.panel.children.filter(e => e.classList.contains("pp-sec")).map(e => e.textContent).join("");
   await env.repeat();
   return { "첫 GET 뒤 취소: 화면·쓰기 유지, 재진입·폴링에도 다시 묻지 않음": waiting && unchanged && env.confirms.length === 1 &&
     env.posts().length === 0 && env.toasts.length === 0 };
@@ -51097,11 +51177,728 @@ console.log(JSON.stringify(out));
 def batch7a_unit():
     """배치 7-A(10/31 — _proto/STUDIO_BATCH7_SPEC.md D47–D53): ComfyUI 메뉴 진입·프로젝트 목록·열기·썸네일. 공용 자리 — 7-A 작업자가 채운다."""
     section("배치 7-A — 메뉴 진입·프로젝트 목록")
+    import tempfile
+    from concurrent.futures import ThreadPoolExecutor
+    from unittest.mock import patch
+    import bmk_design_patch_board as board
+    from aiohttp import web
+
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="batch7a_", dir=OUT_ROOT.resolve()) as tmp, \
+            patch.object(board, "_PROJECT_INPUT", None), patch.object(board, "_PROJECT_MEMO", {}), \
+            patch.object(board, "_PREF", {}), patch.object(store, "_ROOTS", {}):
+        base = Path(tmp) / "input"
+        roots = [store.project_root(str(base), n) for n in ("same", "before", "bad", "missing")]
+        outside = store.project_root(str(Path(tmp) / "external"), "same")
+        for root in roots + [outside]:
+            Path(root).mkdir(parents=True)
+        m = store.new_manifest("same")
+        m["canvas"] = [640, 320]
+        m["base"] = store.save_png_ca(roots[0], "inputs", np.full((320, 640, 3), 160, np.uint8))
+        m["crops"] = [{"id": "001", "name": "one", "rect": [0, 0, 64, 64], "targets": [{"tid": "A"}]}]
+        m["candidates"] = [{"key": "one", "crop_id": "001", "tid": "A"}, {"key": "two", "picked": True}]
+        m["picks"] = {"001/A": ["one"]}
+        m["rejects"] = {"two": True}
+        m["exports"] = [{"rev": 1, "time": "2026-10-31 12:34:56", "state_sig": store.export_state_sig(m)}]
+        store.save_manifest(roots[0], m)
+        store.save_manifest(roots[1], store.new_manifest("before"))
+        Path(roots[2], store.MANIFEST_NAME).write_text('{"schema":', encoding="utf-8")
+        store.save_manifest(outside, store.new_manifest("same"))
+        extkey = store.register_root(outside)
+        board.register_routes(web.RouteTableDef(), str(base))
+        keys = [store.root_key(r) for r in roots]
+        original = Path(roots[0], store.MANIFEST_NAME).read_bytes()
+
+        class Request:
+            content_type = "application/json"
+            path = "/bmk/design_patch/projects"
+
+            def __init__(self, body=None, key=None):
+                self.data = json.dumps(body or {}).encode("utf-8")
+                self.content_length = len(self.data)
+                self.query = {"key": key}
+
+            async def read(self):
+                return self.data
+
+        def call(handler, body=None, key=None):
+            return asyncio.run(handler(Request(body, key)))
+
+        response = call(board.projects_handler)
+        rows = json.loads(response.text)["projects"]
+        by = {r["id"]: r for r in rows}
+        check(response.status == 200 and len(rows) == 5, "7A 스캔 ∪ 등록, 형식 오류·매니페스트 없는 폴더 격리")
+        check(by[keys[0]]["name"] == by[extkey]["name"] == "same" and keys[0] != extkey and by[extkey]["outside_input"]
+              and not by[keys[0]]["outside_input"], "7A input 안팎 같은 이름은 다른 root_key")
+        check(by[keys[0]]["crops"] == 1 and by[keys[0]]["stars"] == 1 and by[keys[0]]["candidates"] == 2
+              and by[keys[0]]["export_state"] == "same" and by[keys[0]]["export_last"]["rev"] == 1, "7A 카드 요약·Export 서명")
+        check(by[keys[1]]["before_import"] and by[keys[1]]["openable"] and not by[keys[2]]["openable"]
+              and not by[keys[3]]["openable"], "7A 가져오기 전은 열림, 깨짐·매니페스트 없음은 열 수 없음")
+        check(str(Path(tmp).resolve()) not in response.text and "root" not in by[keys[0]], "7A 응답에 절대 경로 없음")
+        check(not (base / store.PROJECTS_DIRNAME / store.ROOTS_FILE).exists() and store.resolve_board_root(keys[0]) is None,
+              "7A GET 목록은 미등록 프로젝트를 등록하지 않음")
+        with patch.object(board.os, "scandir", side_effect=PermissionError(f"접근 거부 {tmp}")), patch.object(board.logger, "warning") as warning:
+            denied = call(board.projects_handler)
+            check(denied.status == 200 and [r["id"] for r in json.loads(denied.text)["projects"]] == [extkey]
+                  and tmp not in denied.text and warning.called and tmp in str(warning.call_args.args[-1]),
+                  "7A-R7 스캔 PermissionError: 등록분 200·응답 경로 없음·서버 경고에 원인")
+        with patch.object(store, "load_manifest", wraps=store.load_manifest) as load:
+            board._project_summary(roots[0])
+            board._project_summary(roots[0])
+            check(load.call_count == 0, "7A manifest mtime·size 요약 memo")
+        store.save_board_pref(roots[0], {"method": "saved", "amount": 2})
+        store.register_root(roots[1])
+        store.save_board_pref(roots[1], {"method": "sibling"})
+        store._ROOTS.pop(keys[1])  # 디스크 등록만 남은 형제를 다른 프로젝트의 목록 open 이 함께 올린다.
+        opened = call(board.projects_open_handler, {"key": keys[0]})
+        check(opened.status == 200 and json.loads(opened.text) == {"ok": True, "key": keys[0]}
+              and board._PREF[keys[0]]["method"] == "saved", "7A open 등록·_PREF 복구")
+        check(board._root_param(keys[1]) == roots[1] and board._PREF.get(keys[1]) == {"method": "sibling"}
+              and board.build_state(board._root_param(keys[1]))["root_key"] == keys[1],
+              "7A-R4-2 목록 open 등록으로 복구된 형제의 직접 URL: 별도 open 없이 _PREF 복구·state 조회")
+        board._PREF.pop(keys[1])
+        call(board.projects_open_handler, {"key": keys[1]})
+        check(board._PREF[keys[1]]["method"] == "sibling", "7A 이미 등록된 형제 open 도 _PREF 복구")
+        board._PREF[keys[1]] = {"method": "live"}
+        call(board.projects_open_handler, {"key": keys[1]})
+        check(board._PREF[keys[1]]["method"] == "live", "7A 실행 중 분석 설정 보존")
+        for bad in (str(Path(tmp).resolve()), "../same", "0" * 12, keys[2], keys[3]):
+            res = call(board.projects_open_handler, {"key": bad})
+            check(res.status in (400, 404) and str(Path(tmp).resolve()) not in res.text, "7A 목록 밖·잘못된 키·손상 프로젝트 거절 및 경로 비노출")
+        req = Request({"key": keys[0]})
+        req.content_type = "text/plain"
+        check(asyncio.run(board.projects_open_handler(req)).status == 415, "7A JSON POST 가드")
+        with patch.object(store, "register_root", side_effect=ValueError(f"비밀 경로 {tmp}")):
+            store._ROOTS.pop(keys[0])
+            res = call(board.projects_open_handler, {"key": keys[0]})
+            check(res.status == 400 and tmp not in res.text and "비밀" not in res.text, "7A 등록 오류 경로 숨김")
+        with patch.object(Image.Image, "thumbnail", autospec=True, side_effect=Image.Image.thumbnail) as resize:
+            class NoStudioSlot:
+                def __enter__(self):
+                    raise AssertionError("목록이 Studio 렌더 슬롯을 점유함")
+
+                def __exit__(self, *args):
+                    pass
+
+            with patch.object(board, "_RENDER_SLOTS", NoStudioSlot()), ThreadPoolExecutor(max_workers=4) as pool:
+                thumbs = list(pool.map(board._project_thumb, [keys[0]] * 4))
+            check(resize.call_count == 1 and all(b == thumbs[0] for b in thumbs), "7A 동시 썸네일 요청은 한 번 렌더·캐시 재사용")
+        with Image.open(io.BytesIO(thumbs[0])) as im:
+            check(im.size == (256, 128) and im.format == "JPEG", "7A 썸네일 긴 변 256")
+        check(list(Path(roots[0], "derived", "thumbs").glob("list_*.jpg")) and not list(Path(roots[0], "derived", "thumbs").glob("canvasbase_*.jpg")),
+              "7A 작은 전용 캐시만 생성")
+        check(call(board.projects_thumb_handler, key=keys[0]).status == 200 and call(board.projects_thumb_handler, key=keys[1]).status == 404,
+              "7A 썸네일 라우트·가져오기 전 404")
+        check(Path(roots[0], store.MANIFEST_NAME).read_bytes() == original, "7A 목록·열기·썸네일은 매니페스트 불변")
+        m["crops"][0]["name"] = "changed"
+        store.save_manifest(roots[0], m)
+        check(board._project_summary(roots[0])["export_state"] == "changed", "7A manifest 변경 시 memo 무효화·Export 뒤 변경")
+        m["exports"][0]["hash"] = "first"
+        m["exports"].append({"rev": 8, "hash": "second", "time": "2026-10-31 13:00:00"})
+        store.save_manifest(roots[0], m)
+        board._project_summary(roots[0])
+        store.save_board_export(roots[0], "first")
+        check(board._project_summary(roots[0])["export_last"]["rev"] == 1, "7A manifest 불변·Export 포인터만 변경해도 최신 요약")
+        with patch.object(Image, "open", side_effect=OSError(f"비밀 경로 {tmp}")):
+            # 새 base 서명, 아직 캐시 없음.
+            m["canvas"] = [641, 320]
+            store.save_manifest(roots[0], m)
+            res = call(board.projects_thumb_handler, key=keys[0])
+            check(res.status == 400 and tmp not in res.text, "7A 썸네일 오류 경로 숨김")
+
+    node = shutil.which("node")
+    if not node:
+        skip("node 없음 → 7A 브라우저 하네스 생략")
+        return
+    js = r'''
+const fs = require("fs"), vm = require("vm"), path = require("path");
+const pkg = process.argv[1], out = {}, key = "123456789abc";
+const read = (p) => fs.readFileSync(path.join(pkg, p), "utf8");
+const test = (label, value) => out[label] = !!value;
+class E {
+  constructor(tag) { this.tagName = tag.toUpperCase(); this.children = []; this.events = {}; this.value = ""; this.textContent = "";
+    this.classList = {add() {}, remove() {}, toggle() {}}; }
+  append(...es) { this.children.push(...es); }
+  replaceChildren(...es) { this.children = es; }
+  setAttribute(k, v) { this[k] = v; }
+  addEventListener(k, f) { this.events[k] = f; }
+  querySelector() { return this.input || null; }
+  remove() {}
+  all() { return [this, ...this.children.flatMap(e => e.all())]; }
+}
+function browser(root = "") {
+  const els = {}, moves = [], calls = [], messages = [], confirms = [];
+  const location = {origin:"http://offline", pathname:"/prefix/bmk/design_patch/board/", search:root ? "?root="+root : "",
+    href:"http://offline/prefix/bmk/design_patch/board/"+(root ? "?root="+root : ""), assign: v => moves.push(v), reload:()=>moves.push("reload")};
+  const document = {body:new E("body"), createElement:t=>new E(t), getElementById:id=>els[id] ||= new E("div")};
+  const window = {location, opener:{closed:false, postMessage:d=>messages.push(d)}, confirm:s=>(confirms.push(s), true),
+    removeEventListener:()=>{}, addEventListener:()=>{}};
+  let response = {projects:[]}, status = 200;
+  const ctx = {window, document, location, URL, URLSearchParams, console, setTimeout:()=>0, clearTimeout:()=>{},
+    fetch: async (u, init) => { calls.push([u,init]); return {ok:status===200, status, json:async()=>{ if(response instanceof Error) throw response; return response; }}; }};
+  vm.createContext(ctx);
+  vm.runInContext(read("web_design_patch/board.js").replace("  main();", `globalThis.T = { main, showProjects, goProjects, queueInComfy, tabWay, tabTitle, fatal, reroll, queueReroll, applyFree, refresh,
+    set: (p,m,t) => { pipe=p; maskEd=m; tabLink=t; },
+    prepareReroll: (cell, save) => { rerollCell=()=>cell; S={crops:[],rev:1}; write=save; } };`), ctx);
+  return {ctx, T:ctx.T, els, moves, calls, messages, confirms, window, response:(r,s=200)=>{response=r;status=s;}};
+}
+(async () => {
+  let extension, opened = [], focus = 0, reloads = 0, fatalPage = false;
+  let win = {location:{href:"about:blank", assign(v){this.href=v;}, reload(){reloads++;}},
+    document:{querySelector:s=>s===".fatal"&&fatalPage ? {} : null}, focus(){focus++;}};
+  const nodes = [0, 2, 4, 0].map((mode,i)=>({id:i, type:"BMKDesignPatchReview",mode,properties:{bmk_dp_root_key:i===3?key:"123456789ab"+i}}));
+  const notices=[];
+  const ex = {app:{registerExtension:e=>extension=e, graph:{nodes},extensionManager:{toast:{add:n=>notices.push(n.detail)}}}, api:{fileURL:p=>"/prefix"+p}, console, URL,
+    window:{location:{href:"http://offline/"},open:(...args)=>(opened.push(args),win)}};
+  vm.createContext(ex);
+  vm.runInContext(read("js/bmk_design_patch.js").replace(/^import .*;$/gm,""), ex);
+  extension.commands[0].function();
+  test("메뉴·명령·액션바", extension.menuCommands[0].path[0]==="BMK" && extension.menuCommands[0].commands[0]===extension.commands[0].id && extension.actionBarButtons[0].label==="Patch Studio");
+  test("새 Studio 이름·주소", opened[0][0]==="" && opened[0][1]==="bmk_dp_studio" && win.location.href==="/prefix/bmk/design_patch/board/");
+  win.location.href="http://offline/board/?root="+key;
+  extension.actionBarButtons[0].onClick();
+  test("메뉴 재클릭은 focus 만", focus===2 && win.location.href.endsWith(key));
+  const hello = vm.runInContext('helloReply({type:"bmk-dp-hello",id:"x"})',ex);
+  test("hello 판4·켜진 Review만", hello.ext===4 && hello.reviewRoots.length===2 && hello.reviewRoots.includes(key));
+  win.location.href="about:blank";
+  vm.runInContext('openBoard(app.graph.nodes[3])',ex);
+  test("7A-R3 Open Board 새 창은 지정 root",opened.at(-1)[0]==="" && opened.at(-1)[1]==="bmk_dp_board_"+key && win.location.href.endsWith("?root="+key));
+  const same=win.location.href, priorFocus=focus;
+  vm.runInContext('openBoard(app.graph.nodes[3])',ex);
+  test("7A-R3 Open Board 같은 root 재클릭은 focus만",win.location.href===same&&focus===priorFocus+1&&notices.length===0);
+  fatalPage=true;vm.runInContext('openBoard(app.graph.nodes[3])',ex);
+  test("7A-R3-1 같은 root fatal 재클릭은 새로고침",reloads===1&&win.location.href===same);
+  for(const target of ["http://offline/board/", "http://offline/board/?root=abcdef012345"]) {
+    win.location.href=target;
+    const before=focus;
+    vm.runInContext('openBoard(app.graph.nodes[3])',ex);
+    test("7A-R3 Open Board 다른 화면 보존 "+target,win.location.href===target&&focus===before+1&&notices.at(-1).includes("현재 작업을 유지"));
+  }
+  test("7A-R3-1 다른 root fatal은 새로고침하지 않음",reloads===1);
+  fatalPage=false;
+  const savedWin=win, beforeCross=focus, beforeNotice=notices.length;
+  win={get location(){throw new Error("cross origin");},focus(){focus++;}};
+  extension.commands[0].function();vm.runInContext('openBoard(app.graph.nodes[3])',ex);
+  test("7A-R3-6 교차 출처 창은 보존·focus·새로고침 안내",focus===beforeCross+2&&notices.slice(beforeNotice).length===2
+    &&notices.slice(beforeNotice).every(s=>s.includes("그 창을 새로고침하세요")&&!s.includes("주소가 바뀌었습니다")));
+  win=savedWin;
+
+  const b=browser();
+  b.response({projects:[{id:key,name:"<script>이름</script>",openable:true,before_import:false,crops:0,stars:0,candidates:0,modified:"2026-10-31",thumb_url:"projects/thumb?key="+key},
+    {id:"000000000000",name:"깨진 파일",openable:false,error:"열 수 없음"}]});
+  await b.T.main();
+  test("root 없음은 목록, 뷰어·폴링 초기화 없음", b.calls.length===1 && b.calls[0][0].endsWith("/projects") && b.els.app.all().some(e=>e.textContent==="<script>이름</script>"));
+  const img=b.els.app.all().find(e=>e.tagName==="IMG");
+  test("lazy 썸네일은 로드 전 DOM 에 연결",img && img.loading==="lazy" && img.src.endsWith("projects/thumb?key="+key));
+  img.onerror();test("썸네일 오류에도 카드 유지",b.els.app.all().some(e=>e.textContent==="미리보기 없음")&&b.els.app.all().some(e=>e.className==="projects-open"));
+  const search=b.els.app.all().find(e=>e.className==="projects-search");
+  search.value="깨진";search.events.input();
+  test("이름 검색·열 수 없음", b.els.app.all().filter(e=>e.className?.includes("projects-card")).length===1 && !b.els.app.all().some(e=>e.className==="projects-open"));
+  search.value="";search.events.input();
+  b.response({ok:true,key});
+  await b.els.app.all().find(e=>e.className==="projects-open").events.click();
+  test("카드 열기는 POST 후 같은 창 이동", JSON.parse(b.calls[1][1].body).key===key && b.moves[0]==="?root="+key && b.window.opener);
+  for(const status of [404,500]) {
+    const list=browser();list.response(new Error("Unexpected token < /private/server/path"),status);
+    await list.T.main();
+    const listMessage=list.els.app.all().find(e=>e.className==="projects-status").textContent;
+    const op=browser();op.response({projects:[{id:key,name:"test",openable:true,crops:0,stars:0,candidates:0}]});
+    await op.T.main();op.response(new Error("Unexpected token < /private/server/path"),status);
+    await op.els.app.all().find(e=>e.className==="projects-open").events.click();
+    test("7A-R5 비 JSON 목록·열기 HTTP "+status,[listMessage,op.els.toast.textContent].every(m=>m.includes("HTTP "+status)&&!m.includes("Unexpected")&&!m.includes("private")&&(status!==404||m.includes("ComfyUI 재시작 필요")))&&op.moves.length===0);
+  }
+  const jsonError="프로젝트가 목록에서 사라졌습니다 — 목록을 새로고침하세요";
+  const jl=browser();jl.response({error:jsonError},404);await jl.T.main();
+  const jo=browser();jo.response({projects:[{id:key,name:"test",openable:true,crops:0,stars:0,candidates:0}]});await jo.T.main();
+  jo.response({error:jsonError},404);await jo.els.app.all().find(e=>e.className==="projects-open").events.click();
+  test("7A-R3-2 JSON 404 목록·열기는 서버 오류 보존",jl.els.app.all().find(e=>e.className==="projects-status").textContent===jsonError
+    &&jo.els.toast.textContent===jsonError&&jo.moves.length===0);
+  const fatal=browser(key), doc=fatal.ctx.document, app=doc.getElementById("app"), panel=doc.getElementById("pipe-panel"), button=new E("button");
+  app.id="app";panel.id="pipe-panel";button.id="btn-projects";app.append(panel);doc.body.append(app,button);
+  doc.getElementById=id=>doc.body.all().find(e=>e.id===id)||null; // 이 장면에서는 없는 DOM 을 만들지 않는다.
+  button.addEventListener("click",fatal.T.goProjects);
+  fatal.T.fatal("프로젝트를 읽지 못함");button.events.click();
+  test("7A-R1 fatal 뒤 프로젝트 단추 이동",doc.getElementById("pipe-panel")===null&&fatal.moves[0]===fatal.ctx.location.pathname&&fatal.confirms.length===0);
+  const recovered=browser(key);recovered.T.fatal("잠시 실패");
+  recovered.els.app.all().find(e=>e.textContent==="다시 불러오기").events.click();
+  test("7A-R3-1 fatal 재시도 단추",recovered.moves.join() === "reload");
+  recovered.moves.length=0;recovered.response({error:"아직 실패"},503);await recovered.T.refresh(true);
+  test("7A-R3-1 fatal 뒤 조회 실패는 화면 유지",recovered.moves.length===0);
+  recovered.response({rev:1,crops:[],targets:[]});await recovered.T.refresh(true);
+  test("7A-R3-1 fatal 뒤 state 성공은 새로고침",recovered.moves.join() === "reload");
+  const clean=browser(key);clean.ctx.document.getElementById("pipe-panel").input=new E("select");
+  clean.T.set({canLeave:()=>({ok:true})},null,null);clean.T.goProjects();
+  test("7A-R4 변경 없음·PS 마스크 select만 있으면 확인 없이 이동",clean.moves.length===1&&clean.confirms.length===0);
+  clean.T.set({canLeave:()=>({ok:true,confirm:"채택 수정 입력을 버리고 이동합니다"})},null,null);
+  clean.window.confirm=s=>(clean.confirms.push(s),false);clean.T.goProjects();
+  test("7A-R4 canLeave 확인 문구를 그대로 사용·취소 보존",clean.moves.length===1&&clean.confirms.length===1&&clean.confirms[0].includes("채택 수정 입력")&&!clean.confirms[0].includes("실행 설정"));
+  const locked=browser(key), leaveToasts=[];
+  locked.window.DPViewer={svg:()=>{}};
+  locked.ctx.document.createElement=t=>Object.assign(new E(t),t==="canvas"?{getContext:()=>({})}:{});
+  locked.ctx.document.addEventListener=()=>{};
+  const maskApi="return { enter, leave, go, onKey, onKeyUp, stateChanged, seamsChanged, pending }";
+  vm.runInContext(read("web_design_patch/mask_edit.js").replace(maskApi,
+    maskApi.slice(0,-2)+", setBusy: (b,s) => { M.busy=b; adjustSaving=s; } }"),locked.ctx);
+  const me=locked.window.DPMaskEdit.create({list:new E("div"),panel:new E("div")},{apiUrl:p=>p,root:key,viewer:{},toast:s=>leaveToasts.push(s)});
+  locked.T.set(null,me,null);
+  for(const [busy,saving] of [["apply",null],["edit",null],["pick",null],["zorder",null],["adjust_wait",null],["adjust",null],["load",{}]]) {
+    me.setBusy(busy,saving);locked.T.goProjects();
+    test("7A-R3-3 마스크 처리 중 프로젝트 이동 거절 "+busy,me.pending.locked()&&me.leave()===false&&locked.moves.length===0
+      &&locked.confirms.length===0&&locked.els.toast.textContent===leaveToasts.at(-1));
+  }
+  me.setBusy("",null);locked.T.goProjects();
+  test("7A-R3-3 마스크 응답 대기 끝나면 목록 이동",!me.pending.locked()&&me.pending()===null&&locked.moves.length===1);
+  const c=browser(key);
+  c.T.set({canLeave:()=>({ok:false,why:"승인 응답 대기"})},null,null);
+  c.T.goProjects();
+  test("승인 대기 이동 차단", c.moves.length===0 && c.confirms.length===0 && c.els.toast.textContent==="승인 응답 대기");
+  // 통합(7-A × 7-B): 실행 모듈의 canLeave 가 마스크 획까지 담아 한 문구로 돌려준다 — goProjects 는 그 문구 하나로 한 번만 묻는다
+  c.T.set({canLeave:()=>({ok:true,confirm:"저장하지 않은 실행 설정 · 적용하지 않은 마스크 획이 있습니다. 프로젝트를 이동하면 저장하지 않은 내용이 사라집니다. 이동할까요?"})},{pending:()=>({n:3})},null);
+  c.window.confirm=s=>(c.confirms.push(s),false); c.T.goProjects();
+  test("이동 취소·마스크 전용 문구", c.moves.length===0 && c.confirms.length===1 && c.confirms[0].includes("마스크 획")
+    && c.confirms[0].split("마스크 획").length===2 && c.confirms[0].split("이동할까요").length===2 && !c.confirms[0].includes("K 로 돌아오면"));
+  const solo=browser(key);  // 실행 모듈이 없으면(옛 화면) goProjects 가 마스크 획을 직접 센다
+  solo.T.set(null,{pending:()=>({n:3})},null);
+  solo.window.confirm=s=>(solo.confirms.push(s),false); solo.T.goProjects();
+  test("실행 모듈 없을 때 마스크 획 문구", solo.moves.length===0 && solo.confirms[0].includes("버려집니다"));
+  c.window.confirm=s=>(c.confirms.push(s),true); c.T.goProjects();
+  test("목록 이동은 같은 창", c.moves[0]===c.ctx.location.pathname);
+  c.T.set({paidWhy:()=>"막힘",paidLock:()=>""},null,{state:"ok",ext:4,via:"opener",reviewRoots:[]});
+  test("Review 없는 opener 폴백은 전송 전 차단", c.T.queueInComfy()===false && c.messages.length===0 && c.els.toast.textContent.includes("Review"));
+  const rr=browser(key), rrLink={state:"ok",ext:4,via:"opener",reviewRoots:[]};let writes=0;
+  rr.T.set({paidWhy:()=>"서버 템플릿 사용 불가",paidLock:()=>""},null,rrLink);
+  rr.T.prepareReroll({cell_key:"cell",variant:"V1",pre:0},async()=>{writes++;return {rev:2};});
+  rr.window.confirm=s=>(rr.confirms.push(s),false);await rr.T.reroll(true);
+  test("7A-R2 Review 부재는 저장 전 예약만 확인",rr.T.tabWay()===""&&writes===0&&rr.confirms[0].includes("Review 노드가 없음")&&rr.confirms[0].includes("예약만")&&!rr.confirms[0].includes("큐 요청을 보냅니다"));
+  test("7A-R2 배지 제목도 Review 부재·예약만",rr.T.tabTitle(rrLink).includes("Review 노드가 없음")&&rr.T.tabTitle(rrLink).includes("예약만"));
+  const hasReasons=s=>s.includes("서버 템플릿 사용 불가")&&s.includes("Review 노드가 없음");
+  test("7A-R3-4 R 확인·배지에 유료 길과 Review 부재 이유",hasReasons(rr.confirms[0])&&hasReasons(rr.T.tabTitle(rrLink)));
+  rr.T.queueReroll();test("7A-R3-4 다시 생성 보내기에도 두 이유",hasReasons(rr.els.toast.textContent)&&rr.messages.length===0);
+  await rr.T.applyFree();test("7A-R3-4 옛 서버 layout 대체는 Review 안내 보존",hasReasons(rr.els.toast.textContent)
+    &&rr.els.toast.textContent.includes("ComfyUI 재시작 필요")&&rr.messages.length===0&&rr.confirms.length===1);
+  rr.window.confirm=s=>(rr.confirms.push(s),true);await rr.T.reroll(true);rr.T.queueReroll("");
+  test("7A-R2 동의한 예약만 저장·즉시 큐 없음",writes===1&&rr.messages.length===0);
+  rr.T.set({paidWhy:()=>"서버 템플릿 사용 불가",paidLock:()=>""},null,{via:"opener",reviewRoots:null});
+  test("7A-R2 옛 탭 null 은 Review 폴백 유지",rr.T.tabWay()==="opener");
+  c.T.set({paidWhy:()=>""},null,{via:"opener",reviewRoots:[]});
+  test("유료 길은 Review 없어도 유지", c.T.tabWay()==="paid");
+  c.T.set(null,null,{via:"opener"});
+  test("옛 hello 는 기존 Review 폴백", c.T.queueInComfy()===true && c.messages.length===1);
+
+  let handler, interval, timers=[], reply={tab:"t",ext:4,submit:"ok",reviewRoots:[key]}, changes=0;
+  const w={location:{origin:"http://offline"},addEventListener:(n,f)=>handler=f};
+  w.opener={postMessage:d=>handler({origin:w.location.origin,source:w.opener,data:{type:"bmk-dp-hello",id:d.id,...reply}})};
+  const p={window:w,URL,console,setTimeout:f=>(timers.push(f),1),clearTimeout:()=>{},setInterval:f=>(interval=f,1),clearInterval:()=>{}};
+  vm.createContext(p);vm.runInContext(read("web_design_patch/pipeline.js"),p);
+  const link=w.DPPipeline.link(w,()=>changes++);
+  timers.shift()(); test("hello Review 키 보관", link.reviewRoots[0]===key);
+  interval();timers.shift()();test("같은 Review 목록은 변경 알림 없음",changes===1);
+  reply={tab:"t",ext:3,submit:"ok"}; interval();timers.shift()();test("옛 hello 가 오면 Review 목록 비움",link.reviewRoots===null);
+  reply={tab:"t",ext:2,submit:"ok"}; interval();timers.shift()();test("확장 판2 유료 승인 거절 유지",link.paidWhy().includes("옛 판")&&link.reviewRoots===null);
+  reply={tab:"t",ext:4,submit:"ok",reviewRoots:[]}; interval();timers.shift()();test("빈 Review 배열 보존",Array.isArray(link.reviewRoots)&&link.reviewRoots.length===0);
+  console.log(JSON.stringify(out));
+})().catch(e=>{console.error(e.stack);process.exitCode=1;});
+'''
+    result = subprocess.run([node, "-e", js, str(PKG)], capture_output=True, text=True, encoding="utf-8", timeout=30)
+    check(result.returncode == 0, f"7A JS 하네스 종료 {result.stderr[:600]}")
+    if result.returncode == 0:
+        for name, ok in json.loads(result.stdout).items():
+            check(ok is True, f"7A JS: {name}")
 
 
 def batch7b_unit():
     """배치 7-B(10/31 — _proto/STUDIO_BATCH7_SPEC.md D54–D59): 단계 줄·실행 하위 탭·상단 Export·프롬프트 보기. 공용 자리 — 7-B 작업자가 채운다."""
     section("배치 7-B — 단계 줄·실행 하위 탭·Export·프롬프트")
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    import bmk_design_patch_board as board
+    import bmk_design_patch_prompt_ko as ko
+
+    # 현재 스펙에서 다시 렌더하지 않고 과거 jobs 원문을 읽는지 검증한다(소켓 없음).
+    spec = {"canvas": "canvas.png", "guide": "guide.png", "before_paste": "before.png", "ref_style": "both",
+            "style_note": "soft painted edges", "preserve": ["the untouched face"], "notes": "literal <tag> & note",
+            "targets": [{"id": "A", "name": "clip", "mode": "ref_correct", "refs": ["ref.png"],
+                         "detail": "red petals; silver center", "ref_object": "the original clip", "ref_ignore": "the hand",
+                         "must_not": ["extra petals"], "guide_color": "green", "occluded_by": "the hair",
+                         "defects": "broken stem", "text": "exact_ref", "ref_view": "different"}]}
+    original = copy.deepcopy(spec)
+    rendered = []
+    for mode in P.MODES:
+        for action in P.ACTIONS:
+            for shape in P.SHAPE:
+                s = copy.deepcopy(spec)
+                s["targets"][0].update(mode=mode, action=action, shape=shape)
+                for name, v in P.variants(s).items():
+                    en = v["prompt"]
+                    text = ko.explain(en, P.TEMPLATE_VERSION, ["A"], {"A": "머리 장식"})
+                    check(len(text.splitlines()) == len(en.splitlines()), f"D59 줄 구조 {mode}/{action}/{shape}/{name}")
+                    check(not any(line.startswith("「") for line in text.splitlines()), f"D59 고정 문장 풀이 {mode}/{action}/{shape}/{name}")
+                    check("머리 장식" in text and "「literal <tag> & note」" in text and "「the untouched face」" in text,
+                          f"D59 라벨·자유 슬롯 원문 {mode}/{action}/{shape}/{name}")
+                    rendered.append((name, en))
+    check(spec == original, "D59 입력 스펙 불변")
+    for ref_style in P.REF_STYLES:
+        s = copy.deepcopy(spec)
+        s["ref_style"] = ref_style
+        s["targets"][0].update(name="clip in silver", ref_object="a bird in flight", action="add", location="near the left ear",
+                                refs=["ref.png", "ref2.png", "ref3.png"])
+        other = copy.deepcopy(s["targets"][0])
+        other.update(id="B", mode="sketch_guide", name="pin", action="fix")
+        s["targets"].append(other)
+        en_multi = P.render(s)["prompt"]
+        translated = ko.explain(en_multi, P.TEMPLATE_VERSION, ["A", "B"], {"A": "장식", "B": "핀"})
+        check("「near the left ear」" in translated and translated.count("「a bird in flight」") >= 2
+              and "타깃 A — 장식" in translated and "타깃 B — 핀" in translated
+              and not any(line.startswith("「") for line in translated.splitlines()), f"D59 복수 타깃·이미지·in 포함 슬롯 {ref_style}")
+    en = rendered[0][1]
+    manifest = {"rev": 8, "crops": [{"id": "c1", "name": "장식", "targets": [{"tid": "A", "label": "현재 장식"}]}],
+                "jobs": [{"crop_id": "c1", "tid": "A", "variant": "V1_standard", "template_version": "dp-prompt/1", "prompt": en},
+                         {"crop_id": "c2", "tid": "B", "prompt": "other"}]}
+    before = copy.deepcopy(manifest)
+    req = SimpleNamespace(query={"root": "fe410d7f025d", "crop": "c1"}, path="/prompt")
+    with patch.object(board, "_root_param", return_value="fixture"), patch.object(store, "load_manifest", return_value=manifest), \
+            patch.object(store, "load_spec_override", return_value={"targets": [{"id": "A", "detail": "CHANGED", "_review": {"note": "검토 메모"}}]}):
+        response = asyncio.run(board.prompt_handler(req))
+        data = json.loads(response.text)
+        check(response.status == 200 and len(data["jobs"]) == 1 and data["jobs"][0]["prompt"].encode() == en.encode(), "D59 jobs 원문 바이트·크롭 격리")
+        check(data["targets"][0]["note"] == "검토 메모" and "현재 장식" in data["jobs"][0]["prompt_ko"] and "CHANGED" not in data["jobs"][0]["prompt_ko"], "D59 메모·현재 라벨만 반영")
+        for crop, status in [("../outside", 400), ("missing", 404), (None, 400)]:
+            req.query["crop"] = crop
+            check(asyncio.run(board.prompt_handler(req)).status == status, f"D59 잘못된 크롭 {crop}")
+        req.query["crop"] = "c1"
+        for error in [ValueError("broken H:/private/design_patch.json"), OSError("locked H:/private/design_patch.json")]:
+            with patch.object(board.store, "load_manifest", side_effect=error):
+                answer = asyncio.run(board.prompt_handler(req))
+                message = json.loads(answer.body)["error"]
+                check(answer.status == 500 and "프로젝트 기록" in message and "private" not in message and "H:" not in message,
+                      "D59 매니페스트 읽기 실패에 경로를 노출하지 않음")
+    check(manifest == before, "D59 매니페스트 불변")
+    check(ko.explain(en, "future/2") == f"「{en}」", "D59 모르는 템플릿을 번역한 척하지 않음")
+
+    # 원장의 응답만 있는 크롭·화풍을 실제 계획 경로로 읽는다. 실행·API 호출은 없다.
+    import bmk_design_patch_pipeline as pl
+    import bmk_design_patch_vlm as dvlm
+    root, _, m = _vlm_project("batch7b_free_all", [("001_머리 | A: 리본", (128, 128), {})],
+                               refs=[("001_머리.png", (64, 64))])
+    settings = pl.defaults(root)
+    settings["draft"].update(apply="full", vlm="mock")
+    backend, cfg = board._draft_cfg(root, settings, False)
+    _, reqs, _, _, _ = dvlm.draft_plan(root, m, "", backend, only=[], memo={}, **cfg)
+    for cid, request in reqs.items():
+        dvlm.Ledger(root).write(cid, request.key, 1, "resp", {"output_text": "{}"})
+    free_fn = board._draft_free
+
+    def old_free(*args, **kwargs):
+        result = free_fn(*args, **kwargs)
+        result.pop("free_all", None)
+        return result
+
+    with patch.object(board, "_PLAN_MEMO", {}):
+        recovery_plan = board.pipeline_plan(root, settings, only_ids=[], style=False)
+        selected_plan = board.pipeline_plan(root, settings, only_ids=[m["crops"][0]["id"]], style=False)
+        recovery_state = board.build_state(root)
+    # 복구만 있는 계획의 빈 해시뿐 아니라 실제 승인 대상이 있는 해시도 대조한다.
+    cid = m["crops"][0]["id"]
+    m["jobs"] = [_pl_job(cid)]
+    store.save_manifest(root, m)
+    dvlm.Ledger(root).write(cid, reqs[cid].key, 1, "failed", {"error": "synthetic retry"})
+    with patch.object(board, "_PLAN_MEMO", {}):
+        hash_plan = board.pipeline_plan(root, settings, only_ids=[cid], style=False)
+        hash_state = board.build_state(root)
+    with patch.object(board, "_PLAN_MEMO", {}), patch.object(board, "_draft_free", old_free):
+        old_plan = board.pipeline_plan(root, settings, only_ids=[cid], style=False)
+        old_state = board.build_state(root)
+    check(set(reqs) == {m["crops"][0]["id"], dvlm.STYLE_ID} and recovery_plan["draft"]["free_all"] == 2
+          and recovery_plan["draft"]["free"] == 0 and selected_plan["draft"]["free_all"] == 2,
+          "D55 전체 복구 free_all 은 only·화풍 체크와 무관하게 크롭·_style 을 포함")
+    check(hash_plan["sig"] == old_plan["sig"] and all(
+        hash_plan[k]["hash"] == old_plan[k]["hash"] and re.fullmatch(r"[0-9a-f]{12}", hash_plan[k]["hash"])
+        for k in ("run", "draft")), "D55 free_all 응답 추가 전후 Run·Draft 승인 해시·서명 불변")
+    chips = [c["draft_chip"] for c in hash_state["crops"]]
+    check(chips == [c["draft_chip"] for c in old_state["crops"]] and all("free_all" not in c for c in chips)
+          and all("free_all" not in c for c in recovery_plan["draft"]["by_crop"].values()),
+          "D55 free_all 은 최상위 draft 필드만 — by_crop·draft_chip 불변")
+
+    node = shutil.which("node")
+    if not node:
+        skip("node 없음 → 배치 7-B JS 생략")
+        return
+    out = OUT_ROOT / "batch7b"
+    out.mkdir(parents=True, exist_ok=True)
+    web = PKG / "web_design_patch"
+    harness = _PL_JS_HARNESS
+    cuts = [harness[harness.index(a):harness.index(b, harness.index(a))] for a, b in (
+        ("import fs", "async function run("), ("class El {", "async function mouse("),
+        ("function boardState()", 'await scenario("panel"'), ("function mkPanel(", 'await scenario("panelStyle"'),
+        ("function quietPipeline(mod)", 'await scenario("panelDrift"'))]
+    scene = r'''
+vm.runInContext(fs.readFileSync(IN.checklistJs, "utf8"), ctx);
+await scenario("global", async () => {
+  const D = ctx.window.DPChecklist;
+  const i = {scope: "all", selectedCount: 1, S: {canvas: {}, crops: [{id: "c1", refs: {n: 1}}, {id: "c2", refs: {n: 1}}], targets: []},
+    P0: {settings: {draft: {apply: "full"}}}, plan: {draft: {units: [], free: 0, free_all: 0, by_crop: {c1: {wait: []}, c2: {wait: ["missing"]}},
+      pending_style: 0, warnings: {unwritten: []}, import_pending: []}, run: {need: 0, pre: 0, free: 0,
+      by_crop: {c1: {need: 0, done: 1}, c2: {need: 3, done: 0, pre: 1}}}}};
+  const r = {}, rows = () => D.rows(i);
+  r.selection = rows()[4].state === "todo" && rows()[5].state === "todo" && rows()[5].value.includes("다시 생성 대기 1");
+  i.plan.draft.by_crop.c2.wait = []; i.plan.run.by_crop.c2 = {need: 0, done: 1};
+  r.complete = rows()[4].state === "done" && rows()[5].state === "done";
+  i.stale = true; r.stale = rows()[4].state === "unknown" && rows()[5].state === "unknown"; i.stale = false;
+  i.plan.draft.free_all = 7; r.free = rows()[4].state === "todo"; i.plan.draft.free_all = 0;
+  delete i.plan.draft.free_all; r.oldServer = rows()[4].state === "unknown"; i.plan.draft.free_all = 0;
+  i.plan.draft.pending_style = 1; r.style = rows()[4].state === "todo"; i.plan.draft.pending_style = 0;
+  i.plan.draft.warnings.unwritten = ["c1"]; r.unwritten = rows()[4].state === "warn"; i.plan.draft.warnings.unwritten = [];
+  i.plan.run.by_crop.c1.failed = 1; i.plan.run.by_crop.c2.orphaned = 1;
+  i.progress = {run: {failed: 1, orphaned: 1}};
+  r.failed = rows()[5].state === "done" && rows()[5].value.includes("실패 1") && rows()[5].value.includes("결과 못 받음 1");
+  i.plan.run.by_crop.c2.done = 0; r.failedMissing = rows()[5].state === "warn"; i.plan.run.by_crop.c2.done = 1;
+  delete i.plan.run.by_crop.c1.failed; delete i.plan.run.by_crop.c2.orphaned;
+  i.plan.run.by_crop._stale = {need: 3, pre: 2, free: 1, failed: 1, orphaned: 1, inflight: 1};
+  i.progress.run.inflight = 1;
+  r.removed = rows()[5].state === "done" && !/실패|결과 못 받음|복구|생성 대기|실행 중/.test(rows()[5].value);
+  delete i.progress; delete i.plan.run.by_crop._stale;
+  i.plan = null; r.missing = rows()[4].state === "unknown" && rows()[5].state === "unknown";
+  i.S.crops = []; r.empty = rows()[1].state === "todo" && rows()[5].state !== "done";
+  return r;
+});
+await scenario("panel", async () => {
+  const srv = server(); srv.route.pipeline = quietPipeline(); quietPlan(srv);
+  const base = srv.fetch;
+  srv.fetch = async (u, o) => new URL(u).pathname === "/bmk/design_patch/prompt" ?
+    {ok: true, json: async () => ({jobs: [{variant: "V1", tids: ["A"], prompt: "original <text>", prompt_ko: "풀이", template_version: "dp-prompt/1"}], targets: []})} : base(u, o);
+  const env = mkPanel(srv), S = quietState();
+  const r = {};
+  env.pipe.stateChanged(S); env.pipe.enter(S, "008_e1d4cc");
+  await sleep(100);
+  const sections = () => env.panel.children.filter(x => x.classList.contains("pp-sec"));
+  r.direct = ["prepare", "prompt", "generate"].every(tab => sections().some(x => x.dataset.tab === tab));
+  r.applyOne = env.panel.all().filter(x => x.tagName === "BUTTON" && x.textContent === "반영 (무료)").length === 1;
+  env.pipe.goSection({tab: "generate", section: "Export"});
+  r.scroll = env.pipe.tab() === "generate" && sections().some(x => x.firstElementChild.textContent === "Export" && x.scrolled);
+  env.pipe.openSettings(); r.settings = env.pipe.tab() === "prepare";
+  env.B("← 실행").fire("click"); env.pipe.showTab("prompt");
+  env.B("수정").fire("click"); env.input().value = "A: preserved input"; env.input().fire("input");
+  const crop = sections().find(x => x.firstElementChild.textContent.startsWith("채택 —")).firstElementChild.textContent;
+  r.guard = !!env.pipe.canLeave().confirm;
+  env.pipe.select("001_38a818"); await sleep(20);
+  r.selectGuard = env.input().value === "A: preserved input" && sections().find(x => x.firstElementChild.textContent.startsWith("채택 —")).firstElementChild.textContent === crop;
+  env.pipe.leave(); env.pipe.enter(S, "001_38a818"); await sleep(70);
+  r.edit = env.input().value === "A: preserved input" && sections().find(x => x.firstElementChild.textContent.startsWith("채택 —")).firstElementChild.textContent === crop;
+  r.remember = env.pipe.tab() === "prompt";
+  env.B("취소").fire("click");
+  const planCount = srv.count("pipeline/plan");
+  const S2 = {...S, plan_v: "changed"}; quietPlan(srv, "changed"); env.pipe.stateChanged(S2); env.pipe.leave(); await sleep(450);
+  r.offModePlan = srv.count("pipeline/plan") > planCount && !srv.log.filter(x => x.path === "pipeline/plan").at(-1).q.only;
+  env.pipe.enter(S2, "001_38a818"); await sleep(70);
+  env.B("영문 원문").fire("click"); r.prompt = env.panel.textContent.includes("original <text>");
+  // API 직접 호출도 동일 가드: 미반영 + 별표 없음은 확인 한 번, 취소하면 큐 없음.
+  const S3 = clone(S2); S3.crops[0].layout_status = "changed"; S3.targets.forEach(t => t.pick_keys = []);
+  env.pipe.stateChanged(S3); ctx.window.confirm = m => { env.confirms.push(m); return false; };
+  const q0 = srv.count("api/prompt", "POST"), c0 = env.confirms.length;
+  await env.pipe.exportNow();
+  r.exportConfirm = env.confirms.length === c0 + 1 && env.confirms.at(-1).includes("★ 가 하나도") && env.confirms.at(-1).includes("Import 가 없어") && srv.count("api/prompt", "POST") === q0;
+  srv.route.pipeline = quietPipeline(p => p.confirm = ["prepare.model"]);
+  env.pipe.stateChanged({...S3, pipeline_rev: 91}); await sleep(60);
+  r.exportBlocked = !!env.pipe.exportWhy() && !env.B("Export").disabled && env.B("Export").classList.contains("export-settings-needed");
+  env.B("Export").fire("click");
+  r.exportSettings = env.pipe.tab() === "prepare" && srv.count("api/prompt", "POST") === q0;
+  env.pipe.leave(); return r;
+});
+await scenario("entry", async () => {
+  const r = {}, doc = new Doc(), ids = {}, chosen = [];
+  let data = {ready: false, stages: Array.from({length: 7}, () => ({state: "done", value: "끝"})), export: {state: "todo"}};
+  let mode = null;
+  const bc = {document: doc, MODES: [], curMode: () => mode, pipeReady: () => true, notReady: () => "", refTab: "sheets", renderKeys() {},
+    URLSearchParams, location: {search: ""}, S: {targets: [], crops: []},
+    pipe: {steps: () => data, tab: () => "prepare", exportWhy: () => ""}, goMode: m => chosen.push(m),
+    $: id => {
+      if (!ids[id]) {
+        const el = ids[id] = doc.createElement("div"), dot = doc.createElement("span");
+        el.append(dot); el.querySelector = () => dot; el.prepend = n => el.children.unshift(n);
+      }
+      return ids[id];
+    }};
+  vm.createContext(bc); vm.runInContext(boardFn("renderMode"), bc);
+  const main = "{\n" + boardSrc.slice(boardSrc.indexOf("    const requested = new URLSearchParams(location.search)"), boardSrc.lastIndexOf("    schedule();")) + "\n}";
+  vm.runInContext(main, bc); r.wait = chosen.length === 0;
+  data.ready = true; data.stages[1].state = "todo"; bc.renderMode(); r.crop = chosen.pop() === "edit";
+  bc.S.targets = [{candidates: [{}]}]; vm.runInContext(main, bc); r.candidates = chosen.length === 0;
+  bc.location.search = "?mode=prompt"; vm.runInContext(main, bc); r.url = chosen.pop() === "prompt";
+  bc.location.search = ""; bc.S.targets = []; data.stages[1].state = "unknown"; vm.runInContext(main, bc);
+  r.unknown = chosen.length === 0;
+  data.stages[2].state = "todo"; vm.runInContext(main, bc); r.refs = chosen.pop() === "refs";
+  // 상단 Export 와 Export 설정은 goMode 를 거치지 않고 실행 패널을 연다.
+  const srv = server(); srv.route.pipeline = quietPipeline(p => p.confirm = ["prepare.model"]); quietPlan(srv);
+  const env = mkPanel(srv, mem(), {enter: () => { mode = "pipe"; bc.renderMode(); }});
+  env.pipe.stateChanged(quietState()); await sleep(60);
+  for (const action of ["exportNow", "openSettings"]) {
+    mode = null; data.ready = false; bc.renderMode.initial = true;
+    await env.pipe[action]();
+    data.ready = true; bc.renderMode();
+    r[action + "Stay"] = mode === "pipe" && !bc.renderMode.initial && chosen.length === 0;
+  }
+  env.pipe.leave(); mode = null;
+  const src = fs.readFileSync(IN.pipelineJs, "utf8");
+  const inner = n => src.match(new RegExp(`    function ${n}\\([^)]*\\) \\{[\\s\\S]*?\\n    \\}`))[0];
+  const pc = {PS: {P: {}, sending: false}, asking: false, paying: null, text: null, form: {}, opts: {}};
+  vm.createContext(pc); vm.runInContext(inner("canLeave"), pc);
+  r.idleLeave = pc.canLeave().ok; pc.asking = true; r.askingLeave = !pc.canLeave().ok; pc.asking = false;
+  pc.paying = "run"; r.payingLeave = !pc.canLeave().ok; pc.paying = null; pc.PS.sending = true; r.sendingLeave = !pc.canLeave().ok;
+  pc.PS.sending = false; pc.PS.job = {}; r.jobLeave = pc.canLeave().ok;
+  bc.pipe.exportWhy = () => "설정 확인"; bc.pipe.exportLocked = () => false; bc.renderMode();
+  r.headerSettings = !ids["btn-export"].disabled && ids["btn-export"].classList.contains("export-settings-needed");
+  bc.pipe.exportLocked = () => true; bc.renderMode(); r.headerLocked = ids["btn-export"].disabled;
+  data.stages[3] = {state: "todo", value: "레이아웃 미반영 · 초안 승인 필요 0"}; bc.renderMode();
+  r.zeroWait = ids["btn-prompt"].querySelector(".step-state").textContent === "대기";
+  data.stages[3].value = "초안 복구 대기 2"; bc.renderMode();
+  r.recoveryWait = ids["btn-prompt"].querySelector(".step-state").textContent === "대기 2";
+  return r;
+});
+await scenario("exportMenu", async () => {
+  const doc = new Doc(), ids = {}, calls = [];
+  const get = id => ids[id] ||= doc.createElement(id === "export-menu" ? "details" : "button");
+  const menu = get("export-menu"), inside = doc.createElement("span"), outside = doc.createElement("div");
+  menu.append(get("btn-export-folder"), get("btn-export-settings"), inside); doc.body.append(menu, outside);
+  const bc = {document: doc, $: get, setStar() {}, toggleSlice() {}, toggleReject() {}, drain() {}, pipe: {
+    openFolder: () => calls.push(["folder", menu.open]), goSection: go => calls.push([go.tab, go.section, menu.open])}};
+  vm.createContext(bc); vm.runInContext(boardFn("wireButtons"), bc); bc.wireButtons();
+  menu.open = true; inside.fire("click"); const r = {inside: menu.open};
+  outside.fire("click"); r.outside = !menu.open;
+  menu.open = true; get("btn-export-folder").fire("click");
+  r.folder = !menu.open && JSON.stringify(calls.at(-1)) === '["folder",false]';
+  menu.open = true; get("btn-export-settings").fire("click");
+  r.settings = !menu.open && JSON.stringify(calls.at(-1)) === '["generate","Export",false]';
+  return r;
+});
+await scenario("firstG", async () => {
+  const r = {};
+  for (const kind of ["complete", "wait", "style", "unwritten", "import", "missing", "oldServer", "settings"]) {
+    const srv = server(), S = quietState(); S.canvas = {};
+    srv.route.pipeline = quietPipeline(p => { p.settings.draft.apply = "full"; if (kind === "settings") p.saved = false; });
+    quietPlan(srv); const route = srv.route.plan;
+    srv.route.plan = q => {
+      const [status, p] = route(q);
+      Object.assign(p.draft, {units: [], free: q.only ? 7 : 0, free_all: 0, pending_style: kind === "style" ? 1 : 0,
+        warnings: {unwritten: kind === "unwritten" ? [S.crops[0].id] : []},
+        import_pending: kind === "import" ? ["refs changed"] : [],
+        by_crop: Object.fromEntries(S.crops.map(c => [c.id, {wait: kind === "wait" ? ["spec"] : []}]))});
+      if (kind === "missing") delete p.draft.by_crop;
+      if (kind === "oldServer") delete p.draft.free_all;
+      return [status, p];
+    };
+    const env = mkPanel(srv);
+    ctx.window.confirm = () => false;
+    env.pipe.stateChanged(S); await sleep(50);
+    const before = env.pipe.steps().stages[3];
+    env.pipe.enter(S, S.crops[0].id); await sleep(70);
+    const after = env.pipe.steps().stages[3];
+    r[kind] = env.pipe.tab() === (kind === "complete" ? "generate" : ["missing", "oldServer"].includes(kind) ? null : kind === "settings" ? "prepare" : "prompt");
+    r[kind + "Stable"] = JSON.stringify(before) === JSON.stringify(after);
+    if (kind === "complete") {
+      const cb = env.panel.all().find(e => e.tagName === "INPUT" && e.parent.textContent.includes("화풍 단위 포함"));
+      cb.checked = false; cb.fire("change"); await sleep(400);
+      r.styleOffStable = env.pipe.steps().stages[3].state === "done" && srv.log.filter(x => x.path === "pipeline/plan").at(-1).q.style === "0";
+    }
+    env.pipe.leave(); await sleep(350);
+  }
+  return r;
+});
+await scenario("recovery", async () => {
+  const srv = server(), S = clone(IN.recoveryState);
+  srv.route.pipeline = quietPipeline(p => p.settings = clone(IN.recoverySettings));
+  srv.route.plan = q => [200, clone(q.only ? IN.selectedPlan : IN.recoveryPlan)];
+  const env = mkPanel(srv);
+  ctx.window.confirm = () => false;
+  env.pipe.stateChanged(S); await sleep(70);
+  const before = env.pipe.steps().stages[3];
+  env.pipe.enter(S, S.crops[0].id); await sleep(70);
+  const after = env.pipe.steps().stages[3];
+  const r = {firstG: env.pipe.tab() === "prompt", global: before.state === "todo",
+    stable: after.state === "todo" && JSON.stringify(before) === JSON.stringify(after)};
+  const guidance = "복구 대기 2건 (무료) — 그래프 Spec Draft 를 승인 없이 한 번 큐에 넣으세요.";
+  const draftSection = () => env.panel.children.find(e => e.firstElementChild && e.firstElementChild.textContent === "초안 승인");
+  r.guidance = draftSection().textContent.includes(guidance) && env.pipe.steps().rows[4].hint.includes(guidance);
+  env.B("없음", env.list).fire("click"); await sleep(400);
+  r.unselectedGuidance = draftSection().textContent.includes(guidance);
+  r.noRecoveryQueue = srv.count("pipeline/prompt") === 0 && srv.count("api/prompt", "POST") === 0;
+  env.pipe.leave(); await sleep(350); return r;
+});
+await scenario("selection", async () => {
+  const srv = server(), S = quietState(); srv.route.pipeline = quietPipeline(); quietPlan(srv);
+  const key = S.targets.find(t => t.crop_id === "008_e1d4cc").key, other = S.targets[0];
+  let moves = 0, candMoves = 0;
+  const bc = {S, tKey: key, cKey: "held", pipeOn: true, maskOn: false, defaultCand: () => null, markSeen() {},
+    document: {querySelector: () => null}, selectCand() { candMoves++; }, renderAll() { moves++; }};
+  bc.curTarget = () => S.targets.find(t => t.key === bc.tKey);
+  vm.createContext(bc); vm.runInContext(boardFn("selectTarget") + boardFn("pickCrop"), bc);
+  const env = mkPanel(srv, mem(), {select: id => bc.selectTarget(S.targets.find(t => t.crop_id === id).key)});
+  bc.pipe = env.pipe;
+  env.pipe.stateChanged(S); env.pipe.enter(S, "008_e1d4cc"); await sleep(70);
+  env.B("수정").fire("click"); env.input().value = "A: keep this input"; env.input().fire("input");
+  const selected = () => env.list.children.find(x => x.classList.contains("sel"));
+  const title = selected().textContent;
+  const picked = bc.pickCrop(other.crop_id, other.tid, other.candidates[0].key);
+  const r = {canvas: picked === false && bc.tKey === key && moves === 0 && candMoves === 0 && env.input().value === "A: keep this input" && selected().textContent === title};
+  env.list.children[1].fire("click");
+  r.list = bc.tKey === key && moves === 0 && env.input().value === "A: keep this input" && selected().textContent === title;
+  env.B("취소").fire("click"); bc.selectTarget(other.key); await sleep(70);
+  r.release = bc.tKey === other.key && moves === 1 && selected().textContent.includes(other.crop_id.slice(0, 3));
+  env.pipe.leave(); await sleep(350); return r;
+});
+await scenario("safety", async () => {
+  const srv = server(), S = quietState(); srv.route.pipeline = quietPipeline(); quietPlan(srv);
+  let mask = null;
+  const env = mkPanel(srv, mem(), {maskPending: () => mask});
+  env.pipe.stateChanged(S); env.pipe.enter(S, S.crops[0].id); await sleep(70);
+  const r = {}, q0 = srv.count("api/prompt", "POST");
+  ctx.window.confirm = m => { env.confirms.push(m); return false; };
+  S.layout_added = [{id: "new", name: "새 크롭", rect: [0, 0, 64, 64]}];
+  env.pipe.stateChanged({...S}); await env.pipe.exportNow();
+  r.newCrop = env.confirms.length === 1 && env.confirms[0].includes("반영 전 크롭") && srv.count("api/prompt", "POST") === q0;
+  delete S.layout_added;
+  env.pipe.stateChanged({...S, plan_v: "stale-refs"}); await env.pipe.exportNow();
+  r.staleRefs = env.confirms.length === 2 && env.confirms[1].includes("미반영 확인 필요");
+  const cb = env.panel.all().find(e => e.tagName === "INPUT" && e.parent.textContent.includes("★ 아닌 후보 레이어도 넣기"));
+  srv.delay["pipeline/settings"] = [80]; cb.checked = false; cb.fire("change");
+  r.savingDisabled = env.B("Export").disabled && env.pipe.exportLocked();
+  await env.pipe.exportNow(); r.savingNoQueue = env.confirms.length === 2 && srv.count("api/prompt", "POST") === q0;
+  await sleep(120);
+  env.pipe.openSettings();
+  const field = env.panel.all().find(e => e.classList.contains("pp-field") && e.firstElementChild.textContent.startsWith("n"));
+  const input = field.children[1]; input.value = "3"; input.fire("input");
+  r.unsavedSettings = env.pipe.canLeave().confirm.includes("저장하지 않은 실행 설정");
+  env.B("← 실행").fire("click"); env.B("수정").fire("click");
+  mask = {key: "k0", n: 2};
+  const warning = env.pipe.canLeave().confirm;
+  r.combinedLeave = ["실행 설정", "채택 [수정]", "마스크 획"].every(x => warning.includes(x)) && !warning.includes("K 로 돌아오면") && warning.split("이동할까요?").length === 2;
+  env.pipe.leave(); await sleep(350);
+  return r;
+});
+await scenario("oldPrompt", async () => {
+  const srv = server(); srv.route.pipeline = quietPipeline(); quietPlan(srv);
+  const base = srv.fetch;
+  srv.fetch = async (u, o) => new URL(u).pathname === "/bmk/design_patch/prompt"
+    ? {ok: false, status: 404, json: async () => { throw new SyntaxError("html response"); }} : base(u, o);
+  const env = mkPanel(srv), S = quietState(); env.pipe.enter(S, S.crops[0].id); await sleep(60);
+  const r = {restart: env.panel.textContent.includes("ComfyUI 재시작 필요") && !env.panel.textContent.includes("html response")};
+  env.pipe.leave(); await sleep(350); return r;
+});
+console.log(JSON.stringify(out));
+process.exit(0);
+'''
+    base_harness = "\n".join(cuts).replace("function mkPanel(srv, store = mem())", "function mkPanel(srv, store = mem(), extraOpts = {})")
+    base_harness = base_harness.replace("seams: () => new Map(), drain() {}, enter() {} });", "seams: () => new Map(), drain() {}, enter() {}, ...extraOpts });")
+    (out / "harness.mjs").write_text(base_harness + scene, encoding="utf-8")
+    (out / "in.json").write_text(json.dumps({"api": json.loads((PKG / "tools/fixtures/pipeline_api.json").read_text(encoding="utf-8")),
+        "pipelineJs": str(web / "pipeline.js"), "boardJs": str(web / "board.js"), "checklistJs": str(web / "checklist.js"),
+        "recoveryPlan": recovery_plan, "selectedPlan": selected_plan, "recoveryState": recovery_state, "recoverySettings": settings}), encoding="utf-8")
+    result = subprocess.run([node, str(out / "harness.mjs"), str(out / "in.json")], capture_output=True, text=True, encoding="utf-8", timeout=45)
+    check(result.returncode == 0 and bool(result.stdout.strip()), f"D54–D59 JS 실행 {result.stderr[-1200:]}")
+    if result.returncode == 0 and result.stdout.strip():
+        for group, rows in json.loads(result.stdout.strip().splitlines()[-1]).items():
+            for name, ok in rows.items():
+                check(ok is True, f"D54–D59 {group}/{name}: {ok}")
 
 
 def batch7c_unit():

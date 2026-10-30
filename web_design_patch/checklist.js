@@ -12,38 +12,53 @@ window.DPChecklist = (() => {
     const prepareDrift = input.prepareDrift || [];
     const settingsBlock = input.settingsBlock || "";
     const plan = input.plan;
+    const global = input.scope === "all";
     const draft = plan && plan.draft;
     const run = plan && plan.run;
     const planError = input.planErr ? `계획 오류 — 다시 계산 · ${String(input.planErr).slice(0, 120)}` : "";
     const planOk = !!plan && !planError && input.planOk !== false;
     const ready = planOk && !input.stale;
     const n = crops.length;
-    const selected = input.selectedCount ?? n;
+    const selected = global ? n : input.selectedCount ?? n;
     const allSelected = selected === n;
     const selectionNote = allSelected ? "" : ` (선택 ${selected}/${n} 크롭 기준)`;
     const hasRefs = (c) => c.refs && (c.refs.n > 0 || (c.refs.fixed && c.refs.none && !c.refs.auto));
     const linked = crops.filter(hasRefs).length;
     const missingRef = crops.find((c) => !hasRefs(c));
     const noRefsDir = crops.some((c) => c.refs === null);
-    const draftNeed = draft && Array.isArray(draft.units) ? draft.units.length : null;
+    const draftCrops = draft && draft.by_crop;
+    const draftKnown = draftCrops && crops.every((c) => Array.isArray((draftCrops[c.id] || {}).wait));
+    const draftNeed = global ? draftKnown ? Object.values(draftCrops).filter((c) => (c.wait || []).length).length : null
+      : draft && Array.isArray(draft.units) ? draft.units.length : null;
     const draftPending = draft && Array.isArray(draft.import_pending) ? draft.import_pending : [];
-    const draftFree = draft && Number.isFinite(draft.free) ? draft.free : 0;
+    const draftFree = draft && Number.isFinite(draft[global ? "free_all" : "free"]) ? draft[global ? "free_all" : "free"] : 0;
     const draftUnwritten = draft && draft.warnings && Array.isArray(draft.warnings.unwritten) ? draft.warnings.unwritten.length : 0;
     const draftSettings = input.P0 && !input.P0.error && input.P0.settings && input.P0.settings.draft;
     const draftStyle = draftSettings && draftSettings.apply === "full" && draft && Number.isFinite(draft.pending_style) ? draft.pending_style : 0;
-    const runNeed = run && Number.isFinite(run.need) ? run.need : null;
-    const runPre = run && Number.isFinite(run.pre) ? run.pre : 0;
-    const runFree = run && Number.isFinite(run.free) ? run.free : 0;
     const runCrops = (run && run.by_crop) || {};
+    const liveRun = Object.entries(runCrops).filter(([id]) => id !== "_stale").map(([, c]) => c);
+    const total = (k) => liveRun.reduce((v, c) => v + (c[k] || 0), 0);
+    const runKnown = run && run.by_crop && crops.every((c) => Number.isFinite((runCrops[c.id] || {}).need));
+    const runNeed = global ? runKnown ? total("need") : null : run && Number.isFinite(run.need) ? run.need : null;
+    const runPre = global ? total("pre") : run && Number.isFinite(run.pre) ? run.pre : 0;
+    const runFree = global ? total("free") : run && Number.isFinite(run.free) ? run.free : 0;
     const progress = input.progress && input.progress.run;
-    const inflight = progress && Number.isFinite(progress.inflight) ? progress.inflight
+    const progressTotal = (k) => Math.max(0, (progress && progress[k] || 0) - (global ? (runCrops._stale || {})[k] || 0 : 0));
+    const inflight = progress && Number.isFinite(progress.inflight) ? progressTotal("inflight")
       : crops.reduce((v, c) => v + ((runCrops[c.id] || {}).inflight || 0), 0);
     const running = !!S.running || !!(run && run.running) || inflight > 0;
     const drafting = !!S.drafting || !!(draft && draft.running);
     const missing = crops.filter((c) => !((runCrops[c.id] || {}).done > 0)).length;
     const complete = n > 0 && missing === 0;
-    const failed = Object.values(runCrops).reduce((v, c) => v + (c.failed || 0), 0);
-    const orphaned = Object.values(runCrops).reduce((v, c) => v + (c.orphaned || 0), 0);
+    const failed = Math.max(total("failed"), global ? progressTotal("failed") : 0);
+    const orphaned = Math.max(total("orphaned"), global ? progressTotal("orphaned") : 0);
+    const draftFailed = global && input.progress && input.progress.draft ? input.progress.draft.failed || 0 : 0;
+    // free 는 선택 전용이다. 전체 복구는 화풍까지 포함한 free_all 로만 판정한다(옛 서버면 확인 필요).
+    const draftUnknown = global && (!ready || !draftKnown || !draftSettings || !draft
+      || !Number.isFinite(draft.free_all)
+      || !Array.isArray(draft.import_pending) || !draft.warnings || !Array.isArray(draft.warnings.unwritten)
+      || (draftSettings && draftSettings.apply === "full" && !Number.isFinite(draft.pending_style)));
+    const runUnknown = global && (!ready || !runKnown);
     const draftError = planError || (planOk && draft && draft.error);
     const runError = planError || (planOk && run && run.error);
     const draftApply = planOk && draft && !draftError && !draftUnwritten && !drafting && draftPending.length > 0;
@@ -76,25 +91,26 @@ window.DPChecklist = (() => {
     const row = (n, name, state, value, hint, go) => ({ n, name, state, value, hint: `처음이면: ${hint}`, go });
     return [
       row(1, "PSD 가져오기", S.canvas ? "done" : "todo", S.canvas ? "가져옴" : "Import 필요",
-        "ComfyUI 그래프에서 Import PSD 를 연결하고 큐를 한 번 실행하세요.", { section: "실행 설정" }),
+        "ComfyUI 그래프에서 Import PSD 를 연결하고 큐를 한 번 실행하세요.", { tab: "prepare", section: "실행 설정" }),
       row(2, "크롭", n ? "done" : "todo", `크롭 ${n}`, "크롭 편집(E)에서 고칠 영역을 확인하세요.", { mode: "edit" }),
       row(3, "레퍼런스", n && linked === n ? "done" : "todo", `크롭 ${linked}/${n}${noRefsDir ? " · refs 폴더 없음" : ""}`,
         "레퍼런스(T)에서 각 크롭에 참고 이미지를 연결하세요.", { mode: "refs", cropId: missingRef ? missingRef.id : null }),
       row(4, "반영", !settingsBlock && !pending.length && !prepareDrift.length && !input.unsure ? "done" : "todo",
         settingsBlock ? `실행 설정 확인 필요 (${settingsBlock})` : pending.concat(prepareDrift.length ? [`Prepare 설정 갈라짐 ${prepareDrift.length}`] : [],
           input.unsure ? [`확인 필요: ${input.unsure}`] : []).join(" · ") || "미반영 없음",
-        "크롭·레퍼런스를 바꾼 뒤 반영(무료)을 눌러 생성 입력을 갱신하세요.", { section: settingsBlock ? "실행 설정" : "반영" }),
-      row(5, "초안", draftError || (planOk && !drafting && draftUnwritten > 0) ? "warn"
+        "크롭·레퍼런스를 바꾼 뒤 반영(무료)을 눌러 생성 입력을 갱신하세요.", { tab: settingsBlock ? "prepare" : "prompt", section: settingsBlock ? "실행 설정" : "반영" }),
+      row(5, "초안", draftError || draftFailed || (planOk && !drafting && draftUnwritten > 0) ? "warn" : draftUnknown ? "unknown"
         : n > 0 && allSelected && ready && draftNeed === 0 && draftFree === 0 && draftStyle === 0 && !drafting && !draftPending.length ? "done" : "todo",
-        draftValue,
-        "비용·승인에서 초안 계획과 비용을 확인한 뒤 승인하세요.", { section: draftApply ? "반영" : "비용·승인" }),
-      row(6, "생성", runError ? "warn"
+        draftFailed ? `초안 실패 ${draftFailed}` : draftUnknown ? `전체 초안 확인 필요 · ${draftValue}` : draftValue,
+        draftFree > 0 ? `복구 대기 ${draftFree}건 (무료) — 그래프 Spec Draft 를 승인 없이 한 번 큐에 넣으세요.`
+          : "초안 승인에서 초안 계획과 비용을 확인한 뒤 승인하세요.", { tab: "prompt", section: draftApply ? "반영" : "초안 승인" }),
+      row(6, "생성", runError || (global && missing > 0 && (failed || orphaned)) ? "warn" : runUnknown ? "unknown"
         : allSelected && ready && runNeed === 0 && runPre === 0 && runFree === 0 && complete && !running && !drafting && !prepareDrift.length && !pending.length ? "done" : "todo",
-        runValue,
-        "비용·승인에서 생성 계획을 확인하세요. 모든 크롭에 완료 결과가 있어야 끝납니다.", { section: runApply ? "반영" : "비용·승인" }),
+        global && (failed || orphaned) ? `실패 ${failed} · 결과 못 받음 ${orphaned} · ${runValue}` : runValue,
+        "생성 승인에서 생성 계획을 확인하세요. 모든 크롭에 완료 결과가 있어야 끝납니다.", { tab: runApply ? "prompt" : "generate", section: runApply ? "반영" : "생성 승인" }),
       row(7, "★", targets.length && !missingStar ? "done" : "todo", `타깃 ${stars}/${targets.length}`,
         "검토에서 쓸 후보를 ★ 하세요. 공동 결과의 뒤 타깃은 첫 타깃의 ★ 를 공유합니다.",
-        missingStar ? { target: missingStar.key } : { section: "★ 점검" }),
+        missingStar ? { target: missingStar.key } : { tab: "generate", section: "★ 점검" }),
       row(8, "마스크 다듬기", input.maskLeft ? "warn" : "optional",
         `편집 ${edits}${input.maskLeft ? ` · 적용 안 한 편집 ${input.maskLeft.n}획` : " · 선택"}`,
         "필요할 때만 마스크(K)에서 경계를 다듬고 적용하세요. 끝난 수에는 넣지 않습니다.",
@@ -102,7 +118,7 @@ window.DPChecklist = (() => {
       row(9, "Export", !exported ? "todo" : S.export_state === "same" ? "done" : "warn",
         !exported ? "Export 없음" : S.export_state === "same" ? exValue
           : S.export_state === "changed" ? "다시 Export 필요" : "변경 여부 확인 불가 · 다시 Export 필요",
-        "★ 와 마스크를 확인한 뒤 Export 하세요. 옛 기록은 변경 여부를 확인할 수 없습니다.", { section: "Export" }),
+        "★ 와 마스크를 확인한 뒤 Export 하세요. 옛 기록은 변경 여부를 확인할 수 없습니다.", { tab: "generate", section: "Export" }),
     ];
   }
 
@@ -115,16 +131,16 @@ window.DPChecklist = (() => {
       return e;
     };
     const details = make("details", "pp-sec dp-checklist");
-    details.open = !folded.get(key);
+    details.open = folded.get(key) === false;
     details.addEventListener("toggle", () => {
       if (container.contains(details)) folded.set(key, !details.open);
     });
     const required = items.filter((r) => r.n !== 8);
     const done = required.filter((r) => r.state === "done").length;
-    const title = make("summary", "lp-k", `작업 점검표 (${done}/${required.length})`);
+    const title = make("summary", "lp-k", `작업 점검표 · 선택 기준 (${done}/${required.length})`);
     title.title = "마스크 다듬기는 선택 — 끝난 수에는 포함하지 않습니다.";
-    const symbols = { done: "✓", todo: "○", warn: "!", optional: "선택" };
-    const labels = { done: "끝", todo: "할 일", warn: "경고", optional: "선택" };
+    const symbols = { done: "✓", todo: "○", warn: "!", optional: "선택", unknown: "?" };
+    const labels = { done: "끝", todo: "할 일", warn: "경고", optional: "선택", unknown: "확인 필요" };
     const buttons = items.map((r) => {
       const b = make("button", `dp-check-row ${r.state}`);
       b.type = "button";
@@ -137,7 +153,7 @@ window.DPChecklist = (() => {
         if (go.mode && opts.goMode) opts.goMode(go.mode, go.cropId || null);
         else if (go.mask && opts.goMask) opts.goMask(go.mask, go.target || null);
         else if (go.target && opts.goTarget) opts.goTarget(go.target);
-        else if (go.section && opts.goSection) opts.goSection(go.section);
+        else if (go.section && opts.goSection) opts.goSection(go);
       });
       return b;
     });

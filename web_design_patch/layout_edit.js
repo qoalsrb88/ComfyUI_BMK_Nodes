@@ -1930,7 +1930,8 @@ window.DPLayoutEdit = (() => {
 
     // 진행(G) 반영 칸 [되돌리기]가 쓴 판 — 다른 창의 쓰기로 보지 않아 실행 취소 기록을 남긴다(지운 크롭을 같은 ID 로 되살리는 길은 Ctrl+Z 뿐).
     // 그 사이 다른 창이 썼으면(from ≠ ownRev) 다음 읽기가 기록을 비운다
-    return { enter, leave, onKey, stateChanged, ownWrite: S.ownWrite, proposeGrow };
+    return { enter, leave, onKey, stateChanged, ownWrite: S.ownWrite, proposeGrow,
+      flush: async () => { await flushNudge(); await S.idle(); } };
   }
 
   return { create, session, reloadKind, renameNote };

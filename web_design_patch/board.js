@@ -39,9 +39,9 @@
     s3a: ["b-wait", "탭 확장이 옛 판(S3a) — 유료 승인은 ComfyUI 탭 새로고침 뒤"],
     nosubmit: ["b-wait", "ComfyUI 탭이 승인 제출을 못 함 — 유료 승인 끔"],
     old: ["b-wait", "탭 확장이 옛 판 — ComfyUI 탭 새로고침"],
-    silent: ["b-wait", "ComfyUI 탭 응답 없음 — 탭 새로고침 또는 Open Board 로 다시 열기"],
+    silent: ["b-wait", "ComfyUI 탭 응답 없음 — 탭 새로고침 또는 Open Board 또는 메뉴 BMK → Design Patch Studio 로 다시 열기"],
     none: ["b-dim", "ComfyUI 탭 없음"],
-    many: ["b-wait", "ComfyUI 탭 여러 개 — Open Board 로 다시 여세요"],
+    many: ["b-wait", "ComfyUI 탭 여러 개 — Open Board 또는 메뉴 BMK → Design Patch Studio 로 다시 여세요"],
     wait: ["b-dim", "ComfyUI 탭 확인 중"],
   };
 
@@ -160,7 +160,7 @@
     try {
       return await r.json();
     } catch (e) {
-      return { error: `응답을 읽을 수 없습니다 (HTTP ${r.status})` };
+      return { error: `응답을 읽을 수 없습니다 (HTTP ${r.status})`, unreadable: true };
     }
   }
 
@@ -169,7 +169,7 @@
     if (!force && S) p.set("since_rev", String(S.rev));
     const r = await fetch(apiUrl("state?" + p.toString()), { cache: "no-store" });
     const data = await readJson(r);
-    if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+    if (!r.ok || data.unreadable) throw new Error(data.error || `HTTP ${r.status}`);
     return data;
   }
 
@@ -199,6 +199,10 @@
     polling = true;
     try {
       const d = await getState(force);
+      if (typeof fatal === "function" && fatal.active) {
+        location.reload();
+        return;
+      }
       if (d.unchanged && S) {
         S.running = d.running;
         S.drain = d.drain;
@@ -368,12 +372,12 @@
 
   function selectTarget(key) {
     if (key === tKey) return;
+    if (pipeOn && pipe.select(S.targets.find((t) => t.key === key).crop_id) === false) return false;
     tKey = key;
     cKey = defaultCand(curTarget());
     markSeen(cKey);
     refIdx = 0;
     rerollArm = null;
-    if (pipeOn) pipe.select(curTarget().crop_id); // 진행 모드: 채택 패널도 그 크롭(캔버스 클릭)
     renderAll(true);
   }
 
@@ -400,7 +404,7 @@
       const i = ts.findIndex((x) => x.key === tKey);
       t = ts[i >= 0 ? (i + 1) % ts.length : 0];
     }
-    selectTarget(t.key);
+    if (selectTarget(t.key) === false) return false;
     if (candKey && candKey !== cKey && t.candidates.some((c) => c.key === candKey)) selectCand(candKey);
     const li = document.querySelector("#target-list li.sel");
     if (li) li.scrollIntoView({ block: "nearest" });
@@ -510,7 +514,8 @@
     const way = scripted ? "" : tabWay();
     const tab = !!way;
     const lock = tab && pipe ? pipe.paidLock() : "";
-    const why = tab ? "" : (pipe && pipe.paidWhy()) || "이 창을 연 ComfyUI 탭 없음";
+    const noReview = reviewMissing();
+    const why = tab ? "" : [(pipe && pipe.paidWhy()), noReview].filter(Boolean).join(" · ") || "이 창을 연 ComfyUI 탭 없음";
     // 셀 가격(est_usd)은 마지막 Prepare 의 jobs 값 — 큐는 Prepare 를 다시 돈 뒤 과금한다. 유료 가능한 탭의 재굴림 템플릿은 Studio 실행 설정(반영과
     // 같음 — 반영 확인 창처럼 Prepare·Import 갈라짐 줄을 앞에), 옛 탭의 Review 부분 실행·다음 그래프 Run 은 그래프 위젯 값
     const graphPrep = way === "paid" ? pipe.applyWarn().concat("금액은 지금 jobs(마지막 Prepare) 기준: 다시 생성 템플릿은 Studio 실행 설정(pipeline.json)으로 "
@@ -543,6 +548,7 @@
         // 유료 탭 길로 지금 보내면 승인 제출 — 버튼 R 확인 창의 부수 효과 줄(pipe.side)을 짧게
         toast(`R 을 한 번 더 누르면 ${what} — 유료`
           + (tab ? "" : ` · 지금 큐를 보내지 않음(${scripted ? "스크립트 키 — 큐는 사용자 키 입력만, " : ""}예약만 — 다음 Run 때 과금)`)
+          + (!tab && noReview ? ` · ${why}` : "")
           + (way === "paid" ? " · 승인 제출이라 ComfyUI 탭 그래프의 시드 제어 등 실행마다 바뀌는 값이 한 번 진행됨(그래프는 실행 안 함)" : "")
           + (way === "paid" ? " · 금액은 지금 jobs 기준(Prepare 갈라짐 — Studio 실행 설정이 마지막 Prepare 와 다르면 바뀜)"
             : " · 금액은 지금 jobs 기준(그래프 Prepare 값이 Studio 와 다르면 바뀜)"), "warn");
@@ -581,11 +587,17 @@
     return pipe ? pipe.paidLock() : "";
   }
 
+  function reviewMissing(k = typeof tabLink === "undefined" ? null : tabLink) {
+    return k && k.via === "opener" && Array.isArray(k.reviewRoots) && !k.reviewRoots.includes(ROOT)
+      ? "ComfyUI 탭에 이 프로젝트의 켜진 Review 노드가 없음" : "";
+  }
+
   function tabWay() {
     // R·머리줄 'ComfyUI 큐'가 갈 길: "paid" = 유료 승인을 받는 ComfyUI 탭(opener·채널)이고 서버가 재굴림 템플릿을 낼 수 있음(pipe.paidWhy — 탭 판정 +
     // 마지막 GET /pipeline 의 템플릿 게이트: 실행 설정 미저장·확인 필요·경로 경고·옛 서버면 늘 409·400 이라 S3a 처럼 opener 로), "opener" = opener 탭
     // (Review 부분 실행 — 옛 확장·유료 탭 길이 막힘), "" = 없음
     if (pipe && !pipe.paidWhy()) return "paid";
+    if (reviewMissing()) return "";
     return comfyConnected() ? "opener" : "";
   }
 
@@ -602,13 +614,13 @@
     if (planned === "" && way) toast("다시 생성 예약됨 — R 확인 때 큐를 보낼 탭이 없어 지금 보내지 않음: 머리줄 [다시 생성 보내기]로 보내거나 다음 Run 때 과금", "warn");
     else if (planned && way !== planned) {
       const why = way === "paid" ? "탭이 이제 유료 승인을 받음 — 확인한 Review 부분 실행과 과금 기준이 다름"
-        : (pipe && pipe.paidWhy()) || "이 창을 연 ComfyUI 탭 없음";
+        : [(pipe && pipe.paidWhy()), reviewMissing()].filter(Boolean).join(" · ") || "이 창을 연 ComfyUI 탭 없음";
       toast(`다시 생성 예약됨 — R 확인 뒤 ComfyUI 탭 상태가 바뀌어 지금 보내지 않음(${why}): 머리줄 [다시 생성 보내기]로 보내거나 다음 Run 때 과금`, "warn");
     } else if (held || lock) {
       toast(`다시 생성 예약됨 — 지금 보내지 않음(${lock || "R 확인 때 '지금은 예약만'에 동의함"}): 머리줄 [다시 생성 보내기]로 보내거나 다음 Run 때 과금`, "warn");
     } else if (way === "paid") pipe.reroll();
     else if (way === "opener") queueInComfy();
-    else toast(`다시 생성 예약됨 — Run 실행 때 과금(${(pipe && pipe.paidWhy()) || "큐를 보낼 ComfyUI 탭 없음"})`, "warn");
+    else toast(`다시 생성 예약됨 — Run 실행 때 과금(${[(pipe && pipe.paidWhy()), reviewMissing()].filter(Boolean).join(" · ") || "큐를 보낼 ComfyUI 탭 없음"})`, "warn");
   }
 
   function comfyConnected() {
@@ -619,6 +631,10 @@
   function queueInComfy(layout = false) {
     // layout = 옛 서버 대체(재시작 전 — applyFree) 탭 layout 요청 — ComfyUI 탭은 Review 상류에 Import PSD 가 있을 때만 큐에 넣는다(아니면 그 탭이 알림)
     const op = window.opener;
+    if (reviewMissing()) {
+      toast(`${[(pipe && pipe.paidWhy()), reviewMissing()].filter(Boolean).join(" · ")} — 해당 Review 노드를 실행한 뒤 다시 보내세요(지금은 큐 요청을 보내지 않음)`, "warn");
+      return false;
+    }
     if (op && !op.closed) {
       try {
         op.postMessage({ type: "bmk-dp-queue", rootKey: ROOT, layout }, location.origin);
@@ -628,7 +644,7 @@
         // opener 가 다른 출처로 바뀜 → 아래 안내
       }
     }
-    toast("ComfyUI 탭에서 큐에 넣으세요 — 이 창은 Review 노드의 Open Board 로 열리지 않았습니다", "warn");
+    toast("ComfyUI 탭에서 큐에 넣으세요 — Open Board 또는 메뉴 BMK → Design Patch Studio 로 다시 여세요", "warn");
     return false;
   }
 
@@ -643,6 +659,10 @@
     // 서버는 S3 인데 이 창에 pipeline.js 가 없음 = 이 창이 ComfyUI 재시작 전에 열림(다시 재시작해도 그대로 — 창 새로고침), 그 밖 = 서버가 옛 버전
     const stale = !pipe && !!S && "pipeline_rev" in S;
     const why = stale ? "Studio 창 새로고침 필요(이 창이 ComfyUI 재시작 전에 열려 무료 반영 모듈이 없음)" : "ComfyUI 재시작 필요(서버가 옛 버전)";
+    if (reviewMissing()) {
+      toast(`${[why, pipe && pipe.paidWhy(), reviewMissing()].filter(Boolean).join(" · ")} — 지금 큐 요청을 보내지 않음`, "warn");
+      return;
+    }
     const n = S ? S.pending_preapproved || 0 : 0;
     if (n && !window.confirm(`${why} — 무료 반영 대신 ComfyUI 탭의 Review 부분 실행으로 반영합니다. 대기 다시 생성 ${n}건(사전 승인)도 함께 과금됩니다.`
       + (stale ? " 창을 새로고침하면 무료 반영(다시 생성 과금 없음)을 씁니다." : "") + " 계속할까요?")) return;
@@ -712,6 +732,13 @@
 
   function goMode(m) {
     // 탭: 그 모드로(null = 검토). 마스크 모드는 먼저 나감(적용 안 한 획 확인), 켜는 쪽 set* 이 다른 모드를 끈다
+    if (typeof renderMode === "function") renderMode.initial = false;
+    if (["prepare", "prompt", "generate"].includes(m)) {
+      if (!leaveMask()) return;
+      if (!pipeOn) setPipe(true);
+      if (pipeOn) pipe.showTab(m);
+      return;
+    }
     if (m === curMode()) return;
     if (m === "mask") {
       setMask(true);
@@ -957,7 +984,7 @@
     $("btn-drain").disabled = !S.running;
     const pb = $("btn-pipe");
     pb.disabled = !pipeReady();
-    pb.title = pipeReady() ? "실행 (G) — 실행 설정·무료 반영·비용·승인·채택·★ 점검·Export(탭 불필요), 초안·생성 승인(ComfyUI 탭이 큐에 넣음)"
+    pb.title = pipeReady() ? "준비 (G) — 실행 설정·무료 반영·초안 승인·생성 승인·채택·★ 점검·Export"
       : notReady("진행", "pipeline_rev", pipe);
     const eb = $("btn-edit");
     eb.disabled = !layoutReady();
@@ -981,19 +1008,22 @@
     // 게이트, 그 밖은 link.paidWhy) — 여기는 탭(길·확장 판)과 그동안 R·ComfyUI 큐의 길만
     const why = k.state === "ok" && pipe ? pipe.paidWhy() : k.paidWhy();
     if (k.state === "ok") {
-      const tab = `${k.via === "opener" ? "Open Board 로 연" : "채널로 찾은"} ComfyUI 탭(확장 판 ${k.ext})`;
+      const tab = `${k.via === "opener" ? "Open Board 또는 메뉴 BMK → Design Patch Studio 로 연" : "채널로 찾은"} ComfyUI 탭(확장 판 ${k.ext})`;
       // 그 길이 있어도 이 Studio 가 유료 요청·실행·무료 큐 중이면(paidLock — queueReroll 처럼 길보다 먼저: 자기 승인을 처리하는 탭은 hello busy 라
       // opener 길이 됨) R·ComfyUI 큐는 지금은 예약만
       const lock = pipe && (!why || k.via === "opener") ? pipe.paidLock() : "";
       const held = `다시 생성(R)·[다시 생성 보내기]는 지금은 예약만(${lock} — 머리줄 [다시 생성 보내기] 또는 다음 Run 때 과금)`;
       if (!why) return `${tab} — 초안·생성 승인·다시 생성(R)·[다시 생성 보내기]가 이 탭으로(탭이 서버 템플릿을 큐에 넣음)` + (lock ? `. ${held}` : "");
+      if (reviewMissing(k)) {
+        return `${tab}: ${why}. ${reviewMissing(k)} — 다시 생성(R)·[다시 생성 보내기]는 예약만 되고 다음 Run 때 과금됩니다 — 지금 큐를 보내지 않음`;
+      }
       // 유료 탭 길이 막힘(S3a 판·제출 못 함·큐 처리 중·서버가 템플릿을 못 냄 — tabWay): R·ComfyUI 큐는 opener 면 그 탭의 Review 부분 실행(그래프 위젯
       // 값으로 과금), 채널로만 찾았으면 그 탭에서 직접
       return `${tab}: ${why}. ` + (lock ? held : k.via === "opener" ? "다시 생성(R)·[다시 생성 보내기]는 이 탭의 Review 부분 실행으로(그래프 Prepare 위젯 값으로 과금)"
-        : "이 창은 Open Board 로 열리지 않아 다시 생성(R)·[다시 생성 보내기]는 그 탭에서 직접(R 은 사전 승인만 되고 다음 Run 때 과금)");
+        : "이 창은 Open Board 또는 메뉴 BMK → Design Patch Studio 로 열리지 않아 다시 생성(R)·[다시 생성 보내기]는 그 탭에서 직접(R 은 사전 승인만 되고 다음 Run 때 과금)");
     }
     if (k.state === "old") return why;
-    if (k.state === "many") return "응답한 ComfyUI 탭이 둘 이상이라 어느 탭인지 정할 수 없음 — Review 노드의 Open Board 로 다시 열면 그 탭";
+    if (k.state === "many") return "응답한 ComfyUI 탭이 둘 이상이라 어느 탭인지 정할 수 없음 — Review 노드의 Open Board 또는 메뉴 BMK → Design Patch Studio 로 다시 열면 그 탭";
     if (k.state === "none") return "응답하는 ComfyUI 탭이 없음 — 반영·Export 는 탭 없이 됨, 다시 생성은 ComfyUI 탭에서 큐에 넣어야 함";
     return "ComfyUI 탭에 hello 를 보내는 중";
   }
@@ -1339,6 +1369,7 @@
 
   function onKeyDown(e) {
     if (typing(e.target)) return; // 입력칸(편집기 속성 패널) 포커스: 보드 단축키를 모두 무시 — Enter·Esc 는 입력칸이 처리
+    if (typeof renderMode === "function" && ["KeyE", "KeyT", "KeyG", "KeyK"].includes(e.code)) renderMode.initial = false;
     // 포커스가 남은 data-keys="board" 칸은 키가 값을 바꾸지 않게 기본 동작을 막는다(Home·End·PageUp/Down·화살표·select 글자 찾기 — 바뀌면
     // change 로 회전 점프·다듬기 컷 요청이 말없이 감). 보드·레퍼런스 키 처리는 아래에서 그대로
     if (e.target instanceof Element && e.target.closest('[data-keys="board"]') && !e.ctrlKey && !e.metaKey && e.key !== "Tab") e.preventDefault();
@@ -1483,7 +1514,136 @@
   }
 
   function goProjects() {
-    // 배치 7 공용 자리(감독관 — _proto/STUDIO_BATCH7_SPEC.md D48): 같은 창에서 프로젝트 목록으로. 본문은 7-A 가 채운다(pipe.canLeave 가드).
+    if (maskEd && maskEd.pending.locked && maskEd.pending.locked()) {
+      toast("적용·되돌리기·★ 바꾸기를 처리하는 중 — 끝난 뒤 나가세요", "warn");
+      return;
+    }
+    const gate = pipe && pipe.canLeave ? pipe.canLeave() : { ok: true };
+    if (!gate.ok) {
+      toast(gate.why || gate.reason || "요청을 처리하는 중입니다 — 끝난 뒤 프로젝트를 이동하세요", "warn");
+      return;
+    }
+    const notes = [];
+    if (Array.isArray(gate.confirm)) notes.push(...gate.confirm.filter(Boolean));
+    else if (gate.confirm) notes.push(String(gate.confirm));
+    // 실행 모듈이 있으면 canLeave 가 마스크 획까지 센다(opts.maskPending) — 없을 때만 여기서(같은 내용을 두 번 묻지 않게)
+    const left = !(pipe && pipe.canLeave) && maskEd && maskEd.pending();
+    if (left) notes.push(`적용 안 한 마스크 획 ${left.n}개는 버려집니다 — 이동한 뒤에는 이어서 편집할 수 없습니다.`);
+    const ask = typeof gate.confirm === "string" && notes.length === 1 ? notes[0] : ["프로젝트 목록으로 이동할까요?", ...notes].join("\n");
+    if (notes.length && !window.confirm(ask)) return;
+    const move = () => {
+      // 이동 전용 확인을 이미 받았으므로 마스크 beforeunload 확인을 중복으로 띄우지 않는다.
+      window.removeEventListener("beforeunload", onUnload);
+      location.assign(location.pathname);
+    };
+    if (editor && editor.flush) return editor.flush().then(move, (e) => toast(e.message, "err"));
+    move();
+  }
+
+  async function showProjects() {
+    document.body.classList.add("projects-page");
+    for (const id of ["modebar", "keybar", "btn-projects", "btn-viewer", "btn-queue", "btn-drain", "btn-help"]) $(id).hidden = true;
+    $("proj").textContent = "프로젝트 목록";
+    const page = el("section", "projects-home");
+    page.setAttribute("aria-label", "프로젝트 목록");
+    const tools = el("div", "projects-tools");
+    const search = el("input", "projects-search");
+    search.type = "search";
+    search.placeholder = "프로젝트 이름 검색";
+    search.setAttribute("aria-label", "프로젝트 이름 검색");
+    const reload = el("button", "projects-reload", "새로고침");
+    reload.type = "button";
+    const status = el("p", "projects-status", "프로젝트를 불러오는 중…");
+    status.setAttribute("role", "status");
+    const grid = el("div", "projects-grid");
+    tools.append(search, reload);
+    page.append(tools, status, grid,
+      el("p", "projects-note", "새 프로젝트: ComfyUI Project 노드로 먼저 만드세요."),
+      el("p", "projects-note", "input 밖 프로젝트는 ComfyUI 재시작 뒤 해당 프로젝트 노드를 다시 실행해야 목록에 나타납니다."));
+    $("app").replaceChildren(page);
+    let rows = [];
+    let opening = false;
+
+    function draw() {
+      grid.replaceChildren();
+      const query = search.value.trim().toLocaleLowerCase();
+      const shown = rows.filter((r) => r.name.toLocaleLowerCase().includes(query));
+      status.textContent = shown.length ? `${shown.length}개 프로젝트` : query ? "검색 결과가 없습니다." : "프로젝트가 없습니다 — Project 노드로 먼저 만드세요.";
+      for (const r of shown) {
+        const card = el("article", `projects-card${r.openable ? "" : " projects-unavailable"}`);
+        const picture = el("div", "projects-picture", r.before_import ? "가져오기 전" : "미리보기 없음");
+        if (r.thumb_url) {
+          const img = el("img", "projects-thumb");
+          img.alt = `${r.name} 미리보기`;
+          img.loading = "lazy";
+          img.onerror = () => picture.replaceChildren(el("span", "projects-note", "미리보기 없음"));
+          picture.replaceChildren(img); // lazy 이미지는 DOM 에 붙어 있어야 로딩을 시작한다.
+          img.src = apiUrl(r.thumb_url);
+        }
+        if (r.openable) card.append(picture);
+        card.append(el("h2", "projects-name", r.name));
+        if (r.outside_input) card.append(el("span", "projects-chip", "input 밖"));
+        if (!r.openable) card.append(el("p", "projects-note", r.error));
+        else {
+          card.append(el("p", "projects-counts", `크롭 ${r.crops} · ★ ${r.stars} · 후보 ${r.candidates}`));
+          if (r.before_import) card.append(el("span", "projects-chip", "가져오기 전"));
+          const ex = r.export_last;
+          const state = { same: "Export 뒤 변경 없음", changed: "Export 뒤 변경 있음", unknown: "Export 뒤 변경 여부 알 수 없음" }[r.export_state];
+          card.append(el("p", "projects-note", ex ? `마지막 Export rev ${ex.rev ?? "?"} · ${ex.time || "시각 알 수 없음"}` : "Export 기록 없음"));
+          if (state) card.append(el("p", "projects-note", state));
+          card.append(el("p", "projects-note", `수정 ${r.modified}`));
+          const open = el("button", "projects-open", "열기");
+          open.type = "button";
+          open.disabled = opening;
+          open.setAttribute("aria-label", `${r.name} 프로젝트 열기`);
+          open.addEventListener("click", async () => {
+            if (opening) return;
+            opening = true;
+            reload.disabled = true;
+            draw();
+            status.textContent = `${r.name} 여는 중…`;
+            try {
+              const response = await fetch(apiUrl("projects/open"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: r.id }) });
+              const result = await readJson(response);
+              if (response.status === 404 && result.unreadable) throw new Error("ComfyUI 재시작 필요 — 프로젝트 열기 기능을 찾을 수 없습니다 (HTTP 404)");
+              if (!response.ok || !result.ok || result.key !== r.id) throw new Error(result.error || "프로젝트를 열지 못했습니다");
+              location.assign(`?root=${encodeURIComponent(result.key)}`);
+            } catch (e) {
+              opening = false;
+              reload.disabled = false;
+              draw();
+              status.textContent = e.message;
+              toast(e.message, "warn");
+            }
+          });
+          card.append(open);
+        }
+        grid.append(card);
+      }
+    }
+
+    async function load() {
+      if (opening) return;
+      reload.disabled = true;
+      search.disabled = true;
+      status.textContent = "프로젝트를 불러오는 중…";
+      try {
+        const response = await fetch(apiUrl("projects"), { cache: "no-store" });
+        const result = await readJson(response);
+        if (response.status === 404 && result.unreadable) throw new Error("ComfyUI 재시작 필요 — 프로젝트 목록 기능을 찾을 수 없습니다 (HTTP 404)");
+        if (!response.ok || !Array.isArray(result.projects)) throw new Error(result.error || "프로젝트 목록을 불러오지 못했습니다");
+        rows = result.projects;
+        draw();
+      } catch (e) {
+        status.textContent = e.message;
+      } finally {
+        reload.disabled = false;
+        search.disabled = false;
+      }
+    }
+    search.addEventListener("input", draw);
+    reload.addEventListener("click", load);
+    await load();
   }
 
   function wireButtons() {
@@ -1505,8 +1665,17 @@
     on("btn-review", () => goMode(null));
     on("btn-edit", () => goMode("edit"));
     on("btn-refs", () => goMode("refs"));
-    on("btn-pipe", () => goMode("pipe"));
+    on("btn-pipe", () => goMode("prepare"));
+    on("btn-prompt", () => goMode("prompt"));
+    on("btn-generate", () => goMode("generate"));
     on("btn-mask", () => goMode("mask"));
+    on("btn-export", () => pipe && pipe.exportNow());
+    const exportMenu = $("export-menu");
+    on("btn-export-folder", () => { exportMenu.open = false; if (pipe) pipe.openFolder(); });
+    on("btn-export-settings", () => { exportMenu.open = false; if (pipe) pipe.goSection({ tab: "generate", section: "Export" }); });
+    document.addEventListener("click", (e) => {
+      if (exportMenu.open && !exportMenu.contains(e.target)) exportMenu.open = false;
+    }, true);
     on("btn-keys", () => {
       const off = !document.body.classList.contains("no-keys");
       document.body.classList.toggle("no-keys", off);
@@ -1618,28 +1787,68 @@
     const d = $("mode-title");
     d.textContent = m[2]; // 이름은 탭이 보임(배치 2a)
     d.title = `${m[1]} — ${m[2]}`;
-    const tab = { mask: "btn-mask", pipe: "btn-pipe", refs: "btn-refs", editing: "btn-edit" }[m[0]] || "btn-review";
-    for (const id of ["btn-review", "btn-edit", "btn-refs", "btn-pipe", "btn-mask"]) {
+    const sub = pipe && pipe.tab ? pipe.tab() : "prepare";
+    const tab = { mask: "btn-mask", pipe: { prompt: "btn-prompt", generate: "btn-generate" }[sub] || "btn-pipe", refs: "btn-refs", editing: "btn-edit" }[m[0]] || "btn-review";
+    const ids = ["btn-pipe", "btn-edit", "btn-refs", "btn-prompt", "btn-generate", "btn-review", "btn-mask"];
+    const steps = pipe && pipe.steps ? pipe.steps() : null;
+    for (const id of ids) {
       $(id).classList.toggle("on", id === tab);
       $(id).setAttribute("aria-selected", String(id === tab));
+      const state = steps && steps.stages[ids.indexOf(id)];
+      const dot = $(id).querySelector(".step-state");
+      if (dot) {
+        const n = state && state.value.match(/(?:필요|대기|진행) (\d+)/);
+        dot.textContent = !state ? "?" : state.state === "done" ? "✓" : state.state === "warn" ? "경고"
+          : state.state === "unknown" ? "?" : state.state === "optional" ? "선택" : n && Number(n[1]) > 0 ? `대기 ${n[1]}` : "대기";
+        dot.className = `step-state ${state ? state.state : "unknown"}`;
+        dot.title = state ? `전체 기준 · ${state.value}` : "전체 기준 · 계획을 받는 중";
+      }
     }
+    for (const id of ["btn-prompt", "btn-generate"]) {
+      $(id).disabled = !pipeReady();
+      $(id).title = pipeReady() ? `${id === "btn-prompt" ? "프롬프트" : "생성"} — 실행 하위 탭` : notReady("실행", "pipeline_rev", pipe);
+    }
+    const ex = $("btn-export");
+    const why = pipe && pipe.exportWhy ? pipe.exportWhy() : "실행 설정을 받는 중";
+    ex.disabled = pipe && pipe.exportLocked ? pipe.exportLocked() : !!why;
+    ex.classList.toggle("export-settings-needed", !!why && !ex.disabled);
+    ex.title = why || "무료 Export — 마지막 반영으로 PSD 출력";
+    const last = S && S.export_last;
+    $("export-state").textContent = last ? `r${last.rev} · ${S.export_state === "same" ? "변경 없음" : "다시 Export 필요"}`
+      : steps && steps.export.state !== "todo" ? steps.export.value : "Export 없음";
     const key = m[0] === "refs" && refTab === "grid" ? "refsGrid" : { mask: "mask", pipe: "pipe", refs: "refs", editing: "edit" }[m[0]] || "review";
     if (renderMode.key !== key) {
       renderMode.key = key;
       renderKeys(key);
+      $("keybar").prepend(d);
+    }
+    if (renderMode.initial && curMode() !== null) renderMode.initial = false;
+    if (renderMode.initial && steps && steps.ready) {
+      renderMode.initial = false;
+      const first = steps.stages.slice(0, 3).findIndex((s) => s.state === "todo" || s.state === "warn");
+      if (first >= 0) goMode(["prepare", "edit", "refs"][first]);
     }
   }
 
   function fatal(msg) {
     const app = $("app");
-    app.replaceChildren(el("p", "fatal", msg));
+    const retry = el("button", "", "다시 불러오기");
+    retry.type = "button";
+    retry.addEventListener("click", () => location.reload());
+    app.replaceChildren(el("p", "fatal", msg), retry);
+    fatal.active = true;
   }
 
   async function main() {
-    if (!/^[0-9a-f]{12}$/.test(ROOT)) {
-      fatal("root 파라미터가 없거나 잘못되었습니다 — ComfyUI 의 BMK Design Patch Review 노드에서 Open Board 로 여세요.");
+    if (!ROOT) {
+      await showProjects();
       return;
     }
+    if (!/^[0-9a-f]{12}$/.test(ROOT)) {
+      fatal("root 파라미터가 잘못되었습니다 — Open Board 또는 메뉴 BMK → Design Patch Studio 로 여세요.");
+      return;
+    }
+    $("btn-projects").hidden = false;
     if (loadPref().viewer === false) document.body.classList.add("no-viewer");
     if (loadPref().keys === false) document.body.classList.add("no-keys");
     renderMode();
@@ -1680,6 +1889,9 @@
           if (mode === "refs" && refsOn && cropId) refEd.select(cropId);
         },
         refresh: () => refresh(true),
+        stepsChanged: renderMode,
+        maskPending: () => maskEd && maskEd.pending(),
+        editPending: () => !!S && window.DPPipeline.layoutLines(S).length > 0,
         select: (id) => {
           const t = S ? S.targets.find((x) => x.crop_id === id) : null;
           if (t) selectTarget(t.key);
@@ -1721,7 +1933,14 @@
     if (!S) {
       const s = $("status");
       fatal(s.textContent || "상태를 불러오지 못했습니다");
+      schedule();
       return;
+    }
+    const requested = new URLSearchParams(location.search).get("mode");
+    if (["prepare", "prompt", "generate", "edit", "refs", "pipe", "mask", "review"].includes(requested)) goMode(requested === "review" ? null : requested);
+    else if (!S.targets.some((t) => (t.candidates || []).length)) {
+      renderMode.initial = true;
+      renderMode();
     }
     schedule();
   }
