@@ -629,3 +629,20 @@ body.pipe .proj { min-width: 0; overflow: hidden; text-overflow: ellipsis; white
 
 .fatal { margin: 40px; font-size: 15px; color: var(--bad); }
 body.busy { cursor: progress; }
+/* 배치 7-B: 전체 단계, 실행 하위 탭, 기록된 프롬프트 */
+.modebar { flex-wrap: wrap; }
+.modebar .tabs { flex-wrap: wrap; }
+.step-state { margin-left: 4px; font-size: 11px; color: #b3a58a; }
+.step-state.done { color: #83cfac; }
+.step-state.warn { color: #efb475; }
+.step-state.optional { opacity: .5; }
+.keybar .mode-title { flex: 0 1 auto; font-size: 12px; margin-right: 12px; }
+.pp-tabs, .pp-common { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0; }
+.pp-tabs button.on { background: #364b62; border-color: #80add8; }
+#pipe-panel[data-tab="prepare"] > [data-tab]:not([data-tab="prepare"]),
+#pipe-panel[data-tab="prompt"] > [data-tab]:not([data-tab="prompt"]),
+#pipe-panel[data-tab="generate"] > [data-tab]:not([data-tab="generate"]) { display: none; }
+.pp-prompt { white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; font: inherit; line-height: 1.6; padding: 10px; background: #191e25; }
+.export-menu { position: relative; }
+.export-menu summary { cursor: pointer; list-style: none; padding: 6px; }
+.export-menu > div { position: absolute; right: 0; top: 100%; z-index: 30; display: grid; gap: 5px; padding: 8px; min-width: 145px; background: #202832; border: 1px solid #536173; }

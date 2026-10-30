@@ -5500,7 +5500,44 @@ async def projects_thumb_handler(request: web.Request) -> web.StreamResponse:
 
 @_guard
 async def prompt_handler(request: web.Request) -> web.StreamResponse:
-    raise _Reject(501, "프롬프트 보기는 아직 준비 중입니다(배치 7-B)")
+    root = _root_param(request.query.get("root"))
+    cid = request.query.get("crop")
+    if not isinstance(cid, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", cid):
+        raise _Reject(400, "crop 형식이 잘못되었습니다")
+
+    def read():
+        try:
+            from . import bmk_design_patch_prompt_ko as ko
+        except ImportError:
+            import bmk_design_patch_prompt_ko as ko
+        m = store.load_manifest(root)
+        crop = _crop(m, cid)
+        if crop is None:
+            raise _Reject(404, "크롭이 없습니다")
+        labels = {t["tid"]: t.get("label") or t.get("name_en") or t["tid"] for t in crop.get("targets", [])}
+        spec_error = None
+        try:
+            spec = store.load_spec_override(root, cid)
+        except (ValueError, OSError):
+            spec, spec_error = {}, "현재 스펙의 검토 메모를 읽지 못했습니다. 기록된 프롬프트는 그대로 표시합니다."
+        notes = {}
+        for t in spec.get("targets", []) if isinstance(spec.get("targets", []), list) else []:
+            if isinstance(t, dict) and isinstance(t.get("_review"), dict):
+                notes[str(t.get("id"))] = t["_review"].get("note") or ""
+        jobs = []
+        for job in m.get("jobs", []):
+            if job.get("crop_id") != cid:
+                continue
+            tids = [t for t in str(job.get("tid") or "").split(",") if t]
+            prompt = job.get("prompt", "")
+            version = job.get("template_version")
+            jobs.append({"variant": job.get("variant"), "tids": tids, "prompt": prompt,
+                         "template_version": version, "prompt_ko": ko.explain(prompt, version, tids, labels)})
+        return {"crop": cid, "name": crop.get("name") or cid, "rev": m.get("rev"), "jobs": jobs,
+                "targets": [{"tid": tid, "label": label, "note": notes.get(tid, "")} for tid, label in labels.items()],
+                "spec_error": spec_error}
+
+    return _json(await asyncio.to_thread(read))
 
 
 _ROUTES = (

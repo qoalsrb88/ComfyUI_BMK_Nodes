@@ -33,19 +33,26 @@
   <button type="button" id="btn-help" tabindex="-1" title="단축키 (?)">?</button>
 </header>
 
-<nav id="modebar" class="modebar" aria-label="모드">
+<nav id="modebar" class="modebar" aria-label="작업 단계">
   <div class="tabs" role="tablist">
-    <button type="button" role="tab" id="btn-review" class="tab" tabindex="-1" title="검토 — 모드 키(E·T·G·K)를 다시 눌러도 돌아옴">검토</button>
-    <button type="button" role="tab" id="btn-edit" class="tab" tabindex="-1" disabled title="크롭 편집 (E)">크롭 편집</button>
-    <button type="button" role="tab" id="btn-refs" class="tab" tabindex="-1" disabled title="레퍼런스 (T)">레퍼런스</button>
-    <button type="button" role="tab" id="btn-pipe" class="tab" tabindex="-1" disabled title="실행 (G)">실행</button>
-    <button type="button" role="tab" id="btn-mask" class="tab" tabindex="-1" disabled title="마스크 (K)">마스크</button>
+    <button type="button" role="tab" id="btn-pipe" class="tab" tabindex="-1" disabled title="준비 (G)">① 준비 <span class="step-state">?</span></button>
+    <button type="button" role="tab" id="btn-edit" class="tab" tabindex="-1" disabled title="크롭 편집 (E)">② 크롭 <span class="step-state">?</span></button>
+    <button type="button" role="tab" id="btn-refs" class="tab" tabindex="-1" disabled title="레퍼런스 (T)">③ 레퍼런스 <span class="step-state">?</span></button>
+    <button type="button" role="tab" id="btn-prompt" class="tab" tabindex="-1" disabled title="프롬프트 (G)">④ 프롬프트 <span class="step-state">?</span></button>
+    <button type="button" role="tab" id="btn-generate" class="tab" tabindex="-1" disabled title="생성 (G)">⑤ 생성 <span class="step-state">?</span></button>
+    <button type="button" role="tab" id="btn-review" class="tab" tabindex="-1" title="검토 — 모드 키(E·T·G·K)를 다시 눌러도 돌아옴">⑥ 검토 <span class="step-state">?</span></button>
+    <button type="button" role="tab" id="btn-mask" class="tab" tabindex="-1" disabled title="마스크 (K)">⑦ 마스크 <span class="step-state">선택</span></button>
   </div>
-  <div id="mode-title" class="mode-title"></div>
   <div class="spacer"></div>
+  <span id="export-state" class="chip"></span>
+  <button type="button" id="btn-export" tabindex="-1" disabled>Export</button>
+  <details class="export-menu"><summary title="Export 메뉴">▾</summary><div>
+    <button type="button" id="btn-export-folder">출력 폴더 열기</button>
+    <button type="button" id="btn-export-settings">Export 설정</button>
+  </div></details>
   <button type="button" id="btn-keys" class="keys-toggle" tabindex="-1" title="단축키 줄 접기/펴기">⌨ 단축키</button>
 </nav>
-<div id="keybar" class="keybar" aria-label="이 모드의 단축키 — 눌러도 됨"></div>
+<div id="keybar" class="keybar" aria-label="이 모드의 단축키 — 눌러도 됨"><div id="mode-title" class="mode-title"></div></div>
 
 <main id="app">
   <aside id="targets" aria-label="크롭·타깃 목록">
