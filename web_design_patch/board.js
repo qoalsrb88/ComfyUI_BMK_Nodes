@@ -1526,9 +1526,11 @@
     const notes = [];
     if (Array.isArray(gate.confirm)) notes.push(...gate.confirm.filter(Boolean));
     else if (gate.confirm) notes.push(String(gate.confirm));
-    const left = maskEd && maskEd.pending();
+    // 실행 모듈이 있으면 canLeave 가 마스크 획까지 센다(opts.maskPending) — 없을 때만 여기서(같은 내용을 두 번 묻지 않게)
+    const left = !(pipe && pipe.canLeave) && maskEd && maskEd.pending();
     if (left) notes.push(`적용 안 한 마스크 획 ${left.n}개는 버려집니다 — 이동한 뒤에는 이어서 편집할 수 없습니다.`);
-    if (notes.length && !window.confirm(["프로젝트 목록으로 이동할까요?", ...notes].join("\n"))) return;
+    const ask = typeof gate.confirm === "string" && notes.length === 1 ? notes[0] : ["프로젝트 목록으로 이동할까요?", ...notes].join("\n");
+    if (notes.length && !window.confirm(ask)) return;
     const move = () => {
       // 이동 전용 확인을 이미 받았으므로 마스크 beforeunload 확인을 중복으로 띄우지 않는다.
       window.removeEventListener("beforeunload", onUnload);

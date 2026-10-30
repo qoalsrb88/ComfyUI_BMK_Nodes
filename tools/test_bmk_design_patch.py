@@ -51452,9 +51452,15 @@ function browser(root = "") {
   c.T.set({canLeave:()=>({ok:false,why:"승인 응답 대기"})},null,null);
   c.T.goProjects();
   test("승인 대기 이동 차단", c.moves.length===0 && c.confirms.length===0 && c.els.toast.textContent==="승인 응답 대기");
-  c.T.set({canLeave:()=>({ok:true,confirm:"저장 전 설정"})},{pending:()=>({n:3})},null);
+  // 통합(7-A × 7-B): 실행 모듈의 canLeave 가 마스크 획까지 담아 한 문구로 돌려준다 — goProjects 는 그 문구 하나로 한 번만 묻는다
+  c.T.set({canLeave:()=>({ok:true,confirm:"저장하지 않은 실행 설정 · 적용하지 않은 마스크 획이 있습니다. 프로젝트를 이동하면 저장하지 않은 내용이 사라집니다. 이동할까요?"})},{pending:()=>({n:3})},null);
   c.window.confirm=s=>(c.confirms.push(s),false); c.T.goProjects();
-  test("이동 취소·마스크 전용 문구", c.moves.length===0 && c.confirms[0].includes("버려집니다") && !c.confirms[0].includes("K 로 돌아오면"));
+  test("이동 취소·마스크 전용 문구", c.moves.length===0 && c.confirms.length===1 && c.confirms[0].includes("마스크 획")
+    && c.confirms[0].split("마스크 획").length===2 && c.confirms[0].split("이동할까요").length===2 && !c.confirms[0].includes("K 로 돌아오면"));
+  const solo=browser(key);  // 실행 모듈이 없으면(옛 화면) goProjects 가 마스크 획을 직접 센다
+  solo.T.set(null,{pending:()=>({n:3})},null);
+  solo.window.confirm=s=>(solo.confirms.push(s),false); solo.T.goProjects();
+  test("실행 모듈 없을 때 마스크 획 문구", solo.moves.length===0 && solo.confirms[0].includes("버려집니다"));
   c.window.confirm=s=>(c.confirms.push(s),true); c.T.goProjects();
   test("목록 이동은 같은 창", c.moves[0]===c.ctx.location.pathname);
   c.T.set({paidWhy:()=>"막힘",paidLock:()=>""},null,{state:"ok",ext:4,via:"opener",reviewRoots:[]});
