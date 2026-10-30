@@ -2533,6 +2533,7 @@ def _board_key(root: str) -> str:
     key = store.root_key(root)
     if store.resolve_board_root(key) is None:
         key = store.register_root(root)
+        _restore_board_prefs()
     return key
 
 

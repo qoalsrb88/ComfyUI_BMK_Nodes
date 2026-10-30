@@ -10637,6 +10637,12 @@ def m2_node_unit():
         check(bd._root_param(sibling_key) == sibling and bd._PREF.get(sibling_key) == sibling_pref
               and bd.build_state(bd._root_param(sibling_key))["root_key"] == sibling_key,
               "7A-R6 Review 등록으로 복구된 형제의 직접 URL: 목록 open 없이 _PREF 복구·state 조회")
+        st._ROOTS.pop(st.root_key(root))
+        st._ROOTS.pop(sibling_key)
+        bd._PREF.pop(sibling_key)
+        check(dp._board_key(root) == st.root_key(root) and bd._root_param(sibling_key) == sibling
+              and bd._PREF.get(sibling_key) == sibling_pref,
+              "7A-R3-5 Run·Spec Draft 공용 _board_key 등록 분기도 형제 설정 복구")
         hb, rep_rv = out["result"]
         bu = out["ui"]["bmk_dp_board"][0]
         th_dir = Path(root) / "derived" / "thumbs"
@@ -29445,6 +29451,7 @@ await scenario("applyFree", async () => {  // board.js applyFree: 옛 서버(sta
     const vctx = vm.createContext({ S, pipe: pipeRes === undefined ? null : { queue: async (st) => { c.pipe += 1; c.stage = st; return pipeRes; } },
       window: { confirm: (m) => { c.confirms.push(m); return ok; } }, toast: (m, k) => c.toasts.push(`${k || ""}:${m}`),
       queueInComfy: (layout) => { c.comfy.push(layout); return true; } });
+    vm.runInContext(`reviewMissing = ${boardFn("reviewMissing")};`, vctx);
     await vm.runInContext(`(${src})`, vctx)();
     return c;
   };
@@ -29471,7 +29478,7 @@ await scenario("rerollTab", async () => {  // board.js reroll(r1-04·S3b 계약 
       pipe: { applyWarn: () => ["prepare.n: 마지막 Prepare 4 · Studio 2 — 갈라짐 줄"], paidWhy: () => "ComfyUI 탭이 큐를 처리하는 중",
         paidLock: () => lock, side: "부수 효과 줄" },
       write: async (path) => { c.writes.push(path); return { variant: "V1", cell_pending: 1, pending_calls: 1 }; }, queueReroll: (...a) => c.queued.push(a) });
-    vm.runInContext(`busy = false; rerollSent = null; cellPre = ${boardFn("cellPre")}; rerollHold = ${boardFn("rerollHold")}`, rc); // 키보드 R 거절(사용성 §12 — 이 셀 대기·실행 중·이 Studio 유료 요청 중)
+    vm.runInContext(`reviewMissing = ${boardFn("reviewMissing")}; busy = false; rerollSent = null; cellPre = ${boardFn("cellPre")}; rerollHold = ${boardFn("rerollHold")}`, rc); // 키보드 R 거절(사용성 §12 — 이 셀 대기·실행 중·이 Studio 유료 요청 중)
     return [c, vm.runInContext(`(${src})`, rc)];
   };
   const one = async (way, fromButton, lock = "") => {
@@ -29500,7 +29507,7 @@ await scenario("rerollQueue", async () => {  // board.js queueReroll(planned, he
     const pipe = o.pipe === null ? null : { paidWhy: () => o.why || "", paidLock: () => o.lock || "", reroll: () => { c.reroll += 1; } };
     const qc = vm.createContext({ pipe, comfyConnected: () => !!o.opener, queueInComfy: () => { c.comfy += 1; return true; },
       toast: (m, k) => c.toasts.push(`${k || ""}:${m}`) });
-    vm.runInContext(`tabWay = ${boardFn("tabWay")}; queueReroll = ${boardFn("queueReroll")};`, qc);
+    vm.runInContext(`reviewMissing = ${boardFn("reviewMissing")}; tabWay = ${boardFn("tabWay")}; queueReroll = ${boardFn("queueReroll")};`, qc);
     qc.queueReroll(...o.args);
     return Object.assign(c, { way: qc.tabWay() });
   };
@@ -31065,7 +31072,7 @@ await scenario("tabBadge", async () => {  // board.js 머리줄 탭 배지(§3.8
   const bc = vm.createContext({ document: doc, $: (id) => (els[id] ??= doc.createElement("div")), comfyConnected: () => true, credits: () => "",
     pipeReady: () => true, layoutReady: () => true, refsReady: () => true, tabLink: null, pipe: null,
     S: { project: "261014_Test", crops: [], counts: { targets: 0, candidates: 0, picks: 0 }, cost: { calls: 0 } } });
-  vm.runInContext(`el = ${boardFn("el")}; TAB_BADGE = ${m ? m[1] : "{}"}; tabTitle = ${boardFn("tabTitle")}; renderHeader = ${boardFn("renderHeader")};`
+  vm.runInContext(`reviewMissing = ${boardFn("reviewMissing")}; el = ${boardFn("el")}; TAB_BADGE = ${m ? m[1] : "{}"}; tabTitle = ${boardFn("tabTitle")}; renderHeader = ${boardFn("renderHeader")};`
     + ` tabKey = ${boardFn("tabKey") || "null"};`, bc);
   // 실제 link 객체(hello 를 보내지 않는 창 — 상태만 바꿔 씀): 제목의 이유 문장 = link.paidWhy(r1-26 — 승인 단추 제목과 같은 문장)
   const lk = P.link({ location: { origin: ORIGIN }, opener: null, addEventListener() {} }, () => {}, 1e9, 1e9);
@@ -37242,7 +37249,7 @@ await scenario("reroll", async () => {  // board.js queueReroll(R 뒤·머리줄
   const calls = { comfy: 0, toasts: [] };
   const way = vm.createContext({ tabLink: env.link, pipe: env.pipe, comfyConnected: () => false, queueInComfy: () => { calls.comfy += 1; return true; },
     toast: (m, k) => calls.toasts.push(`${k || ""}:${m}`) });
-  vm.runInContext(`tabWay = ${boardFn("tabWay")}; queueReroll = ${boardFn("queueReroll")};`, way);
+  vm.runInContext(`reviewMissing = ${boardFn("reviewMissing")}; tabWay = ${boardFn("tabWay")}; queueReroll = ${boardFn("queueReroll")};`, way);
   const r = { way: way.tabWay() };
   way.queueReroll();
   r.paying = { head: env.head.textContent, lock: env.pipe.paidLock() };  // r2-15 탭 응답을 기다리는 동안(확인 창 없음 — '승인 — 확인' 아님)
@@ -37542,7 +37549,7 @@ await scenario("gate", async () => {  // r1-09: 서버가 유료 템플릿을 �
     const calls = { comfy: 0, toasts: [], confirms: [] };
     const c = vm.createContext({ tabLink: env.link, pipe: env.pipe, comfyConnected: () => false, queueInComfy: () => { calls.comfy += 1; return true; },
       toast: (m, k) => calls.toasts.push(`${k || ""}:${m}`) });
-    vm.runInContext(`tabWay = ${boardFn("tabWay")}; queueReroll = ${boardFn("queueReroll")}; tabTitle = ${boardFn("tabTitle")};`, c);
+    vm.runInContext(`reviewMissing = ${boardFn("reviewMissing")}; tabWay = ${boardFn("tabWay")}; queueReroll = ${boardFn("queueReroll")}; tabTitle = ${boardFn("tabTitle")};`, c);
     // r2-05 머리줄 탭 배지 제목(tabTitle)도 이 판정(실제 link·pipe — 서버 템플릿 게이트)
     const r = { why: env.pipe.paidWhy(), none: c.tabWay(), run: env.btn("생성 승인"), title: c.tabTitle(env.link) };
     if (send) {
@@ -37551,7 +37558,7 @@ await scenario("gate", async () => {  // r1-09: 서버가 유료 템플릿을 �
         window: { confirm: (m) => { calls.confirms.push(m); return true; } }, toast: c.toast, rerollCell: () => ({ cell_key: "abcdef0123456789", variant: "V1" }),
         usd: () => " ≈ $0.62", curTarget: () => ({ crop_id: "001_38a818" }), tabWay: c.tabWay, tabLink: env.link, pipe: env.pipe,
         write: async () => ({}), queueReroll: c.queueReroll });
-      vm.runInContext(`cellPre = ${boardFn("cellPre")}`, rc); // 단추 확인 창 누적 줄(사용성 §12)
+      vm.runInContext(`reviewMissing = ${boardFn("reviewMissing")}; cellPre = ${boardFn("cellPre")}`, rc); // 단추 확인 창 누적 줄(사용성 §12)
       await vm.runInContext(`(${boardFn("reroll")})`, rc)(true);
       c.queueReroll();
       c.comfyConnected = () => true;
@@ -37618,12 +37625,12 @@ await scenario("rerollHeld", async () => {  // r2-01·r2-09: R 확인 때 이 St
     const k = { comfy: 0, timers: [], confirms: [] };
     const c = vm.createContext({ tabLink: env.link, pipe: env.pipe, comfyConnected: () => opener, queueInComfy: () => { k.comfy += 1; return true; },
       toast: (m, t) => env.toasts.push(`${t || ""}:${m}`) });
-    vm.runInContext(`tabWay = ${boardFn("tabWay")}; queueReroll = ${boardFn("queueReroll")}; tabTitle = ${boardFn("tabTitle")};`, c);
+    vm.runInContext(`reviewMissing = ${boardFn("reviewMissing")}; tabWay = ${boardFn("tabWay")}; queueReroll = ${boardFn("queueReroll")}; tabTitle = ${boardFn("tabTitle")};`, c);
     const rc = vm.createContext({ S: { crops: [] }, LAYOUT_STATUS: {}, REROLL_CONFIRM_MS: 2500, rerollArm: null, Date, setTimeout: (fn) => k.timers.push(fn),
       window: { confirm: (m) => { k.confirms.push(m); return true; } }, toast: c.toast, rerollCell: () => ({ cell_key: "abcdef0123456789", variant: "V1" }),
       usd: () => " ≈ $0.62", curTarget: () => ({ crop_id: "001_38a818" }), tabWay: c.tabWay, tabLink: env.link, pipe: env.pipe,
       write: async () => ({}), queueReroll: c.queueReroll });
-    vm.runInContext(`busy = false; rerollSent = null; cellPre = ${boardFn("cellPre")}; rerollHold = ${boardFn("rerollHold")}`, rc); // 키보드 R 거절(사용성 §12)
+    vm.runInContext(`reviewMissing = ${boardFn("reviewMissing")}; busy = false; rerollSent = null; cellPre = ${boardFn("cellPre")}; rerollHold = ${boardFn("rerollHold")}`, rc); // 키보드 R 거절(사용성 §12)
     return Object.assign(k, { c, reroll: vm.runInContext(`(${boardFn("reroll")})`, rc) });
   };
   const r = {};
@@ -38454,7 +38461,7 @@ function board(w) {
   w.review = 0;
   const c = vm.createContext({ ROOT: KEY, tabLink: w.link, pipe: w.pipe, comfyConnected: () => !!w.win.opener, queueInComfy: () => { w.review += 1; return true; },
     toast: (m, k) => w.toasts.push(`${k || ""}:${m}`) });
-  vm.runInContext(`tabWay = ${boardFn("tabWay")}; queueReroll = ${boardFn("queueReroll")};`, c);
+  vm.runInContext(`reviewMissing = ${boardFn("reviewMissing")}; tabWay = ${boardFn("tabWay")}; queueReroll = ${boardFn("queueReroll")};`, c);
   return c;
 }
 
@@ -38605,7 +38612,7 @@ await scenario("rerollMoved", async () => {
     window: { confirm: () => true }, toast: b.toast, rerollCell: () => ({ cell_key: "abcdef0123456789", variant: "V1" }), usd: () => " ≈ $0.62",
     curTarget: () => ({ crop_id: "001_38a818" }), tabWay: b.tabWay, tabLink: w.link, pipe: w.pipe,
     write: async (path) => { writes.push(path); return {}; }, queueReroll: (x) => { planned.push(x); b.queueReroll(x); } });
-  vm.runInContext(`busy = false; rerollSent = null; cellPre = ${boardFn("cellPre")}; rerollHold = ${boardFn("rerollHold")}`, rc); // 키보드 R 거절(사용성 §12)
+  vm.runInContext(`reviewMissing = ${boardFn("reviewMissing")}; busy = false; rerollSent = null; cellPre = ${boardFn("cellPre")}; rerollHold = ${boardFn("rerollHold")}`, rc); // 키보드 R 거절(사용성 §12)
   const reroll = vm.runInContext(`(${boardFn("reroll")})`, rc);
   await reroll(false);
   await busy(true);
@@ -39326,7 +39333,7 @@ await scenario("rerollHold", async () => {
         return { rev: serverRev, variant: "V1", cell_pending: 1, pending_calls: 1 };
       },
       queueReroll: (...a) => c.queued.push(a) });
-    vm.runInContext(`usd = ${boardFn("usd")}; cellPre = ${boardFn("cellPre")}; rerollHold = ${boardFn("rerollHold")}; reroll = ${boardFn("reroll")};`, ctx);
+    vm.runInContext(`reviewMissing = ${boardFn("reviewMissing")}; usd = ${boardFn("usd")}; cellPre = ${boardFn("cellPre")}; rerollHold = ${boardFn("rerollHold")}; reroll = ${boardFn("reroll")};`, ctx);
     for (const k of seq) {
       if (typeof k === "function") k(ctx, cell, () => serverRev);
       else await ctx.reroll(k === "B", false);
@@ -51263,7 +51270,7 @@ class E {
 function browser(root = "") {
   const els = {}, moves = [], calls = [], messages = [], confirms = [];
   const location = {origin:"http://offline", pathname:"/prefix/bmk/design_patch/board/", search:root ? "?root="+root : "",
-    href:"http://offline/prefix/bmk/design_patch/board/"+(root ? "?root="+root : ""), assign: v => moves.push(v)};
+    href:"http://offline/prefix/bmk/design_patch/board/"+(root ? "?root="+root : ""), assign: v => moves.push(v), reload:()=>moves.push("reload")};
   const document = {body:new E("body"), createElement:t=>new E(t), getElementById:id=>els[id] ||= new E("div")};
   const window = {location, opener:{closed:false, postMessage:d=>messages.push(d)}, confirm:s=>(confirms.push(s), true),
     removeEventListener:()=>{}, addEventListener:()=>{}};
@@ -51271,13 +51278,15 @@ function browser(root = "") {
   const ctx = {window, document, location, URL, URLSearchParams, console, setTimeout:()=>0, clearTimeout:()=>{},
     fetch: async (u, init) => { calls.push([u,init]); return {ok:status===200, status, json:async()=>{ if(response instanceof Error) throw response; return response; }}; }};
   vm.createContext(ctx);
-  vm.runInContext(read("web_design_patch/board.js").replace("  main();", `globalThis.T = { main, showProjects, goProjects, queueInComfy, tabWay, tabTitle, fatal, reroll, queueReroll,
+  vm.runInContext(read("web_design_patch/board.js").replace("  main();", `globalThis.T = { main, showProjects, goProjects, queueInComfy, tabWay, tabTitle, fatal, reroll, queueReroll, applyFree, refresh,
     set: (p,m,t) => { pipe=p; maskEd=m; tabLink=t; },
     prepareReroll: (cell, save) => { rerollCell=()=>cell; S={crops:[],rev:1}; write=save; } };`), ctx);
   return {ctx, T:ctx.T, els, moves, calls, messages, confirms, window, response:(r,s=200)=>{response=r;status=s;}};
 }
 (async () => {
-  let extension, opened = [], focus = 0, win = {location:{href:"about:blank", assign(v){this.href=v;}}, focus(){focus++;}};
+  let extension, opened = [], focus = 0, reloads = 0, fatalPage = false;
+  let win = {location:{href:"about:blank", assign(v){this.href=v;}, reload(){reloads++;}},
+    document:{querySelector:s=>s===".fatal"&&fatalPage ? {} : null}, focus(){focus++;}};
   const nodes = [0, 2, 4, 0].map((mode,i)=>({id:i, type:"BMKDesignPatchReview",mode,properties:{bmk_dp_root_key:i===3?key:"123456789ab"+i}}));
   const notices=[];
   const ex = {app:{registerExtension:e=>extension=e, graph:{nodes},extensionManager:{toast:{add:n=>notices.push(n.detail)}}}, api:{fileURL:p=>"/prefix"+p}, console, URL,
@@ -51298,12 +51307,22 @@ function browser(root = "") {
   const same=win.location.href, priorFocus=focus;
   vm.runInContext('openBoard(app.graph.nodes[3])',ex);
   test("7A-R3 Open Board 같은 root 재클릭은 focus만",win.location.href===same&&focus===priorFocus+1&&notices.length===0);
+  fatalPage=true;vm.runInContext('openBoard(app.graph.nodes[3])',ex);
+  test("7A-R3-1 같은 root fatal 재클릭은 새로고침",reloads===1&&win.location.href===same);
   for(const target of ["http://offline/board/", "http://offline/board/?root=abcdef012345"]) {
     win.location.href=target;
     const before=focus;
     vm.runInContext('openBoard(app.graph.nodes[3])',ex);
     test("7A-R3 Open Board 다른 화면 보존 "+target,win.location.href===target&&focus===before+1&&notices.at(-1).includes("현재 작업을 유지"));
   }
+  test("7A-R3-1 다른 root fatal은 새로고침하지 않음",reloads===1);
+  fatalPage=false;
+  const savedWin=win, beforeCross=focus, beforeNotice=notices.length;
+  win={get location(){throw new Error("cross origin");},focus(){focus++;}};
+  extension.commands[0].function();vm.runInContext('openBoard(app.graph.nodes[3])',ex);
+  test("7A-R3-6 교차 출처 창은 보존·focus·새로고침 안내",focus===beforeCross+2&&notices.slice(beforeNotice).length===2
+    &&notices.slice(beforeNotice).every(s=>s.includes("그 창을 새로고침하세요")&&!s.includes("주소가 바뀌었습니다")));
+  win=savedWin;
 
   const b=browser();
   b.response({projects:[{id:key,name:"<script>이름</script>",openable:true,before_import:false,crops:0,stars:0,candidates:0,modified:"2026-10-31",thumb_url:"projects/thumb?key="+key},
@@ -51329,18 +51348,47 @@ function browser(root = "") {
     await op.els.app.all().find(e=>e.className==="projects-open").events.click();
     test("7A-R5 비 JSON 목록·열기 HTTP "+status,[listMessage,op.els.toast.textContent].every(m=>m.includes("HTTP "+status)&&!m.includes("Unexpected")&&!m.includes("private")&&(status!==404||m.includes("ComfyUI 재시작 필요")))&&op.moves.length===0);
   }
+  const jsonError="프로젝트가 목록에서 사라졌습니다 — 목록을 새로고침하세요";
+  const jl=browser();jl.response({error:jsonError},404);await jl.T.main();
+  const jo=browser();jo.response({projects:[{id:key,name:"test",openable:true,crops:0,stars:0,candidates:0}]});await jo.T.main();
+  jo.response({error:jsonError},404);await jo.els.app.all().find(e=>e.className==="projects-open").events.click();
+  test("7A-R3-2 JSON 404 목록·열기는 서버 오류 보존",jl.els.app.all().find(e=>e.className==="projects-status").textContent===jsonError
+    &&jo.els.toast.textContent===jsonError&&jo.moves.length===0);
   const fatal=browser(key), doc=fatal.ctx.document, app=doc.getElementById("app"), panel=doc.getElementById("pipe-panel"), button=new E("button");
   app.id="app";panel.id="pipe-panel";button.id="btn-projects";app.append(panel);doc.body.append(app,button);
   doc.getElementById=id=>doc.body.all().find(e=>e.id===id)||null; // 이 장면에서는 없는 DOM 을 만들지 않는다.
   button.addEventListener("click",fatal.T.goProjects);
   fatal.T.fatal("프로젝트를 읽지 못함");button.events.click();
   test("7A-R1 fatal 뒤 프로젝트 단추 이동",doc.getElementById("pipe-panel")===null&&fatal.moves[0]===fatal.ctx.location.pathname&&fatal.confirms.length===0);
+  const recovered=browser(key);recovered.T.fatal("잠시 실패");
+  recovered.els.app.all().find(e=>e.textContent==="다시 불러오기").events.click();
+  test("7A-R3-1 fatal 재시도 단추",recovered.moves.join() === "reload");
+  recovered.moves.length=0;recovered.response({error:"아직 실패"},503);await recovered.T.refresh(true);
+  test("7A-R3-1 fatal 뒤 조회 실패는 화면 유지",recovered.moves.length===0);
+  recovered.response({rev:1,crops:[],targets:[]});await recovered.T.refresh(true);
+  test("7A-R3-1 fatal 뒤 state 성공은 새로고침",recovered.moves.join() === "reload");
   const clean=browser(key);clean.ctx.document.getElementById("pipe-panel").input=new E("select");
   clean.T.set({canLeave:()=>({ok:true})},null,null);clean.T.goProjects();
   test("7A-R4 변경 없음·PS 마스크 select만 있으면 확인 없이 이동",clean.moves.length===1&&clean.confirms.length===0);
   clean.T.set({canLeave:()=>({ok:true,confirm:"채택 수정 입력을 버리고 이동합니다"})},null,null);
   clean.window.confirm=s=>(clean.confirms.push(s),false);clean.T.goProjects();
   test("7A-R4 canLeave 확인 문구를 그대로 사용·취소 보존",clean.moves.length===1&&clean.confirms.length===1&&clean.confirms[0].includes("채택 수정 입력")&&!clean.confirms[0].includes("실행 설정"));
+  const locked=browser(key), leaveToasts=[];
+  locked.window.DPViewer={svg:()=>{}};
+  locked.ctx.document.createElement=t=>Object.assign(new E(t),t==="canvas"?{getContext:()=>({})}:{});
+  locked.ctx.document.addEventListener=()=>{};
+  const maskApi="return { enter, leave, go, onKey, onKeyUp, stateChanged, seamsChanged, pending }";
+  vm.runInContext(read("web_design_patch/mask_edit.js").replace(maskApi,
+    maskApi.slice(0,-2)+", setBusy: (b,s) => { M.busy=b; adjustSaving=s; } }"),locked.ctx);
+  const me=locked.window.DPMaskEdit.create({list:new E("div"),panel:new E("div")},{apiUrl:p=>p,root:key,viewer:{},toast:s=>leaveToasts.push(s)});
+  locked.T.set(null,me,null);
+  for(const [busy,saving] of [["apply",null],["edit",null],["pick",null],["zorder",null],["adjust_wait",null],["adjust",null],["load",{}]]) {
+    me.setBusy(busy,saving);locked.T.goProjects();
+    test("7A-R3-3 마스크 처리 중 프로젝트 이동 거절 "+busy,me.pending.locked()&&me.leave()===false&&locked.moves.length===0
+      &&locked.confirms.length===0&&locked.els.toast.textContent===leaveToasts.at(-1));
+  }
+  me.setBusy("",null);locked.T.goProjects();
+  test("7A-R3-3 마스크 응답 대기 끝나면 목록 이동",!me.pending.locked()&&me.pending()===null&&locked.moves.length===1);
   const c=browser(key);
   c.T.set({canLeave:()=>({ok:false,why:"승인 응답 대기"})},null,null);
   c.T.goProjects();
@@ -51357,7 +51405,12 @@ function browser(root = "") {
   rr.T.prepareReroll({cell_key:"cell",variant:"V1",pre:0},async()=>{writes++;return {rev:2};});
   rr.window.confirm=s=>(rr.confirms.push(s),false);await rr.T.reroll(true);
   test("7A-R2 Review 부재는 저장 전 예약만 확인",rr.T.tabWay()===""&&writes===0&&rr.confirms[0].includes("Review 노드가 없음")&&rr.confirms[0].includes("예약만")&&!rr.confirms[0].includes("큐 요청을 보냅니다"));
-  test("7A-R2 배지 제목도 Review 부재·예약만",rr.T.tabTitle(rrLink).includes("Review 노드가 없어")&&rr.T.tabTitle(rrLink).includes("예약만"));
+  test("7A-R2 배지 제목도 Review 부재·예약만",rr.T.tabTitle(rrLink).includes("Review 노드가 없음")&&rr.T.tabTitle(rrLink).includes("예약만"));
+  const hasReasons=s=>s.includes("서버 템플릿 사용 불가")&&s.includes("Review 노드가 없음");
+  test("7A-R3-4 R 확인·배지에 유료 길과 Review 부재 이유",hasReasons(rr.confirms[0])&&hasReasons(rr.T.tabTitle(rrLink)));
+  rr.T.queueReroll();test("7A-R3-4 다시 생성 보내기에도 두 이유",hasReasons(rr.els.toast.textContent)&&rr.messages.length===0);
+  await rr.T.applyFree();test("7A-R3-4 옛 서버 layout 대체는 Review 안내 보존",hasReasons(rr.els.toast.textContent)
+    &&rr.els.toast.textContent.includes("ComfyUI 재시작 필요")&&rr.messages.length===0&&rr.confirms.length===1);
   rr.window.confirm=s=>(rr.confirms.push(s),true);await rr.T.reroll(true);rr.T.queueReroll("");
   test("7A-R2 동의한 예약만 저장·즉시 큐 없음",writes===1&&rr.messages.length===0);
   rr.T.set({paidWhy:()=>"서버 템플릿 사용 불가",paidLock:()=>""},null,{via:"opener",reviewRoots:null});

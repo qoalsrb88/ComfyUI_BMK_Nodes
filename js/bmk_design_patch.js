@@ -817,11 +817,11 @@ function openBoard(node) {
         if (win.location.href === "about:blank") win.location.assign(api.fileURL(`${BOARD_PATH}?root=${key}`));
         else if (new URL(win.location.href, window.location.href).searchParams.get("root") !== key) {
             notify("info", "이 보드 창은 다른 프로젝트나 프로젝트 목록을 보고 있습니다 — 현재 작업을 유지하고 창으로 이동합니다.");
-        }
+        } else if (win.document.querySelector(".fatal")) win.location.reload();
         win.focus();
     } catch (e) {
         win.focus();
-        notify("info", "기존 보드 창의 주소가 바뀌었습니다 — 현재 화면을 유지하고 창으로 이동합니다.");
+        notify("info", "기존 보드 창을 확인할 수 없습니다 — 현재 화면을 유지하고 창으로 이동합니다. 그 창을 새로고침하세요.");
     }
 }
 
@@ -837,6 +837,7 @@ function openStudio() {
     } catch (e) {
         // 다른 출처로 이동한 이름 있는 창도 덮어쓰지 않는다.
         win.focus();
+        notify("info", "기존 Studio 창을 확인할 수 없습니다 — 현재 화면을 유지하고 창으로 이동합니다. 그 창을 새로고침하세요.");
     }
 }
 

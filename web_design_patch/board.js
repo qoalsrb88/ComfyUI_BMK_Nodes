@@ -160,7 +160,7 @@
     try {
       return await r.json();
     } catch (e) {
-      return { error: `응답을 읽을 수 없습니다 (HTTP ${r.status})` };
+      return { error: `응답을 읽을 수 없습니다 (HTTP ${r.status})`, unreadable: true };
     }
   }
 
@@ -169,7 +169,7 @@
     if (!force && S) p.set("since_rev", String(S.rev));
     const r = await fetch(apiUrl("state?" + p.toString()), { cache: "no-store" });
     const data = await readJson(r);
-    if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+    if (!r.ok || data.unreadable) throw new Error(data.error || `HTTP ${r.status}`);
     return data;
   }
 
@@ -199,6 +199,10 @@
     polling = true;
     try {
       const d = await getState(force);
+      if (typeof fatal === "function" && fatal.active) {
+        location.reload();
+        return;
+      }
       if (d.unchanged && S) {
         S.running = d.running;
         S.drain = d.drain;
@@ -510,10 +514,8 @@
     const way = scripted ? "" : tabWay();
     const tab = !!way;
     const lock = tab && pipe ? pipe.paidLock() : "";
-    const noReview = typeof tabLink !== "undefined" && tabLink && tabLink.via === "opener"
-      && Array.isArray(tabLink.reviewRoots) && !tabLink.reviewRoots.includes(ROOT);
-    const why = tab ? "" : noReview ? "ComfyUI 탭에 이 프로젝트의 켜진 Review 노드가 없음"
-      : (pipe && pipe.paidWhy()) || "이 창을 연 ComfyUI 탭 없음";
+    const noReview = reviewMissing();
+    const why = tab ? "" : [(pipe && pipe.paidWhy()), noReview].filter(Boolean).join(" · ") || "이 창을 연 ComfyUI 탭 없음";
     // 셀 가격(est_usd)은 마지막 Prepare 의 jobs 값 — 큐는 Prepare 를 다시 돈 뒤 과금한다. 유료 가능한 탭의 재굴림 템플릿은 Studio 실행 설정(반영과
     // 같음 — 반영 확인 창처럼 Prepare·Import 갈라짐 줄을 앞에), 옛 탭의 Review 부분 실행·다음 그래프 Run 은 그래프 위젯 값
     const graphPrep = way === "paid" ? pipe.applyWarn().concat("금액은 지금 jobs(마지막 Prepare) 기준: 다시 생성 템플릿은 Studio 실행 설정(pipeline.json)으로 "
@@ -585,13 +587,17 @@
     return pipe ? pipe.paidLock() : "";
   }
 
+  function reviewMissing(k = typeof tabLink === "undefined" ? null : tabLink) {
+    return k && k.via === "opener" && Array.isArray(k.reviewRoots) && !k.reviewRoots.includes(ROOT)
+      ? "ComfyUI 탭에 이 프로젝트의 켜진 Review 노드가 없음" : "";
+  }
+
   function tabWay() {
     // R·머리줄 'ComfyUI 큐'가 갈 길: "paid" = 유료 승인을 받는 ComfyUI 탭(opener·채널)이고 서버가 재굴림 템플릿을 낼 수 있음(pipe.paidWhy — 탭 판정 +
     // 마지막 GET /pipeline 의 템플릿 게이트: 실행 설정 미저장·확인 필요·경로 경고·옛 서버면 늘 409·400 이라 S3a 처럼 opener 로), "opener" = opener 탭
     // (Review 부분 실행 — 옛 확장·유료 탭 길이 막힘), "" = 없음
     if (pipe && !pipe.paidWhy()) return "paid";
-    if (typeof tabLink !== "undefined" && tabLink && tabLink.via === "opener"
-      && Array.isArray(tabLink.reviewRoots) && !tabLink.reviewRoots.includes(ROOT)) return "";
+    if (reviewMissing()) return "";
     return comfyConnected() ? "opener" : "";
   }
 
@@ -608,13 +614,13 @@
     if (planned === "" && way) toast("다시 생성 예약됨 — R 확인 때 큐를 보낼 탭이 없어 지금 보내지 않음: 머리줄 [다시 생성 보내기]로 보내거나 다음 Run 때 과금", "warn");
     else if (planned && way !== planned) {
       const why = way === "paid" ? "탭이 이제 유료 승인을 받음 — 확인한 Review 부분 실행과 과금 기준이 다름"
-        : (pipe && pipe.paidWhy()) || "이 창을 연 ComfyUI 탭 없음";
+        : [(pipe && pipe.paidWhy()), reviewMissing()].filter(Boolean).join(" · ") || "이 창을 연 ComfyUI 탭 없음";
       toast(`다시 생성 예약됨 — R 확인 뒤 ComfyUI 탭 상태가 바뀌어 지금 보내지 않음(${why}): 머리줄 [다시 생성 보내기]로 보내거나 다음 Run 때 과금`, "warn");
     } else if (held || lock) {
       toast(`다시 생성 예약됨 — 지금 보내지 않음(${lock || "R 확인 때 '지금은 예약만'에 동의함"}): 머리줄 [다시 생성 보내기]로 보내거나 다음 Run 때 과금`, "warn");
     } else if (way === "paid") pipe.reroll();
     else if (way === "opener") queueInComfy();
-    else toast(`다시 생성 예약됨 — Run 실행 때 과금(${(pipe && pipe.paidWhy()) || "큐를 보낼 ComfyUI 탭 없음"})`, "warn");
+    else toast(`다시 생성 예약됨 — Run 실행 때 과금(${[(pipe && pipe.paidWhy()), reviewMissing()].filter(Boolean).join(" · ") || "큐를 보낼 ComfyUI 탭 없음"})`, "warn");
   }
 
   function comfyConnected() {
@@ -625,8 +631,8 @@
   function queueInComfy(layout = false) {
     // layout = 옛 서버 대체(재시작 전 — applyFree) 탭 layout 요청 — ComfyUI 탭은 Review 상류에 Import PSD 가 있을 때만 큐에 넣는다(아니면 그 탭이 알림)
     const op = window.opener;
-    if (typeof tabLink !== "undefined" && tabLink && tabLink.via === "opener" && Array.isArray(tabLink.reviewRoots) && !tabLink.reviewRoots.includes(ROOT)) {
-      toast("ComfyUI 탭에 이 프로젝트의 켜진 Review 노드가 없습니다 — 해당 Review 노드를 실행한 뒤 다시 보내세요(지금은 큐 요청을 보내지 않음)", "warn");
+    if (reviewMissing()) {
+      toast(`${[(pipe && pipe.paidWhy()), reviewMissing()].filter(Boolean).join(" · ")} — 해당 Review 노드를 실행한 뒤 다시 보내세요(지금은 큐 요청을 보내지 않음)`, "warn");
       return false;
     }
     if (op && !op.closed) {
@@ -653,6 +659,10 @@
     // 서버는 S3 인데 이 창에 pipeline.js 가 없음 = 이 창이 ComfyUI 재시작 전에 열림(다시 재시작해도 그대로 — 창 새로고침), 그 밖 = 서버가 옛 버전
     const stale = !pipe && !!S && "pipeline_rev" in S;
     const why = stale ? "Studio 창 새로고침 필요(이 창이 ComfyUI 재시작 전에 열려 무료 반영 모듈이 없음)" : "ComfyUI 재시작 필요(서버가 옛 버전)";
+    if (reviewMissing()) {
+      toast(`${[why, pipe && pipe.paidWhy(), reviewMissing()].filter(Boolean).join(" · ")} — 지금 큐 요청을 보내지 않음`, "warn");
+      return;
+    }
     const n = S ? S.pending_preapproved || 0 : 0;
     if (n && !window.confirm(`${why} — 무료 반영 대신 ComfyUI 탭의 Review 부분 실행으로 반영합니다. 대기 다시 생성 ${n}건(사전 승인)도 함께 과금됩니다.`
       + (stale ? " 창을 새로고침하면 무료 반영(다시 생성 과금 없음)을 씁니다." : "") + " 계속할까요?")) return;
@@ -997,8 +1007,8 @@
       const lock = pipe && (!why || k.via === "opener") ? pipe.paidLock() : "";
       const held = `다시 생성(R)·[다시 생성 보내기]는 지금은 예약만(${lock} — 머리줄 [다시 생성 보내기] 또는 다음 Run 때 과금)`;
       if (!why) return `${tab} — 초안·생성 승인·다시 생성(R)·[다시 생성 보내기]가 이 탭으로(탭이 서버 템플릿을 큐에 넣음)` + (lock ? `. ${held}` : "");
-      if (k.via === "opener" && Array.isArray(k.reviewRoots) && !k.reviewRoots.includes(ROOT)) {
-        return `${tab}: ${why}. 이 프로젝트의 켜진 Review 노드가 없어 다시 생성(R)은 예약만 되고 다음 Run 때 과금됩니다 — 지금 큐를 보내지 않음`;
+      if (reviewMissing(k)) {
+        return `${tab}: ${why}. ${reviewMissing(k)} — 다시 생성(R)·[다시 생성 보내기]는 예약만 되고 다음 Run 때 과금됩니다 — 지금 큐를 보내지 않음`;
       }
       // 유료 탭 길이 막힘(S3a 판·제출 못 함·큐 처리 중·서버가 템플릿을 못 냄 — tabWay): R·ComfyUI 큐는 opener 면 그 탭의 Review 부분 실행(그래프 위젯
       // 값으로 과금), 채널로만 찾았으면 그 탭에서 직접
@@ -1496,6 +1506,10 @@
   }
 
   function goProjects() {
+    if (maskEd && maskEd.pending.locked && maskEd.pending.locked()) {
+      toast("적용·되돌리기·★ 바꾸기를 처리하는 중 — 끝난 뒤 나가세요", "warn");
+      return;
+    }
     const gate = pipe && pipe.canLeave ? pipe.canLeave() : { ok: true };
     if (!gate.ok) {
       toast(gate.why || gate.reason || "요청을 처리하는 중입니다 — 끝난 뒤 프로젝트를 이동하세요", "warn");
@@ -1577,7 +1591,7 @@
             try {
               const response = await fetch(apiUrl("projects/open"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: r.id }) });
               const result = await readJson(response);
-              if (response.status === 404) throw new Error("ComfyUI 재시작 필요 — 프로젝트 열기 기능을 찾을 수 없습니다 (HTTP 404)");
+              if (response.status === 404 && result.unreadable) throw new Error("ComfyUI 재시작 필요 — 프로젝트 열기 기능을 찾을 수 없습니다 (HTTP 404)");
               if (!response.ok || !result.ok || result.key !== r.id) throw new Error(result.error || "프로젝트를 열지 못했습니다");
               location.assign(`?root=${encodeURIComponent(result.key)}`);
             } catch (e) {
@@ -1602,7 +1616,7 @@
       try {
         const response = await fetch(apiUrl("projects"), { cache: "no-store" });
         const result = await readJson(response);
-        if (response.status === 404) throw new Error("ComfyUI 재시작 필요 — 프로젝트 목록 기능을 찾을 수 없습니다 (HTTP 404)");
+        if (response.status === 404 && result.unreadable) throw new Error("ComfyUI 재시작 필요 — 프로젝트 목록 기능을 찾을 수 없습니다 (HTTP 404)");
         if (!response.ok || !Array.isArray(result.projects)) throw new Error(result.error || "프로젝트 목록을 불러오지 못했습니다");
         rows = result.projects;
         draw();
@@ -1764,7 +1778,11 @@
 
   function fatal(msg) {
     const app = $("app");
-    app.replaceChildren(el("p", "fatal", msg));
+    const retry = el("button", "", "다시 불러오기");
+    retry.type = "button";
+    retry.addEventListener("click", () => location.reload());
+    app.replaceChildren(el("p", "fatal", msg), retry);
+    fatal.active = true;
   }
 
   async function main() {
@@ -1858,6 +1876,7 @@
     if (!S) {
       const s = $("status");
       fatal(s.textContent || "상태를 불러오지 못했습니다");
+      schedule();
       return;
     }
     schedule();

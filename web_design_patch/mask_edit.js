@@ -2209,6 +2209,7 @@ window.DPMaskEdit = (() => {
       return n ? { key: M.key, n, name: x ? `${x.t.crop_name || x.t.crop_id} · ${x.t.tid}` : M.key } : null;
     }
 
+    pending.locked = () => !!(LOCKED.includes(M.busy) || adjustSaving);
     return { enter, leave, go, onKey, onKeyUp, stateChanged, seamsChanged, pending };
   }
 
