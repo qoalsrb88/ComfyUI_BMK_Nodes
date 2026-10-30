@@ -32352,9 +32352,9 @@ def pipeline_js_unit():
     check(pj.count('"bmk-dp-approve"') == 1 and "bmk-dp-approve" not in bj and pcode.count(".send(") == 1
           and "L.send({ type: APPROVE, rootKey: opts.root, stage, hash, only, what }" in pcode,
           "B12″(S3b): 승인 메시지를 보내는 곳은 pipeline.js sendPaid 하나(const APPROVE 한 번·link.send 한 곳 — stage·hash·only 만, prompt 없음), board.js 에는 없음")
-    check("const EXT_VERSION = 3;" in ext and 'const APPROVE = "bmk-dp-approve";' in ext
+    check("const EXT_VERSION = 4;" in ext and 'const APPROVE = "bmk-dp-approve";' in ext
           and 'submitHooked && typeof app.queuePrompt === "function" ? "ok" : "unsupported"' in ext,
-          "탭 확장 = S3b(ext 3 — Studio 승인 처리, submit = 감싸개 설치 && app.queuePrompt 함수, 동작은 paid_js_tab)")
+          "탭 확장 = 배치 7(ext 4 — Studio 승인·reviewRoots, submit = 감싸개 설치 && app.queuePrompt 함수, 동작은 paid_js_tab)")
     qf = pcode[pcode.index("s.queue = async"):pcode.index("s.resume = ")]
     check(0 < qf.index("checkPrompt(t.prompt)") < qf.index('comfy("prompt"') and "if (bad) throw" in qf,
           "보내기 전 검사(checkPrompt) 가 /api/prompt 앞 — 어긋나면 던지고 보내지 않음")
@@ -32696,13 +32696,13 @@ def pipeline_js_unit():
     if "reply" in he:
         rp = he["reply"]
         ok1 = len(rp) == 1 and rp[0][1] == "http://127.0.0.1:8189" and {k: v for k, v in rp[0][0].items() if k != "tab"} \
-            == {"type": "bmk-dp-hello", "id": "h1", "ext": 3, "submit": "ok", "busy": True} and isinstance(rp[0][0].get("tab"), str)
+            == {"type": "bmk-dp-hello", "id": "h1", "ext": 4, "submit": "ok", "busy": True, "reviewRoots": []} and isinstance(rp[0][0].get("tab"), str)
         check(ok1 and he["otherOrigin"] == 0 and he["otherTab"] == 0 and he["ownTab"] == 1 and he["badId"] == 0,
-              f"J-P4 탭 확장 hello(opener 길) = {{id, tab, ext 3, submit ok, busy}} 같은 출처로 · 다른 출처·다른 tab ID·id 없음 무시 {he['reply']}")
+              f"J-P4 탭 확장 hello(opener 길) = {{id, tab, ext 4, submit ok, busy, reviewRoots}} 같은 출처로 · 다른 출처·다른 tab ID·id 없음 무시 {he['reply']}")
         ch = he["channel"]
-        check(len(ch) == 1 and ch[0]["id"] == "c1" and ch[0]["ext"] == 3 and ch[0]["tab"] == rp[0][0]["tab"],
+        check(len(ch) == 1 and ch[0] == dict(rp[0][0], id="c1"),
               f"J-P4 채널(BroadcastChannel bmk-dp) hello = 채널로 답함, tab 지정·응답 모양 메시지는 답하지 않음 {ch}")
-        check(he["one"]["first"] == "wait" and he["one"]["state"] == "ok" and he["one"]["via"] == "channel" and he["one"]["ext"] == 3
+        check(he["one"]["first"] == "wait" and he["one"]["state"] == "ok" and he["one"]["via"] == "channel" and he["one"]["ext"] == 4
               and he["one"]["submit"] == "ok" and he["one"]["busy"] is True and he["one"]["changes"] == ["ok"],
               f"J-P4 Studio(opener 없음): 채널 응답 하나 = 연결 {he['one']}")
         check(he["many"]["state"] == "many" and he["many"]["tab"] is None and he["none"]["state"] == "none" and he["noChannel"]["state"] == "none",
@@ -32725,7 +32725,7 @@ def pipeline_js_unit():
     tb = res.get("tabBadge") or {}
     if "found" in tb:
         paid = "초안·생성 승인·다시 생성(R)·[다시 생성 보내기]가 이 탭으로"
-        check(tb["found"] and tb["ok"][:2] == ["ComfyUI 탭 연결", "badge b-run"] and tb["ok"][2].startswith("Open Board 로 연 ComfyUI 탭(확장 판 3)") and paid in tb["ok"][2]
+        check(tb["found"] and tb["ok"][:2] == ["ComfyUI 탭 연결", "badge b-run"] and tb["ok"][2].startswith("Open Board 또는 메뉴 BMK → Design Patch Studio 로 연 ComfyUI 탭(확장 판 3)") and paid in tb["ok"][2]
               and tb["channel"][:2] == ["ComfyUI 탭 연결(채널)", "badge b-run"] and tb["channel"][2].startswith("채널로 찾은 ComfyUI 탭(확장 판 3)") and paid in tb["channel"][2]
               and tb["busy"][:2] == tb["channel"][:2] and ": ComfyUI 탭이 큐를 처리하는 중. " in tb["busy"][2] and paid not in tb["busy"][2]
               and "다시 생성(R)·[다시 생성 보내기]는 그 탭에서 직접(R 은 사전 승인만 되고 다음 Run 때 과금)" in tb["busy"][2]
@@ -32735,9 +32735,9 @@ def pipeline_js_unit():
               and "다시 생성(R)·[다시 생성 보내기]는 이 탭의 Review 부분 실행으로" in tb["s3aOpener"][2]
               and tb["nosubmit"][:2] == ["ComfyUI 탭이 승인 제출을 못 함 — 유료 승인 끔", "badge b-wait"] and "submit unsupported" in tb["nosubmit"][2]
               and tb["old"][:2] == ["탭 확장이 옛 판 — ComfyUI 탭 새로고침", "badge b-wait"]
-              and (tb.get("silent") or [None, None])[:2] == ["ComfyUI 탭 응답 없음 — 탭 새로고침 또는 Open Board 로 다시 열기", "badge b-wait"]
-              and "Open Board 로 다시 열기" in tb["silent"][2] and tb["none"][:2] == ["ComfyUI 탭 없음", "badge b-dim"]
-              and tb["many"][1] == "badge b-wait" and "Open Board 로 다시 여세요" in tb["many"][0] and tb["wait"][1] == "badge b-dim"
+              and (tb.get("silent") or [None, None])[:2] == ["ComfyUI 탭 응답 없음 — 탭 새로고침 또는 Open Board 또는 메뉴 BMK → Design Patch Studio 로 다시 열기", "badge b-wait"]
+              and "Open Board 또는 메뉴 BMK → Design Patch Studio 로 다시 열기" in tb["silent"][2] and tb["none"][:2] == ["ComfyUI 탭 없음", "badge b-dim"]
+              and tb["many"][1] == "badge b-wait" and "Open Board 또는 메뉴 BMK → Design Patch Studio 로 다시 여세요" in tb["many"][0] and tb["wait"][1] == "badge b-dim"
               and len({tb[k][0] for k in ("ok", "channel", "s3a", "nosubmit", "old", "silent", "none", "many", "wait")}) == 9,
               f"§3.8·S3b 계약 §5 머리줄 탭 배지(board.js renderHeader·TAB_BADGE): 유료 승인을 받는 탭(ext 3·submit ok) = opener 'ComfyUI 탭 연결'·채널 "
               f"'ComfyUI 탭 연결(채널)'(초록 — 승인·R·[다시 생성 보내기]가 그 탭으로 — 큐 처리 중이면 제목 끝 = 유료 승인을 못 받는 탭의 길), "
@@ -32752,8 +32752,8 @@ def pipeline_js_unit():
         gate_ = "실행 설정 확인 필요(prepare.variants) — 실행(G) [실행 설정 열기]에서 확인·저장"
         paid_ = "초안·생성 승인·다시 생성(R)·[다시 생성 보내기]가 이 탭으로(탭이 서버 템플릿을 큐에 넣음)"
         go, gc, gb = (tb.get(k) or [None] * 4 for k in ("gateOpener", "gateChannel", "gateBusy"))
-        check(go[:2] == tb["ok"][:2] and go[2] == f"Open Board 로 연 ComfyUI 탭(확장 판 3): {gate_}. 다시 생성(R)·[다시 생성 보내기]는 이 탭의 Review 부분 실행으로(그래프 Prepare 위젯 값으로 과금)"
-              and gc[2] == (f"채널로 찾은 ComfyUI 탭(확장 판 3): {gate_}. 이 창은 Open Board 로 열리지 않아 다시 생성(R)·[다시 생성 보내기]는 그 탭에서 직접(R 은 사전 승인만 되고 "
+        check(go[:2] == tb["ok"][:2] and go[2] == f"Open Board 또는 메뉴 BMK → Design Patch Studio 로 연 ComfyUI 탭(확장 판 3): {gate_}. 다시 생성(R)·[다시 생성 보내기]는 이 탭의 Review 부분 실행으로(그래프 Prepare 위젯 값으로 과금)"
+              and gc[2] == (f"채널로 찾은 ComfyUI 탭(확장 판 3): {gate_}. 이 창은 Open Board 또는 메뉴 BMK → Design Patch Studio 로 열리지 않아 다시 생성(R)·[다시 생성 보내기]는 그 탭에서 직접(R 은 사전 승인만 되고 "
                             "다음 Run 때 과금)")
               and gb[2] == tb["busy"][2] and (tb.get("gateOld") or [None] * 3)[2] == tb["old"][2]
               and (tb.get("pipeOk") or [None] * 3)[2] == tb["ok"][2] and paid_ in tb["ok"][2],
@@ -32762,8 +32762,8 @@ def pipeline_js_unit():
               f"먼저, 연결 안 된 상태(old)는 link 문장 그대로 {go[2:3]} {gc[2:3]} {gb[2:3]}")
         lock_ = "다시 생성(R)·[다시 생성 보내기]는 지금은 예약만(Run 승인 요청을 처리하는 중 — 머리줄 [다시 생성 보내기] 또는 다음 Run 때 과금)"
         lo, lc, lbo, lbc = (tb.get(k) or [None] * 4 for k in ("lockOk", "lockChannel", "lockBusyOpener", "lockBusyChannel"))
-        check(lo[2] == f"Open Board 로 연 ComfyUI 탭(확장 판 3) — {paid_}. {lock_}" and lc[2] == f"채널로 찾은 ComfyUI 탭(확장 판 3) — {paid_}. {lock_}"
-              and lbo[2] == f"Open Board 로 연 ComfyUI 탭(확장 판 3): ComfyUI 탭이 큐를 처리하는 중. {lock_}" and lbc[2] == tb["busy"][2]
+        check(lo[2] == f"Open Board 또는 메뉴 BMK → Design Patch Studio 로 연 ComfyUI 탭(확장 판 3) — {paid_}. {lock_}" and lc[2] == f"채널로 찾은 ComfyUI 탭(확장 판 3) — {paid_}. {lock_}"
+              and lbo[2] == f"Open Board 또는 메뉴 BMK → Design Patch Studio 로 연 ComfyUI 탭(확장 판 3): ComfyUI 탭이 큐를 처리하는 중. {lock_}" and lbc[2] == tb["busy"][2]
               and "Review 부분 실행으로" not in lbo[2],
               f"r3-11 이 Studio 가 유료 요청·실행·무료 큐 중(paidLock)이면 배지 제목의 R·[다시 생성 보내기] 길 = '지금은 예약만(이유)'(queueReroll 과 같은 판정 순서 — "
               f"자기 승인을 처리하는 탭은 hello busy 라 opener 길이어도 Review 부분 실행이 아님), 채널로만 찾은 탭의 막힌 길은 그대로 {lo[2:3]} {lc[2:3]} {lbo[2:3]} "
@@ -36232,7 +36232,7 @@ console.log(JSON.stringify(out));
 
 
 def _paid_js_tab():
-    """S3b U1: J-X1–X4 — 탭 확장(js/bmk_design_patch.js)의 승인 메시지·서버 템플릿 검사·바꿔치기·무장 중 다른 제출 막기·wave 전달·hello ext 3."""
+    """S3b U1: J-X1–X4 — 탭 확장(js/bmk_design_patch.js)의 승인 메시지·서버 템플릿 검사·바꿔치기·무장 중 다른 제출 막기·wave 전달·hello ext 4."""
     section("S3b paid_js_tab — 탭 확장 Studio 승인 J-X1–X4(node + 가짜 window·채널·app·api, 정본 messages·routes)")
     ext = (PKG / "js" / "bmk_design_patch.js").read_text(encoding="utf-8")
     code = re.sub(r"//[^\n]*", "", ext)
@@ -36304,6 +36304,8 @@ def _paid_js_tab():
         # 정본 messages[key] 의 같은 경우 예시와 대조(_doc 구조.messages — approved 는 ok·reason 이 같은 예시)
         sp = M[key]
         ex = next((e for e in sp["examples"] if key != "bmk-dp-approved" or (e["ok"], e.get("reason")) == (m.get("ok"), m.get("reason"))), None)
+        if key == "bmk-dp-hello_reply" and ex is not None:
+            ex = dict(ex, ext=4, reviewRoots=[])  # 공용 정본은 판 3 호환 시험용으로 보존, 현재 확장 응답만 판 4 계약으로 대조
         return _pl_shape(ex, m, sp) if ex is not None else [f"{key}: 같은 경우의 예시 없음"]
 
     def approved(tab, m, stage, **kw):
@@ -36337,9 +36339,10 @@ def _paid_js_tab():
               and af["toasts"] == ["success: Studio 승인으로 Run 큐 — Run 승인 4건 ≈ $2.40–3.16"],
               f"J-X1 사용자 그래프: Spec Draft adopt 남음(partialRun 은 바꾼 본문으로 셈)·시드 afterQueued 한 번, 토스트 'Studio 승인으로 Run 큐 — <what>' {af}")
         hs = (x1["atAck"] or {}, x1.get("inSubmit") or {}, af["hello"] or {})
-        check([(h.get("ext"), h.get("submit"), h.get("busy")) for h in hs] == [(3, "ok", True), (3, "ok", True), (3, "ok", False)]
+        check([(h.get("ext"), h.get("submit"), h.get("busy"), h.get("reviewRoots")) for h in hs]
+              == [(4, "ok", True, []), (4, "ok", True, []), (4, "ok", False, [])]
               and shape("bmk-dp-hello_reply", af["hello"]) == [],
-              f"J-X4 hello ext 3·submit ok, busy = Studio 승인 처리 중(ack 뒤 큐 전)·제출 중 true, 끝나면 false {hs}")
+              f"J-X4 hello ext 4·submit ok·reviewRoots, busy = Studio 승인 처리 중(ack 뒤 큐 전)·제출 중 true, 끝나면 false {hs}")
         check(x1["next"] == {"keys": user3, "sameData": True, "sameOptions": True, "targets": ["dp_review"], "approve": ua},
               f"J-X1 무장은 finally 에서 풀림 — 다음 사용자 제출(대상이 같아도)은 받은 data·options 그대로 {x1['next']}")
         check(af["approve"] == ua and x1["g2pApprove"] == [ua, ua],
@@ -36448,7 +36451,7 @@ def _paid_js_tab():
         g = xc["got"]
         check(len(g) == 3 and g[0] == {"type": "bmk-dp-ack", "id": g[0].get("id"), "tab": xc["tab"]}
               and g[1] == approved(xc["tab"], g[0], "run", ok=True, prompt_id="pid-1")
-              and g[2] == {"type": "bmk-dp-hello", "id": "hc", "tab": xc["tab"], "ext": 3, "submit": "ok", "busy": False}
+              and g[2] == {"type": "bmk-dp-hello", "id": "hc", "tab": xc["tab"], "ext": 4, "submit": "ok", "busy": False, "reviewRoots": []}
               and xc["bodies"] == 1 and xc["prompt"] == tpl,
               f"채널 길(BroadcastChannel bmk-dp): 승인 → ack·approved 가 채널로, 다른 tab 의 승인은 답 없음, hello 도 채널로 {g}")
     a2 = res.get("x2a") or {}
@@ -36634,9 +36637,9 @@ def _paid_js_tab():
         check(x4["graph"] == {"win": 3, "heard": 1, "toast": "info: wave 시간 상한으로 멈췄습니다. 남은 호출 3건 — 이 실행이 끝나면 승인 버튼으로 이어서 실행하세요."}
               and x4["notMine"] == {"win": 3, "heard": 1, "toasts": 0},
               f"J-X4 그래프 Run 의 wave 는 지금 규칙(Studio 로 안 감), 이 탭이 큐에 넣은 실행이 아니면(runningPromptId 없음) 아무것도 안 함 {x4['graph']} {x4['notMine']}")
-        check(x4["hello"] == {"type": "bmk-dp-hello", "id": "h", "tab": x4["tab"], "ext": 3, "submit": "ok", "busy": False}
+        check(x4["hello"] == {"type": "bmk-dp-hello", "id": "h", "tab": x4["tab"], "ext": 4, "submit": "ok", "busy": False, "reviewRoots": []}
               and ((res.get("x4u") or {}).get("hello") or {}).get("submit") == "unsupported",
-              f"J-X4 hello ext 3·submit ok(감싸개 설치 && app.queuePrompt 함수 — 함수가 아니면 unsupported) {x4['hello']} {res.get('x4u')}")
+              f"J-X4 hello ext 4·reviewRoots·submit ok(감싸개 설치 && app.queuePrompt 함수 — 함수가 아니면 unsupported) {x4['hello']} {res.get('x4u')}")
     x4r = res.get("x4r") or {}
     check(x4r.get("ids") == ["pid-1", "pid-2"]
           and x4r.get("toasts") == ["info: wave 종료(남은 3건) — 사전 승인 다시 생성이라 Studio 머리줄 [다시 생성 보내기](또는 다음 Run)로 이어서",
@@ -36743,7 +36746,7 @@ const DRAFT_H = ui("bmk_dp_draft", { pending_hash: "", pending: 0, reasons: {}, 
   backend: "vlm_openai", model: "gpt-5", effort: "high", approved_now: true, root_key: KEY, refresh_available: 0 });
 
 function mkTab(win, t) {
-  // 가짜 ComfyUI 탭: hello = 정본 hello 답(ext·submit·busy·tab 을 바꿈), 이 탭 앞 승인 메시지 = got 에 쌓고 reply(msg) 의 [[ms, 답, raw], …]를 차례로
+  // 가짜 ComfyUI 탭: hello = 옛 판 3 정본 답(reviewRoots 없음, ext·submit·busy·tab 을 바꿈), 이 탭 앞 승인 메시지 = got 에 쌓고 reply(msg) 의 [[ms, 답, raw], …]를 차례로
   // (raw 가 아니면 id·tab 을 그 요청 것으로). win = 이 탭을 opener 로 둔 Studio 창(답 = window message, source = opener) | null(채널). post = 그 길로 그대로
   const tab = Object.assign({ id: TAB, ext: 3, submit: "ok", busy: false, got: [], reply: okReply }, t);
   tab.post = (d) => {
@@ -38034,7 +38037,7 @@ def _paid_js_studio():
               f"J-P3 기다리는 사이 탭이 바뀜(새 tab ID) = '결과 모름 — 큐 확인' + 계획 다시, 옛 탭이 낸 늦은 approved ok 도 이어서 {to['changed']} {to['changedLate']}")
         gone_ = ["warn:Run 결과 모름 — ComfyUI 탭이 바뀜(새로고침·닫힘·연결 끊김) — 결과 모름: ComfyUI 큐를 확인"]
         check(to["gone"] == {"toasts": gone_, "state": "none", "replan": 1,
-                             "run": [True, "ComfyUI 탭 연결 없음 — Review 노드의 Open Board 로 열거나 ComfyUI 탭을 하나만 열어 두기"]}
+                             "run": [True, "ComfyUI 탭 연결 없음 — Review 노드의 Open Board 또는 메뉴 BMK → Design Patch Studio 로 열거나 ComfyUI 탭을 하나만 열어 두기"]}
               and to["goneLate"] == {"toast": late, "head": True} and to["closed"] == {"toasts": gone_, "state": "none", "via": "channel"},
               f"계약 §5 연결이 끊김(채널 탭이 답하지 않음·opener 닫힘 — 연결된 탭 없음)도 '결과 모름' + 계획 다시(최종 시간까지 기다리지 않음), 다시 붙은 같은 탭의 "
               f"늦은 ok 는 이어 받음 {to['gone']} {to['goneLate']} {to['closed']}")
@@ -38068,16 +38071,16 @@ def _paid_js_studio():
               and di["ext2"] == both("ComfyUI 탭의 확장이 옛 판(S3a — 판 2) — 그 탭을 새로고침한 뒤 유료 승인")
               and di["unsupported"] == both("ComfyUI 탭이 승인 제출을 못 함(submit unsupported — ComfyUI 프론트가 바뀜) — 그래프의 승인 버튼 사용")
               and di["tabBusy"] == both("ComfyUI 탭이 큐를 처리하는 중")
-              and di["noTab"] == both("ComfyUI 탭 연결 없음 — Review 노드의 Open Board 로 열거나 ComfyUI 탭을 하나만 열어 두기")
+              and di["noTab"] == both("ComfyUI 탭 연결 없음 — Review 노드의 Open Board 또는 메뉴 BMK → Design Patch Studio 로 열거나 ComfyUI 탭을 하나만 열어 두기")
               and di["dim"] == di["stale"] == {"run": nohash, "draft": nohash} and di["running"] == di["nothing"] == {"run": nohash, "draft": on_("b21c09e4f7a3")}
               and di["none"] == {"run": None, "draft": None}
               and jb["run"] == jb["draft"] and off(jb["run"], "이 Studio 의 반영(apply)"),
               f"계약 §5 승인 단추 꺼짐(제목에 이유): 탭 ext 2·submit unsupported·탭 큐 처리 중·탭 없음(link.paidWhy), 흐림·낡음(승인 코드 복사 꺼짐 조건), "
               f"Run 실행 중·승인할 것 없음(그 단계만), 선택 0(단추 없음), 이 Studio 의 실행 {di}")
         check(di["silent"] == both("이 창을 연 ComfyUI 탭이 hello 에 답하지 않음(확장이 옛 판·새로고침 중, 또는 그 탭이 다른 주소·페이지로 옮겨 감) — "
-                                   "그 탭을 새로고침하거나 Open Board 로 다시 열기")
+                                   "그 탭을 새로고침하거나 Open Board 또는 메뉴 BMK → Design Patch Studio 로 다시 열기")
               and di["old1"] == both("이 창을 연 ComfyUI 탭의 확장이 옛 판(1) — 그 탭을 새로고침한 뒤 유료 승인"),
-              f"link.paidWhy opener 가 답하지 않음(silent)·확장 판 < 2(old) = 머리줄 배지와 같은 안내('Open Board 로 열거나'가 아님) {di['silent']} {di['old1']}")
+              f"link.paidWhy opener 가 답하지 않음(silent)·확장 판 < 2(old) = 머리줄 배지와 같은 안내('Open Board 또는 메뉴 BMK → Design Patch Studio 로 열거나'가 아님) {di['silent']} {di['old1']}")
     ns = res.get("noSettings") or {}
     if "run" in ns:
         nohash = [True, "승인 코드 없음(승인할 것 없음·미반영·흐림·낡음·실행 중)"]
@@ -38124,7 +38127,7 @@ def _paid_js_studio():
               f"0.6초 큐 = 다시 생성 메시지 0·'예약됨(동의함)' 토스트(버튼), 키보드 R R 은 그동안 무장하지 않음(사용성 §12 rerollHold — 쓰기·큐 0) {bt} {ky}")
         op = rd["opener"]
         mid, aft = op["mid"], op["after"]
-        ot_ = "Open Board 로 연 ComfyUI 탭(확장 판 3): ComfyUI 탭이 큐를 처리하는 중. 다시 생성(R)·[다시 생성 보내기]는 지금은 예약만({} — 머리줄 [다시 생성 보내기] 또는 다음 Run 때 과금)"
+        ot_ = "Open Board 또는 메뉴 BMK → Design Patch Studio 로 연 ComfyUI 탭(확장 판 3): ComfyUI 탭이 큐를 처리하는 중. 다시 생성(R)·[다시 생성 보내기]는 지금은 예약만({} — 머리줄 [다시 생성 보내기] 또는 다음 Run 때 과금)"
         check(mid == {"way": "opener", "lock": lk_, "comfy": 0, "confirm": conf_, "title": ot_.format(lk_)}
               and aft.get("way") == "opener" and str(aft.get("lock")).startswith("이 Studio 의 Run(run)") and aft.get("comfy") == 0 and op["sent"] == ["run"]
               and op["toasts"].count(held_.format(lk_)) == 2 and held_.format(aft.get("lock")) in op["toasts"] and aft.get("title") == ot_.format(aft.get("lock")),
@@ -38293,7 +38296,7 @@ def _paid_js_studio():
         whys = {"noFile": "실행 설정(pipeline.json) 없음 — 실행(G) [실행 설정 열기]에서 한 번 저장",
                 "path": "PSD 파일이 없음: G:/x.psd — 실행(G) [실행 설정 열기]에서 경로를 고침", "oldServer": "ComfyUI 재시작 필요 — 서버가 S3a 판(유료 템플릿 없음)"}
         # r2-05 머리줄 탭 배지 제목도 같은 판정: 서버가 템플릿을 낼 수 없으면 '서버 템플릿을 큐에 넣음'이 아니라 그 이유 + R·ComfyUI 큐의 실제 길
-        ch_t = "채널로 찾은 ComfyUI 탭(확장 판 3): {}. 이 창은 Open Board 로 열리지 않아 다시 생성(R)·[다시 생성 보내기]는 그 탭에서 직접(R 은 사전 승인만 되고 다음 Run 때 과금)"
+        ch_t = "채널로 찾은 ComfyUI 탭(확장 판 3): {}. 이 창은 Open Board 또는 메뉴 BMK → Design Patch Studio 로 열리지 않아 다시 생성(R)·[다시 생성 보내기]는 그 탭에서 직접(R 은 사전 승인만 되고 다음 Run 때 과금)"
         cf_why = "실행 설정 확인 필요(prepare.variants) — 실행(G) [실행 설정 열기]에서 확인·저장"
         bad = {}
         for k, why in whys.items():
@@ -38305,7 +38308,7 @@ def _paid_js_studio():
                 bad[k] = g
         check(not bad and gt["confirm"] == {"why": cf_why, "none": "", "run": nohash, "title": ch_t.format(cf_why)}
               and gt["confirmOpener"] == {"why": cf_why, "none": "", "run": nohash,
-                                          "title": f"Open Board 로 연 ComfyUI 탭(확장 판 3): {cf_why}. 다시 생성(R)·[다시 생성 보내기]는 이 탭의 Review 부분 실행으로(그래프 Prepare 위젯 값으로 과금)"}
+                                          "title": f"Open Board 또는 메뉴 BMK → Design Patch Studio 로 연 ComfyUI 탭(확장 판 3): {cf_why}. 다시 생성(R)·[다시 생성 보내기]는 이 탭의 Review 부분 실행으로(그래프 Prepare 위젯 값으로 과금)"}
               and gt["ok"] == {"why": "", "none": "paid", "run": on_("3f9a1c2b7d10"),
                                "title": "채널로 찾은 ComfyUI 탭(확장 판 3) — 초안·생성 승인·다시 생성(R)·[다시 생성 보내기]가 이 탭으로(탭이 서버 템플릿을 큐에 넣음)"},
               f"r1-09 서버가 유료 템플릿을 내주지 않을 상태(GET /pipeline — 파일 없음·확인 필요·경로 경고·옛 서버(manifest_rev 없음)) = 유료 탭 길 아님: R 확인 창 "
@@ -38475,7 +38478,7 @@ await scenario("channel", async () => {
   return r;
 });
 
-// ── opener 길(Open Board 로 연 창): 초안 승인 → 그 탭(window postMessage — 답은 ev.source) → 템플릿 alt.draft·대상 dp_draft → 끝 ──
+// ── opener 길(Open Board 또는 메뉴 BMK → Design Patch Studio 로 연 창): 초안 승인 → 그 탭(window postMessage — 답은 ev.source) → 템플릿 alt.draft·대상 dp_draft → 끝 ──
 await scenario("opener", async () => {
   const w = await world("e2e-op", { opener: true });
   const r = { link: [w.link.state, w.link.via, w.link.ext, w.link.submit, w.link.tab], btn: w.btn("초안 승인") };
@@ -38532,10 +38535,10 @@ await scenario("autoQueue", async () => {
   return r;
 });
 
-// ── 탭 확장이 옛 판(ext 2 — 판만 고친 사본): 두 승인 단추 꺼짐(이유), 눌러도·R 도 탭에 승인 메시지 없음 → R 은 예약만 ──
+// ── 탭 확장이 옛 판(ext 2·reviewRoots 없음): 두 승인 단추 꺼짐(이유), 눌러도·R 도 탭에 승인 메시지 없음 → R 은 예약만 ──
 await scenario("old", async () => {
   const w = await world("e2e-old", { ext: IN.ext2Mjs });
-  const r = { link: [w.link.state, w.link.ext], run: w.btn("생성 승인"), draft: w.btn("초안 승인") };
+  const r = { link: [w.link.state, w.link.ext], hello: w.t.hello(), run: w.btn("생성 승인"), draft: w.btn("초안 승인") };
   w.click(w.B("생성 승인"));
   w.click(w.B("초안 승인"));
   const b = board(w);
@@ -38702,7 +38705,10 @@ def _paid_js_e2e():
     ext = "const { app, api } = globalThis.__bmk;\n" + re.sub(r'^import \{ (app|api) \} from "\.\./\.\./scripts/(app|api)\.js";\r?\n', "",
                                                               (PKG / "js" / "bmk_design_patch.js").read_text(encoding="utf-8"), flags=re.M)
     (out / "ext.mjs").write_text(ext, encoding="utf-8")
-    (out / "ext2.mjs").write_text(ext.replace("const EXT_VERSION = 3;", "const EXT_VERSION = 2;"), encoding="utf-8")  # 옛 판 탭(판 번호만)
+    old_ext, version_n = re.subn(r"const EXT_VERSION = \d+;", "const EXT_VERSION = 2;", ext)
+    old_ext, roots_n = re.subn(r", reviewRoots(?=\s*};)", "", old_ext)
+    check(version_n == roots_n == 1, "옛 판 2 하네스: 판 번호 교체·hello reviewRoots 제거 각각 한 곳")
+    (out / "ext2.mjs").write_text(old_ext, encoding="utf-8")
     h, t = _PL_JS_HARNESS, _PAID_TAB_JS_HARNESS
     cut = [s[s.index(a):s.index(b, s.index(a))] for s, a, b in (
         (h, "import fs", "async function run("), (h, "class El {", "async function mouse("), (h, "function boardState()", 'await scenario("panel"'),
@@ -38774,8 +38780,8 @@ def _paid_js_e2e():
     ch = res.get("channel") or {}
     if "wire" in ch:
         bad = trip(ch, "channel", "run", run_what, ok=True, prompt_id="pid-1")
-        check(ch["link"] == ["ok", "channel", 3, "ok", ch["tab"]] and ch["btn"] == [False, title.format(R["alt"]["run"]["hash"])] and ch["planOnly"] == only,
-              f"채널 길 연결: Studio link = hello 답(ext 3·submit ok)의 그 탭, 생성 승인 단추 = 정본 run 승인 코드·only(크롭 3 선택), 체크를 껐다 켠 뒤(선택 순서 "
+        check(ch["link"] == ["ok", "channel", 4, "ok", ch["tab"]] and ch["btn"] == [False, title.format(R["alt"]["run"]["hash"])] and ch["planOnly"] == only,
+              f"채널 길 연결: Studio link = hello 답(ext 4·submit ok)의 그 탭, 생성 승인 단추 = 정본 run 승인 코드·only(크롭 3 선택), 체크를 껐다 켠 뒤(선택 순서 "
               f"002,003,001)의 계획 요청 only = 정렬한 정규 only {ch['link']} {ch['btn']} {ch['planOnly']}")
         check(not bad and ch["q"] == [{"root": key, "stage": "run", "approve": R["alt"]["run"]["hash"], "only": only}] and ch["confirms"] == 1
               and ch["confirm"].startswith("GPT Image 호출 4건"),
@@ -38794,10 +38800,10 @@ def _paid_js_e2e():
     op = res.get("opener") or {}
     if "wire" in op:
         bad = trip(op, "window", "draft", draft_what, ok=True, prompt_id="pid-1")
-        check(op["link"] == ["ok", "opener", 3, "ok", op["tab"]] and op["btn"] == [False, title.format(R["alt"]["draft"]["hash"])] and not bad
+        check(op["link"] == ["ok", "opener", 4, "ok", op["tab"]] and op["btn"] == [False, title.format(R["alt"]["draft"]["hash"])] and not bad
               and op["q"] == [{"root": key, "stage": "draft", "approve": R["alt"]["draft"]["hash"], "only": only}] and sent(op, "draft")
               and op["adopt"] == "001_38a818" and op["confirms"] == 1 and op.get("approve") == ua,
-              f"opener 길(Open Board 로 연 창): 초안 승인 → window postMessage(답 = ev.source — 채널엔 없음) → GET stage=draft → 템플릿 alt.draft·대상 "
+              f"opener 길(Open Board 또는 메뉴 BMK → Design Patch Studio 로 연 창): 초안 승인 → window postMessage(답 = ev.source — 채널엔 없음) → GET stage=draft → 템플릿 alt.draft·대상 "
               f"dp_draft, 사용자 Spec Draft adopt·Draft·Run approve(보초 승인 코드) 남음 {bad} {op['q']} {op.get('approve')}")
         check(op["toast"] == queued.format("Spec Draft") and op["tabToasts"] == [f"success: Studio 승인으로 Spec Draft 큐 — {draft_what}"]
               and op["done"] == {"toast": ":Spec Draft 끝 — 승인분 실행 · 남은 초안 대기 0건",
@@ -38837,7 +38843,8 @@ def _paid_js_e2e():
     od = res.get("old") or {}
     if "run" in od:
         why = "ComfyUI 탭의 확장이 옛 판(S3a — 판 2) — 그 탭을 새로고침한 뒤 유료 승인"
-        check(od["link"] == ["ok", 2] and od["run"] == [True, why] and od["draft"] == [True, why] and od["way"] == "" and od["wire"] == []
+        check(od["link"] == ["ok", 2] and od["hello"]["ext"] == 2 and "reviewRoots" not in od["hello"]
+              and od["run"] == [True, why] and od["draft"] == [True, why] and od["way"] == "" and od["wire"] == []
               and od["q"] == [] and od["confirms"] == 0 and od["toasts"][-1:] == [f"warn:다시 생성 예약됨 — Run 실행 때 과금({why})"],
               f"탭 확장 옛 판(hello ext 2): 두 승인 단추 꺼짐(제목 = 이유), 눌러도 확인 창·메시지 없음, R 은 예약만 — 탭에 승인·서버 GET 0 {od}")
     rr = res.get("reroll") or {}
@@ -51097,6 +51104,226 @@ console.log(JSON.stringify(out));
 def batch7a_unit():
     """배치 7-A(10/31 — _proto/STUDIO_BATCH7_SPEC.md D47–D53): ComfyUI 메뉴 진입·프로젝트 목록·열기·썸네일. 공용 자리 — 7-A 작업자가 채운다."""
     section("배치 7-A — 메뉴 진입·프로젝트 목록")
+    import tempfile
+    from concurrent.futures import ThreadPoolExecutor
+    from unittest.mock import patch
+    import bmk_design_patch_board as board
+    from aiohttp import web
+
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="batch7a_", dir=OUT_ROOT.resolve()) as tmp, \
+            patch.object(board, "_PROJECT_INPUT", None), patch.object(board, "_PROJECT_MEMO", {}), \
+            patch.object(board, "_PREF", {}), patch.object(store, "_ROOTS", {}):
+        base = Path(tmp) / "input"
+        roots = [store.project_root(str(base), n) for n in ("same", "before", "bad", "missing")]
+        outside = store.project_root(str(Path(tmp) / "external"), "same")
+        for root in roots + [outside]:
+            Path(root).mkdir(parents=True)
+        m = store.new_manifest("same")
+        m["canvas"] = [640, 320]
+        m["base"] = store.save_png_ca(roots[0], "inputs", np.full((320, 640, 3), 160, np.uint8))
+        m["crops"] = [{"id": "001", "name": "one", "rect": [0, 0, 64, 64], "targets": [{"tid": "A"}]}]
+        m["candidates"] = [{"key": "one", "crop_id": "001", "tid": "A"}, {"key": "two", "picked": True}]
+        m["picks"] = {"001/A": ["one"]}
+        m["rejects"] = {"two": True}
+        m["exports"] = [{"rev": 1, "time": "2026-10-31 12:34:56", "state_sig": store.export_state_sig(m)}]
+        store.save_manifest(roots[0], m)
+        store.save_manifest(roots[1], store.new_manifest("before"))
+        Path(roots[2], store.MANIFEST_NAME).write_text('{"schema":', encoding="utf-8")
+        store.save_manifest(outside, store.new_manifest("same"))
+        extkey = store.register_root(outside)
+        board.register_routes(web.RouteTableDef(), str(base))
+        keys = [store.root_key(r) for r in roots]
+        original = Path(roots[0], store.MANIFEST_NAME).read_bytes()
+
+        class Request:
+            content_type = "application/json"
+            path = "/bmk/design_patch/projects"
+
+            def __init__(self, body=None, key=None):
+                self.data = json.dumps(body or {}).encode("utf-8")
+                self.content_length = len(self.data)
+                self.query = {"key": key}
+
+            async def read(self):
+                return self.data
+
+        def call(handler, body=None, key=None):
+            return asyncio.run(handler(Request(body, key)))
+
+        response = call(board.projects_handler)
+        rows = json.loads(response.text)["projects"]
+        by = {r["id"]: r for r in rows}
+        check(response.status == 200 and len(rows) == 5, "7A 스캔 ∪ 등록, 형식 오류·매니페스트 없는 폴더 격리")
+        check(by[keys[0]]["name"] == by[extkey]["name"] == "same" and keys[0] != extkey and by[extkey]["outside_input"]
+              and not by[keys[0]]["outside_input"], "7A input 안팎 같은 이름은 다른 root_key")
+        check(by[keys[0]]["crops"] == 1 and by[keys[0]]["stars"] == 1 and by[keys[0]]["candidates"] == 2
+              and by[keys[0]]["export_state"] == "same" and by[keys[0]]["export_last"]["rev"] == 1, "7A 카드 요약·Export 서명")
+        check(by[keys[1]]["before_import"] and by[keys[1]]["openable"] and not by[keys[2]]["openable"]
+              and not by[keys[3]]["openable"], "7A 가져오기 전은 열림, 깨짐·매니페스트 없음은 열 수 없음")
+        check(str(Path(tmp).resolve()) not in response.text and "root" not in by[keys[0]], "7A 응답에 절대 경로 없음")
+        check(not (base / store.PROJECTS_DIRNAME / store.ROOTS_FILE).exists() and store.resolve_board_root(keys[0]) is None,
+              "7A GET 목록은 미등록 프로젝트를 등록하지 않음")
+        with patch.object(store, "load_manifest", wraps=store.load_manifest) as load:
+            board._project_summary(roots[0])
+            board._project_summary(roots[0])
+            check(load.call_count == 0, "7A manifest mtime·size 요약 memo")
+        store.save_board_pref(roots[0], {"method": "saved", "amount": 2})
+        opened = call(board.projects_open_handler, {"key": keys[0]})
+        check(opened.status == 200 and json.loads(opened.text) == {"ok": True, "key": keys[0]}
+              and board._PREF[keys[0]]["method"] == "saved", "7A open 등록·_PREF 복구")
+        store.register_root(roots[1])
+        store.save_board_pref(roots[1], {"method": "sibling"})
+        call(board.projects_open_handler, {"key": keys[1]})
+        check(board._PREF[keys[1]]["method"] == "sibling", "7A 이미 등록된 형제 open 도 _PREF 복구")
+        board._PREF[keys[1]] = {"method": "live"}
+        call(board.projects_open_handler, {"key": keys[1]})
+        check(board._PREF[keys[1]]["method"] == "live", "7A 실행 중 분석 설정 보존")
+        for bad in (str(Path(tmp).resolve()), "../same", "0" * 12, keys[2], keys[3]):
+            res = call(board.projects_open_handler, {"key": bad})
+            check(res.status in (400, 404) and str(Path(tmp).resolve()) not in res.text, "7A 목록 밖·잘못된 키·손상 프로젝트 거절 및 경로 비노출")
+        req = Request({"key": keys[0]})
+        req.content_type = "text/plain"
+        check(asyncio.run(board.projects_open_handler(req)).status == 415, "7A JSON POST 가드")
+        with patch.object(store, "register_root", side_effect=ValueError(f"비밀 경로 {tmp}")):
+            store._ROOTS.pop(keys[0])
+            res = call(board.projects_open_handler, {"key": keys[0]})
+            check(res.status == 400 and tmp not in res.text and "비밀" not in res.text, "7A 등록 오류 경로 숨김")
+        with patch.object(Image.Image, "thumbnail", autospec=True, side_effect=Image.Image.thumbnail) as resize:
+            class NoStudioSlot:
+                def __enter__(self):
+                    raise AssertionError("목록이 Studio 렌더 슬롯을 점유함")
+
+                def __exit__(self, *args):
+                    pass
+
+            with patch.object(board, "_RENDER_SLOTS", NoStudioSlot()), ThreadPoolExecutor(max_workers=4) as pool:
+                thumbs = list(pool.map(board._project_thumb, [keys[0]] * 4))
+            check(resize.call_count == 1 and all(b == thumbs[0] for b in thumbs), "7A 동시 썸네일 요청은 한 번 렌더·캐시 재사용")
+        with Image.open(io.BytesIO(thumbs[0])) as im:
+            check(im.size == (256, 128) and im.format == "JPEG", "7A 썸네일 긴 변 256")
+        check(list(Path(roots[0], "derived", "thumbs").glob("list_*.jpg")) and not list(Path(roots[0], "derived", "thumbs").glob("canvasbase_*.jpg")),
+              "7A 작은 전용 캐시만 생성")
+        check(call(board.projects_thumb_handler, key=keys[0]).status == 200 and call(board.projects_thumb_handler, key=keys[1]).status == 404,
+              "7A 썸네일 라우트·가져오기 전 404")
+        check(Path(roots[0], store.MANIFEST_NAME).read_bytes() == original, "7A 목록·열기·썸네일은 매니페스트 불변")
+        m["crops"][0]["name"] = "changed"
+        store.save_manifest(roots[0], m)
+        check(board._project_summary(roots[0])["export_state"] == "changed", "7A manifest 변경 시 memo 무효화·Export 뒤 변경")
+        m["exports"][0]["hash"] = "first"
+        m["exports"].append({"rev": 8, "hash": "second", "time": "2026-10-31 13:00:00"})
+        store.save_manifest(roots[0], m)
+        board._project_summary(roots[0])
+        store.save_board_export(roots[0], "first")
+        check(board._project_summary(roots[0])["export_last"]["rev"] == 1, "7A manifest 불변·Export 포인터만 변경해도 최신 요약")
+        with patch.object(Image, "open", side_effect=OSError(f"비밀 경로 {tmp}")):
+            # 새 base 서명, 아직 캐시 없음.
+            m["canvas"] = [641, 320]
+            store.save_manifest(roots[0], m)
+            res = call(board.projects_thumb_handler, key=keys[0])
+            check(res.status == 400 and tmp not in res.text, "7A 썸네일 오류 경로 숨김")
+
+    node = shutil.which("node")
+    if not node:
+        skip("node 없음 → 7A 브라우저 하네스 생략")
+        return
+    js = r'''
+const fs = require("fs"), vm = require("vm"), path = require("path");
+const pkg = process.argv[1], out = {}, key = "123456789abc";
+const read = (p) => fs.readFileSync(path.join(pkg, p), "utf8");
+const test = (label, value) => out[label] = !!value;
+class E {
+  constructor(tag) { this.tagName = tag.toUpperCase(); this.children = []; this.events = {}; this.value = ""; this.textContent = "";
+    this.classList = {add() {}, remove() {}, toggle() {}}; }
+  append(...es) { this.children.push(...es); }
+  replaceChildren(...es) { this.children = es; }
+  setAttribute(k, v) { this[k] = v; }
+  addEventListener(k, f) { this.events[k] = f; }
+  querySelector() { return this.input || null; }
+  remove() {}
+  all() { return [this, ...this.children.flatMap(e => e.all())]; }
+}
+function browser(root = "") {
+  const els = {}, moves = [], calls = [], messages = [], confirms = [];
+  const location = {origin:"http://offline", pathname:"/prefix/bmk/design_patch/board/", search:root ? "?root="+root : "",
+    href:"http://offline/prefix/bmk/design_patch/board/"+(root ? "?root="+root : ""), assign: v => moves.push(v)};
+  const document = {body:new E("body"), createElement:t=>new E(t), getElementById:id=>els[id] ||= new E("div")};
+  const window = {location, opener:{closed:false, postMessage:d=>messages.push(d)}, confirm:s=>(confirms.push(s), true),
+    removeEventListener:()=>{}, addEventListener:()=>{}};
+  let response = {projects:[]}, status = 200;
+  const ctx = {window, document, location, URL, URLSearchParams, console, setTimeout:()=>0, clearTimeout:()=>{},
+    fetch: async (u, init) => { calls.push([u,init]); return {ok:status===200, json:async()=>response}; }};
+  vm.createContext(ctx);
+  vm.runInContext(read("web_design_patch/board.js").replace("  main();", `globalThis.T = { main, showProjects, goProjects, queueInComfy, tabWay,
+    set: (p,m,t) => { pipe=p; maskEd=m; tabLink=t; } };`), ctx);
+  return {ctx, T:ctx.T, els, moves, calls, messages, confirms, window, response:(r,s=200)=>{response=r;status=s;}};
+}
+(async () => {
+  let extension, opened = [], focus = 0, win = {location:{href:"about:blank", assign(v){this.href=v;}}, focus(){focus++;}};
+  const nodes = [0, 2, 4, 0].map((mode,i)=>({id:i, type:"BMKDesignPatchReview",mode,properties:{bmk_dp_root_key:i===3?key:"123456789ab"+i}}));
+  const ex = {app:{registerExtension:e=>extension=e, graph:{nodes}}, api:{fileURL:p=>"/prefix"+p}, console,
+    window:{open:(...args)=>(opened.push(args),win)}};
+  vm.createContext(ex);
+  vm.runInContext(read("js/bmk_design_patch.js").replace(/^import .*;$/gm,""), ex);
+  extension.commands[0].function();
+  test("메뉴·명령·액션바", extension.menuCommands[0].path[0]==="BMK" && extension.menuCommands[0].commands[0]===extension.commands[0].id && extension.actionBarButtons[0].label==="Patch Studio");
+  test("새 Studio 이름·주소", opened[0][0]==="" && opened[0][1]==="bmk_dp_studio" && win.location.href==="/prefix/bmk/design_patch/board/");
+  win.location.href="http://offline/board/?root="+key;
+  extension.actionBarButtons[0].onClick();
+  test("메뉴 재클릭은 focus 만", focus===2 && win.location.href.endsWith(key));
+  const hello = vm.runInContext('helloReply({type:"bmk-dp-hello",id:"x"})',ex);
+  test("hello 판4·켜진 Review만", hello.ext===4 && hello.reviewRoots.length===2 && hello.reviewRoots.includes(key));
+
+  const b=browser();
+  b.response({projects:[{id:key,name:"<script>이름</script>",openable:true,before_import:false,crops:0,stars:0,candidates:0,modified:"2026-10-31",thumb_url:"projects/thumb?key="+key},
+    {id:"000000000000",name:"깨진 파일",openable:false,error:"열 수 없음"}]});
+  await b.T.main();
+  test("root 없음은 목록, 뷰어·폴링 초기화 없음", b.calls.length===1 && b.calls[0][0].endsWith("/projects") && b.els.app.all().some(e=>e.textContent==="<script>이름</script>"));
+  const img=b.els.app.all().find(e=>e.tagName==="IMG");
+  test("lazy 썸네일은 로드 전 DOM 에 연결",img && img.loading==="lazy" && img.src.endsWith("projects/thumb?key="+key));
+  img.onerror();test("썸네일 오류에도 카드 유지",b.els.app.all().some(e=>e.textContent==="미리보기 없음")&&b.els.app.all().some(e=>e.className==="projects-open"));
+  const search=b.els.app.all().find(e=>e.className==="projects-search");
+  search.value="깨진";search.events.input();
+  test("이름 검색·열 수 없음", b.els.app.all().filter(e=>e.className?.includes("projects-card")).length===1 && !b.els.app.all().some(e=>e.className==="projects-open"));
+  search.value="";search.events.input();
+  b.response({ok:true,key});
+  await b.els.app.all().find(e=>e.className==="projects-open").events.click();
+  test("카드 열기는 POST 후 같은 창 이동", JSON.parse(b.calls[1][1].body).key===key && b.moves[0]==="?root="+key && b.window.opener);
+  const c=browser(key);
+  c.T.set({canLeave:()=>({ok:false,why:"승인 응답 대기"})},null,null);
+  c.T.goProjects();
+  test("승인 대기 이동 차단", c.moves.length===0 && c.confirms.length===0 && c.els.toast.textContent==="승인 응답 대기");
+  c.T.set({canLeave:()=>({ok:true,confirm:"저장 전 설정"})},{pending:()=>({n:3})},null);
+  c.window.confirm=s=>(c.confirms.push(s),false); c.T.goProjects();
+  test("이동 취소·마스크 전용 문구", c.moves.length===0 && c.confirms[0].includes("버려집니다") && !c.confirms[0].includes("K 로 돌아오면"));
+  c.window.confirm=s=>(c.confirms.push(s),true); c.T.goProjects();
+  test("목록 이동은 같은 창", c.moves[0]===c.ctx.location.pathname);
+  c.T.set({paidWhy:()=>"막힘"},null,{via:"opener",reviewRoots:[]});
+  test("Review 없는 opener 폴백은 전송 전 차단", c.T.queueInComfy()===false && c.messages.length===0 && c.els.toast.textContent.includes("Review"));
+  c.T.set({paidWhy:()=>""},null,{via:"opener",reviewRoots:[]});
+  test("유료 길은 Review 없어도 유지", c.T.tabWay()==="paid");
+  c.T.set(null,null,{via:"opener"});
+  test("옛 hello 는 기존 Review 폴백", c.T.queueInComfy()===true && c.messages.length===1);
+
+  let handler, interval, timers=[], reply={tab:"t",ext:4,submit:"ok",reviewRoots:[key]}, changes=0;
+  const w={location:{origin:"http://offline"},addEventListener:(n,f)=>handler=f};
+  w.opener={postMessage:d=>handler({origin:w.location.origin,source:w.opener,data:{type:"bmk-dp-hello",id:d.id,...reply}})};
+  const p={window:w,URL,console,setTimeout:f=>(timers.push(f),1),clearTimeout:()=>{},setInterval:f=>(interval=f,1),clearInterval:()=>{}};
+  vm.createContext(p);vm.runInContext(read("web_design_patch/pipeline.js"),p);
+  const link=w.DPPipeline.link(w,()=>changes++);
+  timers.shift()(); test("hello Review 키 보관", link.reviewRoots[0]===key);
+  interval();timers.shift()();test("같은 Review 목록은 변경 알림 없음",changes===1);
+  reply={tab:"t",ext:3,submit:"ok"}; interval();timers.shift()();test("옛 hello 가 오면 Review 목록 비움",link.reviewRoots===null);
+  reply={tab:"t",ext:2,submit:"ok"}; interval();timers.shift()();test("확장 판2 유료 승인 거절 유지",link.paidWhy().includes("옛 판")&&link.reviewRoots===null);
+  reply={tab:"t",ext:4,submit:"ok",reviewRoots:[]}; interval();timers.shift()();test("빈 Review 배열 보존",Array.isArray(link.reviewRoots)&&link.reviewRoots.length===0);
+  console.log(JSON.stringify(out));
+})().catch(e=>{console.error(e.stack);process.exitCode=1;});
+'''
+    result = subprocess.run([node, "-e", js, str(PKG)], capture_output=True, text=True, encoding="utf-8", timeout=30)
+    check(result.returncode == 0, f"7A JS 하네스 종료 {result.stderr[:600]}")
+    if result.returncode == 0:
+        for name, ok in json.loads(result.stdout).items():
+            check(ok is True, f"7A JS: {name}")
 
 
 def batch7b_unit():
