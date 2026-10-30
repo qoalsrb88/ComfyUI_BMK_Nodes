@@ -2849,10 +2849,18 @@ window.DPPipeline = (() => {
       panel.replaceChildren();
     }
 
+    // 배치 7 공용 자리(감독관 — _proto/STUDIO_BATCH7_SPEC.md D70): 본문은 7-B 가 채운다. exportNow·exportWhy·openFolder = 상단 [Export](D58),
+    // steps = 단계 줄 상태(D55), canLeave = [프로젝트] 이동 가드(D48 — 7-A 의 board.js goProjects 가 부름)
+    function exportNow() { return false; }
+    function exportWhy() { return ""; }
+    function openFolder() { return false; }
+    function steps() { return null; }
+    function canLeave() { return { ok: true }; }
+
     // tabChanged = link 상태가 바뀜(board.js 가 부름 — 승인 단추 켜짐·제목), reroll = board.js queueReroll 의 유료 가능 탭 갈래, paidWhy·paidLock·side =
     // board.js tabWay·R 확인 문구(유료 탭 길을 쓰나·지금은 예약만인가·그 길의 부수 효과 줄), setMaskLeft = 적용 안 한 마스크 편집(★ 점검 줄)
     return { stateChanged, enter, leave, select, queue: boardQueue, applyWarn, recalc: planNow, openSettings, reroll, tabChanged: render, paidWhy, paidLock,
-      side: SIDE, setMaskLeft };
+      side: SIDE, setMaskLeft, exportNow, exportWhy, openFolder, steps, canLeave };
   }
 
   return { create, session, link, checkPrompt, freeBody, endOf, adoptState, runText, draftText, approveText, paidReport, starChecks, layoutLines };

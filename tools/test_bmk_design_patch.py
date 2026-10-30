@@ -6175,9 +6175,9 @@ def m2_board_unit():
             check(not any(ord(ch) >= 0x1F000 or ch == "\ufe0f" for ch in text), f"{name} 이모지 없음")
         check(re.findall(r'<script src="([^"]+)" defer></script>', html)
               == ["layout_geom.js", "viewer.js", "rows.js", "layout_edit.js", "ref_edit.js", "checklist.js", "pipeline.js", "mask_edit.js", "board.js"]
-              and not re.search(r"<script(?![^>]*\bsrc=\"(?:layout_geom|viewer|layout_edit|ref_edit|checklist|pipeline|mask_edit|board)\.js\")", html)
+              and not re.search(r"<script(?![^>]*\bsrc=\"(?:layout_geom|viewer|rows|layout_edit|ref_edit|checklist|pipeline|mask_edit|board)\.js\")", html)
               and "on" + "click=" not in html.lower(),
-              "html 에 인라인 스크립트·이벤트 속성 없음, layout_geom → viewer → layout_edit → ref_edit → checklist → pipeline → mask_edit → board 순서")
+              "html 에 인라인 스크립트·이벤트 속성 없음, layout_geom → viewer → rows → layout_edit → ref_edit → checklist → pipeline → mask_edit → board 순서")
         check('postMessage({ type: "bmk-dp-queue", rootKey: ROOT, layout }, location.origin)' in js,
               "opener postMessage 형식(명세 §4.2, layout = 옛 서버 대체(재시작 전) — 탭 layout 요청)")
         check("POLL_MS = 2000" in js and "since_rev" in js, "2초 폴링 + since_rev")
