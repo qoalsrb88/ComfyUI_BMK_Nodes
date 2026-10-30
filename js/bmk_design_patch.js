@@ -808,8 +808,21 @@ function openBoard(node) {
         notify("info", "먼저 Review 노드를 실행하세요. 보드 주소는 실행 결과로 받습니다.");
         return;
     }
-    const win = window.open(api.fileURL(`${BOARD_PATH}?root=${key}`), `bmk_dp_board_${key}`);
-    if (!win) notify("warn", "팝업이 차단되었습니다. 이 주소의 팝업을 허용하세요.");
+    const win = window.open("", `bmk_dp_board_${key}`);
+    if (!win) {
+        notify("warn", "팝업이 차단되었습니다. 이 주소의 팝업을 허용하세요.");
+        return;
+    }
+    try {
+        if (win.location.href === "about:blank") win.location.assign(api.fileURL(`${BOARD_PATH}?root=${key}`));
+        else if (new URL(win.location.href, window.location.href).searchParams.get("root") !== key) {
+            notify("info", "이 보드 창은 다른 프로젝트나 프로젝트 목록을 보고 있습니다 — 현재 작업을 유지하고 창으로 이동합니다.");
+        }
+        win.focus();
+    } catch (e) {
+        win.focus();
+        notify("info", "기존 보드 창의 주소가 바뀌었습니다 — 현재 화면을 유지하고 창으로 이동합니다.");
+    }
 }
 
 function openStudio() {

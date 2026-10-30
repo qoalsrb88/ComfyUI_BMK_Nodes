@@ -510,7 +510,10 @@
     const way = scripted ? "" : tabWay();
     const tab = !!way;
     const lock = tab && pipe ? pipe.paidLock() : "";
-    const why = tab ? "" : (pipe && pipe.paidWhy()) || "이 창을 연 ComfyUI 탭 없음";
+    const noReview = typeof tabLink !== "undefined" && tabLink && tabLink.via === "opener"
+      && Array.isArray(tabLink.reviewRoots) && !tabLink.reviewRoots.includes(ROOT);
+    const why = tab ? "" : noReview ? "ComfyUI 탭에 이 프로젝트의 켜진 Review 노드가 없음"
+      : (pipe && pipe.paidWhy()) || "이 창을 연 ComfyUI 탭 없음";
     // 셀 가격(est_usd)은 마지막 Prepare 의 jobs 값 — 큐는 Prepare 를 다시 돈 뒤 과금한다. 유료 가능한 탭의 재굴림 템플릿은 Studio 실행 설정(반영과
     // 같음 — 반영 확인 창처럼 Prepare·Import 갈라짐 줄을 앞에), 옛 탭의 Review 부분 실행·다음 그래프 Run 은 그래프 위젯 값
     const graphPrep = way === "paid" ? pipe.applyWarn().concat("금액은 지금 jobs(마지막 Prepare) 기준: 다시 생성 템플릿은 Studio 실행 설정(pipeline.json)으로 "
@@ -543,6 +546,7 @@
         // 유료 탭 길로 지금 보내면 승인 제출 — 버튼 R 확인 창의 부수 효과 줄(pipe.side)을 짧게
         toast(`R 을 한 번 더 누르면 ${what} — 유료`
           + (tab ? "" : ` · 지금 큐를 보내지 않음(${scripted ? "스크립트 키 — 큐는 사용자 키 입력만, " : ""}예약만 — 다음 Run 때 과금)`)
+          + (!tab && noReview ? ` · ${why}` : "")
           + (way === "paid" ? " · 승인 제출이라 ComfyUI 탭 그래프의 시드 제어 등 실행마다 바뀌는 값이 한 번 진행됨(그래프는 실행 안 함)" : "")
           + (way === "paid" ? " · 금액은 지금 jobs 기준(Prepare 갈라짐 — Studio 실행 설정이 마지막 Prepare 와 다르면 바뀜)"
             : " · 금액은 지금 jobs 기준(그래프 Prepare 값이 Studio 와 다르면 바뀜)"), "warn");
@@ -586,6 +590,8 @@
     // 마지막 GET /pipeline 의 템플릿 게이트: 실행 설정 미저장·확인 필요·경로 경고·옛 서버면 늘 409·400 이라 S3a 처럼 opener 로), "opener" = opener 탭
     // (Review 부분 실행 — 옛 확장·유료 탭 길이 막힘), "" = 없음
     if (pipe && !pipe.paidWhy()) return "paid";
+    if (typeof tabLink !== "undefined" && tabLink && tabLink.via === "opener"
+      && Array.isArray(tabLink.reviewRoots) && !tabLink.reviewRoots.includes(ROOT)) return "";
     return comfyConnected() ? "opener" : "";
   }
 
@@ -991,6 +997,9 @@
       const lock = pipe && (!why || k.via === "opener") ? pipe.paidLock() : "";
       const held = `다시 생성(R)·[다시 생성 보내기]는 지금은 예약만(${lock} — 머리줄 [다시 생성 보내기] 또는 다음 Run 때 과금)`;
       if (!why) return `${tab} — 초안·생성 승인·다시 생성(R)·[다시 생성 보내기]가 이 탭으로(탭이 서버 템플릿을 큐에 넣음)` + (lock ? `. ${held}` : "");
+      if (k.via === "opener" && Array.isArray(k.reviewRoots) && !k.reviewRoots.includes(ROOT)) {
+        return `${tab}: ${why}. 이 프로젝트의 켜진 Review 노드가 없어 다시 생성(R)은 예약만 되고 다음 Run 때 과금됩니다 — 지금 큐를 보내지 않음`;
+      }
       // 유료 탭 길이 막힘(S3a 판·제출 못 함·큐 처리 중·서버가 템플릿을 못 냄 — tabWay): R·ComfyUI 큐는 opener 면 그 탭의 Review 부분 실행(그래프 위젯
       // 값으로 과금), 채널로만 찾았으면 그 탭에서 직접
       return `${tab}: ${why}. ` + (lock ? held : k.via === "opener" ? "다시 생성(R)·[다시 생성 보내기]는 이 탭의 Review 부분 실행으로(그래프 Prepare 위젯 값으로 과금)"
@@ -1493,13 +1502,11 @@
       return;
     }
     const notes = [];
-    if (gate.confirm) notes.push(Array.isArray(gate.confirm) ? gate.confirm.join(" · ") : String(gate.confirm));
-    if (gate.dirty || $("pipe-panel").querySelector("textarea, input:not([type=checkbox]), select")) {
-      notes.push("저장하지 않은 채택 [수정] 입력과 실행 설정은 버려집니다.");
-    }
+    if (Array.isArray(gate.confirm)) notes.push(...gate.confirm.filter(Boolean));
+    else if (gate.confirm) notes.push(String(gate.confirm));
     const left = maskEd && maskEd.pending();
     if (left) notes.push(`적용 안 한 마스크 획 ${left.n}개는 버려집니다 — 이동한 뒤에는 이어서 편집할 수 없습니다.`);
-    if (!window.confirm(["프로젝트 목록으로 이동할까요?", ...notes].join("\n"))) return;
+    if (notes.length && !window.confirm(["프로젝트 목록으로 이동할까요?", ...notes].join("\n"))) return;
     // 이동 전용 확인을 이미 받았으므로 마스크 beforeunload 확인을 중복으로 띄우지 않는다.
     window.removeEventListener("beforeunload", onUnload);
     location.assign(location.pathname);
@@ -1569,7 +1576,8 @@
             status.textContent = `${r.name} 여는 중…`;
             try {
               const response = await fetch(apiUrl("projects/open"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: r.id }) });
-              const result = await response.json();
+              const result = await readJson(response);
+              if (response.status === 404) throw new Error("ComfyUI 재시작 필요 — 프로젝트 열기 기능을 찾을 수 없습니다 (HTTP 404)");
               if (!response.ok || !result.ok || result.key !== r.id) throw new Error(result.error || "프로젝트를 열지 못했습니다");
               location.assign(`?root=${encodeURIComponent(result.key)}`);
             } catch (e) {
@@ -1593,7 +1601,8 @@
       status.textContent = "프로젝트를 불러오는 중…";
       try {
         const response = await fetch(apiUrl("projects"), { cache: "no-store" });
-        const result = await response.json();
+        const result = await readJson(response);
+        if (response.status === 404) throw new Error("ComfyUI 재시작 필요 — 프로젝트 목록 기능을 찾을 수 없습니다 (HTTP 404)");
         if (!response.ok || !Array.isArray(result.projects)) throw new Error(result.error || "프로젝트 목록을 불러오지 못했습니다");
         rows = result.projects;
         draw();

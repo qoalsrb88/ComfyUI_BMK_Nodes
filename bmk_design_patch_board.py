@@ -5502,10 +5502,11 @@ def _project_roots() -> list[dict]:
                         if e.is_dir(follow_symlinks=False) and os.path.dirname(os.path.realpath(e.path)) == os.path.realpath(parent):
                             key = store.root_key(e.path)
                             rows.setdefault(key, {"key": key, "root": e.path, "project": e.name})
-                    except OSError:
+                    except OSError as e:
+                        logger.warning("%s 프로젝트 폴더 항목을 읽지 못함: %s", _TAG, e)
                         continue
-        except FileNotFoundError:
-            pass
+        except OSError as e:
+            logger.warning("%s 프로젝트 폴더 스캔 실패 — 등록된 프로젝트를 표시: %s", _TAG, e)
     for r in rows.values():
         r["outside_input"] = not parent or os.path.normcase(os.path.realpath(os.path.dirname(r["root"]))) != os.path.normcase(os.path.realpath(parent))
     return list(rows.values())

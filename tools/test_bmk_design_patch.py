@@ -10626,7 +10626,17 @@ def m2_node_unit():
         check("발사 1" in rep_f3 and len(list((Path(rootf) / "cands").glob("*/r0.done.json"))) == 1, "새 해시 승인 → 재시도 done")
 
         section("M2-N7 Review: 레지스트리·썸네일·ui")
+        sibling = st.project_root(str(NODES2), "review_pref_sibling")
+        st.save_manifest(sibling, st.new_manifest("review_pref_sibling"))
+        sibling_pref = dict(dp._ANALYZE_DEFAULTS, dE=3.0)
+        st.save_board_pref(sibling, sibling_pref)
+        sibling_key = st.register_root(sibling)
+        st._ROOTS.pop(sibling_key)
+        bd._PREF.pop(sibling_key, None)  # 디스크 등록만 남은 형제를 다른 프로젝트의 Review 가 다시 올리는 상황
         out = asyncio.run(REV_.run(h))
+        check(bd._root_param(sibling_key) == sibling and bd._PREF.get(sibling_key) == sibling_pref
+              and bd.build_state(bd._root_param(sibling_key))["root_key"] == sibling_key,
+              "7A-R6 Review 등록으로 복구된 형제의 직접 URL: 목록 open 없이 _PREF 복구·state 조회")
         hb, rep_rv = out["result"]
         bu = out["ui"]["bmk_dp_board"][0]
         th_dir = Path(root) / "derived" / "thumbs"
@@ -37853,7 +37863,7 @@ def _paid_js_studio():
     check(side.split("은 ", 1)[1] in html and "승인 제출(초안·생성 승인, 그 탭으로 가는 다시 생성(R)·[다시 생성 보내기])은" in html,
           "§10.7 보정 4: board.html 도움말(알아 둘 것)에 승인 제출의 부수 효과 한 줄(확인 창·mock 상자와 같은 말)")
     qb = re.search(r'<button type="button" id="btn-queue"[^>]*title="([^"]*)"', html)
-    blocked_ = "그 길이 막히면(옛 확장·탭이 큐 처리 중·실행 설정 미저장·확인 필요·경로 경고·옛 서버) Open Board 탭의 Review"
+    blocked_ = "그 길이 막히면(옛 확장·탭이 큐 처리 중·실행 설정 미저장·확인 필요·경로 경고·옛 서버) Open Board 또는 메뉴 BMK → Design Patch Studio 로 연 탭의 Review"
     check(bool(qb) and "승인 제출이라 ComfyUI 탭 그래프의 시드 제어 등 실행마다 바뀌는 값이 한 번 진행됨(그래프는 실행 안 함)" in qb.group(1)
           and "확인 창 없음 — 사용자 클릭만" in qb.group(1) and "그래프 Prepare 위젯 값으로 과금" in qb.group(1) and blocked_ in qb.group(1)
           and "옛 확장의 opener 탭이면" not in html and blocked_ in html.split('id="help"', 1)[-1],
@@ -38442,7 +38452,7 @@ async function world(name, o = {}) {
 function board(w) {
   // board.js tabWay·queueReroll(R 뒤 큐·머리줄 'ComfyUI 큐') — 이 Studio 의 link·pipe 로. w.review = queueInComfy(opener 길 Review 부분 실행) 부른 수
   w.review = 0;
-  const c = vm.createContext({ tabLink: w.link, pipe: w.pipe, comfyConnected: () => !!w.win.opener, queueInComfy: () => { w.review += 1; return true; },
+  const c = vm.createContext({ ROOT: KEY, tabLink: w.link, pipe: w.pipe, comfyConnected: () => !!w.win.opener, queueInComfy: () => { w.review += 1; return true; },
     toast: (m, k) => w.toasts.push(`${k || ""}:${m}`) });
   vm.runInContext(`tabWay = ${boardFn("tabWay")}; queueReroll = ${boardFn("queueReroll")};`, c);
   return c;
@@ -38574,6 +38584,8 @@ await scenario("reroll", async () => {
 // 사전 승인한 R 의 큐는 실제 queueReroll(확인 때 opener — 지금도 opener)로 Review 부분 실행 ──
 await scenario("rerollMoved", async () => {
   const w = await world("e2e-rm", { opener: true });
+  w.t.app.rootGraph.nodes.push({ id: 9, comfyClass: "BMKDesignPatchReview", mode: 0, properties: { bmk_dp_root_key: KEY }, widgets: [] });
+  await until(() => w.link.reviewRoots?.includes(KEY));  // Review 폴백을 시험하므로 판 4 hello 에 실제 켜진 Review 를 알린다.
   const b = board(w);
   const busy = async (on) => {
     w.t.app.processingQueue = on;
@@ -38589,7 +38601,7 @@ await scenario("rerollMoved", async () => {
   // 키보드 R(fromButton false): 첫 R = 무장(paid 문구) → 탭이 바빠진 두 번째 R = 다시 무장(opener 문구) → 세 번째 R = 사전 승인 → 큐는 opener 판정으로
   const writes = [];
   const planned = [];
-  const rc = vm.createContext({ S: { crops: [] }, LAYOUT_STATUS: {}, REROLL_CONFIRM_MS: 2500, rerollArm: null, Date, setTimeout: (fn) => fn(),
+  const rc = vm.createContext({ ROOT: KEY, S: { crops: [] }, LAYOUT_STATUS: {}, REROLL_CONFIRM_MS: 2500, rerollArm: null, Date, setTimeout: (fn) => fn(),
     window: { confirm: () => true }, toast: b.toast, rerollCell: () => ({ cell_key: "abcdef0123456789", variant: "V1" }), usd: () => " ≈ $0.62",
     curTarget: () => ({ crop_id: "001_38a818" }), tabWay: b.tabWay, tabLink: w.link, pipe: w.pipe,
     write: async (path) => { writes.push(path); return {}; }, queueReroll: (x) => { planned.push(x); b.queueReroll(x); } });
@@ -51164,6 +51176,11 @@ def batch7a_unit():
         check(str(Path(tmp).resolve()) not in response.text and "root" not in by[keys[0]], "7A 응답에 절대 경로 없음")
         check(not (base / store.PROJECTS_DIRNAME / store.ROOTS_FILE).exists() and store.resolve_board_root(keys[0]) is None,
               "7A GET 목록은 미등록 프로젝트를 등록하지 않음")
+        with patch.object(board.os, "scandir", side_effect=PermissionError(f"접근 거부 {tmp}")), patch.object(board.logger, "warning") as warning:
+            denied = call(board.projects_handler)
+            check(denied.status == 200 and [r["id"] for r in json.loads(denied.text)["projects"]] == [extkey]
+                  and tmp not in denied.text and warning.called and tmp in str(warning.call_args.args[-1]),
+                  "7A-R7 스캔 PermissionError: 등록분 200·응답 경로 없음·서버 경고에 원인")
         with patch.object(store, "load_manifest", wraps=store.load_manifest) as load:
             board._project_summary(roots[0])
             board._project_summary(roots[0])
@@ -51252,17 +51269,19 @@ function browser(root = "") {
     removeEventListener:()=>{}, addEventListener:()=>{}};
   let response = {projects:[]}, status = 200;
   const ctx = {window, document, location, URL, URLSearchParams, console, setTimeout:()=>0, clearTimeout:()=>{},
-    fetch: async (u, init) => { calls.push([u,init]); return {ok:status===200, json:async()=>response}; }};
+    fetch: async (u, init) => { calls.push([u,init]); return {ok:status===200, status, json:async()=>{ if(response instanceof Error) throw response; return response; }}; }};
   vm.createContext(ctx);
-  vm.runInContext(read("web_design_patch/board.js").replace("  main();", `globalThis.T = { main, showProjects, goProjects, queueInComfy, tabWay,
-    set: (p,m,t) => { pipe=p; maskEd=m; tabLink=t; } };`), ctx);
+  vm.runInContext(read("web_design_patch/board.js").replace("  main();", `globalThis.T = { main, showProjects, goProjects, queueInComfy, tabWay, tabTitle, fatal, reroll, queueReroll,
+    set: (p,m,t) => { pipe=p; maskEd=m; tabLink=t; },
+    prepareReroll: (cell, save) => { rerollCell=()=>cell; S={crops:[],rev:1}; write=save; } };`), ctx);
   return {ctx, T:ctx.T, els, moves, calls, messages, confirms, window, response:(r,s=200)=>{response=r;status=s;}};
 }
 (async () => {
   let extension, opened = [], focus = 0, win = {location:{href:"about:blank", assign(v){this.href=v;}}, focus(){focus++;}};
   const nodes = [0, 2, 4, 0].map((mode,i)=>({id:i, type:"BMKDesignPatchReview",mode,properties:{bmk_dp_root_key:i===3?key:"123456789ab"+i}}));
-  const ex = {app:{registerExtension:e=>extension=e, graph:{nodes}}, api:{fileURL:p=>"/prefix"+p}, console,
-    window:{open:(...args)=>(opened.push(args),win)}};
+  const notices=[];
+  const ex = {app:{registerExtension:e=>extension=e, graph:{nodes},extensionManager:{toast:{add:n=>notices.push(n.detail)}}}, api:{fileURL:p=>"/prefix"+p}, console, URL,
+    window:{location:{href:"http://offline/"},open:(...args)=>(opened.push(args),win)}};
   vm.createContext(ex);
   vm.runInContext(read("js/bmk_design_patch.js").replace(/^import .*;$/gm,""), ex);
   extension.commands[0].function();
@@ -51273,6 +51292,18 @@ function browser(root = "") {
   test("메뉴 재클릭은 focus 만", focus===2 && win.location.href.endsWith(key));
   const hello = vm.runInContext('helloReply({type:"bmk-dp-hello",id:"x"})',ex);
   test("hello 판4·켜진 Review만", hello.ext===4 && hello.reviewRoots.length===2 && hello.reviewRoots.includes(key));
+  win.location.href="about:blank";
+  vm.runInContext('openBoard(app.graph.nodes[3])',ex);
+  test("7A-R3 Open Board 새 창은 지정 root",opened.at(-1)[0]==="" && opened.at(-1)[1]==="bmk_dp_board_"+key && win.location.href.endsWith("?root="+key));
+  const same=win.location.href, priorFocus=focus;
+  vm.runInContext('openBoard(app.graph.nodes[3])',ex);
+  test("7A-R3 Open Board 같은 root 재클릭은 focus만",win.location.href===same&&focus===priorFocus+1&&notices.length===0);
+  for(const target of ["http://offline/board/", "http://offline/board/?root=abcdef012345"]) {
+    win.location.href=target;
+    const before=focus;
+    vm.runInContext('openBoard(app.graph.nodes[3])',ex);
+    test("7A-R3 Open Board 다른 화면 보존 "+target,win.location.href===target&&focus===before+1&&notices.at(-1).includes("현재 작업을 유지"));
+  }
 
   const b=browser();
   b.response({projects:[{id:key,name:"<script>이름</script>",openable:true,before_import:false,crops:0,stars:0,candidates:0,modified:"2026-10-31",thumb_url:"projects/thumb?key="+key},
@@ -51289,6 +51320,27 @@ function browser(root = "") {
   b.response({ok:true,key});
   await b.els.app.all().find(e=>e.className==="projects-open").events.click();
   test("카드 열기는 POST 후 같은 창 이동", JSON.parse(b.calls[1][1].body).key===key && b.moves[0]==="?root="+key && b.window.opener);
+  for(const status of [404,500]) {
+    const list=browser();list.response(new Error("Unexpected token < /private/server/path"),status);
+    await list.T.main();
+    const listMessage=list.els.app.all().find(e=>e.className==="projects-status").textContent;
+    const op=browser();op.response({projects:[{id:key,name:"test",openable:true,crops:0,stars:0,candidates:0}]});
+    await op.T.main();op.response(new Error("Unexpected token < /private/server/path"),status);
+    await op.els.app.all().find(e=>e.className==="projects-open").events.click();
+    test("7A-R5 비 JSON 목록·열기 HTTP "+status,[listMessage,op.els.toast.textContent].every(m=>m.includes("HTTP "+status)&&!m.includes("Unexpected")&&!m.includes("private")&&(status!==404||m.includes("ComfyUI 재시작 필요")))&&op.moves.length===0);
+  }
+  const fatal=browser(key), doc=fatal.ctx.document, app=doc.getElementById("app"), panel=doc.getElementById("pipe-panel"), button=new E("button");
+  app.id="app";panel.id="pipe-panel";button.id="btn-projects";app.append(panel);doc.body.append(app,button);
+  doc.getElementById=id=>doc.body.all().find(e=>e.id===id)||null; // 이 장면에서는 없는 DOM 을 만들지 않는다.
+  button.addEventListener("click",fatal.T.goProjects);
+  fatal.T.fatal("프로젝트를 읽지 못함");button.events.click();
+  test("7A-R1 fatal 뒤 프로젝트 단추 이동",doc.getElementById("pipe-panel")===null&&fatal.moves[0]===fatal.ctx.location.pathname&&fatal.confirms.length===0);
+  const clean=browser(key);clean.ctx.document.getElementById("pipe-panel").input=new E("select");
+  clean.T.set({canLeave:()=>({ok:true})},null,null);clean.T.goProjects();
+  test("7A-R4 변경 없음·PS 마스크 select만 있으면 확인 없이 이동",clean.moves.length===1&&clean.confirms.length===0);
+  clean.T.set({canLeave:()=>({ok:true,confirm:"채택 수정 입력을 버리고 이동합니다"})},null,null);
+  clean.window.confirm=s=>(clean.confirms.push(s),false);clean.T.goProjects();
+  test("7A-R4 canLeave 확인 문구를 그대로 사용·취소 보존",clean.moves.length===1&&clean.confirms.length===1&&clean.confirms[0].includes("채택 수정 입력")&&!clean.confirms[0].includes("실행 설정"));
   const c=browser(key);
   c.T.set({canLeave:()=>({ok:false,why:"승인 응답 대기"})},null,null);
   c.T.goProjects();
@@ -51298,8 +51350,18 @@ function browser(root = "") {
   test("이동 취소·마스크 전용 문구", c.moves.length===0 && c.confirms[0].includes("버려집니다") && !c.confirms[0].includes("K 로 돌아오면"));
   c.window.confirm=s=>(c.confirms.push(s),true); c.T.goProjects();
   test("목록 이동은 같은 창", c.moves[0]===c.ctx.location.pathname);
-  c.T.set({paidWhy:()=>"막힘"},null,{via:"opener",reviewRoots:[]});
+  c.T.set({paidWhy:()=>"막힘",paidLock:()=>""},null,{state:"ok",ext:4,via:"opener",reviewRoots:[]});
   test("Review 없는 opener 폴백은 전송 전 차단", c.T.queueInComfy()===false && c.messages.length===0 && c.els.toast.textContent.includes("Review"));
+  const rr=browser(key), rrLink={state:"ok",ext:4,via:"opener",reviewRoots:[]};let writes=0;
+  rr.T.set({paidWhy:()=>"서버 템플릿 사용 불가",paidLock:()=>""},null,rrLink);
+  rr.T.prepareReroll({cell_key:"cell",variant:"V1",pre:0},async()=>{writes++;return {rev:2};});
+  rr.window.confirm=s=>(rr.confirms.push(s),false);await rr.T.reroll(true);
+  test("7A-R2 Review 부재는 저장 전 예약만 확인",rr.T.tabWay()===""&&writes===0&&rr.confirms[0].includes("Review 노드가 없음")&&rr.confirms[0].includes("예약만")&&!rr.confirms[0].includes("큐 요청을 보냅니다"));
+  test("7A-R2 배지 제목도 Review 부재·예약만",rr.T.tabTitle(rrLink).includes("Review 노드가 없어")&&rr.T.tabTitle(rrLink).includes("예약만"));
+  rr.window.confirm=s=>(rr.confirms.push(s),true);await rr.T.reroll(true);rr.T.queueReroll("");
+  test("7A-R2 동의한 예약만 저장·즉시 큐 없음",writes===1&&rr.messages.length===0);
+  rr.T.set({paidWhy:()=>"서버 템플릿 사용 불가",paidLock:()=>""},null,{via:"opener",reviewRoots:null});
+  test("7A-R2 옛 탭 null 은 Review 폴백 유지",rr.T.tabWay()==="opener");
   c.T.set({paidWhy:()=>""},null,{via:"opener",reviewRoots:[]});
   test("유료 길은 Review 없어도 유지", c.T.tabWay()==="paid");
   c.T.set(null,null,{via:"opener"});
