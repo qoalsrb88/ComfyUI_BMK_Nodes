@@ -2304,8 +2304,7 @@ def zorder_write(root: str, data: dict) -> dict:
         if "step" in data:
             i = ids.index(item)
             step = 1 if data["step"] == "up" else -1
-            j = next((j for j in range(i + step, len(ids) if step > 0 else -1, step)
-                      if overlaps(item, ids[j])), None)
+            j = _zorder_neighbor(ids, item, step, boxes)
             if j is not None:
                 ids.insert(j, ids.pop(i))
         else:
@@ -2315,11 +2314,12 @@ def zorder_write(root: str, data: dict) -> dict:
             ids.remove(item)
             ids.insert(ids.index(anchor) + (1 if "after" in data else 0), item)
         pos = {cid: i for i, cid in enumerate(ids)}
-        changed = any(pos[a] > pos[b] and overlaps(a, b)
-            for i, a in enumerate(original) for b in original[i + 1:])
+        moved = ids != original
+        changed = moved and ("step" in data or any(pos[a] > pos[b] and overlaps(a, b)
+            for i, a in enumerate(original) for b in original[i + 1:]))
         if not changed:
             expect(store.load_manifest(root))
-            return {"ok": True, "changed": False, "rev": seen, "scope": scope,
+            return {"ok": True, "changed": False, "moved": moved, "rev": seen, "scope": scope,
                     "order": manual.get(scope, []), "effective": original}
         manual[scope] = ids
     elif op == "reset":
@@ -2345,7 +2345,7 @@ def zorder_write(root: str, data: dict) -> dict:
 
     _result, rev = store.update_manifest(root, mutate)
     return {"ok": True, "rev": rev, "scope": scope, "order": manual.get(scope, []), "effective": ids,
-            **({"changed": True} if op == "move" else {})}
+            **({"changed": True, "moved": True} if op == "move" else {})}
 
 
 # ══════════════════════════════════════════════════════════════════════

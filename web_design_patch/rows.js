@@ -97,7 +97,7 @@ window.DPRows = (() => {
       if (!d || !d.ok) return;
       st.z = { crops: d.effective, manual: !!(d.order && d.order.length) };
       movedZ = { rev: d.rev, pref: st.pref_v, z: st.z };
-      tell(d.changed === false ? "겹치지 않는 크롭끼리는 결과가 같아 순서를 저장하지 않음(나중에 겹쳐도 이 순서는 기억 안 됨)" : "겹침 순서 적용 — 이음매를 다시 잽니다");
+      if (d.moved !== false) tell(d.changed === false ? "겹치지 않는 크롭끼리는 결과가 같아 순서를 저장하지 않음(나중에 겹쳐도 이 순서는 기억 안 됨)" : "겹침 순서 적용 — 이음매를 다시 잽니다");
       await config.refresh();
     } catch (err) {
       tell(err.message, "err");
@@ -227,7 +227,12 @@ window.DPRows = (() => {
     }, 250);
   }
   document.addEventListener("pointerdown", (e) => { if (menu && !menu.contains(e.target)) closeMenu(); });
-  document.addEventListener("keydown", (e) => { if (e.code === "Escape") closeMenu(); });
+  document.addEventListener("keydown", (e) => {
+    if (!menu || e.code !== "Escape") return;
+    e.stopPropagation();
+    e.preventDefault();
+    closeMenu();
+  }, true);
   window.addEventListener("blur", () => { closeMenu(); release(); });
   return { tail, configure, order, defer, ensureZ, blocked };
 })();

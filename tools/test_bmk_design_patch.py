@@ -51992,8 +51992,13 @@ def batch7c_unit():
         return bd.zorder_write(root, dict(scope="crops", op="move", item=item, seen=st.load_manifest(root)["rev"], **kw))
 
     before = Path(root, "design_patch.json").read_bytes()
+    stationary_result = move(ids[0], before=ids[1])
+    check(stationary_result["moved"] is False and stationary_result["changed"] is False
+          and stationary_result["effective"] == ids[:3] and Path(root, "design_patch.json").read_bytes() == before,
+          "D67 제자리 끌기는 moved false, 파일·rev 불변")
     r = move(ids[0], after=ids[1])
-    check(r["changed"] is False and r["effective"] == ids[:3] and Path(root, "design_patch.json").read_bytes() == before,
+    nonoverlap_result = r
+    check(r["moved"] is True and r["changed"] is False and r["effective"] == ids[:3] and Path(root, "design_patch.json").read_bytes() == before,
           "D67 겹치지 않는 쌍만 이동하면 파일·rev·수동 순서 불변")
     mm = st.load_manifest(root)
     check(bd._composite_sig(root, mm, None) == sig and st.export_state_sig(mm) == state_sig
@@ -52026,12 +52031,27 @@ def batch7c_unit():
     actual_scopes = bd._zorder_scopes
     def touching(order):
         scopes, boxes = actual_scopes(order)
-        boxes[ids[1]] = [[18, 0, 34, 16]]  # 001 끝(16)에서 2px: 합성의 보수적인 여유
+        boxes[ids[1]] = [[16 + gap, 0, 32 + gap, 16]]  # 변 접촉 또는 2px 틈: step 은 건너뛴다.
         return scopes, boxes
-    with patch.object(bd, "_zorder_scopes", side_effect=touching):
-        check(move(ids[0], after=ids[1])["changed"], "D67 quad bbox 2px 여유 접촉도 겹침")
-        st.save_manifest(root, copy.deepcopy(m))
-        check(move(ids[0], step="up")["effective"] == [ids[1], ids[0], ids[2]], "D67 step 도 2px 여유의 가장 가까운 겹침 사용")
+    for gap in (0, 2):
+        with patch.object(bd, "_zorder_scopes", side_effect=touching):
+            st.save_manifest(root, copy.deepcopy(m))
+            check(move(ids[0], after=ids[1])["changed"], f"D67 끌기는 {gap}px 접촉·여유도 겹침")
+            st.save_manifest(root, copy.deepcopy(m))
+            stepped = move(ids[0], step="up")
+            st.save_manifest(root, copy.deepcopy(m))
+            panel = bd.zorder_write(root, dict(scope="crops", op="up", item=ids[0], seen=st.load_manifest(root)["rev"]))
+            check(stepped["effective"] == panel["effective"] == [ids[1], ids[2], ids[0]],
+                  f"D67 step 은 패널과 같이 {gap}px 접촉·여유를 건너 실제 겹침으로")
+            st.save_manifest(root, copy.deepcopy(m))
+            before_step = Path(root, "design_patch.json").read_bytes()
+            stopped = move(ids[1], step="down")
+            mm = st.load_manifest(root)
+            check(stopped["changed"] is False and stopped["moved"] is False
+                  and Path(root, "design_patch.json").read_bytes() == before_step
+                  and bd._composite_sig(root, mm, None) == sig and st.export_state_sig(mm) == state_sig
+                  and dp._export_hash(mm, entries, cs, {}) == export_hash,
+                  f"D67 {gap}px 접촉·여유만 있으면 step 은 파일·rev·합성·Export 상태 불변")
     missing = copy.deepcopy(m)
     missing["base"] = "inputs/missing.png"
     st.save_manifest(root, missing)
@@ -52095,7 +52115,8 @@ El.prototype.fire = function(type, extra = {}) {
   for(let n=this; n && !stopped; n=n.parent) for(const fn of n.on[type] || []) fn(Object.assign(e,{currentTarget:n}));
 };
 const doc = new Doc();
-doc.addEventListener = () => {};
+const docKeys = [];
+doc.addEventListener = (type, fn, capture = false) => { if(type === "keydown") docKeys.push({fn,capture}); };
 doc.createElementNS = (_, tag) => doc.createElement(tag);
 doc.querySelectorAll = s => doc.body.all().filter(e => e.classList.contains(s.slice(1)));
 let tick;
@@ -52169,6 +52190,46 @@ await scenario("rows",async()=>{
   r.lockRetry=attempts.join()==="true,true" && failedLock.getAttribute("aria-pressed")==="true";
   bs.find(e=>e.title==="위로").fire("click");await sleep(5);
   r.refreshFailure=refreshFailures>=4 && st.rev===1;
+  return r;
+});
+await scenario("stationaryDrag",async()=>{
+  const st={rev:IN.stationary.rev,crops:IN.stationary.effective.map(id=>({id})),z:{crops:IN.stationary.effective,manual:false}};
+  const notices=[],posts=[];
+  Rows.configure({state:()=>st,toast:s=>notices.push(s),refresh:async()=>{},
+    move:async body=>{posts.push(body);return body.before ? IN.stationary : IN.nonoverlap;}});
+  const list=doc.createElement("ol"), rows=st.crops.map(c=>{
+    const li=doc.createElement("li");list.append(li);Rows.tail(li,{crop:c,state:st,z:true});return li;
+  });
+  const grip=rows[0].all().find(e=>e.draggable);
+  grip.fire("dragstart",{dataTransfer:{setData(){}}});rows[1].fire("drop",{clientY:39});await sleep(5);
+  const r={quiet:posts.length===1 && posts[0].before===st.crops[1].id && notices.length===0};
+  grip.fire("dragstart",{dataTransfer:{setData(){}}});rows[1].fire("drop",{clientY:1});await sleep(5);
+  r.nonoverlapNotice=notices.length===1 && notices[0].startsWith("겹치지 않는 크롭끼리는");
+  return r;
+});
+await scenario("menuEscape",async()=>{
+  const source=fs.readFileSync(IN.boardJs,"utf8");
+  let maskOn=true,maskKeys=0;
+  const nav=vm.createContext({typing:()=>false,Element:class{},editing:false,refsOn:false,
+    $:id=>({hidden:id!=="mask-panel"}),maskEd:{onKey(e){maskKeys++;if(e.code==="Escape"){maskOn=false;return true;}return false;}}});
+  vm.runInContext(source.slice(source.indexOf("  function onKeyDown(e)"),source.indexOf("  function onKeyUp(e)")),nav);
+  doc.addEventListener("keydown",nav.onKeyDown);
+  const key=()=>{
+    const e={code:"Escape",key:"Escape",target:doc.body,defaultPrevented:false,cancelBubble:false,
+      preventDefault(){this.defaultPrevented=true;},stopPropagation(){this.cancelBubble=true;}};
+    for(const phase of [true,false]){
+      for(const listener of docKeys.filter(x=>x.capture===phase))listener.fn(e);
+      if(e.cancelBubble)break;
+    }
+    return e;
+  };
+  const li=doc.createElement("li"),c={id:"a"};Rows.configure({});
+  Rows.tail(li,{crop:c,state:{crops:[c],z:{crops:[c.id]}},z:true});
+  li.fire("contextmenu",{clientX:10,clientY:10});
+  const menu=doc.body.children.at(-1),first=key();
+  const r={menuOnly:menu.parent===null && maskOn && maskKeys===0 && first.cancelBubble && first.defaultPrevented};
+  const second=key();
+  r.closedPassThrough=!maskOn && maskKeys===1 && !second.cancelBubble;
   return r;
 });
 await scenario("navigation",async()=>{
@@ -52256,7 +52317,8 @@ process.exit(0);
 '''
     (run / "harness.mjs").write_text(prefix + scene, encoding="utf-8", newline="\n")
     (run / "in.json").write_text(json.dumps({"rowsJs": str(web / "rows.js"), "viewerJs": str(web / "viewer.js"),
-                                            "maskJs": str(web / "mask_edit.js"), "boardJs": str(web / "board.js")}), encoding="utf-8")
+                                            "maskJs": str(web / "mask_edit.js"), "boardJs": str(web / "board.js"),
+                                            "stationary": stationary_result, "nonoverlap": nonoverlap_result}), encoding="utf-8")
     result = subprocess.run([node, str(run / "harness.mjs"), str(web / "layout_geom.js"), str(web / "layout_edit.js"),
                              str(run / "in.json")], capture_output=True, text=True, encoding="utf-8", timeout=45)
     check(result.returncode == 0 and bool(result.stdout.strip()), f"D60–D68 JS 실행 {result.stderr[-1200:]}")
