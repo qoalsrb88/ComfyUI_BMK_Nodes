@@ -48,7 +48,7 @@
 // Studio 승인(S3b — Studio 의 유료 Run·Spec Draft·재굴림을 이 탭이 큐에 넣는다. 토큰은 프론트가 app.queuePrompt 안에서만 붙인다)
 //  - 길: 같은 출처 postMessage(opener — 답은 ev.source 로) 또는 BroadcastChannel("bmk-dp")(답은 채널로). tab = 탭 로드마다 새 임의
 //    ID, tab 을 지정한 메시지는 그 탭만 받는다(채널은 모든 탭에 간다 — 다른 탭의 응답도 tab 이 있어 여기서 걸러짐).
-//  - hello {type:"bmk-dp-hello", id} → {type, id, tab, ext: 3, submit, busy}. submit = 제출 감싸개가 설치됐고 app.queuePrompt 가
+//  - hello {type:"bmk-dp-hello", id} → {type, id, tab, ext: 4, submit, busy, reviewRoots}. submit = 제출 감싸개가 설치됐고 app.queuePrompt 가
 //    함수면 "ok"(아니면 "unsupported" — Studio 유료 단추 끔), busy = 이 탭이 큐를 처리하는 중이거나 Studio 승인을 처리하는 중.
 //  - 승인 {type:"bmk-dp-approve", id, tab, rootKey, stage: run|draft|reroll, hash, only, what}: tab 이 이 탭일 때만(없으면 무시).
 //    모양이 틀리면 bad_request, 바쁘면 busy(프론트 자동 큐가 켜져 있어도 — 아래), 아니면 곧바로 ack 를 보내고 서버(GET /pipeline/prompt)에서 그 단계의 템플릿을 받는다 — 서버가 승인 해시를 지금 계획·반영
@@ -99,7 +99,7 @@ const ROOT_KEY_RE = /^[0-9a-f]{12}$/; // store.root_key = sha1(root)[:12]
 const BOARD_QUEUE_DELAY_MS = 800;
 const HELLO = "bmk-dp-hello";
 const HELLO_CHANNEL = "bmk-dp";
-const EXT_VERSION = 3; // S3a 2(hello 응답만) → S3b 3(Studio 승인 처리)
+const EXT_VERSION = 4; // S3a 2(hello) → S3b 3(승인) → 배치 7 4(Review 프로젝트 목록)
 const APPROVE = "bmk-dp-approve";
 const PROMPT_PATH = "/bmk/design_patch/pipeline/prompt";
 const HASH_RE = /^[0-9a-f]{12}$/; // 승인 해시(run·draft)
@@ -808,8 +808,37 @@ function openBoard(node) {
         notify("info", "먼저 Review 노드를 실행하세요. 보드 주소는 실행 결과로 받습니다.");
         return;
     }
-    const win = window.open(api.fileURL(`${BOARD_PATH}?root=${key}`), `bmk_dp_board_${key}`);
-    if (!win) notify("warn", "팝업이 차단되었습니다. 이 주소의 팝업을 허용하세요.");
+    const win = window.open("", `bmk_dp_board_${key}`);
+    if (!win) {
+        notify("warn", "팝업이 차단되었습니다. 이 주소의 팝업을 허용하세요.");
+        return;
+    }
+    try {
+        if (win.location.href === "about:blank") win.location.assign(api.fileURL(`${BOARD_PATH}?root=${key}`));
+        else if (new URL(win.location.href, window.location.href).searchParams.get("root") !== key) {
+            notify("info", "이 보드 창은 다른 프로젝트나 프로젝트 목록을 보고 있습니다 — 현재 작업을 유지하고 창으로 이동합니다.");
+        } else if (win.document.querySelector(".fatal")) win.location.reload();
+        win.focus();
+    } catch (e) {
+        win.focus();
+        notify("info", "기존 보드 창을 확인할 수 없습니다 — 현재 화면을 유지하고 창으로 이동합니다. 그 창을 새로고침하세요.");
+    }
+}
+
+function openStudio() {
+    const win = window.open("", "bmk_dp_studio");
+    if (!win) {
+        notify("warn", "팝업이 차단되었습니다. 이 주소의 팝업을 허용하세요.");
+        return;
+    }
+    try {
+        if (win.location.href === "about:blank") win.location.assign(api.fileURL(BOARD_PATH));
+        win.focus();
+    } catch (e) {
+        // 다른 출처로 이동한 이름 있는 창도 덮어쓰지 않는다.
+        win.focus();
+        notify("info", "기존 Studio 창을 확인할 수 없습니다 — 현재 화면을 유지하고 창으로 이동합니다. 그 창을 새로고침하세요.");
+    }
 }
 
 // 레이아웃 반영은 부분 실행이 Import PSD 를 다시 돌릴 때만 된다 — 대상(Review)의 조상(입력 링크)에 Import 가 있는가.
@@ -958,7 +987,8 @@ function helloReply(d) {
     // Studio hello → 이 탭의 응답(아니면 null). tab 을 지정했으면 그 탭만(다른 탭의 응답 메시지도 여기서 걸러짐)
     if (d?.type !== HELLO || typeof d.id !== "string" || (d.tab !== undefined && d.tab !== TAB_ID)) return null;
     const submit = submitHooked && typeof app.queuePrompt === "function" ? "ok" : "unsupported";
-    return { type: HELLO, id: d.id, tab: TAB_ID, ext: EXT_VERSION, submit, busy: !!app.processingQueue || studioBusy };
+    const reviewRoots = [...new Set(nodesOf(REVIEW_NODE).filter((n) => !isOff(n)).map(rootKeyOf).filter((k) => ROOT_KEY_RE.test(k || "")))];
+    return { type: HELLO, id: d.id, tab: TAB_ID, ext: EXT_VERSION, submit, busy: !!app.processingQueue || studioBusy, reviewRoots };
 }
 
 // 승인 메시지 모양에서 틀린 필드 이름 하나 | "". reroll 은 사전 승인분 전체라 해시·only 가 없다
@@ -1130,6 +1160,10 @@ function studioWave(detail, node) {
 
 app.registerExtension({
     name: "BMK.DesignPatch",
+
+    commands: [{ id: "BMK.DesignPatch.OpenStudio", label: "Design Patch Studio 열기", icon: "pi pi-th-large", function: openStudio }],
+    menuCommands: [{ path: ["BMK"], commands: ["BMK.DesignPatch.OpenStudio"] }],
+    actionBarButtons: [{ icon: "pi pi-th-large", label: "Patch Studio", tooltip: "Design Patch Studio 열기", onClick: openStudio }],
 
     setup() {
         api.addEventListener("execution_start", (e) => {

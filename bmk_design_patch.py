@@ -2533,6 +2533,7 @@ def _board_key(root: str) -> str:
     key = store.root_key(root)
     if store.resolve_board_root(key) is None:
         key = store.register_root(root)
+        _restore_board_prefs()
     return key
 
 
@@ -2755,6 +2756,7 @@ class BMKDesignPatchReview:
         t0 = time.time()
         root, m = _open(project)
         key = store.register_root(root)
+        _restore_board_prefs()  # 등록 과정에서 함께 복구된 형제 프로젝트도 직접 보드 URL 로 열 수 있다.
         prm = project.get("analyze") or dict(_ANALYZE_DEFAULTS)  # Compose 와 같은 분석 설정의 항목을 보드가 보여 준다
         thumbs = await asyncio.to_thread(board.prebuild_thumbs, root, prm)
         store.save_board_pref(root, prm)  # prebuild_thumbs 가 넣은 보드 분석 설정을 재시작 너머로(Analyze 와 같게)

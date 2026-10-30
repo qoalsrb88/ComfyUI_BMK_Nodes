@@ -748,7 +748,7 @@ window.DPPipeline = (() => {
 
   // ── ComfyUI 탭 연결(D6)·유료 승인 메시지(S3b 계약 §3·§5) ──
   function link(win, onChange, every = HELLO_MS, wait = REPLY_MS, ackMs = ACK_MS, endMs = END_MS) {
-    // every 마다 hello {type, id}: opener(Open Board 로 연 창)가 있으면 그 탭의 응답만, 없으면 BroadcastChannel("bmk-dp") 로 묻고 wait 동안 모은
+    // every 마다 hello {type, id}: opener(Open Board 또는 메뉴 BMK → Design Patch Studio 로 연 창)가 있으면 그 탭의 응답만, 없으면 BroadcastChannel("bmk-dp") 로 묻고 wait 동안 모은
     // 응답의 탭이 정확히 하나일 때만 연결. 같은 출처·이번 hello 의 id 만 받는다. state = wait(첫 판정 전)·ok·old(opener 가 답하지 않음 —
     // 옛 확장)·none·many. 응답 = {tab(탭 로드마다 새 ID), ext(확장 판), submit(승인 제출 가능 ok|unsupported), busy(탭이 큐 처리 중)}.
     // paidWhy() = 유료 승인을 못 하는 이유("" = 유료 가능: 연결·ext 3 이상·submit ok·busy 아님 — 머리줄 배지 제목(board.js tabTitle)도 이 문장).
@@ -757,7 +757,7 @@ window.DPPipeline = (() => {
     // 답은 같은 id·같은 tab·같은 길에서 온 것만. Studio 가 끝낸 요청에 늦게 온 approved 는 late(답) 으로 넘긴다(이미 큐에 들어간 실행을 놓치지 않게).
     // sent({id, tab, via}) = 보낸 직후(호출자가 창을 새로 열어도 이어 받게 남김), adopt({id, tab, via}, late) = 앞 창이 보내고 결과를 모르는 요청의
     // 늦은 approved 를 이 창에서 late 로 받음. onWave(fn) = 연결된 탭(tab 일치)이 보낸 wave
-    const st = { state: "wait", tab: null, ext: null, submit: null, busy: false, via: null };
+    const st = { state: "wait", tab: null, ext: null, submit: null, busy: false, via: null, reviewRoots: null };
     const Channel = win.BroadcastChannel;
     const ch = typeof Channel === "function" ? new Channel(CHANNEL) : null;
     let round = null;
@@ -799,9 +799,10 @@ window.DPPipeline = (() => {
     function settle(r) {
       const got = [...r.replies.values()];
       const d = got.length === 1 ? got[0] : null;
-      const next = d ? { state: d.ext >= 2 ? "ok" : "old", tab: d.tab, ext: d.ext, submit: d.submit, busy: !!d.busy, via: r.via }
-        : { state: r.via === "opener" ? "old" : got.length ? "many" : "none", tab: null, ext: null, submit: null, busy: false, via: r.via };
-      const changed = Object.keys(next).some((k) => st[k] !== next[k]);
+      const reviewRoots = d && Array.isArray(d.reviewRoots) ? [...new Set(d.reviewRoots.filter((k) => typeof k === "string" && /^[0-9a-f]{12}$/.test(k)))].sort() : null;
+      const next = d ? { state: d.ext >= 2 ? "ok" : "old", tab: d.tab, ext: d.ext, submit: d.submit, busy: !!d.busy, via: r.via, reviewRoots }
+        : { state: r.via === "opener" ? "old" : got.length ? "many" : "none", tab: null, ext: null, submit: null, busy: false, via: r.via, reviewRoots: null };
+      const changed = Object.keys(next).some((k) => k === "reviewRoots" ? JSON.stringify(st[k]) !== JSON.stringify(next[k]) : st[k] !== next[k]);
       Object.assign(st, next);
       // 기다리던 요청의 탭이 아니게 됨(새로고침 = 새 tab ID·닫힘·끊김) — 결과를 모름(이미 큐에 들어갔을 수 있음)
       for (const a of asks.values()) {
@@ -814,10 +815,10 @@ window.DPPipeline = (() => {
       // old = opener 가 있는데 답하지 않음(ext null — 옛 확장·새로고침 중·다른 주소로 옮겨 감) 또는 확장 판 < 2
       if (st.state === "old") {
         return st.ext === null ? "이 창을 연 ComfyUI 탭이 hello 에 답하지 않음(확장이 옛 판·새로고침 중, 또는 그 탭이 다른 주소·페이지로 옮겨 감) — "
-          + "그 탭을 새로고침하거나 Open Board 로 다시 열기"
+          + "그 탭을 새로고침하거나 Open Board 또는 메뉴 BMK → Design Patch Studio 로 다시 열기"
           : `이 창을 연 ComfyUI 탭의 확장이 옛 판(${st.ext}) — 그 탭을 새로고침한 뒤 유료 승인`;
       }
-      if (st.state !== "ok") return "ComfyUI 탭 연결 없음 — Review 노드의 Open Board 로 열거나 ComfyUI 탭을 하나만 열어 두기";
+      if (st.state !== "ok") return "ComfyUI 탭 연결 없음 — Review 노드의 Open Board 또는 메뉴 BMK → Design Patch Studio 로 열거나 ComfyUI 탭을 하나만 열어 두기";
       if (st.ext < 3) return `ComfyUI 탭의 확장이 옛 판(S3a — 판 ${st.ext}) — 그 탭을 새로고침한 뒤 유료 승인`;
       if (st.submit !== "ok") return "ComfyUI 탭이 승인 제출을 못 함(submit unsupported — ComfyUI 프론트가 바뀜) — 그래프의 승인 버튼 사용";
       // 할 일('잠시 뒤 다시')은 붙이지 않음 — 재굴림 확인 창·예약 토스트에도 실려 R 재누름(+1 사전 승인)으로 읽히지 않게(단추는 끝나면 저절로 켜짐)

@@ -298,7 +298,7 @@ _MAX_PNG_BODY = 4 * 1024 * 1024  # POST /mask/save 편집 래스터(L PNG — �
 _MAX_REROLL_COUNT = 4      # 요청 하나에 더할 수 있는 호출 수
 _MAX_CELL_PENDING = 16     # 재굴림 후 셀의 대기 호출 상한(키 반복·버그로 인한 과금 폭주 방지, Run 이 소화하면 다시 가능)
 
-_ROOT_HINT = "등록되지 않은 프로젝트 키입니다 — Review 노드를 실행한 뒤 노드의 Open Board 로 여세요"
+_ROOT_HINT = "등록되지 않은 프로젝트 키입니다 — Open Board 또는 메뉴 BMK → Design Patch Studio 로 여세요"
 _KEY_RE = re.compile(r"[A-Za-z0-9_\-]{1,96}")
 _CROP_ID_RE = re.compile(r"[A-Za-z0-9_\-]{1,64}")
 _TID_RE = re.compile(r"[A-Z]{1,3}")
@@ -5483,19 +5483,172 @@ async def mask_ps_import_handler(request: web.Request) -> web.StreamResponse:
 
 
 # ── 배치 7 공용 자리(감독관 — _proto/STUDIO_BATCH7_SPEC.md D70). 본문은 7-A(projects 셋, D49–D52)·7-B(prompt, D59)가 채운다. 그 전엔 501.
+_PROJECT_INPUT: str | None = None
+_PROJECT_MEMO: dict[str, tuple] = {}
+_PROJECT_MEMO_LOCK = threading.Lock()
+_PROJECT_THUMB_SLOTS = threading.BoundedSemaphore(1)
+
+
+def _project_roots() -> list[dict]:
+    """input 바로 아래 프로젝트와 등록 루트의 합집합. GET 에서는 등록 파일을 쓰지 않는다."""
+    rows = {r["key"]: dict(r) for r in store.known_roots()}
+    parent = os.path.join(_PROJECT_INPUT, store.PROJECTS_DIRNAME) if _PROJECT_INPUT else None
+    if parent:
+        try:
+            with os.scandir(parent) as entries:
+                for e in entries:
+                    try:
+                        # junction/symlink 로 input 밖의 미등록 폴더까지 탐색하지 않는다.
+                        if e.is_dir(follow_symlinks=False) and os.path.dirname(os.path.realpath(e.path)) == os.path.realpath(parent):
+                            key = store.root_key(e.path)
+                            rows.setdefault(key, {"key": key, "root": e.path, "project": e.name})
+                    except OSError as e:
+                        logger.warning("%s 프로젝트 폴더 항목을 읽지 못함: %s", _TAG, e)
+                        continue
+        except OSError as e:
+            logger.warning("%s 프로젝트 폴더 스캔 실패 — 등록된 프로젝트를 표시: %s", _TAG, e)
+    for r in rows.values():
+        r["outside_input"] = not parent or os.path.normcase(os.path.realpath(os.path.dirname(r["root"]))) != os.path.normcase(os.path.realpath(parent))
+    return list(rows.values())
+
+
+def _project_time(value) -> str | None:
+    # 기록의 임의 문자열(경로 포함)을 응답에 그대로 싣지 않는다.
+    return value if isinstance(value, str) and re.fullmatch(r"\d{4}-\d\d-\d\d[ T]\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)?", value) else None
+
+
+def _project_summary(root: str) -> dict:
+    path = os.path.join(root, store.MANIFEST_NAME)
+    stat = os.stat(path)
+    try:
+        pref = os.stat(os.path.join(root, store.BOARD_PREF_NAME))
+        pref_stamp = (pref.st_mtime_ns, pref.st_size)
+    except FileNotFoundError:
+        pref_stamp = None
+    # Export 가 옛 PSD 를 재사용하면 manifest rev 는 그대로이고 마지막 Export 포인터만 바뀐다.
+    stamp = (stat.st_mtime_ns, stat.st_size, pref_stamp)
+    with _PROJECT_MEMO_LOCK:
+        cached = _PROJECT_MEMO.get(root)
+        if cached and cached[0] == stamp:
+            return dict(cached[1])
+    m = store.load_manifest(root)
+    for field in ("crops", "candidates", "exports"):
+        if not isinstance(m.get(field), list) or any(not isinstance(x, dict) for x in m[field]):
+            raise ValueError("프로젝트 목록 형식 오류")
+    if not isinstance(m.get("picks"), dict) or not isinstance(m.get("rejects"), dict):
+        raise ValueError("프로젝트 선택 형식 오류")
+    picked = {k for v in m["picks"].values() if isinstance(v, list) for k in v if isinstance(k, str)}
+    picked.update(c["key"] for c in m["candidates"] if c.get("picked") and isinstance(c.get("key"), str))
+    stars = sum(isinstance(c.get("key"), str) and c["key"] in picked and c["key"] not in m["rejects"] for c in m["candidates"])
+    ex = store.last_export(root, m)
+    state = None if ex is None else "unknown"
+    if ex is not None and ex.get("state_sig"):
+        state = "same" if ex["state_sig"] == store.export_state_sig(m) else "changed"
+    last = {"rev": ex.get("rev") if type(ex.get("rev")) is int else None, "time": _project_time(ex.get("time"))} if ex else None
+    row = {"openable": True, "crops": len(m["crops"]), "stars": stars, "candidates": len(m["candidates"]),
+           "before_import": not bool(m.get("base")), "export_last": last, "export_state": state,
+           "modified": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_mtime))}
+    with _PROJECT_MEMO_LOCK:
+        if len(_PROJECT_MEMO) >= 512:
+            _PROJECT_MEMO.clear()
+        _PROJECT_MEMO[root] = (stamp, row)
+    return dict(row)
+
+
+def _projects_list() -> dict:
+    out = []
+    for r in _project_roots():
+        # 표시 이름은 경로가 들어갈 수 있는 manifest.project 대신 실제 폴더 이름.
+        row = {"id": r["key"], "name": os.path.basename(r["root"]), "outside_input": r["outside_input"]}
+        try:
+            store._check_project_name(row["name"])
+            row.update(_project_summary(r["root"]))
+            row["thumb_url"] = None if row["before_import"] else "projects/thumb?" + urlencode({"key": r["key"]})
+        except FileNotFoundError:
+            row.update(openable=False, error="열 수 없음 — Project 노드로 먼저 프로젝트를 만드세요")
+        except Exception:
+            row.update(openable=False, error="열 수 없음 — 프로젝트 파일 형식과 읽기 권한을 확인하세요")
+        out.append(row)
+    out.sort(key=lambda r: (r.get("modified") or "", r["name"], r["id"]), reverse=True)
+    return {"projects": out}
+
+
+def _project_find(key) -> dict:
+    if not isinstance(key, str) or not re.fullmatch(r"[0-9a-f]{12}", key):
+        raise _Reject(400, "프로젝트 키 형식이 잘못되었습니다")
+    row = next((r for r in _project_roots() if r["key"] == key), None)
+    if row is None or not os.path.isfile(os.path.join(row["root"], store.MANIFEST_NAME)):
+        raise _Reject(404, "목록에서 프로젝트를 찾을 수 없습니다 — 목록을 새로고침하세요")
+    return row
+
+
+def _ensure_pref(key: str, root: str) -> None:
+    prm = store.load_board_pref(root)
+    if prm is not None:
+        _PREF.setdefault(key, prm)
+
+
+def _project_open(key) -> dict:
+    r = _project_find(key)
+    _project_summary(r["root"])
+    if store.resolve_board_root(key) is None:
+        store.register_root(r["root"])
+        # 등록 과정에서 함께 올라온 형제도 직접 보드 URL 로 열 수 있게 설정을 복구한다.
+        for row in store.known_roots():
+            _ensure_pref(row["key"], row["root"])
+    else:
+        _ensure_pref(key, r["root"])
+    return {"ok": True, "key": key}
+
+
+def _project_thumb(key) -> bytes:
+    root = _project_find(key)["root"]
+    m = store.load_manifest(root)
+    if not m.get("base"):
+        raise _Reject(404, "가져오기 전 프로젝트에는 미리보기가 없습니다")
+    sig = _base_sig(m)
+    name = f"list_{sig}.jpg"
+
+    def render():
+        cached = _read_bytes(_thumb_path(root, f"canvasbase_{sig}.jpg"))
+        source = io.BytesIO(cached) if cached else store.resolve_path(root, m["base"])
+        with Image.open(source) as im:
+            im.thumbnail((256, 256), Image.Resampling.LANCZOS)
+            data = _jpeg(im)
+        # _cached 의 prepare 는 공용 렌더 슬롯 밖이다. 미리 원자 저장하면 _cached 는 캐시를 확인만 한다.
+        store._atomic_write_bytes(_thumb_path(root, name), data)
+        return data
+
+    # 목록 요청끼리는 한 슬롯으로 직렬화하고, 열린 Studio 의 렌더 슬롯은 점유하지 않는다.
+    with _PROJECT_THUMB_SLOTS:
+        return _cached(root, name, lambda data: data, prepare=render)
+
+
+async def _project_call(fn, *args):
+    # 기존 _guard 는 store/OSError 원문을 싣는다. 이 세 라우트는 경로가 든 예외를 모두 일반 문구로 가린다.
+    try:
+        return await asyncio.to_thread(fn, *args)
+    except _Reject:
+        raise
+    except Exception:
+        raise _Reject(400, "프로젝트 파일을 읽거나 열 수 없습니다 — 파일 형식과 접근 권한을 확인하세요") from None
+
+
 @_guard
 async def projects_handler(request: web.Request) -> web.StreamResponse:
-    raise _Reject(501, "프로젝트 목록은 아직 준비 중입니다(배치 7-A)")
+    return _json(await _project_call(_projects_list))
 
 
 @_guard
 async def projects_open_handler(request: web.Request) -> web.StreamResponse:
-    raise _Reject(501, "프로젝트 열기는 아직 준비 중입니다(배치 7-A)")
+    data = await _body(request)
+    return _json(await _project_call(_project_open, data.get("key")))
 
 
 @_guard
 async def projects_thumb_handler(request: web.Request) -> web.StreamResponse:
-    raise _Reject(501, "프로젝트 썸네일은 아직 준비 중입니다(배치 7-A)")
+    data = await _project_call(_project_thumb, request.query.get("key"))
+    return web.Response(body=data, content_type="image/jpeg", headers={"Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff"})
 
 
 @_guard
@@ -5559,7 +5712,9 @@ def register_routes(routes: web.RouteTableDef, base_dir: str | None = None) -> b
     """보드 라우트를 routes(PromptServer.instance.routes)에 더한다. 이미 있으면 아무것도 더하지 않고 False.
     PromptServer.add_routes() 전에(노드 모듈 import 때) 불러야 /api 접두 사본도 생긴다.
     base_dir(ComfyUI input 디렉터리)를 주면 <base_dir>/bmk_design_patch/_roots.json 을 다시 읽는다(재시작 뒤 보드 링크 복구)."""
+    global _PROJECT_INPUT
     if base_dir:
+        _PROJECT_INPUT = os.path.abspath(base_dir)
         n = store.load_root_registry(base_dir)
         logger.debug(f"{_TAG} Board: 루트 레지스트리 {n}개 복구 ({base_dir})")
     if any(isinstance(r, web.RouteDef) and r.path == f"{API}/state" for r in routes):

@@ -28,7 +28,7 @@
   <div class="spacer"></div>
   <div id="status" class="status"></div>
   <button type="button" id="btn-viewer" tabindex="-1" title="캔버스 뷰어 보이기/숨기기 (V)">뷰어 ▣</button>
-  <button type="button" id="btn-queue" tabindex="-1" title="다시 생성 대기 소화(확인 창 없음 — 사용자 클릭만) — 유료 승인을 받는 ComfyUI 탭이고 서버가 템플릿을 낼 수 있으면 다시 생성 템플릿(사전 승인분·복구만 과금 · 승인 제출이라 ComfyUI 탭 그래프의 시드 제어 등 실행마다 바뀌는 값이 한 번 진행됨(그래프는 실행 안 함)), 그 길이 막히면(옛 확장·탭이 큐 처리 중·실행 설정 미저장·확인 필요·경로 경고·옛 서버) Open Board 탭의 Review 노드 부분 실행(그래프 Prepare 위젯 값으로 과금), 이 Studio 가 승인 요청·실행·반영 큐 중이면 예약만">다시 생성 보내기</button>
+  <button type="button" id="btn-queue" tabindex="-1" title="다시 생성 대기 소화(확인 창 없음 — 사용자 클릭만) — 유료 승인을 받는 ComfyUI 탭이고 서버가 템플릿을 낼 수 있으면 다시 생성 템플릿(사전 승인분·복구만 과금 · 승인 제출이라 ComfyUI 탭 그래프의 시드 제어 등 실행마다 바뀌는 값이 한 번 진행됨(그래프는 실행 안 함)), 그 길이 막히면(옛 확장·탭이 큐 처리 중·실행 설정 미저장·확인 필요·경로 경고·옛 서버) Open Board 또는 메뉴 BMK → Design Patch Studio 로 연 탭의 Review 노드 부분 실행(그래프 Prepare 위젯 값으로 과금), 이 Studio 가 승인 요청·실행·반영 큐 중이면 예약만">다시 생성 보내기</button>
   <button type="button" id="btn-drain" tabindex="-1" title="진행 중인 Run 이 새 호출 발사를 멈춥니다(진행 중인 호출은 끝까지 받아 저장) — Drain">새 호출 멈춤</button>
   <button type="button" id="btn-help" tabindex="-1" title="단축키 (?)">?</button>
 </header>
@@ -186,11 +186,11 @@
       <tr><td>[다른 후보로]</td><td>같은 타깃의 다른 후보를 ★ 로 바꾸면 이음매가 어떻게 되나(후보당 ≈ 2.5초 — 겹친 크롭 영향 포함). [이 후보를 ★] = 검토의 Space</td></tr>
     </table>
     <p class="dim">마스크 모드에서는 검토 키(Space·R·D·C·V·화살표 — X·Q·S·M 은 마스크 키)와 E·T·G 가 꺼집니다(실행은 탭으로). 편집은 분석(위치·색감 맞춤)을 바꾸지 않고, Compose·Export(PSD 그룹 마스크)·★ 합성이 같은 마스크를 씁니다. z 순서는 편집 전 마스크 넓이 그대로입니다. 이음매 검사는 경계에서 잘린 곳만 봅니다 — 페이드 띠 안의 겹침(이중 윤곽)은 Q·S·M 으로 눈으로 보고 원래 그림의 윤곽선을 따라 붓으로 손질하세요.</p>
-    <p class="dim">실행 모드에서는 검토 키(Space·X·R·Q·D·C·S·M·V·화살표)와 E·T 가 꺼집니다. 다시 생성(R)·[다시 생성 보내기]는 유료 승인을 받는 탭이고 서버가 템플릿을 낼 수 있으면 다시 생성 템플릿(사전 승인 다시 생성·복구만 과금), 그 길이 막히면(옛 확장·탭이 큐 처리 중·실행 설정 미저장·확인 필요·경로 경고·옛 서버) Open Board 탭의 Review 부분 실행입니다(지금 보내는 큐는 사용자 키·클릭만 — 스크립트 R 은 예약만).</p>
+    <p class="dim">실행 모드에서는 검토 키(Space·X·R·Q·D·C·S·M·V·화살표)와 E·T 가 꺼집니다. 다시 생성(R)·[다시 생성 보내기]는 유료 승인을 받는 탭이고 서버가 템플릿을 낼 수 있으면 다시 생성 템플릿(사전 승인 다시 생성·복구만 과금), 그 길이 막히면(옛 확장·탭이 큐 처리 중·실행 설정 미저장·확인 필요·경로 경고·옛 서버) Open Board 또는 메뉴 BMK → Design Patch Studio 로 연 탭의 Review 부분 실행입니다(지금 보내는 큐는 사용자 키·클릭만 — 스크립트 R 은 예약만).</p>
     <h3>알아 둘 것</h3>
     <ul>
       <li>보드는 선택만 기록합니다. 유료 호출은 ComfyUI 탭의 큐(승인 템플릿 또는 Review 노드 부분 실행)로만 일어납니다.</li>
-      <li>다시 생성·승인은 상단 "ComfyUI 탭 연결"의 탭으로 갑니다 — Review 노드 <b>Open Board</b> 로 연 탭, 또는 ComfyUI 탭이 하나뿐이면 채널로 찾은 탭(확장 새 판).</li>
+      <li>다시 생성·승인은 상단 "ComfyUI 탭 연결"의 탭으로 갑니다 — <b>Open Board 또는 메뉴 BMK → Design Patch Studio</b> 로 연 탭, 또는 ComfyUI 탭이 하나뿐이면 채널로 찾은 탭(확장 새 판).</li>
       <li>승인 제출(초안·생성 승인, 그 탭으로 가는 다시 생성(R)·[다시 생성 보내기])은 ComfyUI 탭에 열린 그래프에서 실행마다 바뀌는 값을 한 번 진행시킵니다(그래프는 실행하지 않음) — 시드 제어(randomize·increment)와 Pixaroma Dropdown·Prompt 의 순서·무작위 선택이 다음 값으로 넘어가고(Prompt 순서는 설정에 저장됨), BMK Cyclic Seed 의 batch_count 를 1 로·자동 난수를 새로 뽑으며, 워크플로가 '수정됨'이 되고, 이 실행이 그 워크플로의 실행으로 큐·진행 표시에 보입니다.</li>
       <li>ComfyUI 의 Cancel 은 진행 중인 유료 호출을 버립니다(돈을 내고 결과를 못 받음). 멈추려면 <b>새 호출 멈춤</b> 을 쓰세요.</li>
       <li>MOCK 배지 = 과금 없는 mock 백엔드 결과입니다.</li>
