@@ -18,6 +18,7 @@ window.DPViewer = (() => {
   const HI_MAX = 2048; // 원해상도 창 긴 변 상한(/refs/sheet?kind=region max)
   const HI_AREA = 8192 * 8192; // 원해상도 창 넓이 상한(refs.MAX_RECT_AREA)
   const HI_MS = 250;
+  let isolateSerial = 0;
 
   function el(tag, cls, text) {
     const e = document.createElement(tag);
@@ -49,6 +50,8 @@ window.DPViewer = (() => {
     };
     const bBg = btn("★ 합성", "바탕: 베이스 / 현재 ★ 합성 (B)", () => setBg(bg === "base" ? "composite" : "base"));
     const bRects = btn("사각형", "크롭 사각형·이름 (O)", () => toggleRects());
+    const bIsolate = btn("레이어만", "레이어만 보기 (I)", () => toggleIsolate());
+    bIsolate.hidden = true;
     btn("전체", "캔버스 전체 맞춤 (0)", () => fitCanvas());
     btn("크롭", "선택 크롭 맞춤 (F)", () => fitCrop());
     btn("1:1", "원해상도 — 캔버스 1px = 화면 1px (1)", () => zoomTo(1));
@@ -84,7 +87,8 @@ window.DPViewer = (() => {
     ovCrop.append(ovBefore, ovAfter, split);
     ov.append(ovComp, ovCrop);
     const marks = svg("svg", { class: "marks" });
-    stage.append(imgBg, imgHi, ov, marks);
+    const isolated = svg("svg", { class: "dr-isolate" });
+    stage.append(imgBg, imgHi, ov, isolated, marks);
     const labels = el("div", "labels");
     const empty = el("div", "vempty", "불러오는 중…");
     port.append(stage, labels, empty);
@@ -115,7 +119,103 @@ window.DPViewer = (() => {
     let hi = null; // 지금 겹친 원해상도 창 {rect, res(시트 px 당 창 px)}
     let hiTimer = null;
     let maskCv = null; // 마스크 편집 3층 합성 캔버스(setMaskLayer)
+    let isolate = false;
+    let isolateSuppressed = false;
+    let isolateInfo = null;
+    let isolateNotify = null;
+    let isolateDrawing = null;
+    const isolateId = `dp-isolate-${++isolateSerial}`;
     const loadTok = new WeakMap();
+
+    function isolateMode() { return isolateInfo ? isolateInfo() : { mode: "refs" }; }
+
+    function isolation() {
+      const mode = isolateMode().mode;
+      return isolate && !sheet && mode !== "refs" && (mode === "mask" ? !isolateSuppressed
+        : mode !== "review" || (!!(sel && sel.cand) && !qHeld && !slider && !raw));
+    }
+
+    function drawIsolate() {
+      const info = isolateMode(), mode = info.mode;
+      bIsolate.hidden = !!sheet || mode === "refs";
+      bIsolate.disabled = !canvas || (mode === "review" && !(sel && sel.cand));
+      bIsolate.classList.toggle("on", isolate && !bIsolate.disabled);
+      bIsolate.setAttribute("aria-pressed", String(isolate && !bIsolate.disabled));
+      const active = isolation();
+      stage.classList.toggle("dr-isolated", active && (mode === "review" || mode === "mask"));
+      stage.classList.toggle("dr-isolated-review", active && mode === "review");
+      const visible = active && canvas && ["edit", "pipe"].includes(mode);
+      isolated.style.display = visible ? "" : "none";
+      if (!visible) return;
+      const [W, H] = canvas.size;
+      const layers = info.crops || crops;
+      if (!isolateDrawing || layers.length !== isolateDrawing.rows.length
+          || layers.some((c, i) => c.id !== isolateDrawing.rows[i].id)) {
+        const defs = svg("defs");
+        const mask = svg("mask", { id: isolateId, maskUnits: "userSpaceOnUse", x: 0, y: 0, "mask-type": "luminance" });
+        const whole = svg("rect", { fill: "white" });
+        mask.append(whole);
+        const rows = layers.map((c) => ({ id: c.id, cut: svg("rect", { fill: "black" }),
+          depth: svg("rect", { fill: "black", "fill-opacity": 0.12 }), rect: [] }));
+        for (const row of rows) mask.append(row.cut);
+        const pattern = svg("pattern", { id: `${isolateId}-check`, patternUnits: "userSpaceOnUse" });
+        pattern.append(svg("rect", { fill: "#171a20" }), svg("rect", { fill: "#292e38" }), svg("rect", { fill: "#292e38" }));
+        const outside = svg("rect", { fill: `url(#${isolateId}-check)`, mask: `url(#${isolateId})` });
+        const selected = svg("rect", { class: "dr-selected" });
+        defs.append(mask, pattern);
+        isolated.replaceChildren(defs, outside, ...rows.map((r) => r.depth), selected);
+        isolateDrawing = { mask, whole, rows, pattern, outside, selected, selectedRect: [] };
+      }
+      const cache = isolateDrawing;
+      const attrs = (node, values) => {
+        for (const [k, v] of Object.entries(values)) if (node.getAttribute(k) !== String(v)) node.setAttribute(k, v);
+      };
+      if (cache.W !== W || cache.H !== H) {
+        attrs(isolated, { viewBox: `0 0 ${W} ${H}`, width: W, height: H });
+        for (const node of [cache.mask, cache.whole, cache.outside]) attrs(node, { width: W, height: H });
+        cache.W = W; cache.H = H;
+      }
+      if (cache.z !== z) {
+        for (const node of [cache.pattern, cache.pattern.children[0]]) attrs(node, { width: 16 / z, height: 16 / z });
+        for (const node of [cache.pattern.children[1], cache.pattern.children[2]]) attrs(node, { width: 8 / z, height: 8 / z });
+        attrs(cache.pattern.children[2], { x: 8 / z, y: 8 / z });
+        cache.z = z;
+      }
+      const updateRect = (nodes, rect, previous) => {
+        if (rect.every((v, i) => v === previous[i])) return previous;
+        const [x, y, x1, y1] = rect;
+        for (const node of nodes) attrs(node, { x, y, width: x1 - x, height: y1 - y });
+        return rect.slice();
+      };
+      for (let i = 0; i < layers.length; i++) {
+        const row = cache.rows[i];
+        row.rect = updateRect([row.cut, row.depth], layers[i].rect, row.rect);
+      }
+      const selectedCrop = sel && sel.crop && (layers.find((c) => c.id === sel.crop.id) || sel.crop);
+      cache.selected.style.display = selectedCrop ? "" : "none";
+      if (selectedCrop) cache.selectedRect = updateRect([cache.selected], selectedCrop.rect, cache.selectedRect);
+    }
+
+    function toggleIsolate() {
+      drawIsolate();
+      if (bIsolate.hidden || bIsolate.disabled) return;
+      isolate = !isolate;
+      drawOverlay();
+      if (isolateNotify) isolateNotify();
+    }
+
+    function isolateContext(get, changed) {
+      isolateInfo = get;
+      isolateNotify = changed;
+      drawIsolate();
+      new MutationObserver(() => { drawOverlay(); drawMarks(); }).observe(document.body, { attributes: true, attributeFilter: ["class"] });
+    }
+
+    function suppressIsolate(value) {
+      if (isolateSuppressed === !!value) return;
+      isolateSuppressed = !!value;
+      drawIsolate();
+    }
 
     // ── 이미지: 다 받은 뒤 바꿔 끼워 깜빡이지 않게 ──
     function loadInto(img, rel, onDone) {
@@ -158,6 +258,7 @@ window.DPViewer = (() => {
       zoomLabel.textContent = `${Math.round(z * dpr() * 100)}%`;
       drawLabels();
       if (editor) drawMarks(); // 핸들·이름 글자 크기는 화면 px 기준
+      else drawIsolate();
       if (sheet) {
         clearTimeout(hiTimer);
         hiTimer = setTimeout(loadHi, HI_MS);
@@ -232,6 +333,7 @@ window.DPViewer = (() => {
     }
 
     function drawMarks() {
+      drawIsolate();
       marks.replaceChildren();
       if (!canvas) return;
       const [W, H] = canvas.size;
@@ -267,6 +369,7 @@ window.DPViewer = (() => {
     }
 
     function drawOverlay() {
+      drawIsolate();
       // 아래: 크롭 주변을 원해상도로 ★ 합성한 영역 — 후보를 고르면 "이 후보를 ★ 하면"(그 타깃의 ★ 를 이 후보로 바꾼 Compose
       // 결과, 같은 크롭·겹친 크롭의 다른 ★ 포함). 위(크롭 rect): Before(Q·슬라이더 왼쪽), M = 지금 ★ 영역 위에 마스크 없는 원본.
       const crop = sel && sel.crop;
@@ -294,12 +397,13 @@ window.DPViewer = (() => {
         busy.hidden = true;
       });
       loadInto(ovBefore, t.before_full_url);
-      loadInto(ovAfter, c && raw ? c.full_url : null);
+      const alone = isolation() && isolateMode().mode === "review";
+      loadInto(ovAfter, c && (raw || alone) ? c.full_url : null);
       const cut = `${(splitAt * 100).toFixed(2)}%`;
       const split2 = !!c && slider && !qHeld;
       ovBefore.style.visibility = qHeld || split2 ? "" : "hidden";
       ovBefore.style.clipPath = split2 ? `inset(0 calc(100% - ${cut}) 0 0)` : "";
-      ovAfter.style.visibility = raw && !qHeld ? "" : "hidden";
+      ovAfter.style.visibility = (raw || alone) && !qHeld ? "" : "hidden";
       ovAfter.style.clipPath = split2 ? `inset(0 0 0 ${cut})` : "";
       split.hidden = !split2;
       split.style.left = cut;
@@ -669,6 +773,7 @@ window.DPViewer = (() => {
     bRects.classList.add("on");
     drawSeamButton();
     return { setState, setSelection, setFlags, flags, setBg, toggleRects, fitCanvas, fitCrop, zoomTo, nextSeam,
+      toggleIsolate, isolateContext, suppressIsolate, isIsolated: () => isolate,
       seams: () => seams, setEditor, setCursor, canvasPoint: toCanvas, scale: () => z, redraw: drawMarks, setSheet, setMaskLayer,
       showSeam, curSeam: () => (seamIdx >= 0 ? seams.segments[seamIdx] : null) };
   }

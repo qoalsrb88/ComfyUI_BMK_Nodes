@@ -2077,6 +2077,7 @@ window.DPPipeline = (() => {
         if (d && d.adopt === "add") ch.append(chip("채택 가능", "b-reg"));
         if (ch.childElementCount) li.append(ch);
         li.addEventListener("click", () => pick(c.id));
+        if (window.DPRows) window.DPRows.tail(li, { crop: c, state: S, apiUrl: opts.apiUrl });
         list.append(li);
       }
     }

@@ -981,6 +981,40 @@ window.DPLayoutEdit = (() => {
       opts.toast(`지움 ${done}개 (Ctrl+Z 로 하나씩 되살림)` + (held.length ? ` · 잠금으로 건너뜀 ${held.length}` : ""));
     }
 
+    let externalWrites = Promise.resolve();
+    function lockExternal(ids, locked) {
+      const work = externalWrites.then(async () => {
+        try {
+          await flushNudge();
+          await S.idle();
+          if (!on || !S.L || S.stale) await S.load();
+          if (S.err) throw new Error(S.err);
+          if (!S.L || !S.L.exists) throw new Error("레이아웃이 없습니다");
+          let wrote = false;
+          for (const id of ids) {
+            if (window.DPRows && window.DPRows.blocked()) throw new Error("진행 중인 작업이 끝난 뒤 잠금을 바꾸세요");
+            if (!S.crop(id)) continue;
+            const result = await S.update(id, (c) => !!c.locked === locked ? null : { locked });
+            if (!result.skipped) wrote = true;
+          }
+          if (wrote) opts.toast("잠금 바뀜 — 반영 필요");
+        } finally {
+          showNotice();
+          syncSel(false);
+          renderKeepTyping();
+        }
+      });
+      externalWrites = work.catch(() => {});
+      return work;
+    }
+
+    async function removeExternal(id) {
+      if (opening) await opening;
+      if (!on || !S.crop(id)) return;
+      select(id, true);
+      await removeSel();
+    }
+
     async function setLock(ids, to) {
       // 잠금·풀기(F18 — [잠금]·[모두 잠금]·L): 크롭마다 locked 만 바꾸는 update 하나 = 실행 취소 한 걸음(일괄 op 없음 — 쓰기 큐로 차례로),
       // 실패하면 멈추고 몇 개 했는지. 바뀔 것인지는 큐에서 실행할 때의 크롭으로(다른 창이 먼저 바꿨으면 보내지 않음)
@@ -1489,6 +1523,7 @@ window.DPLayoutEdit = (() => {
         li.append(ch);
         // Shift/Ctrl+클릭 = 선택에 더하기·빼기(F18), 그냥 클릭 = 그 크롭 하나
         li.addEventListener("click", (e) => (e.shiftKey || e.ctrlKey || e.metaKey ? toggleSel(c.id, picked()) : select(c.id, true)));
+        if (window.DPRows) window.DPRows.tail(li, { crop: c, state, apiUrl: opts.apiUrl, locked: c.locked, canLock: true, lock: lockExternal, remove: () => removeExternal(c.id) });
         list.append(li);
       }
       for (const g of L.removed) {
@@ -1930,7 +1965,8 @@ window.DPLayoutEdit = (() => {
 
     // 진행(G) 반영 칸 [되돌리기]가 쓴 판 — 다른 창의 쓰기로 보지 않아 실행 취소 기록을 남긴다(지운 크롭을 같은 ID 로 되살리는 길은 Ctrl+Z 뿐).
     // 그 사이 다른 창이 썼으면(from ≠ ownRev) 다음 읽기가 기록을 비운다
-    return { enter, leave, onKey, stateChanged, ownWrite: S.ownWrite, proposeGrow,
+    return { enter, leave, onKey, stateChanged, ownWrite: S.ownWrite, proposeGrow, lockExternal, removeExternal,
+      layerCrops: () => S.L && S.L.crops.map((c) => Object.assign({}, c, { rect: rectOf(c) })),
       flush: async () => { await flushNudge(); await S.idle(); } };
   }
 

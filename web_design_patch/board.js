@@ -412,8 +412,11 @@
 
   function moveTarget(d) {
     if (!S || !S.targets.length) return;
-    const i = Math.max(0, S.targets.findIndex((t) => t.key === tKey));
-    selectTarget(S.targets[Math.min(S.targets.length - 1, Math.max(0, i + d))].key);
+    const targets = typeof window !== "undefined" && window.DPRows
+      ? window.DPRows.order(S).flatMap((c) => S.targets.filter((t) => t.crop_id === c.id)) : S.targets;
+    if (!targets.length) return;
+    const i = Math.max(0, targets.findIndex((t) => t.key === tKey));
+    selectTarget(targets[Math.min(targets.length - 1, Math.max(0, i + d))].key);
     const li = document.querySelector("#target-list li.sel");
     if (li) li.scrollIntoView({ block: "nearest" });
   }
@@ -1091,15 +1094,18 @@
   function renderTargets() {
     // 크롭마다 묶음: 타깃 하나면 한 줄(크롭 이름 + 타깃·크롭 칩), 여럿이면 크롭 머리 줄 + 타깃 줄
     const ol = $("target-list");
+    if (typeof window !== "undefined" && window.DPRows && window.DPRows.defer(ol, renderTargets)) return;
     ol.replaceChildren();
     if (!S) return;
+    if (typeof window !== "undefined" && window.DPRows && viewer && S.canvas && viewer.seams()
+        && viewer.seams().sig === S.canvas.composite_sig) window.DPRows.ensureZ(S);
     const byCrop = new Map();
     for (const t of S.targets) {
       if (!byCrop.has(t.crop_id)) byCrop.set(t.crop_id, []);
       byCrop.get(t.crop_id).push(t);
     }
     const cur = curTarget();
-    for (const c of S.crops) {
+    for (const c of typeof window !== "undefined" && window.DPRows ? window.DPRows.order(S) : S.crops) {
       const ts = byCrop.get(c.id) || [];
       if (ts.length > 1) {
         const head = el("li", "crop" + (cur && cur.crop_id === c.id ? " cur" : ""));
@@ -1110,6 +1116,7 @@
         draftChips(ch, c);
         if (ch.childElementCount) head.append(ch);
         head.addEventListener("click", () => selectTarget(ts[0].key));
+        if (typeof window !== "undefined" && window.DPRows) window.DPRows.tail(head, { crop: c, state: S, z: true });
         ol.append(head);
       }
       for (const t of ts) {
@@ -1131,6 +1138,7 @@
         }
         li.append(ch);
         li.addEventListener("click", () => selectTarget(t.key));
+        if (single && typeof window !== "undefined" && window.DPRows) window.DPRows.tail(li, { crop: c, state: S, z: true });
         ol.append(li);
       }
     }
@@ -1419,6 +1427,7 @@
       return;
     }
     switch (e.code) {
+      case "KeyI": if (!e.repeat && !refsOn && viewer && viewer.toggleIsolate) viewer.toggleIsolate(); break;
       case "KeyE":
         if (!e.repeat) setEditing(!editing);
         break;
@@ -1647,6 +1656,15 @@
   }
 
   function wireButtons() {
+    if (typeof window !== "undefined" && window.DPRows) window.DPRows.configure({
+      state: () => S, apiUrl, toast, refresh: () => refresh(true), move: (body) => post("zorder", body),
+      busy: () => busy || !!(S && (S.running || S.drafting)) || !!(pipe && pipe.paidLock()) || !!(maskEd && maskEd.pending.locked && maskEd.pending.locked()),
+      lock: (ids, locked) => editor.lockExternal(ids, locked),
+      remove: async (id) => { goMode("edit"); if (editing) await editor.removeExternal(id); },
+    });
+    if (typeof viewer !== "undefined" && viewer && viewer.isolateContext) viewer.isolateContext(
+      () => ({ mode: refsOn ? "refs" : editing ? "edit" : maskOn ? "mask" : pipeOn ? "pipe" : "review", crops: editing && editor.layerCrops ? editor.layerCrops() : null }),
+      () => { if (maskEd && maskEd.isolateChanged) maskEd.isolateChanged(); });
     const on = (id, fn) => $(id).addEventListener("click", (e) => {
       e.currentTarget.blur();
       fn(e);
@@ -1702,7 +1720,7 @@
   // 이 모드의 단축키 칩(F13·F14): [키, 하는 일, (선택) {code, shift, ctrl, hold}] — 칩을 누르면 그 키를 누른 것과 같음(hold = 누르는 동안).
   // code 없는 줄은 설명만(끌기 등). R(다시 생성)은 넣지 않음 — 스크립트 키는 예약만이라 칩으로는 큐가 가지 않아 헷갈림([재굴림 +1] 단추가 그 길)
   const VIEW_KEYS = [["N", "이음매", { code: "KeyN" }], ["F", "크롭 맞춤", { code: "KeyF" }], ["0", "전체", { code: "Digit0" }], ["1", "1:1", { code: "Digit1" }],
-    ["2", "2:1", { code: "Digit2" }]];
+    ["2", "2:1", { code: "Digit2" }], ["I", "레이어만", { code: "KeyI" }]];
   const KEYS = {
     review: [["Space", "★ 선택·해제", { code: "Space" }], ["⇧Space", "함께 쓰기 ±", { code: "Space", shift: true }], ["X", "제외", { code: "KeyX" }],
       ["←", "후보", { code: "ArrowLeft" }], ["→", "후보", { code: "ArrowRight" }], ["↑", "타깃", { code: "ArrowUp" }], ["↓", "타깃", { code: "ArrowDown" }],
@@ -1713,7 +1731,7 @@
       ["Tab", "다음 크롭", { code: "Tab" }], ["⇧Tab", "이전 크롭", { code: "Tab", shift: true }], ["←→↑↓", "미세 이동"],
       ["Del", "크롭 지우기", { code: "Delete" }], ["L", "잠금", { code: "KeyL" }],
       ["Ctrl+Z", "되돌리기", { code: "KeyZ", ctrl: true }], ["Ctrl+Y", "다시", { code: "KeyY", ctrl: true }], ["Esc", "취소·나가기", { code: "Escape" }],
-      ["Space+끌기", "화면 이동"], ["F", "크롭 맞춤", { code: "KeyF" }], ["0", "전체", { code: "Digit0" }], ["E", "나가기", { code: "KeyE" }]],
+      ["I", "레이어만", { code: "KeyI" }], ["Space+끌기", "화면 이동"], ["F", "크롭 맞춤", { code: "KeyF" }], ["0", "전체", { code: "Digit0" }], ["E", "나가기", { code: "KeyE" }]],
     refs: [["끌기", "영역"], ["Enter", "컷", { code: "Enter" }], ["T", "나가기", { code: "KeyT" }], ["[", "회전 −0.5°", { code: "BracketLeft" }], ["]", "회전 +0.5°", { code: "BracketRight" }],
       ["H", "좌우 반전", { code: "KeyH" }], ["⌫", "마지막 점 지우기", { code: "Backspace" }], ["F", "영역 맞춤", { code: "KeyF" }], ["0", "시트 전체", { code: "Digit0" }],
       ["Esc", "취소·나가기", { code: "Escape" }]],
@@ -1725,7 +1743,7 @@
       ["W", "원본(누름)", { code: "KeyW", hold: true }], ["S", "처음/편집 슬라이더", { code: "KeyS" }], ["M", "마스크 보기", { code: "KeyM" }],
       ["O", "선 숨기기", { code: "KeyO" }], ["←→↑↓", "패치 이동"], ["⇧←→↑↓", "10px"],
       ["N", "이음매", { code: "KeyN" }], ["Enter", "적용", { code: "Enter" }], ["Ctrl+Z", "되돌리기", { code: "KeyZ", ctrl: true }], ["Ctrl+Y", "다시", { code: "KeyY", ctrl: true }],
-      ["Esc", "나가기", { code: "Escape" }]],
+      ["I", "레이어만", { code: "KeyI" }], ["Esc", "나가기", { code: "Escape" }]],
   };
 
   const CHIP_KEY = { Slash: "?", Space: " ", BracketLeft: "[", BracketRight: "]" };
