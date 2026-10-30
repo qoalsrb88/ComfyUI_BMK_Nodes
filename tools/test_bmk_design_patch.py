@@ -6169,6 +6169,7 @@ def m2_board_unit():
             check("textContent" in code and "replaceChildren" in code, f"{name} textContent / replaceChildren 사용")
         # viewer.js 의 SVG 이름공간 URI 는 불러오는 주소가 아니다(createElementNS 인자)
         for name, text in (("board.js", js), ("viewer.js", vjs.replace("http://www.w3.org/2000/svg", "")),
+                           ("rows.js", (PKG / "web_design_patch/rows.js").read_text(encoding="utf-8").replace("http://www.w3.org/2000/svg", "")),
                            ("board.html", html), ("board.css", css)):
             check(not re.search(r"https?://", text) and "@import" not in text and "cdn" not in text.lower(),
                   f"{name} 외부 URL·CDN 없음")
@@ -39584,7 +39585,7 @@ def studio_ux_unit():
           and cs[ids[3]]["layout_status"] == "removed" and cs[ids[3]]["layout_diff"] is None
           and cs[ids[4]]["layout_status"] == "same" and cs[ids[4]]["layout_diff"] is None,
           f"layout_diff = 바뀐 크롭만 {{fields, 레이아웃 name·rect, 대상(바뀐 때만)}} — 요약 name·rect 는 프로젝트 기록 값 {[(c['id'], c['layout_status'], c['layout_diff']) for c in st['crops']]}")
-    check(st["layout_added"] == [{"id": new_id, "name": "007_새띠", "rect": [0, 640, 256, 896]}],
+    check(st["layout_added"] == [{"id": new_id, "name": "007_새띠", "rect": [0, 640, 256, 896], "locked": False}],
           f"layout_added = 레이아웃에만 있는 크롭 {st['layout_added']}")
 
     section("UX-B3 POST /layout/crop restore_manifest — 마지막 반영 값과 같은 이름·사각형은 규칙 검사를 건너뜀, 다르면 검사, update 만")
@@ -45568,7 +45569,7 @@ console.log(JSON.stringify(out));
                              'if (path === "mask/adjust") return await srv.adjustReply(rec.body);\n    if (path === "mask") return resp(200, info);') + test_js
     (run / "adjust.mjs").write_text(js, encoding="utf-8", newline="\n")
     mask_js = (PKG / "web_design_patch" / "mask_edit.js").read_text(encoding="utf-8")
-    public_api = "return { enter, leave, go, onKey, onKeyUp, stateChanged, seamsChanged, pending }"
+    public_api = "return { enter, leave, go, onKey, onKeyUp, stateChanged, seamsChanged, pending, isolateChanged: repaintAll }"
     assert mask_js.count(public_api) == 1
     test_mask = run / "mask_adjust_test.js"
     test_mask.write_text(mask_js.replace(public_api, public_api[:-2] + ", _test: { M, saveAdjust } }"), encoding="utf-8", newline="\n")
@@ -46297,7 +46298,7 @@ console.log(JSON.stringify(out));
         'if (path === "mask/adjust") return await srv.adjustReply(rec.body);\n    if (path === "mask") return srv.maskError ? resp(422, srv.maskError) : resp(200, info);') + test_js
     test_mask = run / "mask_xform_test.js"
     source = (PKG / "web_design_patch" / "mask_edit.js").read_text(encoding="utf-8")
-    public_api = "return { enter, leave, go, onKey, onKeyUp, stateChanged, seamsChanged, pending }"
+    public_api = "return { enter, leave, go, onKey, onKeyUp, stateChanged, seamsChanged, pending, isolateChanged: repaintAll }"
     test_mask.write_text(source.replace(public_api, public_api[:-2] + ", _test: { M, saveAdjust, refreshInfo, altSet } }"), encoding="utf-8", newline="\n")
     (run / "xform.mjs").write_text(js, encoding="utf-8", newline="\n")
     (run / "in.json").write_text(json.dumps({"api": _pl_api(), "mask": json.loads(_MASK_API.read_text(encoding="utf-8")),
@@ -46928,7 +46929,7 @@ console.log(JSON.stringify(out));
                   dict(dx=12.4, dy=-6.7, rot=37, sx=1.234, sy=.891)):
             cases.append(dict(q=q, v=v, want=an.xform_quad(q, **v)))
     source = (PKG / "web_design_patch" / "mask_edit.js").read_text(encoding="utf-8")
-    api = "return { enter, leave, go, onKey, onKeyUp, stateChanged, seamsChanged, pending }"
+    api = "return { enter, leave, go, onKey, onKeyUp, stateChanged, seamsChanged, pending, isolateChanged: repaintAll }"
     test_mask = out_dir / "mask_xform2_test.js"
     test_mask.write_text(source.replace(api, api[:-2] + ", _test: { M, saveAdjust, refreshInfo, previewLayers, open, drag: () => xdrag, draft: () => adjustDraft } }"), encoding="utf-8", newline="\n")
     (out_dir / "xform2.mjs").write_text(js, encoding="utf-8", newline="\n")
@@ -51436,7 +51437,7 @@ function browser(root = "") {
   locked.window.DPViewer={svg:()=>{}};
   locked.ctx.document.createElement=t=>Object.assign(new E(t),t==="canvas"?{getContext:()=>({})}:{});
   locked.ctx.document.addEventListener=()=>{};
-  const maskApi="return { enter, leave, go, onKey, onKeyUp, stateChanged, seamsChanged, pending }";
+  const maskApi="return { enter, leave, go, onKey, onKeyUp, stateChanged, seamsChanged, pending, isolateChanged: repaintAll }";
   vm.runInContext(read("web_design_patch/mask_edit.js").replace(maskApi,
     maskApi.slice(0,-2)+", setBusy: (b,s) => { M.busy=b; adjustSaving=s; } }"),locked.ctx);
   const me=locked.window.DPMaskEdit.create({list:new E("div"),panel:new E("div")},{apiUrl:p=>p,root:key,viewer:{},toast:s=>leaveToasts.push(s)});
@@ -51902,8 +51903,255 @@ process.exit(0);
 
 
 def batch7c_unit():
-    """배치 7-C(10/31 — _proto/STUDIO_BATCH7_SPEC.md D60–D69): 공통 레이어 행·잠금·겹침 순서·레이어만 보기. 공용 자리 — 7-C 작업자가 채운다."""
+    """D60–D69: 파일·함수·모의 DOM만 사용. HTTP 서버·외부 API 없음."""
     section("배치 7-C — 레이어 패널·겹침 순서·레이어만 보기")
+    import copy
+    import tempfile
+    from unittest.mock import patch
+
+    out = (OUT_ROOT / "batch7c").resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    run = Path(tempfile.mkdtemp(prefix="run_", dir=out))
+    dp = _dp_package()
+    bd, st = dp.board, dp.store
+    _, root = _fx_project(dp, run, "rows", [("001_bottom", [0, 0, 16, 16]), ("002_far", [64, 0, 80, 16]),
+                                          ("003_overlap", [8, 0, 24, 16]), ("004_empty", [96, 0, 112, 16])],
+                         np.zeros((32, 128, 3), np.uint8))
+    m = st.load_manifest(root)
+    ids = [c["id"] for c in m["crops"]]
+    entries = {}
+    cs = dict(dp._COMPOSE_DEFAULTS, mask_source="hand", use_registration=False, use_tone=False)
+    for i, crop in enumerate(m["crops"][:3]):
+        x0, y0, x1, y1 = r = crop["rect"]
+        key = f"h_{i + 1:012x}"
+        mask = st.save_png_ca(root, "masks", np.full((16, 16), 255, np.uint8))
+        entries[key] = {"params_hash": f"b7c{i}", "params": {}, "rect": r, "reg": {"applied": False}, "automask": mask, "tone": {}}
+        m["candidates"].append({"key": key, "crop_id": crop["id"], "tid": "A", "picked": True, "origin": "psd_harvest",
+                                "file": st.save_png_ca(root, "candidates", np.full((16, 16, 3), 50 + i * 60, np.uint8)),
+                                "src_size": [16, 16], "quad": [x0, y0, x1, y0, x1, y1, x0, y1],
+                                "hand_mask": {"file": mask, "rect": r, "bg": 0}})
+    m["analysis"] = entries
+    m["exports"] = [{"compose": cs}]
+    st.save_manifest(root, m)
+    sig = bd._composite_sig(root, m, None)
+    state_sig = st.export_state_sig(m)
+    export_hash = dp._export_hash(m, entries, cs, {})
+
+    def state():
+        with patch.object(bd, "_star_plan", side_effect=AssertionError("state must not plan")), \
+                patch.object(bd, "_node", side_effect=AssertionError("state must not import node")):
+            return bd.build_state(root)
+
+    check(state()["z"] is None, "D66 캐시 없는 state 는 계획·노드 호출 없이 z null")
+    lay = st.layout_from_manifest(m)
+    lay["crops"].append(dict(lay["crops"][0], id="005_new", name="005_new", locked=True))
+    with patch.object(bd, "_layout_or_none", return_value=lay):
+        check(state()["layout_added"][0]["locked"] is True, "D63 반영 전 새 크롭의 잠금도 state 로 전달")
+    jpg, _ = bd._composite(root, m, None, sig)
+    check(state()["z"] == {"crops": ids[:3], "manual": False}, "D66 실제 합성 순서 캐시·별 없는 크롭 제외")
+    zpath = Path(bd._thumb_path(root, f"z_{sig}.json"))
+    good = zpath.read_bytes()
+    zpath.write_bytes(b"bad json")
+    check(state()["z"] is None, "D66 손상된 캐시에도 state 성공")
+    zpath.write_bytes(good)
+    check(state()["z"]["crops"] == ids[:3], "D66 읽기 실패를 기억하지 않고 다음 state 에서 복구")
+    with patch.object(bd, "_read_bytes", side_effect=PermissionError("test")):
+        check(bd._read_z(root, sig) is None, "D66 캐시 접근 실패 격리")
+    zpath.unlink()
+    check(bd._composite(root, m, None, sig)[0] == jpg and zpath.read_bytes() == good, "D66 옛 JPG 보존하면서 누락 순서 캐시 복구")
+
+    def move(item, **kw):
+        return bd.zorder_write(root, dict(scope="crops", op="move", item=item, seen=st.load_manifest(root)["rev"], **kw))
+
+    before = Path(root, "design_patch.json").read_bytes()
+    r = move(ids[0], after=ids[1])
+    check(r["changed"] is False and r["effective"] == ids[:3] and Path(root, "design_patch.json").read_bytes() == before,
+          "D67 겹치지 않는 쌍만 이동하면 파일·rev·수동 순서 불변")
+    mm = st.load_manifest(root)
+    check(bd._composite_sig(root, mm, None) == sig and st.export_state_sig(mm) == state_sig
+          and dp._export_hash(mm, entries, cs, {}) == export_hash, "D67 무효 이동·z 캐시는 기존 합성·Export 해시 유지")
+    r = move(ids[0], after=ids[2])
+    mm = st.load_manifest(root)
+    check(r["changed"] is True and r["effective"] == [ids[1], ids[2], ids[0]] == st.z_order(mm)["crops"], "D67 실제 겹침 변경만 수동 저장")
+    sig2 = bd._composite_sig(root, mm, None)
+    check(sig2 != sig and state()["z"] is None, "D66 새 서명에서 이전 z 캐시를 사용하지 않음")
+    bd._composite(root, mm, None, sig2)
+    check(state()["z"] == {"crops": r["effective"], "manual": True}, "D66 수동 합성 순서 캐시")
+    for extra in ({"scope": f"t:{ids[0]}", "before": "A"}, {"scope": f"s:{ids[0]}/A", "before": "k"},
+                  {}, {"before": ids[1], "after": ids[2]}, {"before": ids[0]}, {"before": []}, {"after": "missing"}):
+        body = dict(scope="crops", op="move", item=ids[0], seen=mm["rev"])
+        body.update(extra)
+        try:
+            bd.zorder_write(root, body)
+            check(False, f"D67 잘못된 move 거절 {extra}")
+        except bd._Reject as e:
+            check(e.status == 400, f"D67 잘못된 move 거절 {extra}")
+    st.save_manifest(root, copy.deepcopy(m))
+    actual_scopes = bd._zorder_scopes
+    def touching(order):
+        scopes, boxes = actual_scopes(order)
+        boxes[ids[1]] = [[18, 0, 34, 16]]  # 001 끝(16)에서 2px: 합성의 보수적인 여유
+        return scopes, boxes
+    with patch.object(bd, "_zorder_scopes", side_effect=touching):
+        check(move(ids[0], after=ids[1])["changed"], "D67 quad bbox 2px 여유 접촉도 겹침")
+    missing = copy.deepcopy(m)
+    missing["base"] = "inputs/missing.png"
+    st.save_manifest(root, missing)
+    with patch.object(bd, "_project_find", return_value={"root": root}):
+        try:
+            bd._project_thumb("test")
+            check(False, "D52 베이스 파일 누락 404")
+        except bd._Reject as e:
+            check(e.status == 404 and root not in str(e), "D52 베이스 파일 누락은 경로 없는 404")
+
+    node = shutil.which("node")
+    if not node:
+        check(False, "D60–D68 Node 실행기 없음")
+        return
+    web = PKG / "web_design_patch"
+    prefix = _LAYOUT_EDIT_HARNESS.split('// 배치 3-1(F17)')[0]
+    scene = r'''
+// 기존 편집 하네스의 서버·DOM만 사용. fetch 는 아래의 메모리 대역이다.
+await scenario("externalLock", async () => {
+  const e = await editor([C1()]);
+  e.ed.leave();
+  e.srv.delay = 8;
+  await Promise.all([e.ed.lockExternal([C1().id], true), e.ed.lockExternal([C1().id], false)]);
+  const r = {serial: e.srv.log.length === 2 && e.srv.log[0].rev === 0 && e.srv.log[1].rev === 1,
+    outsideLoad: e.srv.gets.filter(x => x.startsWith("layout?")).length >= 5,
+    notice: e.toasts.at(-1).includes("잠금 바뀜 — 반영 필요")};
+  e.ed.enter({rev: 1, canvas: [3072,4096], crops: [], layout_rev: 2}); await sleep(30);
+  e.ed.onKey({code:"KeyZ",ctrlKey:true}); await sleep(40);
+  r.undoOne = e.srv.lay.crops[0].locked === true;
+  e.ed.onKey({code:"KeyZ",ctrlKey:true}); await sleep(40);
+  r.undoTwo = e.srv.lay.crops[0].locked === false;
+  ctx.window.DPRows = {blocked: () => true};
+  try { await e.ed.lockExternal([C1().id], true); r.busy = false; } catch { r.busy = e.srv.log.length === 4; }
+  delete ctx.window.DPRows;
+  e.ed.leave();
+  return r;
+});
+
+El.prototype.setAttribute = function(k,v) { (this.attrs ??= {})[k] = String(v); if (k === "class") this.className = String(v); };
+El.prototype.getAttribute = function(k) { return this.attrs?.[k] ?? null; };
+El.prototype.removeAttribute = function(k) { delete this.attrs?.[k]; };
+El.prototype.remove = function() { if(this.parent) this.parent.children = this.parent.children.filter(e => e !== this); this.parent = null; };
+El.prototype.insertBefore = function(e, ref) { e.remove(); e.parent = this; const i = this.children.indexOf(ref); this.children.splice(i < 0 ? this.children.length : i, 0, e); };
+El.prototype.getBoundingClientRect = () => ({left:0,top:0,width:200,height:40});
+Object.defineProperties(El.prototype, {parentNode: {get(){return this.parent;}}, childElementCount:{get(){return this.children.length;}}, clientWidth:{get(){return 400;}}, clientHeight:{get(){return 400;}}});
+El.prototype.fire = function(type, extra = {}) {
+  if(type === "click" && this.disabled) return;
+  let stopped = false;
+  const e = Object.assign({type,target:this,preventDefault(){},stopPropagation(){stopped = true;}}, extra);
+  for(let n=this; n && !stopped; n=n.parent) for(const fn of n.on[type] || []) fn(Object.assign(e,{currentTarget:n}));
+};
+const doc = new Doc();
+doc.addEventListener = () => {};
+doc.createElementNS = (_, tag) => doc.createElement(tag);
+doc.querySelectorAll = s => doc.body.all().filter(e => e.classList.contains(s.slice(1)));
+let tick;
+Object.assign(ctx, {document:doc, setInterval:fn => {tick=fn; return 1;}, clearInterval(){},
+  ResizeObserver:class{observe(){}}, MutationObserver:class{observe(){}}, Image:class{set src(v){if(this.onload)this.onload();}},
+  fetch:async()=>({ok:true,json:async()=>({segments:[]})})});
+Object.assign(ctx.window,{addEventListener(){},innerWidth:1000,innerHeight:800});
+vm.runInContext(fs.readFileSync(IN.rowsJs,"utf8"),ctx);
+const Rows = ctx.window.DPRows;
+await scenario("rows",async()=>{
+  let busy=false, clicks=0, locks=[], posts=[], removed=0, renders=0, refreshes=0;
+  const crops=[{id:"a",name:"001_a",rect:[0,0,16,8]},{id:"b",name:"002_b",rect:[8,0,24,8]},{id:"c",name:"003_c",rect:[0,0,8,8]}];
+  const st={rev:1,crops,layout_rev:0,canvas:{size:[32,32],base_url:"canvas?kind=base&v=stable"},z:{crops:["a","b"],manual:false}};
+  Rows.configure({state:()=>st,busy:()=>busy,apiUrl:API,toast(){},refresh:async()=>{refreshes++;},lock:async(ids,to)=>locks.push([ids,to]),
+    remove:async()=>removed++,move:async b=>{posts.push(b);return {ok:true,changed:true,rev:2,order:["b","a"],effective:["b","a"]};}});
+  const list=doc.createElement("ol"), li=doc.createElement("li"), name=doc.createElement("div"); name.textContent="001_a";
+  li.append(name); list.append(li); doc.body.append(list); li.addEventListener("click",()=>clicks++);
+  Rows.tail(li,{crop:crops[0],state:st,z:true});
+  const bs=li.all().filter(e=>e.tagName==="BUTTON"), thumb=li.all().find(e=>e.className==="dr-thumb");
+  const r={firstChild:li.children[0]===name && li.children.length===2, noText:li.textContent==="001_a",
+    labels:bs.every(e=>e.title && e.getAttribute("aria-label")===e.title),thumb:thumb.style.width==="40px" && thumb.style.height==="20px",
+    sorted:Rows.order(st).map(c=>c.id).join()==="b,a,c",unknown:Rows.order({...st,z:null}).map(c=>c.id).join()==="a,b,c"};
+  bs[0].fire("click"); await sleep(2); r.lock=locks.length===1 && locks[0][1] && clicks===0;
+  busy=true; tick(); bs[0].fire("click"); await sleep(2); r.busy=bs.every(b=>b.disabled) && locks.length===1;
+  busy=false; tick();
+  const li2=doc.createElement("li"); list.append(li2); Rows.tail(li2,{crop:crops[1],state:st,z:true});
+  r.stableUrl=li2.all().find(e=>e.className==="dr-thumb").style.backgroundImage===thumb.style.backgroundImage;
+  const grip=bs.find(e=>e.draggable); grip.fire("dragstart",{dataTransfer:{setData(){}}});
+  r.held=Rows.defer(list,()=>renders++);
+  li2.fire("drop",{clientY:1}); await sleep(5);
+  r.move=posts.length===1 && posts[0].op==="move" && posts[0].after==="b" && renders===1 && st.z.crops.join()==="b,a";
+  const refreshed={...st,z:null}; Rows.order(refreshed);
+  r.immediate=refreshed.z?.crops.join()==="b,a" && refreshed.z.manual;
+  const changedPref={...st,z:null,pref_v:"different"}; Rows.order(changedPref);
+  r.prefChanged=changedPref.z===null;
+  const beforeRefresh=refreshes;
+  Rows.ensureZ({...st,z:null,canvas:{composite_sig:"one"}});
+  Rows.ensureZ({...st,z:null,canvas:{composite_sig:"two"}});
+  r.fastComposite=refreshes===beforeRefresh+2;
+  li.fire("contextmenu",{clientX:10,clientY:10});
+  const menu=doc.body.children.at(-1); r.context=menu.children[0].textContent==="크롭 편집에서 지우기";
+  menu.children[0].fire("click"); await sleep(2); r.remove=removed===1;
+  const gone=doc.createElement("li"); Rows.tail(gone,{crop:crops[0],state:st,canLock:false});
+  r.removedNoLock=gone.all().every(e=>e.tagName!=="BUTTON");
+  const direct=doc.createElement("li"); Rows.tail(direct,{crop:crops[0],state:st,remove:()=>removed++});
+  r.trashOnlyEdit=direct.all().some(e=>e.title==="크롭 지우기") && !bs.some(e=>e.title==="크롭 지우기");
+  const ref=doc.createElement("li"); Rows.tail(ref,{crop:{id:"c",name:"003_c"},state:st});
+  r.refThumb=ref.all().find(e=>e.className==="dr-thumb").style.backgroundImage===thumb.style.backgroundImage;
+  const added={id:"new",name:"004_new",rect:[0,0,8,16],locked:true};
+  const fresh=doc.createElement("li"); Rows.tail(fresh,{crop:{id:"new",name:"004_new"},state:{...st,layout_added:[added]}});
+  const lock=fresh.all().find(e=>e.tagName==="BUTTON");
+  r.newLock=lock.getAttribute("aria-pressed")==="true" && fresh.all().find(e=>e.className==="dr-thumb").style.height==="40px";
+  lock.fire("click"); await sleep(2); r.newUnlock=locks.at(-1)[1]===false;
+  return r;
+});
+await scenario("isolate",async()=>{
+  vm.runInContext(fs.readFileSync(IN.viewerJs,"utf8"),ctx);
+  const host=doc.createElement("div"), viewer=ctx.window.DPViewer.create(host,{apiUrl:API});
+  let mode="edit";
+  const crops=[{id:"a",rect:[0,0,16,16],region:[0,0,32,32],region_url:"region"},{id:"b",rect:[8,0,24,16]}];
+  viewer.isolateContext(()=>({mode,crops}),()=>{});
+  viewer.setState({crops,canvas:{size:[32,32],base_url:"base",composite_url:"composite",seams_url:"seams",composite_sig:"s"}});
+  const selection={crop:crops[0],target:{before_full_url:"before"},cand:{full_url:"raw",pick_url:"pick"}};
+  viewer.setSelection(selection,false); viewer.toggleIsolate();
+  const iso=host.all().find(e=>e.getAttribute("class")==="dr-isolate");
+  const mask=iso.all().find(e=>e.tagName==="MASK");
+  const r={union:mask.children.length===3 && mask.children[0].getAttribute("fill")==="white" && mask.children.slice(1).every(e=>e.getAttribute("fill")==="black"),
+    depth:iso.children.filter(e=>e.getAttribute("fill-opacity")==="0.12").length===2,
+    selected:iso.children.some(e=>e.getAttribute("class")==="dr-selected")};
+  const stage=host.all().find(e=>e.className.split(" ").includes("stage"));
+  mode="review"; viewer.setSelection(selection,false);
+  const after=host.all().find(e=>e.className==="ov-after");
+  r.review=stage.classList.contains("dr-isolated-review") && after.src===API("raw") && after.style.visibility==="";
+  viewer.setFlags({qHeld:true}); r.q=!stage.classList.contains("dr-isolated");
+  viewer.setFlags({qHeld:false,slider:true}); r.s=!stage.classList.contains("dr-isolated");
+  viewer.setFlags({slider:false,raw:true}); r.m=!stage.classList.contains("dr-isolated");
+  viewer.setFlags({raw:false}); viewer.setSelection({...selection,cand:null},false);
+  r.noCandidate=host.all().find(e=>e.textContent==="레이어만").disabled && !stage.classList.contains("dr-isolated");
+  mode="refs";viewer.redraw();r.refs=host.all().find(e=>e.textContent==="레이어만").hidden;
+  mode="mask";viewer.redraw();viewer.suppressIsolate(true);r.maskSuspend=!stage.classList.contains("dr-isolated");
+  viewer.suppressIsolate(false);r.maskResume=stage.classList.contains("dr-isolated");
+  vm.runInContext(fs.readFileSync(IN.maskJs,"utf8"),ctx);
+  const compose=ctx.window.DPMaskEdit.compose;
+  const L={box:[0,0,1,1],under:[10,20,30,255],patch:[100,110,120,255],over:[200,210,220,255]};
+  function paint(v, layer=L, mask=1){const out=new Uint8ClampedArray(4);compose(layer,[0,0,1,1],[mask],[0.5],out,0,0,1,1,{split:null,...v});return [...out];}
+  r.over40=paint({isolate:true})[0]===140;
+  r.checker=paint({isolate:true},{...L,over:[0,0,0,0]},0)[0]===238;
+  r.opacityResume=paint({isolate:true,opacity:0.5},{...L,over:[0,0,0,0]})[0]===169;
+  for(const [k,v] of Object.entries({orig:true,diff:true,base:true,split:1,mark:true}))
+    r[k]=paint({isolate:true,[k]:v}).join()===paint({[k]:v}).join();
+  return r;
+});
+console.log(JSON.stringify(out));
+process.exit(0);
+'''
+    (run / "harness.mjs").write_text(prefix + scene, encoding="utf-8", newline="\n")
+    (run / "in.json").write_text(json.dumps({"rowsJs": str(web / "rows.js"), "viewerJs": str(web / "viewer.js"),
+                                            "maskJs": str(web / "mask_edit.js")}), encoding="utf-8")
+    result = subprocess.run([node, str(run / "harness.mjs"), str(web / "layout_geom.js"), str(web / "layout_edit.js"),
+                             str(run / "in.json")], capture_output=True, text=True, encoding="utf-8", timeout=45)
+    check(result.returncode == 0 and bool(result.stdout.strip()), f"D60–D68 JS 실행 {result.stderr[-1200:]}")
+    if result.returncode == 0 and result.stdout.strip():
+        for group, rows in json.loads(result.stdout.strip().splitlines()[-1]).items():
+            for name, ok in rows.items():
+                check(ok is True, f"D60–D68 {group}/{name}: {ok}")
 
 def want(name: str) -> bool:
     return not ONLY or name in ONLY

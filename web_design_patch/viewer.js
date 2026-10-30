@@ -18,6 +18,7 @@ window.DPViewer = (() => {
   const HI_MAX = 2048; // 원해상도 창 긴 변 상한(/refs/sheet?kind=region max)
   const HI_AREA = 8192 * 8192; // 원해상도 창 넓이 상한(refs.MAX_RECT_AREA)
   const HI_MS = 250;
+  let isolateSerial = 0;
 
   function el(tag, cls, text) {
     const e = document.createElement(tag);
@@ -49,6 +50,8 @@ window.DPViewer = (() => {
     };
     const bBg = btn("★ 합성", "바탕: 베이스 / 현재 ★ 합성 (B)", () => setBg(bg === "base" ? "composite" : "base"));
     const bRects = btn("사각형", "크롭 사각형·이름 (O)", () => toggleRects());
+    const bIsolate = btn("레이어만", "레이어만 보기 (I)", () => toggleIsolate());
+    bIsolate.hidden = true;
     btn("전체", "캔버스 전체 맞춤 (0)", () => fitCanvas());
     btn("크롭", "선택 크롭 맞춤 (F)", () => fitCrop());
     btn("1:1", "원해상도 — 캔버스 1px = 화면 1px (1)", () => zoomTo(1));
@@ -84,7 +87,8 @@ window.DPViewer = (() => {
     ovCrop.append(ovBefore, ovAfter, split);
     ov.append(ovComp, ovCrop);
     const marks = svg("svg", { class: "marks" });
-    stage.append(imgBg, imgHi, ov, marks);
+    const isolated = svg("svg", { class: "dr-isolate" });
+    stage.append(imgBg, imgHi, ov, isolated, marks);
     const labels = el("div", "labels");
     const empty = el("div", "vempty", "불러오는 중…");
     port.append(stage, labels, empty);
@@ -115,7 +119,73 @@ window.DPViewer = (() => {
     let hi = null; // 지금 겹친 원해상도 창 {rect, res(시트 px 당 창 px)}
     let hiTimer = null;
     let maskCv = null; // 마스크 편집 3층 합성 캔버스(setMaskLayer)
+    let isolate = false;
+    let isolateSuppressed = false;
+    let isolateInfo = null;
+    let isolateNotify = null;
+    const isolateId = `dp-isolate-${++isolateSerial}`;
     const loadTok = new WeakMap();
+
+    function isolateMode() { return isolateInfo ? isolateInfo() : { mode: "refs" }; }
+
+    function isolation() {
+      const mode = isolateMode().mode;
+      return isolate && !sheet && mode !== "refs" && (mode === "mask" ? !isolateSuppressed
+        : mode !== "review" || (!!(sel && sel.cand) && !qHeld && !slider && !raw));
+    }
+
+    function drawIsolate() {
+      const info = isolateMode(), mode = info.mode;
+      bIsolate.hidden = !!sheet || mode === "refs";
+      bIsolate.disabled = !canvas || (mode === "review" && !(sel && sel.cand));
+      bIsolate.classList.toggle("on", isolate && !bIsolate.disabled);
+      bIsolate.setAttribute("aria-pressed", String(isolate && !bIsolate.disabled));
+      const active = isolation();
+      stage.classList.toggle("dr-isolated", active && (mode === "review" || mode === "mask"));
+      stage.classList.toggle("dr-isolated-review", active && mode === "review");
+      isolated.replaceChildren();
+      if (!active || !canvas || !["edit", "pipe"].includes(mode)) return;
+      const [W, H] = canvas.size;
+      for (const [k, v] of Object.entries({ viewBox: `0 0 ${W} ${H}`, width: W, height: H })) isolated.setAttribute(k, v);
+      const defs = svg("defs");
+      const mask = svg("mask", { id: isolateId, maskUnits: "userSpaceOnUse", x: 0, y: 0, width: W, height: H, "mask-type": "luminance" });
+      mask.append(svg("rect", { width: W, height: H, fill: "white" }));
+      const layers = info.crops || crops;
+      const rect = (c, attrs) => {
+        const [x, y, x1, y1] = c.rect;
+        return svg("rect", Object.assign({ x, y, width: x1 - x, height: y1 - y }, attrs));
+      };
+      for (const c of layers) mask.append(rect(c, { fill: "black" }));
+      const pattern = svg("pattern", { id: `${isolateId}-check`, patternUnits: "userSpaceOnUse", width: 16 / z, height: 16 / z });
+      pattern.append(svg("rect", { width: 16 / z, height: 16 / z, fill: "#171a20" }),
+        svg("rect", { width: 8 / z, height: 8 / z, fill: "#292e38" }),
+        svg("rect", { x: 8 / z, y: 8 / z, width: 8 / z, height: 8 / z, fill: "#292e38" }));
+      defs.append(mask, pattern);
+      isolated.append(defs, svg("rect", { width: W, height: H, fill: `url(#${isolateId}-check)`, mask: `url(#${isolateId})` }));
+      for (const c of layers) isolated.append(rect(c, { fill: "black", "fill-opacity": 0.12 }));
+      if (sel && sel.crop) isolated.append(rect(sel.crop, { class: "dr-selected" }));
+    }
+
+    function toggleIsolate() {
+      drawIsolate();
+      if (bIsolate.hidden || bIsolate.disabled) return;
+      isolate = !isolate;
+      drawOverlay();
+      if (isolateNotify) isolateNotify();
+    }
+
+    function isolateContext(get, changed) {
+      isolateInfo = get;
+      isolateNotify = changed;
+      drawIsolate();
+      new MutationObserver(() => { drawOverlay(); drawMarks(); }).observe(document.body, { attributes: true, attributeFilter: ["class"] });
+    }
+
+    function suppressIsolate(value) {
+      if (isolateSuppressed === !!value) return;
+      isolateSuppressed = !!value;
+      drawIsolate();
+    }
 
     // ── 이미지: 다 받은 뒤 바꿔 끼워 깜빡이지 않게 ──
     function loadInto(img, rel, onDone) {
@@ -232,6 +302,7 @@ window.DPViewer = (() => {
     }
 
     function drawMarks() {
+      drawIsolate();
       marks.replaceChildren();
       if (!canvas) return;
       const [W, H] = canvas.size;
@@ -267,6 +338,7 @@ window.DPViewer = (() => {
     }
 
     function drawOverlay() {
+      drawIsolate();
       // 아래: 크롭 주변을 원해상도로 ★ 합성한 영역 — 후보를 고르면 "이 후보를 ★ 하면"(그 타깃의 ★ 를 이 후보로 바꾼 Compose
       // 결과, 같은 크롭·겹친 크롭의 다른 ★ 포함). 위(크롭 rect): Before(Q·슬라이더 왼쪽), M = 지금 ★ 영역 위에 마스크 없는 원본.
       const crop = sel && sel.crop;
@@ -294,12 +366,13 @@ window.DPViewer = (() => {
         busy.hidden = true;
       });
       loadInto(ovBefore, t.before_full_url);
-      loadInto(ovAfter, c && raw ? c.full_url : null);
+      const alone = isolation() && isolateMode().mode === "review";
+      loadInto(ovAfter, c && (raw || alone) ? c.full_url : null);
       const cut = `${(splitAt * 100).toFixed(2)}%`;
       const split2 = !!c && slider && !qHeld;
       ovBefore.style.visibility = qHeld || split2 ? "" : "hidden";
       ovBefore.style.clipPath = split2 ? `inset(0 calc(100% - ${cut}) 0 0)` : "";
-      ovAfter.style.visibility = raw && !qHeld ? "" : "hidden";
+      ovAfter.style.visibility = (raw || alone) && !qHeld ? "" : "hidden";
       ovAfter.style.clipPath = split2 ? `inset(0 0 0 ${cut})` : "";
       split.hidden = !split2;
       split.style.left = cut;
@@ -669,6 +742,7 @@ window.DPViewer = (() => {
     bRects.classList.add("on");
     drawSeamButton();
     return { setState, setSelection, setFlags, flags, setBg, toggleRects, fitCanvas, fitCrop, zoomTo, nextSeam,
+      toggleIsolate, isolateContext, suppressIsolate, isIsolated: () => isolate,
       seams: () => seams, setEditor, setCursor, canvasPoint: toCanvas, scale: () => z, redraw: drawMarks, setSheet, setMaskLayer,
       showSeam, curSeam: () => (seamIdx >= 0 ? seams.segments[seamIdx] : null) };
   }

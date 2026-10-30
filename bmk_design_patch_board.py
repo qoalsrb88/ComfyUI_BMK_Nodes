@@ -1290,7 +1290,8 @@ def _compose_full(root: str, m: dict, pref: dict | None, swap: tuple[str, str, s
     union = np.zeros(canvas.shape[:2], np.float32)
     touches = []
     coverage = []
-    for p, t, it in node._slices_in_order(plan):
+    ordered = list(node._slices_in_order(plan))
+    for p, t, it in ordered:
         qx0, qy0, qx1, qy1 = dpsd.quad_bbox(it["quad"])
         if qx1 < bx0 - 2 or qy1 < by0 - 2 or qx0 > bx1 + 2 or qy0 > by1 + 2:
             continue  # 창 밖 패치는 읽지 않는다(겹치지 않으니 합성 결과 그대로)
@@ -1336,7 +1337,8 @@ def _compose_full(root: str, m: dict, pref: dict | None, swap: tuple[str, str, s
             covered |= hit
         s["beside"] = cid if count and 2 * int(covered.sum()) >= covered.size else None
     return out, {"picks": len(picks), "unanalyzed": [c["key"] for c in picks if c["key"] not in entries],
-                 "warnings": warns, "settings": cs, "segments": segs, "seam_format": 3}
+                 "warnings": warns, "settings": cs, "segments": segs, "seam_format": 3,
+                 "z": {"crops": _zorder_scopes(ordered)[0]["crops"], "manual": "crops" in store.z_order(m)}}
 
 
 def _read_seams(root: str, sig: str, current: bool = False) -> dict | None:
@@ -1351,6 +1353,20 @@ def _read_seams(root: str, sig: str, current: bool = False) -> dict | None:
     return info if not current or info.get("seam_format") == 3 else None
 
 
+def _read_z(root: str, sig: str) -> dict | None:
+    """서명별 합성 순서만 읽는다. 누락·손상은 다음 요청에서 다시 시도한다."""
+    try:
+        raw = _read_bytes(_thumb_path(root, f"z_{sig}.json"))
+        z = json.loads(raw) if raw is not None else None
+        if (isinstance(z, dict) and isinstance(z.get("crops"), list)
+                and all(isinstance(cid, str) for cid in z["crops"])
+                and len(set(z["crops"])) == len(z["crops"]) and type(z.get("manual")) is bool):
+            return {"crops": z["crops"], "manual": z["manual"]}
+    except (OSError, ValueError, TypeError):
+        pass
+    return None
+
+
 def _composite(root: str, m: dict, pref: dict | None, sig: str,
                swap: tuple[str, str, str] | None = None) -> tuple[bytes, dict]:
     """composite_<sig>.jpg + seams_<sig>.json — 이음매 형식이 옛 판이면 재계산하되 읽히는 같은 서명 JPG 는 보존한다.
@@ -1358,14 +1374,16 @@ def _composite(root: str, m: dict, pref: dict | None, sig: str,
     jpg = _thumb_path(root, f"composite_{sig}.jpg")
     js = _thumb_path(root, f"seams_{sig}.json")
     data, info = _read_bytes(jpg), _read_seams(root, sig, current=True)
-    if data is None or info is None:
+    if data is None or info is None or _read_z(root, sig) is None:
         with _COMPOSE_LOCK:
             data, info = _read_bytes(jpg), _read_seams(root, sig, current=True)
-            if data is None or info is None:
+            if data is None or info is None or _read_z(root, sig) is None:
                 t0 = time.time()
                 with _RENDER_SLOTS:
                     out, info = _compose_full(root, m, pref, swap)
                 info.update(sig=sig, seconds=round(time.time() - t0, 2))
+                store._atomic_write_bytes(_thumb_path(root, f"z_{sig}.json"),
+                                          json.dumps(info.pop("z")).encode("utf-8"))
                 raw = json.dumps(info, ensure_ascii=False).encode("utf-8")
                 store._atomic_write_bytes(js, raw)
                 if data is None:
@@ -2244,8 +2262,10 @@ def zorder_write(root: str, data: dict) -> dict:
         raise _Reject(400, "scope 는 crops · t:크롭 · s:크롭/타깃 형식이어야 합니다")
     if not isinstance(item, str) or not item:
         raise _Reject(400, "순서를 바꿀 항목이 잘못되었습니다")
-    if op not in ("top", "up", "down", "bottom", "reset"):
-        raise _Reject(400, "op 는 top · up · down · bottom · reset 중 하나여야 합니다")
+    if op not in ("top", "up", "down", "bottom", "reset", "move"):
+        raise _Reject(400, "op 는 top · up · down · bottom · reset · move 중 하나여야 합니다")
+    if op == "move" and (scope != "crops" or ("before" in data) == ("after" in data)):
+        raise _Reject(400, "move 는 crops 범위에서 before 또는 after 하나가 필요합니다")
     if type(seen) is not int or seen < 0:
         raise _Reject(400, "seen 은 보드가 읽은 매니페스트 rev 정수여야 합니다")
 
@@ -2262,7 +2282,25 @@ def zorder_write(root: str, data: dict) -> dict:
         raise _Reject(400, "이 범위에 보이는 항목이 없습니다 — 다시 받기")
     ids = list(scopes[scope])
     manual = store.z_order(m)
-    if op == "reset":
+    if op == "move":
+        anchor = data.get("before", data.get("after"))
+        if not isinstance(anchor, str) or anchor not in ids or anchor == item:
+            raise _Reject(400, "이동 기준 크롭이 잘못되었습니다")
+        original = list(ids)
+        ids.remove(item)
+        ids.insert(ids.index(anchor) + (1 if "after" in data else 0), item)
+        pos = {cid: i for i, cid in enumerate(ids)}
+        # 합성의 quad bbox 여유와 동일하게 2px 접촉까지 겹침으로 본다.
+        changed = any(pos[a] > pos[b] and any(
+            not (x[2] < y[0] - 2 or x[3] < y[1] - 2 or x[0] > y[2] + 2 or x[1] > y[3] + 2)
+            for x in boxes[a] for y in boxes[b])
+            for i, a in enumerate(original) for b in original[i + 1:])
+        if not changed:
+            expect(store.load_manifest(root))
+            return {"ok": True, "changed": False, "rev": seen, "scope": scope,
+                    "order": manual.get(scope, []), "effective": original}
+        manual[scope] = ids
+    elif op == "reset":
         manual.pop(scope, None)
         auto = _star_plan(root, dict(m, z_order=manual), pref)[0]
         ids = _zorder_scopes(list(_node()._slices_in_order(auto)))[0][scope]
@@ -2284,7 +2322,8 @@ def zorder_write(root: str, data: dict) -> dict:
             mm.pop("z_order", None)
 
     _result, rev = store.update_manifest(root, mutate)
-    return {"ok": True, "rev": rev, "scope": scope, "order": manual.get(scope, []), "effective": ids}
+    return {"ok": True, "rev": rev, "scope": scope, "order": manual.get(scope, []), "effective": ids,
+            **({"changed": True} if op == "move" else {})}
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -2517,8 +2556,9 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
         "orphan_candidates": sum(1 for c in m["candidates"] if c.get("crop_id") not in crop_ids),
         "cost": _cost(calls),
         "canvas": canvas,
+        "z": _read_z(root, canvas["composite_sig"]) if canvas else None,
         # 레이아웃에만 있는 크롭(다음 반영에서 새로 생김 — 크롭 요약에는 없음). 레이아웃이 없으면 null
-        "layout_added": None if lay is None else [{"id": x["id"], "name": x["name"], "rect": x["rect"]}
+        "layout_added": None if lay is None else [{"id": x["id"], "name": x["name"], "rect": x["rect"], "locked": bool(x.get("locked"))}
                                                   for x in lay["crops"] if x["id"] not in crop_ids],
         "crops": crops,
         "targets": targets,
@@ -5613,9 +5653,12 @@ def _project_thumb(key) -> bytes:
     def render():
         cached = _read_bytes(_thumb_path(root, f"canvasbase_{sig}.jpg"))
         source = io.BytesIO(cached) if cached else store.resolve_path(root, m["base"])
-        with Image.open(source) as im:
-            im.thumbnail((256, 256), Image.Resampling.LANCZOS)
-            data = _jpeg(im)
+        try:
+            with Image.open(source) as im:
+                im.thumbnail((256, 256), Image.Resampling.LANCZOS)
+                data = _jpeg(im)
+        except FileNotFoundError:
+            raise _Reject(404, "베이스 파일이 없어 미리보기를 만들 수 없습니다") from None
         # _cached 의 prepare 는 공용 렌더 슬롯 밖이다. 미리 원자 저장하면 _cached 는 캐시를 확인만 한다.
         store._atomic_write_bytes(_thumb_path(root, name), data)
         return data

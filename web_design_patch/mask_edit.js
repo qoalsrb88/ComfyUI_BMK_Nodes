@@ -228,10 +228,13 @@ window.DPMaskEdit = (() => {
         const inWin = wx >= 0 && wx < ww && wy >= 0 && wy < wh;
         const mv = !inWin ? 0 : quant(view.base || (view.split !== null && x < view.split) ? base[j] : mask[j]) / 255;
         const pa = view.orig ? 0 : (p[i + 3] / 255) * mv * (view.opacity ?? 1); // 보기 투명도는 저장 마스크에 넣지 않음
-        const oa = o[i + 3] / 255;
-        let r = o[i] * oa + (u[i] + (p[i] - u[i]) * pa) * (1 - oa);
-        let g = o[i + 1] * oa + (u[i + 1] + (p[i + 1] - u[i + 1]) * pa) * (1 - oa);
-        let b = o[i + 2] * oa + (u[i + 2] + (p[i + 2] - u[i + 2]) * pa) * (1 - oa);
+        const alone = view.isolate && !view.orig && !view.base && view.split == null && !view.mark;
+        const checker = ((Math.floor((x + L.box[0]) / 8) + Math.floor((y + L.box[1]) / 8)) & 1) ? 187 : 238;
+        const oa = o[i + 3] / 255 * (alone ? 0.4 : 1);
+        const ur = alone ? checker : u[i], ug = alone ? checker : u[i + 1], ub = alone ? checker : u[i + 2];
+        let r = o[i] * oa + (ur + (p[i] - ur) * pa) * (1 - oa);
+        let g = o[i + 1] * oa + (ug + (p[i + 1] - ug) * pa) * (1 - oa);
+        let b = o[i + 2] * oa + (ub + (p[i + 2] - ub) * pa) * (1 - oa);
         if (view.mark && !view.orig && p[i + 3]) { // 원본 보기(W) 동안은 원본 그대로(빗금 없이 — Codex 4차)
           const a = 0.5 * pa;
           r = r * (1 - a) + 255 * a;
@@ -723,6 +726,7 @@ window.DPMaskEdit = (() => {
     let editTool = "brush";
     let xdrag = null;
     let patchOpacity = 100;
+    let opacityHeld = false;
     let difference = false;
     let previewRaster = null; // 현재 3층 원본 canvas와 마지막 affine 결과만 보관
     let size = 48;
@@ -978,8 +982,11 @@ window.DPMaskEdit = (() => {
       const d = dirty;
       dirty = null;
       if (!d || !M.layers || !img || !M.m) return;
+      const suppressed = view.orig || view.base || slider || view.mark || opacityHeld || (editTool === "xform" && difference);
+      if (viewer.suppressIsolate) viewer.suppressIsolate(suppressed);
       compose(previewLayers(), M.win, M.m, M.base, img.data, d[0], d[1], d[2], d[3],
         { base: view.base, split: slider ? view.split : null, mark: view.mark, orig: view.orig,
+          isolate: !suppressed && !!(viewer.isIsolated && viewer.isIsolated()),
           opacity: editTool === "xform" ? patchOpacity / 100 : 1, diff: editTool === "xform" && difference });
       g2.putImageData(img, 0, 0, d[0], d[1], d[2] - d[0], d[3] - d[1]);
       if (editTool === "xform") viewer.redraw();
@@ -1451,6 +1458,7 @@ window.DPMaskEdit = (() => {
     }
 
     function renderList() {
+      if (window.DPRows && window.DPRows.defer(list, renderList)) return;
       // 왼쪽: 크롭(칩 편집 n·편집 기준 바뀜·이음매 n) — 누르면 그 크롭 첫 타깃 ★. ★ 가 둘 이상이면(타깃 여럿·slice) 줄마다
       if (held) {
         later = true;
@@ -1460,7 +1468,7 @@ window.DPMaskEdit = (() => {
       if (!S) return;
       const segs = (opts.seams() && opts.seams().segments) || [];
       const curCrop = cur() ? cur().crop_id : (candOf(M.key) || { t: {} }).t.crop_id;
-      for (const c of S.crops) {
+      for (const c of window.DPRows ? window.DPRows.order(S) : S.crops) {
         const stars = S.targets.filter((t) => t.crop_id === c.id)
           .flatMap((t) => t.pick_keys.map((k) => ({ t, c: t.candidates.find((x) => x.key === k) })).filter((x) => x.c));
         const li = el("li", (c.id === curCrop ? "sel" : "") + (stars.length ? "" : " empty"));
@@ -1474,6 +1482,7 @@ window.DPMaskEdit = (() => {
         if (!stars.length) ch.append(chip("★ 없음", "b-dim"));
         if (ch.childElementCount) li.append(ch);
         li.addEventListener("click", () => (stars.length ? go({ key: stars[0].c.key }, true) : opts.toast("이 크롭은 ★ 가 없습니다 — 검토에서 ★ 를 먼저 고르세요", "warn")));
+        if (window.DPRows) window.DPRows.tail(li, { crop: c, state: S, apiUrl: opts.apiUrl, z: true });
         list.append(li);
         if (stars.length < 2) continue;
         for (const x of stars) {
@@ -1672,7 +1681,9 @@ window.DPMaskEdit = (() => {
         tools.append(b);
       }
       if (editTool === "xform") {
-        slide(s, "패치 투명도", 0, 100, 5, patchOpacity, (v) => `${v}%`, (v) => { patchOpacity = v; repaintAll(); });
+        const opacity = slide(s, "패치 투명도", 0, 100, 5, patchOpacity, (v) => `${v}%`, (v) => { opacityHeld = true; patchOpacity = v; repaintAll(); });
+        opacity.addEventListener("pointerdown", () => { opacityHeld = true; repaintAll(); });
+        for (const event of ["pointerup", "pointercancel", "blur", "change"]) opacity.addEventListener(event, () => { opacityHeld = false; repaintAll(); });
         const diff = button("원본과 차이", "D — 패치와 원본 아래층의 색 차이(맞으면 검게)", () => {
           difference = !difference;
           repaintAll();
@@ -2210,7 +2221,7 @@ window.DPMaskEdit = (() => {
     }
 
     pending.locked = () => !!(LOCKED.includes(M.busy) || adjustSaving);
-    return { enter, leave, go, onKey, onKeyUp, stateChanged, seamsChanged, pending };
+    return { enter, leave, go, onKey, onKeyUp, stateChanged, seamsChanged, pending, isolateChanged: repaintAll };
   }
 
   return { create, session, smooth, fade, kernel, feather, stamp, op, quant, compose, pngL, xformQuad, relativeAffine, xformPoints, xformDrag };

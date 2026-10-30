@@ -1646,6 +1646,7 @@ window.DPRefEdit = (() => {
         ch.append(...refChips(c));
         li.append(ch);
         li.addEventListener("click", () => select(c.id));
+        if (window.DPRows) window.DPRows.tail(li, { crop: c, state, apiUrl: opts.apiUrl });
         list.append(li);
       }
       for (const o of R.orphans) {
