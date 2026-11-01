@@ -252,6 +252,7 @@ from typing import Callable
 from urllib.parse import urlencode
 
 import cv2
+import aiohttp
 import numpy as np
 from aiohttp import web
 from PIL import Image
@@ -5252,8 +5253,8 @@ def image_header(path: str, kind: str) -> dict:
                 return _webp_size(f.read(30))
             if kind == "png":
                 head = f.read(24)
-                if head[12:16] != b"IHDR":
-                    raise ValueError("PNG IHDR 없음")
+                if len(head) < 24 or head[8:16] != b"\x00\x00\x00\x0dIHDR":  # 잘린 머리를 0 채움으로 읽지 않게 — IHDR 길이 13
+                    raise ValueError("PNG IHDR 없음·잘림")
                 return {"w": int.from_bytes(head[16:20], "big"), "h": int.from_bytes(head[20:24], "big")}
             return _jpeg_size(f)
     except (OSError, ValueError):
@@ -5371,13 +5372,17 @@ async def recv_upload(request: web.Request, dest_dir: str, *, limit: int = _MAX_
         raise
     n, pending = 0, None
     try:
-        async for chunk in request.content.iter_chunked(_UPLOAD_CHUNK):
-            n += len(chunk)
-            if n > limit:
-                raise _Reject(413, "파일이 너무 큽니다(2GB 까지)")
-            pending = asyncio.ensure_future(asyncio.to_thread(f.write, chunk))
-            await asyncio.shield(pending)  # 취소돼도 쓰기는 끝까지 — 아래에서 기다린 뒤 닫는다
-            pending = None
+        try:
+            async for chunk in request.content.iter_chunked(_UPLOAD_CHUNK):
+                n += len(chunk)
+                if n > limit:
+                    raise _Reject(413, "파일이 너무 큽니다(2GB 까지)")
+                pending = asyncio.ensure_future(asyncio.to_thread(f.write, chunk))
+                await asyncio.shield(pending)  # 취소돼도 쓰기는 끝까지 — 아래에서 기다린 뒤 닫는다
+                pending = None
+        except (ConnectionError, EOFError, aiohttp.ClientError, aiohttp.http_exceptions.HttpProcessingError):
+            # 본문 전송이 끊김(연결 재설정·Content-Length 보다 짧음) — 파일 오류(500)가 아니라 다시 올릴 일(400). CancelledError 는 그대로
+            raise _Reject(400, "파일을 받다가 끊겼습니다 — 다시 올려 주세요") from None
         if n == 0:
             raise _Reject(400, "빈 파일입니다")
         if request.content_length is not None and n != request.content_length:

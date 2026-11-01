@@ -53465,6 +53465,9 @@ def batch9_recv_unit():
         info_big = bd.image_header(str(big), "png")
         bd.check_image_dims(info_big, 64)
         check(info_big == {"w": 14000, "h": 14000}, "B9R 196MP PNG 머리는 통과(Pillow 상한에 안 걸림)")
+        cut_png = t / "cut.png"
+        cut_png.write_bytes(big.read_bytes()[:21])
+        check(rejects(bd.image_header, str(cut_png), "png"), "B9R 잘린 PNG 머리(높이 필드 끊김) 400")
         exif_jpg = t / "exif.jpg"
         Image.new("RGB", (77, 55), (9, 9, 9)).save(exif_jpg, "JPEG", exif=b"Exif\x00\x00" + bytes(5000), quality=80, progressive=True)
         check(bd.image_header(str(exif_jpg), "jpeg") == {"w": 77, "h": 55}, "B9R JPEG 큰 APP1 건너뛰고 SOF(점진식 C2)")
@@ -53527,19 +53530,21 @@ def batch9_recv_unit():
         check(bd.unique_file_name(str(dest), "그림.png") == "그림_3.png", "B9R 겹침 k 증가")
 
         class Content:
-            def __init__(self, chunks, cancel_at=None):
-                self.chunks, self.cancel_at = chunks, cancel_at
+            def __init__(self, chunks, cancel_at=None, error_at=None):
+                self.chunks, self.cancel_at, self.error_at = chunks, cancel_at, error_at
 
             async def iter_chunked(self, n):
                 for i, c in enumerate(self.chunks):
                     if self.cancel_at == i:
                         raise asyncio.CancelledError()
+                    if self.error_at is not None and self.error_at[0] == i:
+                        raise self.error_at[1]
                     yield c
 
         class Req:
-            def __init__(self, chunks, ctype="application/octet-stream", length="auto", cancel_at=None):
+            def __init__(self, chunks, ctype="application/octet-stream", length="auto", cancel_at=None, error_at=None):
                 self.content_type = ctype
-                self.content = Content(chunks, cancel_at)
+                self.content = Content(chunks, cancel_at, error_at)
                 self.content_length = sum(map(len, chunks)) if length == "auto" else length
 
         data = files["webp"][0].read_bytes()
@@ -53557,6 +53562,10 @@ def batch9_recv_unit():
         check(recv_fails(Req(chunks, ctype="application/json"), 415) and recv_fails(Req(chunks), 413, limit=10)
               and recv_fails(Req(chunks, length=None), 413, limit=10) and recv_fails(Req([]), 400)
               and recv_fails(Req(chunks, length=len(data) + 5), 400), "B9R 흘려 받기 거절(형식 415·상한 413 — 길이 없이도·빈 400·끊김 400)")
+        import aiohttp as _ah
+        check(all(recv_fails(Req(chunks, error_at=(2, e)), 400) for e in (ConnectionResetError("끊김"), _ah.ClientPayloadError("짧음"),
+                                                                         _ah.http_exceptions.ContentLengthError("짧음")))
+              and not [p for p in dest.iterdir() if p.name.endswith(".part")], "B9R 전송 중 연결 끊김·짧은 본문 = 400(.part 지움)")
         try:
             asyncio.run(bd.recv_upload(Req(chunks, cancel_at=2), str(dest)))
             cancelled = False
