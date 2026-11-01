@@ -33126,9 +33126,9 @@ def pipeline_js_unit():
               f"§3.5 진행에 draft 가 있으면(Spec Draft 실행 중) 초안 진행 줄 {{inflight, created, done, failed}} {pl}")
         sw = {x[0]: x[1] for x in pv["settings"]}
         imsg = R["GET /pipeline"]["ok"]["warnings"][0]["msg"]
-        cmsg = "후보 폴더가 없음: G:/AI_output/_Input/x/03 — 반영을 막음(Export 는 됨): [실행 설정 열기]에서 경로를 고치거나 후보 등록을 끔"
+        cmsg = "후보 폴더가 없음: G:/AI_output/_Input/x/03 — 반영·초안·생성 승인을 막음(Export 는 됨): [실행 설정 열기]에서 경로를 고치거나 후보 등록을 끔"
         check(sw.get(imsg) == "pp-row bad" and sw.get(cmsg) == "pp-row bad" and "후보 폴더가 없음: G:/AI_output/_Input/x/03" not in sw,
-              f"설정 칸 경로 경고 = 모두 막힘(bad — 서버 prompt 409): import.* 는 문구 그대로(반영·Export), cand.path 는 '반영을 막음(Export 는 됨)'"
+              f"설정 칸 경로 경고 = 모두 막힘(bad — 서버 prompt 409): import.* 는 문구 그대로(반영·Export), cand.path 는 '반영·초안·생성 승인을 막음(Export 는 됨)'"
               f"(r2-06 — dp_cand 를 담는 템플릿만 막음, 정본 _doc warnings) {pv['settings']}")
         warn = {"Import PSD": "다음 반영에서 크롭 소스·타깃·레퍼런스가 바뀌면 새 생성 조건(유료 대상)", "Prepare": "다음 반영에서 jobs 가 바뀌어 새 생성 조건이 될 수 있음(유료 대상)",
                 "Spec Draft": "초안 키가 바뀜 — fill 은 갱신 가능 표시만, refresh 면 전 크롭 재초안(유료)"}
@@ -52330,8 +52330,288 @@ process.exit(0);
                 check(ok is True, f"D60–D68 {group}/{name}: {ok}")
 
 def ext60_unit():
-    """6-0 외부 엔진 다리(11/02 — _proto/STUDIO_6-0_SPEC.md D72–D88): 크롭 소스 내보내기·결과 폴더 가져오기·폴더 목록. 공용 자리 — 6-0 작업자가 채운다."""
+    """D72–D87: 합성 파일·직접 라우트·모의 DOM. 소켓·외부 API·탐색기를 실행하지 않는다."""
     section("6-0 — 외부 엔진 다리(내보내기·가져오기)")
+    import asyncio
+    import tempfile
+    from unittest.mock import patch
+
+    out = (OUT_ROOT / "ext60").resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    run = Path(tempfile.mkdtemp(prefix="run_", dir=out))
+    dp = _dp_package()
+    bd, st = dp.board, dp.store
+    ext, pl = bd.ext, bd.pl
+    rgba = np.dstack([_vlm_img(90, 160, 12), np.full((90, 160), 255, np.uint8)])
+    handle, root = _fx_project(dp, run, "bridge", [("001_head | A: hair, B: pin", [0, 0, 73, 41]),
+                                                  ("002_hand | A: hand", [80, 0, 153, 41])], rgba[..., :3])
+    m = st.load_manifest(root)
+    c1, c2 = copy.deepcopy(m["crops"])
+    src = dp._load_rgba(root, c1["source"]).copy()
+    src[:4, :, 3] = 0
+    c1["source"] = st.save_png_ca(root, "inputs", src)
+    m["crops"][0] = c1
+    st.save_manifest(root, m)
+    pref = dict(dp._ANALYZE_DEFAULTS, register="off", tone="off", grow=2, feather_sigma=1.0)
+    st.save_board_pref(root, pref)
+    before = Path(root, st.MANIFEST_NAME).read_bytes()
+    tick = time.localtime()
+    strftime = time.strftime
+    with patch.object(ext.time, "strftime", side_effect=lambda fmt: strftime(fmt, tick)):
+        ex = ext.export_sources(root)
+        ex64 = ext.export_sources(root, [c1["id"], "missing"], "m64")
+    check(ex64["dir"] == ex["dir"] + "-2", "D75 같은 분 내보내기 충돌 suffix")
+    check(Path(root, st.MANIFEST_NAME).read_bytes() == before, "D77 내보내기 manifest bytes·rev 불변")
+    check(ex64["skipped"] == [{"crop_id": "missing", "name": None, "why": "크롭 없음"}], "D72 없는 크롭 사유")
+    side = json.loads(Path(ex["abs"], "export.json").read_text(encoding="utf-8"))
+    check(side["v"] == 1 and side["size"] == "gpt" and side["size_rule"] == "user_k", "D77 사이드카 머리")
+    for result in (ex, ex64):
+        for item in result["items"]:
+            crop = next(c for c in (c1, c2) if c["id"] == item["crop_id"])
+            W, H, _ = st.gpt_output_size(73, 41, "user_k")
+            if result is ex64:
+                W, H = [max(64, int(v / 64 + .5) * 64) for v in (W, H)]
+            rgb, _ = P.flatten_canvas(dp._load_rgba(root, crop["source"]))
+            expected = np.asarray(Image.fromarray(rgb).resize((W, H), Image.Resampling.LANCZOS))
+            with Image.open(Path(result["abs"], item["file"])) as image:
+                check(image.mode == "RGB" and image.size == (W, H) and np.array_equal(np.asarray(image), expected),
+                      "D72–D74 실제 평탄화·LANCZOS RGB·크기")
+            check(abs(item["ratio_err"] - abs((W / H) / (73 / 41) - 1)) < 1e-12, "D73 비율 오차")
+    check(all(i["sha256"] == hashlib.sha256(Path(ex["abs"], i["file"]).read_bytes()).hexdigest()
+              and i["rect"] == next(c["rect"] for c in (c1, c2) if c["id"] == i["crop_id"]) for i in side["items"]),
+          "D77 파일 bytes sha·원래 rect")
+
+    def reject(fn, status, text):
+        try:
+            fn()
+        except ext.BridgeError as e:
+            check(e.status == status and text in str(e), f"거절 {status} {text}")
+        else:
+            check(False, f"거절 안 함 {status} {text}")
+
+    reject(lambda: ext.export_sources(root, size="wrong"), 400, "크기")
+    reject(lambda: ext.export_sources(root, []), 400, "내보낼 크롭")
+    reject(lambda: ext.scan_import(root, ex["abs"]), 400, "export_src")
+    reject(lambda: ext.scan_import(root, str(run / "absent")), 404, "폴더")
+    reject(lambda: ext.scan_import(root, "relative"), 400, "절대")
+    check(len(list(Path(root, "export_src").iterdir())) == 2, "0개·잘못된 크기에 새 폴더 없음")
+
+    # Prepare 의 실제 키·승인 계획과 템플릿을 얻되 Run/Draft 호출은 하지 않는다.
+    handle, _, _ = dp.BMKDesignPatchPrepare().run(dp._handle(root, st.load_manifest(root)), MODEL25, "max", "user_k", "V1", 1, "at")
+    folder = run / "results"
+    folder.mkdir()
+    def png(name, color, wh=(73, 41)):
+        path = folder / name
+        Image.new("RGB", wh, color).save(path)
+        return path
+    good = png(c1["name"] + "__B_result.png", (200, 40, 30))
+    png("001_other.png", (30, 200, 40))
+    png(c1["name"] + "__Z_result.png", (40, 30, 200), (60, 20))
+    png(c2["name"] + "__src_result.png", (100, 60, 30))
+    shutil.copyfile(good, folder / "zz_duplicate.png")
+    shutil.copyfile(Path(ex["abs"], ex["items"][0]["file"]), folder / "hash_source.png")
+    shutil.copyfile(good, folder / "001_head__src.png")
+    Image.fromarray(dp._load_rgba(root, c1["source"])[..., :3]).save(folder / "001_head_bypass.png")
+    (folder / "001_head_broken.png").write_bytes(b"not an image")
+    (folder / "nested").mkdir()
+    Image.new("RGB", (73, 41)).save(folder / "nested/001_head_new.png")
+    m = st.load_manifest(root)
+    m["crops"][1].update(name="renamed_hand", nnn="999", rect=[83, 4, 156, 45])
+    st.save_manifest(root, m)
+    before = Path(root, st.MANIFEST_NAME).read_bytes()
+    readonly = {p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in folder.iterdir() if p.is_file()}
+    preview = ext.scan_import(root, ' "' + str(folder) + '" ')
+    rows = {r["file"]: r for r in preview["rows"]}
+    check(preview["counts"] == {"new": 4, "exists": 0, "skip": 5} and isinstance(preview["fp"], str), "D78 미리보기 판정 개수·문자열 지문·직계 파일만")
+    check(rows[good.name]["match"] == "name" and rows[good.name]["tid"] == "B", "D81 이름 뒤 __B 타깃")
+    check(rows["001_other.png"]["match"] == "nnn", "D78 NNN 매칭")
+    check(rows[c1["name"] + "__Z_result.png"]["tid"] == "A" and len(rows[c1["name"] + "__Z_result.png"]["warn"]) == 2,
+          "D81 없는 타깃·비율 경고")
+    fallback = rows[c2["name"] + "__src_result.png"]
+    check(fallback["match"] == "export" and any("이름" in w for w in fallback["warn"]) and any("위치" in w for w in fallback["warn"]),
+          "D78 이름·NNN 변경 뒤 사이드카 매칭·옛 rect 안내")
+    check("bypass" in rows["001_head_bypass.png"]["why"] and "소스" in rows["hash_source.png"]["why"]
+          and "__src" in rows["001_head__src.png"]["why"] and "읽을 수" in rows["001_head_broken.png"]["why"], "D85 소스·해시·bypass·깨진 이미지 제외")
+    check(Path(root, st.MANIFEST_NAME).read_bytes() == before, "D78 dry_run 은 manifest 불변")
+
+    settings = pl.current(root, m)["settings"]
+    settings["draft"]["vlm"] = "mock"
+    def invariants():
+        current = st.load_manifest(root)
+        plan = bd.pipeline_plan(root, settings, only_ids=[c1["id"], c2["id"]], style=False)
+        backend, cfg = bd._draft_cfg(root, settings, False)
+        _, reqs, _, _, _ = bd._vlm().draft_plan(root, current, "", backend, only=[], memo={}, **cfg)
+        return {"cells": [j["cell_key"] for j in current["jobs"]],
+                "hashes": [plan[k].get("hash") for k in ("run", "draft")],
+                "draft_keys": {cid: req.key for cid, req in reqs.items()},
+                "prepare_fp": st.prepare_inputs_fp(root, current), "record": current.get("prepare_inputs_fp"),
+                "templates": {stage: pl.build_prompt(stage, settings, root, approve="0123456789ab" if stage in ("run", "draft") else "",
+                                                     only=c1["id"] if stage in ("run", "draft", "reroll") else "")
+                              for stage in ("apply", "run", "reroll", "draft")},
+                "pref": Path(root, "board_pref.json").read_bytes()}
+    inv = invariants()
+    check(bool(inv["cells"]) and all(inv["hashes"]) and len(inv["draft_keys"]) == 2 and all(inv["draft_keys"].values()),
+          "D78 실제 셀·승인 해시·초안 키가 있는 불변 시험")
+    old_hash = dp._export_hash(m, {}, dp._COMPOSE_DEFAULTS, {})
+    reject(lambda: ext.apply_import(root, str(folder), "stale"), 409, "미리보기")
+    registered = ext.apply_import(root, str(folder), preview["fp"])
+    m = st.load_manifest(root)
+    check(len(registered["added"]) == 4 and registered["analyzed"] == 4 and registered["rev"] > json.loads(before)["rev"], "D82 후보 등록·실제 분석·rev 증가")
+    check(all(c["origin_info"]["via"] == "studio" and not c["picked"] and c["z"] is None for c in m["candidates"]), "D80 외부 후보는 자동 ★ 없음")
+    check(all(next(iter(m["analysis"][c["key"]].values()))["params"] == pref for c in m["candidates"]), "D82 보드 분석 설정 사용")
+    oldhand = next(c for c in m["candidates"] if c["crop_id"] == c2["id"])
+    check(oldhand["quad"] == dpsd.quad_from_rect(c2["rect"]), "D79 가져올 때 사이드카 rect 로 quad 고정")
+    check(invariants() == inv, "D78 cell_key·승인 해시·초안 키·prepare 지문·템플릿·pref 불변")
+    check(dp._export_hash(m, m["analysis"], dp._COMPOSE_DEFAULTS, {}) != old_hash, "D78 후보 추가는 Export 해시 변경")
+    check(readonly == {p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in folder.iterdir() if p.is_file()}, "결과 폴더 bytes·mtime 불변")
+    summary = ext.ext_summary(root)
+    with patch.object(ext, "scan_import", side_effect=AssertionError("unchanged must not scan")):
+        check(ext.ext_summary(root)["imports"][0]["new_n"] == 0, "D84 같은 지문 스캔 없음")
+    check(ext.scan_import(root, str(folder))["counts"]["exists"] == 4, "D79 재미리보기 exists")
+    existing = copy.deepcopy(m["candidates"])
+    st.update_manifest(root, lambda mm: mm["crops"][0].update(rect=[1, 1, 74, 42]))
+    good.unlink()
+    (folder / "zz_duplicate.png").unlink()
+    again = ext.apply_import(root, str(folder))
+    check(not again["added"] and st.load_manifest(root)["candidates"] == existing, "D79 재가져오기 배치·출처·삭제 후보 보존")
+    check(ext.ext_summary(root)["imports"][0]["missing"] == [existing[0]["key"]], "D84 사라진 파일의 후보 키")
+    bdstate = bd.build_state(root)
+    missing = [c for t in bdstate["targets"] for c in t["candidates"] if c.get("external_missing")]
+    check(missing and missing[0]["label"].startswith("외부 · results/"), "D83 검토 라벨·파일 없음")
+    hash_missing = bdstate["external_files_v"]
+    png(good.name, (200, 40, 30))
+    check(bd.build_state(root, bdstate["rev"])["external_files_v"] != hash_missing, "D83 rev 그대로 파일 복구를 검토에 전달")
+    dp.BMKDesignPatchCandidateIn().run(dp._handle(root, st.load_manifest(root)), "folder", str(folder), "", "", True, True)
+    after_node = {c["key"]: c for c in st.load_manifest(root)["candidates"]}
+    check(all(after_node[c["key"]] == c for c in existing), "D79 Candidate In 재스캔은 Studio 후보 배치·출처·★ 보존")
+    extra = png(c1["name"] + "__A_extra.png", (1, 2, 3))
+    check(ext.ext_summary(root)["imports"][0]["new_n"] == 1, "D84 바뀐 폴더의 새 결과 수")
+    with patch.object(dp, "_ensure_analysis", side_effect=RuntimeError("test analysis failure")):
+        failed = ext.apply_import(root, str(folder))
+    check(len(failed["added"]) == 1 and failed["analyzed"] == 0 and "분석 실패" in failed["warns"][0]
+          and any(c["key"] == failed["added"][0] for c in st.load_manifest(root)["candidates"]), "D82 분석 실패도 등록 유지")
+
+    # 라우트는 실제 소켓 없이 요청 객체로 호출, 탐색기 열기는 대역으로만 검사.
+    async def request(handler, data, ctype="application/json"):
+        raw = json.dumps(data).encode()
+        async def read():
+            return raw
+        req = types.SimpleNamespace(content_type=ctype, content_length=len(raw), read=read, path="/test", query=data)
+        with patch.object(bd, "_root_param", return_value=root):
+            return await handler(req)
+    with patch.object(bd, "is_running", return_value=True):
+        for handler, body in [(bd.candidates_export_handler, {}), (bd.candidates_import_handler, {"path": str(folder), "dry_run": False})]:
+            check(asyncio.run(request(handler, body)).status == 409, "실행 중 export·등록 409")
+        check(asyncio.run(request(bd.candidates_import_handler, {"path": str(folder), "dry_run": True})).status == 200, "실행 중 dry_run 허용")
+    check(asyncio.run(request(bd.candidates_export_handler, {}, "text/plain")).status == 415, "POST JSON 전용")
+    check(asyncio.run(request(bd.candidates_import_handler, {"path": str(folder), "dry_run": "false"})).status == 400, "dry_run bool 검증")
+    with patch.object(bd, "_reveal") as reveal:
+        check(asyncio.run(request(bd.open_folder_handler, {"sub": ex["dir"]})).status == 200 and reveal.call_count == 1, "open_folder sub 성공(탐색기 대역)")
+        for sub, code in [("../outside", 400), ("export_src/990101-0000", 404), (None, 400)]:
+            check(asyncio.run(request(bd.open_folder_handler, {"sub": sub})).status == code, "open_folder sub 검증")
+        check(reveal.call_count == 1, "잘못된 sub 로 탐색기를 열지 않음")
+    with patch.object(bd, "open_export_folder", return_value={"ok": True}) as legacy:
+        check(asyncio.run(request(bd.open_folder_handler, {})).status == 200 and legacy.call_count == 1, "sub 없음 기존 폴더 열기")
+    check(len(bd._ROUTES) == 51, "기존 라우트 51개 유지")
+
+    fixture = json.loads((PKG / "tools/fixtures/ext_api.json").read_text(encoding="utf-8"))
+    for kind, actual in [("export", ex64), ("preview", preview), ("import", registered), ("ext", summary)]:
+        expected = fixture[kind]
+        check(set(actual) == set(expected), f"ext_api {kind} 최상위 키")
+        for key in ("items", "skipped", "rows", "exports", "imports"):
+            if key in expected:
+                check(bool(actual[key]) and all(set(r) == set(expected[key][0]) for r in actual[key]), f"ext_api {kind}/{key} 행 키")
+
+    # 중복 이름·정규화 뒤 파일명 충돌은 모두 제외, 기록 한도는 새 파일 없이 확인.
+    m = st.load_manifest(root)
+    m["crops"][1]["name"] = m["crops"][0]["name"]
+    st.save_manifest(root, m)
+    reject(lambda: ext.export_sources(root), 400, "내보낼 크롭")
+    m["crops"][0]["name"], m["crops"][1]["name"] = "a:b", "a?b"
+    st.save_manifest(root, m)
+    reject(lambda: ext.export_sources(root), 400, "내보낼 크롭")
+    reject(lambda: ext.export_sources(root, [c1["id"]]), 400, "내보낼 크롭")
+    ext60_js_unit(out, fixture)
+
+
+def ext60_js_unit(out, fixture):
+    """기존 패널 DOM 하네스로 실제 UI 이벤트·API body 를 확인한다."""
+    import subprocess
+    node = shutil.which("node") or r"C:\Program Files\nodejs\node.exe"
+    web = PKG / "web_design_patch"
+    h = _PL_JS_HARNESS
+    cuts = [h[h.index(a):h.index(b, h.index(a))] for a, b in (
+        ("import fs", "async function run("), ("class El {", "async function mouse("),
+        ("function boardState()", 'await scenario("panel"'), ("function mkPanel(", 'await scenario("panelStyle"'),
+        ("function quietPipeline(mod)", 'await scenario("panelDrift"'))]
+    harness = "\n".join(cuts).replace("function mkPanel(srv, store = mem())", "function mkPanel(srv, store = mem(), extraOpts = {})")
+    harness = harness.replace("seams: () => new Map(), drain() {}, enter() {} });", "seams: () => new Map(), drain() {}, enter() {}, ...extraOpts });")
+    scene = r'''
+await scenario("external", async () => {
+  const srv = server(); srv.route.pipeline = quietPipeline(); quietPlan(srv);
+  const base = srv.fetch, calls = [], modes = [], copies = [];
+  let conflict = false, summaryCalls = 0;
+  srv.fetch = async (u, o) => {
+    const path = new URL(u).pathname.split("/bmk/design_patch/")[1];
+    if (!path.startsWith("candidates/") && path !== "open_folder") return base(u, o);
+    const body = o && o.body ? JSON.parse(o.body) : null;
+    calls.push({path, body});
+    let data, status = 200;
+    if (path === "candidates/ext") { data = IN.ext.ext; summaryCalls++; }
+    else if (path === "candidates/export") data = IN.ext.export;
+    else if (path === "open_folder") data = {ok: true};
+    else if (body.dry_run) data = IN.ext.preview;
+    else if (conflict) { data = {error: "폴더가 바뀌었습니다 — 미리보기를 다시 하세요"}; status = 409; }
+    else data = IN.ext.import;
+    return {ok: status === 200, status, json: async () => clone(data)};
+  };
+  const env = mkPanel(srv, mem(), {goMode: m => modes.push(m)}), S = quietState();
+  ctx.navigator.clipboard.writeText = async text => copies.push(text);
+  env.pipe.stateChanged(S); env.pipe.enter(S, S.crops[0].id); await sleep(100);
+  env.pipe.showTab("generate"); await sleep(30);
+  const section = () => env.panel.children.find(e => e.firstElementChild && e.firstElementChild.textContent === "외부 엔진");
+  const B = label => env.B(label, section());
+  const input = label => section().all().find(e => e.attrs && e.attrs["aria-label"] === label);
+  const r = {tab: section().dataset.tab === "generate", initial: B("등록 (").disabled};
+  B("크롭 소스 내보내기").fire("click"); await sleep(30);
+  r.export = calls.some(c => c.path === "candidates/export" && c.body.size === "gpt" && c.body.crops.length === S.crops.length);
+  B("폴더 열기").fire("click"); B("경로 복사").fire("click"); B("접두 복사").fire("click"); await sleep(10);
+  r.paths = calls.some(c => c.path === "open_folder" && c.body.sub === IN.ext.export.dir) && copies.includes(IN.ext.export.abs) && copies.includes(IN.ext.export.save_prefix + "nai");
+  input("결과 폴더 경로").value = "H:/results"; input("결과 폴더 경로").fire("input");
+  B("미리보기").fire("click"); await sleep(30);
+  r.preview = !B("등록 (1)").disabled && section().textContent.includes("001_head__B_1.png") && section().textContent.includes("새로");
+  input("결과 폴더 경로").value = "changed"; input("결과 폴더 경로").fire("input");
+  r.invalidated = B("등록 (").disabled;
+  B("미리보기").fire("click"); await sleep(30);
+  conflict = true; B("등록 (1)").fire("click"); await sleep(30);
+  r.conflict = B("등록 (").disabled && section().textContent.includes("미리보기를 다시 하세요");
+  conflict = false; B("미리보기").fire("click"); await sleep(30);
+  B("등록 (1)").fire("click"); await sleep(30);
+  r.register = calls.some(c => c.path === "candidates/import" && !c.body.dry_run && c.body.expect_fp === IN.ext.preview.fp)
+    && section().textContent.includes("1개 등록·분석") && env.refresh === 1;
+  B("⑥ 검토로").fire("click"); r.review = modes[0] === "review";
+  const n = summaryCalls; env.pipe.stateChanged(S); await sleep(30); r.noPoll = summaryCalls === n;
+  env.pipe.showTab("prompt"); env.pipe.showTab("generate"); await sleep(30); r.reopen = summaryCalls === n + 1;
+  env.pipe.stateChanged({...S, running: true}); await sleep(30);
+  r.running = B("크롭 소스 내보내기").disabled && B("등록 (").disabled && !B("미리보기").disabled && section().textContent.includes("생성 실행 중");
+  r.independent = !calls.some(c => c.path.startsWith("pipeline/") || c.path === "prompt");
+  const bc = {el: (tag, cls, txt) => {const e = env.doc.createElement(tag); e.className = cls; e.textContent = txt || ""; return e;},
+    isNew: () => false, oldCell: () => false}; vm.createContext(bc);
+  const badges = vm.runInContext(`(${boardFn("tileBadges")})`, bc)({external_missing: true});
+  r.missing = badges.textContent.includes("파일 없음");
+  env.pipe.leave(); return r;
+});
+console.log(JSON.stringify(out)); process.exit(0);
+'''
+    (out / "harness.mjs").write_text(harness + scene, encoding="utf-8")
+    (out / "in.json").write_text(json.dumps({"api": json.loads((PKG / "tools/fixtures/pipeline_api.json").read_text(encoding="utf-8")),
+        "pipelineJs": str(web / "pipeline.js"), "boardJs": str(web / "board.js"), "ext": fixture}), encoding="utf-8")
+    result = subprocess.run([node, str(out / "harness.mjs"), str(out / "in.json")], capture_output=True, text=True, encoding="utf-8", timeout=30)
+    check(result.returncode == 0 and bool(result.stdout.strip()), f"D87 모의 DOM 실행 {result.stderr[-1200:]}")
+    if result.returncode == 0 and result.stdout.strip():
+        for group, rows in json.loads(result.stdout.strip().splitlines()[-1]).items():
+            for name, ok in rows.items():
+                check(ok is True, f"D87 {group}/{name}: {ok}")
 
 
 def want(name: str) -> bool:

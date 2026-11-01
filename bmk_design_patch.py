@@ -1662,11 +1662,15 @@ class BMKDesignPatchCandidateIn:
         seen = {c["key"] for c in new}
         origin_key = "psd" if source == "psd_harvest" else "folder"
         removed = [k for k, c in old.items() if k not in seen and c.get("origin") == source
+                   and (c.get("origin_info") or {}).get("via") != "studio"
                    and (c.get("origin_info") or {}).get(origin_key) == path]  # 같은 출처에서 사라진 후보
         added = updated = 0
         merged = [c for c in m["candidates"] if c["key"] not in seen and c["key"] not in removed]
         for c in new:
             prev = old.get(c["key"])
+            if prev is not None and (prev.get("origin_info") or {}).get("via") == "studio":
+                merged.append(prev)  # Studio 추가 전용 후보의 배치·출처·수동 ★를 그대로 둔다.
+                continue
             if source == "folder" or not visible_is_pick:
                 c["picked"] = bool(prev.get("picked")) if prev else False
             if prev is None:
@@ -1823,7 +1827,7 @@ class BMKDesignPatchCandidateIn:
         picked = {(c["crop_id"], c["tid"]) for c in m["candidates"] if c.get("picked")}
         for c in m["candidates"]:
             k = (c["crop_id"], c["tid"])
-            if c["key"] in keys and k not in picked:
+            if c["key"] in keys and k not in picked and (c.get("origin_info") or {}).get("via") != "studio":
                 c["picked"] = True
                 picked.add(k)
                 warns.append(f"{c['crop_id']}/{c['tid']}: pick 없음 → 첫 후보 {c['key']} 자동 선택")
