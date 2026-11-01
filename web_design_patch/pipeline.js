@@ -422,6 +422,10 @@ window.DPPipeline = (() => {
     }
 
     s.openFolder = () => call("open_folder", {}); // Export 출력 폴더를 탐색기로(배치 3-5a — 서버 PC)
+    s.exportSources = (crops, size) => call("candidates/export", { crops, size });
+    s.importResults = (path, dry_run, expect_fp) => call("candidates/import", { path, dry_run, expect_fp });
+    s.externalSummary = () => call("candidates/ext?" + qs({}));
+    s.openSources = (sub) => call("open_folder", { sub });
     s.psList = () => call("mask/ps_list?" + qs({}));
     s.psImport = (psd, dry_run, seen) => call("mask/ps_import", { psd, dry_run, seen });
 
@@ -947,6 +951,8 @@ window.DPPipeline = (() => {
     const ASK_KEY = "bmk-dp-ask:" + opts.root;
     let ask = null; // mock 확인 상자 {box, close}(열려 있을 때)
     let maskLeft = null; // 이 창의 적용 안 한 마스크 편집(board.js 가 K 모드를 나올 때 setMaskLeft — ★ 점검 줄)
+    const external = { size: "gpt", exportSize: null, engine: "nai", path: "", preview: null, previewInput: "", exported: null,
+      summary: null, busy: false, loading: false, needsLoad: true, error: "", summaryError: "", message: "", warns: [] };
 
     function el(tag, cls, txt) {
       const e = document.createElement(tag);
@@ -986,7 +992,7 @@ window.DPPipeline = (() => {
 
     function section(title) {
       const s = el("div", "pp-sec");
-      s.dataset.tab = title === "실행 설정" ? "prepare" : ["생성 승인", "★ 점검", "Export"].includes(title) ? "generate" : "prompt";
+      s.dataset.tab = title === "실행 설정" ? "prepare" : ["생성 승인", "★ 점검", "Export", "외부 엔진"].includes(title) ? "generate" : "prompt";
       s.append(el("div", "lp-k", title));
       panel.append(s);
       return s;
@@ -998,6 +1004,178 @@ window.DPPipeline = (() => {
         opts.toast(`복사: ${txt}`);
       } catch (e) {
         opts.toast(`복사하지 못함 — 직접 복사: ${txt}`, "warn");
+      }
+    }
+
+    async function loadExternal() {
+      if (external.loading) { external.needsLoad = true; return; }
+      external.needsLoad = false;
+      external.loading = true;
+      try {
+        external.summary = await PS.externalSummary();
+        external.summaryError = "";
+      } catch (e) {
+        external.summaryError = e.message;
+      } finally {
+        external.loading = false;
+        if (external.needsLoad) { loadExternal(); return; }
+        render();
+      }
+    }
+
+    function externalPrefix(absolute) {
+      const data = external.exported || external.summary || {};
+      const relative = data.save_prefix || `design_patch/${(PS.P && PS.P.folder) || "<프로젝트>"}/ext_`;
+      const prefix = absolute ? data.save_prefix_abs || `output/${relative}` : relative;
+      return prefix.replace(/\\/g, "/") + (external.engine.trim() || "nai") + "/";
+    }
+
+    async function externalAction(kind) {
+      if (external.busy || (kind !== "preview" && S && S.running)) return;
+      if (kind === "import" && (!external.preview || !external.preview.counts.new || external.previewInput !== external.path)) return;
+      external.busy = true;
+      external.error = external.message = "";
+      external.warns = [];
+      render();
+      try {
+        if (kind === "export") {
+          external.exported = await PS.exportSources(sel.size ? [...sel].sort() : null, external.size);
+          external.exportSize = external.size;
+          await loadExternal();
+        } else if (kind === "preview") {
+          external.preview = null;
+          const input = external.path;
+          const result = await PS.importResults(input, true);
+          if (external.path === input) {
+            external.preview = result;
+            external.previewInput = input;
+          }
+        } else {
+          const result = await PS.importResults(external.preview.path, false, external.preview.fp);
+          external.preview = null;
+          external.message = `${result.added.length}개 등록·분석 — ★ 는 ⑥ 검토에서 고르세요`;
+          external.warns = result.warns || [];
+          if (result.analyzed !== result.added.length) external.warns.push(`분석 완료 ${result.analyzed}/${result.added.length}`);
+          await loadExternal();
+          await opts.refresh();
+        }
+      } catch (e) {
+        external.error = e.message;
+        if (e.status === 409 && e.message.includes("폴더")) {
+          external.preview = null;
+          if (!external.error.includes("미리보기")) external.error += " — 미리보기를 다시 하세요";
+        }
+        if (e.data && e.data.skipped) external.warns = e.data.skipped.map((r) => `${r.name || r.crop_id}: ${r.why}`);
+      } finally {
+        external.busy = false;
+        render();
+      }
+    }
+
+    function renderExternal(s) {
+      const busy = external.busy;
+      const running = !!(S && S.running);
+      line(s, "ComfyUI 의 다른 워크플로(NAI·Anima 등)로 크롭을 돌리고 결과를 후보로 가져옵니다 — 크레딧을 쓰지 않습니다.");
+      line(s, "Save Image 의 filename_prefix = design_patch/<프로젝트>/ext_<엔진>/<크롭이름> — 아래 크롭마다 [접두 복사]를 사용하세요.", "dim");
+      if (running) line(s, "생성 실행 중", "warn");
+      line(s, `대상 ${sel.size || (S ? S.crops.length : 0)}개`);
+      const size = el("select");
+      size.setAttribute("aria-label", "소스 크기");
+      for (const [value, label] of [["gpt", "GPT 출력 크기"], ["m64", "64 배수로 맞춤"]]) {
+        const o = el("option", "", label); o.value = value; size.append(o);
+      }
+      size.value = external.size;
+      size.disabled = busy;
+      size.addEventListener("change", () => { external.size = size.value; });
+      const out = button("크롭 소스 내보내기", "고른 크롭의 평탄화 소스를 프로젝트 안에 저장", () => externalAction("export"));
+      out.disabled = busy || running || !S || !S.crops.length;
+      btns(s, size, out);
+      const engine = el("input");
+      engine.value = external.engine;
+      engine.setAttribute("aria-label", "외부 엔진 이름");
+      engine.addEventListener("input", () => {
+        external.engine = engine.value;
+        path.placeholder = externalPrefix(true).replace(/\/$/, "");
+      });
+      btns(s, engine);
+      const ex = external.exported || (external.summary && external.summary.exports[0]);
+      if (ex) {
+        const items = ex.items || [];
+        line(s, `${ex.dir.replace(/\//g, "\\")} — ${ex.n == null ? items.length : ex.n}개 내보냄`);
+        if (ex.gone) line(s, "내보낸 소스 폴더 없음", "warn");
+        for (const r of ex.skipped || []) line(s, `${r.name || r.crop_id}: 건너뜀 — ${r.why}`, "warn");
+        const ratio = items.filter((i) => i.ratio_err > .005);
+        if (external.exportSize === "m64" && ratio.length) line(s, `비율 오차 있음 ${ratio.length}개(최대 ${(Math.max(...ratio.map((i) => i.ratio_err)) * 100).toFixed(1)}%)`, "warn");
+        if (ex.abs) btns(s, button("폴더 열기", "내보낸 소스 폴더", async () => {
+          try { await PS.openSources(ex.dir); } catch (e) { opts.toast(e.message, "err"); }
+        }), button("경로 복사", ex.abs, () => copy(ex.abs)));
+        for (const item of items) {
+          const row = line(s, item.name);
+          const name = item.clean || item.file.replace(/__src\.png$/i, "");
+          row.append(button("접두 복사", `${item.name} — Save Image 의 filename_prefix`, () => copy(externalPrefix(false) + name)));
+        }
+      }
+      const path = el("input");
+      path.value = external.path;
+      path.placeholder = externalPrefix(true).replace(/\/$/, "");
+      path.setAttribute("aria-label", "결과 폴더 경로");
+      path.disabled = busy;
+      path.addEventListener("input", () => {
+        external.path = path.value;
+        external.preview = null;
+        external.message = "";
+        register.disabled = true;
+      });
+      const preview = button("미리보기", "폴더를 읽어 등록할 후보를 확인", () => externalAction("preview"));
+      preview.disabled = busy;
+      const register = button(`등록 (${external.preview ? external.preview.counts.new : 0})`, "미리보기한 새 결과만 추가", () => externalAction("import"));
+      register.disabled = busy || running || !external.preview || !external.preview.counts.new || external.previewInput !== external.path;
+      const recent = el("select");
+      recent.setAttribute("aria-label", "최근 가져온 폴더");
+      recent.disabled = busy;
+      const blank = el("option", "", "최근 가져온 폴더"); blank.value = ""; recent.append(blank);
+      for (const item of (external.summary && external.summary.imports) || []) {
+        const o = el("option", "", item.path); o.value = item.path; recent.append(o);
+      }
+      recent.addEventListener("change", () => {
+        if (recent.value) {
+          external.path = recent.value;
+          external.preview = null;
+          external.previewInput = external.message = "";
+          recent.blur();
+          render();
+        }
+      });
+      btns(s, path, recent, preview, register);
+      if (external.preview) {
+        const table = el("table", "pp-table");
+        const header = el("tr");
+        for (const label of ["파일", "크롭", "타깃", "크기", "상태", "경고"]) header.append(el("th", "", label));
+        table.append(header);
+        for (const r of external.preview.rows) {
+          const tr = el("tr");
+          const status = r.status === "new" ? "새로" : r.status === "exists" ? "이미 있음" : `건너뜀 — ${r.why}`;
+          for (const value of [r.file, r.name || "—", r.tid || "—", r.wh ? r.wh.join("×") : "—", status, r.warn.join(" · ")]) tr.append(el("td", "", value));
+          table.append(tr);
+        }
+        s.append(table);
+      }
+      if (external.error) line(s, external.error, "bad");
+      if (external.message) {
+        line(s, external.message, "ok");
+        btns(s, button("⑥ 검토로", "후보를 보고 ★ 선택", () => opts.goMode("review")));
+      }
+      for (const warn of external.warns) line(s, warn, "warn");
+      if (external.summaryError) line(s, external.summaryError, "bad");
+      for (const item of (external.summary && external.summary.imports) || []) {
+        const row = line(s, `${item.path} · ${item.at}`);
+        row.append(el("span", item.new_n > 0 ? "warn" : "dim", !item.exists ? " · 폴더 없음"
+          : item.new_n == null ? " · 새 결과 확인 못 함" : ` · 가져올 새 결과 ${item.new_n}`));
+        if (item.error) row.append(el("span", "warn", ` · ${item.error}`));
+        if (item.missing.length) row.append(chip(`파일 없음 ${item.missing.length}`, "b-bad"));
+        const b = button("미리보기", item.path, () => { external.path = item.path; externalAction("preview"); });
+        b.disabled = busy || !item.exists;
+        row.append(b);
       }
     }
 
@@ -2151,7 +2329,7 @@ window.DPPipeline = (() => {
           for (const d of P0.drift) line(s, driftText(d), DRIFT_BILL.includes(d.kind) ? "bad" : "warn");
           // 경로 경고는 모두 템플릿을 막는다(서버 prompt_gate 409): import.* = 반영·Export, cand.path = 반영만(export 템플릿에는 dp_cand 가 없음)
           for (const w of P0.warnings) {
-            line(s, w.field.startsWith("cand.") ? `${w.msg} — 반영을 막음(Export 는 됨): [실행 설정 열기]에서 경로를 고치거나 후보 등록을 끔` : w.msg, "bad");
+            line(s, w.field.startsWith("cand.") ? `${w.msg} — 반영·초안·생성 승인을 막음(Export 는 됨): [실행 설정 열기]에서 경로를 고치거나 후보 등록을 끔` : w.msg, "bad");
           }
         }
         btns(s, button("실행 설정 열기", "실행 설정(pipeline.json) — 노드 위젯 그대로, 절마다 저장", openSettings));
@@ -2318,6 +2496,8 @@ window.DPPipeline = (() => {
 
       renderAdopt();
       renderPrompt();
+      renderExternal(section("외부 엔진"));
+      if (shownTab === "generate" && external.needsLoad) loadExternal();
     }
 
     function lastRow(s, stage) {
@@ -2856,6 +3036,7 @@ window.DPPipeline = (() => {
       if (setupPending === null) setupPending = !settingsOn;
       setupInputWait = false;
       on = true;
+      external.needsLoad = true;
       ticks = 0;
       S = st;
       if (cropId && cropId !== cur && text !== null) {
@@ -2966,6 +3147,7 @@ window.DPPipeline = (() => {
 
     function showTab(tab) {
       if (!["prepare", "prompt", "generate"].includes(tab)) return;
+      if (tab === "generate") external.needsLoad = true;
       activeTab = tab;
       if (!on) opts.enter();
       render();

@@ -224,6 +224,7 @@
         if ("plan_v" in d && d.plan_v !== S.plan_v) pollAgain = true;
         // S4: 분석·Export 설정(board_pref.json)이 바뀜 — 매니페스트 rev 는 그대로라 편집 창·★ 합성·stale 을 새 S 로
         if ("pref_v" in d && d.pref_v !== S.pref_v) pollAgain = true;
+        if ("external_files_v" in d && d.external_files_v !== S.external_files_v) pollAgain = true;
         renderHeader();
       } else if (!d.unchanged) {
         S = d;
@@ -1280,6 +1281,7 @@
 
   function tileBadges(c) {
     const b = el("div", "tb");
+    if (c.external_missing) b.append(el("span", "badge b-bad", "파일 없음"));
     if (isNew(c)) b.append(el("span", "badge b-new", "새"));
     if (c.picked) b.append(el("span", "badge b-star", c.slice_index === 1 ? "★" : `S${c.slice_index}`));
     if (c.mock) b.append(el("span", "badge b-mock", "MOCK"));

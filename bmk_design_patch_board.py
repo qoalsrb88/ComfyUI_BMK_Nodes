@@ -249,6 +249,7 @@ from PIL import Image
 
 try:
     from . import bmk_design_patch_analysis as an
+    from . import bmk_design_patch_ext as ext
     from . import bmk_design_patch_mask as dmask
     from . import bmk_design_patch_pipeline as pl
     from . import bmk_design_patch_prompt as dprompt
@@ -257,6 +258,7 @@ try:
     from . import bmk_design_patch_store as store
 except ImportError:  # 단독 실행/테스트
     import bmk_design_patch_analysis as an
+    import bmk_design_patch_ext as ext
     import bmk_design_patch_mask as dmask
     import bmk_design_patch_pipeline as pl
     import bmk_design_patch_prompt as dprompt
@@ -2414,6 +2416,10 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
              "layout_rev": lay["rev"] if lay else None, "refs_rev": doc["rev"] if doc else None, "refs_files_v": _refs_files_v(_refs_dir(m)),
              "pipeline_rev": pl.pipeline_rev(root), "plan_v": None, "pref_v": store.board_pref_v(root),
              "export_state": export_state, "export_last": {k: ex.get(k) for k in ("rev", "time")} if ex is not None else None}
+    external = [c for c in m["candidates"] if (c.get("origin_info") or {}).get("via") == "studio"]
+    external_missing = ext.missing_candidates(external)
+    if external:
+        flags["external_files_v"] = _sig([(c["key"], c["key"] in external_missing) for c in external])
     plan = _plan_free(root)
     if plan is not None:
         r_sig, d_sig = _plan_sigs(root, m, (running, drafting), flags["refs_files_v"])
@@ -2463,7 +2469,8 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
                 cands.append({
                     "key": c["key"], "n": n, "origin": c.get("origin"), "backend": info.get("backend"),
                     "mock": info.get("backend") == "mock", "src_size": c.get("src_size"),
-                    "label": info.get("layer") or info.get("filename") or c["key"],
+                    "label": ext.candidate_label(c),
+                    **({"external_missing": c["key"] in external_missing} if info.get("via") == "studio" else {}),
                     "picked": c["key"] in pick_keys,
                     "slice_index": pick_keys.index(c["key"]) + 1 if c["key"] in pick_keys else None,
                     "rejected": bool(rejects.get(c["key"])),
@@ -5075,6 +5082,8 @@ def _guard(fn):
             return await fn(request)
         except _Reject as e:
             return _json({"error": e.message, **e.extra}, status=e.status)
+        except ext.BridgeError as e:
+            return _json({"error": str(e), **e.extra}, status=e.status)
         except dmask.MaskConflict as e:  # 마스크 편집 seen·★ 경합 — 409 본문에 reason(changed·not_picked)을 싣는다(mask_api.json)
             return _json({"error": str(e), **e.extra}, status=409)
         except _conflicts() as e:  # rev·지문이 요청과 다름(다른 창·노드에서 바뀜)·이미 있음·없음 — 새로고침
@@ -5292,6 +5301,12 @@ async def drain_handler(request: web.Request) -> web.StreamResponse:
 async def open_folder_handler(request: web.Request) -> web.StreamResponse:
     data = await _body(request)
     root = _root_param(data.get("root"))
+    if "sub" in data:
+        def open_source():
+            path = ext.export_folder(root, data["sub"])
+            _reveal(path, False)
+            return {"ok": True, "path": path, "selected": False}
+        return _json(await asyncio.to_thread(open_source))
     return _json(await asyncio.to_thread(open_export_folder, root))
 
 
@@ -5765,20 +5780,31 @@ async def prompt_handler(request: web.Request) -> web.StreamResponse:
     return _json(await asyncio.to_thread(read))
 
 
-# ── 6-0 공용 자리(감독관 — _proto/STUDIO_6-0_SPEC.md D88). 본문은 6-0 작업자가 채운다. 그 전엔 501.
+# ── 6-0 외부 엔진: 템플릿·승인 설정과 독립인 파일 작업.
 @_guard
 async def candidates_export_handler(request: web.Request) -> web.StreamResponse:
-    raise _Reject(501, "크롭 소스 내보내기는 아직 준비 중입니다(6-0)")
+    data = await _body(request)
+    root = _root_param(data.get("root"))
+    return _json(await asyncio.to_thread(ext.export_sources, root, data.get("crops"), data.get("size", "gpt")))
 
 
 @_guard
 async def candidates_import_handler(request: web.Request) -> web.StreamResponse:
-    raise _Reject(501, "결과 폴더 가져오기는 아직 준비 중입니다(6-0)")
+    data = await _body(request)
+    root = _root_param(data.get("root"))
+    if not isinstance(data.get("dry_run"), bool):
+        raise _Reject(400, "dry_run 은 true 또는 false 여야 합니다")
+    if not isinstance(data.get("path"), str):
+        raise _Reject(400, "결과 폴더 경로를 입력하세요")
+    if data["dry_run"]:
+        return _json(await asyncio.to_thread(ext.scan_import, root, data["path"]))
+    return _json(await asyncio.to_thread(ext.apply_import, root, data["path"], data.get("expect_fp")))
 
 
 @_guard
 async def candidates_ext_handler(request: web.Request) -> web.StreamResponse:
-    raise _Reject(501, "외부 엔진 폴더 목록은 아직 준비 중입니다(6-0)")
+    root = _root_param(request.query.get("root"))
+    return _json(await asyncio.to_thread(ext.ext_summary, root))
 
 
 _ROUTES = (
