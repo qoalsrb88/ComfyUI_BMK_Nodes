@@ -705,3 +705,23 @@ svg.dr-isolate { position: absolute; left: 0; top: 0; pointer-events: none; }
 .rg-large-pics figcaption { white-space: normal; overflow-wrap: anywhere; }
 
 /* ── 배치 8-C (마스크) — 8-C 작업자는 이 표시 아래에만 덧붙인다 ── */
+#mask-panel [data-hist]::before { display: inline-block; width: 1.2em; margin-right: 3px; }
+#mask-panel [data-hist="undo"]::before { content: "↶"; }
+#mask-panel [data-hist="redo"]::before { content: "↷"; }
+#mask-panel [data-hist="clear"]::before { content: "⟲"; }
+#mask-panel .rf-slider input[type="number"] { flex: 0 0 5.4em; width: 5.4em; box-sizing: border-box; background: #0e0f12; color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 3px 4px; font: inherit; font-variant-numeric: tabular-nums; }
+#mask-panel .rf-slider input[type="number"]:focus { outline: 1px solid var(--accent); }
+#mask-panel .rf-slider .rf-val { width: 1.7em; min-width: 0; text-align: left; }
+#mask-panel .rf-slider input:disabled { opacity: .45; }
+#mask-list .mc-expand { padding: 1px 4px; font: inherit; cursor: pointer; }
+#mask-list .mc-expand::before { content: "▸"; display: inline-block; width: 1em; }
+#mask-list .mc-expand[aria-expanded="true"]::before { content: "▾"; }
+#mask-list li.sub { flex-wrap: wrap; }
+#mask-list .mc-details { flex: 1 0 100%; display: grid; gap: 3px; margin: 5px 0 3px; padding-left: 10px; border-left: 1px solid var(--line); }
+#mask-list .mc-detail { position: relative; display: block; width: 100%; text-align: left; padding: 4px 6px; overflow-wrap: anywhere; font: inherit; background: transparent; }
+#mask-list .mc-detail::before { content: "·"; display: inline-block; width: 1.3em; color: var(--dim); }
+#mask-list .mc-detail[data-detail="xform"]::before { content: "◇"; }
+#mask-list .mc-detail[data-detail="invert"]::before { content: "◐"; }
+#mask-list .mc-detail[data-detail="fade"]::before { content: "▤"; }
+#mask-list .mc-detail[data-detail="brush"]::before { content: "╱"; }
+#mask-list .mc-blur-bar { position: absolute; height: 2px; left: 0; bottom: 0; background: var(--accent); opacity: .65; pointer-events: none; }

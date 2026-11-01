@@ -39,6 +39,20 @@ window.DPMaskEdit = (() => {
     return 1 - (1 - smooth((d + 0.5) / w)) * t;
   }
 
+  function fadeBounds(side, crop, w, win, a = null, b = null) {
+    const [x0, y0, x1, y1] = crop;
+    const lo = a === null ? -Infinity : a - w, hi = a === null ? Infinity : b + w + 1;
+    const r = side === "top" ? [x0 + lo, -Infinity, x0 + hi, y0 + w]
+      : side === "bottom" ? [x0 + lo, y1 - w, x0 + hi, Infinity]
+      : side === "left" ? [-Infinity, y0 + lo, x0 + w, y0 + hi] : [x1 - w, y0 + lo, Infinity, y0 + hi];
+    return [Math.max(win[0], r[0]), Math.max(win[1], r[1]), Math.min(win[2], r[2]), Math.min(win[3], r[3])];
+  }
+
+  function fadeLimit(side, crop) {
+    const length = side === "top" || side === "bottom" ? crop[3] - crop[1] : crop[2] - crop[0];
+    return Math.max(1, Math.min(256, Math.floor(length / 2)));
+  }
+
   function kernel(sigma) {
     // 전체 페더의 1D 가우시안: 반경 ceil(3σ), 합 1
     const r = Math.ceil(3 * sigma);
@@ -471,6 +485,7 @@ window.DPMaskEdit = (() => {
       const [w, h] = [L.box[2] - L.box[0], L.box[3] - L.box[1]];
       const [under, patch, over] = await Promise.all([L.under_url, L.patch_url, L.over_url].map((u) => image(u, w, h)));
       if (s.key !== key || !s.info || s.info.key !== key || s.info.layers.sig !== L.sig) return false;
+      if (s.stroke && s.stroke.kind === "fade") return false;
       s.layers = { box: L.box.slice(), sig: L.sig, quad: info.quad && info.quad.slice(), under, patch, over };
       return true;
     };
@@ -552,7 +567,7 @@ window.DPMaskEdit = (() => {
     s.move = (pt) => {
       // 마우스 사이를 R/4 간격 도장으로 잇는다(carry = 마지막 도장 뒤 간 거리) → 이번에 바뀐 사각형(캔버스 좌표) | null
       const st = s.stroke;
-      if (!st) return null;
+      if (!st || st.kind === "fade") return null;
       const x = pt[0] - s.win[0];
       const y = pt[1] - s.win[1];
       let r = null;
@@ -571,6 +586,7 @@ window.DPMaskEdit = (() => {
 
     s.end = () => {
       const st = s.stroke;
+      if (st && st.kind === "fade") return;
       s.stroke = null;
       if (st && st.box) push(st.box, grab(st.snap, st.box), "붓");
     };
@@ -578,16 +594,59 @@ window.DPMaskEdit = (() => {
     s.fade = (side, w, crop, a = null, b = null) => {
       // 경계 페이드(변 전체 / 구간 [a, b] ± w 테이퍼). crop = 크롭 rect ∩ 캔버스. 바뀌는 곳(f < 1 — 변 쪽 안쪽 w 와 창 끝까지 바깥 × 구간 ± w)만 단계로
       if (!s.m) return null;
-      const [x0, y0, x1, y1] = crop;
-      const lo = a === null ? -Infinity : a - w;
-      const hi = a === null ? Infinity : b + w + 1;
-      const c = side === "top" ? [x0 + lo, -Infinity, x0 + hi, y0 + w] : side === "bottom" ? [x0 + lo, y1 - w, x0 + hi, Infinity]
-        : side === "left" ? [-Infinity, y0 + lo, x0 + w, y0 + hi] : [x1 - w, y0 + lo, Infinity, y0 + hi];
-      const [W, H] = size();
-      const r = [Math.max(0, c[0] - s.win[0]), Math.max(0, c[1] - s.win[1]), Math.min(W, c[2] - s.win[0]), Math.min(H, c[3] - s.win[1])];
+      const c = fadeBounds(side, crop, w, s.win, a, b);
+      const W = size()[0];
+      const r = c.map((v, i) => v - s.win[i % 2]);
       return whole(a === null ? `가장자리 페이드 ${side} ${w}` : `구간 페이드 ${side} ${a}–${b} ${w}`, r, () => {
         for (let y = r[1]; y < r[3]; y++) for (let x = r[0]; x < r[2]; x++) s.m[y * W + x] *= fade(side, crop, w, x + s.win[0], y + s.win[1], a, b);
       });
+    };
+
+    s.beginFade = (side, crop) => {
+      if (!s.m || s.busy || s.stroke || !crop || crop[2] <= crop[0] || crop[3] <= crop[1]) return false;
+      const limit = fadeLimit(side, crop), c = fadeBounds(side, crop, limit, s.win);
+      const r = c.map((v, i) => v - s.win[i % 2]);
+      if (r[2] <= r[0] || r[3] <= r[1]) return false;
+      s.stroke = { kind: "fade", side, crop: crop.slice(), limit, r, snap: grab(s.m, r), width: 0, box: null };
+      return true;
+    };
+
+    function restoreFade(st, r) {
+      const W = size()[0], stride = st.r[2] - st.r[0], rw = r[2] - r[0];
+      for (let y = r[1]; y < r[3]; y++) {
+        const offset = (y - st.r[1]) * stride + r[0] - st.r[0];
+        s.m.set(st.snap.subarray(offset, offset + rw), y * W + r[0]);
+      }
+    }
+
+    s.previewFade = (w) => {
+      const st = s.stroke;
+      if (!st || st.kind !== "fade") return null;
+      const width = w === null ? 0 : Math.max(1, Math.min(st.limit, Math.round(w)));
+      if (width === st.width) return null;
+      let r = width ? fadeBounds(st.side, st.crop, width, s.win).map((v, i) => v - s.win[i % 2]) : null;
+      if (r && (r[2] <= r[0] || r[3] <= r[1])) r = null;
+      const changed = union(st.box, r);
+      if (changed) restoreFade(st, changed); // 이전 띠와 새 띠만 시작 사본으로 복원
+      st.width = width;
+      st.box = r;
+      if (r) {
+        const W = size()[0];
+        for (let y = r[1]; y < r[3]; y++) for (let x = r[0]; x < r[2]; x++) {
+          s.m[y * W + x] *= fade(st.side, st.crop, width, x + s.win[0], y + s.win[1]);
+        }
+      }
+      return changed && onCanvas(changed);
+    };
+
+    s.endFade = (commit) => {
+      const st = s.stroke;
+      if (!st || st.kind !== "fade") return null;
+      const changed = st.box;
+      if (commit && changed) push(st.r, st.snap, `가장자리 페이드 ${st.side} ${st.width}`);
+      else s.previewFade(null);
+      s.stroke = null;
+      return changed && onCanvas(changed);
     };
 
     s.feather = (sigma) => {
@@ -725,6 +784,11 @@ window.DPMaskEdit = (() => {
     let tool = "erase";
     let editTool = "brush";
     let xdrag = null;
+    let fadeFrame = null;
+    let fadePending = null;
+    let guide = null;
+    let pendingSection = null;
+    const expanded = new Set(); // 후보별 펼침은 이 창 메모리에만
     let patchOpacity = 100;
     let opacityHeld = false;
     let difference = false;
@@ -780,7 +844,28 @@ window.DPMaskEdit = (() => {
 
     function off(b, dis) {
       b.disabled = !!dis;
+      if (b.numberInput) b.numberInput.disabled = !!dis;
       return b;
+    }
+
+    function historyButton(label, scope, kind, action, key, fn, cls) {
+      const b = button(label, `${scope} — ${action}${key ? ` (${key})` : ""}`, fn, cls);
+      b.dataset.hist = kind;
+      return b;
+    }
+
+    function hoverGuide(b, get) {
+      b.addEventListener("mouseenter", () => { if (!b.disabled) { guide = get(); viewer.redraw(); } });
+      b.addEventListener("mouseleave", () => {
+        guide = adjustFocus && adjustFocus.dataset.guide === "feather" ? featherGuide(adjustFocus) : null;
+        viewer.redraw();
+      });
+      return b;
+    }
+
+    function featherGuide(input) {
+      const v = Number(input.value);
+      return { whole: true, feather: true, sigma: Number.isFinite(v) ? clamp(Math.round(v), ...SIGMA) : sigma };
     }
 
     function line(parent, txt, cls) {
@@ -938,9 +1023,10 @@ window.DPMaskEdit = (() => {
 
     function setEditTool(k) {
       cancelXform();
+      finishFade(false);
       pointerup();
       editTool = k;
-      if (k === "brush") difference = false;
+      if (k !== "xform") difference = false;
       cursor = null;
       viewer.setCursor("");
       repaintAll();
@@ -974,7 +1060,10 @@ window.DPMaskEdit = (() => {
       const q = [Math.max(r[0], bx0) - bx0, Math.max(r[1], by0) - by0, Math.min(r[2], bx1) - bx0, Math.min(r[3], by1) - by0];
       if (q[2] <= q[0] || q[3] <= q[1]) return;
       dirty = union(dirty, q);
-      if (!raf) raf = requestAnimationFrame(flush);
+      if (!raf) {
+        if (typeof requestAnimationFrame === "function") raf = requestAnimationFrame(flush);
+        else flush();
+      }
     }
 
     function flush() {
@@ -1010,9 +1099,12 @@ window.DPMaskEdit = (() => {
 
     async function layers() {
       // 3층이 바뀐 때만 받는다. 실패(409 stale — 그 사이 ★ 합성이 바뀜: 다음 state 가 다시 받기를 부름)는 패널 줄
+      if (fadeStroke()) { again = true; return; }
       try {
         layerErr = null;
-        if (await M.loadLayers() || !img || !M.m) attach();
+        const changed = await M.loadLayers();
+        if (fadeStroke()) { again = true; return; }
+        if (changed || !img || !M.m) attach();
       } catch (e) {
         layerErr = e.message;
       }
@@ -1024,8 +1116,9 @@ window.DPMaskEdit = (() => {
     async function open(key, sg, follow) {
       // 편집 대상을 연다(세션 버림 — 확인은 go): 래스터 → 3층(따로) → 다시 그림
       cancelXform();
+      finishFade(false);
       if (key !== M.key) {
-        if (editTool === "xform") {
+        if (editTool !== "brush") {
           cursor = null;
           viewer.setCursor("");
         }
@@ -1051,6 +1144,7 @@ window.DPMaskEdit = (() => {
 
     function go(to, follow = false) {
       // 편집 대상·선택 이음매(목록·N·진행 ★ 점검·이음매 목록): 다른 후보면 적용 안 한 획 확인 뒤 연다. → 그 대상인가
+      if (pendingSection && pendingSection.key !== to.key) pendingSection = null;
       if (to.key !== M.key && (LOCKED.includes(M.busy) || adjustSaving)) {
         opts.toast("적용·되돌리기·★ 바꾸기를 처리하는 중 — 끝난 뒤 바꾸세요", "warn");
         return false;
@@ -1058,6 +1152,7 @@ window.DPMaskEdit = (() => {
       // N 은 끄는 중에도 온다(뷰어 포인터 캡처는 클릭만 막음) — 획을 끝낸다: 다른 후보면 확인 창에 세고(새 대상에 옛 창 좌표로 이어 칠하지 않게),
       // 같은 ★ 의 구간이면 2:1 로 옮긴 화면에서 커서가 가리키는 먼 점과 앞 점을 도장으로 잇지 않게
       cancelXform();
+      finishFade(false);
       pointerup();
       if (to.key !== M.key) {
         const n = M.pending();
@@ -1089,6 +1184,7 @@ window.DPMaskEdit = (() => {
       seenRev = S ? stateVer(S) : seenRev;
       const seq = M.seq, before = shownQuad();
       const reopened = await M.refresh();
+      if (fadeStroke()) { again = true; return; }
       if (M.seq !== seq) cancelXform();
       if (reopened) repaintAll();
       else repaintXform(before);
@@ -1114,7 +1210,66 @@ window.DPMaskEdit = (() => {
         if (distance <= (corner ? Math.max(3, radius) : radius) / z && distance < nearest) { hit = k; nearest = distance; }
       }
       if (hit) return hit;
-      return x >= 0 && x <= 1 && y >= 0 && y <= 1 ? "move" : null;
+      if (x >= 0 && x <= 1 && y >= 0 && y <= 1) return "move";
+      const radius = Math.max(3, Math.min(7, short / 4));
+      return ["nw", "ne", "se", "sw"].some((k) => Math.hypot(pt[0] - points[k][0], pt[1] - points[k][1]) * z <= radius + 16) ? "rot" : null;
+    }
+
+    function fadeStroke() {
+      return M.stroke && M.stroke.kind === "fade" ? M.stroke : null;
+    }
+
+    function fadePoints(rect) {
+      const [x0, y0, x1, y1] = rect, x = (x0 + x1) / 2, y = (y0 + y1) / 2;
+      return { top: [x, y0], bottom: [x, y1], left: [x0, y], right: [x1, y] };
+    }
+
+    function fadeHit(pt) {
+      const rect = cropRect();
+      if (!M.m || !rect || !viewer.flags().rectsOn) return null;
+      const z = viewer.scale();
+      return Object.keys(SIDES).find((side) => {
+        const p = fadePoints(rect)[side];
+        return Math.hypot(pt[0] - p[0], pt[1] - p[1]) * z <= 7;
+      }) || null;
+    }
+
+    function flushFade() {
+      const next = fadePending;
+      fadePending = null;
+      if (!next || next.stroke !== fadeStroke()) return;
+      repaint(M.previewFade(next.width));
+      viewer.redraw();
+    }
+
+    function queueFade(w) {
+      fadePending = { stroke: fadeStroke(), width: w };
+      if (fadeFrame) return;
+      if (typeof requestAnimationFrame !== "function") { flushFade(); return; }
+      const frame = {};
+      fadeFrame = frame;
+      frame.id = requestAnimationFrame(() => {
+        if (fadeFrame !== frame) return; // 취소·대상 전환 뒤 남은 콜백은 새 세션을 건드리지 않음
+        fadeFrame = null;
+        flushFade();
+      });
+    }
+
+    function finishFade(commit) {
+      if (!fadeStroke()) return false;
+      if (fadeFrame) {
+        if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(fadeFrame.id);
+        fadeFrame = null;
+      }
+      if (commit) flushFade(); // 프레임 전에 놓아도 마지막 포인터 위치를 확정
+      else fadePending = null;
+      repaint(M.endFade(commit));
+      guide = null;
+      viewer.setCursor("");
+      viewer.redraw();
+      render();
+      if (again || (M.info && M.behind() && !M.pending())) refreshInfo();
+      return true;
     }
 
     function warnXform() {
@@ -1134,6 +1289,13 @@ window.DPMaskEdit = (() => {
     }
 
     function pointerdown(e) {
+      if (editTool === "fade") {
+        const pt = viewer.canvasPoint(e), side = fadeHit(pt);
+        if (!side || !M.beginFade(side, cropRect())) return false;
+        M.stroke.origin = pt;
+        viewer.setCursor("grabbing");
+        return true;
+      }
       if (editTool === "xform") {
         const pt = viewer.canvasPoint(e), handle = xformHit(pt);
         if (!handle) return false; // 상자 밖 = 뷰어 화면 이동
@@ -1158,6 +1320,25 @@ window.DPMaskEdit = (() => {
 
     function pointermove(e) {
       const pt = viewer.canvasPoint(e);
+      if (editTool === "fade") {
+        const st = fadeStroke();
+        if (st) {
+          const [x0, y0, x1, y1] = st.crop;
+          const distance = st.side === "top" ? pt[1] - y0 : st.side === "bottom" ? y1 - pt[1] : st.side === "left" ? pt[0] - x0 : x1 - pt[0];
+          const axis = st.side === "top" || st.side === "bottom" ? 1 : 0;
+          const inward = (pt[axis] - st.origin[axis]) * (st.side === "top" || st.side === "left" ? 1 : -1);
+          let w = clamp(Math.round(distance), 1, st.limit);
+          if (e.shiftKey) w = clamp(WIDTHS.reduce((a, b) => Math.abs(b - w) < Math.abs(a - w) ? b : a), 1, st.limit);
+          queueFade(distance > 0 && inward * viewer.scale() >= 4 ? w : null);
+        } else {
+          if (slider && M.layers) {
+            view.split = Math.round(pt[0] - M.layers.box[0]);
+            repaintAll();
+          }
+          viewer.setCursor(fadeHit(pt) ? "grab" : "");
+        }
+        return true;
+      }
       if (editTool === "xform") {
         const d = currentDrag();
         if (d) {
@@ -1192,6 +1373,7 @@ window.DPMaskEdit = (() => {
     }
 
     function pointerup() {
+      if (finishFade(true)) return;
       const d = currentDrag();
       if (d) {
         const before = shownQuad(), values = roundGeometry(d.values);
@@ -1218,6 +1400,7 @@ window.DPMaskEdit = (() => {
       }
       if (!M.stroke) return;
       M.end();
+      renderList();
       renderPanel();
       if (again) refreshInfo();
     }
@@ -1241,6 +1424,29 @@ window.DPMaskEdit = (() => {
       if (viewer.flags().rectsOn) { // 뷰어 [사각형](O)으로 숨김 — 경계를 선 없이 눈으로 볼 때(F37)
         if (info && M.win) box(M.win, "mwin");
         if (crop) box(crop.rect, "mcrop");
+        const st = fadeStroke(), r = st ? st.crop : cropRect();
+        const active = st && st.width ? { side: st.side, width: st.width } : guide;
+        if (active && M.win) {
+          const ranges = active.whole ? [M.win] : r ? (active.sides || [active.side]).map((side) =>
+            fadeBounds(side, r, active.width, M.win, active.a ?? null, active.b ?? null)) : [];
+          for (const b of ranges) if (b[2] > b[0] && b[3] > b[1]) root.append(svg("rect", {
+            x: b[0], y: b[1], width: b[2] - b[0], height: b[3] - b[1], class: "mguide", fill: "#ffd477", "fill-opacity": 0.18,
+            stroke: "none", "pointer-events": "none" }));
+          if (active.feather) {
+            const t = svg("text", { x: M.win[0] + 8 / z, y: M.win[1] + 18 / z, class: "mguide", fill: "#ffd477", "font-size": 12 / z,
+              "pointer-events": "none" });
+            t.textContent = `창 전체에 적용 (σ ${active.sigma ?? sigma} px)`;
+            root.append(t);
+          }
+        }
+        if (editTool === "fade" && r && M.m) for (const [side, p] of Object.entries(fadePoints(r))) {
+          if (st && st.side === side && st.width) {
+            const axis = side === "top" || side === "bottom" ? 1 : 0;
+            p[axis] += (side === "top" || side === "left" ? 1 : -1) * st.width;
+          }
+          root.append(svg("rect", { x: p[0] - 4 / z, y: p[1] - 4 / z, width: 8 / z, height: 8 / z,
+            class: "mx-handle", "data-fade": side }));
+        }
       }
       if (seam) root.append(svg("line", { x1: seam.x0, y1: seam.y0, x2: seam.x1, y2: seam.y1, class: "mseam" }));
       if (editTool === "brush" && cursor) root.append(ring);
@@ -1261,6 +1467,7 @@ window.DPMaskEdit = (() => {
     function once(r) {
       if (!r) return;
       repaint(r);
+      renderList();
       renderPanel();
     }
 
@@ -1426,6 +1633,7 @@ window.DPMaskEdit = (() => {
     }
 
     function setTool(k) {
+      if (editTool === "fade") setEditTool("brush");
       tool = k;
       moveRing();
       renderPanel();
@@ -1457,10 +1665,75 @@ window.DPMaskEdit = (() => {
       viewer.redraw();
     }
 
+    function focusSec(title) {
+      const sec = [...panel.querySelectorAll(".pp-sec")].find((s) => s.children[0] && s.children[0].textContent === title);
+      if (sec) sec.scrollIntoView({ block: "start", behavior: "smooth" });
+    }
+
+    function detailChip(text, cls, keys) {
+      const b = button(text, "손질 내역 펼치기·접기", (e) => {
+        e.stopPropagation();
+        const close = keys.every((key) => expanded.has(key));
+        for (const key of keys) { if (close) expanded.delete(key); else expanded.add(key); }
+        renderList();
+      }, `chip ${cls} mc-expand`);
+      b.setAttribute("aria-expanded", String(keys.every((key) => expanded.has(key))));
+      return b;
+    }
+
+    function detailRows(parent, candidate, emptyKey) {
+      const key = candidate ? candidate.key : emptyKey;
+      if (!expanded.has(key)) return;
+      const rows = el("div", "mc-details");
+      parent.append(rows);
+      if (!candidate) {
+        rows.append(el("div", "dim", "★ 없는 크롭 — 검토에서 후보를 고르면 손질 내역을 볼 수 있습니다"));
+        rows.addEventListener("click", (e) => e.stopPropagation());
+        return;
+      }
+      const current = key === M.key && cur(), adjust = current ? adjustValues() : candidate.adjust;
+      const add = (text, kind, title, edit, blur) => {
+        const b = button(text, `${title} 칸으로`, (e) => {
+          e.stopPropagation();
+          pendingSection = { key, title, tool: edit };
+          if (!go({ key }, true)) pendingSection = null;
+        }, "mc-detail");
+        b.dataset.detail = kind;
+        if (blur !== undefined) {
+          const bar = el("span", "mc-blur-bar");
+          bar.style.width = `${Math.min(100, blur * 5)}%`;
+          b.append(bar);
+        }
+        rows.append(b);
+      };
+      if (adjust) {
+        if (adjust.blur > 0) add(`블러 σ ${adjust.blur} px`, "blur", "후보 보정", null, adjust.blur);
+        const fields = [["dx", "x", "px"], ["dy", "y", "px"], ["rot", "회전", "°"], ["sx", "가로", "%"], ["sy", "세로", "%"]];
+        const values = fields.filter(([k]) => adjust[k] !== undefined && adjust[k] !== xformDefault[k]).map(([k, name, unit]) =>
+          `${name} ${Math.round(adjust[k] * (unit === "%" ? 1000 : 10)) / 10}${unit}`);
+        if (adjust.flip_h) values.push("좌우 뒤집기");
+        if (adjust.flip_v) values.push("상하 뒤집기");
+        if (values.length) add(`변형 ${values.join(" · ")}`, "xform", "후보 보정", "xform");
+        if (adjust.invert) add("색반전", "invert", "후보 보정");
+      }
+      const ed = current ? cur().edit : candidate.mask_edit;
+      if (ed) {
+        if (current && ed.ops) for (const op of (ed.ops.startsWith("PS 그룹 마스크 ") ? [ed.ops] : ed.ops.split(" · ")).filter(Boolean)) {
+          const brush = /^붓(?:\s|$)/.test(op), faded = /^(?:가장자리|변|구간) 페이드(?:\s|$)/.test(op);
+          add(op, brush ? "brush" : faded ? "fade" : "mask", brush ? "붓 (왼쪽 끌기 · Space+끌기 = 화면 이동)" : "자동 손질",
+            brush ? "brush" : faded ? "fade" : null);
+        }
+        else add(`마스크 편집 ${when(ed.at) || "요약 없음"}${ed.stale ? " · 처음 마스크가 바뀜" : ""}`, "mask", "저장된 버전");
+        if (current && ed.ops && ed.stale) add("처음 마스크가 바뀜", "mask", "저장된 버전");
+      }
+      if (current && M.pending()) add(`적용 전 획 ${M.pending()} — ${M.ops()}`, "pending", "적용 전 획");
+      if (!rows.childElementCount) rows.append(el("div", "dim", "손질 내역 없음"));
+    }
+
     function renderList() {
       if (window.DPRows && window.DPRows.defer(list, renderList)) return;
       // 왼쪽: 크롭(칩 편집 n·편집 기준 바뀜·이음매 n) — 누르면 그 크롭 첫 타깃 ★. ★ 가 둘 이상이면(타깃 여럿·slice) 줄마다
-      if (held) {
+      if (held || fadeStroke()) {
         later = true;
         return;
       }
@@ -1474,13 +1747,20 @@ window.DPMaskEdit = (() => {
         const li = el("li", (c.id === curCrop ? "sel" : "") + (stars.length ? "" : " empty"));
         li.append(el("div", "tname", c.name || c.id));
         const ch = el("div", "chips");
-        if (c.mask_edits) ch.append(chip(`편집 ${c.mask_edits}`, "b-reg"));
-        if (c.cand_adjust) ch.append(chip("보정", "b-reg"));
+        const keys = stars.length ? stars.map((x) => x.c.key) : [`crop:${c.id}`];
+        const hasDetails = !!(c.mask_edits || c.cand_adjust || (stars.some((x) => x.c.key === M.key) && M.pending()));
+        if (c.mask_edits) ch.append(detailChip(`편집 ${c.mask_edits}`, "b-reg", keys));
+        if (c.cand_adjust) ch.append(detailChip("보정", "b-reg", keys));
+        if (!c.mask_edits && !c.cand_adjust && stars.some((x) => x.c.key === M.key) && M.pending()) ch.append(detailChip("적용 전 획", "b-wait", keys));
         if (c.mask_stale) ch.append(chip("처음 마스크가 바뀜", "b-bad"));
         const mine = segs.filter((x) => x.crop_id === c.id);
         if (mine.length) ch.append(chip(`이음매 ${mine.length}`, mine.some((x) => x.severity === "bad") ? "b-bad" : "b-wait"));
         if (!stars.length) ch.append(chip("★ 없음", "b-dim"));
         if (ch.childElementCount) li.append(ch);
+        if (stars.length < 2) {
+          if (!hasDetails) expanded.delete(keys[0]);
+          detailRows(li, stars[0] && stars[0].c, keys[0]);
+        }
         li.addEventListener("click", () => (stars.length ? go({ key: stars[0].c.key }, true) : opts.toast("이 크롭은 ★ 가 없습니다 — 검토에서 ★ 를 먼저 고르세요", "warn")));
         if (window.DPRows) window.DPRows.tail(li, { crop: c, state: S, apiUrl: opts.apiUrl, z: true });
         list.append(li);
@@ -1488,8 +1768,10 @@ window.DPMaskEdit = (() => {
         for (const x of stars) {
           const sub = el("li", "sub" + (x.c.key === M.key ? " sel" : ""));
           sub.append(el("div", "tname", `${x.t.tid} · c${pad(x.c.n)} ${x.c.slice_index > 1 ? `조각 ${x.c.slice_index}` : "★"}`));
-          if (x.c.mask_edit) sub.append(chip(x.c.mask_edit.stale ? "처음 마스크가 바뀜" : "편집", x.c.mask_edit.stale ? "b-bad" : "b-reg"));
-          if (x.c.adjust) sub.append(chip("보정", "b-reg"));
+          if (x.c.mask_edit) sub.append(detailChip(x.c.mask_edit.stale ? "처음 마스크가 바뀜" : "편집", x.c.mask_edit.stale ? "b-bad" : "b-reg", [x.c.key]));
+          if (x.c.adjust) sub.append(detailChip("보정", "b-reg", [x.c.key]));
+          if (!hasDetails && !x.c.mask_edit && !x.c.adjust) expanded.delete(x.c.key);
+          detailRows(sub, x.c);
           sub.addEventListener("click", (e) => {
             e.stopPropagation();
             go({ key: x.c.key }, true);
@@ -1529,8 +1811,12 @@ window.DPMaskEdit = (() => {
           const why = refreshing ? "순서 정보를 다시 받는 중입니다" : busy ? "마스크 작업 중입니다" : c.blocked[op];
           return off(button(label, why || `${level}을 ${label}`, () => moveZ(c, op)), !!why);
         });
-        if (c.manual) buttons.push(off(button("자동으로", refreshing ? "순서 정보를 다시 받는 중입니다" : busy ? "마스크 작업 중입니다" : `${level} 수동 순서를 지우고 자동 순서로`,
-          () => moveZ(c, "reset")), busy || refreshing));
+        if (c.manual) {
+          const b = off(historyButton("자동으로", `${level} 겹침 순서`, "clear", "수동 순서를 지우고 자동 순서로", "",
+            () => moveZ(c, "reset")), busy || refreshing);
+          if (refreshing || busy) b.title = refreshing ? "순서 정보를 다시 받는 중입니다" : "마스크 작업 중입니다";
+          buttons.push(b);
+        }
         btns(row, ...buttons);
       }
     }
@@ -1674,14 +1960,15 @@ window.DPMaskEdit = (() => {
       label.append(invert, el("span", "", "색반전"));
       s.append(label);
       const tools = line(s, "변형", "k mc-tools");
-      for (const [k, label] of [["brush", "붓"], ["xform", "변형"]]) {
-        const b = button(label, "V — 붓과 변형 도구 전환", () => setEditTool(k));
+      for (const [k, label] of [["brush", "붓"], ["xform", "변형"], ["fade", "페이드"]]) {
+        const b = button(label, k === "fade" ? "크롭 네 변 손잡이를 안으로 끌어 페이드 · Shift 폭 맞춤 · Esc 취소" : "V — 붓과 변형 도구 전환", () => setEditTool(k));
         b.classList.toggle("sel", editTool === k);
         b.ariaPressed = String(editTool === k);
         tools.append(b);
       }
       if (editTool === "xform") {
         const opacity = slide(s, "패치 투명도", 0, 100, 5, patchOpacity, (v) => `${v}%`, (v) => { opacityHeld = true; patchOpacity = v; repaintAll(); });
+        opacity.afterNumber = () => { opacityHeld = false; repaintAll(); };
         opacity.addEventListener("pointerdown", () => { opacityHeld = true; repaintAll(); });
         for (const event of ["pointerup", "pointercancel", "blur", "change"]) opacity.addEventListener(event, () => { opacityHeld = false; repaintAll(); });
         const diff = button("원본과 차이", "D — 패치와 원본 아래층의 색 차이(맞으면 검게)", () => {
@@ -1703,20 +1990,10 @@ window.DPMaskEdit = (() => {
       for (const [k, label, unit, min, max] of [["dx", "이동 x", "px", -65536, 65536], ["dy", "이동 y", "px", -65536, 65536],
         ["sx", "배율 가로", "%", 10, 400], ["sy", "배율 세로", "%", 10, 400], ["rot", "회전", "°", -180, 180]]) {
         const row = el("label", "mc-xform-value");
-        const input = el("input");
         const scale = k === "sx" || k === "sy";
-        Object.assign(input, { type: "number", min, max, step: 0.1, value: Math.round(values[k] * (scale ? 1000 : 10)) / 10, disabled });
-        input.dataset.xform = k;
-        input.ariaLabel = `${label} ${unit}`;
-        adjustInputs[k] = input;
-        const change = () => {
+        const input = numberInput(min, max, 0.1, () => Math.round(adjustValues()[k] * (scale ? 1000 : 10)) / 10, (v) => {
           const old = adjustValues();
-          const raw = Number(input.value);
-          if (!String(input.value).trim() || !Number.isFinite(raw)) {
-            input.value = Math.round(old[k] * (scale ? 1000 : 10)) / 10;
-            return;
-          }
-          const val = Math.round(clamp(raw, min, max) * 10) / (scale ? 1000 : 10);
+          const val = v / (scale ? 100 : 1);
           const next = { [k]: val };
           if (scale && ratioLock) {
             const other = k === "sx" ? "sy" : "sx";
@@ -1726,13 +2003,11 @@ window.DPMaskEdit = (() => {
           }
           input.value = Math.round(next[k] * (scale ? 1000 : 10)) / 10;
           queueAdjust(next);
-        };
-        input.addEventListener("change", change);
-        input.addEventListener("keydown", (e) => {
-          if (e.key === "Enter" || e.code === "Enter") { e.preventDefault(); e.stopPropagation(); change(); }
         });
-        input.addEventListener("focus", () => { adjustFocus = input; });
-        input.addEventListener("blur", () => { if (adjustFocus === input) adjustFocus = null; setTimeout(flushLater, 0); });
+        input.disabled = disabled;
+        input.dataset.xform = k;
+        input.ariaLabel = `${label} ${unit}`;
+        adjustInputs[k] = input;
         row.append(el("span", "", label), input, el("span", "dim", unit));
         grid.append(row);
       }
@@ -1751,29 +2026,31 @@ window.DPMaskEdit = (() => {
         adjustFlips[k] = b;
         return b;
       });
-      clearXform = off(button("변형 없음", "이동·회전·배율·뒤집기를 지움 — 블러·색반전은 유지", () => queueAdjust(xformDefault)),
+      clearXform = off(historyButton("변형 없음", "후보 보정", "clear", "변형 지우기 · 블러·색반전 유지", "", () => queueAdjust(xformDefault)),
         disabled || !Object.keys(xformDefault).some((k) => values[k] !== xformDefault[k]));
-      btns(s, lock, ...flips, clearXform);
+      btns(s, lock, ...flips);
       const buttons = [];
-      if (rec && rec.hist.length) buttons.push(off(button("되돌리기", "블러·색반전·변형을 함께 이전 보정 값으로", () => saveAdjust("undo")), disabled || !!M.busy));
-      if (rec) buttons.push(off(button("보정 없음", "블러·색반전·변형과 이전 보정 기록을 지움", () => saveAdjust("reset")), disabled || !!M.busy));
-      adjustButtons = buttons;
-      if (buttons.length) btns(s, ...buttons);
+      if (rec && rec.hist.length) buttons.push(off(historyButton("되돌리기", "후보 보정", "undo", "이전 보정 값으로", "", () => saveAdjust("undo")), disabled || !!M.busy));
+      buttons.push(clearXform);
+      if (rec) buttons.push(off(historyButton("보정 없음", "후보 보정", "clear", "보정·이전 기록 모두 지우기", "", () => saveAdjust("reset")), disabled || !!M.busy));
+      adjustButtons = buttons.filter((b) => b !== clearXform);
       if (M.pending()) {
         // 막힘을 풀 단추를 문구 바로 옆에 — 아래 「적용 전 획」 칸의 것과 같은 동작
         const busy = !!M.busy || !!M.stroke;
         line(s, "적용 안 한 획을 적용하거나 버린 뒤 보정하세요 ", "warn").append(
           off(button("적용 (Enter)", "적용 안 한 획을 저장(무료) — 그 뒤 보정할 수 있음", apply, "inline"), busy),
-          off(button("버리기", "적용 안 한 획을 모두 버림(확인 창)", discard, "inline"), busy));
+          off(historyButton("버리기", "적용 전 획", "clear", "획 모두 버리기", "", discard, "inline"), busy));
         line(s, "자동 손질(가장자리 페이드·이음매 페이드·전체 페더·처음 마스크로)도 적용 전 획으로 셉니다", "dim");
       } else if (M.busy === "adjust") line(s, "보정 저장·미리보기 받는 중…", "dim");
+      btns(s, ...buttons);
     }
 
     function renderPanel() {
-      if (held || adjustFocus) {
+      if (held || adjustFocus || fadeStroke()) {
         later = true;
         return;
       }
+      if (guide) { guide = null; viewer.redraw(); }
       panel.replaceChildren();
       adjustButtons = [];
       adjustInputs = {};
@@ -1786,6 +2063,7 @@ window.DPMaskEdit = (() => {
 
       // 1 대상
       let s = section("대상");
+      let recoveryRow = null;
       if (info) {
         const [w, h] = [info.rect[2] - info.rect[0], info.rect[3] - info.rect[1]];
         const star = x && x.c.slice_index > 1 ? `조각 ${x.c.slice_index}` : "★";
@@ -1805,7 +2083,7 @@ window.DPMaskEdit = (() => {
           if (ed.stale) {
             line(s, "처음 마스크가 바뀜 — 처음 마스크(재분석·마스크 출처)나 편집 창(위치 맞춤 켬/끔·quad)이 편집을 시작한 때와 다름(편집은 그대로 쓰임 — "
               + "패치와 어긋났을 수 있음) ", "bad")
-              .append(off(button("처음 마스크로 다시 시작", "편집(이전 버전 포함)을 지우고 지금 처음 마스크로 — 확인 창", () => serverEdit("reset"), "inline"), busy));
+              .append(off(historyButton("처음 마스크로 다시 시작", "저장된 버전", "clear", "편집·이전 버전 모두 지우기", "", () => serverEdit("reset"), "inline"), busy));
           }
         }
         for (const wn of info.warnings) line(s, wn, "warn");
@@ -1820,13 +2098,14 @@ window.DPMaskEdit = (() => {
       if (M.err && M.recovery && M.recovery.key === M.key) {
         const rec = M.recovery.adjust;
         const locked = busy || !!adjustSaving || !!M.pending() || (x && (!x.c.picked || x.c.rejected));
-        const row = line(s, "후보 보정", "mc-adjust");
-        const buttons = [off(button("변형 없음", "블러·색반전은 유지하고 변형을 지워 편집 창 복구", () => {
+        recoveryRow = el("div", "pp-row mc-adjust", "후보 보정");
+        const buttons = [];
+        if (rec.hist.length) buttons.push(off(historyButton("되돌리기", "대상 복구", "undo", "이전 후보 보정으로 복구", "", () => saveAdjust("undo")), locked));
+        buttons.push(off(historyButton("변형 없음", "대상 복구", "clear", "변형 지우기 · 블러·색반전 유지", "", () => {
           adjustDraft = Object.assign({}, rec, xformDefault, { key: M.key, seen: rec.at });
           saveAdjust("set");
-        }), locked), off(button("보정 없음", "후보 보정·이력을 지워 편집 창 복구", () => saveAdjust("reset")), locked)];
-        if (rec.hist.length) buttons.push(off(button("되돌리기", "이전 후보 보정으로 편집 창 복구", () => saveAdjust("undo")), locked));
-        btns(row, ...buttons);
+        }), locked), off(historyButton("보정 없음", "대상 복구", "clear", "보정·이전 기록 모두 지우기", "", () => saveAdjust("reset")), locked));
+        btns(recoveryRow, ...buttons);
       }
       if (layerErr) line(s, `미리보기 3층을 받지 못함: ${layerErr} `, "warn").append(off(button("다시 받기", "GET /mask·3층 다시", refreshInfo, "inline"), busy));
       line(s, `보기: ${view.orig ? "원본 — 이 패치 없이(W)" : view.base ? "처음 마스크(Q 누르는 중)" : slider ? "처음|편집 슬라이더(S — 왼쪽 = 처음 마스크)" : "편집"}`
@@ -1844,6 +2123,7 @@ window.DPMaskEdit = (() => {
       });
       rb.classList.toggle("on", !viewer.flags().rectsOn);
       btns(s, ob, mb, rb);
+      if (recoveryRow) s.append(recoveryRow);
 
       if (info && !M.recovery) adjustControls(info);
 
@@ -1877,30 +2157,43 @@ window.DPMaskEdit = (() => {
       s = section("자동 손질");
       const can = !!M.m && !busy;
       const rect = cropRect();
-      btns(s, ...Object.keys(SIDES).map((k) => off(button(`${SIDES[k]} 가장자리 페이드`, `크롭 ${k} 가장자리 전체 — 경계 0 → 안쪽 ${width}px 에서 1(smoothstep)`,
-        () => once(M.fade(k, width, rect))), !can || !rect)));
+      btns(s, ...Object.keys(SIDES).map((k) => hoverGuide(off(button(`${SIDES[k]} 가장자리 페이드`, `크롭 ${k} 가장자리 전체 — 경계 0 → 안쪽 ${width}px 에서 1(smoothstep)`,
+        () => once(M.fade(k, width, rect))), !can || !rect), () => ({ side: k, width }))));
       const sg = seam && info && seam.crop_id === info.crop_id ? seam : null;
-      btns(s, off(button("이음매 구간 페이드", sg ? `${seamName(sg)} ± ${width}px 테이퍼` : "아래 이음매 목록이나 N 으로 구간을 고르세요", rangeFade),
-        !can || !rect || !sg), ...WIDTHS.map((v) => {
+      const rangeGuide = (w) => {
+        if (!sg || !rect) return { sides: Object.keys(SIDES), width: w };
+        const o = sg.side === "top" || sg.side === "bottom" ? rect[0] : rect[1], [a, b] = along(sg);
+        return { side: sg.side, width: w, a: a - o, b: b - o };
+      };
+      btns(s, hoverGuide(off(button("이음매 구간 페이드", sg ? `${seamName(sg)} ± ${width}px 테이퍼` : "아래 이음매 목록이나 N 으로 구간을 고르세요", rangeFade),
+        !can || !rect || !sg), () => rangeGuide(width)), ...WIDTHS.map((v) => {
         const b = button(`폭 ${v}`, "경계 페이드 폭(32 = 짧은 띠 · 64 = 기본 · 128 = 넓은 띠에서 이중 윤곽 주의)", () => {
           width = v;
           renderPanel();
         });
         b.classList.toggle("on", width === v);
-        return b;
+        return hoverGuide(b, () => rangeGuide(v));
       }));
-      slide(s, "페더 (px)", SIGMA[0], SIGMA[1], 1, sigma, (v) => `${v}`, (v) => { sigma = v; });
-      btns(s, off(button("전체 페더", "창 전체를 가우시안 σ 로 흐림(한 단계)", () => once(M.feather(sigma))), !can),
-        off(button("처음 마스크로", "편집 중 마스크를 처음 마스크로(한 단계 — Ctrl+Z 로 되돌림)", () => once(M.toBase())), !can));
+      const featherInput = slide(s, "페더 (px)", SIGMA[0], SIGMA[1], 1, sigma, (v) => `${v}px`, (v) => {
+        sigma = v; guide = { whole: true, feather: true }; viewer.redraw();
+      });
+      featherInput.numberInput.dataset.guide = "feather";
+      for (const input of [featherInput, featherInput.numberInput]) {
+        for (const event of ["focus", "pointerdown", "input"]) input.addEventListener(event, () => {
+          guide = featherGuide(input);
+          viewer.redraw();
+        });
+        const clearEvents = input.type === "number" ? ["blur", "change"] : ["blur", "pointerup", "pointercancel", "change"];
+        for (const event of clearEvents) input.addEventListener(event, () => { guide = null; viewer.redraw(); });
+      }
+      btns(s, hoverGuide(off(button("전체 페더", "창 전체를 가우시안 σ 로 흐림(한 단계)", () => once(M.feather(sigma))), !can), () => ({ whole: true, feather: true })),
+        hoverGuide(off(button("처음 마스크로", "편집 중 마스크를 처음 마스크로(한 단계 — Ctrl+Z 로 되돌림)", () => once(M.toBase())), !can), () => ({ whole: true })));
 
       // 4 세션
       s = section("적용 전 획");
       const n = M.pending();
       line(s, M.busy === "apply" ? `적용 중… (획 ${n})` : n ? `적용 안 한 획 ${n} — ${M.ops()}` : "적용 안 한 획 0", n ? "warn" : "dim");
-      btns(s, off(button("실행 취소", "Ctrl+Z — 획 단위(최근 50)", () => step(true)), busy || !M.undo.length),
-        off(button("다시", "Ctrl+Y · Ctrl+Shift+Z", () => step(false)), busy || !M.redo.length),
-        off(button("적용", "Enter — 편집 창 크기 8비트 PNG 저장(무료) · Compose·Export·★ 합성이 이 마스크를 씀", apply, "primary"), busy || !n),
-        off(button("버리기", "적용 안 한 획을 모두 버림(확인 창)", discard), busy || !n));
+      btns(s, off(button("적용", "Enter — 편집 창 크기 8비트 PNG 저장(무료) · Compose·Export·★ 합성이 이 마스크를 씀", apply, "primary"), busy || !n));
       if (M.conflict) {
         line(s, `${M.conflict.error} — 적용 전 획은 남김(새 버전 위에 다시 할지 정하세요) `, "bad")
           .append(off(button("다시 받기", "서버 버전으로 다시 열기 — 적용 안 한 획은 버림(확인 창)", reload, "inline"), busy));
@@ -1912,15 +2205,18 @@ window.DPMaskEdit = (() => {
           : "처음 마스크가 바뀜(재분석·마스크 출처) — 적용 전 획·미리보기는 연 버전의 처음 마스크(적용하면 지금 처음 마스크의 편집으로 저장 — '처음 마스크가 바뀜' 표시 사라짐) ",
         "warn").append(off(button("다시 받기", "서버 버전으로 다시 열기 — 적용 안 한 획은 버림(확인 창)", reload, "inline"), busy));
       }
+      btns(s, off(historyButton("실행 취소", "적용 전 획", "undo", "한 단계 되돌리기", "Ctrl+Z", () => step(true)), busy || !M.undo.length),
+        off(historyButton("다시", "적용 전 획", "redo", "한 단계 다시", "Ctrl+Y · Ctrl+Shift+Z", () => step(false)), busy || !M.redo.length),
+        off(historyButton("버리기", "적용 전 획", "clear", "획 모두 버리기", "", discard), busy || !n));
 
       // 5 저장된 판
       s = section("저장된 버전");
       const ed = info && info.edit;
       line(s, ed ? `이전 버전 ${ed.hist}` : "저장된 편집 없음", "dim");
-      btns(s, off(button("이전 버전으로", "기록의 이전 버전으로(없으면 기록 지움 = 처음 마스크로)", () => serverEdit("undo")), busy || !ed),
-        off(button("편집 모두 지우기", "기록(이전 버전 포함)을 지우고 처음 마스크로 — 확인 창", () => serverEdit("reset"), "danger"), busy || !ed));
       btns(s, off(button("안 쓰는 편집 파일 정리", "프로젝트 masks/ 에서 어떤 편집 기록(★ 아닌 후보·이전 버전 포함)도 쓰지 않는 PNG 를 지움 — 목록 확인 창, "
         + "10분 안에 쓴 파일은 남김", cleanupFiles), busy));
+      btns(s, off(historyButton("이전 버전으로", "저장된 버전", "undo", "이전 버전으로", "", () => serverEdit("undo")), busy || !ed),
+        off(historyButton("편집 모두 지우기", "저장된 버전", "clear", "편집·이전 버전 모두 지우기", "", () => serverEdit("reset"), "danger"), busy || !ed));
 
       // 6 이 크롭 이음매
       s = section("이 크롭 이음매");
@@ -1967,6 +2263,12 @@ window.DPMaskEdit = (() => {
       } else {
         altsTable(s, alts.data);
       }
+      if (pendingSection && pendingSection.key === M.key && info && M.busy !== "load") {
+        const next = pendingSection;
+        pendingSection = null;
+        if (next.tool && next.tool !== editTool) setEditTool(next.tool);
+        focusSec(next.title);
+      }
     }
 
     function paintPreview() {
@@ -1987,18 +2289,49 @@ window.DPMaskEdit = (() => {
         + " — 흰 = 한 번 찍을 때 바뀌는 양(같은 곳을 여러 번 지나가면 쌓임)";
     }
 
+    function numberInput(min, max, stepV, get, set) {
+      const input = el("input");
+      Object.assign(input, { type: "number", min, max, step: stepV, value: get() });
+      const change = () => {
+        const raw = Number(input.value), old = get();
+        if (!input.disabled && String(input.value).trim() && Number.isFinite(raw)) {
+          const v = clamp(Number((Math.round(clamp(raw, min, max) / stepV) * stepV).toFixed(8)), min, max);
+          input.value = v;
+          if (v !== Number(old)) set(v);
+        } else input.value = old;
+        input.blur();
+        // change/blur 순서와 무관하게 확정한 입력의 패널 잠금을 푼다.
+        if (adjustFocus === input) adjustFocus = null;
+        setTimeout(flushLater, 0);
+      };
+      input.addEventListener("change", change);
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.code === "Enter") { e.preventDefault(); e.stopPropagation(); change(); }
+      });
+      input.addEventListener("focus", () => { adjustFocus = input; });
+      input.addEventListener("blur", () => { if (adjustFocus === input) adjustFocus = null; setTimeout(flushLater, 0); });
+      return input;
+    }
+
     function slide(s, k, min, max, stepV, val, fmt, set) {
       const row = el("div", "rf-slider");
       const inp = el("input");
       Object.assign(inp, { type: "range", min, max, step: stepV, value: val });
       inp.dataset.keys = "board";
-      const v = el("span", "rf-val", fmt(val));
+      const v = el("span", "rf-val", fmt(val).replace(/[-+]?\d*\.?\d+/g, "").replace("σ", "").trim());
+      const number = numberInput(min, max, stepV, () => Number(inp.value), (v) => {
+        inp.value = v;
+        set(v);
+        if (inp.afterNumber) inp.afterNumber();
+      });
+      number.ariaLabel = k;
+      inp.numberInput = number;
       inp.addEventListener("input", () => {
+        number.value = Number(inp.value);
         set(Number(inp.value));
-        v.textContent = fmt(Number(inp.value));
       });
       inp.addEventListener("change", () => inp.blur());
-      row.append(el("span", "k", k), inp, v);
+      row.append(el("span", "k", k), inp, number, v);
       s.append(row);
       return inp;
     }
@@ -2046,6 +2379,10 @@ window.DPMaskEdit = (() => {
     // ── 키(board.js 가 K 모드에서 먼저 넘김 — 입력칸 포커스는 board.js 가 이미 거름). true = 소비 ──
     function onKey(e) {
       if (!on) return false;
+      if (e.code === "Escape" && fadeStroke()) {
+        finishFade(false);
+        return true;
+      }
       if (e.code === "Escape" && currentDrag()) {
         cancelXform();
         return true;
@@ -2110,6 +2447,7 @@ window.DPMaskEdit = (() => {
         case "Digit0":
         case "Digit1":
         case "Digit2":
+          finishFade(false);
           pointerup(); // 뷰어 맞춤·1:1·2:1(board 가 이어서 — 커서 기준이 아님): 끌던 획을 먼저 끝냄(옮긴 화면의 먼 커서 점과 앞 점을 잇지 않게)
           return false;
         default:
@@ -2127,12 +2465,13 @@ window.DPMaskEdit = (() => {
 
     window.addEventListener("blur", () => {
       cancelXform();
+      finishFade(false);
       onKeyUp({ code: "KeyQ" });
       onKeyUp({ code: "KeyW" });
     });
 
     function flushLater() {
-      if (!later || held || adjustFocus) return;
+      if (!later || held || adjustFocus || fadeStroke()) return;
       later = false;
       render();
     }
@@ -2141,8 +2480,9 @@ window.DPMaskEdit = (() => {
       held = false;
       setTimeout(flushLater, 0); // click 처리 뒤
     };
-    document.addEventListener("pointerdown", () => {
+    document.addEventListener("pointerdown", (e) => {
       held = true;
+      if (adjustFocus && e.target !== adjustFocus) adjustFocus.blur();
     }, true);
     document.addEventListener("pointerup", release, true);
     document.addEventListener("pointercancel", release, true);
@@ -2156,7 +2496,7 @@ window.DPMaskEdit = (() => {
       // K 모드 진입: to = {key, seam}. 세션이 있는 같은 후보면 이어서(선택 구간만), 다른 후보면 go(적용 안 한 획 확인 — 아니오면 세션 후보로 이어서)
       on = true;
       S = st;
-      viewer.setEditor({ pointerdown, pointermove, pointerup, cancel: () => { cancelXform(); pointerup(); }, draw });
+      viewer.setEditor({ pointerdown, pointermove, pointerup, cancel: () => { cancelXform(); finishFade(false); pointerup(); }, draw });
       if (to.key !== M.key && go(to, true)) return;
       if (to.key === M.key && to.seam) go(to);
       opts.select(M.key, !(to.key === M.key && to.seam));
@@ -2172,6 +2512,7 @@ window.DPMaskEdit = (() => {
         return false;
       }
       cancelXform();
+      finishFade(false);
       pointerup();
       const n = M.pending();
       if (n && !window.confirm(`적용 안 한 획 ${n}(${label(M.key)})은 이 창에만 남습니다 — Export·다른 창에는 들어가지 않음(K 로 돌아오면 이어서). 나갈까요?`)) {
@@ -2182,6 +2523,7 @@ window.DPMaskEdit = (() => {
       difference = false;
       previewRaster = null;
       adjustFocus = null;
+      pendingSection = guide = null;
       view.base = view.mark = view.orig = slider = false;
       view.split = cursor = null;
       cancelAnimationFrame(raf);
