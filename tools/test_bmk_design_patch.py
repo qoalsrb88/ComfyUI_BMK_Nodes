@@ -53549,8 +53549,9 @@ def batch9_recv_unit():
                     yield c
 
         class Req:
-            def __init__(self, chunks, ctype="application/octet-stream", length="auto", cancel_at=None, error_at=None):
-                self.content_type = ctype
+            def __init__(self, chunks, ctype="application/octet-stream", length="auto", cancel_at=None, error_at=None, header="auto"):
+                self.content_type = ctype if ctype is not None else "application/octet-stream"  # aiohttp: 머리 없으면 이 기본값
+                self.headers = {} if ctype is None else {"Content-Type": ctype if header == "auto" else header}
                 self.content = Content(chunks, cancel_at, error_at)
                 self.content_length = sum(map(len, chunks)) if length == "auto" else length
 
@@ -53566,6 +53567,9 @@ def batch9_recv_unit():
                 return e.status == code
             return False
 
+        check(recv_fails(Req(chunks, ctype=None), 415) and bd.is_octet_stream(Req(chunks, header="Application/Octet-Stream; x=1"))
+              and not bd.is_octet_stream(Req(chunks, ctype=None)),
+              "B9R Content-Type 머리가 없으면 415(aiohttp 기본값 octet-stream 에 속지 않음 — 다른 사이트 no-cors POST)")
         check(recv_fails(Req(chunks, ctype="application/json"), 415) and recv_fails(Req(chunks), 413, limit=10)
               and recv_fails(Req(chunks, length=None), 413, limit=10) and recv_fails(Req([]), 400)
               and recv_fails(Req(chunks, length=len(data) + 5), 400), "B9R 흘려 받기 거절(형식 415·상한 413 — 길이 없이도·빈 400·끊김 400)")
