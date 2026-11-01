@@ -6015,6 +6015,18 @@ def _project_new_begin(data: dict, upload: bool) -> dict:
     return state
 
 
+def _project_new_rename(source: str, dest: str) -> None:
+    """Windows 일시 잠금만 짧게 재시도한다. 이름 충돌은 즉시 호출자에게 돌려준다."""
+    for attempt in range(6):
+        try:
+            os.rename(source, dest)
+            return
+        except PermissionError:
+            if attempt == 5:
+                raise
+            time.sleep(0.05 * (attempt + 1))
+
+
 def _project_new_target(state: dict, part: str | None) -> str:
     root = state["root"] if state["adopt"] else state["tmp"]
     filename = state["filename"]
@@ -6034,11 +6046,7 @@ def _project_new_target(state: dict, part: str | None) -> str:
         if info["depth"] != 8 or info["mode"] != 3:
             raise _Reject(400, "8비트 RGB PSD 만 — Photoshop 이미지 > 모드에서 바꿔 저장하세요")
         psd = dpsd.open_psd(source)
-        named = any(n.name == "I2I_base" or (n.name == "02.크롭영역" and n.is_group()) for n in psd.descendants())
-        lossy = []
-        if not named:
-            drefs._psd_lossy(psd, "", lossy, [])
-        if named or (len(psd) and not lossy):
+        if dpsd._auto_base_layer(psd) is not None or dpsd.find_crop_group(psd) is not None:
             return filename
     stem = os.path.splitext(filename)[0]
     target = unique_file_name(root, stem + ("_base.psd" if psd is not None else ".psd"))
@@ -6046,8 +6054,8 @@ def _project_new_target(state: dict, part: str | None) -> str:
     if psd is not None:
         try:
             notes = dpsd.wrap_psd_composite(psd, dest)
-        except ValueError:
-            raise _Reject(400, "PSD 병합 이미지를 읽을 수 없습니다 — Photoshop 에서 호환성 최대화로 다시 저장하세요") from None
+        except dpsd.EmptyPSDImageError:
+            raise _Reject(400, "보이는 그림이 없습니다") from None
     else:
         notes = dpsd.wrap_image_file(source, dest)
     state["created"].append(dest)
@@ -6055,7 +6063,7 @@ def _project_new_target(state: dict, part: str | None) -> str:
     if not state["adopt"]:
         originals = os.path.join(root, "_source")
         os.mkdir(originals)
-        os.rename(source, os.path.join(originals, filename))
+        _project_new_rename(source, os.path.join(originals, filename))
     return target
 
 
@@ -6083,7 +6091,7 @@ def _project_new_finish(state: dict, target: str) -> dict:
             os.makedirs(os.path.dirname(root), exist_ok=True)
             if os.path.lexists(root):
                 raise _Reject(409, "같은 이름의 프로젝트가 있습니다")
-            os.rename(working, root)
+            _project_new_rename(working, root)
             state["moved"] = True
             rev = 0  # 기존 update 계약: 없는 pipeline.json 은 rev 0.
         else:
@@ -6103,23 +6111,32 @@ def _project_new_finish(state: dict, target: str) -> dict:
 
 
 def _project_new_cleanup(state: dict, success: bool) -> None:
+    def remove(path, fn):
+        try:
+            fn(path)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            logger.exception("%s 새 프로젝트 정리 실패: %s", _TAG, path)
+
     if not success:
         if state["adopt"]:
             for path in reversed(state["created"]):
-                _drop(path)
+                remove(path, os.remove)
             for path in reversed(state["dirs"]):
-                with contextlib.suppress(OSError):
-                    os.rmdir(path)  # 기존 파일이 들어왔다면 폴더는 남긴다.
+                remove(path, os.rmdir)  # 기존 파일이 들어왔다면 폴더는 남긴다.
         elif state["moved"]:
             root = state["root"]
             expected = store.project_root(_PROJECT_INPUT, state["name"])
-            if root == expected and not _is_link(root) and os.path.realpath(root) == os.path.abspath(root):
-                shutil.rmtree(root)
+            if (os.path.normcase(root) == os.path.normcase(expected) and not _is_link(root)
+                    and os.path.normcase(os.path.realpath(root)) == os.path.normcase(os.path.abspath(root))):
+                remove(root, shutil.rmtree)
     tmp = state["tmp"]
     if tmp and os.path.isdir(tmp):
         parent = os.path.join(os.path.abspath(_PROJECT_INPUT), _NEW_TMP_DIRNAME)
-        if os.path.dirname(tmp) == parent and not _is_link(tmp) and os.path.realpath(tmp) == os.path.abspath(tmp):
-            shutil.rmtree(tmp)
+        if (os.path.normcase(os.path.dirname(tmp)) == os.path.normcase(parent) and not _is_link(tmp)
+                and os.path.normcase(os.path.realpath(tmp)) == os.path.normcase(os.path.abspath(tmp))):
+            remove(tmp, shutil.rmtree)
 
 
 async def _project_new_thread(fn, *args):
@@ -6149,7 +6166,10 @@ async def _project_new_request(request):
         return result
     finally:
         if state is not None:
-            await asyncio.shield(asyncio.to_thread(_project_new_cleanup, state, success))
+            try:
+                await asyncio.shield(asyncio.to_thread(_project_new_cleanup, state, success))
+            except Exception:
+                logger.exception("%s 새 프로젝트 정리 중 오류: %s", _TAG, state["root"])
 
 
 def _project_roots() -> list[dict]:
@@ -6228,10 +6248,14 @@ def _projects_list() -> dict:
             row.update(_project_summary(r["root"]))
             row["thumb_url"] = None if row["before_import"] else "projects/thumb?" + urlencode({"key": r["key"]})
         except FileNotFoundError:
-            info = _project_adoption(r["root"])
-            row.update(info if not r["outside_input"] else {"adoptable": False, "files": []})
-            row.update(openable=False, error="열 수 없음 — Studio [새 프로젝트] 또는 [이 폴더로 시작]을 이용하세요" if info["adoptable"]
-                       else "열 수 없음 — 옛 프로젝트 기록이 남아 있습니다(매니페스트 없음)")
+            try:
+                info = _project_adoption(r["root"])
+                row.update(info if not r["outside_input"] else {"adoptable": False, "files": []})
+                row.update(openable=False, error="열 수 없음 — Studio [새 프로젝트] 또는 [이 폴더로 시작]을 이용하세요" if info["adoptable"]
+                           else "열 수 없음 — 옛 프로젝트 기록이 남아 있습니다(매니페스트 없음)")
+            except OSError:
+                logger.exception("%s 프로젝트 폴더 목록 읽기 실패: %s", _TAG, r["root"])
+                row.update(openable=False, error="열 수 없음 — 프로젝트 폴더의 읽기 권한을 확인하세요")
         except Exception:
             row.update(openable=False, error="열 수 없음 — 프로젝트 파일 형식과 읽기 권한을 확인하세요")
         out.append(row)
@@ -6402,8 +6426,16 @@ async def projects_new_handler(request: web.Request) -> web.StreamResponse:
     except _Reject:
         raise
     except FileExistsError:
+        logger.exception("%s 새 프로젝트 파일 이름 충돌", _TAG)
         raise _Reject(409, "같은 이름의 프로젝트 또는 파일이 있습니다 — 목록을 새로고침하세요") from None
+    except MemoryError:
+        logger.exception("%s 새 프로젝트 메모리 부족", _TAG)
+        raise _Reject(503, "그림이 커서 메모리가 부족합니다 — 크기를 줄이거나 메모리를 확보한 뒤 다시 시도하세요") from None
+    except OSError:
+        logger.exception("%s 새 프로젝트 파일 작업 실패", _TAG)
+        raise _Reject(500, "파일을 쓰지 못했습니다 — 디스크 공간·다른 프로그램의 잠금 확인") from None
     except Exception:
+        logger.exception("%s 새 프로젝트 만들기 실패", _TAG)
         raise _Reject(400, "프로젝트를 만들 수 없습니다 — 그림 형식과 폴더 접근 권한을 확인하세요") from None
     finally:
         _PROJECT_NEW_LOCK.release()

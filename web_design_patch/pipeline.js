@@ -1477,9 +1477,22 @@ window.DPPipeline = (() => {
       if (autoApply && S && PS.P && !PS.err) {
         autoApply = false;
         if (!S.canvas) {
-          opts.toast(["새 프로젝트 — Import 를 무료로 한 번 실행합니다", ...(opts.newNotes || [])].join(" · "));
+          opts.toast("새 프로젝트 — Import 를 무료로 한 번 실행합니다");
           queue("apply");
         }
+      }
+    }
+
+    function finishNewProject(st) {
+      if (!opts.newProject || !st.canvas) return;
+      const imported = S && !S.canvas;
+      opts.newProject = false;
+      opts.newNotes = [];
+      autoApply = false;
+      if (imported) {
+        const n = (st.crops || []).length;
+        opts.toast(n ? `가져오기 완료 — 크롭 ${n}개를 가져왔습니다. ② 크롭에서 확인하세요`
+          : "가져오기 완료 — ② 크롭에서 영역을 추가하세요");
       }
     }
 
@@ -2974,7 +2987,6 @@ window.DPPipeline = (() => {
         : "Export: PSD 를 쓰지 않음 — 넣을 후보 없음(★ 도 숨김 후보도 없음)", o.outcome === "empty" ? "warn" : "");
       // 계획은 다시 받은 state 뒤에(§3.1): 반영이 지운 크롭이 아직 선택(only)에 남아 서버가 400('매니페스트에 없는 크롭')을 내지 않게
       doneReplan = true;
-      if (opts.newProject && job.stage === "apply" && res.state === "done") opts.toast("가져오기 완료 — ② 크롭에서 영역을 추가하세요");
       opts.refresh();
       PS.load().then(pipelineLoaded);
     };
@@ -2991,6 +3003,7 @@ window.DPPipeline = (() => {
 
     function stateChanged(st) {
       stateReads += 1;
+      finishNewProject(st);
       // 보드 state 를 받을 때마다(2초 폴링 — unchanged 응답이면 같은 S). 다시 그리기는 state·진행 수가 바뀐 때만(누르는 중인 단추를 갈지 않게)
       const k = [st.rev, st.running, st.drain, st.pipeline_rev, st.plan_v, st.pref_v].join("|");
       const changed = st !== S || k !== seenKey;

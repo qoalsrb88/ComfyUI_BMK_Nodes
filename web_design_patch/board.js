@@ -964,7 +964,8 @@
       first.type = "button";
       first.addEventListener("click", () => applyFree());
       b.append(first);
-    }
+      if ((renderHeader.newNotes || []).length) b.append(el("span", "badge b-wait", renderHeader.newNotes.join(" · ")));
+    } else renderHeader.newNotes = [];
     if (S.backend_mock) b.append(el("span", "badge b-mock", "MOCK 백엔드 (과금 없음)"));
     if (S.running) b.append(el("span", "badge b-run", "Run 진행 중"));
     if (S.drain) b.append(el("span", "badge b-drain", "새 호출 멈춤 요청됨"));
@@ -2004,6 +2005,7 @@
 
   async function main() {
     const newNotes = consumeNewProject();
+    renderHeader.newNotes = newNotes || [];
     if (!ROOT) {
       await showProjects();
       return;

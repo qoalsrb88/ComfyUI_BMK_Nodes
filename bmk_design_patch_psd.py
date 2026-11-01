@@ -1563,12 +1563,25 @@ def wrap_image_file(source: str, path: str) -> list[str]:
         return wrap_base_image(ImageOps.exif_transpose(image), path)
 
 
+class EmptyPSDImageError(ValueError):
+    """병합 이미지와 보이는 레이어 모두 그림이 없는 새 프로젝트 타깃."""
+
+
 def wrap_psd_composite(psd, path: str) -> list[str]:
-    """Photoshop 이 저장한 병합 이미지만 사용한다(수동 재합성으로 대체하지 않음)."""
+    """유효한 병합 이미지 우선, 없거나 전부 투명이면 refs 시트와 같은 레이어 합성으로 감싼다."""
     image = psd.topil()
-    if image is None:
-        raise ValueError("PSD 병합 이미지가 없습니다 — Photoshop 에서 호환성 최대화로 다시 저장하세요")
-    return ["PSD 병합 이미지를 새 타깃으로 사용합니다", *wrap_base_image(image, path)]
+    note = "PSD 병합 이미지를 새 타깃으로 사용합니다"
+    if image is None or image.convert("RGBA").getchannel("A").getextrema()[1] == 0:
+        warns = []
+        w, h = psd.size
+        rgba = _composite_children(psd, (0, 0, w, h), warns)
+        for warning in warns:
+            logger.warning("%s 새 프로젝트 PSD 합성: %s", _TAG, warning)
+        if not np.any(rgba[..., 3]):
+            raise EmptyPSDImageError("보이는 그림이 없습니다")
+        image = Image.fromarray(rgba, "RGBA")
+        note = "PSD 병합 이미지가 없어 보이는 레이어를 합성했습니다"
+    return [note, *wrap_base_image(image, path)]
 
 
 # ═════════════════════════════════════════════════════════════════
