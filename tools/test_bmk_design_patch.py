@@ -13671,7 +13671,8 @@ def layout_board_unit():
         check(st == 200 and d["exists"] is True and d["rev"] == 0 and d["editable"] is True and d["error"] is None,
               f"레이아웃 있음 {st} {d.get('error')}")
         check({"exists", "rev", "editable", "error", "canvas", "applied_rev", "applied", "start_blocked", "pending_rerolls",
-               "refs_dir", "psd", "psd_diff", "crops", "removed"} <= set(d), "최상위 필드(§4.1 + applied·start_blocked)")
+               "refs_dir", "psd", "psd_diff", "crops", "removed", "next_nnn"} <= set(d), "최상위 필드(§4.1 + applied·start_blocked·next_nnn)")
+        check(d["next_nnn"] is None or re.fullmatch(r"[0-9]{3}", d["next_nnn"]), "next_nnn = 세 자리 문자열 또는 null")
         row_keys = {"id", "name", "nnn", "part", "side", "rect", "targets", "psd_name", "note", "status", "changed", "manifest",
                     "gpt", "refs", "history", "draft_boxes", "same_name_continues", "checks"}
         check(all(row_keys <= set(c) for c in d["crops"]), "크롭 행 필드(§4.1)")
@@ -14740,6 +14741,7 @@ function server(crops, L = {}) {
     const b = JSON.parse(o.body);
     srv.log.push(Object.assign({ path }, b));
     if (srv.delay) await sleep(srv.delay);
+    if (b.op === "add" && (typeof b.name !== "string" || !b.name || !b.rect)) return resp(400, { error: "add 에는 name 과 rect 가 있어야 합니다" });
     if (srv.fail400) {
       srv.fail400 = false;
       return resp(400, { error: "규칙 위반(시험)" });
@@ -14822,7 +14824,7 @@ const C2 = () => crop("002_bbbbbb", "002_눈", [1024, 0, 1536, 512], { targets: 
 await scenario("draftEdit", async () => {
   const env = await editor([C1()]);
   const h = env.viewer.h;
-  const ev = (x, y) => ({ x, y, clientX: x, clientY: y, shiftKey: false, ctrlKey: false, metaKey: false });
+  const ev = (x, y) => ({ x, y, clientX: x, clientY: y, shiftKey: false, ctrlKey: false, metaKey: false, altKey: true });
   const drag = async (a, b) => {
     h.pointerdown(ev(...a));
     h.pointermove(ev(...b));
@@ -49307,7 +49309,7 @@ def polish2_unit():
           and res["maskBlocked"]["log"] == ["setMask:true"] and res["maskBlocked"]["mode"] is None,
           f"[검토] 탭 = 켜진 모드를 끔(마스크는 나가기 한 번), ★ 없어 마스크 못 켜면 검토 그대로 "
           f"{res['toReview']['log']} {res['maskToReview']['log']} {res['maskBlocked']}")
-    check(res["editChips"][0] == "info:끌기 새 크롭·이동·크기" and "P" in res["editChips"] and "Ctrl+Z" in res["editChips"]
+    check(res["editChips"][:2] == ["info:끌기 대상→자동 크롭·이동·크기", "info:Alt+끌기 크롭 직접"] and "P" in res["editChips"] and "Ctrl+Z" in res["editChips"]
           and res["pipeChips"] == ["B", "O", "N", "F", "0", "1", "2", "I", "G"] and res["maskChips"][:5] == ["V", "D", "info:끌기 붓·변형", "info:⇧끌기 흐리기·비율/15°", "X"]
           and all("I" in chips for chips in (res["start"]["chips"], res["editChips"], res["pipeChips"], res["maskChips"]))
           and "I" not in res["refsChips"]
@@ -51908,8 +51910,376 @@ process.exit(0);
 
 
 def batch8a_unit():
-    """배치 8-A(11/02 — _proto/STUDIO_BATCH8_SPEC.md D89–D96): 크롭 편집 — 대상 먼저·이름 없이. 공용 자리 — 8-A 작업자가 채운다."""
+    """D89–D96: 합성 프로젝트·함수 직접 호출·모의 DOM, 소켓과 외부 API 없음."""
     section("배치 8-A — 크롭 편집 — 대상 먼저·이름 없이")
+    import tempfile
+    from unittest.mock import patch
+
+    out = (OUT_ROOT / "batch8a").resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    run = Path(tempfile.mkdtemp(prefix="run_", dir=out))
+    dp = _dp_package()
+    bd = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_board")
+    st, dr = dp.store, bd.drefs
+    _, root = _fx_project(dp, run, "names", [("001_기존", [0, 0, 384, 384])], np.zeros((1024, 1024, 3), np.uint8))
+    refs = run / "refs"
+    refs.mkdir()
+    m = st.load_manifest(root)
+    m.setdefault("source", {})["refs_dir"] = str(refs)
+    st.save_manifest(root, m)
+    bd.layout_start(root)
+
+    def add(name):
+        return bd.layout_crop(root, st.load_layout(root)["rev"], "add", {"name": name, "rect": [128, 128, 512, 512]})["crop"]
+
+    def rename(c, name):
+        return bd.layout_crop(root, st.load_layout(root)["rev"], "update", {"id": c["id"], "name": name})["crop"]
+
+    check(bd.layout_state(root)["next_nnn"] == "002", "D93 GET /layout 첫 예약 번호")
+    c = add("010_미정")
+    unnamed_rev = st.load_layout(root)["rev"]
+    (refs / "011_모자.png").write_bytes(b"reference")
+    preview = bd.layout_refs(root, "011_모자", c["id"])
+    changed = rename(c, "011_모자")
+    check(preview["n"] == 1 and not preview.get("fixed") and changed["refs"] == preview and dr.load_refs(root) is None,
+          "D96 반영 전·현재 매칭 없음: auto 고정 생략, 새 이름 미리보기와 실제 매칭 일치")
+    undone = bd.layout_crop(root, st.load_layout(root)["rev"], "update",
+                            {"id": c["id"], "name": "010_미정", "restore_rev": unnamed_rev})["crop"]
+    check(undone["refs"]["n"] == 0 and not undone["refs"].get("fixed") and dr.load_refs(root) is None,
+          "A1 반영 전 010_미정 → 011_모자 → 실행 취소: 011 매칭을 새로 고정하지 않음")
+    (refs / "016_장갑.png").write_bytes(b"other reference")
+    changed = rename(undone, "016_장갑")
+    check(changed["refs"] == {"n": 1, "first": "016_장갑.png"} and dr.load_refs(root) is None,
+          "A1 실행 취소 후 다른 이름을 정해도 011 레퍼런스가 붙지 않음")
+    bd.layout_crop(root, st.load_layout(root)["rev"], "update",
+                   {"id": c["id"], "name": "010_미정", "restore_rev": unnamed_rev})
+    changed = rename(c, "011_모자")
+    matched_rev = st.load_layout(root)["rev"]
+    preview = bd.layout_refs(root, "012_다른이름", c["id"])
+    changed = rename(changed, "012_다른이름")
+    check(preview["n"] == 1 and preview["fixed"] and changed["refs"] == preview
+          and dr.load_refs(root)["links"][c["id"]]["fixed"]["auto"], "D96 반영 전이라도 현재 매칭 파일이 있으면 고정")
+    fixed_bytes = Path(root, "refs.json").read_bytes()
+    undone = bd.layout_crop(root, st.load_layout(root)["rev"], "update",
+                            {"id": c["id"], "name": "011_모자", "restore_rev": matched_rev})["crop"]
+    check(undone["refs"] == preview and Path(root, "refs.json").read_bytes() == fixed_bytes,
+          "A1/B31 반영 전 크롭도 이미 있던 고정은 이름 실행 취소 뒤 그대로")
+    original = m["crops"][0]
+    applied_rev = st.load_layout(root)["rev"]
+    preview = bd.layout_refs(root, "013_다른부위", original["id"])
+    changed = rename(original, "013_다른부위")
+    check(preview["n"] == 0 and preview["fixed"] and changed["refs"] == preview
+          and original["id"] in dr.load_refs(root)["links"], "D96 반영된 크롭은 매칭 없어도 빈 auto 고정 유지")
+    fixed_bytes = Path(root, "refs.json").read_bytes()
+    undone = bd.layout_crop(root, st.load_layout(root)["rev"], "update",
+                            {"id": original["id"], "name": original["name"], "restore_rev": applied_rev})["crop"]
+    check(undone["refs"] == preview and Path(root, "refs.json").read_bytes() == fixed_bytes,
+          "A1/B31 반영된 크롭의 이름 실행 취소도 기존 고정 유지")
+    check(bd.layout_refs(root, "090_새이름", c["id"])["fixed"], "D96 이미 고정된 연결은 미리보기에서도 유지")
+    rev = st.load_layout(root)["rev"]
+    expect_raises(lambda: bd.layout_crop(root, rev, "add", {"rect": [0, 0, 384, 384]}),
+                  "D94 서버 add name 필수 계약 유지", exc=bd._Reject, contains="name 과 rect")
+    check(st.load_layout(root)["rev"] == rev, "D94 name 없는 add 는 쓰지 않음")
+
+    # 지운 매니페스트 크롭·현재 이름·ID, refs 파일·연결, 후보와 specs 를 각각 독립적으로 예약한다.
+    lay = st.load_layout(root)
+    empty = {"crops": [], "candidates": [], "source": {"refs_dir": str(refs)}}
+    for label, mm, ll, doc, expected in [
+        ("현재 이름", empty, {"crops": [{"id": "002_old", "name": "040_현재"}]}, None, "041"),
+        ("현재 ID", empty, {"crops": [{"id": "041_old", "name": "002_현재"}]}, None, "042"),
+        ("지운 크롭", empty, {"removed": [{"name": "050_지움"}]}, None, "051"),
+        ("매니페스트", dict(empty, crops=[{"id": "060_gone"}]), {}, None, "061"),
+        ("후보", dict(empty, candidates=[{"crop_id": "070_orphan"}]), {}, None, "071"),
+        ("refs 연결 ID", empty, {}, {"links": {"080_old": {}}}, "081"),
+        ("refs 연결 이름", empty, {}, {"links": {"001_old": {"fixed": {"name": "081_옛이름"}}}}, "082"),
+    ]:
+        check(bd._layout_next_nnn(root, mm, ll, doc) == expected, f"D93 번호 예약 {label}")
+    number_root = str(run / "number_only")
+    bare = {"crops": [], "candidates": [], "source": {}}
+    long_prefix = {"id": "1000_old", "name": "20261102_시안", "nnn": "20261102", "crop_id": "9999_old", "crop_name": "20261102_시안"}
+    check(bd._layout_next_nnn(number_root, dict(bare, crops=[long_prefix], candidates=[long_prefix]),
+                              {"crops": [long_prefix], "removed": [long_prefix]},
+                              {"links": {"20261102_old": {"fixed": {"name": "1000_시안"}}}}) == "001",
+          "F3 이름·ID·nnn·refs 연결의 4자리 이상 접두는 예약하지 않음")
+    for prefix in ("9", "12", "123", "998", "999"):
+        expected = f"{int(prefix) + 1:03d}" if prefix != "999" else None
+        check(bd._layout_next_nnn(number_root, bare, {"crops": [{"name": f"{prefix}_이관"}]}, None) == expected,
+              f"F3 1–3자리 이관 이름 {prefix} 예약·999 초과 null 유지")
+    (refs / "100_참고.dat").write_bytes(b"reserved")
+    check(bd._layout_next_nnn(root, empty, {}, None) == "101", "D93 refs NNN_* 파일은 확장자와 무관하게 예약")
+    for filename in ("1000_참고.png", "20261102_시안.png", "999.png", "999-no-underscore.png"):
+        (refs / filename).write_bytes(b"not a crop prefix")
+    check(bd._layout_next_nnn(root, empty, {}, None) == "101", "A2 파일은 정확한 NNN_만 예약: 4자리·날짜·밑줄 없음 무시")
+    Path(root, "specs").mkdir(exist_ok=True)
+    Path(root, "specs", "200_orphan.json").write_text("{}", encoding="utf-8")
+    Path(root, "specs", "20261102_note.json").write_text("{}", encoding="utf-8")
+    check(bd.layout_state(root)["next_nnn"] == "201", "D93 GET /layout 은 고아 specs 번호도 피함")
+    with patch.object(bd.os, "scandir", side_effect=PermissionError("test")):
+        check(bd._layout_next_nnn(root, empty, {}, None) is None, "D93 예약 파일을 읽지 못하면 자동 번호 없음")
+    check(bd._layout_next_nnn(root, dict(empty, source={}), {}, None) == "201", "A7 refs_dir 미설정은 허용")
+    missing_manifest = dict(m, source=dict(m["source"], refs_dir=str(run / "missing_refs")))
+    with patch.object(bd.store, "load_manifest", return_value=missing_manifest):
+        check(bd.layout_state(root)["next_nnn"] is None, "A7 설정된 refs_dir 가 없으면 GET /layout next_nnn=null")
+    held = refs / dr.HELD_DIR
+    held.mkdir()
+    (held / "300_보류__261102-010000.png").write_bytes(b"held reference")
+    (held / "20261102_시안.png").write_bytes(b"not a crop prefix")
+    check(bd.layout_state(root)["next_nnn"] == "301", "A2/A7 _보류 NNN_ 번호 예약, 날짜 파일은 무시")
+    listdir = bd.os.listdir
+    for denied in (PermissionError("refs denied"), OSError("refs unavailable")):
+        def refs_denied(folder):
+            if Path(folder) == refs:
+                raise denied
+            return listdir(folder)
+
+        with patch.object(bd.os, "listdir", side_effect=refs_denied):
+            view = bd.layout_state(root)
+            check(view["exists"] and view["editable"] and view["error"] is None and not view["refs_dir"]
+                  and view["next_nnn"] is None and all(c["refs"] is None for c in view["crops"]),
+                  f"F4 GET /layout 응답 함수: refs 목록 {type(denied).__name__} 격리·자동 번호 없음")
+    check(bd.layout_state(root)["next_nnn"] == "301" and bd.layout_state(root)["refs_dir"],
+          "F4 refs 목록 읽기가 복구되면 다음 GET /layout 에서 정상 매칭·번호 예약 복구")
+    scan = bd.os.scandir
+
+    def held_denied(folder):
+        if Path(folder) == held:
+            raise PermissionError("held folder denied")
+        return scan(folder)
+
+    with patch.object(bd.os, "scandir", side_effect=held_denied):
+        check(bd._layout_next_nnn(root, empty, {}, None) is None, "A7 _보류 권한 오류도 자동 번호 없음")
+    check(bd._layout_next_nnn(root, dict(empty, source={"refs_dir": str(refs / "100_참고.dat")}), {}, None) is None,
+          "A7 refs_dir 가 디렉터리가 아닌 경우에도 자동 번호 없음")
+    Path(root, "specs", "999_orphan.json").write_text("{}", encoding="utf-8")
+    check(bd.layout_state(root)["next_nnn"] is None, "D93 999 초과 null")
+    bd.layout_crop(root, st.load_layout(root)["rev"], "delete", {"id": original["id"]})
+    check(any(x["id"] == original["id"] for x in bd.layout_state(root)["removed"]), "D93 지운 반영 크롭은 removed 에 남음")
+
+    node = shutil.which("node")
+    if not node:
+        skip("node 없음 → batch8a JS 생략")
+        return
+    web = PKG / "web_design_patch"
+    pipeline = (web / "pipeline.js").read_text(encoding="utf-8")
+    approve = pipeline[pipeline.index("    async function approve("):pipeline.index("    function mockAsk(")]
+    prefix = _LAYOUT_EDIT_HARNESS.split('// 배치 3-1(F17)')[0]
+    scene = r'''
+const ev8 = (x, y, mods = {}) => ({ x, y, clientX:x, clientY:y, ...mods });
+async function drag8(env, a, b, mods = {}) {
+  env.viewer.h.pointerdown(ev8(...a, mods)); env.viewer.h.pointermove(ev8(...b, mods));
+  env.viewer.h.pointerup(); await sleep(40);
+}
+function rect8(e) { return [e.attrs.x, e.attrs.y, e.attrs.x + e.attrs.width, e.attrs.y + e.attrs.height]; }
+function marks8(env) { const g = new El(env.doc, "g"); env.viewer.h.draw(g, 1); return g.all(); }
+const contains8 = (a,b) => a[0]<=b[0] && a[1]<=b[1] && a[2]>=b[2] && a[3]>=b[3];
+const equal8 = (a,b) => JSON.stringify(a)===JSON.stringify(b);
+function clearBoxes8(rect, boxes, canvas) {
+  const c={id:"check",name:"001_check",rect,targets:boxes.map((box,i)=>({tid:String.fromCharCode(65+i),text:"",box}))};
+  return !G.geomChecks({canvas,crops:[c]}).check.some(x=>["P-out","P-edge","P-70"].includes(x.code));
+}
+
+await scenario("targetFirst", async () => {
+  const env = await editor([], {next_nnn:"014"}); const h=env.viewer.h;
+  h.pointerdown(ev8(501,601)); h.pointermove(ev8(581,701));
+  const marks=marks8(env), r={};
+  r.liveBox=marks.some(e=>e.attrs?.class==="pbox" && equal8(rect8(e),[501,601,581,701]));
+  r.liveCrop=marks.some(e=>e.attrs?.class==="draft" && equal8(rect8(e),G.autoCrop([501,601,581,701],[3072,4096])));
+  h.pointerup(); await sleep(20);
+  r.draft=env.panel.textContent.includes("대상 A 상자 포함") && env.panel.all().some(e=>e.textContent==="미정" && !e.hidden);
+  env.key("Enter"); await sleep(40);
+  const b=env.srv.log[0]; r.oneAdd=env.srv.log.length===1 && b.op==="add" && b.name==="014_미정";
+  r.payload=equal8(b.targets,[{tid:"A",text:"",box:[501,601,581,701]}]) && b.rect[2]-b.rect[0]===384 && b.rect[3]-b.rect[1]===384;
+  r.chip=env.list.textContent.includes("미정");
+  env.key("KeyZ",{ctrlKey:true}); await sleep(40); r.oneUndo=env.srv.lay.crops.length===0 && env.srv.log.length===2;
+  env.key("KeyY",{ctrlKey:true}); await sleep(40); r.redo=env.srv.log.length===3 && env.srv.log[2].name===b.name && equal8(env.srv.log[2].targets,b.targets);
+  env.button(env.head,"반영 (무료)").fire("click"); await sleep(30);
+  r.apply=env.confirms.at(-1).includes("이름 미정 1개 — 반영 전에 정하면 다시 과금 없음") && env.queued.length===1;
+  return r;
+});
+await scenario("draftAndNames", async () => {
+  const r={};
+  for(const [key,L,nnn,side,want] of [["server",{next_nnn:"025"},null,"","025_미정"],
+    ["manual",{next_nnn:"025"},"087","left","087_미정_왼쪽"],["right",{next_nnn:"025"},null,"right","025_미정_오른쪽"],
+    ["legacy",{},null,"","002_미정"]]) {
+    const env=await editor([C1()],L); await drag8(env,[1000,1000],[1100,1100]);
+    if(nnn) env.type("nnn",nnn);
+    if(side) {env.field("side").value=side;env.field("side").fire("change");}
+    env.key("Enter");await sleep(40);r[key]=env.srv.log[0]?.name===want;
+  }
+  const end=await editor([],{next_nnn:null});await drag8(end,[100,100],[200,200]);end.key("Enter");await sleep(30);
+  r.exhausted=!end.srv.log.length && end.toasts.some(t=>t.includes("999 초과"));
+  end.type("nnn","087");end.key("Enter");await sleep(30);r.exhaustedManual=end.srv.log[0]?.name==="087_미정";
+  const alt=await editor([]);await drag8(alt,[1024,1024],[1536,1536],{altKey:true});alt.key("Enter");await sleep(30);
+  r.alt=equal8(alt.srv.log[0].rect,[1024,1024,1536,1536]) && !alt.srv.log[0].targets;
+  const env=await editor([]);await drag8(env,[500,500],[700,700]);
+  const rect=rect8(marks8(env).find(e=>e.attrs?.class==="draft"));
+  await drag8(env,[rect[2],rect[3]],[rect[0]+128,rect[1]+128]);
+  r.outWarning=env.panel.textContent.includes("A 상자가 크롭 밖");env.key("Enter");await sleep(30);
+  r.outAllowed=env.srv.log.length===1 && equal8(env.srv.log[0].targets[0].box,[500,500,700,700]);
+  return r;
+});
+await scenario("modes",async()=>{
+  const r={},env=await editor([C1(),C2()]);
+  await drag8(env,[200,200],[232,200]);r.move=env.srv.log[0]?.op==="update" && equal8(env.srv.log[0].rect,[32,0,544,512]);
+  env.key("Escape");env.key("KeyP");await drag8(env,[200,200],[240,250]);
+  r.force=env.panel.textContent.includes("대상 A 상자 포함") && env.srv.log.length===1;
+  env.key("Escape");env.key("KeyP");env.key("Escape");await drag8(env,[200,200],[216,200]);
+  r.cancel=env.srv.log.length===2 && env.srv.log[1].op==="update";
+  await env.pick("001_모자");await env.pick("002_눈",{ctrlKey:true});env.key("KeyP");
+  r.multi=env.toasts.at(-1).includes("하나만");
+  const fresh=await editor([]);env.button(fresh.panel,"상자").fire("click");r.button=fresh.toasts.at(-1).includes("새 크롭 상자");
+  const edge=await editor([]);await drag8(edge,[3060,4080],[3200,4200]);r.clippedSmall=!edge.panel.textContent.includes("대상 A 상자 포함");
+  return r;
+});
+await scenario("smallBoxes",async()=>{
+  const r={};
+  for(const mode of ["blank","forced","add","existing"]){
+    const env=await editor([C1()]);
+    if(mode==="forced")env.key("KeyP");
+    if(mode==="add" || mode==="existing"){await env.pick("001_모자");if(mode==="add")env.button(env.panel,"대상 상자 추가").fire("click");else env.key("KeyP");}
+    await drag8(env,[700,700],[715,760]);r[mode]=!env.srv.log.length && env.toasts.at(-1).includes("상자가 너무 작습니다 (16px 이상)");
+  }
+  const env=await editor([]);await drag8(env,[700,700],[716,716]);env.key("Enter");await sleep(30);r.exact16=env.srv.log.length===1;
+  return r;
+});
+await scenario("addBox",async()=>{
+  const r={},c=crop("010_box","010_모자",[512,512,1024,1024],{manifest:{name:"010_모자",rect:[512,512,1024,1024]},adopted_only:[{tid:"B",text:"채택"}]});
+  const env=await editor([JSON.parse(JSON.stringify(c))]);await env.pick(c.name);
+  r.cost=env.panel.textContent.includes("반영된 크롭에 대상을 더하면 다음 반영 때 초안·생성 조건이 바뀔 수 있습니다(유료)");
+  env.button(env.panel,"대상 상자 추가").fire("click");await drag8(env,[1100,700],[1200,800]);
+  const b=env.srv.log[0];r.one=env.srv.log.length===1 && b.op==="update" && !b.rect && equal8(b.targets.at(-1),{tid:"C",text:"",box:[1100,700,1200,800]});
+  const prop=marks8(env).find(e=>e.attrs?.class==="prop");
+  r.grow=!!prop && !equal8(rect8(prop),c.rect) && contains8(rect8(prop),c.rect) && contains8(rect8(prop),b.targets.at(-1).box) && equal8(env.srv.lay.crops[0].rect,c.rect);
+  env.key("Enter");await sleep(40);r.apply=env.srv.log.length===2 && equal8(env.srv.log[1].rect,rect8(prop));
+  r.outClear=clearBoxes8(env.srv.lay.crops[0].rect,[b.targets.at(-1).box],[3072,4096]);
+  env.key("KeyZ",{ctrlKey:true});await sleep(30);env.key("KeyZ",{ctrlKey:true});await sleep(30);
+  r.undo=env.srv.lay.crops[0].targets.length===1;
+  const plain=await editor([C1()]);await plain.pick("001_모자");plain.button(plain.panel,"+ 대상").fire("click");await sleep(30);
+  r.plus=equal8(plain.srv.log[0].targets.at(-1),{tid:"B",text:"",box:null});
+  const locked=await editor([crop("001_lock","001_잠김",[0,0,512,512],{locked:true})]);await locked.pick("001_잠김");
+  const btn=locked.button(locked.panel,"대상 상자 추가");r.disabled=btn.disabled;btn.fire("click");r.blocked=!locked.srv.log.length && locked.toasts.at(-1).includes("잠긴 크롭");
+  for(const [code,box] of [["P-edge",[514,700,560,750]],["P-70",[550,700,600,750]],["safe",[700,700,750,750]]]){
+    const e=await editor([JSON.parse(JSON.stringify(c))]);await e.pick(c.name);e.button(e.panel,"대상 상자 추가").fire("click");await drag8(e,box.slice(0,2),box.slice(2));
+    const p=marks8(e).find(x=>x.attrs?.class==="prop");r[code]=code==="safe" ? !p : !!p && !equal8(rect8(p),c.rect) && contains8(rect8(p),c.rect) && contains8(rect8(p),box);
+    if(code!=="safe"){
+      e.key("Enter");await sleep(40);
+      r[code+"Clear"]=e.srv.log.length===2 && clearBoxes8(e.srv.lay.crops[0].rect,[box],[3072,4096]);
+      r[code+"NeededSideOnly"]=equal8(e.srv.lay.crops[0].rect,[384,512,1024,1024]);
+    }
+  }
+  return r;
+});
+await scenario("geometry",async()=>{
+  const r={};
+  for(const [key,b,C] of [["small",[501,601,581,701],[3072,4096]],["large",[600,600,1000,1200],[3072,4096]],
+    ["edge",[0,0,16,16],[3072,4096]],["tinyCanvas",[0,0,100,100],[256,256]]]){
+    const a=G.autoCrop(b,C);r[key]=contains8(a,b) && !G.rectProblem(a,C) && a[2]-a[0]>=Math.min(384,C[0]) && a[3]-a[1]>=Math.min(384,C[1]);
+    if(key==="large")r.suggestUnchanged=equal8(a,G.suggest([b],C,true));
+  }
+  const boxes=[[100,100,200,200],[1500,1500,1600,1600]],base=[500,500,1012,1012];
+  const a=G.expandToBoxes(base,boxes,[2048,2048]);r.union=[base,...boxes].every(b=>contains8(a,b)) && !G.rectProblem(a,[2048,2048]);
+  r.unionClear=clearBoxes8(a,boxes,[2048,2048]);
+  const two=[[700,600,944,700],[550,700,600,750]],start=[512,512,1024,1024];
+  const expanded=G.expandToBoxes(start,two,[3072,4096]);
+  r.recheckOldBox=equal8(expanded,[384,512,1152,1024]) && clearBoxes8(expanded,two,[3072,4096]);
+  const atEdge=G.expandToBoxes([128,128,640,640],[[0,160,16,200]],[1024,1024]);
+  r.canvasStops=!!atEdge && atEdge[0]===0 && atEdge[1]===0 && clearBoxes8(atEdge,[[0,160,16,200]],[1024,1024]);
+  r.noOp=G.expandToBoxes(start,[[700,700,750,750]],[3072,4096])===null;
+  r.outside=G.expandToBoxes(start,[[-10,700,100,750]],[3072,4096])===null;
+  return r;
+});
+await scenario("busyCreate",async()=>{
+  const env=await editor([C1()]);await env.pick("001_모자");
+  env.type("note","저장 대기");env.srv.delay=120;
+  await drag8(env,[1000,1000],[1100,1100]);
+  const before=env.toasts.length;
+  env.key("Enter");env.button(env.panel,"만들기").fire("click");
+  const r={notice:env.toasts.slice(before).filter(t=>t==="warn:앞 레이아웃 편집을 저장하는 중입니다 — 끝난 뒤 다시 하세요").length===2,
+    noAdd:!env.srv.log.some(b=>b.op==="add"),draftKept:env.panel.textContent.includes("대상 A 상자 포함")};
+  await env.ed.flush();env.srv.delay=0;env.key("Enter");await sleep(40);
+  r.retry=env.srv.log.filter(b=>b.op==="add").length===1;return r;
+});
+await scenario("proposalStale",async()=>{
+  const r={};
+  for(const mode of ["undo","clear","remove","queuedClear","text"]){
+    const c=crop("010_box","010_모자",[512,512,1024,1024]);
+    const env=await editor([c]);await env.pick(c.name);
+    env.button(env.panel,"대상 상자 추가").fire("click");await drag8(env,[1100,700],[1200,800]);
+    r[mode+"Setup"]=marks8(env).some(e=>e.attrs?.class==="prop");
+    if(mode==="undo")env.key("KeyZ",{ctrlKey:true});
+    else if(mode==="remove")env.find(env.panel,e=>e.tagName==="BUTTON" && e.title==="B 대상 빼기").fire("click");
+    else if(mode==="text")env.type("t-B","이름만 수정").fire("change");
+    else {
+      if(mode==="queuedClear")env.srv.delay=80;
+      env.find(env.panel,e=>e.tagName==="BUTTON" && e.title==="B 상자 지우기").fire("click");
+    }
+    if(mode!=="queuedClear")await sleep(40);
+    if(mode==="text")r.textKeepsProposal=marks8(env).some(e=>e.attrs?.class==="prop");
+    env.key("Enter");await sleep(mode==="queuedClear"?240:40);
+    r[mode]=mode==="text" ? env.srv.log.some(b=>b.op==="update" && b.rect)
+      : !env.srv.log.some(b=>b.rect) && equal8(env.srv.lay.crops[0].rect,[512,512,1024,1024]) && !marks8(env).some(e=>e.attrs?.class==="prop");
+  }
+  return r;
+});
+await scenario("escapeBoxMode",async()=>{
+  const env=await editor([]);await drag8(env,[500,500],[700,700]);
+  const before=marks8(env).find(e=>e.attrs?.class==="draft");
+  env.type("part","보존").blur();env.key("KeyP");env.key("Escape");
+  const after=marks8(env).find(e=>e.attrs?.class==="draft");
+  const r={draftKept:!!after && equal8(rect8(before),rect8(after)),nameKept:env.field("part")?.value==="보존",
+    boxKept:env.panel.textContent.includes("대상 A 상자 포함"),noWrite:env.srv.log.length===0};
+  env.key("Escape");r.secondCancels=!marks8(env).some(e=>e.attrs?.class==="draft");return r;
+});
+await scenario("impossibleGrow",async()=>{
+  const r={};
+  for(const [key,canvas,box] of [["wide",[4096,512],[3900,100,4000,200]],["tall",[512,4096],[100,3900,200,4000]]]){
+    const c=crop("001_box","001_모자",[0,0,512,512]);
+    const env=await editor([c],{canvas});await env.pick(c.name);
+    env.button(env.panel,"대상 상자 추가").fire("click");await drag8(env,box.slice(0,2),box.slice(2));
+    r[key+"Warning"]=env.toasts.some(t=>t.includes("넓혀서 맞출 수 없음 — 크롭을 나누거나 직접 조정"));
+    r[key+"NoProposal"]=!marks8(env).some(e=>e.attrs?.class==="prop") && !env.button(env.panel,"제안 적용");
+    env.key("Enter");await sleep(40);
+    r[key+"NoRectWrite"]=env.srv.log.length===1 && !env.srv.log[0].rect && equal8(env.srv.log[0].targets.at(-1).box,box);
+  }
+  return r;
+});
+await scenario("checklist",async()=>{
+  vm.runInContext(fs.readFileSync(IN.checklist,"utf8"),ctx);
+  const state={crops:[{id:"a",name:"001_미정",layout_diff:{name:"001_확정"}}, {id:"b",name:"002_확정",layout_diff:{name:"002_미정"}},
+    {id:"c",name:"003_미정"},{id:"d",name:"004_미정",layout_status:"removed"}],layout_added:[{id:"e",name:"005_미정"}]};
+  const row=ctx.window.DPChecklist.rows({S:state})[1];return {count:row.state==="warn" && row.value==="이름 미정 3개 — 반영 전에 정하면 다시 과금 없음",navigate:row.go.mode==="edit"};
+});
+await scenario("approval",async()=>{
+  const r={};
+  for(const kind of ["draft","run"]){
+    let sent=0,asked=0,toasts=[],mutate=null;
+    const S={crops:[{id:"a",name:"013_미정"},{id:"b",name:"014_확정"}],layout_added:[]};
+    const ac=vm.createContext({S,paying:null,asked:{},PS:{plan:{draft:{backend:"vlm_mock"},run:{backend:"mock"}},P:{settings:{draft:{}}}},
+      opts:{toast:m=>toasts.push(m)},copyHashes:()=>({draft:["hash","a"],run:["hash","a"]}),same:equal8,approveWhy:()=>"",render(){},
+      mockAsk:async()=>{asked++;if(mutate)mutate();return true;},sendPaid:async()=>sent++});
+    vm.runInContext(IN.approve+"\nthis.go=approve;",ac);await ac.go({isTrusted:true},kind,"승인",["hash","a"]);
+    r[kind]=sent===0 && asked===0 && toasts.at(-1)==="이름 미정 크롭 1개(013_미정) — ② 크롭에서 이름을 정한 뒤 승인하세요";
+    S.crops[0].layout_diff={name:"013_확정"};S.crops[1].name="014_미정";
+    await ac.go({isTrusted:true},kind,"승인",["hash","a"]);r[kind+"Scope"]=sent===1;
+    mutate=()=>{S.crops[0].layout_diff.name="013_미정";};await ac.go({isTrusted:true},kind,"승인",["hash","a"]);
+    r[kind+"Recheck"]=sent===1 && toasts.at(-1).includes("이름 미정 크롭");
+    S.crops=[];S.layout_added=[{id:"a",name:"015_미정"}];await ac.go({isTrusted:true},kind,"승인",["hash","a"]);
+    r[kind+"Added"]=sent===1 && toasts.at(-1).includes("015_미정");
+  }
+  return r;
+});
+console.log(JSON.stringify(out));
+process.exit(0);
+'''
+    (run / "harness.mjs").write_text(prefix + scene, encoding="utf-8", newline="\n")
+    (run / "in.json").write_text(json.dumps({"approve": approve, "checklist": str(web / "checklist.js")}), encoding="utf-8")
+    result = subprocess.run([node, str(run / "harness.mjs"), str(web / "layout_geom.js"), str(web / "layout_edit.js"), str(run / "in.json")],
+                            capture_output=True, text=True, encoding="utf-8", timeout=60)
+    check(result.returncode == 0 and bool(result.stdout.strip()), f"D89–D95 JS 실행: {result.stderr[-1200:]}")
+    if result.returncode == 0 and result.stdout.strip():
+        for group, rows in json.loads(result.stdout.strip().splitlines()[-1]).items():
+            for name, ok in rows.items():
+                check(ok is True, f"D89–D95 {group}/{name}: {ok}")
 
 
 def batch8b_unit():

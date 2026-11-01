@@ -2955,6 +2955,45 @@ def _name_continues(crop: dict, others: list[dict]) -> bool:
     return store.new_layout_id(crop["name"], [o["id"] for o in others]) == crop["id"]
 
 
+def _layout_next_nnn(root: str, m: dict, lay: dict | None, doc: dict | None) -> str | None:
+    """이름 매칭이 번호를 공유하므로 이름·ID와 디스크의 예약 번호를 모두 피한다(읽기 전용)."""
+    used = [0]
+
+    def take(value):
+        if isinstance(value, str):
+            match = re.match(r"^([0-9]{1,3})(?:_|$)", value)
+            if match:
+                used.append(int(match[1]))
+
+    def crop(c):
+        for key in ("id", "name", "nnn", "crop_id", "crop_name"):
+            take(c.get(key))
+
+    for c in (lay or {}).get("crops", []) + (lay or {}).get("removed", []) + m.get("crops", []) + m.get("candidates", []):
+        crop(c)
+    for cid, link in (doc or {}).get("links", {}).items():
+        take(cid)
+        take((link.get("fixed") or {}).get("name"))
+    refs_dir = _refs_dir(m)
+    folders = ([(refs_dir, False), (os.path.join(refs_dir, drefs.HELD_DIR), True)] if refs_dir else [])
+    folders.append((os.path.join(root, "specs"), True))
+    for folder, optional in folders:
+        try:
+            with os.scandir(folder) as entries:
+                for entry in entries:
+                    if entry.is_file():
+                        match = re.match(r"^([0-9]{3})_", entry.name)
+                        if match:
+                            used.append(int(match[1]))
+        except FileNotFoundError:
+            if not optional:  # 설정된 refs_dir 자체가 없으면 예약 번호를 확인할 수 없다.
+                return None
+        except OSError:  # 읽을 수 없는 예약 번호를 001로 오인하지 않는다.
+            return None
+    n = max(used) + 1
+    return f"{n:03d}" if n <= 999 else None
+
+
 def layout_state(root: str, since: int | None = None) -> dict:
     """GET /layout 응답(STUDIO_S1_SPEC §4.1). since 가 지금 rev 면 {"unchanged": true, "rev"}.
     레이아웃이 없으면 exists false(editable = 베이스·캔버스 있음, manifest_crops = 이관할 크롭 수, start_blocked = 이관이 막힌 이유
@@ -2964,7 +3003,8 @@ def layout_state(root: str, since: int | None = None) -> dict:
     크롭 행 = 레이아웃 크롭(locked — 없으면 false) + 대 매니페스트 상태·GPT 출력 크기·레퍼런스·기록(by_file = 폴더·PSD 수확 후보 수)·초안 상자·
     same_name_continues(_name_continues)·검사(store.layout_geom_checks + R-none·D-psd·D-pname·H-orphan).
     레퍼런스는 refs.json 에 고정된 크롭이면 연결 해석(_linked_refs — 이름을 바꿔도 같음, 행에 fixed), 아니면 이름 매칭(S2 §2.6).
-    removed = 매니페스트에만 있는 크롭(레이아웃에서 지움, 미반영). 문자열은 그대로(보드는 textContent)."""
+    removed = 매니페스트에만 있는 크롭(레이아웃에서 지움, 미반영). next_nnn = 레퍼런스·기록 번호까지 피한 다음 번호(null = 없음/확인 불가).
+    문자열은 그대로(보드는 textContent)."""
     m = store.load_manifest(root)
     try:
         lay, error = store.load_layout(root), None
@@ -2973,14 +3013,19 @@ def layout_state(root: str, since: int | None = None) -> dict:
     if lay is not None and since == lay["rev"]:
         return {"unchanged": True, "rev": lay["rev"]}
     src = m.get("source") or {}
-    find_refs = _refs_finder(src.get("refs_dir"))
-    doc = _refs_doc(root)[0]
+    refs_unreadable = False
+    try:
+        find_refs = _refs_finder(src.get("refs_dir"))
+    except OSError:
+        find_refs, refs_unreadable = None, True
+    doc, refs_error = _refs_doc(root)
     out = {"exists": lay is not None or error is not None, "rev": lay["rev"] if lay else None,
            "editable": bool(m.get("base") and m.get("canvas")) and error is None, "error": error,
            "canvas": lay["canvas"] if lay else m.get("canvas"), "applied_rev": (src.get("layout") or {}).get("rev"),
            "applied": False, "start_blocked": None,
            "pending_rerolls": _pending(root, m)[1], "refs_dir": find_refs is not None, "manifest_crops": len(m["crops"]),
-           "psd": None, "psd_diff": None, "crops": [], "removed": []}
+           "psd": None, "psd_diff": None, "crops": [], "removed": [],
+           "next_nnn": None if refs_error or refs_unreadable else _layout_next_nnn(root, m, lay, doc)}
     snap = _read_snapshot(root, m)
     if lay is None:
         if out["editable"]:
@@ -3121,15 +3166,24 @@ def _opt_count(data: dict, name: str) -> int | None:
     return v
 
 
+def _rename_needs_pin(m: dict, crop: dict, refs_dir: str) -> bool:
+    """반영 전이고 지금 이름에 매칭되는 파일도 없을 때만 자동 고정을 생략한다."""
+    if any(c.get("id") == crop["id"] for c in m.get("crops", [])):
+        return True
+    old = store.parse_crop_layer_name(crop["name"])
+    return bool(store.match_refs(refs_dir, old["nnn"], part=old["part"]))
+
+
 def _fix_before_rename(root: str, rev: int, crop_id: str, name) -> bool:
     """S1 이름 바꾸기 앞의 레퍼런스 고정(STUDIO_S2_SPEC §2.6): refs_dir 폴더가 있고 이 크롭이 refs.json 에 고정 안 됐고 이름이 실제로
     바뀌면, 바꾸기 전 이름의 이름 매칭으로 why "rename" 고정(drefs.fix_link — refs.json 이 없으면 만듦, fixed.auto — 사용자가 레퍼런스를
-    고르지 않은 부수 효과 고정이라 빈 seed 는 의도한 '없음'이 아님, _auto_fixed). update_refs 를 끝낸 뒤에
+    고르지 않은 부수 효과 고정이라 빈 seed 는 의도한 '없음'이 아님, _auto_fixed). 반영 전·매칭 파일 없는 크롭만 생략(D96). update_refs 를 끝낸 뒤에
     update_layout 이 돈다(잠금 안에서 둘을 겹치지 않음). 고정 쓰기가 실패하면(깨진 refs.json 400) 예외가 올라가 이름도 바꾸지 않는다.
     레이아웃 rev 가 요청과 다르거나 새 이름이 규칙 밖·중복이면 아무것도 하지 않는다(update_layout 이 409·400 으로 거절).
     refs.json 의 refs_dir 가 지금 것과 다르면(연결을 무시하는 중) 고정하지 않는다. → 이 호출이 고정을 만들었으면 True — 뒤의 update_layout 이
     거절하면(rect·대상 규칙 400·rev 409) layout_crop 이 _unpin_rename 으로 되돌린다(codex12). 셋 다 layout_crop 이 _refs_write_lock 안에서(codex13)."""
-    refs_dir = _refs_dir(store.load_manifest(root))
+    m = store.load_manifest(root)
+    refs_dir = _refs_dir(m)
     lay = store.load_layout(root)
     if not _refs_dir_ok(refs_dir) or lay is None or lay["rev"] != rev:
         return False
@@ -3142,6 +3196,8 @@ def _fix_before_rename(root: str, rev: int, crop_id: str, name) -> bool:
         return False
     doc = drefs.load_refs(root)
     if new == crop["name"] or (doc is not None and (crop_id in doc["links"] or not drefs.same_refs_dir(doc["refs_dir"], refs_dir))):
+        return False
+    if not _rename_needs_pin(m, crop, refs_dir):
         return False
     old = {"id": crop_id, "name": crop["name"]}
     made = []
@@ -3285,7 +3341,10 @@ def layout_crop(root: str, rev: int, op: str, data: dict) -> dict:
     # 바꾸면 실패한 쪽의 되돌리기가 성공한 쪽에 필요한 고정을 지울 수 있었다(codex13). 잠금 순서 = 이것 → manifest_lock(_write_refs 와 같음)
     with _refs_write_lock(root) if rename else contextlib.nullcontext():
         # 마지막 반영 이름으로 되돌리기는 고정하지 않는다 — 이름 매칭이 반영 때와 같아지는 것이 되돌리기
-        pinned = rename and not restore_manifest and _fix_before_rename(root, rev, crop_id, data["name"])
+        # 반영 전 이름 실행 취소도 새 고정을 만들지 않는다. 이미 있는 고정은 B31 계약대로 남긴다.
+        restoring_new = rename and restore_rev is not None and not any(
+            c.get("id") == crop_id for c in store.load_manifest(root)["crops"])
+        pinned = rename and not restore_manifest and not restoring_new and _fix_before_rename(root, rev, crop_id, data["name"])
         try:
             (cid, gone_at), new_rev = store.update_layout(root, mutate, expect_rev=rev)
         except Exception:
@@ -3417,9 +3476,10 @@ def layout_refs(root: str, name, crop_id=None) -> dict | None:
     """GET /layout/refs: 이름을 그렇게 바꾸면 고를 레퍼런스(속성 패널 '바꾼 뒤' 미리보기 — /layout 크롭 행 refs 와 같은 꼴).
     이름은 형식만 본다(유일성은 보지 않음, 오류는 store.check_crop_name ValueError → 400). refs_dir 가 없으면 None.
     crop_id(선택)가 refs.json 에 고정된 크롭이거나 고정 안 된 크롭(이름 바꾸기가 바꾸기 전 이름으로 먼저 고정 — S2 §2.6)이면
-    이름과 상관없이 그 크롭의 지금 레퍼런스(fixed: true — 연결 유지)."""
+    이름과 상관없이 그 크롭의 지금 레퍼런스(fixed: true — 연결 유지). 반영 전·매칭 파일 없는 크롭은 새 이름으로 매칭(D96)."""
     parsed = store.check_crop_name(name)
-    src = store.load_manifest(root).get("source") or {}
+    m = store.load_manifest(root)
+    src = m.get("source") or {}
     find_refs = _refs_finder(src.get("refs_dir"))
     if find_refs is None:
         return None
@@ -3433,7 +3493,7 @@ def layout_refs(root: str, name, crop_id=None) -> dict | None:
             linked = _linked_refs(src.get("refs_dir"), doc, crop)
             if linked is not None:
                 return _refs_row(linked["refs_auto"], True)
-            if doc is None or drefs.same_refs_dir(doc["refs_dir"], src.get("refs_dir")):
+            if (doc is None or drefs.same_refs_dir(doc["refs_dir"], src.get("refs_dir"))) and _rename_needs_pin(m, crop, src.get("refs_dir")):
                 old = store.parse_crop_layer_name(crop["name"])
                 return _refs_row(find_refs(old["nnn"], old["part"]), True)
     return _refs_row(find_refs(parsed["nnn"], parsed["part"]))
