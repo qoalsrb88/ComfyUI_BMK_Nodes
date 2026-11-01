@@ -5345,6 +5345,14 @@ def clean_user_path(value) -> str:
     return os.path.normpath(p)
 
 
+def is_octet_stream(request: web.Request) -> bool:
+    """본문 형식 머리가 **실제로** application/octet-stream 인가. aiohttp 의 request.content_type 은 머리가 없으면
+    'application/octet-stream' 을 돌려주는데, 머리 없는 POST 는 다른 사이트가 사전 요청 없이 보낼 수 있다(no-cors fetch + Blob) —
+    업로드 판정·받기는 이 함수로(배치 9 cc2 리뷰)."""
+    raw = request.headers.get("Content-Type")
+    return isinstance(raw, str) and raw.split(";", 1)[0].strip().lower() == "application/octet-stream"
+
+
 def _part_path(dest_dir: str) -> str:
     return os.path.join(dest_dir, f".upload_{secrets.token_hex(8)}.part")
 
@@ -5359,7 +5367,7 @@ async def recv_upload(request: web.Request, dest_dir: str, *, limit: int = _MAX_
     """application/octet-stream 본문을 dest_dir/.upload_<토큰>.part 로 흘려 받아 그 경로를 돌려준다(D114 — 메모리에 다 올리지 않음).
     Content-Type 다름 415 · 상한 초과 413 · 빈 본문·Content-Length 와 받은 길이 다름(끊김) 400. 실패·취소면 .part 를 지운다.
     dest_dir 는 부르는 쪽이 만든다. 확장자·머리 바이트는 finish_received 가 본다."""
-    if request.content_type != "application/octet-stream":
+    if not is_octet_stream(request):
         raise _Reject(415, "Content-Type 은 application/octet-stream 이어야 합니다")
     if request.content_length is not None and request.content_length > limit:
         raise _Reject(413, "파일이 너무 큽니다(2GB 까지)")
