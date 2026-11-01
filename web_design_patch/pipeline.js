@@ -1470,9 +1470,17 @@ window.DPPipeline = (() => {
       })();
     }
 
+    let autoApply = !!opts.newProject;
     function pipelineLoaded() {
       render();
       firstSetup();
+      if (autoApply && S && PS.P && !PS.err) {
+        autoApply = false;
+        if (!S.canvas) {
+          opts.toast(["새 프로젝트 — Import 를 무료로 한 번 실행합니다", ...(opts.newNotes || [])].join(" · "));
+          queue("apply");
+        }
+      }
     }
 
     function jobText(job) {
@@ -1491,6 +1499,7 @@ window.DPPipeline = (() => {
         return undefined;
       }
       const q = PS.queue(stage, expect);
+      if (stage === "apply") autoApply = false;
       render(); // 템플릿 요청 동안(PS.sending) 승인 단추를 끈 모양으로 — Export 등 once 밖의 길도
       try {
         const r = await q;
@@ -2965,6 +2974,7 @@ window.DPPipeline = (() => {
         : "Export: PSD 를 쓰지 않음 — 넣을 후보 없음(★ 도 숨김 후보도 없음)", o.outcome === "empty" ? "warn" : "");
       // 계획은 다시 받은 state 뒤에(§3.1): 반영이 지운 크롭이 아직 선택(only)에 남아 서버가 400('매니페스트에 없는 크롭')을 내지 않게
       doneReplan = true;
+      if (opts.newProject && job.stage === "apply" && res.state === "done") opts.toast("가져오기 완료 — ② 크롭에서 영역을 추가하세요");
       opts.refresh();
       PS.load().then(pipelineLoaded);
     };

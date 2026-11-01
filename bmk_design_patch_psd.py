@@ -1526,6 +1526,52 @@ class PSDWriter:
 
 
 # ═════════════════════════════════════════════════════════════════
+# 새 프로젝트 타깃 감싸기
+# ═════════════════════════════════════════════════════════════════
+def wrap_base_image(image: Image.Image, path: str) -> list[str]:
+    """그림 한 장을 I2I_base PSD 로 배타 저장한다. 원본·기존 목적 파일은 바꾸지 않는다."""
+    notes = []
+    if image.mode.startswith("I;16") or image.mode == "I":
+        # 16-bit 회색 PNG 를 convert('RGB') 하면 255 이상이 잘리므로 먼저 8-bit 로 축소한다.
+        image = Image.fromarray((np.clip(np.asarray(image), 0, 65535) / 257.0).round().astype(np.uint8))
+    rgba = image.convert("RGBA")
+    if rgba.getchannel("A").getextrema()[0] < 255:
+        notes.append("투명한 곳은 흰색으로 채웠습니다")
+    rgb = Image.new("RGB", rgba.size, "white")
+    rgb.paste(rgba, mask=rgba.getchannel("A"))
+    pixels = np.asarray(rgb)
+    writer = PSDWriter(rgb.size)
+    writer.add_pixel(None, "I2I_base", pixels, 0, 0)
+    tmp = os.path.join(os.path.dirname(path), f".base_{_uuid.uuid4().hex}.psd")
+    try:
+        writer.save(tmp, composite=pixels)
+        if os.name == "nt":
+            os.rename(tmp, path)
+        else:
+            os.link(tmp, path)
+            os.remove(tmp)
+    finally:
+        if os.path.isfile(tmp):
+            os.remove(tmp)
+    return notes
+
+
+def wrap_image_file(source: str, path: str) -> list[str]:
+    """PNG/JPG/WEBP 를 읽고 EXIF 방향을 적용한 뒤 8-bit RGB PSD 로 감싼다."""
+    from PIL import ImageOps
+    with Image.open(source) as image:
+        return wrap_base_image(ImageOps.exif_transpose(image), path)
+
+
+def wrap_psd_composite(psd, path: str) -> list[str]:
+    """Photoshop 이 저장한 병합 이미지만 사용한다(수동 재합성으로 대체하지 않음)."""
+    image = psd.topil()
+    if image is None:
+        raise ValueError("PSD 병합 이미지가 없습니다 — Photoshop 에서 호환성 최대화로 다시 저장하세요")
+    return ["PSD 병합 이미지를 새 타깃으로 사용합니다", *wrap_base_image(image, path)]
+
+
+# ═════════════════════════════════════════════════════════════════
 # 저장 검증
 # ═════════════════════════════════════════════════════════════════
 def verify_saved(path: str, *, deep: bool = False) -> list[str]:
