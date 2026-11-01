@@ -1449,6 +1449,17 @@ window.DPPipeline = (() => {
       // 다시 그림(r2-07 — 입력 중이라 미뤄 둔 옛 단추). 확인 = mock 백엔드면 페이지 상자, 아니면 네이티브 confirm(Claude 브라우저 패널에서는 늘
       // false — 유료 승인을 누를 수 없는 장치, D7). 상자를 기다리는 사이 바뀌었을 수 있어 확인 뒤 한 번 더 대조
       if (!e || !e.isTrusted || paying) return;
+      // D95: 두 유료 승인 모두 선택 범위의 현재 이름을 확인(무료 반영·계획 해시는 그대로).
+      const unnamed = () => {
+        const ids = new Set(pair[1].split(",").filter(Boolean));
+        const names = new Map((S.crops || []).map((c) => [c.id, (c.layout_diff && c.layout_diff.name) || c.name || ""]));
+        for (const c of S.layout_added || []) names.set(c.id, c.name || "");
+        const bad = [...names].filter(([id, name]) => ids.has(id) && name.includes("_미정")).map(([, name]) => name);
+        if (!bad.length) return false;
+        opts.toast(`이름 미정 크롭 ${bad.length}개(${bad.slice(0, 3).join(", ")}${bad.length > 3 ? " …" : ""}) — ② 크롭에서 이름을 정한 뒤 승인하세요`, "warn");
+        return true;
+      };
+      if (unnamed()) return;
       const now = () => same(copyHashes()[kind], pair) && !approveWhy(pair[0]);
       const moved = () => {
         opts.toast(`계획·탭 상태가 바뀜 — 승인하지 않음: 다시 그린 「${kind === "draft" ? "초안 승인" : "생성 승인"}」 칸을 보고 다시 누르세요`, "warn");
@@ -1482,6 +1493,7 @@ window.DPPipeline = (() => {
         render();
         return;
       }
+      if (unnamed()) { render(); return; }
       if (!now()) {
         moved();
         return;

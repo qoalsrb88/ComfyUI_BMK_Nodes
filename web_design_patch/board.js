@@ -1727,7 +1727,7 @@
       ["Q", "Before(누름)", { code: "KeyQ", hold: true }], ["S", "전/후 슬라이더", { code: "KeyS" }], ["M", "마스크 없이", { code: "KeyM" }],
       ["D", "ΔE 히트맵", { code: "KeyD" }], ["C", "컨텍스트", { code: "KeyC" }], ["Esc", "보기 해제", { code: "Escape" }], ["B", "바탕", { code: "KeyB" }],
       ["O", "사각형", { code: "KeyO" }], ...VIEW_KEYS, ["?", "도움말", { code: "Slash", shift: true }]],
-    edit: [["끌기", "새 크롭·이동·크기"], ["P", "부품 상자", { code: "KeyP" }], ["Enter", "만들기·제안 적용", { code: "Enter" }],
+    edit: [["끌기", "대상→자동 크롭·이동·크기"], ["Alt+끌기", "크롭 직접"], ["P", "부품 상자", { code: "KeyP" }], ["Enter", "만들기·제안 적용", { code: "Enter" }],
       ["Tab", "다음 크롭", { code: "Tab" }], ["⇧Tab", "이전 크롭", { code: "Tab", shift: true }], ["←→↑↓", "미세 이동"],
       ["Del", "크롭 지우기", { code: "Delete" }], ["L", "잠금", { code: "KeyL" }],
       ["Ctrl+Z", "되돌리기", { code: "KeyZ", ctrl: true }], ["Ctrl+Y", "다시", { code: "KeyY", ctrl: true }], ["Esc", "취소·나가기", { code: "Escape" }],

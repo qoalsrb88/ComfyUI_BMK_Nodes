@@ -193,6 +193,32 @@ window.DPLayoutGeom = (() => {
     return [x0, y0, x0 + w, y0 + h];
   }
 
+  function autoCrop(box, canvas) {
+    // 대상 먼저: 기존 맞춤 결과에서 작은 축만 384로 키우고 상자 중심에 둔다.
+    const r = suggest([box], canvas, true);
+    for (const axis of [0, 1]) {
+      if (r[axis + 2] - r[axis] >= SMALL) continue;
+      const s = Math.min(SMALL, canvas[axis]);
+      r[axis] = Math.min(Math.max(rnd((box[axis] + box[axis + 2] - s) / 2, POS), 0), canvas[axis] - s);
+      r[axis + 2] = r[axis] + s;
+    }
+    return r;
+  }
+
+  function expandToBoxes(rect, boxes, canvas) {
+    // 기존 크롭·모든 상자를 보존하는 제안. 맞춤이 이동/축소하면 합집합을 128 배수로 넓힌다.
+    const all = [rect, ...boxes, suggest(boxes, canvas, true)];
+    const lo = [0, 1].map((a) => Math.min(...all.map((r) => r[a])));
+    const hi = [0, 1].map((a) => Math.max(...all.map((r) => r[a + 2])));
+    const sizes = [0, 1].map((a) => Math.ceil((hi[a] - lo[a]) / SIZE) * SIZE);
+    if (sizes[0] > RATIO * sizes[1]) sizes[1] = Math.ceil(sizes[0] / RATIO / SIZE) * SIZE;
+    if (sizes[1] > RATIO * sizes[0]) sizes[0] = Math.ceil(sizes[1] / RATIO / SIZE) * SIZE;
+    const s = sizes.map((v, a) => Math.min(v, canvas[a]));
+    const p = [0, 1].map((a) => Math.min(Math.max(rnd((lo[a] + hi[a] - s[a]) / 2, POS),
+      Math.max(0, hi[a] - s[a])), Math.min(lo[a], canvas[a] - s[a])));
+    return [p[0], p[1], p[0] + s[0], p[1] + s[1]];
+  }
+
   function rectProblem(rect, canvas) {
     // G5: 형식 오류 "error" → 캔버스 밖 "outside" → 비 > 3 "ratio" → null
     if (!Array.isArray(rect) || rect.length !== 4 || !rect.every((v) => Number.isInteger(v) && Math.abs(v) <= COORD_MAX)
@@ -404,6 +430,6 @@ window.DPLayoutGeom = (() => {
     return out;
   }
 
-  return { SIZE, POS, RATIO, NAME_MSGS, TEXT_MSGS, rnd, move, resize, grow, newRect, suggest, rectProblem, gptSize,
+  return { SIZE, POS, RATIO, NAME_MSGS, TEXT_MSGS, rnd, move, resize, grow, newRect, suggest, autoCrop, expandToBoxes, rectProblem, gptSize,
     splitNnn, nameSide, checkName, checkText, fold, geomChecks };
 })();
