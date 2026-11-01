@@ -5246,14 +5246,47 @@ def image_header(path: str, kind: str) -> dict:
                 raise ValueError("짧은 머리")
             return {"w": int.from_bytes(head[18:22], "big"), "h": int.from_bytes(head[14:18], "big"),
                     "depth": int.from_bytes(head[22:24], "big"), "mode": int.from_bytes(head[24:26], "big")}
-        if kind == "webp":  # Pillow 의 WebP 여는 길은 파일 전체를 읽는다(WebPAnimDecoder(fp.read())) — RIFF 머리만 직접
-            with open(path, "rb") as f:
+        # 셋 다 머리를 직접 읽는다 — Pillow 는 WebP 를 통째로 읽고(WebPAnimDecoder(fp.read())), 기본 상한(≈ 179MP)이 D142 의 200MP 보다 작다
+        with open(path, "rb") as f:
+            if kind == "webp":
                 return _webp_size(f.read(30))
-        with Image.open(path) as im:  # PNG·JPEG 는 머리(IHDR·SOF)까지만 읽음(픽셀은 풀지 않음)
-            w, h = im.size
-        return {"w": int(w), "h": int(h)}
-    except (OSError, ValueError, Image.DecompressionBombError):
+            if kind == "png":
+                head = f.read(24)
+                if head[12:16] != b"IHDR":
+                    raise ValueError("PNG IHDR 없음")
+                return {"w": int.from_bytes(head[16:20], "big"), "h": int.from_bytes(head[20:24], "big")}
+            return _jpeg_size(f)
+    except (OSError, ValueError):
         raise _Reject(400, "그림 파일을 읽을 수 없습니다(깨졌거나 지원하지 않는 형식)") from None
+
+
+def _jpeg_size(f) -> dict:
+    """JPEG 마커를 차례로 건너뛰어 SOF(C0–CF 중 C4·C8·CC 제외)의 크기를 읽는다. 못 찾으면 ValueError."""
+    if f.read(2) != b"\xff\xd8":
+        raise ValueError("JPEG SOI 없음")
+    while True:
+        b = f.read(1)
+        while b == b"\xff":
+            b = f.read(1)
+        if not b:
+            raise ValueError("JPEG SOF 없음")
+        marker = b[0]
+        if marker in (0x01, 0xD8) or 0xD0 <= marker <= 0xD7:  # 길이 없는 마커
+            continue
+        seg = f.read(2)
+        if len(seg) < 2:
+            raise ValueError("JPEG 짧음")
+        n = int.from_bytes(seg, "big")
+        if n < 2:
+            raise ValueError("JPEG 마커 길이")
+        if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+            body = f.read(5)
+            if len(body) < 5:
+                raise ValueError("JPEG SOF 짧음")
+            return {"w": int.from_bytes(body[3:5], "big"), "h": int.from_bytes(body[1:3], "big")}
+        if marker == 0xDA:  # SOS 전에 SOF 가 없음
+            raise ValueError("JPEG SOF 없음")
+        f.seek(n - 2, 1)
 
 
 def _webp_size(head: bytes) -> dict:
@@ -5330,7 +5363,12 @@ async def recv_upload(request: web.Request, dest_dir: str, *, limit: int = _MAX_
     if request.content_length is not None and request.content_length > limit:
         raise _Reject(413, "파일이 너무 큽니다(2GB 까지)")
     part = _part_path(dest_dir)
-    f = await asyncio.to_thread(open, part, "xb")
+    opener = asyncio.ensure_future(asyncio.to_thread(open, part, "xb"))
+    try:
+        f = await asyncio.shield(opener)  # 여는 도중 취소돼도 스레드는 파일을 만든다 — 끝나길 기다려 닫고 지움
+    except BaseException:
+        await asyncio.shield(_recv_cleanup(None, part, opener))
+        raise
     n, pending = 0, None
     try:
         async for chunk in request.content.iter_chunked(_UPLOAD_CHUNK):
@@ -5355,13 +5393,16 @@ async def _recv_cleanup(f, part: str, pending) -> None:
     """recv_upload 실패 정리: 진행 중인 쓰기(작업 스레드)가 끝나길 기다린 뒤 닫기·지우기도 스레드에서(루프를 막지 않음)."""
     if pending is not None:
         with contextlib.suppress(BaseException):
-            await pending
+            got = await pending
+            if f is None:  # 열기 작업이었으면 그 결과가 닫을 파일
+                f = got
     await asyncio.to_thread(_close_drop, f, part)
 
 
 def _close_drop(f, part: str) -> None:
-    with contextlib.suppress(OSError):
-        f.close()
+    if f is not None:
+        with contextlib.suppress(OSError):
+            f.close()
     _drop(part)
 
 
@@ -5460,7 +5501,7 @@ def _sweep_new_tmp(base_dir: str) -> None:
 def _is_link(path: str) -> bool:
     """심볼릭 링크·정션(Windows 재분석 지점)이면 True."""
     try:
-        if os.path.islink(path) or os.path.isjunction(path):
+        if os.path.islink(path) or (hasattr(os.path, "isjunction") and os.path.isjunction(path)):
             return True
         st = os.lstat(path)
     except OSError:

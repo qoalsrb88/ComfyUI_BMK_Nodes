@@ -53457,8 +53457,17 @@ def batch9_recv_unit():
             wf = t / f"w{i}.webp"
             Image.new(mode, (321, 123), (1, 2, 3) + ((4,) if mode == "RGBA" else ())).save(wf, "WEBP", **kw)
             check(bd.image_header(str(wf), "webp") == {"w": 321, "h": 123}, f"B9R WebP 머리 직접(VP8L·VP8X) {mode} {kw}")
-        with patch.object(bd.Image, "open", side_effect=AssertionError("WebP 를 Pillow 로 열면 파일 전체를 읽음")):
-            check(bd.image_header(str(files["webp"][0]), "webp")["w"] == 64, "B9R WebP 는 Pillow 로 열지 않음")
+        with patch.object(bd.Image, "open", side_effect=AssertionError("Pillow 로 열면 WebP 는 통째로·큰 그림은 179MP 상한")):
+            check(all(bd.image_header(str(f), k) == {"w": s_[0], "h": s_[1]} for k, (f, s_) in files.items()),
+                  "B9R 머리를 Pillow 없이 직접(PNG IHDR·JPEG SOF·WebP RIFF)")
+        big = t / "big.png"  # 14000×14000 = 196MP — Pillow 기본 상한(≈ 179MP)은 넘고 D142 200MP 안
+        big.write_bytes(b"\x89PNG\r\n\x1a\n" + (13).to_bytes(4, "big") + b"IHDR" + (14000).to_bytes(4, "big") + (14000).to_bytes(4, "big") + bytes(9))
+        info_big = bd.image_header(str(big), "png")
+        bd.check_image_dims(info_big, 64)
+        check(info_big == {"w": 14000, "h": 14000}, "B9R 196MP PNG 머리는 통과(Pillow 상한에 안 걸림)")
+        exif_jpg = t / "exif.jpg"
+        Image.new("RGB", (77, 55), (9, 9, 9)).save(exif_jpg, "JPEG", exif=b"Exif\x00\x00" + bytes(5000), quality=80, progressive=True)
+        check(bd.image_header(str(exif_jpg), "jpeg") == {"w": 77, "h": 55}, "B9R JPEG 큰 APP1 건너뛰고 SOF(점진식 C2)")
 
         def rejects(fn, *a, code=400, **kw):
             try:
@@ -53554,6 +53563,32 @@ def batch9_recv_unit():
         except asyncio.CancelledError:
             cancelled = True
         check(cancelled and not [p for p in dest.iterdir() if p.name.endswith(".part")], "B9R 취소(끊김)되면 .part 지움")
+
+        async def cancel_mid_open():
+            import threading as _t2
+            slow, entered_o = _t2.Event(), _t2.Event()
+            real_open_ = open
+
+            def slow_open(path, mode="r", *a, **k):
+                if mode == "xb" and str(path).endswith(".part"):
+                    entered_o.set()
+                    slow.wait(5)
+                return real_open_(path, mode, *a, **k)
+
+            with patch("builtins.open", slow_open):
+                task = asyncio.ensure_future(bd.recv_upload(Req(chunks), str(dest)))
+                await asyncio.to_thread(entered_o.wait, 5)
+                task.cancel()
+                await asyncio.sleep(0.05)
+                slow.set()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    return True
+                return False
+
+        check(asyncio.run(cancel_mid_open()) and not [p for p in dest.iterdir() if p.name.endswith(".part")],
+              "B9R 파일 여는 도중 취소 — 만들어진 .part 를 닫고 지움")
         import threading as _th
         gate, entered = _th.Event(), _th.Event()
         real_open = open
@@ -53614,11 +53649,16 @@ def batch9_recv_unit():
         linked = t / "input2"
         linked.mkdir()
         import subprocess as _sp
-        made_link = _sp.run(["cmd", "/c", "mklink", "/J", str(linked / bd._NEW_TMP_DIRNAME), str(outside)], capture_output=True).returncode == 0
+        made_link = os.name == "nt" and _sp.run(["cmd", "/c", "mklink", "/J", str(linked / bd._NEW_TMP_DIRNAME), str(outside)],
+                                                capture_output=True).returncode == 0
+        if not made_link and os.name != "nt":
+            with contextlib.suppress(OSError):
+                os.symlink(outside, linked / bd._NEW_TMP_DIRNAME, target_is_directory=True)
+                made_link = True
         if made_link:
             bd._sweep_new_tmp(str(linked))
             check((outside / "keep").exists(), "B9R 임시 폴더 자체가 정션이면 따라가 지우지 않음")
-            os.rmdir(linked / bd._NEW_TMP_DIRNAME)
+            (os.rmdir if os.name == "nt" else os.remove)(linked / bd._NEW_TMP_DIRNAME)
         else:
             skip("B9R 정션 만들기 실패(권한) — 링크 임시 폴더 검사 건너뜀")
         (base / store.PROJECTS_DIRNAME / "p1").mkdir(parents=True)
