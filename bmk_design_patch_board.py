@@ -5216,6 +5216,8 @@ _UPLOAD_CHUNK = 1 << 20
 _UPLOAD_KINDS = {".psd": "psd", ".psb": "psb", ".png": "png", ".jpg": "jpeg", ".jpeg": "jpeg", ".webp": "webp"}
 _NEW_TMP_DIRNAME = ".bmk_dp_tmp"     # D118 — <input>/.bmk_dp_tmp/<토큰>/ 에서 만들고 옮김(bmk_design_patch/ 밖이라 프로젝트 목록에 안 뜸)
 _NEW_TMP_MAX_AGE = 86400             # D121 — 서버 시작 때 이보다 오래된 임시 폴더·.part 정리
+# Windows 예약 장치 이름 — 확장자 앞 이름(끝 공백 무시)이 이것이면 어느 폴더에서도 열 수 없다. ¹²³ 도 COM·LPT 숫자로 친다(store 의 프로젝트 이름 규칙보다 넓음)
+_UPLOAD_RESERVED_RE = re.compile(r"(con|prn|aux|nul|conin\$|conout\$|com[0-9\u00b9\u00b2\u00b3]|lpt[0-9\u00b9\u00b2\u00b3])", re.IGNORECASE)
 
 
 def sniff_image_kind(path: str) -> str | None:
@@ -5244,11 +5246,29 @@ def image_header(path: str, kind: str) -> dict:
                 raise ValueError("짧은 머리")
             return {"w": int.from_bytes(head[18:22], "big"), "h": int.from_bytes(head[14:18], "big"),
                     "depth": int.from_bytes(head[22:24], "big"), "mode": int.from_bytes(head[24:26], "big")}
-        with Image.open(path) as im:  # 머리만 읽음(픽셀은 풀지 않음)
+        if kind == "webp":  # Pillow 의 WebP 여는 길은 파일 전체를 읽는다(WebPAnimDecoder(fp.read())) — RIFF 머리만 직접
+            with open(path, "rb") as f:
+                return _webp_size(f.read(30))
+        with Image.open(path) as im:  # PNG·JPEG 는 머리(IHDR·SOF)까지만 읽음(픽셀은 풀지 않음)
             w, h = im.size
         return {"w": int(w), "h": int(h)}
     except (OSError, ValueError, Image.DecompressionBombError):
         raise _Reject(400, "그림 파일을 읽을 수 없습니다(깨졌거나 지원하지 않는 형식)") from None
+
+
+def _webp_size(head: bytes) -> dict:
+    """WebP RIFF 머리 30바이트에서 크기(VP8 손실·VP8L 무손실·VP8X 확장). 모르는 꼴이면 ValueError."""
+    if len(head) < 30 or head[:4] != b"RIFF" or head[8:12] != b"WEBP":
+        raise ValueError("WebP 머리가 아님")
+    tag = head[12:16]
+    if tag == b"VP8 " and head[23:26] == b"\x9d\x01\x2a":
+        return {"w": int.from_bytes(head[26:28], "little") & 0x3FFF, "h": int.from_bytes(head[28:30], "little") & 0x3FFF}
+    if tag == b"VP8L" and head[20] == 0x2F:
+        b = int.from_bytes(head[21:25], "little")
+        return {"w": (b & 0x3FFF) + 1, "h": ((b >> 14) & 0x3FFF) + 1}
+    if tag == b"VP8X":
+        return {"w": int.from_bytes(head[24:27], "little") + 1, "h": int.from_bytes(head[27:30], "little") + 1}
+    raise ValueError("모르는 WebP 꼴")
 
 
 def check_image_dims(info: dict, min_side: int) -> None:
@@ -5272,7 +5292,7 @@ def check_upload_name(filename) -> str:
         drefs.check_ref_name(name, any_ext=True)
     except ValueError:
         raise _Reject(400, "파일 이름에 쓸 수 없는 문자가 있습니다") from None
-    if store._WIN_RESERVED_RE.match(name) or name.startswith("."):
+    if _UPLOAD_RESERVED_RE.fullmatch(name.split(".", 1)[0].rstrip(" ")) or name.startswith("."):
         raise _Reject(400, "그 파일 이름은 쓸 수 없습니다(Windows 예약 이름·'.' 로 시작)")
     if os.path.splitext(name)[1].lower() not in _UPLOAD_KINDS:
         raise _Reject(400, "PSD·PSB·PNG·JPG·WEBP 파일만 받습니다")
@@ -5310,22 +5330,39 @@ async def recv_upload(request: web.Request, dest_dir: str, *, limit: int = _MAX_
     if request.content_length is not None and request.content_length > limit:
         raise _Reject(413, "파일이 너무 큽니다(2GB 까지)")
     part = _part_path(dest_dir)
-    n = 0
+    f = await asyncio.to_thread(open, part, "xb")
+    n, pending = 0, None
     try:
-        with open(part, "xb") as f:
-            async for chunk in request.content.iter_chunked(_UPLOAD_CHUNK):
-                n += len(chunk)
-                if n > limit:
-                    raise _Reject(413, "파일이 너무 큽니다(2GB 까지)")
-                await asyncio.to_thread(f.write, chunk)
+        async for chunk in request.content.iter_chunked(_UPLOAD_CHUNK):
+            n += len(chunk)
+            if n > limit:
+                raise _Reject(413, "파일이 너무 큽니다(2GB 까지)")
+            pending = asyncio.ensure_future(asyncio.to_thread(f.write, chunk))
+            await asyncio.shield(pending)  # 취소돼도 쓰기는 끝까지 — 아래에서 기다린 뒤 닫는다
+            pending = None
         if n == 0:
             raise _Reject(400, "빈 파일입니다")
         if request.content_length is not None and n != request.content_length:
             raise _Reject(400, "파일을 받다가 끊겼습니다 — 다시 올려 주세요")
-    except BaseException:  # 클라이언트 끊김(CancelledError)까지 — 반쯤 받은 파일을 남기지 않는다
-        _drop(part)
+        await asyncio.to_thread(f.close)
+    except BaseException:  # 클라이언트 끊김(CancelledError)까지 — 반쯤 받은 파일을 남기지 않는다(닫기·지우기는 스레드에서 — 루프를 막지 않음)
+        await asyncio.shield(_recv_cleanup(f, part, pending))
         raise
     return part
+
+
+async def _recv_cleanup(f, part: str, pending) -> None:
+    """recv_upload 실패 정리: 진행 중인 쓰기(작업 스레드)가 끝나길 기다린 뒤 닫기·지우기도 스레드에서(루프를 막지 않음)."""
+    if pending is not None:
+        with contextlib.suppress(BaseException):
+            await pending
+    await asyncio.to_thread(_close_drop, f, part)
+
+
+def _close_drop(f, part: str) -> None:
+    with contextlib.suppress(OSError):
+        f.close()
+    _drop(part)
 
 
 def copy_in(src: str, dest_dir: str, *, limit: int = _MAX_UPLOAD) -> str:
@@ -5345,8 +5382,13 @@ def copy_in(src: str, dest_dir: str, *, limit: int = _MAX_UPLOAD) -> str:
         raise _Reject(400, "빈 파일입니다")
     part = _part_path(dest_dir)
     try:
+        n = 0
         with open(src, "rb") as fi, open(part, "xb") as fo:
-            shutil.copyfileobj(fi, fo, _UPLOAD_CHUNK)
+            while chunk := fi.read(_UPLOAD_CHUNK):
+                n += len(chunk)
+                if n > limit:  # 복사 도중 원본이 커져도(다른 프로그램이 저장 중) 상한
+                    raise _Reject(413, "파일이 너무 큽니다(2GB 까지)")
+                fo.write(chunk)
     except BaseException:
         _drop(part)
         raise
@@ -5387,7 +5429,15 @@ def unique_file_name(folder: str, name: str) -> str:
 
 def _sweep_new_tmp(base_dir: str) -> None:
     """서버 시작 때(register_routes) <input>/.bmk_dp_tmp 안 _NEW_TMP_MAX_AGE 넘은 항목을 지운다(D121 — 만들다 꺼진 새 프로젝트 임시 폴더)."""
-    tmp = os.path.join(base_dir, _NEW_TMP_DIRNAME)
+    tmp = os.path.join(os.path.abspath(base_dir), _NEW_TMP_DIRNAME)
+    if _is_link(tmp) or not os.path.isdir(tmp):
+        if os.path.lexists(tmp) and _is_link(tmp):
+            logger.warning("%s 새 프로젝트 임시 폴더가 링크라 정리하지 않음: %s", _TAG, tmp)
+        return
+    real = os.path.normcase(os.path.realpath(tmp))
+    if real != os.path.normcase(os.path.normpath(tmp)):
+        logger.warning("%s 새 프로젝트 임시 폴더의 실제 경로가 달라 정리하지 않음: %s", _TAG, tmp)
+        return
     try:
         entries = list(os.scandir(tmp))
     except OSError:
@@ -5395,7 +5445,9 @@ def _sweep_new_tmp(base_dir: str) -> None:
     now = time.time()
     for e in entries:
         try:
-            if now - e.stat(follow_symlinks=False).st_mtime < _NEW_TMP_MAX_AGE:
+            if _is_link(e.path) or now - e.stat(follow_symlinks=False).st_mtime < _NEW_TMP_MAX_AGE:
+                continue  # 링크·정션은 따라가지도 지우지도 않음(만든 적 없음)
+            if os.path.normcase(os.path.dirname(os.path.realpath(e.path))) != real:
                 continue
             if e.is_dir(follow_symlinks=False):
                 shutil.rmtree(e.path, ignore_errors=True)
@@ -5403,6 +5455,17 @@ def _sweep_new_tmp(base_dir: str) -> None:
                 os.remove(e.path)
         except OSError as err:
             logger.warning("%s 새 프로젝트 임시 항목을 지우지 못함: %s", _TAG, err)
+
+
+def _is_link(path: str) -> bool:
+    """심볼릭 링크·정션(Windows 재분석 지점)이면 True."""
+    try:
+        if os.path.islink(path) or os.path.isjunction(path):
+            return True
+        st = os.lstat(path)
+    except OSError:
+        return False
+    return bool(getattr(st, "st_file_attributes", 0) & 0x400)  # FILE_ATTRIBUTE_REPARSE_POINT
 
 
 def _field(data: dict, name: str, rx: re.Pattern, required: bool = True) -> str | None:

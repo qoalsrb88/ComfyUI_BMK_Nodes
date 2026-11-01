@@ -53453,6 +53453,12 @@ def batch9_recv_unit():
         info = bd.image_header(str(psd), "psd")
         check(info == {"w": 200, "h": 300, "depth": 8, "mode": 3}, f"B9R PSD 머리 크기·깊이·모드 {info}")
         check(all(bd.image_header(str(f), k) == {"w": s[0], "h": s[1]} for k, (f, s) in files.items()), "B9R 그림 머리 크기(픽셀 안 풂)")
+        for i, (mode, kw) in enumerate((("RGB", {"lossless": True}), ("RGBA", {}), ("RGBA", {"lossless": True}))):
+            wf = t / f"w{i}.webp"
+            Image.new(mode, (321, 123), (1, 2, 3) + ((4,) if mode == "RGBA" else ())).save(wf, "WEBP", **kw)
+            check(bd.image_header(str(wf), "webp") == {"w": 321, "h": 123}, f"B9R WebP 머리 직접(VP8L·VP8X) {mode} {kw}")
+        with patch.object(bd.Image, "open", side_effect=AssertionError("WebP 를 Pillow 로 열면 파일 전체를 읽음")):
+            check(bd.image_header(str(files["webp"][0]), "webp")["w"] == 64, "B9R WebP 는 Pillow 로 열지 않음")
 
         def rejects(fn, *a, code=400, **kw):
             try:
@@ -53468,7 +53474,8 @@ def batch9_recv_unit():
               "B9R 크기 상한·하한(짧은 변 인자·긴 변 30000·넓이 200MP)")
         check(bd.check_upload_name("  캐릭터 A.PSD ") == "캐릭터 A.PSD" and bd.check_upload_name("x.webp") == "x.webp", "B9R 받을 이름 정규화")
         check(all(rejects(bd.check_upload_name, n) for n in ("../a.png", "a\\b.png", "a:b.png", "CON.png", "con.psd", ".x.png", "a.gif",
-                                                             "", None, "a" * 201 + ".png", "a\x01.png")),
+                                                             "", None, "a" * 201 + ".png", "a\x01.png",
+                                                             "COM¹.png", "lpt².psd", "nul .png", "CONIN$.png", "a.png:x")),
               "B9R 받을 이름 거절(폴더·금지 문자·예약 이름·점 시작·확장자·길이·제어 문자)")
         absf = str(t / "a.png")
         check(bd.clean_user_path(f'  "{absf}"  ') == os.path.normpath(absf) and bd.clean_user_path(f"'{absf}'") == os.path.normpath(absf),
@@ -53499,6 +53506,10 @@ def batch9_recv_unit():
         empty = t / "empty.png"
         empty.write_bytes(b"")
         check(rejects(bd.copy_in, str(empty), str(dest)), "B9R 빈 파일 400")
+        real_stat = os.stat
+        with patch.object(bd.os, "stat", side_effect=lambda q, *a, **k: os.stat_result((0o100666, 0, 0, 1, 0, 0, 3, 0, 0, 0))
+                          if q == str(files["png"][0]) else real_stat(q, *a, **k)):
+            check(rejects(bd.copy_in, str(files["png"][0]), str(dest), code=413, limit=10), "B9R 복사 도중 원본이 커져도 실제 바이트로 상한 413")
         check(not [p for p in dest.iterdir() if p.name.endswith(".part")], "B9R 남은 .part 없음")
         check(bd.unique_file_name(str(dest), "그림.png") == "그림_2.png" and bd.unique_file_name(str(dest), "그림.PNG") == "그림_2.PNG"
               and bd.unique_file_name(str(dest), "새.png") == "새.png" and bd.unique_file_name(str(t / "없는폴더"), "a.png") == "a.png",
@@ -53543,6 +53554,48 @@ def batch9_recv_unit():
         except asyncio.CancelledError:
             cancelled = True
         check(cancelled and not [p for p in dest.iterdir() if p.name.endswith(".part")], "B9R 취소(끊김)되면 .part 지움")
+        import threading as _th
+        gate, entered = _th.Event(), _th.Event()
+        real_open = open
+
+        class SlowFile:
+            def __init__(self, path):
+                self.f = real_open(path, "xb")
+                self.closed_in_main = None
+
+            def write(self, b):
+                entered.set()
+                gate.wait(5)
+                return self.f.write(b)
+
+            def close(self):
+                self.closed_in_main = _th.current_thread() is _th.main_thread()
+                self.f.close()
+
+        made = []
+
+        def fake_open(path, mode="r", *a, **k):
+            if mode == "xb" and str(path).endswith(".part"):
+                made.append(SlowFile(path))
+                return made[-1]
+            return real_open(path, mode, *a, **k)
+
+        async def cancel_mid_write():
+            with patch("builtins.open", fake_open):
+                task = asyncio.ensure_future(bd.recv_upload(Req(chunks), str(dest)))
+                await asyncio.to_thread(entered.wait, 5)
+                task.cancel()
+                await asyncio.sleep(0.05)
+                gate.set()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    return True
+                return False
+
+        check(asyncio.run(cancel_mid_write()) and made and made[0].closed_in_main is False
+              and not [p for p in dest.iterdir() if p.name.endswith(".part")],
+              "B9R 쓰기 도중 취소 — 진행 중 쓰기를 기다린 뒤 작업 스레드에서 닫고 .part 지움")
 
         base = t / "input"
         old = base / bd._NEW_TMP_DIRNAME / "old"
@@ -53555,6 +53608,19 @@ def batch9_recv_unit():
         bd._sweep_new_tmp(str(base))
         check(not old.exists() and new.exists(), "B9R 서버 시작 때 1일 넘은 새 프로젝트 임시 폴더만 정리")
         bd._sweep_new_tmp(str(t / "없음"))
+        outside = t / "outside"
+        (outside / "keep").mkdir(parents=True)
+        os.utime(outside / "keep", (past, past))
+        linked = t / "input2"
+        linked.mkdir()
+        import subprocess as _sp
+        made_link = _sp.run(["cmd", "/c", "mklink", "/J", str(linked / bd._NEW_TMP_DIRNAME), str(outside)], capture_output=True).returncode == 0
+        if made_link:
+            bd._sweep_new_tmp(str(linked))
+            check((outside / "keep").exists(), "B9R 임시 폴더 자체가 정션이면 따라가 지우지 않음")
+            os.rmdir(linked / bd._NEW_TMP_DIRNAME)
+        else:
+            skip("B9R 정션 만들기 실패(권한) — 링크 임시 폴더 검사 건너뜀")
         (base / store.PROJECTS_DIRNAME / "p1").mkdir(parents=True)
         with patch.object(bd, "_PROJECT_INPUT", str(base)):
             names = {r.get("project") for r in bd._project_roots()}
