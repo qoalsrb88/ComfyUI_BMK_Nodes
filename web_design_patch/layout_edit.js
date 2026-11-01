@@ -41,6 +41,10 @@ window.DPLayoutEdit = (() => {
     return c.targets.length ? c.targets.map((t) => ({ tid: t.tid, text: t.text, box: t.box })) : [{ tid: "A", text: "", box: null }];
   }
 
+  function boxSignature(c) {
+    return JSON.stringify(plainTargets(c).map((t) => [t.tid, t.box]));
+  }
+
   function fieldNames(fs) {
     return fs.map((f) => FIELDS[f] || f).join("·");
   }
@@ -797,7 +801,8 @@ window.DPLayoutEdit = (() => {
       } finally {
         if (sent === mine) sent = null;
         // PSD 값 가져오기 등 사각형을 바꾸는 다른 쓰기도 옛 사각형 기준 제안을 남기지 않는다.
-        if (proposal && (!S.crop(proposal.id) || !sameRect(S.crop(proposal.id).rect, proposal.base))) proposal = null;
+        if (proposal && (!S.crop(proposal.id) || !sameRect(S.crop(proposal.id).rect, proposal.base)
+          || (proposal.boxes && boxSignature(S.crop(proposal.id)) !== proposal.boxes))) proposal = null;
         if (S.err) seen = null; // 다시 읽기 실패 — 다음 state 에서 다시 받는다
         showNotice();
         syncSel(false);
@@ -951,7 +956,12 @@ window.DPLayoutEdit = (() => {
       const checks = G.geomChecks({ canvas: S.L.canvas, crops: [cur] })[cur.id];
       if (checks.some((x) => x.tid === added && ["P-out", "P-edge", "P-70"].includes(x.code))) {
         const rect = G.expandToBoxes(cur.rect, cur.targets.map((t) => t.box).filter(Boolean), S.L.canvas);
-        proposal = { id: cur.id, rect, base: cur.rect.slice(), since: S.remote, note: "대상 상자를 위한 크롭 넓히기" };
+        if (G.rectProblem(rect, S.L.canvas)) {
+          proposal = null;
+          opts.toast("넓혀서 맞출 수 없음 — 크롭을 나누거나 직접 조정", "warn");
+        } else {
+          proposal = { id: cur.id, rect, base: cur.rect.slice(), since: S.remote, boxes: boxSignature(cur), note: "대상 상자를 위한 크롭 넓히기" };
+        }
       }
       render();
     }
@@ -1248,7 +1258,13 @@ window.DPLayoutEdit = (() => {
         + "지금 ★ 는 옛 크롭 기준으로 남습니다(옛 크롭 ★).")) return;
       proposal = null;
       await flushNudge();
+      if (p.boxes) await S.idle(); // 상자 삭제·실행 취소가 저장 중이면 끝난 값을 비교한다.
       const c = S.crop(p.id);
+      if (p.boxes && (!c || boxSignature(c) !== p.boxes)) {
+        opts.toast("대상 상자가 바뀌어 제안을 버렸습니다 — 다시 제안", "warn");
+        render();
+        return;
+      }
       if (!c || sameRect(c.rect, p.rect) || lockedNow(c.id)) {
         render();
         return;
@@ -1444,8 +1460,11 @@ window.DPLayoutEdit = (() => {
       // Esc 차례: 끌기 취소 → 상자·제안·초안·미세 이동 취소 → 선택 해제(복수 선택 포함) → 편집 모드 나가기
       if (drag) {
         cancel();
-      } else if (boxTid || proposal || draft) {
-        boxTid = proposal = draft = null;
+      } else if (boxTid) {
+        boxTid = null;
+        render();
+      } else if (proposal || draft) {
+        proposal = draft = null;
         render();
       } else if (boxSel) {
         boxSel = null;

@@ -49309,7 +49309,7 @@ def polish2_unit():
           and res["maskBlocked"]["log"] == ["setMask:true"] and res["maskBlocked"]["mode"] is None,
           f"[검토] 탭 = 켜진 모드를 끔(마스크는 나가기 한 번), ★ 없어 마스크 못 켜면 검토 그대로 "
           f"{res['toReview']['log']} {res['maskToReview']['log']} {res['maskBlocked']}")
-    check(res["editChips"][0] == "info:끌기 새 크롭·이동·크기" and "P" in res["editChips"] and "Ctrl+Z" in res["editChips"]
+    check(res["editChips"][:2] == ["info:끌기 대상→자동 크롭·이동·크기", "info:Alt+끌기 크롭 직접"] and "P" in res["editChips"] and "Ctrl+Z" in res["editChips"]
           and res["pipeChips"] == ["B", "O", "N", "F", "0", "1", "2", "I", "G"] and res["maskChips"][:5] == ["V", "D", "info:끌기 붓·변형", "info:⇧끌기 흐리기·비율/15°", "X"]
           and all("I" in chips for chips in (res["start"]["chips"], res["editChips"], res["pipeChips"], res["maskChips"]))
           and "I" not in res["refsChips"]
@@ -51937,20 +51937,44 @@ def batch8a_unit():
 
     check(bd.layout_state(root)["next_nnn"] == "002", "D93 GET /layout 첫 예약 번호")
     c = add("010_미정")
+    unnamed_rev = st.load_layout(root)["rev"]
     (refs / "011_모자.png").write_bytes(b"reference")
     preview = bd.layout_refs(root, "011_모자", c["id"])
     changed = rename(c, "011_모자")
     check(preview["n"] == 1 and not preview.get("fixed") and changed["refs"] == preview and dr.load_refs(root) is None,
           "D96 반영 전·현재 매칭 없음: auto 고정 생략, 새 이름 미리보기와 실제 매칭 일치")
+    undone = bd.layout_crop(root, st.load_layout(root)["rev"], "update",
+                            {"id": c["id"], "name": "010_미정", "restore_rev": unnamed_rev})["crop"]
+    check(undone["refs"]["n"] == 0 and not undone["refs"].get("fixed") and dr.load_refs(root) is None,
+          "A1 반영 전 010_미정 → 011_모자 → 실행 취소: 011 매칭을 새로 고정하지 않음")
+    (refs / "016_장갑.png").write_bytes(b"other reference")
+    changed = rename(undone, "016_장갑")
+    check(changed["refs"] == {"n": 1, "first": "016_장갑.png"} and dr.load_refs(root) is None,
+          "A1 실행 취소 후 다른 이름을 정해도 011 레퍼런스가 붙지 않음")
+    bd.layout_crop(root, st.load_layout(root)["rev"], "update",
+                   {"id": c["id"], "name": "010_미정", "restore_rev": unnamed_rev})
+    changed = rename(c, "011_모자")
+    matched_rev = st.load_layout(root)["rev"]
     preview = bd.layout_refs(root, "012_다른이름", c["id"])
     changed = rename(changed, "012_다른이름")
     check(preview["n"] == 1 and preview["fixed"] and changed["refs"] == preview
           and dr.load_refs(root)["links"][c["id"]]["fixed"]["auto"], "D96 반영 전이라도 현재 매칭 파일이 있으면 고정")
+    fixed_bytes = Path(root, "refs.json").read_bytes()
+    undone = bd.layout_crop(root, st.load_layout(root)["rev"], "update",
+                            {"id": c["id"], "name": "011_모자", "restore_rev": matched_rev})["crop"]
+    check(undone["refs"] == preview and Path(root, "refs.json").read_bytes() == fixed_bytes,
+          "A1/B31 반영 전 크롭도 이미 있던 고정은 이름 실행 취소 뒤 그대로")
     original = m["crops"][0]
+    applied_rev = st.load_layout(root)["rev"]
     preview = bd.layout_refs(root, "013_다른부위", original["id"])
     changed = rename(original, "013_다른부위")
     check(preview["n"] == 0 and preview["fixed"] and changed["refs"] == preview
           and original["id"] in dr.load_refs(root)["links"], "D96 반영된 크롭은 매칭 없어도 빈 auto 고정 유지")
+    fixed_bytes = Path(root, "refs.json").read_bytes()
+    undone = bd.layout_crop(root, st.load_layout(root)["rev"], "update",
+                            {"id": original["id"], "name": original["name"], "restore_rev": applied_rev})["crop"]
+    check(undone["refs"] == preview and Path(root, "refs.json").read_bytes() == fixed_bytes,
+          "A1/B31 반영된 크롭의 이름 실행 취소도 기존 고정 유지")
     check(bd.layout_refs(root, "090_새이름", c["id"])["fixed"], "D96 이미 고정된 연결은 미리보기에서도 유지")
     rev = st.load_layout(root)["rev"]
     expect_raises(lambda: bd.layout_crop(root, rev, "add", {"rect": [0, 0, 384, 384]}),
@@ -51972,11 +51996,35 @@ def batch8a_unit():
         check(bd._layout_next_nnn(root, mm, ll, doc) == expected, f"D93 번호 예약 {label}")
     (refs / "100_참고.dat").write_bytes(b"reserved")
     check(bd._layout_next_nnn(root, empty, {}, None) == "101", "D93 refs NNN_* 파일은 확장자와 무관하게 예약")
+    for filename in ("1000_참고.png", "20261102_시안.png", "999.png", "999-no-underscore.png"):
+        (refs / filename).write_bytes(b"not a crop prefix")
+    check(bd._layout_next_nnn(root, empty, {}, None) == "101", "A2 파일은 정확한 NNN_만 예약: 4자리·날짜·밑줄 없음 무시")
     Path(root, "specs").mkdir(exist_ok=True)
     Path(root, "specs", "200_orphan.json").write_text("{}", encoding="utf-8")
+    Path(root, "specs", "20261102_note.json").write_text("{}", encoding="utf-8")
     check(bd.layout_state(root)["next_nnn"] == "201", "D93 GET /layout 은 고아 specs 번호도 피함")
     with patch.object(bd.os, "scandir", side_effect=PermissionError("test")):
         check(bd._layout_next_nnn(root, empty, {}, None) is None, "D93 예약 파일을 읽지 못하면 자동 번호 없음")
+    check(bd._layout_next_nnn(root, dict(empty, source={}), {}, None) == "201", "A7 refs_dir 미설정은 허용")
+    missing_manifest = dict(m, source=dict(m["source"], refs_dir=str(run / "missing_refs")))
+    with patch.object(bd.store, "load_manifest", return_value=missing_manifest):
+        check(bd.layout_state(root)["next_nnn"] is None, "A7 설정된 refs_dir 가 없으면 GET /layout next_nnn=null")
+    held = refs / dr.HELD_DIR
+    held.mkdir()
+    (held / "300_보류__261102-010000.png").write_bytes(b"held reference")
+    (held / "20261102_시안.png").write_bytes(b"not a crop prefix")
+    check(bd.layout_state(root)["next_nnn"] == "301", "A2/A7 _보류 NNN_ 번호 예약, 날짜 파일은 무시")
+    scan = bd.os.scandir
+
+    def held_denied(folder):
+        if Path(folder) == held:
+            raise PermissionError("held folder denied")
+        return scan(folder)
+
+    with patch.object(bd.os, "scandir", side_effect=held_denied):
+        check(bd._layout_next_nnn(root, empty, {}, None) is None, "A7 _보류 권한 오류도 자동 번호 없음")
+    check(bd._layout_next_nnn(root, dict(empty, source={"refs_dir": str(refs / "100_참고.dat")}), {}, None) is None,
+          "A7 refs_dir 가 디렉터리가 아닌 경우에도 자동 번호 없음")
     Path(root, "specs", "999_orphan.json").write_text("{}", encoding="utf-8")
     check(bd.layout_state(root)["next_nnn"] is None, "D93 999 초과 null")
     bd.layout_crop(root, st.load_layout(root)["rev"], "delete", {"id": original["id"]})
@@ -52095,6 +52143,50 @@ await scenario("geometry",async()=>{
   }
   const boxes=[[100,100,200,200],[1500,1500,1600,1600]],base=[500,500,1012,1012];
   const a=G.expandToBoxes(base,boxes,[2048,2048]);r.union=[base,...boxes].every(b=>contains8(a,b)) && !G.rectProblem(a,[2048,2048]);
+  return r;
+});
+await scenario("proposalStale",async()=>{
+  const r={};
+  for(const mode of ["undo","clear","remove","queuedClear","text"]){
+    const c=crop("010_box","010_모자",[512,512,1024,1024]);
+    const env=await editor([c]);await env.pick(c.name);
+    env.button(env.panel,"대상 상자 추가").fire("click");await drag8(env,[1100,700],[1200,800]);
+    r[mode+"Setup"]=marks8(env).some(e=>e.attrs?.class==="prop");
+    if(mode==="undo")env.key("KeyZ",{ctrlKey:true});
+    else if(mode==="remove")env.find(env.panel,e=>e.tagName==="BUTTON" && e.title==="B 대상 빼기").fire("click");
+    else if(mode==="text")env.type("t-B","이름만 수정").fire("change");
+    else {
+      if(mode==="queuedClear")env.srv.delay=80;
+      env.find(env.panel,e=>e.tagName==="BUTTON" && e.title==="B 상자 지우기").fire("click");
+    }
+    if(mode!=="queuedClear")await sleep(40);
+    if(mode==="text")r.textKeepsProposal=marks8(env).some(e=>e.attrs?.class==="prop");
+    env.key("Enter");await sleep(mode==="queuedClear"?240:40);
+    r[mode]=mode==="text" ? env.srv.log.some(b=>b.op==="update" && b.rect)
+      : !env.srv.log.some(b=>b.rect) && equal8(env.srv.lay.crops[0].rect,[512,512,1024,1024]) && !marks8(env).some(e=>e.attrs?.class==="prop");
+  }
+  return r;
+});
+await scenario("escapeBoxMode",async()=>{
+  const env=await editor([]);await drag8(env,[500,500],[700,700]);
+  const before=marks8(env).find(e=>e.attrs?.class==="draft");
+  env.type("part","보존").blur();env.key("KeyP");env.key("Escape");
+  const after=marks8(env).find(e=>e.attrs?.class==="draft");
+  const r={draftKept:!!after && equal8(rect8(before),rect8(after)),nameKept:env.field("part")?.value==="보존",
+    boxKept:env.panel.textContent.includes("대상 A 상자 포함"),noWrite:env.srv.log.length===0};
+  env.key("Escape");r.secondCancels=!marks8(env).some(e=>e.attrs?.class==="draft");return r;
+});
+await scenario("impossibleGrow",async()=>{
+  const r={};
+  for(const [key,canvas,box] of [["wide",[4096,512],[3900,100,4000,200]],["tall",[512,4096],[100,3900,200,4000]]]){
+    const c=crop("001_box","001_모자",[0,0,512,512]);
+    const env=await editor([c],{canvas});await env.pick(c.name);
+    env.button(env.panel,"대상 상자 추가").fire("click");await drag8(env,box.slice(0,2),box.slice(2));
+    r[key+"Warning"]=env.toasts.some(t=>t.includes("넓혀서 맞출 수 없음 — 크롭을 나누거나 직접 조정"));
+    r[key+"NoProposal"]=!marks8(env).some(e=>e.attrs?.class==="prop") && !env.button(env.panel,"제안 적용");
+    env.key("Enter");await sleep(40);
+    r[key+"NoRectWrite"]=env.srv.log.length===1 && !env.srv.log[0].rect && equal8(env.srv.log[0].targets.at(-1).box,box);
+  }
   return r;
 });
 await scenario("checklist",async()=>{

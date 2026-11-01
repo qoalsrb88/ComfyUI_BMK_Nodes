@@ -2967,14 +2967,20 @@ def _layout_next_nnn(root: str, m: dict, lay: dict | None, doc: dict | None) -> 
     for cid, link in (doc or {}).get("links", {}).items():
         take(cid)
         take((link.get("fixed") or {}).get("name"))
-    for folder in (_refs_dir(m), os.path.join(root, "specs")):
-        if not folder or not os.path.exists(folder):
-            continue
+    refs_dir = _refs_dir(m)
+    folders = ([(refs_dir, False), (os.path.join(refs_dir, drefs.HELD_DIR), True)] if refs_dir else [])
+    folders.append((os.path.join(root, "specs"), True))
+    for folder, optional in folders:
         try:
             with os.scandir(folder) as entries:
                 for entry in entries:
                     if entry.is_file():
-                        take(entry.name)
+                        match = re.match(r"^([0-9]{3})_", entry.name)
+                        if match:
+                            used.append(int(match[1]))
+        except FileNotFoundError:
+            if not optional:  # 설정된 refs_dir 자체가 없으면 예약 번호를 확인할 수 없다.
+                return None
         except OSError:  # 읽을 수 없는 예약 번호를 001로 오인하지 않는다.
             return None
     n = max(used) + 1
@@ -3324,7 +3330,10 @@ def layout_crop(root: str, rev: int, op: str, data: dict) -> dict:
     # 바꾸면 실패한 쪽의 되돌리기가 성공한 쪽에 필요한 고정을 지울 수 있었다(codex13). 잠금 순서 = 이것 → manifest_lock(_write_refs 와 같음)
     with _refs_write_lock(root) if rename else contextlib.nullcontext():
         # 마지막 반영 이름으로 되돌리기는 고정하지 않는다 — 이름 매칭이 반영 때와 같아지는 것이 되돌리기
-        pinned = rename and not restore_manifest and _fix_before_rename(root, rev, crop_id, data["name"])
+        # 반영 전 이름 실행 취소도 새 고정을 만들지 않는다. 이미 있는 고정은 B31 계약대로 남긴다.
+        restoring_new = rename and restore_rev is not None and not any(
+            c.get("id") == crop_id for c in store.load_manifest(root)["crops"])
+        pinned = rename and not restore_manifest and not restoring_new and _fix_before_rename(root, rev, crop_id, data["name"])
         try:
             (cid, gone_at), new_rev = store.update_layout(root, mutate, expect_rev=rev)
         except Exception:
