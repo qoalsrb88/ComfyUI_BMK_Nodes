@@ -956,7 +956,7 @@ window.DPLayoutEdit = (() => {
       const checks = G.geomChecks({ canvas: S.L.canvas, crops: [cur] })[cur.id];
       if (checks.some((x) => x.tid === added && ["P-out", "P-edge", "P-70"].includes(x.code))) {
         const rect = G.expandToBoxes(cur.rect, cur.targets.map((t) => t.box).filter(Boolean), S.L.canvas);
-        if (G.rectProblem(rect, S.L.canvas)) {
+        if (!rect || sameRect(rect, cur.rect) || G.rectProblem(rect, S.L.canvas)) {
           proposal = null;
           opts.toast("넓혀서 맞출 수 없음 — 크롭을 나누거나 직접 조정", "warn");
         } else {
@@ -975,7 +975,11 @@ window.DPLayoutEdit = (() => {
 
     async function createDraft() {
       const d = draft;
-      if (!d || S.busy) return;
+      if (!d) return;
+      if (S.busy) {
+        opts.toast("앞 레이아웃 편집을 저장하는 중입니다 — 끝난 뒤 다시 하세요", "warn");
+        return;
+      }
       const name = composeName(null); // 기다리기 전에 — 그 사이 다른 크롭을 골라 쓴 이름(공유 edits)으로 만들지 않게
       await flushNudge();
       const issue = nameIssue(name, null);

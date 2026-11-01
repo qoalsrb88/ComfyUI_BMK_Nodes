@@ -2954,7 +2954,7 @@ def _layout_next_nnn(root: str, m: dict, lay: dict | None, doc: dict | None) -> 
 
     def take(value):
         if isinstance(value, str):
-            match = re.match(r"^([0-9]+)(?:_|$)", value)
+            match = re.match(r"^([0-9]{1,3})(?:_|$)", value)
             if match:
                 used.append(int(match[1]))
 
@@ -3006,7 +3006,11 @@ def layout_state(root: str, since: int | None = None) -> dict:
     if lay is not None and since == lay["rev"]:
         return {"unchanged": True, "rev": lay["rev"]}
     src = m.get("source") or {}
-    find_refs = _refs_finder(src.get("refs_dir"))
+    refs_unreadable = False
+    try:
+        find_refs = _refs_finder(src.get("refs_dir"))
+    except OSError:
+        find_refs, refs_unreadable = None, True
     doc, refs_error = _refs_doc(root)
     out = {"exists": lay is not None or error is not None, "rev": lay["rev"] if lay else None,
            "editable": bool(m.get("base") and m.get("canvas")) and error is None, "error": error,
@@ -3014,7 +3018,7 @@ def layout_state(root: str, since: int | None = None) -> dict:
            "applied": False, "start_blocked": None,
            "pending_rerolls": _pending(root, m)[1], "refs_dir": find_refs is not None, "manifest_crops": len(m["crops"]),
            "psd": None, "psd_diff": None, "crops": [], "removed": [],
-           "next_nnn": None if refs_error else _layout_next_nnn(root, m, lay, doc)}
+           "next_nnn": None if refs_error or refs_unreadable else _layout_next_nnn(root, m, lay, doc)}
     snap = _read_snapshot(root, m)
     if lay is None:
         if out["editable"]:

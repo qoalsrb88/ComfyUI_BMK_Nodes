@@ -205,18 +205,40 @@ window.DPLayoutGeom = (() => {
     return r;
   }
 
+  function boxMargins(rect, box, canvas) {
+    const [x0, y0, x1, y1] = rect;
+    const w = x1 - x0;
+    const h = y1 - y0;
+    return [[box[0] - x0, w, x0 <= 0], [x1 - box[2], w, x1 >= canvas[0]],
+      [box[1] - y0, h, y0 <= 0], [y1 - box[3], h, y1 >= canvas[1]]];
+  }
+
   function expandToBoxes(rect, boxes, canvas) {
-    // 기존 크롭·모든 상자를 보존하는 제안. 맞춤이 이동/축소하면 합집합을 128 배수로 넓힌다.
-    const all = [rect, ...boxes, suggest(boxes, canvas, true)];
+    // 기존 크롭·모든 상자의 최소 합집합을 128 배수로 잡고, 새 크기에 여백이 부족한 변만 반복해서 넓힌다.
+    if (!boxes.length) return null;
+    const all = [rect, ...boxes];
     const lo = [0, 1].map((a) => Math.min(...all.map((r) => r[a])));
     const hi = [0, 1].map((a) => Math.max(...all.map((r) => r[a + 2])));
+    if (lo[0] < 0 || lo[1] < 0 || hi[0] > canvas[0] || hi[1] > canvas[1]) return null;
     const sizes = [0, 1].map((a) => Math.ceil((hi[a] - lo[a]) / SIZE) * SIZE);
-    if (sizes[0] > RATIO * sizes[1]) sizes[1] = Math.ceil(sizes[0] / RATIO / SIZE) * SIZE;
-    if (sizes[1] > RATIO * sizes[0]) sizes[0] = Math.ceil(sizes[1] / RATIO / SIZE) * SIZE;
     const s = sizes.map((v, a) => Math.min(v, canvas[a]));
     const p = [0, 1].map((a) => Math.min(Math.max(rnd((lo[a] + hi[a] - s[a]) / 2, POS),
       Math.max(0, hi[a] - s[a])), Math.min(lo[a], canvas[a] - s[a])));
-    return [p[0], p[1], p[0] + s[0], p[1] + s[1]];
+    const bounds = [Math.min(...boxes.map((b) => b[0])), Math.min(...boxes.map((b) => b[1])),
+      Math.max(...boxes.map((b) => b[2])), Math.max(...boxes.map((b) => b[3]))];
+    let next = [p[0], p[1], p[0] + s[0], p[1] + s[1]];
+    while (!rectProblem(next, canvas)) {
+      // 상자 합집합의 여백 = 각 변에서 가장 불리한 상자의 여백. geomChecks의 P-edge·P-70 판정과 같다.
+      const need = boxMargins(next, bounds, canvas).map(([m, size, edge]) => !edge && (m < 8 || 50 * m < size || 20 * m < 3 * size));
+      if (!need.some(Boolean)) return next.some((v, i) => v !== rect[i]) ? next : null;
+      const grown = next.slice();
+      for (const [i, side] of [0, 2, 1, 3].entries()) {
+        if (need[i]) grown[side] = side < 2 ? Math.max(0, next[side] - SIZE) : Math.min(canvas[side - 2], next[side] + SIZE);
+      }
+      if (grown.every((v, i) => v === next[i])) return null;
+      next = grown;
+    }
+    return null; // 캔버스·비율 한도 때문에 여백을 확보할 수 없음
   }
 
   function rectProblem(rect, canvas) {
@@ -415,7 +437,7 @@ window.DPLayoutGeom = (() => {
           continue;
         }
         // 크롭 변이 캔버스 끝인 쪽은 여백을 만들 수 없음 — 경고에서 빼고, 거기만 좁으면 정보 P-canvas(store 와 같음)
-        const sides = [[bx0 - x0, w, x0 <= 0], [x1 - bx1, w, x1 >= W], [by0 - y0, h, y0 <= 0], [y1 - by1, h, y1 >= H]];
+        const sides = boxMargins(c.rect, t.box, lay.canvas);
         const margins = sides.filter(([, , edge]) => !edge);
         if (margins.some(([m, s]) => m < 8 || 50 * m < s)) {
           rows.push({ code: "P-edge", level: "warn", msg: `${t.tid} 부품이 경계에 닿음`, tid: t.tid });
