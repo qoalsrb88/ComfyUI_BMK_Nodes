@@ -26,6 +26,7 @@ window.DPRefEdit = (() => {
   const GONE_POLLS = 3; // 대기열에서 사라졌는데 결과 파일이 없는 폴링 수 → 실패로 봄
   const FORGET_POLLS = 5; // 끝난 컷의 실행 기록을 지우기 전에 대기열에서 빠지기를 기다리는 폴링 수(넘으면 그냥 보냄)
   const CLICK_PX = 4;
+  const MOVE_PX = 8; // 상자 이동은 화면 8px 부터(새 영역·크기 조절은 CLICK_PX)
   const HANDLE_PX = 6;
   const DBL_MS = 400; // 다각형: 이 안에 같은 자리를 다시 누르면 닫기(더블클릭)
   const PREVIEW_MAX = 768; // 변환 미리보기 캔버스 긴 변(화면용 — 저장 크기는 따로 계산)
@@ -410,7 +411,7 @@ window.DPRefEdit = (() => {
     largeHost.addEventListener("click", (e) => {
       if (e.target === largeHost) closeLarge();
     });
-    const gridSize = el("label", "rg-size", "썸네일 ");
+    const gridSize = el("div", "rg-size", "썸네일 ");
     const gridSlider = el("input");
     gridSlider.type = "range";
     gridSlider.min = "80";
@@ -681,10 +682,10 @@ window.DPRefEdit = (() => {
       const pt = viewer.canvasPoint(e);
       if (!drag) {
         const h = method !== "poly" && rect && handleAt(pt, rect);
-        viewer.setCursor(h ? CURSORS[h] : moveAt(pt, e) ? "move" : method === "poly" || (method === "sam3" && rect && inside(pt, rect)) ? "crosshair" : "");
+        viewer.setCursor(h ? CURSORS[h] : method === "rect" && moveAt(pt, e) ? "move" : method === "poly" || (method === "sam3" && rect && inside(pt, rect)) ? "crosshair" : "");
         return false;
       }
-      if (!drag.moved && Math.hypot(e.clientX - drag.x, e.clientY - drag.y) < CLICK_PX) return true;
+      if (!drag.moved && Math.hypot(e.clientX - drag.x, e.clientY - drag.y) < (drag.kind === "move" ? MOVE_PX : CLICK_PX)) return true;
       if (method === "poly" && drag.kind === "new") return true; // 다각형 모드의 끌기는 꼭짓점 하나(놓을 때)
       drag.moved = true;
       rect = drag.kind === "resize" ? resized(drag.rect0, drag.handle, pt)
@@ -1777,7 +1778,8 @@ window.DPRefEdit = (() => {
         largeHost.dataset.cropId = c.id;
       }
       largeHost.hidden = false;
-      gridHost.append(largeHost); // 그리드가 재생성돼도 같은 호스트·크롭을 유지
+      largeHost.style.top = `${tabHost.offsetHeight || 38}px`;
+      if (!gridHost.contains(largeHost)) gridHost.append(largeHost); // 붙어 있는 겹침은 옮기지 않음(스크롤 유지)
     }
 
     // ── 그리드(3-4 — F22): 매칭이 끝난 레퍼런스와 고칠 크롭을 한눈에(편집은 오른쪽 패널) ──
@@ -1785,6 +1787,7 @@ window.DPRefEdit = (() => {
       // 카드 = 왼쪽 목록 순서, 고아 연결은 맨 뒤 묶음. R·state 가 그대로면 카드는 두고 선택 표시만(크롭이 많아도 다시 그리기가 가볍게)
       if (tab !== "grid") return;
       const R = S.R;
+      const largeScroll = largeHost.scrollTop || 0; // replaceChildren 로 떼기 전에 저장
       if (!R || !gridOf || gridOf[0] !== R || gridOf[1] !== state) {
         gridOf = [R, state];
         gridCards.clear();
@@ -1804,6 +1807,7 @@ window.DPRefEdit = (() => {
       if (s && sel !== gridScrolledTo) s.scrollIntoView({ block: "nearest" });
       gridScrolledTo = sel;
       renderLarge();
+      if (largeId !== null) largeHost.scrollTop = largeScroll; // 카드·그림 갱신 뒤 다시 붙인 호스트에 복원
     }
 
     function cropCard(c) {

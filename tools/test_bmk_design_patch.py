@@ -51951,6 +51951,10 @@ def batch8b_unit():
     bj = (web / "board.js").read_text(encoding="utf-8")
     bc = (web / "board.css").read_text(encoding="utf-8")
     check("minmax(min(100%, calc(3 * var(--rg-h) + 40px)), 1fr)" in bc, "D98 높이와 카드 폭 연동·좁은 창 클램프")
+    large_css = re.search(r"\.rg-large \{([^}]+)\}", bc).group(1)
+    large_pics_css = re.search(r"\.rg-large-pics \{([^}]+)\}", bc).group(1)
+    check("--rg-h: max(320px, 70vh)" in large_css and "minmax(min(100%, var(--rg-h)), 1fr)" in large_pics_css,
+          "B2 크게 보기 높이·열 최소 폭은 창 높이에 맞춤(좁은 창은 100% 제한, canvasCut 도 같은 높이 변수)")
     check("refGridH: loadPref().refGridH, gridHeightChanged: (refGridH) => savePref({ refGridH })" in bj,
           "D98 보드 설정 로드·저장 콜백 연결")
     node = shutil.which("node")
@@ -52016,12 +52020,50 @@ await scenario("D97move", async () => {
 await scenario("D97points", async () => {
   const env = await sheet8();
   env.button(env.hosts.panel, "자동 오리기(SAM3)").fire("click");
+  let cursor;
+  env.viewer.setCursor = (c) => { cursor = c; };
+  env.ptr("pointermove", 200, 200);
+  const samCursor = cursor === "crosshair";
   env.tap(150, 150); env.tap(450, 450, { altKey: true });
   env.drag(200, 200, 300, 300);
   const neg = env.marks("neg")[0];
   const pointsStay = env.marks("pos").length === 0 && Number(neg.attrs.cx) === 450 && Number(neg.attrs.cy) === 450;
   env.ptr("pointerdown", 300, 300); env.ptr("pointermove", 302, 301); env.ptr("pointerup", 302, 301);
-  return { pointsStay, tap: env.marks("pos").length === 1 && eq(rect8(env), [200, 200, 600, 600]) };
+  return { samCursor, pointsStay, tap: env.marks("pos").length === 1 && eq(rect8(env), [200, 200, 600, 600]) };
+});
+await scenario("B5threshold", async () => {
+  const env = await sheet8();
+  env.key("Enter"); await sleep(35);
+  env.drag(200, 200, 206, 200);
+  const rectSix = eq(rect8(env), [100, 100, 500, 500]) && !env.button(env.hosts.panel, "저장", true).disabled;
+  // 시트 좌표 60px라도 화면은 6px: 확대·축소 배율에 관계없이 화면 거리로 판정.
+  env.ptr("pointerdown", 200, 200);
+  env.ptr("pointermove", 260, 200, { clientX: 206 }); env.ptr("pointerup", 260, 200, { clientX: 206 });
+  const screenSix = eq(rect8(env), [100, 100, 500, 500]) && !env.button(env.hosts.panel, "저장", true).disabled;
+  env.button(env.hosts.panel, "자동 오리기(SAM3)").fire("click");
+  env.tap(105, 150); // 10px 옮기면 영역 밖이 되는 점
+  env.drag(300, 300, 306, 300);
+  const pos = env.marks("pos");
+  const samSix = eq(rect8(env), [100, 100, 500, 500]) && !env.button(env.hosts.panel, "저장", true).disabled;
+  const clickAndPoints = pos.length === 2 && pos.some((p) => Number(p.attrs.cx) === 105)
+    && pos.some((p) => Number(p.attrs.cx) === 306 && Number(p.attrs.cy) === 300);
+  env.drag(300, 300, 310, 300);
+  const samTen = eq(rect8(env), [110, 100, 510, 500]) && !env.button(env.hosts.panel, "저장", true)
+    && env.marks("pos").length === 1 && Number(env.marks("pos")[0].attrs.cx) === 306;
+  env.button(env.hosts.panel, "사각형", true).fire("click");
+  env.drag(300, 300, 308, 300);
+  const exactEight = eq(rect8(env), [118, 100, 518, 500]);
+  env.drag(518, 300, 521, 300);
+  const resizeThree = eq(rect8(env), [118, 100, 518, 500]);
+  env.drag(518, 300, 522, 300);
+  const resizeFour = eq(rect8(env), [118, 100, 522, 500]);
+  env.ptr("pointerdown", 600, 600);
+  env.ptr("pointermove", 640, 640, { clientX: 603, clientY: 600 }); env.ptr("pointerup", 640, 640);
+  const newThree = eq(rect8(env), [118, 100, 522, 500]);
+  env.ptr("pointerdown", 600, 600);
+  env.ptr("pointermove", 640, 640, { clientX: 604, clientY: 600 }); env.ptr("pointerup", 640, 640);
+  return { rectSix, screenSix, samSix, clickAndPoints, samTen, exactEight, resizeThree, resizeFour, newThree,
+    newFour: eq(rect8(env), [600, 600, 640, 640]) };
 });
 await scenario("D97epoch", async () => {
   const env = await sheet8({ cutDelays: [90] });
@@ -52056,6 +52098,7 @@ await scenario("D98size", async () => {
     gridHeightChanged: (refGridH) => { pref.h = refGridH; vm.runInContext("savePref({ refGridH: h })", pref); } });
   const slider = env.all(env.hosts.tabs).find((e) => e.type === "range");
   const label = env.cls(env.hosts.tabs, "rg-size");
+  const noLabelFocus = label.tagName === "DIV" && slider.getAttribute("aria-label") === "그리드 썸네일 크기";
   const range = slider.min === "80" && slider.max === "320" && slider.step === "20" && slider.tabIndex === -1 && slider.dataset.keys === "board";
   const small = urls8(card8(env)).includes(API(IN.fixture.files[0].thumb_url));
   slider.focus(); slider.value = "220"; slider.fire("input"); slider.fire("change");
@@ -52066,6 +52109,7 @@ await scenario("D98size", async () => {
   const restored = await screen({ R: R8(), st: st8(), tab: "grid", refGridH: saved.refGridH });
   const restore = restored.hosts.grid.style["--rg-h"] === "220px";
   slider.focus(); slider.fire("pointerup"); const release = env.doc.activeElement !== slider;
+  slider.focus(); slider.fire("pointercancel"); const cancelBlur = env.doc.activeElement !== slider;
   slider.value = "999"; slider.fire("input"); const max = slider.value === "320";
   slider.value = "1"; slider.fire("input"); const min = slider.value === "80";
   slider.value = "149"; slider.fire("input"); const step = slider.value === "140";
@@ -52073,7 +52117,7 @@ await scenario("D98size", async () => {
   const old = await screen({ st: st8(), tab: "grid", refGridH: 320 });
   const fallback = urls8(card8(old)).includes(API(old.srv.R.crops[1].files[0].thumb_url));
   const invalid = await screen({ st: st8(), tab: "grid", refGridH: "invalid" });
-  return { range, small, large, persistence, blurred, restore, release, max, min, step, hidden, fallback,
+  return { noLabelFocus, range, small, large, persistence, blurred, restore, release, cancelBlur, max, min, step, hidden, fallback,
     defaultValue: invalid.hosts.grid.style["--rg-h"] === "120px" };
 });
 await scenario("D99view", async () => {
@@ -52121,6 +52165,46 @@ await scenario("D99source", async () => {
   const fallback = urls8(large8(env)).includes(API(env.srv.R.crops[1].files[0].thumb_url));
   return { canvas: !!cut && cut.style.backgroundImage.includes("canvas?kind=base") && !urls8(large8(env)).some((s) => s.includes("thumb?size=0")), fallback };
 });
+await scenario("B1B6scroll", async () => {
+  const env = await screen({ R: R8(), st: st8(), tab: "grid" });
+  card8(env).fire("dblclick");
+  const host = large8(env);
+  const fallbackTop = host.style.top === "38px";
+  // DOM 대역에 분리·재삽입·내용 교체 때의 스크롤 초기화를 재현해 복원 누락을 검출.
+  const append = env.hosts.grid.append.bind(env.hosts.grid);
+  const replace = env.hosts.grid.replaceChildren.bind(env.hosts.grid);
+  const content = host.replaceChildren.bind(host);
+  let attaches = 0;
+  env.hosts.grid.append = (...nodes) => {
+    if (nodes.includes(host)) { attaches++; host.scrollTop = 0; }
+    append(...nodes);
+  };
+  env.hosts.grid.replaceChildren = (...nodes) => { host.scrollTop = 0; replace(...nodes); };
+  host.replaceChildren = (...nodes) => { host.scrollTop = 0; content(...nodes); };
+  host.scrollTop = 247;
+  env.ed.stateChanged(env.st); env.ed.stateChanged(env.st);
+  const sameState = attaches === 0 && large8(env) === host && host.scrollTop === 247;
+  env.li(NAME).fire("click");
+  const renderKeeps = attaches === 0 && large8(env) === host && host.scrollTop === 247;
+  env.hosts.tabs.offsetHeight = 76;
+  env.ed.stateChanged(env.st);
+  const wrappedTop = host.style.top === "76px" && attaches === 0 && host.scrollTop === 247;
+  env.hosts.tabs.offsetHeight = 0;
+  env.ed.stateChanged(env.st);
+  const zeroFallback = host.style.top === "38px";
+  const slider = env.all(env.hosts.tabs).find((e) => e.type === "range");
+  slider.value = "220"; slider.fire("input");
+  const sliderKeeps = attaches === 1 && large8(env) === host && host.scrollTop === 247;
+  const next = { ...env.st, targets: [{ ...env.st.targets[0], before_full_url: "thumb?size=0&v=3" }] };
+  env.ed.stateChanged(next);
+  const newState = attaches === 2 && large8(env) === host && host.scrollTop === 247 && urls8(host).includes(API("thumb?size=0&v=3"));
+  env.ed.stateChanged(next);
+  const repeatState = attaches === 2 && host.scrollTop === 247;
+  env.srv.rev++;
+  env.ed.stateChanged({ ...next, refs_rev: env.srv.rev }); await sleep(40);
+  return { fallbackTop, sameState, renderKeeps, wrappedTop, zeroFallback, sliderKeeps, newState, repeatState,
+    refsRefresh: attaches === 3 && large8(env) === host && host.scrollTop === 247 };
+});
 console.log(JSON.stringify(out));
 '''
     (out / "harness.mjs").write_text(h + scene, encoding="utf-8")
@@ -52132,7 +52216,7 @@ console.log(JSON.stringify(out));
     if r.returncode == 0 and r.stdout.strip():
         result = json.loads(r.stdout.strip().splitlines()[-1])
         (out / "results.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-        for group in ("D97move", "D97points", "D97epoch", "D97replay", "D98size", "D99view", "D99source"):
+        for group in ("D97move", "D97points", "B5threshold", "D97epoch", "D97replay", "D98size", "D99view", "D99source", "B1B6scroll"):
             for name, ok in result.get(group, {"error": "missing"}).items():
                 check(ok is True, f"{group}/{name}: {ok}")
 

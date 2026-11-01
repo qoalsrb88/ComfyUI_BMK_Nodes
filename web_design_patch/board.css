@@ -691,12 +691,12 @@ svg.dr-isolate { position: absolute; left: 0; top: 0; pointer-events: none; }
 .rg-size input { width: 110px; }
 .rg-size span { min-width: 38px; text-align: right; }
 .rg-large { position: absolute; inset: 38px 0 0; z-index: 20; display: flex; align-items: flex-start; justify-content: center; padding: 18px;
-  overflow-y: auto; background: #000a; --rg-h: 320px; }
+  overflow-y: auto; background: #000a; --rg-h: max(320px, 70vh); }
 .rg-large-box { width: 100%; min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
 .rg-large-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
 .rg-large-head strong { min-width: 0; overflow-wrap: anywhere; }
 .rg-large-head button { flex: none; }
-.rg-large-pics { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 12px; }
+.rg-large-pics { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--rg-h)), 1fr)); gap: 12px; }
 .rg-large-pics figcaption { white-space: normal; overflow-wrap: anywhere; }
 
 /* ── 배치 8-C (마스크) — 8-C 작업자는 이 표시 아래에만 덧붙인다 ── */
