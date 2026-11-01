@@ -224,6 +224,7 @@
         if ("plan_v" in d && d.plan_v !== S.plan_v) pollAgain = true;
         // S4: 분석·Export 설정(board_pref.json)이 바뀜 — 매니페스트 rev 는 그대로라 편집 창·★ 합성·stale 을 새 S 로
         if ("pref_v" in d && d.pref_v !== S.pref_v) pollAgain = true;
+        if ("external_files_v" in d && d.external_files_v !== S.external_files_v) pollAgain = true;
         renderHeader();
       } else if (!d.unchanged) {
         S = d;
@@ -1280,6 +1281,7 @@
 
   function tileBadges(c) {
     const b = el("div", "tb");
+    if (c.external_missing) b.append(el("span", "badge b-bad", "파일 없음"));
     if (isNew(c)) b.append(el("span", "badge b-new", "새"));
     if (c.picked) b.append(el("span", "badge b-star", c.slice_index === 1 ? "★" : `S${c.slice_index}`));
     if (c.mock) b.append(el("span", "badge b-mock", "MOCK"));
@@ -1727,7 +1729,7 @@
       ["Q", "Before(누름)", { code: "KeyQ", hold: true }], ["S", "전/후 슬라이더", { code: "KeyS" }], ["M", "마스크 없이", { code: "KeyM" }],
       ["D", "ΔE 히트맵", { code: "KeyD" }], ["C", "컨텍스트", { code: "KeyC" }], ["Esc", "보기 해제", { code: "Escape" }], ["B", "바탕", { code: "KeyB" }],
       ["O", "사각형", { code: "KeyO" }], ...VIEW_KEYS, ["?", "도움말", { code: "Slash", shift: true }]],
-    edit: [["끌기", "새 크롭·이동·크기"], ["P", "부품 상자", { code: "KeyP" }], ["Enter", "만들기·제안 적용", { code: "Enter" }],
+    edit: [["끌기", "대상→자동 크롭·이동·크기"], ["Alt+끌기", "크롭 직접"], ["P", "부품 상자", { code: "KeyP" }], ["Enter", "만들기·제안 적용", { code: "Enter" }],
       ["Tab", "다음 크롭", { code: "Tab" }], ["⇧Tab", "이전 크롭", { code: "Tab", shift: true }], ["←→↑↓", "미세 이동"],
       ["Del", "크롭 지우기", { code: "Delete" }], ["L", "잠금", { code: "KeyL" }],
       ["Ctrl+Z", "되돌리기", { code: "KeyZ", ctrl: true }], ["Ctrl+Y", "다시", { code: "KeyY", ctrl: true }], ["Esc", "취소·나가기", { code: "Escape" }],
@@ -1735,14 +1737,14 @@
     refs: [["끌기", "영역"], ["Enter", "컷", { code: "Enter" }], ["T", "나가기", { code: "KeyT" }], ["[", "회전 −0.5°", { code: "BracketLeft" }], ["]", "회전 +0.5°", { code: "BracketRight" }],
       ["H", "좌우 반전", { code: "KeyH" }], ["⌫", "마지막 점 지우기", { code: "Backspace" }], ["F", "영역 맞춤", { code: "KeyF" }], ["0", "시트 전체", { code: "Digit0" }],
       ["Esc", "취소·나가기", { code: "Escape" }]],
-    // 레퍼런스 [그리드] 탭(3-4): 시트가 숨어 시트 키가 꺼짐 — 카드 고르기와 나가기만
-    refsGrid: [["카드 클릭", "크롭 고르기"], ["T", "나가기", { code: "KeyT" }], ["Esc", "선택 해제·나가기", { code: "Escape" }]],
+    // 레퍼런스 [그리드] 탭: 시트 키는 꺼짐, 크게 보기는 오른쪽 관리 패널을 가리지 않음
+    refsGrid: [["카드 클릭", "크롭 고르기"], ["더블클릭", "크게 보기"], ["Space", "크게 보기·닫기", { code: "Space" }], ["T", "나가기", { code: "KeyT" }], ["Esc", "닫기·선택 해제·나가기", { code: "Escape" }]],
     pipe: [["B", "바탕", { code: "KeyB" }], ["O", "사각형", { code: "KeyO" }], ...VIEW_KEYS, ["G", "나가기", { code: "KeyG" }]],
-    mask: [["V", "붓 ↔ 변형", { code: "KeyV" }], ["D", "원본과 차이(변형)", { code: "KeyD" }], ["끌기", "붓·변형"], ["⇧끌기", "흐리기·비율/15°"], ["X", "지우기 ↔ 살리기", { code: "KeyX" }], ["[", "붓 작게", { code: "BracketLeft" }], ["]", "붓 크게", { code: "BracketRight" }],
+    mask: [["V", "붓 ↔ 변형", { code: "KeyV" }], ["D", "원본과 차이(변형)", { code: "KeyD" }], ["끌기", "붓·변형·페이드"], ["⇧끌기", "흐리기·비율/15°·폭 맞춤"], ["X", "지우기 ↔ 살리기", { code: "KeyX" }], ["[", "붓 작게", { code: "BracketLeft" }], ["]", "붓 크게", { code: "BracketRight" }],
       ["⇧[", "경도 −", { code: "BracketLeft", shift: true }], ["⇧]", "경도 +", { code: "BracketRight", shift: true }], ["Q", "처음 마스크(누름)", { code: "KeyQ", hold: true }],
       ["W", "원본(누름)", { code: "KeyW", hold: true }], ["S", "처음/편집 슬라이더", { code: "KeyS" }], ["M", "마스크 보기", { code: "KeyM" }],
       ["O", "선 숨기기", { code: "KeyO" }], ["←→↑↓", "패치 이동"], ["⇧←→↑↓", "10px"],
-      ["N", "이음매", { code: "KeyN" }], ["Enter", "적용", { code: "Enter" }], ["Ctrl+Z", "되돌리기", { code: "KeyZ", ctrl: true }], ["Ctrl+Y", "다시", { code: "KeyY", ctrl: true }],
+      ["N", "이음매", { code: "KeyN" }], ["Enter", "적용", { code: "Enter" }], ["Ctrl+Z", "실행 취소", { code: "KeyZ", ctrl: true }], ["Ctrl+Y", "다시", { code: "KeyY", ctrl: true }],
       ["I", "레이어만", { code: "KeyI" }], ["Esc", "나가기", { code: "Escape" }]],
   };
 
@@ -1886,6 +1888,7 @@
       // 가운데 탭 [시트]/[그리드](3-4)는 이 브라우저에 기억(refTab — 저장소를 못 쓰면 이번 창만, 처음은 시트), 바뀌면 단축키 칩 줄도
       refEd = window.DPRefEdit.create({ list: $("ref-list"), panel: $("ref-panel"), head: $("ref-head"), tabs: $("ref-tabs"), sheets: $("ref-sheets"),
         view: $("ref-viewer"), grid: $("ref-grid") }, { apiUrl, comfyUrl, root: ROOT, viewer: sheetViewer, toast, queue: applyFree, applyWarn,
+        refGridH: loadPref().refGridH, gridHeightChanged: (refGridH) => savePref({ refGridH }),
         tab: refTab, tabChanged: (t, keep) => {
           refTab = t;
           if (keep) savePref({ refTab: t });

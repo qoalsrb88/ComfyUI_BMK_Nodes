@@ -19,6 +19,10 @@ window.DPChecklist = (() => {
     const planOk = !!plan && !planError && input.planOk !== false;
     const ready = planOk && !input.stale;
     const n = crops.length;
+    const layoutNames = new Map(crops.filter((c) => c.layout_status !== "removed")
+      .map((c) => [c.id, (c.layout_diff && c.layout_diff.name) || c.name || ""]));
+    for (const c of S.layout_added || []) layoutNames.set(c.id, c.name || "");
+    const unnamed = [...layoutNames.values()].filter((name) => name.includes("_미정")).length;
     const selected = global ? n : input.selectedCount ?? n;
     const allSelected = selected === n;
     const selectionNote = allSelected ? "" : ` (선택 ${selected}/${n} 크롭 기준)`;
@@ -92,7 +96,9 @@ window.DPChecklist = (() => {
     return [
       row(1, "PSD 가져오기", S.canvas ? "done" : "todo", S.canvas ? "가져옴" : "Import 필요",
         "ComfyUI 그래프에서 Import PSD 를 연결하고 큐를 한 번 실행하세요.", { tab: "prepare", section: "실행 설정" }),
-      row(2, "크롭", n ? "done" : "todo", `크롭 ${n}`, "크롭 편집(E)에서 고칠 영역을 확인하세요.", { mode: "edit" }),
+      row(2, "크롭", unnamed ? "warn" : n ? "done" : "todo",
+        unnamed ? `이름 미정 ${unnamed}개 — 반영 전에 정하면 다시 과금 없음` : `크롭 ${n}`,
+        "크롭 편집(E)에서 고칠 영역을 확인하세요.", { mode: "edit" }),
       row(3, "레퍼런스", n && linked === n ? "done" : "todo", `크롭 ${linked}/${n}${noRefsDir ? " · refs 폴더 없음" : ""}`,
         "레퍼런스(T)에서 각 크롭에 참고 이미지를 연결하세요.", { mode: "refs", cropId: missingRef ? missingRef.id : null }),
       row(4, "반영", !settingsBlock && !pending.length && !prepareDrift.length && !input.unsure ? "done" : "todo",
