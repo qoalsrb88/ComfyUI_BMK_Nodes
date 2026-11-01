@@ -53460,11 +53460,11 @@ def batch9_recv_unit():
         with patch.object(bd.Image, "open", side_effect=AssertionError("Pillow 로 열면 WebP 는 통째로·큰 그림은 179MP 상한")):
             check(all(bd.image_header(str(f), k) == {"w": s_[0], "h": s_[1]} for k, (f, s_) in files.items()),
                   "B9R 머리를 Pillow 없이 직접(PNG IHDR·JPEG SOF·WebP RIFF)")
-        big = t / "big.png"  # 14000×14000 = 196MP — Pillow 기본 상한(≈ 179MP)은 넘고 D142 200MP 안
-        big.write_bytes(b"\x89PNG\r\n\x1a\n" + (13).to_bytes(4, "big") + b"IHDR" + (14000).to_bytes(4, "big") + (14000).to_bytes(4, "big") + bytes(9))
+        big = t / "big.png"  # 13300×13300 ≈ 176.9MP — Pillow 경고 상한(≈ 89MP)은 넘고 D142 178MP 안(머리만 읽음)
+        big.write_bytes(b"\x89PNG\r\n\x1a\n" + (13).to_bytes(4, "big") + b"IHDR" + (13300).to_bytes(4, "big") + (13300).to_bytes(4, "big") + bytes(9))
         info_big = bd.image_header(str(big), "png")
         bd.check_image_dims(info_big, 64)
-        check(info_big == {"w": 14000, "h": 14000}, "B9R 196MP PNG 머리는 통과(Pillow 상한에 안 걸림)")
+        check(info_big == {"w": 13300, "h": 13300}, "B9R 177MP PNG 머리는 통과(Pillow 로 열지 않음)")
         cut_png = t / "cut.png"
         cut_png.write_bytes(big.read_bytes()[:21])
         try:
@@ -53487,8 +53487,10 @@ def batch9_recv_unit():
         check(rejects(bd.image_header, str(junk), "png"), "B9R 깨진 그림 400")
         bd.check_image_dims({"w": 64, "h": 900}, 64)
         check(rejects(bd.check_image_dims, {"w": 63, "h": 900}, 64) and rejects(bd.check_image_dims, {"w": 255, "h": 900}, 256)
-              and rejects(bd.check_image_dims, {"w": 30001, "h": 100}, 64) and rejects(bd.check_image_dims, {"w": 15000, "h": 14000}, 64),
-              "B9R 크기 상한·하한(짧은 변 인자·긴 변 30000·넓이 200MP)")
+              and rejects(bd.check_image_dims, {"w": 30001, "h": 100}, 64) and rejects(bd.check_image_dims, {"w": 14000, "h": 13000}, 64),
+              "B9R 크기 상한·하한(짧은 변 인자·긴 변 30000·넓이 178MP — Pillow 기본 상한 아래)")
+        from PIL import Image as _Im
+        check(bd._MAX_IMAGE_AREA <= 2 * _Im.MAX_IMAGE_PIXELS, "B9R 넓이 상한이 Pillow DecompressionBomb 상한 이하")
         check(bd.check_upload_name("  캐릭터 A.PSD ") == "캐릭터 A.PSD" and bd.check_upload_name("x.webp") == "x.webp", "B9R 받을 이름 정규화")
         check(all(rejects(bd.check_upload_name, n) for n in ("../a.png", "a\\b.png", "a:b.png", "CON.png", "con.psd", ".x.png", "a.gif",
                                                              "", None, "a" * 201 + ".png", "a\x01.png",
