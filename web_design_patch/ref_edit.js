@@ -1742,6 +1742,7 @@ window.DPRefEdit = (() => {
       largeId = id;
       largeOf = null;
       renderLarge();
+      largeHost.scrollTop = 0;
     }
 
     function renderLarge() {

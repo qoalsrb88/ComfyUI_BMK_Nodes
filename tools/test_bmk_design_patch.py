@@ -51955,6 +51955,16 @@ def batch8b_unit():
     large_pics_css = re.search(r"\.rg-large-pics \{([^}]+)\}", bc).group(1)
     check("--rg-h: max(320px, 70vh)" in large_css and "minmax(min(100%, var(--rg-h)), 1fr)" in large_pics_css,
           "B2 크게 보기 높이·열 최소 폭은 창 높이에 맞춤(좁은 창은 100% 제한, canvasCut 도 같은 높이 변수)")
+    help_css = re.search(r"\.overlay \{([^}]+)\}", bc).group(1)
+    check(int(re.search(r"z-index:\s*(\d+)", large_css).group(1)) < int(re.search(r"z-index:\s*(\d+)", help_css).group(1)),
+          "E1 크게 보기보다 도움말 겹침이 위에 표시됨")
+    large_img_css = re.search(r"\.rg-large \.rg-img \{([^}]+)\}", bc).group(1)
+    check("width: 100%;" in large_img_css and "height: 100%;" in large_img_css
+          and "object-fit: contain;" in re.search(r"^\.rg-img \{([^}]+)\}", bc, re.M).group(1),
+          "E2 작은 그림도 크게 보기 프레임까지 확대하며 종횡비 유지")
+    check(".rg-card { user-select: none; }" in bc
+          and '.rg-card input, .rg-card textarea, .rg-card [contenteditable="true"] { user-select: text; }' in bc,
+          "E3 카드 더블클릭 글자 선택 방지·카드 입력칸 선택은 허용")
     check("refGridH: loadPref().refGridH, gridHeightChanged: (refGridH) => savePref({ refGridH })" in bj,
           "D98 보드 설정 로드·저장 콜백 연결")
     node = shutil.which("node")
@@ -52205,6 +52215,22 @@ await scenario("B1B6scroll", async () => {
   return { fallbackTop, sameState, renderKeeps, wrappedTop, zeroFallback, sliderKeeps, newState, repeatState,
     refsRefresh: attaches === 3 && large8(env) === host && host.scrollTop === 247 };
 });
+await scenario("E4scroll", async () => {
+  const env = await screen({ R: R8(), st: st8(), tab: "grid" });
+  card8(env).fire("click"); card8(env).fire("dblclick");
+  const host = large8(env);
+  host.scrollTop = 247;
+  env.key("Escape");
+  const other = card8(env, "011_소매끈_오른쪽");
+  other.fire("click"); other.fire("dblclick");
+  const otherStartsTop = large8(env) === host && open8(env) && host.dataset.cropId === "011_a1b2c3" && host.scrollTop === 0;
+  host.scrollTop = 123;
+  env.key("Space"); env.key("Space");
+  const reopenStartsTop = large8(env) === host && open8(env) && host.scrollTop === 0;
+  host.scrollTop = 369;
+  env.ed.stateChanged({ ...env.st });
+  return { otherStartsTop, reopenStartsTop, refreshKeeps: large8(env) === host && host.scrollTop === 369 };
+});
 console.log(JSON.stringify(out));
 '''
     (out / "harness.mjs").write_text(h + scene, encoding="utf-8")
@@ -52216,7 +52242,7 @@ console.log(JSON.stringify(out));
     if r.returncode == 0 and r.stdout.strip():
         result = json.loads(r.stdout.strip().splitlines()[-1])
         (out / "results.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-        for group in ("D97move", "D97points", "B5threshold", "D97epoch", "D97replay", "D98size", "D99view", "D99source", "B1B6scroll"):
+        for group in ("D97move", "D97points", "B5threshold", "D97epoch", "D97replay", "D98size", "D99view", "D99source", "B1B6scroll", "E4scroll"):
             for name, ok in result.get(group, {"error": "missing"}).items():
                 check(ok is True, f"{group}/{name}: {ok}")
 
