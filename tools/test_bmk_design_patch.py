@@ -52530,7 +52530,13 @@ def ext60_unit():
         check(set(actual) == set(expected), f"ext_api {kind} 최상위 키")
         for key in ("items", "skipped", "rows", "exports", "imports"):
             if key in expected:
-                check(bool(actual[key]) and all(set(r) == set(expected[key][0]) for r in actual[key]), f"ext_api {kind}/{key} 행 키")
+                check(bool(actual[key]) and all(set(r) == set(expected[key][min(n, len(expected[key]) - 1)])
+                                              for n, r in enumerate(actual[key])), f"ext_api {kind}/{key} 행 키")
+        if kind == "ext":
+            latest = actual["exports"][0]
+            check(latest["abs"] == ex64["abs"] and bool(latest["items"])
+                  and all(set(i) == set(expected["exports"][0]["items"][0]) for i in latest["items"]),
+                  "W3 ext_api 최신 내보내기 abs·items 중첩 행 키")
 
     # 중복 이름·정규화 뒤 파일명 충돌은 모두 제외, 기록 한도는 새 파일 없이 확인.
     m = st.load_manifest(root)
@@ -52543,6 +52549,7 @@ def ext60_unit():
     reject(lambda: ext.export_sources(root, [c1["id"]]), 400, "내보낼 크롭")
     ext60_review_unit(dp, run)
     ext60_review2_unit(dp, run)
+    ext60_review3_unit(dp, run)
     ext60_js_unit(out, fixture)
 
 
@@ -52881,6 +52888,107 @@ def ext60_review2_unit(dp, run):
         check(first.result(timeout=5)["ok"], "Q6 첫 프로젝트도 해제 뒤 정상 완료")
 
 
+def ext60_review3_unit(dp, run):
+    """W1–W3: 비교 소스 누락·커밋 뒤 기록 실패·최근 내보내기 복원."""
+    import builtins
+    from unittest.mock import patch
+    bd, st = dp.board, dp.store
+    ext = bd.ext
+    _, root = _fx_project(dp, run, "review3", [("001_part | A: part", [0, 0, 73, 41])], _vlm_img(60, 160, 23))
+    st.update_manifest(root, lambda m: m["crops"][0].update(name="part:pin", nnn=""))
+    crop = st.load_manifest(root)["crops"][0]
+    ex = ext.export_sources(root)
+    item = ex["items"][0]
+    folder = run / "review3_results"
+    folder.mkdir()
+    Image.new("RGB", item["out_wh"], (21, 32, 43)).save(folder / "part_pin_output.png")
+    Image.new("RGB", item["src_wh"], (31, 42, 53)).save(folder / "part_pin_crop.png")
+    (folder / "part_pin_broken.png").write_bytes(b"broken result")
+    exported_source, crop_source = Path(ex["abs"], item["file"]), Path(root, crop["source"])
+    originals = [(p, p.read_bytes()) for p in (exported_source, crop_source)]
+    try:
+        exported_source.unlink()
+        crop_source.unlink()
+        rows = {r["file"]: r for r in ext.scan_import(root, str(folder))["rows"]}
+        check(rows["part_pin_output.png"]["status"] == "new" and rows["part_pin_output.png"]["why"] is None
+              and "내보낸 소스를 읽지 못해 통과 여부 확인 못 함" in rows["part_pin_output.png"]["warn"],
+              "W1 내보낸 PNG 삭제 뒤 out_wh 정상 결과는 new·경고")
+        check(rows["part_pin_crop.png"]["status"] == "new" and rows["part_pin_crop.png"]["why"] is None
+              and "크롭 소스를 읽지 못해 통과 여부 확인 못 함" in rows["part_pin_crop.png"]["warn"],
+              "W1 crop source 삭제 뒤 정상 결과도 new·경고")
+        check(rows["part_pin_broken.png"]["status"] == "skip" and "이미지를 읽을 수 없음" in rows["part_pin_broken.png"]["why"],
+              "W1 결과 디코드 실패는 여전히 skip")
+    finally:
+        for path, data in originals:
+            path.write_bytes(data)
+    real_image_open = Image.open
+    def broken_source(path, *args, **kwargs):
+        if isinstance(path, (str, os.PathLike)) and Path(path) in (exported_source, crop_source):
+            raise SyntaxError("synthetic source decoder failure")
+        return real_image_open(path, *args, **kwargs)
+    with patch.object(ext.Image, "open", side_effect=broken_source):
+        rows = {r["file"]: r for r in ext.scan_import(root, str(folder))["rows"]}
+    check(all(rows[name]["status"] == "new" and rows[name]["warn"] for name in ("part_pin_output.png", "part_pin_crop.png")),
+          "W1 소스 디코더 SyntaxError 도 경고만, 정상 결과 계속")
+
+    # 첫 writable 읽기는 통과하고 마지막 기록 읽기·쓰기만 실패한다.
+    hp = Path(root, "ext_bridge.json")
+    result_folder = run / "review3_committed"
+    result_folder.mkdir()
+    real_open, real_write = builtins.open, st.write_json_atomic
+    for failure in ("second_read", "write"):
+        for operation in ("export", "import"):
+            reads = 0
+            def late_lock(path, mode="r", *args, **kwargs):
+                nonlocal reads
+                if Path(path) == hp:
+                    reads += 1
+                    if reads >= 2 and failure == "second_read":
+                        raise PermissionError("locked after commit")
+                return real_open(path, mode, *args, **kwargs)
+            def failed_write(path, data):
+                if Path(path) == hp and failure == "write":
+                    raise OSError("history write failure")
+                return real_write(path, data)
+            prior = hp.read_bytes()
+            if operation == "import":
+                color = (41, 52, 63) if failure == "second_read" else (51, 62, 73)
+                Image.new("RGB", (73, 41), color).save(result_folder / f"part_pin_{failure}.png")
+            with patch.object(ext, "open", side_effect=late_lock, create=True), \
+                    patch.object(st, "write_json_atomic", side_effect=failed_write), patch.object(ext.logger, "warning") as warning:
+                result = ext.export_sources(root) if operation == "export" else ext.apply_import(root, str(result_folder))
+            check(reads == 2 and result["ok"] and warning.called and hp.read_bytes() == prior,
+                  f"W2 {operation}/{failure}: 완료 뒤 기록 실패는 성공 응답·로그, 원래 기록 보존")
+            if operation == "export":
+                check(all(Path(result["abs"], i["file"]).is_file() for i in result["items"])
+                      and Path(result["abs"], "export.json").is_file(), "W2 성공한 내보내기 PNG·사이드카 유지")
+            else:
+                current = st.load_manifest(root)
+                check(len(result["added"]) == result["analyzed"] == 1 and "기록 저장 실패 — 다음 등록 때 다시 기록" in result["warns"]
+                      and result["added"][0] in current["analysis"] and any(c["key"] == result["added"][0] for c in current["candidates"]),
+                      "W2 등록·분석 커밋 유지, 응답 warns 에 기록 실패 안내")
+    rev = st.load_manifest(root)["rev"]
+    retry = ext.apply_import(root, str(result_folder))
+    check(not retry["added"] and retry["rev"] == rev and not retry["warns"]
+          and set(ext._history(root)["imports"][0]["keys"]) == {c["key"] for c in st.load_manifest(root)["candidates"]},
+          "W2 다시 등록하면 중복·rev 증가 없이 누락된 후보 키 기록 복구")
+
+    # 파일명 정리·나중 이름 변경과 무관하게 실제로 내보낸 접두를 반환한다.
+    st.update_manifest(root, lambda m: m["crops"][0].update(name="renamed"))
+    latest = ext.ext_summary(root)["exports"][0]
+    check(latest["abs"] == ex["abs"] and latest["items"] == [{"crop_id": crop["id"], "name": "part:pin",
+          "file": "part_pin__src.png", "clean": "part_pin"}], "W3 최근 사이드카의 원래 이름·실제 clean 접두·abs 복원")
+    sidepath = Path(ex["abs"], "export.json")
+    side_bytes = sidepath.read_bytes()
+    try:
+        sidepath.write_bytes(b"invalid json")
+        with patch.object(ext.logger, "warning"):
+            latest = ext.ext_summary(root)["exports"][0]
+        check(latest["items"] == [] and latest["abs"] == ex["abs"], "W3 최근 사이드카 손상은 빈 항목, 목록·경로 유지")
+    finally:
+        sidepath.write_bytes(side_bytes)
+
+
 def ext60_js_unit(out, fixture):
     """기존 패널 DOM 하네스로 실제 UI 이벤트·API body 를 확인한다."""
     import subprocess
@@ -52925,11 +53033,22 @@ await scenario("external", async () => {
   const B = label => env.B(label, section());
   const input = label => section().all().find(e => e.attrs && e.attrs["aria-label"] === label);
   const r = {tab: section().dataset.tab === "generate", initial: B("등록 (").disabled};
+  const prefixButtons = () => section().all().filter(e => e.tagName === "BUTTON" && e.textContent === "접두 복사");
+  r.restored = prefixButtons().length === summaryData.exports[0].items.length && !calls.some(c => c.path === "candidates/export");
+  B("폴더 열기").fire("click"); B("경로 복사").fire("click"); prefixButtons()[0].fire("click"); await sleep(10);
+  r.restoredPaths = calls.some(c => c.path === "open_folder" && c.body.sub === summaryData.exports[0].dir)
+    && copies.includes(summaryData.exports[0].abs)
+    && copies.includes(summaryData.save_prefix + "nai/" + summaryData.exports[0].items[0].clean);
+  const savedExports = summaryData.exports;
+  summaryData.exports = []; env.pipe.showTab("generate"); await sleep(30);
+  input("외부 엔진 이름").value = "anima"; input("외부 엔진 이름").fire("input");
+  r.emptyHistoryEngine = prefixButtons().length === 0 && input("결과 폴더 경로").placeholder === summaryData.save_prefix_abs + "anima";
+  input("외부 엔진 이름").value = "nai"; input("외부 엔진 이름").fire("input");
+  summaryData.exports = savedExports; env.pipe.showTab("generate"); await sleep(30);
   B("크롭 소스 내보내기").fire("click"); await sleep(30);
   r.export = calls.some(c => c.path === "candidates/export" && c.body.size === "gpt" && c.body.crops.length === S.crops.length);
   B("폴더 열기").fire("click"); B("경로 복사").fire("click"); await sleep(10);
   r.paths = calls.some(c => c.path === "open_folder" && c.body.sub === IN.ext.export.dir) && copies.includes(IN.ext.export.abs);
-  const prefixButtons = () => section().all().filter(e => e.tagName === "BUTTON" && e.textContent === "접두 복사");
   prefixButtons()[0].fire("click"); await sleep(5);
   r.cropPrefix = prefixButtons().length === IN.ext.export.items.length
     && copies.includes(IN.ext.export.save_prefix + "nai/" + IN.ext.export.items[0].file.replace(/__src\.png$/, ""));

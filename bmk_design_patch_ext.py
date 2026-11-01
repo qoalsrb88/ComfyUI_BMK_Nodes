@@ -252,7 +252,10 @@ def export_sources(root, crops=None, size="gpt"):
         store.write_json_atomic(_path(root, f"{sub}/export.json"),
                                 {"v": 1, "at": at, "size": size, "size_rule": rule, "items": items})
         history["exports"] = [{"dir": sub, "at": at, "n": len(items), "size": size}] + history["exports"][:9]
-        _save_history(root, history)
+        try:
+            _save_history(root, history)
+        except (BridgeError, OSError) as e:
+            logger.warning("내보내기 완료 뒤 외부 엔진 기록 저장 실패: %s", e)
         return {"ok": True, "dir": sub, "abs": folder,
                 "items": [{k: i[k] for k in ("crop_id", "name", "file", "src_wh", "out_wh", "ratio_err")} for i in items],
                 "skipped": skipped, **save_prefixes(root)}
@@ -361,22 +364,28 @@ def _scan(root, path):
             try:
                 pix = node._decode(data)
                 h, w = pix.shape[:2]
-                row["wh"] = [w, h]
-                if item and [w, h] == item.get("out_wh"):
+            except Exception as e:
+                row["why"] = f"이미지를 읽을 수 없음: {e}"
+                continue
+            row["wh"] = [w, h]
+            if item and [w, h] == item.get("out_wh"):
+                try:
                     with Image.open(_path(root, f"export_src/{stamp}/{item['file']}")) as image:
                         source_rgb = np.asarray(image.convert("RGB"))
                     if np.array_equal(pix[..., :3], source_rgb):
                         row["why"] = "내보낸 소스와 같음 — 엔진을 거치지 않음"
                         continue
-                x0, y0, x1, y1 = crop["rect"]
-                if (w, h) == (x1 - x0, y1 - y0):
+                except Exception:
+                    row["warn"].append("내보낸 소스를 읽지 못해 통과 여부 확인 못 함")
+            x0, y0, x1, y1 = crop["rect"]
+            if (w, h) == (x1 - x0, y1 - y0):
+                try:
                     src = node._load_rgba(root, crop["source"])
                     if np.array_equal(pix[..., :3], src[..., :3]):
                         row["why"] = "입력 크롭과 픽셀이 같음(bypass 통과 의심)"
                         continue
-            except Exception as e:
-                row["why"] = f"이미지를 읽을 수 없음: {e}"
-                continue
+                except Exception:
+                    row["warn"].append("크롭 소스를 읽지 못해 통과 여부 확인 못 함")
             if key in seen:
                 row["why"] = "같은 내용의 파일이 이미 있음"
                 continue
@@ -478,10 +487,16 @@ def apply_import(root, path, expect_fp=None):
             _, rev = store.update_manifest(root, analysis)
         path = result["path"]
         prev = next((i for i in history["imports"] if i["path"] == path), {})
+        folder_keys = [c["key"] for c in m["candidates"] if (c.get("origin_info") or {}).get("via") == "studio"
+                       and c["origin_info"].get("folder") == path]
         record = {"path": path, "fp": result["fp"], "at": time.strftime("%Y-%m-%d %H:%M:%S"),
-                  "keys": list(dict.fromkeys(prev.get("keys", []) + added))}
+                  "keys": list(dict.fromkeys(prev.get("keys", []) + folder_keys))}
         history["imports"] = [record] + [i for i in history["imports"] if i["path"] != path][:19]
-        _save_history(root, history)
+        try:
+            _save_history(root, history)
+        except (BridgeError, OSError) as e:
+            warns.append("기록 저장 실패 — 다음 등록 때 다시 기록")
+            logger.warning("등록 완료 뒤 외부 엔진 기록 저장 실패: %s", e)
         result["counts"] = {k: sum(r["status"] == k for r in result["rows"]) for k in ("new", "exists", "skip")}
         return dict(result, added=added, analyzed=analyzed, warns=warns, rev=rev)
 
@@ -523,6 +538,22 @@ def _scan_signature(root, m):
     return hashlib.sha256(json.dumps(inputs, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
+def _export_items(root, sub):
+    """최근 내보내기의 실제 파일 이름으로 새로고침 뒤에도 접두를 복원한다."""
+    try:
+        with open(_path(root, f"{sub}/export.json"), encoding="utf-8") as f:
+            doc = json.load(f)
+        if not isinstance(doc, dict) or not isinstance(doc.get("items"), list):
+            raise ValueError("내보내기 항목 형식 오류")
+        return [{"crop_id": i["crop_id"], "name": i["name"], "file": i["file"],
+                 "clean": os.path.splitext(i["file"])[0].removesuffix("__src")}
+                for i in doc["items"] if isinstance(i, dict)
+                and all(isinstance(i.get(k), str) for k in ("crop_id", "name", "file"))]
+    except (OSError, ValueError) as e:
+        logger.warning("최근 내보내기 항목을 읽지 못했습니다: %s", e)
+        return []
+
+
 def ext_summary(root):
     history = _history(root)
     m = store.load_manifest(root)
@@ -530,8 +561,12 @@ def ext_summary(root):
     exports, imports, signature = [], [], None
     for item in history["exports"]:
         row = dict(item)
+        if not exports:
+            row.update(abs=None, items=[])
         try:
-            export_folder(root, row["dir"])
+            folder = export_folder(root, row["dir"])
+            if not exports:
+                row.update(abs=folder, items=_export_items(root, row["dir"]))
         except (ValueError, OSError):
             row["gone"] = True
         exports.append(row)

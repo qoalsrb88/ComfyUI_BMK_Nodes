@@ -17,7 +17,11 @@
   },
   "ext": {
     "ok": true,
-    "exports": [{"dir": "export_src/261102-1200", "at": "2026-11-02 12:00:00", "n": 1, "size": "m64"}],
+    "exports": [
+      {"dir": "export_src/261102-1200", "at": "2026-11-02 12:00:00", "n": 1, "size": "m64", "abs": "H:/project/export_src/261102-1200",
+       "items": [{"crop_id": "001_abcdef", "name": "001_head", "file": "001_head__src.png", "clean": "001_head"}]},
+      {"dir": "export_src/261102-1159", "at": "2026-11-02 11:59:00", "n": 1, "size": "gpt"}
+    ],
     "imports": [{"path": "H:/results", "at": "2026-11-02 12:05:00", "exists": true, "new_n": 0, "missing": []}],
     "save_prefix": "design_patch/project/ext_", "save_prefix_abs": "H:/ComfyUI/output/design_patch/project/ext_"
   }

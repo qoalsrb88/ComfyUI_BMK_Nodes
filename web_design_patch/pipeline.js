@@ -1090,26 +1090,28 @@ window.DPPipeline = (() => {
       const out = button("크롭 소스 내보내기", "고른 크롭의 평탄화 소스를 프로젝트 안에 저장", () => externalAction("export"));
       out.disabled = busy || running || !S || !S.crops.length;
       btns(s, size, out);
-      const ex = external.exported;
+      const engine = el("input");
+      engine.value = external.engine;
+      engine.setAttribute("aria-label", "외부 엔진 이름");
+      engine.addEventListener("input", () => {
+        external.engine = engine.value;
+        path.placeholder = externalPrefix(true).replace(/\/$/, "");
+      });
+      btns(s, engine);
+      const ex = external.exported || (external.summary && external.summary.exports[0]);
       if (ex) {
-        line(s, `${ex.dir.replace(/\//g, "\\")} — ${ex.items.length}개 내보냄`);
-        for (const r of ex.skipped) line(s, `${r.name || r.crop_id}: 건너뜀 — ${r.why}`, "warn");
-        const ratio = ex.items.filter((i) => i.ratio_err > .005);
+        const items = ex.items || [];
+        line(s, `${ex.dir.replace(/\//g, "\\")} — ${ex.n == null ? items.length : ex.n}개 내보냄`);
+        if (ex.gone) line(s, "내보낸 소스 폴더 없음", "warn");
+        for (const r of ex.skipped || []) line(s, `${r.name || r.crop_id}: 건너뜀 — ${r.why}`, "warn");
+        const ratio = items.filter((i) => i.ratio_err > .005);
         if (external.exportSize === "m64" && ratio.length) line(s, `비율 오차 있음 ${ratio.length}개(최대 ${(Math.max(...ratio.map((i) => i.ratio_err)) * 100).toFixed(1)}%)`, "warn");
-        btns(s, button("폴더 열기", "내보낸 소스 폴더", async () => {
+        if (ex.abs) btns(s, button("폴더 열기", "내보낸 소스 폴더", async () => {
           try { await PS.openSources(ex.dir); } catch (e) { opts.toast(e.message, "err"); }
         }), button("경로 복사", ex.abs, () => copy(ex.abs)));
-        const engine = el("input");
-        engine.value = external.engine;
-        engine.setAttribute("aria-label", "외부 엔진 이름");
-        engine.addEventListener("input", () => {
-          external.engine = engine.value;
-          path.placeholder = externalPrefix(true).replace(/\/$/, "");
-        });
-        btns(s, engine);
-        for (const item of ex.items) {
+        for (const item of items) {
           const row = line(s, item.name);
-          const name = item.file.replace(/__src\.png$/i, "");
+          const name = item.clean || item.file.replace(/__src\.png$/i, "");
           row.append(button("접두 복사", `${item.name} — Save Image 의 filename_prefix`, () => copy(externalPrefix(false) + name)));
         }
       }
