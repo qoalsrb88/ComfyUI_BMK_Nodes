@@ -97,6 +97,9 @@ Review 노드를 부분 실행한다(대체 경로). 인증 토큰은 그 경로
 - POST /bmk/design_patch/projects/open {key}          목록의 프로젝트를 열기(미등록이면 등록 — D50)
 - GET  /bmk/design_patch/projects/thumb?key=          목록 카드 썸네일(D52)
 - GET  /bmk/design_patch/prompt?root=&crop=           그 크롭에 보낸 GPT 프롬프트와 한국어 풀이(배치 7-B — D59, 키·호출 없음)
+- POST /bmk/design_patch/candidates/export {root, crops, size}   크롭 소스 내보내기(6-0 — _proto/STUDIO_6-0_SPEC.md D72–D77)
+- POST /bmk/design_patch/candidates/import {root, path, dry_run}  외부 결과 폴더 미리보기·등록(6-0 — D78–D85)
+- GET  /bmk/design_patch/candidates/ext?root=                  내보낸 폴더·가져온 폴더 목록과 새 결과 수(6-0 — D84)
 POST 는 Content-Type application/json 만 받는다(다른 사이트의 단순 폼 POST 차단 — /mask/save 는 image/png). 오류는 4xx + {"error": 한국어}
 (레퍼런스: 목록 밖 시트·없는 파일 404, 같은 이름이 있음 409).
 CPU·파일 작업은 asyncio.to_thread 로 돌려 aiohttp 루프를 막지 않는다. 시트 디코드·PSD 합성·컷·변환은 _REF_SLOTS 로 한 번에 하나.
@@ -5762,6 +5765,22 @@ async def prompt_handler(request: web.Request) -> web.StreamResponse:
     return _json(await asyncio.to_thread(read))
 
 
+# ── 6-0 공용 자리(감독관 — _proto/STUDIO_6-0_SPEC.md D88). 본문은 6-0 작업자가 채운다. 그 전엔 501.
+@_guard
+async def candidates_export_handler(request: web.Request) -> web.StreamResponse:
+    raise _Reject(501, "크롭 소스 내보내기는 아직 준비 중입니다(6-0)")
+
+
+@_guard
+async def candidates_import_handler(request: web.Request) -> web.StreamResponse:
+    raise _Reject(501, "결과 폴더 가져오기는 아직 준비 중입니다(6-0)")
+
+
+@_guard
+async def candidates_ext_handler(request: web.Request) -> web.StreamResponse:
+    raise _Reject(501, "외부 엔진 폴더 목록은 아직 준비 중입니다(6-0)")
+
+
 _ROUTES = (
     ("GET", f"{API}/board", board_redirect),
     ("GET", f"{API}/board/", board_static),
@@ -5811,6 +5830,9 @@ _ROUTES = (
     ("POST", f"{API}/projects/open", projects_open_handler),
     ("GET", f"{API}/projects/thumb", projects_thumb_handler),
     ("GET", f"{API}/prompt", prompt_handler),
+    ("POST", f"{API}/candidates/export", candidates_export_handler),
+    ("POST", f"{API}/candidates/import", candidates_import_handler),
+    ("GET", f"{API}/candidates/ext", candidates_ext_handler),
 )
 
 
