@@ -100,7 +100,14 @@ Review 노드를 부분 실행한다(대체 경로). 인증 토큰은 그 경로
 - POST /bmk/design_patch/candidates/export {root, crops, size}   크롭 소스 내보내기(6-0 — _proto/STUDIO_6-0_SPEC.md D72–D77)
 - POST /bmk/design_patch/candidates/import {root, path, dry_run}  외부 결과 폴더 미리보기·등록(6-0 — D78–D85)
 - GET  /bmk/design_patch/candidates/ext?root=                  내보낸 폴더·가져온 폴더 목록과 새 결과 수(6-0 — D84)
-POST 는 Content-Type application/json 만 받는다(다른 사이트의 단순 폼 POST 차단 — /mask/save 는 image/png). 오류는 4xx + {"error": 한국어}
+- POST /bmk/design_patch/projects/new                새 프로젝트 만들기(배치 9-A — _proto/STUDIO_BATCH9_SPEC.md D112–D122) — application/json
+                                                       {name, path} · {name, adopt, file} 또는 application/octet-stream(질의 name·filename, 본문 = 타깃 그림)
+- GET  /bmk/design_patch/refs/layers?root=&sheet=[&thumb=&v=]   PSD 시트 레이어 표·레이어 썸네일(배치 9-B — D129–D132)
+- GET  /bmk/design_patch/refs/pool?root=&from=[&thumb=]   다른 프로젝트 refs 폴더 파일 목록·썸네일(배치 9-B — D133·D134)
+- POST /bmk/design_patch/refs/pool {root, rev, op, …}  보관함 쓰기 — op layers·import·rename·hold·restore·sheet_add
+                                                       (sheet_add 는 application/octet-stream + 질의 root·op·filename 도 — D135)
+POST 는 Content-Type application/json 만 받는다(다른 사이트의 단순 폼 POST 차단 — /mask/save 는 image/png,
+/projects/new·/refs/pool 의 파일 받기는 application/octet-stream — 다른 사이트는 사전 요청 없이 못 보냄). 오류는 4xx + {"error": 한국어}
 (레퍼런스: 목록 밖 시트·없는 파일 404, 같은 이름이 있음 409).
 CPU·파일 작업은 asyncio.to_thread 로 돌려 aiohttp 루프를 막지 않는다. 시트 디코드·PSD 합성·컷·변환은 _REF_SLOTS 로 한 번에 하나.
 
@@ -234,6 +241,8 @@ import logging
 import math
 import os
 import re
+import secrets
+import shutil
 import subprocess
 import sys
 import threading
@@ -5197,6 +5206,268 @@ async def _png_body(request: web.Request) -> bytes:
     return raw
 
 
+# ── 배치 9 공용 자리(감독관 — _proto/STUDIO_BATCH9_SPEC.md D114·D117·D121·D135·D139·D142): 파일 받기 도우미.
+# 9-A(새 프로젝트 타깃 그림)·9-B(시트 추가)가 같이 쓴다. 받기 = 받는 폴더 안 '.upload_<토큰>.part' 로 흘려 받거나 복사 → finish_received 가
+# 확장자·머리 바이트를 확인하고 최종 이름으로 배타 이동. 실패·취소면 .part 를 지운다. 오류 문구에 경로를 넣지 않는다(보드 계약).
+_MAX_UPLOAD = 2 * 1024 ** 3          # D114·D142 — dpsd.PSDWriter 상한과 같음
+_MAX_IMAGE_SIDE = 30000              # D117 — PSDWriter 와 같음
+_MAX_IMAGE_AREA = 200_000_000        # D142 — 8-bit RGBA ≈ 800MB
+_UPLOAD_CHUNK = 1 << 20
+_UPLOAD_KINDS = {".psd": "psd", ".psb": "psb", ".png": "png", ".jpg": "jpeg", ".jpeg": "jpeg", ".webp": "webp"}
+_NEW_TMP_DIRNAME = ".bmk_dp_tmp"     # D118 — <input>/.bmk_dp_tmp/<토큰>/ 에서 만들고 옮김(bmk_design_patch/ 밖이라 프로젝트 목록에 안 뜸)
+_NEW_TMP_MAX_AGE = 86400             # D121 — 서버 시작 때 이보다 오래된 임시 폴더·.part 정리
+# Windows 예약 장치 이름 — 확장자 앞 이름(끝 공백 무시)이 이것이면 어느 폴더에서도 열 수 없다. ¹²³ 도 COM·LPT 숫자로 친다(store 의 프로젝트 이름 규칙보다 넓음)
+_UPLOAD_RESERVED_RE = re.compile(r"(con|prn|aux|nul|conin\$|conout\$|com[0-9\u00b9\u00b2\u00b3]|lpt[0-9\u00b9\u00b2\u00b3])", re.IGNORECASE)
+
+
+def sniff_image_kind(path: str) -> str | None:
+    """머리 바이트로 'psd'·'psb'(8BPS 판 1·2)·'png'·'jpeg'·'webp' 를 판별, 모르면 None(D117)."""
+    with open(path, "rb") as f:
+        head = f.read(16)
+    if head[:4] == b"8BPS" and len(head) >= 6:
+        return {1: "psd", 2: "psb"}.get(int.from_bytes(head[4:6], "big"))
+    if head[:8] == b"\x89PNG\r\n\x1a\n":
+        return "png"
+    if head[:3] == b"\xff\xd8\xff":
+        return "jpeg"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "webp"
+    return None
+
+
+def image_header(path: str, kind: str) -> dict:
+    """그림을 풀지 않고 크기를 읽는다(D117·D142): {w, h} + PSD·PSB 는 {depth, mode}(머리 22–25 바이트 — mode 3 = RGB).
+    읽지 못하면 400."""
+    try:
+        if kind in ("psd", "psb"):
+            with open(path, "rb") as f:
+                head = f.read(26)
+            if len(head) < 26:
+                raise ValueError("짧은 머리")
+            return {"w": int.from_bytes(head[18:22], "big"), "h": int.from_bytes(head[14:18], "big"),
+                    "depth": int.from_bytes(head[22:24], "big"), "mode": int.from_bytes(head[24:26], "big")}
+        if kind == "webp":  # Pillow 의 WebP 여는 길은 파일 전체를 읽는다(WebPAnimDecoder(fp.read())) — RIFF 머리만 직접
+            with open(path, "rb") as f:
+                return _webp_size(f.read(30))
+        with Image.open(path) as im:  # PNG·JPEG 는 머리(IHDR·SOF)까지만 읽음(픽셀은 풀지 않음)
+            w, h = im.size
+        return {"w": int(w), "h": int(h)}
+    except (OSError, ValueError, Image.DecompressionBombError):
+        raise _Reject(400, "그림 파일을 읽을 수 없습니다(깨졌거나 지원하지 않는 형식)") from None
+
+
+def _webp_size(head: bytes) -> dict:
+    """WebP RIFF 머리 30바이트에서 크기(VP8 손실·VP8L 무손실·VP8X 확장). 모르는 꼴이면 ValueError."""
+    if len(head) < 30 or head[:4] != b"RIFF" or head[8:12] != b"WEBP":
+        raise ValueError("WebP 머리가 아님")
+    tag = head[12:16]
+    if tag == b"VP8 " and head[23:26] == b"\x9d\x01\x2a":
+        return {"w": int.from_bytes(head[26:28], "little") & 0x3FFF, "h": int.from_bytes(head[28:30], "little") & 0x3FFF}
+    if tag == b"VP8L" and head[20] == 0x2F:
+        b = int.from_bytes(head[21:25], "little")
+        return {"w": (b & 0x3FFF) + 1, "h": ((b >> 14) & 0x3FFF) + 1}
+    if tag == b"VP8X":
+        return {"w": int.from_bytes(head[24:27], "little") + 1, "h": int.from_bytes(head[27:30], "little") + 1}
+    raise ValueError("모르는 WebP 꼴")
+
+
+def check_image_dims(info: dict, min_side: int) -> None:
+    """짧은 변 min_side 이상(D117 타깃 64 · D135 시트 256), 긴 변 _MAX_IMAGE_SIDE·넓이 _MAX_IMAGE_AREA 이하(D142). 어기면 400."""
+    w, h = info["w"], info["h"]
+    if min(w, h) < min_side:
+        raise _Reject(400, f"그림이 너무 작습니다(짧은 변 {min_side}px 이상 — 지금 {w}×{h})")
+    if max(w, h) > _MAX_IMAGE_SIDE or w * h > _MAX_IMAGE_AREA:
+        raise _Reject(400, f"그림이 너무 큽니다(긴 변 {_MAX_IMAGE_SIDE}px·넓이 {_MAX_IMAGE_AREA // 1_000_000}MP 까지 — 지금 {w}×{h})")
+
+
+def check_upload_name(filename) -> str:
+    """받을 파일 이름(경로 아님): NFC·앞뒤 공백 제거, 폴더 부분·Windows 금지 문자·제어 문자·예약 이름(CON.png 등) 없음,
+    확장자 _UPLOAD_KINDS, 200자 이하. 정규화한 이름을 돌려준다(D117)."""
+    if not isinstance(filename, str):
+        raise _Reject(400, "파일 이름이 없습니다")
+    name = unicodedata.normalize("NFC", filename).strip()
+    if not name or len(name) > 200 or "/" in name or "\\" in name:
+        raise _Reject(400, "파일 이름 형식이 잘못되었습니다")
+    try:
+        drefs.check_ref_name(name, any_ext=True)
+    except ValueError:
+        raise _Reject(400, "파일 이름에 쓸 수 없는 문자가 있습니다") from None
+    if _UPLOAD_RESERVED_RE.fullmatch(name.split(".", 1)[0].rstrip(" ")) or name.startswith("."):
+        raise _Reject(400, "그 파일 이름은 쓸 수 없습니다(Windows 예약 이름·'.' 로 시작)")
+    if os.path.splitext(name)[1].lower() not in _UPLOAD_KINDS:
+        raise _Reject(400, "PSD·PSB·PNG·JPG·WEBP 파일만 받습니다")
+    return name
+
+
+def clean_user_path(value) -> str:
+    """경로 칸 값(D114): 앞뒤 공백·감싼 따옴표(탐색기 '경로로 복사')를 지우고 normpath. 절대 경로가 아니면 400."""
+    if not isinstance(value, str):
+        raise _Reject(400, "경로가 없습니다")
+    p = value.strip()
+    if len(p) >= 2 and p[0] == p[-1] and p[0] in "\"'":
+        p = p[1:-1].strip()
+    if not p or len(p) > 1024 or "\0" in p or not os.path.isabs(p):
+        raise _Reject(400, "파일의 전체 경로를 넣으세요(예: G:\\작업\\캐릭터.psd)")
+    return os.path.normpath(p)
+
+
+def _part_path(dest_dir: str) -> str:
+    return os.path.join(dest_dir, f".upload_{secrets.token_hex(8)}.part")
+
+
+def _drop(path: str | None) -> None:
+    if path:
+        with contextlib.suppress(OSError):
+            os.remove(path)
+
+
+async def recv_upload(request: web.Request, dest_dir: str, *, limit: int = _MAX_UPLOAD) -> str:
+    """application/octet-stream 본문을 dest_dir/.upload_<토큰>.part 로 흘려 받아 그 경로를 돌려준다(D114 — 메모리에 다 올리지 않음).
+    Content-Type 다름 415 · 상한 초과 413 · 빈 본문·Content-Length 와 받은 길이 다름(끊김) 400. 실패·취소면 .part 를 지운다.
+    dest_dir 는 부르는 쪽이 만든다. 확장자·머리 바이트는 finish_received 가 본다."""
+    if request.content_type != "application/octet-stream":
+        raise _Reject(415, "Content-Type 은 application/octet-stream 이어야 합니다")
+    if request.content_length is not None and request.content_length > limit:
+        raise _Reject(413, "파일이 너무 큽니다(2GB 까지)")
+    part = _part_path(dest_dir)
+    f = await asyncio.to_thread(open, part, "xb")
+    n, pending = 0, None
+    try:
+        async for chunk in request.content.iter_chunked(_UPLOAD_CHUNK):
+            n += len(chunk)
+            if n > limit:
+                raise _Reject(413, "파일이 너무 큽니다(2GB 까지)")
+            pending = asyncio.ensure_future(asyncio.to_thread(f.write, chunk))
+            await asyncio.shield(pending)  # 취소돼도 쓰기는 끝까지 — 아래에서 기다린 뒤 닫는다
+            pending = None
+        if n == 0:
+            raise _Reject(400, "빈 파일입니다")
+        if request.content_length is not None and n != request.content_length:
+            raise _Reject(400, "파일을 받다가 끊겼습니다 — 다시 올려 주세요")
+        await asyncio.to_thread(f.close)
+    except BaseException:  # 클라이언트 끊김(CancelledError)까지 — 반쯤 받은 파일을 남기지 않는다(닫기·지우기는 스레드에서 — 루프를 막지 않음)
+        await asyncio.shield(_recv_cleanup(f, part, pending))
+        raise
+    return part
+
+
+async def _recv_cleanup(f, part: str, pending) -> None:
+    """recv_upload 실패 정리: 진행 중인 쓰기(작업 스레드)가 끝나길 기다린 뒤 닫기·지우기도 스레드에서(루프를 막지 않음)."""
+    if pending is not None:
+        with contextlib.suppress(BaseException):
+            await pending
+    await asyncio.to_thread(_close_drop, f, part)
+
+
+def _close_drop(f, part: str) -> None:
+    with contextlib.suppress(OSError):
+        f.close()
+    _drop(part)
+
+
+def copy_in(src: str, dest_dir: str, *, limit: int = _MAX_UPLOAD) -> str:
+    """경로 칸(D114): src(clean_user_path 를 거친 값)를 dest_dir/.upload_<토큰>.part 로 복사해 그 경로를 돌려준다(스레드에서 부를 것).
+    확장자 밖 400, 없는 파일·폴더 404, 상한 초과 413, 빈 파일 400. 실패하면 .part 를 지운다(원본은 건드리지 않음)."""
+    if os.path.splitext(src)[1].lower() not in _UPLOAD_KINDS:
+        raise _Reject(400, "PSD·PSB·PNG·JPG·WEBP 파일만 받습니다")
+    try:
+        st = os.stat(src)
+    except OSError:
+        raise _Reject(404, "그 경로에 파일이 없습니다") from None
+    if not os.path.isfile(src):
+        raise _Reject(404, "그 경로에 파일이 없습니다")
+    if st.st_size > limit:
+        raise _Reject(413, "파일이 너무 큽니다(2GB 까지)")
+    if st.st_size == 0:
+        raise _Reject(400, "빈 파일입니다")
+    part = _part_path(dest_dir)
+    try:
+        n = 0
+        with open(src, "rb") as fi, open(part, "xb") as fo:
+            while chunk := fi.read(_UPLOAD_CHUNK):
+                n += len(chunk)
+                if n > limit:  # 복사 도중 원본이 커져도(다른 프로그램이 저장 중) 상한
+                    raise _Reject(413, "파일이 너무 큽니다(2GB 까지)")
+                fo.write(chunk)
+    except BaseException:
+        _drop(part)
+        raise
+    return part
+
+
+def finish_received(part: str, dest: str) -> str:
+    """받은 .part 를 확인하고 dest 로 배타 이동해 종류('psd'·'psb'·'png'·'jpeg'·'webp')를 돌려준다(D117).
+    dest 확장자의 종류와 머리 바이트가 다르면 400, dest 가 이미 있으면 FileExistsError(→ 409 — 덮어쓰지 않음). 실패면 .part 를 지운다."""
+    try:
+        want = _UPLOAD_KINDS.get(os.path.splitext(dest)[1].lower())
+        kind = sniff_image_kind(part)
+        if want is None or kind != want:
+            raise _Reject(400, "파일 내용이 확장자와 맞지 않습니다(PSD·PSB·PNG·JPG·WEBP)")
+        if os.name == "nt":
+            os.rename(part, dest)  # Windows rename 은 대상이 있으면 FileExistsError
+        else:
+            os.link(part, dest)  # 대상이 있으면 FileExistsError(rename 은 POSIX 에서 덮어씀)
+            os.remove(part)
+    except BaseException:
+        _drop(part)
+        raise
+    return kind
+
+
+def unique_file_name(folder: str, name: str) -> str:
+    """folder 안에서 겹치지 않는 이름: name 이 있으면 '<stem>_2<ext>', '_3' … (casefold 비교 — NTFS 가 같은 파일로 여는 이름)."""
+    stem, ext = os.path.splitext(name)
+    try:
+        taken = {e.casefold() for e in os.listdir(folder)}
+    except FileNotFoundError:
+        taken = set()
+    cand, k = name, 2
+    while cand.casefold() in taken:
+        cand, k = f"{stem}_{k}{ext}", k + 1
+    return cand
+
+
+def _sweep_new_tmp(base_dir: str) -> None:
+    """서버 시작 때(register_routes) <input>/.bmk_dp_tmp 안 _NEW_TMP_MAX_AGE 넘은 항목을 지운다(D121 — 만들다 꺼진 새 프로젝트 임시 폴더)."""
+    tmp = os.path.join(os.path.abspath(base_dir), _NEW_TMP_DIRNAME)
+    if _is_link(tmp) or not os.path.isdir(tmp):
+        if os.path.lexists(tmp) and _is_link(tmp):
+            logger.warning("%s 새 프로젝트 임시 폴더가 링크라 정리하지 않음: %s", _TAG, tmp)
+        return
+    real = os.path.normcase(os.path.realpath(tmp))
+    if real != os.path.normcase(os.path.normpath(tmp)):
+        logger.warning("%s 새 프로젝트 임시 폴더의 실제 경로가 달라 정리하지 않음: %s", _TAG, tmp)
+        return
+    try:
+        entries = list(os.scandir(tmp))
+    except OSError:
+        return
+    now = time.time()
+    for e in entries:
+        try:
+            if _is_link(e.path) or now - e.stat(follow_symlinks=False).st_mtime < _NEW_TMP_MAX_AGE:
+                continue  # 링크·정션은 따라가지도 지우지도 않음(만든 적 없음)
+            if os.path.normcase(os.path.dirname(os.path.realpath(e.path))) != real:
+                continue
+            if e.is_dir(follow_symlinks=False):
+                shutil.rmtree(e.path, ignore_errors=True)
+            else:
+                os.remove(e.path)
+        except OSError as err:
+            logger.warning("%s 새 프로젝트 임시 항목을 지우지 못함: %s", _TAG, err)
+
+
+def _is_link(path: str) -> bool:
+    """심볼릭 링크·정션(Windows 재분석 지점)이면 True."""
+    try:
+        if os.path.islink(path) or os.path.isjunction(path):
+            return True
+        st = os.lstat(path)
+    except OSError:
+        return False
+    return bool(getattr(st, "st_file_attributes", 0) & 0x400)  # FILE_ATTRIBUTE_REPARSE_POINT
+
+
 def _field(data: dict, name: str, rx: re.Pattern, required: bool = True) -> str | None:
     v = data.get(name)
     if v is None and not required:
@@ -5868,6 +6139,27 @@ async def candidates_ext_handler(request: web.Request) -> web.StreamResponse:
     return _json(await asyncio.to_thread(ext.ext_summary, root))
 
 
+# ── 배치 9 공용 자리(감독관 — _proto/STUDIO_BATCH9_SPEC.md D139). 본문은 9-A(projects/new)·9-B(refs/layers·refs/pool)가 채운다. 그 전엔 501.
+@_guard
+async def projects_new_handler(request: web.Request) -> web.StreamResponse:
+    raise _Reject(501, "새 프로젝트 만들기는 아직 준비 중입니다(배치 9-A)")
+
+
+@_guard
+async def refs_layers_handler(request: web.Request) -> web.StreamResponse:
+    raise _Reject(501, "레이어별 컷은 아직 준비 중입니다(배치 9-B)")
+
+
+@_guard
+async def refs_pool_get_handler(request: web.Request) -> web.StreamResponse:
+    raise _Reject(501, "다른 프로젝트 레퍼런스 목록은 아직 준비 중입니다(배치 9-B)")
+
+
+@_guard
+async def refs_pool_post_handler(request: web.Request) -> web.StreamResponse:
+    raise _Reject(501, "보관함 쓰기는 아직 준비 중입니다(배치 9-B)")
+
+
 _ROUTES = (
     ("GET", f"{API}/board", board_redirect),
     ("GET", f"{API}/board/", board_static),
@@ -5920,6 +6212,10 @@ _ROUTES = (
     ("POST", f"{API}/candidates/export", candidates_export_handler),
     ("POST", f"{API}/candidates/import", candidates_import_handler),
     ("GET", f"{API}/candidates/ext", candidates_ext_handler),
+    ("POST", f"{API}/projects/new", projects_new_handler),
+    ("GET", f"{API}/refs/layers", refs_layers_handler),
+    ("GET", f"{API}/refs/pool", refs_pool_get_handler),
+    ("POST", f"{API}/refs/pool", refs_pool_post_handler),
 )
 
 
@@ -5932,6 +6228,7 @@ def register_routes(routes: web.RouteTableDef, base_dir: str | None = None) -> b
         _PROJECT_INPUT = os.path.abspath(base_dir)
         n = store.load_root_registry(base_dir)
         logger.debug(f"{_TAG} Board: 루트 레지스트리 {n}개 복구 ({base_dir})")
+        _sweep_new_tmp(_PROJECT_INPUT)
     if any(isinstance(r, web.RouteDef) and r.path == f"{API}/state" for r in routes):
         return False
     for method, path, handler in _ROUTES:

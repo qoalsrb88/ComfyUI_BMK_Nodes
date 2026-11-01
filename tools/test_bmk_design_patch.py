@@ -5653,7 +5653,9 @@ def m2_board_unit():
                        ("GET", "/bmk/design_patch/projects"), ("POST", "/bmk/design_patch/projects/open"),  # 배치 7 공용 자리(7-A 목록 셋 · 7-B 프롬프트)
                        ("GET", "/bmk/design_patch/projects/thumb"), ("GET", "/bmk/design_patch/prompt"),
                        ("POST", "/bmk/design_patch/candidates/export"), ("POST", "/bmk/design_patch/candidates/import"),  # 6-0 공용 자리
-                       ("GET", "/bmk/design_patch/candidates/ext")})
+                       ("GET", "/bmk/design_patch/candidates/ext"),
+                       ("POST", "/bmk/design_patch/projects/new"), ("GET", "/bmk/design_patch/refs/layers"),  # 배치 9 공용 자리
+                       ("GET", "/bmk/design_patch/refs/pool"), ("POST", "/bmk/design_patch/refs/pool")})
         check(paths == want, f"라우트 목록 {paths}")
         # 재시작 흉내: 메모리 레지스트리에서 지움 → base_dir 로 다시 등록하면 _roots.json 에서 복구
         with store._ROOTS_LOCK:
@@ -10419,7 +10421,7 @@ def m2_node_unit():
             n1 = len(fake.routes)
             dp._register_board_routes()
         paths = {r.path for r in fake.routes}
-        check(n1 == 51 and len(fake.routes) == 51 and {"/bmk/design_patch/state", "/bmk/design_patch/drain",
+        check(n1 == 55 and len(fake.routes) == 55 and {"/bmk/design_patch/state", "/bmk/design_patch/drain",
                                                        "/bmk/design_patch/board/", "/bmk/design_patch/canvas",
                                                        "/bmk/design_patch/layout", "/bmk/design_patch/layout/refs",
                                                        "/bmk/design_patch/refs", "/bmk/design_patch/refs/cut",
@@ -12282,7 +12284,7 @@ def vlm_node_unit():
         fake = _FakeServer(web.RouteTableDef())
         with _prompt_server(fake):
             dp._register_board_routes()
-        check(len(fake.routes) == 51, f"보드 라우트 {len(fake.routes)}(배치 3a 3·배치 5 묶음 1 3·묶음 2 1·배치 7 공용 4·6-0 3 포함)")
+        check(len(fake.routes) == 55, f"보드 라우트 {len(fake.routes)}(배치 3a 3·배치 5 묶음 1 3·묶음 2 1·배치 7 공용 4·6-0 3·배치 9 공용 4 포함)")
 
     def t_n9():
         section("M3-N9 평가 도구의 순수 복제 new_targets == main._new_targets (표본 레이어명 6 + 채택 origin 3)")
@@ -14146,7 +14148,7 @@ def layout_board_unit():
         paths = {(r.method, r.path) for r in routes}
         want = {("GET", f"{API}/layout"), ("GET", f"{API}/layout/refs"), ("POST", f"{API}/layout/start"),
                 ("POST", f"{API}/layout/crop"), ("POST", f"{API}/layout/psd")}
-        check(want <= paths and len(routes) == 51, f"레이아웃 라우트 5개 등록(모두 51 — S2 레퍼런스 8·S3 파이프라인 7·S4 마스크 5·배치 3a 3·배치 5 묶음 1 3·묶음 2 1·배치 7 공용 4·6-0 3 포함) {len(routes)}")
+        check(want <= paths and len(routes) == 55, f"레이아웃 라우트 5개 등록(모두 55 — S2 레퍼런스 8·S3 파이프라인 7·S4 마스크 5·배치 3a 3·배치 5 묶음 1 3·묶음 2 1·배치 7 공용 4·6-0 3·배치 9 공용 4 포함) {len(routes)}")
         for name in ("layout_geom.js", "layout_edit.js"):
             st, hd, body = await h.get(f"{API}/board/{name}")
             f = PKG / "web_design_patch" / name
@@ -19536,8 +19538,8 @@ def refs_board_unit():
         paths = {(r.method, r.path) for r in routes}
         want = {("GET", f"{API}/refs"), ("GET", f"{API}/refs/sheets"), ("GET", f"{API}/refs/sheet"), ("GET", f"{API}/refs/img"),
                 ("POST", f"{API}/refs/cut"), ("GET", f"{API}/refs/cut"), ("POST", f"{API}/refs/save"), ("POST", f"{API}/refs/link")}
-        check(want <= paths and len(routes) == 51 and len({p for _m, p in paths}) == 50,
-              f"레퍼런스 라우트 7개(cut 은 GET·POST) — RouteDef 51·경로 50(배치 5 묶음 1 3·묶음 2 1·S3 파이프라인 7·S4 마스크 5·배치 3a 3 포함) {len(routes)}")
+        check(want <= paths and len(routes) == 55 and len({p for _m, p in paths}) == 53,
+              f"레퍼런스 라우트 7개(cut 은 GET·POST) — RouteDef 55·경로 53(배치 5 묶음 1 3·묶음 2 1·S3 파이프라인 7·S4 마스크 5·배치 3a 3·배치 9 공용 4 포함) {len(routes)}")
         st, hd, body = await h.get(f"{API}/board/ref_edit.js")
         f = PKG / "web_design_patch" / "ref_edit.js"
         if f.is_file():
@@ -28887,8 +28889,8 @@ def pipeline_board_unit():
         paths = {(r.method, r.path) for r in routes}
         want = {("GET", f"{API}/pipeline"), ("POST", f"{API}/pipeline/settings"), ("GET", f"{API}/pipeline/prompt"),
                 ("GET", f"{API}/pipeline/plan"), ("GET", f"{API}/pipeline/progress"), ("GET", f"{API}/draft"), ("POST", f"{API}/draft/adopt")}
-        check(want <= paths and len(routes) == 51 and len({p for _m, p in paths}) == 50,
-              f"파이프라인 라우트 7개 — RouteDef 51·경로 50(배치 5 묶음 1 3·묶음 2 1·배치 3a 3 포함) {len(routes)}")
+        check(want <= paths and len(routes) == 55 and len({p for _m, p in paths}) == 53,
+              f"파이프라인 라우트 7개 — RouteDef 55·경로 53(배치 5 묶음 1 3·묶음 2 1·배치 3a 3·배치 9 공용 4 포함) {len(routes)}")
         st, hd, body = await h.get(f"{API}/board/pipeline.js")
         f = PKG / "web_design_patch" / "pipeline.js"
         if f.is_file():
@@ -41668,7 +41670,7 @@ def mask_board_unit():
         paths = {(r.method, r.path) for r in routes}
         want = {("GET", f"{API}/mask"), ("GET", f"{API}/mask/img"), ("POST", f"{API}/mask/save"), ("POST", f"{API}/mask/edit"),
                 ("GET", f"{API}/mask/alts")}
-        check(want <= paths and len(routes) == 51 and len({p for _m, p in paths}) == 50, f"마스크 라우트 5개 — RouteDef 51·경로 50(배치 5 묶음 1 3·묶음 2 1·배치 3a 3 포함) {len(routes)}")
+        check(want <= paths and len(routes) == 55 and len({p for _m, p in paths}) == 53, f"마스크 라우트 5개 — RouteDef 55·경로 53(배치 5 묶음 1 3·묶음 2 1·배치 3a 3·배치 9 공용 4 포함) {len(routes)}")
         st_, hd, body = await h.get(f"{API}/board/mask_edit.js")
         f = PKG / "web_design_patch" / "mask_edit.js"
         if f.is_file():
@@ -53421,6 +53423,220 @@ process.exit(0);
             for name, ok in rows.items():
                 check(ok is True, f"D60–D68 {group}/{name}: {ok}")
 
+def batch9_recv_unit():
+    """배치 9 공용 자리(11/02 — _proto/STUDIO_BATCH9_SPEC.md D114·D117·D139·D142): 파일 받기 도우미(감독관). 9-A·9-B 가 같이 쓴다."""
+    section("배치 9 공용 — 파일 받기 도우미(머리 바이트·이름·경로·흘려 받기·복사·배타 이동)")
+    import tempfile
+    from unittest.mock import patch
+    import bmk_design_patch_board as bd
+    from PIL import Image
+
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="b9recv_", dir=OUT_ROOT.resolve()) as tmp:
+        t = Path(tmp)
+        files = {}
+        for kind, ext, size in (("png", ".png", (80, 70)), ("jpeg", ".jpg", (90, 64)), ("webp", ".webp", (64, 100))):
+            f = t / f"a{ext}"
+            Image.new("RGB", size, (200, 10, 10)).save(f, {"jpeg": "JPEG", "png": "PNG", "webp": "WEBP"}[kind])
+            files[kind] = (f, size)
+        psd = t / "a.psd"
+        head = b"8BPS" + (1).to_bytes(2, "big") + bytes(6) + (3).to_bytes(2, "big") + (300).to_bytes(4, "big") + (200).to_bytes(4, "big") \
+            + (8).to_bytes(2, "big") + (3).to_bytes(2, "big")
+        psd.write_bytes(head + bytes(64))
+        psb = t / "a.psb"
+        psb.write_bytes(b"8BPS" + (2).to_bytes(2, "big") + head[6:] + bytes(64))
+        junk = t / "junk.png"
+        junk.write_bytes(b"not an image at all")
+        check(bd.sniff_image_kind(str(psd)) == "psd" and bd.sniff_image_kind(str(psb)) == "psb"
+              and all(bd.sniff_image_kind(str(f)) == k for k, (f, _s) in files.items()) and bd.sniff_image_kind(str(junk)) is None,
+              "B9R 머리 바이트 6종·모름")
+        info = bd.image_header(str(psd), "psd")
+        check(info == {"w": 200, "h": 300, "depth": 8, "mode": 3}, f"B9R PSD 머리 크기·깊이·모드 {info}")
+        check(all(bd.image_header(str(f), k) == {"w": s[0], "h": s[1]} for k, (f, s) in files.items()), "B9R 그림 머리 크기(픽셀 안 풂)")
+        for i, (mode, kw) in enumerate((("RGB", {"lossless": True}), ("RGBA", {}), ("RGBA", {"lossless": True}))):
+            wf = t / f"w{i}.webp"
+            Image.new(mode, (321, 123), (1, 2, 3) + ((4,) if mode == "RGBA" else ())).save(wf, "WEBP", **kw)
+            check(bd.image_header(str(wf), "webp") == {"w": 321, "h": 123}, f"B9R WebP 머리 직접(VP8L·VP8X) {mode} {kw}")
+        with patch.object(bd.Image, "open", side_effect=AssertionError("WebP 를 Pillow 로 열면 파일 전체를 읽음")):
+            check(bd.image_header(str(files["webp"][0]), "webp")["w"] == 64, "B9R WebP 는 Pillow 로 열지 않음")
+
+        def rejects(fn, *a, code=400, **kw):
+            try:
+                fn(*a, **kw)
+            except bd._Reject as e:
+                return e.status == code
+            return False
+
+        check(rejects(bd.image_header, str(junk), "png"), "B9R 깨진 그림 400")
+        bd.check_image_dims({"w": 64, "h": 900}, 64)
+        check(rejects(bd.check_image_dims, {"w": 63, "h": 900}, 64) and rejects(bd.check_image_dims, {"w": 255, "h": 900}, 256)
+              and rejects(bd.check_image_dims, {"w": 30001, "h": 100}, 64) and rejects(bd.check_image_dims, {"w": 15000, "h": 14000}, 64),
+              "B9R 크기 상한·하한(짧은 변 인자·긴 변 30000·넓이 200MP)")
+        check(bd.check_upload_name("  캐릭터 A.PSD ") == "캐릭터 A.PSD" and bd.check_upload_name("x.webp") == "x.webp", "B9R 받을 이름 정규화")
+        check(all(rejects(bd.check_upload_name, n) for n in ("../a.png", "a\\b.png", "a:b.png", "CON.png", "con.psd", ".x.png", "a.gif",
+                                                             "", None, "a" * 201 + ".png", "a\x01.png",
+                                                             "COM¹.png", "lpt².psd", "nul .png", "CONIN$.png", "a.png:x")),
+              "B9R 받을 이름 거절(폴더·금지 문자·예약 이름·점 시작·확장자·길이·제어 문자)")
+        absf = str(t / "a.png")
+        check(bd.clean_user_path(f'  "{absf}"  ') == os.path.normpath(absf) and bd.clean_user_path(f"'{absf}'") == os.path.normpath(absf),
+              "B9R 경로 칸 따옴표·공백 제거")
+        check(rejects(bd.clean_user_path, "a.png") and rejects(bd.clean_user_path, "") and rejects(bd.clean_user_path, 3)
+              and rejects(bd.clean_user_path, '"'), "B9R 상대 경로·빈 값 거절")
+
+        dest = t / "dest"
+        dest.mkdir()
+        part = bd.copy_in(str(files["png"][0]), str(dest))
+        check(Path(part).parent == dest and Path(part).name.startswith(".upload_") and Path(part).read_bytes() == files["png"][0].read_bytes(),
+              "B9R 경로에서 복사 → .part")
+        check(bd.finish_received(part, str(dest / "그림.png")) == "png" and not Path(part).exists() and (dest / "그림.png").is_file(),
+              "B9R 배타 이동 → 종류")
+        part = bd.copy_in(str(files["png"][0]), str(dest))
+        try:
+            bd.finish_received(part, str(dest / "그림.png"))
+            exists = False
+        except FileExistsError:
+            exists = True
+        check(exists and not Path(part).exists() and (dest / "그림.png").read_bytes() == files["png"][0].read_bytes(),
+              "B9R 대상이 있으면 FileExistsError·덮어쓰지 않음·.part 지움")
+        part = bd.copy_in(str(files["jpeg"][0]), str(dest))
+        check(rejects(bd.finish_received, part, str(dest / "b.png")) and not Path(part).exists() and not (dest / "b.png").exists(),
+              "B9R 내용·확장자 불일치 400·.part 지움")
+        check(rejects(bd.copy_in, str(t / "없음.png"), str(dest), code=404) and rejects(bd.copy_in, str(t), str(dest), code=400)
+              and rejects(bd.copy_in, str(files["png"][0]), str(dest), code=413, limit=10), "B9R 복사 거절(없음 404·확장자·상한 413)")
+        empty = t / "empty.png"
+        empty.write_bytes(b"")
+        check(rejects(bd.copy_in, str(empty), str(dest)), "B9R 빈 파일 400")
+        real_stat = os.stat
+        with patch.object(bd.os, "stat", side_effect=lambda q, *a, **k: os.stat_result((0o100666, 0, 0, 1, 0, 0, 3, 0, 0, 0))
+                          if q == str(files["png"][0]) else real_stat(q, *a, **k)):
+            check(rejects(bd.copy_in, str(files["png"][0]), str(dest), code=413, limit=10), "B9R 복사 도중 원본이 커져도 실제 바이트로 상한 413")
+        check(not [p for p in dest.iterdir() if p.name.endswith(".part")], "B9R 남은 .part 없음")
+        check(bd.unique_file_name(str(dest), "그림.png") == "그림_2.png" and bd.unique_file_name(str(dest), "그림.PNG") == "그림_2.PNG"
+              and bd.unique_file_name(str(dest), "새.png") == "새.png" and bd.unique_file_name(str(t / "없는폴더"), "a.png") == "a.png",
+              "B9R 겹치지 않는 이름(casefold)")
+        (dest / "그림_2.png").write_bytes(b"x")
+        check(bd.unique_file_name(str(dest), "그림.png") == "그림_3.png", "B9R 겹침 k 증가")
+
+        class Content:
+            def __init__(self, chunks, cancel_at=None):
+                self.chunks, self.cancel_at = chunks, cancel_at
+
+            async def iter_chunked(self, n):
+                for i, c in enumerate(self.chunks):
+                    if self.cancel_at == i:
+                        raise asyncio.CancelledError()
+                    yield c
+
+        class Req:
+            def __init__(self, chunks, ctype="application/octet-stream", length="auto", cancel_at=None):
+                self.content_type = ctype
+                self.content = Content(chunks, cancel_at)
+                self.content_length = sum(map(len, chunks)) if length == "auto" else length
+
+        data = files["webp"][0].read_bytes()
+        chunks = [data[i:i + 7] for i in range(0, len(data), 7)]
+        part = asyncio.run(bd.recv_upload(Req(chunks), str(dest)))
+        check(Path(part).read_bytes() == data and bd.finish_received(part, str(dest / "w.webp")) == "webp", "B9R 흘려 받기 → 배타 이동")
+
+        def recv_fails(req, code, **kw):
+            try:
+                asyncio.run(bd.recv_upload(req, str(dest), **kw))
+            except bd._Reject as e:
+                return e.status == code
+            return False
+
+        check(recv_fails(Req(chunks, ctype="application/json"), 415) and recv_fails(Req(chunks), 413, limit=10)
+              and recv_fails(Req(chunks, length=None), 413, limit=10) and recv_fails(Req([]), 400)
+              and recv_fails(Req(chunks, length=len(data) + 5), 400), "B9R 흘려 받기 거절(형식 415·상한 413 — 길이 없이도·빈 400·끊김 400)")
+        try:
+            asyncio.run(bd.recv_upload(Req(chunks, cancel_at=2), str(dest)))
+            cancelled = False
+        except asyncio.CancelledError:
+            cancelled = True
+        check(cancelled and not [p for p in dest.iterdir() if p.name.endswith(".part")], "B9R 취소(끊김)되면 .part 지움")
+        import threading as _th
+        gate, entered = _th.Event(), _th.Event()
+        real_open = open
+
+        class SlowFile:
+            def __init__(self, path):
+                self.f = real_open(path, "xb")
+                self.closed_in_main = None
+
+            def write(self, b):
+                entered.set()
+                gate.wait(5)
+                return self.f.write(b)
+
+            def close(self):
+                self.closed_in_main = _th.current_thread() is _th.main_thread()
+                self.f.close()
+
+        made = []
+
+        def fake_open(path, mode="r", *a, **k):
+            if mode == "xb" and str(path).endswith(".part"):
+                made.append(SlowFile(path))
+                return made[-1]
+            return real_open(path, mode, *a, **k)
+
+        async def cancel_mid_write():
+            with patch("builtins.open", fake_open):
+                task = asyncio.ensure_future(bd.recv_upload(Req(chunks), str(dest)))
+                await asyncio.to_thread(entered.wait, 5)
+                task.cancel()
+                await asyncio.sleep(0.05)
+                gate.set()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    return True
+                return False
+
+        check(asyncio.run(cancel_mid_write()) and made and made[0].closed_in_main is False
+              and not [p for p in dest.iterdir() if p.name.endswith(".part")],
+              "B9R 쓰기 도중 취소 — 진행 중 쓰기를 기다린 뒤 작업 스레드에서 닫고 .part 지움")
+
+        base = t / "input"
+        old = base / bd._NEW_TMP_DIRNAME / "old"
+        new = base / bd._NEW_TMP_DIRNAME / "new"
+        for d in (old, new):
+            d.mkdir(parents=True)
+            (d / "f.bin").write_bytes(b"1")
+        past = time.time() - bd._NEW_TMP_MAX_AGE - 60
+        os.utime(old, (past, past))
+        bd._sweep_new_tmp(str(base))
+        check(not old.exists() and new.exists(), "B9R 서버 시작 때 1일 넘은 새 프로젝트 임시 폴더만 정리")
+        bd._sweep_new_tmp(str(t / "없음"))
+        outside = t / "outside"
+        (outside / "keep").mkdir(parents=True)
+        os.utime(outside / "keep", (past, past))
+        linked = t / "input2"
+        linked.mkdir()
+        import subprocess as _sp
+        made_link = _sp.run(["cmd", "/c", "mklink", "/J", str(linked / bd._NEW_TMP_DIRNAME), str(outside)], capture_output=True).returncode == 0
+        if made_link:
+            bd._sweep_new_tmp(str(linked))
+            check((outside / "keep").exists(), "B9R 임시 폴더 자체가 정션이면 따라가 지우지 않음")
+            os.rmdir(linked / bd._NEW_TMP_DIRNAME)
+        else:
+            skip("B9R 정션 만들기 실패(권한) — 링크 임시 폴더 검사 건너뜀")
+        (base / store.PROJECTS_DIRNAME / "p1").mkdir(parents=True)
+        with patch.object(bd, "_PROJECT_INPUT", str(base)):
+            names = {r.get("project") for r in bd._project_roots()}
+        check(bd._NEW_TMP_DIRNAME not in names and "p1" in names, "B9R 임시 폴더는 프로젝트 목록 밖(bmk_design_patch/ 바깥)")
+
+
+def batch9a_unit():
+    """배치 9-A(11/02 — _proto/STUDIO_BATCH9_SPEC.md D112–D122): 새 프로젝트 만들기. 공용 자리 — 9-A 작업자가 채운다."""
+    section("배치 9-A — 새 프로젝트 만들기")
+
+
+def batch9b_unit():
+    """배치 9-B(11/02 — _proto/STUDIO_BATCH9_SPEC.md D123–D137·D141·D143): 레퍼런스 보관함·레이어별 컷·가져오기·시트 추가·[레퍼런스] 화면 2건. 공용 자리 — 9-B 작업자가 채운다."""
+    section("배치 9-B — 레퍼런스 보관함·레이어별 컷·가져오기·시트 추가")
+
+
 def ext60_unit():
     """D72–D87: 합성 파일·직접 라우트·모의 DOM. 소켓·외부 API·탐색기를 실행하지 않는다."""
     section("6-0 — 외부 엔진 다리(내보내기·가져오기)")
@@ -53614,7 +53830,7 @@ def ext60_unit():
         check(reveal.call_count == 1, "잘못된 sub 로 탐색기를 열지 않음")
     with patch.object(bd, "open_export_folder", return_value={"ok": True}) as legacy:
         check(asyncio.run(request(bd.open_folder_handler, {})).status == 200 and legacy.call_count == 1, "sub 없음 기존 폴더 열기")
-    check(len(bd._ROUTES) == 51, "기존 라우트 51개 유지")
+    check(len(bd._ROUTES) == 55, "기존 라우트 55개 유지(배치 9 공용 4 포함)")
 
     fixture = json.loads((PKG / "tools/fixtures/ext_api.json").read_text(encoding="utf-8"))
     for kind, actual in [("export", ex64), ("preview", preview), ("import", registered), ("ext", summary)]:
@@ -54310,6 +54526,12 @@ if __name__ == "__main__":
         batch8b_unit()
     if want("batch8c_unit"):
         batch8c_unit()
+    if want("batch9_recv_unit"):
+        batch9_recv_unit()
+    if want("batch9a_unit"):
+        batch9a_unit()
+    if want("batch9b_unit"):
+        batch9b_unit()
     print(f"\n단위 테스트 {time.time() - T0:.1f}s (PASS {PASSES} FAIL {len(FAILS)})")
     if QUICK:
         print("\n--quick: 회귀·노드 생략")
