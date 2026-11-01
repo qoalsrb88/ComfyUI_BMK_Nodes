@@ -5212,7 +5212,7 @@ async def _png_body(request: web.Request) -> bytes:
 # 확장자·머리 바이트를 확인하고 최종 이름으로 배타 이동. 실패·취소면 .part 를 지운다. 오류 문구에 경로를 넣지 않는다(보드 계약).
 _MAX_UPLOAD = 2 * 1024 ** 3          # D114·D142 — dpsd.PSDWriter 상한과 같음
 _MAX_IMAGE_SIDE = 30000              # D117 — PSDWriter 와 같음
-_MAX_IMAGE_AREA = 200_000_000        # D142 — 8-bit RGBA ≈ 800MB
+_MAX_IMAGE_AREA = 178_000_000        # D142 — Pillow 기본 상한(2 × MAX_IMAGE_PIXELS ≈ 178.9MP) 아래 — 감싸기·썸네일이 Image.open 으로 열 수 있게
 _UPLOAD_CHUNK = 1 << 20
 _UPLOAD_KINDS = {".psd": "psd", ".psb": "psb", ".png": "png", ".jpg": "jpeg", ".jpeg": "jpeg", ".webp": "webp"}
 _NEW_TMP_DIRNAME = ".bmk_dp_tmp"     # D118 — <input>/.bmk_dp_tmp/<토큰>/ 에서 만들고 옮김(bmk_design_patch/ 밖이라 프로젝트 목록에 안 뜸)
