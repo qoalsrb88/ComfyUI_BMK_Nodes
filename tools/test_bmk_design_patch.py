@@ -52472,6 +52472,7 @@ def ext60_unit():
     st.update_manifest(root, lambda mm: mm["crops"][0].update(rect=[1, 1, 74, 42]))
     good.unlink()
     (folder / "zz_duplicate.png").unlink()
+    (folder / "001_head__src.png").unlink()  # Candidate In 도 같은 key 를 재발견할 수 없게 모든 사본을 제거.
     again = ext.apply_import(root, str(folder))
     check(not again["added"] and st.load_manifest(root)["candidates"] == existing, "D79 재가져오기 배치·출처·삭제 후보 보존")
     check(ext.ext_summary(root)["imports"][0]["missing"] == [existing[0]["key"]], "D84 사라진 파일의 후보 키")
@@ -52479,6 +52480,15 @@ def ext60_unit():
     missing = [c for t in bdstate["targets"] for c in t["candidates"] if c.get("external_missing")]
     check(missing and missing[0]["label"].startswith("외부 · results/"), "D83 검토 라벨·파일 없음")
     hash_missing = bdstate["external_files_v"]
+    check(all("f_" + hashlib.sha256(p.read_bytes()).hexdigest()[:12] != existing[0]["key"]
+              for p in folder.iterdir() if p.is_file()), "R6 삭제 후보의 같은 내용 사본도 남아 있지 않음")
+    missing_snapshot = st.load_manifest(root)
+    dp.BMKDesignPatchCandidateIn().run(dp._handle(root, missing_snapshot), "folder", str(folder), "", "", True, True)
+    missing_after = st.load_manifest(root)
+    missing_cands = {c["key"]: c for c in missing_after["candidates"]}
+    check(all(missing_cands.get(c["key"]) == c for c in existing)
+          and all(missing_after["analysis"].get(c["key"]) == missing_snapshot["analysis"][c["key"]] for c in existing),
+          "R6 파일 삭제 상태의 Candidate In 이 Studio 후보·분석을 보존")
     png(good.name, (200, 40, 30))
     check(bd.build_state(root, bdstate["rev"])["external_files_v"] != hash_missing, "D83 rev 그대로 파일 복구를 검토에 전달")
     dp.BMKDesignPatchCandidateIn().run(dp._handle(root, st.load_manifest(root)), "folder", str(folder), "", "", True, True)
@@ -52531,7 +52541,189 @@ def ext60_unit():
     st.save_manifest(root, m)
     reject(lambda: ext.export_sources(root), 400, "내보낼 크롭")
     reject(lambda: ext.export_sources(root, [c1["id"]]), 400, "내보낼 크롭")
+    ext60_review_unit(dp, run)
     ext60_js_unit(out, fixture)
+
+
+def ext60_review_unit(dp, run):
+    """R1–R9 경계 사례: 실제 파일, 국소 I/O 실패, state 읽기 횟수."""
+    import builtins
+    from unittest.mock import patch
+    bd, st = dp.board, dp.store
+    ext = bd.ext
+    _, root = _fx_project(dp, run, "review", [("001_part | A: part", [0, 0, 73, 41]),
+                                             ("002_hand | A: hand", [75, 0, 148, 41])], _vlm_img(60, 160, 17))
+    crop, hand = st.load_manifest(root)["crops"]
+    folder = run / "review_results"
+    folder.mkdir()
+    def png(name, color):
+        p = folder / name
+        Image.new("RGB", (73, 41), color).save(p)
+        return p
+    good = png("001_part__A_first.png", (1, 20, 50))
+    early = folder / "000_unmatched.png"
+    shutil.copyfile(good, early)
+    png("001_part__A_second.png", (3, 40, 70))
+    scan, prepared = ext._scan(root, str(folder))
+    rows = {r["file"]: r for r in scan["rows"]}
+    check(rows[early.name]["status"] == "skip" and rows[good.name]["status"] == "new" and scan["counts"]["new"] == 2,
+          "R2 이름순 첫 매칭 실패 파일이 정상 중복 파일을 가리지 않음")
+    def no_bytes(value):
+        if isinstance(value, (bytes, bytearray, memoryview)):
+            return False
+        if isinstance(value, dict):
+            return all(no_bytes(v) for v in value.values())
+        return all(no_bytes(v) for v in value) if isinstance(value, (list, tuple)) else True
+    check(no_bytes((scan, prepared)), "R7 dry-run 반환·준비 목록에 이미지 bytes 없음")
+    original_decode = dp._decode
+    bad_data = good.read_bytes()
+    for error in (Image.DecompressionBombError("oversize test"), SyntaxError("decoder test")):
+        def decode(data):
+            if data == bad_data:
+                raise error
+            return original_decode(data)
+        with patch.object(dp, "_decode", side_effect=decode):
+            result = ext.scan_import(root, str(folder))
+        check(result["counts"] == {"new": 1, "exists": 0, "skip": 2}, f"R4 {type(error).__name__} 한 행만 skip")
+    first = ext.apply_import(root, str(folder))
+    keys = first["added"]
+    def reverse_picks(m):
+        for c in m["candidates"]:
+            c["picked"] = True
+        m["picks"][crop["id"] + "/A"] = list(reversed(keys))
+    st.update_manifest(root, reverse_picks)
+    before_picks = copy.deepcopy(st.load_manifest(root)["picks"])
+    png("001_part__A_third.png", (6, 80, 90))
+    ext.apply_import(root, str(folder))
+    check(st.load_manifest(root)["picks"] == before_picks, "R3 등록이 기존 ★·S2 picks [k2,k1] 순서를 보존")
+    before = Path(root, st.MANIFEST_NAME).read_bytes()
+    with patch.object(st, "update_manifest", side_effect=AssertionError("zero import must not write manifest")):
+        zero = ext.apply_import(root, str(folder))
+    check(not zero["added"] and zero["rev"] == json.loads(before)["rev"] and Path(root, st.MANIFEST_NAME).read_bytes() == before,
+          "R3 새 후보 0건은 manifest bytes·rev 불변, update_manifest 미호출")
+
+    changed = png("001_part__A_changed.png", (9, 100, 110))
+    original_scan = ext._scan
+    def scan_then_change(r, p):
+        result = original_scan(r, p)
+        data, stat = changed.read_bytes(), changed.stat()
+        changed.write_bytes(data[:-1] + bytes([data[-1] ^ 1]))
+        os.utime(changed, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+        return result
+    with patch.object(ext, "_scan", side_effect=scan_then_change):
+        expect_raises(lambda: ext.apply_import(root, str(folder)), "R7 등록 재읽기 SHA 변화는 409", ext.BridgeError, "미리보기")
+    check(Path(root, st.MANIFEST_NAME).read_bytes() == before, "R7 같은 크기·mtime 로 바뀐 bytes 를 등록하지 않음")
+    changed.unlink()
+
+    original_scandir = os.scandir
+    norm = lambda p: os.path.normcase(os.path.normpath(p))
+    with patch.object(ext.os, "scandir", wraps=original_scandir) as scans, \
+            patch.object(ext, "candidate_missing", side_effect=AssertionError("per-file missing check")):
+        state = bd.build_state(root)
+    check(sum(norm(c.args[0]) == norm(folder) for c in scans.call_args_list) == 1,
+          "R7 state 의 external_files_v·칩은 동일 폴더 scandir 한 번 공유")
+    def inaccessible(p):
+        if norm(p) == norm(folder):
+            raise PermissionError("folder test")
+        return original_scandir(p)
+    with patch.object(ext.os, "scandir", side_effect=inaccessible):
+        state = bd.build_state(root)
+    check(all(c["external_missing"] for t in state["targets"] for c in t["candidates"]), "R7 접근 실패 폴더의 후보 모두 missing, state 성공")
+
+    png("001_part__A_new.png", (20, 130, 150))
+    ext._NEW_COUNTS.clear()
+    with patch.object(ext, "scan_import", wraps=ext.scan_import) as scan_spy:
+        one = ext.ext_summary(root)
+        two = ext.ext_summary(root)
+    check(one["imports"][0]["new_n"] == two["imports"][0]["new_n"] == 1 and scan_spy.call_count == 1,
+          "R7 (프로젝트,path,fp) 캐시는 같은 지문을 재디코드하지 않음")
+    other = run / "other_results"
+    other.mkdir()
+    history = ext._history(root)
+    history["imports"].append({"path": str(other), "fp": "old", "at": "test", "keys": []})
+    ext._save_history(root, history)
+    for error in (PermissionError("denied"), ext.BridgeError(409, "폴더가 바뀜")):
+        ext._NEW_COUNTS.clear()
+        real_scan = ext.scan_import
+        def maybe_scan(r, p):
+            if norm(p) == norm(folder):
+                raise error
+            return real_scan(r, p)
+        with patch.object(ext, "scan_import", side_effect=maybe_scan):
+            result = ext.ext_summary(root)
+        bad, good_row = result["imports"]
+        check(result["ok"] and bad["new_n"] is None and "확인하지 못" in bad["error"] and good_row["new_n"] == 0,
+              f"R4 {type(error).__name__} 폴더만 error, 다른 폴더 목록 계속")
+    real_fp = st._dir_fp
+    def denied_fp(p):
+        if norm(p) == norm(folder):
+            raise PermissionError("stat denied")
+        return real_fp(p)
+    with patch.object(st, "_dir_fp", side_effect=denied_fp):
+        check(ext.ext_summary(root)["imports"][0]["new_n"] is None, "R4 지문 읽기 실패도 목록 행으로 격리")
+
+    hp = Path(root, "ext_bridge.json")
+    broken = b'{"exports": ['
+    hp.write_bytes(broken)
+    with patch.object(ext.logger, "warning") as warning:
+        recovered = ext._history(root)
+    backups = list(Path(root).glob("ext_bridge.json.bad-*"))
+    check(recovered == {"exports": [], "imports": []} and warning.called and len(backups) == 1
+          and backups[0].read_bytes() == broken and json.loads(hp.read_bytes()) == recovered, "R8 손상 기록 백업·빈 기록 복구·경고")
+    with patch.object(ext, "open", side_effect=PermissionError("read error"), create=True), patch.object(ext.logger, "warning"):
+        check(ext._history(root) == recovered, "R8 기록 읽기 실패도 빈 기록으로 복구")
+    check(len(list(Path(root).glob("ext_bridge.json.bad-*"))) == 2, "R8 같은 시각 손상 백업을 덮어쓰지 않음")
+    record = {"path": str(other), "fp": st._dir_fp(str(other)), "at": "test", "keys": []}
+    ext._save_history(root, {"exports": [{"dir": "bad"}], "imports": [{"path": str(folder)}, record, None]})
+    with patch.object(ext.logger, "warning"):
+        check(ext._history(root) == {"exports": [], "imports": [record]} and ext.ext_summary(root)["imports"][0]["path"] == str(other),
+              "R8 필수 키 빠진 항목만 무시하고 정상 항목 유지")
+    ext._save_history(root, {"exports": [], "imports": []})
+
+    # 실제 길이 초과 이름과 국소 쓰기 오류: 성공한 파일만 사이드카에 남는다.
+    st.update_manifest(root, lambda m: m["crops"][0].update(name="x" * 300))
+    ex = ext.export_sources(root)
+    check(len(ex["items"]) == len(ex["skipped"]) == 1 and ex["items"][0]["crop_id"] == hand["id"]
+          and len(json.loads(Path(ex["abs"], "export.json").read_bytes())["items"]) == 1, "R9 긴 이름 실패 크롭만 skip·성공 항목만 사이드카")
+    st.update_manifest(root, lambda m: m["crops"][0].update(name="part:pin", nnn=""))
+    original_open = builtins.open
+    class PartialWrite:
+        def __init__(self, file):
+            self.file = file
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            self.file.close()
+        def write(self, data):
+            self.file.write(data[:8])
+            raise OSError("partial write test")
+    def partial_write(path, mode="r", *args, **kwargs):
+        file = original_open(path, mode, *args, **kwargs)
+        return PartialWrite(file) if mode == "xb" and str(path).endswith("part_pin__src.png") else file
+    with patch.object(ext, "open", side_effect=partial_write, create=True):
+        partial = ext.export_sources(root)
+    check(len(partial["items"]) == 1 and partial["items"][0]["crop_id"] == hand["id"]
+          and not Path(partial["abs"], "part_pin__src.png").exists(), "R9 부분 쓰기 실패 파일 제거·다른 크롭 계속")
+    def fail_write(path, mode="r", *args, **kwargs):
+        if mode == "xb":
+            raise OSError("path write test")
+        return original_open(path, mode, *args, **kwargs)
+    dirs = set(Path(root, "export_src").iterdir())
+    with patch.object(ext, "open", side_effect=fail_write, create=True):
+        expect_raises(lambda: ext.export_sources(root), "R9 모든 파일 쓰기 실패는 400", ext.BridgeError, "내보낼 크롭")
+    check(set(Path(root, "export_src").iterdir()) == dirs, "R9 전부 실패하면 이번 빈 stamp 폴더 제거")
+    with patch.object(bd, "_OUTPUT_DIR", [str(run / "comfy_output")]):
+        ex = ext.export_sources(root, [crop["id"]])
+    clean = ex["items"][0]["file"].removesuffix("__src.png")
+    output_name = clean + "_00001_.png"
+    png(output_name, (23, 140, 160))
+    row = next(r for r in ext.scan_import(root, str(folder))["rows"] if r["file"] == output_name)
+    check(clean == "part_pin" and row["status"] == "new" and row["crop_id"] == crop["id"],
+          "R1 정리된 크롭별 SaveImage 접두 결과를 사이드카로 매칭")
+    check(ex["save_prefix_abs"] == str(run / "comfy_output" / "design_patch" / "review" / "ext_"),
+          "R1 알려진 ComfyUI output 으로 절대 접두 예시 제공(쓰기 없음)")
+    with patch.object(bd, "_OUTPUT_DIR", []):
+        check(ext.save_prefixes(root)["save_prefix_abs"] is None, "R1 output 미설정은 절대 경로를 추측하지 않음")
 
 
 def ext60_js_unit(out, fixture):
@@ -52550,14 +52742,19 @@ def ext60_js_unit(out, fixture):
 await scenario("external", async () => {
   const srv = server(); srv.route.pipeline = quietPipeline(); quietPlan(srv);
   const base = srv.fetch, calls = [], modes = [], copies = [];
-  let conflict = false, summaryCalls = 0;
+  let conflict = false, summaryCalls = 0, delaySummary = false, releaseSummary;
+  let summaryData = clone(IN.ext.ext);
+  summaryData.imports.push({...summaryData.imports[0], path: "H:/other"});
   srv.fetch = async (u, o) => {
     const path = new URL(u).pathname.split("/bmk/design_patch/")[1];
     if (!path.startsWith("candidates/") && path !== "open_folder") return base(u, o);
     const body = o && o.body ? JSON.parse(o.body) : null;
     calls.push({path, body});
     let data, status = 200;
-    if (path === "candidates/ext") { data = IN.ext.ext; summaryCalls++; }
+    if (path === "candidates/ext") {
+      data = clone(summaryData); summaryCalls++;
+      if (delaySummary) { delaySummary = false; await new Promise(resolve => { releaseSummary = resolve; }); }
+    }
     else if (path === "candidates/export") data = IN.ext.export;
     else if (path === "open_folder") data = {ok: true};
     else if (body.dry_run) data = IN.ext.preview;
@@ -52576,10 +52773,24 @@ await scenario("external", async () => {
   B("크롭 소스 내보내기").fire("click"); await sleep(30);
   r.export = calls.some(c => c.path === "candidates/export" && c.body.size === "gpt" && c.body.crops.length === S.crops.length);
   B("폴더 열기").fire("click"); B("경로 복사").fire("click"); B("접두 복사").fire("click"); await sleep(10);
-  r.paths = calls.some(c => c.path === "open_folder" && c.body.sub === IN.ext.export.dir) && copies.includes(IN.ext.export.abs) && copies.includes(IN.ext.export.save_prefix + "nai");
+  r.paths = calls.some(c => c.path === "open_folder" && c.body.sub === IN.ext.export.dir) && copies.includes(IN.ext.export.abs) && copies.includes(IN.ext.export.save_prefix + "nai/");
+  const prefixButtons = () => section().all().filter(e => e.tagName === "BUTTON" && e.textContent === "접두 복사");
+  prefixButtons()[1].fire("click"); await sleep(5);
+  r.cropPrefix = prefixButtons().length === IN.ext.export.items.length + 1
+    && copies.includes(IN.ext.export.save_prefix + "nai/" + IN.ext.export.items[0].file.replace(/__src\.png$/, ""));
+  r.pathExample = input("결과 폴더 경로").placeholder === IN.ext.export.save_prefix_abs + "nai"
+    && section().textContent.includes("결과 파일 이름은 크롭 이름(또는 NNN_)");
+  input("외부 엔진 이름").value = "anima"; input("외부 엔진 이름").fire("input");
+  prefixButtons()[0].fire("click"); prefixButtons()[1].fire("click"); await sleep(5);
+  r.engine = input("결과 폴더 경로").placeholder.endsWith("ext_anima") && copies.includes(IN.ext.export.save_prefix + "anima/")
+    && copies.includes(IN.ext.export.save_prefix + "anima/" + IN.ext.export.items[0].file.replace(/__src\.png$/, ""));
   input("결과 폴더 경로").value = "H:/results"; input("결과 폴더 경로").fire("input");
   B("미리보기").fire("click"); await sleep(30);
   r.preview = !B("등록 (1)").disabled && section().textContent.includes("001_head__B_1.png") && section().textContent.includes("새로");
+  const recent = input("최근 가져온 폴더"); recent.focus(); recent.value = "H:/other"; recent.fire("change"); await sleep(10);
+  r.recent = env.doc.activeElement !== recent && input("결과 폴더 경로").value === "H:/other" && B("등록 (0)").disabled
+    && !section().all().some(e => e.tagName === "TABLE");
+  B("미리보기").fire("click"); await sleep(30);
   input("결과 폴더 경로").value = "changed"; input("결과 폴더 경로").fire("input");
   r.invalidated = B("등록 (").disabled;
   B("미리보기").fire("click"); await sleep(30);
@@ -52592,6 +52803,18 @@ await scenario("external", async () => {
   B("⑥ 검토로").fire("click"); r.review = modes[0] === "review";
   const n = summaryCalls; env.pipe.stateChanged(S); await sleep(30); r.noPoll = summaryCalls === n;
   env.pipe.showTab("prompt"); env.pipe.showTab("generate"); await sleep(30); r.reopen = summaryCalls === n + 1;
+  for (const [kind, label] of [["export", "크롭 소스 내보내기"], ["import", "등록 (1)"]]) {
+    if (kind === "import") { B("미리보기").fire("click"); await sleep(30); }
+    const before = summaryCalls;
+    delaySummary = true; env.pipe.showTab("generate"); await sleep(10);
+    B(label).fire("click"); await sleep(15);
+    summaryData.imports[0].new_n = kind === "export" ? 7 : 8;
+    releaseSummary(); await sleep(35);
+    r[kind + "Reload"] = summaryCalls === before + 2 && section().textContent.includes(`가져올 새 결과 ${summaryData.imports[0].new_n}`);
+  }
+  summaryData.imports[0].new_n = null; summaryData.imports[0].error = "폴더 확인 실패";
+  env.pipe.showTab("generate"); await sleep(30);
+  r.nullCount = !section().textContent.includes("새 결과 null") && section().textContent.includes("새 결과 확인 못 함") && section().textContent.includes("폴더 확인 실패");
   env.pipe.stateChanged({...S, running: true}); await sleep(30);
   r.running = B("크롭 소스 내보내기").disabled && B("등록 (").disabled && !B("미리보기").disabled && section().textContent.includes("생성 실행 중");
   r.independent = !calls.some(c => c.path.startsWith("pipeline/") || c.path === "prompt");

@@ -2,7 +2,8 @@
   "export": {
     "ok": true, "dir": "export_src/261102-1200", "abs": "H:/project/export_src/261102-1200",
     "items": [{"crop_id": "001_abcdef", "name": "001_head", "file": "001_head__src.png", "src_wh": [73, 41], "out_wh": [1856, 1024], "ratio_err": 0.018}],
-    "skipped": [{"crop_id": "missing", "name": null, "why": "크롭 없음"}], "save_prefix": "design_patch/project/ext_"
+    "skipped": [{"crop_id": "missing", "name": null, "why": "크롭 없음"}], "save_prefix": "design_patch/project/ext_",
+    "save_prefix_abs": "H:/ComfyUI/output/design_patch/project/ext_"
   },
   "preview": {
     "ok": true, "path": "H:/results", "fp": "0123456789abcdef",
@@ -17,6 +18,7 @@
   "ext": {
     "ok": true,
     "exports": [{"dir": "export_src/261102-1200", "at": "2026-11-02 12:00:00", "n": 1, "size": "m64"}],
-    "imports": [{"path": "H:/results", "at": "2026-11-02 12:05:00", "exists": true, "new_n": 0, "missing": []}]
+    "imports": [{"path": "H:/results", "at": "2026-11-02 12:05:00", "exists": true, "new_n": 0, "missing": []}],
+    "save_prefix": "design_patch/project/ext_", "save_prefix_abs": "H:/ComfyUI/output/design_patch/project/ext_"
   }
 }

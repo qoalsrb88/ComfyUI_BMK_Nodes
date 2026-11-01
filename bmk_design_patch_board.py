@@ -2417,8 +2417,9 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
              "pipeline_rev": pl.pipeline_rev(root), "plan_v": None, "pref_v": store.board_pref_v(root),
              "export_state": export_state, "export_last": {k: ex.get(k) for k in ("rev", "time")} if ex is not None else None}
     external = [c for c in m["candidates"] if (c.get("origin_info") or {}).get("via") == "studio"]
+    external_missing = ext.missing_candidates(external)
     if external:
-        flags["external_files_v"] = _sig([(c["key"], ext.candidate_missing(c)) for c in external])
+        flags["external_files_v"] = _sig([(c["key"], c["key"] in external_missing) for c in external])
     plan = _plan_free(root)
     if plan is not None:
         r_sig, d_sig = _plan_sigs(root, m, (running, drafting), flags["refs_files_v"])
@@ -2469,7 +2470,7 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
                     "key": c["key"], "n": n, "origin": c.get("origin"), "backend": info.get("backend"),
                     "mock": info.get("backend") == "mock", "src_size": c.get("src_size"),
                     "label": ext.candidate_label(c),
-                    **({"external_missing": ext.candidate_missing(c)} if info.get("via") == "studio" else {}),
+                    **({"external_missing": c["key"] in external_missing} if info.get("via") == "studio" else {}),
                     "picked": c["key"] in pick_keys,
                     "slice_index": pick_keys.index(c["key"]) + 1 if c["key"] in pick_keys else None,
                     "rejected": bool(rejects.get(c["key"])),

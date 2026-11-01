@@ -1008,7 +1008,7 @@ window.DPPipeline = (() => {
     }
 
     async function loadExternal() {
-      if (external.loading) return;
+      if (external.loading) { external.needsLoad = true; return; }
       external.needsLoad = false;
       external.loading = true;
       try {
@@ -1018,8 +1018,16 @@ window.DPPipeline = (() => {
         external.summaryError = e.message;
       } finally {
         external.loading = false;
+        if (external.needsLoad) { loadExternal(); return; }
         render();
       }
+    }
+
+    function externalPrefix(absolute) {
+      const data = external.exported || external.summary || {};
+      const relative = data.save_prefix || `design_patch/${(PS.P && PS.P.folder) || "<프로젝트>"}/ext_`;
+      const prefix = absolute ? data.save_prefix_abs || `output/${relative}` : relative;
+      return prefix.replace(/\\/g, "/") + (external.engine.trim() || "nai") + "/";
     }
 
     async function externalAction(kind) {
@@ -1068,6 +1076,7 @@ window.DPPipeline = (() => {
       const busy = external.busy;
       const running = !!(S && S.running);
       line(s, "ComfyUI 의 다른 워크플로(NAI·Anima 등)로 크롭을 돌리고 결과를 후보로 가져옵니다 — 크레딧을 쓰지 않습니다.");
+      line(s, "결과 파일 이름은 크롭 이름(또는 NNN_)으로 시작해야 가져올 때 맞춰짐 — 크롭마다 접두를 복사하거나 폴더 로더의 파일 이름을 접두에 이음", "dim");
       if (running) line(s, "생성 실행 중", "warn");
       line(s, `대상 ${sel.size || (S ? S.crops.length : 0)}개`);
       const size = el("select");
@@ -1093,13 +1102,21 @@ window.DPPipeline = (() => {
         const engine = el("input");
         engine.value = external.engine;
         engine.setAttribute("aria-label", "외부 엔진 이름");
-        engine.addEventListener("input", () => { external.engine = engine.value; });
-        line(s, `저장 접두 ${ex.save_prefix}`);
-        btns(s, engine, button("접두 복사", "Save Image 의 filename_prefix", () => copy(ex.save_prefix + external.engine.trim())));
+        engine.addEventListener("input", () => {
+          external.engine = engine.value;
+          path.placeholder = externalPrefix(true).replace(/\/$/, "");
+        });
+        line(s, `저장 폴더 접두 ${externalPrefix(false)}`);
+        btns(s, engine, button("접두 복사", "폴더 로더의 파일 이름 앞에 이을 폴더 접두", () => copy(externalPrefix(false))));
+        for (const item of ex.items) {
+          const row = line(s, item.name);
+          const name = item.file.replace(/__src\.png$/i, "");
+          row.append(button("접두 복사", `${item.name} — Save Image 의 filename_prefix`, () => copy(externalPrefix(false) + name)));
+        }
       }
       const path = el("input");
       path.value = external.path;
-      path.placeholder = "결과 폴더 절대 경로";
+      path.placeholder = externalPrefix(true).replace(/\/$/, "");
       path.setAttribute("aria-label", "결과 폴더 경로");
       path.disabled = busy;
       path.addEventListener("input", () => {
@@ -1120,7 +1137,13 @@ window.DPPipeline = (() => {
         const o = el("option", "", item.path); o.value = item.path; recent.append(o);
       }
       recent.addEventListener("change", () => {
-        if (recent.value) { external.path = recent.value; external.preview = null; render(); }
+        if (recent.value) {
+          external.path = recent.value;
+          external.preview = null;
+          external.previewInput = external.message = "";
+          recent.blur();
+          render();
+        }
       });
       btns(s, path, recent, preview, register);
       if (external.preview) {
@@ -1145,7 +1168,9 @@ window.DPPipeline = (() => {
       if (external.summaryError) line(s, external.summaryError, "bad");
       for (const item of (external.summary && external.summary.imports) || []) {
         const row = line(s, `${item.path} · ${item.at}`);
-        row.append(el("span", item.new_n > 0 ? "warn" : "dim", item.exists ? ` · 가져올 새 결과 ${item.new_n}` : " · 폴더 없음"));
+        row.append(el("span", item.new_n > 0 ? "warn" : "dim", !item.exists ? " · 폴더 없음"
+          : item.new_n == null ? " · 새 결과 확인 못 함" : ` · 가져올 새 결과 ${item.new_n}`));
+        if (item.error) row.append(el("span", "warn", ` · ${item.error}`));
         if (item.missing.length) row.append(chip(`파일 없음 ${item.missing.length}`, "b-bad"));
         const b = button("미리보기", item.path, () => { external.path = item.path; externalAction("preview"); });
         b.disabled = busy || !item.exists;
