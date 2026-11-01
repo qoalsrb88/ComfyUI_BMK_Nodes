@@ -607,31 +607,46 @@ window.DPMaskEdit = (() => {
       const limit = fadeLimit(side, crop), c = fadeBounds(side, crop, limit, s.win);
       const r = c.map((v, i) => v - s.win[i % 2]);
       if (r[2] <= r[0] || r[3] <= r[1]) return false;
-      s.stroke = { kind: "fade", side, crop: crop.slice(), limit, r, snap: grab(s.m, r), width: 0 };
+      s.stroke = { kind: "fade", side, crop: crop.slice(), limit, r, snap: grab(s.m, r), width: 0, box: null };
       return true;
     };
+
+    function restoreFade(st, r) {
+      const W = size()[0], stride = st.r[2] - st.r[0], rw = r[2] - r[0];
+      for (let y = r[1]; y < r[3]; y++) {
+        const offset = (y - st.r[1]) * stride + r[0] - st.r[0];
+        s.m.set(st.snap.subarray(offset, offset + rw), y * W + r[0]);
+      }
+    }
 
     s.previewFade = (w) => {
       const st = s.stroke;
       if (!st || st.kind !== "fade") return null;
-      put(st.r, st.snap); // 매번 시작 사본으로 복원 — 폭을 줄여도 앞 미리보기의 곱셈이 남지 않음
-      st.width = w === null ? 0 : Math.max(1, Math.min(st.limit, Math.round(w)));
-      if (st.width) {
-        const W = size()[0], r = st.r;
+      const width = w === null ? 0 : Math.max(1, Math.min(st.limit, Math.round(w)));
+      if (width === st.width) return null;
+      let r = width ? fadeBounds(st.side, st.crop, width, s.win).map((v, i) => v - s.win[i % 2]) : null;
+      if (r && (r[2] <= r[0] || r[3] <= r[1])) r = null;
+      const changed = union(st.box, r);
+      if (changed) restoreFade(st, changed); // 이전 띠와 새 띠만 시작 사본으로 복원
+      st.width = width;
+      st.box = r;
+      if (r) {
+        const W = size()[0];
         for (let y = r[1]; y < r[3]; y++) for (let x = r[0]; x < r[2]; x++) {
-          s.m[y * W + x] *= fade(st.side, st.crop, st.width, x + s.win[0], y + s.win[1]);
+          s.m[y * W + x] *= fade(st.side, st.crop, width, x + s.win[0], y + s.win[1]);
         }
       }
-      return onCanvas(st.r);
+      return changed && onCanvas(changed);
     };
 
     s.endFade = (commit) => {
       const st = s.stroke;
       if (!st || st.kind !== "fade") return null;
-      if (commit && st.width) push(st.r, st.snap, `가장자리 페이드 ${st.side} ${st.width}`);
-      else put(st.r, st.snap);
+      const changed = st.box;
+      if (commit && changed) push(st.r, st.snap, `가장자리 페이드 ${st.side} ${st.width}`);
+      else s.previewFade(null);
       s.stroke = null;
-      return onCanvas(st.r);
+      return changed && onCanvas(changed);
     };
 
     s.feather = (sigma) => {
@@ -769,6 +784,8 @@ window.DPMaskEdit = (() => {
     let tool = "erase";
     let editTool = "brush";
     let xdrag = null;
+    let fadeFrame = null;
+    let fadePending = null;
     let guide = null;
     let pendingSection = null;
     const expanded = new Set(); // 후보별 펼침은 이 창 메모리에만
@@ -1035,7 +1052,10 @@ window.DPMaskEdit = (() => {
       const q = [Math.max(r[0], bx0) - bx0, Math.max(r[1], by0) - by0, Math.min(r[2], bx1) - bx0, Math.min(r[3], by1) - by0];
       if (q[2] <= q[0] || q[3] <= q[1]) return;
       dirty = union(dirty, q);
-      if (!raf) raf = requestAnimationFrame(flush);
+      if (!raf) {
+        if (typeof requestAnimationFrame === "function") raf = requestAnimationFrame(flush);
+        else flush();
+      }
     }
 
     function flush() {
@@ -1090,7 +1110,7 @@ window.DPMaskEdit = (() => {
       cancelXform();
       finishFade(false);
       if (key !== M.key) {
-        if (editTool === "xform") {
+        if (editTool !== "brush") {
           cursor = null;
           viewer.setCursor("");
         }
@@ -1206,8 +1226,35 @@ window.DPMaskEdit = (() => {
       }) || null;
     }
 
+    function flushFade() {
+      const next = fadePending;
+      fadePending = null;
+      if (!next || next.stroke !== fadeStroke()) return;
+      repaint(M.previewFade(next.width));
+      viewer.redraw();
+    }
+
+    function queueFade(w) {
+      fadePending = { stroke: fadeStroke(), width: w };
+      if (fadeFrame) return;
+      if (typeof requestAnimationFrame !== "function") { flushFade(); return; }
+      const frame = {};
+      fadeFrame = frame;
+      frame.id = requestAnimationFrame(() => {
+        if (fadeFrame !== frame) return; // 취소·대상 전환 뒤 남은 콜백은 새 세션을 건드리지 않음
+        fadeFrame = null;
+        flushFade();
+      });
+    }
+
     function finishFade(commit) {
       if (!fadeStroke()) return false;
+      if (fadeFrame) {
+        if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(fadeFrame.id);
+        fadeFrame = null;
+      }
+      if (commit) flushFade(); // 프레임 전에 놓아도 마지막 포인터 위치를 확정
+      else fadePending = null;
       repaint(M.endFade(commit));
       guide = null;
       viewer.setCursor("");
@@ -1269,13 +1316,19 @@ window.DPMaskEdit = (() => {
         const st = fadeStroke();
         if (st) {
           const [x0, y0, x1, y1] = st.crop;
-          let w = st.side === "top" ? pt[1] - y0 : st.side === "bottom" ? y1 - pt[1] : st.side === "left" ? pt[0] - x0 : x1 - pt[0];
-          w = clamp(Math.round(w), 1, st.limit);
+          const distance = st.side === "top" ? pt[1] - y0 : st.side === "bottom" ? y1 - pt[1] : st.side === "left" ? pt[0] - x0 : x1 - pt[0];
+          const axis = st.side === "top" || st.side === "bottom" ? 1 : 0;
+          const inward = (pt[axis] - st.origin[axis]) * (st.side === "top" || st.side === "left" ? 1 : -1);
+          let w = clamp(Math.round(distance), 1, st.limit);
           if (e.shiftKey) w = clamp(WIDTHS.reduce((a, b) => Math.abs(b - w) < Math.abs(a - w) ? b : a), 1, st.limit);
-          const moved = Math.hypot(pt[0] - st.origin[0], pt[1] - st.origin[1]) * viewer.scale() >= 4;
-          repaint(M.previewFade(moved ? w : null));
-          viewer.redraw();
-        } else viewer.setCursor(fadeHit(pt) ? "grab" : "");
+          queueFade(distance > 0 && inward * viewer.scale() >= 4 ? w : null);
+        } else {
+          if (slider && M.layers) {
+            view.split = Math.round(pt[0] - M.layers.box[0]);
+            repaintAll();
+          }
+          viewer.setCursor(fadeHit(pt) ? "grab" : "");
+        }
         return true;
       }
       if (editTool === "xform") {
@@ -1745,8 +1798,12 @@ window.DPMaskEdit = (() => {
           const why = refreshing ? "순서 정보를 다시 받는 중입니다" : busy ? "마스크 작업 중입니다" : c.blocked[op];
           return off(button(label, why || `${level}을 ${label}`, () => moveZ(c, op)), !!why);
         });
-        if (c.manual) buttons.push(off(historyButton("자동으로", `${level} 겹침 순서`, "clear", "수동 순서를 지우고 자동 순서로", "",
-          () => moveZ(c, "reset")), busy || refreshing));
+        if (c.manual) {
+          const b = off(historyButton("자동으로", `${level} 겹침 순서`, "clear", "수동 순서를 지우고 자동 순서로", "",
+            () => moveZ(c, "reset")), busy || refreshing);
+          if (refreshing || busy) b.title = refreshing ? "순서 정보를 다시 받는 중입니다" : "마스크 작업 중입니다";
+          buttons.push(b);
+        }
         btns(row, ...buttons);
       }
     }
@@ -1963,7 +2020,7 @@ window.DPMaskEdit = (() => {
       if (rec && rec.hist.length) buttons.push(off(historyButton("되돌리기", "후보 보정", "undo", "이전 보정 값으로", "", () => saveAdjust("undo")), disabled || !!M.busy));
       buttons.push(clearXform);
       if (rec) buttons.push(off(historyButton("보정 없음", "후보 보정", "clear", "보정·이전 기록 모두 지우기", "", () => saveAdjust("reset")), disabled || !!M.busy));
-      adjustButtons = buttons;
+      adjustButtons = buttons.filter((b) => b !== clearXform);
       if (M.pending()) {
         // 막힘을 풀 단추를 문구 바로 옆에 — 아래 「적용 전 획」 칸의 것과 같은 동작
         const busy = !!M.busy || !!M.stroke;
@@ -2409,8 +2466,9 @@ window.DPMaskEdit = (() => {
       held = false;
       setTimeout(flushLater, 0); // click 처리 뒤
     };
-    document.addEventListener("pointerdown", () => {
+    document.addEventListener("pointerdown", (e) => {
       held = true;
+      if (adjustFocus && e.target !== adjustFocus) adjustFocus.blur();
     }, true);
     document.addEventListener("pointerup", release, true);
     document.addEventListener("pointercancel", release, true);
