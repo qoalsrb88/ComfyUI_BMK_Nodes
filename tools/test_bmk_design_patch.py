@@ -51907,6 +51907,21 @@ process.exit(0);
                 check(ok is True, f"D54–D59 {group}/{name}: {ok}")
 
 
+def batch8a_unit():
+    """배치 8-A(11/02 — _proto/STUDIO_BATCH8_SPEC.md D89–D96): 크롭 편집 — 대상 먼저·이름 없이. 공용 자리 — 8-A 작업자가 채운다."""
+    section("배치 8-A — 크롭 편집 — 대상 먼저·이름 없이")
+
+
+def batch8b_unit():
+    """배치 8-B(11/02 — _proto/STUDIO_BATCH8_SPEC.md D97–D99): 레퍼런스 — 상자 이동·그리드 크기·크게 보기. 공용 자리 — 8-B 작업자가 채운다."""
+    section("배치 8-B — 레퍼런스 — 상자 이동·그리드 크기·크게 보기")
+
+
+def batch8c_unit():
+    """배치 8-C(11/02 — _proto/STUDIO_BATCH8_SPEC.md D100–D105): 마스크 — 하위 줄·실행 취소 겉모습·숫자 칸·바깥 회전·페이드 손잡이·범위 가이드. 공용 자리 — 8-C 작업자가 채운다."""
+    section("배치 8-C — 마스크 — 하위 줄·실행 취소 겉모습·숫자 칸·바깥 회전·페이드 손잡이·범위 가이드")
+
+
 def batch7c_unit():
     """D60–D69: 파일·함수·모의 DOM만 사용. HTTP 서버·외부 API 없음."""
     section("배치 7-C — 레이어 패널·겹침 순서·레이어만 보기")
@@ -52429,6 +52444,12 @@ if __name__ == "__main__":
         batch7c_unit()
     if want("ext60_unit"):
         ext60_unit()
+    if want("batch8a_unit"):
+        batch8a_unit()
+    if want("batch8b_unit"):
+        batch8b_unit()
+    if want("batch8c_unit"):
+        batch8c_unit()
     print(f"\n단위 테스트 {time.time() - T0:.1f}s (PASS {PASSES} FAIL {len(FAILS)})")
     if QUICK:
         print("\n--quick: 회귀·노드 생략")
