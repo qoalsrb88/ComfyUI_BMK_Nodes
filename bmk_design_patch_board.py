@@ -252,6 +252,7 @@ from typing import Callable
 from urllib.parse import urlencode
 
 import cv2
+import aiohttp
 import numpy as np
 from aiohttp import web
 from PIL import Image
@@ -5586,7 +5587,7 @@ async def _png_body(request: web.Request) -> bytes:
 # 확장자·머리 바이트를 확인하고 최종 이름으로 배타 이동. 실패·취소면 .part 를 지운다. 오류 문구에 경로를 넣지 않는다(보드 계약).
 _MAX_UPLOAD = 2 * 1024 ** 3          # D114·D142 — dpsd.PSDWriter 상한과 같음
 _MAX_IMAGE_SIDE = 30000              # D117 — PSDWriter 와 같음
-_MAX_IMAGE_AREA = 200_000_000        # D142 — 8-bit RGBA ≈ 800MB
+_MAX_IMAGE_AREA = 178_000_000        # D142 — Pillow 기본 상한(2 × MAX_IMAGE_PIXELS ≈ 178.9MP) 아래 — 감싸기·썸네일이 Image.open 으로 열 수 있게
 _UPLOAD_CHUNK = 1 << 20
 _UPLOAD_KINDS = {".psd": "psd", ".psb": "psb", ".png": "png", ".jpg": "jpeg", ".jpeg": "jpeg", ".webp": "webp"}
 _NEW_TMP_DIRNAME = ".bmk_dp_tmp"     # D118 — <input>/.bmk_dp_tmp/<토큰>/ 에서 만들고 옮김(bmk_design_patch/ 밖이라 프로젝트 목록에 안 뜸)
@@ -5621,14 +5622,47 @@ def image_header(path: str, kind: str) -> dict:
                 raise ValueError("짧은 머리")
             return {"w": int.from_bytes(head[18:22], "big"), "h": int.from_bytes(head[14:18], "big"),
                     "depth": int.from_bytes(head[22:24], "big"), "mode": int.from_bytes(head[24:26], "big")}
-        if kind == "webp":  # Pillow 의 WebP 여는 길은 파일 전체를 읽는다(WebPAnimDecoder(fp.read())) — RIFF 머리만 직접
-            with open(path, "rb") as f:
+        # 셋 다 머리를 직접 읽는다 — Pillow 는 WebP 를 통째로 읽고(WebPAnimDecoder(fp.read())), 기본 상한(≈ 179MP)이 D142 의 200MP 보다 작다
+        with open(path, "rb") as f:
+            if kind == "webp":
                 return _webp_size(f.read(30))
-        with Image.open(path) as im:  # PNG·JPEG 는 머리(IHDR·SOF)까지만 읽음(픽셀은 풀지 않음)
-            w, h = im.size
-        return {"w": int(w), "h": int(h)}
-    except (OSError, ValueError, Image.DecompressionBombError):
+            if kind == "png":
+                head = f.read(24)
+                if len(head) < 24 or head[8:16] != b"\x00\x00\x00\x0dIHDR":  # 잘린 머리를 0 채움으로 읽지 않게 — IHDR 길이 13
+                    raise ValueError("PNG IHDR 없음·잘림")
+                return {"w": int.from_bytes(head[16:20], "big"), "h": int.from_bytes(head[20:24], "big")}
+            return _jpeg_size(f)
+    except (OSError, ValueError):
         raise _Reject(400, "그림 파일을 읽을 수 없습니다(깨졌거나 지원하지 않는 형식)") from None
+
+
+def _jpeg_size(f) -> dict:
+    """JPEG 마커를 차례로 건너뛰어 SOF(C0–CF 중 C4·C8·CC 제외)의 크기를 읽는다. 못 찾으면 ValueError."""
+    if f.read(2) != b"\xff\xd8":
+        raise ValueError("JPEG SOI 없음")
+    while True:
+        b = f.read(1)
+        while b == b"\xff":
+            b = f.read(1)
+        if not b:
+            raise ValueError("JPEG SOF 없음")
+        marker = b[0]
+        if marker in (0x01, 0xD8) or 0xD0 <= marker <= 0xD7:  # 길이 없는 마커
+            continue
+        seg = f.read(2)
+        if len(seg) < 2:
+            raise ValueError("JPEG 짧음")
+        n = int.from_bytes(seg, "big")
+        if n < 2:
+            raise ValueError("JPEG 마커 길이")
+        if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+            body = f.read(5)
+            if len(body) < 5:
+                raise ValueError("JPEG SOF 짧음")
+            return {"w": int.from_bytes(body[3:5], "big"), "h": int.from_bytes(body[1:3], "big")}
+        if marker == 0xDA:  # SOS 전에 SOF 가 없음
+            raise ValueError("JPEG SOF 없음")
+        f.seek(n - 2, 1)
 
 
 def _webp_size(head: bytes) -> dict:
@@ -5686,6 +5720,14 @@ def clean_user_path(value) -> str:
     return os.path.normpath(p)
 
 
+def is_octet_stream(request: web.Request) -> bool:
+    """본문 형식 머리가 **실제로** application/octet-stream 인가. aiohttp 의 request.content_type 은 머리가 없으면
+    'application/octet-stream' 을 돌려주는데, 머리 없는 POST 는 다른 사이트가 사전 요청 없이 보낼 수 있다(no-cors fetch + Blob) —
+    업로드 판정·받기는 이 함수로(배치 9 cc2 리뷰)."""
+    raw = request.headers.get("Content-Type")
+    return isinstance(raw, str) and raw.split(";", 1)[0].strip().lower() == "application/octet-stream"
+
+
 def _part_path(dest_dir: str) -> str:
     return os.path.join(dest_dir, f".upload_{secrets.token_hex(8)}.part")
 
@@ -5700,21 +5742,30 @@ async def recv_upload(request: web.Request, dest_dir: str, *, limit: int = _MAX_
     """application/octet-stream 본문을 dest_dir/.upload_<토큰>.part 로 흘려 받아 그 경로를 돌려준다(D114 — 메모리에 다 올리지 않음).
     Content-Type 다름 415 · 상한 초과 413 · 빈 본문·Content-Length 와 받은 길이 다름(끊김) 400. 실패·취소면 .part 를 지운다.
     dest_dir 는 부르는 쪽이 만든다. 확장자·머리 바이트는 finish_received 가 본다."""
-    if request.content_type != "application/octet-stream":
+    if not is_octet_stream(request):
         raise _Reject(415, "Content-Type 은 application/octet-stream 이어야 합니다")
     if request.content_length is not None and request.content_length > limit:
         raise _Reject(413, "파일이 너무 큽니다(2GB 까지)")
     part = _part_path(dest_dir)
-    f = await asyncio.to_thread(open, part, "xb")
+    opener = asyncio.ensure_future(asyncio.to_thread(open, part, "xb"))
+    try:
+        f = await asyncio.shield(opener)  # 여는 도중 취소돼도 스레드는 파일을 만든다 — 끝나길 기다려 닫고 지움
+    except BaseException:
+        await asyncio.shield(_recv_cleanup(None, part, opener))
+        raise
     n, pending = 0, None
     try:
-        async for chunk in request.content.iter_chunked(_UPLOAD_CHUNK):
-            n += len(chunk)
-            if n > limit:
-                raise _Reject(413, "파일이 너무 큽니다(2GB 까지)")
-            pending = asyncio.ensure_future(asyncio.to_thread(f.write, chunk))
-            await asyncio.shield(pending)  # 취소돼도 쓰기는 끝까지 — 아래에서 기다린 뒤 닫는다
-            pending = None
+        try:
+            async for chunk in request.content.iter_chunked(_UPLOAD_CHUNK):
+                n += len(chunk)
+                if n > limit:
+                    raise _Reject(413, "파일이 너무 큽니다(2GB 까지)")
+                pending = asyncio.ensure_future(asyncio.to_thread(f.write, chunk))
+                await asyncio.shield(pending)  # 취소돼도 쓰기는 끝까지 — 아래에서 기다린 뒤 닫는다
+                pending = None
+        except (ConnectionError, EOFError, aiohttp.ClientError, aiohttp.http_exceptions.HttpProcessingError):
+            # 본문 전송이 끊김(연결 재설정·Content-Length 보다 짧음) — 파일 오류(500)가 아니라 다시 올릴 일(400). CancelledError 는 그대로
+            raise _Reject(400, "파일을 받다가 끊겼습니다 — 다시 올려 주세요") from None
         if n == 0:
             raise _Reject(400, "빈 파일입니다")
         if request.content_length is not None and n != request.content_length:
@@ -5730,13 +5781,16 @@ async def _recv_cleanup(f, part: str, pending) -> None:
     """recv_upload 실패 정리: 진행 중인 쓰기(작업 스레드)가 끝나길 기다린 뒤 닫기·지우기도 스레드에서(루프를 막지 않음)."""
     if pending is not None:
         with contextlib.suppress(BaseException):
-            await pending
+            got = await pending
+            if f is None:  # 열기 작업이었으면 그 결과가 닫을 파일
+                f = got
     await asyncio.to_thread(_close_drop, f, part)
 
 
 def _close_drop(f, part: str) -> None:
-    with contextlib.suppress(OSError):
-        f.close()
+    if f is not None:
+        with contextlib.suppress(OSError):
+            f.close()
     _drop(part)
 
 
@@ -5835,7 +5889,7 @@ def _sweep_new_tmp(base_dir: str) -> None:
 def _is_link(path: str) -> bool:
     """심볼릭 링크·정션(Windows 재분석 지점)이면 True."""
     try:
-        if os.path.islink(path) or os.path.isjunction(path):
+        if os.path.islink(path) or (hasattr(os.path, "isjunction") and os.path.isjunction(path)):
             return True
         st = os.lstat(path)
     except OSError:
