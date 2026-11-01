@@ -52072,7 +52072,7 @@ await scenario("fade",async()=>{
   M.step(true);M.step(true);const redo=M.redo.length;
   P.down(144,16);P.move(144,56,{shiftKey:true});P.raf();r.snap=M.stroke.width===32;P.key("Escape");
   r.escape=equal(M.m,original)&&!M.pending()&&M.redo.length===redo&&P.calls.exit===0;
-  P.down(144,16);P.move(144,1000);P.raf();r.maximum=M.stroke.width===128;P.viewer.ed.cancel();
+  P.down(144,16);P.move(144,1000);P.raf();r.maximum=M.stroke.width===64;P.viewer.ed.cancel();
   r.cancel=equal(M.m,original)&&M.redo.length===redo;
   P.down(144,16);P.move(144,40);P.B("붓").fire("click");r.tool=equal(M.m,original)&&!M.stroke&&!M.pending();
   P.B("페이드").fire("click");P.down(144,16);P.move(144,40);P.ed.leave();r.leave=equal(M.m,original)&&!M.stroke&&!M.pending();
@@ -52123,9 +52123,71 @@ await scenario("guides",async()=>{
   const sg={crop_id:P.info.crop_id,key:K15,side:"top",x0:40,x1:60,y0:16,y1:16};P.ed.go({key:K15,seam:sg});
   P.B("이음매 구간 페이드").fire("mouseenter");g=guides(P)[0];r.range=g.attrs.x==="0"&&g.attrs.width==="125"&&g.attrs.height==="80";
   P.B("선 숨기기 (O)").fire("click");P.B("위 가장자리 페이드").fire("mouseenter");r.hidden=guides(P).length===0;
-  P.B("선 숨기기 (O)").fire("click");const feather=P.slider("페더 (px)").children[2];feather.focus();feather.value="7";feather.fire("input");
+  P.B("선 숨기기 (O)").fire("click");const feather=P.slider("페더 (px)").children[2];
+  feather.fire("pointerdown");feather.focus();feather.fire("pointerup");await sleep(5);
+  r.numberClick=guides(P).length===2&&P.doc.activeElement===feather;
+  feather.value="7";feather.fire("input");
   const gs=guides(P);r.feather=gs.length===2&&gs[0].attrs.width==="288"&&gs[0].attrs.height==="160"&&gs[1].textContent==="창 전체에 적용 (σ 7 px)"&&gs.every(e=>e.tag!=="circle");
+  P.B("위 가장자리 페이드").fire("mouseenter");P.B("위 가장자리 페이드").fire("mouseleave");
+  r.focusRestored=guides(P).length===2&&guides(P)[1].textContent==="창 전체에 적용 (σ 7 px)";
+  feather.fire("pointercancel");r.focusUntilCommit=guides(P).length===2;
   feather.fire("change");r.done=guides(P).length===0;
+  feather.focus();feather.blur();r.blurClears=guides(P).length===0;
+  const range=P.slider("페더 (px)").children[1];range.fire("pointerdown");range.fire("pointerup");r.rangeRelease=guides(P).length===0;
+  P.ed.leave();return r;
+});
+await scenario("review2Details",async()=>{
+  const P=await setup(),{M}=P,r={},crop=P.S.crops[0],candidate=P.S.targets[0].candidates[0];
+  const groups=()=>P.list.all().filter(e=>e.classList.contains("mc-details"));
+  crop.mask_edits=0;candidate.mask_edit=null;P.render();P.B("처음 마스크로").fire("click");expanders(P)[0].fire("click");
+  r.pendingOpen=groups().length===1;P.key("KeyZ",{ctrlKey:true});
+  r.undoClears=groups().length===0&&expanders(P).length===0&&!P.list.textContent.includes("손질 내역 없음");
+  P.key("KeyY",{ctrlKey:true});r.redoCollapsed=groups().length===0&&expanders(P)[0].attrs["aria-expanded"]==="false";
+  M.discard();P.render();
+  // 보정 없음·편집 모두 지우기 뒤 받은 state에서 칩이 사라지고, 다시 생겨도 기본 접힘.
+  for(const kind of ["adjust","edit"]) {
+    const summary=kind==="adjust"?"cand_adjust":"mask_edits",field=kind==="adjust"?"adjust":"mask_edit";
+    const record=kind==="adjust"?{blur:2,invert:false,hist:[]}:{at:"2026-11-02 12:30:00",ops:"붓 2획"};
+    crop[summary]=1;candidate[field]=record;M.info[kind]=record;P.render();expanders(P)[0].fire("click");
+    r[kind+"Open"]=groups().length===1;
+    crop[summary]=0;candidate[field]=null;M.info[kind]=null;P.ed.stateChanged(P.S);
+    r[kind+"Clears"]=groups().length===0&&expanders(P).length===0;
+    crop[summary]=1;candidate[field]=record;M.info[kind]=record;P.ed.stateChanged(P.S);
+    r[kind+"Collapsed"]=groups().length===0&&expanders(P)[0].attrs["aria-expanded"]==="false";
+    crop[summary]=0;candidate[field]=null;M.info[kind]=null;P.render();
+  }
+  P.S.targets[0].pick_keys.push(K15B);P.S.targets[0].candidates[1].mask_edit={at:"2026-11-02 12:30:00"};
+  P.B("처음 마스크로").fire("click");expanders(P)[0].fire("click");P.key("KeyZ",{ctrlKey:true});
+  const subs=P.list.children.filter(e=>e.classList.contains("sub"));
+  r.subNoChip=subs[0].all().every(e=>!e.classList.contains("mc-details"));
+  r.subOwnChip=subs[1].all().some(e=>e.classList.contains("mc-details"))&&subs[1].all().some(e=>e.classList.contains("mc-expand"));
+  M.discard();P.ed.leave();return r;
+});
+await scenario("review2Ops",async()=>{
+  const P=await setup(),{M}=P,r={};
+  const ps="PS 그룹 마스크 치마·밑단.psd";M.info.edit={at:"now",ops:ps};P.render();expanders(P)[0].fire("click");
+  r.filename=details(P).length===1&&details(P)[0].textContent===ps;
+  const spaced="PS 그룹 마스크 치마 · 밑단.psd";M.info.edit.ops=spaced;P.render();
+  r.spacedFilename=details(P).length===1&&details(P)[0].textContent===spaced;
+  M.info.edit.ops="붓 2획 · 변 페이드 top 32 · PS 그룹 마스크 치마·밑단.psd";P.render();
+  r.delimiter=details(P).length===3&&details(P)[2].textContent===ps;
+  M.info.edit.ops="붓 2획·페더 4px";P.render();r.noLooseSplit=details(P).length===1;
+  P.ed.leave();return r;
+});
+await scenario("review2Fade",async()=>{
+  const P=await setup(),{M}=P,r={};P.B("페이드").fire("click");const saved=M.m;
+  M.m=null;P.render();P.move(144,16);
+  r.missingSession=P.viewer.cursor===""&&!P.viewer.marks.some(e=>e.attrs["data-fade"])&&P.down(144,16)===false;
+  M.m=saved;P.render();P.move(144,16);r.restoredSession=P.viewer.cursor==="grab";
+  for(const [side,from,to,limit] of [["top",[144,16],[144,1000],64],["bottom",[144,144],[144,-1000],64],
+    ["left",[16,80],[1000,80],128],["right",[272,80],[-1000,80],128]]) {
+    P.down(...from);P.move(...to);P.raf();r[side+"Limit"]=M.stroke.limit===limit&&M.stroke.width===limit;P.key("Escape");
+    P.down(...from);P.move(...to,{shiftKey:true});P.raf();r[side+"Shift"]=M.stroke.width===limit;P.key("Escape");
+  }
+  // 원래 rect보다 캔버스에 걸친 부분이 작을 때도 그 교집합의 수직 길이로 자른다.
+  P.S.crops[0].rect=[-40,-20,272,144];P.S.canvas.size=[240,100];P.ed.stateChanged(P.S);
+  P.down(120,0);P.move(120,1000,{shiftKey:true});P.raf();r.clippedTop=M.stroke.limit===50&&M.stroke.width===50;P.key("Escape");
+  P.down(0,50);P.move(1000,50,{shiftKey:true});P.raf();r.clippedLeft=M.stroke.limit===120&&M.stroke.width===120;P.key("Escape");
   P.ed.leave();return r;
 });
 await scenario("reviewInput",async()=>{
@@ -52223,7 +52285,8 @@ console.log(JSON.stringify(out));
     (out_dir / "ui-result.txt").write_text(result.stdout + result.stderr, encoding="utf-8")
     check(result.returncode == 0, f"8-C node 종료 {result.stderr[:500]}")
     scenes = json.loads(result.stdout) if result.returncode == 0 else {}
-    for name in ("details", "history", "numbers", "rotation", "fade", "fadeSession", "guides", "reviewInput", "reviewFade", "reviewHistory", "reviewFadeCost"):
+    for name in ("details", "history", "numbers", "rotation", "fade", "fadeSession", "guides", "review2Details", "review2Ops", "review2Fade",
+                 "reviewInput", "reviewFade", "reviewHistory", "reviewFadeCost"):
         scene = scenes.get(name, {})
         check(bool(scene) and "error" not in scene, f"8-C {name} 시나리오 {scene.get('error', '')}")
         for label, ok in scene.items():

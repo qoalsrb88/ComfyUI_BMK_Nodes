@@ -49,7 +49,7 @@ window.DPMaskEdit = (() => {
   }
 
   function fadeLimit(side, crop) {
-    const length = side === "top" || side === "bottom" ? crop[2] - crop[0] : crop[3] - crop[1];
+    const length = side === "top" || side === "bottom" ? crop[3] - crop[1] : crop[2] - crop[0];
     return Math.max(1, Math.min(256, Math.floor(length / 2)));
   }
 
@@ -856,8 +856,16 @@ window.DPMaskEdit = (() => {
 
     function hoverGuide(b, get) {
       b.addEventListener("mouseenter", () => { if (!b.disabled) { guide = get(); viewer.redraw(); } });
-      b.addEventListener("mouseleave", () => { guide = null; viewer.redraw(); });
+      b.addEventListener("mouseleave", () => {
+        guide = adjustFocus && adjustFocus.dataset.guide === "feather" ? featherGuide(adjustFocus) : null;
+        viewer.redraw();
+      });
       return b;
+    }
+
+    function featherGuide(input) {
+      const v = Number(input.value);
+      return { whole: true, feather: true, sigma: Number.isFinite(v) ? clamp(Math.round(v), ...SIGMA) : sigma };
     }
 
     function line(parent, txt, cls) {
@@ -1218,7 +1226,7 @@ window.DPMaskEdit = (() => {
 
     function fadeHit(pt) {
       const rect = cropRect();
-      if (!rect || !viewer.flags().rectsOn) return null;
+      if (!M.m || !rect || !viewer.flags().rectsOn) return null;
       const z = viewer.scale();
       return Object.keys(SIDES).find((side) => {
         const p = fadePoints(rect)[side];
@@ -1710,7 +1718,7 @@ window.DPMaskEdit = (() => {
       }
       const ed = current ? cur().edit : candidate.mask_edit;
       if (ed) {
-        if (current && ed.ops) for (const op of ed.ops.split(/\s*·\s*/).filter(Boolean)) {
+        if (current && ed.ops) for (const op of (ed.ops.startsWith("PS 그룹 마스크 ") ? [ed.ops] : ed.ops.split(" · ")).filter(Boolean)) {
           const brush = /^붓(?:\s|$)/.test(op), faded = /^(?:가장자리|변|구간) 페이드(?:\s|$)/.test(op);
           add(op, brush ? "brush" : faded ? "fade" : "mask", brush ? "붓 (왼쪽 끌기 · Space+끌기 = 화면 이동)" : "자동 손질",
             brush ? "brush" : faded ? "fade" : null);
@@ -1740,6 +1748,7 @@ window.DPMaskEdit = (() => {
         li.append(el("div", "tname", c.name || c.id));
         const ch = el("div", "chips");
         const keys = stars.length ? stars.map((x) => x.c.key) : [`crop:${c.id}`];
+        const hasDetails = !!(c.mask_edits || c.cand_adjust || (stars.some((x) => x.c.key === M.key) && M.pending()));
         if (c.mask_edits) ch.append(detailChip(`편집 ${c.mask_edits}`, "b-reg", keys));
         if (c.cand_adjust) ch.append(detailChip("보정", "b-reg", keys));
         if (!c.mask_edits && !c.cand_adjust && stars.some((x) => x.c.key === M.key) && M.pending()) ch.append(detailChip("적용 전 획", "b-wait", keys));
@@ -1748,7 +1757,10 @@ window.DPMaskEdit = (() => {
         if (mine.length) ch.append(chip(`이음매 ${mine.length}`, mine.some((x) => x.severity === "bad") ? "b-bad" : "b-wait"));
         if (!stars.length) ch.append(chip("★ 없음", "b-dim"));
         if (ch.childElementCount) li.append(ch);
-        if (stars.length < 2) detailRows(li, stars[0] && stars[0].c, keys[0]);
+        if (stars.length < 2) {
+          if (!hasDetails) expanded.delete(keys[0]);
+          detailRows(li, stars[0] && stars[0].c, keys[0]);
+        }
         li.addEventListener("click", () => (stars.length ? go({ key: stars[0].c.key }, true) : opts.toast("이 크롭은 ★ 가 없습니다 — 검토에서 ★ 를 먼저 고르세요", "warn")));
         if (window.DPRows) window.DPRows.tail(li, { crop: c, state: S, apiUrl: opts.apiUrl, z: true });
         list.append(li);
@@ -1758,6 +1770,7 @@ window.DPMaskEdit = (() => {
           sub.append(el("div", "tname", `${x.t.tid} · c${pad(x.c.n)} ${x.c.slice_index > 1 ? `조각 ${x.c.slice_index}` : "★"}`));
           if (x.c.mask_edit) sub.append(detailChip(x.c.mask_edit.stale ? "처음 마스크가 바뀜" : "편집", x.c.mask_edit.stale ? "b-bad" : "b-reg", [x.c.key]));
           if (x.c.adjust) sub.append(detailChip("보정", "b-reg", [x.c.key]));
+          if (!hasDetails && !x.c.mask_edit && !x.c.adjust) expanded.delete(x.c.key);
           detailRows(sub, x.c);
           sub.addEventListener("click", (e) => {
             e.stopPropagation();
@@ -2164,13 +2177,14 @@ window.DPMaskEdit = (() => {
       const featherInput = slide(s, "페더 (px)", SIGMA[0], SIGMA[1], 1, sigma, (v) => `${v}px`, (v) => {
         sigma = v; guide = { whole: true, feather: true }; viewer.redraw();
       });
+      featherInput.numberInput.dataset.guide = "feather";
       for (const input of [featherInput, featherInput.numberInput]) {
         for (const event of ["focus", "pointerdown", "input"]) input.addEventListener(event, () => {
-          const v = Number(input.value);
-          guide = { whole: true, feather: true, sigma: Number.isFinite(v) ? clamp(Math.round(v), ...SIGMA) : sigma };
+          guide = featherGuide(input);
           viewer.redraw();
         });
-        for (const event of ["blur", "pointerup", "pointercancel", "change"]) input.addEventListener(event, () => { guide = null; viewer.redraw(); });
+        const clearEvents = input.type === "number" ? ["blur", "change"] : ["blur", "pointerup", "pointercancel", "change"];
+        for (const event of clearEvents) input.addEventListener(event, () => { guide = null; viewer.redraw(); });
       }
       btns(s, hoverGuide(off(button("전체 페더", "창 전체를 가우시안 σ 로 흐림(한 단계)", () => once(M.feather(sigma))), !can), () => ({ whole: true, feather: true })),
         hoverGuide(off(button("처음 마스크로", "편집 중 마스크를 처음 마스크로(한 단계 — Ctrl+Z 로 되돌림)", () => once(M.toBase())), !can), () => ({ whole: true })));
