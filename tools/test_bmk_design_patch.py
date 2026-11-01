@@ -53457,8 +53457,25 @@ def batch9_recv_unit():
             wf = t / f"w{i}.webp"
             Image.new(mode, (321, 123), (1, 2, 3) + ((4,) if mode == "RGBA" else ())).save(wf, "WEBP", **kw)
             check(bd.image_header(str(wf), "webp") == {"w": 321, "h": 123}, f"B9R WebP 머리 직접(VP8L·VP8X) {mode} {kw}")
-        with patch.object(bd.Image, "open", side_effect=AssertionError("WebP 를 Pillow 로 열면 파일 전체를 읽음")):
-            check(bd.image_header(str(files["webp"][0]), "webp")["w"] == 64, "B9R WebP 는 Pillow 로 열지 않음")
+        with patch.object(bd.Image, "open", side_effect=AssertionError("Pillow 로 열면 WebP 는 통째로·큰 그림은 179MP 상한")):
+            check(all(bd.image_header(str(f), k) == {"w": s_[0], "h": s_[1]} for k, (f, s_) in files.items()),
+                  "B9R 머리를 Pillow 없이 직접(PNG IHDR·JPEG SOF·WebP RIFF)")
+        big = t / "big.png"  # 13300×13300 ≈ 176.9MP — Pillow 경고 상한(≈ 89MP)은 넘고 D142 178MP 안(머리만 읽음)
+        big.write_bytes(b"\x89PNG\r\n\x1a\n" + (13).to_bytes(4, "big") + b"IHDR" + (13300).to_bytes(4, "big") + (13300).to_bytes(4, "big") + bytes(9))
+        info_big = bd.image_header(str(big), "png")
+        bd.check_image_dims(info_big, 64)
+        check(info_big == {"w": 13300, "h": 13300}, "B9R 177MP PNG 머리는 통과(Pillow 로 열지 않음)")
+        cut_png = t / "cut.png"
+        cut_png.write_bytes(big.read_bytes()[:21])
+        try:
+            bd.image_header(str(cut_png), "png")
+            cut_ok = False
+        except bd._Reject as e:
+            cut_ok = e.status == 400
+        check(cut_ok, "B9R 잘린 PNG 머리(높이 필드 끊김) 400")
+        exif_jpg = t / "exif.jpg"
+        Image.new("RGB", (77, 55), (9, 9, 9)).save(exif_jpg, "JPEG", exif=b"Exif\x00\x00" + bytes(5000), quality=80, progressive=True)
+        check(bd.image_header(str(exif_jpg), "jpeg") == {"w": 77, "h": 55}, "B9R JPEG 큰 APP1 건너뛰고 SOF(점진식 C2)")
 
         def rejects(fn, *a, code=400, **kw):
             try:
@@ -53470,8 +53487,10 @@ def batch9_recv_unit():
         check(rejects(bd.image_header, str(junk), "png"), "B9R 깨진 그림 400")
         bd.check_image_dims({"w": 64, "h": 900}, 64)
         check(rejects(bd.check_image_dims, {"w": 63, "h": 900}, 64) and rejects(bd.check_image_dims, {"w": 255, "h": 900}, 256)
-              and rejects(bd.check_image_dims, {"w": 30001, "h": 100}, 64) and rejects(bd.check_image_dims, {"w": 15000, "h": 14000}, 64),
-              "B9R 크기 상한·하한(짧은 변 인자·긴 변 30000·넓이 200MP)")
+              and rejects(bd.check_image_dims, {"w": 30001, "h": 100}, 64) and rejects(bd.check_image_dims, {"w": 14000, "h": 13000}, 64),
+              "B9R 크기 상한·하한(짧은 변 인자·긴 변 30000·넓이 178MP — Pillow 기본 상한 아래)")
+        from PIL import Image as _Im
+        check(bd._MAX_IMAGE_AREA <= 2 * _Im.MAX_IMAGE_PIXELS, "B9R 넓이 상한이 Pillow DecompressionBomb 상한 이하")
         check(bd.check_upload_name("  캐릭터 A.PSD ") == "캐릭터 A.PSD" and bd.check_upload_name("x.webp") == "x.webp", "B9R 받을 이름 정규화")
         check(all(rejects(bd.check_upload_name, n) for n in ("../a.png", "a\\b.png", "a:b.png", "CON.png", "con.psd", ".x.png", "a.gif",
                                                              "", None, "a" * 201 + ".png", "a\x01.png",
@@ -53518,19 +53537,21 @@ def batch9_recv_unit():
         check(bd.unique_file_name(str(dest), "그림.png") == "그림_3.png", "B9R 겹침 k 증가")
 
         class Content:
-            def __init__(self, chunks, cancel_at=None):
-                self.chunks, self.cancel_at = chunks, cancel_at
+            def __init__(self, chunks, cancel_at=None, error_at=None):
+                self.chunks, self.cancel_at, self.error_at = chunks, cancel_at, error_at
 
             async def iter_chunked(self, n):
                 for i, c in enumerate(self.chunks):
                     if self.cancel_at == i:
                         raise asyncio.CancelledError()
+                    if self.error_at is not None and self.error_at[0] == i:
+                        raise self.error_at[1]
                     yield c
 
         class Req:
-            def __init__(self, chunks, ctype="application/octet-stream", length="auto", cancel_at=None):
+            def __init__(self, chunks, ctype="application/octet-stream", length="auto", cancel_at=None, error_at=None):
                 self.content_type = ctype
-                self.content = Content(chunks, cancel_at)
+                self.content = Content(chunks, cancel_at, error_at)
                 self.content_length = sum(map(len, chunks)) if length == "auto" else length
 
         data = files["webp"][0].read_bytes()
@@ -53548,12 +53569,42 @@ def batch9_recv_unit():
         check(recv_fails(Req(chunks, ctype="application/json"), 415) and recv_fails(Req(chunks), 413, limit=10)
               and recv_fails(Req(chunks, length=None), 413, limit=10) and recv_fails(Req([]), 400)
               and recv_fails(Req(chunks, length=len(data) + 5), 400), "B9R 흘려 받기 거절(형식 415·상한 413 — 길이 없이도·빈 400·끊김 400)")
+        import aiohttp as _ah
+        check(all(recv_fails(Req(chunks, error_at=(2, e)), 400) for e in (ConnectionResetError("끊김"), _ah.ClientPayloadError("짧음"),
+                                                                         _ah.http_exceptions.ContentLengthError("짧음")))
+              and not [p for p in dest.iterdir() if p.name.endswith(".part")], "B9R 전송 중 연결 끊김·짧은 본문 = 400(.part 지움)")
         try:
             asyncio.run(bd.recv_upload(Req(chunks, cancel_at=2), str(dest)))
             cancelled = False
         except asyncio.CancelledError:
             cancelled = True
         check(cancelled and not [p for p in dest.iterdir() if p.name.endswith(".part")], "B9R 취소(끊김)되면 .part 지움")
+
+        async def cancel_mid_open():
+            import threading as _t2
+            slow, entered_o = _t2.Event(), _t2.Event()
+            real_open_ = open
+
+            def slow_open(path, mode="r", *a, **k):
+                if mode == "xb" and str(path).endswith(".part"):
+                    entered_o.set()
+                    slow.wait(5)
+                return real_open_(path, mode, *a, **k)
+
+            with patch("builtins.open", slow_open):
+                task = asyncio.ensure_future(bd.recv_upload(Req(chunks), str(dest)))
+                await asyncio.to_thread(entered_o.wait, 5)
+                task.cancel()
+                await asyncio.sleep(0.05)
+                slow.set()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    return True
+                return False
+
+        check(asyncio.run(cancel_mid_open()) and not [p for p in dest.iterdir() if p.name.endswith(".part")],
+              "B9R 파일 여는 도중 취소 — 만들어진 .part 를 닫고 지움")
         import threading as _th
         gate, entered = _th.Event(), _th.Event()
         real_open = open
@@ -53614,11 +53665,16 @@ def batch9_recv_unit():
         linked = t / "input2"
         linked.mkdir()
         import subprocess as _sp
-        made_link = _sp.run(["cmd", "/c", "mklink", "/J", str(linked / bd._NEW_TMP_DIRNAME), str(outside)], capture_output=True).returncode == 0
+        made_link = os.name == "nt" and _sp.run(["cmd", "/c", "mklink", "/J", str(linked / bd._NEW_TMP_DIRNAME), str(outside)],
+                                                capture_output=True).returncode == 0
+        if not made_link and os.name != "nt":
+            with contextlib.suppress(OSError):
+                os.symlink(outside, linked / bd._NEW_TMP_DIRNAME, target_is_directory=True)
+                made_link = True
         if made_link:
             bd._sweep_new_tmp(str(linked))
             check((outside / "keep").exists(), "B9R 임시 폴더 자체가 정션이면 따라가 지우지 않음")
-            os.rmdir(linked / bd._NEW_TMP_DIRNAME)
+            (os.rmdir if os.name == "nt" else os.remove)(linked / bd._NEW_TMP_DIRNAME)
         else:
             skip("B9R 정션 만들기 실패(권한) — 링크 임시 폴더 검사 건너뜀")
         (base / store.PROJECTS_DIRNAME / "p1").mkdir(parents=True)
