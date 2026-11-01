@@ -1076,7 +1076,7 @@ window.DPPipeline = (() => {
       const busy = external.busy;
       const running = !!(S && S.running);
       line(s, "ComfyUI 의 다른 워크플로(NAI·Anima 등)로 크롭을 돌리고 결과를 후보로 가져옵니다 — 크레딧을 쓰지 않습니다.");
-      line(s, "결과 파일 이름은 크롭 이름(또는 NNN_)으로 시작해야 가져올 때 맞춰짐 — 크롭마다 접두를 복사하거나 폴더 로더의 파일 이름을 접두에 이음", "dim");
+      line(s, "Save Image 의 filename_prefix = design_patch/<프로젝트>/ext_<엔진>/<크롭이름> — 아래 크롭마다 [접두 복사]를 사용하세요.", "dim");
       if (running) line(s, "생성 실행 중", "warn");
       line(s, `대상 ${sel.size || (S ? S.crops.length : 0)}개`);
       const size = el("select");
@@ -1106,8 +1106,7 @@ window.DPPipeline = (() => {
           external.engine = engine.value;
           path.placeholder = externalPrefix(true).replace(/\/$/, "");
         });
-        line(s, `저장 폴더 접두 ${externalPrefix(false)}`);
-        btns(s, engine, button("접두 복사", "폴더 로더의 파일 이름 앞에 이을 폴더 접두", () => copy(externalPrefix(false))));
+        btns(s, engine);
         for (const item of ex.items) {
           const row = line(s, item.name);
           const name = item.file.replace(/__src\.png$/i, "");

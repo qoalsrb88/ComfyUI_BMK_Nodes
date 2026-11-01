@@ -52542,6 +52542,7 @@ def ext60_unit():
     reject(lambda: ext.export_sources(root), 400, "내보낼 크롭")
     reject(lambda: ext.export_sources(root, [c1["id"]]), 400, "내보낼 크롭")
     ext60_review_unit(dp, run)
+    ext60_review2_unit(dp, run)
     ext60_js_unit(out, fixture)
 
 
@@ -52635,8 +52636,17 @@ def ext60_review_unit(dp, run):
     with patch.object(ext, "scan_import", wraps=ext.scan_import) as scan_spy:
         one = ext.ext_summary(root)
         two = ext.ext_summary(root)
-    check(one["imports"][0]["new_n"] == two["imports"][0]["new_n"] == 1 and scan_spy.call_count == 1,
-          "R7 (프로젝트,path,fp) 캐시는 같은 지문을 재디코드하지 않음")
+        check(one["imports"][0]["new_n"] == two["imports"][0]["new_n"] == 1 and scan_spy.call_count == 1,
+              "R7 (프로젝트,path,fp) 캐시는 같은 지문을 재디코드하지 않음")
+        snapshot = st.load_manifest(root)
+        rev = snapshot["rev"]
+        st.save_manifest(root, snapshot)
+        check(ext.ext_summary(root)["imports"][0]["new_n"] == 1 and scan_spy.call_count == 1
+              and st.load_manifest(root)["rev"] > rev, "Q5 rev 만 증가하면 재스캔 없음")
+        st.update_manifest(root, lambda m: m["candidates"][0].update(picked=False))
+        check(ext.ext_summary(root)["imports"][0]["new_n"] == 1 and scan_spy.call_count == 1, "Q5 ★ 변경도 판정 캐시 재사용")
+        st.update_manifest(root, lambda m: m["crops"][0].update(name="renamed_part"))
+        check(ext.ext_summary(root)["imports"][0]["new_n"] == 1 and scan_spy.call_count == 2, "Q5 크롭 이름 변경은 재스캔")
     other = run / "other_results"
     other.mkdir()
     history = ext._history(root)
@@ -52663,16 +52673,40 @@ def ext60_review_unit(dp, run):
         check(ext.ext_summary(root)["imports"][0]["new_n"] is None, "R4 지문 읽기 실패도 목록 행으로 격리")
 
     hp = Path(root, "ext_bridge.json")
-    broken = b'{"exports": ['
-    hp.write_bytes(broken)
-    with patch.object(ext.logger, "warning") as warning:
-        recovered = ext._history(root)
+    empty = {"exports": [], "imports": []}
+    broken_records = [b'{"exports": [', b'\xff', b'{"exports": {}, "imports": []}']
+    with patch.object(ext.time, "strftime", return_value="20261102-000000"):
+        for broken in broken_records:
+            hp.write_bytes(broken)
+            with patch.object(ext.logger, "warning") as warning:
+                recovered = ext._history(root)
+            check(recovered == empty and warning.called and json.loads(hp.read_bytes()) == empty,
+                  "Q7 파싱 오류·인코딩 오류·모양 오류만 빈 기록 복구")
     backups = list(Path(root).glob("ext_bridge.json.bad-*"))
-    check(recovered == {"exports": [], "imports": []} and warning.called and len(backups) == 1
-          and backups[0].read_bytes() == broken and json.loads(hp.read_bytes()) == recovered, "R8 손상 기록 백업·빈 기록 복구·경고")
-    with patch.object(ext, "open", side_effect=PermissionError("read error"), create=True), patch.object(ext.logger, "warning"):
-        check(ext._history(root) == recovered, "R8 기록 읽기 실패도 빈 기록으로 복구")
-    check(len(list(Path(root).glob("ext_bridge.json.bad-*"))) == 2, "R8 같은 시각 손상 백업을 덮어쓰지 않음")
+    check(len(backups) == 3 and {p.read_bytes() for p in backups} == set(broken_records), "R8 같은 시각 손상 백업을 덮어쓰지 않음")
+    ext._save_history(root, history)
+    history_before, stat_before = hp.read_bytes(), hp.stat().st_mtime_ns
+    manifest_before = Path(root, st.MANIFEST_NAME).read_bytes()
+    files_before = set(Path(root).rglob("*"))
+    original_open = builtins.open
+    def locked_history(path, mode="r", *args, **kwargs):
+        if norm(path) == norm(hp):
+            raise PermissionError("history locked")
+        return original_open(path, mode, *args, **kwargs)
+    with patch.object(ext, "open", side_effect=locked_history, create=True), patch.object(ext.logger, "warning"):
+        check(ext._history(root) == empty and ext.ext_summary(root)["imports"] == [], "Q7 OSError 읽기는 그 회차 빈 목록")
+        for operation in (lambda: ext.export_sources(root), lambda: ext.apply_import(root, str(folder)),
+                          lambda: ext._save_history(root, empty)):
+            try:
+                operation()
+            except ext.BridgeError as e:
+                check(e.status == 409 and "기록" in str(e), "Q7 OSError 쓰기는 409 거절")
+            else:
+                check(False, "Q7 읽기 실패 기록을 덮어쓰면 안 됨")
+    check(hp.read_bytes() == history_before and hp.stat().st_mtime_ns == stat_before
+          and Path(root, st.MANIFEST_NAME).read_bytes() == manifest_before and set(Path(root).rglob("*")) == files_before,
+          "Q7 잠긴 기록의 bytes·mtime·백업·manifest·내보내기 파일 모두 불변")
+    check(ext._history(root) == history, "Q7 잠금 해제 뒤 원래 기록을 다시 읽음")
     record = {"path": str(other), "fp": st._dir_fp(str(other)), "at": "test", "keys": []}
     ext._save_history(root, {"exports": [{"dir": "bad"}], "imports": [{"path": str(folder)}, record, None]})
     with patch.object(ext.logger, "warning"):
@@ -52716,14 +52750,135 @@ def ext60_review_unit(dp, run):
         ex = ext.export_sources(root, [crop["id"]])
     clean = ex["items"][0]["file"].removesuffix("__src.png")
     output_name = clean + "_00001_.png"
+    prefix = ex["save_prefix"] + "nai/" + clean
+    check(os.path.basename(os.path.normpath(prefix)) == clean, "Q1 SaveImage normpath 뒤에도 크롭 이름이 파일 접두")
     png(output_name, (23, 140, 160))
     row = next(r for r in ext.scan_import(root, str(folder))["rows"] if r["file"] == output_name)
     check(clean == "part_pin" and row["status"] == "new" and row["crop_id"] == crop["id"],
           "R1 정리된 크롭별 SaveImage 접두 결과를 사이드카로 매칭")
+    check(row["match"] == "export" and "내보낸 뒤 크롭 이름이 바뀜" not in row["warn"],
+          "Q4 금지 문자만 정리된 같은 이름은 거짓 이름 변경 경고 없음")
     check(ex["save_prefix_abs"] == str(run / "comfy_output" / "design_patch" / "review" / "ext_"),
           "R1 알려진 ComfyUI output 으로 절대 접두 예시 제공(쓰기 없음)")
     with patch.object(bd, "_OUTPUT_DIR", []):
         check(ext.save_prefixes(root)["save_prefix_abs"] is None, "R1 output 미설정은 절대 경로를 추측하지 않음")
+
+
+def ext60_review2_unit(dp, run):
+    """Q1–Q7: 겹친 접두·재인코딩 소스·판정 캐시·프로젝트별 동시 실행."""
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from unittest.mock import patch
+    from PIL.PngImagePlugin import PngInfo
+    bd, st = dp.board, dp.store
+    ext = bd.ext
+    _, root = _fx_project(dp, run, "review2", [("012_hand | A: hand", [0, 0, 73, 41]),
+                                              ("012_hand_left | A: left", [75, 0, 148, 41])], _vlm_img(60, 160, 19))
+    short, long = copy.deepcopy(st.load_manifest(root)["crops"])
+    ex = ext.export_sources(root)
+    folder = run / "review2_results"
+    folder.mkdir()
+    filename = "012_hand_left_00001_.png"
+    Image.new("RGB", (73, 41), (9, 23, 99)).save(folder / filename)
+    def names(short_name, long_name):
+        def mutate(m):
+            m["crops"][0].update(name=short_name, nnn="912")
+            m["crops"][1].update(name=long_name, nnn="913")
+        st.update_manifest(root, mutate)
+    for title, short_name in [("둘 다 이름 바꿈", "renamed_hand"), ("긴 쪽만 이름 바꿈", "012_hand")]:
+        names(short_name, "renamed_left")
+        row = ext.scan_import(root, str(folder))["rows"][0]
+        check(row["crop_id"] == long["id"] and row["match"] == "export" and row["status"] == "new"
+              and "내보낸 뒤 크롭 이름이 바뀜" in row["warn"], f"Q2 {title}: 012_hand_left 최장 사이드카 접두 우선")
+
+    # 같은 접두를 다른 크롭에서 나중에 내보내면 최신 우선, 지금 이름의 동률은 이름 우선.
+    names("012_hand_left", "renamed_left")
+    newest = ext.export_sources(root, [short["id"]])
+    names("renamed_hand", "renamed_left")
+    row = ext.scan_import(root, str(folder))["rows"][0]
+    check(row["crop_id"] == short["id"] and row["match"] == "export", "Q2 같은 길이 사이드카는 최신 내보내기 우선")
+    names("renamed_hand", "012_hand_left")
+    row = ext.scan_import(root, str(folder))["rows"][0]
+    check(row["crop_id"] == long["id"] and row["match"] == "name", "Q2 이름·사이드카 접두 동률이면 지금 이름 우선")
+
+    # bytes 해시와 원래 크롭 크기 검사를 모두 통과하는, 출력 크기의 동일 RGB 파일.
+    bypass = run / "review2_bypass"
+    bypass.mkdir()
+    item = next(i for i in ex["items"] if i["crop_id"] == long["id"])
+    src_path = Path(ex["abs"], item["file"])
+    with Image.open(src_path) as image:
+        rgb = np.asarray(image.convert("RGB")).copy()
+    metadata = PngInfo()
+    metadata.add_text("workflow", "synthetic passthrough")
+    same = bypass / "012_hand_left_00001_.png"
+    Image.fromarray(rgb).save(same, pnginfo=metadata, compress_level=0)
+    changed_rgb = rgb.copy()
+    changed_rgb[0, 0, 0] ^= 1
+    Image.fromarray(changed_rgb).save(bypass / "012_hand_left_00002_.png")
+    check(hashlib.sha256(same.read_bytes()).hexdigest() not in {i["sha256"] for _, i in ext._sidecars(root)}
+          and item["out_wh"] != item["src_wh"], "Q3 RGB 판정이 없으면 놓치는 재인코딩·출력 크기 fixture")
+    rows = ext.scan_import(root, str(bypass))["rows"]
+    check(rows[0]["status"] == "skip" and rows[0]["why"] == "내보낸 소스와 같음 — 엔진을 거치지 않음"
+          and rows[1]["status"] == "new", "Q3 최신 내보낸 소스와 RGB 가 같은 결과만 제외")
+    fresh_rgb = dp._load_rgba(root, long["source"]).copy()
+    fresh_rgb[..., :3] = 31
+    fresh_source = st.save_png_ca(root, "inputs", fresh_rgb)
+    st.update_manifest(root, lambda m: m["crops"][1].update(source=fresh_source))
+    ext.export_sources(root, [long["id"]])
+    check(ext.scan_import(root, str(bypass))["rows"][0]["status"] == "new", "Q3 과거 소스가 달라도 최신 사이드카의 RGB 만 비교")
+
+    # 폴더 fp 가 동일할 때 판정에 관계된 입력만 캐시를 무효화한다.
+    ext._save_history(root, {"exports": [], "imports": [{"path": str(folder), "fp": "old", "at": "test", "keys": []}]})
+    ext._NEW_COUNTS.clear()
+    with patch.object(ext, "scan_import", wraps=ext.scan_import) as scans:
+        check(ext.ext_summary(root)["imports"][0]["new_n"] == 1 and scans.call_count == 1, "Q5 판정 캐시 초기 스캔")
+        mutations = [lambda m: m["crops"][0].update(nnn="999"),
+                     lambda m: m["crops"][0].update(rect=[1, 0, 74, 41]),
+                     lambda m: m["crops"][0].update(source=fresh_source),
+                     lambda m: m["crops"][0]["targets"][0].update(instruction="changed")]
+        for label, mutate in zip(("nnn", "rect", "source", "targets"), mutations):
+            calls = scans.call_count
+            st.update_manifest(root, mutate)
+            ext.ext_summary(root)
+            check(scans.call_count == calls + 1, f"Q5 크롭 {label} 변경은 재스캔")
+        sidepath = Path(newest["abs"], "export.json")
+        doc = json.loads(sidepath.read_bytes())
+        doc["items"][0]["rect"][0] += 1
+        st.write_json_atomic(str(sidepath), doc)
+        calls = scans.call_count
+        ext.ext_summary(root)
+        check(scans.call_count == calls + 1, "Q5 같은 manifest rev 에서 사이드카 변경은 재스캔")
+        ext.apply_import(root, str(folder))
+        # 등록 기록의 fp 단축 경로를 피하여 후보 key 집합 자체의 무효화를 검증.
+        ext._save_history(root, {"exports": [], "imports": [{"path": str(folder), "fp": "old", "at": "test", "keys": []}]})
+        calls = scans.call_count
+        check(ext.ext_summary(root)["imports"][0]["new_n"] == 0 and scans.call_count == calls + 1,
+              "Q5 후보 key 추가는 재스캔하여 new 를 0으로 갱신")
+
+    _, other_root = _fx_project(dp, run, "review2_parallel", [("001_part | A: part", [0, 0, 73, 41])], _vlm_img(60, 160, 20))
+    check(ext._root_lock(root) is ext._root_lock(os.path.join(root, "."))
+          and ext._root_lock(root) is not ext._root_lock(other_root), "Q6 정규화한 root_key 별 동일·독립 잠금")
+    entered, release = Event(), Event()
+    idle = ext._idle
+    def slow_idle(r):
+        if st.root_key(r) == st.root_key(root):
+            entered.set()
+            if not release.wait(10):
+                raise RuntimeError("test release timeout")
+        return idle(r)
+    with patch.object(ext, "_idle", side_effect=slow_idle), ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(ext.export_sources, root)
+        try:
+            check(entered.wait(3), "Q6 첫 프로젝트 내보내기 잠금 진입")
+            second = pool.submit(ext.export_sources, other_root)
+            try:
+                result = second.result(timeout=3)
+                check(result["ok"] and not first.done(), "Q6 한 프로젝트 내보내기 대기 중 다른 프로젝트 완료")
+            except TimeoutError:
+                check(False, "Q6 다른 프로젝트가 전역 잠금에 막힘")
+        finally:
+            release.set()
+        check(first.result(timeout=5)["ok"], "Q6 첫 프로젝트도 해제 뒤 정상 완료")
 
 
 def ext60_js_unit(out, fixture):
@@ -52772,18 +52927,19 @@ await scenario("external", async () => {
   const r = {tab: section().dataset.tab === "generate", initial: B("등록 (").disabled};
   B("크롭 소스 내보내기").fire("click"); await sleep(30);
   r.export = calls.some(c => c.path === "candidates/export" && c.body.size === "gpt" && c.body.crops.length === S.crops.length);
-  B("폴더 열기").fire("click"); B("경로 복사").fire("click"); B("접두 복사").fire("click"); await sleep(10);
-  r.paths = calls.some(c => c.path === "open_folder" && c.body.sub === IN.ext.export.dir) && copies.includes(IN.ext.export.abs) && copies.includes(IN.ext.export.save_prefix + "nai/");
+  B("폴더 열기").fire("click"); B("경로 복사").fire("click"); await sleep(10);
+  r.paths = calls.some(c => c.path === "open_folder" && c.body.sub === IN.ext.export.dir) && copies.includes(IN.ext.export.abs);
   const prefixButtons = () => section().all().filter(e => e.tagName === "BUTTON" && e.textContent === "접두 복사");
-  prefixButtons()[1].fire("click"); await sleep(5);
-  r.cropPrefix = prefixButtons().length === IN.ext.export.items.length + 1
+  prefixButtons()[0].fire("click"); await sleep(5);
+  r.cropPrefix = prefixButtons().length === IN.ext.export.items.length
     && copies.includes(IN.ext.export.save_prefix + "nai/" + IN.ext.export.items[0].file.replace(/__src\.png$/, ""));
   r.pathExample = input("결과 폴더 경로").placeholder === IN.ext.export.save_prefix_abs + "nai"
-    && section().textContent.includes("결과 파일 이름은 크롭 이름(또는 NNN_)");
+    && section().textContent.includes("Save Image 의 filename_prefix = design_patch/<프로젝트>/ext_<엔진>/<크롭이름>");
   input("외부 엔진 이름").value = "anima"; input("외부 엔진 이름").fire("input");
-  prefixButtons()[0].fire("click"); prefixButtons()[1].fire("click"); await sleep(5);
-  r.engine = input("결과 폴더 경로").placeholder.endsWith("ext_anima") && copies.includes(IN.ext.export.save_prefix + "anima/")
+  prefixButtons()[0].fire("click"); await sleep(5);
+  r.engine = input("결과 폴더 경로").placeholder.endsWith("ext_anima")
     && copies.includes(IN.ext.export.save_prefix + "anima/" + IN.ext.export.items[0].file.replace(/__src\.png$/, ""));
+  r.prefixCopies = copies.filter(text => text.startsWith(IN.ext.export.save_prefix));
   input("결과 폴더 경로").value = "H:/results"; input("결과 폴더 경로").fire("input");
   B("미리보기").fire("click"); await sleep(30);
   r.preview = !B("등록 (1)").disabled && section().textContent.includes("001_head__B_1.png") && section().textContent.includes("새로");
@@ -52834,7 +52990,12 @@ console.log(JSON.stringify(out)); process.exit(0);
     if result.returncode == 0 and result.stdout.strip():
         for group, rows in json.loads(result.stdout.strip().splitlines()[-1]).items():
             for name, ok in rows.items():
-                check(ok is True, f"D87 {group}/{name}: {ok}")
+                if name == "prefixCopies":
+                    crop_names = {i["file"].removesuffix("__src.png") for i in fixture["export"]["items"]}
+                    check(bool(ok) and all(os.path.basename(os.path.normpath(prefix)) in crop_names for prefix in ok),
+                          "Q1 실제 클립보드 접두에 normpath 를 적용해도 basename 은 크롭 이름")
+                else:
+                    check(ok is True, f"D87 {group}/{name}: {ok}")
 
 
 def want(name: str) -> bool:

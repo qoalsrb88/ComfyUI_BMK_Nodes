@@ -32,10 +32,19 @@ class BridgeError(ValueError):
         self.status, self.extra = status, extra
 
 
-_LOCK = threading.RLock()  # bridge history read/modify/write and simultaneous imports
+_LOCKS, _LOCKS_GUARD = {}, threading.Lock()
 _STAMP = re.compile(r"^export_src/\d{6}-\d{4}(-\d+)?$")
-_NEW_COUNTS = {}  # (project, path, fp) -> (manifest rev, count); no image bytes
+_NEW_COUNTS = {}  # (project, path, folder fp, decision signature) -> count; no image bytes
+_CACHE_LOCK = threading.Lock()
 logger = logging.getLogger(__name__)
+
+
+def _root_lock(root):
+    key = store.root_key(root)
+    with _LOCKS_GUARD:
+        if key not in _LOCKS:
+            _LOCKS[key] = threading.RLock()
+        return _LOCKS[key]
 
 
 def _path(root, rel):
@@ -64,6 +73,12 @@ def _idle(root):
 
 
 def _history(root):
+    with _root_lock(root):
+        return _read_history(root)
+
+
+def _read_history(root, writable=False):
+    """호출자는 프로젝트 잠금을 잡는다. 일시적 읽기 실패로 원본을 덮어쓰지 않는다."""
     path = _path(root, "ext_bridge.json")
     empty = {"exports": [], "imports": []}
     try:
@@ -73,9 +88,14 @@ def _history(root):
             raise ValueError()
     except FileNotFoundError:
         return empty
-    except (OSError, ValueError, UnicodeError) as e:
+    except OSError as e:
+        logger.warning("외부 엔진 기록을 읽지 못했습니다(원본 보존): %s", e)
+        if writable:
+            raise BridgeError(409, "외부 엔진 기록을 읽을 수 없습니다 — 잠금·권한을 확인한 뒤 다시") from e
+        return empty
+    except (ValueError, UnicodeError) as e:
         logger.warning("외부 엔진 기록을 읽지 못해 빈 기록으로 복구합니다: %s", e)
-        with _LOCK:
+        with _root_lock(root):
             stamp = time.strftime("%Y%m%d-%H%M%S")
             backup, n = _path(root, f"ext_bridge.json.bad-{stamp}"), 1
             while os.path.exists(backup):
@@ -83,10 +103,12 @@ def _history(root):
                 backup = _path(root, f"ext_bridge.json.bad-{stamp}-{n}")
             try:
                 os.rename(path, backup)
-                _save_history(root, empty)
+                store.write_json_atomic(path, empty)
                 logger.warning("손상된 외부 엔진 기록 보존: %s", backup)
             except OSError as recovery:
                 logger.warning("외부 엔진 기록을 보존·복구하지 못했습니다: %s", recovery)
+                if writable:
+                    raise BridgeError(409, "외부 엔진 기록을 복구할 수 없습니다 — 잠금·권한을 확인한 뒤 다시") from recovery
         return empty
     fields = {"exports": ("dir", "at", "n", "size"), "imports": ("path", "fp", "at", "keys")}
     for kind, keys in fields.items():
@@ -108,11 +130,17 @@ def _history(root):
 
 
 def _save_history(root, data):
-    store.write_json_atomic(_path(root, "ext_bridge.json"), data)
+    with _root_lock(root):
+        _read_history(root, writable=True)
+        store.write_json_atomic(_path(root, "ext_bridge.json"), data)
 
 
 def _fold(s):
     return unicodedata.normalize("NFC", s).casefold()
+
+
+def _clean_name(name):
+    return re.sub(r'[\\/:*?"<>|\x00-\x1f\x7f]', "_", name)
 
 
 def save_prefixes(root):
@@ -136,9 +164,9 @@ def export_sources(root, crops=None, size="gpt"):
         raise BridgeError(400, "크기는 gpt 또는 m64 여야 합니다")
     if crops is not None and (not isinstance(crops, list) or any(not isinstance(c, str) for c in crops)):
         raise BridgeError(400, "crops 는 크롭 ID 목록 또는 null 이어야 합니다")
-    with _LOCK:
+    with _root_lock(root):
         _idle(root)
-        history = _history(root)
+        history = _read_history(root, writable=True)
         m = store.load_manifest(root)
         settings = pl.current(root, m)["settings"]
         if not settings:
@@ -148,8 +176,7 @@ def export_sources(root, crops=None, size="gpt"):
         names, files = {}, {}
         for c in m["crops"]:
             names.setdefault(_fold(c["name"]), []).append(c["id"])
-            safe = re.sub(r'[\\/:*?"<>|\x00-\x1f\x7f]', "_", c["name"])
-            files[c["id"]] = safe + "__src.png"
+            files[c["id"]] = _clean_name(c["name"]) + "__src.png"
         collisions = {}
         for cid, fn in files.items():
             collisions.setdefault(_fold(fn), []).append(cid)
@@ -304,17 +331,19 @@ def _scan(root, path):
             key = "f_" + sha[:12]
             crop, match = node._crop_for_filename(stem, m["crops"])
             prefix = crop["name"] if crop else ""
-            if crop is None:
-                for _, item in sidecars:
-                    exp_stem = os.path.splitext(item["file"])[0]
-                    clean_name = exp_stem.removesuffix("__src")
-                    if _fold(stem).startswith(_fold(clean_name)) and item["crop_id"] in crops:
-                        crop, match, prefix = crops[item["crop_id"]], "export", clean_name
-                        row["warn"].append("내보낸 뒤 크롭 이름이 바뀜")
-                        break
+            best_len = len(_fold(prefix)) if match == "name" else 0
+            # 최신부터 순회하되 더 긴 접두만 교체: 동률은 현재 이름, 사이드카끼리는 최신.
+            for _, item in sidecars:
+                clean_name = os.path.splitext(item["file"])[0].removesuffix("__src")
+                folded = _fold(clean_name)
+                if len(folded) > best_len and _fold(stem).startswith(folded) and item["crop_id"] in crops:
+                    crop, match, prefix = crops[item["crop_id"]], "export", clean_name
+                    best_len = len(folded)
             if crop is None:
                 row["why"] = match
                 continue
+            if match == "export" and _clean_name(crop["name"]) != prefix:
+                row["warn"].append("내보낸 뒤 크롭 이름이 바뀜")
             row.update(crop_id=crop["id"], name=crop["name"], match=match)
             tids = [t["tid"] for t in crop["targets"]]
             if not tids:
@@ -328,24 +357,30 @@ def _scan(root, path):
                 row["warn"].append(f"타깃 {tid} 없음 — 첫 타깃 {tids[0]} 사용")
                 tid = tids[0]
             row["tid"] = tid
+            stamp, item = latest.get(crop["id"], (None, None))
             try:
                 pix = node._decode(data)
                 h, w = pix.shape[:2]
+                row["wh"] = [w, h]
+                if item and [w, h] == item.get("out_wh"):
+                    with Image.open(_path(root, f"export_src/{stamp}/{item['file']}")) as image:
+                        source_rgb = np.asarray(image.convert("RGB"))
+                    if np.array_equal(pix[..., :3], source_rgb):
+                        row["why"] = "내보낸 소스와 같음 — 엔진을 거치지 않음"
+                        continue
+                x0, y0, x1, y1 = crop["rect"]
+                if (w, h) == (x1 - x0, y1 - y0):
+                    src = node._load_rgba(root, crop["source"])
+                    if np.array_equal(pix[..., :3], src[..., :3]):
+                        row["why"] = "입력 크롭과 픽셀이 같음(bypass 통과 의심)"
+                        continue
             except Exception as e:
                 row["why"] = f"이미지를 읽을 수 없음: {e}"
                 continue
-            row["wh"] = [w, h]
-            x0, y0, x1, y1 = crop["rect"]
-            if (w, h) == (x1 - x0, y1 - y0):
-                src = node._load_rgba(root, crop["source"])
-                if np.array_equal(pix[..., :3], src[..., :3]):
-                    row["why"] = "입력 크롭과 픽셀이 같음(bypass 통과 의심)"
-                    continue
             if key in seen:
                 row["why"] = "같은 내용의 파일이 이미 있음"
                 continue
             seen.add(key)
-            stamp, item = latest.get(crop["id"], (None, None))
             rect = item["rect"] if item else crop["rect"]
             if list(rect) != list(crop["rect"]):
                 row["warn"].append("내보낸 뒤 크롭 위치·크기가 바뀜 — 내보낸 때 자리에 놓음")
@@ -376,9 +411,9 @@ def scan_import(root, path):
 def apply_import(root, path, expect_fp=None):
     if expect_fp is not None and not isinstance(expect_fp, str):
         raise BridgeError(400, "expect_fp 는 미리보기 지문 문자열이어야 합니다")
-    with _LOCK:
+    with _root_lock(root):
         _idle(root)
-        history = _history(root)
+        history = _read_history(root, writable=True)
         result, prepared = _scan(root, path)
         if expect_fp is not None and result["fp"] != expect_fp:
             raise BridgeError(409, "폴더가 바뀌었습니다 — 미리보기를 다시 하세요")
@@ -481,12 +516,18 @@ def candidate_label(c):
     return info.get("layer") or info.get("filename") or c["key"]
 
 
+def _scan_signature(root, m):
+    inputs = {"keys": sorted({c["key"] for c in m["candidates"]}),
+              "crops": [{k: c.get(k) for k in ("id", "name", "nnn", "rect", "source", "targets")} for c in m["crops"]],
+              "sidecars": _sidecars(root)}
+    return hashlib.sha256(json.dumps(inputs, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
 def ext_summary(root):
-    with _LOCK:
-        history = _history(root)
+    history = _history(root)
     m = store.load_manifest(root)
     missing_keys = missing_candidates(m["candidates"])
-    exports, imports = [], []
+    exports, imports, signature = [], [], None
     for item in history["exports"]:
         row = dict(item)
         try:
@@ -502,20 +543,24 @@ def ext_summary(root):
             row["exists"] = os.path.isdir(path)
             fp = store._dir_fp(path)
             if fp is not None:
-                cache_key = (store.root_key(root), path, fp)
-                with _LOCK:
-                    cached = _NEW_COUNTS.get(cache_key)
                 if fp == item["fp"]:
                     row["new_n"] = 0
-                elif cached is not None and cached[0] == m["rev"]:
-                    row["new_n"] = cached[1]
+                    imports.append(row)
+                    continue
+                if signature is None:
+                    signature = _scan_signature(root, m)
+                cache_key = (store.root_key(root), path, fp, signature)
+                with _CACHE_LOCK:
+                    cached = _NEW_COUNTS.get(cache_key)
+                if cached is not None:
+                    row["new_n"] = cached
                 else:
                     scanned = scan_import(root, path)
-                    if scanned["fp"] != fp:
-                        raise BridgeError(409, "폴더가 바뀌었습니다 — 다음에 다시 확인하세요")
+                    if scanned["fp"] != fp or _scan_signature(root, store.load_manifest(root)) != signature:
+                        raise BridgeError(409, "폴더·판정 입력이 바뀌었습니다 — 다음에 다시 확인하세요")
                     row["new_n"] = scanned["counts"]["new"]
-                    with _LOCK:
-                        _NEW_COUNTS[cache_key] = (m["rev"], row["new_n"])
+                    with _CACHE_LOCK:
+                        _NEW_COUNTS[cache_key] = row["new_n"]
                         while len(_NEW_COUNTS) > 128:
                             _NEW_COUNTS.pop(next(iter(_NEW_COUNTS)))
         except Exception as e:
