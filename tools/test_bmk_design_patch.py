@@ -53467,7 +53467,12 @@ def batch9_recv_unit():
         check(info_big == {"w": 14000, "h": 14000}, "B9R 196MP PNG 머리는 통과(Pillow 상한에 안 걸림)")
         cut_png = t / "cut.png"
         cut_png.write_bytes(big.read_bytes()[:21])
-        check(rejects(bd.image_header, str(cut_png), "png"), "B9R 잘린 PNG 머리(높이 필드 끊김) 400")
+        try:
+            bd.image_header(str(cut_png), "png")
+            cut_ok = False
+        except bd._Reject as e:
+            cut_ok = e.status == 400
+        check(cut_ok, "B9R 잘린 PNG 머리(높이 필드 끊김) 400")
         exif_jpg = t / "exif.jpg"
         Image.new("RGB", (77, 55), (9, 9, 9)).save(exif_jpg, "JPEG", exif=b"Exif\x00\x00" + bytes(5000), quality=80, progressive=True)
         check(bd.image_header(str(exif_jpg), "jpeg") == {"w": 77, "h": 55}, "B9R JPEG 큰 APP1 건너뛰고 SOF(점진식 C2)")
