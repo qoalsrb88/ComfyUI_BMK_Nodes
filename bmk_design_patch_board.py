@@ -3617,7 +3617,7 @@ def _pixel_sha(path: str, fp: list[int], im: Image.Image) -> str:
 
 
 def _ref_file(root: str, refs_dir: str, doc: dict | None, name: str, role: str, held: bool = False) -> dict:
-    """GET /refs 의 파일 행 {name, role, size, bytes, origin, missing, outside_edit, thumb_url, record}. origin = "studio"(refs.json files 에
+    """GET /refs 의 파일 행 {name, role, size, bytes, origin, missing, outside_edit, thumb_url, thumb_url_512, record}. origin = "studio"(refs.json files 에
     기록 — 보류된 것은 "_보류/<이름>" 키) | "ps". outside_edit = 기록의 sha(저장한 RGBA 의 pixel_sha)와 지금 파일이 다름(바깥에서 바뀜).
     record = 다시 열기(§4.6)용 기록 {sheet{path, layer, size, changed}, rect, cut, transform} | null(PS 파일·기록이 모자람) — changed = 지금
     시트 파일의 지문이 기록과 다르거나 시트가 없음. 이미지가 아니면(보류의 PSD) 크기·썸네일 없음."""
@@ -3627,7 +3627,7 @@ def _ref_file(root: str, refs_dir: str, doc: dict | None, name: str, role: str, 
     rk = _record_key(files, key)  # 이름 매칭 행은 디스크 이름 — S2 가 쓴 기록 키와 대소문자·NFC/NFD 가 달라도 찾음
     rec = files.get(rk) if rk else None
     row = {"name": name, "role": role, "size": None, "bytes": None, "origin": "studio" if rec else "ps",
-           "missing": not os.path.isfile(path), "outside_edit": False, "thumb_url": None, "record": None}
+           "missing": not os.path.isfile(path), "outside_edit": False, "thumb_url": None, "thumb_url_512": None, "record": None}
     if rec and isinstance(rec.get("sheet"), dict) and isinstance(rec.get("cut"), dict) and rec.get("rect") and rec.get("transform"):
         sh = rec["sheet"]  # 다시 열기(§4.6) — 시트 지문(mtime_ns 는 JS 안전 정수를 넘음)은 빼고 비교 결과만
         try:
@@ -3650,6 +3650,7 @@ def _ref_file(root: str, refs_dir: str, doc: dict | None, name: str, role: str, 
     except (OSError, Image.DecompressionBombError):  # 깨진 그림 — 이름·용량만
         return row
     row["thumb_url"] = _img_url(store.root_key(root), "held" if held else "refs", name, _REF_THUMB, _sig("refimg", key, fp))
+    row["thumb_url_512"] = _img_url(store.root_key(root), "held" if held else "refs", name, 512, _sig("refimg", key, fp))
     return row
 
 

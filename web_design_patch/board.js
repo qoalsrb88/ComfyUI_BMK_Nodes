@@ -1737,8 +1737,8 @@
     refs: [["끌기", "영역"], ["Enter", "컷", { code: "Enter" }], ["T", "나가기", { code: "KeyT" }], ["[", "회전 −0.5°", { code: "BracketLeft" }], ["]", "회전 +0.5°", { code: "BracketRight" }],
       ["H", "좌우 반전", { code: "KeyH" }], ["⌫", "마지막 점 지우기", { code: "Backspace" }], ["F", "영역 맞춤", { code: "KeyF" }], ["0", "시트 전체", { code: "Digit0" }],
       ["Esc", "취소·나가기", { code: "Escape" }]],
-    // 레퍼런스 [그리드] 탭(3-4): 시트가 숨어 시트 키가 꺼짐 — 카드 고르기와 나가기만
-    refsGrid: [["카드 클릭", "크롭 고르기"], ["T", "나가기", { code: "KeyT" }], ["Esc", "선택 해제·나가기", { code: "Escape" }]],
+    // 레퍼런스 [그리드] 탭: 시트 키는 꺼짐, 크게 보기는 오른쪽 관리 패널을 가리지 않음
+    refsGrid: [["카드 클릭", "크롭 고르기"], ["더블클릭", "크게 보기"], ["Space", "크게 보기·닫기", { code: "Space" }], ["T", "나가기", { code: "KeyT" }], ["Esc", "닫기·선택 해제·나가기", { code: "Escape" }]],
     pipe: [["B", "바탕", { code: "KeyB" }], ["O", "사각형", { code: "KeyO" }], ...VIEW_KEYS, ["G", "나가기", { code: "KeyG" }]],
     mask: [["V", "붓 ↔ 변형", { code: "KeyV" }], ["D", "원본과 차이(변형)", { code: "KeyD" }], ["끌기", "붓·변형"], ["⇧끌기", "흐리기·비율/15°"], ["X", "지우기 ↔ 살리기", { code: "KeyX" }], ["[", "붓 작게", { code: "BracketLeft" }], ["]", "붓 크게", { code: "BracketRight" }],
       ["⇧[", "경도 −", { code: "BracketLeft", shift: true }], ["⇧]", "경도 +", { code: "BracketRight", shift: true }], ["Q", "처음 마스크(누름)", { code: "KeyQ", hold: true }],
@@ -1888,6 +1888,7 @@
       // 가운데 탭 [시트]/[그리드](3-4)는 이 브라우저에 기억(refTab — 저장소를 못 쓰면 이번 창만, 처음은 시트), 바뀌면 단축키 칩 줄도
       refEd = window.DPRefEdit.create({ list: $("ref-list"), panel: $("ref-panel"), head: $("ref-head"), tabs: $("ref-tabs"), sheets: $("ref-sheets"),
         view: $("ref-viewer"), grid: $("ref-grid") }, { apiUrl, comfyUrl, root: ROOT, viewer: sheetViewer, toast, queue: applyFree, applyWarn,
+        refGridH: loadPref().refGridH, gridHeightChanged: (refGridH) => savePref({ refGridH }),
         tab: refTab, tabChanged: (t, keep) => {
           refTab = t;
           if (keep) savePref({ refTab: t });

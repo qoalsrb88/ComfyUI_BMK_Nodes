@@ -20849,7 +20849,7 @@ await scenario("since", async () => { // since = 지금 판 → unchanged
 // ── 화면: 작은 DOM 대역 + 가짜 뷰어(setSheet·setEditor·setSelection 기록, redraw = draw 를 새 svg 에) ──
 class El {
   constructor(doc, tag) {
-    Object.assign(this, { doc, tagName: tag.toUpperCase(), children: [], parent: null, own: "", className: "", dataset: {}, style: {},
+    Object.assign(this, { doc, tagName: tag.toUpperCase(), children: [], parent: null, own: "", className: "", dataset: {}, style: { setProperty(k, v) { this[k] = v; } },
       on: {}, hidden: false, disabled: false, value: "", title: "", type: "", attrs: {}, checked: false, width: 0, height: 0 });
   }
   get textContent() { return this.own + this.children.map((c) => c.textContent).join(""); }
@@ -22317,7 +22317,7 @@ function p3card(e) {
     files: (e.children.find((x) => x.classList.contains("rg-files")) || { own: null }).own, title: e.title || null };
 }
 const p3vis = (env) => [env.hosts.sheets.hidden, env.hosts.view.hidden, env.hosts.grid.hidden,
-  env.hosts.tabs.children.map((b) => `${b.textContent}:${b.classList.contains("on")}:${b.getAttribute("aria-selected")}:${b.getAttribute("role")}`)];
+  env.hosts.tabs.children.filter((b) => b.getAttribute("role") === "tab").map((b) => `${b.textContent}:${b.classList.contains("on")}:${b.getAttribute("aria-selected")}:${b.getAttribute("role")}`)];
 const p3named = (env, name) => p3cards(env).find((e) => e.classList.contains("rg-card") && e.children[0].children[0].own === name);
 
 await scenario("p3grid", async () => { // 시트를 열고 영역·SAM 점을 둔 채 [그리드] → 카드 → 카드 클릭 → 그리드의 시트 키 → [시트](그대로) → 다시 읽기
@@ -23631,7 +23631,7 @@ await scenario("c7aDrawnBtn", async () => c7aRun(await c7aEnv([300, 300, 640, 58
   for (const [x, y] of [[150, 150], [250, 150], [250, 250]]) env.tap(x, y); // [닫기·컷] 단추(doCut 직접) — 그 다각형 닫기
 }, "닫기·컷 (Enter)"));
 await scenario("c7aMoved", async () => c7aRun(await c7aEnv([100, 100, 700, 700], "rect",
-  [[], [{ op: "add", pts: C7A_P1 }]], true), async (env) => env.drag(120, 120, 500, 500))); // 영역을 바꿈 = 보통 컷
+  [[], [{ op: "add", pts: C7A_P1 }]], true), async (env) => env.drag(80, 80, 500, 500))); // 영역 밖에서 새로 그림 = 보통 컷
 await scenario("c7aLost", async () => c7aRun(await c7aEnv([300, 300, 640, 580], "poly", C7A_POLY, false), null)); // 시트 그대로·결과 못 읽음
 await scenario("c9aStale", async () => { // codex9: 모드를 연 채 시트가 저장됨 — state 그대로, 서버 기록 행만 changed(화면이 가진 R 은 낡음)
   const env = await c7aEnv([300, 300, 640, 580], "poly", C7A_POLY, false);
@@ -49216,7 +49216,7 @@ try {
   const EAT = {
     edit: ["Tab", "Delete", "Backspace", "Enter", "KeyP", "KeyL", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "KeyZ", "KeyY"],
     refs: ["Escape", "Enter", "Backspace", "BracketLeft", "BracketRight", "KeyH", "Digit0", "Digit1", "Digit2", "KeyF"],
-    refsGrid: ["Escape"],
+    refsGrid: ["Escape", "Space"],
     mask: ["Escape", "Enter", "KeyX", "BracketLeft", "BracketRight", "KeyQ", "KeyS", "KeyM", "KeyW", "KeyZ", "KeyY", "KeyV", "KeyD"],  // 5-2b-2 V·D
     pipe: [], review: [],
   };
@@ -49327,8 +49327,8 @@ def polish2_unit():
           f"마스크 칩 [ · ⇧] · Ctrl+Z {res['bracket']} {res['shiftBracket']} {res['undo']}")
     check(res["dead"] == [] and res["modes"] == ["review", "edit", "refs", "refsGrid", "pipe", "mask"] and res["hasR"] is False,
           f"모든 칩 키가 그 모드에서 처리됨(편집기가 받거나 그 모드의 끄는 키가 아님), R(유료 다시 생성) 칩 없음 {res['dead']}")
-    check(res["refsGridChips"] == ["info:카드 클릭 크롭 고르기", "T", "Esc"] and res["refsBack"] == res["refsChips"],
-          f"배치 3-4 레퍼런스 [그리드] 탭 = 칩 줄 '카드 클릭 크롭 고르기 · T 나가기 · Esc 선택 해제·나가기'(시트 키 칩 없음), [시트]로 돌아오면 시트 칩 줄 "
+    check(res["refsGridChips"] == ["info:카드 클릭 크롭 고르기", "info:더블클릭 크게 보기", "Space", "T", "Esc"] and res["refsBack"] == res["refsChips"],
+          f"배치 8-B 레퍼런스 [그리드] 탭 = 카드 클릭·더블클릭·Space·T·Esc(시트 키 칩 없음), [시트]로 돌아오면 시트 칩 줄 "
           f"{res['refsGridChips']} {res['refsBack']}")
 
 
@@ -49537,14 +49537,14 @@ def polish3_unit():
           and "localStorage" not in rj and "opts.saveTab" not in rj,
           "3-4 고른 탭 = board.js loadPref/savePref(bmk-dp-studio — try/catch)의 refTab(기억하지 않는 전환은 keep false), 바뀌면 renderMode(칩 줄), "
           "ref_edit.js 는 저장소를 직접 쓰지 않음")
-    check('refsGrid: [["카드 클릭", "크롭 고르기"], ["T", "나가기", { code: "KeyT" }], ["Esc", "선택 해제·나가기", { code: "Escape" }]],' in bj
+    check('refsGrid: [["카드 클릭", "크롭 고르기"], ["더블클릭", "크게 보기"], ["Space", "크게 보기·닫기", { code: "Space" }], ["T", "나가기", { code: "KeyT" }], ["Esc", "닫기·선택 해제·나가기", { code: "Escape" }]],' in bj
           and 'const key = m[0] === "refs" && refTab === "grid" ? "refsGrid" :' in bj,
-          "3-4 [그리드] 탭 칩 줄 = 카드 클릭·T·Esc(시트 키 칩 없음 — 장면 polish2_unit refsGrid)")
+          "8-B [그리드] 탭 칩 줄 = 카드 클릭·더블클릭·Space·T·Esc(시트 키 칩 없음 — 장면 polish2_unit refsGrid)")
     gr = rj[rj.index("    function renderGrid("):rj.index("    function renderPanel(")]
     check("fetch" not in gr and re.search(r'"refs', gr) is None and gr.count("opts.apiUrl(") == 2 and "innerHTML" not in gr
           and 'img.loading = "lazy";' in gr and 'img.decoding = "async";' in gr and "function refChips(c)" in rj and rj.count("refChips(c)") == 3,
           "3-4 그리드 그림 = 서버가 준 주소(thumb_url·before_url·base_url)를 opts.apiUrl 로만(새 경로·fetch 없음, lazy·async), 칩은 목록과 같은 refChips")
-    check(".rg-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr));" in bc
+    check(".rg-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, calc(3 * var(--rg-h) + 40px)), 1fr));" in bc
           and ".rg-card.bad {" in bc and ".rg-card.warn {" in bc and ".ref-tabs { align-self: stretch;" in bc and "#ref-grid {" in bc and "--rg-h:" in bc,
           "3-4 board.css: 카드 auto-fill 격자(좁은 창도 가로 스크롤 없음)·빨강/주황 테두리·탭 줄은 .tabs/.tab.on 재사용")
     check("<td>[시트] · [그리드]</td>" in bh and "· [그리드] = 크롭별 매칭을 한눈에\"]" in bj,
@@ -51913,8 +51913,338 @@ def batch8a_unit():
 
 
 def batch8b_unit():
-    """배치 8-B(11/02 — _proto/STUDIO_BATCH8_SPEC.md D97–D99): 레퍼런스 — 상자 이동·그리드 크기·크게 보기. 공용 자리 — 8-B 작업자가 채운다."""
+    """D97–D99: 모의 DOM·fetch, 파일 행 함수만 격리 실행(서버·외부 API 없음)."""
     section("배치 8-B — 레퍼런스 — 상자 이동·그리드 크기·크게 보기")
+    import bmk_design_patch_refs as drefs
+    web = PKG / "web_design_patch"
+    out = OUT_ROOT / "batch8b"
+    out.mkdir(parents=True, exist_ok=True)
+    fixture = json.loads((PKG / "tools/fixtures/refs_grid.json").read_text(encoding="utf-8"))
+
+    # 실제 파일 행 함수만 AST 로 읽는다. 라우트 등록·프로젝트 레지스트리·ComfyUI 로드는 하지 않는다.
+    tree = ast.parse((PKG / "bmk_design_patch_board.py").read_text(encoding="utf-8"))
+    names = {"_ref_file", "_img_url", "_sig", "_record_key"}
+    defs = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
+    constants = {n.targets[0].id: ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
+                 and isinstance(n.targets[0], ast.Name) and n.targets[0].id in {"_REF_THUMB", "_THUMB_VERSION"}}
+    ns = dict(os=os, Image=Image, store=store, drefs=drefs, json=json, hashlib=hashlib, urlencode=urllib.parse.urlencode, **constants)
+    exec(compile(ast.Module(body=defs, type_ignores=[]), "batch8b_file_row", "exec"), ns)
+    root = out / "files"
+    held = root / drefs.HELD_DIR
+    held.mkdir(parents=True, exist_ok=True)
+    for is_held in (False, True):
+        directory = held if is_held else root
+        Image.new("RGBA", (640, 480), (60, 120, 180, 255)).save(directory / "009_그림_t.png")
+        row = ns["_ref_file"](str(out), str(root), None, "009_그림_t.png", "main", is_held)
+        query = lambda k: dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(row[k]).query))
+        small, big = query("thumb_url"), query("thumb_url_512")
+        check(set(fixture["files"][0]) <= set(row) and row["size"] == [640, 480]
+              and small["size"] == "256" and big["size"] == "512"
+              and {k: v for k, v in small.items() if k != "size"} == {k: v for k, v in big.items() if k != "size"}
+              and big["where"] == ("held" if is_held else "refs"), f"D98 파일 행 256/512 주소·같은 서명·형식 held={is_held}")
+    for name in ("missing.png", "broken.png", "009_그림.psd"):
+        if name != "missing.png":
+            (held / name).write_bytes(b"not an image")
+        row = ns["_ref_file"](str(out), str(root), None, name, "aux", True)
+        check(row["thumb_url"] is None and row["thumb_url_512"] is None, f"D98 사라진 파일·깨진 그림·PSD 주소 없음: {name}")
+
+    bj = (web / "board.js").read_text(encoding="utf-8")
+    bc = (web / "board.css").read_text(encoding="utf-8")
+    check("minmax(min(100%, calc(3 * var(--rg-h) + 40px)), 1fr)" in bc, "D98 높이와 카드 폭 연동·좁은 창 클램프")
+    large_css = re.search(r"\.rg-large \{([^}]+)\}", bc).group(1)
+    large_pics_css = re.search(r"\.rg-large-pics \{([^}]+)\}", bc).group(1)
+    check("--rg-h: max(320px, 70vh)" in large_css and "minmax(min(100%, var(--rg-h)), 1fr)" in large_pics_css,
+          "B2 크게 보기 높이·열 최소 폭은 창 높이에 맞춤(좁은 창은 100% 제한, canvasCut 도 같은 높이 변수)")
+    help_css = re.search(r"\.overlay \{([^}]+)\}", bc).group(1)
+    check(int(re.search(r"z-index:\s*(\d+)", large_css).group(1)) < int(re.search(r"z-index:\s*(\d+)", help_css).group(1)),
+          "E1 크게 보기보다 도움말 겹침이 위에 표시됨")
+    large_img_css = re.search(r"\.rg-large \.rg-img \{([^}]+)\}", bc).group(1)
+    check("width: 100%;" in large_img_css and "height: 100%;" in large_img_css
+          and "object-fit: contain;" in re.search(r"^\.rg-img \{([^}]+)\}", bc, re.M).group(1),
+          "E2 작은 그림도 크게 보기 프레임까지 확대하며 종횡비 유지")
+    check(".rg-card { user-select: none; }" in bc
+          and '.rg-card input, .rg-card textarea, .rg-card [contenteditable="true"] { user-select: text; }' in bc,
+          "E3 카드 더블클릭 글자 선택 방지·카드 입력칸 선택은 허용")
+    check("refGridH: loadPref().refGridH, gridHeightChanged: (refGridH) => savePref({ refGridH })" in bj,
+          "D98 보드 설정 로드·저장 콜백 연결")
+    node = shutil.which("node")
+    if not node:
+        skip("node 없음 → batch8b JS 생략")
+        return
+    h = _f4_harness()
+    marks = ("// ── J-R2 세션 ──", "// ── 화면: ", 'await scenario("ui"', "console.log(JSON.stringify(out));")
+    i_sess, i_scr, i_ui, i_tail = (h.index(m) for m in marks)
+    h = h[:i_sess] + h[i_scr:i_ui]
+    h = h.replace("applyWarn: o.applyWarn, tab: o.tab,", "applyWarn: o.applyWarn, refGridH: o.refGridH, gridHeightChanged: o.gridHeightChanged, tab: o.tab,")
+    scene = r'''
+const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const ID = "009_f21344";
+const NAME = "009_모자본체_휘장";
+const st8 = () => ({ rev: 10, refs_rev: 3, crops: [{ id: ID, rect: [0, 0, 400, 400] }],
+  canvas: { size: [1000, 1000], base_url: "canvas?kind=base" },
+  targets: [{ crop_id: ID, size: [400, 400], before_url: "thumb?size=512", before_full_url: "thumb?size=0" }] });
+const R8 = () => { const r = R0(); r.crops[1].files = plain(IN.fixture.files); return r; };
+const cards8 = (env) => env.all(env.hosts.grid).filter((e) => e.classList.contains("rg-card"));
+const card8 = (env, name = NAME) => cards8(env).find((e) => e.children[0].children[0].textContent === name);
+const large8 = (env) => env.cls(env.hosts.grid, "rg-large");
+const open8 = (env) => !!large8(env) && !large8(env).hidden;
+const urls8 = (node) => node.all().filter((e) => e.tagName === "IMG").map((e) => e.src);
+async function sheet8(o = {}) {
+  const env = await screen(o);
+  env.all(env.hosts.sheets).find((e) => e.tagName === "LI").fire("click");
+  await sleep(15);
+  env.li(NAME).fire("click");
+  env.drag(100, 100, 500, 500);
+  return env;
+}
+const rect8 = (env) => plain(env.viewer.sel.crop.rect);
+await scenario("D97move", async () => {
+  const env = await sheet8();
+  let cursor;
+  env.viewer.setCursor = (c) => { cursor = c; };
+  env.ptr("pointermove", 200, 200);
+  const moveCursor = cursor === "move";
+  env.ptr("pointermove", 200, 200, { ctrlKey: true });
+  const ctrlCursor = cursor !== "move";
+  env.drag(200, 200, 300, 350);
+  const translated = eq(rect8(env), [200, 250, 600, 650]);
+  env.drag(300, 350, 9000, 9000);
+  const bottom = eq(rect8(env), [3527, 7183, 3927, 7583]);
+  env.drag(3600, 7300, -9000, -9000);
+  const top = eq(rect8(env), [0, 0, 400, 400]);
+  env.ptr("pointerdown", 100, 100); env.ptr("pointermove", 200, 200); env.key("Escape"); env.ptr("pointerup", 200, 200);
+  env.key("Enter"); await sleep(30);
+  const cancelled = eq(posts(env.srv, "refs/cut").at(-1).rect, [0, 0, 400, 400]);
+  env.ptr("pointerdown", 100, 100, { ctrlKey: true }); env.ptr("pointermove", 250, 300); env.ptr("pointerup", 250, 300);
+  const forcedNew = eq(rect8(env), [100, 100, 250, 300]);
+  env.drag(250, 170, 350, 270); // x1 끝 배타, 핸들과 충분히 떨어진 곳
+  const exclusiveEdge = eq(rect8(env), [250, 170, 350, 270]);
+  env.drag(250, 170, 230, 150); // 핸들은 이동보다 먼저
+  const handleFirst = eq(rect8(env), [230, 150, 350, 270]);
+  env.button(env.hosts.panel, "다각형", true).fire("click");
+  const before = rect8(env);
+  env.drag(260, 190, 290, 210);
+  return { moveCursor, ctrlCursor, translated, bottom, top, cancelled, forcedNew, exclusiveEdge, handleFirst,
+    polygon: eq(rect8(env), before) && env.marks("rvtx").length === 1 };
+});
+await scenario("D97points", async () => {
+  const env = await sheet8();
+  env.button(env.hosts.panel, "자동 오리기(SAM3)").fire("click");
+  let cursor;
+  env.viewer.setCursor = (c) => { cursor = c; };
+  env.ptr("pointermove", 200, 200);
+  const samCursor = cursor === "crosshair";
+  env.tap(150, 150); env.tap(450, 450, { altKey: true });
+  env.drag(200, 200, 300, 300);
+  const neg = env.marks("neg")[0];
+  const pointsStay = env.marks("pos").length === 0 && Number(neg.attrs.cx) === 450 && Number(neg.attrs.cy) === 450;
+  env.ptr("pointerdown", 300, 300); env.ptr("pointermove", 302, 301); env.ptr("pointerup", 302, 301);
+  return { samCursor, pointsStay, tap: env.marks("pos").length === 1 && eq(rect8(env), [200, 200, 600, 600]) };
+});
+await scenario("B5threshold", async () => {
+  const env = await sheet8();
+  env.key("Enter"); await sleep(35);
+  env.drag(200, 200, 206, 200);
+  const rectSix = eq(rect8(env), [100, 100, 500, 500]) && !env.button(env.hosts.panel, "저장", true).disabled;
+  // 시트 좌표 60px라도 화면은 6px: 확대·축소 배율에 관계없이 화면 거리로 판정.
+  env.ptr("pointerdown", 200, 200);
+  env.ptr("pointermove", 260, 200, { clientX: 206 }); env.ptr("pointerup", 260, 200, { clientX: 206 });
+  const screenSix = eq(rect8(env), [100, 100, 500, 500]) && !env.button(env.hosts.panel, "저장", true).disabled;
+  env.button(env.hosts.panel, "자동 오리기(SAM3)").fire("click");
+  env.tap(105, 150); // 10px 옮기면 영역 밖이 되는 점
+  env.drag(300, 300, 306, 300);
+  const pos = env.marks("pos");
+  const samSix = eq(rect8(env), [100, 100, 500, 500]) && !env.button(env.hosts.panel, "저장", true).disabled;
+  const clickAndPoints = pos.length === 2 && pos.some((p) => Number(p.attrs.cx) === 105)
+    && pos.some((p) => Number(p.attrs.cx) === 306 && Number(p.attrs.cy) === 300);
+  env.drag(300, 300, 310, 300);
+  const samTen = eq(rect8(env), [110, 100, 510, 500]) && !env.button(env.hosts.panel, "저장", true)
+    && env.marks("pos").length === 1 && Number(env.marks("pos")[0].attrs.cx) === 306;
+  env.button(env.hosts.panel, "사각형", true).fire("click");
+  env.drag(300, 300, 308, 300);
+  const exactEight = eq(rect8(env), [118, 100, 518, 500]);
+  env.drag(518, 300, 521, 300);
+  const resizeThree = eq(rect8(env), [118, 100, 518, 500]);
+  env.drag(518, 300, 522, 300);
+  const resizeFour = eq(rect8(env), [118, 100, 522, 500]);
+  env.ptr("pointerdown", 600, 600);
+  env.ptr("pointermove", 640, 640, { clientX: 603, clientY: 600 }); env.ptr("pointerup", 640, 640);
+  const newThree = eq(rect8(env), [118, 100, 522, 500]);
+  env.ptr("pointerdown", 600, 600);
+  env.ptr("pointermove", 640, 640, { clientX: 604, clientY: 600 }); env.ptr("pointerup", 640, 640);
+  return { rectSix, screenSix, samSix, clickAndPoints, samTen, exactEight, resizeThree, resizeFour, newThree,
+    newFour: eq(rect8(env), [600, 600, 640, 640]) };
+});
+await scenario("D97epoch", async () => {
+  const env = await sheet8({ cutDelays: [90] });
+  env.key("Enter"); await sleep(5);
+  env.drag(200, 200, 300, 300); await sleep(120);
+  const discarded = !env.button(env.hosts.panel, "저장", true) && env.hosts.panel.textContent.includes("컷을 하면 결과·변환·저장이 보입니다");
+  env.key("Enter"); await sleep(35);
+  const recut = eq(posts(env.srv, "refs/cut").at(-1).rect, [200, 200, 600, 600]) && !env.button(env.hosts.panel, "저장", true).disabled;
+  env.drag(300, 300, -1000, -1000); env.key("Enter"); await sleep(35);
+  env.drag(100, 100, -100, -100); // 이미 왼쪽 위: 실제 이동 없음
+  const unchanged = !env.button(env.hosts.panel, "저장", true).disabled;
+  return { discarded, recut, unchanged };
+});
+await scenario("D97replay", async () => {
+  const R = R0();
+  R.crops[1].files[1].record = { sheet: { path: SHEET, size: [3927, 7583], changed: true }, rect: [100, 100, 500, 500],
+    cut: { method: "rect", points: [], grow: 0, feather: 0, steps: ["c".repeat(32)], step_polys: [[], [{ op: "sub", pts: [[150,150],[250,150],[200,250]] }]] },
+    transform: { rotate: 0, flip_h: false, scale: 1, pad: 8 } };
+  const env = await screen({ R }); env.li(NAME).fire("click");
+  env.button(env.hosts.panel, "다시 열기", true).fire("click"); await sleep(35);
+  env.drag(200, 200, 300, 300); env.key("Enter"); await sleep(60);
+  const cuts = posts(env.srv, "refs/cut");
+  return { replayDropped: cuts.length === 1 && cuts[0].method === "rect" && eq(cuts[0].rect, [200, 200, 600, 600]) };
+});
+await scenario("D98size", async () => {
+  // 보드의 실제 loadPref/savePref 를 메모리 저장소에서 실행한다.
+  const bj = fs.readFileSync(IN.boardJs, "utf8");
+  const pref = vm.createContext({ PREF_KEY: "test", localStorage: { value: '{"refTab":"grid","other":7}',
+    getItem() { return this.value; }, setItem(k, v) { this.value = v; } } });
+  vm.runInContext(bj.slice(bj.indexOf("  function loadPref("), bj.indexOf("  // ── 서버")), pref);
+  const env = await screen({ R: R8(), st: st8(), tab: "grid", refGridH: 120,
+    gridHeightChanged: (refGridH) => { pref.h = refGridH; vm.runInContext("savePref({ refGridH: h })", pref); } });
+  const slider = env.all(env.hosts.tabs).find((e) => e.type === "range");
+  const label = env.cls(env.hosts.tabs, "rg-size");
+  const noLabelFocus = label.tagName === "DIV" && slider.getAttribute("aria-label") === "그리드 썸네일 크기";
+  const range = slider.min === "80" && slider.max === "320" && slider.step === "20" && slider.tabIndex === -1 && slider.dataset.keys === "board";
+  const small = urls8(card8(env)).includes(API(IN.fixture.files[0].thumb_url));
+  slider.focus(); slider.value = "220"; slider.fire("input"); slider.fire("change");
+  const large = urls8(card8(env)).includes(API(IN.fixture.files[0].thumb_url_512)) && env.hosts.grid.style["--rg-h"] === "220px";
+  const saved = JSON.parse(pref.localStorage.value);
+  const persistence = saved.refGridH === 220 && saved.refTab === "grid" && saved.other === 7;
+  const blurred = env.doc.activeElement !== slider;
+  const restored = await screen({ R: R8(), st: st8(), tab: "grid", refGridH: saved.refGridH });
+  const restore = restored.hosts.grid.style["--rg-h"] === "220px";
+  slider.focus(); slider.fire("pointerup"); const release = env.doc.activeElement !== slider;
+  slider.focus(); slider.fire("pointercancel"); const cancelBlur = env.doc.activeElement !== slider;
+  slider.value = "999"; slider.fire("input"); const max = slider.value === "320";
+  slider.value = "1"; slider.fire("input"); const min = slider.value === "80";
+  slider.value = "149"; slider.fire("input"); const step = slider.value === "140";
+  env.button(env.hosts.tabs, "시트", true).fire("click"); const hidden = label.hidden;
+  const old = await screen({ st: st8(), tab: "grid", refGridH: 320 });
+  const fallback = urls8(card8(old)).includes(API(old.srv.R.crops[1].files[0].thumb_url));
+  const invalid = await screen({ st: st8(), tab: "grid", refGridH: "invalid" });
+  return { noLabelFocus, range, small, large, persistence, blurred, restore, release, cancelBlur, max, min, step, hidden, fallback,
+    defaultValue: invalid.hosts.grid.style["--rg-h"] === "120px" };
+});
+await scenario("D99view", async () => {
+  const R = R8();
+  for (let i = 0; i < 5; i++) R.crops[1].files.push({ ...IN.fixture.files[1], name: `extra${i}.png` });
+  const env = await screen({ R, st: st8(), tab: "grid" });
+  card8(env).fire("dblclick");
+  const host = large8(env);
+  const doubleClick = open8(env) && host.dataset.cropId === ID;
+  const allFiles = host.all().filter((e) => e.tagName === "FIGURE").length === R.crops[1].files.length + 1;
+  const full = urls8(host).includes(API("thumb?size=0")) && urls8(host).includes(API(IN.fixture.files[0].thumb_url_512));
+  host.children[0].fire("click"); const insideStays = open8(env);
+  env.li("011_소매끈_오른쪽").fire("click"); const panelUsable = env.cls(env.hosts.list, "sel").textContent.includes("011_") && host.dataset.cropId === ID;
+  const firstCard = card8(env);
+  env.ed.stateChanged({ ...env.st, targets: [{ ...env.st.targets[0], before_full_url: "thumb?size=0&v=2" }] });
+  const stateRefresh = card8(env) !== firstCard && large8(env) === host && open8(env) && urls8(host).includes(API("thumb?size=0&v=2"));
+  const file = env.srv.R.crops[1].files[0];
+  file.thumb_url_512 += "&updated=1"; env.srv.R.crops[0].status = "pending"; env.srv.rev++;
+  env.ed.stateChanged({ ...env.st, refs_rev: env.srv.rev }); await sleep(40);
+  const refsRefresh = open8(env) && host.dataset.cropId === ID && urls8(host).includes(API(file.thumb_url_512));
+  env.srv.R.crops[1].files.reverse(); env.srv.rev++;
+  env.ed.stateChanged({ ...env.st, refs_rev: env.srv.rev }); await sleep(40);
+  const fileIdentity = host.all().some((e) => e.dataset.file === file.name && urls8(e).includes(API(file.thumb_url_512)));
+  env.key("Escape"); const esc = !open8(env) && !!env.cls(env.hosts.list, "sel") && !env.exits.length;
+  card8(env).fire("click"); env.key("Space"); const spaceOpen = open8(env);
+  env.key("Space", { repeat: true }); const repeat = open8(env);
+  env.key("Space"); const spaceClose = !open8(env);
+  env.key("Space"); large8(env).fire("click"); const outside = !open8(env);
+  env.key("Space"); env.button(env.hosts.tabs, "시트", true).fire("click"); const tabCloses = !open8(env);
+  env.button(env.hosts.tabs, "그리드", true).fire("click"); env.key("Space"); env.ed.leave(); const leaveCloses = !open8(env);
+  env.ed.enter(env.st); await sleep(35); env.key("Space");
+  env.srv.R.crops = env.srv.R.crops.filter((c) => c.id !== ID); env.srv.rev++;
+  env.ed.stateChanged({ ...env.st, refs_rev: env.srv.rev }); await sleep(40);
+  const deleted = !open8(env);
+  const orphan = cards8(env).find((e) => e.classList.contains("gone"));
+  orphan.fire("click"); orphan.fire("dblclick"); env.key("Space"); const noOrphan = !open8(env);
+  return { doubleClick, allFiles, full, insideStays, panelUsable, stateRefresh, refsRefresh, fileIdentity, esc, spaceOpen,
+    repeat, spaceClose, outside, tabCloses, leaveCloses, deleted, noOrphan };
+});
+await scenario("D99source", async () => {
+  const st = st8(); st.targets = []; st.crops = [];
+  st.layout_added = [{ id: ID, rect: [100, 200, 500, 600] }];
+  const env = await screen({ st, tab: "grid" }); card8(env).fire("dblclick");
+  const cut = env.cls(large8(env), "rg-cut");
+  const fallback = urls8(large8(env)).includes(API(env.srv.R.crops[1].files[0].thumb_url));
+  return { canvas: !!cut && cut.style.backgroundImage.includes("canvas?kind=base") && !urls8(large8(env)).some((s) => s.includes("thumb?size=0")), fallback };
+});
+await scenario("B1B6scroll", async () => {
+  const env = await screen({ R: R8(), st: st8(), tab: "grid" });
+  card8(env).fire("dblclick");
+  const host = large8(env);
+  const fallbackTop = host.style.top === "38px";
+  // DOM 대역에 분리·재삽입·내용 교체 때의 스크롤 초기화를 재현해 복원 누락을 검출.
+  const append = env.hosts.grid.append.bind(env.hosts.grid);
+  const replace = env.hosts.grid.replaceChildren.bind(env.hosts.grid);
+  const content = host.replaceChildren.bind(host);
+  let attaches = 0;
+  env.hosts.grid.append = (...nodes) => {
+    if (nodes.includes(host)) { attaches++; host.scrollTop = 0; }
+    append(...nodes);
+  };
+  env.hosts.grid.replaceChildren = (...nodes) => { host.scrollTop = 0; replace(...nodes); };
+  host.replaceChildren = (...nodes) => { host.scrollTop = 0; content(...nodes); };
+  host.scrollTop = 247;
+  env.ed.stateChanged(env.st); env.ed.stateChanged(env.st);
+  const sameState = attaches === 0 && large8(env) === host && host.scrollTop === 247;
+  env.li(NAME).fire("click");
+  const renderKeeps = attaches === 0 && large8(env) === host && host.scrollTop === 247;
+  env.hosts.tabs.offsetHeight = 76;
+  env.ed.stateChanged(env.st);
+  const wrappedTop = host.style.top === "76px" && attaches === 0 && host.scrollTop === 247;
+  env.hosts.tabs.offsetHeight = 0;
+  env.ed.stateChanged(env.st);
+  const zeroFallback = host.style.top === "38px";
+  const slider = env.all(env.hosts.tabs).find((e) => e.type === "range");
+  slider.value = "220"; slider.fire("input");
+  const sliderKeeps = attaches === 1 && large8(env) === host && host.scrollTop === 247;
+  const next = { ...env.st, targets: [{ ...env.st.targets[0], before_full_url: "thumb?size=0&v=3" }] };
+  env.ed.stateChanged(next);
+  const newState = attaches === 2 && large8(env) === host && host.scrollTop === 247 && urls8(host).includes(API("thumb?size=0&v=3"));
+  env.ed.stateChanged(next);
+  const repeatState = attaches === 2 && host.scrollTop === 247;
+  env.srv.rev++;
+  env.ed.stateChanged({ ...next, refs_rev: env.srv.rev }); await sleep(40);
+  return { fallbackTop, sameState, renderKeeps, wrappedTop, zeroFallback, sliderKeeps, newState, repeatState,
+    refsRefresh: attaches === 3 && large8(env) === host && host.scrollTop === 247 };
+});
+await scenario("E4scroll", async () => {
+  const env = await screen({ R: R8(), st: st8(), tab: "grid" });
+  card8(env).fire("click"); card8(env).fire("dblclick");
+  const host = large8(env);
+  host.scrollTop = 247;
+  env.key("Escape");
+  const other = card8(env, "011_소매끈_오른쪽");
+  other.fire("click"); other.fire("dblclick");
+  const otherStartsTop = large8(env) === host && open8(env) && host.dataset.cropId === "011_a1b2c3" && host.scrollTop === 0;
+  host.scrollTop = 123;
+  env.key("Space"); env.key("Space");
+  const reopenStartsTop = large8(env) === host && open8(env) && host.scrollTop === 0;
+  host.scrollTop = 369;
+  env.ed.stateChanged({ ...env.st });
+  return { otherStartsTop, reopenStartsTop, refreshKeeps: large8(env) === host && host.scrollTop === 369 };
+});
+console.log(JSON.stringify(out));
+'''
+    (out / "harness.mjs").write_text(h + scene, encoding="utf-8")
+    (out / "in.json").write_text(json.dumps({"rows": [], "side": [], "hint": [], "bases": [], "comfyRe": "x",
+                                            "fixture": fixture, "boardJs": str(web / "board.js")}), encoding="utf-8")
+    r = subprocess.run([node, str(out / "harness.mjs"), str(web / "layout_geom.js"), str(web / "ref_edit.js"), str(out / "in.json")],
+                       capture_output=True, text=True, encoding="utf-8", timeout=60)
+    check(r.returncode == 0 and bool(r.stdout.strip()), f"D97–D99 JS 실행: {r.stderr[-1200:]}")
+    if r.returncode == 0 and r.stdout.strip():
+        result = json.loads(r.stdout.strip().splitlines()[-1])
+        (out / "results.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        for group in ("D97move", "D97points", "B5threshold", "D97epoch", "D97replay", "D98size", "D99view", "D99source", "B1B6scroll", "E4scroll"):
+            for name, ok in result.get(group, {"error": "missing"}).items():
+                check(ok is True, f"{group}/{name}: {ok}")
 
 
 def batch8c_unit():

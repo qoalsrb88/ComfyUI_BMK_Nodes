@@ -26,6 +26,7 @@ window.DPRefEdit = (() => {
   const GONE_POLLS = 3; // 대기열에서 사라졌는데 결과 파일이 없는 폴링 수 → 실패로 봄
   const FORGET_POLLS = 5; // 끝난 컷의 실행 기록을 지우기 전에 대기열에서 빠지기를 기다리는 폴링 수(넘으면 그냥 보냄)
   const CLICK_PX = 4;
+  const MOVE_PX = 8; // 상자 이동은 화면 8px 부터(새 영역·크기 조절은 CLICK_PX)
   const HANDLE_PX = 6;
   const DBL_MS = 400; // 다각형: 이 안에 같은 자리를 다시 누르면 닫기(더블클릭)
   const PREVIEW_MAX = 768; // 변환 미리보기 캔버스 긴 변(화면용 — 저장 크기는 따로 계산)
@@ -359,7 +360,7 @@ window.DPRefEdit = (() => {
     let points = []; // SAM 점 [x, y, 1|0]
     let poly = []; // 그리는 중인 다각형 꼭짓점 [x, y]
     let lastClick = null; // 다각형 더블클릭 판정 {t, x, y}(화면 px)
-    let drag = null; // {kind: new|resize, handle, start, rect0, x, y, moved}
+    let drag = null; // {kind: new|resize|move, handle, start, rect0, x, y, moved}
     let result = null; // 끝난 컷 {req, rect, method, window, mask_url, preview_url, area_frac, n_parts, sec, warnings, auto_point?(sam3)}
     let inflight = 0; // 응답을 기다리는 컷 요청 수
     let epoch = 0; // 편집 세대 — 결과를 버릴 때마다(dropResult: 다시 열기·시트 열기·Esc·새 영역) 올림, 앞 세대의 컷·다시 열기 응답은 버린다
@@ -402,6 +403,47 @@ window.DPRefEdit = (() => {
       return b;
     });
     tabHost.append(...tabBtns);
+    let gridH = gridHeight(opts.refGridH);
+    let largeId = null; // DOM 카드·rev 대신 크롭 ID 로 유지, 그림은 파일 이름으로 식별
+    let largeOf = null;
+    const largeHost = el("div", "rg-large");
+    largeHost.hidden = true;
+    largeHost.addEventListener("click", (e) => {
+      if (e.target === largeHost) closeLarge();
+    });
+    const gridSize = el("div", "rg-size", "썸네일 ");
+    const gridSlider = el("input");
+    gridSlider.type = "range";
+    gridSlider.min = "80";
+    gridSlider.max = "320";
+    gridSlider.step = "20";
+    gridSlider.tabIndex = -1;
+    gridSlider.dataset.keys = "board";
+    gridSlider.setAttribute("aria-label", "그리드 썸네일 크기");
+    const gridValue = el("span");
+    gridSize.append(gridSlider, gridValue);
+    tabHost.append(gridSize);
+    function gridHeight(value) {
+      return typeof value === "number" && Number.isFinite(value) ? Math.max(80, Math.min(320, Math.round(value / 20) * 20)) : 120;
+    }
+    function sizeGrid() {
+      gridSlider.value = String(gridH);
+      gridValue.textContent = `${gridH}px`;
+      gridHost.style.setProperty("--rg-h", `${gridH}px`);
+    }
+    gridSlider.addEventListener("input", () => {
+      gridH = gridHeight(Number(gridSlider.value));
+      sizeGrid();
+      gridOf = null;
+      renderGrid();
+    });
+    gridSlider.addEventListener("change", () => {
+      gridSlider.blur();
+      if (opts.gridHeightChanged) opts.gridHeightChanged(gridH);
+    });
+    gridSlider.addEventListener("pointerup", () => gridSlider.blur());
+    gridSlider.addEventListener("pointercancel", () => gridSlider.blur());
+    sizeGrid();
 
     function el(tag, cls, txt) {
       const e = document.createElement(tag);
@@ -621,12 +663,17 @@ window.DPRefEdit = (() => {
       return [Math.min(r[0], r[2]), Math.min(r[1], r[3]), Math.max(r[0], r[2]), Math.max(r[1], r[3])];
     }
 
+    function moveAt(pt, e) {
+      // 사각 선택(rect·SAM3)만, 끝 배타. Ctrl 은 안에서도 새 영역(핸들 우선순위는 그대로).
+      return method !== "poly" && !e.ctrlKey && rect && pt[0] >= rect[0] && pt[0] < rect[2] && pt[1] >= rect[1] && pt[1] < rect[3];
+    }
+
     // ── 마우스(뷰어가 왼쪽 버튼을 먼저 넘김, true = 소비) ──
     function pointerdown(e) {
       if (!on || !sheet) return false;
       const pt = viewer.canvasPoint(e);
       const h = method !== "poly" && rect && handleAt(pt, rect);
-      drag = { kind: h ? "resize" : "new", handle: h, start: pt, rect0: rect, x: e.clientX, y: e.clientY, moved: false };
+      drag = { kind: h ? "resize" : moveAt(pt, e) ? "move" : "new", handle: h, start: pt, rect0: rect, x: e.clientX, y: e.clientY, moved: false };
       return true;
     }
 
@@ -635,13 +682,14 @@ window.DPRefEdit = (() => {
       const pt = viewer.canvasPoint(e);
       if (!drag) {
         const h = method !== "poly" && rect && handleAt(pt, rect);
-        viewer.setCursor(h ? CURSORS[h] : method === "poly" || (method === "sam3" && rect && inside(pt, rect)) ? "crosshair" : "");
+        viewer.setCursor(h ? CURSORS[h] : method === "rect" && moveAt(pt, e) ? "move" : method === "poly" || (method === "sam3" && rect && inside(pt, rect)) ? "crosshair" : "");
         return false;
       }
-      if (!drag.moved && Math.hypot(e.clientX - drag.x, e.clientY - drag.y) < CLICK_PX) return true;
+      if (!drag.moved && Math.hypot(e.clientX - drag.x, e.clientY - drag.y) < (drag.kind === "move" ? MOVE_PX : CLICK_PX)) return true;
       if (method === "poly" && drag.kind === "new") return true; // 다각형 모드의 끌기는 꼭짓점 하나(놓을 때)
       drag.moved = true;
-      rect = drag.kind === "resize" ? resized(drag.rect0, drag.handle, pt) : boxOf(drag.start, pt);
+      rect = drag.kind === "resize" ? resized(drag.rect0, drag.handle, pt)
+        : drag.kind === "move" ? G.move(drag.rect0, pt[0] - drag.start[0], pt[1] - drag.start[1], sheet.size, false) : boxOf(drag.start, pt);
       viewer.redraw();
       return true;
     }
@@ -657,8 +705,8 @@ window.DPRefEdit = (() => {
       if (Math.min(rect[2] - rect[0], rect[3] - rect[1]) < MIN_SIDE) {
         opts.toast(`선택의 짧은 변은 ${MIN_SIDE}px 이상이어야 합니다`, "err");
         rect = d.rect0;
-      } else {
-        // 새 영역 = 점·결과를 버림, 핸들로 고침 = 영역 안 점만 남김(결과는 그 영역 것이 아님)
+      } else if (d.kind !== "move" || !sameRect(rect, d.rect0)) {
+        // 새 영역 = 점·결과를 버림, 크기·위치 고침 = 영역 안 점만 남김(점은 시트 좌표 그대로)
         points = d.kind === "new" ? [] : points.filter((p) => inside(p, rect));
         dropResult();
       }
@@ -1382,6 +1430,7 @@ window.DPRefEdit = (() => {
       // 가운데 탭: 시트를 연 채 그리드로 갔다 와도 시트·영역·컷은 그대로(숨기기만). 바뀌면 board.js 에 알림(단축키 칩 줄 — keep = 이 브라우저에
       // 기억, 바깥 저장으로 다시 열 때처럼 사용자가 고르지 않은 전환은 기억하지 않음)
       if (t !== tab) {
+        closeLarge();
         tab = t;
         opts.tabChanged(t, keep);
       }
@@ -1391,6 +1440,7 @@ window.DPRefEdit = (() => {
     function renderSheets() {
       // 가운데 칸: 탭 줄 · [그리드] 면 그리드만 · [시트] 면 시트 목록(시트를 열면 뷰어)
       const g = tab === "grid";
+      gridSize.hidden = !g;
       for (const b of tabBtns) {
         b.classList.toggle("on", b.dataset.tab === tab);
         b.setAttribute("aria-selected", String(b.dataset.tab === tab));
@@ -1448,6 +1498,10 @@ window.DPRefEdit = (() => {
     }
 
     function escape() {
+      if (largeId !== null) {
+        closeLarge();
+        return;
+      }
       // Esc 차례: 그리기 취소(끌기·다각형) → 영역·점·결과 해제 → 크롭 선택 해제 → 모드 나가기. 그리드 탭은 숨은 시트의 다각형·영역·점·컷 결과를
       // 건너뜀(그대로 — [시트]로 돌아와 이어서)
       if (drag) {
@@ -1473,6 +1527,13 @@ window.DPRefEdit = (() => {
       if (!on) return false;
       const mod = e.ctrlKey || e.metaKey;
       switch (e.code) {
+        case "Space":
+          if (tab !== "grid" || mod) return false;
+          if (!e.repeat) {
+            if (largeId !== null) closeLarge();
+            else openLarge(sel);
+          }
+          return true;
         case "Escape":
           escape();
           return true;
@@ -1665,11 +1726,69 @@ window.DPRefEdit = (() => {
       scrolledTo = sel;
     }
 
-    // ── 그리드(3-4 — F22): 매칭이 끝난 레퍼런스와 고칠 크롭을 한눈에. 카드 = 고르기만(편집은 오른쪽 패널) ──
+    function refThumb(file, large = false) {
+      return (large || gridH > 128) && file.thumb_url_512 || file.thumb_url;
+    }
+
+    function closeLarge() {
+      largeId = null;
+      largeOf = null;
+      largeHost.hidden = true;
+      largeHost.replaceChildren();
+    }
+
+    function openLarge(id) {
+      if (tab !== "grid" || !crops().some((c) => c.id === id)) return; // 고아 연결에는 그림이 없음
+      largeId = id;
+      largeOf = null;
+      renderLarge();
+      largeHost.scrollTop = 0;
+    }
+
+    function renderLarge() {
+      if (largeId === null) return;
+      const c = crops().find((x) => x.id === largeId);
+      if (!c) {
+        closeLarge();
+        return;
+      }
+      if (!largeOf || largeOf[0] !== S.R || largeOf[1] !== state) {
+        largeOf = [S.R, state];
+        const box = el("div", "rg-large-box");
+        box.setAttribute("role", "dialog");
+        box.setAttribute("aria-label", `${c.name} 크게 보기`); // 오른쪽 패널은 계속 사용(모달 아님)
+        const top = el("div", "rg-large-head");
+        top.append(el("strong", "", c.name), button("닫기 (Esc · Space)", "크게 보기 닫기", closeLarge));
+        const pics = el("div", "rg-large-pics");
+        const src = srcFig(c);
+        src.dataset.file = "source";
+        // 미반영 크롭의 canvasCut 은 그대로, Before 그림이면 원해상도를 우선한다.
+        const t = state.targets.find((x) => x.crop_id === c.id);
+        const img = src.querySelector("img");
+        if (img && t && t.before_full_url) img.src = opts.apiUrl(t.before_full_url);
+        pics.append(src);
+        for (const f of c.files) {
+          const url = refThumb(f, true);
+          const pic = url ? gridImg(url, f.name) : noPic(f.missing ? "사라짐" : "미리보기 없음", "", f.name);
+          const fig = gridFig(`${f.role === "main" ? "대표" : "보조"} · ${f.name}`, [pic]);
+          fig.dataset.file = f.name;
+          pics.append(fig);
+        }
+        box.append(top, pics);
+        largeHost.replaceChildren(box);
+        largeHost.dataset.cropId = c.id;
+      }
+      largeHost.hidden = false;
+      largeHost.style.top = `${tabHost.offsetHeight || 38}px`;
+      if (!gridHost.contains(largeHost)) gridHost.append(largeHost); // 붙어 있는 겹침은 옮기지 않음(스크롤 유지)
+    }
+
+    // ── 그리드(3-4 — F22): 매칭이 끝난 레퍼런스와 고칠 크롭을 한눈에(편집은 오른쪽 패널) ──
     function renderGrid() {
       // 카드 = 왼쪽 목록 순서, 고아 연결은 맨 뒤 묶음. R·state 가 그대로면 카드는 두고 선택 표시만(크롭이 많아도 다시 그리기가 가볍게)
       if (tab !== "grid") return;
       const R = S.R;
+      const largeScroll = largeHost.scrollTop || 0; // replaceChildren 로 떼기 전에 저장
       if (!R || !gridOf || gridOf[0] !== R || gridOf[1] !== state) {
         gridOf = [R, state];
         gridCards.clear();
@@ -1688,6 +1807,8 @@ window.DPRefEdit = (() => {
       const s = gridCards.get(sel);
       if (s && sel !== gridScrolledTo) s.scrollIntoView({ block: "nearest" });
       gridScrolledTo = sel;
+      renderLarge();
+      if (largeId !== null) largeHost.scrollTop = largeScroll; // 카드·그림 갱신 뒤 다시 붙인 호스트에 복원
     }
 
     function cropCard(c) {
@@ -1707,6 +1828,7 @@ window.DPRefEdit = (() => {
       card.append(top, body);
       if (c.checks.length) card.append(checkLines(c.checks));
       card.addEventListener("click", () => select(c.id));
+      card.addEventListener("dblclick", () => openLarge(c.id));
       gridCards.set(c.id, card);
       return card;
     }
@@ -1792,7 +1914,7 @@ window.DPRefEdit = (() => {
 
     function mainFig(main, noneFixed) {
       // 대표 = GPT 에 보내는 1장 — 없으면 빨간 칸(의도한 '레퍼런스 없이' 고정은 흐린 칸), 사라짐·그림 아님은 이름만
-      const pic = main && main.thumb_url ? gridImg(main.thumb_url, main.name)
+      const pic = main && refThumb(main) ? gridImg(refThumb(main), main.name)
         : main ? noPic(main.missing ? "사라짐" : "미리보기 없음", "bad", main.name)
           : noneFixed ? noPic("레퍼런스 없이(고정)") : noPic("대표 없음", "bad");
       return gridFig("대표", [pic], !main && !noneFixed ? "miss" : "");
@@ -1803,7 +1925,7 @@ window.DPRefEdit = (() => {
       if (!aux.length) return gridFig("보조 0", [noPic("없음")]);
       const n = aux.length > AUX_CELLS ? AUX_CELLS - 1 : aux.length;
       const box = el("div", `rg-aux c${Math.min(aux.length, AUX_CELLS)}`);
-      box.append(...aux.slice(0, n).map((f) => (f.thumb_url ? gridImg(f.thumb_url, f.name) : noPic(f.missing ? "사라짐" : "미리보기 없음", "", f.name))));
+      box.append(...aux.slice(0, n).map((f) => (refThumb(f) ? gridImg(refThumb(f), f.name) : noPic(f.missing ? "사라짐" : "미리보기 없음", "", f.name))));
       if (n < aux.length) box.append(el("div", "rg-more", `+${aux.length - n}`));
       return gridFig(`보조 ${aux.length}`, [box]);
     }
@@ -2296,6 +2418,7 @@ window.DPRefEdit = (() => {
     }
 
     function leave() {
+      closeLarge();
       on = false;
       if (drag && drag.moved) rect = drag.rect0; // 놓기 전에 나감 = 끌기 취소(cancel 과 같음 — 놓지 않은 영역 변경은 결과를 버리지 않았음, codex10)
       drag = null;
