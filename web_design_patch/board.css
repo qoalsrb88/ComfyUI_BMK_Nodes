@@ -454,7 +454,7 @@ body.refs .proj { min-width: 0; overflow: hidden; text-overflow: ellipsis; white
 /* 가운데 탭 [시트] [그리드](3-4) — 그리드 = 크롭마다 카드(auto-fill, 좁은 창에서도 가로 스크롤 없음) */
 .ref-tabs { align-self: stretch; padding: 4px 10px 0; background: var(--panel); border-bottom: 1px solid var(--line); }
 #ref-grid { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 14px; --rg-h: 110px; }
-.rg-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); gap: 8px; }
+.rg-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, calc(3 * var(--rg-h) + 40px)), 1fr)); gap: 8px; }
 .rg-card { min-width: 0; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); cursor: pointer; }
 .rg-card:hover { background: var(--panel2); }
 .rg-card.warn { border-color: var(--slice); }
@@ -685,5 +685,18 @@ svg.dr-isolate { position: absolute; left: 0; top: 0; pointer-events: none; }
 /* ── 배치 8-A (크롭 편집) — 8-A 작업자는 이 표시 아래에만 덧붙인다 ── */
 
 /* ── 배치 8-B (레퍼런스) — 8-B 작업자는 이 표시 아래에만 덧붙인다 ── */
+#ref-view { position: relative; }
+.ref-tabs { flex-wrap: wrap; align-items: center; }
+.rg-size { margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dim); }
+.rg-size input { width: 110px; }
+.rg-size span { min-width: 38px; text-align: right; }
+.rg-large { position: absolute; inset: 38px 0 0; z-index: 20; display: flex; align-items: flex-start; justify-content: center; padding: 18px;
+  overflow-y: auto; background: #000a; --rg-h: 320px; }
+.rg-large-box { width: 100%; min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+.rg-large-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+.rg-large-head strong { min-width: 0; overflow-wrap: anywhere; }
+.rg-large-head button { flex: none; }
+.rg-large-pics { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 12px; }
+.rg-large-pics figcaption { white-space: normal; overflow-wrap: anywhere; }
 
 /* ── 배치 8-C (마스크) — 8-C 작업자는 이 표시 아래에만 덧붙인다 ── */

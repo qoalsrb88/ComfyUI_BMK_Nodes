@@ -1,0 +1,29 @@
+{
+  "schema": "bmk.design_patch.refs_grid/1",
+  "files": [
+    {
+      "name": "009_모자본체_휘장_t.png",
+      "role": "main",
+      "size": [640, 640],
+      "bytes": 5000,
+      "origin": "ps",
+      "missing": false,
+      "outside_edit": false,
+      "thumb_url": "refs/img?root=abcdef012345&where=refs&name=009&size=256&v=sample",
+      "thumb_url_512": "refs/img?root=abcdef012345&where=refs&name=009&size=512&v=sample",
+      "record": null
+    },
+    {
+      "name": "009_모자본체_휘장_측면_t.png",
+      "role": "aux",
+      "size": [480, 640],
+      "bytes": 4000,
+      "origin": "ps",
+      "missing": false,
+      "outside_edit": false,
+      "thumb_url": "refs/img?root=abcdef012345&where=refs&name=009s&size=256&v=sample",
+      "thumb_url_512": "refs/img?root=abcdef012345&where=refs&name=009s&size=512&v=sample",
+      "record": null
+    }
+  ]
+}
