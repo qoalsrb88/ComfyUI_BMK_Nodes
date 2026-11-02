@@ -243,6 +243,7 @@ import os
 import re
 import secrets
 import shutil
+import struct
 import subprocess
 import sys
 import threading
@@ -5955,6 +5956,255 @@ _PROJECT_INPUT: str | None = None
 _PROJECT_MEMO: dict[str, tuple] = {}
 _PROJECT_MEMO_LOCK = threading.Lock()
 _PROJECT_THUMB_SLOTS = threading.BoundedSemaphore(1)
+_PROJECT_NEW_LOCK = threading.Lock()
+_PROJECT_OLD_TRACES = ("cands", "inputs", "specs", "vlm", "layout.json", "refs.json", "pipeline.json")
+
+
+def _project_adoption(root: str) -> dict:
+    """매니페스트를 잃은 옛 프로젝트는 채택하지 않는다. 직계 일반 그림 파일만 표시."""
+    if (not os.path.isdir(root) or _is_link(root)
+            or any(os.path.lexists(os.path.join(root, n)) for n in (store.MANIFEST_NAME, *_PROJECT_OLD_TRACES))):
+        return {"adoptable": False, "files": []}
+    files = []
+    with os.scandir(root) as entries:
+        for e in entries:
+            if not e.is_file(follow_symlinks=False) or _is_link(e.path):
+                continue
+            try:
+                if check_upload_name(e.name) == e.name:
+                    files.append(e.name)
+            except _Reject:
+                continue
+    return {"adoptable": True, "files": sorted(files, key=str.casefold)[:50]}
+
+
+def _project_new_begin(data: dict, upload: bool) -> dict:
+    try:
+        name = store._check_project_name(data.get("name"))
+    except ValueError:
+        raise _Reject(400, "프로젝트 이름: 문자·숫자·_ - . 만, '..'·끝 '.'·Windows 예약 이름은 쓸 수 없습니다") from None
+    if not _PROJECT_INPUT:
+        raise _Reject(400, "프로젝트 input 폴더가 설정되지 않았습니다")
+    if "adopt" in data and type(data["adopt"]) is not bool:
+        raise _Reject(400, "adopt 는 true 또는 false 여야 합니다")
+    adopt = data.get("adopt", False)
+    if upload and adopt:
+        raise _Reject(400, "이 폴더로 시작은 폴더 안 그림을 고르세요")
+    root = store.project_root(_PROJECT_INPUT, name)
+    parent = os.path.dirname(root)
+    tmp_parent = os.path.join(os.path.abspath(_PROJECT_INPUT), _NEW_TMP_DIRNAME)
+    for path in (parent, tmp_parent, root):
+        if (_is_link(path) or os.path.normcase(os.path.realpath(path))
+                != os.path.normcase(os.path.join(os.path.realpath(os.path.dirname(path)), os.path.basename(path)))):
+            raise _Reject(400, "프로젝트·임시 폴더에 링크를 사용할 수 없습니다")
+    if adopt:
+        info = _project_adoption(root)
+        if not info["adoptable"]:
+            raise _Reject(409, "이 폴더로 시작할 수 없습니다 — 프로젝트 기록이 있거나 폴더가 없습니다")
+        filename = check_upload_name(data.get("file"))
+        if filename not in info["files"]:
+            raise _Reject(400, "목록에 있는 폴더 안 그림을 고르세요")
+        source = os.path.join(root, filename)
+    else:
+        if os.path.lexists(root):
+            raise _Reject(409, "같은 이름의 프로젝트가 있습니다 — 폴더 목록을 확인하세요")
+        if upload:
+            source, filename = None, check_upload_name(data.get("filename"))
+        else:
+            try:
+                source = clean_user_path(data.get("path"))
+            except _Reject:
+                raise _Reject(400, "타깃 그림 파일의 전체 경로를 넣으세요") from None
+            filename = check_upload_name(os.path.basename(source))
+    state = {"name": name, "root": root, "adopt": adopt, "source": source, "filename": filename,
+             "tmp": None, "moved": False, "created": [], "dirs": [], "notes": []}
+    if not adopt:
+        os.makedirs(tmp_parent, exist_ok=True)
+        tmp = os.path.join(tmp_parent, secrets.token_hex(16))
+        os.mkdir(tmp)
+        state["tmp"] = tmp
+    return state
+
+
+def _project_new_rename(source: str, dest: str) -> None:
+    """Windows 일시 잠금만 짧게 재시도한다. 이름 충돌은 즉시 호출자에게 돌려준다."""
+    for attempt in range(6):
+        try:
+            os.rename(source, dest)
+            return
+        except PermissionError:
+            if attempt == 5:
+                raise
+            time.sleep(0.05 * (attempt + 1))
+
+
+def _project_new_target(state: dict, part: str | None) -> str:
+    root = state["root"] if state["adopt"] else state["tmp"]
+    filename = state["filename"]
+    source = state["source"] if state["adopt"] else os.path.join(root, filename)
+    if state["adopt"]:
+        if _is_link(source) or os.path.getsize(source) > _MAX_UPLOAD:
+            raise _Reject(400, "타깃 파일은 링크가 아닌 2GB 이하 그림이어야 합니다")
+        kind = sniff_image_kind(source)
+        if kind != _UPLOAD_KINDS[os.path.splitext(filename)[1].lower()]:
+            raise _Reject(400, "파일 내용이 확장자와 맞지 않습니다")
+    else:
+        kind = finish_received(part, source)
+    info = image_header(source, kind)
+    check_image_dims(info, 64)
+    psd = None
+    if kind in ("psd", "psb"):
+        if info["depth"] != 8 or info["mode"] != 3:
+            raise _Reject(400, "8비트 RGB PSD 만 — Photoshop 이미지 > 모드에서 바꿔 저장하세요")
+        try:
+            psd = dpsd.open_psd(source)
+            base = dpsd._auto_base_layer(psd)
+            crop_group = dpsd.find_crop_group(psd)
+            if base is None and crop_group is not None:
+                rgba, _ = dpsd.read_base_rgba(psd, clean_plate_layer="none", base_layer="none")
+                lossy, _, _ = dpsd._project_base_lossy(psd)
+        except (OSError, SyntaxError, EOFError, struct.error, ValueError):
+            logger.exception("%s 새 프로젝트 PSD 디코드 실패: %s", _TAG, source)
+            raise _Reject(400, "그림 파일이 깨졌거나 잘렸습니다") from None
+        if base is not None:
+            return filename
+        if crop_group is not None:
+            if not np.any(rgba[..., 3]):
+                raise _Reject(400, "보이는 그림이 없습니다 — 레이어가 숨겨져 있으면 보이게 저장하세요")
+            if np.any(rgba[..., 3] < 255):
+                state["notes"].append("투명한 곳은 Import 에서 검게 보일 수 있습니다 — I2I_base 레이어를 두면 그 레이어를 씁니다")
+            if lossy:
+                state["notes"].append("합성이 Photoshop 화면과 다를 수 있습니다")
+            return filename
+    stem = os.path.splitext(filename)[0]
+    target = unique_file_name(root, stem + ("_base.psd" if psd is not None else ".psd"))
+    dest = os.path.join(root, target)
+    try:
+        if psd is not None:
+            notes = dpsd.wrap_psd_composite(psd, dest)
+        else:
+            notes = dpsd.wrap_image_file(source, dest)
+    except dpsd.ImageDecodeError:
+        logger.exception("%s 새 프로젝트 그림 디코드 실패: %s", _TAG, source)
+        raise _Reject(400, "그림 파일이 깨졌거나 잘렸습니다") from None
+    except dpsd.EmptyPSDImageError:
+        raise _Reject(400, "보이는 그림이 없습니다") from None
+    except dpsd.PSDCompositeRequiredError:
+        raise _Reject(400, "Photoshop 에서 호환성 최대화로 다시 저장하세요") from None
+    state["created"].append(dest)
+    state["notes"].extend(notes)
+    if not state["adopt"]:
+        originals = os.path.join(root, "_source")
+        os.mkdir(originals)
+        _project_new_rename(source, os.path.join(originals, filename))
+    return target
+
+
+def _project_new_file(state: dict, path: str, value: dict) -> None:
+    # 배타 생성에 성공한 파일만 정리 목록에 넣는다(쓰기 도중 실패해도 이번 파일만 지움).
+    with open(path, "x", encoding="utf-8") as f:
+        state["created"].append(path)
+        json.dump(value, f, ensure_ascii=False, indent=2)
+
+
+def _project_new_finish(state: dict, target: str) -> dict:
+    root = state["root"]
+    working = root if state["adopt"] else state["tmp"]
+    with store.manifest_lock(root):
+        if state["adopt"] and not _project_adoption(root)["adoptable"]:
+            raise _Reject(409, "폴더에 프로젝트 기록이 생겼습니다 — 목록을 새로고침하세요")
+        refs = os.path.join(working, "refs")
+        if not os.path.lexists(refs):
+            os.mkdir(refs)
+            state["dirs"].append(refs)
+        elif _is_link(refs) or not os.path.isdir(refs):
+            raise _Reject(400, "refs 는 링크가 아닌 폴더여야 합니다")
+        if not state["adopt"]:
+            _project_new_file(state, os.path.join(working, store.MANIFEST_NAME), store.new_manifest(state["name"]))
+            os.makedirs(os.path.dirname(root), exist_ok=True)
+            if os.path.lexists(root):
+                raise _Reject(409, "같은 이름의 프로젝트가 있습니다")
+            _project_new_rename(working, root)
+            state["moved"] = True
+            rev = 0  # 기존 update 계약: 없는 pipeline.json 은 rev 0.
+        else:
+            # 다른 요청의 pipeline.json 을 덮어쓰지 않도록 먼저 배타로 자리를 잡는다.
+            _project_new_file(state, os.path.join(root, pl.PIPELINE_NAME), {})
+            rev = None  # 방금 만든 빈 문서의 8절 전체를 update 로 채운다.
+        settings = pl.defaults(root)
+        settings["import"].update(psd_path=os.path.join(root, target), refs_dir=os.path.join(root, "refs"))
+        settings["export"]["filename_prefix"] = state["name"]
+        for section in ("import", "prepare", "export"):
+            rev = pl.update(root, rev, section, settings[section])["rev"]
+        if state["adopt"]:
+            _project_new_file(state, os.path.join(root, store.MANIFEST_NAME), store.new_manifest(state["name"]))
+        key = store.register_root(root)
+        _ensure_pref(key, root)
+    return {"key": key, "name": state["name"], "notes": state["notes"]}
+
+
+def _project_new_cleanup(state: dict, success: bool) -> None:
+    def remove(path, fn):
+        try:
+            fn(path)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            logger.exception("%s 새 프로젝트 정리 실패: %s", _TAG, path)
+
+    if not success:
+        if state["adopt"]:
+            for path in reversed(state["created"]):
+                remove(path, os.remove)
+            for path in reversed(state["dirs"]):
+                remove(path, os.rmdir)  # 기존 파일이 들어왔다면 폴더는 남긴다.
+        elif state["moved"]:
+            root = state["root"]
+            expected = store.project_root(_PROJECT_INPUT, state["name"])
+            if (os.path.normcase(root) == os.path.normcase(expected) and not _is_link(root)
+                    and os.path.normcase(os.path.realpath(root))
+                    == os.path.normcase(os.path.join(os.path.realpath(os.path.dirname(root)), os.path.basename(root)))):
+                remove(root, shutil.rmtree)
+    tmp = state["tmp"]
+    if tmp and os.path.isdir(tmp):
+        parent = os.path.join(os.path.abspath(_PROJECT_INPUT), _NEW_TMP_DIRNAME)
+        if (os.path.normcase(os.path.dirname(tmp)) == os.path.normcase(parent) and not _is_link(tmp)
+                and os.path.normcase(os.path.realpath(tmp))
+                == os.path.normcase(os.path.join(os.path.realpath(os.path.dirname(tmp)), os.path.basename(tmp)))):
+            remove(tmp, shutil.rmtree)
+
+
+async def _project_new_thread(fn, *args):
+    # 요청 취소가 파일 작업 스레드를 남겨 rollback 과 경합하지 않게 끝까지 기다린다.
+    pending = asyncio.create_task(asyncio.to_thread(fn, *args))
+    try:
+        return await asyncio.shield(pending)
+    except asyncio.CancelledError:
+        with contextlib.suppress(Exception):
+            await pending
+        raise
+
+
+async def _project_new_request(request):
+    state, success = None, False
+    try:
+        upload = is_octet_stream(request)
+        data = dict(request.query) if upload else await _body(request)
+        # begin 은 작은 메타데이터 작업뿐. 상태를 받은 뒤부터 취소 시 정리할 수 있다.
+        state = _project_new_begin(data, upload)
+        part = None
+        if not state["adopt"]:
+            part = await recv_upload(request, state["tmp"]) if upload else await _project_new_thread(copy_in, state["source"], state["tmp"])
+        target = await _project_new_thread(_project_new_target, state, part)
+        result = await _project_new_thread(_project_new_finish, state, target)
+        success = True
+        return result
+    finally:
+        if state is not None:
+            try:
+                await asyncio.shield(asyncio.to_thread(_project_new_cleanup, state, success))
+            except Exception:
+                logger.exception("%s 새 프로젝트 정리 중 오류: %s", _TAG, state["root"])
 
 
 def _project_roots() -> list[dict]:
@@ -6027,13 +6277,20 @@ def _projects_list() -> dict:
     out = []
     for r in _project_roots():
         # 표시 이름은 경로가 들어갈 수 있는 manifest.project 대신 실제 폴더 이름.
-        row = {"id": r["key"], "name": os.path.basename(r["root"]), "outside_input": r["outside_input"]}
+        row = {"id": r["key"], "name": os.path.basename(r["root"]), "outside_input": r["outside_input"], "adoptable": False, "files": []}
         try:
             store._check_project_name(row["name"])
             row.update(_project_summary(r["root"]))
             row["thumb_url"] = None if row["before_import"] else "projects/thumb?" + urlencode({"key": r["key"]})
         except FileNotFoundError:
-            row.update(openable=False, error="열 수 없음 — Project 노드로 먼저 프로젝트를 만드세요")
+            try:
+                info = _project_adoption(r["root"])
+                row.update(info if not r["outside_input"] else {"adoptable": False, "files": []})
+                row.update(openable=False, error="열 수 없음 — Studio [새 프로젝트] 또는 [이 폴더로 시작]을 이용하세요" if info["adoptable"]
+                           else "열 수 없음 — 옛 프로젝트 기록이 남아 있습니다(매니페스트 없음)")
+            except OSError:
+                logger.exception("%s 프로젝트 폴더 목록 읽기 실패: %s", _TAG, r["root"])
+                row.update(openable=False, error="열 수 없음 — 프로젝트 폴더의 읽기 권한을 확인하세요")
         except Exception:
             row.update(openable=False, error="열 수 없음 — 프로젝트 파일 형식과 읽기 권한을 확인하세요")
         out.append(row)
@@ -6197,7 +6454,26 @@ async def candidates_ext_handler(request: web.Request) -> web.StreamResponse:
 # ── 배치 9 공용 자리(감독관 — _proto/STUDIO_BATCH9_SPEC.md D139). 본문은 9-A(projects/new)·9-B(refs/layers·refs/pool)가 채운다. 그 전엔 501.
 @_guard
 async def projects_new_handler(request: web.Request) -> web.StreamResponse:
-    raise _Reject(501, "새 프로젝트 만들기는 아직 준비 중입니다(배치 9-A)")
+    if not _PROJECT_NEW_LOCK.acquire(blocking=False):
+        raise _Reject(409, "다른 프로젝트를 만드는 중입니다 — 끝난 뒤 다시 시도하세요")
+    try:
+        return _json(await _project_new_request(request))
+    except _Reject:
+        raise
+    except FileExistsError:
+        logger.exception("%s 새 프로젝트 파일 이름 충돌", _TAG)
+        raise _Reject(409, "같은 이름의 프로젝트 또는 파일이 있습니다 — 목록을 새로고침하세요") from None
+    except MemoryError:
+        logger.exception("%s 새 프로젝트 메모리 부족", _TAG)
+        raise _Reject(503, "그림이 커서 메모리가 부족합니다 — 크기를 줄이거나 메모리를 확보한 뒤 다시 시도하세요") from None
+    except OSError:
+        logger.exception("%s 새 프로젝트 파일 작업 실패", _TAG)
+        raise _Reject(500, "파일을 쓰지 못했습니다 — 디스크 공간·다른 프로그램의 잠금 확인") from None
+    except Exception:
+        logger.exception("%s 새 프로젝트 만들기 실패", _TAG)
+        raise _Reject(400, "프로젝트를 만들 수 없습니다 — 그림 형식과 폴더 접근 권한을 확인하세요") from None
+    finally:
+        _PROJECT_NEW_LOCK.release()
 
 
 @_guard

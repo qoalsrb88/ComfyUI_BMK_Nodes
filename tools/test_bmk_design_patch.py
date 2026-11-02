@@ -53688,8 +53688,699 @@ def batch9_recv_unit():
 
 
 def batch9a_unit():
-    """배치 9-A(11/02 — _proto/STUDIO_BATCH9_SPEC.md D112–D122): 새 프로젝트 만들기. 공용 자리 — 9-A 작업자가 채운다."""
+    """배치 9-A: 합성 그림·직접 처리기·모의 브라우저만(소켓·외부 API 없음)."""
     section("배치 9-A — 새 프로젝트 만들기")
+    import struct
+    import tempfile
+    from unittest.mock import patch
+    import bmk_design_patch_board as bd
+    from PIL import ImageOps, ImageCms
+
+    class Request:
+        path = "/bmk/design_patch/projects/new"
+
+        def __init__(self, data=None, raw=None, query=None):
+            self.content_type = "application/json" if raw is None else "application/octet-stream"
+            self.headers = {"Content-Type": self.content_type}
+            self.raw = json.dumps(data or {}).encode() if raw is None else raw
+            self.content_length = len(self.raw)
+            self.query = query or {}
+            self.content = self
+
+        async def read(self):
+            return self.raw
+
+        async def iter_chunked(self, size):
+            for i in range(0, len(self.raw), 67):
+                yield self.raw[i:i + 67]
+
+    def call(data=None, raw=None, query=None):
+        response = asyncio.run(bd.projects_new_handler(Request(data, raw, query)))
+        return response.status, json.loads(response.text)
+
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="batch9a_", dir=OUT_ROOT.resolve()) as tmp, \
+            patch.object(bd, "_PROJECT_INPUT", tmp), patch.object(store, "_ROOTS", {}), patch.object(bd, "_PREF", {}):
+        t = Path(tmp)
+        parent = t / store.PROJECTS_DIRNAME
+        src = t / "art.png"
+        pixels = np.full((64, 96, 4), (40, 80, 120, 255), np.uint8)
+        pixels[:, :32, 3] = 0
+        Image.fromarray(pixels).save(src)
+        original = src.read_bytes()
+        with patch.object(bd.pl, "update", wraps=bd.pl.update) as updates:
+            status, result = call({"name": "새-project_1", "path": f' "{src}" '})
+        check(status == 200, f"B9A 경로 생성 {status}: {result}")
+        root = parent / "새-project_1"
+        doc = bd.pl.load(str(root))
+        check(set(result) == {"key", "name", "notes"} and tmp not in json.dumps(result, ensure_ascii=False)
+              and store.resolve_board_root(result["key"]) == str(root), "B9A 등록 키·응답 경로 없음")
+        check(root.joinpath("refs").is_dir() and root.joinpath(store.MANIFEST_NAME).is_file()
+              and root.joinpath("_source/art.png").read_bytes() == original and src.read_bytes() == original, "B9A 폴더·원본 bytes 보존")
+        check(all(s in doc for s in bd.pl.SECTIONS) and [c.args[2] for c in updates.call_args_list] == ["import", "prepare", "export"]
+              and not any(c.startswith(("import.", "prepare.")) for c in doc["confirm"])
+              and Path(doc["import"]["psd_path"]) == root / "art.psd" and Path(doc["import"]["refs_dir"]) == root / "refs"
+              and doc["export"]["filename_prefix"] == root.name, "B9A pipeline 8절·3회 저장·confirm·최종 경로·prefix")
+        psd = dpsd.open_psd(str(root / "art.psd"))
+        actual, info = dpsd.read_base(psd)
+        expected = pixels[..., :3].copy()
+        expected[:, :32] = 255
+        check(psd.size == (96, 64) and len(psd) == 1 and psd[0].name == "I2I_base" and info["method"] == "base"
+              and np.array_equal(actual, expected) and any("흰색" in n for n in result["notes"]), "B9A PNG→PSD 왕복·알파 흰색·안내")
+        req = Request(query={"root": result["key"], "stage": "apply"})
+        check(asyncio.run(bd.state_handler(req)).status == 200 and asyncio.run(bd.pipeline_prompt_handler(req)).status == 200,
+              "B9A 등록 직후 state·무료 apply 템플릿 200")
+        check(not list((t / bd._NEW_TMP_DIRNAME).iterdir()), "B9A 성공 뒤 임시 폴더 없음")
+        before = {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+        check(call({"name": root.name, "path": str(src)})[0] == 409
+              and before == {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}, "B9A 같은 이름 409·원래 프로젝트 보존")
+        for name in ("", "../escape", "CON", "LPT1.png", "a..b", "end.", "two words", "C:\\private"):
+            code, error = call({"name": name, "path": str(src)})
+            check(code == 400 and tmp not in str(error) and "C:\\private" not in str(error), f"B9A 노드 이름 규칙·경로 가림 {name!r}")
+        for name in ("Åβ_한글-1", "under_score", "dot.name"):
+            check(call({"name": name, "path": str(src)})[0] == 200, f"B9A 유효 노드 이름 {name}")
+        check(call(raw=original, query={"name": "upload", "filename": "art.png"})[0] == 200, "B9A octet-stream 업로드")
+        huge = Request(raw=original, query={"name": "huge", "filename": "art.png"})
+        huge.content_length = 2 * 1024 ** 3 + 1
+        check(asyncio.run(bd.projects_new_handler(huge)).status == 413 and not (parent / "huge").exists(), "B9A 업로드 2GiB 가드·정리")
+        wrong_type = Request(); wrong_type.content_type = "text/plain"
+        check(asyncio.run(bd.projects_new_handler(wrong_type)).status == 415, "B9A JSON·octet-stream 밖 Content-Type 거절")
+        missing_type = Request(raw=original, query={"name": "missing_type", "filename": "art.png"})
+        missing_type.headers = {}  # aiohttp 는 머리가 없어도 content_type 을 octet-stream 으로 돌려준다.
+        check(asyncio.run(bd.projects_new_handler(missing_type)).status == 415 and not (parent / "missing_type").exists(),
+              "B9A-R2 실제 Content-Type 없는 POST 는 JSON 길에서 415")
+        for raw, filename in ((original, "bad.jpg"), (b"broken", "bad.png"), (original, "CON.png")):
+            check(call(raw=raw, query={"name": "bad_upload", "filename": filename})[0] == 400
+                  and not (parent / "bad_upload").exists(), "B9A 내용·확장자·예약 파일 거절·정리")
+        check(call({"name": "missing", "path": str(t / "missing.png")})[0] == 404, "B9A 없는 경로 404")
+
+        # 회전·팔레트·16-bit·WebP 의 픽셀을 다시 읽어 확인한다.
+        cases = []
+        jpeg = t / "rot.jpg"
+        exif = Image.Exif(); exif[274] = 6
+        Image.fromarray(expected).save(jpeg, exif=exif)
+        with Image.open(jpeg) as im:
+            cases.append((jpeg, np.asarray(ImageOps.exif_transpose(im).convert("RGB"))))
+        palette = Image.new("P", (64, 64), 1)
+        palette.putpalette([0, 0, 0, 80, 120, 160] + [0] * 762)
+        palette.info["transparency"] = 1
+        pal = t / "palette.png"; palette.save(pal)
+        cases.append((pal, np.full((64, 64, 3), 255, np.uint8)))
+        gray = t / "gray16.png"
+        values = np.tile(np.linspace(0, 65535, 64).astype(np.uint16), (64, 1))
+        Image.fromarray(values).save(gray)
+        cases.append((gray, np.repeat((values / 257).round().astype(np.uint8)[..., None], 3, axis=2)))
+        webp = t / "lossless.webp"; Image.fromarray(expected).save(webp, lossless=True)
+        cases.append((webp, expected))
+        for i, (source, wanted) in enumerate(cases):
+            code, response = call({"name": f"image_{i}", "path": str(source)})
+            target = bd.pl.load(str(parent / f"image_{i}"))["import"]["psd_path"]
+            got, _ = dpsd.read_base(dpsd.open_psd(target))
+            check(code == 200 and np.array_equal(got, wanted), f"B9A 이미지 변환 픽셀 {source.name}")
+
+        # ImageCms 가 만든 RGB 프로필의 TRC 감마만 1.8로 바꿔, 프로필을 버리면 픽셀이 다른 입력을 만든다.
+        profile = bytearray(ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes())
+        for index in range(struct.unpack_from(">I", profile, 128)[0]):
+            signature, offset, _ = struct.unpack_from(">4sII", profile, 132 + 12 * index)
+            if signature in (b"rTRC", b"gTRC", b"bTRC"):
+                assert profile[offset:offset + 4] == b"para"
+                struct.pack_into(">i", profile, offset + 12, int(1.8 * 65536))
+        profile = bytes(profile)
+        for suffix in ("png", "jpg", "webp"):
+            source = t / ("profile." + suffix)
+            image = Image.fromarray(pixels)
+            if suffix == "jpg":
+                image = image.convert("RGB")
+            image.save(source, icc_profile=profile, **({"lossless": True} if suffix == "webp" else {}))
+            with Image.open(source) as image:
+                reference = ImageCms.profileToProfile(image.convert("RGB"), io.BytesIO(profile),
+                                                     ImageCms.createProfile("sRGB"), outputMode="RGB")
+                alpha = image.convert("RGBA").getchannel("A")
+                flattened = Image.new("RGB", image.size, "white")
+                flattened.paste(reference, mask=alpha)
+                wanted = np.asarray(flattened)
+            code, response = call({"name": "profile_" + suffix, "path": str(source)})
+            target = bd.pl.load(str(parent / ("profile_" + suffix)))["import"]["psd_path"]
+            got, _ = dpsd.read_base(dpsd.open_psd(target))
+            check(code == 200 and np.array_equal(got, wanted) and not np.array_equal(got, expected)
+                  and "색 프로필을 적용하지 못했습니다" not in response["notes"], "B9A-R3 ICC→sRGB 픽셀·알파 흰 바탕 " + suffix)
+        bad_profile = t / "bad_profile.png"
+        Image.fromarray(pixels).save(bad_profile, icc_profile=b"broken ICC profile")
+        with patch.object(dpsd.logger, "exception") as logged:
+            code, response = call({"name": "bad_profile", "path": str(bad_profile)})
+        target = parent / "bad_profile/bad_profile.psd"
+        check(code == 200 and logged.called and "색 프로필을 적용하지 못했습니다" in response["notes"]
+              and np.array_equal(dpsd.read_base(dpsd.open_psd(str(target)))[0], expected), "B9A-R3 깨진 ICC 는 미변환 픽셀·안내")
+        with patch.object(ImageCms, "profileToProfile", side_effect=ImageCms.PyCMSError("cannot transform")), \
+                patch.object(dpsd.logger, "exception") as logged:
+            code, response = call({"name": "profile_error", "path": str(t / "profile.png")})
+        target = parent / "profile_error/profile.psd"
+        check(code == 200 and logged.called and "색 프로필을 적용하지 못했습니다" in response["notes"]
+              and np.array_equal(dpsd.read_base(dpsd.open_psd(str(target)))[0], expected), "B9A-R3 ICC 변환 실패도 미변환 픽셀·안내")
+
+        flat = t / "flat.psd"
+        dpsd.PSDWriter((96, 64)).save(str(flat), composite=expected)
+        normal = t / "normal.psd"
+        writer = dpsd.PSDWriter((96, 64))
+        writer.add_pixel(None, "paint", expected, 0, 0)
+        writer.save(str(normal), composite=np.full_like(expected, 7))  # 수동 합성과 다른 병합 그림.
+        lossy = t / "lossy.psd"
+        writer.psd[0].blend_mode = dpsd.BlendMode.MULTIPLY
+        writer.save(str(lossy), composite=expected)
+        named = t / "named.psd"
+        writer.psd[0].name = "I2I_base"
+        writer.save(str(named), composite=expected)
+        psb = t / "normal.psb"
+        writer.psd._record.header.version = 2
+        writer.save(str(psb), composite=expected)
+        for source, wrapped in ((flat, True), (normal, True), (lossy, True), (named, False), (psb, False)):
+            code, response = call({"name": source.stem + source.suffix[1:], "path": str(source)})
+            project = parent / (source.stem + source.suffix[1:])
+            target = bd.pl.load(str(project))["import"]["psd_path"]
+            check(code == 200 and Path(target).name == (source.stem + "_base.psd" if wrapped else source.name),
+                  f"B9A PSD/PSB 타깃 선택 {source.name}")
+            check((project / "_source" / source.name if wrapped else project / source.name).read_bytes() == source.read_bytes(),
+                  f"B9A PSD/PSB 원본 보존 {source.name}")
+            if wrapped:
+                check(np.array_equal(dpsd.read_base(dpsd.open_psd(target))[0], expected), "B9A 정확한 수동 합성 또는 병합 이미지 픽셀 왕복")
+        with patch.object(PSDImage, "topil", return_value=None):
+            check(call({"name": "no_composite", "path": str(flat)})[0] == 400 and not (parent / "no_composite").exists(),
+                  "B9A 병합 이미지·보이는 레이어 모두 없음 거절")
+            code, response = call({"name": "lossy_no_composite", "path": str(lossy)})
+        check(code == 400 and response["error"] == "Photoshop 에서 호환성 최대화로 다시 저장하세요"
+              and not (parent / "lossy_no_composite").exists(), "B9A-R2 lossy 병합 이미지 없으면 근사 합성 없이 400")
+
+        guided = t / "guided.psd"
+        writer = dpsd.PSDWriter((96, 64))
+        paint = writer.add_pixel(None, "paint", expected, 0, 0)
+        for group_name in ("guide", "크롭이미지"):
+            group = writer.add_group(None, group_name)
+            writer.add_pixel(group, "overlay", np.full_like(expected, 180), 0, 0)
+        merged_guide = np.full_like(expected, (200, 20, 40))
+        writer.save(str(guided), composite=merged_guide)
+        with patch.object(PSDImage, "topil", side_effect=AssertionError("정확한 수동 합성은 병합 이미지를 읽지 않음")):
+            code, response = call({"name": "guided", "path": str(guided)})
+        target = parent / "guided/guided_base.psd"
+        check(code == 200 and np.array_equal(dpsd.read_base(dpsd.open_psd(str(target)))[0], expected)
+              and not any("가이드" in note for note in response["notes"]), "B9A-R2 수동 합성은 가이드·크롭 이미지 그룹 제외")
+        paint.blend_mode = dpsd.BlendMode.MULTIPLY
+        guided_lossy = t / "guided_lossy.psd"
+        writer.save(str(guided_lossy), composite=merged_guide)
+        with patch.object(dpsd.logger, "warning") as logged:
+            code, response = call({"name": "guided_lossy", "path": str(guided_lossy)})
+        target = parent / "guided_lossy/guided_lossy_base.psd"
+        check(code == 200 and np.array_equal(dpsd.read_base(dpsd.open_psd(str(target)))[0], merged_guide)
+              and "병합 이미지에 가이드가 들어갔을 수 있습니다" in response["notes"]
+              and "병합 이미지에 크롭 영역·크롭 이미지 그룹이 들어갔을 수 있습니다" in response["notes"]
+              and any("가이드" in str(c) for c in logged.call_args_list), "B9A-R2 lossy 는 병합 이미지·가이드 notes 와 로그")
+
+        for index, group_name in enumerate(dpsd.CROP_PIXELS_GROUP_NAMES):
+            writer = dpsd.PSDWriter((96, 64))
+            writer.add_pixel(None, "paint", expected, 0, 0)
+            container = writer.add_group(None, "nested")
+            group = writer.add_group(container, group_name)
+            overlay = writer.add_pixel(group, "overlay", merged_guide, 0, 0)
+            overlay.blend_mode = dpsd.BlendMode.MULTIPLY
+            source = t / f"crop_pixels_{index}.psd"
+            writer.save(str(source), composite=merged_guide)
+            with patch.object(PSDImage, "topil", side_effect=AssertionError("제외 그룹의 blend 는 수동 합성을 막지 않음")):
+                code, response = call({"name": source.stem, "path": str(source)})
+            target = parent / source.stem / (source.stem + "_base.psd")
+            check(code == 200 and np.array_equal(dpsd.read_base(dpsd.open_psd(str(target)))[0], expected),
+                  "B9A-R3 중첩 크롭 픽셀 그룹 lossy 제외 " + group_name)
+
+        # 머리 검사는 통과하지만 본문을 디코드할 수 없는 실제 파일들.
+        jpeg_bytes = jpeg.read_bytes()
+        sos = jpeg_bytes.index(b"\xff\xda")
+        jpeg_end = sos + 2 + int.from_bytes(jpeg_bytes[sos + 2:sos + 4], "big") + 3
+        broken_files = (("png", original[:original.index(b"IDAT") + 8]),
+                        ("jpg", jpeg_bytes[:jpeg_end]), ("psd", flat.read_bytes()[:40]))
+        for suffix, broken in broken_files:
+            with patch.object(bd.logger, "exception") as logged:
+                code, response = call(raw=broken, query={"name": "truncated_" + suffix, "filename": "cut." + suffix})
+            check(code == 400 and response["error"] == "그림 파일이 깨졌거나 잘렸습니다" and logged.called
+                  and not (parent / ("truncated_" + suffix)).exists(), "B9A-R2 정상 머리·잘린 본문 디코드 400 " + suffix)
+        for exception in (OSError(tmp), SyntaxError(tmp), EOFError(tmp), struct.error(tmp), ValueError(tmp)):
+            for owner, function, source in ((dpsd, "open_psd", normal), (PSDImage, "topil", lossy)):
+                with patch.object(owner, function, side_effect=exception), patch.object(bd.logger, "exception") as logged:
+                    code, response = call({"name": "decode_error", "path": str(source)})
+                check(code == 400 and response["error"] == "그림 파일이 깨졌거나 잘렸습니다" and tmp not in str(response)
+                      and logged.called, "B9A-R2 디코드 예외 분리 " + function + "/" + type(exception).__name__)
+        with patch.object(dpsd, "wrap_base_image", side_effect=OSError(tmp)), patch.object(bd.logger, "exception") as logged:
+            code, response = call({"name": "write_error", "path": str(src)})
+        check(code == 500 and "디스크" in response["error"] and logged.called, "B9A-R2 디코드 후 쓰기 오류는 500 유지")
+
+        # 실제 PSD 레코드로 별칭 크롭 그룹·shape·글자 레이어를 만들어 Import auto 판정과 대조한다.
+        from psd_tools.psd.vector import VectorMaskSetting, Path as VectorPath, ClosedPath, ClosedKnotLinked
+        crop_psd = t / "crop_alias.psd"
+        writer = dpsd.PSDWriter((96, 64))
+        paint = writer.add_pixel(None, "paint", expected, 0, 0)
+        group = writer.add_group(None, "크롭영역")
+        shape = writer.add_pixel(group, "001_head", expected[:32, :48], 0, 0)
+        shape._record.flags.pixel_data_irrelevant = True
+        points = [(0., 0.), (0., .5), (.5, .5), (.5, 0.)]
+        shape.tagged_blocks.set_data(Tag.VECTOR_MASK_SETTING1, path=VectorPath([
+            ClosedPath([ClosedKnotLinked(p, p, p) for p in points])]))
+        writer.save(str(crop_psd), composite=expected)
+        reopened = dpsd.open_psd(str(crop_psd))
+        check(dpsd.find_crop_group(reopened).name == "크롭영역" and len(dpsd.read_crop_rects(reopened)) == 1,
+              "B9A-R1 fixture: 별칭 크롭영역 그룹·실제 shape 크롭")
+        code, response = call({"name": "crop_alias", "path": str(crop_psd)})
+        check(code == 200 and (parent / "crop_alias/crop_alias.psd").read_bytes() == crop_psd.read_bytes()
+              and not (parent / "crop_alias/_source").exists() and not response["notes"],
+              "B9A-R1 별칭 크롭 PSD 는 그대로 보존·크롭 shape 는 lossy 제외")
+        paint.visible = False
+        crop_hidden = t / "crop_hidden.psd"
+        writer.save(str(crop_hidden), composite=expected)
+        code, response = call({"name": "crop_hidden", "path": str(crop_hidden)})
+        check(code == 400 and "보이는 그림이 없습니다" in response["error"] and "보이게 저장" in response["error"]
+              and not (parent / "crop_hidden").exists(), "B9A-R3 base 없이 크롭만 보이고 합성은 투명하면 400")
+        paint.visible = True
+        paint.opacity = 128
+        crop_alpha = t / "crop_alpha.psd"
+        writer.save(str(crop_alpha), composite=expected)
+        with patch.object(dpsd, "read_base_rgba", wraps=dpsd.read_base_rgba) as read_base, \
+                patch.object(dpsd, "wrap_psd_composite", side_effect=AssertionError("크롭 PSD 는 감싸지 않음")):
+            code, response = call({"name": "crop_alpha", "path": str(crop_alpha)})
+        check(code == 200 and read_base.call_count == 1
+              and (parent / "crop_alpha/crop_alpha.psd").read_bytes() == crop_alpha.read_bytes()
+              and response["notes"] == ["투명한 곳은 Import 에서 검게 보일 수 있습니다 — I2I_base 레이어를 두면 그 레이어를 씁니다"],
+              "B9A-R3 크롭 PSD 합성 1회·반투명 안내·원본 보존")
+        paint.blend_mode = dpsd.BlendMode.MULTIPLY
+        crop_lossy = t / "crop_lossy.psd"
+        writer.save(str(crop_lossy), composite=expected)
+        code, response = call({"name": "crop_lossy", "path": str(crop_lossy)})
+        check(code == 200 and len(response["notes"]) == 2 and "합성이 Photoshop 화면과 다를 수 있습니다" in response["notes"]
+              and (parent / "crop_lossy/crop_lossy.psd").read_bytes() == crop_lossy.read_bytes(), "B9A-R3 크롭 PSD 의 실제 합성 lossy 안내")
+
+        text_psd = t / "text_base.psd"
+        writer = dpsd.PSDWriter((96, 64))
+        layer = writer.add_pixel(None, "I2I_base", expected, 0, 0)
+        layer.tagged_blocks.set_data(Tag.TYPE_TOOL_OBJECT_SETTING, text_version=50)
+        writer.save(str(text_psd), composite=expected)
+        reopened = dpsd.open_psd(str(text_psd))
+        check(reopened[0].kind == "type" and dpsd._auto_base_layer(reopened) is None, "B9A-R1 fixture: 글자 I2I_base 는 auto base 아님")
+        code, response = call({"name": "text_base", "path": str(text_psd)})
+        check(code == 200 and (parent / "text_base/text_base_base.psd").exists()
+              and (parent / "text_base/_source/text_base.psd").read_bytes() == text_psd.read_bytes(), "B9A-R1 글자 I2I_base 는 감싸기")
+
+        def rgba_psd(path, visible, merged):
+            writer = dpsd.PSDWriter((96, 64))
+            writer.add_pixel(None, "character", pixels, 0, 0, visible=visible)
+            writer.save(str(path), composite=pixels[..., :3])
+            doc = dpsd.open_psd(str(path))
+            doc._record.header.channels = 4
+            info = doc._record.layer_and_mask_information.layer_info
+            info.layer_count = -abs(info.layer_count)  # 병합 이미지의 네 번째 채널 = 투명도.
+            doc._record.image_data.set_data([np.ascontiguousarray(merged[..., i]).tobytes() for i in range(4)], doc._record.header)
+            with path.open("wb") as f:
+                doc._record.write(f)
+
+        hidden = t / "hidden.psd"
+        rgba_psd(hidden, False, np.zeros_like(pixels))
+        check(dpsd.open_psd(str(hidden)).topil().getchannel("A").getextrema()[1] == 0, "B9A-R1 fixture: 전부 숨긴 PSD 병합 알파 0")
+        code, response = call({"name": "hidden", "path": str(hidden)})
+        check(code == 400 and response["error"] == "보이는 그림이 없습니다" and not (parent / "hidden").exists(),
+              "B9A-R1 전부 숨긴 레이어·투명 병합은 400")
+        hidden_merged = t / "hidden_merged.psd"
+        rgba_psd(hidden_merged, False, pixels)
+        code, response = call({"name": "hidden_merged", "path": str(hidden_merged)})
+        check(code == 200 and np.array_equal(dpsd.read_base(dpsd.open_psd(str(parent / "hidden_merged/hidden_merged_base.psd")))[0], expected),
+              "B9A-R2 전부 숨긴 레이어는 보이는 병합 그림 사용")
+        invisible = t / "invisible.psd"
+        writer = dpsd.PSDWriter((96, 64))
+        writer.add_pixel(None, "invisible", np.zeros_like(pixels), 0, 0)
+        writer.save(str(invisible), composite=expected)
+        code, response = call({"name": "invisible", "path": str(invisible)})
+        check(code == 400 and response["error"] == "보이는 그림이 없습니다", "B9A-R2 수동 합성 결과가 전부 투명이면 병합으로 대체하지 않음")
+        empty_group = t / "empty_group.psd"
+        writer = dpsd.PSDWriter((96, 64))
+        writer.add_group(None, "empty")
+        writer.save(str(empty_group), composite=expected)
+        code, response = call({"name": "empty_group", "path": str(empty_group)})
+        check(code == 400 and response["error"] == "보이는 그림이 없습니다", "B9A-R2 보이는 빈 그룹은 전부 숨김으로 오인하지 않음")
+        for variant, merged in (("merged", pixels), ("fallback", np.zeros_like(pixels))):
+            char = t / f"character_{variant}.psd"
+            rgba_psd(char, True, merged)
+            code, response = call({"name": char.stem, "path": str(char)})
+            target = parent / char.stem / (char.stem + "_base.psd")
+            check(code == 200 and np.array_equal(dpsd.read_base(dpsd.open_psd(str(target)))[0], expected)
+                  and any("흰색" in note for note in response["notes"]), "B9A-R1 투명 캐릭터 흰 바탕 " + variant)
+        with patch.object(PSDImage, "topil", return_value=None):
+            code, response = call({"name": "no_merged_visible", "path": str(normal)})
+        check(code == 200 and np.array_equal(dpsd.read_base(dpsd.open_psd(str(parent / "no_merged_visible/normal_base.psd")))[0], expected),
+              "B9A-R1 병합 이미지 없음·보이는 레이어 합성")
+        for depth, mode in ((16, 3), (8, 4)):
+            bad = bytearray(flat.read_bytes()); bad[22:24] = depth.to_bytes(2, "big"); bad[24:26] = mode.to_bytes(2, "big")
+            code, response = call(raw=bad, query={"name": "bad_mode", "filename": "mode.psd"})
+            check(code == 400 and "8비트 RGB" in response["error"], "B9A 16-bit·CMYK PSD 거절")
+        for w, h in ((63, 64), (30001, 64), (20000, 10001)):
+            bad = bytearray(flat.read_bytes()); bad[14:18] = h.to_bytes(4, "big"); bad[18:22] = w.to_bytes(4, "big")
+            with patch.object(dpsd, "open_psd", side_effect=AssertionError("크기 가드 전 디코드 금지")):
+                code, response = call(raw=bad, query={"name": "bad_size", "filename": "size.psd"})
+            check(code == 400 and "그림이 너무" in response["error"], f"B9A 크기 가드 {w}x{h}")
+
+        adopted = parent / "adopted"; adopted.mkdir()
+        (adopted / "art.png").write_bytes(original)
+        (adopted / "art.psd").write_bytes(b"keep existing PSD")
+        (adopted / "refs").mkdir(); (adopted / "refs/keep.txt").write_bytes(b"keep")
+        for trace in bd._PROJECT_OLD_TRACES:
+            legacy = parent / ("old_" + trace.replace(".", "_")); legacy.mkdir()
+            (legacy / trace).mkdir() if "." not in trace else (legacy / trace).write_text("{}")
+            check(not bd._project_adoption(str(legacy))["adoptable"]
+                  and call({"name": legacy.name, "adopt": True, "file": "art.png"})[0] == 409, "B9A 옛 프로젝트 흔적 거절 " + trace)
+        many = parent / "many"; many.mkdir()
+        for i in range(53): (many / f"{i}.png").write_bytes(original)
+        (many / "sub").mkdir(); (many / "sub/hidden.png").write_bytes(original)
+        listed = {r["name"]: r for r in bd._projects_list()["projects"]}
+        check(listed["adopted"]["adoptable"] and len(listed["many"]["files"]) == 50 and "sub/hidden.png" not in listed["many"]["files"],
+              "B9A adoptable·직계 그림 50개 상한")
+        saved = {p.relative_to(adopted): p.read_bytes() for p in adopted.rglob("*") if p.is_file()}
+        real_update = bd.pl.update
+        def fail_update(root, rev, section, values):
+            check(not Path(root, store.MANIFEST_NAME).exists(), "B9A adopt 매니페스트는 마지막")
+            result = real_update(root, rev, section, values)
+            if section == "prepare": raise OSError("private " + tmp)
+            return result
+        with patch.object(bd.pl, "update", side_effect=fail_update), patch.object(bd.logger, "exception") as logged:
+            code, response = call({"name": "adopted", "adopt": True, "file": "art.png"})
+        check(code == 500 and logged.called and "디스크" in response["error"] and tmp not in str(response)
+              and saved == {p.relative_to(adopted): p.read_bytes() for p in adopted.rglob("*") if p.is_file()}, "B9A adopt 실패는 만든 파일만 정리")
+        check(call({"name": "adopted", "adopt": True, "file": "../art.png"})[0] == 400, "B9A adopt 폴더 밖 파일 거절")
+        code, response = call({"name": "adopted", "adopt": True, "file": "art.png"})
+        check(code == 200 and (adopted / "art_2.psd").exists() and all((adopted / p).read_bytes() == b for p, b in saved.items())
+              and not (adopted / "_source").exists(), "B9A adopt PSD _2·기존 파일 보존·복사 없음")
+        adopted_doc = bd.pl.load(str(adopted))
+        check(all(section in adopted_doc for section in bd.pl.SECTIONS)
+              and not any(field.startswith(("import.", "prepare.")) for field in adopted_doc["confirm"])
+              and Path(adopted_doc["import"]["psd_path"]) == adopted / "art_2.psd"
+              and Path(adopted_doc["import"]["refs_dir"]) == adopted / "refs"
+              and asyncio.run(bd.pipeline_prompt_handler(Request(query={"root": response["key"], "stage": "apply"}))).status == 200,
+              "B9A-R3 adopt 성공 pipeline 8절·confirm·경로·apply 200")
+        adopted_fail = parent / "adopted_no_refs"
+        adopted_fail.mkdir()
+        (adopted_fail / "art.png").write_bytes(original)
+        with patch.object(bd.pl, "update", side_effect=fail_update), patch.object(bd.logger, "exception"):
+            code, response = call({"name": adopted_fail.name, "adopt": True, "file": "art.png"})
+        check(code == 500 and {p.name for p in adopted_fail.iterdir()} == {"art.png"}
+              and (adopted_fail / "art.png").read_bytes() == original, "B9A-R3 adopt 실패는 새 refs·타깃·pipeline 정리·원본 보존")
+        with patch.object(store, "register_root", side_effect=OSError("private " + tmp)), patch.object(bd.logger, "exception") as logged:
+            code, response = call({"name": "register_fail", "path": str(src)})
+        check(code == 500 and logged.called and tmp not in str(response) and not (parent / "register_fail").exists(), "B9A 이동 뒤 등록 실패 정리·오류 경로 가림")
+        for exception, status, word in ((MemoryError(tmp), 503, "메모리"), (RuntimeError(tmp), 400, "그림 형식")):
+            with patch.object(bd, "_project_new_target", side_effect=exception), patch.object(bd.logger, "exception") as logged:
+                code, response = call({"name": "cause", "path": str(src)})
+            check(code == status and word in response["error"] and tmp not in str(response) and logged.called,
+                  "B9A-R2 예외별 안내·원인 로그 " + type(exception).__name__)
+
+        # 정리 함수 자체 오류와 rmtree 오류가 검증 거절을 덮지 않는다.
+        bad = bytearray(flat.read_bytes()); bad[22:24] = (16).to_bytes(2, "big")
+        real_cleanup = bd._project_new_cleanup
+        states = []
+        def cleanup_error(state, success):
+            states.append(state)
+            raise RuntimeError(tmp)
+        with patch.object(bd, "_project_new_cleanup", side_effect=cleanup_error), patch.object(bd.logger, "exception") as logged:
+            code, response = call(raw=bad, query={"name": "cleanup_error", "filename": "bad.psd"})
+        check(code == 400 and "8비트 RGB" in response["error"] and logged.called and tmp not in str(response),
+              "B9A-R2 cleanup 예외는 원래 16-bit 거절을 보존")
+        real_cleanup(states.pop(), False)
+        with patch.object(bd.shutil, "rmtree", side_effect=PermissionError(tmp)), \
+                patch.object(bd, "_project_new_cleanup", wraps=real_cleanup) as cleanup, patch.object(bd.logger, "exception") as logged:
+            code, response = call(raw=bad, query={"name": "cleanup_locked", "filename": "bad.psd"})
+        check(code == 400 and "8비트 RGB" in response["error"] and logged.called, "B9A-R2 rmtree 실패도 원래 거절 보존·로그")
+        real_cleanup(cleanup.call_args.args[0], False)
+        real_adoption = bd._project_adoption
+        def unreadable(root):
+            if Path(root).name == "many": raise PermissionError(tmp)
+            return real_adoption(root)
+        with patch.object(bd, "_project_adoption", side_effect=unreadable), patch.object(bd.logger, "exception") as logged:
+            listing = asyncio.run(bd.projects_handler(Request()))
+        rows = {r["name"]: r for r in json.loads(listing.text)["projects"]}
+        check(listing.status == 200 and not rows["many"]["openable"] and not rows["many"]["adoptable"]
+              and rows["adopted"]["openable"] and tmp not in listing.text and logged.called, "B9A-R4 읽기 권한 오류는 한 행에만 격리")
+        if os.name == "nt":
+            with patch.object(bd, "_PROJECT_INPUT", tmp.swapcase()), \
+                    patch.object(store, "register_root", side_effect=OSError(tmp)), patch.object(bd.logger, "exception"):
+                code, _ = call({"name": "mixed_case", "path": str(src)})
+                rejected, _ = call(raw=bad, query={"name": "mixed_tmp", "filename": "bad.psd"})
+            check(code == 500 and rejected == 400 and not (parent / "mixed_case").exists()
+                  and not list((t / bd._NEW_TMP_DIRNAME).iterdir()), "B9A-R4 input 대소문자 달라도 최종·임시 폴더 정리")
+        # 상위 정션·subst 는 realpath 대역으로 검사한다. 실제 링크나 드라이브는 만들지 않는다.
+        realpath = bd.os.path.realpath
+        def ancestor_alias(path):
+            resolved = realpath(path)
+            if os.path.normcase(resolved).startswith(os.path.normcase(tmp + os.sep)) or os.path.normcase(resolved) == os.path.normcase(tmp):
+                return os.path.normpath(os.path.join(tmp, "resolved_input", os.path.relpath(resolved, tmp)))
+            return resolved
+        with patch.object(bd.os.path, "realpath", side_effect=ancestor_alias):
+            state = bd._project_new_begin({"name": "ancestor_tmp", "path": str(src)}, False)
+            bd._project_new_cleanup(state, False)
+            check(not Path(state["tmp"]).exists(), "B9A-R2 상위 경로가 달라도 시작·임시 폴더 정리")
+            state = bd._project_new_begin({"name": "ancestor_moved", "path": str(src)}, False)
+            Path(state["root"]).mkdir()
+            Path(state["root"], "created.txt").write_bytes(b"created")
+            state["moved"] = True
+            bd._project_new_cleanup(state, False)
+            check(not Path(state["root"]).exists() and not Path(state["tmp"]).exists(), "B9A-R2 상위 경로가 달라도 최종 폴더 정리")
+        for leaf in (str(parent), str(t / bd._NEW_TMP_DIRNAME), str(parent / "leaf_link")):
+            def leaf_alias(path):
+                if os.path.normcase(str(path)) == os.path.normcase(leaf):
+                    return str(t / "elsewhere")
+                return realpath(path)
+            with patch.object(bd.os.path, "realpath", side_effect=leaf_alias), patch.object(bd, "_is_link", return_value=False):
+                expect_raises(lambda: bd._project_new_begin({"name": "leaf_link", "path": str(src)}, False),
+                              "B9A-R2 마지막 폴더의 경로 치환은 여전히 거절", bd._Reject)
+        state = bd._project_new_begin({"name": "cleanup_leaf", "path": str(src)}, False)
+        Path(state["root"]).mkdir()
+        state["moved"] = True
+        def replaced_leaf(path):
+            if str(path) in (state["root"], state["tmp"]):
+                return str(t / "elsewhere")
+            return realpath(path)
+        with patch.object(bd.os.path, "realpath", side_effect=replaced_leaf), patch.object(bd, "_is_link", return_value=False):
+            bd._project_new_cleanup(state, False)
+        check(Path(state["root"]).exists() and Path(state["tmp"]).exists(), "B9A-R2 마지막 폴더 경로가 바뀌면 삭제하지 않음")
+        bd._project_new_cleanup(state, False)
+        real_rename = bd.os.rename
+        attempts = {}
+        def temporarily_locked(source, dest):
+            if Path(dest).parent.name == "_source" or Path(dest).name == "rename_retry":
+                attempts[str(dest)] = attempts.get(str(dest), 0) + 1
+                if attempts[str(dest)] < 3: raise PermissionError(tmp)
+            return real_rename(source, dest)
+        with patch.object(bd.os, "rename", side_effect=temporarily_locked), patch.object(bd.time, "sleep") as sleeps:
+            code, _ = call({"name": "rename_retry", "path": str(src)})
+        check(code == 200 and list(attempts.values()) == [3, 3] and [c.args[0] for c in sleeps.call_args_list] == [.05, .1, .05, .1]
+              and (parent / "rename_retry/_source/art.png").read_bytes() == original, "B9A-R5 _source·최종 폴더 잠금 재시도 뒤 성공")
+        for exception, count in ((PermissionError(tmp), 6), (FileExistsError(tmp), 1)):
+            with patch.object(bd.os, "rename", side_effect=exception) as rename, patch.object(bd.time, "sleep") as sleeps:
+                expect_raises(lambda: bd._project_new_rename("unused", "unused"), "B9A-R5 rename 상한·충돌", type(exception))
+            check(rename.call_count == count and sleeps.call_count == count - 1, "B9A-R5 PermissionError 6회·FileExists 즉시 종료")
+        def race_rename(source, dest):
+            if str(dest) == str(parent / "race"):
+                Path(dest).mkdir()
+                Path(dest, "keep").write_bytes(b"other request")
+            return real_rename(source, dest)
+        with patch.object(bd.os, "rename", side_effect=race_rename):
+            check(call({"name": "race", "path": str(src)})[0] == 409, "B9A publish 경합 409")
+        check((parent / "race/keep").read_bytes() == b"other request", "B9A 경합 상대 폴더 보존")
+
+        async def contention():
+            started, release = asyncio.Event(), asyncio.Event()
+            class Slow(Request):
+                async def iter_chunked(self, size):
+                    started.set()
+                    await release.wait()
+                    yield self.raw
+            first = asyncio.create_task(bd.projects_new_handler(Slow(raw=original, query={"name": "slow", "filename": "a.png"})))
+            await started.wait()
+            second = await bd.projects_new_handler(Request({"name": "parallel", "path": str(src)}))
+            check(second.status == 409 and not (parent / "parallel").exists(), "B9A 동시에 두 생성 요청은 하나만")
+            first.cancel()
+            try: await first
+            except asyncio.CancelledError: pass
+            check(not bd._PROJECT_NEW_LOCK.locked() and not (parent / "slow").exists()
+                  and not list((t / bd._NEW_TMP_DIRNAME).iterdir()), "B9A 업로드 취소·임시 파일 정리·잠금 해제")
+        asyncio.run(contention())
+        check(call({"name": "after_cancel", "path": str(src)})[0] == 200, "B9A 취소 뒤 재시도")
+        entered, release = threading.Event(), threading.Event()
+        real_finish = bd._project_new_finish
+        def delayed_finish(state, target):
+            entered.set()
+            release.wait(5)
+            return real_finish(state, target)
+        async def cancel_publish():
+            with patch.object(bd, "_project_new_finish", side_effect=delayed_finish):
+                task = asyncio.create_task(bd.projects_new_handler(Request({"name": "cancel_publish", "path": str(src)})))
+                await asyncio.to_thread(entered.wait, 5)
+                task.cancel()
+                release.set()
+                try: await task
+                except asyncio.CancelledError: pass
+            check(not (parent / "cancel_publish").exists() and not bd._PROJECT_NEW_LOCK.locked()
+                  and store.resolve_board_root(store.root_key(str(parent / "cancel_publish"))) is None,
+                  "B9A publish 스레드 취소는 작업 종료 뒤 rollback·등록 키 비활성")
+        asyncio.run(cancel_publish())
+        output = t / "exclusive.psd"; output.write_bytes(b"keep")
+        expect_raises(lambda: dpsd.wrap_image_file(str(src), str(output)), "B9A 감싸기 배타 저장", FileExistsError)
+        check(output.read_bytes() == b"keep" and not list(t.glob(".base_*")), "B9A 감싸기 기존 파일·임시 파일 정리")
+        if os.name == "nt":
+            wrapped = t / "wrap_retry.psd"
+            def base_locked(source, dest):
+                if base_rename.call_count < 3:
+                    raise PermissionError("temporary lock")
+                return real_rename(source, dest)
+            with patch.object(dpsd.os, "rename", side_effect=base_locked) as base_rename, patch.object(dpsd.time, "sleep") as sleeps:
+                dpsd.wrap_image_file(str(src), str(wrapped))
+            check(base_rename.call_count == 3 and [c.args[0] for c in sleeps.call_args_list] == [.05, .1]
+                  and np.array_equal(dpsd.read_base(dpsd.open_psd(str(wrapped)))[0], expected), "B9A-R3 감싸기 최종 PSD rename 재시도 뒤 성공")
+            for exception, count in ((PermissionError("locked"), 6), (FileExistsError("exists"), 1)):
+                with patch.object(dpsd.os, "rename", side_effect=exception) as base_rename, patch.object(dpsd.time, "sleep") as sleeps:
+                    expect_raises(lambda: dpsd.wrap_image_file(str(src), str(wrapped)), "B9A-R3 감싸기 rename 실패", type(exception))
+                check(base_rename.call_count == count and [c.args[0] for c in sleeps.call_args_list] == [.05 * (i + 1) for i in range(count - 1)]
+                      and not list(t.glob(".base_*")), "B9A-R3 감싸기 6회 상한·충돌 즉시·임시 파일 정리")
+            failure = FileExistsError("original collision")
+            with patch.object(dpsd.os, "rename", side_effect=failure), patch.object(dpsd.os, "remove", side_effect=PermissionError("cleanup lock")), \
+                    patch.object(dpsd.logger, "exception") as logged:
+                try:
+                    dpsd.wrap_image_file(str(src), str(wrapped))
+                except Exception as error:
+                    check(error is failure and logged.called, "B9A-R3 임시 삭제 실패는 로그만·원래 충돌 예외 유지")
+                else:
+                    check(False, "B9A-R3 원래 충돌 예외가 사라짐")
+            for leftover in t.glob(".base_*"):
+                leftover.unlink()
+
+        # 실제 Import 의 PSD 읽기 본문을 실행한다. ComfyUI 전체 import 대신 진행 표시만 대역으로 둔다.
+        # GPU·서버·사용자 설정을 건드리지 않고 새 타깃의 크롭 0 Import 를 검증한다.
+        tree = ast.parse((PKG / "bmk_design_patch.py").read_text(encoding="utf-8"))
+        names = {"_json_default", "_plain", "_auto_group", "_psd_rects", "_empty_start", "_base_lines"}
+        functions = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
+        cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "BMKDesignPatchImportPSD")
+        importer = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "_import")
+        importer.decorator_list = []
+        ns = {"json": json, "np": np, "os": os, "time": time, "dpsd": dpsd, "store": store,
+              "comfy": types.SimpleNamespace(utils=types.SimpleNamespace(ProgressBar=lambda n: types.SimpleNamespace(update=lambda n: None)))}
+        exec(compile(ast.Module(body=functions + [importer], type_ignores=[]), "<Import PSD local test>", "exec"), ns)
+        manifest = store.load_manifest(str(root))
+        heavy = {k: doc["import"][k] for k in ("crop_group", "clean_plate_layer", "base_layer", "crop_pixels_group")}
+        heavy.update(psd=doc["import"]["psd_path"], fingerprint=store.file_fingerprint(doc["import"]["psd_path"]))
+        ns["_import"](str(root), manifest, doc["import"]["psd_path"], heavy)
+        with Image.open(store.resolve_path(str(root), manifest["base"])) as base_image:
+            check(manifest["crops"] == [] and manifest["canvas"] == [96, 64] and np.array_equal(np.asarray(base_image), expected),
+                  "B9A 실제 Import PSD 본문: 빈 시작 크롭 0·베이스 픽셀 일치")
+
+    node = shutil.which("node")
+    if not node:
+        skip("node 없음 → B9A 브라우저 하네스 생략")
+        return
+    js = r'''
+const fs=require("fs"),vm=require("vm"),path=require("path"),out={},key="123456789abc";
+const test=(name,v)=>out[name]=!!v;
+class E {
+  constructor(tag){this.tagName=tag.toUpperCase();this.children=[];this.events={};this.value="";this.textContent="";this.classList={add(){},remove(){},toggle(){}};}
+  append(...v){this.children.push(...v);if(this.tagName==="SELECT"&&!this.value)this.value=v[0]?.value||"";}
+  replaceChildren(...v){this.children=v;} setAttribute(k,v){this[k]=v;} addEventListener(k,f){this.events[k]=f;} focus(){}
+  all(){return [this,...this.children.flatMap(e=>e.all())];}
+}
+function browser(search=""){
+  const els={},calls=[],moves=[],replaced=[],notes=new Map(),location={origin:"http://offline",pathname:"/bmk/design_patch/board/",search,
+    href:"http://offline/bmk/design_patch/board/"+search,assign:v=>moves.push(v)};
+  const document={body:new E("body"),createElement:t=>new E(t),getElementById:id=>els[id]||=(new E("div"))};
+  const window={history:{replaceState:(a,b,u)=>{replaced.push(u);location.href=location.origin+u;}},
+    sessionStorage:{getItem:k=>notes.get(k),setItem:(k,v)=>notes.set(k,v),removeItem:k=>notes.delete(k)}};
+  let response={projects:[]},status=200;
+  const ctx={window,document,location,URL,URLSearchParams,console,setTimeout:()=>0,clearTimeout(){},
+    fetch:async(u,o)=>{calls.push([u,o]);return {ok:status===200,status,json:async()=>response};}};
+  vm.createContext(ctx);
+  vm.runInContext(fs.readFileSync(path.join(process.argv[1],"web_design_patch/board.js"),"utf8").replace("  main();",
+    "globalThis.T={showProjects,newProjectForm,consumeNewProject,projectNameError,renderHeader,toast,setState:s=>{S=s;}};"),ctx);
+  return {ctx,els,calls,moves,replaced,notes,T:ctx.T,response:(v,s=200)=>{response=v;status=s;}};
+}
+const find=(host,cls)=>host.all().find(e=>e.className===cls);
+const submit=host=>find(host,"projects-form").events.submit({preventDefault(){}});
+(async()=>{
+  const b=browser();b.response({projects:[{name:"old",openable:false,adoptable:true,files:["a.png"],error:"만들기 전"}]});
+  await b.T.showProjects();test("목록 새 프로젝트·이 폴더로 시작",!!find(b.els.app,"projects-new")&&!!find(b.els.app,"projects-adopt"));
+  find(b.els.app,"projects-new").events.click();
+  const name=find(b.els.app,"projects-new-name"),pick=find(b.els.app,"projects-new-file"),p=find(b.els.app,"projects-new-path");
+  name.value="CON";name.events.input();test("입력 중 이름 검사",find(b.els.app,"projects-create").disabled);
+  name.value="새-project";name.events.input();
+  pick.files=[{name:"a.png",size:2*1024**3+1}];pick.events.change();await submit(b.els.app);
+  test("2GB 클라 가드",b.calls.length===1&&find(b.els.app,"projects-form-status").textContent.includes("2GB"));
+  const file={name:"한글.png",size:100};pick.files=[file];pick.events.change();b.response({key,name:"새-project",notes:["흰색 안내"]});
+  await submit(b.els.app);const [url,options]=b.calls[1];
+  test("File 그대로 스트리밍·질의",options.body===file&&options.headers["Content-Type"]==="application/octet-stream"
+    &&new URL(url).searchParams.get("name")==="새-project"&&new URL(url).searchParams.get("filename")===file.name);
+  test("성공 뒤 new=1 같은 창 이동",b.moves[0]==="?root="+key+"&new=1");
+  test("notes 다음 화면 전달",JSON.parse(b.notes.get("bmk-dp-new:"+key))[0]==="흰색 안내");
+  const a=browser(),host=new E("div");a.T.newProjectForm(host,{name:"adopt",files:["a.png"]},()=>{});a.response({key});await submit(host);
+  test("adopt 이름 고정·직계 파일·업로드 없음",find(host,"projects-new-name").readOnly&&!find(host,"projects-new-path")
+    &&JSON.stringify(JSON.parse(a.calls[0][1].body))===JSON.stringify({name:"adopt",adopt:true,file:"a.png"}));
+  const c=browser(),h=new E("div");c.T.newProjectForm(h,null,()=>{});find(h,"projects-new-name").value="path";
+  find(h,"projects-new-path").value=' "C:\\art\\a.png" ';find(h,"projects-new-path").events.input();c.response({error:"동일 이름"},409);await submit(h);
+  test("경로 따옴표·실패 후 재시도",JSON.parse(c.calls[0][1].body).path==="C:\\art\\a.png"&&!find(h,"projects-create").disabled
+    &&find(h,"projects-form-status").textContent==="동일 이름"&&c.moves.length===0);
+  const dropped={name:"drop.webp",size:90};find(h,"projects-form").events.drop({preventDefault(){},dataTransfer:{files:[dropped]}});
+  c.response({key});await submit(h);test("끌어 놓기 File 업로드",c.calls[1][1].body===dropped);
+  const fresh=browser("?root="+key+"&new=1&mode=prepare");fresh.notes.set("bmk-dp-new:"+key,'["note"]');
+  const read=fresh.T.consumeNewProject();test("new 플래그 바로 소비·새로고침 중복 없음",read[0]==="note"&&fresh.replaced[0]==="/bmk/design_patch/board/?root="+key+"&mode=prepare"
+    &&fresh.T.consumeNewProject()===null&&!fresh.notes.size);
+  const header=browser(),state={project:"new",canvas:null,crops:[],counts:{targets:0,candidates:0,picks:0},cost:{calls:0}};
+  header.T.setState(state);header.T.renderHeader.newNotes=["투명한 곳은 흰색으로 채웠습니다"];
+  header.T.renderHeader();header.T.toast("반영을 대기열에 넣음");header.T.renderHeader();
+  test("B9A-R3 토스트·폴링 뒤에도 변환 안내 유지",header.els.badges.all().some(e=>e.textContent.includes("흰색"))
+    &&header.els.badges.all().some(e=>e.textContent==="가져오기 전 — [반영 (무료)]"));
+  header.T.setState({...state,canvas:{}});header.T.renderHeader();
+  test("B9A-R3 Import 뒤 안내 해제",header.T.renderHeader.newNotes.length===0&&!header.els.badges.all().some(e=>e.textContent.includes("흰색")));
+  header.T.setState(state);header.T.renderHeader();
+  test("B9A-R3 나중 빈 캔버스에도 옛 notes 없음",!header.els.badges.all().some(e=>e.textContent.includes("흰색")));
+  for(const name of ["한글_1","Åβ-1","dot.name"])test("유효 이름 "+name,!b.T.projectNameError(name));
+  console.log(JSON.stringify(out));
+})().catch(e=>{console.error(e);process.exit(1);});
+'''
+    completed = subprocess.run([node, "-e", js, str(PKG)], capture_output=True, text=True, encoding="utf-8")
+    check(completed.returncode == 0, "B9A JS 하네스 " + completed.stderr[-1200:])
+    if completed.returncode == 0:
+        for name, ok in json.loads(completed.stdout).items(): check(ok, "B9A JS " + name)
+    pj = (PKG / "web_design_patch/pipeline.js").read_text(encoding="utf-8")
+    auto = _layout_js_fn(pj, "pipelineLoaded", indent="    ") + "\n}"
+    script = "let autoApply=true,S={canvas:null},PS={P:{},err:null},n=0; const opts={newNotes:[],toast(){}},render=()=>{},firstSetup=()=>{},queue=()=>{n++;};\n" + auto + "\npipelineLoaded();pipelineLoaded();console.log(n);"
+    completed = subprocess.run([node, "-e", script], capture_output=True, text=True, encoding="utf-8")
+    check(completed.returncode == 0 and completed.stdout.strip() == "1", "B9A 첫 진입 자동 무료 반영 1회 " + completed.stderr[-500:])
+    script = "let autoApply=true,S={canvas:null},PS={P:null,err:'offline'},n=0; const opts={newNotes:[],toast(){}},render=()=>{},firstSetup=()=>{},queue=()=>{n++;};\n" + auto \
+        + "\npipelineLoaded();if(n)throw Error('before load');PS.P={};PS.err=null;pipelineLoaded();pipelineLoaded();autoApply=true;S.canvas={};pipelineLoaded();console.log(n);"
+    completed = subprocess.run([node, "-e", script], capture_output=True, text=True, encoding="utf-8")
+    check(completed.returncode == 0 and completed.stdout.strip() == "1", "B9A 설정 읽기 실패 뒤 한 번·가져온 프로젝트 재큐 없음")
+    finish = _layout_js_fn(pj, "finishNewProject", indent="    ") + "\n}"
+    script = r'''
+let S=null,autoApply=true;const messages=[],opts={newProject:true,newNotes:["white"],toast:s=>messages.push(s)};
+''' + finish + r'''
+const empty={canvas:null,crops:[]},imported={canvas:{},crops:[]};
+finishNewProject(empty);S=empty;finishNewProject(empty);
+if(messages.length||!opts.newProject)throw Error("before import");
+finishNewProject(imported);
+if(messages.length!==1||opts.newProject||opts.newNotes.length||autoApply||!messages[0].includes("추가하세요"))throw Error("first transition");
+if(!messages[0].endsWith(" · white"))throw Error("completion must retain conversion notes");
+S=imported;finishNewProject(imported);S=empty;finishNewProject(imported);
+if(messages.length!==1)throw Error("later apply repeated completion");
+opts.newProject=true;S=empty;finishNewProject({canvas:{},crops:[{},{},{}]});
+if(messages.length!==2||!messages[1].includes("3개")||messages[1].includes("추가하세요"))throw Error("crop count");
+if(messages[1].includes("white"))throw Error("old conversion notes repeated");
+opts.newProject=true;S=null;finishNewProject(imported);
+if(messages.length!==2||opts.newProject)throw Error("already imported on first read");
+console.log("PASS");
+'''
+    completed = subprocess.run([node, "-e", script], capture_output=True, text=True, encoding="utf-8")
+    check(completed.returncode == 0 and completed.stdout.strip() == "PASS"
+          and "finishNewProject(st)" in _layout_js_fn(pj, "stateChanged", indent="    "),
+          "B9A-R3 최초 canvas 전환 1회만 완료·플래그 해제·크롭 수 안내 " + completed.stderr[-700:])
+    bj = (PKG / "web_design_patch/board.js").read_text(encoding="utf-8")
+    check("const newNotes = consumeNewProject();" in bj and "newProject: newNotes !== null, newNotes" in bj
+          and "let autoApply = !!opts.newProject;" in pj, "B9A-R3 board newProject 전달→pipeline autoApply 초기화 연결")
+    check('if (!S.canvas)' in _layout_js_fn(bj, "renderHeader") and '가져오기 전 — [반영 (무료)]' in bj
+          and 'first.addEventListener("click", () => applyFree())' in bj, "B9A 가져오기 전 머리줄·재시도 버튼")
 
 
 def batch9b_unit():
