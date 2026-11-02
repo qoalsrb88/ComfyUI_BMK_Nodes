@@ -380,7 +380,8 @@ export class Model {
 
 export function formatGuessRule(rule) {
   let text = `${rule.pattern ?? ""} => ${rule.primary ?? ""}`;
-  if (rule.regions?.length) text += ` | ${rule.regions.join(" ")}`;
+  const regions = splitItems(rule.regions);   // 코어처럼 "a, b" 글도 받는다
+  if (regions.length) text += ` | ${regions.join(" ")}`;
   if (rule.identity) text += " | identity";
   if (rule.rating) text += ` | rating=${rule.rating}`;
   return text;
