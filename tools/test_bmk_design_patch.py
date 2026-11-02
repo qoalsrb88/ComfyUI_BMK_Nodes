@@ -55358,6 +55358,30 @@ console.log(JSON.stringify(out));
         except bd9._Reject as e:
             keep9 = e.message
         check(keep9 == keep, f"B9 통합 — 경로 없는 문구는 그대로 {keep!r} → {keep9!r}")
+    # 경로를 싣는 원천(없는 refs 폴더)은 정규식과 상관없이 보관함 라우트에서 가림 — 공백·단일 구성요소 경로도. 기존 라우트 문구는 그대로
+    for path9 in ("/refs", "/Project Data/refs", "\\\\NAS\\공유 폴더\\refs", "Z:\\없는 폴더\\refs"):
+        with patch.object(bd9, "_refs_dir", return_value=path9):
+            try:
+                bd9._refs_dir_for_write({})
+                own9 = None
+            except bd9._Reject as e:
+                own9 = e.message
+            try:
+                asyncio.run(bd9._pool_route(bd9._refs_dir_for_write, {}))
+                out9 = None
+            except bd9._Reject as e:
+                out9 = e.message
+        check(own9 == f"레퍼런스 폴더가 없습니다: {path9}" and out9 == "레퍼런스 폴더가 없습니다 — ① 준비에서 refs 폴더를 확인하세요",
+              f"B9 통합 — 없는 refs 폴더 {path9!r}: 기존 라우트 {own9!r} · 보관함 라우트 {out9!r}")
+    doc9 = {"schema": "x", "rev": 1, "refs_dir": "/old refs", "links": {}, "files": {}, "sheets": []}
+    with patch.object(bd9.drefs, "load_refs", return_value=doc9):
+        try:
+            asyncio.run(bd9._pool_route(bd9._refs_at, "root", 1, "/new refs"))
+            out9 = None
+        except bd9._Reject as e:
+            out9 = e
+    check(out9 is not None and out9.status == 409 and out9.message == bd9._DIR_MISMATCH_SAFE and "/old refs" not in out9.message,
+          f"B9 통합 — refs 폴더 불일치 409 도 보관함 라우트에선 경로 없음 {getattr(out9, 'message', None)!r}")
 
 
 def ext60_unit():

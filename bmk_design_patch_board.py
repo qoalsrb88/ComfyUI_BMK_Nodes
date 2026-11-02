@@ -362,6 +362,14 @@ class _Reject(Exception):
         self.extra = extra
 
 
+class _PathReject(_Reject):
+    """메시지에 서버 경로가 든 거절. 기존 레퍼런스 라우트는 message 그대로(자기 프로젝트 안내), 보관함 라우트(_pool_raise)는 경로 없는 safe 만 내보낸다."""
+
+    def __init__(self, status: int, message: str, safe: str, **extra):
+        super().__init__(status, message, **extra)
+        self.safe = safe
+
+
 # ══════════════════════════════════════════════════════════════════════
 # drain / run 레지스트리 (Run 노드·runner 가 조회)
 # runner.run_calls 는 자기 레지스트리(is_running / request_drain / drain_requested)를 가진다. 그 Run 이 돌고 있으면
@@ -4077,6 +4085,7 @@ def ref_cut_state(root: str, req_id) -> dict:
 
 _DIR_MISMATCH = ("refs.json 의 refs_dir({doc})가 지금 refs_dir({now})와 달라 연결을 무시하는 중입니다 — Import PSD 의 refs_dir 를 "
                  "되돌리거나 refs.json 을 치운 뒤 고치세요")
+_DIR_MISMATCH_SAFE = "refs.json 의 레퍼런스 폴더가 지금 설정과 다릅니다 — Import PSD 의 refs_dir 를 되돌리거나 refs.json 을 치운 뒤 고치세요"
 
 
 def _refs_dir_for_write(m: dict) -> str:
@@ -4085,7 +4094,7 @@ def _refs_dir_for_write(m: dict) -> str:
     if not refs_dir:
         raise _Reject(400, "refs_dir 가 비었습니다 — Import PSD 의 refs_dir 에 <project>\\refs 를 넣고 큐하세요")
     if not os.path.isdir(refs_dir):
-        raise _Reject(400, f"레퍼런스 폴더가 없습니다: {refs_dir}")
+        raise _PathReject(400, f"레퍼런스 폴더가 없습니다: {refs_dir}", "레퍼런스 폴더가 없습니다 — ① 준비에서 refs 폴더를 확인하세요")
     return refs_dir
 
 
@@ -4105,7 +4114,7 @@ def _write_refs(root: str, rev: int | None, refs_dir: str, mutate: Callable[[dic
         if not d:
             d.update(drefs.new_refs(refs_dir))
         elif not drefs.same_refs_dir(d["refs_dir"], refs_dir):
-            raise _Reject(409, _DIR_MISMATCH.format(doc=d["refs_dir"], now=refs_dir))
+            raise _PathReject(409, _DIR_MISMATCH.format(doc=d["refs_dir"], now=refs_dir), _DIR_MISMATCH_SAFE)
         return mutate(d)
 
     with _refs_write_lock(root):
@@ -4119,7 +4128,7 @@ def _refs_at(root: str, rev: int | None, refs_dir: str) -> dict | None:
     if now != rev:
         raise drefs.RefsConflict(f"레퍼런스가 다른 창에서 바뀌었습니다(rev {rev} → {now}) — 새로고침")
     if doc is not None and not drefs.same_refs_dir(doc["refs_dir"], refs_dir):
-        raise _Reject(409, _DIR_MISMATCH.format(doc=doc["refs_dir"], now=refs_dir))
+        raise _PathReject(409, _DIR_MISMATCH.format(doc=doc["refs_dir"], now=refs_dir), _DIR_MISMATCH_SAFE)
     return doc
 
 
@@ -4705,7 +4714,7 @@ async def _pool_route(fn, *args):
         _pool_raise(e)
 
 
-# 응답에 실으면 안 되는 경로 꼴: 드라이브(C:\ C:/)·UNC(\\서버\ //서버/)·POSIX 절대 경로(줄 처음·공백·콜론·따옴표·괄호 뒤 '/폴더/')
+# 그 밖 문구의 안전망 — 경로를 싣는 원천은 _PathReject 로 가른다. 드라이브(C:\ C:/)·UNC(\\서버\ //서버/)·POSIX 절대 경로(줄 처음·공백·콜론·따옴표·괄호 뒤 '/폴더/')
 _POOL_PATH_RE = re.compile(r"[A-Za-z]:[\\/]|\\\\[^\\\s]|//[^/\s]|(?:^|[\s:'\"(=])/[^/\s]+/")
 
 
@@ -4715,6 +4724,9 @@ def _pool_raise(e):
         logger.warning("%s 레퍼런스 파일 오류: %s", _TAG, e)
         status = 409 if isinstance(e, FileExistsError) else 404 if isinstance(e, FileNotFoundError) else 500
         raise _Reject(status, "파일을 읽거나 쓰지 못했습니다 — 권한·잠금 확인") from None
+    if isinstance(e, _PathReject):
+        logger.warning("%s 레퍼런스 요청 거절(경로 가림): %s", _TAG, e.message)
+        raise _Reject(e.status, e.safe) from None
     if isinstance(e, _Reject):
         if _POOL_PATH_RE.search(e.message):
             logger.warning("%s 레퍼런스 요청 거절(경로 가림): %s", _TAG, e.message)
