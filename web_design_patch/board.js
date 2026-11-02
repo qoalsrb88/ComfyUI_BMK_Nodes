@@ -959,6 +959,13 @@
     $("proj").textContent = `${S.project} · 크롭 ${S.crops.length} · 타깃 ${S.counts.targets} · 후보 ${S.counts.candidates} · pick ${S.counts.picks}`;
     const b = $("badges");
     b.replaceChildren();
+    if (!S.canvas) {
+      const first = el("button", "badge b-wait", "가져오기 전 — [반영 (무료)]");
+      first.type = "button";
+      first.addEventListener("click", () => applyFree());
+      b.append(first);
+      if ((renderHeader.newNotes || []).length) b.append(el("span", "badge b-wait", renderHeader.newNotes.join(" · ")));
+    } else renderHeader.newNotes = [];
     if (S.backend_mock) b.append(el("span", "badge b-mock", "MOCK 백엔드 (과금 없음)"));
     if (S.running) b.append(el("span", "badge b-run", "Run 진행 중"));
     if (S.drain) b.append(el("span", "badge b-drain", "새 호출 멈춤 요청됨"));
@@ -1551,6 +1558,124 @@
     move();
   }
 
+  function consumeNewProject() {
+    const url = new URL(location.href);
+    if (url.searchParams.get("new") !== "1") return null;
+    url.searchParams.delete("new");
+    window.history.replaceState(null, "", url.pathname + url.search + url.hash);
+    let notes = [];
+    try {
+      const key = "bmk-dp-new:" + ROOT;
+      notes = JSON.parse(window.sessionStorage.getItem(key) || "[]");
+      window.sessionStorage.removeItem(key);
+    } catch (_) { /* 저장소가 막혀도 무료 반영은 가능 */ }
+    return Array.isArray(notes) ? notes.filter((n) => typeof n === "string") : [];
+  }
+
+  function projectNameError(value) {
+    const name = value.trim();
+    if (!name || !/^[\p{L}\p{N}_\.\-]+$/u.test(name)) return "이름에는 문자·숫자·_ - . 만 쓸 수 있습니다";
+    if (name.includes("..") || name.endsWith(".")) return "'..' 또는 '.' 로 끝나는 이름은 쓸 수 없습니다";
+    if (/^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$/i.test(name)) return "Windows 예약 이름은 쓸 수 없습니다";
+    return "";
+  }
+
+  function newProjectForm(host, adopted, setBusy) {
+    const form = el("form", "projects-form");
+    const title = el("h2", "", adopted ? "이 폴더로 시작" : "새 프로젝트");
+    const name = el("input", "projects-new-name");
+    name.type = "text";
+    name.value = adopted ? adopted.name : "";
+    name.readOnly = !!adopted;
+    const pick = el(adopted ? "select" : "input", "projects-new-file");
+    if (adopted) {
+      for (const file of adopted.files || []) {
+        const opt = el("option", "", file);
+        opt.value = file;
+        pick.append(opt);
+      }
+    } else {
+      pick.type = "file";
+      pick.accept = ".psd,.psb,.png,.jpg,.jpeg,.webp";
+    }
+    const path = el("input", "projects-new-path");
+    path.type = "text";
+    path.placeholder = "탐색기에서 복사한 파일 전체 경로";
+    const feedback = el("p", "projects-form-status");
+    feedback.setAttribute("role", "status");
+    const create = el("button", "projects-create", "만들기");
+    create.type = "submit";
+    const close = el("button", "projects-close", "닫기");
+    close.type = "button";
+    const field = (text, input) => {
+      const label = el("label", "projects-field", text);
+      label.append(input);
+      form.append(label);
+    };
+    form.append(title);
+    field("프로젝트 이름", name);
+    field(adopted ? "폴더 안 타깃 그림" : "타깃 그림 — 파일 고르기 또는 여기로 한 장 끌어 놓기", pick);
+    if (!adopted) field("또는 전체 경로", path);
+    form.append(el("p", "projects-note", "모델 gpt-image-2.5-sunburst · 품질 max · 4장 · 변형 V1,V4 — 바꾸려면 만든 뒤 ① 준비"),
+      feedback, create, close);
+    let selected = null, sending = false;
+    function validate() {
+      const why = projectNameError(name.value);
+      const fileError = selected && (selected.size > 2 * 1024 ** 3 ? "파일은 2GB 까지 올릴 수 있습니다"
+        : !/\.(psd|psb|png|jpe?g|webp)$/i.test(selected.name) ? "PSD·PSB·PNG·JPG·WEBP 파일만 받습니다" : "");
+      feedback.textContent = why || fileError || "";
+      create.disabled = sending || !!why || !!fileError || !(adopted ? pick.value : selected || path.value.trim());
+      return !create.disabled;
+    }
+    name.addEventListener("input", validate);
+    pick.addEventListener("change", () => {
+      if (!adopted) { selected = pick.files && pick.files[0]; path.value = ""; }
+      validate();
+    });
+    path.addEventListener("input", () => { selected = null; pick.value = ""; validate(); });
+    path.addEventListener("change", () => { path.value = path.value.trim().replace(/^(["'])(.*)\1$/, "$2").trim(); validate(); });
+    form.addEventListener("dragover", (e) => { e.preventDefault(); });
+    form.addEventListener("drop", (e) => {
+      e.preventDefault();
+      if (adopted || sending) return;
+      const files = e.dataTransfer && e.dataTransfer.files;
+      if (!files || files.length !== 1) { feedback.textContent = "타깃 그림 한 장만 놓으세요"; return; }
+      selected = files[0]; path.value = ""; pick.value = "";
+      if (validate()) feedback.textContent = selected.name;
+    });
+    close.addEventListener("click", () => { if (!sending) host.replaceChildren(); });
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      if (sending || !validate()) return;
+      let url = apiUrl("projects/new");
+      const options = { method: "POST", headers: { "Content-Type": "application/json" } };
+      if (adopted) options.body = JSON.stringify({ name: name.value.trim(), adopt: true, file: pick.value });
+      else if (selected) {
+        url = apiUrl("projects/new?" + new URLSearchParams({ name: name.value.trim(), filename: selected.name }));
+        options.headers["Content-Type"] = "application/octet-stream";
+        options.body = selected;
+      } else options.body = JSON.stringify({ name: name.value.trim(), path: path.value.trim().replace(/^(["'])(.*)\1$/, "$2").trim() });
+      sending = true; setBusy(true);
+      for (const input of [name, pick, path, create, close]) input.disabled = true;
+      feedback.textContent = "그림을 받아 프로젝트를 만드는 중…";
+      try {
+        const response = await fetch(url, options);
+        const result = await readJson(response);
+        if (!response.ok || !/^[0-9a-f]{12}$/.test(result.key || "")) throw new Error(result.error || "프로젝트를 만들지 못했습니다");
+        try { window.sessionStorage.setItem("bmk-dp-new:" + result.key, JSON.stringify(result.notes || [])); } catch (_) { /* 저장소 차단 */ }
+        location.assign(`?root=${encodeURIComponent(result.key)}&new=1`);
+      } catch (err) {
+        sending = false; setBusy(false);
+        for (const input of [name, pick, path, close]) input.disabled = false;
+        validate();
+        feedback.textContent = err.message;
+      }
+    });
+    host.replaceChildren(form);
+    validate();
+    name.focus();
+  }
+
   async function showProjects() {
     document.body.classList.add("projects-page");
     for (const id of ["modebar", "keybar", "btn-projects", "btn-viewer", "btn-queue", "btn-drain", "btn-help"]) $(id).hidden = true;
@@ -1567,19 +1692,28 @@
     const status = el("p", "projects-status", "프로젝트를 불러오는 중…");
     status.setAttribute("role", "status");
     const grid = el("div", "projects-grid");
-    tools.append(search, reload);
-    page.append(tools, status, grid,
-      el("p", "projects-note", "새 프로젝트: ComfyUI Project 노드로 먼저 만드세요."),
+    const newButton = el("button", "projects-new", "새 프로젝트");
+    newButton.type = "button";
+    const formHost = el("div", "projects-form-host");
+    tools.append(search, reload, newButton);
+    page.append(tools, formHost, status, grid,
+      el("p", "projects-note", "Studio [새 프로젝트]에서 이름과 타깃 그림 한 장으로 시작하세요."),
       el("p", "projects-note", "input 밖 프로젝트는 ComfyUI 재시작 뒤 해당 프로젝트 노드를 다시 실행해야 목록에 나타납니다."));
     $("app").replaceChildren(page);
     let rows = [];
     let opening = false;
+    function setCreating(value) {
+      opening = value;
+      reload.disabled = newButton.disabled = search.disabled = value;
+      draw();
+    }
+    newButton.addEventListener("click", () => { if (!opening) newProjectForm(formHost, null, setCreating); });
 
     function draw() {
       grid.replaceChildren();
       const query = search.value.trim().toLocaleLowerCase();
       const shown = rows.filter((r) => r.name.toLocaleLowerCase().includes(query));
-      status.textContent = shown.length ? `${shown.length}개 프로젝트` : query ? "검색 결과가 없습니다." : "프로젝트가 없습니다 — Project 노드로 먼저 만드세요.";
+      status.textContent = shown.length ? `${shown.length}개 프로젝트` : query ? "검색 결과가 없습니다." : "프로젝트가 없습니다 — Studio [새 프로젝트]로 시작하세요.";
       for (const r of shown) {
         const card = el("article", `projects-card${r.openable ? "" : " projects-unavailable"}`);
         const picture = el("div", "projects-picture", r.before_import ? "가져오기 전" : "미리보기 없음");
@@ -1594,7 +1728,17 @@
         if (r.openable) card.append(picture);
         card.append(el("h2", "projects-name", r.name));
         if (r.outside_input) card.append(el("span", "projects-chip", "input 밖"));
-        if (!r.openable) card.append(el("p", "projects-note", r.error));
+        if (!r.openable) {
+          card.append(el("p", "projects-note", r.error));
+          if (r.adoptable) {
+            const adopt = el("button", "projects-adopt", "이 폴더로 시작");
+            adopt.type = "button";
+            adopt.disabled = opening || !(r.files || []).length;
+            adopt.title = (r.files || []).length ? "이 폴더 안 그림을 골라 시작합니다" : "폴더 바로 아래에 타깃 그림을 먼저 넣으세요";
+            adopt.addEventListener("click", () => { if (!opening) newProjectForm(formHost, r, setCreating); });
+            card.append(adopt);
+          }
+        }
         else {
           card.append(el("p", "projects-counts", `크롭 ${r.crops} · ★ ${r.stars} · 후보 ${r.candidates}`));
           if (r.before_import) card.append(el("span", "projects-chip", "가져오기 전"));
@@ -1860,6 +2004,8 @@
   }
 
   async function main() {
+    const newNotes = consumeNewProject();
+    renderHeader.newNotes = newNotes || [];
     if (!ROOT) {
       await showProjects();
       return;
@@ -1903,6 +2049,7 @@
       });
       pipe = window.DPPipeline.create({ list: $("pipe-list"), panel: $("pipe-panel"), head: $("pipe-head") }, {
         apiUrl, comfyUrl, root: ROOT, toast, drain, goTarget, goMask, goGrow, link: tabLink,
+        newProject: newNotes !== null, newNotes,
         goMode: (mode, cropId) => {
           const t = S && cropId ? S.targets.find((x) => x.crop_id === cropId) : null;
           if (t) selectTarget(t.key);

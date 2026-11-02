@@ -1526,6 +1526,156 @@ class PSDWriter:
 
 
 # ═════════════════════════════════════════════════════════════════
+# 새 프로젝트 타깃 감싸기
+# ═════════════════════════════════════════════════════════════════
+def wrap_base_image(image: Image.Image, path: str) -> list[str]:
+    """그림 한 장을 I2I_base PSD 로 배타 저장한다. 원본·기존 목적 파일은 바꾸지 않는다."""
+    notes = []
+    if image.mode.startswith("I;16") or image.mode == "I":
+        # 16-bit 회색 PNG 를 convert('RGB') 하면 255 이상이 잘리므로 먼저 8-bit 로 축소한다.
+        image = Image.fromarray((np.clip(np.asarray(image), 0, 65535) / 257.0).round().astype(np.uint8))
+    rgba = image.convert("RGBA")
+    if rgba.getchannel("A").getextrema()[0] < 255:
+        notes.append("투명한 곳은 흰색으로 채웠습니다")
+    rgb = Image.new("RGB", rgba.size, "white")
+    rgb.paste(rgba, mask=rgba.getchannel("A"))
+    pixels = np.asarray(rgb)
+    writer = PSDWriter(rgb.size)
+    writer.add_pixel(None, "I2I_base", pixels, 0, 0)
+    tmp = os.path.join(os.path.dirname(path), f".base_{_uuid.uuid4().hex}.psd")
+    try:
+        writer.save(tmp, composite=pixels)
+        if os.name == "nt":
+            for attempt in range(6):
+                try:
+                    os.rename(tmp, path)
+                    break
+                except PermissionError:
+                    if attempt == 5:
+                        raise
+                    time.sleep(0.05 * (attempt + 1))
+        else:
+            os.link(tmp, path)
+    finally:
+        try:
+            os.remove(tmp)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            logger.exception("%s 새 프로젝트 PSD 임시 파일 정리 실패: %s", _TAG, tmp)
+    return notes
+
+
+class ImageDecodeError(ValueError):
+    """새 프로젝트 그림의 디코드 실패. 출력 파일 쓰기 오류와 구분한다."""
+
+
+def wrap_image_file(source: str, path: str) -> list[str]:
+    """PNG/JPG/WEBP 에 EXIF 방향·ICC→sRGB 를 적용한 뒤 8-bit RGB PSD 로 감싼다."""
+    from PIL import ImageOps
+    try:
+        with Image.open(source) as image:
+            image.load()
+            decoded = ImageOps.exif_transpose(image)
+    except (OSError, SyntaxError, EOFError, struct.error, ValueError) as exc:
+        raise ImageDecodeError("그림 파일이 깨졌거나 잘렸습니다") from exc
+    notes = []
+    profile = decoded.info.get("icc_profile")
+    if profile is not None:
+        try:
+            from PIL import ImageCms
+            color = decoded
+            if decoded.mode in ("P", "PA", "RGBA"):
+                color = decoded.convert("RGB")
+            elif decoded.mode == "LA":
+                color = decoded.getchannel("L")
+            elif decoded.mode.startswith("I;16") or decoded.mode == "I":
+                color = Image.fromarray((np.clip(np.asarray(decoded), 0, 65535) / 257.0).round().astype(np.uint8))
+            converted = ImageCms.profileToProfile(color, io.BytesIO(profile), ImageCms.createProfile("sRGB"), outputMode="RGB")
+            converted.putalpha(decoded.convert("RGBA").getchannel("A"))
+            decoded = converted
+        except MemoryError:
+            raise
+        except Exception:
+            logger.exception("%s 새 프로젝트 색 프로필 적용 실패: %s", _TAG, source)
+            notes.append("색 프로필을 적용하지 못했습니다")
+    return [*notes, *wrap_base_image(decoded, path)]
+
+
+class EmptyPSDImageError(ValueError):
+    """선택한 합성 경로에 보이는 그림이 없는 새 프로젝트 타깃."""
+
+
+class PSDCompositeRequiredError(ValueError):
+    """수동 합성을 정확히 할 수 없는데 저장된 병합 이미지도 없는 PSD."""
+
+
+def _project_base_lossy(psd) -> tuple[list, list, list]:
+    """Import 가 제외하는 크롭 그룹을 뺀 읽기 전용 트리로 refs 의 lossy 판정을 공유한다."""
+    # refs 가 이 모듈을 사용하므로 판정 도우미는 호출 시 가져온다.
+    try:
+        from . import bmk_design_patch_refs as drefs
+    except ImportError:
+        import bmk_design_patch_refs as drefs
+    skipped = [g for g in (_find_group(psd, CROP_GROUP_NAMES), _find_group(psd, CROP_PIXELS_GROUP_NAMES)) if g is not None]
+
+    class BaseGroupView:
+        def __init__(self, group):
+            self.group = group
+
+        def __getattr__(self, name):
+            return getattr(self.group, name)
+
+        def __iter__(self):
+            for child in self.group:
+                if any(child is group for group in skipped):
+                    continue
+                yield BaseGroupView(child) if child.is_group() else child
+
+    lossy, guides = [], []
+    drefs._psd_lossy(BaseGroupView(psd), "", lossy, guides)
+    visible_guides = [label for label, group in guides if drefs._draws(group)]
+    visible_crops = [group.name for group in skipped if group.is_visible() and drefs._draws(group)]
+    return lossy, visible_guides, visible_crops
+
+
+def wrap_psd_composite(psd, path: str) -> list[str]:
+    """정확한 수동 합성은 Import 경로, lossy·보이는 레이어 없음은 병합 이미지로 흰 바탕에 감싼다."""
+    lossy, guides, crops = _project_base_lossy(psd)
+    notes = []
+    manual = not lossy and any(layer.is_visible() for layer in psd.descendants())
+    try:
+        if manual:
+            rgba, _ = read_base_rgba(psd, clean_plate_layer="none", base_layer="none")
+            image = Image.fromarray(rgba, "RGBA")
+        else:
+            image = psd.topil()
+        if image is not None:
+            image = image.convert("RGBA")
+    except (OSError, SyntaxError, EOFError, struct.error, ValueError) as exc:
+        raise ImageDecodeError("그림 파일이 깨졌거나 잘렸습니다") from exc
+    if image is None:
+        if lossy:
+            raise PSDCompositeRequiredError("Photoshop 에서 호환성 최대화로 다시 저장하세요")
+        raise EmptyPSDImageError("보이는 그림이 없습니다")
+    if image.getchannel("A").getextrema()[1] == 0:
+        raise EmptyPSDImageError("보이는 그림이 없습니다")
+    if manual:
+        notes.append("PSD의 보이는 레이어를 합성했습니다")
+    else:
+        notes.append("PSD 병합 이미지를 새 타깃으로 사용합니다")
+        if guides:
+            warning = "병합 이미지에 가이드가 들어갔을 수 있습니다"
+            notes.append(warning)
+            logger.warning("%s 새 프로젝트 PSD: %s (%s)", _TAG, warning, path)
+        if crops:
+            warning = "병합 이미지에 크롭 영역·크롭 이미지 그룹이 들어갔을 수 있습니다"
+            notes.append(warning)
+            logger.warning("%s 새 프로젝트 PSD: %s (%s)", _TAG, warning, path)
+    return [*notes, *wrap_base_image(image, path)]
+
+
+# ═════════════════════════════════════════════════════════════════
 # 저장 검증
 # ═════════════════════════════════════════════════════════════════
 def verify_saved(path: str, *, deep: bool = False) -> list[str]:

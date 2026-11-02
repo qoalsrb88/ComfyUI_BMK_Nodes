@@ -705,8 +705,29 @@ svg.dr-isolate { position: absolute; left: 0; top: 0; pointer-events: none; }
 .rg-large-pics figcaption { white-space: normal; overflow-wrap: anywhere; }
 
 /* ── 배치 9-A (새 프로젝트) — 9-A 작업자는 이 표시 아래에만 덧붙인다(8-C 표시 뒤는 #mask-* 만 — 시험) ── */
+.projects-form { display: flex; flex-wrap: wrap; gap: 12px; padding: 16px; margin: 12px 0; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+.projects-form h2, .projects-form .projects-note, .projects-form-status { flex-basis: 100%; margin: 0; overflow-wrap: anywhere; }
+.projects-field { display: flex; flex-direction: column; gap: 6px; flex: 1 1 280px; min-width: 0; }
+.projects-field input, .projects-field select { box-sizing: border-box; width: 100%; min-width: 0; color: var(--text); background: var(--bg); border: 1px solid var(--line); padding: 8px; }
+.projects-field input:read-only { opacity: .7; }
+.projects-form-status { min-height: 1.5em; }
 
 /* ── 배치 9-B (레퍼런스 보관함) — 9-B 작업자는 이 표시 아래에만 덧붙인다 ── */
+#ref-panel .lp-row { overflow-wrap: anywhere; }
+#ref-panel .rf-pool-list { max-height: 36vh; overflow-y: auto; }
+#ref-panel .rf-sheet-line { display: flex; align-items: baseline; gap: 6px; }
+#ref-panel .rf-sheet-line > span:not(.k) { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+#ref-panel .rf-sheet-line > .k, #ref-panel .rf-sheet-line > button { flex: none; }
+.rf-dialog { position: absolute; inset: 38px 0 0; z-index: 12; overflow: auto; padding: 12px; background: #0009; }
+.rf-dialog-box { background: var(--panel); border: 1px solid var(--line); padding: 14px; min-width: 0; }
+.rf-dialog-box input[type="text"], .rf-dialog-box select { min-width: 0; max-width: 100%; color: var(--text); background: #0e0f12; border: 1px solid var(--line); padding: 6px; }
+.rf-dialog-box .rg-large-head { position: sticky; top: -14px; background: var(--panel); z-index: 1; }
+.rf-layer-row { display: grid; grid-template-columns: 20px 24px 64px minmax(90px, 1fr) 70px minmax(80px, 1fr); align-items: center; gap: 6px; border-bottom: 1px solid var(--line); padding: 8px 0; overflow-wrap: anywhere; }
+.rf-layer-row > .dim:nth-last-child(-n+2) { grid-column: 4 / -1; }
+.rf-layer-row .rf-thumb, .rf-import-row .rf-thumb { width: 64px; height: 64px; object-fit: contain; }
+.rf-import-row { display: flex; align-items: center; gap: 8px; overflow-wrap: anywhere; padding: 6px; }
+.rf-pool-large { display: block; max-width: 100%; max-height: 75vh; margin: auto; object-fit: contain; }
+.rf-pool-name { width: 100%; box-sizing: border-box; }
 
 /* ── 배치 8-C (마스크) — 8-C 작업자는 이 표시 아래에만 덧붙인다 ── */
 #mask-panel [data-hist]::before { display: inline-block; width: 1.2em; margin-right: 3px; }

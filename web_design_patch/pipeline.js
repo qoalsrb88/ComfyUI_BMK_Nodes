@@ -1470,9 +1470,32 @@ window.DPPipeline = (() => {
       })();
     }
 
+    let autoApply = !!opts.newProject;
     function pipelineLoaded() {
       render();
       firstSetup();
+      if (autoApply && S && PS.P && !PS.err) {
+        autoApply = false;
+        if (!S.canvas) {
+          opts.toast("새 프로젝트 — Import 를 무료로 한 번 실행합니다");
+          queue("apply");
+        }
+      }
+    }
+
+    function finishNewProject(st) {
+      if (!opts.newProject || !st.canvas) return;
+      const imported = S && !S.canvas;
+      const notes = opts.newNotes || [];
+      opts.newProject = false;
+      opts.newNotes = [];
+      autoApply = false;
+      if (imported) {
+        const n = (st.crops || []).length;
+        const message = n ? `가져오기 완료 — 크롭 ${n}개를 가져왔습니다. ② 크롭에서 확인하세요`
+          : "가져오기 완료 — ② 크롭에서 영역을 추가하세요";
+        opts.toast([message, ...notes].join(" · "));
+      }
     }
 
     function jobText(job) {
@@ -1491,6 +1514,7 @@ window.DPPipeline = (() => {
         return undefined;
       }
       const q = PS.queue(stage, expect);
+      if (stage === "apply") autoApply = false;
       render(); // 템플릿 요청 동안(PS.sending) 승인 단추를 끈 모양으로 — Export 등 once 밖의 길도
       try {
         const r = await q;
@@ -2981,6 +3005,7 @@ window.DPPipeline = (() => {
 
     function stateChanged(st) {
       stateReads += 1;
+      finishNewProject(st);
       // 보드 state 를 받을 때마다(2초 폴링 — unchanged 응답이면 같은 S). 다시 그리기는 state·진행 수가 바뀐 때만(누르는 중인 단추를 갈지 않게)
       const k = [st.rev, st.running, st.drain, st.pipeline_rev, st.plan_v, st.pref_v].join("|");
       const changed = st !== S || k !== seenKey;

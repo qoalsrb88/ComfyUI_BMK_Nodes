@@ -243,6 +243,7 @@ import os
 import re
 import secrets
 import shutil
+import struct
 import subprocess
 import sys
 import threading
@@ -359,6 +360,14 @@ class _Reject(Exception):
         self.status = status
         self.message = message
         self.extra = extra
+
+
+class _PathReject(_Reject):
+    """메시지에 서버 경로가 든 거절. 기존 레퍼런스 라우트는 message 그대로(자기 프로젝트 안내), 보관함 라우트(_pool_raise)는 경로 없는 safe 만 내보낸다."""
+
+    def __init__(self, status: int, message: str, safe: str, **extra):
+        super().__init__(status, message, **extra)
+        self.safe = safe
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -3872,13 +3881,19 @@ def refs_state(root: str, since: int | None = None) -> dict:
             "jobs_ref_sha": next((inp.get("sha") for j in m["jobs"] if j.get("crop_id") == cid for inp in j.get("inputs") or []
                                   if isinstance(inp, dict) and inp.get("role") == "ref"), None),
             "checks": checks,
+            "link_info": _pool_link_info(root, mc, refs_dir),
         }
         if link is not None:  # 고정 풀기 확인 창(§5.7): 풀면 쓰일 이름 매칭 결과와 Prepare 가 고를 대표
             rm = drefs.resolve_refs(refs_dir, crop, None)
             row["match_files"], row["match_pick"] = rm["refs_auto"], _pick(name, rm)
         rows.append(row)
     ids = {c["id"] for c in crops}
+    pool, pool_held = _pool_rows(root, m, prov, crops)
     return {"exists": doc is not None or error is not None, "rev": doc["rev"] if doc else None, "error": error,
+            "pool": pool, "pool_held": pool_held, "before_import": not bool(m.get("base")),
+            "all_files": [_ref_file(root, refs_dir, prov, display[n], "pool") for n in sorted(display)
+                          if "/" not in n and os.path.splitext(n)[1].lower() in store.REF_EXTS
+                          and os.path.isfile(os.path.join(refs_dir, display[n]))] if ok else [],
             "refs_dir": refs_dir, "refs_dir_ok": ok, "outside_project": outside, "doc_dir_match": match,
             "doc_refs_dir": doc["refs_dir"] if doc else None, "suggest_dir": os.path.join(root, "refs").replace("\\", "/"),
             "pending_rerolls": _pending(root, m)[1], "sam3": {"ckpts": list(_SAM3_CKPTS)}, "crops": rows,
@@ -4070,6 +4085,7 @@ def ref_cut_state(root: str, req_id) -> dict:
 
 _DIR_MISMATCH = ("refs.json 의 refs_dir({doc})가 지금 refs_dir({now})와 달라 연결을 무시하는 중입니다 — Import PSD 의 refs_dir 를 "
                  "되돌리거나 refs.json 을 치운 뒤 고치세요")
+_DIR_MISMATCH_SAFE = "refs.json 의 레퍼런스 폴더가 지금 설정과 다릅니다 — Import PSD 의 refs_dir 를 되돌리거나 refs.json 을 치운 뒤 고치세요"
 
 
 def _refs_dir_for_write(m: dict) -> str:
@@ -4078,7 +4094,7 @@ def _refs_dir_for_write(m: dict) -> str:
     if not refs_dir:
         raise _Reject(400, "refs_dir 가 비었습니다 — Import PSD 의 refs_dir 에 <project>\\refs 를 넣고 큐하세요")
     if not os.path.isdir(refs_dir):
-        raise _Reject(400, f"레퍼런스 폴더가 없습니다: {refs_dir}")
+        raise _PathReject(400, f"레퍼런스 폴더가 없습니다: {refs_dir}", "레퍼런스 폴더가 없습니다 — ① 준비에서 refs 폴더를 확인하세요")
     return refs_dir
 
 
@@ -4098,7 +4114,7 @@ def _write_refs(root: str, rev: int | None, refs_dir: str, mutate: Callable[[dic
         if not d:
             d.update(drefs.new_refs(refs_dir))
         elif not drefs.same_refs_dir(d["refs_dir"], refs_dir):
-            raise _Reject(409, _DIR_MISMATCH.format(doc=d["refs_dir"], now=refs_dir))
+            raise _PathReject(409, _DIR_MISMATCH.format(doc=d["refs_dir"], now=refs_dir), _DIR_MISMATCH_SAFE)
         return mutate(d)
 
     with _refs_write_lock(root):
@@ -4112,7 +4128,7 @@ def _refs_at(root: str, rev: int | None, refs_dir: str) -> dict | None:
     if now != rev:
         raise drefs.RefsConflict(f"레퍼런스가 다른 창에서 바뀌었습니다(rev {rev} → {now}) — 새로고침")
     if doc is not None and not drefs.same_refs_dir(doc["refs_dir"], refs_dir):
-        raise _Reject(409, _DIR_MISMATCH.format(doc=doc["refs_dir"], now=refs_dir))
+        raise _PathReject(409, _DIR_MISMATCH.format(doc=doc["refs_dir"], now=refs_dir), _DIR_MISMATCH_SAFE)
     return doc
 
 
@@ -4241,6 +4257,488 @@ def _ref_reply(root: str, crop_id: str) -> dict:
             "checks": {c["id"]: c["checks"] for c in view["crops"]}}
 
 
+def _pool_link_info(root, crop, refs_dir):
+    if crop is None:
+        return None
+    try:
+        ov = store.load_spec_override(root, crop["id"]) or {}
+        targets = {str(t.get("id")): t for t in ov.get("targets", []) if isinstance(t, dict)}
+        auto = any("refs" not in targets.get(str(t.get("tid") or t.get("id") or "A"), {}) and not t.get("refs")
+                   and (targets.get(str(t.get("tid") or t.get("id") or "A"), {}).get("mode") or t.get("mode") or "ref_correct") != "self_restore"
+                   for t in crop.get("targets", []))
+    except (ValueError, TypeError):
+        auto = None
+    prefix, seen = [], set()
+    for t in crop.get("targets", []):
+        for name in t.get("refs") or []:
+            if name in seen:
+                continue
+            seen.add(name)
+            path = name if os.path.isabs(name) else os.path.join(refs_dir, name)
+            prefix.append({"name": name if not os.path.isabs(name) else None, "side": _side_of(name), "exists": os.path.isfile(path)})
+    return {"prepare_auto": auto, "draft_prefix": prefix}
+
+
+def _pool_file_state(root, folder, doc, name, held=False):
+    file = _ref_file(root, folder, doc, name, "pool", held=held)
+    key = f"{drefs.HELD_DIR}/{name}" if held else name
+    records = (doc or {}).get("files", {})
+    rec = records.get(_record_key(records, key)) or {}
+    if "for" in rec and rec["for"] is None:
+        file["outside_edit"] = (file["outside_edit"] or not rec.get("sha") or file["size"] != rec.get("size")
+                                or file["thumb_url"] is None or file["missing"])
+    return file
+
+
+def _pool_rows(root, m, doc, crops):
+    pool, held = drefs.pool_files(root, m, doc, crops)
+    for rows, is_held in ((pool, False), (held, True)):
+        for row in rows:
+            file = _pool_file_state(root, _refs_dir(m), doc, row["name"], held=is_held)
+            row.update({k: file[k] for k in ("size", "bytes", "outside_edit", "thumb_url", "thumb_url_512", "record")})
+            if file["outside_edit"]:
+                row["origin"] = "old"
+    return pool, held
+
+
+_POOL_ACTIVE_PARTS = set()
+
+
+def _sweep_pool_parts(base, folder, prefix):
+    if not drefs._plain_cache_path(base, folder):
+        return
+    try:
+        cutoff = time.time() - 86400
+        for entry in os.scandir(folder):
+            if not (entry.name.startswith(prefix) and entry.name.endswith(".part")):
+                continue
+            if os.path.normcase(os.path.realpath(entry.path)) in _POOL_ACTIVE_PARTS:
+                continue
+            if (entry.is_file(follow_symlinks=False) and drefs._plain_cache_path(base, entry.path)
+                    and entry.stat(follow_symlinks=False).st_mtime < cutoff):
+                os.remove(entry.path)
+    except OSError as e:
+        logger.warning("%s 보관함 임시 파일 정리 실패: %s", _TAG, e)
+
+
+def _pool_tmp(root):
+    folder = store.resolve_path(root, "derived/refpool")
+    os.makedirs(folder, exist_ok=True)
+    _sweep_pool_parts(root, folder, ".upload_")
+    refs_dir = _refs_dir(store.load_manifest(root))
+    if refs_dir:
+        _sweep_pool_parts(refs_dir, refs_dir, ".pool_")
+    return folder
+
+
+def _pool_commit(root, rev, entries):
+    """디코드가 끝난 임시 파일들을 하나의 rev 로 반영. 실패하면 이번 파일만 되돌린다."""
+    moved = []
+    with _refs_write_lock(root):
+        m = store.load_manifest(root)
+        folder = _refs_dir_for_write(m)
+        doc = _refs_at(root, rev, folder)
+        reserved = drefs.pool_reserved(root, m, doc)
+        records = {}
+        try:
+            for item in entries:
+                if item.get("sheet_v") is not None and drefs.sheet_sig(root, item["record"]["sheet"]["path"]) != item["sheet_v"]:
+                    raise drefs.RefsConflict("시트가 바뀌었습니다 — 표를 다시 여세요")
+                name = drefs.pool_file_name(item["desc"], reserved, fallback=item.get("fallback", "그림1"),
+                                           preferred=item.get("preferred"))
+                dest = os.path.join(folder, name)
+                _pool_install(item["part"], dest)
+                moved.append(dest)
+                records[name] = item["record"]
+            _, new_rev = _write_refs(root, rev, folder, lambda d: d["files"].update(records))
+        except BaseException:
+            _undo(*(lambda dst=dst: _drop(dst) for dst in reversed(moved)))
+            raise
+    try:
+        pool, _ = _pool_rows(root, m, drefs.load_refs(root), _ref_crops(root, m))
+        return {"ok": True, "rev": new_rev, "files": list(records), "pool": [r for r in pool if r["name"] in records]}
+    except (OSError, ValueError):
+        return {"ok": True, "rev": new_rev, "files": list(records), "pool": [], "warning": "저장은 완료됐습니다 — 목록을 새로고침하세요"}
+
+
+def _pool_install(part, dest):
+    """refs_dir 가 다른 볼륨이어도 대상 폴더에서 배타 이동한다."""
+    tmp = os.path.join(os.path.dirname(dest), ".pool_" + secrets.token_hex(16) + ".part")
+    try:
+        with open(part, "rb") as src, open(tmp, "xb") as out:
+            shutil.copyfileobj(src, out, 1024 * 1024)
+            out.flush()
+            os.fsync(out.fileno())
+        drefs._move_excl(tmp, dest)
+    finally:
+        _drop(tmp)
+
+
+def _pool_stage(root, rgba, desc, record, fallback="그림1"):
+    part = drefs.save_ref(_pool_tmp(root), secrets.token_hex(16) + ".png", rgba)
+    return {"part": part, "desc": desc, "record": record, "fallback": fallback}
+
+
+def _ref_pool_save(root, rev, data):
+    m = store.load_manifest(root)
+    _refs_at(root, rev, _refs_dir_for_write(m))
+    req = drefs.load_cut_request(root, _field(data, "req", _REQ_RE))
+    res = drefs.load_cut_result(root, req["req"])
+    if not res or not res.get("ok"):
+        raise _Reject(400, "끝나지 않았거나 실패한 컷입니다")
+    t = drefs.check_transform(data.get("transform"))
+    desc = data.get("desc", "")
+    drefs.pool_desc(desc)
+    with _REF_SLOTS:
+        rgba = drefs.transform_rgba(drefs.apply_cut(root, req, res), **t)
+    chain = _cut_chain(root, req)
+    first = chain[0]
+    record = {"for": None, "at": time.strftime("%Y-%m-%d %H:%M:%S"), "size": [rgba.shape[1], rgba.shape[0]],
+              "sha": store.pixel_sha(rgba), "sheet": {"path": req["sheet"], "layer": req["layer"],
+              "fingerprint": req["sheet_fp"], "size": req["sheet_size"]}, "rect": req["rect"], "transform": t,
+              "cut": {**{k: first[k] for k in ("method", "points", "text", "refine", "pad", "drop_small", "ckpt")},
+                      "polys": [p for r in chain for p in r["polys"]], "grow": req["grow"], "feather": req["feather"],
+                      "mask": res["mask"], "mask_sha": res["mask_sha"], "steps": [r["req"] for r in chain],
+                      "step_polys": [r["polys"] for r in chain]}}
+    # 빈 설명은 시트 stem_1 부터(D124). 실제 충돌 배정은 쓰기 잠금 안에서 한다.
+    fallback = drefs.pool_desc(os.path.splitext(os.path.basename(req["sheet"]))[0]) + "_1"
+    entry = _pool_stage(root, rgba, desc, record, fallback)
+    nbytes = os.path.getsize(entry["part"])
+    try:
+        reply = _pool_commit(root, rev, [entry])
+    finally:
+        _drop(entry["part"])
+    return {**reply, "file": reply["files"][0], "size": record["size"], "bytes": nbytes, "held": None, "crop": None, "checks": {}}
+
+
+def _pool_source(key):
+    if not isinstance(key, str):
+        raise _Reject(400, "프로젝트 키가 없습니다")
+    row = next((r for r in _project_roots() if r["key"] == key), None)
+    if row is None:
+        raise _Reject(404, "목록에 없는 프로젝트입니다")
+    root = row["root"]
+    m = store.load_manifest(root)
+    return root, m, _refs_dir_for_write(m)
+
+
+def ref_pool_source(root, key, thumb=None):
+    source, m, folder = _pool_source(key)
+    if thumb is not None:
+        name = drefs.check_ref_name(thumb)
+        return ref_image(source, name, "refs", "256", "white")
+    rows = []
+    for name in sorted(os.listdir(folder)):
+        if os.path.splitext(name)[1].lower() not in store.REF_EXTS or not os.path.isfile(os.path.join(folder, name)):
+            continue
+        row = _ref_file(source, folder, None, name, "pool")
+        rows.append({"name": name, "size": row["size"], "thumb_url": "refs/pool?" + urlencode(
+            {"root": store.root_key(root), "from": key, "thumb": name})})
+    return {"project": os.path.basename(source), "files": rows}
+
+
+def _layer_info(root, sheet):
+    info = drefs.sheet_check(root, store.load_manifest(root), sheet)
+    if info["kind"] != "psd":
+        raise _Reject(400, "레이어별 컷은 PSD·PSB 시트만 됩니다")
+    check_image_dims(image_header(info["file"], sniff_image_kind(info["file"])), 256)
+    return info
+
+
+def ref_layers(root, sheet, thumb=None, version=None):
+    if thumb is not None:
+        path = drefs.layer_thumb_path(root, version, thumb)
+        data = _read_bytes(path)
+        if data is None:
+            raise _Reject(404, "레이어 썸네일이 없습니다 — 표를 다시 여세요")
+        return data, version
+    info = _layer_info(root, sheet)
+    with _REF_SLOTS:
+        table = drefs.layer_table(root, info)
+    for row in table["items"]:
+        row["thumb_url"] = None if row["excluded"] else "refs/layers?" + urlencode(
+            {"root": store.root_key(root), "sheet": info["path"], "thumb": row["id"], "v": table["sheet_v"], "render": table["render"]})
+    return table
+
+
+def _pool_manage(root, rev, op, data):
+    name = drefs.check_ref_name(data.get("name"))
+    prepared = None
+    try:
+        if op == "rename" and os.path.splitext(name)[1].lower() != ".png":
+            m = store.load_manifest(root)
+            folder = _refs_dir_for_write(m)
+            doc = _refs_at(root, rev, folder)
+            _pool_owned_row(root, m, doc, op, name)
+            src = os.path.join(folder, name)
+            with _REF_SLOTS:
+                fingerprint = store.file_fingerprint(src)
+                staged = _pool_stage(root, _read_rgba(src), "", {})
+                prepared = {"part": staged["part"], "folder": folder, "fingerprint": fingerprint}
+        return _pool_manage_commit(root, rev, op, data, name, prepared)
+    finally:
+        if prepared:
+            _drop(prepared["part"])
+
+
+def _pool_owned_row(root, m, doc, op, name):
+    pool, held = drefs.pool_files(root, m, doc, _ref_crops(root, m))
+    row = next((r for r in (held if op == "restore" else pool) if r["name"] == name and r["origin"] == "pool"), None)
+    if row is None or _pool_file_state(root, _refs_dir(m), doc, name, held=op == "restore")["outside_edit"]:
+        raise _Reject(409, "이 프로젝트 보관함의 쓰임 없는 파일만 바꿀 수 있습니다")
+    return row
+
+
+def _pool_manage_commit(root, rev, op, data, name, prepared):
+    """PNG 변환 뒤 잠금 안에서 rev·쓰임·원본 지문을 재확인하고 파일·문서만 반영한다."""
+    with _refs_write_lock(root):
+        m = store.load_manifest(root)
+        folder = _refs_dir_for_write(m)
+        doc = _refs_at(root, rev, folder)
+        row = _pool_owned_row(root, m, doc, op, name)
+        used = drefs.pool_usage(root, m, doc, _ref_crops(root, m))
+        old_key = f"{drefs.HELD_DIR}/{name}" if op == "restore" else name
+        src = os.path.join(folder, *old_key.split("/"))
+        if prepared and (not drefs.same_refs_dir(prepared["folder"], folder)
+                         or store.file_fingerprint(src) != prepared["fingerprint"]):
+            raise _Reject(409, "이름을 바꾸는 동안 원본 파일이 바뀌었습니다 — 다시 읽으세요")
+        part = None
+        if op == "hold":
+            if _held_rows(drefs.explicit_refs(root, m), folder, name):
+                raise _Reject(409, "옮길 보류 이름을 스펙이 쓰고 있습니다")
+            target = drefs.hold_file(folder, name)
+            new_key = f"{drefs.HELD_DIR}/{target}"
+        elif op == "restore":
+            target = row["restore_as"]
+            if drefs.ref_key(target) in used or _match_seeds(folder, doc, _ref_crops(root, m), target, ""):
+                raise _Reject(409, "되살릴 이름이 쓰이고 있습니다")
+            drefs.restore_file(folder, name, target)
+            new_key = target
+        else:
+            reserved = drefs._pool_reserved(root, m, doc, name)
+            desc = data.get("desc", "")
+            # 충돌 번호가 붙은 이름도 입력을 그대로 두면 유지한다.
+            preferred = ("ref_" + desc + "_t.png" if isinstance(desc, str) and name.startswith("ref_")
+                         and name.endswith("_t.png") and drefs.ref_key(desc) == drefs.ref_key(name[4:-6]) else None)
+            target = drefs.pool_file_name(desc, reserved, preferred=preferred)
+            if target == name:
+                return {"ok": True, "rev": rev, "file": name, "unchanged": True}
+            new_key = target
+            if os.path.splitext(name)[1].lower() == ".png":
+                drefs._move_excl(src, os.path.join(folder, target))
+            else:
+                # 변환은 잠금 밖에서 끝났다. 원본은 문서 커밋 전까지 임시로 보존한다.
+                _pool_install(prepared["part"], os.path.join(folder, target))
+                part = os.path.join(folder, ".pool_" + secrets.token_hex(16) + ".part")
+                # 원본을 옮기면 예전 mtime 도 따라온다. 진행 중인 복구용 원본은 청소 대상에서 뺀다.
+                active_part = os.path.normcase(os.path.realpath(part))
+                _POOL_ACTIVE_PARTS.add(active_part)
+                try:
+                    drefs._move_excl(src, part)
+                except BaseException:
+                    _POOL_ACTIVE_PARTS.discard(active_part)
+                    _drop(os.path.join(folder, target))
+                    raise
+        dest = os.path.join(folder, *new_key.split("/"))
+        if op == "hold" and drefs.ref_key(new_key) in used:
+            drefs._move_excl(dest, src)
+            raise _Reject(409, "옮길 보류 이름을 스펙이 쓰고 있습니다")
+        def mutate(d):
+            k = _record_key(d["files"], old_key)
+            d["files"][new_key] = d["files"].pop(k)
+            if op == "hold":
+                d.setdefault("held", {})[target] = {"from": name, "crop": None}
+            elif op == "restore":
+                del d["held"][_record_key(d["held"], name)]
+        try:
+            _, new_rev = _write_refs(root, rev, folder, mutate)
+        except BaseException:
+            if part:
+                _undo(lambda: _drop(dest), lambda: drefs._move_excl(part, src))
+                if not os.path.lexists(part):
+                    _POOL_ACTIVE_PARTS.discard(active_part)
+            else:
+                _undo(lambda: drefs._move_excl(dest, src))
+            raise
+        if part:
+            _drop(part)
+            _POOL_ACTIVE_PARTS.discard(active_part)
+    return {"ok": True, "rev": new_rev, "file": target}
+
+
+def ref_pool(root, rev, op, data):
+    if op in ("rename", "hold", "restore"):
+        return _pool_manage(root, rev, op, data)
+    if op not in ("layers", "import", "sheet_add"):
+        raise _Reject(400, "알 수 없는 보관함 작업입니다")
+    m = store.load_manifest(root)
+    if op == "sheet_add":
+        src = clean_user_path(data.get("path"))
+        name = check_upload_name(os.path.basename(src))
+        part = copy_in(src, _pool_tmp(root))
+        return _pool_sheet_finish(root, rev, part, name)
+    _refs_at(root, rev, _refs_dir_for_write(m))
+    entries = []
+    try:
+        with _REF_SLOTS:
+            if op == "layers":
+                info = _layer_info(root, data.get("sheet"))
+                for desc, fallback, rgba, rec in drefs.cut_layers(root, info, data.get("sheet_v"), data.get("items")):
+                    entries.append({**_pool_stage(root, rgba, desc, rec, fallback), "sheet_v": data["sheet_v"]})
+            else:
+                source, _m, folder = _pool_source(data.get("from"))
+                names = data.get("names")
+                if not isinstance(names, list) or not 1 <= len(names) <= 100 or not all(isinstance(n, str) for n in names):
+                    raise _Reject(400, "가져올 파일은 1–100개까지 고르세요")
+                if len({drefs.ref_key(n) for n in names}) != len(names):
+                    raise _Reject(400, "같은 파일을 두 번 고를 수 없습니다")
+                for k, raw in enumerate(names, 1):
+                    name = drefs.check_ref_name(raw)
+                    src = os.path.join(folder, name)
+                    part = copy_in(src, _pool_tmp(root))
+                    try:
+                        kind = sniff_image_kind(part)
+                        if kind != _UPLOAD_KINDS.get(os.path.splitext(name)[1].lower()):
+                            raise _Reject(400, "파일 내용이 확장자와 맞지 않습니다")
+                        check_image_dims(image_header(part, kind), 1)
+                        rgba = _read_rgba(part)
+                        rec = {"for": None, "at": time.strftime("%Y-%m-%d %H:%M:%S"), "size": [rgba.shape[1], rgba.shape[0]],
+                               "sha": store.pixel_sha(rgba), "from": {"project": os.path.basename(source), "name": name}}
+                        if name.startswith("ref_"):
+                            entries.append({"part": part, "desc": "", "preferred": name, "record": rec})
+                            part = None
+                        else:
+                            entries.append(_pool_stage(root, rgba, os.path.splitext(name)[0], rec, f"그림{k}"))
+                    finally:
+                        _drop(part)
+        return _pool_commit(root, rev, entries)
+    finally:
+        for item in entries:
+            _drop(item["part"])
+
+
+def _sheets_are_refs_dir(root: str, m: dict, sheets: str) -> bool:
+    """시트 폴더가 실제 레퍼런스 폴더(매니페스트 기록·실행 설정 어느 쪽이든)면 시트 파일이 번호 매칭(NNN_)으로 크롭에 붙어
+    사람이 연결하지 않아도 Prepare 선택이 바뀐다 — D135 시트 추가는 그런 폴더에 쓰지 않는다(배치 9 통합 Codex 리뷰)."""
+    dirs = [(m.get("source") or {}).get("refs_dir")]
+    with contextlib.suppress(Exception):
+        dirs.append(((pl.load(root) or {}).get("import") or {}).get("refs_dir"))
+    real = os.path.normcase(os.path.realpath(sheets))
+    for d in dirs:
+        if not isinstance(d, str) or not d.strip():
+            continue
+        if drefs.same_refs_dir(d, sheets) or os.path.normcase(os.path.realpath(d)) == real:  # 정션·링크로 같은 폴더도
+            return True
+        with contextlib.suppress(OSError):
+            if os.path.exists(d) and os.path.exists(sheets) and os.path.samefile(d, sheets):
+                return True
+    return False
+
+
+def _pool_sheet_finish(root, rev, part, name):
+    dest = None
+    try:
+        kind = sniff_image_kind(part)
+        check_image_dims(image_header(part, kind), 256)
+        # 시트는 refs 밖의 재료다. refs.json 생성·수정 없이 같은 이름 배정만 직렬화한다.
+        with store.manifest_lock(root):
+            m = store.load_manifest(root)
+            sheets = store.resolve_path(root, "sheets")
+            if _sheets_are_refs_dir(root, m, sheets):
+                raise _Reject(400, "레퍼런스 폴더가 sheets 폴더라 시트를 추가할 수 없습니다 — ① 준비에서 레퍼런스 폴더를 바꾸세요")
+            os.makedirs(sheets, exist_ok=True)
+            name = unique_file_name(sheets, name)
+            target = os.path.join(sheets, name)
+            finish_received(part, target)
+            dest = target
+        return {"ok": True, "sheet": "sheets/" + name}
+    except BaseException:
+        _drop(dest)
+        raise
+    finally:
+        _drop(part)
+
+
+def _pool_upload_start(q):
+    """업로드 전 파일 검사와 임시 폴더 준비도 이벤트 루프 밖에서 한다."""
+    root = _root_param(q.get("root"))
+    if q.get("op") != "sheet_add":
+        raise _Reject(400, "업로드는 시트 추가만 됩니다")
+    name = check_upload_name(q.get("filename"))
+    store.load_manifest(root)
+    return root, None, name, _pool_tmp(root)
+
+
+async def _pool_upload(request):
+    root, rev, name, folder = await _pool_route(_pool_upload_start, request.query)
+    try:
+        part = await recv_upload(request, folder)
+    except (_Reject, ValueError, OSError) as e:
+        _pool_raise(e)
+    # 요청 취소가 파일 쓰기 스레드를 중단하지 않게 끝까지 정리한다.
+    task = asyncio.create_task(_pool_route(_pool_sheet_finish, root, rev, part, name))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        await task
+        raise
+
+
+async def _pool_body(request):
+    """100개 레이어 이름·파일 이름을 받을 수 있는 refs/pool 전용 JSON 한도."""
+    if request.content_type != "application/json":
+        raise _Reject(415, "Content-Type 은 application/json 이어야 합니다")
+    limit = 128 * 1024
+    if request.content_length is not None and request.content_length > limit:
+        raise _Reject(413, "요청 본문이 너무 큽니다")
+    try:
+        raw = await request.read()
+    except OSError as e:
+        _pool_raise(e)
+    if len(raw) > limit:
+        raise _Reject(413, "요청 본문이 너무 큽니다")
+    try:
+        data = json.loads(raw)
+    except (ValueError, UnicodeError):
+        raise _Reject(400, "JSON 본문을 읽을 수 없습니다") from None
+    if not isinstance(data, dict):
+        raise _Reject(400, "본문은 JSON 객체여야 합니다")
+    return data
+
+
+async def _pool_route(fn, *args):
+    """새 refs 라우트는 예외에도 서버의 절대 경로를 보내지 않는다."""
+    try:
+        return await asyncio.to_thread(fn, *args)
+    except (_Reject, ValueError, OSError) as e:
+        _pool_raise(e)
+
+
+# 그 밖 문구의 안전망 — 경로를 싣는 원천은 _PathReject 로 가른다. 드라이브(C:\ C:/)·UNC(\\서버\ //서버/)·POSIX 절대 경로(줄 처음·공백·콜론·따옴표·괄호 뒤 '/폴더/')
+_POOL_PATH_RE = re.compile(r"[A-Za-z]:[\\/]|\\\\[^\\\s]|//[^/\s]|(?:^|[\s:'\"(=])/[^/\s]+/")
+
+
+def _pool_raise(e):
+    """스레드 검사·마무리와 비동기 수신 실패에 같은 경로 가림을 적용한다."""
+    if isinstance(e, OSError):
+        logger.warning("%s 레퍼런스 파일 오류: %s", _TAG, e)
+        status = 409 if isinstance(e, FileExistsError) else 404 if isinstance(e, FileNotFoundError) else 500
+        raise _Reject(status, "파일을 읽거나 쓰지 못했습니다 — 권한·잠금 확인") from None
+    if isinstance(e, _PathReject):
+        logger.warning("%s 레퍼런스 요청 거절(경로 가림): %s", _TAG, e.message)
+        raise _Reject(e.status, e.safe) from None
+    if isinstance(e, _Reject):
+        if _POOL_PATH_RE.search(e.message):
+            logger.warning("%s 레퍼런스 요청 거절(경로 가림): %s", _TAG, e.message)
+            raise _Reject(e.status, "파일 경로 또는 프로젝트 설정을 확인하세요") from None
+    else:
+        if _POOL_PATH_RE.search(str(e)):
+            logger.warning("%s 레퍼런스 요청 오류(경로 가림): %s", _TAG, e)
+            status = 409 if isinstance(e, (drefs.RefsConflict, FileExistsError)) else 404 if isinstance(e, FileNotFoundError) else 400
+            raise _Reject(status, "파일을 처리하지 못했습니다 — 이름·경로·권한을 확인하세요") from None
+    raise e
+
+
 def _cut_chain(root: str, req: dict) -> list[dict]:
     """req 와 그 앞 컷들(base 다듬기 연쇄) — 첫 컷부터. 앞 요청이 정리돼 읽을 수 없으면 거기서 끊는다."""
     chain = [req]
@@ -4268,6 +4766,8 @@ def ref_save(root: str, rev: int | None, data: dict) -> dict:
     변환 뒤의 rev 재검사·파일 동작·refs.json·되돌리기는 _refs_write_lock 안(다른 창의 쓰기가 사이에 끼지 않음).
     → {ok, rev, file, size, bytes, held(옛 파일의 보류 이름 | null), crop, checks}."""
     req_id = _field(data, "req", _REQ_RE)
+    if data.get("crop_id") is None:
+        return _ref_pool_save(root, rev, data)
     crop_id = _field(data, "crop_id", _CROP_ID_RE)
     role = data.get("role")
     if role not in ("main", "aux"):
@@ -4479,6 +4979,9 @@ def ref_link(root: str, rev: int | None, op, data: dict) -> dict:
             ln["files"], ln["main"] = [], None
         elif op == "add":
             _add_name(ln, name)
+            if data.get("main") is True:
+                f = next(f for f in ln["files"] if f.casefold() == name.casefold())
+                ln["files"], ln["main"] = [f] + [n for n in ln["files"] if n != f], f
         elif op in ("main", "move", "remove"):
             i = next((i for i, f in enumerate(ln["files"]) if f.casefold() == name.casefold()), None)
             if i is None:
@@ -5955,6 +6458,255 @@ _PROJECT_INPUT: str | None = None
 _PROJECT_MEMO: dict[str, tuple] = {}
 _PROJECT_MEMO_LOCK = threading.Lock()
 _PROJECT_THUMB_SLOTS = threading.BoundedSemaphore(1)
+_PROJECT_NEW_LOCK = threading.Lock()
+_PROJECT_OLD_TRACES = ("cands", "inputs", "specs", "vlm", "layout.json", "refs.json", "pipeline.json")
+
+
+def _project_adoption(root: str) -> dict:
+    """매니페스트를 잃은 옛 프로젝트는 채택하지 않는다. 직계 일반 그림 파일만 표시."""
+    if (not os.path.isdir(root) or _is_link(root)
+            or any(os.path.lexists(os.path.join(root, n)) for n in (store.MANIFEST_NAME, *_PROJECT_OLD_TRACES))):
+        return {"adoptable": False, "files": []}
+    files = []
+    with os.scandir(root) as entries:
+        for e in entries:
+            if not e.is_file(follow_symlinks=False) or _is_link(e.path):
+                continue
+            try:
+                if check_upload_name(e.name) == e.name:
+                    files.append(e.name)
+            except _Reject:
+                continue
+    return {"adoptable": True, "files": sorted(files, key=str.casefold)[:50]}
+
+
+def _project_new_begin(data: dict, upload: bool) -> dict:
+    try:
+        name = store._check_project_name(data.get("name"))
+    except ValueError:
+        raise _Reject(400, "프로젝트 이름: 문자·숫자·_ - . 만, '..'·끝 '.'·Windows 예약 이름은 쓸 수 없습니다") from None
+    if not _PROJECT_INPUT:
+        raise _Reject(400, "프로젝트 input 폴더가 설정되지 않았습니다")
+    if "adopt" in data and type(data["adopt"]) is not bool:
+        raise _Reject(400, "adopt 는 true 또는 false 여야 합니다")
+    adopt = data.get("adopt", False)
+    if upload and adopt:
+        raise _Reject(400, "이 폴더로 시작은 폴더 안 그림을 고르세요")
+    root = store.project_root(_PROJECT_INPUT, name)
+    parent = os.path.dirname(root)
+    tmp_parent = os.path.join(os.path.abspath(_PROJECT_INPUT), _NEW_TMP_DIRNAME)
+    for path in (parent, tmp_parent, root):
+        if (_is_link(path) or os.path.normcase(os.path.realpath(path))
+                != os.path.normcase(os.path.join(os.path.realpath(os.path.dirname(path)), os.path.basename(path)))):
+            raise _Reject(400, "프로젝트·임시 폴더에 링크를 사용할 수 없습니다")
+    if adopt:
+        info = _project_adoption(root)
+        if not info["adoptable"]:
+            raise _Reject(409, "이 폴더로 시작할 수 없습니다 — 프로젝트 기록이 있거나 폴더가 없습니다")
+        filename = check_upload_name(data.get("file"))
+        if filename not in info["files"]:
+            raise _Reject(400, "목록에 있는 폴더 안 그림을 고르세요")
+        source = os.path.join(root, filename)
+    else:
+        if os.path.lexists(root):
+            raise _Reject(409, "같은 이름의 프로젝트가 있습니다 — 폴더 목록을 확인하세요")
+        if upload:
+            source, filename = None, check_upload_name(data.get("filename"))
+        else:
+            try:
+                source = clean_user_path(data.get("path"))
+            except _Reject:
+                raise _Reject(400, "타깃 그림 파일의 전체 경로를 넣으세요") from None
+            filename = check_upload_name(os.path.basename(source))
+    state = {"name": name, "root": root, "adopt": adopt, "source": source, "filename": filename,
+             "tmp": None, "moved": False, "created": [], "dirs": [], "notes": []}
+    if not adopt:
+        os.makedirs(tmp_parent, exist_ok=True)
+        tmp = os.path.join(tmp_parent, secrets.token_hex(16))
+        os.mkdir(tmp)
+        state["tmp"] = tmp
+    return state
+
+
+def _project_new_rename(source: str, dest: str) -> None:
+    """Windows 일시 잠금만 짧게 재시도한다. 이름 충돌은 즉시 호출자에게 돌려준다."""
+    for attempt in range(6):
+        try:
+            os.rename(source, dest)
+            return
+        except PermissionError:
+            if attempt == 5:
+                raise
+            time.sleep(0.05 * (attempt + 1))
+
+
+def _project_new_target(state: dict, part: str | None) -> str:
+    root = state["root"] if state["adopt"] else state["tmp"]
+    filename = state["filename"]
+    source = state["source"] if state["adopt"] else os.path.join(root, filename)
+    if state["adopt"]:
+        if _is_link(source) or os.path.getsize(source) > _MAX_UPLOAD:
+            raise _Reject(400, "타깃 파일은 링크가 아닌 2GB 이하 그림이어야 합니다")
+        kind = sniff_image_kind(source)
+        if kind != _UPLOAD_KINDS[os.path.splitext(filename)[1].lower()]:
+            raise _Reject(400, "파일 내용이 확장자와 맞지 않습니다")
+    else:
+        kind = finish_received(part, source)
+    info = image_header(source, kind)
+    check_image_dims(info, 64)
+    psd = None
+    if kind in ("psd", "psb"):
+        if info["depth"] != 8 or info["mode"] != 3:
+            raise _Reject(400, "8비트 RGB PSD 만 — Photoshop 이미지 > 모드에서 바꿔 저장하세요")
+        try:
+            psd = dpsd.open_psd(source)
+            base = dpsd._auto_base_layer(psd)
+            crop_group = dpsd.find_crop_group(psd)
+            if base is None and crop_group is not None:
+                rgba, _ = dpsd.read_base_rgba(psd, clean_plate_layer="none", base_layer="none")
+                lossy, _, _ = dpsd._project_base_lossy(psd)
+        except (OSError, SyntaxError, EOFError, struct.error, ValueError):
+            logger.exception("%s 새 프로젝트 PSD 디코드 실패: %s", _TAG, source)
+            raise _Reject(400, "그림 파일이 깨졌거나 잘렸습니다") from None
+        if base is not None:
+            return filename
+        if crop_group is not None:
+            if not np.any(rgba[..., 3]):
+                raise _Reject(400, "보이는 그림이 없습니다 — 레이어가 숨겨져 있으면 보이게 저장하세요")
+            if np.any(rgba[..., 3] < 255):
+                state["notes"].append("투명한 곳은 Import 에서 검게 보일 수 있습니다 — I2I_base 레이어를 두면 그 레이어를 씁니다")
+            if lossy:
+                state["notes"].append("합성이 Photoshop 화면과 다를 수 있습니다")
+            return filename
+    stem = os.path.splitext(filename)[0]
+    target = unique_file_name(root, stem + ("_base.psd" if psd is not None else ".psd"))
+    dest = os.path.join(root, target)
+    try:
+        if psd is not None:
+            notes = dpsd.wrap_psd_composite(psd, dest)
+        else:
+            notes = dpsd.wrap_image_file(source, dest)
+    except dpsd.ImageDecodeError:
+        logger.exception("%s 새 프로젝트 그림 디코드 실패: %s", _TAG, source)
+        raise _Reject(400, "그림 파일이 깨졌거나 잘렸습니다") from None
+    except dpsd.EmptyPSDImageError:
+        raise _Reject(400, "보이는 그림이 없습니다") from None
+    except dpsd.PSDCompositeRequiredError:
+        raise _Reject(400, "Photoshop 에서 호환성 최대화로 다시 저장하세요") from None
+    state["created"].append(dest)
+    state["notes"].extend(notes)
+    if not state["adopt"]:
+        originals = os.path.join(root, "_source")
+        os.mkdir(originals)
+        _project_new_rename(source, os.path.join(originals, filename))
+    return target
+
+
+def _project_new_file(state: dict, path: str, value: dict) -> None:
+    # 배타 생성에 성공한 파일만 정리 목록에 넣는다(쓰기 도중 실패해도 이번 파일만 지움).
+    with open(path, "x", encoding="utf-8") as f:
+        state["created"].append(path)
+        json.dump(value, f, ensure_ascii=False, indent=2)
+
+
+def _project_new_finish(state: dict, target: str) -> dict:
+    root = state["root"]
+    working = root if state["adopt"] else state["tmp"]
+    with store.manifest_lock(root):
+        if state["adopt"] and not _project_adoption(root)["adoptable"]:
+            raise _Reject(409, "폴더에 프로젝트 기록이 생겼습니다 — 목록을 새로고침하세요")
+        refs = os.path.join(working, "refs")
+        if not os.path.lexists(refs):
+            os.mkdir(refs)
+            state["dirs"].append(refs)
+        elif _is_link(refs) or not os.path.isdir(refs):
+            raise _Reject(400, "refs 는 링크가 아닌 폴더여야 합니다")
+        if not state["adopt"]:
+            _project_new_file(state, os.path.join(working, store.MANIFEST_NAME), store.new_manifest(state["name"]))
+            os.makedirs(os.path.dirname(root), exist_ok=True)
+            if os.path.lexists(root):
+                raise _Reject(409, "같은 이름의 프로젝트가 있습니다")
+            _project_new_rename(working, root)
+            state["moved"] = True
+            rev = 0  # 기존 update 계약: 없는 pipeline.json 은 rev 0.
+        else:
+            # 다른 요청의 pipeline.json 을 덮어쓰지 않도록 먼저 배타로 자리를 잡는다.
+            _project_new_file(state, os.path.join(root, pl.PIPELINE_NAME), {})
+            rev = None  # 방금 만든 빈 문서의 8절 전체를 update 로 채운다.
+        settings = pl.defaults(root)
+        settings["import"].update(psd_path=os.path.join(root, target), refs_dir=os.path.join(root, "refs"))
+        settings["export"]["filename_prefix"] = state["name"]
+        for section in ("import", "prepare", "export"):
+            rev = pl.update(root, rev, section, settings[section])["rev"]
+        if state["adopt"]:
+            _project_new_file(state, os.path.join(root, store.MANIFEST_NAME), store.new_manifest(state["name"]))
+        key = store.register_root(root)
+        _ensure_pref(key, root)
+    return {"key": key, "name": state["name"], "notes": state["notes"]}
+
+
+def _project_new_cleanup(state: dict, success: bool) -> None:
+    def remove(path, fn):
+        try:
+            fn(path)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            logger.exception("%s 새 프로젝트 정리 실패: %s", _TAG, path)
+
+    if not success:
+        if state["adopt"]:
+            for path in reversed(state["created"]):
+                remove(path, os.remove)
+            for path in reversed(state["dirs"]):
+                remove(path, os.rmdir)  # 기존 파일이 들어왔다면 폴더는 남긴다.
+        elif state["moved"]:
+            root = state["root"]
+            expected = store.project_root(_PROJECT_INPUT, state["name"])
+            if (os.path.normcase(root) == os.path.normcase(expected) and not _is_link(root)
+                    and os.path.normcase(os.path.realpath(root))
+                    == os.path.normcase(os.path.join(os.path.realpath(os.path.dirname(root)), os.path.basename(root)))):
+                remove(root, shutil.rmtree)
+    tmp = state["tmp"]
+    if tmp and os.path.isdir(tmp):
+        parent = os.path.join(os.path.abspath(_PROJECT_INPUT), _NEW_TMP_DIRNAME)
+        if (os.path.normcase(os.path.dirname(tmp)) == os.path.normcase(parent) and not _is_link(tmp)
+                and os.path.normcase(os.path.realpath(tmp))
+                == os.path.normcase(os.path.join(os.path.realpath(os.path.dirname(tmp)), os.path.basename(tmp)))):
+            remove(tmp, shutil.rmtree)
+
+
+async def _project_new_thread(fn, *args):
+    # 요청 취소가 파일 작업 스레드를 남겨 rollback 과 경합하지 않게 끝까지 기다린다.
+    pending = asyncio.create_task(asyncio.to_thread(fn, *args))
+    try:
+        return await asyncio.shield(pending)
+    except asyncio.CancelledError:
+        with contextlib.suppress(Exception):
+            await pending
+        raise
+
+
+async def _project_new_request(request):
+    state, success = None, False
+    try:
+        upload = is_octet_stream(request)
+        data = dict(request.query) if upload else await _body(request)
+        # begin 은 작은 메타데이터 작업뿐. 상태를 받은 뒤부터 취소 시 정리할 수 있다.
+        state = _project_new_begin(data, upload)
+        part = None
+        if not state["adopt"]:
+            part = await recv_upload(request, state["tmp"]) if upload else await _project_new_thread(copy_in, state["source"], state["tmp"])
+        target = await _project_new_thread(_project_new_target, state, part)
+        result = await _project_new_thread(_project_new_finish, state, target)
+        success = True
+        return result
+    finally:
+        if state is not None:
+            try:
+                await asyncio.shield(asyncio.to_thread(_project_new_cleanup, state, success))
+            except Exception:
+                logger.exception("%s 새 프로젝트 정리 중 오류: %s", _TAG, state["root"])
 
 
 def _project_roots() -> list[dict]:
@@ -6027,13 +6779,20 @@ def _projects_list() -> dict:
     out = []
     for r in _project_roots():
         # 표시 이름은 경로가 들어갈 수 있는 manifest.project 대신 실제 폴더 이름.
-        row = {"id": r["key"], "name": os.path.basename(r["root"]), "outside_input": r["outside_input"]}
+        row = {"id": r["key"], "name": os.path.basename(r["root"]), "outside_input": r["outside_input"], "adoptable": False, "files": []}
         try:
             store._check_project_name(row["name"])
             row.update(_project_summary(r["root"]))
             row["thumb_url"] = None if row["before_import"] else "projects/thumb?" + urlencode({"key": r["key"]})
         except FileNotFoundError:
-            row.update(openable=False, error="열 수 없음 — Project 노드로 먼저 프로젝트를 만드세요")
+            try:
+                info = _project_adoption(r["root"])
+                row.update(info if not r["outside_input"] else {"adoptable": False, "files": []})
+                row.update(openable=False, error="열 수 없음 — Studio [새 프로젝트] 또는 [이 폴더로 시작]을 이용하세요" if info["adoptable"]
+                           else "열 수 없음 — 옛 프로젝트 기록이 남아 있습니다(매니페스트 없음)")
+            except OSError:
+                logger.exception("%s 프로젝트 폴더 목록 읽기 실패: %s", _TAG, r["root"])
+                row.update(openable=False, error="열 수 없음 — 프로젝트 폴더의 읽기 권한을 확인하세요")
         except Exception:
             row.update(openable=False, error="열 수 없음 — 프로젝트 파일 형식과 읽기 권한을 확인하세요")
         out.append(row)
@@ -6197,22 +6956,55 @@ async def candidates_ext_handler(request: web.Request) -> web.StreamResponse:
 # ── 배치 9 공용 자리(감독관 — _proto/STUDIO_BATCH9_SPEC.md D139). 본문은 9-A(projects/new)·9-B(refs/layers·refs/pool)가 채운다. 그 전엔 501.
 @_guard
 async def projects_new_handler(request: web.Request) -> web.StreamResponse:
-    raise _Reject(501, "새 프로젝트 만들기는 아직 준비 중입니다(배치 9-A)")
+    if not _PROJECT_NEW_LOCK.acquire(blocking=False):
+        raise _Reject(409, "다른 프로젝트를 만드는 중입니다 — 끝난 뒤 다시 시도하세요")
+    try:
+        return _json(await _project_new_request(request))
+    except _Reject:
+        raise
+    except FileExistsError:
+        logger.exception("%s 새 프로젝트 파일 이름 충돌", _TAG)
+        raise _Reject(409, "같은 이름의 프로젝트 또는 파일이 있습니다 — 목록을 새로고침하세요") from None
+    except MemoryError:
+        logger.exception("%s 새 프로젝트 메모리 부족", _TAG)
+        raise _Reject(503, "그림이 커서 메모리가 부족합니다 — 크기를 줄이거나 메모리를 확보한 뒤 다시 시도하세요") from None
+    except OSError:
+        logger.exception("%s 새 프로젝트 파일 작업 실패", _TAG)
+        raise _Reject(500, "파일을 쓰지 못했습니다 — 디스크 공간·다른 프로그램의 잠금 확인") from None
+    except Exception:
+        logger.exception("%s 새 프로젝트 만들기 실패", _TAG)
+        raise _Reject(400, "프로젝트를 만들 수 없습니다 — 그림 형식과 폴더 접근 권한을 확인하세요") from None
+    finally:
+        _PROJECT_NEW_LOCK.release()
 
 
 @_guard
 async def refs_layers_handler(request: web.Request) -> web.StreamResponse:
-    raise _Reject(501, "레이어별 컷은 아직 준비 중입니다(배치 9-B)")
+    q = request.query
+    root = await _pool_route(_root_param, q.get("root"))
+    result = await _pool_route(ref_layers, root, q.get("sheet"), q.get("thumb"), q.get("v"))
+    if q.get("thumb") is not None:
+        return _image_response(result[0], "image/jpeg", result[1], q.get("v"))
+    return _json(result)
 
 
 @_guard
 async def refs_pool_get_handler(request: web.Request) -> web.StreamResponse:
-    raise _Reject(501, "다른 프로젝트 레퍼런스 목록은 아직 준비 중입니다(배치 9-B)")
+    q = request.query
+    root = await _pool_route(_root_param, q.get("root"))
+    result = await _pool_route(ref_pool_source, root, q.get("from"), q.get("thumb"))
+    if q.get("thumb") is not None:
+        return _image_response(result[0], result[1], result[2], q.get("v"))
+    return _json(result)
 
 
 @_guard
 async def refs_pool_post_handler(request: web.Request) -> web.StreamResponse:
-    raise _Reject(501, "보관함 쓰기는 아직 준비 중입니다(배치 9-B)")
+    if is_octet_stream(request):
+        return _json(await _pool_upload(request))
+    data = await _pool_body(request)
+    root = await _pool_route(_root_param, data.get("root"))
+    return _json(await _pool_route(ref_pool, root, None if data.get("op") == "sheet_add" else _refs_rev(data), data.get("op"), data))
 
 
 _ROUTES = (
