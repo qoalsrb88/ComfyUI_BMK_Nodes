@@ -1546,13 +1546,23 @@ def wrap_base_image(image: Image.Image, path: str) -> list[str]:
     try:
         writer.save(tmp, composite=pixels)
         if os.name == "nt":
-            os.rename(tmp, path)
+            for attempt in range(6):
+                try:
+                    os.rename(tmp, path)
+                    break
+                except PermissionError:
+                    if attempt == 5:
+                        raise
+                    time.sleep(0.05 * (attempt + 1))
         else:
             os.link(tmp, path)
-            os.remove(tmp)
     finally:
-        if os.path.isfile(tmp):
+        try:
             os.remove(tmp)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            logger.exception("%s 새 프로젝트 PSD 임시 파일 정리 실패: %s", _TAG, tmp)
     return notes
 
 
@@ -1561,7 +1571,7 @@ class ImageDecodeError(ValueError):
 
 
 def wrap_image_file(source: str, path: str) -> list[str]:
-    """PNG/JPG/WEBP 를 읽고 EXIF 방향을 적용한 뒤 8-bit RGB PSD 로 감싼다."""
+    """PNG/JPG/WEBP 에 EXIF 방향·ICC→sRGB 를 적용한 뒤 8-bit RGB PSD 로 감싼다."""
     from PIL import ImageOps
     try:
         with Image.open(source) as image:
@@ -1569,7 +1579,27 @@ def wrap_image_file(source: str, path: str) -> list[str]:
             decoded = ImageOps.exif_transpose(image)
     except (OSError, SyntaxError, EOFError, struct.error, ValueError) as exc:
         raise ImageDecodeError("그림 파일이 깨졌거나 잘렸습니다") from exc
-    return wrap_base_image(decoded, path)
+    notes = []
+    profile = decoded.info.get("icc_profile")
+    if profile is not None:
+        try:
+            from PIL import ImageCms
+            color = decoded
+            if decoded.mode in ("P", "PA", "RGBA"):
+                color = decoded.convert("RGB")
+            elif decoded.mode == "LA":
+                color = decoded.getchannel("L")
+            elif decoded.mode.startswith("I;16") or decoded.mode == "I":
+                color = Image.fromarray((np.clip(np.asarray(decoded), 0, 65535) / 257.0).round().astype(np.uint8))
+            converted = ImageCms.profileToProfile(color, io.BytesIO(profile), ImageCms.createProfile("sRGB"), outputMode="RGB")
+            converted.putalpha(decoded.convert("RGBA").getchannel("A"))
+            decoded = converted
+        except MemoryError:
+            raise
+        except Exception:
+            logger.exception("%s 새 프로젝트 색 프로필 적용 실패: %s", _TAG, source)
+            notes.append("색 프로필을 적용하지 못했습니다")
+    return [*notes, *wrap_base_image(decoded, path)]
 
 
 class EmptyPSDImageError(ValueError):
@@ -1580,15 +1610,39 @@ class PSDCompositeRequiredError(ValueError):
     """수동 합성을 정확히 할 수 없는데 저장된 병합 이미지도 없는 PSD."""
 
 
-def wrap_psd_composite(psd, path: str) -> list[str]:
-    """정확한 수동 합성은 Import 경로, lossy·보이는 레이어 없음은 병합 이미지로 흰 바탕에 감싼다."""
+def _project_base_lossy(psd) -> tuple[list, list, list]:
+    """Import 가 제외하는 크롭 그룹을 뺀 읽기 전용 트리로 refs 의 lossy 판정을 공유한다."""
     # refs 가 이 모듈을 사용하므로 판정 도우미는 호출 시 가져온다.
     try:
         from . import bmk_design_patch_refs as drefs
     except ImportError:
         import bmk_design_patch_refs as drefs
-    lossy, guides, notes = [], [], []
-    drefs._psd_lossy(psd, "", lossy, guides)
+    skipped = [g for g in (_find_group(psd, CROP_GROUP_NAMES), _find_group(psd, CROP_PIXELS_GROUP_NAMES)) if g is not None]
+
+    class BaseGroupView:
+        def __init__(self, group):
+            self.group = group
+
+        def __getattr__(self, name):
+            return getattr(self.group, name)
+
+        def __iter__(self):
+            for child in self.group:
+                if any(child is group for group in skipped):
+                    continue
+                yield BaseGroupView(child) if child.is_group() else child
+
+    lossy, guides = [], []
+    drefs._psd_lossy(BaseGroupView(psd), "", lossy, guides)
+    visible_guides = [label for label, group in guides if drefs._draws(group)]
+    visible_crops = [group.name for group in skipped if group.is_visible() and drefs._draws(group)]
+    return lossy, visible_guides, visible_crops
+
+
+def wrap_psd_composite(psd, path: str) -> list[str]:
+    """정확한 수동 합성은 Import 경로, lossy·보이는 레이어 없음은 병합 이미지로 흰 바탕에 감싼다."""
+    lossy, guides, crops = _project_base_lossy(psd)
+    notes = []
     manual = not lossy and any(layer.is_visible() for layer in psd.descendants())
     try:
         if manual:
@@ -1610,8 +1664,12 @@ def wrap_psd_composite(psd, path: str) -> list[str]:
         notes.append("PSD의 보이는 레이어를 합성했습니다")
     else:
         notes.append("PSD 병합 이미지를 새 타깃으로 사용합니다")
-        if any(drefs._draws(group) for _, group in guides):
+        if guides:
             warning = "병합 이미지에 가이드가 들어갔을 수 있습니다"
+            notes.append(warning)
+            logger.warning("%s 새 프로젝트 PSD: %s (%s)", _TAG, warning, path)
+        if crops:
+            warning = "병합 이미지에 크롭 영역·크롭 이미지 그룹이 들어갔을 수 있습니다"
             notes.append(warning)
             logger.warning("%s 새 프로젝트 PSD: %s (%s)", _TAG, warning, path)
     return [*notes, *wrap_base_image(image, path)]

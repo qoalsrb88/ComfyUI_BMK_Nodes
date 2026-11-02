@@ -53694,7 +53694,7 @@ def batch9a_unit():
     import tempfile
     from unittest.mock import patch
     import bmk_design_patch_board as bd
-    from PIL import ImageOps
+    from PIL import ImageOps, ImageCms
 
     class Request:
         path = "/bmk/design_patch/projects/new"
@@ -53798,6 +53798,46 @@ def batch9a_unit():
             got, _ = dpsd.read_base(dpsd.open_psd(target))
             check(code == 200 and np.array_equal(got, wanted), f"B9A 이미지 변환 픽셀 {source.name}")
 
+        # ImageCms 가 만든 RGB 프로필의 TRC 감마만 1.8로 바꿔, 프로필을 버리면 픽셀이 다른 입력을 만든다.
+        profile = bytearray(ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes())
+        for index in range(struct.unpack_from(">I", profile, 128)[0]):
+            signature, offset, _ = struct.unpack_from(">4sII", profile, 132 + 12 * index)
+            if signature in (b"rTRC", b"gTRC", b"bTRC"):
+                assert profile[offset:offset + 4] == b"para"
+                struct.pack_into(">i", profile, offset + 12, int(1.8 * 65536))
+        profile = bytes(profile)
+        for suffix in ("png", "jpg", "webp"):
+            source = t / ("profile." + suffix)
+            image = Image.fromarray(pixels)
+            if suffix == "jpg":
+                image = image.convert("RGB")
+            image.save(source, icc_profile=profile, **({"lossless": True} if suffix == "webp" else {}))
+            with Image.open(source) as image:
+                reference = ImageCms.profileToProfile(image.convert("RGB"), io.BytesIO(profile),
+                                                     ImageCms.createProfile("sRGB"), outputMode="RGB")
+                alpha = image.convert("RGBA").getchannel("A")
+                flattened = Image.new("RGB", image.size, "white")
+                flattened.paste(reference, mask=alpha)
+                wanted = np.asarray(flattened)
+            code, response = call({"name": "profile_" + suffix, "path": str(source)})
+            target = bd.pl.load(str(parent / ("profile_" + suffix)))["import"]["psd_path"]
+            got, _ = dpsd.read_base(dpsd.open_psd(target))
+            check(code == 200 and np.array_equal(got, wanted) and not np.array_equal(got, expected)
+                  and "색 프로필을 적용하지 못했습니다" not in response["notes"], "B9A-R3 ICC→sRGB 픽셀·알파 흰 바탕 " + suffix)
+        bad_profile = t / "bad_profile.png"
+        Image.fromarray(pixels).save(bad_profile, icc_profile=b"broken ICC profile")
+        with patch.object(dpsd.logger, "exception") as logged:
+            code, response = call({"name": "bad_profile", "path": str(bad_profile)})
+        target = parent / "bad_profile/bad_profile.psd"
+        check(code == 200 and logged.called and "색 프로필을 적용하지 못했습니다" in response["notes"]
+              and np.array_equal(dpsd.read_base(dpsd.open_psd(str(target)))[0], expected), "B9A-R3 깨진 ICC 는 미변환 픽셀·안내")
+        with patch.object(ImageCms, "profileToProfile", side_effect=ImageCms.PyCMSError("cannot transform")), \
+                patch.object(dpsd.logger, "exception") as logged:
+            code, response = call({"name": "profile_error", "path": str(t / "profile.png")})
+        target = parent / "profile_error/profile.psd"
+        check(code == 200 and logged.called and "색 프로필을 적용하지 못했습니다" in response["notes"]
+              and np.array_equal(dpsd.read_base(dpsd.open_psd(str(target)))[0], expected), "B9A-R3 ICC 변환 실패도 미변환 픽셀·안내")
+
         flat = t / "flat.psd"
         dpsd.PSDWriter((96, 64)).save(str(flat), composite=expected)
         normal = t / "normal.psd"
@@ -53851,7 +53891,23 @@ def batch9a_unit():
         target = parent / "guided_lossy/guided_lossy_base.psd"
         check(code == 200 and np.array_equal(dpsd.read_base(dpsd.open_psd(str(target)))[0], merged_guide)
               and "병합 이미지에 가이드가 들어갔을 수 있습니다" in response["notes"]
+              and "병합 이미지에 크롭 영역·크롭 이미지 그룹이 들어갔을 수 있습니다" in response["notes"]
               and any("가이드" in str(c) for c in logged.call_args_list), "B9A-R2 lossy 는 병합 이미지·가이드 notes 와 로그")
+
+        for index, group_name in enumerate(dpsd.CROP_PIXELS_GROUP_NAMES):
+            writer = dpsd.PSDWriter((96, 64))
+            writer.add_pixel(None, "paint", expected, 0, 0)
+            container = writer.add_group(None, "nested")
+            group = writer.add_group(container, group_name)
+            overlay = writer.add_pixel(group, "overlay", merged_guide, 0, 0)
+            overlay.blend_mode = dpsd.BlendMode.MULTIPLY
+            source = t / f"crop_pixels_{index}.psd"
+            writer.save(str(source), composite=merged_guide)
+            with patch.object(PSDImage, "topil", side_effect=AssertionError("제외 그룹의 blend 는 수동 합성을 막지 않음")):
+                code, response = call({"name": source.stem, "path": str(source)})
+            target = parent / source.stem / (source.stem + "_base.psd")
+            check(code == 200 and np.array_equal(dpsd.read_base(dpsd.open_psd(str(target)))[0], expected),
+                  "B9A-R3 중첩 크롭 픽셀 그룹 lossy 제외 " + group_name)
 
         # 머리 검사는 통과하지만 본문을 디코드할 수 없는 실제 파일들.
         jpeg_bytes = jpeg.read_bytes()
@@ -53878,7 +53934,7 @@ def batch9a_unit():
         from psd_tools.psd.vector import VectorMaskSetting, Path as VectorPath, ClosedPath, ClosedKnotLinked
         crop_psd = t / "crop_alias.psd"
         writer = dpsd.PSDWriter((96, 64))
-        writer.add_pixel(None, "paint", expected, 0, 0)
+        paint = writer.add_pixel(None, "paint", expected, 0, 0)
         group = writer.add_group(None, "크롭영역")
         shape = writer.add_pixel(group, "001_head", expected[:32, :48], 0, 0)
         shape._record.flags.pixel_data_irrelevant = True
@@ -53891,7 +53947,31 @@ def batch9a_unit():
               "B9A-R1 fixture: 별칭 크롭영역 그룹·실제 shape 크롭")
         code, response = call({"name": "crop_alias", "path": str(crop_psd)})
         check(code == 200 and (parent / "crop_alias/crop_alias.psd").read_bytes() == crop_psd.read_bytes()
-              and not (parent / "crop_alias/_source").exists(), "B9A-R1 별칭 크롭 PSD 는 그대로 보존")
+              and not (parent / "crop_alias/_source").exists() and not response["notes"],
+              "B9A-R1 별칭 크롭 PSD 는 그대로 보존·크롭 shape 는 lossy 제외")
+        paint.visible = False
+        crop_hidden = t / "crop_hidden.psd"
+        writer.save(str(crop_hidden), composite=expected)
+        code, response = call({"name": "crop_hidden", "path": str(crop_hidden)})
+        check(code == 400 and "보이는 그림이 없습니다" in response["error"] and "보이게 저장" in response["error"]
+              and not (parent / "crop_hidden").exists(), "B9A-R3 base 없이 크롭만 보이고 합성은 투명하면 400")
+        paint.visible = True
+        paint.opacity = 128
+        crop_alpha = t / "crop_alpha.psd"
+        writer.save(str(crop_alpha), composite=expected)
+        with patch.object(dpsd, "read_base_rgba", wraps=dpsd.read_base_rgba) as read_base, \
+                patch.object(dpsd, "wrap_psd_composite", side_effect=AssertionError("크롭 PSD 는 감싸지 않음")):
+            code, response = call({"name": "crop_alpha", "path": str(crop_alpha)})
+        check(code == 200 and read_base.call_count == 1
+              and (parent / "crop_alpha/crop_alpha.psd").read_bytes() == crop_alpha.read_bytes()
+              and response["notes"] == ["투명한 곳은 Import 에서 검게 보일 수 있습니다 — I2I_base 레이어를 두면 그 레이어를 씁니다"],
+              "B9A-R3 크롭 PSD 합성 1회·반투명 안내·원본 보존")
+        paint.blend_mode = dpsd.BlendMode.MULTIPLY
+        crop_lossy = t / "crop_lossy.psd"
+        writer.save(str(crop_lossy), composite=expected)
+        code, response = call({"name": "crop_lossy", "path": str(crop_lossy)})
+        check(code == 200 and len(response["notes"]) == 2 and "합성이 Photoshop 화면과 다를 수 있습니다" in response["notes"]
+              and (parent / "crop_lossy/crop_lossy.psd").read_bytes() == crop_lossy.read_bytes(), "B9A-R3 크롭 PSD 의 실제 합성 lossy 안내")
 
         text_psd = t / "text_base.psd"
         writer = dpsd.PSDWriter((96, 64))
@@ -53990,6 +54070,20 @@ def batch9a_unit():
         code, response = call({"name": "adopted", "adopt": True, "file": "art.png"})
         check(code == 200 and (adopted / "art_2.psd").exists() and all((adopted / p).read_bytes() == b for p, b in saved.items())
               and not (adopted / "_source").exists(), "B9A adopt PSD _2·기존 파일 보존·복사 없음")
+        adopted_doc = bd.pl.load(str(adopted))
+        check(all(section in adopted_doc for section in bd.pl.SECTIONS)
+              and not any(field.startswith(("import.", "prepare.")) for field in adopted_doc["confirm"])
+              and Path(adopted_doc["import"]["psd_path"]) == adopted / "art_2.psd"
+              and Path(adopted_doc["import"]["refs_dir"]) == adopted / "refs"
+              and asyncio.run(bd.pipeline_prompt_handler(Request(query={"root": response["key"], "stage": "apply"}))).status == 200,
+              "B9A-R3 adopt 성공 pipeline 8절·confirm·경로·apply 200")
+        adopted_fail = parent / "adopted_no_refs"
+        adopted_fail.mkdir()
+        (adopted_fail / "art.png").write_bytes(original)
+        with patch.object(bd.pl, "update", side_effect=fail_update), patch.object(bd.logger, "exception"):
+            code, response = call({"name": adopted_fail.name, "adopt": True, "file": "art.png"})
+        check(code == 500 and {p.name for p in adopted_fail.iterdir()} == {"art.png"}
+              and (adopted_fail / "art.png").read_bytes() == original, "B9A-R3 adopt 실패는 새 refs·타깃·pipeline 정리·원본 보존")
         with patch.object(store, "register_root", side_effect=OSError("private " + tmp)), patch.object(bd.logger, "exception") as logged:
             code, response = call({"name": "register_fail", "path": str(src)})
         check(code == 500 and logged.called and tmp not in str(response) and not (parent / "register_fail").exists(), "B9A 이동 뒤 등록 실패 정리·오류 경로 가림")
@@ -54131,6 +54225,32 @@ def batch9a_unit():
         output = t / "exclusive.psd"; output.write_bytes(b"keep")
         expect_raises(lambda: dpsd.wrap_image_file(str(src), str(output)), "B9A 감싸기 배타 저장", FileExistsError)
         check(output.read_bytes() == b"keep" and not list(t.glob(".base_*")), "B9A 감싸기 기존 파일·임시 파일 정리")
+        if os.name == "nt":
+            wrapped = t / "wrap_retry.psd"
+            def base_locked(source, dest):
+                if base_rename.call_count < 3:
+                    raise PermissionError("temporary lock")
+                return real_rename(source, dest)
+            with patch.object(dpsd.os, "rename", side_effect=base_locked) as base_rename, patch.object(dpsd.time, "sleep") as sleeps:
+                dpsd.wrap_image_file(str(src), str(wrapped))
+            check(base_rename.call_count == 3 and [c.args[0] for c in sleeps.call_args_list] == [.05, .1]
+                  and np.array_equal(dpsd.read_base(dpsd.open_psd(str(wrapped)))[0], expected), "B9A-R3 감싸기 최종 PSD rename 재시도 뒤 성공")
+            for exception, count in ((PermissionError("locked"), 6), (FileExistsError("exists"), 1)):
+                with patch.object(dpsd.os, "rename", side_effect=exception) as base_rename, patch.object(dpsd.time, "sleep") as sleeps:
+                    expect_raises(lambda: dpsd.wrap_image_file(str(src), str(wrapped)), "B9A-R3 감싸기 rename 실패", type(exception))
+                check(base_rename.call_count == count and [c.args[0] for c in sleeps.call_args_list] == [.05 * (i + 1) for i in range(count - 1)]
+                      and not list(t.glob(".base_*")), "B9A-R3 감싸기 6회 상한·충돌 즉시·임시 파일 정리")
+            failure = FileExistsError("original collision")
+            with patch.object(dpsd.os, "rename", side_effect=failure), patch.object(dpsd.os, "remove", side_effect=PermissionError("cleanup lock")), \
+                    patch.object(dpsd.logger, "exception") as logged:
+                try:
+                    dpsd.wrap_image_file(str(src), str(wrapped))
+                except Exception as error:
+                    check(error is failure and logged.called, "B9A-R3 임시 삭제 실패는 로그만·원래 충돌 예외 유지")
+                else:
+                    check(False, "B9A-R3 원래 충돌 예외가 사라짐")
+            for leftover in t.glob(".base_*"):
+                leftover.unlink()
 
         # 실제 Import 의 PSD 읽기 본문을 실행한다. ComfyUI 전체 import 대신 진행 표시만 대역으로 둔다.
         # GPU·서버·사용자 설정을 건드리지 않고 새 타깃의 크롭 0 Import 를 검증한다.
@@ -54257,6 +54377,8 @@ console.log("PASS");
           and "finishNewProject(st)" in _layout_js_fn(pj, "stateChanged", indent="    "),
           "B9A-R3 최초 canvas 전환 1회만 완료·플래그 해제·크롭 수 안내 " + completed.stderr[-700:])
     bj = (PKG / "web_design_patch/board.js").read_text(encoding="utf-8")
+    check("const newNotes = consumeNewProject();" in bj and "newProject: newNotes !== null, newNotes" in bj
+          and "let autoApply = !!opts.newProject;" in pj, "B9A-R3 board newProject 전달→pipeline autoApply 초기화 연결")
     check('if (!S.canvas)' in _layout_js_fn(bj, "renderHeader") and '가져오기 전 — [반영 (무료)]' in bj
           and 'first.addEventListener("click", () => applyFree())' in bj, "B9A 가져오기 전 머리줄·재시도 버튼")
 

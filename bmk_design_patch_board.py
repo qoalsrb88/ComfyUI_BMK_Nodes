@@ -6058,10 +6058,23 @@ def _project_new_target(state: dict, part: str | None) -> str:
             raise _Reject(400, "8비트 RGB PSD 만 — Photoshop 이미지 > 모드에서 바꿔 저장하세요")
         try:
             psd = dpsd.open_psd(source)
+            base = dpsd._auto_base_layer(psd)
+            crop_group = dpsd.find_crop_group(psd)
+            if base is None and crop_group is not None:
+                rgba, _ = dpsd.read_base_rgba(psd, clean_plate_layer="none", base_layer="none")
+                lossy, _, _ = dpsd._project_base_lossy(psd)
         except (OSError, SyntaxError, EOFError, struct.error, ValueError):
             logger.exception("%s 새 프로젝트 PSD 디코드 실패: %s", _TAG, source)
             raise _Reject(400, "그림 파일이 깨졌거나 잘렸습니다") from None
-        if dpsd._auto_base_layer(psd) is not None or dpsd.find_crop_group(psd) is not None:
+        if base is not None:
+            return filename
+        if crop_group is not None:
+            if not np.any(rgba[..., 3]):
+                raise _Reject(400, "보이는 그림이 없습니다 — 레이어가 숨겨져 있으면 보이게 저장하세요")
+            if np.any(rgba[..., 3] < 255):
+                state["notes"].append("투명한 곳은 Import 에서 검게 보일 수 있습니다 — I2I_base 레이어를 두면 그 레이어를 씁니다")
+            if lossy:
+                state["notes"].append("합성이 Photoshop 화면과 다를 수 있습니다")
             return filename
     stem = os.path.splitext(filename)[0]
     target = unique_file_name(root, stem + ("_base.psd" if psd is not None else ".psd"))

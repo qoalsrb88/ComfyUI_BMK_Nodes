@@ -828,7 +828,7 @@ def path_warnings(settings: dict) -> list[dict]:
     imp = (settings or {}).get("import") or {}
     psd = imp.get("psd_path") or ""
     if not psd:
-        out.append({"field": "import.psd_path", "reason": "no_psd", "msg": "PSD 경로가 비어 있음 — Studio [새 프로젝트]에서 타깃 그림을 고르세요"})
+        out.append({"field": "import.psd_path", "reason": "no_psd", "msg": "PSD 경로가 비어 있음 — 실행 설정 ① 준비의 PSD 경로를 채우거나, 다른 이름으로 [새 프로젝트]를 만드세요"})
     elif not os.path.isfile(psd):
         out.append({"field": "import.psd_path", "reason": "missing_path", "msg": f"PSD 파일이 없음: {psd}"})
     for key, isdir, what in (("refs_dir", True, "레퍼런스 폴더가"), ("glossary_path", False, "용어집 파일이")):
@@ -890,7 +890,7 @@ def prompt_gate(root: str, stage: str, m: dict | None = None, *, cur: dict | Non
     blocks = ("import.", "cand.") if "cand" in STAGE_NODES[stage] else ("import.",)  # cand.path 는 cand.enabled 일 때만 나온다
     rows = [w for w in path_warnings(cur["settings"]) if w["field"].startswith(blocks)]
     if any(w["reason"] == "no_psd" for w in rows):
-        return {"error": "PSD 경로가 비어 있습니다 — Studio [새 프로젝트]에서 타깃 그림을 고르세요", "reason": "no_psd"}
+        return {"error": "PSD 경로가 비어 있습니다 — 실행 설정 ① 준비의 PSD 경로를 채우거나, 다른 이름으로 [새 프로젝트]를 만드세요", "reason": "no_psd"}
     if rows:
         return {"error": "; ".join(w["msg"] for w in rows), "reason": "missing_path", "field": rows[0]["field"],
                 "fields": [w["field"] for w in rows]}
