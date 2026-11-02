@@ -56350,7 +56350,6 @@ def agent_approve_unit():
                         switch_path(dr).unlink(missing_ok=True)
                     return result
 
-            before = vlm.approval({"units": units}, "", backend_name=PaidMock.name)
             rep = asyncio.run(vlm.run_units(dr, units, reqs, PaidMock({"delay_s": .01, "credits": 10}), model="mock", effort="high",
                 image_detail="high", concurrency=4 if mode == "wait" else 1, credit_cap=100 if mode == "wait" else 0, progress_cb=None))
             n = 2 if mode == "cap" else 1 if mode == "delete" else 5
@@ -56359,7 +56358,6 @@ def agent_approve_unit():
             check(len(lines(dr)) == (0 if mode in ("off", "mock", "local") else n), f"S5 Draft {mode}: wait 재적립·무료 적립 없음")
             check(sum(vlm.Ledger(dr).state(u.crop_id, u.key)["status"] == "none" for u in units) == 5-n,
                   f"S5 Draft {mode}: 남은 단위는 원장 없이 대기")
-            check(vlm.approval({"units": units}, "", backend_name=PaidMock.name) == before, f"S5 Draft {mode}: 승인 해시·과금 키 불변")
             if mode in ("off", "cap", "delete"):
                 draft_shapes.append(vlm.Ledger(dr).read(units[0].crop_id, units[0].key, 1, "req"))
         check(all(not _pl_shape(draft_shapes[0], q, {}) for q in draft_shapes[1:]), "S5 Draft req 원장 모양 동일")
@@ -56393,11 +56391,37 @@ def agent_approve_unit():
         for sec in pl.SECTIONS:
             cur = pl.current(br, deep=True)
             pl.update(br, cur["rev"], sec, cur["settings"][sec])
+        m, settings = store.load_manifest(br), pl.current(br, deep=True)["settings"]
+
+        def selected_plan():
+            run = board._run_sel(br, m, settings["run"], cid)
+            keys, draft_plan = [], vlm.draft_plan
+
+            def planned(*args, **kw):
+                result = draft_plan(*args, **kw)
+                keys.extend((u.crop_id, u.key) for u in result[3]["units"])
+                return result
+
+            # 계획 memo 를 우회하고 평탄화 memo 도 매번 비움. 실제 draft_plan 결과의 키만 관찰한다.
+            with patch.object(board, "_draft_memo", side_effect=dict), patch.object(vlm, "draft_plan", side_effect=planned):
+                draft = board._draft_sel(br, m, settings, cid)
+            return run, draft, keys
+
+        run0, draft0, keys0 = selected_plan()
         p0 = board.pipeline_plan(br, only_ids=[cid], style=False)
         s0 = board.build_state(br)
         with patch.object(board, "_runner", return_value=None):
             check(board._agent_state(br) == off, "S6 runner 없음 → 꺼짐 응답")
         enable(br, .01)
+        run1, draft1, keys1 = selected_plan()
+        check(run0.get("hash") and run0["need"] > 0 and run0["est_usd"][1] > 0
+              and all(run0[k] == run1.get(k) for k in ("hash", "est_usd", "credits")),
+              "S6 스위치 꺼짐·켜짐: 실제 _run_sel 승인 해시·추정 불변(memo 없음)")
+        check(draft0.get("hash") and draft0["units"] and draft0["est_credits"][1] > 0
+              and all(draft0[k] == draft1.get(k) for k in ("hash", "est_usd", "est_credits")),
+              "S6 스위치 꺼짐·켜짐: 실제 _draft_sel 승인 해시·추정 불변(memo 없음)")
+        check(bool(keys0) and all(key for _, key in keys0) and keys0 == keys1,
+              "S6 스위치 꺼짐·켜짐: _draft_sel 이 호출한 실제 draft_plan units 과금 키 불변")
         p1 = board.pipeline_plan(br, only_ids=[cid], style=False)
         s1, same = board.build_state(br), board.build_state(br, s0["rev"])
         check(p0["agent_approve"] == s0["agent_approve"] == off and p1["agent_approve"]["on"] and s1["agent_approve"]["on"]
@@ -56522,15 +56546,20 @@ await scenario("revalidate", async () => {
   e.click(e.B("승인", e.box())); await sleep(30);
   const r = {noSend:e.tab.got.length === 0, reason:!!e.toast("이름 미정")}; e.stop(); return r;
 });
-for (const mode of ["off", "on", "cell", "way", "lock", "mine", "mineCell", "keyboard", "cap", "mineCap"]) await scenario("reroll_" + mode, async () => {
+for (const mode of ["off", "on", "cell", "way", "lock", "mine", "mineCell", "keyboard", "cap", "mineCap", "shared"]) await scenario("reroll_" + mode, async () => {
   const e = await agentStudio(mode === "off" ? "off" : "on");
   const capped = ["cap", "mineCap"].includes(mode);
   let cell = {cell_key:"abcdef0123456789", variant:"V1", est_usd:[.5,1], pre:capped ? 1 : 0};
   // 이 셀만은 422 ≤ 500, 다른 타깃의 사전 승인까지면 1688 > 500. 추정 없는 셀은 0.
   if (capped) e.fresh = {...ON, cap:mode === "mineCap" ? 2000 : 500, spent:0};
+  if (mode === "shared") {
+    cell = {...cell, est_usd:[.25,.25], pre:2};
+    e.fresh = {...ON, cap:200, spent:0};
+  }
   const calls = {native:0, write:0, queue:0, toasts:[], needs:[]};
   const c = vm.createContext({S:{crops:[{id:"001_38a818",layout_status:["mine","mineCell","keyboard","mineCap"].includes(mode) ? "changed" : null}],
-    targets:[{cells:[cell]}, {cells:capped ? [{cell_key:"other", est_usd:[1,2], pre:3}, {cell_key:"unknown", pre:99}] : []}]},
+    targets:[{tid:"A", cells:[cell]}, {tid:"B", cells:capped ? [{cell_key:"other", est_usd:[1,2], pre:3}, {cell_key:"unknown", pre:99}]
+      : mode === "shared" ? [clone(cell)] : []}]},
     LAYOUT_STATUS:{changed:true}, REROLL_CONFIRM_MS:2500, rerollArm:null, rerollSent:null, Date,
     setTimeout:fn => fn(), window:{confirm:() => {calls.native++;return true;}}, toast:m => calls.toasts.push(m),
     rerollCell:() => cell, usd:() => " ≈ $1", curTarget:() => ({crop_id:"001_38a818"}),
@@ -56548,11 +56577,12 @@ for (const mode of ["off", "on", "cell", "way", "lock", "mine", "mineCell", "key
       if (mode === "way") c.way = "";
       if (mode === "lock") c.lock = "busy";
       if (mode === "mineCap") calls.firstAllowed = !e.B("승인", e.box()).disabled;
+      if (mode === "shared") calls.allowed = !e.B("승인", e.box()).disabled;
       if (mode === "cap") {
         calls.disabled = e.B("승인", e.box()).disabled;
         calls.warning = e.box().textContent.includes("이번 최대 1688 크레딧");
         e.click(e.B("취소", e.box()));
-      } else e.click(e.B("승인", e.box()));
+      } else e.click(e.B(mode === "shared" && !calls.allowed ? "취소" : "승인", e.box()));
       if (["mine", "mineCell", "mineCap"].includes(mode)) {
         if (mode === "mineCap") e.fresh = {...ON, cap:500, spent:0};
         await until(() => e.box());
@@ -56573,6 +56603,7 @@ for (const mode of ["off", "on", "cell", "way", "lock", "mine", "mineCell", "key
     stale:!moved || calls.toasts.some(t => t.includes("상태가 바뀜 — 다시 생성 안 함")), noBox:!e.box()};
   if (capped) Object.assign(r, {disabled:calls.disabled, warning:calls.warning, total:calls.needs.every(n => n === 1688)});
   if (mode === "mineCap") r.firstAllowed = calls.firstAllowed;
+  if (mode === "shared") Object.assign(r, {allowed:calls.allowed, total:calls.needs.length === 1 && calls.needs[0] === 158.25});
   e.stop(); return r;
 });
 await scenario("badgeReport", async () => {

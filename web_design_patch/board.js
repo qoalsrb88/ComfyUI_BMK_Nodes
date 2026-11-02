@@ -520,9 +520,17 @@
     const tab = !!way;
     const lock = tab && pipe ? pipe.paidLock() : "";
     const agent = fromButton && pipe && pipe.agentOn && pipe.agentOn();
-    // 템플릿은 모든 셀의 사전 승인분을 함께 보낸다 — 이번 +1 을 더한 전체 최대 금액으로 확인.
-    const need = agent ? ((S.targets || []).reduce((sum, t) => sum + (t.cells || []).reduce(
-      (n, c) => n + (c.est_usd ? cellPre(c) * c.est_usd[1] : 0), 0), 0) + (cell.est_usd ? cell.est_usd[1] : 0)) * 211 : 0;
+    // 템플릿은 모든 셀의 사전 승인분을 함께 보낸다 — 묶음 타깃의 공유 셀은 한 번만, 이번 +1 을 더해 확인.
+    let need = 0;
+    if (agent) {
+      const seen = new Set();
+      for (const t of S.targets || []) for (const c of t.cells || []) {
+        if (seen.has(c.cell_key)) continue;
+        seen.add(c.cell_key);
+        need += c.est_usd ? cellPre(c) * c.est_usd[1] : 0;
+      }
+      need = (need + (cell.est_usd ? cell.est_usd[1] : 0)) * 211;
+    }
     const stillHere = () => {
       const current = rerollCell();
       const nextWay = scripted ? "" : tabWay();
