@@ -520,7 +520,9 @@
     const tab = !!way;
     const lock = tab && pipe ? pipe.paidLock() : "";
     const agent = fromButton && pipe && pipe.agentOn && pipe.agentOn();
-    const need = cell.est_usd ? cell.est_usd[1] * 211 : 0;
+    // 템플릿은 모든 셀의 사전 승인분을 함께 보낸다 — 이번 +1 을 더한 전체 최대 금액으로 확인.
+    const need = agent ? ((S.targets || []).reduce((sum, t) => sum + (t.cells || []).reduce(
+      (n, c) => n + (c.est_usd ? cellPre(c) * c.est_usd[1] : 0), 0), 0) + (cell.est_usd ? cell.est_usd[1] : 0)) * 211 : 0;
     const stillHere = () => {
       const current = rerollCell();
       const nextWay = scripted ? "" : tabWay();
@@ -546,7 +548,7 @@
         + "머리줄 [다시 생성 보내기]로 보내거나 다음 Run 때(선택과 무관) 함께 과금됩니다. 계속할까요?"
         : tab ? (way === "paid" ? `${pipe.side}\n` : "") + "유료 호출이 사전 승인되고 ComfyUI 탭에 큐 요청을 보냅니다. 계속할까요?"
           : `유료 호출이 사전 승인됩니다 — 지금 큐를 보내지 않음(${why}): 다시 생성은 예약만 되고 다음 Run 때(선택과 무관) 함께 과금됩니다. 계속할까요?`);
-      if (agent ? !(await pipe.agentConfirm(text.split("\n"), need * (pre + 1))) : !window.confirm(text)) {
+      if (agent ? !(await pipe.agentConfirm(text.split("\n"), need)) : !window.confirm(text)) {
         return;
       }
       if (agent && !stillHere()) return;

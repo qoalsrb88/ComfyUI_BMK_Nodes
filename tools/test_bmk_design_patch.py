@@ -5738,7 +5738,7 @@ def m2_board_unit():
         st, u = await h.jget("/bmk/design_patch/state", root=key, since_rev=str(s["rev"]))
         check(st == 200 and u == {"unchanged": True, "rev": s["rev"], "running": False, "drain": False, "drafting": False, "layout_rev": None,
                                   "refs_rev": None, "refs_files_v": None, "pipeline_rev": None, "plan_v": None, "pref_v": None,
-                                  "export_state": None, "export_last": None}
+                                  "export_state": None, "export_last": None, "agent_approve": {"on": False, "cap": 0, "spent": 0, "expires": None}}
               and s.get("refs_files_v", "없음") is None,
               f"since_rev 같음 → unchanged(레이아웃·refs.json·refs_dir·pipeline.json·기억한 계획 없음 → layout_rev·refs_rev·refs_files_v·"
               f"pipeline_rev·plan_v null, S1 §4.2·S2 §5.8·S3 §6) {u}")
@@ -14066,7 +14066,8 @@ def layout_board_unit():
         st, u = await h.jget(f"{API}/state", root=key, since_rev=str(s["rev"]))
         refs_rev = (board.drefs.load_refs(root) or {}).get("rev")  # B21 이름 바꾸기가 고정(S2 §2.6)해 refs.json 이 있음
         check(u == {"unchanged": True, "rev": s["rev"], "running": False, "drain": False, "drafting": False, "layout_rev": L["rev"],
-                    "refs_rev": refs_rev, "refs_files_v": s.get("refs_files_v"), "pipeline_rev": None, "plan_v": None, "pref_v": None, "export_state": None, "export_last": None}
+                    "refs_rev": refs_rev, "refs_files_v": s.get("refs_files_v"), "pipeline_rev": None, "plan_v": None, "pref_v": None, "export_state": None, "export_last": None,
+                    "agent_approve": {"on": False, "cap": 0, "spent": 0, "expires": None}}
               and refs_rev is not None and isinstance(s.get("refs_files_v"), str),
               f"unchanged 응답에도 layout_rev·refs_rev·refs_files_v(S3 drafting false, pipeline_rev·plan_v 는 파일·계획이 없어 null) {u}")
         mrev = store.load_manifest(root)["rev"]
@@ -56181,6 +56182,7 @@ console.log(JSON.stringify(out)); process.exit(0);
 
 def agent_approve_unit():
     """S1–S7: 파일 스위치·적립·실행·라우트 본문·가짜 DOM. comfy·torch·네트워크 없이 돈다."""
+    modules_before = set(sys.modules)
     from concurrent.futures import ThreadPoolExecutor
     from datetime import datetime, timezone, timedelta
     from tempfile import mkdtemp
@@ -56433,7 +56435,8 @@ def agent_approve_unit():
             ex = api["state"][label]
             act = {k: state[k] for k in ex} if label == "flags" else state
             check(not _pl_shape({label: ex}, {label: act}, api["state"]), f"S6 {label} 정본 nullable expires 대조")
-    check(not any(k == "torch" or k == "comfy" or k.startswith("comfy.") for k in sys.modules), "S1–S6 torch·comfy import 없음")
+    check(not any(k == "torch" or k == "comfy" or k.startswith(("torch.", "comfy.")) for k in set(sys.modules) - modules_before),
+          "S1–S6 torch·comfy 새 import 없음")
     _agent_approve_js(out)
 
 
@@ -56519,17 +56522,22 @@ await scenario("revalidate", async () => {
   e.click(e.B("승인", e.box())); await sleep(30);
   const r = {noSend:e.tab.got.length === 0, reason:!!e.toast("이름 미정")}; e.stop(); return r;
 });
-for (const mode of ["off", "on", "cell", "way", "lock", "mine", "mineCell", "keyboard"]) await scenario("reroll_" + mode, async () => {
+for (const mode of ["off", "on", "cell", "way", "lock", "mine", "mineCell", "keyboard", "cap", "mineCap"]) await scenario("reroll_" + mode, async () => {
   const e = await agentStudio(mode === "off" ? "off" : "on");
-  let cell = {cell_key:"abcdef0123456789", variant:"V1", est_usd:[.5,1], pre:0};
-  const calls = {native:0, write:0, queue:0, toasts:[]};
-  const c = vm.createContext({S:{crops:[{id:"001_38a818",layout_status:["mine","mineCell","keyboard"].includes(mode) ? "changed" : null}]},
+  const capped = ["cap", "mineCap"].includes(mode);
+  let cell = {cell_key:"abcdef0123456789", variant:"V1", est_usd:[.5,1], pre:capped ? 1 : 0};
+  // 이 셀만은 422 ≤ 500, 다른 타깃의 사전 승인까지면 1688 > 500. 추정 없는 셀은 0.
+  if (capped) e.fresh = {...ON, cap:mode === "mineCap" ? 2000 : 500, spent:0};
+  const calls = {native:0, write:0, queue:0, toasts:[], needs:[]};
+  const c = vm.createContext({S:{crops:[{id:"001_38a818",layout_status:["mine","mineCell","keyboard","mineCap"].includes(mode) ? "changed" : null}],
+    targets:[{cells:[cell]}, {cells:capped ? [{cell_key:"other", est_usd:[1,2], pre:3}, {cell_key:"unknown", pre:99}] : []}]},
     LAYOUT_STATUS:{changed:true}, REROLL_CONFIRM_MS:2500, rerollArm:null, rerollSent:null, Date,
     setTimeout:fn => fn(), window:{confirm:() => {calls.native++;return true;}}, toast:m => calls.toasts.push(m),
     rerollCell:() => cell, usd:() => " ≈ $1", curTarget:() => ({crop_id:"001_38a818"}),
     way:"paid", lock:"", tabWay:() => c.way, reviewMissing:() => "", rerollHold:() => "",
     write:async () => {calls.write++;return {rev:1};}, queueReroll:() => calls.queue++});
-  c.pipe = {agentOn:e.pipe.agentOn, agentConfirm:e.pipe.agentConfirm, paidLock:() => c.lock, paidWhy:() => "", applyWarn:() => [], side:P.side || "부수 효과"};
+  c.pipe = {agentOn:e.pipe.agentOn, agentConfirm:(lines, need) => {calls.needs.push(need); return e.pipe.agentConfirm(lines, need);},
+    paidLock:() => c.lock, paidWhy:() => "", applyWarn:() => [], side:P.side || "부수 효과"};
   vm.runInContext(`cellPre = ${boardFn("cellPre")}; reroll = ${boardFn("reroll")};`, c);
   if (mode === "keyboard") {await c.reroll(false); await c.reroll(false);}
   else {
@@ -56539,20 +56547,32 @@ for (const mode of ["off", "on", "cell", "way", "lock", "mine", "mineCell", "key
       if (mode === "cell") cell = {...cell, cell_key:"changed"};
       if (mode === "way") c.way = "";
       if (mode === "lock") c.lock = "busy";
-      e.click(e.B("승인", e.box()));
-      if (["mine", "mineCell"].includes(mode)) {
+      if (mode === "mineCap") calls.firstAllowed = !e.B("승인", e.box()).disabled;
+      if (mode === "cap") {
+        calls.disabled = e.B("승인", e.box()).disabled;
+        calls.warning = e.box().textContent.includes("이번 최대 1688 크레딧");
+        e.click(e.B("취소", e.box()));
+      } else e.click(e.B("승인", e.box()));
+      if (["mine", "mineCell", "mineCap"].includes(mode)) {
+        if (mode === "mineCap") e.fresh = {...ON, cap:500, spent:0};
         await until(() => e.box());
         if (mode === "mineCell") cell = {...cell, cell_key:"changed"};
-        e.click(e.B("승인", e.box()));
+        if (mode === "mineCap") {
+          calls.disabled = e.B("승인", e.box()).disabled;
+          calls.warning = e.box().textContent.includes("이번 최대 1688 크레딧");
+          e.click(e.B("취소", e.box()));
+        } else e.click(e.B("승인", e.box()));
       }
     }
     await pending;
   }
   const moved = ["cell","way","lock","mineCell"].includes(mode);
-  const r = {write:calls.write === (moved ? 0 : 1), queue:calls.queue === (moved ? 0 : 1),
+  const r = {write:calls.write === (moved || capped ? 0 : 1), queue:calls.queue === (moved || capped ? 0 : 1),
     native:calls.native === (["off","keyboard"].includes(mode) ? 1 : 0),
-    state:e.stateReads.length === (["off","keyboard"].includes(mode) ? 0 : ["mine","mineCell"].includes(mode) ? 2 : 1),
+    state:e.stateReads.length === (["off","keyboard"].includes(mode) ? 0 : ["mine","mineCell","mineCap"].includes(mode) ? 2 : 1),
     stale:!moved || calls.toasts.some(t => t.includes("상태가 바뀜 — 다시 생성 안 함")), noBox:!e.box()};
+  if (capped) Object.assign(r, {disabled:calls.disabled, warning:calls.warning, total:calls.needs.every(n => n === 1688)});
+  if (mode === "mineCap") r.firstAllowed = calls.firstAllowed;
   e.stop(); return r;
 });
 await scenario("badgeReport", async () => {
