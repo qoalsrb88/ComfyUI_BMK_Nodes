@@ -129,6 +129,8 @@ import logging
 import math
 import os
 import re
+import shutil
+import stat
 import struct
 import threading
 import time
@@ -322,6 +324,110 @@ def ref_file_name(crop_name: Any, role: str, desc: Any = None) -> str:
     if _part_rank(name, store.parse_crop_layer_name(crop_name)["part"]) != (0 if role == "main" else 1):
         raise ValueError(f"크롭 이름에 '_t' 표지 꼴이 있어 {name!r} 이 이름 매칭에서 이 크롭의 부위로 읽히지 않습니다 — 크롭 이름을 바꾸세요")
     return name
+
+
+def pool_desc(raw: str, fallback: str = "그림1") -> str:
+    """D141: 파일 이름의 설명만 정리한다(기존 크롭 보조 설명 규칙과 별개)."""
+    if not isinstance(raw, str):
+        raise ValueError("설명은 문자열이어야 합니다")
+    text = "".join(c if c == "-" or unicodedata.category(c)[0] in "LN" else "-"
+                   for c in unicodedata.normalize("NFC", raw))
+    text = re.sub("-+", "-", text).strip("-")[:40] or fallback
+    return "x-" + text if store._REF_T_RE.search("_" + text) else text
+
+
+def pool_reserved(root: str, m: dict, doc: dict | None) -> set[str]:
+    """존재하지 않는 연결·스펙 이름도 예약: 파일 생성만으로 참조가 되살아나지 않게."""
+    return _pool_reserved(root, m, doc, None)
+
+
+def _pool_reserved(root, m, doc, own_file):
+    """이름 바꾸기는 자신의 디스크 항목만 뺀다. 같은 키의 다른 예약은 유지한다."""
+    folder = (m.get("source") or {}).get("refs_dir") or ""
+    names = set(explicit_refs(root, m))
+    for sub in (folder, os.path.join(folder, HELD_DIR) if folder else ""):
+        if sub and os.path.isdir(sub):
+            names.update(n for n in os.listdir(sub) if sub != folder or n != own_file)
+    for ln in (doc or {}).get("links", {}).values():
+        names.update(ln["files"])
+    names.update(h["from"] for h in (doc or {}).get("held", {}).values())
+    # 보류 경로를 명시한 이름도 피한다(나중 보류 시 참조가 생기는 길 포함).
+    return {ref_key(n) for n in names} | {ref_key(n).rsplit("/", 1)[-1] for n in names}
+
+
+def pool_file_name(desc: str, reserved: set[str], *, fallback: str = "그림1", preferred: str | None = None) -> str:
+    """저장·레이어·복사·이름 바꾸기의 공통 배정기. 배정한 이름도 reserved 에 넣는다."""
+    if preferred and preferred.startswith("ref_"):
+        check_ref_name(preferred)
+        stem, ext = os.path.splitext(preferred)
+        stem = stem[:-2] if stem.endswith("_t") else stem
+        first = preferred
+    else:
+        stem, ext = "ref_" + pool_desc(desc, fallback), ".png"
+        first = stem + "_t" + ext
+        if not pool_desc(desc, "") and fallback.endswith("_1"):
+            stem = stem[:-2]
+    name, k = first, 2
+    while ref_key(name) in reserved:
+        name, k = f"{stem}_{k}_t{ext}", k + 1
+    reserved.add(ref_key(name))
+    return name
+
+
+def pool_usage(root: str, m: dict, doc: dict | None, crops: list[dict]) -> set[str]:
+    used = set(explicit_refs(root, m))
+    for ln in (doc or {}).get("links", {}).values():
+        used.update(ref_key(n) for n in ln["files"])
+    for c in crops:
+        r = resolve_refs((m.get("source") or {}).get("refs_dir") or "", c, doc)
+        used.update(ref_key(n) for n in r["refs_auto"] + r["unlinked"])
+    for c in m.get("crops", []):
+        used.update(ref_key(n) for n in c.get("refs_auto", []))
+    return used
+
+
+def pool_files(root: str, m: dict, doc: dict | None, crops: list[dict]) -> tuple[list[dict], list[dict]]:
+    """보관함/보류 메타데이터(경로를 응답에 싣지 않는다)."""
+    folder = (m.get("source") or {}).get("refs_dir") or ""
+    if not folder or not os.path.isdir(folder):
+        return [], []
+    used = pool_usage(root, m, doc, crops)
+    records = {ref_key(n): rec for n, rec in (doc or {}).get("files", {}).items()}
+    held = {ref_key(n): rec for n, rec in (doc or {}).get("held", {}).items()}
+    out, hold = [], []
+    for sub, rows in (("", out), (HELD_DIR, hold)):
+        directory = os.path.join(folder, sub)
+        if not os.path.isdir(directory):
+            continue
+        for name in sorted(os.listdir(directory)):
+            key = ref_key(f"{sub}/{name}" if sub else name)
+            path = os.path.join(directory, name)
+            if key in used or not os.path.isfile(path) or os.path.splitext(name)[1].lower() not in store.REF_EXTS:
+                continue
+            rec = records.get(key)
+            own = rec is not None and "for" in rec and rec["for"] is None
+            hr = held.get(ref_key(name))
+            if sub and (not own or not hr or hr.get("crop") is not None):
+                continue
+            try:
+                size = list(_sheet_header(path))
+            except (OSError, ValueError):
+                size = None
+            row = {"name": name, "size": size, "at": (rec or {}).get("at"), "origin": "pool" if own else "old"}
+            if rec and rec.get("sheet"):
+                sh = rec["sheet"]
+                try:
+                    rel = "/".join(store._norm_relparts(sh.get("path"), "시트"))
+                except ValueError:
+                    rel = None
+                row["sheet"] = {"path": rel, "layer": sh.get("layer"), "size": sh.get("size")}
+                row["layer_path"] = rec["sheet"].get("layer_path")
+            if rec and rec.get("from"):
+                row["from"] = rec["from"]
+            if sub:
+                row["restore_as"] = hr["from"]
+            rows.append(row)
+    return out, hold
 
 
 def check_transform(t: Any) -> dict:
@@ -824,6 +930,249 @@ def _psd_rgba(path: str, layer: str | None) -> np.ndarray:
     for w in warns:
         logger.info("%s 시트 합성 %s: %s", _TAG, os.path.basename(path), w)
     return rgba
+
+
+def layer_thumb_path(root: str, version: str, layer_id: str) -> str:
+    if not isinstance(version, str) or not re.fullmatch(r"[0-9a-f]{16}", version):
+        raise ValueError("시트 지문이 잘못되었습니다")
+    if not isinstance(layer_id, str) or not re.fullmatch(r"[0-9]+(?:/[0-9]+)*", layer_id):
+        raise ValueError("레이어 인덱스 경로가 잘못되었습니다")
+    return store.resolve_path(root, f"derived/reflayers/{version}/{layer_id}.jpg")
+
+
+def _layer_nodes(psd):
+    """id 는 원래 인덱스 경로, 표시 순서는 PS 패널처럼 위에서 아래로."""
+    def walk(parent, prefix, labels, visible, excluded):
+        for idx in range(len(parent) - 1, -1, -1):
+            node = parent[idx]
+            ident = f"{prefix}/{idx}" if prefix else str(idx)
+            path = labels + [node.name]
+            work = bool(dpsd._GUIDE_RE.search(node.name or "")) or node.name in (
+                *dpsd.CROP_GROUP_NAMES, *dpsd.CROP_PIXELS_GROUP_NAMES, *dpsd.BASE_LAYER_NAMES, *dpsd.CLEAN_PLATE_NAMES)
+            vis = visible and node.visible
+            blocked = excluded or work
+            yield node, ident, path, vis, blocked
+            if node.is_group():
+                yield from walk(node, ident, path, vis, blocked)
+    yield from walk(psd, "", [], True, False)
+
+
+def _layer_extent(node):
+    """레이어 컷의 가시 범위. 흰 배경 마스크의 bbox 밖 픽셀도 포함한다(IoU 범위와 별개)."""
+    if node.is_group():
+        boxes = [_layer_extent(child) for child in node if child.visible]
+        boxes = [b for b in boxes if b[2] > b[0] and b[3] > b[1]]
+        rect = ([min(b[0] for b in boxes), min(b[1] for b in boxes),
+                 max(b[2] for b in boxes), max(b[3] for b in boxes)] if boxes else [0, 0, 0, 0])
+    else:
+        rect = list(node.bbox)
+    mask = node.mask if node.has_mask() else None
+    if mask is not None and not mask.disabled and mask.background_color == 0:
+        b = mask.bbox
+        if b[2] > b[0] and b[3] > b[1]:
+            rect = [max(rect[0], b[0]), max(rect[1], b[1]), min(rect[2], b[2]), min(rect[3], b[3])]
+    return rect
+
+
+def _layer_composite(group, rect):
+    """그룹 결과 창은 한 번 만들고, 자식은 자신의 bbox 와 겹치는 창만 합성한다."""
+    x0, y0, x1, y1 = rect
+    result = Image.new("RGBA", (x1 - x0, y1 - y0))
+    for child in group:
+        if not child.visible or (child.is_group() and dpsd._GUIDE_RE.search(child.name or "")):
+            continue
+        if not child.is_group() and child.kind not in dpsd._RENDER_KINDS:
+            continue
+        bounds = _layer_extent(child)
+        window = [max(x0, bounds[0]), max(y0, bounds[1]), min(x1, bounds[2]), min(y1, bounds[3])]
+        if window[2] <= window[0] or window[3] <= window[1]:
+            continue
+        if child.is_group():
+            rgba = dpsd._apply_node_alpha(child, _layer_composite(child, window), window)
+        else:
+            rgba = dpsd._layer_window(child, window)
+        if rgba is not None:
+            result.alpha_composite(Image.fromarray(rgba), dest=(window[0] - x0, window[1] - y0))
+    return np.array(result)
+
+
+def _layer_pixels(node, blocked: bool):
+    """한 노드의 extent 창만 합성. 지원하지 않는 행은 디코드하지 않는다."""
+    rect = _layer_extent(node)
+    w, h = rect[2] - rect[0], rect[3] - rect[1]
+    reason = ("작업 그룹" if blocked else
+              "제외: " + node.kind if not node.is_group() and node.kind not in ("pixel", "smartobject") else
+              "범위 초과" if w * h > MAX_RECT_AREA else "빈 레이어" if w <= 0 or h <= 0 else None)
+    if reason:
+        return rect, None, [reason]
+    if node.is_group():
+        rgba = dpsd._apply_node_alpha(node, _layer_composite(node, rect), rect)
+    else:
+        rgba = dpsd._layer_window(node, rect)
+    if rgba is None or not np.any(rgba[..., 3]):
+        return rect, None, ["알파 없음"]
+    return rect, rgba, []
+
+
+def _plain_cache_path(base, path):
+    """지정 폴더 안의 실제 경로만 허용하며 중간 링크·정션·재분석 지점도 제외한다."""
+    base, path = os.path.abspath(base), os.path.abspath(path)
+    try:
+        if os.path.normcase(os.path.commonpath([base, path])) != os.path.normcase(base):
+            return False
+        current = path
+        while True:
+            st = os.lstat(current)
+            if stat.S_ISLNK(st.st_mode) or getattr(st, "st_file_attributes", 0) & 0x400:
+                return False
+            if os.path.normcase(current) == os.path.normcase(base):
+                break
+            current = os.path.dirname(current)
+        real_base = os.path.realpath(base)
+        return os.path.normcase(os.path.commonpath([real_base, os.path.realpath(path)])) == os.path.normcase(real_base)
+    except (OSError, ValueError):
+        return False
+
+
+def _prune_layer_tables(root, sheet, version):
+    folder = store.resolve_path(root, "derived/reflayers")
+    if not _plain_cache_path(root, folder):
+        return
+    try:
+        entries = list(os.scandir(folder))
+    except OSError as e:
+        logger.warning("%s 레이어 캐시 목록 읽기 실패: %s", _TAG, e)
+        return
+    for entry in entries:
+        if entry.name == version or not re.fullmatch(r"[0-9a-f]{16}", entry.name):
+            continue
+        try:
+            if not entry.is_dir(follow_symlinks=False) or not _plain_cache_path(root, entry.path):
+                continue
+            source = os.path.join(entry.path, "source.json")
+            if not os.path.exists(source):
+                source = os.path.join(entry.path, "table.json")  # 이전 캐시도 시트별로 정리.
+            orphan = not os.path.lexists(source)
+            if orphan:
+                if entry.stat(follow_symlinks=False).st_mtime >= time.time() - 86400:
+                    continue
+            else:
+                if not _plain_cache_path(root, source):
+                    continue
+                with open(source, encoding="utf-8") as f:
+                    owner = json.load(f)
+                if not isinstance(owner, dict) or owner.get("sheet") != sheet:
+                    continue
+            # 하위 인덱스 폴더까지 검사한 뒤 지운다. 링크가 하나라도 있으면 그 판은 보존한다.
+            plain = True
+            for parent, dirs, files in os.walk(entry.path, followlinks=False):
+                if orphan and (any(not re.fullmatch(r"[0-9]+", name) for name in dirs)
+                               or any(not re.fullmatch(r"[0-9]+\.jpg|\.(?:table|source)\.json\.[0-9]+\.[0-9a-f]+\.tmp", name) for name in files)):
+                    plain = False
+                    break
+                if not all(_plain_cache_path(root, os.path.join(parent, name)) for name in dirs + files):
+                    plain = False
+                    break
+            if plain:
+                shutil.rmtree(entry.path)
+        except (OSError, ValueError) as e:
+            logger.warning("%s 레이어 캐시 정리 실패: %s", _TAG, e)
+
+
+def layer_table(root: str, info: dict) -> dict:
+    version = sheet_sig(root, info["path"])
+    cache = store.resolve_path(root, f"derived/reflayers/{version}/table.json")
+    try:
+        with open(cache, encoding="utf-8") as f:
+            table = json.load(f)
+        if (table.get("render") == 2 and table.get("sheet") == info["path"] and table.get("sheet_v") == version
+                and isinstance(table.get("items"), list)
+                and all(isinstance(r, dict) and (r.get("excluded") is True or
+                        os.path.isfile(layer_thumb_path(root, version, r.get("id")))) for r in table["items"])
+                and sheet_sig(root, info["path"]) == version):
+            _prune_layer_tables(root, info["path"], version)
+            return table
+    except (OSError, ValueError, AttributeError):
+        pass  # 없거나 불완전한 캐시는 다시 만든다.
+    # 합성이 중단되어 table.json 이 없어도 다음 판에서 이 시트의 캐시임을 알 수 있다.
+    store.write_json_atomic(os.path.join(os.path.dirname(cache), "source.json"), {"sheet": info["path"]})
+    psd = dpsd.open_psd(info["file"])
+    rows = []
+    for node, ident, labels, visible, blocked in _layer_nodes(psd):
+        rect, rgba, chips = _layer_pixels(node, blocked)
+        excluded = rgba is None
+        lossy = []
+        # _psd_lossy 는 보이는 노드만 검사한다. 숨긴 행도 수동 선택할 수 있으므로 경고는 별도로 계산.
+        was_visible = node.visible
+        try:
+            node.visible = True
+            _psd_lossy([node], "", lossy, [])
+        finally:
+            node.visible = was_visible
+        if not visible:
+            chips.append("숨김")
+        if lossy:
+            chips.append("합성 주의")
+        background = False
+        if rgba is not None:
+            x0, y0, x1, y1 = rect
+            W, H = psd.size
+            ix0, iy0, ix1, iy1 = max(x0, 0), max(y0, 0), min(x1, W), min(y1, H)
+            background = (ix1 > ix0 and iy1 > iy0 and
+                          np.count_nonzero(rgba[iy0-y0:iy1-y0, ix0-x0:ix1-x0, 3] == 255) >= W * H * .9)
+            if background:
+                chips.append("배경")
+            thumb = layer_thumb_path(root, version, ident)
+            os.makedirs(os.path.dirname(thumb), exist_ok=True)
+            store._atomic_write_bytes(thumb, _jpg_on_white(rgba, 256, 85))
+        rows.append({"id": ident, "parent": ident.rpartition("/")[0] or None, "path": "/".join(labels),
+                     "layer": node.name, "group": node.is_group(), "size": [max(0, rect[2]-rect[0]), max(0, rect[3]-rect[1])],
+                     "name": pool_desc(node.name, f"레이어{len(rows)+1}"), "fallback": f"레이어{len(rows)+1}", "excluded": excluded,
+                     "checked": not (excluded or not visible or lossy or background), "chips": chips, "warnings": lossy})
+    if sheet_sig(root, info["path"]) != version:
+        raise RefsConflict("시트가 바뀌었습니다 — 표를 다시 여세요")
+    table = {"render": 2, "sheet": info["path"], "sheet_v": version, "items": rows}
+    store.write_json_atomic(cache, table)
+    _prune_layer_tables(root, info["path"], version)
+    return table
+
+
+def cut_layers(root: str, info: dict, version: str, items: list[dict]):
+    """요청 전체에서 PSD 한 번, 한 레이어씩 반환(호출자가 즉시 임시 PNG 로 저장)."""
+    if version != sheet_sig(root, info["path"]):
+        raise RefsConflict("시트가 바뀌었습니다 — 표를 다시 여세요")
+    if not isinstance(items, list) or not 1 <= len(items) <= 100:
+        raise ValueError("레이어는 1–100개까지 고르세요")
+    if any(not isinstance(it, dict) or not isinstance(it.get("id"), str) or not isinstance(it.get("name"), str) for it in items):
+        raise ValueError("레이어는 id·name 이 있는 목록이어야 합니다")
+    if len({it["id"] for it in items}) != len(items):
+        raise ValueError("같은 레이어를 두 번 고를 수 없습니다")
+    psd = dpsd.open_psd(info["file"])
+    nodes = {ident: (node, blocked, f"레이어{k}")
+             for k, (node, ident, _labels, _visible, blocked) in enumerate(_layer_nodes(psd), 1)}
+    for item in items:
+        if item["id"] not in nodes:
+            raise ValueError("표에 없는 레이어입니다")
+        node, blocked, fallback = nodes[item["id"]]
+        rect, rgba, why = _layer_pixels(node, blocked)
+        if rgba is None:
+            raise ValueError("자를 수 없는 레이어입니다: " + ", ".join(why))
+        t = check_transform({})
+        cut = transform_rgba(rgba, **t)
+        record = {"for": None, "at": _now(), "size": [cut.shape[1], cut.shape[0]], "sha": store.pixel_sha(cut),
+                  "sheet": {"path": info["path"], "layer": node.name, "layer_path": item["id"],
+                            "fingerprint": store.file_fingerprint(info["file"]), "size": info["size"]},
+                  "cut": {"method": "rect", "source": "layer", "pad": TRIM_PAD}, "transform": t}
+        # 재열기는 캔버스 좌표의 실제 알파 bbox + pad. 캔버스 밖/너무 작은 컷은 재열기를 제공하지 않는다.
+        ax, ay, aw, ah = cv2.boundingRect(rgba[..., 3])
+        W, H = psd.size
+        reopen = [max(0, rect[0] + ax - t["pad"]), max(0, rect[1] + ay - t["pad"]),
+                  min(W, rect[0] + ax + aw + t["pad"]), min(H, rect[1] + ay + ah + t["pad"])]
+        if min(reopen[2] - reopen[0], reopen[3] - reopen[1]) >= 16:
+            record["rect"] = reopen
+        yield item["name"], fallback, cut, record
+    if version != sheet_sig(root, info["path"]):
+        raise RefsConflict("시트가 바뀌었습니다 — 표를 다시 여세요")
 
 
 def _build_sheet(path: str, layer: str | None, npy: str) -> None:

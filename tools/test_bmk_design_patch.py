@@ -20937,7 +20937,9 @@ async function screen(o = {}) {
   await sleep(30);
   const all = (root) => root.all();
   const env = { srv, doc, ed, viewer, hosts, toasts, queued, exits, confirms, imgs, st, all, tabSaves,
-    button: (root, label, exact) => all(root).find((e) => e.tagName === "BUTTON" && (exact ? e.textContent === label : e.textContent.startsWith(label))) || null,
+    button: (root, label, exact) => all(root).find((e) => e.tagName === "BUTTON" && (label === "저장"
+      ? ["대표로 저장", "보조로 저장"].includes(e.textContent) : label === "저장 (Enter)" ? e.textContent === "보조로 저장"
+        : exact ? e.textContent === label : e.textContent.startsWith(label))) || null,
     press: async (root, label, exact) => {
       const b = env.button(root, label, exact);
       if (!b) throw new Error(`단추 없음: ${label}`);
@@ -22000,7 +22002,7 @@ def _f4_checks(res, refs, f21):
               and f6["afterDisabled"] is False and f6["saveReq"] == "2".rjust(32, "0"),
               f"F06 다듬기가 도는 동안 저장 끔(눌러도 POST 없음), 끝나면 새 결과(req 2)로 저장 {f6}")
         check(f6["busy"] == {"head": True, "disabled": True}, f"F24 저장 중: 머리줄 '저장 중…'·저장 단추 끔 {f6['busy']}")
-        check(f6["mainLabel"] == "저장" and f6["auxLabel"] == "저장 (Enter)", f"F26 대표 역할 저장 단추 = '저장'(Enter 는 컷), 보조 = '저장 (Enter)' {f6}")
+        check(f6["mainLabel"] == "대표로 저장" and f6["auxLabel"] == "보조로 저장", f"D125 대표·보조 저장 단추 {f6}")
     f8 = res.get("f08") or {}
     check(f8.get("front") == {"btns": [["↓"], ["↑"]], "aDown": 2, "cUp": 1} and f8.get("middle") == {"btns": [["↓"], ["↑"]], "aDown": 2, "cUp": 0},
           f"F08 보조 ↑↓ = 보조 목록의 이웃 자리(대표 건너뜀 — files [M,A,C]·[A,M,C]) {f8}")
@@ -22659,8 +22661,8 @@ def refs_js_unit():
           "ref_edit.js 외부 URL·이모지 없음")
     check("textContent" in rj and "replaceChildren" in rj, "ref_edit.js textContent·replaceChildren")
     paths = set(re.findall(r'"(refs(?:/\w+)?)[?"]', rj))
-    check(paths == {"refs", "refs/sheets", "refs/sheet", "refs/cut", "refs/save", "refs/link"} and "fetchFn(apiUrl(path)" in rj
-          and rj.count("fetchFn(") == 2, f"ref_edit.js 보드 주소 = apiUrl 상대 경로 refs* 뿐 {sorted(paths)}")
+    check(paths == {"refs", "refs/sheets", "refs/sheet", "refs/cut", "refs/save", "refs/link", "refs/layers", "refs/pool"} and "fetchFn(apiUrl(path)" in rj
+          and rj.count("fetchFn(") == 3, f"ref_edit.js 보드 주소 = apiUrl 상대 경로 refs* {sorted(paths)}")
     # I1: /api/prompt 본문은 promptBody 하나 — 무료 노드 고정, 노드 키 dp_refcut, front, 인증·탭 정보 없음
     pb = _layout_js_fn(rj, "promptBody")
     check(rj.count('"BMKDesignPatchRefCut"') == 1 and rj.count("dp_refcut") == 1 and rj.count("promptBody(") == 2
@@ -54386,6 +54388,922 @@ console.log("PASS");
 def batch9b_unit():
     """배치 9-B(11/02 — _proto/STUDIO_BATCH9_SPEC.md D123–D137·D141·D143): 레퍼런스 보관함·레이어별 컷·가져오기·시트 추가·[레퍼런스] 화면 2건. 공용 자리 — 9-B 작업자가 채운다."""
     section("배치 9-B — 레퍼런스 보관함·레이어별 컷·가져오기·시트 추가")
+    import asyncio
+    import tempfile
+    import threading
+    import unicodedata
+    from unittest.mock import patch
+    from types import SimpleNamespace
+    import bmk_design_patch_board as bd
+    import bmk_design_patch_refs as rf
+    import bmk_design_patch_vlm as vlm
+
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="b9pool_", dir=OUT_ROOT.resolve()) as tmp:
+        out = Path(tmp)
+        root = _r3_project(out, "pool")
+        rd = Path(root, "refs")
+        m = store.load_manifest(root)
+        c1, c2 = m["crops"][:2]
+        rgba = np.full((32, 40, 4), (200, 80, 30, 255), np.uint8)
+        # 지운 연결·고아·스펙·보류 원래 이름은 디스크에 없어도 재사용 금지.
+        doc = rf.new_refs(str(rd))
+        doc["links"]["gone"] = {"files": ["ref_009-모자_t.png"], "main": "ref_009-모자_t.png"}
+        doc["held"] = {"held.png": {"from": "ref_예약_t.png", "crop": None}}
+        m["crops"][0]["targets"][0]["refs"].append("ref_스펙_t.png")
+        store.save_manifest(root, m)
+        rf.update_refs(root, lambda d: d.update(doc), expect_rev=None, create=True)
+        doc = rf.load_refs(root)
+        reserved = rf.pool_reserved(root, m, doc)
+        check(rf.pool_file_name("009_모자", reserved) == "ref_009-모자_2_t.png"
+              and rf.pool_file_name("스펙", reserved) == "ref_스펙_2_t.png"
+              and rf.pool_file_name("예약", reserved) == "ref_예약_2_t.png", "D141 지운 연결·스펙·held from 예약")
+        check(rf.pool_file_name("t2_장식 ..", set()) == "ref_x-t2-장식_t.png"
+              and rf.pool_file_name("__..", set()) == "ref_그림1_t.png"
+              and rf.pool_desc("a" * 45) == "a" * 40
+              and rf.pool_desc("가_나") == "가-나", "D141 NFC·허용 문자·40자·빈 설명·t 표지")
+        check(rf.pool_file_name("x", {"ref_x_t.png".casefold(), "REF_X_2_T.PNG".casefold()}) == "ref_x_3_t.png", "D141 casefold 겹침 k")
+        nfd = unicodedata.normalize("NFD", "ref_한글_t.png")
+        _r3_png(rd / nfd, rgba)
+        check(rf.pool_file_name("한글", rf.pool_reserved(root, m, doc)) == "ref_한글_2_t.png", "D141 디스크 NFD 이름 예약")
+        (rd / nfd).unlink()
+        probe = {"id": c1["id"], "targets": [{"tid": "A", "refs": [], "mode": "ref_correct"}]}
+        for override, expected in (({}, True), ({"targets": [{"id": "A", "refs": []}]}, False),
+                                   ({"targets": [{"id": "A", "refs": ["ref_스펙_t.png"]}]}, False),
+                                   ({"targets": [{"id": "A", "mode": "self_restore"}]}, False)):
+            with patch.object(store, "load_spec_override", return_value=override):
+                check(bd._pool_link_info(root, probe, str(rd))["prepare_auto"] is expected,
+                      f"D126 link_info 스펙 refs(빈 목록 포함)·자체 복원 우선: {override}")
+        with patch.object(store, "load_spec_override", return_value={}):
+            probe["targets"][0]["refs"] = ["001_머리_t.png", "ref_없는_t.png"]
+            info = bd._pool_link_info(root, probe, str(rd))
+            check(info["prepare_auto"] is False and [r["exists"] for r in info["draft_prefix"]] == [True, False],
+                  "D126 타깃 refs 우선·초안 prefix 존재 여부")
+        with patch.object(store, "load_spec_override", side_effect=ValueError("broken spec")):
+            broken_info = bd._pool_link_info(root, probe, str(rd))
+            check(broken_info["prepare_auto"] is None and broken_info["draft_prefix"] == info["draft_prefix"],
+                  "D126 깨진 스펙은 Prepare 불명·매니페스트 초안 prefix 유지")
+
+        def rev():
+            d = rf.load_refs(root)
+            return d["rev"] if d else None
+
+        def reject(fn, kind, text):
+            try:
+                fn()
+            except kind as e:
+                check(text in str(e), f"B9 거절: {text}")
+            else:
+                check(False, f"B9 거절 누락: {text}")
+
+        def choices():
+            current = store.load_manifest(root)
+            d = rf.load_refs(root)
+            result = []
+            for crop in current["crops"]:
+                resolved = rf.resolve_refs(str(rd), crop, d)
+                applied = dict(crop, refs_auto=resolved["refs_auto"], refs_main=resolved["refs_main"])
+                spec = P.spec_from_manifest(applied, None, str(rd), {}, store.load_spec_override(root, crop["id"]))
+                ctx = vlm.build_crop_ctx(root, current, applied, refs_dir=str(rd), glossary={}, backend="mock", memo={})
+                draft = vlm.build_request(ctx, backend="mock", model="mock", effort="medium", image_detail="high", draft_round=0)
+                result.append((resolved, [t["refs"] for t in spec["targets"]], [(r.name, r.src_sha) for r in ctx.refs], draft.key))
+            return result
+
+        before = choices()
+        links = copy.deepcopy(doc["links"])
+        cut = bd.ref_cut(root, {"sheet": "00_원본/sheet.png", "rect": [20, 20, 280, 280], "method": "rect"})
+        saved = bd.ref_save(root, rev(), {"req": cut["req"], "desc": "009_모자", "transform": {}})
+        check(saved["file"] == "ref_009-모자_2_t.png" and saved["pool"][0]["origin"] == "pool"
+              and rf.load_refs(root)["files"][saved["file"]]["for"] is None
+              and rf.load_refs(root)["links"] == links, "D125 crop 없는 저장: 보관함 행·for null·links 그대로")
+        check(choices() == before, "D141 보관함 저장 전후 모든 크롭 resolve·Prepare 선택·초안 후보/픽셀 그대로")
+        blank_saved = bd.ref_save(root, rev(), {"req": cut["req"], "desc": "", "transform": {}})
+        check(blank_saved["file"] == "ref_sheet_1_t.png", "D124 빈 설명 저장은 시트 stem_1 대체 이름")
+        replaced = rd / blank_saved["file"]
+        own_bytes = replaced.read_bytes()
+        replaced.unlink()
+        _r3_png(replaced, np.full((32, 40, 4), (10, 30, 90, 255), np.uint8))
+        foreign_doc = Path(root, rf.REFS_NAME).read_bytes()
+        foreign_bytes = replaced.read_bytes()
+        stale_row = next(f for f in bd.refs_state(root)["pool"] if f["name"] == replaced.name)
+        check(stale_row["origin"] == "old" and stale_row["outside_edit"], "D128 묵은 for:null·다른 픽셀은 old 로 표시")
+        for operation in ("rename", "hold"):
+            reject(lambda: bd.ref_pool(root, rev(), operation, {"name": replaced.name, "desc": "foreign"}), bd._Reject, "쓰임 없는")
+        check(replaced.read_bytes() == foreign_bytes and Path(root, rf.REFS_NAME).read_bytes() == foreign_doc,
+              "D128 교체된 남의 파일·문서 보존")
+        replaced.write_bytes(own_bytes)
+        original_size = rf.load_refs(root)["files"][replaced.name]["size"]
+        rf.update_refs(root, lambda d: d["files"][replaced.name].update(size=[1, 1]), expect_rev=rev())
+        size_row = next(f for f in bd.refs_state(root)["pool"] if f["name"] == replaced.name)
+        check(size_row["origin"] == "old" and size_row["outside_edit"], "D128 sha 같아도 기록 size 불일치면 old")
+        reject(lambda: bd.ref_pool(root, rev(), "hold", {"name": replaced.name}), bd._Reject, "쓰임 없는")
+        rf.update_refs(root, lambda d: d["files"][replaced.name].update(size=original_size), expect_rev=rev())
+        old_rev = rev()
+        reject(lambda: bd.ref_save(root, old_rev - 1, {"req": cut["req"], "transform": {}}), rf.RefsConflict, "다른 창")
+        view = bd.refs_state(root)
+        check(saved["file"] in {f["name"] for f in view["pool"]} and "001_머리_t.png" not in {f["name"] for f in view["pool"]},
+              "D123 사용 중 파일은 보관함에서 제외")
+        _r3_png(rd / "옛파일.png", rgba)
+        view = bd.refs_state(root)
+        check(next(f for f in view["pool"] if f["name"] == "옛파일.png")["origin"] == "old", "D123 탐색기 파일 origin old")
+        for op in ("rename", "hold"):
+            reject(lambda op=op: bd.ref_pool(root, rev(), op, {"name": "옛파일.png", "desc": "새이름"}), bd._Reject, "쓰임 없는")
+        renamed = bd.ref_pool(root, rev(), "rename", {"name": saved["file"], "desc": "예약"})["file"]
+        refs_path = Path(root, rf.REFS_NAME)
+        original_doc, original_file = refs_path.read_bytes(), (rd / renamed).read_bytes()
+        original_stat = (rd / renamed).stat()
+        with patch.object(bd, "_write_refs", side_effect=AssertionError("no-op write")), \
+                patch.object(rf, "_move_excl", side_effect=AssertionError("no-op move")):
+            unchanged = bd.ref_pool(root, rev(), "rename", {"name": renamed, "desc": "예약_2"})
+        check(unchanged.get("unchanged") and unchanged["rev"] == rev() and refs_path.read_bytes() == original_doc
+              and (rd / renamed).stat().st_mtime_ns == original_stat.st_mtime_ns, "D128 같은 이름(충돌 번호 포함)은 파일·rev 그대로")
+        case_name = bd.ref_pool(root, rev(), "rename", {"name": renamed, "desc": "Hat"})["file"]
+        case_name = bd.ref_pool(root, rev(), "rename", {"name": case_name, "desc": "hat"})["file"]
+        check(case_name == "ref_hat_t.png" and (rd / case_name).read_bytes() == original_file, "D128 대소문자만 변경: 자기 예약 제외·픽셀 보존")
+        # 자기 파일을 빼도 held.from 에서 온 같은 키 예약은 남긴다.
+        test_doc = rf.load_refs(root)
+        test_doc["held"]["other.png"] = {"from": case_name.upper(), "crop": None}
+        check(rf.ref_key(case_name) in rf._pool_reserved(root, m, test_doc, case_name), "D128 자기 이름과 같은 held.from 예약 유지")
+        renamed = bd.ref_pool(root, rev(), "rename", {"name": case_name, "desc": "예약"})["file"]
+
+        def snapshot_pool():
+            return refs_path.read_bytes(), {p.relative_to(rd).as_posix(): p.read_bytes() for p in rd.rglob("*") if p.is_file()}
+
+        for op, data in (("rename", {"name": renamed, "desc": "실패"}), ("hold", {"name": renamed})):
+            snapshot = snapshot_pool()
+            with patch.object(bd, "_write_refs", side_effect=OSError("test failure")):
+                reject(lambda: bd.ref_pool(root, rev(), op, data), OSError, "test failure")
+            check(snapshot_pool() == snapshot, f"D128 {op} 문서 쓰기 실패: 파일·refs.json 원상")
+        held = bd.ref_pool(root, rev(), "hold", {"name": renamed})["file"]
+        check(bd.refs_state(root)["pool_held"][0]["name"] == held and rf.load_refs(root)["held"][held]["crop"] is None,
+              "D128 보관함 보류 목록·crop null")
+        snapshot = snapshot_pool()
+        with patch.object(bd, "_write_refs", side_effect=OSError("test failure")):
+            reject(lambda: bd.ref_pool(root, rev(), "restore", {"name": held}), OSError, "test failure")
+        check(snapshot_pool() == snapshot, "D128 restore 문서 쓰기 실패: 파일·refs.json 원상")
+        _r3_png(rd / renamed, rgba)
+        restore_same = snapshot_pool()
+        reject(lambda: bd.ref_pool(root, rev(), "restore", {"name": held}), FileExistsError, "같은 이름")
+        check(snapshot_pool() == restore_same, "D128 restore 같은 이름 파일 보존")
+        (rd / renamed).unlink()
+        rf.update_refs(root, lambda d: d["links"].update({"missing": {"files": [renamed], "main": renamed}}), expect_rev=rev())
+        snapshot = snapshot_pool()
+        reject(lambda: bd.ref_pool(root, rev(), "restore", {"name": held}), bd._Reject, "쓰이고")
+        check(snapshot_pool() == snapshot, "D128 restore 사라진 연결 이름 보존")
+        rf.update_refs(root, lambda d: d["links"].pop("missing"), expect_rev=rev())
+        restored = bd.ref_pool(root, rev(), "restore", {"name": held})
+        check(restored["file"] == renamed and rf.load_refs(root)["links"] == links and choices() == before,
+              "D128 되살리기 연결 없음·과금 입력 그대로")
+        linked = bd.ref_link(root, rev(), "add", {"crop_id": c1["id"], "name": renamed, "main": True})
+        check(linked["rev"] == restored["rev"] + 1 and rf.load_refs(root)["links"][c1["id"]]["main"] == renamed,
+              "D126 add main true 한 번의 rev 로 대표 연결")
+        rf.update_refs(root, lambda d: d["links"].update({c2["id"]: {"files": [], "main": None}}), expect_rev=rev())
+        first_link = bd.ref_link(root, rev(), "add", {"crop_id": c2["id"], "name": renamed, "main": False})
+        check(first_link["crop"]["files"][0]["role"] == "main" and rf.load_refs(root)["links"][c2["id"]]["main"] == renamed,
+              "D126 빈 연결에 보조 추가: 첫 파일이 대표가 됨")
+        reject(lambda: bd.ref_pool(root, rev(), "hold", {"name": renamed}), bd._Reject, "쓰임 없는")
+        before = choices()
+
+        # 실제 PSD: top→bottom, 숨긴 부모, 그룹 합성, 불투명 배경, 혼합 경고, 작업 그룹.
+        wr = dpsd.PSDWriter((400, 300))
+        wr.add_pixel(None, "배경", np.full((300, 400, 4), 255, np.uint8), 0, 0)
+        group = wr.add_group(None, "그룹")
+        wr.add_pixel(group, "009_모자", rgba, 20, 30)
+        hidden = wr.add_group(None, "숨긴 부모", visible=False)
+        wr.add_pixel(hidden, "속 레이어", rgba, 70, 50)
+        work = wr.add_group(None, "02.크롭영역")
+        wr.add_pixel(work, "작업", rgba, 0, 0)
+        mixed = wr.add_pixel(None, "혼합", rgba, 100, 90)
+        mixed.blend_mode = dpsd.BlendMode.MULTIPLY
+        psd_path = Path(root, "layers.psd")
+        wr.save(str(psd_path))
+        open_real = rf.dpsd.open_psd
+        extent_calls = []
+        layer_real = rf.dpsd._layer_window
+        def bounded(node, rect):
+            extent_calls.append(list(rect))
+            return layer_real(node, rect)
+        with patch.object(rf.dpsd, "open_psd", wraps=open_real) as opened, patch.object(rf.dpsd, "_layer_window", side_effect=bounded):
+            table = bd.ref_layers(root, "layers.psd")
+            check(opened.call_count == 1, "D132 레이어 표·썸네일 PSD 한 번 열기")
+        rows = table["items"]
+        check([r["id"] for r in rows] == ["4", "3", "3/0", "2", "2/0", "1", "1/0", "0"], "D129 인덱스 경로·위→아래")
+        by = {r["id"]: r for r in rows}
+        check(by["1"]["checked"] and by["1/0"]["checked"] and not by["2/0"]["checked"] and "숨김" in by["2/0"]["chips"]
+              and "배경" in by["0"]["chips"] and "합성 주의" in by["4"]["chips"] and by["3"]["excluded"] and by["3/0"]["excluded"],
+              "D130 그룹·부모 숨김·배경·lossy 기본 끔·작업 그룹 제외")
+        check([20, 30, 60, 62] in extent_calls and all(r != [0, 0, 400, 300] for r in extent_calls[:-1]), "D130 레이어 extent 창만 읽음")
+        for kind in ("shape", "type", "adjustment"):
+            node = SimpleNamespace(kind=kind, is_group=lambda: False)
+            with patch.object(rf, "_layer_extent", return_value=[0, 0, 10, 10]):
+                check(rf._layer_pixels(node, False)[1] is None, f"D130 {kind} 제외")
+        with patch.object(rf.dpsd, "open_psd", side_effect=AssertionError("PSD reopen")):
+            thumb, _ = bd.ref_layers(root, "layers.psd", "1/0", table["sheet_v"])
+            cached = bd.ref_layers(root, "layers.psd")
+        check(thumb[:2] == b"\xff\xd8", "D132 썸네일은 캐시만 읽음")
+        table_path = Path(root, "derived/reflayers", table["sheet_v"], "table.json")
+        check(cached == table and table_path.is_file(), "D132 같은 sheet_v 표 캐시: PSD 열기·합성 없음")
+        old_table = dict(table)
+        old_table.pop("render")
+        table_path.write_text(json.dumps(old_table), encoding="utf-8")
+        with patch.object(rf.dpsd, "open_psd", wraps=open_real) as opened:
+            check(bd.ref_layers(root, "layers.psd") == table and opened.call_count == 1, "D132 마스크 범위 변경 전 캐시 재생성")
+        table_path.write_text("{broken", encoding="utf-8")
+        with patch.object(rf.dpsd, "open_psd", wraps=open_real) as opened:
+            check(bd.ref_layers(root, "layers.psd") == table and opened.call_count == 1, "D132 깨진 표 캐시 재생성")
+        with patch.object(rf, "_layer_extent", return_value=[0, 0, 8193, 8193]):
+            check(rf._layer_pixels(mixed, False)[1] is None, "D142 레이어 bbox 면적 상한")
+        reject(lambda: bd.ref_pool(root, rev(), "layers", {"sheet": "layers.psd", "sheet_v": "0" * 16,
+                                                          "items": [{"id": "1/0", "name": "009_모자"}]}), rf.RefsConflict, "시트가 바뀌었습니다")
+        layers = bd.ref_pool(root, rev(), "layers", {"sheet": "layers.psd", "sheet_v": table["sheet_v"],
+                                                     "items": [{"id": "1/0", "name": "009_모자"}, {"id": "1", "name": "그룹"}]})
+        rec = rf.load_refs(root)["files"][layers["files"][0]]
+        check(rec["sheet"]["layer_path"] == "1/0" and rec["sheet"]["layer"] == "009_모자"
+              and rec["cut"]["source"] == "layer" and rec["cut"]["method"] == "rect" and rec["for"] is None
+              and rec["rect"] == [12, 22, 68, 70],
+              "D131 레이어 이름·인덱스·rect 컷·for null 기록")
+        check(choices() == before, "D141 레이어 컷 전후 resolve·Prepare 선택·초안 후보/픽셀 그대로")
+        # 알파 여백·캔버스 밖 절반·짧은 변·완전히 밖인 레이어의 재열기 기록.
+        edge = dpsd.PSDWriter((400, 300))
+        padded = np.zeros((80, 100, 4), np.uint8)
+        padded[20:60, 30:70] = (200, 80, 30, 255)
+        edge.add_pixel(None, "여백", padded, 100, 80)
+        edge.add_pixel(None, "절반 밖", rgba, -20, 40)
+        edge.add_pixel(None, "짧음", rgba, -38, 80)
+        edge.add_pixel(None, "밖", rgba, -80, 80)
+        edge.save(str(Path(root, "edge.psd")))
+        edge_table = bd.ref_layers(root, "edge.psd")
+        edge_result = bd.ref_pool(root, rev(), "layers", {"sheet": "edge.psd", "sheet_v": edge_table["sheet_v"],
+                                 "items": [{"id": str(i), "name": f"가장자리{i}"} for i in range(4)]})
+        records = [rf.load_refs(root)["files"][n] for n in edge_result["files"]]
+        check([r.get("rect") for r in records] == [[122, 92, 178, 148], [0, 32, 28, 80], None, None],
+              "D131 실제 알파 bbox + pad · 캔버스 clipping · 16px 미만/빈 rect 생략")
+        edge_rows = {r["name"]: r for r in bd.refs_state(root)["pool"]}
+        check([edge_rows[n]["record"] is not None for n in edge_result["files"]] == [True, True, False, False],
+              "D131 작은/캔버스 밖 레이어는 다시 열기 숨김")
+        for rec in records[:2]:
+            check(bool(bd.ref_cut(root, {"sheet": "edge.psd", "layer": rec["sheet"]["layer"],
+                                        "rect": rec["rect"], "method": "rect"})["req"]), "D131 저장 rect 로 실제 다시 열기 가능")
+        # 레이어 컷은 마스크 밖 배경색을 고려한다. 공용 IoU _node_extent 는 유지한다.
+        masked = dpsd.PSDWriter((1200, 1200))
+        full = np.full((1000, 1000, 4), (90, 160, 220, 255), np.uint8)
+        white = masked.add_pixel(None, "흰 마스크 일부 검정", full, 50, 60,
+                                 mask={"arr": np.zeros((100, 100), np.uint8), "left": 200, "top": 210, "bg": 255})
+        empty = masked.add_pixel(None, "칠 안 한 흰 마스크", full, 50, 60,
+                                 mask={"arr": np.full((1, 1), 255, np.uint8), "bg": 255})
+        empty.mask.data.right = empty.mask.data.left
+        empty.mask.data.bottom = empty.mask.data.top
+        black = masked.add_pixel(None, "검은 마스크 일부 흰색", full, 50, 60,
+                                 mask={"arr": np.full((100, 100), 255, np.uint8), "left": 200, "top": 210, "bg": 0})
+        group_mask = masked.add_group(None, "흰 그룹 마스크", mask={"arr": np.zeros((100, 100), np.uint8), "left": 200, "top": 210, "bg": 255})
+        masked.add_pixel(group_mask, "큰 자식", full, 50, 60)
+        masked.save(str(Path(root, "masked.psd")), composite=np.zeros((1200, 1200, 3), np.uint8))
+        mask_table = bd.ref_layers(root, "masked.psd")
+        mask_rows = {r["id"]: r for r in mask_table["items"]}
+        check(all(not mask_rows[i]["excluded"] for i in ("0", "1", "2", "3"))
+              and [mask_rows[i]["size"] for i in ("0", "1", "2", "3")] == [[1000, 1000], [1000, 1000], [100, 100], [1000, 1000]],
+              "D130 흰 마스크 일부·bbox 0·검은 마스크·그룹 범위")
+        mask_cut = bd.ref_pool(root, rev(), "layers", {"sheet": "masked.psd", "sheet_v": mask_table["sheet_v"],
+                                  "items": [{"id": i, "name": ""} for i in ("0", "1", "2", "3")]})
+        mask_images = [bd._read_rgba(str(rd / n)) for n in mask_cut["files"]]
+        check([im.shape[:2] for im in mask_images] == [(1016, 1016), (1016, 1016), (116, 116), (1016, 1016)]
+              and [np.count_nonzero(im[..., 3]) for im in mask_images] == [990000, 1000000, 10000, 990000],
+              "D131 실제 PSD 마스크 컷: bbox 밖 흰 배경 보존·검은 배경 교집합")
+        check(mask_cut["files"] == [f"ref_{mask_rows[i]['fallback']}_t.png" for i in ("0", "1", "2", "3")],
+              "D131 빈 레이어 이름: 요청 순서·부분 선택과 무관하게 표 fallback 사용")
+        check(dpsd._node_extent(white) == [200, 210, 300, 310], "D130 공용 IoU 범위 함수 변경 없음")
+        black.mask.data.left = 0
+        black.mask.data.top = 0
+        check(rf._layer_extent(black) == [50, 60, 300, 310], "D130 검은 마스크는 레이어 bbox 와 교집합")
+        # 멀리 떨어진 작은 자식과 중첩 그룹: 자식마다 그룹 전체 창을 만들지 않고 동일 픽셀을 얻는다.
+        sparse = dpsd.PSDWriter((2048, 2048))
+        sparse_group = sparse.add_group(None, "큰 그룹")
+        sparse.add_pixel(sparse_group, "시작", rgba, -10, -5)
+        sub = sparse.add_group(sparse_group, "안쪽", mask={"arr": np.zeros((4, 4), np.uint8), "left": 11, "top": 12, "bg": 255})
+        sub.opacity = 180
+        sparse.add_pixel(sub, "겹침", rgba, 0, 0)
+        sparse.add_pixel(sub, "끝", rgba, 1800, 1800)
+        sparse.save(str(Path(root, "sparse.psd")), composite=np.zeros((2048, 2048, 3), np.uint8))
+        extent = rf._layer_extent(sparse_group)
+        expected_pixels = dpsd._apply_node_alpha(sparse_group, dpsd._composite_children(sparse_group, extent, []), extent)
+        extent_calls.clear()
+        with patch.object(dpsd, "_composite_children", side_effect=AssertionError("full group window")), \
+                patch.object(dpsd, "_layer_window", side_effect=bounded):
+            sparse_table = bd.ref_layers(root, "sparse.psd")
+            actual_pixels = rf._layer_pixels(sparse_group, False)[1]
+        check(np.array_equal(actual_pixels, expected_pixels), "D132 bbox 부분 합성은 중첩 opacity·마스크 포함 기존 픽셀과 동일")
+        check(extent_calls and max((r[2]-r[0]) * (r[3]-r[1]) for r in extent_calls) <= 40 * 32
+              and not sparse_table["items"][0]["excluded"], "D132 그룹 표·컷의 자식 창은 각 bbox 크기로 제한")
+
+        jpg = "ref_convert_t.jpg"
+        Image.fromarray(rgba[..., :3]).save(rd / jpg)
+        jpg_pixels = bd._read_rgba(str(rd / jpg))
+        rf.update_refs(root, lambda d: d["files"].update({jpg: {"for": None, "size": [40, 32], "sha": store.pixel_sha(jpg_pixels)}}), expect_rev=rev())
+        read_real, save_real = bd._read_rgba, rf.save_ref
+        phases = []
+        def outside_read(path):
+            phases.append(("decode", bd._REFS_WRITE_LOCKS[store.root_key(root)]._is_owned()))
+            return read_real(path)
+        def outside_save(*args, **kwargs):
+            phases.append(("encode", bd._REFS_WRITE_LOCKS[store.root_key(root)]._is_owned()))
+            return save_real(*args, **kwargs)
+        snapshot = snapshot_pool()
+        with patch.object(bd, "_read_rgba", side_effect=outside_read), patch.object(rf, "save_ref", side_effect=outside_save), \
+                patch.object(bd, "_write_refs", side_effect=OSError("test failure")):
+            reject(lambda: bd.ref_pool(root, rev(), "rename", {"name": jpg, "desc": "converted"}), OSError, "test failure")
+        check(phases == [("decode", False), ("encode", False)] and snapshot_pool() == snapshot
+              and not list(Path(root, "derived/refpool").iterdir()), "D128 JPEG 변환은 잠금 밖·문서 실패 원본/refs.json/임시 복구")
+        stage_real = bd._pool_stage
+        race_rev = rev()
+        def race_stage(*args, **kwargs):
+            result = stage_real(*args, **kwargs)
+            rf.update_refs(root, lambda d: d["files"][jpg].update(at="race"), expect_rev=rev())
+            return result
+        with patch.object(bd, "_pool_stage", side_effect=race_stage):
+            reject(lambda: bd.ref_pool(root, race_rev, "rename", {"name": jpg, "desc": "converted"}), rf.RefsConflict, "다른 창")
+        check((rd / jpg).read_bytes() == snapshot[1][jpg] and not (rd / "ref_converted_t.png").exists()
+              and not list(Path(root, "derived/refpool").iterdir()), "D128 JPEG 변환 후 rev 재확인·임시 정리")
+        def used_stage(*args, **kwargs):
+            result = stage_real(*args, **kwargs)
+            changed = store.load_manifest(root)
+            changed["crops"][0]["targets"][0]["refs"].append(jpg)
+            store.save_manifest(root, changed)
+            return result
+        old_manifest = store.load_manifest(root)
+        with patch.object(bd, "_pool_stage", side_effect=used_stage):
+            reject(lambda: bd.ref_pool(root, rev(), "rename", {"name": jpg, "desc": "converted"}), bd._Reject, "쓰임 없는")
+        store.save_manifest(root, old_manifest)
+        check((rd / jpg).exists() and not (rd / "ref_converted_t.png").exists()
+              and not list(Path(root, "derived/refpool").iterdir()), "D128 JPEG 변환 후 쓰임 재확인")
+        jpg_stat = (rd / jpg).stat()
+        def changed_stage(*args, **kwargs):
+            result = stage_real(*args, **kwargs)
+            os.utime(rd / jpg, ns=(jpg_stat.st_atime_ns, jpg_stat.st_mtime_ns + 1_000_000_000))
+            return result
+        with patch.object(bd, "_pool_stage", side_effect=changed_stage):
+            reject(lambda: bd.ref_pool(root, rev(), "rename", {"name": jpg, "desc": "converted"}), bd._Reject, "원본 파일이 바뀌었습니다")
+        check((rd / jpg).exists() and not (rd / "ref_converted_t.png").exists()
+              and not list(Path(root, "derived/refpool").iterdir()), "D128 JPEG 변환 후 원본 지문 재확인·임시 정리")
+        converted = bd.ref_pool(root, rev(), "rename", {"name": jpg, "desc": "converted"})
+        check(converted["file"] == "ref_converted_t.png" and not (rd / jpg).exists()
+              and np.array_equal(bd._read_rgba(str(rd / converted["file"])), jpg_pixels), "D128 JPEG 이름 바꾸기 PNG 픽셀 보존")
+
+        source, _ = _r1_project(out / "input", "other")
+        _r3_png(Path(source, "refs", "001_가져오기.png"), rgba)
+        _r3_png(Path(source, "refs", "ref_기존_t.png"), rgba)
+        source_before = {p.name: p.read_bytes() for p in Path(source, "refs").iterdir()}
+        key = store.root_key(source)
+        with patch.object(bd, "_PROJECT_INPUT", str(out / "input")), patch.object(store, "known_roots", return_value=[]), \
+                patch.object(store, "register_root", side_effect=AssertionError("register forbidden")):
+            source_list = bd.ref_pool_source(root, key)
+            pic = bd.ref_pool_source(root, key, "001_가져오기.png")
+            check(len(source_list["files"]) == 2 and pic[0][:2] == b"\xff\xd8", "D134 미등록 프로젝트 조회·썸네일·등록 안 함")
+            imported = bd.ref_pool(root, rev(), "import", {"from": key, "names": list(source_before)})
+        check(set(imported["files"]) == {"ref_001-가져오기_t.png", "ref_기존_t.png"}
+              and source_before == {p.name: p.read_bytes() for p in Path(source, "refs").iterdir()}, "D133 가져오기 이름·원본 보존")
+        check(choices() == before, "D141 가져오기 전후 resolve·Prepare 선택·초안 후보/픽셀 그대로")
+        check(rf.load_refs(root)["files"]["ref_001-가져오기_t.png"]["from"] == {"project": "other", "name": "001_가져오기.png"}, "D133 복사 출처 기록")
+        small, big = out / "small.png", out / "new.png"
+        Image.new("RGB", (255, 300)).save(small)
+        Image.new("RGB", (256, 300)).save(big)
+        reject(lambda: bd.ref_pool(root, rev(), "sheet_add", {"path": str(small)}), bd._Reject, "256")
+        sheet_fp = store.prepare_inputs_fp(root, store.load_manifest(root))
+        sheet_doc = refs_path.read_bytes(), refs_path.stat().st_mtime_ns
+        added = bd.ref_pool(root, rev(), "sheet_add", {"path": str(big)})
+        again = bd.ref_pool(root, rev()-1, "sheet_add", {"path": str(big)})
+        check(added["sheet"] == "sheets/new.png" and again["sheet"] == "sheets/new_2.png" and big.read_bytes() == Path(root, added["sheet"]).read_bytes(),
+              "D135 시트 추가·겹침·원본 그대로")
+        check(store.prepare_inputs_fp(root, store.load_manifest(root)) == sheet_fp
+              and (refs_path.read_bytes(), refs_path.stat().st_mtime_ns) == sheet_doc, "D143 시트 추가는 Prepare 입력 지문·refs.json·rev 불변")
+        no_refs_root = _r3_project(out, "no_refs_doc")
+        no_refs_m = store.load_manifest(no_refs_root)
+        no_refs_fp = store.prepare_inputs_fp(no_refs_root, no_refs_m)
+        bd.ref_pool(no_refs_root, None, "sheet_add", {"path": str(big)})
+        check(not Path(no_refs_root, rf.REFS_NAME).exists() and store.prepare_inputs_fp(no_refs_root, no_refs_m) == no_refs_fp,
+              "D143 refs.json 없던 프로젝트의 경로 시트 추가: 문서 생성 없음·입력 지문 불변")
+        check(not list(Path(root, "derived/refpool").iterdir()), "B9 성공·거절 뒤 임시 파일 없음")
+        temp_folder = Path(bd._pool_tmp(root))
+        old_time = time.time() - 90000
+        old_parts = [temp_folder / (".upload_" + "a" * 16 + ".part"), rd / (".pool_" + "b" * 32 + ".part")]
+        keep_parts = [temp_folder / ".upload_new.part", temp_folder / "unrelated.part", rd / ".pool_active.part"]
+        for part in old_parts + keep_parts:
+            part.write_bytes(b"temporary fixture")
+            if part.name != ".upload_new.part":
+                os.utime(part, (old_time, old_time))
+        active_key = os.path.normcase(os.path.realpath(keep_parts[-1]))
+        bd._POOL_ACTIVE_PARTS.add(active_key)
+        try:
+            bd._pool_tmp(root)
+        finally:
+            bd._POOL_ACTIVE_PARTS.discard(active_key)
+        check(all(not p.exists() for p in old_parts) and all(p.exists() for p in keep_parts),
+              "D135 1일 지난 업로드·설치 part 만 정리, 새 파일·다른 파일·진행 중 원본 보존")
+        for part in keep_parts:
+            part.unlink()
+        linked_part = temp_folder / ".upload_link.part"
+        linked_part.write_bytes(b"preserve")
+        os.utime(linked_part, (old_time, old_time))
+        plain_real = rf._plain_cache_path
+        with patch.object(rf, "_plain_cache_path", side_effect=lambda base, path: False if Path(path) == linked_part else plain_real(base, path)):
+            bd._pool_tmp(root)
+        check(linked_part.exists(), "D135 링크·정션 판정 항목은 정리 제외")
+        lstat_real = rf.os.lstat
+        def reparse_stat(path, *args, **kwargs):
+            result = lstat_real(path, *args, **kwargs)
+            if Path(path) == temp_folder:
+                return SimpleNamespace(st_mode=result.st_mode, st_file_attributes=0x400)
+            return result
+        with patch.object(rf.os, "lstat", side_effect=reparse_stat):
+            check(not plain_real(root, linked_part), "D135 중간 폴더의 Windows 재분석 지점도 제외")
+        check(not plain_real(root, out), "D135 정리 대상의 프로젝트 밖 경로 거절")
+        if os.name == "nt":
+            check(plain_real(str(root).swapcase(), str(linked_part)), "D135 Windows 경로 대소문자가 달라도 정리 범위 검사 종료")
+        linked_part.unlink()
+        # 파일 단계 뒤 문서 쓰기 실패: 신규 파일을 남겨 자동 입력을 바꾸지 않는다.
+        snapshot = sorted(p.name for p in rd.iterdir())
+        with patch.object(bd, "_write_refs", side_effect=OSError("test failure")):
+            reject(lambda: bd.ref_save(root, rev(), {"req": cut["req"], "desc": "실패", "transform": {}}), OSError, "test failure")
+        check(snapshot == sorted(p.name for p in rd.iterdir()) and not list(Path(root, "derived/refpool").iterdir()), "B9 문서 실패 롤백·임시 정리")
+        # 소켓 없이 실제 라우트 본문·가드·업로드를 호출한다.
+        class Request:
+            path = "/bmk/design_patch/refs/pool"
+            def __init__(self, body=None, query=None, raw=None):
+                self.query = query or {}
+                self.content_type = "application/json" if raw is None else "application/octet-stream"
+                self.headers = {"Content-Type": self.content_type}
+                self.raw = json.dumps(body or {}).encode("utf-8") if raw is None else raw
+                self.content_length = len(self.raw)
+                self.content = self
+            async def read(self):
+                return self.raw
+            async def iter_chunked(self, _n):
+                yield self.raw
+        async def routes():
+            with patch.object(bd, "_root_param", return_value=root):
+                stale = await bd.refs_pool_post_handler(Request({"root": "key", "rev": rev()-1, "op": "hold", "name": "ref_기존_t.png"}))
+                table_response = await bd.refs_layers_handler(Request(query={"root": "key", "sheet": "layers.psd"}))
+                main_thread = threading.get_ident()
+                threads = []
+                start_real, finish_real = bd._pool_upload_start, bd._pool_sheet_finish
+                def start(q):
+                    threads.append(threading.get_ident())
+                    return start_real(q)
+                def finish(*args):
+                    threads.append(threading.get_ident())
+                    return finish_real(*args)
+                def upload_req():
+                    return Request(query={"root": "key", "op": "sheet_add", "filename": "upload.png"}, raw=big.read_bytes())
+                upload_fp = store.prepare_inputs_fp(root, store.load_manifest(root))
+                upload_doc = refs_path.read_bytes(), refs_path.stat().st_mtime_ns
+                with patch.object(bd, "_pool_upload_start", side_effect=start), patch.object(bd, "_pool_sheet_finish", side_effect=finish):
+                    up = await bd.refs_pool_post_handler(upload_req())
+                check(len(threads) == 2 and all(t != main_thread for t in threads), "D135 업로드 사전 검사·임시 폴더·마무리는 스레드")
+                check(store.prepare_inputs_fp(root, store.load_manifest(root)) == upload_fp
+                      and (refs_path.read_bytes(), refs_path.stat().st_mtime_ns) == upload_doc, "D143 업로드 시트 추가도 입력 지문·refs.json 불변")
+                with patch.object(bd, "_root_param", return_value=no_refs_root):
+                    empty_up = await bd.refs_pool_post_handler(upload_req())
+                    empty_path = await bd.refs_pool_post_handler(Request({"root": "key", "op": "sheet_add", "path": str(big)}))
+                check(empty_up.status == 200 and empty_path.status == 200 and not Path(no_refs_root, rf.REFS_NAME).exists()
+                      and store.prepare_inputs_fp(no_refs_root, no_refs_m) == no_refs_fp, "D143 rev 없는 업로드·JSON 시트 추가: refs.json 생성 없음")
+                no_header = upload_req()
+                no_header.headers = {}  # aiohttp 의 기본 content_type 은 octet-stream 이다.
+                with patch.object(bd, "recv_upload", side_effect=AssertionError("headerless upload")):
+                    no_header_response = await bd.refs_pool_post_handler(no_header)
+                check(no_header_response.status == 415, "D135 Content-Type 머리 없는 POST 는 JSON 길 415")
+                same = await bd.refs_pool_post_handler(Request({"root": "key", "rev": rev(), "op": "rename",
+                                                               "name": "ref_기존_t.png", "desc": "기존"}))
+                check(same.status == 200 and json.loads(same.body).get("unchanged"), "D128 같은 이름 200 no change")
+                stale_layers = await bd.refs_pool_post_handler(Request({"root": "key", "rev": rev()-1, "op": "layers",
+                    "sheet": "layers.psd", "sheet_v": table["sheet_v"], "items": [{"id": "1", "name": "그룹"}]}))
+                check(stale_layers.status == 409, "D132 레이어 저장 rev 409")
+                held_name = bd.ref_pool(root, rev(), "hold", {"name": "ref_기존_t.png"})["file"]
+                _r3_png(rd / "ref_기존_t.png", rgba)
+                clash = await bd.refs_pool_post_handler(Request({"root": "key", "rev": rev(), "op": "restore", "name": held_name}))
+                (rd / "ref_기존_t.png").unlink()
+                rf.update_refs(root, lambda d: d["links"].update({"missing": {"files": ["ref_기존_t.png"], "main": "ref_기존_t.png"}}), expect_rev=rev())
+                missing = await bd.refs_pool_post_handler(Request({"root": "key", "rev": rev(), "op": "restore", "name": held_name}))
+                check(clash.status == 409 and missing.status == 409, "D128 restore 같은 이름·사라진 연결 이름 실제 409")
+                rf.update_refs(root, lambda d: d["links"].pop("missing"), expect_rev=rev())
+                bd.ref_pool(root, rev(), "restore", {"name": held_name})
+                failures = []
+                for owner, function in ((store, "load_manifest"), (bd, "_pool_tmp"), (bd, "finish_received")):
+                    with patch.object(owner, function, side_effect=OSError(r"G:\private\project")):
+                        failures.append(await bd.refs_pool_post_handler(upload_req()))
+                with patch.object(bd, "recv_upload", side_effect=OSError(r"G:\private\upload.part")):
+                    failures.append(await bd.refs_pool_post_handler(upload_req()))
+                with patch.object(bd, "ref_pool", side_effect=FileNotFoundError(r"G:\private\refs")):
+                    failures.append(await bd.refs_pool_post_handler(Request({"root": "key", "rev": rev(), "op": "hold", "name": "ref_기존_t.png"})))
+                check(all(r.status in (404, 500) and json.loads(r.body)["error"] == "파일을 읽거나 쓰지 못했습니다 — 권한·잠금 확인" for r in failures),
+                      "D135 오류 응답 경로 가림: 사전 검사·임시 폴더·마무리·수신·JSON")
+                for error in (OSError(r"\\NAS\private\share"), PermissionError("/srv/private/refs/a.png"),
+                              FileNotFoundError("/tmp/private/lost.png"), FileExistsError(r"\\NAS\private\taken.png")):
+                    with patch.object(bd, "ref_pool", side_effect=error), patch.object(bd.logger, "warning") as logged:
+                        failed = await bd.refs_pool_post_handler(Request({"root": "key", "rev": rev(), "op": "hold", "name": "ref_기존_t.png"}))
+                    expected_status = 409 if isinstance(error, FileExistsError) else 404 if isinstance(error, FileNotFoundError) else 500
+                    check(failed.status == expected_status and json.loads(failed.body)["error"] == "파일을 읽거나 쓰지 못했습니다 — 권한·잠금 확인"
+                          and logged.call_count == 1 and logged.call_args.args[-1] is error, "D135 UNC·POSIX OSError 고정 응답·상세는 로그만")
+                with patch.object(bd, "_root_param", side_effect=OSError("/srv/private/roots")), patch.object(bd.logger, "warning"):
+                    roots = [await handler(Request({"root": "key", "rev": rev(), "op": "hold", "name": "ref_기존_t.png"}, query={"root": "key"}))
+                             for handler in (bd.refs_pool_post_handler, bd.refs_pool_get_handler, bd.refs_layers_handler)]
+                check(all(r.status == 500 and "private" not in r.text for r in roots), "D135 라우트 진입의 프로젝트 경로 오류도 가림")
+                check(not list(Path(root, "derived/refpool").iterdir()), "D135 실패 뒤 업로드 임시 파일 정리")
+                return stale, table_response, up
+        stale, layer_response, upload = asyncio.run(routes())
+        check(stale.status == 409 and layer_response.status == 200 and upload.status == 200
+              and json.loads(upload.body)["sheet"] == "sheets/upload.png", "D132·D134·D135 실제 라우트 rev409·레이어 표·octet 업로드(소켓 없음)")
+        check(str(Path(root).drive) not in layer_response.text and str(Path(root).drive) not in upload.text, "B9 새 라우트 응답에 절대 경로 없음")
+        reject(lambda: bd.ref_pool(root, rev(), "layers", {"sheet": "layers.psd", "sheet_v": table["sheet_v"],
+                                                          "items": [{"id": "1", "name": "x"}] * 101}), ValueError, "100")
+        fp = psd_path.stat()
+        os.utime(psd_path, ns=(fp.st_atime_ns, fp.st_mtime_ns + 1_000_000_000))
+        with patch.object(rf.dpsd, "open_psd", wraps=open_real) as opened:
+            updated_table = bd.ref_layers(root, "layers.psd")
+        check(updated_table["sheet_v"] != table["sheet_v"] and opened.call_count == 1, "D132 sheet_v 변경 시 표 재생성")
+        cache_root = Path(root, "derived/reflayers")
+        check(not (cache_root / table["sheet_v"]).exists() and (cache_root / mask_table["sheet_v"]).is_dir(),
+              "D132 같은 시트 옛 판 삭제·다른 시트 캐시 유지")
+        abandoned = cache_root / ("c" * 16)
+        abandoned.mkdir()
+        (abandoned / "source.json").write_text(json.dumps({"sheet": "layers.psd"}), encoding="utf-8")
+        (abandoned / "0.jpg").write_bytes(b"incomplete")
+        orphan = cache_root / ("d" * 16)
+        orphan.mkdir()
+        (orphan / "0.jpg").write_bytes(b"legacy incomplete")
+        os.utime(orphan, (old_time, old_time))
+        preserved = cache_root / ("e" * 16)
+        preserved.mkdir()
+        (preserved / "notes.txt").write_text("keep", encoding="utf-8")
+        os.utime(preserved, (old_time, old_time))
+        link_cache = cache_root / ("f" * 16)
+        link_cache.mkdir()
+        (link_cache / "source.json").write_text(json.dumps({"sheet": "layers.psd"}), encoding="utf-8")
+        (link_cache / "0.jpg").write_bytes(b"link fixture")
+        with patch.object(rf.dpsd, "open_psd", side_effect=AssertionError("cached table")), \
+                patch.object(rf, "_plain_cache_path", side_effect=lambda base, path: False if Path(path) == link_cache / "0.jpg" else plain_real(base, path)):
+            bd.ref_layers(root, "layers.psd")
+        check(not abandoned.exists() and not orphan.exists() and preserved.exists() and link_cache.exists(),
+              "D132 중단된 판·하루 지난 옛 미완성 캐시 정리, 다른 자료·링크 포함 판 보존")
+        with patch.object(store, "load_manifest", return_value=dict(m, base=None)):
+            check(bd.refs_state(root)["before_import"], "D120 매니페스트 base 없는 프로젝트의 가져오기 전 상태")
+
+    web = PKG / "web_design_patch"
+    js = (web / "ref_edit.js").read_text(encoding="utf-8")
+    css = (web / "board.css").read_text(encoding="utf-8")
+    check('return backToSheets()' in js and '"시트 목록으로", backToSheets' in js and "result.req !== savedReq" in js,
+          "D136 탭·목록 같은 감싸기 함수·마지막 저장 req 비교")
+    check("시트 탭을 한 번 더 누르면 목록" in js and "시트 탭을 한 번 더 누르면 목록" in (web / "board.html").read_text(encoding="utf-8"), "D136 title·도움말")
+    check(".rf-sheet-line { display: flex;" in css and "overflow-wrap: anywhere" in css and ".rf-sheet-line > button { flex: none; }" in css,
+          "D137 목록 단추 flex 고정·긴 경로 줄바꿈")
+    check(all(t in js for t in ("보관함에 저장", "대표로 저장", "보조로 저장", "보관함에만 저장", "R.pool || []", "pool_held",
+                                "보관함을 바꾸면 반영(무료)이 필요합니다", 'extraBox("레이어별 컷")', "sheet_v: table.sheet_v", '"application/octet-stream"')),
+          "D125–D143 저장 3상태·보관함·레이어 겹침 판·시트 업로드 계약")
+    node = shutil.which("node")
+    if not node:
+        skip("node 없음 → batch9b JS 생략")
+        return
+    h = _f4_harness()
+    i_sess, i_scr, i_ui = (h.index(m) for m in ("// ── J-R2 세션 ──", "// ── 화면: ", 'await scenario("ui"'))
+    h = h[:i_sess] + h[i_scr:i_ui]
+    scene = r'''
+Object.defineProperty(El.prototype, "parentElement", { get() { return this.parent; } });
+El.prototype.remove = function () { if (this.parent) { this.parent.children.splice(this.parent.children.indexOf(this), 1); this.parent = null; } };
+El.prototype.addEventListener = function (type, fn, capture = false) {
+  const events = capture ? (this.capture ??= {}) : this.on;
+  (events[type] ??= []).push(fn);
+};
+El.prototype.removeEventListener = function (type, fn, capture = false) {
+  const events = capture ? (this.capture ??= {}) : this.on;
+  events[type] = (events[type] || []).filter((f) => f !== fn);
+};
+El.prototype.setSelectionRange = function (start, end) { this.selectionStart = start; this.selectionEnd = end; };
+El.prototype.fire = function (type, extra = {}) {
+  let stopped = false;
+  const ev = Object.assign({ type, target: this, defaultPrevented: false,
+    preventDefault() { this.defaultPrevented = true; }, stopPropagation() { stopped = true; } }, extra);
+  const chain = [];
+  for (let node = this; node; node = node.parent) chain.unshift(node);
+  for (const node of chain) {
+    for (const fn of (node.capture || {})[type] || []) fn(Object.assign(ev, { currentTarget: node }));
+    if (stopped) return ev;
+  }
+  for (let node = this; node; node = node.parent) {
+    for (const fn of node.on[type] || []) fn(Object.assign(ev, { currentTarget: node }));
+    if (stopped) break;
+  }
+  return ev;
+};
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const poolFile = { name: "ref_hat_t.png", origin: "pool", size: [40, 32], thumb_url: "refs/img?name=ref_hat_t.png", thumb_url_512: "refs/img?size=512&name=ref_hat_t.png" };
+const response = (d) => ({ ok: true, status: 200, json: async () => d });
+async function start9(o = {}) {
+  const R = R0(); R.pool = [poolFile]; R.pool_held = [];
+  const st = { rev: 10, refs_rev: 3, crops: R.crops.map((c) => ({ id: c.id, rect: [0,0,400,400] })), targets: [] };
+  const env = await screen(Object.assign({ R, st }, o));
+  const old = ctx.fetch;
+  env.poolCalls = [];
+  ctx.fetch = async (url, opt) => {
+    const u = new URL(url), path = u.pathname.split("/bmk/design_patch/")[1];
+    const body = opt && opt.body && typeof opt.body === "string" ? JSON.parse(opt.body) : null;
+    if (path === "refs/save" && !body.crop_id) {
+      env.srv.log.push({ method: "POST", path: u.pathname, body }); env.srv.rev += 1;
+      return response({ ok: true, rev: env.srv.rev, file: poolFile.name, size: [40, 32], bytes: 900, held: null });
+    }
+    if (path === "refs/layers") return response({ sheet_v: "a".repeat(16), items: env.layerItems || [
+      { id: "1", parent: null, layer: "hat", path: "hat", size: [40,32], name: "hat", fallback: "레이어1", checked: true, chips: [], thumb_url: "refs/layers?thumb=1" }] });
+    if (path === "projects") return response({ projects: [{ id: "other", name: "Other", openable: true }] });
+    if (path === "refs/pool") {
+      env.poolCalls.push({ body, query: Object.fromEntries(u.searchParams), raw: opt && opt.body, type: opt && opt.headers && opt.headers["Content-Type"] });
+      if (opt && opt.method === "POST" && env.uploadFailures > 0) {
+        env.uploadFailures -= 1;
+        return { ok: false, status: 500, json: async () => ({ error: "retry upload" }) };
+      }
+      if (opt && opt.method === "POST" && env.poolResult) return response(env.poolResult);
+      return response(body || opt && opt.method === "POST" ? { ok: true, rev: ++env.srv.rev } : { files: [poolFile] });
+    }
+    return old(url, opt);
+  };
+  return env;
+}
+async function cut9(env) {
+  env.all(env.hosts.sheets).find((e) => e.tagName === "LI" && e.textContent.includes("refer_character.psd")).fire("click"); await sleep(15);
+  env.drag(100,100,400,500); env.key("Enter"); await sleep(30);
+}
+await scenario("b9saveTabs", async () => {
+  const env = await start9(); await cut9(env);
+  const noCrop = !!env.button(env.hosts.panel, "보관함에 저장", true);
+  const poolTitle = env.button(env.hosts.panel, "보관함에 저장", true).title;
+  await env.press(env.hosts.panel, "보관함에 저장", true);
+  const body = posts(env.srv, "refs/save").at(-1);
+  const n = env.confirms.length;
+  await env.press(env.hosts.tabs, "시트", true);
+  const savedNoAsk = env.confirms.length === n && !env.hosts.sheets.hidden;
+  await cut9(env);
+  await env.press(env.hosts.tabs, "시트", true);
+  const dirtyAsk = env.confirms.length === n + 1 && !env.hosts.sheets.hidden;
+  await cut9(env);
+  env.li("009_모자본체_휘장").fire("click");
+  const chosen = !!env.button(env.hosts.panel, "대표로 저장", true) && !!env.button(env.hosts.panel, "보관함에만 저장", true);
+  const cropTitle = env.button(env.hosts.panel, "대표로 저장", true).title;
+  await env.press(env.hosts.panel, "보조", true);
+  const aux = !!env.button(env.hosts.panel, "보조로 저장", true);
+  await env.press(env.hosts.tabs, "그리드", true); const before = env.confirms.length;
+  await env.press(env.hosts.tabs, "시트", true);
+  return { noCrop, body: !Object.hasOwn(body, "crop_id"), savedNoAsk, dirtyAsk, chosen, aux,
+    titles: poolTitle.includes("보관함") && !poolTitle.includes("크롭 ID") && cropTitle.includes("크롭 ID"),
+    returnSheet: !env.hosts.view.hidden && env.confirms.length === before };
+});
+await scenario("b9layers", async () => {
+  const env = await start9(); await cut9(env);
+  await env.press(env.hosts.panel, "레이어별 컷", true);
+  const box = env.doc.body.all().find((e) => e.classList.contains("rf-dialog"));
+  const keys = posts(env.srv, "refs/cut").length; env.key("Enter"); await sleep(10);
+  await env.press(box, "보관함에 저장 (1)", true);
+  const b = env.poolCalls.at(-1).body;
+  return { overlay: !!box, noHiddenCut: posts(env.srv, "refs/cut").length === keys,
+    payload: b.op === "layers" && b.sheet_v === "a".repeat(16) && same(b.items, [{ id: "1", name: "hat" }]),
+    closed: !env.doc.body.all().some((e) => e.classList.contains("rf-dialog")) };
+});
+await scenario("b9pool", async () => {
+  const env = await start9(); env.li("009_모자본체_휘장").fire("click");
+  await env.press(env.hosts.panel, "대표로 연결", true);
+  const b = posts(env.srv, "refs/link").at(-1);
+  await env.press(env.hosts.panel, "모든 파일", true);
+  return { main: b.main === true && b.op === "add" && b.name === poolFile.name,
+    one: posts(env.srv, "refs/link").length === 1, impact: env.confirms.at(-1).includes("초안 입력") && env.confirms.at(-1).includes("고정"),
+    free: env.hosts.panel.textContent.includes("보관함을 바꾸면 반영(무료)이 필요합니다") };
+});
+await scenario("b9upload", async () => {
+  const env = await start9(); await env.press(env.hosts.sheets, "시트 추가", true);
+  const host = env.doc.body.all().find((e) => e.classList.contains("rf-dialog"));
+  const input = host.all().find((e) => e.type === "file");
+  input.files = [{ name: "huge.psd", size: 2*1024**3+1 }]; input.fire("change"); await sleep(10);
+  const tooBig = env.poolCalls.length === 0;
+  const file = { name: "image.png", size: 100 }; input.files = [file]; input.fire("change"); await sleep(40);
+  const last = env.poolCalls.at(-1);
+  return { tooBig, raw: last.raw === file, type: last.type === "application/octet-stream", query: last.query.op === "sheet_add" && last.query.rev === "3" };
+});
+await scenario("b9impact", async () => {
+  const results = {};
+  for (const mode of ["spec", "first", "missing", "unknown", "existing"]) {
+    const R = R0(); R.pool = [poolFile];
+    const c = R.crops[1]; c.pick = c.files[0].name;
+    c.link_info = { prepare_auto: mode === "spec" ? false : mode === "unknown" ? null : true, draft_prefix: [] };
+    if (mode === "first") { c.files = []; c.pick = null; }
+    if (mode === "missing") { c.files = [Object.assign({}, c.files[0], { missing: true })]; c.pick = null; }
+    if (mode === "spec" || mode === "unknown") c.link_info.draft_prefix = Array.from({ length: 6 }, (_, i) => ({ name: `explicit${i}.png`, exists: true, side: null }));
+    const env = await start9({ R }); env.li(c.name).fire("click");
+    const main = ["spec", "existing"].includes(mode);
+    env.srv.linkCrop = { pick: poolFile.name, files: [{ name: poolFile.name, role: mode === "missing" ? "aux" : "main" }] };
+    await env.press(env.hosts.panel, main ? "대표로 연결" : "보조로 연결", true);
+    const impact = env.confirms.at(-1), toast = env.toasts.at(-1);
+    results[mode] = mode === "spec" ? impact.includes("Prepare 선택 그대로 — 스펙") && impact.includes("초안 입력 그대로")
+      : mode === "first" ? impact.includes("첫 파일이라 대표가 됨") && impact.includes("Prepare 선택 없음 →") && toast.includes("대표로 연결(첫 레퍼런스)")
+        : mode === "missing" ? impact.includes("Prepare 선택 없음 →") && toast.includes("대표 파일이 없어 Prepare 가 이것을 고름") && !toast.includes("첫 레퍼런스")
+          : mode === "unknown" ? impact.includes("스펙을 읽지 못해") && impact.includes("초안 입력 그대로")
+            : toast.startsWith(":대표로 연결") && !toast.includes("첫 레퍼런스");
+    env.ed.leave();
+  }
+  return results;
+});
+await scenario("b9lateWrite", async () => {
+  const results = {};
+  for (const op of ["rename", "hold", "layers", "import", "upload", "sheet_add"]) {
+    const env = await start9();
+    if (op !== "upload" && op !== "sheet_add") await cut9(env);
+    env.li("009_모자본체_휘장").fire("click");
+    const dialog = () => env.doc.body.all().find((e) => e.classList.contains("rf-dialog"));
+    if (op === "rename" || op === "hold") await env.press(env.hosts.panel, "⋯", true);
+    else if (op === "layers") await env.press(env.hosts.panel, "레이어별 컷", true);
+    else if (op === "import") await env.press(env.hosts.panel, "다른 프로젝트에서 가져오기", true);
+    else await env.press(env.hosts.sheets, "시트 추가", true);
+    const own = dialog();
+    if (op === "import") {
+      const select = own.all().find((e) => e.tagName === "SELECT"); select.value = "other"; select.fire("change"); await sleep(15);
+      const cb = own.all().find((e) => e.type === "checkbox"); cb.checked = true; cb.fire("change");
+    }
+    let release;
+    const oldFetch = ctx.fetch;
+    ctx.fetch = async (url, options) => {
+      if (url.includes("refs/pool") && options && options.method === "POST") await new Promise((resolve) => { release = resolve; });
+      return oldFetch(url, options);
+    };
+    if (op === "upload") {
+      const input = own.all().find((e) => e.type === "file"); input.files = [{ name: "late.png", size: 100 }]; input.fire("change");
+    } else {
+      await env.press(own, { rename: "이름 바꾸기", hold: "보류로 옮기기", layers: "보관함에 저장 (1)", import: "가져오기 (1)", sheet_add: "경로에서 추가" }[op], true);
+    }
+    await sleep(10);
+    if (!release) throw new Error(`write not started: ${op}`);
+    env.key("Escape");
+    if (op === "upload" || op === "sheet_add") {
+      env.all(env.hosts.sheets).find((e) => e.tagName === "LI" && e.textContent.includes("refer_character.psd")).fire("click");
+      await sleep(15);
+    }
+    await env.press(env.hosts.panel, "레이어별 컷", true);
+    const newer = dialog();
+    release(); await sleep(60);
+    results[op] = !!newer && newer !== own && dialog() === newer && newer.textContent.includes("레이어별 컷");
+    env.ed.leave();
+  }
+  return results;
+});
+await scenario("b9beforeImport", async () => {
+  const R = R0(); R.before_import = true; R.refs_dir = "C:/p/configured/refs"; R.refs_dir_ok = false;
+  const env = await start9({ R });
+  const text = env.doc.body.textContent;
+  return { firstApply: text.includes("첫 반영 뒤 쓸 수 있습니다"), noFolderError: !text.includes("refs_dir 폴더가 없습니다") };
+});
+await scenario("b9groupChoice", async () => {
+  const env = await start9(); await cut9(env);
+  env.layerItems = [
+    { id: "2", parent: null, group: true }, { id: "2/0", parent: "2", group: true },
+    { id: "2/0/0", parent: "2/0" }, { id: "2/1", parent: "2" }
+  ].map((r, i) => Object.assign({ path: r.id, size: [40,32], name: "hat", fallback: `레이어${i+1}`, checked: true, chips: [] }, r));
+  await env.press(env.hosts.panel, "레이어별 컷", true);
+  const host = env.doc.body.all().find((e) => e.classList.contains("rf-dialog"));
+  const rows = () => host.all().filter((e) => e.classList.contains("rf-layer-row"));
+  env.button(rows()[0], "▸", true).focus();
+  await env.press(rows()[0], "▸", true);
+  const toggleFocus = env.doc.activeElement === env.button(rows()[0], "▾", true);
+  const defaults = !!env.button(host, "보관함에 저장 (2)", true);
+  const rootCheck = rows()[0].all().find((e) => e.type === "checkbox"); rootCheck.checked = true; rootCheck.fire("change");
+  await env.press(rows()[1], "▸", true);
+  const nested = !!env.button(host, "보관함에 저장 (1)", true) && !rows()[0].all().find((e) => e.type === "checkbox").checked;
+  await env.press(rows()[0], "▾", true);
+  const collapsed = rows().length === 1 && env.button(host, "보관함에 저장 (0)", true).disabled;
+  await env.press(rows()[0], "▸", true);
+  const checkRow = (index) => { const cb = rows()[index].all().find((e) => e.type === "checkbox"); cb.checked = true; cb.fire("change"); };
+  checkRow(0); checkRow(2);
+  const childClearsGroup = !rows()[0].all().find((e) => e.type === "checkbox").checked;
+  checkRow(0);
+  const groupClearsChildren = rows().slice(1).every((r) => !r.all().find((e) => e.type === "checkbox").checked);
+  const input = rows()[0].all().find((e) => e.type === "text"); input.value = ""; input.fire("input");
+  const fallback = rows()[0].textContent.includes("ref_레이어1_t.png");
+  input.focus(); input.setSelectionRange(0, 0); checkRow(0);
+  const currentName = rows()[0].all().find((e) => e.type === "text");
+  const nameFocus = env.doc.activeElement === currentName && currentName.selectionStart === 0 && currentName.value === "";
+  await env.press(host, "보관함에 저장 (1)", true);
+  return { defaults, nested, collapsed, childClearsGroup, groupClearsChildren, fallback, toggleFocus, nameFocus,
+    savedGroupOnly: same(env.poolCalls.at(-1).body.items, [{ id: "2", name: "" }]) };
+});
+await scenario("b9dialogEvents", async () => {
+  const env = await start9(); await cut9(env);
+  const dialog = () => env.doc.body.all().find((e) => e.classList.contains("rf-dialog"));
+  await env.press(env.hosts.panel, "레이어별 컷", true);
+  let host = dialog();
+  const drag = host.fire("dragover"), drop = host.fire("drop", { dataTransfer: { files: [{ name: "ignore.png", size: 100 }] } });
+  const blocked = drag.defaultPrevented && drop.defaultPrevented && env.poolCalls.length === 0;
+  const cb = host.all().find((e) => e.type === "checkbox"); cb.focus();
+  const cbEsc = cb.fire("keydown", { key: "Escape", code: "Escape" });
+  const checkbox = cbEsc.defaultPrevented && !dialog();
+  await env.press(env.hosts.panel, "다른 프로젝트에서 가져오기", true);
+  const select = dialog().all().find((e) => e.tagName === "SELECT"); select.focus();
+  const selectEsc = select.fire("keydown", { key: "Escape", code: "Escape" });
+  const selected = selectEsc.defaultPrevented && !dialog();
+  await env.press(env.hosts.panel, "목록", true);
+  await env.press(env.hosts.sheets, "시트 추가", true);
+  host = dialog();
+  const uploadDrop = host.fire("drop", { dataTransfer: { files: [{ name: "backdrop.png", size: 100 }] } });
+  await sleep(40);
+  return { blocked, checkbox, selected, backdropUpload: uploadDrop.defaultPrevented && env.poolCalls.length === 1
+    && env.poolCalls[0].query.filename === "backdrop.png" };
+});
+await scenario("b9reopenSaved", async () => {
+  const results = {};
+  for (const target of ["목록", "시트"]) {
+    const R = R0(), req = "b".repeat(32), rect = [100,100,400,500];
+    R.crops[1].files[0].record = { sheet: { path: "00_원본/refer_character.psd", size: [3927,7583], changed: false }, rect,
+      cut: { method: "rect", steps: [req] }, transform: { rotate: 0, flip_h: false, scale: 1, pad: 8 } };
+    const env = await start9({ R }); env.srv.cuts[req] = { body: { rect }, waits: 0 };
+    env.li(R.crops[1].name).fire("click");
+    await env.press(env.hosts.panel, "다시 열기", true);
+    const restored = env.hosts.panel.textContent.includes("면적 42.0%");
+    const n = env.confirms.length;
+    await env.press(target === "시트" ? env.hosts.tabs : env.hosts.panel, target, true);
+    results[target] = restored && env.confirms.length === n && !env.hosts.sheets.hidden;
+    env.ed.leave();
+  }
+  const env = await start9(); await cut9(env);
+  results.blankSheetName = env.hosts.panel.textContent.includes("ref_refer-character_1_t.png");
+  await env.press(env.hosts.panel, "목록", true);
+  results.unsavedStillWarns = env.confirms.at(-1).includes("저장하지 않은 컷");
+  return results;
+});
+await scenario("b9dialogKeys", async () => {
+  const env = await start9(); await cut9(env);
+  const docTarget = new El(env.doc, "document"); docTarget.append(env.doc.body);
+  let boardKeys = 0;
+  docTarget.addEventListener("keydown", (e) => { boardKeys += 1; if (env.ed.onKey(e)) e.preventDefault(); });
+  await env.press(env.hosts.panel, "레이어별 컷", true);
+  const host = env.doc.body.all().find((e) => e.classList.contains("rf-dialog"));
+  const field = (type) => host.all().find((e) => e.type === type);
+  const name = field("text"); name.value = "edited"; name.fire("input");
+  const space = (cb) => {
+    cb.focus();
+    const event = cb.fire("keydown", { code: "Space", key: " " });
+    if (!event.defaultPrevented) { cb.checked = !cb.checked; cb.fire("change"); }
+    return event;
+  };
+  const a = space(field("checkbox"));
+  const checkboxFocus = env.doc.activeElement === field("checkbox") && !field("checkbox").checked;
+  const b = space(field("checkbox"));
+  const spaceKeeps = !a.defaultPrevented && !b.defaultPrevented && field("text").value === "edited" && env.doc.body.contains(host);
+  const allowed = ["Tab", "PageDown", "ArrowDown", "F5", "KeyF"].every((code) =>
+    !env.doc.body.fire("keydown", { code, key: code, ctrlKey: code === "KeyF" }).defaultPrevented);
+  const composing = field("text").fire("keydown", { code: "Escape", key: "Escape", isComposing: true });
+  const ime = !composing.defaultPrevented && env.doc.body.contains(host);
+  const keyResult = env.key("Enter") === false;
+  const save = env.button(host, "보관함에 저장 (1)", true); save.focus();
+  const tabbable = host.all().filter((e) => e.tagName === "BUTTON").every((e) => e.tabIndex === 0);
+  const enter = save.fire("keydown", { code: "Enter", key: "Enter" });
+  if (!enter.defaultPrevented) save.fire("click");
+  await sleep(40);
+  const entered = !enter.defaultPrevented && !env.doc.body.contains(host) && env.poolCalls.at(-1).body.items[0].name === "edited";
+  const noBoardKeys = boardKeys === 0;
+  env.doc.body.fire("keydown", { code: "Tab", key: "Tab" });
+  const unregistered = boardKeys === 1;
+  await env.press(env.hosts.panel, "크게 보기", true);
+  const large = env.doc.body.all().find((e) => e.classList.contains("rf-dialog"));
+  const closed = env.doc.body.fire("keydown", { code: "Space", key: " " });
+  return { checkboxFocus, spaceKeeps, allowed, ime, keyResult, entered, noBoardKeys, unregistered, tabbable,
+    largeSpace: closed.defaultPrevented && !env.doc.body.contains(large) };
+});
+await scenario("b9retryAndNoop", async () => {
+  const env = await start9();
+  env.uploadFailures = 1;
+  await env.press(env.hosts.sheets, "시트 추가", true);
+  const host = env.doc.body.all().find((e) => e.classList.contains("rf-dialog"));
+  const input = host.all().find((e) => e.type === "file");
+  const file = { name: "same.png", size: 100 };
+  const choose = () => {
+    if (input.value !== file.name) { input.value = file.name; input.files = [file]; input.fire("change"); }
+  };
+  choose(); const startClear = input.value === ""; await sleep(40);
+  const failedClear = input.value === "" && env.doc.body.contains(host) && host.textContent.includes("retry upload");
+  choose(); await sleep(40);
+  const retried = env.poolCalls.length === 2 && !env.doc.body.contains(host);
+  env.li("009_모자본체_휘장").fire("click");
+  await env.press(env.hosts.panel, "⋯", true);
+  const menu = env.doc.body.all().find((e) => e.classList.contains("rf-dialog"));
+  env.poolResult = { ok: true, rev: env.srv.rev, unchanged: true };
+  await env.press(menu, "이름 바꾸기", true);
+  return { startClear, failedClear, retried, noop: env.toasts.at(-1) === ":바뀐 것 없음" };
+});
+console.log(JSON.stringify(out));
+'''
+    out = OUT_ROOT / "batch9b_js"
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "harness.mjs").write_text(h + scene, encoding="utf-8")
+    (out / "in.json").write_text(json.dumps({"rows": [], "side": [], "hint": [], "bases": []}), encoding="utf-8")
+    proc = subprocess.run([node, str(out / "harness.mjs"), str(web / "layout_geom.js"), str(web / "ref_edit.js"), str(out / "in.json")],
+                          capture_output=True, text=True, encoding="utf-8", timeout=90)
+    check(proc.returncode == 0 and bool(proc.stdout.strip()), "B9 모의 DOM 실행: " + proc.stderr[-600:])
+    if proc.returncode == 0 and proc.stdout.strip():
+        results = json.loads(proc.stdout.strip().splitlines()[-1])
+        for name in ("b9saveTabs", "b9layers", "b9pool", "b9upload", "b9impact", "b9lateWrite", "b9beforeImport",
+                     "b9groupChoice", "b9dialogEvents", "b9reopenSaved", "b9dialogKeys", "b9retryAndNoop"):
+            result = results.get(name, {})
+            check(bool(result) and all(v is True for v in result.values()), f"B9 {name}: {result}")
 
 
 def ext60_unit():
