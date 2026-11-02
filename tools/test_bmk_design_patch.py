@@ -55305,6 +55305,38 @@ console.log(JSON.stringify(out));
             result = results.get(name, {})
             check(bool(result) and all(v is True for v in result.values()), f"B9 {name}: {result}")
 
+    # 통합 Codex 리뷰(11/02): refs 폴더가 <프로젝트>/sheets 면 시트 추가 거절 · 경로 가림(UNC·POSIX)
+    import bmk_design_patch_board as bd9
+    from PIL import Image as _Im9
+    with tempfile.TemporaryDirectory(prefix="b9int_", dir=OUT_ROOT.resolve()) as tmp9:
+        root9 = store.project_root(str(Path(tmp9) / "input"), "p9")
+        Path(root9).mkdir(parents=True)
+        m9 = store.new_manifest("p9")
+        m9.setdefault("source", {})["refs_dir"] = os.path.join(root9, "sheets")
+        store.save_manifest(root9, m9)
+        part9 = Path(root9) / ".upload_b9int.part"
+        _Im9.new("RGB", (300, 300), (1, 2, 3)).save(part9, "PNG")
+        try:
+            bd9._pool_sheet_finish(root9, None, str(part9), "a.png")
+            rej9 = None
+        except bd9._Reject as e:
+            rej9 = e
+        check(rej9 is not None and rej9.status == 400 and not (Path(root9) / "sheets" / "a.png").exists() and not part9.exists(),
+              "B9 통합 — refs 폴더가 sheets 면 시트 추가 거절(번호 매칭으로 크롭에 붙지 않게)·.part 정리")
+    for msg in ("레퍼런스 폴더가 없습니다: \\\\NAS\\share\\refs", "x //nas/private/refs", "없음 /mnt/data/refs", "C:\\a\\b"):
+        try:
+            bd9._pool_raise(bd9._Reject(400, msg))
+            out9 = None
+        except bd9._Reject as e:
+            out9 = e.message
+        check(out9 == "파일 경로 또는 프로젝트 설정을 확인하세요", f"B9 통합 — 경로 가림 {msg!r} → {out9!r}")
+    try:
+        bd9._pool_raise(bd9._Reject(400, "설명은 1–40자"))
+        keep9 = None
+    except bd9._Reject as e:
+        keep9 = e.message
+    check(keep9 == "설명은 1–40자", "B9 통합 — 경로 없는 문구는 그대로")
+
 
 def ext60_unit():
     """D72–D87: 합성 파일·직접 라우트·모의 DOM. 소켓·외부 API·탐색기를 실행하지 않는다."""

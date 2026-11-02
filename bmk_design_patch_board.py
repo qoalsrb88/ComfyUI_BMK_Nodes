@@ -4608,6 +4608,15 @@ def ref_pool(root, rev, op, data):
             _drop(item["part"])
 
 
+def _sheets_are_refs_dir(root: str, m: dict, sheets: str) -> bool:
+    """시트 폴더가 실제 레퍼런스 폴더(매니페스트 기록·실행 설정 어느 쪽이든)면 시트 파일이 번호 매칭(NNN_)으로 크롭에 붙어
+    사람이 연결하지 않아도 Prepare 선택이 바뀐다 — D135 시트 추가는 그런 폴더에 쓰지 않는다(배치 9 통합 Codex 리뷰)."""
+    dirs = [(m.get("source") or {}).get("refs_dir")]
+    with contextlib.suppress(Exception):
+        dirs.append(((pl.load(root) or {}).get("import") or {}).get("refs_dir"))
+    return any(drefs.same_refs_dir(d, sheets) for d in dirs if d)
+
+
 def _pool_sheet_finish(root, rev, part, name):
     dest = None
     try:
@@ -4615,8 +4624,10 @@ def _pool_sheet_finish(root, rev, part, name):
         check_image_dims(image_header(part, kind), 256)
         # 시트는 refs 밖의 재료다. refs.json 생성·수정 없이 같은 이름 배정만 직렬화한다.
         with store.manifest_lock(root):
-            store.load_manifest(root)
+            m = store.load_manifest(root)
             sheets = store.resolve_path(root, "sheets")
+            if _sheets_are_refs_dir(root, m, sheets):
+                raise _Reject(400, "레퍼런스 폴더가 sheets 폴더라 시트를 추가할 수 없습니다 — ① 준비에서 레퍼런스 폴더를 바꾸세요")
             os.makedirs(sheets, exist_ok=True)
             name = unique_file_name(sheets, name)
             target = os.path.join(sheets, name)
@@ -4685,6 +4696,10 @@ async def _pool_route(fn, *args):
         _pool_raise(e)
 
 
+# 응답에 실으면 안 되는 경로 꼴: 드라이브(C:\ C:/)·UNC(\\서버\ //서버/)·흔한 POSIX 절대 경로
+_POOL_PATH_RE = re.compile(r"[A-Za-z]:[\\/]|\\\\[^\\\s]|//[^/\s]|(?<![\w.])/(?:Users|home|mnt|media|srv|var|tmp|Volumes|opt)/")
+
+
 def _pool_raise(e):
     """스레드 검사·마무리와 비동기 수신 실패에 같은 경로 가림을 적용한다."""
     if isinstance(e, OSError):
@@ -4692,10 +4707,12 @@ def _pool_raise(e):
         status = 409 if isinstance(e, FileExistsError) else 404 if isinstance(e, FileNotFoundError) else 500
         raise _Reject(status, "파일을 읽거나 쓰지 못했습니다 — 권한·잠금 확인") from None
     if isinstance(e, _Reject):
-        if re.search(r"[A-Za-z]:[\\/]|/Users/|/home/", e.message):
+        if _POOL_PATH_RE.search(e.message):
+            logger.warning("%s 레퍼런스 요청 거절(경로 가림): %s", _TAG, e.message)
             raise _Reject(e.status, "파일 경로 또는 프로젝트 설정을 확인하세요") from None
     else:
-        if re.search(r"[A-Za-z]:[\\/]|/Users/|/home/", str(e)):
+        if _POOL_PATH_RE.search(str(e)):
+            logger.warning("%s 레퍼런스 요청 오류(경로 가림): %s", _TAG, e)
             status = 409 if isinstance(e, (drefs.RefsConflict, FileExistsError)) else 404 if isinstance(e, FileNotFoundError) else 400
             raise _Reject(status, "파일을 처리하지 못했습니다 — 이름·경로·권한을 확인하세요") from None
     raise e
