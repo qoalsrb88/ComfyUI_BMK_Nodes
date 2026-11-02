@@ -405,6 +405,7 @@ window.DPRefEdit = (() => {
     let allPool = false;
     let extraHost = null;
     let extraKeyHost = null;
+    let poolHost = null; // poolBlock 동안 fileRow 가 줄을 넣을 곳(높이 제한 목록 — 컷 칸이 아래로 밀리지 않게)
     let matte = "gray";
     let asym = false; // "글자·비대칭 있음"(반전 경고)
     let overlay = null; // 겹쳐 보기 {alpha, x, y, k} — 화면용, 저장 안 함
@@ -1522,7 +1523,7 @@ window.DPRefEdit = (() => {
         return;
       }
       if (!sheetList.length) {
-        sheetHost.append(el("p", "warn", "시트가 없습니다 — 받은 시트를 <프로젝트>\\00_원본\\ 에 두고 새로고침(매뉴얼)"));
+        sheetHost.append(el("p", "warn", "시트가 없습니다 — 위 [시트 추가] 로 넣거나, 프로젝트 폴더에 그림을 두고 [새로고침]"));
         return;
       }
       const recent = new Set(S.R ? S.R.sheets.map((x) => x.path) : []);
@@ -1990,6 +1991,8 @@ window.DPRefEdit = (() => {
       if (allPool) for (const crop of R.crops) for (const f of crop.files.concat(crop.unlinked)) {
         if (!f.missing && !files.has(f.name)) files.set(f.name, f);
       }
+      const list = el("div", "rf-pool-list");
+      poolHost = list;
       for (const f of files.values()) {
         const actions = [];
         if (f.thumb_url) actions.push(["크게 보기", "레퍼런스 크게 보기", () => poolLarge(f), false]);
@@ -2002,8 +2005,10 @@ window.DPRefEdit = (() => {
         if (f.origin === "pool" && (R.pool || []).some((p) => p.name === f.name)) actions.push(["⋯", "보관함 파일 관리", () => poolMenu(f), true]);
         fileRow(f, f.from ? `${f.from.project} / ${f.from.name}` : f.sheet ? f.sheet.path : f.origin === "pool" ? "이 프로젝트 보관함" : "기존 파일", actions);
       }
-      if (!files.size) panel.append(el("p", "dim", "보관함이 비었습니다 — 시트에서 잘라 저장하거나 다른 프로젝트에서 가져오세요"));
       for (const f of R.pool_held || []) fileRow(f, "보관함 보류", [["되살리기", "연결 없이 보관함으로", () => poolWrite({ op: "restore", name: f.name }), true]]);
+      poolHost = null;
+      if (list.children.length) panel.append(list);
+      if (!files.size) panel.append(el("p", "dim", "보관함이 비었습니다 — 시트에서 잘라 저장하거나 다른 프로젝트에서 가져오세요"));
       panel.append(el("p", "dim", "보관함을 바꾸면 반영(무료)이 필요합니다 — 크롭의 레퍼런스는 그대로"));
     }
 
@@ -2379,7 +2384,7 @@ window.DPRefEdit = (() => {
       }
       info.append(acts);
       r.append(img, info);
-      panel.append(r);
+      (poolHost || panel).append(r);
     }
 
     function manageBlock(c) {
