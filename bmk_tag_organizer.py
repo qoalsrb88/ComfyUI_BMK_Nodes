@@ -7,7 +7,7 @@
   빼고 포즈·구도·배경은 남겨 다른 캐릭터에 쓰기.
 
   분류 데이터와 처리 로직은 TagOrganizer 저장소(정본)에서 온다.
-  bmk_tag_organizer_core.py 와 tag_organizer_data/ 는 그 저장소의
+  bmk_tag_organizer_core.py, tag_organizer_data/, js/tag_organizer/(청크 편집기) 는 그 저장소의
   `python tagorg.py sync` 가 복사하는 파일이므로 이 폴더에서 직접 고치지 않는다.
 
 옵션:
@@ -28,7 +28,7 @@
                      넣어, 구도 규칙이 바로 그 크롭(시점)으로 돈다. auto = 프롬프트 그대로.
   - guess          : 팩에 없는 토큰(자연어 구절 등)의 분류를 패턴·끝말로 추정해 임시로 넣는다.
   - arrangement    : 배열 세팅 JSON(숨김 위젯). 줄 → 청크 → 멤버(서브) 순서를 정한다.
-                     JS 편집기(js/bmk_tag_organizer.js)가 쓰고, TagOrganizer 관리 툴에서 내보낸
+                     JS 편집기(js/bmk_tag_organizer.js + js/tag_organizer/)가 쓰고, TagOrganizer 관리 툴에서 내보낸
                      파일을 가져올 수 있다. 비우면 layout. 형식은 TagOrganizer docs/arrangement.md.
   - dialect_priority : auto 의 우선순위. NAI 표기와 ComfyUI·Anima 표기가 함께 있을 때, 그리고 표기가 없을 때
                      앞의 문법을 쓴다. Anima 는 ComfyUI 의 상위 호환이라 @작가가 있으면 anima.
@@ -54,6 +54,9 @@
   - v3: 코어 v1.5. 입력 문법 auto 와 우선순위(dialect_priority), // 주석(comments), 마침표 문장(sentences).
         새 입력은 optional 맨 뒤라 v2 워크플로가 그대로 열리고, 빠진 값은 코어 기본값(주석 뺌·문장 나누기 켬)이다.
         편집기 미리보기에 자동 인식 결과(문법·근거·섞임)와 입력 문법 경고(warning_text)를 보인다.
+  - v4: 청크 편집기 JS 를 TagOrganizer 의 모듈(js/tag_organizer/, sync 가 복사)로 합치고 js/bmk_tag_organizer.js 는
+        ComfyUI 어댑터만 남겼다. 추정 규칙 메뉴 추가, 배열의 description·다른 툴 키 보존, 놓친 끌기 취소.
+        노드 입력·서버 경로·저장 형식은 그대로라 v3 워크플로가 그대로 열린다.
 """
 
 from __future__ import annotations
