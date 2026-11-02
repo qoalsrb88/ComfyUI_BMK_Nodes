@@ -55323,19 +55323,41 @@ console.log(JSON.stringify(out));
             rej9 = e
         check(rej9 is not None and rej9.status == 400 and not (Path(root9) / "sheets" / "a.png").exists() and not part9.exists(),
               "B9 통합 — refs 폴더가 sheets 면 시트 추가 거절(번호 매칭으로 크롭에 붙지 않게)·.part 정리")
-    for msg in ("레퍼런스 폴더가 없습니다: \\\\NAS\\share\\refs", "x //nas/private/refs", "없음 /mnt/data/refs", "C:\\a\\b"):
+        # 정션으로 같은 폴더: refs_dir = <프로젝트>/refs(정션 → sheets)
+        (Path(root9) / "sheets").mkdir(exist_ok=True)
+        link9 = Path(root9) / "refs"
+        linked9 = (os.name == "nt" and subprocess.run(["cmd", "/c", "mklink", "/J", str(link9), str(Path(root9) / "sheets")],
+                                                      capture_output=True).returncode == 0)
+        if not linked9 and os.name != "nt":
+            with contextlib.suppress(OSError):
+                os.symlink(Path(root9) / "sheets", link9, target_is_directory=True)
+                linked9 = True
+        if linked9:
+            m9 = store.load_manifest(root9)
+            m9["source"]["refs_dir"] = str(link9)
+            store.save_manifest(root9, m9)
+            check(bd9._sheets_are_refs_dir(root9, m9, store.resolve_path(root9, "sheets")),
+                  "B9 통합 — refs 폴더가 sheets 를 가리키는 정션이어도 같은 폴더로 봄")
+            m9["source"]["refs_dir"] = os.path.join(root9, "other_refs")
+            check(not bd9._sheets_are_refs_dir(root9, m9, store.resolve_path(root9, "sheets")), "B9 통합 — 다른 폴더면 시트 추가 허용")
+            (os.rmdir if os.name == "nt" else os.remove)(link9)
+        else:
+            skip("B9 통합 — 정션을 만들지 못해 정션 refs 폴더 검사 건너뜀")
+    for msg in ("레퍼런스 폴더가 없습니다: \\\\NAS\\share\\refs", "x //nas/private/refs", "없음 /mnt/data/refs", "C:\\a\\b",
+                "레퍼런스 폴더가 없습니다: /data/private/refs", "경로 '/root/x/y' 없음", "(/workspace/refs/) 확인"):
         try:
             bd9._pool_raise(bd9._Reject(400, msg))
             out9 = None
         except bd9._Reject as e:
             out9 = e.message
         check(out9 == "파일 경로 또는 프로젝트 설정을 확인하세요", f"B9 통합 — 경로 가림 {msg!r} → {out9!r}")
-    try:
-        bd9._pool_raise(bd9._Reject(400, "설명은 1–40자"))
-        keep9 = None
-    except bd9._Reject as e:
-        keep9 = e.message
-    check(keep9 == "설명은 1–40자", "B9 통합 — 경로 없는 문구는 그대로")
+    for keep in ("설명은 1–40자", "대표/보조 연결은 크롭을 고른 뒤", "rev 3/4 — 새로고침", "PSD·PSB·PNG 만 (1/2)"):
+        try:
+            bd9._pool_raise(bd9._Reject(400, keep))
+            keep9 = None
+        except bd9._Reject as e:
+            keep9 = e.message
+        check(keep9 == keep, f"B9 통합 — 경로 없는 문구는 그대로 {keep!r} → {keep9!r}")
 
 
 def ext60_unit():

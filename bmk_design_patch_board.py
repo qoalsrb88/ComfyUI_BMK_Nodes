@@ -4614,7 +4614,16 @@ def _sheets_are_refs_dir(root: str, m: dict, sheets: str) -> bool:
     dirs = [(m.get("source") or {}).get("refs_dir")]
     with contextlib.suppress(Exception):
         dirs.append(((pl.load(root) or {}).get("import") or {}).get("refs_dir"))
-    return any(drefs.same_refs_dir(d, sheets) for d in dirs if d)
+    real = os.path.normcase(os.path.realpath(sheets))
+    for d in dirs:
+        if not isinstance(d, str) or not d.strip():
+            continue
+        if drefs.same_refs_dir(d, sheets) or os.path.normcase(os.path.realpath(d)) == real:  # 정션·링크로 같은 폴더도
+            return True
+        with contextlib.suppress(OSError):
+            if os.path.exists(d) and os.path.exists(sheets) and os.path.samefile(d, sheets):
+                return True
+    return False
 
 
 def _pool_sheet_finish(root, rev, part, name):
@@ -4696,8 +4705,8 @@ async def _pool_route(fn, *args):
         _pool_raise(e)
 
 
-# 응답에 실으면 안 되는 경로 꼴: 드라이브(C:\ C:/)·UNC(\\서버\ //서버/)·흔한 POSIX 절대 경로
-_POOL_PATH_RE = re.compile(r"[A-Za-z]:[\\/]|\\\\[^\\\s]|//[^/\s]|(?<![\w.])/(?:Users|home|mnt|media|srv|var|tmp|Volumes|opt)/")
+# 응답에 실으면 안 되는 경로 꼴: 드라이브(C:\ C:/)·UNC(\\서버\ //서버/)·POSIX 절대 경로(줄 처음·공백·콜론·따옴표·괄호 뒤 '/폴더/')
+_POOL_PATH_RE = re.compile(r"[A-Za-z]:[\\/]|\\\\[^\\\s]|//[^/\s]|(?:^|[\s:'\"(=])/[^/\s]+/")
 
 
 def _pool_raise(e):
