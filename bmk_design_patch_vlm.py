@@ -4523,7 +4523,7 @@ class RunReport:
     left_created: int = 0
     credits: float = 0.0             # 보고된 크레딧(실측)만
     unreported: int = 0              # 과금됐을 수 있는데 크레딧이 보고되지 않은 단위 — credit_cap 은 단위 최대로 셈
-    stopped_reason: str = "none"     # none | auth | interrupt | credit_cap | vram
+    stopped_reason: str = "none"     # none | auth | interrupt | credit_cap | agent_cap | vram
     cap_need: float = 0.0            # credit_cap 이 지출·진행 중 0 에서 막은 단위의 최대 추정(> 0 = 상한이 1건보다 작음)
     lines: list[str] = field(default_factory=list)
     usage: list[dict] = field(default_factory=list)
@@ -4532,6 +4532,7 @@ class RunReport:
 _EXPECT_STATE = {"new": ("none", "req"), "retry": ("failed",), "orphan": ("inflight",), "rejected": ("rejected",),
                  "repoll": ("created",), "reparse": ("resp",)}
 _STOP_TEXT = {"auth": "인증 거부/없음(401/402/403) — 다시 로그인한 뒤 큐", "interrupt": "취소됨",
+              "agent_cap": "Claude 승인 모드 상한 도달(또는 실행 중 스위치 꺼짐) — 남은 단위는 과금 안 됨, 대기 유지",
               "credit_cap": "credit_cap 도달(실측(미보고 = 단위 최대) + 다음 단위 최대 > 상한) — 남은 단위는 대기 유지",
               "vram": "VRAM 부족·CUDA 없음 — 로컬 단위는 대기 유지"}
 
@@ -4583,6 +4584,7 @@ async def run_units(root: str, units: list[Unit], reqs: dict[str, Request], back
     paid = backend.name == BACKEND_NAMES["openai"]
     local = backend.name == BACKEND_NAMES["local_qwen"]
     cap = max(0, int(credit_cap or 0))
+    armed = paid and bool(runner.agent_switch(root))
     st = SimpleNamespace(stop=None, exc=None, spent=0.0, actual=0.0, inflight={}, finished=0,  # spent = cap 용(미보고 = 단위 최대)
                          released=asyncio.Event())  # 진행 중 예약이 풀릴 때마다 — credit_cap 'wait' 단위가 다시 판정
     attempted: list[Unit] = []
@@ -4630,6 +4632,9 @@ async def run_units(root: str, units: list[Unit], reqs: dict[str, Request], back
                 return "credit_cap"
             if st.spent + sum(st.inflight.values()) + need > cap:
                 return "wait"  # 진행 중 예약 때문에 넘친다 — 그것들이 끝나 실측으로 바뀐 뒤 다시 판정
+        if paid and u.billable and runner.agent_charge(root, "draft", u.crop_id, need, u.key, armed):
+            st.stop = "agent_cap"
+            return "agent_cap"
         if u.billable:
             st.inflight[id(u)] = need
         return None

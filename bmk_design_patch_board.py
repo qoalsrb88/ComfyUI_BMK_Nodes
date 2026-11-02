@@ -16,7 +16,7 @@ Review 노드를 부분 실행한다(대체 경로). 인증 토큰은 그 경로
                                             layout_edit.js·ref_edit.js·checklist.js·pipeline.js·mask_edit.js·board.css 만)
 - GET  /bmk/design_patch/state?root=&since_rev=
        보드 요약(JSON). since_rev 가 지금 rev 와 같으면 {"unchanged": true, rev, running, drain, layout_rev, refs_rev, refs_files_v,
-       pipeline_rev, plan_v}.
+       pipeline_rev, plan_v, agent_approve}(승인 모드 상한은 폴링마다 갱신).
 - GET  /bmk/design_patch/thumb?root=&kind=&key=&size=[&v=]
        JPEG. kind = cand(후보 키) | before(crop_id/tid) | ref(crop_id/tid/번호) | delta(후보 키) | context(후보 키).
        size ∈ 128·192·256·384·512·768·1024, 또는 0 = 원해상도(cand·before 만).
@@ -69,9 +69,9 @@ Review 노드를 부분 실행한다(대체 경로). 인증 토큰은 그 경로
        템플릿 {stage, prompt, targets, hash, only, sig}(pipeline_prompt — S3b 계약 §1). apply·export = 무료(targets null, hash·only ""),
        run·draft = approve 가 지금 선택 계획의 해시와 같을 때만(only 는 서버 정규형으로 돌려줌), reroll = approve·only 없이(사전 승인분).
        인자 400, 409 {reason} = 설정 확인·경로·깨진 파일·expect('<pipeline rev>:<매니페스트 rev>') 다름·실행 중·반영 필요·계획 잠금
-       15초·계획 오류·승인할 것 없음·해시 다름(stale — 지금 해시)
+       15초·계획 오류·승인할 것 없음·해시 다름(stale — 지금 해시)·Claude 승인 상한(agent_cap)
 - GET  /bmk/design_patch/pipeline/plan?root=&only=&style=   Run·Draft 계획(pipeline_plan — 노드와 같은 함수의 승인 해시·비용·크롭별),
-                                                       다른 계획을 계산 중이면 202 {busy: true}
+                                                       agent_approve 는 매번 갱신, 다른 계획을 계산 중이면 202 {busy: true}
 - GET  /bmk/design_patch/pipeline/progress?root=       Run(원장)·Spec Draft(draft_active 동안의 원장) 진행
 - GET  /bmk/design_patch/draft?root=&crop=             크롭의 초안 제안·채택 상태(vlm.draft_view)
 - POST /bmk/design_patch/draft/adopt {root, crop_id, op: adopt|set|clear, text?, value?, seen, crop_sig, preview?}
@@ -592,6 +592,11 @@ def _runner():
         except ImportError:
             return None
     return runner if hasattr(runner, "plan_calls") else None
+
+
+def _agent_state(root: str) -> dict:
+    runner = _runner()
+    return runner.agent_state(root) if runner is not None else {"on": False, "cap": 0, "spent": 0, "expires": None}
 
 
 @functools.lru_cache(maxsize=1)
@@ -2418,6 +2423,7 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
     폴링으로 반영된다. pref_v(unchanged 응답에도) = board_pref.json 지문(store.board_pref_v) — 분석·Export 설정이 바뀌면(편집 창·기준·★ 합성의
     재료, 매니페스트 rev 는 그대로) 보드는 since_rev 없이 다시 받는다.
     export_state(unchanged 응답에도) = 마지막 Export 뒤 사용자 입력 서명 same·changed·unknown(옛 기록)·null(Export 없음).
+    agent_approve(unchanged 응답에도) = Claude 승인 모드 스위치·크레딧 상한·적립·만료(계획 서명과 무관).
     export_last = 그 기록의 rev·time('변경 없음'으로 재사용한 옛 PSD 도 last_export 기준)."""
     m = store.load_manifest(root)
     rk = store.root_key(root)
@@ -2431,7 +2437,7 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
             export_state = "same" if ex["state_sig"] == store.export_state_sig(m) else "changed"
         except Exception:  # 점검표 서명 오류가 state 폴링을 중단시키지 않게
             pass
-    flags = {"running": running, "drain": running and drain_requested(root), "drafting": drafting,
+    flags = {"running": running, "drain": running and drain_requested(root), "drafting": drafting, "agent_approve": _agent_state(root),
              "layout_rev": lay["rev"] if lay else None, "refs_rev": doc["rev"] if doc else None, "refs_files_v": _refs_files_v(_refs_dir(m)),
              "pipeline_rev": pl.pipeline_rev(root), "plan_v": None, "pref_v": store.board_pref_v(root),
              "export_state": export_state, "export_last": {k: ex.get(k) for k in ("rev", "time")} if ex is not None else None}
@@ -5402,7 +5408,7 @@ def pipeline_plan(root: str, settings: dict | None = None, *, only_ids, style: b
     선택 필드는 빈 값(hash "" — 빈 only 는 노드에서 '전부'라 그 해시를 보이지 않음, 정본 alt.no_selection).
     sig = "r:<Run 서명>|d:<Draft 서명>"(_plan_sigs) + 선택이 있으면 "|o:<정규 only>". 같은 서명·같은 설정(계산에 쓴 설정의 지문 —
     다른 settings 로 부르면 다시 계산)·같은 선택이면 기억한 결과(computed_at 그대로)를 계산 없이 — notes(설정 쪽 '반영 뒤 다시 계산')·
-    apply_pending('반영 필요' — Import 미반영 + prepare_inputs 불일치, _apply_pending)은 매번 계산. 오류가 있는
+    apply_pending('반영 필요' — Import 미반영 + prepare_inputs 불일치, _apply_pending)·agent_approve 는 매번 계산. 오류가 있는
     계획은 다시 쓰지 않는다(_plan_ok — 선택 부분은 only 없는 계획도 오류 없을 때만 기억). 계산 중 Run·Spec Draft 가 시작·끝나면
     (서명에 넣은 실행 상태 ≠ 계산 뒤 실행 상태·계산이 본 run.running·draft {running}, 또는 그 사이 시작 수(_starts)가 늚 — 시작해서
     파일을 되돌리고 끝난 실행 포함) 이번 계산은 기억하지 않는다 — 실행 중 값이 '실행 중 아님' 서명으로 남으면 그 실행이 파일을 바꾸지
@@ -5471,6 +5477,7 @@ def pipeline_plan(root: str, settings: dict | None = None, *, only_ids, style: b
             r_sig, d_sig = _plan_sigs(root, m, ran, refs_v, mock)
             sig = f"r:{r_sig}|d:{d_sig}"
     return {"sig": sig + (f"|o:{only}" if only else ""), "computed_at": (sel or free)["computed_at"],
+            "agent_approve": _agent_state(root),
             "notes": _plan_notes(root, m, settings, confirm), "apply_pending": _apply_pending(root, m, settings), "run": run, "draft": draft}
 
 
@@ -5504,7 +5511,7 @@ def pipeline_prompt(root: str, stage, approve=None, only=None, expect=None) -> d
     busy) 기억값 없이 지금 상태의 선택 계획(_run_sel·_draft_sel) — 계산 뒤 ⑥ 을 다시 본다: 잠금을 기다리고 계산하는 사이 ⑥ 의
     실행이 돌거나 시작 수(_starts)가 늘었으면(시작해서 파일을 되돌리고 끝난 실행 포함 — 계획 라우트 steady 와 같은 재료) 그 해시는
     일시값이라 409 running, 그다음 오류 409 plan_error, 해시 "" 409 nothing_to_approve, 해시 ≠ approve 409 stale(지금 해시)
-    ⑨ pl.build_prompt.
+    ⑨ Claude 승인 모드 상한 초과 409 agent_cap(run·draft·reroll, error·reason 만) ⑩ pl.build_prompt.
     reroll 은 ⑥–⑧ 을 보지 않는다(사전 승인분만 과금하고 템플릿의 Import·Prepare 가 반영을 겸함 — R 경로와 같음). 매니페스트·
     pipeline.json 은 한 번 읽은 같은 값으로 판정·해시·템플릿까지(두 번 읽으면 그 사이 다른 창·그래프가 바꾼 값이 판정 없이 템플릿에
     실림 — r1-21). targets = 무료 null, 유료 [출력 노드 키], hash = 대조한 approve(reroll·무료 ""), only = 정규 only(reroll·무료 "")."""
@@ -5566,6 +5573,27 @@ def pipeline_prompt(root: str, stage, approve=None, only=None, expect=None) -> d
         if sel["hash"] != approve:
             raise _Reject(409, f"승인한 계획이 지금과 다릅니다 — 계획을 다시 받아 승인(지금 승인 코드 {sel['hash']})", reason="stale",
                           stale=True, hash=sel["hash"])
+    if paid or stage == "reroll":
+        runner = _runner()
+        if runner is not None and runner.agent_switch(root):
+            hi, unknown = 0.0, False
+            if stage == "draft":
+                hi = float(sel["est_credits"][1])
+            else:
+                try:
+                    if settings is not None:
+                        ap = _run_plans(root, m, settings["run"])[3]
+                        hi = runner.estimate_calls(ap["preapproved"])[1]
+                except (ValueError, OSError, TypeError, KeyError, OverflowError):
+                    unknown = True  # 미리보기 실패: 발사 지점에서 최종 상한을 지킨다
+                if stage == "run":
+                    hi += float(sel["est_usd"][1])
+                hi *= runner.CREDITS_PER_USD
+            room = runner.agent_room(root, hi)
+            if room is not None and (room["over"] or (unknown and room["spent"] >= room["cap"])):
+                left = room["left"]
+                raise _Reject(409, f"Claude 승인 모드 상한 도달 — 남은 {left:,.0f} 크레딧 < 이번 최대 {hi:,.0f} 크레딧: 사용자 승인으로 상한을 다시 정한 뒤",
+                              reason="agent_cap")
     return {"stage": stage, "prompt": pl.build_prompt(stage, settings, root, approve=approve, only=only),
             "targets": None if stage in pl.FREE_STAGES else [pl.OUTPUT_KEY[stage]], "hash": approve, "only": only, "sig": sig}
 

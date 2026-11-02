@@ -88,6 +88,7 @@ body.no-keys .keys-toggle { opacity: .6; }
   white-space: nowrap;
 }
 .b-mock { background: #3a2752; border-color: var(--mock); color: #e2ccff; }
+.b-agent { background: #4a3310; border-color: #ff9f1a; color: #ffd9a0; }
 .b-run { background: #1f3b2b; border-color: var(--ok); color: #c9f5da; }
 .b-drain { background: #4a2a1a; border-color: var(--slice); color: #ffdcc0; }
 .b-wait { background: #3e3818; border-color: var(--wait); color: #fff1b0; }

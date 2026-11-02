@@ -93,6 +93,7 @@ import threading
 import time
 import types
 import uuid
+from datetime import datetime
 from typing import Any, Callable, Iterable
 from urllib.parse import urlparse
 
@@ -117,7 +118,7 @@ EDITS_PATH = "/proxy/openai/images/edits"
 MAX_INPUT_PIXELS = 2048 * 2048  # 내장 노드와 같은 입력 축소 상한
 SECONDS_PER_CALL = 91.0  # 실측(max 품질 1콜) — 예상 시간 표시용
 CREDITS_PER_USD = 211  # comfy_api_nodes client._display_text 의 환산
-STOP_REASONS = ("none", "wave", "max_calls", "auth", "drain", "interrupt")
+STOP_REASONS = ("none", "wave", "max_calls", "auth", "drain", "interrupt", "agent_cap")
 AUTH_STATUSES = frozenset({401, 402, 403})  # 과금 전 거부: pending 으로 되돌리고 새 발사 중지
 
 _CELL_RE = re.compile(r"[0-9a-f]{24}")
@@ -860,6 +861,115 @@ def mock_enabled(root: str) -> bool:
     return os.path.isfile(os.path.join(os.path.dirname(os.path.abspath(root)), MOCK_FILE))
 
 
+AGENT_PORT = 8189  # 파일이 잘못 복사돼도 실사용(8188)에서는 켜지지 않게 시험 인스턴스 포트로 고정
+AGENT_FILE = "_AGENT_APPROVE.json"
+AGENT_SPENT = "_AGENT_APPROVE.spent.jsonl"
+_AGENT_LOCK = threading.Lock()
+
+
+def _server_port() -> int | None:
+    try:
+        from comfy.cli_args import args
+        return args.port if isinstance(args.port, int) and not isinstance(args.port, bool) else None
+    except Exception:
+        return None
+
+
+def agent_switch(root: str) -> dict | None:
+    """8189 시험용 승인 스위치. 파일이 없으면 comfy 를 읽지 않고 꺼짐 — 매번 파일·만료를 다시 본다."""
+    try:
+        path = os.path.join(os.path.dirname(os.path.abspath(root)), AGENT_FILE)
+        with open(path, "rb") as f:
+            raw, stamp = f.read(), os.fstat(f.fileno()).st_mtime_ns
+        d = json.loads(raw.decode("utf-8-sig"))
+        if not isinstance(d, dict):
+            return None
+        port, cap = d.get("port"), d.get("cap_credits")
+        if isinstance(port, bool) or not isinstance(port, int) or port != AGENT_PORT or port != _server_port():
+            return None
+        if isinstance(cap, bool) or not isinstance(cap, (int, float)) or not math.isfinite(cap) or cap <= 0:
+            return None
+        if not isinstance(d.get("plan"), str) or not isinstance(d.get("expires"), str):
+            return None
+        expires = datetime.fromisoformat(d["expires"].removesuffix("Z") + ("+00:00" if d["expires"].endswith("Z") else ""))
+        if expires.tzinfo is None or expires.utcoffset() is None:
+            return None
+        until = expires.timestamp()
+        if not time.time() < until:
+            return None
+        return {"cap": float(cap), "expires": until, "plan": d["plan"], "port": port,
+                "sid": hashlib.sha256(raw + str(stamp).encode("ascii")).hexdigest()[:16]}
+    except (OSError, ValueError, TypeError, OverflowError):
+        return None
+
+
+def agent_spent(path: str, sid: str) -> float:
+    """같은 스위치의 최대 추정 합. 읽을 수 없거나 깨진 장부는 발사를 막는다(다른 sid 는 건너뜀)."""
+    try:
+        total = 0.0
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                row = json.loads(line)
+                if not isinstance(row, dict) or not isinstance(row.get("sid"), str):
+                    return math.inf
+                if row["sid"] != sid:
+                    continue
+                hi = row.get("hi")
+                if isinstance(hi, bool) or not isinstance(hi, (int, float)) or not math.isfinite(hi) or hi < 0:
+                    return math.inf
+                total += hi
+        return total
+    except FileNotFoundError:
+        return 0.0
+    except (OSError, ValueError, TypeError, OverflowError):
+        return math.inf
+
+
+def agent_state(root: str) -> dict:
+    d = agent_switch(root)
+    if d is None:
+        return {"on": False, "cap": 0, "spent": 0, "expires": None}
+    with _AGENT_LOCK:
+        spent = agent_spent(os.path.join(os.path.dirname(os.path.abspath(root)), AGENT_SPENT), d["sid"])
+    return {"on": True, "cap": d["cap"], "spent": round(spent, 2) if math.isfinite(spent) else d["cap"],
+            "expires": d["expires"]}
+
+
+def agent_charge(root: str, stage: str, key: str, hi_credits: float, call: str = "", armed: bool = False) -> str | None:
+    """발사 직전 최대 추정을 덧붙인다. 판정·쓰기 한 잠금, 실패하면 과금하지 않음. 취소해도 적립은 되돌리지 않는다."""
+    with _AGENT_LOCK:
+        d = agent_switch(root)
+        if d is None:
+            return "agent_cap" if armed else None
+        try:
+            if (isinstance(hi_credits, bool) or not isinstance(hi_credits, (int, float))
+                    or not math.isfinite(hi_credits) or hi_credits <= 0):
+                return "agent_cap"
+            path = os.path.join(os.path.dirname(os.path.abspath(root)), AGENT_SPENT)
+            if agent_spent(path, d["sid"]) + hi_credits > d["cap"]:
+                return "agent_cap"
+            row = {"time": _now(), "sid": d["sid"], "root": os.path.abspath(root), "stage": stage,
+                   "key": key, "call": call, "hi": float(hi_credits)}
+            data = (json.dumps(row, ensure_ascii=False) + "\n").encode("utf-8")
+            with open(path, "ab") as f:
+                if f.write(data) != len(data):
+                    return "agent_cap"
+        except (OSError, ValueError, TypeError, OverflowError):
+            return "agent_cap"
+    return None
+
+
+def agent_room(root: str, hi_credits: float) -> dict | None:
+    """템플릿 미리 판정만 — 실제 적립은 발사 직전 다시 한다."""
+    with _AGENT_LOCK:
+        d = agent_switch(root)
+        if d is None:
+            return None
+        spent = agent_spent(os.path.join(os.path.dirname(os.path.abspath(root)), AGENT_SPENT), d["sid"])
+        return {"cap": d["cap"], "spent": spent, "left": max(0.0, d["cap"] - spent),
+                "over": spent + hi_credits > d["cap"]}
+
+
 def _mock_options(root: str) -> dict:
     path = os.path.join(os.path.dirname(os.path.abspath(root)), MOCK_FILE)
     try:
@@ -1254,7 +1364,7 @@ class RunReport:
     credits_total: float | None = None
     elapsed: float = 0.0
     calls: list = dataclasses.field(default_factory=list)
-    stopped_reason: str = "none"  # wave|max_calls|auth|drain|interrupt|none
+    stopped_reason: str = "none"  # wave|max_calls|auth|drain|interrupt|agent_cap|none
     new_candidates: list = dataclasses.field(default_factory=list)
     continuation_hash: str = ""  # remaining 중 승인이 필요한 것의 pending_hash (wave 자동 이어가기용)
     errors: list = dataclasses.field(default_factory=list)  # 저장·반영 오류(원장 기준 다음 실행에서 복구)
@@ -1276,6 +1386,7 @@ class RunReport:
             "max_calls": f"max_new_calls 상한({self.limits.get('max_new_calls')}) — 다시 큐에 넣으면 이어서",
             "auth": "인증 만료/거부(401/402/403) — 다시 로그인(또는 크레딧 충전)한 뒤 다시 큐에 넣으면 이어서",
             "drain": "drain 요청 — 진행 중 호출만 받고 멈춤. 다시 큐에 넣으면 이어서",
+            "agent_cap": "Claude 승인 모드 상한 도달(또는 실행 중 스위치 꺼짐) — 남은 호출은 과금 안 됨, 대기 유지",
             "interrupt": "취소됨 — 진행 중이던 호출은 결과 없이 orphaned(과금됐을 수 있음). retry_orphans 로만 다시 호출",
         }.get(self.stopped_reason)
         lines = [head] + ([f"중지: {why}"] if why else [])
@@ -1300,7 +1411,7 @@ class RunReport:
 
 
 class _RunState:
-    def __init__(self, report: RunReport, wave_s: float, max_new: int, drain_flag, interrupt_check):
+    def __init__(self, report: RunReport, wave_s: float, max_new: int, drain_flag, interrupt_check, *, root: str | None = None):
         self.report = report
         self.t0 = time.monotonic()
         self.wave_s = wave_s
@@ -1311,6 +1422,8 @@ class _RunState:
         self.interrupt_exc: BaseException | None = None
         self.finished = 0
         self.credits: list[float] = []
+        self.agent_root = root
+        self.agent_armed = bool(root and agent_switch(root))
 
     def set_stop(self, reason: str) -> None:
         if self.stop is None:
@@ -1342,6 +1455,10 @@ class _RunState:
         if self.report.launched >= self.max_new:
             self.set_stop("max_calls")
             return "max_calls"
+        if self.agent_root is not None and agent_charge(self.agent_root, "run", e["cell_key"],
+                float(e["est_usd"][1]) * CREDITS_PER_USD, e["call_id"], self.agent_armed):
+            self.set_stop("agent_cap")
+            return "agent_cap"
         self.report.launched += 1
         return None
 
@@ -1380,7 +1497,7 @@ async def run_calls(root: str, calls: list[dict], backend, *, concurrency: int =
     report = RunReport(backend=backend.name, limits={"concurrency": concurrency, "wave_minutes": wave_minutes,
                                                      "max_new_calls": max_new_calls})
     drain = drain_flag or (lambda: drain_requested(root))
-    state = _RunState(report, float(wave_minutes) * 60.0, max_new_calls, drain, interrupt_check or _comfy_interrupt_flag)
+    state = _RunState(report, float(wave_minutes) * 60.0, max_new_calls, drain, interrupt_check or _comfy_interrupt_flag, root=root)
     calls = list(calls)
     total = len(calls)
     with _REG_LOCK:
