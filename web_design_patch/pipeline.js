@@ -2,7 +2,7 @@
 // 무료(S3a): 실행 설정(pipeline.json)·무료 템플릿 큐(반영 = apply, Export — 서버가 만든 템플릿을 ComfyUI /api/prompt 로 직접 넣음, 탭 불필요)·
 // 계획/비용 미리보기(Run·초안 해시까지)·진행·★ 점검·Export 결과·제안 채택/수정.
 // 유료(S3b — 계약 _proto/s3b/S3B_CONTRACT.md §5): 초안·Run 승인·재굴림은 ComfyUI 탭에 승인 메시지(stage·hash·only)만 보내고 탭이 서버 템플릿을
-// app.queuePrompt 로 낸다(토큰은 탭에서만 — D5). 초안·Run 승인은 사용자 클릭(isTrusted) + 확인 창(mock = 페이지 상자, 아니면 네이티브 confirm — D7),
+// app.queuePrompt 로 낸다(토큰은 탭에서만 — D5). 초안·Run 승인은 사용자 클릭(isTrusted) + 확인 창(mock·Claude 승인 모드 = 페이지 상자, 그 밖은 네이티브 confirm),
 // 재굴림(reroll — board.js queueReroll)은 확인 창·isTrusted 없음: 동의는 R 의 확인(사전 승인 — 그 재굴림·복구만 과금)과 머리줄 클릭.
 // /api/prompt 본문을 만드는 곳은 freeBody 하나(서버가 준 템플릿 prompt + front — 인증·탭 정보 없음)이고, 보내기 전에 checkPrompt 로 본다.
 // 왼쪽 = 크롭 목록 + 선택 체크(only), 가운데 = 뷰어(그대로), 오른쪽 = 진행 패널(위: 설정·반영·초안·Run·★·Export, 아래: 선택 크롭의 채택).
@@ -12,6 +12,7 @@
 
 window.DPPipeline = (() => {
   const POLL_MS = 1000; // Studio 가 낸 프롬프트 폴링(/api/history·/api/queue)
+  const CREDITS_PER_USD = 211; // runner.CREDITS_PER_USD 와 같은 크레딧 환산
   const GONE_POLLS = 3; // 대기열에도 기록에도 없는 폴링이 이만큼 이어지면 사라짐(ComfyUI 재시작·큐에서 지움)
   const PLAN_MS = 300; // 크롭 선택을 바꾼 뒤 계획 요청까지
   const BUSY_MS = 500; // 계획 202(다른 계산 중) 뒤 다시 묻는 간격
@@ -35,7 +36,7 @@ window.DPPipeline = (() => {
     run: { paid: true, label: "Run" }, draft: { paid: true, label: "Spec Draft" }, reroll: { paid: true, label: "다시 생성" } };
   const PAID = ["BMKDesignPatchRun", "BMKDesignPatchSpecDraft"];
   // 승인 메시지가 계획을 다시 받아야 하는 결과(서버 409 사유 + 결과를 모름 — 이미 큐에 들어갔을 수 있음)
-  const REPLAN = ["stale", "apply_needed", "nothing_to_approve", "running", "stale_settings", "timeout", "tab_changed", "unknown"];
+  const REPLAN = ["stale", "apply_needed", "nothing_to_approve", "running", "stale_settings", "agent_cap", "timeout", "tab_changed", "unknown"];
   // 결과를 모르고 끝난 사유(이미 큐에 들어갔을 수 있음 — link 가 끝냄 no_ack·timeout·tab_changed, 탭이 제출한 뒤 응답을 잃음 unknown): 토스트 머리
   // '결과 모름'·같은 해시 재승인 확인 창 줄·진행 패널 줄
   const UNKNOWN = ["no_ack", "timeout", "tab_changed", "unknown"];
@@ -250,13 +251,14 @@ window.DPPipeline = (() => {
     if (!e) return endOf(h).state === "done" ? "보고 없음(노드가 옛 버전 — ComfyUI 재시작)" : "";
     const mock = e.backend === "mock" || e.backend === "vlm_mock" ? " [MOCK]" : "";
     const login = e.stopped_reason === "auth" || (stage === "draft" && e.auth_held > 0);
+    const agent = e.stopped_reason === "agent_cap" ? " · Claude 승인 모드 상한 도달 — 남은 호출은 과금 안 됨" : "";
     if (stage === "reroll") {
       return `${login ? `다시 생성 중지 — ${LOGIN}: ComfyUI 탭에서 로그인한 뒤 머리줄 [다시 생성 보내기](사전 승인한 다시 생성은 예약된 채 남음 — R 을 다시 누르면 `
-        + "+1 호출이 더 승인됨)" : "다시 생성(사전 승인)·복구만 실행"} · 승인 필요 ${e.pending}건 남음${mock}`;
+        + "+1 호출이 더 승인됨)" : "다시 생성(사전 승인)·복구만 실행"} · 승인 필요 ${e.pending}건 남음${mock}${agent}`;
     }
     const ran = !e.approved_now ? "승인 안 됨 — 승인 코드가 실행 전 계획과 달라 드라이런(승인 필요분 과금 없음)"
       : login ? `승인했지만 중지 — ${LOGIN}: ComfyUI 탭에서 로그인한 뒤 다시 승인` : "승인분 실행";
-    return stage === "draft" ? `${ran} · 남은 초안 대기 ${e.pending}건${mock}` : `${ran} · 남은 승인 필요 ${e.pending}건${mock}`;
+    return stage === "draft" ? `${ran} · 남은 초안 대기 ${e.pending}건${mock}${agent}` : `${ran} · 남은 승인 필요 ${e.pending}건${mock}${agent}`;
   }
 
   function shown(x) {
@@ -949,7 +951,8 @@ window.DPPipeline = (() => {
     // 것까지(대기열은 차례대로라 그 실행이 끝날 때 앞 요청도 끝남). 다른 요청의 거절은 앞 요청에 대해 아무것도 말하지 않아 둔다
     const asked = {};
     const ASK_KEY = "bmk-dp-ask:" + opts.root;
-    let ask = null; // mock 확인 상자 {box, close}(열려 있을 때)
+    let ask = null; // mock·Claude 승인 확인 상자 {box, close}(열려 있을 때)
+    let agentFresh = null; // 확인 직전 /state 로 받은 상한(계획에 기억한 값으로 승인하지 않음)
     let maskLeft = null; // 이 창의 적용 안 한 마스크 편집(board.js 가 K 모드를 나올 때 setMaskLeft — ★ 점검 줄)
     const external = { size: "gpt", exportSize: null, engine: "nai", path: "", preview: null, previewInput: "", exported: null,
       summary: null, busy: false, loading: false, needsLoad: true, error: "", summaryError: "", message: "", warns: [] };
@@ -1648,8 +1651,8 @@ window.DPPipeline = (() => {
 
     async function approve(e, kind, label, pair) {
       // 유료 승인(§4.4·계약 §5). 사용자 클릭(isTrusted)이 아니면 아무것도 안 함. 누를 때 지금 판정(해시·only·탭)이 그린 값과 다르면 보내지 않고
-      // 다시 그림(r2-07 — 입력 중이라 미뤄 둔 옛 단추). 확인 = mock 백엔드면 페이지 상자, 아니면 네이티브 confirm(Claude 브라우저 패널에서는 늘
-      // false — 유료 승인을 누를 수 없는 장치, D7). 상자를 기다리는 사이 바뀌었을 수 있어 확인 뒤 한 번 더 대조
+      // 다시 그림(r2-07 — 입력 중이라 미뤄 둔 옛 단추). 확인 = mock·Claude 승인 모드는 페이지 상자, 그 밖은 네이티브 confirm.
+      // 상자를 기다리는 사이 바뀌었을 수 있어 확인 뒤 한 번 더 대조
       if (!e || !e.isTrusted || paying) return;
       // D95: 두 유료 승인 모두 선택 범위의 현재 이름을 확인(무료 반영·계획 해시는 그대로).
       const unnamed = () => {
@@ -1683,7 +1686,10 @@ window.DPPipeline = (() => {
       render();
       let ok = false;
       try {
+        const agent = !mock && agentOn() ? await freshAgent() : null;
+        const need = agent ? (kind === "run" ? p.run.credits[1] + p.run.est_usd_pre[1] * CREDITS_PER_USD : p.draft.est_credits[1]) : 0;
         ok = mock ? await mockAsk(label, kind === "draft" && !!p.draft.mock_forced)
+          : agent ? await agentAsk(kind, approveText(kind, p, pair[1].split(","), PS.planStyle, full).concat(again, "계속할까요?"), need)
           : window.confirm(approveText(kind, p, pair[1].split(","), PS.planStyle, full).concat(again, "계속할까요?").join("\n"));
       } catch (err) {
         // 확인 창 문구를 만들지 못함 = 계획에 확인 창 필드가 없음(새 JS + 재시작 전 옛 서버 — §1.3: S3a 초안 계획에는 reasons 등이 없음).
@@ -1720,6 +1726,54 @@ window.DPPipeline = (() => {
           el("p", "dim", SIDE));
         btns(sheet, button("승인", "mock 승인 — 과금 없음", (e) => e.isTrusted && close(true), "primary"),
           button("취소", "Esc", (e) => e.isTrusted && close(false)));
+        box.append(sheet);
+        document.body.append(box);
+        ask = { box, close };
+      });
+    }
+
+    function agentOn() {
+      return !!((S && S.agent_approve && S.agent_approve.on) || (PS.plan && PS.plan.agent_approve && PS.plan.agent_approve.on));
+    }
+
+    async function freshAgent() {
+      agentFresh = null;
+      try {
+        const r = await fetch(`${opts.apiUrl("state")}?root=${encodeURIComponent(opts.root)}`, { cache: "no-store" });
+        if (r.ok) {
+          const d = await r.json();
+          if (d.agent_approve && d.agent_approve.on) agentFresh = d.agent_approve;
+        }
+      } catch (err) { /* 읽기 실패는 꺼짐 — 네이티브 확인으로 돌아감 */ }
+      return agentFresh;
+    }
+
+    async function agentConfirm(lines, need) {
+      if (ask) return false;
+      const agent = agentOn() ? await freshAgent() : null;
+      return agent ? agentAsk("reroll", lines, need) : window.confirm(lines.join("\n"));
+    }
+
+    function agentAsk(kind, lines, need) {
+      if (ask || !agentFresh) return Promise.resolve(false);
+      const left = Math.max(0, agentFresh.cap - agentFresh.spent);
+      const n = Math.floor(left);
+      return new Promise((resolve) => {
+        const box = el("div", "overlay");
+        const sheet = el("div", "sheet");
+        const close = (ok) => {
+          ask = null;
+          box.remove();
+          resolve(ok);
+        };
+        sheet.append(el("h2", "", `Claude 승인 모드 · 상한 남은 ${n} 크레딧`));
+        for (const line of lines) sheet.append(el("p", "", line));
+        const yes = button("승인", "Claude 승인 모드", (e) => e.isTrusted && close(true), "primary");
+        if (need > left) {
+          sheet.append(el("p", "bad", `상한 도달 — 남은 ${n} < 이번 최대 ${Math.ceil(need)} 크레딧: 승인할 수 없습니다`));
+          yes.disabled = true;
+        }
+        btns(sheet, yes, button("취소", "Esc", (e) => e.isTrusted && close(false)));
         box.append(sheet);
         document.body.append(box);
         ask = { box, close };
@@ -3257,7 +3311,7 @@ window.DPPipeline = (() => {
 
     // tabChanged = link 상태가 바뀜(board.js 가 부름 — 승인 단추 켜짐·제목), reroll = board.js queueReroll 의 유료 가능 탭 갈래, paidWhy·paidLock·side =
     // board.js tabWay·R 확인 문구(유료 탭 길을 쓰나·지금은 예약만인가·그 길의 부수 효과 줄), setMaskLeft = 적용 안 한 마스크 편집(★ 점검 줄)
-    return { stateChanged, enter, leave, select, queue: boardQueue, applyWarn, recalc: planNow, openSettings, reroll, tabChanged: render, paidWhy, paidLock,
+    return { stateChanged, enter, leave, select, queue: boardQueue, applyWarn, recalc: planNow, openSettings, reroll, tabChanged: render, paidWhy, paidLock, agentOn, agentConfirm,
       side: SIDE, setMaskLeft, exportNow, exportWhy, exportLocked, openFolder, steps, canLeave, showTab, goSection, tab: () => activeTab };
   }
 

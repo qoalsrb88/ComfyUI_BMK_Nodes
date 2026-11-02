@@ -204,6 +204,7 @@
         return;
       }
       if (d.unchanged && S) {
+        if ("agent_approve" in d) S.agent_approve = d.agent_approve;
         S.running = d.running;
         S.drain = d.drain;
         S.drafting = d.drafting; // S3: Spec Draft 실행 중(옛 서버 = undefined)
@@ -518,6 +519,15 @@
     const way = scripted ? "" : tabWay();
     const tab = !!way;
     const lock = tab && pipe ? pipe.paidLock() : "";
+    const agent = fromButton && pipe && pipe.agentOn && pipe.agentOn();
+    const need = cell.est_usd ? cell.est_usd[1] * 211 : 0;
+    const stillHere = () => {
+      const current = rerollCell();
+      const nextWay = scripted ? "" : tabWay();
+      if (current && current.cell_key === cell.cell_key && nextWay === way && (nextWay && pipe ? pipe.paidLock() : "") === lock) return true;
+      toast("상태가 바뀜 — 다시 생성 안 함: 다시 누르세요", "warn");
+      return false;
+    };
     const noReview = reviewMissing();
     const why = tab ? "" : [(pipe && pipe.paidWhy()), noReview].filter(Boolean).join(" · ") || "이 창을 연 ComfyUI 탭 없음";
     // 셀 가격(est_usd)은 마지막 Prepare 의 jobs 값 — 큐는 Prepare 를 다시 돈 뒤 과금한다. 유료 가능한 탭의 재굴림 템플릿은 Studio 실행 설정(반영과
@@ -532,12 +542,14 @@
       // 사전 승인 재굴림이 있으면 누적 건수·금액을 맨 앞에(키보드 R 은 그때 거절 — rerollHold)
       const pre = cellPre(cell);
       const stack = pre ? `이 생성 조건 다시 생성 대기 ${pre}건(사전 승인) → ${pre + 1}건${usd(cell.est_usd ? { est_usd: cell.est_usd.map((v) => v * (pre + 1)) } : null)}\n` : "";
-      if (!window.confirm(`${what}\n${stack}${graphPrep}\n` + (lock ? `유료 호출이 사전 승인됩니다 — 지금은 큐를 보내지 않음(${lock}): 다시 생성은 예약만 되고 `
+      const text = `${what}\n${stack}${graphPrep}\n` + (lock ? `유료 호출이 사전 승인됩니다 — 지금은 큐를 보내지 않음(${lock}): 다시 생성은 예약만 되고 `
         + "머리줄 [다시 생성 보내기]로 보내거나 다음 Run 때(선택과 무관) 함께 과금됩니다. 계속할까요?"
         : tab ? (way === "paid" ? `${pipe.side}\n` : "") + "유료 호출이 사전 승인되고 ComfyUI 탭에 큐 요청을 보냅니다. 계속할까요?"
-          : `유료 호출이 사전 승인됩니다 — 지금 큐를 보내지 않음(${why}): 다시 생성은 예약만 되고 다음 Run 때(선택과 무관) 함께 과금됩니다. 계속할까요?`))) {
+          : `유료 호출이 사전 승인됩니다 — 지금 큐를 보내지 않음(${why}): 다시 생성은 예약만 되고 다음 Run 때(선택과 무관) 함께 과금됩니다. 계속할까요?`);
+      if (agent ? !(await pipe.agentConfirm(text.split("\n"), need * (pre + 1))) : !window.confirm(text)) {
         return;
       }
+      if (agent && !stillHere()) return;
     } else {
       // 키보드 R 은 R R 마다 +1 — 앞 R R 이 아직 처리·실행 중이면 무장하지 않는다(rerollHold — 첫 R·둘째 R 모두). 그래서 여기서 lock 은 늘 ""
       const hold = rerollHold(cell);
@@ -564,8 +576,12 @@
     // 바뀌면 이 재굴림은 돌지 않는다
     const pend = S.crops.filter((c) => LAYOUT_STATUS[c.layout_status]);
     const mine = pend.some((c) => c.id === curTarget().crop_id);
-    if (mine && !window.confirm(`이 크롭은 레이아웃이 바뀌어(미반영) 이 큐에서 생성 조건이 바뀌면 다시 생성이 실행되지 않습니다. `
-      + `미반영 레이아웃 ${pend.length}건도 이 큐로 반영됩니다. 계속할까요?`)) return;
+    if (mine) {
+      const text = `이 크롭은 레이아웃이 바뀌어(미반영) 이 큐에서 생성 조건이 바뀌면 다시 생성이 실행되지 않습니다. `
+        + `미반영 레이아웃 ${pend.length}건도 이 큐로 반영됩니다. 계속할까요?`;
+      if (agent ? !(await pipe.agentConfirm(text.split("\n"), need)) : !window.confirm(text)) return;
+      if (agent && !stillHere()) return;
+    }
     const r = await write("reroll", { cell_key: cell.cell_key, count: 1 },
       (x) => `다시 생성 +1 → ${x.variant || ""} 생성 조건 대기 ${x.cell_pending} · 전체 대기 ${x.pending_calls}`
         + (pend.length && !mine ? ` · 미반영 레이아웃 ${pend.length}건 함께 반영` : ""));
@@ -967,6 +983,12 @@
       if ((renderHeader.newNotes || []).length) b.append(el("span", "badge b-wait", renderHeader.newNotes.join(" · ")));
     } else renderHeader.newNotes = [];
     if (S.backend_mock) b.append(el("span", "badge b-mock", "MOCK 백엔드 (과금 없음)"));
+    if (S.agent_approve && S.agent_approve.on) {
+      const a = S.agent_approve;
+      const until = new Date(a.expires * 1000);
+      const hhmm = `${String(until.getHours()).padStart(2, "0")}:${String(until.getMinutes()).padStart(2, "0")}`;
+      b.append(el("span", "badge b-agent", `Claude 승인 모드 · 남은 ${Math.max(0, Math.floor(a.cap - a.spent))} / 상한 ${Math.floor(a.cap)} 크레딧 · ~${hhmm}`));
+    }
     if (S.running) b.append(el("span", "badge b-run", "Run 진행 중"));
     if (S.drain) b.append(el("span", "badge b-drain", "새 호출 멈춤 요청됨"));
     if (S.pending_calls) {

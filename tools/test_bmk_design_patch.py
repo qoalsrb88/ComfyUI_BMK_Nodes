@@ -48,6 +48,7 @@ S3a 파이프라인(STUDIO_S3_SPEC §7 — --only 이름 = 묶음, 응답 모양
   pipeline_node_unit  (--quick 생략) _pipeline_node_u2b = N24·N30·N31(U2b, --only=pipeline_node_u2b) ·
                       _pipeline_node_u3 = P2·N25–N28·R1‴(U3, --only=pipeline_node_u3)
 S3b 유료 승인(STUDIO_S3_SPEC §4·§7 · 계약 _proto\s3b\S3B_CONTRACT.md)
+  agent_approve_unit  8189 Claude 승인 스위치·적립 상한·Run/Draft·서버 본문·JS 확인 상자(네트워크 없음, --quick 포함)
   paid_board_unit     B36 유료 GET /pipeline/prompt·plan 확인 창 필드·expect·manifest_rev(U2)
   paid_js_unit        _paid_js_tab = J-X1–X4 탭 확장(U1, --only=paid_js_tab) · _paid_js_studio = J-P3·R 재굴림·B12″ 유료(U3,
                       --only=paid_js_studio) · _paid_js_e2e = Studio ↔ 탭 왕복(U4, --only=paid_js_e2e)
@@ -25631,21 +25632,21 @@ def pipeline_unit():
         fields = {"request", "ok", "alt", "errors", "nullable", "optional", "maps", "any", "opaque"}
         check(api["schema"] == "bmk.design_patch.pipeline_api/1" and list(api) == ["schema", "_doc", "routes", "state", "history", "messages"]
               and list(routes) == want_routes
-              and all(set(e) == fields for e in routes.values()) and {"flags", "crop", "unchanged", "nullable"} == set(api["state"]),
+              and all(set(e) == fields for e in routes.values()) and {"flags", "crop", "unchanged", "nullable", "alt"} == set(api["state"]),
               f"라우트 7개 · 항목 키 {sorted(fields)} · state(flags·crop·unchanged) · messages(S3b)")
         errs_ok = all(isinstance(b.get("error"), str) for e in routes.values() for st, bs in e["errors"].items() if st != "202" for b in bs)
         e409 = routes["GET /pipeline/prompt"]["errors"]["409"]
         stale_keys = {b["reason"]: set(b) - {"error", "reason"} for b in e409 if b.get("stale") is True}
         check(errs_ok and routes["GET /pipeline/plan"]["errors"]["202"] == [{"busy": True}]
               and [b["reason"] for b in e409] == ["confirm_settings", "no_psd", "missing_path", "pipeline_broken", "stale", "apply_needed",
-                                                  "nothing_to_approve", "running", "busy", "plan_error", "stale_settings"]
+                                                  "nothing_to_approve", "running", "busy", "plan_error", "stale_settings", "agent_cap"]
               and stale_keys == {"stale": {"stale", "hash"}, "apply_needed": {"stale", "pending"}, "running": {"stale"},
                                  "stale_settings": {"stale", "sig"}}
-              and all(set(b) == {"error", "reason"} for b in e409 if b["reason"] in ("nothing_to_approve", "busy", "plan_error"))
+              and all(set(b) == {"error", "reason"} for b in e409 if b["reason"] in ("nothing_to_approve", "busy", "plan_error", "agent_cap"))
               and list(api["_doc"]["열거"]["409 reason(GET /pipeline/prompt — 판정 순서, S3b 계약 §1)"])
               == ["pipeline_broken", "confirm_settings", "no_psd", "missing_path", "stale_settings", "running", "apply_needed", "busy",
-                  "plan_error", "nothing_to_approve", "stale"],
-              f"오류 본문 = error 문자열(+ reason 등), 202 = {{busy: true}}, prompt 409 사유 = S3a 4종(색인 그대로) + S3b 7종(stale·apply_needed·"
+                  "plan_error", "nothing_to_approve", "stale", "agent_cap"],
+              f"오류 본문 = error 문자열(+ reason 등), 202 = {{busy: true}}, prompt 409 사유 = S3a 4종 + S3b 7종 + agent_cap(stale·apply_needed·"
               f"running·stale_settings 는 stale: true + hash·pending·sig — S3b 계약 §1), 열거는 판정 순서 {stale_keys}")
         g = routes["GET /pipeline"]
         ok = g["ok"]
@@ -25731,7 +25732,8 @@ def pipeline_unit():
         # 대조 예시가 null·빈 배열인 경로는 다른 예시(ok·alt)의 값으로 타입을 본다(규칙 7) — 그 값이 정본 어딘가에 있어야 한다
         st, hi = api["state"], api["history"]
         groups = [(n, [e["ok"], *e["alt"].values()], e) for n, e in routes.items()]
-        groups += [("state", [{k: st[k]} for k in ("flags", "crop", "unchanged")], st), ("history", [{"bmk_dp_export": hi["bmk_dp_export"]}], hi)]
+        groups += [("state", [{k: st[k]} for k in ("flags", "crop", "unchanged")] + list(st.get("alt", {}).values()), st),
+                   ("history", [{"bmk_dp_export": hi["bmk_dp_export"]}], hi)]
         groups += [(f"messages {n}", e["examples"], e) for n, e in api["messages"].items()]
         walked = {n: [pv for b in bodies for pv in _pl_walk(b, sp_) if not any(pv[0] == o or pv[0].startswith(o + ".")
                                                                               for o in sp_.get("opaque", []))]
@@ -25805,7 +25807,8 @@ def pipeline_unit():
         six_extra = {"GET /pipeline": {"widgets", "exports[].layers", "manifest_rev", "exports[].mask_groups", "exports[].mask_edits",
                                        "folder"},  # 프로젝트 폴더 이름(Studio 출력 폴더 미리 보기 — 다듬기 3-5b)
                      "GET /pipeline/plan": {"draft.orphan_retries", "draft.est_usd", "draft.reasons", "draft.reasons[].reason", "draft.reasons[].n",
-                                            "draft.free", "draft.free_all", "draft.pending_style", "draft.mock_forced"}}
+                                            "draft.free", "draft.free_all", "draft.pending_style", "draft.mock_forced", "agent_approve",
+                                            "agent_approve.on", "agent_approve.cap", "agent_approve.spent", "agent_approve.expires"}}
 
         def up(q):
             return q.rsplit(".", 1)[0] if "." in q else ""
@@ -25831,11 +25834,11 @@ def pipeline_unit():
         un = dict(st["unchanged"], pipeline_rev=None, plan_v=None, layout_rev=None, refs_rev=None, refs_files_v=None)
         bad_st = (_pl_shape({"unchanged": st["unchanged"]}, {"unchanged": un}, st)
                   + _pl_shape({"unchanged": st["unchanged"]}, {"unchanged": dict(st["unchanged"], layout_rev=5, refs_rev=9)}, st)
-                  + _pl_shape({"flags": st["flags"]}, {"flags": {"drafting": True, "pipeline_rev": None, "plan_v": None, "export_state": None, "export_last": None}}, st)
+                  + _pl_shape({"flags": st["flags"]}, {"flags": dict(st["flags"], drafting=True, pipeline_rev=None, plan_v=None, export_state=None, export_last=None)}, st)
                   + _pl_shape({"crop": st["crop"]}, {"crop": dict(st["crop"], draft_chip=dict(st["crop"]["draft_chip"], adopt=None))}, st)
                   + _pl_shape({"crop": st["crop"]}, {"crop": {"draft_chip": None, "plan_stale": False}}, st))
         check(not bad_st and isinstance(st["unchanged"]["layout_rev"], int)
-              and _pl_shape({"flags": st["flags"]}, {"flags": {"drafting": False, "pipeline_rev": "3", "plan_v": None, "export_state": None, "export_last": None}}, st) == ["flags.pipeline_rev: str ≠ 예시 num"],
+              and _pl_shape({"flags": st["flags"]}, {"flags": dict(st["flags"], drafting=False, pipeline_rev="3", plan_v=None, export_state=None, export_last=None)}, st) == ["flags.pipeline_rev: str ≠ 예시 num"],
               f"state: unchanged 의 pipeline_rev·plan_v·layout_rev·refs_rev·refs_files_v null, draft_chip(.adopt) null 통과, 타입은 대조 {bad_st}")
         # plan: 채택할 제안 없는 크롭(adopt null), only 빈 값 = alt.no_selection(칩용 — 선택 필드 빈 값, 해시 "")
         pp = routes["GET /pipeline/plan"]
@@ -25855,7 +25858,7 @@ def pipeline_unit():
         plans = {"ok": pp["ok"], **pp["alt"]}
         have = sorted(n for n, b in plans.items() if "pending_style" in b["draft"])
         conf = ("orphan_retries", "est_usd", "reasons", "free", "pending_style", "mock_forced")
-        check(have == ["no_selection", "ok", "run_error", "style"]
+        check(have == ["agent_on", "no_selection", "ok", "run_error", "style"]
               and {k: ns["draft"][k] for k in conf} == {"orphan_retries": 0, "est_usd": [0, 0], "reasons": [], "free": 0,
                                                        "pending_style": 0, "mock_forced": pp["ok"]["draft"]["mock_forced"]}
               and pp["ok"]["draft"]["pending_style"] == 0 and pp["alt"]["style"]["draft"]["pending_style"] == 1
@@ -36467,8 +36470,8 @@ def _paid_js_tab():
             want.update({k: e[k] for k in ("hash", "pending") if (k, e["reason"]) in (("hash", "stale"), ("pending", "apply_needed"))})
             if m != want or shape("bmk-dp-approved", m):
                 bad_e.append((e["reason"], m))
-        check(not bad_e and len(xe["e409"]) == len(R["errors"]["409"]) == 11,
-              f"J-X1 서버 409 11종 → approved reason·error 그대로(stale 은 hash, apply_needed 는 pending), 정본 approved 모양 {bad_e}")
+        check(not bad_e and len(xe["e409"]) == len(R["errors"]["409"]) == 12,
+              f"J-X1 서버 409 12종(agent_cap 포함) → approved reason·error 그대로(stale 은 hash, apply_needed 는 pending), 정본 approved 모양 {bad_e}")
         http = {k: (xe[k] or {}).get("error") for k in ("e404", "e400", "noReason", "e502", "net")}
         check(all((xe[k] or {}).get("reason") == "http" and shape("bmk-dp-approved", xe[k]) == [] for k in http)
               and http == {"e404": f"템플릿 요청 실패(HTTP 404): {R['errors']['404'][0]['error']}",
@@ -37901,13 +37904,17 @@ def _paid_js_studio():
 
     # B12″ 유료 정적(P7·P1): 승인 처리기 = 사용자 클릭만 → mock 이면 페이지 상자·아니면 네이티브 confirm → 누를 때·확인 뒤 지금 판정 대조, 보내는 곳 하나
     ap = part(pcode, "    async function approve(", "    function mockAsk(")
-    check(order(ap, "if (!e || !e.isTrusted || paying) return;", "if (!now())", "paying = kind;", "window.confirm(") and "mock ? await mockAsk(" in ap
+    check(order(ap, "if (!e || !e.isTrusted || paying) return;", "if (!now())", "paying = kind;", "mock ? await mockAsk(",
+                "agent ? await agentAsk(", "window.confirm(")
           and 'p.run.backend === "mock"' in ap and 'p.draft.backend === "vlm_mock"' in ap and ap.count("if (!now())") == 2
           and 0 <= ap.rfind("if (!now())") < ap.find("await sendPaid("),
           "B12″(P7): 승인 처리기 = 사용자 클릭(isTrusted)만 · mock 백엔드면 페이지 상자, 아니면 네이티브 window.confirm · 누를 때와 확인 뒤 지금 판정 대조(r2-07)")
     mk = part(pcode, "    function mockAsk(", "\n    }\n")
     check(mk.count("(e) => e.isTrusted && close(") == 2 and "document.body.append(box)" in mk and "el(" in mk,
           "mock 확인 상자: [승인]·[취소]도 사용자 클릭만, el(textContent)로 만듦")
+    ak = part(pcode, "    function agentAsk(", "\n    }\n")
+    check(ak.count("(e) => e.isTrusted && close(") == 2 and "document.body.append(box)" in ak and "el(" in ak,
+          "Claude 승인 상자: [승인]·[취소]도 사용자 클릭만, el(textContent)로 만듦")
     sp = part(pcode, "    async function sendPaid(", "    function paidResult(")
     check("approve=" not in pj and "innerHTML" not in pcode and pcode.count("freeBody(") == 2 and pcode.count('comfy("prompt"') == 1
           and "L.send({ type: APPROVE, rootKey: opts.root, stage, hash, only, what }" in sp and "prompt" not in sp
@@ -56172,6 +56179,410 @@ console.log(JSON.stringify(out)); process.exit(0);
                     check(ok is True, f"D87 {group}/{name}: {ok}")
 
 
+def agent_approve_unit():
+    """S1–S7: 파일 스위치·적립·실행·라우트 본문·가짜 DOM. comfy·torch·네트워크 없이 돈다."""
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import datetime, timezone, timedelta
+    from tempfile import mkdtemp
+    from unittest.mock import patch
+    import bmk_design_patch_runner as rn
+    import bmk_design_patch_vlm as vlm
+    import bmk_design_patch_board as board
+    import bmk_design_patch_pipeline as pl
+
+    section("agent_approve_unit — S1–S7 승인 모드(합성·mock·node, 네트워크 없음)")
+    # 매번 새 폴더라 다른 실행의 산출물을 지우지 않는다.
+    dest = OUT_ROOT.resolve()
+    dest.mkdir(parents=True, exist_ok=True)
+    out = Path(mkdtemp(prefix="aa", dir=dest))
+    off = {"on": False, "cap": 0, "spent": 0, "expires": None}
+
+    def root_at(name):
+        return _pl_project(out / name, "p")
+
+    def switch_path(root):
+        return Path(root).parent / rn.AGENT_FILE
+
+    def ledger_path(root):
+        return Path(root).parent / rn.AGENT_SPENT
+
+    def enable(root, cap=500, **kw):
+        d = {"port": 8189, "cap_credits": cap, "expires": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(), "plan": "시험"}
+        d.update(kw)
+        switch_path(root).write_text(json.dumps(d), encoding="utf-8-sig", newline="\n")
+        return rn.agent_switch(root)
+
+    def lines(root):
+        p = ledger_path(root)
+        return [json.loads(s) for s in p.read_text(encoding="utf-8").splitlines()] if p.exists() else []
+
+    with patch.object(rn, "_server_port", return_value=8189) as port:
+        root = root_at("s")
+        check(rn.agent_switch(root) is None and rn.agent_state(root) == off and rn.agent_charge(root, "run", "c", 12) is None
+              and port.call_count == 0 and not ledger_path(root).exists(), "S1 스위치 없음: comfy 조회·장부 생성·제약 없음")
+        check(rn.agent_charge(root, "run", "c", 12, armed=True) == "agent_cap" and not ledger_path(root).exists(),
+              "S1 무장한 실행은 스위치 없음에서 중지(장부 생성 없음)")
+        for name, kw in [("포트", {"port": 8188}), ("포트 문자열", {"port": "8189"}), ("포트 bool", {"port": True}),
+                         ("만료", {"expires": "2000-01-01T00:00:00Z"}), ("시간대 없음", {"expires": "2099-01-01T00:00:00"}),
+                         ("시간 숫자", {"expires": 9999999999}), ("plan 없음", {"plan": None})]:
+            enable(root, **kw)
+            check(rn.agent_switch(root) is None, f"S2 {name} → 꺼짐")
+        for cap in [0, -1, True, float("nan"), float("inf"), "500", 10 ** 400]:
+            enable(root, cap)
+            check(rn.agent_switch(root) is None, f"S2 cap {str(cap)[:20]} → 꺼짐")
+        for raw in [b"{", b"[]", b"null", b"\xff"]:
+            switch_path(root).write_bytes(raw)
+            check(rn.agent_switch(root) is None, f"S2 잘못된 스위치 {raw!r} → 꺼짐")
+        d = enable(root, expires="2099-01-01T00:00:00Z")
+        expected_sid = hashlib.sha256(switch_path(root).read_bytes() + str(switch_path(root).stat().st_mtime_ns).encode()).hexdigest()[:16]
+        check(d and d["sid"] == expected_sid and d["cap"] == 500 and rn.agent_state(root)["on"], "S2 BOM·Z·원본+mtime sid")
+        missing = json.loads(switch_path(root).read_text(encoding="utf-8-sig"))
+        missing.pop("plan")
+        switch_path(root).write_text(json.dumps(missing), encoding="utf-8")
+        check(rn.agent_switch(root) is None, "S2 plan 필드 없음 → 꺼짐")
+        enable(root)
+        with patch.object(rn, "_server_port", return_value=None):
+            check(rn.agent_switch(root) is None, "S2 서버 포트 모름 → 꺼짐")
+        with patch.object(rn, "_server_port", return_value=8188):
+            enable(root, port=8188)
+            check(rn.agent_switch(root) is None, "S2 8188 은 파일 포트가 같아도 켜지지 않음")
+        d = enable(root)
+        check(rn.agent_charge(root, "run", "c", 300) is None and rn.agent_charge(root, "draft", "d", 200) is None
+              and rn.agent_charge(root, "run", "c", .01) == "agent_cap" and len(lines(root)) == 2,
+              "S3 300+200=500 통과, 다음 .01 거절·장부 불변")
+        for hi in [0, -1, float("nan"), float("inf"), True, "1"]:
+            check(rn.agent_charge(root, "run", "c", hi) == "agent_cap" and len(lines(root)) == 2, f"S3 잘못된 추정 {hi!r} 거절")
+        d2 = enable(root)
+        check(d2["sid"] != d["sid"] and rn.agent_state(root)["spent"] == 0, "S3 새 스위치 sid → 옛 장부 보존·합 0")
+        check(rn.agent_charge(root, "run", "c", .004) is None and rn.agent_state(root)["spent"] == 0
+              and rn.agent_room(root, 500)["over"], "S3 표시는 반올림, 발사·미리 판정은 원래 소수")
+        for raw in ['{', '{}', '[]', json.dumps({"sid": d2["sid"], "hi": -1}), json.dumps({"sid": d2["sid"], "hi": float("nan")}),
+                    json.dumps({"sid": d2["sid"], "hi": True})]:
+            badroot = root_at("b" + str(len(list(out.iterdir()))))
+            bd = enable(badroot)
+            ledger_path(badroot).write_text(raw.replace(d2["sid"], bd["sid"]) + "\n", encoding="utf-8")
+            check(rn.agent_charge(badroot, "run", "c", 1) == "agent_cap" and rn.agent_state(badroot)["spent"] == 500,
+                  f"S3 깨진 장부 → fail closed {raw[:45]}")
+        skiproot = root_at("old")
+        enable(skiproot)
+        ledger_path(skiproot).write_text('{"sid":"old","hi":"bad"}\n', encoding="utf-8")
+        check(rn.agent_charge(skiproot, "run", "c", 1) is None, "S3 다른 sid 의 hi 는 건너뜀")
+        blocked = root_at("blocked")
+        enable(blocked)
+        ledger_path(blocked).mkdir()
+        check(rn.agent_charge(blocked, "run", "c", 1) == "agent_cap", "S3 장부 경로가 폴더 → 발사 거절")
+        with patch("builtins.open", side_effect=OSError("쓰기 실패")), patch.object(rn, "agent_switch", return_value=d2), patch.object(rn, "agent_spent", return_value=0):
+            check(rn.agent_charge(root, "run", "c", 1) == "agent_cap", "S3 append 쓰기 실패 → 발사 거절")
+        concurrent = root_at("threads")
+        enable(concurrent, 50)
+        with ThreadPoolExecutor(max_workers=12) as pool:
+            results = list(pool.map(lambda i: rn.agent_charge(concurrent, "run", str(i), 3), range(40)))
+        check(results.count(None) == 16 and sum(x["hi"] for x in lines(concurrent)) == 48, "S3 동시 40건 적립: 합 48 ≤ cap 50")
+
+        def run_project(name):
+            root = root_at(name)
+            m = store.load_manifest(root)
+            m["canvas"], m["work_rect"] = [64, 64], [0, 0, 64, 64]
+            arr = np.zeros((64, 64, 3), dtype=np.uint8)
+            rel = store.save_png_ca(root, "inputs", arr)
+            m["base"] = rel
+            for i in range(4):
+                cid = f"{i + 1:03d}_{i:06x}"
+                m["crops"].append({"id": cid, "name": f"{i+1:03d}_part", "nnn": f"{i+1:03d}", "part": "part",
+                    "rect": [0, 0, 64, 64], "rect_source": "vector", "source": rel, "source_kind": "base_crop", "alpha_frac": 0.0,
+                    "targets": [{"tid": "A", "label": "ribbon", "name_en": "", "mode": "ref_correct", "refs": []}], "refs_auto": [], "warnings": []})
+                m["jobs"].append(dict(_pl_job(cid, n=1), prompt="Edit ribbon", background="opaque", size=[256, 256],
+                    inputs=[{"role": "canvas", "file": rel, "sha": store.pixel_sha(arr)}], template_version="dp-prompt/1", status="pending"))
+            store.save_manifest(root, m)
+            plan = rn.plan_calls(m, root)
+            h = rn.split_approval(plan, "", backend=rn.BACKEND_MOCK)["pending_hash"]
+            return root, h, rn.split_approval(plan, h, backend=rn.BACKEND_MOCK)["to_run"]
+
+        req_shapes, run_hashes = [], []
+        for mode in ["off", "cap", "delete"]:
+            rr, h, calls = run_project("r" + mode)
+            run_hashes.append(h)
+            hi = calls[0]["est_usd"][1] * rn.CREDITS_PER_USD
+            if mode != "off":
+                enable(rr, hi * (2 if mode == "cap" else 10))
+                check(rn.split_approval(rn.plan_calls(store.load_manifest(rr), rr), "", backend=rn.BACKEND_MOCK)["pending_hash"] == h,
+                      f"S4 {mode}: 스위치가 승인 해시를 바꾸지 않음")
+
+            class RunMock(rn.MockBackend):
+                async def request(self, *args, **kw):
+                    result = await super().request(*args, **kw)
+                    if mode == "delete":
+                        switch_path(rr).unlink(missing_ok=True)
+                    return result
+
+            rep = asyncio.run(rn.run_calls(rr, calls, RunMock(), concurrency=1, interrupt_check=lambda: False))
+            n = {"off": 4, "cap": 2, "delete": 1}[mode]
+            check(rep.launched == n and rep.done == n and len(rep.remaining) == 4-n
+                  and rep.stopped_reason == ("none" if mode == "off" else "agent_cap"), f"S4 Run {mode}: 완료 {n}, 나머지 대기 {rep.text().splitlines()[0]}")
+            check(len(lines(rr)) == (0 if mode == "off" else n), f"S4 Run {mode}: 발사 수와 적립 수")
+            req_shapes.append(json.loads(next(Path(rr, "cands").glob("*/r0.req.json")).read_text(encoding="utf-8")))
+        check(len(set(run_hashes)) == 1 and all(not _pl_shape(req_shapes[0], q, {}) for q in req_shapes[1:]),
+              "S4 스위치 유무: pending_hash·req.json 모양 동일")
+        direct = rn._RunState(rn.RunReport(backend=rn.BACKEND_MOCK), 60, 10, lambda: False, lambda: False)
+        check(direct.launch_block(calls[0]) is None and direct.report.launched == 1, "S4 root=None 직접 실행은 적립 없음")
+
+        reqs = {}
+        for i in range(5):
+            cid, key = f"{i+1:03d}_aaaaaa", f"{i+1:024x}"
+            schema = {"type": "object", "properties": {"targets": {"items": {"properties": {"id": {"enum": ["A"]}}}}}}
+            reqs[cid] = vlm.Request(kind="crop", crop_id=cid, key=key, system="system", parts=[("text", "ribbon")], schema=schema,
+                bbox_frame=("q1000",), shown_refs=[], user_text="ribbon", backend="mock", model="mock", effort=None, image_detail=None, draft_round=0)
+        units = [vlm.Unit(cid, req.key, 1, "crop", "new", ["신규"], True, (10, 40)) for cid, req in reqs.items()]
+        draft_shapes = []
+        for mode in ["off", "cap", "delete", "wait", "mock", "local"]:
+            dr = root_at("d" + mode)
+            if mode != "off":
+                enable(dr, 80 if mode == "cap" else 200)
+
+            class PaidMock(vlm.MockVLM):
+                name = vlm.BACKEND_NAMES["local_qwen" if mode == "local" else "mock" if mode == "mock" else "openai"]
+
+                async def call(self, *args, **kw):
+                    result = await super().call(*args, **kw)
+                    if mode == "delete":
+                        switch_path(dr).unlink(missing_ok=True)
+                    return result
+
+            before = vlm.approval({"units": units}, "", backend_name=PaidMock.name)
+            rep = asyncio.run(vlm.run_units(dr, units, reqs, PaidMock({"delay_s": .01, "credits": 10}), model="mock", effort="high",
+                image_detail="high", concurrency=4 if mode == "wait" else 1, credit_cap=100 if mode == "wait" else 0, progress_cb=None))
+            n = 2 if mode == "cap" else 1 if mode == "delete" else 5
+            check(rep.launched == n and rep.done == n and rep.stopped_reason == ("agent_cap" if mode in ("cap", "delete") else "none"),
+                  f"S5 Draft {mode}: 완료 {n}, stop={rep.stopped_reason}")
+            check(len(lines(dr)) == (0 if mode in ("off", "mock", "local") else n), f"S5 Draft {mode}: wait 재적립·무료 적립 없음")
+            check(sum(vlm.Ledger(dr).state(u.crop_id, u.key)["status"] == "none" for u in units) == 5-n,
+                  f"S5 Draft {mode}: 남은 단위는 원장 없이 대기")
+            check(vlm.approval({"units": units}, "", backend_name=PaidMock.name) == before, f"S5 Draft {mode}: 승인 해시·과금 키 불변")
+            if mode in ("off", "cap", "delete"):
+                draft_shapes.append(vlm.Ledger(dr).read(units[0].crop_id, units[0].key, 1, "req"))
+        check(all(not _pl_shape(draft_shapes[0], q, {}) for q in draft_shapes[1:]), "S5 Draft req 원장 모양 동일")
+        free_root = root_at("repoll")
+        fd = enable(free_root, 1)
+        rn.agent_charge(free_root, "draft", "used", 1)
+        unit = dataclasses.replace(units[0], state="repoll", billable=False)
+        ledger = vlm.Ledger(free_root)
+        ledger.write(unit.crop_id, unit.key, unit.attempt, "created", {"response_id": "mock-id", "mock": {"text": vlm._mock_text(reqs[unit.crop_id])}})
+        class PollMock(vlm.MockVLM):
+            name = vlm.BACKEND_NAMES["openai"]
+        poll = PollMock({})
+        rep = asyncio.run(vlm.run_units(free_root, [unit], reqs, poll, model="mock", effort="high", image_detail="high",
+                                       concurrency=1, credit_cap=0, progress_cb=None))
+        check(rep.done == 1 and rep.repolled == 1 and rep.launched == 0 and len(lines(free_root)) == 1 and not poll.calls,
+              "S5 상한을 다 써도 무료 repoll 은 적립 없이 완료")
+
+        # 라우트 본문 함수를 직접 부른다. HTTP 서버·소켓 없이 실제 계획·서명·템플릿 게이트를 검증.
+        with patch.dict(globals(), VLM_OUT=out / "v"):
+            br, refs_dir, m = _vlm_project("b", [("001_머리 | A: 리본", (64, 64), {})], base_wh=(64, 64))
+        cid = m["crops"][0]["id"]
+        psd = out / "source.psd"
+        psd.write_bytes(b"test")
+        job = _pl_job(cid, n=1, reps=2)
+        def ready(mm):
+            mm["source"].update(psd=psd.as_posix(), fingerprint=store.file_fingerprint(str(psd)), crop_group="auto", clean_plate_layer="auto",
+                                base_layer="auto", crop_pixels_group="auto", refs_dir=Path(refs_dir).as_posix(), glossary="")
+            mm["jobs"], mm["rerolls"] = [job], {job["cell_key"]: 1}
+        store.update_manifest(br, ready)
+        store.update_manifest(br, lambda mm: mm.update(prepare_inputs=store.prepare_inputs_fp(br, mm)))
+        for sec in pl.SECTIONS:
+            cur = pl.current(br, deep=True)
+            pl.update(br, cur["rev"], sec, cur["settings"][sec])
+        p0 = board.pipeline_plan(br, only_ids=[cid], style=False)
+        s0 = board.build_state(br)
+        with patch.object(board, "_runner", return_value=None):
+            check(board._agent_state(br) == off, "S6 runner 없음 → 꺼짐 응답")
+        enable(br, .01)
+        p1 = board.pipeline_plan(br, only_ids=[cid], style=False)
+        s1, same = board.build_state(br), board.build_state(br, s0["rev"])
+        check(p0["agent_approve"] == s0["agent_approve"] == off and p1["agent_approve"]["on"] and s1["agent_approve"]["on"]
+              and same["unchanged"] and same["agent_approve"]["on"], "S6 plan·state·unchanged 모두 스위치 갱신")
+        check(p0["sig"] == p1["sig"] and p0["computed_at"] == p1["computed_at"] and s0["plan_v"] == s1["plan_v"] == same["plan_v"],
+              "S6 스위치 변경: sig·plan_v·memo 계산 시각 불변")
+        for stage in ["run", "draft", "reroll"]:
+            kw = {"approve": p0[stage]["hash"], "only": cid} if stage != "reroll" else {}
+            try:
+                board.pipeline_prompt(br, stage, **kw)
+                check(False, f"S6 {stage}: agent_cap 거절 없음")
+            except board._Reject as e:
+                check(e.status == 409 and e.extra == {"reason": "agent_cap"} and str(e).startswith("Claude 승인 모드"),
+                      f"S6 {stage}: 409 error·reason 만 {e.extra}")
+            switch_path(br).unlink()
+            with patch.object(rn, "agent_room", side_effect=AssertionError("꺼짐 경로의 추가 계산")):
+                check(board.pipeline_prompt(br, stage, **kw)["stage"] == stage, f"S6 {stage}: 꺼짐이면 기존 템플릿")
+            enable(br, .01)
+        with patch.object(board, "_run_plans", side_effect=ValueError("계획 실패")):
+            check(board.pipeline_prompt(br, "reroll")["stage"] == "reroll", "S6 reroll 추정 실패·남은 상한 → 발사 지점에 맡김")
+            rn.agent_charge(br, "run", "c", .01)
+            try:
+                board.pipeline_prompt(br, "reroll")
+                check(False, "S6 추정 실패·상한 소진 거절 없음")
+            except board._Reject as e:
+                check(e.extra == {"reason": "agent_cap"}, "S6 reroll 추정 실패·상한 소진 → 거절")
+        switch_path(br).unlink()
+        p2, s2 = board.pipeline_plan(br, only_ids=[cid], style=False), board.build_state(br)
+        check(p2["agent_approve"] == s2["agent_approve"] == off and p2["sig"] == p0["sig"] and s2["plan_v"] == s0["plan_v"],
+              "S6 다시 꺼짐: 상태만 갱신, 서명 동일")
+        api = _pl_api()
+        for spec, body in [(api["routes"]["GET /pipeline/plan"], p1)]:
+            check(not _pl_shape(spec["ok"], body, spec), "S6 plan 정본 nullable expires 대조")
+        for label, state in [("flags", s1), ("unchanged", same)]:
+            ex = api["state"][label]
+            act = {k: state[k] for k in ex} if label == "flags" else state
+            check(not _pl_shape({label: ex}, {label: act}, api["state"]), f"S6 {label} 정본 nullable expires 대조")
+    check(not any(k == "torch" or k == "comfy" or k.startswith("comfy.") for k in sys.modules), "S1–S6 torch·comfy import 없음")
+    _agent_approve_js(out)
+
+
+def _agent_approve_js(out):
+    """기존 Studio 하네스의 모의 서버·DOM·탭만 재사용 — 실제 fetch·브라우저·네트워크 없음."""
+    node = shutil.which("node")
+    if not node:
+        skip("S7 node 없음 — agent_approve JS 생략")
+        return
+    web = PKG / "web_design_patch"
+    h = _PL_JS_HARNESS
+    cut = [h[h.index(a):h.index(b, h.index(a))] for a, b in (("import fs", "async function run("), ("class El {", "async function mouse("),
+        ("function boardState()", 'await scenario("panel"'), ("function quietPipeline(mod)", 'await scenario("panelDrift"'))]
+    setup = _PAID_STUDIO_JS_HARNESS.split('// ── J-P3 승인 단추:', 1)[0]
+    scene = r'''
+const OFF = {on:false, cap:0, spent:0, expires:null};
+const ON = {on:true, cap:100000, spent:100, expires:2000000000};
+async function agentStudio(mode = "on", extra = {}) {
+  const e = await mkStudio({S: s => {if (mode !== "old" && mode !== "plan") s.agent_approve = clone(mode === "off" ? OFF : ON);},
+    plan: p => {if (mode === "plan") p.agent_approve = clone(ON);}, ...extra});
+  e.fresh = clone(ON); e.stateReads = []; e.fail = false;
+  ctx.fetch = async (url, opts) => {
+    const u = new URL(url);
+    if (u.pathname.endsWith("/state")) {
+      e.stateReads.push(Object.fromEntries(u.searchParams));
+      if (e.fail) throw Error("state 실패");
+      return {ok:true, json:async () => ({agent_approve:clone(e.fresh)})};
+    }
+    return e.srv.fetch(url, opts);
+  };
+  return e;
+}
+for (const mode of ["off", "old", "freshOff", "fail"]) await scenario(mode, async () => {
+  const e = await agentStudio(mode); e.answer = false;
+  if (mode === "freshOff") e.fresh = clone(OFF);
+  if (mode === "fail") e.fail = true;
+  e.click(e.B("생성 승인")); await sleep(40);
+  const r = {native:e.confirms.length === 1, noBox:!e.box(), noSend:e.tab.got.length === 0,
+    reads:e.stateReads.length === (["off", "old"].includes(mode) ? 0 : 1), onlyRoot:e.stateReads.every(q => Object.keys(q).join() === "root")};
+  e.stop(); return r;
+});
+for (const stage of ["run", "draft"]) await scenario(stage, async () => {
+  const e = await agentStudio(stage === "draft" ? "plan" : "on");
+  const label = stage === "run" ? "생성 승인" : "초안 승인";
+  const open = async () => {e.click(e.B(label)); await until(() => e.box());};
+  await open();
+  const last = e.srv.log.filter(x => x.path === "pipeline/plan").at(-1);
+  const plan = e.srv.route.plan(last.q)[1];
+  const text = P.approveText(stage, plan, ALL.split(","), false, false);
+  const r = {title:e.box().textContent.includes("Claude 승인 모드 · 상한 남은 99900 크레딧"),
+    lines:text.every(x => e.box().textContent.includes(x)), native:e.confirms.length === 0};
+  e.B("승인", e.box()).fire("click"); e.B("취소", e.box()).fire("click"); await sleep(20);
+  r.untrusted = !!e.box() && e.tab.got.length === 0;
+  r.noSecondBox = await e.pipe.agentConfirm(["중복"], 1) === false && e.doc.body.children.filter(x => x.classList.contains("overlay")).length === 1;
+  e.click(e.B("취소", e.box())); await sleep(20); r.cancel = !e.box() && e.tab.got.length === 0;
+  await open(); const esc = e.key("Escape"); await sleep(20); r.escape = !e.box() && e.tab.got.length === 0 && esc.every(Boolean);
+  await open(); e.click(e.B("승인", e.box()));
+  await until(() => e.tab.got.length === 1); await sleep(60);
+  r.approve = e.tab.got.length === 1 && e.tab.got[0].stage === stage;
+  r.fresh = e.stateReads.length === 3 && e.stateReads.every(q => Object.keys(q).join() === "root");
+  await e.finish(`pid-${stage}`, stage === "run" ? RUN_H({}) : DRAFT_H({}), stage === "run" ? "Run 끝" : "Spec Draft 끝");
+  e.stop(); return r;
+});
+for (const stage of ["run", "draft"]) await scenario(stage + "Cap", async () => {
+  const e = await agentStudio();
+  const last = e.srv.log.filter(x => x.path === "pipeline/plan").at(-1);
+  const p = e.srv.route.plan(last.q)[1];
+  const need = stage === "run" ? p.run.credits[1] + p.run.est_usd_pre[1] * 211 : p.draft.est_credits[1];
+  e.fresh = {on:true, cap:need - .01, spent:0, expires:2000000000};
+  e.click(e.B(stage === "run" ? "생성 승인" : "초안 승인")); await until(() => e.box());
+  const r = {disabled:e.B("승인", e.box()).disabled, warning:e.box().textContent.includes("승인할 수 없습니다"), noSend:e.tab.got.length === 0};
+  e.click(e.B("취소", e.box())); await sleep(10); e.stop(); return r;
+});
+await scenario("mock", async () => {
+  const e = await agentStudio("on", {plan:p => {p.run.backend = "mock";}});
+  e.click(e.B("생성 승인")); await until(() => e.box());
+  const r = {mock:e.box().textContent.includes("[MOCK] 과금 없음"), noState:e.stateReads.length === 0};
+  e.click(e.B("취소", e.box())); await sleep(10); e.stop(); return r;
+});
+await scenario("revalidate", async () => {
+  const e = await agentStudio(); e.click(e.B("생성 승인")); await until(() => e.box());
+  const moved = clone(e.S); moved.crops[0].name = "001_미정"; e.pipe.stateChanged(moved);
+  e.click(e.B("승인", e.box())); await sleep(30);
+  const r = {noSend:e.tab.got.length === 0, reason:!!e.toast("이름 미정")}; e.stop(); return r;
+});
+for (const mode of ["off", "on", "cell", "way", "lock", "mine", "mineCell", "keyboard"]) await scenario("reroll_" + mode, async () => {
+  const e = await agentStudio(mode === "off" ? "off" : "on");
+  let cell = {cell_key:"abcdef0123456789", variant:"V1", est_usd:[.5,1], pre:0};
+  const calls = {native:0, write:0, queue:0, toasts:[]};
+  const c = vm.createContext({S:{crops:[{id:"001_38a818",layout_status:["mine","mineCell","keyboard"].includes(mode) ? "changed" : null}]},
+    LAYOUT_STATUS:{changed:true}, REROLL_CONFIRM_MS:2500, rerollArm:null, rerollSent:null, Date,
+    setTimeout:fn => fn(), window:{confirm:() => {calls.native++;return true;}}, toast:m => calls.toasts.push(m),
+    rerollCell:() => cell, usd:() => " ≈ $1", curTarget:() => ({crop_id:"001_38a818"}),
+    way:"paid", lock:"", tabWay:() => c.way, reviewMissing:() => "", rerollHold:() => "",
+    write:async () => {calls.write++;return {rev:1};}, queueReroll:() => calls.queue++});
+  c.pipe = {agentOn:e.pipe.agentOn, agentConfirm:e.pipe.agentConfirm, paidLock:() => c.lock, paidWhy:() => "", applyWarn:() => [], side:P.side || "부수 효과"};
+  vm.runInContext(`cellPre = ${boardFn("cellPre")}; reroll = ${boardFn("reroll")};`, c);
+  if (mode === "keyboard") {await c.reroll(false); await c.reroll(false);}
+  else {
+    const pending = c.reroll(true);
+    if (mode !== "off") {
+      await until(() => e.box());
+      if (mode === "cell") cell = {...cell, cell_key:"changed"};
+      if (mode === "way") c.way = "";
+      if (mode === "lock") c.lock = "busy";
+      e.click(e.B("승인", e.box()));
+      if (["mine", "mineCell"].includes(mode)) {
+        await until(() => e.box());
+        if (mode === "mineCell") cell = {...cell, cell_key:"changed"};
+        e.click(e.B("승인", e.box()));
+      }
+    }
+    await pending;
+  }
+  const moved = ["cell","way","lock","mineCell"].includes(mode);
+  const r = {write:calls.write === (moved ? 0 : 1), queue:calls.queue === (moved ? 0 : 1),
+    native:calls.native === (["off","keyboard"].includes(mode) ? 1 : 0),
+    state:e.stateReads.length === (["off","keyboard"].includes(mode) ? 0 : ["mine","mineCell"].includes(mode) ? 2 : 1),
+    stale:!moved || calls.toasts.some(t => t.includes("상태가 바뀜 — 다시 생성 안 함")), noBox:!e.box()};
+  e.stop(); return r;
+});
+await scenario("badgeReport", async () => {
+  const e = await agentStudio();
+  const nodes = {};
+  const c = vm.createContext({S:{...e.S, canvas:[64,64], counts:{targets:0,candidates:0,picks:0}, cost:{calls:0},agent_approve:{...ON,cap:1100.9,spent:300.1}},
+    document:e.doc, Date, $:id => nodes[id] ||= e.doc.createElement("div"),
+    el:(tag,cls,text) => {const x=e.doc.createElement(tag);x.className=cls;x.textContent=text || "";return x;},
+    tabLink:null, comfyConnected:() => false, pipe:null, pipeReady:() => true, layoutReady:() => true, refsReady:() => true});
+  vm.runInContext(`renderHeader = ${boardFn("renderHeader")};`, c); c.renderHeader();
+  const date = new Date(ON.expires * 1000);
+  const hhmm = `${String(date.getHours()).padStart(2,"0")}:${String(date.getMinutes()).padStart(2,"0")}`;
+  const r = {badge:nodes.badges.textContent.includes(`Claude 승인 모드 · 남은 800 / 상한 1100 크레딧 · ~${hhmm}`)};
+  for (const stage of ["run","draft","reroll"]) r[stage] = P.paidReport(stage, (stage === "draft" ? DRAFT_H : RUN_H)({stopped_reason:"agent_cap"}))
+    .endsWith(" · Claude 승인 모드 상한 도달 — 남은 호출은 과금 안 됨");
+  c.S.agent_approve = OFF; c.renderHeader(); r.removed = !nodes.badges.textContent.includes("Claude 승인 모드");
+  e.stop(); return r;
+});
+console.log(JSON.stringify(out)); process.exit(0);
+'''
+    (out / "agent.mjs").write_text("".join(cut) + setup + scene, encoding="utf-8", newline="\n")
+    (out / "in.json").write_text(json.dumps({"api": _pl_api(), "pipelineJs": str(web / "pipeline.js"), "boardJs": str(web / "board.js")}), encoding="utf-8")
+    r = subprocess.run([node, str(out / "agent.mjs"), str(out / "in.json")], capture_output=True, text=True, encoding="utf-8", timeout=60)
+    check(r.returncode == 0 and bool(r.stdout.strip()), f"S7 모의 DOM 실행 {r.stderr[-1500:]}")
+    if r.returncode == 0 and r.stdout.strip():
+        for name, rows in json.loads(r.stdout.strip().splitlines()[-1]).items():
+            for key, ok in rows.items():
+                check(ok is True, f"S7 {name}/{key}: {ok}")
+
+
 def want(name: str) -> bool:
     return not ONLY or name in ONLY
 
@@ -56212,6 +56623,8 @@ if __name__ == "__main__":
         pipeline_board_unit()
     if want("paid_board_unit"):
         paid_board_unit()
+    if want("agent_approve_unit"):
+        agent_approve_unit()
     if want("mask_board_unit"):
         mask_board_unit()
     if want("vlm_unit"):
