@@ -4410,23 +4410,51 @@ def ref_layers(root, sheet, thumb=None, version=None):
         table = drefs.layer_table(root, info)
     for row in table["items"]:
         row["thumb_url"] = None if row["excluded"] else "refs/layers?" + urlencode(
-            {"root": store.root_key(root), "sheet": info["path"], "thumb": row["id"], "v": table["sheet_v"]})
+            {"root": store.root_key(root), "sheet": info["path"], "thumb": row["id"], "v": table["sheet_v"], "render": table["render"]})
     return table
 
 
 def _pool_manage(root, rev, op, data):
     name = drefs.check_ref_name(data.get("name"))
+    prepared = None
+    try:
+        if op == "rename" and os.path.splitext(name)[1].lower() != ".png":
+            m = store.load_manifest(root)
+            folder = _refs_dir_for_write(m)
+            doc = _refs_at(root, rev, folder)
+            _pool_owned_row(root, m, doc, op, name)
+            src = os.path.join(folder, name)
+            with _REF_SLOTS:
+                fingerprint = store.file_fingerprint(src)
+                staged = _pool_stage(root, _read_rgba(src), "", {})
+                prepared = {"part": staged["part"], "folder": folder, "fingerprint": fingerprint}
+        return _pool_manage_commit(root, rev, op, data, name, prepared)
+    finally:
+        if prepared:
+            _drop(prepared["part"])
+
+
+def _pool_owned_row(root, m, doc, op, name):
+    pool, held = drefs.pool_files(root, m, doc, _ref_crops(root, m))
+    row = next((r for r in (held if op == "restore" else pool) if r["name"] == name and r["origin"] == "pool"), None)
+    if row is None:
+        raise _Reject(409, "이 프로젝트 보관함의 쓰임 없는 파일만 바꿀 수 있습니다")
+    return row
+
+
+def _pool_manage_commit(root, rev, op, data, name, prepared):
+    """PNG 변환 뒤 잠금 안에서 rev·쓰임·원본 지문을 재확인하고 파일·문서만 반영한다."""
     with _refs_write_lock(root):
         m = store.load_manifest(root)
         folder = _refs_dir_for_write(m)
         doc = _refs_at(root, rev, folder)
-        pool, held = drefs.pool_files(root, m, doc, _ref_crops(root, m))
-        row = next((r for r in (held if op == "restore" else pool) if r["name"] == name and r["origin"] == "pool"), None)
-        if row is None:
-            raise _Reject(409, "이 프로젝트 보관함의 쓰임 없는 파일만 바꿀 수 있습니다")
+        row = _pool_owned_row(root, m, doc, op, name)
         used = drefs.pool_usage(root, m, doc, _ref_crops(root, m))
         old_key = f"{drefs.HELD_DIR}/{name}" if op == "restore" else name
         src = os.path.join(folder, *old_key.split("/"))
+        if prepared and (not drefs.same_refs_dir(prepared["folder"], folder)
+                         or store.file_fingerprint(src) != prepared["fingerprint"]):
+            raise _Reject(409, "이름을 바꾸는 동안 원본 파일이 바뀌었습니다 — 다시 읽으세요")
         part = None
         if op == "hold":
             if _held_rows(drefs.explicit_refs(root, m), folder, name):
@@ -4452,9 +4480,8 @@ def _pool_manage(root, rev, op, data):
             if os.path.splitext(name)[1].lower() == ".png":
                 drefs._move_excl(src, os.path.join(folder, target))
             else:
-                # 확장자가 PNG 로 바뀌면 픽셀 그대로 PNG 에 저장, 원본은 커밋 전까지 임시로 보존.
-                with _REF_SLOTS:
-                    drefs.save_ref(folder, target, _read_rgba(src))
+                # 변환은 잠금 밖에서 끝났다. 원본은 문서 커밋 전까지 임시로 보존한다.
+                _pool_install(prepared["part"], os.path.join(folder, target))
                 part = os.path.join(folder, ".pool_" + secrets.token_hex(16) + ".part")
                 try:
                     drefs._move_excl(src, part)
@@ -4491,12 +4518,12 @@ def ref_pool(root, rev, op, data):
     if op not in ("layers", "import", "sheet_add"):
         raise _Reject(400, "알 수 없는 보관함 작업입니다")
     m = store.load_manifest(root)
-    _refs_at(root, rev, _refs_dir_for_write(m))
     if op == "sheet_add":
         src = clean_user_path(data.get("path"))
         name = check_upload_name(os.path.basename(src))
         part = copy_in(src, _pool_tmp(root))
         return _pool_sheet_finish(root, rev, part, name)
+    _refs_at(root, rev, _refs_dir_for_write(m))
     entries = []
     try:
         with _REF_SLOTS:
@@ -4541,20 +4568,16 @@ def _pool_sheet_finish(root, rev, part, name):
     try:
         kind = sniff_image_kind(part)
         check_image_dims(image_header(part, kind), 256)
-        with _refs_write_lock(root):
-            folder = _refs_dir_for_write(store.load_manifest(root))
-            _refs_at(root, rev, folder)
+        # 시트는 refs 밖의 재료다. refs.json 생성·수정 없이 같은 이름 배정만 직렬화한다.
+        with store.manifest_lock(root):
+            store.load_manifest(root)
             sheets = store.resolve_path(root, "sheets")
             os.makedirs(sheets, exist_ok=True)
             name = unique_file_name(sheets, name)
             target = os.path.join(sheets, name)
             finish_received(part, target)
             dest = target
-            def remember(d):
-                d["sheets"].insert(0, {"path": "sheets/" + name, "layer": None, "view": None})
-                del d["sheets"][drefs.MAX_SHEETS:]
-            _, new_rev = _write_refs(root, rev, folder, remember)
-        return {"ok": True, "rev": new_rev, "sheet": "sheets/" + name}
+        return {"ok": True, "sheet": "sheets/" + name}
     except BaseException:
         _drop(dest)
         raise
@@ -4567,13 +4590,9 @@ def _pool_upload_start(q):
     root = _root_param(q.get("root"))
     if q.get("op") != "sheet_add":
         raise _Reject(400, "업로드는 시트 추가만 됩니다")
-    raw = q.get("rev")
-    if raw != "null" and (raw is None or not re.fullmatch(r"\d{1,12}", raw)):
-        raise _Reject(400, "rev 는 지금 레퍼런스 판 또는 null 이어야 합니다")
-    rev = None if raw == "null" else int(raw)
     name = check_upload_name(q.get("filename"))
-    _refs_at(root, rev, _refs_dir_for_write(store.load_manifest(root)))
-    return root, rev, name, _pool_tmp(root)
+    store.load_manifest(root)
+    return root, None, name, _pool_tmp(root)
 
 
 async def _pool_upload(request):
@@ -6620,7 +6639,7 @@ async def refs_pool_post_handler(request: web.Request) -> web.StreamResponse:
         return _json(await _pool_upload(request))
     data = await _pool_body(request)
     root = _root_param(data.get("root"))
-    return _json(await _pool_route(ref_pool, root, _refs_rev(data), data.get("op"), data))
+    return _json(await _pool_route(ref_pool, root, None if data.get("op") == "sheet_add" else _refs_rev(data), data.get("op"), data))
 
 
 _ROUTES = (

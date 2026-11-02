@@ -955,9 +955,26 @@ def _layer_nodes(psd):
     yield from walk(psd, "", [], True, False)
 
 
+def _layer_extent(node):
+    """레이어 컷의 가시 범위. 흰 배경 마스크의 bbox 밖 픽셀도 포함한다(IoU 범위와 별개)."""
+    if node.is_group():
+        boxes = [_layer_extent(child) for child in node if child.visible]
+        boxes = [b for b in boxes if b[2] > b[0] and b[3] > b[1]]
+        rect = ([min(b[0] for b in boxes), min(b[1] for b in boxes),
+                 max(b[2] for b in boxes), max(b[3] for b in boxes)] if boxes else [0, 0, 0, 0])
+    else:
+        rect = list(node.bbox)
+    mask = node.mask if node.has_mask() else None
+    if mask is not None and not mask.disabled and mask.background_color == 0:
+        b = mask.bbox
+        if b[2] > b[0] and b[3] > b[1]:
+            rect = [max(rect[0], b[0]), max(rect[1], b[1]), min(rect[2], b[2]), min(rect[3], b[3])]
+    return rect
+
+
 def _layer_pixels(node, blocked: bool):
     """한 노드의 extent 창만 합성. 지원하지 않는 행은 디코드하지 않는다."""
-    rect = list(dpsd._node_extent(node))
+    rect = _layer_extent(node)
     w, h = rect[2] - rect[0], rect[3] - rect[1]
     reason = ("작업 그룹" if blocked else
               "제외: " + node.kind if not node.is_group() and node.kind not in ("pixel", "smartobject") else
@@ -979,7 +996,7 @@ def layer_table(root: str, info: dict) -> dict:
     try:
         with open(cache, encoding="utf-8") as f:
             table = json.load(f)
-        if (table.get("sheet") == info["path"] and table.get("sheet_v") == version
+        if (table.get("render") == 2 and table.get("sheet") == info["path"] and table.get("sheet_v") == version
                 and isinstance(table.get("items"), list)
                 and all(isinstance(r, dict) and (r.get("excluded") is True or
                         os.path.isfile(layer_thumb_path(root, version, r.get("id")))) for r in table["items"])
@@ -1018,11 +1035,11 @@ def layer_table(root: str, info: dict) -> dict:
             store._atomic_write_bytes(thumb, _jpg_on_white(rgba, 256, 85))
         rows.append({"id": ident, "parent": ident.rpartition("/")[0] or None, "path": "/".join(labels),
                      "layer": node.name, "group": node.is_group(), "size": [max(0, rect[2]-rect[0]), max(0, rect[3]-rect[1])],
-                     "name": pool_desc(node.name, f"레이어{len(rows)+1}"), "excluded": excluded,
+                     "name": pool_desc(node.name, f"레이어{len(rows)+1}"), "fallback": f"레이어{len(rows)+1}", "excluded": excluded,
                      "checked": not (excluded or not visible or lossy or background), "chips": chips, "warnings": lossy})
     if sheet_sig(root, info["path"]) != version:
         raise RefsConflict("시트가 바뀌었습니다 — 표를 다시 여세요")
-    table = {"sheet": info["path"], "sheet_v": version, "items": rows}
+    table = {"render": 2, "sheet": info["path"], "sheet_v": version, "items": rows}
     store.write_json_atomic(cache, table)
     return table
 
@@ -1038,11 +1055,12 @@ def cut_layers(root: str, info: dict, version: str, items: list[dict]):
     if len({it["id"] for it in items}) != len(items):
         raise ValueError("같은 레이어를 두 번 고를 수 없습니다")
     psd = dpsd.open_psd(info["file"])
-    nodes = {ident: (node, blocked) for node, ident, _labels, _visible, blocked in _layer_nodes(psd)}
-    for k, item in enumerate(items, 1):
+    nodes = {ident: (node, blocked, f"레이어{k}")
+             for k, (node, ident, _labels, _visible, blocked) in enumerate(_layer_nodes(psd), 1)}
+    for item in items:
         if item["id"] not in nodes:
             raise ValueError("표에 없는 레이어입니다")
-        node, blocked = nodes[item["id"]]
+        node, blocked, fallback = nodes[item["id"]]
         rect, rgba, why = _layer_pixels(node, blocked)
         if rgba is None:
             raise ValueError("자를 수 없는 레이어입니다: " + ", ".join(why))
@@ -1059,7 +1077,7 @@ def cut_layers(root: str, info: dict, version: str, items: list[dict]):
                   min(W, rect[0] + ax + aw + t["pad"]), min(H, rect[1] + ay + ah + t["pad"])]
         if min(reopen[2] - reopen[0], reopen[3] - reopen[1]) >= 16:
             record["rect"] = reopen
-        yield item["name"], f"레이어{k}", cut, record
+        yield item["name"], fallback, cut, record
     if version != sheet_sig(root, info["path"]):
         raise RefsConflict("시트가 바뀌었습니다 — 표를 다시 여세요")
 

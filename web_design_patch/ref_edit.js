@@ -1372,6 +1372,7 @@ window.DPRefEdit = (() => {
           return;
         }
         result = Object.assign({ rect: rec.rect.slice(), method: cut.method, grow: cut.grow || 0, feather: cut.feather || 0 }, r);
+        savedReq = result.req;
         got = result;
         loadCutImg();
       } catch (e) {
@@ -1864,6 +1865,14 @@ window.DPRefEdit = (() => {
       top.append(el("h3", "", title), button("닫기", "닫기 (Esc)", closeExtra));
       box.append(top);
       host.append(box);
+      host.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" || e.code === "Escape") {
+          e.preventDefault(); e.stopPropagation(); closeOwnExtra(box);
+        }
+      });
+      for (const type of ["dragover", "drop"]) host.addEventListener(type, (e) => {
+        e.preventDefault(); e.stopPropagation();
+      });
       (viewHost.parentElement || viewHost.parentNode).append(host);
       extraHost = host;
       return box;
@@ -1990,6 +1999,11 @@ window.DPRefEdit = (() => {
         const expanded = new Set();
         const visited = new Set();
         const chosen = new Set(table.items.filter((r) => !r.parent && r.checked).map((r) => r.id));
+        const clearChildren = (id) => { for (const key of chosen) if (key.startsWith(id + "/")) chosen.delete(key); };
+        const choose = (id) => {
+          chosen.add(id); clearChildren(id);
+          for (const key of chosen) if (id.startsWith(key + "/")) chosen.delete(key);
+        };
         const draw = () => {
           list.replaceChildren();
           for (const r of table.items) {
@@ -1999,16 +2013,18 @@ window.DPRefEdit = (() => {
             const check = el("input");
             check.type = "checkbox"; check.checked = chosen.has(r.id); check.disabled = r.excluded;
             check.addEventListener("change", () => {
-              if (check.checked) chosen.add(r.id); else chosen.delete(r.id);
+              if (check.checked) choose(r.id); else chosen.delete(r.id);
+              draw();
               count();
             });
             row.append(check);
             if (r.group) row.append(button(expanded.has(r.id) ? "▾" : "▸", "그룹 펼치기", () => {
-              if (expanded.has(r.id)) expanded.delete(r.id); else expanded.add(r.id);
+              if (expanded.has(r.id)) { expanded.delete(r.id); clearChildren(r.id); }
+              else expanded.add(r.id);
               if (!visited.has(r.id)) {
                 // 처음 펼치면 그룹 한 장 대신 안쪽 기본 체크로 바꾼다(그룹·자식 중복 저장 방지).
                 chosen.delete(r.id);
-                for (const child of table.items) if (child.parent === r.id && child.checked) chosen.add(child.id);
+                for (const child of table.items) if (child.parent === r.id && child.checked) choose(child.id);
                 visited.add(r.id);
               }
               draw();
@@ -2019,8 +2035,8 @@ window.DPRefEdit = (() => {
             if (r.thumb_url) img.src = opts.apiUrl(r.thumb_url);
             row.append(img, el("span", "rf-layer-path", r.path), el("span", "dim", r.size.join("×")));
             const name = el("input", "rf-pool-name"); name.type = "text"; name.value = r.name; name.maxLength = 80;
-            const preview = el("span", "dim", `ref_${poolDesc(r.name)}_t.png`);
-            name.addEventListener("input", () => { r.name = name.value; preview.textContent = `ref_${poolDesc(r.name)}_t.png`; });
+            const preview = el("span", "dim", `ref_${poolDesc(r.name, r.fallback)}_t.png`);
+            name.addEventListener("input", () => { r.name = name.value; preview.textContent = `ref_${poolDesc(r.name, r.fallback)}_t.png`; });
             row.append(name, preview, el("span", "dim", r.chips.join(" · ")));
             list.append(row);
           }
@@ -2093,8 +2109,7 @@ window.DPRefEdit = (() => {
         finally { renderSoon(); }
       };
       input.addEventListener("change", () => upload(input.files[0]));
-      box.addEventListener("dragover", (e) => { e.preventDefault(); });
-      box.addEventListener("drop", (e) => { e.preventDefault(); upload(e.dataTransfer.files[0]); });
+      (box.parentElement || box.parentNode).addEventListener("drop", (e) => { upload(e.dataTransfer.files[0]); });
       box.append(input, path, button("경로에서 추가", "원본을 프로젝트 sheets 폴더로 복사", async () => {
         if (await poolWrite({ op: "sheet_add", path: path.value })) { closeOwnExtra(box); await loadSheets(); }
       }), status);
@@ -2712,7 +2727,8 @@ window.DPRefEdit = (() => {
     }
 
     function showName(c) {
-      const nm = c ? refFileName(c.name, role, role === "aux" ? desc : null) : { name: `ref_${poolDesc(desc)}_t.png (겹치면 번호 추가)` };
+      const fallback = poolDesc(sheet ? sheet.path.split("/").at(-1).replace(/\.[^.]*$/, "") : "") + "_1";
+      const nm = c ? refFileName(c.name, role, role === "aux" ? desc : null) : { name: `ref_${poolDesc(desc, fallback)}_t.png (겹치면 번호 추가)` };
       live.name.textContent = nm.name || NAME_ERRS[nm.err];
       live.name.classList.toggle("bad", !nm.name);
       live.impact.replaceChildren(...(c && nm.name ? impactLines(c, nm.name) : []).map(([cls, t]) => el("li", cls, t)));

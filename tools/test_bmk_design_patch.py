@@ -53784,6 +53784,8 @@ def batch9b_unit():
               and rf.load_refs(root)["files"][saved["file"]]["for"] is None
               and rf.load_refs(root)["links"] == links, "D125 crop 없는 저장: 보관함 행·for null·links 그대로")
         check(choices() == before, "D141 보관함 저장 전후 모든 크롭 resolve·Prepare 선택·초안 후보/픽셀 그대로")
+        blank_saved = bd.ref_save(root, rev(), {"req": cut["req"], "desc": "", "transform": {}})
+        check(blank_saved["file"] == "ref_sheet_1_t.png", "D124 빈 설명 저장은 시트 stem_1 대체 이름")
         old_rev = rev()
         reject(lambda: bd.ref_save(root, old_rev - 1, {"req": cut["req"], "transform": {}}), rf.RefsConflict, "다른 창")
         view = bd.refs_state(root)
@@ -53881,7 +53883,7 @@ def batch9b_unit():
         check([20, 30, 60, 62] in extent_calls and all(r != [0, 0, 400, 300] for r in extent_calls[:-1]), "D130 레이어 extent 창만 읽음")
         for kind in ("shape", "type", "adjustment"):
             node = SimpleNamespace(kind=kind, is_group=lambda: False)
-            with patch.object(rf.dpsd, "_node_extent", return_value=[0, 0, 10, 10]):
+            with patch.object(rf, "_layer_extent", return_value=[0, 0, 10, 10]):
                 check(rf._layer_pixels(node, False)[1] is None, f"D130 {kind} 제외")
         with patch.object(rf.dpsd, "open_psd", side_effect=AssertionError("PSD reopen")):
             thumb, _ = bd.ref_layers(root, "layers.psd", "1/0", table["sheet_v"])
@@ -53889,10 +53891,15 @@ def batch9b_unit():
         check(thumb[:2] == b"\xff\xd8", "D132 썸네일은 캐시만 읽음")
         table_path = Path(root, "derived/reflayers", table["sheet_v"], "table.json")
         check(cached == table and table_path.is_file(), "D132 같은 sheet_v 표 캐시: PSD 열기·합성 없음")
+        old_table = dict(table)
+        old_table.pop("render")
+        table_path.write_text(json.dumps(old_table), encoding="utf-8")
+        with patch.object(rf.dpsd, "open_psd", wraps=open_real) as opened:
+            check(bd.ref_layers(root, "layers.psd") == table and opened.call_count == 1, "D132 마스크 범위 변경 전 캐시 재생성")
         table_path.write_text("{broken", encoding="utf-8")
         with patch.object(rf.dpsd, "open_psd", wraps=open_real) as opened:
             check(bd.ref_layers(root, "layers.psd") == table and opened.call_count == 1, "D132 깨진 표 캐시 재생성")
-        with patch.object(rf.dpsd, "_node_extent", return_value=[0, 0, 8193, 8193]):
+        with patch.object(rf, "_layer_extent", return_value=[0, 0, 8193, 8193]):
             check(rf._layer_pixels(mixed, False)[1] is None, "D142 레이어 bbox 면적 상한")
         reject(lambda: bd.ref_pool(root, rev(), "layers", {"sheet": "layers.psd", "sheet_v": "0" * 16,
                                                           "items": [{"id": "1/0", "name": "009_모자"}]}), rf.RefsConflict, "시트가 바뀌었습니다")
@@ -53925,6 +53932,90 @@ def batch9b_unit():
         for rec in records[:2]:
             check(bool(bd.ref_cut(root, {"sheet": "edge.psd", "layer": rec["sheet"]["layer"],
                                         "rect": rec["rect"], "method": "rect"})["req"]), "D131 저장 rect 로 실제 다시 열기 가능")
+        # 레이어 컷은 마스크 밖 배경색을 고려한다. 공용 IoU _node_extent 는 유지한다.
+        masked = dpsd.PSDWriter((1200, 1200))
+        full = np.full((1000, 1000, 4), (90, 160, 220, 255), np.uint8)
+        white = masked.add_pixel(None, "흰 마스크 일부 검정", full, 50, 60,
+                                 mask={"arr": np.zeros((100, 100), np.uint8), "left": 200, "top": 210, "bg": 255})
+        empty = masked.add_pixel(None, "칠 안 한 흰 마스크", full, 50, 60,
+                                 mask={"arr": np.full((1, 1), 255, np.uint8), "bg": 255})
+        empty.mask.data.right = empty.mask.data.left
+        empty.mask.data.bottom = empty.mask.data.top
+        black = masked.add_pixel(None, "검은 마스크 일부 흰색", full, 50, 60,
+                                 mask={"arr": np.full((100, 100), 255, np.uint8), "left": 200, "top": 210, "bg": 0})
+        group_mask = masked.add_group(None, "흰 그룹 마스크", mask={"arr": np.zeros((100, 100), np.uint8), "left": 200, "top": 210, "bg": 255})
+        masked.add_pixel(group_mask, "큰 자식", full, 50, 60)
+        masked.save(str(Path(root, "masked.psd")), composite=np.zeros((1200, 1200, 3), np.uint8))
+        mask_table = bd.ref_layers(root, "masked.psd")
+        mask_rows = {r["id"]: r for r in mask_table["items"]}
+        check(all(not mask_rows[i]["excluded"] for i in ("0", "1", "2", "3"))
+              and [mask_rows[i]["size"] for i in ("0", "1", "2", "3")] == [[1000, 1000], [1000, 1000], [100, 100], [1000, 1000]],
+              "D130 흰 마스크 일부·bbox 0·검은 마스크·그룹 범위")
+        mask_cut = bd.ref_pool(root, rev(), "layers", {"sheet": "masked.psd", "sheet_v": mask_table["sheet_v"],
+                                  "items": [{"id": i, "name": ""} for i in ("0", "1", "2", "3")]})
+        mask_images = [bd._read_rgba(str(rd / n)) for n in mask_cut["files"]]
+        check([im.shape[:2] for im in mask_images] == [(1016, 1016), (1016, 1016), (116, 116), (1016, 1016)]
+              and [np.count_nonzero(im[..., 3]) for im in mask_images] == [990000, 1000000, 10000, 990000],
+              "D131 실제 PSD 마스크 컷: bbox 밖 흰 배경 보존·검은 배경 교집합")
+        check(mask_cut["files"] == [f"ref_{mask_rows[i]['fallback']}_t.png" for i in ("0", "1", "2", "3")],
+              "D131 빈 레이어 이름: 요청 순서·부분 선택과 무관하게 표 fallback 사용")
+        check(dpsd._node_extent(white) == [200, 210, 300, 310], "D130 공용 IoU 범위 함수 변경 없음")
+        black.mask.data.left = 0
+        black.mask.data.top = 0
+        check(rf._layer_extent(black) == [50, 60, 300, 310], "D130 검은 마스크는 레이어 bbox 와 교집합")
+
+        jpg = "ref_convert_t.jpg"
+        Image.fromarray(rgba[..., :3]).save(rd / jpg)
+        jpg_pixels = bd._read_rgba(str(rd / jpg))
+        rf.update_refs(root, lambda d: d["files"].update({jpg: {"for": None, "size": [40, 32], "sha": store.pixel_sha(jpg_pixels)}}), expect_rev=rev())
+        read_real, save_real = bd._read_rgba, rf.save_ref
+        phases = []
+        def outside_read(path):
+            phases.append(("decode", bd._REFS_WRITE_LOCKS[store.root_key(root)]._is_owned()))
+            return read_real(path)
+        def outside_save(*args, **kwargs):
+            phases.append(("encode", bd._REFS_WRITE_LOCKS[store.root_key(root)]._is_owned()))
+            return save_real(*args, **kwargs)
+        snapshot = snapshot_pool()
+        with patch.object(bd, "_read_rgba", side_effect=outside_read), patch.object(rf, "save_ref", side_effect=outside_save), \
+                patch.object(bd, "_write_refs", side_effect=OSError("test failure")):
+            reject(lambda: bd.ref_pool(root, rev(), "rename", {"name": jpg, "desc": "converted"}), OSError, "test failure")
+        check(phases == [("decode", False), ("encode", False)] and snapshot_pool() == snapshot
+              and not list(Path(root, "derived/refpool").iterdir()), "D128 JPEG 변환은 잠금 밖·문서 실패 원본/refs.json/임시 복구")
+        stage_real = bd._pool_stage
+        race_rev = rev()
+        def race_stage(*args, **kwargs):
+            result = stage_real(*args, **kwargs)
+            rf.update_refs(root, lambda d: d["files"][jpg].update(at="race"), expect_rev=rev())
+            return result
+        with patch.object(bd, "_pool_stage", side_effect=race_stage):
+            reject(lambda: bd.ref_pool(root, race_rev, "rename", {"name": jpg, "desc": "converted"}), rf.RefsConflict, "다른 창")
+        check((rd / jpg).read_bytes() == snapshot[1][jpg] and not (rd / "ref_converted_t.png").exists()
+              and not list(Path(root, "derived/refpool").iterdir()), "D128 JPEG 변환 후 rev 재확인·임시 정리")
+        def used_stage(*args, **kwargs):
+            result = stage_real(*args, **kwargs)
+            changed = store.load_manifest(root)
+            changed["crops"][0]["targets"][0]["refs"].append(jpg)
+            store.save_manifest(root, changed)
+            return result
+        old_manifest = store.load_manifest(root)
+        with patch.object(bd, "_pool_stage", side_effect=used_stage):
+            reject(lambda: bd.ref_pool(root, rev(), "rename", {"name": jpg, "desc": "converted"}), bd._Reject, "쓰임 없는")
+        store.save_manifest(root, old_manifest)
+        check((rd / jpg).exists() and not (rd / "ref_converted_t.png").exists()
+              and not list(Path(root, "derived/refpool").iterdir()), "D128 JPEG 변환 후 쓰임 재확인")
+        jpg_stat = (rd / jpg).stat()
+        def changed_stage(*args, **kwargs):
+            result = stage_real(*args, **kwargs)
+            os.utime(rd / jpg, ns=(jpg_stat.st_atime_ns, jpg_stat.st_mtime_ns + 1_000_000_000))
+            return result
+        with patch.object(bd, "_pool_stage", side_effect=changed_stage):
+            reject(lambda: bd.ref_pool(root, rev(), "rename", {"name": jpg, "desc": "converted"}), bd._Reject, "원본 파일이 바뀌었습니다")
+        check((rd / jpg).exists() and not (rd / "ref_converted_t.png").exists()
+              and not list(Path(root, "derived/refpool").iterdir()), "D128 JPEG 변환 후 원본 지문 재확인·임시 정리")
+        converted = bd.ref_pool(root, rev(), "rename", {"name": jpg, "desc": "converted"})
+        check(converted["file"] == "ref_converted_t.png" and not (rd / jpg).exists()
+              and np.array_equal(bd._read_rgba(str(rd / converted["file"])), jpg_pixels), "D128 JPEG 이름 바꾸기 PNG 픽셀 보존")
 
         source, _ = _r1_project(out / "input", "other")
         _r3_png(Path(source, "refs", "001_가져오기.png"), rgba)
@@ -53945,11 +54036,20 @@ def batch9b_unit():
         Image.new("RGB", (255, 300)).save(small)
         Image.new("RGB", (256, 300)).save(big)
         reject(lambda: bd.ref_pool(root, rev(), "sheet_add", {"path": str(small)}), bd._Reject, "256")
+        sheet_fp = store.prepare_inputs_fp(root, store.load_manifest(root))
+        sheet_doc = refs_path.read_bytes(), refs_path.stat().st_mtime_ns
         added = bd.ref_pool(root, rev(), "sheet_add", {"path": str(big)})
-        again = bd.ref_pool(root, rev(), "sheet_add", {"path": str(big)})
+        again = bd.ref_pool(root, rev()-1, "sheet_add", {"path": str(big)})
         check(added["sheet"] == "sheets/new.png" and again["sheet"] == "sheets/new_2.png" and big.read_bytes() == Path(root, added["sheet"]).read_bytes(),
               "D135 시트 추가·겹침·원본 그대로")
-        reject(lambda: bd.ref_pool(root, added["rev"], "sheet_add", {"path": str(big)}), rf.RefsConflict, "다른 창")
+        check(store.prepare_inputs_fp(root, store.load_manifest(root)) == sheet_fp
+              and (refs_path.read_bytes(), refs_path.stat().st_mtime_ns) == sheet_doc, "D143 시트 추가는 Prepare 입력 지문·refs.json·rev 불변")
+        no_refs_root = _r3_project(out, "no_refs_doc")
+        no_refs_m = store.load_manifest(no_refs_root)
+        no_refs_fp = store.prepare_inputs_fp(no_refs_root, no_refs_m)
+        bd.ref_pool(no_refs_root, None, "sheet_add", {"path": str(big)})
+        check(not Path(no_refs_root, rf.REFS_NAME).exists() and store.prepare_inputs_fp(no_refs_root, no_refs_m) == no_refs_fp,
+              "D143 refs.json 없던 프로젝트의 경로 시트 추가: 문서 생성 없음·입력 지문 불변")
         check(not list(Path(root, "derived/refpool").iterdir()), "B9 성공·거절 뒤 임시 파일 없음")
         # 파일 단계 뒤 문서 쓰기 실패: 신규 파일을 남겨 자동 입력을 바꾸지 않는다.
         snapshot = sorted(p.name for p in rd.iterdir())
@@ -53984,10 +54084,19 @@ def batch9b_unit():
                     threads.append(threading.get_ident())
                     return finish_real(*args)
                 def upload_req():
-                    return Request(query={"root": "key", "rev": str(rev()), "op": "sheet_add", "filename": "upload.png"}, raw=big.read_bytes())
+                    return Request(query={"root": "key", "op": "sheet_add", "filename": "upload.png"}, raw=big.read_bytes())
+                upload_fp = store.prepare_inputs_fp(root, store.load_manifest(root))
+                upload_doc = refs_path.read_bytes(), refs_path.stat().st_mtime_ns
                 with patch.object(bd, "_pool_upload_start", side_effect=start), patch.object(bd, "_pool_sheet_finish", side_effect=finish):
                     up = await bd.refs_pool_post_handler(upload_req())
                 check(len(threads) == 2 and all(t != main_thread for t in threads), "D135 업로드 사전 검사·임시 폴더·마무리는 스레드")
+                check(store.prepare_inputs_fp(root, store.load_manifest(root)) == upload_fp
+                      and (refs_path.read_bytes(), refs_path.stat().st_mtime_ns) == upload_doc, "D143 업로드 시트 추가도 입력 지문·refs.json 불변")
+                with patch.object(bd, "_root_param", return_value=no_refs_root):
+                    empty_up = await bd.refs_pool_post_handler(upload_req())
+                    empty_path = await bd.refs_pool_post_handler(Request({"root": "key", "op": "sheet_add", "path": str(big)}))
+                check(empty_up.status == 200 and empty_path.status == 200 and not Path(no_refs_root, rf.REFS_NAME).exists()
+                      and store.prepare_inputs_fp(no_refs_root, no_refs_m) == no_refs_fp, "D143 rev 없는 업로드·JSON 시트 추가: refs.json 생성 없음")
                 no_header = upload_req()
                 no_header.headers = {}  # aiohttp 의 기본 content_type 은 octet-stream 이다.
                 with patch.object(bd, "recv_upload", side_effect=AssertionError("headerless upload")):
@@ -54009,9 +54118,8 @@ def batch9b_unit():
                 rf.update_refs(root, lambda d: d["links"].pop("missing"), expect_rev=rev())
                 bd.ref_pool(root, rev(), "restore", {"name": held_name})
                 failures = []
-                for function in ("_refs_dir_for_write", "_pool_tmp", "_write_refs"):
-                    error = bd._Reject(400, r"레퍼런스 폴더가 없습니다: G:\private\refs") if function == "_refs_dir_for_write" else OSError(r"G:\private\refs")
-                    with patch.object(bd, function, side_effect=error):
+                for owner, function in ((store, "load_manifest"), (bd, "_pool_tmp"), (bd, "finish_received")):
+                    with patch.object(owner, function, side_effect=OSError(r"G:\private\project")):
                         failures.append(await bd.refs_pool_post_handler(upload_req()))
                 with patch.object(bd, "recv_upload", side_effect=OSError(r"G:\private\upload.part")):
                     failures.append(await bd.refs_pool_post_handler(upload_req()))
@@ -54056,6 +54164,16 @@ def batch9b_unit():
     scene = r'''
 Object.defineProperty(El.prototype, "parentElement", { get() { return this.parent; } });
 El.prototype.remove = function () { if (this.parent) { this.parent.children.splice(this.parent.children.indexOf(this), 1); this.parent = null; } };
+El.prototype.fire = function (type, extra = {}) {
+  let stopped = false;
+  const ev = Object.assign({ type, target: this, defaultPrevented: false,
+    preventDefault() { this.defaultPrevented = true; }, stopPropagation() { stopped = true; } }, extra);
+  for (let node = this; node; node = node.parent) {
+    for (const fn of node.on[type] || []) fn(Object.assign(ev, { currentTarget: node }));
+    if (stopped) break;
+  }
+  return ev;
+};
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const poolFile = { name: "ref_hat_t.png", origin: "pool", size: [40, 32], thumb_url: "refs/img?name=ref_hat_t.png", thumb_url_512: "refs/img?size=512&name=ref_hat_t.png" };
 const response = (d) => ({ ok: true, status: 200, json: async () => d });
@@ -54072,8 +54190,8 @@ async function start9(o = {}) {
       env.srv.log.push({ method: "POST", path: u.pathname, body }); env.srv.rev += 1;
       return response({ ok: true, rev: env.srv.rev, file: poolFile.name, size: [40, 32], bytes: 900, held: null });
     }
-    if (path === "refs/layers") return response({ sheet_v: "a".repeat(16), items: [
-      { id: "1", parent: null, layer: "hat", path: "hat", size: [40,32], name: "hat", checked: true, chips: [], thumb_url: "refs/layers?thumb=1" }] });
+    if (path === "refs/layers") return response({ sheet_v: "a".repeat(16), items: env.layerItems || [
+      { id: "1", parent: null, layer: "hat", path: "hat", size: [40,32], name: "hat", fallback: "레이어1", checked: true, chips: [], thumb_url: "refs/layers?thumb=1" }] });
     if (path === "projects") return response({ projects: [{ id: "other", name: "Other", openable: true }] });
     if (path === "refs/pool") {
       env.poolCalls.push({ body, query: Object.fromEntries(u.searchParams), raw: opt && opt.body, type: opt && opt.headers && opt.headers["Content-Type"] });
@@ -54209,6 +54327,77 @@ await scenario("b9beforeImport", async () => {
   const text = env.doc.body.textContent;
   return { firstApply: text.includes("첫 반영 뒤 쓸 수 있습니다"), noFolderError: !text.includes("refs_dir 폴더가 없습니다") };
 });
+await scenario("b9groupChoice", async () => {
+  const env = await start9(); await cut9(env);
+  env.layerItems = [
+    { id: "2", parent: null, group: true }, { id: "2/0", parent: "2", group: true },
+    { id: "2/0/0", parent: "2/0" }, { id: "2/1", parent: "2" }
+  ].map((r, i) => Object.assign({ path: r.id, size: [40,32], name: "hat", fallback: `레이어${i+1}`, checked: true, chips: [] }, r));
+  await env.press(env.hosts.panel, "레이어별 컷", true);
+  const host = env.doc.body.all().find((e) => e.classList.contains("rf-dialog"));
+  const rows = () => host.all().filter((e) => e.classList.contains("rf-layer-row"));
+  await env.press(rows()[0], "▸", true);
+  const defaults = !!env.button(host, "보관함에 저장 (2)", true);
+  const rootCheck = rows()[0].all().find((e) => e.type === "checkbox"); rootCheck.checked = true; rootCheck.fire("change");
+  await env.press(rows()[1], "▸", true);
+  const nested = !!env.button(host, "보관함에 저장 (1)", true) && !rows()[0].all().find((e) => e.type === "checkbox").checked;
+  await env.press(rows()[0], "▾", true);
+  const collapsed = rows().length === 1 && env.button(host, "보관함에 저장 (0)", true).disabled;
+  await env.press(rows()[0], "▸", true);
+  const checkRow = (index) => { const cb = rows()[index].all().find((e) => e.type === "checkbox"); cb.checked = true; cb.fire("change"); };
+  checkRow(0); checkRow(2);
+  const childClearsGroup = !rows()[0].all().find((e) => e.type === "checkbox").checked;
+  checkRow(0);
+  const groupClearsChildren = rows().slice(1).every((r) => !r.all().find((e) => e.type === "checkbox").checked);
+  const input = rows()[0].all().find((e) => e.type === "text"); input.value = ""; input.fire("input");
+  const fallback = rows()[0].textContent.includes("ref_레이어1_t.png");
+  await env.press(host, "보관함에 저장 (1)", true);
+  return { defaults, nested, collapsed, childClearsGroup, groupClearsChildren, fallback,
+    savedGroupOnly: same(env.poolCalls.at(-1).body.items, [{ id: "2", name: "" }]) };
+});
+await scenario("b9dialogEvents", async () => {
+  const env = await start9(); await cut9(env);
+  const dialog = () => env.doc.body.all().find((e) => e.classList.contains("rf-dialog"));
+  await env.press(env.hosts.panel, "레이어별 컷", true);
+  let host = dialog();
+  const drag = host.fire("dragover"), drop = host.fire("drop", { dataTransfer: { files: [{ name: "ignore.png", size: 100 }] } });
+  const blocked = drag.defaultPrevented && drop.defaultPrevented && env.poolCalls.length === 0;
+  const cb = host.all().find((e) => e.type === "checkbox"); cb.focus();
+  const cbEsc = cb.fire("keydown", { key: "Escape", code: "Escape" });
+  const checkbox = cbEsc.defaultPrevented && !dialog();
+  await env.press(env.hosts.panel, "다른 프로젝트에서 가져오기", true);
+  const select = dialog().all().find((e) => e.tagName === "SELECT"); select.focus();
+  const selectEsc = select.fire("keydown", { key: "Escape", code: "Escape" });
+  const selected = selectEsc.defaultPrevented && !dialog();
+  await env.press(env.hosts.panel, "목록", true);
+  await env.press(env.hosts.sheets, "시트 추가", true);
+  host = dialog();
+  const uploadDrop = host.fire("drop", { dataTransfer: { files: [{ name: "backdrop.png", size: 100 }] } });
+  await sleep(40);
+  return { blocked, checkbox, selected, backdropUpload: uploadDrop.defaultPrevented && env.poolCalls.length === 1
+    && env.poolCalls[0].query.filename === "backdrop.png" };
+});
+await scenario("b9reopenSaved", async () => {
+  const results = {};
+  for (const target of ["목록", "시트"]) {
+    const R = R0(), req = "b".repeat(32), rect = [100,100,400,500];
+    R.crops[1].files[0].record = { sheet: { path: "00_원본/refer_character.psd", size: [3927,7583], changed: false }, rect,
+      cut: { method: "rect", steps: [req] }, transform: { rotate: 0, flip_h: false, scale: 1, pad: 8 } };
+    const env = await start9({ R }); env.srv.cuts[req] = { body: { rect }, waits: 0 };
+    env.li(R.crops[1].name).fire("click");
+    await env.press(env.hosts.panel, "다시 열기", true);
+    const restored = env.hosts.panel.textContent.includes("면적 42.0%");
+    const n = env.confirms.length;
+    await env.press(target === "시트" ? env.hosts.tabs : env.hosts.panel, target, true);
+    results[target] = restored && env.confirms.length === n && !env.hosts.sheets.hidden;
+    env.ed.leave();
+  }
+  const env = await start9(); await cut9(env);
+  results.blankSheetName = env.hosts.panel.textContent.includes("ref_refer-character_1_t.png");
+  await env.press(env.hosts.panel, "목록", true);
+  results.unsavedStillWarns = env.confirms.at(-1).includes("저장하지 않은 컷");
+  return results;
+});
 console.log(JSON.stringify(out));
 '''
     out = OUT_ROOT / "batch9b_js"
@@ -54220,7 +54409,8 @@ console.log(JSON.stringify(out));
     check(proc.returncode == 0 and bool(proc.stdout.strip()), "B9 모의 DOM 실행: " + proc.stderr[-600:])
     if proc.returncode == 0 and proc.stdout.strip():
         results = json.loads(proc.stdout.strip().splitlines()[-1])
-        for name in ("b9saveTabs", "b9layers", "b9pool", "b9upload", "b9impact", "b9lateWrite", "b9beforeImport"):
+        for name in ("b9saveTabs", "b9layers", "b9pool", "b9upload", "b9impact", "b9lateWrite", "b9beforeImport",
+                     "b9groupChoice", "b9dialogEvents", "b9reopenSaved"):
             result = results.get(name, {})
             check(bool(result) and all(v is True for v in result.values()), f"B9 {name}: {result}")
 
