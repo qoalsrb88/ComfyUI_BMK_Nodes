@@ -5883,7 +5883,8 @@ def _sweep_new_tmp(base_dir: str) -> None:
             logger.warning("%s 새 프로젝트 임시 폴더가 링크라 정리하지 않음: %s", _TAG, tmp)
         return
     real = os.path.normcase(os.path.realpath(tmp))
-    if real != os.path.normcase(os.path.normpath(tmp)):
+    # 마지막 단계만 본다 — input 상위에 정션·subst 가 있어도 정리하되, .bmk_dp_tmp 자체가 링크면 안 함
+    if real != os.path.normcase(os.path.join(os.path.realpath(os.path.dirname(tmp)), os.path.basename(tmp))):
         logger.warning("%s 새 프로젝트 임시 폴더의 실제 경로가 달라 정리하지 않음: %s", _TAG, tmp)
         return
     try:
