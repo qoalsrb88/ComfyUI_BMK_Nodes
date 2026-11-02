@@ -1556,32 +1556,65 @@ def wrap_base_image(image: Image.Image, path: str) -> list[str]:
     return notes
 
 
+class ImageDecodeError(ValueError):
+    """새 프로젝트 그림의 디코드 실패. 출력 파일 쓰기 오류와 구분한다."""
+
+
 def wrap_image_file(source: str, path: str) -> list[str]:
     """PNG/JPG/WEBP 를 읽고 EXIF 방향을 적용한 뒤 8-bit RGB PSD 로 감싼다."""
     from PIL import ImageOps
-    with Image.open(source) as image:
-        return wrap_base_image(ImageOps.exif_transpose(image), path)
+    try:
+        with Image.open(source) as image:
+            image.load()
+            decoded = ImageOps.exif_transpose(image)
+    except (OSError, SyntaxError, EOFError, struct.error, ValueError) as exc:
+        raise ImageDecodeError("그림 파일이 깨졌거나 잘렸습니다") from exc
+    return wrap_base_image(decoded, path)
 
 
 class EmptyPSDImageError(ValueError):
-    """병합 이미지와 보이는 레이어 모두 그림이 없는 새 프로젝트 타깃."""
+    """선택한 합성 경로에 보이는 그림이 없는 새 프로젝트 타깃."""
+
+
+class PSDCompositeRequiredError(ValueError):
+    """수동 합성을 정확히 할 수 없는데 저장된 병합 이미지도 없는 PSD."""
 
 
 def wrap_psd_composite(psd, path: str) -> list[str]:
-    """유효한 병합 이미지 우선, 없거나 전부 투명이면 refs 시트와 같은 레이어 합성으로 감싼다."""
-    image = psd.topil()
-    note = "PSD 병합 이미지를 새 타깃으로 사용합니다"
-    if image is None or image.convert("RGBA").getchannel("A").getextrema()[1] == 0:
-        warns = []
-        w, h = psd.size
-        rgba = _composite_children(psd, (0, 0, w, h), warns)
-        for warning in warns:
-            logger.warning("%s 새 프로젝트 PSD 합성: %s", _TAG, warning)
-        if not np.any(rgba[..., 3]):
-            raise EmptyPSDImageError("보이는 그림이 없습니다")
-        image = Image.fromarray(rgba, "RGBA")
-        note = "PSD 병합 이미지가 없어 보이는 레이어를 합성했습니다"
-    return [note, *wrap_base_image(image, path)]
+    """정확한 수동 합성은 Import 경로, lossy·보이는 레이어 없음은 병합 이미지로 흰 바탕에 감싼다."""
+    # refs 가 이 모듈을 사용하므로 판정 도우미는 호출 시 가져온다.
+    try:
+        from . import bmk_design_patch_refs as drefs
+    except ImportError:
+        import bmk_design_patch_refs as drefs
+    lossy, guides, notes = [], [], []
+    drefs._psd_lossy(psd, "", lossy, guides)
+    manual = not lossy and any(layer.is_visible() for layer in psd.descendants())
+    try:
+        if manual:
+            rgba, _ = read_base_rgba(psd, clean_plate_layer="none", base_layer="none")
+            image = Image.fromarray(rgba, "RGBA")
+        else:
+            image = psd.topil()
+        if image is not None:
+            image = image.convert("RGBA")
+    except (OSError, SyntaxError, EOFError, struct.error, ValueError) as exc:
+        raise ImageDecodeError("그림 파일이 깨졌거나 잘렸습니다") from exc
+    if image is None:
+        if lossy:
+            raise PSDCompositeRequiredError("Photoshop 에서 호환성 최대화로 다시 저장하세요")
+        raise EmptyPSDImageError("보이는 그림이 없습니다")
+    if image.getchannel("A").getextrema()[1] == 0:
+        raise EmptyPSDImageError("보이는 그림이 없습니다")
+    if manual:
+        notes.append("PSD의 보이는 레이어를 합성했습니다")
+    else:
+        notes.append("PSD 병합 이미지를 새 타깃으로 사용합니다")
+        if any(drefs._draws(group) for _, group in guides):
+            warning = "병합 이미지에 가이드가 들어갔을 수 있습니다"
+            notes.append(warning)
+            logger.warning("%s 새 프로젝트 PSD: %s (%s)", _TAG, warning, path)
+    return [*notes, *wrap_base_image(image, path)]
 
 
 # ═════════════════════════════════════════════════════════════════

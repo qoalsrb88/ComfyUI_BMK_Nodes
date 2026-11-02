@@ -1486,13 +1486,15 @@ window.DPPipeline = (() => {
     function finishNewProject(st) {
       if (!opts.newProject || !st.canvas) return;
       const imported = S && !S.canvas;
+      const notes = opts.newNotes || [];
       opts.newProject = false;
       opts.newNotes = [];
       autoApply = false;
       if (imported) {
         const n = (st.crops || []).length;
-        opts.toast(n ? `가져오기 완료 — 크롭 ${n}개를 가져왔습니다. ② 크롭에서 확인하세요`
-          : "가져오기 완료 — ② 크롭에서 영역을 추가하세요");
+        const message = n ? `가져오기 완료 — 크롭 ${n}개를 가져왔습니다. ② 크롭에서 확인하세요`
+          : "가져오기 완료 — ② 크롭에서 영역을 추가하세요";
+        opts.toast([message, ...notes].join(" · "));
       }
     }
 

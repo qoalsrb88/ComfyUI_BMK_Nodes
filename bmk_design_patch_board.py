@@ -243,6 +243,7 @@ import os
 import re
 import secrets
 import shutil
+import struct
 import subprocess
 import sys
 import threading
@@ -5992,7 +5993,8 @@ def _project_new_begin(data: dict, upload: bool) -> dict:
     parent = os.path.dirname(root)
     tmp_parent = os.path.join(os.path.abspath(_PROJECT_INPUT), _NEW_TMP_DIRNAME)
     for path in (parent, tmp_parent, root):
-        if _is_link(path) or os.path.normcase(os.path.realpath(path)) != os.path.normcase(os.path.abspath(path)):
+        if (_is_link(path) or os.path.normcase(os.path.realpath(path))
+                != os.path.normcase(os.path.join(os.path.realpath(os.path.dirname(path)), os.path.basename(path)))):
             raise _Reject(400, "프로젝트·임시 폴더에 링크를 사용할 수 없습니다")
     if adopt:
         info = _project_adoption(root)
@@ -6053,19 +6055,28 @@ def _project_new_target(state: dict, part: str | None) -> str:
     if kind in ("psd", "psb"):
         if info["depth"] != 8 or info["mode"] != 3:
             raise _Reject(400, "8비트 RGB PSD 만 — Photoshop 이미지 > 모드에서 바꿔 저장하세요")
-        psd = dpsd.open_psd(source)
+        try:
+            psd = dpsd.open_psd(source)
+        except (OSError, SyntaxError, EOFError, struct.error, ValueError):
+            logger.exception("%s 새 프로젝트 PSD 디코드 실패: %s", _TAG, source)
+            raise _Reject(400, "그림 파일이 깨졌거나 잘렸습니다") from None
         if dpsd._auto_base_layer(psd) is not None or dpsd.find_crop_group(psd) is not None:
             return filename
     stem = os.path.splitext(filename)[0]
     target = unique_file_name(root, stem + ("_base.psd" if psd is not None else ".psd"))
     dest = os.path.join(root, target)
-    if psd is not None:
-        try:
+    try:
+        if psd is not None:
             notes = dpsd.wrap_psd_composite(psd, dest)
-        except dpsd.EmptyPSDImageError:
-            raise _Reject(400, "보이는 그림이 없습니다") from None
-    else:
-        notes = dpsd.wrap_image_file(source, dest)
+        else:
+            notes = dpsd.wrap_image_file(source, dest)
+    except dpsd.ImageDecodeError:
+        logger.exception("%s 새 프로젝트 그림 디코드 실패: %s", _TAG, source)
+        raise _Reject(400, "그림 파일이 깨졌거나 잘렸습니다") from None
+    except dpsd.EmptyPSDImageError:
+        raise _Reject(400, "보이는 그림이 없습니다") from None
+    except dpsd.PSDCompositeRequiredError:
+        raise _Reject(400, "Photoshop 에서 호환성 최대화로 다시 저장하세요") from None
     state["created"].append(dest)
     state["notes"].extend(notes)
     if not state["adopt"]:
@@ -6137,13 +6148,15 @@ def _project_new_cleanup(state: dict, success: bool) -> None:
             root = state["root"]
             expected = store.project_root(_PROJECT_INPUT, state["name"])
             if (os.path.normcase(root) == os.path.normcase(expected) and not _is_link(root)
-                    and os.path.normcase(os.path.realpath(root)) == os.path.normcase(os.path.abspath(root))):
+                    and os.path.normcase(os.path.realpath(root))
+                    == os.path.normcase(os.path.join(os.path.realpath(os.path.dirname(root)), os.path.basename(root)))):
                 remove(root, shutil.rmtree)
     tmp = state["tmp"]
     if tmp and os.path.isdir(tmp):
         parent = os.path.join(os.path.abspath(_PROJECT_INPUT), _NEW_TMP_DIRNAME)
         if (os.path.normcase(os.path.dirname(tmp)) == os.path.normcase(parent) and not _is_link(tmp)
-                and os.path.normcase(os.path.realpath(tmp)) == os.path.normcase(os.path.abspath(tmp))):
+                and os.path.normcase(os.path.realpath(tmp))
+                == os.path.normcase(os.path.join(os.path.realpath(os.path.dirname(tmp)), os.path.basename(tmp)))):
             remove(tmp, shutil.rmtree)
 
 
@@ -6161,7 +6174,7 @@ async def _project_new_thread(fn, *args):
 async def _project_new_request(request):
     state, success = None, False
     try:
-        upload = request.content_type == "application/octet-stream"
+        upload = is_octet_stream(request)
         data = dict(request.query) if upload else await _body(request)
         # begin 은 작은 메타데이터 작업뿐. 상태를 받은 뒤부터 취소 시 정리할 수 있다.
         state = _project_new_begin(data, upload)
