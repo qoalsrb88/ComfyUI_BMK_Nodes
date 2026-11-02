@@ -53699,6 +53699,8 @@ def batch9b_unit():
     section("배치 9-B — 레퍼런스 보관함·레이어별 컷·가져오기·시트 추가")
     import asyncio
     import tempfile
+    import threading
+    import unicodedata
     from unittest.mock import patch
     from types import SimpleNamespace
     import bmk_design_patch_board as bd
@@ -53730,6 +53732,24 @@ def batch9b_unit():
               and rf.pool_desc("a" * 45) == "a" * 40
               and rf.pool_desc("가_나") == "가-나", "D141 NFC·허용 문자·40자·빈 설명·t 표지")
         check(rf.pool_file_name("x", {"ref_x_t.png".casefold(), "REF_X_2_T.PNG".casefold()}) == "ref_x_3_t.png", "D141 casefold 겹침 k")
+        nfd = unicodedata.normalize("NFD", "ref_한글_t.png")
+        _r3_png(rd / nfd, rgba)
+        check(rf.pool_file_name("한글", rf.pool_reserved(root, m, doc)) == "ref_한글_2_t.png", "D141 디스크 NFD 이름 예약")
+        (rd / nfd).unlink()
+        probe = {"id": c1["id"], "targets": [{"tid": "A", "refs": [], "mode": "ref_correct"}]}
+        for override, expected in (({}, True), ({"targets": [{"id": "A", "refs": []}]}, False),
+                                   ({"targets": [{"id": "A", "refs": ["ref_스펙_t.png"]}]}, False),
+                                   ({"targets": [{"id": "A", "mode": "self_restore"}]}, False)):
+            with patch.object(store, "load_spec_override", return_value=override):
+                check(bd._pool_link_info(root, probe, str(rd))["prepare_auto"] is expected,
+                      f"D126 link_info 스펙 refs(빈 목록 포함)·자체 복원 우선: {override}")
+        with patch.object(store, "load_spec_override", return_value={}):
+            probe["targets"][0]["refs"] = ["001_머리_t.png", "ref_없는_t.png"]
+            info = bd._pool_link_info(root, probe, str(rd))
+            check(info["prepare_auto"] is False and [r["exists"] for r in info["draft_prefix"]] == [True, False],
+                  "D126 타깃 refs 우선·초안 prefix 존재 여부")
+        with patch.object(store, "load_spec_override", side_effect=ValueError("broken spec")):
+            check(bd._pool_link_info(root, probe, str(rd))["prepare_auto"] is None, "D126 스펙 읽기 실패는 불명")
 
         def rev():
             d = rf.load_refs(root)
@@ -53775,15 +53795,58 @@ def batch9b_unit():
         for op in ("rename", "hold"):
             reject(lambda op=op: bd.ref_pool(root, rev(), op, {"name": "옛파일.png", "desc": "새이름"}), bd._Reject, "쓰임 없는")
         renamed = bd.ref_pool(root, rev(), "rename", {"name": saved["file"], "desc": "예약"})["file"]
+        refs_path = Path(root, rf.REFS_NAME)
+        original_doc, original_file = refs_path.read_bytes(), (rd / renamed).read_bytes()
+        original_stat = (rd / renamed).stat()
+        with patch.object(bd, "_write_refs", side_effect=AssertionError("no-op write")), \
+                patch.object(rf, "_move_excl", side_effect=AssertionError("no-op move")):
+            unchanged = bd.ref_pool(root, rev(), "rename", {"name": renamed, "desc": "예약_2"})
+        check(unchanged.get("unchanged") and unchanged["rev"] == rev() and refs_path.read_bytes() == original_doc
+              and (rd / renamed).stat().st_mtime_ns == original_stat.st_mtime_ns, "D128 같은 이름(충돌 번호 포함)은 파일·rev 그대로")
+        case_name = bd.ref_pool(root, rev(), "rename", {"name": renamed, "desc": "Hat"})["file"]
+        case_name = bd.ref_pool(root, rev(), "rename", {"name": case_name, "desc": "hat"})["file"]
+        check(case_name == "ref_hat_t.png" and (rd / case_name).read_bytes() == original_file, "D128 대소문자만 변경: 자기 예약 제외·픽셀 보존")
+        # 자기 파일을 빼도 held.from 에서 온 같은 키 예약은 남긴다.
+        test_doc = rf.load_refs(root)
+        test_doc["held"]["other.png"] = {"from": case_name.upper(), "crop": None}
+        check(rf.ref_key(case_name) in rf._pool_reserved(root, m, test_doc, case_name), "D128 자기 이름과 같은 held.from 예약 유지")
+        renamed = bd.ref_pool(root, rev(), "rename", {"name": case_name, "desc": "예약"})["file"]
+
+        def snapshot_pool():
+            return refs_path.read_bytes(), {p.relative_to(rd).as_posix(): p.read_bytes() for p in rd.rglob("*") if p.is_file()}
+
+        for op, data in (("rename", {"name": renamed, "desc": "실패"}), ("hold", {"name": renamed})):
+            snapshot = snapshot_pool()
+            with patch.object(bd, "_write_refs", side_effect=OSError("test failure")):
+                reject(lambda: bd.ref_pool(root, rev(), op, data), OSError, "test failure")
+            check(snapshot_pool() == snapshot, f"D128 {op} 문서 쓰기 실패: 파일·refs.json 원상")
         held = bd.ref_pool(root, rev(), "hold", {"name": renamed})["file"]
         check(bd.refs_state(root)["pool_held"][0]["name"] == held and rf.load_refs(root)["held"][held]["crop"] is None,
               "D128 보관함 보류 목록·crop null")
+        snapshot = snapshot_pool()
+        with patch.object(bd, "_write_refs", side_effect=OSError("test failure")):
+            reject(lambda: bd.ref_pool(root, rev(), "restore", {"name": held}), OSError, "test failure")
+        check(snapshot_pool() == snapshot, "D128 restore 문서 쓰기 실패: 파일·refs.json 원상")
+        _r3_png(rd / renamed, rgba)
+        restore_same = snapshot_pool()
+        reject(lambda: bd.ref_pool(root, rev(), "restore", {"name": held}), FileExistsError, "같은 이름")
+        check(snapshot_pool() == restore_same, "D128 restore 같은 이름 파일 보존")
+        (rd / renamed).unlink()
+        rf.update_refs(root, lambda d: d["links"].update({"missing": {"files": [renamed], "main": renamed}}), expect_rev=rev())
+        snapshot = snapshot_pool()
+        reject(lambda: bd.ref_pool(root, rev(), "restore", {"name": held}), bd._Reject, "쓰이고")
+        check(snapshot_pool() == snapshot, "D128 restore 사라진 연결 이름 보존")
+        rf.update_refs(root, lambda d: d["links"].pop("missing"), expect_rev=rev())
         restored = bd.ref_pool(root, rev(), "restore", {"name": held})
         check(restored["file"] == renamed and rf.load_refs(root)["links"] == links and choices() == before,
               "D128 되살리기 연결 없음·과금 입력 그대로")
         linked = bd.ref_link(root, rev(), "add", {"crop_id": c1["id"], "name": renamed, "main": True})
         check(linked["rev"] == restored["rev"] + 1 and rf.load_refs(root)["links"][c1["id"]]["main"] == renamed,
               "D126 add main true 한 번의 rev 로 대표 연결")
+        rf.update_refs(root, lambda d: d["links"].update({c2["id"]: {"files": [], "main": None}}), expect_rev=rev())
+        first_link = bd.ref_link(root, rev(), "add", {"crop_id": c2["id"], "name": renamed, "main": False})
+        check(first_link["crop"]["files"][0]["role"] == "main" and rf.load_refs(root)["links"][c2["id"]]["main"] == renamed,
+              "D126 빈 연결에 보조 추가: 첫 파일이 대표가 됨")
         reject(lambda: bd.ref_pool(root, rev(), "hold", {"name": renamed}), bd._Reject, "쓰임 없는")
         before = choices()
 
@@ -53822,7 +53885,13 @@ def batch9b_unit():
                 check(rf._layer_pixels(node, False)[1] is None, f"D130 {kind} 제외")
         with patch.object(rf.dpsd, "open_psd", side_effect=AssertionError("PSD reopen")):
             thumb, _ = bd.ref_layers(root, "layers.psd", "1/0", table["sheet_v"])
+            cached = bd.ref_layers(root, "layers.psd")
         check(thumb[:2] == b"\xff\xd8", "D132 썸네일은 캐시만 읽음")
+        table_path = Path(root, "derived/reflayers", table["sheet_v"], "table.json")
+        check(cached == table and table_path.is_file(), "D132 같은 sheet_v 표 캐시: PSD 열기·합성 없음")
+        table_path.write_text("{broken", encoding="utf-8")
+        with patch.object(rf.dpsd, "open_psd", wraps=open_real) as opened:
+            check(bd.ref_layers(root, "layers.psd") == table and opened.call_count == 1, "D132 깨진 표 캐시 재생성")
         with patch.object(rf.dpsd, "_node_extent", return_value=[0, 0, 8193, 8193]):
             check(rf._layer_pixels(mixed, False)[1] is None, "D142 레이어 bbox 면적 상한")
         reject(lambda: bd.ref_pool(root, rev(), "layers", {"sheet": "layers.psd", "sheet_v": "0" * 16,
@@ -53831,9 +53900,31 @@ def batch9b_unit():
                                                      "items": [{"id": "1/0", "name": "009_모자"}, {"id": "1", "name": "그룹"}]})
         rec = rf.load_refs(root)["files"][layers["files"][0]]
         check(rec["sheet"]["layer_path"] == "1/0" and rec["sheet"]["layer"] == "009_모자"
-              and rec["cut"]["source"] == "layer" and rec["cut"]["method"] == "rect" and rec["for"] is None,
+              and rec["cut"]["source"] == "layer" and rec["cut"]["method"] == "rect" and rec["for"] is None
+              and rec["rect"] == [12, 22, 68, 70],
               "D131 레이어 이름·인덱스·rect 컷·for null 기록")
         check(choices() == before, "D141 레이어 컷 전후 resolve·Prepare 선택·초안 후보/픽셀 그대로")
+        # 알파 여백·캔버스 밖 절반·짧은 변·완전히 밖인 레이어의 재열기 기록.
+        edge = dpsd.PSDWriter((400, 300))
+        padded = np.zeros((80, 100, 4), np.uint8)
+        padded[20:60, 30:70] = (200, 80, 30, 255)
+        edge.add_pixel(None, "여백", padded, 100, 80)
+        edge.add_pixel(None, "절반 밖", rgba, -20, 40)
+        edge.add_pixel(None, "짧음", rgba, -38, 80)
+        edge.add_pixel(None, "밖", rgba, -80, 80)
+        edge.save(str(Path(root, "edge.psd")))
+        edge_table = bd.ref_layers(root, "edge.psd")
+        edge_result = bd.ref_pool(root, rev(), "layers", {"sheet": "edge.psd", "sheet_v": edge_table["sheet_v"],
+                                 "items": [{"id": str(i), "name": f"가장자리{i}"} for i in range(4)]})
+        records = [rf.load_refs(root)["files"][n] for n in edge_result["files"]]
+        check([r.get("rect") for r in records] == [[122, 92, 178, 148], [0, 32, 28, 80], None, None],
+              "D131 실제 알파 bbox + pad · 캔버스 clipping · 16px 미만/빈 rect 생략")
+        edge_rows = {r["name"]: r for r in bd.refs_state(root)["pool"]}
+        check([edge_rows[n]["record"] is not None for n in edge_result["files"]] == [True, True, False, False],
+              "D131 작은/캔버스 밖 레이어는 다시 열기 숨김")
+        for rec in records[:2]:
+            check(bool(bd.ref_cut(root, {"sheet": "edge.psd", "layer": rec["sheet"]["layer"],
+                                        "rect": rec["rect"], "method": "rect"})["req"]), "D131 저장 rect 로 실제 다시 열기 가능")
 
         source, _ = _r1_project(out / "input", "other")
         _r3_png(Path(source, "refs", "001_가져오기.png"), rgba)
@@ -53871,6 +53962,7 @@ def batch9b_unit():
             def __init__(self, body=None, query=None, raw=None):
                 self.query = query or {}
                 self.content_type = "application/json" if raw is None else "application/octet-stream"
+                self.headers = {"Content-Type": self.content_type}
                 self.raw = json.dumps(body or {}).encode("utf-8") if raw is None else raw
                 self.content_length = len(self.raw)
                 self.content = self
@@ -53882,7 +53974,52 @@ def batch9b_unit():
             with patch.object(bd, "_root_param", return_value=root):
                 stale = await bd.refs_pool_post_handler(Request({"root": "key", "rev": rev()-1, "op": "hold", "name": "ref_기존_t.png"}))
                 table_response = await bd.refs_layers_handler(Request(query={"root": "key", "sheet": "layers.psd"}))
-                up = await bd.refs_pool_post_handler(Request(query={"root": "key", "rev": str(rev()), "op": "sheet_add", "filename": "upload.png"}, raw=big.read_bytes()))
+                main_thread = threading.get_ident()
+                threads = []
+                start_real, finish_real = bd._pool_upload_start, bd._pool_sheet_finish
+                def start(q):
+                    threads.append(threading.get_ident())
+                    return start_real(q)
+                def finish(*args):
+                    threads.append(threading.get_ident())
+                    return finish_real(*args)
+                def upload_req():
+                    return Request(query={"root": "key", "rev": str(rev()), "op": "sheet_add", "filename": "upload.png"}, raw=big.read_bytes())
+                with patch.object(bd, "_pool_upload_start", side_effect=start), patch.object(bd, "_pool_sheet_finish", side_effect=finish):
+                    up = await bd.refs_pool_post_handler(upload_req())
+                check(len(threads) == 2 and all(t != main_thread for t in threads), "D135 업로드 사전 검사·임시 폴더·마무리는 스레드")
+                no_header = upload_req()
+                no_header.headers = {}  # aiohttp 의 기본 content_type 은 octet-stream 이다.
+                with patch.object(bd, "recv_upload", side_effect=AssertionError("headerless upload")):
+                    no_header_response = await bd.refs_pool_post_handler(no_header)
+                check(no_header_response.status == 415, "D135 Content-Type 머리 없는 POST 는 JSON 길 415")
+                same = await bd.refs_pool_post_handler(Request({"root": "key", "rev": rev(), "op": "rename",
+                                                               "name": "ref_기존_t.png", "desc": "기존"}))
+                check(same.status == 200 and json.loads(same.body).get("unchanged"), "D128 같은 이름 200 no change")
+                stale_layers = await bd.refs_pool_post_handler(Request({"root": "key", "rev": rev()-1, "op": "layers",
+                    "sheet": "layers.psd", "sheet_v": table["sheet_v"], "items": [{"id": "1", "name": "그룹"}]}))
+                check(stale_layers.status == 409, "D132 레이어 저장 rev 409")
+                held_name = bd.ref_pool(root, rev(), "hold", {"name": "ref_기존_t.png"})["file"]
+                _r3_png(rd / "ref_기존_t.png", rgba)
+                clash = await bd.refs_pool_post_handler(Request({"root": "key", "rev": rev(), "op": "restore", "name": held_name}))
+                (rd / "ref_기존_t.png").unlink()
+                rf.update_refs(root, lambda d: d["links"].update({"missing": {"files": ["ref_기존_t.png"], "main": "ref_기존_t.png"}}), expect_rev=rev())
+                missing = await bd.refs_pool_post_handler(Request({"root": "key", "rev": rev(), "op": "restore", "name": held_name}))
+                check(clash.status == 409 and missing.status == 409, "D128 restore 같은 이름·사라진 연결 이름 실제 409")
+                rf.update_refs(root, lambda d: d["links"].pop("missing"), expect_rev=rev())
+                bd.ref_pool(root, rev(), "restore", {"name": held_name})
+                failures = []
+                for function in ("_refs_dir_for_write", "_pool_tmp", "_write_refs"):
+                    error = bd._Reject(400, r"레퍼런스 폴더가 없습니다: G:\private\refs") if function == "_refs_dir_for_write" else OSError(r"G:\private\refs")
+                    with patch.object(bd, function, side_effect=error):
+                        failures.append(await bd.refs_pool_post_handler(upload_req()))
+                with patch.object(bd, "recv_upload", side_effect=OSError(r"G:\private\upload.part")):
+                    failures.append(await bd.refs_pool_post_handler(upload_req()))
+                with patch.object(bd, "ref_pool", side_effect=FileNotFoundError(r"G:\private\refs")):
+                    failures.append(await bd.refs_pool_post_handler(Request({"root": "key", "rev": rev(), "op": "hold", "name": "ref_기존_t.png"})))
+                check(all(r.status in (400, 404) and not re.search(r"[A-Za-z]:[\\/]", r.text) and "private" not in r.text for r in failures),
+                      "D135 오류 응답 경로 가림: 사전 검사·임시 폴더·마무리·수신·JSON")
+                check(not list(Path(root, "derived/refpool").iterdir()), "D135 실패 뒤 업로드 임시 파일 정리")
                 return stale, table_response, up
         stale, layer_response, upload = asyncio.run(routes())
         check(stale.status == 409 and layer_response.status == 200 and upload.status == 200
@@ -53890,6 +54027,13 @@ def batch9b_unit():
         check(str(Path(root).drive) not in layer_response.text and str(Path(root).drive) not in upload.text, "B9 새 라우트 응답에 절대 경로 없음")
         reject(lambda: bd.ref_pool(root, rev(), "layers", {"sheet": "layers.psd", "sheet_v": table["sheet_v"],
                                                           "items": [{"id": "1", "name": "x"}] * 101}), ValueError, "100")
+        fp = psd_path.stat()
+        os.utime(psd_path, ns=(fp.st_atime_ns, fp.st_mtime_ns + 1_000_000_000))
+        with patch.object(rf.dpsd, "open_psd", wraps=open_real) as opened:
+            updated_table = bd.ref_layers(root, "layers.psd")
+        check(updated_table["sheet_v"] != table["sheet_v"] and opened.call_count == 1, "D132 sheet_v 변경 시 표 재생성")
+        with patch.object(store, "load_manifest", return_value=dict(m, base=None)):
+            check(bd.refs_state(root)["before_import"], "D120 매니페스트 base 없는 프로젝트의 가져오기 전 상태")
 
     web = PKG / "web_design_patch"
     js = (web / "ref_edit.js").read_text(encoding="utf-8")
@@ -53994,6 +54138,77 @@ await scenario("b9upload", async () => {
   const last = env.poolCalls.at(-1);
   return { tooBig, raw: last.raw === file, type: last.type === "application/octet-stream", query: last.query.op === "sheet_add" && last.query.rev === "3" };
 });
+await scenario("b9impact", async () => {
+  const results = {};
+  for (const mode of ["spec", "first", "missing", "unknown", "existing"]) {
+    const R = R0(); R.pool = [poolFile];
+    const c = R.crops[1]; c.pick = c.files[0].name;
+    c.link_info = { prepare_auto: mode === "spec" ? false : mode === "unknown" ? null : true, draft_prefix: [] };
+    if (mode === "first") { c.files = []; c.pick = null; }
+    if (mode === "missing") { c.files = [Object.assign({}, c.files[0], { missing: true })]; c.pick = null; }
+    if (mode === "spec") c.link_info.draft_prefix = Array.from({ length: 6 }, (_, i) => ({ name: `explicit${i}.png`, exists: true, side: null }));
+    const env = await start9({ R }); env.li(c.name).fire("click");
+    const main = ["spec", "existing"].includes(mode);
+    env.srv.linkCrop = { pick: poolFile.name, files: [{ name: poolFile.name, role: mode === "missing" ? "aux" : "main" }] };
+    await env.press(env.hosts.panel, main ? "대표로 연결" : "보조로 연결", true);
+    const impact = env.confirms.at(-1), toast = env.toasts.at(-1);
+    results[mode] = mode === "spec" ? impact.includes("Prepare 선택 그대로 — 스펙") && impact.includes("초안 입력 그대로")
+      : mode === "first" ? impact.includes("첫 파일이라 대표가 됨") && impact.includes("Prepare 선택 없음 →") && toast.includes("대표로 연결(첫 레퍼런스)")
+        : mode === "missing" ? impact.includes("Prepare 선택 없음 →") && toast.includes("대표 파일이 없어 Prepare 가 이것을 고름") && !toast.includes("첫 레퍼런스")
+          : mode === "unknown" ? impact.includes("스펙을 읽지 못해")
+            : toast.startsWith(":대표로 연결") && !toast.includes("첫 레퍼런스");
+    env.ed.leave();
+  }
+  return results;
+});
+await scenario("b9lateWrite", async () => {
+  const results = {};
+  for (const op of ["rename", "hold", "layers", "import", "upload", "sheet_add"]) {
+    const env = await start9();
+    if (op !== "upload" && op !== "sheet_add") await cut9(env);
+    env.li("009_모자본체_휘장").fire("click");
+    const dialog = () => env.doc.body.all().find((e) => e.classList.contains("rf-dialog"));
+    if (op === "rename" || op === "hold") await env.press(env.hosts.panel, "⋯", true);
+    else if (op === "layers") await env.press(env.hosts.panel, "레이어별 컷", true);
+    else if (op === "import") await env.press(env.hosts.panel, "다른 프로젝트에서 가져오기", true);
+    else await env.press(env.hosts.sheets, "시트 추가", true);
+    const own = dialog();
+    if (op === "import") {
+      const select = own.all().find((e) => e.tagName === "SELECT"); select.value = "other"; select.fire("change"); await sleep(15);
+      const cb = own.all().find((e) => e.type === "checkbox"); cb.checked = true; cb.fire("change");
+    }
+    let release;
+    const oldFetch = ctx.fetch;
+    ctx.fetch = async (url, options) => {
+      if (url.includes("refs/pool") && options && options.method === "POST") await new Promise((resolve) => { release = resolve; });
+      return oldFetch(url, options);
+    };
+    if (op === "upload") {
+      const input = own.all().find((e) => e.type === "file"); input.files = [{ name: "late.png", size: 100 }]; input.fire("change");
+    } else {
+      await env.press(own, { rename: "이름 바꾸기", hold: "보류로 옮기기", layers: "보관함에 저장 (1)", import: "가져오기 (1)", sheet_add: "경로에서 추가" }[op], true);
+    }
+    await sleep(10);
+    if (!release) throw new Error(`write not started: ${op}`);
+    env.key("Escape");
+    if (op === "upload" || op === "sheet_add") {
+      env.all(env.hosts.sheets).find((e) => e.tagName === "LI" && e.textContent.includes("refer_character.psd")).fire("click");
+      await sleep(15);
+    }
+    await env.press(env.hosts.panel, "레이어별 컷", true);
+    const newer = dialog();
+    release(); await sleep(60);
+    results[op] = !!newer && newer !== own && dialog() === newer && newer.textContent.includes("레이어별 컷");
+    env.ed.leave();
+  }
+  return results;
+});
+await scenario("b9beforeImport", async () => {
+  const R = R0(); R.before_import = true; R.refs_dir = "C:/p/configured/refs"; R.refs_dir_ok = false;
+  const env = await start9({ R });
+  const text = env.doc.body.textContent;
+  return { firstApply: text.includes("첫 반영 뒤 쓸 수 있습니다"), noFolderError: !text.includes("refs_dir 폴더가 없습니다") };
+});
 console.log(JSON.stringify(out));
 '''
     out = OUT_ROOT / "batch9b_js"
@@ -54005,7 +54220,7 @@ console.log(JSON.stringify(out));
     check(proc.returncode == 0 and bool(proc.stdout.strip()), "B9 모의 DOM 실행: " + proc.stderr[-600:])
     if proc.returncode == 0 and proc.stdout.strip():
         results = json.loads(proc.stdout.strip().splitlines()[-1])
-        for name in ("b9saveTabs", "b9layers", "b9pool", "b9upload"):
+        for name in ("b9saveTabs", "b9layers", "b9pool", "b9upload", "b9impact", "b9lateWrite", "b9beforeImport"):
             result = results.get(name, {})
             check(bool(result) and all(v is True for v in result.values()), f"B9 {name}: {result}")
 

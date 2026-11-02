@@ -548,6 +548,7 @@ window.DPRefEdit = (() => {
       // 저장·연결을 막는 이유(§1.1) — null = 됨. 보드는 Import 위젯을 바꿀 수 없다
       const R = S.R;
       if (!R) return S.err ? `레퍼런스를 읽지 못했습니다: ${S.err}` : "불러오는 중…";
+      if (R.before_import || (state && state.before_import)) return "가져오기 전 — 첫 반영 뒤 쓸 수 있습니다";
       if (!R.refs_dir) return state && (state.before_import || (state.crops && !state.crops.length)) ? "가져오기 전 — 첫 반영 뒤 쓸 수 있습니다"
         : "Import PSD 의 refs_dir 가 비었습니다 — <프로젝트>\\refs 를 넣고 큐에 넣으면 저장·연결을 쓸 수 있습니다(시트 보기·컷은 됨).";
       if (!R.refs_dir_ok) return `refs_dir 폴더가 없습니다: ${R.refs_dir} — Import PSD 의 refs_dir 를 확인하세요.`;
@@ -1215,6 +1216,8 @@ window.DPRefEdit = (() => {
         return;
       }
       if (ask && !window.confirm(ask)) return;
+      const before = S.R.crops.find((c) => c.id === fields.crop_id);
+      const first = !!before && !before.files.length;
       try {
         const p = S.link(Object.assign({ op }, fields, confirm ? { confirm } : {}));
         renderSoon(); // busy 가 선 뒤 — 머리줄 '저장 중…'·쓰기 단추 끔
@@ -1225,7 +1228,7 @@ window.DPRefEdit = (() => {
         const adds = (op === "add" || op === "restore") && !!r.crop;
         const asMain = adds && r.crop.files.some((f) => f.role === "main" && f.name === added);
         const picked = adds && !asMain && r.crop.pick === added;
-        opts.toast((asMain ? (op === "add" ? "대표로 연결(첫 레퍼런스)" : "되살려 대표로 연결(첫 레퍼런스)")
+        opts.toast((asMain ? (op === "add" ? "대표로 연결" : "되살려 대표로 연결") + (first ? "(첫 레퍼런스)" : "")
           : picked ? `${op === "add" ? "보조로 연결" : "되살려 보조로 연결"} — 대표 파일이 없어 Prepare 가 이것을 고름(새 생성 조건)` : LINK_DONE[op])
           + (r.held ? `: _보류/${r.held}` : r.file ? `: ${r.file}` : ""));
       } catch (e) {
@@ -1847,6 +1850,10 @@ window.DPRefEdit = (() => {
       extraHost = null;
     }
 
+    function closeOwnExtra(box) {
+      if (extraHost && extraHost.contains(box)) closeExtra();
+    }
+
     function extraBox(title) {
       closeExtra();
       const host = el("div", "rf-dialog");
@@ -1894,9 +1901,9 @@ window.DPRefEdit = (() => {
       input.addEventListener("input", show);
       show();
       box.append(input, preview, button("이름 바꾸기", "쓰임 없는 보관함 파일의 이름 변경", async () => {
-        if (await poolWrite({ op: "rename", name: f.name, desc: input.value })) closeExtra();
+        if (await poolWrite({ op: "rename", name: f.name, desc: input.value })) closeOwnExtra(box);
       }), button("보류로 옮기기", "보관함 보류 목록으로", async () => {
-        if (await poolWrite({ op: "hold", name: f.name })) closeExtra();
+        if (await poolWrite({ op: "hold", name: f.name })) closeOwnExtra(box);
       }));
     }
 
@@ -2022,7 +2029,7 @@ window.DPRefEdit = (() => {
           const items = table.items.filter((r) => chosen.has(r.id)).map((r) => ({ id: r.id, name: r.name }));
           save.disabled = true;
           const ok = await poolWrite({ op: "layers", sheet: path, sheet_v: table.sheet_v, items });
-          if (ok) closeExtra(); else count();
+          if (ok) closeOwnExtra(box); else count();
         }, "primary");
         const count = () => { save.textContent = `보관함에 저장 (${chosen.size})`; save.disabled = !chosen.size || chosen.size > 100 || S.busy; };
         box.append(list, save); draw(); count();
@@ -2047,7 +2054,7 @@ window.DPRefEdit = (() => {
         const chosen = new Set();
         const save = button("가져오기 (0)", "픽셀을 이 프로젝트 보관함으로 복사", async () => {
           save.disabled = true;
-          if (await poolWrite({ op: "import", from: source, names: [...chosen] })) closeExtra(); else count();
+          if (await poolWrite({ op: "import", from: source, names: [...chosen] })) closeOwnExtra(box); else count();
         }, "primary");
         const count = () => { save.textContent = `가져오기 (${chosen.size})`; save.disabled = !chosen.size || chosen.size > 100 || S.busy; };
         select.addEventListener("change", async () => {
@@ -2081,7 +2088,7 @@ window.DPRefEdit = (() => {
       const upload = async (file) => {
         if (!file) return;
         status.textContent = "시트를 추가하는 중…";
-        try { await S.uploadSheet(file); closeExtra(); await loadSheets(); }
+        try { await S.uploadSheet(file); closeOwnExtra(box); await loadSheets(); }
         catch (e) { status.textContent = e.message; }
         finally { renderSoon(); }
       };
@@ -2089,7 +2096,7 @@ window.DPRefEdit = (() => {
       box.addEventListener("dragover", (e) => { e.preventDefault(); });
       box.addEventListener("drop", (e) => { e.preventDefault(); upload(e.dataTransfer.files[0]); });
       box.append(input, path, button("경로에서 추가", "원본을 프로젝트 sheets 폴더로 복사", async () => {
-        if (await poolWrite({ op: "sheet_add", path: path.value })) { closeExtra(); await loadSheets(); }
+        if (await poolWrite({ op: "sheet_add", path: path.value })) { closeOwnExtra(box); await loadSheets(); }
       }), status);
     }
 

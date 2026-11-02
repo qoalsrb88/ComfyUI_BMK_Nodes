@@ -336,11 +336,16 @@ def pool_desc(raw: str, fallback: str = "그림1") -> str:
 
 def pool_reserved(root: str, m: dict, doc: dict | None) -> set[str]:
     """존재하지 않는 연결·스펙 이름도 예약: 파일 생성만으로 참조가 되살아나지 않게."""
+    return _pool_reserved(root, m, doc, None)
+
+
+def _pool_reserved(root, m, doc, own_file):
+    """이름 바꾸기는 자신의 디스크 항목만 뺀다. 같은 키의 다른 예약은 유지한다."""
     folder = (m.get("source") or {}).get("refs_dir") or ""
     names = set(explicit_refs(root, m))
     for sub in (folder, os.path.join(folder, HELD_DIR) if folder else ""):
         if sub and os.path.isdir(sub):
-            names.update(os.listdir(sub))
+            names.update(n for n in os.listdir(sub) if sub != folder or n != own_file)
     for ln in (doc or {}).get("links", {}).values():
         names.update(ln["files"])
     names.update(h["from"] for h in (doc or {}).get("held", {}).values())
@@ -970,6 +975,18 @@ def _layer_pixels(node, blocked: bool):
 
 def layer_table(root: str, info: dict) -> dict:
     version = sheet_sig(root, info["path"])
+    cache = store.resolve_path(root, f"derived/reflayers/{version}/table.json")
+    try:
+        with open(cache, encoding="utf-8") as f:
+            table = json.load(f)
+        if (table.get("sheet") == info["path"] and table.get("sheet_v") == version
+                and isinstance(table.get("items"), list)
+                and all(isinstance(r, dict) and (r.get("excluded") is True or
+                        os.path.isfile(layer_thumb_path(root, version, r.get("id")))) for r in table["items"])
+                and sheet_sig(root, info["path"]) == version):
+            return table
+    except (OSError, ValueError, AttributeError):
+        pass  # 없거나 불완전한 캐시는 다시 만든다.
     psd = dpsd.open_psd(info["file"])
     rows = []
     for node, ident, labels, visible, blocked in _layer_nodes(psd):
@@ -1005,7 +1022,9 @@ def layer_table(root: str, info: dict) -> dict:
                      "checked": not (excluded or not visible or lossy or background), "chips": chips, "warnings": lossy})
     if sheet_sig(root, info["path"]) != version:
         raise RefsConflict("시트가 바뀌었습니다 — 표를 다시 여세요")
-    return {"sheet": info["path"], "sheet_v": version, "items": rows}
+    table = {"sheet": info["path"], "sheet_v": version, "items": rows}
+    store.write_json_atomic(cache, table)
+    return table
 
 
 def cut_layers(root: str, info: dict, version: str, items: list[dict]):
@@ -1032,7 +1051,14 @@ def cut_layers(root: str, info: dict, version: str, items: list[dict]):
         record = {"for": None, "at": _now(), "size": [cut.shape[1], cut.shape[0]], "sha": store.pixel_sha(cut),
                   "sheet": {"path": info["path"], "layer": node.name, "layer_path": item["id"],
                             "fingerprint": store.file_fingerprint(info["file"]), "size": info["size"]},
-                  "rect": rect, "cut": {"method": "rect", "source": "layer", "pad": TRIM_PAD}, "transform": t}
+                  "cut": {"method": "rect", "source": "layer", "pad": TRIM_PAD}, "transform": t}
+        # 재열기는 캔버스 좌표의 실제 알파 bbox + pad. 캔버스 밖/너무 작은 컷은 재열기를 제공하지 않는다.
+        ax, ay, aw, ah = cv2.boundingRect(rgba[..., 3])
+        W, H = psd.size
+        reopen = [max(0, rect[0] + ax - t["pad"]), max(0, rect[1] + ay - t["pad"]),
+                  min(W, rect[0] + ax + aw + t["pad"]), min(H, rect[1] + ay + ah + t["pad"])]
+        if min(reopen[2] - reopen[0], reopen[3] - reopen[1]) >= 16:
+            record["rect"] = reopen
         yield item["name"], f"레이어{k}", cut, record
     if version != sheet_sig(root, info["path"]):
         raise RefsConflict("시트가 바뀌었습니다 — 표를 다시 여세요")

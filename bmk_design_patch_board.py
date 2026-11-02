@@ -3881,7 +3881,7 @@ def refs_state(root: str, since: int | None = None) -> dict:
     ids = {c["id"] for c in crops}
     pool, pool_held = _pool_rows(root, m, prov, crops)
     return {"exists": doc is not None or error is not None, "rev": doc["rev"] if doc else None, "error": error,
-            "pool": pool, "pool_held": pool_held,
+            "pool": pool, "pool_held": pool_held, "before_import": not bool(m.get("base")),
             "all_files": [_ref_file(root, refs_dir, prov, display[n], "pool") for n in sorted(display)
                           if "/" not in n and os.path.splitext(n)[1].lower() in store.REF_EXTS
                           and os.path.isfile(os.path.join(refs_dir, display[n]))] if ok else [],
@@ -4440,8 +4440,14 @@ def _pool_manage(root, rev, op, data):
             drefs.restore_file(folder, name, target)
             new_key = target
         else:
-            reserved = drefs.pool_reserved(root, m, doc)
-            target = drefs.pool_file_name(data.get("desc", ""), reserved)
+            reserved = drefs._pool_reserved(root, m, doc, name)
+            desc = data.get("desc", "")
+            # 충돌 번호가 붙은 이름도 입력을 그대로 두면 유지한다.
+            preferred = ("ref_" + desc + "_t.png" if isinstance(desc, str) and name.startswith("ref_")
+                         and name.endswith("_t.png") and drefs.ref_key(desc) == drefs.ref_key(name[4:-6]) else None)
+            target = drefs.pool_file_name(desc, reserved, preferred=preferred)
+            if target == name:
+                return {"ok": True, "rev": rev, "file": name, "unchanged": True}
             new_key = target
             if os.path.splitext(name)[1].lower() == ".png":
                 drefs._move_excl(src, os.path.join(folder, target))
@@ -4556,8 +4562,8 @@ def _pool_sheet_finish(root, rev, part, name):
         _drop(part)
 
 
-async def _pool_upload(request):
-    q = request.query
+def _pool_upload_start(q):
+    """업로드 전 파일 검사와 임시 폴더 준비도 이벤트 루프 밖에서 한다."""
     root = _root_param(q.get("root"))
     if q.get("op") != "sheet_add":
         raise _Reject(400, "업로드는 시트 추가만 됩니다")
@@ -4567,9 +4573,17 @@ async def _pool_upload(request):
     rev = None if raw == "null" else int(raw)
     name = check_upload_name(q.get("filename"))
     _refs_at(root, rev, _refs_dir_for_write(store.load_manifest(root)))
-    part = await recv_upload(request, _pool_tmp(root))
+    return root, rev, name, _pool_tmp(root)
+
+
+async def _pool_upload(request):
+    root, rev, name, folder = await _pool_route(_pool_upload_start, request.query)
+    try:
+        part = await recv_upload(request, folder)
+    except (_Reject, ValueError, OSError) as e:
+        _pool_raise(e)
     # 요청 취소가 파일 쓰기 스레드를 중단하지 않게 끝까지 정리한다.
-    task = asyncio.create_task(asyncio.to_thread(_pool_sheet_finish, root, rev, part, name))
+    task = asyncio.create_task(_pool_route(_pool_sheet_finish, root, rev, part, name))
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:
@@ -4600,15 +4614,20 @@ async def _pool_route(fn, *args):
     """새 refs 라우트는 예외에도 서버의 절대 경로를 보내지 않는다."""
     try:
         return await asyncio.to_thread(fn, *args)
-    except _Reject as e:
+    except (_Reject, ValueError, OSError) as e:
+        _pool_raise(e)
+
+
+def _pool_raise(e):
+    """스레드 검사·마무리와 비동기 수신 실패에 같은 경로 가림을 적용한다."""
+    if isinstance(e, _Reject):
         if re.search(r"[A-Za-z]:[\\/]|/Users/|/home/", e.message):
             raise _Reject(e.status, "파일 경로 또는 프로젝트 설정을 확인하세요") from None
-        raise
-    except (ValueError, OSError) as e:
+    else:
         if re.search(r"[A-Za-z]:[\\/]|/Users/|/home/", str(e)):
             status = 409 if isinstance(e, (drefs.RefsConflict, FileExistsError)) else 404 if isinstance(e, FileNotFoundError) else 400
             raise _Reject(status, "파일을 처리하지 못했습니다 — 이름·경로·권한을 확인하세요") from None
-        raise
+    raise e
 
 
 def _cut_chain(root: str, req: dict) -> list[dict]:
@@ -6596,7 +6615,7 @@ async def refs_pool_get_handler(request: web.Request) -> web.StreamResponse:
 
 @_guard
 async def refs_pool_post_handler(request: web.Request) -> web.StreamResponse:
-    if request.content_type == "application/octet-stream":
+    if is_octet_stream(request):
         return _json(await _pool_upload(request))
     data = await _pool_body(request)
     root = _root_param(data.get("root"))
