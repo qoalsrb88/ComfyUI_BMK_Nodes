@@ -129,6 +129,8 @@ import logging
 import math
 import os
 import re
+import shutil
+import stat
 import struct
 import threading
 import time
@@ -972,6 +974,28 @@ def _layer_extent(node):
     return rect
 
 
+def _layer_composite(group, rect):
+    """그룹 결과 창은 한 번 만들고, 자식은 자신의 bbox 와 겹치는 창만 합성한다."""
+    x0, y0, x1, y1 = rect
+    result = Image.new("RGBA", (x1 - x0, y1 - y0))
+    for child in group:
+        if not child.visible or (child.is_group() and dpsd._GUIDE_RE.search(child.name or "")):
+            continue
+        if not child.is_group() and child.kind not in dpsd._RENDER_KINDS:
+            continue
+        bounds = _layer_extent(child)
+        window = [max(x0, bounds[0]), max(y0, bounds[1]), min(x1, bounds[2]), min(y1, bounds[3])]
+        if window[2] <= window[0] or window[3] <= window[1]:
+            continue
+        if child.is_group():
+            rgba = dpsd._apply_node_alpha(child, _layer_composite(child, window), window)
+        else:
+            rgba = dpsd._layer_window(child, window)
+        if rgba is not None:
+            result.alpha_composite(Image.fromarray(rgba), dest=(window[0] - x0, window[1] - y0))
+    return np.array(result)
+
+
 def _layer_pixels(node, blocked: bool):
     """한 노드의 extent 창만 합성. 지원하지 않는 행은 디코드하지 않는다."""
     rect = _layer_extent(node)
@@ -982,12 +1006,77 @@ def _layer_pixels(node, blocked: bool):
     if reason:
         return rect, None, [reason]
     if node.is_group():
-        rgba = dpsd._apply_node_alpha(node, dpsd._composite_children(node, rect, []), rect)
+        rgba = dpsd._apply_node_alpha(node, _layer_composite(node, rect), rect)
     else:
         rgba = dpsd._layer_window(node, rect)
     if rgba is None or not np.any(rgba[..., 3]):
         return rect, None, ["알파 없음"]
     return rect, rgba, []
+
+
+def _plain_cache_path(base, path):
+    """지정 폴더 안의 실제 경로만 허용하며 중간 링크·정션·재분석 지점도 제외한다."""
+    base, path = os.path.abspath(base), os.path.abspath(path)
+    try:
+        if os.path.normcase(os.path.commonpath([base, path])) != os.path.normcase(base):
+            return False
+        current = path
+        while True:
+            st = os.lstat(current)
+            if stat.S_ISLNK(st.st_mode) or getattr(st, "st_file_attributes", 0) & 0x400:
+                return False
+            if os.path.normcase(current) == os.path.normcase(base):
+                break
+            current = os.path.dirname(current)
+        real_base = os.path.realpath(base)
+        return os.path.normcase(os.path.commonpath([real_base, os.path.realpath(path)])) == os.path.normcase(real_base)
+    except (OSError, ValueError):
+        return False
+
+
+def _prune_layer_tables(root, sheet, version):
+    folder = store.resolve_path(root, "derived/reflayers")
+    if not _plain_cache_path(root, folder):
+        return
+    try:
+        entries = list(os.scandir(folder))
+    except OSError as e:
+        logger.warning("%s 레이어 캐시 목록 읽기 실패: %s", _TAG, e)
+        return
+    for entry in entries:
+        if entry.name == version or not re.fullmatch(r"[0-9a-f]{16}", entry.name):
+            continue
+        try:
+            if not entry.is_dir(follow_symlinks=False) or not _plain_cache_path(root, entry.path):
+                continue
+            source = os.path.join(entry.path, "source.json")
+            if not os.path.exists(source):
+                source = os.path.join(entry.path, "table.json")  # 이전 캐시도 시트별로 정리.
+            orphan = not os.path.lexists(source)
+            if orphan:
+                if entry.stat(follow_symlinks=False).st_mtime >= time.time() - 86400:
+                    continue
+            else:
+                if not _plain_cache_path(root, source):
+                    continue
+                with open(source, encoding="utf-8") as f:
+                    owner = json.load(f)
+                if not isinstance(owner, dict) or owner.get("sheet") != sheet:
+                    continue
+            # 하위 인덱스 폴더까지 검사한 뒤 지운다. 링크가 하나라도 있으면 그 판은 보존한다.
+            plain = True
+            for parent, dirs, files in os.walk(entry.path, followlinks=False):
+                if orphan and (any(not re.fullmatch(r"[0-9]+", name) for name in dirs)
+                               or any(not re.fullmatch(r"[0-9]+\.jpg|\.(?:table|source)\.json\.[0-9]+\.[0-9a-f]+\.tmp", name) for name in files)):
+                    plain = False
+                    break
+                if not all(_plain_cache_path(root, os.path.join(parent, name)) for name in dirs + files):
+                    plain = False
+                    break
+            if plain:
+                shutil.rmtree(entry.path)
+        except (OSError, ValueError) as e:
+            logger.warning("%s 레이어 캐시 정리 실패: %s", _TAG, e)
 
 
 def layer_table(root: str, info: dict) -> dict:
@@ -1001,9 +1090,12 @@ def layer_table(root: str, info: dict) -> dict:
                 and all(isinstance(r, dict) and (r.get("excluded") is True or
                         os.path.isfile(layer_thumb_path(root, version, r.get("id")))) for r in table["items"])
                 and sheet_sig(root, info["path"]) == version):
+            _prune_layer_tables(root, info["path"], version)
             return table
     except (OSError, ValueError, AttributeError):
         pass  # 없거나 불완전한 캐시는 다시 만든다.
+    # 합성이 중단되어 table.json 이 없어도 다음 판에서 이 시트의 캐시임을 알 수 있다.
+    store.write_json_atomic(os.path.join(os.path.dirname(cache), "source.json"), {"sheet": info["path"]})
     psd = dpsd.open_psd(info["file"])
     rows = []
     for node, ident, labels, visible, blocked in _layer_nodes(psd):
@@ -1041,6 +1133,7 @@ def layer_table(root: str, info: dict) -> dict:
         raise RefsConflict("시트가 바뀌었습니다 — 표를 다시 여세요")
     table = {"render": 2, "sheet": info["path"], "sheet_v": version, "items": rows}
     store.write_json_atomic(cache, table)
+    _prune_layer_tables(root, info["path"], version)
     return table
 
 

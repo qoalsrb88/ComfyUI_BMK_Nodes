@@ -53749,7 +53749,9 @@ def batch9b_unit():
             check(info["prepare_auto"] is False and [r["exists"] for r in info["draft_prefix"]] == [True, False],
                   "D126 타깃 refs 우선·초안 prefix 존재 여부")
         with patch.object(store, "load_spec_override", side_effect=ValueError("broken spec")):
-            check(bd._pool_link_info(root, probe, str(rd))["prepare_auto"] is None, "D126 스펙 읽기 실패는 불명")
+            broken_info = bd._pool_link_info(root, probe, str(rd))
+            check(broken_info["prepare_auto"] is None and broken_info["draft_prefix"] == info["draft_prefix"],
+                  "D126 깨진 스펙은 Prepare 불명·매니페스트 초안 prefix 유지")
 
         def rev():
             d = rf.load_refs(root)
@@ -53786,6 +53788,25 @@ def batch9b_unit():
         check(choices() == before, "D141 보관함 저장 전후 모든 크롭 resolve·Prepare 선택·초안 후보/픽셀 그대로")
         blank_saved = bd.ref_save(root, rev(), {"req": cut["req"], "desc": "", "transform": {}})
         check(blank_saved["file"] == "ref_sheet_1_t.png", "D124 빈 설명 저장은 시트 stem_1 대체 이름")
+        replaced = rd / blank_saved["file"]
+        own_bytes = replaced.read_bytes()
+        replaced.unlink()
+        _r3_png(replaced, np.full((32, 40, 4), (10, 30, 90, 255), np.uint8))
+        foreign_doc = Path(root, rf.REFS_NAME).read_bytes()
+        foreign_bytes = replaced.read_bytes()
+        stale_row = next(f for f in bd.refs_state(root)["pool"] if f["name"] == replaced.name)
+        check(stale_row["origin"] == "old" and stale_row["outside_edit"], "D128 묵은 for:null·다른 픽셀은 old 로 표시")
+        for operation in ("rename", "hold"):
+            reject(lambda: bd.ref_pool(root, rev(), operation, {"name": replaced.name, "desc": "foreign"}), bd._Reject, "쓰임 없는")
+        check(replaced.read_bytes() == foreign_bytes and Path(root, rf.REFS_NAME).read_bytes() == foreign_doc,
+              "D128 교체된 남의 파일·문서 보존")
+        replaced.write_bytes(own_bytes)
+        original_size = rf.load_refs(root)["files"][replaced.name]["size"]
+        rf.update_refs(root, lambda d: d["files"][replaced.name].update(size=[1, 1]), expect_rev=rev())
+        size_row = next(f for f in bd.refs_state(root)["pool"] if f["name"] == replaced.name)
+        check(size_row["origin"] == "old" and size_row["outside_edit"], "D128 sha 같아도 기록 size 불일치면 old")
+        reject(lambda: bd.ref_pool(root, rev(), "hold", {"name": replaced.name}), bd._Reject, "쓰임 없는")
+        rf.update_refs(root, lambda d: d["files"][replaced.name].update(size=original_size), expect_rev=rev())
         old_rev = rev()
         reject(lambda: bd.ref_save(root, old_rev - 1, {"req": cut["req"], "transform": {}}), rf.RefsConflict, "다른 창")
         view = bd.refs_state(root)
@@ -53963,6 +53984,25 @@ def batch9b_unit():
         black.mask.data.left = 0
         black.mask.data.top = 0
         check(rf._layer_extent(black) == [50, 60, 300, 310], "D130 검은 마스크는 레이어 bbox 와 교집합")
+        # 멀리 떨어진 작은 자식과 중첩 그룹: 자식마다 그룹 전체 창을 만들지 않고 동일 픽셀을 얻는다.
+        sparse = dpsd.PSDWriter((2048, 2048))
+        sparse_group = sparse.add_group(None, "큰 그룹")
+        sparse.add_pixel(sparse_group, "시작", rgba, -10, -5)
+        sub = sparse.add_group(sparse_group, "안쪽", mask={"arr": np.zeros((4, 4), np.uint8), "left": 11, "top": 12, "bg": 255})
+        sub.opacity = 180
+        sparse.add_pixel(sub, "겹침", rgba, 0, 0)
+        sparse.add_pixel(sub, "끝", rgba, 1800, 1800)
+        sparse.save(str(Path(root, "sparse.psd")), composite=np.zeros((2048, 2048, 3), np.uint8))
+        extent = rf._layer_extent(sparse_group)
+        expected_pixels = dpsd._apply_node_alpha(sparse_group, dpsd._composite_children(sparse_group, extent, []), extent)
+        extent_calls.clear()
+        with patch.object(dpsd, "_composite_children", side_effect=AssertionError("full group window")), \
+                patch.object(dpsd, "_layer_window", side_effect=bounded):
+            sparse_table = bd.ref_layers(root, "sparse.psd")
+            actual_pixels = rf._layer_pixels(sparse_group, False)[1]
+        check(np.array_equal(actual_pixels, expected_pixels), "D132 bbox 부분 합성은 중첩 opacity·마스크 포함 기존 픽셀과 동일")
+        check(extent_calls and max((r[2]-r[0]) * (r[3]-r[1]) for r in extent_calls) <= 40 * 32
+              and not sparse_table["items"][0]["excluded"], "D132 그룹 표·컷의 자식 창은 각 bbox 크기로 제한")
 
         jpg = "ref_convert_t.jpg"
         Image.fromarray(rgba[..., :3]).save(rd / jpg)
@@ -54051,6 +54091,43 @@ def batch9b_unit():
         check(not Path(no_refs_root, rf.REFS_NAME).exists() and store.prepare_inputs_fp(no_refs_root, no_refs_m) == no_refs_fp,
               "D143 refs.json 없던 프로젝트의 경로 시트 추가: 문서 생성 없음·입력 지문 불변")
         check(not list(Path(root, "derived/refpool").iterdir()), "B9 성공·거절 뒤 임시 파일 없음")
+        temp_folder = Path(bd._pool_tmp(root))
+        old_time = time.time() - 90000
+        old_parts = [temp_folder / (".upload_" + "a" * 16 + ".part"), rd / (".pool_" + "b" * 32 + ".part")]
+        keep_parts = [temp_folder / ".upload_new.part", temp_folder / "unrelated.part", rd / ".pool_active.part"]
+        for part in old_parts + keep_parts:
+            part.write_bytes(b"temporary fixture")
+            if part.name != ".upload_new.part":
+                os.utime(part, (old_time, old_time))
+        active_key = os.path.normcase(os.path.realpath(keep_parts[-1]))
+        bd._POOL_ACTIVE_PARTS.add(active_key)
+        try:
+            bd._pool_tmp(root)
+        finally:
+            bd._POOL_ACTIVE_PARTS.discard(active_key)
+        check(all(not p.exists() for p in old_parts) and all(p.exists() for p in keep_parts),
+              "D135 1일 지난 업로드·설치 part 만 정리, 새 파일·다른 파일·진행 중 원본 보존")
+        for part in keep_parts:
+            part.unlink()
+        linked_part = temp_folder / ".upload_link.part"
+        linked_part.write_bytes(b"preserve")
+        os.utime(linked_part, (old_time, old_time))
+        plain_real = rf._plain_cache_path
+        with patch.object(rf, "_plain_cache_path", side_effect=lambda base, path: False if Path(path) == linked_part else plain_real(base, path)):
+            bd._pool_tmp(root)
+        check(linked_part.exists(), "D135 링크·정션 판정 항목은 정리 제외")
+        lstat_real = rf.os.lstat
+        def reparse_stat(path, *args, **kwargs):
+            result = lstat_real(path, *args, **kwargs)
+            if Path(path) == temp_folder:
+                return SimpleNamespace(st_mode=result.st_mode, st_file_attributes=0x400)
+            return result
+        with patch.object(rf.os, "lstat", side_effect=reparse_stat):
+            check(not plain_real(root, linked_part), "D135 중간 폴더의 Windows 재분석 지점도 제외")
+        check(not plain_real(root, out), "D135 정리 대상의 프로젝트 밖 경로 거절")
+        if os.name == "nt":
+            check(plain_real(str(root).swapcase(), str(linked_part)), "D135 Windows 경로 대소문자가 달라도 정리 범위 검사 종료")
+        linked_part.unlink()
         # 파일 단계 뒤 문서 쓰기 실패: 신규 파일을 남겨 자동 입력을 바꾸지 않는다.
         snapshot = sorted(p.name for p in rd.iterdir())
         with patch.object(bd, "_write_refs", side_effect=OSError("test failure")):
@@ -54125,8 +54202,19 @@ def batch9b_unit():
                     failures.append(await bd.refs_pool_post_handler(upload_req()))
                 with patch.object(bd, "ref_pool", side_effect=FileNotFoundError(r"G:\private\refs")):
                     failures.append(await bd.refs_pool_post_handler(Request({"root": "key", "rev": rev(), "op": "hold", "name": "ref_기존_t.png"})))
-                check(all(r.status in (400, 404) and not re.search(r"[A-Za-z]:[\\/]", r.text) and "private" not in r.text for r in failures),
+                check(all(r.status in (404, 500) and json.loads(r.body)["error"] == "파일을 읽거나 쓰지 못했습니다 — 권한·잠금 확인" for r in failures),
                       "D135 오류 응답 경로 가림: 사전 검사·임시 폴더·마무리·수신·JSON")
+                for error in (OSError(r"\\NAS\private\share"), PermissionError("/srv/private/refs/a.png"),
+                              FileNotFoundError("/tmp/private/lost.png"), FileExistsError(r"\\NAS\private\taken.png")):
+                    with patch.object(bd, "ref_pool", side_effect=error), patch.object(bd.logger, "warning") as logged:
+                        failed = await bd.refs_pool_post_handler(Request({"root": "key", "rev": rev(), "op": "hold", "name": "ref_기존_t.png"}))
+                    expected_status = 409 if isinstance(error, FileExistsError) else 404 if isinstance(error, FileNotFoundError) else 500
+                    check(failed.status == expected_status and json.loads(failed.body)["error"] == "파일을 읽거나 쓰지 못했습니다 — 권한·잠금 확인"
+                          and logged.call_count == 1 and logged.call_args.args[-1] is error, "D135 UNC·POSIX OSError 고정 응답·상세는 로그만")
+                with patch.object(bd, "_root_param", side_effect=OSError("/srv/private/roots")), patch.object(bd.logger, "warning"):
+                    roots = [await handler(Request({"root": "key", "rev": rev(), "op": "hold", "name": "ref_기존_t.png"}, query={"root": "key"}))
+                             for handler in (bd.refs_pool_post_handler, bd.refs_pool_get_handler, bd.refs_layers_handler)]
+                check(all(r.status == 500 and "private" not in r.text for r in roots), "D135 라우트 진입의 프로젝트 경로 오류도 가림")
                 check(not list(Path(root, "derived/refpool").iterdir()), "D135 실패 뒤 업로드 임시 파일 정리")
                 return stale, table_response, up
         stale, layer_response, upload = asyncio.run(routes())
@@ -54140,6 +54228,30 @@ def batch9b_unit():
         with patch.object(rf.dpsd, "open_psd", wraps=open_real) as opened:
             updated_table = bd.ref_layers(root, "layers.psd")
         check(updated_table["sheet_v"] != table["sheet_v"] and opened.call_count == 1, "D132 sheet_v 변경 시 표 재생성")
+        cache_root = Path(root, "derived/reflayers")
+        check(not (cache_root / table["sheet_v"]).exists() and (cache_root / mask_table["sheet_v"]).is_dir(),
+              "D132 같은 시트 옛 판 삭제·다른 시트 캐시 유지")
+        abandoned = cache_root / ("c" * 16)
+        abandoned.mkdir()
+        (abandoned / "source.json").write_text(json.dumps({"sheet": "layers.psd"}), encoding="utf-8")
+        (abandoned / "0.jpg").write_bytes(b"incomplete")
+        orphan = cache_root / ("d" * 16)
+        orphan.mkdir()
+        (orphan / "0.jpg").write_bytes(b"legacy incomplete")
+        os.utime(orphan, (old_time, old_time))
+        preserved = cache_root / ("e" * 16)
+        preserved.mkdir()
+        (preserved / "notes.txt").write_text("keep", encoding="utf-8")
+        os.utime(preserved, (old_time, old_time))
+        link_cache = cache_root / ("f" * 16)
+        link_cache.mkdir()
+        (link_cache / "source.json").write_text(json.dumps({"sheet": "layers.psd"}), encoding="utf-8")
+        (link_cache / "0.jpg").write_bytes(b"link fixture")
+        with patch.object(rf.dpsd, "open_psd", side_effect=AssertionError("cached table")), \
+                patch.object(rf, "_plain_cache_path", side_effect=lambda base, path: False if Path(path) == link_cache / "0.jpg" else plain_real(base, path)):
+            bd.ref_layers(root, "layers.psd")
+        check(not abandoned.exists() and not orphan.exists() and preserved.exists() and link_cache.exists(),
+              "D132 중단된 판·하루 지난 옛 미완성 캐시 정리, 다른 자료·링크 포함 판 보존")
         with patch.object(store, "load_manifest", return_value=dict(m, base=None)):
             check(bd.refs_state(root)["before_import"], "D120 매니페스트 base 없는 프로젝트의 가져오기 전 상태")
 
@@ -54164,10 +54276,25 @@ def batch9b_unit():
     scene = r'''
 Object.defineProperty(El.prototype, "parentElement", { get() { return this.parent; } });
 El.prototype.remove = function () { if (this.parent) { this.parent.children.splice(this.parent.children.indexOf(this), 1); this.parent = null; } };
+El.prototype.addEventListener = function (type, fn, capture = false) {
+  const events = capture ? (this.capture ??= {}) : this.on;
+  (events[type] ??= []).push(fn);
+};
+El.prototype.removeEventListener = function (type, fn, capture = false) {
+  const events = capture ? (this.capture ??= {}) : this.on;
+  events[type] = (events[type] || []).filter((f) => f !== fn);
+};
+El.prototype.setSelectionRange = function (start, end) { this.selectionStart = start; this.selectionEnd = end; };
 El.prototype.fire = function (type, extra = {}) {
   let stopped = false;
   const ev = Object.assign({ type, target: this, defaultPrevented: false,
     preventDefault() { this.defaultPrevented = true; }, stopPropagation() { stopped = true; } }, extra);
+  const chain = [];
+  for (let node = this; node; node = node.parent) chain.unshift(node);
+  for (const node of chain) {
+    for (const fn of (node.capture || {})[type] || []) fn(Object.assign(ev, { currentTarget: node }));
+    if (stopped) return ev;
+  }
   for (let node = this; node; node = node.parent) {
     for (const fn of node.on[type] || []) fn(Object.assign(ev, { currentTarget: node }));
     if (stopped) break;
@@ -54195,6 +54322,11 @@ async function start9(o = {}) {
     if (path === "projects") return response({ projects: [{ id: "other", name: "Other", openable: true }] });
     if (path === "refs/pool") {
       env.poolCalls.push({ body, query: Object.fromEntries(u.searchParams), raw: opt && opt.body, type: opt && opt.headers && opt.headers["Content-Type"] });
+      if (opt && opt.method === "POST" && env.uploadFailures > 0) {
+        env.uploadFailures -= 1;
+        return { ok: false, status: 500, json: async () => ({ error: "retry upload" }) };
+      }
+      if (opt && opt.method === "POST" && env.poolResult) return response(env.poolResult);
       return response(body || opt && opt.method === "POST" ? { ok: true, rev: ++env.srv.rev } : { files: [poolFile] });
     }
     return old(url, opt);
@@ -54208,6 +54340,7 @@ async function cut9(env) {
 await scenario("b9saveTabs", async () => {
   const env = await start9(); await cut9(env);
   const noCrop = !!env.button(env.hosts.panel, "보관함에 저장", true);
+  const poolTitle = env.button(env.hosts.panel, "보관함에 저장", true).title;
   await env.press(env.hosts.panel, "보관함에 저장", true);
   const body = posts(env.srv, "refs/save").at(-1);
   const n = env.confirms.length;
@@ -54219,11 +54352,13 @@ await scenario("b9saveTabs", async () => {
   await cut9(env);
   env.li("009_모자본체_휘장").fire("click");
   const chosen = !!env.button(env.hosts.panel, "대표로 저장", true) && !!env.button(env.hosts.panel, "보관함에만 저장", true);
+  const cropTitle = env.button(env.hosts.panel, "대표로 저장", true).title;
   await env.press(env.hosts.panel, "보조", true);
   const aux = !!env.button(env.hosts.panel, "보조로 저장", true);
   await env.press(env.hosts.tabs, "그리드", true); const before = env.confirms.length;
   await env.press(env.hosts.tabs, "시트", true);
   return { noCrop, body: !Object.hasOwn(body, "crop_id"), savedNoAsk, dirtyAsk, chosen, aux,
+    titles: poolTitle.includes("보관함") && !poolTitle.includes("크롭 ID") && cropTitle.includes("크롭 ID"),
     returnSheet: !env.hosts.view.hidden && env.confirms.length === before };
 });
 await scenario("b9layers", async () => {
@@ -54264,7 +54399,7 @@ await scenario("b9impact", async () => {
     c.link_info = { prepare_auto: mode === "spec" ? false : mode === "unknown" ? null : true, draft_prefix: [] };
     if (mode === "first") { c.files = []; c.pick = null; }
     if (mode === "missing") { c.files = [Object.assign({}, c.files[0], { missing: true })]; c.pick = null; }
-    if (mode === "spec") c.link_info.draft_prefix = Array.from({ length: 6 }, (_, i) => ({ name: `explicit${i}.png`, exists: true, side: null }));
+    if (mode === "spec" || mode === "unknown") c.link_info.draft_prefix = Array.from({ length: 6 }, (_, i) => ({ name: `explicit${i}.png`, exists: true, side: null }));
     const env = await start9({ R }); env.li(c.name).fire("click");
     const main = ["spec", "existing"].includes(mode);
     env.srv.linkCrop = { pick: poolFile.name, files: [{ name: poolFile.name, role: mode === "missing" ? "aux" : "main" }] };
@@ -54273,7 +54408,7 @@ await scenario("b9impact", async () => {
     results[mode] = mode === "spec" ? impact.includes("Prepare 선택 그대로 — 스펙") && impact.includes("초안 입력 그대로")
       : mode === "first" ? impact.includes("첫 파일이라 대표가 됨") && impact.includes("Prepare 선택 없음 →") && toast.includes("대표로 연결(첫 레퍼런스)")
         : mode === "missing" ? impact.includes("Prepare 선택 없음 →") && toast.includes("대표 파일이 없어 Prepare 가 이것을 고름") && !toast.includes("첫 레퍼런스")
-          : mode === "unknown" ? impact.includes("스펙을 읽지 못해")
+          : mode === "unknown" ? impact.includes("스펙을 읽지 못해") && impact.includes("초안 입력 그대로")
             : toast.startsWith(":대표로 연결") && !toast.includes("첫 레퍼런스");
     env.ed.leave();
   }
@@ -54336,7 +54471,9 @@ await scenario("b9groupChoice", async () => {
   await env.press(env.hosts.panel, "레이어별 컷", true);
   const host = env.doc.body.all().find((e) => e.classList.contains("rf-dialog"));
   const rows = () => host.all().filter((e) => e.classList.contains("rf-layer-row"));
+  env.button(rows()[0], "▸", true).focus();
   await env.press(rows()[0], "▸", true);
+  const toggleFocus = env.doc.activeElement === env.button(rows()[0], "▾", true);
   const defaults = !!env.button(host, "보관함에 저장 (2)", true);
   const rootCheck = rows()[0].all().find((e) => e.type === "checkbox"); rootCheck.checked = true; rootCheck.fire("change");
   await env.press(rows()[1], "▸", true);
@@ -54351,8 +54488,11 @@ await scenario("b9groupChoice", async () => {
   const groupClearsChildren = rows().slice(1).every((r) => !r.all().find((e) => e.type === "checkbox").checked);
   const input = rows()[0].all().find((e) => e.type === "text"); input.value = ""; input.fire("input");
   const fallback = rows()[0].textContent.includes("ref_레이어1_t.png");
+  input.focus(); input.setSelectionRange(0, 0); checkRow(0);
+  const currentName = rows()[0].all().find((e) => e.type === "text");
+  const nameFocus = env.doc.activeElement === currentName && currentName.selectionStart === 0 && currentName.value === "";
   await env.press(host, "보관함에 저장 (1)", true);
-  return { defaults, nested, collapsed, childClearsGroup, groupClearsChildren, fallback,
+  return { defaults, nested, collapsed, childClearsGroup, groupClearsChildren, fallback, toggleFocus, nameFocus,
     savedGroupOnly: same(env.poolCalls.at(-1).body.items, [{ id: "2", name: "" }]) };
 });
 await scenario("b9dialogEvents", async () => {
@@ -54398,6 +54538,66 @@ await scenario("b9reopenSaved", async () => {
   results.unsavedStillWarns = env.confirms.at(-1).includes("저장하지 않은 컷");
   return results;
 });
+await scenario("b9dialogKeys", async () => {
+  const env = await start9(); await cut9(env);
+  const docTarget = new El(env.doc, "document"); docTarget.append(env.doc.body);
+  let boardKeys = 0;
+  docTarget.addEventListener("keydown", (e) => { boardKeys += 1; if (env.ed.onKey(e)) e.preventDefault(); });
+  await env.press(env.hosts.panel, "레이어별 컷", true);
+  const host = env.doc.body.all().find((e) => e.classList.contains("rf-dialog"));
+  const field = (type) => host.all().find((e) => e.type === type);
+  const name = field("text"); name.value = "edited"; name.fire("input");
+  const space = (cb) => {
+    cb.focus();
+    const event = cb.fire("keydown", { code: "Space", key: " " });
+    if (!event.defaultPrevented) { cb.checked = !cb.checked; cb.fire("change"); }
+    return event;
+  };
+  const a = space(field("checkbox"));
+  const checkboxFocus = env.doc.activeElement === field("checkbox") && !field("checkbox").checked;
+  const b = space(field("checkbox"));
+  const spaceKeeps = !a.defaultPrevented && !b.defaultPrevented && field("text").value === "edited" && env.doc.body.contains(host);
+  const allowed = ["Tab", "PageDown", "ArrowDown", "F5", "KeyF"].every((code) =>
+    !env.doc.body.fire("keydown", { code, key: code, ctrlKey: code === "KeyF" }).defaultPrevented);
+  const composing = field("text").fire("keydown", { code: "Escape", key: "Escape", isComposing: true });
+  const ime = !composing.defaultPrevented && env.doc.body.contains(host);
+  const keyResult = env.key("Enter") === false;
+  const save = env.button(host, "보관함에 저장 (1)", true); save.focus();
+  const tabbable = host.all().filter((e) => e.tagName === "BUTTON").every((e) => e.tabIndex === 0);
+  const enter = save.fire("keydown", { code: "Enter", key: "Enter" });
+  if (!enter.defaultPrevented) save.fire("click");
+  await sleep(40);
+  const entered = !enter.defaultPrevented && !env.doc.body.contains(host) && env.poolCalls.at(-1).body.items[0].name === "edited";
+  const noBoardKeys = boardKeys === 0;
+  env.doc.body.fire("keydown", { code: "Tab", key: "Tab" });
+  const unregistered = boardKeys === 1;
+  await env.press(env.hosts.panel, "크게 보기", true);
+  const large = env.doc.body.all().find((e) => e.classList.contains("rf-dialog"));
+  const closed = env.doc.body.fire("keydown", { code: "Space", key: " " });
+  return { checkboxFocus, spaceKeeps, allowed, ime, keyResult, entered, noBoardKeys, unregistered, tabbable,
+    largeSpace: closed.defaultPrevented && !env.doc.body.contains(large) };
+});
+await scenario("b9retryAndNoop", async () => {
+  const env = await start9();
+  env.uploadFailures = 1;
+  await env.press(env.hosts.sheets, "시트 추가", true);
+  const host = env.doc.body.all().find((e) => e.classList.contains("rf-dialog"));
+  const input = host.all().find((e) => e.type === "file");
+  const file = { name: "same.png", size: 100 };
+  const choose = () => {
+    if (input.value !== file.name) { input.value = file.name; input.files = [file]; input.fire("change"); }
+  };
+  choose(); const startClear = input.value === ""; await sleep(40);
+  const failedClear = input.value === "" && env.doc.body.contains(host) && host.textContent.includes("retry upload");
+  choose(); await sleep(40);
+  const retried = env.poolCalls.length === 2 && !env.doc.body.contains(host);
+  env.li("009_모자본체_휘장").fire("click");
+  await env.press(env.hosts.panel, "⋯", true);
+  const menu = env.doc.body.all().find((e) => e.classList.contains("rf-dialog"));
+  env.poolResult = { ok: true, rev: env.srv.rev, unchanged: true };
+  await env.press(menu, "이름 바꾸기", true);
+  return { startClear, failedClear, retried, noop: env.toasts.at(-1) === ":바뀐 것 없음" };
+});
 console.log(JSON.stringify(out));
 '''
     out = OUT_ROOT / "batch9b_js"
@@ -54410,7 +54610,7 @@ console.log(JSON.stringify(out));
     if proc.returncode == 0 and proc.stdout.strip():
         results = json.loads(proc.stdout.strip().splitlines()[-1])
         for name in ("b9saveTabs", "b9layers", "b9pool", "b9upload", "b9impact", "b9lateWrite", "b9beforeImport",
-                     "b9groupChoice", "b9dialogEvents", "b9reopenSaved"):
+                     "b9groupChoice", "b9dialogEvents", "b9reopenSaved", "b9dialogKeys", "b9retryAndNoop"):
             result = results.get(name, {})
             check(bool(result) and all(v is True for v in result.values()), f"B9 {name}: {result}")
 

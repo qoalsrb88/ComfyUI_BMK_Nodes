@@ -4257,7 +4257,7 @@ def _pool_link_info(root, crop, refs_dir):
                    and (targets.get(str(t.get("tid") or t.get("id") or "A"), {}).get("mode") or t.get("mode") or "ref_correct") != "self_restore"
                    for t in crop.get("targets", []))
     except (ValueError, TypeError):
-        return {"prepare_auto": None, "draft_prefix": []}
+        auto = None
     prefix, seen = [], set()
     for t in crop.get("targets", []):
         for name in t.get("refs") or []:
@@ -4269,18 +4269,55 @@ def _pool_link_info(root, crop, refs_dir):
     return {"prepare_auto": auto, "draft_prefix": prefix}
 
 
+def _pool_file_state(root, folder, doc, name, held=False):
+    file = _ref_file(root, folder, doc, name, "pool", held=held)
+    key = f"{drefs.HELD_DIR}/{name}" if held else name
+    records = (doc or {}).get("files", {})
+    rec = records.get(_record_key(records, key)) or {}
+    if "for" in rec and rec["for"] is None:
+        file["outside_edit"] = (file["outside_edit"] or not rec.get("sha") or file["size"] != rec.get("size")
+                                or file["thumb_url"] is None or file["missing"])
+    return file
+
+
 def _pool_rows(root, m, doc, crops):
     pool, held = drefs.pool_files(root, m, doc, crops)
     for rows, is_held in ((pool, False), (held, True)):
         for row in rows:
-            file = _ref_file(root, _refs_dir(m), doc, row["name"], "pool", held=is_held)
-            row.update({k: file[k] for k in ("bytes", "thumb_url", "thumb_url_512", "record")})
+            file = _pool_file_state(root, _refs_dir(m), doc, row["name"], held=is_held)
+            row.update({k: file[k] for k in ("size", "bytes", "outside_edit", "thumb_url", "thumb_url_512", "record")})
+            if file["outside_edit"]:
+                row["origin"] = "old"
     return pool, held
+
+
+_POOL_ACTIVE_PARTS = set()
+
+
+def _sweep_pool_parts(base, folder, prefix):
+    if not drefs._plain_cache_path(base, folder):
+        return
+    try:
+        cutoff = time.time() - 86400
+        for entry in os.scandir(folder):
+            if not (entry.name.startswith(prefix) and entry.name.endswith(".part")):
+                continue
+            if os.path.normcase(os.path.realpath(entry.path)) in _POOL_ACTIVE_PARTS:
+                continue
+            if (entry.is_file(follow_symlinks=False) and drefs._plain_cache_path(base, entry.path)
+                    and entry.stat(follow_symlinks=False).st_mtime < cutoff):
+                os.remove(entry.path)
+    except OSError as e:
+        logger.warning("%s 보관함 임시 파일 정리 실패: %s", _TAG, e)
 
 
 def _pool_tmp(root):
     folder = store.resolve_path(root, "derived/refpool")
     os.makedirs(folder, exist_ok=True)
+    _sweep_pool_parts(root, folder, ".upload_")
+    refs_dir = _refs_dir(store.load_manifest(root))
+    if refs_dir:
+        _sweep_pool_parts(refs_dir, refs_dir, ".pool_")
     return folder
 
 
@@ -4437,7 +4474,7 @@ def _pool_manage(root, rev, op, data):
 def _pool_owned_row(root, m, doc, op, name):
     pool, held = drefs.pool_files(root, m, doc, _ref_crops(root, m))
     row = next((r for r in (held if op == "restore" else pool) if r["name"] == name and r["origin"] == "pool"), None)
-    if row is None:
+    if row is None or _pool_file_state(root, _refs_dir(m), doc, name, held=op == "restore")["outside_edit"]:
         raise _Reject(409, "이 프로젝트 보관함의 쓰임 없는 파일만 바꿀 수 있습니다")
     return row
 
@@ -4483,9 +4520,13 @@ def _pool_manage_commit(root, rev, op, data, name, prepared):
                 # 변환은 잠금 밖에서 끝났다. 원본은 문서 커밋 전까지 임시로 보존한다.
                 _pool_install(prepared["part"], os.path.join(folder, target))
                 part = os.path.join(folder, ".pool_" + secrets.token_hex(16) + ".part")
+                # 원본을 옮기면 예전 mtime 도 따라온다. 진행 중인 복구용 원본은 청소 대상에서 뺀다.
+                active_part = os.path.normcase(os.path.realpath(part))
+                _POOL_ACTIVE_PARTS.add(active_part)
                 try:
                     drefs._move_excl(src, part)
                 except BaseException:
+                    _POOL_ACTIVE_PARTS.discard(active_part)
                     _drop(os.path.join(folder, target))
                     raise
         dest = os.path.join(folder, *new_key.split("/"))
@@ -4504,11 +4545,14 @@ def _pool_manage_commit(root, rev, op, data, name, prepared):
         except BaseException:
             if part:
                 _undo(lambda: _drop(dest), lambda: drefs._move_excl(part, src))
+                if not os.path.lexists(part):
+                    _POOL_ACTIVE_PARTS.discard(active_part)
             else:
                 _undo(lambda: drefs._move_excl(dest, src))
             raise
         if part:
             _drop(part)
+            _POOL_ACTIVE_PARTS.discard(active_part)
     return {"ok": True, "rev": new_rev, "file": target}
 
 
@@ -4617,7 +4661,10 @@ async def _pool_body(request):
     limit = 128 * 1024
     if request.content_length is not None and request.content_length > limit:
         raise _Reject(413, "요청 본문이 너무 큽니다")
-    raw = await request.read()
+    try:
+        raw = await request.read()
+    except OSError as e:
+        _pool_raise(e)
     if len(raw) > limit:
         raise _Reject(413, "요청 본문이 너무 큽니다")
     try:
@@ -4639,6 +4686,10 @@ async def _pool_route(fn, *args):
 
 def _pool_raise(e):
     """스레드 검사·마무리와 비동기 수신 실패에 같은 경로 가림을 적용한다."""
+    if isinstance(e, OSError):
+        logger.warning("%s 레퍼런스 파일 오류: %s", _TAG, e)
+        status = 409 if isinstance(e, FileExistsError) else 404 if isinstance(e, FileNotFoundError) else 500
+        raise _Reject(status, "파일을 읽거나 쓰지 못했습니다 — 권한·잠금 확인") from None
     if isinstance(e, _Reject):
         if re.search(r"[A-Za-z]:[\\/]|/Users/|/home/", e.message):
             raise _Reject(e.status, "파일 경로 또는 프로젝트 설정을 확인하세요") from None
@@ -6616,7 +6667,7 @@ async def projects_new_handler(request: web.Request) -> web.StreamResponse:
 @_guard
 async def refs_layers_handler(request: web.Request) -> web.StreamResponse:
     q = request.query
-    root = _root_param(q.get("root"))
+    root = await _pool_route(_root_param, q.get("root"))
     result = await _pool_route(ref_layers, root, q.get("sheet"), q.get("thumb"), q.get("v"))
     if q.get("thumb") is not None:
         return _image_response(result[0], "image/jpeg", result[1], q.get("v"))
@@ -6626,7 +6677,7 @@ async def refs_layers_handler(request: web.Request) -> web.StreamResponse:
 @_guard
 async def refs_pool_get_handler(request: web.Request) -> web.StreamResponse:
     q = request.query
-    root = _root_param(q.get("root"))
+    root = await _pool_route(_root_param, q.get("root"))
     result = await _pool_route(ref_pool_source, root, q.get("from"), q.get("thumb"))
     if q.get("thumb") is not None:
         return _image_response(result[0], result[1], result[2], q.get("v"))
@@ -6638,7 +6689,7 @@ async def refs_pool_post_handler(request: web.Request) -> web.StreamResponse:
     if is_octet_stream(request):
         return _json(await _pool_upload(request))
     data = await _pool_body(request)
-    root = _root_param(data.get("root"))
+    root = await _pool_route(_root_param, data.get("root"))
     return _json(await _pool_route(ref_pool, root, None if data.get("op") == "sheet_add" else _refs_rev(data), data.get("op"), data))
 
 

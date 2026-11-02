@@ -404,6 +404,7 @@ window.DPRefEdit = (() => {
     let savedReq = null;
     let allPool = false;
     let extraHost = null;
+    let extraKeyHost = null;
     let matte = "gray";
     let asym = false; // "글자·비대칭 있음"(반전 경고)
     let overlay = null; // 겹쳐 보기 {alpha, x, y, k} — 화면용, 저장 안 함
@@ -493,9 +494,15 @@ window.DPRefEdit = (() => {
       b.tabIndex = -1;
       if (title) b.title = title;
       b.addEventListener("click", (e) => {
-        e.currentTarget.blur();
+        if (!extraHost || !extraHost.contains(e.currentTarget)) e.currentTarget.blur();
         fn();
       });
+      return b;
+    }
+
+    function extraButton(label, title, fn, cls) {
+      const b = button(label, title, fn, cls);
+      b.tabIndex = 0;
       return b;
     }
 
@@ -1585,8 +1592,13 @@ window.DPRefEdit = (() => {
       // board.js 가 레퍼런스 모드에서 먼저 넘긴다(입력칸 포커스는 board.js 가 이미 거름). true = 소비
       if (!on) return false;
       if (extraHost) {
-        if (e.code === "Escape" || e.code === "Space") closeExtra();
-        return true;
+        if (e.isComposing) return false;
+        if (e.code === "Escape" || (e.code === "Space" && extraHost.dataset.spaceClose === "true"
+            && !e.ctrlKey && !e.metaKey && !e.altKey)) {
+          closeExtra();
+          return true;
+        }
+        return false;
       }
       const mod = e.ctrlKey || e.metaKey;
       switch (e.code) {
@@ -1847,8 +1859,17 @@ window.DPRefEdit = (() => {
     }
 
     function closeExtra() {
+      if (extraKeyHost) extraKeyHost.removeEventListener("keydown", extraKeys, true);
+      extraKeyHost = null;
       if (extraHost) extraHost.remove();
       extraHost = null;
+    }
+
+    function extraKeys(e) {
+      if (!extraHost) return;
+      const handled = onKey(e);
+      e.stopPropagation(); // board.js 의 후속 단축키도 막고, Tab·Space·Enter 등의 기본 동작은 살린다.
+      if (handled) e.preventDefault();
     }
 
     function closeOwnExtra(box) {
@@ -1862,24 +1883,22 @@ window.DPRefEdit = (() => {
       box.setAttribute("role", "dialog");
       box.setAttribute("aria-label", title);
       const top = el("div", "rg-large-head");
-      top.append(el("h3", "", title), button("닫기", "닫기 (Esc)", closeExtra));
+      top.append(el("h3", "", title), extraButton("닫기", "닫기 (Esc)", closeExtra));
       box.append(top);
       host.append(box);
-      host.addEventListener("keydown", (e) => {
-        if (e.key === "Escape" || e.code === "Escape") {
-          e.preventDefault(); e.stopPropagation(); closeOwnExtra(box);
-        }
-      });
       for (const type of ["dragover", "drop"]) host.addEventListener(type, (e) => {
         e.preventDefault(); e.stopPropagation();
       });
       (viewHost.parentElement || viewHost.parentNode).append(host);
       extraHost = host;
+      extraKeyHost = document.body;
+      extraKeyHost.addEventListener("keydown", extraKeys, true);
       return box;
     }
 
     function poolLarge(f) {
       const box = extraBox(f.name);
+      extraHost.dataset.spaceClose = "true";
       const img = el("img", "rf-pool-large");
       img.alt = f.name;
       img.src = opts.apiUrl(f.thumb_url_512 || f.thumb_url);
@@ -1891,7 +1910,8 @@ window.DPRefEdit = (() => {
         const p = S.pool(body);
         renderSoon();
         const r = await p;
-        opts.toast(body.op === "sheet_add" ? "시트를 추가했습니다" : "보관함 변경 · 반영 필요(무료) — 크롭의 레퍼런스는 그대로");
+        opts.toast(r.unchanged ? "바뀐 것 없음" : body.op === "sheet_add" ? "시트를 추가했습니다"
+          : "보관함 변경 · 반영 필요(무료) — 크롭의 레퍼런스는 그대로");
         return r;
       } catch (e) {
         opts.toast(e.message, "err");
@@ -1909,9 +1929,9 @@ window.DPRefEdit = (() => {
       const show = () => { preview.textContent = `ref_${poolDesc(input.value)}_t.png (겹치면 번호 추가)`; };
       input.addEventListener("input", show);
       show();
-      box.append(input, preview, button("이름 바꾸기", "쓰임 없는 보관함 파일의 이름 변경", async () => {
+      box.append(input, preview, extraButton("이름 바꾸기", "쓰임 없는 보관함 파일의 이름 변경", async () => {
         if (await poolWrite({ op: "rename", name: f.name, desc: input.value })) closeOwnExtra(box);
-      }), button("보류로 옮기기", "보관함 보류 목록으로", async () => {
+      }), extraButton("보류로 옮기기", "보관함 보류 목록으로", async () => {
         if (await poolWrite({ op: "hold", name: f.name })) closeOwnExtra(box);
       }));
     }
@@ -2005,12 +2025,18 @@ window.DPRefEdit = (() => {
           for (const key of chosen) if (id.startsWith(key + "/")) chosen.delete(key);
         };
         const draw = () => {
+          const active = list.contains(document.activeElement) ? document.activeElement : null;
+          const focusKey = active && active.dataset.focus;
+          const start = active && active.selectionStart, end = active && active.selectionEnd;
+          const scrollTop = list.scrollTop;
+          const controls = new Map();
           list.replaceChildren();
           for (const r of table.items) {
             const parents = r.id.split("/").slice(0, -1);
             if (parents.some((_p, i) => !expanded.has(parents.slice(0, i + 1).join("/")))) continue;
             const row = el("div", "rf-layer-row");
             const check = el("input");
+            check.dataset.focus = r.id + ":check"; controls.set(check.dataset.focus, check);
             check.type = "checkbox"; check.checked = chosen.has(r.id); check.disabled = r.excluded;
             check.addEventListener("change", () => {
               if (check.checked) choose(r.id); else chosen.delete(r.id);
@@ -2018,30 +2044,41 @@ window.DPRefEdit = (() => {
               count();
             });
             row.append(check);
-            if (r.group) row.append(button(expanded.has(r.id) ? "▾" : "▸", "그룹 펼치기", () => {
-              if (expanded.has(r.id)) { expanded.delete(r.id); clearChildren(r.id); }
-              else expanded.add(r.id);
-              if (!visited.has(r.id)) {
-                // 처음 펼치면 그룹 한 장 대신 안쪽 기본 체크로 바꾼다(그룹·자식 중복 저장 방지).
-                chosen.delete(r.id);
-                for (const child of table.items) if (child.parent === r.id && child.checked) choose(child.id);
-                visited.add(r.id);
-              }
-              draw();
-              count();
-            }));
+            if (r.group) {
+              const toggle = extraButton(expanded.has(r.id) ? "▾" : "▸", "그룹 펼치기", () => {
+                if (expanded.has(r.id)) { expanded.delete(r.id); clearChildren(r.id); }
+                else expanded.add(r.id);
+                if (!visited.has(r.id)) {
+                  // 처음 펼치면 그룹 한 장 대신 안쪽 기본 체크로 바꾼다(그룹·자식 중복 저장 방지).
+                  chosen.delete(r.id);
+                  for (const child of table.items) if (child.parent === r.id && child.checked) choose(child.id);
+                  visited.add(r.id);
+                }
+                draw();
+                count();
+              });
+              toggle.dataset.focus = r.id + ":toggle"; controls.set(toggle.dataset.focus, toggle);
+              row.append(toggle);
+            }
             else row.append(el("span"));
             const img = el("img", "rf-thumb"); img.alt = "";
             if (r.thumb_url) img.src = opts.apiUrl(r.thumb_url);
             row.append(img, el("span", "rf-layer-path", r.path), el("span", "dim", r.size.join("×")));
             const name = el("input", "rf-pool-name"); name.type = "text"; name.value = r.name; name.maxLength = 80;
+            name.dataset.focus = r.id + ":name"; controls.set(name.dataset.focus, name);
             const preview = el("span", "dim", `ref_${poolDesc(r.name, r.fallback)}_t.png`);
             name.addEventListener("input", () => { r.name = name.value; preview.textContent = `ref_${poolDesc(r.name, r.fallback)}_t.png`; });
             row.append(name, preview, el("span", "dim", r.chips.join(" · ")));
             list.append(row);
           }
+          const focus = controls.get(focusKey);
+          if (focus) {
+            focus.focus({ preventScroll: true });
+            if (typeof start === "number" && typeof focus.setSelectionRange === "function") focus.setSelectionRange(start, end);
+          }
+          list.scrollTop = scrollTop;
         };
-        const save = button("", "선택한 레이어를 보관함에 저장", async () => {
+        const save = extraButton("", "선택한 레이어를 보관함에 저장", async () => {
           const items = table.items.filter((r) => chosen.has(r.id)).map((r) => ({ id: r.id, name: r.name }));
           save.disabled = true;
           const ok = await poolWrite({ op: "layers", sheet: path, sheet_v: table.sheet_v, items });
@@ -2068,7 +2105,7 @@ window.DPRefEdit = (() => {
         const list = el("div", "rf-import-list");
         let files = [], source = "", seq = 0;
         const chosen = new Set();
-        const save = button("가져오기 (0)", "픽셀을 이 프로젝트 보관함으로 복사", async () => {
+        const save = extraButton("가져오기 (0)", "픽셀을 이 프로젝트 보관함으로 복사", async () => {
           save.disabled = true;
           if (await poolWrite({ op: "import", from: source, names: [...chosen] })) closeOwnExtra(box); else count();
         }, "primary");
@@ -2103,14 +2140,15 @@ window.DPRefEdit = (() => {
       const status = el("p", "dim");
       const upload = async (file) => {
         if (!file) return;
+        input.value = "";
         status.textContent = "시트를 추가하는 중…";
         try { await S.uploadSheet(file); closeOwnExtra(box); await loadSheets(); }
-        catch (e) { status.textContent = e.message; }
+        catch (e) { input.value = ""; status.textContent = e.message; }
         finally { renderSoon(); }
       };
       input.addEventListener("change", () => upload(input.files[0]));
       (box.parentElement || box.parentNode).addEventListener("drop", (e) => { upload(e.dataTransfer.files[0]); });
-      box.append(input, path, button("경로에서 추가", "원본을 프로젝트 sheets 폴더로 복사", async () => {
+      box.append(input, path, extraButton("경로에서 추가", "원본을 프로젝트 sheets 폴더로 복사", async () => {
         if (await poolWrite({ op: "sheet_add", path: path.value })) { closeOwnExtra(box); await loadSheets(); }
       }), status);
     }
@@ -2734,7 +2772,7 @@ window.DPRefEdit = (() => {
       live.impact.replaceChildren(...(c && nm.name ? impactLines(c, nm.name) : []).map(([cls, t]) => el("li", cls, t)));
       const why = saveProblem(c, nm);
       live.save.disabled = !!why;
-      live.save.title = why || "새 파일로 저장하고 크롭을 크롭 ID 로 고정 — 덮어쓰지 않음";
+      live.save.title = why || (c ? "새 파일로 저장하고 크롭을 크롭 ID 로 고정 — 덮어쓰지 않음" : "새 파일로 보관함에 저장");
     }
 
     // ── board.js 와의 경계 ──
