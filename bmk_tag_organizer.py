@@ -26,6 +26,9 @@
   - line_per_section / trailing_comma / dedupe : 출력 모양과 중복 제거.
   - framing / view : 크롭·시점 덮어쓰기. 프롬프트의 크롭(시점) 태그를 모두 빼고 고른 태그를
                      넣어, 구도 규칙이 바로 그 크롭(시점)으로 돈다. auto = 프롬프트 그대로.
+  - gaze           : 시선 덮어쓰기(숨김 위젯, 쉼표로 여럿). 편집기 위의 시선 칩이 쓴다. 프롬프트의 시선 태그를
+                     고른 태그들로 바꾸되, 크롭·시점과 함께 그릴 수 없는 태그(straight-on 의 looking back 등)는
+                     넣지 않는다. 비우면 프롬프트 그대로.
   - guess          : 팩에 없는 토큰(자연어 구절 등)의 분류를 패턴·끝말로 추정해 임시로 넣는다.
   - arrangement    : 배열 세팅 JSON(숨김 위젯). 줄 → 청크 → 멤버(서브) 순서를 정한다.
                      JS 편집기(js/bmk_tag_organizer.js + js/tag_organizer/)가 쓰고, TagOrganizer 관리 툴에서 내보낸
@@ -44,7 +47,7 @@
   - 태그 팩은 처음 실행할 때 한 번 읽고(약 1초) 파일이 바뀔 때까지 재사용한다.
     콤보 목록은 팩 옆 pack_info.json 에서 읽어 시작할 때 팩을 읽지 않는다.
   - 서버 경로(JS 편집기용): GET /bmk/tag_organizer/palette(분류·색·퀵 목록·레이아웃별 배열),
-    POST /bmk/tag_organizer/preview(위젯 값 → 정리 결과와 청크 구조). 실행과 같은 옵션 함수를 쓴다.
+    POST /bmk/tag_organizer/preview(위젯 값 → 정리 결과와 청크 구조, 지금 고를 수 없는 시선). 실행과 같은 옵션 함수를 쓴다.
   - 실행하면 입력 글을 ui(bmk_tag_input)로 돌려준다 — text 를 상류에 연결했을 때 편집기 미리보기용.
 
 버전 이력:
@@ -57,6 +60,9 @@
   - v4: 청크 편집기 JS 를 TagOrganizer 의 모듈(js/tag_organizer/, sync 가 복사)로 합치고 js/bmk_tag_organizer.js 는
         ComfyUI 어댑터만 남겼다. 추정 규칙 메뉴 추가, 배열의 description·다른 툴 키 보존, 놓친 끌기 취소.
         노드 입력·서버 경로·저장 형식은 그대로라 v3 워크플로가 그대로 열린다.
+  - v5: 코어 v1.6. 시선 입력(gaze)과 편집기 위의 시선 칩(여러 개 선택, 함께 못 쓰는 태그는 켜는 순간 꺼짐,
+        크롭·시점이 막는 태그는 숨김). 구도 규칙이 크롭·시점과 함께 그릴 수 없는 시선을 프롬프트에서도 뺀다(1인 그림만).
+        facing 태그는 이제 시선으로 분류된다. 새 입력은 optional 맨 뒤라 v4 워크플로가 그대로 열린다.
 """
 
 from __future__ import annotations
@@ -109,6 +115,7 @@ _DEFAULTS: Dict[str, Any] = {
     "dialect_priority": _PRIORITIES[0],
     "comments": "remove",
     "sentences": True,
+    "gaze": "",
 }
 
 
@@ -203,6 +210,7 @@ def _options(core: ModuleType, values: Mapping[str, Any]) -> Any:
         arrangement=v["arrangement"] or None,
         framing="" if v["framing"] == _AUTO else v["framing"],
         view="" if v["view"] == _AUTO else v["view"],
+        gaze=v["gaze"],
         guess=v["guess"],
     )
 
@@ -254,6 +262,7 @@ def _preview_payload(body: Mapping[str, Any]) -> Dict[str, Any]:
         # 자동 인식 결과(input·output·auto, 자동이면 evidence·counts·conflict)와 입력 문법 경고(설명 글 포함)
         "dialect": report["dialect"],
         "warnings": [{**w, "text": core.warning_text(w["reason"])} for w in report["warnings"]],
+        "gaze_blocked": report["gaze_blocked"],     # 시선 칩에서 숨길 태그(지금 크롭·시점과 맞지 않음)
     }
 
 
@@ -489,6 +498,16 @@ class BMKTagOrganizer:
                         ),
                     },
                 ),
+                # v5 입력. 맨 뒤에 붙여 v4 워크플로의 widgets_values 가 밀리지 않는다
+                "gaze": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "multiline": False,
+                        "hidden": True,
+                        "tooltip": "시선 덮어쓰기(쉼표로 여럿, 시선 칩이 씀). 크롭·시점이 막는 태그는 넣지 않습니다. 비우면 프롬프트 그대로",
+                    },
+                ),
             },
         }
 
@@ -521,6 +540,7 @@ class BMKTagOrganizer:
         dialect_priority: str = _PRIORITIES[0],
         comments: str = "remove",
         sentences: bool = True,
+        gaze: str = "",
     ):
         result = _organize(
             text,
@@ -542,6 +562,7 @@ class BMKTagOrganizer:
                 "dialect_priority": dialect_priority,
                 "comments": comments,
                 "sentences": sentences,
+                "gaze": gaze,
             },
         )
         counts = result.report["counts"]

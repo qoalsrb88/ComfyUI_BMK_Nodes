@@ -1,4 +1,4 @@
-// bmk_tag_organizer.js — BMKTagOrganizer 짝 JS 확장 (v4)
+// bmk_tag_organizer.js — BMKTagOrganizer 짝 JS 확장 (v5)
 //
 // 배열 세팅(arrangement) 청크 편집기를 노드에 붙이는 ComfyUI 어댑터. 편집기 자체는 TagOrganizer 저장소의
 // extension/editor/ 가 정본이고(크롬 확장 패널과 같은 코드), js/tag_organizer/ 는 그 저장소의
@@ -11,6 +11,9 @@
 // - 미리보기: 지금 위젯 값으로 서버 /bmk/tag_organizer/preview 를 부른다(실행과 같은 옵션 함수).
 //   text 를 상류에 연결했으면 마지막 실행의 입력(ui.bmk_tag_input).
 // - 분류·색·레이아웃별 시작 배열은 /bmk/tag_organizer/palette 에서 한 번 받는다(⋯ → 팩 다시 읽기).
+// - 시선 칩: 편집기 맨 위 한 줄. 여러 개를 고르고 결과는 숨긴 STRING 위젯 gaze 에 "a, b" 로 쓴다.
+//   지금 크롭·시점과 맞지 않는 칩은 미리보기 결과(gaze_blocked)를 따라 숨기되 선택은 남긴다. 코어가 막힌 선택을
+//   넣지 않으므로 시점을 되돌리면 다시 든다. text 가 연결돼 있으면 한 번 실행한 뒤부터 숨긴다.
 //
 // 상태는 ArrangementEditor·host 객체에 두고 위젯에는 자체 필드를 얹지 않는다(프론트 1.53 이 위젯을
 // BaseWidget 으로 흡수하며 충돌할 수 있음 — bmk_sam3_mask_layers.js 와 같은 이유).
@@ -18,21 +21,32 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { ArrangementEditor, el } from "./tag_organizer/editor.js";
+import { gazeToggle, splitItems } from "./tag_organizer/model.js";
 
 const NODE_ID = "BMKTagOrganizer";
 const ARR = "arrangement";
+const GAZE = "gaze";
 const EDITOR_TYPE = "BMK_TAG_ARRANGEMENT";
 const PALETTE_URL = "/bmk/tag_organizer/palette";
 const PREVIEW_URL = "/bmk/tag_organizer/preview";
 const OPTION_KEYS = [
   "preset", "exclude", "max_rating", "rules", "layout", "input_dialect", "output_dialect",
   "line_per_section", "trailing_comma", "dedupe", "framing", "view", "guess",
-  "dialect_priority", "comments", "sentences",
+  "dialect_priority", "comments", "sentences", GAZE,
 ];
 const MIN_WIDTH = 560;
-const ADD_HEIGHT = 420;      // 처음 만들 때 편집기 몫으로 늘리는 높이
-const EDITOR_MIN_H = 300;
+const ADD_HEIGHT = 480;      // 처음 만들 때 편집기 몫으로 늘리는 높이
+const EDITOR_MIN_H = 360;
 const MARGIN = 6;
+const GAZE_STYLE = `
+.bmk-to-gaze{flex:0 0 auto;display:flex;flex-wrap:wrap;align-items:center;gap:3px}
+.bmk-to-gaze[hidden]{display:none}
+.bmk-to-gaze>span{margin-right:3px;color:var(--descrip-text,#999)}
+.bmk-to-gaze button{height:18px;padding:0 7px;border:1px solid var(--border-color,#4e4e4e);border-radius:9px;background:var(--comfy-input-bg,#222);color:var(--input-text,#ddd);font:inherit;font-size:11px;line-height:16px;cursor:pointer}
+.bmk-to-gaze button:hover{border-color:var(--input-text,#ddd)}
+.bmk-to-gaze button[aria-pressed=true]{border-color:var(--p-primary-color,#5b8def);background:var(--p-primary-color,#5b8def);color:#fff}
+.bmk-to-gaze button.tag[aria-pressed=true]::before{content:"✓ "}
+`;
 
 function checkState() {
   try {
@@ -84,12 +98,80 @@ async function validateArrangement(json) {
   }
 }
 
+// ─── 시선 칩 ───
+
+function injectGazeStyle() {
+  if (document.getElementById("bmk-to-gaze-style")) return;
+  const style = el("style", "", GAZE_STYLE);
+  style.id = "bmk-to-gaze-style";
+  document.head.appendChild(style);
+}
+
+function gazeChips(node, onChange) {
+  injectGazeStyle();
+  const widget = () => node.widgets?.find((w) => w.name === GAZE);
+  const row = el("div", "bmk-to-gaze");
+  let palette = null;
+  let blocked = [];
+
+  function chip(label, cls, pressed, title, onClick) {
+    const button = el("button", cls, label);
+    button.type = "button";
+    button.title = title;
+    button.setAttribute("aria-pressed", String(pressed));
+    button.addEventListener("click", onClick);
+    return button;
+  }
+
+  function set(tags) {
+    const w = widget();
+    const value = tags.join(", ");
+    if (w && w.value !== value) {
+      w.value = value;
+      w.callback?.(value);
+      onChange();
+    }
+    render();
+  }
+
+  function render() {
+    const tags = palette?.quick?.gaze ?? [];
+    const linked = node.inputs?.find((i) => i.name === GAZE)?.link != null;
+    row.hidden = !tags.length || !widget() || linked;
+    const on = splitItems(widget()?.value);
+    row.replaceChildren(
+      el("span", "", "시선"),
+      chip("자동", "", !on.some((tag) => !blocked.includes(tag)), "프롬프트 그대로", () => set([])), // 고른 것이 모두 막혀도 프롬프트 그대로
+      ...tags.filter((tag) => !blocked.includes(tag)).map((tag) => chip(tag, "tag", on.includes(tag),
+        `${tag.startsWith("facing") ? "눈을 감거나 가렸을 때" : "눈이 보일 때"} — 프롬프트의 시선 태그를 고른 태그들로 바꿉니다. 여러 개 고를 수 있습니다`,
+        () => set(gazeToggle(palette, on, tag)))),
+    );
+  }
+
+  return {
+    row,
+    render,
+    setPalette(value) {
+      palette = value;
+      render();
+    },
+    setBlocked(value) {
+      if (value.join() === blocked.join()) return;
+      blocked = value;
+      render();
+    },
+  };
+}
+
 // ─── 편집기 ↔ 노드 ───
 
 function nodeHost(node) {
   const widget = (name) => node.widgets?.find((w) => w.name === name);
   const linked = (name) => node.inputs?.find((i) => i.name === name)?.link != null;
+  const gaze = gazeChips(node, () => host.changed());
+  let previewSeq = 0;
   const host = {
+    gaze,
     lastInput: null,      // 마지막 실행의 입력(text 를 연결했을 때)
     split: node.properties?.bmk_to_split,
     canReset: true,
@@ -117,8 +199,16 @@ function nodeHost(node) {
       return typeof v === "string" ? v : "";
     },
     locked: () => linked(ARR),
-    loadPalette,
-    preview: postPreview,
+    loadPalette: (force) => loadPalette(force).then((data) => {
+      gaze.setPalette(data.palette);
+      return data;
+    }),
+    async preview(body) {
+      const seq = ++previewSeq;
+      const data = await postPreview(body);
+      if (seq === previewSeq) gaze.setBlocked(data.gaze_blocked ?? []);
+      return data;
+    },
     validate: validateArrangement,
     renderState(box, { model, fromLayout, locked, layoutLabel }) {
       box.replaceChildren();
@@ -159,9 +249,11 @@ app.registerExtension({
     const onNodeCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function () {
       const r = onNodeCreated?.apply(this, arguments);
-      const arr = this.widgets?.find((w) => w.name === ARR);
-      if (arr) arr.hidden = true; // 입력 옵션 hidden 을 모르는 프론트에서도 숨긴다
+      for (const w of this.widgets ?? []) {
+        if (w.name === ARR || w.name === GAZE) w.hidden = true; // 입력 옵션 hidden 을 모르는 프론트에서도 숨긴다
+      }
       const editor = new ArrangementEditor(nodeHost(this));
+      editor.root.prepend(editor.host.gaze.row);
       this.__bmkTagArr = editor;
       const widget = this.addDOMWidget("arrangement_editor", EDITOR_TYPE, editor.root, {
         serialize: false,
@@ -186,6 +278,7 @@ app.registerExtension({
         editor.split = Number(this.properties?.bmk_to_split) || editor.split;
         editor.applySplit();
         editor.syncFromWidget(true);
+        editor.host.gaze.render();
       }
       // v1 워크플로의 노드는 편집기 자리가 없으므로 최소 크기까지 늘린다
       const sz = this.computeSize?.();

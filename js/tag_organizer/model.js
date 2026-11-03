@@ -19,6 +19,23 @@ export function splitItems(value) {
   return items.map((v) => String(v).trim()).filter(Boolean);
 }
 
+// 시선 칩을 눌렀을 때의 새 선택(퀵 목록 순서). 켜면 함께 쓸 수 없는 태그(gaze_conflicts, 양방향)를 끈다.
+export function gazeToggle(paletteData, selected, tag) {
+  let on = new Set(selected);
+  if (on.has(tag)) {
+    on.delete(tag);
+  } else {
+    const conflicts = paletteData.gaze_conflicts || {};
+    const off = new Set(conflicts[tag] || []);
+    for (const [other, tags] of Object.entries(conflicts)) if (tags.includes(tag)) off.add(other);
+    on = new Set([...on].filter((t) => !off.has(t)));
+    on.add(tag);
+  }
+  const order = paletteData.quick.gaze;
+  const rank = (t) => (order.includes(t) ? order.indexOf(t) : order.length);
+  return [...on].sort((a, b) => rank(a) - rank(b));
+}
+
 export function lines(text) {
   return String(text).split("\n").map((s) => s.trim()).filter(Boolean);
 }

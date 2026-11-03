@@ -293,7 +293,7 @@ export class ArrangementEditor {
         <label class="bmk-to-check" title="켜면 청크 안 태그를 펼친 서브 순서로 놓습니다. 끄면 입력 순서"><input type="checkbox" data-act="suborder">서브 순서</label>
         <button type="button" class="bmk-to-btn" data-act="custom" title="태그·패턴으로 고른 토큰을 모으는 청크">+ 커스텀</button>
         <button type="button" class="bmk-to-btn" data-act="import" title="관리 툴에서 내보낸 배열 세팅 JSON 파일">가져오기</button>
-        <button type="button" class="bmk-to-btn" data-act="export" title="관리 툴·Studio·사내 툴에서 쓸 배열 세팅 JSON 파일로 저장">내보내기</button>
+        <button type="button" class="bmk-to-btn" data-act="export" title="관리 툴 등 다른 프로그램에서 쓸 배열 세팅 JSON 파일로 저장">내보내기</button>
         <button type="button" class="bmk-to-btn" data-act="more" title="이름·JSON·레이아웃으로·펼치기">⋯</button>
       </div>
       <div class="bmk-to-warn" hidden></div>

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-r"""bmk_tag_organizer(v3) 자체 테스트 — 노드 팩 패키지 전체가 아니라 단일 모듈로 불러 쓴다.
+r"""bmk_tag_organizer(v5) 자체 테스트 — 노드 팩 패키지 전체가 아니라 단일 모듈로 불러 쓴다.
 
 실행 (ComfyUI-Easy-Install 루트에서):
     python_embeded\python.exe ComfyUI\custom_nodes\ComfyUI_BMK_Nodes\tools\test_bmk_tag_organizer.py
@@ -8,6 +8,7 @@ v2 입력(framing·view·guess·arrangement)이 optional 이라 v1 입력만 주
 배열 세팅·덮어쓰기·추정이 코어와 같은 결과를 내는지, 편집기 경로(_preview_payload·_palette_payload)가
 노드 실행과 같은 결과를 내는지 본다. v3 입력(dialect_priority·comments·sentences)은 arrangement 뒤에 붙어
 v2 워크플로의 widgets_values 자리가 그대로인지, 자동 인식·주석·문장·경고가 코어와 같은지 본다.
+v5 입력(gaze)은 그 뒤이고, 시선 덮어쓰기와 막는 태그가 코어와 같은지 본다.
 코어·팩은 TagOrganizer `tagorg.py sync` 가 복사한 사본을 쓴다.
 """
 from __future__ import annotations
@@ -59,9 +60,10 @@ pack = mod._load_pack()
 # ── 노드 정의 ──
 it = mod.BMKTagOrganizer.INPUT_TYPES()
 check(list(it["required"])[-1] == "dedupe" and len(it["required"]) == 11, "required 는 v1 그대로(11개)")
-check(list(it["optional"]) == ["framing", "view", "guess", "arrangement", "dialect_priority", "comments", "sentences"],
-      "v2 입력은 optional 맨 뒤, v3 입력은 그 뒤")
+check(list(it["optional"]) == ["framing", "view", "guess", "arrangement", "dialect_priority", "comments", "sentences", "gaze"],
+      "v2 입력은 optional 맨 뒤, v3·v5 입력은 그 뒤")
 check(it["optional"]["arrangement"][1].get("hidden") is True, "arrangement 숨김 위젯")
+check(it["optional"]["gaze"][1].get("hidden") is True, "gaze 숨김 위젯")
 # v2 워크플로의 widgets_values(위젯 순서대로 15개)가 같은 이름 자리에 들어간다
 V2_WIDGETS = ["text", "preset", "exclude", "max_rating", "rules", "layout", "input_dialect", "output_dialect",
               "line_per_section", "trailing_comma", "dedupe", "framing", "view", "guess", "arrangement"]
@@ -201,9 +203,37 @@ for text in V3_TEXTS:
                                         sentences=True)
     check(v2["result"] == v3["result"], "새 입력이 빠지면 기본값")
 
+# ── v5: 시선 ──
+(t, removed, report), _ = run("1girl, looking down, smile", gaze="looking back, looking at viewer")
+check("looking back" in t and "looking at viewer" in t and "looking down  # override:gaze" in removed, "시선을 여러 개로 덮어씀")
+(t, removed, report), _ = run("1girl, smile", view="straight-on", gaze="looking back, looking down")
+check("looking back" not in t and "looking down" in t, "시점이 막는 선택은 넣지 않음")
+check("looking back" in json.loads(report)["gaze_blocked"], "report 의 gaze_blocked")
+(t, removed, _), _ = run("1girl, straight-on, looking back")
+check("looking back  # rule:view(straight-on)" in removed, "프롬프트의 막힌 시선은 구도 규칙으로 뺌")
+check("looking back" in run("1girl, straight-on, looking back", rules="off")[0][0], "구도 규칙을 끄면 남음")
+(t, removed, _), _ = run("1girl, smile", view="from behind", gaze="looking at viewer")
+check("smile" in t, "from behind 에서 고개를 돌리면 표정이 남음")
+(t, removed, _), _ = run("1girl, smile, from above, facing away", view="from side")
+check("facing away" in t and "from above  # override:view" in removed, "시점 덮어쓰기가 facing 을 지우지 않음")
+try:
+    run("1girl", gaze="smile")
+    check(False, "시선이 아닌 태그는 오류")
+except ValueError as e:
+    check("action/gaze" in str(e), "시선이 아닌 태그는 오류")
+page = mod._preview_payload({"text": "1girl, smile", "view": "straight-on", "gaze": "looking at viewer"})
+check("looking back" in page["gaze_blocked"] and "looking at viewer" in page["text"], "미리보기 경로의 시선")
+check(mod._preview_payload({"text": "1girl", "gaze": 3})["gaze_blocked"] == [], "형식이 다른 gaze 는 기본값")
+v4 = mod.BMKTagOrganizer().organize(TEXTS[0], **V1, framing="auto", view="auto", guess=False, arrangement="",
+                                    dialect_priority=mod._PRIORITIES[0], comments="remove", sentences=True)
+check(v4["result"] == run(TEXTS[0], gaze="")[0], "gaze 가 빠지면 기본값(v4 워크플로)")
+widgets = (list(it["required"]) + list(it["optional"]))
+check(widgets[:18] == V2_WIDGETS + ["dialect_priority", "comments", "sentences"], "v4 위젯 자리 그대로")
+
 # ── palette ──
 pal = mod._palette_payload()
 check(pal["palette"]["format"] == core.PALETTE_FORMAT, "palette 형식")
+check(pal["palette"]["quick"]["gaze"] and "looking back" in pal["palette"]["gaze_conflicts"], "palette 의 시선 칩·충돌 표")
 check(set(pal["layouts"]) == set(pack.layouts), "레이아웃마다 시작 배열")
 for lid, start in pal["layouts"].items():
     for text in TEXTS:

@@ -74,6 +74,9 @@ Impact Pack 의존 import는 전부 `try/except`로 격리돼 있어서, 없어�
 내보낸 JSON 을 **가져오기**로 넣습니다. 결과는 숨긴 `arrangement` 위젯에 저장되고, 비워 두면
 `layout` 을 씁니다. 형식은 TagOrganizer 저장소의 `docs/arrangement.md` 가 정본입니다.
 
+시선은 편집기 맨 위의 시선 칩에서 여러 개 고릅니다(`looking back` + `looking at viewer` 등). 함께 쓸 수 없는
+태그는 켜는 순간 꺼지고, 지금 크롭·시점과 맞지 않는 시선(`straight-on` 의 `looking back` 등)은 목록에서 사라집니다.
+
 입력 문법은 `input_dialect` 에서 고르거나 `auto` 로 프롬프트의 표기(NAI `1.2::x ::`·`{x}`, ComfyUI
 `(x:1.2)`·`\(`, Anima `@작가`)로 알아내게 합니다. 표기가 섞였거나 없으면 `dialect_priority` 순서(기본
 nai > comfyui > anima)를 따르고, 알아낸 문법과 근거는 편집기 상태 줄과 `report` 출력의 `dialect` 에
