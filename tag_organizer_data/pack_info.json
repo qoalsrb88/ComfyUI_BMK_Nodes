@@ -41,11 +41,13 @@
   },
   "synced_from": {
     "repo": "TagOrganizer",
-    "commit": "9c25fcfd150578e91f7ca0ff086f6b6717a8c74c",
+    "commit": "d70d6b4fe92f8c4bd7232230f1fbb596e62a96d1",
     "dirty": false
   },
   "files": {
     "bmk_tag_organizer_core.py": "a7dbfe15d94eed78b9f16416a108ded2c2b5bd1749838ce458fd9deb37b83c43",
-    "tag_organizer_data/tagpack.json.gz": "6ec30590065ee0ee1c397542524823c3b87431954823d7fec48b9878d85f12ca"
+    "tag_organizer_data/tagpack.json.gz": "6ec30590065ee0ee1c397542524823c3b87431954823d7fec48b9878d85f12ca",
+    "js/tag_organizer/editor.js": "5cc7c192958a1c6fb4b2ed3a8ab4e85e50429c8d43a69587cc9f1640d57d8567",
+    "js/tag_organizer/model.js": "460d1499a3eb2731ef5755a4788d29e17c93c2335140d333b2912a715bbcc590"
   }
 }

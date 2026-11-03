@@ -64,10 +64,11 @@ Impact Pack 의존 import는 전부 `try/except`로 격리돼 있어서, 없어�
 
 ## BMK Tag Organizer — 분류 데이터
 
-`bmk_tag_organizer_core.py` 와 `tag_organizer_data/`(태그 팩)는 별도 TagOrganizer 저장소가
-정본이며, 그 저장소의 `python tagorg.py sync` 가 이 폴더로 복사합니다. 이 폴더에서 직접
-고치지 마세요(다음 동기화가 바뀐 파일을 감지하고 멈춥니다). 다른 위치의 팩을 쓰려면 환경
-변수 `TAGORG_PACK` 에 경로를 지정합니다.
+`bmk_tag_organizer_core.py`, `tag_organizer_data/`(태그 팩), `js/tag_organizer/`(청크 편집기)는
+별도 TagOrganizer 저장소가 정본이며(편집기는 `extension/editor/`), 그 저장소의
+`python tagorg.py sync` 가 이 폴더로 복사합니다. 이 폴더에서 직접 고치지 마세요(다음 동기화가
+바뀐 파일을 감지하고 멈춥니다). `js/bmk_tag_organizer.js` 는 편집기를 노드에 붙이는 어댑터입니다.
+다른 위치의 팩을 쓰려면 환경 변수 `TAGORG_PACK` 에 경로를 지정합니다.
 
 줄·청크 순서(배열 세팅)는 노드 안의 청크 편집기에서 끌어서 바꾸거나, TagOrganizer 관리 툴에서
 내보낸 JSON 을 **가져오기**로 넣습니다. 결과는 숨긴 `arrangement` 위젯에 저장되고, 비워 두면

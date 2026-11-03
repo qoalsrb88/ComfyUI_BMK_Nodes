@@ -280,9 +280,13 @@ for _module_name in _NODE_MODULES:
 #   - bmk_tag_organizer.js
 #       BMKTagOrganizer용 확장. 배열 세팅(arrangement) 청크 편집기 DOM 위젯: 줄마다 분류 색 청크를 끌어
 #       순서·줄을 바꾸고, 펼쳐서 서브(멤버) 순서 바꾸기·다른 청크로·밖으로 새 청크, 숨기기, 커스텀 청크
-#       (태그·패턴), 관리 툴 JSON 가져오기/내보내기. 결과는 숨긴 STRING 위젯 arrangement 에 JSON 으로
+#       (태그·패턴), 추정 규칙, 관리 툴 JSON 가져오기/내보내기. 결과는 숨긴 STRING 위젯 arrangement 에 JSON 으로
 #       쓰고, /bmk/tag_organizer/preview 로 남는 태그는 밝게·뺀 태그는 흐리게 미리 본다. 상태 줄에 자동
 #       인식한 입력 문법과 근거·입력 문법 경고, 미리보기에 주석(맨 위)·자연어 문장을 그린다.
+#       이 파일은 노드에 붙이는 어댑터(위젯·서버 경로·캔버스)만 두고, 편집기 본체는 아래 모듈을 쓴다.
+#   - tag_organizer/editor.js, tag_organizer/model.js
+#       청크 편집기 본체. TagOrganizer 저장소 extension/editor/ 가 정본이고 그 저장소의 `python tagorg.py sync` 가
+#       복사한다(여기서 직접 고치면 다음 동기화가 멈춘다). 확장으로 로드돼도 import 만으로는 아무 일도 하지 않는다.
 #   - bmk_native_file_dialog.js
 #       워크플로 저장 파일명 입력창(ComfyWorkflow.promptSave)과 열기(app.ui.loadFile)를 윈도우 기본
 #       파일 창으로 바꾸는 패치. 창은 서버(bmk_native_file_dialog.py, /bmk/native_dialog/*)가 띄우고,
