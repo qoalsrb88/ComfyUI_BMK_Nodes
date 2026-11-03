@@ -22,7 +22,7 @@ ComfyUI 노드, BMK AI Studio, CLI가 함께 쓰는 단일 파일 코어다. 표
 - DB에 없는 토큰(unknown)과 아직 분류하지 않은 태그(etc)는 조용히 버리지 않는다.
 - BREAK 로 나뉜 구간은 각각 따로 정리하고 BREAK 를 그대로 둔다.
 
-배열 세팅(arrangement)은 다른 툴(ComfyUI JS 편집기, Studio, 사내 툴)과 같이 쓰는 JSON 이다.
+배열 세팅(arrangement)은 여러 편집기에서 읽을 수 있는 공용 JSON 형식이다.
 형식은 docs/arrangement.md, 편집기가 쓰는 카테고리·색·퀵 목록은 palette(), 레이아웃에서 시작할 때는
 arrangement_from_layout(). 결과의 report["arranged"] 는 줄 → 청크 → 토큰(뺀 것 포함) 구조라
 미리보기 화면이 뺀 태그를 제자리에 흐리게 그릴 수 있다.
@@ -42,6 +42,9 @@ arrangement_from_layout(). 결과의 report["arranged"] 는 줄 → 청크 → �
         문장 끝 마침표(sentences, kind=natural·시스템 카테고리 natural), 입력 문법 자동 인식(input_dialect=auto,
         detect_dialect, dialect_priority, report dialect.auto·evidence·conflict). 팩 스키마는 그대로 — 옛 팩에서는
         자연어 문장이 rest 로 가고, 옛 코어는 새 팩의 natural 섹션을 빈 섹션으로 둔다.
+- v1.6: 시선 덮어쓰기(gaze: 여러 태그), 크롭·시점이 막는 태그(rules 의 framing·view.blocks), report 의 gaze_blocked,
+        칩 토글(gaze_toggle), palette 의 gaze_conflicts. 팩 스키마는 그대로 — 옛 팩에는 시선 퀵 목록과 blocks 가
+        없어 덮어쓰기만 동작한다.
 """
 
 from __future__ import annotations
@@ -80,7 +83,7 @@ TYPE_GUESS = -2   # 추정한 토큰에 붙이는 임시 정보(팩에는 없음
 ARRANGEMENT_FORMAT = "tagorg-arrangement"
 ARRANGEMENT_VERSION = 1
 PALETTE_FORMAT = "tagorg-palette"
-OVERRIDE_TARGETS = {"framing": "composition/framing", "view": "composition/angle"}
+OVERRIDE_TARGETS = {"framing": "composition/framing", "view": "composition/angle", "gaze": "action/gaze"}
 REST_CHUNK = "rest"
 DEFAULT_GUESS_HEADS = ("composition", "action", "clothes", "body", "object", "effect", "background")
 
@@ -321,6 +324,7 @@ class Options:
     arrangement: Any = None             # 배열 세팅(dict 또는 JSON 글). 주면 layout 대신 쓴다
     framing: str = ""                   # 크롭 덮어쓰기: composition/framing 태그(쉼표로 여럿). 비우면 프롬프트 그대로
     view: str = ""                      # 시점 덮어쓰기: composition/angle 태그
+    gaze: str = ""                      # 시선 덮어쓰기: action/gaze 태그(쉼표로 여럿). 크롭·시점이 막는 태그는 넣지 않는다
     guess: bool = False                 # 팩에 없는 토큰의 분류를 패턴·끝말로 추정한다(임시 편입)
 
     @classmethod
@@ -1134,7 +1138,7 @@ def _guess(tokens: List[Token], pack: TagPack, rules: Sequence[GuessRule], heads
                          regions=tuple(regions), identity=identity, status="guess", display=t.core or t.text)
 
 
-# ─── 크롭·시점 덮어쓰기 ───────────────────────────────────────────
+# ─── 크롭·시점·시선 덮어쓰기 ──────────────────────────────────────
 
 def _overrides(pack: TagPack, opts: Options) -> List[Tuple[str, str, List[TagInfo]]]:
     """(그룹, 대상 서브 카테고리, 넣을 태그들). 대상 서브 카테고리의 태그만 받는다."""
@@ -1154,12 +1158,18 @@ def _overrides(pack: TagPack, opts: Options) -> List[Tuple[str, str, List[TagInf
     return out
 
 
-def _apply_overrides(tokens: List[Token], overrides, inject: bool) -> List[Token]:
+def _apply_overrides(tokens: List[Token], overrides, inject: bool, pack: TagPack, opts: Options) -> List[Token]:
     """대상 서브 카테고리 토큰을 빼고(override:<그룹>) 고른 태그를 그 자리에 넣는다. 고른 태그가 이미 있으면 둔다.
 
     BREAK 첫 구간(inject)에는 늘 넣고, 다른 구간에는 그 구간에 대상 태그가 있었을 때만 바꾼다.
+    시선은 크롭·시점 다음에 정한다: 그 구간의 크롭·시점이 막는 태그는 고르지 않은 것으로 본다.
     """
     for group, target, infos in overrides:
+        if group == "gaze":
+            blocked = _blocked_tags(_alive_keys(tokens), pack, opts)
+            infos = [i for i in infos if i.key not in blocked or blocked[i.key][1] != "remove"]
+            if not infos:
+                continue
         keys = {i.key for i in infos}
         pos: Optional[int] = None
         for idx, t in enumerate(tokens):
@@ -1211,6 +1221,45 @@ def _is_multi_subject(present: Set[str], rules: Mapping[str, Any]) -> bool:
     return len(present & set(cfg.get("count_single", ()))) >= 2
 
 
+def _alive_keys(tokens: List[Token]) -> Set[str]:
+    return {t.key for t in tokens if t.kind == "tag" and not t.removed}
+
+
+def _rule_groups(present: Set[str], pack: TagPack, opts: Options) -> List[Tuple[str, str, Mapping[str, Any]]]:
+    """지금 프롬프트에 적용할 크롭·시점 규칙: (그룹, 모드, 설정). 끄거나 면제된 그룹은 없다."""
+    modes = opts.rule_modes()
+    multi = _is_multi_subject(present, pack.rules)
+    out = []
+    for group in ("framing", "view"):
+        mode = modes[group]
+        cfg = pack.rules.get(group) or {}
+        if mode == "off" or present & set(cfg.get("exempt", ())):
+            continue
+        if group == "view" and multi and cfg.get("multi_subject_exempt", True):
+            continue
+        out.append((group, mode, cfg))
+    return out
+
+
+def _blocked_tags(present: Set[str], pack: TagPack, opts: Options) -> Dict[str, Tuple[str, str, str]]:
+    """크롭·시점이 막는 태그 → (그룹, 모드, 기준 태그). 한 그룹의 기준 태그가 여럿이면 모두가 막는 것만 막는다.
+
+    한 사람의 시선·시점을 맞추는 규칙이라 여러 명이면 쓰지 않는다(한 명은 고개가 잘리고 다른 한 명은 볼 수 있다).
+    """
+    out: Dict[str, Tuple[str, str, str]] = {}
+    if _is_multi_subject(present, pack.rules):
+        return out
+    for group, mode, cfg in _rule_groups(present, pack, opts):
+        active = [b for b in cfg.get("blocks", ()) if present & set(b["tags"])]
+        if not active:
+            continue
+        blocks = set.intersection(*(set(b["block"]) for b in active))
+        gates = ", ".join(sorted(present & {tag for b in active for tag in b["tags"]}))
+        for tag in blocks:
+            out.setdefault(tag, (group, mode, gates))
+    return out
+
+
 def _apply_rules(tokens: List[Token], pack: TagPack, opts: Options) -> None:
     rules = pack.rules
     modes = opts.rule_modes()
@@ -1220,13 +1269,7 @@ def _apply_rules(tokens: List[Token], pack: TagPack, opts: Options) -> None:
 
     # 부위 기반 규칙: 가려진 부위 → (그룹, 모드, 기준 태그)
     hidden: Dict[str, Tuple[str, str, str]] = {}
-    for group in ("framing", "view"):
-        mode = modes[group]
-        cfg = rules.get(group) or {}
-        if mode == "off" or present & set(cfg.get("exempt", ())):
-            continue
-        if group == "view" and multi and cfg.get("multi_subject_exempt", True):
-            continue
+    for group, mode, cfg in _rule_groups(present, pack, opts):
         active = [g for g in cfg.get("gates", ()) if present & set(g["tags"])]
         if not active:
             continue
@@ -1250,6 +1293,13 @@ def _apply_rules(tokens: List[Token], pack: TagPack, opts: Options) -> None:
             entries = sorted({hidden[r] for r in regs})
             mode = "remove" if all(e[1] == "remove" for e in entries) else "report"
             _act(t, mode, "rule:" + "; ".join(f"{g}({gates})" for g, _, gates in entries))
+
+    # 크롭·시점과 함께 그릴 수 없는 태그
+    blocked = _blocked_tags(present, pack, opts)
+    for t in alive:
+        if t.kind == "tag" and t.key in blocked:
+            group, mode, gates = blocked[t.key]
+            _act(t, mode, f"rule:{group}({gates})")
 
     # 명시 규칙
     for rule in rules.get("explicit", ()):
@@ -1644,6 +1694,7 @@ def organize(text: str, pack: Optional[TagPack] = None, options: Any = None) -> 
     all_tokens: List[Token] = []
     chunk_texts: List[str] = []
     arranged: List[Dict[str, Any]] = []
+    first_present: Set[str] = set()
     taken = 0
     for ci, chunk in enumerate(_BREAK.split(body)):
         count = chunk.count(_COMMENT_MARK)
@@ -1655,12 +1706,14 @@ def organize(text: str, pack: Optional[TagPack] = None, options: Any = None) -> 
         if opts.guess:
             _guess(tokens, pack, guess_rules, heads)
         if overrides:
-            tokens = _apply_overrides(tokens, overrides, inject=ci == 0)
+            tokens = _apply_overrides(tokens, overrides, ci == 0, pack, opts)
         for i, t in enumerate(notes + tokens):
             t.chunk, t.order, t.index = ci, len(all_tokens) + i, len(all_tokens) + i
         if opts.dedupe:
             _dedupe(tokens)
         _apply_filters(tokens, sels, opts)
+        if ci == 0:
+            first_present = _alive_keys(tokens)
         _apply_rules(tokens, pack, opts)
         _place(tokens, plan, pack)
         lines, rows = _render(tokens, plan, opts, out_dialect)
@@ -1686,6 +1739,9 @@ def organize(text: str, pack: Optional[TagPack] = None, options: Any = None) -> 
     report = _report(all_tokens, pack, opts, out_dialect, detected)
     report["arrangement"] = plan.label if _has_arrangement(opts.arrangement) else ""
     report["arranged"] = arranged
+    # 시선 칩에서 지금 고를 수 없는 태그: 칩이 늘 넣는 첫 구간의 크롭·시점으로 판단한다
+    blocked = _blocked_tags(first_present, pack, opts)
+    report["gaze_blocked"] = [tag for tag in (pack.rules.get("quick") or {}).get("gaze", ()) if tag in blocked]
     return Result(joiner.join(chunk_texts), removed_text, report, all_tokens)
 
 
@@ -1745,7 +1801,7 @@ def _report(tokens: List[Token], pack: TagPack, opts: Options, out_dialect: str,
 # ─── 편집기용 ─────────────────────────────────────────────────────
 
 def palette(pack: Any) -> Dict[str, Any]:
-    """편집기(관리 툴·ComfyUI JS·Studio)가 쓰는 카테고리·서브·색, 크롭/시점 퀵 목록, 레이아웃 이름(JSON 그대로).
+    """편집기(관리 툴·ComfyUI JS 등)가 쓰는 카테고리·서브·색, 크롭/시점/시선 퀵 목록, 레이아웃 이름(JSON 그대로).
 
     pack 은 TagPack 이나 taxonomy·rules·layouts 속성을 가진 객체.
     """
@@ -1758,7 +1814,22 @@ def palette(pack: Any) -> Dict[str, Any]:
     quick = (pack.rules or {}).get("quick") or {}
     return {"format": PALETTE_FORMAT, "categories": cats,
             "quick": {group: list(quick.get(group, ())) for group in OVERRIDE_TARGETS},
+            "gaze_conflicts": {tag: list(others) for tag, others in (quick.get("gaze_conflicts") or {}).items()},
             "layouts": {lid: lay.get("label", lid) for lid, lay in pack.layouts.items()}}
+
+
+def gaze_toggle(palette_data: Mapping[str, Any], selected: Sequence[str], tag: str) -> List[str]:
+    """시선 칩을 눌렀을 때의 새 선택(퀵 목록 순서). 켜면 함께 쓸 수 없는 태그(gaze_conflicts, 양방향)를 끈다."""
+    on = set(selected)
+    if tag in on:
+        on.discard(tag)
+    else:
+        conflicts = palette_data.get("gaze_conflicts") or {}
+        on -= set(conflicts.get(tag, ()))
+        on -= {other for other, tags in conflicts.items() if tag in tags}
+        on.add(tag)
+    order = list(palette_data["quick"]["gaze"])
+    return sorted(on, key=lambda t: order.index(t) if t in order else len(order))
 
 
 def category_slots(taxonomy: Mapping[str, Any]) -> List[str]:
