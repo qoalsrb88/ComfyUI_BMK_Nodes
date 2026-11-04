@@ -48,6 +48,8 @@ arrangement_from_layout(). 결과의 report["arranged"] 는 줄 → 청크 → �
 - v1.7: 시점 덮어쓰기도 여러 태그(view), 칩 토글(view_toggle), palette 의 view_conflicts·view_lift, report 의
         view_lifted. 부위 어휘에 front_hips·back_hips·back_legs, 규칙 게이트의 unless_any, 배열 청크의 gap_after(빈 줄).
         팩 스키마는 그대로 — 옛 팩에서는 이전과 같이 동작한다.
+- v1.8: 시선 규칙(rules 의 gaze 그룹): facing 이면 눈이 떠 있어야 성립하는 태그를 뺀다. 게이트의 keep·unless_prefix.
+        팩 스키마는 그대로 — 옛 팩에는 gaze 그룹이 없어 이전과 같이 동작한다.
 """
 
 from __future__ import annotations
@@ -75,7 +77,7 @@ AUTO_DIALECT = "auto"                          # 입력 문법을 프롬프트�
 INPUT_DIALECTS = (AUTO_DIALECT,) + DIALECTS
 DIALECT_PRIORITY = ("nai", "comfyui", "anima")  # 자동 인식: 신호가 섞였을 때·없을 때 앞의 것
 COMMENT_MODES = ("remove", "keep")
-RULE_GROUPS = ("framing", "view", "explicit")
+RULE_GROUPS = ("framing", "view", "gaze", "explicit")
 RULE_MODES = ("off", "report", "remove")
 ORDERS = ("input", "popular", "alpha")
 SYSTEM_CATEGORIES = ("etc", "unknown", "special", "natural")
@@ -1237,23 +1239,29 @@ def _alive_keys(tokens: List[Token]) -> Set[str]:
 
 
 def _rule_groups(present: Set[str], pack: TagPack, opts: Options) -> List[Tuple[str, str, Mapping[str, Any]]]:
-    """지금 프롬프트에 적용할 크롭·시점 규칙: (그룹, 모드, 설정). 끄거나 면제된 그룹은 없다."""
+    """지금 프롬프트에 적용할 크롭·시점·시선 규칙: (그룹, 모드, 설정). 끄거나 면제된 그룹은 없다."""
     modes = opts.rule_modes()
     multi = _is_multi_subject(present, pack.rules)
     out = []
-    for group in ("framing", "view"):
+    for group in ("framing", "view", "gaze"):
         mode = modes[group]
         cfg = pack.rules.get(group) or {}
         if mode == "off" or present & set(cfg.get("exempt", ())):
             continue
-        if group == "view" and multi and cfg.get("multi_subject_exempt", True):
+        if multi and cfg.get("multi_subject_exempt", group == "view"):
             continue
         out.append((group, mode, cfg))
     return out
 
 
+def _gate_active(gate: Mapping[str, Any], present: Set[str]) -> bool:
+    if not present & set(gate["tags"]) or present & set(gate.get("unless_any", ())):
+        return False
+    return not any(key.startswith(prefix) for prefix in gate.get("unless_prefix", ()) for key in present)
+
+
 def _blocked_tags(present: Set[str], pack: TagPack, opts: Options) -> Dict[str, Tuple[str, str, str]]:
-    """크롭·시점이 막는 태그 → (그룹, 모드, 기준 태그). 한 그룹의 기준 태그가 여럿이면 모두가 막는 것만 막는다.
+    """규칙 그룹이 막는 태그 → (그룹, 모드, 기준 태그). 한 그룹의 기준 태그가 여럿이면 모두가 막는 것만 막는다.
 
     한 사람의 시선·시점을 맞추는 규칙이라 여러 명이면 쓰지 않는다(한 명은 고개가 잘리고 다른 한 명은 볼 수 있다).
     """
@@ -1278,20 +1286,25 @@ def _apply_rules(tokens: List[Token], pack: TagPack, opts: Options) -> None:
     present = {t.key for t in alive if t.kind == "tag"}
     multi = _is_multi_subject(present, rules)
 
+    # 곧 빠질 시선은 기준으로 삼지 않는다(straight-on 이 뺄 facing away 때문에 눈 태그까지 빠지지 않게)
+    blocked = _blocked_tags(present, pack, opts)
+    gating = present - {tag for tag, (_, mode, _) in blocked.items() if mode == "remove"}
+
     # 부위 기반 규칙: 가려진 부위 → (그룹, 모드, 기준 태그)
     hidden: Dict[str, Tuple[str, str, str]] = {}
+    spared: Dict[str, Set[str]] = {}        # 그룹 → 그 그룹이 가려도 남기는 태그
     for group, mode, cfg in _rule_groups(present, pack, opts):
-        active = [g for g in cfg.get("gates", ())
-                  if present & set(g["tags"]) and not present & set(g.get("unless_any", ()))]
+        active = [g for g in cfg.get("gates", ()) if _gate_active(g, gating)]
         if not active:
             continue
+        spared[group] = {tag for g in active for tag in g.get("keep", ())}
         # 기준 태그가 여럿이면(예: upper body + full body) 모두가 가리는 부위만 가린다
         regions = set.intersection(*(set(g.get("hide", ())) for g in active))
         for g in active:
             for tag, revealed in (g.get("reveal") or {}).items():
                 if tag in present:
                     regions -= set(revealed)
-        gates = ", ".join(sorted(present & {tag for g in active for tag in g["tags"]}))
+        gates = ", ".join(sorted(gating & {tag for g in active for tag in g["tags"]}))
         for region in regions:
             hidden.setdefault(region, (group, mode, gates))
 
@@ -1300,14 +1313,13 @@ def _apply_rules(tokens: List[Token], pack: TagPack, opts: Options) -> None:
             if t.info is None or not t.info.regions:
                 continue
             regs = sorted(set(t.info.regions))
-            if not all(r in hidden for r in regs):
+            if not all(r in hidden and t.key not in spared[hidden[r][0]] for r in regs):
                 continue
             entries = sorted({hidden[r] for r in regs})
             mode = "remove" if all(e[1] == "remove" for e in entries) else "report"
             _act(t, mode, "rule:" + "; ".join(f"{g}({gates})" for g, _, gates in entries))
 
     # 크롭·시점과 함께 그릴 수 없는 태그
-    blocked = _blocked_tags(present, pack, opts)
     for t in alive:
         if t.kind == "tag" and t.key in blocked:
             group, mode, gates = blocked[t.key]

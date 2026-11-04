@@ -71,6 +71,9 @@
         를 켜면 함께). 칩에 front view·three quarter view·multiple views 가 더해졌다. 위젯 이름·자리는 그대로이고
         콤보가 저장한 값 하나(from behind, auto 등)는 뜻이 같아 v5 워크플로·API 프롬프트가 그대로 돈다.
         편집기의 빈 줄(gap_after)과 앞면·뒷면 부위 규칙은 코어·팩·편집기 동기화로 들어온다.
+  - v7: 코어 v1.8. facing 시선이면 눈이 떠 있어야 성립하는 태그(yellow eyes, tsurime 등)를 구도 규칙으로 뺀다.
+        closed eyes, blindfold 와 눈썹은 남고, looking 시선을 함께 고르면 빼지 않는다. 노드 입력은 그대로라
+        v6 워크플로가 그대로 열린다(facing 과 눈 태그를 함께 쓰던 워크플로만 결과가 달라진다. rules=off 면 그대로).
 """
 
 from __future__ import annotations

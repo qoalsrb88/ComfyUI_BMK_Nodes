@@ -77,6 +77,8 @@ Impact Pack 의존 import는 전부 `try/except`로 격리돼 있어서, 없어�
 시점·시선은 편집기 맨 위의 칩에서 여러 개 고릅니다(`from behind` + `from side`, `looking back` + `looking at viewer` 등).
 함께 쓸 수 없는 태그는 켜는 순간 꺼지고, 지금 크롭·시점과 맞지 않는 시선(`straight-on` 의 `looking back` 등)은 목록에서
 사라집니다. 부딪치는 시점(`front view` + `from behind`)을 함께 쓰려면 `multiple views` 칩을 켭니다.
+`facing` 시선을 고르면 눈이 떠 있어야 성립하는 태그(`yellow eyes`, `tsurime` 등)가 구도 규칙으로 빠집니다. `closed eyes`, `blindfold` 와
+눈썹은 남고, `looking` 시선을 함께 고르면 빼지 않습니다.
 
 입력 문법은 `input_dialect` 에서 고르거나 `auto` 로 프롬프트의 표기(NAI `1.2::x ::`·`{x}`, ComfyUI
 `(x:1.2)`·`\(`, Anima `@작가`)로 알아내게 합니다. 표기가 섞였거나 없으면 `dialect_priority` 순서(기본
