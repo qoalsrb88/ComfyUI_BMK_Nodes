@@ -1,4 +1,4 @@
-// bmk_tag_organizer.js — BMKTagOrganizer 짝 JS 확장 (v5)
+// bmk_tag_organizer.js — BMKTagOrganizer 짝 JS 확장 (v6)
 //
 // 배열 세팅(arrangement) 청크 편집기를 노드에 붙이는 ComfyUI 어댑터. 편집기 자체는 TagOrganizer 저장소의
 // extension/editor/ 가 정본이고(크롬 확장 패널과 같은 코드), js/tag_organizer/ 는 그 저장소의
@@ -11,8 +11,10 @@
 // - 미리보기: 지금 위젯 값으로 서버 /bmk/tag_organizer/preview 를 부른다(실행과 같은 옵션 함수).
 //   text 를 상류에 연결했으면 마지막 실행의 입력(ui.bmk_tag_input).
 // - 분류·색·레이아웃별 시작 배열은 /bmk/tag_organizer/palette 에서 한 번 받는다(⋯ → 팩 다시 읽기).
-// - 시선 칩: 편집기 맨 위 한 줄. 여러 개를 고르고 결과는 숨긴 STRING 위젯 gaze 에 "a, b" 로 쓴다.
-//   지금 크롭·시점과 맞지 않는 칩은 미리보기 결과(gaze_blocked)를 따라 숨기되 선택은 남긴다. 코어가 막힌 선택을
+// - 시점·시선 칩: 편집기 맨 위 두 줄. 여러 개를 고르고 결과는 숨긴 STRING 위젯 view·gaze 에 "a, b" 로 쓴다.
+//   시점은 켠 칩과 부딪치는 칩이 꺼지고(까닭을 줄 끝에 잠시 보임), multiple views 칩을 켜거나 프롬프트에 형식 태그가
+//   있으면(미리보기의 view_lifted) 함께 고른다. v5 까지 콤보가 저장한 값 하나(from behind, auto)는 그대로 읽는다.
+//   시선은 지금 크롭·시점과 맞지 않는 칩을 미리보기 결과(gaze_blocked)를 따라 숨기되 선택은 남긴다. 코어가 막힌 선택을
 //   넣지 않으므로 시점을 되돌리면 다시 든다. text 가 연결돼 있으면 한 번 실행한 뒤부터 숨긴다.
 //
 // 상태는 ArrangementEditor·host 객체에 두고 위젯에는 자체 필드를 얹지 않는다(프론트 1.53 이 위젯을
@@ -21,31 +23,35 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { ArrangementEditor, el } from "./tag_organizer/editor.js";
-import { gazeToggle, splitItems } from "./tag_organizer/model.js";
+import { gazeToggle, splitItems, viewToggle } from "./tag_organizer/model.js";
 
 const NODE_ID = "BMKTagOrganizer";
 const ARR = "arrangement";
 const GAZE = "gaze";
+const VIEW = "view";
+const AUTO = "auto";         // v5 까지의 view 콤보가 저장한 값. 고른 것이 없다는 뜻
 const EDITOR_TYPE = "BMK_TAG_ARRANGEMENT";
 const PALETTE_URL = "/bmk/tag_organizer/palette";
 const PREVIEW_URL = "/bmk/tag_organizer/preview";
 const OPTION_KEYS = [
   "preset", "exclude", "max_rating", "rules", "layout", "input_dialect", "output_dialect",
-  "line_per_section", "trailing_comma", "dedupe", "framing", "view", "guess",
+  "line_per_section", "trailing_comma", "dedupe", "framing", VIEW, "guess",
   "dialect_priority", "comments", "sentences", GAZE,
 ];
 const MIN_WIDTH = 560;
-const ADD_HEIGHT = 480;      // 처음 만들 때 편집기 몫으로 늘리는 높이
-const EDITOR_MIN_H = 360;
+const ADD_HEIGHT = 520;      // 처음 만들 때 편집기 몫으로 늘리는 높이
+const EDITOR_MIN_H = 400;
 const MARGIN = 6;
-const GAZE_STYLE = `
-.bmk-to-gaze{flex:0 0 auto;display:flex;flex-wrap:wrap;align-items:center;gap:3px}
-.bmk-to-gaze[hidden]{display:none}
-.bmk-to-gaze>span{margin-right:3px;color:var(--descrip-text,#999)}
-.bmk-to-gaze button{height:18px;padding:0 7px;border:1px solid var(--border-color,#4e4e4e);border-radius:9px;background:var(--comfy-input-bg,#222);color:var(--input-text,#ddd);font:inherit;font-size:11px;line-height:16px;cursor:pointer}
-.bmk-to-gaze button:hover{border-color:var(--input-text,#ddd)}
-.bmk-to-gaze button[aria-pressed=true]{border-color:var(--p-primary-color,#5b8def);background:var(--p-primary-color,#5b8def);color:#fff}
-.bmk-to-gaze button.tag[aria-pressed=true]::before{content:"✓ "}
+const NOTE_MS = 8000;        // 칩이 꺼진 까닭을 보이는 시간
+const CHIP_STYLE = `
+.bmk-to-chips{flex:0 0 auto;display:flex;flex-wrap:wrap;align-items:center;gap:3px}
+.bmk-to-chips[hidden]{display:none}
+.bmk-to-chips>span{margin-right:3px;color:var(--descrip-text,#999)}
+.bmk-to-chips>span.note{flex:1 1 100%;color:#d4a017}
+.bmk-to-chips button{height:18px;padding:0 7px;border:1px solid var(--border-color,#4e4e4e);border-radius:9px;background:var(--comfy-input-bg,#222);color:var(--input-text,#ddd);font:inherit;font-size:11px;line-height:16px;cursor:pointer}
+.bmk-to-chips button:hover{border-color:var(--input-text,#ddd)}
+.bmk-to-chips button[aria-pressed=true]{border-color:var(--p-primary-color,#5b8def);background:var(--p-primary-color,#5b8def);color:#fff}
+.bmk-to-chips button.tag[aria-pressed=true]::before{content:"✓ "}
 `;
 
 function checkState() {
@@ -98,21 +104,26 @@ async function validateArrangement(json) {
   }
 }
 
-// ─── 시선 칩 ───
+// ─── 시점·시선 칩 ───
 
-function injectGazeStyle() {
-  if (document.getElementById("bmk-to-gaze-style")) return;
-  const style = el("style", "", GAZE_STYLE);
-  style.id = "bmk-to-gaze-style";
+function injectChipStyle() {
+  if (document.getElementById("bmk-to-chips-style")) return;
+  const style = el("style", "", CHIP_STYLE);
+  style.id = "bmk-to-chips-style";
   document.head.appendChild(style);
 }
 
-function gazeChips(node, onChange) {
-  injectGazeStyle();
-  const widget = () => node.widgets?.find((w) => w.name === GAZE);
-  const row = el("div", "bmk-to-gaze");
+// 칩 한 줄. spec: name(위젯 이름·퀵 그룹), label, title(palette, tag), toggle(palette, on, tag) → 새 선택,
+// dropNote?(palette, dropped) → 칩이 꺼진 까닭
+function chipRow(node, onChange, spec) {
+  injectChipStyle();
+  const widget = () => node.widgets?.find((w) => w.name === spec.name);
+  const selected = () => splitItems(widget()?.value).filter((tag) => tag !== AUTO);
+  const row = el("div", "bmk-to-chips");
   let palette = null;
   let blocked = [];
+  let note = "";
+  let noteTimer = 0;
 
   function chip(label, cls, pressed, title, onClick) {
     const button = el("button", cls, label);
@@ -123,28 +134,39 @@ function gazeChips(node, onChange) {
     return button;
   }
 
-  function set(tags) {
+  function set(tags, noteText = "") {
     const w = widget();
     const value = tags.join(", ");
-    if (w && w.value !== value) {
+    // 저장된 값과 뜻이 같으면(auto → 빈 값 등) 쓰지 않아 되돌리기 기록을 남기지 않는다
+    if (w && selected().join(", ") !== value) {
       w.value = value;
       w.callback?.(value);
       onChange();
+    }
+    clearTimeout(noteTimer);
+    note = noteText;
+    if (note) {
+      noteTimer = setTimeout(() => {
+        note = "";
+        render();
+      }, NOTE_MS);
     }
     render();
   }
 
   function render() {
-    const tags = palette?.quick?.gaze ?? [];
-    const linked = node.inputs?.find((i) => i.name === GAZE)?.link != null;
+    const tags = palette?.quick?.[spec.name] ?? [];
+    const linked = node.inputs?.find((i) => i.name === spec.name)?.link != null;
     row.hidden = !tags.length || !widget() || linked;
-    const on = splitItems(widget()?.value);
+    const on = selected();
     row.replaceChildren(
-      el("span", "", "시선"),
+      el("span", "", spec.label),
       chip("자동", "", !on.some((tag) => !blocked.includes(tag)), "프롬프트 그대로", () => set([])), // 고른 것이 모두 막혀도 프롬프트 그대로
-      ...tags.filter((tag) => !blocked.includes(tag)).map((tag) => chip(tag, "tag", on.includes(tag),
-        `${tag.startsWith("facing") ? "눈을 감거나 가렸을 때" : "눈이 보일 때"} — 프롬프트의 시선 태그를 고른 태그들로 바꿉니다. 여러 개 고를 수 있습니다`,
-        () => set(gazeToggle(palette, on, tag)))),
+      ...tags.filter((tag) => !blocked.includes(tag)).map((tag) => chip(tag, "tag", on.includes(tag), spec.title(palette, tag), () => {
+        const next = spec.toggle(palette, on, tag);
+        set(next, spec.dropNote?.(palette, on.filter((t) => t !== tag && !next.includes(t))));
+      })),
+      ...(note ? [el("span", "note", note)] : []),
     );
   }
 
@@ -163,14 +185,47 @@ function gazeChips(node, onChange) {
   };
 }
 
+function gazeChips(node, onChange) {
+  return chipRow(node, onChange, {
+    name: GAZE,
+    label: "시선",
+    title: (_palette, tag) => `${tag.startsWith("facing") ? "눈을 감거나 가렸을 때" : "눈이 보일 때"} — 프롬프트의 시선 태그를 고른 태그들로 바꿉니다. 여러 개 고를 수 있습니다`,
+    toggle: gazeToggle,
+  });
+}
+
+function viewChips(node, onChange) {
+  let lifted = false;
+  const lifts = (palette) => palette.view_lift ?? [];
+  const row = chipRow(node, onChange, {
+    name: VIEW,
+    label: "시점",
+    title: (palette, tag) => (lifts(palette).includes(tag)
+      ? "부딪치는 시점도 함께 고를 수 있게 합니다(크롭·시점 규칙을 끔)"
+      : "프롬프트의 시점 태그를 고른 태그들로 바꿉니다. 여러 개 고를 수 있습니다"),
+    toggle: (palette, on, tag) => viewToggle(palette, on, tag, lifted),
+    dropNote: (palette, dropped) => (dropped.length
+      ? `${dropped.join(", ")}: 고른 시점과 부딪쳐 껐습니다. ${lifts(palette).join(", ")} 를 켜면 함께 고를 수 있습니다.`
+      : ""),
+  });
+  return {
+    ...row,
+    setLifted(value) {
+      lifted = value;
+    },
+  };
+}
+
 // ─── 편집기 ↔ 노드 ───
 
 function nodeHost(node) {
   const widget = (name) => node.widgets?.find((w) => w.name === name);
   const linked = (name) => node.inputs?.find((i) => i.name === name)?.link != null;
+  const view = viewChips(node, () => host.changed());
   const gaze = gazeChips(node, () => host.changed());
   let previewSeq = 0;
   const host = {
+    view,
     gaze,
     lastInput: null,      // 마지막 실행의 입력(text 를 연결했을 때)
     split: node.properties?.bmk_to_split,
@@ -200,13 +255,17 @@ function nodeHost(node) {
     },
     locked: () => linked(ARR),
     loadPalette: (force) => loadPalette(force).then((data) => {
+      view.setPalette(data.palette);
       gaze.setPalette(data.palette);
       return data;
     }),
     async preview(body) {
       const seq = ++previewSeq;
       const data = await postPreview(body);
-      if (seq === previewSeq) gaze.setBlocked(data.gaze_blocked ?? []);
+      if (seq === previewSeq) {
+        view.setLifted(Boolean(data.view_lifted));
+        gaze.setBlocked(data.gaze_blocked ?? []);
+      }
       return data;
     },
     validate: validateArrangement,
@@ -250,10 +309,10 @@ app.registerExtension({
     nodeType.prototype.onNodeCreated = function () {
       const r = onNodeCreated?.apply(this, arguments);
       for (const w of this.widgets ?? []) {
-        if (w.name === ARR || w.name === GAZE) w.hidden = true; // 입력 옵션 hidden 을 모르는 프론트에서도 숨긴다
+        if (w.name === ARR || w.name === VIEW || w.name === GAZE) w.hidden = true; // 입력 옵션 hidden 을 모르는 프론트에서도 숨긴다
       }
       const editor = new ArrangementEditor(nodeHost(this));
-      editor.root.prepend(editor.host.gaze.row);
+      editor.root.prepend(editor.host.view.row, editor.host.gaze.row);
       this.__bmkTagArr = editor;
       const widget = this.addDOMWidget("arrangement_editor", EDITOR_TYPE, editor.root, {
         serialize: false,
@@ -278,6 +337,7 @@ app.registerExtension({
         editor.split = Number(this.properties?.bmk_to_split) || editor.split;
         editor.applySplit();
         editor.syncFromWidget(true);
+        editor.host.view.render();
         editor.host.gaze.render();
       }
       // v1 워크플로의 노드는 편집기 자리가 없으므로 최소 크기까지 늘린다

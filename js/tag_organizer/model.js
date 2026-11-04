@@ -36,6 +36,23 @@ export function gazeToggle(paletteData, selected, tag) {
   return [...on].sort((a, b) => rank(a) - rank(b));
 }
 
+// 시점 칩을 눌렀을 때의 새 선택(퀵 목록 순서). 켠 태그와 부딪치는 태그(view_conflicts, 양방향)를 끈다.
+// view_lift 태그가 켜져 있거나 lifted(report 의 view_lifted)면 부딪치지 않는다. lift 를 끄면 부딪치는 태그 중 목록의 앞쪽만 남긴다.
+export function viewToggle(paletteData, selected, tag, lifted = false) {
+  const conflicts = paletteData.view_conflicts || {};
+  const order = paletteData.quick.view;
+  const rank = (t) => (order.includes(t) ? order.indexOf(t) : order.length);
+  const clash = (a, b) => (conflicts[a] || []).includes(b) || (conflicts[b] || []).includes(a);
+  const adding = !selected.includes(tag);
+  let on = adding ? [...new Set([...selected, tag])] : selected.filter((t) => t !== tag);
+  on.sort((a, b) => rank(a) - rank(b));
+  if (lifted || on.some((t) => (paletteData.view_lift || []).includes(t))) return on;
+  if (adding) on = on.filter((t) => t === tag || !clash(t, tag));
+  const kept = [];
+  for (const t of on) if (!kept.some((k) => clash(t, k))) kept.push(t);
+  return kept;
+}
+
 export function lines(text) {
   return String(text).split("\n").map((s) => s.trim()).filter(Boolean);
 }
@@ -242,9 +259,32 @@ export class Model {
     return true;
   }
 
+  toggleGapAfter(cid) {
+    const spec = this.chunks.get(cid);
+    if (spec.gap_after) delete spec.gap_after;
+    else {
+      spec.gap_after = true;
+      this.breakAfter(cid);
+    }
+    return true;
+  }
+
+  toggleGapBefore(cid) {
+    const flat = this.flat();
+    const i = flat.indexOf(cid);
+    return i > 0 ? this.toggleGapAfter(flat[i - 1]) : false;
+  }
+
+  hasGapBefore(cid) {
+    const flat = this.flat();
+    const i = flat.indexOf(cid);
+    return i > 0 && Boolean(this.chunks.get(flat[i - 1]).gap_after);
+  }
+
   joinPrevious(cid) {
     const [r] = this.where(cid);
     if (r === 0) return false;
+    delete this.chunks.get(this.rows[r - 1].at(-1)).gap_after;
     this.rows[r - 1].push(...this.rows.splice(r, 1)[0]);
     return true;
   }

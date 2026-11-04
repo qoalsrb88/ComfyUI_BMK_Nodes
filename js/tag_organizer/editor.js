@@ -44,7 +44,8 @@ const STYLE = `
 .bmk-to-warn a{color:var(--p-primary-color,#5b8def);cursor:pointer;text-decoration:underline}
 .bmk-to-scroll{overflow:auto;min-height:40px;border:1px solid var(--border-color,#4e4e4e);border-radius:6px;background:color-mix(in srgb,var(--comfy-input-bg,#222) 70%,transparent)}
 .bmk-to-canvas{padding:6px 6px 16px 0}
-.bmk-to-row{display:flex;align-items:flex-start;margin-bottom:8px}
+.bmk-to-row{display:grid;grid-template-columns:24px minmax(0,1fr);align-items:start;margin-bottom:8px}
+.bmk-to-gap{grid-column:2;margin-top:4px;border-top:1px dashed var(--border-color,#4e4e4e);font-size:10px;line-height:16px;text-align:center;color:var(--descrip-text,#999)}
 .bmk-to-gutter{flex:0 0 24px;box-sizing:border-box;padding-right:6px;text-align:right;line-height:24px;color:var(--descrip-text,#999);font-variant-numeric:tabular-nums}
 .bmk-to-chunks{flex:1 1 auto;min-width:0;display:flex;flex-wrap:wrap;align-items:flex-start;gap:5px}
 .bmk-to-chunk{display:inline-flex;flex-wrap:wrap;align-items:center;gap:4px;max-width:100%;box-sizing:border-box;min-height:24px;padding:2px 8px;border:1px solid color-mix(in srgb,var(--c) 65%,transparent);border-radius:6px;background:color-mix(in srgb,var(--c) 18%,var(--comfy-input-bg,#222));cursor:grab}
@@ -67,6 +68,7 @@ const STYLE = `
 .bmk-to-split:hover{background:var(--border-color,#4e4e4e)}
 .bmk-to-preview{padding:5px 7px;line-height:1.65;user-select:text;word-break:break-word}
 .bmk-to-line{margin:0}
+.bmk-to-line:empty{min-height:1.65em}
 .bmk-to-line.brk{color:var(--descrip-text,#999);font-weight:600}
 .bmk-to-grp{padding:0 1px;border-radius:3px;background:color-mix(in srgb,var(--c) 16%,transparent);-webkit-box-decoration-break:clone;box-decoration-break:clone}
 .bmk-to-grp.hl{background:color-mix(in srgb,var(--c) 40%,transparent)}
@@ -650,6 +652,7 @@ export class ArrangementEditor {
       const chunks = el("div", "bmk-to-chunks");
       row.forEach((cid, pi) => chunks.appendChild(this.chunkEl(cid, ri, pi)));
       rowEl.append(el("span", "bmk-to-gutter", String(ri + 1)), chunks);
+      if (this.model.chunks.get(row.at(-1)).gap_after) rowEl.appendChild(el("div", "bmk-to-gap", "빈 줄"));
       return rowEl;
     });
     box.replaceChildren(...rows);
@@ -665,6 +668,11 @@ export class ArrangementEditor {
     box.classList.toggle("off", Boolean(spec.hidden));
     const head = el("span", "bmk-to-head");
     head.appendChild(el("span", "bmk-to-label", this.chunkLabel(cid)));
+    if (spec.gap_after && pi < this.model.rows[ri].length - 1) {
+      const mark = el("span", "bmk-to-gap-mark", "↵");
+      mark.title = "이 청크 아래에 빈 줄";
+      head.appendChild(mark);
+    }
     const count = this.counts.get(cid);
     if (count) {
       const badge = el("span", "bmk-to-badge", String(count.kept));
@@ -1064,6 +1072,10 @@ export class ArrangementEditor {
     for (const [ri, rowEl] of rows.entries()) {
       const r = rowEl.getBoundingClientRect();
       const edge = Math.min(EDGE * scale, r.height / 4);
+      const gap = rowEl.querySelector(".bmk-to-gap")?.getBoundingClientRect();
+      if (gap && y >= gap.top && y <= gap.bottom) {
+        return { kind: "row", row: ri, pos: this.model.rows[ri].length };
+      }
       if (y < r.top + edge) return { kind: "newrow", row: ri };
       if (y <= r.bottom - edge) {
         const chunks = [...rowEl.querySelectorAll(".bmk-to-chunks > .bmk-to-chunk")];
@@ -1151,6 +1163,11 @@ export class ArrangementEditor {
       items.push(
         { label: "앞에서 줄바꿈", action: () => this.edit((mm) => mm.breakBefore(cid)) },
         { label: "뒤에서 줄바꿈", action: () => this.edit((mm) => mm.breakAfter(cid)) },
+        { label: spec.gap_after ? "아래 빈 줄 빼기" : "아래에 빈 줄 넣기", action: () => this.edit((mm) => mm.toggleGapAfter(cid)) },
+        ...(m.flat()[0] === cid ? [] : [{
+          label: m.hasGapBefore(cid) ? "위 빈 줄 빼기" : "위에 빈 줄 넣기",
+          action: () => this.edit((mm) => mm.toggleGapBefore(cid)),
+        }]),
         { label: "앞 줄과 합치기", action: () => this.edit((mm) => mm.joinPrevious(cid)) },
         "-",
         { label: spec.hidden ? "보이기" : "숨기기 — 이 청크의 태그를 뺌", action: () => this.edit((mm) => mm.toggleHidden(cid)) },
@@ -1167,6 +1184,13 @@ export class ArrangementEditor {
       if (m.isCustom(cid)) items.push({ label: "커스텀 청크 지우기", action: () => this.edit((mm) => mm.deleteChunk(cid)) });
       items.push("-", { label: "새 커스텀 청크…", action: () => this.chunkDialog(null) });
     } else {
+      const row = e.target.closest(".bmk-to-row");
+      if (row && this.canvasEl.contains(row)) {
+        const cid = m.rows[Number(row.dataset.row)].at(-1);
+        const label = e.target.closest(".bmk-to-gap") ? "빈 줄 빼기"
+          : m.chunks.get(cid).gap_after ? "이 줄 아래에 빈 줄 빼기" : "이 줄 아래에 빈 줄 넣기";
+        items.push({ label, action: () => this.edit((mm) => mm.toggleGapAfter(cid)) }, "-");
+      }
       items.push({ label: "새 커스텀 청크…", action: () => this.chunkDialog(null) }, "-", ...this.moreItems());
     }
     showMenu(e.clientX, e.clientY, items);

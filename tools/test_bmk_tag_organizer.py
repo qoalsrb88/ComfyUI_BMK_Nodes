@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-r"""bmk_tag_organizer(v5) 자체 테스트 — 노드 팩 패키지 전체가 아니라 단일 모듈로 불러 쓴다.
+r"""bmk_tag_organizer(v6) 자체 테스트 — 노드 팩 패키지 전체가 아니라 단일 모듈로 불러 쓴다.
 
 실행 (ComfyUI-Easy-Install 루트에서):
     python_embeded\python.exe ComfyUI\custom_nodes\ComfyUI_BMK_Nodes\tools\test_bmk_tag_organizer.py
@@ -9,6 +9,7 @@ v2 입력(framing·view·guess·arrangement)이 optional 이라 v1 입력만 주
 노드 실행과 같은 결과를 내는지 본다. v3 입력(dialect_priority·comments·sentences)은 arrangement 뒤에 붙어
 v2 워크플로의 widgets_values 자리가 그대로인지, 자동 인식·주석·문장·경고가 코어와 같은지 본다.
 v5 입력(gaze)은 그 뒤이고, 시선 덮어쓰기와 막는 태그가 코어와 같은지 본다.
+v6 은 view 를 콤보에서 숨긴 STRING 으로 바꿨다. 같은 자리에서 콤보가 저장한 값 하나를 그대로 읽는지, 여러 시점이 코어와 같은지 본다.
 코어·팩은 TagOrganizer `tagorg.py sync` 가 복사한 사본을 쓴다.
 """
 from __future__ import annotations
@@ -64,6 +65,8 @@ check(list(it["optional"]) == ["framing", "view", "guess", "arrangement", "diale
       "v2 입력은 optional 맨 뒤, v3·v5 입력은 그 뒤")
 check(it["optional"]["arrangement"][1].get("hidden") is True, "arrangement 숨김 위젯")
 check(it["optional"]["gaze"][1].get("hidden") is True, "gaze 숨김 위젯")
+check(it["optional"]["view"][0] == "STRING" and it["optional"]["view"][1].get("hidden") is True
+      and it["optional"]["view"][1]["default"] == "", "view 숨김 STRING 위젯, 기본은 빈 값")
 # v2 워크플로의 widgets_values(위젯 순서대로 15개)가 같은 이름 자리에 들어간다
 V2_WIDGETS = ["text", "preset", "exclude", "max_rating", "rules", "layout", "input_dialect", "output_dialect",
               "line_per_section", "trailing_comma", "dedupe", "framing", "view", "guess", "arrangement"]
@@ -83,7 +86,6 @@ check(core.Options(dialect_priority=mod._DEFAULTS["dialect_priority"]).priority(
       "새 위젯 기본값 == 코어 Options 기본값")
 quick = core.palette(pack)["quick"]
 check(it["optional"]["framing"][0] == ["auto"] + quick["framing"], "framing 콤보 = auto + 팩 퀵 목록")
-check(it["optional"]["view"][0] == ["auto"] + quick["view"], "view 콤보 = auto + 팩 퀵 목록")
 
 # ── v1 입력만 → 레이아웃 결과, ui 에 입력 ──
 for text in TEXTS:
@@ -230,10 +232,50 @@ check(v4["result"] == run(TEXTS[0], gaze="")[0], "gaze 가 빠지면 기본값(v
 widgets = (list(it["required"]) + list(it["optional"]))
 check(widgets[:18] == V2_WIDGETS + ["dialect_priority", "comments", "sentences"], "v4 위젯 자리 그대로")
 
+# ── v6: 시점 여러 개, v5 콤보 값 ──
+check(widgets == V2_WIDGETS + ["dialect_priority", "comments", "sentences", "gaze"], "v5 위젯 자리 그대로(새 위젯 없음)")
+V5_VIEWS = ["from behind", "from side", "from above", "from below", "straight-on", "profile", "pov", "dutch angle"]
+check(set(V5_VIEWS) <= set(quick["view"]), "v5 콤보의 값이 모두 시점 칩에 있음")
+for text in TEXTS:
+    for value in V5_VIEWS:
+        (t, removed, report), _ = run(text, view=value)
+        want = core.organize(text, pack, {"view": value})
+        check((t, removed) == (want.text, want.removed_text), f"v5 콤보 값 == 코어 {value}")
+        pv = mod._preview_payload({**V1, "text": text, "view": value})
+        check((pv["text"], pv["removed"]) == (t, removed), f"미리보기 == 실행 {value}")
+    plain = core.organize(text, pack, {})
+    for values in ({"view": "auto"}, {"view": ""}, {}):
+        (t, removed, _), _ = run(text, **values)
+        check((t, removed) == (plain.text, plain.removed_text), f"시점 자동 {values}")
+        pv = mod._preview_payload({**V1, "text": text, **values})
+        check((pv["text"], pv["removed"]) == (plain.text, plain.removed_text), f"미리보기 시점 자동 {values}")
+for value in ("from behind, from side", "front view, from behind, multiple views", "multiple views",
+              "three quarter view, dutch angle"):
+    for text in TEXTS:
+        (t, removed, _), _ = run(text, view=value)
+        want = core.organize(text, pack, {"view": value})
+        check((t, removed) == (want.text, want.removed_text), f"여러 시점 == 코어 {value}")
+(t, removed, _), _ = run("1girl, from above, smile", view="from behind, from side")
+check("from behind" in t and "from side" in t and "from above  # override:view" in removed, "시점을 여러 개로 덮어씀")
+(t, removed, _), _ = run("1girl, from above, smile", view="multiple views")
+check("multiple views" in t and "from above" in t and "override:view" not in removed, "multiple views 만 고르면 프롬프트 시점을 둠")
+try:
+    run("1girl", view="smile")
+    check(False, "시점이 아닌 태그는 오류")
+except ValueError as e:
+    check("composition/angle" in str(e), "시점이 아닌 태그는 오류")
+check(mod._preview_payload({"text": "1girl, smile"})["view_lifted"] is False, "프롬프트에 형식 태그가 없으면 view_lifted 끔")
+check(mod._preview_payload({"text": "1girl, multiple views"})["view_lifted"] is True, "프롬프트의 multiple views 로 view_lifted")
+check(mod._preview_payload({"text": "1girl", "view": "multiple views"})["view_lifted"] is False, "칩이 넣은 lift 는 세지 않음")
+check(mod._preview_payload({"text": "1girl, smile", "view": 3})["text"] == mod._preview_payload({"text": "1girl, smile"})["text"],
+      "형식이 다른 view 는 기본값")
+
 # ── palette ──
 pal = mod._palette_payload()
 check(pal["palette"]["format"] == core.PALETTE_FORMAT, "palette 형식")
 check(pal["palette"]["quick"]["gaze"] and "looking back" in pal["palette"]["gaze_conflicts"], "palette 의 시선 칩·충돌 표")
+check("multiple views" in pal["palette"]["quick"]["view"] and pal["palette"]["view_lift"] == ["multiple views"]
+      and "from behind" in pal["palette"]["view_conflicts"]["front view"], "palette 의 시점 칩·충돌 표·lift")
 check(set(pal["layouts"]) == set(pack.layouts), "레이아웃마다 시작 배열")
 for lid, start in pal["layouts"].items():
     for text in TEXTS:

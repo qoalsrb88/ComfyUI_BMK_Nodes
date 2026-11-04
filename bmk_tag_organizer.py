@@ -24,8 +24,11 @@
   - output_dialect : 출력 문법. same = 입력과 같음(auto 면 알아낸 문법). NAI 숫자 강조는 `1.1::x ::` 처럼
                      닫는 :: 앞을 띄운다.
   - line_per_section / trailing_comma / dedupe : 출력 모양과 중복 제거.
-  - framing / view : 크롭·시점 덮어쓰기. 프롬프트의 크롭(시점) 태그를 모두 빼고 고른 태그를
-                     넣어, 구도 규칙이 바로 그 크롭(시점)으로 돈다. auto = 프롬프트 그대로.
+  - framing        : 크롭 덮어쓰기. 프롬프트의 크롭 태그를 모두 빼고 고른 태그를 넣어, 구도 규칙이 바로 그
+                     크롭으로 돈다. auto = 프롬프트 그대로.
+  - view           : 시점 덮어쓰기(숨김 위젯, 쉼표로 여럿). 편집기 위의 시점 칩이 쓴다. 방식은 framing 과 같고,
+                     부딪치는 시점은 칩을 켜는 순간 꺼지며 multiple views 칩을 켜면 함께 고른다. multiple views 만
+                     고르면 프롬프트의 시점을 지우지 않는다. 비우거나 auto(v5 까지의 콤보 값) = 프롬프트 그대로.
   - gaze           : 시선 덮어쓰기(숨김 위젯, 쉼표로 여럿). 편집기 위의 시선 칩이 쓴다. 프롬프트의 시선 태그를
                      고른 태그들로 바꾸되, 크롭·시점과 함께 그릴 수 없는 태그(straight-on 의 looking back 등)는
                      넣지 않는다. 비우면 프롬프트 그대로.
@@ -47,7 +50,8 @@
   - 태그 팩은 처음 실행할 때 한 번 읽고(약 1초) 파일이 바뀔 때까지 재사용한다.
     콤보 목록은 팩 옆 pack_info.json 에서 읽어 시작할 때 팩을 읽지 않는다.
   - 서버 경로(JS 편집기용): GET /bmk/tag_organizer/palette(분류·색·퀵 목록·레이아웃별 배열),
-    POST /bmk/tag_organizer/preview(위젯 값 → 정리 결과와 청크 구조, 지금 고를 수 없는 시선). 실행과 같은 옵션 함수를 쓴다.
+    POST /bmk/tag_organizer/preview(위젯 값 → 정리 결과와 청크 구조, 지금 고를 수 없는 시선, 시점 충돌이 풀렸는지).
+    실행과 같은 옵션 함수를 쓴다.
   - 실행하면 입력 글을 ui(bmk_tag_input)로 돌려준다 — text 를 상류에 연결했을 때 편집기 미리보기용.
 
 버전 이력:
@@ -63,6 +67,10 @@
   - v5: 코어 v1.6. 시선 입력(gaze)과 편집기 위의 시선 칩(여러 개 선택, 함께 못 쓰는 태그는 켜는 순간 꺼짐,
         크롭·시점이 막는 태그는 숨김). 구도 규칙이 크롭·시점과 함께 그릴 수 없는 시선을 프롬프트에서도 뺀다(1인 그림만).
         facing 태그는 이제 시선으로 분류된다. 새 입력은 optional 맨 뒤라 v4 워크플로가 그대로 열린다.
+  - v6: 코어 v1.7. 시점(view)을 콤보에서 숨긴 STRING 위젯과 칩 줄로 바꿔 여러 개를 고른다(부딪치면 꺼지고 multiple views
+        를 켜면 함께). 칩에 front view·three quarter view·multiple views 가 더해졌다. 위젯 이름·자리는 그대로이고
+        콤보가 저장한 값 하나(from behind, auto 등)는 뜻이 같아 v5 워크플로·API 프롬프트가 그대로 돈다.
+        편집기의 빈 줄(gap_after)과 앞면·뒷면 부위 규칙은 코어·팩·편집기 동기화로 들어온다.
 """
 
 from __future__ import annotations
@@ -87,7 +95,7 @@ _SYNC_HINT = "TagOrganizer 저장소에서 `python tagorg.py sync --to <이 노�
 _RATINGS = ["e", "q", "s", "g"]
 _RULE_MODES = ["remove", "report", "off"]
 _DIALECTS = ["comfyui", "nai", "anima"]
-_QUICK_GROUPS = ("framing", "view")
+_QUICK_GROUPS = ("framing",)   # 콤보로 고르는 퀵 그룹. 시점·시선은 칩이 palette 에서 받는다
 _AUTO = "auto"
 _UI_INPUT = "bmk_tag_input"
 _COMMENT_MODES = ["remove", "keep"]
@@ -109,7 +117,7 @@ _DEFAULTS: Dict[str, Any] = {
     "trailing_comma": True,
     "dedupe": True,
     "framing": _AUTO,
-    "view": _AUTO,
+    "view": "",
     "guess": False,
     "arrangement": "",
     "dialect_priority": _PRIORITIES[0],
@@ -155,7 +163,7 @@ def _as_quick(value: Any) -> Dict[str, List[str]]:
 
 
 def _read_info() -> Dict[str, Any]:
-    """콤보 목록(presets·layouts → 표시명, 크롭/시점 퀵 태그). 실제로 쓸 팩 옆의 pack_info.json 을 읽고,
+    """콤보 목록(presets·layouts → 표시명, 크롭 퀵 태그). 실제로 쓸 팩 옆의 pack_info.json 을 읽고,
     없거나 깨졌으면 팩에서 직접 읽는다. 둘 다 안 되면 빈 목록(노드 로딩은 막지 않는다)."""
     pack_path = _pack_path()
     info: Dict[str, Any] = {}
@@ -263,6 +271,7 @@ def _preview_payload(body: Mapping[str, Any]) -> Dict[str, Any]:
         "dialect": report["dialect"],
         "warnings": [{**w, "text": core.warning_text(w["reason"])} for w in report["warnings"]],
         "gaze_blocked": report["gaze_blocked"],     # 시선 칩에서 숨길 태그(지금 크롭·시점과 맞지 않음)
+        "view_lifted": report["view_lifted"],       # 프롬프트에 직접 쓴 형식 태그로 시점 칩의 충돌이 풀림
     }
 
 
@@ -439,11 +448,14 @@ class BMKTagOrganizer:
                         ),
                     },
                 ),
+                # v5 까지 콤보였다. 이름·자리가 같고 저장된 값 하나(from behind, auto 등)를 그대로 읽는다
                 "view": (
-                    [_AUTO] + quick.get("view", []),
+                    "STRING",
                     {
-                        "default": _AUTO,
-                        "tooltip": "시점 덮어쓰기(방식은 framing 과 같음). auto = 프롬프트 그대로",
+                        "default": "",
+                        "multiline": False,
+                        "hidden": True,
+                        "tooltip": "시점 덮어쓰기(쉼표로 여럿, 시점 칩이 씀). 방식은 framing 과 같음. 비우거나 auto = 프롬프트 그대로",
                     },
                 ),
                 "guess": (
@@ -534,7 +546,7 @@ class BMKTagOrganizer:
         trailing_comma: bool,
         dedupe: bool,
         framing: str = _AUTO,
-        view: str = _AUTO,
+        view: str = "",
         guess: bool = False,
         arrangement: str = "",
         dialect_priority: str = _PRIORITIES[0],

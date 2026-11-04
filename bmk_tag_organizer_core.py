@@ -45,6 +45,9 @@ arrangement_from_layout(). 결과의 report["arranged"] 는 줄 → 청크 → �
 - v1.6: 시선 덮어쓰기(gaze: 여러 태그), 크롭·시점이 막는 태그(rules 의 framing·view.blocks), report 의 gaze_blocked,
         칩 토글(gaze_toggle), palette 의 gaze_conflicts. 팩 스키마는 그대로 — 옛 팩에는 시선 퀵 목록과 blocks 가
         없어 덮어쓰기만 동작한다.
+- v1.7: 시점 덮어쓰기도 여러 태그(view), 칩 토글(view_toggle), palette 의 view_conflicts·view_lift, report 의
+        view_lifted. 부위 어휘에 front_hips·back_hips·back_legs, 규칙 게이트의 unless_any, 배열 청크의 gap_after(빈 줄).
+        팩 스키마는 그대로 — 옛 팩에서는 이전과 같이 동작한다.
 """
 
 from __future__ import annotations
@@ -1140,16 +1143,22 @@ def _guess(tokens: List[Token], pack: TagPack, rules: Sequence[GuessRule], heads
 
 # ─── 크롭·시점·시선 덮어쓰기 ──────────────────────────────────────
 
+def _override_lifts(pack: Any, group: str) -> Set[str]:
+    """덮어쓰기에 함께 고를 수 있는, 대상 서브 카테고리 밖의 태그(시점의 multiple views)."""
+    return set(((pack.rules or {}).get("quick") or {}).get(f"{group}_lift", ()))
+
+
 def _overrides(pack: TagPack, opts: Options) -> List[Tuple[str, str, List[TagInfo]]]:
-    """(그룹, 대상 서브 카테고리, 넣을 태그들). 대상 서브 카테고리의 태그만 받는다."""
+    """(그룹, 대상 서브 카테고리, 넣을 태그들). 대상 서브 카테고리의 태그와 그 그룹의 lift 태그만 받는다."""
     out = []
     for group, target in OVERRIDE_TARGETS.items():
         infos: List[TagInfo] = []
+        lifts = _override_lifts(pack, group)
         for name in re.split(r"[,\n]", getattr(opts, group) or ""):
             if not name.strip():
                 continue
             info, _ = pack.resolve(normalize_key(name, pack.kaomoji))
-            if info is None or info.primary != target:
+            if info is None or (info.primary != target and info.key not in lifts):
                 raise ValueError(f"{group} 덮어쓰기는 {target} 태그여야 합니다: {name.strip()}")
             if info.key not in {i.key for i in infos}:
                 infos.append(info)
@@ -1163,6 +1172,7 @@ def _apply_overrides(tokens: List[Token], overrides, inject: bool, pack: TagPack
 
     BREAK 첫 구간(inject)에는 늘 넣고, 다른 구간에는 그 구간에 대상 태그가 있었을 때만 바꾼다.
     시선은 크롭·시점 다음에 정한다: 그 구간의 크롭·시점이 막는 태그는 고르지 않은 것으로 본다.
+    lift 태그(multiple views)만 골랐으면 고른 시점이 없는 것이므로 프롬프트의 시점을 그대로 두고 더하기만 한다.
     """
     for group, target, infos in overrides:
         if group == "gaze":
@@ -1171,12 +1181,13 @@ def _apply_overrides(tokens: List[Token], overrides, inject: bool, pack: TagPack
             if not infos:
                 continue
         keys = {i.key for i in infos}
+        replacing = any(i.primary == target for i in infos)
         pos: Optional[int] = None
         for idx, t in enumerate(tokens):
             if t.removed or t.kind == "special" or t.primary != target:
                 continue
             pos = idx
-            if not (t.kind == "tag" and t.key in keys):
+            if replacing and not (t.kind == "tag" and t.key in keys):
                 t.removed = f"override:{group}"
         if pos is None and not inject:
             continue
@@ -1270,7 +1281,8 @@ def _apply_rules(tokens: List[Token], pack: TagPack, opts: Options) -> None:
     # 부위 기반 규칙: 가려진 부위 → (그룹, 모드, 기준 태그)
     hidden: Dict[str, Tuple[str, str, str]] = {}
     for group, mode, cfg in _rule_groups(present, pack, opts):
-        active = [g for g in cfg.get("gates", ()) if present & set(g["tags"])]
+        active = [g for g in cfg.get("gates", ())
+                  if present & set(g["tags"]) and not present & set(g.get("unless_any", ()))]
         if not active:
             continue
         # 기준 태그가 여럿이면(예: upper body + full body) 모두가 가리는 부위만 가린다
@@ -1391,6 +1403,7 @@ class Chunk:
     patterns: List[Any] = field(default_factory=list)        # 커스텀: 와일드카드·정규식
     hidden: bool = False                                     # 이 청크의 태그를 뺀다(hidden:<id>)
     excepts: List[Selector] = field(default_factory=list)    # 레이아웃 섹션의 except
+    gap_after: bool = False                                  # 뒤 묶음 앞에 빈 줄
 
 
 @dataclass
@@ -1551,7 +1564,7 @@ def _load_chunk(cid: str, spec: Any, pack: TagPack, errors: List[str]) -> Chunk:
         errors.append(f"{where} color 는 #rrggbb 여야 합니다: {color}")
     label = str(spec.get("label", "") or "") or _default_label(members, pack.taxonomy) or cid
     return Chunk(cid, label, color or _default_color(members, pack.taxonomy), members, tags, patterns,
-                 bool(spec.get("hidden")))
+                 bool(spec.get("hidden")), gap_after=bool(spec.get("gap_after")))
 
 
 def _layout_plan(pack: TagPack, name: str) -> Plan:
@@ -1639,7 +1652,7 @@ def _join(parts: Sequence[Tuple[str, bool]], sep: str, after_sentence: str = " "
 def _render(tokens: List[Token], plan: Plan, opts: Options, out_dialect: str
             ) -> Tuple[List[Tuple[str, bool]], List[List[Dict[str, Any]]]]:
     """((출력 줄, 문장으로 끝나는지), 줄 → 청크 구조). 줄 안의 청크는 ', ' 로 잇고(문장 뒤는 빈칸) 빈 청크·빈 줄은
-    건너뛴다. 구조에는 뺀 토큰도 넣는다."""
+    건너뛴다. 구조에는 뺀 토큰도 넣는다. 빈 줄 표시는 다음 내용이 있을 때만 넣는다."""
     by_slot: Dict[int, List[Token]] = {}
     for t in tokens:
         by_slot.setdefault(t.slot, []).append(t)
@@ -1651,24 +1664,40 @@ def _render(tokens: List[Token], plan: Plan, opts: Options, out_dialect: str
     rows.append([(-1, plan.rest)])
     lines: List[Tuple[str, bool]] = []
     arranged: List[List[Dict[str, Any]]] = []
+    parts: List[Tuple[str, bool]] = []
+    chunks: List[Dict[str, Any]] = []
+    text_gap = structure_gap = False
+
+    def flush() -> None:
+        nonlocal text_gap, structure_gap
+        if parts:
+            if text_gap and lines:
+                lines.append(("", True))   # 빈 줄 뒤에는 쉼표 없이 줄바꿈만 잇는다
+            lines.append((_join(parts, ", "), parts[-1][1]))
+            parts.clear()
+            text_gap = False
+        if chunks:
+            if structure_gap and arranged:
+                arranged.append([])
+            arranged.append(list(chunks))
+            chunks.clear()
+            structure_gap = False
+
     for row in rows:
-        parts: List[Tuple[str, bool]] = []
-        chunks: List[Dict[str, Any]] = []
         for slot, c in row:
             items = by_slot.get(slot)
-            if not items:
-                continue
-            items = _sorted_chunk(items, plan, opts)
-            kept = [t for t in items if not t.removed]
-            if kept:
-                text = _join([(_format_token(t, opts, out_dialect), t.kind == "natural") for t in kept], ", ")
-                parts.append((text, kept[-1].kind == "natural"))
-            chunks.append({"id": c.id, "label": c.label, "color": c.color, "hidden": c.hidden,
-                           "custom": bool(c.tags or c.patterns), "tokens": [t.index for t in items]})
-        if parts:
-            lines.append((_join(parts, ", "), parts[-1][1]))
-        if chunks:
-            arranged.append(chunks)
+            if items:
+                items = _sorted_chunk(items, plan, opts)
+                kept = [t for t in items if not t.removed]
+                if kept:
+                    text = _join([(_format_token(t, opts, out_dialect), t.kind == "natural") for t in kept], ", ")
+                    parts.append((text, kept[-1].kind == "natural"))
+                chunks.append({"id": c.id, "label": c.label, "color": c.color, "hidden": c.hidden,
+                               "custom": bool(c.tags or c.patterns), "tokens": [t.index for t in items]})
+            if c.gap_after and opts.line_per_section:
+                flush()
+                text_gap = structure_gap = True
+        flush()
     return lines, arranged
 
 
@@ -1695,6 +1724,7 @@ def organize(text: str, pack: Optional[TagPack] = None, options: Any = None) -> 
     chunk_texts: List[str] = []
     arranged: List[Dict[str, Any]] = []
     first_present: Set[str] = set()
+    first_typed: Set[str] = set()
     taken = 0
     for ci, chunk in enumerate(_BREAK.split(body)):
         count = chunk.count(_COMMENT_MARK)
@@ -1714,6 +1744,7 @@ def organize(text: str, pack: Optional[TagPack] = None, options: Any = None) -> 
         _apply_filters(tokens, sels, opts)
         if ci == 0:
             first_present = _alive_keys(tokens)
+            first_typed = {t.key for t in tokens if t.kind == "tag" and not t.removed and not t.injected}
         _apply_rules(tokens, pack, opts)
         _place(tokens, plan, pack)
         lines, rows = _render(tokens, plan, opts, out_dialect)
@@ -1742,6 +1773,9 @@ def organize(text: str, pack: Optional[TagPack] = None, options: Any = None) -> 
     # 시선 칩에서 지금 고를 수 없는 태그: 칩이 늘 넣는 첫 구간의 크롭·시점으로 판단한다
     blocked = _blocked_tags(first_present, pack, opts)
     report["gaze_blocked"] = [tag for tag in (pack.rules.get("quick") or {}).get("gaze", ()) if tag in blocked]
+    # 프롬프트에 시점 규칙을 끄는 형식(multiple views, mirror 등)이 있으면 시점 칩이 서로 막지 않는다.
+    # 칩이 넣은 lift 태그는 세지 않는다: 칩을 끄는 순간 다시 막아야 한다.
+    report["view_lifted"] = bool(first_typed & set((pack.rules.get("view") or {}).get("exempt", ())))
     return Result(joiner.join(chunk_texts), removed_text, report, all_tokens)
 
 
@@ -1815,6 +1849,8 @@ def palette(pack: Any) -> Dict[str, Any]:
     return {"format": PALETTE_FORMAT, "categories": cats,
             "quick": {group: list(quick.get(group, ())) for group in OVERRIDE_TARGETS},
             "gaze_conflicts": {tag: list(others) for tag, others in (quick.get("gaze_conflicts") or {}).items()},
+            "view_conflicts": {tag: list(others) for tag, others in (quick.get("view_conflicts") or {}).items()},
+            "view_lift": list(quick.get("view_lift", ())),
             "layouts": {lid: lay.get("label", lid) for lid, lay in pack.layouts.items()}}
 
 
@@ -1830,6 +1866,34 @@ def gaze_toggle(palette_data: Mapping[str, Any], selected: Sequence[str], tag: s
         on.add(tag)
     order = list(palette_data["quick"]["gaze"])
     return sorted(on, key=lambda t: order.index(t) if t in order else len(order))
+
+
+def view_toggle(palette_data: Mapping[str, Any], selected: Sequence[str], tag: str, lifted: bool = False) -> List[str]:
+    """시점 칩을 눌렀을 때의 새 선택(퀵 목록 순서). 켠 태그와 부딪치는 태그(view_conflicts, 양방향)를 끈다.
+
+    view_lift 태그가 켜져 있거나 lifted(report 의 view_lifted)면 부딪치지 않는다. lift 를 끄면 부딪치는 태그 중
+    목록의 앞쪽만 남긴다.
+    """
+    conflicts = palette_data.get("view_conflicts") or {}
+    order = list(palette_data["quick"]["view"])
+
+    def rank(t: str) -> int:
+        return order.index(t) if t in order else len(order)
+
+    def clash(a: str, b: str) -> bool:
+        return b in conflicts.get(a, ()) or a in conflicts.get(b, ())
+
+    adding = tag not in selected
+    on = sorted({*selected, tag} if adding else set(selected) - {tag}, key=rank)
+    if lifted or set(on) & set(palette_data.get("view_lift") or ()):
+        return on
+    if adding:
+        on = [t for t in on if t == tag or not clash(t, tag)]
+    kept: List[str] = []
+    for t in on:
+        if not any(clash(t, k) for k in kept):
+            kept.append(t)
+    return kept
 
 
 def category_slots(taxonomy: Mapping[str, Any]) -> List[str]:

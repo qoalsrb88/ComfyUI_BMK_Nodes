@@ -1,6 +1,6 @@
 {
   "format": "tagorg-pack-info",
-  "pack_version": "2026.10.01+2b8d43cd",
+  "pack_version": "2026.10.01+ec45f601",
   "source": {
     "file": "danbooru_2026-10-01_pt20-ia-dd.csv",
     "date": "2026-10-01",
@@ -29,14 +29,17 @@
       "head out of frame"
     ],
     "view": [
-      "from behind",
+      "front view",
+      "straight-on",
+      "three quarter view",
       "from side",
+      "from behind",
       "from above",
       "from below",
-      "straight-on",
       "profile",
       "pov",
-      "dutch angle"
+      "dutch angle",
+      "multiple views"
     ],
     "gaze": [
       "looking at viewer",
@@ -58,13 +61,13 @@
   },
   "synced_from": {
     "repo": "TagOrganizer",
-    "commit": "40c11b034f36fccadbb396a0d1c6f414d810d602",
+    "commit": "2dafe6f72224a49288b65bbd60fe5a307023b6a4",
     "dirty": false
   },
   "files": {
-    "bmk_tag_organizer_core.py": "d4c790b2f68573d37a7c6add9c4b6d7b2b042a9fae3c091a9e3acd5c2bda39cb",
-    "tag_organizer_data/tagpack.json.gz": "f7a042669d4b854164fa4ae23f0aa6a5d9c2a04a97647a81501883a958c58291",
-    "js/tag_organizer/editor.js": "ac34942c2f28171ad9235f4fad35789ecc6d605f13d72f9d5f17b76137f76161",
-    "js/tag_organizer/model.js": "648f4582b05b4b9d5cdb5a2564d545e96c2d4497ccbc75ef48ff4e94dfba6e3d"
+    "bmk_tag_organizer_core.py": "7f8223c02f8ea80a52a54ebd267a8272dc86ad530fe69e0e895ac7747034f704",
+    "tag_organizer_data/tagpack.json.gz": "0455b08cae344fc8e9d87085adcd61faa7ab419a4064a371e1d73a37069225de",
+    "js/tag_organizer/editor.js": "53741b652d755f013835d4dd87db2b29549cb8aaa21f004cea9a654957d0c998",
+    "js/tag_organizer/model.js": "9a3aa590c7594158b384560f5c601887adb21f7ca1858a613e6563299537592b"
   }
 }
