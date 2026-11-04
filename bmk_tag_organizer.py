@@ -32,6 +32,9 @@
   - gaze           : 시선 덮어쓰기(숨김 위젯, 쉼표로 여럿). 편집기 위의 시선 칩이 쓴다. 프롬프트의 시선 태그를
                      고른 태그들로 바꾸되, 크롭·시점과 함께 그릴 수 없는 태그(straight-on 의 looking back 등)는
                      넣지 않는다. 비우면 프롬프트 그대로.
+  - pose           : 포즈 덮어쓰기(숨김 위젯, 쉼표로 여럿). 편집기 위의 포즈 칩이 쓴다. 프롬프트의 자세 태그를 고른
+                     태그들로 바꾸되 장소(on bed)·구속(bound) 태그는 남긴다. 몸이 동시에 할 수 없는 자세는 칩을 켜는 순간
+                     꺼지고, portrait·close-up 에서는 넣지 않는다. 비우면 프롬프트 그대로.
   - guess          : 팩에 없는 토큰(자연어 구절 등)의 분류를 패턴·끝말로 추정해 임시로 넣는다.
   - arrangement    : 배열 세팅 JSON(숨김 위젯). 줄 → 청크 → 멤버(서브) 순서를 정한다.
                      JS 편집기(js/bmk_tag_organizer.js + js/tag_organizer/)가 쓰고, TagOrganizer 관리 툴에서 내보낸
@@ -50,7 +53,7 @@
   - 태그 팩은 처음 실행할 때 한 번 읽고(약 1초) 파일이 바뀔 때까지 재사용한다.
     콤보 목록은 팩 옆 pack_info.json 에서 읽어 시작할 때 팩을 읽지 않는다.
   - 서버 경로(JS 편집기용): GET /bmk/tag_organizer/palette(분류·색·퀵 목록·레이아웃별 배열),
-    POST /bmk/tag_organizer/preview(위젯 값 → 정리 결과와 청크 구조, 지금 고를 수 없는 시선, 시점 충돌이 풀렸는지).
+    POST /bmk/tag_organizer/preview(위젯 값 → 정리 결과와 청크 구조, 지금 고를 수 없는 시선·포즈, 시점 충돌이 풀렸는지).
     실행과 같은 옵션 함수를 쓴다.
   - 실행하면 입력 글을 ui(bmk_tag_input)로 돌려준다 — text 를 상류에 연결했을 때 편집기 미리보기용.
 
@@ -74,6 +77,10 @@
   - v7: 코어 v1.8. facing 시선이면 눈이 떠 있어야 성립하는 태그(yellow eyes, tsurime 등)를 구도 규칙으로 뺀다.
         closed eyes, blindfold 와 눈썹은 남고, looking 시선을 함께 고르면 빼지 않는다. 노드 입력은 그대로라
         v6 워크플로가 그대로 열린다(facing 과 눈 태그를 함께 쓰던 워크플로만 결과가 달라진다. rules=off 면 그대로).
+  - v8: 코어 v1.9. 포즈 입력(pose)과 편집기 위의 포즈 칩(여러 개 선택, 몸이 동시에 할 수 없는 자세는 켜는 순간 꺼짐,
+        portrait·close-up 에서는 숨김). 장소·구속 태그는 프롬프트에 남는다. 구도 규칙이 portrait·close-up 과 함께 쓴 포즈
+        칩의 태그를 프롬프트에서도 뺀다(1인 그림만). 새 입력은 optional 맨 뒤라 v7 워크플로가 그대로 열린다
+        (portrait·close-up 과 포즈 태그를 함께 쓰던 워크플로만 결과가 달라진다. rules=off 면 그대로).
 """
 
 from __future__ import annotations
@@ -98,7 +105,7 @@ _SYNC_HINT = "TagOrganizer 저장소에서 `python tagorg.py sync --to <이 노�
 _RATINGS = ["e", "q", "s", "g"]
 _RULE_MODES = ["remove", "report", "off"]
 _DIALECTS = ["comfyui", "nai", "anima"]
-_QUICK_GROUPS = ("framing",)   # 콤보로 고르는 퀵 그룹. 시점·시선은 칩이 palette 에서 받는다
+_QUICK_GROUPS = ("framing",)   # 콤보로 고르는 퀵 그룹. 시점·시선·포즈는 칩이 palette 에서 받는다
 _AUTO = "auto"
 _UI_INPUT = "bmk_tag_input"
 _COMMENT_MODES = ["remove", "keep"]
@@ -127,6 +134,7 @@ _DEFAULTS: Dict[str, Any] = {
     "comments": "remove",
     "sentences": True,
     "gaze": "",
+    "pose": "",
 }
 
 
@@ -222,6 +230,7 @@ def _options(core: ModuleType, values: Mapping[str, Any]) -> Any:
         framing="" if v["framing"] == _AUTO else v["framing"],
         view="" if v["view"] == _AUTO else v["view"],
         gaze=v["gaze"],
+        pose=v["pose"],
         guess=v["guess"],
     )
 
@@ -274,6 +283,7 @@ def _preview_payload(body: Mapping[str, Any]) -> Dict[str, Any]:
         "dialect": report["dialect"],
         "warnings": [{**w, "text": core.warning_text(w["reason"])} for w in report["warnings"]],
         "gaze_blocked": report["gaze_blocked"],     # 시선 칩에서 숨길 태그(지금 크롭·시점과 맞지 않음)
+        "pose_blocked": report["pose_blocked"],     # 포즈 칩에서 숨길 태그(지금 크롭과 맞지 않음)
         "view_lifted": report["view_lifted"],       # 프롬프트에 직접 쓴 형식 태그로 시점 칩의 충돌이 풀림
     }
 
@@ -523,6 +533,16 @@ class BMKTagOrganizer:
                         "tooltip": "시선 덮어쓰기(쉼표로 여럿, 시선 칩이 씀). 크롭·시점이 막는 태그는 넣지 않습니다. 비우면 프롬프트 그대로",
                     },
                 ),
+                # v8 입력. 맨 뒤에 붙여 v7 워크플로의 widgets_values 가 밀리지 않는다
+                "pose": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "multiline": False,
+                        "hidden": True,
+                        "tooltip": "포즈 덮어쓰기(쉼표로 여럿, 포즈 칩이 씀). 장소·구속 태그는 남고 크롭이 막는 태그는 넣지 않습니다. 비우면 프롬프트 그대로",
+                    },
+                ),
             },
         }
 
@@ -556,6 +576,7 @@ class BMKTagOrganizer:
         comments: str = "remove",
         sentences: bool = True,
         gaze: str = "",
+        pose: str = "",
     ):
         result = _organize(
             text,
@@ -578,6 +599,7 @@ class BMKTagOrganizer:
                 "comments": comments,
                 "sentences": sentences,
                 "gaze": gaze,
+                "pose": pose,
             },
         )
         counts = result.report["counts"]

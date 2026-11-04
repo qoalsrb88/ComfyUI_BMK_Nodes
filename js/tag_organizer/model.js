@@ -19,21 +19,30 @@ export function splitItems(value) {
   return items.map((v) => String(v).trim()).filter(Boolean);
 }
 
-// 시선 칩을 눌렀을 때의 새 선택(퀵 목록 순서). 켜면 함께 쓸 수 없는 태그(gaze_conflicts, 양방향)를 끈다.
-export function gazeToggle(paletteData, selected, tag) {
+function conflictToggle(paletteData, group, selected, tag) {
   let on = new Set(selected);
   if (on.has(tag)) {
     on.delete(tag);
   } else {
-    const conflicts = paletteData.gaze_conflicts || {};
+    const conflicts = paletteData[`${group}_conflicts`] || {};
     const off = new Set(conflicts[tag] || []);
     for (const [other, tags] of Object.entries(conflicts)) if (tags.includes(tag)) off.add(other);
     on = new Set([...on].filter((t) => !off.has(t)));
     on.add(tag);
   }
-  const order = paletteData.quick.gaze;
+  const order = paletteData.quick[group];
   const rank = (t) => (order.includes(t) ? order.indexOf(t) : order.length);
   return [...on].sort((a, b) => rank(a) - rank(b));
+}
+
+// 시선 칩을 눌렀을 때의 새 선택(퀵 목록 순서). 켜면 함께 쓸 수 없는 태그(gaze_conflicts, 양방향)를 끈다.
+export function gazeToggle(paletteData, selected, tag) {
+  return conflictToggle(paletteData, "gaze", selected, tag);
+}
+
+// 포즈 칩을 눌렀을 때의 새 선택(퀵 목록 순서). 켜면 함께 쓸 수 없는 태그(pose_conflicts, 양방향)를 끈다.
+export function poseToggle(paletteData, selected, tag) {
+  return conflictToggle(paletteData, "pose", selected, tag);
 }
 
 // 시점 칩을 눌렀을 때의 새 선택(퀵 목록 순서). 켠 태그와 부딪치는 태그(view_conflicts, 양방향)를 끈다.

@@ -80,6 +80,10 @@ Impact Pack 의존 import는 전부 `try/except`로 격리돼 있어서, 없어�
 `facing` 시선을 고르면 눈이 떠 있어야 성립하는 태그(`yellow eyes`, `tsurime` 등)가 구도 규칙으로 빠집니다. `closed eyes`, `blindfold` 와
 눈썹은 남고, `looking` 시선을 함께 고르면 빼지 않습니다.
 
+포즈도 편집기 맨 위의 칩에서 여러 개 고릅니다(`lying` + `on back` 등). 몸이 동시에 할 수 없는 자세(`standing` 과 `sitting` 등)는
+켜는 순간 앞의 것이 꺼집니다. `on bed` 같은 장소 태그와 `bound` 같은 구속 태그는 프롬프트에 그대로 남습니다. `portrait`, `close-up` 에서는
+자세가 보이지 않으므로 칩이 사라지고, 프롬프트의 해당 포즈 태그도 구도 규칙으로 빠집니다.
+
 입력 문법은 `input_dialect` 에서 고르거나 `auto` 로 프롬프트의 표기(NAI `1.2::x ::`·`{x}`, ComfyUI
 `(x:1.2)`·`\(`, Anima `@작가`)로 알아내게 합니다. 표기가 섞였거나 없으면 `dialect_priority` 순서(기본
 nai > comfyui > anima)를 따르고, 알아낸 문법과 근거는 편집기 상태 줄과 `report` 출력의 `dialect` 에

@@ -282,9 +282,9 @@ for _module_name in _NODE_MODULES:
 #       순서·줄을 바꾸고, 펼쳐서 서브(멤버) 순서 바꾸기·다른 청크로·밖으로 새 청크, 숨기기, 커스텀 청크
 #       (태그·패턴), 추정 규칙, 관리 툴 JSON 가져오기/내보내기. 결과는 숨긴 STRING 위젯 arrangement 에 JSON 으로
 #       쓰고, /bmk/tag_organizer/preview 로 남는 태그는 밝게·뺀 태그는 흐리게 미리 본다. 상태 줄에 자동
-#       인식한 입력 문법과 근거·입력 문법 경고, 미리보기에 주석(맨 위)·자연어 문장을 그린다. 편집기 맨 위의 시점·시선
-#       칩은 숨긴 STRING 위젯 view·gaze 에 쓴다. 부딪치는 시점은 켜는 순간 꺼지고(multiple views 를 켜면 함께), 지금
-#       크롭·시점과 맞지 않는 시선 칩(preview 의 gaze_blocked)은 숨긴다.
+#       인식한 입력 문법과 근거·입력 문법 경고, 미리보기에 주석(맨 위)·자연어 문장을 그린다. 편집기 맨 위의 시점·시선·포즈
+#       칩은 숨긴 STRING 위젯 view·gaze·pose 에 쓴다. 부딪치는 시점은 켜는 순간 꺼지고(multiple views 를 켜면 함께), 지금
+#       크롭·시점과 맞지 않는 시선·포즈 칩(preview 의 gaze_blocked·pose_blocked)은 숨긴다.
 #       이 파일은 노드에 붙이는 어댑터(위젯·서버 경로·캔버스)만 두고, 편집기 본체는 아래 모듈을 쓴다.
 #   - tag_organizer/editor.js, tag_organizer/model.js
 #       청크 편집기 본체. TagOrganizer 저장소 extension/editor/ 가 정본이고 그 저장소의 `python tagorg.py sync` 가

@@ -1,6 +1,6 @@
 {
   "format": "tagorg-pack-info",
-  "pack_version": "2026.10.01+946032c3",
+  "pack_version": "2026.10.01+1e08853a",
   "source": {
     "file": "danbooru_2026-10-01_pt20-ia-dd.csv",
     "date": "2026-10-01",
@@ -57,17 +57,36 @@
       "facing ahead",
       "facing down",
       "facing up"
+    ],
+    "pose": [
+      "standing",
+      "standing on one leg",
+      "contrapposto",
+      "sitting",
+      "wariza",
+      "seiza",
+      "lying",
+      "on back",
+      "on side",
+      "on stomach",
+      "kneeling",
+      "on one knee",
+      "squatting",
+      "all fours",
+      "leaning forward",
+      "bent over",
+      "leaning back"
     ]
   },
   "synced_from": {
     "repo": "TagOrganizer",
-    "commit": "d2bb38dd99e938a1cc11b8f32e0bbf10d390ced5",
+    "commit": "2a483a4afe30f7453b5cb4b5303fa72948e16d12",
     "dirty": false
   },
   "files": {
-    "bmk_tag_organizer_core.py": "d488b4dc9dedc1559243c4205f0b6abcc656913f1e438fd5460522686555f5a9",
-    "tag_organizer_data/tagpack.json.gz": "fa076cd12d270ca1e3037fe0d7a6e6c294282411b3178bad0850d3070e496ee4",
+    "bmk_tag_organizer_core.py": "dd682994da77ae949ca9dbf327e7286c27007348e0674ce7d7ce9b63449985b9",
+    "tag_organizer_data/tagpack.json.gz": "743820671e70e95dc0934055bc0caee126acab70c87a280ec7bc6344816a76bc",
     "js/tag_organizer/editor.js": "d1e5c4c285948c5c5f371f2e2504da499aca1127cd1f38bfb6a56c81248935aa",
-    "js/tag_organizer/model.js": "a5964af16096c37261b75e7ee3d9e83d123e001f272346a605618c9975c048ee"
+    "js/tag_organizer/model.js": "d43cd8e659d2c2c16754769fa9e17f669d7b0bc18fd227a8d53886df906b8494"
   }
 }

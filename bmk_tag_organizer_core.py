@@ -10,7 +10,7 @@ ComfyUI 노드, BMK AI Studio, CLI가 함께 쓰는 단일 파일 코어다. 표
     parse    입력 문법(comfyui / nai / anima)에 맞춰 토큰으로 나눈다. 문장 끝 마침표도 나누고 문장은 자연어 토큰으로
     resolve  소문자·밑줄 정규화 후 이름 → 별칭 순으로 찾는다
     guess    (guess 옵션) 팩에 없는 토큰의 분류를 패턴·끝말로 추정한다
-    override (framing·view 옵션) 프롬프트의 크롭·시점 태그를 고른 태그로 바꾼다
+    override (framing·view·gaze·pose 옵션) 프롬프트의 크롭·시점·시선·포즈 태그를 고른 태그로 바꾼다
     dedupe   같은 태그가 다시 나오면 첫 번째만 남긴다
     filter   카테고리 제외(프리셋 + exclude) → 등급(max_rating)
     rules    구도 규칙(크롭·시점·명시 규칙)
@@ -50,6 +50,8 @@ arrangement_from_layout(). 결과의 report["arranged"] 는 줄 → 청크 → �
         팩 스키마는 그대로 — 옛 팩에서는 이전과 같이 동작한다.
 - v1.8: 시선 규칙(rules 의 gaze 그룹): facing 이면 눈이 떠 있어야 성립하는 태그를 뺀다. 게이트의 keep·unless_prefix.
         팩 스키마는 그대로 — 옛 팩에는 gaze 그룹이 없어 이전과 같이 동작한다.
+- v1.9: 포즈 덮어쓰기(pose: 여러 태그), rules.quick 의 pose_scope 안의 태그만 바꾼다. report 의 pose_blocked, 칩 토글(pose_toggle),
+        palette 의 pose_conflicts. 팩 스키마는 그대로 — 옛 팩에는 포즈 퀵 목록과 범위가 없어 고른 태그를 더하기만 한다.
 """
 
 from __future__ import annotations
@@ -88,7 +90,8 @@ TYPE_GUESS = -2   # 추정한 토큰에 붙이는 임시 정보(팩에는 없음
 ARRANGEMENT_FORMAT = "tagorg-arrangement"
 ARRANGEMENT_VERSION = 1
 PALETTE_FORMAT = "tagorg-palette"
-OVERRIDE_TARGETS = {"framing": "composition/framing", "view": "composition/angle", "gaze": "action/gaze"}
+OVERRIDE_TARGETS = {"framing": "composition/framing", "view": "composition/angle", "gaze": "action/gaze",
+                    "pose": "action/posture"}
 REST_CHUNK = "rest"
 DEFAULT_GUESS_HEADS = ("composition", "action", "clothes", "body", "object", "effect", "background")
 
@@ -330,6 +333,7 @@ class Options:
     framing: str = ""                   # 크롭 덮어쓰기: composition/framing 태그(쉼표로 여럿). 비우면 프롬프트 그대로
     view: str = ""                      # 시점 덮어쓰기: composition/angle 태그
     gaze: str = ""                      # 시선 덮어쓰기: action/gaze 태그(쉼표로 여럿). 크롭·시점이 막는 태그는 넣지 않는다
+    pose: str = ""                      # 포즈 덮어쓰기: action/posture 태그(쉼표로 여럿). 크롭이 막는 태그는 넣지 않는다
     guess: bool = False                 # 팩에 없는 토큰의 분류를 패턴·끝말로 추정한다(임시 편입)
 
     @classmethod
@@ -1143,7 +1147,7 @@ def _guess(tokens: List[Token], pack: TagPack, rules: Sequence[GuessRule], heads
                          regions=tuple(regions), identity=identity, status="guess", display=t.core or t.text)
 
 
-# ─── 크롭·시점·시선 덮어쓰기 ──────────────────────────────────────
+# ─── 크롭·시점·시선·포즈 덮어쓰기 ─────────────────────────────────
 
 def _override_lifts(pack: Any, group: str) -> Set[str]:
     """덮어쓰기에 함께 고를 수 있는, 대상 서브 카테고리 밖의 태그(시점의 multiple views)."""
@@ -1169,15 +1173,26 @@ def _overrides(pack: TagPack, opts: Options) -> List[Tuple[str, str, List[TagInf
     return out
 
 
+def _override_covers(t: Token, group: str, target: str, pack: TagPack) -> bool:
+    """이 토큰이 덮어쓰기의 대상인가. 포즈는 action/posture 의 장소·구속 태그를 남기려고 정해 둔 범위만 본다."""
+    if t.primary != target:
+        return False
+    if group != "pose":
+        return True
+    quick = pack.rules.get("quick") or {}
+    scope = quick.get("pose_scope") or {}
+    return t.key in quick.get("pose", ()) or t.key in scope.get("tags", ()) or t.key.startswith(tuple(scope.get("prefix", ())))
+
+
 def _apply_overrides(tokens: List[Token], overrides, inject: bool, pack: TagPack, opts: Options) -> List[Token]:
-    """대상 서브 카테고리 토큰을 빼고(override:<그룹>) 고른 태그를 그 자리에 넣는다. 고른 태그가 이미 있으면 둔다.
+    """대상 태그를 빼고(override:<그룹>) 고른 태그를 그 자리에 넣는다. 고른 태그가 이미 있으면 둔다.
 
     BREAK 첫 구간(inject)에는 늘 넣고, 다른 구간에는 그 구간에 대상 태그가 있었을 때만 바꾼다.
-    시선은 크롭·시점 다음에 정한다: 그 구간의 크롭·시점이 막는 태그는 고르지 않은 것으로 본다.
+    시선·포즈는 크롭·시점 다음에 정한다: 그 구간의 크롭·시점이 막는 태그는 고르지 않은 것으로 본다.
     lift 태그(multiple views)만 골랐으면 고른 시점이 없는 것이므로 프롬프트의 시점을 그대로 두고 더하기만 한다.
     """
     for group, target, infos in overrides:
-        if group == "gaze":
+        if group in ("gaze", "pose"):
             blocked = _blocked_tags(_alive_keys(tokens), pack, opts)
             infos = [i for i in infos if i.key not in blocked or blocked[i.key][1] != "remove"]
             if not infos:
@@ -1186,7 +1201,7 @@ def _apply_overrides(tokens: List[Token], overrides, inject: bool, pack: TagPack
         replacing = any(i.primary == target for i in infos)
         pos: Optional[int] = None
         for idx, t in enumerate(tokens):
-            if t.removed or t.kind == "special" or t.primary != target:
+            if t.removed or t.kind == "special" or not _override_covers(t, group, target, pack):
                 continue
             pos = idx
             if replacing and not (t.kind == "tag" and t.key in keys):
@@ -1782,9 +1797,10 @@ def organize(text: str, pack: Optional[TagPack] = None, options: Any = None) -> 
     report = _report(all_tokens, pack, opts, out_dialect, detected)
     report["arrangement"] = plan.label if _has_arrangement(opts.arrangement) else ""
     report["arranged"] = arranged
-    # 시선 칩에서 지금 고를 수 없는 태그: 칩이 늘 넣는 첫 구간의 크롭·시점으로 판단한다
+    # 시선·포즈 칩에서 지금 고를 수 없는 태그: 칩이 늘 넣는 첫 구간의 크롭·시점으로 판단한다
     blocked = _blocked_tags(first_present, pack, opts)
     report["gaze_blocked"] = [tag for tag in (pack.rules.get("quick") or {}).get("gaze", ()) if tag in blocked]
+    report["pose_blocked"] = [tag for tag in (pack.rules.get("quick") or {}).get("pose", ()) if tag in blocked]
     # 프롬프트에 시점 규칙을 끄는 형식(multiple views, mirror 등)이 있으면 시점 칩이 서로 막지 않는다.
     # 칩이 넣은 lift 태그는 세지 않는다: 칩을 끄는 순간 다시 막아야 한다.
     report["view_lifted"] = bool(first_typed & set((pack.rules.get("view") or {}).get("exempt", ())))
@@ -1847,7 +1863,7 @@ def _report(tokens: List[Token], pack: TagPack, opts: Options, out_dialect: str,
 # ─── 편집기용 ─────────────────────────────────────────────────────
 
 def palette(pack: Any) -> Dict[str, Any]:
-    """편집기(관리 툴·ComfyUI JS 등)가 쓰는 카테고리·서브·색, 크롭/시점/시선 퀵 목록, 레이아웃 이름(JSON 그대로).
+    """편집기(관리 툴·ComfyUI JS 등)가 쓰는 카테고리·서브·색, 크롭/시점/시선/포즈 퀵 목록, 레이아웃 이름(JSON 그대로).
 
     pack 은 TagPack 이나 taxonomy·rules·layouts 속성을 가진 객체.
     """
@@ -1861,23 +1877,33 @@ def palette(pack: Any) -> Dict[str, Any]:
     return {"format": PALETTE_FORMAT, "categories": cats,
             "quick": {group: list(quick.get(group, ())) for group in OVERRIDE_TARGETS},
             "gaze_conflicts": {tag: list(others) for tag, others in (quick.get("gaze_conflicts") or {}).items()},
+            "pose_conflicts": {tag: list(others) for tag, others in (quick.get("pose_conflicts") or {}).items()},
             "view_conflicts": {tag: list(others) for tag, others in (quick.get("view_conflicts") or {}).items()},
             "view_lift": list(quick.get("view_lift", ())),
             "layouts": {lid: lay.get("label", lid) for lid, lay in pack.layouts.items()}}
 
 
-def gaze_toggle(palette_data: Mapping[str, Any], selected: Sequence[str], tag: str) -> List[str]:
-    """시선 칩을 눌렀을 때의 새 선택(퀵 목록 순서). 켜면 함께 쓸 수 없는 태그(gaze_conflicts, 양방향)를 끈다."""
+def _conflict_toggle(palette_data: Mapping[str, Any], group: str, selected: Sequence[str], tag: str) -> List[str]:
     on = set(selected)
     if tag in on:
         on.discard(tag)
     else:
-        conflicts = palette_data.get("gaze_conflicts") or {}
+        conflicts = palette_data.get(f"{group}_conflicts") or {}
         on -= set(conflicts.get(tag, ()))
         on -= {other for other, tags in conflicts.items() if tag in tags}
         on.add(tag)
-    order = list(palette_data["quick"]["gaze"])
+    order = list(palette_data["quick"][group])
     return sorted(on, key=lambda t: order.index(t) if t in order else len(order))
+
+
+def gaze_toggle(palette_data: Mapping[str, Any], selected: Sequence[str], tag: str) -> List[str]:
+    """시선 칩을 눌렀을 때의 새 선택(퀵 목록 순서). 켜면 함께 쓸 수 없는 태그(gaze_conflicts, 양방향)를 끈다."""
+    return _conflict_toggle(palette_data, "gaze", selected, tag)
+
+
+def pose_toggle(palette_data: Mapping[str, Any], selected: Sequence[str], tag: str) -> List[str]:
+    """포즈 칩을 눌렀을 때의 새 선택(퀵 목록 순서). 켜면 함께 쓸 수 없는 태그(pose_conflicts, 양방향)를 끈다."""
+    return _conflict_toggle(palette_data, "pose", selected, tag)
 
 
 def view_toggle(palette_data: Mapping[str, Any], selected: Sequence[str], tag: str, lifted: bool = False) -> List[str]:

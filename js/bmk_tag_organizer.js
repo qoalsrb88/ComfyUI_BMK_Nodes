@@ -1,4 +1,4 @@
-// bmk_tag_organizer.js — BMKTagOrganizer 짝 JS 확장 (v6)
+// bmk_tag_organizer.js — BMKTagOrganizer 짝 JS 확장 (v8)
 //
 // 배열 세팅(arrangement) 청크 편집기를 노드에 붙이는 ComfyUI 어댑터. 편집기 자체는 TagOrganizer 저장소의
 // extension/editor/ 가 정본이고(크롬 확장 패널과 같은 코드), js/tag_organizer/ 는 그 저장소의
@@ -11,11 +11,12 @@
 // - 미리보기: 지금 위젯 값으로 서버 /bmk/tag_organizer/preview 를 부른다(실행과 같은 옵션 함수).
 //   text 를 상류에 연결했으면 마지막 실행의 입력(ui.bmk_tag_input).
 // - 분류·색·레이아웃별 시작 배열은 /bmk/tag_organizer/palette 에서 한 번 받는다(⋯ → 팩 다시 읽기).
-// - 시점·시선 칩: 편집기 맨 위 두 줄. 여러 개를 고르고 결과는 숨긴 STRING 위젯 view·gaze 에 "a, b" 로 쓴다.
+// - 시점·시선·포즈 칩: 편집기 맨 위 세 줄. 여러 개를 고르고 결과는 숨긴 STRING 위젯 view·gaze·pose 에 "a, b" 로 쓴다.
 //   시점은 켠 칩과 부딪치는 칩이 꺼지고(까닭을 줄 끝에 잠시 보임), multiple views 칩을 켜거나 프롬프트에 형식 태그가
 //   있으면(미리보기의 view_lifted) 함께 고른다. v5 까지 콤보가 저장한 값 하나(from behind, auto)는 그대로 읽는다.
 //   시선은 지금 크롭·시점과 맞지 않는 칩을 미리보기 결과(gaze_blocked)를 따라 숨기되 선택은 남긴다. 코어가 막힌 선택을
 //   넣지 않으므로 시점을 되돌리면 다시 든다. text 가 연결돼 있으면 한 번 실행한 뒤부터 숨긴다.
+//   포즈도 같은 방식이다(미리보기의 pose_blocked). 몸이 동시에 할 수 없는 칩이 꺼지고, 함의 관계(lying + on back)는 함께 고른다.
 //
 // 상태는 ArrangementEditor·host 객체에 두고 위젯에는 자체 필드를 얹지 않는다(프론트 1.53 이 위젯을
 // BaseWidget 으로 흡수하며 충돌할 수 있음 — bmk_sam3_mask_layers.js 와 같은 이유).
@@ -23,12 +24,13 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { ArrangementEditor, el } from "./tag_organizer/editor.js";
-import { gazeToggle, splitItems, viewToggle } from "./tag_organizer/model.js";
+import { gazeToggle, poseToggle, splitItems, viewToggle } from "./tag_organizer/model.js";
 
 const NODE_ID = "BMKTagOrganizer";
 const ARR = "arrangement";
 const GAZE = "gaze";
 const VIEW = "view";
+const POSE = "pose";
 const AUTO = "auto";         // v5 까지의 view 콤보가 저장한 값. 고른 것이 없다는 뜻
 const EDITOR_TYPE = "BMK_TAG_ARRANGEMENT";
 const PALETTE_URL = "/bmk/tag_organizer/palette";
@@ -36,11 +38,11 @@ const PREVIEW_URL = "/bmk/tag_organizer/preview";
 const OPTION_KEYS = [
   "preset", "exclude", "max_rating", "rules", "layout", "input_dialect", "output_dialect",
   "line_per_section", "trailing_comma", "dedupe", "framing", VIEW, "guess",
-  "dialect_priority", "comments", "sentences", GAZE,
+  "dialect_priority", "comments", "sentences", GAZE, POSE,
 ];
 const MIN_WIDTH = 560;
-const ADD_HEIGHT = 520;      // 처음 만들 때 편집기 몫으로 늘리는 높이
-const EDITOR_MIN_H = 400;
+const ADD_HEIGHT = 600;      // 처음 만들 때 편집기 몫으로 늘리는 높이
+const EDITOR_MIN_H = 480;
 const MARGIN = 6;
 const NOTE_MS = 8000;        // 칩이 꺼진 까닭을 보이는 시간
 const CHIP_STYLE = `
@@ -104,7 +106,7 @@ async function validateArrangement(json) {
   }
 }
 
-// ─── 시점·시선 칩 ───
+// ─── 시점·시선·포즈 칩 ───
 
 function injectChipStyle() {
   if (document.getElementById("bmk-to-chips-style")) return;
@@ -194,6 +196,15 @@ function gazeChips(node, onChange) {
   });
 }
 
+function poseChips(node, onChange) {
+  return chipRow(node, onChange, {
+    name: POSE,
+    label: "포즈",
+    title: () => "프롬프트의 자세 태그를 고른 태그들로 바꿉니다(장소·구속 태그는 남김). 여러 개 고를 수 있습니다",
+    toggle: poseToggle,
+  });
+}
+
 function viewChips(node, onChange) {
   let lifted = false;
   const lifts = (palette) => palette.view_lift ?? [];
@@ -223,10 +234,12 @@ function nodeHost(node) {
   const linked = (name) => node.inputs?.find((i) => i.name === name)?.link != null;
   const view = viewChips(node, () => host.changed());
   const gaze = gazeChips(node, () => host.changed());
+  const pose = poseChips(node, () => host.changed());
   let previewSeq = 0;
   const host = {
     view,
     gaze,
+    pose,
     lastInput: null,      // 마지막 실행의 입력(text 를 연결했을 때)
     split: node.properties?.bmk_to_split,
     canReset: true,
@@ -257,6 +270,7 @@ function nodeHost(node) {
     loadPalette: (force) => loadPalette(force).then((data) => {
       view.setPalette(data.palette);
       gaze.setPalette(data.palette);
+      pose.setPalette(data.palette);
       return data;
     }),
     async preview(body) {
@@ -265,6 +279,7 @@ function nodeHost(node) {
       if (seq === previewSeq) {
         view.setLifted(Boolean(data.view_lifted));
         gaze.setBlocked(data.gaze_blocked ?? []);
+        pose.setBlocked(data.pose_blocked ?? []);
       }
       return data;
     },
@@ -309,10 +324,10 @@ app.registerExtension({
     nodeType.prototype.onNodeCreated = function () {
       const r = onNodeCreated?.apply(this, arguments);
       for (const w of this.widgets ?? []) {
-        if (w.name === ARR || w.name === VIEW || w.name === GAZE) w.hidden = true; // 입력 옵션 hidden 을 모르는 프론트에서도 숨긴다
+        if (w.name === ARR || w.name === VIEW || w.name === GAZE || w.name === POSE) w.hidden = true; // 입력 옵션 hidden 을 모르는 프론트에서도 숨긴다
       }
       const editor = new ArrangementEditor(nodeHost(this));
-      editor.root.prepend(editor.host.view.row, editor.host.gaze.row);
+      editor.root.prepend(editor.host.view.row, editor.host.gaze.row, editor.host.pose.row);
       this.__bmkTagArr = editor;
       const widget = this.addDOMWidget("arrangement_editor", EDITOR_TYPE, editor.root, {
         serialize: false,
@@ -339,6 +354,7 @@ app.registerExtension({
         editor.syncFromWidget(true);
         editor.host.view.render();
         editor.host.gaze.render();
+        editor.host.pose.render();
       }
       // v1 워크플로의 노드는 편집기 자리가 없으므로 최소 크기까지 늘린다
       const sz = this.computeSize?.();
