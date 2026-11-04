@@ -245,6 +245,14 @@ export class Model {
     return true;
   }
 
+  // rows[row] 를 통째로 rows[to] 앞으로(옮기기 전 기준, to == 줄 수면 맨 끝). 빈 줄 표시는 청크를 따라간다
+  moveRow(row, to) {
+    if (!(row >= 0 && row < this.rows.length) || !(to >= 0 && to <= this.rows.length) || to === row || to === row + 1) return false;
+    const [moved] = this.rows.splice(row, 1);
+    this.rows.splice(row < to ? to - 1 : to, 0, moved);
+    return true;
+  }
+
   breakBefore(cid) {
     const [r, p] = this.where(cid);
     if (p === 0) return false;
@@ -279,6 +287,30 @@ export class Model {
     const flat = this.flat();
     const i = flat.indexOf(cid);
     return i > 0 && Boolean(this.chunks.get(flat[i - 1]).gap_after);
+  }
+
+  // rows[row] 위에 빈 줄을 놓는다(row == 줄 수면 맨 아래). 맨 위는 앞 청크가 없어 둘 수 없다
+  addGapAt(row) {
+    if (!(row >= 1 && row <= this.rows.length)) return false;
+    const spec = this.chunks.get(this.rows[row - 1].at(-1));
+    if (spec.gap_after) return false;
+    spec.gap_after = true;
+    return true;
+  }
+
+  // 아직 빈 줄이 없는 가장 아래 자리에 빈 줄을 놓고 그 자리를 돌려준다(둘 곳이 없으면 null)
+  addGapBottom() {
+    for (let row = this.rows.length; row > 0; row--) if (this.addGapAt(row)) return row;
+    return null;
+  }
+
+  // rows[row] 아래의 빈 줄을 rows[to] 위로. 거기에 이미 빈 줄이 있으면 그대로 둔다
+  moveGap(row, to) {
+    if (!(row >= 0 && row < this.rows.length)) return false;
+    const spec = this.chunks.get(this.rows[row].at(-1));
+    if (!spec.gap_after || !this.addGapAt(to)) return false;
+    delete spec.gap_after;
+    return true;
   }
 
   joinPrevious(cid) {

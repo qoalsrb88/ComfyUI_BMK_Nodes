@@ -9,6 +9,8 @@
 // - 한 줄 = 출력 한 줄, 줄 안의 청크는 ", " 로 이어진다. 색 = 분류 색(또는 청크 color), 숫자 = 남는 태그 수.
 // - 청크를 끌면 순서·줄이 바뀐다(줄 사이·맨 아래에 놓으면 새 줄). ▸ 또는 더블클릭으로 펼치면 서브(멤버)가
 //   보이고, 서브를 끌어 순서를 바꾸거나(서브 순서가 켜짐) 다른 청크에 넣거나 청크 밖에 놓아 새 청크로 뺀다.
+// - 줄 번호나 줄의 빈 자리를 끌면 줄째 위아래로 옮긴다. 점선 빈 줄 띠를 끌면 빈 줄이 다른 줄 사이로 옮겨 가고,
+//   구석의 + 를 줄 사이에 놓으면 거기에 빈 줄이 생긴다(누르면 맨 아래에).
 // - 우클릭: 줄바꿈·앞 줄과 합치기·숨기기·이름/색·다른 청크에 합치기·커스텀 청크(태그·패턴) 편집.
 // - 미리보기: 남는 태그는 밝게, 빼는 태그는 제자리에 흐리게. 청크에 마우스를 올리면 해당 태그가 강조된다.
 //
@@ -29,6 +31,13 @@ const PREVIEW_DELAY = 250;
 const EDGE = 5;              // 줄 위·아래 가장자리: 여기에 놓으면 새 줄
 const WARN_COLOR = "#d4a017";
 const DIALECT_NAMES = { nai: "NAI", comfyui: "ComfyUI", anima: "Anima" };
+const HELP = [
+  ["청크 끌기", "순서 바꾸기. 줄 사이·맨 아래에 놓으면 새 줄"],
+  ["줄 번호·빈 자리 끌기", "줄째 위아래로 옮기기"],
+  ["빈 줄", "구석 + 를 줄 사이로 끌어다 놓기(누르면 맨 아래에). 점선 띠는 끌어서 옮기고, 우클릭으로 빼기"],
+  ["▸·더블클릭", "서브 펼치기. 서브는 끌어서 순서 바꾸기·다른 청크로·밖으로(새 청크)"],
+  ["우클릭", "줄바꿈·앞 줄과 합치기·숨기기·이름/색·합치기·커스텀 청크 편집"],
+];
 
 const STYLE = `
 .bmk-to-root{box-sizing:border-box;height:100%;display:flex;flex-direction:column;gap:4px;padding:2px;font:12px/1.35 Inter,Arial,sans-serif;color:var(--input-text,#ddd);overflow:hidden;user-select:none}
@@ -44,9 +53,19 @@ const STYLE = `
 .bmk-to-warn a{color:var(--p-primary-color,#5b8def);cursor:pointer;text-decoration:underline}
 .bmk-to-scroll{overflow:auto;min-height:40px;border:1px solid var(--border-color,#4e4e4e);border-radius:6px;background:color-mix(in srgb,var(--comfy-input-bg,#222) 70%,transparent)}
 .bmk-to-canvas{padding:6px 6px 16px 0}
-.bmk-to-row{display:grid;grid-template-columns:24px minmax(0,1fr);align-items:start;margin-bottom:8px}
+.bmk-to-row{display:grid;grid-template-columns:24px minmax(0,1fr);align-items:start;margin-bottom:8px;cursor:grab}
+.bmk-to-row.dragging,.bmk-to-gap.dragging{opacity:.35}
 .bmk-to-gap{grid-column:2;margin-top:4px;border-top:1px dashed var(--border-color,#4e4e4e);font-size:10px;line-height:16px;text-align:center;color:var(--descrip-text,#999)}
 .bmk-to-gutter{flex:0 0 24px;box-sizing:border-box;padding-right:6px;text-align:right;line-height:24px;color:var(--descrip-text,#999);font-variant-numeric:tabular-nums}
+.bmk-to-row:not(:has(.bmk-to-chunk:hover,.bmk-to-gap:hover)):hover>.bmk-to-gutter{font-size:0}
+.bmk-to-row:not(:has(.bmk-to-chunk:hover,.bmk-to-gap:hover)):hover>.bmk-to-gutter::before{content:"⠿";font-size:13px}
+.bmk-to-pane{display:flex;gap:3px;min-width:0;min-height:40px}
+.bmk-to-pane>.bmk-to-canvas{flex:1 1 auto;min-width:0}
+.bmk-to-tools{flex:0 0 20px;display:flex;flex-direction:column;gap:3px}
+.bmk-to-tool{box-sizing:border-box;width:20px;height:20px;padding:0;border:1px solid var(--border-color,#4e4e4e);border-radius:5px;background:var(--comfy-input-bg,#222);color:inherit;font:inherit;line-height:18px;text-align:center;cursor:pointer}
+.bmk-to-tool:hover{border-color:var(--input-text,#ddd)}
+.bmk-to-tool[data-act=gap]{cursor:grab;touch-action:none}
+.bmk-to-tool[data-act=help]{border-radius:50%}
 .bmk-to-chunks{flex:1 1 auto;min-width:0;display:flex;flex-wrap:wrap;align-items:flex-start;gap:5px}
 .bmk-to-chunk{display:inline-flex;flex-wrap:wrap;align-items:center;gap:4px;max-width:100%;box-sizing:border-box;min-height:24px;padding:2px 8px;border:1px solid color-mix(in srgb,var(--c) 65%,transparent);border-radius:6px;background:color-mix(in srgb,var(--c) 18%,var(--comfy-input-bg,#222));cursor:grab}
 .bmk-to-chunk.off{background:transparent;border-style:dashed;color:var(--descrip-text,#999)}
@@ -89,6 +108,8 @@ const STYLE = `
 .bmk-to-menu .it:hover,.bmk-to-menu .it.open{background:var(--comfy-input-bg,#222)}
 .bmk-to-menu .it.has-sub::after{content:"▸";float:right;margin-left:14px;opacity:.7}
 .bmk-to-menu hr{margin:4px 0;border:0;border-top:1px solid var(--border-color,#4e4e4e)}
+.bmk-to-menu.bmk-to-help{display:grid;grid-template-columns:auto minmax(0,1fr);gap:3px 10px;box-sizing:border-box;width:min(400px,calc(100vw - 8px));padding:7px 10px}
+.bmk-to-help b{font-weight:600;white-space:nowrap}
 .bmk-to-overlay{position:fixed;inset:0;z-index:10002;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.45)}
 .bmk-to-dialog{box-sizing:border-box;width:min(480px,92vw);max-height:88vh;overflow:auto;display:flex;flex-direction:column;gap:8px;padding:14px 16px;border:1px solid var(--border-color,#4e4e4e);border-radius:8px;background:var(--comfy-menu-bg,#353535);color:var(--input-text,#ddd);font:13px/1.45 Inter,Arial,sans-serif}
 .bmk-to-dialog h3{margin:0 0 2px;font-size:14px}
@@ -191,6 +212,17 @@ function showMenu(x, y, items) {
   const menu = buildMenu(clean, 0);
   openMenus.push(menu);
   placeMenu(menu, x, y);
+  window.addEventListener("pointerdown", onMenuOutside, true);
+  window.addEventListener("keydown", onMenuKey, true);
+}
+
+// ? 를 눌렀을 때의 설명. 메뉴처럼 밖을 누르거나 Esc 로 닫는다
+function showHelp(x, y, rows) {
+  closeMenus();
+  const box = el("div", "bmk-to-menu bmk-to-help");
+  for (const [name, text] of rows) box.append(el("b", "", name), el("span", "", text));
+  openMenus.push(box);
+  placeMenu(box, x, y);
   window.addEventListener("pointerdown", onMenuOutside, true);
   window.addEventListener("keydown", onMenuKey, true);
 }
@@ -300,7 +332,13 @@ export class ArrangementEditor {
       </div>
       <div class="bmk-to-warn" hidden></div>
       <div class="bmk-to-body">
-        <div class="bmk-to-scroll bmk-to-canvas"></div>
+        <div class="bmk-to-pane">
+          <div class="bmk-to-scroll bmk-to-canvas"></div>
+          <div class="bmk-to-tools">
+            <button type="button" class="bmk-to-tool" data-act="gap" title="빈 줄 — 끌어서 줄 사이에 놓습니다. 누르면 맨 아래에 넣습니다">+</button>
+            <button type="button" class="bmk-to-tool" data-act="help">?</button>
+          </div>
+        </div>
         <div class="bmk-to-split" title="끌어서 청크·미리보기 크기 나누기"></div>
         <div class="bmk-to-scroll bmk-to-preview"></div>
       </div>
@@ -309,7 +347,10 @@ export class ArrangementEditor {
     this.subOrderBox = this.root.querySelector("[data-act=suborder]");
     this.warnEl = this.root.querySelector(".bmk-to-warn");
     this.bodyEl = this.root.querySelector(".bmk-to-body");
+    this.paneEl = this.root.querySelector(".bmk-to-pane");
     this.canvasEl = this.root.querySelector(".bmk-to-canvas");
+    this.gapBtn = this.root.querySelector("[data-act=gap]");
+    this.root.querySelector("[data-act=help]").title = HELP.map(([name, text]) => `${name}: ${text}`).join("\n");
     this.splitEl = this.root.querySelector(".bmk-to-split");
     this.previewEl = this.root.querySelector(".bmk-to-preview");
     this.statusEl = this.root.querySelector(".bmk-to-status");
@@ -651,8 +692,14 @@ export class ArrangementEditor {
       rowEl.dataset.row = ri;
       const chunks = el("div", "bmk-to-chunks");
       row.forEach((cid, pi) => chunks.appendChild(this.chunkEl(cid, ri, pi)));
-      rowEl.append(el("span", "bmk-to-gutter", String(ri + 1)), chunks);
-      if (this.model.chunks.get(row.at(-1)).gap_after) rowEl.appendChild(el("div", "bmk-to-gap", "빈 줄"));
+      const gutter = el("span", "bmk-to-gutter", String(ri + 1));
+      gutter.title = "끌어서 줄 옮기기";
+      rowEl.append(gutter, chunks);
+      if (this.model.chunks.get(row.at(-1)).gap_after) {
+        const gap = el("div", "bmk-to-gap", "빈 줄");
+        gap.title = "끌어서 다른 줄 사이로 옮기기 · 우클릭으로 빼기";
+        rowEl.appendChild(gap);
+      }
       return rowEl;
     });
     box.replaceChildren(...rows);
@@ -823,7 +870,7 @@ export class ArrangementEditor {
   }
 
   applySplit() {
-    this.canvasEl.style.flex = `${this.split} 1 0`;
+    this.paneEl.style.flex = `${this.split} 1 0`;
     this.previewEl.style.flex = `${1 - this.split} 1 0`;
   }
 
@@ -881,6 +928,18 @@ export class ArrangementEditor {
       });
     });
 
+    this.root.querySelector(".bmk-to-tools").addEventListener("click", (e) => {
+      const act = e.target.closest("[data-act]")?.dataset.act;
+      if (act === "gap") this.addGapBottom();
+      else if (act === "help") {
+        const r = e.target.getBoundingClientRect();
+        showHelp(r.left, r.bottom + 2, HELP);
+      }
+    });
+    this.gapBtn.addEventListener("pointerdown", (e) => {
+      if (e.button === 0 && this.model) this.trackDrag(e, { line: "new", el: this.gapBtn });
+    });
+
     const c = this.canvasEl;
     c.addEventListener("pointerdown", (e) => this.onPointerDown(e));
     c.addEventListener("dblclick", (e) => {
@@ -905,7 +964,7 @@ export class ArrangementEditor {
       const at = (ev) => (side ? ev.clientX : ev.clientY);
       const size = (box) => (side ? box.getBoundingClientRect().width : box.getBoundingClientRect().height);
       const from = at(e);
-      const total = size(this.canvasEl) + size(this.previewEl);
+      const total = size(this.paneEl) + size(this.previewEl);
       const s0 = this.split;
       this.splitEl.setPointerCapture?.(e.pointerId);
       const move = (ev) => {
@@ -956,12 +1015,20 @@ export class ArrangementEditor {
       this.toggle(chunk.dataset.cid);
       return;
     }
+    const rowEl = e.target.closest(".bmk-to-row");
+    const gap = e.target.closest(".bmk-to-gap");
     const src = member
       ? { cid: member.dataset.cid, mi: Number(member.dataset.mi), el: member }
       : chunk
         ? { cid: chunk.dataset.cid, mi: -1, el: chunk }
-        : null;
-    if (!src) return;
+        : rowEl
+          ? { line: gap ? "gap" : "row", row: Number(rowEl.dataset.row), el: gap ?? rowEl }
+          : null;
+    if (src) this.trackDrag(e, src);
+  }
+
+  // 누른 곳에서 일정 거리 움직이면 끌기를 시작한다. src: 청크·서브 {cid, mi, el} 또는 줄 단위 {line: row|gap|new, row, el}
+  trackDrag(e, src) {
     e.preventDefault();
     const x0 = e.clientX;
     const y0 = e.clientY;
@@ -1003,14 +1070,23 @@ export class ArrangementEditor {
 
   beginDrag(src) {
     src.el.classList.add("dragging");
-    const label = src.mi < 0 ? this.chunkLabel(src.cid) : this.memberLabel(src.cid, this.model.members(src.cid)[src.mi]);
-    const ghost = el("div", "bmk-to-ghost", label);
-    ghost.style.setProperty("--c", src.el.style.getPropertyValue("--c"));
+    const ghost = el("div", "bmk-to-ghost", this.dragLabel(src));
+    const color = src.line === "row" ? this.tax.chunkColor(this.model.chunks.get(this.model.rows[src.row][0])) : src.el.style.getPropertyValue("--c");
+    ghost.style.setProperty("--c", color || "#888888");
     const bar = el("div", "bmk-to-drop");
     const box = el("div", "bmk-to-dropbox");
     bar.hidden = box.hidden = true;
     document.body.append(ghost, bar, box);
     this.drag = { src, ghost, bar, box, target: null };
+  }
+
+  dragLabel(src) {
+    if (src.line === "row") {
+      const names = this.model.rows[src.row].map((cid) => this.chunkLabel(cid));
+      return `${src.row + 1}번 줄 — ${names.slice(0, 3).join(" · ")}${names.length > 3 ? " …" : ""}`;
+    }
+    if (src.line) return "빈 줄";
+    return src.mi < 0 ? this.chunkLabel(src.cid) : this.memberLabel(src.cid, this.model.members(src.cid)[src.mi]);
   }
 
   endDrag(apply) {
@@ -1055,8 +1131,24 @@ export class ArrangementEditor {
     return index(same[same.length - 1].e) + 1;
   }
 
+  // 줄 단위로 끌 때의 자리: 점이 든 줄의 가운데보다 위면 그 줄 앞, 아래면 다음 줄 앞. 맨 위에는 빈 줄을 둘 수 없다
+  lineTarget(src, x, y) {
+    if (src.line === "new") {   // 구석 + 를 청크 칸 밖에 놓으면 넣지 않는다
+      const c = this.canvasEl.getBoundingClientRect();
+      if (x < c.left || x > c.right || y < c.top || y > c.bottom) return null;
+    }
+    const rows = [...this.canvasEl.querySelectorAll(".bmk-to-row")];
+    let at = rows.findIndex((rowEl) => {
+      const r = rowEl.getBoundingClientRect();
+      return y < (r.top + r.bottom) / 2;
+    });
+    if (at < 0) at = rows.length;
+    return { kind: "between", row: src.line === "row" ? at : Math.max(at, 1) };
+  }
+
   dropTarget(x, y) {
     const src = this.drag.src;
+    if (src.line) return this.lineTarget(src, x, y);
     if (src.mi >= 0) {
       const over = document.elementFromPoint(x, y)?.closest?.(".bmk-to-chunk");
       if (over && this.canvasEl.contains(over)) {
@@ -1121,7 +1213,13 @@ export class ArrangementEditor {
   }
 
   applyDrop(src, t) {
-    if (src.mi < 0) {
+    if (src.line === "row") {
+      this.edit((m) => m.moveRow(src.row, t.row));
+    } else if (src.line === "gap") {
+      this.edit((m) => m.moveGap(src.row, t.row));
+    } else if (src.line) {
+      this.edit((m) => m.addGapAt(t.row));
+    } else if (src.mi < 0) {
       if (t.kind === "row") this.edit((m) => m.moveChunk(src.cid, t.row, t.pos));
       else this.edit((m) => m.moveChunkNewRow(src.cid, t.row));
     } else if (t.kind === "member") {
@@ -1129,6 +1227,12 @@ export class ArrangementEditor {
     } else {
       this.edit((m) => m.detachMember(src.cid, src.mi, t.row, t.kind === "row" ? t.pos : null));
     }
+  }
+
+  // 구석 + 를 눌렀을 때: 아직 빈 줄이 없는 맨 아래 자리에 넣고 보여 준다(거기서 띠를 끌어 옮긴다)
+  addGapBottom() {
+    this.edit((m) => m.addGapBottom());
+    this.canvasEl.scrollTop = this.canvasEl.scrollHeight;
   }
 
   // ---- 메뉴 ----

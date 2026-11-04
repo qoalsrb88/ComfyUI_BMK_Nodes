@@ -61,13 +61,13 @@
   },
   "synced_from": {
     "repo": "TagOrganizer",
-    "commit": "2dafe6f72224a49288b65bbd60fe5a307023b6a4",
+    "commit": "beabf8806ea18548d2bf274529d094b11397cae3",
     "dirty": false
   },
   "files": {
     "bmk_tag_organizer_core.py": "7f8223c02f8ea80a52a54ebd267a8272dc86ad530fe69e0e895ac7747034f704",
     "tag_organizer_data/tagpack.json.gz": "0455b08cae344fc8e9d87085adcd61faa7ab419a4064a371e1d73a37069225de",
-    "js/tag_organizer/editor.js": "53741b652d755f013835d4dd87db2b29549cb8aaa21f004cea9a654957d0c998",
-    "js/tag_organizer/model.js": "9a3aa590c7594158b384560f5c601887adb21f7ca1858a613e6563299537592b"
+    "js/tag_organizer/editor.js": "d1e5c4c285948c5c5f371f2e2504da499aca1127cd1f38bfb6a56c81248935aa",
+    "js/tag_organizer/model.js": "a5964af16096c37261b75e7ee3d9e83d123e001f272346a605618c9975c048ee"
   }
 }
