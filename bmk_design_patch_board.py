@@ -4719,6 +4719,7 @@ def _pool_undelete(root, rev, data):
         m = store.load_manifest(root)
         folder = _refs_dir_for_write(m)
         doc = _refs_at(root, rev, folder)
+        _pool_delete_shared(root, folder)
         directory = _pool_deleted_dir(folder)
         src = os.path.join(directory, name)
         if not os.path.isfile(src) or not drefs._plain_cache_path(folder, src):

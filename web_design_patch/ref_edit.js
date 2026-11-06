@@ -1118,6 +1118,7 @@ window.DPRefEdit = (() => {
       if (!size || !ctx) {
         cutCanvas.width = 0;
         cutCanvas.height = 0;
+        perspectiveView = null;
         return;
       }
       const k = Math.min(1, PREVIEW_MAX / Math.max(size[0], size[1]));
@@ -1127,15 +1128,33 @@ window.DPRefEdit = (() => {
       ctx.clearRect(0, 0, cutCanvas.width, cutCanvas.height);
       // 저장 순서 = 회전(양수 반시계) → 좌우 반전 → 배율. 캔버스 rotate 는 y 가 아래라 양수가 시계 방향.
       // 돌린 모양의 bbox 가운데(m)를 캔버스 가운데에
-      const m = shapeBox(T).m;
+      const shape = shapeBox(T), m = shape.m;
       ctx.translate(cutCanvas.width / 2, cutCanvas.height / 2);
       ctx.scale(k * T.scale * (T.flip_h ? -1 : 1), k * T.scale);
       ctx.translate(-m[0], -m[1]);
       ctx.rotate((-T.rotate * Math.PI) / 180);
       const b = cutBox;
       ctx.drawImage(cutImg, b.x, b.y, b.w, b.h, -b.w / 2, -b.h / 2, b.w, b.h);
+      // 일반 경로도 B 틀 → 캔버스의 실제 배율·원점을 기록한다(정수 캔버스 반올림 포함).
+      const pixelScale = k * T.scale;
+      setPerspectiveView({ x0: shape.w / 2 - cutCanvas.width / (2 * pixelScale),
+        y0: shape.h / 2 - cutCanvas.height / (2 * pixelScale), k: pixelScale, scale: T.scale,
+        w: cutCanvas.width / pixelScale, h: cutCanvas.height / pixelScale });
       placeOverlay();
       if (live.size) live.size.textContent = sizeLine();
+    }
+
+    function setPerspectiveView(view) {
+      const previous = perspectiveView;
+      if (overlay && previous && !perspectiveDrag) {
+        const oldScreenScale = previous.k * overlay.k;
+        // 저장 배율 변경은 살리고, 캔버스 bbox·미리보기 축소율 변경만 상쇄한다.
+        const screenScale = oldScreenScale * view.scale / previous.scale;
+        overlay.k = screenScale / view.k;
+        overlay.x += view.x0 * screenScale - previous.x0 * oldScreenScale;
+        overlay.y += view.y0 * screenScale - previous.y0 * oldScreenScale;
+      }
+      perspectiveView = view;
     }
 
     function drawPerspective() {
@@ -1144,15 +1163,8 @@ window.DPRefEdit = (() => {
       const pad = TRIM_PAD / T.scale;
       const x0 = Math.min(0, p.x0) - pad, y0 = Math.min(0, p.y0) - pad;
       const w = Math.max(p.w, p.x1) + pad - x0, h = Math.max(p.h, p.y1) + pad - y0;
-      const view = perspectiveDrag ? perspectiveDrag.view : { x0, y0, k: Math.min(T.scale, PREVIEW_MAX / Math.max(w, h)), w, h };
-      const previous = perspectiveView;
-      if (overlay && previous && !perspectiveDrag) {
-        const screenScale = previous.k * overlay.k;
-        overlay.k = screenScale / view.k;
-        overlay.x += (view.x0 - previous.x0) * screenScale;
-        overlay.y += (view.y0 - previous.y0) * screenScale;
-      }
-      perspectiveView = view;
+      const view = perspectiveDrag ? perspectiveDrag.view : { x0, y0, k: Math.min(T.scale, PREVIEW_MAX / Math.max(w, h)), scale: T.scale, w, h };
+      setPerspectiveView(view);
       const { k } = view;
       const key = [result && result.req, T.rotate, T.flip_h, T.scale, k].join("|");
       if (!perspectiveCache || perspectiveCache.key !== key || perspectiveCache.img !== cutImg) {

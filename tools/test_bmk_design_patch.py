@@ -56687,8 +56687,19 @@ def batch12_unit():
     checker = np.zeros((100, 100, 4), np.uint8)
     checker[..., :3] = ((np.indices((100, 100)).sum(axis=0) % 2) * 255)[..., None]
     checker[..., 3] = 255
+    rows = [[y, 0, 100] for y in range(100)]
+    # ss=1 은 중심 보정이 빠지면 정수 격자의 한 색만 뽑힌다. ss=2 의 항등 warp 와 분리한다.
+    with patch.object(rf, "PERSPECTIVE_MAX_AREA", 2500):
+        check(rf.perspective_geometry(rows, 0, False, half)[0] == (50, 50, 1), "B12 체커 ss 1 강제")
+        small = rf.transform_rgba(checker, 0, False, 1, 0, corners=half)
+    check(small.shape == (50, 50, 4) and np.all((small[2:-2, 2:-2, :3] >= 127) & (small[2:-2, 2:-2, :3] <= 128)), "B12 ss 1 픽셀 중심: 체커 2x2 평균 회색")
     small = rf.transform_rgba(checker, 0, False, 1, 0, corners=half)
-    check(small.shape == (50, 50, 4) and np.all((small[2:-2, 2:-2, :3] >= 127) & (small[2:-2, 2:-2, :3] <= 128)), "B12 픽셀 중심: 체커 평균 회색")
+    check(small.shape == (50, 50, 4) and np.all((small[2:-2, 2:-2, :3] >= 127) & (small[2:-2, 2:-2, :3] <= 128)), "B12 ss 2 축소: 체커 평균 회색")
+    frame = np.zeros((240, 130, 4), np.uint8)
+    frame[20:220, 10:110] = (220, 40, 10, 255)
+    for corners, size in (([[-.5,0],[1,0],[1,1],[0,1]], (200,150,4)),
+                          ([[.1,0],[.9,0],[1,1],[0,1]], (200,100,4))):
+        check(rf.transform_rgba(frame, 0, False, 1, 0, corners=corners).shape == size, "B12 명세 숫자 예: B 100x200·pad 0 출력 크기")
     quadrants = np.zeros((80, 100, 4), np.uint8)
     quadrants[:40, :50] = (255, 0, 0, 255); quadrants[:40, 50:] = (0, 255, 0, 255)
     quadrants[40:, :50] = (0, 0, 255, 255); quadrants[40:, 50:] = (255, 255, 0, 255)
@@ -56698,14 +56709,14 @@ def batch12_unit():
     with patch.object(rf.cv2, "warpPerspective", wraps=rf.cv2.warpPerspective) as warp, patch.object(rf, "_rotate_premul", side_effect=AssertionError("이중 보간")):
         rf.transform_rgba(quadrants, 37.5, True, .65, 8, corners=half)
         check(warp.call_count == 1, "B12 회전·반전·원근 합성 warp 한 번")
-    rows = [[y, 0, 100] for y in range(100)]
     check(rf.perspective_geometry(rows, 0, False, half)[0] == (50, 50, 2), "B12 압축 ss 2")
     with patch.object(rf, "PERSPECTIVE_MAX_AREA", 2500):
         check(rf.perspective_geometry(rows, 0, False, half)[0][-1] == 1, "B12 초표본 메모리 상한이면 ss 1")
     with patch.object(rf.cv2, "warpPerspective", side_effect=AssertionError("상한 뒤 할당")):
         expect_raises(lambda: rf.perspective_geometry([[0, 0, 4096], [4095, 0, 4096]], 0, False, [[-1,-1],[2,-1],[2,2],[-1,2]]), "B12 할당 전 상한", contains="너무 큽니다")
-    red = np.full((70, 70, 4), (220, 40, 10, 0), np.uint8); red[10:60, 10:60, 3] = 120
+    red = np.zeros((70, 70, 4), np.uint8); red[10:60, 10:60] = (220, 40, 10, 120)
     red = rf.transform_rgba(red, 37.5, True, .8, 0, corners=[[.2,0],[.8,0],[1,1],[0,1]])
+    check(np.any((red[...,3] > 0) & (red[...,3] < 120)), "B12 검은 투명 RGB 와 섞인 가장자리 존재")
     check(np.max(np.abs(red[red[...,3] > 0, :3].astype(int) - [220,40,10])) <= 1, "B12 프리멀티 반투명 색 보존")
     expect_raises(lambda: rf.transform_rgba(np.zeros((8,8,4), np.uint8), 0, False, 1, 0, corners=half), "B12 모두 투명")
 
@@ -56729,11 +56740,11 @@ def batch12_unit():
             ctx = vlm.build_crop_ctx(root, m, c, refs_dir=str(rd), glossary={}, backend="mock", memo={})
             values.append((r, [t["refs"] for t in spec["targets"]], [(x.name, x.src_sha) for x in ctx.refs]))
         return values
-    def deny(fn, status=409):
+    def deny(fn, status=409, contains=None):
         try:
             fn()
         except bd._Reject as e:
-            check(e.status == status, f"B12 거절 {status}: {e}")
+            check(e.status == status and (contains is None or contains in str(e)), f"B12 거절 {status} {contains or ''}: {e}")
         else:
             check(False, f"B12 {status} 거절 누락")
     with patch.object(bd, "_project_roots", return_value=[]):
@@ -56753,11 +56764,10 @@ def batch12_unit():
         deny(lambda: remove("001_머리_t.png"))
         _r3_png(rd / "old.png", quadrants); deny(lambda: remove("old.png"))
         old_bytes = (rd/a).read_bytes(); _r3_png(rd/a, quadrants); deny(lambda: remove(a)); (rd/a).write_bytes(old_bytes)
-        shared = dict(m, source={**m["source"], "refs_dir": str(out)})
-        with patch.object(store, "load_manifest", return_value=shared):
-            deny(lambda: remove(a))
+        deny(lambda: bd._pool_delete_shared(root, str(out)), contains="프로젝트 밖")
         with patch.object(bd, "_project_roots", return_value=[{"root": str(out/"other")}]), patch.object(store, "load_manifest", return_value=m):
-            deny(lambda: remove(a))
+            deny(lambda: bd._pool_delete_shared(root, str(rd)), contains="다른 프로젝트(other)도 씁니다")
+            deny(lambda: remove(a), contains="다른 프로젝트(other)도 씁니다")
         with patch.object(rf, "explicit_refs", return_value={rf.ref_key("_삭제/"+a): [(m["crops"][0]["id"], "A", "spec")]}):
             deny(lambda: remove(a))
         deny(lambda: bd.ref_pool(root, rev(), "delete", {"items": [{"name": a}] * 101}), 400)
@@ -56790,6 +56800,19 @@ def batch12_unit():
         expect_raises(lambda: bd.ref_image(root, "../x.png", "deleted", "0", "white"), "B12 경로 탈출 거절")
         with patch.object(rf, "explicit_refs", return_value={rf.ref_key("_삭제/"+a): [(m["crops"][0]["id"], "A", "spec")]}):
             deny(lambda: action("undelete", name=a))
+        before_shared = Path(root, rf.REFS_NAME).read_bytes()
+        with patch.object(bd, "_project_roots", return_value=[{"root": str(out/"other")}]), patch.object(store, "load_manifest", return_value=m):
+            deny(lambda: action("undelete", name=a), contains="다른 프로젝트(other)도 씁니다")
+        check((deleted/a).read_bytes() == old_bytes and not (rd/a).exists() and Path(root, rf.REFS_NAME).read_bytes() == before_shared,
+              "B12 공유 refs 되살리기 거절은 파일·rev 그대로")
+        outside_root = _r3_project(out, "outside12", refs_inside=False, sheets=False)
+        outside_refs = Path(store.load_manifest(outside_root)["source"]["refs_dir"])
+        outside_doc = rf.new_refs(str(outside_refs))
+        _, outside_rev = rf.update_refs(outside_root, lambda d: d.update(outside_doc), expect_rev=None, create=True)
+        _r3_png(outside_refs/rf.DELETED_DIR/"ref_external.png", quadrants)
+        deny(lambda: bd.ref_pool(outside_root, outside_rev, "undelete", {"name": "ref_external.png"}), contains="프로젝트 밖")
+        check((outside_refs/rf.DELETED_DIR/"ref_external.png").exists() and not (outside_refs/"ref_external.png").exists()
+              and rf.load_refs(outside_root)["rev"] == outside_rev, "B12 프로젝트 밖 되살리기 거절은 파일·rev 그대로")
         check(action("undelete", name=a)["file"] == a and rf.load_refs(root)["files"][a]["transform"]["corners"] == half, "B12 원래 이름·다시 열기 복구")
         check(choices() == initial, "B12 되살리기 모든 크롭 입력 불변")
         _r3_png(rd/b, quadrants)
@@ -56833,7 +56856,11 @@ def batch12_unit():
         gone = save("gone")["file"]; remove(gone); (deleted/gone).unlink(); remove(crash)
         check(gone not in rf.load_refs(root)["deleted"], "B12 사라진 삭제 기록 정리")
         with patch.object(bd, "_pool_source", return_value=(root, m, str(rd))):
-            check(all(not r["name"].startswith("_삭제/") for r in bd.ref_pool_source(root, "test")["files"]), "B12 가져오기 삭제 폴더 제외")
+            deleted_only = "ref_deleted_only.png"
+            _r3_png(deleted/deleted_only, quadrants)
+            source_names = {r["name"] for r in bd.ref_pool_source(root, "test")["files"]}
+            check(not (rd/deleted_only).exists() and deleted_only not in source_names and photo in source_names,
+                  "B12 가져오기 목록: 삭제 폴더에만 있는 파일 제외·일반 파일 포함")
         c = m["crops"][2]
         for role in ("main", "aux"):
             saved = save("detail", crop_id=c["id"], role=role, confirm=[c["name"]+"_t.png"])
@@ -56899,9 +56926,11 @@ await scenario("perspective", async () => {
   const beforeKey = env.own(env.hosts.panel,"저장 크기 약");
   env.key("BracketRight"); env.key("KeyH");
   const swallowed = env.own(env.hosts.panel,"저장 크기 약") === beforeKey;
-  env.ed.stateChanged({...env.st,refs_rev:8}); await sleep(40);
-  const deferred = handles12(env)[0] === handle;
+  const panelTitle = env.cls(env.hosts.panel,"lp-k");
+  env.ed.stateChanged({...env.st,rev:8,refs_rev:8}); await sleep(40);
+  const deferred = !!panelTitle && env.cls(env.hosts.panel,"lp-k") === panelTitle;
   env.key("Escape"); await sleep(15);
+  const resumed = env.cls(env.hosts.panel,"lp-k") !== panelTitle;
   const esc = !!env.button(env.hosts.panel,"보관함에 저장",true) && !env.hosts.panel.textContent.includes("perspective-warped") && handle.captured === null;
   handle = handles12(env)[0]; grab12(handle,20,5); await sleep(15); handle.fire("pointerup",{pointerId:7});
   const hint = env.hosts.panel.textContent.includes("perspective-warped");
@@ -56909,7 +56938,7 @@ await scenario("perspective", async () => {
   const sent = env.lastSave.transform.corners[0][0] === .2;
   handle = handles12(env)[0]; grab12(handle,10,0); handle.fire("lostpointercapture",{pointerId:7});
   const n = env.confirms.length; await env.press(env.hosts.panel,"목록",true);
-  return {fixed,swallowed,deferred,esc,hint,sent,dirty:env.confirms.length === n+1};
+  return {fixed,swallowed,deferred,resumed,esc,hint,sent,dirty:env.confirms.length === n+1};
 });
 await scenario("invalidReset", async () => {
   const env = await start12(); await preview12(env); await env.press(env.hosts.panel,"원근",true);
@@ -56961,9 +56990,51 @@ await scenario("dragDrop", async () => {
   return {defer,over,invalid,foreign,own,ended,documentDrop:!env.hosts.grid.classList.contains("rf-dropping"),token:typeof payload.token === "string"};
 });
 await scenario("oldServer", async () => {
-  const env = await start9(); await preview12(env);
-  return { perspective:env.button(env.hosts.panel,"원근",true).disabled, deletion:env.button(env.hosts.panel,"선택 삭제 (0)",true).disabled,
+  const env = await start12(); await preview12(env);
+  const cb = env.cls(env.hosts.panel,"rf-pool-check"); cb.checked = true; cb.fire("change");
+  const enabledBefore = !env.button(env.hosts.panel,"선택 삭제 (1)",true).disabled;
+  env.srv.R.pool_deleted = [{name:"ref_old_deleted.png",recorded:false,thumb_url:null,size:[10,10]}];
+  delete env.srv.R.caps;
+  env.ed.stateChanged({...env.st,rev:22,refs_rev:22}); await sleep(35);
+  const checkbox = env.cls(env.hosts.panel,"rf-pool-check");
+  const details = env.cls(env.hosts.panel,"rf-deleted");
+  const restore = env.button(details,"되살리기",true).disabled;
+  await env.press(env.hosts.panel,"⋯",true);
+  const dialog = env.doc.body.all().find((e) => e.classList.contains("rf-dialog"));
+  return { enabledBefore, perspective:env.button(env.hosts.panel,"원근",true).disabled, deletion:env.button(env.hosts.panel,"선택 삭제 (1)",true).disabled,
+    checkbox:checkbox.checked && checkbox.disabled, menu:env.button(dialog,"삭제",true).disabled, restore,
     title:env.button(env.hosts.panel,"원근",true).title === "ComfyUI 재시작 필요(서버가 옛 판)" };
+});
+await scenario("overlayTransitions", async () => {
+  const env = await start12(), id = env.srv.R.crops[1].id;
+  env.st.targets = [{crop_id:id,before_full_url:"thumb?before=12"}];
+  env.li(env.srv.R.crops[1].name).fire("click");
+  await preview12(env); await env.press(env.hosts.panel,"겹쳐 보기",true);
+  const snapshot = () => {
+    const canvas = canvas12(env);
+    return ["left","top","width","height"].map((p) => parseFloat(canvas.style[p]));
+  };
+  const close = (a,b) => a.every((v,i) => Math.abs(v-b[i]) < 1e-7);
+  const scale = async (value) => {
+    const row = env.all(env.hosts.panel).find((e) => e.classList.contains("rf-slider") && e.children[0].textContent === "배율");
+    row.children[1].value = String(value); row.children[1].fire("input"); row.children[1].fire("change"); await sleep(10);
+  };
+  const original = snapshot();
+  await env.press(env.hosts.panel,"원근",true); const firstOn = close(snapshot(),original);
+  await env.press(env.hosts.panel,"원근",true); await scale(.5);
+  const half = snapshot(), shrunk = half[2] < original[2] && half[3] < original[3];
+  await env.press(env.hosts.panel,"원근",true); const scaleThenOn = close(snapshot(),half);
+  await env.press(env.hosts.panel,"원근",true); const backOff = close(snapshot(),half);
+  await scale(1); const scaleBack = close(snapshot(),original);
+  await env.press(env.hosts.panel,"원근",true);
+  const handle = handles12(env)[0]; grab12(handle,-30,-20); await sleep(15); handle.fire("pointerup",{pointerId:7});
+  const expanded = snapshot(), canvas = canvas12(env), zoom = expanded[2]/canvas.width;
+  const bOrigin = [expanded[0]+38*zoom,expanded[1]+28*zoom]; // B 좌상단 = 늘어난 30/20 + pad 8
+  await env.press(env.hosts.panel,"원근 켬",true); const hidden = close(snapshot(),expanded);
+  await env.press(env.hosts.panel,"원근 초기화",true);
+  const reset = snapshot(), newZoom = reset[2]/canvas12(env).width;
+  const resetAnchored = close([reset[0]+8*newZoom,reset[1]+8*newZoom],bOrigin);
+  return {firstOn,shrunk,scaleThenOn,backOff,scaleBack,hidden,resetAnchored,resetSize:close(reset,original)};
 });
 await scenario("overlayAndLimit", async () => {
   const env = await start12();
@@ -57017,7 +57088,7 @@ console.log(JSON.stringify(out)); process.exit(0);
     check(proc.returncode == 0 and bool(proc.stdout.strip()), "B12 JS 하네스 실행: " + proc.stderr[-1500:])
     if proc.returncode == 0 and proc.stdout.strip():
         results = json.loads(proc.stdout.strip().splitlines()[-1])
-        for name in ("rules", "bframe", "constants", "matrix", "perspective", "invalidReset", "delete", "dragDrop", "oldServer", "overlayAndLimit", "reopen", "dragCleanup"):
+        for name in ("rules", "bframe", "constants", "matrix", "perspective", "invalidReset", "delete", "dragDrop", "oldServer", "overlayTransitions", "overlayAndLimit", "reopen", "dragCleanup"):
             result = results.get(name, {})
             check(bool(result) and all(v is True for v in (result if isinstance(result, list) else result.values())), f"B12 JS {name}: {result}")
 
