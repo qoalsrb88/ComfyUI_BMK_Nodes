@@ -462,6 +462,8 @@ window.DPPipeline = (() => {
       return true;
     };
 
+    s.previewPrepare = (prepare) => call("pipeline?" + qs({ prepare: JSON.stringify(prepare) }));
+
     s.save = async (section, values, rev = s.P.rev) => {
       // 절 하나를 통째로(POST /pipeline/settings — rev = 가진 판: 파일 없음 0·깨짐 null, 여러 절을 잇따라 저장하면 앞 저장 응답의 rev). 성공이든
       // 409(다른 창이 씀)든 끝나면 다시 읽는다
@@ -2082,10 +2084,55 @@ window.DPPipeline = (() => {
       }, again ? 0 : PREVIEW_MS);
     }
 
+    function prepareChanged(base, values) {
+      return ["model", "quality", "size_rule", "variants", "ref_style", "complexity"].some((k) =>
+        (k !== "complexity" || /^gpt-image-2\.6-/.test(values.model)) && !same(base[k], values[k]));
+    }
+
+    function prepareText(preview) {
+      const p = preview.prepare;
+      const model = `${p.model} · 품질 ${p.quality}` + (/^gpt-image-2\.6-/.test(p.model) ? ` · 복잡도 ${p.complexity}` : "");
+      if (preview.error) throw new Error(preview.error);
+      return [`${model} 으로 바꿉니다.`,
+        `다음 [반영] 뒤 생성 승인 필요 ${preview.need}건 (${preview.cells}셀) ≈ $${preview.est_usd[0].toFixed(2)}–${preview.est_usd[1].toFixed(2)} (≈ ${preview.credits[0]}–${preview.credits[1]} 크레딧) — 승인 전에는 과금 없음.`,
+        "지금 ★·후보는 남고 '옛 조건' 배지가 붙습니다. 초안 재과금은 없습니다.",
+        `다시 생성 대기 ${preview.pruned}건은 반영 때 정리(과금 없음).`,
+        ...(preview.pending_preapproved ? [`남는 다시 생성 사전 승인 ${preview.pending_preapproved}건 ≈ $${preview.est_usd_pre[0].toFixed(2)}–${preview.est_usd_pre[1].toFixed(2)} 도 다음 실행에 포함됩니다.`] : []),
+        ...(preview.blocked.length ? [`발사 못 함 ${preview.blocked.length}건 — ${[...new Set(preview.blocked)].join("; ")}`] : []),
+        ...(preview.uncertain ? ["미리 보기 — 반영 뒤 달라질 수 있음(입력·다른 설정 변경 포함)."] : []),
+        "그래프에서 Prepare 를 직접 돌리면 그 위젯 값(2.5 · 옛 워크플로는 complexity 위젯이 없어 high)으로 돌아갑니다: 그래프 Prepare 의 model·complexity 도 바꾸거나 Studio [반영]만 쓰세요.",
+        ...(preview.backend === "mock" ? ["[MOCK] 과금 없음"] : [])].join("\n");
+    }
+
+    async function preparePreview(values, P0) {
+      const p = await PS.previewPrepare(values);
+      if (p.rev !== P0.rev || p.manifest_rev !== P0.manifest_rev) throw new Error("미리 보기 중 프로젝트가 바뀜 — 다시 읽고 저장하세요");
+      if (!p.switch) throw new Error("생성 조건 미리 보기를 받지 못했습니다 — 설정을 다시 읽으세요");
+      return prepareText(p.switch);
+    }
+
+    async function switchModel() {
+      const p = PS.P;
+      if (!p || !p.saved || p.error || confirmOf(p).some((c) => c.startsWith("prepare.")) || PS.busy) return;
+      if (Object.keys(form.prepare || {}).length) {
+        opts.toast("편집 중인 준비 설정을 먼저 저장하세요", "err");
+        return;
+      }
+      const values = Object.assign({}, p.settings.prepare, { model: p.settings.prepare.model.replace("2.5", "2.6") });
+      try {
+        if (!window.confirm(await preparePreview(values, p))) return;
+        await PS.save("prepare", values, p.rev);
+        opts.toast("2.6 전환 설정 저장 — 다음 [반영] 뒤 생성 승인(승인 전에는 과금 없음)");
+        planNow();
+      } catch (e) { opts.toast(e.message, "err"); }
+      render();
+    }
+
     async function saveSection(sec) {
       if (PS.busy) return; // 앞 쓰기를 처리하는 중(두 번 누름) — 조용히 버림
       const w = PS.P.widgets[sec];
       const base = PS.P.settings ? PS.P.settings[sec] : PS.P.derived.settings[sec];
+      const P0 = PS.P;
       const sent = Object.assign({}, form[sec]); // 보낸 편집값 — 응답을 기다리는 사이 같은 절에 친 값은 남긴다
       const raw = Object.assign({}, base, sent);
       const values = {};
@@ -2104,7 +2151,8 @@ window.DPPipeline = (() => {
         return;
       }
       try {
-        const r = await PS.save(sec, values);
+        if (sec === "prepare" && prepareChanged(base, values) && !window.confirm(await preparePreview(values, P0))) return;
+        const r = await PS.save(sec, values, P0.rev);
         // 이 창이 저장한 값 = 서버가 쓴 절(import 경로는 정규화 — 따옴표·공백 없이 '/'). 입력 중이라 다시 그리기가 미뤄져도 다음 저장·칸 옆 표시가
         // 제 값을 '다른 창 값'으로 보지 않게: 화면 기준값(drawn)과, 응답을 기다리는 사이 같은 칸에 더 친 키의 첫 편집 기준값(edits)을 이 값으로
         const saved = r.settings[sec];
@@ -2162,6 +2210,10 @@ window.DPPipeline = (() => {
       const diff = P0.settings ? secs.flatMap((sec) => Object.keys(D[sec]).filter((k) => JSON.stringify(P0.settings[sec][k]) !== JSON.stringify(D[sec][k]))
         .map((k) => ` · ${sec}.${k}: ${shown(P0.settings[sec][k])} → ${shown(D[sec][k])}`)) : [];
       if (diff.length) lines.push("저장값에서 바뀌는 값:", ...diff);
+      if (secs.includes("prepare") && P0.settings && prepareChanged(P0.settings.prepare, D.prepare)) {
+        try { lines.push(await preparePreview(D.prepare, P0)); }
+        catch (e) { opts.toast(e.message, "err"); return; }
+      }
       if (!window.confirm(lines.concat("Prepare·Import 가 바뀌면 다음 반영에서 생성 조건이 바뀌어 다시 과금 대상이 될 수 있습니다. 계속할까요?").join("\n"))) return;
       // 확인 창을 닫은 때의 편집값 — 리셋이 덮는 것은 이 값뿐. 저장을 기다리는 사이 칸은 켜져 있어 그 뒤에 친 값(바꾼 키·새 키)은 보내지 않은
       // 새 편집이라 남긴다(saveSection 과 같은 뜻 — 지우면 칸이 blur 뒤 저장값으로 돌아가고, 바로 누른 [저장]은 친 값 대신 저장값을 '저장 성공'으로)
@@ -2407,7 +2459,8 @@ window.DPPipeline = (() => {
           else {
             const pr = P0.settings.prepare;
             const dr = P0.settings.draft;
-            line(s, `${P0.saved ? `rev ${P0.rev}` : "파일 없음(유도값)"} · Prepare ${pr.model} · ${pr.quality} · ${pr.size_rule} · ${pr.variants} · n ${pr.n} · `
+            line(s, `${P0.saved ? `rev ${P0.rev}` : "파일 없음(유도값)"} · Prepare ${pr.model} · ${pr.quality} · `
+              + (/^gpt-image-2\.6-/.test(pr.model) ? `복잡도 ${pr.complexity} · ` : "") + `${pr.size_rule} · ${pr.variants} · n ${pr.n} · `
               + `${pr.ref_style} · ${pr.calls_per_cell} · 초안 ${dr.vlm} · ${dr.effort} · ${dr.write_mode} · ${dr.apply}`);
           }
           // 확인 필요 = 서버 prompt_gate 판정대로 두 줄: 막는 항목(prepare.*·import.* — 깨진 파일은 전부)은 빨강, 그 밖(늘 남는 draft.apply·기록 없는
@@ -2905,6 +2958,14 @@ window.DPPipeline = (() => {
         if (SECTION_WARN[sec]) line(box, SECTION_WARN[sec], "dim");
         for (const d of P0.drift.filter((x) => x.section === sec)) line(box, driftText(d), DRIFT_BILL.includes(d.kind) ? "bad" : "warn");
         const need = confirmOf(P0).filter((c) => c.startsWith(sec + "."));
+        if (sec === "prepare" && /^gpt-image-2\.5-/.test(base.model)) {
+          const sw = button("2.6 으로 전환", "같은 계열의 2.6 으로 전환 — 예상 호출·비용을 확인한 뒤 저장", once(switchModel));
+          sw.disabled = PS.busy || !P0.saved || !!P0.error || !!need.length || !!Object.keys(form.prepare || {}).length;
+          if (!P0.saved || P0.error || need.length) sw.title = "먼저 ① 준비 설정 확인";
+          else if (Object.keys(form.prepare || {}).length) sw.title = "편집 중인 준비 설정을 먼저 저장하세요";
+          btns(box, el("span", "", `모델 ${base.model} — `), sw);
+          if (!P0.saved || P0.error || need.length) line(box, "먼저 ① 준비 설정 확인", "dim");
+        }
         for (const [k, spec] of Object.entries(ws)) box.append(field(sec, k, spec, base[k], need.includes(`${sec}.${k}`)));
         const sb = button(need.length ? "확인·저장" : "저장", need.length ? `확인 필요: ${need.join(", ")} — 이 값으로 저장하면 확인됨` : "이 절을 저장",
           () => saveSection(sec), need.length ? "primary" : "");
@@ -2932,6 +2993,7 @@ window.DPPipeline = (() => {
         const e = (edits[sec] = edits[sec] || {});
         if (!(k in e)) e[k] = drawn[sec][k];
         (form[sec] = form[sec] || {})[k] = v;
+        if (sec === "prepare" && k === "model") render();
       };
       let inp;
       if (spec.type === "COMBO") {
@@ -2964,6 +3026,13 @@ window.DPPipeline = (() => {
       inp.disabled = !!spec.readonly;
       if (spec.readonly) inp.title = "읽기 전용(그래프에서 바꿈)";
       r.append(lab, inp);
+      if (sec === "prepare" && k === "complexity") {
+        const model = (form.prepare || {}).model || (PS.P.settings || PS.P.derived.settings).prepare.model;
+        if (!/^gpt-image-2\.6-/.test(model)) {
+          r.classList.add("pp-complexity-unused");
+          r.append(el("span", "dim", "2.6 만 — 지금 모델에는 쓰지 않음"));
+        }
+      }
       if (sub) {
         // 이름 검사는 저장할 때 서버(400 문구 그대로 토스트) — 여기는 앞뒤 공백만 떼어 보임(서버와 같음). 경로 구분자·'..' 는
         // 하위 폴더처럼 보이는 경로를 미리 보이지 않고 저장 안 됨을 먼저 알림(8189 — 'a/b' 가 output/design_patch/a/b 로 보였음)

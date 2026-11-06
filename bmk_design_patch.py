@@ -279,8 +279,8 @@ _CATEGORY = "BMK/Image"
 _ALIASES = ["multi layer crop edit", "design patch", "디자인 패치", "디자인 수정", "디자인 보정", "파츠 보정",
             "크롭 수정", "레퍼런스 보정", "psd"]
 
-_MODELS = ["gpt-image-2.5-sunburst", "gpt-image-2.5-flare"]
-_QUALITIES = ["max", "xhigh", "high", "medium", "low"]  # gpt-image-2.5 가 받는 품질(medium·low 는 시험·저비용용)
+_MODELS = ["gpt-image-2.6-sunburst", "gpt-image-2.6-flare", "gpt-image-2.5-sunburst", "gpt-image-2.5-flare"]
+_QUALITIES = ["max", "xhigh", "high", "medium", "low"]  # gpt-image-2.5·2.6 공통 품질
 _REF_STYLES = ["at", "plain", "both"]
 _REGISTER_MODES = ["guarded_affine", "translation", "off"]
 _TONE_MODES = ["field", "global", "off"]
@@ -1851,7 +1851,7 @@ def _glossary(root: str, m: dict) -> dict:
 
 
 class BMKDesignPatchPrepare:
-    """크롭마다 스펙 → 평탄화 입력 → 변형별 결정적 프롬프트 → cell_key 로 GPT 작업 목록(jobs)을 만든다(호출 없음)."""
+    """크롭마다 스펙 → 평탄화 입력 → 변형별 프롬프트 → cell_key 로 jobs 를 만든다(무료, 2.6 은 complexity 포함)."""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -1876,6 +1876,10 @@ class BMKDesignPatchPrepare:
                                                       "Run 에서 다시 승인해야 과금됩니다(보드 재굴림 결과도 이 수에 셈). "
                                                       "줄여도 받은 결과는 그대로."}),
             },
+            "optional": {
+                "complexity": (["low", "medium", "high"], {"default": "high",
+                                "tooltip": "2.6 전용 복잡도(생성 조건 키에 포함). 2.5 에서는 쓰지 않음."}),
+            },
         }
 
     RETURN_TYPES = (PROJECT_TYPE, "IMAGE", "STRING")
@@ -1890,7 +1894,7 @@ class BMKDesignPatchPrepare:
     )
     SEARCH_ALIASES = _ALIASES + ["prepare", "prompt", "gpt prompt", "프롬프트", "작업 준비", "평탄화"]
 
-    def run(self, project, model, quality, size_rule, variants, n, ref_style, calls_per_cell=1):
+    def run(self, project, model, quality, size_rule, variants, n, ref_style, calls_per_cell=1, complexity="high"):
         t0 = time.time()
         root, m = _open(project)
         before = _snapshot(m)
@@ -1898,6 +1902,8 @@ class BMKDesignPatchPrepare:
             raise ValueError(f"{_TAG} 크롭이 없습니다 - BMK Design Patch Import PSD 를 먼저 실행하세요")
         if ref_style not in _REF_STYLES:
             raise ValueError(f"{_TAG} ref_style 은 {_REF_STYLES} 중 하나여야 합니다: {ref_style!r}")
+        if complexity not in ("low", "medium", "high"):
+            raise ValueError(f"{_TAG} complexity 는 low·medium·high 중 하나여야 합니다: {complexity!r}")
         dprompt.select_variants({}, variants)  # 형식 검사(잘못된 토큰이면 ValueError)
         # 입력 지문은 스펙·용어집을 읽기 전에 — 실행 도중 바뀐 입력은 지금 값과 달라 Studio 에 '반영 필요'로 남는다
         inputs_fp = store.prepare_inputs_fp(root, m)
@@ -1981,7 +1987,8 @@ class BMKDesignPatchPrepare:
                     continue
                 seen_prompts[(v["prompt"], tuple(v["images"]))] = vname
                 shas = [sha_of[p] for p in v["images"]]
-                ck = store.cell_key(model, quality, [W, H], _BACKGROUND, v["prompt"], shas, dprompt.TEMPLATE_VERSION, vname)
+                ck = store.cell_key(model, quality, [W, H], _BACKGROUND, v["prompt"], shas, dprompt.TEMPLATE_VERSION, vname,
+                                    complexity=complexity)
                 roles = []
                 for p in v["images"]:
                     role = ("canvas" if p == spec["canvas"] else "guide" if p == spec.get("guide")
@@ -1997,6 +2004,10 @@ class BMKDesignPatchPrepare:
                             "variant": vname, "model": model, "quality": quality, "size": [W, H], "n": int(n),
                             "reps": int(calls_per_cell), "background": _BACKGROUND, "prompt": v["prompt"],
                             "inputs": roles, "template_version": dprompt.TEMPLATE_VERSION, "size_info": sinfo})
+                if model in store.COMPLEXITY_MODELS:
+                    job["complexity"] = complexity
+                else:
+                    job.pop("complexity", None)
                 crop_jobs.append(job)
             jobs += crop_jobs
             for wmsg in spec["warnings"] + [f"스펙 점검: {p}" for p in probs]:
@@ -2009,7 +2020,7 @@ class BMKDesignPatchPrepare:
         m["jobs"] = _plain(jobs)
         # jobs 와 같은 커밋에(STUDIO_S3_SPEC §2.2): 실제로 쓴 위젯 값 — Studio 처음 값·그래프와의 갈라짐 판정, 같은 설정이면 바이트 그대로
         m["prepare_settings"] = {"model": model, "quality": quality, "size_rule": size_rule, "variants": variants,
-                                 "n": int(n), "ref_style": ref_style, "calls_per_cell": int(calls_per_cell)}
+                                 "n": int(n), "ref_style": ref_style, "calls_per_cell": int(calls_per_cell), "complexity": complexity}
         if not adopt_pending:  # 채택 미반영 크롭이 있으면 열 때 값 그대로(없으면 키 없음) — Studio '반영 필요'가 다음 반영까지 남게
             m["prepare_inputs"] = inputs_fp
         # 배치 10 D161 공용 자리(몸통 = 갈래 B): 잠금 안 병합 결과에서 jobs 밖(·reset) 생성 조건의 다시 생성 대기를 원장 쓴 몫까지 내림
@@ -2026,7 +2037,8 @@ class BMKDesignPatchPrepare:
         mock = runner.mock_enabled(root)  # 해시는 백엔드에 묶인다 — Run 이 지금 쓸 백엔드와 같게
         ap = runner.split_approval(plan, "", backend=runner.BACKEND_MOCK if mock else runner.BACKEND_COMFY_ORG)
         lines = [f"Prepare: 작업 {len(jobs)} (신규 {n_new} · 기존 {len(jobs) - n_new}) · 셀당 호출 {int(calls_per_cell)} · "
-                 f"예상 후보 {len(jobs) * int(n) * int(calls_per_cell)}장 · {model} {quality} {size_rule} · "
+                 f"예상 후보 {len(jobs) * int(n) * int(calls_per_cell)}장 · {model} · {quality} · "
+                 f"{('복잡도 ' + complexity + ' · ') if model in store.COMPLEXITY_MODELS else ''}{size_rule} · "
                  f"템플릿 {dprompt.TEMPLATE_VERSION} | 승인 해시 {ap['pending_hash'] or '-'}{' (MOCK)' if mock else ''} | "
                  f"rev {m['rev']} | {time.time() - t0:.1f}s",
                  "유료 호출 없음. Run 이 approve == pending_hash 일 때만 과금합니다"
@@ -2707,12 +2719,18 @@ class BMKDesignPatchRun:
                 draft_mock=0) -> str:
         mock = backend.name == runner.BACKEND_MOCK
         be = "MOCK(과금 없음)" if mock else "comfy.org(유료)"
+        blocked = [e for e in ap["blocked"] if e.get("blocked")]
+        unapproved = [e for e in ap["blocked"] if not e.get("blocked")]
         if report is not None:
             state = f"실행: 발사 {report.launched} · 완료 {report.done} · 실패 {report.failed} · 남음 {len(report.remaining)}"
         elif ap["needs_approval"]:
             state = f"드라이런(과금 없음): 승인 필요 {len(ap['needs_approval'])}건"
+        elif blocked:
+            state = "드라이런(과금 없음)"
         else:
             state = "할 일 없음(대기 호출 0)"
+        if blocked:
+            state += f" · 발사 못 함 {len(blocked)}건"
         lines = [f"Run [{be}] {state} | 새 후보 {len(new_keys)} | rev {rev} | {sec:.1f}s"]
         if draft_pending > 0:
             lines.append(f"주의: 스펙 초안 대기 {_draft_pending_text(draft_pending, draft_style)}(Spec Draft 미승인) — "
@@ -2728,10 +2746,12 @@ class BMKDesignPatchRun:
                          f"다시 큐하면 Spec Draft 가 원장으로 다시 씀(0 호출). 지금 승인하면 그 변경 없이 과금")
         if report is not None:
             lines += report.text().splitlines()
-        if ap["blocked"]:
+        if unapproved:
             why = ("approve 가 비어 있음" if not approve else
                    f"approve {approve} ≠ 지금 pending_hash {ap['pending_hash']}(드라이런 이후 대기 목록·n 이 바뀜)")
-            lines.append(f"승인 안 된 {len(ap['blocked'])}건은 과금하지 않음 — {why}")
+            lines.append(f"승인 안 된 {len(unapproved)}건은 과금하지 않음 — {why}")
+        if blocked:
+            lines.append(f"발사 못 함 {len(blocked)}건 — " + "; ".join(dict.fromkeys(e["blocked"] for e in blocked)))
         lines.append("현재 상태: " + runner.format_plan(plan_after, ap_after, concurrency=concurrency).replace("\n", "\n  "))
         if ap_after["needs_approval"]:
             lines.append(f"→ 승인: Run 노드의 '승인 후 실행' 버튼, 또는 approve 에 {ap_after['pending_hash']} 를 넣고 큐")

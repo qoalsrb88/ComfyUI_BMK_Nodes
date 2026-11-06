@@ -150,7 +150,8 @@
   "GET /pipeline": {
    "request": {
     "query": {
-     "root": "fe410d7f025d"
+     "root": "fe410d7f025d",
+     "prepare": "{\"model\":\"gpt-image-2.6-sunburst\",\"quality\":\"max\",\"size_rule\":\"user_k\",\"variants\":\"V1,V4\",\"n\":2,\"ref_style\":\"at\",\"calls_per_cell\":1,\"complexity\":\"high\"}"
     }
    },
    "ok": {
@@ -183,7 +184,8 @@
       "variants": "V1,V4",
       "n": 2,
       "ref_style": "at",
-      "calls_per_cell": 1
+      "calls_per_cell": 1,
+      "complexity": "high"
      },
      "draft": {
       "vlm": "openai/gpt-6-sol",
@@ -260,7 +262,8 @@
        "variants": "V1,V4",
        "n": 2,
        "ref_style": "at",
-       "calls_per_cell": 1
+       "calls_per_cell": 1,
+       "complexity": "high"
       },
       "draft": {
        "vlm": "openai/gpt-6-sol",
@@ -362,7 +365,8 @@
       "export.include_base": "manifest",
       "export.include_crop_outlines": "manifest",
       "export.skip_empty": "default",
-      "export.subfolder": "manifest"
+      "export.subfolder": "manifest",
+      "prepare.complexity": "manifest"
      },
      "confirm": [
       "prepare.variants",
@@ -507,8 +511,10 @@
      "prepare": {
       "model": {
        "type": "COMBO",
-       "default": "gpt-image-2.5-sunburst",
+       "default": "gpt-image-2.6-sunburst",
        "choices": [
+        "gpt-image-2.6-sunburst",
+        "gpt-image-2.6-flare",
         "gpt-image-2.5-sunburst",
         "gpt-image-2.5-flare"
        ]
@@ -556,6 +562,15 @@
        "default": 1,
        "min": 1,
        "max": 8
+      },
+      "complexity": {
+       "type": "COMBO",
+       "default": "high",
+       "choices": [
+        "low",
+        "medium",
+        "high"
+       ]
       }
      },
      "draft": {
@@ -796,7 +811,38 @@
      }
     },
     "manifest_rev": 79,
-    "folder": "261014_Test"
+    "folder": "261014_Test",
+    "switch": {
+     "prepare": {
+      "model": "gpt-image-2.6-sunburst",
+      "quality": "max",
+      "size_rule": "user_k",
+      "variants": "V1,V4",
+      "n": 2,
+      "ref_style": "at",
+      "calls_per_cell": 1,
+      "complexity": "high"
+     },
+     "need": 4,
+     "cells": 4,
+     "est_usd": [
+      2.4,
+      3.16
+     ],
+     "credits": [
+      506,
+      667
+     ],
+     "pending_preapproved": 0,
+     "est_usd_pre": [
+      0,
+      0
+     ],
+     "pruned": 1,
+     "blocked": [],
+     "uncertain": true,
+     "backend": "mock"
+    }
    },
    "alt": {
     "missing": {
@@ -829,7 +875,8 @@
        "variants": "V1,V4",
        "n": 2,
        "ref_style": "at",
-       "calls_per_cell": 1
+       "calls_per_cell": 1,
+       "complexity": "high"
       },
       "draft": {
        "vlm": "openai/gpt-6-sol",
@@ -908,7 +955,8 @@
         "variants": "V1,V4",
         "n": 2,
         "ref_style": "at",
-        "calls_per_cell": 1
+        "calls_per_cell": 1,
+        "complexity": "high"
        },
        "draft": {
         "vlm": "openai/gpt-6-sol",
@@ -1010,7 +1058,8 @@
        "export.include_base": "manifest",
        "export.include_crop_outlines": "manifest",
        "export.skip_empty": "default",
-       "export.subfolder": "manifest"
+       "export.subfolder": "manifest",
+       "prepare.complexity": "manifest"
       },
       "confirm": [
        "prepare.variants",
@@ -1134,8 +1183,10 @@
       "prepare": {
        "model": {
         "type": "COMBO",
-        "default": "gpt-image-2.5-sunburst",
+        "default": "gpt-image-2.6-sunburst",
         "choices": [
+         "gpt-image-2.6-sunburst",
+         "gpt-image-2.6-flare",
          "gpt-image-2.5-sunburst",
          "gpt-image-2.5-flare"
         ]
@@ -1183,6 +1234,15 @@
         "default": 1,
         "min": 1,
         "max": 8
+       },
+       "complexity": {
+        "type": "COMBO",
+        "default": "high",
+        "choices": [
+         "low",
+         "medium",
+         "high"
+        ]
        }
       },
       "draft": {
@@ -1423,7 +1483,41 @@
       }
      },
      "manifest_rev": 79,
-     "folder": "261014_Test"
+     "folder": "261014_Test",
+     "switch": {
+      "prepare": {
+       "model": "gpt-image-2.6-sunburst",
+       "quality": "max",
+       "size_rule": "user_k",
+       "variants": "V1,V4",
+       "n": 2,
+       "ref_style": "at",
+       "calls_per_cell": 1,
+       "complexity": "high"
+      },
+      "need": 4,
+      "cells": 4,
+      "est_usd": [
+       2.4,
+       3.16
+      ],
+      "credits": [
+       506,
+       667
+      ],
+      "pending_preapproved": 0,
+      "est_usd_pre": [
+       0,
+       0
+      ],
+      "pruned": 1,
+      "blocked": [
+       "ComfyUI complexity unsupported"
+      ],
+      "uncertain": true,
+      "backend": "mock",
+      "error": "Prepare records are incomplete"
+     }
     },
     "broken": {
      "rev": null,
@@ -1458,7 +1552,8 @@
         "variants": "V1,V4",
         "n": 2,
         "ref_style": "at",
-        "calls_per_cell": 1
+        "calls_per_cell": 1,
+        "complexity": "high"
        },
        "draft": {
         "vlm": "openai/gpt-6-sol",
@@ -1560,7 +1655,8 @@
        "export.include_base": "manifest",
        "export.include_crop_outlines": "manifest",
        "export.skip_empty": "default",
-       "export.subfolder": "manifest"
+       "export.subfolder": "manifest",
+       "prepare.complexity": "manifest"
       },
       "confirm": [
        "prepare.variants",
@@ -1684,8 +1780,10 @@
       "prepare": {
        "model": {
         "type": "COMBO",
-        "default": "gpt-image-2.5-sunburst",
+        "default": "gpt-image-2.6-sunburst",
         "choices": [
+         "gpt-image-2.6-sunburst",
+         "gpt-image-2.6-flare",
          "gpt-image-2.5-sunburst",
          "gpt-image-2.5-flare"
         ]
@@ -1733,6 +1831,15 @@
         "default": 1,
         "min": 1,
         "max": 8
+       },
+       "complexity": {
+        "type": "COMBO",
+        "default": "high",
+        "choices": [
+         "low",
+         "medium",
+         "high"
+        ]
        }
       },
       "draft": {
@@ -1973,7 +2080,8 @@
       }
      },
      "manifest_rev": 79,
-     "folder": "261014_Test"
+     "folder": "261014_Test",
+     "switch": null
     }
    },
    "errors": {
@@ -1992,9 +2100,21 @@
     "exports[].problems",
     "exports[].bytes",
     "exports[].mask_groups",
-    "exports[].mask_edits"
+    "exports[].mask_edits",
+    "switch"
    ],
-   "optional": [],
+   "optional": [
+    "switch.need",
+    "switch.cells",
+    "switch.est_usd",
+    "switch.credits",
+    "switch.pending_preapproved",
+    "switch.est_usd_pre",
+    "switch.pruned",
+    "switch.blocked",
+    "switch.backend",
+    "switch.error"
+   ],
    "maps": [],
    "any": [
     "drift[].manifest",
@@ -2015,7 +2135,8 @@
       "variants": "V1,V4",
       "n": 2,
       "ref_style": "at",
-      "calls_per_cell": 1
+      "calls_per_cell": 1,
+      "complexity": "high"
      }
     }
    },
@@ -2048,7 +2169,8 @@
       "variants": "V1,V4",
       "n": 2,
       "ref_style": "at",
-      "calls_per_cell": 1
+      "calls_per_cell": 1,
+      "complexity": "high"
      },
      "draft": {
       "vlm": "openai/gpt-6-sol",
@@ -2228,7 +2350,8 @@
        "variants": "V1,V4",
        "n": 2,
        "ref_style": "at",
-       "calls_per_cell": 1
+       "calls_per_cell": 1,
+       "complexity": "high"
       }
      },
      "dp_analyze": {
@@ -2367,7 +2490,8 @@
         "variants": "V1,V4",
         "n": 2,
         "ref_style": "at",
-        "calls_per_cell": 1
+        "calls_per_cell": 1,
+        "complexity": "high"
        }
       },
       "dp_run": {
@@ -2514,7 +2638,8 @@
         "variants": "V1,V4",
         "n": 2,
         "ref_style": "at",
-        "calls_per_cell": 1
+        "calls_per_cell": 1,
+        "complexity": "high"
        }
       },
       "dp_run": {
@@ -2730,7 +2855,8 @@
         1.2,
         1.58
        ],
-       "selected": true
+       "selected": true,
+       "blocked": 0
       },
       "012_93661a": {
        "need": 2,
@@ -2744,7 +2870,8 @@
         1.2,
         1.58
        ],
-       "selected": false
+       "selected": false,
+       "blocked": 0
       },
       "_stale": {
        "need": 0,
@@ -2758,7 +2885,8 @@
         0.0,
         0.0
        ],
-       "selected": false
+       "selected": false,
+       "blocked": 0
       }
      },
      "running": false
@@ -3011,7 +3139,8 @@
          1.2,
          1.58
         ],
-        "selected": true
+        "selected": true,
+        "blocked": 0
        },
        "012_93661a": {
         "need": 2,
@@ -3025,7 +3154,8 @@
          1.2,
          1.58
         ],
-        "selected": false
+        "selected": false,
+        "blocked": 0
        },
        "_stale": {
         "need": 0,
@@ -3039,7 +3169,8 @@
          0.0,
          0.0
         ],
-        "selected": false
+        "selected": false,
+        "blocked": 0
        }
       },
       "running": false
@@ -3106,7 +3237,8 @@
          1.2,
          1.58
         ],
-        "selected": true
+        "selected": true,
+        "blocked": 0
        },
        "012_93661a": {
         "need": 2,
@@ -3120,7 +3252,8 @@
          1.2,
          1.58
         ],
-        "selected": false
+        "selected": false,
+        "blocked": 0
        },
        "_stale": {
         "need": 0,
@@ -3134,7 +3267,8 @@
          0.0,
          0.0
         ],
-        "selected": false
+        "selected": false,
+        "blocked": 0
        }
       },
       "running": false
@@ -3202,7 +3336,8 @@
          1.2,
          1.58
         ],
-        "selected": true
+        "selected": true,
+        "blocked": 0
        },
        "012_93661a": {
         "need": 2,
@@ -3216,7 +3351,8 @@
          1.2,
          1.58
         ],
-        "selected": false
+        "selected": false,
+        "blocked": 0
        },
        "_stale": {
         "need": 0,
@@ -3230,7 +3366,8 @@
          0.0,
          0.0
         ],
-        "selected": false
+        "selected": false,
+        "blocked": 0
        }
       },
       "running": false
@@ -3289,7 +3426,8 @@
          1.2,
          1.58
         ],
-        "selected": false
+        "selected": false,
+        "blocked": 0
        },
        "012_93661a": {
         "need": 2,
@@ -3303,7 +3441,8 @@
          1.2,
          1.58
         ],
-        "selected": false
+        "selected": false,
+        "blocked": 0
        },
        "_stale": {
         "need": 0,
@@ -3317,7 +3456,8 @@
          0.0,
          0.0
         ],
-        "selected": false
+        "selected": false,
+        "blocked": 0
        }
       },
       "running": false
@@ -3430,7 +3570,8 @@
          1.2,
          1.58
         ],
-        "selected": true
+        "selected": true,
+        "blocked": 0
        },
        "012_93661a": {
         "need": 2,
@@ -3444,7 +3585,8 @@
          1.2,
          1.58
         ],
-        "selected": false
+        "selected": false,
+        "blocked": 0
        },
        "_stale": {
         "need": 0,
@@ -3458,7 +3600,8 @@
          0.0,
          0.0
         ],
-        "selected": false
+        "selected": false,
+        "blocked": 0
        }
       },
       "running": false
@@ -3622,7 +3765,8 @@
          1.2,
          1.58
         ],
-        "selected": true
+        "selected": true,
+        "blocked": 0
        },
        "012_93661a": {
         "need": 2,
@@ -3636,7 +3780,8 @@
          1.2,
          1.58
         ],
-        "selected": false
+        "selected": false,
+        "blocked": 0
        },
        "_stale": {
         "need": 0,
@@ -3650,7 +3795,8 @@
          0.0,
          0.0
         ],
-        "selected": false
+        "selected": false,
+        "blocked": 0
        }
       },
       "running": false

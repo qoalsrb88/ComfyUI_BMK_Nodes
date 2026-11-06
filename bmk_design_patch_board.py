@@ -2792,6 +2792,10 @@ def apply_reroll(root: str, count: int, cell_key: str | None = None, crop_id: st
                 raise _Reject(400, f"{crop_id}/{tid} 타깃에 작업이 {len(jobs)}개입니다 — variant 또는 cell_key 를 지정하세요 "
                                    f"({', '.join(str(j.get('variant')) for j in jobs)})")
             job = jobs[0]
+        runner = _runner()
+        why = runner.blocked_reason(job, backend=runner.BACKEND_MOCK if _mock_active(root) else runner.BACKEND_COMFY_ORG)
+        if why:
+            raise _Reject(409, f"발사 못 함 — {why}", reason="blocked")
         ck = job["cell_key"]
         cur = int(m["rerolls"].get(ck) or 0)
         waiting = _pending(root, m)[0].get(ck, 0)  # 원장 폴더 몇 개를 훑는 정도(잠금 안에서도 짧다)
@@ -5026,7 +5030,7 @@ _RUN_LEDGER_RE = re.compile(r"r\d+\.(req|inflight|resp|done|failed)\.json")  # r
 _VLM_CAPS = "_vlm_caps.json"             # vlm.CAPS_FILE 와 같음(root 의 부모 폴더 — openai 예상 크레딧 보정, Draft est 에 들어감)
 _SINCE_SLACK = 0.05                      # 원장 파일 시각은 time.time() 보다 거칠다(NTFS 갱신 틱·float 반올림) — Draft 시작 직후
                                          # 쓴 원장이 진행 수에서 빠지지 않게 시작 시각을 이만큼 당겨 센다
-_RUN_ZERO = {"need": 0, "pre": 0, "free": 0, "done": 0, "failed": 0, "orphaned": 0, "inflight": 0, "est_usd": [0.0, 0.0],
+_RUN_ZERO = {"need": 0, "blocked": 0, "pre": 0, "free": 0, "done": 0, "failed": 0, "orphaned": 0, "inflight": 0, "est_usd": [0.0, 0.0],
              "selected": False}
 _STALE = "_stale"                        # run.by_crop: crop_id 가 없거나 매니페스트에 없는 크롭의 옛 셀
 _DRAFT_SEL_EMPTY = {"hash": "", "units": [], "refresh_available": [], "skipped": [], "cached": [], "accepted": [], "filtered": [],
@@ -5162,7 +5166,7 @@ def _run_plans(root: str, m: dict, run_cfg: dict, only: str = "", mock: bool | N
 
 
 def _run_free(root: str, m: dict, run_cfg: dict, mock: bool | None = None) -> dict:
-    """only 없는 Run 계획: by_crop(크롭별 승인 필요·사전 승인·복구·완료·실패·orphaned·실행 중·예상 USD — 옛 셀은 _stale)·pre·free·
+    """only 없는 Run 계획: by_crop(크롭별 승인 필요·발사 불가·사전 승인·복구·완료·실패·orphaned·실행 중·예상 USD — 옛 셀은 _stale)·pre·free·
     est_usd_pre(재굴림은 approve·only 와 무관하게 Run 실행 때 함께 과금)·running + 비운 선택 필드(hash "" 등). 실패하면 {error}
     — 원장 대체 계산(_ledger_pending)으로 해시 없는 계획을 보이지 않는다."""
     try:
@@ -5181,7 +5185,8 @@ def _run_free(root: str, m: dict, run_cfg: dict, mock: bool | None = None) -> di
         k, r = row(e)
         r["need"] += 1
         need.setdefault(k, []).append(e)
-    for key, entries in (("pre", ap["preapproved"]), ("free", ap["free"]), ("done", plan["done"]), ("failed", plan["failed"]),
+    for key, entries in (("blocked", [e for e in ap["blocked"] if e.get("blocked")]),
+                         ("pre", ap["preapproved"]), ("free", ap["free"]), ("done", plan["done"]), ("failed", plan["failed"]),
                          ("orphaned", plan["orphaned"]), ("inflight", plan["inflight"])):
         for e in entries:
             row(e)[1][key] += 1
@@ -5203,9 +5208,13 @@ def _run_sel(root: str, m: dict, run_cfg: dict, only: str, mock: bool | None = N
     reasons: dict[str, int] = {}
     for e in ap["needs_approval"]:
         reasons[e["reason"]] = reasons.get(e["reason"], 0) + 1
+    blocked_entries = [e for e in ap["blocked"] if e.get("blocked")]
+    blocked = ([{"reason": "blocked", "n": len(blocked_entries),
+                 "msg": "발사 못 함 — " + "; ".join(dict.fromkeys(e["blocked"] for e in blocked_entries))}]
+               if blocked_entries else [])
     return {"hash": ap["pending_hash"], "need": len(ap["needs_approval"]), "filtered": plan["filtered"], "est_usd": [lo, hi],
             "credits": [round(lo * runner.CREDITS_PER_USD), round(hi * runner.CREDITS_PER_USD)],
-            "reasons": [{"reason": r, "n": n} for r, n in reasons.items()]}
+            "reasons": [{"reason": r, "n": n} for r, n in reasons.items()] + blocked}
 
 
 def _draft_cfg(root: str, settings: dict, mock: bool | None = None) -> tuple[str, dict]:
@@ -6355,7 +6364,13 @@ async def refs_link_handler(request: web.Request) -> web.StreamResponse:
 @_guard
 async def pipeline_handler(request: web.Request) -> web.StreamResponse:
     root = _root_param(request.query.get("root"))
-    return _json(await asyncio.to_thread(pl.view, root))
+    prepare = request.query.get("prepare")
+    if prepare is not None:
+        try:
+            prepare = pl.validate_section("prepare", json.loads(prepare))
+        except (ValueError, TypeError) as e:
+            raise _Reject(400, str(e)) from e
+    return _json(await asyncio.to_thread(pl.view, root, switch_prepare=prepare))
 
 
 @_guard
