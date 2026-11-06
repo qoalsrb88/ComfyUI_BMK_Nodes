@@ -53709,6 +53709,65 @@ def batch10b_unit():
             expect_raises(lambda: asyncio.run(dp.BMKDesignPatchRun().run(h, "", 64, 4, 25, False, False, "")), "B10 Run propagates planning exception", Planned)
         check(not dp.runner.is_running(nr) and not dp.board.is_running(nr), "B10 planning exception unregisters")
 
+        # Drain after run_calls has returned must still stop the next automatic wave.
+        original_plan, original_grid, original_report = dp._run_plan, dp._cand_grid, dp.BMKDesignPatchRun._report
+        original_run_calls = dp.runner.run_calls
+        original_run_state = dp.runner._RunState
+        def expired_wave(*args, **kwargs):
+            state = original_run_state(*args, **kwargs)
+            state.t0 -= state.wave_s + 1  # 실제 대기·Windows 시계 해상도에 기대지 않고 wave 상한을 지난 상태.
+            return state
+        opts = {"retry_failed": False, "retry_orphans": False, "only": ""}
+        approval = original_plan(nr, "", opts, dp.runner.BACKEND_MOCK)[1]["pending_hash"]
+        for drain_phase in ("replan", "grid", "report", "none"):
+            finished, accepted = [], []
+            backend = dp.runner.MockBackend(delay_s=0)
+            fake = _FakeServer(bd.web.RouteTableDef())
+
+            async def finish_calls(*args, **kwargs):
+                result = await original_run_calls(*args, **kwargs)
+                finished.append((result, result.stopped_reason))
+                return result
+
+            def late_drain(phase):
+                if finished and drain_phase == phase and not accepted:
+                    accepted.append(dp.board.set_drain(nr))
+
+            def replan(*args):
+                result = original_plan(*args)
+                late_drain("replan")
+                return result
+
+            def grid_after_calls(*args):
+                result = original_grid(*args)
+                late_drain("grid")
+                return result
+
+            def report_after_calls(*args):
+                result = original_report(*args)
+                late_drain("report")
+                return result
+
+            with patch.object(dp.runner, "make_backend", return_value=backend), patch.object(dp.runner, "_RunState", side_effect=expired_wave), \
+                    patch.object(dp.runner, "run_calls", side_effect=finish_calls), \
+                    patch.object(dp, "_run_plan", side_effect=replan), patch.object(dp, "_cand_grid", side_effect=grid_after_calls), \
+                    patch.object(dp.BMKDesignPatchRun, "_report", side_effect=report_after_calls), patch.object(dp, "_server", return_value=fake):
+                result = asyncio.run(dp.BMKDesignPatchRun().run(h, approval, 64, 1, 1, False, False, "", unique_id="b10-drain"))
+            entry = result["ui"]["bmk_dp_run"][0]
+            waves = [data for event, data, _sid in fake.events if event == "bmk.dp.wave"]
+            check(len(finished) == 1 and finished[0][1] == "wave" and finished[0][0].remaining and not backend.requests,
+                  f"B10 late drain {drain_phase}: real run_calls returned wave before postprocessing "
+                  f"stops={[reason for _rep, reason in finished]} ui={entry['stopped_reason']}")
+            if drain_phase == "none":
+                check(not accepted and len(waves) == 1 and waves[0]["node"] == "b10-drain" and entry["stopped_reason"] == "wave",
+                      "B10 no late drain preserves automatic wave")
+            else:
+                check(accepted == [True] and not waves and finished[0][0].stopped_reason == entry["stopped_reason"] == "drain"
+                      and "중지: drain 요청" in result["result"][1] and result["ui"]["text"] == [result["result"][1]],
+                      f"B10 drain during {drain_phase} suppresses wave and updates UI/report")
+            check(not dp.runner.is_running(nr) and not dp.board.is_running(nr) and not dp.board.drain_requested(nr),
+                  f"B10 late drain {drain_phase}: Run registries and drain cleaned up")
+
         # Trim trailing markers, including Windows copy suffixes, but preserve letters after _t.
         source, _ = _r1_project(out / "pool", "source")
         dest, _ = _r1_project(out / "pool", "dest")
