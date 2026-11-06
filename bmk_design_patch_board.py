@@ -2792,6 +2792,10 @@ def apply_reroll(root: str, count: int, cell_key: str | None = None, crop_id: st
                 raise _Reject(400, f"{crop_id}/{tid} 타깃에 작업이 {len(jobs)}개입니다 — variant 또는 cell_key 를 지정하세요 "
                                    f"({', '.join(str(j.get('variant')) for j in jobs)})")
             job = jobs[0]
+        runner = _runner()
+        why = runner.blocked_reason(job, backend=runner.BACKEND_MOCK if _mock_active(root) else runner.BACKEND_COMFY_ORG)
+        if why:
+            raise _Reject(409, f"발사 못 함 — {why}", reason="blocked")
         ck = job["cell_key"]
         cur = int(m["rerolls"].get(ck) or 0)
         waiting = _pending(root, m)[0].get(ck, 0)  # 원장 폴더 몇 개를 훑는 정도(잠금 안에서도 짧다)
@@ -5203,9 +5207,13 @@ def _run_sel(root: str, m: dict, run_cfg: dict, only: str, mock: bool | None = N
     reasons: dict[str, int] = {}
     for e in ap["needs_approval"]:
         reasons[e["reason"]] = reasons.get(e["reason"], 0) + 1
+    blocked_entries = [e for e in ap["blocked"] if e.get("blocked")]
+    blocked = ([{"reason": "blocked", "n": len(blocked_entries),
+                 "msg": "발사 못 함 — " + "; ".join(dict.fromkeys(e["blocked"] for e in blocked_entries))}]
+               if blocked_entries else [])
     return {"hash": ap["pending_hash"], "need": len(ap["needs_approval"]), "filtered": plan["filtered"], "est_usd": [lo, hi],
             "credits": [round(lo * runner.CREDITS_PER_USD), round(hi * runner.CREDITS_PER_USD)],
-            "reasons": [{"reason": r, "n": n} for r, n in reasons.items()]}
+            "reasons": [{"reason": r, "n": n} for r, n in reasons.items()] + blocked}
 
 
 def _draft_cfg(root: str, settings: dict, mock: bool | None = None) -> tuple[str, dict]:
@@ -6355,7 +6363,13 @@ async def refs_link_handler(request: web.Request) -> web.StreamResponse:
 @_guard
 async def pipeline_handler(request: web.Request) -> web.StreamResponse:
     root = _root_param(request.query.get("root"))
-    return _json(await asyncio.to_thread(pl.view, root))
+    prepare = request.query.get("prepare")
+    if prepare is not None:
+        try:
+            prepare = pl.validate_section("prepare", json.loads(prepare))
+        except (ValueError, TypeError) as e:
+            raise _Reject(400, str(e)) from e
+    return _json(await asyncio.to_thread(pl.view, root, switch_prepare=prepare))
 
 
 @_guard

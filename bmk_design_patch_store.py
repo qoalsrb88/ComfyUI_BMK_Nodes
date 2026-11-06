@@ -1053,6 +1053,8 @@ def cell_key(
     input_shas: Iterable[str],
     template_version: str,
     variant: str,
+    *,
+    complexity: str | None = None,
 ) -> str:
     """유료 호출 셀의 캐시 키 = sha256(정규 JSON) hex 앞 24자. **n 은 넣지 않는다**(n 4→8 이 재과금되지 않게).
     input_shas 는 업로드 순서대로(순서가 바뀌면 다른 키). size 는 [W, H] / (W, H) / 'WxH' 모두 같은 키.
@@ -1072,6 +1074,10 @@ def cell_key(
         "template": str(template_version),
         "variant": str(variant),
     }
+    if model in COMPLEXITY_MODELS:
+        if complexity is None:
+            raise ValueError("GPT Image 2.6 cell_key 에는 complexity 가 필요합니다")
+        payload["complexity"] = complexity
     blob = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(blob).hexdigest()[:24]
 

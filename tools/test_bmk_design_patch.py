@@ -2578,7 +2578,7 @@ def node_integration(psd05, crops03):
     can7 = np.asarray(Image.open(store.resolve_path(root, j007["inputs"][0]["file"])))
     check(float((can7.max(axis=2) < 8).mean(axis=0)[-20:].max()) < 0.5, "Prepare: 007-오른쪽 canvas 오른쪽 검은 띠 없음(edge-replicate)")
     recomputed = store.cell_key(j002["model"], j002["quality"], j002["size"], j002["background"], j002["prompt"],
-                                [i["sha"] for i in j002["inputs"]], j002["template_version"], j002["variant"])
+                                [i["sha"] for i in j002["inputs"]], j002["template_version"], j002["variant"], complexity=j002.get("complexity"))
     check(recomputed == j002["cell_key"], "Prepare: cell_key 재계산 일치")
     check(is_img(sheet) and h["rev"] == r_before + 1, f"Prepare: job_sheet {tuple(sheet.shape)}, rev {r_before} → {h['rev']}")
     h2, _s, rep2 = PRE.run(h, "gpt-image-2.5-sunburst", "max", "user_k", "V1,V4", 4, "at")
@@ -4907,10 +4907,13 @@ def m2_runner_unit(with_comfy: bool):
 
         section("C2 내장 OpenAIGPTImageNodeV2 와 sync_op 인자 동등성 (1장 · 3장 · >2048²)")
         cases = [("one", [(512, 768)], (1024, 1536)), ("three", [(512, 768), (300, 300), (1000, 700)], (2048, 2048)),
-                 ("big", [(3000, 2600)], (1536, 1024)), ("big3", [(2600, 3000), (128, 128), (2100, 2100)], (1024, 1024))]
+                 ("big", [(3000, 2600)], (1536, 1024)), ("big3", [(2600, 3000), (128, 128), (2100, 2100)], (1024, 1024)),
+                 ("26-sunburst", [(128, 128)], (1024, 1024)), ("26-flare", [(128, 128)], (1024, 1024))]
         for name, sizes, (W, H) in cases:
             root = make_project(f"c2_{name}", 1, n=2, size=(W, H), input_sizes=sizes)
             job = store.load_manifest(root)["jobs"][0]
+            if name.startswith("26-"):
+                job.update(model="gpt-image-2.6-" + name[3:], complexity="medium")
             paths = [store.resolve_path(root, i["file"]) for i in job["inputs"]]
             resp = lambda cls, kw: OpenAIImageGenerationResponse(data=[Datum2(b64_json=tiny_png_b64())] * kw["data"].n)
             got_core, got_ours = [], []
@@ -4918,8 +4921,10 @@ def m2_runner_unit(with_comfy: bool):
             for i, p in enumerate(paths):
                 with Image.open(p) as im:
                     tensors[f"image_{i + 1}"] = torch.from_numpy(np.array(im.convert("RGB")).astype(np.float32) / 255.0)[None]
-            model = {"model": MODEL, "size": "Custom", "custom_width": W, "custom_height": H, "background": "opaque",
+            model = {"model": job["model"], "size": "Custom", "custom_width": W, "custom_height": H, "background": "opaque",
                      "quality": "max", "images": tensors, "mask": None}
+            if "complexity" in job:
+                model["complexity"] = job["complexity"]
             orig = nodes_openai.sync_op
             nodes_openai.sync_op = capture(got_core, resp)
             try:
@@ -4936,8 +4941,9 @@ def m2_runner_unit(with_comfy: bool):
             check(c["path"] == o["path"] == "/proxy/openai/images/edits" and c["method"] == o["method"] == "POST",
                   f"{name}: endpoint")
             check(c["data"] == o["data"], f"{name}: data 필드 {c['data']} vs {o['data']}")
-            check(o["data"] == {"model": MODEL, "prompt": job["prompt"], "quality": "max", "background": "opaque", "n": 2,
-                                "size": f"{W}x{H}", "moderation": "low"}, f"{name}: data 값")
+            check(o["data"] == {"model": job["model"], "prompt": job["prompt"], "quality": "max", "background": "opaque", "n": 2,
+                                "size": f"{W}x{H}", "moderation": "low",
+                                **({"complexity": job["complexity"]} if "complexity" in job else {})}, f"{name}: data 값")
             strip = lambda fs: [{k: v for k, v in f.items()} for f in fs]
             check([(f["field"], f["filename"], f["ctype"]) for f in c["files"]]
                   == [(f["field"], f["filename"], f["ctype"]) for f in o["files"]], f"{name}: files 이름·순서·형식")
@@ -24796,8 +24802,8 @@ def pipeline_unit():
         check(top_mods - set(sys.stdlib_module_names) == {"bmk_design_patch_store"},
               f"T6 모듈 최상위 import = 표준 라이브러리 + store 만 {sorted(top_mods - set(sys.stdlib_module_names))}")
         check(not all_mods & {"torch", "comfy", "comfy_api_nodes", "aiohttp", "folder_paths", "bmk_design_patch",
-                              "bmk_design_patch_board"} and lazy == {"bmk_design_patch_prompt", "bmk_design_patch_vlm"},
-              f"T6 전체: torch·comfy·aiohttp·folder_paths·노드·보드 import 없음, 함수 안 지연 import = prompt·vlm 뿐 {sorted(lazy)}")
+                              "bmk_design_patch_board"} and lazy == {"bmk_design_patch_prompt", "bmk_design_patch_vlm", "bmk_design_patch_runner"},
+              f"T6 전체: torch·comfy·aiohttp·folder_paths·노드·보드 import 없음, 함수 안 지연 import = prompt·vlm·runner 뿐 {sorted(lazy)}")
         api = ["widget_table", "settings_widgets", "section_keys", "defaults", "validate_section", "load", "pipeline_rev", "current",
                "update", "view", "derive", "drift", "prepare_record", "path_warnings", "recent_exports", "prompt_gate", "build_prompt",
                "only_string", "strip_style"]
@@ -24816,7 +24822,7 @@ def pipeline_unit():
         s0["cand"].update(source="folder", path="G:/x/harvest", group="04.후보", mapping_json='{"a": "B"}', visible_is_pick=False,
                           keep_hand_masks=False)
         s0["prepare"].update(model="gpt-image-2.5-flare", quality="high", size_rule="int_k_2560", variants="V1,V2", n=2,
-                             ref_style="plain", calls_per_cell=2)
+                             ref_style="plain", calls_per_cell=2, complexity="low")
         s0["draft"].update(vlm="openai/gpt-6-astra", effort="high", image_detail="original", write_mode="refresh", draft_round=3,
                            concurrency=2, credit_cap=1200, apply="full")
         s0["run"].update(max_new_calls=10, concurrency=2, wave_minutes=5, retry_failed=True, retry_orphans=True)
@@ -24946,7 +24952,7 @@ def pipeline_unit():
         section("S3a-P3 pipeline.json — 검증 표·수명·rev 409·깨진 파일·confirm")
         expect_raises(lambda: pl.section_keys("review"), "모르는 절 ValueError")
         keys = {s: pl.section_keys(s) for s in pl.SECTIONS}
-        check(keys["cand"][0] == "enabled" and len(keys["import"]) == 7 and len(keys["prepare"]) == 7 and len(keys["draft"]) == 8
+        check(keys["cand"][0] == "enabled" and len(keys["import"]) == 7 and len(keys["prepare"]) == 8 and len(keys["draft"]) == 8
               and len(keys["run"]) == 5 and len(keys["analyze"]) == 8 and len(keys["compose"]) == 4 and len(keys["export"]) == 9
               and not any(k in pl.NOT_STORED for ks in keys.values() for k in ks),
               f"절 키 = 노드 위젯 − {{project, approve, only, adopt, keep_loaded}} (+ cand.enabled) {[len(v) for v in keys.values()]}")
@@ -25061,7 +25067,7 @@ def pipeline_unit():
               and v["confirm"] == der["confirm"] == ["prepare.variants", "prepare.ref_style", "draft.apply"] and v["drift"] == []
               and v["warnings"] == [] and len(v["exports"]) == 1 and v["widgets"] == sw and v["manifest_rev"] == m["rev"]
               and set(v) == {"rev", "saved", "error", "settings", "confirm", "derived", "drift", "warnings", "exports", "widgets", "manifest_rev",
-                             "folder"} and v["folder"] == os.path.basename(root),
+                             "folder", "switch"} and v["folder"] == os.path.basename(root),
               f"파일 없음: rev 0·saved false·유도값·confirm(추정 variants·ref_style·draft.apply) {v['confirm']}")
         g = pl.prompt_gate(root, "apply", m)
         check(pl.pipeline_rev(root) is None and pl.load(root) is None and g["reason"] == "confirm_settings"
@@ -25361,7 +25367,7 @@ def pipeline_unit():
               and all(frm[f"import.{k}"] == "manifest" for k in pl.section_keys("import")),
               f"import = 매니페스트 source(glossary → glossary_path) {s['import']}")
         check(s["prepare"] == {"model": "gpt-image-2.5-flare", "quality": "high", "size_rule": "int_k_2560", "variants": "V1,V2", "n": 3,
-                               "ref_style": "plain", "calls_per_cell": 1} and frm["prepare.n"] == "manifest"
+                               "ref_style": "plain", "calls_per_cell": 1, "complexity": "high"} and frm["prepare.n"] == "manifest"
               and frm["prepare.calls_per_cell"] == "manifest" and not [c for c in d["confirm"] if c.startswith("prepare.")],
               f"prepare = prepare_settings 우선(jobs 무시, calls_per_cell 생략 = 1), 확인 필요 없음 {s['prepare']}")
         check(s["draft"]["vlm"] == "openai/gpt-6-astra" and s["draft"]["effort"] == "high" and s["draft"]["image_detail"] == "original"
@@ -25456,7 +25462,7 @@ def pipeline_unit():
                                 _pl_job(ids[0], "V4_checklist", model="gpt-image-2.5-flare", n=2, reps=2)])
         d2 = pl.derive(old, store.load_manifest(old))
         check(d2["settings"]["prepare"] == {"model": "gpt-image-2.5-sunburst", "quality": "max", "size_rule": "user_k", "variants": "V1,V4",
-                                            "n": 2, "ref_style": "at", "calls_per_cell": 1}
+                                            "n": 2, "ref_style": "at", "calls_per_cell": 1, "complexity": "high"}
               and d2["confirm"] == ["prepare.model", "prepare.variants", "prepare.ref_style", "prepare.calls_per_cell", "draft.vlm", "draft.apply",
                                     "analyze.register", "analyze.tone", "analyze.tone_sigma", "analyze.dE", "analyze.grow", "analyze.feather_sigma",
                                     "analyze.roi_prior", "analyze.only_picked"] + [f"compose.{k}" for k in pl.section_keys("compose")]
@@ -25473,7 +25479,7 @@ def pipeline_unit():
             so["prepare"][key] = val
             rows_o[key] = [(x["field"], x["manifest"], x["kind"]) for x in pl.drift(so, mo)]
         check(pl.prepare_record(mo) == ("jobs", {"model": "gpt-image-2.5-sunburst", "quality": "max", "n": 2, "calls_per_cell": 1,
-                                                 "size_rule": "user_k"})
+                                                 "size_rule": "user_k", "complexity": "high"})
               and rows_o == {"model": [("model", "gpt-image-2.5-sunburst", "cell")], "quality": [("quality", "max", "cell")],
                              "size_rule": [("size_rule", "user_k", "cell")], "n": [("n", 2, "cost")],
                              "calls_per_cell": [("calls_per_cell", 1, "calls")], "variants": [], "ref_style": []},
@@ -25483,7 +25489,7 @@ def pipeline_unit():
         mn = store.load_manifest(nr)
         sn = copy.deepcopy(d2["settings"])
         sn["prepare"].update(model="gpt-image-2.5-flare", size_rule="int_k_2560")
-        check(pl.prepare_record(mn) == ("jobs", {"quality": "max", "n": 2, "calls_per_cell": 1}) and pl.drift(sn, mn) == []
+        check(pl.prepare_record(mn) == ("jobs", {"quality": "max", "n": 2, "calls_per_cell": 1, "complexity": "high"}) and pl.drift(sn, mn) == []
               and pl.prepare_record({"jobs": []}) == (None, {}) and pl.drift(sn, {"jobs": []}) == [],
               f"jobs 최다값이 없음(None — size_info 비어 있음·model 없음)인 키는 비교 안 함(derive 는 확인 필요), jobs 도 없으면 기록 없음 "
               f"{pl.prepare_record(mn)}")
@@ -25813,7 +25819,7 @@ def pipeline_unit():
         # 무료 반영 expect 를 만드는 매니페스트 rev(S3b 계약 §1), Draft 확인 창 필드(§4.4 확인 창 — S3b 계약 §2),
         # Export 그룹 마스크·편집 수(S4 §7 결과 줄 '그룹 마스크 n (편집 k)')
         six_extra = {"GET /pipeline": {"widgets", "exports[].layers", "manifest_rev", "exports[].mask_groups", "exports[].mask_edits",
-                                       "folder"},  # 프로젝트 폴더 이름(Studio 출력 폴더 미리 보기 — 다듬기 3-5b)
+                                       "folder", "switch"},  # 프로젝트 폴더 이름(Studio 출력 폴더 미리 보기 — 다듬기 3-5b)
                      "GET /pipeline/plan": {"draft.orphan_retries", "draft.est_usd", "draft.reasons", "draft.reasons[].reason", "draft.reasons[].n",
                                             "draft.free", "draft.free_all", "draft.pending_style", "draft.mock_forced", "agent_approve",
                                             "agent_approve.on", "agent_approve.cap", "agent_approve.spent", "agent_approve.expires"}}
@@ -29106,7 +29112,10 @@ function server() {
     const cur = () => (typeof srv.queue === "function" ? srv.queue() : srv.queue);
     const pick = (x) => (typeof x === "function" ? x(q, body) : x);
     let r;
-    if (path === "pipeline") r = pick(srv.route.pipeline) || [200, R["GET /pipeline"].ok];
+    if (path === "pipeline") {
+      r = clone(pick(srv.route.pipeline) || [200, R["GET /pipeline"].ok]);
+      if (u.searchParams.has("prepare")) r[1].switch = Object.assign(clone(R["GET /pipeline"].ok.switch), { prepare: JSON.parse(u.searchParams.get("prepare")) });
+    }
     else if (path === "pipeline/settings") r = pick(srv.route.settings) || [200, R["POST /pipeline/settings"].ok];
     else if (path === "pipeline/prompt") r = pick(srv.route.prompt) || [200, q.stage === "export" ? R["GET /pipeline/prompt"].alt.export : R["GET /pipeline/prompt"].ok];
     else if (path === "pipeline/plan") {
@@ -31204,7 +31213,7 @@ await scenario("panelBroken", async () => {  // r2-01: 깨진 pipeline.json(GET 
   const boxes = env.panel.children.filter((e) => e.classList.contains("pp-sec") && e.dataset.tab === "prepare");
   r.marked = env.panel.all().filter((e) => e.classList.contains("pp-field") && e.children[0].textContent.endsWith(" (확인 필요)"))
     .map((e) => e.children[0].textContent);
-  r.buttons = Object.fromEntries(boxes.map((b) => [b.children[0].textContent, (b.all().find((e) => e.tagName === "BUTTON") || {}).textContent]));
+  r.buttons = Object.fromEntries(boxes.map((b) => [b.children[0].textContent, (b.all().find((e) => e.tagName === "BUTTON" && /^(확인·)?저장$/.test(e.textContent)) || {}).textContent]));
   const s0 = srv.count("pipeline/settings");
   env.B("마지막 실행 값으로 채우기").fire("click");
   await sleep(150);
@@ -33315,7 +33324,9 @@ def pipeline_js_unit():
               and not any(x.startswith(" · prepare.n") for x in un["asked"][0].split("\n"))
               and un["posts"] == [[6, 5, "gpt-image-2.5-flare", "V1,V4"]],
               f"r2-03 입력칸 포커스 중(다시 그리기 미룸) 다른 창이 손대지 않은 키(model)를 저장 = [저장] 마우스 한 번에 화면에 없던 값을 묻고 저장 {cf['unseenShown']} {un}")
-        check(cf["own"] == {"asked": [], "posts": [[7, 6, "gpt-image-2.5-flare", "V1,V4"], [8, 6, "gpt-image-2.5-flare", "V1"]]},
+        check(cf["own"]["posts"] == [[7, 6, "gpt-image-2.5-flare", "V1,V4"], [8, 6, "gpt-image-2.5-flare", "V1"]]
+              and len(cf["own"]["asked"]) == 1 and "생성 승인 필요" in cf["own"]["asked"][0]
+              and "다른 창" not in cf["own"]["asked"][0],
               f"r2-03 이 창의 저장 뒤(입력 중 — 다시 그리기 미룸) 같은 절을 다시 저장 = 제가 저장한 값을 '다른 창 값'으로 묻지 않음 {cf['own']}")
     hk = res.get("panelHashClick") or {}
     if "v1" in hk:
@@ -33574,8 +33585,8 @@ def _pipeline_node_u2b():
     IMP, EXP = dp.BMKDesignPatchImportPSD(), dp.BMKDesignPatchExportPSD()
     base = texture(384, 512, 51)
     rects = [("001_왼쪽", [32, 32, 160, 160]), ("002_가운데", [192, 64, 320, 192]), ("003_오른쪽", [352, 160, 480, 288])]
-    # 7개 모두 노드 위젯 기본값과 다른 값 — 받은 값 대신 기본값을 기록하는 결함(셀 설정 model·size_rule 포함)이 걸리게
-    PRE_ARGS = ("gpt-image-2.5-flare", "high", "int_k_2560", " v1 ; V4 ", 2, "plain", 3)
+    # 기존 7개는 노드 위젯 기본값과 다른 값, 새 optional complexity 는 옛 워크플로 기본 high
+    PRE_ARGS = ("gpt-image-2.5-flare", "high", "int_k_2560", " v1 ; V4 ", 2, "plain", 3, "high")
 
     def set_mock(**vlm_opts):
         mock_file.parent.mkdir(parents=True, exist_ok=True)
@@ -33638,13 +33649,13 @@ def _pipeline_node_u2b():
             h1, _s, _r = PRE.run(h, *PRE_ARGS[:4], 2.0, "plain", 3.0)  # 검증을 거치지 않은 숫자(float)도 int 로 기록
         m1 = man(root)
         ps = m1.get("prepare_settings")
-        wdef = {k: PRE.INPUT_TYPES()["required"][k][1]["default"] for k in pl.section_keys("prepare")}
+        wdef = {k: (PRE.INPUT_TYPES()["required"] | PRE.INPUT_TYPES()["optional"])[k][1]["default"] for k in pl.section_keys("prepare")}
         same_def = [k for k, v in zip(pl.section_keys("prepare"), PRE_ARGS) if v == wdef[k]]
         check(ps == {"model": "gpt-image-2.5-flare", "quality": "high", "size_rule": "int_k_2560", "variants": " v1 ; V4 ", "n": 2,
-                     "ref_style": "plain", "calls_per_cell": 3}
-              and same_def == [] and list(ps) == list(pl.section_keys("prepare")) and type(ps["n"]) is int
+                     "ref_style": "plain", "calls_per_cell": 3, "complexity": "high"}
+              and same_def == ["complexity"] and list(ps) == list(pl.section_keys("prepare")) and type(ps["n"]) is int
               and type(ps["calls_per_cell"]) is int,
-              f"prepare_settings = 실제로 쓴 위젯 값 7개(모두 위젯 기본값과 다른 값 — 기본값과 같은 키 {same_def}; variants 는 받은 문자열 "
+              f"prepare_settings = 실제로 쓴 위젯 값 8개(complexity 외 기본값과 다른 값 — 기본값과 같은 키 {same_def}; variants 는 받은 문자열 "
               f"그대로, n·calls_per_cell 은 int — 2.0·3.0 도, 키 순서 = Studio prepare 절) {ps}")
         rect_of = {c["id"]: c["rect"] for c in m1["crops"]}
         cell_of = {j["crop_id"]: (j["model"], j["quality"], j["size"]) for j in m1["jobs"]}
@@ -33664,7 +33675,7 @@ def _pipeline_node_u2b():
         check(raw(root) == b1, "같은 설정 재실행 = 매니페스트 바이트·rev 그대로(commit_merge 가 같으면 저장 안 함)")
         cks = sorted(j["cell_key"] for j in m1["jobs"])
         same_ck = all(st.cell_key(j["model"], j["quality"], j["size"], j["background"], j["prompt"], [i["sha"] for i in j["inputs"]],
-                                  j["template_version"], j["variant"]) == j["cell_key"] for j in m1["jobs"])
+                                  j["template_version"], j["variant"], complexity=j.get("complexity")) == j["cell_key"] for j in m1["jobs"])
         h2, _s, _r = PRE.run(h1, *PRE_ARGS[:4], 4, "plain", 1)
         m2 = man(root)
         check(same_ck and sorted(j["cell_key"] for j in m2["jobs"]) == cks and m2["rev"] == m1["rev"] + 1
@@ -34152,7 +34163,7 @@ def _pipeline_node_u3():
     SHAPES = [("001_왼쪽", [32, 32, 160, 160]), ("002_가운데 | A: 단추; B: 리본;", [192, 64, 320, 192]), ("003_오른쪽", [352, 160, 480, 288])]
     PSD = NS / "u3.psd"
     _layout_node_psd(PSD, base)
-    PRE_ARGS = {"model": MODEL25, "quality": "high", "size_rule": "user_k", "variants": "V1", "n": 1, "ref_style": "at", "calls_per_cell": 1}
+    PRE_ARGS = {"model": MODEL25, "quality": "high", "size_rule": "user_k", "variants": "V1", "n": 1, "ref_style": "at", "calls_per_cell": 1, "complexity": "high"}
     IMPORT = {"psd_path": PSD.as_posix(), "crop_group": "auto", "clean_plate_layer": "auto", "base_layer": "auto",
               "crop_pixels_group": "auto", "refs_dir": "", "glossary_path": ""}
     DRAFT = {"vlm": "openai/gpt-6-sol", "effort": "xhigh", "image_detail": "high", "write_mode": "fill", "draft_round": 0,
@@ -53441,8 +53452,203 @@ process.exit(0);
                 check(ok is True, f"D60–D68 {group}/{name}: {ok}")
 
 def batch10a_unit():
-    """배치 10-A: 모델 2.6·complexity·가격표·생성 조건 키·[2.6 으로 전환] 미리 보기(STUDIO_BATCH10_SPEC D144–D155). 갈래 A 가 채움."""
+    """배치 10-A: 합성 프로젝트·가짜 API/DOM 만 사용(D144–D155)."""
     section("배치 10-A — 모델 2.6·가격·생성 조건 키")
+    from unittest.mock import patch, Mock
+    dp = _dp_package()
+    st, rn, bd = dp.store, dp.runner, dp.board
+    pl = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_pipeline")
+    api_module = importlib.import_module("comfy_api_nodes.apis.openai")
+    out = OUT_ROOT / "batch10a"
+    out.mkdir(parents=True, exist_ok=True)
+    models = ["gpt-image-2.6-sunburst", "gpt-image-2.6-flare", "gpt-image-2.5-sunburst", "gpt-image-2.5-flare"]
+    pre = dp.BMKDesignPatchPrepare()
+    ins = pre.INPUT_TYPES()
+    check(dp._MODELS == list(pl._MODELS) == models and pl.defaults()["prepare"]["model"] == models[0], "D144–145 선택지·새 기본값")
+    check(list(ins["required"])[-1] == "calls_per_cell" and list(ins["optional"]) == ["complexity"]
+          and ins["optional"]["complexity"][0] == ["low", "medium", "high"], "D146 optional 맨 뒤 complexity")
+    args = [models[2], "high", [1024, 1024], "opaque", "same", ["abc"], "dp-prompt/1", "V1_standard"]
+    old_key = st.cell_key(*args)
+    check(old_key == st.cell_key(*args, complexity="low") == st.cell_key(*args, complexity="high"), "D147 2.5 키 무시·호환")
+    args[0] = models[0]
+    expect_raises(lambda: st.cell_key(*args), "D147 2.6 complexity 없음 거부", contains="complexity")
+    check(st.cell_key(*args, complexity="high") != st.cell_key(*args, complexity="medium"), "D147 2.6 complexity 별 키")
+    h, root = _fx_project(dp, out, "proj", [("001_왼쪽", [0, 0, 64, 64]), ("002_오른쪽", [64, 0, 128, 64])], texture(128, 128, 10))
+    with patch.object(rn, "mock_enabled", return_value=True):
+        h, _, report = pre.run(h, models[2], "low", "user_k", "V1", 1, "at")
+        m25 = st.load_manifest(root)
+        check(all("complexity" not in j for j in m25["jobs"]) and "복잡도" not in report, "D146 2.5 jobs·보고 복잡도 생략")
+        h, _, report = pre.run(h, models[0], "low", "user_k", "V1", 1, "at", complexity="medium")
+        m26 = st.load_manifest(root)
+        check(all(j["complexity"] == "medium" for j in m26["jobs"]) and "복잡도 medium" in report, "D146·155 2.6 jobs·보고")
+    settings = pl.derive(root, m25)["settings"]
+    check(settings["prepare"]["model"] == models[2], "D145 기존 기록의 2.5 유지")
+    old = {"schema": pl.SCHEMA, "rev": 1, "confirm": [], **settings}
+    old["prepare"] = dict(old["prepare"])
+    del old["prepare"]["complexity"]
+    raw = json.dumps(old, ensure_ascii=False).encode("utf-8")
+    Path(root, pl.PIPELINE_NAME).write_bytes(raw)
+    loaded = pl.load(root)
+    check(loaded["prepare"]["complexity"] == "high" and loaded["confirm"] == []
+          and Path(root, pl.PIPELINE_NAME).read_bytes() == raw, "D148 옛 파일 읽기: high·확인 필요 없음·원본 불변")
+    pl.update(root, 1, "prepare", loaded["prepare"])
+    check(json.loads(Path(root, pl.PIPELINE_NAME).read_text(encoding="utf-8"))["prepare"]["complexity"] == "high", "D148 다음 저장 키 추가")
+    old_m = copy.deepcopy(m25)
+    old_m["prepare_settings"].pop("complexity")
+    d = pl.derive(root, old_m)
+    check(d["settings"]["prepare"]["complexity"] == "high" and not any(x.startswith("prepare.") for x in d["confirm"]), "D148 옛 prepare_settings 유도")
+    d["settings"]["prepare"]["complexity"] = "low"
+    check(pl.drift(d["settings"], old_m) == [], "D148 2.5 complexity 만 바꿔도 갈라짐 없음")
+    d26 = pl.derive(root, m26)["settings"]
+    d26["prepare"]["complexity"] = "high"
+    check(pl.drift(d26, m26) == [{"section": "prepare", "field": "complexity", "manifest": "medium", "settings": "high", "kind": "cell"}], "D148 2.6 복잡도 cell 갈라짐")
+    d_jobs = pl.derive(root, dict(m25, prepare_settings={}))
+    check("prepare.complexity" not in d_jobs["confirm"], "D148 2.5 jobs complexity 생략 확인 불필요")
+
+    # 신규·사전 승인·재시도 모두 차단, 무료 복구는 남긴다.
+    p = rn.plan_calls(m26, root)
+    entries = []
+    for model, quality in (("unknown-model", "low"), (models[2], "unknown-quality"), (models[0], "low")):
+        for kind, preapproved in (("new", False), ("new", True), ("retry_failed", False), ("retry_orphan", False)):
+            e = copy.deepcopy(p["pending"][0])
+            e.update(kind=kind, preapproved=preapproved)
+            e["job"].update(model=model, quality=quality)
+            entries.append(e)
+    free = dict(entries[0], kind="recover", billable=False, preapproved=False)
+    bad = dict(p, pending=entries + [free])
+    with patch.object(api_module, "OpenAIImageEditRequest", type("OldRequest", (), {"model_fields": {}})):
+        for approve in ("", "0123456789ab"):
+            ap = rn.split_approval(bad, approve, backend=rn.BACKEND_COMFY_ORG)
+            check(len(ap["blocked"]) == 12 and ap["needs_approval"] == ap["preapproved"] == []
+                  and ap["pending_hash"] == "" and [e["kind"] for e in ap["to_run"]] == ["recover"], "D150 발사 불가 제외·복구 허용")
+        check("발사 못 함 12건" in rn.format_plan(bad, ap), "D150 보고 blocked 사유")
+        st.save_manifest(root, m26)
+        before = Path(root, st.MANIFEST_NAME).read_bytes()
+        with patch.object(bd, "_mock_active", return_value=False):
+            expect_raises(lambda: bd.apply_reroll(root, 1, m26["jobs"][0]["cell_key"]), "D150 R 차단", exc=bd._Reject, contains="발사 못 함")
+            sel = bd._run_sel(root, m26, settings["run"], "", False)
+        check(sel["need"] == 0 and sel["reasons"][0]["reason"] == "blocked"
+              and Path(root, st.MANIFEST_NAME).read_bytes() == before, "D150 보드 차단 reason·원본 불변")
+
+    # 실제 요청 타입 + sync_op 대역: 외부 API·네트워크 없음.
+    body = []
+    async def sync(cls, endpoint, **kw):
+        body.append(kw["data"].model_dump(exclude_none=True))
+        return types.SimpleNamespace(usage=None, data=[])
+    be = rn.ComfyOrgBackend({"auth_token": "fake-batch10a-test"})
+    be.api = types.SimpleNamespace(OpenAIImageEditRequest=api_module.OpenAIImageEditRequest,
+                                   OpenAIImageGenerationResponse=object, ApiEndpoint=lambda **kw: kw,
+                                   sync_op=sync, credits_used=lambda cls: None)
+    with patch.object(be, "encode_inputs", return_value=[]):
+        for m in (m25, m26):
+            job = m["jobs"][0]
+            asyncio.run(be.request(rn._job_view(job), [], "test"))
+    check("complexity" not in body[0] and body[1]["complexity"] == "medium", "D151 요청: 2.5 생략·2.6 전송")
+    e = dict(p["pending"][0], approved_by="board")
+    old_request = type("OldRequest", (), {"model_fields": {}})
+    be.api.OpenAIImageEditRequest = old_request
+    with patch.object(rn, "agent_charge", Mock(return_value=None)) as charge:
+        r = asyncio.run(rn.run_calls(root, [e], be))
+        check(r.launched == 0 and not charge.called and rn.board_spent(root, e["cell_key"]) == 0, "D151 마지막 사전 검사: 장부·사전 승인 소비 0")
+    for kind in ("new", "retry_failed", "retry_orphan"):
+        ck, rep = e["cell_key"], e["rep"]
+        prior = {}
+        if kind != "new":
+            prior = {"req": b'{"approved_by":"board","attempt":1}',
+                     "failed" if kind == "retry_failed" else "inflight": b'{"error":"original"}'}
+            for name, data in prior.items():
+                st._atomic_write_bytes(rn._lpath(root, ck, rep, name), data)
+        report = rn.RunReport(backend=be.name, launched=1)
+        state = rn._RunState(report, 100, 10, lambda: False, lambda: False)
+        asyncio.run(rn._billable(root, dict(e, kind=kind), [], be, state))
+        actual = {name: Path(rn._lpath(root, ck, rep, name)).read_bytes() for name in ("req", "failed", "inflight", "resp")
+                  if Path(rn._lpath(root, ck, rep, name)).exists()}
+        check(actual == prior and report.launched == 0 and state.stop == "auth", f"D151 request 거부 {kind}: 원장 바이트 복원·중지")
+        for name in actual:
+            Path(rn._lpath(root, ck, rep, name)).unlink()
+    for m in (m25, m26):
+        entry = rn.plan_calls(m, root)["pending"][0]
+        req = rn._begin_call(root, entry, rn.BACKEND_MOCK)["req"]
+        mm = copy.deepcopy(m)
+        rn._add_candidates(mm, req, {"slots": [{"slot": 0, "file": "candidate.png", "size": [1, 1]}]}, [])
+        oi = mm["candidates"][-1]["origin_info"]
+        check(("complexity" in req) == ("complexity" in oi) == (m is m26), "D151 원장·후보 complexity 2.6 만")
+        for name in ("req", "inflight"):
+            Path(rn._lpath(root, req["cell_key"], req["rep"], name)).unlink()
+
+    # 2.6 완료 원장을 갖고 2.5 로 돌아온 프로젝트: 이미 끝난 새 셀 제외, 설정 n/품질/호출 수 사용.
+    settings["prepare"].update(n=3, calls_per_cell=2, complexity="medium")
+    mm = copy.deepcopy(m25)
+    mm["rerolls"] = {mm["jobs"][0]["cell_key"]: 4}
+    snapshot = copy.deepcopy(mm)
+    with patch.object(rn, "mock_enabled", return_value=True):
+        preview = pl.switch_preview(root, mm, settings)
+        check(preview["need"] == 4 and preview["cells"] == 2 and preview["pruned"] == 4 and preview["uncertain"], "D152 전환 횟수·정리·미반영 표시")
+        expected = st.estimate_usd(models[0], "low", [2048, 2048], 3, len(mm["jobs"][0]["inputs"]))
+        check(preview["est_usd"] == [round(v * 4, 4) for v in expected] and mm == snapshot, "D152 설정 장 수·품질 비용·사본만 변경")
+        completed = m26["jobs"][0]
+        for rep in (0, 1):
+            rn._write_json(rn._lpath(root, completed["cell_key"], rep, "done"), {"slots": []})
+        preview = pl.switch_preview(root, mm, settings)
+        check(preview["need"] == 2 and preview["cells"] == 1, "D152 이미 완료된 2.6 셀 제외")
+        higher = pl.switch_preview(root, mm, settings, prepare=dict(settings["prepare"], model=models[0], quality="high"))
+        check(higher["need"] == 4 and higher["est_usd"][1] > preview["est_usd"][1], "D152 품질 변경 키 재계산")
+        Path(root, pl.PIPELINE_NAME).write_bytes(b"{")
+        broken = pl.view(root, m25, switch_prepare=dict(settings["prepare"], model=models[0]))
+        check(broken["error"] and broken["rev"] is None and broken["switch"]["prepare"]["model"] == models[0]
+              and Path(root, pl.PIPELINE_NAME).read_bytes() == b"{", "D152 깨진 파일도 명시적 저장 미리 보기 가능·파일 불변")
+    # 실제 초안 요청 작성은 이미지 생성 모델·복잡도가 바뀌어도 같은 키.
+    dv = dp.dvlm
+    def draft_req(m):
+        ctx = dv.build_crop_ctx(root, m, m["crops"][0], refs_dir="", glossary={}, backend="mock", memo={})
+        return dv.build_request(ctx, backend="mock", model="mock", effort="high", image_detail="high", draft_round=0)
+    req25, req26 = draft_req(m25), draft_req(m26)
+    check(req25.key == req26.key, "D154 이미지 모델·complexity 전환은 초안 키 밖")
+
+    js = (PKG / "web_design_patch/pipeline.js").read_text(encoding="utf-8")
+    check("2.6 만 — 지금 모델에는 쓰지 않음" in _layout_js_fn(js, "field", "    ")
+          and "먼저 ① 준비 설정 확인" in _layout_js_fn(js, "renderSettings", "    "), "D146·152 설정 칸·전환 게이트")
+    check("preparePreview(values, P0)" in js[js.index("async function saveSection("):js.index("function typed(")]
+          and "preparePreview(D.prepare, P0)" in js[js.index("async function resetDerived("):js.index("function panelBusy(")], "D152 저장·마지막 실행 값 확인 창 연결")
+    script = "const assert=require('node:assert/strict'); const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);\n"
+    script += "\n".join(_layout_js_fn(js, name, "    ") + "\n}" for name in ("prepareChanged", "prepareText"))
+    script += "\n" + _layout_js_fn(js, "typed", "    ") + "\n}"
+    for name in ("preparePreview", "switchModel", "saveSection"):
+        start = js.index(f"    async function {name}(")
+        script += "\n" + js[start:js.index("\n    }\n", start)] + "\n}"
+    script += "\nconst p=" + json.dumps(preview, ensure_ascii=False) + ";\n"
+    script += r'''
+assert.equal(prepareChanged({model:'gpt-image-2.5-flare',complexity:'high'}, {model:'gpt-image-2.5-flare',complexity:'low'}),false);
+assert.equal(prepareChanged({model:'gpt-image-2.6-flare',complexity:'high'}, {model:'gpt-image-2.6-flare',complexity:'low'}),true);
+const text=prepareText(p);
+for(const s of ['생성 승인 필요 2건','승인 전에는 과금 없음','복잡도 medium','다시 생성 대기 4건','옛 조건','그래프 Prepare','반영 뒤 달라질 수 있음']) assert.ok(text.includes(s),s);
+assert.throws(()=>prepareText({...p,error:'preview failure'}),/preview failure/);
+const clone=x=>JSON.parse(JSON.stringify(x));
+let accept=false, asks=[], saves=[], form={}, edits={}, drawn={}, errors=[];
+const original={...p.prepare,model:'gpt-image-2.5-sunburst'};
+const PS={busy:false,P:{saved:true,error:null,rev:3,manifest_rev:8,confirm:[],settings:{prepare:original},widgets:{prepare:Object.fromEntries(Object.keys(original).map(k=>[k,{type:typeof original[k]==='number'?'INT':'STRING'}]))}}};
+PS.previewPrepare=async prepare=>({...PS.P,switch:{...p,prepare}});
+PS.save=async(sec,values,rev)=>{saves.push({sec,values:clone(values),rev});PS.P={...PS.P,settings:{[sec]:clone(values)},rev:rev+1};return PS.P};
+const opts={toast:x=>errors.push(x)},window={confirm:x=>{asks.push(x);return accept}},SECTIONS={prepare:'Prepare'};
+const confirmOf=x=>x.confirm,shown=x=>String(x),render=()=>{},planNow=()=>{};
+(async()=>{
+await switchModel(); assert.equal(saves.length,0); assert.equal(asks.length,1);
+accept=true; asks=[]; PS.P.saved=false; await switchModel(); assert.equal(asks.length,0);
+PS.P.saved=true; PS.P.confirm=['prepare.variants']; await switchModel(); assert.equal(saves.length,0);
+PS.P.confirm=[]; await switchModel(); assert.equal(saves.length,1);
+assert.deepEqual(saves[0],{sec:'prepare',values:{...original,model:'gpt-image-2.6-sunburst'},rev:3});
+saves=[];asks=[];accept=false;PS.P.settings.prepare=clone(original);form={prepare:{quality:'high'}};
+await saveSection('prepare');assert.equal(saves.length,0);assert.equal(asks.length,1);
+accept=true;await saveSection('prepare');assert.equal(saves.length,1);assert.equal(saves[0].values.quality,'high');
+saves=[];asks=[];form={prepare:{complexity:'low'}};await saveSection('prepare');assert.equal(asks.length,0);assert.equal(saves.length,1);
+saves=[];form={prepare:{quality:'max'}};PS.previewPrepare=async()=>({...PS.P,rev:99,switch:p});
+await saveSection('prepare');assert.equal(saves.length,0);assert.ok(errors.length);
+console.log('batch10a JS passed');
+})().catch(e=>{console.error(e);process.exitCode=1});
+'''
+    node = shutil.which("node") or r"C:\Program Files\nodejs\node.exe"
+    result = subprocess.run([node, "-e", script], capture_output=True, encoding="utf-8", timeout=30)
+    check(result.returncode == 0, f"D152–153 JS 실행 확인: {result.stdout} {result.stderr}")
 
 
 def batch10b_unit():
