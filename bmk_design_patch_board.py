@@ -6485,7 +6485,8 @@ async def pipeline_handler(request: web.Request) -> web.StreamResponse:
             prepare = pl.validate_section("prepare", json.loads(prepare))
         except (ValueError, TypeError) as e:
             raise _Reject(400, str(e)) from e
-    return _json(await asyncio.to_thread(pl.view, root, switch_prepare=prepare))
+    return _json(await asyncio.to_thread(pl.view, root, switch_prepare=prepare,
+                                        import_pending=_import_pending if prepare is not None else None))
 
 
 @_guard

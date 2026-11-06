@@ -2178,11 +2178,12 @@ window.DPPipeline = (() => {
       const model = `${p.model} · 품질 ${p.quality}` + (/^gpt-image-2\.6-/.test(p.model) ? ` · 복잡도 ${p.complexity}` : "");
       if (preview.error) throw new Error(preview.error);
       return [`${model} 으로 바꿉니다.`,
-        `다음 [반영] 뒤 생성 승인 필요 ${preview.need}건 (${preview.cells}셀) ≈ $${preview.est_usd[0].toFixed(2)}–${preview.est_usd[1].toFixed(2)} (≈ ${preview.credits[0]}–${preview.credits[1]} 크레딧) — 승인 전에는 과금 없음.`,
+        preview.exact === false ? "이 변경은 반영 전에 호출 수를 셀 수 없음 — 반영 뒤 생성 승인 칸에서 확인" :
+          `다음 [반영] 뒤 생성 승인 필요 ${preview.need}건 (${preview.cells}셀) ≈ $${preview.est_usd[0].toFixed(2)}–${preview.est_usd[1].toFixed(2)} (≈ ${preview.credits[0]}–${preview.credits[1]} 크레딧) — 승인 전에는 과금 없음.`,
         "지금 ★·후보는 남고 '옛 조건' 배지가 붙습니다. 초안 재과금은 없습니다.",
-        `다시 생성 대기 ${preview.pruned}건은 반영 때 정리(과금 없음).`,
+        ...(preview.pruned != null ? [`다시 생성 대기 ${preview.pruned}건은 반영 때 정리(과금 없음).`] : []),
         ...(preview.pending_preapproved ? [`남는 다시 생성 사전 승인 ${preview.pending_preapproved}건 ≈ $${preview.est_usd_pre[0].toFixed(2)}–${preview.est_usd_pre[1].toFixed(2)} 도 다음 실행에 포함됩니다.`] : []),
-        ...(preview.blocked.length ? [`발사 못 함 ${preview.blocked.length}건 — ${[...new Set(preview.blocked)].join("; ")}`] : []),
+        ...(preview.blocked?.length ? [`발사 못 함 ${preview.blocked.length}건 — ${[...new Set(preview.blocked)].join("; ")}`] : []),
         ...(preview.uncertain ? ["미리 보기 — 반영 뒤 달라질 수 있음(입력·다른 설정 변경 포함)."] : []),
         "그래프에서 Prepare 를 직접 돌리면 그 위젯 값(2.5 · 옛 워크플로는 complexity 위젯이 없어 high)으로 돌아갑니다: 그래프 Prepare 의 model·complexity 도 바꾸거나 Studio [반영]만 쓰세요.",
         ...(preview.backend === "mock" ? ["[MOCK] 과금 없음"] : [])].join("\n");
@@ -2190,7 +2191,7 @@ window.DPPipeline = (() => {
 
     async function preparePreview(values, P0) {
       const p = await PS.previewPrepare(values);
-      if (p.rev !== P0.rev || p.manifest_rev !== P0.manifest_rev) throw new Error("미리 보기 중 프로젝트가 바뀜 — 다시 읽고 저장하세요");
+      if (p.rev !== P0.rev) throw new Error("미리 보기 중 프로젝트가 바뀜 — 다시 읽고 저장하세요");
       if (!p.switch) throw new Error("생성 조건 미리 보기를 받지 못했습니다 — 설정을 다시 읽으세요");
       return prepareText(p.switch);
     }

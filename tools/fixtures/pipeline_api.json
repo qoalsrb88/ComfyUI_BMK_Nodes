@@ -841,7 +841,8 @@
      "pruned": 1,
      "blocked": [],
      "uncertain": true,
-     "backend": "mock"
+     "backend": "mock",
+     "exact": true
     }
    },
    "alt": {
@@ -2101,7 +2102,11 @@
     "exports[].bytes",
     "exports[].mask_groups",
     "exports[].mask_edits",
-    "switch"
+    "switch",
+    "switch.need",
+    "switch.cells",
+    "switch.est_usd",
+    "switch.credits"
    ],
    "optional": [
     "switch.need",
@@ -2113,7 +2118,8 @@
     "switch.pruned",
     "switch.blocked",
     "switch.backend",
-    "switch.error"
+    "switch.error",
+    "switch.exact"
    ],
    "maps": [],
    "any": [
