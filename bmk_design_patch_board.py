@@ -641,28 +641,38 @@ def _ledger_pending(root: str, m: dict) -> dict[str, int]:
     return out
 
 
-def _pending_cells(root: str, m: dict) -> tuple[dict[str, int], dict[str, int]]:
-    """({cell_key: 대기 호출 수}, {cell_key: 그중 보드 사전 승인 수}). runner.plan_calls 가 있으면 그것(Run 과 같은 판단:
-    다운로드 복구 포함), 없으면 _ledger_pending(사전 승인 = 셀마다 min(rerolls, 대기))."""
+def _pending_plan(root: str, m: dict) -> dict:
+    """상태 조회의 호출·예약 수가 같은 원장 스냅샷을 쓰게 한다. 읽기 실패는 빈 계획으로."""
     runner = _runner()
     if runner is not None:
         try:
-            plan = runner.plan_calls(m, root)
+            return runner.plan_calls(m, root)
         except Exception as e:  # 보드 폴링이 runner 오류로 죽지 않게 — 원장 계산으로 대신하고 한 번만 알림
             rk = store.root_key(root)
             if rk not in _PLAN_WARNED:
                 _PLAN_WARNED.add(rk)
                 logger.warning(f"{_TAG} Board: runner.plan_calls 실패 → 원장 파일로 대기 호출 계산 ({e})")
-        else:
-            out: dict[str, int] = {}
-            pre: dict[str, int] = {}
-            for it in plan.get("pending") or []:
-                ck = str(it.get("cell_key") if isinstance(it, dict) else str(it).rsplit("_r", 1)[0])
-                out[ck] = out.get(ck, 0) + 1
-                if isinstance(it, dict) and it.get("preapproved"):
-                    pre[ck] = pre.get(ck, 0) + 1
-            return out, pre
-    out = _ledger_pending(root, m)
+    return {}
+
+
+def _pending_cells(root: str, m: dict, *, plan: dict | None = None) -> tuple[dict[str, int], dict[str, int]]:
+    """({cell_key: 대기 호출 수}, {cell_key: 그중 보드 사전 승인 수}). runner.plan_calls 가 있으면 그것(Run 과 같은 판단:
+    다운로드 복구 포함), 없으면 _ledger_pending(사전 승인 = 셀마다 min(rerolls, 대기))."""
+    if plan is None:
+        plan = _pending_plan(root, m)
+    if "pending" in plan:
+        out: dict[str, int] = {}
+        pre: dict[str, int] = {}
+        for it in plan.get("pending") or []:
+            ck = str(it.get("cell_key") if isinstance(it, dict) else str(it).rsplit("_r", 1)[0])
+            out[ck] = out.get(ck, 0) + 1
+            if isinstance(it, dict) and it.get("preapproved"):
+                pre[ck] = pre.get(ck, 0) + 1
+        return out, pre
+    try:
+        out = _ledger_pending(root, m)
+    except OSError:
+        return {}, {}
     rerolls = m.get("rerolls") or {}
     return out, {ck: k for ck, n in out.items() if (k := min(int(rerolls.get(ck) or 0), n))}
 
@@ -673,19 +683,20 @@ def _pending(root: str, m: dict) -> tuple[dict[str, int], int]:
     return out, sum(pre.values())
 
 
-def _reroll_status(root: str, m: dict) -> tuple[dict[str, int], dict[str, int]]:
+def _reroll_status(root: str, m: dict, *, plan: dict | None = None) -> tuple[dict[str, int], dict[str, int]]:
     """셀별 남은 예약과 그중 기본 호출을 대신한 수. 옛 키도 남은 예약에 포함한다."""
-    runner = _runner()
-    if runner is None:
-        return {}, {}  # 옛 보드의 읽기 전용 fallback. 원장 없이 취소할 수는 없다.
-    waiting = {ck: max(0, int(n or 0) - runner.board_spent(root, ck)) for ck, n in (m.get("rerolls") or {}).items()}
-    jobs = {j["cell_key"]: j for j in m["jobs"]}
-    base = {}
-    for e in runner.plan_calls(m, root)["pending"]:
-        ck = e["cell_key"]
-        if e.get("preapproved") and e["rep"] < int(jobs.get(ck, {}).get("reps") or 1):
-            base[ck] = base.get(ck, 0) + 1
-    return waiting, base
+    if plan is None:
+        plan = _pending_plan(root, m)
+    try:
+        jobs = {j["cell_key"]: j for j in m["jobs"]}
+        base = {}
+        for e in plan.get("pending") or []:
+            ck = e["cell_key"]
+            if e.get("preapproved") and e["rep"] < int(jobs.get(ck, {}).get("reps") or 1):
+                base[ck] = base.get(ck, 0) + 1
+        return plan.get("rerolls_pending", {}), base
+    except Exception:
+        return {}, {}
 
 
 def _est_usd(job: dict):
@@ -2471,8 +2482,9 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
     picks = m.get("picks") if isinstance(m.get("picks"), dict) else {}
     rerolls = m.get("rerolls") or {}
     cs = _compose_settings(root, m)
-    pending, pre_cells = _pending_cells(root, m)
-    reroll_waiting, reroll_base = _reroll_status(root, m)
+    pending_plan = _pending_plan(root, m)
+    pending, pre_cells = _pending_cells(root, m, plan=pending_plan)
+    reroll_waiting, reroll_base = _reroll_status(root, m, plan=pending_plan)
     calls = [x for x in m.get("calls") or [] if isinstance(x, dict)]
     call_by_id = {x.get("call_id"): x for x in calls}
     crop_ids = {c.get("id") for c in m["crops"]}
@@ -2829,7 +2841,7 @@ def apply_reroll(root: str, count: int, cell_key: str | None = None, crop_id: st
 def _reroll_apply_gate(root: str, m: dict, settings=None) -> None:
     if settings is None:
         settings = pl.current(root, m)["settings"]
-    if settings is None or any(d["section"] == "prepare" and d["kind"] == "cell" for d in pl.drift(settings, m)):
+    if settings is not None and any(d["section"] == "prepare" and d["kind"] == "cell" for d in pl.drift(settings, m)):
         raise _Reject(409, "실행 설정이 반영과 다름 — 먼저 [반영 (무료)]", reason="apply_needed")
 
 
@@ -4694,7 +4706,7 @@ def ref_pool(root, rev, op, data):
                             part = None
                         else:
                             stem = os.path.splitext(name)[0]
-                            stem = re.sub(r"_t$", "", stem, flags=re.IGNORECASE)
+                            stem = re.sub(r"_t\d*$", "", stem, flags=re.IGNORECASE)
                             entries.append(_pool_stage(root, rgba, stem, rec, f"그림{k}"))
                     finally:
                         _drop(part)

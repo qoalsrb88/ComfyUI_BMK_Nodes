@@ -159,7 +159,7 @@ window.DPPipeline = (() => {
     if (run.filtered) parts.push(`선택 밖 ${run.filtered}건`);
     parts.push(`승인 코드 ${run.hash || "없음"}`);
     const line = parts.join(" · ") + (run.backend === "mock" ? "  [MOCK]" : "");
-    return { line: running ? `Run 실행 중 — 끝난 뒤 다시 계산 (${line})` : line, rows: run.reasons.map((x) => `${x.reason} × ${x.n}`),
+    return { line: running ? `Run 실행 중 — 끝난 뒤 다시 계산 (${line})` : line, rows: run.reasons.map((x) => `${x.msg || x.reason} × ${x.n}`),
       dim: !!running, label: `생성 승인 ${run.need}건` + (run.need ? ` ≈ ${usd(run.est_usd)}` : "") + (run.backend === "mock" ? " [MOCK]" : "") };
   }
 
@@ -216,7 +216,7 @@ window.DPPipeline = (() => {
     } else if (kind === "draft") {
       out.push(`VLM 초안 ${tally(d.units.map((u) => u.crop_id), "크롭")}(보통 ≈ ${num(d.est_credits[0])}, 최대 ${num(d.est_credits[1])} 크레딧)을 승인하고 `
         + "과금합니다." + (d.orphan_retries ? ` 결과 못 받음 재시도 ${d.orphan_retries}건 포함(과금됐을 수 있음).` : ""));
-      if (d.reasons.length) out.push(`사유: ${d.reasons.map((x) => `${x.reason} × ${x.n}`).join(", ")}`);
+      if (d.reasons.length) out.push(`사유: ${d.reasons.map((x) => `${x.msg || x.reason} × ${x.n}`).join(", ")}`);
       out.push("드라이런 이후 대기 목록이 바뀌었으면 서버가 호출 없이 드라이런만 다시 합니다.");
     } else {
       const r = p.run;
@@ -224,6 +224,13 @@ window.DPPipeline = (() => {
       const pr = p.prepare;
       if (pr) out.push(`모델 ${pr.model} · 품질 ${pr.quality}` + (/^gpt-image-2\.6-/.test(pr.model) ? ` · 복잡도 ${pr.complexity || "high"}` : ""));
       if (r.pre) out.push(`다시 생성(사전 승인) ${r.pre}건 ≈ ${usd(r.est_usd_pre)} 도 함께 과금 — 선택과 무관(다른 크롭 포함).`);
+      const reasons = r.reasons || [];
+      const payable = reasons.filter((x) => x.reason !== "blocked");
+      if (payable.length) out.push(`사유: ${payable.map((x) => `${x.msg || x.reason} × ${x.n}`).join(", ")}`);
+      for (const x of reasons.filter((x) => x.reason === "blocked")) {
+        const why = (x.msg || "사유 확인 필요").replace(/^발사 못 함\s*—\s*/, "");
+        out.push(`발사 못 함 ${x.n}건 — ${why} (이 승인으로 과금되지 않음)`);
+      }
       out.push("드라이런 이후 대기 목록이 바뀌었으면 서버가 과금 없이 드라이런만 다시 합니다.");
       // 초안 대기: 선택 크롭(by_crop wait — only 없는 판정)과 화풍(pending_style)을 따로. 화풍을 고르지 않은 apply=full 이면 화풍 초안은 보류
       const wait = ids.filter((id) => d.by_crop[id] && d.by_crop[id].wait.length).length;
@@ -1266,14 +1273,15 @@ window.DPPipeline = (() => {
 
     function dimWhy() {
       const P0 = PS.P;
-      const out = pendingApply().slice();
+      const drift = P0 && P0.drift || [];
+      const importDrift = drift.some((d) => d.section === "import");
+      const out = pendingApply().filter((s) => !(importDrift && s.startsWith("Import 설정이 마지막 Import 와 다름")));
       const unknown = pendingUnknown();
       if (unknown) out.push(`반영 상태 확인 못 함 — ${unknown}`);
       if (!P0 || PS.err) out.push(`실행 설정을 읽지 못함 — ${PS.err || "불러오는 중"}`);
       else if (P0.error) out.push(`실행 설정을 읽지 못함 — ${P0.error}`);
       const notes = PS.plan && PS.plan.notes || [];
       if (confirmOf(P0).length || notes.some((n) => n.startsWith("설정 미확인:"))) out.push("설정 확인 필요");
-      const drift = P0 && P0.drift || [];
       for (const [section, label] of [["prepare", "Prepare"], ["import", "Import"]]) {
         const fields = drift.filter((d) => d.section === section).map((d) => d.field);
         if (fields.length) out.push(`${label} 설정 갈라짐(${fields.join(", ")})`);
