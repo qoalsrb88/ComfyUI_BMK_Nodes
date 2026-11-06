@@ -392,6 +392,23 @@ def _only_match(tokens: list[str], entry: dict) -> bool:
     return False
 
 
+def _count_board_used(ledger: dict, states: dict, *, settled: bool = False) -> int:
+    """보드 사전 승인으로 이미 쓴 rep 수 — 원장 상태가 none 이 아니고(req 만 = 호출 전 제외) board 승인으로 한 번이라도 나간 rep
+    (재시도로 req 가 바뀌어도 history 로 셈). settled = 지금 실행 중(inflight)인 rep 은 빼고(배치 10 D157 — 취소·정리의 하한:
+    진행 중 호출이 401 로 원장을 되돌려도 취소가 유지되게)."""
+    return sum(1 for rep, f in ledger.items()
+               if states[rep] != "none" and _board_spent(f) and not (settled and states[rep] == "inflight"))
+
+
+def board_spent(root: str, cell_key: str, *, settled: bool = False) -> int:
+    """배치 10 공용 자리(D157·D161): 이 셀에서 보드 사전 승인으로 이미 쓴 rep 수 — plan_calls 의 board_used 와 같은 셈(_count_board_used).
+    다시 생성 대기를 줄일 때(취소·옛 키 정리)의 하한은 settled=True, 더할 때의 바닥은 settled=False."""
+    rid = _rid(root)
+    ledger = read_ledger(root, cell_key)
+    states = {rep: _rep_state(files, _is_active(rid, call_id_for(cell_key, rep))) for rep, files in ledger.items()}
+    return _count_board_used(ledger, states, settled=settled)
+
+
 def _board_spent(files: dict) -> bool:
     """이 rep 이 보드 사전 승인으로 한 번이라도 호출됐는지(재시도로 req 가 바뀌어도 history 에 남는다)."""
     req = files.get("req")
@@ -463,7 +480,7 @@ def plan_calls(m: dict, ledger_root: str, *, retry_failed: bool = False, retry_o
         ledger = read_ledger(ledger_root, ck)
         states = {rep: _rep_state(files, _is_active(rid, call_id_for(ck, rep))) for rep, files in ledger.items()}
         used = sum(1 for s in states.values() if s != "none")  # req 만 = 호출 전
-        board_used = sum(1 for rep, f in ledger.items() if states[rep] != "none" and _board_spent(f))
+        board_used = _count_board_used(ledger, states)
         board_left = max(0, extra - board_used)
         # 셀 목표 = max(reps, 보드 아닌 호출 + rerolls): 재굴림은 아직 안 돈 기본 호출을 먼저 대신한다 — 그 기본 호출이
         # Run 승인 대기로 남아 같은 크롭을 두 번 만들지 않게(10/15). 빈 rep 은 번호 앞쪽부터 채운다.
