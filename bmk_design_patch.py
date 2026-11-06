@@ -2018,7 +2018,8 @@ class BMKDesignPatchPrepare:
 
         def _prune(mm: dict) -> None:
             pruned[0] = store.prune_stale_rerolls(mm, {j.get("cell_key") for j in mm.get("jobs") or []},
-                                                  lambda ck: runner.board_spent(root, ck, settled=True), reset_keys)
+                                                  lambda ck: runner.board_spent(root, ck, settled=True),
+                                                  reset_keys | (set(mm.get("rerolls") or {}) - old_jobs.keys()))
 
         handle, conflicts = _commit(root, m, before, project, finalize=_prune)
         n_pruned = pruned[0]
