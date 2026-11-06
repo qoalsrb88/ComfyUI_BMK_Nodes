@@ -81,6 +81,9 @@
         portrait·close-up 에서는 숨김). 장소·구속 태그는 프롬프트에 남는다. 구도 규칙이 portrait·close-up 과 함께 쓴 포즈
         칩의 태그를 프롬프트에서도 뺀다(1인 그림만). 새 입력은 optional 맨 뒤라 v7 워크플로가 그대로 열린다
         (portrait·close-up 과 포즈 태그를 함께 쓰던 워크플로만 결과가 달라진다. rules=off 면 그대로).
+  - v9: 코어 v1.10. 시점·시선·포즈 칩에 그림을 붙이고(js/tag_organizer/glyphs.js, sync 가 복사), 시선은 방향 ×
+        looking·facing 격자로, 포즈는 자세 묶음으로 놓는다(palette 의 gaze_grid·pose_groups). 정렬 결과와 노드 입력·
+        저장 형식은 그대로라 v8 워크플로가 그대로 열린다. 칩 줄이 높아져 편집기 최소 높이를 520, 처음 높이를 640 으로 늘린다.
 """
 
 from __future__ import annotations

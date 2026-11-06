@@ -52,6 +52,8 @@ arrangement_from_layout(). 결과의 report["arranged"] 는 줄 → 청크 → �
         팩 스키마는 그대로 — 옛 팩에는 gaze 그룹이 없어 이전과 같이 동작한다.
 - v1.9: 포즈 덮어쓰기(pose: 여러 태그), rules.quick 의 pose_scope 안의 태그만 바꾼다. report 의 pose_blocked, 칩 토글(pose_toggle),
         palette 의 pose_conflicts. 팩 스키마는 그대로 — 옛 팩에는 포즈 퀵 목록과 범위가 없어 고른 태그를 더하기만 한다.
+- v1.10: palette 의 gaze_grid(시선 칩 격자: 방향 × looking·facing)·pose_groups(포즈 칩 묶음). 정렬 동작은 그대로이고,
+        옛 팩에서는 두 목록이 비어 칩을 예전처럼 한 줄로 늘어놓는다.
 """
 
 from __future__ import annotations
@@ -1880,6 +1882,10 @@ def palette(pack: Any) -> Dict[str, Any]:
             "pose_conflicts": {tag: list(others) for tag, others in (quick.get("pose_conflicts") or {}).items()},
             "view_conflicts": {tag: list(others) for tag, others in (quick.get("view_conflicts") or {}).items()},
             "view_lift": list(quick.get("view_lift", ())),
+            "gaze_grid": [{key: col[key] for key in ("label", "looking", "facing") if col.get(key)}
+                          for col in quick.get("gaze_grid", ())],
+            "pose_groups": [{"label": group.get("label", ""), "tags": list(group.get("tags", ()))}
+                            for group in quick.get("pose_groups", ())],
             "layouts": {lid: lay.get("label", lid) for lid, lay in pack.layouts.items()}}
 
 

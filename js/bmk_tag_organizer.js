@@ -1,8 +1,9 @@
-// bmk_tag_organizer.js — BMKTagOrganizer 짝 JS 확장 (v8)
+// bmk_tag_organizer.js — BMKTagOrganizer 짝 JS 확장 (v9)
 //
 // 배열 세팅(arrangement) 청크 편집기를 노드에 붙이는 ComfyUI 어댑터. 편집기 자체는 TagOrganizer 저장소의
 // extension/editor/ 가 정본이고(크롬 확장 패널과 같은 코드), js/tag_organizer/ 는 그 저장소의
 // `python tagorg.py sync` 가 복사한 파일이다. 여기서 직접 고치면 다음 동기화가 멈춘다. 조작은 editor.js 머리 주석 참고.
+// 칩 그림(glyphs.js)과 시선 격자·포즈 묶음의 모양은 NovelAI 미리보기 패널(extension/nai/panel.js·panel.css)과 같다.
 //
 // 이 파일이 맡는 것(editor.js 의 host):
 // - 결과는 숨긴 STRING 위젯 arrangement 에 JSON 으로 쓴다(widgets_values·API 프롬프트로 그대로 간다).
@@ -17,6 +18,9 @@
 //   시선은 지금 크롭·시점과 맞지 않는 칩을 미리보기 결과(gaze_blocked)를 따라 숨기되 선택은 남긴다. 코어가 막힌 선택을
 //   넣지 않으므로 시점을 되돌리면 다시 든다. text 가 연결돼 있으면 한 번 실행한 뒤부터 숨긴다.
 //   포즈도 같은 방식이다(미리보기의 pose_blocked). 몸이 동시에 할 수 없는 칩이 꺼지고, 함의 관계(lying + on back)는 함께 고른다.
+// - 칩 모양: 태그 칩에 그림을 붙인다. palette 의 gaze_grid 가 있으면 시선은 방향(열) × looking·facing(행) 격자로, 자동 칩은
+//   격자 왼쪽 위 모서리에, 고른 태그 이름은 격자 옆에 글로 둔다. pose_groups 가 있으면 포즈는 자세 묶음(이름표 + 칩)으로 둔다.
+//   격자·묶음에 없는 퀵 태그는 뒤에 보통 칩으로 둔다. 옛 팩처럼 두 목록이 비면 예전처럼 한 줄로 늘어놓는다.
 //
 // 상태는 ArrangementEditor·host 객체에 두고 위젯에는 자체 필드를 얹지 않는다(프론트 1.53 이 위젯을
 // BaseWidget 으로 흡수하며 충돌할 수 있음 — bmk_sam3_mask_layers.js 와 같은 이유).
@@ -24,6 +28,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { ArrangementEditor, el } from "./tag_organizer/editor.js";
+import { glyph } from "./tag_organizer/glyphs.js";
 import { gazeToggle, poseToggle, splitItems, viewToggle } from "./tag_organizer/model.js";
 
 const NODE_ID = "BMKTagOrganizer";
@@ -41,19 +46,36 @@ const OPTION_KEYS = [
   "dialect_priority", "comments", "sentences", GAZE, POSE,
 ];
 const MIN_WIDTH = 560;
-const ADD_HEIGHT = 600;      // 처음 만들 때 편집기 몫으로 늘리는 높이
-const EDITOR_MIN_H = 480;
+const ADD_HEIGHT = 640;      // 처음 만들 때 편집기 몫으로 늘리는 높이
+const EDITOR_MIN_H = 520;    // 칩 세 줄(시선 격자 포함)을 빼고도 청크·미리보기가 남는 높이
 const MARGIN = 6;
 const NOTE_MS = 8000;        // 칩이 꺼진 까닭을 보이는 시간
+const GLYPH_SIZE = { view: 16, gaze: 16, pose: 18 };   // 칩 안 그림 높이(px)
+const CELL_GLYPH = 18;                                  // 시선 격자 칸의 그림 높이
+const GAZE_ROWS = [["looking", "looking: 눈이 보일 때"], ["facing", "facing: 눈을 감거나 가렸을 때"]];
 const CHIP_STYLE = `
 .bmk-to-chips{flex:0 0 auto;display:flex;flex-wrap:wrap;align-items:center;gap:3px}
 .bmk-to-chips[hidden]{display:none}
 .bmk-to-chips>span{margin-right:3px;color:var(--descrip-text,#999)}
 .bmk-to-chips>span.note{flex:1 1 100%;color:#d4a017}
-.bmk-to-chips button{height:18px;padding:0 7px;border:1px solid var(--border-color,#4e4e4e);border-radius:9px;background:var(--comfy-input-bg,#222);color:var(--input-text,#ddd);font:inherit;font-size:11px;line-height:16px;cursor:pointer}
+.bmk-to-chips button{height:20px;padding:0 7px;border:1px solid var(--border-color,#4e4e4e);border-radius:10px;background:var(--comfy-input-bg,#222);color:var(--input-text,#ddd);font:inherit;font-size:11px;line-height:18px;cursor:pointer}
 .bmk-to-chips button:hover{border-color:var(--input-text,#ddd)}
 .bmk-to-chips button[aria-pressed=true]{border-color:var(--p-primary-color,#5b8def);background:var(--p-primary-color,#5b8def);color:#fff}
-.bmk-to-chips button.tag[aria-pressed=true]::before{content:"✓ "}
+.bmk-to-chips button.tag{display:inline-flex;align-items:center;gap:2px;padding:0 6px}
+.bmk-to-chips button.tag:has(.glyph){padding-left:2px}
+.bmk-to-chips .glyph{flex:0 0 auto}
+.bmk-to-chips button.tag:not(:has(.glyph))[aria-pressed=true]::before{content:"✓ "}
+.bmk-to-chips>span.bmk-to-grp{display:contents}
+.bmk-to-grp-head{display:inline-flex;align-items:center;gap:3px}
+.bmk-to-grp-label{margin-left:3px;padding-left:5px;border-left:1px solid var(--border-color,#4e4e4e);color:var(--descrip-text,#999);font-size:10px;white-space:nowrap}
+.bmk-to-chips>span.bmk-to-picked{flex:1 1 80px;margin-left:4px;font-size:11px;overflow-wrap:anywhere}
+.bmk-to-gaze{flex:0 1 auto;min-width:0;display:grid;grid-template-columns:max-content repeat(var(--cols),minmax(24px,34px));gap:2px 3px;align-items:center}
+.bmk-to-gaze-corner{padding-right:4px}
+.bmk-to-gaze-head{color:var(--descrip-text,#999);font-size:10px;white-space:nowrap}
+.bmk-to-gaze-head.col{display:flex;justify-content:center;overflow:visible}
+.bmk-to-gaze-head.row{padding-right:4px;cursor:help}
+.bmk-to-chips button.bmk-to-cell{display:flex;align-items:center;justify-content:center;height:22px;padding:0;border-radius:6px}
+.bmk-to-gaze-empty{height:22px}
 `;
 
 function checkState() {
@@ -115,8 +137,70 @@ function injectChipStyle() {
   document.head.appendChild(style);
 }
 
+function chipButton(cls, pressed, title, onClick) {
+  const button = el("button", cls);
+  button.type = "button";
+  button.title = title;
+  button.setAttribute("aria-pressed", String(pressed));
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+// 시선 격자: 열은 방향, 행은 looking·facing. 칸에는 그림만 있으니 고른 태그 이름을 격자 옆에 글로 보인다.
+// 막힌 태그 칸은 비워 자리만 지킨다. 격자가 없으면(옛 팩) 한 줄 칩.
+function gazeLayout({ palette, tags, on, shown, press, chipFor, autoChip }) {
+  const grid = palette?.gaze_grid ?? [];
+  const placed = new Set(grid.flatMap((col) => [col.looking, col.facing]).filter(Boolean));
+  const rest = tags.filter((tag) => !placed.has(tag) && shown(tag)).map(chipFor);
+  if (!grid.length) return [autoChip, ...rest];
+  const table = el("div", "bmk-to-gaze");
+  table.style.setProperty("--cols", String(grid.length));
+  const corner = el("span", "bmk-to-gaze-corner");
+  corner.append(autoChip);
+  table.append(corner, ...grid.map((col) => el("span", "bmk-to-gaze-head col", col.label)));
+  for (const [name, title] of GAZE_ROWS) {
+    const head = el("span", "bmk-to-gaze-head row", name);
+    head.title = title;
+    table.append(head);
+    for (const col of grid) {
+      const tag = col[name];
+      if (!tag || !tags.includes(tag) || !shown(tag)) {
+        table.append(el("span", "bmk-to-gaze-empty"));
+        continue;
+      }
+      const cell = chipButton("bmk-to-cell", on.includes(tag), `${tag} (${col.label})`, () => press(tag));
+      cell.setAttribute("aria-label", tag);
+      cell.append(glyph("gaze", tag, { size: CELL_GLYPH }) ?? tag);
+      table.append(cell);
+    }
+  }
+  return [table, el("span", "bmk-to-picked", on.filter(shown).join(", ")), ...rest];
+}
+
+// 포즈 묶음: 자세별로 칩을 모은다. 이름표는 첫 칩과 붙여 줄 끝에 혼자 남지 않게 한다.
+// 묶음 안이 모두 막히면 묶음째 숨긴다. 묶음이 없으면(옛 팩) 한 줄 칩.
+function poseLayout({ palette, tags, shown, chipFor, autoChip }) {
+  const groups = palette?.pose_groups ?? [];
+  const placed = new Set(groups.flatMap((g) => g.tags));
+  const out = [autoChip];
+  for (const g of groups) {
+    const [first, ...chips] = g.tags.filter((tag) => tags.includes(tag) && shown(tag)).map(chipFor);
+    if (!first) continue;
+    const box = el("span", "bmk-to-grp");
+    box.setAttribute("role", "group");
+    box.setAttribute("aria-label", g.label);
+    const head = el("span", "bmk-to-grp-head");
+    const label = el("span", "bmk-to-grp-label", g.label);
+    label.title = g.label;
+    head.append(label, first);
+    box.append(head, ...chips);
+    out.push(box);
+  }
+  return [...out, ...tags.filter((tag) => !placed.has(tag) && shown(tag)).map(chipFor)];
+}
+
 // 칩 한 줄. spec: name(위젯 이름·퀵 그룹), label, title(palette, tag), toggle(palette, on, tag) → 새 선택,
-// dropNote?(palette, dropped) → 칩이 꺼진 까닭
+// dropNote?(palette, dropped) → 칩이 꺼진 까닭, layout?(ctx) → 이름표와 알림 사이에 놓을 것(없으면 자동 + 칩 한 줄)
 function chipRow(node, onChange, spec) {
   injectChipStyle();
   const widget = () => node.widgets?.find((w) => w.name === spec.name);
@@ -126,15 +210,6 @@ function chipRow(node, onChange, spec) {
   let blocked = [];
   let note = "";
   let noteTimer = 0;
-
-  function chip(label, cls, pressed, title, onClick) {
-    const button = el("button", cls, label);
-    button.type = "button";
-    button.title = title;
-    button.setAttribute("aria-pressed", String(pressed));
-    button.addEventListener("click", onClick);
-    return button;
-  }
 
   function set(tags, noteText = "") {
     const w = widget();
@@ -161,13 +236,25 @@ function chipRow(node, onChange, spec) {
     const linked = node.inputs?.find((i) => i.name === spec.name)?.link != null;
     row.hidden = !tags.length || !widget() || linked;
     const on = selected();
+    const shown = (tag) => !blocked.includes(tag);
+    const press = (tag) => {
+      const next = spec.toggle(palette, on, tag);
+      set(next, spec.dropNote?.(palette, on.filter((t) => t !== tag && !next.includes(t))));
+    };
+    const chipFor = (tag) => {
+      const button = chipButton("tag", on.includes(tag), spec.title(palette, tag), () => press(tag));
+      const icon = glyph(spec.name, tag, { size: GLYPH_SIZE[spec.name] ?? 16 });
+      if (icon) button.append(icon);
+      button.append(tag);
+      return button;
+    };
+    // 고른 것이 모두 막혀도 프롬프트 그대로
+    const autoChip = chipButton("", !on.some(shown), "프롬프트 그대로", () => set([]));
+    autoChip.append("자동");
+    const ctx = { palette, tags, on, shown, press, chipFor, autoChip };
     row.replaceChildren(
       el("span", "", spec.label),
-      chip("자동", "", !on.some((tag) => !blocked.includes(tag)), "프롬프트 그대로", () => set([])), // 고른 것이 모두 막혀도 프롬프트 그대로
-      ...tags.filter((tag) => !blocked.includes(tag)).map((tag) => chip(tag, "tag", on.includes(tag), spec.title(palette, tag), () => {
-        const next = spec.toggle(palette, on, tag);
-        set(next, spec.dropNote?.(palette, on.filter((t) => t !== tag && !next.includes(t))));
-      })),
+      ...(spec.layout ? spec.layout(ctx) : [autoChip, ...tags.filter(shown).map(chipFor)]),
       ...(note ? [el("span", "note", note)] : []),
     );
   }
@@ -193,6 +280,7 @@ function gazeChips(node, onChange) {
     label: "시선",
     title: (_palette, tag) => `${tag.startsWith("facing") ? "눈을 감거나 가렸을 때" : "눈이 보일 때"} — 프롬프트의 시선 태그를 고른 태그들로 바꿉니다. 여러 개 고를 수 있습니다`,
     toggle: gazeToggle,
+    layout: gazeLayout,
   });
 }
 
@@ -202,6 +290,7 @@ function poseChips(node, onChange) {
     label: "포즈",
     title: () => "프롬프트의 자세 태그를 고른 태그들로 바꿉니다(장소·구속 태그는 남김). 여러 개 고를 수 있습니다",
     toggle: poseToggle,
+    layout: poseLayout,
   });
 }
 
