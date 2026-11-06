@@ -4682,9 +4682,14 @@ def _pool_delete(root, rev, data):
         doc = _refs_at(root, rev, folder)
         _pool_delete_shared(root, folder)
         directory = _pool_deleted_dir(folder)
-        used = drefs.pool_usage(root, m, doc, _ref_crops(root, m))
+        crops = _ref_crops(root, m)
+        used = drefs.pool_usage(root, m, doc, crops)
+        pool, held_rows = drefs.pool_files(root, m, doc, crops)
+        owned = {(r["name"], held): r for held, rows in ((False, pool), (True, held_rows))
+                 for r in rows if r["origin"] == "pool"}
         for name, held in names:
-            _pool_owned_row(root, m, doc, "restore" if held else "delete", name)
+            if (name, held) not in owned or _pool_file_state(root, folder, doc, name, held=held)["outside_edit"]:
+                raise _Reject(409, "이 프로젝트 보관함의 쓰임 없는 파일만 바꿀 수 있습니다")
         os.makedirs(directory, exist_ok=True)
         moved, records = [], []
         try:
@@ -4732,17 +4737,38 @@ def _pool_undelete(root, rev, data):
         key = _record_key(deleted, name)
         entry = deleted.get(key, {})
         original = entry.get("from", name)
-        reserved = drefs.pool_reserved(root, m, doc) | used
+        record = entry.get("record")
+        orphan_keys, held_keys = set(), set()
+        with Image.open(src) as im:
+            sha = _pixel_sha(src, store.file_fingerprint(src), im)
+        # 파일 이동 뒤 문서 쓰기 전에 종료된 경우: 삭제 접미와 보류 경로도 찾는다.
+        # 디스크에 남은 다른 파일의 기록은 건드리지 않고, 픽셀이 같은 고아만 회수한다.
+        if not entry:
+            stem, ext = os.path.splitext(name)
+            candidates = dict.fromkeys((name, re.sub(r"__\d{6}-\d{6}(?:-\d+)?$", "", stem) + ext))
+            files, held = (doc or {}).get("files", {}), (doc or {}).get("held", {})
+            for candidate in candidates:
+                for is_held in (False, True):
+                    old = (drefs.HELD_DIR + "/" if is_held else "") + candidate
+                    orphan = _record_key(files, old)
+                    rec = files.get(orphan)
+                    if (rec is None or rec.get("for", "old") is not None or rec.get("sha") != sha
+                            or os.path.lexists(os.path.join(folder, *old.split("/")))):
+                        continue
+                    held_key = _record_key(held, candidate) if is_held else None
+                    if record is None:
+                        record = rec
+                        original = held[held_key]["from"] if held_key else candidate
+                    orphan_keys.add(orphan)
+                    if held_key:
+                        held_keys.add(held_key)
+        good = record is not None and record.get("for", "old") is None and record.get("sha") == sha
+        reservation_doc = dict(doc or {}, held={k: v for k, v in (doc or {}).get("held", {}).items() if k not in held_keys})
+        reserved = drefs.pool_reserved(root, m, reservation_doc) | used
         safe = drefs.ref_key(original) not in reserved and not _match_seeds(folder, doc, crops, original, "")
         target = original if safe and (entry or original.startswith("ref_")) else drefs.pool_file_name(
             os.path.splitext(original)[0].removeprefix("ref_").removesuffix("_t"), reserved,
             preferred=original if original.startswith("ref_") else None)
-        # 중간 종료 시 files 에만 옛 기록이 남을 수 있다. 픽셀까지 같을 때만 복구한다.
-        orphan_key = _record_key((doc or {}).get("files", {}), name) if not entry else None
-        record = entry.get("record") or ((doc or {}).get("files", {}).get(orphan_key) if orphan_key else None)
-        with Image.open(src) as im:
-            fp = store.file_fingerprint(src)
-            good = record is not None and record.get("for", "old") is None and record.get("sha") == _pixel_sha(src, fp, im)
         dst = os.path.join(folder, target)
         converted = os.path.splitext(target)[1].lower() != os.path.splitext(name)[1].lower()
         if converted:
@@ -4752,14 +4778,16 @@ def _pool_undelete(root, rev, data):
         else:
             drefs._move_excl(src, dst)
         def mutate(d):
+            for orphan in orphan_keys:
+                d["files"].pop(orphan, None)
+            for held_key in held_keys:
+                d["held"].pop(held_key, None)
             if good:
                 d["files"][target] = record
             else:
                 old = _record_key(d["files"], target)
                 if old:
                     del d["files"][old]
-            if orphan_key and orphan_key != target and not os.path.isfile(os.path.join(folder, orphan_key)):
-                d["files"].pop(orphan_key, None)
             if key:
                 d["deleted"].pop(key, None)
             _pool_prune_deleted(d, directory)

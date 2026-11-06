@@ -1214,7 +1214,8 @@ window.DPRefEdit = (() => {
       points.forEach(([x,y], i) => {
         const X = Math.max(limit.left+7, Math.min(limit.right-7, x)), Y = Math.max(limit.top+7, Math.min(limit.bottom-7, y));
         const node = perspectiveHandles[i];
-        node.style.left = `${X-root.left}px`; node.style.top = `${Y-root.top}px`; node.classList.toggle("outside", X !== x || Y !== y);
+        node.style.left = `${X-root.left}px`; node.style.top = `${Y-root.top}px`;
+        node.classList.toggle("outside", x < limit.left || x > limit.right || y < limit.top || y > limit.bottom);
         const next = points[(i+1)%4], line = perspectiveLines[i];
         Object.assign(line.style, { left: `${x-root.left}px`, top: `${y-root.top}px`, width: `${Math.hypot(next[0]-x,next[1]-y)}px`, transform: `rotate(${Math.atan2(next[1]-y,next[0]-x)}rad)` });
       });
