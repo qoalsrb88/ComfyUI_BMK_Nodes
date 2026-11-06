@@ -53919,6 +53919,25 @@ def batch10b_unit():
         check(route({"op": "cancel", "scope": "oops"})[0] == 400 and route({"op": "oops"})[0] == 400, "B10 invalid op/scope")
         check(route({"op": "cancel", "scope": "all"})[1]["cancelled"] == 0, "B10 empty cancellation is idempotent")
 
+        # A target edit can hide a job from targets[].cells before the next Prepare.
+        crop_id = jobs[0]["crop_id"]
+        original_targets = copy.deepcopy(next(c for c in store.load_manifest(root)["crops"] if c["id"] == crop_id)["targets"])
+        def retarget(mm):
+            crop = next(c for c in mm["crops"] if c["id"] == crop_id)
+            crop["targets"] = [{**t, "tid": chr(ord("X") + i)} for i, t in enumerate(original_targets)]
+        reservations({a: 2})
+        store.update_manifest(root, retarget)
+        try:
+            changed_state = bd.build_state(root)
+            crop_state = next(c for c in changed_state["crops"] if c["id"] == crop_id)
+            check(not any(t["cells"] for t in changed_state["targets"] if t["crop_id"] == crop_id)
+                  and (crop_state["rerolls_pending"], crop_state["rerolls_base"]) == (2, 1), "B10 crop reroll counts include jobs hidden by target edits")
+            code, result = route({"op": "cancel", "scope": "crop", "crop_id": crop_id})
+            check(code == 200 and (result["cancelled"], result["base"]) == (crop_state["rerolls_pending"], crop_state["rerolls_base"]),
+                  "B10 crop preview matches server cancellation after target edit")
+        finally:
+            store.update_manifest(root, lambda mm: next(c for c in mm["crops"] if c["id"] == crop_id).update(targets=original_targets))
+
         # Ledger board approvals include history; settled excludes active reps.
         led = Path(root, "cands", a)
         led.mkdir(parents=True, exist_ok=True)
@@ -54014,6 +54033,15 @@ def batch10b_unit():
             check(pipeline_file.read_bytes() == b"{broken", "B10 reroll preserves broken pipeline bytes")
         finally:
             pipeline_file.write_bytes(pipeline_bytes)
+        legacy_root = _layout_board_project(out, "legacy_no_pipeline")
+        store.update_manifest(legacy_root, lambda mm: mm.update(rerolls={}, prepare_settings={"model": "gpt-image-2.5-sunburst", "quality": "max"}))
+        legacy_manifest = store.load_manifest(legacy_root)
+        legacy_current = pl.current(legacy_root, legacy_manifest)
+        check(not legacy_current["saved"] and any(d["section"] == "prepare" and d["kind"] == "cell"
+              for d in pl.drift(legacy_current["settings"], legacy_manifest)), "B10 unsaved legacy derived settings reproduce false drift")
+        check(bd.apply_reroll(legacy_root, 1, cell_key=legacy_manifest["jobs"][0]["cell_key"])[0]["rerolls"] == 1
+              and not Path(legacy_root, "pipeline.json").exists(), "B10 missing pipeline permits graph reroll reservation")
+        rejected(lambda: bd.pipeline_prompt(legacy_root, "reroll"), "confirm_settings")
         notes = bd._plan_notes(root, store.load_manifest(root), settings, ["prepare.variants", "draft.apply"])
         check(any("① 준비에서 확인·저장" in n for n in notes) and any("승인 칸 [지금 값으로 확정]" in n for n in notes), "B10 gate/rest guidance")
         adopt = out / "adopt"
@@ -54037,6 +54065,16 @@ def batch10b_unit():
         check(not dp.store.load_manifest(nr)["rerolls"] and "다시 생성 대기 3건 정리" in report, "B10 Prepare merge and report")
         h, _, _ = pre.run(h, "gpt-image-2.5-sunburst", "high", "user_k", "V1", 1, "at", 1)
         check(not dp.store.load_manifest(nr)["rerolls"], "B10 Prepare restored condition stays cleared")
+        h, _, _ = pre.run(h, "gpt-image-2.5-sunburst", "max", "user_k", "V1", 1, "at", 1)
+        dp.store.update_manifest(nr, lambda mm: mm["rerolls"].update({ck: 1}))
+        legacy_jobs = dp.store.load_manifest(nr)["jobs"]
+        check(ck not in {j["cell_key"] for j in legacy_jobs} and dp.runner.board_spent(nr, ck) == 0,
+              "B10 pre-upgrade stale reservation fixture has unused old key")
+        h, _, report = pre.run(h, "gpt-image-2.5-sunburst", "high", "user_k", "V1", 1, "at", 1)
+        restored = dp.store.load_manifest(nr)
+        restored_plan = dp.runner.split_approval(dp.runner.plan_calls(restored, nr), "", backend=dp.runner.BACKEND_MOCK)
+        check(ck in {j["cell_key"] for j in restored["jobs"]} and ck not in restored["rerolls"] and not restored_plan["preapproved"]
+              and "다시 생성 대기 1건 정리" in report, "B10 Prepare clears pre-upgrade stale reservation when old key returns")
         dp.store.update_manifest(nr, lambda mm: mm["rerolls"].update({ck: 2}))
         h, _, report = pre.run(h, "gpt-image-2.5-sunburst", "high", "user_k", "V1", 2, "at", 1)
         check(not dp.store.load_manifest(nr)["rerolls"] and "다시 생성 대기 2건 정리" in report, "B10 Prepare n change pruning")
@@ -54055,17 +54093,79 @@ def batch10b_unit():
             expect_raises(lambda: asyncio.run(dp.BMKDesignPatchRun().run(h, "", 64, 4, 25, False, False, "")), "B10 Run propagates planning exception", Planned)
         check(not dp.runner.is_running(nr) and not dp.board.is_running(nr), "B10 planning exception unregisters")
 
-        # Trim only a final _t or _t plus digits in pool import.
+        # Drain after run_calls has returned must still stop the next automatic wave.
+        original_plan, original_grid, original_report = dp._run_plan, dp._cand_grid, dp.BMKDesignPatchRun._report
+        original_run_calls = dp.runner.run_calls
+        original_run_state = dp.runner._RunState
+        def expired_wave(*args, **kwargs):
+            state = original_run_state(*args, **kwargs)
+            state.t0 -= state.wave_s + 1  # 실제 대기·Windows 시계 해상도에 기대지 않고 wave 상한을 지난 상태.
+            return state
+        opts = {"retry_failed": False, "retry_orphans": False, "only": ""}
+        approval = original_plan(nr, "", opts, dp.runner.BACKEND_MOCK)[1]["pending_hash"]
+        for drain_phase in ("replan", "grid", "report", "none"):
+            finished, accepted = [], []
+            backend = dp.runner.MockBackend(delay_s=0)
+            fake = _FakeServer(bd.web.RouteTableDef())
+
+            async def finish_calls(*args, **kwargs):
+                result = await original_run_calls(*args, **kwargs)
+                finished.append((result, result.stopped_reason))
+                return result
+
+            def late_drain(phase):
+                if finished and drain_phase == phase and not accepted:
+                    accepted.append(dp.board.set_drain(nr))
+
+            def replan(*args):
+                result = original_plan(*args)
+                late_drain("replan")
+                return result
+
+            def grid_after_calls(*args):
+                result = original_grid(*args)
+                late_drain("grid")
+                return result
+
+            def report_after_calls(*args):
+                result = original_report(*args)
+                late_drain("report")
+                return result
+
+            with patch.object(dp.runner, "make_backend", return_value=backend), patch.object(dp.runner, "_RunState", side_effect=expired_wave), \
+                    patch.object(dp.runner, "run_calls", side_effect=finish_calls), \
+                    patch.object(dp, "_run_plan", side_effect=replan), patch.object(dp, "_cand_grid", side_effect=grid_after_calls), \
+                    patch.object(dp.BMKDesignPatchRun, "_report", side_effect=report_after_calls), patch.object(dp, "_server", return_value=fake):
+                result = asyncio.run(dp.BMKDesignPatchRun().run(h, approval, 64, 1, 1, False, False, "", unique_id="b10-drain"))
+            entry = result["ui"]["bmk_dp_run"][0]
+            waves = [data for event, data, _sid in fake.events if event == "bmk.dp.wave"]
+            check(len(finished) == 1 and finished[0][1] == "wave" and finished[0][0].remaining and not backend.requests,
+                  f"B10 late drain {drain_phase}: real run_calls returned wave before postprocessing "
+                  f"stops={[reason for _rep, reason in finished]} ui={entry['stopped_reason']}")
+            if drain_phase == "none":
+                check(not accepted and len(waves) == 1 and waves[0]["node"] == "b10-drain" and entry["stopped_reason"] == "wave",
+                      "B10 no late drain preserves automatic wave")
+            else:
+                check(accepted == [True] and not waves and finished[0][0].stopped_reason == entry["stopped_reason"] == "drain"
+                      and "중지: drain 요청" in result["result"][1] and result["ui"]["text"] == [result["result"][1]],
+                      f"B10 drain during {drain_phase} suppresses wave and updates UI/report")
+            check(not dp.runner.is_running(nr) and not dp.board.is_running(nr) and not dp.board.drain_requested(nr),
+                  f"B10 late drain {drain_phase}: Run registries and drain cleaned up")
+
+        # Trim trailing markers, including Windows copy suffixes, but preserve letters after _t.
         source, _ = _r1_project(out / "pool", "source")
         dest, _ = _r1_project(out / "pool", "dest")
-        names = ["001_바보털_t.png", "001_바보털_t2.png", "001_t셔츠_t.png", "001_t_앞.png", "001_t_뒤.png"]
+        names = ["001_바보털_t.png", "001_바보털_t2.png", "001_바보털_t (2).png", "001_바보털_t_2.png", "001_바보털_t-2.png",
+                 "001_t셔츠_t.png", "001_t_앞.png", "001_t_뒤.png", "001_바보털_t2_앞.png"]
         rgba = np.full((8, 8, 4), 255, np.uint8)
         for name in names:
             _r3_png(Path(source, "refs", name), rgba)
         originals = {name: Path(source, "refs", name).read_bytes() for name in names}
         with patch.object(bd, "_PROJECT_INPUT", str(out / "pool")), patch.object(store, "known_roots", return_value=[]):
             imported = bd.ref_pool(dest, None, "import", {"from": store.root_key(source), "names": names})
-        check(set(imported["files"]) == {"ref_001-바보털_t.png", "ref_001-바보털_2_t.png", "ref_001-t셔츠_t.png", "ref_001-t-앞_t.png", "ref_001-t-뒤_t.png"}, "B10 strip final marker and numeric tail only")
+        check(set(imported["files"]) == {"ref_001-바보털_t.png", "ref_001-바보털_2_t.png", "ref_001-바보털_3_t.png", "ref_001-바보털_4_t.png",
+              "ref_001-바보털_5_t.png", "ref_001-t셔츠_t.png", "ref_001-t-앞_t.png", "ref_001-t-뒤_t.png", "ref_001-바보털-t2-앞_t.png"},
+              "B10 strip final marker and Windows copy tail only")
         check(all(Path(source, "refs", name).read_bytes() == data for name, data in originals.items()), "B10 import preserves originals")
 
         web = PKG / "web_design_patch"
@@ -54086,6 +54186,9 @@ def batch10b_unit():
             "functions": {n: fn(pj, n, "    ") for n in ["dimWhy", "planDim", "confirmOf", "confirmGate", "confirmRest", "confirmRestRow"]},
             "dimText": pj[pj.index("      const why = dimWhy();"):pj.index('      s = section("초안 승인");', pj.index("      const why = dimWhy();"))],
             "pendingApply": fn(pj, "pendingApply", "    "), "header": fn(bj, "renderHeader", "  "),
+            "runLine": pj[pj.index("        const rt = runText({ ...p.run,"):pj.index("        line(s, rt.line,")],
+            "boardWrite": fn(bj, "write", "  "), "refresh": fn(bj, "refresh", "  "), "pollState": fn(bj, "pollState", "  "),
+            "cancelButton": fn(bj, "cancelButton", "  "),
             "cancel": fn(bj, "cancelRerolls", "  ")}), encoding="utf-8")
         js.write_text(r"""
 const fs = require('fs'), vm = require('vm'), assert = require('assert');
@@ -54116,6 +54219,16 @@ const P = ctx.window.DPPipeline;
     pendingApply:()=>pending, pendingUnknown:()=>unknown, paidLock:()=>'', render:()=>renders++, planNow:async()=>recalcs++,
     opts:{toast:(...args)=>toasts.push(args)}});
   for(const [name,src] of Object.entries(input.functions)) vm.runInContext(`${name} = ${src}`,ctx);
+  Object.assign(ctx,{runText:P.runText,testRun:r,S:{running:false}});
+  const runLine = () => vm.runInContext(`(() => {const P0=PS.P,p={run:testRun};${input.runLine}return rt.line;})()`,ctx);
+  ctx.PS.P.settings={prepare:prep};
+  assert(!runLine().includes('(반영 뒤)'));
+  ctx.PS.P.drift=[{section:'prepare',field:'quality'}];
+  assert(runLine().includes('모델 gpt-image-2.6-flare · 품질 max · 복잡도 medium (반영 뒤)'));
+  assert(runLine().includes('≈ $1.00–2.00'));
+  prep.model='gpt-image-2.5-flare';assert(runLine().includes('모델 gpt-image-2.5-flare · 품질 max (반영 뒤)'));
+  ctx.PS.P.drift=[{section:'import',field:'psd_path'}];assert(!runLine().includes('(반영 뒤)'));
+  ctx.PS.P.drift=[];
   assert(!ctx.planDim());
   for(const mode of ['pending','unknown','read','confirm','drift','import','notes','broken']) {
     ctx.PS.P={saved:true,confirm:[],drift:[]};ctx.PS.err=null;ctx.PS.plan.notes=[];pending=[];unknown='';
@@ -54160,34 +54273,67 @@ const P = ctx.window.DPPipeline;
   }, {getItem:()=>null,setItem:()=>{}});
   ses.P={rev:3};await ses.confirmOnly(['draft']);
   const body=JSON.parse(fetches[0][1].body);assert.deepEqual(body,{root:'test',rev:3,confirm_only:['draft']});assert(!ses.busy);
-  Object.assign(ctx,{busy:false,S:{rerolls_pending:3,rerolls_base:1,targets:[{crop_id:'c',cells:[{cell_key:'k',rerolls_pending:2,rerolls_base:1}]}]},
+  Object.assign(ctx,{busy:false,S:{rerolls_pending:3,rerolls_base:1,crops:[{id:'c',rerolls_pending:2,rerolls_base:1}],
+    targets:[{crop_id:'c',cells:[{cell_key:'k',rerolls_pending:2,rerolls_base:1}]}]},
     rerollArm:{},rerollSent:{},pipe:{recalc:()=>recalcs++},toast:(...a)=>toasts.push(a),
-    write:async(path,body,msg)=>{writes.push(body);const r={cancelled:2,base:1};msg(r);return r;}});
+    write:async(path,body,msg)=>{writes.push(body);const r={cancelled:2,base:1};ctx.toast(msg(r));return r;}});
   const confirmTexts=[];
   ctx.window.confirm=s=>{confirmations++;confirmTexts.push(s);return true;};
   vm.runInContext(`cancelRerolls = ${input.cancel}`,ctx);
   await ctx.cancelRerolls('crop',{crop_id:'c'});assert.equal(confirmations,1);assert.equal(writes.at(-1).scope,'crop');
   await ctx.cancelRerolls('cell',{cell_key:'k'});assert.equal(confirmations,1);assert.equal(ctx.rerollSent,null);
   await ctx.cancelRerolls('all');assert.equal(confirmations,2);assert.equal(writes.at(-1).scope,'all');
+  ctx.S.rerolls_stale=1;
+  await ctx.cancelRerolls('all');assert.equal(confirmations,3);
   assert.deepEqual(confirmTexts,[
     "다시 생성 대기 2건을 취소합니다. 그중 1건은 아직 한 번도 만들지 않은 생성 조건이라 '생성 승인 필요'로 돌아갑니다(승인 코드가 바뀜 — 이미 큐에 넣은 [생성 승인]은 드라이런이 되어 과금 없음). 계속할까요?",
-    "다시 생성 대기 3건을 취소합니다. 그중 1건은 아직 한 번도 만들지 않은 생성 조건이라 '생성 승인 필요'로 돌아갑니다(승인 코드가 바뀜 — 이미 큐에 넣은 [생성 승인]은 드라이런이 되어 과금 없음). 계속할까요?"
+    "다시 생성 대기 3건을 취소합니다. 그중 1건은 아직 한 번도 만들지 않은 생성 조건이라 '생성 승인 필요'로 돌아갑니다(승인 코드가 바뀜 — 이미 큐에 넣은 [생성 승인]은 드라이런이 되어 과금 없음). 계속할까요?",
+    "다시 생성 대기 3건(옛 조건 1건 포함)을 취소합니다. 그중 1건은 아직 한 번도 만들지 않은 생성 조건이라 '생성 승인 필요'로 돌아갑니다(승인 코드가 바뀜 — 이미 큐에 넣은 [생성 승인]은 드라이런이 되어 과금 없음). 계속할까요?"
   ]);
+  ctx.S.targets=[{crop_id:'c',cells:[]}];
+  ctx.write=async(path,body,msg)=>{writes.push(body);const r={cancelled:1,base:0};ctx.toast(msg(r));return r;};
+  await ctx.cancelRerolls('crop',{crop_id:'c'});assert.equal(writes.at(-1).scope,'crop');
+  assert.equal(confirmTexts.at(-1),confirmTexts[0]);
+  assert.equal(toasts.at(-1)[0],'다시 생성 대기 1건 취소(과금 없음) · 생성 승인 필요로 돌아감 0건 — 되돌림 = R');
   ctx.S.running=true;const nw=writes.length;await ctx.cancelRerolls('all');assert.equal(writes.length,nw);
   const elements={};
-  const element=()=>({children:[],append(...c){this.children.push(...c);},replaceChildren(){this.children=[];}});
+  const element=()=>({children:[],listeners:{},append(...c){this.children.push(...c);},replaceChildren(){this.children=[];},
+    addEventListener(event,fn){this.listeners[event]=fn;}});
   Object.assign(ctx,{document:{},$:(id)=>elements[id]||(elements[id]=element()),
     el:(_tag,_cls,text)=>Object.assign(element(),{textContent:text}),cancelButton:()=>element(),
     tabLink:null,comfyConnected:()=>false,pipeReady:()=>true,layoutReady:()=>true,refsReady:()=>true,
     S:{project:'test',crops:[],counts:{targets:0,candidates:0,picks:0},canvas:{},cost:{calls:0},rerolls_total:9,rerolls_pending:3,rerolls_stale:2}});
   vm.runInContext(`renderHeader = ${input.header}`,ctx);ctx.renderHeader();
-  let badge=elements.badges.children.find(x=>x.textContent==='다시 생성 대기 3');
+  let badge=elements.badges.children.find(x=>x.textContent==='다시 생성 대기 1');
   assert(badge);assert.equal(badge.title,'다시 생성 누적 9(이미 쓴 몫 포함)');
+  assert(elements.badges.children.some(x=>x.textContent==='옛 조건 대기 2 — 다음 반영 때 정리'));
+  ctx.S.rerolls_pending=2;ctx.renderHeader();
+  assert(elements.badges.children.some(x=>x.textContent==='다시 생성 대기 0'));
   assert(elements.badges.children.some(x=>x.textContent==='옛 조건 대기 2 — 다음 반영 때 정리'));
   ctx.S.rerolls_pending=0;ctx.S.rerolls_stale=0;ctx.renderHeader();
   badge=elements.badges.children.find(x=>x.textContent==='다시 생성 대기 0');
   assert(badge);assert.equal(badge.title,'다시 생성 누적 9(이미 쓴 몫 포함)');
   assert(!elements.badges.children.some(x=>(x.textContent||'').startsWith('옛 조건 대기')));
+  let detailButton, detailRenders=0, posts=0, stateReads=0;
+  ctx.document.body={classList:{add(){},remove(){}}};
+  Object.assign(ctx,{busy:false,polling:false,pollAgain:false,cycle:null,editing:false,refsOn:false,pipe:null,
+    reconcile:()=>{},setConn:()=>{},post:async()=>{posts++;return {ok:true};},
+    getState:async()=>++stateReads===1 ? ctx.S : {unchanged:true,running:false,drain:false,drafting:false},
+    renderAll:()=>{
+      detailRenders++;assert(ctx.busy);
+      detailButton=ctx.cancelButton('cell',{cell_key:'k'});
+      detailButton.listeners.click({stopPropagation(){}});
+    }});
+  ctx.S.targets=[{cells:[{cell_key:'k',rerolls_pending:1,rerolls_base:1}]}];
+  vm.runInContext(`cancelButton = ${input.cancelButton}; write = ${input.boardWrite}; refresh = ${input.refresh}; pollState = ${input.pollState}`,ctx);
+  assert(await ctx.write('reroll',{count:1}));
+  assert.equal(posts,1);assert.equal(detailRenders,1);assert.equal(ctx.busy,false);assert.equal(detailButton.disabled,false);
+  await ctx.refresh(false);
+  assert.equal(detailRenders,1);assert.equal(detailButton.disabled,false);
+  detailButton.listeners.click({stopPropagation(){}});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(posts,2);assert.equal(ctx.busy,false);
+  ctx.S.running=true;assert.equal(ctx.cancelButton('cell',{cell_key:'k'}).disabled,true);
   console.log('PASS B10 JS');
 })().catch(e=>{console.error(e);process.exitCode=1;});
 """, encoding="utf-8", newline="\n")

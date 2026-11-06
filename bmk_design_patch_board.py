@@ -2586,6 +2586,9 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
                 "warnings": list(crop.get("warnings") or []),
             })
     crops = _crop_summaries(m, targets, calls)
+    crop_job_keys: dict[str, set[str]] = {}
+    for job in {j["cell_key"]: j for j in m["jobs"]}.values():
+        crop_job_keys.setdefault(job["crop_id"], set()).add(job["cell_key"])
     by_id = {c["id"]: c for c in lay["crops"]} if lay else {}
     refs_dir = _refs_dir(m)
     refs_ok = _refs_dir_ok(refs_dir)
@@ -2593,6 +2596,9 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
     draft_rows = (plan or {}).get("draft", {}).get("by_crop") or {}
     busy = running or drafting
     for c, mc in zip(crops, m["crops"]):  # 레이아웃 대 매니페스트(검토 모드 목록의 "미반영" 칩)
+        keys = crop_job_keys.get(c["id"], ())
+        c["rerolls_pending"] = sum(reroll_waiting.get(ck, 0) for ck in keys)
+        c["rerolls_base"] = sum(reroll_base.get(ck, 0) for ck in keys)
         status, changed = (None, []) if lay is None else ("removed", []) if c["id"] not in by_id else _layout_status(by_id[c["id"]], mc)
         c["layout_status"] = status
         # 바뀐 크롭의 레이아웃 값(요약의 name·rect 는 마지막 반영 = 매니페스트 값) — 진행(G) 반영 칸의 크롭별 줄·[되돌리기]
@@ -2844,7 +2850,10 @@ def apply_reroll(root: str, count: int, cell_key: str | None = None, crop_id: st
 
 def _reroll_apply_gate(root: str, m: dict, settings=None) -> None:
     if settings is None:
-        settings = pl.current(root, m)["settings"]
+        current = pl.current(root, m)
+        if not current["saved"] or current["error"]:
+            return
+        settings = current["settings"]
     if settings is not None and any(d["section"] == "prepare" and d["kind"] == "cell" for d in pl.drift(settings, m)):
         raise _Reject(409, "실행 설정이 반영과 다름 — 먼저 [반영 (무료)]", reason="apply_needed")
 
@@ -4710,7 +4719,7 @@ def ref_pool(root, rev, op, data):
                             part = None
                         else:
                             stem = os.path.splitext(name)[0]
-                            stem = re.sub(r"_t\d*$", "", stem, flags=re.IGNORECASE)
+                            stem = re.sub(r"_t[\s_()\d-]*$", "", stem, flags=re.IGNORECASE)
                             entries.append(_pool_stage(root, rgba, stem, rec, f"그림{k}"))
                     finally:
                         _drop(part)

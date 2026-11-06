@@ -608,15 +608,23 @@
   async function cancelRerolls(scope, selector = {}) {
     if (busy || !S) return;
     if (S.running) { toast("실행 중 — [새 호출 멈춤] 뒤 다시", "warn"); return; }
-    const cells = new Map();
-    for (const t of S.targets || []) for (const c of t.cells || []) {
-      if (scope === "all" || (scope === "crop" && t.crop_id === selector.crop_id)
-          || (scope === "cell" && c.cell_key === selector.cell_key)) cells.set(c.cell_key, c);
+    let n = 0, base = 0;
+    if (scope === "all") {
+      n = S.rerolls_pending || 0;
+      base = S.rerolls_base || 0;
+    } else if (scope === "crop") {
+      const crop = (S.crops || []).find((c) => c.id === selector.crop_id);
+      n = crop && crop.rerolls_pending || 0;
+      base = crop && crop.rerolls_base || 0;
+    } else {
+      const cell = (S.targets || []).flatMap((t) => t.cells || []).find((c) => c.cell_key === selector.cell_key);
+      n = cell && cell.rerolls_pending || 0;
+      base = cell && cell.rerolls_base || 0;
     }
-    const n = scope === "all" ? S.rerolls_pending || 0 : [...cells.values()].reduce((s, c) => s + (c.rerolls_pending || 0), 0);
-    const base = scope === "all" ? S.rerolls_base || 0 : [...cells.values()].reduce((s, c) => s + (c.rerolls_base || 0), 0);
     if (!n) { toast("다시 생성 대기 없음"); return; }
-    if (scope !== "cell" && !window.confirm(`다시 생성 대기 ${n}건을 취소합니다. 그중 ${base}건은 아직 한 번도 만들지 않은 생성 조건이라 '생성 승인 필요'로 돌아갑니다(승인 코드가 바뀜 — 이미 큐에 넣은 [생성 승인]은 드라이런이 되어 과금 없음). 계속할까요?`)) return;
+    const stale = scope === "all" ? S.rerolls_stale || 0 : 0;
+    const count = `${n}건` + (stale ? `(옛 조건 ${stale}건 포함)` : "");
+    if (scope !== "cell" && !window.confirm(`다시 생성 대기 ${count}을 취소합니다. 그중 ${base}건은 아직 한 번도 만들지 않은 생성 조건이라 '생성 승인 필요'로 돌아갑니다(승인 코드가 바뀜 — 이미 큐에 넣은 [생성 승인]은 드라이런이 되어 과금 없음). 계속할까요?`)) return;
     const result = await write("reroll", { op: "cancel", scope, ...selector },
       (r) => `다시 생성 대기 ${r.cancelled}건 취소(과금 없음) · 생성 승인 필요로 돌아감 ${r.base}건 — 되돌림 = R`);
     if (result) { rerollArm = null; rerollSent = null; if (pipe) pipe.recalc(); }
@@ -625,7 +633,7 @@
   function cancelButton(scope, selector, label = "대기 취소") {
     const b = el("button", "", label);
     b.type = "button";
-    b.disabled = busy || !!S.running;
+    b.disabled = !!S.running;
     b.title = S.running ? "실행 중 — [새 호출 멈춤] 뒤 다시" : "다시 생성 대기 취소(무료) — 되돌림 = R";
     b.addEventListener("click", (e) => { e.stopPropagation(); cancelRerolls(scope, selector); });
     return b;
@@ -1037,7 +1045,7 @@
       b.append(cb);
     }
     if (S.rerolls_total || S.rerolls_pending) {
-      const r = el("span", "badge", `다시 생성 대기 ${S.rerolls_pending || 0}`);
+      const r = el("span", "badge", `다시 생성 대기 ${(S.rerolls_pending || 0) - (S.rerolls_stale || 0)}`);
       r.title = `다시 생성 누적 ${S.rerolls_total || 0}(이미 쓴 몫 포함)`;
       b.append(r);
     }

@@ -153,7 +153,8 @@ window.DPPipeline = (() => {
     const picked = Object.values(run.by_crop || {}).filter((x) => x.selected).length;
     const parts = [`Run: 승인 필요(선택 ${picked}크롭) ${run.need}건` + (run.need ? ` ≈ ${usd(run.est_usd)}(≈ ${span(run.credits)} 크레딧)` : "")];
     const pr = run.prepare;
-    if (pr) parts.push(`모델 ${pr.model} · 품질 ${pr.quality}` + (/^gpt-image-2\.6-/.test(pr.model) ? ` · 복잡도 ${pr.complexity || "high"}` : ""));
+    if (pr) parts.push(`모델 ${pr.model} · 품질 ${pr.quality}` + (/^gpt-image-2\.6-/.test(pr.model) ? ` · 복잡도 ${pr.complexity || "high"}` : "")
+      + (run.prepare_drift ? " (반영 뒤)" : ""));
     if (run.pre) parts.push(`다시 생성(사전 승인) ${run.pre}건 ≈ ${usd(run.est_usd_pre)} 도 함께 과금(선택과 무관)`);
     parts.push(`복구 ${run.free}`);
     if (run.filtered) parts.push(`선택 밖 ${run.filtered}건`);
@@ -2649,7 +2650,8 @@ window.DPPipeline = (() => {
       if (planOk && only) {
         if (stale) line(s, "계획이 지금 파일 상태와 다름 — 다시 계산한 뒤 승인", "warn");
         if (dim) line(s, dimText, "warn");
-        const rt = runText({ ...p.run, prepare: P0 && P0.settings && P0.settings.prepare }, p.run.running || !!(S && S.running));
+        const rt = runText({ ...p.run, prepare: P0 && P0.settings && P0.settings.prepare,
+          prepare_drift: !!(P0 && (P0.drift || []).some((d) => d.section === "prepare")) }, p.run.running || !!(S && S.running));
         line(s, rt.line, rt.dim || dim ? "dim" : "");
         for (const r of rt.rows) line(s, `· ${r}`, "dim");
         // D9: 이 Studio 의 유료 Run 이 wave 로 멈춤 — 끝난 뒤 새 계획·새 해시로 '이어서 승인'(확인 창 — 클릭만, 자동 없음). 재굴림 실행의 wave 는

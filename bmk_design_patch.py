@@ -2029,7 +2029,8 @@ class BMKDesignPatchPrepare:
 
         def _prune(mm: dict) -> None:
             pruned[0] = store.prune_stale_rerolls(mm, {j.get("cell_key") for j in mm.get("jobs") or []},
-                                                  lambda ck: runner.board_spent(root, ck, settled=True), reset_keys)
+                                                  lambda ck: runner.board_spent(root, ck, settled=True),
+                                                  reset_keys | (set(mm.get("rerolls") or {}) - old_jobs.keys()))
 
         handle, conflicts = _commit(root, m, before, project, finalize=_prune)
         n_pruned = pruned[0]
@@ -2670,11 +2671,6 @@ class BMKDesignPatchRun:
             else:
                 plan_after, ap_after = plan, runner.split_approval(plan, "", backend=backend.name)
             m = store.load_manifest(root)
-            if report is not None and report.stopped_reason == "wave" and report.remaining:
-                srv = _server()
-                if srv is not None:  # JS 가 이 프롬프트가 끝나면 새 해시로 이어서 큐에 넣는다(자동 이어가기)
-                    srv.send_sync("bmk.dp.wave", {"node": unique_id, "root_key": key, "remaining": len(report.remaining)},
-                                  srv.client_id)
             new_keys = list(dict.fromkeys(rec["candidates"] + (report.new_candidates if report is not None else [])))
             grid = await asyncio.to_thread(_cand_grid, root, new_keys)
             draft = (project or {}).get("draft") or {}  # 상류 Spec Draft 의 승인 대기(pending 은 화풍 단위 포함)
@@ -2682,10 +2678,21 @@ class BMKDesignPatchRun:
             draft_held, draft_held_style = int(draft.get("held") or 0), int(draft.get("held_style") or 0)
             draft_unwritten = int(draft.get("unwritten") or 0)
             draft_mock = 0 if backend.name == runner.BACKEND_MOCK else int(draft.get("mock_specs") or 0)
-            text = self._report(ap, plan_after, ap_after, report, rec, backend, approve, bool(auth_token or api_key),
-                                int(concurrency), new_keys, m["rev"], time.time() - t0, draft_pending, draft_style,
-                                draft_unwritten, draft_held, draft_held_style, draft_mock)
+            report_args = (ap, plan_after, ap_after, report, rec, backend, approve, bool(auth_token or api_key),
+                           int(concurrency), new_keys, m["rev"], time.time() - t0, draft_pending, draft_style,
+                           draft_unwritten, draft_held, draft_held_style, draft_mock)
+            text = self._report(*report_args)
             logger.info("%s %s", _TAG, text.splitlines()[0])
+            # run_calls 뒤의 계획·격자·보고 생성 중 받은 Drain 도 자동 이어가기 전에 반영한다.
+            if report is not None and report.stopped_reason == "wave":
+                if board.drain_requested(root):
+                    report.stopped_reason = "drain"
+                    text = self._report(*report_args)
+                elif report.remaining:
+                    srv = _server()
+                    if srv is not None:  # JS 가 이 프롬프트가 끝나면 새 해시로 이어서 큐에 넣는다(자동 이어가기)
+                        srv.send_sync("bmk.dp.wave", {"node": unique_id, "root_key": key, "remaining": len(report.remaining)},
+                                      srv.client_id)
             # continuation_hash = 이번 실행이 승인받고 남긴 호출의 해시. JS 자동 이어가기는 pending_hash 가 이것과 같을 때만
             # 승인한다(개수가 아니라 집합 비교 — 승인하지 않은 호출이 섞이면 멈춤). stopped_reason = 실행이 멈춘 까닭(runner.STOP_REASONS —
             # auth = 로그인 없음·401/402/403 부터 보내지 않음: Studio 끝 줄이 '승인분 실행' 대신 로그인 필요)
