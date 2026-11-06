@@ -53507,8 +53507,39 @@ def batch10a_unit():
         ordinary = pl.view(root, m25)
         check(ordinary["switch"] is None and plans.call_count == 0, "D152 prepare 없는 view: switch null·plan_calls 0회")
         explicit = pl.view(root, m25, switch_prepare=target)
-        check(plans.call_count == 1 and explicit["switch"]["need"] == 2 and explicit["switch"]["uncertain"] is False,
+        check(plans.call_count == 1 and explicit["switch"]["exact"] is True
+              and explicit["switch"]["need"] == 2 and explicit["switch"]["uncertain"] is False,
               "D152 명시적 view: 실제 jobs 전환 계획·깨끗한 프로젝트 uncertain false")
+        inexact_previews = []
+        plans.reset_mock()
+        for field, value in (("variants", "V1,V4"), ("ref_style", "plain"),
+                             ("size_rule", next(k for k in st.GPT_SIZE_RULES if k != target["size_rule"]))):
+            result = pl.view(root, m25, switch_prepare=dict(settings["prepare"], **{field: value}))
+            preview = result["switch"]
+            inexact_previews.append(preview)
+            check(preview["exact"] is False and preview["uncertain"] is True
+                  and all(preview[k] is None for k in ("need", "cells", "est_usd", "credits")) and plans.call_count == 0,
+                  f"D152 {field} 변경: 숫자 null·계획 계산 0회")
+            api = _pl_api()["routes"]["GET /pipeline"]
+            check(_pl_shape(api["ok"], result, api) == [], f"D152 {field} 계산 불가 응답 모양")
+        normalized = pl.switch_preview(root, m25, settings, prepare=dict(target, variants=" v1 ; V1 "))
+        check(normalized["exact"] is True and normalized["need"] == 2, "D152 같은 변형 토큰은 숫자 미리 보기 유지")
+        psd = out / "preview-source.psd"
+        psd.write_bytes(b"PSD fingerprint fixture")
+        psd_settings = copy.deepcopy(settings)
+        psd_settings["import"]["psd_path"] = str(psd.resolve())
+        psd_m = copy.deepcopy(m25)
+        psd_m["source"] = {key: psd_settings["import"][field] for field, key in pl._IMPORT_SOURCE}
+        psd_m["source"]["fingerprint"] = st.file_fingerprint(str(psd))
+        psd_m["prepare_inputs"] = st.prepare_inputs_fp(root, psd_m)
+        unchanged = pl.switch_preview(root, psd_m, psd_settings, prepare=target)
+        check(unchanged["exact"] is True and unchanged["uncertain"] is False, "D152 PSD 지문 일치: 확정 가능한 미리 보기")
+        psd.write_bytes(psd.read_bytes() + b" changed")
+        changed = pl.switch_preview(root, psd_m, psd_settings, prepare=target)
+        check(changed["uncertain"] is True and changed["need"] == unchanged["need"]
+              and psd_m["prepare_inputs"] == st.prepare_inputs_fp(root, psd_m)
+              and "마지막 Import 뒤 PSD 파일이 바뀜" in bd._import_pending(root, psd_m, psd_settings),
+              "D152 PSD만 변경: 보드와 같은 지문으로 uncertain")
         for damage in ("job", "cell_key", "sha", "prompt"):
             broken_m = copy.deepcopy(m25)
             if damage == "job":
@@ -53671,19 +53702,26 @@ def batch10a_unit():
         start = js.index(f"    async function {name}(")
         script += "\n" + js[start:js.index("\n    }\n", start)] + "\n}"
     script += "\nconst p=" + json.dumps(preview, ensure_ascii=False) + ";\n"
+    script += "\nconst inexact=" + json.dumps(inexact_previews, ensure_ascii=False) + ";\n"
     script += r'''
 assert.equal(prepareChanged({model:'gpt-image-2.5-flare',complexity:'high'}, {model:'gpt-image-2.5-flare',complexity:'low'}),false);
 assert.equal(prepareChanged({model:'gpt-image-2.6-flare',complexity:'high'}, {model:'gpt-image-2.6-flare',complexity:'low'}),true);
 const text=prepareText(p);
 for(const s of ['생성 승인 필요 2건','승인 전에는 과금 없음','복잡도 medium','다시 생성 대기 4건','옛 조건','그래프 Prepare','반영 뒤 달라질 수 있음']) assert.ok(text.includes(s),s);
 assert.throws(()=>prepareText({...p,error:'preview failure'}),/preview failure/);
+for(const preview of inexact){
+  const message=prepareText(preview);
+  assert.ok(message.includes('이 변경은 반영 전에 호출 수를 셀 수 없음 — 반영 뒤 생성 승인 칸에서 확인'));
+  for(const s of ['옛 조건','초안 재과금은 없습니다','그래프 Prepare','[MOCK] 과금 없음']) assert.ok(message.includes(s),s);
+  for(const s of ['생성 승인 필요 0건','$0.00','null건','undefined건']) assert.ok(!message.includes(s),s);
+}
 const clone=x=>JSON.parse(JSON.stringify(x));
 let accept=false, asks=[], saves=[], form={}, edits={}, drawn={}, errors=[];
 const original={...p.prepare,model:'gpt-image-2.5-sunburst'};
 const PS={busy:false,P:{saved:true,error:null,rev:3,manifest_rev:8,confirm:[],settings:{prepare:original},widgets:{prepare:Object.fromEntries(Object.keys(original).map(k=>[k,{type:typeof original[k]==='number'?'INT':'STRING'}]))}}};
 PS.previewPrepare=async prepare=>({...PS.P,switch:{...p,prepare}});
 PS.save=async(sec,values,rev)=>{saves.push({sec,values:clone(values),rev});PS.P={...PS.P,settings:{[sec]:clone(values)},rev:rev+1};return PS.P};
-const opts={toast:x=>errors.push(x)},window={confirm:x=>{asks.push(x);return accept}},SECTIONS={prepare:'Prepare'};
+const opts={toast:(x,kind)=>{if(kind==='err')errors.push(x)}},window={confirm:x=>{asks.push(x);return accept}},SECTIONS={prepare:'Prepare'};
 const confirmOf=x=>x.confirm,shown=x=>String(x),render=()=>{},planNow=()=>{};
 (async()=>{
 await switchModel(); assert.equal(saves.length,0); assert.equal(asks.length,1);
@@ -53695,6 +53733,20 @@ saves=[];asks=[];accept=false;PS.P.settings.prepare=clone(original);form={prepar
 await saveSection('prepare');assert.equal(saves.length,0);assert.equal(asks.length,1);
 accept=true;await saveSection('prepare');assert.equal(saves.length,1);assert.equal(saves[0].values.quality,'high');
 saves=[];asks=[];form={prepare:{complexity:'low'}};await saveSection('prepare');assert.equal(asks.length,0);assert.equal(saves.length,1);
+saves=[];asks=[];errors=[];form={prepare:{quality:'max'}};
+PS.previewPrepare=async prepare=>({...PS.P,manifest_rev:PS.P.manifest_rev+1,switch:{...p,prepare,need:7,cells:5,est_usd:[1.23,4.56],credits:[260,960]}});
+let expectedRev=PS.P.rev;
+await saveSection('prepare');assert.equal(saves.length,1);assert.equal(errors.length,0);assert.equal(saves[0].rev,expectedRev);
+assert.ok(asks[0].includes('생성 승인 필요 7건 (5셀) ≈ $1.23–4.56 (≈ 260–960 크레딧)'));
+saves=[];asks=[];form={};PS.P.settings.prepare=clone(original);expectedRev=PS.P.rev;
+await switchModel();assert.equal(saves.length,1);assert.equal(errors.length,0);assert.equal(saves[0].rev,expectedRev);
+assert.ok(asks[0].includes('생성 승인 필요 7건 (5셀) ≈ $1.23–4.56'));
+for(const preview of inexact){
+  saves=[];asks=[];form={prepare:preview.prepare};PS.P.settings.prepare=clone(original);
+  PS.previewPrepare=async()=>({...PS.P,switch:preview});
+  await saveSection('prepare');assert.equal(saves.length,1);assert.equal(errors.length,0);
+  assert.ok(asks[0].includes('이 변경은 반영 전에 호출 수를 셀 수 없음'));
+}
 saves=[];form={prepare:{quality:'max'}};PS.previewPrepare=async()=>({...PS.P,rev:99,switch:p});
 await saveSection('prepare');assert.equal(saves.length,0);assert.ok(errors.length);
 console.log('batch10a JS passed');

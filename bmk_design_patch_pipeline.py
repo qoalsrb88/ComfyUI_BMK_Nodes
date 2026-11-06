@@ -872,6 +872,12 @@ def switch_preview(root: str, m: dict, settings: dict, *, prepare: dict | None =
         if prepare is None and target["model"] in ("gpt-image-2.5-sunburst", "gpt-image-2.5-flare"):
             target["model"] = target["model"].replace("2.5", "2.6")
         target = validate_section("prepare", target)
+        backend = runner.BACKEND_MOCK if runner.mock_enabled(root) else runner.BACKEND_COMFY_ORG
+        _src, rec = prepare_record(m)
+        if (target["size_rule"] != rec.get("size_rule") or target["ref_style"] != rec.get("ref_style")
+                or _variant_tokens(target["variants"]) != _variant_tokens(rec.get("variants"))):
+            return {"prepare": target, "exact": False, "need": None, "cells": None, "est_usd": None, "credits": None,
+                    "uncertain": True, "backend": backend}
         mm = copy.deepcopy(m)
         old_jobs = {j["cell_key"]: j for j in m.get("jobs") or []}
         reset = set()
@@ -902,17 +908,18 @@ def switch_preview(root: str, m: dict, settings: dict, *, prepare: dict | None =
                     del mm["rerolls"][ck]
         cfg = settings.get("run") or {}
         plan = runner.plan_calls(mm, root, retry_failed=bool(cfg.get("retry_failed")), retry_orphans=bool(cfg.get("retry_orphans")))
-        backend = runner.BACKEND_MOCK if runner.mock_enabled(root) else runner.BACKEND_COMFY_ORG
         ap = runner.split_approval(plan, "", backend=backend)
         changed = drift(settings, m)
-        _src, rec = prepare_record(m)
-        uncertain = bool(changed) or any(target.get(k) != rec.get(k) for k in ("size_rule", "variants", "ref_style"))
+        uncertain = bool(changed)
         try:
             uncertain = uncertain or not m.get("prepare_inputs") or m["prepare_inputs"] != store.prepare_inputs_fp(root, m)
+            src = m.get("source") or {}
+            if src.get("psd"):
+                uncertain = uncertain or store.file_fingerprint(src["psd"]) != src.get("fingerprint")
         except (OSError, ValueError, KeyError, TypeError):
             uncertain = True
         lo, hi = ap["est_usd"]
-        return {"prepare": target, "need": len(ap["needs_approval"]),
+        return {"prepare": target, "exact": True, "need": len(ap["needs_approval"]),
                 "cells": len({e["cell_key"] for e in ap["needs_approval"]}), "est_usd": [lo, hi],
                 "credits": [round(lo * runner.CREDITS_PER_USD), round(hi * runner.CREDITS_PER_USD)],
                 "pending_preapproved": len(ap["preapproved"]), "est_usd_pre": list(runner.estimate_calls(ap["preapproved"])),
