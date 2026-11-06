@@ -2656,54 +2656,54 @@ class BMKDesignPatchRun:
         key = _board_key(root)
         opts = {"retry_failed": bool(retry_failed), "retry_orphans": bool(retry_orphans), "only": str(only or "")}
         approve = str(approve or "").strip()
-        rec = await asyncio.to_thread(runner.reconcile_ledger, root)
-        # 백엔드를 먼저 정한다: 승인 해시·실행·ui backend 를 한 백엔드가 정해야 MOCK 드라이런 해시가 유료 실행을 승인하지 않는다
-        backend = runner.make_backend(root, {"auth_token": auth_token, "api_key": api_key, "usage_source": usage_source,
-                                             "unique_id": unique_id})
-        plan, ap = await asyncio.to_thread(_run_plan, root, approve, opts, backend.name)
-        report = None
-        if ap["to_run"]:
-            report = await self._execute(root, ap["to_run"], backend, int(concurrency), wave_minutes, int(max_new_calls),
-                                         unique_id)
-            plan_after, ap_after = await asyncio.to_thread(_run_plan, root, "", opts, backend.name)
-        else:
-            plan_after, ap_after = plan, runner.split_approval(plan, "", backend=backend.name)
-        m = store.load_manifest(root)
-        if report is not None and report.stopped_reason == "wave" and report.remaining:
-            srv = _server()
-            if srv is not None:  # JS 가 이 프롬프트가 끝나면 새 해시로 이어서 큐에 넣는다(자동 이어가기)
-                srv.send_sync("bmk.dp.wave", {"node": unique_id, "root_key": key, "remaining": len(report.remaining)},
-                              srv.client_id)
-        new_keys = list(dict.fromkeys(rec["candidates"] + (report.new_candidates if report is not None else [])))
-        grid = await asyncio.to_thread(_cand_grid, root, new_keys)
-        draft = (project or {}).get("draft") or {}  # 상류 Spec Draft 의 승인 대기(pending 은 화풍 단위 포함)
-        draft_pending, draft_style = int(draft.get("pending") or 0), int(draft.get("pending_style") or 0)
-        draft_held, draft_held_style = int(draft.get("held") or 0), int(draft.get("held_style") or 0)
-        draft_unwritten = int(draft.get("unwritten") or 0)
-        draft_mock = 0 if backend.name == runner.BACKEND_MOCK else int(draft.get("mock_specs") or 0)
-        text = self._report(ap, plan_after, ap_after, report, rec, backend, approve, bool(auth_token or api_key),
-                            int(concurrency), new_keys, m["rev"], time.time() - t0, draft_pending, draft_style,
-                            draft_unwritten, draft_held, draft_held_style, draft_mock)
-        logger.info("%s %s", _TAG, text.splitlines()[0])
-        # continuation_hash = 이번 실행이 승인받고 남긴 호출의 해시. JS 자동 이어가기는 pending_hash 가 이것과 같을 때만
-        # 승인한다(개수가 아니라 집합 비교 — 승인하지 않은 호출이 섞이면 멈춤). stopped_reason = 실행이 멈춘 까닭(runner.STOP_REASONS —
-        # auth = 로그인 없음·401/402/403 부터 보내지 않음: Studio 끝 줄이 '승인분 실행' 대신 로그인 필요)
-        entry = {"pending_hash": ap_after["pending_hash"], "pending": len(ap_after["needs_approval"]),
-                 "est_usd": list(ap_after["est_usd"]), "approved_now": ap["approved_now"], "root_key": key,
-                 "stopped_reason": report.stopped_reason if report is not None else "none",
-                 "backend": backend.name, "continuation_hash": report.continuation_hash if report is not None else "",
-                 "draft_pending": draft_pending, "draft_style": draft_style, "draft_unwritten": draft_unwritten,
-                 "draft_held": draft_held, "draft_held_style": draft_held_style, "draft_mock": draft_mock}
-        return {"ui": {"bmk_dp_run": [entry], "text": [text]}, "result": (_handle(root, m, project), text, grid)}
+        with runner.run_active(root), board.run_active(root):
+            rec = await asyncio.to_thread(runner.reconcile_ledger, root)
+            # 백엔드를 먼저 정한다: 승인 해시·실행·ui backend 를 한 백엔드가 정해야 MOCK 드라이런 해시가 유료 실행을 승인하지 않는다
+            backend = runner.make_backend(root, {"auth_token": auth_token, "api_key": api_key, "usage_source": usage_source,
+                                                 "unique_id": unique_id})
+            plan, ap = await asyncio.to_thread(_run_plan, root, approve, opts, backend.name)
+            report = None
+            if ap["to_run"]:
+                report = await self._execute(root, ap["to_run"], backend, int(concurrency), wave_minutes, int(max_new_calls),
+                                             unique_id)
+                plan_after, ap_after = await asyncio.to_thread(_run_plan, root, "", opts, backend.name)
+            else:
+                plan_after, ap_after = plan, runner.split_approval(plan, "", backend=backend.name)
+            m = store.load_manifest(root)
+            if report is not None and report.stopped_reason == "wave" and report.remaining:
+                srv = _server()
+                if srv is not None:  # JS 가 이 프롬프트가 끝나면 새 해시로 이어서 큐에 넣는다(자동 이어가기)
+                    srv.send_sync("bmk.dp.wave", {"node": unique_id, "root_key": key, "remaining": len(report.remaining)},
+                                  srv.client_id)
+            new_keys = list(dict.fromkeys(rec["candidates"] + (report.new_candidates if report is not None else [])))
+            grid = await asyncio.to_thread(_cand_grid, root, new_keys)
+            draft = (project or {}).get("draft") or {}  # 상류 Spec Draft 의 승인 대기(pending 은 화풍 단위 포함)
+            draft_pending, draft_style = int(draft.get("pending") or 0), int(draft.get("pending_style") or 0)
+            draft_held, draft_held_style = int(draft.get("held") or 0), int(draft.get("held_style") or 0)
+            draft_unwritten = int(draft.get("unwritten") or 0)
+            draft_mock = 0 if backend.name == runner.BACKEND_MOCK else int(draft.get("mock_specs") or 0)
+            text = self._report(ap, plan_after, ap_after, report, rec, backend, approve, bool(auth_token or api_key),
+                                int(concurrency), new_keys, m["rev"], time.time() - t0, draft_pending, draft_style,
+                                draft_unwritten, draft_held, draft_held_style, draft_mock)
+            logger.info("%s %s", _TAG, text.splitlines()[0])
+            # continuation_hash = 이번 실행이 승인받고 남긴 호출의 해시. JS 자동 이어가기는 pending_hash 가 이것과 같을 때만
+            # 승인한다(개수가 아니라 집합 비교 — 승인하지 않은 호출이 섞이면 멈춤). stopped_reason = 실행이 멈춘 까닭(runner.STOP_REASONS —
+            # auth = 로그인 없음·401/402/403 부터 보내지 않음: Studio 끝 줄이 '승인분 실행' 대신 로그인 필요)
+            entry = {"pending_hash": ap_after["pending_hash"], "pending": len(ap_after["needs_approval"]),
+                     "est_usd": list(ap_after["est_usd"]), "approved_now": ap["approved_now"], "root_key": key,
+                     "stopped_reason": report.stopped_reason if report is not None else "none",
+                     "backend": backend.name, "continuation_hash": report.continuation_hash if report is not None else "",
+                     "draft_pending": draft_pending, "draft_style": draft_style, "draft_unwritten": draft_unwritten,
+                     "draft_held": draft_held, "draft_held_style": draft_held_style, "draft_mock": draft_mock}
+            return {"ui": {"bmk_dp_run": [entry], "text": [text]}, "result": (_handle(root, m, project), text, grid)}
 
     @staticmethod
     async def _execute(root, calls, backend, concurrency, wave_minutes, max_new_calls, unique_id):
         """runner.run_calls + 진행 표시 + 보드 Drain(board 레지스트리). 취소는 InterruptProcessingException 으로 다시 올린다."""
         try:
-            with board.run_active(root):
-                return await runner.run_calls(root, calls, backend, concurrency=concurrency, wave_minutes=wave_minutes,
-                                              max_new_calls=max_new_calls, progress_cb=_progress_cb(len(calls), unique_id),
-                                              drain_flag=lambda: board.drain_requested(root))
+            return await runner.run_calls(root, calls, backend, concurrency=concurrency, wave_minutes=wave_minutes,
+                                          max_new_calls=max_new_calls, progress_cb=_progress_cb(len(calls), unique_id),
+                                          drain_flag=lambda: board.drain_requested(root))
         except (Exception, comfy.model_management.InterruptProcessingException) as e:  # IPE 는 BaseException
             rep = getattr(e, "bmk_dp_report", None)
             if rep is None:

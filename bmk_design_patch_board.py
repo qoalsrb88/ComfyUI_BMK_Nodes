@@ -641,28 +641,38 @@ def _ledger_pending(root: str, m: dict) -> dict[str, int]:
     return out
 
 
-def _pending_cells(root: str, m: dict) -> tuple[dict[str, int], dict[str, int]]:
-    """({cell_key: 대기 호출 수}, {cell_key: 그중 보드 사전 승인 수}). runner.plan_calls 가 있으면 그것(Run 과 같은 판단:
-    다운로드 복구 포함), 없으면 _ledger_pending(사전 승인 = 셀마다 min(rerolls, 대기))."""
+def _pending_plan(root: str, m: dict) -> dict:
+    """상태 조회의 호출·예약 수가 같은 원장 스냅샷을 쓰게 한다. 읽기 실패는 빈 계획으로."""
     runner = _runner()
     if runner is not None:
         try:
-            plan = runner.plan_calls(m, root)
+            return runner.plan_calls(m, root)
         except Exception as e:  # 보드 폴링이 runner 오류로 죽지 않게 — 원장 계산으로 대신하고 한 번만 알림
             rk = store.root_key(root)
             if rk not in _PLAN_WARNED:
                 _PLAN_WARNED.add(rk)
                 logger.warning(f"{_TAG} Board: runner.plan_calls 실패 → 원장 파일로 대기 호출 계산 ({e})")
-        else:
-            out: dict[str, int] = {}
-            pre: dict[str, int] = {}
-            for it in plan.get("pending") or []:
-                ck = str(it.get("cell_key") if isinstance(it, dict) else str(it).rsplit("_r", 1)[0])
-                out[ck] = out.get(ck, 0) + 1
-                if isinstance(it, dict) and it.get("preapproved"):
-                    pre[ck] = pre.get(ck, 0) + 1
-            return out, pre
-    out = _ledger_pending(root, m)
+    return {}
+
+
+def _pending_cells(root: str, m: dict, *, plan: dict | None = None) -> tuple[dict[str, int], dict[str, int]]:
+    """({cell_key: 대기 호출 수}, {cell_key: 그중 보드 사전 승인 수}). runner.plan_calls 가 있으면 그것(Run 과 같은 판단:
+    다운로드 복구 포함), 없으면 _ledger_pending(사전 승인 = 셀마다 min(rerolls, 대기))."""
+    if plan is None:
+        plan = _pending_plan(root, m)
+    if "pending" in plan:
+        out: dict[str, int] = {}
+        pre: dict[str, int] = {}
+        for it in plan.get("pending") or []:
+            ck = str(it.get("cell_key") if isinstance(it, dict) else str(it).rsplit("_r", 1)[0])
+            out[ck] = out.get(ck, 0) + 1
+            if isinstance(it, dict) and it.get("preapproved"):
+                pre[ck] = pre.get(ck, 0) + 1
+        return out, pre
+    try:
+        out = _ledger_pending(root, m)
+    except OSError:
+        return {}, {}
     rerolls = m.get("rerolls") or {}
     return out, {ck: k for ck, n in out.items() if (k := min(int(rerolls.get(ck) or 0), n))}
 
@@ -671,6 +681,22 @@ def _pending(root: str, m: dict) -> tuple[dict[str, int], int]:
     """({cell_key: 대기 호출 수}, 그중 보드 사전 승인 수 합) — _pending_cells 의 합."""
     out, pre = _pending_cells(root, m)
     return out, sum(pre.values())
+
+
+def _reroll_status(root: str, m: dict, *, plan: dict | None = None) -> tuple[dict[str, int], dict[str, int]]:
+    """셀별 남은 예약과 그중 기본 호출을 대신한 수. 옛 키도 남은 예약에 포함한다."""
+    if plan is None:
+        plan = _pending_plan(root, m)
+    try:
+        jobs = {j["cell_key"]: j for j in m["jobs"]}
+        base = {}
+        for e in plan.get("pending") or []:
+            ck = e["cell_key"]
+            if e.get("preapproved") and e["rep"] < int(jobs.get(ck, {}).get("reps") or 1):
+                base[ck] = base.get(ck, 0) + 1
+        return plan.get("rerolls_pending", {}), base
+    except Exception:
+        return {}, {}
 
 
 def _est_usd(job: dict):
@@ -2456,7 +2482,9 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
     picks = m.get("picks") if isinstance(m.get("picks"), dict) else {}
     rerolls = m.get("rerolls") or {}
     cs = _compose_settings(root, m)
-    pending, pre_cells = _pending_cells(root, m)
+    pending_plan = _pending_plan(root, m)
+    pending, pre_cells = _pending_cells(root, m, plan=pending_plan)
+    reroll_waiting, reroll_base = _reroll_status(root, m, plan=pending_plan)
     calls = [x for x in m.get("calls") or [] if isinstance(x, dict)]
     call_by_id = {x.get("call_id"): x for x in calls}
     crop_ids = {c.get("id") for c in m["crops"]}
@@ -2536,6 +2564,7 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
                 cells.append({"cell_key": ck, "variant": j.get("variant"), "tids": _job_tids(j),
                               "reps": int(j.get("reps") or 1), "rerolls": int(rerolls.get(ck) or 0),
                               "pending": pending.get(ck, 0), "pre": pre_cells.get(ck, 0), "model": j.get("model"), "quality": j.get("quality"),
+                              "rerolls_pending": reroll_waiting.get(ck, 0), "rerolls_base": reroll_base.get(ck, 0),
                               "size": j.get("size"), "n": j.get("n"), "est_usd": _est_usd(j)})
             refs = [{"index": i, "file": r, "thumb_url": _turl(rk, "ref", f"{tkey}/{i}", BIG_SIZE, _sig("ref", BIG_SIZE, r)),
                      "file_url": _furl(rk, r)} for i, r in enumerate(_target_refs(m, crop["id"], tid))]
@@ -2608,6 +2637,8 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
         "rev": m["rev"], "project": m.get("project"), "root_key": rk, "backend_mock": _mock_active(root),
         **flags, "time": time.strftime("%H:%M:%S"),
         "pending_calls": sum(pending.values()), "pending_preapproved": sum(pre_cells.values()), "rerolls_total": sum(int(v or 0) for v in rerolls.values()),
+        "rerolls_pending": sum(reroll_waiting.values()), "rerolls_base": sum(reroll_base.values()),
+        "rerolls_stale": sum(n for ck, n in reroll_waiting.items() if ck not in {j["cell_key"] for j in m["jobs"]}),
         "counts": {"targets": len(targets), "candidates": len(m["candidates"]), "rejected": len(rejects),
                    "picks": sum(len(t["pick_keys"]) for t in targets)},
         "orphan_candidates": sum(1 for c in m["candidates"] if c.get("crop_id") not in crop_ids),
@@ -2772,7 +2803,7 @@ def apply_reroll(root: str, count: int, cell_key: str | None = None, crop_id: st
                  tid: str | None = None, variant: str | None = None) -> tuple[dict, int]:
     """rerolls[cell] += count (보드 사전 승인 호출). 셀은 cell_key, 아니면 (crop_id, tid[, variant]) 로 찾는다
     (variant 가 없으면 그 타깃의 작업이 하나일 때만). 더한 뒤 그 셀의 대기 호출이 _MAX_CELL_PENDING 을 넘으면 409
-    (rerolls 는 셀 목표의 누적값이라 줄지 않으므로 상한은 아직 소화하지 않은 대기 호출로 본다)."""
+    (취소·정리는 쓴 몫까지 내리고, 추가는 원장 사용량 이상에서 시작한다. 상한은 남은 대기 호출로 본다)."""
     if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= _MAX_REROLL_COUNT:
         raise _Reject(400, f"count 는 1–{_MAX_REROLL_COUNT} 정수여야 합니다")
 
@@ -2797,7 +2828,11 @@ def apply_reroll(root: str, count: int, cell_key: str | None = None, crop_id: st
         if why:
             raise _Reject(409, f"발사 못 함 — {why}", reason="blocked")
         ck = job["cell_key"]
-        cur = int(m["rerolls"].get(ck) or 0)
+        _reroll_apply_gate(root, m)
+        runner = _runner()
+        if runner is None:
+            raise _Reject(409, "원장 사용량을 읽을 수 없습니다 — 새로고침", reason="plan_error")
+        cur = max(int(m["rerolls"].get(ck) or 0), runner.board_spent(root, ck))
         waiting = _pending(root, m)[0].get(ck, 0)  # 원장 폴더 몇 개를 훑는 정도(잠금 안에서도 짧다)
         if waiting + count > _MAX_CELL_PENDING:
             raise _Reject(409, f"이 생성 조건에 대기 호출이 이미 {waiting}개입니다(상한 {_MAX_CELL_PENDING}) — Run 으로 소화한 뒤 다시")
@@ -2805,6 +2840,62 @@ def apply_reroll(root: str, count: int, cell_key: str | None = None, crop_id: st
         return {"cell_key": ck, "variant": job.get("variant"), "rerolls": cur + count, "est_usd": _est_usd(job)}
 
     return store.update_manifest(root, mutate)
+
+
+def _reroll_apply_gate(root: str, m: dict, settings=None) -> None:
+    if settings is None:
+        settings = pl.current(root, m)["settings"]
+    if settings is not None and any(d["section"] == "prepare" and d["kind"] == "cell" for d in pl.drift(settings, m)):
+        raise _Reject(409, "실행 설정이 반영과 다름 — 먼저 [반영 (무료)]", reason="apply_needed")
+
+
+def cancel_rerolls(root: str, scope: str, cell_key=None, crop_id=None, tid=None, variant=None) -> dict:
+    """사전 승인 대기만 줄인다. 시작 등록과 같은 잠금 안에서 실행 여부를 확인한다."""
+    if scope not in ("cell", "crop", "all"):
+        raise _Reject(400, "scope 는 cell·crop·all 이어야 합니다")
+
+    def mutate(m):
+        if is_running(root):
+            raise _Reject(409, "실행 중 — [새 호출 멈춤] 뒤 다시", reason="running")
+        runner = _runner()
+        if runner is None:
+            raise _Reject(409, "원장 사용량을 읽을 수 없습니다 — 새로고침", reason="plan_error")
+        jobs = {j["cell_key"]: j for j in m["jobs"]}
+        if scope == "all":
+            keys = list(m["rerolls"])
+        elif scope == "crop":
+            if not any(c["id"] == crop_id for c in m["crops"]):
+                raise _Reject(404, "크롭이 없습니다 — 새로고침")
+            keys = [ck for ck, j in jobs.items() if j.get("crop_id") == crop_id]
+        elif cell_key is not None:
+            if cell_key not in jobs and cell_key not in m["rerolls"]:
+                raise _Reject(404, "작업(셀)이 없습니다 — 새로고침")
+            keys = [cell_key]
+        else:
+            selected = _target_jobs(m, crop_id, tid)
+            if variant is not None:
+                selected = [j for j in selected if j.get("variant") == variant]
+            if len(selected) != 1:
+                raise _Reject(400, "취소할 셀 하나를 cell_key 또는 crop_id·tid·variant 로 지정하세요")
+            keys = [selected[0]["cell_key"]]
+        _, bases = _reroll_status(root, m)
+        cells = []
+        for ck in keys:
+            before = int(m["rerolls"].get(ck) or 0)
+            after = min(before, runner.board_spent(root, ck, settled=True))
+            if after:
+                m["rerolls"][ck] = after
+            else:
+                m["rerolls"].pop(ck, None)
+            job = jobs.get(ck, {})
+            cells.append({"cell_key": ck, "crop_id": job.get("crop_id"), "tid": job.get("tid"),
+                          "before": before, "after": after, "base": min(before - after, bases.get(ck, 0))})
+        pending, pre = _pending(root, m)
+        return {"cancelled": sum(c["before"] - c["after"] for c in cells), "base": sum(c["base"] for c in cells),
+                "cells": cells, "pending_calls": sum(pending.values()), "pending_preapproved": pre}
+
+    result, rev = store.update_manifest(root, mutate)
+    return {"ok": True, "rev": rev, **result}
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -4618,7 +4709,9 @@ def ref_pool(root, rev, op, data):
                             entries.append({"part": part, "desc": "", "preferred": name, "record": rec})
                             part = None
                         else:
-                            entries.append(_pool_stage(root, rgba, os.path.splitext(name)[0], rec, f"그림{k}"))
+                            stem = os.path.splitext(name)[0]
+                            stem = re.sub(r"_t\d*$", "", stem, flags=re.IGNORECASE)
+                            entries.append(_pool_stage(root, rgba, stem, rec, f"그림{k}"))
                     finally:
                         _drop(part)
         return _pool_commit(root, rev, entries)
@@ -5354,8 +5447,13 @@ def _plan_notes(root: str, m: dict, settings: dict, confirm) -> list[str]:
     """계획 머리 줄 — Run·Draft 공통으로 '반영 뒤 다시 계산'(§3.3)인 설정 쪽 이유: 설정 미확인(confirm), Prepare 설정 갈라짐(셀/호출/비용 —
     옛 프로젝트는 jobs 와 비교), Import 설정 갈라짐. 파일 쪽 '반영 필요'는 _apply_pending. 매번 계산한다."""
     out = []
-    if confirm:
-        out.append(f"설정 미확인: {', '.join(confirm)} — 반영 전에 설정 패널에서 확인·저장")
+    confirm = confirm or ()
+    gate = [c for c in confirm if c.split(".", 1)[0] in ("import", "prepare")]
+    rest = [c for c in confirm if c not in gate]
+    if gate:
+        out.append(f"설정 미확인: {', '.join(gate)} — ① 준비에서 확인·저장")
+    if rest:
+        out.append(f"설정 미확인: {', '.join(rest)} — 승인 칸 [지금 값으로 확정]")
     rows = pl.drift(settings, m)
     pre = [d for d in rows if d["section"] == "prepare"]
     if pre:
@@ -5521,7 +5619,7 @@ def pipeline_prompt(root: str, stage, approve=None, only=None, expect=None) -> d
     실행이 돌거나 시작 수(_starts)가 늘었으면(시작해서 파일을 되돌리고 끝난 실행 포함 — 계획 라우트 steady 와 같은 재료) 그 해시는
     일시값이라 409 running, 그다음 오류 409 plan_error, 해시 "" 409 nothing_to_approve, 해시 ≠ approve 409 stale(지금 해시)
     ⑨ Claude 승인 모드 상한 초과 409 agent_cap(run·draft·reroll, error·reason 만) ⑩ pl.build_prompt.
-    reroll 은 ⑥–⑧ 을 보지 않는다(사전 승인분만 과금하고 템플릿의 Import·Prepare 가 반영을 겸함 — R 경로와 같음). 매니페스트·
+    reroll 은 ⑥–⑧ 대신 Prepare 'cell' 갈라짐만 막는다(D170 — 먼저 무료 반영, cost 갈라짐은 허용). 매니페스트·
     pipeline.json 은 한 번 읽은 같은 값으로 판정·해시·템플릿까지(두 번 읽으면 그 사이 다른 창·그래프가 바꾼 값이 판정 없이 템플릿에
     실림 — r1-21). targets = 무료 null, 유료 [출력 노드 키], hash = 대조한 approve(reroll·무료 ""), only = 정규 only(reroll·무료 "")."""
     if stage not in pl.STAGES:
@@ -5549,6 +5647,8 @@ def pipeline_prompt(root: str, stage, approve=None, only=None, expect=None) -> d
     if expect and expect != sig:
         raise _Reject(409, f"실행 설정·매니페스트가 바뀜(요청 {expect} · 지금 {sig}) — 계획을 다시 받아 확인", reason="stale_settings",
                       stale=True, sig=sig)
+    if stage == "reroll":
+        _reroll_apply_gate(root, m, settings)
     if paid:
         starts, (running, drafting) = _starts(root), _busy(root)  # 시작 수가 먼저 — 그 뒤 시작한 실행은 _busy 나 재확인의 시작 수가 봄
         if drafting or (stage == "run" and running):
@@ -6204,6 +6304,21 @@ def _reroll_and_count(root: str, count: int, sel: dict) -> dict:
 async def reroll_handler(request: web.Request) -> web.StreamResponse:
     data = await _body(request)
     root = _root_param(data.get("root"))
+    if data.get("op") == "cancel":
+        scope = data.get("scope")
+        if scope == "all":
+            sel = {}
+        elif scope == "crop":
+            sel = {"crop_id": _field(data, "crop_id", _CROP_ID_RE)}
+        elif scope == "cell":
+            sel = ({"cell_key": _field(data, "cell_key", _CELL_RE)} if data.get("cell_key") is not None else
+                   {"crop_id": _field(data, "crop_id", _CROP_ID_RE), "tid": _field(data, "tid", _TID_RE),
+                    "variant": _field(data, "variant", _VARIANT_RE, required=False)})
+        else:
+            raise _Reject(400, "scope 는 cell·crop·all 이어야 합니다")
+        return _json(await asyncio.to_thread(cancel_rerolls, root, scope, **sel))
+    if data.get("op") not in (None, "add"):
+        raise _Reject(400, "op 는 add·cancel 이어야 합니다")
     count = data.get("count", 1)
     if data.get("cell_key") is not None:
         sel = {"cell_key": _field(data, "cell_key", _CELL_RE)}
@@ -6379,6 +6494,10 @@ async def pipeline_settings_handler(request: web.Request) -> web.StreamResponse:
     root = _root_param(data.get("root"))
     if "rev" not in data:
         raise _Reject(400, "rev 가 없습니다(GET /pipeline 의 rev — 파일이 없으면 0, 깨진 파일 덮어쓰기는 null)")
+    if "confirm_only" in data:
+        if "section" in data or "values" in data:
+            raise _Reject(400, "confirm_only 는 section·values 와 함께 보낼 수 없습니다")
+        return _json(await asyncio.to_thread(pl.confirm_only, root, data["rev"], data["confirm_only"]))
     return _json(await asyncio.to_thread(pl.update, root, data["rev"], data.get("section"), data.get("values")))
 
 
@@ -6502,7 +6621,7 @@ _PROJECT_MEMO: dict[str, tuple] = {}
 _PROJECT_MEMO_LOCK = threading.Lock()
 _PROJECT_THUMB_SLOTS = threading.BoundedSemaphore(1)
 _PROJECT_NEW_LOCK = threading.Lock()
-_PROJECT_OLD_TRACES = ("cands", "inputs", "specs", "vlm", "layout.json", "refs.json", "pipeline.json")
+_PROJECT_OLD_TRACES = ("cands", "inputs", "specs", "vlm", "layout.json", "refs.json", "pipeline.json", "board_pref.json")
 
 
 def _project_adoption(root: str) -> dict:
@@ -6681,6 +6800,7 @@ def _project_new_finish(state: dict, target: str) -> dict:
         settings["export"]["filename_prefix"] = state["name"]
         for section in ("import", "prepare", "export"):
             rev = pl.update(root, rev, section, settings[section])["rev"]
+        pl.confirm_only(root, rev, [s for s in pl.SECTIONS if s not in ("import", "prepare", "export")])
         if state["adopt"]:
             _project_new_file(state, os.path.join(root, store.MANIFEST_NAME), store.new_manifest(state["name"]))
         key = store.register_root(root)

@@ -78,6 +78,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import dataclasses
 import hashlib
 import io
@@ -310,6 +311,24 @@ def is_running(root: str) -> bool:
         return _RUNS.get(_rid(root), 0) > 0
 
 
+@contextlib.contextmanager
+def run_active(root: str):
+    """Run 노드의 계획부터 끝까지 등록한다. 취소의 잠금 안 검사와 시작을 직렬화한다."""
+    rid = _rid(root)
+    with store.manifest_lock(root), _REG_LOCK:
+        if _RUNS.get(rid, 0) == 0:
+            _DRAIN.discard(rid)
+        _RUNS[rid] = _RUNS.get(rid, 0) + 1
+    try:
+        yield
+    finally:
+        with _REG_LOCK:
+            _RUNS[rid] -= 1
+            if _RUNS[rid] <= 0:
+                _RUNS.pop(rid, None)
+                _DRAIN.discard(rid)
+
+
 def request_drain(root: str) -> bool:
     """진행 중 Run 에 drain 요청(새 발사 중지, 진행 중 호출은 끝까지 받음). 돌고 있는 Run 이 없으면 False(아무것도 안 함)."""
     rid = _rid(root)
@@ -439,13 +458,15 @@ def plan_calls(m: dict, ledger_root: str, *, retry_failed: bool = False, retry_o
     해당 failed / orphaned 항목이 pending 으로 옮겨진다(과금, 승인 필요). only = 쉼표 구분 crop_id / NNN / cell_key 접두
     (6자 이상) / call_id — 승인이 필요한 pending(new·retry)에만 적용, 걸러낸 수는 filtered. 보드 재굴림(사전 승인)과
     다운로드 복구(무료)는 걸러지지 않는다(보드가 요청한 호출이 only 때문에 조용히 밀리지 않게).
-    jobs 에 없는 옛 셀(stale)의 원장도 훑어 recoverable 은 pending(recover), orphaned 는 목록에 넣는다(돈 낸 결과 보호)."""
+    jobs 에 없는 옛 셀(stale)의 원장도 훑어 recoverable 은 pending(recover), orphaned 는 목록에 넣는다(돈 낸 결과 보호).
+    rerolls_pending = 같은 원장 순회로 센 셀별 미사용 보드 예약 수(옛 키 포함, 상태 조회에서 원장을 다시 읽지 않게)."""
     if not isinstance(m, dict):
         raise ValueError(f"{_TAG} plan_calls: 매니페스트(dict)가 아닙니다: {type(m).__name__}")
     rid = _rid(ledger_root)
     out: dict[str, Any] = {k: [] for k in ("pending", "done", "inflight", "orphaned", "failed")}
     warnings: list[str] = []
     rerolls = m.get("rerolls") if isinstance(m.get("rerolls"), dict) else {}
+    out["rerolls_pending"] = {ck: _nonneg_int(n, 0) for ck, n in rerolls.items()}
     tokens = [t.strip() for t in str(only or "").replace("，", ",").split(",") if t.strip()]
     jobs, seen = [], set()
     for job in m.get("jobs") or []:
@@ -482,6 +503,8 @@ def plan_calls(m: dict, ledger_root: str, *, retry_failed: bool = False, retry_o
         used = sum(1 for s in states.values() if s != "none")  # req 만 = 호출 전
         board_used = _count_board_used(ledger, states)
         board_left = max(0, extra - board_used)
+        if ck in rerolls:
+            out["rerolls_pending"][ck] = board_left
         # 셀 목표 = max(reps, 보드 아닌 호출 + rerolls): 재굴림은 아직 안 돈 기본 호출을 먼저 대신한다 — 그 기본 호출이
         # Run 승인 대기로 남아 같은 크롭을 두 번 만들지 않게(10/15). 빈 rep 은 번호 앞쪽부터 채운다.
         want = max(0, max(reps, used - board_used + extra) - used)
@@ -526,8 +549,12 @@ def plan_calls(m: dict, ledger_root: str, *, retry_failed: bool = False, retry_o
     for ck in _ledger_cells(ledger_root):  # jobs 에 없는 옛 셀: 돈 낸 결과(recoverable·orphaned)만
         if ck in seen:
             continue
-        for rep, files in sorted(read_ledger(ledger_root, ck).items()):
-            st = _rep_state(files, _is_active(rid, call_id_for(ck, rep)))
+        ledger = read_ledger(ledger_root, ck)
+        states = {rep: _rep_state(files, _is_active(rid, call_id_for(ck, rep))) for rep, files in ledger.items()}
+        if ck in rerolls:
+            out["rerolls_pending"][ck] = max(0, _nonneg_int(rerolls[ck], 0) - _count_board_used(ledger, states))
+        for rep, files in sorted(ledger.items()):
+            st = states[rep]
             rview = _job_view(files["req"]) if isinstance(files.get("req"), dict) else {"cell_key": ck}
             if st == "recoverable":
                 recover.append(entry(ck, rep, st, rview, files, kind="recover", reason="옛 조건 — 다운로드만 다시",

@@ -11,6 +11,7 @@ window.DPChecklist = (() => {
     const pending = input.pending || [];
     const prepareDrift = input.prepareDrift || [];
     const settingsBlock = input.settingsBlock || "";
+    const settingsConfirm = !!input.settingsConfirm || !!(input.P0 && (input.P0.confirm || []).length);
     const plan = input.plan;
     const global = input.scope === "all";
     const draft = plan && plan.draft;
@@ -69,10 +70,10 @@ window.DPChecklist = (() => {
     const runApply = planOk && run && !runError && !drafting && !running && (pending.length > 0 || prepareDrift.length > 0);
     const draftValue = draftError ? draftError : !planOk || !draft ? "계산 중"
       : drafting ? "초안 진행 중" : draftUnwritten > 0 ? `못 쓴 스펙 ${draftUnwritten}`
-        : draftApply ? "반영 뒤 다시 계산" : draftFree > 0 ? `초안 복구 대기 ${draftFree}` : draftStyle > 0 ? `화풍 초안 대기 ${draftStyle}`
+        : settingsConfirm ? "설정 확인 필요" : draftApply ? "반영 뒤 다시 계산" : draftFree > 0 ? `초안 복구 대기 ${draftFree}` : draftStyle > 0 ? `화풍 초안 대기 ${draftStyle}`
           : draftNeed === null ? "계산 중" : `초안 승인 필요 ${draftNeed}${selectionNote}`;
     const runValue = runError ? runError : !planOk || !run ? "계산 중"
-      : drafting ? "초안 진행 중 — 끝난 뒤" : running ? `진행 ${inflight}` : runApply ? "반영 뒤 다시 계산"
+      : drafting ? "초안 진행 중 — 끝난 뒤" : running ? `진행 ${inflight}` : settingsConfirm ? "설정 확인 필요" : runApply ? "반영 뒤 다시 계산"
         : runPre > 0 ? `다시 생성 대기 ${runPre}` : runFree > 0 ? `복구 대기 ${runFree}`
           : runNeed === 0 && missing > 0 ? `완료 결과 없는 크롭 ${missing} (실패 ${failed} · 결과 못 받음 ${orphaned})`
             : runNeed === null ? "계산 중" : `생성 승인 필요 ${runNeed}${selectionNote}`;
@@ -106,12 +107,12 @@ window.DPChecklist = (() => {
           input.unsure ? [`확인 필요: ${input.unsure}`] : []).join(" · ") || "미반영 없음",
         "크롭·레퍼런스를 바꾼 뒤 반영(무료)을 눌러 생성 입력을 갱신하세요.", { tab: settingsBlock ? "prepare" : "prompt", section: settingsBlock ? "실행 설정" : "반영" }),
       row(5, "초안", draftError || draftFailed || (planOk && !drafting && draftUnwritten > 0) ? "warn" : draftUnknown ? "unknown"
-        : n > 0 && allSelected && ready && draftNeed === 0 && draftFree === 0 && draftStyle === 0 && !drafting && !draftPending.length ? "done" : "todo",
+        : !settingsConfirm && n > 0 && allSelected && ready && draftNeed === 0 && draftFree === 0 && draftStyle === 0 && !drafting && !draftPending.length ? "done" : "todo",
         draftFailed ? `초안 실패 ${draftFailed}` : draftUnknown ? `전체 초안 확인 필요 · ${draftValue}` : draftValue,
         draftFree > 0 ? `복구 대기 ${draftFree}건 (무료) — 그래프 Spec Draft 를 승인 없이 한 번 큐에 넣으세요.`
           : "초안 승인에서 초안 계획과 비용을 확인한 뒤 승인하세요.", { tab: "prompt", section: draftApply ? "반영" : "초안 승인" }),
       row(6, "생성", runError || (global && missing > 0 && (failed || orphaned)) ? "warn" : runUnknown ? "unknown"
-        : allSelected && ready && runNeed === 0 && runPre === 0 && runFree === 0 && complete && !running && !drafting && !prepareDrift.length && !pending.length ? "done" : "todo",
+        : !settingsConfirm && allSelected && ready && runNeed === 0 && runPre === 0 && runFree === 0 && complete && !running && !drafting && !prepareDrift.length && !pending.length ? "done" : "todo",
         global && (failed || orphaned) ? `실패 ${failed} · 결과 못 받음 ${orphaned} · ${runValue}` : runValue,
         "생성 승인에서 생성 계획을 확인하세요. 모든 크롭에 완료 결과가 있어야 끝납니다.", { tab: runApply ? "prompt" : "generate", section: runApply ? "반영" : "생성 승인" }),
       row(7, "★", targets.length && !missingStar ? "done" : "todo", `타깃 ${stars}/${targets.length}`,
