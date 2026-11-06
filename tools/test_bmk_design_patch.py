@@ -56734,8 +56734,36 @@ def batch12_unit():
     check(rf.perspective_geometry(rows, 0, False, half)[0] == (50, 50, 2), "B12 압축 ss 2")
     with patch.object(rf, "PERSPECTIVE_MAX_AREA", 2500):
         check(rf.perspective_geometry(rows, 0, False, half)[0][-1] == 1, "B12 초표본 메모리 상한이면 ss 1")
-    with patch.object(rf.cv2, "warpPerspective", side_effect=AssertionError("상한 뒤 할당")):
-        expect_raises(lambda: rf.perspective_geometry([[0, 0, 4096], [4095, 0, 4096]], 0, False, [[-1,-1],[2,-1],[2,2],[-1,2]]), "B12 할당 전 상한", contains="너무 큽니다")
+    large = np.broadcast_to(np.array([255,255,255,255], np.uint8), (1600,1600,4))
+    with patch.object(rf.cv2, "warpPerspective", side_effect=AssertionError("상한 뒤 할당")) as warp:
+        expect_raises(lambda: rf.transform_rgba(large, 0, False, 1, 0, corners=[[-1,-1],[2,-1],[2,2],[-1,2]]),
+                      "B12 transform_rgba 할당 전 상한", ValueError, contains="너무 큽니다")
+        check(warp.call_count == 0, "B12 상한 거절은 warpPerspective 호출 0회")
+    def checker_image(side, cell):
+        rgba = np.full((side, side, 4), 255, np.uint8)
+        rgba[..., :3] = (((np.indices((side, side)) // cell).sum(axis=0) % 2) * 255)[..., None]
+        return rgba
+    def laplacian_energy(rgba):
+        h, w = rgba.shape[:2]
+        center = rgba[h//4:3*h//4, w//4:3*w//4]
+        check(np.all(center[..., 3] == 255), "B12 선명도·계단 지표는 불투명 내부만 비교")
+        return float(rf.cv2.Laplacian(center[..., 0].astype(np.float64), rf.cv2.CV_64F)[1:-1, 1:-1].var())
+    detail = checker_image(160, 3)
+    trapezoid = [[.1,0],[.9,0],[1,1],[0,1]]
+    composed = rf.transform_rgba(detail, 17.5, False, 1, 0, corners=trapezoid)
+    rotated = rf.transform_rgba(detail, 17.5, False, 1, 0)
+    sequential = rf.transform_rgba(rotated, 0, False, 1, 0, corners=trapezoid)
+    sharp_ratio = laplacian_energy(composed) / laplacian_energy(sequential)
+    check(sharp_ratio > 1.4, f"B12 합성 1회가 순차 보간보다 선명: 라플라시안 분산 비 {sharp_ratio:.4f}")
+    detail = checker_image(200, 1)
+    compressed = [[0,0],[.45,0],[.45,.45],[0,.45]]
+    ss2 = rf.transform_rgba(detail, 0, False, 1, 0, corners=compressed)
+    with patch.object(rf, "PERSPECTIVE_MAX_AREA", 10000):
+        ss1 = rf.transform_rgba(detail, 0, False, 1, 0, corners=compressed)
+    alias_ratio = laplacian_energy(ss2) / laplacian_energy(ss1)
+    check(ss2.shape == ss1.shape == (90,90,4) and alias_ratio < .1,
+          f"B12 ss=2 축소가 ss=1보다 고주파 계단 감소: 라플라시안 분산 비 {alias_ratio:.4f}")
+    print(f"   B12 선명도 합성/순차 {sharp_ratio:.4f} · 축소 고주파 ss2/ss1 {alias_ratio:.4f}")
     red = np.zeros((70, 70, 4), np.uint8); red[10:60, 10:60] = (220, 40, 10, 120)
     red = rf.transform_rgba(red, 37.5, True, .8, 0, corners=[[.2,0],[.8,0],[1,1],[0,1]])
     check(np.any((red[...,3] > 0) & (red[...,3] < 120)), "B12 검은 투명 RGB 와 섞인 가장자리 존재")
@@ -56839,10 +56867,12 @@ def batch12_unit():
         deny(lambda: bd.ref_pool(outside_root, outside_rev, "undelete", {"name": "ref_external.png"}), contains="프로젝트 밖")
         check((outside_refs/rf.DELETED_DIR/"ref_external.png").exists() and not (outside_refs/"ref_external.png").exists()
               and rf.load_refs(outside_root)["rev"] == outside_rev, "B12 프로젝트 밖 되살리기 거절은 파일·rev 그대로")
-        check(action("undelete", name=a)["file"] == a and rf.load_refs(root)["files"][a]["transform"]["corners"] == half, "B12 원래 이름·다시 열기 복구")
+        restored = action("undelete", name=a)
+        check(restored["file"] == a and restored["renamed"] is False and rf.load_refs(root)["files"][a]["transform"]["corners"] == half, "B12 원래 이름·다시 열기 복구·renamed false")
         check(choices() == initial, "B12 되살리기 모든 크롭 입력 불변")
         _r3_png(rd/b, quadrants)
-        check(action("undelete", name=b)["file"] == "ref_second_2_t.png", "B12 같은 이름 D141 번호")
+        restored = action("undelete", name=b)
+        check(restored["file"] == "ref_second_2_t.png" and restored["renamed"] == "collision", "B12 같은 이름 D141 번호·collision 사유")
         held = action("hold", name=a)["file"]
         removed = remove({"name": held, "held": True})["deleted"][0]
         check(held not in rf.load_refs(root)["held"] and rf.load_refs(root)["deleted"][removed]["from"] == a, "B12 보류 삭제 from 계승")
@@ -56856,7 +56886,8 @@ def batch12_unit():
         restored = action("undelete", name=removed)["file"]
         check(restored not in rf.load_refs(root)["files"] and next(r for r in bd.refs_state(root)["pool"] if r["name"] == restored)["origin"] == "old", "B12 바뀐 픽셀은 origin old")
         _r3_png(deleted/"001_external.png", quadrants)
-        check(action("undelete", name="001_external.png")["file"].startswith("ref_"), "B12 기록 없는 NNN 이름 매칭 차단")
+        restored = action("undelete", name="001_external.png")
+        check(restored["file"].startswith("ref_") and restored["renamed"] == "nnn", "B12 기록 없는 NNN 이름 매칭 차단·nnn 사유")
         Image.fromarray(quadrants[..., :3]).save(deleted/"001_photo.jpg")
         with patch.object(bd, "_write_refs", side_effect=OSError("convert rollback")):
             expect_raises(lambda: action("undelete", name="001_photo.jpg"), "B12 JPG 복구 실패 원본 보존", OSError)
@@ -56872,6 +56903,28 @@ def batch12_unit():
         crash = save("crash")["file"]; rf._move_excl(str(rd/crash), str(deleted/crash))
         check(not next(r for r in bd.refs_state(root)["pool_deleted"] if r["name"] == crash)["recorded"], "B12 중간 종료 기록 없음 표시")
         check(action("undelete", name=crash)["file"] == crash and crash in rf.load_refs(root)["files"], "B12 중간 종료 files 기록 회수")
+        for changed_v1 in (False, True):
+            desc = "versions-changed" if changed_v1 else "versions"
+            version_name = save(desc)["file"]
+            v1_record = rf.load_refs(root)["files"][version_name]
+            remove(version_name)
+            v2 = save(desc, transform={})["file"]
+            v2_record = rf.load_refs(root)["files"][v2]
+            v2_deleted = bd._pool_deleted_name(str(deleted), v2)
+            rf._move_excl(str(rd/v2), str(deleted/v2_deleted))
+            check(v2 == version_name and v1_record["sha"] != v2_record["sha"], "B12 같은 이름 v1 정상 삭제·다른 픽셀 v2 삭제 도중 종료")
+            if changed_v1:
+                _r3_png(deleted/version_name, quadrants)
+            restored = action("undelete", name=version_name)
+            d = rf.load_refs(root)
+            check(restored["file"] == f"ref_{desc}_2_t.png" and restored["renamed"] == "collision"
+                  and d["files"][version_name] == v2_record and not (rd/version_name).exists(),
+                  "B12 v1 되살리기는 D141 번호로·다른 v2 고아 기록 보존")
+            check((d["files"].get(restored["file"]) == v1_record) if not changed_v1 else restored["file"] not in d["files"],
+                  "B12 v1 픽셀 일치 여부에 맞는 복구 기록")
+            recovered = action("undelete", name=v2_deleted)
+            check(recovered["file"] == version_name and rf.load_refs(root)["files"][version_name] == v2_record,
+                  "B12 보존된 v2 고아 기록도 뒤이어 복구 가능")
         for is_held in (False, True):
             for suffix in ("", "__261106-123456", "__261106-123456-2"):
                 original = save(f"crash-{is_held}-{suffix or 'plain'}")["file"]
@@ -57004,8 +57057,10 @@ await scenario("perspective", async () => {
   grab12(handle,20,5); await sleep(15);
   const fixed = canvas.width === w;
   const beforeKey = env.own(env.hosts.panel,"저장 크기 약");
+  const flipBefore = env.button(env.hosts.panel,"좌우 반전").textContent;
   env.key("BracketRight"); env.key("KeyH");
   const swallowed = env.own(env.hosts.panel,"저장 크기 약") === beforeKey;
+  const flipSwallowed = env.button(env.hosts.panel,"좌우 반전").textContent === flipBefore;
   const panelTitle = env.cls(env.hosts.panel,"lp-k");
   env.ed.stateChanged({...env.st,rev:8,refs_rev:8}); await sleep(40);
   const deferred = !!panelTitle && env.cls(env.hosts.panel,"lp-k") === panelTitle;
@@ -57016,9 +57071,41 @@ await scenario("perspective", async () => {
   const hint = env.hosts.panel.textContent.includes("perspective-warped");
   await env.press(env.hosts.panel,"보관함에 저장",true);
   const sent = env.lastSave.transform.corners[0][0] === .2;
+  const flipSaved = env.lastSave.transform.flip_h === false;
   handle = handles12(env)[0]; grab12(handle,10,0); handle.fire("lostpointercapture",{pointerId:7});
   const n = env.confirms.length; await env.press(env.hosts.panel,"목록",true);
-  return {fixed,swallowed,deferred,resumed,esc,hint,sent,dirty:env.confirms.length === n+1};
+  return {fixed,swallowed,flipSwallowed,flipSaved,deferred,resumed,esc,hint,sent,dirty:env.confirms.length === n+1};
+});
+await scenario("newCutErrors", async () => {
+  const checks = {};
+  for (const large of [false,true]) {
+    const env = await start12(); await preview12(env);
+    const size = large ? [2400,2400] : [100,80];
+    let img = env.imgs.at(-1); [img.naturalWidth,img.naturalHeight] = size; img.onload();
+    await env.press(env.hosts.panel,"원근",true);
+    let handle = handles12(env)[0]; grab12(handle,large ? -1000 : 100,large ? -1000 : 80);
+    await sleep(15); handle.fire("pointerup",{pointerId:7});
+    const message = large ? "너무 큽니다" : "꼬였습니다";
+    checks[`errorBefore${large}`] = env.hosts.panel.textContent.includes(message);
+    env.drag(500,600,800,900); env.key("Enter"); await sleep(35);
+    img = env.imgs.at(-1); [img.naturalWidth,img.naturalHeight] = size;
+    const oldPixels = CTX2D.lastImage; img.onload(); await sleep(15);
+    const canvas = canvas12(env), layer = env.cls(env.hosts.panel,"rf-perspective");
+    const pixels = CTX2D.lastImage;
+    checks[`drawn${large}`] = canvas.width > 0 && canvas.height > 0 && pixels !== oldPixels && pixels.data.some((v,i) => i%4 === 3 && v > 0);
+    checks[`handles${large}`] = !layer.hidden && layer.classList.contains("bad") && handles12(env).length === 4 &&
+      env.all(layer).filter((e) => e.classList.contains("rf-perspective-line")).length === 4;
+    checks[`blocked${large}`] = env.button(env.hosts.panel,"보관함에 저장",true).disabled && env.hosts.panel.textContent.includes(message);
+    // 초기화 단추 없이 손잡이 자체로 항등 근처까지 고친다.
+    handle = handles12(env)[0];
+    const k = Math.min(1,768/Math.max(size[0]+16,size[1]+16));
+    grab12(handle,(large ? 1 : -1)*size[0]*k,(large ? 1 : -1)*size[1]*k);
+    await sleep(15); handle.fire("pointerup",{pointerId:7});
+    checks[`repaired${large}`] = !env.cls(env.hosts.panel,"rf-perspective").classList.contains("bad") && !env.button(env.hosts.panel,"보관함에 저장",true).disabled;
+    await env.press(env.hosts.panel,"보관함에 저장",true);
+    checks[`saved${large}`] = !Object.hasOwn(env.lastSave.transform,"corners");
+  }
+  return checks;
 });
 await scenario("invalidReset", async () => {
   const env = await start12(); await preview12(env); await env.press(env.hosts.panel,"원근",true);
@@ -57051,6 +57138,37 @@ await scenario("delete", async () => {
   await env.press(details,"되살리기",true);
   return {kept,body:body.op === "delete" && body.items[0].name === poolFile.name,ask,menu,
     closed,recordless:details.textContent.includes("기록 없음"),restore:env.poolCalls.at(-1).body.op === "undelete"};
+});
+await scenario("undeleteReasons", async () => {
+  const env = await start12();
+  env.srv.R.pool_deleted = [{name:"001_external.png",recorded:false,thumb_url:null,size:[10,10]}];
+  env.ed.stateChanged({...env.st,rev:15,refs_rev:15}); await sleep(35);
+  const checks = {};
+  for (const [reason,word] of [["nnn","이름 매칭을 피해"],["collision","이름이 겹쳐"],[false,"보관함 변경"]]) {
+    env.poolResult = {ok:true,rev:++env.srv.rev,file:"ref_restored_t.png",renamed:reason};
+    const before = env.toasts.length;
+    await env.press(env.cls(env.hosts.panel,"rf-deleted"),"되살리기",true);
+    checks[String(reason)] = env.toasts.length === before+1 && env.toasts.at(-1).startsWith(`:${word}`) &&
+      (reason === false || env.toasts.at(-1).includes("ref_restored_t.png 으로 되살림"));
+  }
+  return checks;
+});
+await scenario("heldMenu", async () => {
+  const env = await start12();
+  env.srv.R.pool_held = [
+    {...poolFile,name:"ref_held_own.png",origin:"pool",outside_edit:false},
+    {...poolFile,name:"ref_held_changed.png",origin:"pool",outside_edit:true},
+    {...poolFile,name:"ref_held_old.png",origin:"old",outside_edit:false}
+  ];
+  env.ed.stateChanged({...env.st,rev:17,refs_rev:17}); await sleep(35);
+  const row = (name) => env.all(env.hosts.panel).find((e) => e.classList.contains("rf-file") && e.textContent.includes(name));
+  const own = row("ref_held_own.png"), changed = row("ref_held_changed.png"), old = row("ref_held_old.png");
+  const actions = (r) => env.all(r).filter((e) => e.tagName === "BUTTON").map((e) => e.textContent);
+  const allowed = !!env.button(own,"⋯",true) && !!env.cls(own,"rf-pool-check");
+  const restricted = [changed,old].every((r) => same(actions(r),["되살리기"]) && !env.cls(r,"rf-pool-check"));
+  await env.press(changed,"되살리기",true);
+  const body = env.poolCalls.at(-1).body;
+  return {allowed,restricted,restore:body.op === "restore" && body.name === "ref_held_changed.png"};
 });
 await scenario("dragDrop", async () => {
   const env = await start12(); await env.press(env.hosts.tabs,"그리드",true);
@@ -57189,7 +57307,7 @@ console.log(JSON.stringify(out)); process.exit(0);
     check(proc.returncode == 0 and bool(proc.stdout.strip()), "B12 JS 하네스 실행: " + proc.stderr[-1500:])
     if proc.returncode == 0 and proc.stdout.strip():
         results = json.loads(proc.stdout.strip().splitlines()[-1])
-        for name in ("rules", "bframe", "bpoints", "constants", "matrix", "identityHandles", "perspective", "invalidReset", "delete", "dragDrop", "dragChangedTarget", "oldServer", "overlayTransitions", "overlayAndLimit", "reopen", "dragCleanup"):
+        for name in ("rules", "bframe", "bpoints", "constants", "matrix", "identityHandles", "perspective", "newCutErrors", "invalidReset", "delete", "undeleteReasons", "heldMenu", "dragDrop", "dragChangedTarget", "oldServer", "overlayTransitions", "overlayAndLimit", "reopen", "dragCleanup"):
             result = results.get(name, {})
             check(bool(result) and all(v is True for v in (result if isinstance(result, list) else result.values())), f"B12 JS {name}: {result}")
 

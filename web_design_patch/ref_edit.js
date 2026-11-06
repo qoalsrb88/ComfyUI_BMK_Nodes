@@ -1158,8 +1158,12 @@ window.DPRefEdit = (() => {
     }
 
     function drawPerspective() {
-      const p = perspectiveInfo();
-      if (p.error || !p.inverse) { updatePerspectiveUI(); return; }
+      let p = perspectiveInfo();
+      if (p.error || !p.inverse) {
+        // 새 컷에서도 오류를 손잡이로 고칠 수 있게 B 틀 그림과 패딩을 먼저 보인다.
+        const b = shapeBox(T);
+        p = { w: b.w, h: b.h, x0: 0, y0: 0, x1: b.w, y1: b.h, inverse: [1,0,0,0,1,0,0,0,1] };
+      }
       const pad = TRIM_PAD / T.scale;
       const x0 = Math.min(0, p.x0) - pad, y0 = Math.min(0, p.y0) - pad;
       const w = Math.max(p.w, p.x1) + pad - x0, h = Math.max(p.h, p.y1) + pad - y0;
@@ -2165,7 +2169,7 @@ window.DPRefEdit = (() => {
         renderSoon();
         const r = await p;
         opts.toast(r.unchanged ? "바뀐 것 없음" : body.op === "sheet_add" ? "시트를 추가했습니다"
-          : body.op === "undelete" && r.renamed ? `이름이 겹쳐 ${r.file} 으로 되살림 · 반영 필요(무료)`
+          : body.op === "undelete" && r.renamed ? `${r.renamed === "nnn" ? "이름 매칭을 피해" : "이름이 겹쳐"} ${r.file} 으로 되살림 · 반영 필요(무료)`
           : "보관함 변경 · 반영 필요(무료) — 크롭의 레퍼런스는 그대로");
         return r;
       } catch (e) {
@@ -2281,9 +2285,11 @@ window.DPRefEdit = (() => {
         if (selectable.includes(f.name)) poolCheckbox(row, f.name);
       }
       for (const f of R.pool_held || []) {
-        const row = fileRow(f, "보관함 보류", [["되살리기", "연결 없이 보관함으로", () => poolWrite({ op: "restore", name: f.name }), true],
-          ["⋯", "보관함 파일 관리", () => poolMenu({ ...f, poolHeld: true }), true]]);
-        if (selectable.includes(`${HELD_DIR}/${f.name}`)) poolCheckbox(row, `${HELD_DIR}/${f.name}`);
+        const key = `${HELD_DIR}/${f.name}`, canSelect = selectable.includes(key);
+        const actions = [["되살리기", "연결 없이 보관함으로", () => poolWrite({ op: "restore", name: f.name }), true]];
+        if (canSelect) actions.push(["⋯", "보관함 파일 관리", () => poolMenu({ ...f, poolHeld: true }), true]);
+        const row = fileRow(f, "보관함 보류", actions);
+        if (canSelect) poolCheckbox(row, key);
       }
       poolHost = null;
       if (list.children.length) panel.append(list);

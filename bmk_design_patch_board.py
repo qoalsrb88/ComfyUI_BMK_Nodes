@@ -4765,6 +4765,8 @@ def _pool_undelete(root, rev, data):
         good = record is not None and record.get("for", "old") is None and record.get("sha") == sha
         reservation_doc = dict(doc or {}, held={k: v for k, v in (doc or {}).get("held", {}).items() if k not in held_keys})
         reserved = drefs.pool_reserved(root, m, reservation_doc) | used
+        # 디스크에 없어도 다른 파일의 기록은 예약한다. 이번에 회수할 고아 키만 제외한다.
+        reserved.update(drefs.ref_key(k) for k in (doc or {}).get("files", {}) if k not in orphan_keys)
         safe = drefs.ref_key(original) not in reserved and not _match_seeds(folder, doc, crops, original, "")
         target = original if safe and (entry or original.startswith("ref_")) else drefs.pool_file_name(
             os.path.splitext(original)[0].removeprefix("ref_").removesuffix("_t"), reserved,
@@ -4798,7 +4800,10 @@ def _pool_undelete(root, rev, data):
             raise
         if converted:
             _drop(src)
-    return {"ok": True, "rev": new_rev, "file": target, "renamed": target != original}
+    renamed = False
+    if target != original:
+        renamed = "nnn" if not entry and not original.startswith("ref_") else "collision"
+    return {"ok": True, "rev": new_rev, "file": target, "renamed": renamed}
 
 
 def ref_pool(root, rev, op, data):
