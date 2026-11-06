@@ -1909,6 +1909,7 @@ class BMKDesignPatchPrepare:
         if not m["crops"]:  # 빈 시작(D6): 예외 대신 경고
             warn_lines.append("  크롭 없음 — 작업 없음(Studio 레이아웃 편집에서 크롭을 그린 뒤 다시 큐)")
         n_new = n_dup = 0
+        reset_keys: set[str] = set()  # 배치 10 D161′: 장 수가 바뀐 셀(키는 그대로 — n 은 키 밖)
         pbar = comfy.utils.ProgressBar(len(m["crops"]))
         for crop in m["crops"]:
             pbar.update(1)
@@ -1990,6 +1991,8 @@ class BMKDesignPatchPrepare:
                 job = dict(old_jobs.get(ck) or {})
                 if not job:
                     n_new += 1
+                elif str(job.get("n")) != str(int(n)):
+                    reset_keys.add(ck)  # 배치 10 D161′: 장 수가 바뀐 셀의 안 쓴 다시 생성 예약은 정리(예약 때 본 비용과 달라짐)
                 job.update({"cell_key": ck, "crop_id": crop["id"], "tid": ",".join(t["id"] for t in v["targets"]),
                             "variant": vname, "model": model, "quality": quality, "size": [W, H], "n": int(n),
                             "reps": int(calls_per_cell), "background": _BACKGROUND, "prompt": v["prompt"],
@@ -2011,12 +2014,11 @@ class BMKDesignPatchPrepare:
             m["prepare_inputs"] = inputs_fp
         # 배치 10 D161 공용 자리(몸통 = 갈래 B): 잠금 안 병합 결과에서 jobs 밖(·reset) 생성 조건의 다시 생성 대기를 원장 쓴 몫까지 내림
         # — 노드가 연 뒤 보드가 옛 셀에 더한 몫까지, 키가 되돌아와도 안 살아나게
-        reset_keys: set[str] = set()
         pruned = [0]
 
         def _prune(mm: dict) -> None:
             pruned[0] = store.prune_stale_rerolls(mm, {j.get("cell_key") for j in mm.get("jobs") or []},
-                                                  lambda ck: runner.board_spent(root, ck), reset_keys)
+                                                  lambda ck: runner.board_spent(root, ck, settled=True), reset_keys)
 
         handle, conflicts = _commit(root, m, before, project, finalize=_prune)
         n_pruned = pruned[0]

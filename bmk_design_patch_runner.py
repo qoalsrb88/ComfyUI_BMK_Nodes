@@ -392,16 +392,21 @@ def _only_match(tokens: list[str], entry: dict) -> bool:
     return False
 
 
-def board_spent(root: str, cell_key: str) -> int:
-    """배치 10 공용 자리(몸통 = 갈래 B, D157): 이 셀에서 보드 사전 승인으로 이미 쓴 rep 수(plan_calls 의 board_used 와 같은 셈).
-    다시 생성 대기를 줄일 때의 하한. 공용 자리 = 0."""
-    return 0
+def _count_board_used(ledger: dict, states: dict, *, settled: bool = False) -> int:
+    """보드 사전 승인으로 이미 쓴 rep 수 — 원장 상태가 none 이 아니고(req 만 = 호출 전 제외) board 승인으로 한 번이라도 나간 rep
+    (재시도로 req 가 바뀌어도 history 로 셈). settled = 지금 실행 중(inflight)인 rep 은 빼고(배치 10 D157 — 취소·정리의 하한:
+    진행 중 호출이 401 로 원장을 되돌려도 취소가 유지되게)."""
+    return sum(1 for rep, f in ledger.items()
+               if states[rep] != "none" and _board_spent(f) and not (settled and states[rep] == "inflight"))
 
 
-def _reroll_still_wanted(root: str, e: dict) -> bool:
-    """배치 10 공용 자리(몸통 = 갈래 B, D160): 계획 확정 뒤 발사 직전에 board 사전 승인 항목이 아직 남은 몫인지 다시 확인
-    (그 사이 [다시 생성 대기 취소]면 False → 건너뜀, 과금 없음). 공용 자리 = 늘 True."""
-    return True
+def board_spent(root: str, cell_key: str, *, settled: bool = False) -> int:
+    """배치 10 공용 자리(D157·D161): 이 셀에서 보드 사전 승인으로 이미 쓴 rep 수 — plan_calls 의 board_used 와 같은 셈(_count_board_used).
+    다시 생성 대기를 줄일 때(취소·옛 키 정리)의 하한은 settled=True, 더할 때의 바닥은 settled=False."""
+    rid = _rid(root)
+    ledger = read_ledger(root, cell_key)
+    states = {rep: _rep_state(files, _is_active(rid, call_id_for(cell_key, rep))) for rep, files in ledger.items()}
+    return _count_board_used(ledger, states, settled=settled)
 
 
 def _board_spent(files: dict) -> bool:
@@ -475,7 +480,7 @@ def plan_calls(m: dict, ledger_root: str, *, retry_failed: bool = False, retry_o
         ledger = read_ledger(ledger_root, ck)
         states = {rep: _rep_state(files, _is_active(rid, call_id_for(ck, rep))) for rep, files in ledger.items()}
         used = sum(1 for s in states.values() if s != "none")  # req 만 = 호출 전
-        board_used = sum(1 for rep, f in ledger.items() if states[rep] != "none" and _board_spent(f))
+        board_used = _count_board_used(ledger, states)
         board_left = max(0, extra - board_used)
         # 셀 목표 = max(reps, 보드 아닌 호출 + rerolls): 재굴림은 아직 안 돈 기본 호출을 먼저 대신한다 — 그 기본 호출이
         # Run 승인 대기로 남아 같은 크롭을 두 번 만들지 않게(10/15). 빈 rep 은 번호 앞쪽부터 채운다.
@@ -1664,10 +1669,6 @@ async def _one_call(root: str, rid: str, e: dict, backend, state: _RunState) -> 
         lost = [os.path.basename(p) for p in input_paths if not os.path.isfile(p)]
         if lost:
             skip(f"입력 파일 없음({', '.join(lost)}) — Prepare 를 다시 실행하세요")
-            return
-        # 배치 10 D160 공용 자리: 계획 뒤 취소된 다시 생성(사전 승인)은 보내지 않음
-        if e.get("approved_by") == "board" and not await _to_thread(lambda: _reroll_still_wanted(root, e)):
-            skip("다시 생성 취소됨 — 과금하지 않음")
             return
         await _billable(root, e, input_paths, backend, state)
     finally:
