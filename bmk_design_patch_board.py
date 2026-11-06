@@ -2830,14 +2830,13 @@ def apply_reroll(root: str, count: int, cell_key: str | None = None, crop_id: st
                                    f"({', '.join(str(j.get('variant')) for j in jobs)})")
             job = jobs[0]
         runner = _runner()
+        if runner is None:  # 배치 10 통합: 두 갈래가 합쳐진 자리 — runner 를 못 읽으면 발사 불가 판정·쓴 몫 셈 모두 못 함
+            raise _Reject(409, "원장 사용량을 읽을 수 없습니다 — 새로고침", reason="plan_error")
         why = runner.blocked_reason(job, backend=runner.BACKEND_MOCK if _mock_active(root) else runner.BACKEND_COMFY_ORG)
         if why:
             raise _Reject(409, f"발사 못 함 — {why}", reason="blocked")
         ck = job["cell_key"]
         _reroll_apply_gate(root, m)
-        runner = _runner()
-        if runner is None:
-            raise _Reject(409, "원장 사용량을 읽을 수 없습니다 — 새로고침", reason="plan_error")
         cur = max(int(m["rerolls"].get(ck) or 0), runner.board_spent(root, ck))
         waiting = _pending(root, m)[0].get(ck, 0)  # 원장 폴더 몇 개를 훑는 정도(잠금 안에서도 짧다)
         if waiting + count > _MAX_CELL_PENDING:
