@@ -1049,7 +1049,13 @@
       r.title = `다시 생성 누적 ${S.rerolls_total || 0}(이미 쓴 몫 포함)`;
       b.append(r);
     }
-    if (S.rerolls_pending) b.append(cancelButton("all", {}, "다시 생성 대기 취소"));
+    if (S.rerolls_pending) {
+      // 머리줄은 폴링마다 다시 채운다 — 전체 취소 단추는 칸에 붙여 둔 같은 객체를 다시 붙여 누르는 사이에 바뀌지 않게(배치 10 통합)
+      const hc = b.bmkCancel || (b.bmkCancel = cancelButton("all", {}, "다시 생성 대기 취소"));
+      hc.disabled = !!S.running;
+      hc.title = S.running ? "실행 중 — [새 호출 멈춤] 뒤 다시" : "다시 생성 대기 취소(무료) — 되돌림 = R";
+      b.append(hc);
+    }
     if (S.rerolls_stale) b.append(el("span", "badge b-wait", `옛 조건 대기 ${S.rerolls_stale} — 다음 반영 때 정리`));
     if (S.orphan_candidates) b.append(el("span", "badge b-bad", `크롭 없는 후보 ${S.orphan_candidates}`));
     if (tabLink) {
