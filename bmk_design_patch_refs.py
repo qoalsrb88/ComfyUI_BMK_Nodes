@@ -6,7 +6,7 @@
 서로의 파일을 받고, S1 에서 크롭 이름을 바꾸면 고르는 파일이 바뀐다. S2 는 크롭 ID 로 잇는 연결 문서 <project>/refs.json 을 두고,
 크롭의 레퍼런스를 처음 고칠 때 **그 순간의 이름 매칭 결과(files)와 자동 선택(main)을 고정**한다(지연 고정 — 고정만으로는 refs_auto·
 Prepare 선택·cell_key·초안 키가 바뀌지 않음, 명세 §2.5 I3). 시트 이미지(PNG·JPG·WEBP·PSD/PSB)에서 부품을 잘라(사각형·SAM3·다각형)
-회전·반전·축소한 뒤 refs_dir 에 새 파일로 저장한다 — 덮어쓰지 않고 지우지 않는다(옮기는 것은 _보류 뿐, D5).
+회전·반전·원근·축소한 뒤 refs_dir 에 새 파일로 저장한다 — 덮어쓰지 않는다. 보류는 _보류, 보관함 삭제는 _삭제 로 옮긴다(영구 삭제 없음).
 store 가 prompt 를 import 하면 순환이라 새 모듈에 둔다. torch·comfy·folder_paths·aiohttp 를 import 하지 않는다
 (store·prompt·psd + numpy·PIL·cv2). SAM3 호출은 노드(BMKDesignPatchRefCut → bmk_sam3_mask_layers.segment)가 하고, 이 모듈은 그 앞뒤
 (창·자동 양점·후처리·결과 파일)만 맡는다. 라우트(보드)와 노드가 같은 함수를 쓴다.
@@ -40,7 +40,10 @@ store 가 prompt 를 import 하면 순환이라 새 모듈에 둔다. torch·com
 - check_ref_name(name, *, any_ext=False) -> str 파일 이름만(구분자·'..'·Windows 금지 문자·제어 문자 금지, REF_EXTS). NFC 로 바꾸지 않음
 - check_desc(desc) -> str                       NFC·strip, 1–24자, 유니코드 L*·N*·'-'(글자·숫자 하나 이상), "_"+설명에 _t 표지 금지
 - ref_file_name(crop_name, role, desc=None) -> str   대표 "<크롭 이름>_t.png", 보조 "<크롭 이름>_<설명>_t.png" — match_refs 재매칭 확인
-- check_transform(t) -> {"rotate", "flip_h", "scale", "pad"}   rotate −180…180(0.5° 단위), scale 0.05–1, pad 0–256(기본 8)
+- check_transform(t) -> {"rotate", "flip_h", "scale", "pad", corners?}   rotate −180…180(0.5° 단위), scale 0.05–1, pad 0–256(기본 8)
+- check_corners(value) -> list | None           네 꼭짓점(반올림 4자리·범위 −1…2·정방향 볼록·넓이 2% 이상), 항등은 None
+- perspective_frame(rows, rotate, flip_h=False) -> (bbox, matrix)  알파 행 끝점의 공통 B 틀·회전/반전 연속 좌표 행렬
+- perspective_geometry(rows, rotate, flip_h, corners) -> ((W,H,ss), matrix)  할당 전 4096² 검사·픽셀 중심 행렬
 시트·이미지 (CPU, 라우트는 _REF_SLOTS 세마포어로 한 번에 하나)
 - SHEET_EXTS · SHEET_EXCLUDE · SHEETS_DIR("derived/sheets") · SHEET_CACHE_KEEP(4) · MAX_RECT_AREA(8192²)
 - list_sheets(root, m) -> [{path, size, kind("image"|"psd"), bytes}]   §5.2(m = 매니페스트 — source.refs_dir·source.psd)
@@ -57,7 +60,7 @@ store 가 prompt 를 import 하면 순환이라 새 모듈에 둔다. torch·com
 - raster_polys(shape, origin, polys, base=None) -> float32   다각형 더하기(max)/빼기(min), 차례대로 — 덮임 = 4배 초표본 면적 평균
                                                 (명세 §1.4 의 LINE_AA 는 경계 밖 0.7px 번짐·아래 1px 치우침을 실측해 바꿈)
 - merge_alpha(sheet_alpha, mask, grow, feather) -> uint8      시트 알파 × (mask → grow(정사각 커널) → 가우시안 σ) — SAM3 Mask Layers 순서
-- transform_rgba(rgba, rotate, flip_h, scale, pad) -> rgba    회전 → 반전 → 배율 → 다듬기(알파 bbox + pad). 90° 배수·배율 1 은
+- transform_rgba(rgba, rotate, flip_h, scale, pad, *, corners=None) -> rgba    회전 → 반전 → 원근(선택) → 배율 → 다듬기(알파 bbox + pad). 원근 없는 90° 배수·배율 1 은
                                                 np.rot90 그대로(바이트 같음), 그 밖은 프리멀티 알파 보간(INTER_LINEAR·INTER_AREA)
 - same_name(folder, name) -> 실제 이름 | None    folder 바로 아래의 같은 이름(ref_key — NTFS 는 NFC·NFD 를 다른 이름으로 봄). 아래 셋의 '같은 이름'
 - save_ref(refs_dir, name, rgba) -> path        배타 생성(이미 있으면 FileExistsError, 덮어쓰기 0) + 원자(임시 파일 → 이름 바꾸기)
@@ -115,6 +118,8 @@ store 가 prompt 를 import 하면 순환이라 새 모듈에 둔다. torch·com
 
 버전 이력
 ---------
+v2 (2026-11, Studio 배치 12)
+- 원근 합성 1회·조건부 2배 초표본, 항등/원근 없음은 기존 픽셀 그대로. deleted 기록 검사·삭제 기록 컷 보존(옛 files 키 규칙 유지).
 v1 (2026-10, Studio S2 U1)
 - 최초 구현: refs.json 스키마·쓰기·해석·고정, 이름 규칙(공용 표 refs_rules.json), 시트 목록·캐시·미리보기·창, 컷 요청·후처리·결과 파일,
   변환(프리멀티), 파일 동작(배타 생성·보류·되살리기), explicit_refs.
@@ -159,6 +164,10 @@ REFS_NAME = "refs.json"
 REFS_SCHEMA = "bmk.design_patch.refs/1"
 REFS_HISTORY_DIR = "refs_history"
 HELD_DIR = "_보류"
+DELETED_DIR = "_삭제"
+PERSPECTIVE_MAX_AREA = 4096 * 4096
+PERSPECTIVE_MIN_AREA = 0.02
+PERSPECTIVE_IDENTITY = [[0, 0], [1, 0], [1, 1], [0, 1]]
 MAX_LINK_FILES = 64     # 크롭당 연결 파일 — seed(이름 매칭)를 자르지 않을 만큼(10/16 결정, 넘으면 seed_link)
 MAX_SHEETS = 8
 FIX_WHY = ("edit", "rename", "fix", "none")
@@ -430,6 +439,34 @@ def pool_files(root: str, m: dict, doc: dict | None, crops: list[dict]) -> tuple
     return out, hold
 
 
+def check_corners(value: Any) -> list | None:
+    """D192–193: 반올림 뒤 범위·방향·볼록·넓이 검사. 항등은 기록하지 않는다."""
+    if value is None:
+        return None
+    if (not isinstance(value, list) or len(value) != 4
+            or any(not isinstance(p, list) or len(p) != 2 for p in value)):
+        raise ValueError("원근 꼭짓점은 숫자 두 개씩 네 점이어야 합니다 (range)")
+    points = []
+    for p in value:
+        if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not -2 <= v <= 3 for v in p):
+            raise ValueError("원근 꼭짓점은 유한 수여야 합니다 (range)")
+        # JS 와 동일한 반올림(음수도 +무한대 방향 동률). -0 은 0 으로 정규화.
+        if any(v < -2 or v > 3 for v in p):
+            raise ValueError("원근 꼭짓점 범위는 −1…2 입니다 (range)")
+        q = [math.floor(v * 10000 + 0.5) / 10000 for v in p]
+        if any(v < -1 or v > 2 for v in q):
+            raise ValueError("원근 꼭짓점 범위는 −1…2 입니다 (range)")
+        points.append(q)
+    for k in range(4):
+        a, b, c = points[k], points[(k + 1) % 4], points[(k + 2) % 4]
+        if (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]) <= 0:
+            raise ValueError("원근 꼭짓점은 볼록 사각형이어야 합니다(꼬임·넓이 0 거절) (convex)")
+    area = sum(points[k][0] * points[(k + 1) % 4][1] - points[k][1] * points[(k + 1) % 4][0] for k in range(4)) / 2
+    if area < PERSPECTIVE_MIN_AREA:
+        raise ValueError("원근 사각형 넓이는 원래 틀의 2% 이상이어야 합니다 (area)")
+    return None if points == PERSPECTIVE_IDENTITY else points
+
+
 def check_transform(t: Any) -> dict:
     """변환 값 검사·기본값: rotate −180…180 의 0.5 배수(기본 0), flip_h bool(False), scale 0.05–1(1.0, 확대 없음 — D4), pad 0–256 정수(8).
     모르는 키는 무시한다. 반환 {"rotate": float, "flip_h": bool, "scale": float, "pad": int}."""
@@ -441,8 +478,12 @@ def check_transform(t: Any) -> dict:
     flip = t.get("flip_h", False)
     if not isinstance(flip, bool):
         raise ValueError(f"flip_h 는 true/false 여야 합니다: {flip!r}")
-    return {"rotate": float(r), "flip_h": flip, "scale": float(_num(t.get("scale", 1.0), "scale", 0.05, 1.0)),
-            "pad": _int(t.get("pad", TRIM_PAD), "pad", 0, 256)}
+    out = {"rotate": float(r), "flip_h": flip, "scale": float(_num(t.get("scale", 1.0), "scale", 0.05, 1.0)),
+           "pad": _int(t.get("pad", TRIM_PAD), "pad", 0, 256)}
+    corners = check_corners(t.get("corners"))
+    if corners is not None:
+        out["corners"] = corners
+    return out
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -496,7 +537,17 @@ def validate_refs(doc: Any) -> list[str]:
         if fixed is not None and (not isinstance(fixed, dict) or fixed.get("why", "edit") not in FIX_WHY
                                   or not isinstance(fixed.get("auto", False), bool)):
             raise ValueError(f"크롭 {cid} fixed 형식이 잘못되었습니다(why ∈ {FIX_WHY}, auto 는 참/거짓): {fixed!r}")
-    for key, rec in files.items():
+    deleted = doc.get("deleted", {})
+    if not isinstance(deleted, dict):
+        raise ValueError("deleted 는 객체여야 합니다({삭제 이름: {from, at, record}}).")
+    records = list(files.items())
+    for key, rec in deleted.items():
+        check_ref_name(key)
+        if not isinstance(rec, dict) or not isinstance(rec.get("at"), str) or not isinstance(rec.get("record"), dict):
+            raise ValueError("deleted 기록은 {from, at, record} 이어야 합니다.")
+        check_ref_name(rec.get("from"))
+        records.append((key, rec["record"]))
+    for key, rec in records:
         _check_record_key(key)
         if not isinstance(rec, dict):
             raise ValueError(f"files[{key!r}] 가 객체가 아닙니다.")
@@ -1573,6 +1624,14 @@ def prune_cuts(root: str, keep: Iterable[Any] = ()) -> int:
     folder = os.path.join(root, *CUT_DIR.split("/"))
     if not os.path.isdir(folder):
         return 0
+    # D185: 삭제한 파일도 되살린 뒤 컷 기록을 다시 열 수 있어야 한다.
+    # ref_cut 호출부(다른 작업자 소유)를 건드리지 않고 정리 함수가 보존 범위를 합친다.
+    try:
+        doc = load_refs(root)
+    except (OSError, ValueError):
+        return 0  # 깨진 문서가 가리키던 컷을 추측해 지우지 않는다.
+    deleted_cuts = [(r.get("record") or {}).get("cut") or {} for r in (doc or {}).get("deleted", {}).values()]
+    keep = list(keep) + [c.get("mask") for c in deleted_cuts] + [s for c in deleted_cuts for s in c.get("steps") or []]
     keep_ids = {mt.group(0) for k in keep for mt in [_REQ_RE.search(str(k))] if mt}
     groups: dict[str, list[str]] = {}
     newest: dict[str, float] = {}
@@ -1627,16 +1686,73 @@ def _rotate_premul(f: np.ndarray, deg: float) -> np.ndarray:
     return cv2.warpAffine(f, M, (W, H), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
 
 
-def transform_rgba(rgba: np.ndarray, rotate: float, flip_h: bool, scale: float, pad: int) -> np.ndarray:
+def perspective_frame(rows, rotate, flip_h=False):
+    """알파 행 [y,l,r(배타)]의 B 틀과 연속 좌표 R·F. shapeBox 와 같은 중심(평행 이동은 합성에서 상쇄)."""
+    if not len(rows):
+        raise ValueError("변환 결과가 모두 투명합니다(빈 컷).")
+    rows = np.asarray(rows, dtype=np.float64)
+    ox = (rows[:, 1].min() + rows[:, 2].max()) / 2
+    oy = (rows[:, 0].min() + rows[:, 0].max() + 1) / 2
+    th = math.radians(rotate)
+    c, s = math.cos(th), math.sin(th)
+    R = np.array([[c, s, -c * ox - s * oy], [-s, c, s * ox - c * oy], [0, 0, 1]], dtype=np.float64)
+    pts = np.array([[x, y + dy, 1] for y, l, r in rows for x in (l, r) for dy in (0, 1)])
+    rotated = pts @ R.T
+    x0, y0 = rotated[:, :2].min(axis=0)
+    x1, y1 = rotated[:, :2].max(axis=0)
+    if flip_h:
+        R = np.array([[-1, 0, x0 + x1], [0, 1, 0], [0, 0, 1]]) @ R
+    return [float(x0), float(y0), float(x1), float(y1)], R
+
+
+def perspective_geometry(rows, rotate, flip_h, corners):
+    """배열 할당 전 캔버스 크기·초표본 배율·합성 연속 행렬을 정한다."""
+    (x0, y0, x1, y1), R = perspective_frame(rows, rotate, flip_h)
+    w, h = x1 - x0, y1 - y0
+    dest = np.asarray(corners, dtype=np.float64) * [w, h]
+    lo, hi = np.floor(dest.min(axis=0)), np.ceil(dest.max(axis=0))
+    W, H = map(int, hi - lo)
+    if W * H > PERSPECTIVE_MAX_AREA:
+        raise ValueError("원근 결과가 너무 큽니다 — 꼭짓점을 안쪽으로 또는 컷을 작게")
+    compressed = any(np.linalg.norm(dest[(k + 1) % 4] - dest[k]) / (w if k % 2 == 0 else h) < 0.7 for k in range(4))
+    ss = 2 if compressed and W * H * 4 <= PERSPECTIVE_MAX_AREA else 1
+    hc = cv2.getPerspectiveTransform(np.float32([[0, 0], [w, 0], [w, h], [0, h]]), np.float32(dest))
+    shift = lambda x, y: np.array([[1, 0, x], [0, 1, y], [0, 0, 1]], dtype=np.float64)
+    M = np.diag([ss, ss, 1]) @ shift(-lo[0], -lo[1]) @ hc @ shift(-x0, -y0) @ R
+    # 가장자리 → cv2 픽셀 중심 좌표 변환은 이 한 곳에서만 한다.
+    return (W, H, ss), shift(-0.5, -0.5) @ M @ shift(0.5, 0.5)
+
+
+def _perspective_rgba(a, t):
+    alpha = a[..., 3]
+    rows = [[y, int(xs[0]), int(xs[-1]) + 1] for y in np.flatnonzero(alpha.any(axis=1))
+            for xs in [np.flatnonzero(alpha[y])]]
+    (W, H, ss), M = perspective_geometry(rows, t["rotate"], t["flip_h"], t["corners"])
+    f = a.astype(np.float32)
+    f[..., :3] *= f[..., 3:4] / 255.0
+    f = cv2.warpPerspective(f, M, (ss * W, ss * H), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+    if ss != 1 or t["scale"] < 1:
+        f = cv2.resize(f, (max(1, int(W * t["scale"] + 0.5)), max(1, int(H * t["scale"] + 0.5))), interpolation=cv2.INTER_AREA)
+    A = np.clip(f[..., 3], 0.0, 255.0)
+    out = np.zeros(f.shape, np.uint8)
+    out[..., 3] = np.floor(A + 0.5)
+    rgb = f[..., :3] * (255.0 / np.maximum(A, 1e-6))[..., None]
+    out[..., :3] = np.where(out[..., 3:4] > 0, np.floor(np.clip(rgb, 0.0, 255.0) + 0.5), 0)
+    return out
+
+
+def transform_rgba(rgba: np.ndarray, rotate: float, flip_h: bool, scale: float, pad: int, *, corners=None) -> np.ndarray:
     """저장 전 변환(§1.2 순서): 회전(양수 = 반시계) → 좌우 반전 → 배율(≤ 1) → 다듬기(알파 > 0 bbox + 변마다 pad 투명).
     90° 배수·배율 1 은 np.rot90·뒤집기만(바이트 그대로). 그 밖은 프리멀티 알파 float 로 회전(INTER_LINEAR)·축소(INTER_AREA)한 뒤
     되돌린다(반투명 가장자리 색 유지 — 검은 띠 없음). 값 검사는 check_transform. 모두 투명이면 ValueError."""
-    t = check_transform({"rotate": rotate, "flip_h": flip_h, "scale": scale, "pad": pad})
+    t = check_transform({"rotate": rotate, "flip_h": flip_h, "scale": scale, "pad": pad, "corners": corners})
     a = np.asarray(rgba)
     if a.dtype != np.uint8 or a.ndim != 3 or a.shape[2] != 4:
         raise ValueError(f"변환 입력은 HxWx4 uint8 이어야 합니다: {a.shape} {a.dtype}")
     r, k = t["rotate"] % 360, int(t["rotate"] % 360 // 90)
-    if r % 90 == 0 and t["scale"] == 1:
+    if "corners" in t:
+        out = _perspective_rgba(a, t)
+    elif r % 90 == 0 and t["scale"] == 1:
         out = np.rot90(a, k)
         out = out[:, ::-1] if t["flip_h"] else out
     else:

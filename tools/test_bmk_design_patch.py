@@ -5,6 +5,7 @@ r"""Design Patch 통합 테스트 (M1_SPEC §6, M2_SPEC §6, M3_SPEC §7): 보�
     python_embeded\python.exe -X utf8 -W ignore ComfyUI\custom_nodes\ComfyUI_BMK_Nodes\tools\test_bmk_design_patch.py [--quick]
 
 단위(합성 데이터, --quick 도 실행)
+  batch12_unit        D180–D202 보관함 삭제·되살리기·끌어 놓기·네 꼭짓점 원근(직접 함수·모의 DOM, 네트워크 없음)
   S  store: 프로젝트 이름, 매니페스트 원자 저장, 내용 주소 저장, crop_id, 레이어명 파싱, _layer_targets 병합(TO-S), 용어집, 레퍼런스 매칭,
      GPT 출력 크기(명세 검증표 + 전수/무작위), cell_key
   P  prompt: 렌더러 바이트 일치(rendered/*.txt), 시제품 대조, 변형, 평탄화, spec_from_manifest
@@ -56655,6 +56656,662 @@ def want(name: str) -> bool:
     return not ONLY or name in ONLY
 
 
+def batch12_unit():
+    """배치 12: 실제 서버 없이 소유 파일의 공개 함수와 기존 JS 화면 하네스를 검증한다."""
+    section("배치 12 — 원근·보관함 삭제·되살리기·끌어 놓기")
+    from unittest.mock import patch
+    import bmk_design_patch_refs as rf
+    import bmk_design_patch_board as bd
+    import bmk_design_patch_vlm as vlm
+
+    table = json.loads((PKG / "tools/fixtures/refs_perspective.json").read_text(encoding="utf-8"))
+    check(table["max_area"] == rf.PERSPECTIVE_MAX_AREA and table["min_area"] == rf.PERSPECTIVE_MIN_AREA, "B12 공용 상한")
+    for i, row in enumerate(table["corners"]):
+        try:
+            result = rf.check_transform({"corners": row["corners"]})
+            check(row["ok"], f"B12 공용 꼭짓점 {i} 허용")
+            if i in (0, 1, 2):
+                check(result == rf.check_transform({}), f"B12 항등 {i} 키 없음")
+            if i == 3:
+                check(result["corners"][0][0] == .1235, "B12 네 자리 반올림")
+        except ValueError as e:
+            check(not row["ok"] and row["code"] in str(e), f"B12 공용 꼭짓점 {i} 거절: {e}")
+    for x in (float("nan"), float("inf"), -float("inf"), 1e308):
+        expect_raises(lambda: rf.check_corners([[x, 0], [1, 0], [1, 1], [0, 1]]), "B12 비유한·큰 수")
+    for row in table["bframe"]:
+        b, matrix = rf.perspective_frame(row["rows"], row["rotate"], row["flip_h"])
+        check(np.allclose(b, row["expect"], atol=1e-10), "B12 Python B 틀")
+        points = np.array([[x, y + dy, 1] for y, l, r in row["rows"] for x in (l, r) for dy in (0, 1)])
+        row["points"] = ((points @ matrix.T)[:, :2] - b[:2]).tolist()
+    a = np.arange(29 * 37 * 4, dtype=np.uint8).reshape(29, 37, 4)
+    a[:3, :, 3] = 0
+    a[:, -4:, 3] = 0
+    # 변경 전 625c1ab 코드로 이 실행에서 측정한 픽셀 해시(순서 rotate, flip, scale).
+    hashes = [
+        "298e15003943ed45d3ce351cedc4e3588835e15e1ae1ac7a8a591bbe97a90459", "4668ae78e3fc76dbe928e615f76af3caccabd74a4fe3ec4e406c0c0cadebcb03",
+        "7d8260c4708823ae0bf5cf6d965325021c0a4ac8765ba2270a52ec3fb2d1d377", "c912ec0e5bce1e903893027f8aeaec446dc0f6cc8d05492142eadd8aed91f13d",
+        "74893e18e0289f1a8b0d86bd778cb6e53df4084b5e16a7dd58b08c2813354243", "2fc87d3b34db472583ae3d0b695cf0c6cdfda0b1b362eb77293d5feecb5632e7",
+        "cef33d87a950fb2bf514d01315150a195d2a0cc7ea849ac112e85cfbf5bed5d3", "19d6a2a313c92b95bf42501adf4feefdabc060bd89a5561e1b94834b1ac735bf",
+        "bb083984c7ea79a0c1df946ad1f20567aebc2d49d03ec4711041bfe419118523", "6559806562d74fff7f47bc7ad587cc47cd99d27a6e722c9092eb35d8af06f4b5",
+        "200429fbea834e7fabfde39fe0703dcdf2eaaaf4443ed993251a26c7f9cad801", "41964d07657c97f36b369d09c535da1108471124d2d1ad67828244d1d0703db3"]
+    i = 0
+    for rotate in (0, 37.5, 90):
+        for flip in (False, True):
+            for scale in (1, .65):
+                old = rf.transform_rgba(a, rotate, flip, scale, 8)
+                check(hashlib.sha256(old.tobytes()).hexdigest() == hashes[i], f"B12 기존 바이트 {rotate}/{flip}/{scale}")
+                check(np.array_equal(old, rf.transform_rgba(a, rotate, flip, scale, 8, corners=rf.PERSPECTIVE_IDENTITY)), "B12 항등 바이트")
+                i += 1
+    half = [[0, 0], [.5, 0], [.5, .5], [0, .5]]
+    checker = np.zeros((100, 100, 4), np.uint8)
+    checker[..., :3] = ((np.indices((100, 100)).sum(axis=0) % 2) * 255)[..., None]
+    checker[..., 3] = 255
+    rows = [[y, 0, 100] for y in range(100)]
+    # ss=1 은 중심 보정이 빠지면 정수 격자의 한 색만 뽑힌다. ss=2 의 항등 warp 와 분리한다.
+    with patch.object(rf, "PERSPECTIVE_MAX_AREA", 2500):
+        check(rf.perspective_geometry(rows, 0, False, half)[0] == (50, 50, 1), "B12 체커 ss 1 강제")
+        small = rf.transform_rgba(checker, 0, False, 1, 0, corners=half)
+    check(small.shape == (50, 50, 4) and np.all((small[2:-2, 2:-2, :3] >= 127) & (small[2:-2, 2:-2, :3] <= 128)), "B12 ss 1 픽셀 중심: 체커 2x2 평균 회색")
+    small = rf.transform_rgba(checker, 0, False, 1, 0, corners=half)
+    check(small.shape == (50, 50, 4) and np.all((small[2:-2, 2:-2, :3] >= 127) & (small[2:-2, 2:-2, :3] <= 128)), "B12 ss 2 축소: 체커 평균 회색")
+    frame = np.zeros((240, 130, 4), np.uint8)
+    frame[20:220, 10:110] = (220, 40, 10, 255)
+    for corners, size in (([[-.5,0],[1,0],[1,1],[0,1]], (200,150,4)),
+                          ([[.1,0],[.9,0],[1,1],[0,1]], (200,100,4))):
+        check(rf.transform_rgba(frame, 0, False, 1, 0, corners=corners).shape == size, "B12 명세 숫자 예: B 100x200·pad 0 출력 크기")
+    quadrants = np.zeros((80, 100, 4), np.uint8)
+    quadrants[:40, :50] = (255, 0, 0, 255); quadrants[:40, 50:] = (0, 255, 0, 255)
+    quadrants[40:, :50] = (0, 0, 255, 255); quadrants[40:, 50:] = (255, 255, 0, 255)
+    q = rf.transform_rgba(quadrants, 0, False, 1, 0, corners=half)
+    check([q[y, x].tolist() for x, y in [(10, 10), (40, 10), (10, 30), (40, 30)]] ==
+          [[255, 0, 0, 255], [0, 255, 0, 255], [0, 0, 255, 255], [255, 255, 0, 255]], "B12 사분면 색 위치")
+    q = rf.transform_rgba(quadrants, 0, True, 1, 0, corners=half)
+    check([q[y, x].tolist() for x, y in [(10, 10), (40, 10), (10, 30), (40, 30)]] ==
+          [[0, 255, 0, 255], [255, 0, 0, 255], [255, 255, 0, 255], [0, 0, 255, 255]], "B12 좌우 반전 뒤 원근: 사분면 좌우 교환")
+    with patch.object(rf.cv2, "warpPerspective", wraps=rf.cv2.warpPerspective) as warp, patch.object(rf, "_rotate_premul", side_effect=AssertionError("이중 보간")):
+        rf.transform_rgba(quadrants, 37.5, True, .65, 8, corners=half)
+        check(warp.call_count == 1, "B12 회전·반전·원근 합성 warp 한 번")
+    check(rf.perspective_geometry(rows, 0, False, half)[0] == (50, 50, 2), "B12 압축 ss 2")
+    with patch.object(rf, "PERSPECTIVE_MAX_AREA", 2500):
+        check(rf.perspective_geometry(rows, 0, False, half)[0][-1] == 1, "B12 초표본 메모리 상한이면 ss 1")
+    large = np.broadcast_to(np.array([255,255,255,255], np.uint8), (1600,1600,4))
+    with patch.object(rf.cv2, "warpPerspective", side_effect=AssertionError("상한 뒤 할당")) as warp:
+        expect_raises(lambda: rf.transform_rgba(large, 0, False, 1, 0, corners=[[-1,-1],[2,-1],[2,2],[-1,2]]),
+                      "B12 transform_rgba 할당 전 상한", ValueError, contains="너무 큽니다")
+        check(warp.call_count == 0, "B12 상한 거절은 warpPerspective 호출 0회")
+    def checker_image(side, cell):
+        rgba = np.full((side, side, 4), 255, np.uint8)
+        rgba[..., :3] = (((np.indices((side, side)) // cell).sum(axis=0) % 2) * 255)[..., None]
+        return rgba
+    def laplacian_energy(rgba):
+        h, w = rgba.shape[:2]
+        center = rgba[h//4:3*h//4, w//4:3*w//4]
+        check(np.all(center[..., 3] == 255), "B12 선명도·계단 지표는 불투명 내부만 비교")
+        return float(rf.cv2.Laplacian(center[..., 0].astype(np.float64), rf.cv2.CV_64F)[1:-1, 1:-1].var())
+    detail = checker_image(160, 3)
+    trapezoid = [[.1,0],[.9,0],[1,1],[0,1]]
+    composed = rf.transform_rgba(detail, 17.5, False, 1, 0, corners=trapezoid)
+    rotated = rf.transform_rgba(detail, 17.5, False, 1, 0)
+    sequential = rf.transform_rgba(rotated, 0, False, 1, 0, corners=trapezoid)
+    sharp_ratio = laplacian_energy(composed) / laplacian_energy(sequential)
+    check(sharp_ratio > 1.4, f"B12 합성 1회가 순차 보간보다 선명: 라플라시안 분산 비 {sharp_ratio:.4f}")
+    detail = checker_image(200, 1)
+    compressed = [[0,0],[.45,0],[.45,.45],[0,.45]]
+    ss2 = rf.transform_rgba(detail, 0, False, 1, 0, corners=compressed)
+    with patch.object(rf, "PERSPECTIVE_MAX_AREA", 10000):
+        ss1 = rf.transform_rgba(detail, 0, False, 1, 0, corners=compressed)
+    alias_ratio = laplacian_energy(ss2) / laplacian_energy(ss1)
+    check(ss2.shape == ss1.shape == (90,90,4) and alias_ratio < .1,
+          f"B12 ss=2 축소가 ss=1보다 고주파 계단 감소: 라플라시안 분산 비 {alias_ratio:.4f}")
+    print(f"   B12 선명도 합성/순차 {sharp_ratio:.4f} · 축소 고주파 ss2/ss1 {alias_ratio:.4f}")
+    red = np.zeros((70, 70, 4), np.uint8); red[10:60, 10:60] = (220, 40, 10, 120)
+    red = rf.transform_rgba(red, 37.5, True, .8, 0, corners=[[.2,0],[.8,0],[1,1],[0,1]])
+    check(np.any((red[...,3] > 0) & (red[...,3] < 120)), "B12 검은 투명 RGB 와 섞인 가장자리 존재")
+    check(np.max(np.abs(red[red[...,3] > 0, :3].astype(int) - [220,40,10])) <= 1, "B12 프리멀티 반투명 색 보존")
+    expect_raises(lambda: rf.transform_rgba(np.zeros((8,8,4), np.uint8), 0, False, 1, 0, corners=half), "B12 모두 투명")
+
+    out = OUT_ROOT / "batch12"
+    out.mkdir(parents=True, exist_ok=True)
+    root = _r3_project(out, "refs12")
+    rd = Path(root, "refs"); deleted = rd / rf.DELETED_DIR
+    m = store.load_manifest(root)
+    def rev():
+        return (rf.load_refs(root) or {}).get("rev")
+    def action(op, **data):
+        return bd.ref_pool(root, rev(), op, data)
+    def remove(*names):
+        return action("delete", items=[{"name": n} if isinstance(n, str) else n for n in names])
+    def choices():
+        d = rf.load_refs(root); values = []
+        for crop in m["crops"]:
+            r = rf.resolve_refs(str(rd), crop, d)
+            c = dict(crop, refs_auto=r["refs_auto"], refs_main=r["refs_main"])
+            spec = P.spec_from_manifest(c, None, str(rd), {}, store.load_spec_override(root, c["id"]))
+            ctx = vlm.build_crop_ctx(root, m, c, refs_dir=str(rd), glossary={}, backend="mock", memo={})
+            values.append((r, [t["refs"] for t in spec["targets"]], [(x.name, x.src_sha) for x in ctx.refs]))
+        return values
+    def deny(fn, status=409, contains=None):
+        try:
+            fn()
+        except bd._Reject as e:
+            check(e.status == status and (contains is None or contains in str(e)), f"B12 거절 {status} {contains or ''}: {e}")
+        else:
+            check(False, f"B12 {status} 거절 누락")
+    with patch.object(bd, "_project_roots", return_value=[]):
+        cut = bd.ref_cut(root, {"sheet": "00_원본/sheet.png", "rect": [20,20,280,280], "method": "rect"})
+        def save(desc, **extra):
+            return bd.ref_save(root, rev(), {"req": cut["req"], "desc": desc, "transform": {"corners": half}, **extra})
+        first, second = save("first"), save("second")
+        a, b = first["file"], second["file"]
+        check(first["transform"]["corners"] == half and first["size"] == rf.load_refs(root)["files"][a]["size"], "B12 보관함 저장 원근 응답·기록")
+        state = bd.refs_state(root)
+        check(state["caps"] == {"perspective": True, "pool_delete": True} and next(r for r in state["pool"] if r["name"] == a)["record"]["transform"]["corners"] == half, "B12 caps·다시 열기")
+        bad = copy.deepcopy(rf.load_refs(root)); bad["files"][a]["transform"]["corners"] = [[0,0],[1,1],[1,0],[0,1]]
+        expect_raises(lambda: rf.validate_refs(bad), "B12 꼬인 저장 기록 거절")
+        expect_raises(lambda: save("bad", transform={"corners": [[0,0],[1,1],[1,0],[0,1]]}), "B12 저장 꼬임 메시지", contains="볼록")
+        with patch.object(rf, "PERSPECTIVE_MAX_AREA", 1):
+            expect_raises(lambda: save("big"), "B12 저장 상한 메시지", contains="너무 큽니다")
+        owned_message = "이 프로젝트 보관함의 쓰임 없는 파일만 바꿀 수 있습니다"
+        deny(lambda: remove("001_머리_t.png"), contains=owned_message)
+        _r3_png(rd / "old.png", quadrants); deny(lambda: remove("old.png"), contains=owned_message)
+        old_bytes = (rd/a).read_bytes(); _r3_png(rd/a, quadrants); deny(lambda: remove(a), contains=owned_message); (rd/a).write_bytes(old_bytes)
+        deny(lambda: bd._pool_delete_shared(root, str(out)), contains="프로젝트 밖")
+        with patch.object(bd, "_project_roots", return_value=[{"root": str(out/"other")}]), patch.object(store, "load_manifest", return_value=m):
+            deny(lambda: bd._pool_delete_shared(root, str(rd)), contains="다른 프로젝트(other)도 씁니다")
+            deny(lambda: remove(a), contains="다른 프로젝트(other)도 씁니다")
+        with patch.object(rf, "explicit_refs", return_value={rf.ref_key("_삭제/"+a): [(m["crops"][0]["id"], "A", "spec")]}):
+            deny(lambda: remove(a))
+        deny(lambda: bd.ref_pool(root, rev(), "delete", {"items": [{"name": a}] * 101}), 400)
+        deny(lambda: remove(a, a), 400)
+        expect_raises(lambda: bd.ref_pool(root, rev()-1, "delete", {"items": [{"name": a}]}), "B12 낡은 rev", rf.RefsConflict)
+        initial = choices(); document = Path(root, rf.REFS_NAME).read_bytes()
+        move = rf._move_excl; calls = []
+        def fail_second(src, dst):
+            calls.append((src, dst))
+            if len(calls) == 2: raise OSError("injected second move")
+            return move(src, dst)
+        with patch.object(rf, "_move_excl", side_effect=fail_second):
+            expect_raises(lambda: remove(a, b), "B12 중간 이동 실패", OSError)
+        check((rd/a).exists() and (rd/b).exists() and Path(root, rf.REFS_NAME).read_bytes() == document, "B12 중간 예외 파일·rev 복구")
+        with patch.object(bd, "_write_refs", side_effect=OSError("injected commit")):
+            expect_raises(lambda: remove(a, b), "B12 문서 실패", OSError)
+        check((rd/a).exists() and (rd/b).exists() and Path(root, rf.REFS_NAME).read_bytes() == document, "B12 문서 실패 묶음 복구")
+        oldrev = rev()
+        with patch.object(rf, "pool_files", wraps=rf.pool_files) as pool_scan, patch.object(bd, "_pool_file_state", wraps=bd._pool_file_state) as file_check:
+            result = remove(a, b)
+            check(pool_scan.call_count == 1 and file_check.call_count == 2, "B12 묶음 소유 목록 한 번·파일 지문은 항목별 검사")
+        check(result["rev"] == oldrev+1 and not (rd/a).exists() and (deleted/a).read_bytes() == old_bytes, "B12 묶음 한 rev·원본 바이트")
+        d = rf.load_refs(root)
+        check(a not in d["files"] and d["deleted"][a]["from"] == a and d["deleted"][a]["record"]["transform"]["corners"] == half, "B12 deleted record 분리")
+        # 옛 files 키 규칙만 확인한다. 새 validate_refs 를 옛 판 검사로 대신하지 않는다.
+        check(all(rf._check_record_key(k) == k for k in [*d["files"], a, rf.HELD_DIR + "/" + a]), "B12 files 키는 이름 또는 _보류/ 만")
+        expect_raises(lambda: rf._check_record_key(rf.DELETED_DIR + "/" + a), "B12 files 키에 _삭제/ 허용하지 않음")
+        check(choices() == initial, "B12 삭제 모든 크롭 resolve·Prepare·초안 후보 불변")
+        rows = bd.refs_state(root)["pool_deleted"]
+        check(len(rows) == 2 and all(r["recorded"] and r["thumb_url"] for r in rows), "B12 삭제 목록·썸네일")
+        image, mime, _ = bd.ref_image(root, a, "deleted", "0", "white")
+        check(image == old_bytes and mime == "image/png", "B12 deleted 원본 이미지")
+        expect_raises(lambda: bd.ref_image(root, "../x.png", "deleted", "0", "white"), "B12 경로 탈출 거절")
+        with patch.object(rf, "explicit_refs", return_value={rf.ref_key("_삭제/"+a): [(m["crops"][0]["id"], "A", "spec")]}):
+            deny(lambda: action("undelete", name=a))
+        before_shared = Path(root, rf.REFS_NAME).read_bytes()
+        with patch.object(bd, "_project_roots", return_value=[{"root": str(out/"other")}]), patch.object(store, "load_manifest", return_value=m):
+            deny(lambda: action("undelete", name=a), contains="다른 프로젝트(other)도 씁니다")
+        check((deleted/a).read_bytes() == old_bytes and not (rd/a).exists() and Path(root, rf.REFS_NAME).read_bytes() == before_shared,
+              "B12 공유 refs 되살리기 거절은 파일·rev 그대로")
+        outside_root = _r3_project(out, "outside12", refs_inside=False, sheets=False)
+        outside_refs = Path(store.load_manifest(outside_root)["source"]["refs_dir"])
+        outside_doc = rf.new_refs(str(outside_refs))
+        _, outside_rev = rf.update_refs(outside_root, lambda d: d.update(outside_doc), expect_rev=None, create=True)
+        _r3_png(outside_refs/rf.DELETED_DIR/"ref_external.png", quadrants)
+        deny(lambda: bd.ref_pool(outside_root, outside_rev, "undelete", {"name": "ref_external.png"}), contains="프로젝트 밖")
+        check((outside_refs/rf.DELETED_DIR/"ref_external.png").exists() and not (outside_refs/"ref_external.png").exists()
+              and rf.load_refs(outside_root)["rev"] == outside_rev, "B12 프로젝트 밖 되살리기 거절은 파일·rev 그대로")
+        restored = action("undelete", name=a)
+        check(restored["file"] == a and restored["renamed"] is False and rf.load_refs(root)["files"][a]["transform"]["corners"] == half, "B12 원래 이름·다시 열기 복구·renamed false")
+        check(choices() == initial, "B12 되살리기 모든 크롭 입력 불변")
+        _r3_png(rd/b, quadrants)
+        restored = action("undelete", name=b)
+        check(restored["file"] == "ref_second_2_t.png" and restored["renamed"] == "collision", "B12 같은 이름 D141 번호·collision 사유")
+        held = action("hold", name=a)["file"]
+        removed = remove({"name": held, "held": True})["deleted"][0]
+        check(held not in rf.load_refs(root)["held"] and rf.load_refs(root)["deleted"][removed]["from"] == a, "B12 보류 삭제 from 계승")
+        # 삭제 기록의 mask·steps 를 강제 오래된 것으로 만들어도 정리하지 않는다.
+        for path in Path(root, "derived/refcut").glob(cut["req"]+"*"):
+            os.utime(path, (1,1))
+        rf.prune_cuts(root)
+        check(rf.load_cut_result(root, cut["req"])["ok"], "B12 삭제 기록 컷 보존")
+        _r3_png(deleted/removed, quadrants)
+        check(next(r for r in bd.refs_state(root)["pool_deleted"] if r["name"] == removed)["outside_edit"], "B12 삭제 픽셀 변경 칩")
+        restored = action("undelete", name=removed)["file"]
+        check(restored not in rf.load_refs(root)["files"] and next(r for r in bd.refs_state(root)["pool"] if r["name"] == restored)["origin"] == "old", "B12 바뀐 픽셀은 origin old")
+        _r3_png(deleted/"001_external.png", quadrants)
+        restored = action("undelete", name="001_external.png")
+        check(restored["file"].startswith("ref_") and restored["renamed"] == "nnn", "B12 기록 없는 NNN 이름 매칭 차단·nnn 사유")
+        Image.fromarray(quadrants[..., :3]).save(deleted/"001_photo.jpg")
+        with patch.object(bd, "_write_refs", side_effect=OSError("convert rollback")):
+            expect_raises(lambda: action("undelete", name="001_photo.jpg"), "B12 JPG 복구 실패 원본 보존", OSError)
+        check((deleted/"001_photo.jpg").exists() and not (rd/"ref_001-photo_t.png").exists(), "B12 형식 변환 롤백")
+        photo = action("undelete", name="001_photo.jpg")["file"]
+        check(photo.startswith("ref_") and (rd/photo).read_bytes().startswith(b"\x89PNG") and not (deleted/"001_photo.jpg").exists(), "B12 D141 PNG 이름·실제 형식 일치")
+        reserved_name = save("reserve")["file"]; remove(reserved_name)
+        with patch.object(rf, "explicit_refs", return_value={rf.ref_key(reserved_name): [(m["crops"][0]["id"], "A", "spec")]}):
+            check(action("undelete", name=reserved_name)["file"] == "ref_reserve_2_t.png", "B12 사라진 스펙 이름 예약 우회")
+        matched = save("match")["file"]; remove(matched)
+        rf.update_refs(root, lambda d: d["deleted"][matched].update({"from": "001_new_t.png"}), expect_rev=rev())
+        check(action("undelete", name=matched)["file"].startswith("ref_"), "B12 같은 번호 seed 되살리기 우회")
+        crash = save("crash")["file"]; rf._move_excl(str(rd/crash), str(deleted/crash))
+        check(not next(r for r in bd.refs_state(root)["pool_deleted"] if r["name"] == crash)["recorded"], "B12 중간 종료 기록 없음 표시")
+        check(action("undelete", name=crash)["file"] == crash and crash in rf.load_refs(root)["files"], "B12 중간 종료 files 기록 회수")
+        for changed_v1 in (False, True):
+            desc = "versions-changed" if changed_v1 else "versions"
+            version_name = save(desc)["file"]
+            v1_record = rf.load_refs(root)["files"][version_name]
+            remove(version_name)
+            v2 = save(desc, transform={})["file"]
+            v2_record = rf.load_refs(root)["files"][v2]
+            v2_deleted = bd._pool_deleted_name(str(deleted), v2)
+            rf._move_excl(str(rd/v2), str(deleted/v2_deleted))
+            check(v2 == version_name and v1_record["sha"] != v2_record["sha"], "B12 같은 이름 v1 정상 삭제·다른 픽셀 v2 삭제 도중 종료")
+            if changed_v1:
+                _r3_png(deleted/version_name, quadrants)
+            restored = action("undelete", name=version_name)
+            d = rf.load_refs(root)
+            check(restored["file"] == f"ref_{desc}_2_t.png" and restored["renamed"] == "collision"
+                  and d["files"][version_name] == v2_record and not (rd/version_name).exists(),
+                  "B12 v1 되살리기는 D141 번호로·다른 v2 고아 기록 보존")
+            check((d["files"].get(restored["file"]) == v1_record) if not changed_v1 else restored["file"] not in d["files"],
+                  "B12 v1 픽셀 일치 여부에 맞는 복구 기록")
+            recovered = action("undelete", name=v2_deleted)
+            check(recovered["file"] == version_name and rf.load_refs(root)["files"][version_name] == v2_record,
+                  "B12 보존된 v2 고아 기록도 뒤이어 복구 가능")
+        for is_held in (False, True):
+            for suffix in ("", "__261106-123456", "__261106-123456-2"):
+                original = save(f"crash-{is_held}-{suffix or 'plain'}")["file"]
+                if is_held and suffix.endswith("-2"):
+                    _r3_png(rd/rf.HELD_DIR/original, quadrants)  # 보류 이름 자체에도 충돌 접미가 붙음
+                source_name = action("hold", name=original)["file"] if is_held else original
+                if is_held and suffix.endswith("-2"):
+                    (rd/rf.HELD_DIR/original).unlink()
+                old_key = rf.HELD_DIR + "/" + source_name if is_held else source_name
+                old_record = rf.load_refs(root)["files"][old_key]
+                stem, ext = os.path.splitext(source_name)
+                deleted_name = stem + suffix + ext
+                rf._move_excl(str(rd/old_key), str(deleted/deleted_name))
+                if is_held and not suffix:
+                    document = Path(root, rf.REFS_NAME).read_bytes()
+                    with patch.object(bd, "_write_refs", side_effect=OSError("orphan recovery rollback")):
+                        expect_raises(lambda: action("undelete", name=deleted_name), "B12 보류 고아 복구 문서 실패", OSError)
+                    check((deleted/deleted_name).exists() and not (rd/original).exists()
+                          and Path(root, rf.REFS_NAME).read_bytes() == document, "B12 보류 고아 복구 실패 파일·기록 원복")
+                restored = action("undelete", name=deleted_name)["file"]
+                d = rf.load_refs(root)
+                check(restored == original and d["files"].get(restored) == old_record
+                      and next(r for r in bd.refs_state(root)["pool"] if r["name"] == restored)["origin"] == "pool",
+                      f"B12 삭제 도중 종료 복구 원래 이름·origin pool: held={is_held}, suffix={suffix}")
+                check((old_key == restored or old_key not in d["files"]) and source_name not in d.get("held", {})
+                      and not (deleted/deleted_name).exists(), "B12 고아 files 키·낡은 held 정리")
+        bad_crash = save("crash-changed")["file"]
+        bad_held = action("hold", name=bad_crash)["file"]
+        bad_key = rf.HELD_DIR + "/" + bad_held
+        before_bad = rf.load_refs(root)
+        rf._move_excl(str(rd/bad_key), str(deleted/bad_held)); _r3_png(deleted/bad_held, quadrants)
+        restored = action("undelete", name=bad_held)["file"]
+        d = rf.load_refs(root)
+        check(restored not in d["files"] and d["files"][bad_key] == before_bad["files"][bad_key]
+              and d["held"][bad_held] == before_bad["held"][bad_held], "B12 sha 다른 고아는 기록을 회수·정리하지 않음")
+        long = "ref_" + "x"*110 + ".png"
+        _r3_png(deleted/long, quadrants)
+        target = bd._pool_deleted_name(str(deleted), long)
+        check(len(target) <= 120 and target != long and "__" in target, "B12 긴 이름 접미 제한")
+        _r3_png(deleted/target, quadrants)
+        check(bd._pool_deleted_name(str(deleted), long) != target, "B12 삭제 접미 충돌 번호")
+        # 기록은 있는데 파일이 사라진 경우 다음 쓰기에서 정리한다.
+        gone = save("gone")["file"]; remove(gone); (deleted/gone).unlink(); remove(crash)
+        check(gone not in rf.load_refs(root)["deleted"], "B12 사라진 삭제 기록 정리")
+        with patch.object(bd, "_pool_source", return_value=(root, m, str(rd))):
+            deleted_only = "ref_deleted_only.png"
+            _r3_png(deleted/deleted_only, quadrants)
+            source_names = {r["name"] for r in bd.ref_pool_source(root, "test")["files"]}
+            check(not (rd/deleted_only).exists() and deleted_only not in source_names and photo in source_names,
+                  "B12 가져오기 목록: 삭제 폴더에만 있는 파일 제외·일반 파일 포함")
+        c = m["crops"][2]
+        for role in ("main", "aux"):
+            saved = save("detail", crop_id=c["id"], role=role, confirm=[c["name"]+"_t.png"])
+            check(saved["transform"]["corners"] == half and rf.load_refs(root)["files"][saved["file"]]["transform"]["corners"] == half, f"B12 {role} 저장 응답·기록 원근")
+
+    node = shutil.which("node")
+    if not node:
+        skip("node 없음 → batch12 JS 생략")
+        return
+    h = _f4_harness()
+    i_sess, i_scr, i_ui = (h.index(mark) for mark in ("// ── J-R2 세션 ──", "// ── 화면: ", 'await scenario("ui"'))
+    h = h[:i_sess] + h[i_scr:i_ui]
+    # 배치 9 의 실제 이벤트 거품/캡처 대역과 pool 서버 대역만 재사용한다.
+    setup = inspect.getsource(batch9b_unit).split("scene = r'''", 1)[1].split('await scenario("b9saveTabs"', 1)[0]
+    scene = r'''
+El.prototype.querySelectorAll = function (selector) { return this.all().filter((e) => selector === "button" ? e.tagName === "BUTTON" : e.classList.contains(selector.slice(1))); };
+El.prototype.getBoundingClientRect = function () { return { left:0, top:0, right: this.width || 500, bottom: this.height || 500, width: this.width || 500, height: this.height || 500 }; };
+El.prototype.setPointerCapture = function (id) { this.captured = id; };
+El.prototype.hasPointerCapture = function (id) { return this.captured === id; };
+El.prototype.releasePointerCapture = function (id) { this.captured = null; this.fire("lostpointercapture", { pointerId:id }); };
+CTX2D.createImageData = (w,h) => ({ data:new Uint8ClampedArray(w*h*4), width:w, height:h });
+CTX2D.putImageData = function (data) { this.lastImage = data; };
+ctx.window.requestAnimationFrame = (fn) => setTimeout(fn, 0);
+ctx.window.cancelAnimationFrame = clearTimeout;
+out.rules = IN.perspective.corners.map((row) => { const v = E.checkCorners(row.corners); return !v.error === row.ok && (v.code || null) === row.code; });
+out.bframe = IN.perspective.bframe.map((row) => E.perspectiveFrame(row.rows,row.rotate,row.flip_h).bounds.every((v,i) => Math.abs(v-row.expect[i]) < 1e-9));
+out.bpoints = IN.perspective.bframe.map((row) => {
+  const points = E.perspectiveFrame(row.rows,row.rotate,row.flip_h).points;
+  return points.length === row.points.length && points.every((p,i) => p.every((v,j) => Math.abs(v-row.points[i][j]) < 1e-9));
+});
+out.constants = [E.PERSPECTIVE_MAX_AREA === IN.perspective.max_area, E.PERSPECTIVE_MIN_AREA === IN.perspective.min_area];
+out.matrix = IN.perspective.corners.filter((r) => r.ok && r.corners).map((r) => {
+  const src = [[0,0],[100,0],[100,200],[0,200]], dst = r.corners.map(([x,y]) => [x*100,y*200]);
+  const matrix = E.homography(src,dst), inverse = E.homography(dst,src);
+  return src.every(([x,y],i) => E.projectPoint(matrix,x,y).every((v,j) => Math.abs(v-dst[i][j]) < 1e-7)) &&
+    dst.every(([x,y],i) => E.projectPoint(inverse,x,y).every((v,j) => Math.abs(v-src[i][j]) < 1e-7));
+});
+async function start12(o = {}) {
+  const R = R0(); R.pool = [{...poolFile}]; R.pool_held = []; R.pool_deleted = []; R.caps = { perspective:true, pool_delete:true };
+  R.crops.push({...R.crops[0], id:"missing12",name:"099_없음",fixed:false,auto:false,files:[],unlinked:[],held:[],checks:[],pick:null});
+  R.crops.push({...R.crops.at(-1), id:"fixed12",name:"098_고정없음",fixed:true});
+  const env = await start9({ R, ...o });
+  const old = ctx.fetch;
+  ctx.fetch = async (url,opt) => {
+    if (url.includes("/refs/save") && opt && opt.body) {
+      const body = JSON.parse(opt.body); env.lastSave = body;
+      const r = await old(url,opt), data = await r.json();
+      if (!env.dropCorners) data.transform = body.transform;
+      return response(data);
+    }
+    return old(url,opt);
+  };
+  return env;
+}
+async function preview12(env) {
+  await cut9(env);
+  const img = env.imgs.at(-1); img.naturalWidth = 100; img.naturalHeight = 80; img.onload(); await sleep(15);
+}
+const dragData = () => ({ data:{}, types:[], setData(k,v) { this.data[k]=v; this.types=[k]; }, getData(k) { return this.data[k] || ""; } });
+const handles12 = (env) => env.all(env.hosts.panel).filter((e) => e.classList.contains("rf-perspective-handle"));
+const canvas12 = (env) => env.cls(env.hosts.panel,"rf-cut");
+const grab12 = (h,x=20,y=10) => { h.fire("pointerdown",{button:0,pointerId:7,clientX:0,clientY:0}); h.fire("pointermove",{pointerId:7,clientX:x,clientY:y}); };
+await scenario("identityHandles", async () => {
+  const env = await start12(); await preview12(env);
+  const canvas = canvas12(env); let offset = 0;
+  const box = () => ({left:50,top:60,right:50+canvas.width/2,bottom:60+canvas.height/2,width:canvas.width/2,height:canvas.height/2});
+  env.cls(env.hosts.panel,"rf-ct").getBoundingClientRect = box;
+  canvas.getBoundingClientRect = () => { const r = box(); return {...r,left:r.left+offset,right:r.right+offset}; };
+  await env.press(env.hosts.panel,"원근",true);
+  const handles = handles12(env);
+  const inside = handles.length === 4 && handles.every((h) => !h.classList.contains("outside"));
+  const inset = parseFloat(handles[0].style.left) === 57; // 실제 pad 4px, 손잡이 위치 여유 7px
+  await env.press(env.hosts.panel,"원근",true); offset = -6;
+  await env.press(env.hosts.panel,"원근",true);
+  return {inside,inset,outside:handles.every((h,i) => h.classList.contains("outside") === (i === 0 || i === 3))};
+});
+await scenario("perspective", async () => {
+  const env = await start12(); await preview12(env); await env.press(env.hosts.panel,"원근",true);
+  let handle = handles12(env)[0], canvas = canvas12(env), w = canvas.width;
+  grab12(handle,20,5); await sleep(15);
+  const fixed = canvas.width === w;
+  const beforeKey = env.own(env.hosts.panel,"저장 크기 약");
+  const flipBefore = env.button(env.hosts.panel,"좌우 반전").textContent;
+  env.key("BracketRight"); env.key("KeyH");
+  const swallowed = env.own(env.hosts.panel,"저장 크기 약") === beforeKey;
+  const flipSwallowed = env.button(env.hosts.panel,"좌우 반전").textContent === flipBefore;
+  const panelTitle = env.cls(env.hosts.panel,"lp-k");
+  env.ed.stateChanged({...env.st,rev:8,refs_rev:8}); await sleep(40);
+  const deferred = !!panelTitle && env.cls(env.hosts.panel,"lp-k") === panelTitle;
+  env.key("Escape"); await sleep(15);
+  const resumed = env.cls(env.hosts.panel,"lp-k") !== panelTitle;
+  const esc = !!env.button(env.hosts.panel,"보관함에 저장",true) && !env.hosts.panel.textContent.includes("perspective-warped") && handle.captured === null;
+  handle = handles12(env)[0]; grab12(handle,20,5); await sleep(15); handle.fire("pointerup",{pointerId:7});
+  const hint = env.hosts.panel.textContent.includes("perspective-warped");
+  await env.press(env.hosts.panel,"보관함에 저장",true);
+  const sent = env.lastSave.transform.corners[0][0] === .2;
+  const flipSaved = env.lastSave.transform.flip_h === false;
+  handle = handles12(env)[0]; grab12(handle,10,0); handle.fire("lostpointercapture",{pointerId:7});
+  const n = env.confirms.length; await env.press(env.hosts.panel,"목록",true);
+  return {fixed,swallowed,flipSwallowed,flipSaved,deferred,resumed,esc,hint,sent,dirty:env.confirms.length === n+1};
+});
+await scenario("newCutErrors", async () => {
+  const checks = {};
+  for (const large of [false,true]) {
+    const env = await start12(); await preview12(env);
+    const size = large ? [2400,2400] : [100,80];
+    let img = env.imgs.at(-1); [img.naturalWidth,img.naturalHeight] = size; img.onload();
+    await env.press(env.hosts.panel,"원근",true);
+    let handle = handles12(env)[0]; grab12(handle,large ? -1000 : 100,large ? -1000 : 80);
+    await sleep(15); handle.fire("pointerup",{pointerId:7});
+    const message = large ? "너무 큽니다" : "꼬였습니다";
+    checks[`errorBefore${large}`] = env.hosts.panel.textContent.includes(message);
+    env.drag(500,600,800,900); env.key("Enter"); await sleep(35);
+    img = env.imgs.at(-1); [img.naturalWidth,img.naturalHeight] = size;
+    const oldPixels = CTX2D.lastImage; img.onload(); await sleep(15);
+    const canvas = canvas12(env), layer = env.cls(env.hosts.panel,"rf-perspective");
+    const pixels = CTX2D.lastImage;
+    checks[`drawn${large}`] = canvas.width > 0 && canvas.height > 0 && pixels !== oldPixels && pixels.data.some((v,i) => i%4 === 3 && v > 0);
+    checks[`handles${large}`] = !layer.hidden && layer.classList.contains("bad") && handles12(env).length === 4 &&
+      env.all(layer).filter((e) => e.classList.contains("rf-perspective-line")).length === 4;
+    checks[`blocked${large}`] = env.button(env.hosts.panel,"보관함에 저장",true).disabled && env.hosts.panel.textContent.includes(message);
+    // 초기화 단추 없이 손잡이 자체로 항등 근처까지 고친다.
+    handle = handles12(env)[0];
+    const k = Math.min(1,768/Math.max(size[0]+16,size[1]+16));
+    grab12(handle,(large ? 1 : -1)*size[0]*k,(large ? 1 : -1)*size[1]*k);
+    await sleep(15); handle.fire("pointerup",{pointerId:7});
+    checks[`repaired${large}`] = !env.cls(env.hosts.panel,"rf-perspective").classList.contains("bad") && !env.button(env.hosts.panel,"보관함에 저장",true).disabled;
+    await env.press(env.hosts.panel,"보관함에 저장",true);
+    checks[`saved${large}`] = !Object.hasOwn(env.lastSave.transform,"corners");
+  }
+  return checks;
+});
+await scenario("invalidReset", async () => {
+  const env = await start12(); await preview12(env); await env.press(env.hosts.panel,"원근",true);
+  let handle = handles12(env)[0]; grab12(handle,100,80); await sleep(15); handle.fire("pointerup",{pointerId:7});
+  const invalid = env.button(env.hosts.panel,"보관함에 저장",true).disabled && env.hosts.panel.textContent.includes("꼬였습니다");
+  await env.press(env.hosts.panel,"원근 초기화",true); await env.press(env.hosts.panel,"보관함에 저장",true);
+  const identity = !Object.hasOwn(env.lastSave.transform,"corners");
+  handle = handles12(env)[0]; grab12(handle,20,5); await sleep(15); handle.fire("pointerup",{pointerId:7});
+  env.dropCorners = true; await env.press(env.hosts.panel,"보관함에 저장",true);
+  return {invalid,identity,warning:env.toasts.some((s) => s.includes("서버가 원근을 적용하지 않았습니다"))};
+});
+await scenario("delete", async () => {
+  const env = await start12();
+  let cb = env.cls(env.hosts.panel,"rf-pool-check"); cb.checked = true; cb.fire("change");
+  env.ed.stateChanged({...env.st,refs_rev:8}); await sleep(35);
+  const kept = env.cls(env.hosts.panel,"rf-pool-check").checked;
+  await env.press(env.hosts.panel,"선택 삭제 (1)",true);
+  const body = env.poolCalls.at(-1).body;
+  const callsBeforeMenu = env.poolCalls.length, confirmsBeforeMenu = env.confirms.length;
+  await env.press(env.hosts.panel,"⋯",true);
+  const dialog = env.doc.body.all().find((e) => e.classList.contains("rf-dialog"));
+  await env.press(dialog,"삭제",true);
+  const menuBody = env.poolCalls.at(-1).body;
+  const menu = env.poolCalls.length === callsBeforeMenu+1 && menuBody.op === "delete" && same(menuBody.items,[{name:poolFile.name,held:false}]);
+  const ask = env.confirms.length === confirmsBeforeMenu+1 && env.confirms.at(-1).includes("refs\\_삭제\\") && env.confirms.at(-1).includes("1개");
+  env.srv.R.pool_deleted = [{name:"ref_deleted.png",recorded:false,thumb_url:null,size:[10,10]}];
+  env.ed.stateChanged({...env.st,rev:12,refs_rev:12}); await sleep(35);
+  const details = env.cls(env.hosts.panel,"rf-deleted"), closed = !details.open;
+  details.open = true; details.fire("toggle");
+  await env.press(details,"되살리기",true);
+  return {kept,body:body.op === "delete" && body.items[0].name === poolFile.name,ask,menu,
+    closed,recordless:details.textContent.includes("기록 없음"),restore:env.poolCalls.at(-1).body.op === "undelete"};
+});
+await scenario("undeleteReasons", async () => {
+  const env = await start12();
+  env.srv.R.pool_deleted = [{name:"001_external.png",recorded:false,thumb_url:null,size:[10,10]}];
+  env.ed.stateChanged({...env.st,rev:15,refs_rev:15}); await sleep(35);
+  const checks = {};
+  for (const [reason,word] of [["nnn","이름 매칭을 피해"],["collision","이름이 겹쳐"],[false,"보관함 변경"]]) {
+    env.poolResult = {ok:true,rev:++env.srv.rev,file:"ref_restored_t.png",renamed:reason};
+    const before = env.toasts.length;
+    await env.press(env.cls(env.hosts.panel,"rf-deleted"),"되살리기",true);
+    checks[String(reason)] = env.toasts.length === before+1 && env.toasts.at(-1).startsWith(`:${word}`) &&
+      (reason === false || env.toasts.at(-1).includes("ref_restored_t.png 으로 되살림"));
+  }
+  return checks;
+});
+await scenario("heldMenu", async () => {
+  const env = await start12();
+  env.srv.R.pool_held = [
+    {...poolFile,name:"ref_held_own.png",origin:"pool",outside_edit:false},
+    {...poolFile,name:"ref_held_changed.png",origin:"pool",outside_edit:true},
+    {...poolFile,name:"ref_held_old.png",origin:"old",outside_edit:false}
+  ];
+  env.ed.stateChanged({...env.st,rev:17,refs_rev:17}); await sleep(35);
+  const row = (name) => env.all(env.hosts.panel).find((e) => e.classList.contains("rf-file") && e.textContent.includes(name));
+  const own = row("ref_held_own.png"), changed = row("ref_held_changed.png"), old = row("ref_held_old.png");
+  const actions = (r) => env.all(r).filter((e) => e.tagName === "BUTTON").map((e) => e.textContent);
+  const allowed = !!env.button(own,"⋯",true) && !!env.cls(own,"rf-pool-check");
+  const restricted = [changed,old].every((r) => same(actions(r),["되살리기"]) && !env.cls(r,"rf-pool-check"));
+  await env.press(changed,"되살리기",true);
+  const body = env.poolCalls.at(-1).body;
+  return {allowed,restricted,restore:body.op === "restore" && body.name === "ref_held_changed.png"};
+});
+await scenario("dragDrop", async () => {
+  const env = await start12(); await env.press(env.hosts.tabs,"그리드",true);
+  const source = () => env.all(env.hosts.grid).find((e) => e.draggable);
+  const target = () => env.all(env.hosts.grid).find((e) => e.dataset.refDrop);
+  const data = dragData(), card = source(), drop = target();
+  card.fire("dragstart",{dataTransfer:data});
+  env.ed.stateChanged({...env.st,refs_rev:8}); await sleep(35);
+  const defer = source() === card;
+  const over = drop.fire("dragover",{dataTransfer:data}).defaultPrevented;
+  const mainFrame = (name) => {
+    const crop = env.all(env.hosts.grid).find((e) => e.classList.contains("rg-card") && e.textContent.includes(name));
+    const figure = env.all(crop).find((e) => e.tagName === "FIGURE" && e.children[0].textContent === "대표");
+    return env.cls(figure,"rg-frame");
+  };
+  const invalid = [mainFrame(env.srv.R.crops[0].name),mainFrame("098_고정없음")].every((frame) =>
+    !Object.hasOwn(frame.dataset,"refDrop") && !frame.fire("dragover",{dataTransfer:data}).defaultPrevented);
+  const payload = JSON.parse(data.getData("application/x-bmk-dp-ref"));
+  data.data["application/x-bmk-dp-ref"] = JSON.stringify({...payload,token:"foreign"});
+  const foreign = !drop.fire("drop",{dataTransfer:data}).defaultPrevented;
+  data.data["application/x-bmk-dp-ref"] = JSON.stringify(payload);
+  drop.fire("drop",{dataTransfer:data}); await sleep(40);
+  const body = posts(env.srv,"refs/link").at(-1);
+  const own = body && body.op === "add" && body.main === true && body.crop_id === drop.dataset.refDrop;
+  const ended = !env.hosts.grid.classList.contains("rf-dropping");
+  const data2 = dragData(); source().fire("dragstart",{dataTransfer:data2}); env.doc.body.fire("drop",{dataTransfer:data2}); await sleep(10);
+  return {defer,over,invalid,foreign,own,ended,documentDrop:!env.hosts.grid.classList.contains("rf-dropping"),token:typeof payload.token === "string"};
+});
+await scenario("dragChangedTarget", async () => {
+  const env = await start12(); await env.press(env.hosts.tabs,"그리드",true);
+  const source = env.all(env.hosts.grid).find((e) => e.draggable);
+  const target = env.all(env.hosts.grid).find((e) => e.dataset.refDrop === "missing12"), data = dragData();
+  source.fire("dragstart",{dataTransfer:data});
+  env.srv.R.crops.find((c) => c.id === "missing12").files = [{...poolFile,role:"main"}];
+  env.ed.stateChanged({...env.st,rev:24,refs_rev:24}); await sleep(35);
+  const accepted = target.fire("drop",{dataTransfer:data}).defaultPrevented; await sleep(40);
+  return {accepted,noPost:posts(env.srv,"refs/link").length === 0,
+    warned:env.toasts.some((s) => s.includes("대표가 바뀌었습니다"))};
+});
+await scenario("oldServer", async () => {
+  const env = await start12(); await preview12(env);
+  const cb = env.cls(env.hosts.panel,"rf-pool-check"); cb.checked = true; cb.fire("change");
+  const enabledBefore = !env.button(env.hosts.panel,"선택 삭제 (1)",true).disabled;
+  env.srv.R.pool_deleted = [{name:"ref_old_deleted.png",recorded:false,thumb_url:null,size:[10,10]}];
+  delete env.srv.R.caps;
+  env.ed.stateChanged({...env.st,rev:22,refs_rev:22}); await sleep(35);
+  const checkbox = env.cls(env.hosts.panel,"rf-pool-check");
+  const details = env.cls(env.hosts.panel,"rf-deleted");
+  const restore = env.button(details,"되살리기",true).disabled;
+  await env.press(env.hosts.panel,"⋯",true);
+  const dialog = env.doc.body.all().find((e) => e.classList.contains("rf-dialog"));
+  return { enabledBefore, perspective:env.button(env.hosts.panel,"원근",true).disabled, deletion:env.button(env.hosts.panel,"선택 삭제 (1)",true).disabled,
+    checkbox:checkbox.checked && checkbox.disabled, menu:env.button(dialog,"삭제",true).disabled, restore,
+    title:env.button(env.hosts.panel,"원근",true).title === "ComfyUI 재시작 필요(서버가 옛 판)" };
+});
+await scenario("overlayTransitions", async () => {
+  const env = await start12(), id = env.srv.R.crops[1].id;
+  env.st.targets = [{crop_id:id,before_full_url:"thumb?before=12"}];
+  env.li(env.srv.R.crops[1].name).fire("click");
+  await preview12(env); await env.press(env.hosts.panel,"겹쳐 보기",true);
+  const snapshot = () => {
+    const canvas = canvas12(env);
+    return ["left","top","width","height"].map((p) => parseFloat(canvas.style[p]));
+  };
+  const close = (a,b) => a.every((v,i) => Math.abs(v-b[i]) < 1e-7);
+  const scale = async (value) => {
+    const row = env.all(env.hosts.panel).find((e) => e.classList.contains("rf-slider") && e.children[0].textContent === "배율");
+    row.children[1].value = String(value); row.children[1].fire("input"); row.children[1].fire("change"); await sleep(10);
+  };
+  const original = snapshot();
+  await env.press(env.hosts.panel,"원근",true); const firstOn = close(snapshot(),original);
+  await env.press(env.hosts.panel,"원근",true); await scale(.5);
+  const half = snapshot(), shrunk = half[2] < original[2] && half[3] < original[3];
+  await env.press(env.hosts.panel,"원근",true); const scaleThenOn = close(snapshot(),half);
+  await env.press(env.hosts.panel,"원근",true); const backOff = close(snapshot(),half);
+  await scale(1); const scaleBack = close(snapshot(),original);
+  await env.press(env.hosts.panel,"원근",true);
+  const handle = handles12(env)[0]; grab12(handle,-30,-20); await sleep(15); handle.fire("pointerup",{pointerId:7});
+  const expanded = snapshot(), canvas = canvas12(env), zoom = expanded[2]/canvas.width;
+  const bOrigin = [expanded[0]+38*zoom,expanded[1]+28*zoom]; // B 좌상단 = 늘어난 30/20 + pad 8
+  await env.press(env.hosts.panel,"원근 켬",true); const hidden = close(snapshot(),expanded);
+  await env.press(env.hosts.panel,"원근 초기화",true);
+  const reset = snapshot(), newZoom = reset[2]/canvas12(env).width;
+  const resetAnchored = close([reset[0]+8*newZoom,reset[1]+8*newZoom],bOrigin);
+  return {firstOn,shrunk,scaleThenOn,backOff,scaleBack,hidden,resetAnchored,resetSize:close(reset,original)};
+});
+await scenario("overlayAndLimit", async () => {
+  const env = await start12();
+  const id = env.srv.R.crops[1].id;
+  env.st.targets = [{crop_id:id,before_full_url:"thumb?before=12"}];
+  env.li(env.srv.R.crops[1].name).fire("click");
+  await preview12(env); await env.press(env.hosts.panel,"원근",true); await env.press(env.hosts.panel,"겹쳐 보기",true);
+  let canvas = canvas12(env), handle = handles12(env)[0];
+  const x0 = parseFloat(canvas.style.left), y0 = parseFloat(canvas.style.top), width0 = parseFloat(canvas.style.width);
+  grab12(handle,-30,-20); await sleep(15); handle.fire("pointerup",{pointerId:7});
+  const anchored = Math.abs(parseFloat(canvas.style.left)-x0+30) < .01 && Math.abs(parseFloat(canvas.style.top)-y0+20) < .01;
+  const enlarged = parseFloat(canvas.style.width) > width0;
+  await env.press(env.hosts.panel,"원근 초기화",true); await env.press(env.hosts.panel,"나란히",true);
+  const img = env.imgs.at(-1); img.naturalWidth = 2400; img.naturalHeight = 2400; img.onload(); await sleep(15);
+  handle = handles12(env)[0]; grab12(handle,-1000,-1000); await sleep(20); handle.fire("pointerup",{pointerId:7});
+  const tooLarge = env.button(env.hosts.panel,"대표로 저장",true).disabled && env.hosts.panel.textContent.includes("너무 큽니다");
+  return {anchored,enlarged,tooLarge};
+});
+await scenario("reopen", async () => {
+  const R = R0(), req = "c".repeat(32), rect = [100,100,400,500], corners = [[.2,0],[1,0],[1,1],[0,1]];
+  R.pool = []; R.pool_held = []; R.caps = {perspective:true,pool_delete:true};
+  R.crops[1].files[0].record = {sheet:{path:"00_원본/refer_character.psd",size:[3927,7583],changed:false},rect,
+    cut:{method:"rect",steps:[req]},transform:{rotate:0,flip_h:false,scale:1,pad:8,corners}};
+  const env = await start12({R}); env.srv.cuts[req] = {body:{rect},waits:0}; env.li(R.crops[1].name).fire("click");
+  await env.press(env.hosts.panel,"다시 열기",true);
+  const img = env.imgs.at(-1); img.naturalWidth=100; img.naturalHeight=80; img.onload(); await sleep(10);
+  const restored = !!env.button(env.hosts.panel,"원근 켬",true);
+  await env.press(env.hosts.panel,"보관함에만 저장",true);
+  return {restored,body:same(env.lastSave.transform.corners,corners)};
+});
+await scenario("dragCleanup", async () => {
+  const env = await start12(); await env.press(env.hosts.tabs,"그리드",true);
+  const source = () => env.all(env.hosts.panel).find((e) => e.draggable), target = () => env.all(env.hosts.grid).find((e) => e.dataset.refDrop);
+  const data = dragData(); source().fire("dragstart",{dataTransfer:data});
+  const otherType = !target().fire("dragover",{dataTransfer:{types:["Files"]}}).defaultPrevented;
+  const panel = source(); env.ed.stateChanged({...env.st,rev:20}); await sleep(35);
+  const deferred = source() === panel;
+  panel.fire("dragend"); const ended = !env.hosts.grid.classList.contains("rf-dropping");
+  const oldTimer = ctx.setTimeout; let safety = null;
+  ctx.setTimeout = (fn,ms) => ms === 30000 ? (safety=fn, -1) : oldTimer(fn,ms);
+  source().fire("dragstart",{dataTransfer:dragData()}); ctx.setTimeout=oldTimer;
+  safety();
+  return {otherType,deferred,ended,timeout:!env.hosts.grid.classList.contains("rf-dropping")};
+});
+console.log(JSON.stringify(out)); process.exit(0);
+'''
+    (out / "harness.mjs").write_text(h + setup + scene, encoding="utf-8", newline="\n")
+    (out / "in.json").write_text(json.dumps({"rows": [], "side": [], "hint": [], "bases": [], "perspective": table}), encoding="utf-8")
+    proc = subprocess.run([node, str(out / "harness.mjs"), str(PKG / "web_design_patch/layout_geom.js"),
+                           str(PKG / "web_design_patch/ref_edit.js"), str(out / "in.json")], capture_output=True, text=True, encoding="utf-8", timeout=90)
+    check(proc.returncode == 0 and bool(proc.stdout.strip()), "B12 JS 하네스 실행: " + proc.stderr[-1500:])
+    if proc.returncode == 0 and proc.stdout.strip():
+        results = json.loads(proc.stdout.strip().splitlines()[-1])
+        for name in ("rules", "bframe", "bpoints", "constants", "matrix", "identityHandles", "perspective", "newCutErrors", "invalidReset", "delete", "undeleteReasons", "heldMenu", "dragDrop", "dragChangedTarget", "oldServer", "overlayTransitions", "overlayAndLimit", "reopen", "dragCleanup"):
+            result = results.get(name, {})
+            check(bool(result) and all(v is True for v in (result if isinstance(result, list) else result.values())), f"B12 JS {name}: {result}")
+
+
 if __name__ == "__main__":
     T0 = time.time()
     if ONLY:
@@ -56764,6 +57421,8 @@ if __name__ == "__main__":
         batch9a_unit()
     if want("batch9b_unit"):
         batch9b_unit()
+    if want("batch12_unit"):
+        batch12_unit()
     print(f"\n단위 테스트 {time.time() - T0:.1f}s (PASS {PASSES} FAIL {len(FAILS)})")
     if QUICK:
         print("\n--quick: 회귀·노드 생략")
