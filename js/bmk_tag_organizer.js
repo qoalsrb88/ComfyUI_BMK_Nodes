@@ -1,4 +1,4 @@
-// bmk_tag_organizer.js — BMKTagOrganizer 짝 JS 확장 (v10)
+// bmk_tag_organizer.js — BMKTagOrganizer 짝 JS 확장 (v11)
 //
 // 배열 세팅(arrangement) 청크 편집기를 노드에 붙이는 ComfyUI 어댑터. 편집기 자체는 TagOrganizer 저장소의
 // extension/editor/ 가 정본이고(크롬 확장 패널과 같은 코드), js/tag_organizer/ 는 그 저장소의
@@ -22,10 +22,12 @@
 // - 칩 모양: 태그 칩에 그림을 붙인다. palette 의 gaze_grid 가 있으면 시선은 방향(열) × looking·facing(행) 격자로, 자동 칩은
 //   격자 왼쪽 위 모서리에, 고른 태그 이름은 격자 옆에 글로 둔다. pose_groups 가 있으면 포즈는 자세 묶음(이름표 + 칩)으로 둔다.
 //   격자·묶음에 없는 퀵 태그는 뒤에 보통 칩으로 둔다. 옛 팩처럼 두 목록이 비면 예전처럼 한 줄로 늘어놓는다.
-// - 퀵 세팅 그림: 시점 줄 끝의 그림 단추로 켜고 끈다(켬 상태는 node.properties.bmk_to_stage). 켜면 시점 줄 옆에 크롭 틀과
+// - 퀵 세팅 그림: 시점 줄 끝의 그림 단추로 켜고 끈다(켬 상태는 node.properties.bmk_to_stage). 켜면 칩 줄 왼쪽에 크롭 틀과
 //   방향·높이 다이얼이 나오고, 그림이 고른 값은 framing 콤보와 숨긴 view 위젯에 쓴다. 다이얼이 맡는 시점 칩은 숨기고 다이얼 밖
 //   태그(straight-on, pov 등)만 칩으로 남긴다. 점선 '지금 값'은 미리보기 토큰 중 덮어쓰기로 넣지 않은 태그다. 끄는 동안의 중간
 //   값은 되돌리기 기록에 남기지 않고 손을 뗄 때 한 번 남긴다. palette 에 framing_frame·view_dial 이 없으면(옛 팩) 단추가 없다.
+//   칩 영역 폭이 600 이상이면 시점·시선·포즈 줄을 모두 그림 옆에, 500 이상이면 시점 줄만 옆에, 그보다 좁으면 그림 아래에 둔다.
+// - 편집기 최소 높이는 잰 칩 영역 높이에 청크·미리보기 몫을 더한 값이라, 폭이 넓어 칩 줄이 줄면 노드도 더 줄일 수 있다.
 //
 // 상태는 ArrangementEditor·host 객체에 두고 위젯에는 자체 필드를 얹지 않는다(프론트 1.53 이 위젯을
 // BaseWidget 으로 흡수하며 충돌할 수 있음 — bmk_sam3_mask_layers.js 와 같은 이유).
@@ -56,8 +58,10 @@ const OPTION_KEYS = [
 ];
 const MIN_WIDTH = 560;
 const ADD_HEIGHT = 640;      // 처음 만들 때 편집기 몫으로 늘리는 높이
-const EDITOR_MIN_H = 520;    // 칩 세 줄(시선 격자 포함)을 빼고도 청크·미리보기가 남는 높이
-const STAGE_MIN_H = 140;     // 그림을 켜면 더하는 높이(그림 높이에서 옆으로 옮긴 시점 줄 몫을 뺀 것)
+const EDITOR_REST_H = 312;   // 칩 영역을 뺀 편집기 최소 높이(청크·미리보기가 남는 몫)
+const CHIPS_H = 208;         // 560 폭의 칩 영역 높이(그림 끔). 재기 전에 쓴다
+const STAGE_H = 140;         // 560 폭에서 그림을 켜면 늘어나는 칩 영역 높이. 재기 전에 쓴다
+const ROOT_PAD = 4;          // 편집기 root 의 좌우 padding 합(editor.js 의 .bmk-to-root)
 const MARGIN = 6;
 const NOTE_MS = 8000;        // 칩이 꺼진 까닭을 보이는 시간
 const GLYPH_SIZE = { view: 16, gaze: 16, pose: 18 };   // 칩 안 그림 높이(px)
@@ -87,8 +91,16 @@ const CHIP_STYLE = `
 .bmk-to-chips button.bmk-to-cell{display:flex;align-items:center;justify-content:center;height:22px;padding:0;border-radius:6px}
 .bmk-to-gaze-empty{height:22px}
 .bmk-to-chips button.bmk-to-stage-btn{margin-left:auto}
-.bmk-to-quick{flex:0 0 auto;display:flex;flex-wrap:wrap;align-items:flex-start;gap:4px 12px}
-.bmk-to-quick>.bmk-to-chips{flex:1 1 240px;min-width:0}
+.bmk-to-quick{flex:0 0 auto;container-type:inline-size}
+.bmk-to-quick-grid{display:flex;flex-direction:column;gap:4px}
+.bmk-to-quick-grid>.bmk-to-chips{min-width:0}
+.bmk-to-quick-grid:has(>.bmk-to-stage:not([hidden])){display:grid;grid-template-columns:minmax(0,1fr);grid-template-areas:"stage" "view" "gaze" "pose";gap:4px 12px;align-items:start}
+.bmk-to-quick-grid>.bmk-to-stage{grid-area:stage}
+.bmk-to-quick-grid>.bmk-to-q-view{grid-area:view}
+.bmk-to-quick-grid>.bmk-to-q-gaze{grid-area:gaze}
+.bmk-to-quick-grid>.bmk-to-q-pose{grid-area:pose}
+@container (min-width:500px){.bmk-to-quick-grid:has(>.bmk-to-stage:not([hidden])){grid-template-columns:auto minmax(0,1fr);grid-template-areas:"stage view" "gaze gaze" "pose pose"}}
+@container (min-width:600px){.bmk-to-quick-grid:has(>.bmk-to-stage:not([hidden])){grid-template-rows:auto auto auto 1fr;grid-template-areas:"stage view" "stage gaze" "stage pose" "stage ."}}
 `;
 // 퀵 세팅 그림(stage.js). 규칙은 panel.css 의 .qs-* 와 같고, 색 이름을 ComfyUI 변수에 잇는다.
 // 점선은 프롬프트에 든 지금 값, 채움은 덮어쓰기
@@ -484,17 +496,36 @@ function nodeHost(node) {
     onChange: () => host.changed(),
     onToggle: () => {
       view.render();
-      // 켜서 편집기 최소 높이가 늘면 노드를 늘린다(줄이지는 않는다)
-      const sz = node.computeSize?.();
-      if (sz && node.size[1] < sz[1]) node.setSize([node.size[0], sz[1]]);
-      node.setDirtyCanvas?.(true, true);
+      growToMin();
     },
   });
   const view = viewChips(node, () => host.changed(), stage);
   const gaze = gazeChips(node, () => host.changed());
   const pose = poseChips(node, () => host.changed());
+  // 칩 영역: 그림을 켜면 폭에 따라 세 가지로 놓는다(CSS 의 .bmk-to-quick-grid). 좁으면 위에서 아래로, 중간이면 시점 줄만
+  // 그림 옆에, 넓으면 시점·시선·포즈 줄을 모두 그림 옆에. 폭은 칩 영역 자체를 재므로 캔버스 배율과 상관없다
+  view.row.classList.add("bmk-to-q-view");
+  gaze.row.classList.add("bmk-to-q-gaze");
+  pose.row.classList.add("bmk-to-q-pose");
   const quick = el("div", "bmk-to-quick");
-  quick.append(stage.box, view.row);
+  const grid = el("div", "bmk-to-quick-grid");
+  grid.append(stage.box, view.row, gaze.row, pose.row);
+  quick.append(grid);
+  // 칩 영역 높이는 폭과 그림 켬에 따라 바뀌므로 편집기 최소 높이를 물을 때마다 잰다(그릴 때 한 번꼴).
+  // 노드 폭대로 놓이기 전(막 만든 노드)이나 안 보일 때(작게 줌, 팩을 받기 전)는 마지막으로 잰 값,
+  // 그것도 없으면 560 폭의 값을 쓴다
+  let chipsH = 0;
+  const chipsHeight = () => {
+    const laidOut = Math.abs(grid.offsetWidth - (node.size[0] - 2 * MARGIN - ROOT_PAD)) <= 8;
+    if (laidOut && grid.offsetHeight) chipsH = grid.offsetHeight;
+    return chipsH || CHIPS_H + (stage.shown() ? STAGE_H : 0);
+  };
+  function growToMin() {
+    // 편집기 최소 높이가 늘면 노드를 늘린다(줄이지는 않는다)
+    const sz = node.computeSize?.();
+    if (sz && node.size[1] < sz[1]) node.setSize([node.size[0], sz[1]]);
+    node.setDirtyCanvas?.(true, true);
+  }
   let previewSeq = 0;
   const host = {
     view,
@@ -502,6 +533,7 @@ function nodeHost(node) {
     pose,
     stage,
     quick,
+    minHeight: () => EDITOR_REST_H + chipsHeight(),   // 편집기 최소 높이: 칩 영역을 뺀 몫 + 잰 칩 영역
     lastInput: null,      // 마지막 실행의 입력(text 를 연결했을 때)
     split: node.properties?.bmk_to_split,
     canReset: true,
@@ -592,7 +624,7 @@ app.registerExtension({
         if (w.name === ARR || w.name === VIEW || w.name === GAZE || w.name === POSE) w.hidden = true; // 입력 옵션 hidden 을 모르는 프론트에서도 숨긴다
       }
       const editor = new ArrangementEditor(nodeHost(this));
-      editor.root.prepend(editor.host.quick, editor.host.gaze.row, editor.host.pose.row);
+      editor.root.prepend(editor.host.quick);
       this.__bmkTagArr = editor;
       const widget = this.addDOMWidget("arrangement_editor", EDITOR_TYPE, editor.root, {
         serialize: false,
@@ -600,7 +632,7 @@ app.registerExtension({
         margin: MARGIN,
         getValue: () => "",
         setValue: () => {},
-        getMinHeight: () => EDITOR_MIN_H + (editor.host.stage.shown() ? STAGE_MIN_H : 0),
+        getMinHeight: () => editor.host.minHeight(),
       });
       widget.serialize = false;
       if (widget.options) widget.options.serialize = false;
