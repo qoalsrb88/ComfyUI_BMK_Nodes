@@ -1081,9 +1081,10 @@ def cell_key(
 COMPLEXITY_MODELS = frozenset({"gpt-image-2.6-sunburst", "gpt-image-2.6-flare"})
 
 
-def prune_stale_rerolls(m: dict, keep_keys: Iterable[str], spent: Callable[[str], int]) -> int:
-    """배치 10 D161(갈래 B 가 몸통을 채움): jobs 밖 생성 조건 키의 다시 생성 대기(rerolls)를 원장에서 이미 쓴 몫(spent(ck))까지
-    내린다(0 이면 키 삭제) — 키가 되돌아와도 사전 승인이 되살아나지 않게. 정리한 남은 몫 합을 돌려준다. 공용 자리 = 아무것도 안 함."""
+def prune_stale_rerolls(m: dict, keep_keys: Iterable[str], spent: Callable[[str], int], reset_keys: Iterable[str] = ()) -> int:
+    """배치 10 D161(갈래 B 가 몸통을 채움): keep_keys(지금 jobs) 밖이거나 reset_keys 에 든 생성 조건 키의 다시 생성 대기(rerolls)를
+    원장에서 이미 쓴 몫(spent(ck) — 끝난 것만)까지 내린다(0 이면 키 삭제) — 키가 되돌아와도 사전 승인이 되살아나지 않게.
+    Prepare 가 commit_merge(finalize=…) 로 잠금 안 병합 결과에 부른다. 정리한 남은 몫 합을 돌려준다. 공용 자리 = 아무것도 안 함."""
     return 0
 
 
@@ -1392,16 +1393,20 @@ def merge_manifest(base: dict, ours: dict, theirs: dict) -> tuple[dict, list[str
     return merged, conflicts
 
 
-def commit_merge(root: str, before_snapshot: dict | str, ours: dict) -> tuple[dict, int, list[str]]:
+def commit_merge(root: str, before_snapshot: dict | str, ours: dict, *,
+                 finalize: Callable[[dict], Any] | None = None) -> tuple[dict, int, list[str]]:
     """노드 저장(M1 _commit 대체): 잠금 → 디스크 최신본(theirs) → merge_manifest(before_snapshot, ours, theirs) → 저장.
     before_snapshot = 노드가 매니페스트를 연 직후의 상태(dict, 또는 M1 _snapshot 이 만든 JSON 문자열).
     반환 (merged, rev, conflicts): merged = 디스크에 있는 내용(rev 포함). 합친 결과가 디스크와 같으면(ours 가 바꾼 것이
     없거나 이미 반영됨) 저장하지 않고 디스크 rev 를 그대로 돌려준다 — 같은 입력의 재실행은 rev 를 올리지 않는다.
-    ours·before_snapshot 은 바꾸지 않는다(ours['rev'] 가 필요하면 반환 rev 를 쓸 것). 매니페스트가 없으면 ValueError."""
+    ours·before_snapshot 은 바꾸지 않는다(ours['rev'] 가 필요하면 반환 rev 를 쓸 것). 매니페스트가 없으면 ValueError.
+    finalize(merged) = 잠금 안에서 병합 결과를 저장 전에 고친다(배치 10 D161 — 노드가 연 뒤 보드가 더한 값까지 보고 정리)."""
     base = json.loads(before_snapshot) if isinstance(before_snapshot, str) else before_snapshot
     with manifest_lock(root):
         theirs = _load_existing(root)
         merged, conflicts = merge_manifest(base, ours, theirs)
+        if finalize is not None:
+            finalize(merged)
         rev = theirs["rev"]
         if merged != theirs:
             rev = save_manifest(root, merged)

@@ -360,11 +360,11 @@ def _snapshot(m: dict) -> str:
     return json.dumps(m, sort_keys=True, ensure_ascii=False, default=_json_default)
 
 
-def _commit(root: str, m: dict, before: str, src: dict | None = None, **branch) -> tuple[dict, list[str]]:
+def _commit(root: str, m: dict, before: str, src: dict | None = None, *, finalize=None, **branch) -> tuple[dict, list[str]]:
     """3-way 병합 저장(store.commit_merge): 이 노드가 연 뒤에 보드·Run 이 쓴 변경을 덮지 않는다. 합친 결과가 디스크와 같으면
     저장하지 않는다(같은 입력의 재실행은 rev 그대로). m 은 저장된 내용(rev 포함)으로 바뀐다.
     반환 (핸들, 병합 충돌 경고 — 보고서 끝에 붙인다)."""
-    merged, _rev, conflicts = store.commit_merge(root, before, m)
+    merged, _rev, conflicts = store.commit_merge(root, before, m, finalize=finalize)
     m.clear()
     m.update(merged)
     return _handle(root, m, src, **branch), [f"매니페스트 병합 충돌(이 노드의 값으로 저장): {c}" for c in conflicts]
@@ -2004,14 +2004,22 @@ class BMKDesignPatchPrepare:
                           + (f"  fill {finfo['alpha_frac'] * 100:.0f}%" if finfo["method"] != "none" else ""))]
             tiles.append(_label_tile(cells, lab, (255, 140, 120) if (spec["warnings"] or probs) else (220, 220, 220)))
         m["jobs"] = _plain(jobs)
-        # 배치 10 D161 공용 자리(몸통 = 갈래 B): jobs 밖 생성 조건의 다시 생성 대기를 원장 쓴 몫까지 내림 — 키가 되돌아와도 안 살아나게
-        n_pruned = store.prune_stale_rerolls(m, {j["cell_key"] for j in jobs}, lambda ck: runner.board_spent(root, ck))
         # jobs 와 같은 커밋에(STUDIO_S3_SPEC §2.2): 실제로 쓴 위젯 값 — Studio 처음 값·그래프와의 갈라짐 판정, 같은 설정이면 바이트 그대로
         m["prepare_settings"] = {"model": model, "quality": quality, "size_rule": size_rule, "variants": variants,
                                  "n": int(n), "ref_style": ref_style, "calls_per_cell": int(calls_per_cell)}
         if not adopt_pending:  # 채택 미반영 크롭이 있으면 열 때 값 그대로(없으면 키 없음) — Studio '반영 필요'가 다음 반영까지 남게
             m["prepare_inputs"] = inputs_fp
-        handle, conflicts = _commit(root, m, before, project)
+        # 배치 10 D161 공용 자리(몸통 = 갈래 B): 잠금 안 병합 결과에서 jobs 밖(·reset) 생성 조건의 다시 생성 대기를 원장 쓴 몫까지 내림
+        # — 노드가 연 뒤 보드가 옛 셀에 더한 몫까지, 키가 되돌아와도 안 살아나게
+        reset_keys: set[str] = set()
+        pruned = [0]
+
+        def _prune(mm: dict) -> None:
+            pruned[0] = store.prune_stale_rerolls(mm, {j.get("cell_key") for j in mm.get("jobs") or []},
+                                                  lambda ck: runner.board_spent(root, ck), reset_keys)
+
+        handle, conflicts = _commit(root, m, before, project, finalize=_prune)
+        n_pruned = pruned[0]
         plan = runner.plan_calls(m, root)
         mock = runner.mock_enabled(root)  # 해시는 백엔드에 묶인다 — Run 이 지금 쓸 백엔드와 같게
         ap = runner.split_approval(plan, "", backend=runner.BACKEND_MOCK if mock else runner.BACKEND_COMFY_ORG)
