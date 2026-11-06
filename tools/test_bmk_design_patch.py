@@ -53569,6 +53569,78 @@ def batch10a_unit():
     d_jobs = pl.derive(root, dict(m25, prepare_settings={}))
     check("prepare.complexity" not in d_jobs["confirm"], "D148 2.5 jobs complexity 생략 확인 불필요")
 
+    with patch.object(rn, "mock_enabled", return_value=True):
+        for missing_size in (False, True):
+            legacy_m = copy.deepcopy(m25)
+            legacy_m.pop("prepare_settings")
+            if missing_size:
+                for job in legacy_m["jobs"]:
+                    job.pop("size_info", None)
+            source, record = pl.prepare_record(legacy_m)
+            check(source == "jobs" and "variants" not in record and "ref_style" not in record
+                  and ("size_rule" not in record) == missing_size, f"D152 옛 jobs 기록 누락 재현: size={missing_size}")
+            for field, value in (("model", models[0]), ("quality", "high")):
+                result = pl.view(root, legacy_m, switch_prepare=dict(settings["prepare"], **{field: value}))["switch"]
+                check(result["exact"] is True and result["need"] == result["cells"] == 2 and result["est_usd"][1] > 0
+                      and result["uncertain"] is True, f"D152 옛 jobs {field}만 변경: 숫자·uncertain(size={missing_size})")
+            for field, value in (("variants", "V1,V4"), ("ref_style", "plain"),
+                                 ("size_rule", next(k for k in st.GPT_SIZE_RULES if k != target["size_rule"]))):
+                result = pl.view(root, legacy_m, switch_prepare=dict(target, **{field: value}))["switch"]
+                check(result["exact"] is False and result["need"] is None,
+                      f"D152 옛 jobs {field} 변경: 기록 또는 저장값과 다르면 계산 불가(size={missing_size})")
+
+        # 네트워크 없이 실제 라우트 함수를 호출해 보드 판정이 view 에 전달되는지 확인한다.
+        def preview_route(manifest, prepare=target):
+            query = {"root": "test"}
+            if prepare is not None:
+                query["prepare"] = json.dumps(prepare)
+            with patch.object(bd, "_root_param", return_value=root), patch.object(st, "load_manifest", return_value=manifest):
+                response = asyncio.run(bd.pipeline_handler(types.SimpleNamespace(query=query, path="/pipeline")))
+            check(response.status == 200, "D152 미리 보기 라우트 200")
+            return json.loads(response.body)
+
+        with patch.object(bd, "_import_pending", wraps=bd._import_pending) as pending, patch.object(rn, "plan_calls", wraps=rn.plan_calls) as plans:
+            result = preview_route(m25, None)
+            check(result["switch"] is None and pending.call_count == plans.call_count == 0,
+                  "D152 일반 조회: Import 판정·호출 계획 0회")
+            result = preview_route(m25)
+            check(result["switch"]["uncertain"] is False and pending.call_count == plans.call_count == 1,
+                  "D152 깨끗한 프로젝트 라우트: 숫자·확실성 유지")
+
+        layout = st.layout_from_manifest(m25)
+        pending_m = copy.deepcopy(m25)
+        pending_m["source"]["layout"] = {"rev": 0, "sig": st.layout_sig(layout)}
+        layout["crops"][0]["rect"][2] -= 1
+        layout_path = Path(root, st.LAYOUT_NAME)
+        st.write_json_atomic(str(layout_path), layout)
+        try:
+            pending_m["prepare_inputs"] = st.prepare_inputs_fp(root, pending_m)  # Import 없이 Prepare 만 다시 돈 상태
+            check(pl.switch_preview(root, pending_m, settings, prepare=target)["uncertain"] is False
+                  and any(s.startswith("레이아웃 미반영") for s in bd._import_pending(root, pending_m, settings)),
+                  "D152 Prepare 지문은 같아도 source.layout.sig 는 미반영")
+            result = preview_route(pending_m)["switch"]
+            check(result["uncertain"] is True and result["exact"] is True and result["need"] == 2,
+                  "D152 레이아웃 미반영 라우트: uncertain OR·숫자 유지")
+        finally:
+            layout_path.unlink()
+
+        refs_dir = out / "preview-refs"
+        refs_dir.mkdir(exist_ok=True)
+        Image.new("RGB", (8, 8), "white").save(refs_dir / "001_preview.png")
+        pending_m = copy.deepcopy(m25)
+        pending_m["source"]["refs_dir"] = str(refs_dir.resolve())
+        pending_m["prepare_inputs"] = st.prepare_inputs_fp(root, pending_m)
+        check(pl.switch_preview(root, pending_m, settings, prepare=target)["uncertain"] is False
+              and any(s.startswith("레퍼런스 미반영") for s in bd._import_pending(root, pending_m, settings)),
+              "D152 Prepare 지문은 같아도 resolve_refs 결과는 미반영")
+        result = preview_route(pending_m)["switch"]
+        check(result["uncertain"] is True and result["exact"] is True and result["need"] == 2,
+              "D152 레퍼런스 미반영 라우트: uncertain OR·숫자 유지")
+        with patch.object(bd, "_import_pending", side_effect=OSError("locked import input")):
+            result = preview_route(m25)["switch"]
+            check(result["uncertain"] is True and "locked import input" in result["error"],
+                  "D152 Import 판정 실패도 미리 보기 오류로 반환")
+
     # 신규·사전 승인·재시도 모두 차단, 무료 복구는 남긴다.
     p = rn.plan_calls(m26, root)
     entries = []

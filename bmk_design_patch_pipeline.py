@@ -99,7 +99,7 @@ import math
 import os
 import re
 from collections import Counter
-from typing import Any
+from typing import Any, Callable
 
 try:
     from . import bmk_design_patch_store as store
@@ -859,7 +859,8 @@ def recent_exports(m: dict, n: int = 10) -> list[dict]:
     return [{k: e.get(k) for k in ("rev", "psd", "time", "layers", "problems", "bytes", "mask_groups", "mask_edits")} for e in reversed(rows[-n:])]
 
 
-def switch_preview(root: str, m: dict, settings: dict, *, prepare: dict | None = None) -> dict:
+def switch_preview(root: str, m: dict, settings: dict, *, prepare: dict | None = None,
+                   import_pending: Callable[[str, dict, dict], list[str]] | None = None) -> dict:
     """읽기 전용 생성 조건 변경 추정. 현재 입력·프롬프트를 재사용하므로 미반영 입력/변형 변화는 반영 뒤 달라질 수 있다."""
     target = prepare
     try:
@@ -874,8 +875,11 @@ def switch_preview(root: str, m: dict, settings: dict, *, prepare: dict | None =
         target = validate_section("prepare", target)
         backend = runner.BACKEND_MOCK if runner.mock_enabled(root) else runner.BACKEND_COMFY_ORG
         _src, rec = prepare_record(m)
-        if (target["size_rule"] != rec.get("size_rule") or target["ref_style"] != rec.get("ref_style")
-                or _variant_tokens(target["variants"]) != _variant_tokens(rec.get("variants"))):
+        input_keys = ("size_rule", "variants", "ref_style")
+        missing_record = any(k not in rec for k in input_keys)
+        recorded = {k: rec.get(k, before[k]) for k in input_keys}
+        if (target["size_rule"] != recorded["size_rule"] or target["ref_style"] != recorded["ref_style"]
+                or _variant_tokens(target["variants"]) != _variant_tokens(recorded["variants"])):
             return {"prepare": target, "exact": False, "need": None, "cells": None, "est_usd": None, "credits": None,
                     "uncertain": True, "backend": backend}
         mm = copy.deepcopy(m)
@@ -910,7 +914,9 @@ def switch_preview(root: str, m: dict, settings: dict, *, prepare: dict | None =
         plan = runner.plan_calls(mm, root, retry_failed=bool(cfg.get("retry_failed")), retry_orphans=bool(cfg.get("retry_orphans")))
         ap = runner.split_approval(plan, "", backend=backend)
         changed = drift(settings, m)
-        uncertain = bool(changed)
+        uncertain = missing_record or bool(changed)
+        if import_pending is not None:
+            uncertain = uncertain or bool(import_pending(root, m, settings))
         try:
             uncertain = uncertain or not m.get("prepare_inputs") or m["prepare_inputs"] != store.prepare_inputs_fp(root, m)
             src = m.get("source") or {}
@@ -928,7 +934,8 @@ def switch_preview(root: str, m: dict, settings: dict, *, prepare: dict | None =
         return {"prepare": target, "error": f"생성 조건 변경을 미리 계산하지 못함: {e}", "uncertain": True}
 
 
-def view(root: str, m: dict | None = None, *, switch_prepare: dict | None = None) -> dict:
+def view(root: str, m: dict | None = None, *, switch_prepare: dict | None = None,
+         import_pending: Callable[[str, dict, dict], list[str]] | None = None) -> dict:
     """GET /pipeline 응답 {rev, saved, error, settings, confirm, derived, drift, warnings, exports, widgets, manifest_rev, folder}. 유도는
     deep(설정 패널의 [매니페스트 값으로 다시]가 그대로 저장되게), widgets = settings_widgets(), manifest_rev = 매니페스트 rev(Studio 가
     GET /pipeline/prompt 의 expect '<rev>:<manifest_rev>' 를 만듦 — S3b 계약 §1), folder = 프로젝트 폴더 이름(export.subfolder 를
@@ -941,7 +948,8 @@ def view(root: str, m: dict | None = None, *, switch_prepare: dict | None = None
     return {**cur, "derived": der, "drift": drift(st, m) if st else [], "warnings": path_warnings(st) if st else [],
             "exports": recent_exports(m), "widgets": settings_widgets(), "manifest_rev": m["rev"],
             "folder": os.path.basename(os.path.normpath(root)),
-            "switch": switch_preview(root, m, preview_settings, prepare=switch_prepare) if preview_settings else None}
+            "switch": switch_preview(root, m, preview_settings, prepare=switch_prepare,
+                                     import_pending=import_pending) if preview_settings else None}
 
 
 # ══════════════════════════════════════════════════════════════════════
