@@ -735,6 +735,26 @@ svg.dr-isolate { position: absolute; left: 0; top: 0; pointer-events: none; }
 
 /* ── 배치 10-B (실행 설정·다시 생성 취소) — 10-B 작업자는 이 표시 아래에만 덧붙인다 ── */
 
+/* ── 배치 12 (레퍼런스 도구) — 배치 12 작업자는 이 표시 아래에만 덧붙인다 ── */
+.lp-row.bad { color: var(--bad); }
+.rf-cmp { position: relative; }
+.rf-perspective { position: absolute; inset: 0; z-index: 4; pointer-events: none; overflow: hidden; color: #6bd6ff; }
+.rf-perspective[hidden] { display: none; }
+.rf-perspective.bad { color: #ff7474; }
+.rf-perspective-line { position: absolute; height: 1px; background: currentColor; transform-origin: 0 0; }
+.rf-perspective-handle { position: absolute; width: 14px; height: 14px; min-width: 0; padding: 0; border: 2px solid currentColor;
+  border-radius: 50%; background: #17222b; color: inherit; transform: translate(-50%, -50%); pointer-events: auto; cursor: move; touch-action: none; }
+.rf-perspective-handle.outside { background: transparent; box-shadow: 0 0 0 1px #17222b; }
+.rf-cmp:has(.rf-perspective:not([hidden])) { overflow: visible; }
+.rf-ref-drag { cursor: grab; }
+.rf-ref-drag:active { cursor: grabbing; }
+.rf-dropping { cursor: no-drop; }
+.rf-dropping [data-ref-drop] { outline: 2px dashed #6bd6ff; outline-offset: -3px; cursor: copy; }
+.rf-pool-check { flex: none; align-self: center; }
+.rf-deleted { margin-top: 8px; }
+.rf-deleted > summary { cursor: pointer; color: var(--muted, #aab1bc); padding: 6px 0; }
+.rf-deleted .rf-file { opacity: .85; }
+
 /* ── 배치 8-C (마스크) — 8-C 작업자는 이 표시 아래에만 덧붙인다 ── */
 #mask-panel [data-hist]::before { display: inline-block; width: 1.2em; margin-right: 3px; }
 #mask-panel [data-hist="undo"]::before { content: "↶"; }

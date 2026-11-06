@@ -1,0 +1,33 @@
+{
+  "max_area": 16777216,
+  "min_area": 0.02,
+  "corners": [
+    {"corners": null, "ok": true, "code": null},
+    {"corners": [[0,0],[1,0],[1,1],[0,1]], "ok": true, "code": null},
+    {"corners": [[0.000049,0],[0.999951,0],[1,1],[0,1]], "ok": true, "code": null},
+    {"corners": [[0.123456,0],[0.9,0],[1,1],[0,1]], "ok": true, "code": null},
+    {"corners": [[-1,0],[2,0],[2,2],[-1,2]], "ok": true, "code": null},
+    {"corners": [[0,0],[1,0],[1,0.019],[0,0.019]], "ok": false, "code": "area"},
+    {"corners": [[0,0],[1,0],[1,0.02],[0,0.02]], "ok": true, "code": null},
+    {"corners": [[0,0],[1,1],[1,0],[0,1]], "ok": false, "code": "convex"},
+    {"corners": [[1,0],[0,0],[0,1],[1,1]], "ok": false, "code": "convex"},
+    {"corners": [[0,0],[0,0],[0,0],[0,0]], "ok": false, "code": "convex"},
+    {"corners": [[0,0],[1,0],[0.2,0.2],[0,1]], "ok": false, "code": "convex"},
+    {"corners": [[0,0],[1,0],[2,0],[0,1]], "ok": false, "code": "convex"},
+    {"corners": [[-1.0001,0],[1,0],[1,1],[0,1]], "ok": false, "code": "range"},
+    {"corners": [[0,0],[2.0001,0],[1,1],[0,1]], "ok": false, "code": "range"},
+    {"corners": [[0,0],[1,0],[1,1]], "ok": false, "code": "range"},
+    {"corners": [["0",0],[1,0],[1,1],[0,1]], "ok": false, "code": "range"},
+    {"corners": [[false,0],[1,0],[1,1],[0,1]], "ok": false, "code": "range"},
+    {"corners": [[0,0,0],[1,0],[1,1],[0,1]], "ok": false, "code": "range"},
+    {"corners": [[-1.000049,0],[1,0],[1,1],[0,1]], "ok": true, "code": null},
+    {"corners": [[0,0],[0.5,0],[0.5,0.5],[0,0.5]], "ok": true, "code": null}
+  ],
+  "bframe": [
+    {"rows": [[10,20,60],[11,20,60]], "rotate": 0, "flip_h": false, "expect": [-20,-1,20,1]},
+    {"rows": [[10,20,60],[11,20,60]], "rotate": 90, "flip_h": true, "expect": [-1,-20,1,20]},
+    {"rows": [[0,0,1],[1,0,3],[2,1,4]], "rotate": 0, "flip_h": true, "expect": [-2,-1.5,2,1.5]},
+    {"rows": [[0,0,1],[1,0,3],[2,1,4]], "rotate": 90, "flip_h": false, "expect": [-1.5,-2,1.5,2]},
+    {"rows": [[0,0,2],[1,0,2]], "rotate": 45, "flip_h": true, "expect": [-1.4142135623730951,-1.4142135623730951,1.4142135623730951,1.4142135623730951]}
+  ]
+}

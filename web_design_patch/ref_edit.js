@@ -30,6 +30,11 @@ window.DPRefEdit = (() => {
   const HANDLE_PX = 6;
   const DBL_MS = 400; // 다각형: 이 안에 같은 자리를 다시 누르면 닫기(더블클릭)
   const PREVIEW_MAX = 768; // 변환 미리보기 캔버스 긴 변(화면용 — 저장 크기는 따로 계산)
+  const PERSPECTIVE_MAX_AREA = 4096 * 4096;
+  const PERSPECTIVE_MIN_AREA = 0.02;
+  const ID_CORNERS = [[0, 0], [1, 0], [1, 1], [0, 1]];
+  const REF_DRAG_TYPE = "application/x-bmk-dp-ref";
+  const OLD_SERVER = "ComfyUI 재시작 필요(서버가 옛 판)";
   const STRIP_PX = 1 << 20; // 컷 미리보기 알파를 원크기로 읽을 때 띠 하나의 픽셀 수(메모리 묶음)
   const HANDLES = ["nw", "ne", "se", "sw", "n", "e", "s", "w"];
   const CURSORS = { n: "ns-resize", s: "ns-resize", e: "ew-resize", w: "ew-resize", ne: "nesw-resize", sw: "nesw-resize",
@@ -152,7 +157,60 @@ window.DPRefEdit = (() => {
     const did = [];
     if (t.rotate) did.push(`rotated ${Math.abs(t.rotate)}° ${t.rotate > 0 ? "counter-clockwise" : "clockwise"}`);
     if (t.flip_h) did.push("mirrored horizontally");
+    if (checkCorners(t.corners).corners) did.push("perspective-warped (four-corner distortion)");
     return did.length ? `Reference cutout was ${did.join(" and then ")} to match the canvas angle.` : "";
+  }
+
+  function checkCorners(value) {
+    const bad = (code, error) => ({ code, error, corners: null });
+    if (value == null) return { corners: null };
+    if (!Array.isArray(value) || value.length !== 4 || value.some((p) => !Array.isArray(p) || p.length !== 2
+        || p.some((v) => typeof v !== "number" || !Number.isFinite(v)))) return bad("range", "원근 꼭짓점은 숫자 두 개씩 네 점이어야 합니다");
+    const p = value.map((q) => q.map((v) => Math.round(v * 10000) / 10000 || 0));
+    if (p.some((q) => q.some((v) => v < -1 || v > 2))) return bad("range", "원근 꼭짓점 범위는 −1…2 입니다");
+    for (let k = 0; k < 4; k++) {
+      const a = p[k], b = p[(k + 1) % 4], c = p[(k + 2) % 4];
+      if ((b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]) <= 0)
+        return bad("convex", "원근 꼭짓점이 꼬였습니다 — 볼록 사각형만");
+    }
+    const area = p.reduce((s, q, k) => s + q[0] * p[(k + 1) % 4][1] - q[1] * p[(k + 1) % 4][0], 0) / 2;
+    if (area < PERSPECTIVE_MIN_AREA) return bad("area", "원근 사각형 넓이는 원래 틀의 2% 이상이어야 합니다");
+    return { corners: p.every((q, k) => q.every((v, j) => v === ID_CORNERS[k][j])) ? null : p };
+  }
+
+  function perspectiveFrame(rows, rotate, flip_h) {
+    let l = Infinity, r = -Infinity, top = Infinity, bottom = -Infinity;
+    for (const [y, a, b] of rows) { l = Math.min(l, a); r = Math.max(r, b); top = Math.min(top, y); bottom = Math.max(bottom, y + 1); }
+    const ox = (l + r) / 2, oy = (top + bottom) / 2, a = rotate * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
+    const pts = [];
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    for (const [y, l, r] of rows) for (const x of [l, r]) for (const yy of [y, y + 1]) {
+      const X = c * (x - ox) + s * (yy - oy), Y = c * (yy - oy) - s * (x - ox);
+      pts.push([X, Y]); x0 = Math.min(x0, X); x1 = Math.max(x1, X); y0 = Math.min(y0, Y); y1 = Math.max(y1, Y);
+    }
+    return { bounds: [x0, y0, x1, y1], points: pts.map(([x, y]) => [(flip_h ? x0 + x1 - x : x) - x0, y - y0]) };
+  }
+
+  function homography(src, dst) {
+    const a = [];
+    for (let i = 0; i < 4; i++) {
+      const [x, y] = src[i], [u, v] = dst[i];
+      a.push([x, y, 1, 0, 0, 0, -u*x, -u*y, u], [0, 0, 0, x, y, 1, -v*x, -v*y, v]);
+    }
+    for (let k = 0; k < 8; k++) {
+      let best = k;
+      for (let j = k + 1; j < 8; j++) if (Math.abs(a[j][k]) > Math.abs(a[best][k])) best = j;
+      [a[k], a[best]] = [a[best], a[k]];
+      if (Math.abs(a[k][k]) < 1e-12) return null;
+      const d = a[k][k]; for (let j = k; j < 9; j++) a[k][j] /= d;
+      for (let i = 0; i < 8; i++) if (i !== k) { const f = a[i][k]; for (let j = k; j < 9; j++) a[i][j] -= f * a[k][j]; }
+    }
+    return a.map((r) => r[8]).concat(1);
+  }
+
+  function projectPoint(h, x, y) {
+    const z = h[6] * x + h[7] * y + h[8];
+    return [(h[0]*x + h[1]*y + h[2])/z, (h[3]*x + h[4]*y + h[5])/z];
   }
 
   // ── ComfyUI 큐 본문(I1): 레퍼런스 편집기가 /api/prompt 로 보내는 것은 이것뿐(Studio 의 무료 템플릿 큐는 pipeline.js freeBody 하나) ──
@@ -402,6 +460,11 @@ window.DPRefEdit = (() => {
     let role = "main";
     let desc = "";
     let savedReq = null;
+    let savedTransform = null;
+    let perspectiveOn = false, perspectiveDrag = null, perspectiveView = null, perspectiveCache = null, perspectiveFrameId = null;
+    let poolDrag = null, poolDragTimer = null, deletedOpen = false;
+    const poolSelected = new Set();
+    const dragToken = `${Date.now()}-${Math.random()}-${Math.random()}`;
     let allPool = false;
     let extraHost = null;
     let extraKeyHost = null;
@@ -420,8 +483,11 @@ window.DPRefEdit = (() => {
     const bfImg = el("img", "rf-bfimg");
     const ctBox = el("div", "rf-ct");
     const cutCanvas = el("canvas", "rf-cut");
+    const perspectiveLayer = el("div", "rf-perspective");
+    const perspectiveHandles = [], perspectiveLines = [];
     bfImg.alt = "";
     bfImg.draggable = false;
+    bfImg.addEventListener("load", () => { if (perspectiveOn) updatePerspectiveUI(); });
     bfBox.append(bfImg);
     // 가운데 탭 줄(3-4 — F22): [시트] = 시트 목록 ↔ 시트 뷰어 · [그리드] = 크롭마다 카드
     const tabBtns = [["sheets", "시트", "시트 탭을 한 번 더 누르면 목록 — 시트에서 부품을 오려 저장"],
@@ -520,6 +586,41 @@ window.DPRefEdit = (() => {
 
     function typingInPanel() {
       return composing || (panel.contains(document.activeElement) && textField(document.activeElement));
+    }
+
+    function interacting() { return !!(perspectiveDrag || poolDrag); }
+    function deferPanel() { return typingInPanel() || interacting(); }
+    function transformBody(t = T) {
+      const out = { rotate: t.rotate, flip_h: t.flip_h, scale: t.scale };
+      const p = checkCorners(t.corners);
+      if (p.corners) out.corners = p.corners;
+      return out;
+    }
+    function transformSignature(t = T) {
+      const out = transformBody(t);
+      if (checkCorners(t.corners).error) out.corners = t.corners;
+      return JSON.stringify(out);
+    }
+
+    function perspectiveInfo() {
+      const p = checkCorners(T.corners);
+      if (p.error) return p;
+      if (!cutBox) return { error: "미리보기 불러오는 중…" };
+      const b = shapeBox(T), w = b.w, h = b.h;
+      const corners = p.corners || ID_CORNERS, dest = corners.map(([u, v]) => [u * w, v * h]);
+      const x0 = Math.floor(Math.min(...dest.map((p) => p[0]))), y0 = Math.floor(Math.min(...dest.map((p) => p[1])));
+      const x1 = Math.ceil(Math.max(...dest.map((p) => p[0]))), y1 = Math.ceil(Math.max(...dest.map((p) => p[1])));
+      if (p.corners && (x1 - x0) * (y1 - y0) > PERSPECTIVE_MAX_AREA) return { error: "원근 결과가 너무 큽니다 — 꼭짓점을 안쪽으로 또는 컷을 작게", w, h, dest };
+      const src = [[0, 0], [w, 0], [w, h], [0, h]];
+      return { w, h, dest, x0, y0, x1, y1, hmat: homography(src, dest), inverse: homography(dest, src) };
+    }
+
+    function perspectiveProblem() {
+      if (!T.corners) return null;
+      const value = checkCorners(T.corners);
+      if (!value.error && !value.corners) return null;
+      if (!(S.R && S.R.caps && S.R.caps.perspective)) return OLD_SERVER;
+      return perspectiveInfo().error || null;
     }
 
     function sizeMb(bytes) {
@@ -819,6 +920,8 @@ window.DPRefEdit = (() => {
 
     // ── 컷 ──
     function dropResult() {
+      finishPerspective(true);
+      perspectiveCache = null; perspectiveView = null;
       result = null;
       queued = [];
       cutImg = null;
@@ -995,16 +1098,27 @@ window.DPRefEdit = (() => {
     function savedSize() {
       // 저장 크기 = 돌린 모양의 bbox(정수 올림)에 배율·pad(transformSize 의 회전 0 경로)
       if (!cutBox) return null;
+      if (T.corners && !checkCorners(T.corners).error && checkCorners(T.corners).corners) {
+        const p = perspectiveInfo();
+        if (!p.error && p.hmat) {
+          const pts = perspectiveFrame(cutBox.rows, T.rotate, T.flip_h).points.map(([x, y]) => projectPoint(p.hmat, x, y));
+          const xs = pts.map((q) => q[0]), ys = pts.map((q) => q[1]);
+          return [Math.ceil(Math.max(...xs)) - Math.floor(Math.min(...xs)), Math.ceil(Math.max(...ys)) - Math.floor(Math.min(...ys))]
+            .map((n) => Math.max(1, Math.round(n * T.scale)) + 2 * TRIM_PAD);
+        }
+      }
       const b = shapeBox(T);
       return transformSize(Math.ceil(b.w - 1e-6), Math.ceil(b.h - 1e-6), Object.assign({}, T, { rotate: 0, pad: TRIM_PAD }));
     }
 
     function drawPreview() {
+      if ((perspectiveOn || T.corners) && cutBox && cutImg) { drawPerspective(); return; }
       const ctx = cutCanvas.getContext("2d");
       const size = savedSize();
       if (!size || !ctx) {
         cutCanvas.width = 0;
         cutCanvas.height = 0;
+        perspectiveView = null;
         return;
       }
       const k = Math.min(1, PREVIEW_MAX / Math.max(size[0], size[1]));
@@ -1014,15 +1128,144 @@ window.DPRefEdit = (() => {
       ctx.clearRect(0, 0, cutCanvas.width, cutCanvas.height);
       // 저장 순서 = 회전(양수 반시계) → 좌우 반전 → 배율. 캔버스 rotate 는 y 가 아래라 양수가 시계 방향.
       // 돌린 모양의 bbox 가운데(m)를 캔버스 가운데에
-      const m = shapeBox(T).m;
+      const shape = shapeBox(T), m = shape.m;
       ctx.translate(cutCanvas.width / 2, cutCanvas.height / 2);
       ctx.scale(k * T.scale * (T.flip_h ? -1 : 1), k * T.scale);
       ctx.translate(-m[0], -m[1]);
       ctx.rotate((-T.rotate * Math.PI) / 180);
       const b = cutBox;
       ctx.drawImage(cutImg, b.x, b.y, b.w, b.h, -b.w / 2, -b.h / 2, b.w, b.h);
+      // 일반 경로도 B 틀 → 캔버스의 실제 배율·원점을 기록한다(정수 캔버스 반올림 포함).
+      const pixelScale = k * T.scale;
+      setPerspectiveView({ x0: shape.w / 2 - cutCanvas.width / (2 * pixelScale),
+        y0: shape.h / 2 - cutCanvas.height / (2 * pixelScale), k: pixelScale, scale: T.scale,
+        w: cutCanvas.width / pixelScale, h: cutCanvas.height / pixelScale });
       placeOverlay();
       if (live.size) live.size.textContent = sizeLine();
+    }
+
+    function setPerspectiveView(view) {
+      const previous = perspectiveView;
+      if (overlay && previous && !perspectiveDrag) {
+        const oldScreenScale = previous.k * overlay.k;
+        // 저장 배율 변경은 살리고, 캔버스 bbox·미리보기 축소율 변경만 상쇄한다.
+        const screenScale = oldScreenScale * view.scale / previous.scale;
+        overlay.k = screenScale / view.k;
+        overlay.x += view.x0 * screenScale - previous.x0 * oldScreenScale;
+        overlay.y += view.y0 * screenScale - previous.y0 * oldScreenScale;
+      }
+      perspectiveView = view;
+    }
+
+    function drawPerspective() {
+      let p = perspectiveInfo();
+      if (p.error || !p.inverse) {
+        // 새 컷에서도 오류를 손잡이로 고칠 수 있게 B 틀 그림과 패딩을 먼저 보인다.
+        const b = shapeBox(T);
+        p = { w: b.w, h: b.h, x0: 0, y0: 0, x1: b.w, y1: b.h, inverse: [1,0,0,0,1,0,0,0,1] };
+      }
+      const pad = TRIM_PAD / T.scale;
+      const x0 = Math.min(0, p.x0) - pad, y0 = Math.min(0, p.y0) - pad;
+      const w = Math.max(p.w, p.x1) + pad - x0, h = Math.max(p.h, p.y1) + pad - y0;
+      const view = perspectiveDrag ? perspectiveDrag.view : { x0, y0, k: Math.min(T.scale, PREVIEW_MAX / Math.max(w, h)), scale: T.scale, w, h };
+      setPerspectiveView(view);
+      const { k } = view;
+      const key = [result && result.req, T.rotate, T.flip_h, T.scale, k].join("|");
+      if (!perspectiveCache || perspectiveCache.key !== key || perspectiveCache.img !== cutImg) {
+        const source = el("canvas");
+        source.width = Math.max(1, Math.ceil(p.w * k)); source.height = Math.max(1, Math.ceil(p.h * k));
+        const ctx = source.getContext("2d"), b = cutBox, m = shapeBox(T).m;
+        ctx.translate(source.width / 2, source.height / 2);
+        ctx.scale(source.width / p.w * (T.flip_h ? -1 : 1), source.height / p.h);
+        ctx.translate(-m[0], -m[1]); ctx.rotate(-T.rotate * Math.PI / 180);
+        ctx.drawImage(cutImg, b.x, b.y, b.w, b.h, -b.w/2, -b.h/2, b.w, b.h);
+        perspectiveCache = { key, img: cutImg, w: source.width, h: source.height, data: ctx.getImageData(0, 0, source.width, source.height).data };
+      }
+      cutCanvas.width = Math.max(1, Math.round(view.w * k)); cutCanvas.height = Math.max(1, Math.round(view.h * k));
+      const ctx = cutCanvas.getContext("2d"), output = ctx.createImageData(cutCanvas.width, cutCanvas.height), src = perspectiveCache;
+      const sample = (x, y, channel) => x >= 0 && y >= 0 && x < src.w && y < src.h ? src.data[(y * src.w + x) * 4 + channel] : 0;
+      for (let y = 0; y < cutCanvas.height; y++) for (let x = 0; x < cutCanvas.width; x++) {
+        const q = projectPoint(p.inverse, (x + 0.5) / k + view.x0, (y + 0.5) / k + view.y0);
+        const u = q[0] / p.w * src.w - 0.5, v = q[1] / p.h * src.h - 0.5, dst = (y * cutCanvas.width + x) * 4;
+        if (!Number.isFinite(u) || !Number.isFinite(v)) continue;
+        if (perspectiveDrag) {
+          for (let c = 0; c < 4; c++) output.data[dst + c] = sample(Math.round(u), Math.round(v), c);
+        } else {
+          const ix = Math.floor(u), iy = Math.floor(v), fx = u - ix, fy = v - iy;
+          const weights = [[ix,iy,(1-fx)*(1-fy)], [ix+1,iy,fx*(1-fy)], [ix,iy+1,(1-fx)*fy], [ix+1,iy+1,fx*fy]];
+          const a = weights.reduce((s, [xx,yy,wt]) => s + sample(xx,yy,3)*wt, 0);
+          output.data[dst+3] = Math.round(a);
+          if (a > 0) for (let c = 0; c < 3; c++) output.data[dst+c] = weights.reduce((s,[xx,yy,wt]) => s + sample(xx,yy,c)*sample(xx,yy,3)*wt, 0) / a;
+        }
+      }
+      ctx.putImageData(output, 0, 0);
+      placeOverlay(); updatePerspectiveUI();
+    }
+
+    function updatePerspectiveUI() {
+      const problem = perspectiveProblem();
+      if (live.size) { live.size.textContent = problem || sizeLine(); live.size.classList.toggle("bad", !!problem); }
+      if (live.hint) live.hint.textContent = hintText(T) || "회전·반전 없음 — 제안할 _hint 없음";
+      if (live.save && live.name) showName(cur());
+      if (live.poolSave) live.poolSave.disabled = !!saveProblem(null, { name: poolDesc(desc) });
+      if (live.perspective) live.perspective.textContent = checkCorners(T.corners).corners || checkCorners(T.corners).error ? "원근 켬" : "원근";
+      perspectiveLayer.hidden = !perspectiveOn || !perspectiveView || !cutBox;
+      if (perspectiveLayer.hidden) return;
+      perspectiveLayer.classList.toggle("bad", !!problem);
+      const cr = cutCanvas.getBoundingClientRect(), root = cmp.getBoundingClientRect(), limit = (overlay ? bfBox : ctBox).getBoundingClientRect();
+      const v = perspectiveView, b = shapeBox(T), coords = T.corners || ID_CORNERS;
+      const points = coords.map(([u,y]) => [cr.left + (u*b.w-v.x0)*v.k*cr.width/Math.max(1,cutCanvas.width), cr.top + (y*b.h-v.y0)*v.k*cr.height/Math.max(1,cutCanvas.height)]);
+      points.forEach(([x,y], i) => {
+        const X = Math.max(limit.left+7, Math.min(limit.right-7, x)), Y = Math.max(limit.top+7, Math.min(limit.bottom-7, y));
+        const node = perspectiveHandles[i];
+        node.style.left = `${X-root.left}px`; node.style.top = `${Y-root.top}px`;
+        node.classList.toggle("outside", x < limit.left || x > limit.right || y < limit.top || y > limit.bottom);
+        const next = points[(i+1)%4], line = perspectiveLines[i];
+        Object.assign(line.style, { left: `${x-root.left}px`, top: `${y-root.top}px`, width: `${Math.hypot(next[0]-x,next[1]-y)}px`, transform: `rotate(${Math.atan2(next[1]-y,next[0]-x)}rad)` });
+      });
+    }
+
+    function finishPerspective(cancel = false) {
+      if (!perspectiveDrag) return;
+      const d = perspectiveDrag;
+      if (cancel) { if (d.before) T.corners = d.before; else delete T.corners; }
+      perspectiveDrag = null;
+      if (perspectiveFrameId !== null) { window.cancelAnimationFrame(perspectiveFrameId); perspectiveFrameId = null; }
+      if (d.node.hasPointerCapture && d.node.hasPointerCapture(d.id)) d.node.releasePointerCapture(d.id);
+      drawPreview(); flushPanel(); renderGrid();
+    }
+
+    for (let i = 0; i < 4; i++) {
+      const line = el("div", "rf-perspective-line"), handle = el("button", "rf-perspective-handle");
+      handle.type = "button"; handle.title = ["왼위", "오른위", "오른아래", "왼아래"][i]; handle.setAttribute("aria-label", `원근 ${handle.title} 모서리`);
+      handle.dataset.keys = "board";
+      handle.addEventListener("keydown", (e) => {
+        if (perspectiveDrag && ["Escape", "BracketLeft", "BracketRight", "KeyH"].includes(e.code)) {
+          e.preventDefault(); e.stopPropagation(); onKey(e);
+        }
+      });
+      perspectiveLines.push(line); perspectiveHandles.push(handle); perspectiveLayer.append(line, handle);
+      handle.addEventListener("pointerdown", (e) => {
+        if (e.button !== 0 || perspectiveDrag || !perspectiveView) return;
+        e.preventDefault(); e.stopPropagation();
+        handle.focus();
+        const b = shapeBox(T), cr = cutCanvas.getBoundingClientRect(), corners = (T.corners || ID_CORNERS).map((p) => p.slice());
+        perspectiveDrag = { node: handle, id: e.pointerId, i, x: e.clientX, y: e.clientY, corners, before: T.corners ? T.corners.map((p) => p.slice()) : null,
+          view: { ...perspectiveView }, dx: b.w * perspectiveView.k * cr.width / cutCanvas.width, dy: b.h * perspectiveView.k * cr.height / cutCanvas.height };
+        handle.setPointerCapture(e.pointerId);
+      });
+      handle.addEventListener("pointermove", (e) => {
+        const d = perspectiveDrag;
+        if (!d || d.id !== e.pointerId) return;
+        e.preventDefault(); e.stopPropagation();
+        const points = d.corners.map((p) => p.slice());
+        points[d.i] = [d.corners[d.i][0] + (e.clientX-d.x)/d.dx, d.corners[d.i][1] + (e.clientY-d.y)/d.dy].map((v) => Math.round(Math.max(-1,Math.min(2,v))*10000)/10000);
+        T.corners = points;
+        if (perspectiveFrameId === null) perspectiveFrameId = window.requestAnimationFrame(() => { perspectiveFrameId = null; drawPreview(); });
+      });
+      handle.addEventListener("pointerup", () => finishPerspective());
+      handle.addEventListener("pointercancel", () => finishPerspective(true));
+      handle.addEventListener("lostpointercapture", () => finishPerspective());
     }
 
     function sizeLine() {
@@ -1035,6 +1278,7 @@ window.DPRefEdit = (() => {
       if (!overlay) return;
       Object.assign(cutCanvas.style, { left: `${overlay.x}px`, top: `${overlay.y}px`, opacity: String(overlay.alpha),
         width: `${cutCanvas.width * overlay.k}px`, height: `${cutCanvas.height * overlay.k}px` });
+      if (perspectiveOn) updatePerspectiveUI();
     }
 
     function toggleOverlay() {
@@ -1069,6 +1313,7 @@ window.DPRefEdit = (() => {
       T = Object.assign({}, T, next);
       drawPreview();
       if (live.hint) live.hint.textContent = hintText(T) || "회전·반전 없음 — 제안할 _hint 없음";
+      if (live.save && live.name) showName(cur());
     }
 
     function rotateBy(d) {
@@ -1099,6 +1344,7 @@ window.DPRefEdit = (() => {
       const block = refsBlock();
       if (block) return block;
       if (!result) return "컷을 먼저 하세요";
+      if (perspectiveProblem()) return perspectiveProblem();
       // 다듬기·다시 컷이 도는 중 — 저장은 지금 결과(req)를 보내는데 곧 새 결과가 화면을 바꾼다
       if (inflight) return "컷·다듬기를 마치는 중 — 결과가 나온 뒤 저장하세요";
       // 슬라이더의 grow·feather 가 결과를 만든 값과 다름(이어 다듬기가 실패함) — 저장은 결과(req)의 값이라 화면과 다른 그림이 됨
@@ -1195,7 +1441,7 @@ window.DPRefEdit = (() => {
           opts.toast(why, "err");
           return;
         }
-        body = { req: result.req, transform: { rotate: T.rotate, flip_h: T.flip_h, scale: T.scale } };
+        body = { req: result.req, transform: transformBody() };
         if (c) Object.assign(body, { crop_id: c.id, role });
         if (!c || role === "aux") body.desc = desc;
       }
@@ -1203,9 +1449,14 @@ window.DPRefEdit = (() => {
         const p = S.save(body);
         renderSoon(); // busy 가 선 뒤 — 머리줄 '저장 중…'·쓰기 단추 끔
         const r = await p;
+        if (body.transform.corners && !(r.transform && r.transform.corners)) {
+          opts.toast("서버가 원근을 적용하지 않았습니다 — ComfyUI 재시작 후 다시 저장하고 연결을 확인하세요", "err");
+          return;
+        }
         opts.toast(`저장: ${r.file} · ${r.size[0]}×${r.size[1]} · ${sizeMb(r.bytes)}` + (r.held ? ` · 옛 파일 → _보류/${r.held}` : "")
           + " · 반영 필요(무료) — 반영 전엔 생성 승인이 막힘");
         savedReq = body.req;
+        savedTransform = transformSignature(body.transform);
         if (body.role === "aux" && sel === body.crop_id) desc = ""; // 다른 크롭으로 옮겼으면 그 크롭의 설명은 그대로
       } catch (e) {
         const ex = explicitOf(e);
@@ -1251,7 +1502,7 @@ window.DPRefEdit = (() => {
     function savePool() {
       const why = saveProblem(null, { name: poolDesc(desc) });
       if (why) return opts.toast(why, "err");
-      return save({ req: result.req, desc, transform: { rotate: T.rotate, flip_h: T.flip_h, scale: T.scale } });
+      return save({ req: result.req, desc, transform: transformBody() });
     }
 
     function outsideLine() {
@@ -1361,6 +1612,8 @@ window.DPRefEdit = (() => {
       feather = cut.feather || 0;
       ckpt = cut.ckpt && cut.ckpt !== ckpts()[0] && ckpts().includes(cut.ckpt) ? cut.ckpt : null; // 목록에 없는 체크포인트는 보내면 400
       T = { rotate: rec.transform.rotate, flip_h: rec.transform.flip_h, scale: rec.transform.scale };
+      if (rec.transform.corners) T.corners = rec.transform.corners.map((p) => p.slice());
+      perspectiveOn = !!T.corners;
       const req = rec.sheet.changed ? null : (cut.steps || []).at(-1) || (/[0-9a-f]{32}/.exec(cut.mask || "") || [])[0];
       if (!req) {
         arm();
@@ -1381,6 +1634,7 @@ window.DPRefEdit = (() => {
         }
         result = Object.assign({ rect: rec.rect.slice(), method: cut.method, grow: cut.grow || 0, feather: cut.feather || 0 }, r);
         savedReq = result.req;
+        savedTransform = transformSignature();
         got = result;
         loadCutImg();
       } catch (e) {
@@ -1467,7 +1721,7 @@ window.DPRefEdit = (() => {
     }
 
     function backToSheets() {
-      if ((inflight || (result && result.req !== savedReq))
+      if ((inflight || (result && (result.req !== savedReq || transformSignature() !== savedTransform)))
           && !window.confirm("저장하지 않은 컷 결과가 사라집니다. 시트 목록으로 갈까요?")) return;
       closeSheet();
       setTab("sheets");
@@ -1564,6 +1818,7 @@ window.DPRefEdit = (() => {
     }
 
     function escape() {
+      if (perspectiveDrag) { finishPerspective(true); return; }
       if (extraHost) { closeExtra(); return; }
       if (largeId !== null) {
         closeLarge();
@@ -1592,6 +1847,8 @@ window.DPRefEdit = (() => {
     function onKey(e) {
       // board.js 가 레퍼런스 모드에서 먼저 넘긴다(입력칸 포커스는 board.js 가 이미 거름). true = 소비
       if (!on) return false;
+      if (perspectiveDrag && ["BracketLeft", "BracketRight", "KeyH"].includes(e.code)) return true;
+      if (perspectiveDrag && e.code === "Escape") { escape(); return true; }
       if (extraHost) {
         if (e.isComposing) return false;
         if (e.code === "Escape" || (e.code === "Space" && extraHost.dataset.spaceClose === "true"
@@ -1665,7 +1922,7 @@ window.DPRefEdit = (() => {
     function renderSoon() {
       // 비동기 응답 뒤: 패널 입력칸에서 입력·한글 조합 중이면 패널은 입력이 끝난 뒤(flushPanel) 그린다
       if (!on) return;
-      if (!typingInPanel()) {
+      if (!deferPanel()) {
         render();
         return;
       }
@@ -1677,7 +1934,7 @@ window.DPRefEdit = (() => {
     }
 
     function flushPanel() {
-      if (on && pendingPanel && !typingInPanel()) renderPanel();
+      if (on && pendingPanel && !deferPanel()) renderPanel();
     }
 
     panel.addEventListener("compositionstart", () => {
@@ -1912,6 +2169,7 @@ window.DPRefEdit = (() => {
         renderSoon();
         const r = await p;
         opts.toast(r.unchanged ? "바뀐 것 없음" : body.op === "sheet_add" ? "시트를 추가했습니다"
+          : body.op === "undelete" && r.renamed ? `${r.renamed === "nnn" ? "이름 매칭을 피해" : "이름이 겹쳐"} ${r.file} 으로 되살림 · 반영 필요(무료)`
           : "보관함 변경 · 반영 필요(무료) — 크롭의 레퍼런스는 그대로");
         return r;
       } catch (e) {
@@ -1922,6 +2180,11 @@ window.DPRefEdit = (() => {
 
     function poolMenu(f) {
       const box = extraBox(f.name);
+      const del = extraButton("삭제", "refs\\_삭제\\ 로 옮김 — 되살리기 가능", async () => {
+        if (await deletePool([{ name: f.name, held: !!f.poolHeld }])) closeOwnExtra(box);
+      });
+      del.disabled = !canDelete(); del.title = canDelete() ? del.title : deleteProblem(); box.append(del);
+      if (f.poolHeld) return;
       const input = el("input", "rf-pool-name");
       input.type = "text";
       input.maxLength = 80;
@@ -1986,6 +2249,18 @@ window.DPRefEdit = (() => {
       top.append(button("다른 프로젝트에서 가져오기", "레퍼런스를 이 프로젝트로 복사", showImport),
         button("모든 파일", "다른 크롭이 쓰는 파일도 연결", () => { allPool = !allPool; render(); }, allPool ? "on" : ""));
       panel.append(top);
+      const selectable = (R.pool || []).filter((f) => f.origin === "pool" && !f.outside_edit).map((f) => f.name)
+        .concat((R.pool_held || []).filter((f) => f.origin === "pool" && !f.outside_edit).map((f) => `${HELD_DIR}/${f.name}`));
+      for (const key of poolSelected) if (!selectable.includes(key)) poolSelected.delete(key);
+      const deletion = el("div", "lp-btns");
+      const remove = button(`선택 삭제 (${poolSelected.size})`, deleteProblem() || "선택한 보관함 파일 삭제", () => deletePool([...poolSelected].map((key) =>
+        key.startsWith(HELD_DIR + "/") ? { name: key.slice(HELD_DIR.length + 1), held: true } : { name: key })));
+      remove.disabled = !canDelete() || !poolSelected.size;
+      const all = button(poolSelected.size ? "선택 해제" : "모두 선택", "한 번에 100개까지", () => {
+        if (poolSelected.size) poolSelected.clear(); else for (const key of selectable.slice(0, 100)) poolSelected.add(key);
+        render();
+      });
+      all.disabled = !canDelete(); deletion.append(remove, all); panel.append(deletion);
       const files = new Map((R.pool || []).map((f) => [f.name, f]));
       if (allPool) for (const f of R.all_files || []) if (!f.missing && !files.has(f.name)) files.set(f.name, f);
       if (allPool) for (const crop of R.crops) for (const f of crop.files.concat(crop.unlinked)) {
@@ -2003,14 +2278,107 @@ window.DPRefEdit = (() => {
             () => link("add", { crop_id: c.id, name: f.name, main }, impact + "\n계속할까요?"), true]);
         }
         if (f.origin === "pool" && (R.pool || []).some((p) => p.name === f.name)) actions.push(["⋯", "보관함 파일 관리", () => poolMenu(f), true]);
-        fileRow(f, f.from ? `${f.from.project} / ${f.from.name}` : f.sheet ? f.sheet.path : f.origin === "pool" ? "이 프로젝트 보관함" : "기존 파일", actions);
+        const row = fileRow(f, f.from ? `${f.from.project} / ${f.from.name}` : f.sheet ? f.sheet.path : f.origin === "pool" ? "이 프로젝트 보관함" : "기존 파일", actions);
+        if ((R.pool || []).some((p) => p.name === f.name)) {
+          for (const node of [row.querySelector("img"), row.querySelector(".rf-name")]) if (node) poolDraggable(node, f);
+        }
+        if (selectable.includes(f.name)) poolCheckbox(row, f.name);
       }
-      for (const f of R.pool_held || []) fileRow(f, "보관함 보류", [["되살리기", "연결 없이 보관함으로", () => poolWrite({ op: "restore", name: f.name }), true]]);
+      for (const f of R.pool_held || []) {
+        const key = `${HELD_DIR}/${f.name}`, canSelect = selectable.includes(key);
+        const actions = [["되살리기", "연결 없이 보관함으로", () => poolWrite({ op: "restore", name: f.name }), true]];
+        if (canSelect) actions.push(["⋯", "보관함 파일 관리", () => poolMenu({ ...f, poolHeld: true }), true]);
+        const row = fileRow(f, "보관함 보류", actions);
+        if (canSelect) poolCheckbox(row, key);
+      }
       poolHost = null;
       if (list.children.length) panel.append(list);
       if (!files.size) panel.append(el("p", "dim", "보관함이 비었습니다 — 시트에서 잘라 저장하거나 다른 프로젝트에서 가져오세요"));
       panel.append(el("p", "dim", "보관함을 바꾸면 반영(무료)이 필요합니다 — 크롭의 레퍼런스는 그대로"));
+      const deleted = el("details", "rf-deleted"); deleted.open = deletedOpen;
+      deleted.append(el("summary", "", `삭제한 파일 ${(R.pool_deleted || []).length}`));
+      deleted.addEventListener("toggle", () => {
+        const opening = deleted.open && !deletedOpen;
+        deletedOpen = deleted.open;
+        if (opening) reload(true); // 탐색기에서 넣은 파일·중간 종료 복구도 펼칠 때 다시 읽는다.
+      });
+      poolHost = deleted;
+      for (const f of R.pool_deleted || []) {
+        const row = fileRow(f, [f.recorded ? f.at : "기록 없음", f.outside_edit ? "바뀜" : null].filter(Boolean).join(" · "),
+          [["되살리기", "연결 없이 보관함으로", () => poolWrite({ op: "undelete", name: f.name }), true]]);
+        if (!(R.caps && R.caps.pool_delete)) for (const b of row.querySelectorAll("button")) { b.disabled = true; b.title = OLD_SERVER; }
+      }
+      poolHost = null; panel.append(deleted);
     }
+
+    function deleteProblem() {
+      return !(S.R && S.R.caps && S.R.caps.pool_delete) ? OLD_SERVER : refsBlock() || (S.busy ? "저장 중…" : null);
+    }
+    function canDelete() { return !deleteProblem(); }
+    function poolCheckbox(row, key) {
+      const cb = el("input", "rf-pool-check"); cb.type = "checkbox"; cb.checked = poolSelected.has(key); cb.disabled = !canDelete();
+      cb.setAttribute("aria-label", `${key} 삭제 선택`);
+      cb.addEventListener("change", () => {
+        if (cb.checked && poolSelected.size >= 100) { cb.checked = false; return opts.toast("한 번에 100개까지 고르세요", "warn"); }
+        if (cb.checked) poolSelected.add(key); else poolSelected.delete(key); cb.blur(); render();
+      });
+      row.append(cb);
+    }
+    async function deletePool(items) {
+      if (!canDelete()) { opts.toast(deleteProblem(), "warn"); return null; }
+      const names = items.map((r) => (r.held ? HELD_DIR + "/" : "") + r.name);
+      const ask = `${items.length}개를 삭제합니다 — refs\\_삭제\\ 로 옮김(Studio 목록에서 사라짐 · 보관함 끝 「삭제한 파일」에서 되살리기). 보관함을 바꾸면 반영(무료)이 필요합니다. 계속할까요?\n`
+        + names.slice(0,10).join("\n") + (items.length > 10 ? `\n외 ${items.length-10}` : "") + outsideLine();
+      if (!window.confirm(ask)) return null;
+      const r = await poolWrite({ op: "delete", items });
+      if (r) { for (const name of names) poolSelected.delete(name); renderSoon(); }
+      return r;
+    }
+
+    function poolDraggable(node, f) {
+      node.draggable = true; node.classList.add("rf-ref-drag");
+      node.addEventListener("dragstart", (e) => {
+        if (interacting() || S.busy || refsBlock() || !e.dataTransfer) { e.preventDefault(); return; }
+        poolDrag = { name: f.name, token: dragToken };
+        e.dataTransfer.setData(REF_DRAG_TYPE, JSON.stringify(poolDrag)); e.dataTransfer.effectAllowed = "link";
+        gridHost.classList.add("rf-dropping");
+        poolDragTimer = setTimeout(endPoolDrag, 30000);
+      });
+      node.addEventListener("dragend", endPoolDrag);
+    }
+    function endPoolDrag() {
+      if (!poolDrag) return;
+      poolDrag = null; clearTimeout(poolDragTimer); poolDragTimer = null; gridHost.classList.remove("rf-dropping");
+      flushPanel(); renderGrid();
+    }
+    function dropTarget(e) {
+      if (!poolDrag || !e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes(REF_DRAG_TYPE)) return null;
+      let node = e.target;
+      while (node && node !== gridHost) { if (node.dataset && node.dataset.refDrop) return node.dataset.refDrop; node = node.parentElement || node.parentNode; }
+      return null;
+    }
+    function acceptsPool(c) { return c && !c.files.some((f) => f.role === "main") && !(c.fixed && !c.files.length && !c.auto); }
+    gridHost.addEventListener("dragover", (e) => {
+      const id = dropTarget(e);
+      if (id && acceptsPool(crops().find((c) => c.id === id))) { e.preventDefault(); e.dataTransfer.dropEffect = "link"; }
+    });
+    gridHost.addEventListener("drop", (e) => {
+      const id = dropTarget(e); if (!id) return;
+      let data;
+      try { data = JSON.parse(e.dataTransfer.getData(REF_DRAG_TYPE)); } catch (_) { return; }
+      if (!data || data.token !== dragToken || data.name !== poolDrag.name) return;
+      e.preventDefault(); e.stopPropagation(); endPoolDrag();
+      setTimeout(() => {
+        select(id);
+        const block = refsBlock(); if (S.busy || block) return opts.toast(block || "저장 중…", "warn");
+        const c = crops().find((c) => c.id === id), f = (S.R.pool || []).find((f) => f.name === data.name);
+        if (!acceptsPool(c) || !f || f.missing) return opts.toast("크롭·보관함 파일 또는 대표가 바뀌었습니다 — 다시 확인하세요", "warn");
+        link("add", { crop_id: id, name: f.name, main: true }, poolImpact(c, f, true) + "\n계속할까요?");
+      }, 0);
+    });
+    for (const type of ["drop", "dragend"]) document.body.addEventListener(type, () => {
+      if (poolDrag) setTimeout(endPoolDrag, 0);
+    }, true);
 
     async function showLayers(path) {
       const box = extraBox("레이어별 컷");
@@ -2160,6 +2528,7 @@ window.DPRefEdit = (() => {
 
     // ── 그리드(3-4 — F22): 매칭이 끝난 레퍼런스와 고칠 크롭을 한눈에(편집은 오른쪽 패널) ──
     function renderGrid() {
+      if (interacting()) { pendingPanel = true; return; }
       // 카드 = 왼쪽 목록 순서, 고아 연결은 맨 뒤 묶음. R·state 가 그대로면 카드는 두고 선택 표시만(크롭이 많아도 다시 그리기가 가볍게)
       if (tab !== "grid") return;
       const R = S.R;
@@ -2180,6 +2549,7 @@ window.DPRefEdit = (() => {
             for (const f of R.pool) {
               const card = gridFig(f.name, [f.thumb_url ? gridImg(f.thumb_url, f.name) : noPic("미리보기 없음")]);
               card.addEventListener("dblclick", () => poolLarge(f));
+              poolDraggable(card, f);
               cards.append(card);
             }
           }
@@ -2207,7 +2577,9 @@ window.DPRefEdit = (() => {
       ch.append(...refChips(c));
       top.append(el("div", "tname", c.name), ch);
       const body = el("div", "rg-body");
-      body.append(srcFig(c), mainFig(main, noneFixed), auxFig(aux));
+      const mainFigure = mainFig(main, noneFixed);
+      if (!main && !noneFixed) Object.assign(mainFigure.querySelector(".rg-frame").dataset, { refDrop: c.id, crop: c.id });
+      body.append(srcFig(c), mainFigure, auxFig(aux));
       card.append(top, body);
       if (c.checks.length) card.append(checkLines(c.checks));
       card.addEventListener("click", () => select(c.id));
@@ -2324,6 +2696,7 @@ window.DPRefEdit = (() => {
     }
 
     function renderPanel() {
+      if (interacting()) { pendingPanel = true; return; }
       const a = document.activeElement;
       const fk = panel.contains(a) && textField(a) ? a.dataset.k : null;
       pendingPanel = false;
@@ -2385,6 +2758,7 @@ window.DPRefEdit = (() => {
       info.append(acts);
       r.append(img, info);
       (poolHost || panel).append(r);
+      return r;
     }
 
     function manageBlock(c) {
@@ -2643,7 +3017,7 @@ window.DPRefEdit = (() => {
     }
 
     function transformBlock(c) {
-      panel.append(el("div", "lp-k", "변환 (회전 → 반전 → 배율 — 확대 없음)"));
+      panel.append(el("div", "lp-k", "변환 (회전 → 반전 → 원근 → 배율 — 확대 없음)"));
       slider("회전", T.rotate, -180, 180, 0.5, (v) => `${v}°`, (v, done) => {
         setT({ rotate: v });
         if (done) render();
@@ -2671,6 +3045,16 @@ window.DPRefEdit = (() => {
       ab.append(cbx, document.createTextNode(" 글자·비대칭 있음"));
       fb.append(ab);
       panel.append(fb);
+      const pb = el("div", "lp-btns");
+      live.perspective = button(T.corners ? "원근 켬" : "원근", "네 모서리 원근 변형", () => { perspectiveOn = !perspectiveOn; render(); }, perspectiveOn ? "on" : "");
+      live.perspective.disabled = !(S.R && S.R.caps && S.R.caps.perspective);
+      if (live.perspective.disabled) live.perspective.title = OLD_SERVER;
+      const reset = button("원근 초기화", "네 모서리를 원래 틀로", () => { delete T.corners; drawPreview(); render(); });
+      reset.disabled = live.perspective.disabled; pb.append(live.perspective, reset); panel.append(pb);
+      if (perspectiveOn) {
+        panel.append(el("p", "dim", "모서리를 끌어 극단 각도에 맞춥니다 — [겹쳐 보기]로 크롭 Before 위에서 맞추면 쉬움 · 볼록 사각형만"));
+        for (const b of fb.querySelectorAll("button")) b.title += " · 원근 값은 그대로 — 필요하면 [원근 초기화] 뒤 다시 맞추세요";
+      }
       if (T.flip_h && ((c && sideOf(c.name)) || asym)) panel.append(el("p", "warn", "대칭 부품만 반전(매뉴얼) — 크롭 이름에 좌우가 있거나 글자·비대칭이 있음"));
       live.size = el("div", "lp-row", sizeLine());
       panel.append(live.size);
@@ -2688,7 +3072,8 @@ window.DPRefEdit = (() => {
       ctBox.hidden = !!overlay;
       if (overlay) bfBox.append(cutCanvas);
       else ctBox.append(cutCanvas);
-      cmp.replaceChildren(bfBox, ctBox);
+      cmp.replaceChildren(bfBox, ctBox, perspectiveLayer);
+      perspectiveLayer.hidden = !perspectiveOn;
       cmp.classList.toggle("over", !!overlay);
       panel.append(cmp);
       const ob = el("div", "lp-btns");
@@ -2761,6 +3146,7 @@ window.DPRefEdit = (() => {
       sb.append(live.save);
       if (c) {
         const b = button("보관함에만 저장", "크롭에 연결하지 않고 저장", savePool);
+        live.poolSave = b;
         b.disabled = !!saveProblem(null, { name: poolDesc(desc) });
         sb.append(b);
       }
@@ -2808,6 +3194,7 @@ window.DPRefEdit = (() => {
     }
 
     function leave() {
+      finishPerspective(true); endPoolDrag();
       closeExtra();
       closeLarge();
       on = false;
@@ -2838,5 +3225,6 @@ window.DPRefEdit = (() => {
     } };
   }
 
-  return { create, session, checkDesc, refFileName, transformSize, sideOf, hintText };
+  return { create, session, checkDesc, refFileName, transformSize, sideOf, hintText, checkCorners, perspectiveFrame, homography, projectPoint,
+    PERSPECTIVE_MAX_AREA, PERSPECTIVE_MIN_AREA };
 })();

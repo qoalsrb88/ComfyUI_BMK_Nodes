@@ -52,7 +52,7 @@ Review 노드를 부분 실행한다(대체 경로). 인증 토큰은 그 경로
 - GET  /bmk/design_patch/refs?root=&since=             레퍼런스 편집기 상태(STUDIO_S2_SPEC §5.1, refs_state)
 - GET  /bmk/design_patch/refs/sheets?root=             시트 후보 목록 [{path, size, kind, bytes, v, preview_url}] (§5.2)
 - GET  /bmk/design_patch/refs/sheet?root=&sheet=&kind=preview|region&rect=&max=&v=   시트 JPEG(§5.3)
-- GET  /bmk/design_patch/refs/img?root=&name=&where=refs|held|cut|cutmask&size=&bg=&v=   레퍼런스 썸네일·원본, 컷 미리보기(§5.4)
+- GET  /bmk/design_patch/refs/img?root=&name=&where=refs|held|cut|cutmask|deleted&size=&bg=&v=   레퍼런스 썸네일·원본, 컷 미리보기(§5.4)
 - POST /bmk/design_patch/refs/cut  {root, sheet, sheet_v?, rect, method: rect|sam3|poly, …}   컷 요청(rect·poly 즉시, sam3 = 요청 파일만,
                                                        sheet_v ≠ 지금 시트 서명 = 409 {sheet_changed: true})
 - GET  /bmk/design_patch/refs/cut?root=&req=           컷 상태 waiting|done|error(§5.5)
@@ -104,7 +104,8 @@ Review 노드를 부분 실행한다(대체 경로). 인증 토큰은 그 경로
                                                        {name, path} · {name, adopt, file} 또는 application/octet-stream(질의 name·filename, 본문 = 타깃 그림)
 - GET  /bmk/design_patch/refs/layers?root=&sheet=[&thumb=&v=]   PSD 시트 레이어 표·레이어 썸네일(배치 9-B — D129–D132)
 - GET  /bmk/design_patch/refs/pool?root=&from=[&thumb=]   다른 프로젝트 refs 폴더 파일 목록·썸네일(배치 9-B — D133·D134)
-- POST /bmk/design_patch/refs/pool {root, rev, op, …}  보관함 쓰기 — op layers·import·rename·hold·restore·sheet_add
+- POST /bmk/design_patch/refs/pool {root, rev, op, …}  보관함 쓰기 — op layers·import·rename·hold·restore·sheet_add·delete·undelete
+  배치 12: GET refs 에 pool_deleted·caps{perspective,pool_delete}, refs/save 응답에 실제 transform(corners 선택)을 더함.
                                                        (sheet_add 는 application/octet-stream + 질의 root·op·filename 도 — D135)
 POST 는 Content-Type application/json 만 받는다(다른 사이트의 단순 폼 POST 차단 — /mask/save 는 image/png,
 /projects/new·/refs/pool 의 파일 받기는 application/octet-stream — 다른 사이트는 사전 요청 없이 못 보냄). 오류는 4xx + {"error": 한국어}
@@ -3638,7 +3639,7 @@ _REFS_WRITE_LOCKS: dict[str, threading.RLock] = {}  # root_key → 레퍼런스 
 _SAM3_CKPTS: list[str] = []                  # set_sam3_ckpts — 노드 모듈이 import 때 넘긴 SAM3 체크포인트 이름
 _QWEN_DIR: list[str] = []                    # set_qwen_dir — 노드 모듈이 import 때 넘긴 local_qwen 모델 폴더(비면 미설정)
 _OUTPUT_DIR: list[str] = []                  # set_output_dir — 노드 모듈이 import 때 넘긴 ComfyUI output 폴더(비면 미설정)
-_REF_IMG_WHERE = ("refs", "held", "cut", "cutmask")
+_REF_IMG_WHERE = ("refs", "held", "cut", "cutmask", "deleted")
 _REF_IMG_SIZES = (0, 128, 256, 512)
 _REF_BGS = {"gray": 128, "white": 255, "check": None}   # GPT 가 받는 매트 #808080 · 흰 · 체크(8px)
 _REF_THUMB = 256
@@ -3999,7 +4000,8 @@ def refs_state(root: str, since: int | None = None) -> dict:
     ids = {c["id"] for c in crops}
     pool, pool_held = _pool_rows(root, m, prov, crops)
     return {"exists": doc is not None or error is not None, "rev": doc["rev"] if doc else None, "error": error,
-            "pool": pool, "pool_held": pool_held, "before_import": not bool(m.get("base")),
+            "pool": pool, "pool_held": pool_held, "pool_deleted": _pool_deleted_rows(root, m, prov),
+            "caps": {"perspective": True, "pool_delete": True}, "before_import": not bool(m.get("base")),
             "all_files": [_ref_file(root, refs_dir, prov, display[n], "pool") for n in sorted(display)
                           if "/" not in n and os.path.splitext(n)[1].lower() in store.REF_EXTS
                           and os.path.isfile(os.path.join(refs_dir, display[n]))] if ok else [],
@@ -4112,7 +4114,12 @@ def ref_image(root: str, name, where: str, size_raw, bg: str) -> tuple[bytes, st
         raise _Reject(404, "레퍼런스 폴더가 없습니다")
     name = drefs.check_ref_name(name)
     key = f"{drefs.HELD_DIR}/{name}" if where == "held" else name
+    if where == "deleted":
+        _pool_deleted_dir(refs_dir)
+        key = f"{drefs.DELETED_DIR}/{name}"
     path = os.path.join(refs_dir, *key.split("/"))
+    if where == "deleted" and not drefs._plain_cache_path(refs_dir, path):
+        raise _Reject(404, "삭제 파일이 없거나 다른 위치를 가리킵니다")
     if not os.path.isfile(path):
         raise _Reject(404, f"레퍼런스 파일이 없습니다: {key}")
     sig = _sig("refimg", key, store.file_fingerprint(path))
@@ -4517,7 +4524,7 @@ def _ref_pool_save(root, rev, data):
         reply = _pool_commit(root, rev, [entry])
     finally:
         _drop(entry["part"])
-    return {**reply, "file": reply["files"][0], "size": record["size"], "bytes": nbytes, "held": None, "crop": None, "checks": {}}
+    return {**reply, "file": reply["files"][0], "size": record["size"], "bytes": nbytes, "held": None, "crop": None, "checks": {}, "transform": t}
 
 
 def _pool_source(key):
@@ -4675,7 +4682,238 @@ def _pool_manage_commit(root, rev, op, data, name, prepared):
     return {"ok": True, "rev": new_rev, "file": target}
 
 
+def _pool_deleted_dir(folder):
+    path = os.path.join(folder, drefs.DELETED_DIR)
+    if not drefs._plain_cache_path(folder, path if os.path.lexists(path) else folder):
+        raise _Reject(409, "삭제 폴더가 다른 위치를 가리킵니다 — 링크를 확인하세요")
+    return path
+
+
+def _pool_deleted_rows(root, m, doc):
+    folder = _refs_dir(m)
+    if not _refs_dir_ok(folder):
+        return []
+    try:
+        directory = _pool_deleted_dir(folder)
+    except _Reject:
+        return []
+    if not os.path.isdir(directory):
+        return []
+    records = (doc or {}).get("deleted", {})
+    rows = []
+    for name in sorted(os.listdir(directory)):
+        path = os.path.join(directory, name)
+        if not os.path.isfile(path) or not drefs._plain_cache_path(folder, path) or os.path.splitext(name)[1].lower() not in store.REF_EXTS:
+            continue
+        key = _record_key(records, name)
+        rec = records.get(key, {})
+        fp = store.file_fingerprint(path)
+        size, changed = None, False
+        try:
+            with Image.open(path) as im:
+                size = list(im.size)
+                old = rec.get("record", {})
+                changed = bool(rec) and (not old.get("sha") or _pixel_sha(path, fp, im) != old["sha"])
+        except (OSError, Image.DecompressionBombError):
+            changed = bool(rec)
+        rows.append({"name": name, "from": rec.get("from"), "at": rec.get("at"), "size": size,
+                     "recorded": bool(rec), "outside_edit": changed,
+                     "thumb_url": _img_url(store.root_key(root), "deleted", name, _REF_THUMB, _sig("refimg", drefs.DELETED_DIR + "/" + name, fp)) if size else None})
+    return rows
+
+
+def _pool_delete_shared(root, folder):
+    # 실경로로도 검사: 프로젝트 안 정션이 바깥의 공유 폴더를 가리키는 경우 포함.
+    base, real = os.path.normcase(os.path.realpath(root)), os.path.normcase(os.path.realpath(folder))
+    try:
+        outside = os.path.commonpath([base, real]) != base
+    except ValueError:
+        outside = True
+    if outside:
+        raise _Reject(409, "이 refs 폴더가 프로젝트 밖에 있습니다 — 삭제하지 않습니다(탐색기에서 정리)")
+    for other in _project_roots():
+        if drefs.same_refs_dir(other["root"], root):
+            continue
+        try:
+            m = store.load_manifest(other["root"])
+        except (OSError, ValueError) as e:
+            logger.warning("%s 공유 refs 확인 중 프로젝트를 읽지 못함: %s", _TAG, e)
+            continue
+        ref = _refs_dir(m)
+        if drefs.same_refs_dir(ref, folder) or (ref and os.path.normcase(os.path.realpath(ref)) == real):
+            raise _Reject(409, f"이 refs 폴더를 다른 프로젝트({os.path.basename(other['root'])})도 씁니다 — 삭제하지 않습니다(탐색기에서 정리)")
+
+
+def _pool_deleted_name(directory, name):
+    """D181/186: 배타 이름 배정, 접미 포함 120자 이하. 실제 이동은 호출자가 한다."""
+    stem, ext = os.path.splitext(name)
+    cand = stem[:120 - len(ext)] + ext
+    if drefs.same_name(directory, cand) is not None:
+        stamp, k = time.strftime("%y%m%d-%H%M%S"), 1
+        while True:
+            suffix = "__" + stamp + (f"-{k}" if k > 1 else "")
+            cand = stem[:120 - len(ext) - len(suffix)] + suffix + ext
+            if drefs.same_name(directory, cand) is None:
+                break
+            k += 1
+    return cand
+
+
+def _pool_prune_deleted(d, directory):
+    for name in list(d.get("deleted", {})):
+        actual = drefs.same_name(directory, name)
+        if actual is None or not os.path.isfile(os.path.join(directory, actual)):
+            del d["deleted"][name]
+
+
+def _pool_delete(root, rev, data):
+    items = data.get("items")
+    if not isinstance(items, list) or not 1 <= len(items) <= 100:
+        raise _Reject(400, "삭제할 파일은 1–100개까지 고르세요")
+    names = []
+    for item in items:
+        if not isinstance(item, dict) or not isinstance(item.get("held", False), bool):
+            raise _Reject(400, "삭제 항목은 {name, held?: bool} 이어야 합니다")
+        name = drefs.check_ref_name(item.get("name"))
+        names.append((name, item.get("held", False)))
+    keys = [(drefs.HELD_DIR + "/" if held else "") + name for name, held in names]
+    if len({drefs.ref_key(n) for n in keys}) != len(keys):
+        raise _Reject(400, "같은 파일을 두 번 고를 수 없습니다")
+    with _refs_write_lock(root):
+        m = store.load_manifest(root)
+        folder = _refs_dir_for_write(m)
+        doc = _refs_at(root, rev, folder)
+        _pool_delete_shared(root, folder)
+        directory = _pool_deleted_dir(folder)
+        crops = _ref_crops(root, m)
+        used = drefs.pool_usage(root, m, doc, crops)
+        pool, held_rows = drefs.pool_files(root, m, doc, crops)
+        owned = {(r["name"], held): r for held, rows in ((False, pool), (True, held_rows))
+                 for r in rows if r["origin"] == "pool"}
+        for name, held in names:
+            if (name, held) not in owned or _pool_file_state(root, folder, doc, name, held=held)["outside_edit"]:
+                raise _Reject(409, "이 프로젝트 보관함의 쓰임 없는 파일만 바꿀 수 있습니다")
+        os.makedirs(directory, exist_ok=True)
+        moved, records = [], []
+        try:
+            for (name, held), key in zip(names, keys):
+                target = _pool_deleted_name(directory, name)
+                if drefs.ref_key(drefs.DELETED_DIR + "/" + target) in used:
+                    raise _Reject(409, "옮길 삭제 이름을 스펙이 쓰고 있습니다")
+                src, dst = os.path.join(folder, *key.split("/")), os.path.join(directory, target)
+                if not drefs._plain_cache_path(folder, src):
+                    raise _Reject(409, "삭제할 파일이 다른 위치를 가리킵니다")
+                drefs._move_excl(src, dst)
+                moved.append((src, dst))
+                original = _held_rec(doc, name)["from"] if held else name
+                records.append((key, name if held else None, target, original))
+            def mutate(d):
+                _pool_prune_deleted(d, directory)
+                for key, held, target, original in records:
+                    record = d["files"].pop(_record_key(d["files"], key))
+                    d.setdefault("deleted", {})[target] = {"from": original, "at": time.strftime("%Y-%m-%d %H:%M:%S"), "record": record}
+                    if held:
+                        del d["held"][_record_key(d["held"], held)]
+            _, new_rev = _write_refs(root, rev, folder, mutate)
+        except BaseException:
+            _undo(*(lambda src=src, dst=dst: drefs._move_excl(dst, src) for src, dst in reversed(moved)))
+            raise
+    return {"ok": True, "rev": new_rev, "deleted": [r[2] for r in records]}
+
+
+def _pool_undelete(root, rev, data):
+    name = drefs.check_ref_name(data.get("name"))
+    with _refs_write_lock(root):
+        m = store.load_manifest(root)
+        folder = _refs_dir_for_write(m)
+        doc = _refs_at(root, rev, folder)
+        _pool_delete_shared(root, folder)
+        directory = _pool_deleted_dir(folder)
+        src = os.path.join(directory, name)
+        if not os.path.isfile(src) or not drefs._plain_cache_path(folder, src):
+            raise _Reject(409, "되살릴 파일이 없거나 다른 위치를 가리킵니다")
+        crops = _ref_crops(root, m)
+        used = drefs.pool_usage(root, m, doc, crops)
+        if drefs.ref_key(drefs.DELETED_DIR + "/" + name) in used:
+            raise _Reject(409, "삭제 파일을 스펙이 쓰고 있습니다 — 되살리지 않습니다")
+        deleted = (doc or {}).get("deleted", {})
+        key = _record_key(deleted, name)
+        entry = deleted.get(key, {})
+        original = entry.get("from", name)
+        record = entry.get("record")
+        orphan_keys, held_keys = set(), set()
+        with Image.open(src) as im:
+            sha = _pixel_sha(src, store.file_fingerprint(src), im)
+        # 파일 이동 뒤 문서 쓰기 전에 종료된 경우: 삭제 접미와 보류 경로도 찾는다.
+        # 디스크에 남은 다른 파일의 기록은 건드리지 않고, 픽셀이 같은 고아만 회수한다.
+        if not entry:
+            stem, ext = os.path.splitext(name)
+            candidates = dict.fromkeys((name, re.sub(r"__\d{6}-\d{6}(?:-\d+)?$", "", stem) + ext))
+            files, held = (doc or {}).get("files", {}), (doc or {}).get("held", {})
+            for candidate in candidates:
+                for is_held in (False, True):
+                    old = (drefs.HELD_DIR + "/" if is_held else "") + candidate
+                    orphan = _record_key(files, old)
+                    rec = files.get(orphan)
+                    if (rec is None or rec.get("for", "old") is not None or rec.get("sha") != sha
+                            or os.path.lexists(os.path.join(folder, *old.split("/")))):
+                        continue
+                    held_key = _record_key(held, candidate) if is_held else None
+                    if record is None:
+                        record = rec
+                        original = held[held_key]["from"] if held_key else candidate
+                    orphan_keys.add(orphan)
+                    if held_key:
+                        held_keys.add(held_key)
+        good = record is not None and record.get("for", "old") is None and record.get("sha") == sha
+        reservation_doc = dict(doc or {}, held={k: v for k, v in (doc or {}).get("held", {}).items() if k not in held_keys})
+        reserved = drefs.pool_reserved(root, m, reservation_doc) | used
+        # 디스크에 없어도 다른 파일의 기록은 예약한다. 이번에 회수할 고아 키만 제외한다.
+        reserved.update(drefs.ref_key(k) for k in (doc or {}).get("files", {}) if k not in orphan_keys)
+        safe = drefs.ref_key(original) not in reserved and not _match_seeds(folder, doc, crops, original, "")
+        target = original if safe and (entry or original.startswith("ref_")) else drefs.pool_file_name(
+            os.path.splitext(original)[0].removeprefix("ref_").removesuffix("_t"), reserved,
+            preferred=original if original.startswith("ref_") else None)
+        dst = os.path.join(folder, target)
+        converted = os.path.splitext(target)[1].lower() != os.path.splitext(name)[1].lower()
+        if converted:
+            # D141 의 .png 배정에는 실제 PNG 를 쓴다. 원본은 문서 커밋까지 삭제 폴더에 둔다.
+            with _REF_SLOTS:
+                drefs.save_ref(folder, target, _read_rgba(src))
+        else:
+            drefs._move_excl(src, dst)
+        def mutate(d):
+            for orphan in orphan_keys:
+                d["files"].pop(orphan, None)
+            for held_key in held_keys:
+                d["held"].pop(held_key, None)
+            if good:
+                d["files"][target] = record
+            else:
+                old = _record_key(d["files"], target)
+                if old:
+                    del d["files"][old]
+            if key:
+                d["deleted"].pop(key, None)
+            _pool_prune_deleted(d, directory)
+        try:
+            _, new_rev = _write_refs(root, rev, folder, mutate)
+        except BaseException:
+            _undo((lambda: _drop(dst)) if converted else (lambda: drefs._move_excl(dst, src)))
+            raise
+        if converted:
+            _drop(src)
+    renamed = False
+    if target != original:
+        renamed = "nnn" if not entry and not original.startswith("ref_") else "collision"
+    return {"ok": True, "rev": new_rev, "file": target, "renamed": renamed}
+
+
 def ref_pool(root, rev, op, data):
+    if op == "delete":
+        return _pool_delete(root, rev, data)
+    if op == "undelete":
+        return _pool_undelete(root, rev, data)
     if op in ("rename", "hold", "restore"):
         return _pool_manage(root, rev, op, data)
     if op not in ("layers", "import", "sheet_add"):
@@ -4968,7 +5206,7 @@ def ref_save(root: str, rev: int | None, data: dict) -> dict:
             _undo(lambda: drefs.hold_file(refs_dir, name), unhold)
             raise
         nbytes = os.path.getsize(path)
-    return {"ok": True, "rev": new_rev, "file": name, "size": [w, h], "bytes": nbytes, "held": held, **_ref_reply(root, crop_id)}
+    return {"ok": True, "rev": new_rev, "file": name, "size": [w, h], "bytes": nbytes, "held": held, "transform": t, **_ref_reply(root, crop_id)}
 
 
 def ref_link(root: str, rev: int | None, op, data: dict) -> dict:
