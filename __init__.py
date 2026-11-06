@@ -286,9 +286,11 @@ for _module_name in _NODE_MODULES:
 #       칩은 숨긴 STRING 위젯 view·gaze·pose 에 쓴다. 부딪치는 시점은 켜는 순간 꺼지고(multiple views 를 켜면 함께), 지금
 #       크롭·시점과 맞지 않는 시선·포즈 칩(preview 의 gaze_blocked·pose_blocked)은 숨긴다. 칩에는 그림을 붙이고,
 #       시선은 방향 × looking·facing 격자, 포즈는 자세 묶음으로 놓는다(palette 의 gaze_grid·pose_groups, 없으면 한 줄).
+#       시점 줄의 그림 단추는 크롭 틀·방향/높이 다이얼(퀵 세팅 그림)을 켜고 끄며, 그림은 framing 콤보와 view 위젯에 쓴다
+#       (palette 의 framing_frame·view_dial 이 없으면 단추 없음, 켬 상태는 node.properties.bmk_to_stage).
 #       이 파일은 노드에 붙이는 어댑터(위젯·서버 경로·캔버스)만 두고, 편집기 본체는 아래 모듈을 쓴다.
-#   - tag_organizer/editor.js, tag_organizer/model.js, tag_organizer/glyphs.js
-#       청크 편집기 본체와 퀵 칩 그림. TagOrganizer 저장소 extension/editor/ 가 정본이고 그 저장소의 `python tagorg.py sync` 가
+#   - tag_organizer/editor.js, model.js, glyphs.js(+ glyphs.json), stage.js, figure.js
+#       청크 편집기 본체, 퀵 칩 그림, 퀵 세팅 그림. TagOrganizer 저장소 extension/editor/ 가 정본이고 그 저장소의 `python tagorg.py sync` 가
 #       복사한다(여기서 직접 고치면 다음 동기화가 멈춘다). 확장으로 로드돼도 import 만으로는 아무 일도 하지 않는다.
 #   - bmk_native_file_dialog.js
 #       워크플로 저장 파일명 입력창(ComfyWorkflow.promptSave)과 열기(app.ui.loadFile)를 윈도우 기본

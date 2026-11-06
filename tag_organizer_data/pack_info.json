@@ -1,6 +1,6 @@
 {
   "format": "tagorg-pack-info",
-  "pack_version": "2026.10.01+968042b4",
+  "pack_version": "2026.10.01+c8e00451",
   "source": {
     "file": "danbooru_2026-10-01_pt20-ia-dd.csv",
     "date": "2026-10-01",
@@ -80,14 +80,17 @@
   },
   "synced_from": {
     "repo": "TagOrganizer",
-    "commit": "7bcf07cb2a4995a0d7dee75c8ee065f428adebdc",
+    "commit": "cee40676768365698613ba8c73ad51864ac822dd",
     "dirty": false
   },
   "files": {
-    "bmk_tag_organizer_core.py": "5d86c967502a896c91d4f41f61d4b9dad884e8348252f738737c2bd0bc39ab93",
-    "tag_organizer_data/tagpack.json.gz": "bfa2c262b2dbc195fdc13348f1f5898a50a5e1ca951bfce9e11f691bf23207b6",
+    "bmk_tag_organizer_core.py": "b09470b7c013ac106f2db7fd76f29da7e4d771e134b11bf82168a94c7f3029df",
+    "tag_organizer_data/tagpack.json.gz": "826455e8b76d70594f72267a7deb00303998a3afcb87fd310e5acf56451ac41c",
     "js/tag_organizer/editor.js": "d1e5c4c285948c5c5f371f2e2504da499aca1127cd1f38bfb6a56c81248935aa",
     "js/tag_organizer/model.js": "d43cd8e659d2c2c16754769fa9e17f669d7b0bc18fd227a8d53886df906b8494",
-    "js/tag_organizer/glyphs.js": "ebb9de391f6455848e30764cc11df4055081ce41b6eea9c61cfa757e0cee8eaf"
+    "js/tag_organizer/glyphs.js": "a3ecdf524e8930847e0bce33792525badda555f58366942687f7757ad1502ace",
+    "js/tag_organizer/glyphs.json": "625003ca05cd7d85981a41ec05f70e843da5f09b34a29f31274e45f27b6ba6f4",
+    "js/tag_organizer/stage.js": "99c801819d285ed75dee54d050af5be8ac32292e1eaedaedde4ba651faee7642",
+    "js/tag_organizer/figure.js": "7b4dfb0f3fe9b2087959da2a8b0e14ca0a7460bfbc727f6eb5ef8687b34eec86"
   }
 }

@@ -1,9 +1,10 @@
-// bmk_tag_organizer.js — BMKTagOrganizer 짝 JS 확장 (v9)
+// bmk_tag_organizer.js — BMKTagOrganizer 짝 JS 확장 (v10)
 //
 // 배열 세팅(arrangement) 청크 편집기를 노드에 붙이는 ComfyUI 어댑터. 편집기 자체는 TagOrganizer 저장소의
 // extension/editor/ 가 정본이고(크롬 확장 패널과 같은 코드), js/tag_organizer/ 는 그 저장소의
 // `python tagorg.py sync` 가 복사한 파일이다. 여기서 직접 고치면 다음 동기화가 멈춘다. 조작은 editor.js 머리 주석 참고.
-// 칩 그림(glyphs.js)과 시선 격자·포즈 묶음의 모양은 NovelAI 미리보기 패널(extension/nai/panel.js·panel.css)과 같다.
+// 칩 그림(glyphs.js), 시선 격자·포즈 묶음, 퀵 세팅 그림(stage.js)의 모양은 NovelAI 미리보기 패널
+// (extension/nai/panel.js·panel.css)과 같다.
 //
 // 이 파일이 맡는 것(editor.js 의 host):
 // - 결과는 숨긴 STRING 위젯 arrangement 에 JSON 으로 쓴다(widgets_values·API 프롬프트로 그대로 간다).
@@ -21,6 +22,10 @@
 // - 칩 모양: 태그 칩에 그림을 붙인다. palette 의 gaze_grid 가 있으면 시선은 방향(열) × looking·facing(행) 격자로, 자동 칩은
 //   격자 왼쪽 위 모서리에, 고른 태그 이름은 격자 옆에 글로 둔다. pose_groups 가 있으면 포즈는 자세 묶음(이름표 + 칩)으로 둔다.
 //   격자·묶음에 없는 퀵 태그는 뒤에 보통 칩으로 둔다. 옛 팩처럼 두 목록이 비면 예전처럼 한 줄로 늘어놓는다.
+// - 퀵 세팅 그림: 시점 줄 끝의 그림 단추로 켜고 끈다(켬 상태는 node.properties.bmk_to_stage). 켜면 시점 줄 옆에 크롭 틀과
+//   방향·높이 다이얼이 나오고, 그림이 고른 값은 framing 콤보와 숨긴 view 위젯에 쓴다. 다이얼이 맡는 시점 칩은 숨기고 다이얼 밖
+//   태그(straight-on, pov 등)만 칩으로 남긴다. 점선 '지금 값'은 미리보기 토큰 중 덮어쓰기로 넣지 않은 태그다. 끄는 동안의 중간
+//   값은 되돌리기 기록에 남기지 않고 손을 뗄 때 한 번 남긴다. palette 에 framing_frame·view_dial 이 없으면(옛 팩) 단추가 없다.
 //
 // 상태는 ArrangementEditor·host 객체에 두고 위젯에는 자체 필드를 얹지 않는다(프론트 1.53 이 위젯을
 // BaseWidget 으로 흡수하며 충돌할 수 있음 — bmk_sam3_mask_layers.js 와 같은 이유).
@@ -30,12 +35,16 @@ import { api } from "../../scripts/api.js";
 import { ArrangementEditor, el } from "./tag_organizer/editor.js";
 import { glyph } from "./tag_organizer/glyphs.js";
 import { gazeToggle, poseToggle, splitItems, viewToggle } from "./tag_organizer/model.js";
+import { QuickStage, stageCovers } from "./tag_organizer/stage.js";
 
 const NODE_ID = "BMKTagOrganizer";
 const ARR = "arrangement";
 const GAZE = "gaze";
 const VIEW = "view";
 const POSE = "pose";
+const FRAMING = "framing";   // 크롭은 노드의 콤보 위젯(auto + 퀵 크롭 태그)
+const STAGE_PROP = "bmk_to_stage";
+const STAGE_KEYS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "Delete", "Backspace"]);
 const AUTO = "auto";         // v5 까지의 view 콤보가 저장한 값. 고른 것이 없다는 뜻
 const EDITOR_TYPE = "BMK_TAG_ARRANGEMENT";
 const PALETTE_URL = "/bmk/tag_organizer/palette";
@@ -48,6 +57,7 @@ const OPTION_KEYS = [
 const MIN_WIDTH = 560;
 const ADD_HEIGHT = 640;      // 처음 만들 때 편집기 몫으로 늘리는 높이
 const EDITOR_MIN_H = 520;    // 칩 세 줄(시선 격자 포함)을 빼고도 청크·미리보기가 남는 높이
+const STAGE_MIN_H = 140;     // 그림을 켜면 더하는 높이(그림 높이에서 옆으로 옮긴 시점 줄 몫을 뺀 것)
 const MARGIN = 6;
 const NOTE_MS = 8000;        // 칩이 꺼진 까닭을 보이는 시간
 const GLYPH_SIZE = { view: 16, gaze: 16, pose: 18 };   // 칩 안 그림 높이(px)
@@ -76,6 +86,55 @@ const CHIP_STYLE = `
 .bmk-to-gaze-head.row{padding-right:4px;cursor:help}
 .bmk-to-chips button.bmk-to-cell{display:flex;align-items:center;justify-content:center;height:22px;padding:0;border-radius:6px}
 .bmk-to-gaze-empty{height:22px}
+.bmk-to-chips button.bmk-to-stage-btn{margin-left:auto}
+.bmk-to-quick{flex:0 0 auto;display:flex;flex-wrap:wrap;align-items:flex-start;gap:4px 12px}
+.bmk-to-quick>.bmk-to-chips{flex:1 1 240px;min-width:0}
+`;
+// 퀵 세팅 그림(stage.js). 규칙은 panel.css 의 .qs-* 와 같고, 색 이름을 ComfyUI 변수에 잇는다.
+// 점선은 프롬프트에 든 지금 값, 채움은 덮어쓰기
+const STAGE_STYLE = `
+.bmk-to-stage{flex:0 0 auto;--muted:var(--descrip-text,#999);--bg:var(--comfy-input-bg,#222);--fg:var(--input-text,#ddd);--accent:var(--p-primary-color,#5b8def);--accent-fg:#fff;--line:var(--border-color,#4e4e4e);--line-strong:color-mix(in srgb,var(--input-text,#ddd) 32%,transparent)}
+.bmk-to-stage[hidden]{display:none}
+.bmk-to-stage .qs{display:flex;gap:12px}
+.bmk-to-stage .qs-col{display:flex;flex-direction:column;align-items:center;gap:2px}
+.bmk-to-stage .qs-head{display:flex;align-items:center;gap:4px;min-height:20px;color:var(--muted);font-size:11px}
+.bmk-to-stage button.qs-auto{height:20px;padding:0 8px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--fg);font:inherit;font-size:11px;line-height:18px;cursor:pointer}
+.bmk-to-stage button.qs-auto:hover{border-color:var(--fg)}
+.bmk-to-stage button.qs-auto[aria-pressed=true]{border-color:var(--accent);background:var(--accent);color:var(--accent-fg)}
+.bmk-to-stage .qs-dial-row{display:flex;gap:4px}
+.bmk-to-stage .qs-svg{display:block;overflow:visible;touch-action:none;cursor:grab;border-radius:4px}
+.bmk-to-stage .qs-crop-svg{cursor:ns-resize;background:var(--bg)}
+.bmk-to-stage .qs-crop-svg.qs-axis-x{cursor:ew-resize}
+.bmk-to-stage .qs-svg:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.bmk-to-stage .qs-read{max-width:136px;color:var(--muted);font-size:11px;line-height:1.3;text-align:center;overflow-wrap:anywhere}
+.bmk-to-stage .qs-crop .qs-read{max-width:100px}
+.bmk-to-stage .qs-read.on{color:var(--accent)}
+.bmk-to-stage .hidden{display:none}
+.bmk-to-stage .qs-figure{fill:none;stroke:var(--muted);stroke-width:4.5;stroke-linecap:round}
+.bmk-to-stage .qs-head-shape{fill:var(--bg);stroke-width:2}
+.bmk-to-stage .qs-head-shape.back{fill:var(--muted);fill-opacity:.55}
+.bmk-to-stage .qs-eye{fill:var(--fg);stroke:none}
+.bmk-to-stage .qs-eye.contact{fill:var(--accent)}
+.bmk-to-stage .qs-lid{stroke:var(--fg);stroke-width:1.2}
+.bmk-to-stage .qs-ray{stroke:var(--accent);stroke-width:1.2;stroke-dasharray:2 2}
+.bmk-to-stage .qs-dim{fill:var(--bg);opacity:.72}
+.bmk-to-stage .qs-frame{fill:none;stroke:var(--muted);stroke-width:1.6;stroke-dasharray:4 3}
+.bmk-to-stage .qs-frame.on{stroke:var(--accent);stroke-dasharray:none}
+.bmk-to-stage .qs-ghost{fill:none;stroke:var(--muted);stroke-width:1;stroke-dasharray:2 2}
+.bmk-to-stage .qs-handle{fill:var(--muted)}
+.bmk-to-stage .qs-handle:not(.framed){opacity:.3}
+.bmk-to-stage .qs-crop-svg:hover .qs-handle,.bmk-to-stage .qs-crop-svg:focus-visible .qs-handle{opacity:1}
+.bmk-to-stage .qs-handle.on{fill:var(--accent)}
+.bmk-to-stage .qs-track{fill:none;stroke:var(--line);stroke-width:1}
+.bmk-to-stage .qs-zone{fill:transparent;stroke:var(--line-strong);stroke-width:.8}
+.bmk-to-stage .qs-zone:hover{fill:color-mix(in srgb,var(--accent) 14%,transparent)}
+.bmk-to-stage .qs-zone.on{fill:color-mix(in srgb,var(--accent) 50%,transparent);stroke:var(--accent)}
+.bmk-to-stage .qs-zone.det{fill:color-mix(in srgb,var(--muted) 18%,transparent);stroke:var(--muted);stroke-dasharray:3 2}
+.bmk-to-stage .qs-zone.prompt{stroke:var(--muted);stroke-dasharray:2 2}
+.bmk-to-stage .qs-subject{fill:none;stroke:var(--muted);stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.bmk-to-stage .qs-cam{fill:var(--bg);stroke:var(--muted);stroke-width:1.6;stroke-dasharray:2 2}
+.bmk-to-stage .qs-cam.on{fill:var(--accent);stroke:var(--accent);stroke-dasharray:none}
+.bmk-to-stage .qs-col.bmk-to-off{opacity:.4;pointer-events:none}
 `;
 
 function checkState() {
@@ -132,7 +191,7 @@ async function validateArrangement(json) {
 
 function injectChipStyle() {
   if (document.getElementById("bmk-to-chips-style")) return;
-  const style = el("style", "", CHIP_STYLE);
+  const style = el("style", "", CHIP_STYLE + STAGE_STYLE);
   style.id = "bmk-to-chips-style";
   document.head.appendChild(style);
 }
@@ -200,7 +259,8 @@ function poseLayout({ palette, tags, shown, chipFor, autoChip }) {
 }
 
 // 칩 한 줄. spec: name(위젯 이름·퀵 그룹), label, title(palette, tag), toggle(palette, on, tag) → 새 선택,
-// dropNote?(palette, dropped) → 칩이 꺼진 까닭, layout?(ctx) → 이름표와 알림 사이에 놓을 것(없으면 자동 + 칩 한 줄)
+// dropNote?(palette, dropped) → 칩이 꺼진 까닭, layout?(ctx) → 이름표와 알림 사이에 놓을 것(없으면 자동 + 칩 한 줄),
+// unlisted?(tag) → 다른 곳(그림)이 맡아 칩을 두지 않을 태그, tail?() → 줄 끝에 둘 것
 function chipRow(node, onChange, spec) {
   injectChipStyle();
   const widget = () => node.widgets?.find((w) => w.name === spec.name);
@@ -252,9 +312,11 @@ function chipRow(node, onChange, spec) {
     const autoChip = chipButton("", !on.some(shown), "프롬프트 그대로", () => set([]));
     autoChip.append("자동");
     const ctx = { palette, tags, on, shown, press, chipFor, autoChip };
+    const listed = (tag) => shown(tag) && !spec.unlisted?.(tag);
     row.replaceChildren(
       el("span", "", spec.label),
-      ...(spec.layout ? spec.layout(ctx) : [autoChip, ...tags.filter(shown).map(chipFor)]),
+      ...(spec.layout ? spec.layout(ctx) : [autoChip, ...tags.filter(listed).map(chipFor)]),
+      ...(spec.tail?.() ?? []),
       ...(note ? [el("span", "note", note)] : []),
     );
   }
@@ -262,6 +324,7 @@ function chipRow(node, onChange, spec) {
   return {
     row,
     render,
+    set,
     setPalette(value) {
       palette = value;
       render();
@@ -294,10 +357,13 @@ function poseChips(node, onChange) {
   });
 }
 
-function viewChips(node, onChange) {
+// stage: 그림이 맡는 칩을 빼고(unlisted) 줄 끝에 그림 단추를 둔다(tail)
+function viewChips(node, onChange, stage) {
   let lifted = false;
   const lifts = (palette) => palette.view_lift ?? [];
   const row = chipRow(node, onChange, {
+    unlisted: (tag) => stage.covers(tag),
+    tail: () => (stage.available() ? [stage.toggle] : []),
     name: VIEW,
     label: "시점",
     title: (palette, tag) => (lifts(palette).includes(tag)
@@ -316,19 +382,126 @@ function viewChips(node, onChange) {
   };
 }
 
+// ─── 퀵 세팅 그림 ───
+
+// 크롭 틀·방향·높이 그림(QuickStage)을 노드 위젯에 잇는다. 그림은 값을 갖지 않고 render 때마다 위젯 값을 받아 그린다.
+// setView(tags): 시점 위젯에 쓰기(시점 칩 줄의 set), onChange(): 위젯을 바꾼 뒤, onToggle(): 켜고 끈 뒤(노드 크기)
+function stageControl(node, { setView, onChange, onToggle }) {
+  injectChipStyle();
+  const widget = (name) => node.widgets?.find((w) => w.name === name);
+  const linked = (name) => node.inputs?.find((i) => i.name === name)?.link != null;
+  const picked = (name) => splitItems(widget(name)?.value).filter((tag) => tag !== AUTO);
+  const box = el("div", "bmk-to-stage");
+  box.hidden = true;
+  let stage = null;
+  let covered = new Set();     // 다이얼이 맡는 시점 태그
+  let present = new Set();     // 프롬프트에 원래 든 태그(덮어쓰기로 넣은 것 제외)
+  let lifted = false;
+  let on = false;
+
+  const setFraming = (tag) => {
+    const w = widget(FRAMING);
+    const value = tag || AUTO;
+    if (!w || w.value === value) return;
+    w.value = value;
+    w.callback?.(value);
+    onChange();
+  };
+  // 끄는 동안은 onChange 가 되돌리기 기록을 건너뛰므로 손을 뗄 때 남긴다
+  for (const type of ["pointerup", "pointercancel"]) box.addEventListener(type, () => checkState());
+  // 그림이 쓰는 키는 ComfyUI 단축키로 넘기지 않는다(Delete·Backspace 가 선택한 노드를 지우지 않게)
+  box.addEventListener("keydown", (e) => {
+    if (STAGE_KEYS.has(e.key) && e.target.closest?.(".qs-svg")) e.stopPropagation();
+  });
+
+  const toggle = chipButton("bmk-to-stage-btn", false,
+    "크롭과 시점의 방향·높이를 그림으로 고릅니다. 켜면 다이얼이 맡는 시점 칩은 숨깁니다", () => ctl.setOn(!on));
+  toggle.append("그림");
+
+  const ctl = {
+    box,
+    toggle,
+    available: () => Boolean(stage),
+    // 그림이 보이는가: 단추가 있는 시점 줄이 숨으면(view 연결) 그림도 숨긴다
+    shown: () => Boolean(stage) && on && Boolean(widget(VIEW)) && !linked(VIEW),
+    covers: (tag) => ctl.shown() && covered.has(tag),
+    dragging: () => Boolean(stage?.drag),
+    setPalette(palette) {
+      const covers = stageCovers(palette ?? {});
+      covered = new Set(covers.view);
+      // 옛 팩처럼 그림이 맡는 태그가 없으면 그림 단추를 두지 않는다
+      stage = covers.framing.length || covers.view.length
+        ? new QuickStage({ palette, onFraming: setFraming, onView: (tags) => setView(tags) })
+        : null;
+      box.replaceChildren(...(stage ? [stage.root] : []));
+      ctl.render();
+      if (on) onToggle();   // 켠 채 저장한 워크플로는 팩을 받은 뒤에야 그림이 생긴다
+    },
+    setResult(data) {
+      present = new Set((data?.tokens ?? []).filter((t) => t.kind === "tag" && t.key && !t.injected).map((t) => t.key));
+      lifted = Boolean(data?.view_lifted);
+      ctl.render();
+    },
+    // save=false: 워크플로를 읽을 때(properties 에서 온 값)
+    setOn(value, save = true) {
+      on = Boolean(value);
+      if (save) {
+        node.properties ??= {};
+        node.properties[STAGE_PROP] = on;
+      }
+      ctl.render();
+      onToggle();
+    },
+    render() {
+      toggle.setAttribute("aria-pressed", String(on));
+      box.hidden = !ctl.shown();
+      if (box.hidden) return;
+      const crop = stage.root.querySelector(".qs-crop");
+      const cropOff = !widget(FRAMING) || linked(FRAMING);
+      crop?.classList.toggle("bmk-to-off", cropOff);
+      if (crop) crop.title = cropOff ? "framing 입력이 연결돼 있어 그림으로 고를 수 없습니다" : "";
+      const framing = widget(FRAMING)?.value;
+      stage.update({
+        framing: typeof framing === "string" && framing !== AUTO ? framing : "",
+        view: picked(VIEW),
+        pose: picked(POSE),
+        gaze: picked(GAZE),
+        present,
+        lifted,
+      });
+    },
+  };
+  return ctl;
+}
+
 // ─── 편집기 ↔ 노드 ───
 
 function nodeHost(node) {
   const widget = (name) => node.widgets?.find((w) => w.name === name);
   const linked = (name) => node.inputs?.find((i) => i.name === name)?.link != null;
-  const view = viewChips(node, () => host.changed());
+  const stage = stageControl(node, {
+    setView: (tags) => view.set(tags),
+    onChange: () => host.changed(),
+    onToggle: () => {
+      view.render();
+      // 켜서 편집기 최소 높이가 늘면 노드를 늘린다(줄이지는 않는다)
+      const sz = node.computeSize?.();
+      if (sz && node.size[1] < sz[1]) node.setSize([node.size[0], sz[1]]);
+      node.setDirtyCanvas?.(true, true);
+    },
+  });
+  const view = viewChips(node, () => host.changed(), stage);
   const gaze = gazeChips(node, () => host.changed());
   const pose = poseChips(node, () => host.changed());
+  const quick = el("div", "bmk-to-quick");
+  quick.append(stage.box, view.row);
   let previewSeq = 0;
   const host = {
     view,
     gaze,
     pose,
+    stage,
+    quick,
     lastInput: null,      // 마지막 실행의 입력(text 를 연결했을 때)
     split: node.properties?.bmk_to_split,
     canReset: true,
@@ -357,6 +530,7 @@ function nodeHost(node) {
     },
     locked: () => linked(ARR),
     loadPalette: (force) => loadPalette(force).then((data) => {
+      stage.setPalette(data.palette);
       view.setPalette(data.palette);
       gaze.setPalette(data.palette);
       pose.setPalette(data.palette);
@@ -369,6 +543,7 @@ function nodeHost(node) {
         view.setLifted(Boolean(data.view_lifted));
         gaze.setBlocked(data.gaze_blocked ?? []);
         pose.setBlocked(data.pose_blocked ?? []);
+        stage.setResult(data);
       }
       return data;
     },
@@ -388,7 +563,8 @@ function nodeHost(node) {
     },
     changed() {
       node.setDirtyCanvas?.(true, true);
-      checkState();
+      if (!stage.dragging()) checkState();
+      stage.render();
     },
     layoutChanged: () => node.setDirtyCanvas?.(true, true),
     previewNote: () => (linked("text") && host.lastInput == null
@@ -416,7 +592,7 @@ app.registerExtension({
         if (w.name === ARR || w.name === VIEW || w.name === GAZE || w.name === POSE) w.hidden = true; // 입력 옵션 hidden 을 모르는 프론트에서도 숨긴다
       }
       const editor = new ArrangementEditor(nodeHost(this));
-      editor.root.prepend(editor.host.view.row, editor.host.gaze.row, editor.host.pose.row);
+      editor.root.prepend(editor.host.quick, editor.host.gaze.row, editor.host.pose.row);
       this.__bmkTagArr = editor;
       const widget = this.addDOMWidget("arrangement_editor", EDITOR_TYPE, editor.root, {
         serialize: false,
@@ -424,7 +600,7 @@ app.registerExtension({
         margin: MARGIN,
         getValue: () => "",
         setValue: () => {},
-        getMinHeight: () => EDITOR_MIN_H,
+        getMinHeight: () => EDITOR_MIN_H + (editor.host.stage.shown() ? STAGE_MIN_H : 0),
       });
       widget.serialize = false;
       if (widget.options) widget.options.serialize = false;
@@ -441,7 +617,7 @@ app.registerExtension({
         editor.split = Number(this.properties?.bmk_to_split) || editor.split;
         editor.applySplit();
         editor.syncFromWidget(true);
-        editor.host.view.render();
+        editor.host.stage.setOn(this.properties?.[STAGE_PROP], false);   // 시점 줄도 다시 그린다
         editor.host.gaze.render();
         editor.host.pose.render();
       }
@@ -449,6 +625,20 @@ app.registerExtension({
       const sz = this.computeSize?.();
       if (sz && (this.size[0] < MIN_WIDTH || this.size[1] < sz[1])) {
         this.setSize([Math.max(this.size[0], MIN_WIDTH), Math.max(this.size[1], sz[1])]);
+      }
+      return r;
+    };
+
+    // 위젯 입력을 잇거나 끊으면 칩 줄·그림을 바로 다시 그린다(연결된 위젯은 칩·그림으로 고르지 않는다)
+    const onConnectionsChange = nodeType.prototype.onConnectionsChange;
+    nodeType.prototype.onConnectionsChange = function () {
+      const r = onConnectionsChange?.apply(this, arguments);
+      const host = this.__bmkTagArr?.host;
+      if (host) {
+        host.view.render();
+        host.gaze.render();
+        host.pose.render();
+        host.stage.render();
       }
       return r;
     };

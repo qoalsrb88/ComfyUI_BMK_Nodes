@@ -84,6 +84,10 @@
   - v9: 코어 v1.10. 시점·시선·포즈 칩에 그림을 붙이고(js/tag_organizer/glyphs.js, sync 가 복사), 시선은 방향 ×
         looking·facing 격자로, 포즈는 자세 묶음으로 놓는다(palette 의 gaze_grid·pose_groups). 정렬 결과와 노드 입력·
         저장 형식은 그대로라 v8 워크플로가 그대로 열린다. 칩 줄이 높아져 편집기 최소 높이를 520, 처음 높이를 640 으로 늘린다.
+  - v10: 코어 v1.11. 퀵 세팅 그림(js/tag_organizer/stage.js·figure.js, sync 가 복사): 시점 줄의 그림 단추로 크롭 틀과
+        방향·높이 다이얼을 켜고, 그림이 고른 값을 framing 콤보와 view 위젯에 쓴다(palette 의 framing_frame·view_dial,
+        없으면 단추 없음). 켬 상태는 노드 properties 에 남는다. 노드 입력·저장 형식은 그대로라 v9 워크플로가 그대로 열리고,
+        그림을 켜면 편집기 최소 높이가 140 늘어난다.
 """
 
 from __future__ import annotations

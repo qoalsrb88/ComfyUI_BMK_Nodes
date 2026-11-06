@@ -54,6 +54,8 @@ arrangement_from_layout(). 결과의 report["arranged"] 는 줄 → 청크 → �
         palette 의 pose_conflicts. 팩 스키마는 그대로 — 옛 팩에는 포즈 퀵 목록과 범위가 없어 고른 태그를 더하기만 한다.
 - v1.10: palette 의 gaze_grid(시선 칩 격자: 방향 × looking·facing)·pose_groups(포즈 칩 묶음). 정렬 동작은 그대로이고,
         옛 팩에서는 두 목록이 비어 칩을 예전처럼 한 줄로 늘어놓는다.
+- v1.11: palette 의 framing_frame(크롭 태그별 틀의 위·아래)·view_dial(방향·높이 다이얼의 각도 구간). 정렬 동작은 그대로이고,
+        옛 팩에서는 비어 있어 그림 조작이 맡는 태그가 없다.
 """
 
 from __future__ import annotations
@@ -1886,6 +1888,9 @@ def palette(pack: Any) -> Dict[str, Any]:
                           for col in quick.get("gaze_grid", ())],
             "pose_groups": [{"label": group.get("label", ""), "tags": list(group.get("tags", ()))}
                             for group in quick.get("pose_groups", ())],
+            "framing_frame": {tag: list(span) for tag, span in (quick.get("framing_frame") or {}).items()},
+            "view_dial": {axis: [dict(zone) for zone in (quick.get("view_dial") or {}).get(axis, ())]
+                          for axis in ("direction", "height")},
             "layouts": {lid: lay.get("label", lid) for lid, lay in pack.layouts.items()}}
 
 
