@@ -25797,7 +25797,7 @@ def pipeline_unit():
                "GET /pipeline/plan": "sig computed_at notes apply_pending run run.hash run.backend run.need run.pre run.free run.filtered run.est_usd "
                                      "run.est_usd_pre run.credits run.reasons run.reasons[].reason run.reasons[].n run.by_crop run.by_crop.*.need "
                                      "run.by_crop.*.pre run.by_crop.*.free run.by_crop.*.done run.by_crop.*.failed run.by_crop.*.orphaned "
-                                     "run.by_crop.*.inflight run.by_crop.*.est_usd run.by_crop.*.selected run.running draft draft.hash "
+                                     "run.by_crop.*.inflight run.by_crop.*.blocked run.by_crop.*.est_usd run.by_crop.*.selected run.running draft draft.hash "
                                      "draft.backend draft.family draft.units draft.units[].crop_id draft.units[].state draft.units[].reasons "
                                      "draft.units[].est draft.refresh_available draft.refresh_available[].crop_id draft.refresh_available[].est "
                                      "draft.skipped draft.skipped[].crop_id draft.skipped[].reason draft.cached draft.accepted draft.filtered "
@@ -53491,8 +53491,41 @@ def batch10a_unit():
     loaded = pl.load(root)
     check(loaded["prepare"]["complexity"] == "high" and loaded["confirm"] == []
           and Path(root, pl.PIPELINE_NAME).read_bytes() == raw, "D148 옛 파일 읽기: high·확인 필요 없음·원본 불변")
-    pl.update(root, 1, "prepare", loaded["prepare"])
-    check(json.loads(Path(root, pl.PIPELINE_NAME).read_text(encoding="utf-8"))["prepare"]["complexity"] == "high", "D148 다음 저장 키 추가")
+    for sec in ("prepare", "run", "export"):
+        saved = pl.update(root, 1, sec, loaded[sec])
+        check(saved["rev"] == 1 and Path(root, pl.PIPELINE_NAME).read_bytes() == raw, f"D148 옛 파일 {sec} 같은 값 저장: rev·바이트 불변")
+    saved = pl.update(root, 1, "run", dict(loaded["run"], max_new_calls=loaded["run"]["max_new_calls"] + 1))
+    check(saved["rev"] == 2 and json.loads(Path(root, pl.PIPELINE_NAME).read_text(encoding="utf-8"))["prepare"]["complexity"] == "high",
+          "D148 다음 값 변경 저장: rev 증가·complexity 키 추가")
+    # 실제 Prepare 산출물: 기록과 설정·입력 모두 같고 반영 대기가 없는 상태에서 미리 보기.
+    check(all(j["prompt"] and j["template_version"] and j["inputs"] for j in m25["jobs"])
+          and pl.drift(saved["settings"], m25) == [] and m25["prepare_inputs"] == st.prepare_inputs_fp(root, m25),
+          "D152 실제 Prepare jobs·입력 기록 일치")
+    target = dict(settings["prepare"], model=models[0])
+    saved_raw = Path(root, pl.PIPELINE_NAME).read_bytes()
+    with patch.object(rn, "mock_enabled", return_value=True), patch.object(rn, "plan_calls", wraps=rn.plan_calls) as plans:
+        ordinary = pl.view(root, m25)
+        check(ordinary["switch"] is None and plans.call_count == 0, "D152 prepare 없는 view: switch null·plan_calls 0회")
+        explicit = pl.view(root, m25, switch_prepare=target)
+        check(plans.call_count == 1 and explicit["switch"]["need"] == 2 and explicit["switch"]["uncertain"] is False,
+              "D152 명시적 view: 실제 jobs 전환 계획·깨끗한 프로젝트 uncertain false")
+        for damage in ("job", "cell_key", "sha", "prompt"):
+            broken_m = copy.deepcopy(m25)
+            if damage == "job":
+                broken_m["jobs"][0] = None
+            elif damage == "sha":
+                broken_m["jobs"][0]["inputs"][0].pop("sha")
+            else:
+                broken_m["jobs"][0].pop(damage)
+            before_m = copy.deepcopy(broken_m)
+            result = pl.view(root, broken_m, switch_prepare=target)
+            check(result["error"] is None and result["switch"]["error"] and result["switch"]["uncertain"] is True
+                  and broken_m == before_m, f"D152 손상된 {damage}: view 오류 응답·매니페스트 불변")
+        with patch.object(rn, "plan_calls", side_effect=RuntimeError("ledger unavailable")):
+            result = pl.view(root, m25, switch_prepare=target)
+            check("ledger unavailable" in result["switch"]["error"] and result["switch"]["uncertain"] is True,
+                  "D152 원장 계획 예외도 switch 오류로 반환")
+    check(Path(root, pl.PIPELINE_NAME).read_bytes() == saved_raw, "D152 view·switch 읽기 전용 설정 불변")
     old_m = copy.deepcopy(m25)
     old_m["prepare_settings"].pop("complexity")
     d = pl.derive(root, old_m)
@@ -53516,7 +53549,12 @@ def batch10a_unit():
             entries.append(e)
     free = dict(entries[0], kind="recover", billable=False, preapproved=False)
     bad = dict(p, pending=entries + [free])
+    p25 = rn.plan_calls(m25, root)
+    ap25 = rn.split_approval(p25, "", backend=rn.BACKEND_COMFY_ORG)
     with patch.object(api_module, "OpenAIImageEditRequest", type("OldRequest", (), {"model_fields": {}})):
+        legacy = rn.split_approval(p25, "", backend=rn.BACKEND_COMFY_ORG)
+        check(len(legacy["needs_approval"]) == 2 and legacy["needs_approval"] == ap25["needs_approval"]
+              and legacy["pending_hash"] == ap25["pending_hash"] != "", "D150 옛 요청 모델: 2.5 승인 need·pending_hash 불변")
         for approve in ("", "0123456789ab"):
             ap = rn.split_approval(bad, approve, backend=rn.BACKEND_COMFY_ORG)
             check(len(ap["blocked"]) == 12 and ap["needs_approval"] == ap["preapproved"] == []
@@ -53529,6 +53567,22 @@ def batch10a_unit():
             sel = bd._run_sel(root, m26, settings["run"], "", False)
         check(sel["need"] == 0 and sel["reasons"][0]["reason"] == "blocked"
               and Path(root, st.MANIFEST_NAME).read_bytes() == before, "D150 보드 차단 reason·원본 불변")
+        rows = bd._run_free(root, m26, settings["run"], False)["by_crop"]
+        check(all(r["blocked"] == 1 and r["need"] == 0 for r in rows.values()), "D150 보드 크롭마다 발사 불가 1건 표시")
+        mixed_m = dict(m26, jobs=[m26["jobs"][0], *m25["jobs"]])
+        rows = bd._run_free(root, mixed_m, settings["run"], False)["by_crop"]
+        check(sum(r["blocked"] for r in rows.values()) == 1 and sum(r["need"] for r in rows.values()) == 2,
+              "D150 보드 승인 대기는 blocked 수에서 제외")
+        for mixed in (False, True):
+            plan = dict(p, pending=[p["pending"][0]] + ([p25["pending"][0]] if mixed else []))
+            approval = rn.split_approval(plan, "", backend=rn.BACKEND_COMFY_ORG)
+            report = dp.BMKDesignPatchRun._report(approval, plan, approval, None, {"candidates": [], "warnings": []},
+                                                types.SimpleNamespace(name=rn.BACKEND_COMFY_ORG), "", True, 4, [], 1, 0)
+            check("발사 못 함 1건" in report.splitlines()[0] and "할 일 없음" not in report.splitlines()[0]
+                  and "발사 못 함 1건 — " + approval["blocked"][0]["blocked"] in report,
+                  f"D150 Run 상태·별도 사유: 혼합={mixed}")
+            check(("승인 안 된 1건은 과금하지 않음" in report if mixed else "승인 안 된" not in report)
+                  and "승인 안 된 2건" not in report, f"D150 Run 발사 불가를 미승인 수에서 제외: 혼합={mixed}")
 
     # 실제 요청 타입 + sync_op 대역: 외부 API·네트워크 없음.
     body = []

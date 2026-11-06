@@ -2719,12 +2719,18 @@ class BMKDesignPatchRun:
                 draft_mock=0) -> str:
         mock = backend.name == runner.BACKEND_MOCK
         be = "MOCK(과금 없음)" if mock else "comfy.org(유료)"
+        blocked = [e for e in ap["blocked"] if e.get("blocked")]
+        unapproved = [e for e in ap["blocked"] if not e.get("blocked")]
         if report is not None:
             state = f"실행: 발사 {report.launched} · 완료 {report.done} · 실패 {report.failed} · 남음 {len(report.remaining)}"
         elif ap["needs_approval"]:
             state = f"드라이런(과금 없음): 승인 필요 {len(ap['needs_approval'])}건"
+        elif blocked:
+            state = "드라이런(과금 없음)"
         else:
             state = "할 일 없음(대기 호출 0)"
+        if blocked:
+            state += f" · 발사 못 함 {len(blocked)}건"
         lines = [f"Run [{be}] {state} | 새 후보 {len(new_keys)} | rev {rev} | {sec:.1f}s"]
         if draft_pending > 0:
             lines.append(f"주의: 스펙 초안 대기 {_draft_pending_text(draft_pending, draft_style)}(Spec Draft 미승인) — "
@@ -2740,10 +2746,12 @@ class BMKDesignPatchRun:
                          f"다시 큐하면 Spec Draft 가 원장으로 다시 씀(0 호출). 지금 승인하면 그 변경 없이 과금")
         if report is not None:
             lines += report.text().splitlines()
-        if ap["blocked"]:
+        if unapproved:
             why = ("approve 가 비어 있음" if not approve else
                    f"approve {approve} ≠ 지금 pending_hash {ap['pending_hash']}(드라이런 이후 대기 목록·n 이 바뀜)")
-            lines.append(f"승인 안 된 {len(ap['blocked'])}건은 과금하지 않음 — {why}")
+            lines.append(f"승인 안 된 {len(unapproved)}건은 과금하지 않음 — {why}")
+        if blocked:
+            lines.append(f"발사 못 함 {len(blocked)}건 — " + "; ".join(dict.fromkeys(e["blocked"] for e in blocked)))
         lines.append("현재 상태: " + runner.format_plan(plan_after, ap_after, concurrency=concurrency).replace("\n", "\n  "))
         if ap_after["needs_approval"]:
             lines.append(f"→ 승인: Run 노드의 '승인 후 실행' 버튼, 또는 approve 에 {ap_after['pending_hash']} 를 넣고 큐")

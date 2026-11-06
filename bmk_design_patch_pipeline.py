@@ -558,8 +558,7 @@ def update(root: str, rev: int | None, section: str, values: Any) -> dict:
             new = copy.deepcopy(doc)
         new[section] = vals
         new["confirm"] = [c for c in new["confirm"] if not c.startswith(section + ".")]
-        upgrade_prepare = doc is not None and "complexity" not in json.loads(raw.decode("utf-8-sig"))["prepare"]
-        if doc is None or new != doc or upgrade_prepare:
+        if doc is None or new != doc:
             new["rev"] = base_rev + 1 if base_rev < _REV_MAX else 1  # 상한 이상(그런 rev 의 깨진 파일 포함)이면 1 — 저장한 파일이 깨진 파일로 읽히지 않게
             store.write_json_atomic(_path(root), {k: new[k] for k in _DOC_KEYS})
     settings = _settings_of(new)
@@ -862,60 +861,64 @@ def recent_exports(m: dict, n: int = 10) -> list[dict]:
 
 def switch_preview(root: str, m: dict, settings: dict, *, prepare: dict | None = None) -> dict:
     """읽기 전용 생성 조건 변경 추정. 현재 입력·프롬프트를 재사용하므로 미반영 입력/변형 변화는 반영 뒤 달라질 수 있다."""
+    target = prepare
     try:
-        from . import bmk_design_patch_runner as runner
-    except ImportError:
-        import bmk_design_patch_runner as runner
-    before = settings["prepare"]
-    target = dict(prepare if prepare is not None else before)
-    if prepare is None and target["model"] in ("gpt-image-2.5-sunburst", "gpt-image-2.5-flare"):
-        target["model"] = target["model"].replace("2.5", "2.6")
-    target = validate_section("prepare", target)
-    mm = copy.deepcopy(m)
-    old_jobs = {j["cell_key"]: j for j in m.get("jobs") or []}
-    reset = set()
-    for job in mm.get("jobs") or []:
-        if not all(k in job for k in ("prompt", "template_version", "variant", "size")):
-            return {"prepare": target, "error": "작업에 생성 조건 기록이 부족합니다 — 먼저 Prepare 를 반영하세요", "uncertain": True}
-        job.update(model=target["model"], quality=target["quality"], n=target["n"], reps=target["calls_per_cell"])
-        if job["model"] in store.COMPLEXITY_MODELS:
-            job["complexity"] = target["complexity"]
-        else:
-            job.pop("complexity", None)
-        ck = store.cell_key(job["model"], job["quality"], job["size"], job.get("background"), job["prompt"],
-                            [i["sha"] for i in job.get("inputs") or []], job["template_version"], job["variant"],
-                            complexity=target["complexity"])
-        job["cell_key"] = ck
-        if ck in old_jobs and str(old_jobs[ck].get("n")) != str(target["n"]):
-            reset.add(ck)
-    keep = {j["cell_key"] for j in mm.get("jobs") or []}
-    pruned = 0
-    # D161 과 같은 정리, 사본만 변경(갈래 B 의 prune_stale_rerolls 공용 자리는 아직 빈 몸통이어도 추정 가능).
-    for ck, count in list((mm.get("rerolls") or {}).items()):
-        if ck not in keep or ck in reset:
-            spent = runner.board_spent(root, ck, settled=True)
-            pruned += max(0, count - spent)
-            if spent:
-                mm["rerolls"][ck] = spent
+        try:
+            from . import bmk_design_patch_runner as runner
+        except ImportError:
+            import bmk_design_patch_runner as runner
+        before = settings["prepare"]
+        target = dict(prepare if prepare is not None else before)
+        if prepare is None and target["model"] in ("gpt-image-2.5-sunburst", "gpt-image-2.5-flare"):
+            target["model"] = target["model"].replace("2.5", "2.6")
+        target = validate_section("prepare", target)
+        mm = copy.deepcopy(m)
+        old_jobs = {j["cell_key"]: j for j in m.get("jobs") or []}
+        reset = set()
+        for job in mm.get("jobs") or []:
+            if not all(k in job for k in ("prompt", "template_version", "variant", "size")):
+                return {"prepare": target, "error": "작업에 생성 조건 기록이 부족합니다 — 먼저 Prepare 를 반영하세요", "uncertain": True}
+            job.update(model=target["model"], quality=target["quality"], n=target["n"], reps=target["calls_per_cell"])
+            if job["model"] in store.COMPLEXITY_MODELS:
+                job["complexity"] = target["complexity"]
             else:
-                del mm["rerolls"][ck]
-    cfg = settings.get("run") or {}
-    plan = runner.plan_calls(mm, root, retry_failed=bool(cfg.get("retry_failed")), retry_orphans=bool(cfg.get("retry_orphans")))
-    backend = runner.BACKEND_MOCK if runner.mock_enabled(root) else runner.BACKEND_COMFY_ORG
-    ap = runner.split_approval(plan, "", backend=backend)
-    changed = drift(settings, m)
-    _src, rec = prepare_record(m)
-    uncertain = bool(changed) or any(target.get(k) != rec.get(k) for k in ("size_rule", "variants", "ref_style"))
-    try:
-        uncertain = uncertain or not m.get("prepare_inputs") or m["prepare_inputs"] != store.prepare_inputs_fp(root, m)
-    except (OSError, ValueError, KeyError, TypeError):
-        uncertain = True
-    lo, hi = ap["est_usd"]
-    return {"prepare": target, "need": len(ap["needs_approval"]),
-            "cells": len({e["cell_key"] for e in ap["needs_approval"]}), "est_usd": [lo, hi],
-            "credits": [round(lo * runner.CREDITS_PER_USD), round(hi * runner.CREDITS_PER_USD)],
-            "pending_preapproved": len(ap["preapproved"]), "est_usd_pre": list(runner.estimate_calls(ap["preapproved"])),
-            "pruned": pruned, "blocked": [e["blocked"] for e in ap["blocked"] if e.get("blocked")], "uncertain": bool(uncertain), "backend": backend}
+                job.pop("complexity", None)
+            ck = store.cell_key(job["model"], job["quality"], job["size"], job.get("background"), job["prompt"],
+                                [i["sha"] for i in job.get("inputs") or []], job["template_version"], job["variant"],
+                                complexity=target["complexity"])
+            job["cell_key"] = ck
+            if ck in old_jobs and str(old_jobs[ck].get("n")) != str(target["n"]):
+                reset.add(ck)
+        keep = {j["cell_key"] for j in mm.get("jobs") or []}
+        pruned = 0
+        # D161 과 같은 정리, 사본만 변경(갈래 B 의 prune_stale_rerolls 공용 자리는 아직 빈 몸통이어도 추정 가능).
+        for ck, count in list((mm.get("rerolls") or {}).items()):
+            if ck not in keep or ck in reset:
+                spent = runner.board_spent(root, ck, settled=True)
+                pruned += max(0, count - spent)
+                if spent:
+                    mm["rerolls"][ck] = spent
+                else:
+                    del mm["rerolls"][ck]
+        cfg = settings.get("run") or {}
+        plan = runner.plan_calls(mm, root, retry_failed=bool(cfg.get("retry_failed")), retry_orphans=bool(cfg.get("retry_orphans")))
+        backend = runner.BACKEND_MOCK if runner.mock_enabled(root) else runner.BACKEND_COMFY_ORG
+        ap = runner.split_approval(plan, "", backend=backend)
+        changed = drift(settings, m)
+        _src, rec = prepare_record(m)
+        uncertain = bool(changed) or any(target.get(k) != rec.get(k) for k in ("size_rule", "variants", "ref_style"))
+        try:
+            uncertain = uncertain or not m.get("prepare_inputs") or m["prepare_inputs"] != store.prepare_inputs_fp(root, m)
+        except (OSError, ValueError, KeyError, TypeError):
+            uncertain = True
+        lo, hi = ap["est_usd"]
+        return {"prepare": target, "need": len(ap["needs_approval"]),
+                "cells": len({e["cell_key"] for e in ap["needs_approval"]}), "est_usd": [lo, hi],
+                "credits": [round(lo * runner.CREDITS_PER_USD), round(hi * runner.CREDITS_PER_USD)],
+                "pending_preapproved": len(ap["preapproved"]), "est_usd_pre": list(runner.estimate_calls(ap["preapproved"])),
+                "pruned": pruned, "blocked": [e["blocked"] for e in ap["blocked"] if e.get("blocked")], "uncertain": bool(uncertain), "backend": backend}
+    except Exception as e:
+        return {"prepare": target, "error": f"생성 조건 변경을 미리 계산하지 못함: {e}", "uncertain": True}
 
 
 def view(root: str, m: dict | None = None, *, switch_prepare: dict | None = None) -> dict:
@@ -927,7 +930,7 @@ def view(root: str, m: dict | None = None, *, switch_prepare: dict | None = None
     der = derive(root, m, deep=True)
     cur = current(root, m, derived=der)
     st = cur["settings"]
-    preview_settings = st if st is not None else der["settings"] if switch_prepare is not None else None
+    preview_settings = (st if st is not None else der["settings"]) if switch_prepare is not None else None
     return {**cur, "derived": der, "drift": drift(st, m) if st else [], "warnings": path_warnings(st) if st else [],
             "exports": recent_exports(m), "widgets": settings_widgets(), "manifest_rev": m["rev"],
             "folder": os.path.basename(os.path.normpath(root)),
