@@ -3786,8 +3786,11 @@ def m2_store_unit():
         for name in ("ranges", "presets", "perImage"):
             mm = re.search(r"\$" + name + r"\s*:=\s*(\{.*?\})\s*;", blk, re.S)
             out[name] = json.loads(mm.group(1))
-        fam = re.search(r'\$family\s*:=\s*\(\$model\s*=\s*"([^"]+)"\s*or\s*\$model\s*=\s*"([^"]+)"\)\s*\?\s*"([^"]+)"', blk)
-        out["family"] = {fam.group(1): fam.group(3), fam.group(2): fam.group(3)}
+        # v0.44 + 2.6(52a20aa77): 삼항이 갈래마다 이어짐 — 모든 갈래를 모은다(배치 10 D149)
+        fam_blk = blk[blk.index("$family"):]
+        fam_blk = fam_blk[:fam_blk.index(";")]
+        fams = re.findall(r'\(\$model\s*=\s*"([^"]+)"\s*or\s*\$model\s*=\s*"([^"]+)"\)\s*\?\s*"([^"]+)"', fam_blk)
+        out["family"] = {m: f for a, b, f in fams for m in (a, b)}
         out["formula"] = ("$min := ($out[0] + $refs * $image[0]) * $n;" in blk and "$max := ($out[1] + $refs * $image[1]) * $n;" in blk
                           and "$out := ($preset != null) ? [$preset, $preset] : $range;" in blk)
         return out
@@ -3812,7 +3815,7 @@ def m2_store_unit():
         check(plain(store._PRICE_RANGES) == tb["ranges"], "ranges 표 = badge")
         check(plain(store._PRICE_PRESETS) == tb["presets"], "presets 표 = badge")
         check(plain(store._PRICE_PER_INPUT_IMAGE) == tb["perImage"], "입력 이미지당 표 = badge")
-        check(store._PRICE_FAMILY == tb["family"], "모델 가족(2.5-flare/sunburst → gpt-image-2.5) = badge")
+        check(store._PRICE_FAMILY == tb["family"] and len(tb["family"]) == 4, f"모델 가족(2.5·2.6 flare/sunburst) = badge {tb['family']}")
         n_ok = n_all = 0
         legacy_sizes = ["1024x1024", "1024x1536", "1536x1024"]
         for model, quals in tb["ranges"].items():
@@ -3833,7 +3836,10 @@ def m2_store_unit():
             (("gpt-image-2.5-flare", "high", "1024x1536", 1, 0), (0.0589, 0.0589)),
             (("gpt-image-2.5-sunburst", "xhigh", (2160, 3840), 2, 1), ((0.2544 + 0.0117) * 2, (0.2544 + 0.0176) * 2)),
             (("gpt-image-2", "medium", [2048, 1152], 1, 2), (0.0509 + 2 * 0.0098, 0.0509 + 2 * 0.0147)),
-            (("gpt-image-1", "high", (1024, 1024), 2, 1), ((0.167 + 0.0019) * 2, (0.25 + 0.0019) * 2)),
+            (("gpt-image-1.5", "high", (1024, 1024), 2, 1), ((0.133 + 0.0016) * 2, (0.22 + 0.0016) * 2)),
+            (("gpt-image-2.6-sunburst", "max", [2048, 2048], 4, 2), (2.5428, 2.59)),  # 2.6 max = 2.5 max(배치 10 D149)
+            (("gpt-image-2.6-sunburst", "low", "2048x2048", 1, 1), (0.0716 + 0.0117, 0.0716 + 0.0176)),
+            (("gpt-image-2.6-flare", "medium", (1024, 1536), 2, 0), (0.0486 * 2, 0.0486 * 2)),
         ]
         for args, exp in samples:
             got = store.estimate_usd(*args)
@@ -3883,8 +3889,9 @@ def m2_store_unit():
                         prev = (lo, hi)
         check(in_range, "모든 Custom 근사가 lo ≤ hi 이고 badge 범위 안")
         check(mono, "같은 종횡비에서 화소가 늘면 근사 가격이 줄지 않음(badge 프리셋이 단조인 품질)")
-        check(skipped == ["gpt-image-2.5-flare/low", "gpt-image-2.5-sunburst/low"], f"비단조 badge 프리셋 {skipped}")
-        note(f"badge 프리셋 자체가 비단조라 단조 검사 제외: {', '.join(skipped)} (1024x1536 0.0068 > 2048x1152 0.0067)")
+        check(skipped == ["gpt-image-2.5-flare/low", "gpt-image-2.5-sunburst/low", "gpt-image-2.6-flare/low", "gpt-image-2.6-sunburst/low"],
+              f"비단조 badge 프리셋 {skipped}")
+        note(f"badge 프리셋 자체가 비단조라 단조 검사 제외: {', '.join(skipped)} (2.5 1024x1536 0.0068 > 2048x1152 0.0067 · 2.6 0.0285 > 0.0283)")
         rows = []
         for w, h in ((2048, 2048), (1024, 1536), (1024, 2048), (1024, 2560), (1536, 2560), (2560, 1536), (1280, 1536), (1152, 1536)):
             lo, hi = store.estimate_usd("gpt-image-2.5-sunburst", "max", [w, h], 4, 2)
@@ -53433,6 +53440,16 @@ process.exit(0);
             for name, ok in rows.items():
                 check(ok is True, f"D60–D68 {group}/{name}: {ok}")
 
+def batch10a_unit():
+    """배치 10-A: 모델 2.6·complexity·가격표·생성 조건 키·[2.6 으로 전환] 미리 보기(STUDIO_BATCH10_SPEC D144–D155). 갈래 A 가 채움."""
+    section("배치 10-A — 모델 2.6·가격·생성 조건 키")
+
+
+def batch10b_unit():
+    """배치 10-B·C·D: 다시 생성 대기 취소·옛 셀 정리·실행 설정 확정·흐림 이유·새 프로젝트·가져오기 이름(D156–D169). 갈래 B 가 채움."""
+    section("배치 10-B — 다시 생성 취소·실행 설정 흐름")
+
+
 def batch9_recv_unit():
     """배치 9 공용 자리(11/02 — _proto/STUDIO_BATCH9_SPEC.md D114·D117·D139·D142): 파일 받기 도우미(감독관). 9-A·9-B 가 같이 쓴다."""
     section("배치 9 공용 — 파일 받기 도우미(머리 바이트·이름·경로·흘려 받기·복사·배타 이동)")
@@ -56737,6 +56754,10 @@ if __name__ == "__main__":
         batch8b_unit()
     if want("batch8c_unit"):
         batch8c_unit()
+    if want("batch10a_unit"):
+        batch10a_unit()
+    if want("batch10b_unit"):
+        batch10b_unit()
     if want("batch9_recv_unit"):
         batch9_recv_unit()
     if want("batch9a_unit"):

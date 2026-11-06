@@ -392,6 +392,18 @@ def _only_match(tokens: list[str], entry: dict) -> bool:
     return False
 
 
+def board_spent(root: str, cell_key: str) -> int:
+    """배치 10 공용 자리(몸통 = 갈래 B, D157): 이 셀에서 보드 사전 승인으로 이미 쓴 rep 수(plan_calls 의 board_used 와 같은 셈).
+    다시 생성 대기를 줄일 때의 하한. 공용 자리 = 0."""
+    return 0
+
+
+def _reroll_still_wanted(root: str, e: dict) -> bool:
+    """배치 10 공용 자리(몸통 = 갈래 B, D160): 계획 확정 뒤 발사 직전에 board 사전 승인 항목이 아직 남은 몫인지 다시 확인
+    (그 사이 [다시 생성 대기 취소]면 False → 건너뜀, 과금 없음). 공용 자리 = 늘 True."""
+    return True
+
+
 def _board_spent(files: dict) -> bool:
     """이 rep 이 보드 사전 승인으로 한 번이라도 호출됐는지(재시도로 req 가 바뀌어도 history 에 남는다)."""
     req = files.get("req")
@@ -1652,6 +1664,10 @@ async def _one_call(root: str, rid: str, e: dict, backend, state: _RunState) -> 
         lost = [os.path.basename(p) for p in input_paths if not os.path.isfile(p)]
         if lost:
             skip(f"입력 파일 없음({', '.join(lost)}) — Prepare 를 다시 실행하세요")
+            return
+        # 배치 10 D160 공용 자리: 계획 뒤 취소된 다시 생성(사전 승인)은 보내지 않음
+        if e.get("approved_by") == "board" and not await _to_thread(lambda: _reroll_still_wanted(root, e)):
+            skip("다시 생성 취소됨 — 과금하지 않음")
             return
         await _billable(root, e, input_paths, backend, state)
     finally:

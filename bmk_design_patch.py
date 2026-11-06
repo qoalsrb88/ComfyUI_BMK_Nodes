@@ -2004,6 +2004,8 @@ class BMKDesignPatchPrepare:
                           + (f"  fill {finfo['alpha_frac'] * 100:.0f}%" if finfo["method"] != "none" else ""))]
             tiles.append(_label_tile(cells, lab, (255, 140, 120) if (spec["warnings"] or probs) else (220, 220, 220)))
         m["jobs"] = _plain(jobs)
+        # 배치 10 D161 공용 자리(몸통 = 갈래 B): jobs 밖 생성 조건의 다시 생성 대기를 원장 쓴 몫까지 내림 — 키가 되돌아와도 안 살아나게
+        n_pruned = store.prune_stale_rerolls(m, {j["cell_key"] for j in jobs}, lambda ck: runner.board_spent(root, ck))
         # jobs 와 같은 커밋에(STUDIO_S3_SPEC §2.2): 실제로 쓴 위젯 값 — Studio 처음 값·그래프와의 갈라짐 판정, 같은 설정이면 바이트 그대로
         m["prepare_settings"] = {"model": model, "quality": quality, "size_rule": size_rule, "variants": variants,
                                  "n": int(n), "ref_style": ref_style, "calls_per_cell": int(calls_per_cell)}
@@ -2020,6 +2022,8 @@ class BMKDesignPatchPrepare:
                  "유료 호출 없음. Run 이 approve == pending_hash 일 때만 과금합니다"
                  "(Run 의 retry_failed·retry_orphans·only 가 기본값이면 Run 드라이런의 해시와 같음)."]
         lines += runner.format_plan(plan, ap).splitlines()
+        if n_pruned:  # 배치 10 D161
+            lines.append(f"옛 생성 조건의 다시 생성 대기 {n_pruned}건 정리(과금 없음)")
         if n_dup:
             lines.append(f"같은 요청이 되는 변형 {n_dup}개 건너뜀:")
             lines += dup_lines
