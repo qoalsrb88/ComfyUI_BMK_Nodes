@@ -99,7 +99,7 @@ import math
 import os
 import re
 from collections import Counter
-from typing import Any
+from typing import Any, Callable
 
 try:
     from . import bmk_design_patch_store as store
@@ -128,7 +128,7 @@ CONTROL_KEYS = {"cand": ("enabled",)}  # 템플릿 제어 키(위젯 아님): bu
 
 # ── 노드 위젯 표(bmk_design_patch.py INPUT_TYPES 복사 — P2 가 대조) ─────────────────────────────────────────────
 _PROJECT_TYPE = "BMK_DP_PROJECT"
-_MODELS = ("gpt-image-2.5-sunburst", "gpt-image-2.5-flare")
+_MODELS = ("gpt-image-2.6-sunburst", "gpt-image-2.6-flare", "gpt-image-2.5-sunburst", "gpt-image-2.5-flare")
 _QUALITIES = ("max", "xhigh", "high", "medium", "low")
 _REF_STYLES = ("at", "plain", "both")
 _REGISTER_MODES = ("guarded_affine", "translation", "off")
@@ -177,7 +177,7 @@ WIDGETS = {
     "BMKDesignPatchPrepare": {
         "project": _LINK, "model": _c(_MODELS, _MODELS[0]), "quality": _c(_QUALITIES, "max"),
         "size_rule": _c(tuple(store.GPT_SIZE_RULES), "user_k"), "variants": _s("V1,V4"), "n": _i(4, 1, 10),
-        "ref_style": _c(_REF_STYLES, "at"), "calls_per_cell": _i(1, 1, 8)},
+        "ref_style": _c(_REF_STYLES, "at"), "calls_per_cell": _i(1, 1, 8), "complexity": _c(("low", "medium", "high"), "high")},
     "BMKDesignPatchSpecDraft": {
         "project": _LINK, "approve": _s(""), "vlm": _c("vlm:VLM_CHOICES", "openai/gpt-6-sol"),
         "effort": _c("vlm:EFFORTS", "xhigh"), "image_detail": _c("vlm:IMAGE_DETAILS", "high"),
@@ -209,7 +209,7 @@ _IMPORT_PATHS = ("psd_path", "refs_dir", "glossary_path")
 _IMPORT_SOURCE = (("psd_path", "psd"), ("crop_group", "crop_group"), ("clean_plate_layer", "clean_plate_layer"),
                   ("base_layer", "base_layer"), ("crop_pixels_group", "crop_pixels_group"), ("refs_dir", "refs_dir"),
                   ("glossary_path", "glossary"))
-_PREPARE_CELL = ("model", "quality", "size_rule", "variants", "ref_style")  # cell_key 에 들어가는 설정(다르면 새 셀)
+_PREPARE_CELL = ("model", "quality", "size_rule", "variants", "ref_style", "complexity")  # complexity 는 2.6 만
 # n·calls_per_cell 은 셀이 그대로 — n 은 장 수·비용·승인 해시만. calls_per_cell 을 늘리면 jobs[].reps 가 늘어 완료된 셀에도 빠진 rep 이
 # 새 유료 호출(runner.plan_calls '생성 조건마다 호출 수 증가')이 되므로 갈라짐 kind "calls"(줄이면 "cost")
 _REV_MAX = 2 ** 53 - 1  # 브라우저 JSON 수(Number.MAX_SAFE_INTEGER) — 넘는 rev 는 반올림돼 rev·sig 대조가 늘 어긋나므로 깨진 파일로 본다
@@ -460,6 +460,8 @@ def _parse(raw: bytes) -> dict:
         if sec not in doc:
             raise ValueError(f"{PIPELINE_NAME} 에 {sec} 절이 없습니다")
         vals = doc[sec]
+        if sec == "prepare" and isinstance(vals, dict) and "complexity" not in vals:
+            vals = dict(vals, complexity="high")  # 옛 파일의 optional 기본값, 확인 필요를 새로 만들지 않는다
         if sec == "export" and isinstance(vals, dict) and "subfolder" not in vals:
             vals = dict(vals, subfolder="")  # 배치 3b 전 파일(키 없음) = 기본 폴더(노드 기본값) — 깨진 파일 아님
         try:
@@ -566,6 +568,31 @@ def update(root: str, rev: int | None, section: str, values: Any) -> dict:
 # ══════════════════════════════════════════════════════════════════════
 # 처음 값 유도(§2.2)
 # ══════════════════════════════════════════════════════════════════════
+def confirm_only(root: str, rev: int, sections) -> dict:
+    """저장된 비-gate 절의 값은 그대로 두고 확인 필요만 한 트랜잭션으로 지운다."""
+    if type(rev) is not int or rev < 1:
+        raise PipelineConflict("저장된 실행 설정을 다시 읽은 뒤 확정하세요")
+    if (not isinstance(sections, list) or not sections
+            or any(not isinstance(s, str) or s not in SECTIONS or s in ("import", "prepare") for s in sections)):
+        raise ValueError("confirm_only 는 import·prepare 밖의 절 이름 목록이어야 합니다")
+    with store.manifest_lock(root):
+        try:
+            doc = load(root)
+        except ValueError as e:
+            raise PipelineConflict(f"실행 설정을 읽을 수 없습니다 — ① 준비에서 확인·저장: {e}") from e
+        if doc is None or rev != doc["rev"]:
+            raise PipelineConflict("실행 설정이 다른 창에서 바뀌었습니다 — 다시 읽은 뒤 확정하세요")
+        confirmed = set(sections)
+        remaining = [c for c in doc["confirm"] if c.split(".", 1)[0] not in confirmed]
+        if remaining != doc["confirm"]:
+            doc["confirm"] = remaining
+            doc["rev"] = rev + 1 if rev < _REV_MAX else 1
+            store.write_json_atomic(_path(root), {k: doc[k] for k in _DOC_KEYS})
+        m = store.load_manifest(root)
+    settings = _settings_of(doc)
+    return {"ok": True, "rev": doc["rev"], "settings": settings, "confirm": list(doc["confirm"]), "drift": drift(settings, m)}
+
+
 def _majority(values: list) -> tuple[Any, bool]:
     """최다값(같으면 먼저 나온 것)과 섞였는지."""
     c = Counter(json.dumps(v, sort_keys=True, ensure_ascii=False) for v in values)
@@ -599,6 +626,7 @@ def _jobs_prepare(jobs: list[dict]) -> dict:
     """jobs 에 남은 Prepare 설정 {키: 작업마다 값} — model·quality·n·calls_per_cell(= reps, 없으면 1)·size_rule(= size_info.rule).
     variants·ref_style 은 기록이 없다(옛 프로젝트 유도·갈라짐이 같이 쓴다)."""
     return {"model": [j.get("model") for j in jobs], "quality": [j.get("quality") for j in jobs],
+            "complexity": [j.get("complexity", "high") if j.get("model") in store.COMPLEXITY_MODELS else "high" for j in jobs],
             "n": [j.get("n") for j in jobs], "calls_per_cell": [j.get("reps") if j.get("reps") is not None else 1 for j in jobs],
             "size_rule": [(j.get("size_info") or {}).get("rule") if isinstance(j.get("size_info"), dict) else None
                           for j in jobs]}
@@ -609,6 +637,7 @@ def _derive_prepare(m: dict, out: dict, frm: dict, conf: set, notes: list) -> No
     if isinstance(ps, dict) and ps:
         vals = {k: ps[k] for k in section_keys("prepare") if k in ps}
         vals.setdefault("calls_per_cell", 1)  # 생략 = 1(prepare_settings 계약)
+        vals.setdefault("complexity", "high")
         try:
             vals = _check_section("prepare", vals, deep=False)
         except ValueError as e:
@@ -776,12 +805,12 @@ def _variant_tokens(v: Any) -> set[str]:
 
 
 def prepare_record(m: dict) -> tuple[str | None, dict]:
-    """갈라짐이 비교할 마지막 Prepare 기록 → (출처, {키: 값}). "prepare_settings" = 키 7개(calls_per_cell 생략 = 1) / "jobs" = 옛 프로젝트
+    """갈라짐이 비교할 마지막 Prepare 기록 → (출처, {키: 값}). "prepare_settings" = 키 8개(calls_per_cell=1·complexity=high 생략 가능) / "jobs" = 옛 프로젝트
     (prepare_settings 없음 — derive 와 같은 jobs 최다값의 model·quality·size_rule·n·calls_per_cell, 최다값이 없음(None)인 키는 뺌.
     variants·ref_style 은 기록이 없어 없음 — confirm 이 맡는다) / None = 기록 없음({})."""
     ps = m.get("prepare_settings")
     if isinstance(ps, dict) and ps:
-        return "prepare_settings", {k: ps.get(k, 1 if k == "calls_per_cell" else None) for k in section_keys("prepare")}
+        return "prepare_settings", {k: ps.get(k, {"calls_per_cell": 1, "complexity": "high"}.get(k)) for k in section_keys("prepare")}
     rec = {}
     for key, vs in _jobs_prepare(_jobs_of(m)).items():
         v = _majority(vs)[0] if vs else None
@@ -810,6 +839,8 @@ def drift(settings: dict, m: dict) -> list[dict]:
     pre = (settings or {}).get("prepare") or {}
     for key in section_keys("prepare"):
         if key not in rec:
+            continue
+        if key == "complexity" and pre.get("model") not in store.COMPLEXITY_MODELS:
             continue
         mv, sv = rec[key], pre.get(key)
         if (_variant_tokens(mv) == _variant_tokens(sv)) if key == "variants" else mv == sv:
@@ -853,7 +884,83 @@ def recent_exports(m: dict, n: int = 10) -> list[dict]:
     return [{k: e.get(k) for k in ("rev", "psd", "time", "layers", "problems", "bytes", "mask_groups", "mask_edits")} for e in reversed(rows[-n:])]
 
 
-def view(root: str, m: dict | None = None) -> dict:
+def switch_preview(root: str, m: dict, settings: dict, *, prepare: dict | None = None,
+                   import_pending: Callable[[str, dict, dict], list[str]] | None = None) -> dict:
+    """읽기 전용 생성 조건 변경 추정. 현재 입력·프롬프트를 재사용하므로 미반영 입력/변형 변화는 반영 뒤 달라질 수 있다."""
+    target = prepare
+    try:
+        try:
+            from . import bmk_design_patch_runner as runner
+        except ImportError:
+            import bmk_design_patch_runner as runner
+        before = settings["prepare"]
+        target = dict(prepare if prepare is not None else before)
+        if prepare is None and target["model"] in ("gpt-image-2.5-sunburst", "gpt-image-2.5-flare"):
+            target["model"] = target["model"].replace("2.5", "2.6")
+        target = validate_section("prepare", target)
+        backend = runner.BACKEND_MOCK if runner.mock_enabled(root) else runner.BACKEND_COMFY_ORG
+        _src, rec = prepare_record(m)
+        input_keys = ("size_rule", "variants", "ref_style")
+        missing_record = any(k not in rec for k in input_keys)
+        recorded = {k: rec.get(k, before[k]) for k in input_keys}
+        if (target["size_rule"] != recorded["size_rule"] or target["ref_style"] != recorded["ref_style"]
+                or _variant_tokens(target["variants"]) != _variant_tokens(recorded["variants"])):
+            return {"prepare": target, "exact": False, "need": None, "cells": None, "est_usd": None, "credits": None,
+                    "uncertain": True, "backend": backend}
+        mm = copy.deepcopy(m)
+        old_jobs = {j["cell_key"]: j for j in m.get("jobs") or []}
+        reset = set()
+        for job in mm.get("jobs") or []:
+            if not all(k in job for k in ("prompt", "template_version", "variant", "size")):
+                return {"prepare": target, "error": "작업에 생성 조건 기록이 부족합니다 — 먼저 Prepare 를 반영하세요", "uncertain": True}
+            job.update(model=target["model"], quality=target["quality"], n=target["n"], reps=target["calls_per_cell"])
+            if job["model"] in store.COMPLEXITY_MODELS:
+                job["complexity"] = target["complexity"]
+            else:
+                job.pop("complexity", None)
+            ck = store.cell_key(job["model"], job["quality"], job["size"], job.get("background"), job["prompt"],
+                                [i["sha"] for i in job.get("inputs") or []], job["template_version"], job["variant"],
+                                complexity=target["complexity"])
+            job["cell_key"] = ck
+            if ck in old_jobs and str(old_jobs[ck].get("n")) != str(target["n"]):
+                reset.add(ck)
+        keep = {j["cell_key"] for j in mm.get("jobs") or []}
+        pruned = 0
+        # D161 과 같은 정리, 사본만 변경(갈래 B 의 prune_stale_rerolls 공용 자리는 아직 빈 몸통이어도 추정 가능).
+        for ck, count in list((mm.get("rerolls") or {}).items()):
+            if ck not in keep or ck in reset:
+                spent = runner.board_spent(root, ck, settled=True)
+                pruned += max(0, count - spent)
+                if spent:
+                    mm["rerolls"][ck] = spent
+                else:
+                    del mm["rerolls"][ck]
+        cfg = settings.get("run") or {}
+        plan = runner.plan_calls(mm, root, retry_failed=bool(cfg.get("retry_failed")), retry_orphans=bool(cfg.get("retry_orphans")))
+        ap = runner.split_approval(plan, "", backend=backend)
+        changed = drift(settings, m)
+        uncertain = missing_record or bool(changed)
+        if import_pending is not None:
+            uncertain = uncertain or bool(import_pending(root, m, settings))
+        try:
+            uncertain = uncertain or not m.get("prepare_inputs") or m["prepare_inputs"] != store.prepare_inputs_fp(root, m)
+            src = m.get("source") or {}
+            if src.get("psd"):
+                uncertain = uncertain or store.file_fingerprint(src["psd"]) != src.get("fingerprint")
+        except (OSError, ValueError, KeyError, TypeError):
+            uncertain = True
+        lo, hi = ap["est_usd"]
+        return {"prepare": target, "exact": True, "need": len(ap["needs_approval"]),
+                "cells": len({e["cell_key"] for e in ap["needs_approval"]}), "est_usd": [lo, hi],
+                "credits": [round(lo * runner.CREDITS_PER_USD), round(hi * runner.CREDITS_PER_USD)],
+                "pending_preapproved": len(ap["preapproved"]), "est_usd_pre": list(runner.estimate_calls(ap["preapproved"])),
+                "pruned": pruned, "blocked": [e["blocked"] for e in ap["blocked"] if e.get("blocked")], "uncertain": bool(uncertain), "backend": backend}
+    except Exception as e:
+        return {"prepare": target, "error": f"생성 조건 변경을 미리 계산하지 못함: {e}", "uncertain": True}
+
+
+def view(root: str, m: dict | None = None, *, switch_prepare: dict | None = None,
+         import_pending: Callable[[str, dict, dict], list[str]] | None = None) -> dict:
     """GET /pipeline 응답 {rev, saved, error, settings, confirm, derived, drift, warnings, exports, widgets, manifest_rev, folder}. 유도는
     deep(설정 패널의 [매니페스트 값으로 다시]가 그대로 저장되게), widgets = settings_widgets(), manifest_rev = 매니페스트 rev(Studio 가
     GET /pipeline/prompt 의 expect '<rev>:<manifest_rev>' 를 만듦 — S3b 계약 §1), folder = 프로젝트 폴더 이름(export.subfolder 를
@@ -862,9 +969,12 @@ def view(root: str, m: dict | None = None) -> dict:
     der = derive(root, m, deep=True)
     cur = current(root, m, derived=der)
     st = cur["settings"]
+    preview_settings = (st if st is not None else der["settings"]) if switch_prepare is not None else None
     return {**cur, "derived": der, "drift": drift(st, m) if st else [], "warnings": path_warnings(st) if st else [],
             "exports": recent_exports(m), "widgets": settings_widgets(), "manifest_rev": m["rev"],
-            "folder": os.path.basename(os.path.normpath(root))}
+            "folder": os.path.basename(os.path.normpath(root)),
+            "switch": switch_preview(root, m, preview_settings, prepare=switch_prepare,
+                                     import_pending=import_pending) if preview_settings else None}
 
 
 # ══════════════════════════════════════════════════════════════════════

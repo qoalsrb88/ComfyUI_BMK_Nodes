@@ -78,6 +78,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import dataclasses
 import hashlib
 import io
@@ -310,6 +311,24 @@ def is_running(root: str) -> bool:
         return _RUNS.get(_rid(root), 0) > 0
 
 
+@contextlib.contextmanager
+def run_active(root: str):
+    """Run 노드의 계획부터 끝까지 등록한다. 취소의 잠금 안 검사와 시작을 직렬화한다."""
+    rid = _rid(root)
+    with store.manifest_lock(root), _REG_LOCK:
+        if _RUNS.get(rid, 0) == 0:
+            _DRAIN.discard(rid)
+        _RUNS[rid] = _RUNS.get(rid, 0) + 1
+    try:
+        yield
+    finally:
+        with _REG_LOCK:
+            _RUNS[rid] -= 1
+            if _RUNS[rid] <= 0:
+                _RUNS.pop(rid, None)
+                _DRAIN.discard(rid)
+
+
 def request_drain(root: str) -> bool:
     """진행 중 Run 에 drain 요청(새 발사 중지, 진행 중 호출은 끝까지 받음). 돌고 있는 Run 이 없으면 False(아무것도 안 함)."""
     rid = _rid(root)
@@ -347,9 +366,9 @@ def _release(rid: str, call_id: str) -> None:
 # 실행 계획
 # ══════════════════════════════════════════════════════════════════════
 _JOB_FIELDS = ("cell_key", "crop_id", "tid", "variant", "model", "quality", "size", "n", "background", "prompt",
-               "inputs", "template_version")
+               "inputs", "template_version", "complexity")
 _CHANGE_FIELDS = (("model", "모델"), ("quality", "품질"), ("size", "크기"), ("background", "배경"),
-                  ("prompt", "프롬프트"), ("inputs", "입력 이미지"), ("template_version", "템플릿"))
+                  ("prompt", "프롬프트"), ("inputs", "입력 이미지"), ("template_version", "템플릿"), ("complexity", "복잡도"))
 
 
 def pending_hash(pending_ids: Iterable[str]) -> str:
@@ -368,7 +387,7 @@ def approval_id(e: dict) -> str:
 
 
 def _job_view(job: dict) -> dict:
-    v = {k: job.get(k) for k in _JOB_FIELDS}
+    v = {k: job.get(k) for k in _JOB_FIELDS if k != "complexity" or job.get(k) is not None}
     v["inputs"] = [{"role": i.get("role"), "file": i.get("file"), "sha": i.get("sha")}
                    | ({"source": i["source"]} if i.get("source") else {})  # canvas 의 평탄화 전 크롭 소스(원장에 남김)
                    for i in (job.get("inputs") or []) if isinstance(i, dict)]
@@ -439,13 +458,15 @@ def plan_calls(m: dict, ledger_root: str, *, retry_failed: bool = False, retry_o
     해당 failed / orphaned 항목이 pending 으로 옮겨진다(과금, 승인 필요). only = 쉼표 구분 crop_id / NNN / cell_key 접두
     (6자 이상) / call_id — 승인이 필요한 pending(new·retry)에만 적용, 걸러낸 수는 filtered. 보드 재굴림(사전 승인)과
     다운로드 복구(무료)는 걸러지지 않는다(보드가 요청한 호출이 only 때문에 조용히 밀리지 않게).
-    jobs 에 없는 옛 셀(stale)의 원장도 훑어 recoverable 은 pending(recover), orphaned 는 목록에 넣는다(돈 낸 결과 보호)."""
+    jobs 에 없는 옛 셀(stale)의 원장도 훑어 recoverable 은 pending(recover), orphaned 는 목록에 넣는다(돈 낸 결과 보호).
+    rerolls_pending = 같은 원장 순회로 센 셀별 미사용 보드 예약 수(옛 키 포함, 상태 조회에서 원장을 다시 읽지 않게)."""
     if not isinstance(m, dict):
         raise ValueError(f"{_TAG} plan_calls: 매니페스트(dict)가 아닙니다: {type(m).__name__}")
     rid = _rid(ledger_root)
     out: dict[str, Any] = {k: [] for k in ("pending", "done", "inflight", "orphaned", "failed")}
     warnings: list[str] = []
     rerolls = m.get("rerolls") if isinstance(m.get("rerolls"), dict) else {}
+    out["rerolls_pending"] = {ck: _nonneg_int(n, 0) for ck, n in rerolls.items()}
     tokens = [t.strip() for t in str(only or "").replace("，", ",").split(",") if t.strip()]
     jobs, seen = [], set()
     for job in m.get("jobs") or []:
@@ -482,6 +503,8 @@ def plan_calls(m: dict, ledger_root: str, *, retry_failed: bool = False, retry_o
         used = sum(1 for s in states.values() if s != "none")  # req 만 = 호출 전
         board_used = _count_board_used(ledger, states)
         board_left = max(0, extra - board_used)
+        if ck in rerolls:
+            out["rerolls_pending"][ck] = board_left
         # 셀 목표 = max(reps, 보드 아닌 호출 + rerolls): 재굴림은 아직 안 돈 기본 호출을 먼저 대신한다 — 그 기본 호출이
         # Run 승인 대기로 남아 같은 크롭을 두 번 만들지 않게(10/15). 빈 rep 은 번호 앞쪽부터 채운다.
         want = max(0, max(reps, used - board_used + extra) - used)
@@ -526,8 +549,12 @@ def plan_calls(m: dict, ledger_root: str, *, retry_failed: bool = False, retry_o
     for ck in _ledger_cells(ledger_root):  # jobs 에 없는 옛 셀: 돈 낸 결과(recoverable·orphaned)만
         if ck in seen:
             continue
-        for rep, files in sorted(read_ledger(ledger_root, ck).items()):
-            st = _rep_state(files, _is_active(rid, call_id_for(ck, rep)))
+        ledger = read_ledger(ledger_root, ck)
+        states = {rep: _rep_state(files, _is_active(rid, call_id_for(ck, rep))) for rep, files in ledger.items()}
+        if ck in rerolls:
+            out["rerolls_pending"][ck] = max(0, _nonneg_int(rerolls[ck], 0) - _count_board_used(ledger, states))
+        for rep, files in sorted(ledger.items()):
+            st = states[rep]
             rview = _job_view(files["req"]) if isinstance(files.get("req"), dict) else {"cell_key": ck}
             if st == "recoverable":
                 recover.append(entry(ck, rep, st, rview, files, kind="recover", reason="옛 조건 — 다운로드만 다시",
@@ -597,15 +624,41 @@ def estimate_seconds(count: int, concurrency: int = 4, per_call_s: float = SECON
     return math.ceil(count / max(1, int(concurrency))) * float(per_call_s)
 
 
+def blocked_reason(job: dict, *, backend: str, request_model=None) -> str | None:
+    """과금 전 판정(계획·R·요청 공통). MOCK 도 가격표를 검사하되 ComfyUI 모듈은 필요하지 않다."""
+    model, quality = job.get("model"), job.get("quality")
+    if quality not in store._PRICE_RANGES.get(model, {}):
+        return f"가격표에 없는 모델 {model} / 품질 {quality}(Design Patch 업데이트)"
+    if model in store.COMPLEXITY_MODELS:
+        if job.get("complexity") not in ("low", "medium", "high"):
+            return "2.6 complexity 값이 없음/잘못됨 — Prepare 를 다시 실행하세요"
+        if backend != BACKEND_MOCK:
+            if request_model is None:
+                try:
+                    from comfy_api_nodes.apis.openai import OpenAIImageEditRequest
+                    request_model = OpenAIImageEditRequest
+                except Exception:
+                    return "ComfyUI 가 2.6 complexity 를 모름(ComfyUI 업데이트)"
+            if "complexity" not in getattr(request_model, "model_fields", {}):
+                return "ComfyUI 가 2.6 complexity 를 모름(ComfyUI 업데이트)"
+    return None
+
+
 def split_approval(plan: dict, approve: str = "", *, backend: str) -> dict:
     """승인 판정. backend = 이 계획을 실행할 백엔드 이름(BACKEND_MOCK / BACKEND_COMFY_ORG — 해시에 들어간다). 반환:
       pending_hash   승인이 필요한 호출(과금·비사전승인)의 해시. 없으면 ""
       needs_approval 그 호출들 / preapproved 보드 재굴림 / free 다운로드 복구
       approved_now   approve == pending_hash (승인 필요 호출이 있을 때만 True)
       to_run         실행할 호출(plan 순서, approved_by 채움): free + preapproved + (approved_now 면 needs_approval)
-      blocked        승인이 없어 과금하지 않는 호출
+      blocked        미승인 호출 + 발사 불가 호출(후자는 항목의 blocked 에 사유)
       est_usd        needs_approval 의 예상 USD (lo, hi) / est_usd_run  to_run 의 과금 예상"""
-    pending = plan.get("pending") or []
+    pending, blocked = [], []
+    for e in plan.get("pending") or []:
+        why = blocked_reason(e["job"], backend=backend) if e["billable"] else None
+        if why:
+            blocked.append(dict(e, blocked=why))
+        else:
+            pending.append(e)
     need = [e for e in pending if e["billable"] and not e["preapproved"]]
     h = pending_hash([f"backend:{backend}"] + [approval_id(e) for e in need]) if need else ""
     ok = bool(need) and str(approve or "").strip() == h
@@ -617,7 +670,7 @@ def split_approval(plan: dict, approve: str = "", *, backend: str) -> dict:
             to_run.append(dict(e, approved_by="board"))
         elif ok:
             to_run.append(dict(e, approved_by=f"hash:{h}"))
-    return {"pending_hash": h, "approved_now": ok, "to_run": to_run, "blocked": [] if ok else need,
+    return {"pending_hash": h, "approved_now": ok, "to_run": to_run, "blocked": blocked + ([] if ok else need),
             "needs_approval": need, "preapproved": [e for e in pending if e["billable"] and e["preapproved"]],
             "free": [e for e in pending if not e["billable"]], "est_usd": estimate_calls(need),
             "est_usd_run": estimate_calls(to_run)}
@@ -633,6 +686,9 @@ def format_plan(plan: dict, approval: dict, *, concurrency: int = 4) -> str:
              f"다운로드 복구 {len(ap['free'])}) | 완료 {len(plan['done'])} · 실행 중 {len(plan['inflight'])} · "
              f"orphaned {len(plan['orphaned'])} · 실패 {len(plan['failed'])}"
              + (f" | only 로 제외 {plan['filtered']}" if plan.get("filtered") else "")]
+    blocked = [e for e in ap.get("blocked", []) if e.get("blocked")]
+    if blocked:
+        lines.append(f"발사 못 함 {len(blocked)}건 — " + "; ".join(dict.fromkeys(e["blocked"] for e in blocked)))
     if need:
         secs = estimate_seconds(len(need), concurrency)
         lines.append(f"승인 필요 {len(need)}건 ≈ ${lo:.2f}–${hi:.2f} · 예상 {secs / 60:.0f}분(동시 {concurrency}) | "
@@ -755,6 +811,9 @@ class ComfyOrgBackend:
 
     async def request(self, job: dict, input_paths: list[str], call_id: str) -> dict:
         api = self._load_api()
+        why = blocked_reason(job, backend=self.name, request_model=api.OpenAIImageEditRequest)
+        if why:
+            raise CallError(why, status=None, phase="blocked", retryable=False, maybe_billed=False)
         if not self.holder.auth_token_comfy_org and not self.holder.api_key_comfy_org:
             raise CallError("ComfyUI 에 comfy.org 로그인(또는 API 키)이 없습니다 — 로그인한 뒤 다시 큐에 넣으세요.",
                             status=401, maybe_billed=False)
@@ -781,7 +840,7 @@ class ComfyOrgBackend:
                 asset_urls=True,
                 data=api.OpenAIImageEditRequest(
                     model=job["model"], prompt=job["prompt"], quality=job["quality"], background=job["background"],
-                    n=int(job["n"]), size=f"{w}x{h}", moderation="low"),
+                    n=int(job["n"]), size=f"{w}x{h}", moderation="low", complexity=job.get("complexity")),
                 content_type="multipart/form-data",
                 files=files,
                 is_rate_limited=observe_status,
@@ -1187,7 +1246,7 @@ def _begin_call(root: str, e: dict, backend_name: str) -> dict:
         history.append(prev)
     job = e["job"]
     req = {"schema": LEDGER_SCHEMA, "call_id": e["call_id"], "cell_key": ck, "rep": rep,
-           **{k: job.get(k) for k in _JOB_FIELDS if k != "cell_key"},
+            **{k: job.get(k) for k in _JOB_FIELDS if k != "cell_key" and (k != "complexity" or job.get(k) is not None)},
            "backend": backend_name, "approved_by": e.get("approved_by"), "kind": e["kind"],
            "attempt": len(history) + 1, "history": history, "time": _now()}
     _write_json(_lpath(root, ck, rep, "req"), req)
@@ -1303,6 +1362,7 @@ def _add_candidates(m: dict, req: dict, done: dict, warns: list[str]) -> list[st
                 "origin": "run",
                 "origin_info": {"call_id": req.get("call_id"), "cell_key": ck, "rep": rep, "slot": s["slot"],
                                 "variant": req.get("variant"), "model": req.get("model"), "quality": req.get("quality"),
+                                 **({"complexity": req["complexity"]} if req.get("complexity") is not None else {}),
                                 "backend": req.get("backend"), "tids": tids},
                 "quad": _quad(crop["rect"]), "picked": False, "z": None, "hand_mask": None,
             })
@@ -1640,6 +1700,15 @@ async def _one_call(root: str, rid: str, e: dict, backend, state: _RunState) -> 
     if e["billable"] and not str(e.get("approved_by") or ""):
         report.skipped.append({"call_id": cid, "why": "승인 정보(approved_by) 없음 — 과금하지 않음"})
         return
+    if e["billable"]:
+        # 요청 모델은 실행 중 바뀌지 않는다. 장부 적립 전에 실제 백엔드 모델도 확인(계획 뒤 모듈 변경 방어).
+        request_model = backend._load_api().OpenAIImageEditRequest if isinstance(backend, ComfyOrgBackend) else None
+        why = blocked_reason(e["job"], backend=backend.name, request_model=request_model)
+        if why:
+            state.set_stop("auth")  # 과금 전 거부와 같은 중지·복구 정책, 기존 중지 사유 계약 유지
+            report.remaining.append(cid)
+            report.errors.append(f"{cid}: 발사 못 함 — {why}")
+            return
     if state.launch_block(e) is not None:
         report.remaining.append(cid)
         return
@@ -1825,10 +1894,11 @@ async def _request_failed(root, e, files, ex: CallError, t0, state: _RunState, r
     report = state.report
     ck, rep = e["cell_key"], int(e["rep"])
     elapsed = round(time.monotonic() - t0, 2)
-    if ex.status in AUTH_STATUSES and ex.phase == "request":
+    if (ex.status in AUTH_STATUSES and ex.phase == "request") or ex.phase == "blocked":
         # 과금 전 거부 → 원장을 이 시도 전으로 되돌리고(새 호출 = 원장 없음 = pending, 재시도 = 원래 orphaned/failed 그대로 —
         # 지우면 과금됐을 수 있는 이전 시도의 기록과 보드 사전 승인 사용 기록이 사라진다) 새 발사를 멈춘다
         state.set_stop("auth")
+        error = f"HTTP {ex.status}: {_short(ex)}" if ex.phase != "blocked" else f"발사 못 함 — {_short(ex)}"
         prev = prev or {}
         try:
             for what in ("req", "failed", "resp", "inflight"):  # 되살린 뒤 지운다 → 중간에 끊겨도 "원장 없음"이 되지 않게
@@ -1843,14 +1913,14 @@ async def _request_failed(root, e, files, ex: CallError, t0, state: _RunState, r
         st = _rep_state(restored, False)
         report.remaining.append(e["call_id"])
         report.launched -= 1  # 서버가 받기 전 거부 — 발사로 세지 않음
-        report.calls.append(_summary(e, "pending" if st == "none" else st, error=f"HTTP {ex.status}: {_short(ex)}",
+        report.calls.append(_summary(e, "pending" if st == "none" else st, error=error,
                                      elapsed_s=elapsed))
 
         def mutate(m):
             rec = _call_record(ck, rep, restored, st)
             if st == "none":
                 rec.update(crop_id=e.get("crop_id"), tid=e.get("tid"), variant=e.get("variant"),
-                           error=f"HTTP {ex.status}: {_short(ex)}")
+                           error=error)
             _upsert_call(m, rec)
 
         await _manifest(root, mutate, state)

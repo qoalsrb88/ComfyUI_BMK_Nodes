@@ -565,7 +565,7 @@
       const hold = rerollHold(cell);
       if (hold) {
         rerollArm = null;
-        toast(`R 무시 — ${hold}. 더 넣으려면 [다시 생성 +1] 단추(확인 창에 누적 건수)`, "warn");
+        toast(`R 무시 — ${hold}. 더 넣으려면 [다시 생성 +1] 단추(확인 창에 누적 건수), 취소하려면 [대기 취소]`, "warn");
         return;
       }
       const now = Date.now();
@@ -603,6 +603,40 @@
   function cellPre(cell) {
     // 그 셀의 아직 돌지 않은 사전 승인 재굴림 수(state 셀 pre). 옛 서버(키 없음)는 서버 원장 대체 계산과 같은 min(누적 재굴림, 대기) — 넘쳐 세면 R 만 막힘
     return "pre" in cell ? cell.pre : Math.min(cell.rerolls || 0, cell.pending || 0);
+  }
+
+  async function cancelRerolls(scope, selector = {}) {
+    if (busy || !S) return;
+    if (S.running) { toast("실행 중 — [새 호출 멈춤] 뒤 다시", "warn"); return; }
+    let n = 0, base = 0;
+    if (scope === "all") {
+      n = S.rerolls_pending || 0;
+      base = S.rerolls_base || 0;
+    } else if (scope === "crop") {
+      const crop = (S.crops || []).find((c) => c.id === selector.crop_id);
+      n = crop && crop.rerolls_pending || 0;
+      base = crop && crop.rerolls_base || 0;
+    } else {
+      const cell = (S.targets || []).flatMap((t) => t.cells || []).find((c) => c.cell_key === selector.cell_key);
+      n = cell && cell.rerolls_pending || 0;
+      base = cell && cell.rerolls_base || 0;
+    }
+    if (!n) { toast("다시 생성 대기 없음"); return; }
+    const stale = scope === "all" ? S.rerolls_stale || 0 : 0;
+    const count = `${n}건` + (stale ? `(옛 조건 ${stale}건 포함)` : "");
+    if (scope !== "cell" && !window.confirm(`다시 생성 대기 ${count}을 취소합니다. 그중 ${base}건은 아직 한 번도 만들지 않은 생성 조건이라 '생성 승인 필요'로 돌아갑니다(승인 코드가 바뀜 — 이미 큐에 넣은 [생성 승인]은 드라이런이 되어 과금 없음). 계속할까요?`)) return;
+    const result = await write("reroll", { op: "cancel", scope, ...selector },
+      (r) => `다시 생성 대기 ${r.cancelled}건 취소(과금 없음) · 생성 승인 필요로 돌아감 ${r.base}건 — 되돌림 = R`);
+    if (result) { rerollArm = null; rerollSent = null; if (pipe) pipe.recalc(); }
+  }
+
+  function cancelButton(scope, selector, label = "대기 취소") {
+    const b = el("button", "", label);
+    b.type = "button";
+    b.disabled = !!S.running;
+    b.title = S.running ? "실행 중 — [새 호출 멈춤] 뒤 다시" : "다시 생성 대기 취소(무료) — 되돌림 = R";
+    b.addEventListener("click", (e) => { e.stopPropagation(); cancelRerolls(scope, selector); });
+    return b;
   }
 
   function rerollHold(cell) {
@@ -1010,7 +1044,19 @@
       cb.title = `원장 calls 합계(완료 ${S.cost.done}) — Spec Draft 비용은 들어 있지 않음`;
       b.append(cb);
     }
-    if (S.rerolls_total) b.append(el("span", "badge", `다시 생성 누적 ${S.rerolls_total}`));
+    if (S.rerolls_total || S.rerolls_pending) {
+      const r = el("span", "badge", `다시 생성 대기 ${(S.rerolls_pending || 0) - (S.rerolls_stale || 0)}`);
+      r.title = `다시 생성 누적 ${S.rerolls_total || 0}(이미 쓴 몫 포함)`;
+      b.append(r);
+    }
+    if (S.rerolls_pending) {
+      // 머리줄은 폴링마다 다시 채운다 — 전체 취소 단추는 칸에 붙여 둔 같은 객체를 다시 붙여 누르는 사이에 바뀌지 않게(배치 10 통합)
+      const hc = b.bmkCancel || (b.bmkCancel = cancelButton("all", {}, "다시 생성 대기 취소"));
+      hc.disabled = !!S.running;
+      hc.title = S.running ? "실행 중 — [새 호출 멈춤] 뒤 다시" : "다시 생성 대기 취소(무료) — 되돌림 = R";
+      b.append(hc);
+    }
+    if (S.rerolls_stale) b.append(el("span", "badge b-wait", `옛 조건 대기 ${S.rerolls_stale} — 다음 반영 때 정리`));
     if (S.orphan_candidates) b.append(el("span", "badge b-bad", `크롭 없는 후보 ${S.orphan_candidates}`));
     if (tabLink) {
       const [cls, label] = TAB_BADGE[tabKey(tabLink)];
@@ -1258,7 +1304,9 @@
     row(d, "타깃", `${targetTitle(t)} · ${w}×${h}` + (t.name_en ? ` · ${t.name_en}` : "")
       + ` · 초점 [${t.focus_box.join(", ")}]`);
     const cells = t.cells.map((x) => `${x.variant || "?"} ${x.reps}+${x.rerolls}회 대기 ${x.pending}${usd(x)}`);
-    row(d, "작업", cells.length ? cells.join(" | ") : "없음 (Prepare 전 — 다시 생성 불가)", cells.length ? "" : "warn");
+    const work = row(d, "작업", cells.length ? cells.join(" | ") : "없음 (Prepare 전 — 다시 생성 불가)", cells.length ? "" : "warn");
+    for (const x of t.cells) if (x.rerolls_pending) work.append(cancelButton("cell", { cell_key: x.cell_key },
+      t.cells.length > 1 ? `${x.variant || ""} 대기 취소` : "대기 취소"));
     if (crop && crop.calls) {
       row(d, "비용", `이 크롭 Run ${credits(crop.credits, crop.credits_unknown)} · 호출 ${crop.calls}(완료 ${crop.calls_done})`
         + (crop.pending ? ` · 대기 ${crop.pending}` : ""));
@@ -1648,7 +1696,7 @@
     field("프로젝트 이름", name);
     field(adopted ? "폴더 안 타깃 그림" : "타깃 그림 — 파일 고르기 또는 여기로 한 장 끌어 놓기", pick);
     if (!adopted) field("또는 전체 경로", path);
-    form.append(el("p", "projects-note", "모델 gpt-image-2.5-sunburst · 품질 max · 4장 · 변형 V1,V4 — 바꾸려면 만든 뒤 ① 준비"),
+    form.append(el("p", "projects-note", "모델 gpt-image-2.6-sunburst · 품질 max · 복잡도 high · 4장 · 변형 V1,V4 — 바꾸려면 만든 뒤 ① 준비"),
       feedback, create, close);
     let selected = null, sending = false;
     function validate() {
@@ -2080,7 +2128,7 @@
         pipe.tabChanged();
       });
       pipe = window.DPPipeline.create({ list: $("pipe-list"), panel: $("pipe-panel"), head: $("pipe-head") }, {
-        apiUrl, comfyUrl, root: ROOT, toast, drain, goTarget, goMask, goGrow, link: tabLink,
+        apiUrl, comfyUrl, root: ROOT, toast, drain, goTarget, goMask, goGrow, link: tabLink, cancelRerolls,
         newProject: newNotes !== null, newNotes,
         goMode: (mode, cropId) => {
           const t = S && cropId ? S.targets.find((x) => x.crop_id === cropId) : null;

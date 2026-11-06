@@ -2579,7 +2579,7 @@ def node_integration(psd05, crops03):
     can7 = np.asarray(Image.open(store.resolve_path(root, j007["inputs"][0]["file"])))
     check(float((can7.max(axis=2) < 8).mean(axis=0)[-20:].max()) < 0.5, "Prepare: 007-오른쪽 canvas 오른쪽 검은 띠 없음(edge-replicate)")
     recomputed = store.cell_key(j002["model"], j002["quality"], j002["size"], j002["background"], j002["prompt"],
-                                [i["sha"] for i in j002["inputs"]], j002["template_version"], j002["variant"])
+                                [i["sha"] for i in j002["inputs"]], j002["template_version"], j002["variant"], complexity=j002.get("complexity"))
     check(recomputed == j002["cell_key"], "Prepare: cell_key 재계산 일치")
     check(is_img(sheet) and h["rev"] == r_before + 1, f"Prepare: job_sheet {tuple(sheet.shape)}, rev {r_before} → {h['rev']}")
     h2, _s, rep2 = PRE.run(h, "gpt-image-2.5-sunburst", "max", "user_k", "V1,V4", 4, "at")
@@ -4908,10 +4908,13 @@ def m2_runner_unit(with_comfy: bool):
 
         section("C2 내장 OpenAIGPTImageNodeV2 와 sync_op 인자 동등성 (1장 · 3장 · >2048²)")
         cases = [("one", [(512, 768)], (1024, 1536)), ("three", [(512, 768), (300, 300), (1000, 700)], (2048, 2048)),
-                 ("big", [(3000, 2600)], (1536, 1024)), ("big3", [(2600, 3000), (128, 128), (2100, 2100)], (1024, 1024))]
+                 ("big", [(3000, 2600)], (1536, 1024)), ("big3", [(2600, 3000), (128, 128), (2100, 2100)], (1024, 1024)),
+                 ("26-sunburst", [(128, 128)], (1024, 1024)), ("26-flare", [(128, 128)], (1024, 1024))]
         for name, sizes, (W, H) in cases:
             root = make_project(f"c2_{name}", 1, n=2, size=(W, H), input_sizes=sizes)
             job = store.load_manifest(root)["jobs"][0]
+            if name.startswith("26-"):
+                job.update(model="gpt-image-2.6-" + name[3:], complexity="medium")
             paths = [store.resolve_path(root, i["file"]) for i in job["inputs"]]
             resp = lambda cls, kw: OpenAIImageGenerationResponse(data=[Datum2(b64_json=tiny_png_b64())] * kw["data"].n)
             got_core, got_ours = [], []
@@ -4919,8 +4922,10 @@ def m2_runner_unit(with_comfy: bool):
             for i, p in enumerate(paths):
                 with Image.open(p) as im:
                     tensors[f"image_{i + 1}"] = torch.from_numpy(np.array(im.convert("RGB")).astype(np.float32) / 255.0)[None]
-            model = {"model": MODEL, "size": "Custom", "custom_width": W, "custom_height": H, "background": "opaque",
+            model = {"model": job["model"], "size": "Custom", "custom_width": W, "custom_height": H, "background": "opaque",
                      "quality": "max", "images": tensors, "mask": None}
+            if "complexity" in job:
+                model["complexity"] = job["complexity"]
             orig = nodes_openai.sync_op
             nodes_openai.sync_op = capture(got_core, resp)
             try:
@@ -4937,8 +4942,9 @@ def m2_runner_unit(with_comfy: bool):
             check(c["path"] == o["path"] == "/proxy/openai/images/edits" and c["method"] == o["method"] == "POST",
                   f"{name}: endpoint")
             check(c["data"] == o["data"], f"{name}: data 필드 {c['data']} vs {o['data']}")
-            check(o["data"] == {"model": MODEL, "prompt": job["prompt"], "quality": "max", "background": "opaque", "n": 2,
-                                "size": f"{W}x{H}", "moderation": "low"}, f"{name}: data 값")
+            check(o["data"] == {"model": job["model"], "prompt": job["prompt"], "quality": "max", "background": "opaque", "n": 2,
+                                "size": f"{W}x{H}", "moderation": "low",
+                                **({"complexity": job["complexity"]} if "complexity" in job else {})}, f"{name}: data 값")
             strip = lambda fs: [{k: v for k, v in f.items()} for f in fs]
             check([(f["field"], f["filename"], f["ctype"]) for f in c["files"]]
                   == [(f["field"], f["filename"], f["ctype"]) for f in o["files"]], f"{name}: files 이름·순서·형식")
@@ -24797,8 +24803,8 @@ def pipeline_unit():
         check(top_mods - set(sys.stdlib_module_names) == {"bmk_design_patch_store"},
               f"T6 모듈 최상위 import = 표준 라이브러리 + store 만 {sorted(top_mods - set(sys.stdlib_module_names))}")
         check(not all_mods & {"torch", "comfy", "comfy_api_nodes", "aiohttp", "folder_paths", "bmk_design_patch",
-                              "bmk_design_patch_board"} and lazy == {"bmk_design_patch_prompt", "bmk_design_patch_vlm"},
-              f"T6 전체: torch·comfy·aiohttp·folder_paths·노드·보드 import 없음, 함수 안 지연 import = prompt·vlm 뿐 {sorted(lazy)}")
+                              "bmk_design_patch_board"} and lazy == {"bmk_design_patch_prompt", "bmk_design_patch_vlm", "bmk_design_patch_runner"},
+              f"T6 전체: torch·comfy·aiohttp·folder_paths·노드·보드 import 없음, 함수 안 지연 import = prompt·vlm·runner 뿐 {sorted(lazy)}")
         api = ["widget_table", "settings_widgets", "section_keys", "defaults", "validate_section", "load", "pipeline_rev", "current",
                "update", "view", "derive", "drift", "prepare_record", "path_warnings", "recent_exports", "prompt_gate", "build_prompt",
                "only_string", "strip_style"]
@@ -24817,7 +24823,7 @@ def pipeline_unit():
         s0["cand"].update(source="folder", path="G:/x/harvest", group="04.후보", mapping_json='{"a": "B"}', visible_is_pick=False,
                           keep_hand_masks=False)
         s0["prepare"].update(model="gpt-image-2.5-flare", quality="high", size_rule="int_k_2560", variants="V1,V2", n=2,
-                             ref_style="plain", calls_per_cell=2)
+                             ref_style="plain", calls_per_cell=2, complexity="low")
         s0["draft"].update(vlm="openai/gpt-6-astra", effort="high", image_detail="original", write_mode="refresh", draft_round=3,
                            concurrency=2, credit_cap=1200, apply="full")
         s0["run"].update(max_new_calls=10, concurrency=2, wave_minutes=5, retry_failed=True, retry_orphans=True)
@@ -24947,7 +24953,7 @@ def pipeline_unit():
         section("S3a-P3 pipeline.json — 검증 표·수명·rev 409·깨진 파일·confirm")
         expect_raises(lambda: pl.section_keys("review"), "모르는 절 ValueError")
         keys = {s: pl.section_keys(s) for s in pl.SECTIONS}
-        check(keys["cand"][0] == "enabled" and len(keys["import"]) == 7 and len(keys["prepare"]) == 7 and len(keys["draft"]) == 8
+        check(keys["cand"][0] == "enabled" and len(keys["import"]) == 7 and len(keys["prepare"]) == 8 and len(keys["draft"]) == 8
               and len(keys["run"]) == 5 and len(keys["analyze"]) == 8 and len(keys["compose"]) == 4 and len(keys["export"]) == 9
               and not any(k in pl.NOT_STORED for ks in keys.values() for k in ks),
               f"절 키 = 노드 위젯 − {{project, approve, only, adopt, keep_loaded}} (+ cand.enabled) {[len(v) for v in keys.values()]}")
@@ -25062,7 +25068,7 @@ def pipeline_unit():
               and v["confirm"] == der["confirm"] == ["prepare.variants", "prepare.ref_style", "draft.apply"] and v["drift"] == []
               and v["warnings"] == [] and len(v["exports"]) == 1 and v["widgets"] == sw and v["manifest_rev"] == m["rev"]
               and set(v) == {"rev", "saved", "error", "settings", "confirm", "derived", "drift", "warnings", "exports", "widgets", "manifest_rev",
-                             "folder"} and v["folder"] == os.path.basename(root),
+                             "folder", "switch"} and v["folder"] == os.path.basename(root),
               f"파일 없음: rev 0·saved false·유도값·confirm(추정 variants·ref_style·draft.apply) {v['confirm']}")
         g = pl.prompt_gate(root, "apply", m)
         check(pl.pipeline_rev(root) is None and pl.load(root) is None and g["reason"] == "confirm_settings"
@@ -25362,7 +25368,7 @@ def pipeline_unit():
               and all(frm[f"import.{k}"] == "manifest" for k in pl.section_keys("import")),
               f"import = 매니페스트 source(glossary → glossary_path) {s['import']}")
         check(s["prepare"] == {"model": "gpt-image-2.5-flare", "quality": "high", "size_rule": "int_k_2560", "variants": "V1,V2", "n": 3,
-                               "ref_style": "plain", "calls_per_cell": 1} and frm["prepare.n"] == "manifest"
+                               "ref_style": "plain", "calls_per_cell": 1, "complexity": "high"} and frm["prepare.n"] == "manifest"
               and frm["prepare.calls_per_cell"] == "manifest" and not [c for c in d["confirm"] if c.startswith("prepare.")],
               f"prepare = prepare_settings 우선(jobs 무시, calls_per_cell 생략 = 1), 확인 필요 없음 {s['prepare']}")
         check(s["draft"]["vlm"] == "openai/gpt-6-astra" and s["draft"]["effort"] == "high" and s["draft"]["image_detail"] == "original"
@@ -25457,7 +25463,7 @@ def pipeline_unit():
                                 _pl_job(ids[0], "V4_checklist", model="gpt-image-2.5-flare", n=2, reps=2)])
         d2 = pl.derive(old, store.load_manifest(old))
         check(d2["settings"]["prepare"] == {"model": "gpt-image-2.5-sunburst", "quality": "max", "size_rule": "user_k", "variants": "V1,V4",
-                                            "n": 2, "ref_style": "at", "calls_per_cell": 1}
+                                            "n": 2, "ref_style": "at", "calls_per_cell": 1, "complexity": "high"}
               and d2["confirm"] == ["prepare.model", "prepare.variants", "prepare.ref_style", "prepare.calls_per_cell", "draft.vlm", "draft.apply",
                                     "analyze.register", "analyze.tone", "analyze.tone_sigma", "analyze.dE", "analyze.grow", "analyze.feather_sigma",
                                     "analyze.roi_prior", "analyze.only_picked"] + [f"compose.{k}" for k in pl.section_keys("compose")]
@@ -25474,7 +25480,7 @@ def pipeline_unit():
             so["prepare"][key] = val
             rows_o[key] = [(x["field"], x["manifest"], x["kind"]) for x in pl.drift(so, mo)]
         check(pl.prepare_record(mo) == ("jobs", {"model": "gpt-image-2.5-sunburst", "quality": "max", "n": 2, "calls_per_cell": 1,
-                                                 "size_rule": "user_k"})
+                                                 "size_rule": "user_k", "complexity": "high"})
               and rows_o == {"model": [("model", "gpt-image-2.5-sunburst", "cell")], "quality": [("quality", "max", "cell")],
                              "size_rule": [("size_rule", "user_k", "cell")], "n": [("n", 2, "cost")],
                              "calls_per_cell": [("calls_per_cell", 1, "calls")], "variants": [], "ref_style": []},
@@ -25484,7 +25490,7 @@ def pipeline_unit():
         mn = store.load_manifest(nr)
         sn = copy.deepcopy(d2["settings"])
         sn["prepare"].update(model="gpt-image-2.5-flare", size_rule="int_k_2560")
-        check(pl.prepare_record(mn) == ("jobs", {"quality": "max", "n": 2, "calls_per_cell": 1}) and pl.drift(sn, mn) == []
+        check(pl.prepare_record(mn) == ("jobs", {"quality": "max", "n": 2, "calls_per_cell": 1, "complexity": "high"}) and pl.drift(sn, mn) == []
               and pl.prepare_record({"jobs": []}) == (None, {}) and pl.drift(sn, {"jobs": []}) == [],
               f"jobs 최다값이 없음(None — size_info 비어 있음·model 없음)인 키는 비교 안 함(derive 는 확인 필요), jobs 도 없으면 기록 없음 "
               f"{pl.prepare_record(mn)}")
@@ -25792,7 +25798,7 @@ def pipeline_unit():
                "GET /pipeline/plan": "sig computed_at notes apply_pending run run.hash run.backend run.need run.pre run.free run.filtered run.est_usd "
                                      "run.est_usd_pre run.credits run.reasons run.reasons[].reason run.reasons[].n run.by_crop run.by_crop.*.need "
                                      "run.by_crop.*.pre run.by_crop.*.free run.by_crop.*.done run.by_crop.*.failed run.by_crop.*.orphaned "
-                                     "run.by_crop.*.inflight run.by_crop.*.est_usd run.by_crop.*.selected run.running draft draft.hash "
+                                     "run.by_crop.*.inflight run.by_crop.*.blocked run.by_crop.*.est_usd run.by_crop.*.selected run.running draft draft.hash "
                                      "draft.backend draft.family draft.units draft.units[].crop_id draft.units[].state draft.units[].reasons "
                                      "draft.units[].est draft.refresh_available draft.refresh_available[].crop_id draft.refresh_available[].est "
                                      "draft.skipped draft.skipped[].crop_id draft.skipped[].reason draft.cached draft.accepted draft.filtered "
@@ -25814,7 +25820,7 @@ def pipeline_unit():
         # 무료 반영 expect 를 만드는 매니페스트 rev(S3b 계약 §1), Draft 확인 창 필드(§4.4 확인 창 — S3b 계약 §2),
         # Export 그룹 마스크·편집 수(S4 §7 결과 줄 '그룹 마스크 n (편집 k)')
         six_extra = {"GET /pipeline": {"widgets", "exports[].layers", "manifest_rev", "exports[].mask_groups", "exports[].mask_edits",
-                                       "folder"},  # 프로젝트 폴더 이름(Studio 출력 폴더 미리 보기 — 다듬기 3-5b)
+                                       "folder", "switch"},  # 프로젝트 폴더 이름(Studio 출력 폴더 미리 보기 — 다듬기 3-5b)
                      "GET /pipeline/plan": {"draft.orphan_retries", "draft.est_usd", "draft.reasons", "draft.reasons[].reason", "draft.reasons[].n",
                                             "draft.free", "draft.free_all", "draft.pending_style", "draft.mock_forced", "agent_approve",
                                             "agent_approve.on", "agent_approve.cap", "agent_approve.spent", "agent_approve.expires"}}
@@ -29107,7 +29113,10 @@ function server() {
     const cur = () => (typeof srv.queue === "function" ? srv.queue() : srv.queue);
     const pick = (x) => (typeof x === "function" ? x(q, body) : x);
     let r;
-    if (path === "pipeline") r = pick(srv.route.pipeline) || [200, R["GET /pipeline"].ok];
+    if (path === "pipeline") {
+      r = clone(pick(srv.route.pipeline) || [200, R["GET /pipeline"].ok]);
+      if (u.searchParams.has("prepare")) r[1].switch = Object.assign(clone(R["GET /pipeline"].ok.switch), { prepare: JSON.parse(u.searchParams.get("prepare")) });
+    }
     else if (path === "pipeline/settings") r = pick(srv.route.settings) || [200, R["POST /pipeline/settings"].ok];
     else if (path === "pipeline/prompt") r = pick(srv.route.prompt) || [200, q.stage === "export" ? R["GET /pipeline/prompt"].alt.export : R["GET /pipeline/prompt"].ok];
     else if (path === "pipeline/plan") {
@@ -30090,7 +30099,7 @@ await scenario("panelDim", async () => {  // 해시 흐림·복사 끔(§3.3): �
     const text = hosts.panel.textContent;
     const star = hosts.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent === "★ 점검");
     const apply = hosts.panel.children.find((e) => e.classList.contains("pp-sec") && e.children[0].textContent === "반영");
-    const res = { copy: copies.map((e) => e.disabled), titles: copies.map((e) => e.title), dimRow: text.includes("반영 뒤 다시 계산"),
+    const res = { copy: copies.map((e) => e.disabled), titles: copies.map((e) => e.title), dimRow: text.includes("승인 코드 흐림 —"),
       runBusy: text.includes("Run 실행 중 — 끝난 뒤 다시 계산"), draftBusy: text.includes("초안: Spec Draft 실행 중"),
       head: hosts.head.children[0] ? hosts.head.children[0].textContent : null, headTitle: hosts.head.children[0] ? hosts.head.children[0].title : null,
       chip: hosts.list.textContent.includes("레이아웃 미반영"),
@@ -31205,7 +31214,7 @@ await scenario("panelBroken", async () => {  // r2-01: 깨진 pipeline.json(GET 
   const boxes = env.panel.children.filter((e) => e.classList.contains("pp-sec") && e.dataset.tab === "prepare");
   r.marked = env.panel.all().filter((e) => e.classList.contains("pp-field") && e.children[0].textContent.endsWith(" (확인 필요)"))
     .map((e) => e.children[0].textContent);
-  r.buttons = Object.fromEntries(boxes.map((b) => [b.children[0].textContent, (b.all().find((e) => e.tagName === "BUTTON") || {}).textContent]));
+  r.buttons = Object.fromEntries(boxes.map((b) => [b.children[0].textContent, (b.all().find((e) => e.tagName === "BUTTON" && /^(확인·)?저장$/.test(e.textContent)) || {}).textContent]));
   const s0 = srv.count("pipeline/settings");
   env.B("마지막 실행 값으로 채우기").fire("click");
   await sleep(150);
@@ -32651,7 +32660,7 @@ def pipeline_js_unit():
         check("ComfyUI 탭에 큐 요청을 보냅니다" not in conf["lock"] and "부수 효과 줄" not in conf["lock"]
               and conf["lock"].endswith("유료 호출이 사전 승인됩니다 — 지금은 큐를 보내지 않음(Run 승인 요청을 처리하는 중): 다시 생성은 예약만 되고 머리줄 [다시 생성 보내기]로 "
                                         "보내거나 다음 Run 때(선택과 무관) 함께 과금됩니다. 계속할까요?")
-              and rt["lockKey"]["toasts"] == ["warn:R 무시 — Run 승인 요청을 처리하는 중. 더 넣으려면 [다시 생성 +1] 단추(확인 창에 누적 건수)"]
+              and rt["lockKey"]["toasts"] == ["warn:R 무시 — Run 승인 요청을 처리하는 중. 더 넣으려면 [다시 생성 +1] 단추(확인 창에 누적 건수), 취소하려면 [대기 취소]"]
               and rt["lockKey"]["writes"] == [],
               f"r1-25 유료 탭 길인데 이 Studio 가 유료 요청·실행·무료 큐 중(pipe.paidLock — pipe.reroll 이 보내지 않고 예약만)이면 R 확인 창 = "
               f"'지금은 큐를 보내지 않음(이유) — 예약만'(큐 요청을 보낸다·부수 효과 줄 없음), 키보드 R 은 무장하지 않음(사용성 §12 rerollHold) "
@@ -32878,7 +32887,8 @@ def pipeline_js_unit():
                                      "retry_failed·retry_orphans(Studio false·false) 가 Studio 와 같을 때만 같습니다 — 다르면 과금 없이 드라이런"],
               f"r1-19·r3-13 승인 코드 안내 = 생성 승인 코드를 바꾸는 Run 위젯 retry_failed·retry_orphans 와 지금 Studio 값, 같은 큐에서 먼저 도는 그래프 Import PSD 위젯"
               f"(Studio 는 그래프 위젯을 모름 — 다르면 드라이런) {pn.get('hashNote')}")
-        nohash = "승인 코드 없음(승인할 것 없음·미반영·흐림·낡음·실행 중)"
+        nohash = ("승인 코드 흐림 — 레이아웃 미반영 1 · Prepare 입력이 바뀜(마지막 Prepare 뒤 스펙·레이아웃·레퍼런스·용어집)"
+                  " · 설정 확인 필요 · Prepare 설정 갈라짐(n) · Import 설정 갈라짐(glossary_path)")
         check(pn["approve"]["run"] and pn["approve"]["run"] == [True, nohash, "생성 승인 4건 ≈ $2.40–3.16"]
               and pn["approve"]["draft"] == [True, nohash, "초안 승인 1크롭 ≈ 27(최대 47) 크레딧"] and pn["copy"] == [True, True],
               f"S3b 승인 단추 라벨(계약 §5) · 미반영(흐림)면 승인 코드 복사와 함께 꺼짐 — 제목에 이유 {pn['approve']} {pn['copy']}")
@@ -33316,7 +33326,9 @@ def pipeline_js_unit():
               and not any(x.startswith(" · prepare.n") for x in un["asked"][0].split("\n"))
               and un["posts"] == [[6, 5, "gpt-image-2.5-flare", "V1,V4"]],
               f"r2-03 입력칸 포커스 중(다시 그리기 미룸) 다른 창이 손대지 않은 키(model)를 저장 = [저장] 마우스 한 번에 화면에 없던 값을 묻고 저장 {cf['unseenShown']} {un}")
-        check(cf["own"] == {"asked": [], "posts": [[7, 6, "gpt-image-2.5-flare", "V1,V4"], [8, 6, "gpt-image-2.5-flare", "V1"]]},
+        check(cf["own"]["posts"] == [[7, 6, "gpt-image-2.5-flare", "V1,V4"], [8, 6, "gpt-image-2.5-flare", "V1"]]
+              and len(cf["own"]["asked"]) == 1 and "생성 승인 필요" in cf["own"]["asked"][0]
+              and "다른 창" not in cf["own"]["asked"][0],
               f"r2-03 이 창의 저장 뒤(입력 중 — 다시 그리기 미룸) 같은 절을 다시 저장 = 제가 저장한 값을 '다른 창 값'으로 묻지 않음 {cf['own']}")
     hk = res.get("panelHashClick") or {}
     if "v1" in hk:
@@ -33575,8 +33587,8 @@ def _pipeline_node_u2b():
     IMP, EXP = dp.BMKDesignPatchImportPSD(), dp.BMKDesignPatchExportPSD()
     base = texture(384, 512, 51)
     rects = [("001_왼쪽", [32, 32, 160, 160]), ("002_가운데", [192, 64, 320, 192]), ("003_오른쪽", [352, 160, 480, 288])]
-    # 7개 모두 노드 위젯 기본값과 다른 값 — 받은 값 대신 기본값을 기록하는 결함(셀 설정 model·size_rule 포함)이 걸리게
-    PRE_ARGS = ("gpt-image-2.5-flare", "high", "int_k_2560", " v1 ; V4 ", 2, "plain", 3)
+    # 기존 7개는 노드 위젯 기본값과 다른 값, 새 optional complexity 는 옛 워크플로 기본 high
+    PRE_ARGS = ("gpt-image-2.5-flare", "high", "int_k_2560", " v1 ; V4 ", 2, "plain", 3, "high")
 
     def set_mock(**vlm_opts):
         mock_file.parent.mkdir(parents=True, exist_ok=True)
@@ -33639,13 +33651,13 @@ def _pipeline_node_u2b():
             h1, _s, _r = PRE.run(h, *PRE_ARGS[:4], 2.0, "plain", 3.0)  # 검증을 거치지 않은 숫자(float)도 int 로 기록
         m1 = man(root)
         ps = m1.get("prepare_settings")
-        wdef = {k: PRE.INPUT_TYPES()["required"][k][1]["default"] for k in pl.section_keys("prepare")}
+        wdef = {k: (PRE.INPUT_TYPES()["required"] | PRE.INPUT_TYPES()["optional"])[k][1]["default"] for k in pl.section_keys("prepare")}
         same_def = [k for k, v in zip(pl.section_keys("prepare"), PRE_ARGS) if v == wdef[k]]
         check(ps == {"model": "gpt-image-2.5-flare", "quality": "high", "size_rule": "int_k_2560", "variants": " v1 ; V4 ", "n": 2,
-                     "ref_style": "plain", "calls_per_cell": 3}
-              and same_def == [] and list(ps) == list(pl.section_keys("prepare")) and type(ps["n"]) is int
+                     "ref_style": "plain", "calls_per_cell": 3, "complexity": "high"}
+              and same_def == ["complexity"] and list(ps) == list(pl.section_keys("prepare")) and type(ps["n"]) is int
               and type(ps["calls_per_cell"]) is int,
-              f"prepare_settings = 실제로 쓴 위젯 값 7개(모두 위젯 기본값과 다른 값 — 기본값과 같은 키 {same_def}; variants 는 받은 문자열 "
+              f"prepare_settings = 실제로 쓴 위젯 값 8개(complexity 외 기본값과 다른 값 — 기본값과 같은 키 {same_def}; variants 는 받은 문자열 "
               f"그대로, n·calls_per_cell 은 int — 2.0·3.0 도, 키 순서 = Studio prepare 절) {ps}")
         rect_of = {c["id"]: c["rect"] for c in m1["crops"]}
         cell_of = {j["crop_id"]: (j["model"], j["quality"], j["size"]) for j in m1["jobs"]}
@@ -33665,7 +33677,7 @@ def _pipeline_node_u2b():
         check(raw(root) == b1, "같은 설정 재실행 = 매니페스트 바이트·rev 그대로(commit_merge 가 같으면 저장 안 함)")
         cks = sorted(j["cell_key"] for j in m1["jobs"])
         same_ck = all(st.cell_key(j["model"], j["quality"], j["size"], j["background"], j["prompt"], [i["sha"] for i in j["inputs"]],
-                                  j["template_version"], j["variant"]) == j["cell_key"] for j in m1["jobs"])
+                                  j["template_version"], j["variant"], complexity=j.get("complexity")) == j["cell_key"] for j in m1["jobs"])
         h2, _s, _r = PRE.run(h1, *PRE_ARGS[:4], 4, "plain", 1)
         m2 = man(root)
         check(same_ck and sorted(j["cell_key"] for j in m2["jobs"]) == cks and m2["rev"] == m1["rev"] + 1
@@ -34153,7 +34165,7 @@ def _pipeline_node_u3():
     SHAPES = [("001_왼쪽", [32, 32, 160, 160]), ("002_가운데 | A: 단추; B: 리본;", [192, 64, 320, 192]), ("003_오른쪽", [352, 160, 480, 288])]
     PSD = NS / "u3.psd"
     _layout_node_psd(PSD, base)
-    PRE_ARGS = {"model": MODEL25, "quality": "high", "size_rule": "user_k", "variants": "V1", "n": 1, "ref_style": "at", "calls_per_cell": 1}
+    PRE_ARGS = {"model": MODEL25, "quality": "high", "size_rule": "user_k", "variants": "V1", "n": 1, "ref_style": "at", "calls_per_cell": 1, "complexity": "high"}
     IMPORT = {"psd_path": PSD.as_posix(), "crop_group": "auto", "clean_plate_layer": "auto", "base_layer": "auto",
               "crop_pixels_group": "auto", "refs_dir": "", "glossary_path": ""}
     DRAFT = {"vlm": "openai/gpt-6-sol", "effort": "xhigh", "image_detail": "high", "write_mode": "fill", "draft_round": 0,
@@ -37290,7 +37302,7 @@ await scenario("noSettings", async () => {  // 실행 설정(GET /pipeline)을 �
   let fail = true;
   const env = await mkStudio({ pipeline: () => (fail ? [500, { error: "잠김" }] : quietPipeline()) });
   const copies = () => env.panel.all().filter((e) => e.tagName === "BUTTON" && e.textContent === "승인 코드 복사").map((b) => b.disabled);
-  const r = { run: env.btn("생성 승인"), draft: env.btn("초안 승인"), copy: copies(), row: env.rows("반영 뒤 다시 계산"), settings: env.rows("읽기 오류") };
+  const r = { run: env.btn("생성 승인"), draft: env.btn("초안 승인"), copy: copies(), row: env.rows("승인 코드 흐림 —"), settings: env.rows("읽기 오류") };
   env.click(env.B("생성 승인"));
   env.click(env.B("초안 승인"));
   await sleep(30);
@@ -37982,6 +37994,7 @@ def _paid_js_studio():
     allids = "001_38a818,002_d98f99,003_2f8f50,008_e1d4cc,012_93661a"
     head = "GPT Image 호출 4건(예상 $2.40–3.16 ≈ 506–667 크레딧)을 승인하고 과금합니다. 대상: "
     pre = "다시 생성(사전 승인) 1건 ≈ $0.62 도 함께 과금 — 선택과 무관(다른 크롭 포함)."
+    reasons = "사유: 새 생성 조건 — 이전 생성 조건 대비 변경: 프롬프트 × 2, 새 생성 조건(처음 실행) × 2"
     dry = "드라이런 이후 대기 목록이 바뀌었으면 서버가 과금 없이 드라이런만 다시 합니다."
     wait1 = "주의: 스펙 초안 대기 1크롭(Spec Draft 미승인) — 지금 승인하면 초안 없는 프롬프트로 과금합니다."
     unw = "주의: 스펙 파일 1개에 초안·화풍 변경을 아직 못 씀(잠김) — 지금 승인하면 그 변경 없이 과금합니다."
@@ -38019,7 +38032,7 @@ def _paid_js_studio():
               and a["untrusted"] == {"confirms": 0, "sent": 0},
               f"J-P3 유료 가능한 탭(opener — ext 3·submit ok)·지금 승인 코드 = 승인 단추 켜짐(라벨 계약 §5, 제목 approve·only), 스크립트 클릭(isTrusted 아님) = "
               f"확인 창·메시지 없음 {a['drawn']} {a['untrusted']}")
-        check((a["declined"]["confirm"] or "").split("\n") == [head + allids.replace(",", ", "), pre, dry, wait1, unw, side, "계속할까요?"]
+        check((a["declined"]["confirm"] or "").split("\n") == [head + allids.replace(",", ", "), "모델 gpt-image-2.5-sunburst · 품질 max", pre, reasons, dry, wait1, unw, side, "계속할까요?"]
               and a["declined"]["sent"] == 0 and a["declined"]["again"] == on_("3f9a1c2b7d10"),
               f"J-P3 유료 확인 = 네이티브 confirm(§4.4 + 계약 §5 — 다시 생성 함께 과금·초안 대기·못 쓴 스펙·부수 효과 줄), false = 메시지 안 보냄·단추 다시 켬 "
               f"{a['declined']}")
@@ -38157,7 +38170,8 @@ def _paid_js_studio():
               and di["unsupported"] == both("ComfyUI 탭이 승인 제출을 못 함(submit unsupported — ComfyUI 프론트가 바뀜) — 그래프의 승인 버튼 사용")
               and di["tabBusy"] == both("ComfyUI 탭이 큐를 처리하는 중")
               and di["noTab"] == both("ComfyUI 탭 연결 없음 — Review 노드의 Open Board 또는 메뉴 BMK → Design Patch Studio 로 열거나 ComfyUI 탭을 하나만 열어 두기")
-              and di["dim"] == di["stale"] == {"run": nohash, "draft": nohash} and di["running"] == di["nothing"] == {"run": nohash, "draft": on_("b21c09e4f7a3")}
+              and di["dim"] == both("승인 코드 흐림 — Prepare 입력이 바뀜(마지막 Prepare 뒤 스펙·레이아웃·레퍼런스·용어집)")
+              and di["stale"] == {"run": nohash, "draft": nohash} and di["running"] == di["nothing"] == {"run": nohash, "draft": on_("b21c09e4f7a3")}
               and di["none"] == {"run": None, "draft": None}
               and jb["run"] == jb["draft"] and off(jb["run"], "이 Studio 의 반영(apply)"),
               f"계약 §5 승인 단추 꺼짐(제목에 이유): 탭 ext 2·submit unsupported·탭 큐 처리 중·탭 없음(link.paidWhy), 흐림·낡음(승인 코드 복사 꺼짐 조건), "
@@ -38168,8 +38182,8 @@ def _paid_js_studio():
               f"link.paidWhy opener 가 답하지 않음(silent)·확장 판 < 2(old) = 머리줄 배지와 같은 안내('Open Board 또는 메뉴 BMK → Design Patch Studio 로 열거나'가 아님) {di['silent']} {di['old1']}")
     ns = res.get("noSettings") or {}
     if "run" in ns:
-        nohash = [True, "승인 코드 없음(승인할 것 없음·미반영·흐림·낡음·실행 중)"]
-        check(ns["run"] == ns["draft"] == nohash and ns["copy"] == [True, True] and ns["row"] == ["반영 뒤 다시 계산 — 지금 승인 코드는 반영 뒤 달라질 수 있음(실행 설정을 읽지 못함 — 잠김)"] * 2
+        nohash = [True, "승인 코드 흐림 — 실행 설정을 읽지 못함 — 잠김"]
+        check(ns["run"] == ns["draft"] == nohash and ns["copy"] == [True, True] and ns["row"] == [nohash[1]] * 2
               and ns["settings"] == ["읽기 오류: 잠김"] and ns["clicked"] == {"confirms": 0, "sent": 0}
               and ns["back"] == {"run": on_("3f9a1c2b7d10"), "draft": on_("b21c09e4f7a3"), "copy": [False, False]}
               and ns["failAgain"] == {"run": nohash, "draft": nohash, "copy": [True, True]},
@@ -38207,7 +38221,7 @@ def _paid_js_studio():
         check(bt["at"] == {"way": "paid", "lock": lk_} and bt["freed"] == {"way": "paid", "lock": ""} and bt["timers"] == 1 and bt["confirm"] == conf_
               and bt["side"] is False and bt["sent"] == ["run"] and bt["toasts"][-1:] == [agreed]
               and ky["at"] == bt["at"] and ky["freed"] == bt["freed"] and ky["timers"] == 0 and ky["sent"] == ["run"]
-              and ky["toasts"][:2] == [f"warn:R 무시 — {lk_}. 더 넣으려면 [다시 생성 +1] 단추(확인 창에 누적 건수)"] * 2 and agreed not in ky["toasts"],
+              and ky["toasts"][:2] == [f"warn:R 무시 — {lk_}. 더 넣으려면 [다시 생성 +1] 단추(확인 창에 누적 건수), 취소하려면 [대기 취소]"] * 2 and agreed not in ky["toasts"],
               f"r2-01 R 확인 때 이 Studio 가 생성 승인 응답을 기다림(lock) = '지금은 예약만'(부수 효과 줄 없음)에 동의 → 탭이 확정 거절(busy)로 lock 이 풀린 뒤 "
               f"0.6초 큐 = 다시 생성 메시지 0·'예약됨(동의함)' 토스트(버튼), 키보드 R R 은 그동안 무장하지 않음(사용성 §12 rerollHold — 쓰기·큐 0) {bt} {ky}")
         op = rd["opener"]
@@ -38313,10 +38327,10 @@ def _paid_js_studio():
         # r1-22 보류 줄 = Studio 에서 고칠 곳(계획 칸 체크) — 그래프 Spec Draft 노드의 only 위젯 말이 아님
         held = "주의: 화풍 단위를 고르지 않아(「초안 승인」 칸 '화풍 단위 포함' 끔) 화풍 초안 대기가 보류됨 — 지금 승인하면 화풍 초안 없는 프롬프트로 과금합니다."
         mock2 = "주의: 스펙 2개가 mock 초안(자리표시 문구) — 지금 승인하면 그 문구로 과금합니다."
-        check(tx["run"] == [head + ids3, pre, dry, wait1, unw, side] and wait_s in tx["runStyle"] and held not in tx["runStyle"]
+        check(tx["run"] == [head + ids3, pre, reasons, dry, wait1, unw, side] and wait_s in tx["runStyle"] and held not in tx["runStyle"]
               and wait1 in tx["runHeld"] and held in tx["runHeld"] and wait1 in tx["runNoFull"] and held not in tx["runNoFull"]
               and not any(x.startswith("주의: 스펙 초안 대기") for x in tx["runOther"]) and mock2 in tx["runMockSpecs"] and mock2 not in tx["runMockBackend"]
-              and tx["runBare"] == [head + "001_38a818", dry, side],
+              and tx["runBare"] == [head + "001_38a818", reasons, dry, side],
               f"§4.4·계약 §5 Run 확인 창: 다시 생성(사전 승인) 함께 과금, 선택 크롭의 초안 대기와 화풍(골랐으면 대기·apply full 인데 안 골랐으면 보류), 못 쓴 스펙, "
               f"mock 초안 스펙(Run 백엔드가 mock 이면 0), 끝 줄 = 부수 효과 {tx['run']}")
         check(tx["draft"] == ["VLM 초안 1크롭(보통 ≈ 27, 최대 47 크레딧)을 승인하고 과금합니다. 결과 못 받음 재시도 2건 포함(과금됐을 수 있음).", "사유: 타깃 추가 × 1",
@@ -38377,7 +38391,7 @@ def _paid_js_studio():
               f"r1-08·r1-14 다시 생성 결과 모름 = '다시 생성 결과 모름'(들어가지 않았으면 예약된 채 남음) + 진행 패널 줄 {rx['noAck']}")
     gt = res.get("gate") or {}
     if "noFile" in gt:
-        nohash = [True, "승인 코드 없음(승인할 것 없음·미반영·흐림·낡음·실행 중)"]
+        nohash = [True, "승인 코드 흐림 — 설정 확인 필요"]
         whys = {"noFile": "실행 설정(pipeline.json) 없음 — 실행(G) [실행 설정 열기]에서 한 번 저장",
                 "path": "PSD 파일이 없음: G:/x.psd — 실행(G) [실행 설정 열기]에서 경로를 고침", "oldServer": "ComfyUI 재시작 필요 — 서버가 S3a 판(유료 템플릿 없음)"}
         # r2-05 머리줄 탭 배지 제목도 같은 판정: 서버가 템플릿을 낼 수 없으면 '서버 템플릿을 큐에 넣음'이 아니라 그 이유 + R·ComfyUI 큐의 실제 길
@@ -39736,7 +39750,7 @@ def studio_ux_unit():
     rh = res.get("rerollHold") or {}
     if "smoke" in rh:
         ign = "R 무시 — "
-        hint = "더 넣으려면 [다시 생성 +1] 단추(확인 창에 누적 건수)"
+        hint = "더 넣으려면 [다시 생성 +1] 단추(확인 창에 누적 건수), 취소하려면 [대기 취소]"
         sm = rh["smoke"]
         check(sm["writes"] == 1 and sm["pre"] == 1 and len(sm["queued"]) == 1
               and sum(ign in t and "이 생성 조건 다시 생성 대기 1건(사전 승인)이 아직 돌지 않음" in t and hint in t for t in sm["toasts"]) == 2,
@@ -39765,11 +39779,11 @@ def studio_ux_unit():
         check(rs["writes"] == 0 and len(rs["toasts"]) == 3 and rs["toasts"][0].startswith("warn:R 을 한 번 더") and rs["toasts"][1].startswith("warn:R 무시")
               and rs["toasts"][2].startswith("warn:R 을 한 번 더"),
               f"리뷰 tests-03: 거절하면 무장도 풂 — 'R 무시' 뒤 R 한 번은 다시 무장만(쓰기 0) {rs['toasts']}")
-        check(rh["order"] == ["warn:R 무시 — 앞 요청을 처리하는 중. 더 넣으려면 [다시 생성 +1] 단추(확인 창에 누적 건수)",
-                              f"warn:{wait_} 더 넣으려면 [다시 생성 +1] 단추(확인 창에 누적 건수)",
-                              "warn:R 무시 — 이 생성 조건 다시 생성 대기 1건(사전 승인)이 아직 돌지 않음. 더 넣으려면 [다시 생성 +1] 단추(확인 창에 누적 건수)",
-                              "warn:R 무시 — Run(다시 생성 포함) 실행 중. 더 넣으려면 [다시 생성 +1] 단추(확인 창에 누적 건수)",
-                              "warn:R 무시 — L. 더 넣으려면 [다시 생성 +1] 단추(확인 창에 누적 건수)"],
+        check(rh["order"] == ["warn:R 무시 — 앞 요청을 처리하는 중. 더 넣으려면 [다시 생성 +1] 단추(확인 창에 누적 건수), 취소하려면 [대기 취소]",
+                              f"warn:{wait_} 더 넣으려면 [다시 생성 +1] 단추(확인 창에 누적 건수), 취소하려면 [대기 취소]",
+                              "warn:R 무시 — 이 생성 조건 다시 생성 대기 1건(사전 승인)이 아직 돌지 않음. 더 넣으려면 [다시 생성 +1] 단추(확인 창에 누적 건수), 취소하려면 [대기 취소]",
+                              "warn:R 무시 — Run(다시 생성 포함) 실행 중. 더 넣으려면 [다시 생성 +1] 단추(확인 창에 누적 건수), 취소하려면 [대기 취소]",
+                              "warn:R 무시 — L. 더 넣으려면 [다시 생성 +1] 단추(확인 창에 누적 건수), 취소하려면 [대기 취소]"],
               f"리뷰 tests-08: rerollHold 사유 순서 = 앞 쓰기 처리 중 → 그 생성 조건 쓰기 미반영 state(다른 생성 조건 쓰기는 무관) → 그 생성 조건 대기 → Run 실행 중 → 이 Studio 유료 요청 {rh['order']}")
     rc = res.get("refreshCycle") or {}
     if "same" in rc:
@@ -48598,11 +48612,12 @@ test("renderPanel 삽입 블록: 실제 opts·섹션 이동·설정 분기 뒤",
   vm.runInContext(src.match(/    function goSection\(go\) \{[\s\S]*?\n    \}/)[0], ctx);
   vm.runInContext(block, ctx);
   const host = panel.children[0], sec = new E("div"); sec.className = "pp-sec"; sec.dataset = {tab: "prompt"};
-  assert.equal(host.children[0].children[0].textContent, "작업 점검표 · 선택 기준 (8/8)");
+  assert.equal(host.children[0].children[0].textContent, "작업 점검표 · 선택 기준 (6/8)");
+  for (const n of [5, 6]) assert.equal(host.children[0].children[n].children[2].textContent, "설정 확인 필요");
   const heading = new E("div"); heading.textContent = "반영"; sec.append(heading); panel.append(sec);
   host.children[0].children[2].events.click(); assert.deepEqual(calls, [["edit", null]]);
   host.children[0].children[4].events.click(); assert(sec.scrolled);
-  ctx.sel.delete("c2"); vm.runInContext(block, ctx);
+  ctx.P0.confirm = []; ctx.sel.delete("c2"); vm.runInContext(block, ctx);
   const partial = panel.children[2].children[0].children;
   for (const n of [5, 6]) {
     assert(partial[n].className.includes("todo")); assert(partial[n].children[2].textContent.endsWith(" (선택 1/2 크롭 기준)"));
@@ -48620,7 +48635,7 @@ test("renderPanel 삽입 블록: 실제 opts·섹션 이동·설정 분기 뒤",
   const drifted = panel.children[panel.children.length - 1].children[0].children;
   assert(drifted[4].className.includes("todo")); assert.equal(drifted[4].children[2].textContent, "Prepare 설정 갈라짐 2");
   assert(drifted[6].className.includes("todo"));
-  ctx.P0.error = "pipeline.json 오류"; vm.runInContext(block, ctx);
+  ctx.P0.error = "pipeline.json 오류"; ctx.P0.derived = {confirm: []}; vm.runInContext(block, ctx);
   const broken = panel.children[panel.children.length - 1].children[0].children;
   assert(broken[4].className.includes("todo"));
   assert.equal(broken[4].children[2].textContent, "실행 설정 확인 필요 (pipeline.json 오류)"); // C22: 깨진 파일은 반영 완료 아님
@@ -48632,7 +48647,7 @@ test("renderPanel 삽입 블록: 실제 opts·섹션 이동·설정 분기 뒤",
   const good = { saved: true, confirm: ["draft.apply", "analyze.method", "export.color"] };
   for (const [P0, err, reason] of [
     [null, null, "불러오는 중"], [good, "읽기 실패", "읽기 오류"],
-    [{ ...good, error: "깨진 JSON" }, null, "pipeline.json 오류"],
+    [{ ...good, error: "깨진 JSON", derived: {confirm: []} }, null, "pipeline.json 오류"],
     [{ saved: false, confirm: [] }, null, "파일 없음"],
     [{ ...good, confirm: ["prepare.model"] }, null, "필수 항목 미확인"],
     [{ ...good, confirm: ["import.psd_path"] }, null, "필수 항목 미확인"],
@@ -53442,13 +53457,891 @@ process.exit(0);
                 check(ok is True, f"D60–D68 {group}/{name}: {ok}")
 
 def batch10a_unit():
-    """배치 10-A: 모델 2.6·complexity·가격표·생성 조건 키·[2.6 으로 전환] 미리 보기(STUDIO_BATCH10_SPEC D144–D155). 갈래 A 가 채움."""
+    """배치 10-A: 합성 프로젝트·가짜 API/DOM 만 사용(D144–D155)."""
     section("배치 10-A — 모델 2.6·가격·생성 조건 키")
+    from unittest.mock import patch, Mock
+    dp = _dp_package()
+    st, rn, bd = dp.store, dp.runner, dp.board
+    pl = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_pipeline")
+    api_module = importlib.import_module("comfy_api_nodes.apis.openai")
+    out = OUT_ROOT / "batch10a"
+    out.mkdir(parents=True, exist_ok=True)
+    models = ["gpt-image-2.6-sunburst", "gpt-image-2.6-flare", "gpt-image-2.5-sunburst", "gpt-image-2.5-flare"]
+    pre = dp.BMKDesignPatchPrepare()
+    ins = pre.INPUT_TYPES()
+    check(dp._MODELS == list(pl._MODELS) == models and pl.defaults()["prepare"]["model"] == models[0], "D144–145 선택지·새 기본값")
+    check(list(ins["required"])[-1] == "calls_per_cell" and list(ins["optional"]) == ["complexity"]
+          and ins["optional"]["complexity"][0] == ["low", "medium", "high"], "D146 optional 맨 뒤 complexity")
+    args = [models[2], "high", [1024, 1024], "opaque", "same", ["abc"], "dp-prompt/1", "V1_standard"]
+    old_key = st.cell_key(*args)
+    check(old_key == st.cell_key(*args, complexity="low") == st.cell_key(*args, complexity="high"), "D147 2.5 키 무시·호환")
+    args[0] = models[0]
+    expect_raises(lambda: st.cell_key(*args), "D147 2.6 complexity 없음 거부", contains="complexity")
+    check(st.cell_key(*args, complexity="high") != st.cell_key(*args, complexity="medium"), "D147 2.6 complexity 별 키")
+    h, root = _fx_project(dp, out, "proj", [("001_왼쪽", [0, 0, 64, 64]), ("002_오른쪽", [64, 0, 128, 64])], texture(128, 128, 10))
+    with patch.object(rn, "mock_enabled", return_value=True):
+        h, _, report = pre.run(h, models[2], "low", "user_k", "V1", 1, "at")
+        m25 = st.load_manifest(root)
+        check(all("complexity" not in j for j in m25["jobs"]) and "복잡도" not in report, "D146 2.5 jobs·보고 복잡도 생략")
+        h, _, report = pre.run(h, models[0], "low", "user_k", "V1", 1, "at", complexity="medium")
+        m26 = st.load_manifest(root)
+        check(all(j["complexity"] == "medium" for j in m26["jobs"]) and "복잡도 medium" in report, "D146·155 2.6 jobs·보고")
+    settings = pl.derive(root, m25)["settings"]
+    check(settings["prepare"]["model"] == models[2], "D145 기존 기록의 2.5 유지")
+    old = {"schema": pl.SCHEMA, "rev": 1, "confirm": [], **settings}
+    old["prepare"] = dict(old["prepare"])
+    del old["prepare"]["complexity"]
+    raw = json.dumps(old, ensure_ascii=False).encode("utf-8")
+    Path(root, pl.PIPELINE_NAME).write_bytes(raw)
+    loaded = pl.load(root)
+    check(loaded["prepare"]["complexity"] == "high" and loaded["confirm"] == []
+          and Path(root, pl.PIPELINE_NAME).read_bytes() == raw, "D148 옛 파일 읽기: high·확인 필요 없음·원본 불변")
+    for sec in ("prepare", "run", "export"):
+        saved = pl.update(root, 1, sec, loaded[sec])
+        check(saved["rev"] == 1 and Path(root, pl.PIPELINE_NAME).read_bytes() == raw, f"D148 옛 파일 {sec} 같은 값 저장: rev·바이트 불변")
+    saved = pl.update(root, 1, "run", dict(loaded["run"], max_new_calls=loaded["run"]["max_new_calls"] + 1))
+    check(saved["rev"] == 2 and json.loads(Path(root, pl.PIPELINE_NAME).read_text(encoding="utf-8"))["prepare"]["complexity"] == "high",
+          "D148 다음 값 변경 저장: rev 증가·complexity 키 추가")
+    # 실제 Prepare 산출물: 기록과 설정·입력 모두 같고 반영 대기가 없는 상태에서 미리 보기.
+    check(all(j["prompt"] and j["template_version"] and j["inputs"] for j in m25["jobs"])
+          and pl.drift(saved["settings"], m25) == [] and m25["prepare_inputs"] == st.prepare_inputs_fp(root, m25),
+          "D152 실제 Prepare jobs·입력 기록 일치")
+    target = dict(settings["prepare"], model=models[0])
+    saved_raw = Path(root, pl.PIPELINE_NAME).read_bytes()
+    with patch.object(rn, "mock_enabled", return_value=True), patch.object(rn, "plan_calls", wraps=rn.plan_calls) as plans:
+        ordinary = pl.view(root, m25)
+        check(ordinary["switch"] is None and plans.call_count == 0, "D152 prepare 없는 view: switch null·plan_calls 0회")
+        explicit = pl.view(root, m25, switch_prepare=target)
+        check(plans.call_count == 1 and explicit["switch"]["exact"] is True
+              and explicit["switch"]["need"] == 2 and explicit["switch"]["uncertain"] is False,
+              "D152 명시적 view: 실제 jobs 전환 계획·깨끗한 프로젝트 uncertain false")
+        inexact_previews = []
+        plans.reset_mock()
+        for field, value in (("variants", "V1,V4"), ("ref_style", "plain"),
+                             ("size_rule", next(k for k in st.GPT_SIZE_RULES if k != target["size_rule"]))):
+            result = pl.view(root, m25, switch_prepare=dict(settings["prepare"], **{field: value}))
+            preview = result["switch"]
+            inexact_previews.append(preview)
+            check(preview["exact"] is False and preview["uncertain"] is True
+                  and all(preview[k] is None for k in ("need", "cells", "est_usd", "credits")) and plans.call_count == 0,
+                  f"D152 {field} 변경: 숫자 null·계획 계산 0회")
+            api = _pl_api()["routes"]["GET /pipeline"]
+            check(_pl_shape(api["ok"], result, api) == [], f"D152 {field} 계산 불가 응답 모양")
+        normalized = pl.switch_preview(root, m25, settings, prepare=dict(target, variants=" v1 ; V1 "))
+        check(normalized["exact"] is True and normalized["need"] == 2, "D152 같은 변형 토큰은 숫자 미리 보기 유지")
+        psd = out / "preview-source.psd"
+        psd.write_bytes(b"PSD fingerprint fixture")
+        psd_settings = copy.deepcopy(settings)
+        psd_settings["import"]["psd_path"] = str(psd.resolve())
+        psd_m = copy.deepcopy(m25)
+        psd_m["source"] = {key: psd_settings["import"][field] for field, key in pl._IMPORT_SOURCE}
+        psd_m["source"]["fingerprint"] = st.file_fingerprint(str(psd))
+        psd_m["prepare_inputs"] = st.prepare_inputs_fp(root, psd_m)
+        unchanged = pl.switch_preview(root, psd_m, psd_settings, prepare=target)
+        check(unchanged["exact"] is True and unchanged["uncertain"] is False, "D152 PSD 지문 일치: 확정 가능한 미리 보기")
+        psd.write_bytes(psd.read_bytes() + b" changed")
+        changed = pl.switch_preview(root, psd_m, psd_settings, prepare=target)
+        check(changed["uncertain"] is True and changed["need"] == unchanged["need"]
+              and psd_m["prepare_inputs"] == st.prepare_inputs_fp(root, psd_m)
+              and "마지막 Import 뒤 PSD 파일이 바뀜" in bd._import_pending(root, psd_m, psd_settings),
+              "D152 PSD만 변경: 보드와 같은 지문으로 uncertain")
+        for damage in ("job", "cell_key", "sha", "prompt"):
+            broken_m = copy.deepcopy(m25)
+            if damage == "job":
+                broken_m["jobs"][0] = None
+            elif damage == "sha":
+                broken_m["jobs"][0]["inputs"][0].pop("sha")
+            else:
+                broken_m["jobs"][0].pop(damage)
+            before_m = copy.deepcopy(broken_m)
+            result = pl.view(root, broken_m, switch_prepare=target)
+            check(result["error"] is None and result["switch"]["error"] and result["switch"]["uncertain"] is True
+                  and broken_m == before_m, f"D152 손상된 {damage}: view 오류 응답·매니페스트 불변")
+        with patch.object(rn, "plan_calls", side_effect=RuntimeError("ledger unavailable")):
+            result = pl.view(root, m25, switch_prepare=target)
+            check("ledger unavailable" in result["switch"]["error"] and result["switch"]["uncertain"] is True,
+                  "D152 원장 계획 예외도 switch 오류로 반환")
+    check(Path(root, pl.PIPELINE_NAME).read_bytes() == saved_raw, "D152 view·switch 읽기 전용 설정 불변")
+    old_m = copy.deepcopy(m25)
+    old_m["prepare_settings"].pop("complexity")
+    d = pl.derive(root, old_m)
+    check(d["settings"]["prepare"]["complexity"] == "high" and not any(x.startswith("prepare.") for x in d["confirm"]), "D148 옛 prepare_settings 유도")
+    d["settings"]["prepare"]["complexity"] = "low"
+    check(pl.drift(d["settings"], old_m) == [], "D148 2.5 complexity 만 바꿔도 갈라짐 없음")
+    d26 = pl.derive(root, m26)["settings"]
+    d26["prepare"]["complexity"] = "high"
+    check(pl.drift(d26, m26) == [{"section": "prepare", "field": "complexity", "manifest": "medium", "settings": "high", "kind": "cell"}], "D148 2.6 복잡도 cell 갈라짐")
+    d_jobs = pl.derive(root, dict(m25, prepare_settings={}))
+    check("prepare.complexity" not in d_jobs["confirm"], "D148 2.5 jobs complexity 생략 확인 불필요")
+
+    with patch.object(rn, "mock_enabled", return_value=True):
+        for missing_size in (False, True):
+            legacy_m = copy.deepcopy(m25)
+            legacy_m.pop("prepare_settings")
+            if missing_size:
+                for job in legacy_m["jobs"]:
+                    job.pop("size_info", None)
+            source, record = pl.prepare_record(legacy_m)
+            check(source == "jobs" and "variants" not in record and "ref_style" not in record
+                  and ("size_rule" not in record) == missing_size, f"D152 옛 jobs 기록 누락 재현: size={missing_size}")
+            for field, value in (("model", models[0]), ("quality", "high")):
+                result = pl.view(root, legacy_m, switch_prepare=dict(settings["prepare"], **{field: value}))["switch"]
+                check(result["exact"] is True and result["need"] == result["cells"] == 2 and result["est_usd"][1] > 0
+                      and result["uncertain"] is True, f"D152 옛 jobs {field}만 변경: 숫자·uncertain(size={missing_size})")
+            for field, value in (("variants", "V1,V4"), ("ref_style", "plain"),
+                                 ("size_rule", next(k for k in st.GPT_SIZE_RULES if k != target["size_rule"]))):
+                result = pl.view(root, legacy_m, switch_prepare=dict(target, **{field: value}))["switch"]
+                check(result["exact"] is False and result["need"] is None,
+                      f"D152 옛 jobs {field} 변경: 기록 또는 저장값과 다르면 계산 불가(size={missing_size})")
+
+        # 네트워크 없이 실제 라우트 함수를 호출해 보드 판정이 view 에 전달되는지 확인한다.
+        def preview_route(manifest, prepare=target):
+            query = {"root": "test"}
+            if prepare is not None:
+                query["prepare"] = json.dumps(prepare)
+            with patch.object(bd, "_root_param", return_value=root), patch.object(st, "load_manifest", return_value=manifest):
+                response = asyncio.run(bd.pipeline_handler(types.SimpleNamespace(query=query, path="/pipeline")))
+            check(response.status == 200, "D152 미리 보기 라우트 200")
+            return json.loads(response.body)
+
+        with patch.object(bd, "_import_pending", wraps=bd._import_pending) as pending, patch.object(rn, "plan_calls", wraps=rn.plan_calls) as plans:
+            result = preview_route(m25, None)
+            check(result["switch"] is None and pending.call_count == plans.call_count == 0,
+                  "D152 일반 조회: Import 판정·호출 계획 0회")
+            result = preview_route(m25)
+            check(result["switch"]["uncertain"] is False and pending.call_count == plans.call_count == 1,
+                  "D152 깨끗한 프로젝트 라우트: 숫자·확실성 유지")
+
+        layout = st.layout_from_manifest(m25)
+        pending_m = copy.deepcopy(m25)
+        pending_m["source"]["layout"] = {"rev": 0, "sig": st.layout_sig(layout)}
+        layout["crops"][0]["rect"][2] -= 1
+        layout_path = Path(root, st.LAYOUT_NAME)
+        st.write_json_atomic(str(layout_path), layout)
+        try:
+            pending_m["prepare_inputs"] = st.prepare_inputs_fp(root, pending_m)  # Import 없이 Prepare 만 다시 돈 상태
+            check(pl.switch_preview(root, pending_m, settings, prepare=target)["uncertain"] is False
+                  and any(s.startswith("레이아웃 미반영") for s in bd._import_pending(root, pending_m, settings)),
+                  "D152 Prepare 지문은 같아도 source.layout.sig 는 미반영")
+            result = preview_route(pending_m)["switch"]
+            check(result["uncertain"] is True and result["exact"] is True and result["need"] == 2,
+                  "D152 레이아웃 미반영 라우트: uncertain OR·숫자 유지")
+        finally:
+            layout_path.unlink()
+
+        refs_dir = out / "preview-refs"
+        refs_dir.mkdir(exist_ok=True)
+        Image.new("RGB", (8, 8), "white").save(refs_dir / "001_preview.png")
+        pending_m = copy.deepcopy(m25)
+        pending_m["source"]["refs_dir"] = str(refs_dir.resolve())
+        pending_m["prepare_inputs"] = st.prepare_inputs_fp(root, pending_m)
+        check(pl.switch_preview(root, pending_m, settings, prepare=target)["uncertain"] is False
+              and any(s.startswith("레퍼런스 미반영") for s in bd._import_pending(root, pending_m, settings)),
+              "D152 Prepare 지문은 같아도 resolve_refs 결과는 미반영")
+        result = preview_route(pending_m)["switch"]
+        check(result["uncertain"] is True and result["exact"] is True and result["need"] == 2,
+              "D152 레퍼런스 미반영 라우트: uncertain OR·숫자 유지")
+        with patch.object(bd, "_import_pending", side_effect=OSError("locked import input")):
+            result = preview_route(m25)["switch"]
+            check(result["uncertain"] is True and "locked import input" in result["error"],
+                  "D152 Import 판정 실패도 미리 보기 오류로 반환")
+
+    # 신규·사전 승인·재시도 모두 차단, 무료 복구는 남긴다.
+    p = rn.plan_calls(m26, root)
+    entries = []
+    for model, quality in (("unknown-model", "low"), (models[2], "unknown-quality"), (models[0], "low")):
+        for kind, preapproved in (("new", False), ("new", True), ("retry_failed", False), ("retry_orphan", False)):
+            e = copy.deepcopy(p["pending"][0])
+            e.update(kind=kind, preapproved=preapproved)
+            e["job"].update(model=model, quality=quality)
+            entries.append(e)
+    free = dict(entries[0], kind="recover", billable=False, preapproved=False)
+    bad = dict(p, pending=entries + [free])
+    p25 = rn.plan_calls(m25, root)
+    ap25 = rn.split_approval(p25, "", backend=rn.BACKEND_COMFY_ORG)
+    with patch.object(api_module, "OpenAIImageEditRequest", type("OldRequest", (), {"model_fields": {}})):
+        legacy = rn.split_approval(p25, "", backend=rn.BACKEND_COMFY_ORG)
+        check(len(legacy["needs_approval"]) == 2 and legacy["needs_approval"] == ap25["needs_approval"]
+              and legacy["pending_hash"] == ap25["pending_hash"] != "", "D150 옛 요청 모델: 2.5 승인 need·pending_hash 불변")
+        for approve in ("", "0123456789ab"):
+            ap = rn.split_approval(bad, approve, backend=rn.BACKEND_COMFY_ORG)
+            check(len(ap["blocked"]) == 12 and ap["needs_approval"] == ap["preapproved"] == []
+                  and ap["pending_hash"] == "" and [e["kind"] for e in ap["to_run"]] == ["recover"], "D150 발사 불가 제외·복구 허용")
+        check("발사 못 함 12건" in rn.format_plan(bad, ap), "D150 보고 blocked 사유")
+        st.save_manifest(root, m26)
+        before = Path(root, st.MANIFEST_NAME).read_bytes()
+        with patch.object(bd, "_mock_active", return_value=False):
+            expect_raises(lambda: bd.apply_reroll(root, 1, m26["jobs"][0]["cell_key"]), "D150 R 차단", exc=bd._Reject, contains="발사 못 함")
+            sel = bd._run_sel(root, m26, settings["run"], "", False)
+        check(sel["need"] == 0 and sel["reasons"][0]["reason"] == "blocked"
+              and Path(root, st.MANIFEST_NAME).read_bytes() == before, "D150 보드 차단 reason·원본 불변")
+        rows = bd._run_free(root, m26, settings["run"], False)["by_crop"]
+        check(all(r["blocked"] == 1 and r["need"] == 0 for r in rows.values()), "D150 보드 크롭마다 발사 불가 1건 표시")
+        mixed_m = dict(m26, jobs=[m26["jobs"][0], *m25["jobs"]])
+        rows = bd._run_free(root, mixed_m, settings["run"], False)["by_crop"]
+        check(sum(r["blocked"] for r in rows.values()) == 1 and sum(r["need"] for r in rows.values()) == 2,
+              "D150 보드 승인 대기는 blocked 수에서 제외")
+        for mixed in (False, True):
+            plan = dict(p, pending=[p["pending"][0]] + ([p25["pending"][0]] if mixed else []))
+            approval = rn.split_approval(plan, "", backend=rn.BACKEND_COMFY_ORG)
+            report = dp.BMKDesignPatchRun._report(approval, plan, approval, None, {"candidates": [], "warnings": []},
+                                                types.SimpleNamespace(name=rn.BACKEND_COMFY_ORG), "", True, 4, [], 1, 0)
+            check("발사 못 함 1건" in report.splitlines()[0] and "할 일 없음" not in report.splitlines()[0]
+                  and "발사 못 함 1건 — " + approval["blocked"][0]["blocked"] in report,
+                  f"D150 Run 상태·별도 사유: 혼합={mixed}")
+            check(("승인 안 된 1건은 과금하지 않음" in report if mixed else "승인 안 된" not in report)
+                  and "승인 안 된 2건" not in report, f"D150 Run 발사 불가를 미승인 수에서 제외: 혼합={mixed}")
+
+    # 실제 요청 타입 + sync_op 대역: 외부 API·네트워크 없음.
+    body = []
+    async def sync(cls, endpoint, **kw):
+        body.append(kw["data"].model_dump(exclude_none=True))
+        return types.SimpleNamespace(usage=None, data=[])
+    be = rn.ComfyOrgBackend({"auth_token": "fake-batch10a-test"})
+    be.api = types.SimpleNamespace(OpenAIImageEditRequest=api_module.OpenAIImageEditRequest,
+                                   OpenAIImageGenerationResponse=object, ApiEndpoint=lambda **kw: kw,
+                                   sync_op=sync, credits_used=lambda cls: None)
+    with patch.object(be, "encode_inputs", return_value=[]):
+        for m in (m25, m26):
+            job = m["jobs"][0]
+            asyncio.run(be.request(rn._job_view(job), [], "test"))
+    check("complexity" not in body[0] and body[1]["complexity"] == "medium", "D151 요청: 2.5 생략·2.6 전송")
+    e = dict(p["pending"][0], approved_by="board")
+    old_request = type("OldRequest", (), {"model_fields": {}})
+    be.api.OpenAIImageEditRequest = old_request
+    with patch.object(rn, "agent_charge", Mock(return_value=None)) as charge:
+        r = asyncio.run(rn.run_calls(root, [e], be))
+        check(r.launched == 0 and not charge.called and rn.board_spent(root, e["cell_key"]) == 0, "D151 마지막 사전 검사: 장부·사전 승인 소비 0")
+    for kind in ("new", "retry_failed", "retry_orphan"):
+        ck, rep = e["cell_key"], e["rep"]
+        prior = {}
+        if kind != "new":
+            prior = {"req": b'{"approved_by":"board","attempt":1}',
+                     "failed" if kind == "retry_failed" else "inflight": b'{"error":"original"}'}
+            for name, data in prior.items():
+                st._atomic_write_bytes(rn._lpath(root, ck, rep, name), data)
+        report = rn.RunReport(backend=be.name, launched=1)
+        state = rn._RunState(report, 100, 10, lambda: False, lambda: False)
+        asyncio.run(rn._billable(root, dict(e, kind=kind), [], be, state))
+        actual = {name: Path(rn._lpath(root, ck, rep, name)).read_bytes() for name in ("req", "failed", "inflight", "resp")
+                  if Path(rn._lpath(root, ck, rep, name)).exists()}
+        check(actual == prior and report.launched == 0 and state.stop == "auth", f"D151 request 거부 {kind}: 원장 바이트 복원·중지")
+        for name in actual:
+            Path(rn._lpath(root, ck, rep, name)).unlink()
+    for m in (m25, m26):
+        entry = rn.plan_calls(m, root)["pending"][0]
+        req = rn._begin_call(root, entry, rn.BACKEND_MOCK)["req"]
+        mm = copy.deepcopy(m)
+        rn._add_candidates(mm, req, {"slots": [{"slot": 0, "file": "candidate.png", "size": [1, 1]}]}, [])
+        oi = mm["candidates"][-1]["origin_info"]
+        check(("complexity" in req) == ("complexity" in oi) == (m is m26), "D151 원장·후보 complexity 2.6 만")
+        for name in ("req", "inflight"):
+            Path(rn._lpath(root, req["cell_key"], req["rep"], name)).unlink()
+
+    # 2.6 완료 원장을 갖고 2.5 로 돌아온 프로젝트: 이미 끝난 새 셀 제외, 설정 n/품질/호출 수 사용.
+    settings["prepare"].update(n=3, calls_per_cell=2, complexity="medium")
+    mm = copy.deepcopy(m25)
+    mm["rerolls"] = {mm["jobs"][0]["cell_key"]: 4}
+    snapshot = copy.deepcopy(mm)
+    with patch.object(rn, "mock_enabled", return_value=True):
+        preview = pl.switch_preview(root, mm, settings)
+        check(preview["need"] == 4 and preview["cells"] == 2 and preview["pruned"] == 4 and preview["uncertain"], "D152 전환 횟수·정리·미반영 표시")
+        expected = st.estimate_usd(models[0], "low", [2048, 2048], 3, len(mm["jobs"][0]["inputs"]))
+        check(preview["est_usd"] == [round(v * 4, 4) for v in expected] and mm == snapshot, "D152 설정 장 수·품질 비용·사본만 변경")
+        completed = m26["jobs"][0]
+        for rep in (0, 1):
+            rn._write_json(rn._lpath(root, completed["cell_key"], rep, "done"), {"slots": []})
+        preview = pl.switch_preview(root, mm, settings)
+        check(preview["need"] == 2 and preview["cells"] == 1, "D152 이미 완료된 2.6 셀 제외")
+        higher = pl.switch_preview(root, mm, settings, prepare=dict(settings["prepare"], model=models[0], quality="high"))
+        check(higher["need"] == 4 and higher["est_usd"][1] > preview["est_usd"][1], "D152 품질 변경 키 재계산")
+        Path(root, pl.PIPELINE_NAME).write_bytes(b"{")
+        broken = pl.view(root, m25, switch_prepare=dict(settings["prepare"], model=models[0]))
+        check(broken["error"] and broken["rev"] is None and broken["switch"]["prepare"]["model"] == models[0]
+              and Path(root, pl.PIPELINE_NAME).read_bytes() == b"{", "D152 깨진 파일도 명시적 저장 미리 보기 가능·파일 불변")
+    # 실제 초안 요청 작성은 이미지 생성 모델·복잡도가 바뀌어도 같은 키.
+    dv = dp.dvlm
+    def draft_req(m):
+        ctx = dv.build_crop_ctx(root, m, m["crops"][0], refs_dir="", glossary={}, backend="mock", memo={})
+        return dv.build_request(ctx, backend="mock", model="mock", effort="high", image_detail="high", draft_round=0)
+    req25, req26 = draft_req(m25), draft_req(m26)
+    check(req25.key == req26.key, "D154 이미지 모델·complexity 전환은 초안 키 밖")
+
+    js = (PKG / "web_design_patch/pipeline.js").read_text(encoding="utf-8")
+    check("2.6 만 — 지금 모델에는 쓰지 않음" in _layout_js_fn(js, "field", "    ")
+          and "먼저 ① 준비 설정 확인" in _layout_js_fn(js, "renderSettings", "    "), "D146·152 설정 칸·전환 게이트")
+    check("preparePreview(values, P0)" in js[js.index("async function saveSection("):js.index("function typed(")]
+          and "preparePreview(D.prepare, P0)" in js[js.index("async function resetDerived("):js.index("function panelBusy(")], "D152 저장·마지막 실행 값 확인 창 연결")
+    script = "const assert=require('node:assert/strict'); const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);\n"
+    script += "\n".join(_layout_js_fn(js, name, "    ") + "\n}" for name in ("prepareChanged", "prepareText"))
+    script += "\n" + _layout_js_fn(js, "typed", "    ") + "\n}"
+    for name in ("preparePreview", "switchModel", "saveSection"):
+        start = js.index(f"    async function {name}(")
+        script += "\n" + js[start:js.index("\n    }\n", start)] + "\n}"
+    script += "\nconst p=" + json.dumps(preview, ensure_ascii=False) + ";\n"
+    script += "\nconst inexact=" + json.dumps(inexact_previews, ensure_ascii=False) + ";\n"
+    script += r'''
+assert.equal(prepareChanged({model:'gpt-image-2.5-flare',complexity:'high'}, {model:'gpt-image-2.5-flare',complexity:'low'}),false);
+assert.equal(prepareChanged({model:'gpt-image-2.6-flare',complexity:'high'}, {model:'gpt-image-2.6-flare',complexity:'low'}),true);
+const text=prepareText(p);
+for(const s of ['생성 승인 필요 2건','승인 전에는 과금 없음','복잡도 medium','다시 생성 대기 4건','옛 조건','그래프 Prepare','반영 뒤 달라질 수 있음']) assert.ok(text.includes(s),s);
+assert.throws(()=>prepareText({...p,error:'preview failure'}),/preview failure/);
+for(const preview of inexact){
+  const message=prepareText(preview);
+  assert.ok(message.includes('이 변경은 반영 전에 호출 수를 셀 수 없음 — 반영 뒤 생성 승인 칸에서 확인'));
+  for(const s of ['옛 조건','초안 재과금은 없습니다','그래프 Prepare','[MOCK] 과금 없음']) assert.ok(message.includes(s),s);
+  for(const s of ['생성 승인 필요 0건','$0.00','null건','undefined건']) assert.ok(!message.includes(s),s);
+}
+const clone=x=>JSON.parse(JSON.stringify(x));
+let accept=false, asks=[], saves=[], form={}, edits={}, drawn={}, errors=[];
+const original={...p.prepare,model:'gpt-image-2.5-sunburst'};
+const PS={busy:false,P:{saved:true,error:null,rev:3,manifest_rev:8,confirm:[],settings:{prepare:original},widgets:{prepare:Object.fromEntries(Object.keys(original).map(k=>[k,{type:typeof original[k]==='number'?'INT':'STRING'}]))}}};
+PS.previewPrepare=async prepare=>({...PS.P,switch:{...p,prepare}});
+PS.save=async(sec,values,rev)=>{saves.push({sec,values:clone(values),rev});PS.P={...PS.P,settings:{[sec]:clone(values)},rev:rev+1};return PS.P};
+const opts={toast:(x,kind)=>{if(kind==='err')errors.push(x)}},window={confirm:x=>{asks.push(x);return accept}},SECTIONS={prepare:'Prepare'};
+const confirmOf=x=>x.confirm,shown=x=>String(x),render=()=>{},planNow=()=>{};
+(async()=>{
+await switchModel(); assert.equal(saves.length,0); assert.equal(asks.length,1);
+accept=true; asks=[]; PS.P.saved=false; await switchModel(); assert.equal(asks.length,0);
+PS.P.saved=true; PS.P.confirm=['prepare.variants']; await switchModel(); assert.equal(saves.length,0);
+PS.P.confirm=[]; await switchModel(); assert.equal(saves.length,1);
+assert.deepEqual(saves[0],{sec:'prepare',values:{...original,model:'gpt-image-2.6-sunburst'},rev:3});
+saves=[];asks=[];accept=false;PS.P.settings.prepare=clone(original);form={prepare:{quality:'high'}};
+await saveSection('prepare');assert.equal(saves.length,0);assert.equal(asks.length,1);
+accept=true;await saveSection('prepare');assert.equal(saves.length,1);assert.equal(saves[0].values.quality,'high');
+saves=[];asks=[];form={prepare:{complexity:'low'}};await saveSection('prepare');assert.equal(asks.length,0);assert.equal(saves.length,1);
+saves=[];asks=[];errors=[];form={prepare:{quality:'max'}};
+PS.previewPrepare=async prepare=>({...PS.P,manifest_rev:PS.P.manifest_rev+1,switch:{...p,prepare,need:7,cells:5,est_usd:[1.23,4.56],credits:[260,960]}});
+let expectedRev=PS.P.rev;
+await saveSection('prepare');assert.equal(saves.length,1);assert.equal(errors.length,0);assert.equal(saves[0].rev,expectedRev);
+assert.ok(asks[0].includes('생성 승인 필요 7건 (5셀) ≈ $1.23–4.56 (≈ 260–960 크레딧)'));
+saves=[];asks=[];form={};PS.P.settings.prepare=clone(original);expectedRev=PS.P.rev;
+await switchModel();assert.equal(saves.length,1);assert.equal(errors.length,0);assert.equal(saves[0].rev,expectedRev);
+assert.ok(asks[0].includes('생성 승인 필요 7건 (5셀) ≈ $1.23–4.56'));
+for(const preview of inexact){
+  saves=[];asks=[];form={prepare:preview.prepare};PS.P.settings.prepare=clone(original);
+  PS.previewPrepare=async()=>({...PS.P,switch:preview});
+  await saveSection('prepare');assert.equal(saves.length,1);assert.equal(errors.length,0);
+  assert.ok(asks[0].includes('이 변경은 반영 전에 호출 수를 셀 수 없음'));
+}
+saves=[];form={prepare:{quality:'max'}};PS.previewPrepare=async()=>({...PS.P,rev:99,switch:p});
+await saveSection('prepare');assert.equal(saves.length,0);assert.ok(errors.length);
+console.log('batch10a JS passed');
+})().catch(e=>{console.error(e);process.exitCode=1});
+'''
+    node = shutil.which("node") or r"C:\Program Files\nodejs\node.exe"
+    result = subprocess.run([node, "-e", script], capture_output=True, encoding="utf-8", timeout=30)
+    check(result.returncode == 0, f"D152–153 JS 실행 확인: {result.stdout} {result.stderr}")
 
 
 def batch10b_unit():
-    """배치 10-B·C·D: 다시 생성 대기 취소·옛 셀 정리·실행 설정 확정·흐림 이유·새 프로젝트·가져오기 이름(D156–D169). 갈래 B 가 채움."""
+    """D155–D170: 합성 파일·직접 처리기·모의 JS(소켓·외부 API 없음)."""
     section("배치 10-B — 다시 생성 취소·실행 설정 흐름")
+    import tempfile
+    from unittest.mock import patch
+    import bmk_design_patch_board as bd
+    import bmk_design_patch_pipeline as pl
+    import bmk_design_patch_runner as rn
+    import bmk_design_patch_refs as rf
+
+    class Request:
+        content_type = "application/json"
+        headers = {"Content-Type": "application/json"}
+        path = "/bmk/design_patch/reroll"
+        def __init__(self, data):
+            self.raw = json.dumps(data).encode()
+            self.content_length = len(self.raw)
+        async def read(self):
+            return self.raw
+
+    def rejected(fn, reason):
+        try:
+            fn()
+        except bd._Reject as e:
+            check(e.status == 409 and e.extra.get("reason") == reason, f"B10 409 {reason}: {e.extra}")
+        else:
+            check(False, f"B10 missing rejection: {reason}")
+
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="batch10b_", dir=OUT_ROOT.resolve()) as tmp:
+        out = Path(tmp)
+        root = _layout_board_project(out, "cancel")
+        m = store.load_manifest(root)
+        jobs = m["jobs"]
+        a, b = [j["cell_key"] for j in jobs]
+        old = "f0" * 12
+        settings = pl.defaults(root)
+        settings["prepare"].update(model="gpt-image-2.5-sunburst", quality="max", size_rule="user_k", variants="V1", n=1)
+        m["prepare_settings"] = copy.deepcopy(settings["prepare"])
+        psd = out / "test.psd"
+        psd.write_bytes(b"test path only")
+        settings["import"].update(psd_path=str(psd), refs_dir=m["source"]["refs_dir"])
+        m["source"]["psd"] = str(psd)
+        store.save_manifest(root, m)
+        pl.update(root, 0, "prepare", settings["prepare"])
+        pl.update(root, pl.load(root)["rev"], "import", settings["import"])
+        key = store.register_root(root)
+
+        def reservations(values):
+            store.update_manifest(root, lambda mm: mm.update(rerolls=dict(values)))
+        def ap():
+            return rn.split_approval(rn.plan_calls(store.load_manifest(root), root), "", backend=rn.BACKEND_MOCK)
+        def route(data):
+            r = asyncio.run(bd.reroll_handler(Request({"root": key, **data})))
+            return r.status, json.loads(r.text)
+
+        reservations({a: 2, b: 1, old: 3})
+        with patch.object(rn, "plan_calls", wraps=rn.plan_calls) as planned, patch.object(rn, "read_ledger", wraps=rn.read_ledger) as ledgers, \
+                patch.object(rn, "board_spent", side_effect=AssertionError("state must reuse plan")):
+            state = bd.build_state(root)
+        check(planned.call_count == 1 and [c.args[1] for c in ledgers.call_args_list] == [a, b], "B10 state plans once and reads each ledger once")
+        with patch.object(rn, "plan_calls", side_effect=AssertionError("unchanged state must skip planning")):
+            check(bd.build_state(root, state["rev"])["unchanged"], "B10 unchanged state skips planning")
+        with patch.object(rn, "read_ledger", side_effect=OSError("unreadable ledger")), patch.object(rn, "plan_calls", wraps=rn.plan_calls) as planned:
+            response = asyncio.run(bd.state_handler(types.SimpleNamespace(query={"root": key})))
+            failed_state = json.loads(response.text)
+        check(response.status == 200 and planned.call_count == 1 and all(failed_state[k] == 0 for k in ("rerolls_pending", "rerolls_base", "rerolls_stale")),
+              "B10 state tolerates ledger failure with empty reroll counts")
+        with patch.object(rn, "read_ledger", side_effect=OSError("unreadable ledger")), patch.object(bd, "_ledger_pending", side_effect=OSError("unreadable fallback")):
+            check(bd._pending_cells(root, store.load_manifest(root)) == ({}, {}) and bd._reroll_status(root, store.load_manifest(root)) == ({}, {}),
+                  "B10 standalone status and fallback tolerate ledger failure")
+        check((state["rerolls_pending"], state["rerolls_stale"], state["rerolls_base"]) == (6, 3, 2), "B10 state pending/stale/base counts")
+        cells = {c["cell_key"]: c for t in state["targets"] for c in t["cells"]}
+        check((cells[a]["rerolls_pending"], cells[a]["rerolls_base"]) == (2, 1), "B10 cell cancellation preview")
+        before_hash = ap()["pending_hash"]
+        code, r = route({"op": "cancel", "scope": "cell", "cell_key": a})
+        check(code == 200 and (r["cancelled"], r["base"], r["pending_preapproved"]) == (2, 1, 1)
+              and r["cells"][0]["after"] == 0 and a not in store.load_manifest(root)["rerolls"], "B10 cell cancellation response and zero deletion")
+        check(len(ap()["needs_approval"]) == 1 and ap()["pending_hash"] != before_hash, "B10 base approval restored and hash changed")
+        code, r = route({"op": "cancel", "scope": "crop", "crop_id": jobs[1]["crop_id"]})
+        check(code == 200 and r["cancelled"] == r["base"] == 1, "B10 crop cancellation")
+        code, r = route({"op": "cancel", "scope": "all"})
+        check(code == 200 and (r["cancelled"], r["base"]) == (3, 0) and not store.load_manifest(root)["rerolls"], "B10 all includes stale keys")
+        check(route({"op": "cancel", "scope": "oops"})[0] == 400 and route({"op": "oops"})[0] == 400, "B10 invalid op/scope")
+        check(route({"op": "cancel", "scope": "all"})[1]["cancelled"] == 0, "B10 empty cancellation is idempotent")
+
+        # A target edit can hide a job from targets[].cells before the next Prepare.
+        crop_id = jobs[0]["crop_id"]
+        original_targets = copy.deepcopy(next(c for c in store.load_manifest(root)["crops"] if c["id"] == crop_id)["targets"])
+        def retarget(mm):
+            crop = next(c for c in mm["crops"] if c["id"] == crop_id)
+            crop["targets"] = [{**t, "tid": chr(ord("X") + i)} for i, t in enumerate(original_targets)]
+        reservations({a: 2})
+        store.update_manifest(root, retarget)
+        try:
+            changed_state = bd.build_state(root)
+            crop_state = next(c for c in changed_state["crops"] if c["id"] == crop_id)
+            check(not any(t["cells"] for t in changed_state["targets"] if t["crop_id"] == crop_id)
+                  and (crop_state["rerolls_pending"], crop_state["rerolls_base"]) == (2, 1), "B10 crop reroll counts include jobs hidden by target edits")
+            code, result = route({"op": "cancel", "scope": "crop", "crop_id": crop_id})
+            check(code == 200 and (result["cancelled"], result["base"]) == (crop_state["rerolls_pending"], crop_state["rerolls_base"]),
+                  "B10 crop preview matches server cancellation after target edit")
+        finally:
+            store.update_manifest(root, lambda mm: next(c for c in mm["crops"] if c["id"] == crop_id).update(targets=original_targets))
+
+        # Ledger board approvals include history; settled excludes active reps.
+        led = Path(root, "cands", a)
+        led.mkdir(parents=True, exist_ok=True)
+        for rep, st in enumerate(["done", "failed", "resp", "inflight"]):
+            store.write_json_atomic(str(led / f"r{rep}.req.json"), {**jobs[0], "approved_by": "hash:old", "history": [{"req": {"approved_by": "board"}}]})
+            store.write_json_atomic(str(led / f"r{rep}.{st}.json"), {"data": []} if st == "resp" else {})
+        check(rn.board_spent(root, a, settled=True) == rn.board_spent(root, a) == 4, "B10 ledger history and spent states")
+        call_id = rn.call_id_for(a, 3)
+        rn._claim(rn._rid(root), call_id)
+        try:
+            check(rn.board_spent(root, a) == 4 and rn.board_spent(root, a, settled=True) == 3, "B10 settled excludes inflight")
+            mm = {"rerolls": {a: 6}}
+            check(store.prune_stale_rerolls(mm, [], lambda ck: rn.board_spent(root, ck, settled=True)) == 3
+                  and mm["rerolls"][a] == 3, "B10 pruning uses settled floor")
+        finally:
+            with rn._REG_LOCK:
+                rn._ACTIVE_CALLS.discard((rn._rid(root), call_id))
+        reservations({a: 1})
+        r, _ = bd.apply_reroll(root, 1, cell_key=a)
+        check(r["rerolls"] == 5, "B10 add repairs below-spent baseline")
+        with patch.object(rn, "board_spent", side_effect=AssertionError("status must use plan")):
+            status_m = store.load_manifest(root)
+            check(bd._reroll_status(root, status_m) == ({a: 1}, {}), "B10 current ledger history deducted from planned reservations")
+            status_m["jobs"] = []
+            with patch.object(rn, "read_ledger", wraps=rn.read_ledger) as ledgers:
+                waiting, base = bd._reroll_status(root, status_m)
+            check(waiting == {a: 1} and not base and sum(c.args[1] == a for c in ledgers.call_args_list) == 1,
+                  "B10 stale ledger history deducted with one read")
+        r = bd.cancel_rerolls(root, "cell", cell_key=a)
+        check(r["cancelled"] == 1 and r["cells"][0]["after"] == 4 and r["base"] == 0, "B10 cancellation keeps spent floor")
+        reservations({a: 1})
+        bd.cancel_rerolls(root, "all")
+        check(store.load_manifest(root)["rerolls"][a] == 1, "B10 cancellation never increases reservation")
+        reservations({b: 1})
+        snapshot = Path(root, store.MANIFEST_NAME).read_bytes()
+        with rn.run_active(root):
+            check(bd.is_running(root), "B10 planning registration visible to board")
+            code, r = route({"op": "cancel", "scope": "all"})
+            check(code == 409 and r["reason"] == "running" and Path(root, store.MANIFEST_NAME).read_bytes() == snapshot, "B10 running conflict preserves bytes")
+            check(rn.request_drain(root), "B10 drain during planning")
+            with rn.run_active(root):
+                check(rn.drain_requested(root), "B10 nested registration preserves drain")
+        check(not rn.is_running(root) and not rn.drain_requested(root), "B10 registry cleanup")
+        check(route({"op": "cancel", "scope": "all"})[1]["cancelled"] == 1, "B10 queued-before-start cancellation")
+
+        # Prune after merging reservations added after the node snapshot.
+        reservations({a: 5, b: 2})
+        snap = store.load_manifest(root)
+        ours = copy.deepcopy(snap)
+        ours["jobs"] = [copy.deepcopy(jobs[1])]
+        ours["jobs"][0]["n"] = 3
+        reservations({a: 7, b: 4})
+        pruned = []
+        merged, _, _ = store.commit_merge(root, snap, ours, finalize=lambda mm: pruned.append(store.prune_stale_rerolls(
+            mm, [b], lambda ck: rn.board_spent(root, ck, settled=True), [b])))
+        check(pruned == [7] and merged["rerolls"] == {a: 4}, "B10 merged stale/n-changed/late reservations pruned")
+        store.update_manifest(root, lambda mm: mm.update(jobs=jobs))
+        check(not ap()["preapproved"], "B10 restored keys do not revive reservations")
+
+        # Confirm rest sections without resaving values, in one revision.
+        doc = pl.load(root)
+        before_values = {s: copy.deepcopy(doc[s]) for s in pl.SECTIONS}
+        rest = [s for s in pl.SECTIONS if s not in ("import", "prepare")]
+        with patch.object(pl, "validate_section", side_effect=AssertionError("no revalidation")), patch.object(pl, "derive", side_effect=AssertionError("no deriving")):
+            r = pl.confirm_only(root, doc["rev"], rest)
+        check(r["rev"] == doc["rev"] + 1 and not r["confirm"] and r["settings"] == before_values
+              and r["settings"]["draft"]["credit_cap"] == 1200, "B10 confirm atomic revision, unchanged values and cap 1200")
+        expect_raises(lambda: pl.confirm_only(root, doc["rev"], rest), "B10 confirm revision conflict", pl.PipelineConflict)
+        expect_raises(lambda: pl.confirm_only(root, r["rev"], ["prepare"]), "B10 gate requires normal save")
+        same_rev = pl.confirm_only(root, r["rev"], rest)["rev"]
+        check(same_rev == r["rev"], "B10 repeated confirmation preserves revision")
+        response = asyncio.run(bd.pipeline_settings_handler(Request({"root": key, "rev": same_rev, "confirm_only": rest})))
+        check(response.status == 200, "B10 confirm through existing route")
+        response = asyncio.run(bd.pipeline_settings_handler(Request({"root": key, "rev": same_rev, "confirm_only": rest, "section": "draft"})))
+        check(response.status == 400, "B10 reject mixed confirm and write")
+        vals = copy.deepcopy(settings["prepare"])
+        vals["quality"] = "high"
+        pl.update(root, same_rev, "prepare", vals)
+        rejected(lambda: bd.apply_reroll(root, 1, cell_key=b), "apply_needed")
+        rejected(lambda: bd.pipeline_prompt(root, "reroll"), "apply_needed")
+        vals = copy.deepcopy(settings["prepare"])
+        vals["n"] += 1
+        pl.update(root, pl.load(root)["rev"], "prepare", vals)
+        check(bd.apply_reroll(root, 1, cell_key=b)[0]["rerolls"] == 1
+              and bd.pipeline_prompt(root, "reroll")["stage"] == "reroll", "B10 cost drift allows R and template")
+        pipeline_file = Path(root, "pipeline.json")
+        pipeline_bytes = pipeline_file.read_bytes()
+        try:
+            pipeline_file.write_bytes(b"{broken")
+            check(pl.current(root, store.load_manifest(root))["settings"] is None
+                  and bd.apply_reroll(root, 1, cell_key=b)[0]["rerolls"] == 2, "B10 broken pipeline permits graph reroll reservation")
+            rejected(lambda: bd.pipeline_prompt(root, "reroll"), "pipeline_broken")
+            check(pipeline_file.read_bytes() == b"{broken", "B10 reroll preserves broken pipeline bytes")
+        finally:
+            pipeline_file.write_bytes(pipeline_bytes)
+        legacy_root = _layout_board_project(out, "legacy_no_pipeline")
+        store.update_manifest(legacy_root, lambda mm: mm.update(rerolls={}, prepare_settings={"model": "gpt-image-2.5-sunburst", "quality": "max"}))
+        legacy_manifest = store.load_manifest(legacy_root)
+        legacy_current = pl.current(legacy_root, legacy_manifest)
+        check(not legacy_current["saved"] and any(d["section"] == "prepare" and d["kind"] == "cell"
+              for d in pl.drift(legacy_current["settings"], legacy_manifest)), "B10 unsaved legacy derived settings reproduce false drift")
+        check(bd.apply_reroll(legacy_root, 1, cell_key=legacy_manifest["jobs"][0]["cell_key"])[0]["rerolls"] == 1
+              and not Path(legacy_root, "pipeline.json").exists(), "B10 missing pipeline permits graph reroll reservation")
+        rejected(lambda: bd.pipeline_prompt(legacy_root, "reroll"), "confirm_settings")
+        notes = bd._plan_notes(root, store.load_manifest(root), settings, ["prepare.variants", "draft.apply"])
+        check(any("① 준비에서 확인·저장" in n for n in notes) and any("승인 칸 [지금 값으로 확정]" in n for n in notes), "B10 gate/rest guidance")
+        adopt = out / "adopt"
+        adopt.mkdir()
+        (adopt / "board_pref.json").write_text("{}")
+        check(not bd._project_adoption(str(adopt))["adoptable"], "B10 board_pref blocks adoption")
+
+        # Exercise real Prepare commit/finalize and Run planning lifetime.
+        dp = _dp_package()
+        h, nr = _fx_project(dp, out / "nodes", "prepare", [("001_머리", [8, 8, 48, 48])], texture(64, 64, 51))
+        pre = dp.BMKDesignPatchPrepare()
+        h, _, _ = pre.run(h, "gpt-image-2.5-sunburst", "high", "user_k", "V1", 1, "at", 1)
+        ck = dp.store.load_manifest(nr)["jobs"][0]["cell_key"]
+        dp.store.update_manifest(nr, lambda mm: mm["rerolls"].update({ck: 2}))
+        commit = dp.store.commit_merge
+        def late(*args, **kw):
+            dp.store.update_manifest(nr, lambda mm: mm["rerolls"].update({ck: 3}))
+            return commit(*args, **kw)
+        with patch.object(dp.store, "commit_merge", side_effect=late):
+            h, _, report = pre.run(h, "gpt-image-2.5-sunburst", "max", "user_k", "V1", 1, "at", 1)
+        check(not dp.store.load_manifest(nr)["rerolls"] and "다시 생성 대기 3건 정리" in report, "B10 Prepare merge and report")
+        h, _, _ = pre.run(h, "gpt-image-2.5-sunburst", "high", "user_k", "V1", 1, "at", 1)
+        check(not dp.store.load_manifest(nr)["rerolls"], "B10 Prepare restored condition stays cleared")
+        h, _, _ = pre.run(h, "gpt-image-2.5-sunburst", "max", "user_k", "V1", 1, "at", 1)
+        dp.store.update_manifest(nr, lambda mm: mm["rerolls"].update({ck: 1}))
+        legacy_jobs = dp.store.load_manifest(nr)["jobs"]
+        check(ck not in {j["cell_key"] for j in legacy_jobs} and dp.runner.board_spent(nr, ck) == 0,
+              "B10 pre-upgrade stale reservation fixture has unused old key")
+        h, _, report = pre.run(h, "gpt-image-2.5-sunburst", "high", "user_k", "V1", 1, "at", 1)
+        restored = dp.store.load_manifest(nr)
+        restored_plan = dp.runner.split_approval(dp.runner.plan_calls(restored, nr), "", backend=dp.runner.BACKEND_MOCK)
+        check(ck in {j["cell_key"] for j in restored["jobs"]} and ck not in restored["rerolls"] and not restored_plan["preapproved"]
+              and "다시 생성 대기 1건 정리" in report, "B10 Prepare clears pre-upgrade stale reservation when old key returns")
+        dp.store.update_manifest(nr, lambda mm: mm["rerolls"].update({ck: 2}))
+        h, _, report = pre.run(h, "gpt-image-2.5-sunburst", "high", "user_k", "V1", 2, "at", 1)
+        check(not dp.store.load_manifest(nr)["rerolls"] and "다시 생성 대기 2건 정리" in report, "B10 Prepare n change pruning")
+        class Planned(Exception):
+            pass
+        def planning(*args):
+            check(dp.runner.is_running(nr) and dp.board.is_running(nr), "B10 Run registers before planning")
+            try:
+                dp.board.cancel_rerolls(nr, "all")
+            except dp.board._Reject as e:
+                check(e.extra.get("reason") == "running", "B10 real planning rejects cancellation")
+            else:
+                check(False, "B10 real planning incorrectly allowed cancellation")
+            raise Planned()
+        with patch.object(dp, "_run_plan", side_effect=planning), patch.object(dp.runner, "make_backend", return_value=types.SimpleNamespace(name="mock")):
+            expect_raises(lambda: asyncio.run(dp.BMKDesignPatchRun().run(h, "", 64, 4, 25, False, False, "")), "B10 Run propagates planning exception", Planned)
+        check(not dp.runner.is_running(nr) and not dp.board.is_running(nr), "B10 planning exception unregisters")
+
+        # Drain after run_calls has returned must still stop the next automatic wave.
+        original_plan, original_grid, original_report = dp._run_plan, dp._cand_grid, dp.BMKDesignPatchRun._report
+        original_run_calls = dp.runner.run_calls
+        original_run_state = dp.runner._RunState
+        def expired_wave(*args, **kwargs):
+            state = original_run_state(*args, **kwargs)
+            state.t0 -= state.wave_s + 1  # 실제 대기·Windows 시계 해상도에 기대지 않고 wave 상한을 지난 상태.
+            return state
+        opts = {"retry_failed": False, "retry_orphans": False, "only": ""}
+        approval = original_plan(nr, "", opts, dp.runner.BACKEND_MOCK)[1]["pending_hash"]
+        for drain_phase in ("replan", "grid", "report", "none"):
+            finished, accepted = [], []
+            backend = dp.runner.MockBackend(delay_s=0)
+            fake = _FakeServer(bd.web.RouteTableDef())
+
+            async def finish_calls(*args, **kwargs):
+                result = await original_run_calls(*args, **kwargs)
+                finished.append((result, result.stopped_reason))
+                return result
+
+            def late_drain(phase):
+                if finished and drain_phase == phase and not accepted:
+                    accepted.append(dp.board.set_drain(nr))
+
+            def replan(*args):
+                result = original_plan(*args)
+                late_drain("replan")
+                return result
+
+            def grid_after_calls(*args):
+                result = original_grid(*args)
+                late_drain("grid")
+                return result
+
+            def report_after_calls(*args):
+                result = original_report(*args)
+                late_drain("report")
+                return result
+
+            with patch.object(dp.runner, "make_backend", return_value=backend), patch.object(dp.runner, "_RunState", side_effect=expired_wave), \
+                    patch.object(dp.runner, "run_calls", side_effect=finish_calls), \
+                    patch.object(dp, "_run_plan", side_effect=replan), patch.object(dp, "_cand_grid", side_effect=grid_after_calls), \
+                    patch.object(dp.BMKDesignPatchRun, "_report", side_effect=report_after_calls), patch.object(dp, "_server", return_value=fake):
+                result = asyncio.run(dp.BMKDesignPatchRun().run(h, approval, 64, 1, 1, False, False, "", unique_id="b10-drain"))
+            entry = result["ui"]["bmk_dp_run"][0]
+            waves = [data for event, data, _sid in fake.events if event == "bmk.dp.wave"]
+            check(len(finished) == 1 and finished[0][1] == "wave" and finished[0][0].remaining and not backend.requests,
+                  f"B10 late drain {drain_phase}: real run_calls returned wave before postprocessing "
+                  f"stops={[reason for _rep, reason in finished]} ui={entry['stopped_reason']}")
+            if drain_phase == "none":
+                check(not accepted and len(waves) == 1 and waves[0]["node"] == "b10-drain" and entry["stopped_reason"] == "wave",
+                      "B10 no late drain preserves automatic wave")
+            else:
+                check(accepted == [True] and not waves and finished[0][0].stopped_reason == entry["stopped_reason"] == "drain"
+                      and "중지: drain 요청" in result["result"][1] and result["ui"]["text"] == [result["result"][1]],
+                      f"B10 drain during {drain_phase} suppresses wave and updates UI/report")
+            check(not dp.runner.is_running(nr) and not dp.board.is_running(nr) and not dp.board.drain_requested(nr),
+                  f"B10 late drain {drain_phase}: Run registries and drain cleaned up")
+
+        # Trim trailing markers, including Windows copy suffixes, but preserve letters after _t.
+        source, _ = _r1_project(out / "pool", "source")
+        dest, _ = _r1_project(out / "pool", "dest")
+        names = ["001_바보털_t.png", "001_바보털_t2.png", "001_바보털_t (2).png", "001_바보털_t_2.png", "001_바보털_t-2.png",
+                 "001_t셔츠_t.png", "001_t_앞.png", "001_t_뒤.png", "001_바보털_t2_앞.png"]
+        rgba = np.full((8, 8, 4), 255, np.uint8)
+        for name in names:
+            _r3_png(Path(source, "refs", name), rgba)
+        originals = {name: Path(source, "refs", name).read_bytes() for name in names}
+        with patch.object(bd, "_PROJECT_INPUT", str(out / "pool")), patch.object(store, "known_roots", return_value=[]):
+            imported = bd.ref_pool(dest, None, "import", {"from": store.root_key(source), "names": names})
+        check(set(imported["files"]) == {"ref_001-바보털_t.png", "ref_001-바보털_2_t.png", "ref_001-바보털_3_t.png", "ref_001-바보털_4_t.png",
+              "ref_001-바보털_5_t.png", "ref_001-t셔츠_t.png", "ref_001-t-앞_t.png", "ref_001-t-뒤_t.png", "ref_001-바보털-t2-앞_t.png"},
+              "B10 strip final marker and Windows copy tail only")
+        check(all(Path(source, "refs", name).read_bytes() == data for name, data in originals.items()), "B10 import preserves originals")
+
+        web = PKG / "web_design_patch"
+        pj = (web / "pipeline.js").read_text(encoding="utf-8")
+        bj = (web / "board.js").read_text(encoding="utf-8")
+        dflt = pl.defaults()["prepare"]
+        # Branch A changes the model default; compare final wording on integration.
+        expected_model = dflt["model"] if "gpt-image-2.6-sunburst" in pl._MODELS else "gpt-image-2.6-sunburst"
+        note = f'모델 {expected_model} · 품질 {dflt["quality"]} · 복잡도 {dflt.get("complexity", "high")} · {dflt["n"]}장 · 변형 {dflt["variants"]}'
+        check(note in bj, "B10 new project wording matches integrated defaults")
+        js = out / "checks.cjs"
+        data = out / "checks.json"
+        def fn(src, name, indent):
+            mark = f"{indent}function {name}("
+            start = src.index(mark) if mark in src else src.index(f"{indent}async function {name}(")
+            return src[start:src.index(f"\n{indent}}}\n", start)] + "\n}"
+        data.write_text(json.dumps({"pipeline": str(web / "pipeline.js"), "checklist": str(web / "checklist.js"),
+            "functions": {n: fn(pj, n, "    ") for n in ["dimWhy", "planDim", "confirmOf", "confirmGate", "confirmRest", "confirmRestRow"]},
+            "dimText": pj[pj.index("      const why = dimWhy();"):pj.index('      s = section("초안 승인");', pj.index("      const why = dimWhy();"))],
+            "pendingApply": fn(pj, "pendingApply", "    "), "header": fn(bj, "renderHeader", "  "),
+            "runLine": pj[pj.index("        const rt = runText({ ...p.run,"):pj.index("        line(s, rt.line,")],
+            "boardWrite": fn(bj, "write", "  "), "refresh": fn(bj, "refresh", "  "), "pollState": fn(bj, "pollState", "  "),
+            "cancelButton": fn(bj, "cancelButton", "  "),
+            "cancel": fn(bj, "cancelRerolls", "  ")}), encoding="utf-8")
+        js.write_text(r"""
+const fs = require('fs'), vm = require('vm'), assert = require('assert');
+const input = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+const ctx = vm.createContext({window:{}, URLSearchParams, console, setTimeout, clearTimeout});
+vm.runInContext(fs.readFileSync(input.pipeline,'utf8'),ctx);
+vm.runInContext(fs.readFileSync(input.checklist,'utf8'),ctx);
+const P = ctx.window.DPPipeline;
+(async () => {
+  const prep = {model:'gpt-image-2.6-sunburst',quality:'max',complexity:'medium'};
+  const r = {need:1,pre:0,est_usd:[1,2],credits:[200,400],free:0,hash:'a',reasons:[],by_crop:{a:{selected:true}},prepare:prep};
+  assert(P.runText(r).line.includes('모델 gpt-image-2.6-sunburst · 품질 max · 복잡도 medium'));
+  prep.model = 'gpt-image-2.5-flare'; assert(!P.runText(r).line.includes('복잡도'));
+  const p = {run:r,prepare:prep,draft:{by_crop:{},warnings:{unwritten:[]}}};
+  assert(P.approveText('run',p,['a'],false,false).some(s=>s.includes('gpt-image-2.5-flare')));
+  prep.model='gpt-image-2.6-flare'; assert(P.approveText('run',p,['a'],false,false).some(s=>s.includes('복잡도 medium')));
+  r.reasons=[{reason:'new',n:1,msg:'새 생성 조건'},{reason:'retry',n:1},
+    {reason:'blocked',n:2,msg:'발사 못 함 — 지원하지 않는 모델, 가격 확인 필요'}];
+  assert.deepEqual(Array.from(P.runText(r).rows),['새 생성 조건 × 1','retry × 1','발사 못 함 — 지원하지 않는 모델, 가격 확인 필요 × 2']);
+  const approval=P.approveText('run',p,['a'],false,false);
+  assert.deepEqual(Array.from(approval.filter(s=>s.startsWith('사유:'))),['사유: 새 생성 조건 × 1, retry × 1']);
+  assert.equal(approval.filter(s=>s.startsWith('발사 못 함')).length,1);
+  assert(approval.includes('발사 못 함 2건 — 지원하지 않는 모델, 가격 확인 필요 (이 승인으로 과금되지 않음)'));
+  assert(!approval.some(s=>s.includes('blocked')));
+  r.reasons=[];
+  let pending=[], unknown='', renders=0, recalcs=0, toasts=[], confirmations=0, writes=[];
+  Object.assign(ctx,{PS:{P:{saved:true,confirm:[],drift:[]},plan:{notes:[]}}, GATE_SECTIONS:['import','prepare'],
+    pendingApply:()=>pending, pendingUnknown:()=>unknown, paidLock:()=>'', render:()=>renders++, planNow:async()=>recalcs++,
+    opts:{toast:(...args)=>toasts.push(args)}});
+  for(const [name,src] of Object.entries(input.functions)) vm.runInContext(`${name} = ${src}`,ctx);
+  Object.assign(ctx,{runText:P.runText,testRun:r,S:{running:false}});
+  const runLine = () => vm.runInContext(`(() => {const P0=PS.P,p={run:testRun};${input.runLine}return rt.line;})()`,ctx);
+  ctx.PS.P.settings={prepare:prep};
+  assert(!runLine().includes('(반영 뒤)'));
+  ctx.PS.P.drift=[{section:'prepare',field:'quality'}];
+  assert(runLine().includes('모델 gpt-image-2.6-flare · 품질 max · 복잡도 medium (반영 뒤)'));
+  assert(runLine().includes('≈ $1.00–2.00'));
+  prep.model='gpt-image-2.5-flare';assert(runLine().includes('모델 gpt-image-2.5-flare · 품질 max (반영 뒤)'));
+  ctx.PS.P.drift=[{section:'import',field:'psd_path'}];assert(!runLine().includes('(반영 뒤)'));
+  ctx.PS.P.drift=[];
+  assert(!ctx.planDim());
+  for(const mode of ['pending','unknown','read','confirm','drift','import','notes','broken']) {
+    ctx.PS.P={saved:true,confirm:[],drift:[]};ctx.PS.err=null;ctx.PS.plan.notes=[];pending=[];unknown='';
+    if(mode==='pending') pending=['입력 바뀜']; if(mode==='unknown') unknown='판정 모름'; if(mode==='read')ctx.PS.err='읽기 실패';
+    if(mode==='confirm'){ctx.PS.P.confirm=['draft.apply'];ctx.PS.plan.notes=['설정 미확인: draft.apply','설정 미확인: analyze.a'];}
+    if(mode==='drift')ctx.PS.P.drift=[{section:'prepare',field:'quality'}];
+    if(mode==='import')ctx.PS.P.drift=[{section:'import',field:'psd_path'}];
+    if(mode==='notes')ctx.PS.plan.notes=['서버 사유'];if(mode==='broken'){ctx.PS.P.error='깨진 파일';ctx.PS.P.derived={confirm:[]};}
+    assert(ctx.planDim(),mode);assert(ctx.dimWhy().length,mode);
+    if(mode==='confirm')assert.equal(ctx.dimWhy().filter(s=>s==='설정 확인 필요').length,1);
+  }
+  Object.assign(ctx,{S:{crops:[]},LAYOUT_PENDING:[],LAYOUT_REASON:'레이아웃 미반영'});
+  ctx.PS.P={saved:true,confirm:[],drift:[{section:'import',field:'psd_path'}]};ctx.PS.err=null;
+  ctx.PS.plan={apply_pending:['Import 설정이 마지막 Import 와 다름(psd_path)','Prepare 입력 변경'],
+    draft:{import_pending:['Import 설정이 마지막 Import 와 다름(psd_path)']},notes:['Import 설정 갈라짐: psd_path']};
+  const fakePending=ctx.pendingApply;
+  vm.runInContext(`pendingApply = ${input.pendingApply}`,ctx);
+  assert.deepEqual(Array.from(ctx.dimWhy()),['Prepare 입력 변경','Import 설정 갈라짐(psd_path)']);
+  ctx.PS.P.drift=[];ctx.PS.plan.notes=[];
+  assert.deepEqual(Array.from(ctx.dimWhy()),['Import 설정이 마지막 Import 와 다름(psd_path)','Prepare 입력 변경']);
+  ctx.pendingApply=fakePending;
+  ctx.PS.P={saved:true,rev:2,confirm:['draft.apply','analyze.a','analyze.b'],drift:[]};ctx.PS.err=null;pending=[];unknown='';
+  const dimText = () => vm.runInContext(`(() => {const pend=pendingApply(),P0=PS.P,p=PS.plan;${input.dimText}return dimText;})()`,ctx);
+  ctx.PS.plan.notes=['설정 미확인: draft.apply'];
+  assert(dimText().includes('설정 확인 필요'));assert(!dimText().includes('반영 뒤 다시 계산'));
+  ctx.PS.P.confirm=[];ctx.PS.plan.notes=[];unknown='모름';assert(!dimText().includes('반영 뒤 다시 계산'));
+  unknown='';pending=['입력 변경'];assert(dimText().includes('반영 뒤 다시 계산'));pending=[];
+  ctx.PS.P.drift=[{section:'prepare',field:'n'}];assert(dimText().includes('반영 뒤 다시 계산'));
+  ctx.PS.P.drift=[];ctx.PS.P.confirm=['draft.apply','analyze.a','analyze.b'];
+  Object.assign(ctx,{el:(_tag,_cls,text)=>({text,children:[],append(...c){this.children.push(...c);}}),button:(label,title,click)=>({label,title,click})});
+  const host={children:[],append(c){this.children.push(c);}};ctx.confirmRestRow(host);
+  assert(host.children[0].text.includes('초안 1 · 분석 2'));assert.equal(host.children[0].children[0].label,'지금 값으로 확정');
+  ctx.PS.confirmOnly=async s=>{writes.push(Array.from(s));}; await ctx.confirmRest();
+  assert.deepEqual(writes,[['draft','analyze']]);assert.equal(recalcs,1);
+  ctx.PS.confirmOnly=async()=>{throw Object.assign(new Error('conflict'),{status:409})};await ctx.confirmRest();
+  assert(toasts.at(-1)[0].includes('다시 읽었습니다'));assert.equal(recalcs,1);
+  const rows = ctx.window.DPChecklist.rows({P0:{confirm:['draft.apply']},plan:{draft:{units:[],import_pending:[],free:0},run:{need:0}},planOk:true});
+  assert.equal(rows[4].value,'설정 확인 필요');assert.equal(rows[5].value,'설정 확인 필요');assert.notEqual(rows[4].state,'done');
+  let fetches=[], onWrite=0;
+  const ses=P.session(s=>s,s=>s,'test',async(url,o)=>{
+    fetches.push([url,o]);return {ok:true,status:200,json:async()=>url==='pipeline/settings'?{rev:4}:{rev:4,saved:true,confirm:[]}};
+  }, {getItem:()=>null,setItem:()=>{}});
+  ses.P={rev:3};await ses.confirmOnly(['draft']);
+  const body=JSON.parse(fetches[0][1].body);assert.deepEqual(body,{root:'test',rev:3,confirm_only:['draft']});assert(!ses.busy);
+  Object.assign(ctx,{busy:false,S:{rerolls_pending:3,rerolls_base:1,crops:[{id:'c',rerolls_pending:2,rerolls_base:1}],
+    targets:[{crop_id:'c',cells:[{cell_key:'k',rerolls_pending:2,rerolls_base:1}]}]},
+    rerollArm:{},rerollSent:{},pipe:{recalc:()=>recalcs++},toast:(...a)=>toasts.push(a),
+    write:async(path,body,msg)=>{writes.push(body);const r={cancelled:2,base:1};ctx.toast(msg(r));return r;}});
+  const confirmTexts=[];
+  ctx.window.confirm=s=>{confirmations++;confirmTexts.push(s);return true;};
+  vm.runInContext(`cancelRerolls = ${input.cancel}`,ctx);
+  await ctx.cancelRerolls('crop',{crop_id:'c'});assert.equal(confirmations,1);assert.equal(writes.at(-1).scope,'crop');
+  await ctx.cancelRerolls('cell',{cell_key:'k'});assert.equal(confirmations,1);assert.equal(ctx.rerollSent,null);
+  await ctx.cancelRerolls('all');assert.equal(confirmations,2);assert.equal(writes.at(-1).scope,'all');
+  ctx.S.rerolls_stale=1;
+  await ctx.cancelRerolls('all');assert.equal(confirmations,3);
+  assert.deepEqual(confirmTexts,[
+    "다시 생성 대기 2건을 취소합니다. 그중 1건은 아직 한 번도 만들지 않은 생성 조건이라 '생성 승인 필요'로 돌아갑니다(승인 코드가 바뀜 — 이미 큐에 넣은 [생성 승인]은 드라이런이 되어 과금 없음). 계속할까요?",
+    "다시 생성 대기 3건을 취소합니다. 그중 1건은 아직 한 번도 만들지 않은 생성 조건이라 '생성 승인 필요'로 돌아갑니다(승인 코드가 바뀜 — 이미 큐에 넣은 [생성 승인]은 드라이런이 되어 과금 없음). 계속할까요?",
+    "다시 생성 대기 3건(옛 조건 1건 포함)을 취소합니다. 그중 1건은 아직 한 번도 만들지 않은 생성 조건이라 '생성 승인 필요'로 돌아갑니다(승인 코드가 바뀜 — 이미 큐에 넣은 [생성 승인]은 드라이런이 되어 과금 없음). 계속할까요?"
+  ]);
+  ctx.S.targets=[{crop_id:'c',cells:[]}];
+  ctx.write=async(path,body,msg)=>{writes.push(body);const r={cancelled:1,base:0};ctx.toast(msg(r));return r;};
+  await ctx.cancelRerolls('crop',{crop_id:'c'});assert.equal(writes.at(-1).scope,'crop');
+  assert.equal(confirmTexts.at(-1),confirmTexts[0]);
+  assert.equal(toasts.at(-1)[0],'다시 생성 대기 1건 취소(과금 없음) · 생성 승인 필요로 돌아감 0건 — 되돌림 = R');
+  ctx.S.running=true;const nw=writes.length;await ctx.cancelRerolls('all');assert.equal(writes.length,nw);
+  const elements={};
+  const element=()=>({children:[],listeners:{},append(...c){this.children.push(...c);},replaceChildren(){this.children=[];},
+    addEventListener(event,fn){this.listeners[event]=fn;}});
+  Object.assign(ctx,{document:{},$:(id)=>elements[id]||(elements[id]=element()),
+    el:(_tag,_cls,text)=>Object.assign(element(),{textContent:text}),cancelButton:()=>element(),
+    tabLink:null,comfyConnected:()=>false,pipeReady:()=>true,layoutReady:()=>true,refsReady:()=>true,
+    S:{project:'test',crops:[],counts:{targets:0,candidates:0,picks:0},canvas:{},cost:{calls:0},rerolls_total:9,rerolls_pending:3,rerolls_stale:2}});
+  vm.runInContext(`renderHeader = ${input.header}`,ctx);ctx.renderHeader();
+  let badge=elements.badges.children.find(x=>x.textContent==='다시 생성 대기 1');
+  assert(badge);assert.equal(badge.title,'다시 생성 누적 9(이미 쓴 몫 포함)');
+  assert(elements.badges.children.some(x=>x.textContent==='옛 조건 대기 2 — 다음 반영 때 정리'));
+  ctx.S.rerolls_pending=2;ctx.renderHeader();
+  assert(elements.badges.children.some(x=>x.textContent==='다시 생성 대기 0'));
+  assert(elements.badges.children.some(x=>x.textContent==='옛 조건 대기 2 — 다음 반영 때 정리'));
+  ctx.S.rerolls_pending=0;ctx.S.rerolls_stale=0;ctx.renderHeader();
+  badge=elements.badges.children.find(x=>x.textContent==='다시 생성 대기 0');
+  assert(badge);assert.equal(badge.title,'다시 생성 누적 9(이미 쓴 몫 포함)');
+  assert(!elements.badges.children.some(x=>(x.textContent||'').startsWith('옛 조건 대기')));
+  let detailButton, detailRenders=0, posts=0, stateReads=0;
+  ctx.document.body={classList:{add(){},remove(){}}};
+  Object.assign(ctx,{busy:false,polling:false,pollAgain:false,cycle:null,editing:false,refsOn:false,pipe:null,
+    reconcile:()=>{},setConn:()=>{},post:async()=>{posts++;return {ok:true};},
+    getState:async()=>++stateReads===1 ? ctx.S : {unchanged:true,running:false,drain:false,drafting:false},
+    renderAll:()=>{
+      detailRenders++;assert(ctx.busy);
+      detailButton=ctx.cancelButton('cell',{cell_key:'k'});
+      detailButton.listeners.click({stopPropagation(){}});
+    }});
+  ctx.S.targets=[{cells:[{cell_key:'k',rerolls_pending:1,rerolls_base:1}]}];
+  vm.runInContext(`cancelButton = ${input.cancelButton}; write = ${input.boardWrite}; refresh = ${input.refresh}; pollState = ${input.pollState}`,ctx);
+  assert(await ctx.write('reroll',{count:1}));
+  assert.equal(posts,1);assert.equal(detailRenders,1);assert.equal(ctx.busy,false);assert.equal(detailButton.disabled,false);
+  await ctx.refresh(false);
+  assert.equal(detailRenders,1);assert.equal(detailButton.disabled,false);
+  detailButton.listeners.click({stopPropagation(){}});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(posts,2);assert.equal(ctx.busy,false);
+  ctx.S.running=true;assert.equal(ctx.cancelButton('cell',{cell_key:'k'}).disabled,true);
+  console.log('PASS B10 JS');
+})().catch(e=>{console.error(e);process.exitCode=1;});
+""", encoding="utf-8", newline="\n")
+        node = shutil.which("node") or r"C:\Program Files\nodejs\node.exe"
+        result = subprocess.run([node, str(js), str(data)], capture_output=True, text=True, encoding="utf-8", timeout=30)
+        check(result.returncode == 0 and "PASS B10 JS" in result.stdout, f"B10 JS dim/model/confirm/cancel {result.stderr[-1800:]}")
+
 
 
 def batch9_recv_unit():
@@ -53766,9 +54659,9 @@ def batch9a_unit():
         check(root.joinpath("refs").is_dir() and root.joinpath(store.MANIFEST_NAME).is_file()
               and root.joinpath("_source/art.png").read_bytes() == original and src.read_bytes() == original, "B9A 폴더·원본 bytes 보존")
         check(all(s in doc for s in bd.pl.SECTIONS) and [c.args[2] for c in updates.call_args_list] == ["import", "prepare", "export"]
-              and not any(c.startswith(("import.", "prepare.")) for c in doc["confirm"])
+              and doc["confirm"] == [] and doc["draft"]["credit_cap"] == 1200
               and Path(doc["import"]["psd_path"]) == root / "art.psd" and Path(doc["import"]["refs_dir"]) == root / "refs"
-              and doc["export"]["filename_prefix"] == root.name, "B9A pipeline 8절·3회 저장·confirm·최종 경로·prefix")
+              and doc["export"]["filename_prefix"] == root.name, "B9A pipeline 8절 확정·3회 값 저장·cap 1200·최종 경로·prefix")
         psd = dpsd.open_psd(str(root / "art.psd"))
         actual, info = dpsd.read_base(psd)
         expected = pixels[..., :3].copy()
@@ -54100,7 +54993,7 @@ def batch9a_unit():
               and not (adopted / "_source").exists(), "B9A adopt PSD _2·기존 파일 보존·복사 없음")
         adopted_doc = bd.pl.load(str(adopted))
         check(all(section in adopted_doc for section in bd.pl.SECTIONS)
-              and not any(field.startswith(("import.", "prepare.")) for field in adopted_doc["confirm"])
+              and adopted_doc["confirm"] == [] and adopted_doc["draft"]["credit_cap"] == 1200
               and Path(adopted_doc["import"]["psd_path"]) == adopted / "art_2.psd"
               and Path(adopted_doc["import"]["refs_dir"]) == adopted / "refs"
               and asyncio.run(bd.pipeline_prompt_handler(Request(query={"root": response["key"], "stage": "apply"}))).status == 200,

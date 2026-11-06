@@ -1053,6 +1053,8 @@ def cell_key(
     input_shas: Iterable[str],
     template_version: str,
     variant: str,
+    *,
+    complexity: str | None = None,
 ) -> str:
     """유료 호출 셀의 캐시 키 = sha256(정규 JSON) hex 앞 24자. **n 은 넣지 않는다**(n 4→8 이 재과금되지 않게).
     input_shas 는 업로드 순서대로(순서가 바뀌면 다른 키). size 는 [W, H] / (W, H) / 'WxH' 모두 같은 키.
@@ -1072,6 +1074,10 @@ def cell_key(
         "template": str(template_version),
         "variant": str(variant),
     }
+    if model in COMPLEXITY_MODELS:
+        if complexity is None:
+            raise ValueError("GPT Image 2.6 cell_key 에는 complexity 가 필요합니다")
+        payload["complexity"] = complexity
     blob = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(blob).hexdigest()[:24]
 
@@ -1082,10 +1088,23 @@ COMPLEXITY_MODELS = frozenset({"gpt-image-2.6-sunburst", "gpt-image-2.6-flare"})
 
 
 def prune_stale_rerolls(m: dict, keep_keys: Iterable[str], spent: Callable[[str], int], reset_keys: Iterable[str] = ()) -> int:
-    """배치 10 D161(갈래 B 가 몸통을 채움): keep_keys(지금 jobs) 밖이거나 reset_keys 에 든 생성 조건 키의 다시 생성 대기(rerolls)를
+    """배치 10 D161: keep_keys(지금 jobs) 밖이거나 reset_keys 에 든 생성 조건 키의 다시 생성 대기(rerolls)를
     원장에서 이미 쓴 몫(spent(ck) — 끝난 것만)까지 내린다(0 이면 키 삭제) — 키가 되돌아와도 사전 승인이 되살아나지 않게.
-    Prepare 가 commit_merge(finalize=…) 로 잠금 안 병합 결과에 부른다. 정리한 남은 몫 합을 돌려준다. 공용 자리 = 아무것도 안 함."""
-    return 0
+    Prepare 가 commit_merge(finalize=…) 로 잠금 안 병합 결과에 부른다. 정리한 남은 몫 합을 돌려준다."""
+    keep, reset = set(keep_keys), set(reset_keys)
+    rerolls = m.get("rerolls") or {}
+    removed = 0
+    for ck in list(rerolls):
+        if ck in keep and ck not in reset:
+            continue
+        before = int(rerolls[ck] or 0)
+        after = min(before, max(0, int(spent(ck))))
+        removed += before - after
+        if after:
+            rerolls[ck] = after
+        else:
+            del rerolls[ck]
+    return removed
 
 
 # ══════════════════════════════════════════════════════════════════════

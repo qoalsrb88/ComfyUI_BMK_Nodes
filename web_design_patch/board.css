@@ -731,6 +731,7 @@ svg.dr-isolate { position: absolute; left: 0; top: 0; pointer-events: none; }
 .rf-pool-name { width: 100%; box-sizing: border-box; }
 
 /* ── 배치 10-A (모델 2.6) — 10-A 작업자는 이 표시 아래에만 덧붙인다 ── */
+.pp-complexity-unused { opacity: .55; }
 
 /* ── 배치 10-B (실행 설정·다시 생성 취소) — 10-B 작업자는 이 표시 아래에만 덧붙인다 ── */
 

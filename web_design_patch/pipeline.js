@@ -152,12 +152,15 @@ window.DPPipeline = (() => {
     if (run.error) return { line: `Run: 계산하지 못함 — ${run.error}`, rows: [], dim: true, label: "생성 승인" };
     const picked = Object.values(run.by_crop || {}).filter((x) => x.selected).length;
     const parts = [`Run: 승인 필요(선택 ${picked}크롭) ${run.need}건` + (run.need ? ` ≈ ${usd(run.est_usd)}(≈ ${span(run.credits)} 크레딧)` : "")];
+    const pr = run.prepare;
+    if (pr) parts.push(`모델 ${pr.model} · 품질 ${pr.quality}` + (/^gpt-image-2\.6-/.test(pr.model) ? ` · 복잡도 ${pr.complexity || "high"}` : "")
+      + (run.prepare_drift ? " (반영 뒤)" : ""));
     if (run.pre) parts.push(`다시 생성(사전 승인) ${run.pre}건 ≈ ${usd(run.est_usd_pre)} 도 함께 과금(선택과 무관)`);
     parts.push(`복구 ${run.free}`);
     if (run.filtered) parts.push(`선택 밖 ${run.filtered}건`);
     parts.push(`승인 코드 ${run.hash || "없음"}`);
     const line = parts.join(" · ") + (run.backend === "mock" ? "  [MOCK]" : "");
-    return { line: running ? `Run 실행 중 — 끝난 뒤 다시 계산 (${line})` : line, rows: run.reasons.map((x) => `${x.reason} × ${x.n}`),
+    return { line: running ? `Run 실행 중 — 끝난 뒤 다시 계산 (${line})` : line, rows: run.reasons.map((x) => `${x.msg || x.reason} × ${x.n}`),
       dim: !!running, label: `생성 승인 ${run.need}건` + (run.need ? ` ≈ ${usd(run.est_usd)}` : "") + (run.backend === "mock" ? " [MOCK]" : "") };
   }
 
@@ -214,12 +217,21 @@ window.DPPipeline = (() => {
     } else if (kind === "draft") {
       out.push(`VLM 초안 ${tally(d.units.map((u) => u.crop_id), "크롭")}(보통 ≈ ${num(d.est_credits[0])}, 최대 ${num(d.est_credits[1])} 크레딧)을 승인하고 `
         + "과금합니다." + (d.orphan_retries ? ` 결과 못 받음 재시도 ${d.orphan_retries}건 포함(과금됐을 수 있음).` : ""));
-      if (d.reasons.length) out.push(`사유: ${d.reasons.map((x) => `${x.reason} × ${x.n}`).join(", ")}`);
+      if (d.reasons.length) out.push(`사유: ${d.reasons.map((x) => `${x.msg || x.reason} × ${x.n}`).join(", ")}`);
       out.push("드라이런 이후 대기 목록이 바뀌었으면 서버가 호출 없이 드라이런만 다시 합니다.");
     } else {
       const r = p.run;
       out.push(`GPT Image 호출 ${r.need}건(예상 ${usd(r.est_usd)} ≈ ${span(r.credits)} 크레딧)을 승인하고 과금합니다. 대상: ${ids.join(", ")}`);
+      const pr = p.prepare;
+      if (pr) out.push(`모델 ${pr.model} · 품질 ${pr.quality}` + (/^gpt-image-2\.6-/.test(pr.model) ? ` · 복잡도 ${pr.complexity || "high"}` : ""));
       if (r.pre) out.push(`다시 생성(사전 승인) ${r.pre}건 ≈ ${usd(r.est_usd_pre)} 도 함께 과금 — 선택과 무관(다른 크롭 포함).`);
+      const reasons = r.reasons || [];
+      const payable = reasons.filter((x) => x.reason !== "blocked");
+      if (payable.length) out.push(`사유: ${payable.map((x) => `${x.msg || x.reason} × ${x.n}`).join(", ")}`);
+      for (const x of reasons.filter((x) => x.reason === "blocked")) {
+        const why = (x.msg || "사유 확인 필요").replace(/^발사 못 함\s*—\s*/, "");
+        out.push(`발사 못 함 ${x.n}건 — ${why} (이 승인으로 과금되지 않음)`);
+      }
       out.push("드라이런 이후 대기 목록이 바뀌었으면 서버가 과금 없이 드라이런만 다시 합니다.");
       // 초안 대기: 선택 크롭(by_crop wait — only 없는 판정)과 화풍(pending_style)을 따로. 화풍을 고르지 않은 apply=full 이면 화풍 초안은 보류
       const wait = ids.filter((id) => d.by_crop[id] && d.by_crop[id].wait.length).length;
@@ -462,6 +474,8 @@ window.DPPipeline = (() => {
       return true;
     };
 
+    s.previewPrepare = (prepare) => call("pipeline?" + qs({ prepare: JSON.stringify(prepare) }));
+
     s.save = async (section, values, rev = s.P.rev) => {
       // 절 하나를 통째로(POST /pipeline/settings — rev = 가진 판: 파일 없음 0·깨짐 null, 여러 절을 잇따라 저장하면 앞 저장 응답의 rev). 성공이든
       // 409(다른 창이 씀)든 끝나면 다시 읽는다
@@ -469,6 +483,19 @@ window.DPPipeline = (() => {
       s.busy = true;
       try {
         const r = await call("pipeline/settings", { rev, section, values });
+        s.onWrite();
+        return r;
+      } finally {
+        await s.load();
+        s.busy = false;
+      }
+    };
+
+    s.confirmOnly = async (sections) => {
+      if (s.busy) throw new Error("앞 저장을 처리하는 중입니다 — 끝난 뒤 다시 하세요");
+      s.busy = true;
+      try {
+        const r = await call("pipeline/settings", { rev: s.P.rev, confirm_only: sections });
         s.onWrite();
         return r;
       } finally {
@@ -1244,9 +1271,68 @@ window.DPPipeline = (() => {
       // 해시를 흐리게(반영 뒤 다시 계산 — 복사·승인 끔): 실행 설정 모름(GET /pipeline 을 아직 못 읽음·마지막 읽기 실패 — 확인 남음·갈라짐을 모름)·
       // 반영 필요(apply_pending — prepare_inputs 불일치 포함)·반영 상태 모름(초안 계획 실행 중·오류)·설정 확인 남음·Prepare 갈라짐·계획 notes(서버의
       // 설정 쪽 '반영 뒤 다시 계산' 사유)
+      return dimWhy().length > 0;
+    }
+
+    function dimWhy() {
       const P0 = PS.P;
-      return !P0 || !!PS.err || pendingApply().length > 0 || !!pendingUnknown() || confirmOf(P0).length > 0 || P0.drift.some((x) => x.section === "prepare")
-        || (!!PS.plan && PS.plan.notes.length > 0);
+      const drift = P0 && P0.drift || [];
+      const importDrift = drift.some((d) => d.section === "import");
+      const out = pendingApply().filter((s) => !(importDrift && s.startsWith("Import 설정이 마지막 Import 와 다름")));
+      const unknown = pendingUnknown();
+      if (unknown) out.push(`반영 상태 확인 못 함 — ${unknown}`);
+      if (!P0 || PS.err) out.push(`실행 설정을 읽지 못함 — ${PS.err || "불러오는 중"}`);
+      else if (P0.error) out.push(`실행 설정을 읽지 못함 — ${P0.error}`);
+      const notes = PS.plan && PS.plan.notes || [];
+      if (confirmOf(P0).length || notes.some((n) => n.startsWith("설정 미확인:"))) out.push("설정 확인 필요");
+      for (const [section, label] of [["prepare", "Prepare"], ["import", "Import"]]) {
+        const fields = drift.filter((d) => d.section === section).map((d) => d.field);
+        if (fields.length) out.push(`${label} 설정 갈라짐(${fields.join(", ")})`);
+      }
+      for (const note of notes) {
+        if (note.startsWith("설정 미확인:")) continue;
+        if (drift.some((d) => d.section === "prepare") && note.startsWith("Prepare 설정 갈라짐:")) continue;
+        if (drift.some((d) => d.section === "import") && note.startsWith("Import 설정")) continue;
+        out.push(note);
+      }
+      return [...new Set(out)];
+    }
+
+    async function confirmRest() {
+      if (!PS.P || PS.err || PS.P.error || !PS.P.saved || PS.busy || paidLock()) return;
+      const sections = [...new Set(confirmGate(PS.P).rest.map((c) => c.split(".")[0]))];
+      if (!sections.length) return;
+      try {
+        await PS.confirmOnly(sections);
+        opts.toast("지금 값으로 확정했습니다(무료) — 설정값은 그대로");
+        await planNow();
+      } catch (e) {
+        opts.toast(e.status === 409 ? "실행 설정이 바뀌어 다시 읽었습니다 — 확인 후 [지금 값으로 확정]" : e.message, "warn");
+      } finally { render(); }
+    }
+
+    function confirmRestRow(host) {
+      const P0 = PS.P;
+      if (!P0 || PS.err || P0.error || !P0.saved) return;
+      const rest = confirmGate(P0).rest;
+      if (!rest.length) return;
+      const names = { draft: "초안", analyze: "분석", compose: "합성", export: "내보내기", run: "생성", cand: "후보" };
+      const counts = {};
+      for (const path of rest) { const sec = path.split(".")[0]; counts[sec] = (counts[sec] || 0) + 1; }
+      const row = el("div", "warn", `설정 확인 필요 — ${Object.entries(counts).map(([sec, n]) => `${names[sec] || sec} ${n}`).join(" · ")} `);
+      const b = button("지금 값으로 확정", "설정값은 그대로 두고 확인 필요만 해제(무료)", confirmRest);
+      b.disabled = PS.busy || !!paidLock();
+      row.append(b);
+      host.append(row);
+    }
+
+    function cancelCropButton(id) {
+      const b = button("대기 취소", S && S.running ? "실행 중 — [새 호출 멈춤] 뒤 다시" : "이 크롭의 다시 생성 대기 취소(무료)", (e) => {
+        e.stopPropagation();
+        if (opts.cancelRerolls) opts.cancelRerolls("crop", { crop_id: id });
+      });
+      b.disabled = !!(S && S.running) || !opts.cancelRerolls;
+      return b;
     }
 
     function copyHashes() {
@@ -1644,6 +1730,7 @@ window.DPPipeline = (() => {
       // 흐림·낡음·실행 중·승인할 것 없음), 앞 승인이 '계획 다시'로 끝나 계획을 다시 받는 중, 탭·서버(paidWhy)
       const lock = paidLock();
       if (lock) return lock;
+      if (dimWhy().length) return `승인 코드 흐림 — ${dimWhy().join(" · ")}`;
       if (!hash) return "승인 코드 없음(승인할 것 없음·미반영·흐림·낡음·실행 중)";
       if (PS.plan === replanned) return "앞 승인 결과로 계획을 다시 받는 중";
       return paidWhy();
@@ -1674,7 +1761,7 @@ window.DPPipeline = (() => {
         moved();
         return;
       }
-      const p = PS.plan;
+      const p = { ...PS.plan, prepare: PS.P && PS.P.settings && PS.P.settings.prepare };
       const full = !!(PS.P && PS.P.settings && PS.P.settings.draft.apply === "full");
       const mock = kind === "run" ? p.run.backend === "mock" : p.draft.backend === "vlm_mock";
       // 앞서 같은 해시로 보낸 승인의 결과를 모름(서버 해시·실행 중 판정은 대기열에 있는 첫 프롬프트를 모름) — 첫 승인이 큐에 있고 승인분을 소화하면 둘째는
@@ -2082,10 +2169,56 @@ window.DPPipeline = (() => {
       }, again ? 0 : PREVIEW_MS);
     }
 
+    function prepareChanged(base, values) {
+      return ["model", "quality", "size_rule", "variants", "ref_style", "complexity"].some((k) =>
+        (k !== "complexity" || /^gpt-image-2\.6-/.test(values.model)) && !same(base[k], values[k]));
+    }
+
+    function prepareText(preview) {
+      const p = preview.prepare;
+      const model = `${p.model} · 품질 ${p.quality}` + (/^gpt-image-2\.6-/.test(p.model) ? ` · 복잡도 ${p.complexity}` : "");
+      if (preview.error) throw new Error(preview.error);
+      return [`${model} 으로 바꿉니다.`,
+        preview.exact === false ? "이 변경은 반영 전에 호출 수를 셀 수 없음 — 반영 뒤 생성 승인 칸에서 확인" :
+          `다음 [반영] 뒤 생성 승인 필요 ${preview.need}건 (${preview.cells}셀) ≈ $${preview.est_usd[0].toFixed(2)}–${preview.est_usd[1].toFixed(2)} (≈ ${preview.credits[0]}–${preview.credits[1]} 크레딧) — 승인 전에는 과금 없음.`,
+        "지금 ★·후보는 남고 '옛 조건' 배지가 붙습니다. 초안 재과금은 없습니다.",
+        ...(preview.pruned != null ? [`다시 생성 대기 ${preview.pruned}건은 반영 때 정리(과금 없음).`] : []),
+        ...(preview.pending_preapproved ? [`남는 다시 생성 사전 승인 ${preview.pending_preapproved}건 ≈ $${preview.est_usd_pre[0].toFixed(2)}–${preview.est_usd_pre[1].toFixed(2)} 도 다음 실행에 포함됩니다.`] : []),
+        ...(preview.blocked?.length ? [`발사 못 함 ${preview.blocked.length}건 — ${[...new Set(preview.blocked)].join("; ")}`] : []),
+        ...(preview.uncertain ? ["미리 보기 — 반영 뒤 달라질 수 있음(입력·다른 설정 변경 포함)."] : []),
+        "그래프에서 Prepare 를 직접 돌리면 그 위젯 값(2.5 · 옛 워크플로는 complexity 위젯이 없어 high)으로 돌아갑니다: 그래프 Prepare 의 model·complexity 도 바꾸거나 Studio [반영]만 쓰세요.",
+        ...(preview.backend === "mock" ? ["[MOCK] 과금 없음"] : [])].join("\n");
+    }
+
+    async function preparePreview(values, P0) {
+      const p = await PS.previewPrepare(values);
+      if (p.rev !== P0.rev) throw new Error("미리 보기 중 프로젝트가 바뀜 — 다시 읽고 저장하세요");
+      if (!p.switch) throw new Error("생성 조건 미리 보기를 받지 못했습니다 — 설정을 다시 읽으세요");
+      return prepareText(p.switch);
+    }
+
+    async function switchModel() {
+      const p = PS.P;
+      if (!p || !p.saved || p.error || confirmOf(p).some((c) => c.startsWith("prepare.")) || PS.busy) return;
+      if (Object.keys(form.prepare || {}).length) {
+        opts.toast("편집 중인 준비 설정을 먼저 저장하세요", "err");
+        return;
+      }
+      const values = Object.assign({}, p.settings.prepare, { model: p.settings.prepare.model.replace("2.5", "2.6") });
+      try {
+        if (!window.confirm(await preparePreview(values, p))) return;
+        await PS.save("prepare", values, p.rev);
+        opts.toast("2.6 전환 설정 저장 — 다음 [반영] 뒤 생성 승인(승인 전에는 과금 없음)");
+        planNow();
+      } catch (e) { opts.toast(e.message, "err"); }
+      render();
+    }
+
     async function saveSection(sec) {
       if (PS.busy) return; // 앞 쓰기를 처리하는 중(두 번 누름) — 조용히 버림
       const w = PS.P.widgets[sec];
       const base = PS.P.settings ? PS.P.settings[sec] : PS.P.derived.settings[sec];
+      const P0 = PS.P;
       const sent = Object.assign({}, form[sec]); // 보낸 편집값 — 응답을 기다리는 사이 같은 절에 친 값은 남긴다
       const raw = Object.assign({}, base, sent);
       const values = {};
@@ -2104,7 +2237,8 @@ window.DPPipeline = (() => {
         return;
       }
       try {
-        const r = await PS.save(sec, values);
+        if (sec === "prepare" && prepareChanged(base, values) && !window.confirm(await preparePreview(values, P0))) return;
+        const r = await PS.save(sec, values, P0.rev);
         // 이 창이 저장한 값 = 서버가 쓴 절(import 경로는 정규화 — 따옴표·공백 없이 '/'). 입력 중이라 다시 그리기가 미뤄져도 다음 저장·칸 옆 표시가
         // 제 값을 '다른 창 값'으로 보지 않게: 화면 기준값(drawn)과, 응답을 기다리는 사이 같은 칸에 더 친 키의 첫 편집 기준값(edits)을 이 값으로
         const saved = r.settings[sec];
@@ -2162,6 +2296,10 @@ window.DPPipeline = (() => {
       const diff = P0.settings ? secs.flatMap((sec) => Object.keys(D[sec]).filter((k) => JSON.stringify(P0.settings[sec][k]) !== JSON.stringify(D[sec][k]))
         .map((k) => ` · ${sec}.${k}: ${shown(P0.settings[sec][k])} → ${shown(D[sec][k])}`)) : [];
       if (diff.length) lines.push("저장값에서 바뀌는 값:", ...diff);
+      if (secs.includes("prepare") && P0.settings && prepareChanged(P0.settings.prepare, D.prepare)) {
+        try { lines.push(await preparePreview(D.prepare, P0)); }
+        catch (e) { opts.toast(e.message, "err"); return; }
+      }
       if (!window.confirm(lines.concat("Prepare·Import 가 바뀌면 다음 반영에서 생성 조건이 바뀌어 다시 과금 대상이 될 수 있습니다. 계속할까요?").join("\n"))) return;
       // 확인 창을 닫은 때의 편집값 — 리셋이 덮는 것은 이 값뿐. 저장을 기다리는 사이 칸은 켜져 있어 그 뒤에 친 값(바꾼 키·새 키)은 보내지 않은
       // 새 편집이라 남긴다(saveSection 과 같은 뜻 — 지우면 칸이 blur 뒤 저장값으로 돌아가고, 바로 누른 [저장]은 친 값 대신 저장값을 '저장 성공'으로)
@@ -2332,7 +2470,7 @@ window.DPPipeline = (() => {
           ch.append(lc);
         }
         if (r && r.need) ch.append(chip(`승인 필요 ${r.need}`, "b-wait"));
-        if (r && r.pre) ch.append(chip(`다시 생성 ${r.pre}`, "b-wait"));
+        if (r && r.pre) ch.append(chip(`다시 생성 ${r.pre}`, "b-wait"), cancelCropButton(c.id));
         if (r && r.inflight) ch.append(chip(`진행 ${r.inflight}`, "b-run"));
         if (r && (r.failed || r.orphaned)) ch.append(chip(`실패 ${r.failed} · 결과 못 받음 ${r.orphaned}`, "b-bad"));
         if (r && r.done) ch.append(chip(`완료 ${r.done}`, "b-cost"));
@@ -2386,7 +2524,7 @@ window.DPPipeline = (() => {
         const settingsBlock = PS.err ? "읽기 오류" : !P0 ? "불러오는 중" : P0.error ? "pipeline.json 오류"
           : !P0.saved ? "파일 없음" : confirmGate(P0).gate.length ? "필수 항목 미확인" : "";
         window.DPChecklist.render(host, window.DPChecklist.rows({ S, P0, plan: p, pending: pend, prepareDrift, settingsBlock, unsure,
-          planOk, planErr: PS.planErr, stale, selectedCount: sel.size, maskLeft, progress: PS.progress }), {
+          settingsConfirm: confirmOf(P0).length > 0, planOk, planErr: PS.planErr, stale, selectedCount: sel.size, maskLeft, progress: PS.progress }), {
           memory: panel, goMode: opts.goMode, goTarget: opts.goTarget, goMask: opts.goMask,
           goSection,
         });
@@ -2395,19 +2533,24 @@ window.DPPipeline = (() => {
       // 설정
       if (settingsOn) {
         const before = new Set(panel.children);
+        const confirms = el("div");
+        confirmRestRow(confirms);
+        panel.append(confirms);
         renderSettings();
         for (const child of panel.children) if (!before.has(child)) child.dataset.tab = "prepare";
       }
       let s;
       if (!settingsOn) {
         s = section("실행 설정");
+        confirmRestRow(s);
         if (!P0) line(s, PS.err ? `읽기 오류: ${PS.err}` : "불러오는 중…", PS.err ? "bad" : "dim");
         else {
           if (P0.error) line(s, `pipeline.json 오류: ${P0.error} — [실행 설정 열기]에서 다시 저장(덮어쓰기)`, "bad");
           else {
             const pr = P0.settings.prepare;
             const dr = P0.settings.draft;
-            line(s, `${P0.saved ? `rev ${P0.rev}` : "파일 없음(유도값)"} · Prepare ${pr.model} · ${pr.quality} · ${pr.size_rule} · ${pr.variants} · n ${pr.n} · `
+            line(s, `${P0.saved ? `rev ${P0.rev}` : "파일 없음(유도값)"} · Prepare ${pr.model} · ${pr.quality} · `
+              + (/^gpt-image-2\.6-/.test(pr.model) ? `복잡도 ${pr.complexity} · ` : "") + `${pr.size_rule} · ${pr.variants} · n ${pr.n} · `
               + `${pr.ref_style} · ${pr.calls_per_cell} · 초안 ${dr.vlm} · ${dr.effort} · ${dr.write_mode} · ${dr.apply}`);
           }
           // 확인 필요 = 서버 prompt_gate 판정대로 두 줄: 막는 항목(prepare.*·import.* — 깨진 파일은 전부)은 빨강, 그 밖(늘 남는 draft.apply·기록 없는
@@ -2457,8 +2600,12 @@ window.DPPipeline = (() => {
       // 초안·Run(계획) — 흐림(planDim — 반영 뒤 다시 계산)·낡음(stale — 다시 받을 때까지)이면 해시 복사 끔(copyHashes)
       const dim = planDim();
       const hc = copyHashes();
-      const why = pend.concat(unk ? [`반영 상태 확인 못 함 — ${unk}`] : [], !P0 || PS.err ? [`실행 설정을 읽지 못함 — ${PS.err || "불러오는 중"}`] : []);
+      const why = dimWhy();
+      const applyDim = pend.length || (P0 && P0.drift || []).some((d) => ["prepare", "import"].includes(d.section))
+        || (p && p.notes || []).some((n) => n.startsWith("Prepare 설정 갈라짐:") || n.startsWith("Import 설정"));
+      const dimText = `승인 코드 흐림 — ${why.join(" · ")}${applyDim ? " · 반영 뒤 다시 계산" : ""}`;
       s = section("초안 승인");
+      confirmRestRow(s);
       if (!only) line(s, "선택한 크롭 없음 — 계획·승인을 끕니다(빈 only 는 '전부')", "warn");
       else if (PS.planErr) line(s, `계획: ${PS.planErr}`, "bad");
       else if (!planOk) line(s, PS.job ? `계산 대기 — 이 Studio 의 ${jobText(PS.job)} 이 끝난 뒤 계산(그동안 계획을 부르지 않음)` : "계산 중…", "dim");
@@ -2482,7 +2629,7 @@ window.DPPipeline = (() => {
       }
       if (planOk && only) {
         if (stale) line(s, "계획이 지금 파일 상태와 다름(다른 창·그래프의 쓰기·실행) — 다시 받기 전에는 승인 코드 복사 끔", "warn");
-        if (dim) line(s, `반영 뒤 다시 계산 — 지금 승인 코드는 반영 뒤 달라질 수 있음${why.length ? `(${why.join(", ")})` : ""}`, "warn");
+        if (dim) line(s, dimText, "warn");
         const dt = draftText(p.draft, p.draft.running || !!(S && S.drafting)); // 실행 중에는 계획을 다시 받지 않으므로 state 로 흐림(Run 줄과 같이)
         line(s, dt.line, dt.dim || dim ? "dim" : "");
         for (const r of dt.rows) line(s, `· ${r}`, "dim");
@@ -2491,13 +2638,20 @@ window.DPPipeline = (() => {
         lastRow(s, "draft");
       }
       s = section("생성 승인");
+      confirmRestRow(s);
+      if (S && S.rerolls_pending && opts.cancelRerolls) {
+        const cancel = button("다시 생성 대기 취소", S.running ? "실행 중 — [새 호출 멈춤] 뒤 다시" : "전체 다시 생성 대기 취소(무료)", () => opts.cancelRerolls("all"));
+        cancel.disabled = !!S.running;
+        s.append(cancel);
+      }
       if (!only) line(s, "선택한 크롭 없음 — 계획·승인을 끕니다(빈 only 는 '전부')", "warn");
       else if (PS.planErr) line(s, `계획: ${PS.planErr}`, "bad");
       else if (!planOk) line(s, PS.job ? `계산 대기 — 이 Studio 의 ${jobText(PS.job)} 이 끝난 뒤 계산(그동안 계획을 부르지 않음)` : "계산 중…", "dim");
       if (planOk && only) {
         if (stale) line(s, "계획이 지금 파일 상태와 다름 — 다시 계산한 뒤 승인", "warn");
-        if (dim) line(s, `반영 뒤 다시 계산 — 지금 승인 코드는 반영 뒤 달라질 수 있음${why.length ? `(${why.join(", ")})` : ""}`, "warn");
-        const rt = runText(p.run, p.run.running || !!(S && S.running));
+        if (dim) line(s, dimText, "warn");
+        const rt = runText({ ...p.run, prepare: P0 && P0.settings && P0.settings.prepare,
+          prepare_drift: !!(P0 && (P0.drift || []).some((d) => d.section === "prepare")) }, p.run.running || !!(S && S.running));
         line(s, rt.line, rt.dim || dim ? "dim" : "");
         for (const r of rt.rows) line(s, `· ${r}`, "dim");
         // D9: 이 Studio 의 유료 Run 이 wave 로 멈춤 — 끝난 뒤 새 계획·새 해시로 '이어서 승인'(확인 창 — 클릭만, 자동 없음). 재굴림 실행의 wave 는
@@ -2617,7 +2771,7 @@ window.DPPipeline = (() => {
     function hashCopy(kind, [hash, only]) {
       // 해시 복사(§3.3): 그래프 Run·Draft 노드의 approve·only 칸에 넣을 값 한 줄. 누를 때 지금 판정(copyHashes)과 다르면(입력 중이라 미뤄 둔 패널의
       // 옛 단추 — 그 사이 계획이 낡거나 바뀜·Run 시작) 복사하지 않고 다시 그림
-      const b = button("승인 코드 복사", hash ? `approve: ${hash}  only: ${only}` : "복사할 승인 코드 없음(승인할 것 없음·미반영·실행 중)", () => {
+      const b = button("승인 코드 복사", hash ? `approve: ${hash}  only: ${only}` : dimWhy().length ? `승인 코드 흐림 — ${dimWhy().join(" · ")}` : "복사할 승인 코드 없음(승인할 것 없음·미반영·실행 중)", () => {
         if (!same(copyHashes()[kind], [hash, only])) {
           opts.toast(`계획이 바뀜(다른 창·그래프의 쓰기·실행) — 승인 코드를 복사하지 않음: 다시 그린 「${kind === "draft" ? "초안 승인" : "생성 승인"}」 칸을 보고 다시 누르세요`, "warn");
           render();
@@ -2647,7 +2801,11 @@ window.DPPipeline = (() => {
         const c = S.crops.find((x) => x.id === id);
         const tr = el("tr", v.selected ? "sel" : "");
         tr.append(el("td", "", id === "_stale" ? "옛 조건" : (c && c.name) || id));
-        for (const k of ["need", "pre", "free", "done", "failed", "orphaned", "inflight"]) tr.append(el("td", "", v[k] || ""));
+        for (const k of ["need", "pre", "free", "done", "failed", "orphaned", "inflight"]) {
+          const cell = el("td", "", v[k] || "");
+          if (k === "pre" && v.pre && id !== "_stale") cell.append(cancelCropButton(id));
+          tr.append(cell);
+        }
         t.append(tr);
       }
       return t;
@@ -2905,6 +3063,14 @@ window.DPPipeline = (() => {
         if (SECTION_WARN[sec]) line(box, SECTION_WARN[sec], "dim");
         for (const d of P0.drift.filter((x) => x.section === sec)) line(box, driftText(d), DRIFT_BILL.includes(d.kind) ? "bad" : "warn");
         const need = confirmOf(P0).filter((c) => c.startsWith(sec + "."));
+        if (sec === "prepare" && /^gpt-image-2\.5-/.test(base.model)) {
+          const sw = button("2.6 으로 전환", "같은 계열의 2.6 으로 전환 — 예상 호출·비용을 확인한 뒤 저장", once(switchModel));
+          sw.disabled = PS.busy || !P0.saved || !!P0.error || !!need.length || !!Object.keys(form.prepare || {}).length;
+          if (!P0.saved || P0.error || need.length) sw.title = "먼저 ① 준비 설정 확인";
+          else if (Object.keys(form.prepare || {}).length) sw.title = "편집 중인 준비 설정을 먼저 저장하세요";
+          btns(box, el("span", "", `모델 ${base.model} — `), sw);
+          if (!P0.saved || P0.error || need.length) line(box, "먼저 ① 준비 설정 확인", "dim");
+        }
         for (const [k, spec] of Object.entries(ws)) box.append(field(sec, k, spec, base[k], need.includes(`${sec}.${k}`)));
         const sb = button(need.length ? "확인·저장" : "저장", need.length ? `확인 필요: ${need.join(", ")} — 이 값으로 저장하면 확인됨` : "이 절을 저장",
           () => saveSection(sec), need.length ? "primary" : "");
@@ -2932,6 +3098,7 @@ window.DPPipeline = (() => {
         const e = (edits[sec] = edits[sec] || {});
         if (!(k in e)) e[k] = drawn[sec][k];
         (form[sec] = form[sec] || {})[k] = v;
+        if (sec === "prepare" && k === "model") render();
       };
       let inp;
       if (spec.type === "COMBO") {
@@ -2964,6 +3131,13 @@ window.DPPipeline = (() => {
       inp.disabled = !!spec.readonly;
       if (spec.readonly) inp.title = "읽기 전용(그래프에서 바꿈)";
       r.append(lab, inp);
+      if (sec === "prepare" && k === "complexity") {
+        const model = (form.prepare || {}).model || (PS.P.settings || PS.P.derived.settings).prepare.model;
+        if (!/^gpt-image-2\.6-/.test(model)) {
+          r.classList.add("pp-complexity-unused");
+          r.append(el("span", "dim", "2.6 만 — 지금 모델에는 쓰지 않음"));
+        }
+      }
       if (sub) {
         // 이름 검사는 저장할 때 서버(400 문구 그대로 토스트) — 여기는 앞뒤 공백만 떼어 보임(서버와 같음). 경로 구분자·'..' 는
         // 하위 폴더처럼 보이는 경로를 미리 보이지 않고 저장 안 됨을 먼저 알림(8189 — 'a/b' 가 output/design_patch/a/b 로 보였음)
@@ -3210,6 +3384,7 @@ window.DPPipeline = (() => {
       const rows = window.DPChecklist.rows({ S, P0, scope: "all", plan: PS.plan, planErr: PS.planErr,
         planOk: !!PS.plan && !PS.planErr, stale: planStale(), pending: pendingApply(), unsure: unsureWhy(),
         prepareDrift: P0 && P0.drift ? P0.drift.filter((x) => x.section === "prepare") : [],
+        settingsConfirm: confirmOf(P0).length > 0,
         settingsBlock: !P0 || PS.err || P0.error || !P0.saved || confirmGate(P0).gate.length ? "준비 탭 확인 필요" : "",
         maskLeft: opts.maskPending ? opts.maskPending() : maskLeft, progress: PS.progress });
       const combined = [rows[3], rows[4]];
