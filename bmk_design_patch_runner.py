@@ -78,6 +78,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import dataclasses
 import hashlib
 import io
@@ -308,6 +309,24 @@ def is_running(root: str) -> bool:
     """이 프로세스에서 root 의 run_calls 가 돌고 있는지(보드의 drain 버튼 활성 여부)."""
     with _REG_LOCK:
         return _RUNS.get(_rid(root), 0) > 0
+
+
+@contextlib.contextmanager
+def run_active(root: str):
+    """Run 노드의 계획부터 끝까지 등록한다. 취소의 잠금 안 검사와 시작을 직렬화한다."""
+    rid = _rid(root)
+    with store.manifest_lock(root), _REG_LOCK:
+        if _RUNS.get(rid, 0) == 0:
+            _DRAIN.discard(rid)
+        _RUNS[rid] = _RUNS.get(rid, 0) + 1
+    try:
+        yield
+    finally:
+        with _REG_LOCK:
+            _RUNS[rid] -= 1
+            if _RUNS[rid] <= 0:
+                _RUNS.pop(rid, None)
+                _DRAIN.discard(rid)
 
 
 def request_drain(root: str) -> bool:

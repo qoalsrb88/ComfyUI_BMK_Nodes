@@ -566,6 +566,31 @@ def update(root: str, rev: int | None, section: str, values: Any) -> dict:
 # ══════════════════════════════════════════════════════════════════════
 # 처음 값 유도(§2.2)
 # ══════════════════════════════════════════════════════════════════════
+def confirm_only(root: str, rev: int, sections) -> dict:
+    """저장된 비-gate 절의 값은 그대로 두고 확인 필요만 한 트랜잭션으로 지운다."""
+    if type(rev) is not int or rev < 1:
+        raise PipelineConflict("저장된 실행 설정을 다시 읽은 뒤 확정하세요")
+    if (not isinstance(sections, list) or not sections
+            or any(not isinstance(s, str) or s not in SECTIONS or s in ("import", "prepare") for s in sections)):
+        raise ValueError("confirm_only 는 import·prepare 밖의 절 이름 목록이어야 합니다")
+    with store.manifest_lock(root):
+        try:
+            doc = load(root)
+        except ValueError as e:
+            raise PipelineConflict(f"실행 설정을 읽을 수 없습니다 — ① 준비에서 확인·저장: {e}") from e
+        if doc is None or rev != doc["rev"]:
+            raise PipelineConflict("실행 설정이 다른 창에서 바뀌었습니다 — 다시 읽은 뒤 확정하세요")
+        confirmed = set(sections)
+        remaining = [c for c in doc["confirm"] if c.split(".", 1)[0] not in confirmed]
+        if remaining != doc["confirm"]:
+            doc["confirm"] = remaining
+            doc["rev"] = rev + 1 if rev < _REV_MAX else 1
+            store.write_json_atomic(_path(root), {k: doc[k] for k in _DOC_KEYS})
+        m = store.load_manifest(root)
+    settings = _settings_of(doc)
+    return {"ok": True, "rev": doc["rev"], "settings": settings, "confirm": list(doc["confirm"]), "drift": drift(settings, m)}
+
+
 def _majority(values: list) -> tuple[Any, bool]:
     """최다값(같으면 먼저 나온 것)과 섞였는지."""
     c = Counter(json.dumps(v, sort_keys=True, ensure_ascii=False) for v in values)
