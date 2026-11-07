@@ -270,8 +270,9 @@ class RefsEditor {
     };
     refs.callback = this.refsCallback;
     this.textarea = refs.inputEl || refs.element?.querySelector?.("textarea") || refs.element;
+    // 사용자 타이핑은 항상 미리보기를 예약한다(refs 콜백이 먼저 text 를 맞춰 놓아도 빠지지 않게).
     this.onTextInput = () => queueMicrotask(() => {
-      if (!this.disposed) this.syncFromWidget();
+      if (!this.disposed) this.schedulePreview();
     });
     this.textarea?.addEventListener?.("input", this.onTextInput);
     this.ensureSize();

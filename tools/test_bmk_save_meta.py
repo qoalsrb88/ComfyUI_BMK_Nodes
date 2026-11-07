@@ -101,6 +101,9 @@ fake_nodes.NODE_CLASS_MAPPINGS = {
     "Lora Stacker (LoraManager)": _LoraStacker,
     "SkipLayerGuidanceDiTSimple": _Loader,
     "ComfySwitchNode": _Switch,
+    "BasicGuider": type("_BasicGuider", (), {"RETURN_TYPES": ("GUIDER",)}),
+    "ControlNetApplyAdvanced": type("_ControlNetApplyAdvanced", (), {
+        "RETURN_TYPES": ("CONDITIONING", "CONDITIONING"), "RETURN_NAMES": ("positive", "negative")}),
     "PrimitiveStringMultiline": _PrimitiveString,
     "PrimitiveFloat": _PrimitiveFloat,
     "BMKCyclicSeed": _CyclicSeed,
@@ -722,8 +725,8 @@ broken = user_prompt("KSampler: 34\nExtra: 88.a\nGone: 87.a")
 broken.update({"86": [1], "87": {"inputs": {"a": 1}}, "85": {"class_type": ["A"], "inputs": {}},
                "88": {"class_type": "A", "inputs": {"a": ["51", 0.0]}}})
 lines = mod.resolve_refs({"prompt": broken, "node_id": "61:66"})["lines"]
-eq([line["status"] for line in lines], ["ok", "missing", "missing"],
-   "설치 안 된 노드(class_type 없음)·깨진 노드·float 링크는 빼고 나머지는 해석한다(미리보기가 막히지 않게)")
+eq([line["status"] for line in lines], ["ok", "missing", "ok"],
+   "깨진 노드·float 링크가 있어도 미리보기가 막히지 않고, class_type 없는 노드의 리터럴은 on_prompt 처럼 해석")
 eq(broken["88"]["inputs"], {"a": ["51", 0.0]}, "미리보기는 요청 프롬프트를 고치지 않는다")
 
 
@@ -763,6 +766,26 @@ eq((slots.get("positive|0|value"), "negative|0|value" in slots, slots.get("te|0|
    ("a cat", False, "clip_l.safetensors"), "BasicGuider: conditioning 은 positive 로만, negative 로 따라가지 않는다")
 slots = flux_slots("negative: 3", lambda p: p["27"]["inputs"].update(negative=["28", 0]))
 eq(slots, {}, "ConditioningZeroOut 에서 멈춰 positive 텍스트를 negative 로 기록하지 않는다")
+
+
+def guider_switch(p):
+    p["29"] = {"class_type": "ComfySwitchNode", "inputs": {"switch": True, "on_true": ["22", 0], "on_false": ["22", 0]}}
+    p["30"]["inputs"]["guider"] = ["29", 0]
+
+
+eq(flux_slots("negative: 30", guider_switch), {}, "가이더 → 스위치 → BasicGuider 여도 negative 로 conditioning 을 따라가지 않는다")
+eq(flux_slots("negative: 22"), {}, "BasicGuider 를 negative 로 직접 가리켜도 positive 텍스트를 쓰지 않는다")
+slots = flux_slots("negative: 3", lambda p: p["3"]["inputs"].update(negative=["27", 0]))
+eq(slots.get("negative|0|value"), "a cat",
+   "negative 소켓에 ControlNetApplyAdvanced 의 positive 출력을 이으면 실제로 쓴 positive 쪽을 기록한다")
+
+prompt = user_prompt("Note: 6.value")
+prompt["61:6"] = {"inputs": {"value": "local"}}
+prompt["6"] = {"class_type": "X", "inputs": {"value": "root"}}
+preview_value = mod.resolve_refs({"prompt": prompt, "node_id": "61:66"})["lines"][0]["fields"][0]["value"]
+mod.compile_refs_in_prompt({"prompt": prompt})
+eq((preview_value, prompt["61:66"]["inputs"].get(P + "Note|0|value")), ("local", "local"),
+   "설치 안 된 서브그래프 노드도 ID 는 남겨, 미리보기와 on_prompt 가 같은 노드를 가리킨다")
 out = mod.BMKSaveMeta.execute("te: 11", mod._DEFAULT_TEMPLATE, "", "T", "one line", True, True, **{
     P + "te|0|value": "clip_l.safetensors", P + "te|1|value": "t5\\t5xxl_fp16.safetensors"})
 eq(out.args[0]["values"]["te"], "clip_l + t5xxl_fp16", "DualCLIP 이름은 폴더·확장자를 떼고 + 로 잇는다")

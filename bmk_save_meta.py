@@ -322,47 +322,50 @@ def _path_source(prompt: dict, node_id: str, paths: tuple):
     return None
 
 
-def _next_conditioning_link(prompt: dict, node_id: str, polarity: str, strict: bool):
-    """컨디셔닝을 거슬러 올라갈 (링크, 입력 이름). 정할 수 없으면 (None, None).
+def _next_conditioning_link(prompt: dict, node_id: str, polarity: str):
+    """컨디셔닝을 거슬러 올라갈 링크. 정할 수 없으면 None.
 
     리터럴 스위치는 고른 갈래, 그 밖엔 polarity(positive/negative) 입력 → conditioning → guider →
-    CONDITIONING 타입 입력이 딱 하나일 때 그것. strict(negative 로 가이더에 막 들어옴)면 negative 입력만 —
-    BasicGuider 의 conditioning 은 positive 라서 negative 로 따라가면 안 된다.
+    CONDITIONING 타입 입력이 딱 하나일 때 그것. GUIDER 를 내보내는 노드에서 negative 는 negative 입력만 —
+    BasicGuider 의 conditioning 은 positive 라서 negative 로 따라가면 안 된다(스위치를 거쳐 오거나 직접 가리켜도).
     """
     inputs = _inputs(prompt, node_id)
     if "switch" in inputs and ("on_true" in inputs or "on_false" in inputs):
         switch = inputs["switch"]
         chosen = inputs.get("on_true" if switch else "on_false") if isinstance(switch, bool) else None
-        return (chosen, "switch") if is_link(chosen) else (None, None)
+        return chosen if is_link(chosen) else None
     if is_link(inputs.get(polarity)):
-        return inputs[polarity], polarity
-    if strict:
-        return None, None
+        return inputs[polarity]
+    if polarity == "negative" and "GUIDER" in _output_types(prompt[node_id].get("class_type")):
+        return None
     for name in ("conditioning", "guider"):
         if is_link(inputs.get(name)):
-            return inputs[name], name
+            return inputs[name]
     candidates = [link for link in inputs.values() if is_link(link) and _link_type(prompt, link) == "CONDITIONING"]
-    return (candidates[0], "conditioning") if len(candidates) == 1 else (None, None)
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def _conditioning_chain(prompt: dict, node_id: str, polarity: str):
     """샘플러·가이더에서 polarity 컨디셔닝을 거슬러 올라가며 노드 ID 를 낸다(시작 노드 포함).
 
     FluxGuidance·ControlNetApply·ReferenceLatent 처럼 인코더와 샘플러 사이에 낀 노드를 지나간다.
+    링크가 positive·negative 라는 이름의 출력에서 오면(ControlNetApplyAdvanced 등) 그 이름으로 극성을 바꿔
+    따라간다 — negative 소켓에 positive 출력을 이어도 실제로 쓴 쪽을 기록한다.
     ConditioningZeroOut 에서는 멈춘다(0으로 만든 컨디셔닝에는 기록할 텍스트가 없다).
     """
     seen = set()
-    strict = False
     while node_id in prompt and node_id not in seen and len(seen) < _MAX_CHAIN:
         seen.add(node_id)
         yield node_id
         if prompt[node_id].get("class_type") == "ConditioningZeroOut":
             return
-        link, name = _next_conditioning_link(prompt, node_id, polarity, strict)
+        link = _next_conditioning_link(prompt, node_id, polarity)
         if link is None:
             return
-        strict = name == "guider" and polarity == "negative"
         node_id = link[0]
+        names = _output_names(prompt[node_id].get("class_type")) if node_id in prompt else ()
+        if isinstance(link[1], int) and link[1] < len(names) and names[link[1]] in _PROMPT_KEYS:
+            polarity = names[link[1]]
 
 
 def _text_source(prompt: dict, node_id: str, polarity: str):
@@ -637,19 +640,19 @@ def _register_prompt_handler() -> None:
 def resolve_refs(payload: dict) -> dict:
     """미리보기 응답을 순수 계산한다. 요청 프롬프트는 고치지 않는다(얕은 사본에서 해석한다).
 
-    프론트는 설치되지 않은 노드를 class_type 없이 보낸다. 그런 노드와 출력 번호가 정수가 아닌 링크는
-    해석에서 빼고 나머지로 계산한다(노드 하나 때문에 미리보기 전체가 막히지 않게).
+    프론트는 설치되지 않은 노드를 class_type 없이 보낸다. 그런 노드도 ID 는 남겨(서브그래프 번호 우선
+    규칙이 on_prompt 와 같게) class_type 은 빈 문자열로 두고, 깨진 inputs·정수가 아닌 링크 번호만 비운다.
+    노드 하나 때문에 미리보기 전체가 막히지 않게 한다.
     """
     if not isinstance(payload, dict) or not isinstance(payload.get("prompt"), dict):
         raise ValueError("prompt 객체가 필요합니다.")
     prompt = {}
     for key, node in payload["prompt"].items():
-        if (not isinstance(node, dict) or not isinstance(node.get("class_type"), str)
-                or not isinstance(node.get("inputs", {}), dict)):
-            continue
-        inputs = {name: value for name, value in node.get("inputs", {}).items()
-                  if not (is_link(value) and not isinstance(value[1], int))}
-        prompt[key] = dict(node, inputs=inputs)
+        node = node if isinstance(node, dict) else {}
+        inputs = node.get("inputs") if isinstance(node.get("inputs"), dict) else {}
+        class_type = node.get("class_type") if isinstance(node.get("class_type"), str) else ""
+        prompt[key] = dict(node, class_type=class_type, inputs={
+            name: value for name, value in inputs.items() if not (is_link(value) and not isinstance(value[1], int))})
     node_id = payload.get("node_id")
     node = prompt.get(node_id) if isinstance(node_id, str) else None
     if not isinstance(node, dict) or node.get("class_type") != _META_NODE_ID:
