@@ -246,6 +246,10 @@ class RefsEditor {
       margin: MARGIN,
     });
     this.widget.serialize = false;
+    // refs 자리에 그린다. 직렬화하지 않는 위젯이라 순서를 바꿔도 widgets_values 위치는 그대로다.
+    const widgets = node.widgets;
+    widgets.splice(widgets.indexOf(this.widget), 1);
+    widgets.splice(widgets.indexOf(refs) + 1, 0, this.widget);
     const editor = this;
     this.refsCallback = function () {
       const result = editor.originalCallback?.apply(this, arguments);
@@ -535,18 +539,22 @@ class RefsEditor {
       const missing = parsed.kind === "ref" && parsed.specs.some((spec) => !referencedNode(this.node, spec.id));
       const reserved = parsed.key && RESERVED.has(parsed.key.toLowerCase());
       if (view.addSpec) view.addSpec.hidden = row.key !== "loras";
+      // 서버 미리보기가 오면 그쪽 판정만 보인다(같은 경고를 두 번 쓰지 않게).
       const local = reserved ? "예약어는 사용할 수 없음: time·width·height·postfix" :
-        invalid ? "문법 오류 — 원문 보존됨" : missing ? "노드를 못 찾음 — ID 확인" : "";
+        invalid ? "문법 오류 — 원문 보존됨" : missing && !row.preview ? "노드를 못 찾음 — ID 확인" : "";
       const resolved = previewText(row.preview);
       view.preview.textContent = [local, resolved].filter(Boolean).join(" · ") ||
         (["comment", "blank"].includes(parsed.kind) ? "그대로 보존" : "미리보기 대기");
-      view.preview.title = view.preview.textContent;
       view.root.classList.toggle("bmk-svm-warning", !!(invalid || missing));
       view.preview.classList.toggle("bmk-svm-error", invalid || ["missing", "invalid"].includes(row.preview?.status));
       view.preview.classList.toggle("bmk-svm-muted", row.preview?.status === "wired");
+      // 좁은 노드에서 둘 다 잘리지 않게, 새 실행 값이 있으면 그 줄을 다 쓰고 미리보기는 툴팁으로 보인다.
+      const fresh = row.executed && !row.executed.stale;
       view.executed.textContent = row.executed ? `실행${row.executed.stale ? " (오래됨)" : ""}: ${row.executed.text}` : "";
-      view.executed.title = view.executed.textContent;
+      view.executed.title = fresh ? `${view.executed.textContent}\n미리보기: ${view.preview.textContent}` : view.executed.textContent;
+      view.preview.title = view.preview.textContent;
       view.executed.hidden = !row.executed;
+      view.preview.hidden = !!fresh;
       view.executed.classList.toggle("bmk-svm-stale", !!row.executed?.stale);
       for (const { spec, names } of view.specs) this.fillNames(spec, names);
     }
@@ -560,7 +568,7 @@ class RefsEditor {
     for (const row of this.rows) {
       const parsed = parseLine(row.raw);
       const keys = parsed.key === "ksampler" ? KEYS.filter((key) => key !== "ksampler") : [parsed.key];
-      const fields = keys.filter((key) => key && Object.hasOwn(values, key))
+      const fields = keys.filter((key) => key && Object.hasOwn(values, key) && values[key] !== "")
         .map((key) => `${key} = ${valueText(values[key])}`);
       if (missing.has(strip(row.raw))) fields.push("못 찾음");
       row.executed = fields.length ? { text: fields.join(" · "), stale: false } : null;
