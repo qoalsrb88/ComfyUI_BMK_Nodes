@@ -50,11 +50,41 @@ class _Seed:
     RETURN_TYPES = ("INT",)
 
 
+class _PrimitiveString:
+    RETURN_TYPES = ("STRING",)
+
+
+class _PrimitiveFloat:
+    RETURN_TYPES = ("FLOAT",)
+
+
+class _CyclicSeed:
+    RETURN_TYPES = ("INT", "STRING")
+    RETURN_NAMES = ("seed", "seed_text")
+
+
+class _LoraStacker:
+    RETURN_TYPES = ("LORA_STACK", "STRING", "STRING")
+    RETURN_NAMES = ("LORA_STACK", "trigger_words", "active_loras")
+
+
+class _Switch:
+    RETURN_TYPES = ("COMFY_MATCHTYPE_V3",)
+    RETURN_NAMES = ("output",)
+
+
 fake_nodes = types.ModuleType("nodes")
 fake_nodes.NODE_CLASS_MAPPINGS = {
     "UNETLoader": _Loader,
     "LoraLoaderModelOnly": _Loader,
     "LoraManagerLoader": _LoraManagerLoader,
+    "Lora Loader (LoraManager)": _LoraManagerLoader,
+    "Lora Stacker (LoraManager)": _LoraStacker,
+    "SkipLayerGuidanceDiTSimple": _Loader,
+    "ComfySwitchNode": _Switch,
+    "PrimitiveStringMultiline": _PrimitiveString,
+    "PrimitiveFloat": _PrimitiveFloat,
+    "BMKCyclicSeed": _CyclicSeed,
     "Wildcard": _Wildcard,
     "SeedNode": _Seed,
 }
@@ -246,6 +276,69 @@ plain = {"prompt": {"1": {"class_type": "KSampler", "inputs": {"steps": 3}}}}
 mod.compile_refs_in_prompt(plain)
 eq(plain, {"prompt": {"1": {"class_type": "KSampler", "inputs": {"steps": 3}}}}, "Meta 가 없는 프롬프트는 그대로")
 eq(mod.compile_refs_in_prompt({"client_id": "x"}), {"client_id": "x"}, "prompt 가 없는 요청도 그대로")
+
+
+# ─── 2-1. 사용자 워크플로 구조 (MOSS 서브그래프, 8188 실행 기록의 API 프롬프트) ──
+
+def user_prompt(refs: str) -> dict:
+    return {
+        "46": {"class_type": "PrimitiveStringMultiline", "inputs": {"value": "A photorealistic photograph"}},
+        "56": {"class_type": "PrimitiveStringMultiline", "inputs": {"value": "anime, 2d illustration"}},
+        "51": {"class_type": "BMKCyclicSeed", "inputs": {"mode": "control_after_generate", "base_seed": 1}},
+        "55": {"class_type": "Lora Stacker (LoraManager)", "inputs": {"text": "<lora:a:1>", "loras": {"__value__": []}}},
+        "77": {"class_type": "PrimitiveFloat", "inputs": {"value": 0.5}},
+        "61:31": {"class_type": "UNETLoader", "inputs": {"unet_name": "Moss\\mossImage_sft_bf16.safetensors"}},
+        "61:50": {"class_type": "Lora Loader (LoraManager)",
+                  "inputs": {"text": "", "loras": {"__value__": []}, "model": ["61:31", 0], "lora_stack": ["55", 0]}},
+        "61:41": {"class_type": "SkipLayerGuidanceDiTSimple", "inputs": {"model": ["61:50", 0], "single_layers": "22"}},
+        "61:90": {"class_type": "LoraLoaderModelOnly",
+                  "inputs": {"model": ["61:50", 0], "lora_name": "unused.safetensors", "strength_model": 1.0}},
+        "61:42": {"class_type": "ComfySwitchNode", "inputs": {"switch": True, "on_false": ["61:90", 0], "on_true": ["61:41", 0]}},
+        "61:37": {"class_type": "ComfySwitchNode", "inputs": {"switch": False, "on_false": ["46", 0], "on_true": ["61:53", 0]}},
+        "61:32": {"class_type": "CLIPTextEncode", "inputs": {"text": ["61:37", 0], "clip": ["61:33", 0]}},
+        "61:39": {"class_type": "CLIPTextEncode", "inputs": {"text": ["56", 0], "clip": ["61:33", 0]}},
+        "61:34": {"class_type": "KSampler", "inputs": {
+            "seed": ["51", 0], "steps": 25, "cfg": 3.0, "sampler_name": "euler", "scheduler": "simple", "denoise": 1.0,
+            "model": ["61:42", 0], "positive": ["61:32", 0], "negative": ["61:39", 0], "latent_image": ["61:38", 0]}},
+        "61:66": {"class_type": "BMKSaveMeta", "inputs": {"refs": refs}},
+    }
+
+
+def user_slots(refs: str) -> dict:
+    prompt = user_prompt(refs)
+    mod.compile_refs_in_prompt({"prompt": prompt})
+    return {k[len(P):]: v for k, v in prompt["61:66"]["inputs"].items() if k.startswith(P)}
+
+
+slots = user_slots("KSampler: 34\npositive: 46\nnegative: 56\nloras: 55")
+eq((slots.get("positive|0|value"), slots.get("negative|0|value"), slots.get("loras|0|value")),
+   (["46", 0], ["56", 0], ["55", 0]),
+   "사용자 refs: 서브그래프 밖 Primitive 프롬프트는 STRING 출력, 스태커는 LORA_STACK 출력")
+eq(slots.get("model|0|value"), "Moss\\mossImage_sft_bf16.safetensors", "사용자 refs: model 은 스위치 갈래를 지나 UNETLoader 까지")
+eq(slots.get("seed|0|value"), ["51", 0], "사용자 refs: 시드는 루트 시드 노드 링크")
+
+slots = user_slots("KSampler: 34")
+eq((slots.get("positive|0|value"), slots.get("negative|0|value"), slots.get("loras|0|value"),
+    any(k.startswith("loras|1|") for k in slots)),
+   (["61:37", 0], ["56", 0], ["61:50", 3], False),
+   "묶음만: 실제 인코딩한 텍스트(스위치 출력), 고른 갈래의 loaded_loras 만(안 고른 갈래 LoRA 제외)")
+
+slots = user_slots("seed: 51\nSLG: 41.single_layers\nScale: 77")
+eq((slots.get("seed|0|value"), slots.get("SLG|0|value"), slots.get("Scale|0|value")),
+   (["51", 0], "22", ["77", 0]), "시드 노드는 INT 출력, 커스텀 노드ID 는 하나뿐인 출력")
+
+prompt = user_prompt("KSampler: 34")
+prompt["61:42"]["inputs"]["switch"] = ["51", 0]
+mod.compile_refs_in_prompt({"prompt": prompt})
+lora_parts = sorted(k for k in prompt["61:66"]["inputs"] if k.startswith(P + "loras|"))
+eq(len({k.split("|")[2] for k in lora_parts}), 2, "switch 가 링크면 두 갈래를 다 본다")
+
+out = mod.BMKSaveMeta.execute("loras: 55, 50", mod._DEFAULT_TEMPLATE, "", "T", "one line", True, True, **{
+    P + "loras|0|value": [("D:\\loras\\cine-moss.safetensors", 0.3, 0.3)],
+    P + "loras|1|value": "<lora:cine-moss:0.3> <lora:extra:1>",
+})
+eq([e["name"] for e in out.args[0]["values"]["loras"]], ["cine-moss", "extra"],
+   "LORA_STACK 파싱, 스태커와 로더를 함께 적어도 같은 LoRA 는 한 번")
 
 
 # ─── 3. Meta 값 조립 ─────────────────────────────────────────────
