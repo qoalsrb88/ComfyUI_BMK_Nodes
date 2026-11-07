@@ -61,7 +61,7 @@ refs 문법 (한 줄에 하나, # 은 주석, 줄 순서 = 커스텀 항목 기�
   - 표준 키의 유선 소켓에 선을 이으면 참조보다 우선하고, 그 키의 참조는 아예 넣지 않는다
     (쓰지 않을 노드를 실행하지 않게). te·vae 는 refs 전용이며 기존 10개 소켓은 그대로다.
   - POST /bmk/save_meta/resolve 는 같은 컴파일 함수로 줄별 해석 결과를 미리 보여 준다.
-    실행 후 ui.bmk_save_meta[0] 에 최종 표시 문자열(values)과 해석 못 한 줄(missing)을 보낸다.
+    실행 후 ui.bmk_save_meta[0] 에 최종 표시 문자열(values), 해석 못 한 줄(missing), 실행에 쓴 refs 를 보낸다.
 
 파일명 토큰 (BMK NAI Autosave Name 과 같은 문법 — 끝에 % 가 없다):
   %time %model %vae %te %steps %cfg %sampler %scheduler %seed %denoise
@@ -635,19 +635,21 @@ def _register_prompt_handler() -> None:
 
 
 def resolve_refs(payload: dict) -> dict:
-    """미리보기 응답을 순수 계산한다. 요청 프롬프트는 고치지 않는다(해석 결과는 별도 dict 에 모은다).
+    """미리보기 응답을 순수 계산한다. 요청 프롬프트는 고치지 않는다(얕은 사본에서 해석한다).
 
-    해석 함수는 프론트가 만든 정상 프롬프트를 전제로 하므로, 깨진 노드·링크는 여기서 400 으로 거른다.
+    프론트는 설치되지 않은 노드를 class_type 없이 보낸다. 그런 노드와 출력 번호가 정수가 아닌 링크는
+    해석에서 빼고 나머지로 계산한다(노드 하나 때문에 미리보기 전체가 막히지 않게).
     """
     if not isinstance(payload, dict) or not isinstance(payload.get("prompt"), dict):
         raise ValueError("prompt 객체가 필요합니다.")
-    prompt = payload["prompt"]
-    for node in prompt.values():
+    prompt = {}
+    for key, node in payload["prompt"].items():
         if (not isinstance(node, dict) or not isinstance(node.get("class_type"), str)
                 or not isinstance(node.get("inputs", {}), dict)):
-            raise ValueError("노드는 class_type(문자열)과 inputs(객체)를 가진 객체여야 합니다.")
-        if any(is_link(value) and not isinstance(value[1], int) for value in node.get("inputs", {}).values()):
-            raise ValueError("링크의 출력 번호는 정수여야 합니다.")
+            continue
+        inputs = {name: value for name, value in node.get("inputs", {}).items()
+                  if not (is_link(value) and not isinstance(value[1], int))}
+        prompt[key] = dict(node, inputs=inputs)
     node_id = payload.get("node_id")
     node = prompt.get(node_id) if isinstance(node_id, str) else None
     if not isinstance(node, dict) or node.get("class_type") != _META_NODE_ID:
@@ -1039,8 +1041,9 @@ class BMKSaveMeta(io.ComfyNode):
         }
         displayed = {key: " ".join(_lora_tag(entry) for entry in value or []) if key == "loras"
                      else _format_value(value) for key, value in values.items()}
-        return io.NodeOutput({"values": values, "settings": settings},
-                             ui={"bmk_save_meta": [{"values": displayed, "missing": missing}]})
+        # refs 는 실행에 쓴 원문 — 실행 중에 편집기를 고쳤으면 프론트가 이 값을 오래됨으로 표시한다.
+        ui = {"values": displayed, "missing": missing, "refs": refs if isinstance(refs, str) else ""}
+        return io.NodeOutput({"values": values, "settings": settings}, ui={"bmk_save_meta": [ui]})
 
 
 class BMKSaveImage(io.ComfyNode):

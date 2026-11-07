@@ -718,14 +718,13 @@ prompt["61:33"] = {"class_type": "DualCLIPLoader", "inputs": {
 eq([field["kind"] for field in mod.resolve_refs({"prompt": prompt, "node_id": "61:66"})["lines"][0]["fields"]],
    ["literal", "link"], "DualCLIP 미리보기: 이름마다 리터럴·링크 종류를 따로 표시")
 
-for broken, label in ((dict(user_prompt("seed: 3"), x=[1]), "dict 가 아닌 노드"),
-                      (dict(user_prompt("seed: 3"), x={"class_type": ["A"], "inputs": {}}), "문자열이 아닌 class_type"),
-                      (dict(user_prompt("seed: 3"), x={"class_type": "A", "inputs": {"a": ["51", 0.0]}}), "float 링크 번호")):
-    try:
-        mod.resolve_refs({"prompt": broken, "node_id": "61:66"})
-        check(False, f"깨진 프롬프트는 ValueError(400): {label}")
-    except ValueError:
-        check(True, f"깨진 프롬프트는 ValueError(400): {label}")
+broken = user_prompt("KSampler: 34\nExtra: 88.a\nGone: 87.a")
+broken.update({"86": [1], "87": {"inputs": {"a": 1}}, "85": {"class_type": ["A"], "inputs": {}},
+               "88": {"class_type": "A", "inputs": {"a": ["51", 0.0]}}})
+lines = mod.resolve_refs({"prompt": broken, "node_id": "61:66"})["lines"]
+eq([line["status"] for line in lines], ["ok", "missing", "missing"],
+   "설치 안 된 노드(class_type 없음)·깨진 노드·float 링크는 빼고 나머지는 해석한다(미리보기가 막히지 않게)")
+eq(broken["88"]["inputs"], {"a": ["51", 0.0]}, "미리보기는 요청 프롬프트를 고치지 않는다")
 
 
 # ─── 8-1. 컨디셔닝 중간 노드·Baked VAE (cc2 리뷰) ─────────────────
@@ -824,7 +823,8 @@ out = mod.BMKSaveMeta.execute('bad line\nMissing: 99\nwidth: 3\nsteps: 99\nksamp
 eq(out.ui, {"bmk_save_meta": [{"values": {
     "seed": "42", "Keep": "상속", "Missing": "보존", "Empty": "", "Flag": "off", "Zero": "0", "cfg": "2.5",
     "loras": "<lora:a:1> <lora:b:0.5:0.25>", "steps": "17",
-}, "missing": ["bad line", "Missing: 99", "width: 3", "ksampler: 999"]}]},
+}, "missing": ["bad line", "Missing: 99", "width: 3", "ksampler: 999"],
+    "refs": 'bad line\nMissing: 99\nwidth: 3\nsteps: 99\nksampler: 999'}]},
    "UI: 리스트 한 겹, 상속 포함 최종 표시 문자열·LoRA 공백 결합, 유선 제외 미해석·문법 오류 줄")
 check(all(any(line in warning for warning in WARNINGS.messages) for line in out.ui["bmk_save_meta"][0]["missing"]),
       "UI missing 은 이번 실행의 경고에 나온 refs 줄")
@@ -832,9 +832,10 @@ eq(inherited, before, "실행 후 UI 생성도 meta_in 을 바꾸지 않음")
 eq(out.args[0]["values"]["seed"], 42, "UI 문자열 변환이 실제 meta 값의 타입을 바꾸지 않음")
 out = execute_prompt(user_prompt("te: 33\nvae: 35\nAbsent: 999"))
 eq(out.ui["bmk_save_meta"], [{"values": {"te": "qwen3.5_9b_int8_convrot", "vae": "flux2-vae_small", "Absent": ""},
-                            "missing": ["Absent: 999"]}], "UI: 새 키는 실행 후 정리된 이름, 없는 값은 빈 문자열")
+                            "missing": ["Absent: 999"], "refs": "te: 33\nvae: 35\nAbsent: 999"}],
+   "UI: 새 키는 실행 후 정리된 이름, 없는 값은 빈 문자열, 실행에 쓴 refs 원문")
 out = mod.BMKSaveMeta.execute("", mod._DEFAULT_TEMPLATE, "", "T", "one line", True, True)
-eq(out.ui, {"bmk_save_meta": [{"values": {}, "missing": []}]}, "값이 없어도 UI 계약 유지")
+eq(out.ui, {"bmk_save_meta": [{"values": {}, "missing": [], "refs": ""}]}, "값이 없어도 UI 계약 유지")
 
 
 print(f"\n{PASSES} passed, {len(FAILS)} failed")

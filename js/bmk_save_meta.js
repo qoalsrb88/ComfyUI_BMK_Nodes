@@ -84,7 +84,12 @@ function input(value, className, title, action) {
   el.value = value;
   el.title = title;
   el.setAttribute("aria-label", title);
-  el.addEventListener("input", () => action(el.value));
+  // 붙여넣은 U+2028·\v 같은 줄 구분 문자는 Python splitlines 에서 줄을 쪼개므로 공백으로 바꾼다.
+  el.addEventListener("input", () => {
+    const clean = el.value.replace(LINE_END, " ");
+    if (clean !== el.value) el.value = clean;
+    action(el.value);
+  });
   return el;
 }
 
@@ -166,9 +171,15 @@ function nodeAtPath(graph, id) {
   return found;
 }
 
+// 큐 프롬프트에 들어가는 노드만(가상 노드·서브그래프 노드는 펼쳐지거나 빠진다).
+function queuedNode(found) {
+  return found && !found.isVirtualNode && !found.isSubgraphNode?.() ? found : null;
+}
+
+// 서버 _find_node 와 같은 순서: 같은 그래프의 번호, 없으면 루트의 번호.
 function referencedNode(node, id) {
   if (!ID_ONLY.test(id)) return null;
-  return nodeAtPath(node.graph, id) || nodeAtPath(app.graph, id);
+  return queuedNode(nodeAtPath(node.graph, id)) || queuedNode(nodeAtPath(app.graph, id));
 }
 
 // 비공개 실행 ID 헬퍼를 import하지 않고 루트에서 소속 그래프를 찾는다.
@@ -253,7 +264,8 @@ class RefsEditor {
     const editor = this;
     this.refsCallback = function () {
       const result = editor.originalCallback?.apply(this, arguments);
-      if (!editor.writing && !editor.disposed) editor.syncFromWidget();
+      // 불러오기·undo 로 값이 바뀔 때도 불리므로 미리보기는 하지 않는다(타이핑은 onTextInput 이 미리보기).
+      if (!editor.writing && !editor.disposed) editor.syncFromWidget(false);
       return result;
     };
     refs.callback = this.refsCallback;
@@ -267,15 +279,22 @@ class RefsEditor {
 
   build() {
     this.root = element("div", "bmk-svm-root");
-    // 편집기 안의 입력이 캔버스 단축키/드래그로 전달되지 않도록 한다.
-    for (const type of ["pointerdown", "mousedown", "keydown", "keyup", "wheel"]) {
+    // 편집기 안의 클릭·타이핑이 캔버스 드래그·단축키로 가지 않게 한다. Ctrl·Alt 조합(큐 Ctrl+Enter, 저장 Ctrl+S)은
+    // 그대로 보내고, 휠은 편집기에 스크롤할 것이 없으니 캔버스 확대·이동으로 넘긴다.
+    for (const type of ["pointerdown", "mousedown"]) {
       this.root.addEventListener(type, (event) => event.stopPropagation());
     }
+    for (const type of ["keydown", "keyup"]) {
+      this.root.addEventListener(type, (event) => {
+        if (!event.ctrlKey && !event.metaKey && !event.altKey) event.stopPropagation();
+      });
+    }
+    this.root.addEventListener("wheel", (event) => app.canvas?.processMouseWheel?.(event));
     const head = element("div", "bmk-svm-head");
     this.addButton = button("＋ 행", "참조 행 추가", () => this.addRow());
     this.samplerButton = button("KSampler로 채우기", "캔버스에서 KSampler 선택", () => this.startPick(null, null, this.samplerButton));
     this.toggleButton = button("텍스트", "원래 refs 텍스트 편집기로 전환", () => this.toggleMode());
-    this.status = element("span", "bmk-svm-status", "미리보기 대기");
+    this.status = element("span", "bmk-svm-status", "↻ 로 미리보기");
     this.status.setAttribute("role", "status");
     head.append(this.addButton, this.samplerButton, this.toggleButton,
       button("↻ 미리보기", "현재 refs 미리보기 새로고침", () => this.schedulePreview(0)), this.status);
@@ -335,6 +354,7 @@ class RefsEditor {
 
   toggleMode() {
     this.cancelPick();
+    this.text = null; // 버튼 툴팁대로 refs 를 다시 읽는다.
     this.syncFromWidget();
     const before = this.node.computeSize?.()[1];
     this.textMode = !this.textMode;
@@ -364,9 +384,13 @@ class RefsEditor {
       this.writing = false;
     }
     this.node.setDirtyCanvas?.(true, true);
-    try {
-      app.extensionManager?.workflow?.activeWorkflow?.changeTracker?.checkState?.();
-    } catch { /* undo 기록은 선택 사항 */ }
+    // 실행 취소 기록은 입력이 멈춘 뒤 한 번만 남긴다(키마다 남기면 기록 한도를 채워 앞선 그래프 작업을 못 되돌린다).
+    clearTimeout(this.historyTimer);
+    this.historyTimer = setTimeout(() => {
+      try {
+        app.extensionManager?.workflow?.activeWorkflow?.changeTracker?.checkState?.();
+      } catch { /* undo 기록은 선택 사항 */ }
+    }, 800);
     this.schedulePreview();
   }
 
@@ -565,13 +589,15 @@ class RefsEditor {
     this.syncFromWidget(false);
     const values = message.values || {};
     const missing = new Set((Array.isArray(message.missing) ? message.missing : []).map((line) => strip(String(line))));
+    // 실행 중에 refs 를 고쳤으면 도착한 값은 처음부터 오래된 것이다.
+    const stale = typeof message.refs === "string" && message.refs !== this.refs.value;
     for (const row of this.rows) {
       const parsed = parseLine(row.raw);
       const keys = parsed.key === "ksampler" ? KEYS.filter((key) => key !== "ksampler") : [parsed.key];
       const fields = keys.filter((key) => key && Object.hasOwn(values, key) && values[key] !== "")
         .map((key) => `${key} = ${valueText(values[key])}`);
       if (missing.has(strip(row.raw))) fields.push("못 찾음");
-      row.executed = fields.length ? { text: fields.join(" · "), stale: false } : null;
+      row.executed = fields.length ? { text: fields.join(" · "), stale } : null;
     }
     this.refreshResults();
   }
@@ -689,6 +715,11 @@ class RefsEditor {
       if (!found || !/^\d+$/.test(String(found.id))) return;
       event.preventDefault();
       event.stopImmediatePropagation();
+      if (!queuedNode(found)) {
+        // 큐에 들어가지 않는 노드의 번호는 서버가 루트의 같은 번호로 넘겨 엉뚱한 노드를 가리킨다.
+        this.setStatus("가상 노드·서브그래프 노드는 큐에 들어가지 않아 고를 수 없음 — 다른 노드를 클릭", true);
+        return;
+      }
       cancel();
       this.applyPick(row, spec, String(found.id));
     };
@@ -734,6 +765,7 @@ class RefsEditor {
     this.disposed = true;
     this.revision++;
     clearTimeout(this.timer);
+    clearTimeout(this.historyTimer);
     this.controller?.abort();
     this.cancelPick();
     this.textarea?.removeEventListener?.("input", this.onTextInput);
@@ -777,9 +809,10 @@ app.registerExtension({
           if (!editor || !this.graph) return;
           if (hook === "onAdded") editor.resume();
           if (editor.disposed) return;
+          // 불러오기·붙여넣기·undo 때는 미리보기를 돌리지 않는다. Meta 마다 graphToPrompt 가 돌고,
+          // 그때 모든 위젯의 serializeValue(웹캠 캡처 업로드 등)도 실행되기 때문이다. 편집하거나 ↻ 를 누르면 돈다.
           editor.syncFromWidget(false);
           editor.ensureSize();
-          editor.schedulePreview();
         });
         return result;
       };
@@ -787,7 +820,7 @@ app.registerExtension({
     const onDrawForeground = nodeType.prototype.onDrawForeground;
     nodeType.prototype.onDrawForeground = function () {
       const result = onDrawForeground?.apply(this, arguments);
-      editors.get(this)?.syncFromWidget();
+      editors.get(this)?.syncFromWidget(false);
       return result;
     };
     const onExecuted = nodeType.prototype.onExecuted;
