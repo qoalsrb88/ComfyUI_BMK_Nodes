@@ -48,7 +48,8 @@ refs 문법 (한 줄에 하나, # 은 주석, 줄 순서 = 커스텀 항목 기�
   - 선언하지 않은 입력을 받으려고 V3 스키마의 accept_all_inputs 를 쓴다.
   - 서버에서 도는 일이라 UI 없이 API 로 큐에 넣어도 동작한다.
   - 뮤트·바이패스된 노드는 API 프롬프트에서 빠지므로 그 항목은 비고 경고만 남는다.
-  - 표준 키의 유선 소켓에 선을 이으면 참조보다 우선한다.
+  - 표준 키의 유선 소켓에 선을 이으면 참조보다 우선하고, 그 키의 참조는 아예 넣지 않는다
+    (쓰지 않을 노드를 실행하지 않게).
 
 파일명 토큰 (BMK NAI Autosave Name 과 같은 문법 — 끝에 % 가 없다):
   %time %model %steps %cfg %sampler %scheduler %seed %denoise
@@ -141,6 +142,9 @@ _MODEL_EXTS = (".safetensors", ".sft", ".ckpt", ".pt", ".pth", ".bin", ".gguf")
 _MAX_CHAIN = 64
 
 _FORBIDDEN_CHARS = re.compile(r'[<>:"|?*\x00-\x1f]')
+_RESERVED_NAMES = frozenset(
+    ["CON", "PRN", "AUX", "NUL"] + [f"{name}{i}" for name in ("COM", "LPT") for i in range(1, 10)]
+)
 _MAX_SEGMENT = 200
 _ID_SPEC = re.compile(r"^(\d+(?::\d+)*)(?:\.(.+))?$")
 _LITERAL_SPEC = re.compile(r'^"(.*)"\s*(?:#.*)?$')
@@ -298,9 +302,15 @@ def _lora_sources(prompt: dict, node_id: str) -> list:
     return found
 
 
-def _usable_source(value: Any) -> bool:
-    """링크이거나 스칼라 리터럴만 주입한다. 리스트 리터럴은 링크로 오인될 수 있다."""
-    return is_link(value) or isinstance(value, (str, int, float, bool))
+def _usable_source(prompt: dict, value: Any) -> bool:
+    """스칼라 리터럴과, 프롬프트에 있는 노드로 가는 링크만 주입한다.
+
+    리스트 리터럴은 링크로 오인될 수 있고, 없는 노드로 가는 링크는 Meta 실행을 깨뜨린다.
+    다른 Meta 를 가리키는 링크는 meta_in 체인과 사이클을 만들 수 있어 넣지 않는다(값도 dict 라 쓸 데가 없다).
+    """
+    if is_link(value):
+        return value[0] in prompt and prompt[value[0]].get("class_type") != _META_NODE_ID
+    return isinstance(value, (str, int, float, bool))
 
 
 def _add_slots(slots: dict, key: str, specs: list, prompt: dict, scope: str) -> None:
@@ -328,7 +338,7 @@ def _add_slots(slots: dict, key: str, specs: list, prompt: dict, scope: str) -> 
             else:
                 groups.append({"value": _named_source(prompt, node_id, key)})
         for parts in groups:
-            usable = {part: value for part, value in parts.items() if _usable_source(value)}
+            usable = {part: value for part, value in parts.items() if _usable_source(prompt, value)}
             if "value" not in usable and "name" not in usable:
                 continue
             for part, value in usable.items():
@@ -336,17 +346,20 @@ def _add_slots(slots: dict, key: str, specs: list, prompt: dict, scope: str) -> 
             index += 1
 
 
-def _compile_refs(text: str, prompt: dict, scope: str) -> dict:
+def _compile_refs(text: str, prompt: dict, scope: str, wired: set) -> dict:
+    """wired = 선이 이어진 표준 키. 유선이 이기므로 그 키의 참조는 의존성으로 넣지 않는다."""
     lines, _ = _parse_refs(text)
     explicit = {key for key, _, _ in lines}
     slots: dict = {}
     for key, specs, _ in lines:
+        if key in wired:
+            continue
         if key != _BUNDLE_KEY:
             _add_slots(slots, key, specs, prompt, scope)
             continue
         bare = [spec for spec in specs if spec[0] == "ref" and spec[2] is None]
         for field in _STANDARD_KEYS:
-            if field not in explicit:
+            if field not in explicit and field not in wired:
                 _add_slots(slots, field, bare, prompt, scope)
     return slots
 
@@ -367,7 +380,8 @@ def compile_refs_in_prompt(json_data: dict) -> dict:
         refs = inputs.get("refs")
         if isinstance(refs, str):
             head, sep, _ = str(node_id).rpartition(":")
-            inputs.update(_compile_refs(refs, prompt, head + sep))
+            wired = {key for key in _STANDARD_KEYS if key in inputs}
+            inputs.update(_compile_refs(refs, prompt, head + sep, wired))
     return json_data
 
 
@@ -460,13 +474,16 @@ def _collect_values(refs: Any, kwargs: dict) -> dict:
     missing = []
     for key, _, line in lines:
         if key == _BUNDLE_KEY:
-            for field in _STANDARD_KEYS:
-                if field not in explicit and field in grouped:
+            wanted = [field for field in _STANDARD_KEYS if field not in explicit and kwargs.get(field) is None]
+            for field in wanted:
+                if field in grouped:
                     values[field] = _assemble(field, grouped[field])
+            if wanted and not any(field in grouped for field in wanted):
+                missing.append(line)
             continue
         if key in grouped:
             values[key] = _assemble(key, grouped[key])
-        else:
+        elif kwargs.get(key) is None:
             values[key] = None
             missing.append(line)
 
@@ -529,13 +546,23 @@ def _render_filename(template: str, tokens: dict) -> str:
     return re.sub(r"(?:[_\- ]*\x00)+", "", text)
 
 
+def _cap_segment(segment: str) -> str:
+    """Windows 경로 요소 길이(UTF-16 단위)를 넘지 않게 자른다. 확장자·_02 자리를 남긴다."""
+    segment = segment[:_MAX_SEGMENT]
+    while len(segment.encode("utf-16-le")) // 2 > _MAX_SEGMENT:
+        segment = segment[:-1]
+    return segment.rstrip(". ")
+
+
 def _sanitize(text: str) -> str:
-    """금지문자를 _ 로, / 는 하위 폴더 구분자로 둔다. 빈 세그먼트와 . .. 은 버린다."""
+    """금지문자를 _ 로, / 는 하위 폴더 구분자로 둔다. 빈 세그먼트와 . .. 은 버리고 CON 같은 예약 이름은 피한다."""
     parts = []
     for segment in text.replace("\\", "/").split("/"):
-        segment = _FORBIDDEN_CHARS.sub("_", segment).strip().rstrip(". ")
+        segment = _cap_segment(_FORBIDDEN_CHARS.sub("_", segment).strip().rstrip(". "))
+        if segment.split(".", 1)[0].upper() in _RESERVED_NAMES:
+            segment = "_" + segment
         if segment:
-            parts.append(segment[:_MAX_SEGMENT])
+            parts.append(segment)
     return "/".join(parts)
 
 
@@ -588,7 +615,7 @@ def _a1111_text(values: dict, lora_mode: str, width: int, height: int) -> str:
         ("Size", f"{width}x{height}"),
         ("Model", values.get("model")),
     ]
-    denoise = values.get("denoise")
+    denoise = _number(values.get("denoise"))
     if isinstance(denoise, (int, float)) and denoise != 1:
         params.append(("Denoising strength", denoise))
     params.extend((key, value) for key, value in values.items() if key not in _STANDARD_KEYS)

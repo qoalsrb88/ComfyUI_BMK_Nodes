@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import logging
 import os
 import sys
 import tempfile
@@ -69,6 +70,19 @@ spec.loader.exec_module(mod)
 
 FAILS: list[str] = []
 PASSES = 0
+
+
+class _Warnings(logging.Handler):
+    def __init__(self):
+        super().__init__()
+        self.messages: list[str] = []
+
+    def emit(self, record):
+        self.messages.append(record.getMessage())
+
+
+WARNINGS = _Warnings()
+mod.logger.addHandler(WARNINGS)
 
 
 def check(cond, msg):
@@ -194,6 +208,22 @@ eq((slots.get(P + "steps|0|value"), slots.get(P + "seed|0|value")), (20, "42"), 
 slots = compile_slots("seed: 99\nSft: 10\nshift: 10\nmodel: 2.nothing")
 eq(sorted(slots), [P + "shift|0|value"], "없는 노드·이름은 넣지 않고, 커스텀 노드ID 는 키와 같은 입력만 찾는다")
 
+prompt = make_prompt("a: 6.clip\nb: 7.list\nc: 9.meta\nd: 8.meta")
+prompt["6"]["inputs"]["clip"] = ["99", 0]
+prompt["7"]["inputs"]["list"] = ["x", 1]
+prompt["8"] = {"class_type": "Other", "inputs": {"meta": ["9", 0]}}
+mod.compile_refs_in_prompt({"prompt": prompt})
+check(not any(k.startswith(P) for k in prompt["9"]["inputs"]),
+      "없는 노드로 가는 링크, 리스트 리터럴, Meta 를 가리키는 링크는 넣지 않는다")
+
+prompt = make_prompt("positive: 6\nksampler: 3")
+prompt["9"]["inputs"]["positive"] = ["21", 0]
+prompt["9"]["inputs"]["steps"] = ["22", 0]
+mod.compile_refs_in_prompt({"prompt": prompt})
+injected = {k.split("|")[1] for k in prompt["9"]["inputs"] if k.startswith(P)}
+check("positive" not in injected and "steps" not in injected and "seed" in injected,
+      f"유선이 이어진 키는 참조를 넣지 않는다(쓰지 않을 노드를 실행하지 않게)\n    {sorted(injected)}")
+
 slots = compile_slots("ksampler: 3", meta_id="20:9")
 eq((slots.get(P + "steps|0|value"), slots.get(P + "sampler|0|value")), (8, "euler_a"),
    "서브그래프 안 Meta 는 같은 서브그래프의 번호를 먼저 찾는다")
@@ -240,11 +270,18 @@ eq((chained["steps"], chained["denoise"], chained["Sft"], chained["seed"]), (20,
 kept = run_meta("Sft: 99.x", meta_in=meta)["values"]
 eq(kept["Sft"], 1.5, "meta_in: 해석 못 한 값은 물려받은 값을 지우지 않는다")
 
+WARNINGS.messages.clear()
+run_meta("ksampler: 999\nSft: 10.shift")
+check(any("ksampler: 999" in m for m in WARNINGS.messages), f"묶음이 아무것도 못 찾으면 경고\n    {WARNINGS.messages}")
+WARNINGS.messages.clear()
+mod.BMKSaveMeta.execute("positive: 6", mod._DEFAULT_TEMPLATE, "", "T", "one line", True, True, positive="wired")
+eq(WARNINGS.messages, [], "유선이 이긴 키는 참조가 없어도 경고하지 않는다")
+
 wired = run_meta("ksampler: 3", steps=30, model="other/Model.v2.safetensors", loras="<lora:W:1>",
                  cfg=torch.zeros(1, 2))["values"]
-eq((wired["steps"], wired["model"], wired["loras"], wired["cfg"]),
-   (30, "Model.v2", [{"name": "W", "weight": 1.0, "clip": None}], 1.5),
-   "유선: 참조보다 우선, 텐서 같은 객체는 무시하고 참조값 유지")
+eq((wired["steps"], wired["model"], wired["loras"], "cfg" in wired),
+   (30, "Model.v2", [{"name": "W", "weight": 1.0, "clip": None}], False),
+   "유선: 참조보다 우선, 텐서 같은 객체는 경고하고 버린다(그 키의 참조는 컴파일되지 않으므로)")
 
 
 # ─── 4. 파일명 ───────────────────────────────────────────────────
@@ -266,6 +303,10 @@ tokens = mod._filename_tokens({"S": "x", "Sft": 2.0, "Path": "a/b\\c"}, "T", 1, 
 eq(mod._render_filename("%S_%Sft_%Path", tokens), "x_2_a_b_c", "긴 토큰 먼저, 값 속 / 는 _")
 eq(mod._sanitize(mod._render_filename("out/%time/[%seed]x", tokens)), "out/T/x", "템플릿 / 는 하위 폴더")
 eq(mod._sanitize('../a:b/./c?. /..'), "a_b/c_", "금지문자, . .. 세그먼트 제거")
+eq(mod._sanitize("CON/aux.txt/com1x/LPT9 "), "_CON/_aux.txt/com1x/_LPT9", "Windows 예약 이름 피하기")
+capped = mod._sanitize("😀" * 128)
+check(len(capped.encode("utf-16-le")) // 2 <= mod._MAX_SEGMENT and capped.startswith("😀"),
+      f"UTF-16 단위로 길이 제한 ({len(capped.encode('utf-16-le')) // 2})")
 
 
 # ─── 5. A1111 ────────────────────────────────────────────────────
@@ -290,6 +331,8 @@ text = mod._a1111_text(values, "one per line", 64, 64)
 check(text.startswith("1girl, <lora:nikkeb1:0.8>\n<lora:Extra:0.6:0.4>\n<lora:Third:1>\nNegative prompt:"),
       f"A1111: 로라마다 줄바꿈, 같은 클립 강도는 생략\n    {text!r}")
 check("Denoising strength: 0.55" in text, "A1111: denoise 1 이 아니면 기록")
+check("Denoising strength: 0.55" in mod._a1111_text({"denoise": "0.55"}, "none", 8, 8),
+      "A1111: 따옴표로 쓴 denoise 도 숫자로 보고 기록")
 eq(mod._a1111_text({"positive": "a", "loras": values["loras"]}, "none", 8, 8).splitlines(),
    ["a", "Size: 8x8, Version: ComfyUI"], "A1111: none 이면 LoRA 를 붙이지 않고 빈 값은 생략")
 
