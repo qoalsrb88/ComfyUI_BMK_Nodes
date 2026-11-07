@@ -272,6 +272,10 @@ for _module_name in _NODE_MODULES:
 #       위젯으로 그린다(± 전환, prompt, threshold/grow/blur 숫자 칸, on 토글, 드래그
 #       순서 변경, 행 추가/삭제). 값은 JSON 문자열 하나로 직렬화된다. 실행 후 행별
 #       감지 개수를 표시하고, 기본 이미지 프리뷰에서 레이어 장을 보면 그 행을 강조.
+#   - bmk_save_meta.js
+#       BMKSaveMeta용 refs 행/텍스트 편집기. 캔버스 노드 선택, KSampler 채우기,
+#       로컬 resolve 미리보기와 실행 후 값을 표시한다. refs 원문만 저장하고
+#       편집기 DOM·미리보기·실행 값은 직렬화하지 않는다.
 #   - bmk_design_patch.js
 #       BMKDesignPatchRun / BMKDesignPatchSpecDraft / BMKDesignPatchReview용 얇은 확장. Run: 드라이런 결과로
 #       "승인 후 실행 (N건 ≈ $X)" 버튼(approve = pending_hash → Run 만 부분 실행), Drain 버튼, wave 자동 이어가기 토글.
