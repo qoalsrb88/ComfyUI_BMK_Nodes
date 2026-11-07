@@ -330,15 +330,37 @@ eq((slots.get("seed|0|value"), slots.get("SLG|0|value"), slots.get("Scale|0|valu
 prompt = user_prompt("KSampler: 34")
 prompt["61:42"]["inputs"]["switch"] = ["51", 0]
 mod.compile_refs_in_prompt({"prompt": prompt})
-lora_parts = sorted(k for k in prompt["61:66"]["inputs"] if k.startswith(P + "loras|"))
-eq(len({k.split("|")[2] for k in lora_parts}), 2, "switch 가 링크면 두 갈래를 다 본다")
+check(not any(k.startswith((P + "loras|", P + "model|")) for k in prompt["61:66"]["inputs"]),
+      "switch 가 링크면 갈래를 정할 수 없어 멈춘다(안 쓸 로더를 실행시키지 않게)")
+
+prompt = user_prompt("KSampler: 34")
+prompt["61:43"] = {"class_type": "ComfySwitchNode", "inputs": {"switch": False, "on_false": ["61:41", 0], "on_true": ["61:90", 0]}}
+prompt["61:42"]["inputs"]["on_true"] = ["61:43", 0]
+mod.compile_refs_in_prompt({"prompt": prompt})
+eq((prompt["61:66"]["inputs"].get(P + "loras|0|value"), prompt["61:66"]["inputs"].get(P + "model|0|value")),
+   (["61:50", 3], "Moss\\mossImage_sft_bf16.safetensors"), "리터럴 스위치 두 개가 이어져도 고른 갈래로 건너간다")
+
+prompt = user_prompt("KSampler: 34\nsteps: 80\ndenoise: 80")
+prompt["80"] = {"class_type": "Context", "inputs": {"seed": 123, "steps": 20, "cfg": 3.0, "denoise": 0.6,
+                                                    "model_raw": ["61:90", 0], "model": ["61:41", 0]}}
+prompt["61:34"]["inputs"]["model"] = ["80", 0]
+fake_nodes.NODE_CLASS_MAPPINGS["Context"] = type("_Context", (), {
+    "RETURN_TYPES": ("MODEL", "INT", "INT", "FLOAT", "FLOAT"),
+    "RETURN_NAMES": ("model", "seed", "steps", "cfg", "denoise")})
+mod.compile_refs_in_prompt({"prompt": prompt})
+inputs = prompt["61:66"]["inputs"]
+eq((inputs.get(P + "steps|0|value"), inputs.get(P + "denoise|0|value"), inputs.get(P + "loras|0|value"),
+    any(k.startswith(P + "loras|1|") for k in inputs)),
+   (["80", 2], ["80", 4], ["61:50", 3], False),
+   "같은 타입 출력이 여럿이면 이름이 같은 출력, MODEL 입력이 여럿이면 model 입력만 따라간다")
 
 out = mod.BMKSaveMeta.execute("loras: 55, 50", mod._DEFAULT_TEMPLATE, "", "T", "one line", True, True, **{
     P + "loras|0|value": [("D:\\loras\\cine-moss.safetensors", 0.3, 0.3)],
-    P + "loras|1|value": "<lora:cine-moss:0.3> <lora:extra:1>",
+    P + "loras|1|value": "<lora:cine-moss:0.3> <lora:extra:1> <lora:extra:0.5>",
 })
-eq([e["name"] for e in out.args[0]["values"]["loras"]], ["cine-moss", "extra"],
-   "LORA_STACK 파싱, 스태커와 로더를 함께 적어도 같은 LoRA 는 한 번")
+eq([(e["name"], e["weight"]) for e in out.args[0]["values"]["loras"]],
+   [("cine-moss", 0.3), ("extra", 1.0), ("extra", 0.5)],
+   "LORA_STACK 파싱, 스태커와 로더가 같은 항목을 함께 보고하면 한 번, 강도가 다르면 둘 다")
 
 
 # ─── 3. Meta 값 조립 ─────────────────────────────────────────────
