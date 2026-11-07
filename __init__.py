@@ -88,6 +88,7 @@ _NODE_MODULES = (
     "bmk_run_batch_grid",
     "bmk_run_cycle",
     "bmk_sam3_mask_layers",
+    "bmk_save_meta",
     "bmk_scale_to_target",
     "bmk_segs_core_mask",
     "bmk_tabbed_notes",
