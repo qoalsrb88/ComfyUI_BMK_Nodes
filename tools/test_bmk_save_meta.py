@@ -718,6 +718,65 @@ prompt["61:33"] = {"class_type": "DualCLIPLoader", "inputs": {
 eq([field["kind"] for field in mod.resolve_refs({"prompt": prompt, "node_id": "61:66"})["lines"][0]["fields"]],
    ["literal", "link"], "DualCLIP 미리보기: 이름마다 리터럴·링크 종류를 따로 표시")
 
+for broken, label in ((dict(user_prompt("seed: 3"), x=[1]), "dict 가 아닌 노드"),
+                      (dict(user_prompt("seed: 3"), x={"class_type": ["A"], "inputs": {}}), "문자열이 아닌 class_type"),
+                      (dict(user_prompt("seed: 3"), x={"class_type": "A", "inputs": {"a": ["51", 0.0]}}), "float 링크 번호")):
+    try:
+        mod.resolve_refs({"prompt": broken, "node_id": "61:66"})
+        check(False, f"깨진 프롬프트는 ValueError(400): {label}")
+    except ValueError:
+        check(True, f"깨진 프롬프트는 ValueError(400): {label}")
+
+
+# ─── 8-1. 컨디셔닝 중간 노드·Baked VAE (cc2 리뷰) ─────────────────
+
+def flux_prompt(refs: str) -> dict:
+    return {
+        "11": {"class_type": "DualCLIPLoader", "inputs": {"clip_name1": "clip_l.safetensors", "clip_name2": "t5\\t5xxl_fp16.safetensors"}},
+        "12": {"class_type": "UNETLoader", "inputs": {"unet_name": "flux1-dev.safetensors"}},
+        "6": {"class_type": "CLIPTextEncode", "inputs": {"text": "a cat", "clip": ["11", 0]}},
+        "7": {"class_type": "CLIPTextEncode", "inputs": {"text": "blurry", "clip": ["11", 0]}},
+        "26": {"class_type": "FluxGuidance", "inputs": {"conditioning": ["6", 0], "guidance": 3.5}},
+        "27": {"class_type": "ControlNetApplyAdvanced", "inputs": {"positive": ["26", 0], "negative": ["7", 0], "strength": 1.0}},
+        "28": {"class_type": "ConditioningZeroOut", "inputs": {"conditioning": ["6", 0]}},
+        "3": {"class_type": "KSampler", "inputs": {"model": ["12", 0], "positive": ["27", 0], "negative": ["27", 1],
+                                                    "seed": 1, "steps": 20, "cfg": 1.0, "sampler_name": "euler", "scheduler": "simple"}},
+        "22": {"class_type": "BasicGuider", "inputs": {"model": ["12", 0], "conditioning": ["26", 0]}},
+        "30": {"class_type": "SamplerCustomAdvanced", "inputs": {"guider": ["22", 0]}},
+        "9": {"class_type": "BMKSaveMeta", "inputs": {"refs": refs}},
+    }
+
+
+def flux_slots(refs: str, edit=None) -> dict:
+    prompt = flux_prompt(refs)
+    if edit:
+        edit(prompt)
+    mod.compile_refs_in_prompt({"prompt": prompt})
+    return {k[len(P):]: v for k, v in prompt["9"]["inputs"].items() if k.startswith(P)}
+
+
+slots = flux_slots("ksampler: 3")
+eq((slots.get("positive|0|value"), slots.get("negative|0|value"), slots.get("te|0|value"), slots.get("te|1|value")),
+   ("a cat", "blurry", "clip_l.safetensors", "t5\\t5xxl_fp16.safetensors"),
+   "FluxGuidance·ControlNetApply 를 지나 positive·negative·te 를 찾는다")
+slots = flux_slots("ksampler: 30")
+eq((slots.get("positive|0|value"), "negative|0|value" in slots, slots.get("te|0|value")),
+   ("a cat", False, "clip_l.safetensors"), "BasicGuider: conditioning 은 positive 로만, negative 로 따라가지 않는다")
+slots = flux_slots("negative: 3", lambda p: p["27"]["inputs"].update(negative=["28", 0]))
+eq(slots, {}, "ConditioningZeroOut 에서 멈춰 positive 텍스트를 negative 로 기록하지 않는다")
+out = mod.BMKSaveMeta.execute("te: 11", mod._DEFAULT_TEMPLATE, "", "T", "one line", True, True, **{
+    P + "te|0|value": "clip_l.safetensors", P + "te|1|value": "t5\\t5xxl_fp16.safetensors"})
+eq(out.args[0]["values"]["te"], "clip_l + t5xxl_fp16", "DualCLIP 이름은 폴더·확장자를 떼고 + 로 잇는다")
+
+prompt = user_prompt("vae: 34")
+prompt["61:35"] = {"class_type": "Efficient Loader", "inputs": {"ckpt_name": "model.safetensors", "vae_name": "Baked VAE"}}
+mod.compile_refs_in_prompt({"prompt": prompt})
+check(not any(k.startswith(P + "vae|") for k in prompt["61:66"]["inputs"]),
+      "체크포인트 겸용 로더의 Baked VAE 는 기록하지 않는다")
+prompt["61:35"]["inputs"]["vae_name"] = "sdxl_vae.safetensors"
+mod.compile_refs_in_prompt({"prompt": prompt})
+eq(prompt["61:66"]["inputs"].get(P + "vae|0|value"), "sdxl_vae.safetensors", "겸용 로더라도 따로 고른 VAE 는 기록")
+
 
 class _Request:
     def __init__(self, body):

@@ -24,14 +24,16 @@ refs 문법 (한 줄에 하나, # 은 주석, 줄 순서 = 커스텀 항목 기�
 
   표준 키      노드 ID 만 주었을 때 찾는 곳 (왼쪽부터)
   ("STRING 출력" 등은 키와 같은 이름의 출력, 없으면 그 타입 출력이 하나뿐일 때)
-  positive     STRING 출력(프롬프트 노드) / text / positive 링크 → text / guider → positive → text
-  negative     STRING 출력 / text / negative 링크 → text / guider → negative → text
+  positive     STRING 출력(프롬프트 노드) / positive 컨디셔닝을 거슬러 올라가 처음 만나는 text 입력
+               (FluxGuidance·ControlNet 같은 중간 노드, guider, 리터럴 스위치를 지나간다)
+  negative     STRING 출력 / 같은 방식의 negative 체인(BasicGuider 의 conditioning 은 따라가지 않고,
+               ConditioningZeroOut 에서 멈춘다)
   model        모델 링크를 한 줄로 거슬러 올라가 unet_name · ckpt_name. switch 가 리터럴인 스위치는
                고른 갈래, 그 밖엔 model 입력 또는 하나뿐인 MODEL 입력. 정할 수 없으면 멈춘다.
   loras        같은 길에서 만나는 LoraLoader(lora_name·strength), loaded_loras 출력(LoraManager 로더),
                LORA_STACK 출력(스태커). 쉼표로 여러 노드를 줄 수 있다.
-  te           (별칭 text_encoder) clip_name 또는 clip_name1~4. 샘플러는 positive(또는 guider →
-               positive)에서 CLIP 링크를 거슬러 올라간다. 여러 이름은 폴더·확장자를 떼고 " + " 로 잇는다.
+  te           (별칭 text_encoder) clip_name 또는 clip_name1~4. 샘플러는 positive 체인에서 처음 만나는
+               clip 입력(인코더)에서 CLIP 링크를 거슬러 올라간다. 여러 이름은 폴더·확장자를 떼고 " + " 로 잇는다.
   vae          vae_name 또는 VAE 링크를 거슬러 올라간 로더. 샘플러는 출력을 samples 로 받는
                디코더의 vae 를 찾는다. 여러 디코더의 이름이 다르거나 링크면 추측하지 않는다.
                te·vae 모두 리터럴 스위치의 고른 갈래만 따라가며 체크포인트 안의 이름은 생략한다.
@@ -101,7 +103,6 @@ import os
 import re
 import sys
 import time
-from copy import deepcopy
 from typing import Any
 
 import numpy as np
@@ -152,9 +153,11 @@ _FIELD_PATHS = {
     "sampler": (("sampler_name",), ("sampler", "sampler_name")),
     "scheduler": (("scheduler",), ("sigmas", "scheduler")),
     "denoise": (("denoise",), ("sigmas", "denoise")),
-    "positive": (("text",), ("positive", "text"), ("guider", "positive", "text")),
-    "negative": (("text",), ("negative", "text"), ("guider", "negative", "text")),
 }
+# positive·negative 는 경로 대신 컨디셔닝 체인을 거슬러 올라가 text 입력을 찾는다(_text_source).
+_PROMPT_KEYS = ("positive", "negative")
+# 체크포인트 겸용 로더(Efficient Loader 등)가 vae_name 에 넣는 "내장 VAE" 표시.
+_EMBEDDED_NAMES = ("baked vae", "none")
 # 가리킨 노드가 이 타입의 값을 내보내면(텍스트·시드 노드) 입력 경로보다 그 출력을 먼저 쓴다.
 _KEY_TYPES = {"positive": "STRING", "negative": "STRING", "seed": "INT", "steps": "INT",
               "cfg": "FLOAT", "denoise": "FLOAT"}
@@ -319,11 +322,63 @@ def _path_source(prompt: dict, node_id: str, paths: tuple):
     return None
 
 
+def _next_conditioning_link(prompt: dict, node_id: str, polarity: str, strict: bool):
+    """컨디셔닝을 거슬러 올라갈 (링크, 입력 이름). 정할 수 없으면 (None, None).
+
+    리터럴 스위치는 고른 갈래, 그 밖엔 polarity(positive/negative) 입력 → conditioning → guider →
+    CONDITIONING 타입 입력이 딱 하나일 때 그것. strict(negative 로 가이더에 막 들어옴)면 negative 입력만 —
+    BasicGuider 의 conditioning 은 positive 라서 negative 로 따라가면 안 된다.
+    """
+    inputs = _inputs(prompt, node_id)
+    if "switch" in inputs and ("on_true" in inputs or "on_false" in inputs):
+        switch = inputs["switch"]
+        chosen = inputs.get("on_true" if switch else "on_false") if isinstance(switch, bool) else None
+        return (chosen, "switch") if is_link(chosen) else (None, None)
+    if is_link(inputs.get(polarity)):
+        return inputs[polarity], polarity
+    if strict:
+        return None, None
+    for name in ("conditioning", "guider"):
+        if is_link(inputs.get(name)):
+            return inputs[name], name
+    candidates = [link for link in inputs.values() if is_link(link) and _link_type(prompt, link) == "CONDITIONING"]
+    return (candidates[0], "conditioning") if len(candidates) == 1 else (None, None)
+
+
+def _conditioning_chain(prompt: dict, node_id: str, polarity: str):
+    """샘플러·가이더에서 polarity 컨디셔닝을 거슬러 올라가며 노드 ID 를 낸다(시작 노드 포함).
+
+    FluxGuidance·ControlNetApply·ReferenceLatent 처럼 인코더와 샘플러 사이에 낀 노드를 지나간다.
+    ConditioningZeroOut 에서는 멈춘다(0으로 만든 컨디셔닝에는 기록할 텍스트가 없다).
+    """
+    seen = set()
+    strict = False
+    while node_id in prompt and node_id not in seen and len(seen) < _MAX_CHAIN:
+        seen.add(node_id)
+        yield node_id
+        if prompt[node_id].get("class_type") == "ConditioningZeroOut":
+            return
+        link, name = _next_conditioning_link(prompt, node_id, polarity, strict)
+        if link is None:
+            return
+        strict = name == "guider" and polarity == "negative"
+        node_id = link[0]
+
+
+def _text_source(prompt: dict, node_id: str, polarity: str):
+    for current in _conditioning_chain(prompt, node_id, polarity):
+        inputs = _inputs(prompt, current)
+        if "text" in inputs:
+            return inputs["text"]
+    return None
+
+
 def _field_source(prompt: dict, node_id: str, key: str):
-    """노드 ID 만 준 표준 키: 키 타입의 출력 → 입력 경로 → 하나뿐인 스칼라 출력."""
+    """노드 ID 만 준 표준 키: 키 타입의 출력 → 입력 경로(프롬프트는 컨디셔닝 체인) → 하나뿐인 스칼라 출력."""
     source = _typed_output(prompt, node_id, key)
     if source is None:
-        source = _path_source(prompt, node_id, _FIELD_PATHS[key])
+        source = (_text_source(prompt, node_id, key) if key in _PROMPT_KEYS
+                  else _path_source(prompt, node_id, _FIELD_PATHS[key]))
     if source is None:
         source = _sole_scalar_output(prompt, node_id)
     return source
@@ -400,10 +455,10 @@ def _component_sources(prompt: dict, node_id: str, component: str) -> list:
         seen.add(node_id)
         inputs = _inputs(prompt, node_id)
         found = [inputs[name] for name in names if name in inputs]
+        if "ckpt_name" in inputs:
+            return [value for value in found if not (isinstance(value, str) and value.lower() in _EMBEDDED_NAMES)]
         if found:
             return found
-        if "ckpt_name" in inputs:
-            break
         link = _next_component_link(prompt, node_id, component)
         if link is None:
             break
@@ -412,11 +467,12 @@ def _component_sources(prompt: dict, node_id: str, component: str) -> list:
 
 
 def _te_sources(prompt: dict, node_id: str) -> list:
-    if not any(name in _inputs(prompt, node_id) for name in _CLIP_NAME_INPUTS):
-        positive = _path_source(prompt, node_id, (("positive",), ("guider", "positive")))
-        if is_link(positive):
-            node_id = positive[0]
-    return _component_sources(prompt, node_id, "clip")
+    """positive 컨디셔닝을 거슬러 올라가 처음 만나는 CLIP 입력(또는 clip_name) 노드에서 CLIP 체인을 탄다."""
+    for current in _conditioning_chain(prompt, node_id, "positive"):
+        inputs = _inputs(prompt, current)
+        if is_link(inputs.get("clip")) or any(name in inputs for name in _CLIP_NAME_INPUTS):
+            return _component_sources(prompt, current, "clip")
+    return []
 
 
 def _vae_source(prompt: dict, node_id: str):
@@ -504,7 +560,7 @@ def _add_slots(slots: dict, key: str, specs: list, prompt: dict, scope: str) -> 
                 groups.extend({"value": source} for source in _te_sources(prompt, node_id))
             elif key == "vae":
                 groups.append({"value": _vae_source(prompt, node_id)})
-            elif key in _FIELD_PATHS:
+            elif key in _FIELD_PATHS or key in _PROMPT_KEYS:
                 groups.append({"value": _field_source(prompt, node_id, key)})
             else:
                 source = _named_source(prompt, node_id, key)
@@ -579,10 +635,19 @@ def _register_prompt_handler() -> None:
 
 
 def resolve_refs(payload: dict) -> dict:
-    """미리보기 응답을 순수 계산한다. 요청 프롬프트는 복사해 보존한다."""
+    """미리보기 응답을 순수 계산한다. 요청 프롬프트는 고치지 않는다(해석 결과는 별도 dict 에 모은다).
+
+    해석 함수는 프론트가 만든 정상 프롬프트를 전제로 하므로, 깨진 노드·링크는 여기서 400 으로 거른다.
+    """
     if not isinstance(payload, dict) or not isinstance(payload.get("prompt"), dict):
         raise ValueError("prompt 객체가 필요합니다.")
-    prompt = deepcopy(payload["prompt"])
+    prompt = payload["prompt"]
+    for node in prompt.values():
+        if (not isinstance(node, dict) or not isinstance(node.get("class_type"), str)
+                or not isinstance(node.get("inputs", {}), dict)):
+            raise ValueError("노드는 class_type(문자열)과 inputs(객체)를 가진 객체여야 합니다.")
+        if any(is_link(value) and not isinstance(value[1], int) for value in node.get("inputs", {}).values()):
+            raise ValueError("링크의 출력 번호는 정수여야 합니다.")
     node_id = payload.get("node_id")
     node = prompt.get(node_id) if isinstance(node_id, str) else None
     if not isinstance(node, dict) or node.get("class_type") != _META_NODE_ID:
