@@ -18,7 +18,7 @@ refs 문법 (한 줄에 하나, # 은 주석, 줄 순서 = 커스텀 항목 기�
   키: 노드ID.이름       그 노드의 입력(위젯) 이름, 없으면 출력 이름.
   키: "값"              리터럴.
   ksampler: 노드ID      KSampler(또는 SamplerCustom 계열) 하나로 seed·steps·cfg·
-                        sampler·scheduler·denoise·positive·negative·model·loras 를
+                        sampler·scheduler·denoise·positive·negative·model·loras·te·vae 를
                         한꺼번에 채운다. 따로 적은 키가 이긴다.
   서브그래프 안 Meta 는 같은 서브그래프의 노드 번호를 먼저 찾는다("12:5" 처럼 직접 써도 된다).
 
@@ -30,6 +30,11 @@ refs 문법 (한 줄에 하나, # 은 주석, 줄 순서 = 커스텀 항목 기�
                고른 갈래, 그 밖엔 model 입력 또는 하나뿐인 MODEL 입력. 정할 수 없으면 멈춘다.
   loras        같은 길에서 만나는 LoraLoader(lora_name·strength), loaded_loras 출력(LoraManager 로더),
                LORA_STACK 출력(스태커). 쉼표로 여러 노드를 줄 수 있다.
+  te           (별칭 text_encoder) clip_name 또는 clip_name1~4. 샘플러는 positive(또는 guider →
+               positive)에서 CLIP 링크를 거슬러 올라간다. 여러 이름은 폴더·확장자를 떼고 " + " 로 잇는다.
+  vae          vae_name 또는 VAE 링크를 거슬러 올라간 로더. 샘플러는 출력을 samples 로 받는
+               디코더의 vae 를 찾는다. 여러 디코더의 이름이 다르거나 링크면 추측하지 않는다.
+               te·vae 모두 리터럴 스위치의 고른 갈래만 따라가며 체크포인트 안의 이름은 생략한다.
   seed         INT 출력(시드 노드) / seed / noise_seed / noise → noise_seed
   steps        INT 출력 / steps / sigmas → steps
   cfg          FLOAT 출력 / cfg / guider → cfg
@@ -52,10 +57,12 @@ refs 문법 (한 줄에 하나, # 은 주석, 줄 순서 = 커스텀 항목 기�
   - 서버에서 도는 일이라 UI 없이 API 로 큐에 넣어도 동작한다.
   - 뮤트·바이패스된 노드는 API 프롬프트에서 빠지므로 그 항목은 비고 경고만 남는다.
   - 표준 키의 유선 소켓에 선을 이으면 참조보다 우선하고, 그 키의 참조는 아예 넣지 않는다
-    (쓰지 않을 노드를 실행하지 않게).
+    (쓰지 않을 노드를 실행하지 않게). te·vae 는 refs 전용이며 기존 10개 소켓은 그대로다.
+  - POST /bmk/save_meta/resolve 는 같은 컴파일 함수로 줄별 해석 결과를 미리 보여 준다.
+    실행 후 ui.bmk_save_meta[0] 에 최종 표시 문자열(values)과 해석 못 한 줄(missing)을 보낸다.
 
 파일명 토큰 (BMK NAI Autosave Name 과 같은 문법 — 끝에 % 가 없다):
-  %time %model %steps %cfg %sampler %scheduler %seed %denoise
+  %time %model %vae %te %steps %cfg %sampler %scheduler %seed %denoise
   %width %height (저장하는 이미지의 실제 크기) %postfix (Save 노드 입력) %커스텀키
   - 긴 토큰부터 치환한다(%S 가 %Sft 를 먹지 않게).
   - 토큰이 모두 빈 값인 [...] 묶음은 앞의 구분자(_ - 공백)와 함께 지운다.
@@ -66,7 +73,7 @@ refs 문법 (한 줄에 하나, # 은 주석, 줄 순서 = 커스텀 항목 기�
 
 A1111 parameters:
   긍정 프롬프트, LoRA 태그(none / one line / one per line), Negative prompt:,
-  Steps, Sampler, Schedule type, CFG scale, Seed, Size, Model, Denoising strength
+  Steps, Sampler, Schedule type, CFG scale, Seed, Size, Model, VAE, Text encoder, Denoising strength
   (1 이 아닐 때), 커스텀 항목, Version: ComfyUI. 값에 , : 줄바꿈이 있으면 A1111 처럼
   큰따옴표로 감싼다. 프롬프트에 이미 있는 <lora:이름:...> 은 다시 붙이지 않는다.
   sampler·scheduler 는 ComfyUI 이름 그대로 쓴다(er_sde 처럼 A1111 대응이 없는 것이 많다).
@@ -82,6 +89,8 @@ A1111 parameters:
 - v1.1 (2026-11): 노드 ID 만 준 키가 PrimitiveStringMultiline(입력 이름 value)·Lora Stacker 를
       못 찾고, model 체인이 ComfySwitchNode(on_true/on_false)에서 끊기던 문제. 키 타입의 출력을
       먼저 보고, 리터럴 스위치는 고른 갈래로 건너가며, LORA_STACK 출력도 LoRA 로 읽는다.
+- v1.2 (2026-11): te·vae 참조와 파일명·A1111 표기, 줄별 해석 미리보기 라우트,
+      실행 후 최종 값·미해석 줄 UI 메시지. 기존 소켓과 위젯 순서는 유지한다.
 """
 
 from __future__ import annotations
@@ -92,9 +101,11 @@ import os
 import re
 import sys
 import time
+from copy import deepcopy
 from typing import Any
 
 import numpy as np
+from aiohttp import web
 from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 
@@ -123,11 +134,12 @@ _DEFAULT_TEMPLATE = (
 _DEFAULT_TIME_FORMAT = "%y%m%d-%H%M%S"
 _LORA_MODES = ("none", "one line", "one per line")
 
-_STANDARD_KEYS = (
+_WIRED_KEYS = (
     "positive", "negative", "model", "loras",
     "seed", "steps", "cfg", "sampler", "scheduler", "denoise",
 )
-_KEY_ALIASES = {"prompt": "positive", "lora": "loras"}
+_STANDARD_KEYS = (*_WIRED_KEYS, "te", "vae")
+_KEY_ALIASES = {"prompt": "positive", "lora": "loras", "text_encoder": "te"}
 _BUNDLE_KEY = "ksampler"
 # Save 노드가 채우는 토큰. 같은 이름의 커스텀 키는 받지 않는다.
 _RESERVED_KEYS = ("time", "width", "height", "postfix")
@@ -148,6 +160,7 @@ _KEY_TYPES = {"positive": "STRING", "negative": "STRING", "seed": "INT", "steps"
               "cfg": "FLOAT", "denoise": "FLOAT"}
 _SCALAR_TYPES = ("STRING", "INT", "FLOAT", "BOOLEAN", "COMBO")
 _MODEL_NAME_INPUTS = ("unet_name", "ckpt_name")
+_CLIP_NAME_INPUTS = ("clip_name", "clip_name1", "clip_name2", "clip_name3", "clip_name4")
 _MODEL_EXTS = (".safetensors", ".sft", ".ckpt", ".pt", ".pth", ".bin", ".gguf")
 _MAX_CHAIN = 64
 
@@ -191,13 +204,8 @@ def _parse_specs(body: str, multi: bool):
     return specs
 
 
-def _parse_refs(text: str):
-    """refs 를 [(키, 스펙 목록, 원래 줄)] 과 읽지 못한 줄 목록으로 나눈다.
-
-    표준 키는 소문자로 맞추고 커스텀 키는 대소문자를 살린다.
-    """
-    lines = []
-    errors = []
+def _parse_ref_lines(text: str):
+    """빈 줄·주석을 빼고 원래 순서로 낸다. 문법 오류의 스펙은 None, 커스텀 키는 대소문자를 살린다."""
     for raw in (text or "").splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
@@ -209,10 +217,20 @@ def _parse_refs(text: str):
         if key not in _STANDARD_KEYS and key != _BUNDLE_KEY:
             key = label
         specs = _parse_specs(body, multi=key == "loras") if sep and label and body else None
-        if specs is None or key.lower() in _RESERVED_KEYS:
+        if key.lower() in _RESERVED_KEYS:
+            specs = None
+        yield key if sep and label else None, specs, line
+
+
+def _parse_refs(text: str):
+    """refs 를 [(키, 스펙 목록, 원래 줄)] 과 읽지 못한 줄 목록으로 나눈다."""
+    lines = []
+    errors = []
+    for key, specs, line in _parse_ref_lines(text):
+        if specs is None:
             errors.append(line)
-            continue
-        lines.append((key, specs, line))
+        else:
+            lines.append((key, specs, line))
     return lines, errors
 
 
@@ -358,6 +376,72 @@ def _model_source(prompt: dict, node_id: str):
     return None
 
 
+def _next_component_link(prompt: dict, node_id: str, component: str):
+    """CLIP·VAE 체인에서 고른 갈래, 같은 이름 입력, 유일한 타입 입력 순으로 찾는다."""
+    inputs = _inputs(prompt, node_id)
+    if "switch" in inputs and ("on_true" in inputs or "on_false" in inputs):
+        switch = inputs["switch"]
+        if not isinstance(switch, bool):
+            return None
+        chosen = inputs.get("on_true" if switch else "on_false")
+        return chosen if is_link(chosen) else None
+    if is_link(inputs.get(component)):
+        return inputs[component]
+    candidates = [link for link in inputs.values()
+                  if is_link(link) and _link_type(prompt, link) == component.upper()]
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _component_sources(prompt: dict, node_id: str, component: str) -> list:
+    """체인을 따라 로더의 이름 입력들을 찾는다. 체크포인트 내장 이름은 기록하지 않는다."""
+    names = _CLIP_NAME_INPUTS if component == "clip" else ("vae_name",)
+    seen = set()
+    while node_id in prompt and node_id not in seen and len(seen) < _MAX_CHAIN:
+        seen.add(node_id)
+        inputs = _inputs(prompt, node_id)
+        found = [inputs[name] for name in names if name in inputs]
+        if found:
+            return found
+        if "ckpt_name" in inputs:
+            break
+        link = _next_component_link(prompt, node_id, component)
+        if link is None:
+            break
+        node_id = link[0]
+    return []
+
+
+def _te_sources(prompt: dict, node_id: str) -> list:
+    if not any(name in _inputs(prompt, node_id) for name in _CLIP_NAME_INPUTS):
+        positive = _path_source(prompt, node_id, (("positive",), ("guider", "positive")))
+        if is_link(positive):
+            node_id = positive[0]
+    return _component_sources(prompt, node_id, "clip")
+
+
+def _vae_source(prompt: dict, node_id: str):
+    inputs = _inputs(prompt, node_id)
+    if ("vae_name" not in inputs and "vae" not in inputs
+            and "LATENT" in _output_types(prompt[node_id].get("class_type"))):
+        sources = []
+        for decoder in prompt:
+            decoder_inputs = _inputs(prompt, decoder)
+            samples = decoder_inputs.get("samples")
+            if (is_link(samples) and samples[0] == node_id and _link_type(prompt, samples) == "LATENT"
+                    and "vae" in decoder_inputs):
+                found = _component_sources(prompt, decoder, "vae")
+                sources.append(found[0] if found else None)
+        if not sources:
+            return None
+        # 링크는 실행 전에 비교할 수 없고, 미해석 디코더도 일치한다고 보지 않는다.
+        if len(sources) > 1 and (not all(isinstance(source, str) for source in sources)
+                                 or len(set(sources)) != 1):
+            return None
+        return sources[0]
+    sources = _component_sources(prompt, node_id, "vae")
+    return sources[0] if sources else None
+
+
 def _lora_sources(prompt: dict, node_id: str) -> list:
     """model 체인의 LoRA 를 적용 순서(로더 쪽 먼저)로 [(노드ID, {부분: 소스})] 로 모은다.
 
@@ -416,6 +500,10 @@ def _add_slots(slots: dict, key: str, specs: list, prompt: dict, scope: str) -> 
                         groups.append(parts)
             elif key == "model":
                 groups.append({"value": _model_source(prompt, node_id)})
+            elif key == "te":
+                groups.extend({"value": source} for source in _te_sources(prompt, node_id))
+            elif key == "vae":
+                groups.append({"value": _vae_source(prompt, node_id)})
             elif key in _FIELD_PATHS:
                 groups.append({"value": _field_source(prompt, node_id, key)})
             else:
@@ -430,21 +518,35 @@ def _add_slots(slots: dict, key: str, specs: list, prompt: dict, scope: str) -> 
             index += 1
 
 
+def _resolve_ref_lines(text: str, prompt: dict, scope: str, wired: set) -> list:
+    """컴파일과 미리보기가 공유하는 줄별 결과. 유선·명시 키 우선순위도 여기서 정한다."""
+    lines = list(_parse_ref_lines(text))
+    explicit = {key for key, specs, _ in lines if specs is not None}
+    results = []
+    for key, specs, line in lines:
+        slots = {}
+        if specs is None:
+            status = "invalid"
+        elif key in wired:
+            status = "wired"
+        elif key != _BUNDLE_KEY:
+            _add_slots(slots, key, specs, prompt, scope)
+            status = "ok" if slots else "missing"
+        else:
+            bare = [spec for spec in specs if spec[0] == "ref" and spec[2] is None]
+            for field in _STANDARD_KEYS:
+                if field not in explicit and field not in wired:
+                    _add_slots(slots, field, bare, prompt, scope)
+            status = "ok" if slots else "missing"
+        results.append({"line": line, "key": key, "status": status, "slots": slots})
+    return results
+
+
 def _compile_refs(text: str, prompt: dict, scope: str, wired: set) -> dict:
     """wired = 선이 이어진 표준 키. 유선이 이기므로 그 키의 참조는 의존성으로 넣지 않는다."""
-    lines, _ = _parse_refs(text)
-    explicit = {key for key, _, _ in lines}
-    slots: dict = {}
-    for key, specs, _ in lines:
-        if key in wired:
-            continue
-        if key != _BUNDLE_KEY:
-            _add_slots(slots, key, specs, prompt, scope)
-            continue
-        bare = [spec for spec in specs if spec[0] == "ref" and spec[2] is None]
-        for field in _STANDARD_KEYS:
-            if field not in explicit and field not in wired:
-                _add_slots(slots, field, bare, prompt, scope)
+    slots = {}
+    for result in _resolve_ref_lines(text, prompt, scope, wired):
+        slots.update(result["slots"])
     return slots
 
 
@@ -464,7 +566,7 @@ def compile_refs_in_prompt(json_data: dict) -> dict:
         refs = inputs.get("refs")
         if isinstance(refs, str):
             head, sep, _ = str(node_id).rpartition(":")
-            wired = {key for key in _STANDARD_KEYS if key in inputs}
+            wired = {key for key in _WIRED_KEYS if key in inputs}
             inputs.update(_compile_refs(refs, prompt, head + sep, wired))
     return json_data
 
@@ -474,6 +576,61 @@ def _register_prompt_handler() -> None:
     server = getattr(getattr(sys.modules.get("server"), "PromptServer", None), "instance", None)
     if server is not None:
         server.add_on_prompt_handler(compile_refs_in_prompt)
+
+
+def resolve_refs(payload: dict) -> dict:
+    """미리보기 응답을 순수 계산한다. 요청 프롬프트는 복사해 보존한다."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("prompt"), dict):
+        raise ValueError("prompt 객체가 필요합니다.")
+    prompt = deepcopy(payload["prompt"])
+    node_id = payload.get("node_id")
+    node = prompt.get(node_id) if isinstance(node_id, str) else None
+    if not isinstance(node, dict) or node.get("class_type") != _META_NODE_ID:
+        return {"node_found": False, "lines": []}
+    inputs = _inputs(prompt, node_id)
+    refs = payload.get("refs", inputs.get("refs", ""))
+    if not isinstance(refs, str):
+        return {"node_found": True, "lines": []}
+    head, sep, _ = node_id.rpartition(":")
+    wired = {key for key in _WIRED_KEYS if key in inputs}
+    lines = []
+    for result in _resolve_ref_lines(refs, prompt, head + sep, wired):
+        fields = []
+        for name, value in result["slots"].items():
+            key, _, part = name[len(_REF_PREFIX):].rsplit("|", 2)
+            field = {"key": key, "part": part}
+            if is_link(value):
+                source_id, index = value
+                source = prompt[source_id]
+                names = _output_names(source.get("class_type"))
+                field.update(kind="link", node=source_id, class_type=source.get("class_type"),
+                             title=(source.get("_meta") or {}).get("title"),
+                             output=str(names[index]) if 0 <= index < len(names) else str(index))
+            else:
+                field.update(kind="literal", value=value)
+            fields.append(field)
+        lines.append({"line": result["line"], "key": result["key"], "status": result["status"],
+                      "fields": fields})
+    return {"node_found": True, "lines": lines}
+
+
+async def _resolve_request(request):
+    try:
+        result = resolve_refs(await request.json())
+    except ValueError as exc:
+        return web.json_response({"error": f"요청 JSON을 해석할 수 없습니다: {exc}"}, status=400)
+    return web.json_response(result)
+
+
+def _register_routes() -> None:
+    """서버가 있을 때만 해석 미리보기를 등록한다. 서버 모듈을 직접 불러오지 않는다."""
+    if getattr(_register_routes, "_done", False):
+        return
+    server = getattr(getattr(sys.modules.get("server"), "PromptServer", None), "instance", None)
+    routes = getattr(server, "routes", None)
+    if routes is not None:
+        routes.post("/bmk/save_meta/resolve")(_resolve_request)
+        _register_routes._done = True
 
 
 # ─── 값 정리 ─────────────────────────────────────────────────────
@@ -545,13 +702,18 @@ def _assemble(key: str, groups: dict):
         for entry in entries:
             unique.setdefault((entry["name"].lower(), entry["weight"], entry["clip"]), entry)
         return list(unique.values())
+    if key == "te":
+        names = [_scalar(parts.get("value")) for _, parts in sorted(groups.items())]
+        names = [_model_display(name) for name in names if isinstance(name, str) and name]
+        return " + ".join(names) if names else None
     value = _scalar(groups[min(groups)].get("value"))
-    if key == "model" and isinstance(value, str):
+    if key in ("model", "vae") and isinstance(value, str):
         return _model_display(value)
     return value
 
 
-def _collect_values(refs: Any, kwargs: dict) -> dict:
+def _collect_values(refs: Any, kwargs: dict) -> tuple[dict, list]:
+    """실행된 숨은 입력과 유선을 합치고, 경고에 나온 미해석 줄을 원래 순서로 돌려준다."""
     grouped: dict = {}
     for name, value in kwargs.items():
         if name.startswith(_REF_PREFIX):
@@ -583,7 +745,7 @@ def _collect_values(refs: Any, kwargs: dict) -> dict:
         logger.warning("%s 해석하지 못한 참조 — 노드 ID·이름을 확인하세요(뮤트·바이패스 노드는 빠집니다): %s",
                        _TAG, " | ".join(missing))
 
-    for key in _STANDARD_KEYS:
+    for key in _WIRED_KEYS:
         wired = kwargs.get(key)
         if wired is None:
             continue
@@ -595,7 +757,9 @@ def _collect_values(refs: Any, kwargs: dict) -> dict:
             logger.warning("%s 연결된 %s 값은 문자열·숫자가 아니라 무시합니다.", _TAG, key)
             continue
         values[key] = _model_display(value) if key == "model" and isinstance(value, str) else value
-    return values
+    unresolved = set(errors + missing)
+    return values, [line for _, _, line in _parse_ref_lines(refs if isinstance(refs, str) else "")
+                    if line in unresolved]
 
 
 # ─── 파일명 ───────────────────────────────────────────────────────
@@ -704,6 +868,8 @@ def _a1111_text(values: dict, lora_mode: str, width: int, height: int) -> str:
         ("Seed", values.get("seed")),
         ("Size", f"{width}x{height}"),
         ("Model", values.get("model")),
+        ("VAE", values.get("vae")),
+        ("Text encoder", values.get("te")),
     ]
     denoise = _number(values.get("denoise"))
     if isinstance(denoise, (int, float)) and denoise != 1:
@@ -718,7 +884,7 @@ def _a1111_text(values: dict, lora_mode: str, width: int, height: int) -> str:
 # ─── 노드 ────────────────────────────────────────────────────────
 
 _REFS_PLACEHOLDER = (
-    "ksampler: 3        (KSampler ID 하나로 seed·steps·cfg·sampler·scheduler·denoise·프롬프트·모델·LoRA)\n"
+    "ksampler: 3        (KSampler ID 하나로 seed·steps·cfg·sampler·scheduler·denoise·프롬프트·모델·LoRA·te·vae)\n"
     "positive: 6        (키: 노드ID)\n"
     "Sft: 10.shift      (키: 노드ID.위젯 또는 출력 이름 — 표준 키가 아니면 커스텀 항목, 파일명 %Sft)\n"
     "Note: \"직접 쓴 값\""
@@ -755,7 +921,7 @@ class BMKSaveMeta(io.ComfyNode):
         wired = [
             io.AnyType.Input(key, optional=True,
                              tooltip=_WIRED_TOOLTIPS.get(key, f"{key} 값. 연결하면 refs 보다 우선합니다."))
-            for key in _STANDARD_KEYS
+            for key in _WIRED_KEYS
         ]
         return io.Schema(
             node_id=_META_NODE_ID,
@@ -772,7 +938,7 @@ class BMKSaveMeta(io.ComfyNode):
                 ),
                 io.String.Input(
                     "filename", default=_DEFAULT_TEMPLATE,
-                    tooltip="파일명 템플릿. 토큰: %time %model %steps %cfg %sampler %scheduler %seed "
+                    tooltip="파일명 템플릿. 토큰: %time %model %vae %te %steps %cfg %sampler %scheduler %seed "
                             "%denoise %width %height %postfix %커스텀키. / 는 하위 폴더, 값이 모두 빈 [...] 는 지워집니다.",
                 ),
                 io.String.Input("path", default="", tooltip="output 폴더 아래 하위 폴더. 비우면 output 바로 아래."),
@@ -794,7 +960,8 @@ class BMKSaveMeta(io.ComfyNode):
     def execute(cls, refs, filename, path, time_format, loras_in_prompt, a1111_metadata, embed_workflow,
                 meta_in=None, **kwargs) -> io.NodeOutput:
         values = dict(meta_in["values"]) if meta_in else {}
-        for key, value in _collect_values(refs, kwargs).items():
+        collected, missing = _collect_values(refs, kwargs)
+        for key, value in collected.items():
             if value is not None or key not in values:
                 values[key] = value
         settings = {
@@ -805,7 +972,10 @@ class BMKSaveMeta(io.ComfyNode):
             "a1111_metadata": a1111_metadata,
             "embed_workflow": embed_workflow,
         }
-        return io.NodeOutput({"values": values, "settings": settings})
+        displayed = {key: " ".join(_lora_tag(entry) for entry in value or []) if key == "loras"
+                     else _format_value(value) for key, value in values.items()}
+        return io.NodeOutput({"values": values, "settings": settings},
+                             ui={"bmk_save_meta": [{"values": displayed, "missing": missing}]})
 
 
 class BMKSaveImage(io.ComfyNode):
@@ -868,6 +1038,7 @@ class BMKSaveImage(io.ComfyNode):
 
 
 _register_prompt_handler()
+_register_routes()
 
 
 NODE_CLASS_MAPPINGS = {

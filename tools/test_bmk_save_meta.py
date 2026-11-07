@@ -6,13 +6,14 @@ r"""bmk_save_meta 자체 테스트.
 
 worktree 처럼 ComfyUI 밖에 있는 사본은 COMFYUI_DIR 로 ComfyUI 폴더를 알려 준다.
 
-refs 파싱, on_prompt 링크 컴파일(ksampler 묶음, model·loras 체인, SamplerCustomAdvanced,
+refs 파싱, on_prompt 링크 컴파일(ksampler 묶음, model·loras·te·vae 체인, SamplerCustomAdvanced,
 서브그래프 범위, 재컴파일), Meta 값 조립(meta_in 체인, 유선 우선), 파일명 렌더링,
-A1111 parameters, 실제 PNG 저장(청크·중복 이름·하위 폴더)을 검사한다.
+A1111 parameters, 해석 미리보기·실행 후 UI, 실제 PNG 저장(청크·중복 이름·하위 폴더)을 검사한다.
 노드 클래스 목록(nodes 모듈)은 가짜로 바꿔 끼운다.
 """
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import json
 import logging
@@ -21,7 +22,9 @@ import sys
 import tempfile
 import types
 
+from copy import deepcopy
 from pathlib import Path
+from unittest.mock import patch
 
 _HERE = Path(__file__).resolve()
 COMFY = os.environ.get("COMFYUI_DIR") or str(_HERE.parents[3])  # .../ComfyUI
@@ -73,6 +76,22 @@ class _Switch:
     RETURN_NAMES = ("output",)
 
 
+class _ClipLoader:
+    RETURN_TYPES = ("CLIP",)
+
+
+class _VaeLoader:
+    RETURN_TYPES = ("VAE",)
+
+
+class _CheckpointLoader:
+    RETURN_TYPES = ("MODEL", "CLIP", "VAE")
+
+
+class _Sampler:
+    RETURN_TYPES = ("LATENT",)
+
+
 fake_nodes = types.ModuleType("nodes")
 fake_nodes.NODE_CLASS_MAPPINGS = {
     "UNETLoader": _Loader,
@@ -87,6 +106,14 @@ fake_nodes.NODE_CLASS_MAPPINGS = {
     "BMKCyclicSeed": _CyclicSeed,
     "Wildcard": _Wildcard,
     "SeedNode": _Seed,
+    "CLIPLoader": _ClipLoader,
+    "DualCLIPLoader": _ClipLoader,
+    "TripleCLIPLoader": _ClipLoader,
+    "QuadrupleCLIPLoader": _ClipLoader,
+    "VAELoader": _VaeLoader,
+    "CheckpointLoaderSimple": _CheckpointLoader,
+    "KSampler": _Sampler,
+    "SamplerCustomAdvanced": _Sampler,
 }
 sys.modules["nodes"] = fake_nodes
 
@@ -297,6 +324,9 @@ def user_prompt(refs: str) -> dict:
         "61:37": {"class_type": "ComfySwitchNode", "inputs": {"switch": False, "on_false": ["46", 0], "on_true": ["61:53", 0]}},
         "61:32": {"class_type": "CLIPTextEncode", "inputs": {"text": ["61:37", 0], "clip": ["61:33", 0]}},
         "61:39": {"class_type": "CLIPTextEncode", "inputs": {"text": ["56", 0], "clip": ["61:33", 0]}},
+        "61:33": {"class_type": "CLIPLoader", "inputs": {"clip_name": "qwen3.5_9b_int8_convrot.safetensors"}},
+        "61:35": {"class_type": "VAELoader", "inputs": {"vae_name": "flux2-vae_small.safetensors"}},
+        "61:40": {"class_type": "VAEDecode", "inputs": {"samples": ["61:34", 0], "vae": ["61:35", 0]}},
         "61:34": {"class_type": "KSampler", "inputs": {
             "seed": ["51", 0], "steps": 25, "cfg": 3.0, "sampler_name": "euler", "scheduler": "simple", "denoise": 1.0,
             "model": ["61:42", 0], "positive": ["61:32", 0], "negative": ["61:39", 0], "latent_image": ["61:38", 0]}},
@@ -361,6 +391,125 @@ out = mod.BMKSaveMeta.execute("loras: 55, 50", mod._DEFAULT_TEMPLATE, "", "T", "
 eq([(e["name"], e["weight"]) for e in out.args[0]["values"]["loras"]],
    [("cine-moss", 0.3), ("extra", 1.0), ("extra", 0.5)],
    "LORA_STACK 파싱, 스태커와 로더가 같은 항목을 함께 보고하면 한 번, 강도가 다르면 둘 다")
+
+
+# ─── 2-2. 텍스트 인코더·VAE ──────────────────────────────────────
+
+def prompt_slots(prompt: dict, node_id: str = "61:66") -> dict:
+    mod.compile_refs_in_prompt({"prompt": prompt})
+    return {k[len(P):]: v for k, v in prompt[node_id]["inputs"].items() if k.startswith(P)}
+
+
+def execute_prompt(prompt: dict, runtime=None, meta_in=None):
+    """실제 실행기 대신 지정한 출력 값만 대입한다. 모델·서비스는 실행하지 않는다."""
+    refs = prompt["61:66"]["inputs"]["refs"]
+    slots = prompt_slots(prompt)
+    kwargs = {P + key: (runtime[(value[0], value[1])] if isinstance(value, list) else value)
+              for key, value in slots.items()}
+    return mod.BMKSaveMeta.execute(refs, mod._DEFAULT_TEMPLATE, "", "T", "one line", True, True,
+                                  meta_in=meta_in, **kwargs)
+
+
+slots = user_slots("KSampler: 34")
+eq((slots.get("te|0|value"), slots.get("vae|0|value")),
+   ("qwen3.5_9b_int8_convrot.safetensors", "flux2-vae_small.safetensors"),
+   "사용자 묶음: positive 인코더의 CLIP 과 samples 를 받는 디코더의 VAE")
+eq(user_slots("TEXT_ENCODER: 33\nVAE: 35"),
+   {"te|0|value": "qwen3.5_9b_int8_convrot.safetensors", "vae|0|value": "flux2-vae_small.safetensors"},
+   "te 별칭·대소문자, 로더 직접 참조")
+eq(user_slots("te: 32\nvae: 40"), user_slots("te: 33\nvae: 35"), "인코더·디코더에서 이름을 역추적")
+
+prompt = user_prompt('KSampler: 34\ntext_encoder: "enc/explicit.safetensors"\nvae: "vae/explicit.pt"')
+prompt["61:66"]["inputs"]["steps"] = ["51", 0]
+slots = prompt_slots(prompt)
+eq((slots.get("te|0|value"), slots.get("vae|0|value"), "steps|0|value" in slots),
+   ("enc/explicit.safetensors", "vae/explicit.pt", False), "별도 te·vae 는 묶음보다 우선, 기존 유선도 우선")
+
+for count, loader in ((2, "DualCLIPLoader"), (3, "TripleCLIPLoader"), (4, "QuadrupleCLIPLoader")):
+    prompt = user_prompt("te: 34\nvae: 40")
+    prompt["61:33"] = {"class_type": loader, "inputs": {
+        f"clip_name{i}": ["46", 0] if i == 2 else f"enc/e{i}.v1.safetensors" for i in range(1, count + 1)}}
+    prompt["61:35"]["inputs"]["vae_name"] = ["56", 0]
+    slots = prompt_slots(prompt)
+    eq([slots.get(f"te|{i}|value") for i in range(count)],
+       [["46", 0] if i == 1 else f"enc/e{i + 1}.v1.safetensors" for i in range(count)],
+       f"{loader}: 리터럴·링크 이름을 각 숨은 그룹으로 주입")
+    out = execute_prompt(prompt, {("46", 0): "enc\\e2.v1.gguf", ("56", 0): "vae\\v1.pt"})
+    eq((out.args[0]["values"]["te"], out.args[0]["values"]["vae"]),
+       (" + ".join(f"e{i}.v1" for i in range(1, count + 1)), "v1"),
+       f"{loader}: 실행된 이름 각각의 경로·확장자를 제거하고 순서대로 합침")
+
+prompt = user_prompt("te: 34\nvae: 34")
+prompt["61:80"] = {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "built-in.safetensors"}}
+prompt["61:32"]["inputs"]["clip"] = ["61:80", 1]
+prompt["61:40"]["inputs"]["vae"] = ["61:80", 2]
+eq(prompt_slots(prompt), {}, "체크포인트 내장 CLIP·VAE 이름은 생략")
+
+prompt = user_prompt("te: 30\nvae: 30")
+prompt["61:30"] = {"class_type": "SamplerCustomAdvanced", "inputs": {"guider": ["61:81", 0]}}
+prompt["61:81"] = {"class_type": "CFGGuider", "inputs": {"positive": ["61:32", 0]}}
+prompt["61:40"]["inputs"]["samples"] = ["61:30", 0]
+eq(prompt_slots(prompt), user_slots("te: 33\nvae: 35"), "Custom 샘플러의 guider → positive 와 출력 디코더")
+
+for key, component, start, loader_id in (("te", "clip", "61:32", "61:33"),
+                                       ("vae", "vae", "61:40", "61:35")):
+    prompt = user_prompt(f"{key}: {start}")
+    original = prompt_slots(deepcopy(prompt))
+    prompt[start]["inputs"][component] = ["61:80", 0]
+    prompt["61:80"] = {"class_type": "ComfySwitchNode", "inputs": {
+        "switch": True, "on_true": ["61:81", 0], "on_false": ["999", 0]}}
+    prompt["61:81"] = {"class_type": "ComfySwitchNode", "inputs": {
+        "switch": False, "on_false": [loader_id, 0], "on_true": ["999", 0]}}
+    eq(prompt_slots(prompt), original, f"{key}: 중첩 리터럴 스위치의 고른 갈래만 추적")
+    prompt["61:80"]["inputs"].update(switch=["51", 0], on_true=[loader_id, 0])
+    eq(prompt_slots(prompt), {}, f"{key}: 타입이 맞는 갈래가 하나라도 조건이 링크면 추측하지 않음")
+    prompt["61:80"] = {"class_type": "Wrapper", "inputs": {"renamed": [loader_id, 0]}}
+    eq(prompt_slots(prompt), original, f"{key}: 이름이 달라도 타입 입력이 하나면 추적")
+    prompt["61:80"]["inputs"]["other"] = [loader_id, 0]
+    eq(prompt_slots(prompt), {}, f"{key}: 같은 타입 입력이 둘이면 멈춤")
+    prompt["61:80"]["inputs"][component] = [loader_id, 0]
+    eq(prompt_slots(prompt), original, f"{key}: 같은 이름 입력은 여러 타입 후보보다 우선")
+    prompt["61:80"]["inputs"] = {component: ["61:80", 0]}
+    eq(prompt_slots(prompt), {}, f"{key}: 순환 링크에서 중단")
+    prompt["61:80"]["inputs"] = {component: ["999", 0]}
+    eq(prompt_slots(prompt), {}, f"{key}: 없는 노드에서 중단")
+    for i in range(mod._MAX_CHAIN):
+        prompt[str(1000 + i)] = {"class_type": "Wrapper", "inputs": {component: [str(1001 + i), 0]}}
+    prompt[str(1000 + mod._MAX_CHAIN)] = deepcopy(prompt[loader_id])
+    prompt[start]["inputs"][component] = ["1000", 0]
+    eq(prompt_slots(prompt), {}, f"{key}: 최대 체인 길이를 넘기면 중단")
+
+prompt = user_prompt("vae: 34")
+prompt["61:41"] = {"class_type": "VAEDecodeTiled", "inputs": {"samples": ["61:34", 0], "vae": ["61:36", 0]}}
+prompt["61:36"] = deepcopy(prompt["61:35"])
+eq(prompt_slots(prompt), {"vae|0|value": "flux2-vae_small.safetensors"}, "여러 디코더의 VAE 리터럴 이름이 같으면 기록")
+prompt["61:36"]["inputs"]["vae_name"] = "different.safetensors"
+eq(prompt_slots(prompt), {}, "여러 디코더의 VAE 이름이 다르면 생략")
+prompt["61:36"]["inputs"]["vae_name"] = ["46", 0]
+eq(prompt_slots(prompt), {}, "여러 디코더 중 VAE 이름 링크가 있으면 생략")
+prompt["61:35"]["inputs"]["vae_name"] = ["46", 0]
+eq(prompt_slots(prompt), {}, "여러 디코더가 같은 이름 링크여도 실행 전 비교하지 않음")
+prompt["61:41"]["inputs"]["vae"] = ["999", 0]
+eq(prompt_slots(prompt), {}, "여러 디코더 중 VAE 를 해석 못 한 경우도 생략")
+del prompt["61:41"]
+eq(prompt_slots(prompt), {"vae|0|value": ["46", 0]}, "디코더가 하나면 VAE 이름 링크를 그대로 주입")
+prompt["61:40"]["inputs"]["samples"] = ["61:34", 1]
+eq(prompt_slots(prompt), {}, "샘플러의 LATENT 출력 슬롯만 디코더 탐색에 사용")
+
+prompt = user_prompt("te: 33\nvae: 34")
+prompt["33"] = {"class_type": "CLIPLoader", "inputs": {"clip_name": "root.safetensors"}}
+prompt["34"] = {"class_type": "KSampler", "inputs": {}}
+prompt["35"] = {"class_type": "VAELoader", "inputs": {"vae_name": "root.safetensors"}}
+prompt["40"] = {"class_type": "VAEDecode", "inputs": {"samples": ["34", 0], "vae": ["35", 0]}}
+eq(prompt_slots(prompt), user_slots("te: 33\nvae: 35"), "서브그래프의 같은 번호가 우선, 다른 샘플러의 디코더는 제외")
+prompt["61:66"]["inputs"]["refs"] = "te: 33.clip_name\nvae: 35.vae_name"
+eq(prompt_slots(prompt), user_slots("te: 33\nvae: 35"), "새 키도 노드ID.입력 이름 문법 유지")
+
+schema = mod.BMKSaveMeta.define_schema()
+eq([item.id for item in schema.inputs],
+   ["refs", "filename", "path", "time_format", "loras_in_prompt", "a1111_metadata", "embed_workflow", "meta_in",
+    "positive", "negative", "model", "loras", "seed", "steps", "cfg", "sampler", "scheduler", "denoise"],
+   "기존 입력 목록·순서 유지, te·vae 소켓 없음")
 
 
 # ─── 3. Meta 값 조립 ─────────────────────────────────────────────
@@ -489,6 +638,144 @@ with tempfile.TemporaryDirectory() as tmp:
     png = Image.open(os.path.join(tmp, files[0]["filename"]))
     check("parameters" not in png.text and "workflow" in png.text, "저장: meta 없으면 워크플로만")
     png.close()
+
+
+# ─── 7. 새 키의 파일명·A1111 표기 ────────────────────────────────
+
+tokens = mod._filename_tokens({"te": "clip1 + clip2", "vae": "vae.v1"}, "T", 8, 8, "")
+eq(mod._render_filename("[%te]_[%vae]", tokens), "[clip1 + clip2]_[vae.v1]", "te·vae 파일명 토큰")
+tokens = mod._filename_tokens({}, "T", 8, 8, "")
+eq(mod._render_filename("[%time]_[te%te]-[vae%vae]", tokens), "[T]", "없는 te·vae 의 빈 묶음 제거")
+eq(mod._a1111_text({"model": "m", "vae": "v,1", "te": "clip:1 + clip2", "denoise": 0.5}, "none", 8, 8),
+   '\nSize: 8x8, Model: m, VAE: "v,1", Text encoder: "clip:1 + clip2", Denoising strength: 0.5, Version: ComfyUI',
+   "A1111: Model → VAE → Text encoder 순서와 기존 따옴표 규칙")
+eq(mod._a1111_text({"model": "m", "vae": "", "te": None}, "none", 8, 8),
+   "\nSize: 8x8, Model: m, Version: ComfyUI", "A1111: 빈 te·vae 생략")
+
+
+# ─── 8. 미리보기 응답·라우트 (실제 HTTP 없음) ─────────────────────
+
+refs = '# 주석\n\nKSampler: 34\npositive: 99\nbad line\nsteps: 34\nwidth: 34\nNote: "메모"'
+prompt = user_prompt(refs)
+prompt["51"]["_meta"] = {"title": "Seed"}
+prompt["61:66"]["inputs"].update(steps=["51", 0], **{P + "stale|0|value": "old"})
+payload = {"prompt": prompt, "node_id": "61:66"}
+before = deepcopy(payload)
+preview = mod.resolve_refs(payload)
+eq(payload, before, "미리보기는 refs·숨은 입력을 포함해 요청 프롬프트를 바꾸지 않음")
+eq(preview["node_found"], True, "미리보기: 서브그래프 Meta 찾음")
+eq([(line["line"], line["key"], line["status"]) for line in preview["lines"]], [
+    ("KSampler: 34", "ksampler", "ok"), ("positive: 99", "positive", "missing"),
+    ("bad line", None, "invalid"), ("steps: 34", "steps", "wired"),
+    ("width: 34", "width", "invalid"), ('Note: "메모"', "Note", "ok"),
+], "미리보기: 빈 줄·주석만 제외하고 문법 오류·예약 키·유선·미해석 줄 순서 유지")
+bundle_fields = preview["lines"][0]["fields"]
+check({"key": "seed", "part": "value", "kind": "link", "node": "51", "class_type": "BMKCyclicSeed",
+       "title": "Seed", "output": "seed"} in bundle_fields, "미리보기 링크: 노드 ID·클래스·제목·출력 이름")
+check({"key": "loras", "part": "value", "kind": "link", "node": "61:50",
+       "class_type": "Lora Loader (LoraManager)", "title": None, "output": "loaded_loras"} in bundle_fields,
+      "미리보기 링크: 제목이 없으면 null")
+check({"key": "te", "part": "value", "kind": "literal", "value": "qwen3.5_9b_int8_convrot.safetensors"}
+      in bundle_fields, "미리보기 리터럴: 실행 전에 원본 이름을 보여 줌")
+check(all(not line["fields"] for line in preview["lines"][1:5]), "미해석·문법 오류·유선 줄은 fields 가 빈 배열")
+eq(preview["lines"][-1]["fields"], [{"key": "Note", "part": "value", "kind": "literal", "value": "메모"}],
+   "미리보기: 커스텀 키 대소문자와 리터럴 유지")
+compiled = prompt_slots(deepcopy(prompt))
+preview_slots = []
+for line in preview["lines"]:
+    for field in line["fields"]:
+        value = field["value"] if field["kind"] == "literal" else [
+            field["node"], mod._output_names(field["class_type"]).index(field["output"])]
+        preview_slots.append((field["key"], field["part"], value))
+eq(preview_slots, [(name.rsplit("|", 2)[0], name.rsplit("|", 2)[2], value) for name, value in compiled.items()],
+   "미리보기의 모든 필드가 실제 on_prompt 주입 결과와 일치")
+
+override = dict(payload, refs="TEXT_ENCODER: 33\nvae: 35")
+eq([line["key"] for line in mod.resolve_refs(override)["lines"]], ["te", "vae"], "요청 refs 가 노드의 refs 보다 우선")
+eq(mod.resolve_refs(dict(payload, refs="")), {"node_found": True, "lines": []}, "빈 refs 덮어쓰기")
+eq(payload, before, "여러 번 미리보기 후에도 원본 프롬프트 보존")
+for node_id in ("999", "51", None):
+    eq(mod.resolve_refs(dict(payload, node_id=node_id)), {"node_found": False, "lines": []},
+       f"없는 ID·다른 클래스·누락 ID 응답: {node_id}")
+prompt = user_prompt("Extra: 88.value")
+prompt["88"] = {"class_type": "Other", "inputs": {"value": ["89", 3]}}
+prompt["89"] = {"class_type": "Unknown", "inputs": {}}
+eq(mod.resolve_refs({"prompt": prompt, "node_id": "61:66"})["lines"][0]["fields"],
+   [{"key": "Extra", "part": "value", "kind": "link", "node": "89", "class_type": "Unknown",
+     "title": None, "output": "3"}], "출력 이름을 모르면 슬롯 번호 문자열")
+prompt["61:66"]["inputs"]["refs"] = ["46", 0]
+eq(mod.resolve_refs({"prompt": prompt, "node_id": "61:66"}), {"node_found": True, "lines": []},
+   "refs 가 링크면 큐 컴파일처럼 해석하지 않음")
+
+prompt = make_prompt("loras: 2")
+eq(mod.resolve_refs({"prompt": prompt, "node_id": "9"})["lines"][0]["fields"], [
+    {"key": "loras", "part": "name", "kind": "literal", "value": "styles/NikkeB1.safetensors"},
+    {"key": "loras", "part": "weight", "kind": "literal", "value": 0.8},
+], "LoRA 이름·강도 숨은 입력마다 미리보기 필드를 하나씩 반환")
+prompt = user_prompt("te: 33")
+prompt["61:33"] = {"class_type": "DualCLIPLoader", "inputs": {
+    "clip_name1": "one.safetensors", "clip_name2": ["46", 0]}}
+eq([field["kind"] for field in mod.resolve_refs({"prompt": prompt, "node_id": "61:66"})["lines"][0]["fields"]],
+   ["literal", "link"], "DualCLIP 미리보기: 이름마다 리터럴·링크 종류를 따로 표시")
+
+
+class _Request:
+    def __init__(self, body):
+        self.body = body
+
+    async def json(self):
+        return json.loads(self.body)
+
+
+response = asyncio.run(mod._resolve_request(_Request(json.dumps(payload))))
+eq((response.status, json.loads(response.text)), (200, preview), "라우트 래퍼: 순수 응답 함수를 200 JSON 으로 반환")
+response = asyncio.run(mod._resolve_request(_Request(json.dumps(dict(payload, node_id="999")))))
+eq((response.status, json.loads(response.text)), (200, {"node_found": False, "lines": []}), "라우트: 없는 ID 도 200")
+for body in ('{"prompt":', 'null', '{"prompt": []}'):
+    response = asyncio.run(mod._resolve_request(_Request(body)))
+    check(response.status == 400 and isinstance(json.loads(response.text).get("error"), str),
+          f"깨진 JSON·잘못된 요청 객체는 400 error: {body}")
+
+check(not getattr(mod._register_routes, "_done", False), "서버 없는 단독 import 는 라우트 등록을 건너뜀")
+handlers = []
+routes = mod.web.RouteTableDef()
+server = types.SimpleNamespace(PromptServer=types.SimpleNamespace(instance=types.SimpleNamespace(
+    routes=routes, add_on_prompt_handler=handlers.append)))
+with patch.dict(sys.modules, {"server": server}):
+    route_spec = importlib.util.spec_from_file_location("_bmk_save_meta_routes", MODULE)
+    route_mod = importlib.util.module_from_spec(route_spec)
+    route_spec.loader.exec_module(route_mod)
+    route_mod._register_routes()
+eq([(route.method, route.path) for route in routes], [("POST", "/bmk/save_meta/resolve")],
+   "서버가 있으면 import 시 POST 라우트를 한 번만 등록")
+eq(handlers, [route_mod.compile_refs_in_prompt], "import 시 기존 on_prompt 핸들러도 유지")
+
+
+# ─── 9. 실행 후 UI ───────────────────────────────────────────────
+
+inherited = {"values": {"seed": 42, "Keep": "상속", "Missing": "보존", "Empty": None,
+                        "Flag": False, "Zero": 0, "cfg": 2.5,
+                        "loras": [{"name": "a", "weight": 1.0, "clip": None},
+                                  {"name": "b", "weight": 0.5, "clip": 0.25}]}}
+before = deepcopy(inherited)
+WARNINGS.messages.clear()
+out = mod.BMKSaveMeta.execute('bad line\nMissing: 99\nwidth: 3\nsteps: 99\nksampler: 999',
+                              mod._DEFAULT_TEMPLATE, "", "T", "one line", True, True,
+                              meta_in=inherited, steps=17)
+eq(out.ui, {"bmk_save_meta": [{"values": {
+    "seed": "42", "Keep": "상속", "Missing": "보존", "Empty": "", "Flag": "off", "Zero": "0", "cfg": "2.5",
+    "loras": "<lora:a:1> <lora:b:0.5:0.25>", "steps": "17",
+}, "missing": ["bad line", "Missing: 99", "width: 3", "ksampler: 999"]}]},
+   "UI: 리스트 한 겹, 상속 포함 최종 표시 문자열·LoRA 공백 결합, 유선 제외 미해석·문법 오류 줄")
+check(all(any(line in warning for warning in WARNINGS.messages) for line in out.ui["bmk_save_meta"][0]["missing"]),
+      "UI missing 은 이번 실행의 경고에 나온 refs 줄")
+eq(inherited, before, "실행 후 UI 생성도 meta_in 을 바꾸지 않음")
+eq(out.args[0]["values"]["seed"], 42, "UI 문자열 변환이 실제 meta 값의 타입을 바꾸지 않음")
+out = execute_prompt(user_prompt("te: 33\nvae: 35\nAbsent: 999"))
+eq(out.ui["bmk_save_meta"], [{"values": {"te": "qwen3.5_9b_int8_convrot", "vae": "flux2-vae_small", "Absent": ""},
+                            "missing": ["Absent: 999"]}], "UI: 새 키는 실행 후 정리된 이름, 없는 값은 빈 문자열")
+out = mod.BMKSaveMeta.execute("", mod._DEFAULT_TEMPLATE, "", "T", "one line", True, True)
+eq(out.ui, {"bmk_save_meta": [{"values": {}, "missing": []}]}, "값이 없어도 UI 계약 유지")
 
 
 print(f"\n{PASSES} passed, {len(FAILS)} failed")
