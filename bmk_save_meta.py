@@ -22,20 +22,23 @@ refs 문법 (한 줄에 하나, # 은 주석, 줄 순서 = 커스텀 항목 기�
                         한꺼번에 채운다. 따로 적은 키가 이긴다.
   서브그래프 안 Meta 는 같은 서브그래프의 노드 번호를 먼저 찾는다("12:5" 처럼 직접 써도 된다).
 
-  표준 키      노드 ID 만 주었을 때 찾는 곳
-  positive     text  /  positive 링크 → text  /  guider → positive → text
-  negative     text  /  negative 링크 → text  /  guider → negative → text
-  model        model 링크를 따라 올라가 unet_name · ckpt_name
-  loras        model 링크를 따라 올라가며 만나는 LoraLoader(lora_name·strength)와
-               loaded_loras 출력(LoraManager). 쉼표로 여러 노드를 줄 수 있다.
-  seed         seed / noise_seed / noise → noise_seed
-  steps        steps / sigmas → steps
-  cfg          cfg / guider → cfg
+  표준 키      노드 ID 만 주었을 때 찾는 곳 (왼쪽부터)
+  ("STRING 출력" 등은 키와 같은 이름의 출력, 없으면 그 타입 출력이 하나뿐일 때)
+  positive     STRING 출력(프롬프트 노드) / text / positive 링크 → text / guider → positive → text
+  negative     STRING 출력 / text / negative 링크 → text / guider → negative → text
+  model        모델 링크를 한 줄로 거슬러 올라가 unet_name · ckpt_name. switch 가 리터럴인 스위치는
+               고른 갈래, 그 밖엔 model 입력 또는 하나뿐인 MODEL 입력. 정할 수 없으면 멈춘다.
+  loras        같은 길에서 만나는 LoraLoader(lora_name·strength), loaded_loras 출력(LoraManager 로더),
+               LORA_STACK 출력(스태커). 쉼표로 여러 노드를 줄 수 있다.
+  seed         INT 출력(시드 노드) / seed / noise_seed / noise → noise_seed
+  steps        INT 출력 / steps / sigmas → steps
+  cfg          FLOAT 출력 / cfg / guider → cfg
   sampler      sampler_name / sampler → sampler_name
   scheduler    scheduler / sigmas → scheduler
-  denoise      denoise / sigmas → denoise
-  그 밖의 키는 커스텀 항목이다. 노드 ID 만 주면 키 이름과 같은 입력을 찾는다.
-  A1111 줄 끝에 "키: 값" 으로, 파일명에는 %키 토큰으로 들어간다.
+  denoise      FLOAT 출력 / denoise / sigmas → denoise
+  위에서 못 찾으면 출력이 하나뿐인 노드(Primitive 등)의 그 출력을 쓴다.
+  그 밖의 키는 커스텀 항목이다. 노드 ID 만 주면 키 이름과 같은 입력, 없으면 출력이 하나뿐인
+  노드의 그 출력을 쓴다. A1111 줄 끝에 "키: 값" 으로, 파일명에는 %키 토큰으로 들어간다.
 
 참조 해석 — 큐 직전 링크 컴파일:
   PromptServer 의 on_prompt 핸들러가 /prompt 요청을 검증 전에 고친다. Meta 노드의
@@ -76,6 +79,9 @@ A1111 parameters:
 버전 이력:
 - v1 (2026-11): 최초. on_prompt 링크 컴파일, ksampler 묶음, model·loras 체인 추적,
       meta_in 체인, 빈 묶음 제거, A1111 parameters + 워크플로 임베드.
+- v1.1 (2026-11): 노드 ID 만 준 키가 PrimitiveStringMultiline(입력 이름 value)·Lora Stacker 를
+      못 찾고, model 체인이 ComfySwitchNode(on_true/on_false)에서 끊기던 문제. 키 타입의 출력을
+      먼저 보고, 리터럴 스위치는 고른 갈래로 건너가며, LORA_STACK 출력도 LoRA 로 읽는다.
 """
 
 from __future__ import annotations
@@ -137,6 +143,10 @@ _FIELD_PATHS = {
     "positive": (("text",), ("positive", "text"), ("guider", "positive", "text")),
     "negative": (("text",), ("negative", "text"), ("guider", "negative", "text")),
 }
+# 가리킨 노드가 이 타입의 값을 내보내면(텍스트·시드 노드) 입력 경로보다 그 출력을 먼저 쓴다.
+_KEY_TYPES = {"positive": "STRING", "negative": "STRING", "seed": "INT", "steps": "INT",
+              "cfg": "FLOAT", "denoise": "FLOAT"}
+_SCALAR_TYPES = ("STRING", "INT", "FLOAT", "BOOLEAN", "COMBO")
 _MODEL_NAME_INPUTS = ("unet_name", "ckpt_name")
 _MODEL_EXTS = (".safetensors", ".sft", ".ckpt", ".pt", ".pth", ".bin", ".gguf")
 _MAX_CHAIN = 64
@@ -216,6 +226,42 @@ def _output_names(class_type: Any) -> tuple:
     return tuple(getattr(cls, "RETURN_NAMES", None) or cls.RETURN_TYPES or ())
 
 
+def _output_types(class_type: Any) -> tuple:
+    cls = nodes.NODE_CLASS_MAPPINGS.get(class_type)
+    return tuple(cls.RETURN_TYPES or ()) if cls is not None else ()
+
+
+def _link_type(prompt: dict, link: list):
+    types = _output_types(prompt[link[0]].get("class_type")) if link[0] in prompt else ()
+    index = int(link[1])
+    return types[index] if index < len(types) else None
+
+
+def _typed_output(prompt: dict, node_id: str, key: str):
+    """키 이름과 같은 이름의 출력, 없으면 키 타입의 출력이 하나뿐일 때 그 출력.
+
+    seed·steps·cfg·denoise 를 모두 내보내는 컨텍스트 노드에서 첫 INT·FLOAT 를 잡지 않게 한다.
+    """
+    wanted = _KEY_TYPES.get(key)
+    if wanted is None:
+        return None
+    class_type = prompt[node_id].get("class_type")
+    types = _output_types(class_type)
+    for index, (name, kind) in enumerate(zip(_output_names(class_type), types)):
+        if kind == wanted and str(name).lower() == key:
+            return [node_id, index]
+    matches = [index for index, kind in enumerate(types) if kind == wanted]
+    return [node_id, matches[0]] if len(matches) == 1 else None
+
+
+def _sole_scalar_output(prompt: dict, node_id: str):
+    """출력이 하나뿐이고 문자열·숫자 같은 값이면 그 출력(Primitive 노드 등)."""
+    types = _output_types(prompt[node_id].get("class_type"))
+    if len(types) == 1 and (isinstance(types[0], list) or types[0] in _SCALAR_TYPES):
+        return [node_id, 0]
+    return None
+
+
 def _find_node(prompt: dict, scope: str, ref_id: str):
     if scope and scope + ref_id in prompt:
         return scope + ref_id
@@ -255,8 +301,38 @@ def _path_source(prompt: dict, node_id: str, paths: tuple):
     return None
 
 
+def _field_source(prompt: dict, node_id: str, key: str):
+    """노드 ID 만 준 표준 키: 키 타입의 출력 → 입력 경로 → 하나뿐인 스칼라 출력."""
+    source = _typed_output(prompt, node_id, key)
+    if source is None:
+        source = _path_source(prompt, node_id, _FIELD_PATHS[key])
+    if source is None:
+        source = _sole_scalar_output(prompt, node_id)
+    return source
+
+
+def _next_model_link(prompt: dict, node_id: str):
+    """이 노드가 받은 모델을 거슬러 올라갈 링크 하나. 하나로 정할 수 없으면 None(멈춤).
+
+    - switch 가 리터럴인 스위치(on_true·on_false)는 고른 갈래. 안쪽 스위치 출력은 MODEL 로
+      선언되지 않으므로 타입을 보지 않고 따라간다.
+    - 그 밖에는 model 입력, 없으면 MODEL 타입 입력이 딱 하나일 때 그것.
+    조건이 링크인 스위치나 MODEL 입력이 여럿인 노드에서 갈래를 다 따라가면 실행되지 않을
+    로더까지 링크로 끌어와 실행시키고 쓰지 않은 LoRA 를 기록하게 된다.
+    """
+    inputs = _inputs(prompt, node_id)
+    switch = inputs.get("switch")
+    if isinstance(switch, bool) and ("on_true" in inputs or "on_false" in inputs):
+        chosen = inputs.get("on_true" if switch else "on_false")
+        return chosen if is_link(chosen) else None
+    if is_link(inputs.get("model")):
+        return inputs["model"]
+    candidates = [link for link in inputs.values() if is_link(link) and _link_type(prompt, link) == "MODEL"]
+    return candidates[0] if len(candidates) == 1 else None
+
+
 def _model_chain(prompt: dict, node_id: str):
-    """node_id 에서 model 입력 링크를 따라 올라가며 노드 ID 를 낸다.
+    """node_id 에서 모델을 거슬러 올라가며 노드 ID 를 낸다(_next_model_link 를 따라 한 줄로).
 
     SamplerCustomAdvanced 처럼 model 입력이 없고 guider 가 있으면 guider 에서 시작한다.
     """
@@ -267,8 +343,8 @@ def _model_chain(prompt: dict, node_id: str):
     while node_id in prompt and node_id not in seen and len(seen) < _MAX_CHAIN:
         seen.add(node_id)
         yield node_id
-        link = _inputs(prompt, node_id).get("model")
-        if not is_link(link):
+        link = _next_model_link(prompt, node_id)
+        if link is None:
             return
         node_id = link[0]
 
@@ -283,7 +359,11 @@ def _model_source(prompt: dict, node_id: str):
 
 
 def _lora_sources(prompt: dict, node_id: str) -> list:
-    """model 체인의 LoRA 를 적용 순서(로더 쪽 먼저)로 [(노드ID, {부분: 소스})] 로 모은다."""
+    """model 체인의 LoRA 를 적용 순서(로더 쪽 먼저)로 [(노드ID, {부분: 소스})] 로 모은다.
+
+    LoraManager 로더의 loaded_loras 는 받은 lora_stack 까지 담고, 스태커의 LORA_STACK 은
+    위쪽 스태커까지 담는다(active_loras 는 그 노드 몫뿐이라 쓰지 않는다).
+    """
     found = []
     for current in _model_chain(prompt, node_id):
         inputs = _inputs(prompt, current)
@@ -296,8 +376,11 @@ def _lora_sources(prompt: dict, node_id: str) -> list:
             found.append((current, parts))
             continue
         outputs = _output_names(prompt[current].get("class_type"))
+        types = _output_types(prompt[current].get("class_type"))
         if "loaded_loras" in outputs:
             found.append((current, {"value": [current, outputs.index("loaded_loras")]}))
+        elif "LORA_STACK" in types:
+            found.append((current, {"value": [current, types.index("LORA_STACK")]}))
     found.reverse()
     return found
 
@@ -334,9 +417,10 @@ def _add_slots(slots: dict, key: str, specs: list, prompt: dict, scope: str) -> 
             elif key == "model":
                 groups.append({"value": _model_source(prompt, node_id)})
             elif key in _FIELD_PATHS:
-                groups.append({"value": _path_source(prompt, node_id, _FIELD_PATHS[key])})
+                groups.append({"value": _field_source(prompt, node_id, key)})
             else:
-                groups.append({"value": _named_source(prompt, node_id, key)})
+                source = _named_source(prompt, node_id, key)
+                groups.append({"value": _sole_scalar_output(prompt, node_id) if source is None else source})
         for parts in groups:
             usable = {part: value for part, value in parts.items() if _usable_source(prompt, value)}
             if "value" not in usable and "name" not in usable:
@@ -424,8 +508,10 @@ def _number(value: Any) -> Any:
 
 
 def _lora_entry(name: Any, weight: Any = 1.0, clip: Any = None) -> dict:
+    """클립 강도가 모델 강도와 같으면 None 으로 둔다(LORA_STACK 과 <lora:이름:강도> 가 같은 항목이 되게)."""
+    weight = _number(weight)
     clip = None if clip in (None, "") else _number(clip)
-    return {"name": _model_display(str(name)), "weight": _number(weight), "clip": clip}
+    return {"name": _model_display(str(name)), "weight": weight, "clip": None if clip == weight else clip}
 
 
 def _loras_from_value(value: Any) -> list:
@@ -454,7 +540,11 @@ def _assemble(key: str, groups: dict):
                 entries.extend(_loras_from_value(parts["value"]))
             elif "name" in parts:
                 entries.append(_lora_entry(parts["name"], parts.get("weight", 1.0), parts.get("clip")))
-        return entries
+        # 스태커와 그 스택을 받은 로더를 함께 적으면 같은 항목이 두 번 나온다. 강도가 다르면 별개 적용이라 둔다.
+        unique = {}
+        for entry in entries:
+            unique.setdefault((entry["name"].lower(), entry["weight"], entry["clip"]), entry)
+        return list(unique.values())
     value = _scalar(groups[min(groups)].get("value"))
     if key == "model" and isinstance(value, str):
         return _model_display(value)
