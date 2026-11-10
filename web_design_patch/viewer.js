@@ -90,7 +90,7 @@ window.DPViewer = (() => {
     const isolated = svg("svg", { class: "dr-isolate" });
     stage.append(imgBg, imgHi, ov, isolated, marks);
     const labels = el("div", "labels");
-    const empty = el("div", "vempty", "불러오는 중…");
+    const empty = el("div", "vempty dp-empty", "불러오는 중…");
     port.append(stage, labels, empty);
     host.replaceChildren(bar, port);
 
@@ -159,7 +159,7 @@ window.DPViewer = (() => {
           depth: svg("rect", { fill: "black", "fill-opacity": 0.12 }), rect: [] }));
         for (const row of rows) mask.append(row.cut);
         const pattern = svg("pattern", { id: `${isolateId}-check`, patternUnits: "userSpaceOnUse" });
-        pattern.append(svg("rect", { fill: "#171a20" }), svg("rect", { fill: "#292e38" }), svg("rect", { fill: "#292e38" }));
+        pattern.append(svg("rect", { class: "dr-check-base" }), svg("rect", { class: "dr-check-tile" }), svg("rect", { class: "dr-check-tile" }));
         const outside = svg("rect", { fill: `url(#${isolateId}-check)`, mask: `url(#${isolateId})` });
         const selected = svg("rect", { class: "dr-selected" });
         defs.append(mask, pattern);
@@ -577,7 +577,7 @@ window.DPViewer = (() => {
       crops = st.crops || [];
       empty.hidden = !!canvas;
       if (!canvas) {
-        empty.textContent = "베이스가 없습니다 — Import PSD 를 먼저 실행하세요";
+        empty.textContent = "베이스가 없습니다 — ① 준비에서 [반영 (무료)] 를 먼저 누르세요";
         stage.hidden = true;
         return;
       }

@@ -857,3 +857,6 @@ svg.marks .draft, svg.marks .rpoly, svg.marks .mx-outline, .dr-selected {
 
 /* ── Forge F3-U2 (도구·빈 화면) — 갈래 U2 는 이 표시 아래에만 덧붙인다 ── */
 /* 색은 변수로만. */
+svg.dr-isolate .dr-check-base { fill: var(--panel); }
+svg.dr-isolate .dr-check-tile { fill: var(--panel2); }
+svg.marks .mguide { fill: var(--accent); }

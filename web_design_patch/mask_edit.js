@@ -9,6 +9,8 @@
 "use strict";
 
 window.DPMaskEdit = (() => {
+  const SM = () => !!(window.DPEnv && window.DPEnv.serverMode);
+  const modeText = (local, server) => SM() ? server : local;
   const UNDO_MAX = 50; // 세션 실행 취소 단계(획 하나·한 번에 하는 연산 하나) — 넘으면 오래된 것부터 버림(경고 없음, 적용 요약에는 남김)
   const WIDTHS = [32, 64, 128]; // 경계 페이드 폭 — 기본 64(U0 §2.2: 32 는 끊김이 짧은 띠로 남고 128 은 넓은 띠에서 이중 윤곽)
   const SIZE = [4, 512]; // 붓 크기(지름 — 크롭 px, 도장 반지름 R = 크기 / 2)
@@ -21,7 +23,7 @@ window.DPMaskEdit = (() => {
   const TILE = 64; // 부드럽게 붓의 흐림 사본을 이 칸 단위로 필요할 때만 계산
   const LOCKED = ["apply", "edit", "pick", "zorder", "adjust_wait", "adjust"]; // 대상 바꾸기·나가기를 거절하는 busy
   const SIDES = { top: "위", bottom: "아래", left: "왼", right: "오른" };
-  const TOOLS = { erase: "지우기", revive: "살리기", soften: "흐리기" };
+  const TOOLS = { erase: "지우개", revive: "브러시", soften: "흐리기" };
   const SRC = { auto: "자동 마스크", hand: "손 마스크", none: "마스크 없음(창 전체)" };
 
   // ── 식(§3.5 — 마스크 m ∈ [0, 1], 크롭 해상도. J-K1 이 mask_rules.json 의 모든 행과 맞춰 본다) ──
@@ -350,7 +352,8 @@ window.DPMaskEdit = (() => {
     }
 
     function failure(r, d) {
-      const msg = d && d.error ? d.error : r.status === 404 ? "마스크 라우트가 없습니다 — ComfyUI 를 재시작해야 마스크 편집(K)을 쓸 수 있습니다"
+      const msg = d && d.error ? d.error : r.status === 404 ? modeText("마스크 라우트가 없습니다 — ComfyUI 를 재시작해야 마스크 편집(K)을 쓸 수 있습니다",
+        "마스크 편집을 불러올 수 없습니다 — 화면을 새로 고쳐 보세요 — 계속되면 관리자에게 알려 주세요")
         : `응답을 읽을 수 없습니다 (HTTP ${r.status})`;
       return Object.assign(new Error(msg), { status: r.status, data: d });
     }
@@ -1287,7 +1290,7 @@ window.DPMaskEdit = (() => {
     }
 
     function warnXform() {
-      opts.toast(M.pending() ? "적용 안 한 획을 적용하거나 버린 뒤 보정하세요 — 「후보 보정」 칸 [적용 (Enter)]·[버리기] (자동 손질도 획으로 셉니다)"
+      opts.toast(M.pending() ? "적용 안 한 획을 적용하거나 버린 뒤 보정하세요 — 「후보 보정」 칸 [적용 (Enter)]·[전체 지우기] (자동 손질도 획으로 셉니다)"
         : "지금은 변형할 수 없습니다 — 작업이 끝나거나 다시 받은 뒤 시도하세요", "warn");
     }
 
@@ -1444,10 +1447,10 @@ window.DPMaskEdit = (() => {
           const ranges = active.whole ? [M.win] : r ? (active.sides || [active.side]).map((side) =>
             fadeBounds(side, r, active.width, M.win, active.a ?? null, active.b ?? null)) : [];
           for (const b of ranges) if (b[2] > b[0] && b[3] > b[1]) root.append(svg("rect", {
-            x: b[0], y: b[1], width: b[2] - b[0], height: b[3] - b[1], class: "mguide", fill: "#ffd477", "fill-opacity": 0.18,
+            x: b[0], y: b[1], width: b[2] - b[0], height: b[3] - b[1], class: "mguide", "fill-opacity": 0.18,
             stroke: "none", "pointer-events": "none" }));
           if (active.feather) {
-            const t = svg("text", { x: M.win[0] + 8 / z, y: M.win[1] + 18 / z, class: "mguide", fill: "#ffd477", "font-size": 12 / z,
+            const t = svg("text", { x: M.win[0] + 8 / z, y: M.win[1] + 18 / z, class: "mguide", "font-size": 12 / z,
               "pointer-events": "none" });
             t.textContent = `창 전체에 적용 (σ ${active.sigma ?? sigma} px)`;
             root.append(t);
@@ -2057,7 +2060,7 @@ window.DPMaskEdit = (() => {
         const busy = !!M.busy || !!M.stroke;
         line(s, "적용 안 한 획을 적용하거나 버린 뒤 보정하세요 ", "warn").append(
           off(button("적용 (Enter)", "적용 안 한 획을 저장(무료) — 그 뒤 보정할 수 있음", apply, "inline"), busy),
-          off(historyButton("버리기", "적용 전 획", "clear", "획 모두 버리기", "", discard, "inline"), busy));
+          off(historyButton("전체 지우기", "적용 전 획", "clear", "획 모두 버리기", "", discard, "inline"), busy));
         line(s, "자동 손질(가장자리 페이드·이음매 페이드·전체 페더·처음 마스크로)도 적용 전 획으로 셉니다", "dim");
       } else if (M.busy === "adjust") line(s, "보정 저장·미리보기 받는 중…", "dim");
       btns(s, ...buttons);
@@ -2091,7 +2094,7 @@ window.DPMaskEdit = (() => {
         zControls(s, info, busy);
         if (info.base.src === "auto") {
           // 자동 마스크는 대상을 알아보는 것이 아님(10/21 실사용 — '프롬프트로 대상을 찾은 영역'으로 읽힘, U-2)
-          line(s, "자동 마스크 = Analyze 가 후보와 원본 크롭의 색 차이(ΔE)로 만든 영역 — 대상인지와 무관: 엉뚱하게 바뀐 곳은 [지우기], 대상 안 구멍은 [살리기]", "dim");
+          line(s, "자동 마스크 = Analyze 가 후보와 원본 크롭의 색 차이(ΔE)로 만든 영역 — 대상인지와 무관: 엉뚱하게 바뀐 곳은 [지우개], 대상 안 구멍은 [브러시]", "dim");
         }
         const ed = info.edit;
         if (!ed) line(s, "편집 없음 — 처음 마스크 그대로", "dim");
@@ -2148,7 +2151,7 @@ window.DPMaskEdit = (() => {
       // 2 붓
       s = section("붓 (왼쪽 끌기 · Space+끌기 = 화면 이동)");
       btns(s, ...Object.keys(TOOLS).map((k) => {
-        const b = button(TOOLS[k], k === "soften" ? "흐리기 — Shift 를 누른 채 끌어도(붓 원 흰 점선)" : `X: 지우기 ↔ 살리기(붓 원 ${k === "erase" ? "빨강" : "초록"})`,
+        const b = button(TOOLS[k], k === "soften" ? "흐리기 — Shift 를 누른 채 끌어도(붓 원 흰 점선)" : `X: 지우개 ↔ 브러시(붓 원 ${k === "erase" ? "빨강" : "초록"}) — 지우개 = 패치를 지움 · 브러시 = 패치를 살림`,
           () => setTool(k), `mt-${k}`);
         b.classList.toggle("on", tool === k);
         return b;
@@ -2219,13 +2222,14 @@ window.DPMaskEdit = (() => {
         // 실행 취소로 0 이 돼도 세션(다시 Ctrl+Y)은 연 판 그대로 — 미리보기 ≠ Compose·Export 임을 알림. 기록 file·창이 바뀌었으면 서버가 거절(409 changed·
         // rect_changed), 기준 서명만 바뀌었으면(같은 창·같은 기록 — 재분석·마스크 출처) 받아서 지금 기준의 편집으로 저장한다
         const refused = (info.edit ? info.edit.file : "") !== M.file || info.rect.join() !== M.win.join();
-        line(s, refused ? "서버 버전이 바뀜(다른 창·노드) — 적용 전 획·미리보기는 연 버전(적용하면 거절) "
+        line(s, refused ? modeText("서버 버전이 바뀜(다른 창·노드) — 적용 전 획·미리보기는 연 버전(적용하면 거절) ",
+          "서버 버전이 바뀜(다른 창·작업) — 적용 전 획·미리보기는 연 버전(적용하면 거절) ")
           : "처음 마스크가 바뀜(재분석·마스크 출처) — 적용 전 획·미리보기는 연 버전의 처음 마스크(적용하면 지금 처음 마스크의 편집으로 저장 — '처음 마스크가 바뀜' 표시 사라짐) ",
         "warn").append(off(button("다시 받기", "서버 버전으로 다시 열기 — 적용 안 한 획은 버림(확인 창)", reload, "inline"), busy));
       }
-      btns(s, off(historyButton("실행 취소", "적용 전 획", "undo", "한 단계 되돌리기", "Ctrl+Z", () => step(true)), busy || !M.undo.length),
-        off(historyButton("다시", "적용 전 획", "redo", "한 단계 다시", "Ctrl+Y · Ctrl+Shift+Z", () => step(false)), busy || !M.redo.length),
-        off(historyButton("버리기", "적용 전 획", "clear", "획 모두 버리기", "", discard), busy || !n));
+      btns(s, off(historyButton("되돌리기", "적용 전 획", "undo", "한 단계 되돌리기", "Ctrl+Z", () => step(true)), busy || !M.undo.length),
+        off(historyButton("다시실행", "적용 전 획", "redo", "한 단계 다시", "Ctrl+Y · Ctrl+Shift+Z", () => step(false)), busy || !M.redo.length),
+        off(historyButton("전체 지우기", "적용 전 획", "clear", "획 모두 버리기", "", discard), busy || !n));
 
       // 5 저장된 판
       s = section("저장된 버전");
