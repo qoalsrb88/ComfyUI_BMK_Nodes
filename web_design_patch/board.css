@@ -814,10 +814,13 @@ body:not(.server) [data-server] { display: none !important; }
 #statusbar { display: flex; flex: none; align-items: center; flex-wrap: wrap; gap: 3px 7px; min-width: 0; min-height: 26px; padding: 2px 10px; font-size: 12px; background: var(--panel); border-top: 1px solid var(--line); }
 #statusbar > *, #statusbar .lhead { min-width: 0; }
 #statusbar .proj, #statusbar .lhead > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#statusbar .proj, #statusbar .lhead { flex: 0 1 auto; max-width: 100%; }
+#statusbar #proj, #statusbar #pipe-head { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#statusbar #pipe-head { flex-wrap: nowrap; }
+#statusbar .spacer { flex: 0; }
+#statusbar #layout-head, #statusbar #ref-head { flex: 0 0 auto; max-width: 100%; }
 #statusbar .status { white-space: normal; overflow-wrap: anywhere; }
 #statusbar .lhead { flex-wrap: wrap; }
-#statusbar button { padding: 0 6px; font-size: 12px; line-height: 20px; }
+#statusbar > button { padding: 0 6px; font-size: 12px; line-height: 20px; }
 #statusbar .keys-toggle { margin: 0; }
 .dp-off { visibility: hidden !important; pointer-events: none; }
 @media (max-width: 1399px) {

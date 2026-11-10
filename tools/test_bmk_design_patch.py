@@ -48608,7 +48608,7 @@ test("순수 판정·힌트·DOM 이동 인자·접힘 메모리·선택 단계�
 // 실제 renderPanel 의 유일한 삽입 블록을 실행해 연결·스크롤도 확인(기존 비용/승인 UI 의 하네스와 독립).
 test("renderPanel 삽입 블록: 실제 opts·섹션 이동·설정 분기 뒤", async () => {
   const src = fs.readFileSync(process.argv[3], "utf8"), start = src.indexOf("      if (window.DPChecklist) {");
-  const end = src.indexOf("      // 설정", start), block = src.slice(start, end);
+  const end = src.indexOf("      // 설정", start), block = "{\n" + src.match(/^      const prepareDrift = .*$/m)[0] + "\n" + src.slice(start, end) + "\n}";
   assert(start > src.indexOf("function renderPanel"));
   const gateStart = src.indexOf("    function confirmOf(P0) {"), gateEnd = src.indexOf("    function busyNow()", gateStart);
   vm.runInContext(src.match(/  const GATE_SECTIONS = .*;/)[0] + "\n" + src.slice(gateStart, gateEnd), ctx);
@@ -53072,6 +53072,13 @@ def forge_f3_frame_unit():
     check('background: var(--panel)' in dock_css and 'border-top: 1px solid var(--line)' in dock_css and 'opacity' not in dock_css,
           "F3U1 D352 주 실행 줄 불투명 바탕·위 테두리")
     check('.dp-off { visibility: hidden !important; pointer-events: none; }' in block, "F3U1 D349 숨긴 단추도 자리 유지")
+    for ident in ["btn-queue", "btn-drain"]:
+        tag = re.search(r'<button type="button" id="' + ident + r'"[^>]+>', bh).group()
+        check('class="dp-off"' in tag and tag.index('title=') < tag.index('class='), f"F3U1 R4 {ident} 최초 HTML부터 숨김·속성 순서")
+    check('#statusbar #proj, #statusbar #pipe-head { flex: 1 1 0; min-width: 0;' in block
+          and '#statusbar .spacer { flex: 0; }' in block and '#statusbar #pipe-head { flex-wrap: nowrap; }' in block
+          and '#statusbar #layout-head, #statusbar #ref-head { flex: 0 0 auto;' in block, "F3U1 R6 상태 글 말줄임 우선·도구 단추 폭 유지")
+    check('#statusbar > button {' in block and '#statusbar button {' not in block, "F3U1 R6 단추형 배지 글꼴 보존")
     check('#pipe-panel:not([data-adv="1"]) .pp-adv { display: none; }' in block and '#pipe-panel .pp-tabs { display: none; }' in block,
           "F3U1 D353–354 고급·겹친 하위 탭 가리기")
     check(css.count('@media (max-width: 1399px)') == 1 and 'flex-wrap: wrap' in block and 'min-width: 0' in block
@@ -53081,8 +53088,12 @@ def forge_f3_frame_unit():
           "F3U1 D357 레퍼런스 빈 안내")
     help_text = bh[bh.index('id="help"'):]
     server_help = re.sub(r'<(tr|p|li)\b[^>]*data-local[^>]*>.*?</\1>', '', help_text, flags=re.S)
-    check(not re.search(r'ComfyUI|그래프|노드|위젯|Open Board|메뉴 BMK|대기열|(?:^|[^가-힣A-Za-z])큐(?:에|를|하|(?=\s|$|[.,·:()]))|pipeline\.json|_layer_targets', server_help),
+    check(not re.search(r'ComfyUI|그래프|노드|위젯|Open Board|메뉴 BMK|대기열|(?:^|[^가-힣A-Za-z])큐(?:에|를|하|로|가|는|의|도|(?=\s|$|[.,·:()]))|pipeline\.json|_layer_targets', server_help),
           "F3U1 D359 서버 도움말에 로컬 실행 용어 없음")
+    check('SAM3' not in server_help and '자동 오리기' not in server_help and '<tr data-local><td>SAM3:' in bh
+          and '<tr data-server><td>방법</td><td>사각형(기본, 시트 알파 그대로) · 다각형</td></tr>' in bh, "F3U1 R5 서버 도움말은 지원하는 오리기만")
+    check('승인 코드' not in server_help and '계획·승인의 대상 크롭(only)' in server_help
+          and '<tr data-local><td>왼쪽 체크</td><td>계획·승인 코드의 대상 크롭(only)' in bh, "F3U1 R7 도움말 대상 안내의 모드 분리")
     check(bh.count('아래 상태 줄 "ComfyUI 탭 연결"') == 3 and '상단 "ComfyUI 탭 연결"' not in bh, "F3U1 D349 로컬 도움말 위치 3곳")
     pl = (web / "pipeline.js").read_text(encoding="utf-8")
     panel_source = pl[pl.index('    function renderPanel()'):pl.index('    function lastRow(')]
@@ -53103,7 +53114,7 @@ def forge_f3_frame_unit():
             ("function boardState()", 'await scenario("panel"'), ("function quietPipeline(mod)", 'await scenario("panelDrift"'))]
     setup = _PAID_STUDIO_JS_HARNESS.split('// ── J-P3 승인 단추:', 1)[0]
     harness = "\n".join(cut) + setup
-    hook = '''.replace("return { stateChanged, enter, leave, select, queue: boardQueue", "return { _f3: { PS, render, prepareText, applyNow, paidResult, setWave: x => wave = x, setSettings: x => settingsOn = x, clearSelection: () => sel.clear(), exportReason: fn => { const old = exportWhy; exportWhy = fn; return () => exportWhy = old; } }, stateChanged, enter, leave, select, queue: boardQueue")'''
+    hook = '''.replace("return { stateChanged, enter, leave, select, queue: boardQueue", "return { _f3: { PS, render, prepareText, applyNow, paidResult, dimWhy, approveWhy, refusal, loseRun: () => asked.run = [{lost:true,hash:'test-code'}], setWave: x => wave = x, setSettings: x => settingsOn = x, clearSelection: () => sel.clear(), exportReason: fn => { const old = exportWhy; exportWhy = fn; return () => exportWhy = old; } }, stateChanged, enter, leave, select, queue: boardQueue")'''
     harness = harness.replace('fs.readFileSync(IN.pipelineJs, "utf8")', 'fs.readFileSync(IN.pipelineJs, "utf8")' + hook)
     harness += r'''
 vm.runInContext(fs.readFileSync(IN.checklistJs, "utf8"), ctx);
@@ -53142,7 +53153,7 @@ const fresh = async (server=false) => {
 const dock = e => e.panel.children.find(x=>x.classList.contains("pp-dock"));
 const main = e => dock(e)?.children.find(x=>x.tagName==="BUTTON");
 const sectionOf = (e,title) => e.panel.children.find(x=>x.classList.contains("pp-sec")&&x.firstElementChild?.textContent===title);
-const forbidden = /ComfyUI|그래프|노드|위젯|Open Board|메뉴 BMK|대기열|(?:^|[^가-힣A-Za-z])큐(?:에|를|하|(?=\s|$|[.,·:()]))|pipeline\.json|_layer_targets/;
+const forbidden = /ComfyUI|그래프|노드|위젯|Open Board|메뉴 BMK|대기열|(?:^|[^가-힣A-Za-z])큐(?:에|를|하|로|가|는|의|도|(?=\s|$|[.,·:()]))|pipeline\.json|_layer_targets/;
 const illegal = new RegExp(forbidden.source+"|\\$|크레딧|\\bcr\\b");
 const textOf = root => [root.textContent,...root.all().map(x=>x.title||"")].join("\n");
 const complete = e => {
@@ -53180,8 +53191,8 @@ await scenario("F3U1 D352 단계·같은 단추·승인 클릭",async()=>{
 });
 await scenario("F3U1 D352 안내만·막힌 승인",async()=>{
   const e=await fresh(true),h=e.pipe._f3,p=h.PS.plan,r={};
-  await e.pipe.showTab("generate");h.PS.planErr="계획 검사 실패";h.render();r.error=!main(e)&&dock(e).textContent.includes("계획: 계획 검사 실패");
-  h.PS.planErr=null;h.PS.plan=null;h.render();r.computing=!main(e)&&dock(e).textContent.includes("계획 계산 중");h.PS.plan=p;
+  await e.pipe.showTab("generate");h.PS.planErr="계획 검사 실패";h.render();r.error=!main(e)&&dock(e).textContent==="반영 상태를 확인하지 못했습니다 — [다시 계산]";
+  h.PS.planErr=null;h.PS.plan=null;h.render();r.computing=!main(e)&&dock(e).textContent==="반영 상태를 확인하지 못했습니다 — [다시 계산]";h.PS.plan=p;
   const run=p.run;p.run={error:"생성 검사 실패"};h.render();r.runError=!main(e)&&dock(e).textContent==="계획: 생성 검사 실패";p.run=run;
   complete(e);e.S.running=true;h.render();r.running=!main(e)&&dock(e).textContent.includes("실행 중");e.S.running=false;
   p.run.free=2;p.run.by_crop[e.S.crops[0].id].free=2;h.render();r.free=!main(e)&&dock(e).textContent.includes("복구 2건")&&dock(e).textContent.includes("대기분 보내기")&&e.pipe.freePending()===2;
@@ -53193,11 +53204,76 @@ await scenario("F3U1 D352 안내만·막힌 승인",async()=>{
   p.draft.running=true;h.render();r.drafting=!main(e)&&dock(e).textContent.includes("실행 중");p.draft.running=false;
   h.PS.planOnly="다른 선택";h.render();r.otherPlan=!main(e)&&dock(e).textContent==="계획 계산 중…";h.PS.planOnly=ALL;
   p.run.need=4;p.run.by_crop[e.S.crops[0].id].need=4;e.S.running=true;h.render();r.disabled=main(e)?.disabled===true&&dock(e).textContent.includes(main(e).title);e.S.running=false;
-  const draft=p.draft;p.draft={error:"초안 검사 실패"};await e.pipe.showTab("prompt");r.draftError=!main(e)&&dock(e).textContent.includes("계획: 초안 검사 실패");p.draft=draft;
+  const draft=p.draft;p.draft={error:"초안 검사 실패"};await e.pipe.showTab("prompt");r.draftError=!main(e)&&dock(e).textContent==="반영 상태를 확인하지 못했습니다 — [다시 계산]";p.draft=draft;
   p.draft.units=[];h.render();r.noDraft=!main(e)&&dock(e).dataset.main===""&&dock(e).textContent==="초안 승인할 것이 없습니다 — 다음: ⑤ 생성";
   h.clearSelection();h.render();r.noSelection=!main(e)&&dock(e).textContent.includes("왼쪽에서 크롭을 선택하세요");
   complete(e);await e.pipe.showTab("generate");r.noSelectionExport=!main(e)&&dock(e).textContent.includes("왼쪽에서 크롭을 선택하세요");
   e.stop();return r;
+});
+await scenario("F3U1 R1 점검표와 같은 반영 판정",async()=>{
+  const r={};
+  for(const server of [false,true]) {
+    const e=await fresh(server),h=e.pipe._f3,p=h.PS.plan,p0=h.PS.P;complete(e);p.draft.units=[];
+    p0.drift=[{section:"prepare",field:"model",kind:"cell",manifest:"old",settings:"new"},{section:"prepare",field:"quality",kind:"cell",manifest:"low",settings:"high"}];
+    p.notes=["Prepare 설정 갈라짐: model, quality"];
+    for(const tab of ["prepare","prompt","generate"]) {
+      await e.pipe.showTab(tab);
+      r[`${server}-drift-${tab}`]=dock(e).dataset.main==="apply"&&main(e)===e.B("반영 (무료)")&&e.pipe.steps().rows[3].state!=="done"
+        &&dock(e).textContent.includes("실행 설정이 마지막 반영과 다름(model, quality) — 반영하면 새 생성 조건");
+    }
+    p0.drift=[];p.notes=[];
+    const draft=clone(p.draft),sig=e.S.plan_v;
+    for(const cause of ["calculating","error","retainedError","draftError","stale"]) {
+      h.PS.plan=p;h.PS.planErr=null;p.draft=clone(draft);e.S.plan_v=sig;
+      if(cause==="calculating"||cause==="error")h.PS.plan=null;
+      if(cause==="error"||cause==="retainedError")h.PS.planErr="계획 오류";
+      if(cause==="draftError")p.draft={error:"초안 오류"};
+      if(cause==="stale")e.S.plan_v="새 프로젝트 기록";
+      for(const tab of ["prepare","prompt","generate"]) {
+        await e.pipe.showTab(tab);
+        r[`${server}-${cause}-${tab}`]=!main(e)&&dock(e).dataset.main===""&&dock(e).textContent==="반영 상태를 확인하지 못했습니다 — [다시 계산]"
+          &&e.pipe.steps().rows[3].state!=="done";
+      }
+    }
+    h.PS.plan=p;h.PS.planErr=null;p.draft=draft;e.S.plan_v=sig;h.PS.P=null;
+    for(const tab of ["prepare","prompt","generate"]) {await e.pipe.showTab(tab);r[`${server}-loading-${tab}`]=!main(e)&&dock(e).textContent==="실행 설정을 불러오는 중…";}
+    e.stop();
+  }
+  return r;
+});
+await scenario("F3U1 R2 레이아웃 다시 생성·대기 취소의 실제 대화 상자",async()=>{
+  const doc=new Doc(),r={first:false,second:false,all:false,crop:false},cell={cell_key:"k",variant:"기본",pre:0,rerolls_pending:3,rerolls_base:1};
+  const S={rev:1,pipeline_rev:1,layout_rev:1,running:false,rerolls_pending:3,rerolls_base:1,rerolls_stale:1,pending_preapproved:3,
+    crops:[{id:"c",layout_status:"changed",rerolls_pending:3,rerolls_base:1}],targets:[{crop_id:"c",cells:[cell]}]};
+  const appendChild=El.prototype.appendChild;El.prototype.appendChild=function(x){this.append(x);return x;};
+  let writes=0;
+  const bctx=vm.createContext({window:{DPEnv:{serverMode:true,backend:"mock"},addEventListener(){},removeEventListener(){},confirm(){throw Error("서버에서 네이티브 확인 금지");}},document:doc,
+    SM:()=>true,S,busy:false,rerollArm:null,rerollSent:null,tKey:"t",cKey:"v",LAYOUT_STATUS:{changed:"미반영"},
+    rerollCell:()=>cell,curTarget:()=>S.targets[0],tabWay:()=>"paid",reviewMissing:()=>"",toast(){},usd:()=>" ≈ $1.00",
+    pipe:{paidLock:()=>"",agentOn:()=>false,applyWarn:()=>[],recalc(){},side:"기존 부수 효과"},write:async()=>{writes++;return null;}});
+  vm.runInContext(fs.readFileSync(IN.dialogJs,"utf8"),bctx);
+  for(const name of ["askFree","cellPre","reroll","cancelRerolls"]) {
+    const src=boardSrc.match(new RegExp(`\\n  (?:async )?function ${name}\\([^\\n]*\\) \\{[\\s\\S]*?\\n  \\}`))[0];vm.runInContext(src,bctx);
+  }
+  const box=()=>doc.body.children.find(x=>x.classList.contains("dp-dialog"));
+  const choose=ok=>{const b=box().all().find(x=>x.tagName==="BUTTON"&&x.textContent===(ok?"확인":"취소"));b.onclick({isTrusted:true});};
+  try {
+    const work=bctx.reroll(true,false);
+    r.first=!!box()&&box().textContent.includes("다시 생성 +1 호출")&&!forbidden.test(box().textContent);choose(true);
+    await until(()=>box()?.textContent.includes("이번 실행에서 생성 조건"),200);
+    if(box()) {r.second=box().textContent.includes("이번 실행에 함께 반영됩니다")&&!forbidden.test(box().textContent);choose(false);}
+    await work;
+    for(const scope of ["all","crop"]) {
+      const pending=bctx.cancelRerolls(scope,{crop_id:"c"});
+      if(box()) {r[scope]=box().textContent.includes("이미 보낸 [생성 승인] 은 과금 없이 끝남")&&!forbidden.test(box().textContent)&&!/승인 코드|드라이런/.test(box().textContent);choose(false);}
+      await pending;
+    }
+    r.cancelledWrites=writes===0&&!box();
+    bctx.SM=()=>false;const local=[];bctx.window.confirm=t=>{local.push(t);return local.length===1;};
+    await bctx.reroll(true,false);
+    r.local=local.length===2&&local[1]==="이 크롭은 레이아웃이 바뀌어(미반영) 이 큐에서 생성 조건이 바뀌면 다시 생성이 실행되지 않습니다. 미반영 레이아웃 1건도 이 큐로 반영됩니다. 계속할까요?"&&writes===0;
+  } finally {bctx.window.DPDialog.cancel();if(appendChild)El.prototype.appendChild=appendChild;else delete El.prototype.appendChild;}
+  return r;
 });
 await scenario("F3U1 D352 반영 차단 우선·절 단추 보존",async()=>{
   const e=await fresh(),h=e.pipe._f3,p=h.PS.P,r={};
@@ -53208,7 +53284,7 @@ await scenario("F3U1 D352 반영 차단 우선·절 단추 보존",async()=>{
     h.PS.P=p;p.saved=true;p.confirm=[];p.warnings=[];p.error=null;h.PS.err=null;change();
     for(const tab of ["prepare","prompt","generate"]) {
       await e.pipe.showTab(tab);
-      r[name+"-"+tab]=!main(e)&&dock(e).dataset.main===""&&dock(e).textContent==="실행 설정 확인이 먼저입니다 — ① 준비의 「실행 설정」"
+      r[name+"-"+tab]=!main(e)&&dock(e).dataset.main===""&&dock(e).textContent===(name==="loading"?"실행 설정을 불러오는 중…":"실행 설정 확인이 먼저입니다 — ① 준비의 「실행 설정」")
         &&e.B("반영 (무료)").parent!==dock(e);
     }
   }
@@ -53227,8 +53303,10 @@ await scenario("F3U1 D352 자리 전환 뒤 800ms capture 차단",async()=>{
     clock+=20;h.PS.plan.apply_pending=[];h.render();const changed=clock,posts=e.srv.log.filter(x=>x.method==="POST").length;
     let reached=0;
     const spy=()=>{const b=main(e),fn=b.on.click[0];b.on.click[0]=ev=>{reached++;return fn(ev);};};spy();
-    const ev=main(e).fire("click",{isTrusted:true});
-    clock=changed+799;main(e).fire("click",{isTrusted:true});
+    main(e).focus();const ev=main(e).fire("click",{isTrusted:true});
+    r.focusCleared=!dock(e).contains(e.doc.activeElement);
+    clock=changed+799;main(e).focus();main(e).fire("click",{isTrusted:true});
+    r.focusClearedAgain=!dock(e).contains(e.doc.activeElement);
     r.blocked=reached===0&&e.confirms.length===0&&!e.box()&&e.tab.got.length===0&&e.srv.log.filter(x=>x.method==="POST").length===posts&&ev.defaultPrevented===true;
     r.capture=dock(e).capture.click.length===1;
     clock=changed+800;main(e).fire("click",{isTrusted:true});await sleep(1);
@@ -53250,7 +53328,6 @@ await scenario("F3U1 D353 고급·이동·경고",async()=>{
   r.hint=hint?.dataset.tab==="prepare"&&!hint.classList.contains("pp-sec")&&hint.textContent===`기본 설정으로 진행합니다 — 모델 ${pr.model} · 후보 ${pr.n}장씩. 바꾸려면 [고급]`;
   r.sectionCount=e.panel.children.filter(x=>x.classList.contains("pp-sec")&&x.dataset.tab==="prepare").length===1;
   r.toggleOrder=e.panel.children.at(-2)===toggle;
-  r.smallDOM=typeof El.prototype.querySelector==="undefined"&&typeof El.prototype.closest==="undefined";
   e.click(toggle);r.open=e.panel.dataset.adv==="1"&&e.B("고급").attrs["aria-expanded"]==="true";
   e.click(e.B("고급"));await e.pipe.goSection({tab:"prepare",section:"실행 설정"});
   r.go=e.panel.dataset.adv==="1"&&sectionOf(e,"실행 설정").scrolled&&e.B("고급").attrs["aria-expanded"]==="true";
@@ -53259,10 +53336,49 @@ await scenario("F3U1 D353 고급·이동·경고",async()=>{
   h.PS.P.drift=[];h.PS.P.warnings=[{field:"import.psd_path",msg:"경로 확인"}];h.render();r.warningVisible=!sectionOf(e,"실행 설정").classList.contains("pp-adv");
   r.noWarningHint=!e.panel.children.some(x=>x.classList.contains("pp-adv-hint"))&&!e.B("고급");
   h.PS.P.warnings=[];h.PS.err="읽기 오류";h.render();r.noErrorHint=!e.panel.children.some(x=>x.classList.contains("pp-adv-hint"));h.PS.err=null;
-  h.PS.P.warnings=[];await e.pipe.showTab("generate");r.codeAdvanced=e.panel.all().filter(x=>x.tagName==="BUTTON"&&x.textContent==="승인 코드 복사").every(x=>x.classList.contains("pp-adv"));
+  h.PS.P.warnings=[];await e.pipe.showTab("generate");const copies=e.panel.all().filter(x=>x.tagName==="BUTTON"&&x.textContent==="승인 코드 복사");
+  r.codeAdvanced=copies.length===2&&copies.every(x=>x.classList.contains("pp-adv"));
   r.externalAdvanced=sectionOf(e,"외부 엔진").classList.contains("pp-adv");e.stop();
   const s=await fresh(true);await s.pipe.showTab("generate");r.noServerToggle=!s.B("고급");s.panel.dataset.adv="1";s.pipe._f3.render();
   r.noServerCodes=!s.B("승인 코드 복사")&&!s.panel.textContent.includes("승인 코드는 그래프");s.stop();return r;
+});
+await scenario("F3U1 R7 승인 코드 없는 서버 안내·판정 보존",async()=>{
+  const e=await fresh(true),h=e.pipe._f3,p=h.PS.plan,p0=h.PS.P,r={};
+  const title="선택(only) — 계획·승인의 대상";
+  r.selection=e.list.all().filter(x=>x.tagName==="INPUT").length===e.S.crops.length&&e.list.all().filter(x=>x.tagName==="INPUT").every(x=>x.title===title);
+  const compare=(name)=>{
+    serverMode(false);const why=h.dimWhy(),local=h.approveWhy("");
+    serverMode(true);r[name]=JSON.stringify(h.dimWhy())===JSON.stringify(why)&&!!h.approveWhy("")===!!local&&!h.approveWhy("").includes("승인 코드");
+  };
+  compare("noHash");r.noHashText=h.approveWhy("").startsWith("승인할 계획 없음");
+  p0.confirm=["draft.apply"];await e.pipe.showTab("generate");compare("confirm");
+  r.confirmText=!textOf(e.panel).includes("승인 코드")&&textOf(e.panel).includes("승인 보류")&&textOf(e.panel).includes("승인을 보류");
+  p0.confirm=[];p.draft.import_pending=["레퍼런스 미반영"];await e.pipe.showTab("prompt");compare("pending");
+  r.pendingText=e.panel.textContent.includes("초안 승인은 반영 뒤 확정: 레퍼런스 미반영")&&!textOf(e.panel).includes("승인 코드");
+  p.draft.import_pending=[];p0.drift=[{section:"prepare",field:"n",kind:"cost",manifest:1,settings:2}];await e.pipe.showTab("prepare");compare("cost");
+  r.costText=!textOf(e.panel).includes("승인 코드")&&textOf(e.panel).includes("대기 호출의 설정·승인 조건이 바뀜")
+    &&dock(e).textContent.includes("반영하면 대기 호출 조건 갱신")&&!dock(e).textContent.includes("새 생성 조건");
+  p0.drift=[];h.loseRun();await e.pipe.showTab("generate");r.lost=!textOf(e.panel).includes("승인 코드")&&textOf(e.panel).includes("승인의 결과를 모름");
+  r.stale=h.refusal({reason:"stale",hash:"old"},"run")==="계획이 바뀜 — 다시 받은 계획을 보고 다시 승인";
+  serverMode(false);h.render();r.localSelection=e.list.all().filter(x=>x.tagName==="INPUT").length===e.S.crops.length&&e.list.all().filter(x=>x.tagName==="INPUT").every(x=>x.title==="선택(only) — 계획·승인 코드 복사의 대상");
+  r.localLost=e.panel.textContent.includes("승인 코드 test-code");e.stop();return r;
+});
+await scenario("F3U1 R8 진행 중 크롭만 dp-live",async()=>{
+  const e=await fresh(),h=e.pipe._f3,p=h.PS.plan,r={};complete(e);
+  const id=e.S.crops[0].id;p.run.by_crop[id].inflight=2;h.render();
+  let live=e.list.all().filter(x=>x.textContent==="진행 2"&&x.classList.contains("chip"));
+  r.running=live.length===1&&live[0].classList.contains("b-run")&&live[0].classList.contains("dp-live");
+  e.S.plan_v="새 기록";h.render();live=e.list.all().filter(x=>x.textContent==="진행 2"&&x.classList.contains("chip"));
+  r.stale=live.length===1&&live[0].classList.contains("b-run")&&!live[0].classList.contains("dp-live");
+  const chip=(text,cls)=>{const x=e.doc.createElement("span");x.textContent=text;x.className="chip "+cls;return x;};
+  const bctx=vm.createContext({chip});vm.runInContext(boardSrc.match(/\n  function draftChips\(ch, c\) \{[\s\S]*?\n  \}/)[0],bctx);
+  for(const stale of [false,true]) {
+    const host=e.doc.createElement("div");bctx.draftChips(host,{plan_stale:stale,draft_chip:{running:true,wait:["초안 필요"],run_need:1}});
+    const running=host.children.find(x=>x.textContent==="실행 중"),waiting=host.children.filter(x=>x.classList.contains("b-wait"));
+    r["draft-"+stale]=host.children.length===3&&!!running&&running.classList.contains("b-run")&&running.classList.contains("dp-live")===!stale
+      &&running.classList.contains("stale")===stale&&waiting.length===2&&waiting.every(x=>!x.classList.contains("dp-live"));
+  }
+  e.stop();return r;
 });
 await scenario("F3U1 D358–359 서버 문구·단가·복구",async()=>{
   const e=await fresh(true),h=e.pipe._f3,r={};
@@ -53281,7 +53397,7 @@ await scenario("F3U1 D358–359 서버 문구·단가·복구",async()=>{
   h.PS.sending=true;e.pipe.reroll();h.PS.sending=false;r.reserved=e.toasts.at(-1).includes("아래 상태 줄 [대기분 보내기]")&&!illegal.test(e.toasts.at(-1));
   const oldTrack=h.PS.track;h.PS.track=()=>true;h.paidResult("run",{ok:true,prompt_id:"test"},false);h.PS.track=oldTrack;
   r.success=e.toasts.at(-1)===":Run 서버 작업 줄에 들어감 — 서버가 작업을 받음(진행은 상태 줄)"&&!illegal.test(e.toasts.at(-1));
-  ctx.window.DPDialog={confirm:async t=>{r.apply=!illegal.test(t);return false;}};await h.applyNow();delete ctx.window.DPDialog;
+  r.apply=false;ctx.window.DPDialog={confirm:async t=>{r.apply=!illegal.test(t);return false;}};await h.applyNow();delete ctx.window.DPDialog;
   const rows=ctx.window.DPChecklist.rows({S:e.S,P0:h.PS.P,plan:h.PS.plan});r.firstHint=rows[0].hint==="처음이면: ① 준비에서 [반영 (무료)] 를 한 번 누르세요.";
   r.report=!illegal.test(P.paidReport("run",RUN_H({stopped_reason:"auth"})))&&!illegal.test(P.paidReport("reroll",RUN_H({stopped_reason:"auth"})));
   h.PS.plan.notes=["서버 안내 원문: 큐에 보내기"];h.render();r.noRewrite=e.panel.textContent.includes("서버 안내 원문: 큐에 보내기");h.PS.plan.notes=[];
@@ -53289,7 +53405,7 @@ await scenario("F3U1 D358–359 서버 문구·단가·복구",async()=>{
 });
 await scenario("F3U1 D359 금지 구절·작업 실패·F1 서버 갈래",async()=>{
   serverMode(true);const r={};
-  r.phrases=["ComfyUI","그래프","노드","위젯","Open Board","메뉴 BMK","대기열","큐에","큐를","큐 ","한 번 큐","큐하세요","pipeline.json","_layer_targets"].every(x=>forbidden.test(x));
+  r.phrases=["ComfyUI","그래프","노드","위젯","Open Board","메뉴 BMK","대기열","큐에","큐를","큐 ","한 번 큐","큐하세요","큐로","큐가","큐는","큐의","큐도","pipeline.json","_layer_targets"].every(x=>forbidden.test(x));
   r.allowed=!forbidden.test("서버 재시작 · 단계 탭 · 다큐멘터리");
   const types=["ImportPSD","Prepare","SpecDraft","Run","Analyze","Review","Compose","ExportPSD"],ids=["import","prepare","draft","run","analyze","review","compose","export"],labels=["가져오기","준비","초안","생성","분석","검토 준비","합성","Export"];
   for(let i=0;i<types.length;i++)for(const field of ["node_type","node_id"]) {
@@ -53308,7 +53424,7 @@ await scenario("F3U1 D359 금지 구절·작업 실패·F1 서버 갈래",async(
     throw Error("모의 경로 밖: "+path);};
   const s=P.session(A,C,KEY,mockFetch,mem(),1);let done;
   s.onDone=(job,res)=>done=res;await s.queue("apply");await until(()=>done,200);
-  r.gone=done?.state==="gone"&&done.msg==="서버가 다시 시작됐거나 작업이 지워짐"&&!forbidden.test(done.msg)&&seen.every(x=>x.includes("/jobs/"));
+  r.gone=done?.state==="gone"&&done.msg==="서버가 다시 시작됐거나 작업이 지워짐"&&!forbidden.test(done.msg)&&seen.length>=4&&seen.every(x=>x.includes("/jobs/"));
   const bad=P.session(A,C,KEY,async()=>{throw Error("연결 끊김");},mem(),1);
   try{await bad.queue("export");r.unknownQueue=false;}catch(err){r.unknownQueue=err.message==="보냈는지 모름 — 작업 줄을 확인하세요(작업이 들어갔을 수 있음): 연결 끊김"&&!forbidden.test(err.message);}
   serverMode(false);r.localFailure=P.endOf(entry("error",[["execution_error",{node_type:"BMKDesignPatchRun",exception_message:"실패"}]])).msg==="BMKDesignPatchRun: 실패";
@@ -53343,9 +53459,19 @@ await scenario("F3U1 D350–351 머리 단추·기억값",async()=>{
   const code=boardSrc.match(/\n  function renderHeader\(\) \{[\s\S]*?\n  \}/)[0];vm.runInContext(code,bctx);
   const render=()=>vm.runInContext("renderHeader()",bctx);
   const start=boardSrc.slice(boardSrc.indexOf('    $("btn-drain").classList.add("dp-off");'),boardSrc.indexOf('    const newNotes = consumeNewProject();'));
+  const pendingStart=boardSrc.slice(boardSrc.indexOf('    if (window.DPEnv) await window.DPEnv.ready;'),boardSrc.indexOf('    const newNotes = consumeNewProject();'));
+  vm.runInContext(`async function startAfterReady(){${pendingStart}}`,bctx);
+  for(const server of [false,true]) {
+    mode=server;$("top").replaceChildren($("btn-queue"),$("btn-drain"));$("statusbar").replaceChildren($("btn-keys"));
+    for(const id of ["btn-queue","btn-drain"])$(id).className="dp-off";
+    let ready;bctx.window.DPEnv={ready:new Promise(resolve=>ready=resolve)};const starting=bctx.startAfterReady();
+    r["initial-"+server]=$("btn-queue").classList.contains("dp-off")&&$("btn-drain").classList.contains("dp-off")&&$("btn-queue").parent===$("top");
+    ready();await starting;r["ready-"+server]=$("btn-queue").classList.contains("dp-off")===server&&$("btn-drain").classList.contains("dp-off");
+  }
+  mode=true;
   const place=()=>{$("top").replaceChildren($("btn-viewer"),$("btn-queue"),$("btn-drain"),$("btn-help"));$("statusbar").replaceChildren($("proj"),$("btn-keys"));
-    for(const id of ["btn-queue","btn-drain"])$(id).className="";vm.runInContext(start,bctx);};
-  place();r.serverPlace=$("top").children.length===2&&$("statusbar").children.slice(-3).every((x,i)=>x===$(["btn-queue","btn-drain","btn-keys"][i]));
+    for(const id of ["btn-queue","btn-drain"])$(id).className="dp-off";vm.runInContext(start,bctx);};
+  place();r.serverPlace=$("top").children.length===2&&$("statusbar").children.length===4&&$("statusbar").children.slice(-3).every((x,i)=>x===$(["btn-queue","btn-drain","btn-keys"][i]));
   const originalPlace=[...$("statusbar").children];
   const off=id=>$(id).classList.contains("dp-off");
   render();r.empty=off("btn-queue")&&off("btn-drain");r.noCost=!illegal.test($("badges").textContent);
@@ -53355,15 +53481,20 @@ await scenario("F3U1 D350–351 머리 단추·기억값",async()=>{
     r[`queue-${running}-${!!lock}-${pre}-${recovery}`]=off("btn-queue")===(running||!!lock||!(pre||recovery))
       &&off("btn-drain")===!running&&$("btn-drain").disabled===!running&&!$("btn-queue").hidden&&!$("btn-drain").hidden
       &&$("btn-queue").textContent==="대기분 보내기"&&$("btn-queue").title===`사전 승인된 다시 생성 ${pre}건·복구 ${recovery}건을 지금 보냅니다(새 승인 없음)`
-      &&$("statusbar").children.every((x,i)=>x===originalPlace[i]);
+      &&$("statusbar").children.length===4&&$("statusbar").children.every((x,i)=>x===originalPlace[i]);
   }
   S.running=false;paid="";S.pending_preapproved=2;bctx.pipe.freePending=undefined;render();r.unknownPlan=!off("btn-queue");
   S.pending_preapproved=0;render();r.unknownEmpty=off("btn-queue");bctx.pipe.freePending=()=>free;
   S.pending_calls=4;render();r.waitClass=$("badges").all().some(x=>x.classList.contains("b-wait"));
   mode=false;place();$("btn-queue").textContent="다시 생성 보내기";$("btn-queue").title="local";render();
-  r.localPlace=$("top").children.slice(1,3).every((x,i)=>x===$(["btn-queue","btn-drain"][i]))&&$("statusbar").children.length===2;
+  r.localPlace=$("top").children.length===4&&$("top").children.slice(1,3).every((x,i)=>x===$(["btn-queue","btn-drain"][i]))&&$("statusbar").children.length===2;
   r.local=!off("btn-queue")&&$("btn-queue").textContent==="다시 생성 보내기"&&$("btn-queue").title==="local"&&off("btn-drain");
   S.running=true;paid="요청 중";render();r.localRunning=!off("btn-queue")&&!off("btn-drain");S.running=false;
+  S.running=true;S.drain=true;bctx.comfyConnected=()=>true;render();
+  const running=$("badges").children.filter(x=>x.textContent==="Run 진행 중"),tab=$("badges").children.at(-1),waiting=$("badges").children.filter(x=>x.classList.contains("b-wait")||x.classList.contains("b-drain"));
+  r.liveBadge=running.length===1&&running[0].classList.contains("b-run")&&running[0].classList.contains("dp-live");
+  r.noIdlePulse=tab.textContent==="ComfyUI 탭 연결"&&tab.classList.contains("b-run")&&!tab.classList.contains("dp-live")&&waiting.length>=2&&waiting.every(x=>!x.classList.contains("dp-live"));
+  S.running=false;S.drain=false;
   const projects=boardSrc.slice(boardSrc.indexOf('    document.body.classList.add("projects-page");'),boardSrc.indexOf('    $("proj").textContent = "프로젝트 목록";'));
   vm.runInContext(projects,bctx);
   r.projects=["modebar","export-state","btn-export","export-menu","btn-keys","btn-viewer"].every(id=>$(id).hidden)&&off("btn-queue")&&off("btn-drain")&&!$("btn-queue").hidden&&!$("btn-drain").hidden;
@@ -53398,7 +53529,7 @@ console.log(JSON.stringify(out));process.exit(0);
     out.mkdir(parents=True, exist_ok=True)
     (out / "frame.mjs").write_text(harness, encoding="utf-8")
     (out / "in.json").write_text(json.dumps({"api": _pl_api(), "forge": _server_api(), "pipelineJs": str(web / "pipeline.js"),
-                                            "boardJs": str(web / "board.js"), "checklistJs": str(web / "checklist.js")}, ensure_ascii=False), encoding="utf-8")
+                                            "boardJs": str(web / "board.js"), "checklistJs": str(web / "checklist.js"), "dialogJs": str(web / "dialog.js")}, ensure_ascii=False), encoding="utf-8")
     result = subprocess.run([node, str(out / "frame.mjs"), str(out / "in.json")], capture_output=True, text=True, encoding="utf-8", timeout=90)
     (out / "result.txt").write_text(result.stdout + result.stderr, encoding="utf-8")
     if result.returncode or not result.stdout.strip():
@@ -54571,7 +54702,7 @@ def batch10b_unit():
         js.write_text(r"""
 const fs = require('fs'), vm = require('vm'), assert = require('assert');
 const input = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
-const ctx = vm.createContext({window:{}, URLSearchParams, console, setTimeout, clearTimeout});
+const ctx = vm.createContext({window:{}, URLSearchParams, console, setTimeout, clearTimeout, SM:()=>false});
 vm.runInContext(fs.readFileSync(input.pipeline,'utf8'),ctx);
 vm.runInContext(fs.readFileSync(input.checklist,'utf8'),ctx);
 const P = ctx.window.DPPipeline;
@@ -60826,7 +60957,7 @@ await scenario("FW27 서버 SAM3 응답은 ComfyUI 큐 전에 차단",async()=>{
 });
 await scenario("FW28 R1 Drain·대기 취소는 판 갱신과 독립",async()=>{
   const e=context(),c=e.ctx,posts=[],warnings=[];let answer;
-  Object.assign(c,{S:{rev:1,running:true,rerolls_pending:3,crops:[]},busy:false,pipe:null,rerollArm:null,rerollSent:null,
+  Object.assign(c,{S:{rev:1,running:true,rerolls_pending:3,crops:[]},SM:()=>false,busy:false,pipe:null,rerollArm:null,rerollSent:null,
     toast:t=>warnings.push(t),write:async(path,body)=>{posts.push([path,body]);return {};},
     DPDialog:{confirm:()=>new Promise(r=>{answer=r;})}});
   vm.runInContext(["askFree","drain","cancelRerolls"].map(n=>sourceFn("board.js",n)).join("\n"),c);
