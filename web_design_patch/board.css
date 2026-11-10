@@ -266,7 +266,7 @@ svg.marks .crop.bad { stroke: var(--bad); }
 svg.marks .crop.sel { stroke: var(--accent); stroke-width: 2.5px; }
 svg.marks .seam { stroke-width: 4px; stroke-linecap: round; vector-effect: non-scaling-stroke; }
 svg.marks .seam.bad { stroke: #ff3b3b; }
-svg.marks .seam.weak { stroke: var(--slice); }
+svg.marks .seam.weak { stroke: var(--warn); }
 svg.marks .seam.cur { stroke-width: 8px; }
 .labels { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
 .clabel {
@@ -432,8 +432,8 @@ svg.marks .guide { fill: none; stroke: var(--reg); stroke-width: 1px; stroke-das
 svg.marks .pbox { fill: none; stroke-width: 2px; vector-effect: non-scaling-stroke; }
 svg.marks .pbox.on { stroke-width: 3px; } /* 고른 부품 상자(F19) — 핸들 = 크기 · 안쪽 끌기 = 이동 */
 #layout-panel button.sel { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
-svg.marks .handle { fill: #fff; stroke: var(--accent); stroke-width: 1px; vector-effect: non-scaling-stroke; }
-svg.marks .prop { fill: rgba(77, 163, 255, .08); stroke: var(--info); stroke-width: 2px; stroke-dasharray: 8 4; vector-effect: non-scaling-stroke; }
+svg.marks .handle { fill: var(--on-accent); stroke: var(--accent); stroke-width: 1.5px; vector-effect: non-scaling-stroke; }
+svg.marks .prop { fill: color-mix(in srgb, var(--info) 8%, transparent); stroke: var(--info); stroke-width: 2px; stroke-dasharray: 8 4; vector-effect: non-scaling-stroke; }
 svg.marks .draft { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2px; stroke-dasharray: 6 3; vector-effect: non-scaling-stroke; }
 svg.marks text { fill: var(--text); stroke: rgba(9, 9, 11, .85); paint-order: stroke; font-family: inherit; }
 svg.marks text.lname.sel { fill: var(--accent); }
@@ -532,7 +532,7 @@ svg.marks .rpt.neg { fill: var(--bad); }
 svg.marks .rpt.auto { fill: #9aa0a6; opacity: .85; }
 svg.marks .rpt.auto.approx { fill: none; stroke: #9aa0a6; stroke-dasharray: 3 2; }
 svg.marks .rpoly { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5px; vector-effect: non-scaling-stroke; }
-svg.marks .rvtx { fill: #fff; stroke: var(--accent); stroke-width: 1px; vector-effect: non-scaling-stroke; }
+svg.marks .rvtx { fill: var(--on-accent); stroke: var(--accent); stroke-width: 1.5px; vector-effect: non-scaling-stroke; }
 
 /* ── 마스크 편집 모드 (mask_edit.js) ─────── */
 #mask-list { display: none; }
@@ -660,7 +660,7 @@ body.busy { cursor: progress; }
 /* 배치 7-B: 전체 단계, 실행 하위 탭, 기록된 프롬프트 */
 .modebar { flex-wrap: wrap; }
 .modebar .tabs { flex-wrap: wrap; }
-.step-state { margin-left: 4px; font-size: 11px; color: var(--wait); }
+.step-state { margin-left: 4px; font-size: 11px; color: var(--dim); }
 .step-state.done { color: #83cfac; }
 .step-state.warn { color: #efb475; }
 .step-state.optional { opacity: .5; }
@@ -802,34 +802,53 @@ body:not(.server) [data-server] { display: none !important; }
 /* 아래 F3-U1·F3-U2 블록은 다른 갈래 자리 — 건드리지 않는다. */
 
 * { scrollbar-color: var(--line2) transparent; }
+html { accent-color: var(--accent); }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 input, select, textarea { border-radius: var(--radius-sm); }
 input:focus, select:focus, textarea:focus { border-color: var(--accent); }
+/* 빠진 입력칸도 패널 표면을 따르되, 기존 폭·flex·간격은 각 자리의 규칙에 맡긴다. */
+#ref-panel input[type="number"], #ref-panel input:not([type]), #ref-panel textarea,
+#mask-panel input[type="number"], #mask-panel input[type="text"], #mask-panel input:not([type]), #mask-panel select, #mask-panel textarea,
+#pipe-panel input:not([type]), #pipe-panel textarea, .rg-size input {
+  background: var(--well); color: var(--text); border: 1px solid var(--line); border-radius: var(--radius-sm); font: inherit;
+}
+#layout-panel select:focus, #ref-panel input[type="number"]:focus, #ref-panel input:not([type]):focus, #ref-panel select:focus, #ref-panel textarea:focus,
+#mask-panel input:focus, #mask-panel select:focus, #mask-panel textarea:focus,
+#pipe-panel input:not([type]):focus, #pipe-panel textarea:focus, .rg-size input:focus,
+.rf-dialog-box input[type="text"]:focus, .rf-dialog-box select:focus { border-color: var(--accent); }
 button.on, button[aria-pressed="true"], button.sel { background: var(--accent-soft); border-color: var(--accent); color: var(--text); }
 /* 채움은 화면의 실행 단추에만 쓴다. 절에 남은 단추와 유료 승인 상자는 기본 primary 꼴을 따른다. */
 #layout-panel .lp-btns button.primary, #ref-panel .lp-btns button.primary, #mask-panel .lp-btns button.primary,
-.rf-dialog .lp-btns button.primary, .projects-home button.primary,
 .dp-dialog .lp-btns button:first-child:not(.danger), .dp-env-block button,
 button.dp-main, #pipe-panel .pp-dock button.dp-main { border-color: var(--accent); background: var(--accent); color: var(--on-accent); font-weight: 700; }
 /* 꺼진 채움 단추는 기본 불투명도를 겹쳐 낮추지 않아 글자가 읽히게 한다. */
 #layout-panel .lp-btns button.primary:disabled, #ref-panel .lp-btns button.primary:disabled, #mask-panel .lp-btns button.primary:disabled,
-.rf-dialog .lp-btns button.primary:disabled, .projects-home button.primary:disabled,
 .dp-dialog .lp-btns button:first-child:not(.danger):disabled, .dp-env-block button:disabled,
 button.dp-main:disabled, #pipe-panel .pp-dock button.dp-main:disabled {
   background: var(--panel2); border-color: var(--line); color: var(--dim); opacity: 1;
 }
 .dp-main { width: 100%; min-height: 40px; }
 .pp-tabs { display: none; }
+.tabs .tab:disabled { opacity: 1; color: #71717a; }
+.tabs .tab:disabled .step-state, .tabs .tab:disabled .step-state::before { color: inherit; opacity: 1; }
+.rf-perspective-handle:hover { border-color: currentColor; }
+
+/* 밝은 그림에서도 선택 선을 찾을 수 있게 어두운 가장자리를 두른다. 선 굵기·점선은 그대로다. */
+svg.marks .crop.sel, svg.marks .lc.sel, svg.marks .rsel, svg.marks .mcrop,
+svg.marks .draft, svg.marks .rpoly, svg.marks .mx-outline, .dr-selected {
+  filter: drop-shadow(0 0 1px #000) drop-shadow(0 0 1px #000);
+}
 
 /* 대기는 점선으로 표시하고, 실제 진행에만 맥동을 쓴다. */
-.lh-wait::before, .clabel.wait::before, .step-state:not(.done):not(.warn):not(.optional)::before { content: "◌ "; color: var(--wait); }
+.step-state.todo { color: var(--wait); }
+.lh-wait::before, .clabel.wait::before, .step-state.todo::before { content: "◌ "; color: var(--wait); }
 .b-run, .vmsg.busy { animation: dp-pulse 2s ease-in-out infinite; }
 @keyframes dp-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .6; } }
 @media (prefers-reduced-motion: reduce) {
   .b-run, .vmsg.busy { animation: none; }
 }
 
-.dp-empty { display: flex; align-items: center; justify-content: center; gap: 8px; color: var(--dim); text-align: center; }
+.dp-empty { display: flex; align-items: center; justify-content: center; grid-column: 1 / -1; gap: 8px; color: var(--dim); text-align: center; }
 .dp-empty::before { content: ""; flex: none; width: 12px; height: 12px; border: 1px dashed currentColor; border-radius: 50%; }
 
 /* ── Forge F3-U1 (머리줄·상태 줄·주 실행 단추·고급) — 갈래 U1 은 이 표시 아래에만 덧붙인다 ── */

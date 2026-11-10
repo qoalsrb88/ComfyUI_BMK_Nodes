@@ -49438,7 +49438,6 @@ def forge_f3_theme_unit():
     primary = (
         "button.dp-main", "#pipe-panel .pp-dock button.dp-main",
         "#layout-panel .lp-btns button.primary", "#ref-panel .lp-btns button.primary", "#mask-panel .lp-btns button.primary",
-        ".rf-dialog .lp-btns button.primary", ".projects-home button.primary",
         ".dp-dialog .lp-btns button:first-child:not(.danger)", ".dp-env-block button",
     )
     for selector in primary:
@@ -49446,13 +49445,18 @@ def forge_f3_theme_unit():
         has_style(selector + ":disabled", {"background": "var(--panel2)", "color": "var(--dim)", "border-color": "var(--line)", "opacity": "1"})
     filled = set()
     pulse = set()
+    waiting_marks = set()
     for selectors, body in re.findall(r"([^{}]+)\{([^{}]*)\}", code):
         names = {s.strip() for s in selectors.split(",")}
         if re.search(r"(?:^|;)\s*background(?:-color)?:\s*var\(--accent\)\s*;", body):
             filled.update(s for s in names if re.search(r"\bbutton\b|\.(?:primary|dp-main)\b", s))
         if re.search(r"(?:^|;)\s*animation(?:-name)?:[^;]*\bdp-pulse\b", body):
             pulse.update(names)
+        if re.search(r'content:\s*"◌ "', body):
+            waiting_marks.update(names)
     check(filled == set(primary), f"D346 채움 단추 선택자는 허용 목록만(실행 절·일반 승인 상자 제외): {sorted(filled)}")
+    for unused in (".rf-dialog .lp-btns button.primary", ".projects-home button.primary"):
+        check(unused not in code, f"R6 실제 요소가 없는 채움·disabled 선택자 제거: {unused}")
     check(not style("button.primary:disabled"), "D346 보조 primary 전체에 채움 단추의 disabled 모양을 적용하지 않음")
     check(code.index("#pipe-panel .pp-dock button.dp-main") > code.index("button.primary {"), "D346 실행 줄의 주 단추는 기본 primary 뒤에서 구체적으로 덮어씀")
     has_style(".dp-main", {"width": "100%", "min-height": "40px"})
@@ -49477,12 +49481,30 @@ def forge_f3_theme_unit():
     has_style(".rf-perspective-handle", {"background": "var(--panel)"})
     has_style('.dr-button[aria-pressed="true"]', {"color": "var(--accent)"})
 
+    # R1: 밝은 그림 위에서도 선택 핸들·선을 찾고, 기존 선 굵기·점선은 유지한다.
+    for selector in ("svg.marks .handle", "svg.marks .rvtx"):
+        has_style(selector, {"fill": "var(--on-accent)", "stroke": "var(--accent)", "stroke-width": "1.5px"})
+    for selector, width in (("svg.marks .crop.sel", "2.5px"), ("svg.marks .lc.sel", "2.5px"), ("svg.marks .rsel", "2px"),
+                            ("svg.marks .mcrop", "2px"), ("svg.marks .draft", "2px"), ("svg.marks .rpoly", "1.5px"),
+                            ("svg.marks .mx-outline", "1.5px"), (".dr-selected", "3px")):
+        has_style(selector, {"filter": "drop-shadow(0 0 1px #000) drop-shadow(0 0 1px #000)", "stroke-width": width})
+    has_style("svg.marks .draft", {"stroke-dasharray": "6 3"})
+    has_style("svg.marks .lc.locked", {"stroke-dasharray": "6 3"})
+    # R2·R3: 꺼진 탭의 글자는 중복으로 흐리지 않고, 원근 핸들은 상태색을 지킨다.
+    has_style(".tabs .tab:disabled", {"opacity": "1", "color": "#71717a"})
+    for selector in (".tabs .tab:disabled .step-state", ".tabs .tab:disabled .step-state::before"):
+        has_style(selector, {"color": "inherit", "opacity": "1"})
+    has_style(".rf-perspective-handle:hover", {"border-color": "currentColor"})
+
     # D347 수정 1: 대기는 회색 점선, 맥동은 실제 진행에만 쓴다.
     for selector in (".b-wait", ".rg-tag", ".projects-chip"):
         has_style(selector, {"background": "var(--panel2)", "border": "1px dashed var(--wait)", "color": "var(--text)"})
         check(not any(k.startswith("animation") and v != "none" for k, v in style(selector).items()), f"D347 {selector} 대기 배지 애니메이션 없음")
-    for selector in (".lh-wait::before", ".clabel.wait::before", ".step-state:not(.done):not(.warn):not(.optional)::before"):
+    for selector in (".lh-wait::before", ".clabel.wait::before", ".step-state.todo::before"):
         has_style(selector, {"content": '"◌ "', "color": "var(--wait)"})
+    check(waiting_marks == {".lh-wait::before", ".clabel.wait::before", ".step-state.todo::before"},
+          f"R4 대기 원은 todo 단계·대기 글자에만(모름·초기 단계 제외): {sorted(waiting_marks)}")
+    has_style(".step-state", {"color": "var(--dim)"})
     check(pulse == {".b-run", ".vmsg.busy"}, f"D347 dp-pulse 는 실제 진행 선택자 두 곳만: {sorted(pulse)}")
     check(re.search(r"@keyframes dp-pulse\s*\{\s*0%, 100%\s*\{\s*opacity: 1;\s*\}\s*50%\s*\{\s*opacity: \.6;", code) is not None,
           "D347 진행 맥동 불투명도 1 ↔ .6")
@@ -49505,11 +49527,13 @@ def forge_f3_theme_unit():
     check(re.fullmatch(r"#[0-9a-fA-F]{6}", style(":root").get("--panel2", "")) is not None, "F3 알림 바탕 변수는 알파 없는 불투명 색")
     has_style("#toast.show", {"opacity": "1"})
     has_style("#toast.err", {"border-color": "var(--bad)"})
-    for selector in (".step-state", ".vmsg.busy", ".clabel.wait", ".lh-wait"):
+    for selector in (".step-state.todo", ".vmsg.busy", ".clabel.wait", ".lh-wait"):
         has_style(selector, {"color": "var(--wait)"})
     has_style("#p-cand.mode-before figcaption", {"color": "var(--info)"})
-    has_style(".b-new", {"border-color": "var(--info)", "background": "#1d3550", "color": "#cfe3ff"})
-    has_style("svg.marks .prop", {"fill": "rgba(77, 163, 255, .08)", "stroke": "var(--info)"})
+    # R6: 정보 채움은 변수에서 파생하고, 이음매 경고는 조각 색과 구분한다.
+    has_style(".b-new", {"border-color": "var(--info)"})
+    has_style("svg.marks .prop", {"fill": "color-mix(in srgb, var(--info) 8%, transparent)", "stroke": "var(--info)"})
+    has_style("svg.marks .seam.weak", {"stroke": "var(--warn)"})
     has_style("svg.marks text.linfo", {"fill": "var(--info)"})
 
     # D348·D354·D356·D357: 로컬 글꼴 목록, 단추 크기, 탭, 빈 화면의 모양.
@@ -49522,8 +49546,27 @@ def forge_f3_theme_unit():
     has_style(".tabs .tab", {"background": "transparent", "border": "0", "border-radius": "0", "border-bottom": "2px solid transparent"})
     has_style(".tabs .tab.on", {"background": "transparent", "color": "var(--accent)", "border-bottom-color": "var(--accent)"})
     check(".pp-tabs { display: none; }" in css, "D354 실행 하위 탭 숨김")
-    has_style(".dp-empty", {"display": "flex", "align-items": "center", "justify-content": "center", "color": "var(--dim)", "text-align": "center"})
+    # R5: 후보 격자 안의 빈 화면도 첫 칸에 갇히지 않고 전체 열을 쓴다.
+    has_style(".dp-empty", {"display": "flex", "align-items": "center", "justify-content": "center", "grid-column": "1 / -1", "color": "var(--dim)", "text-align": "center"})
     has_style(".dp-empty::before", {"content": '""', "width": "12px", "height": "12px", "border": "1px dashed currentColor", "border-radius": "50%"})
+
+    # R7: 네 패널의 텍스트·숫자·선택·메모 칸(기본 text 포함)과 초점 테두리를 빠짐없이 검사한다.
+    has_style("html", {"accent-color": "var(--accent)"})
+    field_style = {"background": "var(--well)", "border": "1px solid var(--line)", "border-radius": "var(--radius-sm)", "color": "var(--text)"}
+    for panel in ("#layout-panel", "#ref-panel", "#mask-panel", "#pipe-panel"):
+        for field in ('input[type="number"]', 'input[type="text"]', "input:not([type])", "select", "textarea"):
+            base = "input" if field.startswith("input") else field
+            actual = style(f"{panel} {base}") | style(f"{panel} {field}")
+            focus = style(f"{panel} {base}:focus") | style(f"{panel} {field}:focus")
+            check(all(actual.get(k) == v for k, v in field_style.items()), f"R7 {panel} {field} 공통 표면")
+            check(focus.get("border-color") == "var(--accent)", f"R7 {panel} {field} 강조 초점 테두리")
+    has_style(".rg-size input", dict(field_style, width="110px"))
+    for selector in (".rg-size input:focus", '.rf-dialog-box input[type="text"]:focus', ".rf-dialog-box select:focus"):
+        has_style(selector, {"border-color": "var(--accent)"})
+    has_style("#mask-panel .mc-xform-value input", {"width": "76px", "min-width": "0", "margin-left": "auto"})
+    has_style(".rf-slider input", {"flex": "1", "min-width": "0"})
+    for selector in ('.pp-field input[type="text"]', '.pp-field input[type="number"]', ".pp-field select"):
+        has_style(selector, {"flex": "1", "min-width": "0"})
 
     protected = (
         "#top button { flex: none; white-space: nowrap; }", ".tabs .tab.on {", "body.no-keys .keybar { display: none; }",
