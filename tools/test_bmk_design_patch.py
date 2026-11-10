@@ -58214,16 +58214,850 @@ def _server_api():
     return json.loads((PKG / "tools/fixtures/server_api.json").read_text(encoding="utf-8"))
 
 
+def _fs_jobs():
+    """실행기를 돌리지 않고 라우트·범위 전달·정리 계약만 확인하는 주입물."""
+    import asyncio
+    from aiohttp import web
+    import bmk_design_patch_board as bd
+
+    class Runner:
+        def __init__(self, *, workers):
+            self.workers, self.closed = workers, False
+
+        def close(self):
+            self.closed = True
+
+    def routes(runner):
+        @bd._guard
+        async def handler(request):
+            data = await request.json() if request.method == "POST" else request.query
+            root = bd._root_param(data.get("root"))
+            scope = await asyncio.to_thread(bd.current_scope)
+            return web.json_response({"ok": bool(root and scope), "workers": runner.workers})
+        return tuple((method, bd.API + path, handler) for method, path in (
+            ("POST", "/jobs/prompt"), ("GET", "/jobs/queue"), ("POST", "/jobs/queue"), ("GET", "/jobs/history/{prompt_id}")))
+
+    return types.SimpleNamespace(JobRunner=Runner, routes=routes)
+
+
+def _fs_link(link, target):
+    """합성 폴더 사이 정션/심볼릭 링크. 대상도 시험 출력 안이며 정리 때 따라가지 않는다."""
+    if os.name == "nt":
+        result = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], capture_output=True)
+        if result.returncode:
+            raise OSError("시험 정션을 만들 수 없습니다")
+    else:
+        os.symlink(target, link, target_is_directory=True)
+
+
+async def _fs_new_limits(bd, ascope, bscope):
+    """업로드 잠금은 계정별, 디코드는 서버 전체 둘, 로컬은 무제한이라는 동작을 검사한다."""
+    import asyncio
+    from unittest.mock import patch
+    token = bd.set_scope(ascope)
+    try:
+        first = bd._project_new_lock()
+        check(first.acquire(blocking=False), "FS11 첫 계정 생성 잠금 획득")
+        try:
+            check(not bd._project_new_lock().acquire(blocking=False), "FS11 같은 계정의 두 생성은 경합")
+            other = bd.set_scope(bscope)
+            try:
+                second = bd._project_new_lock()
+                acquired = second.acquire(blocking=False)
+                check(acquired, "FS11 다른 계정은 첫 계정의 업로드를 기다리지 않음")
+                if acquired:
+                    second.release()
+            finally:
+                bd.reset_scope(other)
+        finally:
+            first.release()
+    finally:
+        bd.reset_scope(token)
+    entered, release = threading.Event(), threading.Event()
+    mutex, active, peak = threading.Lock(), [0], [0]
+
+    def decode(state, part):
+        with mutex:
+            active[0] += 1
+            peak[0] = max(peak[0], active[0])
+            if active[0] == 2:
+                entered.set()
+        try:
+            if not release.wait(5):
+                raise TimeoutError("시험 디코드 해제 신호 없음")
+            return "target"
+        finally:
+            with mutex:
+                active[0] -= 1
+
+    with patch.object(bd, "_project_new_target", side_effect=decode), \
+            patch.object(bd, "_project_new_thread", wraps=bd._project_new_thread) as submit:
+        tasks = [asyncio.create_task(bd._project_new_target_limited({}, None)) for _ in range(2)]
+        try:
+            check(await asyncio.to_thread(entered.wait, 5), "FS11 디코드 둘은 동시에 진입 가능")
+            third = asyncio.create_task(bd._project_new_target_limited({}, None))
+            tasks.append(third)
+            try:
+                await asyncio.wait_for(asyncio.shield(third), 0.05)
+            except asyncio.TimeoutError:
+                pass
+            check(not third.done() and submit.call_count == 2, "FS21 R6 셋째 업로드는 스레드를 제출하지 않고 슬롯 대기")
+            check(await asyncio.wait_for(asyncio.to_thread(lambda: "responsive"), 1) == "responsive",
+                  "FS21 R6 디코드 대기 중에도 다른 executor 작업 진행")
+            third.cancel()
+            try:
+                await third
+            except asyncio.CancelledError:
+                pass
+            tasks.pop()
+            check(submit.call_count == 2, "FS21 R6 슬롯 대기 취소는 작업 스레드를 만들지 않음")
+            tasks.append(asyncio.create_task(bd._project_new_target_limited({}, None)))
+        finally:
+            release.set()
+            results = await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 5)
+        check(results == ["target"] * 3 and peak[0] == 2, "FS21 R6 자리가 나면 셋째 진행·서버 디코드 동시 상한 둘")
+    with patch.object(bd, "_project_new_target", side_effect=ValueError("decode failed")):
+        try:
+            await bd._project_new_target_limited({}, None)
+        except ValueError:
+            pass
+    slots = bd._PROJECT_NEW_SLOTS
+    acquired = [slots.acquire(blocking=False), slots.acquire(blocking=False)]
+    try:
+        check(all(acquired), "FS21 R6 디코드 예외도 슬롯 반환")
+    finally:
+        for held in acquired:
+            if held:
+                slots.release()
+    # 잠긴 세마포어를 로컬판이 건드리면 즉시 실패하게 해서 블로킹 없이 확인한다.
+    with patch.object(bd, "server_mode", return_value=False), patch.object(bd, "_project_new_target", return_value="local"), \
+            patch.object(bd, "_PROJECT_NEW_SLOTS") as slots:
+        slots.acquire.side_effect = AssertionError("로컬에서 서버 슬롯 사용")
+        check(await bd._project_new_target_limited({}, None) == "local", "FS11 로컬 디코드에는 서버 세마포어 없음")
+
+
+async def _fs_scoped_roots(bd, out, call, login, sessions):
+    """FS26 T1: 계정 간 강제 키 충돌·재시작 순서·폴더 mtime 캐시·로컬 조회 계약."""
+    from unittest.mock import patch
+    key, root_key = "c" * 12, store.root_key
+
+    def colliding_key(root):
+        return key if os.path.basename(root) in ("alice_project", "bob_project") else root_key(root)
+
+    def rejected(value, status, message):
+        try:
+            bd._root_param(value)
+        except bd._Reject as e:
+            check(e.status == status and str(e) == message, "FS26 T1 범위/키/매니페스트 거절 " + repr(value))
+        else:
+            check(False, "FS26 T1 거절해야 할 키 " + repr(value))
+
+    with patch.object(store, "root_key", side_effect=colliding_key), patch.object(store, "_ROOTS", {}), \
+            patch.object(bd, "_SCOPE_ROOTS", {}), \
+            patch.object(store, "load_root_registry", side_effect=AssertionError("계정 로그인은 전역 로딩 금지")) as load:
+        accounts = []
+        for name, shade in (("alice", 64), ("bob", 192)):
+            sid, tag = await login(name, org="collision")
+            scope = sessions.get(sid)["scope"]
+            root = Path(scope["input"], store.PROJECTS_DIRNAME, name + "_project")
+            png = png_bytes(np.full((64, 64, 3), shade, np.uint8))
+            response, data = await call("POST", bd.API + "/projects/new", sid=sid, tag=tag, data=png,
+                                        params={"name": root.name, "filename": "base.png"},
+                                        headers={"Content-Type": "application/octet-stream"})
+            check(response.status == 200 and data.get("key") == key, "FS26 T1 같은 키의 새 프로젝트도 각 계정에 생성 " + name)
+            (root / "inputs").mkdir(exist_ok=True)
+            for filename in ("shared.png", name + ".png"):
+                (root / "inputs" / filename).write_bytes(png)
+            accounts.append((sid, tag, scope, root, png))
+
+        # 재시작 직후의 전역 등록 상태를 재현한다. bob 만 먼저 등록해도 alice 로그인은 그 상태에 의존하지 않는다.
+        store._ROOTS.clear()
+        store.register_root(str(accounts[1][3]))
+        bd._SCOPE_ROOTS.clear()
+        with patch.object(store, "resolve_board_root", side_effect=AssertionError("서버는 전역 키 조회 금지")) as resolve, \
+                patch.object(store, "known_roots", side_effect=AssertionError("서버는 전역 목록 금지")) as known:
+            sid, tag = await login("alice", org="collision")
+            accounts[0] = (sid, tag, *accounts[0][2:])
+            check(store._ROOTS[key]["root"] == str(accounts[1][3]), "FS26 T1 bob 선등록 뒤 alice 로그인도 전역 상태 불변")
+            for index, (sid, tag, scope, root, png) in enumerate(accounts):
+                response, data = await call("GET", bd.API + "/state", sid=sid, params={"root": key})
+                check(response.status == 200 and data.get("project") == root.name, "FS26 T1 충돌 키 state 는 자기 프로젝트 " + root.name)
+                response, data = await call("POST", bd.API + "/projects/open", sid=sid, tag=tag, json={"key": key})
+                check(response.status == 200 and data == {"ok": True, "key": key}, "FS26 T1 충돌 키 projects/open 성공 " + root.name)
+                response, data = await call("GET", bd.API + "/projects", sid=sid)
+                check(response.status == 200 and [p["name"] for p in data["projects"]] == [root.name],
+                      "FS26 T1 목록에 다른 계정 프로젝트 없음 " + root.name)
+                response, data = await call("GET", bd.API + "/file", sid=sid, params={"root": key, "rel": "inputs/shared.png"})
+                check(response.status == 200 and data == png, "FS26 T1 동일 키·상대 경로의 파일도 자기 바이트 " + root.name)
+                other_name = "bob" if index == 0 else "alice"
+                response, _ = await call("GET", bd.API + "/file", sid=sid, params={"root": key, "rel": "inputs/" + other_name + ".png"})
+                check(response.status == 404, "FS26 T1 상대 계정에만 있는 파일은 404 " + root.name)
+
+            token = bd.set_scope(accounts[0][2])
+            try:
+                root = accounts[0][3]
+                parent = root.parent
+                bd._SCOPE_ROOTS.clear()
+                with patch.object(bd, "_project_roots", wraps=bd._project_roots) as scan:
+                    check(bd._root_param(key) == str(root) and bd._root_param(key) == str(root) and scan.call_count == 1,
+                          "FS26 T1 같은 계정·폴더 mtime 이면 스캔/해시 재사용")
+                    for invalid in (None, "../", "C" * 12, "c" * 11, "c" * 13, "d" * 12):
+                        rejected(invalid, 404, bd._ROOT_HINT)
+                    manifest = root / store.MANIFEST_NAME
+                    saved = manifest.read_bytes()
+                    manifest.unlink()
+                    rejected(key, 404, bd._ROOT_HINT)
+                    manifest.write_bytes(saved)
+                    check(bd._root_param(key) == str(root) and scan.call_count == 1,
+                          "FS26 T1 캐시가 있어도 매니페스트 삭제/복원은 매번 확인")
+                    fresh = parent / "fresh_project"
+                    fresh.mkdir()
+                    store.write_json_atomic(str(fresh / store.MANIFEST_NAME), store.new_manifest(fresh.name))
+                    stamp = parent.stat()
+                    os.utime(parent, ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 1_000_000_000))
+                    fresh_key = root_key(str(fresh))
+                    check(bd._root_param(fresh_key) == str(fresh) and scan.call_count == 2,
+                          "FS26 T1 폴더 mtime 변경 뒤 전역 미등록 새 프로젝트 발견")
+                    (fresh / store.MANIFEST_NAME).unlink()
+                    fresh.rmdir()
+                    stamp = parent.stat()
+                    os.utime(parent, ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 2_000_000_000))
+                    rejected(fresh_key, 404, bd._ROOT_HINT)
+                    check(scan.call_count == 3, "FS26 T1 프로젝트 삭제도 폴더 mtime 으로 캐시 갱신")
+                oldest = str(out / "cache_0")
+                with patch.object(bd, "_SCOPE_ROOTS", {str(out / ("cache_" + str(i))): (0, {}) for i in range(256)}):
+                    check(bd._root_param(key) == str(root) and len(bd._SCOPE_ROOTS) == 256 and oldest not in bd._SCOPE_ROOTS,
+                          "FS26 T1 캐시는 최근 256개 계정 폴더로 제한")
+            finally:
+                bd.reset_scope(token)
+            token = bd.set_scope(None)
+            try:
+                for value in (key, None):
+                    rejected(value, 401, bd.NO_SESSION)
+            finally:
+                bd.reset_scope(token)
+            check(resolve.call_count == 0 and known.call_count == 0 and load.call_count == 0,
+                  "FS26 T1 서버 조회·열기·로그인은 전역 resolve/known/load 호출 0")
+        with patch.dict(os.environ, {bd.SERVER_ENV: "0"}), \
+                patch.object(store, "resolve_board_root", wraps=store.resolve_board_root) as resolve:
+            check(bd._root_param(key) == str(accounts[1][3]) and resolve.call_args_list == [((key,), {})],
+                  "FS26 T1 로컬 _root_param 은 기존 전역 조회 결과·호출 그대로")
+
+
 def forge_server_unit():
     """F1 갈래 S — 서버 진입점·세션·요청 검사·계정 격리·경로 봉쇄·설정 저장·내려받기(aiohttp 시험 서버, torch·comfy 없음, --quick 포함)."""
     section("Forge F1 서버·세션·범위 (forge_server_unit)")
     import bmk_design_patch_board as bd
+    import bmk_design_patch_server as srv
+    import asyncio
+    import dataclasses
+    import html
+    import logging
+    import tempfile
+    from aiohttp import DummyCookieJar, web
+    from aiohttp.test_utils import TestClient, TestServer
+    from unittest.mock import patch
     api = _server_api()
+    api_path = bd.API
+    initial_node = {k for k in sys.modules if k == "bmk_design_patch" or k.endswith(".bmk_design_patch")}
+    initial_env = {k: os.environ.get(k) for k in (bd.SERVER_ENV, "BMK_DP_MOCK_API")}
     check(bd.server_mode() is False and bd.current_scope() is None, "FS0 로컬판: 서버 모드 꺼짐·범위 없음")
     check(bd.in_scope("C:/어디든") is True, "FS0 로컬판: in_scope 는 늘 True")
     check(api["env_local"]["response"] == {"server_mode": False, "caps": bd.LOCAL_CAPS}, "FS0 계약: 로컬 env 본문 = 보드 LOCAL_CAPS")
     check(bd.LOCAL_CAPS["jobs"] is False and bd.LOCAL_CAPS["export_download"] is False
           and set(api["env_server"]["response"]["caps"]) == set(bd.LOCAL_CAPS), "FS0 계약: caps 키가 두 모드 같고 서버 전용 둘은 로컬 false")
+    base = OUT_ROOT / "forge_server_unit"
+    base.mkdir(parents=True, exist_ok=True)
+    out = Path(tempfile.mkdtemp(prefix="run_", dir=base))
+    config = srv.ServerConfig(str(out / "data"), dev_handoff=True, parent_origins=("http://localhost:8790",),
+                              idle_ttl=10, max_ttl=25, workers=2)
+    now = [100.0]
+    jobs = _fs_jobs()
+    log = io.StringIO()
+    capture = logging.StreamHandler(log)
+
+    # 새 프로세스의 import 는 모드와 노드/torch import 에 손대지 않아야 한다.
+    source = ("import os,sys; sys.path.insert(0, " + repr(str(PKG)) + "); "
+              "keys=('BMK_DP_SERVER_MODE','BMK_DP_MOCK_API'); before=[os.environ.get(k) for k in keys]; "
+              "import bmk_design_patch_server; assert [os.environ.get(k) for k in keys]==before; assert 'torch' not in sys.modules; "
+              "assert 'bmk_design_patch' not in sys.modules; print('import clean')")
+    proc = subprocess.run([sys.executable, "-B", "-X", "utf8", "-c", source], capture_output=True, text=True, encoding="utf-8")
+    check(proc.returncode == 0 and "import clean" in proc.stdout, "FS1 진입점 import 순도: " + proc.stderr[-500:])
+    for change in ({"dev_handoff": False}, {"cookie_samesite": "bad"}, {"cookie_samesite": "None"},
+                   {"dev_handoff": False, "public_origin": "https://studio.test", "dev_parent_port": 8790}):
+        expect_raises(lambda c=change: srv.make_app(dataclasses.replace(config, **c), jobs_module=jobs), "FS1 설정 거절 " + str(change))
+    for host in ("0.0.0.0", "::", "192.168.0.2", "example.test"):
+        expect_raises(lambda h=host: srv._validate_config(dataclasses.replace(config, host=h)),
+                      "FS16 R1 개발 모드 외부 바인딩 거절 " + host, contains="루프백")
+    for host in ("127.0.0.1", "::1", "localhost"):
+        check(srv._validate_config(dataclasses.replace(config, host=host)).host == host, "FS16 R1 개발 루프백 허용 " + host)
+    check(srv._validate_config(dataclasses.replace(config, dev_handoff=False, host="0.0.0.0", public_origin="https://studio.test")).host == "0.0.0.0",
+          "FS16 R1 운영 모드 바인딩은 기존처럼 허용")
+    expect_raises(lambda: srv.make_app(config), "FS1 미구현 jobs 를 조용히 생략하지 않음", NotImplementedError)
+    check(not bd.server_mode() and os.environ.get("BMK_DP_MOCK_API") == initial_env["BMK_DP_MOCK_API"], "FS1 만들기 실패도 모드 원복")
+
+    # main 이 만든 실제 설정을 받되 서비스 바인딩 전에 멈춘다.
+    cli_configs = []
+
+    class ConfigCaptured(Exception):
+        pass
+
+    def capture_config(value):
+        cli_configs.append(value)
+        raise ConfigCaptured
+
+    with patch.object(srv, "make_app", side_effect=capture_config):
+        expect_raises(lambda: srv.main(["--data", str(out / "ipv6_data"), "--host", "::1", "--dev-handoff", "--dev-parent-port", "8790"]),
+                      "FS27 T2 IPv6 CLI 설정 생성·실제 서비스 시작 전 중단", ConfigCaptured)
+    ids = ("Alice", "alice", "CON", "x" * 128, "한글", "h_alice", "con", "org/../../other")
+    names = [srv._folder_id(value) for value in ids]
+    check(len({s.casefold() for s in names}) == len(names) and all(re.fullmatch(r"[a-z0-9_]{1,24}-[0-9a-f]{16}", n) for n in names),
+          "FS2 대소문자·예약어·긴 ID·한글·접두 ID 의 안정적인 폴더 분리")
+
+    # 저장소 자체의 만료·LRU 상한은 HTTP 시각 시험과 별도로 10,001개까지 확인한다.
+    registry = srv.SessionStore(10, 25, clock=lambda: now[0])
+    identity = {"account_id": "a", "organization_id": "o", "name": "a"}
+    first = registry.create(identity, {}, "tag")
+    for i in range(10000):
+        registry.create(dict(identity, account_id=str(i)), {}, "tag")
+    check(len(registry._sessions) == 10000 and registry.get(first) is None, "FS2 세션 10,000 상한·오래 안 쓴 세션 제거")
+    registry = srv.SessionStore(10, 25, clock=lambda: now[0], limit=2)
+    oldest = registry.create(identity, {}, "tag")
+    now[0] += 1
+    middle = registry.create(identity, {}, "tag")
+    now[0] += 1
+    registry.get(oldest)
+    newest = registry.create(identity, {}, "tag")
+    check(registry.get(middle) is None and registry.get(oldest) and registry.get(newest), "FS2 LRU 는 생성 순서가 아닌 마지막 조회 시각")
+    now[0] = 100.0
+
+    async def run():
+        routes = web.RouteTableDef()
+        bd.register_routes(routes)
+        local = web.Application()
+        local.add_routes(routes)
+        async with TestClient(TestServer(local)) as client:
+            response = await client.get(api_path + "/env")
+            check(await response.json() == api["env_local"]["response"], "FS3 실제 로컬 env 응답")
+
+        app = srv.make_app(config, jobs_module=jobs, clock=lambda: now[0])
+        check(app._client_max_size == 8 * 1024 ** 2, "FS17 R2 메모리 본문 상한 8MiB")
+        runner, sessions = app[srv._RUNNER_KEY], app[srv._SESSION_KEY]
+        client = TestClient(TestServer(app), cookie_jar=DummyCookieJar())
+        try:
+            await client.start_server()
+            origin = str(client.make_url("/")).rstrip("/")
+            common = {"Origin": origin, api["header"]["name"]: api["header"]["value"]}
+
+            async def call(method, path, *, sid=None, tag=None, headers=None, **kwargs):
+                hs = dict(common)
+                if sid is not None:
+                    hs["Cookie"] = srv.COOKIE + "=" + sid
+                if tag is not None:
+                    hs[api["account_header"]["name"]] = tag
+                for key, value in (headers or {}).items():
+                    if value is None:
+                        hs.pop(key, None)
+                    else:
+                        hs[key] = value
+                response = await client.request(method, path, headers=hs, allow_redirects=False, **kwargs)
+                raw = await response.read()
+                check(response.headers.get("Content-Security-Policy") == "frame-ancestors http://localhost:8790"
+                      and response.headers.get("X-Content-Type-Options") == "nosniff"
+                      and response.headers.get("Referrer-Policy") == "same-origin", "FS4 모든 응답 보안 머리 " + method + " " + path)
+                if response.content_type == "application/json":
+                    check(response.headers.get("Cache-Control") == "no-store", "FS4 JSON 캐시 금지 " + path)
+                    data = json.loads(raw)
+                else:
+                    data = raw
+                if path in ("/api/session", "/api/preferences") and response.status == 400:
+                    check(response.content_type == "application/json" and set(data) == {"error"} and isinstance(data["error"], str),
+                          "FS25 R10 세션·설정 400 은 JSON error " + path)
+                return response, data
+
+            async def login(name="alice", old=None, org="org1"):
+                response, data = await call("POST", "/api/session", sid=old, json={"token": "dev:" + name, "organization_id": org})
+                check(response.status == 200 and set(data) == set(api["session_post"]["response"])
+                      and set(data["account"]) == {"name", "tag"}, "FS5 세션 계약 " + name)
+                cookie = response.cookies[srv.COOKIE]
+                check(cookie["httponly"] and cookie["path"] == "/" and cookie["samesite"] == "Lax" and not cookie["secure"],
+                      "FS5 개발 쿠키 속성")
+                check("dev:" + name not in str(data) + str(response.headers), "FS5 응답·머리에 토큰 없음")
+                return cookie.value, data["account"]["tag"]
+
+            for path, status in (("/", 302), (api_path + "/board", 302), (api_path + "/board/", 200),
+                                 (api_path + "/board/env.js", 200), (api_path + "/board/missing.js", 404)):
+                response, _ = await call("GET", path)
+                check(response.status == status, "FS4 공개 경로 " + path)
+            response, _ = await call("GET", "/?parent_origin=http%3A%2F%2Flocalhost%3A8790&x=1")
+            check(response.status == 302 and "parent_origin=" in response.headers["Location"] and "x=1" in response.headers["Location"],
+                  "FS4 첫 리다이렉트 쿼리 보존")
+            response, data = await call("GET", api_path + "/env")
+            check(data == api["env_server_no_session"]["response"], "FS3 서버 비로그인 env 계약")
+            response, data = await call("GET", api_path + "/state")
+            check(response.status == 401 and data == api["no_session"]["response"] and "Cookie" in response.headers.get("Vary", ""),
+                  "FS4 보호 경로 세션 없음·캐시 분리")
+            for headers in ({"X-DesignPatch-Request": None}, {"Origin": "http://attacker.test"}, {"Origin": None}, {"Host": "attacker.test"}):
+                response, data = await call("POST", "/api/session", headers=headers, json=api["session_post"]["request"])
+                check(response.status == 403 and data == api["bad_request_header"]["response"], "FS4 Host·Origin·전용 헤더 거절 " + str(headers))
+            for body in ({"token": "bad", "organization_id": "org1"}, {"token": "dev:a\n", "organization_id": "org1"}):
+                response, data = await call("POST", "/api/session", json=body)
+                check(response.status == 401 and data == api["session_post_bad_token"]["response"], "FS5 잘못된 개발 토큰")
+            for body in ({"token": 1, "organization_id": "org1"}, {"token": "a" * 4097, "organization_id": "org1"},
+                         {"token": "dev:a", "organization_id": "x" * 129}, {"token": "dev:a", "organization_id": "o\n"}):
+                response, _ = await call("POST", "/api/session", json=body)
+                check(response.status == 400, "FS5 로그인 본문 형식·길이")
+            response, _ = await call("POST", "/api/session", data=b" " * (16 * 1024 + 1), headers={"Content-Type": "application/json"})
+            check(response.status == 400, "FS5 로그인 본문 16KiB 한도")
+            alice, atag = await login()
+            rotated, same = await login(old=alice)
+            check(rotated != alice and same == atag, "FS5 매 POST 새 sid·같은 계정 표지 고정")
+            response, _ = await call("GET", "/api/session", sid=alice)
+            check(response.status == 401, "FS5 교체 전 sid 는 401")
+            alice = rotated
+            response, data = await call("GET", "/api/session", sid=alice)
+            check(response.status == 200 and set(data) == set(api["session_get"]["response"]), "FS5 GET 세션 계약")
+            response, data = await call("GET", api_path + "/env", sid=alice)
+            check(set(data) == set(api["env_server"]["response"]) and data["account"] == {"name": "alice", "tag": atag}
+                  and data["caps"] == api["env_server"]["response"]["caps"], "FS3 서버 로그인 env 계약·ID/경로 비공개")
+            bob, btag = await login("bob")
+            same_acct, _ = await login("alice")
+            different_org, orgtag = await login("alice", org="org2")
+            check(atag != btag and atag != orgtag, "FS5 계정·조직마다 다른 표지")
+            # 같은 이름도 조직이 다르면 상한을 공유하지 않는다.
+            other_org, _ = await login("prolific", org="org2")
+            prolific = [(await login("prolific"))[0] for _ in range(25)]
+            check(sum(sid in sessions._sessions for sid in prolific) == 20
+                  and all(sessions.get(sid) for sid in (alice, bob, other_org)), "FS19 R4 25회 로그인 뒤 해당 계정 20개·다른 계정/조직 세션 유지")
+            check(all(sid not in sessions._sessions for sid in prolific[:5]), "FS19 R4 해당 계정의 오래 안 쓴 세션부터 제거")
+            # LRU 와 생성 순서가 다를 때도 같은 계정의 최근 조회를 보존한다.
+            now[0] += 1
+            sessions.get(prolific[5])
+            more, _ = await login("prolific")
+            check(prolific[5] in sessions._sessions and prolific[6] not in sessions._sessions and more in sessions._sessions,
+                  "FS19 R4 계정별 LRU 는 마지막 조회 기준")
+            recover, recover_tag = await login("recover")
+            for path in ("/api/session", api_path + "/env"):
+                response, data = await call("GET", path, sid=recover, tag=atag)
+                check(response.status == 200 and data["account"]["tag"] == recover_tag, "FS20 R5 공개 GET 은 옛 표지로도 복구 가능 " + path)
+            response, data = await call("POST", "/api/session", sid=recover, tag=atag,
+                                        json={"token": "dev:recovered", "organization_id": "org1"})
+            replacement = response.cookies.get(srv.COOKIE)
+            check(response.status == 200 and replacement is not None and replacement.value != recover and sessions.get(recover) is None,
+                  "FS20 R5 옛 표지를 붙인 세션 POST 도 새 sid 로 교체")
+            response, _ = await call("POST", "/api/session/logout", sid=replacement.value, tag=atag, json={})
+            check(response.status == 200 and sessions.get(replacement.value) is None, "FS20 R5 옛 표지로 공개 로그아웃 가능")
+            response, data = await call("GET", "/api/preferences", sid=bob, tag=atag)
+            check(response.status == 409 and data == api["session_changed"]["response"], "FS6 다른 탭의 계정 표지 거절")
+            response, data = await call("POST", "/api/preferences", sid=alice, json={})
+            check(response.status == 403 and data == api["bad_request_header"]["response"], "FS6 쓰기에는 계정 표지 필수")
+            response, _ = await call("GET", "/missing", sid=alice)
+            check(response.status == 404 and "Cookie" in response.headers.get("Vary", ""), "FS4 aiohttp 404 보안 머리·Vary")
+            response, _ = await call("POST", api_path + "/env", sid=alice, tag=atag, json={})
+            check(response.status == 405, "FS4 aiohttp 405 보안 머리")
+            response, _ = await call("GET", "/api" + api_path + "/env", sid=alice)
+            check(response.status == 404, "FS4 ComfyUI /api 접두 사본 없음")
+
+            # 두 계정이 동일한 이름을 업로드해도 홈·키가 다르다. 노드 모듈은 부르지 않는다.
+            png = png_bytes(np.full((64, 64, 3), 127, np.uint8))
+            async def upload(sid, tag):
+                response, data = await call("POST", api_path + "/projects/new", sid=sid, tag=tag, data=png,
+                                            params={"name": "same_name", "filename": "base.png"}, headers={"Content-Type": "application/octet-stream"})
+                check(response.status == 200, "FS7 계정 홈에 그림 업로드: " + str(data))
+                return data["key"]
+            akey, bkey = await upload(alice, atag), await upload(bob, btag)
+            check(akey != bkey, "FS7 같은 프로젝트 이름의 키 분리")
+            aroot, broot = store.resolve_board_root(akey), store.resolve_board_root(bkey)
+            ascope, bscope = sessions.get(alice)["scope"], sessions.get(bob)["scope"]
+            await _fs_new_limits(bd, ascope, bscope)
+            await _fs_scoped_roots(bd, out, call, login, sessions)
+            # 서버의 큰 업로드는 메모리 본문 상한을 우회해 디스크까지 흘러간 뒤 형식 검사로 끝난다.
+            async def large_chunks():
+                for _ in range(144):
+                    yield b"x" * 65536  # 9MiB, 그림 형식은 아님
+
+            sizes = []
+            sniff = bd.sniff_image_kind
+
+            def sniff_size(path):
+                sizes.append(os.path.getsize(path))
+                return sniff(path)
+
+            with patch.object(bd, "sniff_image_kind", side_effect=sniff_size):
+                for endpoint, query in (("projects/new", {"name": "large_invalid", "filename": "large.png"}),
+                                        ("refs/pool", {"root": akey, "op": "sheet_add", "filename": "large.png"})):
+                    response, data = await call("POST", api_path + "/" + endpoint, sid=alice, tag=atag, params=query,
+                                                data=large_chunks(), headers={"Content-Type": "application/octet-stream"})
+                    check(response.status == 400 and "너무 큼" not in str(data) and "너무 큽니다" not in str(data),
+                          "FS17 R2 9MiB 스트리밍은 크기 제한이 아닌 형식 오류로 종료 " + endpoint + ": " + str(data))
+            check(sizes == [9 * 1024 ** 2] * 2, "FS17 R2 두 업로드 모두 9MiB 전체를 받은 뒤 형식 검사")
+            for endpoint, content_type in (("pipeline/settings", "application/json"), ("mask/save", "image/png"),
+                                            ("refs/pool", "application/json")):
+                response, _ = await call("POST", api_path + "/" + endpoint, sid=alice, tag=atag, params={"root": akey},
+                                         data=large_chunks(), headers={"Content-Type": content_type})
+                check(response.status == 413, "FS17 R2 청크 전송의 메모리 본문도 읽는 중 8MiB 에서 거절 " + endpoint)
+
+            token = bd.set_scope(ascope)
+            try:
+                with patch.object(store, "known_roots", side_effect=AssertionError("전역 루트 탐색")) as known:
+                    rows = bd._project_roots()
+                    check(rows == [{"key": akey, "root": aroot, "project": "same_name", "outside_input": False}],
+                          "FS23 R8 계정 폴더 scandir 만으로 자기 프로젝트 목록 유지")
+                    store._ROOTS.pop(akey)
+                    check(bd._project_open(akey) == {"ok": True, "key": akey}, "FS23 R8 프로젝트 열기·설정 복구도 계정 폴더만 탐색")
+                    check(known.call_count == 0, "FS23 R8 서버 목록·열기에 known_roots 호출 0")
+            finally:
+                bd.reset_scope(token)
+
+            tmp = Path(ascope["home"], bd._NEW_TMP_DIRNAME)
+            stale, fresh = tmp / ("a" * 32), tmp / ("b" * 32)
+            for directory in (stale, fresh):
+                directory.mkdir(parents=True)
+                (directory / "upload.part").write_bytes(b"unfinished")
+            old_time = time.time() - bd._NEW_TMP_MAX_AGE - 60
+            os.utime(stale, (old_time, old_time))
+            await login("alice")
+            check(not stale.exists() and (fresh / "upload.part").read_bytes() == b"unfinished", "FS22 R7 로그인 때 24시간 지난 임시 폴더만 정리")
+            with patch.object(bd, "_sweep_new_tmp", side_effect=OSError("private sweep detail")), patch.object(srv.logger, "warning") as warning:
+                await login("alice")
+                check(warning.called and "정리 실패" in str(warning.call_args), "FS22 R7 임시 폴더 정리 실패는 경고만·로그인 유지")
+
+            for path, sid, tag in (("/api/session", None, None), ("/api/preferences", alice, atag)):
+                for raw, content_type in ((b"{}", "text/plain"), (b"{", "application/json"),
+                                           (b"[]", "application/json"), (b"\xff", "application/json")):
+                    response, data = await call("POST", path, sid=sid, tag=tag, data=raw, headers={"Content-Type": content_type})
+                    check(response.status == 400 and data.get("error"), "FS25 R10 Content-Type·깨진 JSON·배열·UTF-8 오류 JSON " + path)
+                with patch.object(srv.logger, "error") as errors:
+                    response, data = await call("POST", path, sid=sid, tag=tag, data=b"[" * 16000,
+                                                headers={"Content-Type": "application/json"})
+                    check(response.status == 400 and set(data) == {"error"} and data["error"] and not errors.called,
+                          "FS28 T3 깊게 중첩된 JSON 은 오류 로그 없이 400 JSON " + path)
+            with patch.object(srv._Preferences, "apply", side_effect=RuntimeError("opaque-sensitive-payload")):
+                response, data = await call("GET", "/api/preferences", sid=alice)
+                check(response.status == 500 and set(data) == {"error"} and "서버 요청 처리 실패: RuntimeError" in log.getvalue()
+                      and "opaque-sensitive-payload" not in log.getvalue() + str(data), "FS25 R10 일반 500 은 형식 이름만 로그·메시지와 traceback 없음")
+            image_dir = Path(aroot, "inputs")
+            image_dir.mkdir(exist_ok=True)
+            (image_dir / "image.png").write_bytes(png)
+            response, data = await call("GET", api_path + "/file", sid=alice, params={"root": akey, "rel": "inputs/image.png"})
+            check(response.status == 200 and data == png and "Cookie" in response.headers.get("Vary", "")
+                  and response.headers.get("Cache-Control") == "private, max-age=86400", "FS7 이미지 헤더 없는 GET·기존 캐시 정책에 Vary 추가")
+            for sid, key in ((alice, akey), (bob, bkey)):
+                response, _ = await call("GET", api_path + "/state", sid=sid, params={"root": key})
+                check(response.status == 200, "FS7 자기 state 는 헤더 없는 GET 도 성공")
+            response, data = await call("GET", api_path + "/projects", sid=bob)
+            check(response.status == 200 and {row["id"] for row in data["projects"]} == {bkey}
+                  and all(row["outside_input"] is False for row in data["projects"]), "FS7 남의 프로젝트 목록 누출 없음")
+            response, _ = await call("GET", api_path + "/projects", sid=alice)
+            check(response.status == 200, "FS7 자기 프로젝트 목록 성공")
+
+            blocked = {("POST", p) for p in ("open_folder", "candidates/export", "candidates/import", "mask/ps_import")}
+            blocked.update(("GET", p) for p in ("candidates/ext", "mask/ps_list", "pipeline/prompt"))
+            public_paths = {api_path + p for p in ("/board", "/board/", "/board/{name}", "/env")}
+            rootless = {("GET", api_path + "/projects"), ("POST", api_path + "/projects/new")}
+            isolated = []
+            for method, path, handler in bd._ROUTES:
+                short = path[len(api_path) + 1:]
+                if path in public_paths or (method, path) in rootless or (method, short) in blocked:
+                    continue
+                # 새 라우트도 자동 포함한다. 입력 위치가 달라지면 404 단정이 실패해 재검토하게 된다.
+                query = {"root": akey, "key": akey, "from": akey}
+                kwargs = {"params": query}
+                if method != "GET":
+                    if path.endswith("/mask/save"):
+                        kwargs.update(data=png, headers={"Content-Type": "image/png"})
+                    else:
+                        kwargs["json"] = dict(query, rev=0, op="import")
+                response, data = await call(method, path, sid=bob, tag=btag, **kwargs)
+                check(response.status == 404, "FS7 전체 root/key 라우트 계정 격리 " + method + " " + path + ": " + str(data))
+                isolated.append((method, path))
+            check(len(isolated) == len(bd._ROUTES) - len(public_paths) - len(rootless) - len(blocked), "FS7 라우트 전수 분류·누락 없음")
+            for method, path, _ in jobs.routes(runner):
+                path = path.replace("{prompt_id}", "test")
+                kwargs = {"params": {"root": akey}} if method == "GET" else {"json": {"root": akey}}
+                response, _ = await call(method, path, sid=bob, tag=btag, **kwargs)
+                check(response.status == 404, "FS7 jobs 경계도 남의 root 거절 " + path)
+            response, data = await call("POST", api_path + "/jobs/prompt", sid=alice, tag=atag, json={"root": akey})
+            check(response.status == 200 and data == {"ok": True, "workers": 2}, "FS7 jobs 주입·to_thread 범위 전달")
+            response, _ = await call("GET", api_path + "/refs/pool", sid=bob, params={"root": bkey, "from": akey})
+            check(response.status == 404, "FS7 다른 프로젝트 보관함 from 격리")
+            manifest = store.load_manifest(broot)
+            manifest["source"] = {"refs_dir": str(Path(broot, "refs"))}
+            store.write_json_atomic(str(Path(broot, store.MANIFEST_NAME)), manifest)
+            response, data = await call("POST", api_path + "/refs/pool", sid=bob, tag=btag,
+                                        json={"root": bkey, "from": akey, "op": "import", "rev": None, "names": ["a.png"]})
+            check(response.status == 404, "FS7 보관함 복사 POST from 격리: " + str(data))
+            for method, short in sorted(blocked):
+                kwargs = {"params": {"root": akey}} if method == "GET" else {"json": {"root": akey}}
+                response, data = await call(method, api_path + "/" + short, sid=alice, tag=atag, **kwargs)
+                check(response.status == 404 and data == api["blocked_route"]["response"], "FS8 차단 라우트 " + short)
+
+            # 경로 입력과 서버에서 쓸 수 없는 로컬 기능은 자기 계정 요청에서도 차단한다.
+            for extra in ({"path": str(out / "private.png")}, {"adopt": False}, {"adopt": True, "file": "base.png"}):
+                response, data = await call("POST", api_path + "/projects/new", sid=alice, tag=atag, json=dict(name="blocked", **extra))
+                check(response.status == 400 and str(out) not in str(data), "FS8 새 프로젝트 path·adopt 거절")
+            response, data = await call("POST", api_path + "/refs/pool", sid=alice, tag=atag,
+                                        json={"root": akey, "op": "sheet_add", "path": str(out / "private.png")})
+            check(response.status == 400 and str(out) not in str(data), "FS8 시트 경로 거절")
+            with patch.object(bd, "_SAM3_CKPTS", ["sam3-existing.pt"]):
+                response, data = await call("GET", api_path + "/refs", sid=alice, params={"root": akey})
+                check(response.status == 200 and data["sam3"]["ckpts"] == [], "FS8 로컬 체크포인트가 있어도 서버 목록은 빈 값")
+                response, data = await call("POST", api_path + "/refs/cut", sid=alice, tag=atag, json={"root": akey, "method": "sam3"})
+                check(response.status == 400 and data["error"] == "서버 모드에서는 자동 오리기를 쓸 수 없습니다", "FS8 SAM3 서버 문구")
+            for section, keys in (("import", bd.pl._IMPORT_PATHS), ("cand", ("path",))):
+                for key in keys:
+                    current = bd.pl.current(aroot)
+                    values = dict(current["settings"][section])
+                    values[key] = str(out / "private" / key)
+                    before = Path(aroot, bd.pl.PIPELINE_NAME).read_bytes()
+                    response, data = await call("POST", api_path + "/pipeline/settings", sid=alice, tag=atag,
+                                               json={"root": akey, "rev": current["rev"], "section": section, "values": values})
+                    check(response.status == 400 and str(out) not in str(data)
+                          and Path(aroot, bd.pl.PIPELINE_NAME).read_bytes() == before, "FS8 외부 경로 무변경 거절 " + section + "." + key)
+                for mode in ("current", "empty", "inside"):
+                    current = bd.pl.current(aroot)
+                    values = dict(current["settings"][section])
+                    for key in keys:
+                        values[key] = (' "' + values[key] + '" ') if mode == "current" else "" if mode == "empty" else str(Path(aroot, key))
+                    response, data = await call("POST", api_path + "/pipeline/settings", sid=alice, tag=atag,
+                                               json={"root": akey, "rev": current["rev"], "section": section, "values": values})
+                    check(response.status == 200, "FS8 정규화된 현재 값·빈 값·프로젝트 내부 경로 허용 " + section + " " + mode + str(data))
+            current = bd.pl.current(aroot)
+            values = dict(current["settings"]["draft"], vlm="local_qwen/example")
+            response, _ = await call("POST", api_path + "/pipeline/settings", sid=alice, tag=atag,
+                                     json={"root": akey, "rev": current["rev"], "section": "draft", "values": values})
+            check(response.status == 400, "FS8 local_qwen 거절")
+            response, _ = await call("POST", api_path + "/pipeline/settings", sid=alice, tag=atag,
+                                     json={"root": akey, "rev": current["rev"], "confirm_only": ["export"]})
+            check(response.status == 200, "FS8 confirm_only 허용")
+
+            # 저장 파일과 HTTP 한도를 함께 본다. 거절은 기존 바이트를 그대로 남긴다.
+            pref_file = Path(ascope["home"], "_prefs.json")
+            response, data = await call("POST", "/api/preferences", sid=alice, tag=atag, json=api["prefs_post"]["request"])
+            check(response.status == 200 and data == api["prefs_post"]["response"], "FS9 설정 저장 계약")
+            response, data = await call("GET", "/api/preferences", sid=alice)
+            check(data == {"values": api["prefs_post"]["request"]["set"]}, "FS9 설정 왕복")
+            response, data = await call("GET", "/api/preferences", sid=bob)
+            check(data == {"values": {}}, "FS9 계정별 설정 분리")
+            before = pref_file.read_bytes()
+            for body in ({"set": {"bad": "x"}}, {"set": {"bmk-dp-": "x"}}, {"set": {"bmk-dp-" + "x" * 81: "x"}},
+                         {"set": {"bmk-dp-test": 1}}, {"set": {"bmk-dp-test": "한" * 21846}}, {"remove": ["bad"]},
+                         {"set": {"bmk-dp-" + str(i): "a" * 65536 for i in range(17)}}):
+                response, _ = await call("POST", "/api/preferences", sid=alice, tag=atag, json=body)
+                check(response.status == 400 and pref_file.read_bytes() == before, "FS9 키·타입·UTF-8 값·전체 한도 무변경 거절")
+            response, _ = await call("POST", "/api/preferences", sid=alice, tag=atag,
+                                     json={"set": {"bmk-dp-한글:.-": "a" * 65536}, "remove": ["bmk-dp-studio"]})
+            check(response.status == 200, "FS9 64KiB 값·유니코드 키·삭제 허용")
+            async def oversized():
+                for _ in range(33):
+                    yield b" " * 65536
+            response, _ = await call("POST", "/api/preferences", sid=alice, tag=atag, data=oversized(), headers={"Content-Type": "application/json"})
+            check(response.status == 400, "FS9 chunked 본문 2MiB 한도")
+            pref_file.write_bytes(b"broken first")
+            response, data = await call("GET", "/api/preferences", sid=alice)
+            check(data == {"values": {}} and pref_file.read_bytes() == b"broken first", "FS9 깨진 파일 GET 은 빈 값·원본 보존")
+            response, _ = await call("POST", "/api/preferences", sid=alice, tag=atag, json={"set": {"bmk-dp-ok": "yes"}})
+            backup = pref_file.with_name("_prefs.bad.json")
+            check(response.status == 200 and backup.read_bytes() == b"broken first", "FS9 깨진 파일 첫 저장 때 보존")
+            pref_file.write_bytes(b"broken second")
+            await call("POST", "/api/preferences", sid=alice, tag=atag, json={})
+            check(backup.read_bytes() == b"broken first", "FS9 기존 깨진 파일 백업 덮어쓰지 않음")
+
+            # 다운로드는 매니페스트의 기록과 계정 output 을 동시에 확인한다.
+            response, data = await call("GET", api_path + "/export/file", sid=alice, params={"root": akey})
+            check(response.status == 404 and response.content_type == "application/json" and data == {"error": "내려받을 PSD 가 없습니다"},
+                  "FS25 R10 Export 기록 없음은 JSON 404")
+            psd = Path(ascope["output"], "프로젝트_r12.psd")
+            psd.write_bytes(b"8BPS synthetic export")
+            manifest = store.load_manifest(aroot)
+            manifest["exports"] = [{"psd": str(psd), "rev": 12}]
+            store.write_json_atomic(str(Path(aroot, store.MANIFEST_NAME)), manifest)
+            response, data = await call("GET", api_path + "/export/file", sid=alice, params={"root": akey})
+            check(response.status == 200 and data == psd.read_bytes()
+                  and all(response.headers[k] == v for k, v in api["export_file"]["response_headers"].items())
+                  and response.headers.get("Cache-Control") == "no-store" and "Cookie" in response.headers.get("Vary", ""), "FS10 PSD 스트리밍·첨부·캐시 계약")
+            response, _ = await call("GET", api_path + "/export/file", sid=bob, params={"root": akey})
+            check(response.status == 404, "FS10 남의 Export 거절")
+            outside = out / "outside.psd"
+            outside.write_bytes(b"private")
+            manifest["exports"] = [{"psd": str(outside), "rev": 13}]
+            store.write_json_atomic(str(Path(aroot, store.MANIFEST_NAME)), manifest)
+            response, data = await call("GET", api_path + "/export/file", sid=alice, params={"root": akey})
+            check(response.status == 404 and data == {"error": "내려받을 PSD 가 없습니다"}, "FS25 R10 output 밖 기록도 경로 없는 JSON 404")
+
+            check(bd.current_scope() is None, "FS11 요청 끝에 contextvar 원복")
+            for fn in (bd.project_input, bd.output_dir, lambda: bd._root_param(akey), bd._project_roots):
+                try:
+                    fn()
+                    check(False, "FS11 범위 없는 서버 접근은 거절해야 함")
+                except bd._Reject as e:
+                    check(e.status == 401, "FS11 범위 없는 서버 접근 401")
+            token = bd.set_scope(ascope)
+            try:
+                check(bd.in_scope(aroot) and not bd.in_scope(broot), "FS11 계정 홈 범위")
+                lock = bd._project_new_lock()
+                with patch.object(bd, "_PROJECT_INPUT", str(out / "unrelated")), patch.object(bd, "_OUTPUT_DIR", [str(out / "unrelated")]):
+                    check(bd.project_input() == ascope["input"] and bd.output_dir() == ascope["output"], "FS11 전역 로컬 경로보다 범위 우선")
+                link = Path(ascope["input"], store.PROJECTS_DIRNAME, "escape")
+                try:
+                    _fs_link(link, Path(broot))
+                except OSError:
+                    skip("FS11 실제 정션 생성 불가 — 아래 realpath 대역 시험만 수행")
+                    realpath = os.path.realpath
+                    with patch.object(bd.os.path, "realpath", side_effect=lambda p: broot if str(p) == str(link) else realpath(p)):
+                        check(not bd.in_scope(str(link)), "FS11 정션 밖 realpath 판정")
+                else:
+                    check(not bd.in_scope(str(link)), "FS11 실제 정션으로 남의 프로젝트 접근 거절")
+                    linked_home = out / "linked_home"
+                    _fs_link(linked_home, Path(bscope["home"]))
+                    linked_scope = bd.set_scope(dict(ascope, home=str(linked_home), input=str(linked_home)))
+                    try:
+                        check(not bd.in_scope(str(linked_home / store.PROJECTS_DIRNAME / "same_name")), "FS11 홈 자체 정션도 거절")
+                        expect_raises(bd.project_input, "FS11 정션 홈 접근자 거절", bd._Reject)
+                    finally:
+                        bd.reset_scope(linked_scope)
+                    linked_parent_home = out / "linked_parent"
+                    linked_parent_home.mkdir()
+                    _fs_link(linked_parent_home / store.PROJECTS_DIRNAME, Path(bscope["input"], store.PROJECTS_DIRNAME))
+                    linked_scope = bd.set_scope(dict(ascope, home=str(linked_parent_home), input=str(linked_parent_home)))
+                    try:
+                        check(not bd.in_scope(str(linked_parent_home / store.PROJECTS_DIRNAME / "same_name")), "FS11 프로젝트 부모 정션도 거절")
+                        check(bd._project_roots() == [], "FS23 R8 부모 정션이면 scandir 목록도 비움")
+                    finally:
+                        bd.reset_scope(linked_scope)
+                    path_link = Path(aroot, "outside_link")
+                    _fs_link(path_link, out)
+                    cur = bd.pl.current(aroot)
+                    vals = dict(cur["settings"]["import"], psd_path=str(path_link / outside.name))
+                    expect_raises(lambda: bd._server_pipeline_update(aroot, cur["rev"], "import", vals),
+                                  "FS8 프로젝트 내부처럼 보이는 정션 경로도 거절", bd._Reject)
+                    output_link = Path(ascope["output"], "outside_link")
+                    _fs_link(output_link, out)
+                    manifest["exports"] = [{"psd": str(output_link / outside.name), "rev": 14}]
+                    store.write_json_atomic(str(Path(aroot, store.MANIFEST_NAME)), manifest)
+                    response, _ = await call("GET", api_path + "/export/file", sid=alice, params={"root": akey})
+                    check(response.status == 404, "FS10 output 안 정션을 통한 바깥 파일 다운로드 거절")
+                # 저장값이 이미 밖인 경우 그대로 저장은 허용하지만, 새로운 정션 탈출 경로는 거절한다.
+                cur = bd.pl.current(aroot)
+                vals = dict(cur["settings"]["import"], psd_path=str(outside))
+                bd.pl.update(aroot, cur["rev"], "import", vals)
+                cur = bd.pl.current(aroot)
+                bd._server_pipeline_update(aroot, cur["rev"], "import", cur["settings"]["import"])
+                check(bd.pl.current(aroot)["settings"]["import"]["psd_path"] == bd.pl._norm_path(str(outside)), "FS8 현재 경로 값 유지 허용")
+            finally:
+                bd.reset_scope(token)
+            token = bd.set_scope(bscope)
+            try:
+                check(bd._project_new_lock() is not lock, "FS11 다른 계정의 프로젝트 생성 잠금 분리")
+            finally:
+                bd.reset_scope(token)
+
+            account_file = Path(ascope["home"], "_account.json")
+            saved = account_file.read_bytes()
+            record = json.loads(saved)
+            record["account_id"] = "collision"
+            store.write_json_atomic(str(account_file), record)
+            response, data = await call("POST", "/api/session", json=api["session_post"]["request"])
+            check(response.status == 401 and data == api["session_post_bad_token"]["response"] and "계정 폴더 충돌" in log.getvalue(),
+                  "FS11 메타데이터 ID 불일치는 401·충돌 로그")
+            account_file.write_bytes(saved)
+            check(all("token" not in rec and set(rec) == {"account_id", "organization_id", "name", "tag", "scope", "created", "seen"}
+                      for rec in sessions._sessions.values()), "FS5 세션 객체에는 토큰을 보관하지 않음")
+            response, data = await call("POST", "/api/session/logout", sid=same_acct, json={})
+            check(response.status == 200 and data == api["session_logout"]["response"] and response.cookies[srv.COOKIE]["max-age"] == "0", "FS5 로그아웃·쿠키 삭제")
+            response, _ = await call("GET", "/api/session", sid=same_acct)
+            check(response.status == 401, "FS5 로그아웃한 sid 재사용 거절")
+            now[0] += 10
+            response, _ = await call("GET", "/api/session", sid=alice)
+            check(response.status == 401 and alice not in sessions._sessions, "FS5 유휴 만료 경계·조회 시 제거")
+            active, _ = await login("active")
+            for step in (9, 9, 7):
+                now[0] += step
+                response, _ = await call("GET", "/api/session", sid=active)
+                check(response.status == (401 if step == 7 else 200), "FS5 조회해도 절대 만료 연장 안 됨")
+        finally:
+            await client.close()
+        check(runner.closed and not bd.server_mode() and not bd._ENV_PROVIDER and not sessions._sessions,
+              "FS12 앱 정리: runner close·모드·env·세션 제거")
+
+        class Verifier:
+            async def verify(self, token, organization_id):
+                if token == "throw-sensitive-token":
+                    raise RuntimeError(token)
+                return {"account_id": "verified", "organization_id": organization_id, "name": "검증 계정"}
+
+        production = dataclasses.replace(config, dev_handoff=False, public_origin="https://studio.test", cookie_samesite="None")
+        for verifier in (None, Verifier(), srv.DevVerifier()):
+            app = srv.make_app(production, verifier=verifier, jobs_module=jobs)
+            async with TestClient(TestServer(app), cookie_jar=DummyCookieJar()) as c:
+                headers = {"Host": "studio.test", "Origin": "https://studio.test", "X-DesignPatch-Request": "1"}
+                r = await c.post("/api/session", headers=headers, json={"token": "throw-sensitive-token", "organization_id": "org1"})
+                data = await r.json()
+                check(r.status == (401 if isinstance(verifier, Verifier) else 503)
+                      and data == api["session_post_bad_token" if isinstance(verifier, Verifier) else "session_post_no_verifier"]["response"],
+                      "FS13 운영 검증기 없음·예외·개발 검증기 비활성")
+                check("throw-sensitive-token" not in str(data) + str(r.headers) + log.getvalue(), "FS13 검증기 예외의 토큰을 응답·로그에 싣지 않음")
+                r = await c.post("/api/session", headers=headers, json=api["session_post"]["request"])
+                check(r.status == 401, "FS13 운영에서 dev: 토큰 거절")
+                if isinstance(verifier, Verifier):
+                    r = await c.post("/api/session", headers=headers, json={"token": "verified-token", "organization_id": "org1"})
+                    check(r.status == 200 and r.cookies[srv.COOKIE]["secure"] and r.cookies[srv.COOKIE]["samesite"] == "None",
+                          "FS13 HTTP 프록시 뒤에서도 HTTPS 설정으로 Secure 쿠키")
+        explicit = dataclasses.replace(config, allowed_hosts=("only.test",), parent_origins=())
+        async with TestClient(TestServer(srv.make_app(explicit, jobs_module=jobs))) as c:
+            r = await c.get(api_path + "/env")
+            check(r.status == 403 and r.headers["Content-Security-Policy"] == "frame-ancestors 'none'", "FS13 명시 Host 목록이면 개발 loopback 도 거절·부모 기본 none")
+            r = await c.get(api_path + "/env", headers={"Host": "only.test"})
+            check(r.status == 200, "FS13 명시 Host 허용")
+
+        async with TestClient(TestServer(srv.make_app(cli_configs[0], jobs_module=jobs))) as c:
+            r = await c.get(api_path + "/env", headers={"Host": "[::1]:8791"})
+            check(r.status == 200 and r.headers["Content-Security-Policy"] ==
+                  "frame-ancestors http://localhost:8790 http://127.0.0.1:8790 http://[::1]:8790",
+                  "FS27 T2 --host ::1·개발 부모 설정의 실제 응답 CSP 는 루프백 origin 셋 모두 허용")
+
+        parent = srv.make_dev_parent_app(dataclasses.replace(config, dev_parent_port=8790))
+        async with TestClient(TestServer(parent)) as c:
+            r = await c.get("/?acct=bob")
+            page = await r.text()
+            check(r.status == 200 and 'sandbox="allow-scripts allow-same-origin allow-downloads allow-popups allow-popups-to-escape-sandbox"' in page
+                  and 'allow="clipboard-write"' in page and 'referrerpolicy="origin"' in page and "calc(100dvh - 56px)" in page
+                  and "dev%3Abob" in page and "organization_id=org1" in page and "<script" not in page, "FS14 가짜 부모 iframe 계약·스크립트 없음")
+            r = await c.get("/", params={"acct": '<script>alert(1)</script>'})
+            check(r.status == 400, "FS14 부모 계정 쿼리 검증")
+            for host, expected in (("localhost:8790", "localhost:8791"), ("127.0.0.1:8790", "127.0.0.1:8791"),
+                                   ("[::1]:8790", "[::1]:8791")):
+                r = await c.get("/?acct=bob", headers={"Host": host})
+                page = await r.text()
+                source = html.unescape(re.search(r' src="([^"]+)"', page).group(1))
+                parsed = urllib.parse.urlsplit(source)
+                check(r.status == 200 and parsed.scheme == "http" and parsed.netloc == expected
+                      and urllib.parse.parse_qs(parsed.query)["parent_origin"] == ["http://" + host],
+                      "FS24 R9 iframe 은 부모와 같은 루프백 호스트·IPv6 괄호 " + host)
+            for host in ("attacker.test:8790", "localhost:bad", "127.0.0.1@attacker.test:8790"):
+                r = await c.get("/", headers={"Host": host})
+                check(r.status == 400, "FS24 R9 부모의 외부/잘못된 Host 거절 " + host)
+
+    logging.getLogger().addHandler(capture)
+    try:
+        # 저장소·캐시의 합성 프로젝트가 뒤따르는 로컬 묶음으로 새지 않게 대역을 둔다.
+        with patch.object(store, "_ROOTS", {}), patch.object(bd, "_PREF", {}), patch.object(bd, "_PROJECT_MEMO", {}), \
+                patch.object(bd, "_PROJECT_NEW_LOCKS", {}), patch.object(bd, "_SCOPE_ROOTS", {}):
+            asyncio.run(run())
+    finally:
+        logging.getLogger().removeHandler(capture)
+        check(not bd.server_mode() and not bd._ENV_PROVIDER and bd.current_scope() is None, "FS15 시험 끝 서버 모드·범위·env 원복")
+        check({k: os.environ.get(k) for k in initial_env} == initial_env, "FS15 환경 변수 원복")
+        check({k for k in sys.modules if k == "bmk_design_patch" or k.endswith(".bmk_design_patch")} == initial_node,
+              "FS15 노드 모듈 import 상태 불변")
+        # 시험 중 예외가 나도 뒤의 로컬 묶음에 서버 모드를 남기지 않는다.
+        bd.set_server_mode(False)
+        bd.set_env_provider(None)
+        for key, value in initial_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 def forge_jobs_unit():
