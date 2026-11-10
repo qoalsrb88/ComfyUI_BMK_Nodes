@@ -2,6 +2,7 @@
 "use strict";
 
 window.DPChecklist = (() => {
+  const SM = () => !!(window.DPEnv && window.DPEnv.serverMode);
   const folded = new WeakMap(); // 패널별 접힘은 이 창에서만 기억한다.
 
   function rows(input = {}) {
@@ -96,7 +97,7 @@ window.DPChecklist = (() => {
     const row = (n, name, state, value, hint, go) => ({ n, name, state, value, hint: `처음이면: ${hint}`, go });
     return [
       row(1, "PSD 가져오기", S.canvas ? "done" : "todo", S.canvas ? "가져옴" : "Import 필요",
-        "ComfyUI 그래프에서 Import PSD 를 연결하고 큐를 한 번 실행하세요.", { tab: "prepare", section: "실행 설정" }),
+        SM() ? "① 준비에서 [반영 (무료)] 를 한 번 누르세요." : "ComfyUI 그래프에서 Import PSD 를 연결하고 큐를 한 번 실행하세요.", { tab: "prepare", section: "실행 설정" }),
       row(2, "크롭", unnamed ? "warn" : n ? "done" : "todo",
         unnamed ? `이름 미정 ${unnamed}개 — 반영 전에 정하면 다시 과금 없음` : `크롭 ${n}`,
         "크롭 편집(E)에서 고칠 영역을 확인하세요.", { mode: "edit" }),
@@ -109,8 +110,8 @@ window.DPChecklist = (() => {
       row(5, "초안", draftError || draftFailed || (planOk && !drafting && draftUnwritten > 0) ? "warn" : draftUnknown ? "unknown"
         : !settingsConfirm && n > 0 && allSelected && ready && draftNeed === 0 && draftFree === 0 && draftStyle === 0 && !drafting && !draftPending.length ? "done" : "todo",
         draftFailed ? `초안 실패 ${draftFailed}` : draftUnknown ? `전체 초안 확인 필요 · ${draftValue}` : draftValue,
-        draftFree > 0 ? `복구 대기 ${draftFree}건 (무료) — 그래프 Spec Draft 를 승인 없이 한 번 큐에 넣으세요.`
-          : "초안 승인에서 초안 계획과 비용을 확인한 뒤 승인하세요.", { tab: "prompt", section: draftApply ? "반영" : "초안 승인" }),
+        draftFree > 0 ? (SM() ? `복구 대기 ${draftFree}건 (무료)` : `복구 대기 ${draftFree}건 (무료) — 그래프 Spec Draft 를 승인 없이 한 번 큐에 넣으세요.`)
+          : SM() ? "초안 승인에서 초안 계획과 호출 수를 확인한 뒤 승인하세요." : "초안 승인에서 초안 계획과 비용을 확인한 뒤 승인하세요.", { tab: "prompt", section: draftApply ? "반영" : "초안 승인" }),
       row(6, "생성", runError || (global && missing > 0 && (failed || orphaned)) ? "warn" : runUnknown ? "unknown"
         : !settingsConfirm && allSelected && ready && runNeed === 0 && runPre === 0 && runFree === 0 && complete && !running && !drafting && !prepareDrift.length && !pending.length ? "done" : "todo",
         global && (failed || orphaned) ? `실패 ${failed} · 결과 못 받음 ${orphaned} · ${runValue}` : runValue,
