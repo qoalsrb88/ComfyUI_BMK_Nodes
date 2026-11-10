@@ -27,6 +27,7 @@ import os
 import re
 import secrets
 import threading
+import time
 from collections import OrderedDict
 
 try:
@@ -88,6 +89,36 @@ def _validation_args(fn, inputs):
             (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)}
 
 
+def _validate_scope(prompt):
+    """서버 템플릿의 경로를 노드 실행 전에 검사한다(옛 설정·우회 입력도 같은 범위)."""
+    if not compat.server_mode():
+        return
+    scope = board.current_scope()
+    if scope is None:
+        raise RuntimeError("서버 모드의 작업에는 계정 범위가 필요합니다")
+
+    def path_value(value):
+        if not isinstance(value, str):
+            raise ValueError
+        # 노드의 _strip_path 와 같은 앞뒤 공백·따옴표 처리. 검사는 실제로 읽을 경로로 한다.
+        return value.strip().strip('"').strip("'").strip()
+
+    try:
+        project = prompt[pl.NODE_KEYS["project"]]["inputs"]
+        base = path_value(project.get("base_dir"))
+        if not base or _path(base) != _path(scope["input"]):
+            raise ValueError
+        root = _path(pl.store.project_root(base, project["project"]))
+        for role, names in (("import", ("psd_path", "refs_dir", "glossary_path")), ("cand", ("path",))):
+            inputs = prompt.get(pl.NODE_KEYS[role], {}).get("inputs", {})
+            for name in names:
+                value = path_value(inputs.get(name, ""))
+                if value and os.path.commonpath((root, _path(value))) != root:
+                    raise ValueError
+    except (KeyError, TypeError, ValueError, OSError):
+        raise ValueError("작업의 프로젝트·입력 경로가 계정 범위를 벗어났거나 잘못되었습니다") from None
+
+
 def execute(prompt: dict, *, hidden: dict | None = None) -> dict:
     """템플릿 하나를 차례로 실행 → {"outputs": {노드 키: ui dict}}. 큐·스레드를 만들지 않는다(부르는 스레드에서 끝까지).
     실행 전 검사에 걸리면 ValueError, 노드가 낸 예외는 그대로 올리되 어느 노드였는지(node_id·node_type)를 예외에 붙인다.
@@ -99,6 +130,7 @@ def execute(prompt: dict, *, hidden: dict | None = None) -> dict:
     else:
         raise RuntimeError("execute 는 실행 중인 이벤트 루프 밖의 작업 스레드에서 불러야 합니다")
     _validate_prompt(prompt)  # 뒤쪽 노드가 잘못돼도 앞쪽 노드의 쓰기가 시작되지 않게
+    _validate_scope(prompt)
     classes = _node_classes()
     state = _STATE.get()
     outputs = state["outputs"] if state is not None else {}
@@ -106,6 +138,8 @@ def execute(prompt: dict, *, hidden: dict | None = None) -> dict:
     try:
         for key, node in prompt.items():
             kind = node["class_type"]
+            if state is not None:
+                state["node"] = {"node_id": "", "node_type": ""}
             inputs = {}
             for name, value in node["inputs"].items():
                 if isinstance(value, list):
@@ -147,12 +181,18 @@ def execute(prompt: dict, *, hidden: dict | None = None) -> dict:
             except (KeyboardInterrupt, SystemExit):
                 raise
             except BaseException as exc:
-                exc.bmk_dp_node = {"node_id": key, "node_type": kind}
+                try:
+                    exc.bmk_dp_node = {"node_id": key, "node_type": kind}
+                except Exception:
+                    pass  # 속성 대입을 막은 예외도 원래 종류·내용을 보존한다
                 raise
     except (KeyboardInterrupt, SystemExit):
         raise
     except BaseException as exc:
-        exc.bmk_dp_outputs = outputs
+        try:
+            exc.bmk_dp_outputs = outputs
+        except Exception:
+            pass
         raise
     return {"outputs": outputs}
 
@@ -161,14 +201,35 @@ def _path(path):
     return os.path.normcase(os.path.realpath(path))
 
 
-def _record(outputs, exc=None, *, interrupted=False, node=None):
-    if exc is None and not interrupted:
-        return {"status": {"status_str": "success", "completed": True, "messages": []}, "outputs": outputs}
+def _error_message(exc, scope):
+    try:
+        message = str(exc)
+    except BaseException:
+        message = type(exc).__name__
+    home = (scope or {}).get("home")
+    if compat.server_mode() and isinstance(home, str) and home:
+        pattern = r"[\\/]".join(re.escape(part) for part in re.split(r"[\\/]", home.rstrip("\\/")))
+        if pattern:
+            message = re.sub(pattern + r"(?![\w.-])", "<계정 폴더>", message, flags=re.IGNORECASE)
+    return message
+
+
+def _record(outputs, exc=None, *, interrupted=False, node=None, scope=None):
     info = dict(node or getattr(exc, "bmk_dp_node", None) or {"node_id": "", "node_type": ""})
-    if not interrupted:
-        info["exception_message"] = str(exc)
-    name = "execution_interrupted" if interrupted else "execution_error"
-    return {"status": {"status_str": "error", "completed": False, "messages": [[name, info]]}, "outputs": outputs}
+    if exc is None and not interrupted:
+        record = {"status": {"status_str": "success", "completed": True, "messages": []}, "outputs": outputs}
+    else:
+        if not interrupted:
+            info["exception_message"] = _error_message(exc, scope)
+        name = "execution_interrupted" if interrupted else "execution_error"
+        record = {"status": {"status_str": "error", "completed": False, "messages": [[name, info]]}, "outputs": outputs}
+    try:
+        # JSON 왕복으로 기록을 분리한다. 이후 deepcopy 가 노드 객체의 사용자 코드를 부르지 않는다.
+        return json.loads(json.dumps(record, allow_nan=False))
+    except BaseException:
+        info = {k: v if type(v) is str else "" for k, v in ((k, info.get(k, "")) for k in ("node_id", "node_type"))}
+        info["exception_message"] = _error_message(exc, scope) if exc is not None else "작업 출력을 JSON 으로 바꿀 수 없습니다"
+        return {"status": {"status_str": "error", "completed": False, "messages": [["execution_error", info]]}, "outputs": {}}
 
 
 class JobRunner:
@@ -244,14 +305,26 @@ class JobRunner:
             entry = self._history.get(home, {}).get(prompt_id)
             return {prompt_id: copy.deepcopy(entry[1])} if entry is not None and entry[0] == project else {}
 
-    def close(self) -> None:
-        """작업 스레드를 멈춘다(대기 중인 것은 버림)."""
+    def close(self, timeout: float = 0.0) -> None:
+        """새 호출을 멈추고 전체 timeout 동안 저장·끝 처리를 기다린다(대기는 기록 없이 버림)."""
+        deadline = time.monotonic() + max(0.0, float(timeout))
         with self._condition:
             self._closed = True
             self._pending.clear()
+            active = list(self._running.values())
+            self._condition.notify_all()
+        for job in active:
+            try:
+                board.set_drain(job["root"])
+            except Exception:
+                pass
+        for thread in self._threads:
+            if thread is not threading.current_thread():
+                thread.join(max(0.0, deadline - time.monotonic()))
+        with self._condition:
             for job in list(self._running.values()):
                 job["closed"] = True
-                self._finish(job, _record(dict(job["outputs"]), interrupted=True, node=job["node"]))
+                self._finish(job, _record(job["outputs"], interrupted=True, node=job["node"], scope=job["scope"]))
             self._condition.notify_all()
 
     def _take(self):
@@ -269,12 +342,14 @@ class JobRunner:
     def _finish(self, job, record):
         """조건 잠금 안에서 한 번만 끝낸다(close 와 실행 끝의 경합 포함)."""
         pid = job["prompt_id"]
-        if self._running.pop(pid, None) is None:
+        if pid not in self._running:
             return
+        snapshot = copy.deepcopy(record)
         history = self._history.setdefault(job["home"], OrderedDict())
-        history[pid] = (job["root"], copy.deepcopy(record))
+        history[pid] = (job["root"], snapshot)
         while len(history) > self._keep:
             history.popitem(last=False)
+        self._running.pop(pid, None)
         self._condition.notify_all()
 
     def _progress(self, job, value, total):
@@ -292,7 +367,18 @@ class JobRunner:
                     self._condition.wait()
                 else:
                     return
-            self._run(job)
+            try:
+                self._run(job)
+            except BaseException as exc:
+                logger.warning("Design Patch 작업 스레드 복구: %s", type(exc).__name__)
+                with self._condition:
+                    try:
+                        self._finish(job, _record(job["outputs"], exc, node=job["node"], scope=job["scope"]))
+                    except BaseException as finish_exc:
+                        logger.warning("Design Patch 작업 끝 처리 실패: %s", type(finish_exc).__name__)
+                    finally:
+                        self._running.pop(job["prompt_id"], None)
+                        self._condition.notify_all()
 
     def _run(self, job):
         scope_token = progress_token = state_token = None
@@ -304,12 +390,13 @@ class JobRunner:
             if job["closed"]:
                 raise compat.InterruptProcessingException()
             result = execute(job["prompt"])
-            record = _record(result["outputs"])
-        except (KeyboardInterrupt, SystemExit):
-            raise
+            record = _record(result["outputs"], node=job["node"], scope=job["scope"])
         except BaseException as exc:
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                logger.warning("Design Patch 작업의 프로세스 종료 예외를 오류로 기록합니다: %s", type(exc).__name__)
             interrupted = isinstance(exc, (compat.InterruptProcessingException, *backend._interrupt_types()))
-            record = _record(getattr(exc, "bmk_dp_outputs", job["outputs"]), exc, interrupted=interrupted)
+            record = _record(getattr(exc, "bmk_dp_outputs", job["outputs"]), exc, interrupted=interrupted,
+                             node=getattr(exc, "bmk_dp_node", None) or job["node"], scope=job["scope"])
         finally:
             try:
                 if state_token is not None:
@@ -346,10 +433,10 @@ def routes(runner: JobRunner) -> tuple:
         root = board._root_param(data.get("root"))
         account = scope()
         stage = data.get("stage")
-        res = await asyncio.to_thread(board.pipeline_prompt, root, stage, data.get("approve"),
-                                      data.get("only"), data.get("expect"))
         if stage in ("run", "draft", "reroll") and not backend.mock_enabled(root):
             raise board._Reject(409, "서버 모드 생성 백엔드가 아직 연결되지 않았습니다(mock 만).", reason="no_backend")
+        res = await asyncio.to_thread(board.pipeline_prompt, root, stage, data.get("approve"),
+                                      data.get("only"), data.get("expect"))
         try:
             result = runner.submit(account, root, stage, res["prompt"])
         except QueueFull as exc:
