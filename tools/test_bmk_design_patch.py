@@ -59060,11 +59060,819 @@ def forge_server_unit():
                 os.environ[key] = value
 
 
+def _fj_wait(fn, message):
+    end = time.monotonic() + 8
+    while time.monotonic() < end:
+        value = fn()
+        if value:
+            return value
+        time.sleep(0.01)
+    raise AssertionError(message)
+
+
+def _fj_scope(home):
+    return {"input": str(home), "output": str(home / "_output"), "home": str(home), "account": "a", "org": "o"}
+
+
+def _fj_probe(mode, output):
+    """새 프로세스 전용: 서버 모드 N 이 다른 묶음의 import 캐시에 남지 않게 한다."""
+    from unittest.mock import patch
+    import bmk_design_patch_compat as compat
+    import bmk_design_patch_jobs as jobs
+    assert "bmk_design_patch" not in sys.modules and "torch" not in sys.modules
+    assert not any(n.startswith("comfy") for n in sys.modules)
+    if mode == "A":
+        class Block:
+            def find_spec(self, fullname, path=None, target=None):
+                if fullname.split(".")[0] in {"torch", "comfy", "comfy_api_nodes", "comfy_extras", "folder_paths", "nodes", "server"}:
+                    raise ModuleNotFoundError(fullname)
+        sys.meta_path.insert(0, Block())
+    elif mode == "C":
+        import comfy.cli_args
+        comfy.cli_args.args.cpu = True
+    initial_output = list(jobs.board._OUTPUT_DIR)
+    import bmk_design_patch as dp
+    assert len(dp.NODE_CLASS_MAPPINGS) == 11
+    if mode == "C":
+        import torch
+        import comfy.utils
+        import folder_paths
+        import bmk_sam3_mask_layers
+        assert dp._STANDALONE is False and dp.torch is torch and dp.sam3 is bmk_sam3_mask_layers
+        assert dp.comfy.utils.ProgressBar is comfy.utils.ProgressBar and dp.folder_paths is folder_paths
+        with patch.object(folder_paths, "get_input_directory", return_value=str(output)), \
+                patch.object(folder_paths, "get_output_directory", return_value=str(output)):
+            assert dp._project_root("local", "") == store.project_root(str(output), "local")
+            assert dp._output_dir("local") == os.path.join(str(output), "design_patch", "local")
+    else:
+        assert dp._STANDALONE is True and dp.comfy is compat.comfy and dp.folder_paths is compat.folder_paths
+        assert dp.sam3 is None and "bmk_sam3_mask_layers" not in sys.modules
+        assert "comfy.model_management" not in sys.modules and "folder_paths" not in sys.modules
+        assert dp._sam3_ckpt_names() == [] and dp.folder_paths.models_dir == ""
+        assert dp.board._SAM3_CKPTS == [] and dp.board._qwen_dir() == os.path.join("", *dp._QWEN_DIR)
+        assert dp.board._OUTPUT_DIR == initial_output  # FJ49 서버 모드 주입: output 접근자는 부르지 않는다
+        for fn in (lambda: dp._project_root("a", ""), lambda: dp._output_dir("a"),
+                   lambda: dp.BMKDesignPatchRefCut().run("", "")):
+            try:
+                fn()
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("범위 없음·SAM3 가드")
+    if mode != "A":
+        rgb = np.arange(72, dtype=np.uint8).reshape(4, 6, 3)
+        if dp.torch is not None:
+            assert dp.torch.equal(dp._to_image(rgb), dp.torch.from_numpy(rgb.astype(np.float32) / 255.0)[None])
+            assert dp.torch.equal(dp._tensor(), dp.torch.zeros((1, 1, 1, 3), dtype=dp.torch.float32))
+        print("FJ1 import·tensor", mode)
+        return
+    assert dp.torch is None
+    rgb = np.arange(72, dtype=np.uint8).reshape(4, 6, 3)
+    assert np.array_equal(dp._to_image(rgb), (rgb.astype(np.float32) / 255.0)[None])
+    assert dp._tensor().shape == (1, 1, 1, 3) and dp._tensor().dtype == np.float32
+    home = output / "home"
+    root = _pl_project(home, "forge")
+    source = Path(root) / "source.psd"
+    _layout_node_psd(source, texture(192, 192, 17), crop_group=False)
+    Path(root, "refs").mkdir()
+    settings = jobs.pl.defaults(root)
+    settings["import"].update(psd_path=str(source), refs_dir=str(Path(root, "refs")))
+    settings["prepare"].update(quality="low", n=1, calls_per_cell=1, variants="V1", size_rule="user_k")
+    rev = 0
+    for section_name in jobs.pl.SECTIONS:
+        rev = jobs.pl.update(root, rev, section_name, settings[section_name])["rev"]
+    Path(home, "bmk_design_patch", "_MOCK_API").write_text('{"delay_s": 0}', encoding="utf-8")
+    scope = _fj_scope(home)
+    token = dp.board.set_scope(scope)
+    try:
+        assert dp._project_root("forge", "") == root
+        # 처음 Import 로 바탕을 읽은 뒤 Studio 레이아웃 API 로 크롭을 만든다.
+        initial = dp.board.pipeline_prompt(root, "apply")["prompt"]
+        jobs.execute(dict(list(initial.items())[:2]))
+        dp.board.layout_start(root)
+        crop = dp.board.layout_crop(root, store.load_layout(root)["rev"], "add", {"name": "001_button", "rect": [16, 16, 176, 176],
+                                                    "targets": [{"tid": "A", "text": "red button", "box": None}]})["crop"]
+        applied = jobs.execute(dp.board.pipeline_prompt(root, "apply")["prompt"])
+        assert "dp_review" in applied["outputs"]
+        assert dp._cand_grid(root, []).shape == (1, 1, 1, 3)
+        plan = dp.board.pipeline_plan(root, only_ids=[crop["id"]], style=False)
+        assert plan["run"]["hash"], plan
+        generated = jobs.execute(dp.board.pipeline_prompt(root, "run", plan["run"]["hash"], crop["id"])["prompt"])
+        assert "dp_run" in generated["outputs"]
+        candidates = store.load_manifest(root)["candidates"]
+        assert candidates, generated
+        candidate = candidates[0]
+        dp.board.apply_pick(root, candidate["crop_id"], candidate["tid"], candidate["key"], "set")
+        export_prompt = dp.board.pipeline_prompt(root, "export")["prompt"]
+        missing = dp.board.set_scope(None)
+        try:
+            try:
+                jobs.execute(export_prompt)
+            except RuntimeError as exc:
+                assert "범위" in str(exc)
+            else:
+                raise AssertionError("범위 없는 새 Export 는 실패해야 함")
+        finally:
+            dp.board.reset_scope(missing)
+        exported = jobs.execute(export_prompt)
+        assert exported["outputs"]["dp_export"]["bmk_dp_export"][0]["outcome"] == "new", exported
+        files = list(Path(scope["output"], "design_patch").rglob("*.psd"))
+        assert len(files) == 1 and dpsd.open_psd(str(files[0])).size == (192, 192)
+        assert not dp.runner._MOCK_ASSETS  # 서버 기본 b64 는 URL 저장소에 쌓이지 않는다
+        print("FJ2 apply→mock run→pick→export·새 Export 범위 가드 통과", files[0], flush=True)
+    finally:
+        dp.board.reset_scope(token)
+    try:
+        jobs.execute(export_prompt)
+    except RuntimeError as exc:
+        assert "범위" in str(exc)
+    else:
+        raise AssertionError("범위 없는 재사용 Export 도 실패해야 함")
+
+
+def _fj_execute(jobs):
+    from unittest.mock import patch
+    calls = []
+
+    class Node:
+        FUNCTION = "run"
+
+        @classmethod
+        def INPUT_TYPES(cls):
+            return {"required": {}, "optional": {"optional": ("INT", {"default": 7})},
+                    "hidden": {"auth_token": "AUTH", "api_key": "KEY", "usage_source": "SOURCE", "unique_id": "UNIQUE_ID"}}
+
+        @classmethod
+        def IS_CHANGED(cls, **kwargs):
+            raise AssertionError("IS_CHANGED 를 부르면 안 됨")
+
+        @classmethod
+        def VALIDATE_INPUTS(cls, reject=False):
+            return "거절 문구" if reject else True
+
+        def run(self, **kwargs):
+            calls.append(kwargs)
+            if "error" in kwargs:
+                raise kwargs["error"]
+            return {"ui": {"text": ["끝"]}, "result": (kwargs.get("value", 42),)}
+
+    class AsyncNode(Node):
+        async def run(self, **kwargs):
+            await asyncio.sleep(0)
+            return super().run(**kwargs)
+
+    def node(role, **inputs):
+        return {"class_type": jobs.pl.CLASS[role], "inputs": inputs}
+
+    classes = {name: Node for name in jobs.pl.CLASS.values()}
+    classes[jobs.pl.CLASS["import"]] = AsyncNode
+    prompt = {"dp_project": node("project"), "dp_import": node("import", project=["dp_project", 0])}
+    with patch.object(jobs, "_node_classes", return_value=classes):
+        for _ in range(2):
+            out = jobs.execute(prompt, hidden={"usage_source": "test"})
+        check(len(calls) == 4 and calls[1]["project"] == 42 and "optional" not in calls[0]
+              and calls[0]["auth_token"] is None and calls[0]["api_key"] is None
+              and calls[0]["usage_source"] == "test" and calls[1]["unique_id"] == "dp_import"
+              and set(out["outputs"]) == set(prompt), "FJ3 연결·hidden·optional·코루틴·매번 실행")
+        bad = [{"unknown": node("project")}, {"dp_project": node("run")},
+               {"dp_project": node("project", value=["dp_import", 0]), "dp_import": node("import")},
+               {"dp_project": node("project"), "dp_import": node("import", value=["dp_project"])},
+               {"dp_project": node("project"), "dp_import": node("import", value=["dp_project", -1])},
+               {"dp_project": node("project"), "dp_import": node("import", value=["dp_project", True])},
+               {"dp_project": node("project"), "dp_import": node("import", value=("dp_project", 0))}]
+        before = len(calls)
+        for invalid in bad:
+            expect_raises(lambda: jobs.execute(invalid), "FJ4 잘못된 프롬프트 전체 사전 검사")
+        check(len(calls) == before, "FJ4 뒤 노드 오류도 앞 노드를 실행하지 않음")
+        expect_raises(lambda: jobs.execute({"dp_project": node("project"),
+                                           "dp_import": node("import", value=["dp_project", 7])}), "FJ4 출력 범위 검사")
+        before = len(calls)
+        expect_raises(lambda: jobs.execute({"dp_project": node("project", reject=True)}), "FJ5 VALIDATE_INPUTS 거절", contains="거절 문구")
+        check(len(calls) == before, "FJ5 검증 거절 때 FUNCTION 실행 안 함")
+        for error in (ValueError("실패"), BaseException("기본 예외"), asyncio.CancelledError()):
+            try:
+                jobs.execute({"dp_project": node("project"), "dp_import": node("import", error=error)})
+            except BaseException as exc:
+                check(exc is error and exc.bmk_dp_node == {"node_id": "dp_import", "node_type": jobs.pl.CLASS["import"]}
+                      and "dp_project" in exc.bmk_dp_outputs, "FJ6 노드 예외 식별·앞 UI 보존")
+            else:
+                check(False, "FJ6 노드 예외 전파")
+        for error in (KeyboardInterrupt(), SystemExit()):
+            try:
+                jobs.execute({"dp_project": node("project", error=error)})
+            except BaseException as exc:
+                check(exc is error and not hasattr(exc, "bmk_dp_node"), "FJ6 프로세스 종료 예외는 가공 안 함")
+        with patch.object(Node, "run", return_value={"ui": {"bad": object()}}):
+            check(jobs.execute({"dp_project": node("project")}) == {"outputs": {}}, "FJ7 JSON 불가 UI 제외·없는 result 빈 튜플")
+        with patch.object(Node, "run", return_value=(99,)):
+            check(jobs.execute({"dp_project": node("project")}) == {"outputs": {}}, "FJ7 튜플 반환")
+
+        async def in_loop():
+            expect_raises(lambda: jobs.execute(prompt), "FJ8 이미 도는 루프 거절", exc=RuntimeError)
+        asyncio.run(in_loop())
+
+
+def _fj_runner(jobs, compat, out, api):
+    from unittest.mock import patch
+    scope, other = _fj_scope(out / "a"), _fj_scope(out / "b")
+    p1, p2, p3 = (str(out / name) for name in ("p1", "p2", "p3"))
+
+    def done(runner, sub, account=scope, root=p1):
+        pid = sub["prompt_id"]
+        return _fj_wait(lambda: runner.history(account, root, pid), "작업 기록 대기")[pid]
+
+    def joined(runner):
+        runner.close()
+        for thread in runner._threads:
+            thread.join(8)
+        check(not any(t.is_alive() for t in runner._threads), "FJ9 시험 작업 스레드 정리")
+
+    started = {i: threading.Event() for i in range(1, 6)}
+    release = threading.Event()
+    order, seen = [], []
+
+    def fake(prompt):
+        i = prompt["i"]
+        order.append(i)
+        seen.append(jobs.board.current_scope())
+        compat.ProgressBar(10).update(2)
+        started[i].set()
+        if i == 1:
+            assert release.wait(8)
+        return {"outputs": {"dp_export": {"text": [str(i)]}}}
+
+    with patch.object(jobs, "execute", side_effect=fake):
+        runner = jobs.JobRunner(workers=2, max_pending=2)
+        try:
+            first = runner.submit(scope, p1, "apply", {"i": 1})
+            assert started[1].wait(8)
+            second = runner.submit(scope, os.path.join(p1, "."), "apply", {"i": 2})
+            third = runner.submit(scope, p2, "apply", {"i": 3})
+            assert started[3].wait(8)
+            done(runner, third, root=p2)
+            check(not started[2].is_set(), "FJ9 같은 실제 프로젝트는 직렬·다른 프로젝트는 workers=2 동시 실행")
+            fourth = runner.submit(scope, p1, "apply", {"i": 4})
+            expect_raises(lambda: runner.submit(scope, p3, "apply", {"i": 5}), "FJ10 계정 대기 상한", exc=jobs.QueueFull)
+            foreign = runner.submit(other, p3, "apply", {"i": 5})
+            done(runner, foreign, other, p3)
+            check(runner.delete(scope, p1, [first["prompt_id"], third["prompt_id"]]) == [], "FJ11 실행·완료 작업은 삭제 안 함")
+            check(runner.delete(other, p1, [fourth["prompt_id"]]) == []
+                  and runner.delete(scope, p2, [fourth["prompt_id"]]) == [], "FJ11 다른 계정·프로젝트 삭제 거절")
+            check(runner.delete(scope, p1, [fourth["prompt_id"]]) == [fourth["prompt_id"]]
+                  and runner.history(scope, p1, fourth["prompt_id"]) == {}, "FJ11 대기 삭제는 기록 없음")
+            check(seen[0] == scope and runner._running[first["prompt_id"]]["progress"] == (2, 10), "FJ12 작업 스레드 범위·진행")
+            release.set()
+            result = done(runner, second)
+            check(order.index(1) < order.index(2) and not started[4].is_set(), "FJ12 프로젝트 FIFO")
+            check(runner.history(other, p1, second["prompt_id"]) == {}
+                  and runner.history(scope, p2, second["prompt_id"]) == {}, "FJ13 계정·프로젝트 기록 격리")
+            shape = next(iter(api["jobs_history_done"]["response"].values()))
+            check(set(result) == set(shape) and result["status"] == shape["status"], "FJ14 성공 기록 계약")
+            result["outputs"].clear()
+            check(bool(runner.history(scope, p1, second["prompt_id"])[second["prompt_id"]]["outputs"]), "FJ14 기록 사본 반환")
+        finally:
+            release.set()
+            joined(runner)
+
+    # 같은 계정 Export 가 막혀도 다른 계정 작업은 빈 작업 스레드를 쓴다.
+    for event in started.values():
+        event.clear()
+    release.clear()
+    with patch.object(jobs, "execute", side_effect=fake):
+        runner = jobs.JobRunner(workers=2)
+        try:
+            first = runner.submit(scope, p1, "export", {"i": 1})
+            assert started[1].wait(8)
+            second = runner.submit(scope, p2, "export", {"i": 2})
+            later = runner.submit(scope, p2, "apply", {"i": 4})
+            third = runner.submit(other, p3, "export", {"i": 3})
+            assert started[3].wait(8)
+            done(runner, third, other, p3)
+            check(not started[2].is_set() and not started[4].is_set(), "FJ15 계정 Export 직렬·뒤 같은 프로젝트 추월 방지·다른 계정 병렬")
+            queue = runner.queue(scope, p2)
+            check(set(queue) == set(api["jobs_queue"]["response"])
+                  and queue["queue_running"] == [[first["number"], "", ""]]
+                  and queue["queue_pending"] == [[second["number"], second["prompt_id"], "export"],
+                                                 [later["number"], later["prompt_id"], "apply"]], "FJ16 대기열 계약·다른 프로젝트 익명 표시")
+            check(runner.queue(other, p1) == {"queue_running": [], "queue_pending": []}, "FJ16 자기 작업 없으면 남의 작업을 드러내지 않음")
+            release.set()
+            done(runner, later, root=p2)
+        finally:
+            release.set()
+            joined(runner)
+
+    def failures(prompt):
+        if "error" in prompt:
+            raise prompt["error"]
+        return {"outputs": {}}
+
+    with patch.object(jobs, "execute", side_effect=failures):
+        runner = jobs.JobRunner(keep=2)
+        try:
+            errors = [ValueError("사전 검사"), BaseException("기본 예외"), compat.InterruptProcessingException(),
+                      jobs.backend.RunInterrupted(), asyncio.CancelledError()]
+            for index, error in enumerate(errors):
+                if index:
+                    error.bmk_dp_node = {"node_id": "dp_run", "node_type": jobs.pl.CLASS["run"]}
+                    error.bmk_dp_outputs = {"dp_project": {"text": ["앞 결과"]}}
+                bad = runner.submit(scope, p1, "run", {"error": error})
+                record = done(runner, bad)
+                # submit 의 입력 스냅샷은 예외도 복사하므로 신원 대신 내용·계약을 대조한다.
+                interrupted = index >= 2
+                shape = next(iter(api["jobs_history_interrupted" if interrupted else "jobs_history_error"]["response"].values()))
+                actual = record["status"]["messages"][0]
+                expected = shape["status"]["messages"][0]
+                check(set(record) == set(shape) and set(record["status"]) == set(shape["status"])
+                      and actual[0] == expected[0] and set(actual[1]) == set(expected[1])
+                      and not record["status"]["completed"]
+                      and actual[1]["node_id"] == ("dp_run" if index else ""), "FJ17 오류·중단 기록 계약")
+                check(not index or "dp_project" in record["outputs"], "FJ17 예외 전 UI 기록")
+                good = runner.submit(scope, p1, "apply", {})
+                check(done(runner, good)["status"]["completed"], "FJ18 BaseException 뒤에도 작업 계속")
+            last = runner.submit(scope, p2, "apply", {})
+            done(runner, last, root=p2)
+            check(runner.history(scope, p1, bad["prompt_id"]) == {}, "FJ18 keep 는 계정의 모든 프로젝트에 걸친 상한")
+        finally:
+            joined(runner)
+
+    started[1].clear()
+    release.clear()
+    with patch.object(jobs, "execute", side_effect=fake):
+        runner = jobs.JobRunner()
+        try:
+            active = runner.submit(scope, p1, "run", {"i": 1})
+            assert started[1].wait(8)
+            pending = runner.submit(scope, p1, "apply", {"i": 2})
+            runner.close()
+            closed = done(runner, active)
+            check(closed["status"]["messages"][0][0] == "execution_interrupted"
+                  and runner.history(scope, p1, pending["prompt_id"]) == {}
+                  and runner.queue(scope, p1) == {"queue_running": [], "queue_pending": []}, "FJ19 close 기록·대기 폐기·큐 비움")
+            expect_raises(lambda: runner.submit(scope, p1, "apply", {}), "FJ19 close 뒤 submit 거절", exc=RuntimeError)
+        finally:
+            release.set()
+            joined(runner)
+        check(done(runner, active) == closed, "FJ19 늦게 끝난 실행이 close 기록을 덮지 않음")
+    check(jobs.board.current_scope() is None and compat._PROGRESS.get() is None, "FJ20 호출자 범위·진행 문맥 불변")
+
+
+async def _fj_routes(jobs, out, api, *, http=False):
+    """같은 계약을 소켓 없는 aiohttp 요청으로 검사한다. http=True 는 감독관의 별도 루프백 서버 검증용."""
+    from unittest.mock import AsyncMock, patch
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
+    scope = _fj_scope(out / "routes")
+    root = _pl_project(Path(scope["home"]), "routes")
+    key = store.register_root(root)
+    accepted = api["jobs_prompt"]["response"]
+    fake = types.SimpleNamespace(submit=lambda *a: dict(accepted), queue=lambda *a: api["jobs_queue"]["response"],
+                                 delete=lambda s, r, ids: ids, history=lambda *a: {})
+    route_list = jobs.routes(fake)
+    token = jobs.board.set_scope(scope)
+    client = None
+    try:
+        if http:
+            app = web.Application()
+            for method, path, handler in route_list:
+                app.router.add_route(method, path, handler)
+            client = TestClient(TestServer(app))
+            await client.start_server()
+
+        async def call(method, name, data=None, *, pid=None, root_key=key):
+            path = f"{jobs.API}/jobs/{name}" + (f"/{pid}" if pid is not None else "")
+            path += "?" + urllib.parse.urlencode({"root": root_key})
+            if client is not None:
+                response = await client.request(method, path, json=data)
+                return response.status, await response.json()
+            route = next(h for m, p, h in route_list if m == method and p == f"{jobs.API}/jobs/{name}" +
+                         ("/{prompt_id}" if pid is not None else ""))
+            request = make_mocked_request(method, path, headers={"Content-Type": "application/json"})
+            request.read = AsyncMock(return_value=json.dumps(data).encode("utf-8"))
+            if pid is not None:
+                request._match_info["prompt_id"] = pid
+            response = await route(request)
+            return response.status, json.loads(response.text)
+
+        def pipeline(*args):
+            check(jobs.board.current_scope() == scope, "FJ21 to_thread 에 계정 범위 전달")
+            return {"prompt": {}}
+
+        with patch.object(jobs.board, "pipeline_prompt", side_effect=pipeline) as build, \
+                patch.object(jobs.backend, "mock_enabled", return_value=True):
+            check(await call("POST", "prompt", {"root": key, "stage": "apply"}) == (200, accepted), "FJ21 작업 접수 계약")
+            build.assert_called_with(root, "apply", None, None, None)
+            count = build.call_count
+            check((await call("POST", "prompt", {"root": key, "stage": "apply", "prompt": {}}))[0] == 400
+                  and build.call_count == count, "FJ22 클라이언트 프롬프트·모르는 키 거절")
+            for field in ("stage", "expect", "approve", "only"):
+                check((await call("POST", "prompt", {"root": key, "stage": "apply", field: []}))[0] == 400,
+                      "FJ22 JSON 입력 형식은 문자열만")
+            check((await call("GET", "queue", root_key="unknown"))[0] == 404, "FJ22 root 입구 검사")
+            check(await call("GET", "queue") == (200, api["jobs_queue"]["response"]), "FJ23 대기열 라우트 계약")
+            pid = accepted["prompt_id"]
+            check(await call("POST", "queue", {"root": key, "delete": [pid]}) == (200, {"deleted": [pid]}), "FJ23 삭제 라우트 계약")
+            check(await call("GET", "history", pid=pid) == (200, {}), "FJ23 기록 없음 계약")
+            for invalid in ("bad", "j_" + "0" * 15, "j_" + "A" * 16):
+                check((await call("GET", "history", pid=invalid))[0] == 400
+                      and (await call("POST", "queue", {"root": key, "delete": [invalid]}))[0] == 400, "FJ24 작업 ID 검사")
+            with patch.object(jobs.backend, "mock_enabled", return_value=False):
+                count = build.call_count
+                for stage in ("run", "draft", "reroll"):
+                    check(await call("POST", "prompt", {"root": key, "stage": stage}) ==
+                          (409, api["jobs_prompt_no_backend"]["response"]), "FJ25 mock 아닌 유료 stage 거절")
+                check(build.call_count == count, "FJ47 R4 백엔드 없으면 계획 계산 호출 0회")
+                with patch.object(jobs.board, "pipeline_prompt", side_effect=jobs.board._Reject(400, "모르는 stage")) as invalid:
+                    check(await call("POST", "prompt", {"root": key, "stage": "unknown"}) == (400, {"error": "모르는 stage"})
+                          and invalid.call_count == 1, "FJ47 모르는 stage 는 기존 계획 함수에서 거절")
+            with patch.object(fake, "submit", side_effect=jobs.QueueFull(api["jobs_prompt_queue_full"]["response"]["error"])):
+                check(await call("POST", "prompt", {"root": key, "stage": "apply"}) ==
+                      (409, api["jobs_prompt_queue_full"]["response"]), "FJ26 큐 상한 HTTP 계약")
+            stale = api["jobs_prompt_stale"]["response"]
+            with patch.object(jobs.board, "pipeline_prompt", side_effect=jobs.board._Reject(409, stale["error"],
+                                                                                         **{k: v for k, v in stale.items() if k != "error"})):
+                check(await call("POST", "prompt", {"root": key, "stage": "run"}) == (409, stale), "FJ27 승인 거절 상태·본문 보존")
+            with patch.object(jobs.board, "current_scope", return_value=None):
+                check(await call("POST", "prompt", {"root": key, "stage": "apply"}) ==
+                      (401, api["no_session"]["response"]), "FJ28 범위 없음 거절")
+    finally:
+        if client is not None:
+            await client.close()
+        jobs.board.reset_scope(token)
+
+
+def _fj_scope_guard(jobs, out):
+    """R1: 실제 경로·정션을 쓰되 노드 클래스는 가짜로 두어 실행 전 차단을 확인한다."""
+    from unittest.mock import patch
+    home, other = out / "scope_home", out / "scope_other"
+    root = home / "bmk_design_patch" / "project"
+    root.mkdir(parents=True)
+    other.mkdir()
+    scope = _fj_scope(home)
+    calls = []
+
+    class Node:
+        FUNCTION = "run"
+
+        @classmethod
+        def INPUT_TYPES(cls):
+            return {}
+
+        def run(self, **inputs):
+            calls.append(inputs)
+            return ({},)
+
+    templates = {stage: jobs.pl.build_prompt(stage, jobs.pl.defaults(str(root)), str(root)) for stage in ("apply", "export")}
+    classes = {name: Node for name in jobs.pl.CLASS.values()}
+    with patch.object(jobs, "_node_classes", return_value=classes) as loader, \
+            patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1"}):
+        token = jobs.board.set_scope(None)
+        try:
+            for stage in templates:
+                expect_raises(lambda: jobs.execute(templates[stage]), f"FJ34 R1 범위 없는 {stage} 사전 차단",
+                              exc=RuntimeError, contains="서버 모드의 작업에는 계정 범위가 필요합니다")
+            check(not calls and loader.call_count == 0, "FJ34 범위 없으면 노드 import·실행 모두 없음")
+        finally:
+            jobs.board.reset_scope(token)
+
+        token = jobs.board.set_scope(scope)
+        try:
+            valid = copy.deepcopy(templates["apply"])
+            valid["dp_project"]["inputs"]["base_dir"] = str(home / ".")
+            valid["dp_import"]["inputs"].update(psd_path=str(root / "source.psd"), refs_dir=str(root / "refs"), glossary_path="")
+            jobs.execute(valid)
+            check(len(calls) == len(valid), "FJ35 프로젝트 내부 입력·빈 경로 통과")
+            if os.name == "nt":
+                normalized = copy.deepcopy(valid)
+                normalized["dp_project"]["inputs"]["base_dir"] = str(home).upper().replace("\\", "/")
+                jobs.execute(normalized)
+                check(True, "FJ35 base_dir 대소문자·구분자는 같은 폴더로 판정")
+            invalid = []
+            foreign = copy.deepcopy(valid)
+            foreign["dp_project"]["inputs"]["base_dir"] = str(other)
+            invalid.append(foreign)
+            for field in ("psd_path", "refs_dir", "glossary_path"):
+                for value in (str(other / "outside.psd"), str(root / ".." / "outside.psd"), str(root) + "_other/outside.psd"):
+                    prompt = copy.deepcopy(valid)
+                    prompt["dp_import"]["inputs"][field] = value
+                    invalid.append(prompt)
+            candidate = copy.deepcopy(valid)
+            candidate["dp_cand"] = {"class_type": jobs.pl.CLASS["cand"], "inputs": {"path": str(other)}}
+            invalid.append(candidate)
+            if os.name == "nt":
+                prompt = copy.deepcopy(valid)
+                prompt["dp_import"]["inputs"]["psd_path"] = ("Z" if root.drive[:1].upper() != "Z" else "Y") + ":\\outside.psd"
+                invalid.append(prompt)
+            before = len(calls)
+            for prompt in invalid:
+                try:
+                    jobs.execute(prompt)
+                except ValueError as exc:
+                    check(str(home).lower() not in str(exc).lower() and str(other).lower() not in str(exc).lower(),
+                          "FJ36 범위 밖 base_dir·경로 위젯 거절 문구에 경로 없음")
+                else:
+                    check(False, "FJ36 범위 밖 경로가 실행됨")
+            check(len(calls) == before, "FJ36 모든 경로 검사는 첫 노드 실행 전")
+            junction = root / "linked"
+            if os.name == "nt":
+                result = subprocess.run(["cmd", "/c", "mklink", "/J", str(junction), str(other)],
+                                        capture_output=True, timeout=15)
+                assert result.returncode == 0, "FJ37 시험용 정션 생성 실패"
+            else:
+                junction.symlink_to(other, target_is_directory=True)
+            prompt = copy.deepcopy(valid)
+            prompt["dp_import"]["inputs"]["psd_path"] = str(junction / "outside.psd")
+            expect_raises(lambda: jobs.execute(prompt), "FJ37 프로젝트 안 정션이 가리키는 다른 홈 거절")
+            check(len(calls) == before, "FJ37 정션 우회도 실행 전 거절")
+
+            runner = jobs.JobRunner()
+            try:
+                sub = runner.submit(scope, str(root), "apply", foreign)
+                record = _fj_wait(lambda: runner.history(scope, str(root), sub["prompt_id"]), "R1 오류 기록")[sub["prompt_id"]]
+                info = record["status"]["messages"][0][1]
+                check(info["node_id"] == "" and info["node_type"] == "" and record["outputs"] == {},
+                      "FJ38 입구 경로 거절은 실행 전 오류 기록")
+            finally:
+                runner.close(timeout=1)
+        finally:
+            jobs.board.reset_scope(token)
+        with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": ""}):
+            token = jobs.board.set_scope(None)
+            try:
+                jobs.execute(foreign)
+                check(len(calls) > before, "FJ38 로컬 모드는 범위·경로 가드를 적용하지 않음")
+            finally:
+                jobs.board.reset_scope(token)
+
+
+def _fj_worker_errors(jobs, compat, out):
+    """R2: 예외 종류·속성·문자열·기록 저장 실패 뒤에도 같은 작업 스레드가 계속 일한다."""
+    from unittest.mock import patch
+    scope = _fj_scope(out / "errors")
+    root = str(out / "errors" / "bmk_design_patch" / "p")
+
+    class BrokenString(Exception):
+        def __str__(self):
+            raise RuntimeError("문자열 실패")
+
+    class LockedError(Exception):
+        def __setattr__(self, name, value):
+            raise AttributeError("속성 잠김")
+
+    class LockedInterrupt(compat.InterruptProcessingException):
+        def __setattr__(self, name, value):
+            raise AttributeError("속성 잠김")
+
+    class BadCopy(str):
+        def __deepcopy__(self, memo):
+            raise RuntimeError("노드 객체 복사 실패")
+
+    errors = {"exit": SystemExit, "keyboard": KeyboardInterrupt, "broken": BrokenString,
+              "locked": LockedError, "interrupt": LockedInterrupt}
+    emitted = []
+
+    class Node:
+        FUNCTION = "run"
+
+        @classmethod
+        def INPUT_TYPES(cls):
+            return {}
+
+        def run(self, mode="good", **kwargs):
+            if mode in errors:
+                exc = errors[mode]("원래 오류")
+                emitted.append(exc)
+                raise exc
+            return {"ui": {"text": ["앞 결과"]}, "result": (1,)}
+
+    def prompt(mode):
+        return {"dp_project": {"class_type": jobs.pl.CLASS["project"], "inputs": {}},
+                "dp_import": {"class_type": jobs.pl.CLASS["import"], "inputs": {"mode": mode}}}
+
+    with patch.object(jobs, "_node_classes", return_value={name: Node for name in jobs.pl.CLASS.values()}), \
+            patch.dict(os.environ, {"BMK_DP_SERVER_MODE": ""}):
+        for mode in ("locked", "interrupt"):
+            try:
+                jobs.execute(prompt(mode))
+            except BaseException as exc:
+                check(exc is emitted[-1] and isinstance(exc, errors[mode]), "FJ39 속성 대입 실패가 원래 예외를 가리지 않음")
+            else:
+                check(False, "FJ39 잠긴 예외 전파")
+        runner = jobs.JobRunner()
+
+        def run(mode):
+            sub = runner.submit(scope, root, "apply", prompt(mode))
+            return _fj_wait(lambda: runner.history(scope, root, sub["prompt_id"]), "R2 작업 기록")[sub["prompt_id"]]
+
+        def next_works():
+            check(run("good")["status"]["completed"] and runner._threads[0].is_alive(), "FJ40 오류 뒤 다음 작업 실행·스레드 생존")
+
+        try:
+            for mode in errors:
+                record = run(mode)
+                name, info = record["status"]["messages"][0]
+                check(name == ("execution_interrupted" if mode == "interrupt" else "execution_error")
+                      and info["node_id"] == "dp_import" and info["node_type"] == jobs.pl.CLASS["import"]
+                      and "dp_project" in record["outputs"], f"FJ40 {mode} 오류 분류·노드·앞 UI 보존")
+                if mode == "broken":
+                    check(info["exception_message"] == "BrokenString", "FJ40 깨진 __str__ 은 예외 형식명")
+                next_works()
+            for value in (object(), BadCopy("복사 훅")):
+                with patch.object(jobs, "execute", return_value={"outputs": {"dp_project": {"text": [value]}}}):
+                    record = run("good")
+                check((record["outputs"] == {} and record["status"]["messages"][0][0] == "execution_error")
+                      if not isinstance(value, str) else record["status"]["completed"], "FJ41 JSON 불가 출력은 오류·JSON 가능한 객체는 안전한 기록으로 변환")
+                next_works()
+            with patch.object(runner, "_run", side_effect=BaseException("실행기 실패")):
+                record = run("good")
+            check(record["status"]["messages"][0][0] == "execution_error", "FJ42 _run 밖 예외도 끝 처리")
+            next_works()
+            original_finish = runner._finish
+            attempts = []
+
+            def fail_once(job, record):
+                attempts.append(job["prompt_id"])
+                if len(attempts) == 1:
+                    raise RuntimeError("끝 처리 실패")
+                return original_finish(job, record)
+
+            with patch.object(runner, "_finish", side_effect=fail_once):
+                record = run("good")
+            check(len(attempts) == 2 and record["status"]["messages"][0][0] == "execution_error", "FJ42 끝 처리 실패도 마지막 방어선에서 기록")
+            next_works()
+            with patch.object(runner, "_finish", side_effect=RuntimeError("끝 처리 계속 실패")):
+                sub = runner.submit(scope, root, "apply", prompt("good"))
+                _fj_wait(lambda: not any(runner.queue(scope, root).values()), "R2 실패 작업 큐 제거")
+            check(runner.history(scope, root, sub["prompt_id"]) == {}, "FJ43 끝 처리마저 실패해도 실행 중 자리를 비움")
+            next_works()
+        finally:
+            runner.close(timeout=1)
+
+
+def _fj_close(jobs, out):
+    """R3: drain 뒤 제한 시간 안의 정상 완료와 제한 시간 밖의 중단을 구분한다."""
+    from unittest.mock import patch
+    scope = _fj_scope(out / "closing")
+    root = str(out / "closing" / "bmk_design_patch" / "p")
+    for behavior in ("done", "timeout", "drain_error"):
+        started, release = threading.Event(), threading.Event()
+
+        def execute(prompt):
+            started.set()
+            assert release.wait(8)
+            return {"outputs": {"dp_run": {"text": ["저장 완료"]}}}
+
+        with patch.object(jobs, "execute", side_effect=execute):
+            runner = jobs.JobRunner()
+            try:
+                active = runner.submit(scope, root, "run", {})
+                assert started.wait(8)
+                pending = runner.submit(scope, root, "apply", {})
+
+                def drain(path):
+                    check(runner.history(scope, root, active["prompt_id"]) == {}, "FJ44 drain 때 아직 완료 기록 없음")
+                    if behavior == "done":
+                        release.set()
+                    elif behavior == "drain_error":
+                        raise RuntimeError("drain 실패")
+
+                with patch.object(jobs.board, "set_drain", side_effect=drain) as stop:
+                    runner.close(timeout=2 if behavior == "done" else 0.05)
+                stop.assert_called_once_with(jobs._path(root))
+                record = runner.history(scope, root, active["prompt_id"])[active["prompt_id"]]
+                if behavior == "done":
+                    check(record["status"]["completed"] and record["outputs"]["dp_run"]["text"] == ["저장 완료"],
+                          "FJ44 제한 시간 안에 저장한 작업은 success")
+                else:
+                    check(not record["status"]["completed"] and record["status"]["messages"][0][0] == "execution_interrupted",
+                          "FJ45 시간 초과·drain 실패는 interrupted")
+                check(runner.history(scope, root, pending["prompt_id"]) == {} and not any(runner.queue(scope, root).values()),
+                      "FJ46 close 대기 폐기·큐 종료")
+                expect_raises(lambda: runner.submit(scope, root, "apply", {}), "FJ46 close 뒤 새 작업 거절", exc=RuntimeError)
+            finally:
+                release.set()
+                runner.close(timeout=1)
+            check(runner.history(scope, root, active["prompt_id"])[active["prompt_id"]] == record, "FJ46 늦은 완료가 종료 기록을 바꾸지 않음")
+
+
+def _fj_history_paths(jobs, out):
+    """R5: 서버 오류 문구에서 자기 계정 홈만 가리고 로컬 문구는 보존한다."""
+    from unittest.mock import patch
+    scope = _fj_scope(out / "private_home")
+    root = str(out / "private_home" / "bmk_design_patch" / "p")
+    backslash = scope["home"].replace("/", "\\").upper()
+    slash = scope["home"].replace("\\", "/").lower()
+    outside = str(out / "outside" / "other.psd")
+    sibling = scope["home"] + "_other/other.psd"
+    message = f"실패: {backslash}\\one.psd / {slash}/two.psd / {outside} / {sibling}"
+    for mode in ("1", ""):
+        with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": mode}), \
+                patch.object(jobs, "execute", side_effect=ValueError(message)):
+            runner = jobs.JobRunner()
+            try:
+                sub = runner.submit(scope, root, "apply", {})
+                record = _fj_wait(lambda: runner.history(scope, root, sub["prompt_id"]), "R5 기록")[sub["prompt_id"]]
+                actual = record["status"]["messages"][0][1]["exception_message"]
+                check(actual == message if not mode else (actual.count("<계정 폴더>") == 2 and outside in actual and sibling in actual
+                      and (backslash + "\\").lower() not in actual.lower() and slash + "/" not in actual.lower()),
+                      "FJ48 서버 홈 경로는 구분자·대소문자 무관하게 가림·홈 밖과 로컬은 보존")
+            finally:
+                runner.close(timeout=1)
+
+
+def _fj_injection():
+    """R6: 기존 구조 시험과 같은 최상위 주입 위치를 유지한다."""
+    tree = ast.parse((PKG / "bmk_design_patch.py").read_text(encoding="utf-8"))
+
+    def call(stmt, name):
+        return (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)
+                and isinstance(stmt.value.func, ast.Attribute) and isinstance(stmt.value.func.value, ast.Name)
+                and stmt.value.func.value.id == "board" and stmt.value.func.attr == name)
+
+    pos = next((i for i, stmt in enumerate(tree.body) if call(stmt, "set_sam3_ckpts")), -1)
+    check(pos >= 0 and call(tree.body[pos + 1], "set_qwen_dir") and len(tree.body[pos + 1].value.args) == 1,
+          "FJ49 SAM3·Qwen 주입은 연속된 모듈 최상위 문장")
+    check(any(isinstance(stmt, ast.If) and ast.dump(stmt.test) == ast.dump(ast.parse("not _STANDALONE", mode="eval").body)
+              and len(stmt.body) == 1 and call(stmt.body[0], "set_output_dir") for stmt in tree.body),
+          "FJ49 output 주입 한 줄만 로컬 모드 가드")
+
+
 def forge_jobs_unit():
     """F1 갈래 J — ComfyUI 대체물·노드 import 가드·프로세스 안 실행기·서버 모드 백엔드 가드(--quick 포함, 새 프로세스 e2e 는 mock)."""
     section("Forge F1 실행기·대체물 (forge_jobs_unit)")
     api = _server_api()
     check(set(api["jobs_history_done"]["response"]) and "jobs_prompt" in api, "FJ0 계약: jobs 예시가 있음")
+    from tempfile import mkdtemp
+    from unittest.mock import patch
+    before = "bmk_design_patch" in sys.modules
+    import bmk_design_patch_jobs as jobs
+    import bmk_design_patch_compat as compat
+    import bmk_design_patch_runner as runner
+    import bmk_design_patch_vlm as vlm
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    out = Path(mkdtemp(prefix="fj_", dir=OUT_ROOT.resolve()))
+    try:
+        # 부모의 import 캐시와 환경 변수를 건드리지 않는다.
+        for mode in ("A", "B") + (() if QUICK else ("C",)):
+            env = dict(os.environ)
+            env.pop("BMK_DP_SERVER_MODE", None)
+            env.pop(runner.MOCK_ENV, None)
+            if mode != "C":
+                env["BMK_DP_SERVER_MODE"] = "1"
+            code = ("import sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); "
+                    "import test_bmk_design_patch as t; t._fj_probe(sys.argv[2], Path(sys.argv[3]))")
+            proc = subprocess.run([sys.executable, "-X", "utf8", "-W", "ignore", "-c", code, str(PKG / "tools"), mode, str(out / mode)],
+                                  capture_output=True, text=True, encoding="utf-8", timeout=150, env=env)
+            check(proc.returncode == 0, f"FJ1–2 새 프로세스 {mode}: {proc.stdout[-1500:]} {proc.stderr[-2500:]}")
+        seen = []
+        token = compat.set_progress_sink(lambda value, total: seen.append((value, total)))
+        try:
+            bar = compat.ProgressBar(4)
+            bar.update()
+            bar.update_absolute(3, total=6)
+            check(seen == [(1, 4), (3, 6)], "FJ29 진행 update·absolute")
+            nested = compat.set_progress_sink(lambda *a: (_ for _ in ()).throw(RuntimeError("표시 실패")))
+            try:
+                bar.update()
+            finally:
+                nested.var.reset(nested)
+            bar.update()
+            check(seen[-1] == (5, 6), "FJ29 받개 예외 삼킴·토큰 복원")
+        finally:
+            token.var.reset(token)
+        compat.ProgressBar(1).update()
+        check(not compat.comfy.model_management.processing_interrupted(), "FJ29 중단 플래그 기본 false")
+        for fn in (compat.folder_paths.get_input_directory, compat.folder_paths.get_output_directory):
+            expect_raises(fn, "FJ29 전역 기본 폴더 없음", exc=RuntimeError, contains="전역 기본 폴더")
+        _fj_execute(jobs)
+        _fj_runner(jobs, compat, out, api)
+        _fj_scope_guard(jobs, out)
+        _fj_worker_errors(jobs, compat, out)
+        _fj_close(jobs, out)
+        _fj_history_paths(jobs, out)
+        _fj_injection()
+        root = str(out / "guards" / "bmk_design_patch" / "p")
+        with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1", runner.MOCK_ENV: ""}):
+            for fn in (lambda: runner.make_backend(root, None), lambda: runner.ComfyOrgBackend(None),
+                       lambda: vlm.make_vlm("openai", root, {}, model_dir="", keep_loaded=False),
+                       lambda: vlm.make_vlm("local_qwen", root, {}, model_dir="", keep_loaded=False),
+                       lambda: vlm.OpenAIVLM({}, root=root), lambda: vlm.QwenVLM("", keep_loaded=False)):
+                expect_raises(fn, "FJ30 서버 모드 백엔드 이중 가드", exc=RuntimeError, contains="mock 만")
+            check(runner.agent_switch(root) is None, "FJ30 서버 모드 승인 스위치 꺼짐")
+            with patch.dict(os.environ, {runner.MOCK_ENV: "1"}):
+                check(runner.make_backend(root, None).response == "b64"
+                      and isinstance(vlm.make_vlm("mock", root, {}, model_dir="", keep_loaded=False), vlm.MockVLM), "FJ31 서버 mock 허용·b64 기본")
+                options = Path(root).parent / runner.MOCK_FILE
+                options.parent.mkdir(parents=True)
+                options.write_text('{"response": "url", "delay_s": 0}', encoding="utf-8")
+                check(runner.make_backend(root, None).response == "url", "FJ31 명시 mock 응답 옵션 유지")
+        with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "", runner.MOCK_ENV: "1"}):
+            check(runner.make_backend(str(out / "local" / "p"), None).response == "url", "FJ32 로컬 mock 기본 url 불변")
+        with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "", runner.MOCK_ENV: ""}):
+            check(isinstance(runner.make_backend(str(out / "local" / "p"), None), runner.ComfyOrgBackend), "FJ32 로컬 백엔드 선택 불변(생성만)")
+        asyncio.run(_fj_routes(jobs, out, api))
+        note("FJ HTTP 전송은 별도 검증: _fj_routes(..., http=True). 기본 묶음은 소켓 없는 aiohttp 요청으로 계약을 검사함.")
+    finally:
+        check(("bmk_design_patch" in sys.modules) == before, "FJ33 노드 import 캐시 오염 없음")
 
 
 def forge_js_unit():
