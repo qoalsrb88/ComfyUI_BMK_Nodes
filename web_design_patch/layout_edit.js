@@ -1279,7 +1279,8 @@ window.DPLayoutEdit = (() => {
       if (lockedNow(p.id)) return;
       const remote = S.remote, selected = JSON.stringify([sel, [...(multi || [])].sort()]);
       if (p.grow && !await askFree("크롭 넓히기 제안을 적용할까요?\n적용은 레이아웃만 바꿉니다(무료).\n"
-        + modeText("[반영 (무료)] 뒤 이 크롭은 새 생성 조건이 되어, 실행(G)에서 생성을 승인할 때만 유료(평균 ≈ 169 크레딧/호출, 초안 갱신 ≈ 21 — 10/23 원장 평균).\n", "")
+        + modeText("[반영 (무료)] 뒤 이 크롭은 새 생성 조건이 되어, 실행(G)에서 생성을 승인할 때만 유료(평균 ≈ 169 크레딧/호출, 초안 갱신 ≈ 21 — 10/23 원장 평균).\n",
+          "[반영 (무료)] 뒤 이 크롭은 새 생성 조건이 되어, ⑤ 생성에서 승인할 때만 유료.\n")
         + "지금 ★ 는 옛 크롭 기준으로 남습니다(옛 크롭 ★).", () => S.remote === remote && selected === JSON.stringify([sel, [...(multi || [])].sort()]) && proposal === p)) return;
       proposal = null;
       await flushNudge();
@@ -1981,7 +1982,8 @@ window.DPLayoutEdit = (() => {
         if (t.box) r.append(button("✕", `${t.tid} 상자 지우기`, () => setBox(c, t.tid, null)));
         if (adopted[t.tid]) {
           const a = chip("채택", "b-dim");
-          a.title = `스펙 _layer_targets 채택 문구: ${adopted[t.tid]} — 여기 문구를 쓰면 이것이 이김`;
+          a.title = modeText(`스펙 _layer_targets 채택 문구: ${adopted[t.tid]} — 여기 문구를 쓰면 이것이 이김`,
+            `초안에서 채택한 대상 문구: ${adopted[t.tid]} — 여기 문구를 쓰면 이것이 이김`);
           r.append(a);
         }
         if (ts.length > 1) {
@@ -1998,7 +2000,8 @@ window.DPLayoutEdit = (() => {
         // 레이아웃 대상에 없는 tid 의 채택 문구 — Import 가 스펙 _layer_targets 에서 더한다
         const r = el("div", "lt adopted");
         r.append(el("span", "lt-tid", a.tid), el("span", "dim", `채택: ${a.text}`));
-        r.title = "스펙 _layer_targets 채택 문구(레이아웃 대상 아님) — 같은 글자로 대상을 더하면 레이아웃 문구가 이김";
+        r.title = modeText("스펙 _layer_targets 채택 문구(레이아웃 대상 아님) — 같은 글자로 대상을 더하면 레이아웃 문구가 이김",
+          "초안에서 채택한 대상 문구(레이아웃 대상 아님) — 같은 글자로 대상을 더하면 레이아웃 문구가 이김");
         tb.append(r);
       }
       panel.append(el("div", "lp-k", "대상 (이름 · 부품 상자)"), tb);

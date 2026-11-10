@@ -42994,7 +42994,8 @@ function maskPanel() {
     exit: () => { P.calls.exit += 1; }, refresh: () => { P.calls.refresh += 1; }, seams: () => P.viewer.seamsObj, select: (k, f) => P.calls.select.push([k, f]),
     pick: async (t, k) => { P.calls.pick.push([t.key, k]); return P.pick ? P.pick() : { ok: true }; }, ranText: (x) => `${x.done} ${x.via}` });
   P.rows = () => P.panel.all().filter((e) => e.classList.contains("pp-row")).map((e) => e.textContent);
-  P.B = (label) => P.panel.all().find((e) => e.tagName === "BUTTON" && e.textContent === label) || null;
+  P.B = (label, section = null) => (section ? P.panel.children.find(e => e.children[0]?.textContent === section) : P.panel)
+    ?.all().find((e) => e.tagName === "BUTTON" && e.textContent === label) || null;
   P.key = (code, m) => P.ed.onKey(Object.assign({ code, key: code, repeat: false, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false }, m || {}));
   P.count = (p, kind) => srv.log.filter((x) => x.path === p && (!kind || x.q.kind === kind)).length;
   return P;
@@ -43051,10 +43052,14 @@ await scenario("panel", async () => {
   let release;
   srv.hold = new Promise((ok) => { release = ok; });
   srv.save.push([409, MA["POST /mask/save"].errors["409"][2]]);
+  const sessionReady = ["되돌리기", "전체 지우기"].every(l => B(l, "적용 전 획") && !B(l, "적용 전 획").disabled);
   key("Enter");
   await sleep(10);
-  r.applying = { row: rows().find((t) => t.startsWith("적용 중")) || null,
-    disabled: ["되돌리기", "적용", "전체 지우기", "위 가장자리 페이드", "전체 페더", "이전 버전으로"].map((l) => (B(l) ? B(l).disabled : null)),
+  r.applying = { sessionReady, row: rows().find((t) => t.startsWith("적용 중")) || null,
+    disabled: ["되돌리기", "적용", "전체 지우기", "위 가장자리 페이드", "전체 페더", "이전 버전으로"].map((l) => {
+      const b = B(l, ["되돌리기", "적용", "전체 지우기"].includes(l) ? "적용 전 획" : null);
+      return b ? b.disabled : null;
+    }),
     brush: viewer.ed.pointerdown({ cx: 600, cy: 2900, shiftKey: false }), undoKey: key("KeyZ", { ctrlKey: true }), pending: ed.pending() };
   // 적용 중 대상 바꾸기(N·목록) 거절 — 받으면 적용 성공 길이 옛 대상의 값·file 을 새 대상 세션에 씀
   Object.assign(r.applying, { go: (await ed.go({ key: K14, seam: null })), goToast: toasts.at(-1), confirms: confirms.length });
@@ -43130,7 +43135,7 @@ await scenario("panel", async () => {
   r.again.zero = { pending: ed.pending(), behind: behindRow(), button: !!B("다시 받기"), gets: P.count("mask") - g1 };
   key("KeyY", { ctrlKey: true });
   const n1 = [P.count("mask"), P.count("mask/img", "edit")];
-  B("전체 지우기").fire("click"); await Promise.resolve(); await Promise.resolve();
+  B("전체 지우기", "적용 전 획").fire("click"); await Promise.resolve(); await Promise.resolve();
   raf();  // U3 3차 검증: 브라우저에선 [버리기]의 rAF 가 다시 열기보다 먼저 돎(연 판 합성) — 다시 연 뒤 겹침 전체를 서버 판으로 다시 그려야 함
   const pDisc = puts.length;
   await until(() => P.count("mask/img", "edit") > n1[1] && !behindRow().length);
@@ -43908,7 +43913,7 @@ await scenario("panelR2", async () => {
   await sleep(5);
   r.starStroke = { confirm: confirms.pop() || null, pick: calls.pick.length, pending: ed.pending() && ed.pending().n };
   P.answer = true;
-  B("전체 지우기").fire("click"); await sleep(0);
+  B("전체 지우기", "적용 전 획").fire("click"); await sleep(0);
   confirms.pop();
   // tests-r2-05: 패널 6 이음매 줄 누르기(지금 대상) = 그 구간으로 2:1·선택 구간(줄 강조·구간 페이드 켬)
   const nLook = viewer.looks.length;
@@ -44094,7 +44099,7 @@ await scenario("panelR3", async () => {
     raf();
     r.viewKeys.push([code, ret, ended, puts.length - p1]);
   }
-  B("전체 지우기").fire("click"); await sleep(0);
+  B("전체 지우기", "적용 전 획").fire("click"); await sleep(0);
   confirms.pop();
   // tests-r3-02: 보드 쓰기 실패(null — 보드가 다른 쓰기 중·409·네트워크) = 대상·세션 그대로
   srv.alts.push([200, MA["GET /mask/alts"].ok]);
@@ -44115,12 +44120,16 @@ await scenario("panelR3", async () => {
   P.pick = () => gp.p.then(() => ({ ok: true }));
   const s0 = P.count("mask/save");
   const t0 = toasts.length;
+  const sessionReady = ["되돌리기", "전체 지우기"].every(l => B(l, "적용 전 획") && !B(l, "적용 전 획").disabled);
   if (B("이 후보를 ★")) B("이 후보를 ★").fire("click"); await sleep(0);  // 쓰기 실패에도 대상을 바꿨으면(회귀) 표가 없음 — pickFail 이 그 이유를 적음
   await sleep(5);
   const brush = viewer.ed.pointerdown({ cx: 650, cy: 2900, shiftKey: false });
   viewer.ed.pointerup({});
-  r.pickHold = { brush, enter: key("Enter"), undo: key("KeyZ", { ctrlKey: true }), go: (await ed.go({ key: K14, seam: null })), leave: (await ed.leave()), n: n(),
-    off: ["적용", "전체 지우기", "되돌리기", "이 후보를 ★"].map((l) => (B(l) ? B(l).disabled : null)) };
+  r.pickHold = { sessionReady, brush, enter: key("Enter"), undo: key("KeyZ", { ctrlKey: true }), go: (await ed.go({ key: K14, seam: null })), leave: (await ed.leave()), n: n(),
+    off: ["적용", "전체 지우기", "되돌리기", "이 후보를 ★"].map((l) => {
+      const b = B(l, l === "이 후보를 ★" ? null : "적용 전 획");
+      return b ? b.disabled : null;
+    }) };
   await sleep(10);
   Object.assign(r.pickHold, { saves: P.count("mask/save") - s0, toasts: toasts.slice(t0), confirms: confirms.splice(0).length, editor: !!viewer.ed });
   gp.go();
@@ -44415,7 +44424,7 @@ await scenario("panelR3b", async () => {
               and pn["leaveNo"]["ok"] is False and pn["leaveNo"]["editor"] and "은 이 창에만 남습니다" in pn["leaveNo"]["confirm"],
               f"적용 안 한 획: 다른 후보로(목록·N·이음매) = 확인 창(아니오면 그대로), 나가기 = 확인 창(세션은 이 창에 남음) {pn['goNo']} {pn['leaveNo']}")
         ap = pn["applying"]
-        check(ap["row"] == "적용 중… (획 1)" and ap["disabled"] == [True] * 6 and ap["brush"] is False and ap["undoKey"] is True and ap["pending"]["n"] == 1
+        check(ap["sessionReady"] is True and ap["row"] == "적용 중… (획 1)" and ap["disabled"] == [True] * 6 and ap["brush"] is False and ap["undoKey"] is True and ap["pending"]["n"] == 1
               and ap["go"] is False and ap["goToast"] == "warn:적용·되돌리기·★ 바꾸기를 처리하는 중 — 끝난 뒤 바꾸세요" and ap["confirms"] == 0,
               f"적용 중: 실행 취소·적용·버리기·페이드·페더·이전 버전 단추 끔, 붓 안 됨(왼쪽 끌기는 화면 이동), Ctrl+Z 무시, 대상 바꾸기 거절(확인 창 없이) {ap}")
         check(ap.get("leave") is False and ap.get("leaveToast") == "warn:적용·되돌리기·★ 바꾸기를 처리하는 중 — 끝난 뒤 나가세요" and ap.get("leaveConfirms") == 0
@@ -44767,7 +44776,7 @@ await scenario("panelR3b", async () => {
                                  "on": True},
               f"3차 tests-r3-02: [이 후보를 ★] 의 보드 쓰기 실패(null — 다른 쓰기 중·409·네트워크) = 대상·세션 그대로(GET /mask 없음·획 남음·단추 다시 켬) "
               f"{p3['pickFail']}")
-        check(p3["pickHold"] == {"brush": False, "enter": True, "undo": True, "go": False, "leave": False, "n": 1, "off": [True] * 4, "saves": 0,
+        check(p3["pickHold"] == {"sessionReady": True, "brush": False, "enter": True, "undo": True, "go": False, "leave": False, "n": 1, "off": [True] * 4, "saves": 0,
                                  "toasts": [lock + "바꾸세요", lock + "나가세요"], "confirms": 1, "editor": True,
                                  "after": {"n": 0, "gets": [K15B], "saves": 0, "select": [K15B, False]}},
               f"3차 session-r3-01: [이 후보를 ★] 의 보드 쓰기(POST /pick + state) 동안 세션 잠금 — 붓(왼쪽 끌기 = 화면 이동)·Enter·실행 취소·대상 바꾸기·나가기 "
@@ -45351,7 +45360,7 @@ def polish5_adjust_unit():
     test_js = r'''
 await scenario("adjust", async () => {
   const P = maskPanel(), { srv, ed, viewer } = P;
-  const B = label => label === "되돌리기" ? controls()?.all().find(e => e.tagName === "BUTTON" && e.textContent === label) : P.B(label);
+  const B = (label, section = null) => label === "되돌리기" ? controls()?.all().find(e => e.tagName === "BUTTON" && e.textContent === label) : P.B(label, section);
   const info = maskInfo(K15);
   info.adjust = null;
   srv.info[K15] = info;
@@ -45441,7 +45450,7 @@ await scenario("adjust", async () => {
   slider().value = 4; slider().fire("input");
   await new Promise((r) => setTimeout(r, 350));
   result.pendingNoWrite = P.count("mask/adjust") === n;
-  B("전체 지우기").fire("click");
+  B("전체 지우기", "적용 전 획").fire("click");
   await until(() => !ed.pending() && !ed._test.M.busy);
   srv.fail = true;
   slider().value = 4; slider().fire("input");
@@ -46224,7 +46233,7 @@ await scenario("xform", async () => {
   result.arrows = P.key("ArrowLeft") && P.key("ArrowDown", {shiftKey: true});
   await save();
   result.arrows = result.arrows && info.adjust.dx === -1 && info.adjust.dy === 10;
-  B("되돌리기").fire("click");
+  B("되돌리기", "후보 보정").fire("click");
   await until(() => idle() && info.adjust.dx === 0 && info.adjust.dy === 0);
   result.undoTogether = info.adjust.blur === 2 && !info.adjust.flip_h;
   const focused = input("dx"); focused.focus(); focused.fire("focus");
@@ -46299,8 +46308,8 @@ await scenario("xformRecovery", async () => {
       srv.maskError = error;
       await ed._test.refreshInfo();
     }
-    await until(() => !M.busy && M.recovery && B(label));
-    result[`${op}Controls`] = P.panel.textContent.includes(error.error) && !B(label).disabled
+    await until(() => !M.busy && M.recovery && B(label, "대상"));
+    result[`${op}Controls`] = P.panel.textContent.includes(error.error) && !B(label, "대상").disabled
       && !P.panel.all().some(e => e.dataset.xform);
     let release;
     srv.hold = new Promise(r => { release = r; });
@@ -46313,15 +46322,15 @@ await scenario("xformRecovery", async () => {
     };
     const beforeGet = P.count("mask");
     if (op === "undo") srv.rejectUndo = true;
-    B(label).fire("click");
+    B(label, "대상").fire("click");
     await until(() => M.busy === "adjust");
     result[`${op}Locked`] = !(await ed.leave()) && !(await ed.go({key: K14}));
     release();
     if (op === "undo") {
       await until(() => !M.busy && P.toasts.some(t => String(t).includes("되돌리면")));
-      result.undoRejected = M.recovery.adjust.at === old.at && !B(label).disabled;
+      result.undoRejected = M.recovery.adjust.at === old.at && !B(label, "대상").disabled;
       srv.rejectUndo = false;
-      B(label).fire("click");
+      B(label, "대상").fire("click");
     }
     await until(() => !M.busy && !M.err && M.m && !M.recovery);
     const body = srv.log.filter(r => r.path === "mask/adjust").pop().body;
@@ -46335,7 +46344,7 @@ await scenario("xformRecovery", async () => {
   (await P.ed.enter(maskState(), {key: K15}));
   await until(() => !P.ed._test.M.busy && P.ed._test.M.err);
   result.noRecord = !P.B("변형 없음") && !P.B("보정 없음")
-    && !P.panel.all().some(e => e.tagName === "BUTTON" && e.textContent === "되돌리기" && e.title.startsWith("후보 보정 —"));
+    && !P.panel.all().some(e => e.tagName === "BUTTON" && e.textContent === "되돌리기" && !e.title.startsWith("적용 전 획 —"));
   (await P.ed.leave());
   return result;
 });
@@ -52737,7 +52746,7 @@ await scenario("details",async()=>{
   details(P).find(e=>e.dataset.detail==="xform").fire("click");
   r.xformNavigation=P.B("변형").ariaPressed==="true"&&sectionOf(P,"후보 보정").scrolled===true;
   P.B("처음 마스크로").fire("click"); r.pending=details(P).some(e=>e.textContent.startsWith("적용 전 획 1"));
-  P.B("되돌리기").fire("click");r.pendingUndo=!details(P).some(e=>e.textContent.startsWith("적용 전 획"));M.discard();
+  P.B("되돌리기","적용 전 획").fire("click");r.pendingUndo=!details(P).some(e=>e.textContent.startsWith("적용 전 획"));M.discard();
   expanders(P)[0].fire("click"); r.collapse=P.list.textContent===collapsed&&details(P).length===0;
   // 다중 ★ 의 줄은 해당 하위 li 안에만. 미선택 후보는 ops 대신 날짜·stale.
   const second={...P.S.targets[0].candidates[0],key:K15B,n:2,mask_edit:{at:"2026-11-01 09:10:00",stale:true}};
@@ -52976,7 +52985,7 @@ await scenario("reviewHistory",async()=>{
   M.info.z.controls[0].manual=true;M.busy="apply";P.render();
   r.busyTitle=P.B("자동으로").disabled&&P.B("자동으로").title==="마스크 작업 중입니다";
   M.busy="";M.info.adjust={blur:1,invert:false,dx:0,dy:0,rot:0,sx:1,sy:1,flip_h:false,flip_v:false,hist:[{blur:0}],at:"a"};P.render();
-  P.key("ArrowRight");r.clearDuringWait=M.busy==="adjust_wait"&&!P.B("변형 없음").disabled&&P.B("되돌리기").disabled&&P.B("보정 없음").disabled;
+  P.key("ArrowRight");r.clearDuringWait=M.busy==="adjust_wait"&&!P.B("변형 없음").disabled&&P.B("되돌리기","후보 보정").disabled&&P.B("보정 없음").disabled;
   P.B("변형 없음").fire("click");
   r.cleared=await until(()=>P.count("mask/adjust")===1&&!M.busy);
   r.cleared&&=P.srv.log.find(e=>e.path==="mask/adjust").body.dx===0;
@@ -56360,7 +56369,7 @@ def forge_f3_tools_unit():
 
     # 기존 DOM·이미지·fetch 대역을 재사용한다. VM 밖의 통신 경로는 만들지 않는다.
     common = r'''
-const forbidden = /ComfyUI|그래프|노드|위젯|Open Board|메뉴 BMK|큐|대기열|재시작|pipeline\.json|_layer_targets|탭 불필요/;
+const forbidden = /ComfyUI|그래프|노드|위젯|Open Board|메뉴 BMK|대기열|pipeline\.json|_layer_targets|(?:^|[^\p{L}\p{N}_])큐(?=$|[^\p{L}\p{N}_]|에|의|를|는|가|로|하)/u;
 const shown = root => root.all().map(e => `${e.own || ""} ${e.title || ""}`).join("\n");
 '''
     tree = ast.parse(inspect.getsource(mask_js_unit))
@@ -56422,6 +56431,8 @@ console.log(JSON.stringify(out));
 for (const sm of [false, true]) await scenario(sm ? "server" : "local", async () => {
   ctx.window.DPEnv = {serverMode:sm}; const r = {};
   const c = crop("001_aaaaaa", "001_문양", [256,256,512,512]);
+  c.targets[0].adopted = "붉은 리본";
+  c.adopted_only = [{tid:"B",text:"푸른 끈"}];
   const env = await editor([c], {pending_rerolls:2}, {crops:JSON.parse(JSON.stringify([c]))});
   ctx.window.DPDialog = {confirm:async text => {env.confirms.push(text); return false;}};
   ctx.window.confirm = text => {env.confirms.push(text); return false;};
@@ -56432,11 +56443,21 @@ for (const sm of [false, true]) await scenario(sm ? "server" : "local", async ()
     : apply.includes("R·[다시 생성 보내기]·그래프 Run 에서 과금") && apply.includes("그래프 Spec Draft 를 승인 없이 한 번 큐하면 병합");
   r.head = sm ? !forbidden.test(shown(env.head)) && shown(env.head).includes("다음 [반영 (무료)] 때 반영")
     : shown(env.head).includes("다음 큐의 Import 에서 반영");
-  await env.pick(c.name); env.key("Delete"); await sleep(10);
+  await env.pick(c.name);
+  const adopted = env.panel.all().find(e=>e.textContent==="채택");
+  const adoptedOnly = env.panel.all().find(e=>e.classList.contains("lt") && e.classList.contains("adopted"));
+  r.adoptedTitle = !!adopted && adopted.title === (sm ? "초안에서 채택한 대상 문구: 붉은 리본 — 여기 문구를 쓰면 이것이 이김"
+    : "스펙 _layer_targets 채택 문구: 붉은 리본 — 여기 문구를 쓰면 이것이 이김");
+  r.adoptedOnlyTitle = !!adoptedOnly && adoptedOnly.textContent.includes("채택: 푸른 끈")
+    && adoptedOnly.title === (sm ? "초안에서 채택한 대상 문구(레이아웃 대상 아님) — 같은 글자로 대상을 더하면 레이아웃 문구가 이김"
+      : "스펙 _layer_targets 채택 문구(레이아웃 대상 아님) — 같은 글자로 대상을 더하면 레이아웃 문구가 이김");
+  r.adoptedScreen = !sm || !forbidden.test(shown(env.panel));
+  env.key("Delete"); await sleep(10);
   r.remove = env.confirms.at(-1).includes(sm ? "다음 [반영 (무료)] 때 반영됩니다" : "다음 큐의 Import 에서 반영됩니다");
   r.growOffered = await env.ed.proposeGrow(c.id,["left"]); env.key("Enter"); await sleep(10);
   const cost = "[반영 (무료)] 뒤 이 크롭은 새 생성 조건이 되어, 실행(G)에서 생성을 승인할 때만 유료(평균 ≈ 169 크레딧/호출, 초안 갱신 ≈ 21 — 10/23 원장 평균).\n";
-  r.grow = env.confirms.at(-1) === "크롭 넓히기 제안을 적용할까요?\n적용은 레이아웃만 바꿉니다(무료).\n" + (sm ? "" : cost) + "지금 ★ 는 옛 크롭 기준으로 남습니다(옛 크롭 ★).";
+  const paid = "[반영 (무료)] 뒤 이 크롭은 새 생성 조건이 되어, ⑤ 생성에서 승인할 때만 유료.\n";
+  r.grow = env.confirms.at(-1) === "크롭 넓히기 제안을 적용할까요?\n적용은 레이아웃만 바꿉니다(무료).\n" + (sm ? paid : cost) + "지금 ★ 는 옛 크롭 기준으로 남습니다(옛 크롭 ★).";
   r.cancel = env.srv.log.length === 0 && env.queued.length === 0;
   await env.ed.leave();
   const empty = await editor([], {}, {canvas:null});
@@ -56493,13 +56514,23 @@ for (const sm of [false, true]) await scenario(sm ? "server" : "local", async ()
   for (const issue of ["missing","mismatch","error","old"]) {
     const R = R0();
     if(issue==="missing") R.refs_dir="";
-    if(issue==="mismatch") R.doc_dir_match=false;
+    if(issue==="mismatch") {R.doc_dir_match=false;R.doc_refs_dir="C:/p/old-refs";}
     if(issue==="error") R.error="레퍼런스 설정을 읽지 못했습니다";
     const e=await screen({R,refs404:issue==="old"});
     const all=Object.values(e.hosts).map(shown).join("\n");
-    r[issue]=sm ? !forbidden.test(all) && (issue!=="missing" || all.includes("① 준비에서 [반영 (무료)]"))
-      : issue==="old" ? all.includes("ComfyUI 를 재시작해야 레퍼런스 편집을 쓸 수 있습니다")
-      : issue==="missing" ? all.includes("<프로젝트>\\refs 를 넣고 큐에 넣으면") : true;
+    const localText = {
+      missing:"Import PSD 의 refs_dir 가 비었습니다 — <프로젝트>\\refs 를 넣고 큐에 넣으면 저장·연결을 쓸 수 있습니다(시트 보기·컷은 됨).",
+      mismatch:"refs.json 의 refs_dir(C:/p/old-refs)가 지금 refs_dir(C:/p/refs)와 달라 연결을 무시하고 이름 매칭 중입니다(R-dir) — "
+        + "Import PSD 의 refs_dir 를 되돌리거나 refs.json 을 치운 뒤 저장·연결을 쓸 수 있습니다(시트 보기·컷은 됨).",
+      error:"refs.json 을 읽을 수 없어 저장·연결을 막았습니다(크롭은 이름 매칭으로 보임): 레퍼런스 설정을 읽지 못했습니다",
+      old:"레퍼런스 라우트가 없습니다 — ComfyUI 를 재시작해야 레퍼런스 편집을 쓸 수 있습니다"
+    };
+    const serverText = {...localText,
+      missing:"레퍼런스 폴더가 설정되지 않았습니다 — ① 준비에서 [반영 (무료)] 를 먼저 누르세요(시트 보기·컷은 됨).",
+      mismatch:"레퍼런스 폴더 설정을 읽지 못했습니다 — 서버 설정을 확인하세요.",
+      old:"레퍼런스 편집을 불러올 수 없습니다 — 화면을 새로 고쳐 보세요 — 계속되면 관리자에게 알려 주세요"
+    };
+    r[issue]=all.includes((sm ? serverText : localText)[issue]) && (!sm || !forbidden.test(all));
     await e.ed.leave();
   }
   return r;
