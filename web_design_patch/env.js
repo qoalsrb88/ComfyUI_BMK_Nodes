@@ -37,6 +37,13 @@ window.DPEnv = (() => {
 
   const AGAIN = "Forge에서 Design Patch Studio를 다시 열어 주세요.";
   let blocker = null, changed = false;
+  const blockedInert = new Map();
+  function clearBlock() {
+    if (blocker) blocker.remove();
+    blocker = null;
+    for (const [child, inert] of blockedInert) child.inert = inert;
+    blockedInert.clear();
+  }
   function block(message, error, retry = false) {
     if (changed && message !== "다른 계정으로 바뀌었습니다 — " + AGAIN) return;
     if (message.startsWith("다른 계정")) changed = true;
@@ -44,6 +51,7 @@ window.DPEnv = (() => {
       document.addEventListener("DOMContentLoaded", () => block(message, error, retry), { once: true });
       return;
     }
+    if (window.DPDialog) window.DPDialog.cancel();
     if (blocker) blocker.remove();
     blocker = document.createElement("div");
     blocker.className = "overlay dp-env-block";
@@ -57,10 +65,13 @@ window.DPEnv = (() => {
     }
     if (retry) {
       const button = document.createElement("button");
-      button.textContent = "다시 시도"; button.onclick = () => location.reload(); sheet.appendChild(button);
+      button.textContent = "다시 시도"; button.onclick = () => { clearBlock(); initialize(); }; sheet.appendChild(button);
     }
     blocker.appendChild(sheet);
-    for (const child of document.body.children) if (child !== blocker) child.inert = true;
+    for (const child of document.body.children) if (child !== blocker) {
+      if (!blockedInert.has(child)) blockedInert.set(child, child.inert);
+      child.inert = true;
+    }
     document.body.appendChild(blocker);
   }
 
@@ -104,7 +115,6 @@ window.DPEnv = (() => {
       ]);
     } finally { clearTimeout(timer); }
   }
-  const forever = () => new Promise(() => {});
   const object = (value) => value && typeof value === "object" && !Array.isArray(value);
   function endpoint(value) {
     if (typeof value !== "string" || !value) throw new Error("url");
@@ -145,12 +155,17 @@ window.DPEnv = (() => {
     };
   }
 
-  env.ready = (async () => {
+  let resolveReady, initializing = false;
+  env.ready = new Promise((resolve) => { resolveReady = resolve; });
+  window.addEventListener("pagehide", () => { token = null; organization = ""; });
+  async function initialize() {
+    if (initializing || changed) return;
+    initializing = true;
     let data;
     try {
       const result = await read(new URL("env", API));
       if (result.response.status === 404) {
-        env.serverMode = false; env.caps = Object.assign({}, LOCAL_CAPS); token = null; organization = ""; return;
+        env.serverMode = false; env.caps = Object.assign({}, LOCAL_CAPS); token = null; organization = ""; resolveReady(); return;
       }
       data = result.data;
       if (result.response.status !== 200 || !object(data) || typeof data.server_mode !== "boolean"
@@ -160,19 +175,19 @@ window.DPEnv = (() => {
       if (data.server_mode && typeof data.backend !== "string") throw new Error("backend");
       env.serverMode = data.server_mode;
       env.caps = data.caps;
-      if (!env.serverMode) { token = null; organization = ""; return; }
+      if (!env.serverMode) { token = null; organization = ""; resolveReady(); return; }
       let session;
       try {
         session = await read(sessionUrl, token ? { method: "POST",
           headers: { "Content-Type": "application/json", "X-DesignPatch-Request": "1" },
           body: JSON.stringify({ token, organization_id: organization }) } : undefined);
       } catch (e) {
-        block(AGAIN); return forever();
+        block(AGAIN); return;
       } finally { token = null; organization = ""; }
       const account = session.data && session.data.account;
       if (session.response.status !== 200 || !object(session.data) || session.data.ok !== true || !object(account)
           || typeof account.name !== "string" || typeof account.tag !== "string" || !account.tag) {
-        block(AGAIN, session.data && session.data.error); return forever();
+        block(AGAIN, session.data && session.data.error); return;
       }
       env.account = account;
       const prefs = await read(prefsUrl);
@@ -188,10 +203,11 @@ window.DPEnv = (() => {
         env.store = local;
       }
       env.backend = data.backend;
+      resolveReady();
     } catch (e) {
-      token = null; organization = "";
-      block("서버에 연결하지 못했습니다", null, true); return forever();
-    }
-  })();
+      block("서버에 연결하지 못했습니다", null, true);
+    } finally { initializing = false; }
+  }
+  initialize();
   return env;
 })();

@@ -596,7 +596,8 @@ window.DPPipeline = (() => {
           let d;
           try { d = await call("jobs/prompt", expect ? { stage, expect } : { stage }); }
           catch (e) {
-            if (e.data && e.data.reason === "stale_settings") {
+            if (!e.status || e.status >= 500) e.message = `보냈는지 모름 — 대기열을 확인하세요(작업이 들어갔을 수 있음): ${e.message}`;
+            else if (e.data && e.data.reason === "stale_settings") {
               e.message = `큐에 넣지 않음 — 확인한 뒤 실행 설정·프로젝트 기록이 바뀜(${expect} → ${e.data.sig}, 다른 창의 저장·그래프 실행): 다시 [반영 (무료)]해 새 설정으로 확인하세요`;
             }
             throw e;
@@ -935,15 +936,13 @@ window.DPPipeline = (() => {
 
   // ── 화면 ──
   function create(hosts, opts) {
-    // 확인 중에는 폴링이 계속된다. 확인한 판·선택·미저장 입력이 바뀌면 쓰지 않는다.
-    async function askFree(t) {
+    // 확인 중에는 폴링이 계속된다. 동작별 대상·입력만 재확인하고 판 충돌은 서버가 판단한다.
+    async function askFree(t, same) {
       if (askFree.pending) return false;
       askFree.pending = true;
-      const current = () => JSON.stringify([on, PS.P, S && [S.rev, S.layout_rev, S.pipeline_rev, S.running, S.drafting, S.pending_preapproved], cur, dv && [dv.id, dv.seen, dv.crop_sig], text, form, [...sel], PS.job && PS.job.pid, PS.busy, PS.sending, psMask && [psMask.psd, psMask.preview], opts.maskPending && opts.maskPending()]);
       try {
-        const before = current();
         if (!(await (window.DPDialog ? window.DPDialog.confirm(t) : Promise.resolve(window.confirm(t))))) return false;
-        if (before === current()) return true;
+        if (!same || same()) return true;
         opts.toast("확인 중 상태가 바뀌었습니다 — 다시 확인한 뒤 시도하세요", "warn");
         return false;
       } finally { askFree.pending = false; }
@@ -1424,7 +1423,7 @@ window.DPPipeline = (() => {
         const sig = `${PS.P.rev}:${PS.P.manifest_rev}`;
         const extra = applyWarn().filter((x) => !shown.includes(x));
         if (!extra.length) return { sig };
-        if (!await askFree(["확인 창을 띄운 뒤 설정 갈라짐이 새로 생겼습니다(그래프 Prepare·Import):", ...extra, "그래도 반영할까요?"].join("\n"))) return null;
+        if (!await askFree(["확인 창을 띄운 뒤 설정 갈라짐이 새로 생겼습니다(그래프 Prepare·Import):", ...extra, "그래도 반영할까요?"].join("\n"), () => !PS.job && !PS.sending && !PS.busy)) return null;
       }
     }
 
@@ -1460,7 +1459,7 @@ window.DPPipeline = (() => {
         const r = await fetch(SM() ? opts.apiUrl("jobs/queue?root=" + encodeURIComponent(opts.root)) : opts.comfyUrl("queue"), { cache: "no-store" });
         const q = r.ok ? await r.json() : null;
         return !!q && Array.isArray(q.queue_running) && Array.isArray(q.queue_pending)
-          && !q.queue_running.length && !q.queue_pending.length;
+          && (SM() ? !q.queue_running.concat(q.queue_pending).some((x) => x[1] !== "") : !q.queue_running.length && !q.queue_pending.length);
       } catch (e) {
         return false; // 읽지 못함 = 아직 판정할 수 없음
       }
@@ -1528,7 +1527,7 @@ window.DPPipeline = (() => {
         const rest = confirmGate(P0).rest;
         if (rest.length) lines.push(`확인 필요로 남음(반영·Export 는 막지 않음): ${rest.join(", ")}`);
         lines.push("저장하면 pipeline.json 이 만들어져 [반영 (무료)]·Export 를 쓸 수 있습니다. 나중에 [실행 설정 열기]에서 바꿀 수 있습니다.");
-        if (!await askFree(lines.join("\n"))) return;
+        if (!await askFree(lines.join("\n"), () => !!PS.P && ["import", "prepare"].every((sec) => same(values[sec], PS.P.settings[sec])))) return;
         const notSaved = "실행 설정을 저장하지 않았습니다 — [실행 설정 열기]에서 확인";
         const before = stateReads;
         let refreshed = false;
@@ -1696,7 +1695,7 @@ window.DPPipeline = (() => {
       const lines = applyWarn().concat(lays.length ? [`${LAYOUT_REASON} ${lays.length}건 — 이 반영에 들어감(아니면 취소 → ${back}크롭 편집(E)):`,
         ...lays.map((x) => ` · ${x.text}`)] : [], "무료 반영(Import → Prepare → Analyze → Review 템플릿, 탭 불필요)을 ComfyUI 대기열 앞에 넣습니다.");
       if (n) lines.push(`다시 생성 대기 ${n}건(사전 승인)은 이 반영에서 돌지 않음 — R·[다시 생성 보내기]·그래프 Run 에서 과금`);
-      if (!await askFree(lines.concat(DRAFT_NOTE, "계속할까요?").join("\n"))) return;
+      if (!await askFree(lines.concat(DRAFT_NOTE, "계속할까요?").join("\n"), () => !PS.job && !PS.sending && !PS.busy)) return;
       const ok = await checkWarn();
       if (ok) await queueHere("apply", ok.sig);
     }
@@ -1704,13 +1703,14 @@ window.DPPipeline = (() => {
     async function layoutBack(x, rev) {
       // 반영 칸 [되돌리기](layoutLines 의 back 이 있는 줄): 바뀐 이름·사각형을 마지막 반영 값으로 — 레이아웃만 쓰고 큐는 없음. rev = 그 줄을 그린 state 의
       // layout_rev(누르는 동안·입력 중 다시 그리기가 미뤄져 줄이 낡았으면 서버가 409 — 지금 rev 로 보내면 그 사이 편집을 덮음)
+      const targetId = x.id;
       const to = [x.back.name ? `이름 ${x.back.name}` : "", x.back.rect ? `위치 [${x.back.rect.join(", ")}]` : ""].filter(Boolean).join(" · ");
       // layout.json 을 다시 쓰므로 Prepare 입력 지문(파일 mtime)이 바뀌어 '반영 필요(Prepare 입력이 바뀜)'는 남는다 — 무료 반영 한 번. 이 크롭의 대상 문구
       // 바뀜(x.rest)은 되돌리지 않으므로 그때는 새 셀이 될 수 있다고(그 밖의 미반영 — 다른 크롭·채택 등 — 은 이 단추와 무관)
       const after = x.rest ? "이 크롭의 대상 문구 바뀜은 남음 — 반영하면 새 생성 조건(생성 승인 대상)이 될 수 있음(대상 문구는 크롭 편집(E)에서)."
         : "이 크롭의 이름·위치는 마지막 반영 그대로라 그것 때문에 새 생성 조건(생성 승인)이 생기지는 않음.";
       if (!await askFree(`${x.text}\n\n${to} 으로 되돌립니다(마지막 반영 값 — 레이아웃만 쓰고 무료). ${after} 되돌린 뒤에도 '미반영(Prepare 입력이 바뀜)'은 `
-        + "남으니 [반영 (무료)]을 한 번. 계속할까요?")) return;
+        + "남으니 [반영 (무료)]을 한 번. 계속할까요?", () => x.id === targetId && !!S && (S.crops || []).some((c) => c.id === targetId))) return;
       try {
         const r = await PS.layoutBack(rev, x.id, x.back);
         if (opts.layoutWrote) opts.layoutWrote(rev, r.rev); // 같은 창 편집기(E)의 Ctrl+Z 기록을 남김
@@ -1808,7 +1808,8 @@ window.DPPipeline = (() => {
       // 앞서 같은 해시로 보낸 승인의 결과를 모름(서버 해시·실행 중 판정은 대기열에 있는 첫 프롬프트를 모름) — 첫 승인이 큐에 있고 승인분을 소화하면 둘째는
       // 해시가 바뀌어 드라이런, 큐에 없거나 Run 앞에서 멈추면 둘째가 과금
       const again = (asked[kind] || []).some((a) => a.lost && a.hash === pair[0])
-        ? [`앞서 보낸 같은 승인(승인 코드 ${pair[0]})의 결과를 모름 — 첫 승인이 ComfyUI 큐에 있으면 둘째는 그 실행이 승인분을 소화한 뒤라 과금 없이 드라이런, `
+        ? SM() ? [`앞서 보낸 같은 승인(승인 코드 ${pair[0]})의 결과를 모름 — 서버 작업이 이미 대기·실행 중일 수 있습니다. 다시 보내기 전에 진행 줄(대기·실행 중 작업)을 확인하세요.`]
+        : [`앞서 보낸 같은 승인(승인 코드 ${pair[0]})의 결과를 모름 — 첫 승인이 ComfyUI 큐에 있으면 둘째는 그 실행이 승인분을 소화한 뒤라 과금 없이 드라이런, `
           + "큐에 없으면(또는 첫 실행이 Run 앞에서 멈추면) 이 승인이 과금합니다 — 보내기 전에 ComfyUI 큐 확인."] : [];
       paying = kind;
       render();
@@ -1817,7 +1818,7 @@ window.DPPipeline = (() => {
         const agent = !mock && agentOn() ? await freshAgent() : null;
         const need = agent ? (kind === "run" ? p.run.credits[1] + p.run.est_usd_pre[1] * CREDITS_PER_USD : p.draft.est_credits[1]) : 0;
         if (SM() && !mock) opts.toast("서버 모드 생성 백엔드가 아직 연결되지 않았습니다", "warn");
-        else ok = mock ? await mockAsk(label, kind === "draft" && !!p.draft.mock_forced)
+        else ok = mock ? await mockAsk(label, kind === "draft" && !!p.draft.mock_forced, SM() ? again : [])
           : agent ? await agentAsk(kind, approveText(kind, p, pair[1].split(","), PS.planStyle, full).concat(again, "계속할까요?"), need)
           : window.confirm(approveText(kind, p, pair[1].split(","), PS.planStyle, full).concat(again, "계속할까요?").join("\n"));
       } catch (err) {
@@ -1838,7 +1839,7 @@ window.DPPipeline = (() => {
       await sendPaid(kind, pair[0], pair[1], label);
     }
 
-    function mockAsk(label, forced) {
+    function mockAsk(label, forced, warnings = []) {
       if (ask || (window.DPDialog && !window.DPDialog.lock({ keys: askKeys }))) return Promise.resolve(false);
       // mock 백엔드 확인 = 페이지 안 상자(해시가 mock 에 묶여 유료 실행을 승인할 수 없음 — §4.4). [승인]·[취소]도 사용자 클릭만, Esc = 취소.
       // 제목 = 단추 라벨에서 금액·끝 [MOCK] 을 뗀 이름(과금 없음 옆에 달러 추정·태그 두 번을 두지 않음)
@@ -1853,8 +1854,9 @@ window.DPPipeline = (() => {
         };
         sheet.append(el("h2", "", `[MOCK] 과금 없음 — ${label.replace(/ ≈ .*| \[MOCK\]$/, "")}`),
           el("p", "", "mock 백엔드 — 승인 코드가 mock 에 묶여 있어 유료 실행을 승인하지 못합니다."
-            + (forced ? " 실행 설정의 초안 vlm 은 openai 지만 mock 스위치(_MOCK_API)로 mock 입니다." : "")),
-          el("p", "dim", SIDE));
+            + (forced ? " 실행 설정의 초안 vlm 은 openai 지만 mock 스위치(_MOCK_API)로 mock 입니다." : "")));
+        if (!SM()) sheet.append(el("p", "dim", SIDE));
+        else for (const warning of warnings) sheet.append(el("p", "warn", warning));
         btns(sheet, button("승인", "mock 승인 — 과금 없음", (e) => e.isTrusted && close(true), "primary"),
           button("취소", "Esc", (e) => e.isTrusted && close(false)));
         box.append(sheet);
@@ -1918,6 +1920,7 @@ window.DPPipeline = (() => {
     }
 
     async function sendPaid(stage, hash, only, what) {
+      if (SM() && window.DPEnv.backend !== "mock") { opts.toast("서버 모드 생성 백엔드가 아직 연결되지 않았습니다", "warn"); return; }
       // 승인 메시지(계약 §3 bmk-dp-approve) — 보내는 곳은 여기 하나. hash·only = 그린 계획 값(reroll 은 둘 다 ""), what = 탭 토스트용 설명
       paying = stage;
       if (stage !== "draft") wave = null;
@@ -1928,10 +1931,12 @@ window.DPPipeline = (() => {
           const body = Object.assign({ root: opts.root, stage }, stage === "reroll" ? {} : { approve: hash, only });
           const response = await fetch(opts.apiUrl("jobs/prompt"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
           const result = await response.json().catch(() => null);
-          if (response.ok && (!result || !result.prompt_id)) throw new Error("작업 응답을 읽지 못했습니다");
-          const refusal = result || {};
+          if (!result || response.status >= 500 || (!response.ok && !(response.status >= 400 && response.status < 500 && typeof result.reason === "string" && result.reason))
+              || (response.ok && (typeof result.prompt_id !== "string" || !result.prompt_id))) {
+            throw new Error(result && result.error || `작업 응답을 확인하지 못했습니다(HTTP ${response.status})`);
+          }
           d = response.ok ? { ok: true, prompt_id: result.prompt_id }
-            : { ok: false, reason: refusal.reason || "http", error: refusal.error || `HTTP ${response.status}`, hash: refusal.hash, pending: refusal.pending };
+            : { ok: false, reason: result.reason, error: result.error || `HTTP ${response.status}`, hash: result.hash, pending: result.pending };
         } catch (e) { d = { ok: false, reason: "unknown", error: e.message }; }
         paying = null;
         if (d.reason === "unknown") (asked[stage] = asked[stage] || []).push({ hash, id: `server-${Date.now()}`, lost: true });
@@ -2015,8 +2020,8 @@ window.DPPipeline = (() => {
       const label = STAGES[stage].label;
       const pre = late ? "늦게 온 결과 — " : "";
       if (submitted(d)) {
-        if (PS.track(stage, d.prompt_id)) opts.toast(`${pre}${label} 큐에 들어감 — ComfyUI 탭이 승인 템플릿을 제출함(진행은 머리줄)`);
-        else opts.toast(`${pre}${label} 큐에 들어감(prompt ${d.prompt_id}) — 이 Studio 가 다른 실행을 보는 중이라 진행은 ComfyUI 큐에서 확인`, "warn");
+        if (PS.track(stage, d.prompt_id)) opts.toast(SM() ? `${pre}${label} 큐에 들어감 — 서버가 작업을 받음(진행은 머리줄)` : `${pre}${label} 큐에 들어감 — ComfyUI 탭이 승인 템플릿을 제출함(진행은 머리줄)`);
+        else opts.toast(SM() ? `${pre}${label} 큐에 들어감(prompt ${d.prompt_id}) — 서버가 작업을 받음(진행 줄의 대기·실행 중 작업을 확인)` : `${pre}${label} 큐에 들어감(prompt ${d.prompt_id}) — 이 Studio 가 다른 실행을 보는 중이라 진행은 ComfyUI 큐에서 확인`, "warn");
         return;
       }
       // 머리: 결과를 모르고 끝남(UNKNOWN — Studio 가 끝냄·탭이 응답을 잃음) = '결과 모름'(이미 큐에 들어갔을 수 있음), 재굴림 = '큐 안 됨'(R 이 이미 사전 승인 — 예약된 채 남아 다음 Run·
@@ -2043,6 +2048,7 @@ window.DPPipeline = (() => {
       // 재굴림은 그 할 일이 R 재누름(+1 사전 승인)으로 읽히지 않게 빼거나 머리줄 'ComfyUI 큐'로(머리줄 큐 안내가 뒤에 붙음)
       if (d.reason === "apply_needed") return `미반영 — 먼저 [반영 (무료)]${Array.isArray(d.pending) && d.pending.length ? `(${d.pending.join(", ")})` : ""}`;
       if (d.reason === "stale") return `계획이 바뀜(지금 승인 코드 ${d.hash || "?"}) — 다시 받은 계획을 보고 다시 승인`;
+      if (SM() && d.error) return String(d.error);
       const why = String(d.error || (d.reason === "busy" ? "탭이 바쁨 — 잠시 뒤 다시 승인" : "ComfyUI 탭 응답 모양이 잘못됨"));
       if (stage !== "reroll") return why;
       // 탭 not_submitted 의 꼬리(남은 승인 항목·무장 중 쌓인 큐 항목을 뺌 — 하나 또는 둘)는 떼고 할 일을 바꾼 뒤 다시 붙임
@@ -2053,6 +2059,7 @@ window.DPPipeline = (() => {
     }
 
     function reroll() {
+      if (SM() && window.DPEnv.backend !== "mock") { opts.toast("서버 모드 생성 백엔드가 아직 연결되지 않았습니다", "warn"); return; }
       // board.js queueReroll(R 뒤·머리줄 'ComfyUI 큐' — 유료 가능한 탭일 때): reroll stage(approve·only 없음 — Run 은 사전 승인 재굴림·복구만 과금).
       // 확인 창 없음(R 의 확인이 동의). 이 Studio 가 유료 요청을 보내지 않는 중(paidLock)이면 보내지 않음(재굴림은 이미 사전 승인 — 머리줄 큐·다음 Run 때
       // 과금 — R 확인 문구도 이 판정으로 '지금은 예약만')
@@ -2175,7 +2182,7 @@ window.DPPipeline = (() => {
       }
       try {
         const r = await PS.adopt(d0, op, text, (p) => askFree([`${what}(${d0.name}): 스펙 _layer_targets 를 씁니다(반영은 다음 무료 반영).`,
-          ...effectLines(p), "계속할까요?"].join("\n")));
+          ...effectLines(p), "계속할까요?"].join("\n"), () => !!dv && dv.id === d0.id));
         if (!r) {
           render(); // 확인에서 멈춤 — 미리보기를 기다리는 사이(busy) 다시 그린 단추를 다시 켬
           return;
@@ -2276,7 +2283,8 @@ window.DPPipeline = (() => {
       }
       const values = Object.assign({}, p.settings.prepare, { model: p.settings.prepare.model.replace("2.5", "2.6") });
       try {
-        if (!await askFree(await preparePreview(values, p))) return;
+        if (!await askFree(await preparePreview(values, p), () => !Object.keys(form.prepare || {}).length && !!PS.P
+          && same(values, Object.assign({}, PS.P.settings.prepare, { model: PS.P.settings.prepare.model.replace("2.5", "2.6") })))) return;
         await PS.save("prepare", values, p.rev);
         opts.toast("2.6 전환 설정 저장 — 다음 [반영] 뒤 생성 승인(승인 전에는 과금 없음)");
         planNow();
@@ -2302,12 +2310,12 @@ window.DPPipeline = (() => {
       if ((over.length || unseen.length) && !await askFree([`${SECTIONS[sec]}: 편집을 시작한 뒤 다른 창이 이 절을 저장했습니다(지금 rev ${PS.P.rev}).`,
         ...over.map((k) => ` · ${sec}.${k}: 다른 창이 쓴 ${shown(base[k])} 을 이 창 값 ${shown(values[k])} 로 덮어씀`),
         ...unseen.map((k) => ` · ${sec}.${k}: ${shown(seen[k])} → ${shown(base[k])} (화면에 없던 다른 창 값 — 그대로 저장)`),
-        "이대로 저장할까요?"].join("\n"))) {
+        "이대로 저장할까요?"].join("\n"), () => same(sent, form[sec] || {}))) {
         render(); // 다른 창 값·충돌 표시로 다시 그림
         return;
       }
       try {
-        if (sec === "prepare" && prepareChanged(base, values) && !await askFree(await preparePreview(values, P0))) return;
+        if (sec === "prepare" && prepareChanged(base, values) && !await askFree(await preparePreview(values, P0), () => same(sent, form[sec] || {}))) return;
         const r = await PS.save(sec, values, P0.rev);
         // 이 창이 저장한 값 = 서버가 쓴 절(import 경로는 정규화 — 따옴표·공백 없이 '/'). 입력 중이라 다시 그리기가 미뤄져도 다음 저장·칸 옆 표시가
         // 제 값을 '다른 창 값'으로 보지 않게: 화면 기준값(drawn)과, 응답을 기다리는 사이 같은 칸에 더 친 키의 첫 편집 기준값(edits)을 이 값으로
@@ -2371,7 +2379,8 @@ window.DPPipeline = (() => {
         try { lines.push(await preparePreview(D.prepare, P0)); }
         catch (e) { opts.toast(e.message, "err"); return; }
       }
-      if (!await askFree(lines.concat("Prepare·Import 가 바뀌면 다음 반영에서 생성 조건이 바뀌어 다시 과금 대상이 될 수 있습니다. 계속할까요?").join("\n"))) return;
+      if (!await askFree(lines.concat("Prepare·Import 가 바뀌면 다음 반영에서 생성 조건이 바뀌어 다시 과금 대상이 될 수 있습니다. 계속할까요?").join("\n"), () => !!PS.P && secs.every((sec) =>
+        Object.keys(D[sec]).every((key) => same(D[sec][key], hiddenPath(sec, key) && PS.P.settings ? PS.P.settings[sec][key] : PS.P.derived.settings[sec][key]))))) return;
       // 확인 창을 닫은 때의 편집값 — 리셋이 덮는 것은 이 값뿐. 저장을 기다리는 사이 칸은 켜져 있어 그 뒤에 친 값(바꾼 키·새 키)은 보내지 않은
       // 새 편집이라 남긴다(saveSection 과 같은 뜻 — 지우면 칸이 blur 뒤 저장값으로 돌아가고, 바로 누른 [저장]은 친 값 대신 저장값을 '저장 성공'으로)
       const f0 = Object.fromEntries(secs.map((sec) => [sec, Object.assign({}, form[sec])]));
@@ -2825,7 +2834,7 @@ window.DPPipeline = (() => {
           x.state !== "done" ? "bad" : (x.report || "").includes(LOGIN) ? "warn" : "dim");
       }
       for (const h of new Set((asked[stage] || []).filter((a) => a.lost).map((a) => a.hash))) {
-        line(s, `앞서 보낸 ${STAGES[stage].label} 승인${h ? `(승인 코드 ${h})` : ""}의 결과를 모름 — 이미 ComfyUI 큐에 들어갔을 수 있음: `
+        line(s, SM() ? `앞서 보낸 ${STAGES[stage].label} 승인${h ? `(승인 코드 ${h})` : ""}의 결과를 모름 — 이미 서버 작업이 들어갔을 수 있음: 다시 보내기 전에 진행 줄(대기·실행 중 작업)을 확인` : `앞서 보낸 ${STAGES[stage].label} 승인${h ? `(승인 코드 ${h})` : ""}의 결과를 모름 — 이미 ComfyUI 큐에 들어갔을 수 있음: `
           + "다시 보내기 전에 ComfyUI 큐 확인", "warn");
       }
     }
@@ -2901,8 +2910,10 @@ window.DPPipeline = (() => {
       if (kind === "open") psMask = { rows: [], psd: "", preview: null, result: null, error: null, busy: false };
       const state = psMask;
       if (!state) return;
+      const target = state.psd, keys = state.preview && state.preview.changed.map((r) => r.key).sort().join("\n");
       if (kind === "import" && (!state.preview || !state.preview.changed.length || !await askFree(
-        `다음 그룹의 PS 마스크를 마스크 편집 새 판으로 가져옵니다(무료).\n${state.preview.changed.map((r) => r.label).join("\n")}\n마스크 모드에서 되돌릴 수 있습니다. 계속할까요?`))) return;
+        `다음 그룹의 PS 마스크를 마스크 편집 새 판으로 가져옵니다(무료).\n${state.preview.changed.map((r) => r.label).join("\n")}\n마스크 모드에서 되돌릴 수 있습니다. 계속할까요?`, () => !!psMask && psMask.psd === target && !!psMask.preview
+          && psMask.preview.changed.map((r) => r.key).sort().join("\n") === keys))) return;
       state.busy = true;
       state.error = null;
       state.result = null;
@@ -3445,7 +3456,7 @@ window.DPPipeline = (() => {
         if (unsure) lines.push(`미반영 확인 필요: ${unsure}`);
         if (mask) lines.push("마스크 적용 안 한 획이 있습니다.");
       }
-      if (lines.length && !await askFree(lines.concat("그래도 Export 할까요?").join("\n"))) return false;
+      if (lines.length && !await askFree(lines.concat("그래도 Export 할까요?").join("\n"), () => !PS.job && !PS.sending && !PS.busy)) return false;
       if (exportWhy()) return false;
       await queueHere("export");
       return true;

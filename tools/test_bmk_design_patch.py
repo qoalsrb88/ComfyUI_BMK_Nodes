@@ -58239,7 +58239,7 @@ def forge_jobs_unit():
 
 def _fw_legacy_js(source):
     """독립 함수 하네스가 새 환경·확인 의존성도 로컬 대역으로 받게 한다."""
-    return source.replace(") {", ") { " + 'const SM = () => !!(typeof window !== "undefined" && window.DPEnv && window.DPEnv.serverMode); const can = n => typeof window === "undefined" || !window.DPEnv ? !["jobs", "export_download"].includes(n) : window.DPEnv.can(n); const askFree = async t => window.DPDialog ? window.DPDialog.confirm(t) : window.confirm(t);', 1)
+    return source.replace(") {", ") { " + 'const SM = () => !!(typeof window !== "undefined" && window.DPEnv && window.DPEnv.serverMode); const can = n => typeof window === "undefined" || !window.DPEnv ? !["jobs", "export_download"].includes(n) : window.DPEnv.can(n); const askFree = async (t, same) => { const ok = await (window.DPDialog ? window.DPDialog.confirm(t) : window.confirm(t)); return ok && (!same || same()); };', 1)
 
 
 def forge_js_unit():
@@ -58257,7 +58257,7 @@ def forge_js_unit():
         code = re.sub(r"//[^\n]*", "", sources[name])
         calls = code.count("await askFree(") + code.count("(p) => askFree(")
         check(calls == count, f"FW1 무료 확인 {name}: {calls}/{count} 비동기·취소 가드")
-        check("before === current()" in code and "askFree.pending" in code, f"FW2 {name} 확인 중 재진입·판 변경 가드")
+        check("if (!same || same()) return true;" in code and "askFree.pending" in code, f"FW2 {name} 확인 중 재진입·대상 재확인 가드")
     check("await ok(pv)" in sources["pipeline.js"], "FW3 채택 콜백의 약속을 기다림")
     check('tabLink = SM() ? null : window.DPPipeline.link' in sources["board.js"], "FW4 서버에서 ComfyUI 탭 연결을 만들지 않음")
     for cap, name in (("open_folder", "board.js"), ("external", "pipeline.js"), ("path_input", "ref_edit.js"),
@@ -58288,7 +58288,7 @@ def forge_js_unit():
     setup = _PAID_STUDIO_JS_HARNESS.split('// ── J-P3 승인 단추:', 1)[0]
     harness = "\n".join(cut) + setup + _fw_ui_js()
     # VM 안에서만 관찰점을 열어 실제 전송·후속 판정까지 검사한다.
-    hook = '''.replace("return { stateChanged, enter, leave, select, queue: boardQueue", "return { _fw: { sendPaid, askFree, applyNow, saveSection, exportNow, PS, form, asked }, stateChanged, enter, leave, select, queue: boardQueue")
+    hook = '''.replace("return { stateChanged, enter, leave, select, queue: boardQueue", "return { _fw: { sendPaid, askFree, applyNow, saveSection, exportNow, setupQueueIdle, mockAsk, PS, form, asked }, stateChanged, enter, leave, select, queue: boardQueue")
       .replace("paidResult(stage, d, false);", "paidResult(stage, d, false); window.__fwPaid = d;")'''
     harness = harness.replace('fs.readFileSync(IN.pipelineJs, "utf8")', 'fs.readFileSync(IN.pipelineJs, "utf8")' + hook)
     (out / "ui.mjs").write_text(harness, encoding="utf-8")
@@ -58315,7 +58315,7 @@ const settle = async () => { for (let i=0;i<20;i++) await new Promise(r => setIm
 const response = (data, status=200) => new Response(JSON.stringify(data), {status, headers:{"Content-Type":"application/json"}});
 async function scenario(name, fn) { try { out[name] = await fn(); } catch(e) { out[name] = e.stack; } }
 class Element {
-  constructor(tag, doc) { this.tagName=tag.toUpperCase(); this.doc=doc; this.children=[]; this.attrs={}; this.inert=false; this.own=""; }
+  constructor(tag, doc) { this.tagName=tag.toUpperCase(); this.doc=doc; this.children=[]; this.attrs={}; this.inert=false; this.own=""; this.classList={contains:n=>String(this.className||"").split(" ").includes(n)}; }
   appendChild(x) { this.children.push(x); x.parent=this; return x; }
   append(...xs) { xs.forEach(x => this.appendChild(x)); }
   remove() { if(this.parent) this.parent.children=this.parent.children.filter(x=>x!==this); this.parent=null; }
@@ -58377,8 +58377,8 @@ for(const mode of ["500","network","json","shape","timeout"]) await scenario("FW
   const e=await boot({handler:()=>{if(mode==="network")throw Error("offline");if(mode==="timeout")return new Promise(()=>{});
     return mode==="json"?new Response("not json"):response(mode==="shape"?{server_mode:true}: {},mode==="shape"?200:500);}});
   if(mode==="timeout")await e.fire(8000);
-  const button=e.doc.body.all().find(x=>x.tagName==="BUTTON"); button?.onclick();
-  return !e.ready && e.ctx.DPEnv.serverMode!==false && e.doc.body.textContent.includes("서버에 연결하지 못했습니다") && e.loc.reloaded===true;
+  const button=e.doc.body.all().find(x=>x.tagName==="BUTTON");
+  return !e.ready && e.ctx.DPEnv.serverMode!==false && e.doc.body.textContent.includes("서버에 연결하지 못했습니다") && !!button && !e.loc.reloaded;
 });
 for(const code of [401,503]) await scenario("FW10 세션 실패 안내·ready 대기 "+code,async()=>{
   const e=await boot({handler:(u,o)=>String(u).endsWith("/api/session")?response({error:"세션 없음",reason:"no_session"},code):serverHandler(u,o)});
@@ -58491,10 +58491,10 @@ for(const file of ["board.js","pipeline.js","ref_edit.js","mask_edit.js","layout
       seen:1,sheet:null,epoch:0,result:null,inflight:false,T:{},role:"main",desc:"",savedReq:null,savedTransform:null,poolSelected:new Set(),multi:[],proposal:null});
     c.DPDialog={confirm:()=>{n++;return new Promise(r=>{answer=r;});}};
     vm.runInContext(sourceFn(file,"askFree",file==="board.js"?"  ":"    "),c);
-    const first=c.askFree("한 번");if(await c.askFree("중복")!==false||n!==1)return false;
-    if(file==="ref_edit.js")c.seen++;else if(file==="layout_edit.js")c.S.L.rev++;else c.S.rev++;
+    const first=c.askFree("한 번",()=>c.M.key==="a");if(await c.askFree("중복")!==false||n!==1)return false;
+    c.M.key="changed";
     answer(true);if(await first!==false||warns!==1)return false;
-    const second=c.askFree("같은 판");answer(true);return await second===true&&n===2;
+    const second=c.askFree("재확인 불필요");c.S.rev++;answer(true);return await second===true&&n===2;
   });
 }
 await scenario("FW24 뷰어 동기 선택은 즉시 보류·확인 뒤만 이음매 이동",async()=>{
@@ -58515,7 +58515,7 @@ await scenario("FW26 mock·Claude 상자 공유 잠금·Esc·신뢰 클릭",asyn
   Element.prototype.querySelectorAll=function(){return this.all().filter(x=>x.tagName==="BUTTON"&&!x.disabled);};
   Element.prototype.querySelector=function(){return this.querySelectorAll()[0]||null;};
   const el=(tag,cls,t)=>{const n=e.doc.createElement(tag);n.className=cls;if(t!==undefined)n.textContent=t;return n;};
-  Object.assign(c,{ask:null,SIDE:"부수 효과",agentFresh:{cap:100,spent:0},el,
+  Object.assign(c,{SM:()=>false,ask:null,SIDE:"부수 효과",agentFresh:{cap:100,spent:0},el,
     button:(label,title,click)=>{const n=el("button","",label);n.onclick=click;return n;},btns:(host,...bs)=>host.append(...bs)});
   vm.runInContext(IN.source["dialog.js"]+"\n"+["mockAsk","agentAsk","askKeys"].map(n=>sourceFn("pipeline.js",n,"    ")).join("\n"),c);
   const p=c.mockAsk("생성 승인 [MOCK]",false), yes=e.doc.body.children.at(-1).querySelector();
@@ -58524,6 +58524,7 @@ await scenario("FW26 mock·Claude 상자 공유 잠금·Esc·신뢰 클릭",asyn
   e.key("keydown","Tab");if(e.doc.activeElement===yes)return false;
   e.key("keydown","Escape");if(await p!==false||c.DPDialog.open||background.inert)return false;
   const q=c.agentAsk("run",["승인"],1);if(!e.key("keyup","Q").stopped)return false;
+  for(const key of ["Enter"," "]){const ev=e.key("keydown",key);if(!ev.stopped||ev.prevented)return false;}
   e.doc.body.children.at(-1).querySelector().onclick({isTrusted:true});
   return await q===true&&!c.DPDialog.open&&!background.inert;
 });
@@ -58531,6 +58532,124 @@ await scenario("FW27 서버 SAM3 응답은 ComfyUI 큐 전에 차단",async()=>{
   const e=context();e.ctx.DPEnv={serverMode:true};vm.runInContext(IN.source["ref_edit.js"],e.ctx);let calls=0;
   const s=e.ctx.DPRefEdit.session(x=>x,()=>{throw Error("ComfyUI 경로 금지");},"root",async()=>{calls++;return response({state:"client_queue",req:"request"});});
   try{await s.cut({method:"sam3"});return false;}catch(err){return calls===1&&!s.job&&err.message==="서버 모드에서는 자동 오리기를 쓸 수 없습니다";}
+});
+await scenario("FW28 R1 Drain·대기 취소는 판 갱신과 독립",async()=>{
+  const e=context(),c=e.ctx,posts=[],warnings=[];let answer;
+  Object.assign(c,{S:{rev:1,running:true,rerolls_pending:3,crops:[]},busy:false,pipe:null,rerollArm:null,rerollSent:null,
+    toast:t=>warnings.push(t),write:async(path,body)=>{posts.push([path,body]);return {};},
+    DPDialog:{confirm:()=>new Promise(r=>{answer=r;})}});
+  vm.runInContext(["askFree","drain","cancelRerolls"].map(n=>sourceFn("board.js",n)).join("\n"),c);
+  const drain=c.drain();c.S.rev++;answer(true);await drain;
+  if(posts.length!==1||posts[0][0]!=="drain"||!c.S.running||warnings.length)return false;
+  c.S.running=false;const cancel=c.cancelRerolls("all");c.S.rev++;answer(true);await cancel;
+  if(posts.length!==2||posts[1][1].op!=="cancel")return false;
+  const gone=c.cancelRerolls("all");c.S.rerolls_pending=0;answer(true);await gone;
+  return posts.length===2&&warnings.some(t=>t.includes("확인 중 상태"));
+});
+for(const action of ["leave","go","reload","discard"])for(const change of ["rev","key","strokes","busy"]){
+  await scenario("FW29 R1 마스크 "+action+" / "+change,async()=>{
+    const e=context(),c=e.ctx;let answer,warnings=0,effects=0,strokes=2;
+    Object.assign(c,{M:{key:"old",seq:1,busy:"",pending:()=>strokes,discard:()=>{effects++;},behind:()=>false},
+      S:{rev:1,running:true},LOCKED:["apply"],adjustSaving:false,pendingSection:null,view:{},raf:0,seam:null,
+      cancelXform(){},finishFade(){},pointerup(){},candOf:()=>null,label:x=>x,render(){},once(){},
+      open(){effects++;},cancelAnimationFrame(){},viewer:{setEditor(){effects++;},setMaskLayer(){},showSeam(){}},
+      list:{replaceChildren(){}},panel:{replaceChildren(){}},opts:{toast:()=>warnings++},
+      DPDialog:{confirm:()=>new Promise(r=>{answer=r;})}});
+    vm.runInContext(["askFree",action].map(n=>sourceFn("mask_edit.js",n,"    ")).join("\n"),c);
+    const pending=c[action]({key:"next"},false);c.S.rev++;
+    if(change==="key")c.M.key="other";if(change==="strokes")strokes++;if(change==="busy")c.M.busy="apply";
+    answer(true);await pending;
+    return c.S.running&&(change==="rev"?effects===1&&warnings===0:effects===0&&warnings===1);
+  });
+}
+await scenario("FW30 R1 레이아웃 선택 변경 취소·원격 rev 갱신 허용",async()=>{
+  const e=context(),c=e.ctx;let answer,removed=0,warns=0;
+  Object.assign(c,{sel:"crop1",multi:null,S:{remote:1,crop:id=>({id,name:id}),remove:async()=>{removed++;return true;}},
+    flushNudge:async()=>{},lockedNow:()=>false,againText:()=>"",act:p=>p,opts:{toast:()=>warns++},
+    DPDialog:{confirm:()=>new Promise(r=>{answer=r;})}});
+  vm.runInContext(["askFree","removeSel"].map(n=>sourceFn("layout_edit.js",n,"    ")).join("\n"),c);
+  const first=c.removeSel();await settle();c.sel="crop2";answer(true);await first;
+  if(removed||warns!==1)return false;
+  const second=c.removeSel();await settle();c.S.remote++;answer(true);await second;
+  return removed===1&&warns===2;
+});
+await scenario("FW32 R2 보드 R·R R 비 mock 은 확인·예약 POST 없음",async()=>{
+  const e=context(),c=e.ctx;let dialogs=0,posts=0,warns=0;
+  Object.assign(c,{SM:()=>true,DPEnv:{serverMode:true,backend:"future"},toast:()=>warns++,
+    DPDialog:{confirm:async()=>{dialogs++;return true;}},write:async()=>{posts++;}});
+  vm.runInContext(sourceFn("board.js","reroll"),c);
+  await c.reroll(true);await c.reroll(false);await c.reroll(false);
+  if(posts!==0||dialogs!==0||warns!==3)return false;
+  let queued=0,body;Object.assign(c,{S:{rev:1,crops:[]},tKey:"t",cKey:"c",rerollArm:null,rerollSent:null,
+    rerollCell:()=>({cell_key:"cell",variant:"v",pre:0}),usd:()=>"",tabWay:()=>"paid",reviewMissing:()=>"",
+    pipe:{agentOn:()=>false,paidLock:()=>"",paidWhy:()=>"",applyWarn:()=>[],side:""},
+    write:async(path,b)=>{posts++;body=b;return {rev:2};},queueReroll:()=>queued++});
+  c.DPEnv.backend="mock";vm.runInContext(sourceFn("board.js","cellPre"),c);
+  await c.reroll(true);await e.fire(600);
+  return posts===1&&body.cell_key==="cell"&&body.count===1&&dialogs===1&&queued===1;
+});
+for(const kind of ["502","network"])await scenario("FW34 R3 무료 큐 불확실성 "+kind,async()=>{
+  const e=context();e.ctx.DPEnv={serverMode:true};vm.runInContext(IN.source["pipeline.js"],e.ctx);
+  const s=e.ctx.DPPipeline.session(x=>x,()=>{throw Error("ComfyUI 금지");},"root",async()=>{
+    if(kind==="network")throw Error("offline");return response({reason:"proxy",error:"gateway"},502);
+  },e.old);
+  try{await s.queue("export");return false;}catch(err){return err.message.includes("보냈는지 모름")&&err.message.includes("대기열을 확인")&&!s.job&&!s.sending;}
+});
+await scenario("FW35 R4 같은 페이지 env 재시도·토큰 교환·같은 ready",async()=>{
+  let envCalls=0;const e=context({hash:"#token=dev%3Aalice&organization_id=org1",handler:(u,o)=>{
+    if(String(u).endsWith("/env")&&++envCalls===1)return response({},500);return serverHandler(u,o);
+  }});
+  const before=e.doc.createElement("main"),held=e.doc.createElement("aside");held.inert=true;e.doc.body.append(before,held);
+  vm.runInContext(IN.source["env.js"],e.ctx);const ready=e.ctx.DPEnv.ready;let done=false;ready.then(()=>{done=true;});
+  await settle();if(done||!before.inert||!held.inert||e.loc.hash!==""||e.calls.some(([u])=>String(u).endsWith("/api/session")))return false;
+  e.doc.body.all().find(x=>x.tagName==="BUTTON").onclick();await settle();
+  const session=e.calls.filter(([u])=>String(u).endsWith("/api/session"));
+  return done&&ready===e.ctx.DPEnv.ready&&envCalls===2&&!before.inert&&held.inert&&!e.loc.hash&&!e.loc.reloaded
+    &&session.length===1&&session[0][1].method==="POST"&&JSON.parse(session[0][1].body).token==="dev:alice"
+    &&!e.doc.body.textContent.includes("다시 시도")&&!JSON.stringify(e.ctx.DPEnv).includes("dev:alice");
+});
+for(const mode of ["confirm","lock"])await scenario("FW36 R5 세션 차단은 상자 종료 뒤에도 inert "+mode,async()=>{
+  const e=await boot({handler:(u,o)=>String(u).endsWith("/lost")?response({reason:"session_changed",error:"changed"},409):serverHandler(u,o)});
+  const background=e.doc.createElement("main");e.doc.body.append(background);vm.runInContext(IN.source["dialog.js"],e.ctx);
+  const d=e.ctx.DPDialog;let ownerKeys=0;const pending=mode==="confirm"?d.confirm("쓰기 확인"):d.lock({keys:()=>ownerKeys++});
+  await e.ctx.fetch("https://studio.invalid/lost");
+  if(mode==="confirm"&&await pending!==false)return false;
+  if(mode==="lock"&&(!d.open||ownerKeys))return false;
+  d.unlock();e.key("keydown","Escape");
+  return background.inert&&!d.open&&!d.lock()&&e.doc.body.textContent.includes("다른 계정으로 바뀌었습니다")&&!e.doc.body.textContent.includes("쓰기 확인");
+});
+await scenario("FW37 R6 서버 R 문구·로컬 SIDE 보존",async()=>{
+  const messages=[];
+  for(const server of [true,false]){
+    const e=context(),c=e.ctx;Object.assign(c,{SM:()=>server,DPEnv:{serverMode:server,backend:"mock"},
+      S:{rev:1,crops:[]},tKey:"t",cKey:"c",rerollCell:()=>({cell_key:"cell",variant:"v",pre:0}),
+      usd:()=>"",tabWay:()=>"paid",reviewMissing:()=>"",toast(){},pipe:{agentOn:()=>false,paidLock:()=>"",paidWhy:()=>"",applyWarn:()=>[],side:"SIDE_SENTINEL"},
+      DPDialog:{confirm:async t=>{messages.push(t);return false;}},confirm:t=>{messages.push(t);return false;}});
+    vm.runInContext(sourceFn("board.js","cellPre")+"\n"+sourceFn("board.js","reroll"),c);await c.reroll(true);
+  }
+  return messages.length===2&&messages[0].includes("서버 작업으로 실행")&&!messages[0].includes("ComfyUI 탭")&&!messages[0].includes("SIDE_SENTINEL")
+    &&messages[1].includes("유료 호출이 사전 승인되고 ComfyUI 탭에 큐 요청을 보냅니다. 계속할까요?")&&messages[1].includes("SIDE_SENTINEL");
+});
+await scenario("FW39 R8 브라우저 단축키 기본 동작·Studio 전파 차단",async()=>{
+  const e=context();vm.runInContext(IN.source["dialog.js"],e.ctx);const d=e.ctx.DPDialog,p=d.confirm("키 검사");
+  for(const [key,extra] of [["F5",{}],["F12",{}],["r",{ctrlKey:true}],["I",{ctrlKey:true,shiftKey:true}],["r",{metaKey:true}],["ArrowLeft",{altKey:true}],["Enter",{ctrlKey:true}]]){
+    const ev=e.key("keydown",key,true,extra);if(!ev.stopped||ev.prevented||!d.open)return false;
+  }
+  for(const key of [" ","ArrowDown","PageDown","Home","Backspace"]){
+    const ev=e.key("keyup",key);if(!ev.stopped||!ev.prevented)return false;
+  }
+  d.cancel();return await p===false;
+});
+for(const during of [false,true])await scenario("FW40 R1 레퍼런스 explicit 재확인 시점 / "+during,async()=>{
+  const e=context(),c=e.ctx,posts=[],warnings=[];let reject,answer;
+  Object.assign(c,{sel:"A",epoch:1,result:{req:"cut-A"},role:"main",savedReq:null,savedTransform:null,
+    S:{save:body=>{posts.push(body);return posts.length===1?new Promise((resolve,no)=>{reject=no;}):Promise.resolve({file:"A.png",size:[10,10],bytes:100});}},
+    explicitOf:()=>[{file:"A.png"}],explicitText:()=>"A.png 덮어쓰기",sizeMb:()=>"100B",transformSignature:()=>"original",
+    renderSoon(){},opts:{toast:(t,k)=>{if(k==="warn")warnings.push(t);}},DPDialog:{confirm:()=>new Promise(r=>{answer=r;})}});
+  vm.runInContext(["askFree","save"].map(n=>sourceFn("ref_edit.js",n,"    ")).join("\n"),c);
+  const original={req:"cut-A",crop_id:"A",role:"main",transform:{rotate:0}},pending=c.save(original);
+  c.sel="B";reject(Error("explicit"));await settle();if(during)c.sel="C";answer(true);await pending;
+  return during?posts.length===1&&warnings.length===1:posts.length===2&&posts[1].crop_id==="A"&&posts[1].req==="cut-A"&&posts[1].confirm[0]==="A.png"&&!warnings.length;
 });
 console.log(JSON.stringify(out));
 '''
@@ -58540,8 +58659,8 @@ def _fw_ui_js():
     """기존 Studio DOM·서버 대역으로 서버 전송과 실제 패널을 실행한다."""
     return r'''
 const F=IN.forge;
-const serverMode=()=>{ctx.window.DPEnv={serverMode:true,can:n=>F.env_server.response.caps[n]===true};};
-await scenario("FW19 서버 유료 응답 4꼴",async()=>{
+const serverMode=()=>{ctx.window.DPEnv={serverMode:true,backend:"mock",can:n=>F.env_server.response.caps[n]===true};};
+await scenario("FW19 서버 유료 응답 5꼴",async()=>{
   const result={};
   for(const mode of ["ok","stale","http","unknown","httpText"]){
     serverMode(); const e=await mkStudio();let sent=null;
@@ -58557,9 +58676,9 @@ await scenario("FW19 서버 유료 응답 4꼴",async()=>{
     const hook=e.pipe._fw;hook.PS.track=(stage,pid)=>({stage,pid});
     await hook.sendPaid("run","hash","crop","생성");const d=ctx.window.__fwPaid;
     result[mode]=sent.root===KEY&&sent.stage==="run"&&sent.approve==="hash"&&sent.only==="crop"&&e.tab.got.length===0
-      &&(mode==="ok"?d.ok&&d.prompt_id===F.jobs_prompt.response.prompt_id:!d.ok&&d.reason===(["http","httpText"].includes(mode)?"http":mode==="stale"?"stale":"unknown"))
+      &&(mode==="ok"?d.ok&&d.prompt_id===F.jobs_prompt.response.prompt_id:!d.ok&&d.reason===(mode==="stale"?"stale":"unknown"))
       &&(mode==="stale"?d.hash===F.jobs_prompt_stale.response.hash:true)
-      &&(mode==="unknown"?(hook.asked.run||[]).some(a=>a.lost&&a.hash==="hash"):!(hook.asked.run||[]).length);
+      &&(["unknown","http","httpText"].includes(mode)?(hook.asked.run||[]).some(a=>a.lost&&a.hash==="hash"):!(hook.asked.run||[]).length);
     e.stop();await sleep(20);
   }
   return result;
@@ -58594,7 +58713,7 @@ await scenario("FW20 숨김·다운로드·경로값 보존",async()=>{
 await scenario("FW21 취소·확인 중 상태 변경이면 쓰기 없음",async()=>{
   serverMode();const e=await mkStudio();const h=e.pipe._fw;
   let answer;ctx.window.DPDialog={confirm:()=>new Promise(r=>{answer=r;})};
-  const pending=h.askFree("판 검사");h.PS.P.rev++;answer(true);const changed=await pending===false;
+  const pending=h.askFree("입력 검사",()=>!h.form.prepare);h.form.prepare={n:2};h.PS.P.rev++;answer(true);const changed=await pending===false;
   ctx.window.DPDialog={confirm:async()=>false};const before=e.srv.log.filter(x=>x.method==="POST").length;
   await h.applyNow();const after=e.srv.log.filter(x=>x.method==="POST").length;
   const r={changed,cancel:before===after};delete ctx.window.DPDialog;e.stop();return r;
@@ -58607,6 +58726,69 @@ await scenario("FW25 로컬 승인·agentConfirm 네이티브 유지",async()=>{
   const confirmed=await e.pipe.agentConfirm(["사전 승인"],0);
   const r={approve,native:confirmed===false&&e.confirms.length===2&&dialogs===0};
   delete ctx.window.DPDialog;e.stop();return r;
+});
+await scenario("FW31 R1 Export 판 갱신 허용·쓰기 409 보존",async()=>{
+  serverMode();const e=await mkStudio(),h=e.pipe._fw;let answer,queued=0;
+  e.S.running=true;e.S.targets.forEach(t=>{t.pick_keys=[];});
+  ctx.window.DPDialog={confirm:()=>new Promise(r=>{answer=r;})};
+  h.PS.queue=async stage=>{if(stage==="export")queued++;return {};};
+  const exp=h.exportNow();await sleep(10);e.S.rev++;h.PS.P.manifest_rev++;answer(true);
+  const exportOk=await exp&&queued===1&&e.S.running&&!e.toasts.some(t=>t.includes("확인 중 상태"));
+  e.S.running=false;
+  const rev=h.PS.P.rev;h.form.prepare={quality:h.PS.P.settings.prepare.quality==="high"?"medium":"high"};
+  e.srv.route.settings=[409,{error:"설정 판이 다른 창에서 바뀌었습니다(시험)",reason:"stale"}];
+  answer=null;const save=h.saveSection("prepare");await until(()=>!!answer);
+  h.PS.P={...h.PS.P,rev:rev+1,manifest_rev:h.PS.P.manifest_rev+1};answer(true);await save;
+  const post=e.srv.log.filter(x=>x.path==="pipeline/settings").at(-1);
+  const r={exportOk,server409:post?.body.rev===rev&&!!e.toast("설정 판이 다른 창에서 바뀌었습니다(시험)")};
+  delete ctx.window.DPDialog;e.stop();return r;
+});
+await scenario("FW32 R2 다시 생성 보내기·직접 제출 backend 가드",async()=>{
+  serverMode();const e=await mkStudio(),h=e.pipe._fw;let posts=0;
+  const original=ctx.fetch;ctx.fetch=async(u,o)=>{if(o?.method==="POST")posts++;return original(u,o);};
+  ctx.window.DPEnv.backend="future";
+  e.pipe.reroll();await h.sendPaid("reroll","","","다시 생성");await sleep(10);
+  const r={blocked:posts===0&&e.toasts.filter(t=>t.includes("서버 모드 생성 백엔드가 아직 연결되지 않았습니다")).length===2};
+  ctx.window.DPEnv.backend="mock";h.PS.track=()=>true;
+  ctx.fetch=async(u,o)=>{if(String(u).includes("jobs/prompt")){posts++;return {ok:true,status:200,json:async()=>F.jobs_prompt.response};}return original(u,o);};
+  e.pipe.reroll();await sleep(20);r.mock=posts===1&&e.tab.got.length===0;e.stop();return r;
+});
+await scenario("FW33 R3 서버 응답 불확실·확정 거절·재계획",async()=>{
+  const result={};
+  for(const [mode,status,data] of [["502",502,{reason:"proxy",error:"gateway"}],["nonJSON",200,null],["400",400,{error:"contract"}],
+    ["stale",409,{reason:"stale",hash:"new",error:"changed"}],["queue_full",409,{reason:"queue_full",error:"대기열 한도(서버)"}],
+    ["no_backend",409,{reason:"no_backend",error:"실행기 미연결(서버)"}]]){
+    serverMode();const e=await mkStudio(),h=e.pipe._fw,plans=e.srv.count("pipeline/plan");
+    ctx.fetch=async(u,o)=>String(u).includes("jobs/prompt")?{ok:status===200,status,json:async()=>{if(data===null)throw Error("not json");return data;}}:e.srv.fetch(u,o);
+    await h.sendPaid("run","hash","crop","생성");await sleep(30);
+    const unknown=["502","nonJSON","400"].includes(mode),d=ctx.window.__fwPaid;
+    result[mode]=d.ok===false&&d.reason===(unknown?"unknown":mode)
+      &&(unknown?(h.asked.run||[]).some(a=>a.lost&&a.hash==="hash"):!(h.asked.run||[]).length)
+      &&(unknown||mode==="stale"?e.srv.count("pipeline/plan")>plans:!!e.toast(data.error));
+    e.stop();await sleep(20);
+  }
+  return result;
+});
+await scenario("FW37 R6 서버 제출·재승인 경고·mock SIDE 분기",async()=>{
+  delete ctx.window.DPDialog;
+  serverMode();const e=await mkStudio({plan:p=>{p.run.backend="mock";}}),h=e.pipe._fw;
+  h.asked.run=[{hash:h.PS.plan.run.hash,id:"lost",lost:true}];
+  e.click(e.B("생성 승인"));await until(()=>!!e.box());
+  const text=e.box()?.textContent||"";
+  const r={warning:text.includes("진행 줄(대기·실행 중 작업)")&&!text.includes("ComfyUI")&&!text.includes(e.pipe.side)};
+  if(e.box())e.click(e.B("취소",e.box()));await sleep(10);
+  h.PS.track=()=>true;ctx.fetch=async(u,o)=>String(u).includes("jobs/prompt")?{ok:true,status:200,json:async()=>F.jobs_prompt.response}:e.srv.fetch(u,o);
+  await h.sendPaid("run","hash","crop","생성");r.accepted=!!e.toast("서버가 작업을 받음")&&!e.toast("ComfyUI 탭이 승인 템플릿을 제출함");
+  delete ctx.window.DPEnv;const p=h.mockAsk("생성 승인 [MOCK]",false);r.localSide=e.box().textContent.includes(e.pipe.side);
+  e.click(e.B("취소",e.box()));await p;e.stop();return r;
+});
+await scenario("FW38 R7 첫 설정 idle 은 자기 프로젝트 작업만",async()=>{
+  serverMode();const e=await mkStudio(),h=e.pipe._fw;let queue={queue_running:[[1,"",""]],queue_pending:[[2,"",""]]};
+  ctx.fetch=async()=>({ok:true,json:async()=>queue});
+  const foreign=await h.setupQueueIdle();queue.queue_pending.push([3,"our-pid",""]);const own=await h.setupQueueIdle();
+  queue.queue_pending.pop();delete ctx.window.DPEnv;const local=await h.setupQueueIdle();
+  queue={queue_running:[],queue_pending:[]};const empty=await h.setupQueueIdle();
+  e.stop();return {foreign,own:!own,local:!local,empty};
 });
 console.log(JSON.stringify(out));process.exit(0);
 '''

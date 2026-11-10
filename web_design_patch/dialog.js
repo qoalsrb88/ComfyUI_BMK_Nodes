@@ -6,12 +6,15 @@
 window.DPDialog = (() => {
   const text = (t) => (Array.isArray(t) ? t.join("\n") : String(t));
   let active = null;
+  const blocked = () => [...document.body.children].some((child) => child.classList.contains("dp-env-block"));
   function capture(e) {
     if (!active) return;
     e.stopImmediatePropagation();
-    // 기존 mock·Claude 상자의 키 동작은 전달받은 처리기가 맡는다.
+    if (e.ctrlKey || e.metaKey || e.altKey || /^F(?:[1-9]|1[0-2])$/.test(e.key)) return;
+    if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown", "Home", "End", "Backspace"].includes(e.key)) e.preventDefault();
+    // 기존 mock·Claude 상자의 키 동작은 소유자가 맡는다(Enter·Space 의 버튼 기본 동작도 유지).
     if (active.keys) { active.keys(e); return; }
-    e.preventDefault();
+    if (["Tab", "Enter", " ", "Spacebar", "Escape"].includes(e.key)) e.preventDefault();
     if (e.type !== "keydown" || !e.isTrusted || !active.finish) return;
     const buttons = active.buttons, index = buttons.indexOf(document.activeElement);
     if (e.key === "Escape") active.finish(false);
@@ -21,7 +24,7 @@ window.DPDialog = (() => {
     }
   }
   function lock(options = {}) {
-    if (active) return false;
+    if (active || blocked()) return false;
     active = { before: document.activeElement, inert: [], keys: options.keys, finish: null, buttons: [] };
     for (const child of document.body.children) {
       active.inert.push([child, child.inert]); child.inert = true;
@@ -33,8 +36,14 @@ window.DPDialog = (() => {
     if (!active) return;
     const saved = active; active = null;
     for (const type of ["keydown", "keyup", "keypress"]) window.removeEventListener(type, capture, true);
+    if (saved.keepInert || blocked()) return;
     for (const [child, inert] of saved.inert) child.inert = inert;
     if (saved.before && saved.before.isConnected !== false) saved.before.focus();
+  }
+  function cancel() {
+    if (!active) return;
+    if (active.finish) active.finish(false);
+    else active.keepInert = true; // 외부 상자의 닫기는 소유자가 맡되 세션 차단은 풀지 않는다.
   }
   function show(t, options, alert) {
     if (!lock()) return Promise.resolve(false);
@@ -72,7 +81,7 @@ window.DPDialog = (() => {
     native(t) {
       return window.confirm(text(t));
     },
-    lock, unlock,
+    lock, unlock, cancel,
     get open() { return active !== null; },
   };
 })();

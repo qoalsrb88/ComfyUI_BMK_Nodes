@@ -758,15 +758,13 @@ window.DPMaskEdit = (() => {
 
   // ── 화면: 왼쪽 크롭 목록·오른쪽 패널·뷰어 겹침 캔버스와 붓 ──
   function create(hosts, opts) {
-    // 확인 중에는 폴링이 계속된다. 확인한 판·선택·미저장 입력이 바뀌면 쓰지 않는다.
-    async function askFree(t) {
+    // 확인 중에는 폴링이 계속된다. 동작별 대상·입력만 재확인하고 판 충돌은 서버가 판단한다.
+    async function askFree(t, same) {
       if (askFree.pending) return false;
       askFree.pending = true;
-      const current = () => JSON.stringify([on, stateVer(S), M.key, M.seq, M.pending(), M.undo.length, M.redo.length, M.info, M.busy, !!M.stroke, adjustSaving]);
       try {
-        const before = current();
         if (!(await (window.DPDialog ? window.DPDialog.confirm(t) : Promise.resolve(window.confirm(t))))) return false;
-        if (before === current()) return true;
+        if (!same || same()) return true;
         opts.toast("확인 중 상태가 바뀌었습니다 — 다시 확인한 뒤 시도하세요", "warn");
         return false;
       } finally { askFree.pending = false; }
@@ -1169,10 +1167,11 @@ window.DPMaskEdit = (() => {
       finishFade(false);
       pointerup();
       if (to.key !== M.key) {
+        const key = M.key, processing = M.busy, saving = adjustSaving;
         const n = M.pending();
         const x = candOf(M.key);
         const gone = x && (!x.c.picked || x.c.rejected) ? " — 이제 ★ 가 아니라 적용할 수 없음" : "";
-        if (n && !await askFree(`적용 안 한 획 ${n}(${label(M.key)}${gone})을 버리고 ${label(to.key)} 를 편집할까요?`)) return false;
+        if (n && !await askFree(`적용 안 한 획 ${n}(${label(M.key)}${gone})을 버리고 ${label(to.key)} 를 편집할까요?`, () => M.key === key && M.pending() === n && M.busy === processing && adjustSaving === saving)) return false;
         open(to.key, to.seam, follow && !to.seam);
       } else if (to.seam) {
         seam = to.seam;
@@ -1184,8 +1183,9 @@ window.DPMaskEdit = (() => {
 
     async function reload() {
       // [다시 받기](409·읽기 실패): 서버 판으로 다시 연다 — 적용 안 한 획은 확인 뒤 버림
+      const key = M.key, processing = M.busy, saving = adjustSaving;
       const n = M.pending();
-      if (n && !await askFree(`적용 안 한 획 ${n} 을 버리고 서버 버전을 다시 받을까요?`)) return;
+      if (n && !await askFree(`적용 안 한 획 ${n} 을 버리고 서버 버전을 다시 받을까요?`, () => M.key === key && M.pending() === n && M.busy === processing && adjustSaving === saving)) return;
       open(M.key, seam, false);
     }
 
@@ -1499,8 +1499,9 @@ window.DPMaskEdit = (() => {
     }
 
     async function discard() {
+      const key = M.key, processing = M.busy, saving = adjustSaving;
       const n = M.pending();
-      if (!n || !await askFree(`적용 안 한 획 ${n} 을 모두 버릴까요?`)) return;
+      if (!n || !await askFree(`적용 안 한 획 ${n} 을 모두 버릴까요?`, () => M.key === key && M.pending() === n && M.busy === processing && adjustSaving === saving)) return;
       once(M.discard());
       if (M.behind()) refreshInfo(); // 획이 있는 동안 다른 창·노드가 새 판을 씀 — 버렸으니 서버 판으로 다시 연다
     }
@@ -1533,6 +1534,7 @@ window.DPMaskEdit = (() => {
     }
 
     async function cleanupFiles() {
+      const key = M.key, opened = M.seq;
       // 배치 3-6: 목록을 받아 확인 창 → 서버가 잠금 안에서 다시 판정해 지움(그 사이 다시 쓰이게 된 파일은 남김)
       let d;
       try {
@@ -1549,7 +1551,7 @@ window.DPMaskEdit = (() => {
       }
       const names = d.files.slice(0, 8).map((f) => ` · ${f.file} (${f.at})`).concat(d.files.length > 8 ? [` · … 외 ${d.files.length - 8}개`] : []);
       if (!await askFree([`masks/ 에서 어떤 편집 기록도 쓰지 않는 PNG ${d.files.length}개(${mb(d.bytes)})를 지웁니다 — 되돌릴 수 없음${recent}.`,
-        ...names, "계속할까요?"].join("\n"))) return;
+        ...names, "계속할까요?"].join("\n"), () => M.key === key && M.seq === opened)) return;
       const sum = { deleted: 0, bytes: 0, kept: 0 };
       try {
         // 서버 본문 상한(16KB)·목록 상한(500) 아래로 200개씩(Codex 3a 1차)
@@ -1566,13 +1568,14 @@ window.DPMaskEdit = (() => {
     }
 
     async function serverEdit(kind) {
+      const key = M.key, opened = M.seq;
       const n = M.pending();
       const ed = M.info && M.info.edit;
       const ask = kind === "reset"
         ? `${label(M.key)} 의 마스크 편집 기록(이전 버전 ${ed ? ed.hist : 0} 포함)을 지우고 처음 마스크로 돌아갑니다.` + (n ? ` 적용 안 한 획 ${n} 도 버립니다.` : "")
           + " 계속할까요?"
         : n ? `적용 안 한 획 ${n} 을 버리고 이전 버전으로 돌아갈까요?` : "";
-      if (ask && !await askFree(ask)) return;
+      if (ask && !await askFree(ask, () => M.key === key && M.seq === opened)) return;
       const p = M.edit(kind);
       render();
       let d = null;
@@ -1617,6 +1620,7 @@ window.DPMaskEdit = (() => {
     }
 
     async function starAlt(r) {
+      const key = M.key, opened = M.seq;
       if (M.busy) {
         if (M.busy === "adjust_wait" || M.busy === "adjust") opts.toast("보정을 먼저 저장한 뒤 ★를 바꾸세요", "warn");
         return;
@@ -1632,7 +1636,7 @@ window.DPMaskEdit = (() => {
         + `이 크롭의 마스크 편집은 옛 ★ c${pad(x.c.n)} 에 남고(다시 ★ 하면 살아남) `
         + (ed ? `c${pad(r.c)} 에 남아 있던 편집(${when(ed.at)}${ed.stale ? " · 처음 마스크가 바뀜" : ""})이 다시 쓰입니다(표 값도 그 편집으로 계산 — `
           + "지우려면 ★ 뒤 [편집 모두 지우기])." : "새 ★ 는 편집 없이 처음 마스크로 시작합니다.")
-        + (n ? `\n적용 안 한 획 ${n} 은 버립니다.` : "") + "\n계속할까요?")) return;
+        + (n ? `\n적용 안 한 획 ${n} 은 버립니다.` : "") + "\n계속할까요?", () => M.key === key && M.seq === opened)) return;
       // 보드 ★ 쓰기(POST /pick + state 다시 — 수백 ms) 동안 세션을 잠근다(붓·Enter·실행 취소·대상 바꾸기·나가기 거절): 확인한 뒤의 획·적용이 버리기로 한
       // 옛 ★ 에 들어가거나 새 대상 세션에 남지 않게. 쓰기가 실패하면(보드가 다른 쓰기 중·409·네트워크 — null) 대상·세션 그대로
       M.busy = "pick";
@@ -2528,8 +2532,9 @@ window.DPMaskEdit = (() => {
       cancelXform();
       finishFade(false);
       pointerup();
+      const key = M.key, processing = M.busy, saving = adjustSaving;
       const n = M.pending();
-      if (n && !await askFree(`적용 안 한 획 ${n}(${label(M.key)})은 이 창에만 남습니다 — Export·다른 창에는 들어가지 않음(K 로 돌아오면 이어서). 나갈까요?`)) {
+      if (n && !await askFree(`적용 안 한 획 ${n}(${label(M.key)})은 이 창에만 남습니다 — Export·다른 창에는 들어가지 않음(K 로 돌아오면 이어서). 나갈까요?`, () => M.key === key && M.pending() === n && M.busy === processing && adjustSaving === saving)) {
         return false;
       }
       on = false;

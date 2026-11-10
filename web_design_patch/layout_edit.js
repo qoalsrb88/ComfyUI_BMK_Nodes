@@ -273,15 +273,13 @@ window.DPLayoutEdit = (() => {
 
   // ── 화면 ──
   function create(hosts, opts) {
-    // 확인 중에는 폴링이 계속된다. 확인한 판·선택·미저장 입력이 바뀌면 쓰지 않는다.
-    async function askFree(t) {
+    // 확인 중에는 폴링이 계속된다. 동작별 대상·입력만 재확인하고 판 충돌은 서버가 판단한다.
+    async function askFree(t, same) {
       if (askFree.pending) return false;
       askFree.pending = true;
-      const current = () => JSON.stringify([on, S.remote, S.L, S.busy, sel, multi, proposal]);
       try {
-        const before = current();
         if (!(await (window.DPDialog ? window.DPDialog.confirm(t) : Promise.resolve(window.confirm(t))))) return false;
-        if (before === current()) return true;
+        if (!same || same()) return true;
         opts.toast("확인 중 상태가 바뀌었습니다 — 다시 확인한 뒤 시도하세요", "warn");
         return false;
       } finally { askFree.pending = false; }
@@ -1034,8 +1032,9 @@ window.DPLayoutEdit = (() => {
       if (!c || lockedNow(c.id)) return;
       const h = c.history || {};
       const what = [`후보 ${h.candidates || 0}`, `★ ${h.picks || 0}`].concat(h.spec ? ["스펙 있음"] : []).join(" · ");
+      const selected = JSON.stringify([sel, [...(multi || [])].sort()]);
       if (!await askFree(`${c.name} 크롭을 레이아웃에서 지웁니다.\n${what} — ${againText(c)}\n`
-        + "프로젝트 기록에는 다음 큐의 Import 에서 반영됩니다. 계속할까요?")) return;
+        + "프로젝트 기록에는 다음 큐의 Import 에서 반영됩니다. 계속할까요?", () => selected === JSON.stringify([sel, [...(multi || [])].sort()]))) return;
       if (await act(S.remove(c.id))) opts.toast(`지움: ${c.name} (Ctrl+Z 로 되살림)`);
     }
 
@@ -1054,7 +1053,8 @@ window.DPLayoutEdit = (() => {
       })];
       if (held.length) lines.push(`잠금으로 건너뜀 ${held.length}: ${held.join(", ")}`);
       lines.push("파일은 남습니다. 되살리려면 Ctrl+Z(이 창에서만 — 크롭마다 한 번). 프로젝트 기록에는 다음 큐의 Import 에서 반영됩니다. 계속할까요?");
-      if (!await askFree(lines.join("\n"))) return;
+      const selected = JSON.stringify([sel, [...(multi || [])].sort()]);
+      if (!await askFree(lines.join("\n"), () => selected === JSON.stringify([sel, [...(multi || [])].sort()]))) return;
       let done = 0;
       for (const c of go) {
         if (!(await act(S.remove(c.id)))) break;
@@ -1271,9 +1271,10 @@ window.DPLayoutEdit = (() => {
         return;
       }
       if (lockedNow(p.id)) return;
+      const selected = JSON.stringify([sel, [...(multi || [])].sort()]);
       if (p.grow && !await askFree("크롭 넓히기 제안을 적용할까요?\n적용은 레이아웃만 바꿉니다(무료).\n"
         + "[반영 (무료)] 뒤 이 크롭은 새 생성 조건이 되어, 실행(G)에서 생성을 승인할 때만 유료(평균 ≈ 169 크레딧/호출, 초안 갱신 ≈ 21 — 10/23 원장 평균).\n"
-        + "지금 ★ 는 옛 크롭 기준으로 남습니다(옛 크롭 ★).")) return;
+        + "지금 ★ 는 옛 크롭 기준으로 남습니다(옛 크롭 ★).", () => selected === JSON.stringify([sel, [...(multi || [])].sort()]) && proposal === p)) return;
       proposal = null;
       await flushNudge();
       if (p.boxes) await S.idle(); // 상자 삭제·실행 취소가 저장 중이면 끝난 값을 비교한다.
@@ -1363,7 +1364,8 @@ window.DPLayoutEdit = (() => {
           : `나머지 다른 곳 ${rest.length}건은 가져오지 않고 경고만 꺼집니다(기준점이 지금 PSD 로 바뀜 — ComfyUI 재시작 전 서버):`, ...rest.map((x) => ` · ${x}`));
       }
       if (held.length) lines.push(`${heldText(held)} — 가져오지 않고 그대로 경고`);
-      if (!await askFree(lines.concat("계속할까요?").join("\n"))) return;
+      const selected = JSON.stringify([sel, [...(multi || [])].sort()]);
+      if (!await askFree(lines.concat("계속할까요?").join("\n"), () => selected === JSON.stringify([sel, [...(multi || [])].sort()]))) return;
       const pc = proposal && S.crop(proposal.id);
       if (pc && seen.changed.some((x) => names.includes(x.name) && x.name === (pc.psd_name || pc.name) && x.fields.includes("rect"))) {
         proposal = null;
@@ -1385,9 +1387,10 @@ window.DPLayoutEdit = (() => {
       const seen = S.L.psd_diff;
       if (!seen) return;
       const rest = names ? psdSplit(names).rest.length : 0;
+      const selected = JSON.stringify([sel, [...(multi || [])].sort()]);
       if (!await askFree(names ? `${names.join(", ")} 의 PSD 와 다름 경고만 끕니다(레이아웃 그대로, 그 사각형의 PSD 기준점만 지금 PSD 로)`
         + (rest ? ` — 나머지 다른 곳 ${rest}건은 그대로 경고` : "") + ". 계속할까요?"
-        : "레이아웃은 그대로 두고 PSD 기준점만 지금 PSD 로 바꿉니다(PSD 와 다름 경고를 모두 끔). 계속할까요?")) return;
+        : "레이아웃은 그대로 두고 PSD 기준점만 지금 PSD 로 바꿉니다(PSD 와 다름 경고를 모두 끔). 계속할까요?", () => selected === JSON.stringify([sel, [...(multi || [])].sort()]))) return;
       if (await act(S.psd("ack", names, seen))) opts.toast(names ? `PSD 기준점 갱신: ${names.join(", ")}` : "PSD 기준점을 갱신했습니다");
     }
 
@@ -1404,7 +1407,8 @@ window.DPLayoutEdit = (() => {
       if (n) lines.push(`다시 생성 대기 ${n}건(사전 승인)은 이 반영에서 돌지 않음 — R·[다시 생성 보내기]·그래프 Run 에서 과금`);
       const unnamed = S.L.crops.filter((c) => c.name.includes("_미정")).length;
       if (unnamed) lines.push(`이름 미정 ${unnamed}개 — 반영 전에 정하면 다시 과금 없음`);
-      if (!await askFree(lines.concat(APPLY_NOTE, "계속할까요?").join("\n"))) return;
+      const selected = JSON.stringify([sel, [...(multi || [])].sort()]);
+      if (!await askFree(lines.concat(APPLY_NOTE, "계속할까요?").join("\n"), () => selected === JSON.stringify([sel, [...(multi || [])].sort()]))) return;
       opts.queue(true);
     }
 

@@ -80,15 +80,13 @@
 
   const $ = (id) => document.getElementById(id);
 
-  // 확인 중에는 폴링이 계속된다. 확인한 판·선택·미저장 입력이 바뀌면 쓰지 않는다.
-  async function askFree(t) {
+  // 확인 중에는 폴링이 계속된다. 동작별 대상·입력만 재확인하고 판 충돌은 서버가 판단한다.
+  async function askFree(t, same) {
     if (askFree.pending) return false;
     askFree.pending = true;
-    const current = () => JSON.stringify([S && [S.rev, S.pipeline_rev, S.layout_rev, S.running, S.drafting, S.rerolls_pending, S.pending_preapproved], tKey, cKey, busy, editing, refsOn, pipeOn, maskOn, maskEd && maskEd.pending(), pipe && pipe.canLeave ? pipe.canLeave() : null]);
     try {
-      const before = current();
       if (!(await (window.DPDialog ? window.DPDialog.confirm(t) : Promise.resolve(window.confirm(t))))) return false;
-      if (before === current()) return true;
+      if (!same || same()) return true;
       toast("확인 중 상태가 바뀌었습니다 — 다시 확인한 뒤 시도하세요", "warn");
       return false;
     } finally { askFree.pending = false; }
@@ -526,6 +524,7 @@
   }
 
   async function reroll(fromButton, scripted) {
+    if (SM() && window.DPEnv.backend !== "mock") { toast("서버 모드 생성 백엔드가 아직 연결되지 않았습니다", "warn"); return; }
     const cell = rerollCell();
     if (!cell) {
       toast("이 타깃의 작업(jobs)이 없습니다 — Prepare 를 먼저 실행하세요", "err");
@@ -579,7 +578,7 @@
       const stack = pre ? `이 생성 조건 다시 생성 대기 ${pre}건(사전 승인) → ${pre + 1}건${usd(cell.est_usd ? { est_usd: cell.est_usd.map((v) => v * (pre + 1)) } : null)}\n` : "";
       const text = `${what}\n${stack}${graphPrep}\n` + (lock ? `유료 호출이 사전 승인됩니다 — 지금은 큐를 보내지 않음(${lock}): 다시 생성은 예약만 되고 `
         + "머리줄 [다시 생성 보내기]로 보내거나 다음 Run 때(선택과 무관) 함께 과금됩니다. 계속할까요?"
-        : tab ? (way === "paid" ? `${pipe.side}\n` : "") + "유료 호출이 사전 승인되고 ComfyUI 탭에 큐 요청을 보냅니다. 계속할까요?"
+        : tab ? (SM() ? "유료 호출이 사전 승인되고 서버 작업으로 실행합니다. 계속할까요?" : (way === "paid" ? `${pipe.side}\n` : "") + "유료 호출이 사전 승인되고 ComfyUI 탭에 큐 요청을 보냅니다. 계속할까요?")
           : `유료 호출이 사전 승인됩니다 — 지금 큐를 보내지 않음(${why}): 다시 생성은 예약만 되고 다음 Run 때(선택과 무관) 함께 과금됩니다. 계속할까요?`);
       if (SM() ? !(await window.DPDialog.confirm(text)) : (agent ? !(await pipe.agentConfirm(text.split("\n"), need)) : !window.confirm(text))) {
         return;
@@ -600,7 +599,7 @@
         toast(`R 을 한 번 더 누르면 ${what} — 유료`
           + (tab ? "" : ` · 지금 큐를 보내지 않음(${scripted ? "스크립트 키 — 큐는 사용자 키 입력만, " : ""}예약만 — 다음 Run 때 과금)`)
           + (!tab && noReview ? ` · ${why}` : "")
-          + (way === "paid" ? " · 승인 제출이라 ComfyUI 탭 그래프의 시드 제어 등 실행마다 바뀌는 값이 한 번 진행됨(그래프는 실행 안 함)" : "")
+          + (!SM() && way === "paid" ? " · 승인 제출이라 ComfyUI 탭 그래프의 시드 제어 등 실행마다 바뀌는 값이 한 번 진행됨(그래프는 실행 안 함)" : "")
           + (way === "paid" ? " · 금액은 지금 jobs 기준(Prepare 갈라짐 — Studio 실행 설정이 마지막 Prepare 와 다르면 바뀜)"
             : " · 금액은 지금 jobs 기준(그래프 Prepare 값이 Studio 와 다르면 바뀜)"), "warn");
         return;
@@ -649,7 +648,15 @@
     if (!n) { toast("다시 생성 대기 없음"); return; }
     const stale = scope === "all" ? S.rerolls_stale || 0 : 0;
     const count = `${n}건` + (stale ? `(옛 조건 ${stale}건 포함)` : "");
-    if (scope !== "cell" && !await askFree(`다시 생성 대기 ${count}을 취소합니다. 그중 ${base}건은 아직 한 번도 만들지 않은 생성 조건이라 '생성 승인 필요'로 돌아갑니다(승인 코드가 바뀜 — 이미 큐에 넣은 [생성 승인]은 드라이런이 되어 과금 없음). 계속할까요?`)) return;
+    const cropId = selector.crop_id, cellKey = selector.cell_key;
+    const stillPending = () => {
+      if (selector.crop_id !== cropId || selector.cell_key !== cellKey) return false;
+      if (scope === "all") return !!S && S.rerolls_pending > 0;
+      const target = scope === "crop" ? (S.crops || []).find((c) => c.id === cropId)
+        : (S.targets || []).flatMap((t) => t.cells || []).find((c) => c.cell_key === cellKey);
+      return !!target && target.rerolls_pending > 0;
+    };
+    if (scope !== "cell" && !await askFree(`다시 생성 대기 ${count}을 취소합니다. 그중 ${base}건은 아직 한 번도 만들지 않은 생성 조건이라 '생성 승인 필요'로 돌아갑니다(승인 코드가 바뀜 — 이미 큐에 넣은 [생성 승인]은 드라이런이 되어 과금 없음). 계속할까요?`, stillPending)) return;
     const result = await write("reroll", { op: "cancel", scope, ...selector },
       (r) => `다시 생성 대기 ${r.cancelled}건 취소(과금 없음) · 생성 승인 필요로 돌아감 ${r.base}건 — 되돌림 = R`);
     if (result) { rerollArm = null; rerollSent = null; if (pipe) pipe.recalc(); }
@@ -705,7 +712,7 @@
     else if (planned && way !== planned) {
       const why = way === "paid" ? "탭이 이제 유료 승인을 받음 — 확인한 Review 부분 실행과 과금 기준이 다름"
         : [(pipe && pipe.paidWhy()), reviewMissing()].filter(Boolean).join(" · ") || "이 창을 연 ComfyUI 탭 없음";
-      toast(`다시 생성 예약됨 — R 확인 뒤 ComfyUI 탭 상태가 바뀌어 지금 보내지 않음(${why}): 머리줄 [다시 생성 보내기]로 보내거나 다음 Run 때 과금`, "warn");
+      toast(SM() ? `다시 생성 예약됨 — R 확인 뒤 서버 실행기 상태가 바뀌어 지금 보내지 않음(${why}): 머리줄 [다시 생성 보내기]로 보내거나 다음 Run 때 과금` : `다시 생성 예약됨 — R 확인 뒤 ComfyUI 탭 상태가 바뀌어 지금 보내지 않음(${why}): 머리줄 [다시 생성 보내기]로 보내거나 다음 Run 때 과금`, "warn");
     } else if (held || lock) {
       toast(`다시 생성 예약됨 — 지금 보내지 않음(${lock || "R 확인 때 '지금은 예약만'에 동의함"}): 머리줄 [다시 생성 보내기]로 보내거나 다음 Run 때 과금`, "warn");
     } else if (way === "paid") pipe.reroll();
