@@ -49380,6 +49380,11 @@ def polish2_unit():
 
 
 
+def forge_f3_theme_unit():
+    """Forge F3 갈래 T — 테마(CSS 정적 검사). 명세 _proto/STUDIO_FORGE_F3_SPEC.md §4.1·§5. --quick 포함."""
+    section("Forge F3-T — 테마 (forge_f3_theme_unit)")
+
+
 def polish3_unit():
     """다듬기 배치 3(10/21 — _proto/STUDIO_POLISH_PLAN_2610.md §3·§11): 서버 함수·라우트·정적. 3-1·3-2 끌기는 layout_js_unit(draftEdit·boxEdit)."""
     section("다듬기 배치 3 — 3-5a Export [출력 폴더 열기](ComfyUI output 안만, 마지막 Export PSD 고름)")
@@ -53039,6 +53044,11 @@ console.log(JSON.stringify(out));
           "8-C CSS는 마스크 패널·목록에만 적용")
 
 
+def forge_f3_frame_unit():
+    """Forge F3 갈래 U1 — 머리줄·상태 줄·주 실행 단추·고급·서버 모드 표시(node vm). 명세 §4.2·§5. --quick 포함."""
+    section("Forge F3-U1 — 틀 (forge_f3_frame_unit)")
+
+
 def batch7c_unit():
     """D60–D69: 파일·함수·모의 DOM만 사용. HTTP 서버·외부 API 없음."""
     section("배치 7-C — 레이어 패널·겹침 순서·레이어만 보기")
@@ -56308,6 +56318,11 @@ console.log(JSON.stringify(out));
           f"B9 통합 — refs 폴더 불일치 409 도 보관함 라우트에선 경로 없음 {getattr(out9, 'message', None)!r}")
 
 
+def forge_f3_tools_unit():
+    """Forge F3 갈래 U2 — 도구 문구·빈 화면·서버 모드 표시(node vm). 명세 §4.3·§5. --quick 포함."""
+    section("Forge F3-U2 — 도구 문구 (forge_f3_tools_unit)")
+
+
 def ext60_unit():
     """D72–D87: 합성 파일·직접 라우트·모의 DOM. 소켓·외부 API·탐색기를 실행하지 않는다."""
     section("6-0 — 외부 엔진 다리(내보내기·가져오기)")
@@ -59400,6 +59415,11 @@ def _fj_execute(jobs):
         asyncio.run(in_loop())
 
 
+def forge_f3_server_unit():
+    """Forge F3 갈래 S — 작업 기록 허용 목록·오류 경로 가림·로그인 실패 속도 제한. 명세 §4.4·§5. --quick 포함."""
+    section("Forge F3-S — 서버 보강 (forge_f3_server_unit)")
+
+
 def _fj_runner(jobs, compat, out, api):
     from unittest.mock import patch
     scope, other = _fj_scope(out / "a"), _fj_scope(out / "b")
@@ -60950,6 +60970,14 @@ if __name__ == "__main__":
         forge_jobs_unit()
     if want("forge_js_unit"):
         forge_js_unit()
+    if want("forge_f3_theme_unit"):
+        forge_f3_theme_unit()
+    if want("forge_f3_frame_unit"):
+        forge_f3_frame_unit()
+    if want("forge_f3_tools_unit"):
+        forge_f3_tools_unit()
+    if want("forge_f3_server_unit"):
+        forge_f3_server_unit()
     print(f"\n단위 테스트 {time.time() - T0:.1f}s (PASS {PASSES} FAIL {len(FAILS)})")
     if QUICK:
         print("\n--quick: 회귀·노드 생략")

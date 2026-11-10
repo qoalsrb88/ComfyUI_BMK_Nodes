@@ -14,6 +14,15 @@
   --mock: #b67cff;
   --reg: #4dd6e8;
   --wait: #f0d060;
+  /* Forge F3 공용 자리 — 이름만 먼저(값은 갈래 T 가 테마 값으로). 지금 값 = 바꾸기 전 모습 */
+  --line2: #536173;
+  --well: #0e0f12;
+  --on-accent: #06121f;
+  --accent-soft: #22314a;
+  --info: #4da3ff;
+  --warn: #ffa24d;
+  --radius: 6px;
+  --radius-sm: 4px;
   color-scheme: dark;
 }
 
@@ -783,3 +792,18 @@ svg.dr-isolate { position: absolute; left: 0; top: 0; pointer-events: none; }
 .dp-dialog .sheet, .dp-env-block .sheet { max-width: 680px; max-height: 85vh; overflow: auto; }
 .dp-dialog p, .dp-env-block p { white-space: pre-wrap; overflow-wrap: anywhere; }
 .dp-env-block .muted { color: var(--dim); font-size: .9em; }
+
+/* ── Forge F3 공용 (감독관) — 모드 전용 글: 서버 모드면 body.server ── */
+body.server [data-local] { display: none !important; }
+body:not(.server) [data-server] { display: none !important; }
+
+/* ── Forge F3-T (테마 보정) — 갈래 T 는 이 표시 아래에만 덧붙인다 ── */
+/* 기존 규칙의 값은 제자리에서 고치고, 새 규칙만 여기에. */
+/* 아래 F3-U1·F3-U2 블록은 다른 갈래 자리 — 건드리지 않는다. */
+
+/* ── Forge F3-U1 (머리줄·상태 줄·주 실행 단추·고급) — 갈래 U1 은 이 표시 아래에만 덧붙인다 ── */
+/* 색은 변수로만. 위쪽 기존 규칙을 덮어써야 하면 여기서 다시 선언한다. */
+/* 아래 F3-U2 블록은 다른 갈래 자리 — 건드리지 않는다. */
+
+/* ── Forge F3-U2 (도구·빈 화면) — 갈래 U2 는 이 표시 아래에만 덧붙인다 ── */
+/* 색은 변수로만. */
