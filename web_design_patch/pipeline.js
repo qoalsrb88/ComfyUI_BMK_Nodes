@@ -2550,7 +2550,7 @@ window.DPPipeline = (() => {
       const ex = PS.P && PS.P.exports && PS.P.exports[0];
       if (ex) head.append(el("span", "", `Export r${ex.rev}`));
       if (PS.job) {
-        head.append(el("span", "lh-wait", `실행 중: ${jobText(PS.job)}`));
+        head.append(el("span", "lh-wait lh-job", `실행 중: ${jobText(PS.job)}`));
         if (PS.job.ahead !== null && !PS.job.running) head.append(button("취소", modeText("대기 중인 이 Studio 의 프롬프트를 ComfyUI 대기열에서 지움", "대기 중인 이 프로젝트의 서버 작업을 취소"), cancelJob));
       }
       // 재굴림 큐는 확인 창 없음(R 의 확인이 동의 — 사전 승인분 제출)이라 '승인 — 확인' 이 아님
@@ -2911,16 +2911,18 @@ window.DPPipeline = (() => {
       const dock = el("div", "pp-dock");
       let main = null, kind = "", note = "";
       const applyBlocked = PS.err || (P0 && (P0.error || !P0.saved || confirmGate(P0).gate.length || (P0.warnings || []).length));
-      const running = busyNow() || (p && (p.run.running || p.draft.running));
+      // 계획이 말하는 '실행 중'은 계획 오류가 없을 때만 믿는다(끝난 뒤 다시 받기에 실패하면 옛 계획의 running 이 남는다) — 실제 실행은 busyNow 가 잡는다
+      const running = busyNow() || (p && !PS.planErr && (p.run.running || p.draft.running));
       if (applyBlocked) {
         note = "실행 설정 확인이 먼저입니다 — ① 준비의 「실행 설정」";
       } else if (!P0) {
         note = "실행 설정을 불러오는 중…";
       } else if (!S || !S.canvas || pend.length || prepareDrift.length) {
         main = ab; kind = "apply"; // 꺼짐은 단추가 가진 조건 그대로(이 Studio 의 실행·승인 처리 중) — 다른 창·탭의 Run 중에는 F3 전처럼 눌린다
-        const summary = pend.concat(prepareDrift.length ? [`실행 설정이 마지막 반영과 다름(${prepareDrift.map((d) => d.field).join(", ")}) — `
+        // 갈라짐 줄을 앞에(반영 확인 창과 같은 순서) — 두 줄만 보이므로 과금 안내가 미반영 사유에 밀려 잘리지 않게
+        const summary = (prepareDrift.length ? [`실행 설정이 마지막 반영과 다름(${prepareDrift.map((d) => d.field).join(", ")}) — `
           + (prepareDrift.some((d) => d.kind === "cell") ? "반영하면 새 생성 조건"
-            : prepareDrift.some((d) => d.kind === "calls") ? "반영하면 새 유료 호출이 생김(생성 승인 필요)" : "반영하면 대기 호출 조건 갱신")] : []);
+            : prepareDrift.some((d) => d.kind === "calls") ? "반영하면 새 유료 호출이 생김(생성 승인 필요)" : "반영하면 대기 호출 조건 갱신")] : []).concat(pend);
         note = summary.length ? summary.slice(0, 2).join(" · ") : "가져오기 전 — 반영을 먼저 하세요";
       } else if (running) {
         note = "실행 중 — 끝나면 다음 단계가 나옵니다";
