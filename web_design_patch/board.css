@@ -873,7 +873,8 @@ svg.marks .mx-outline, .dr-selected {
 #statusbar .proj, #statusbar .lhead > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #statusbar #proj, #statusbar #pipe-head { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #statusbar #pipe-head { flex-wrap: nowrap; min-width: 9em; }
-#statusbar #pipe-head > button { order: -1; flex: none; }
+#statusbar #pipe-head > button { order: -2; flex: none; }
+#statusbar #pipe-head > .lh-job { order: -1; } /* [취소] 가 '실행 중: …' 글 바로 앞에 붙어 보이게 */
 #statusbar .spacer { flex: 0; }
 #statusbar #layout-head, #statusbar #ref-head { flex: 0 0 auto; max-width: 100%; }
 #statusbar .status { white-space: normal; overflow-wrap: anywhere; }

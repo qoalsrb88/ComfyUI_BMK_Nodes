@@ -53351,8 +53351,8 @@ def forge_f3_frame_unit():
     check('#statusbar > button {' in block and '#statusbar button {' not in block, "F3U1 R6 단추형 배지 글꼴 보존")
     check('#statusbar #pipe-head { flex-wrap: nowrap; min-width: 9em; }' in block,
           "F3U1 수정3 R2 상태 줄 실행 머리 최소 폭 9em")
-    check('#statusbar #pipe-head > button { order: -1; flex: none; }' in block,
-          "F3U1 수정3 R2 취소·다시 계산 단추를 앞에 표시·폭 유지")
+    check('#statusbar #pipe-head > button { order: -2; flex: none; }' in block and '#statusbar #pipe-head > .lh-job { order: -1; }' in block,
+          "F3U1 수정3 R2 취소·다시 계산 단추를 앞에 표시·폭 유지(실행 중 글은 그 바로 뒤)")
     check('#pipe-panel:not([data-adv="1"]) .pp-adv { display: none; }' in block and '#pipe-panel .pp-tabs { display: none; }' in block,
           "F3U1 D353–354 고급·겹친 하위 탭 가리기")
     check(css.count('@media (max-width: 1399px)') == 1 and 'flex-wrap: wrap' in block and 'min-width: 0' in block
@@ -53538,6 +53538,13 @@ await scenario("F3U1 수정3 R1 실행 중 안내·미반영 우선",async()=>{
         &&dock(e).children[0].textContent==="레이아웃 변경";
     }
     e.S.running=false;h.render();r[`${server}-knownBeforeUnknown`]=dock(e).dataset.main==="apply"&&!main(e).disabled&&dock(e).textContent.includes("레이아웃 변경");
+    // 갈라짐 줄이 미반영 사유보다 앞(두 줄만 보인다 — 과금 안내가 잘리지 않게)
+    p.apply_pending=["레이아웃 변경","레퍼런스 변경"];h.PS.P.drift=[{section:"prepare",field:"calls_per_cell",kind:"calls",manifest:1,settings:2}];h.render();
+    r[`${server}-driftFirst`]=dock(e).children[0].textContent.startsWith("실행 설정이 마지막 반영과 다름(calls_per_cell) — 반영하면 새 유료 호출이 생김(생성 승인 필요) · ");
+    // 실행이 끝난 뒤 계획을 다시 받지 못함(옛 계획의 running + 계획 오류): '실행 중'이 아니라 [다시 계산] 안내
+    p.apply_pending=[];h.PS.P.drift=[];p.run.running=true;e.S.plan_v=sig;h.PS.planErr="다른 계획 계산이 끝나지 않았습니다 — 다시 계산";h.render();
+    r[`${server}-stalePlanRunning`]=!main(e)&&dock(e).textContent==="반영 상태를 확인하지 못했습니다 — [다시 계산]";
+    h.PS.planErr="";p.run.running=false;
     e.stop();
   }
   return r;
