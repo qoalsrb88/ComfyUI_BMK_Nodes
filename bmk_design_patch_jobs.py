@@ -109,6 +109,15 @@ def _validate_scope(prompt):
         if not base or _path(base) != _path(scope["input"]):
             raise ValueError
         root = _path(pl.store.project_root(base, project["project"]))
+        for key, node in prompt.items():
+            inputs = node["inputs"]
+            if key != pl.NODE_KEYS["project"]:
+                link = inputs.get("project")
+                # 앞선 노드 여부·연결 꼴은 _validate_prompt 가 검사했다. 핸들은 출력 0으로만 잇는다.
+                if not isinstance(link, list) or len(link) != 2 or link[1] != 0:
+                    raise ValueError
+            if any(isinstance(value, dict) for value in inputs.values()):
+                raise ValueError
         for role, names in (("import", ("psd_path", "refs_dir", "glossary_path")), ("cand", ("path",))):
             inputs = prompt.get(pl.NODE_KEYS[role], {}).get("inputs", {})
             for name in names:
@@ -151,7 +160,7 @@ def execute(prompt: dict, *, hidden: dict | None = None) -> dict:
             try:
                 if state is not None:
                     state["node"] = {"node_id": key, "node_type": kind}
-                    if state["closed"]:
+                    if state["closed"] or (state["draining"] and kind in (pl.CLASS["run"], pl.CLASS["draft"])):
                         raise compat.InterruptProcessingException()
                 cls = classes[kind]
                 for name in cls.INPUT_TYPES().get("hidden", {}):
@@ -208,7 +217,7 @@ def _error_message(exc, scope):
         message = type(exc).__name__
     home = (scope or {}).get("home")
     if compat.server_mode() and isinstance(home, str) and home:
-        pattern = r"[\\/]".join(re.escape(part) for part in re.split(r"[\\/]", home.rstrip("\\/")))
+        pattern = r"[\\/]+".join(re.escape(part) for part in re.split(r"[\\/]", home.rstrip("\\/")))
         if pattern:
             message = re.sub(pattern + r"(?![\w.-])", "<계정 폴더>", message, flags=re.IGNORECASE)
     return message
@@ -263,8 +272,8 @@ class JobRunner:
                 number = next(_NUMBERS)
             prompt_id = "j_" + secrets.token_hex(8)
             job = {"number": number, "prompt_id": prompt_id, "stage": stage, "scope": copy.deepcopy(scope),
-                   "home": home, "root": project, "prompt": copy.deepcopy(prompt), "outputs": {},
-                   "node": {"node_id": "", "node_type": ""}, "closed": False}
+                   "home": home, "root": project, "raw_root": root, "prompt": copy.deepcopy(prompt), "outputs": {},
+                   "node": {"node_id": "", "node_type": ""}, "closed": False, "draining": False}
             self._pending.append(job)
             self._condition.notify_all()
             return {"prompt_id": prompt_id, "number": number}
@@ -312,10 +321,12 @@ class JobRunner:
             self._closed = True
             self._pending.clear()
             active = list(self._running.values())
+            for job in active:
+                job["draining"] = True
             self._condition.notify_all()
         for job in active:
             try:
-                board.set_drain(job["root"])
+                board.set_drain(job["raw_root"])
             except Exception:
                 pass
         for thread in self._threads:

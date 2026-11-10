@@ -59230,8 +59230,15 @@ def _fj_probe(mode, output):
         assert dp.sam3 is None and "bmk_sam3_mask_layers" not in sys.modules
         assert "comfy.model_management" not in sys.modules and "folder_paths" not in sys.modules
         assert dp._sam3_ckpt_names() == [] and dp.folder_paths.models_dir == ""
-        assert dp.board._SAM3_CKPTS == [] and dp.board._qwen_dir() == os.path.join("", *dp._QWEN_DIR)
+        assert dp.board._SAM3_CKPTS == [] and dp.board._qwen_dir() == "", "FJ54 서버 Qwen 경로 없음"
         assert dp.board._OUTPUT_DIR == initial_output  # FJ49 서버 모드 주입: output 접근자는 부르지 않는다
+        legacy = str(output / "home" / "bmk_design_patch" / "legacy_qwen")
+        qwen_settings = jobs.pl.defaults(legacy)
+        qwen_settings["draft"]["vlm"] = "local_qwen/Qwen3-VL-8B-Instruct"
+        with patch.object(dp.dvlm, "draft_plan") as draft_plan:
+            qwen_plan = dp.board._draft_free(legacy, store.new_manifest("legacy_qwen"), qwen_settings)
+        assert qwen_plan["hash"] is None and "모델 경로 미설정" in qwen_plan["error"], "FJ54 옛 local_qwen 설정도 승인 해시 없음"
+        assert draft_plan.call_count == 0, "FJ54 local_qwen 계획 계산 전에 거절"
         for fn in (lambda: dp._project_root("a", ""), lambda: dp._output_dir("a"),
                    lambda: dp.BMKDesignPatchRefCut().run("", "")):
             try:
@@ -59677,7 +59684,8 @@ def _fj_scope_guard(jobs, out):
                     prompt["dp_import"]["inputs"][field] = value
                     invalid.append(prompt)
             candidate = copy.deepcopy(valid)
-            candidate["dp_cand"] = {"class_type": jobs.pl.CLASS["cand"], "inputs": {"path": str(other)}}
+            candidate["dp_cand"] = {"class_type": jobs.pl.CLASS["cand"],
+                                    "inputs": {"project": ["dp_project", 0], "path": str(other)}}
             invalid.append(candidate)
             if os.name == "nt":
                 prompt = copy.deepcopy(valid)
@@ -59705,6 +59713,20 @@ def _fj_scope_guard(jobs, out):
             expect_raises(lambda: jobs.execute(prompt), "FJ37 프로젝트 안 정션이 가리키는 다른 홈 거절")
             check(len(calls) == before, "FJ37 정션 우회도 실행 전 거절")
 
+            # 경로 위젯뿐 아니라 이미 열린 핸들을 가장한 리터럴도 노드 실행 전에 막는다.
+            for stage in ("apply", "export"):
+                for key in templates[stage]:
+                    if key == "dp_project":
+                        continue
+                    for value in ({"root": str(other)}, ["dp_project", 1], "리터럴", None):
+                        bad_link = copy.deepcopy(templates[stage])
+                        bad_link[key]["inputs"]["project"] = value
+                        expect_raises(lambda: jobs.execute(bad_link), "FJ53 Project 뒤 핸들은 앞 노드의 출력 0 연결만 허용")
+                literal = copy.deepcopy(templates[stage])
+                literal[next(reversed(literal))]["inputs"]["other"] = {"root": str(other)}
+                expect_raises(lambda: jobs.execute(literal), "FJ53 다른 입력의 dict 리터럴도 거절")
+            check(len(calls) == before, "FJ53 핸들 리터럴·다른 출력 번호·dict 는 첫 노드 실행 전 차단")
+
             runner = jobs.JobRunner()
             try:
                 sub = runner.submit(scope, str(root), "apply", foreign)
@@ -59721,6 +59743,8 @@ def _fj_scope_guard(jobs, out):
             try:
                 jobs.execute(foreign)
                 check(len(calls) > before, "FJ38 로컬 모드는 범위·경로 가드를 적용하지 않음")
+                jobs.execute(literal)
+                check(True, "FJ53 로컬 모드의 dict 입력은 기존대로 전달")
             finally:
                 jobs.board.reset_scope(token)
 
@@ -59858,7 +59882,7 @@ def _fj_close(jobs, out):
 
                 with patch.object(jobs.board, "set_drain", side_effect=drain) as stop:
                     runner.close(timeout=2 if behavior == "done" else 0.05)
-                stop.assert_called_once_with(jobs._path(root))
+                stop.assert_called_once_with(root)
                 record = runner.history(scope, root, active["prompt_id"])[active["prompt_id"]]
                 if behavior == "done":
                     check(record["status"]["completed"] and record["outputs"]["dp_run"]["text"] == ["저장 완료"],
@@ -59898,6 +59922,21 @@ def _fj_history_paths(jobs, out):
                       "FJ48 서버 홈 경로는 구분자·대소문자 무관하게 가림·홈 밖과 로컬은 보존")
             finally:
                 runner.close(timeout=1)
+    filename = scope["home"].replace("/", "\\") + "\\a.psd"
+    for error in (ValueError(repr(filename)), FileNotFoundError(2, "x", filename)):
+        for mode in ("1", ""):
+            with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": mode}), patch.object(jobs, "execute", side_effect=error):
+                runner = jobs.JobRunner()
+                try:
+                    sub = runner.submit(scope, root, "apply", {})
+                    record = _fj_wait(lambda: runner.history(scope, root, sub["prompt_id"]), "T3 오류 기록")[sub["prompt_id"]]
+                    actual = record["status"]["messages"][0][1]["exception_message"]
+                    plain = re.sub(r"[\\/]+", "/", actual).casefold()
+                    home_plain = re.sub(r"[\\/]+", "/", scope["home"]).casefold()
+                    check(actual == str(error) if not mode else (actual.count("<계정 폴더>") == 1
+                          and home_plain not in plain and "a.psd" in actual), "FJ52 repr·FileNotFoundError 의 두 겹 백슬래시 홈 경로 가림")
+                finally:
+                    runner.close(timeout=1)
 
 
 def _fj_injection():
@@ -59915,6 +59954,109 @@ def _fj_injection():
     check(any(isinstance(stmt, ast.If) and ast.dump(stmt.test) == ast.dump(ast.parse("not _STANDALONE", mode="eval").body)
               and len(stmt.body) == 1 and call(stmt.body[0], "set_output_dir") for stmt in tree.body),
           "FJ49 output 주입 한 줄만 로컬 모드 가드")
+    check(any(isinstance(stmt, ast.If) and ast.dump(stmt.test) == ast.dump(ast.parse("not _STANDALONE", mode="eval").body)
+              and len(stmt.orelse) == 1 and call(stmt.orelse[0], "set_qwen_dir")
+              and ast.dump(stmt.orelse[0].value.args[0]) == ast.dump(ast.Constant(None)) for stmt in tree.body),
+          "FJ54 Qwen 경로 비우기는 서버 모드 갈래에만 있음")
+
+
+def _fj_draining_nodes(jobs, out):
+    """T1: 종료 대기 중 무료 노드는 끝내고, 아직 시작하지 않은 Run·Draft 는 막는다."""
+    from unittest.mock import patch
+    home = out / "draining"
+    scope = _fj_scope(home)
+    root = str(home / "bmk_design_patch" / "p")
+    stages = {"run": ("project", "prepare", "run", "review"), "draft": ("project", "import", "draft"),
+              "apply": ("project", "import", "review"), "export": ("project", "compose", "export")}
+    for stage, slow in (("run", "prepare"), ("draft", "import"), ("apply", "import"), ("export", "compose"), ("run", "run")):
+        started, release = threading.Event(), threading.Event()
+        calls, states = [], []
+
+        class Node:
+            FUNCTION = "run"
+
+            @classmethod
+            def INPUT_TYPES(cls):
+                return {"hidden": {"unique_id": "UNIQUE_ID"}}
+
+            def run(self, unique_id, **kwargs):
+                calls.append(unique_id)
+                if unique_id == jobs.pl.NODE_KEYS[slow]:
+                    started.set()
+                    assert release.wait(8)
+                return {"ui": {"text": [unique_id]}, "result": ({},)}
+
+        prompt, previous = {}, None
+        for role in stages[stage]:
+            key = jobs.pl.NODE_KEYS[role]
+            inputs = {"project": "p", "base_dir": str(home)} if previous is None else {"project": [previous, 0]}
+            prompt[key] = {"class_type": jobs.pl.CLASS[role], "inputs": inputs}
+            previous = key
+        with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1"}), \
+                patch.object(jobs, "_node_classes", return_value={kind: Node for kind in jobs.pl.CLASS.values()}):
+            runner = jobs.JobRunner()
+            try:
+                active = runner.submit(scope, root, stage, prompt)
+                assert started.wait(8)
+
+                def drain(path):
+                    states.append(runner._running[active["prompt_id"]])
+                    check(states[-1]["draining"] and not states[-1]["closed"], "FJ50 drain 호출 전에 대기 중 유료 노드 차단 플래그 설정")
+                    release.set()
+
+                with patch.object(jobs.board, "set_drain", side_effect=drain):
+                    runner.close(timeout=2)
+                record = runner.history(scope, root, active["prompt_id"])[active["prompt_id"]]
+                if stage in ("run", "draft") and slow != stage:
+                    paid = jobs.pl.NODE_KEYS[stage]
+                    check(paid not in calls and record["status"]["messages"][0] ==
+                          ["execution_interrupted", {"node_id": paid, "node_type": jobs.pl.CLASS[stage]}]
+                          and jobs.pl.NODE_KEYS[slow] in record["outputs"], "FJ50 Run·Draft 앞에서 닫으면 유료 노드를 부르지 않음")
+                else:
+                    check(calls == list(prompt) and record["status"]["completed"], "FJ50 무료 작업·이미 시작한 Run 뒤 무료 노드는 정상 완료")
+                check(states and not states[0]["closed"] and not runner._threads[0].is_alive(), "FJ50 시간 초과 전에 노드 경계에서 종료")
+            finally:
+                release.set()
+                runner.close(timeout=1)
+
+
+def _fj_drain_root(jobs, out):
+    """T2: 직렬화는 실제 경로, 중단 요청은 실행 핸들과 같은 접수 경로를 쓴다."""
+    from unittest.mock import patch
+    scope = _fj_scope(out / "raw_home")
+    raw = str(out / "alias" / "bmk_design_patch" / "p")
+    real = str(out / "actual" / "bmk_design_patch" / "p")
+    original_realpath = os.path.realpath
+    started, release = threading.Event(), threading.Event()
+    calls = []
+
+    def mapped(path):
+        return real if path == raw else original_realpath(path)
+
+    def execute(prompt):
+        calls.append(prompt["i"])
+        started.set()
+        assert release.wait(8)
+        return {"outputs": {}}
+
+    with patch.object(jobs.os.path, "realpath", side_effect=mapped), patch.object(jobs, "execute", side_effect=execute):
+        runner = jobs.JobRunner(workers=2)
+        try:
+            active = runner.submit(scope, raw, "run", {"i": 1})
+            assert started.wait(8)
+            pending = runner.submit(scope, real, "apply", {"i": 2})
+            job = runner._running[active["prompt_id"]]
+            check(job["root"] == jobs._path(real) and job["root"] != os.path.normcase(os.path.abspath(raw))
+                  and runner.queue(scope, raw)["queue_pending"][0][1] == pending["prompt_id"]
+                  and calls == [1], "FJ51 다른 접수 경로라도 같은 실제 프로젝트는 직렬 실행")
+            with patch.object(jobs.board, "set_drain", side_effect=lambda path: release.set()) as drain:
+                runner.close(timeout=2)
+            check(drain.call_args_list == [((raw,), {})], "FJ51 set_drain 에는 submit 이 받은 원래 root 전달")
+            check(runner.history(scope, raw, active["prompt_id"])[active["prompt_id"]]["status"]["completed"]
+                  and runner.history(scope, real, pending["prompt_id"]) == {}, "FJ51 원래 root 로 기록 조회·대기 작업 폐기")
+        finally:
+            release.set()
+            runner.close(timeout=1)
 
 
 def forge_jobs_unit():
@@ -59971,6 +60113,8 @@ def forge_jobs_unit():
         _fj_close(jobs, out)
         _fj_history_paths(jobs, out)
         _fj_injection()
+        _fj_draining_nodes(jobs, out)
+        _fj_drain_root(jobs, out)
         root = str(out / "guards" / "bmk_design_patch" / "p")
         with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1", runner.MOCK_ENV: ""}):
             for fn in (lambda: runner.make_backend(root, None), lambda: runner.ComfyOrgBackend(None),
