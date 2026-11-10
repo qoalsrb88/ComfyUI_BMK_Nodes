@@ -12622,7 +12622,7 @@ _S0_261014 = Path(r"H:\ComfyUI-Easy-Install\comfy8189\input\bmk_design_patch\s0_
 
 
 # 마스크 모드 「대상」 둘째 줄(기준이 자동 마스크일 때 — 10/21 실사용 U-2)
-MASK_AUTO_ROW = "자동 마스크 = Analyze 가 후보와 원본 크롭의 색 차이(ΔE)로 만든 영역 — 대상인지와 무관: 엉뚱하게 바뀐 곳은 [지우기], 대상 안 구멍은 [살리기]"
+MASK_AUTO_ROW = "자동 마스크 = Analyze 가 후보와 원본 크롭의 색 차이(ΔE)로 만든 영역 — 대상인지와 무관: 엉뚱하게 바뀐 곳은 [지우개], 대상 안 구멍은 [브러시]"
 
 
 def _layout_rnd(v, q):
@@ -29850,7 +29850,10 @@ class El {
     return { contains: (c) => names().includes(c), add: (c) => set(c, true), remove: (c) => set(c, false),
       toggle: (c, on) => set(c, on === undefined ? !names().includes(c) : !!on) };
   }
-  append(...xs) { for (const x of xs) { x.parent = this; this.children.push(x); } }
+  append(...xs) { for (const x of xs) {
+    if (x.parent) x.parent.children = x.parent.children.filter((c) => c !== x);
+    x.parent = this; this.children.push(x);
+  } }
   replaceChildren(...xs) { for (const c of this.children) c.parent = null; this.children = []; this.own = ""; this.append(...xs); }
   addEventListener(type, fn) { (this.on[type] ??= []).push(fn); }
   fire(type, extra = {}) {
@@ -38002,7 +38005,7 @@ def _paid_js_studio():
     unw = "주의: 스펙 파일 1개에 초안·화풍 변경을 아직 못 씀(잠김) — 지금 승인하면 그 변경 없이 과금합니다."
     on_ = lambda h: [False, f"확인 창 뒤 ComfyUI 탭이 승인 템플릿을 큐에 넣음 — approve: {h}  only: {allids}"]
     busy_ = [True, "Run 승인 요청을 처리하는 중"]
-    late = ":늦게 온 결과 — Run 큐에 들어감 — ComfyUI 탭이 승인 템플릿을 제출함(진행은 머리줄)"
+    late = ":늦게 온 결과 — Run 큐에 들어감 — ComfyUI 탭이 승인 템플릿을 제출함(진행은 상태 줄)"
     # r1-14 Studio 가 결과를 모르고 끝냄(no_ack·timeout·tab_changed) = 머리 '결과 모름'·경고(큐에 들어갔을 수 있음 — '승인 안 됨'·빨강 아님)
     lost = "warn:Run 결과 모름 — ComfyUI 탭에서 결과를 받지 못함 — 이미 큐에 들어갔을 수 있으니 ComfyUI 큐를 확인(다시 보내지 않음)"
     lost_row = ("앞서 보낸 Run 승인(승인 코드 3f9a1c2b7d10)의 결과를 모름 — 이미 ComfyUI 큐에 들어갔을 수 있음: 다시 보내기 전에 ComfyUI 큐 확인")
@@ -38043,7 +38046,7 @@ def _paid_js_studio():
               f"결과를 기다리는 동안 두 승인 단추·반영을 끔(이 Studio 의 유료 요청은 하나씩), 머리줄에 기다림 {a['during']}")
         check(len(a["msgs"]) == 1 and sent(a["msgs"][0], "run", "3f9a1c2b7d10", allids, "생성 승인 4건 ≈ $2.40–3.16"),
               f"승인 메시지 = 정본 messages bmk-dp-approve 모양(_pl_shape)·hash·only = 지금 계획 값·prompt 없음 {a['msgs']} {[shape(m) for m in a['msgs']]}")
-        check(a["ok"]["toast"] == ":Run 큐에 들어감 — ComfyUI 탭이 승인 템플릿을 제출함(진행은 머리줄)"
+        check(a["ok"]["toast"] == ":Run 큐에 들어감 — ComfyUI 탭이 승인 템플릿을 제출함(진행은 상태 줄)"
               and a["ok"]["stored"] == {"stage": "run", "pid": "pid-run", "number": None} and "실행 중: Run(run)" in a["ok"]["head"]
               and off(a["ok"]["run"], "이 Studio 의 Run(run)"),
               f"approved ok = 그 prompt_id 를 이 Studio 의 실행으로(sessionStorage 이어 받기·머리줄 진행 — 무료 큐와 같음), 실행 중엔 승인 끔 {a['ok']}")
@@ -38838,7 +38841,7 @@ def _paid_js_e2e():
     ua = ["deadbeef0000"] * 2  # world() 의 사용자 Draft·Run approve 보초
     run_what, draft_what = "생성 승인 4건 ≈ $2.40–3.16", "초안 승인 1크롭 ≈ 27(최대 47) 크레딧"
     stale = next(e for e in R["errors"]["409"] if e["reason"] == "stale")
-    queued = ":{} 큐에 들어감 — ComfyUI 탭이 승인 템플릿을 제출함(진행은 머리줄)"
+    queued = ":{} 큐에 들어감 — ComfyUI 탭이 승인 템플릿을 제출함(진행은 상태 줄)"
     blocked = "Studio 승인을 제출하는 중이라 이 큐 제출을 막았습니다(과금 없음) — 다시 큐에 넣으세요"
     title = "확인 창 뒤 ComfyUI 탭이 승인 템플릿을 큐에 넣음 — approve: {}  only: " + only
 
@@ -42994,7 +42997,8 @@ function maskPanel() {
     exit: () => { P.calls.exit += 1; }, refresh: () => { P.calls.refresh += 1; }, seams: () => P.viewer.seamsObj, select: (k, f) => P.calls.select.push([k, f]),
     pick: async (t, k) => { P.calls.pick.push([t.key, k]); return P.pick ? P.pick() : { ok: true }; }, ranText: (x) => `${x.done} ${x.via}` });
   P.rows = () => P.panel.all().filter((e) => e.classList.contains("pp-row")).map((e) => e.textContent);
-  P.B = (label) => P.panel.all().find((e) => e.tagName === "BUTTON" && e.textContent === label) || null;
+  P.B = (label, section = null) => (section ? P.panel.children.find(e => e.children[0]?.textContent === section) : P.panel)
+    ?.all().find((e) => e.tagName === "BUTTON" && e.textContent === label) || null;
   P.key = (code, m) => P.ed.onKey(Object.assign({ code, key: code, repeat: false, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false }, m || {}));
   P.count = (p, kind) => srv.log.filter((x) => x.path === p && (!kind || x.q.kind === kind)).length;
   return P;
@@ -43051,10 +43055,14 @@ await scenario("panel", async () => {
   let release;
   srv.hold = new Promise((ok) => { release = ok; });
   srv.save.push([409, MA["POST /mask/save"].errors["409"][2]]);
+  const sessionReady = ["되돌리기", "전체 지우기"].every(l => B(l, "적용 전 획") && !B(l, "적용 전 획").disabled);
   key("Enter");
   await sleep(10);
-  r.applying = { row: rows().find((t) => t.startsWith("적용 중")) || null,
-    disabled: ["실행 취소", "적용", "버리기", "위 가장자리 페이드", "전체 페더", "이전 버전으로"].map((l) => (B(l) ? B(l).disabled : null)),
+  r.applying = { sessionReady, row: rows().find((t) => t.startsWith("적용 중")) || null,
+    disabled: ["되돌리기", "적용", "전체 지우기", "위 가장자리 페이드", "전체 페더", "이전 버전으로"].map((l) => {
+      const b = B(l, ["되돌리기", "적용", "전체 지우기"].includes(l) ? "적용 전 획" : null);
+      return b ? b.disabled : null;
+    }),
     brush: viewer.ed.pointerdown({ cx: 600, cy: 2900, shiftKey: false }), undoKey: key("KeyZ", { ctrlKey: true }), pending: ed.pending() };
   // 적용 중 대상 바꾸기(N·목록) 거절 — 받으면 적용 성공 길이 옛 대상의 값·file 을 새 대상 세션에 씀
   Object.assign(r.applying, { go: (await ed.go({ key: K14, seam: null })), goToast: toasts.at(-1), confirms: confirms.length });
@@ -43130,7 +43138,7 @@ await scenario("panel", async () => {
   r.again.zero = { pending: ed.pending(), behind: behindRow(), button: !!B("다시 받기"), gets: P.count("mask") - g1 };
   key("KeyY", { ctrlKey: true });
   const n1 = [P.count("mask"), P.count("mask/img", "edit")];
-  B("버리기").fire("click"); await Promise.resolve(); await Promise.resolve();
+  B("전체 지우기", "적용 전 획").fire("click"); await Promise.resolve(); await Promise.resolve();
   raf();  // U3 3차 검증: 브라우저에선 [버리기]의 rAF 가 다시 열기보다 먼저 돎(연 판 합성) — 다시 연 뒤 겹침 전체를 서버 판으로 다시 그려야 함
   const pDisc = puts.length;
   await until(() => P.count("mask/img", "edit") > n1[1] && !behindRow().length);
@@ -43908,7 +43916,7 @@ await scenario("panelR2", async () => {
   await sleep(5);
   r.starStroke = { confirm: confirms.pop() || null, pick: calls.pick.length, pending: ed.pending() && ed.pending().n };
   P.answer = true;
-  B("버리기").fire("click"); await sleep(0);
+  B("전체 지우기", "적용 전 획").fire("click"); await sleep(0);
   confirms.pop();
   // tests-r2-05: 패널 6 이음매 줄 누르기(지금 대상) = 그 구간으로 2:1·선택 구간(줄 강조·구간 페이드 켬)
   const nLook = viewer.looks.length;
@@ -44094,7 +44102,7 @@ await scenario("panelR3", async () => {
     raf();
     r.viewKeys.push([code, ret, ended, puts.length - p1]);
   }
-  B("버리기").fire("click"); await sleep(0);
+  B("전체 지우기", "적용 전 획").fire("click"); await sleep(0);
   confirms.pop();
   // tests-r3-02: 보드 쓰기 실패(null — 보드가 다른 쓰기 중·409·네트워크) = 대상·세션 그대로
   srv.alts.push([200, MA["GET /mask/alts"].ok]);
@@ -44115,12 +44123,16 @@ await scenario("panelR3", async () => {
   P.pick = () => gp.p.then(() => ({ ok: true }));
   const s0 = P.count("mask/save");
   const t0 = toasts.length;
+  const sessionReady = ["되돌리기", "전체 지우기"].every(l => B(l, "적용 전 획") && !B(l, "적용 전 획").disabled);
   if (B("이 후보를 ★")) B("이 후보를 ★").fire("click"); await sleep(0);  // 쓰기 실패에도 대상을 바꿨으면(회귀) 표가 없음 — pickFail 이 그 이유를 적음
   await sleep(5);
   const brush = viewer.ed.pointerdown({ cx: 650, cy: 2900, shiftKey: false });
   viewer.ed.pointerup({});
-  r.pickHold = { brush, enter: key("Enter"), undo: key("KeyZ", { ctrlKey: true }), go: (await ed.go({ key: K14, seam: null })), leave: (await ed.leave()), n: n(),
-    off: ["적용", "버리기", "실행 취소", "이 후보를 ★"].map((l) => (B(l) ? B(l).disabled : null)) };
+  r.pickHold = { sessionReady, brush, enter: key("Enter"), undo: key("KeyZ", { ctrlKey: true }), go: (await ed.go({ key: K14, seam: null })), leave: (await ed.leave()), n: n(),
+    off: ["적용", "전체 지우기", "되돌리기", "이 후보를 ★"].map((l) => {
+      const b = B(l, l === "이 후보를 ★" ? null : "적용 전 획");
+      return b ? b.disabled : null;
+    }) };
   await sleep(10);
   Object.assign(r.pickHold, { saves: P.count("mask/save") - s0, toasts: toasts.slice(t0), confirms: confirms.splice(0).length, editor: !!viewer.ed });
   gp.go();
@@ -44247,7 +44259,7 @@ await scenario("panelR3b", async () => {
   const Hp = maskPanel();
   (await Hp.ed.enter(maskState(), { key: K15, seam: null }));
   await ready(Hp);
-  const xb = Hp.B("살리기");
+  const xb = Hp.B("브러시");
   xb.fire("pointerdown", { buttons: 1 });
   Hp.viewer.seamsObj = { sig: Hp.seams.sig, segments: Hp.seams.segments.concat([Object.assign(clone(Hp.seams.segments[0]), { y0: 2600, y1: 2650 })]) };
   Hp.ed.seamsChanged();
@@ -44260,7 +44272,7 @@ await scenario("panelR3b", async () => {
     tool: Hp.panel.all().filter((e) => e.tagName === "BUTTON" && e.classList.contains("on")).map((e) => e.textContent) };
   Hp.panel.fire("pointerdown", { buttons: 1 });
   Hp.panel.fire("pointermove", { buttons: 0 });
-  const b2 = Hp.B("살리기");
+  const b2 = Hp.B("브러시");
   Hp.ed.seamsChanged();
   r.held.missedUp = Hp.panel.contains(b2);
   (await Hp.ed.leave());
@@ -44402,7 +44414,7 @@ await scenario("panelR3b", async () => {
               and e["paths"] == ["mask", "mask/img:base", "mask/img:edit", "mask/img:under", "mask/img:patch", "mask/img:over"],
               f"K 진입: 뷰어 편집기 훅·겹침 캔버스(box)·전체 합성 한 번, 보드 선택 = 편집 대상, 대상 줄(크롭·타깃·c·★·기준·창·z)·편집 줄, 왼쪽 크롭 칩 {e}")
         k = pn["keys"]
-        check(k["x"] is True and k["tool"] == ["살리기", "폭 64"] and k["sliders"] == [dict(text="크기px", value=58), dict(text="경도", value=.4), dict(text="흐름", value=1), dict(text="페더 (px)px", value=4)]
+        check(k["x"] is True and k["tool"] == ["브러시", "폭 64"] and k["sliders"] == [dict(text="크기px", value=58), dict(text="경도", value=.4), dict(text="흐름", value=1), dict(text="페더 (px)px", value=4)]
               and k["q"] == "보기: 처음 마스크(Q 누르는 중)" and k["view"] == "보기: 처음|편집 슬라이더(S — 왼쪽 = 처음 마스크) · 마스크(M)" and k["review"] == [False] * 6,
               f"키: X 지우기 ↔ 살리기, ] 크기 ×1.2, Shift+[ 경도 −0.1, Q 누르는 동안 기준, M·S 보기, 검토·뷰어 키는 받지 않음(board.js 가 끔·뷰어로) {k}")
         sk = pn["stroke"]
@@ -44415,7 +44427,7 @@ await scenario("panelR3b", async () => {
               and pn["leaveNo"]["ok"] is False and pn["leaveNo"]["editor"] and "은 이 창에만 남습니다" in pn["leaveNo"]["confirm"],
               f"적용 안 한 획: 다른 후보로(목록·N·이음매) = 확인 창(아니오면 그대로), 나가기 = 확인 창(세션은 이 창에 남음) {pn['goNo']} {pn['leaveNo']}")
         ap = pn["applying"]
-        check(ap["row"] == "적용 중… (획 1)" and ap["disabled"] == [True] * 6 and ap["brush"] is False and ap["undoKey"] is True and ap["pending"]["n"] == 1
+        check(ap["sessionReady"] is True and ap["row"] == "적용 중… (획 1)" and ap["disabled"] == [True] * 6 and ap["brush"] is False and ap["undoKey"] is True and ap["pending"]["n"] == 1
               and ap["go"] is False and ap["goToast"] == "warn:적용·되돌리기·★ 바꾸기를 처리하는 중 — 끝난 뒤 바꾸세요" and ap["confirms"] == 0,
               f"적용 중: 실행 취소·적용·버리기·페이드·페더·이전 버전 단추 끔, 붓 안 됨(왼쪽 끌기는 화면 이동), Ctrl+Z 무시, 대상 바꾸기 거절(확인 창 없이) {ap}")
         check(ap.get("leave") is False and ap.get("leaveToast") == "warn:적용·되돌리기·★ 바꾸기를 처리하는 중 — 끝난 뒤 나가세요" and ap.get("leaveConfirms") == 0
@@ -44767,7 +44779,7 @@ await scenario("panelR3b", async () => {
                                  "on": True},
               f"3차 tests-r3-02: [이 후보를 ★] 의 보드 쓰기 실패(null — 다른 쓰기 중·409·네트워크) = 대상·세션 그대로(GET /mask 없음·획 남음·단추 다시 켬) "
               f"{p3['pickFail']}")
-        check(p3["pickHold"] == {"brush": False, "enter": True, "undo": True, "go": False, "leave": False, "n": 1, "off": [True] * 4, "saves": 0,
+        check(p3["pickHold"] == {"sessionReady": True, "brush": False, "enter": True, "undo": True, "go": False, "leave": False, "n": 1, "off": [True] * 4, "saves": 0,
                                  "toasts": [lock + "바꾸세요", lock + "나가세요"], "confirms": 1, "editor": True,
                                  "after": {"n": 0, "gets": [K15B], "saves": 0, "select": [K15B, False]}},
               f"3차 session-r3-01: [이 후보를 ★] 의 보드 쓰기(POST /pick + state) 동안 세션 잠금 — 붓(왼쪽 끌기 = 화면 이동)·Enter·실행 취소·대상 바꾸기·나가기 "
@@ -44797,7 +44809,7 @@ await scenario("panelR3b", async () => {
         fl = p3b["flushLost"]
         check(fl["queued"] > 0 and {k: v for k, v in fl.items() if k != "queued"} == {"threw": None, "layer": None, "err": True},
               f"3차 session-r3-03 (8): 되돌린 뒤 다시 열기가 래스터를 못 받음(세션 없음) — 3층을 다시 받는 사이 rAF 가 돌아도 합성하지 않음(예외 없음), 겹침 뗌 {fl}")
-        check(p3b["held"] == {"kept": True, "listDuring": "015_치마밑단_주름편집 1이음매 2", "list": "015_치마밑단_주름편집 1이음매 3", "tool": ["살리기", "폭 64"],
+        check(p3b["held"] == {"kept": True, "listDuring": "015_치마밑단_주름편집 1이음매 2", "list": "015_치마밑단_주름편집 1이음매 3", "tool": ["브러시", "폭 64"],
                               "missedUp": False},
               f"3차 ui-r3-01: 포인터가 눌린 동안 새 이음매·state 로 목록·패널을 다시 만들지 않음(누른 단추가 그대로 — click 이 감), 놓은 뒤 그림, pointerup 을 놓치면 "
               f"버튼 없는 pointermove 가 놓은 것으로 {p3b['held']}")
@@ -45350,7 +45362,8 @@ def polish5_adjust_unit():
     cut += [harness[:harness.index('// J-K1 공용 표')], harness[harness.index('function maskState()'):harness.index('await scenario("panel",')]]
     test_js = r'''
 await scenario("adjust", async () => {
-  const P = maskPanel(), { srv, ed, viewer, B } = P;
+  const P = maskPanel(), { srv, ed, viewer } = P;
+  const B = (label, section = null) => label === "되돌리기" ? controls()?.all().find(e => e.tagName === "BUTTON" && e.textContent === label) : P.B(label, section);
   const info = maskInfo(K15);
   info.adjust = null;
   srv.info[K15] = info;
@@ -45440,7 +45453,7 @@ await scenario("adjust", async () => {
   slider().value = 4; slider().fire("input");
   await new Promise((r) => setTimeout(r, 350));
   result.pendingNoWrite = P.count("mask/adjust") === n;
-  B("버리기").fire("click");
+  B("전체 지우기", "적용 전 획").fire("click");
   await until(() => !ed.pending() && !ed._test.M.busy);
   srv.fail = true;
   slider().value = 4; slider().fire("input");
@@ -46223,7 +46236,7 @@ await scenario("xform", async () => {
   result.arrows = P.key("ArrowLeft") && P.key("ArrowDown", {shiftKey: true});
   await save();
   result.arrows = result.arrows && info.adjust.dx === -1 && info.adjust.dy === 10;
-  B("되돌리기").fire("click");
+  B("되돌리기", "후보 보정").fire("click");
   await until(() => idle() && info.adjust.dx === 0 && info.adjust.dy === 0);
   result.undoTogether = info.adjust.blur === 2 && !info.adjust.flip_h;
   const focused = input("dx"); focused.focus(); focused.fire("focus");
@@ -46298,8 +46311,8 @@ await scenario("xformRecovery", async () => {
       srv.maskError = error;
       await ed._test.refreshInfo();
     }
-    await until(() => !M.busy && M.recovery && B(label));
-    result[`${op}Controls`] = P.panel.textContent.includes(error.error) && !B(label).disabled
+    await until(() => !M.busy && M.recovery && B(label, "대상"));
+    result[`${op}Controls`] = P.panel.textContent.includes(error.error) && !B(label, "대상").disabled
       && !P.panel.all().some(e => e.dataset.xform);
     let release;
     srv.hold = new Promise(r => { release = r; });
@@ -46312,15 +46325,15 @@ await scenario("xformRecovery", async () => {
     };
     const beforeGet = P.count("mask");
     if (op === "undo") srv.rejectUndo = true;
-    B(label).fire("click");
+    B(label, "대상").fire("click");
     await until(() => M.busy === "adjust");
     result[`${op}Locked`] = !(await ed.leave()) && !(await ed.go({key: K14}));
     release();
     if (op === "undo") {
       await until(() => !M.busy && P.toasts.some(t => String(t).includes("되돌리면")));
-      result.undoRejected = M.recovery.adjust.at === old.at && !B(label).disabled;
+      result.undoRejected = M.recovery.adjust.at === old.at && !B(label, "대상").disabled;
       srv.rejectUndo = false;
-      B(label).fire("click");
+      B(label, "대상").fire("click");
     }
     await until(() => !M.busy && !M.err && M.m && !M.recovery);
     const body = srv.log.filter(r => r.path === "mask/adjust").pop().body;
@@ -46333,7 +46346,8 @@ await scenario("xformRecovery", async () => {
   P.srv.maskError = {error: "편집할 창 없음", adjust: null};
   (await P.ed.enter(maskState(), {key: K15}));
   await until(() => !P.ed._test.M.busy && P.ed._test.M.err);
-  result.noRecord = !P.B("변형 없음") && !P.B("보정 없음") && !P.B("되돌리기");
+  result.noRecord = !P.B("변형 없음") && !P.B("보정 없음")
+    && !P.panel.all().some(e => e.tagName === "BUTTON" && e.textContent === "되돌리기" && !e.title.startsWith("적용 전 획 —"));
   (await P.ed.leave());
   return result;
 });
@@ -46958,12 +46972,12 @@ await scenario("b7Fixes",async()=>{
   const buttons=()=>P.panel.all().filter(e=>e.tagName==="BUTTON");
   r.pending=M.pending()>0;
   r.inlineApply=buttons().filter(b=>b.textContent==="적용 (Enter)").length===1&&!buttons().find(b=>b.textContent==="적용 (Enter)").disabled;
-  r.inlineDiscard=buttons().filter(b=>b.textContent==="버리기").length===2;
+  r.inlineDiscard=buttons().filter(b=>b.textContent==="전체 지우기").length===2;
   r.hint=P.panel.all().some(e=>e.textContent==="자동 손질(가장자리 페이드·이음매 페이드·전체 페더·처음 마스크로)도 적용 전 획으로 셉니다");
   B("변형").fire("click");const n=P.toasts.length;P.down(24,20);
-  r.toast=P.toasts.length===n+1&&P.toasts.at(-1).includes("「후보 보정」 칸 [적용 (Enter)]·[버리기]");
+  r.toast=P.toasts.length===n+1&&P.toasts.at(-1).includes("「후보 보정」 칸 [적용 (Enter)]·[전체 지우기]");
   M.discard();B("붓").fire("click");P.raf();
-  r.cleared=!buttons().some(b=>b.textContent==="적용 (Enter)")&&buttons().filter(b=>b.textContent==="버리기").length===1;
+  r.cleared=!buttons().some(b=>b.textContent==="적용 (Enter)")&&buttons().filter(b=>b.textContent==="전체 지우기").length===1;
   (await ed.leave());return r;
 });
 console.log(JSON.stringify(out));
@@ -48335,6 +48349,7 @@ def polish4_check_unit():
 const fs = require("fs"), vm = require("vm"), assert = require("assert");
 class E {
   constructor(tag) { this.tagName = tag; this.children = []; this.events = {}; this.attrs = {}; this.open = false; }
+  get classList() { return { contains: name => String(this.className || "").split(" ").includes(name) }; }
   replaceChildren(...children) { this.children = children; }
   append(...children) { this.children.push(...children); }
   addEventListener(name, fn) { this.events[name] = fn; }
@@ -48344,7 +48359,7 @@ class E {
   querySelectorAll() { return this.children.filter((c) => c.className === "pp-sec"); }
   scrollIntoView() { this.scrolled = true; }
 }
-const ctx = { window: {}, document: { createElement: (tag) => new E(tag) } };
+const ctx = { window: {}, document: { createElement: (tag) => new E(tag) }, modeText: local => local };
 vm.createContext(ctx);
 vm.runInContext(fs.readFileSync(process.argv[2], "utf8"), ctx);
 vm.runInContext(fs.readFileSync(process.argv[3], "utf8"), ctx);
@@ -48604,7 +48619,7 @@ test("순수 판정·힌트·DOM 이동 인자·접힘 메모리·선택 단계�
 // 실제 renderPanel 의 유일한 삽입 블록을 실행해 연결·스크롤도 확인(기존 비용/승인 UI 의 하네스와 독립).
 test("renderPanel 삽입 블록: 실제 opts·섹션 이동·설정 분기 뒤", async () => {
   const src = fs.readFileSync(process.argv[3], "utf8"), start = src.indexOf("      if (window.DPChecklist) {");
-  const end = src.indexOf("      // 설정", start), block = src.slice(start, end);
+  const end = src.indexOf("      // 설정", start), block = "{\n" + src.match(/^      const prepareDrift = .*$/m)[0] + "\n" + src.slice(start, end) + "\n}";
   assert(start > src.indexOf("function renderPanel"));
   const gateStart = src.indexOf("    function confirmOf(P0) {"), gateEnd = src.indexOf("    function busyNow()", gateStart);
   vm.runInContext(src.match(/  const GATE_SECTIONS = .*;/)[0] + "\n" + src.slice(gateStart, gateEnd), ctx);
@@ -49301,13 +49316,13 @@ def polish2_unit():
     nav = bh[bh.index('<nav id="modebar"'):bh.index("</nav>")]
     tabs = re.findall(r'<button type="button" role="tab" id="(btn-[a-z]+)" class="tab"[^>]*>([^<]+) <span class="step-state">', nav)
     check(tabs == [("btn-pipe", "① 준비"), ("btn-edit", "② 크롭"), ("btn-refs", "③ 레퍼런스"), ("btn-prompt", "④ 프롬프트"), ("btn-generate", "⑤ 생성"), ("btn-review", "⑥ 검토"), ("btn-mask", "⑦ 마스크")]
-          and bh.index("</header>") < bh.index('<nav id="modebar"') < bh.index("<main"),
-          f"D54 둘째 줄 단계 7개(용어표 A1–A5 — 검토도 탭), 머리줄 아래·본문 위 {tabs}")
-    check(not any(f'id="{i}"' in head for i in ("btn-edit", "btn-refs", "btn-pipe", "btn-mask", "mode-title"))
-          and 'id="mode-title"' in bh[bh.index('<div id="keybar"'):] and 'id="btn-keys"' in nav
+          and bh.index('<header id="top">') < bh.index('<nav id="modebar"') < bh.index("</header>") < bh.index("<main"),
+          f"D54·D349 머리줄 안 단계 7개(용어표 A1–A5 — 검토도 탭) {tabs}")
+    check(all(f'id="{i}"' in head for i in ("btn-edit", "btn-refs", "btn-pipe", "btn-mask")) and 'id="mode-title"' not in head
+          and 'id="mode-title"' in bh[bh.index('<div id="keybar"'):] and 'id="btn-keys"' in bh[bh.index('<footer id="statusbar"'):bh.index('</footer>')]
           and bh.index("</nav>") < bh.index('<div id="keybar"') < bh.index("<main")
           and re.search(r'id="btn-viewer"[^>]*>뷰어 ▣</button>', head) is not None,
-          "머리줄에는 모드 단추가 없고(탭 줄로), 모드 설명·⌨ 는 탭 줄에, 칩 줄은 그 아래 자기 줄, [뷰어 ▣](A6)는 머리줄 오른쪽 그대로")
+          "머리줄 단계·뷰어, 아래 상태 줄 ⌨, 모드 설명·칩은 머리줄 아래 자기 줄")
     check(all(f'on("btn-{a}", () => goMode({b}));' in bj for a, b in (("review", "null"), ("edit", '"edit"'), ("refs", '"refs"'),
                                                                      ("pipe", '"prepare"'), ("mask", '"mask"')))
           and "setEditing(!editing)" in bj and "setMask(!maskShown)" in bj,
@@ -49383,6 +49398,263 @@ def polish2_unit():
 def forge_f3_theme_unit():
     """Forge F3 갈래 T — 테마(CSS 정적 검사). 명세 _proto/STUDIO_FORGE_F3_SPEC.md §4.1·§5. --quick 포함."""
     section("Forge F3-T — 테마 (forge_f3_theme_unit)")
+    path = PKG / "web_design_patch" / "board.css"
+    css = path.read_text(encoding="utf-8")
+    code = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+
+    def style(selector, source=code):
+        # 같은 선택자를 나눠 쓴 기존 규칙도 모아 검사한다(브라우저 캐스케이드 검사는 아님).
+        result = {}
+        for selectors, body in re.findall(r"([^{}]+)\{([^{}]*)\}", source):
+            if selector in (s.strip() for s in selectors.split(",")):
+                result.update((k.strip(), v.strip()) for k, v in re.findall(r"([^:;]+):([^;]+);", body))
+        return result
+
+    def has_style(selector, expected, source=code):
+        actual = style(selector, source)
+        check(all(actual.get(k) == v for k, v in expected.items()), f"F3 테마 {selector}: {expected}")
+
+    # D345: 공용 변수 값·고정 기능색은 각각 독립적으로 확인한다.
+    palette = {
+        "--bg": "#09090b", "--panel": "#18181b", "--panel2": "#27272a", "--line": "#3f3f46",
+        "--line2": "#52525b", "--text": "#e4e4e7", "--dim": "#a1a1aa", "--well": "#09090b",
+        "--accent": "#dfe104", "--on-accent": "#09090b", "--accent-soft": "rgba(223, 225, 4, .10)",
+        "--info": "#4da3ff", "--warn": "#ffa24d", "--star": "#ffc940", "--slice": "#ffa24d",
+        "--wait": "#b4b4bc", "--bad": "#ff5d5d", "--ok": "#46d17e", "--mock": "#b67cff", "--reg": "#4dd6e8",
+        "--radius": "8px", "--radius-sm": "6px", "color-scheme": "dark",
+    }
+    for name, value in palette.items():
+        has_style(":root", {name: value})
+    for old in ("#22314a", "#0e0f12", "#0b0c0f", "#9ccbff", "#364b62", "#80add8", "#3b5a85", "#ffd477", "--muted"):
+        check(old not in css.lower(), f"D345 옛 테마 값 없음: {old}")
+    check(css.lower().count("#4da3ff") == 1, "D345 옛 강조 파랑은 --info 정의 한 곳뿐")
+    for selector in (".frame", ".tile .imgbox", "#viewer", "#ref-view", ".rg-frame", ".rf-bf", ".rf-ct", ".pp-prompt",
+                     '#layout-panel input[type="text"]', '#ref-panel input[type="text"]', '#pipe-panel input[type="text"]',
+                     '.rf-dialog-box input[type="text"]', '#mask-panel .rf-slider input[type="number"]',
+                     ".projects-search", '.projects-field input[type="text"]'):
+        has_style(selector, {"background": "var(--well)"})
+    for selector in (".dr-menu", ".export-menu > div"):
+        has_style(selector, {"background": "var(--panel)", "border": "1px solid var(--line2)"})
+    has_style(".dr-thumb", {"background-color": "var(--well)"})
+    has_style(".mpreview", {"border": "1px solid var(--line)"})
+    has_style("#p-cand", {"border-color": "var(--line2)"})
+    has_style("svg.marks .rpt", {"stroke": "var(--well)"})
+    has_style(".clabel", {"background": "rgba(9, 9, 11, .82)"})
+    has_style("svg.marks text", {"stroke": "rgba(9, 9, 11, .85)"})
+    has_style(".dp-env-block", {"background": "rgba(9, 9, 11, .96)"})
+    has_style(".frame.loading::after", {"border": "3px solid var(--text)"})
+    has_style(".vbusy", {"color": "var(--text)"})
+    has_style("#target-list li.crop.cur .tname", {"color": "var(--text)"})
+    has_style(".rf-deleted > summary", {"color": "var(--dim)"})
+
+    # D346 수정 1: 채움은 지정된 실행 단추에만, 절에 남은 단추·유료 승인은 보조 꼴이다.
+    has_style("button.primary", {"background": "var(--panel2)", "color": "var(--text)", "border-color": "var(--accent)"})
+    check(style("button.primary").get("background") != "var(--accent)", "D346 기본 primary 는 노랑 채움 아님")
+    primary = (
+        "button.dp-main", "#pipe-panel .pp-dock button.dp-main",
+        "#layout-panel .lp-btns button.primary", "#ref-panel .lp-btns button.primary", "#mask-panel .lp-btns button.primary",
+        ".dp-dialog .lp-btns button:first-child:not(.danger)", ".dp-env-block button",
+    )
+    for selector in primary:
+        has_style(selector, {"background": "var(--accent)", "color": "var(--on-accent)", "border-color": "var(--accent)", "font-weight": "700"})
+        has_style(selector + ":disabled", {"background": "var(--panel2)", "color": "var(--dim)", "border-color": "var(--line)", "opacity": "1"})
+    filled = set()
+    pulse = set()
+    waiting_marks = set()
+    for selectors, body in re.findall(r"([^{}]+)\{([^{}]*)\}", code):
+        names = {s.strip() for s in selectors.split(",")}
+        if re.search(r"(?:^|;)\s*background(?:-color)?:\s*var\(--accent\)\s*;", body):
+            filled.update(s for s in names if re.search(r"\bbutton\b|\.(?:primary|dp-main)\b", s))
+        if re.search(r"(?:^|;)\s*animation(?:-name)?:[^;]*\bdp-pulse\b", body):
+            pulse.update(names)
+        if re.search(r'content:\s*"◌ "', body):
+            waiting_marks.update(names)
+    check(filled == set(primary), f"D346 채움 단추 선택자는 허용 목록만(실행 절·일반 승인 상자 제외): {sorted(filled)}")
+    for unused in (".rf-dialog .lp-btns button.primary", ".projects-home button.primary"):
+        check(unused not in code, f"R6 실제 요소가 없는 채움·disabled 선택자 제거: {unused}")
+    check(not style("button.primary:disabled"), "D346 보조 primary 전체에 채움 단추의 disabled 모양을 적용하지 않음")
+    # 수정 3차 R5: 규칙이 빠져도 묶음을 끊지 않고 해당 단정만 실패시킨다.
+    dock_rule, primary_rule = "#pipe-panel .pp-dock button.dp-main", "button.primary {"
+    check(dock_rule in code and primary_rule in code and code.index(dock_rule) > code.index(primary_rule),
+          "D346 실행 줄의 주 단추는 기본 primary 뒤에서 구체적으로 덮어씀")
+    has_style(".dp-main", {"width": "100%", "min-height": "40px"})
+    for selector in ("button.on", 'button[aria-pressed="true"]', "button.sel", ".keybar .kchip.held", ".vbar button.on",
+                     ".lp-targets .lt button.on", ".lp-btns button.on", "#layout-panel button.sel",
+                     '#mask-panel .mc-adjust button[aria-pressed="true"]', "#target-list li.sel", "#layout-list li.sel",
+                     "#ref-list li.sel", "#mask-list li.sel", "#pipe-list li.sel"):
+        has_style(selector, {"background": "var(--accent-soft)", "border-color": "var(--accent)", "color": "var(--text)"})
+    has_style("button:hover", {"border-color": "var(--line2)"})
+    has_style(":focus-visible", {"outline": "2px solid var(--accent)"})
+    check("outline: none" not in code, "D346 입력칸 focus 규칙이 키보드 외곽선을 가리지 않음")
+    for selector in ('input[type="text"]:focus', 'input[type="number"]:focus', "input:not([type]):focus", "select:focus", "textarea:focus"):
+        has_style(selector, {"border-color": "var(--accent)"})
+    has_style(".clabel.sel", {"background": "var(--accent)", "color": "var(--on-accent)"})
+    has_style("svg.marks text.lname.sel", {"fill": "var(--accent)"})
+    has_style(".pp-table tr.sel td:first-child", {"color": "var(--accent)"})
+    has_style("svg.marks .draft", {"fill": "var(--accent-soft)", "stroke": "var(--accent)"})
+    has_style("svg.marks .rpoly", {"fill": "var(--accent-soft)", "stroke": "var(--accent)"})
+    for selector in ("svg.marks .rvtx", "svg.marks .mx-outline", "svg.marks .mx-handle"):
+        has_style(selector, {"stroke": "var(--accent)"})
+    has_style("svg.marks .mx-handle", {"fill": "var(--panel)"})
+    has_style(".rf-perspective-handle", {"background": "var(--panel)"})
+    has_style('.dr-button[aria-pressed="true"]', {"color": "var(--accent)"})
+
+    # R1: 밝은 그림 위에서도 선택 핸들·선을 찾고, 기존 선 굵기·점선은 유지한다.
+    for selector in ("svg.marks .handle", "svg.marks .rvtx"):
+        has_style(selector, {"fill": "var(--on-accent)", "stroke": "var(--accent)", "stroke-width": "1.5px"})
+    # 수정 3차 R1·R2: 채움은 어둡게 덮지 않고, 선의 그림자 길이는 화면 배율로 보정한다.
+    for selector, width in (("svg.marks .draft", "2px"), ("svg.marks .rpoly", "1.5px")):
+        check("filter" not in style(selector), f"수정 3차 R1 {selector} 채움에는 그림자 필터 없음")
+        has_style(selector, {"fill": "var(--accent-soft)", "stroke-width": width})
+    shadow = "drop-shadow(0 0 calc(var(--u, 1) * 1px) #000) drop-shadow(0 0 calc(var(--u, 1) * 1px) #000)"
+    for selector, width in (("svg.marks .crop.sel", "2.5px"), ("svg.marks .lc.sel", "2.5px"), ("svg.marks .rsel", "2px"),
+                            ("svg.marks .mcrop", "2px"), ("svg.marks .mx-outline", "1.5px"), (".dr-selected", "3px")):
+        has_style(selector, {"filter": shadow, "stroke-width": width})
+    has_style("svg.marks .draft", {"stroke-dasharray": "6 3"})
+    has_style("svg.marks .lc.locked", {"stroke-dasharray": "6 3"})
+    # R2·R3: 꺼진 탭의 글자는 중복으로 흐리지 않고, 원근 핸들은 상태색을 지킨다.
+    has_style(".tabs .tab:disabled", {"opacity": "1", "color": "#71717a"})
+    for selector in (".tabs .tab:disabled .step-state", ".tabs .tab:disabled .step-state::before"):
+        has_style(selector, {"color": "inherit", "opacity": "1"})
+    has_style(".rf-perspective-handle:hover", {"border-color": "currentColor"})
+
+    # D347 수정 1: 대기는 회색 점선, 맥동은 실제 진행에만 쓴다.
+    for selector in (".b-wait", ".rg-tag", ".projects-chip"):
+        has_style(selector, {"background": "var(--panel2)", "border": "1px dashed var(--wait)", "color": "var(--text)"})
+        check(not any(k.startswith("animation") and v != "none" for k, v in style(selector).items()), f"D347 {selector} 대기 배지 애니메이션 없음")
+    for selector in (".lh-wait::before", ".clabel.wait::before", ".step-state.todo::before"):
+        has_style(selector, {"content": '"◌ "', "color": "var(--wait)"})
+    check(waiting_marks == {".lh-wait::before", ".clabel.wait::before", ".step-state.todo::before"},
+          f"R4 대기 원은 todo 단계·대기 글자에만(모름·초기 단계 제외): {sorted(waiting_marks)}")
+    has_style(".step-state", {"color": "var(--dim)"})
+    check(pulse == {".dp-live", ".vmsg.busy"}, f"D347 dp-pulse 는 실제 진행 선택자 두 곳만: {sorted(pulse)}")
+    check(not any(k.startswith("animation") and v != "none" for k, v in style(".b-run").items()),
+          "수정 3차 R3 일반 b-run 연결·과거 배지는 맥동하지 않음")
+    has_style(".chip.stale", {"animation": "none", "opacity": ".5"})
+    check(re.search(r"@keyframes dp-pulse\s*\{\s*0%, 100%\s*\{\s*opacity: 1;\s*\}\s*50%\s*\{\s*opacity: \.6;", code) is not None,
+          "D347 진행 맥동 불투명도 1 ↔ .6")
+    reduced = re.search(r"@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{(.*?)\n\}", code, re.S)
+    check(reduced is not None, "D347 움직임 줄이기 규칙 존재")
+    normal = code[:reduced.start()] if reduced else code
+    for selector in (".dp-live", ".vmsg.busy"):
+        has_style(selector, {"animation": "dp-pulse 2s ease-in-out infinite"}, normal)
+        has_style(selector, {"animation": "none"}, reduced.group(1) if reduced else "")
+    has_style("svg.marks .crop.wait", {"stroke": "var(--wait)", "stroke-dasharray": "4 3"})
+    has_style(".tile.slice", {"border-color": "var(--slice)", "border-style": "dashed"})
+    for selector in (".detail .warn", ".vmsg.warn", "#layout-panel .warn", "#ref-panel .warn", ".lp-checks li.warn",
+                     "#ref-sheets .warn", ".dp-check-row.warn .dp-check-state", ".pp-row.warn", ".chip.b-unnamed"):
+        has_style(selector, {"color": "var(--warn)"})
+    for selector in (".rg-card.warn", "#toast.warn"):
+        has_style(selector, {"border-color": "var(--warn)"})
+    has_style("svg.marks .lc.changed", {"stroke": "var(--warn)"})
+    # 수정 3: 알림은 불투명 표면으로 띄우고 아래 상태 줄·주 실행 단추를 피한다.
+    has_style("#toast", {"background": "var(--panel2)", "border": "1px solid var(--line2)", "bottom": "96px"})
+    check(re.fullmatch(r"#[0-9a-fA-F]{6}", style(":root").get("--panel2", "")) is not None, "F3 알림 바탕 변수는 알파 없는 불투명 색")
+    has_style("#toast.show", {"opacity": "1"})
+    has_style("#toast.err", {"border-color": "var(--bad)"})
+    for selector in (".step-state.todo", ".vmsg.busy", ".clabel.wait", ".lh-wait"):
+        has_style(selector, {"color": "var(--wait)"})
+    has_style("#p-cand.mode-before figcaption", {"color": "var(--info)"})
+    # R6: 정보 채움은 변수에서 파생하고, 이음매 경고는 조각 색과 구분한다.
+    has_style(".b-new", {"border-color": "var(--info)"})
+    has_style("svg.marks .prop", {"fill": "color-mix(in srgb, var(--info) 8%, transparent)", "stroke": "var(--info)"})
+    has_style("svg.marks .seam.weak", {"stroke": "var(--warn)"})
+    has_style("svg.marks text.linfo", {"fill": "var(--info)"})
+
+    # D348·D354·D356·D357: 로컬 글꼴 목록, 단추 크기, 탭, 빈 화면의 모양.
+    has_style("html", {"font": '14px/1.45 "Noto Sans KR", "Pretendard Variable", "Pretendard", "Malgun Gothic", "Apple SD Gothic Neo", system-ui, sans-serif'})
+    has_style("button", {"border-radius": "var(--radius)", "padding": "5px 12px"})
+    for selector in (".vbar button", ".lhead button", "button.inline", ".keybar .kchip", ".dr-button",
+                     'input[type="text"]', 'input[type="number"]', "input:not([type])", "select", "textarea"):
+        has_style(selector, {"border-radius": "var(--radius-sm)"})
+    has_style("*", {"scrollbar-color": "var(--line2) transparent"})
+    has_style(".ref-tabs", {"height": "38px", "min-height": "38px", "flex-wrap": "nowrap"})
+    has_style(".tabs .tab", {"background": "transparent", "border": "0", "border-radius": "0", "border-bottom": "2px solid transparent"})
+    has_style(".tabs .tab.on", {"background": "transparent", "color": "var(--accent)", "border-bottom-color": "var(--accent)"})
+    check(".pp-tabs { display: none; }" in css, "D354 실행 하위 탭 숨김")
+    # R5: 후보 격자 안의 빈 화면도 첫 칸에 갇히지 않고 전체 열을 쓴다.
+    has_style(".dp-empty", {"display": "flex", "align-items": "center", "justify-content": "center", "grid-column": "1 / -1", "color": "var(--dim)", "text-align": "center"})
+    has_style(".dp-empty::before", {"content": '""', "width": "12px", "height": "12px", "border": "1px dashed currentColor", "border-radius": "50%"})
+
+    # R7: 네 패널의 텍스트·숫자·선택·메모 칸(기본 text 포함)과 초점 테두리를 빠짐없이 검사한다.
+    has_style("html", {"accent-color": "var(--accent)"})
+    field_style = {"background": "var(--well)", "border": "1px solid var(--line)", "border-radius": "var(--radius-sm)", "color": "var(--text)"}
+    for panel in ("#layout-panel", "#ref-panel", "#mask-panel", "#pipe-panel"):
+        for field in ('input[type="number"]', 'input[type="text"]', "input:not([type])", "select", "textarea"):
+            base = "input" if field.startswith("input") else field
+            actual = style(f"{panel} {base}") | style(f"{panel} {field}")
+            focus = style(f"{panel} {base}:focus") | style(f"{panel} {field}:focus")
+            check(all(actual.get(k) == v for k, v in field_style.items()), f"R7 {panel} {field} 공통 표면")
+            check(focus.get("border-color") == "var(--accent)", f"R7 {panel} {field} 강조 초점 테두리")
+    # 수정 3차 R4: range 는 폭만 유지하고, 네이티브 입력을 잡는 기본·focus 꾸밈은 남기지 않는다.
+    check(style(".rg-size input") == {"width": "110px"} and not style(".rg-size input:focus"),
+          "수정 3차 R4 썸네일 슬라이더는 폭만 있고 배경·테두리·focus 꾸밈 없음")
+    native_decorators = []
+    for selectors, body in re.findall(r"([^{}]+)\{([^{}]*)\}", code):
+        if re.search(r"(?:^|;)\s*(?:background(?:-color)?|border(?:-[\w-]+)?)\s*:", body):
+            for selector in (s.strip() for s in selectors.split(",")):
+                if re.search(r"(?:^|\s)input(?::(?:focus(?:-visible)?|hover|disabled|read-only))?$", selector) or re.search(
+                        r'input\[type=["\']?(?:range|checkbox|radio|file)\b', selector):
+                    native_decorators.append(selector)
+    check(not native_decorators, f"수정 3차 R4 일반 input·range·checkbox·radio·file 에 입력칸 꾸밈 없음: {native_decorators}")
+    for selector in ('.rf-dialog-box input[type="text"]:focus', ".rf-dialog-box select:focus"):
+        has_style(selector, {"border-color": "var(--accent)"})
+    has_style("#mask-panel .mc-xform-value input", {"width": "76px", "min-width": "0", "margin-left": "auto"})
+    has_style(".rf-slider input", {"flex": "1", "min-width": "0"})
+    for selector in ('.pp-field input[type="text"]', '.pp-field input[type="number"]', ".pp-field select"):
+        has_style(selector, {"flex": "1", "min-width": "0"})
+
+    protected = (
+        "#top button { flex: none; white-space: nowrap; }", ".tabs .tab.on {", "body.no-keys .keybar { display: none; }",
+        ".rg-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, calc(3 * var(--rg-h) + 40px)), 1fr));",
+        ".ref-tabs { align-self: stretch;", ".rg-card.bad {", ".rg-card.warn {", "#ref-grid {", "--rg-h:",
+        "svg.marks .lc.locked { stroke-dasharray: 6 3; }", "#layout-list li { user-select: none; }", ".pp-sub .pp-hint {",
+        ".frame.loading img { visibility: hidden; }", ".ov.loading .ov-comp { visibility: hidden; }",
+        ".rf-sheet-line { display: flex;", ".rf-sheet-line > button { flex: none; }", ".rg-card { user-select: none; }",
+        '.rg-card input, .rg-card textarea, .rg-card [contenteditable="true"] { user-select: text; }',
+        "body.refs #ref-panel", "body.refs #center", "body.pipe #pipe-panel", "body.pipe #target-list, body.pipe #center",
+        "body.mask #mask-panel", "body.mask #target-list, body.mask #center", "canvas.ov-mask", ".chip.stale", ".rg-large-pics",
+        "svg.marks .mbrush.revive { stroke: #63e07a; }", "#mask-panel button.mt-erase.on { border-color: #ff6b6b; }",
+        "#mask-panel button.mt-revive.on { border-color: #63e07a; }", "svg.marks .seam.bad { stroke: #ff3b3b; }",
+        ".tile.sel { outline: 2px solid #fff; outline-offset: 1px; }",
+        ".m-white { background: #fff; }", ".m-gray { background: #808080; }",
+        ".m-check { background: repeating-conic-gradient(#bbb 0 25%, #eee 0 50%) 0 0 / 16px 16px; }",
+        ".stage.dr-isolated { background: repeating-conic-gradient(#bbb 0 25%, #eee 0 50%) 0 0 / 16px 16px; }",
+        "#toast.err { background: #4a1f22; border-color: var(--bad); }",
+    )
+    for token in protected:
+        check(token in css, f"F3 기존 CSS 계약 보존: {token}")
+    has_style(".keybar", {"flex-wrap": "wrap"})
+    has_style("#mask-panel .pp-table td.wrap", {"white-space": "normal"})
+    has_style(".overlay", {"background": "rgba(0, 0, 0, .6)", "z-index": "10"})
+    has_style(".rg-large", {"z-index": "5", "inset": "38px 0 0"})
+    # 수정 4: 크게 보기의 첫 규칙·반응형 격자·대화 상자 쌓임 순서를 보존한다.
+    first_large = re.search(r"(?m)^\.rg-large\s*\{([^}]*)\}", code)
+    check(first_large is not None and "--rg-h: max(320px, 70vh)" in first_large.group(1), "F3 첫 rg-large 블록의 그림 높이 보존")
+    has_style(".rg-large-pics", {"grid-template-columns": "repeat(auto-fit, minmax(min(100%, var(--rg-h)), 1fr))"})
+    overlay_z, large_z = style(".overlay").get("z-index", ""), style(".rg-large").get("z-index", "")
+    check(overlay_z.isdecimal() and large_z.isdecimal() and int(overlay_z) > int(large_z), "F3 overlay 는 크게 보기보다 위")
+    for forbidden in ("#btn-edit.on", "#ref-list li { user-select", "cdn"):
+        check(forbidden not in css.lower(), f"F3 CSS 주석 포함 금지 문자열 없음: {forbidden}")
+    has_style(".rf-dialog", {"inset": "38px 0 0"})
+    has_style(".rf-thumb", {"background": "#808080"})
+    batch8 = css.split("/* ── 배치 8-C", 1)[-1].split("/* Forge F1", 1)[0]
+    batch8 = re.sub(r"/\*.*?\*/", "", "/* ── 배치 8-C" + batch8, flags=re.S)
+    check(all(s.strip().startswith(("#mask-panel", "#mask-list")) for s in re.findall(r"([^{}]+)\{", batch8)),
+          "F3 배치 8-C 구간에는 마스크 규칙만")
+    markers = ("/* ── Forge F3 공용", "/* ── Forge F3-T", "/* ── Forge F3-U1", "/* ── Forge F3-U2")
+    offsets = [css.find(marker) for marker in markers]
+    check(all(css.count(marker) == 1 for marker in markers) and offsets == sorted(offsets), "F3 공용·T·U1·U2 표시 보존·순서")
+    if all(i >= 0 for i in offsets):
+        tail = re.sub(r"/\*.*?\*/", "", css[offsets[2]:], flags=re.S)
+        # 통합 후 다른 갈래의 규칙은 허용하되, T 소유 규칙이 그 블록에 들어가지는 않는다.
+        check(all(not style(s, tail) for s in (*primary, ".dp-main", ".dp-empty", ".dp-empty::before", ".pp-tabs"))
+              and "dp-pulse" not in tail, "F3 T 테마 규칙은 U1·U2 블록 밖")
+    check(not re.search(r"\.overlay[^{}]*\bbutton[^{}]*\{", code), "D346 일반 overlay 승인 단추 전용 규칙 없음")
+    urls = re.findall(r"url\(\s*['\"]?([^)'\"]+)", code, re.I)
+    check(not re.search(r"@import|https?://", code, re.I) and all(u.startswith("#") for u in urls), "F3 외부 URL·글꼴·import 없음(내부 SVG 채움만)")
+    check(not any(ord(c) >= 0x1F000 or c == "\ufe0f" for c in code), "F3 이모지 추가 없음(대기 점선 원 글리프는 허용)")
+    check(b"\r" not in path.read_bytes(), "F3 CSS 줄바꿈 LF")
 
 
 def polish3_unit():
@@ -52735,7 +53007,7 @@ await scenario("details",async()=>{
   details(P).find(e=>e.dataset.detail==="xform").fire("click");
   r.xformNavigation=P.B("변형").ariaPressed==="true"&&sectionOf(P,"후보 보정").scrolled===true;
   P.B("처음 마스크로").fire("click"); r.pending=details(P).some(e=>e.textContent.startsWith("적용 전 획 1"));
-  P.B("실행 취소").fire("click");r.pendingUndo=!details(P).some(e=>e.textContent.startsWith("적용 전 획"));M.discard();
+  P.B("되돌리기","적용 전 획").fire("click");r.pendingUndo=!details(P).some(e=>e.textContent.startsWith("적용 전 획"));M.discard();
   expanders(P)[0].fire("click"); r.collapse=P.list.textContent===collapsed&&details(P).length===0;
   // 다중 ★ 의 줄은 해당 하위 li 안에만. 미선택 후보는 ops 대신 날짜·stale.
   const second={...P.S.targets[0].candidates[0],key:K15B,n:2,mask_edit:{at:"2026-11-01 09:10:00",stale:true}};
@@ -52760,7 +53032,9 @@ await scenario("history",async()=>{
   const kinds=name=>sectionOf(P,name).all().filter(e=>e.dataset.hist).map(e=>e.dataset.hist).join();
   r.order=kinds("적용 전 획")==="undo,redo,clear"&&kinds("저장된 버전")==="undo,clear"&&kinds("후보 보정")==="undo,clear,clear";
   r.bottom=["적용 전 획","저장된 버전","후보 보정"].every(name=>sectionOf(P,name).children.at(-1).all().some(e=>e.dataset.hist));
-  r.title=P.B("실행 취소").title==="적용 전 획 — 한 단계 되돌리기 (Ctrl+Z)"&&P.B("다시").title.includes("Ctrl+Shift+Z");
+  const sessionButtons=sectionOf(P,"적용 전 획").all().filter(e=>e.tagName==="BUTTON");
+  r.title=sessionButtons.find(e=>e.textContent==="되돌리기").title==="적용 전 획 — 한 단계 되돌리기 (Ctrl+Z)"
+    &&sessionButtons.find(e=>e.textContent==="다시실행").title.includes("Ctrl+Shift+Z");
   M.err="test"; M.recovery={key:M.key,adjust:M.info.adjust}; P.render();
   const row=sectionOf(P,"대상").children.at(-1);
   r.recovery=row.all().filter(e=>e.dataset.hist).map(e=>e.textContent).join()==="되돌리기,변형 없음,보정 없음";
@@ -52972,7 +53246,7 @@ await scenario("reviewHistory",async()=>{
   M.info.z.controls[0].manual=true;M.busy="apply";P.render();
   r.busyTitle=P.B("자동으로").disabled&&P.B("자동으로").title==="마스크 작업 중입니다";
   M.busy="";M.info.adjust={blur:1,invert:false,dx:0,dy:0,rot:0,sx:1,sy:1,flip_h:false,flip_v:false,hist:[{blur:0}],at:"a"};P.render();
-  P.key("ArrowRight");r.clearDuringWait=M.busy==="adjust_wait"&&!P.B("변형 없음").disabled&&P.B("되돌리기").disabled&&P.B("보정 없음").disabled;
+  P.key("ArrowRight");r.clearDuringWait=M.busy==="adjust_wait"&&!P.B("변형 없음").disabled&&P.B("되돌리기","후보 보정").disabled&&P.B("보정 없음").disabled;
   P.B("변형 없음").fire("click");
   r.cleared=await until(()=>P.count("mask/adjust")===1&&!M.busy);
   r.cleared&&=P.srv.log.find(e=>e.path==="mask/adjust").body.dx===0;
@@ -53038,7 +53312,7 @@ console.log(JSON.stringify(out));
             check(ok is True, f"8-C {name}:{label} {ok if ok is not True else ''}")
     board = (PKG / "web_design_patch" / "board.js").read_text(encoding="utf-8")
     mask_keys = board[board.index('    mask: [['):board.index('  const CHIP_KEY')]
-    check('["Ctrl+Z", "실행 취소"' in mask_keys, "8-C 마스크 도움말 Ctrl+Z 실행 취소")
+    check('["Ctrl+Z", "되돌리기"' in mask_keys, "8-C·D355 마스크 도움말 Ctrl+Z 되돌리기")
     css = (PKG / "web_design_patch" / "board.css").read_text(encoding="utf-8").split('/* ── 배치 8-C')[1].split("/* Forge F1", 1)[0]
     check(all(x.strip().startswith(("#mask-panel", "#mask-list")) for x in css.split("*/", 1)[1].split("}") if x.strip()),
           "8-C CSS는 마스크 패널·목록에만 적용")
@@ -53047,6 +53321,584 @@ console.log(JSON.stringify(out));
 def forge_f3_frame_unit():
     """Forge F3 갈래 U1 — 머리줄·상태 줄·주 실행 단추·고급·서버 모드 표시(node vm). 명세 §4.2·§5. --quick 포함."""
     section("Forge F3-U1 — 틀 (forge_f3_frame_unit)")
+    web = PKG / "web_design_patch"
+    bh = (web / "board.html").read_text(encoding="utf-8")
+    css = (web / "board.css").read_text(encoding="utf-8")
+    head = bh[bh.index('<header id="top">'):bh.index('</header>')]
+    foot = bh[bh.index('<footer id="statusbar">'):bh.index('</footer>')]
+    check('<nav id="modebar"' in head and head.index('</nav>') < head.index('id="export-state"'), "F3U1 D349 단계와 Export 는 머리줄")
+    check(re.findall(r'id="([^"]+)"', foot) == ["statusbar", "proj", "layout-head", "ref-head", "pipe-head", "badges", "status", "btn-keys"],
+          "F3U1 D349 상태 줄 요소·순서")
+    check(head.index('id="btn-viewer"') < head.index('id="btn-queue"') < head.index('id="btn-drain"') < head.index('id="btn-help"'),
+          "F3U1 D349 로컬 보내기·멈춤 단추는 머리줄에 원래 순서")
+    check(bh.index('</main>') < bh.index('<footer') < bh.index('id="help"') and bh.index('</header>') < bh.index('id="keybar"') < bh.index('<main'),
+          "F3U1 D349 칩 줄·본문·상태 줄 순서")
+    ids = re.findall(r'\bid="([^"]+)"', bh)
+    check(len(ids) == len(set(ids)), "F3U1 D349 id 중복 없음")
+    block = css.split('/* ── Forge F3-U1', 1)[1].split('/* ── Forge F3-U2', 1)[0]
+    check('position: sticky; bottom: 0' in block and 'margin-top: auto' in block and 'body.pipe #pipe-panel { display: flex;' in block,
+          "F3U1 D352 패널 세로 flex·하단 sticky")
+    dock_css = re.search(r'#pipe-panel \.pp-dock \{([^}]+)\}', block).group(1)
+    check('background: var(--panel)' in dock_css and 'border-top: 1px solid var(--line)' in dock_css and 'opacity' not in dock_css,
+          "F3U1 D352 주 실행 줄 불투명 바탕·위 테두리")
+    check('.dp-off { visibility: hidden !important; pointer-events: none; }' in block, "F3U1 D349 숨긴 단추도 자리 유지")
+    for ident in ["btn-queue", "btn-drain"]:
+        tag = re.search(r'<button type="button" id="' + ident + r'"[^>]+>', bh).group()
+        check('class="dp-off"' in tag and tag.index('title=') < tag.index('class='), f"F3U1 R4 {ident} 최초 HTML부터 숨김·속성 순서")
+    check('#statusbar #proj, #statusbar #pipe-head { flex: 1 1 0; min-width: 0;' in block
+          and '#statusbar .spacer { flex: 0; }' in block and '#statusbar #pipe-head { flex-wrap: nowrap;' in block
+          and '#statusbar #layout-head, #statusbar #ref-head { flex: 0 0 auto;' in block, "F3U1 R6 상태 글 말줄임 우선·도구 단추 폭 유지")
+    check('#statusbar > button {' in block and '#statusbar button {' not in block, "F3U1 R6 단추형 배지 글꼴 보존")
+    check('#statusbar #pipe-head { flex-wrap: nowrap; min-width: 9em; }' in block,
+          "F3U1 수정3 R2 상태 줄 실행 머리 최소 폭 9em")
+    check('#statusbar #pipe-head > button { order: -2; flex: none; }' in block and '#statusbar #pipe-head > .lh-job { order: -1; }' in block,
+          "F3U1 수정3 R2 취소·다시 계산 단추를 앞에 표시·폭 유지(실행 중 글은 그 바로 뒤)")
+    check('#pipe-panel:not([data-adv="1"]) .pp-adv { display: none; }' in block and '#pipe-panel .pp-tabs { display: none; }' in block,
+          "F3U1 D353–354 고급·겹친 하위 탭 가리기")
+    check(css.count('@media (max-width: 1399px)') == 1 and 'flex-wrap: wrap' in block and 'min-width: 0' in block
+          and '#top .brand .dim, #export-state { display: none; }' in block and 'body.server #top .brand { display: none; }' in block
+          and '#top .tabs .tab { padding: 5px 5px; }' in block and 'text-overflow: ellipsis' in block, "F3U1 D349 좁은 폭·줄바꿈·상태 말줄임 규칙")
+    check('body.server.projects-page #top .brand { display: block; }' in block, "F3U1 D349 서버 모드 프로젝트 목록의 머리줄이 비지 않음")
+    check('id="ref-empty" class="empty dp-empty" hidden>레퍼런스 없음 — ③ 레퍼런스에서 연결' in bh,
+          "F3U1 D357 레퍼런스 빈 안내")
+    help_text = bh[bh.index('id="help"'):]
+    server_help = re.sub(r'<(tr|p|li)\b[^>]*data-local[^>]*>.*?</\1>', '', help_text, flags=re.S)
+    check(not re.search(r'ComfyUI|그래프|노드|위젯|Open Board|메뉴 BMK|대기열|(?:^|[^가-힣A-Za-z])큐(?:에|를|하|로|가|는|의|도|(?=\s|$|[.,·:()]))|pipeline\.json|_layer_targets', server_help),
+          "F3U1 D359 서버 도움말에 로컬 실행 용어 없음")
+    check('SAM3' not in server_help and '자동 오리기' not in server_help and '<tr data-local><td>SAM3:' in bh
+          and '<tr data-server><td>방법</td><td>사각형(기본, 시트 알파 그대로) · 다각형</td></tr>' in bh, "F3U1 R5 서버 도움말은 지원하는 오리기만")
+    check('승인 코드' not in server_help and '계획·승인의 대상 크롭(only)' in server_help
+          and '<tr data-local><td>왼쪽 체크</td><td>계획·승인 코드의 대상 크롭(only)' in bh, "F3U1 R7 도움말 대상 안내의 모드 분리")
+    check(bh.count('아래 상태 줄 "ComfyUI 탭 연결"') == 3 and '상단 "ComfyUI 탭 연결"' not in bh, "F3U1 D349 로컬 도움말 위치 3곳")
+    pl = (web / "pipeline.js").read_text(encoding="utf-8")
+    panel_source = pl[pl.index('    function renderPanel()'):pl.index('    function lastRow(')]
+    check(not re.search(r'\.(querySelector|querySelectorAll|closest|insertBefore|before|prepend|remove|getAttribute)\(', panel_source),
+          "F3U1 계약 3.2 새 실행 줄·고급 토글은 잡아 둔 참조로 이동")
+    check('ComfyUI 탭이 승인 템플릿을 제출함(진행은 상태 줄)' in pl, "F3U1 D349 로컬 진행 위치 문구")
+    rt_source = pl[pl.index('        const rt = runText({ ...p.run,'):pl.index('        line(s, rt.line,')]
+    check(rt_source.count('const ') == 1 and rt_source.count(';') == 1, "F3U1 그 밖: runText 절단 구간에 추가 계산 없음")
+    check('[지우개]·[브러시]' in bh and '되돌리기 · 다시실행' in bh and '[⌨ 단축키] = 칩 줄 접기/펴기' in bh,
+          "F3U1 D355 도움말·칩 접기 설명")
+    node = shutil.which("node")
+    if not node:
+        skip("F3U1 node 없음 — 화면 VM 검증 못 함")
+        return
+    h = _PL_JS_HARNESS
+    cut = [h[h.index(a):h.index(b, h.index(a))] for a, b in
+           (("import fs", "async function run("), ("class El {", "async function mouse("),
+            ("function boardState()", 'await scenario("panel"'), ("function quietPipeline(mod)", 'await scenario("panelDrift"'))]
+    setup = _PAID_STUDIO_JS_HARNESS.split('// ── J-P3 승인 단추:', 1)[0]
+    harness = "\n".join(cut) + setup
+    hook = '''.replace("return { stateChanged, enter, leave, select, queue: boardQueue", "return { _f3: { PS, render, prepareText, applyNow, paidResult, dimWhy, approveWhy, refusal, loseRun: () => asked.run = [{lost:true,hash:'test-code'}], setWave: x => wave = x, setSettings: x => settingsOn = x, clearSelection: () => sel.clear(), exportReason: fn => { const old = exportWhy; exportWhy = fn; return () => exportWhy = old; } }, stateChanged, enter, leave, select, queue: boardQueue")'''
+    harness = harness.replace('fs.readFileSync(IN.pipelineJs, "utf8")', 'fs.readFileSync(IN.pipelineJs, "utf8")' + hook)
+    harness += r'''
+vm.runInContext(fs.readFileSync(IN.checklistJs, "utf8"), ctx);
+// 이 묶음은 실제 capture 순서까지 재현한다. 기존 단추 처리기보다 먼저 막히는지를 본다.
+const listen = El.prototype.addEventListener;
+El.prototype.addEventListener = function(type, fn, capture=false) {
+  if(capture) ((this.capture ||= {})[type] ||= []).push(fn);
+  else listen.call(this,type,fn);
+};
+El.prototype.fire = function(type, extra={}) {
+  let stopped=false;
+  const path=[];for(let n=this;n;n=n.parent)path.push(n);
+  const ev=Object.assign({type,target:this,preventDefault(){this.defaultPrevented=true;},stopPropagation(){stopped=true;}},extra);
+  for(const n of [...path].reverse()) {
+    for(const fn of n.capture?.[type]||[])fn(Object.assign(ev,{currentTarget:n}));
+    if(stopped)return ev;
+  }
+  for(const n of path) {
+    for(const fn of n.on[type]||[])fn(Object.assign(ev,{currentTarget:n}));
+    if(stopped)return ev;
+  }
+  if(path.at(-1)===this.doc.body)for(const fn of this.doc.on[type]||[])fn(Object.assign(ev,{currentTarget:this.doc}));
+  return ev;
+};
+const placements = new Map(), append = El.prototype.append;
+El.prototype.append = function (...xs) {
+  if (this.classList.contains("lp-btns")) for (const x of xs) if (x.tagName === "BUTTON") placements.set(x, this);
+  return append.apply(this, xs);
+};
+const serverMode = on => { if (on) ctx.window.DPEnv = {serverMode:true,backend:"mock",can:n=>IN.forge.env_server.response.caps[n]===true}; else delete ctx.window.DPEnv; };
+const fresh = async (server=false) => {
+  serverMode(server);
+  const e = await mkStudio({S:s=>{s.canvas={width:512,height:512};s.rerolls_pending=0;s.rerolls_stale=0;}, plan:p=>{p.run.backend="mock";p.draft.backend="vlm_mock";}});
+  return e;
+};
+const dock = e => e.panel.children.find(x=>x.classList.contains("pp-dock"));
+const main = e => dock(e)?.children.find(x=>x.tagName==="BUTTON");
+const sectionOf = (e,title) => e.panel.children.find(x=>x.classList.contains("pp-sec")&&x.firstElementChild?.textContent===title);
+const forbidden = /ComfyUI|그래프|노드|위젯|Open Board|메뉴 BMK|대기열|(?:^|[^가-힣A-Za-z])큐(?:에|를|하|로|가|는|의|도|(?=\s|$|[.,·:()]))|pipeline\.json|_layer_targets/;
+const illegal = new RegExp(forbidden.source+"|\\$|크레딧|\\bcr\\b");
+const textOf = root => [root.textContent,...root.all().map(x=>x.title||"")].join("\n");
+const complete = e => {
+  const h=e.pipe._f3,p=h.PS.plan;
+  p.run.need=p.run.pre=p.run.free=p.run.filtered=0;p.run.running=false;p.draft.running=false;
+  for(const c of e.S.crops) p.run.by_crop[c.id]={est_usd:[0,0],selected:true,...(p.run.by_crop[c.id]||{}),need:0,pre:0,free:0,done:1,failed:0,orphaned:0,inflight:0};
+  e.S.running=e.S.drafting=false;e.S.rerolls_pending=0;h.PS.progress=null;
+};
+await scenario("F3U1 D352 단계·같은 단추·승인 클릭",async()=>{
+  const e=await fresh(),h=e.pipe._f3,r={};
+  await e.pipe.showTab("prepare");r.prepare=!main(e)&&dock(e).dataset.main===""&&dock(e).textContent==="반영됨 — 바뀐 것이 없습니다. 다음: ② 크롭 · ④ 프롬프트";
+  r.oneApply=e.panel.all().filter(x=>x.tagName==="BUTTON"&&x.textContent==="반영 (무료)").length===1;
+  h.PS.plan.apply_pending=["레이아웃 변경"];h.render();
+  r.sameObject=dock(e).dataset.main==="apply"&&!!placements.get(main(e))&&!placements.get(main(e)).children.includes(main(e))&&main(e).parent===dock(e);
+  h.PS.plan.apply_pending=[];h.render();
+  r.last=dock(e)===e.panel.children.at(-1)&&!("tab" in dock(e).dataset);
+  await e.pipe.showTab("prompt");r.draft=dock(e).dataset.main==="draft"&&main(e).classList.contains("dp-main")&&main(e).classList.contains("primary");
+  const old=main(e),before=e.srv.log.filter(x=>x.method==="POST").length;
+  old.fire("click",{isTrusted:false});await sleep(10);
+  r.untrusted=e.srv.log.filter(x=>x.method==="POST").length===before&&e.tab.got.length===0&&!e.box()&&e.confirms.length===0;
+  r.noFocus=old.tabIndex===-1;
+  h.render();r.freshObject=main(e)!==old;
+  await e.pipe.showTab("generate");r.run=dock(e).dataset.main==="run"&&!!e.B("Export",sectionOf(e,"Export"));
+  h.setWave({stage:"run",remaining:4});h.render();r.wave=main(e).textContent.startsWith("남은 4건 이어서 승인");h.setWave(null);
+  h.PS.plan.apply_pending=["레퍼런스 미반영","대상 문구 미반영","세 번째"];
+  h.render();r.pending=dock(e).dataset.main==="apply"&&dock(e).textContent.includes("레퍼런스 미반영 · 대상 문구 미반영")&&!dock(e).textContent.includes("세 번째");
+  h.PS.plan.apply_pending=[];e.S.canvas=null;h.render();r.beforeImport=dock(e).dataset.main==="apply";
+  e.S.canvas={};complete(e);await e.pipe.showTab("generate");r.export=dock(e).dataset.main==="export"&&e.pipe.steps().stages[4].state==="done";
+  r.oneExport=e.panel.all().filter(x=>x.tagName==="BUTTON"&&x.textContent==="Export").length===1;
+  const restore=h.exportReason(()=>"Export 설정 확인 안내");h.render();r.exportReason=!main(e).disabled&&dock(e).textContent.includes("Export 설정 확인 안내");restore();
+  h.setSettings(true);await e.pipe.showTab("prepare");r.settings=!dock(e);
+  await e.pipe.showTab("prompt");r.settingsPrompt=dock(e)?.dataset.main==="draft";
+  await e.pipe.showTab("generate");r.settingsGenerate=dock(e)?.dataset.main==="export";h.setSettings(false);
+  e.stop();r.leave=e.panel.children.length===0;return r;
+});
+await scenario("F3U1 D352 안내만·막힌 승인",async()=>{
+  const e=await fresh(true),h=e.pipe._f3,p=h.PS.plan,r={};
+  await e.pipe.showTab("generate");h.PS.planErr="계획 검사 실패";h.render();r.error=!main(e)&&dock(e).textContent==="반영 상태를 확인하지 못했습니다 — [다시 계산]";
+  h.PS.planErr=null;h.PS.plan=null;h.render();r.computing=!main(e)&&dock(e).textContent==="반영 상태를 확인하지 못했습니다 — [다시 계산]";h.PS.plan=p;
+  const run=p.run;p.run={error:"생성 검사 실패"};h.render();r.runError=!main(e)&&dock(e).textContent==="계획: 생성 검사 실패";p.run=run;
+  complete(e);e.S.running=true;h.render();r.running=!main(e)&&dock(e).textContent.includes("실행 중");e.S.running=false;
+  p.run.free=2;p.run.by_crop[e.S.crops[0].id].free=2;h.render();r.free=!main(e)&&dock(e).textContent.includes("복구 2건")&&dock(e).textContent.includes("대기분 보내기")&&e.pipe.freePending()===2;
+  p.run.pre=3;p.run.by_crop[e.S.crops[0].id].pre=3;h.render();r.pre=!main(e)&&dock(e).textContent.includes("다시 생성 대기 3건");
+  complete(e);p.run.by_crop[e.S.crops[0].id].done=0;h.render();r.missing=!main(e);
+  complete(e);p.run.filtered=3;p.run.by_crop[e.S.crops[1].id].need=3;h.render();
+  r.outside=!main(e)&&dock(e).dataset.main===""&&dock(e).textContent==="선택 밖 승인 필요 3건 — 왼쪽 [승인 필요만]";
+  complete(e);p.run.running=true;h.render();r.planRunning=!main(e)&&dock(e).textContent.includes("실행 중");p.run.running=false;
+  p.draft.running=true;h.render();r.drafting=!main(e)&&dock(e).textContent.includes("실행 중");p.draft.running=false;
+  h.PS.planOnly="다른 선택";h.render();r.otherPlan=!main(e)&&dock(e).textContent==="계획 계산 중…";h.PS.planOnly=ALL;
+  p.run.need=4;p.run.by_crop[e.S.crops[0].id].need=4;e.S.running=true;h.render();
+  r.disabled=!main(e)&&dock(e).textContent==="실행 중 — 끝나면 다음 단계가 나옵니다"&&e.B("생성 승인").disabled===true;e.S.running=false;
+  const draft=p.draft;p.draft={error:"초안 검사 실패"};await e.pipe.showTab("prompt");r.draftError=!main(e)&&dock(e).textContent==="반영 상태를 확인하지 못했습니다 — [다시 계산]";p.draft=draft;
+  p.draft.units=[];h.render();r.noDraft=!main(e)&&dock(e).dataset.main===""&&dock(e).textContent==="초안 승인할 것이 없습니다 — 다음: ⑤ 생성";
+  h.clearSelection();h.render();r.noSelection=!main(e)&&dock(e).textContent.includes("왼쪽에서 크롭을 선택하세요");
+  complete(e);await e.pipe.showTab("generate");r.noSelectionExport=!main(e)&&dock(e).textContent.includes("왼쪽에서 크롭을 선택하세요");
+  e.stop();return r;
+});
+await scenario("F3U1 R1 점검표와 같은 반영 판정",async()=>{
+  const r={};
+  for(const server of [false,true]) {
+    const e=await fresh(server),h=e.pipe._f3,p=h.PS.plan,p0=h.PS.P;complete(e);p.draft.units=[];
+    p0.drift=[{section:"prepare",field:"model",kind:"cell",manifest:"old",settings:"new"},{section:"prepare",field:"quality",kind:"cell",manifest:"low",settings:"high"}];
+    p.notes=["Prepare 설정 갈라짐: model, quality"];
+    for(const tab of ["prepare","prompt","generate"]) {
+      await e.pipe.showTab(tab);
+      r[`${server}-drift-${tab}`]=dock(e).dataset.main==="apply"&&main(e)===e.B("반영 (무료)")&&e.pipe.steps().rows[3].state!=="done"
+        &&dock(e).textContent.includes("실행 설정이 마지막 반영과 다름(model, quality) — 반영하면 새 생성 조건");
+    }
+    p0.drift=[];p.notes=[];
+    const draft=clone(p.draft),sig=e.S.plan_v;
+    for(const cause of ["calculating","error","retainedError","draftError","stale"]) {
+      h.PS.plan=p;h.PS.planErr=null;p.draft=clone(draft);e.S.plan_v=sig;
+      if(cause==="calculating"||cause==="error")h.PS.plan=null;
+      if(cause==="error"||cause==="retainedError")h.PS.planErr="계획 오류";
+      if(cause==="draftError")p.draft={error:"초안 오류"};
+      if(cause==="stale")e.S.plan_v="새 프로젝트 기록";
+      for(const tab of ["prepare","prompt","generate"]) {
+        await e.pipe.showTab(tab);
+        r[`${server}-${cause}-${tab}`]=!main(e)&&dock(e).dataset.main===""&&dock(e).textContent==="반영 상태를 확인하지 못했습니다 — [다시 계산]"
+          &&(cause==="retainedError"?e.pipe.steps().rows[3].state==="done":e.pipe.steps().rows[3].state!=="done");
+      }
+    }
+    h.PS.plan=p;h.PS.planErr=null;p.draft=draft;e.S.plan_v=sig;h.PS.P=null;
+    for(const tab of ["prepare","prompt","generate"]) {await e.pipe.showTab(tab);r[`${server}-loading-${tab}`]=!main(e)&&dock(e).textContent==="실행 설정을 불러오는 중…";}
+    e.stop();
+  }
+  return r;
+});
+await scenario("F3U1 수정3 R1 실행 중 안내·미반영 우선",async()=>{
+  const r={};
+  for(const server of [false,true]) {
+    const e=await fresh(server),h=e.pipe._f3,p=h.PS.plan,draft=p.draft,sig=e.S.plan_v;complete(e);
+    for(const stage of ["run","draft"]) {
+      e.S.running=stage==="run";e.S.plan_v=stage==="run"?"Run 실행 중 바뀐 서명":sig;
+      p.draft=stage==="draft"?{running:true}:draft;
+      for(const tab of ["prepare","prompt","generate"]) {
+        await e.pipe.showTab(tab);
+        r[`${server}-${stage}-${tab}`]=!main(e)&&dock(e).dataset.main===""&&dock(e).textContent==="실행 중 — 끝나면 다음 단계가 나옵니다";
+      }
+    }
+    p.draft=draft;e.S.running=true;e.S.plan_v="Run 실행 중 바뀐 서명";
+    p.apply_pending=["레이아웃 변경"];
+    for(const tab of ["prepare","prompt","generate"]) {
+      await e.pipe.showTab(tab);
+      // 다른 창·탭의 Run 중에는 F3 전처럼 [반영] 이 눌린다(꺼짐 = 이 Studio 의 실행·승인 처리 중뿐 — 단추가 가진 조건 그대로)
+      r[`${server}-pending-${tab}`]=dock(e).dataset.main==="apply"&&main(e)===e.B("반영 (무료)")&&main(e).disabled===false
+        &&dock(e).children[0].textContent==="레이아웃 변경";
+    }
+    e.S.running=false;h.render();r[`${server}-knownBeforeUnknown`]=dock(e).dataset.main==="apply"&&!main(e).disabled&&dock(e).textContent.includes("레이아웃 변경");
+    // 갈라짐 줄이 미반영 사유보다 앞(두 줄만 보인다 — 과금 안내가 잘리지 않게)
+    p.apply_pending=["레이아웃 변경","레퍼런스 변경"];h.PS.P.drift=[{section:"prepare",field:"calls_per_cell",kind:"calls",manifest:1,settings:2}];h.render();
+    r[`${server}-driftFirst`]=dock(e).children[0].textContent.startsWith("실행 설정이 마지막 반영과 다름(calls_per_cell) — 반영하면 새 유료 호출이 생김(생성 승인 필요) · ");
+    // 실행이 끝난 뒤 계획을 다시 받지 못함(옛 계획의 running + 계획 오류): '실행 중'이 아니라 [다시 계산] 안내
+    p.apply_pending=[];h.PS.P.drift=[];p.run.running=true;e.S.plan_v=sig;h.PS.planErr="다른 계획 계산이 끝나지 않았습니다 — 다시 계산";h.render();
+    r[`${server}-stalePlanRunning`]=!main(e)&&dock(e).textContent==="반영 상태를 확인하지 못했습니다 — [다시 계산]";
+    h.PS.planErr="";p.run.running=false;
+    e.stop();
+  }
+  return r;
+});
+await scenario("F3U1 수정3 R3 계획 오류는 주 실행 줄에만 반영",async()=>{
+  const e=await fresh(),h=e.pipe._f3,r={},queued=[];complete(e);
+  for(const t of e.S.targets)if(!t.pick_keys.length)t.pick_keys=["test-pick"];
+  h.render();e.answer=false;
+  const snapshot=()=>({head:e.head.textContent,apply:sectionOf(e,"반영").textContent,stars:sectionOf(e,"★ 점검").textContent,
+    checklist:JSON.stringify(e.pipe.steps().rows[3])});
+  const before=snapshot(),queue=h.PS.queue;
+  h.PS.queue=async stage=>{queued.push(stage);return {};};
+  try {
+    r.before=await e.pipe.exportNow()&&queued.length===1&&queued[0]==="export"&&e.confirms.length===0;
+    h.PS.planErr="다른 계획 계산이 끝나지 않았습니다 — 다시 계산";
+    for(const tab of ["prepare","prompt","generate"]) {
+      await e.pipe.showTab(tab);
+      r[tab]=!main(e)&&dock(e).textContent==="반영 상태를 확인하지 못했습니다 — [다시 계산]";
+    }
+    const after=snapshot();
+    r.head=after.head===before.head&&e.head.all().some(x=>x.classList.contains("lh-ok")&&x.textContent==="반영됨");
+    r.apply=after.apply===before.apply&&after.apply.includes("반영됨 — 레이아웃");
+    r.stars=after.stars===before.stars&&!after.stars.includes("반영 상태를 확인하지 못함");
+    r.checklist=after.checklist===before.checklist&&e.pipe.steps().rows[3].state==="done";
+    r.export=await e.pipe.exportNow()&&queued.length===2&&queued[1]==="export"&&e.confirms.length===0&&!e.box();
+  } finally {h.PS.queue=queue;e.stop();}
+  return r;
+});
+await scenario("F3U1 수정3 R4 첫 실행 설정 읽기 실패",async()=>{
+  const r={};
+  for(const server of [false,true]) {
+    const e=await fresh(server),h=e.pipe._f3;h.PS.P=null;h.PS.err="첫 읽기 실패";
+    for(const tab of ["prepare","prompt","generate"]) {
+      await e.pipe.showTab(tab);
+      r[`${server}-${tab}`]=!main(e)&&dock(e).dataset.main===""&&dock(e).textContent==="실행 설정 확인이 먼저입니다 — ① 준비의 「실행 설정」"
+        &&sectionOf(e,"실행 설정").textContent.includes("읽기 오류: 첫 읽기 실패");
+    }
+    e.stop();
+  }
+  return r;
+});
+await scenario("F3U1 수정3 R5 calls 갈라짐의 새 유료 호출 안내",async()=>{
+  const r={};
+  for(const server of [false,true]) {
+    const e=await fresh(server),h=e.pipe._f3;complete(e);
+    h.PS.P.drift=[{section:"prepare",field:"calls_per_cell",kind:"calls",manifest:1,settings:2}];
+    for(const tab of ["prepare","prompt","generate"]) {
+      await e.pipe.showTab(tab);
+      r[`${server}-${tab}`]=dock(e).dataset.main==="apply"&&main(e)===e.B("반영 (무료)")
+        &&dock(e).children[0].textContent==="실행 설정이 마지막 반영과 다름(calls_per_cell) — 반영하면 새 유료 호출이 생김(생성 승인 필요)";
+    }
+    h.PS.P.drift.push({section:"prepare",field:"model",kind:"cell",manifest:"old",settings:"new"});h.render();
+    r[`${server}-cellFirst`]=dock(e).children[0].textContent==="실행 설정이 마지막 반영과 다름(calls_per_cell, model) — 반영하면 새 생성 조건";
+    e.stop();
+  }
+  return r;
+});
+await scenario("F3U1 R2 레이아웃 다시 생성·대기 취소의 실제 대화 상자",async()=>{
+  const doc=new Doc(),r={first:false,second:false,all:false,crop:false},cell={cell_key:"k",variant:"기본",pre:0,rerolls_pending:3,rerolls_base:1};
+  const S={rev:1,pipeline_rev:1,layout_rev:1,running:false,rerolls_pending:3,rerolls_base:1,rerolls_stale:1,pending_preapproved:3,
+    crops:[{id:"c",layout_status:"changed",rerolls_pending:3,rerolls_base:1}],targets:[{crop_id:"c",cells:[cell]}]};
+  const appendChild=El.prototype.appendChild;El.prototype.appendChild=function(x){this.append(x);return x;};
+  let writes=0;
+  const bctx=vm.createContext({window:{DPEnv:{serverMode:true,backend:"mock"},addEventListener(){},removeEventListener(){},confirm(){throw Error("서버에서 네이티브 확인 금지");}},document:doc,
+    SM:()=>true,S,busy:false,rerollArm:null,rerollSent:null,tKey:"t",cKey:"v",LAYOUT_STATUS:{changed:"미반영"},
+    rerollCell:()=>cell,curTarget:()=>S.targets[0],tabWay:()=>"paid",reviewMissing:()=>"",toast(){},usd:()=>" ≈ $1.00",
+    pipe:{paidLock:()=>"",agentOn:()=>false,applyWarn:()=>[],recalc(){},side:"기존 부수 효과"},write:async()=>{writes++;return null;}});
+  vm.runInContext(fs.readFileSync(IN.dialogJs,"utf8"),bctx);
+  for(const name of ["askFree","cellPre","reroll","cancelRerolls"]) {
+    const src=boardSrc.match(new RegExp(`\\n  (?:async )?function ${name}\\([^\\n]*\\) \\{[\\s\\S]*?\\n  \\}`))[0];vm.runInContext(src,bctx);
+  }
+  const box=()=>doc.body.children.find(x=>x.classList.contains("dp-dialog"));
+  const choose=ok=>{const b=box().all().find(x=>x.tagName==="BUTTON"&&x.textContent===(ok?"확인":"취소"));b.onclick({isTrusted:true});};
+  try {
+    const work=bctx.reroll(true,false);
+    r.first=!!box()&&box().textContent.includes("다시 생성 +1 호출")&&!forbidden.test(box().textContent);choose(true);
+    await until(()=>box()?.textContent.includes("이번 실행에서 생성 조건"),200);
+    if(box()) {r.second=box().textContent.includes("이번 실행에 함께 반영됩니다")&&!forbidden.test(box().textContent);choose(false);}
+    await work;
+    for(const scope of ["all","crop"]) {
+      const pending=bctx.cancelRerolls(scope,{crop_id:"c"});
+      if(box()) {r[scope]=box().textContent.includes("이미 보낸 [생성 승인] 은 과금 없이 끝남")&&!forbidden.test(box().textContent)&&!/승인 코드|드라이런/.test(box().textContent);choose(false);}
+      await pending;
+    }
+    r.cancelledWrites=writes===0&&!box();
+    bctx.SM=()=>false;const local=[];bctx.window.confirm=t=>{local.push(t);return local.length===1;};
+    await bctx.reroll(true,false);
+    r.local=local.length===2&&local[1]==="이 크롭은 레이아웃이 바뀌어(미반영) 이 큐에서 생성 조건이 바뀌면 다시 생성이 실행되지 않습니다. 미반영 레이아웃 1건도 이 큐로 반영됩니다. 계속할까요?"&&writes===0;
+  } finally {bctx.window.DPDialog.cancel();if(appendChild)El.prototype.appendChild=appendChild;else delete El.prototype.appendChild;}
+  return r;
+});
+await scenario("F3U1 D352 반영 차단 우선·절 단추 보존",async()=>{
+  const e=await fresh(),h=e.pipe._f3,p=h.PS.P,r={};
+  h.PS.plan.apply_pending=["반영 대기"];e.S.canvas=null;
+  const cases={unsaved:()=>p.saved=false,confirm:()=>p.confirm=["prepare.n"],path:()=>p.warnings=[{field:"import.psd_path",msg:"파일 확인"}],
+    cand:()=>p.warnings=[{field:"cand.path",msg:"후보 경로 확인"}],broken:()=>p.error="설정 오류",read:()=>h.PS.err="읽기 실패",loading:()=>h.PS.P=null};
+  for(const [name,change] of Object.entries(cases)) {
+    h.PS.P=p;p.saved=true;p.confirm=[];p.warnings=[];p.error=null;h.PS.err=null;change();
+    for(const tab of ["prepare","prompt","generate"]) {
+      await e.pipe.showTab(tab);
+      r[name+"-"+tab]=!main(e)&&dock(e).dataset.main===""&&dock(e).textContent===(name==="loading"?"실행 설정을 불러오는 중…":"실행 설정 확인이 먼저입니다 — ① 준비의 「실행 설정」")
+        &&e.B("반영 (무료)").parent!==dock(e);
+    }
+  }
+  h.PS.P=p;h.PS.err=null;p.confirm=["draft.apply"];p.saved=true;p.error=null;p.warnings=[];
+  h.render();r.restDoesNotBlock=dock(e).dataset.main==="apply";
+  h.PS.sending=true;h.PS.job={stage:"apply",pid:"test",ahead:0,running:true};h.render();
+  r.applyDisabled=main(e).disabled&&dock(e).textContent.includes("끝난 뒤");
+  r.waitClass=e.head.all().some(x=>x.classList.contains("lh-wait"));h.PS.job=null;h.PS.sending=false;
+  e.stop();return r;
+});
+await scenario("F3U1 D352 자리 전환 뒤 800ms capture 차단",async()=>{
+  serverMode(false);let clock=10000;ctx.Date=class extends Date{static now(){return clock;}};
+  const e=await mkStudio({S:s=>{s.canvas={};s.rerolls_pending=0;}}),h=e.pipe._f3,r={};e.answer=false;
+  try {
+    h.PS.plan.apply_pending=["반영 대기"];await e.pipe.showTab("generate");r.free=dock(e).dataset.main==="apply";
+    clock+=20;h.PS.plan.apply_pending=[];h.render();const changed=clock,posts=e.srv.log.filter(x=>x.method==="POST").length;
+    let reached=0;
+    const spy=()=>{const b=main(e),fn=b.on.click[0];b.on.click[0]=ev=>{reached++;return fn(ev);};};spy();
+    main(e).focus();const ev=main(e).fire("click",{isTrusted:true});
+    r.focusCleared=!dock(e).contains(e.doc.activeElement);
+    clock=changed+799;main(e).focus();main(e).fire("click",{isTrusted:true});
+    r.focusClearedAgain=!dock(e).contains(e.doc.activeElement);
+    r.blocked=reached===0&&e.confirms.length===0&&!e.box()&&e.tab.got.length===0&&e.srv.log.filter(x=>x.method==="POST").length===posts&&ev.defaultPrevented===true;
+    r.capture=dock(e).capture.click.length===1;
+    clock=changed+800;main(e).fire("click",{isTrusted:true});await sleep(1);
+    r.boundary=reached===1&&e.confirms.length===1&&e.tab.got.length===0;
+    const previous=main(e);h.render();spy();main(e).fire("click",{isTrusted:true});await sleep(1);
+    r.sameKind=main(e)!==previous&&Number(e.panel.dataset.mainChanged)===changed&&reached===2&&e.confirms.length===2;
+    clock+=10;h.PS.plan.apply_pending=["다른 창 변경"];h.render();const refresh=e.refresh;main(e).fire("click",{isTrusted:true});await sleep(1);
+    r.paidToFree=dock(e).dataset.main==="apply"&&Number(e.panel.dataset.mainChanged)===clock&&e.refresh===refresh;
+    clock+=10;h.PS.plan.apply_pending=[];await e.pipe.showTab("prepare");r.empty=dock(e).dataset.main===""&&e.panel.dataset.main==="";
+    clock+=10;await e.pipe.showTab("generate");main(e).fire("click",{isTrusted:true});r.fromEmpty=e.confirms.length===2&&Number(e.panel.dataset.mainChanged)===clock;
+  } finally {e.stop();delete ctx.Date;}
+  return r;
+});
+await scenario("F3U1 D353 고급·이동·경고",async()=>{
+  const e=await fresh(),h=e.pipe._f3,r={};await e.pipe.showTab("prepare");
+  let sec=sectionOf(e,"실행 설정"),toggle=e.B("고급");
+  r.direct=sec?.parent===e.panel&&sec.classList.contains("pp-adv");r.closed=toggle?.attrs["aria-expanded"]==="false";
+  const hint=e.panel.children.find(x=>x.classList.contains("pp-adv-hint")),pr=h.PS.P.settings.prepare;
+  r.hint=hint?.dataset.tab==="prepare"&&!hint.classList.contains("pp-sec")&&hint.textContent===`기본 설정으로 진행합니다 — 모델 ${pr.model} · 후보 ${pr.n}장씩. 바꾸려면 [고급]`;
+  r.sectionCount=e.panel.children.filter(x=>x.classList.contains("pp-sec")&&x.dataset.tab==="prepare").length===1;
+  r.toggleOrder=e.panel.children.at(-2)===toggle;
+  e.click(toggle);r.open=e.panel.dataset.adv==="1"&&e.B("고급").attrs["aria-expanded"]==="true";
+  e.click(e.B("고급"));await e.pipe.goSection({tab:"prepare",section:"실행 설정"});
+  r.go=e.panel.dataset.adv==="1"&&sectionOf(e,"실행 설정").scrolled&&e.B("고급").attrs["aria-expanded"]==="true";
+  h.PS.P.confirm=["prepare.n"];h.render();r.confirmVisible=!sectionOf(e,"실행 설정").classList.contains("pp-adv");
+  h.PS.P.confirm=[];h.PS.P.drift=[{section:"prepare",field:"quality",kind:"cell",manifest:"low",settings:"high"}];h.render();r.driftVisible=!sectionOf(e,"실행 설정").classList.contains("pp-adv");
+  h.PS.P.drift=[];h.PS.P.warnings=[{field:"import.psd_path",msg:"경로 확인"}];h.render();r.warningVisible=!sectionOf(e,"실행 설정").classList.contains("pp-adv");
+  r.noWarningHint=!e.panel.children.some(x=>x.classList.contains("pp-adv-hint"))&&!e.B("고급");
+  h.PS.P.warnings=[];h.PS.err="읽기 오류";h.render();r.noErrorHint=!e.panel.children.some(x=>x.classList.contains("pp-adv-hint"));h.PS.err=null;
+  h.PS.P.warnings=[];await e.pipe.showTab("generate");const copies=e.panel.all().filter(x=>x.tagName==="BUTTON"&&x.textContent==="승인 코드 복사");
+  r.codeAdvanced=copies.length===2&&copies.every(x=>x.classList.contains("pp-adv"));
+  r.externalAdvanced=sectionOf(e,"외부 엔진").classList.contains("pp-adv");e.stop();
+  const s=await fresh(true);await s.pipe.showTab("generate");r.noServerToggle=!s.B("고급");s.panel.dataset.adv="1";s.pipe._f3.render();
+  r.noServerCodes=!s.B("승인 코드 복사")&&!s.panel.textContent.includes("승인 코드는 그래프");s.stop();return r;
+});
+await scenario("F3U1 R7 승인 코드 없는 서버 안내·판정 보존",async()=>{
+  const e=await fresh(true),h=e.pipe._f3,p=h.PS.plan,p0=h.PS.P,r={};
+  const title="선택(only) — 계획·승인의 대상";
+  r.selection=e.list.all().filter(x=>x.tagName==="INPUT").length===e.S.crops.length&&e.list.all().filter(x=>x.tagName==="INPUT").every(x=>x.title===title);
+  const compare=(name)=>{
+    serverMode(false);const why=h.dimWhy(),local=h.approveWhy("");
+    serverMode(true);r[name]=JSON.stringify(h.dimWhy())===JSON.stringify(why)&&!!h.approveWhy("")===!!local&&!h.approveWhy("").includes("승인 코드");
+  };
+  compare("noHash");r.noHashText=h.approveWhy("").startsWith("승인할 계획 없음");
+  p0.confirm=["draft.apply"];await e.pipe.showTab("generate");compare("confirm");
+  r.confirmText=!textOf(e.panel).includes("승인 코드")&&textOf(e.panel).includes("승인 보류")&&textOf(e.panel).includes("승인을 보류");
+  p0.confirm=[];p.draft.import_pending=["레퍼런스 미반영"];await e.pipe.showTab("prompt");compare("pending");
+  r.pendingText=e.panel.textContent.includes("초안 승인은 반영 뒤 확정: 레퍼런스 미반영")&&!textOf(e.panel).includes("승인 코드");
+  p.draft.import_pending=[];p0.drift=[{section:"prepare",field:"n",kind:"cost",manifest:1,settings:2}];await e.pipe.showTab("prepare");compare("cost");
+  r.costText=!textOf(e.panel).includes("승인 코드")&&textOf(e.panel).includes("대기 호출의 설정·승인 조건이 바뀜")
+    &&dock(e).textContent.includes("반영하면 대기 호출 조건 갱신")&&!dock(e).textContent.includes("새 생성 조건");
+  p0.drift=[];h.loseRun();await e.pipe.showTab("generate");r.lost=!textOf(e.panel).includes("승인 코드")&&textOf(e.panel).includes("승인의 결과를 모름");
+  r.stale=h.refusal({reason:"stale",hash:"old"},"run")==="계획이 바뀜 — 다시 받은 계획을 보고 다시 승인";
+  serverMode(false);h.render();r.localSelection=e.list.all().filter(x=>x.tagName==="INPUT").length===e.S.crops.length&&e.list.all().filter(x=>x.tagName==="INPUT").every(x=>x.title==="선택(only) — 계획·승인 코드 복사의 대상");
+  r.localLost=e.panel.textContent.includes("승인 코드 test-code");e.stop();return r;
+});
+await scenario("F3U1 R8 진행 중 크롭만 dp-live",async()=>{
+  const e=await fresh(),h=e.pipe._f3,p=h.PS.plan,r={};complete(e);
+  const id=e.S.crops[0].id;p.run.by_crop[id].inflight=2;h.render();
+  let live=e.list.all().filter(x=>x.textContent==="진행 2"&&x.classList.contains("chip"));
+  r.running=live.length===1&&live[0].classList.contains("b-run")&&live[0].classList.contains("dp-live");
+  e.S.plan_v="새 기록";h.render();live=e.list.all().filter(x=>x.textContent==="진행 2"&&x.classList.contains("chip"));
+  r.stale=live.length===1&&live[0].classList.contains("b-run")&&!live[0].classList.contains("dp-live");
+  const chip=(text,cls)=>{const x=e.doc.createElement("span");x.textContent=text;x.className="chip "+cls;return x;};
+  const bctx=vm.createContext({chip});vm.runInContext(boardSrc.match(/\n  function draftChips\(ch, c\) \{[\s\S]*?\n  \}/)[0],bctx);
+  for(const stale of [false,true]) {
+    const host=e.doc.createElement("div");bctx.draftChips(host,{plan_stale:stale,draft_chip:{running:true,wait:["초안 필요"],run_need:1}});
+    const running=host.children.find(x=>x.textContent==="실행 중"),waiting=host.children.filter(x=>x.classList.contains("b-wait"));
+    r["draft-"+stale]=host.children.length===3&&!!running&&running.classList.contains("b-run")&&running.classList.contains("dp-live")===!stale
+      &&running.classList.contains("stale")===stale&&waiting.length===2&&waiting.every(x=>!x.classList.contains("dp-live"));
+  }
+  e.stop();return r;
+});
+await scenario("F3U1 D358–359 서버 문구·단가·복구",async()=>{
+  const e=await fresh(true),h=e.pipe._f3,r={};
+  for(const tab of ["prepare","prompt","generate"]) {await e.pipe.showTab(tab);r[tab]=!illegal.test(textOf(e.panel)+textOf(e.head));}
+  r.noCodes=!e.B("승인 코드 복사")&&!e.panel.textContent.includes("승인 코드 "+h.PS.plan.run.hash)&&!e.panel.textContent.includes("승인 코드는 그래프");
+  const rt=P.runText({...h.PS.plan.run,prepare:{...h.PS.P.settings.prepare,n:3}}),dt=P.draftText({...h.PS.plan.draft,backend:"vlm_openai"});
+  r.counts=rt.label==="생성 승인 4건 [MOCK]"&&!/호출당|\d+장/.test(rt.line+rt.label)&&!illegal.test(rt.line+rt.label+dt.line+dt.label);
+  const pre=P.runText({...h.PS.plan.run,pre:2,prepare:{...h.PS.P.settings.prepare,n:8}});
+  r.pre=pre.line.includes("다시 생성(사전 승인) 2건도 함께 실행(선택과 무관)")&&!/호출당|\d+장|함께 과금/.test(pre.line)&&!illegal.test(pre.line);
+  r.preview=!illegal.test(h.prepareText({...clone(R["GET /pipeline"].ok.switch),prepare:h.PS.P.settings.prepare}));
+  h.PS.P.drift=[{section:"prepare",field:"quality",kind:"cell",manifest:"low",settings:"high"}];await e.pipe.showTab("prepare");r.drift=!illegal.test(textOf(e.panel)+textOf(e.head));
+  h.PS.planErr="계획 검사 실패";h.render();r.planError=!illegal.test(textOf(e.panel)+textOf(e.head));h.PS.planErr=null;
+  h.PS.P.error="설정 읽기 실패";h.render();r.settingsError=!illegal.test(textOf(e.panel)+textOf(e.head));h.PS.P.error=null;
+  await e.pipe.openSettings();r.settings=!illegal.test(textOf(e.panel));
+  h.paidResult("reroll",{ok:false,reason:"unknown"},false);r.failure=!illegal.test(e.toasts.at(-1));
+  h.PS.sending=true;e.pipe.reroll();h.PS.sending=false;r.reserved=e.toasts.at(-1).includes("아래 상태 줄 [대기분 보내기]")&&!illegal.test(e.toasts.at(-1));
+  const oldTrack=h.PS.track;h.PS.track=()=>true;h.paidResult("run",{ok:true,prompt_id:"test"},false);h.PS.track=oldTrack;
+  r.success=e.toasts.at(-1)===":Run 서버 작업 줄에 들어감 — 서버가 작업을 받음(진행은 상태 줄)"&&!illegal.test(e.toasts.at(-1));
+  r.apply=false;ctx.window.DPDialog={confirm:async t=>{r.apply=!illegal.test(t);return false;}};await h.applyNow();delete ctx.window.DPDialog;
+  const rows=ctx.window.DPChecklist.rows({S:e.S,P0:h.PS.P,plan:h.PS.plan});r.firstHint=rows[0].hint==="처음이면: ① 준비에서 [반영 (무료)] 를 한 번 누르세요.";
+  r.report=!illegal.test(P.paidReport("run",RUN_H({stopped_reason:"auth"})))&&!illegal.test(P.paidReport("reroll",RUN_H({stopped_reason:"auth"})));
+  h.PS.plan.notes=["서버 안내 원문: 큐에 보내기"];h.render();r.noRewrite=e.panel.textContent.includes("서버 안내 원문: 큐에 보내기");h.PS.plan.notes=[];
+  e.stop();return r;
+});
+await scenario("F3U1 D359 금지 구절·작업 실패·F1 서버 갈래",async()=>{
+  serverMode(true);const r={};
+  r.phrases=["ComfyUI","그래프","노드","위젯","Open Board","메뉴 BMK","대기열","큐에","큐를","큐 ","한 번 큐","큐하세요","큐로","큐가","큐는","큐의","큐도","pipeline.json","_layer_targets"].every(x=>forbidden.test(x));
+  r.allowed=!forbidden.test("서버 재시작 · 단계 탭 · 다큐멘터리");
+  const types=["ImportPSD","Prepare","SpecDraft","Run","Analyze","Review","Compose","ExportPSD"],ids=["import","prepare","draft","run","analyze","review","compose","export"],labels=["가져오기","준비","초안","생성","분석","검토 준비","합성","Export"];
+  for(let i=0;i<types.length;i++)for(const field of ["node_type","node_id"]) {
+    const d={exception_message:"작업 실패\n",[field]:field==="node_type"?"BMKDesignPatch"+types[i]:"dp_"+ids[i]};
+    const msg=P.endOf(entry("error",[["execution_error",d]])).msg;
+    r[types[i]+"-"+field]=msg===labels[i]+": 작업 실패"&&!forbidden.test(msg);
+  }
+  r.unknown=P.endOf(entry("error",[["execution_error",{node_type:"UnknownNode",exception_message:"실패"}]])).msg==="작업: 실패";
+  r.unknownProperty=P.endOf(entry("error",[["execution_error",{node_type:"constructor",node_id:"toString",exception_message:"실패"}]])).msg==="작업: 실패";
+  const response=data=>({ok:true,status:200,json:async()=>data});
+  const seen=[];
+  const mockFetch=async(url,opts)=>{const path=new URL(url).pathname;seen.push(path);
+    if(path.endsWith("/jobs/prompt"))return response({prompt_id:"f3-gone",number:1});
+    if(path.endsWith("/jobs/queue"))return response({queue_running:[],queue_pending:[]});
+    if(path.endsWith("/jobs/history/f3-gone"))return response({});
+    throw Error("모의 경로 밖: "+path);};
+  const s=P.session(A,C,KEY,mockFetch,mem(),1);let done;
+  s.onDone=(job,res)=>done=res;await s.queue("apply");await until(()=>done,200);
+  r.gone=done?.state==="gone"&&done.msg==="서버가 다시 시작됐거나 작업이 지워짐"&&!forbidden.test(done.msg)&&seen.length>=4&&seen.every(x=>x.includes("/jobs/"));
+  const bad=P.session(A,C,KEY,async()=>{throw Error("연결 끊김");},mem(),1);
+  try{await bad.queue("export");r.unknownQueue=false;}catch(err){r.unknownQueue=err.message==="보냈는지 모름 — 작업 줄을 확인하세요(작업이 들어갔을 수 있음): 연결 끊김"&&!forbidden.test(err.message);}
+  serverMode(false);r.localFailure=P.endOf(entry("error",[["execution_error",{node_type:"BMKDesignPatchRun",exception_message:"실패"}]])).msg==="BMKDesignPatchRun: 실패";
+  return r;
+});
+await scenario("F3U1 D358 로컬 승인 라벨·금액·확인 문구",async()=>{
+  serverMode(false);const p=clone(R["GET /pipeline/plan"].ok),r={};
+  const run=P.runText(p.run),draft=P.draftText(p.draft);
+  r.run=run.label==="생성 승인 4건 ≈ $2.40–3.16"&&run.line.includes("≈ $2.40–3.16(≈ 506–667 크레딧)")&&run.line.includes("승인 코드 "+p.run.hash);
+  r.draft=draft.label==="초안 승인 1크롭 ≈ 27(최대 47) 크레딧"&&draft.line.includes("≈ 27(최대 47) 크레딧")&&draft.line.includes("승인 코드 "+p.draft.hash);
+  const lines=P.approveText("run",p,ALL.split(","),false,false);
+  r.confirm=lines.includes("드라이런 이후 대기 목록이 바뀌었으면 서버가 과금 없이 드라이런만 다시 합니다.")&&lines.some(x=>x.startsWith("다시 생성(사전 승인)")&&x.includes("함께 과금"))
+    &&lines.at(-1).startsWith("승인 제출은 ComfyUI 탭에 열린 그래프에서 실행마다 바뀌는 값을 한 번 진행시킵니다");
+  // 다시 생성의 세 조립 값만 실제 소스로 계산한다. 마지막 confirm 식과 로컬 꼬리는 기존 유료 묶음이 그대로 검증한다.
+  const slice=(a,b)=>boardSrc.slice(boardSrc.indexOf(a),boardSrc.indexOf(b,boardSrc.indexOf(a)));
+  const make=slice('    const what =','    // 큐 요청은')+slice('    const graphPrep =','    if (fromButton)')
+    +slice('      const stack =','      const text =');
+  const bctx=vm.createContext({SM:()=>false,cell:{variant:"기본",cell_key:"sample",est_usd:[1,2]},pre:2,way:"paid",pipe:{applyWarn:()=>["설정 확인"]},usd:c=>` $${c.est_usd[0]}–${c.est_usd[1]}`});
+  const evaluate=()=>vm.runInContext(`(()=>{${make};return {what,stack,graphPrep};})()`,bctx);
+  const local=evaluate();r.rerollLocal=local.what==="다시 생성 +1 호출 (기본 $1–2)"&&local.stack==="이 생성 조건 다시 생성 대기 2건(사전 승인) → 3건 $3–6\n"&&local.graphPrep.includes("금액은 지금 jobs");
+  bctx.SM=()=>true;const server=evaluate();r.rerollServer=server.what==="다시 생성 +1 호출 (기본)"&&server.stack==="이 생성 조건 다시 생성 대기 2건(사전 승인) → 3건\n"&&server.graphPrep==="설정 확인";
+  return r;
+});
+await scenario("F3U1 D350–351 머리 단추·기억값",async()=>{
+  const r={},doc=new Doc(),els=new Map(),$=id=>{if(!els.has(id))els.set(id,doc.createElement("div"));return els.get(id);};
+  let mode=true,free=0,paid="";
+  const S={project:"시험",canvas:{},crops:[],counts:{targets:0,candidates:0,picks:0},cost:{calls:2,done:1,credits:999},running:false};
+  const bctx=vm.createContext({window:{},document:doc,S,$,SM:()=>mode,can:()=>false,pipe:{freePending:()=>free,paidLock:()=>paid},tabLink:null,
+    el:(tag,cls,t)=>{const x=doc.createElement(tag);x.className=cls;x.textContent=t||"";return x;},
+    pipeReady:()=>true,layoutReady:()=>true,refsReady:()=>true,notReady:()=>"",cancelButton:()=>doc.createElement("button"),comfyConnected:()=>false,
+    credits:()=>"999 cr",loadPref:()=>({})});
+  const code=boardSrc.match(/\n  function renderHeader\(\) \{[\s\S]*?\n  \}/)[0];vm.runInContext(code,bctx);
+  const render=()=>vm.runInContext("renderHeader()",bctx);
+  const start=boardSrc.slice(boardSrc.indexOf('    $("btn-drain").classList.add("dp-off");'),boardSrc.indexOf('    const newNotes = consumeNewProject();'));
+  const pendingStart=boardSrc.slice(boardSrc.indexOf('    if (window.DPEnv) await window.DPEnv.ready;'),boardSrc.indexOf('    const newNotes = consumeNewProject();'));
+  vm.runInContext(`async function startAfterReady(){${pendingStart}}`,bctx);
+  for(const server of [false,true]) {
+    mode=server;$("top").replaceChildren($("btn-queue"),$("btn-drain"));$("statusbar").replaceChildren($("btn-keys"));
+    for(const id of ["btn-queue","btn-drain"])$(id).className="dp-off";
+    let ready;bctx.window.DPEnv={ready:new Promise(resolve=>ready=resolve)};const starting=bctx.startAfterReady();
+    r["initial-"+server]=$("btn-queue").classList.contains("dp-off")&&$("btn-drain").classList.contains("dp-off")&&$("btn-queue").parent===$("top");
+    ready();await starting;r["ready-"+server]=$("btn-queue").classList.contains("dp-off")===server&&$("btn-drain").classList.contains("dp-off");
+  }
+  mode=true;
+  const place=()=>{$("top").replaceChildren($("btn-viewer"),$("btn-queue"),$("btn-drain"),$("btn-help"));$("statusbar").replaceChildren($("proj"),$("btn-keys"));
+    for(const id of ["btn-queue","btn-drain"])$(id).className="dp-off";vm.runInContext(start,bctx);};
+  place();r.serverPlace=$("top").children.length===2&&$("statusbar").children.length===4&&$("statusbar").children.slice(-3).every((x,i)=>x===$(["btn-queue","btn-drain","btn-keys"][i]));
+  const originalPlace=[...$("statusbar").children];
+  const off=id=>$(id).classList.contains("dp-off");
+  render();r.empty=off("btn-queue")&&off("btn-drain");r.noCost=!illegal.test($("badges").textContent);
+  S.rerolls_pending=9;S.rerolls_stale=0;render();r.pendingIsCalls=off("btn-queue");
+  for(const running of [false,true])for(const lock of ["","요청 중"])for(const pre of [0,2])for(const recovery of [0,3]) {
+    S.running=running;paid=lock;S.pending_preapproved=pre;free=recovery;render();
+    r[`queue-${running}-${!!lock}-${pre}-${recovery}`]=off("btn-queue")===(running||!!lock||!(pre||recovery))
+      &&off("btn-drain")===!running&&$("btn-drain").disabled===!running&&!$("btn-queue").hidden&&!$("btn-drain").hidden
+      &&$("btn-queue").textContent==="대기분 보내기"&&$("btn-queue").title===`사전 승인된 다시 생성 ${pre}건·복구 ${recovery}건을 지금 보냅니다(새 승인 없음)`
+      &&$("statusbar").children.length===4&&$("statusbar").children.every((x,i)=>x===originalPlace[i]);
+  }
+  S.running=false;paid="";S.pending_preapproved=2;bctx.pipe.freePending=undefined;render();r.unknownPlan=!off("btn-queue");
+  S.pending_preapproved=0;render();r.unknownEmpty=off("btn-queue");bctx.pipe.freePending=()=>free;
+  S.pending_calls=4;render();r.waitClass=$("badges").all().some(x=>x.classList.contains("b-wait"));
+  mode=false;place();$("btn-queue").textContent="다시 생성 보내기";$("btn-queue").title="local";render();
+  r.localPlace=$("top").children.length===4&&$("top").children.slice(1,3).every((x,i)=>x===$(["btn-queue","btn-drain"][i]))&&$("statusbar").children.length===2;
+  r.local=!off("btn-queue")&&$("btn-queue").textContent==="다시 생성 보내기"&&$("btn-queue").title==="local"&&off("btn-drain");
+  S.running=true;paid="요청 중";render();r.localRunning=!off("btn-queue")&&!off("btn-drain");S.running=false;
+  S.running=true;S.drain=true;bctx.comfyConnected=()=>true;render();
+  const running=$("badges").children.filter(x=>x.textContent==="Run 진행 중"),tab=$("badges").children.at(-1),waiting=$("badges").children.filter(x=>x.classList.contains("b-wait")||x.classList.contains("b-drain"));
+  r.liveBadge=running.length===1&&running[0].classList.contains("b-run")&&running[0].classList.contains("dp-live");
+  r.noIdlePulse=tab.textContent==="ComfyUI 탭 연결"&&tab.classList.contains("b-run")&&!tab.classList.contains("dp-live")&&waiting.length>=2&&waiting.every(x=>!x.classList.contains("dp-live"));
+  S.running=false;S.drain=false;
+  const projects=boardSrc.slice(boardSrc.indexOf('    document.body.classList.add("projects-page");'),boardSrc.indexOf('    $("proj").textContent = "프로젝트 목록";'));
+  vm.runInContext(projects,bctx);
+  r.projects=["modebar","export-state","btn-export","export-menu","btn-keys","btn-viewer"].every(id=>$(id).hidden)&&off("btn-queue")&&off("btn-drain")&&!$("btn-queue").hidden&&!$("btn-drain").hidden;
+  const prefs=boardSrc.slice(boardSrc.indexOf('    if (loadPref().keys === false)'),boardSrc.indexOf('    renderMode();',boardSrc.indexOf('    if (loadPref().keys === false)')));
+  for(const server of [false,true])for(const value of [undefined,false,true]) {
+    doc.body.className="";bctx.SM=()=>server;bctx.loadPref=()=>value===undefined?{}:{keys:value};vm.runInContext(prefs,bctx);
+    r[`${server}-${value}`]=doc.body.classList.contains("no-keys")===(value===false||server&&value===undefined);
+  }
+  bctx.SM=()=>true;
+  const crop={calls:2,calls_done:1,pending:1,dup_picks:[],stale_picked:[]};
+  const target={size:[512,512],focus_box:[0,0,512,512],cells:[{variant:"기본",reps:2,rerolls:0,pending:1}],candidates:[],pending_calls:2};
+  Object.assign(bctx,{curCand:()=>null,curTarget:()=>target,cropOf:()=>crop,targetTitle:()=>"시험",usd:()=>" $9.00",
+    row:(parent,key,text)=>{const x=doc.createElement("div");x.textContent=key+": "+text;parent.append(x);return x;}});
+  for(const name of ["renderDetail","renderGrid"]) vm.runInContext(boardSrc.match(new RegExp(`\\n  function ${name}\\(\\) \\{[\\s\\S]*?\\n  \\}`))[0],bctx);
+  vm.runInContext("renderDetail(); renderGrid()",bctx);
+  r.detail=!illegal.test($("detail").textContent)&&$("detail").textContent.includes("호출: 이 크롭 호출 2(완료 1) · 대기 1");
+  r.emptyGrid=$("grid").firstElementChild.classList.contains("dp-empty")&&$("grid").textContent==="후보 없음 — 대기 호출 2(끝나면 여기에 나옵니다)";
+  bctx.SM=()=>false;vm.runInContext("renderDetail()",bctx);r.localDetail=$("detail").textContent.includes("비용: 이 크롭 Run 999 cr · 호출 2(완료 1)")&&$("detail").textContent.includes("$9.00");
+  const messages=[];let way="paid",locked="";
+  Object.assign(bctx,{SM:()=>true,tabWay:()=>way,reviewMissing:()=>"",toast:t=>messages.push(t),pipe:{paidWhy:()=>"서버 확인 중",paidLock:()=>locked,reroll:()=>{}},queueInComfy:()=>{throw Error("로컬 실행 금지");}});
+  vm.runInContext(boardSrc.match(/\n  function queueReroll\(planned, held\) \{[\s\S]*?\n  \}/)[0],bctx);
+  vm.runInContext('queueReroll("")',bctx);locked="작업 중";vm.runInContext('queueReroll("paid")',bctx);way="";vm.runInContext('queueReroll("paid"); queueReroll()',bctx);
+  r.reserved=messages.length===4&&messages.every(t=>!illegal.test(t));
+  let clicked=null,sent=0;bctx.on=(id,fn)=>{if(id==="btn-queue")clicked=fn;};bctx.queueReroll=()=>sent++;
+  vm.runInContext(boardSrc.match(/^    on\("btn-queue"[^\n]+/m)[0],bctx);clicked({isTrusted:false});
+  r.scripted=sent===0&&!illegal.test(messages.at(-1))&&messages.at(-1).includes("대기분 보내기");clicked({isTrusted:true});r.trusted=sent===1;
+  return r;
+});
+console.log(JSON.stringify(out));process.exit(0);
+'''
+    out = OUT_ROOT / "forge_f3_frame"
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "frame.mjs").write_text(harness, encoding="utf-8")
+    (out / "in.json").write_text(json.dumps({"api": _pl_api(), "forge": _server_api(), "pipelineJs": str(web / "pipeline.js"),
+                                            "boardJs": str(web / "board.js"), "checklistJs": str(web / "checklist.js"), "dialogJs": str(web / "dialog.js")}, ensure_ascii=False), encoding="utf-8")
+    result = subprocess.run([node, str(out / "frame.mjs"), str(out / "in.json")], capture_output=True, text=True, encoding="utf-8", timeout=90)
+    (out / "result.txt").write_text(result.stdout + result.stderr, encoding="utf-8")
+    if result.returncode or not result.stdout.strip():
+        check(False, f"F3U1 VM 실패: {result.stderr[-3000:]}")
+        return
+    for name, values in json.loads(result.stdout.strip().splitlines()[-1]).items():
+        for key, value in values.items():
+            check(value is True, f"{name} {key}" if value is True else f"{name} {key}: {value}")
 
 
 def batch7c_unit():
@@ -53798,6 +54650,7 @@ def batch10a_unit():
     script += r'''
 assert.equal(prepareChanged({model:'gpt-image-2.5-flare',complexity:'high'}, {model:'gpt-image-2.5-flare',complexity:'low'}),false);
 assert.equal(prepareChanged({model:'gpt-image-2.6-flare',complexity:'high'}, {model:'gpt-image-2.6-flare',complexity:'low'}),true);
+const window={};
 const text=prepareText(p);
 for(const s of ['생성 승인 필요 2건','승인 전에는 과금 없음','복잡도 medium','다시 생성 대기 4건','옛 조건','그래프 Prepare','반영 뒤 달라질 수 있음']) assert.ok(text.includes(s),s);
 assert.throws(()=>prepareText({...p,error:'preview failure'}),/preview failure/);
@@ -53813,7 +54666,8 @@ const original={...p.prepare,model:'gpt-image-2.5-sunburst'};
 const PS={busy:false,P:{saved:true,error:null,rev:3,manifest_rev:8,confirm:[],settings:{prepare:original},widgets:{prepare:Object.fromEntries(Object.keys(original).map(k=>[k,{type:typeof original[k]==='number'?'INT':'STRING'}]))}}};
 PS.previewPrepare=async prepare=>({...PS.P,switch:{...p,prepare}});
 PS.save=async(sec,values,rev)=>{saves.push({sec,values:clone(values),rev});PS.P={...PS.P,settings:{[sec]:clone(values)},rev:rev+1};return PS.P};
-const opts={toast:(x,kind)=>{if(kind==='err')errors.push(x)}},window={confirm:x=>{asks.push(x);return accept}},SECTIONS={prepare:'Prepare'};
+const opts={toast:(x,kind)=>{if(kind==='err')errors.push(x)}},SECTIONS={prepare:'Prepare'};
+window.confirm=x=>{asks.push(x);return accept};
 const confirmOf=x=>x.confirm,shown=x=>String(x),render=()=>{},planNow=()=>{};
 (async()=>{
 await switchModel(); assert.equal(saves.length,0); assert.equal(asks.length,1);
@@ -54209,7 +55063,7 @@ def batch10b_unit():
         js.write_text(r"""
 const fs = require('fs'), vm = require('vm'), assert = require('assert');
 const input = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
-const ctx = vm.createContext({window:{}, URLSearchParams, console, setTimeout, clearTimeout});
+const ctx = vm.createContext({window:{}, URLSearchParams, console, setTimeout, clearTimeout, SM:()=>false});
 vm.runInContext(fs.readFileSync(input.pipeline,'utf8'),ctx);
 vm.runInContext(fs.readFileSync(input.checklist,'utf8'),ctx);
 const P = ctx.window.DPPipeline;
@@ -54314,6 +55168,7 @@ const P = ctx.window.DPPipeline;
   ctx.S.running=true;const nw=writes.length;await ctx.cancelRerolls('all');assert.equal(writes.length,nw);
   const elements={};
   const element=()=>({children:[],listeners:{},append(...c){this.children.push(...c);},replaceChildren(){this.children=[];},
+    classList:{names:new Set(),toggle(name,on){if(on)this.names.add(name);else this.names.delete(name);return !!on;},contains(name){return this.names.has(name);}},
     addEventListener(event,fn){this.listeners[event]=fn;}});
   Object.assign(ctx,{document:{},$:(id)=>elements[id]||(elements[id]=element()),
     el:(_tag,_cls,text)=>Object.assign(element(),{textContent:text}),cancelButton:()=>element(),
@@ -56321,6 +57176,213 @@ console.log(JSON.stringify(out));
 def forge_f3_tools_unit():
     """Forge F3 갈래 U2 — 도구 문구·빈 화면·서버 모드 표시(node vm). 명세 §4.3·§5. --quick 포함."""
     section("Forge F3-U2 — 도구 문구 (forge_f3_tools_unit)")
+    web = PKG / "web_design_patch"
+    src = {n: (web / n).read_text(encoding="utf-8") for n in
+           ("mask_edit.js", "layout_edit.js", "ref_edit.js", "viewer.js", "board.css")}
+    for name, count in (("mask_edit.js", 7), ("layout_edit.js", 6), ("ref_edit.js", 6)):
+        check(src[name].count("await askFree(") == count, f"F3-U2 {name} 무료 확인 호출 수 보존")
+    css = src["board.css"].split("/* ── Forge F3-U2", 1)[1]
+    check("svg.dr-isolate .dr-check-base { fill: var(--panel); }" in css
+          and "svg.dr-isolate .dr-check-tile { fill: var(--panel2); }" in css
+          and "svg.marks .mguide { fill: var(--accent); }" in css, "F3-U2 D364 SVG 가이드·체커 테마 변수")
+    check('#ffd477' not in src["mask_edit.js"] and '#171a20' not in src["viewer.js"] and '#292e38' not in src["viewer.js"],
+          "F3-U2 D364 SVG 테마색의 고정 fill 제거")
+    check('svg("rect", { fill: "white" })' in src["viewer.js"] and 'fill: "black", "fill-opacity": 0.12' in src["viewer.js"],
+          "F3-U2 D364 격리 마스크 흑백·불투명도 보존")
+    node = shutil.which("node")
+    if not node:
+        skip("node 없음: F3-U2 모의 DOM·키·두 모드 문구 미검증")
+        return
+    out = OUT_ROOT / "forge_f3_tools"
+    out.mkdir(parents=True, exist_ok=True)
+
+    def run(name, script, data, *modules):
+        js, inp = out / f"{name}.mjs", out / f"{name}.json"
+        js.write_text(script, encoding="utf-8")
+        inp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        result = subprocess.run([node, str(js), *[str(web / n) for n in modules], str(inp)],
+                                capture_output=True, text=True, encoding="utf-8", timeout=90)
+        if result.returncode or not result.stdout.strip():
+            check(False, f"F3-U2 {name} VM 실패: {result.stderr[-3000:]}")
+            return
+        for case, values in json.loads(result.stdout.strip().splitlines()[-1]).items():
+            for label, value in values.items():
+                check(value is True, f"F3-U2 {name} {case} {label}: {value}")
+
+    # 기존 DOM·이미지·fetch 대역을 재사용한다. VM 밖의 통신 경로는 만들지 않는다.
+    common = r'''
+const forbidden = /ComfyUI|그래프|노드|위젯|Open Board|메뉴 BMK|대기열|pipeline\.json|_layer_targets|(?:^|[^\p{L}\p{N}_])큐(?=$|[^\p{L}\p{N}_]|에|의|를|는|가|로|하)/u;
+const shown = root => root.all().map(e => `${e.own || ""} ${e.title || ""}`).join("\n");
+'''
+    tree = ast.parse(inspect.getsource(mask_js_unit))
+    harness = next(n.value.value for n in ast.walk(tree) if isinstance(n, ast.Assign)
+                   and any(isinstance(t, ast.Name) and t.id == "harness" for t in n.targets) and isinstance(n.value, ast.Constant))
+    cut = [_PL_JS_HARNESS[_PL_JS_HARNESS.index(a):_PL_JS_HARNESS.index(b, _PL_JS_HARNESS.index(a))]
+           for a, b in (("import fs", "async function run("), ("class El {", "async function mouse("))]
+    cut += [harness[:harness.index('// J-K1 공용 표')], harness[harness.index('function maskState()'):harness.index('await scenario("panel",')]]
+    mask = "".join(cut).replace('fs.readFileSync(IN.maskJs, "utf8")',
+        'fs.readFileSync(IN.maskJs, "utf8").replace("return { enter, leave, go, onKey, onKeyUp, stateChanged, seamsChanged, pending, isolateChanged: repaintAll }", '
+        '"return { _f3: { M, renderPanel, warnXform }, enter, leave, go, onKey, onKeyUp, stateChanged, seamsChanged, pending, isolateChanged: repaintAll }")')
+    mask = mask.replace('  P.winOn = {};', '  P.ctx = c;\n  P.winOn = {};')
+    mask += common + r'''
+for (const sm of [false, true]) await scenario(sm ? "server" : "local", async () => {
+  const P = maskPanel(), {ed, B, key, panel} = P, r = {};
+  P.ctx.window.DPEnv = {serverMode: sm};
+  P.ctx.window.DPDialog = {confirm: async text => {P.confirms.push(text); return P.answer;}};
+  const info = maskInfo(K15); info.edit = null; info.adjust = null; P.srv.info[K15] = info;
+  await ed.enter(maskState(), {key: K15}); await until(() => P.viewer.layer);
+  const {M, renderPanel, warnXform} = ed._f3;
+  const section = name => panel.children.find(e => e.children[0]?.textContent === name);
+  const hist = label => section("적용 전 획").all().find(e => e.tagName === "BUTTON" && e.textContent === label);
+  r.labels = !!B("지우개") && !!B("브러시") && !!B("흐리기") && !!B("붓") && !!B("변형") && !!B("페이드")
+    && !!section("붓 (왼쪽 끌기 · Space+끌기 = 화면 이동)") && B("지우개").classList.contains("mt-erase") && B("지우개").classList.contains("on");
+  r.titles = B("지우개").title === "X: 지우개 ↔ 브러시(붓 원 빨강) — 지우개 = 패치를 지움 · 브러시 = 패치를 살림"
+    && B("브러시").title === "X: 지우개 ↔ 브러시(붓 원 초록) — 지우개 = 패치를 지움 · 브러시 = 패치를 살림";
+  r.auto = P.rows().includes(IN.autoRow);
+  r.x = key("KeyX") && B("브러시").classList.contains("on") && key("KeyX") && B("지우개").classList.contains("on");
+  const slider = name => Number(panel.all().find(e => e.classList.contains("rf-slider") && e.children[0]?.textContent === name).children[2].value);
+  r.brackets = key("BracketRight") && slider("크기") === 58 && key("BracketLeft") && slider("크기") === 48
+    && key("BracketLeft", {shiftKey:true}) && slider("경도") === .4 && key("BracketRight", {shiftKey:true}) && slider("경도") === .5;
+  M.begin("erase", [M.win[0]+300, M.win[1]+300], 24, 1, 1); M.end(); renderPanel();
+  r.ops = M.ops() === "붓 1획";
+  r.history = hist("되돌리기").dataset.hist === "undo" && hist("다시실행").dataset.hist === "redo" && hist("전체 지우기").dataset.hist === "clear"
+    && hist("되돌리기").title === "적용 전 획 — 한 단계 되돌리기 (Ctrl+Z)" && hist("다시실행").title === "적용 전 획 — 한 단계 다시 (Ctrl+Y · Ctrl+Shift+Z)";
+  r.undo = key("KeyZ", {ctrlKey:true}) && M.pending() === 0 && M.redo.length === 1;
+  r.redo = key("KeyY", {ctrlKey:true}) && M.pending() === 1 && M.redo.length === 0;
+  r.shiftRedo = key("KeyZ", {ctrlKey:true}) && key("KeyZ", {ctrlKey:true,shiftKey:true}) && M.pending() === 1;
+  r.inline = section("후보 보정").textContent.includes("전체 지우기");
+  warnXform(); r.toast = P.toasts.at(-1).includes("[적용 (Enter)]·[전체 지우기]");
+  M.info = {...M.info, edit:{file:"new-version.png",hist:0,at:"2026-11-10 12:00:00"}}; renderPanel();
+  r.behind = panel.textContent.includes(sm ? "서버 버전이 바뀜(다른 창·작업)" : "서버 버전이 바뀜(다른 창·노드)");
+  r.screen = !sm || !forbidden.test(shown(panel));
+  M.info = info; renderPanel(); hist("전체 지우기").fire("click"); await sleep(10);
+  r.clear = M.pending() === 0 && P.confirms.at(-1) === "적용 안 한 획 1 을 모두 버릴까요?";
+  const old = P.ctx.window.DPMaskEdit.session(A, KEY, async () => ({ok:false,status:404,json:async()=>null}), async()=>null, 5);
+  await old.open(K15);
+  r.error = sm ? !forbidden.test(old.err) && old.err.includes("관리자")
+    : old.err === "마스크 라우트가 없습니다 — ComfyUI 를 재시작해야 마스크 편집(K)을 쓸 수 있습니다";
+  await ed.leave(); return r;
+});
+console.log(JSON.stringify(out));
+'''
+    run("mask", mask, {"api": _pl_api(), "mask": json.loads(_MASK_API.read_text(encoding="utf-8")), "rules": {},
+                       "maskJs": str(web / "mask_edit.js"), "pipelineJs": str(web / "pipeline.js"), "boardJs": str(web / "board.js"),
+                       "autoRow": MASK_AUTO_ROW})
+
+    layout = _LAYOUT_EDIT_HARNESS.split('// 배치 3-1(F17)')[0] + common + r'''
+for (const sm of [false, true]) await scenario(sm ? "server" : "local", async () => {
+  ctx.window.DPEnv = {serverMode:sm}; const r = {};
+  const c = crop("001_aaaaaa", "001_문양", [256,256,512,512]);
+  c.targets[0].adopted = "붉은 리본";
+  c.adopted_only = [{tid:"B",text:"푸른 끈"}];
+  const env = await editor([c], {pending_rerolls:2}, {crops:JSON.parse(JSON.stringify([c]))});
+  ctx.window.DPDialog = {confirm:async text => {env.confirms.push(text); return false;}};
+  ctx.window.confirm = text => {env.confirms.push(text); return false;};
+  r.redo = env.button(env.head,"다시실행").title === "다시 실행 (Ctrl+Y · Ctrl+Shift+Z)";
+  env.button(env.head,"반영 (무료)").fire("click"); await sleep(10);
+  const apply = env.confirms.at(-1);
+  r.apply = sm ? !forbidden.test(apply) && apply.includes("다시 생성 대기 2건") && apply.includes("다음 생성 때 과금")
+    : apply.includes("R·[다시 생성 보내기]·그래프 Run 에서 과금") && apply.includes("그래프 Spec Draft 를 승인 없이 한 번 큐하면 병합");
+  r.head = sm ? !forbidden.test(shown(env.head)) && shown(env.head).includes("다음 [반영 (무료)] 때 반영")
+    : shown(env.head).includes("다음 큐의 Import 에서 반영");
+  await env.pick(c.name);
+  const adopted = env.panel.all().find(e=>e.textContent==="채택");
+  const adoptedOnly = env.panel.all().find(e=>e.classList.contains("lt") && e.classList.contains("adopted"));
+  r.adoptedTitle = !!adopted && adopted.title === (sm ? "초안에서 채택한 대상 문구: 붉은 리본 — 여기 문구를 쓰면 이것이 이김"
+    : "스펙 _layer_targets 채택 문구: 붉은 리본 — 여기 문구를 쓰면 이것이 이김");
+  r.adoptedOnlyTitle = !!adoptedOnly && adoptedOnly.textContent.includes("채택: 푸른 끈")
+    && adoptedOnly.title === (sm ? "초안에서 채택한 대상 문구(레이아웃 대상 아님) — 같은 글자로 대상을 더하면 레이아웃 문구가 이김"
+      : "스펙 _layer_targets 채택 문구(레이아웃 대상 아님) — 같은 글자로 대상을 더하면 레이아웃 문구가 이김");
+  r.adoptedScreen = !sm || !forbidden.test(shown(env.panel));
+  env.key("Delete"); await sleep(10);
+  r.remove = env.confirms.at(-1).includes(sm ? "다음 [반영 (무료)] 때 반영됩니다" : "다음 큐의 Import 에서 반영됩니다");
+  r.growOffered = await env.ed.proposeGrow(c.id,["left"]); env.key("Enter"); await sleep(10);
+  const cost = "[반영 (무료)] 뒤 이 크롭은 새 생성 조건이 되어, 실행(G)에서 생성을 승인할 때만 유료(평균 ≈ 169 크레딧/호출, 초안 갱신 ≈ 21 — 10/23 원장 평균).\n";
+  const paid = "[반영 (무료)] 뒤 이 크롭은 새 생성 조건이 되어, ⑤ 생성에서 승인할 때만 유료.\n";
+  r.grow = env.confirms.at(-1) === "크롭 넓히기 제안을 적용할까요?\n적용은 레이아웃만 바꿉니다(무료).\n" + (sm ? paid : cost) + "지금 ★ 는 옛 크롭 기준으로 남습니다(옛 크롭 ★).";
+  r.cancel = env.srv.log.length === 0 && env.queued.length === 0;
+  await env.ed.leave();
+  const empty = await editor([], {}, {canvas:null});
+  r.empty = empty.panel.textContent === "베이스가 없습니다 — ① 준비에서 [반영 (무료)] 를 먼저 누르세요(크롭 편집 불가)."
+    && empty.panel.children[0].classList.contains("lp-msg") && empty.panel.children[0].classList.contains("dp-empty");
+  await empty.ed.leave();
+  const multi = await editor([C1(),C2()]);
+  ctx.window.confirm = text => {multi.confirms.push(text);return false;};
+  ctx.window.DPDialog = {confirm:async text=>{multi.confirms.push(text);return false;}};
+  await multi.pick("001_모자"); await multi.pick("002_눈",{ctrlKey:true}); multi.key("Delete"); await sleep(10);
+  r.multi = multi.confirms.at(-1).includes(sm ? "다음 [반영 (무료)] 때 반영됩니다" : "다음 큐의 Import 에서 반영됩니다")
+    && multi.srv.log.length === 0;
+  await multi.ed.leave();
+  const d = {token:"diff",changed:[C1(),C2()].map(c=>({name:c.name,fields:["rect"],from:{rect:c.rect},to:{rect:c.rect}})),added:[],removed:[]};
+  const diff = await editor([C1(),C2()],{psd_diff:d},{},{psdPartial:()=>false}); await diff.pick("001_모자");
+  ctx.window.confirm = text=>{diff.confirms.push(text);return false;};
+  ctx.window.DPDialog = {confirm:async text=>{diff.confirms.push(text);return false;}};
+  const take=diff.button(diff.panel,"PSD 값으로"); take.fire("click"); await sleep(10);
+  r.psd = sm ? !forbidden.test(take.title+diff.confirms.at(-1)) && diff.confirms.at(-1).includes("나머지 다른 곳 1건")
+    : take.title.includes("ComfyUI 재시작 전 서버") && diff.confirms.at(-1).includes("ComfyUI 재시작 전 서버");
+  await diff.ed.leave();
+  const old = await editor([C1()]);
+  ctx.fetch = async () => ({ok:false,status:404,json:async()=>null}); old.state(2,1); await sleep(30);
+  r.error = sm ? !forbidden.test(shown(old.panel)+shown(old.head)) && old.head.textContent.includes("관리자")
+    : old.head.textContent.includes("레이아웃 라우트가 없습니다 — ComfyUI 를 재시작해야 크롭 편집을 쓸 수 있습니다");
+  await old.ed.leave(); return r;
+});
+console.log(JSON.stringify(out));
+'''
+    run("layout", layout, {}, "layout_geom.js", "layout_edit.js")
+
+    # refs 의 세션 시나리오는 건너뛰고 화면에 쓰는 대역 정의만 가져온다.
+    refs = _R4_HARNESS[:_R4_HARNESS.index('// ── J-R1·J-R3')]
+    refs += _R4_HARNESS[_R4_HARNESS.index('// ── 가짜 서버:'):_R4_HARNESS.index('await scenario(')]
+    refs += _R4_HARNESS[_R4_HARNESS.index('class El {'):_R4_HARNESS.index('await scenario("ui",')]
+    refs += common + r'''
+for (const sm of [false, true]) await scenario(sm ? "server" : "local", async () => {
+  ctx.window.DPEnv = {serverMode:sm,can:n=>!sm || !["sam3","path_input"].includes(n)}; const r = {};
+  const env = await screen();
+  ctx.window.DPDialog = {confirm:async text=>{env.confirms.push(text);return false;}};
+  await env.press(env.hosts.head,"반영 (무료)");
+  const apply = env.confirms.at(-1);
+  r.apply = sm ? !forbidden.test(apply) && apply.includes("다시 생성 대기 1건")
+    : apply.includes("R·[다시 생성 보내기]·그래프 Run 에서 과금") && apply.includes("그래프 Spec Draft 를 승인 없이 한 번 큐하면 병합");
+  r.head = sm ? !forbidden.test(shown(env.hosts.head)) && shown(env.hosts.head).includes("다음 [반영 (무료)] 때 반영")
+    : shown(env.hosts.head).includes("다음 큐의 Import 에서 반영");
+  env.all(env.hosts.sheets).find(e=>e.tagName==="LI").fire("click"); await sleep(10);
+  r.cut = env.button(env.hosts.panel,"컷 (Enter)").title === (sm ? "선택 영역을 지금 방법으로 컷" : "선택 영역을 지금 방법으로 컷(SAM3 는 ComfyUI 대기열 앞에서 돎)");
+  env.drag(100,100,300,300); env.key("Enter"); await sleep(30);
+  const perspective=env.button(env.hosts.panel,"원근",true);
+  r.oldCapability = perspective?.disabled && perspective.title === (sm ? "화면을 새로 고쳐 보세요 — 계속되면 관리자에게 알려 주세요" : "ComfyUI 재시작 필요(서버가 옛 판)");
+  r.screen = !sm || !forbidden.test(shown(env.hosts.panel));
+  await env.ed.leave();
+  for (const issue of ["missing","mismatch","error","old"]) {
+    const R = R0();
+    if(issue==="missing") R.refs_dir="";
+    if(issue==="mismatch") {R.doc_dir_match=false;R.doc_refs_dir="C:/p/old-refs";}
+    if(issue==="error") R.error="레퍼런스 설정을 읽지 못했습니다";
+    const e=await screen({R,refs404:issue==="old"});
+    const all=Object.values(e.hosts).map(shown).join("\n");
+    const localText = {
+      missing:"Import PSD 의 refs_dir 가 비었습니다 — <프로젝트>\\refs 를 넣고 큐에 넣으면 저장·연결을 쓸 수 있습니다(시트 보기·컷은 됨).",
+      mismatch:"refs.json 의 refs_dir(C:/p/old-refs)가 지금 refs_dir(C:/p/refs)와 달라 연결을 무시하고 이름 매칭 중입니다(R-dir) — "
+        + "Import PSD 의 refs_dir 를 되돌리거나 refs.json 을 치운 뒤 저장·연결을 쓸 수 있습니다(시트 보기·컷은 됨).",
+      error:"refs.json 을 읽을 수 없어 저장·연결을 막았습니다(크롭은 이름 매칭으로 보임): 레퍼런스 설정을 읽지 못했습니다",
+      old:"레퍼런스 라우트가 없습니다 — ComfyUI 를 재시작해야 레퍼런스 편집을 쓸 수 있습니다"
+    };
+    const serverText = {...localText,
+      missing:"레퍼런스 폴더가 설정되지 않았습니다 — ① 준비에서 [반영 (무료)] 를 먼저 누르세요(시트 보기·컷은 됨).",
+      mismatch:"레퍼런스 폴더 설정을 읽지 못했습니다 — 서버 설정을 확인하세요.",
+      old:"레퍼런스 편집을 불러올 수 없습니다 — 화면을 새로 고쳐 보세요 — 계속되면 관리자에게 알려 주세요"
+    };
+    r[issue]=all.includes((sm ? serverText : localText)[issue]) && (!sm || !forbidden.test(all));
+    await e.ed.leave();
+  }
+  return r;
+});
+console.log(JSON.stringify(out));
+'''
+    run("refs", refs, {}, "layout_geom.js", "ref_edit.js")
+    check('el("div", "vempty dp-empty", "불러오는 중…")' in src["viewer.js"]
+          and 'empty.textContent = "베이스가 없습니다 — ① 준비에서 [반영 (무료)] 를 먼저 누르세요";' in src["viewer.js"],
+          "F3-U2 D357 뷰어 초기·빈 화면 공용 class 및 다음 행동 안내")
 
 
 def ext60_unit():
@@ -58407,7 +59469,7 @@ async def _fs_root_cache_races(bd, accounts, key, call):
             for _ in range(2):
                 count = scan.call_count
                 response, data = await call("GET", bd.API + "/state", sid=accounts[0][0], params={"root": "e" * 12})
-                check(response.status == 404 and data == {"error": bd._ROOT_HINT} and scan.call_count == count + 1,
+                check(response.status == 404 and data == {"error": bd._SERVER_ROOT_HINT} and scan.call_count == count + 1,
                       "FS29 U1 없는 키는 요청당 한 번만 재스캔하고 404")
             response, _ = await call("GET", bd.API + "/state", sid=accounts[1][0], params={"root": fresh_key})
             check(response.status == 404, "FS29 U1 새로 발견한 키도 다른 계정에서는 404")
@@ -58514,11 +59576,11 @@ async def _fs_scoped_roots(bd, out, call, login, sessions):
                     check(bd._root_param(key) == str(root) and bd._root_param(key) == str(root) and scan.call_count == 1,
                           "FS26 T1 같은 계정·폴더 mtime 이면 스캔/해시 재사용")
                     for invalid in (None, "../", "C" * 12, "c" * 11, "c" * 13):
-                        rejected(invalid, 404, bd._ROOT_HINT)
+                        rejected(invalid, 404, bd._SERVER_ROOT_HINT)
                     manifest = root / store.MANIFEST_NAME
                     saved = manifest.read_bytes()
                     manifest.unlink()
-                    rejected(key, 404, bd._ROOT_HINT)
+                    rejected(key, 404, bd._SERVER_ROOT_HINT)
                     manifest.write_bytes(saved)
                     check(bd._root_param(key) == str(root) and scan.call_count == 1,
                           "FS26 T1 캐시가 있어도 매니페스트 삭제/복원은 매번 확인")
@@ -58534,7 +59596,7 @@ async def _fs_scoped_roots(bd, out, call, login, sessions):
                     fresh.rmdir()
                     stamp = parent.stat()
                     os.utime(parent, ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 2_000_000_000))
-                    rejected(fresh_key, 404, bd._ROOT_HINT)
+                    rejected(fresh_key, 404, bd._SERVER_ROOT_HINT)
                     check(scan.call_count == 3, "FS26 T1 프로젝트 삭제도 폴더 mtime 으로 캐시 갱신")
                 oldest = str(out / "cache_0")
                 with patch.object(bd, "_SCOPE_ROOTS", {str(out / ("cache_" + str(i))): (0, {}) for i in range(256)}):
@@ -59418,6 +60480,974 @@ def _fj_execute(jobs):
 def forge_f3_server_unit():
     """Forge F3 갈래 S — 작업 기록 허용 목록·오류 경로 가림·로그인 실패 속도 제한. 명세 §4.4·§5. --quick 포함."""
     section("Forge F3-S — 서버 보강 (forge_f3_server_unit)")
+    import contextlib
+    import dataclasses
+    import functools
+    import inspect
+    import tempfile
+    from aiohttp import web
+    from aiohttp.test_utils import make_mocked_request
+    from multidict import CIMultiDict
+    from unittest.mock import AsyncMock, patch
+    import bmk_design_patch_board as bd
+    import bmk_design_patch_jobs as jobs
+    import bmk_design_patch_pipeline as pl
+    import bmk_design_patch_server as srv
+    import bmk_design_patch_vlm as vlm
+
+    api = _server_api()
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    out = Path(tempfile.mkdtemp(prefix="f3_server_", dir=OUT_ROOT.resolve()))
+    scope = _fj_scope(out / "account")
+    synthetic_home = {"home": "C:/data/account"}
+    closed_message = "요청을 처리하지 못했습니다(서버 기록 참고)"
+    paths = [
+        (r"C:\a\b.png", "<서버 경로>"), ("C:/a/b.png", "<서버 경로>"),
+        (r"C:\\a\\b", "<서버 경로>"), (r"\\server\share\x", "<서버 경로>"),
+        ("/srv/data/x", "<서버 경로>"), ("(--data=/srv/data/x)", "(--data=<서버 경로>)"),
+        ("실패:/tmp/work/x.png", "실패:<서버 경로>"),
+        (r"C:\Program Files\x.psd 를 못 읽음", closed_message),
+        (r"C:\Program Files (x86)\App\lib\x.py 를 읽지 못함", closed_message),
+        (r"C:\Several Folder Name Words\App\x.py 없음", closed_message),
+        (r"C:\Several Folder Name Words\one / D:\other\two", closed_message),
+        (r"<계정 폴더>\Several Folder Name Words\p\x.py", r"<계정 폴더>\Several Folder Name Words\p\x.py"),  # 5차 (f): 자기 홈 뒤에는 적용하지 않음.
+        ('"C:/Program Files/file name.psd" 없음', '"<서버 경로>" 없음'),
+        ("'/srv/some folder/file name.psd' 없음", "'<서버 경로>' 없음"),
+        ('"/dir)]}/file name.psd" 없음', '"<서버 경로>" 없음'),
+        (r"'\\server\shared folder\file name.psd' 없음", "'<서버 경로>' 없음"),
+        ("경로 /srv/some folder/x.psd 를 못 읽음", closed_message),
+        (r"c:\DATA\ACCOUNT\bmk_design_patch\p\x.psd", r"<계정 폴더>\bmk_design_patch\p\x.psd"),
+        (r"C:\\data\\account\\x.psd", r"<계정 폴더>\\x.psd"),
+        ("C:/data/account/x.psd", "<계정 폴더>/x.psd"),
+        ("C:/data/account", "<계정 폴더>"),
+        ("C:/data/account_other/x.psd", "<서버 경로>"),
+        ("C:/data/account.other/x.psd", "<서버 경로>"),
+        ("C:/data/account-other/x.psd", "<서버 경로>"),
+        ("C:/data/account가/x.psd", "<서버 경로>"),
+        ("https://example.test/a/b?q=C:/temp/x", "https://example.test/a/b?q=C:/temp/x"),
+        ("http://example.test/a/b", "http://example.test/a/b"),
+        ("https://example.test/a/b?q=C:/data/account/x", "https://example.test/a/b?q=C:/data/account/x"),
+        (r"refs\\a\\b", r"refs\\a\\b"),
+        (r"refs\a\b · .\parts\image.psd · ..\draft\notes.txt", r"refs\a\b · .\parts\image.psd · ..\draft\notes.txt"),
+        ("2026/11/10 · 3/4 · A/B/C · refs/a.png · ../a/b", "2026/11/10 · 3/4 · A/B/C · refs/a.png · ../a/b"),
+        ("/one · name/foo/bar", closed_message),  # 5차 (d): 한 단계 절대 경로도 닫음.
+        (r"<계정 폴더>\bmk_design_patch\p\x.psd", r"<계정 폴더>\bmk_design_patch\p\x.psd"),
+        ("https://example.test/a/b 와 /srv/data/x", "https://example.test/a/b 와 <서버 경로>"),
+        (r"C:/data/account/one / C:\other\two / /srv/data/three", r"<계정 폴더>/one / <서버 경로> / <서버 경로>"),
+        (r"C:/data/account/one C:\other\two", r"<계정 폴더>/one <서버 경로>"),
+        # 4차 R1: 공백을 건너 뒤쪽 경로·설명까지 한 후보로 삼키지 않는다.
+        (r"C:/data/account/p/x.psd 쓰기 실패 (C:\other\two)", "<계정 폴더>/p/x.psd 쓰기 실패 (<서버 경로>)"),
+        (r"<계정 폴더>\p\x.psd 쓰기 실패 (C:\other\two)", r"<계정 폴더>\p\x.psd 쓰기 실패 (<서버 경로>)"),
+        (r"C:\srv\x.psd 를 열 수 없습니다(PSD/PSB 아님)", "<서버 경로> 를 열 수 없습니다(PSD/PSB 아님)"),
+        (r"대상=C:\x\y.psd", "대상=<서버 경로>"),
+        (r"경로C:\x\y.psd", closed_message),
+        (r"(C:\srv\x.psd)닫는 괄호 뒤 설명", "(<서버 경로>)닫는 괄호 뒤 설명"),
+        ("[C:/private/a.psd]", "[<서버 경로>]"),
+        ("401/402/403 · 001_ab/A · 앞 / 뒤", "401/402/403 · 001_ab/A · 앞 / 뒤"),
+        ("<계정 폴더>/a/b", "<계정 폴더>/a/b"),
+        ("s3://bucket/a/b · file:///srv/data/x · custom+v1://host/a/b", "s3:<서버 경로> · <서버 경로> · custom+v1:<서버 경로>"),
+        ("//host/share/x", "<서버 경로>"), ("'//host/shared folder/a.psd'", "'<서버 경로>'"),
+        ("C://data/x", "<서버 경로>"), ("FILE:///srv/data/x", "<서버 경로>"),
+        ("file://host/share/x", "<서버 경로>"),
+        ("<계정 폴더>/srv/data/x", "<계정 폴더>/srv/data/x"),
+        ("<계정 폴더>/one file:///srv/other/x", "<계정 폴더>/one <서버 경로>"),
+        ("HTTPS://example.test/srv/data/x", "HTTPS://example.test/srv/data/x"),
+    ]
+    for mode in ("", "1"):
+        with patch.dict(os.environ, {bd.SERVER_ENV: mode}), patch.object(bd.logger, "warning") as log:
+            token = bd.set_scope(synthetic_home)
+            try:
+                for source, expected in paths:
+                    expected = expected if mode else source
+                    log.reset_mock()
+                    actual = bd.public_error(source)
+                    check(actual == expected, f"F3S1 경로·경계·로컬 보존 {mode!r} {source!r}: {actual!r}")
+                    check(log.call_count == int(bool(mode) and expected == closed_message)
+                          and (not log.called or log.call_args.args[-1] == source), "F3S1 4차 R1 닫힌 쪽만 원문을 로그에 기록·로컬 로그 없음")
+                    check(bd.public_error(actual) == actual, "F3S1 중복 가림은 같은 결과")
+                check(bd.public_error("C:/data/account/x", {}) == ("<서버 경로>" if mode else "C:/data/account/x"),
+                      "F3S1 명시한 빈 scope 는 현재 계정 범위를 쓰지 않음")
+                expect_raises(lambda: bd._refs_dir_for_write({}), "F3S2 빈 레퍼런스 안내", bd._Reject,
+                              contains="반영하세요" if mode else "큐하세요")
+                with patch.object(bd, "project_input", return_value=str(out)), \
+                        patch.object(store, "resolve_board_root", return_value=None):
+                    expect_raises(lambda: bd._root_param("bad"), "F3S2 프로젝트 안내 두 모드", bd._Reject,
+                                  contains=bd._SERVER_ROOT_HINT if mode else bd._ROOT_HINT)
+                expect_raises(lambda: pl._check_round(9, [0]), "F3S2 설정 round 거절", contains="유도값 [0]" + ("):" if mode else " — 다시 초안은 그래프에서):"))
+                draft = dict(pl.defaults()["draft"], write_mode="force")
+                expect_raises(lambda: pl.validate_section("draft", draft), "F3S2 설정 write_mode 거절",
+                              contains="만 씁니다:" if mode else "만 씁니다(preview·force 는 그래프):")
+                drift = [{"section": "prepare", "kind": "cell", "field": "prepare.quality", "manifest": "old", "settings": "new"}]
+                with patch.object(pl, "drift", return_value=drift):
+                    notes = bd._plan_notes(str(out), {}, {}, ())
+                check(("그래프" not in str(notes)) if mode else ("그래프와 Studio" in str(notes)), "F3S2 설정 갈라짐 안내 두 모드")
+            finally:
+                bd.reset_scope(token)
+
+    for mode in ("", "1"):
+        with patch.dict(os.environ, {bd.SERVER_ENV: mode}):
+            for home, path, expected_path in (
+                ("/srv/accounts/me", "/srv/accounts/me/a", "<계정 폴더>/a"),
+                ("/srv/accounts/me", "/srv/accounts/me/p/x.psd 실패 (/srv/other/two)", "<계정 폴더>/p/x.psd 실패 (<서버 경로>)"),
+                ("/srv/accounts/me", "https://example.test/srv/accounts/me/a", "https://example.test/srv/accounts/me/a"),
+                (r"\\server\share\account", r"\\SERVER\SHARE\account\a", r"<계정 폴더>\a"),
+                (r"\\server\share\account", "//SERVER/share/account/a", "<계정 폴더>/a"),
+                ("C:/Data Home/Account", r"C:\DATA HOME\ACCOUNT\a", r"<계정 폴더>\a"),
+            ):
+                check(bd.public_error(path, {"home": home}) == (expected_path if mode else path),
+                      "F3S1 POSIX·UNC·공백 계정 홈·URL·4차 R1 뒤쪽 경로·로컬 보존")
+    for mode in ("", "1"):
+        with patch.dict(os.environ, {bd.SERVER_ENV: mode, "TMPDIR": "", "TEMP": r"D:\Temporary Folder With Spaces", "TMP": ""}), \
+                patch.object(bd, "__file__", r"D:\Package Folder With Spaces\board.py"), \
+                patch.object(bd.sys, "prefix", r"D:\Python Install Folder"), \
+                patch.object(bd.sys, "executable", r"D:\Python Install Folder\python.exe"), patch.object(bd.logger, "warning"):
+            spaced_scope = {"home": r"D:\Design Patch Data\org1\acct1"}
+            for source, expected_path in (
+                (r"D:\Design Patch Data\org1\acct1\bmk_design_patch\p\manifest.json", r"<계정 폴더>\bmk_design_patch\p\manifest.json"),
+                (r"d:\\DESIGN PATCH DATA\\org1\\acct1\\p\\x.psd", r"<계정 폴더>\\p\\x.psd"),
+                ("D:/Design Patch Data/org1/acct1/p/x.psd 없음", "<계정 폴더>/p/x.psd 없음"),
+                (r"D:\Design Patch Data\org1\acct1 없음", "<계정 폴더> 없음"),
+                (r"D:\Design Patch Data\org2\acct2\p\x.psd 없음", "<서버 경로> 없음"),
+                (r"d:\DESIGN PATCH DATA 없음", "<서버 경로> 없음"),
+                (r"D:\Package Folder With Spaces 없음", "<서버 경로> 없음"),
+                (r"D:\Python Install Folder 없음", "<서버 경로> 없음"),
+                (r"D:\Temporary Folder With Spaces 없음", "<서버 경로> 없음"),
+                ("/My Data/acct/x.psd 없음", "요청을 처리하지 못했습니다(서버 기록 참고)"),
+            ):
+                check(bd.public_error(source, spaced_scope) == (expected_path if mode else source),
+                      "F3S1 3차 R1 공백 뿌리 우선·일반 후보·POSIX 잔여 경로·로컬 원문: " + source)
+            explicit = dict(spaced_scope, data_dir="/Explicit Data Folder")
+            check(bd.public_error("/Explicit Data Folder 없음", explicit) == ("<서버 경로> 없음" if mode else "/Explicit Data Folder 없음"),
+                  "F3S1 3차 R1 범위에 명시한 데이터 폴더")
+            posix_scope = {"home": "/My Data/org1/acct1"}
+            check(bd.public_error("/My Data/org1/acct1/p/x.psd 없음", posix_scope)
+                  == ("<계정 폴더>/p/x.psd 없음" if mode else "/My Data/org1/acct1/p/x.psd 없음"), "F3S1 3차 R1 공백 POSIX 계정 홈")
+            check(bd.public_error("/My Data/org2/acct2/p/x.psd 없음", posix_scope)
+                  == ("<서버 경로> 없음" if mode else "/My Data/org2/acct2/p/x.psd 없음"), "F3S1 3차 R1 추론한 공백 POSIX 데이터 뿌리")
+    # 5차 R1–R6: 실제 뿌리 대신 범위·설치 폴더를 주입하고 두 모드의 결과·원문 로그를 고정한다.
+    review_paths = [
+        ("R1", synthetic_home, "C:/Program Files/x.psd 를 못 읽음", closed_message),
+        ("R1", {"home": "/srv/data/org1/acct1"}, "/srv/data/org2/acct2/My Project/x.psd 없음", closed_message),
+        ("R1", synthetic_home, "/home/o'brien/x.psd", closed_message),
+        ("R1", synthetic_home, "/opt/My (old)/x.psd 없음", closed_message),
+        ("R2", {"data_dir": "/My Data"}, "데이터 폴더(/My Data)가 없습니다", "데이터 폴더(<서버 경로>)가 없습니다"),
+        ("R2", {"data_dir": "/My Data"}, "데이터 폴더 /My Data. 없음", "데이터 폴더 <서버 경로>. 없음"),
+        ("R2", {"data_dir": "/My Data"}, "데이터 폴더 /My Data, 없음", "데이터 폴더 <서버 경로>, 없음"),
+        ("R2", synthetic_home, r"D:\Python Install Folder에서 실패", "<서버 경로>에서 실패"),
+        ("R2", {"home": "C:/Data Home/Account"}, "C:/Data Home/Account에 쓰기 실패", "<계정 폴더>에 쓰기 실패"),
+        ("R2", {"home": "C:/Data Home/Account"}, "(C:/Data Home/Account)가 없습니다", "(<계정 폴더>)가 없습니다"),
+        ("R2", {"home": "C:/Data Home/Account"}, "C:/Data Home/Account.other 없음", "<서버 경로> 없음"),
+        ("R2", {"data_dir": "/My Data"}, "/My Data/app/custom nodes/BMK/x.py 실패", "<서버 경로> 실패"),
+        ("R2", {"home": r"D:\Design Patch Data\org1\acct1"}, r"D:\Design Patch Data\org1\acct1-bbbb2\p\x.psd", "<서버 경로>"),
+        ("R3", {"home": "/srv/accounts/me"}, "검색 경로: /srv/accounts/me/bin:/srv/secret/bin", "검색 경로: <계정 폴더>/bin:<서버 경로>"),
+        ("R3", synthetic_home, r"C:\data\account\a.psd;D:\secret\b.psd", r"<계정 폴더>\a.psd;<서버 경로>"),
+        ("R3", synthetic_home, "C:/data/account/a.psd,C:/other/b.psd", "<계정 폴더>/a.psd,<서버 경로>"),
+        ("R3", synthetic_home, '"C:/data/account/a.psd,C:/other/b.psd"', closed_message),
+        ("R3", synthetic_home, "'C:/data/account/a.psd,C:/other/b.psd'", closed_message),
+        ("R3", synthetic_home, "C:/data/account/a.psd|/srv/secret/b.psd", "<계정 폴더>/a.psd|<서버 경로>"),
+        ("R3", synthetic_home, "https://x.test/a,/srv/secret/x", "https://x.test/a,<서버 경로>"),
+        ("R3", synthetic_home, "https://x.test/a;/srv/secret/x", "https://x.test/a;<서버 경로>"),
+        ("R3", synthetic_home, "https://x.test/a|/srv/secret/x", "https://x.test/a|<서버 경로>"),
+        ("R3", synthetic_home, "https://x.test/a?q=C:/temp/x", "https://x.test/a?q=C:/temp/x"),
+        ("R4", synthetic_home, r"경로\\server\share\x.psd", closed_message),
+        ("R4", synthetic_home, r"\Users\svc\AppData\x.psd 없음", closed_message),
+        ("R4", synthetic_home, r"refs\a.png 가 없음", r"refs\a.png 가 없음"),
+        ("R4", synthetic_home, r".\out\x.png", r".\out\x.png"),
+        ("R4", synthetic_home, r"..\x", r"..\x"),
+        ("R5", synthetic_home, r"C:\data\account\p\manifest.json 의 refs\a.png 가 없음",
+         r"<계정 폴더>\p\manifest.json 의 refs\a.png 가 없음"),
+        ("R5", synthetic_home, r"C:\data\account\p\manifest.json 의 'a\nb'",
+         r"<계정 폴더>\p\manifest.json 의 'a\nb'"),
+        ("R6", synthetic_home, "폴더/Users/me/x.psd", closed_message),
+        ("R6", synthetic_home, "작업/app/acct/x.psd", closed_message),
+        ("R6", synthetic_home, "a.psd->/workspace/acct/b.psd", closed_message),
+        ("R6", synthetic_home, "<b>/custom/private/x", closed_message),
+        ("보존", synthetic_home, "2026/11/10 · 3/4 · 401/402/403 · 001_ab/A · A/B/C · PSD/PSB · +/- · refs/a.png",
+         "2026/11/10 · 3/4 · 401/402/403 · 001_ab/A · A/B/C · PSD/PSB · +/- · refs/a.png"),
+    ]
+    for mode in ("", "1"):
+        with patch.dict(os.environ, {bd.SERVER_ENV: mode, "TMPDIR": "", "TEMP": r"D:\Temp Folder", "TMP": ""}), \
+                patch.object(bd, "__file__", "/My Data/app/custom nodes/BMK/board.py"), \
+                patch.object(bd.os.path, "abspath", return_value="/My Data/app/custom nodes/BMK/board.py"), \
+                patch.object(bd.sys, "prefix", r"D:\Python Install Folder"), \
+                patch.object(bd.sys, "executable", r"D:\Python Install Folder\python.exe"), \
+                patch.object(bd.logger, "warning") as log:
+            for item, item_scope, source, expected_path in review_paths:
+                log.reset_mock()
+                expected_path = expected_path if mode else source
+                actual = bd.public_error(source, item_scope)
+                check(actual == expected_path, f"F3S1 5차 {item} {mode!r} {source!r}: {actual!r}")
+                check(log.call_count == int(bool(mode) and expected_path == closed_message)
+                      and (not log.called or log.call_args.args[-1] == source), f"F3S1 5차 {item} 원문 로그·로컬 로그 없음")
+                check(bd.public_error(actual, item_scope) == actual, f"F3S1 5차 {item} 중복 가림")
+    # 남은 것 판정은 모드·scope·로그에 기대지 않고 보호 구간 밖의 (a)–(f)만 본다.
+    for source, expected_leftover in (
+        (r"경로C:\private\x", True), (r"경로\\server\share\x", True),
+        ("\\", True), ("//", True),
+        (r"\Users", True), ("bad!//host/share", True), ("/tmp", True),
+        ("/~acct", True), ("/.private", True), ("폴더/Volumes/data/x", True),
+        ("<계정 폴더>/bin:/srv/private/bin", True),
+        ("<계정 폴더>/one / <서버 경로>", False),
+        (r"<계정 폴더>\p\manifest.json 의 refs\a.png 가 없음", False),
+        (r"refs\\a\\b · .\out\x.png · ..\x", False),
+        ("https://x.test/a?q=C:/temp/x", False),
+        ("<서버 경로> Files/x.psd 를 못 읽음", True),
+        ("<서버 경로>'brien/x.psd", True),
+        ("<서버 경로> (old)/x.psd 없음", True),
+        ("<서버 경로> words <서버 경로> Files/x.psd", True),
+        ("<서버 경로> words <계정 폴더>/x Files/x.psd", True),
+        ("<서버 경로> words https://x.test/a?q=C:/temp/x", False),
+        ("<서버 경로> 를 열 수 없습니다(PSD/PSB 아님)", False),
+        ("<서버 경로> / refs/a.png", False),
+        ("<서버 경로> · refs/a.png", False),
+        ("<계정 폴더>/p/x.psd 쓰기 실패 (<서버 경로>)", False),
+        ("3/4 · A/B/C · 001_ab/A · +/- · 앞 / 뒤", False),
+    ):
+        with patch.object(bd.logger, "warning") as log:
+            check(bd._public_leftover(source) is expected_leftover, "F3S1 5차 남은 것 판정: " + source)
+            check(not log.called, "F3S1 5차 남은 것 판정 자체는 로그·치환 없음")
+    for mode in ("", "1"):
+        with patch.dict(os.environ, {bd.SERVER_ENV: mode}), patch.object(bd.logger, "warning") as log:
+            closed_paths = ["opaqueC:/private/a.psd", r"bad!\\server\share\x", "{/srv/private/x}", "bad!//host/share/x"]
+            closed_paths += [prefix + "/" + base + "/private/x" for prefix in ("<b>", "폴더", "word")
+                             for base in ("srv", "home", "var", "tmp", "mnt", "opt", "usr", "etc", "data",
+                                          "Users", "root", "app", "workspace", "Volumes", "private", "run", "media")]
+            for source in closed_paths:
+                actual = bd.public_error(source)
+                check(actual == ("요청을 처리하지 못했습니다(서버 기록 참고)" if mode else source), "F3S1 R6 가림 실패는 닫힌 쪽: " + source)
+                if mode:
+                    check(log.call_args is not None and log.call_args.args[-1] == source, "F3S1 가리지 못한 원문은 서버 로그에만 기록")
+            check(log.call_count == (len(closed_paths) if mode else 0), "F3S1 로컬은 가림·추가 로그 없음")
+            for error, expected_error in (
+                (FileNotFoundError(2, "파일 없음", "C:/private/a'b.psd"), "파일 없음: '<서버 경로>'"),
+                (FileExistsError(17, "이미 있음", "/srv/private/space name.psd"), "이미 있음: '<서버 경로>'"),
+                (OSError(5, "옮기기 실패", "C:/data/account/a.psd", None, "/srv/private/b.psd"),
+                 "옮기기 실패: '<계정 폴더>/a.psd' -> '<서버 경로>'"),
+                (OSError(5, "실패", "refs/a.png"), "실패: 'refs/a.png'"),
+            ):
+                check(jobs._error_message(error, synthetic_home) == (expected_error if mode else str(error)),
+                      "F3S1 작업 OSError 는 strerror·filename·filename2 로 재구성")
+
+    run = {"approved_now": 1, "pending": 2, "backend": "mock", "stopped_reason": None, "auth_held": False,
+           "est_usd": 0.5, "root_key": "0123456789ab", "pending_hash": "a" * 12, "continuation_hash": "b" * 12}
+    draft = {k: v for k, v in run.items() if k != "continuation_hash"}
+    draft["est_credits"] = [1, 2.5]
+    screen = {key: run[key] for key in ("approved_now", "pending", "backend", "stopped_reason", "auth_held")}
+    raw = {"dp_export": {"text": ["Export PSD: C:/data/private/out.psd"], "bmk_dp_export": [
+               {"outcome": "new", "psd": "C:/data/private/out.psd", "rev": 12, "extra": "private"},
+               {"outcome": "same", "rev": 12}]},
+           "dp_run": {"text": ["private"], "bmk_dp_run": [dict(run, extra="private")]},
+           "dp_draft": {"text": ["private"], "bmk_dp_draft": [dict(draft, continuation_hash="private")]},
+           "dp_review": {"text": ["private"]}, "dp_import": {"path": "C:/data/private"}}
+    expected = {"dp_export": {"bmk_dp_export": [{"outcome": "new", "psd": "out.psd", "rev": 12},
+                                               {"outcome": "same", "psd": None, "rev": 12}]},
+                "dp_run": {"bmk_dp_run": [screen]}, "dp_draft": {"bmk_dp_draft": [screen]}, "dp_review": {}, "dp_import": {}}
+    original = copy.deepcopy(raw)
+    for mode in ("", "1"):
+        with patch.dict(os.environ, {bd.SERVER_ENV: mode}):
+            for exc, interrupted in ((None, False), (ValueError("C:/data/private/fail.psd"), False), (None, True)):
+                record = jobs._record(raw, exc, interrupted=interrupted, scope=synthetic_home)
+                check(record["outputs"] == (expected if mode else raw), "F3S3 성공·오류·중단 기록 허용 목록·로컬 보존")
+            check(raw == original, "F3S3 원본 ui·노드 사이 전달값 불변")
+    with patch.dict(os.environ, {bd.SERVER_ENV: "1"}):
+        shape = jobs._record({"dp_run": {"bmk_dp_run": [run, None, "bad", {}, 7]}, "dp_draft": {}, "dp_project": {"text": ["private"]}})["outputs"]
+        check(shape == {"dp_run": {"bmk_dp_run": [screen, {}, {}, {}, {}]}, "dp_draft": {}, "dp_project": {}},
+              "F3S3 금액·해시 없음·원소 수와 노드 키 보존·없는 목록은 만들지 않음")
+        for value, allowed in ((0, True), (False, True), (None, True), ("x" * 256, True), ([1, 2.5], True),
+                               ("x" * 257, False), ("a/b", False), (r"a\b", False), ({"n": 1}, False),
+                               (["text"], False), ([True], False), ([[1]], False), (float("nan"), False), (float("inf"), False)):
+            actual = jobs._record({"dp_run": {"bmk_dp_run": [{"pending": value}]}})["outputs"]["dp_run"]["bmk_dp_run"][0]
+            check(("pending" in actual) == allowed, "F3S3 허용 값·문자열 길이·목록 검사 " + repr(value)[:70])
+        example = next(iter(api["jobs_history_done"]["response"].values()))
+        check(jobs._record({"dp_export": raw["dp_export"]})["outputs"]["dp_export"]["bmk_dp_export"][0]
+              == dict(example["outputs"]["dp_export"]["bmk_dp_export"][0], psd="out.psd"), "F3S3 fixture 허용 목록 계약")
+        runner = jobs.JobRunner()
+        try:
+            with patch.object(jobs, "execute", return_value={"outputs": raw}):
+                submitted = runner.submit(scope, str(out / "project"), "export", {})
+                saved = _fj_wait(lambda: runner.history(scope, str(out / "project"), submitted["prompt_id"]), "F3 기록")
+            check(saved[submitted["prompt_id"]]["outputs"] == expected, "F3S3 실행기 기록 경로에 허용 목록 적용")
+            check("private" not in repr(runner._history), "F3S3 메모리 기록에 text·절대 경로 없음")
+        finally:
+            runner.close(timeout=1)
+
+    crop = {"id": "001_abcdef", "name": "001_part", "layer_name": "001_part | A: part", "rect": [0, 0, 16, 16],
+            "targets": [], "refs_auto": ["old.png"], "refs_main": None}
+    root = _pl_project(out / "messages", "project", crops=[crop])
+    manifest = store.load_manifest(root)
+    banned = re.compile(r"ComfyUI|그래프|노드|위젯|Open Board|메뉴 BMK|대기열|(?<![가-힣])큐(?:에|를|하|\s|$)|pipeline\.json|_layer_targets")
+
+    def message_of(fn):
+        try:
+            fn()
+        except Exception as exc:
+            return str(exc)
+        check(False, "F3S2 예상한 문구 거절이 없음")
+        return ""
+
+    def wording(actual, local, mode):
+        check(not banned.search(actual) if mode else actual == local, "F3S2 서버 금지 구절 없음·로컬 원문 보존: " + actual)
+
+    for mode in ("", "1"):
+        with patch.dict(os.environ, {bd.SERVER_ENV: mode}):
+            expected_notes = [
+                "import: 매니페스트에 Import 기록이 없음 — PSD 경로를 확인(처음 Import 는 그래프에서)",
+                "prepare: Prepare 기록(prepare_settings·jobs)이 없음 — 노드 기본값(모델·품질·n 등 확인 필요)",
+                "draft: 스펙 초안 기록이 없음 — 노드 기본 vlm",
+                "draft: credit_cap 은 기록이 없어 권장 1200(노드 기본값 0 = 상한 없음)",
+                "analyze: 분석 기록이 없음 — 노드 기본값",
+                "export: Export 기록이 없음 — 노드 기본값(filename_prefix = 프로젝트 폴더 이름)",
+            ]
+            derived = pl.view(root)["derived"]
+            check(len(derived["notes"]) == len(expected_notes), "F3S2 유도 안내 건수 유지")
+            for actual, local in zip(derived["notes"], expected_notes):
+                wording(actual, local, mode)
+            if not mode:
+                local_derived = derived
+            else:
+                check({k: v for k, v in derived.items() if k != "notes"}
+                      == {k: v for k, v in local_derived.items() if k != "notes"}, "F3S2 문구 분기가 유도값·설정 키를 바꾸지 않음")
+            wording(store.adopt_stale(crop, {}), "매니페스트 타깃이 레이어명 + _layer_targets 와 다름 — 다음 큐에서 Import PSD 가 반영", mode)
+            parsed = store.parse_crop_layer_name(crop["layer_name"])
+            for value, local in ((5, "_layer_targets 는 문자열이어야 합니다: 5"),
+                                 ("broken", "_layer_targets 에 라벨 없는 조각이 있습니다('B: …' 처럼 적을 것): 'broken'"),
+                                 ("A: one; A: two", "_layer_targets 에 같은 타깃 라벨이 두 번 있습니다(A): 'A: one; A: two'")):
+                wording(message_of(lambda v=value: store.merge_layer_targets(parsed, v)), local, mode)
+            wording(store.merge_layer_targets(parsed, "B:")[1][0], "_layer_targets B: 문구가 비어 무시", mode)
+            wording(store.merge_layer_targets(parsed, "A: changed")[1][0], "_layer_targets A: 레이어명 문구 'part' 가 이김('changed' 무시)", mode)
+            wording(vlm._kind_why("replace", "A: old", "A: new"), "노드 값 그대로 — 바꾸려면 [수정]", mode)
+            wording(message_of(lambda: vlm.check_vlm_effort(None, "bad")),
+                    vlm._TAG + " effort 값이 잘못되었습니다: 'bad' (선택지: " + ", ".join(vlm.EFFORTS) + ")", mode)
+            wording(message_of(lambda: vlm.extract_json(None)), vlm._TAG + " VLM 출력이 문자열이 아닙니다: NoneType", mode)
+            choice, effort = next((choice, effort) for choice in vlm.VLM_CHOICES if choice.startswith("openai/")
+                                  for effort in vlm.EFFORTS if effort not in vlm.MODEL_EFFORTS[choice.split("/", 1)[1]])
+            model = choice.split("/", 1)[1]
+            expected_error = f"{model} 은 effort {effort!r} 를 받지 않습니다(허용: {', '.join(vlm.MODEL_EFFORTS[model])})"
+            raw_error = message_of(lambda: vlm.check_vlm_effort(choice, effort))
+            check(raw_error == ("[DesignPatch]" if mode else vlm._TAG) + " " + expected_error,
+                  "F3S2 R4 VLM 예외 태그·로컬 원문 보존")
+            invalid_draft = dict(pl.defaults()["draft"], vlm=choice, effort=effort)
+            check(message_of(lambda: pl.validate_section("draft", invalid_draft)) == "draft: " + expected_error,
+                  "F3S2 R4 validate_section 깊은 검증은 두 모드 모두 태그 없는 원문")
+            check(vlm._TAG == "[ComfyUI_BMK_Nodes::DesignPatch]", "F3S2 R4 로그 태그는 모드와 무관하게 그대로")
+            wording(message_of(lambda: pl._parse(b"[]")), "pipeline.json 최상위가 객체가 아닙니다", mode)
+            settings_root = _pl_project(out / ("settings_" + (mode or "local")), "project")
+            values = pl.defaults(settings_root)["export"]
+            wording(message_of(lambda: pl.update(settings_root, 1, "export", values)), "pipeline.json 이 없습니다(rev 0) — 새로고침", mode)
+            Path(pl._path(settings_root)).write_text("{", encoding="utf-8")
+            broken = message_of(lambda: pl._parse(b"{"))
+            wording(message_of(lambda: pl.update(settings_root, 1, "export", values)),
+                    "pipeline.json 이 깨져 있습니다 — 덮어쓰려면 rev 없이(null) 저장: " + broken, mode)
+            with patch.object(vlm, "unwritten_specs", return_value=[crop["id"]]):
+                wording(message_of(lambda: vlm.adopt_write(root, manifest, crop["id"], "adopt", value="A: part", seen="null",
+                            crop_sig=vlm.crop_signature(crop), family="mock", apply_mode="targets", preview=True)), vlm._UNWRITTEN_WHY, mode)
+            ctx = types.SimpleNamespace(crop_id=crop["id"])
+            with patch.object(vlm, "adopt_check", return_value=("A: part", "")), \
+                    patch.object(vlm, "_merge_path", return_value=(None, None, "add")):
+                with patch.object(vlm, "_arrived", return_value=True):
+                    wording(vlm.adopt_state(root, manifest, ctx, {}, family="mock", memo={})[2], vlm._UNWRITTEN_WHY, mode)
+                with patch.object(vlm, "_arrived", return_value=False), patch.object(vlm, "_yield_paths", return_value=["crop.detail"]):
+                    wording(vlm.adopt_state(root, manifest, ctx, {}, family="mock", memo={})[2],
+                            "초안 뒤 생긴 영문 이름·용어집·사람 refs·mode 로 노드 값 양보가 남음(crop.detail) — 그래프 Spec Draft 로 채택", mode)
+            effects, warns = vlm._adopt_effects(crop, crop, ctx, None, {"_accepted": True, "_layer_targets": "A: new"}, {},
+                                               glossary={}, family="mock", apply_mode="targets", arrived=True)
+            check(effects["prompt_changed"], "F3S2 도착 초안 뒤 타깃 변경 경고 조건")
+            wording(warns[-1], "원장에 도착한 초안이 아직 스펙에 안 쓰임 — 이 쓰기를 반영하면 타깃이 바뀌어 그 초안은 병합되지 않음(먼저 그래프 Spec Draft 를 한 번 큐하면 0 호출로 병합)", mode)
+            for branch, local in (
+                ("moved", "Studio 초안 설정(apply·화풍)이 이 스펙을 마지막으로 쓴 Spec Draft 와 달라 채택 외 필드가 바뀜 — 설정 확인 또는 그래프 Spec Draft 로 채택"),
+                ("render", "노드가 쓴 필드가 지금 렌더되지 않아 빼고 써야 해 채택 외 필드가 바뀜(render_fallback) — 그래프 Spec Draft 로 채택"),
+                ("record", "병합이 스펙 _draft 기록(손으로 고친 written 등)을 정리해 채택 외 필드가 바뀜 — 그래프 Spec Draft 로 채택"),
+            ):
+                def merge(cur, *args, **kwargs):
+                    kwargs["out"]["check"] = types.SimpleNamespace(ok=True, dropped=[])
+                    return types.SimpleNamespace(spec={"detail": "changed"}, render_changed=branch == "render",
+                                                 rows=[types.SimpleNamespace(path="crop.detail", kind="fill")] if branch == "moved" else [])
+                with patch.object(vlm, "build_crop_ctx", return_value=ctx), patch.object(vlm, "project_style_for", return_value=None), \
+                        patch.object(vlm, "adopt_state", return_value=("A: part", "add", "")), \
+                        patch.object(vlm, "merge_crop", side_effect=merge):
+                    wording(message_of(lambda: vlm.adopt_write(root, manifest, crop["id"], "adopt", value="A: part", seen="null",
+                                crop_sig=vlm.crop_signature(crop), family="mock", apply_mode="targets", preview=True)), local, mode)
+            rows = bd.refs_state(root)["crops"]
+            pending = [c["msg"] for row in rows for c in row["checks"] if c["code"] == "R-pending"]
+            check(pending == ["미반영 — 반영 뒤 이 레퍼런스를 씀" if mode else "미반영 — 반영(큐) 뒤 Import 가 이 레퍼런스를 씀"],
+                  "F3S2 R-pending 안내 두 모드")
+            with patch.object(vlm, "build_crop_ctx", return_value=object()), \
+                    patch.object(vlm, "render_check", return_value=types.SimpleNamespace(ok=True, dropped=["detail"])):
+                expect_raises(lambda: vlm.adopt_write(root, manifest, crop["id"], "set", "A: part", seen="null",
+                              crop_sig=vlm.crop_signature(crop), family="mock", apply_mode="targets", preview=True),
+                              "F3S2 채택 거절 안내 두 모드", vlm.AdoptRefused,
+                              contains="저장된 detail 를 빼야 렌더됨(쓰지 않음)" if mode else "노드가 쓴 detail 를 빼야 렌더됨(쓰지 않음 — 그래프 Spec Draft 로)")
+            spec_path = Path(vlm._spec_path(root, crop["id"]))
+            spec_path.parent.mkdir(parents=True, exist_ok=True)
+            spec_path.write_text("[]", encoding="utf-8")
+            try:
+                with patch.object(vlm, "build_crop_ctx", return_value=ctx):
+                    wording(message_of(lambda: vlm.adopt_write(root, manifest, crop["id"], "clear", seen="null",
+                                crop_sig=vlm.crop_signature(crop), family="mock", apply_mode="targets", preview=True)),
+                            vlm._TAG + " specs/" + crop["id"] + ".json — 최상위가 객체가 아님", mode)
+            finally:
+                spec_path.unlink()
+            cls = pl.CLASS["project"]
+            with patch.dict(pl.STAGE_NODES, {"apply": ("project",)}), patch.dict(pl.NODE_INPUTS, {cls: ("project", "base_dir", "extra")}):
+                wording(message_of(lambda: pl.build_prompt("apply", {}, root)),
+                        cls + " 입력이 노드 위젯과 다릅니다: ['extra']", mode)
+
+    now = [100.0]
+    config = srv.ServerConfig(str(out / "data"), dev_handoff=True)
+    check((config.login_fail_limit, config.login_fail_window, config.login_fail_global, config.trusted_proxies)
+          == (10, 300, 200, ()), "F3S4 로그인 제한 기본값")
+    for change in ({"login_fail_limit": 0}, {"login_fail_limit": True}, {"login_fail_limit": 1.5},
+                   {"login_fail_global": 0}, {"login_fail_global": True}, {"login_fail_window": 0},
+                   {"login_fail_window": True}, {"login_fail_window": float("nan")}, {"login_fail_window": float("inf")},
+                   {"trusted_proxies": "192.0.2.1"}, {"trusted_proxies": ("proxy.test",)}, {"trusted_proxies": (123,)},
+                   {"trusted_proxies": ("192.0.2.0/33",)}, {"trusted_proxies": ("2001:db8::/129",)}):
+        expect_raises(lambda c=change: srv._validate_config(dataclasses.replace(config, **c)), "F3S4 잘못된 제한·프록시 설정 " + str(change))
+    trusted = srv._validate_config(dataclasses.replace(config, trusted_proxies=["192.0.2.1", "2001:db8::1"]))
+    check(trusted.trusted_proxies == ("192.0.2.1", "2001:db8::1"), "F3S4 IP 목록 정규화")
+    for remote, forwarded, proxies, expected_ip in (
+        ("192.0.2.1", "198.51.100.1, 198.51.100.2", (), "192.0.2.1"),
+        ("192.0.2.1", "198.51.100.1, 198.51.100.2", trusted.trusted_proxies, "198.51.100.2"),
+        ("192.0.2.1", "198.51.100.1, bad", trusted.trusted_proxies, "192.0.2.1"),
+        ("192.0.2.1", "198.51.100.1,", trusted.trusted_proxies, "192.0.2.1"),
+        ("192.0.2.1", "", trusted.trusted_proxies, "192.0.2.1"),
+        ("2001:db8::1", "2001:db8::2", trusted.trusted_proxies, "2001:db8::/64"),
+        ("192.0.2.1", "bad, 198.51.100.1, 192.0.2.2", ("192.0.2.0/24",), "198.51.100.1"),
+        ("192.0.2.1", "198.51.100.1, bad, 192.0.2.2", ("192.0.2.0/24",), "192.0.2.1"),
+        ("192.0.2.1", "192.0.2.2, 192.0.2.3", ("192.0.2.0/24",), "192.0.2.1"),
+        ("2001:db8:1::1", "2001:db8:2::99, 2001:db8:1::2", ("2001:db8:1::/64",), "2001:db8:2::/64"),
+        ("2001:db8:3::1", "198.51.100.1", ("192.0.2.0/24",), "2001:db8:3::/64"),
+    ):
+        request = types.SimpleNamespace(remote=remote, headers=CIMultiDict({"X-Forwarded-For": forwarded}))
+        check(srv._client_address(request, proxies) == expected_ip, "F3S4 CIDR·오른쪽 신뢰 체인·IPv6 /64")
+    for remote, forwarded, proxies, expected_ip in (
+        ("192.0.2.1", "198.51.100.2:5123", ("192.0.2.0/24",), "198.51.100.2"),
+        ("192.0.2.1", "[2001:db8::1]:443", ("192.0.2.0/24",), "2001:db8::/64"),
+        ("192.0.2.1", "198.51.100.2:70000", ("192.0.2.0/24",), "192.0.2.1"),
+        ("192.0.2.1", "[2001:db8::1]:bad", ("192.0.2.0/24",), "192.0.2.1"),
+        ("192.0.2.1", "example.test:443", ("192.0.2.0/24",), "192.0.2.1"),
+        ("::ffff:198.51.100.7", "203.0.113.1", (), "198.51.100.7"),
+        ("::ffff:198.51.100.8", "203.0.113.1", (), "198.51.100.8"),
+        ("::ffff:192.0.2.1", "::ffff:198.51.100.7, ::ffff:192.0.2.2", ("192.0.2.0/24",), "198.51.100.7"),
+        ("192.0.2.1", "[::ffff:198.51.100.8]:443", ("192.0.2.0/24",), "198.51.100.8"),
+        (None, "198.51.100.7", ("192.0.2.0/24",), ""),
+    ):
+        request = types.SimpleNamespace(remote=remote, headers=CIMultiDict({"X-Forwarded-For": forwarded}))
+        check(srv._client_address(request, proxies) == expected_ip, "F3S4 R1·R2 포트·mapped 주소·잘못된 주소의 폴백")
+    for forged in ("203.0.113.1", "203.0.113.2"):
+        headers = CIMultiDict([("X-Forwarded-For", forged), ("x-forwarded-for", "198.51.100.2:5123, 192.0.2.2")])
+        request = types.SimpleNamespace(remote="192.0.2.1", headers=headers)
+        check(srv._client_address(request, ("192.0.2.0/24",)) == "198.51.100.2",
+              "F3S4 R1 여러 줄 XFF 는 마지막 줄부터 읽어 위조한 첫 줄을 무시")
+        check(srv._client_address(request, ()) == "192.0.2.1", "F3S4 R1 직접 접속은 여러 줄 XFF 도 무시")
+    check(srv._validate_config(dataclasses.replace(config, trusted_proxies=("192.0.2.7/24", "2001:db8::1/64"))).trusted_proxies
+          == ("192.0.2.0/24", "2001:db8::/64"), "F3S4 CIDR 네트워크 주소 정규화")
+    for configured, normalized in (("::ffff:192.0.2.5", "192.0.2.5"), ("::ffff:c000:205", "192.0.2.5"),
+                                   ("::ffff:192.0.2.5/128", "192.0.2.5/32"), ("::ffff:192.0.2.5/120", "192.0.2.0/24"),
+                                   ("::ffff:192.0.2.5/104", "192.0.0.0/8"), ("::ffff:192.0.2.5/96", "0.0.0.0/0")):
+        mapped = srv._validate_config(dataclasses.replace(config, trusted_proxies=(configured,)))
+        check(mapped.trusted_proxies == (normalized,), "F3S4 3차 R2 mapped 프록시 주소·CIDR 정규화 " + configured)
+        if normalized != "0.0.0.0/0":
+            for remote in ("192.0.2.5", "::ffff:192.0.2.5"):
+                request = types.SimpleNamespace(remote=remote, headers=CIMultiDict({"X-Forwarded-For": "198.51.100.7"}))
+                check(srv._client_address(request, mapped.trusted_proxies) == "198.51.100.7", "F3S4 3차 R2 정규화한 설정으로 XFF 신뢰")
+    for configured in ("::ffff:192.0.2.5/95", "::ffff:c000:205/64", "::ffff:192.0.2.5/0"):
+        expect_raises(lambda p=configured: srv._validate_config(dataclasses.replace(config, trusted_proxies=(p,))),
+                      "F3S4 3차 R2 mapped 네트워크 /96 미만 거절", ValueError)
+    failures = srv.LoginFailures(2, 10, 4, clock=lambda: now[0])
+    for _ in range(3):
+        check(failures.retry_after("192.0.2.1") == 0 and not failures._inflight and failures._pending == 0,
+              "F3S4 3차 R3 본문 전 판정만으로는 자리 예약 없음")
+    check(failures.begin("192.0.2.1") == 0, "F3S4 첫 자리 예약")
+    failures.reject("192.0.2.1"); failures.finish("192.0.2.1")
+    now[0] = 104
+    check(failures.begin("192.0.2.1") == 0, "F3S4 두 번째 자리 예약")
+    failures.reject("192.0.2.1"); failures.finish("192.0.2.1")
+    now[0] = 105.1
+    check(failures.begin("192.0.2.1") == 5, "F3S4 가장 오래된 거절까지 올림한 Retry-After")
+    now[0] = 99
+    check(failures.begin("192.0.2.1") == 11 and len(failures._global) == 2, "F3S4 시계 역행 때 기록을 버리지 않음")
+    now[0] = 110
+    check(failures.begin("192.0.2.1") == 0 and failures._global == [104], "F3S4 이동 창 만료 경계")
+    failures.finish("192.0.2.1")
+    lru = srv.LoginFailures(2, 300, 20000, clock=lambda: now[0])
+    for i in range(10000):
+        client = f"2001:db8::{i:x}"
+        lru.begin(client); lru.reject(client); lru.finish(client)
+    lru.begin("2001:db8::0"); lru.finish("2001:db8::0")
+    lru.begin("2001:db8::ffff"); lru.reject("2001:db8::ffff"); lru.finish("2001:db8::ffff")
+    check(len(lru._clients) == 10000 and "2001:db8::1" not in lru._clients and "2001:db8::0" in lru._clients
+          and len(lru._global) == 10001, "F3S4 주소 10,000 LRU·전역 기록은 퇴출로 지워지지 않음")
+    small = srv.LoginFailures(1, 300, 10, clock=lambda: now[0], max_clients=1)
+    small.begin("192.0.2.1"); small.reject("192.0.2.1")
+    small.begin("192.0.2.2"); small.reject("192.0.2.2"); small.finish("192.0.2.2")
+    check(small.begin("192.0.2.1") == 1, "F3S4 LRU 퇴출된 주소도 진행 중 요청은 기억")
+    small.finish("192.0.2.1")
+    closing = srv.LoginFailures(2, 300, 10, clock=lambda: now[0])
+    closing.begin("192.0.2.1"); closing.begin("192.0.2.1")
+    closing.clear()
+    closing.finish("192.0.2.1"); closing.finish("192.0.2.1"); closing.finish("missing")
+    check(not closing._inflight and closing._pending == 0, "F3S4 R7 clear 뒤 늦은 finish·중복 finish 는 예외·음수 없음")
+    for count in (0, -1):
+        closing._inflight["192.0.2.1"] = count
+        closing.finish("192.0.2.1")
+        check(closing._pending == 0, "F3S4 R7 0 이하의 진행 중 수는 다시 내리지 않음")
+
+    class Body:
+        def __init__(self, raw, gate=None):
+            self.raw, self.gate, self.reads = raw, gate, 0
+            self.started = asyncio.Event()
+
+        async def iter_chunked(self, size):
+            self.reads += 1
+            self.started.set()
+            if self.gate is not None:
+                await self.gate.wait()
+            for start in range(0, len(self.raw), size):
+                yield self.raw[start:start + size]
+
+    class Verifier:
+        def __init__(self):
+            self.calls, self.gate = 0, None
+            self.started = asyncio.Event()
+
+        async def verify(self, token, organization_id):
+            self.calls += 1
+            self.started.set()
+            if self.gate is not None:
+                await self.gate.wait()
+            if token == "throw-sensitive-token":
+                raise RuntimeError(token)
+            if token == "malformed":
+                return {"account_id": "a"}
+            if token == "wrong-org":
+                return {"account_id": "a", "organization_id": "another", "name": "a"}
+            if token == "bad":
+                return None
+            return {"account_id": "a", "organization_id": organization_id, "name": "a"}
+
+    @contextlib.asynccontextmanager
+    async def serving(verifier=None, jobs_module=None, **changes):
+        # 비밀 파일·실제 계정 폴더는 만들지 않고 실제 처리기와 미들웨어만 실행한다.
+        with patch.object(srv, "_server_secret", return_value=b"test" * 8), \
+                patch.object(srv, "_account_scope", return_value=scope), \
+                patch.dict(os.environ):
+            app = srv.make_app(dataclasses.replace(config, **changes), verifier=verifier,
+                               jobs_module=jobs_module or _fs_jobs(), clock=lambda: now[0])
+            try:
+                yield app
+            finally:
+                for cleanup in app.on_cleanup:
+                    await cleanup(app)
+
+    async def call(app, method="POST", path="/api/session", *, token="bad", remote="192.0.2.1", body=None,
+                   headers=None, raw=None, payload=None):
+        hs = CIMultiDict({"Host": "localhost:8791", "Origin": "http://localhost:8791", "X-DesignPatch-Request": "1",
+                          "Content-Type": "application/json"})
+        for key in (headers or {}):
+            hs.popall(key, None)
+        for key, value in (headers or {}).items():
+            if value is not None:
+                hs.add(key, value)
+        if raw is None:
+            raw = json.dumps(body if body is not None else {"token": token, "organization_id": "org-test"}).encode("utf-8")
+        request = make_mocked_request(method, path, headers=hs, payload=payload or Body(raw), app=app)
+        request.read = AsyncMock(return_value=raw)
+        request._cache["remote"] = remote
+        request._match_info = await app.router.resolve(request)
+        handler = request.match_info.handler
+        for middleware in reversed(app.middlewares):
+            handler = functools.partial(middleware, handler=handler)
+        response = await handler(request)
+        return response, json.loads(response.text) if response.content_type == "application/json" else response
+
+    async def exercise():
+        bd._vlm()  # 실제 _conflicts 가 SpecConflict 를 포함하는 경로도 함께 검사한다.
+        for mode in ("", "1"):
+            with patch.dict(os.environ, {bd.SERVER_ENV: mode}):
+                mock = vlm.MockVLM({})
+                mock.interrupt_check = lambda: False
+                try:
+                    await mock._poll(types.SimpleNamespace(crop_id=crop["id"], key="test", attempt=1),
+                                     {"mock": {"text": "{}"}}, None, time.monotonic(), None, "poll401")
+                except vlm.runner.CallError as error:
+                    wording(str(error), "mock: Unauthorized (폴링 중) — created 유지, 다시 큐에 넣으면 무료 재폴링", mode)
+                else:
+                    check(False, "F3S2 mock 폴링 거절을 재현하지 못함")
+                for exc, status in ((bd._Reject(409, "C:/data/other/x"), 409), (ValueError("/srv/data/x"), 400),
+                                    (bd.ext.BridgeError(409, "C:/data/other/x"), 409),
+                                    (bd.dmask.MaskConflict("/srv/data/x", "changed"), 409),
+                                    (pl.PipelineConflict("C:/data/other/x"), 409),
+                                    (store.LayoutConflict("C:/data/other/x"), 409),
+                                    (bd.drefs.RefsConflict("/srv/data/x"), 409),
+                                    (vlm.SpecConflict("/srv/data/x"), 409),
+                                    (FileNotFoundError("C:/data/other/x"), 404), (FileExistsError("/tmp/a/b"), 409),
+                                    (OSError("C:/data/other/x"), 500),
+                                    (bd._PathReject(400, "C:/data/other/x", "폴더를 확인하세요"), 400)):
+                    async def fail(request):
+                        raise exc
+                    response = await bd._guard(fail)(types.SimpleNamespace(path="/test"))
+                    text = json.loads(response.text)["error"]
+                    check(response.status == status and (text.endswith(str(exc)) if not mode else
+                          text == "폴더를 확인하세요" if isinstance(exc, bd._PathReject) else "<서버 경로>" in text),
+                          "F3S5 guard 상태·safe·로컬 보존 " + type(exc).__name__)
+                for exc, status, expected in (
+                    (FileNotFoundError(2, "없음", "C:/private/a'b.psd"), 404, "없음: '<서버 경로>'"),
+                    (FileExistsError(17, "있음", "/srv/private/a.psd"), 409, "있음: '<서버 경로>'"),
+                    (OSError(5, "이동 실패", "C:/private/a.psd", None, "/srv/private/b.psd"), 500,
+                     "이동 실패: '<서버 경로>' -> '<서버 경로>'"),
+                ):
+                    async def fail(request):
+                        raise exc
+                    response = await bd._guard(fail)(types.SimpleNamespace(path="/test"))
+                    text = json.loads(response.text)["error"]
+                    check(response.status == status and (text == expected if mode else text.endswith(str(exc))),
+                          "F3S5 guard OSError 는 파일 이름을 별도로 가림")
+
+        async with serving(Verifier()) as app:
+            for _ in range(9):
+                check((await call(app))[0].status == 401, "F3S6 기본 한도: 토큰 거절 아홉 번")
+            for _ in range(12):
+                check((await call(app, body={}))[0].status == 400, "F3S6 기본 한도: 본문 오류는 누적하지 않음")
+            check((await call(app, token="ok"))[0].status == 200, "F3S6 기존 세션 시험 흐름은 기본 한도로 정상 로그인")
+            check((await call(app))[0].status == 401 and (await call(app))[0].status == 429, "F3S6 기본 열 번째 토큰 거절 뒤 제한")
+
+        verifier = Verifier()
+        now[0] = 100
+        async with serving(verifier, login_fail_limit=2, login_fail_window=10) as app:
+            for _ in range(2):
+                response, data = await call(app)
+                check(response.status == 401 and data == api["session_post_bad_token"]["response"], "F3S6 명시적 거절")
+            count = verifier.calls
+            blocked_body = Body(b"{}")
+            response, data = await call(app, payload=blocked_body)
+            check(response.status == 429 and data == api["session_post_rate_limited"]["response"]
+                  and response.headers["Retry-After"] == "10" and verifier.calls == count and blocked_body.reads == 0,
+                  "F3S6 429 fixture·검증기 미호출·본문 읽기 전 차단")
+            response, _ = await call(app, remote="192.0.2.2", token="ok")
+            check(response.status == 200, "F3S6 클라이언트별 제한 분리")
+            now[0] = 110
+            response, _ = await call(app, token="ok")
+            check(response.status == 200, "F3S6 창 만료 뒤 재로그인")
+        verifier = Verifier()
+        async with serving(verifier, login_fail_limit=2) as app:
+            await call(app)
+            await call(app, token="ok")
+            await call(app)
+            check((await call(app, token="ok"))[0].status == 429, "F3S6 성공해도 이전 거절 기록 유지")
+            check((await call(app, "GET"))[0].status == 401 and (await call(app, path="/api/session/logout"))[0].status == 200,
+                  "F3S6 GET session·logout 은 실패 한도 없음")
+        verifier = Verifier()
+        async with serving(verifier, login_fail_global=2) as app:
+            await call(app, remote="192.0.2.1"); await call(app, remote="192.0.2.2")
+            response, _ = await call(app, remote="192.0.2.1", token="ok")
+            check(response.status == 200, "F3S6 전역 거절이 한도를 넘기 전에는 허용")
+            await call(app, remote="192.0.2.3")
+            count = verifier.calls
+            response, _ = await call(app, remote="192.0.2.1")
+            check(response.status == 429 and verifier.calls == count, "F3S6 전역 한도 초과는 실패 이력이 있는 주소만 제한")
+            check((await call(app, remote="192.0.2.4", token="ok"))[0].status == 200, "F3S6 전역 한도 중에도 기록 없는 정상 주소 허용")
+            now[0] += 300
+            check((await call(app, remote="192.0.2.1", token="ok"))[0].status == 200, "F3S6 창에서 빠진 이력은 전역 차단 대상이 아님")
+        for proxy in ((), ("192.0.2.1",)):
+            async with serving(Verifier(), login_fail_limit=1, trusted_proxies=proxy) as app:
+                await call(app, headers={"X-Forwarded-For": "198.51.100.1, 198.51.100.2"})
+                response, _ = await call(app, headers={"X-Forwarded-For": "198.51.100.3, 198.51.100.2"})
+                check(response.status == 429, "F3S6 위조한 첫 XFF 값으로 버킷 변경 불가")
+                response, _ = await call(app, token="ok", headers={"X-Forwarded-For": "198.51.100.3"})
+                check(response.status == (200 if proxy else 429), "F3S6 신뢰한 프록시에서만 마지막 주소별 버킷")
+        async with serving(Verifier(), login_fail_limit=1, trusted_proxies=("192.0.2.0/24",)) as app:
+            for forged, status in (("203.0.113.1", 401), ("203.0.113.2", 429)):
+                headers = CIMultiDict([("X-Forwarded-For", forged), ("X-Forwarded-For", "198.51.100.2:5123, 192.0.2.2")])
+                check((await call(app, headers=headers))[0].status == status,
+                      "F3S6 R1 여러 줄 XFF 첫 줄을 바꿔도 같은 클라이언트 한도")
+            check((await call(app, token="ok", headers={"X-Forwarded-For": "203.0.113.1"}))[0].status == 200,
+                  "F3S6 R1 위조한 첫 줄 주소의 다른 사용자는 차단되지 않음")
+        async with serving(Verifier(), login_fail_limit=1, trusted_proxies=("192.0.2.0/24",)) as app:
+            for forwarded, token, status in (("::ffff:198.51.100.7", "bad", 401),
+                                              ("::ffff:198.51.100.8", "ok", 200), ("198.51.100.7", "ok", 429)):
+                check((await call(app, remote="::ffff:192.0.2.1", headers={"X-Forwarded-For": forwarded}, token=token))[0].status == status,
+                      "F3S6 R2 mapped IPv4 는 사용자별로 나누고 일반 IPv4 표기와 한도를 공유")
+
+        for kwargs, expected_status in (({"body": {"token": 1}}, 400), ({"raw": b"["}, 400),
+                                         ({"raw": b"x" * (16 * 1024 + 1)}, 400),
+                                         ({"token": "malformed"}, 401), ({"token": "wrong-org"}, 401)):
+            async with serving(Verifier(), login_fail_limit=1) as app:
+                check((await call(app, **kwargs))[0].status == expected_status, "F3S7 명시적 거절의 원래 상태")
+                check((await call(app, token="ok"))[0].status == (200 if expected_status == 400 else 429),
+                      "F3S7 본문 모양은 세지 않고 신원 오류만 실패로 셈")
+        async with serving(Verifier(), login_fail_limit=1, login_fail_global=1) as app:
+            for i in range(20):
+                check((await call(app, remote=f"192.0.2.{i + 1}", body={}))[0].status == 400, "F3S7 여러 주소의 빈 본문")
+            check(not app[srv._LOGIN_FAILURES_KEY]._global and (await call(app, token="ok"))[0].status == 200,
+                  "F3S7 빈 본문으로 클라이언트·전역 거절 한도를 채울 수 없음")
+        async with serving(Verifier(), login_fail_limit=1) as app:
+            for _ in range(3):
+                check((await call(app, token="throw-sensitive-token"))[0].status == 401, "F3S7 검증기 장애는 실패로 세지 않음")
+            for _ in range(3):
+                with patch.object(srv, "_account_scope", side_effect=OSError("C:/private/account")):
+                    check((await call(app, token="ok"))[0].status == 401, "F3S7 계정 폴더 장애는 실패로 세지 않음")
+            for _ in range(3):
+                check((await call(app, headers={"Origin": "http://other.test"}))[0].status == 403, "F3S7 미들웨어 거절")
+            state = app[srv._LOGIN_FAILURES_KEY]
+            check(not state._global and not state._pending and not state._inflight, "F3S7 장애·403 뒤 거절·진행 중 기록 없음")
+            check((await call(app, token="ok"))[0].status == 200, "F3S7 장애 뒤 즉시 정상 로그인")
+            check("throw-sensitive-token" not in repr(vars(state)) and "org-test" not in repr(vars(state)), "F3S7 거절 기록에 토큰·조직 없음")
+        production_headers = {"Host": "studio.test", "Origin": "https://studio.test"}
+        async with serving(dev_handoff=False, public_origin="https://studio.test", login_fail_limit=1) as app:
+            for _ in range(3):
+                response, data = await call(app, token="ok", headers=production_headers)
+                check(response.status == 503 and data == api["session_post_no_verifier"]["response"], "F3S7 검증기 없음은 세지 않음")
+            check((await call(app, token="dev:a", headers=production_headers))[0].status == 401, "F3S7 운영의 개발 토큰 거절")
+            check((await call(app, token="ok", headers=production_headers))[0].status == 429, "F3S7 운영의 개발 토큰은 실패로 셈")
+
+        verifier = Verifier()
+        verifier.gate = asyncio.Event()
+        async with serving(verifier, login_fail_limit=1, login_fail_global=1) as app:
+            task = asyncio.create_task(call(app))
+            await asyncio.wait_for(verifier.started.wait(), 5)
+            response, _ = await call(app)
+            check(response.status == 429 and response.headers["Retry-After"] == "1" and verifier.calls == 1,
+                  "F3S8 검증 대기 중 같은 클라이언트 추가 요청 차단")
+            verifier.started.clear()
+            other = asyncio.create_task(call(app, remote="192.0.2.2", token="ok"))
+            await asyncio.wait_for(verifier.started.wait(), 5)
+            check(verifier.calls == 2, "F3S8 진행 중 전역 수로 새 클라이언트를 막지 않음")
+            verifier.gate.set()
+            await asyncio.gather(task, other)
+            check(app[srv._LOGIN_FAILURES_KEY]._pending == 0, "F3S8 완료 뒤 진행 중 수 복원")
+        async with serving(Verifier(), login_fail_limit=1) as app:
+            await call(app, remote="2001:db8:1::1")
+            check((await call(app, remote="2001:db8:1::99", token="ok"))[0].status == 429, "F3S8 IPv6 하위 주소를 바꿔도 같은 /64 제한")
+            check((await call(app, remote="2001:db8:2::1", token="ok"))[0].status == 200, "F3S8 다른 IPv6 /64 는 별도 제한")
+        verifier = Verifier()
+        async with serving(verifier, login_fail_limit=1) as app:
+            bodies = [Body(b"{}", asyncio.Event()) for _ in range(10)]
+            tasks = [asyncio.create_task(call(app, payload=body)) for body in bodies]
+            await asyncio.wait_for(asyncio.gather(*(body.started.wait() for body in bodies)), 5)
+            state = app[srv._LOGIN_FAILURES_KEY]
+            check(not state._inflight and state._pending == 0 and verifier.calls == 0,
+                  "F3S8 3차 R3 본문만 기다리는 연결 열 개는 검증 자리를 잡지 않음")
+            response, _ = await call(app, token="ok")
+            check(response.status == 200 and verifier.calls == 1 and all(body.reads == 1 for body in bodies),
+                  "F3S8 3차 R3 느린 본문 연결 중에도 같은 버킷의 정상 로그인 허용")
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            check(not state._inflight and state._pending == 0 and not state._global,
+                  "F3S8 3차 R3 본문 수신 취소는 거절·예약 기록 없음")
+        verifier = Verifier()
+        async with serving(verifier, login_fail_limit=1) as app:
+            body = Body(b'{"token":"bad","organization_id":"org-test"}', asyncio.Event())
+            task = asyncio.create_task(call(app, payload=body))
+            await asyncio.wait_for(body.started.wait(), 5)
+            check((await call(app))[0].status == 401, "F3S8 3차 R3 다른 본문 수신 중 거절 한도 도달")
+            body.gate.set()
+            check((await task)[0].status == 429 and verifier.calls == 1,
+                  "F3S8 3차 R3 본문 수신 뒤 바뀐 한도를 검증 직전에 다시 검사")
+        verifier = Verifier()
+        async with serving(verifier, login_fail_limit=1) as app:
+            wait_for = asyncio.wait_for
+            async def deadline(awaitable, timeout):
+                check(timeout == 10, "F3S8 3차 R3 본문 수신 제한은 10초")
+                return await wait_for(awaitable, timeout=0.01)
+            body = Body(b"{}", asyncio.Event())
+            with patch.object(srv.asyncio, "wait_for", side_effect=deadline):
+                response, data = await call(app, payload=body)
+            state = app[srv._LOGIN_FAILURES_KEY]
+            check(response.status == 400 and data == {"error": "JSON 본문을 읽을 수 없습니다"}
+                  and body.reads == 1 and verifier.calls == 0 and not state._global and not state._inflight and state._pending == 0,
+                  "F3S8 3차 R3 본문 시간 초과는 기존 400·검증 미호출·거절로 세지 않음")
+            check((await call(app, token="ok"))[0].status == 200, "F3S8 3차 R3 수신 시간 초과 뒤 정상 로그인")
+        verifier = Verifier()
+        verifier.gate = asyncio.Event()
+        async with serving(verifier, login_fail_limit=1) as app:
+            body = Body(b"{}", asyncio.Event())
+            slow = asyncio.create_task(call(app, payload=body))
+            await asyncio.wait_for(body.started.wait(), 5)
+            active = asyncio.create_task(call(app, token="ok"))
+            await asyncio.wait_for(verifier.started.wait(), 5)
+            slow.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await slow
+            state = app[srv._LOGIN_FAILURES_KEY]
+            check(state._pending == 1 and state._inflight == {"192.0.2.1": 1},
+                  "F3S8 3차 R3 수신 취소는 다른 검증의 자리를 반환하지 않음")
+            blocked_body = Body(b"{}")
+            check((await call(app, payload=blocked_body))[0].status == 429 and blocked_body.reads == 0,
+                  "F3S8 3차 R3 검증 중 한도는 여전히 본문 읽기 전 차단")
+            active.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await active
+            check(state._pending == 0 and not state._inflight and not state._global,
+                  "F3S8 3차 R3 검증 중 취소는 예약을 반환하고 거절로 세지 않음")
+        verifier = Verifier()
+        verifier.gate = asyncio.Event()
+        async with serving(verifier, login_fail_limit=1) as app:
+            task = asyncio.create_task(call(app, token="ok"))
+            await asyncio.wait_for(verifier.started.wait(), 5)
+            state = app[srv._LOGIN_FAILURES_KEY]
+            check(state._pending == 1, "F3S8 R7 종료 정리 전 검증 중 요청 재현")
+            state.clear()
+            verifier.gate.set()
+            check((await task)[0].status == 200 and not state._inflight and state._pending == 0,
+                  "F3S8 R7 clear 뒤 요청 finally 도 KeyError 없이 완료")
+
+        message = "실패: C:/data/other/x.psd"
+        payload = {"error": message, "warning": message, "start_blocked": message, "warnings": [message, {"msg": message}],
+                   "notes": [message], "failed": [message], "pending": [message, 2], "reasons": [message],
+                   "apply_pending": [message], "import_pending": [message], "spec_error": message,
+                   "render_warning": message, "draft_notes": [message], "draft_errors": [message],
+                   "draft_warnings": [message, {"file_error": message}, 3, False, None],
+                   "non_text": {"spec_error": 4, "file_warning": True, "apply_pending": {"path": "C:/data/other/x"},
+                                "import_pending": message, "notes": message},
+                   "exports": [{"psd": r"C:\data\other\out.psd", "rev": 1}],
+                   "settings": {"import": {"psd_path": "C:/data/other/x.psd"}},
+                   "derived": {"settings": {"import": {"psd_path": "C:/data/other/x.psd", "refs_dir": "C:/data/other/refs"}},
+                               "notes": [message]},
+                   "drift": [{"manifest": "C:/data/other/old", "settings": "C:/data/other/new"}],
+                   "psd": {"path": "C:/data/other/x.psd"}, "refs_dir": "C:/data/other/refs",
+                   "doc_refs_dir": "C:/data/other/docrefs", "suggest_dir": "C:/data/other/suggest"}
+        saved_payload = copy.deepcopy(payload)
+        with patch.dict(os.environ, {bd.SERVER_ENV: ""}):
+            check(srv._public_json(payload, bd) is payload, "F3S9 로컬 JSON 은 원본 그대로")
+        fake_jobs = _fs_jobs()
+        fake_jobs.JobRunner.history = lambda *args: payload
+        fake_jobs.routes = jobs.routes
+        async with serving(Verifier(), jobs_module=fake_jobs) as app:
+            response, data = await call(app, token="ok")
+            auth = {"Cookie": srv.COOKIE + "=" + response.cookies[srv.COOKIE].value,
+                    "X-DesignPatch-Account": data["account"]["tag"]}
+            for exc, expected in ((bd._Reject(409, scope["home"] + "/a/b"), "<계정 폴더>/a/b"),
+                                  (bd._PathReject(409, "C:/private/a", "안전한 안내"), "안전한 안내")):
+                async def rejected(request):
+                    raise exc
+                request = make_mocked_request("GET", bd.API + "/pipeline", headers={"Host": "localhost:8791", **auth}, app=app)
+                guarded = await app.middlewares[1](request, rejected)
+                check(guarded.status == 409 and json.loads(guarded.text) == {"error": expected},
+                      "F3S9 protect 자체의 _Reject·safe 가림과 계정 범위")
+            with patch.object(bd, "_root_param", return_value=root), patch.object(pl, "view", return_value=payload), \
+                    patch.object(bd, "layout_state", return_value=payload), patch.object(bd, "refs_state", return_value=payload), \
+                    patch.object(bd, "_server_pipeline_update", return_value=payload):
+                for method, path in (("GET", "/pipeline"), ("POST", "/pipeline/settings"), ("GET", "/layout"),
+                                     ("GET", "/refs"), ("GET", "/jobs/history/j_0123456789abcdef")):
+                    response, data = await call(app, method, bd.API + path, headers=auth, body={"root": "key", "rev": 0})
+                    check(response.status == 200 and data["error"] == "실패: <서버 경로>"
+                          and data["warnings"] == ["실패: <서버 경로>", {"msg": "실패: <서버 경로>"}]
+                          and data["pending"] == ["실패: <서버 경로>", 2]
+                          and data["exports"] == [{"psd": "out.psd", "rev": 1}], "F3S9 공용 JSON 경로 가림 " + path)
+                    check(all(data[key] == ["실패: <서버 경로>"] for key in ("apply_pending", "import_pending", "draft_notes", "draft_errors"))
+                          and data["spec_error"] == data["render_warning"] == "실패: <서버 경로>"
+                          and data["draft_warnings"] == ["실패: <서버 경로>", {"file_error": "실패: <서버 경로>"}, 3, False, None],
+                          "F3S9 R3 접미 규칙·누락된 세 칸·목록 안 객체의 안내 가림 " + path)
+                    check(all(data.get(k) == payload[k] for k in ("settings", "drift", "psd", "refs_dir", "doc_refs_dir", "suggest_dir")),
+                          "F3S9 저장 왕복 경로 보존 " + path)
+                    check(data["derived"]["settings"] == payload["derived"]["settings"]
+                          and data["derived"]["notes"] == ["실패: <서버 경로>"] and data["non_text"] == payload["non_text"],
+                          "F3S9 R3 derived.settings·숫자·불리언·대상 밖 값 보존 " + path)
+                with patch.object(pl, "view", side_effect=bd._PathReject(409, message, "안전한 안내", notes=[message])):
+                    response, data = await call(app, "GET", bd.API + "/pipeline", headers=auth)
+                    check(response.status == 409 and data == {"error": "안전한 안내", "notes": ["실패: <서버 경로>"]},
+                          "F3S9 오류 상태에서도 safe·목록 가림")
+                with patch.object(pl, "view", return_value={"error": scope["home"] + "/bmk_design_patch/p/x.psd"}):
+                    _, data = await call(app, "GET", bd.API + "/pipeline", headers=auth)
+                    check(data == {"error": "<계정 폴더>/bmk_design_patch/p/x.psd"}, "F3S9 미들웨어가 요청 계정 범위를 유지")
+            check(payload == saved_payload, "F3S9 응답 변환은 원본 설정·기록을 바꾸지 않음")
+            async def binary(request):
+                return web.Response(body=b"C:/data/private/x", content_type="image/png")
+            request = make_mocked_request("GET", "/test", app=app)
+            response = await app.middlewares[0](request, binary)
+            check(response.body == b"C:/data/private/x", "F3S9 그림 응답 바이트 보존")
+            for raw, parses in (
+                (b' { "ok": true, "settings": {"psd_path": "C:/private/x"} }\n', 0),
+                (' { "spec_error": null, "warnings": ["3/4", {"msg":"<계정 폴더>/a/b"}], "exports": [{"psd":"out.psd"}] }\n'.encode("utf-8"), 1),
+            ):
+                original_response = web.Response(body=raw, content_type="application/json")
+                async def unchanged(request):
+                    return original_response
+                with patch.object(srv.json, "loads", wraps=json.loads) as loads, \
+                        patch.object(srv.json, "dumps", side_effect=AssertionError("변경 없는 응답을 재직렬화함")):
+                    response = await app.middlewares[0](request, unchanged)
+                check(response is original_response and response.body is raw and loads.call_count == parses,
+                      "F3S9 R5 대상 낱말 없으면 파싱 생략·변경 없으면 같은 응답 객체와 바이트")
+            unchanged_payload = {"warnings": ["3/4", {"msg": "<계정 폴더>/a/b"}], "exports": [{"psd": "out.psd"}]}
+            check(srv._public_json(unchanged_payload, bd) is unchanged_payload,
+                  "F3S9 R5 바뀌지 않은 중첩 목록·객체는 원본으로 변경 여부 전달")
+            loop_thread = threading.get_ident()
+            loads, dumps, redact, offload = srv.json.loads, srv.json.dumps, srv._public_json, srv.asyncio.to_thread
+            request["bmk_dp_session"] = {"scope": scope}
+            for size in (64 * 1024, 64 * 1024 + 1):
+                for changed in (False, True):
+                    document = {"rerolls_pending": 0, "error": scope["home"] + "/a/b" if changed else "문제 없음",
+                                "settings": {"import": {"psd_path": "C:/data/other/x.psd"}}, "padding": ""}
+                    document["padding"] = "x" * (size - len(dumps(document, ensure_ascii=False).encode("utf-8")))
+                    raw = dumps(document, ensure_ascii=False).encode("utf-8")
+                    original_response = web.Response(body=raw, content_type="application/json", status=200)
+                    phases = []
+                    def tracked(name, fn):
+                        def invoke(*args, **kwargs):
+                            phases.append((name, threading.get_ident()))
+                            return fn(*args, **kwargs)
+                        return invoke
+                    async def large_response(request):
+                        return original_response
+                    with patch.object(srv.json, "loads", side_effect=tracked("parse", loads)), \
+                            patch.object(srv, "_public_json", side_effect=tracked("redact", redact)), \
+                            patch.object(srv.json, "dumps", side_effect=tracked("serialize", dumps)), \
+                            patch.object(srv.asyncio, "to_thread", wraps=offload) as worker:
+                        response = await app.middlewares[0](request, large_response)
+                    threaded = size > 64 * 1024
+                    check(len(raw) == size and worker.await_count == int(threaded)
+                          and [name for name, _ in phases] == (["parse", "redact", "serialize"] if changed else ["parse", "redact"])
+                          and all((tid != loop_thread) == threaded for _, tid in phases),
+                          "F3S9 3차 R4 64KiB 초과는 파싱·가림·재직렬화 전부 작업 스레드에서 실행")
+                    expected = dict(document, error="<계정 폴더>/a/b") if changed else document
+                    check(response is original_response and loads(response.body) == expected
+                          and (changed or response.body is raw),
+                          "F3S9 3차 R4 작은·큰 응답은 같은 가공 결과·계정 범위·설정 보존, 무변경이면 원래 바이트")
+            raw = dumps({"error": "C:/private/x", "padding": "x" * (64 * 1024)}).encode("utf-8")
+            original_response = web.Response(body=raw, content_type="application/json")
+            async def local_response(request):
+                return original_response
+            with patch.dict(os.environ, {bd.SERVER_ENV: ""}), \
+                    patch.object(srv.asyncio, "to_thread", side_effect=AssertionError("로컬 응답을 가공함")):
+                response = await app.middlewares[0](request, local_response)
+            check(response is original_response and response.body is raw, "F3S9 3차 R4 로컬 모드는 큰 응답도 원문 그대로")
+        parent = srv.make_dev_parent_app(dataclasses.replace(config, dev_parent_port=8790))
+        response, _ = await call(parent, "GET", "/?acct=bob")
+        check(all(text in response.text for text in ("background:#09090b", "color:#e4e4e7", "color:#a1a1aa", "height:56px",
+                                                     "calc(100dvh - 56px)")) and "<script" not in response.text,
+              "F3S10 가짜 부모의 어두운 머리·iframe 높이·스크립트 없음")
+
+    before = {k: os.environ.get(k) for k in (bd.SERVER_ENV, "BMK_DP_MOCK_API")}
+    try:
+        asyncio.run(exercise())
+        legacy = inspect.getsource(forge_server_unit)
+        check("DP_TEST_NO_NETWORK" not in legacy and "login_fail_limit=" not in legacy and "asyncio.run(run())" in legacy,
+              "F3S11 기존 HTTP 단정·기본 한도 유지, 샌드박스 우회 분기 없음")
+        with patch.object(srv, "make_app", side_effect=RuntimeError("captured")) as capture:
+            expect_raises(lambda: srv.main(["--data", str(out), "--dev-handoff", "--trusted-proxy", "192.0.2.7/24",
+                                           "--trusted-proxy", "2001:db8::/64"]), "F3S4 CLI 반복 프록시(서비스 시작 전 중단)", RuntimeError)
+            check(capture.call_args.args[0].trusted_proxies == ("192.0.2.0/24", "2001:db8::/64"), "F3S4 CLI CIDR 설정 전달")
+        for args, warning in ((["--public-origin", "https://studio.test"], True),
+                              (["--public-origin", "https://studio.test", "--trusted-proxy", "192.0.2.0/24"], False),
+                              (["--dev-handoff"], False)):
+            stdout = io.StringIO()
+            runner = types.SimpleNamespace(setup=AsyncMock(), cleanup=AsyncMock())
+            with patch.object(srv, "make_app", return_value=object()), patch.object(srv.web, "AppRunner", return_value=runner), \
+                    patch.object(srv.web, "TCPSite", return_value=types.SimpleNamespace(start=AsyncMock())), \
+                    patch.object(srv.asyncio, "Event", return_value=types.SimpleNamespace(wait=AsyncMock(side_effect=RuntimeError("stop")))), \
+                    contextlib.redirect_stdout(stdout):
+                expect_raises(lambda: srv.main(["--data", str(out), *args]), "F3S4 서비스 대역의 시작 안내 뒤 중단", RuntimeError)
+            check(stdout.getvalue().count("trusted_proxies 가 비어 있습니다") == int(warning),
+                  "F3S4 main 의 운영·프록시 미설정 시작 안내 한 줄")
+    finally:
+        for key, value in before.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        bd.set_env_provider(None)
+    check(bd.current_scope() is None and not bd.server_mode(), "F3S11 시험 종료 범위·서버 모드 복원")
 
 
 def _fj_runner(jobs, compat, out, api):
@@ -59920,7 +61950,7 @@ def _fj_close(jobs, out):
 
 
 def _fj_history_paths(jobs, out):
-    """R5: 서버 오류 문구에서 자기 계정 홈만 가리고 로컬 문구는 보존한다."""
+    """D361: 계정 홈은 표시자로, 나머지 절대 경로는 통째로 가리고 로컬 문구는 보존한다."""
     from unittest.mock import patch
     scope = _fj_scope(out / "private_home")
     root = str(out / "private_home" / "bmk_design_patch" / "p")
@@ -59937,9 +61967,10 @@ def _fj_history_paths(jobs, out):
                 sub = runner.submit(scope, root, "apply", {})
                 record = _fj_wait(lambda: runner.history(scope, root, sub["prompt_id"]), "R5 기록")[sub["prompt_id"]]
                 actual = record["status"]["messages"][0][1]["exception_message"]
-                check(actual == message if not mode else (actual.count("<계정 폴더>") == 2 and outside in actual and sibling in actual
+                check(actual == message if not mode else (actual.count("<계정 폴더>") == 2 and actual.count("<서버 경로>") == 2
+                      and outside not in actual and sibling not in actual
                       and (backslash + "\\").lower() not in actual.lower() and slash + "/" not in actual.lower()),
-                      "FJ48 서버 홈 경로는 구분자·대소문자 무관하게 가림·홈 밖과 로컬은 보존")
+                      "FJ48 서버 홈·홈 밖 절대 경로 가림·로컬 원문 보존")
             finally:
                 runner.close(timeout=1)
     filename = scope["home"].replace("/", "\\") + "\\a.psd"
@@ -60463,7 +62494,7 @@ await scenario("FW27 서버 SAM3 응답은 ComfyUI 큐 전에 차단",async()=>{
 });
 await scenario("FW28 R1 Drain·대기 취소는 판 갱신과 독립",async()=>{
   const e=context(),c=e.ctx,posts=[],warnings=[];let answer;
-  Object.assign(c,{S:{rev:1,running:true,rerolls_pending:3,crops:[]},busy:false,pipe:null,rerollArm:null,rerollSent:null,
+  Object.assign(c,{S:{rev:1,running:true,rerolls_pending:3,crops:[]},SM:()=>false,busy:false,pipe:null,rerollArm:null,rerollSent:null,
     toast:t=>warnings.push(t),write:async(path,body)=>{posts.push([path,body]);return {};},
     DPDialog:{confirm:()=>new Promise(r=>{answer=r;})}});
   vm.runInContext(["askFree","drain","cancelRerolls"].map(n=>sourceFn("board.js",n)).join("\n"),c);
@@ -60521,7 +62552,7 @@ for(const kind of ["502","network"])await scenario("FW34 R3 무료 큐 불확실
   const s=e.ctx.DPPipeline.session(x=>x,()=>{throw Error("ComfyUI 금지");},"root",async()=>{
     if(kind==="network")throw Error("offline");return response({reason:"proxy",error:"gateway"},502);
   },e.old);
-  try{await s.queue("export");return false;}catch(err){return err.message.includes("보냈는지 모름")&&err.message.includes("대기열을 확인")&&!s.job&&!s.sending;}
+  try{await s.queue("export");return false;}catch(err){return err.message.includes("보냈는지 모름")&&err.message.includes("작업 줄을 확인")&&!s.job&&!s.sending;}
 });
 await scenario("FW35 R4 같은 페이지 env 재시도·토큰 교환·같은 ready",async()=>{
   let envCalls=0;const e=context({hash:"#token=dev%3Aalice&organization_id=org1",handler:(u,o)=>{
@@ -60704,10 +62735,10 @@ for(const kind of ["nonJSON","empty","stale_settings","queue_full"])await scenar
     posts.push(JSON.parse(o.body));return kind==="nonJSON"?new Response("not json"):kind==="empty"?response({}):response({reason:kind,error:"서버 거절",sig:"3:13"},409);
   },e.old);
   try{await s.queue("apply","3:12");return false;}catch(err){
-    const expected=kind==="stale_settings"?"큐에 넣지 않음 — 확인한 뒤 실행 설정·프로젝트 기록이 바뀜(3:12 → 3:13, 다른 창의 저장·그래프 실행): 다시 [반영 (무료)]해 새 설정으로 확인하세요":
+    const expected=kind==="stale_settings"?"보내지 않음 — 확인한 뒤 실행 설정·프로젝트 기록이 바뀜(3:12 → 3:13): 다시 [반영 (무료)]해 새 설정으로 확인하세요":
       kind==="queue_full"?"서버 거절":null;
     return posts.length===1&&JSON.stringify(posts[0])===JSON.stringify({root:"root",stage:"apply",expect:"3:12"})&&!s.job&&!s.sending
-      &&(expected?err.message===expected:err.message.startsWith("보냈는지 모름 — 대기열을 확인하세요(작업이 들어갔을 수 있음): "));
+      &&(expected?err.message===expected:err.message.startsWith("보냈는지 모름 — 작업 줄을 확인하세요(작업이 들어갔을 수 있음): "));
   }
 });
 console.log(JSON.stringify(out));

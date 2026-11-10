@@ -9,6 +9,7 @@
 
 window.DPRefEdit = (() => {
   const SM = () => !!(window.DPEnv && window.DPEnv.serverMode);
+  const modeText = (local, server) => SM() ? server : local;
   const can = (name) => window.DPEnv ? window.DPEnv.can(name) : !["jobs", "export_download"].includes(name);
 
   const G = window.DPLayoutGeom;
@@ -247,7 +248,8 @@ window.DPRefEdit = (() => {
       const data = await readJson(r);
       if (!r.ok || !data) {
         const msg = data && data.error ? data.error
-          : r.status === 404 ? "레퍼런스 라우트가 없습니다 — ComfyUI 를 재시작해야 레퍼런스 편집을 쓸 수 있습니다"
+          : r.status === 404 ? modeText("레퍼런스 라우트가 없습니다 — ComfyUI 를 재시작해야 레퍼런스 편집을 쓸 수 있습니다",
+            "레퍼런스 편집을 불러올 수 없습니다 — 화면을 새로 고쳐 보세요 — 계속되면 관리자에게 알려 주세요")
             : `응답을 읽을 수 없습니다 (HTTP ${r.status})`;
         throw Object.assign(new Error(msg), { status: r.status, data });
       }
@@ -635,7 +637,7 @@ window.DPRefEdit = (() => {
       if (!T.corners) return null;
       const value = checkCorners(T.corners);
       if (!value.error && !value.corners) return null;
-      if (!(S.R && S.R.caps && S.R.caps.perspective)) return OLD_SERVER;
+      if (!(S.R && S.R.caps && S.R.caps.perspective)) return modeText(OLD_SERVER, "화면을 새로 고쳐 보세요 — 계속되면 관리자에게 알려 주세요");
       return perspectiveInfo().error || null;
     }
 
@@ -675,7 +677,8 @@ window.DPRefEdit = (() => {
       if (!R) return S.err ? `레퍼런스를 읽지 못했습니다: ${S.err}` : "불러오는 중…";
       if (R.before_import || (state && state.before_import)) return "가져오기 전 — 첫 반영 뒤 쓸 수 있습니다";
       if (!R.refs_dir) return state && (state.before_import || (state.crops && !state.crops.length)) ? "가져오기 전 — 첫 반영 뒤 쓸 수 있습니다"
-        : "Import PSD 의 refs_dir 가 비었습니다 — <프로젝트>\\refs 를 넣고 큐에 넣으면 저장·연결을 쓸 수 있습니다(시트 보기·컷은 됨).";
+        : modeText("Import PSD 의 refs_dir 가 비었습니다 — <프로젝트>\\refs 를 넣고 큐에 넣으면 저장·연결을 쓸 수 있습니다(시트 보기·컷은 됨).",
+          "레퍼런스 폴더가 설정되지 않았습니다 — ① 준비에서 [반영 (무료)] 를 먼저 누르세요(시트 보기·컷은 됨).");
       if (!can("path_input") && (!R.refs_dir_ok || R.doc_dir_match === false)) return "레퍼런스 폴더 설정을 읽지 못했습니다 — 서버 설정을 확인하세요.";
       if (!R.refs_dir_ok) return `refs_dir 폴더가 없습니다: ${R.refs_dir} — Import PSD 의 refs_dir 를 확인하세요.`;
       if (R.error) return `refs.json 을 읽을 수 없어 저장·연결을 막았습니다(크롭은 이름 매칭으로 보임): ${R.error}`;
@@ -788,8 +791,10 @@ window.DPRefEdit = (() => {
         if (ap) {
           const c = add("circle", { cx: ap[0], cy: ap[1], r: 5 * u, class: known ? "rpt auto" : "rpt auto approx" });
           const tip = svg("title");
-          tip.textContent = known ? "자동 양점 — 노드가 이 컷에 맨 앞에 넣은 점(상자 가운데에 가장 가까운 불투명 픽셀, 찍은 점은 그 뒤에)"
-            : "자동 양점(대략 — 상자 가운데) — 실제 점은 노드가 상자 가운데에 가장 가까운 불투명 픽셀로 정해 늘 맨 앞에 씀(찍은 점은 그 뒤에)";
+          tip.textContent = known ? modeText("자동 양점 — 노드가 이 컷에 맨 앞에 넣은 점(상자 가운데에 가장 가까운 불투명 픽셀, 찍은 점은 그 뒤에)",
+            "자동 양점 — 이 컷에 맨 앞에 넣은 점(상자 가운데에 가장 가까운 불투명 픽셀, 찍은 점은 그 뒤에)")
+            : modeText("자동 양점(대략 — 상자 가운데) — 실제 점은 노드가 상자 가운데에 가장 가까운 불투명 픽셀로 정해 늘 맨 앞에 씀(찍은 점은 그 뒤에)",
+              "자동 양점(대략 — 상자 가운데) — 실제 점은 상자 가운데에 가장 가까운 불투명 픽셀로 정해 늘 맨 앞에 씀(찍은 점은 그 뒤에)");
           c.append(tip);
         }
       }
@@ -1467,7 +1472,8 @@ window.DPRefEdit = (() => {
         renderSoon(); // busy 가 선 뒤 — 머리줄 '저장 중…'·쓰기 단추 끔
         const r = await p;
         if (body.transform.corners && !(r.transform && r.transform.corners)) {
-          opts.toast("서버가 원근을 적용하지 않았습니다 — ComfyUI 재시작 후 다시 저장하고 연결을 확인하세요", "err");
+          opts.toast(modeText("서버가 원근을 적용하지 않았습니다 — ComfyUI 재시작 후 다시 저장하고 연결을 확인하세요",
+            "서버가 원근을 적용하지 않았습니다 — 화면을 새로 고쳐 보세요 — 계속되면 관리자에게 알려 주세요"), "err");
           return;
         }
         opts.toast(`저장: ${r.file} · ${r.size[0]}×${r.size[1]} · ${sizeMb(r.bytes)}` + (r.held ? ` · 옛 파일 → _보류/${r.held}` : "")
@@ -1978,10 +1984,13 @@ window.DPRefEdit = (() => {
       }
       const n = S.R ? S.R.pending_rerolls || 0 : 0;
       const lines = (opts.applyWarn ? opts.applyWarn() : [])
-        .concat("반영 (무료): 무료 반영(Import → Prepare → Analyze → Review 템플릿, 탭 불필요)으로 레퍼런스 연결을 프로젝트 기록에 반영합니다.");
-      if (n) lines.push(`다시 생성 대기 ${n}건(사전 승인)은 이 반영에서 돌지 않음 — R·[다시 생성 보내기]·그래프 Run 에서 과금`);
+        .concat(modeText("반영 (무료): 무료 반영(Import → Prepare → Analyze → Review 템플릿, 탭 불필요)으로 레퍼런스 연결을 프로젝트 기록에 반영합니다.",
+          "반영 (무료): 레퍼런스 연결을 프로젝트 기록에 반영하는 서버 작업 줄에 넣습니다."));
+      if (n) lines.push(modeText(`다시 생성 대기 ${n}건(사전 승인)은 이 반영에서 돌지 않음 — R·[다시 생성 보내기]·그래프 Run 에서 과금`,
+        `다시 생성 대기 ${n}건(사전 승인)은 이 반영에서 돌지 않음 — 다음 생성 때 과금`));
       const rev = S.R ? S.R.rev : null, selected = sel;
-      if (!await askFree(lines.concat(APPLY_NOTE, "계속할까요?").join("\n"), () => (S.R ? S.R.rev : null) === rev && sel === selected)) return;
+      if (!await askFree(lines.concat(modeText(APPLY_NOTE,
+        "원장에만 남은 초안(받았지만 스펙에 못 쓴 것)은 이 반영이 병합하지 않음 — 실행(G) 초안 줄의 '못 쓴 스펙'으로 보임"), "계속할까요?").join("\n"), () => (S.R ? S.R.rev : null) === rev && sel === selected)) return;
       opts.queue(true);
     }
 
@@ -1992,8 +2001,10 @@ window.DPRefEdit = (() => {
       if (R) {
         const k = R.crops.filter((c) => c.status !== "same").length;
         const st = el("span", k ? "lh-wait" : "lh-ok", k ? `미반영 ${k}` : "반영됨");
-        st.title = k ? "프로젝트 기록 refs_auto·refs_main 이 지금 연결과 다름 — 다음 큐의 Import 에서 반영" : "프로젝트 기록이 지금 연결과 같음";
-        head.append(st, button("반영 (무료)", "무료 반영(Import → Prepare → Analyze → Review 템플릿, 탭 불필요) — 연결을 프로젝트 기록에 반영", applyQueue));
+        st.title = k ? modeText("프로젝트 기록 refs_auto·refs_main 이 지금 연결과 다름 — 다음 큐의 Import 에서 반영",
+          "프로젝트 기록 refs_auto·refs_main 이 지금 연결과 다름 — 다음 [반영 (무료)] 때 반영") : "프로젝트 기록이 지금 연결과 같음";
+        head.append(st, button("반영 (무료)", modeText("무료 반영(Import → Prepare → Analyze → Review 템플릿, 탭 불필요) — 연결을 프로젝트 기록에 반영",
+          "서버 작업 줄에 넣음 — 연결을 프로젝트 기록에 반영(무료)"), applyQueue));
         if (R.doc_dir_match === false) {
           const b = el("span", "lh-bad", "연결 무시 중");
           b.title = "refs.json 의 refs_dir 가 지금 Import 의 refs_dir 와 다름(R-dir) — 이름 매칭으로 동작";
@@ -2332,13 +2343,13 @@ window.DPRefEdit = (() => {
       for (const f of R.pool_deleted || []) {
         const row = fileRow(f, [f.recorded ? f.at : "기록 없음", f.outside_edit ? "바뀜" : null].filter(Boolean).join(" · "),
           [["되살리기", "연결 없이 보관함으로", () => poolWrite({ op: "undelete", name: f.name }), true]]);
-        if (!(R.caps && R.caps.pool_delete)) for (const b of row.querySelectorAll("button")) { b.disabled = true; b.title = OLD_SERVER; }
+        if (!(R.caps && R.caps.pool_delete)) for (const b of row.querySelectorAll("button")) { b.disabled = true; b.title = modeText(OLD_SERVER, "화면을 새로 고쳐 보세요 — 계속되면 관리자에게 알려 주세요"); }
       }
       poolHost = null; panel.append(deleted);
     }
 
     function deleteProblem() {
-      return !(S.R && S.R.caps && S.R.caps.pool_delete) ? OLD_SERVER : refsBlock() || (S.busy ? "저장 중…" : null);
+      return !(S.R && S.R.caps && S.R.caps.pool_delete) ? modeText(OLD_SERVER, "화면을 새로 고쳐 보세요 — 계속되면 관리자에게 알려 주세요") : refsBlock() || (S.busy ? "저장 중…" : null);
     }
     function canDelete() { return !deleteProblem(); }
     function poolCheckbox(row, key) {
@@ -2965,7 +2976,8 @@ window.DPRefEdit = (() => {
       if (method === "sam3" && points.length) row("점", `양 ${points.filter((p) => p[2]).length} · 음 ${points.filter((p) => !p[2]).length}`);
       if (method === "poly" && poly.length) row("다각형", `꼭짓점 ${poly.length}`);
       const cb = el("div", "lp-btns");
-      cb.append(button((method === "poly" ? "닫기·컷" : "컷") + (g ? "" : " (Enter)"), "선택 영역을 지금 방법으로 컷(SAM3 는 ComfyUI 대기열 앞에서 돎)", doCut,
+      cb.append(button((method === "poly" ? "닫기·컷" : "컷") + (g ? "" : " (Enter)"), modeText("선택 영역을 지금 방법으로 컷(SAM3 는 ComfyUI 대기열 앞에서 돎)",
+        "선택 영역을 지금 방법으로 컷"), doCut,
         "primary"));
       if (method === "poly" && result) {
         cb.append(button("닫기·더하기", "Shift+닫기 — 앞 결과에 더하기", () => closePoly({ shiftKey: true })),
@@ -3078,7 +3090,7 @@ window.DPRefEdit = (() => {
       const pb = el("div", "lp-btns");
       live.perspective = button(T.corners ? "원근 켬" : "원근", "네 모서리 원근 변형", () => { perspectiveOn = !perspectiveOn; render(); }, perspectiveOn ? "on" : "");
       live.perspective.disabled = !(S.R && S.R.caps && S.R.caps.perspective);
-      if (live.perspective.disabled) live.perspective.title = OLD_SERVER;
+      if (live.perspective.disabled) live.perspective.title = modeText(OLD_SERVER, "화면을 새로 고쳐 보세요 — 계속되면 관리자에게 알려 주세요");
       const reset = button("원근 초기화", "네 모서리를 원래 틀로", () => { delete T.corners; drawPreview(); render(); });
       reset.disabled = live.perspective.disabled; pb.append(live.perspective, reset); panel.append(pb);
       if (perspectiveOn) {

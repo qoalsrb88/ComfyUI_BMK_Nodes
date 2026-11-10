@@ -318,6 +318,7 @@ _MAX_REROLL_COUNT = 4      # 요청 하나에 더할 수 있는 호출 수
 _MAX_CELL_PENDING = 16     # 재굴림 후 셀의 대기 호출 상한(키 반복·버그로 인한 과금 폭주 방지, Run 이 소화하면 다시 가능)
 
 _ROOT_HINT = "등록되지 않은 프로젝트 키입니다 — Open Board 또는 메뉴 BMK → Design Patch Studio 로 여세요"
+_SERVER_ROOT_HINT = "프로젝트를 찾을 수 없습니다 — 프로젝트 목록에서 다시 여세요"
 _KEY_RE = re.compile(r"[A-Za-z0-9_\-]{1,96}")
 _CROP_ID_RE = re.compile(r"[A-Za-z0-9_\-]{1,64}")
 _TID_RE = re.compile(r"[A-Z]{1,3}")
@@ -417,6 +418,144 @@ def reset_scope(token: contextvars.Token) -> None:
 
 def current_scope() -> dict | None:
     return _SCOPE.get()
+
+
+def _public_path(path, scope=None):
+    """찾아낸 경로 하나를 분류한다. 홈 이름만 같은 형제 폴더는 계정 꼬리로 남기지 않는다."""
+    home = (current_scope() if scope is None else scope) or {}
+    home = home.get("home")
+    if isinstance(home, str) and home:
+        pattern = r"[\\/]+".join(re.escape(part) for part in re.split(r"[\\/]+", home.rstrip("\\/")))
+        if pattern:
+            match = re.match(pattern + r"(?![A-Za-z0-9_-])", path, flags=re.IGNORECASE)
+            if match:
+                tail = path[match.end():]
+                # 홈의 조사·구두점은 남기되, 이름 뒤 글자가 붙은 형제 폴더의 하위 경로는 제외한다.
+                if not tail or tail.startswith(("/", "\\")) or not re.search(r"[A-Za-z0-9_\\/]", tail):
+                    return "<계정 폴더>" + tail
+    return "<서버 경로>"
+
+
+def _public_roots(scope=None):
+    """공백으로 토큰을 자르기 전에 아는 뿌리를 먼저 맞춘다. 임시 폴더를 알아내려고 파일을 만들지는 않는다."""
+    scope = (current_scope() if scope is None else scope) or {}
+    home = scope.get("home")
+    data = scope.get("data_dir")
+    if (not isinstance(data, str) or not data) and isinstance(home, str):
+        data = os.path.dirname(os.path.dirname(home.replace("\\", "/").rstrip("/")))
+    roots = [home, data, os.path.dirname(os.path.abspath(__file__)), sys.prefix, os.path.dirname(sys.executable),
+             *(os.environ.get(key) for key in ("TMPDIR", "TEMP", "TMP"))]
+    if os.name != "nt":
+        roots.append("/tmp")
+    patterns = []
+    for path in roots:
+        if not isinstance(path, str) or not re.match(r"(?:[A-Za-z]:[\\/]|[\\/])", path):
+            continue
+        path = path.rstrip("\\/")
+        if not path or re.fullmatch(r"[A-Za-z]:", path):
+            continue
+        pattern = r"[\\/]+".join(re.escape(part) for part in re.split(r"[\\/]+", path))
+        if pattern not in patterns:
+            patterns.append(pattern)
+    # 더 긴 설치 폴더를 먼저 맞추고, 조사·구두점도 뿌리의 끝으로 인정한다.
+    return r"(?i:" + "|".join(sorted(patterns, key=len, reverse=True)) + r")(?![A-Za-z0-9_-])"
+
+
+_PUBLIC_TAIL = r'''[^\s"'<>)\]};,|:]*'''
+# URL의 쿼리는 보존하고 목록 구분자에서 끝낸다. 홈 꼬리는 콜론에서도 끝낸다.
+_PUBLIC_KEEP = r'''(?i:https?)://[^\s<>"',;|]+|<계정 폴더>''' + _PUBLIC_TAIL
+
+
+def _public_mask(message, scope=None):
+    """1단계: 아는 뿌리와 절대 경로 후보만 가린다. 공백 뒤 토큰은 이어 붙이지 않는다."""
+    known = re.compile(_public_roots(scope))
+    left = r'''(?<![^\s:'"(=\[;,|])'''
+    # 아는 뿌리·드라이브·file URI·UNC 후보는 POSIX 일반 후보보다 먼저 맞춘다.
+    root = r"(?:" + known.pattern + r"|[A-Za-z]:[\\/]|(?i:file):/{2,}|\\{2,}|/{2,})"
+    # 따옴표 안에서는 닫는 따옴표까지, 밖에서는 구분자 앞까지만 후보로 삼는다.
+    quoted_root = r"(?:" + root + r'''|(?<![A-Za-z]:)/[^/\s"'<>]+/)'''
+    root = r"(?:" + root + r'''|(?<![A-Za-z]:)/[^/\s"'<>)\]};,|:]+/)'''
+    paths = (r"(?P<keep>" + _PUBLIC_KEEP + r")|" + left
+             + r'''(?P<quote>["'])(?P<quoted>''' + quoted_root + r'''[^\r\n]*?)(?P=quote)|'''
+             + left + r"(?P<path>" + root + _PUBLIC_TAIL + r")")
+
+    def hide(match):
+        if match.group("keep") is not None:
+            return match.group()
+        quote = match.group("quote") or ""
+        path = match.group("quoted") if quote else match.group("path")
+        plain = path if quote else path.rstrip(".,;)]}")
+        punctuation = path[len(plain):]
+        suffix = ""
+        found = known.match(plain)
+        if found:
+            rest = plain[found.end():]
+            # 뿌리 바로 뒤 조사·구두점은 경로가 아니다. 하위 경로나 형제 이름은 통째로 분류한다.
+            if rest and not re.search(r"[A-Za-z0-9_\\/]", rest):
+                plain, suffix = plain[:found.end()], rest
+        return quote + _public_path(plain, scope) + suffix + quote + punctuation
+
+    return re.sub(paths, hide, message)
+
+
+def _public_leftover(result) -> bool:
+    """2단계: 보호 구간 밖의 절대 경로와 서버 경로 뒤 조각을 판정만 한다."""
+    remains = re.compile(
+        r"[A-Za-z]:[\\/]"  # (a) 드라이브 문자.
+        r"|(?<![\w.\\])\\|\\{2}[^\\\s]+\\(?!\\)"  # (b) 루트 역슬래시·낱말에 붙은 UNC, 상대 경로 제외.
+        r"|//"  # (c) 슬래시 UNC.
+        r"|(?<![\w.])/(?=[\w.~])"  # (d) 토큰 처음의 POSIX 루트, 한 단계도 포함.
+        r"|/(?:srv|home|var|tmp|mnt|opt|usr|etc|data|Users|root|app|workspace|Volumes|private|run|media)/[^\s/]+"  # (e) 낱말에 붙은 알려진 POSIX 루트.
+    )
+    parts = []
+    start = 0
+    for protected in re.finditer(_PUBLIC_KEEP, result):
+        parts.append(result[start:protected.start()])
+        start = protected.end()
+    parts.append(result[start:])
+    after_server = False
+    for part in parts:
+        if remains.search(part):
+            return True
+        # (f) 서버 표시 뒤의 조각만 검사한다. 다른 표시·URL·홈은 넘기고 한글·구분자에서 멈춘다.
+        for token in re.finditer(r"<서버 경로>|[^\s<]+|<", part):
+            word = token.group()
+            if word == "<서버 경로>":
+                after_server = True
+            elif after_server:
+                if word in ("/", "·") or re.search(r"[가-힣ㄱ-ㅣ\u1100-\u11ff]", word):
+                    after_server = False
+                elif "/" in word or "\\" in word:
+                    return True
+    return False
+
+
+def _public_closed(message):
+    """3단계: 가리지 못한 원문은 로그에만 남기고 응답은 고정 문구로 닫는다."""
+    logger.warning("%s 서버 경로 가림 실패: %s", _TAG, message)
+    return "요청을 처리하지 못했습니다(서버 기록 참고)"
+
+
+def public_error(message: str, scope: dict | None = None) -> str:
+    """서버 모드에서만 후보 가림 → 남은 것 판정 → 실패 시 고정 문구 순서로 처리한다."""
+    if not server_mode():
+        return message
+    result = _public_mask(message, scope)
+    return _public_closed(message) if _public_leftover(result) else result
+
+
+def _public_os_error(exc, scope=None):
+    """OSError 의 repr 에서 경로를 짐작하지 않고 strerror·파일 이름을 따로 가린다."""
+    if not server_mode():
+        return str(exc)
+    message = public_error(exc.strerror if isinstance(exc.strerror, str) else str(exc), scope)
+    names = []
+    for filename in (exc.filename, exc.filename2):
+        if filename is not None:
+            path = os.fsdecode(filename)
+            absolute = re.match(r"(?:[A-Za-z]:[\\/]|[\\/])", path) is not None
+            names.append(repr(_public_path(path, scope) if absolute else public_error(path, scope)))
+    return message + (": " + " -> ".join(names) if names else "")
 
 
 def _scope_dir(name: str) -> str | None:
@@ -4091,7 +4230,7 @@ def refs_state(root: str, since: int | None = None) -> dict:
         checks += [{"code": "R-side", "level": "info", "msg": f"레퍼런스 이름의 좌우가 크롭과 반대 — 초안에서 뒤로 밀림: {f['name']}"}
                    for f in files if side and _side_of(f["name"]) not in (None, side)]
         if status != "same":
-            checks.append({"code": "R-pending", "level": "info", "msg": "미반영 — 반영(큐) 뒤 Import 가 이 레퍼런스를 씀"})
+            checks.append({"code": "R-pending", "level": "info", "msg": "미반영 — 반영 뒤 이 레퍼런스를 씀" if server_mode() else "미반영 — 반영(큐) 뒤 Import 가 이 레퍼런스를 씀"})
         row = {
             "id": cid, "name": name, "fixed": link is not None, "auto": _auto_fixed(link), "pick": pick, "status": status, "files": files,
             "unlinked": [_ref_file(root, refs_dir, doc, f, "unlinked") for f in r["unlinked"]], "held": held, "explicit": explicit,
@@ -4318,7 +4457,7 @@ def _refs_dir_for_write(m: dict) -> str:
     """쓰기 가능한 refs_dir(§1.1): 비었거나 폴더가 없으면 400(보드는 Import 위젯을 바꿀 수 없음 — 안내)."""
     refs_dir = _refs_dir(m)
     if not refs_dir:
-        raise _Reject(400, "refs_dir 가 비었습니다 — Import PSD 의 refs_dir 에 <project>\\refs 를 넣고 큐하세요")
+        raise _Reject(400, "레퍼런스 폴더가 비었습니다 — ① 준비에서 레퍼런스 폴더를 확인하고 반영하세요" if server_mode() else "refs_dir 가 비었습니다 — Import PSD 의 refs_dir 에 <project>\\refs 를 넣고 큐하세요")
     if not os.path.isdir(refs_dir):
         raise _PathReject(400, f"레퍼런스 폴더가 없습니다: {refs_dir}", "레퍼런스 폴더가 없습니다 — ① 준비에서 refs 폴더를 확인하세요")
     return refs_dir
@@ -5815,7 +5954,8 @@ def _plan_notes(root: str, m: dict, settings: dict, confirm) -> list[str]:
     if pre:
         last = "매니페스트" if pl.prepare_record(m)[0] == "prepare_settings" else "jobs 추정"  # 옛 프로젝트 = jobs 최다값
         what = ", ".join(f"{d['field']}({last} {d['manifest']} · Studio {d['settings']})" for d in pre)
-        why = [(text, [d["field"] for d in pre if d["kind"] == kind]) for kind, text in _PREPARE_DRIFT_WHY]
+        why = [("저장된 설정과 생성 조건이 달라 다시 과금 대상" if server_mode() and kind == "cell" else text,
+                [d["field"] for d in pre if d["kind"] == kind]) for kind, text in _PREPARE_DRIFT_WHY]
         why = [(text, fs) for text, fs in why if fs]
         out.append(f"Prepare 설정 갈라짐: {what} — "
                    + (why[0][0] if len(why) == 1 else "; ".join(f"{text}({', '.join(fs)})" for text, fs in why)))
@@ -6148,22 +6288,23 @@ def _guard(fn):
         try:
             return await fn(request)
         except _Reject as e:
-            return _json({"error": e.message, **e.extra}, status=e.status)
+            message = e.safe if server_mode() and isinstance(e, _PathReject) and e.safe else e.message
+            return _json({"error": public_error(message), **e.extra}, status=e.status)
         except ext.BridgeError as e:
-            return _json({"error": str(e), **e.extra}, status=e.status)
+            return _json({"error": public_error(str(e)), **e.extra}, status=e.status)
         except dmask.MaskConflict as e:  # 마스크 편집 seen·★ 경합 — 409 본문에 reason(changed·not_picked)을 싣는다(mask_api.json)
-            return _json({"error": str(e), **e.extra}, status=409)
+            return _json({"error": public_error(str(e)), **e.extra}, status=409)
         except _conflicts() as e:  # rev·지문이 요청과 다름(다른 창·노드에서 바뀜)·이미 있음·없음 — 새로고침
-            return _json({"error": str(e)}, status=409)
+            return _json({"error": public_error(str(e))}, status=409)
         except ValueError as e:  # store·refs 검증(매니페스트가 사라짐·형식 오류 등)
-            return _json({"error": str(e)}, status=400)
+            return _json({"error": public_error(str(e))}, status=400)
         except FileNotFoundError as e:  # refs: 시트 목록 밖·없는 컷 요청·레퍼런스 파일
-            return _json({"error": str(e)}, status=404)
+            return _json({"error": _public_os_error(e)}, status=404)
         except FileExistsError as e:  # refs: 같은 이름이 있음(덮어쓰지 않음 — D5)
-            return _json({"error": str(e)}, status=409)
+            return _json({"error": _public_os_error(e)}, status=409)
         except OSError as e:  # 백신·동기화·탐색기 미리보기가 파일을 잡음 — aiohttp 의 텍스트 500 대신 보드가 읽는 JSON
             logger.warning(f"{_TAG} Board: {request.path} 파일 오류: {e}")
-            return _json({"error": f"파일을 읽거나 쓰지 못했습니다(다른 프로그램이 잠갔을 수 있음): {e}"}, status=500)
+            return _json({"error": _public_os_error(e) if server_mode() else f"파일을 읽거나 쓰지 못했습니다(다른 프로그램이 잠갔을 수 있음): {e}"}, status=500)
     return wrapped
 
 
@@ -6171,12 +6312,12 @@ def _root_param(value) -> str:
     if server_mode():
         base_dir = project_input()  # 키 형식보다 먼저 범위를 검사한다(없으면 401).
         if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{12}", value):
-            raise _Reject(404, _ROOT_HINT)
+            raise _Reject(404, _SERVER_ROOT_HINT)
         parent = os.path.normcase(os.path.abspath(os.path.join(base_dir, store.PROJECTS_DIRNAME)))
         try:
             stamp = os.stat(parent).st_mtime_ns
         except OSError:
-            raise _Reject(404, _ROOT_HINT) from None
+            raise _Reject(404, _SERVER_ROOT_HINT) from None
         with _SCOPE_ROOTS_LOCK:
             cached = _SCOPE_ROOTS.pop(parent, None)
             if cached is not None:
@@ -6194,7 +6335,7 @@ def _root_param(value) -> str:
         root = cached[1].get(value)
         # 매니페스트·링크 변경은 부모 mtime 을 바꾸지 않을 수도 있으므로 매번 확인한다.
         if root is None or not in_scope(root) or not os.path.isfile(os.path.join(root, store.MANIFEST_NAME)):
-            raise _Reject(404, _ROOT_HINT)
+            raise _Reject(404, _SERVER_ROOT_HINT)
         return root
     root = store.resolve_board_root(value)
     if root is None or not in_scope(root):

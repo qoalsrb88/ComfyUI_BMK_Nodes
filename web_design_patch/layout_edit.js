@@ -7,6 +7,8 @@
 "use strict";
 
 window.DPLayoutEdit = (() => {
+  const SM = () => !!(window.DPEnv && window.DPEnv.serverMode);
+  const modeText = (local, server) => SM() ? server : local;
   const G = window.DPLayoutGeom;
   const CLICK_PX = 4;
   const HANDLE_PX = 6; // 핸들을 잡는 거리(화면 px)
@@ -93,7 +95,8 @@ window.DPLayoutEdit = (() => {
       }
       if (!r.ok || !data) {
         const msg = data && data.error ? data.error
-          : r.status === 404 ? "레이아웃 라우트가 없습니다 — ComfyUI 를 재시작해야 크롭 편집을 쓸 수 있습니다"
+          : r.status === 404 ? modeText("레이아웃 라우트가 없습니다 — ComfyUI 를 재시작해야 크롭 편집을 쓸 수 있습니다",
+            "크롭 편집을 불러올 수 없습니다 — 화면을 새로 고쳐 보세요 — 계속되면 관리자에게 알려 주세요")
             : `응답을 읽을 수 없습니다 (HTTP ${r.status})`;
         throw Object.assign(new Error(msg), { status: r.status });
       }
@@ -1034,7 +1037,8 @@ window.DPLayoutEdit = (() => {
       const what = [`후보 ${h.candidates || 0}`, `★ ${h.picks || 0}`].concat(h.spec ? ["스펙 있음"] : []).join(" · ");
       const remote = S.remote, selected = JSON.stringify([sel, [...(multi || [])].sort()]);
       if (!await askFree(`${c.name} 크롭을 레이아웃에서 지웁니다.\n${what} — ${againText(c)}\n`
-        + "프로젝트 기록에는 다음 큐의 Import 에서 반영됩니다. 계속할까요?", () => S.remote === remote && selected === JSON.stringify([sel, [...(multi || [])].sort()]))) return;
+        + (window.DPEnv && window.DPEnv.serverMode ? "프로젝트 기록에는 다음 [반영 (무료)] 때 반영됩니다. 계속할까요?"
+          : "프로젝트 기록에는 다음 큐의 Import 에서 반영됩니다. 계속할까요?"), () => S.remote === remote && selected === JSON.stringify([sel, [...(multi || [])].sort()]))) return;
       if (await act(S.remove(c.id))) opts.toast(`지움: ${c.name} (Ctrl+Z 로 되살림)`);
     }
 
@@ -1052,7 +1056,8 @@ window.DPLayoutEdit = (() => {
         return ` · ${c.name} — 후보 ${h.candidates || 0} · ★ ${h.picks || 0}` + (h.spec ? " · 스펙 있음" : "");
       })];
       if (held.length) lines.push(`잠금으로 건너뜀 ${held.length}: ${held.join(", ")}`);
-      lines.push("파일은 남습니다. 되살리려면 Ctrl+Z(이 창에서만 — 크롭마다 한 번). 프로젝트 기록에는 다음 큐의 Import 에서 반영됩니다. 계속할까요?");
+      lines.push(modeText("파일은 남습니다. 되살리려면 Ctrl+Z(이 창에서만 — 크롭마다 한 번). 프로젝트 기록에는 다음 큐의 Import 에서 반영됩니다. 계속할까요?",
+        "파일은 남습니다. 되살리려면 Ctrl+Z(이 창에서만 — 크롭마다 한 번). 프로젝트 기록에는 다음 [반영 (무료)] 때 반영됩니다. 계속할까요?"));
       const remote = S.remote, selected = JSON.stringify([sel, [...(multi || [])].sort()]);
       if (!await askFree(lines.join("\n"), () => S.remote === remote && selected === JSON.stringify([sel, [...(multi || [])].sort()]))) return;
       let done = 0;
@@ -1127,7 +1132,8 @@ window.DPLayoutEdit = (() => {
         return;
       }
       if (!cs.every((c) => "locked" in c)) {
-        opts.toast("잠금은 ComfyUI 재시작 뒤에 — 서버가 아직 옛 판입니다", "warn");
+        opts.toast(modeText("잠금은 ComfyUI 재시작 뒤에 — 서버가 아직 옛 판입니다",
+          "잠금을 쓸 수 없습니다 — 화면을 새로 고쳐 보세요 — 계속되면 관리자에게 알려 주세요"), "warn");
         return;
       }
       setLock(cs.map((c) => c.id), !cs.every((c) => c.locked));
@@ -1273,7 +1279,8 @@ window.DPLayoutEdit = (() => {
       if (lockedNow(p.id)) return;
       const remote = S.remote, selected = JSON.stringify([sel, [...(multi || [])].sort()]);
       if (p.grow && !await askFree("크롭 넓히기 제안을 적용할까요?\n적용은 레이아웃만 바꿉니다(무료).\n"
-        + "[반영 (무료)] 뒤 이 크롭은 새 생성 조건이 되어, 실행(G)에서 생성을 승인할 때만 유료(평균 ≈ 169 크레딧/호출, 초안 갱신 ≈ 21 — 10/23 원장 평균).\n"
+        + modeText("[반영 (무료)] 뒤 이 크롭은 새 생성 조건이 되어, 실행(G)에서 생성을 승인할 때만 유료(평균 ≈ 169 크레딧/호출, 초안 갱신 ≈ 21 — 10/23 원장 평균).\n",
+          "[반영 (무료)] 뒤 이 크롭은 새 생성 조건이 되어, ⑤ 생성에서 승인할 때만 유료.\n")
         + "지금 ★ 는 옛 크롭 기준으로 남습니다(옛 크롭 ★).", () => S.remote === remote && selected === JSON.stringify([sel, [...(multi || [])].sort()]) && proposal === p)) return;
       proposal = null;
       await flushNudge();
@@ -1361,7 +1368,8 @@ window.DPLayoutEdit = (() => {
       const lines = ["모두 PSD 값으로(실행 취소로 되돌릴 수 없음):", ...take.map((x) => ` · ${x}`)];
       if (rest.length) {
         lines.push(partial() ? `나머지 다른 곳 ${rest.length}건은 가져오지 않고 그대로 경고:`
-          : `나머지 다른 곳 ${rest.length}건은 가져오지 않고 경고만 꺼집니다(기준점이 지금 PSD 로 바뀜 — ComfyUI 재시작 전 서버):`, ...rest.map((x) => ` · ${x}`));
+          : modeText(`나머지 다른 곳 ${rest.length}건은 가져오지 않고 경고만 꺼집니다(기준점이 지금 PSD 로 바뀜 — ComfyUI 재시작 전 서버):`,
+            `나머지 다른 곳 ${rest.length}건은 가져오지 않고 경고만 꺼집니다(기준점이 지금 PSD 로 바뀜 — 서버가 옛 판):`), ...rest.map((x) => ` · ${x}`));
       }
       if (held.length) lines.push(`${heldText(held)} — 가져오지 않고 그대로 경고`);
       const remote = S.remote, selected = JSON.stringify([sel, [...(multi || [])].sort()]);
@@ -1403,12 +1411,15 @@ window.DPLayoutEdit = (() => {
         .concat(S.L.removed.map((c) => `${c.name || c.id}(지움)`));
       const lines = (opts.applyWarn ? opts.applyWarn() : [])
         .concat(ch.length ? [`이 반영에 들어가는 레이아웃 바뀜 ${ch.length}건: ${ch.join(" · ")} — 실수면 취소 → Ctrl+Z(이 창의 편집) 또는 실행(G) 반영 칸 [되돌리기]`] : [],
-          "반영 (무료): 무료 반영(Import → Prepare → Analyze → Review 템플릿, 탭 불필요)으로 레이아웃을 프로젝트 기록에 반영합니다.");
-      if (n) lines.push(`다시 생성 대기 ${n}건(사전 승인)은 이 반영에서 돌지 않음 — R·[다시 생성 보내기]·그래프 Run 에서 과금`);
+          modeText("반영 (무료): 무료 반영(Import → Prepare → Analyze → Review 템플릿, 탭 불필요)으로 레이아웃을 프로젝트 기록에 반영합니다.",
+            "반영 (무료): 레이아웃을 프로젝트 기록에 반영하는 서버 작업 줄에 넣습니다."));
+      if (n) lines.push(modeText(`다시 생성 대기 ${n}건(사전 승인)은 이 반영에서 돌지 않음 — R·[다시 생성 보내기]·그래프 Run 에서 과금`,
+        `다시 생성 대기 ${n}건(사전 승인)은 이 반영에서 돌지 않음 — 다음 생성 때 과금`));
       const unnamed = S.L.crops.filter((c) => c.name.includes("_미정")).length;
       if (unnamed) lines.push(`이름 미정 ${unnamed}개 — 반영 전에 정하면 다시 과금 없음`);
       const remote = S.remote, selected = JSON.stringify([sel, [...(multi || [])].sort()]);
-      if (!await askFree(lines.concat(APPLY_NOTE, "계속할까요?").join("\n"), () => S.remote === remote && selected === JSON.stringify([sel, [...(multi || [])].sort()]))) return;
+      if (!await askFree(lines.concat(modeText(APPLY_NOTE,
+        "원장에만 남은 초안(받았지만 스펙에 못 쓴 것)은 이 반영이 병합하지 않음 — 실행(G) 초안 줄의 '못 쓴 스펙'으로 보임"), "계속할까요?").join("\n"), () => S.remote === remote && selected === JSON.stringify([sel, [...(multi || [])].sort()]))) return;
       opts.queue(true);
     }
 
@@ -1572,8 +1583,10 @@ window.DPLayoutEdit = (() => {
         const applied = "applied" in L ? L.applied : L.applied_rev === L.rev;
         head.append(el("span", "lh-title", `레이아웃 rev ${L.rev}`));
         const st = el("span", applied ? "lh-ok" : "lh-wait", applied ? "반영됨" : `미반영 ${k}`);
-        st.title = applied ? "마지막 Import 가 이 판을 읽었습니다" : `프로젝트 기록 반영 rev ${L.applied_rev ?? "없음"} — 다음 큐의 Import 에서 반영`;
-        head.append(st, button("반영 (무료)", "무료 반영(Import → Prepare → Analyze → Review 템플릿, 탭 불필요) — 레이아웃을 프로젝트 기록에 반영",
+        st.title = applied ? "마지막 Import 가 이 판을 읽었습니다" : modeText(`프로젝트 기록 반영 rev ${L.applied_rev ?? "없음"} — 다음 큐의 Import 에서 반영`,
+          `프로젝트 기록 반영 rev ${L.applied_rev ?? "없음"} — 다음 [반영 (무료)] 때 반영`);
+        head.append(st, button("반영 (무료)", modeText("무료 반영(Import → Prepare → Analyze → Review 템플릿, 탭 불필요) — 레이아웃을 프로젝트 기록에 반영",
+          "서버 작업 줄에 넣음 — 레이아웃을 프로젝트 기록에 반영(무료)"),
           applyQueue));
         const d = L.psd_diff;
         const nd = d ? d.changed.length + d.added.length + d.removed.length : 0;
@@ -1591,7 +1604,7 @@ window.DPLayoutEdit = (() => {
         }
         const ub = button("되돌리기", "실행 취소 (Ctrl+Z)", undo);
         ub.disabled = !S.undo.length;
-        const rb = button("다시", "다시 실행 (Ctrl+Y · Ctrl+Shift+Z)", redo);
+        const rb = button("다시실행", "다시 실행 (Ctrl+Y · Ctrl+Shift+Z)", redo);
         rb.disabled = !S.redo.length;
         head.append(ub, rb);
       }
@@ -1616,7 +1629,7 @@ window.DPLayoutEdit = (() => {
         }
         if (STATUS[c.status]) {
           const x = chip(STATUS[c.status] + (c.changed && c.changed.length ? " " + fieldNames(c.changed) : ""), "b-wait");
-          x.title = "프로젝트 기록과 다름 — 다음 큐의 Import 에서 반영";
+          x.title = modeText("프로젝트 기록과 다름 — 다음 큐의 Import 에서 반영", "프로젝트 기록과 다름 — 다음 [반영 (무료)] 때 반영");
           ch.append(x);
         }
         if (split.has(c.psd_name || c.name)) ch.append(chip("PSD 와 다름", "b-bad"));
@@ -1650,7 +1663,7 @@ window.DPLayoutEdit = (() => {
     }
 
     function blocked() {
-      if (!state || !state.canvas) return "베이스가 없습니다 — Import PSD 를 먼저 실행하세요(크롭 편집 불가).";
+      if (!state || !state.canvas) return "베이스가 없습니다 — ① 준비에서 [반영 (무료)] 를 먼저 누르세요(크롭 편집 불가).";
       if (!S.L) return S.err ? `레이아웃을 읽지 못했습니다: ${S.err}` : "불러오는 중…";
       if (S.L.error) return `layout.json 을 읽을 수 없어 편집할 수 없습니다: ${S.L.error}`;
       if (S.L.exists && !S.L.editable) return "이 레이아웃은 편집할 수 없습니다(베이스·캔버스 확인).";
@@ -1668,7 +1681,7 @@ window.DPLayoutEdit = (() => {
       draftWarn = null;
       nameShow = null;
       const msg = blocked();
-      if (msg) panel.append(el("p", "lp-msg", msg));
+      if (msg) panel.append(el("p", "lp-msg" + (!state || !state.canvas ? " dp-empty" : ""), msg));
       else if (!S.L.exists) renderStart();
       else if (draft) renderDraft();
       else if (multi) renderMulti();
@@ -1904,7 +1917,8 @@ window.DPLayoutEdit = (() => {
         // S1-a: 이 이름의 기준점만 지금 PSD 값으로 — 다른 갈라짐은 그대로 경고. 옛 서버는 기준점이 통째로 바뀌어 다른 갈라짐 경고도 꺼짐(라벨에 그 수)
         const rest = part ? 0 : psdSplit([pn]).rest.length;
         const tb = button(rest ? `PSD 값으로(나머지 ${rest}건 경고 끔)` : "PSD 값으로", "이 크롭의 PSD 에서 바뀐 필드(사각형·대상)를 지금 PSD 값으로 — "
-          + (part ? "다른 곳은 그대로 경고" : rest ? `나머지 다른 곳 ${rest}건은 가져오지 않고 경고만 꺼짐(ComfyUI 재시작 전 서버)` : "다른 곳은 이것뿐"),
+          + (part ? "다른 곳은 그대로 경고" : rest ? modeText(`나머지 다른 곳 ${rest}건은 가져오지 않고 경고만 꺼짐(ComfyUI 재시작 전 서버)`,
+            `나머지 다른 곳 ${rest}건은 가져오지 않고 경고만 꺼짐(서버가 옛 판)`) : "다른 곳은 이것뿐"),
         () => takePsd([pn]));
         if (c.locked) tb.title = "잠긴 크롭 — 잠금을 풀고";
         b.append(tb);
@@ -1968,7 +1982,8 @@ window.DPLayoutEdit = (() => {
         if (t.box) r.append(button("✕", `${t.tid} 상자 지우기`, () => setBox(c, t.tid, null)));
         if (adopted[t.tid]) {
           const a = chip("채택", "b-dim");
-          a.title = `스펙 _layer_targets 채택 문구: ${adopted[t.tid]} — 여기 문구를 쓰면 이것이 이김`;
+          a.title = modeText(`스펙 _layer_targets 채택 문구: ${adopted[t.tid]} — 여기 문구를 쓰면 이것이 이김`,
+            `초안에서 채택한 대상 문구: ${adopted[t.tid]} — 여기 문구를 쓰면 이것이 이김`);
           r.append(a);
         }
         if (ts.length > 1) {
@@ -1985,7 +2000,8 @@ window.DPLayoutEdit = (() => {
         // 레이아웃 대상에 없는 tid 의 채택 문구 — Import 가 스펙 _layer_targets 에서 더한다
         const r = el("div", "lt adopted");
         r.append(el("span", "lt-tid", a.tid), el("span", "dim", `채택: ${a.text}`));
-        r.title = "스펙 _layer_targets 채택 문구(레이아웃 대상 아님) — 같은 글자로 대상을 더하면 레이아웃 문구가 이김";
+        r.title = modeText("스펙 _layer_targets 채택 문구(레이아웃 대상 아님) — 같은 글자로 대상을 더하면 레이아웃 문구가 이김",
+          "초안에서 채택한 대상 문구(레이아웃 대상 아님) — 같은 글자로 대상을 더하면 레이아웃 문구가 이김");
         tb.append(r);
       }
       panel.append(el("div", "lp-k", "대상 (이름 · 부품 상자)"), tb);

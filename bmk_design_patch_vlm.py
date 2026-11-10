@@ -181,7 +181,16 @@ except ImportError:  # 단독 실행/테스트
 
 logger = logging.getLogger(__name__)
 
+
+def _server_text(local, server):
+    return server if os.environ.get("BMK_DP_SERVER_MODE") == "1" else local
+
+
 _TAG = "[ComfyUI_BMK_Nodes::DesignPatch]"
+
+
+def _error_tag():
+    return _server_text(_TAG, "[DesignPatch]")
 
 
 def _server_mode() -> bool:
@@ -255,7 +264,7 @@ def _family(backend: str) -> str:
     for fam, name in BACKEND_NAMES.items():
         if backend == name:
             return fam
-    raise ValueError(f"{_TAG} 알 수 없는 VLM 백엔드: {backend!r}")
+    raise ValueError(f"{_error_tag()} 알 수 없는 VLM 백엔드: {backend!r}")
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -352,7 +361,7 @@ class Request:
 def parse_vlm_choice(choice: str) -> tuple[str, str]:
     """콤보 값 → (family, model). "openai/gpt-6-astra" → ("openai", "gpt-6-astra"), "mock" → ("mock", "mock")."""
     if choice not in VLM_CHOICES:
-        raise ValueError(f"{_TAG} vlm 값이 목록에 없습니다: {choice!r} (선택지: {', '.join(VLM_CHOICES)})")
+        raise ValueError(f"{_error_tag()} vlm 값이 목록에 없습니다: {choice!r} (선택지: {', '.join(VLM_CHOICES)})")
     if choice == "mock":
         return "mock", "mock"
     fam, model = choice.split("/", 1)
@@ -365,18 +374,18 @@ def check_vlm_effort(choice: str | None, effort: str | None) -> None:
     if effort is None:
         return
     if effort not in EFFORTS:
-        raise ValueError(f"{_TAG} effort 값이 잘못되었습니다: {effort!r} (선택지: {', '.join(EFFORTS)})")
+        raise ValueError(f"{_error_tag()} effort 값이 잘못되었습니다: {effort!r} (선택지: {', '.join(EFFORTS)})")
     if fam == "openai" and effort not in MODEL_EFFORTS[model]:
-        raise ValueError(f"{_TAG} {model} 은 effort {effort!r} 를 받지 않습니다(허용: {', '.join(MODEL_EFFORTS[model])})")
+        raise ValueError(f"{_error_tag()} {model} 은 effort {effort!r} 를 받지 않습니다(허용: {', '.join(MODEL_EFFORTS[model])})")
 
 
 def check_widgets(choice: str, effort: str, image_detail: str, write_mode: str) -> None:
     """호출 전에 위젯 조합을 검사한다(ValueError, 한국어)."""
     check_vlm_effort(choice, effort)
     if image_detail not in IMAGE_DETAILS:
-        raise ValueError(f"{_TAG} image_detail 값이 잘못되었습니다: {image_detail!r} (선택지: {', '.join(IMAGE_DETAILS)})")
+        raise ValueError(f"{_error_tag()} image_detail 값이 잘못되었습니다: {image_detail!r} (선택지: {', '.join(IMAGE_DETAILS)})")
     if write_mode not in WRITE_MODES:
-        raise ValueError(f"{_TAG} write_mode 값이 잘못되었습니다: {write_mode!r} (선택지: {', '.join(WRITE_MODES)})")
+        raise ValueError(f"{_error_tag()} write_mode 값이 잘못되었습니다: {write_mode!r} (선택지: {', '.join(WRITE_MODES)})")
 
 
 def side_of(name: str) -> str | None:
@@ -787,7 +796,7 @@ def sent_size(wh: tuple[int, int], role: str, backend: str) -> tuple[int, int]:
     local_qwen 은 그 결과의 양 변을 32 배수로 맞춘다(processor 재리사이즈 방지)."""
     w, h = (int(v) for v in wh)
     if w <= 0 or h <= 0:
-        raise ValueError(f"{_TAG} 이미지 크기가 잘못되었습니다: {wh!r}")
+        raise ValueError(f"{_error_tag()} 이미지 크기가 잘못되었습니다: {wh!r}")
     long_, short = max(w, h), min(w, h)
     if role in ("canvas", "crop"):
         lo, hi = CANVAS_LONG
@@ -797,7 +806,7 @@ def sent_size(wh: tuple[int, int], role: str, backend: str) -> tuple[int, int]:
     elif role == "base":
         s = min(1.0, STYLE_LONG / long_)
     else:
-        raise ValueError(f"{_TAG} 알 수 없는 이미지 역할: {role!r}")
+        raise ValueError(f"{_error_tag()} 알 수 없는 이미지 역할: {role!r}")
     sw, sh = max(1, round(w * s)), max(1, round(h * s))
     if _family(backend) == "local_qwen":
         sw, sh = (max(QWEN_FACTOR, round(v / QWEN_FACTOR) * QWEN_FACTOR) for v in (sw, sh))
@@ -842,7 +851,7 @@ class Unit:
 
 def _spec_path(root: str, crop_id: str) -> str:
     if not isinstance(crop_id, str) or not store._CROP_ID_RE.match(crop_id):
-        raise ValueError(f"{_TAG} crop_id 형식이 잘못되었습니다: {crop_id!r}")
+        raise ValueError(f"{_error_tag()} crop_id 형식이 잘못되었습니다: {crop_id!r}")
     return os.path.join(root, "specs", f"{crop_id}.json")
 
 
@@ -969,7 +978,7 @@ def plan(root: str, ctxs: list[CropCtx], reqs: dict[str, Request], style_req: Re
       orphan_specs [파일명]  매니페스트에 크롭이 없는 specs/*.json(지우지 않고 보고만, §5.2)
     est: openai = estimate_unit(caps 보정), local_qwen = (초, 초), mock = (0, 0)."""
     if mode not in WRITE_MODES:
-        raise ValueError(f"{_TAG} write_mode 값이 잘못되었습니다: {mode!r}")
+        raise ValueError(f"{_error_tag()} write_mode 값이 잘못되었습니다: {mode!r}")
     ledger = Ledger(root)
     first = style_req or next(iter(reqs.values()), None)
     family = first.backend if first is not None else "mock"
@@ -1167,16 +1176,16 @@ class Ledger:
 
     def dir(self, crop_id: str, key: str) -> str:
         if not isinstance(crop_id, str) or not store._CROP_ID_RE.match(crop_id) or crop_id == "img":
-            raise ValueError(f"{_TAG} 원장 crop_id 형식이 잘못되었습니다: {crop_id!r}")
+            raise ValueError(f"{_error_tag()} 원장 crop_id 형식이 잘못되었습니다: {crop_id!r}")
         if not isinstance(key, str) or not _KEY_RE.fullmatch(key):
-            raise ValueError(f"{_TAG} 초안 키 형식이 아닙니다(소문자 hex 24자): {key!r}")
+            raise ValueError(f"{_error_tag()} 초안 키 형식이 아닙니다(소문자 hex 24자): {key!r}")
         return store.resolve_path(self.root, f"{LEDGER_DIR}/{crop_id}/{key}")
 
     def _path(self, crop_id: str, key: str, attempt: int, kind: str) -> str:
         if kind not in _LEDGER_KINDS:
-            raise ValueError(f"{_TAG} 원장 종류가 잘못되었습니다: {kind!r}")
+            raise ValueError(f"{_error_tag()} 원장 종류가 잘못되었습니다: {kind!r}")
         if isinstance(attempt, bool) or int(attempt) < 1:
-            raise ValueError(f"{_TAG} 시도 번호는 1 이상: {attempt!r}")
+            raise ValueError(f"{_error_tag()} 시도 번호는 1 이상: {attempt!r}")
         return os.path.join(self.dir(crop_id, key), f"a{int(attempt)}.{kind}.json")
 
     def _attempts(self, crop_id: str, key: str) -> dict[int, dict]:
@@ -1367,9 +1376,9 @@ def estimate_unit(req: Request, *, model: str, effort: str, calib: dict) -> tupl
     """(보통, 최대) 크레딧. in = TEXT_OVERHEAD_TOKENS + len(user_text 바이트)/4 + Σ ceil(w/32)·ceil(h/32),
     out 보통 = caps 보정 중앙값(CALIB_MIN 건 이상) 또는 OUT_TYPICAL(화풍은 × STYLE_OUT_FACTOR), out 최대 = MAX_OUTPUT_TOKENS."""
     if model not in PRICE_PER_1K:
-        raise ValueError(f"{_TAG} 가격표에 없는 모델: {model!r}")
+        raise ValueError(f"{_error_tag()} 가격표에 없는 모델: {model!r}")
     if effort not in EFFORTS:
-        raise ValueError(f"{_TAG} effort 값이 잘못되었습니다: {effort!r}")
+        raise ValueError(f"{_error_tag()} effort 값이 잘못되었습니다: {effort!r}")
     p_in, p_out = PRICE_PER_1K[model]
     in_tok = TEXT_OVERHEAD_TOKENS + len((req.user_text or "").encode("utf-8")) / 4
     for im in _images_of(req):
@@ -1565,7 +1574,7 @@ def system_prompt(kind: str, backend: str, bbox_frame: tuple) -> str:
     if kind == "style":
         return _STYLE_SYSTEM
     if kind != "crop":
-        raise ValueError(f"{_TAG} 알 수 없는 요청 종류: {kind!r}")
+        raise ValueError(f"{_error_tag()} 알 수 없는 요청 종류: {kind!r}")
     frame = tuple(bbox_frame or ("q1000",))
     if _family(backend) == "local_qwen" or frame[0] != "px":
         fmt = _BBOX_Q1000
@@ -1595,7 +1604,7 @@ def openai_body(req: Request, *, model: str, effort: str, image_detail: str, lev
     """Responses API 본문(dict, sync_op_raw 로 보냄). level ≥1 이면 text.format json_schema(strict), background 면 background:True.
     이미지는 render_sent → PNG data URI, 라벨 텍스트와 교차(input_text / input_image)."""
     if effort not in MAX_OUTPUT_TOKENS:
-        raise ValueError(f"{_TAG} effort 값이 잘못되었습니다: {effort!r}")
+        raise ValueError(f"{_error_tag()} effort 값이 잘못되었습니다: {effort!r}")
     content = []
     for kind, val in req.parts:
         if kind == "image":
@@ -1611,7 +1620,7 @@ def openai_body(req: Request, *, model: str, effort: str, image_detail: str, lev
 def _decode_uri(uri: str) -> "Image.Image":
     head, _, b64 = str(uri).partition(",")
     if not head.startswith("data:image/") or not b64:
-        raise ValueError(f"{_TAG} data URI 가 아닙니다: {_short(uri, 40)!r}")
+        raise ValueError(f"{_error_tag()} data URI 가 아닙니다: {_short(uri, 40)!r}")
     im = Image.open(io.BytesIO(base64.b64decode(b64)))
     im.load()
     return im
@@ -1790,7 +1799,7 @@ def extract_json(text: str) -> tuple[dict, list[str]]:
     → 잘렸으면 열린 문자열·괄호 닫기("truncated", 열린 문자열을 닫았으면 + "truncated_string")
     (그래도 안 되면 마지막 쉼표들에서 잘라 닫기, + "truncated_cut"). 객체가 아니거나 실패면 ParseError."""
     if not isinstance(text, str):
-        raise ParseError(f"{_TAG} VLM 출력이 문자열이 아닙니다: {type(text).__name__}")
+        raise ParseError(f"{_error_tag()} VLM 출력이 문자열이 아닙니다: {type(text).__name__}")
     repairs: list[str] = []
     s = text
     low = s.lower()
@@ -1807,14 +1816,14 @@ def extract_json(text: str) -> tuple[dict, list[str]]:
         repairs.append("fence")
     start = s.find("{")
     if start < 0:
-        raise ParseError(f"{_TAG} 출력에 JSON 객체('{{')가 없습니다: {_short(text, 120)!r}")
+        raise ParseError(f"{_error_tag()} 출력에 JSON 객체('{{')가 없습니다: {_short(text, 120)!r}")
     if s[:start].strip():
         repairs.append("prefix_text")
     s = s[start:]
 
     def finish(obj: Any) -> tuple[dict, list[str]]:
         if not isinstance(obj, dict):
-            raise ParseError(f"{_TAG} JSON 최상위가 객체가 아닙니다: {type(obj).__name__}")
+            raise ParseError(f"{_error_tag()} JSON 최상위가 객체가 아닙니다: {type(obj).__name__}")
         return obj, repairs
 
     end, stack, in_str, cuts = _scan(s)
@@ -1831,7 +1840,7 @@ def extract_json(text: str) -> tuple[dict, list[str]]:
         try:
             return finish(_loads(fixed[:end]))
         except json.JSONDecodeError as e:
-            raise ParseError(f"{_TAG} JSON 수리 실패: {e}") from e
+            raise ParseError(f"{_error_tag()} JSON 수리 실패: {e}") from e
     repairs.append("truncated")
     t = fixed[:end]
     if in_str:
@@ -1852,7 +1861,7 @@ def extract_json(text: str) -> tuple[dict, list[str]]:
             continue
         repairs.append("truncated_cut")
         return finish(obj)
-    raise ParseError(f"{_TAG} 잘린 JSON 을 닫지 못했습니다: {_short(text, 120)!r}")
+    raise ParseError(f"{_error_tag()} 잘린 JSON 을 닫지 못했습니다: {_short(text, 120)!r}")
 
 
 @dataclass
@@ -2653,7 +2662,7 @@ def paste_layer_name(ctx: CropCtx, draft: Draft) -> str:
     s = f"{ctx.name} | " + "; ".join(f"{tid}: {nm}" for tid, nm in pairs)
     p = store.parse_crop_layer_name(s)
     if len(p["targets"]) != len(pairs) or store.crop_id_for(s) != store.crop_id_for(ctx.layer_name or ctx.name):
-        raise ValueError(f"{_TAG} 제안 레이어명이 다시 읽히지 않습니다: {s!r}")
+        raise ValueError(f"{_error_tag()} 제안 레이어명이 다시 읽히지 않습니다: {s!r}")
     return s
 
 
@@ -2832,7 +2841,7 @@ def merge_spec(current: dict | None, draft: Draft | None, ctx: CropCtx, *, mode:
       backend = 지금 백엔드(family 또는 이름, None = mock 판정 안 함).
     - _accepted: true 인 크롭은 force 가 아니면 건드리지 않는다(채택도 안 함). 결과를 다시 병합하면 changed=False(멱등)."""
     if mode not in WRITE_MODES:
-        raise ValueError(f"{_TAG} write_mode 값이 잘못되었습니다: {mode!r}")
+        raise ValueError(f"{_error_tag()} write_mode 값이 잘못되었습니다: {mode!r}")
     targets_only = apply_mode == "targets"
     cur = copy.deepcopy(current) if isinstance(current, dict) else None
     spec = copy.deepcopy(cur) if cur is not None else {}
@@ -3033,7 +3042,7 @@ def merge_project(current: dict | None, style: str | None, *, mode: str, provena
     바뀐 초안은 적용하지 않는다(mock 화풍을 실제 백엔드 초안으로 바꿀 때는 refresh 규칙).
     style_note == "" 는 사람 값(화풍 초안·전파 끔)이다."""
     if mode not in WRITE_MODES:
-        raise ValueError(f"{_TAG} write_mode 값이 잘못되었습니다: {mode!r}")
+        raise ValueError(f"{_error_tag()} write_mode 값이 잘못되었습니다: {mode!r}")
     cur = copy.deepcopy(current) if isinstance(current, dict) else None
     spec = copy.deepcopy(cur) if cur is not None else {}
     if style is None:
@@ -3152,7 +3161,7 @@ def write_spec(root: str, crop_id: str, merge: Callable[[dict | None], MergeResu
         except FileNotFoundError:
             current, err = None, None
         if err:
-            raise ValueError(f"{_TAG} specs/{crop_id}.json — {err}")
+            raise ValueError(f"{_error_tag()} specs/{crop_id}.json — {err}")
         res = merge(current)
         if res.spec is None:
             return res, None
@@ -3348,7 +3357,7 @@ def _kind_why(kind: str | None, c: Any, value: str) -> str:
         return "사람 값 있음 — [수정]으로 바꾸세요"
     if kind == "keep_deleted":
         return "해제함 — 다시 쓰려면 [수정]"
-    return "이미 채택" if c is not _MISSING and _eq(c, value) else "노드 값 그대로 — 바꾸려면 [수정]"
+    return "이미 채택" if c is not _MISSING and _eq(c, value) else _server_text("노드 값 그대로 — 바꾸려면 [수정]", "저장된 값 그대로 — 바꾸려면 [수정]")
 
 
 def _strip_adopted(spec: Any) -> dict:
@@ -3452,12 +3461,11 @@ def adopt_state(root: str, m: dict, ctx: CropCtx, spec: Any, *, family: str, mem
     value, why = adopt_check(spec, ctx, family)
     kind = _merge_path("fill", *_lt_cb(spec), value)[2] if value else None
     if kind == "add" and _arrived(root, m, _adopt_crop(m, ctx.crop_id), ctx, spec, family=family, memo=memo):
-        return "", None, _UNWRITTEN_WHY
+        return "", None, _server_text(_UNWRITTEN_WHY, "원장 초안이 아직 스펙에 안 쓰임")
     ylds = _yield_paths(spec, ctx) if kind == "add" else []
     if ylds:
         more = f" 외 {len(ylds) - 4}" if len(ylds) > 4 else ""
-        return value, None, (f"초안 뒤 생긴 영문 이름·용어집·사람 refs·mode 로 노드 값 양보가 남음({', '.join(ylds[:4])}{more}) — "
-                             "그래프 Spec Draft 로 채택")
+        return value, None, _server_text(f"초안 뒤 생긴 영문 이름·용어집·사람 refs·mode 로 노드 값 양보가 남음({', '.join(ylds[:4])}{more}) — 그래프 Spec Draft 로 채택", f"초안 뒤 생긴 영문 이름·용어집·사람 refs·mode 로 저장된 값의 양보가 남음({', '.join(ylds[:4])}{more})")
     return value, kind, why
 
 
@@ -3556,8 +3564,7 @@ def _adopt_effects(crop: dict, nxt: dict, ctx: CropCtx, cur: Any, after: Any, la
                               "after": [] if arrived and not changed else wait(tafter, nxt["layer_name"], after)},
                "layout_wins": wins}
     if arrived and changed:
-        warns = warns + ["원장에 도착한 초안이 아직 스펙에 안 쓰임 — 이 쓰기를 반영하면 타깃이 바뀌어 그 초안은 병합되지 않음"
-                         "(먼저 그래프 Spec Draft 를 한 번 큐하면 0 호출로 병합)"]
+        warns = warns + [_server_text("원장에 도착한 초안이 아직 스펙에 안 쓰임 — 이 쓰기를 반영하면 타깃이 바뀌어 그 초안은 병합되지 않음(먼저 그래프 Spec Draft 를 한 번 큐하면 0 호출로 병합)", "원장에 도착한 초안이 아직 스펙에 안 쓰임 — 이 쓰기를 반영하면 타깃이 바뀌어 그 초안은 병합되지 않음")]
     return effects, warns
 
 
@@ -3602,7 +3609,7 @@ def adopt_write(root: str, m: dict, crop_id: str, op: str, text: str | None = No
         if not text:
             raise AdoptRefused("수정 문구가 비었습니다 — 해제를 쓰세요")
     if op == "adopt" and crop_id in unwritten_specs(root):
-        raise AdoptRefused(_UNWRITTEN_WHY)
+        raise AdoptRefused(_server_text(_UNWRITTEN_WHY, "원장 초안이 아직 스펙에 안 쓰임"))
     if crop_signature(crop) != crop_sig:
         raise SpecConflict("크롭이 바뀌었습니다(레이어명·타깃) — 다시 읽기")
     refs_dir = (m.get("source") or {}).get("refs_dir") or ""
@@ -3634,7 +3641,7 @@ def adopt_write(root: str, m: dict, crop_id: str, op: str, text: str | None = No
         if not chk.ok:
             raise AdoptRefused("렌더 점검 실패 — 쓰지 않음: " + "; ".join(chk.problems))
         if chk.dropped:
-            raise AdoptRefused(f"렌더 점검 실패 — 노드가 쓴 {', '.join(chk.dropped)} 를 빼야 렌더됨(쓰지 않음 — 그래프 Spec Draft 로)")
+            raise AdoptRefused(_server_text(f"렌더 점검 실패 — 노드가 쓴 {', '.join(chk.dropped)} 를 빼야 렌더됨(쓰지 않음 — 그래프 Spec Draft 로)", f"렌더 점검 실패 — 저장된 {', '.join(chk.dropped)} 를 빼야 렌더됨(쓰지 않음)"))
         sd = spec.get("_draft")
         return _shown_flags(chk.flags, drafted=isinstance(sd, dict) and bool(sd.get("key")), targets_only=apply_mode == "targets",
                             bare=[t.tid for t in _target_ins(tg, nxt["layer_name"], glossary) if t.legacy and not (t.name_en or t.gloss)])
@@ -3659,11 +3666,11 @@ def adopt_write(root: str, m: dict, crop_id: str, op: str, text: str | None = No
         after = res.spec if res.spec is not None else cur
         if rows or res.render_changed or not _eq(_strip_adopted(after), _strip_adopted(cur)):
             if moved:  # 병합 행 = 이번 apply·화풍이 노드 값을 바꿈
-                why = "Studio 초안 설정(apply·화풍)이 이 스펙을 마지막으로 쓴 Spec Draft 와 달라 채택 외 필드가 바뀜 — 설정 확인 또는 그래프 Spec Draft 로 채택"
+                why = _server_text("Studio 초안 설정(apply·화풍)이 이 스펙을 마지막으로 쓴 Spec Draft 와 달라 채택 외 필드가 바뀜 — 설정 확인 또는 그래프 Spec Draft 로 채택", "Studio 초안 설정(apply·화풍)이 마지막으로 저장된 값과 달라 채택 외 필드가 바뀜 — 설정 확인")
             elif chk.dropped or res.render_changed:
-                why = "노드가 쓴 필드가 지금 렌더되지 않아 빼고 써야 해 채택 외 필드가 바뀜(render_fallback) — 그래프 Spec Draft 로 채택"
+                why = _server_text("노드가 쓴 필드가 지금 렌더되지 않아 빼고 써야 해 채택 외 필드가 바뀜(render_fallback) — 그래프 Spec Draft 로 채택", "저장된 필드가 지금 렌더되지 않아 빼고 써야 해 채택 외 필드가 바뀜(render_fallback)")
             else:  # 행 없이 병합이 고쳐 쓰는 _draft(손으로 고친 written 등)
-                why = "병합이 스펙 _draft 기록(손으로 고친 written 등)을 정리해 채택 외 필드가 바뀜 — 그래프 Spec Draft 로 채택"
+                why = _server_text("병합이 스펙 _draft 기록(손으로 고친 written 등)을 정리해 채택 외 필드가 바뀜 — 그래프 Spec Draft 로 채택", "병합이 스펙 _draft 기록(손으로 고친 written 등)을 정리해 채택 외 필드가 바뀜")
             raise AdoptRefused(why, rows=rows)
         if res.spec is not None:
             dropped.extend(_drop_stale(res.spec, crop, nxt))
@@ -3673,7 +3680,7 @@ def adopt_write(root: str, m: dict, crop_id: str, op: str, text: str | None = No
     def decide(cur: dict | None) -> MergeResult:
         bad = _targets_error(cur)
         if bad:  # 깨진 JSON(write_spec·미리보기의 _parse_spec)과 같이 — 병합·렌더 점검이 targets 를 목록으로 순회
-            raise ValueError(f"{_TAG} specs/{crop_id}.json — {bad}")
+            raise ValueError(f"{_error_tag()} specs/{crop_id}.json — {bad}")
         if _spec_seen(path) != seen:
             raise SpecConflict("스펙이 다른 곳에서 바뀌었습니다 — 다시 읽기")
         now = next((c for c in store.load_manifest(root)["crops"] if c["id"] == crop_id), None)
@@ -3699,7 +3706,7 @@ def adopt_write(root: str, m: dict, crop_id: str, op: str, text: str | None = No
         except FileNotFoundError:
             cur, err = None, None
         if err:
-            raise ValueError(f"{_TAG} specs/{crop_id}.json — {err}")
+            raise ValueError(f"{_error_tag()} specs/{crop_id}.json — {err}")
         res = decide(cur)
         new_seen = seen
     else:
@@ -4462,7 +4469,7 @@ class MockVLM:
         if act == "interrupt_poll":
             raise runner._make_interrupt()
         if act == "poll401":
-            raise runner.CallError("mock: Unauthorized (폴링 중) — created 유지, 다시 큐에 넣으면 무료 재폴링",
+            raise runner.CallError(_server_text("mock: Unauthorized (폴링 중) — created 유지, 다시 큐에 넣으면 무료 재폴링", "mock: Unauthorized (폴링 중) — created 유지, 다시 실행하면 무료 재폴링"),
                                    status=401, phase="poll", retryable=True, maybe_billed=False)
         if act == "poll404":  # OpenAIVLM._poll 과 같게: 읽을 수 없는 응답 id 는 과금됐을 수 있는 실패
             raise _record_failed(ledger, unit, "mock: 폴링 GET HTTP 404 — 응답을 더 읽을 수 없음(과금됐을 수 있음)",
@@ -4519,7 +4526,7 @@ def make_vlm(family: str, root: str, hidden: dict, *, model_dir: str, keep_loade
         return OpenAIVLM(hidden, root=root)
     if family == "local_qwen":
         return QwenVLM(model_dir, keep_loaded=keep_loaded)
-    raise ValueError(f"{_TAG} 알 수 없는 VLM family: {family!r}")
+    raise ValueError(f"{_error_tag()} 알 수 없는 VLM family: {family!r}")
 
 
 @dataclass

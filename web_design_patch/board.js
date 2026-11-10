@@ -530,7 +530,7 @@
       toast("이 타깃의 작업(jobs)이 없습니다 — Prepare 를 먼저 실행하세요", "err");
       return;
     }
-    const what = `다시 생성 +1 호출 (${cell.variant || cell.cell_key.slice(0, 8)}${usd(cell)})`;
+    const what = SM() ? `다시 생성 +1 호출 (${cell.variant || cell.cell_key.slice(0, 8)})` : `다시 생성 +1 호출 (${cell.variant || cell.cell_key.slice(0, 8)}${usd(cell)})`;
     // 큐 요청은 queueReroll 의 길(유료 승인을 받는 탭 — 채널 포함 · 옛 확장의 opener 탭)로 — 둘 다 없으면 예약만(다음 Run 때 선택과 무관하게 과금).
     // 0.6초 뒤 큐는 이 판정(way·lock)을 넘겨받는다 — 그 사이 길이 바뀌면(busy 풀림·잡힘 등) 확인한 문구의 길이 아니므로 보내지 않음(예약만).
     // 탭 길이어도 이 Studio 가 유료 요청·실행·무료 큐 중이면(lock — 길과 무관: 자기 승인을 처리하는 탭은 hello busy 라 opener 길이 됨) 지금은
@@ -563,10 +563,10 @@
       return false;
     };
     const noReview = reviewMissing();
-    const why = tab ? "" : [(pipe && pipe.paidWhy()), noReview].filter(Boolean).join(" · ") || "이 창을 연 ComfyUI 탭 없음";
+    const why = tab ? "" : [(pipe && pipe.paidWhy()), noReview].filter(Boolean).join(" · ") || (SM() ? "서버 실행기를 사용할 수 없음" : "이 창을 연 ComfyUI 탭 없음");
     // 셀 가격(est_usd)은 마지막 Prepare 의 jobs 값 — 큐는 Prepare 를 다시 돈 뒤 과금한다. 유료 가능한 탭의 재굴림 템플릿은 Studio 실행 설정(반영과
     // 같음 — 반영 확인 창처럼 Prepare·Import 갈라짐 줄을 앞에), 옛 탭의 Review 부분 실행·다음 그래프 Run 은 그래프 위젯 값
-    const graphPrep = way === "paid" ? pipe.applyWarn().concat("금액은 지금 jobs(마지막 Prepare) 기준: 다시 생성 템플릿은 Studio 실행 설정(pipeline.json)으로 "
+    const graphPrep = SM() ? (pipe ? pipe.applyWarn().join("\n") : "") : way === "paid" ? pipe.applyWarn().concat("금액은 지금 jobs(마지막 Prepare) 기준: 다시 생성 템플릿은 Studio 실행 설정(pipeline.json)으로 "
       + "Import·Prepare 를 다시 돈 뒤 과금하므로 Prepare 갈라짐이 있으면 장 수·비용이 바뀌거나(n·생성 조건마다 호출) 생성 조건이 바뀌어 이 다시 생성이 미뤄짐(모델·품질·변형 등)")
       .join("\n")
       : "금액은 지금 jobs(마지막 Prepare — Studio 반영 포함) 기준: 큐·Run 은 그래프 Prepare(그래프 위젯 값)를 다시 돌린 뒤 과금하므로 "
@@ -575,11 +575,11 @@
       // 유료 탭 길은 승인 제출이라 사용자 그래프 부수 효과 줄(pipe.side — §10.7 보정 4)을 붙임(지금 보내지 않으면 없음). 이 셀에 아직 돌지 않은
       // 사전 승인 재굴림이 있으면 누적 건수·금액을 맨 앞에(키보드 R 은 그때 거절 — rerollHold)
       const pre = cellPre(cell);
-      const stack = pre ? `이 생성 조건 다시 생성 대기 ${pre}건(사전 승인) → ${pre + 1}건${usd(cell.est_usd ? { est_usd: cell.est_usd.map((v) => v * (pre + 1)) } : null)}\n` : "";
-      const text = `${what}\n${stack}${graphPrep}\n` + (lock ? `유료 호출이 사전 승인됩니다 — 지금은 큐를 보내지 않음(${lock}): 다시 생성은 예약만 되고 `
+      const stack = pre ? (SM() ? `이 생성 조건 다시 생성 대기 ${pre}건(사전 승인) → ${pre + 1}건\n` : `이 생성 조건 다시 생성 대기 ${pre}건(사전 승인) → ${pre + 1}건${usd(cell.est_usd ? { est_usd: cell.est_usd.map((v) => v * (pre + 1)) } : null)}\n`) : "";
+      const text = `${what}\n${stack}${graphPrep}\n` + (lock ? SM() ? `유료 호출이 사전 승인됩니다 — 지금은 보내지 않음(${lock}): 다시 생성은 예약만 되고 아래 상태 줄 [대기분 보내기]로 보내거나 다음 생성 때 함께 과금됩니다. 계속할까요?` : `유료 호출이 사전 승인됩니다 — 지금은 큐를 보내지 않음(${lock}): 다시 생성은 예약만 되고 `
         + "머리줄 [다시 생성 보내기]로 보내거나 다음 Run 때(선택과 무관) 함께 과금됩니다. 계속할까요?"
         : tab ? (SM() ? "유료 호출이 사전 승인되고 서버 작업으로 실행합니다. 계속할까요?" : (way === "paid" ? `${pipe.side}\n` : "") + "유료 호출이 사전 승인되고 ComfyUI 탭에 큐 요청을 보냅니다. 계속할까요?")
-          : `유료 호출이 사전 승인됩니다 — 지금 큐를 보내지 않음(${why}): 다시 생성은 예약만 되고 다음 Run 때(선택과 무관) 함께 과금됩니다. 계속할까요?`);
+          : SM() ? `유료 호출이 사전 승인됩니다 — 지금 보내지 않음(${why}): 다시 생성은 예약만 되고 다음 생성 때 함께 과금됩니다. 계속할까요?` : `유료 호출이 사전 승인됩니다 — 지금 큐를 보내지 않음(${why}): 다시 생성은 예약만 되고 다음 Run 때(선택과 무관) 함께 과금됩니다. 계속할까요?`);
       if (SM() ? !(await window.DPDialog.confirm(text)) : (agent ? !(await pipe.agentConfirm(text.split("\n"), need)) : !window.confirm(text))) {
         return;
       }
@@ -597,10 +597,10 @@
         rerollArm = { cell: cell.cell_key, way, until: now + REROLL_CONFIRM_MS };
         // 유료 탭 길로 지금 보내면 승인 제출 — 버튼 R 확인 창의 부수 효과 줄(pipe.side)을 짧게
         toast(`R 을 한 번 더 누르면 ${what} — 유료`
-          + (tab ? "" : ` · 지금 큐를 보내지 않음(${scripted ? "스크립트 키 — 큐는 사용자 키 입력만, " : ""}예약만 — 다음 Run 때 과금)`)
+          + (tab ? "" : SM() ? " · 지금 보내지 않음(예약만 — 다음 생성 때 과금)" : ` · 지금 큐를 보내지 않음(${scripted ? "스크립트 키 — 큐는 사용자 키 입력만, " : ""}예약만 — 다음 Run 때 과금)`)
           + (!tab && noReview ? ` · ${why}` : "")
           + (!SM() && way === "paid" ? " · 승인 제출이라 ComfyUI 탭 그래프의 시드 제어 등 실행마다 바뀌는 값이 한 번 진행됨(그래프는 실행 안 함)" : "")
-          + (way === "paid" ? " · 금액은 지금 jobs 기준(Prepare 갈라짐 — Studio 실행 설정이 마지막 Prepare 와 다르면 바뀜)"
+          + (SM() ? "" : way === "paid" ? " · 금액은 지금 jobs 기준(Prepare 갈라짐 — Studio 실행 설정이 마지막 Prepare 와 다르면 바뀜)"
             : " · 금액은 지금 jobs 기준(그래프 Prepare 값이 Studio 와 다르면 바뀜)"), "warn");
         return;
       }
@@ -611,8 +611,10 @@
     const pend = S.crops.filter((c) => LAYOUT_STATUS[c.layout_status]);
     const mine = pend.some((c) => c.id === curTarget().crop_id);
     if (mine) {
-      const text = `이 크롭은 레이아웃이 바뀌어(미반영) 이 큐에서 생성 조건이 바뀌면 다시 생성이 실행되지 않습니다. `
-        + `미반영 레이아웃 ${pend.length}건도 이 큐로 반영됩니다. 계속할까요?`;
+      const text = SM() ? `이 크롭은 레이아웃이 바뀌어(미반영) 이번 실행에서 생성 조건이 바뀌면 다시 생성이 실행되지 않습니다. `
+        + `미반영 레이아웃 ${pend.length}건도 이번 실행에 함께 반영됩니다. 계속할까요?`
+        : `이 크롭은 레이아웃이 바뀌어(미반영) 이 큐에서 생성 조건이 바뀌면 다시 생성이 실행되지 않습니다. `
+          + `미반영 레이아웃 ${pend.length}건도 이 큐로 반영됩니다. 계속할까요?`;
       if (SM() ? !(await window.DPDialog.confirm(text)) : (agent ? !(await pipe.agentConfirm(text.split("\n"), need)) : !window.confirm(text))) return;
       if ((SM() || agent) && !stillHere()) return;
     }
@@ -656,7 +658,8 @@
         : (S.targets || []).flatMap((t) => t.cells || []).find((c) => c.cell_key === cellKey);
       return !!target && target.rerolls_pending > 0;
     };
-    if (scope !== "cell" && !await askFree(`다시 생성 대기 ${count}을 취소합니다. 그중 ${base}건은 아직 한 번도 만들지 않은 생성 조건이라 '생성 승인 필요'로 돌아갑니다(승인 코드가 바뀜 — 이미 큐에 넣은 [생성 승인]은 드라이런이 되어 과금 없음). 계속할까요?`, stillPending)) return;
+    if (scope !== "cell" && !await askFree(SM() ? `다시 생성 대기 ${count}을 취소합니다. 그중 ${base}건은 아직 한 번도 만들지 않은 생성 조건이라 '생성 승인 필요'로 돌아갑니다(이미 보낸 [생성 승인] 은 과금 없이 끝남). 계속할까요?`
+      : `다시 생성 대기 ${count}을 취소합니다. 그중 ${base}건은 아직 한 번도 만들지 않은 생성 조건이라 '생성 승인 필요'로 돌아갑니다(승인 코드가 바뀜 — 이미 큐에 넣은 [생성 승인]은 드라이런이 되어 과금 없음). 계속할까요?`, stillPending)) return;
     const result = await write("reroll", { op: "cancel", scope, ...selector },
       (r) => `다시 생성 대기 ${r.cancelled}건 취소(과금 없음) · 생성 승인 필요로 돌아감 ${r.base}건 — 되돌림 = R`);
     if (result) { rerollArm = null; rerollSent = null; if (pipe) pipe.recalc(); }
@@ -708,16 +711,16 @@
     // 탭은 hello busy 라 opener 길이 되므로 그 탭의 Review 부분 실행으로 새지 않게). 머리줄 'ComfyUI 큐'는 지금 판정
     const way = tabWay();
     const lock = way && pipe ? pipe.paidLock() : "";
-    if (planned === "" && way) toast("다시 생성 예약됨 — R 확인 때 큐를 보낼 탭이 없어 지금 보내지 않음: 머리줄 [다시 생성 보내기]로 보내거나 다음 Run 때 과금", "warn");
+    if (planned === "" && way) toast(SM() ? "다시 생성 예약됨 — R 확인 때 예약만 승인해 지금 보내지 않음: 아래 상태 줄 [대기분 보내기]로 보내거나 다음 생성 때 과금" : "다시 생성 예약됨 — R 확인 때 큐를 보낼 탭이 없어 지금 보내지 않음: 머리줄 [다시 생성 보내기]로 보내거나 다음 Run 때 과금", "warn");
     else if (planned && way !== planned) {
-      const why = way === "paid" ? "탭이 이제 유료 승인을 받음 — 확인한 Review 부분 실행과 과금 기준이 다름"
-        : [(pipe && pipe.paidWhy()), reviewMissing()].filter(Boolean).join(" · ") || "이 창을 연 ComfyUI 탭 없음";
-      toast(SM() ? `다시 생성 예약됨 — R 확인 뒤 서버 실행기 상태가 바뀌어 지금 보내지 않음(${why}): 머리줄 [다시 생성 보내기]로 보내거나 다음 Run 때 과금` : `다시 생성 예약됨 — R 확인 뒤 ComfyUI 탭 상태가 바뀌어 지금 보내지 않음(${why}): 머리줄 [다시 생성 보내기]로 보내거나 다음 Run 때 과금`, "warn");
+      const why = way === "paid" ? (SM() ? "서버 실행기 상태가 바뀜" : "탭이 이제 유료 승인을 받음 — 확인한 Review 부분 실행과 과금 기준이 다름")
+        : [(pipe && pipe.paidWhy()), reviewMissing()].filter(Boolean).join(" · ") || (SM() ? "서버 실행기를 사용할 수 없음" : "이 창을 연 ComfyUI 탭 없음");
+      toast(SM() ? `다시 생성 예약됨 — R 확인 뒤 서버 실행기 상태가 바뀌어 지금 보내지 않음(${why}): 아래 상태 줄 [대기분 보내기]로 보내거나 다음 생성 때 과금` : `다시 생성 예약됨 — R 확인 뒤 ComfyUI 탭 상태가 바뀌어 지금 보내지 않음(${why}): 머리줄 [다시 생성 보내기]로 보내거나 다음 Run 때 과금`, "warn");
     } else if (held || lock) {
-      toast(`다시 생성 예약됨 — 지금 보내지 않음(${lock || "R 확인 때 '지금은 예약만'에 동의함"}): 머리줄 [다시 생성 보내기]로 보내거나 다음 Run 때 과금`, "warn");
+      toast(SM() ? `다시 생성 예약됨 — 지금 보내지 않음(${lock || "R 확인 때 '지금은 예약만'에 동의함"}): 아래 상태 줄 [대기분 보내기]로 보내거나 다음 생성 때 과금` : `다시 생성 예약됨 — 지금 보내지 않음(${lock || "R 확인 때 '지금은 예약만'에 동의함"}): 머리줄 [다시 생성 보내기]로 보내거나 다음 Run 때 과금`, "warn");
     } else if (way === "paid") pipe.reroll();
     else if (way === "opener") queueInComfy();
-    else toast(`다시 생성 예약됨 — Run 실행 때 과금(${[(pipe && pipe.paidWhy()), reviewMissing()].filter(Boolean).join(" · ") || "큐를 보낼 ComfyUI 탭 없음"})`, "warn");
+    else toast(SM() ? `다시 생성 예약됨 — 다음 생성 때 과금(${pipe && pipe.paidWhy() || "서버 실행기를 사용할 수 없음"})` : `다시 생성 예약됨 — Run 실행 때 과금(${[(pipe && pipe.paidWhy()), reviewMissing()].filter(Boolean).join(" · ") || "큐를 보낼 ComfyUI 탭 없음"})`, "warn");
   }
 
   function comfyConnected() {
@@ -782,6 +785,7 @@
   function maskWhy() {
     // notReady 와 같은 갈래 — S4 표지는 state 최상위가 아니라 크롭 요약에 있다(크롭이 없으면 서버 버전을 알 수 없음 — Import 가 먼저)
     if (S && !S.crops.length) return "Import PSD 로 크롭이 생기고 ★ 를 고른 뒤 마스크 편집(K)을 쓸 수 있습니다";
+    if (SM()) return "화면을 새로 고쳐 보세요 — 계속되면 관리자에게 알려 주세요";
     return S && S.crops.some((c) => "mask_edits" in c) && !maskEd
       ? "Studio 창을 새로고침해야 마스크 편집(K)을 쓸 수 있습니다(이 창이 ComfyUI 재시작 전에 열려 모듈이 없음)"
       : "ComfyUI 를 재시작해야 마스크 편집(K)을 쓸 수 있습니다(서버가 옛 버전)";
@@ -951,6 +955,7 @@
   }
 
   function notReady(what, key, mod) {
+    if (SM()) return "화면을 새로 고쳐 보세요 — 계속되면 관리자에게 알려 주세요";
     // 모드를 못 쓰는 이유: state 에 key 가 있는데 모듈 JS 가 없음 = 이 창이 ComfyUI 재시작 전에 열려 그 파일이 404 였음(창 새로고침 — 다시 재시작해도
     // 그대로), 아니면 서버가 옛 버전(ComfyUI 재시작)
     return S && key in S && !mod ? `Studio 창을 새로고침해야 ${what}을 쓸 수 있습니다(이 창이 ComfyUI 재시작 전에 열려 모듈이 없음)`
@@ -1068,21 +1073,21 @@
       if ((renderHeader.newNotes || []).length) b.append(el("span", "badge b-wait", renderHeader.newNotes.join(" · ")));
     } else renderHeader.newNotes = [];
     if (S.backend_mock) b.append(el("span", "badge b-mock", "MOCK 백엔드 (과금 없음)"));
-    if (can("agent_approve") && S.agent_approve && S.agent_approve.on) {
+    if (!SM() && can("agent_approve") && S.agent_approve && S.agent_approve.on) {
       const a = S.agent_approve;
       const until = new Date(a.expires * 1000);
       const hhmm = `${String(until.getHours()).padStart(2, "0")}:${String(until.getMinutes()).padStart(2, "0")}`;
       b.append(el("span", "badge b-agent", `Claude 승인 모드 · 남은 ${Math.max(0, Math.floor(a.cap - a.spent))} / 상한 ${Math.floor(a.cap)} 크레딧 · ~${hhmm}`));
     }
-    if (S.running) b.append(el("span", "badge b-run", "Run 진행 중"));
+    if (S.running) b.append(el("span", "badge b-run dp-live", "Run 진행 중"));
     if (S.drain) b.append(el("span", "badge b-drain", "새 호출 멈춤 요청됨"));
     if (S.pending_calls) {
       const pre = S.pending_preapproved ? ` (다시 생성 승인 ${S.pending_preapproved})` : "";
       b.append(el("span", "badge b-wait", `대기 호출 ${S.pending_calls}${pre}`));
     }
     if (S.cost.calls) {
-      const cb = el("span", "badge", `Run ${credits(S.cost.credits, S.cost.unknown)} · 호출 ${S.cost.calls}`);
-      cb.title = `원장 calls 합계(완료 ${S.cost.done}) — Spec Draft 비용은 들어 있지 않음`;
+      const cb = el("span", "badge", SM() ? `호출 ${S.cost.calls}` : `Run ${credits(S.cost.credits, S.cost.unknown)} · 호출 ${S.cost.calls}`);
+      cb.title = SM() ? `생성 호출 합계 ${S.cost.calls}(완료 ${S.cost.done})` : `원장 calls 합계(완료 ${S.cost.done}) — Spec Draft 비용은 들어 있지 않음`;
       b.append(cb);
     }
     if (S.rerolls_total || S.rerolls_pending) {
@@ -1112,6 +1117,15 @@
       b.append(cn);
     }
     $("btn-drain").disabled = !S.running;
+    $("btn-drain").classList.toggle("dp-off", !S.running);
+    if (SM()) {
+      const pre = S.pending_preapproved || 0;
+      const free = pipe && pipe.freePending ? pipe.freePending() : 0;
+      const queue = $("btn-queue");
+      queue.classList.toggle("dp-off", !!S.running || !!(pipe && pipe.paidLock()) || !(pre > 0 || free > 0));
+      queue.textContent = "대기분 보내기";
+      queue.title = `사전 승인된 다시 생성 ${pre}건·복구 ${free}건을 지금 보냅니다(새 승인 없음)`;
+    }
     const pb = $("btn-pipe");
     pb.disabled = !pipeReady();
     pb.title = pipeReady() ? "준비 (G) — 실행 설정·무료 반영·초안 승인·생성 승인·채택·★ 점검·Export"
@@ -1186,7 +1200,7 @@
       ch.append(lost ? chip("레퍼런스 없음(연결 파일 사라짐)", "b-bad") : c.refs.auto ? chip("레퍼런스 없음(자동 고정)", "b-wait")
         : chip(c.refs.fixed ? "레퍼런스 없이(고정)" : "레퍼런스 없음", c.refs.fixed ? "" : "b-wait"));
     }
-    if (c.calls) ch.append(chip(credits(c.credits, c.credits_unknown), "b-cost"));
+    if (c.calls && !SM()) ch.append(chip(credits(c.credits, c.credits_unknown), "b-cost"));
     if (c.dup_picks.length) ch.append(chip(`중복 ★ ${c.dup_picks.length}`, "b-bad"));
     if (c.stale_picked.length) ch.append(chip("옛 크롭 ★", "b-bad"));
     // S4 마스크 편집: 이 크롭의 지금 ★ 가운데 편집이 있는 수·그 가운데 기준이 바뀐 것(state 크롭 요약 — 옛 서버엔 키 없음)
@@ -1207,7 +1221,7 @@
     const d = c.draft_chip;
     if (!d) return;
     const st = c.plan_stale ? " stale" : "";
-    if (d.running) ch.append(chip("실행 중", "b-run" + st));
+    if (d.running) ch.append(chip("실행 중", "b-run" + st + (st ? "" : " dp-live")));
     if (d.wait.length) {
       const w = chip("초안 대기", "b-wait" + st);
       w.title = d.wait.join("\n");
@@ -1336,7 +1350,7 @@
     sb.title = on ? "Space — 이 후보의 ★ 를 풂(다시 누르면 ★)" : "Space — 이 후보 하나로 ★(그 타깃의 ★ 를 바꿈)";
     const t = curTarget();
     if (!t) {
-      d.append(el("div", "row", S ? "타깃이 없습니다 — Import PSD 를 먼저 실행하세요" : "불러오는 중…"));
+      d.append(el("div", "row dp-empty", S ? "타깃이 없습니다 — ① 준비에서 [반영 (무료)] 를 먼저 누르세요" : "불러오는 중…"));
       return;
     }
     const c = curCand();
@@ -1344,13 +1358,14 @@
     const [w, h] = t.size;
     row(d, "타깃", `${targetTitle(t)} · ${w}×${h}` + (t.name_en ? ` · ${t.name_en}` : "")
       + ` · 초점 [${t.focus_box.join(", ")}]`);
-    const cells = t.cells.map((x) => `${x.variant || "?"} ${x.reps}+${x.rerolls}회 대기 ${x.pending}${usd(x)}`);
+    const cells = t.cells.map((x) => `${x.variant || "?"} ${x.reps}+${x.rerolls}회 대기 ${x.pending}${SM() ? "" : usd(x)}`);
     const work = row(d, "작업", cells.length ? cells.join(" | ") : "없음 (Prepare 전 — 다시 생성 불가)", cells.length ? "" : "warn");
     for (const x of t.cells) if (x.rerolls_pending) work.append(cancelButton("cell", { cell_key: x.cell_key },
       t.cells.length > 1 ? `${x.variant || ""} 대기 취소` : "대기 취소"));
     if (crop && crop.calls) {
-      row(d, "비용", `이 크롭 Run ${credits(crop.credits, crop.credits_unknown)} · 호출 ${crop.calls}(완료 ${crop.calls_done})`
-        + (crop.pending ? ` · 대기 ${crop.pending}` : ""));
+      row(d, SM() ? "호출" : "비용", SM() ? `이 크롭 호출 ${crop.calls}(완료 ${crop.calls_done}) · 대기 ${crop.pending || 0}`
+        : `이 크롭 Run ${credits(crop.credits, crop.credits_unknown)} · 호출 ${crop.calls}(완료 ${crop.calls_done})`
+          + (crop.pending ? ` · 대기 ${crop.pending}` : ""));
     }
     if (crop && crop.dup_picks.length) {
       const names = crop.dup_picks.map((x) => `${x.tid}(= ${x.same_as})`).join(", ");
@@ -1429,7 +1444,7 @@
     const t = curTarget();
     if (!t) return;
     if (!t.candidates.length) {
-      g.append(el("div", "empty", t.pending_calls ? `후보 없음 — 대기 호출 ${t.pending_calls}` : "후보 없음"));
+      g.append(el("div", "empty dp-empty", t.pending_calls ? `후보 없음 — 대기 호출 ${t.pending_calls}(끝나면 여기에 나옵니다)` : "후보 없음 — ⑤ 생성에서 [생성 승인] 하면 여기에 나옵니다"));
       return;
     }
     for (const c of t.candidates) {
@@ -1800,7 +1815,8 @@
 
   async function showProjects() {
     document.body.classList.add("projects-page");
-    for (const id of ["modebar", "keybar", "btn-projects", "btn-viewer", "btn-queue", "btn-drain", "btn-help"]) $(id).hidden = true;
+    for (const id of ["modebar", "keybar", "btn-projects", "btn-viewer", "btn-help", "export-state", "btn-export", "export-menu", "btn-keys"]) $(id).hidden = true;
+    for (const id of ["btn-queue", "btn-drain"]) $(id).classList.add("dp-off");
     $("proj").textContent = "프로젝트 목록";
     const page = el("section", "projects-home");
     page.setAttribute("aria-label", "프로젝트 목록");
@@ -1836,6 +1852,7 @@
       const query = search.value.trim().toLocaleLowerCase();
       const shown = rows.filter((r) => r.name.toLocaleLowerCase().includes(query));
       status.textContent = shown.length ? `${shown.length}개 프로젝트` : query ? "검색 결과가 없습니다." : "프로젝트가 없습니다 — Studio [새 프로젝트]로 시작하세요.";
+      status.classList.toggle("dp-empty", !shown.length);
       for (const r of shown) {
         const card = el("article", `projects-card${r.openable ? "" : " projects-unavailable"}`);
         const picture = el("div", "projects-picture", r.before_import ? "가져오기 전" : "미리보기 없음");
@@ -1882,7 +1899,7 @@
             try {
               const response = await fetch(apiUrl("projects/open"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: r.id }) });
               const result = await readJson(response);
-              if (response.status === 404 && result.unreadable) throw new Error("ComfyUI 재시작 필요 — 프로젝트 열기 기능을 찾을 수 없습니다 (HTTP 404)");
+              if (response.status === 404 && result.unreadable) throw new Error((SM() ? "화면을 새로 고쳐 보세요 — 계속되면 관리자에게 알려 주세요 (HTTP 404)" : "ComfyUI 재시작 필요 — 프로젝트 열기 기능을 찾을 수 없습니다 (HTTP 404)"));
               if (!response.ok || !result.ok || result.key !== r.id) throw new Error(result.error || "프로젝트를 열지 못했습니다");
               location.assign(`?root=${encodeURIComponent(result.key)}`);
             } catch (e) {
@@ -1907,7 +1924,7 @@
       try {
         const response = await fetch(apiUrl("projects"), { cache: "no-store" });
         const result = await readJson(response);
-        if (response.status === 404 && result.unreadable) throw new Error("ComfyUI 재시작 필요 — 프로젝트 목록 기능을 찾을 수 없습니다 (HTTP 404)");
+        if (response.status === 404 && result.unreadable) throw new Error((SM() ? "화면을 새로 고쳐 보세요 — 계속되면 관리자에게 알려 주세요 (HTTP 404)" : "ComfyUI 재시작 필요 — 프로젝트 목록 기능을 찾을 수 없습니다 (HTTP 404)"));
         if (!response.ok || !Array.isArray(result.projects)) throw new Error(result.error || "프로젝트 목록을 불러오지 못했습니다");
         rows = result.projects;
         draw();
@@ -1942,7 +1959,7 @@
     on("btn-reject", toggleReject);
     on("btn-reroll", () => reroll(true));
     // 머리줄 'ComfyUI 큐'는 확인 창 없이 지금 큐를 보냄(사전 승인분 과금) — 사용자 클릭만(D7: 스크립트 클릭이 바로 과금하지 않게)
-    on("btn-queue", (e) => (e.isTrusted ? queueReroll() : toast("머리줄 [다시 생성 보내기]는 사용자 클릭만 — 스크립트 클릭은 큐를 보내지 않음", "warn")));
+    on("btn-queue", (e) => (e.isTrusted ? queueReroll() : toast(SM() ? "아래 상태 줄 [대기분 보내기]는 사용자 클릭만 — 스크립트 클릭은 서버 작업을 보내지 않음" : "머리줄 [다시 생성 보내기]는 사용자 클릭만 — 스크립트 클릭은 큐를 보내지 않음", "warn")));
     on("btn-drain", drain);
     on("btn-viewer", () => toggleViewer());
     on("btn-help", () => help());
@@ -2015,7 +2032,7 @@
     edit: [["끌기", "대상→자동 크롭·이동·크기"], ["Alt+끌기", "크롭 직접"], ["P", "부품 상자", { code: "KeyP" }], ["Enter", "만들기·제안 적용", { code: "Enter" }],
       ["Tab", "다음 크롭", { code: "Tab" }], ["⇧Tab", "이전 크롭", { code: "Tab", shift: true }], ["←→↑↓", "미세 이동"],
       ["Del", "크롭 지우기", { code: "Delete" }], ["L", "잠금", { code: "KeyL" }],
-      ["Ctrl+Z", "되돌리기", { code: "KeyZ", ctrl: true }], ["Ctrl+Y", "다시", { code: "KeyY", ctrl: true }], ["Esc", "취소·나가기", { code: "Escape" }],
+      ["Ctrl+Z", "되돌리기", { code: "KeyZ", ctrl: true }], ["Ctrl+Y", "다시실행", { code: "KeyY", ctrl: true }], ["Esc", "취소·나가기", { code: "Escape" }],
       ["I", "레이어만", { code: "KeyI" }], ["Space+끌기", "화면 이동"], ["F", "크롭 맞춤", { code: "KeyF" }], ["0", "전체", { code: "Digit0" }], ["E", "나가기", { code: "KeyE" }]],
     refs: [["끌기", "영역"], ["Enter", "컷", { code: "Enter" }], ["T", "나가기", { code: "KeyT" }], ["[", "회전 −0.5°", { code: "BracketLeft" }], ["]", "회전 +0.5°", { code: "BracketRight" }],
       ["H", "좌우 반전", { code: "KeyH" }], ["⌫", "마지막 점 지우기", { code: "Backspace" }], ["F", "영역 맞춤", { code: "KeyF" }], ["0", "시트 전체", { code: "Digit0" }],
@@ -2023,11 +2040,11 @@
     // 레퍼런스 [그리드] 탭: 시트 키는 꺼짐, 크게 보기는 오른쪽 관리 패널을 가리지 않음
     refsGrid: [["카드 클릭", "크롭 고르기"], ["더블클릭", "크게 보기"], ["Space", "크게 보기·닫기", { code: "Space" }], ["T", "나가기", { code: "KeyT" }], ["Esc", "닫기·선택 해제·나가기", { code: "Escape" }]],
     pipe: [["B", "바탕", { code: "KeyB" }], ["O", "사각형", { code: "KeyO" }], ...VIEW_KEYS, ["G", "나가기", { code: "KeyG" }]],
-    mask: [["V", "붓 ↔ 변형", { code: "KeyV" }], ["D", "원본과 차이(변형)", { code: "KeyD" }], ["끌기", "붓·변형·페이드"], ["⇧끌기", "흐리기·비율/15°·폭 맞춤"], ["X", "지우기 ↔ 살리기", { code: "KeyX" }], ["[", "붓 작게", { code: "BracketLeft" }], ["]", "붓 크게", { code: "BracketRight" }],
+    mask: [["V", "붓 ↔ 변형", { code: "KeyV" }], ["D", "원본과 차이(변형)", { code: "KeyD" }], ["끌기", "붓·변형·페이드"], ["⇧끌기", "흐리기·비율/15°·폭 맞춤"], ["X", "지우개 ↔ 브러시", { code: "KeyX" }], ["[", "크기 작게", { code: "BracketLeft" }], ["]", "크기 크게", { code: "BracketRight" }],
       ["⇧[", "경도 −", { code: "BracketLeft", shift: true }], ["⇧]", "경도 +", { code: "BracketRight", shift: true }], ["Q", "처음 마스크(누름)", { code: "KeyQ", hold: true }],
       ["W", "원본(누름)", { code: "KeyW", hold: true }], ["S", "처음/편집 슬라이더", { code: "KeyS" }], ["M", "마스크 보기", { code: "KeyM" }],
       ["O", "선 숨기기", { code: "KeyO" }], ["←→↑↓", "패치 이동"], ["⇧←→↑↓", "10px"],
-      ["N", "이음매", { code: "KeyN" }], ["Enter", "적용", { code: "Enter" }], ["Ctrl+Z", "실행 취소", { code: "KeyZ", ctrl: true }], ["Ctrl+Y", "다시", { code: "KeyY", ctrl: true }],
+      ["N", "이음매", { code: "KeyN" }], ["Enter", "적용", { code: "Enter" }], ["Ctrl+Z", "되돌리기", { code: "KeyZ", ctrl: true }], ["Ctrl+Y", "다시실행", { code: "KeyY", ctrl: true }],
       ["I", "레이어만", { code: "KeyI" }], ["Esc", "나가기", { code: "Escape" }]],
   };
 
@@ -2144,6 +2161,12 @@
 
   async function main() {
     if (window.DPEnv) await window.DPEnv.ready;
+    $("btn-drain").classList.add("dp-off");
+    if (SM()) {
+      document.body.classList.add("server");
+      $("btn-queue").classList.add("dp-off");
+      $("statusbar").append($("btn-queue"), $("btn-drain"), $("btn-keys"));
+    } else $("btn-queue").classList.remove("dp-off");
     const newNotes = consumeNewProject();
     renderHeader.newNotes = newNotes || [];
     if (!ROOT) {
@@ -2151,12 +2174,14 @@
       return;
     }
     if (!/^[0-9a-f]{12}$/.test(ROOT)) {
-      fatal("root 파라미터가 잘못되었습니다 — Open Board 또는 메뉴 BMK → Design Patch Studio 로 여세요.");
+      fatal((SM() ? "프로젝트를 찾을 수 없습니다 — 프로젝트 목록에서 다시 여세요." : "root 파라미터가 잘못되었습니다 — Open Board 또는 메뉴 BMK → Design Patch Studio 로 여세요."));
       return;
     }
     $("btn-projects").hidden = false;
     if (loadPref().viewer === false) document.body.classList.add("no-viewer");
     if (loadPref().keys === false) document.body.classList.add("no-keys");
+    else if (SM() && loadPref().keys === undefined) document.body.classList.add("no-keys");
+    if (SM()) document.body.classList.add("server");
     renderMode();
     new MutationObserver(renderMode).observe(document.body, { attributes: true, attributeFilter: ["class"] });
     viewer = window.DPViewer.create($("viewer"), { apiUrl, onPick: pickCrop, onSeams });
@@ -2197,7 +2222,7 @@
           if (mode === "refs" && refsOn && cropId) refEd.select(cropId);
         },
         refresh: () => refresh(true),
-        stepsChanged: renderMode,
+        stepsChanged: () => { renderMode(); renderHeader(); },
         maskPending: () => maskEd && maskEd.pending(),
         editPending: () => !!S && window.DPPipeline.layoutLines(S).length > 0,
         select: (id) => {

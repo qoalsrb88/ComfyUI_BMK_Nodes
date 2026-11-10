@@ -131,6 +131,13 @@
       "reason": "no_verifier"
     }
   },
+  "session_post_rate_limited": {
+    "status": 429,
+    "response": {
+      "error": "로그인 시도가 너무 많습니다 — 잠시 뒤 Forge에서 Design Patch Studio를 다시 열어 주세요.",
+      "reason": "rate_limited"
+    }
+  },
   "session_get": {
     "method": "GET",
     "path": "/api/session",
@@ -277,9 +284,6 @@
         },
         "outputs": {
           "dp_export": {
-            "text": [
-              "Export 끝"
-            ],
             "bmk_dp_export": [
               {
                 "outcome": "new",
