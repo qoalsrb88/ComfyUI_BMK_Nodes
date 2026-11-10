@@ -7032,10 +7032,18 @@ def _project_new_lock():
         return _PROJECT_NEW_LOCKS.setdefault(key, threading.Lock())
 
 
-def _project_new_target_limited(state, part):
-    # 무거운 디코드·PSD 감싸기만 제한한다. 대기는 작업 스레드 안에서 하므로 이벤트 루프를 막지 않는다.
-    with _PROJECT_NEW_SLOTS if server_mode() else contextlib.nullcontext():
-        return _project_new_target(state, part)
+async def _project_new_target_limited(state, part):
+    # 슬롯 대기는 이벤트 루프에서 한다. 디코드를 시작하기 전에는 기본 executor 를 점유하지 않는다.
+    acquired = False
+    if server_mode():
+        while not _PROJECT_NEW_SLOTS.acquire(blocking=False):
+            await asyncio.sleep(0.2)
+        acquired = True
+    try:
+        return await _project_new_thread(_project_new_target, state, part)
+    finally:
+        if acquired:
+            _PROJECT_NEW_SLOTS.release()
 
 
 def _project_adoption(root: str) -> dict:
@@ -7220,7 +7228,12 @@ def _project_new_finish(state: dict, target: str) -> dict:
         pl.confirm_only(root, rev, [s for s in pl.SECTIONS if s not in ("import", "prepare", "export")])
         if state["adopt"]:
             _project_new_file(state, os.path.join(root, store.MANIFEST_NAME), store.new_manifest(state["name"]))
-        key = store.register_root(root)
+        try:
+            key = store.register_root(root)
+        except ValueError as e:
+            if server_mode() and str(e) == "같은 키의 다른 프로젝트가 이미 있습니다":
+                raise _Reject(409, "다른 이름으로 다시 만들어 주세요") from None
+            raise
         _ensure_pref(key, root)
     return {"key": key, "name": state["name"], "notes": state["notes"]}
 
@@ -7277,7 +7290,7 @@ async def _project_new_request(request):
         part = None
         if not state["adopt"]:
             part = await recv_upload(request, state["tmp"]) if upload else await _project_new_thread(copy_in, state["source"], state["tmp"])
-        target = await _project_new_thread(_project_new_target_limited, state, part)
+        target = await _project_new_target_limited(state, part)
         result = await _project_new_thread(_project_new_finish, state, target)
         success = True
         return result
@@ -7292,16 +7305,20 @@ async def _project_new_request(request):
 def _project_roots() -> list[dict]:
     """input 바로 아래 프로젝트와 등록 루트의 합집합. GET 에서는 등록 파일을 쓰지 않는다."""
     base_dir = project_input()
-    rows = {r["key"]: dict(r) for r in store.known_roots() if in_scope(r["root"])}
+    server = server_mode()
+    rows = {} if server else {r["key"]: dict(r) for r in store.known_roots()}
     parent = os.path.join(base_dir, store.PROJECTS_DIRNAME) if base_dir else None
     if parent:
         try:
+            real_parent = os.path.realpath(parent)
+            # project_input 이 홈을 검사했다. 서버의 프로젝트 부모 자체도 링크가 아니어야 한다.
+            if server and os.path.normcase(real_parent) != os.path.normcase(os.path.abspath(parent)):
+                return []
             with os.scandir(parent) as entries:
                 for e in entries:
                     try:
                         # junction/symlink 로 input 밖의 미등록 폴더까지 탐색하지 않는다.
-                        if (e.is_dir(follow_symlinks=False) and os.path.dirname(os.path.realpath(e.path)) == os.path.realpath(parent)
-                                and in_scope(e.path)):
+                        if e.is_dir(follow_symlinks=False) and os.path.dirname(os.path.realpath(e.path)) == real_parent:
                             key = store.root_key(e.path)
                             rows.setdefault(key, {"key": key, "root": e.path, "project": e.name})
                     except OSError as e:
@@ -7310,7 +7327,7 @@ def _project_roots() -> list[dict]:
         except OSError as e:
             logger.warning("%s 프로젝트 폴더 스캔 실패 — 등록된 프로젝트를 표시: %s", _TAG, e)
     for r in rows.values():
-        r["outside_input"] = (not server_mode() and (not parent or os.path.normcase(os.path.realpath(os.path.dirname(r["root"])))
+        r["outside_input"] = (not server and (not parent or os.path.normcase(os.path.realpath(os.path.dirname(r["root"])))
                                                     != os.path.normcase(os.path.realpath(parent))))
     return list(rows.values())
 
@@ -7404,9 +7421,8 @@ def _project_open(key) -> dict:
     if store.resolve_board_root(key) is None:
         store.register_root(r["root"])
         # 등록 과정에서 함께 올라온 형제도 직접 보드 URL 로 열 수 있게 설정을 복구한다.
-        for row in store.known_roots():
-            if in_scope(row["root"]):
-                _ensure_pref(row["key"], row["root"])
+        for row in (_project_roots() if server_mode() else store.known_roots()):
+            _ensure_pref(row["key"], row["root"])
     else:
         _ensure_pref(key, r["root"])
     return {"ok": True, "key": key}

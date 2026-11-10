@@ -1477,6 +1477,29 @@ def _registry_entries(projects_dir: str) -> dict[str, dict]:
     return out
 
 
+def _merge_root_entries(entries: dict, *, registry_path=None, required_key=None) -> int:
+    """_ROOTS_LOCK 안에서 호출. 서버는 살아 있는 다른 루트의 키를 덮지 않는다."""
+    accepted = {}
+    server = os.environ.get("BMK_DP_SERVER_MODE", "") == "1"
+    for key, row in entries.items():
+        old = _ROOTS.get(key)
+        if (server and old and os.path.normcase(old["root"]) != os.path.normcase(row["root"])
+                and os.path.isfile(os.path.join(old["root"], MANIFEST_NAME))):
+            logger.warning("보드 키 충돌: %s — 기존 %s, 요청 %s", key, old["root"], row["root"])
+            if key == required_key:
+                raise ValueError("같은 키의 다른 프로젝트가 이미 있습니다")
+            continue
+        accepted[key] = row
+    if registry_path is not None:
+        # 충돌 검사 뒤에만 쓴다. 저장 실패 때도 메모리의 등록 상태는 그대로다.
+        write_json_atomic(registry_path, {
+            "schema": _ROOTS_SCHEMA,
+            "roots": {k: {"project": e["project"], "time": e["time"]} for k, e in accepted.items()},
+        })
+    _ROOTS.update(accepted)
+    return len(accepted)
+
+
 def register_root(root: str) -> str:
     """프로젝트 폴더를 보드에 노출하고 키를 돌려준다(Review 노드). <base_dir>/bmk_design_patch/_roots.json 에도 원자 저장해
     재시작 뒤 load_root_registry 로 되살린다. root 는 project_root() 모양(…/bmk_design_patch/<project>)이고
@@ -1495,11 +1518,7 @@ def register_root(root: str) -> str:
     with _ROOTS_LOCK:
         entries = _registry_entries(projects_dir)
         entries[key] = {"root": root, "project": name, "time": time.strftime("%Y-%m-%d %H:%M:%S")}
-        write_json_atomic(os.path.join(projects_dir, ROOTS_FILE), {
-            "schema": _ROOTS_SCHEMA,
-            "roots": {k: {"project": e["project"], "time": e["time"]} for k, e in entries.items()},
-        })
-        _ROOTS.update(entries)
+        _merge_root_entries(entries, registry_path=os.path.join(projects_dir, ROOTS_FILE), required_key=key)
     return key
 
 
@@ -1511,8 +1530,7 @@ def load_root_registry(base_dir: str) -> int:
         raise ValueError("base_dir 가 비어 있습니다.")
     entries = _registry_entries(os.path.join(os.path.abspath(base_dir.strip()), PROJECTS_DIRNAME))
     with _ROOTS_LOCK:
-        _ROOTS.update(entries)
-    return len(entries)
+        return _merge_root_entries(entries)
 
 
 def known_roots() -> list[dict]:

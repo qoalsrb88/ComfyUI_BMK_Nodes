@@ -82,6 +82,8 @@ def _origin(value):
 
 
 def _validate_config(config):
+    if config.dev_handoff and config.host not in ("127.0.0.1", "::1", "localhost"):
+        raise ValueError("개발 모드는 루프백 주소(127.0.0.1·::1·localhost)에서만 띄울 수 있습니다")
     if not config.dev_handoff and not config.public_origin:
         raise ValueError("개발 모드 밖에서는 public_origin 이 필요합니다")
     origin = _origin(config.public_origin) if config.public_origin else None
@@ -139,6 +141,10 @@ def _server_secret(data_dir):
 
 
 def _account_scope(data_dir, identity, store, now):
+    try:
+        from . import bmk_design_patch_board as board
+    except ImportError:
+        import bmk_design_patch_board as board
     org, acct = identity["organization_id"], identity["account_id"]
     home = os.path.join(data_dir, _folder_id(org), _folder_id(acct))
     with _ACCOUNT_LOCK:
@@ -160,6 +166,10 @@ def _account_scope(data_dir, identity, store, now):
         for name in (store.PROJECTS_DIRNAME, "_output"):
             os.makedirs(_plain_path(os.path.join(home, name)), exist_ok=True)
         store.load_root_registry(home)
+    try:
+        board._sweep_new_tmp(home)
+    except Exception as e:
+        logger.warning("계정 임시 폴더 정리 실패: %s", type(e).__name__)
     return {"input": home, "output": os.path.join(home, "_output"), "home": home, "account": acct, "org": org}
 
 
@@ -190,6 +200,12 @@ class SessionStore:
             for sid, session in list(self._sessions.items()):
                 if now - session["seen"] >= self.idle_ttl or now - session["created"] >= self.max_ttl:
                     del self._sessions[sid]
+            own = sorted((sid for sid, session in self._sessions.items()
+                          if session["organization_id"] == identity["organization_id"]
+                          and session["account_id"] == identity["account_id"]),
+                         key=lambda sid: self._sessions[sid]["seen"])
+            for sid in own[:max(0, len(own) - 19)]:
+                del self._sessions[sid]  # 새 세션까지 계정당 20개. 전역 LRU 는 마지막 방어선이다.
             while len(self._sessions) >= self.limit:
                 del self._sessions[min(self._sessions, key=lambda sid: self._sessions[sid]["seen"])]
             sid = secrets.token_urlsafe(32)
@@ -211,21 +227,21 @@ class SessionStore:
 async def _body(request, limit):
     # request.json/read 의 본문 캐시에 로그인 토큰을 남기지 않고, 청크 전송에도 상한을 건다.
     if request.content_type != "application/json":
-        raise web.HTTPBadRequest(text="JSON 본문이 필요합니다")
+        return web.json_response({"error": "JSON 본문이 필요합니다"}, status=400)
     if request.content_length is not None and request.content_length > limit:
-        raise web.HTTPBadRequest(text="요청 본문이 너무 큽니다")
+        return web.json_response({"error": "요청 본문이 너무 큽니다"}, status=400)
     raw = bytearray()
-    async for chunk in request.content.iter_chunked(min(limit + 1, 65536)):
-        raw.extend(chunk)
-        if len(raw) > limit:
-            raise web.HTTPBadRequest(text="요청 본문이 너무 큽니다")
     try:
+        async for chunk in request.content.iter_chunked(min(limit + 1, 65536)):
+            raw.extend(chunk)
+            if len(raw) > limit:
+                return web.json_response({"error": "요청 본문이 너무 큽니다"}, status=400)
         data = json.loads(raw.decode("utf-8"))
         if not isinstance(data, dict):
             raise ValueError
         return data
     except (UnicodeError, ValueError):
-        raise web.HTTPBadRequest(text="JSON 본문을 읽을 수 없습니다") from None
+        return web.json_response({"error": "JSON 본문을 읽을 수 없습니다"}, status=400)
     finally:
         raw.clear()
 
@@ -383,11 +399,11 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
                 request["bmk_dp_session"] = session
                 if not public(request) and session is None:
                     return _error("no_session")
-                if session:
+                if session and not public(request):
                     tag = request.headers.get("X-DesignPatch-Account")
                     if tag is not None and tag != session["tag"]:
                         return _error("session_changed")
-                    if mutation and not public(request) and tag is None:
+                    if mutation and tag is None:
                         return _error("bad_origin")
                 method = "GET" if request.method == "HEAD" else request.method
                 if (method, request.path) in blocked:
@@ -401,9 +417,9 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
                 response = board._json({"error": e.message, **e.extra}, status=e.status)
             except web.HTTPException as e:
                 response = e
-            except Exception:
+            except Exception as e:
                 # 검증기·본문 등에서 받은 비밀을 traceback 이나 오류 문구에 싣지 않는다.
-                logger.error("서버 요청 처리 실패")
+                logger.error("서버 요청 처리 실패: %s", type(e).__name__)
                 response = web.json_response({"error": "요청을 처리하지 못했습니다."}, status=500)
             return response
 
@@ -437,10 +453,12 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
 
         async def session_post(request):
             data = await _body(request, 16 * 1024)
+            if isinstance(data, web.Response):
+                return data
             token, org = data.get("token"), data.get("organization_id")
             try:
                 if not isinstance(token, str) or not 1 <= len(token) <= 4096 or not _valid_id(org):
-                    raise web.HTTPBadRequest(text="토큰·조직 형식이 잘못되었습니다")
+                    return web.json_response({"error": "토큰·조직 형식이 잘못되었습니다"}, status=400)
                 if not config.dev_handoff and token.startswith("dev:"):
                     return _error("bad_token")
                 if verifier is None:
@@ -475,10 +493,12 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
 
         async def preferences(request):
             data = await _body(request, 2 * 1024 ** 2) if request.method == "POST" else None
+            if isinstance(data, web.Response):
+                return data
             try:
                 result = await asyncio.to_thread(prefs.apply, board.current_scope()["home"], data)
             except (ValueError, UnicodeError):
-                raise web.HTTPBadRequest(text="설정 키·값 형식 또는 크기가 잘못되었습니다") from None
+                return web.json_response({"error": "설정 키·값 형식 또는 크기가 잘못되었습니다"}, status=400)
             return web.json_response(result)
 
         async def export_file(request):
@@ -488,14 +508,16 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
                 record = store.last_export(root, store.load_manifest(root)) or {}
                 path = record.get("psd")
                 if not isinstance(path, str) or not path or not _inside(path, board.output_dir()) or not os.path.isfile(path):
-                    raise web.HTTPNotFound(text="내려받을 PSD 가 없습니다")
+                    return None
                 return path
 
             path = await asyncio.to_thread(last_path)
+            if path is None:
+                return web.json_response({"error": "내려받을 PSD 가 없습니다"}, status=404)
             return web.FileResponse(path, headers={"Content-Type": "application/octet-stream", "Cache-Control": "no-store",
                                     "Content-Disposition": "attachment; filename*=UTF-8''" + quote(os.path.basename(path), safe="")})
 
-        app = web.Application(middlewares=[protect], client_max_size=board._MAX_UPLOAD,
+        app = web.Application(middlewares=[protect], client_max_size=8 * 1024 ** 2,
                               handler_args={"access_log": None})
         app[_SESSION_KEY], app[_RUNNER_KEY] = sessions, runner
         app.on_response_prepare.append(headers)
@@ -543,15 +565,20 @@ def make_dev_parent_app(config):
     config = _validate_config(config)
     if not config.dev_handoff or config.dev_parent_port is None:
         raise ValueError("가짜 부모 페이지는 개발 모드·부모 포트가 필요합니다")
-    host = config.host
-    if ":" in host and not host.startswith("["):
-        host = "[" + host + "]"
-
     async def index(request):
+        try:
+            authority = _host(request.headers.get("Host"))
+            host = urlsplit("//" + authority).hostname
+            if host not in ("127.0.0.1", "::1", "localhost"):
+                raise ValueError
+        except ValueError:
+            raise web.HTTPBadRequest(text="개발 부모 페이지는 루프백 호스트로 열어 주세요") from None
+        if host == "::1":
+            host = "[::1]"
         acct = request.query.get("acct", "alice")
         if re.fullmatch(r"[a-z0-9_-]{1,32}", acct) is None:
             raise web.HTTPBadRequest(text="개발 계정 이름 형식이 잘못되었습니다")
-        parent = "http://" + request.headers["Host"]
+        parent = "http://" + authority
         source = f"http://{host}:{config.port}/?" + urlencode({"parent_origin": parent})
         source += "#" + urlencode({"token": "dev:" + acct, "organization_id": "org1"})
         page = ('<!doctype html><html lang="ko"><meta charset="utf-8"><title>Forge 개발</title>'
