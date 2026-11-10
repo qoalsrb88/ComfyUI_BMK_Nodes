@@ -233,6 +233,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextlib
+import contextvars
 import copy
 import functools
 import hashlib
@@ -286,7 +287,8 @@ API = "/bmk/design_patch"
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web_design_patch")
 _STATIC = {"board.html": "text/html", "board.js": "text/javascript", "viewer.js": "text/javascript",
            "layout_geom.js": "text/javascript", "rows.js": "text/javascript", "layout_edit.js": "text/javascript", "ref_edit.js": "text/javascript",
-           "checklist.js": "text/javascript", "pipeline.js": "text/javascript", "mask_edit.js": "text/javascript", "board.css": "text/css"}
+           "checklist.js": "text/javascript", "pipeline.js": "text/javascript", "mask_edit.js": "text/javascript", "board.css": "text/css",
+           "env.js": "text/javascript", "dialog.js": "text/javascript"}  # env·dialog = Forge 이식 F1 공용 객체(DPEnv·DPDialog)
 
 THUMB_KINDS = ("cand", "before", "ref", "delta", "context")
 THUMB_SIZES = (128, 192, 256, 384, 512, 768, 1024)
@@ -369,6 +371,90 @@ class _PathReject(_Reject):
     def __init__(self, status: int, message: str, safe: str, **extra):
         super().__init__(status, message, **extra)
         self.safe = safe
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 서버 모드·범위 (Forge 이식 F1 — _proto/STUDIO_FORGE_F1_SPEC.md §3.3)
+# 로컬판(ComfyUI)은 서버 모드가 꺼져 있고 범위가 없다 → 아래 접근자는 지금 전역(_PROJECT_INPUT·_OUTPUT_DIR)을 그대로 돌려준다.
+# 서버 모드(bmk_design_patch_server)는 요청마다 세션 계정의 범위를 건다. 라우트의 CPU·파일 일은 asyncio.to_thread 로 돌고
+# to_thread 는 contextvar 를 복사하므로 스레드 안에서도 같은 범위를 본다(직접 만든 스레드는 범위를 스스로 걸어야 한다 — 실행기).
+# 서버 모드인데 범위가 없으면 닫힌 쪽으로 실패한다(401) — 범위 없이 남의 프로젝트에 닿는 길을 남기지 않는다.
+# ══════════════════════════════════════════════════════════════════════
+NO_SESSION = "Forge에서 Design Patch Studio를 다시 열어 주세요."
+SERVER_ENV = "BMK_DP_SERVER_MODE"  # D339 — 프로세스 플래그는 이 환경 변수 하나("1" = 서버 모드). runner·vlm·노드 모듈도 이것을 읽는다
+# 로컬판이 쓸 수 있는 기능 표(GET /env 의 caps — D341). 서버 전용(jobs·export_download)은 로컬에서 false
+LOCAL_CAPS = {"jobs": False, "export_download": False, "sam3": True, "local_qwen": True, "external": True, "open_folder": True,
+              "path_input": True, "ps_mask": True, "agent_approve": True}
+_SCOPE: contextvars.ContextVar = contextvars.ContextVar("bmk_dp_scope", default=None)
+_ENV_PROVIDER: list = []           # set_env_provider — 서버 모드의 GET /env 본문을 만드는 함수(request → dict)
+
+
+def set_server_mode(on: bool) -> None:
+    """프로세스 플래그(환경 변수 SERVER_ENV)를 켜고 끈다. 서버 진입점(bmk_design_patch_server)은 Design Patch 모듈을 import 하기
+    전에 환경 변수를 직접 걸고(노드 모듈이 import 때 이 값으로 ComfyUI 대체물을 고른다), 앱을 만들 때 이 함수를 다시 부른다.
+    로컬판은 부르지 않는다."""
+    if on:
+        os.environ[SERVER_ENV] = "1"
+    else:
+        os.environ.pop(SERVER_ENV, None)
+
+
+def server_mode() -> bool:
+    return os.environ.get(SERVER_ENV, "") == "1"
+
+
+def set_scope(scope: dict | None) -> contextvars.Token:
+    """이 요청(작업)의 계정 범위 {"input": 절대 경로, "output": 절대 경로, "home": 절대 경로, "account": str, "org": str}.
+    돌려준 토큰으로 reset_scope 한다."""
+    return _SCOPE.set(dict(scope) if scope is not None else None)
+
+
+def reset_scope(token: contextvars.Token) -> None:
+    _SCOPE.reset(token)
+
+
+def current_scope() -> dict | None:
+    return _SCOPE.get()
+
+
+def _scope_dir(name: str) -> str | None:
+    """범위의 폴더(name = input·output). 범위가 없으면 None — 서버 모드면 401(닫힌 쪽)."""
+    scope = _SCOPE.get()
+    if scope is not None:
+        return scope[name]
+    if server_mode():
+        raise _Reject(401, NO_SESSION, reason="no_session")
+    return None
+
+
+def project_input() -> str | None:
+    """프로젝트들이 놓이는 input 폴더 — 범위가 있으면 그 계정 홈, 없으면 register_routes 가 받은 ComfyUI input."""
+    return _scope_dir("input") or _PROJECT_INPUT
+
+
+def output_dir() -> str | None:
+    """Export 출력의 바탕 폴더 — 범위가 있으면 그 계정의 출력 폴더, 없으면 set_output_dir 가 받은 ComfyUI output(미설정 None)."""
+    return _scope_dir("output") or (_OUTPUT_DIR[0] if _OUTPUT_DIR else None)
+
+
+def in_scope(root: str) -> bool:
+    """root(프로젝트 폴더)가 지금 범위의 것인가. 로컬판(서버 모드 꺼짐)은 늘 True. 서버 모드는 root 의 부모가 정확히
+    <범위 input>/bmk_design_patch 일 때만(실제 경로 — 링크로 밖을 가리키면 밖). 범위가 없으면 False."""
+    if not server_mode():
+        return True
+    scope = _SCOPE.get()
+    if scope is None or not isinstance(root, str) or not root:
+        return False
+    try:
+        want = os.path.normcase(os.path.realpath(os.path.join(scope["input"], store.PROJECTS_DIRNAME)))
+        return os.path.normcase(os.path.dirname(os.path.realpath(root))) == want
+    except (OSError, ValueError):
+        return False
+
+
+def set_env_provider(fn) -> None:
+    """서버 모드의 GET /env 본문을 만드는 함수(request → dict)를 건다. None 이면 로컬 본문({"server_mode": false, "caps": LOCAL_CAPS})."""
+    _ENV_PROVIDER[:] = [fn] if fn is not None else []
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -6438,6 +6524,16 @@ async def board_static(request: web.Request) -> web.StreamResponse:
 
 
 @_guard
+async def env_handler(request: web.Request) -> web.StreamResponse:
+    """GET /env(Forge 이식 F1 D334 — 두 모드 공통): 화면이 로컬판인지 서버 모드인지와 쓸 수 있는 기능(caps)을 읽는다.
+    로컬 = {"server_mode": false, "caps": LOCAL_CAPS}. 서버 모드 본문은 서버 진입점이 건 함수가 만든다(세션이 없어도 200 — 계정 ID·
+    경로는 싣지 않음)."""
+    if _ENV_PROVIDER:
+        return _json(_ENV_PROVIDER[0](request))
+    return _json({"server_mode": False, "caps": dict(LOCAL_CAPS)})
+
+
+@_guard
 async def state_handler(request: web.Request) -> web.StreamResponse:
     root = _root_param(request.query.get("root"))
     raw = request.query.get("since_rev")
@@ -7473,6 +7569,7 @@ _ROUTES = (
     ("GET", f"{API}/refs/layers", refs_layers_handler),
     ("GET", f"{API}/refs/pool", refs_pool_get_handler),
     ("POST", f"{API}/refs/pool", refs_pool_post_handler),
+    ("GET", f"{API}/env", env_handler),
 )
 
 

@@ -1,0 +1,351 @@
+{
+  "_comment": "Design Patch Studio 서버 모드(Forge 이식 F1) HTTP 계약 예시 — _proto/STUDIO_FORGE_F1_SPEC.md §3.1·§3.2. 세 갈래(S 서버·J 실행기·W 화면)의 시험이 같은 예시를 읽는다. 키 이름·값 형식이 계약이고 값 자체는 예시다. API = /bmk/design_patch.",
+  "header": {
+    "name": "X-DesignPatch-Request",
+    "value": "1"
+  },
+  "cookie": {
+    "name": "bmk_dp_session"
+  },
+  "no_session": {
+    "status": 401,
+    "response": {
+      "error": "Forge에서 Design Patch Studio를 다시 열어 주세요.",
+      "reason": "no_session"
+    }
+  },
+  "blocked_route": {
+    "status": 404,
+    "response": {
+      "error": "서버 모드에서는 쓸 수 없는 기능입니다.",
+      "reason": "server_mode"
+    }
+  },
+  "bad_request_header": {
+    "status": 403,
+    "response": {
+      "error": "요청 헤더·출처 검사에 걸렸습니다.",
+      "reason": "bad_origin"
+    }
+  },
+  "session_changed": {
+    "status": 409,
+    "response": {
+      "error": "다른 계정으로 바뀌었습니다 — Forge에서 Design Patch Studio를 다시 열어 주세요.",
+      "reason": "session_changed"
+    }
+  },
+  "env_local": {
+    "method": "GET",
+    "path": "{API}/env",
+    "response": {
+      "server_mode": false,
+      "caps": {
+        "jobs": false,
+        "export_download": false,
+        "sam3": true,
+        "local_qwen": true,
+        "external": true,
+        "open_folder": true,
+        "path_input": true,
+        "ps_mask": true,
+        "agent_approve": true
+      }
+    }
+  },
+  "env_server": {
+    "method": "GET",
+    "path": "{API}/env",
+    "response": {
+      "server_mode": true,
+      "session": true,
+      "account": {
+        "name": "alice",
+        "tag": "5f2c8a1e9b7d4c03"
+      },
+      "session_url": "/api/session",
+      "prefs_url": "/api/preferences",
+      "caps": {
+        "jobs": true,
+        "export_download": true,
+        "sam3": false,
+        "local_qwen": false,
+        "external": false,
+        "open_folder": false,
+        "path_input": false,
+        "ps_mask": false,
+        "agent_approve": false
+      },
+      "backend": "mock"
+    }
+  },
+  "env_server_no_session": {
+    "method": "GET",
+    "path": "{API}/env",
+    "response": {
+      "server_mode": true,
+      "session": false,
+      "account": null,
+      "session_url": "/api/session",
+      "prefs_url": "/api/preferences",
+      "caps": {
+        "jobs": true,
+        "export_download": true,
+        "sam3": false,
+        "local_qwen": false,
+        "external": false,
+        "open_folder": false,
+        "path_input": false,
+        "ps_mask": false,
+        "agent_approve": false
+      },
+      "backend": "mock"
+    }
+  },
+  "session_post": {
+    "method": "POST",
+    "path": "/api/session",
+    "request": {
+      "token": "dev:alice",
+      "organization_id": "org1"
+    },
+    "response": {
+      "ok": true,
+      "account": {
+        "name": "alice",
+        "tag": "5f2c8a1e9b7d4c03"
+      }
+    }
+  },
+  "session_post_bad_token": {
+    "status": 401,
+    "response": {
+      "error": "토큰을 확인하지 못했습니다 — Forge에서 Design Patch Studio를 다시 열어 주세요.",
+      "reason": "bad_token"
+    }
+  },
+  "session_post_no_verifier": {
+    "status": 503,
+    "response": {
+      "error": "토큰 검증기가 설정되지 않았습니다.",
+      "reason": "no_verifier"
+    }
+  },
+  "session_get": {
+    "method": "GET",
+    "path": "/api/session",
+    "response": {
+      "ok": true,
+      "account": {
+        "name": "alice",
+        "tag": "5f2c8a1e9b7d4c03"
+      }
+    }
+  },
+  "session_logout": {
+    "method": "POST",
+    "path": "/api/session/logout",
+    "response": {
+      "ok": true
+    }
+  },
+  "prefs_get": {
+    "method": "GET",
+    "path": "/api/preferences",
+    "response": {
+      "values": {
+        "bmk-dp-studio": "{\"viewer\":true}",
+        "bmk-dp-seen:0123456789ab": "[\"r01a1\"]"
+      }
+    }
+  },
+  "prefs_post": {
+    "method": "POST",
+    "path": "/api/preferences",
+    "request": {
+      "set": {
+        "bmk-dp-studio": "{\"viewer\":false}"
+      },
+      "remove": [
+        "bmk-dp-seen:0123456789ab"
+      ]
+    },
+    "response": {
+      "ok": true
+    }
+  },
+  "jobs_prompt": {
+    "method": "POST",
+    "path": "{API}/jobs/prompt",
+    "request_free": {
+      "root": "0123456789ab",
+      "stage": "apply",
+      "expect": "3:12"
+    },
+    "request_paid": {
+      "root": "0123456789ab",
+      "stage": "run",
+      "approve": "0123456789ab",
+      "only": "001_ab12cd34"
+    },
+    "request_reroll": {
+      "root": "0123456789ab",
+      "stage": "reroll"
+    },
+    "response": {
+      "prompt_id": "j_5f2c8a1e9b7d4c03",
+      "number": 7
+    }
+  },
+  "jobs_prompt_stale": {
+    "status": 409,
+    "response": {
+      "error": "승인한 계획이 지금과 다릅니다 — 계획을 다시 받아 승인(지금 승인 코드 ba9876543210)",
+      "reason": "stale",
+      "stale": true,
+      "hash": "ba9876543210"
+    }
+  },
+  "jobs_prompt_no_backend": {
+    "status": 409,
+    "response": {
+      "error": "서버 모드 생성 백엔드가 아직 연결되지 않았습니다(mock 만).",
+      "reason": "no_backend"
+    }
+  },
+  "jobs_prompt_queue_full": {
+    "status": 409,
+    "response": {
+      "error": "대기 중인 작업이 너무 많습니다 — 앞 작업이 끝난 뒤 다시 하세요.",
+      "reason": "queue_full"
+    }
+  },
+  "jobs_queue": {
+    "method": "GET",
+    "path": "{API}/jobs/queue?root=0123456789ab",
+    "response": {
+      "queue_running": [
+        [
+          5,
+          "",
+          ""
+        ]
+      ],
+      "queue_pending": [
+        [
+          6,
+          "",
+          ""
+        ],
+        [
+          7,
+          "j_5f2c8a1e9b7d4c03",
+          "apply"
+        ]
+      ]
+    }
+  },
+  "jobs_queue_delete": {
+    "method": "POST",
+    "path": "{API}/jobs/queue",
+    "request": {
+      "root": "0123456789ab",
+      "delete": [
+        "j_5f2c8a1e9b7d4c03"
+      ]
+    },
+    "response": {
+      "deleted": [
+        "j_5f2c8a1e9b7d4c03"
+      ]
+    }
+  },
+  "jobs_history_none": {
+    "method": "GET",
+    "path": "{API}/jobs/history/j_5f2c8a1e9b7d4c03?root=0123456789ab",
+    "response": {}
+  },
+  "jobs_history_done": {
+    "method": "GET",
+    "path": "{API}/jobs/history/j_5f2c8a1e9b7d4c03?root=0123456789ab",
+    "response": {
+      "j_5f2c8a1e9b7d4c03": {
+        "status": {
+          "status_str": "success",
+          "completed": true,
+          "messages": []
+        },
+        "outputs": {
+          "dp_export": {
+            "text": [
+              "Export 끝"
+            ],
+            "bmk_dp_export": [
+              {
+                "outcome": "new",
+                "psd": "프로젝트_r12.psd",
+                "rev": 12
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+  "jobs_history_error": {
+    "method": "GET",
+    "path": "{API}/jobs/history/j_5f2c8a1e9b7d4c03?root=0123456789ab",
+    "response": {
+      "j_5f2c8a1e9b7d4c03": {
+        "status": {
+          "status_str": "error",
+          "completed": false,
+          "messages": [
+            [
+              "execution_error",
+              {
+                "node_id": "dp_import",
+                "node_type": "BMKDesignPatchImportPSD",
+                "exception_message": "PSD 를 읽을 수 없습니다"
+              }
+            ]
+          ]
+        },
+        "outputs": {}
+      }
+    }
+  },
+  "jobs_history_interrupted": {
+    "method": "GET",
+    "path": "{API}/jobs/history/j_5f2c8a1e9b7d4c03?root=0123456789ab",
+    "response": {
+      "j_5f2c8a1e9b7d4c03": {
+        "status": {
+          "status_str": "error",
+          "completed": false,
+          "messages": [
+            [
+              "execution_interrupted",
+              {
+                "node_id": "dp_run",
+                "node_type": "BMKDesignPatchRun"
+              }
+            ]
+          ]
+        },
+        "outputs": {}
+      }
+    }
+  },
+  "export_file": {
+    "method": "GET",
+    "path": "{API}/export/file?root=0123456789ab",
+    "response_headers": {
+      "Content-Type": "application/octet-stream",
+      "Content-Disposition": "attachment; filename*=UTF-8''%ED%94%84%EB%A1%9C%EC%A0%9D%ED%8A%B8_r12.psd"
+    }
+  },
+  "account_header": {
+    "name": "X-DesignPatch-Account"
+  }
+}

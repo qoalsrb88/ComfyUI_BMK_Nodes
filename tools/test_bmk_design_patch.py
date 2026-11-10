@@ -5670,7 +5670,8 @@ def m2_board_unit():
                        ("POST", "/bmk/design_patch/candidates/export"), ("POST", "/bmk/design_patch/candidates/import"),  # 6-0 공용 자리
                        ("GET", "/bmk/design_patch/candidates/ext"),
                        ("POST", "/bmk/design_patch/projects/new"), ("GET", "/bmk/design_patch/refs/layers"),  # 배치 9 공용 자리
-                       ("GET", "/bmk/design_patch/refs/pool"), ("POST", "/bmk/design_patch/refs/pool")})
+                       ("GET", "/bmk/design_patch/refs/pool"), ("POST", "/bmk/design_patch/refs/pool"),
+                       ("GET", "/bmk/design_patch/env")})  # Forge 이식 F1 공용 자리(D334 — 두 모드 공통)
         check(paths == want, f"라우트 목록 {paths}")
         # 재시작 흉내: 메모리 레지스트리에서 지움 → base_dir 로 다시 등록하면 _roots.json 에서 복구
         with store._ROOTS_LOCK:
@@ -6194,8 +6195,8 @@ def m2_board_unit():
                   f"{name} 외부 URL·CDN 없음")
             check(not any(ord(ch) >= 0x1F000 or ch == "\ufe0f" for ch in text), f"{name} 이모지 없음")
         check(re.findall(r'<script src="([^"]+)" defer></script>', html)
-              == ["layout_geom.js", "viewer.js", "rows.js", "layout_edit.js", "ref_edit.js", "checklist.js", "pipeline.js", "mask_edit.js", "board.js"]
-              and not re.search(r"<script(?![^>]*\bsrc=\"(?:layout_geom|viewer|rows|layout_edit|ref_edit|checklist|pipeline|mask_edit|board)\.js\")", html)
+              == ["env.js", "dialog.js", "layout_geom.js", "viewer.js", "rows.js", "layout_edit.js", "ref_edit.js", "checklist.js", "pipeline.js", "mask_edit.js", "board.js"]
+              and not re.search(r"<script(?![^>]*\bsrc=\"(?:env|dialog|layout_geom|viewer|rows|layout_edit|ref_edit|checklist|pipeline|mask_edit|board)\.js\")", html)
               and "on" + "click=" not in html.lower(),
               "html 에 인라인 스크립트·이벤트 속성 없음, layout_geom → viewer → rows → layout_edit → ref_edit → checklist → pipeline → mask_edit → board 순서")
         check('postMessage({ type: "bmk-dp-queue", rootKey: ROOT, layout }, location.origin)' in js,
@@ -10436,7 +10437,7 @@ def m2_node_unit():
             n1 = len(fake.routes)
             dp._register_board_routes()
         paths = {r.path for r in fake.routes}
-        check(n1 == 55 and len(fake.routes) == 55 and {"/bmk/design_patch/state", "/bmk/design_patch/drain",
+        check(n1 == 56 and len(fake.routes) == 56 and {"/bmk/design_patch/state", "/bmk/design_patch/drain",
                                                        "/bmk/design_patch/board/", "/bmk/design_patch/canvas",
                                                        "/bmk/design_patch/layout", "/bmk/design_patch/layout/refs",
                                                        "/bmk/design_patch/refs", "/bmk/design_patch/refs/cut",
@@ -12299,7 +12300,7 @@ def vlm_node_unit():
         fake = _FakeServer(web.RouteTableDef())
         with _prompt_server(fake):
             dp._register_board_routes()
-        check(len(fake.routes) == 55, f"보드 라우트 {len(fake.routes)}(배치 3a 3·배치 5 묶음 1 3·묶음 2 1·배치 7 공용 4·6-0 3·배치 9 공용 4 포함)")
+        check(len(fake.routes) == 56, f"보드 라우트 {len(fake.routes)}(Forge F1 env 1·배치 3a 3·배치 5 묶음 1 3·묶음 2 1·배치 7 공용 4·6-0 3·배치 9 공용 4 포함)")
 
     def t_n9():
         section("M3-N9 평가 도구의 순수 복제 new_targets == main._new_targets (표본 레이어명 6 + 채택 origin 3)")
@@ -14164,7 +14165,7 @@ def layout_board_unit():
         paths = {(r.method, r.path) for r in routes}
         want = {("GET", f"{API}/layout"), ("GET", f"{API}/layout/refs"), ("POST", f"{API}/layout/start"),
                 ("POST", f"{API}/layout/crop"), ("POST", f"{API}/layout/psd")}
-        check(want <= paths and len(routes) == 55, f"레이아웃 라우트 5개 등록(모두 55 — S2 레퍼런스 8·S3 파이프라인 7·S4 마스크 5·배치 3a 3·배치 5 묶음 1 3·묶음 2 1·배치 7 공용 4·6-0 3·배치 9 공용 4 포함) {len(routes)}")
+        check(want <= paths and len(routes) == 56, f"레이아웃 라우트 5개 등록(모두 56 — Forge F1 env 1· S2 레퍼런스 8·S3 파이프라인 7·S4 마스크 5·배치 3a 3·배치 5 묶음 1 3·묶음 2 1·배치 7 공용 4·6-0 3·배치 9 공용 4 포함) {len(routes)}")
         for name in ("layout_geom.js", "layout_edit.js"):
             st, hd, body = await h.get(f"{API}/board/{name}")
             f = PKG / "web_design_patch" / name
@@ -15934,7 +15935,7 @@ def layout_js_unit():
           f"layout_edit.js 서버 주소 = apiUrl 상대 경로 5개뿐 {sorted(paths)}")
     check("textContent" in ed and "replaceChildren" in ed, "layout_edit.js textContent·replaceChildren")
     check(re.findall(r'<script src="([^"]+)" defer></script>', html)
-          == ["layout_geom.js", "viewer.js", "rows.js", "layout_edit.js", "ref_edit.js", "checklist.js", "pipeline.js", "mask_edit.js", "board.js"],
+          == ["env.js", "dialog.js", "layout_geom.js", "viewer.js", "rows.js", "layout_edit.js", "ref_edit.js", "checklist.js", "pipeline.js", "mask_edit.js", "board.js"],
           "board.html script 순서 layout_geom → viewer → layout_edit → ref_edit → pipeline → mask_edit → board")
     check(all(f'id="{i}"' in html for i in ("btn-edit", "layout-head", "layout-list", "layout-panel")), "board.html 크롭 편집 모드 요소 4개")
     vj = code["viewer.js"]
@@ -19554,8 +19555,8 @@ def refs_board_unit():
         paths = {(r.method, r.path) for r in routes}
         want = {("GET", f"{API}/refs"), ("GET", f"{API}/refs/sheets"), ("GET", f"{API}/refs/sheet"), ("GET", f"{API}/refs/img"),
                 ("POST", f"{API}/refs/cut"), ("GET", f"{API}/refs/cut"), ("POST", f"{API}/refs/save"), ("POST", f"{API}/refs/link")}
-        check(want <= paths and len(routes) == 55 and len({p for _m, p in paths}) == 53,
-              f"레퍼런스 라우트 7개(cut 은 GET·POST) — RouteDef 55·경로 53(배치 5 묶음 1 3·묶음 2 1·S3 파이프라인 7·S4 마스크 5·배치 3a 3·배치 9 공용 4 포함) {len(routes)}")
+        check(want <= paths and len(routes) == 56 and len({p for _m, p in paths}) == 54,
+              f"레퍼런스 라우트 7개(cut 은 GET·POST) — RouteDef 56·경로 54(Forge F1 env 1 포함)(배치 5 묶음 1 3·묶음 2 1·S3 파이프라인 7·S4 마스크 5·배치 3a 3·배치 9 공용 4 포함) {len(routes)}")
         st, hd, body = await h.get(f"{API}/board/ref_edit.js")
         f = PKG / "web_design_patch" / "ref_edit.js"
         if f.is_file():
@@ -22695,7 +22696,7 @@ def refs_js_unit():
     check("textField(a)" in rp and '"TEXTAREA"' in rj and "renderSoon" in rj, "패널 다시 그리기 = 글자 입력칸 포커스 복원, 입력 중이면 미룸")
     # board.html·board.js·viewer.js·board.css 연결
     scripts = re.findall(r'<script src="([^"]+)" defer></script>', html)
-    check(scripts == ["layout_geom.js", "viewer.js", "rows.js", "layout_edit.js", "ref_edit.js", "checklist.js", "pipeline.js", "mask_edit.js", "board.js"],
+    check(scripts == ["env.js", "dialog.js", "layout_geom.js", "viewer.js", "rows.js", "layout_edit.js", "ref_edit.js", "checklist.js", "pipeline.js", "mask_edit.js", "board.js"],
           f"board.html script 순서 layout_geom → viewer → layout_edit → ref_edit → pipeline → mask_edit → board {scripts}")
     check(all(f'id="{i}"' in html for i in ("btn-refs", "ref-head", "ref-list", "ref-view", "ref-sheets", "ref-viewer", "ref-panel"))
           and "레퍼런스 (<kbd>T</kbd>)" in html, "board.html 레퍼런스 모드 요소 7개·도움말")
@@ -28909,8 +28910,8 @@ def pipeline_board_unit():
         paths = {(r.method, r.path) for r in routes}
         want = {("GET", f"{API}/pipeline"), ("POST", f"{API}/pipeline/settings"), ("GET", f"{API}/pipeline/prompt"),
                 ("GET", f"{API}/pipeline/plan"), ("GET", f"{API}/pipeline/progress"), ("GET", f"{API}/draft"), ("POST", f"{API}/draft/adopt")}
-        check(want <= paths and len(routes) == 55 and len({p for _m, p in paths}) == 53,
-              f"파이프라인 라우트 7개 — RouteDef 55·경로 53(배치 5 묶음 1 3·묶음 2 1·배치 3a 3·배치 9 공용 4 포함) {len(routes)}")
+        check(want <= paths and len(routes) == 56 and len({p for _m, p in paths}) == 54,
+              f"파이프라인 라우트 7개 — RouteDef 56·경로 54(Forge F1 env 1 포함)(배치 5 묶음 1 3·묶음 2 1·배치 3a 3·배치 9 공용 4 포함) {len(routes)}")
         st, hd, body = await h.get(f"{API}/board/pipeline.js")
         f = PKG / "web_design_patch" / "pipeline.js"
         if f.is_file():
@@ -41702,7 +41703,7 @@ def mask_board_unit():
         paths = {(r.method, r.path) for r in routes}
         want = {("GET", f"{API}/mask"), ("GET", f"{API}/mask/img"), ("POST", f"{API}/mask/save"), ("POST", f"{API}/mask/edit"),
                 ("GET", f"{API}/mask/alts")}
-        check(want <= paths and len(routes) == 55 and len({p for _m, p in paths}) == 53, f"마스크 라우트 5개 — RouteDef 55·경로 53(배치 5 묶음 1 3·묶음 2 1·배치 3a 3·배치 9 공용 4 포함) {len(routes)}")
+        check(want <= paths and len(routes) == 56 and len({p for _m, p in paths}) == 54, f"마스크 라우트 5개 — RouteDef 56·경로 54(Forge F1 env 1 포함)(배치 5 묶음 1 3·묶음 2 1·배치 3a 3·배치 9 공용 4 포함) {len(routes)}")
         st_, hd, body = await h.get(f"{API}/board/mask_edit.js")
         f = PKG / "web_design_patch" / "mask_edit.js"
         if f.is_file():
@@ -42386,7 +42387,7 @@ def mask_js_unit():
           and "if (maskCv || !crop" in vj,
           "viewer.js 마스크 겹침 훅(setMaskLayer — 선택 크롭 겹침 대신)·showSeam·curSeam(3차 ui-r3-03)·N 이 onPick 에 구간을 넘김")
     check(re.findall(r'<script src="([^"]+)" defer></script>', html)
-          == ["layout_geom.js", "viewer.js", "rows.js", "layout_edit.js", "ref_edit.js", "checklist.js", "pipeline.js", "mask_edit.js", "board.js"]
+          == ["env.js", "dialog.js", "layout_geom.js", "viewer.js", "rows.js", "layout_edit.js", "ref_edit.js", "checklist.js", "pipeline.js", "mask_edit.js", "board.js"]
           and all(f'id="{i}"' in html for i in ("btn-mask", "mask-list", "mask-panel")) and re.search(r'<section id="mask-panel"[^>]*hidden>', html)
           and "마스크 (<kbd>K</kbd>)" in html,
           "board.html: mask_edit.js 가 pipeline 뒤·board 앞, 마스크 모드 요소 3개(패널은 처음 hidden)·도움말 '마스크 (K)' 표")
@@ -56496,7 +56497,7 @@ def ext60_unit():
         check(reveal.call_count == 1, "잘못된 sub 로 탐색기를 열지 않음")
     with patch.object(bd, "open_export_folder", return_value={"ok": True}) as legacy:
         check(asyncio.run(request(bd.open_folder_handler, {})).status == 200 and legacy.call_count == 1, "sub 없음 기존 폴더 열기")
-    check(len(bd._ROUTES) == 55, "기존 라우트 55개 유지(배치 9 공용 4 포함)")
+    check(len(bd._ROUTES) == 56, "기존 라우트 56개 유지(배치 9 공용 4·Forge F1 env 1 포함)")
 
     fixture = json.loads((PKG / "tools/fixtures/ext_api.json").read_text(encoding="utf-8"))
     for kind, actual in [("export", ex64), ("preview", preview), ("import", registered), ("ext", summary)]:
@@ -58205,6 +58206,40 @@ console.log(JSON.stringify(out)); process.exit(0);
             check(bool(result) and all(v is True for v in (result if isinstance(result, list) else result.values())), f"B12 JS {name}: {result}")
 
 
+# ═════════════════════════════════════════════════════════════════
+# Forge 이식 F1 — 서버 모드(_proto/STUDIO_FORGE_F1_SPEC.md §4.4). 응답 모양 정본 = tools/fixtures/server_api.json
+# ═════════════════════════════════════════════════════════════════
+def _server_api():
+    """tools/fixtures/server_api.json(서버 모드 HTTP 계약 예시 — 세 묶음 공용)."""
+    return json.loads((PKG / "tools/fixtures/server_api.json").read_text(encoding="utf-8"))
+
+
+def forge_server_unit():
+    """F1 갈래 S — 서버 진입점·세션·요청 검사·계정 격리·경로 봉쇄·설정 저장·내려받기(aiohttp 시험 서버, torch·comfy 없음, --quick 포함)."""
+    section("Forge F1 서버·세션·범위 (forge_server_unit)")
+    import bmk_design_patch_board as bd
+    api = _server_api()
+    check(bd.server_mode() is False and bd.current_scope() is None, "FS0 로컬판: 서버 모드 꺼짐·범위 없음")
+    check(bd.in_scope("C:/어디든") is True, "FS0 로컬판: in_scope 는 늘 True")
+    check(api["env_local"]["response"] == {"server_mode": False, "caps": bd.LOCAL_CAPS}, "FS0 계약: 로컬 env 본문 = 보드 LOCAL_CAPS")
+    check(bd.LOCAL_CAPS["jobs"] is False and bd.LOCAL_CAPS["export_download"] is False
+          and set(api["env_server"]["response"]["caps"]) == set(bd.LOCAL_CAPS), "FS0 계약: caps 키가 두 모드 같고 서버 전용 둘은 로컬 false")
+
+
+def forge_jobs_unit():
+    """F1 갈래 J — ComfyUI 대체물·노드 import 가드·프로세스 안 실행기·서버 모드 백엔드 가드(--quick 포함, 새 프로세스 e2e 는 mock)."""
+    section("Forge F1 실행기·대체물 (forge_jobs_unit)")
+    api = _server_api()
+    check(set(api["jobs_history_done"]["response"]) and "jobs_prompt" in api, "FJ0 계약: jobs 예시가 있음")
+
+
+def forge_js_unit():
+    """F1 갈래 W — DPEnv·DPDialog·서버 모드 큐·숨김·로컬 유료 동의 고정(node vm, --quick 포함)."""
+    section("Forge F1 화면 (forge_js_unit)")
+    web = PKG / "web_design_patch"
+    check((web / "env.js").is_file() and (web / "dialog.js").is_file(), "FW0 env.js·dialog.js 가 있음")
+
+
 if __name__ == "__main__":
     T0 = time.time()
     if ONLY:
@@ -58316,6 +58351,12 @@ if __name__ == "__main__":
         batch9b_unit()
     if want("batch12_unit"):
         batch12_unit()
+    if want("forge_server_unit"):
+        forge_server_unit()
+    if want("forge_jobs_unit"):
+        forge_jobs_unit()
+    if want("forge_js_unit"):
+        forge_js_unit()
     print(f"\n단위 테스트 {time.time() - T0:.1f}s (PASS {PASSES} FAIL {len(FAILS)})")
     if QUICK:
         print("\n--quick: 회귀·노드 생략")
