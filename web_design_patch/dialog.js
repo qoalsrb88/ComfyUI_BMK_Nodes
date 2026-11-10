@@ -9,10 +9,12 @@ window.DPDialog = (() => {
   const blocked = () => [...document.body.children].some((child) => child.classList.contains("dp-env-block"));
   function capture(e) {
     if (!active) return;
-    e.stopImmediatePropagation();
+    if (e.type !== "keyup") e.stopImmediatePropagation();
+    // 유료 상자의 버튼 활성화 키는 보조키가 붙어도 소유자의 승인 차단을 거친다.
+    if (active.keys && ["Enter", " ", "Spacebar"].includes(e.key)) { active.keys(e); return; }
     if (e.ctrlKey || e.metaKey || e.altKey || /^F(?:[1-9]|1[0-2])$/.test(e.key)) return;
     if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown", "Home", "End", "Backspace"].includes(e.key)) e.preventDefault();
-    // 기존 mock·Claude 상자의 키 동작은 소유자가 맡는다(Enter·Space 의 버튼 기본 동작도 유지).
+    // 기존 mock·Claude 상자의 키 동작은 소유자가 맡는다(키보드 승인 차단·Esc 취소).
     if (active.keys) { active.keys(e); return; }
     if (["Tab", "Enter", " ", "Spacebar", "Escape"].includes(e.key)) e.preventDefault();
     if (e.type !== "keydown" || !e.isTrusted || !active.finish) return;

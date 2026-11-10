@@ -36,11 +36,25 @@ window.DPEnv = (() => {
   };
 
   const AGAIN = "Forge에서 Design Patch Studio를 다시 열어 주세요.";
-  let blocker = null, changed = false;
+  let blocker = null, retryButton = null, changed = false;
   const blockedInert = new Map();
+  function blockKeys(e) {
+    if (!blocker) return;
+    e.stopImmediatePropagation();
+    if (e.ctrlKey || e.metaKey || e.altKey || /^F(?:[1-9]|1[0-2])$/.test(e.key)) return;
+    if (e.key === "Tab") {
+      e.preventDefault();
+      if (retryButton) retryButton.focus();
+      return;
+    }
+    if (["Enter", " ", "Spacebar"].includes(e.key) && retryButton && document.activeElement === retryButton) return;
+    e.preventDefault();
+  }
   function clearBlock() {
+    for (const type of ["keydown", "keypress"]) window.removeEventListener(type, blockKeys, true);
     if (blocker) blocker.remove();
     blocker = null;
+    retryButton = null;
     for (const [child, inert] of blockedInert) child.inert = inert;
     blockedInert.clear();
   }
@@ -53,18 +67,21 @@ window.DPEnv = (() => {
     }
     if (window.DPDialog) window.DPDialog.cancel();
     if (blocker) blocker.remove();
+    else for (const type of ["keydown", "keypress"]) window.addEventListener(type, blockKeys, true);
+    retryButton = null;
     blocker = document.createElement("div");
     blocker.className = "overlay dp-env-block";
     blocker.setAttribute("role", "alertdialog");
     blocker.setAttribute("aria-modal", "true");
     const sheet = document.createElement("div"), p = document.createElement("p");
     sheet.className = "sheet"; p.textContent = message; sheet.appendChild(p);
-    if (error) {
+    if (error && String(error) !== message) {
       const small = document.createElement("p");
       small.className = "muted"; small.textContent = String(error); sheet.appendChild(small);
     }
     if (retry) {
       const button = document.createElement("button");
+      retryButton = button;
       button.textContent = "다시 시도"; button.onclick = () => { clearBlock(); initialize(); }; sheet.appendChild(button);
     }
     blocker.appendChild(sheet);
