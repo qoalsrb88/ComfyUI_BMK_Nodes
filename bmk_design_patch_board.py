@@ -458,18 +458,17 @@ def _public_roots(scope=None):
 
 
 def public_error(message: str, scope: dict | None = None) -> str:
-    """후보마다 한 번만 가린다. URL·상대 경로·이미 가린 홈 꼬리는 다시 경로로 읽지 않는다."""
+    """후보를 공백 너머로 잇지 않는다. URL·이미 가린 홈의 한 토큰만 보호하고 남은 경로는 닫는다."""
     if not server_mode():
         return message
-    token = r'''[^\s"'<>]'''
-    gap = r"[ \t]+(?![A-Za-z][A-Za-z0-9+.-]*:[\\/]|[\\/])"
-    word = r'''[^\s"'<>\\/]+'''
-    tail = token + r"*(?:(?:" + gap + word + r")*?" + gap + token + r"*[\\/]" + token + r"+)*"
+    tail = r'''[^\s"'<>)\]}]*'''
     keep = r'''(?i:https?)://[^\s<>"']+|<계정 폴더>''' + tail
     left = r'''(?<![^\s:'"(=\[])'''
-    root = r"(?:" + _public_roots(scope) + r'''|[A-Za-z]:[\\/]|(?i:file):/{2,}|\\{2,}|/{2,}|(?<![A-Za-z]:)/[^/\s"'<>]+/)'''
+    root = r"(?:" + _public_roots(scope) + r"|[A-Za-z]:[\\/]|(?i:file):/{2,}|\\{2,}|/{2,})"
+    quoted_root = r"(?:" + root + r'''|(?<![A-Za-z]:)/[^/\s"'<>]+/)'''
+    root = r"(?:" + root + r'''|(?<![A-Za-z]:)/[^/\s"'<>)\]}]+/)'''
     paths = (r"(?P<keep>" + keep + r")|" + left
-             + r'''(?P<quote>["'])(?P<quoted>''' + root + r'''[^\r\n]*?)(?P=quote)|'''
+             + r'''(?P<quote>["'])(?P<quoted>''' + quoted_root + r'''[^\r\n]*?)(?P=quote)|'''
              + left + r"(?P<path>" + root + tail + r")")
 
     def hide(match):
@@ -484,7 +483,9 @@ def public_error(message: str, scope: dict | None = None) -> str:
     # 후보 경계 밖에 붙은 경로도 원문으로 내보내지 않는다. 이 검사는 치환하지 않는다.
     remains = re.compile(r"[A-Za-z]:[\\/]|(?<![\w\\])\\{2,}|/{2,}[^\s/]+/"
                          r"|(?<![\w./\\>])/(?:[^\s/]+/)[^\s]*|/(?:srv|home|var|tmp|mnt|opt|usr|etc|data)/[^\s/]+"
-                         r'''|(?<![\w./\\>])/[^/\s"'<>]+(?:[ \t]+(?!·(?:\s|$))[^/\s"'<>]+)+/''')
+                         r'''|(?<![\w./\\>])/[^/\s"'<>]+(?:[ \t]+(?!·(?:\s|$))[^/\s"'<>]+)+/'''
+                         # 가린 경로의 남은 역슬래시 조각도 닫는다. 절대 경로 없는 상대 경로 안내는 그대로다.
+                         + (r"|\\" if "<계정 폴더>" in result or "<서버 경로>" in result else ""))
     start = 0
     for protected in re.finditer(keep, result):
         if remains.search(result[start:protected.start()]):

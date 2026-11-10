@@ -60409,20 +60409,22 @@ def forge_f3_server_unit():
     out = Path(tempfile.mkdtemp(prefix="f3_server_", dir=OUT_ROOT.resolve()))
     scope = _fj_scope(out / "account")
     synthetic_home = {"home": "C:/data/account"}
+    closed_message = "요청을 처리하지 못했습니다(서버 기록 참고)"
     paths = [
         (r"C:\a\b.png", "<서버 경로>"), ("C:/a/b.png", "<서버 경로>"),
         (r"C:\\a\\b", "<서버 경로>"), (r"\\server\share\x", "<서버 경로>"),
         ("/srv/data/x", "<서버 경로>"), ("(--data=/srv/data/x)", "(--data=<서버 경로>)"),
         ("실패:/tmp/work/x.png", "실패:<서버 경로>"),
-        (r"C:\Program Files\x.psd 를 못 읽음", "<서버 경로> 를 못 읽음"),
-        (r"C:\Program Files (x86)\App\lib\x.py 를 읽지 못함", "<서버 경로> 를 읽지 못함"),
-        (r"C:\Several Folder Name Words\App\x.py 없음", "<서버 경로> 없음"),
-        (r"C:\Several Folder Name Words\one / D:\other\two", "<서버 경로> / <서버 경로>"),
-        (r"<계정 폴더>\Several Folder Name Words\p\x.py", r"<계정 폴더>\Several Folder Name Words\p\x.py"),
+        (r"C:\Program Files\x.psd 를 못 읽음", closed_message),
+        (r"C:\Program Files (x86)\App\lib\x.py 를 읽지 못함", closed_message),
+        (r"C:\Several Folder Name Words\App\x.py 없음", closed_message),
+        (r"C:\Several Folder Name Words\one / D:\other\two", closed_message),
+        (r"<계정 폴더>\Several Folder Name Words\p\x.py", closed_message),
         ('"C:/Program Files/file name.psd" 없음', '"<서버 경로>" 없음'),
         ("'/srv/some folder/file name.psd' 없음", "'<서버 경로>' 없음"),
+        ('"/dir)]}/file name.psd" 없음', '"<서버 경로>" 없음'),
         (r"'\\server\shared folder\file name.psd' 없음", "'<서버 경로>' 없음"),
-        ("경로 /srv/some folder/x.psd 를 못 읽음", "경로 <서버 경로> 를 못 읽음"),
+        ("경로 /srv/some folder/x.psd 를 못 읽음", "경로 <서버 경로> folder/x.psd 를 못 읽음"),
         (r"c:\DATA\ACCOUNT\bmk_design_patch\p\x.psd", r"<계정 폴더>\bmk_design_patch\p\x.psd"),
         (r"C:\\data\\account\\x.psd", r"<계정 폴더>\\x.psd"),
         ("C:/data/account/x.psd", "<계정 폴더>/x.psd"),
@@ -60435,12 +60437,20 @@ def forge_f3_server_unit():
         ("http://example.test/a/b", "http://example.test/a/b"),
         ("https://example.test/a/b?q=C:/data/account/x", "https://example.test/a/b?q=C:/data/account/x"),
         (r"refs\\a\\b", r"refs\\a\\b"),
+        (r"refs\a\b · .\parts\image.psd · ..\draft\notes.txt", r"refs\a\b · .\parts\image.psd · ..\draft\notes.txt"),
         ("2026/11/10 · 3/4 · A/B/C · refs/a.png · ../a/b", "2026/11/10 · 3/4 · A/B/C · refs/a.png · ../a/b"),
         ("/one · name/foo/bar", "/one · name/foo/bar"),
         (r"<계정 폴더>\bmk_design_patch\p\x.psd", r"<계정 폴더>\bmk_design_patch\p\x.psd"),
         ("https://example.test/a/b 와 /srv/data/x", "https://example.test/a/b 와 <서버 경로>"),
         (r"C:/data/account/one / C:\other\two / /srv/data/three", r"<계정 폴더>/one / <서버 경로> / <서버 경로>"),
         (r"C:/data/account/one C:\other\two", r"<계정 폴더>/one <서버 경로>"),
+        # 4차 R1: 공백을 건너 뒤쪽 경로·설명까지 한 후보로 삼키지 않는다.
+        (r"C:/data/account/p/x.psd 쓰기 실패 (C:\other\two)", "<계정 폴더>/p/x.psd 쓰기 실패 (<서버 경로>)"),
+        (r"<계정 폴더>\p\x.psd 쓰기 실패 (C:\other\two)", r"<계정 폴더>\p\x.psd 쓰기 실패 (<서버 경로>)"),
+        (r"C:\srv\x.psd 를 열 수 없습니다(PSD/PSB 아님)", "<서버 경로> 를 열 수 없습니다(PSD/PSB 아님)"),
+        (r"대상=C:\x\y.psd", "대상=<서버 경로>"),
+        (r"경로C:\x\y.psd", closed_message),
+        (r"(C:\srv\x.psd)닫는 괄호 뒤 설명", "(<서버 경로>)닫는 괄호 뒤 설명"),
         ("[C:/private/a.psd]", "[<서버 경로>]"),
         ("401/402/403 · 001_ab/A · 앞 / 뒤", "401/402/403 · 001_ab/A · 앞 / 뒤"),
         ("<계정 폴더>/a/b", "<계정 폴더>/a/b"),
@@ -60453,13 +60463,16 @@ def forge_f3_server_unit():
         ("HTTPS://example.test/srv/data/x", "HTTPS://example.test/srv/data/x"),
     ]
     for mode in ("", "1"):
-        with patch.dict(os.environ, {bd.SERVER_ENV: mode}):
+        with patch.dict(os.environ, {bd.SERVER_ENV: mode}), patch.object(bd.logger, "warning") as log:
             token = bd.set_scope(synthetic_home)
             try:
                 for source, expected in paths:
                     expected = expected if mode else source
+                    log.reset_mock()
                     actual = bd.public_error(source)
                     check(actual == expected, f"F3S1 경로·경계·로컬 보존 {mode!r} {source!r}: {actual!r}")
+                    check(log.call_count == int(bool(mode) and expected == closed_message)
+                          and (not log.called or log.call_args.args[-1] == source), "F3S1 4차 R1 닫힌 쪽만 원문을 로그에 기록·로컬 로그 없음")
                     check(bd.public_error(actual) == actual, "F3S1 중복 가림은 같은 결과")
                 check(bd.public_error("C:/data/account/x", {}) == ("<서버 경로>" if mode else "C:/data/account/x"),
                       "F3S1 명시한 빈 scope 는 현재 계정 범위를 쓰지 않음")
@@ -60480,15 +60493,18 @@ def forge_f3_server_unit():
             finally:
                 bd.reset_scope(token)
 
-    with patch.dict(os.environ, {bd.SERVER_ENV: "1"}):
-        for home, path, expected_path in (
-            ("/srv/accounts/me", "/srv/accounts/me/a", "<계정 폴더>/a"),
-            ("/srv/accounts/me", "https://example.test/srv/accounts/me/a", "https://example.test/srv/accounts/me/a"),
-            (r"\\server\share\account", r"\\SERVER\SHARE\account\a", r"<계정 폴더>\a"),
-            (r"\\server\share\account", "//SERVER/share/account/a", "<계정 폴더>/a"),
-            ("C:/Data Home/Account", r"C:\DATA HOME\ACCOUNT\a", r"<계정 폴더>\a"),
-        ):
-            check(bd.public_error(path, {"home": home}) == expected_path, "F3S1 POSIX·UNC·공백 계정 홈·URL 보존")
+    for mode in ("", "1"):
+        with patch.dict(os.environ, {bd.SERVER_ENV: mode}):
+            for home, path, expected_path in (
+                ("/srv/accounts/me", "/srv/accounts/me/a", "<계정 폴더>/a"),
+                ("/srv/accounts/me", "/srv/accounts/me/p/x.psd 실패 (/srv/other/two)", "<계정 폴더>/p/x.psd 실패 (<서버 경로>)"),
+                ("/srv/accounts/me", "https://example.test/srv/accounts/me/a", "https://example.test/srv/accounts/me/a"),
+                (r"\\server\share\account", r"\\SERVER\SHARE\account\a", r"<계정 폴더>\a"),
+                (r"\\server\share\account", "//SERVER/share/account/a", "<계정 폴더>/a"),
+                ("C:/Data Home/Account", r"C:\DATA HOME\ACCOUNT\a", r"<계정 폴더>\a"),
+            ):
+                check(bd.public_error(path, {"home": home}) == (expected_path if mode else path),
+                      "F3S1 POSIX·UNC·공백 계정 홈·URL·4차 R1 뒤쪽 경로·로컬 보존")
     for mode in ("", "1"):
         with patch.dict(os.environ, {bd.SERVER_ENV: mode, "TMPDIR": "", "TEMP": r"D:\Temporary Folder With Spaces", "TMP": ""}), \
                 patch.object(bd, "__file__", r"D:\Package Folder With Spaces\board.py"), \
