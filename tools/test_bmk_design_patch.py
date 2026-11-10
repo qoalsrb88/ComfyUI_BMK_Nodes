@@ -60510,12 +60510,12 @@ def forge_f3_server_unit():
         (r"C:\Program Files (x86)\App\lib\x.py 를 읽지 못함", closed_message),
         (r"C:\Several Folder Name Words\App\x.py 없음", closed_message),
         (r"C:\Several Folder Name Words\one / D:\other\two", closed_message),
-        (r"<계정 폴더>\Several Folder Name Words\p\x.py", closed_message),
+        (r"<계정 폴더>\Several Folder Name Words\p\x.py", r"<계정 폴더>\Several Folder Name Words\p\x.py"),  # 5차 (f): 자기 홈 뒤에는 적용하지 않음.
         ('"C:/Program Files/file name.psd" 없음', '"<서버 경로>" 없음'),
         ("'/srv/some folder/file name.psd' 없음", "'<서버 경로>' 없음"),
         ('"/dir)]}/file name.psd" 없음', '"<서버 경로>" 없음'),
         (r"'\\server\shared folder\file name.psd' 없음", "'<서버 경로>' 없음"),
-        ("경로 /srv/some folder/x.psd 를 못 읽음", "경로 <서버 경로> folder/x.psd 를 못 읽음"),
+        ("경로 /srv/some folder/x.psd 를 못 읽음", closed_message),
         (r"c:\DATA\ACCOUNT\bmk_design_patch\p\x.psd", r"<계정 폴더>\bmk_design_patch\p\x.psd"),
         (r"C:\\data\\account\\x.psd", r"<계정 폴더>\\x.psd"),
         ("C:/data/account/x.psd", "<계정 폴더>/x.psd"),
@@ -60530,7 +60530,7 @@ def forge_f3_server_unit():
         (r"refs\\a\\b", r"refs\\a\\b"),
         (r"refs\a\b · .\parts\image.psd · ..\draft\notes.txt", r"refs\a\b · .\parts\image.psd · ..\draft\notes.txt"),
         ("2026/11/10 · 3/4 · A/B/C · refs/a.png · ../a/b", "2026/11/10 · 3/4 · A/B/C · refs/a.png · ../a/b"),
-        ("/one · name/foo/bar", "/one · name/foo/bar"),
+        ("/one · name/foo/bar", closed_message),  # 5차 (d): 한 단계 절대 경로도 닫음.
         (r"<계정 폴더>\bmk_design_patch\p\x.psd", r"<계정 폴더>\bmk_design_patch\p\x.psd"),
         ("https://example.test/a/b 와 /srv/data/x", "https://example.test/a/b 와 <서버 경로>"),
         (r"C:/data/account/one / C:\other\two / /srv/data/three", r"<계정 폴더>/one / <서버 경로> / <서버 경로>"),
@@ -60624,11 +60624,94 @@ def forge_f3_server_unit():
                   == ("<계정 폴더>/p/x.psd 없음" if mode else "/My Data/org1/acct1/p/x.psd 없음"), "F3S1 3차 R1 공백 POSIX 계정 홈")
             check(bd.public_error("/My Data/org2/acct2/p/x.psd 없음", posix_scope)
                   == ("<서버 경로> 없음" if mode else "/My Data/org2/acct2/p/x.psd 없음"), "F3S1 3차 R1 추론한 공백 POSIX 데이터 뿌리")
+    # 5차 R1–R6: 실제 뿌리 대신 범위·설치 폴더를 주입하고 두 모드의 결과·원문 로그를 고정한다.
+    review_paths = [
+        ("R1", synthetic_home, "C:/Program Files/x.psd 를 못 읽음", closed_message),
+        ("R1", {"home": "/srv/data/org1/acct1"}, "/srv/data/org2/acct2/My Project/x.psd 없음", closed_message),
+        ("R1", synthetic_home, "/home/o'brien/x.psd", closed_message),
+        ("R1", synthetic_home, "/opt/My (old)/x.psd 없음", closed_message),
+        ("R2", {"data_dir": "/My Data"}, "데이터 폴더(/My Data)가 없습니다", "데이터 폴더(<서버 경로>)가 없습니다"),
+        ("R2", {"data_dir": "/My Data"}, "데이터 폴더 /My Data. 없음", "데이터 폴더 <서버 경로>. 없음"),
+        ("R2", {"data_dir": "/My Data"}, "데이터 폴더 /My Data, 없음", "데이터 폴더 <서버 경로>, 없음"),
+        ("R2", synthetic_home, r"D:\Python Install Folder에서 실패", "<서버 경로>에서 실패"),
+        ("R2", {"home": "C:/Data Home/Account"}, "C:/Data Home/Account에 쓰기 실패", "<계정 폴더>에 쓰기 실패"),
+        ("R2", {"home": "C:/Data Home/Account"}, "(C:/Data Home/Account)가 없습니다", "(<계정 폴더>)가 없습니다"),
+        ("R2", {"home": "C:/Data Home/Account"}, "C:/Data Home/Account.other 없음", "<서버 경로> 없음"),
+        ("R2", {"data_dir": "/My Data"}, "/My Data/app/custom nodes/BMK/x.py 실패", "<서버 경로> 실패"),
+        ("R2", {"home": r"D:\Design Patch Data\org1\acct1"}, r"D:\Design Patch Data\org1\acct1-bbbb2\p\x.psd", "<서버 경로>"),
+        ("R3", {"home": "/srv/accounts/me"}, "검색 경로: /srv/accounts/me/bin:/srv/secret/bin", "검색 경로: <계정 폴더>/bin:<서버 경로>"),
+        ("R3", synthetic_home, r"C:\data\account\a.psd;D:\secret\b.psd", r"<계정 폴더>\a.psd;<서버 경로>"),
+        ("R3", synthetic_home, "C:/data/account/a.psd,C:/other/b.psd", "<계정 폴더>/a.psd,<서버 경로>"),
+        ("R3", synthetic_home, '"C:/data/account/a.psd,C:/other/b.psd"', closed_message),
+        ("R3", synthetic_home, "'C:/data/account/a.psd,C:/other/b.psd'", closed_message),
+        ("R3", synthetic_home, "C:/data/account/a.psd|/srv/secret/b.psd", "<계정 폴더>/a.psd|<서버 경로>"),
+        ("R3", synthetic_home, "https://x.test/a,/srv/secret/x", "https://x.test/a,<서버 경로>"),
+        ("R3", synthetic_home, "https://x.test/a;/srv/secret/x", "https://x.test/a;<서버 경로>"),
+        ("R3", synthetic_home, "https://x.test/a|/srv/secret/x", "https://x.test/a|<서버 경로>"),
+        ("R3", synthetic_home, "https://x.test/a?q=C:/temp/x", "https://x.test/a?q=C:/temp/x"),
+        ("R4", synthetic_home, r"경로\\server\share\x.psd", closed_message),
+        ("R4", synthetic_home, r"\Users\svc\AppData\x.psd 없음", closed_message),
+        ("R4", synthetic_home, r"refs\a.png 가 없음", r"refs\a.png 가 없음"),
+        ("R4", synthetic_home, r".\out\x.png", r".\out\x.png"),
+        ("R4", synthetic_home, r"..\x", r"..\x"),
+        ("R5", synthetic_home, r"C:\data\account\p\manifest.json 의 refs\a.png 가 없음",
+         r"<계정 폴더>\p\manifest.json 의 refs\a.png 가 없음"),
+        ("R5", synthetic_home, r"C:\data\account\p\manifest.json 의 'a\nb'",
+         r"<계정 폴더>\p\manifest.json 의 'a\nb'"),
+        ("R6", synthetic_home, "폴더/Users/me/x.psd", closed_message),
+        ("R6", synthetic_home, "작업/app/acct/x.psd", closed_message),
+        ("R6", synthetic_home, "a.psd->/workspace/acct/b.psd", closed_message),
+        ("R6", synthetic_home, "<b>/custom/private/x", closed_message),
+        ("보존", synthetic_home, "2026/11/10 · 3/4 · 401/402/403 · 001_ab/A · A/B/C · PSD/PSB · +/- · refs/a.png",
+         "2026/11/10 · 3/4 · 401/402/403 · 001_ab/A · A/B/C · PSD/PSB · +/- · refs/a.png"),
+    ]
+    for mode in ("", "1"):
+        with patch.dict(os.environ, {bd.SERVER_ENV: mode, "TMPDIR": "", "TEMP": r"D:\Temp Folder", "TMP": ""}), \
+                patch.object(bd, "__file__", "/My Data/app/custom nodes/BMK/board.py"), \
+                patch.object(bd.os.path, "abspath", return_value="/My Data/app/custom nodes/BMK/board.py"), \
+                patch.object(bd.sys, "prefix", r"D:\Python Install Folder"), \
+                patch.object(bd.sys, "executable", r"D:\Python Install Folder\python.exe"), \
+                patch.object(bd.logger, "warning") as log:
+            for item, item_scope, source, expected_path in review_paths:
+                log.reset_mock()
+                expected_path = expected_path if mode else source
+                actual = bd.public_error(source, item_scope)
+                check(actual == expected_path, f"F3S1 5차 {item} {mode!r} {source!r}: {actual!r}")
+                check(log.call_count == int(bool(mode) and expected_path == closed_message)
+                      and (not log.called or log.call_args.args[-1] == source), f"F3S1 5차 {item} 원문 로그·로컬 로그 없음")
+                check(bd.public_error(actual, item_scope) == actual, f"F3S1 5차 {item} 중복 가림")
+    # 남은 것 판정은 모드·scope·로그에 기대지 않고 보호 구간 밖의 (a)–(f)만 본다.
+    for source, expected_leftover in (
+        (r"경로C:\private\x", True), (r"경로\\server\share\x", True),
+        ("\\", True), ("//", True),
+        (r"\Users", True), ("bad!//host/share", True), ("/tmp", True),
+        ("/~acct", True), ("/.private", True), ("폴더/Volumes/data/x", True),
+        ("<계정 폴더>/bin:/srv/private/bin", True),
+        ("<계정 폴더>/one / <서버 경로>", False),
+        (r"<계정 폴더>\p\manifest.json 의 refs\a.png 가 없음", False),
+        (r"refs\\a\\b · .\out\x.png · ..\x", False),
+        ("https://x.test/a?q=C:/temp/x", False),
+        ("<서버 경로> Files/x.psd 를 못 읽음", True),
+        ("<서버 경로>'brien/x.psd", True),
+        ("<서버 경로> (old)/x.psd 없음", True),
+        ("<서버 경로> words <서버 경로> Files/x.psd", True),
+        ("<서버 경로> words <계정 폴더>/x Files/x.psd", True),
+        ("<서버 경로> words https://x.test/a?q=C:/temp/x", False),
+        ("<서버 경로> 를 열 수 없습니다(PSD/PSB 아님)", False),
+        ("<서버 경로> / refs/a.png", False),
+        ("<서버 경로> · refs/a.png", False),
+        ("<계정 폴더>/p/x.psd 쓰기 실패 (<서버 경로>)", False),
+        ("3/4 · A/B/C · 001_ab/A · +/- · 앞 / 뒤", False),
+    ):
+        with patch.object(bd.logger, "warning") as log:
+            check(bd._public_leftover(source) is expected_leftover, "F3S1 5차 남은 것 판정: " + source)
+            check(not log.called, "F3S1 5차 남은 것 판정 자체는 로그·치환 없음")
     for mode in ("", "1"):
         with patch.dict(os.environ, {bd.SERVER_ENV: mode}), patch.object(bd.logger, "warning") as log:
             closed_paths = ["opaqueC:/private/a.psd", r"bad!\\server\share\x", "{/srv/private/x}", "bad!//host/share/x"]
             closed_paths += [prefix + "/" + base + "/private/x" for prefix in ("<b>", "폴더", "word")
-                             for base in ("srv", "home", "var", "tmp", "mnt", "opt", "usr", "etc", "data")]
+                             for base in ("srv", "home", "var", "tmp", "mnt", "opt", "usr", "etc", "data",
+                                          "Users", "root", "app", "workspace", "Volumes", "private", "run", "media")]
             for source in closed_paths:
                 actual = bd.public_error(source)
                 check(actual == ("요청을 처리하지 못했습니다(서버 기록 참고)" if mode else source), "F3S1 R6 가림 실패는 닫힌 쪽: " + source)
