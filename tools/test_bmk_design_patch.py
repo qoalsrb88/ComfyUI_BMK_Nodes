@@ -12622,7 +12622,7 @@ _S0_261014 = Path(r"H:\ComfyUI-Easy-Install\comfy8189\input\bmk_design_patch\s0_
 
 
 # 마스크 모드 「대상」 둘째 줄(기준이 자동 마스크일 때 — 10/21 실사용 U-2)
-MASK_AUTO_ROW = "자동 마스크 = Analyze 가 후보와 원본 크롭의 색 차이(ΔE)로 만든 영역 — 대상인지와 무관: 엉뚱하게 바뀐 곳은 [지우기], 대상 안 구멍은 [살리기]"
+MASK_AUTO_ROW = "자동 마스크 = Analyze 가 후보와 원본 크롭의 색 차이(ΔE)로 만든 영역 — 대상인지와 무관: 엉뚱하게 바뀐 곳은 [지우개], 대상 안 구멍은 [브러시]"
 
 
 def _layout_rnd(v, q):
@@ -43054,7 +43054,7 @@ await scenario("panel", async () => {
   key("Enter");
   await sleep(10);
   r.applying = { row: rows().find((t) => t.startsWith("적용 중")) || null,
-    disabled: ["실행 취소", "적용", "버리기", "위 가장자리 페이드", "전체 페더", "이전 버전으로"].map((l) => (B(l) ? B(l).disabled : null)),
+    disabled: ["되돌리기", "적용", "전체 지우기", "위 가장자리 페이드", "전체 페더", "이전 버전으로"].map((l) => (B(l) ? B(l).disabled : null)),
     brush: viewer.ed.pointerdown({ cx: 600, cy: 2900, shiftKey: false }), undoKey: key("KeyZ", { ctrlKey: true }), pending: ed.pending() };
   // 적용 중 대상 바꾸기(N·목록) 거절 — 받으면 적용 성공 길이 옛 대상의 값·file 을 새 대상 세션에 씀
   Object.assign(r.applying, { go: (await ed.go({ key: K14, seam: null })), goToast: toasts.at(-1), confirms: confirms.length });
@@ -43130,7 +43130,7 @@ await scenario("panel", async () => {
   r.again.zero = { pending: ed.pending(), behind: behindRow(), button: !!B("다시 받기"), gets: P.count("mask") - g1 };
   key("KeyY", { ctrlKey: true });
   const n1 = [P.count("mask"), P.count("mask/img", "edit")];
-  B("버리기").fire("click"); await Promise.resolve(); await Promise.resolve();
+  B("전체 지우기").fire("click"); await Promise.resolve(); await Promise.resolve();
   raf();  // U3 3차 검증: 브라우저에선 [버리기]의 rAF 가 다시 열기보다 먼저 돎(연 판 합성) — 다시 연 뒤 겹침 전체를 서버 판으로 다시 그려야 함
   const pDisc = puts.length;
   await until(() => P.count("mask/img", "edit") > n1[1] && !behindRow().length);
@@ -43908,7 +43908,7 @@ await scenario("panelR2", async () => {
   await sleep(5);
   r.starStroke = { confirm: confirms.pop() || null, pick: calls.pick.length, pending: ed.pending() && ed.pending().n };
   P.answer = true;
-  B("버리기").fire("click"); await sleep(0);
+  B("전체 지우기").fire("click"); await sleep(0);
   confirms.pop();
   // tests-r2-05: 패널 6 이음매 줄 누르기(지금 대상) = 그 구간으로 2:1·선택 구간(줄 강조·구간 페이드 켬)
   const nLook = viewer.looks.length;
@@ -44094,7 +44094,7 @@ await scenario("panelR3", async () => {
     raf();
     r.viewKeys.push([code, ret, ended, puts.length - p1]);
   }
-  B("버리기").fire("click"); await sleep(0);
+  B("전체 지우기").fire("click"); await sleep(0);
   confirms.pop();
   // tests-r3-02: 보드 쓰기 실패(null — 보드가 다른 쓰기 중·409·네트워크) = 대상·세션 그대로
   srv.alts.push([200, MA["GET /mask/alts"].ok]);
@@ -44120,7 +44120,7 @@ await scenario("panelR3", async () => {
   const brush = viewer.ed.pointerdown({ cx: 650, cy: 2900, shiftKey: false });
   viewer.ed.pointerup({});
   r.pickHold = { brush, enter: key("Enter"), undo: key("KeyZ", { ctrlKey: true }), go: (await ed.go({ key: K14, seam: null })), leave: (await ed.leave()), n: n(),
-    off: ["적용", "버리기", "실행 취소", "이 후보를 ★"].map((l) => (B(l) ? B(l).disabled : null)) };
+    off: ["적용", "전체 지우기", "되돌리기", "이 후보를 ★"].map((l) => (B(l) ? B(l).disabled : null)) };
   await sleep(10);
   Object.assign(r.pickHold, { saves: P.count("mask/save") - s0, toasts: toasts.slice(t0), confirms: confirms.splice(0).length, editor: !!viewer.ed });
   gp.go();
@@ -44247,7 +44247,7 @@ await scenario("panelR3b", async () => {
   const Hp = maskPanel();
   (await Hp.ed.enter(maskState(), { key: K15, seam: null }));
   await ready(Hp);
-  const xb = Hp.B("살리기");
+  const xb = Hp.B("브러시");
   xb.fire("pointerdown", { buttons: 1 });
   Hp.viewer.seamsObj = { sig: Hp.seams.sig, segments: Hp.seams.segments.concat([Object.assign(clone(Hp.seams.segments[0]), { y0: 2600, y1: 2650 })]) };
   Hp.ed.seamsChanged();
@@ -44260,7 +44260,7 @@ await scenario("panelR3b", async () => {
     tool: Hp.panel.all().filter((e) => e.tagName === "BUTTON" && e.classList.contains("on")).map((e) => e.textContent) };
   Hp.panel.fire("pointerdown", { buttons: 1 });
   Hp.panel.fire("pointermove", { buttons: 0 });
-  const b2 = Hp.B("살리기");
+  const b2 = Hp.B("브러시");
   Hp.ed.seamsChanged();
   r.held.missedUp = Hp.panel.contains(b2);
   (await Hp.ed.leave());
@@ -44402,7 +44402,7 @@ await scenario("panelR3b", async () => {
               and e["paths"] == ["mask", "mask/img:base", "mask/img:edit", "mask/img:under", "mask/img:patch", "mask/img:over"],
               f"K 진입: 뷰어 편집기 훅·겹침 캔버스(box)·전체 합성 한 번, 보드 선택 = 편집 대상, 대상 줄(크롭·타깃·c·★·기준·창·z)·편집 줄, 왼쪽 크롭 칩 {e}")
         k = pn["keys"]
-        check(k["x"] is True and k["tool"] == ["살리기", "폭 64"] and k["sliders"] == [dict(text="크기px", value=58), dict(text="경도", value=.4), dict(text="흐름", value=1), dict(text="페더 (px)px", value=4)]
+        check(k["x"] is True and k["tool"] == ["브러시", "폭 64"] and k["sliders"] == [dict(text="크기px", value=58), dict(text="경도", value=.4), dict(text="흐름", value=1), dict(text="페더 (px)px", value=4)]
               and k["q"] == "보기: 처음 마스크(Q 누르는 중)" and k["view"] == "보기: 처음|편집 슬라이더(S — 왼쪽 = 처음 마스크) · 마스크(M)" and k["review"] == [False] * 6,
               f"키: X 지우기 ↔ 살리기, ] 크기 ×1.2, Shift+[ 경도 −0.1, Q 누르는 동안 기준, M·S 보기, 검토·뷰어 키는 받지 않음(board.js 가 끔·뷰어로) {k}")
         sk = pn["stroke"]
@@ -44797,7 +44797,7 @@ await scenario("panelR3b", async () => {
         fl = p3b["flushLost"]
         check(fl["queued"] > 0 and {k: v for k, v in fl.items() if k != "queued"} == {"threw": None, "layer": None, "err": True},
               f"3차 session-r3-03 (8): 되돌린 뒤 다시 열기가 래스터를 못 받음(세션 없음) — 3층을 다시 받는 사이 rAF 가 돌아도 합성하지 않음(예외 없음), 겹침 뗌 {fl}")
-        check(p3b["held"] == {"kept": True, "listDuring": "015_치마밑단_주름편집 1이음매 2", "list": "015_치마밑단_주름편집 1이음매 3", "tool": ["살리기", "폭 64"],
+        check(p3b["held"] == {"kept": True, "listDuring": "015_치마밑단_주름편집 1이음매 2", "list": "015_치마밑단_주름편집 1이음매 3", "tool": ["브러시", "폭 64"],
                               "missedUp": False},
               f"3차 ui-r3-01: 포인터가 눌린 동안 새 이음매·state 로 목록·패널을 다시 만들지 않음(누른 단추가 그대로 — click 이 감), 놓은 뒤 그림, pointerup 을 놓치면 "
               f"버튼 없는 pointermove 가 놓은 것으로 {p3b['held']}")
@@ -45350,7 +45350,8 @@ def polish5_adjust_unit():
     cut += [harness[:harness.index('// J-K1 공용 표')], harness[harness.index('function maskState()'):harness.index('await scenario("panel",')]]
     test_js = r'''
 await scenario("adjust", async () => {
-  const P = maskPanel(), { srv, ed, viewer, B } = P;
+  const P = maskPanel(), { srv, ed, viewer } = P;
+  const B = label => label === "되돌리기" ? controls()?.all().find(e => e.tagName === "BUTTON" && e.textContent === label) : P.B(label);
   const info = maskInfo(K15);
   info.adjust = null;
   srv.info[K15] = info;
@@ -45440,7 +45441,7 @@ await scenario("adjust", async () => {
   slider().value = 4; slider().fire("input");
   await new Promise((r) => setTimeout(r, 350));
   result.pendingNoWrite = P.count("mask/adjust") === n;
-  B("버리기").fire("click");
+  B("전체 지우기").fire("click");
   await until(() => !ed.pending() && !ed._test.M.busy);
   srv.fail = true;
   slider().value = 4; slider().fire("input");
@@ -46333,7 +46334,8 @@ await scenario("xformRecovery", async () => {
   P.srv.maskError = {error: "편집할 창 없음", adjust: null};
   (await P.ed.enter(maskState(), {key: K15}));
   await until(() => !P.ed._test.M.busy && P.ed._test.M.err);
-  result.noRecord = !P.B("변형 없음") && !P.B("보정 없음") && !P.B("되돌리기");
+  result.noRecord = !P.B("변형 없음") && !P.B("보정 없음")
+    && !P.panel.all().some(e => e.tagName === "BUTTON" && e.textContent === "되돌리기" && e.title.startsWith("후보 보정 —"));
   (await P.ed.leave());
   return result;
 });
@@ -46958,12 +46960,12 @@ await scenario("b7Fixes",async()=>{
   const buttons=()=>P.panel.all().filter(e=>e.tagName==="BUTTON");
   r.pending=M.pending()>0;
   r.inlineApply=buttons().filter(b=>b.textContent==="적용 (Enter)").length===1&&!buttons().find(b=>b.textContent==="적용 (Enter)").disabled;
-  r.inlineDiscard=buttons().filter(b=>b.textContent==="버리기").length===2;
+  r.inlineDiscard=buttons().filter(b=>b.textContent==="전체 지우기").length===2;
   r.hint=P.panel.all().some(e=>e.textContent==="자동 손질(가장자리 페이드·이음매 페이드·전체 페더·처음 마스크로)도 적용 전 획으로 셉니다");
   B("변형").fire("click");const n=P.toasts.length;P.down(24,20);
-  r.toast=P.toasts.length===n+1&&P.toasts.at(-1).includes("「후보 보정」 칸 [적용 (Enter)]·[버리기]");
+  r.toast=P.toasts.length===n+1&&P.toasts.at(-1).includes("「후보 보정」 칸 [적용 (Enter)]·[전체 지우기]");
   M.discard();B("붓").fire("click");P.raf();
-  r.cleared=!buttons().some(b=>b.textContent==="적용 (Enter)")&&buttons().filter(b=>b.textContent==="버리기").length===1;
+  r.cleared=!buttons().some(b=>b.textContent==="적용 (Enter)")&&buttons().filter(b=>b.textContent==="전체 지우기").length===1;
   (await ed.leave());return r;
 });
 console.log(JSON.stringify(out));
@@ -52735,7 +52737,7 @@ await scenario("details",async()=>{
   details(P).find(e=>e.dataset.detail==="xform").fire("click");
   r.xformNavigation=P.B("변형").ariaPressed==="true"&&sectionOf(P,"후보 보정").scrolled===true;
   P.B("처음 마스크로").fire("click"); r.pending=details(P).some(e=>e.textContent.startsWith("적용 전 획 1"));
-  P.B("실행 취소").fire("click");r.pendingUndo=!details(P).some(e=>e.textContent.startsWith("적용 전 획"));M.discard();
+  P.B("되돌리기").fire("click");r.pendingUndo=!details(P).some(e=>e.textContent.startsWith("적용 전 획"));M.discard();
   expanders(P)[0].fire("click"); r.collapse=P.list.textContent===collapsed&&details(P).length===0;
   // 다중 ★ 의 줄은 해당 하위 li 안에만. 미선택 후보는 ops 대신 날짜·stale.
   const second={...P.S.targets[0].candidates[0],key:K15B,n:2,mask_edit:{at:"2026-11-01 09:10:00",stale:true}};
@@ -52760,7 +52762,9 @@ await scenario("history",async()=>{
   const kinds=name=>sectionOf(P,name).all().filter(e=>e.dataset.hist).map(e=>e.dataset.hist).join();
   r.order=kinds("적용 전 획")==="undo,redo,clear"&&kinds("저장된 버전")==="undo,clear"&&kinds("후보 보정")==="undo,clear,clear";
   r.bottom=["적용 전 획","저장된 버전","후보 보정"].every(name=>sectionOf(P,name).children.at(-1).all().some(e=>e.dataset.hist));
-  r.title=P.B("실행 취소").title==="적용 전 획 — 한 단계 되돌리기 (Ctrl+Z)"&&P.B("다시").title.includes("Ctrl+Shift+Z");
+  const sessionButtons=sectionOf(P,"적용 전 획").all().filter(e=>e.tagName==="BUTTON");
+  r.title=sessionButtons.find(e=>e.textContent==="되돌리기").title==="적용 전 획 — 한 단계 되돌리기 (Ctrl+Z)"
+    &&sessionButtons.find(e=>e.textContent==="다시실행").title.includes("Ctrl+Shift+Z");
   M.err="test"; M.recovery={key:M.key,adjust:M.info.adjust}; P.render();
   const row=sectionOf(P,"대상").children.at(-1);
   r.recovery=row.all().filter(e=>e.dataset.hist).map(e=>e.textContent).join()==="되돌리기,변형 없음,보정 없음";
@@ -56321,6 +56325,191 @@ console.log(JSON.stringify(out));
 def forge_f3_tools_unit():
     """Forge F3 갈래 U2 — 도구 문구·빈 화면·서버 모드 표시(node vm). 명세 §4.3·§5. --quick 포함."""
     section("Forge F3-U2 — 도구 문구 (forge_f3_tools_unit)")
+    web = PKG / "web_design_patch"
+    src = {n: (web / n).read_text(encoding="utf-8") for n in
+           ("mask_edit.js", "layout_edit.js", "ref_edit.js", "viewer.js", "board.css")}
+    for name, count in (("mask_edit.js", 7), ("layout_edit.js", 6), ("ref_edit.js", 6)):
+        check(src[name].count("await askFree(") == count, f"F3-U2 {name} 무료 확인 호출 수 보존")
+    css = src["board.css"].split("/* ── Forge F3-U2", 1)[1]
+    check("svg.dr-isolate .dr-check-base { fill: var(--panel); }" in css
+          and "svg.dr-isolate .dr-check-tile { fill: var(--panel2); }" in css
+          and "svg.marks .mguide { fill: var(--accent); }" in css, "F3-U2 D364 SVG 가이드·체커 테마 변수")
+    check('#ffd477' not in src["mask_edit.js"] and '#171a20' not in src["viewer.js"] and '#292e38' not in src["viewer.js"],
+          "F3-U2 D364 SVG 테마색의 고정 fill 제거")
+    check('svg("rect", { fill: "white" })' in src["viewer.js"] and 'fill: "black", "fill-opacity": 0.12' in src["viewer.js"],
+          "F3-U2 D364 격리 마스크 흑백·불투명도 보존")
+    node = shutil.which("node")
+    if not node:
+        skip("node 없음: F3-U2 모의 DOM·키·두 모드 문구 미검증")
+        return
+    out = OUT_ROOT / "forge_f3_tools"
+    out.mkdir(parents=True, exist_ok=True)
+
+    def run(name, script, data, *modules):
+        js, inp = out / f"{name}.mjs", out / f"{name}.json"
+        js.write_text(script, encoding="utf-8")
+        inp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        result = subprocess.run([node, str(js), *[str(web / n) for n in modules], str(inp)],
+                                capture_output=True, text=True, encoding="utf-8", timeout=90)
+        if result.returncode or not result.stdout.strip():
+            check(False, f"F3-U2 {name} VM 실패: {result.stderr[-3000:]}")
+            return
+        for case, values in json.loads(result.stdout.strip().splitlines()[-1]).items():
+            for label, value in values.items():
+                check(value is True, f"F3-U2 {name} {case} {label}: {value}")
+
+    # 기존 DOM·이미지·fetch 대역을 재사용한다. VM 밖의 통신 경로는 만들지 않는다.
+    common = r'''
+const forbidden = /ComfyUI|그래프|노드|위젯|Open Board|메뉴 BMK|큐|대기열|재시작|pipeline\.json|_layer_targets|탭 불필요/;
+const shown = root => root.all().map(e => `${e.own || ""} ${e.title || ""}`).join("\n");
+'''
+    tree = ast.parse(inspect.getsource(mask_js_unit))
+    harness = next(n.value.value for n in ast.walk(tree) if isinstance(n, ast.Assign)
+                   and any(isinstance(t, ast.Name) and t.id == "harness" for t in n.targets) and isinstance(n.value, ast.Constant))
+    cut = [_PL_JS_HARNESS[_PL_JS_HARNESS.index(a):_PL_JS_HARNESS.index(b, _PL_JS_HARNESS.index(a))]
+           for a, b in (("import fs", "async function run("), ("class El {", "async function mouse("))]
+    cut += [harness[:harness.index('// J-K1 공용 표')], harness[harness.index('function maskState()'):harness.index('await scenario("panel",')]]
+    mask = "".join(cut).replace('fs.readFileSync(IN.maskJs, "utf8")',
+        'fs.readFileSync(IN.maskJs, "utf8").replace("return { enter, leave, go, onKey, onKeyUp, stateChanged, seamsChanged, pending, isolateChanged: repaintAll }", '
+        '"return { _f3: { M, renderPanel, warnXform }, enter, leave, go, onKey, onKeyUp, stateChanged, seamsChanged, pending, isolateChanged: repaintAll }")')
+    mask = mask.replace('  P.winOn = {};', '  P.ctx = c;\n  P.winOn = {};')
+    mask += common + r'''
+for (const sm of [false, true]) await scenario(sm ? "server" : "local", async () => {
+  const P = maskPanel(), {ed, B, key, panel} = P, r = {};
+  P.ctx.window.DPEnv = {serverMode: sm};
+  P.ctx.window.DPDialog = {confirm: async text => {P.confirms.push(text); return P.answer;}};
+  const info = maskInfo(K15); info.edit = null; info.adjust = null; P.srv.info[K15] = info;
+  await ed.enter(maskState(), {key: K15}); await until(() => P.viewer.layer);
+  const {M, renderPanel, warnXform} = ed._f3;
+  const section = name => panel.children.find(e => e.children[0]?.textContent === name);
+  const hist = label => section("적용 전 획").all().find(e => e.tagName === "BUTTON" && e.textContent === label);
+  r.labels = !!B("지우개") && !!B("브러시") && !!B("흐리기") && !!B("붓") && !!B("변형") && !!B("페이드")
+    && !!section("붓 (왼쪽 끌기 · Space+끌기 = 화면 이동)") && B("지우개").classList.contains("mt-erase") && B("지우개").classList.contains("on");
+  r.titles = B("지우개").title === "X: 지우개 ↔ 브러시(붓 원 빨강) — 지우개 = 패치를 지움 · 브러시 = 패치를 살림"
+    && B("브러시").title === "X: 지우개 ↔ 브러시(붓 원 초록) — 지우개 = 패치를 지움 · 브러시 = 패치를 살림";
+  r.auto = P.rows().includes(IN.autoRow);
+  r.x = key("KeyX") && B("브러시").classList.contains("on") && key("KeyX") && B("지우개").classList.contains("on");
+  const slider = name => Number(panel.all().find(e => e.classList.contains("rf-slider") && e.children[0]?.textContent === name).children[2].value);
+  r.brackets = key("BracketRight") && slider("크기") === 58 && key("BracketLeft") && slider("크기") === 48
+    && key("BracketLeft", {shiftKey:true}) && slider("경도") === .4 && key("BracketRight", {shiftKey:true}) && slider("경도") === .5;
+  M.begin("erase", [M.win[0]+300, M.win[1]+300], 24, 1, 1); M.end(); renderPanel();
+  r.ops = M.ops() === "붓 1획";
+  r.history = hist("되돌리기").dataset.hist === "undo" && hist("다시실행").dataset.hist === "redo" && hist("전체 지우기").dataset.hist === "clear"
+    && hist("되돌리기").title === "적용 전 획 — 한 단계 되돌리기 (Ctrl+Z)" && hist("다시실행").title === "적용 전 획 — 한 단계 다시 (Ctrl+Y · Ctrl+Shift+Z)";
+  r.undo = key("KeyZ", {ctrlKey:true}) && M.pending() === 0 && M.redo.length === 1;
+  r.redo = key("KeyY", {ctrlKey:true}) && M.pending() === 1 && M.redo.length === 0;
+  r.shiftRedo = key("KeyZ", {ctrlKey:true}) && key("KeyZ", {ctrlKey:true,shiftKey:true}) && M.pending() === 1;
+  r.inline = section("후보 보정").textContent.includes("전체 지우기");
+  warnXform(); r.toast = P.toasts.at(-1).includes("[적용 (Enter)]·[전체 지우기]");
+  M.info = {...M.info, edit:{file:"new-version.png",hist:0,at:"2026-11-10 12:00:00"}}; renderPanel();
+  r.behind = panel.textContent.includes(sm ? "서버 버전이 바뀜(다른 창·작업)" : "서버 버전이 바뀜(다른 창·노드)");
+  r.screen = !sm || !forbidden.test(shown(panel));
+  M.info = info; renderPanel(); hist("전체 지우기").fire("click"); await sleep(10);
+  r.clear = M.pending() === 0 && P.confirms.at(-1) === "적용 안 한 획 1 을 모두 버릴까요?";
+  const old = P.ctx.window.DPMaskEdit.session(A, KEY, async () => ({ok:false,status:404,json:async()=>null}), async()=>null, 5);
+  await old.open(K15);
+  r.error = sm ? !forbidden.test(old.err) && old.err.includes("관리자")
+    : old.err === "마스크 라우트가 없습니다 — ComfyUI 를 재시작해야 마스크 편집(K)을 쓸 수 있습니다";
+  await ed.leave(); return r;
+});
+console.log(JSON.stringify(out));
+'''
+    run("mask", mask, {"api": _pl_api(), "mask": json.loads(_MASK_API.read_text(encoding="utf-8")), "rules": {},
+                       "maskJs": str(web / "mask_edit.js"), "pipelineJs": str(web / "pipeline.js"), "boardJs": str(web / "board.js"),
+                       "autoRow": MASK_AUTO_ROW})
+
+    layout = _LAYOUT_EDIT_HARNESS.split('// 배치 3-1(F17)')[0] + common + r'''
+for (const sm of [false, true]) await scenario(sm ? "server" : "local", async () => {
+  ctx.window.DPEnv = {serverMode:sm}; const r = {};
+  const c = crop("001_aaaaaa", "001_문양", [256,256,512,512]);
+  const env = await editor([c], {pending_rerolls:2}, {crops:JSON.parse(JSON.stringify([c]))});
+  ctx.window.DPDialog = {confirm:async text => {env.confirms.push(text); return false;}};
+  ctx.window.confirm = text => {env.confirms.push(text); return false;};
+  r.redo = env.button(env.head,"다시실행").title === "다시 실행 (Ctrl+Y · Ctrl+Shift+Z)";
+  env.button(env.head,"반영 (무료)").fire("click"); await sleep(10);
+  const apply = env.confirms.at(-1);
+  r.apply = sm ? !forbidden.test(apply) && apply.includes("다시 생성 대기 2건") && apply.includes("다음 생성 때 과금")
+    : apply.includes("R·[다시 생성 보내기]·그래프 Run 에서 과금") && apply.includes("그래프 Spec Draft 를 승인 없이 한 번 큐하면 병합");
+  r.head = sm ? !forbidden.test(shown(env.head)) && shown(env.head).includes("다음 [반영 (무료)] 때 반영")
+    : shown(env.head).includes("다음 큐의 Import 에서 반영");
+  await env.pick(c.name); env.key("Delete"); await sleep(10);
+  r.remove = env.confirms.at(-1).includes(sm ? "다음 [반영 (무료)] 때 반영됩니다" : "다음 큐의 Import 에서 반영됩니다");
+  r.growOffered = await env.ed.proposeGrow(c.id,["left"]); env.key("Enter"); await sleep(10);
+  const cost = "[반영 (무료)] 뒤 이 크롭은 새 생성 조건이 되어, 실행(G)에서 생성을 승인할 때만 유료(평균 ≈ 169 크레딧/호출, 초안 갱신 ≈ 21 — 10/23 원장 평균).\n";
+  r.grow = env.confirms.at(-1) === "크롭 넓히기 제안을 적용할까요?\n적용은 레이아웃만 바꿉니다(무료).\n" + (sm ? "" : cost) + "지금 ★ 는 옛 크롭 기준으로 남습니다(옛 크롭 ★).";
+  r.cancel = env.srv.log.length === 0 && env.queued.length === 0;
+  await env.ed.leave();
+  const empty = await editor([], {}, {canvas:null});
+  r.empty = empty.panel.textContent === "베이스가 없습니다 — ① 준비에서 [반영 (무료)] 를 먼저 누르세요(크롭 편집 불가)."
+    && empty.panel.children[0].classList.contains("lp-msg") && empty.panel.children[0].classList.contains("dp-empty");
+  await empty.ed.leave();
+  const multi = await editor([C1(),C2()]);
+  ctx.window.confirm = text => {multi.confirms.push(text);return false;};
+  ctx.window.DPDialog = {confirm:async text=>{multi.confirms.push(text);return false;}};
+  await multi.pick("001_모자"); await multi.pick("002_눈",{ctrlKey:true}); multi.key("Delete"); await sleep(10);
+  r.multi = multi.confirms.at(-1).includes(sm ? "다음 [반영 (무료)] 때 반영됩니다" : "다음 큐의 Import 에서 반영됩니다")
+    && multi.srv.log.length === 0;
+  await multi.ed.leave();
+  const d = {token:"diff",changed:[C1(),C2()].map(c=>({name:c.name,fields:["rect"],from:{rect:c.rect},to:{rect:c.rect}})),added:[],removed:[]};
+  const diff = await editor([C1(),C2()],{psd_diff:d},{},{psdPartial:()=>false}); await diff.pick("001_모자");
+  ctx.window.confirm = text=>{diff.confirms.push(text);return false;};
+  ctx.window.DPDialog = {confirm:async text=>{diff.confirms.push(text);return false;}};
+  const take=diff.button(diff.panel,"PSD 값으로"); take.fire("click"); await sleep(10);
+  r.psd = sm ? !forbidden.test(take.title+diff.confirms.at(-1)) && diff.confirms.at(-1).includes("나머지 다른 곳 1건")
+    : take.title.includes("ComfyUI 재시작 전 서버") && diff.confirms.at(-1).includes("ComfyUI 재시작 전 서버");
+  await diff.ed.leave();
+  const old = await editor([C1()]);
+  ctx.fetch = async () => ({ok:false,status:404,json:async()=>null}); old.state(2,1); await sleep(30);
+  r.error = sm ? !forbidden.test(shown(old.panel)+shown(old.head)) && old.head.textContent.includes("관리자")
+    : old.head.textContent.includes("레이아웃 라우트가 없습니다 — ComfyUI 를 재시작해야 크롭 편집을 쓸 수 있습니다");
+  await old.ed.leave(); return r;
+});
+console.log(JSON.stringify(out));
+'''
+    run("layout", layout, {}, "layout_geom.js", "layout_edit.js")
+
+    # refs 의 세션 시나리오는 건너뛰고 화면에 쓰는 대역 정의만 가져온다.
+    refs = _R4_HARNESS[:_R4_HARNESS.index('// ── J-R1·J-R3')]
+    refs += _R4_HARNESS[_R4_HARNESS.index('// ── 가짜 서버:'):_R4_HARNESS.index('await scenario(')]
+    refs += _R4_HARNESS[_R4_HARNESS.index('class El {'):_R4_HARNESS.index('await scenario("ui",')]
+    refs += common + r'''
+for (const sm of [false, true]) await scenario(sm ? "server" : "local", async () => {
+  ctx.window.DPEnv = {serverMode:sm,can:n=>!sm || !["sam3","path_input"].includes(n)}; const r = {};
+  const env = await screen();
+  ctx.window.DPDialog = {confirm:async text=>{env.confirms.push(text);return false;}};
+  await env.press(env.hosts.head,"반영 (무료)");
+  const apply = env.confirms.at(-1);
+  r.apply = sm ? !forbidden.test(apply) && apply.includes("다시 생성 대기 1건")
+    : apply.includes("R·[다시 생성 보내기]·그래프 Run 에서 과금") && apply.includes("그래프 Spec Draft 를 승인 없이 한 번 큐하면 병합");
+  r.head = sm ? !forbidden.test(shown(env.hosts.head)) && shown(env.hosts.head).includes("다음 [반영 (무료)] 때 반영")
+    : shown(env.hosts.head).includes("다음 큐의 Import 에서 반영");
+  env.all(env.hosts.sheets).find(e=>e.tagName==="LI").fire("click"); await sleep(10);
+  r.cut = env.button(env.hosts.panel,"컷 (Enter)").title === (sm ? "선택 영역을 지금 방법으로 컷" : "선택 영역을 지금 방법으로 컷(SAM3 는 ComfyUI 대기열 앞에서 돎)");
+  env.drag(100,100,300,300); env.key("Enter"); await sleep(30);
+  const perspective=env.button(env.hosts.panel,"원근",true);
+  r.oldCapability = perspective?.disabled && perspective.title === (sm ? "화면을 새로 고쳐 보세요 — 계속되면 관리자에게 알려 주세요" : "ComfyUI 재시작 필요(서버가 옛 판)");
+  r.screen = !sm || !forbidden.test(shown(env.hosts.panel));
+  await env.ed.leave();
+  for (const issue of ["missing","mismatch","error","old"]) {
+    const R = R0();
+    if(issue==="missing") R.refs_dir="";
+    if(issue==="mismatch") R.doc_dir_match=false;
+    if(issue==="error") R.error="레퍼런스 설정을 읽지 못했습니다";
+    const e=await screen({R,refs404:issue==="old"});
+    const all=Object.values(e.hosts).map(shown).join("\n");
+    r[issue]=sm ? !forbidden.test(all) && (issue!=="missing" || all.includes("① 준비에서 [반영 (무료)]"))
+      : issue==="old" ? all.includes("ComfyUI 를 재시작해야 레퍼런스 편집을 쓸 수 있습니다")
+      : issue==="missing" ? all.includes("<프로젝트>\\refs 를 넣고 큐에 넣으면") : true;
+    await e.ed.leave();
+  }
+  return r;
+});
+console.log(JSON.stringify(out));
+'''
+    run("refs", refs, {}, "layout_geom.js", "ref_edit.js")
+    check('el("div", "vempty dp-empty", "불러오는 중…")' in src["viewer.js"]
+          and 'empty.textContent = "베이스가 없습니다 — ① 준비에서 [반영 (무료)] 를 먼저 누르세요";' in src["viewer.js"],
+          "F3-U2 D357 뷰어 초기·빈 화면 공용 class 및 다음 행동 안내")
 
 
 def ext60_unit():
