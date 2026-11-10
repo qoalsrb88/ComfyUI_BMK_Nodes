@@ -59444,6 +59444,10 @@ def forge_f3_server_unit():
         ("/srv/data/x", "<서버 경로>"), ("(--data=/srv/data/x)", "(--data=<서버 경로>)"),
         ("실패:/tmp/work/x.png", "실패:<서버 경로>"),
         (r"C:\Program Files\x.psd 를 못 읽음", "<서버 경로> 를 못 읽음"),
+        (r"C:\Program Files (x86)\App\lib\x.py 를 읽지 못함", "<서버 경로> 를 읽지 못함"),
+        (r"C:\Several Folder Name Words\App\x.py 없음", "<서버 경로> 없음"),
+        (r"C:\Several Folder Name Words\one / D:\other\two", "<서버 경로> / <서버 경로>"),
+        (r"<계정 폴더>\Several Folder Name Words\p\x.py", r"<계정 폴더>\Several Folder Name Words\p\x.py"),
         ('"C:/Program Files/file name.psd" 없음', '"<서버 경로>" 없음'),
         ("'/srv/some folder/file name.psd' 없음", "'<서버 경로>' 없음"),
         (r"'\\server\shared folder\file name.psd' 없음", "'<서버 경로>' 없음"),
@@ -59514,6 +59518,34 @@ def forge_f3_server_unit():
             ("C:/Data Home/Account", r"C:\DATA HOME\ACCOUNT\a", r"<계정 폴더>\a"),
         ):
             check(bd.public_error(path, {"home": home}) == expected_path, "F3S1 POSIX·UNC·공백 계정 홈·URL 보존")
+    for mode in ("", "1"):
+        with patch.dict(os.environ, {bd.SERVER_ENV: mode, "TMPDIR": "", "TEMP": r"D:\Temporary Folder With Spaces", "TMP": ""}), \
+                patch.object(bd, "__file__", r"D:\Package Folder With Spaces\board.py"), \
+                patch.object(bd.sys, "prefix", r"D:\Python Install Folder"), \
+                patch.object(bd.sys, "executable", r"D:\Python Install Folder\python.exe"), patch.object(bd.logger, "warning"):
+            spaced_scope = {"home": r"D:\Design Patch Data\org1\acct1"}
+            for source, expected_path in (
+                (r"D:\Design Patch Data\org1\acct1\bmk_design_patch\p\manifest.json", r"<계정 폴더>\bmk_design_patch\p\manifest.json"),
+                (r"d:\\DESIGN PATCH DATA\\org1\\acct1\\p\\x.psd", r"<계정 폴더>\\p\\x.psd"),
+                ("D:/Design Patch Data/org1/acct1/p/x.psd 없음", "<계정 폴더>/p/x.psd 없음"),
+                (r"D:\Design Patch Data\org1\acct1 없음", "<계정 폴더> 없음"),
+                (r"D:\Design Patch Data\org2\acct2\p\x.psd 없음", "<서버 경로> 없음"),
+                (r"d:\DESIGN PATCH DATA 없음", "<서버 경로> 없음"),
+                (r"D:\Package Folder With Spaces 없음", "<서버 경로> 없음"),
+                (r"D:\Python Install Folder 없음", "<서버 경로> 없음"),
+                (r"D:\Temporary Folder With Spaces 없음", "<서버 경로> 없음"),
+                ("/My Data/acct/x.psd 없음", "요청을 처리하지 못했습니다(서버 기록 참고)"),
+            ):
+                check(bd.public_error(source, spaced_scope) == (expected_path if mode else source),
+                      "F3S1 3차 R1 공백 뿌리 우선·일반 후보·POSIX 잔여 경로·로컬 원문: " + source)
+            explicit = dict(spaced_scope, data_dir="/Explicit Data Folder")
+            check(bd.public_error("/Explicit Data Folder 없음", explicit) == ("<서버 경로> 없음" if mode else "/Explicit Data Folder 없음"),
+                  "F3S1 3차 R1 범위에 명시한 데이터 폴더")
+            posix_scope = {"home": "/My Data/org1/acct1"}
+            check(bd.public_error("/My Data/org1/acct1/p/x.psd 없음", posix_scope)
+                  == ("<계정 폴더>/p/x.psd 없음" if mode else "/My Data/org1/acct1/p/x.psd 없음"), "F3S1 3차 R1 공백 POSIX 계정 홈")
+            check(bd.public_error("/My Data/org2/acct2/p/x.psd 없음", posix_scope)
+                  == ("<서버 경로> 없음" if mode else "/My Data/org2/acct2/p/x.psd 없음"), "F3S1 3차 R1 추론한 공백 POSIX 데이터 뿌리")
     for mode in ("", "1"):
         with patch.dict(os.environ, {bd.SERVER_ENV: mode}), patch.object(bd.logger, "warning") as log:
             closed_paths = ["opaqueC:/private/a.psd", r"bad!\\server\share\x", "{/srv/private/x}", "bad!//host/share/x"]
@@ -59748,7 +59780,22 @@ def forge_f3_server_unit():
         check(srv._client_address(request, ()) == "192.0.2.1", "F3S4 R1 직접 접속은 여러 줄 XFF 도 무시")
     check(srv._validate_config(dataclasses.replace(config, trusted_proxies=("192.0.2.7/24", "2001:db8::1/64"))).trusted_proxies
           == ("192.0.2.0/24", "2001:db8::/64"), "F3S4 CIDR 네트워크 주소 정규화")
+    for configured, normalized in (("::ffff:192.0.2.5", "192.0.2.5"), ("::ffff:c000:205", "192.0.2.5"),
+                                   ("::ffff:192.0.2.5/128", "192.0.2.5/32"), ("::ffff:192.0.2.5/120", "192.0.2.0/24"),
+                                   ("::ffff:192.0.2.5/104", "192.0.0.0/8"), ("::ffff:192.0.2.5/96", "0.0.0.0/0")):
+        mapped = srv._validate_config(dataclasses.replace(config, trusted_proxies=(configured,)))
+        check(mapped.trusted_proxies == (normalized,), "F3S4 3차 R2 mapped 프록시 주소·CIDR 정규화 " + configured)
+        if normalized != "0.0.0.0/0":
+            for remote in ("192.0.2.5", "::ffff:192.0.2.5"):
+                request = types.SimpleNamespace(remote=remote, headers=CIMultiDict({"X-Forwarded-For": "198.51.100.7"}))
+                check(srv._client_address(request, mapped.trusted_proxies) == "198.51.100.7", "F3S4 3차 R2 정규화한 설정으로 XFF 신뢰")
+    for configured in ("::ffff:192.0.2.5/95", "::ffff:c000:205/64", "::ffff:192.0.2.5/0"):
+        expect_raises(lambda p=configured: srv._validate_config(dataclasses.replace(config, trusted_proxies=(p,))),
+                      "F3S4 3차 R2 mapped 네트워크 /96 미만 거절", ValueError)
     failures = srv.LoginFailures(2, 10, 4, clock=lambda: now[0])
+    for _ in range(3):
+        check(failures.retry_after("192.0.2.1") == 0 and not failures._inflight and failures._pending == 0,
+              "F3S4 3차 R3 본문 전 판정만으로는 자리 예약 없음")
     check(failures.begin("192.0.2.1") == 0, "F3S4 첫 자리 예약")
     failures.reject("192.0.2.1"); failures.finish("192.0.2.1")
     now[0] = 104
@@ -59787,9 +59834,11 @@ def forge_f3_server_unit():
     class Body:
         def __init__(self, raw, gate=None):
             self.raw, self.gate, self.reads = raw, gate, 0
+            self.started = asyncio.Event()
 
         async def iter_chunked(self, size):
             self.reads += 1
+            self.started.set()
             if self.gate is not None:
                 await self.gate.wait()
             for start in range(0, len(self.raw), size):
@@ -59798,9 +59847,11 @@ def forge_f3_server_unit():
     class Verifier:
         def __init__(self):
             self.calls, self.gate = 0, None
+            self.started = asyncio.Event()
 
         async def verify(self, token, organization_id):
             self.calls += 1
+            self.started.set()
             if self.gate is not None:
                 await self.gate.wait()
             if token == "throw-sensitive-token":
@@ -59992,12 +60043,13 @@ def forge_f3_server_unit():
         verifier.gate = asyncio.Event()
         async with serving(verifier, login_fail_limit=1, login_fail_global=1) as app:
             task = asyncio.create_task(call(app))
-            await asyncio.sleep(0)
+            await asyncio.wait_for(verifier.started.wait(), 5)
             response, _ = await call(app)
             check(response.status == 429 and response.headers["Retry-After"] == "1" and verifier.calls == 1,
                   "F3S8 검증 대기 중 같은 클라이언트 추가 요청 차단")
+            verifier.started.clear()
             other = asyncio.create_task(call(app, remote="192.0.2.2", token="ok"))
-            await asyncio.sleep(0)
+            await asyncio.wait_for(verifier.started.wait(), 5)
             check(verifier.calls == 2, "F3S8 진행 중 전역 수로 새 클라이언트를 막지 않음")
             verifier.gate.set()
             await asyncio.gather(task, other)
@@ -60006,21 +60058,72 @@ def forge_f3_server_unit():
             await call(app, remote="2001:db8:1::1")
             check((await call(app, remote="2001:db8:1::99", token="ok"))[0].status == 429, "F3S8 IPv6 하위 주소를 바꿔도 같은 /64 제한")
             check((await call(app, remote="2001:db8:2::1", token="ok"))[0].status == 200, "F3S8 다른 IPv6 /64 는 별도 제한")
-        async with serving(Verifier(), login_fail_limit=1) as app:
-            body = Body(b"{}", asyncio.Event())
-            task = asyncio.create_task(call(app, payload=body))
-            await asyncio.sleep(0)
+        verifier = Verifier()
+        async with serving(verifier, login_fail_limit=1) as app:
+            bodies = [Body(b"{}", asyncio.Event()) for _ in range(10)]
+            tasks = [asyncio.create_task(call(app, payload=body)) for body in bodies]
+            await asyncio.wait_for(asyncio.gather(*(body.started.wait() for body in bodies)), 5)
+            state = app[srv._LOGIN_FAILURES_KEY]
+            check(not state._inflight and state._pending == 0 and verifier.calls == 0,
+                  "F3S8 3차 R3 본문만 기다리는 연결 열 개는 검증 자리를 잡지 않음")
             response, _ = await call(app, token="ok")
-            check(response.status == 429 and body.reads == 1, "F3S8 본문 첫 await 전부터 제한")
-            task.cancel()
+            check(response.status == 200 and verifier.calls == 1 and all(body.reads == 1 for body in bodies),
+                  "F3S8 3차 R3 느린 본문 연결 중에도 같은 버킷의 정상 로그인 허용")
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            check(not state._inflight and state._pending == 0 and not state._global,
+                  "F3S8 3차 R3 본문 수신 취소는 거절·예약 기록 없음")
+        verifier = Verifier()
+        async with serving(verifier, login_fail_limit=1) as app:
+            body = Body(b'{"token":"bad","organization_id":"org-test"}', asyncio.Event())
+            task = asyncio.create_task(call(app, payload=body))
+            await asyncio.wait_for(body.started.wait(), 5)
+            check((await call(app))[0].status == 401, "F3S8 3차 R3 다른 본문 수신 중 거절 한도 도달")
+            body.gate.set()
+            check((await task)[0].status == 429 and verifier.calls == 1,
+                  "F3S8 3차 R3 본문 수신 뒤 바뀐 한도를 검증 직전에 다시 검사")
+        verifier = Verifier()
+        async with serving(verifier, login_fail_limit=1) as app:
+            wait_for = asyncio.wait_for
+            async def deadline(awaitable, timeout):
+                check(timeout == 10, "F3S8 3차 R3 본문 수신 제한은 10초")
+                return await wait_for(awaitable, timeout=0.01)
+            body = Body(b"{}", asyncio.Event())
+            with patch.object(srv.asyncio, "wait_for", side_effect=deadline):
+                response, data = await call(app, payload=body)
+            state = app[srv._LOGIN_FAILURES_KEY]
+            check(response.status == 400 and data == {"error": "JSON 본문을 읽을 수 없습니다"}
+                  and body.reads == 1 and verifier.calls == 0 and not state._global and not state._inflight and state._pending == 0,
+                  "F3S8 3차 R3 본문 시간 초과는 기존 400·검증 미호출·거절로 세지 않음")
+            check((await call(app, token="ok"))[0].status == 200, "F3S8 3차 R3 수신 시간 초과 뒤 정상 로그인")
+        verifier = Verifier()
+        verifier.gate = asyncio.Event()
+        async with serving(verifier, login_fail_limit=1) as app:
+            body = Body(b"{}", asyncio.Event())
+            slow = asyncio.create_task(call(app, payload=body))
+            await asyncio.wait_for(body.started.wait(), 5)
+            active = asyncio.create_task(call(app, token="ok"))
+            await asyncio.wait_for(verifier.started.wait(), 5)
+            slow.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await task
-            check((await call(app, token="ok"))[0].status == 200, "F3S8 취소도 finally 에서 자리 반환·실패로 세지 않음")
+                await slow
+            state = app[srv._LOGIN_FAILURES_KEY]
+            check(state._pending == 1 and state._inflight == {"192.0.2.1": 1},
+                  "F3S8 3차 R3 수신 취소는 다른 검증의 자리를 반환하지 않음")
+            blocked_body = Body(b"{}")
+            check((await call(app, payload=blocked_body))[0].status == 429 and blocked_body.reads == 0,
+                  "F3S8 3차 R3 검증 중 한도는 여전히 본문 읽기 전 차단")
+            active.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await active
+            check(state._pending == 0 and not state._inflight and not state._global,
+                  "F3S8 3차 R3 검증 중 취소는 예약을 반환하고 거절로 세지 않음")
         verifier = Verifier()
         verifier.gate = asyncio.Event()
         async with serving(verifier, login_fail_limit=1) as app:
             task = asyncio.create_task(call(app, token="ok"))
-            await asyncio.sleep(0)
+            await asyncio.wait_for(verifier.started.wait(), 5)
             state = app[srv._LOGIN_FAILURES_KEY]
             check(state._pending == 1, "F3S8 R7 종료 정리 전 검증 중 요청 재현")
             state.clear()
@@ -60108,6 +60211,46 @@ def forge_f3_server_unit():
             unchanged_payload = {"warnings": ["3/4", {"msg": "<계정 폴더>/a/b"}], "exports": [{"psd": "out.psd"}]}
             check(srv._public_json(unchanged_payload, bd) is unchanged_payload,
                   "F3S9 R5 바뀌지 않은 중첩 목록·객체는 원본으로 변경 여부 전달")
+            loop_thread = threading.get_ident()
+            loads, dumps, redact, offload = srv.json.loads, srv.json.dumps, srv._public_json, srv.asyncio.to_thread
+            request["bmk_dp_session"] = {"scope": scope}
+            for size in (64 * 1024, 64 * 1024 + 1):
+                for changed in (False, True):
+                    document = {"rerolls_pending": 0, "error": scope["home"] + "/a/b" if changed else "문제 없음",
+                                "settings": {"import": {"psd_path": "C:/data/other/x.psd"}}, "padding": ""}
+                    document["padding"] = "x" * (size - len(dumps(document, ensure_ascii=False).encode("utf-8")))
+                    raw = dumps(document, ensure_ascii=False).encode("utf-8")
+                    original_response = web.Response(body=raw, content_type="application/json", status=200)
+                    phases = []
+                    def tracked(name, fn):
+                        def invoke(*args, **kwargs):
+                            phases.append((name, threading.get_ident()))
+                            return fn(*args, **kwargs)
+                        return invoke
+                    async def large_response(request):
+                        return original_response
+                    with patch.object(srv.json, "loads", side_effect=tracked("parse", loads)), \
+                            patch.object(srv, "_public_json", side_effect=tracked("redact", redact)), \
+                            patch.object(srv.json, "dumps", side_effect=tracked("serialize", dumps)), \
+                            patch.object(srv.asyncio, "to_thread", wraps=offload) as worker:
+                        response = await app.middlewares[0](request, large_response)
+                    threaded = size > 64 * 1024
+                    check(len(raw) == size and worker.await_count == int(threaded)
+                          and [name for name, _ in phases] == (["parse", "redact", "serialize"] if changed else ["parse", "redact"])
+                          and all((tid != loop_thread) == threaded for _, tid in phases),
+                          "F3S9 3차 R4 64KiB 초과는 파싱·가림·재직렬화 전부 작업 스레드에서 실행")
+                    expected = dict(document, error="<계정 폴더>/a/b") if changed else document
+                    check(response is original_response and loads(response.body) == expected
+                          and (changed or response.body is raw),
+                          "F3S9 3차 R4 작은·큰 응답은 같은 가공 결과·계정 범위·설정 보존, 무변경이면 원래 바이트")
+            raw = dumps({"error": "C:/private/x", "padding": "x" * (64 * 1024)}).encode("utf-8")
+            original_response = web.Response(body=raw, content_type="application/json")
+            async def local_response(request):
+                return original_response
+            with patch.dict(os.environ, {bd.SERVER_ENV: ""}), \
+                    patch.object(srv.asyncio, "to_thread", side_effect=AssertionError("로컬 응답을 가공함")):
+                response = await app.middlewares[0](request, local_response)
+            check(response is original_response and response.body is raw, "F3S9 3차 R4 로컬 모드는 큰 응답도 원문 그대로")
         parent = srv.make_dev_parent_app(dataclasses.replace(config, dev_parent_port=8790))
         response, _ = await call(parent, "GET", "/?acct=bob")
         check(all(text in response.text for text in ("background:#09090b", "color:#e4e4e7", "color:#a1a1aa", "height:56px",
