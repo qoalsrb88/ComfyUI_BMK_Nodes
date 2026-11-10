@@ -758,6 +758,20 @@ window.DPMaskEdit = (() => {
 
   // ── 화면: 왼쪽 크롭 목록·오른쪽 패널·뷰어 겹침 캔버스와 붓 ──
   function create(hosts, opts) {
+    // 확인 중에는 폴링이 계속된다. 확인한 판·선택·미저장 입력이 바뀌면 쓰지 않는다.
+    async function askFree(t) {
+      if (askFree.pending) return false;
+      askFree.pending = true;
+      const current = () => JSON.stringify([on, stateVer(S), M.key, M.seq, M.pending(), M.undo.length, M.redo.length, M.info, M.busy, !!M.stroke, adjustSaving]);
+      try {
+        const before = current();
+        if (!(await (window.DPDialog ? window.DPDialog.confirm(t) : Promise.resolve(window.confirm(t))))) return false;
+        if (before === current()) return true;
+        opts.toast("확인 중 상태가 바뀌었습니다 — 다시 확인한 뒤 시도하세요", "warn");
+        return false;
+      } finally { askFree.pending = false; }
+    }
+
     // hosts: {list, panel}. opts: apiUrl·root·viewer·toast, exit()(K 모드 나가기 — board setMask(false)), refresh()(보드 state 다시),
     // select(key, follow)(보드 선택 = 편집 대상 — 뷰어 선택 크롭·F·1·2 의 초점), pick(t, key)(검토의 Space 와 같은 ★ 쓰기 → 결과 | null),
     // seams()(뷰어가 받은 ★ 합성 이음매 {sig, segments} | null), ranText(r)(후보 완료 시각·종류 — board.js ranText)
@@ -1142,7 +1156,7 @@ window.DPMaskEdit = (() => {
       await layers();
     }
 
-    function go(to, follow = false) {
+    async function go(to, follow = false) {
       // 편집 대상·선택 이음매(목록·N·진행 ★ 점검·이음매 목록): 다른 후보면 적용 안 한 획 확인 뒤 연다. → 그 대상인가
       if (pendingSection && pendingSection.key !== to.key) pendingSection = null;
       if (to.key !== M.key && (LOCKED.includes(M.busy) || adjustSaving)) {
@@ -1158,7 +1172,7 @@ window.DPMaskEdit = (() => {
         const n = M.pending();
         const x = candOf(M.key);
         const gone = x && (!x.c.picked || x.c.rejected) ? " — 이제 ★ 가 아니라 적용할 수 없음" : "";
-        if (n && !window.confirm(`적용 안 한 획 ${n}(${label(M.key)}${gone})을 버리고 ${label(to.key)} 를 편집할까요?`)) return false;
+        if (n && !await askFree(`적용 안 한 획 ${n}(${label(M.key)}${gone})을 버리고 ${label(to.key)} 를 편집할까요?`)) return false;
         open(to.key, to.seam, follow && !to.seam);
       } else if (to.seam) {
         seam = to.seam;
@@ -1168,10 +1182,10 @@ window.DPMaskEdit = (() => {
       return true;
     }
 
-    function reload() {
+    async function reload() {
       // [다시 받기](409·읽기 실패): 서버 판으로 다시 연다 — 적용 안 한 획은 확인 뒤 버림
       const n = M.pending();
-      if (n && !window.confirm(`적용 안 한 획 ${n} 을 버리고 서버 버전을 다시 받을까요?`)) return;
+      if (n && !await askFree(`적용 안 한 획 ${n} 을 버리고 서버 버전을 다시 받을까요?`)) return;
       open(M.key, seam, false);
     }
 
@@ -1484,9 +1498,9 @@ window.DPMaskEdit = (() => {
       once(M.step(back));
     }
 
-    function discard() {
+    async function discard() {
       const n = M.pending();
-      if (!n || !window.confirm(`적용 안 한 획 ${n} 을 모두 버릴까요?`)) return;
+      if (!n || !await askFree(`적용 안 한 획 ${n} 을 모두 버릴까요?`)) return;
       once(M.discard());
       if (M.behind()) refreshInfo(); // 획이 있는 동안 다른 창·노드가 새 판을 씀 — 버렸으니 서버 판으로 다시 연다
     }
@@ -1534,7 +1548,7 @@ window.DPMaskEdit = (() => {
         return;
       }
       const names = d.files.slice(0, 8).map((f) => ` · ${f.file} (${f.at})`).concat(d.files.length > 8 ? [` · … 외 ${d.files.length - 8}개`] : []);
-      if (!window.confirm([`masks/ 에서 어떤 편집 기록도 쓰지 않는 PNG ${d.files.length}개(${mb(d.bytes)})를 지웁니다 — 되돌릴 수 없음${recent}.`,
+      if (!await askFree([`masks/ 에서 어떤 편집 기록도 쓰지 않는 PNG ${d.files.length}개(${mb(d.bytes)})를 지웁니다 — 되돌릴 수 없음${recent}.`,
         ...names, "계속할까요?"].join("\n"))) return;
       const sum = { deleted: 0, bytes: 0, kept: 0 };
       try {
@@ -1558,7 +1572,7 @@ window.DPMaskEdit = (() => {
         ? `${label(M.key)} 의 마스크 편집 기록(이전 버전 ${ed ? ed.hist : 0} 포함)을 지우고 처음 마스크로 돌아갑니다.` + (n ? ` 적용 안 한 획 ${n} 도 버립니다.` : "")
           + " 계속할까요?"
         : n ? `적용 안 한 획 ${n} 을 버리고 이전 버전으로 돌아갈까요?` : "";
-      if (ask && !window.confirm(ask)) return;
+      if (ask && !await askFree(ask)) return;
       const p = M.edit(kind);
       render();
       let d = null;
@@ -1614,7 +1628,7 @@ window.DPMaskEdit = (() => {
       const y = candOf(r.key);
       const ed = y && y.c.mask_edit;
       const n = M.pending();
-      if (!window.confirm(`c${pad(r.c)} 를 ${x.t.crop_name || x.t.crop_id} · ${x.t.tid} 의 ★ 로 바꿉니다(검토의 Space 와 같음).\n`
+      if (!await askFree(`c${pad(r.c)} 를 ${x.t.crop_name || x.t.crop_id} · ${x.t.tid} 의 ★ 로 바꿉니다(검토의 Space 와 같음).\n`
         + `이 크롭의 마스크 편집은 옛 ★ c${pad(x.c.n)} 에 남고(다시 ★ 하면 살아남) `
         + (ed ? `c${pad(r.c)} 에 남아 있던 편집(${when(ed.at)}${ed.stale ? " · 처음 마스크가 바뀜" : ""})이 다시 쓰입니다(표 값도 그 편집으로 계산 — `
           + "지우려면 ★ 뒤 [편집 모두 지우기])." : "새 ★ 는 편집 없이 처음 마스크로 시작합니다.")
@@ -1693,10 +1707,10 @@ window.DPMaskEdit = (() => {
       }
       const current = key === M.key && cur(), adjust = current ? adjustValues() : candidate.adjust;
       const add = (text, kind, title, edit, blur) => {
-        const b = button(text, `${title} 칸으로`, (e) => {
+        const b = button(text, `${title} 칸으로`, async (e) => {
           e.stopPropagation();
           pendingSection = { key, title, tool: edit };
-          if (!go({ key }, true)) pendingSection = null;
+          if (!(await go({ key }, true))) pendingSection = null;
         }, "mc-detail");
         b.dataset.detail = kind;
         if (blur !== undefined) {
@@ -2492,19 +2506,19 @@ window.DPMaskEdit = (() => {
     }, true);
 
     // ── board.js ──
-    function enter(st, to) {
+    async function enter(st, to) {
       // K 모드 진입: to = {key, seam}. 세션이 있는 같은 후보면 이어서(선택 구간만), 다른 후보면 go(적용 안 한 획 확인 — 아니오면 세션 후보로 이어서)
       on = true;
       S = st;
       viewer.setEditor({ pointerdown, pointermove, pointerup, cancel: () => { cancelXform(); finishFade(false); pointerup(); }, draw });
-      if (to.key !== M.key && go(to, true)) return;
-      if (to.key === M.key && to.seam) go(to);
+      if (to.key !== M.key && await go(to, true)) return;
+      if (to.key === M.key && to.seam) await go(to);
       opts.select(M.key, !(to.key === M.key && to.seam));
       if (M.layers) attach();
       refreshInfo();
     }
 
-    function leave() {
+    async function leave() {
       // K 모드 나가기 — 적용·되돌리기·★ 바꾸기 중이면 거절(go 와 같음 — 나갈 때 board 가 진행 ★ 점검에 넘기는 적용 안 한 획 수가 응답 뒤 낡음), 끌던 획은 먼저
       // 끝냄(setEditor(null) 뒤엔 pointerup 이 오지 않음 — 확인 창·★ 점검의 획 수에 들어가게), 적용 안 한 획이 있으면 확인(세션은 이 창에 남음). → 나갔는가
       if (LOCKED.includes(M.busy) || adjustSaving) {
@@ -2515,7 +2529,7 @@ window.DPMaskEdit = (() => {
       finishFade(false);
       pointerup();
       const n = M.pending();
-      if (n && !window.confirm(`적용 안 한 획 ${n}(${label(M.key)})은 이 창에만 남습니다 — Export·다른 창에는 들어가지 않음(K 로 돌아오면 이어서). 나갈까요?`)) {
+      if (n && !await askFree(`적용 안 한 획 ${n}(${label(M.key)})은 이 창에만 남습니다 — Export·다른 창에는 들어가지 않음(K 로 돌아오면 이어서). 나갈까요?`)) {
         return false;
       }
       on = false;

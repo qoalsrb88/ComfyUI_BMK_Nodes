@@ -776,3 +776,10 @@ svg.dr-isolate { position: absolute; left: 0; top: 0; pointer-events: none; }
 #mask-list .mc-detail[data-detail="fade"]::before { content: "▤"; }
 #mask-list .mc-detail[data-detail="brush"]::before { content: "╱"; }
 #mask-list .mc-blur-bar { position: absolute; height: 2px; left: 0; bottom: 0; background: var(--accent); opacity: .65; pointer-events: none; }
+
+/* Forge F1 — 페이지 대화 상자·세션 안내 */
+.dp-dialog { z-index: 10000; }
+.dp-env-block { z-index: 11000; position: fixed; inset: 0; background: rgba(10, 12, 16, .96); }
+.dp-dialog .sheet, .dp-env-block .sheet { max-width: 680px; max-height: 85vh; overflow: auto; }
+.dp-dialog p, .dp-env-block p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.dp-env-block .muted { color: var(--dim); font-size: .9em; }
