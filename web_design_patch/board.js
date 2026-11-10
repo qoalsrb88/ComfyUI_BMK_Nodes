@@ -611,8 +611,10 @@
     const pend = S.crops.filter((c) => LAYOUT_STATUS[c.layout_status]);
     const mine = pend.some((c) => c.id === curTarget().crop_id);
     if (mine) {
-      const text = `이 크롭은 레이아웃이 바뀌어(미반영) 이 큐에서 생성 조건이 바뀌면 다시 생성이 실행되지 않습니다. `
-        + `미반영 레이아웃 ${pend.length}건도 이 큐로 반영됩니다. 계속할까요?`;
+      const text = SM() ? `이 크롭은 레이아웃이 바뀌어(미반영) 이번 실행에서 생성 조건이 바뀌면 다시 생성이 실행되지 않습니다. `
+        + `미반영 레이아웃 ${pend.length}건도 이번 실행에 함께 반영됩니다. 계속할까요?`
+        : `이 크롭은 레이아웃이 바뀌어(미반영) 이 큐에서 생성 조건이 바뀌면 다시 생성이 실행되지 않습니다. `
+          + `미반영 레이아웃 ${pend.length}건도 이 큐로 반영됩니다. 계속할까요?`;
       if (SM() ? !(await window.DPDialog.confirm(text)) : (agent ? !(await pipe.agentConfirm(text.split("\n"), need)) : !window.confirm(text))) return;
       if ((SM() || agent) && !stillHere()) return;
     }
@@ -656,7 +658,8 @@
         : (S.targets || []).flatMap((t) => t.cells || []).find((c) => c.cell_key === cellKey);
       return !!target && target.rerolls_pending > 0;
     };
-    if (scope !== "cell" && !await askFree(`다시 생성 대기 ${count}을 취소합니다. 그중 ${base}건은 아직 한 번도 만들지 않은 생성 조건이라 '생성 승인 필요'로 돌아갑니다(승인 코드가 바뀜 — 이미 큐에 넣은 [생성 승인]은 드라이런이 되어 과금 없음). 계속할까요?`, stillPending)) return;
+    if (scope !== "cell" && !await askFree(SM() ? `다시 생성 대기 ${count}을 취소합니다. 그중 ${base}건은 아직 한 번도 만들지 않은 생성 조건이라 '생성 승인 필요'로 돌아갑니다(이미 보낸 [생성 승인] 은 과금 없이 끝남). 계속할까요?`
+      : `다시 생성 대기 ${count}을 취소합니다. 그중 ${base}건은 아직 한 번도 만들지 않은 생성 조건이라 '생성 승인 필요'로 돌아갑니다(승인 코드가 바뀜 — 이미 큐에 넣은 [생성 승인]은 드라이런이 되어 과금 없음). 계속할까요?`, stillPending)) return;
     const result = await write("reroll", { op: "cancel", scope, ...selector },
       (r) => `다시 생성 대기 ${r.cancelled}건 취소(과금 없음) · 생성 승인 필요로 돌아감 ${r.base}건 — 되돌림 = R`);
     if (result) { rerollArm = null; rerollSent = null; if (pipe) pipe.recalc(); }
@@ -1076,7 +1079,7 @@
       const hhmm = `${String(until.getHours()).padStart(2, "0")}:${String(until.getMinutes()).padStart(2, "0")}`;
       b.append(el("span", "badge b-agent", `Claude 승인 모드 · 남은 ${Math.max(0, Math.floor(a.cap - a.spent))} / 상한 ${Math.floor(a.cap)} 크레딧 · ~${hhmm}`));
     }
-    if (S.running) b.append(el("span", "badge b-run", "Run 진행 중"));
+    if (S.running) b.append(el("span", "badge b-run dp-live", "Run 진행 중"));
     if (S.drain) b.append(el("span", "badge b-drain", "새 호출 멈춤 요청됨"));
     if (S.pending_calls) {
       const pre = S.pending_preapproved ? ` (다시 생성 승인 ${S.pending_preapproved})` : "";
@@ -1218,7 +1221,7 @@
     const d = c.draft_chip;
     if (!d) return;
     const st = c.plan_stale ? " stale" : "";
-    if (d.running) ch.append(chip("실행 중", "b-run" + st));
+    if (d.running) ch.append(chip("실행 중", "b-run" + st + (st ? "" : " dp-live")));
     if (d.wait.length) {
       const w = chip("초안 대기", "b-wait" + st);
       w.title = d.wait.join("\n");
@@ -2163,7 +2166,7 @@
       document.body.classList.add("server");
       $("btn-queue").classList.add("dp-off");
       $("statusbar").append($("btn-queue"), $("btn-drain"), $("btn-keys"));
-    }
+    } else $("btn-queue").classList.remove("dp-off");
     const newNotes = consumeNewProject();
     renderHeader.newNotes = newNotes || [];
     if (!ROOT) {

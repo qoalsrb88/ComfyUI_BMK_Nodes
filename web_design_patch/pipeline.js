@@ -334,7 +334,8 @@ window.DPPipeline = (() => {
   function driftText(d) {
     if (!can("path_input") && ((d.section === "import" && ["psd_path", "refs_dir", "glossary_path"].includes(d.field))
         || (d.section === "cand" && ["path", "mapping_json"].includes(d.field)))) return `${d.section}.${d.field}: 서버 경로 설정이 바뀌었습니다`;
-    const reason = SM() && d.kind === "cell" ? "설정을 바꾸면 생성 조건이 바뀌어 다시 과금 대상" : DRIFT[d.kind] || d.kind;
+    const reason = SM() && d.kind === "cell" ? "설정을 바꾸면 생성 조건이 바뀌어 다시 과금 대상"
+      : SM() && d.kind === "cost" ? "생성 조건은 그대로, 대기 호출의 설정·승인 조건이 바뀜" : DRIFT[d.kind] || d.kind;
     return `${d.section}.${d.field}: 마지막 ${d.kind === "import" ? "Import" : "Prepare"} ${shown(d.manifest)} · Studio ${shown(d.settings)} — ${reason}`;
   }
 
@@ -1440,7 +1441,7 @@ window.DPPipeline = (() => {
 
     function unsureWhy() {
       // 머리줄·반영 칸·★ 점검이 '미반영 없음'이라 말하지 못하는 이유("" = 말할 수 있음): 반영 판정을 모름, 또는 받은 계획이 지금 파일과 다름
-      return pendingUnknown() || (planStale() ? "계획이 지금 파일 상태와 다름" : "");
+      return PS.planErr ? `계획 오류 — ${PS.planErr}` : pendingUnknown() || (planStale() ? "계획이 지금 파일 상태와 다름" : "");
     }
 
     function applyWarn() {
@@ -1821,8 +1822,8 @@ window.DPPipeline = (() => {
       // 흐림·낡음·실행 중·승인할 것 없음), 앞 승인이 '계획 다시'로 끝나 계획을 다시 받는 중, 탭·서버(paidWhy)
       const lock = paidLock();
       if (lock) return lock;
-      if (dimWhy().length) return `승인 코드 흐림 — ${dimWhy().join(" · ")}`;
-      if (!hash) return "승인 코드 없음(승인할 것 없음·미반영·흐림·낡음·실행 중)";
+      if (dimWhy().length) return `${SM() ? "승인 보류" : "승인 코드 흐림"} — ${dimWhy().join(" · ")}`;
+      if (!hash) return SM() ? "승인할 계획 없음(승인할 것 없음·미반영·보류·낡음·실행 중)" : "승인 코드 없음(승인할 것 없음·미반영·흐림·낡음·실행 중)";
       if (PS.plan === replanned) return "앞 승인 결과로 계획을 다시 받는 중";
       return paidWhy();
     }
@@ -2097,7 +2098,7 @@ window.DPPipeline = (() => {
       // 이유와 할 일을 함께 싣는다(큐 처리 중 = 잠시 뒤 다시 승인, 자동 큐 = Run 단추 모드를 바꾼 뒤 다시 승인, 제출 안 됨 = 승인은 Studio 에서 다시 등) —
       // 재굴림은 그 할 일이 R 재누름(+1 사전 승인)으로 읽히지 않게 빼거나 머리줄 'ComfyUI 큐'로(머리줄 큐 안내가 뒤에 붙음)
       if (d.reason === "apply_needed") return `미반영 — 먼저 [반영 (무료)]${Array.isArray(d.pending) && d.pending.length ? `(${d.pending.join(", ")})` : ""}`;
-      if (d.reason === "stale") return `계획이 바뀜(지금 승인 코드 ${d.hash || "?"}) — 다시 받은 계획을 보고 다시 승인`;
+      if (d.reason === "stale") return SM() ? "계획이 바뀜 — 다시 받은 계획을 보고 다시 승인" : `계획이 바뀜(지금 승인 코드 ${d.hash || "?"}) — 다시 받은 계획을 보고 다시 승인`;
       if (SM()) return String(d.error || (d.reason === "busy" ? "서버가 바쁨 — 잠시 뒤 다시 승인" : "서버 응답 모양이 잘못됨"));
       const why = String(d.error || (d.reason === "busy" ? "탭이 바쁨 — 잠시 뒤 다시 승인" : "ComfyUI 탭 응답 모양이 잘못됨"));
       if (stage !== "reroll") return why;
@@ -2581,7 +2582,7 @@ window.DPPipeline = (() => {
         cb.type = "checkbox";
         cb.checked = sel.has(c.id);
         cb.dataset.keys = "board";
-        cb.title = "선택(only) — 계획·승인 코드 복사의 대상";
+        cb.title = SM() ? "선택(only) — 계획·승인의 대상" : "선택(only) — 계획·승인 코드 복사의 대상";
         cb.addEventListener("click", (e) => e.stopPropagation());
         cb.addEventListener("change", () => {
           if (cb.checked) sel.add(c.id);
@@ -2602,7 +2603,7 @@ window.DPPipeline = (() => {
         }
         if (r && r.need) ch.append(chip(`승인 필요 ${r.need}`, "b-wait"));
         if (r && r.pre) ch.append(chip(`다시 생성 ${r.pre}`, "b-wait"), cancelCropButton(c.id));
-        if (r && r.inflight) ch.append(chip(`진행 ${r.inflight}`, "b-run"));
+        if (r && r.inflight) ch.append(chip(`진행 ${r.inflight}`, "b-run" + (planStale() ? "" : " dp-live")));
         if (r && (r.failed || r.orphaned)) ch.append(chip(`실패 ${r.failed} · 결과 못 받음 ${r.orphaned}`, "b-bad"));
         if (r && r.done) ch.append(chip(`완료 ${r.done}`, "b-cost"));
         if (d && d.wait.length) {
@@ -2634,6 +2635,7 @@ window.DPPipeline = (() => {
       const unk = pendingUnknown();
       const stale = planStale();
       const unsure = unsureWhy();
+      const prepareDrift = P0 && !P0.error ? (P0.drift || []).filter((x) => x.section === "prepare") : [];
       const tabs = el("div", "pp-tabs");
       tabs.setAttribute("role", "tablist");
       for (const [id, label] of [["prepare", "준비"], ["prompt", "프롬프트"], ["generate", "생성"]]) {
@@ -2653,7 +2655,6 @@ window.DPPipeline = (() => {
       if (window.DPChecklist) {
         const host = el("div");
         panel.append(host);
-        const prepareDrift = P0 && !P0.error ? (P0.drift || []).filter((x) => x.section === "prepare") : [];
         const settingsBlock = PS.err ? "읽기 오류" : !P0 ? "불러오는 중" : P0.error ? modeText("pipeline.json 오류", "실행 설정 오류")
           : !P0.saved ? "파일 없음" : confirmGate(P0).gate.length ? "필수 항목 미확인" : "";
         window.DPChecklist.render(host, window.DPChecklist.rows({ S, P0, plan: p, pending: pend, prepareDrift, settingsBlock, unsure,
@@ -2701,7 +2702,7 @@ window.DPPipeline = (() => {
           const cg = confirmGate(P0);
           if (cg.gate.length) line(s, `확인 필요: ${cg.gate.join(", ")} — 확인(저장) 전에는 반영·Export 를 막음`, "bad");
           else if (cg.noFile) line(s, modeText("pipeline.json 없음 — 한 번 저장하기 전에는 반영·Export 를 막음", "실행 설정 없음 — 한 번 저장하기 전에는 반영·Export 를 막음"), "bad");
-          if (cg.rest.length) line(s, `확인 필요: ${cg.rest.join(", ")} — 반영·Export 는 막지 않음(확인(저장) 전에는 승인 코드를 흐림)`, "warn");
+          if (cg.rest.length) line(s, `확인 필요: ${cg.rest.join(", ")} — 반영·Export 는 막지 않음(확인(저장) 전에는 ${SM() ? "승인을 보류" : "승인 코드를 흐림"})`, "warn");
           for (const d of P0.drift) line(s, driftText(d), DRIFT_BILL.includes(d.kind) ? "bad" : "warn");
           // 경로 경고는 모두 템플릿을 막는다(서버 prompt_gate 409): import.* = 반영·Export, cand.path = 반영만(export 템플릿에는 dp_cand 가 없음)
           for (const w of P0.warnings) {
@@ -2746,7 +2747,7 @@ window.DPPipeline = (() => {
       const why = dimWhy();
       const applyDim = pend.length || (P0 && P0.drift || []).some((d) => ["prepare", "import"].includes(d.section))
         || (p && p.notes || []).some((n) => n.startsWith("Prepare 설정 갈라짐:") || n.startsWith("Import 설정"));
-      const dimText = `승인 코드 흐림 — ${why.join(" · ")}${applyDim ? " · 반영 뒤 다시 계산" : ""}`;
+      const dimText = `${SM() ? "승인 보류" : "승인 코드 흐림"} — ${why.join(" · ")}${applyDim ? " · 반영 뒤 다시 계산" : ""}`;
       s = section("초안 승인");
       confirmRestRow(s);
       if (!only) line(s, "선택한 크롭 없음 — 계획·승인을 끕니다(빈 only 는 '전부')", "warn");
@@ -2776,7 +2777,7 @@ window.DPPipeline = (() => {
         const dt = draftText(p.draft, p.draft.running || !!(S && S.drafting)); // 실행 중에는 계획을 다시 받지 않으므로 state 로 흐림(Run 줄과 같이)
         line(s, dt.line, dt.dim || dim ? "dim" : "");
         for (const r of dt.rows) line(s, `· ${r}`, "dim");
-        if ((p.draft.import_pending || []).length) line(s, `초안 승인 코드는 반영 뒤 확정: ${p.draft.import_pending.join(", ")}`, "warn");
+        if ((p.draft.import_pending || []).length) line(s, `${SM() ? "초안 승인은 반영 뒤 확정" : "초안 승인 코드는 반영 뒤 확정"}: ${p.draft.import_pending.join(", ")}`, "warn");
         draftMain = approveButton("draft", dt.label, hc.draft);
         btns(s, draftMain, ...(SM() ? [] : [hashCopy("draft", hc.draft)]));
         if (!SM()) advancedTabs.add("prompt");
@@ -2909,12 +2910,18 @@ window.DPPipeline = (() => {
       // 같은 그리기에서 만든 단추만 옮긴다. 승인 계획·이벤트·초점 규칙을 그대로 보존한다.
       const dock = el("div", "pp-dock");
       let main = null, kind = "", note = "";
-      const applyBlocked = !P0 || PS.err || P0.error || !P0.saved || confirmGate(P0).gate.length || (P0.warnings || []).length;
-      if (applyBlocked) {
+      const applyBlocked = PS.err || (P0 && (P0.error || !P0.saved || confirmGate(P0).gate.length || (P0.warnings || []).length));
+      if (!P0) {
+        note = "실행 설정을 불러오는 중…";
+      } else if (applyBlocked) {
         note = "실행 설정 확인이 먼저입니다 — ① 준비의 「실행 설정」";
-      } else if (!S || !S.canvas || pend.length) {
+      } else if (unsure) {
+        note = "반영 상태를 확인하지 못했습니다 — [다시 계산]";
+      } else if (!S || !S.canvas || pend.length || prepareDrift.length) {
         main = ab; kind = "apply";
-        note = pend.length ? pend.slice(0, 2).join(" · ") : "가져오기 전 — 반영을 먼저 하세요";
+        const summary = pend.concat(prepareDrift.length ? [`실행 설정이 마지막 반영과 다름(${prepareDrift.map((d) => d.field).join(", ")}) — `
+          + (prepareDrift.some((d) => d.kind === "cell") ? "반영하면 새 생성 조건" : "반영하면 대기 호출 조건 갱신")] : []);
+        note = summary.length ? summary.slice(0, 2).join(" · ") : "가져오기 전 — 반영을 먼저 하세요";
       } else if (shownTab === "prepare") {
         note = "반영됨 — 바뀐 것이 없습니다. 다음: ② 크롭 · ④ 프롬프트";
       } else if (shownTab === "prompt" && draftMain && p.draft.units?.length) {
@@ -2942,7 +2949,10 @@ window.DPPipeline = (() => {
       if (panel.dataset.main !== kind) { panel.dataset.main = kind; panel.dataset.mainChanged = String(Date.now()); }
       // 같은 자리의 뜻이 달라진 직후에는 클릭을 버린다. 기존 처리기를 대신 호출하지 않는다.
       dock.addEventListener("click", (e) => {
-        if (Date.now() - Number(panel.dataset.mainChanged) < 800) { e.preventDefault(); e.stopPropagation(); }
+        if (Date.now() - Number(panel.dataset.mainChanged) < 800) {
+          e.preventDefault(); e.stopPropagation();
+          if (dock.contains(document.activeElement)) document.activeElement.blur();
+        }
       }, true);
       if (note) dock.append(el("div", "pp-dock-note", note));
       if (main) {
@@ -2962,7 +2972,7 @@ window.DPPipeline = (() => {
           x.state !== "done" ? "bad" : (x.report || "").includes(LOGIN) ? "warn" : "dim");
       }
       for (const h of new Set((asked[stage] || []).filter((a) => a.lost).map((a) => a.hash))) {
-        line(s, SM() ? `앞서 보낸 ${STAGES[stage].label} 승인${h ? `(승인 코드 ${h})` : ""}의 결과를 모름 — 이미 서버 작업이 들어갔을 수 있음: 다시 보내기 전에 진행 줄(대기·실행 중 작업)을 확인` : `앞서 보낸 ${STAGES[stage].label} 승인${h ? `(승인 코드 ${h})` : ""}의 결과를 모름 — 이미 ComfyUI 큐에 들어갔을 수 있음: `
+        line(s, SM() ? `앞서 보낸 ${STAGES[stage].label} 승인의 결과를 모름 — 이미 서버 작업이 들어갔을 수 있음: 다시 보내기 전에 진행 줄(대기·실행 중 작업)을 확인` : `앞서 보낸 ${STAGES[stage].label} 승인${h ? `(승인 코드 ${h})` : ""}의 결과를 모름 — 이미 ComfyUI 큐에 들어갔을 수 있음: `
           + "다시 보내기 전에 ComfyUI 큐 확인", "warn");
       }
     }
