@@ -129,10 +129,23 @@ def _validate_config(config):
                                allowed_hosts=tuple(_host(h) for h in config.allowed_hosts), trusted_proxies=proxies)
 
 
+def _client_ip(value):
+    """프록시가 붙인 포트는 떼고, mapped IPv6 는 신뢰 검사 전 IPv4 로 맞춘다."""
+    value = value.strip()
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        match = re.fullmatch(r"(?:\[([^\]]+)\]|([^:]+)):([0-9]{1,5})", value)
+        if match is None or int(match[3]) > 65535:
+            raise ValueError("클라이언트 주소 형식이 잘못되었습니다") from None
+        address = ipaddress.ip_address(match[1] or match[2])
+    return (address.ipv4_mapped or address) if isinstance(address, ipaddress.IPv6Address) else address
+
+
 def _client_address(request, trusted_proxies):
     remote = request.remote or ""
     try:
-        address = ipaddress.ip_address(remote)
+        address = _client_ip(remote)
     except ValueError:
         return remote
     networks = tuple(ipaddress.ip_network(proxy, strict=False) for proxy in trusted_proxies)
@@ -141,9 +154,10 @@ def _client_address(request, trusted_proxies):
         return any(value in network for network in networks)
 
     if trusted(address):
-        for value in reversed(request.headers.get("X-Forwarded-For", "").split(",")):
+        forwarded = ",".join(request.headers.getall("X-Forwarded-For", ()))
+        for value in reversed(forwarded.split(",")):
             try:
-                candidate = ipaddress.ip_address(value.strip())
+                candidate = _client_ip(value)
             except ValueError:
                 break  # 불완전한 체인은 접속 상대의 버킷으로 돌린다.
             if not trusted(candidate):
@@ -195,12 +209,15 @@ class LoginFailures:
         self._global.append(now)
 
     def finish(self, client):
-        remaining = self._inflight[client] - 1
+        active = self._inflight.get(client, 0)
+        if active <= 0:
+            return  # 종료 정리 뒤 도착한 finally 는 이미 비운 수를 다시 내리지 않는다.
+        remaining = active - 1
         if remaining:
             self._inflight[client] = remaining
         else:
             del self._inflight[client]
-        self._pending -= 1
+        self._pending = max(0, self._pending - 1)
 
     def clear(self):
         self._clients.clear()
@@ -213,27 +230,49 @@ def _public_json(data, board, scope=None):
     """안내 글만 가린다. 설정을 저장할 때 다시 보내는 경로 값은 바꾸지 않는다."""
     if not board.server_mode():
         return data
-    if isinstance(data, list):
-        return [_public_json(item, board, scope) for item in data]
-    if not isinstance(data, dict):
-        return data
-    result = {}
-    for key, value in data.items():
-        if key in ("error", "warning", "start_blocked", "msg") and isinstance(value, str):
-            result[key] = board.public_error(value, scope)
-        elif key in ("notes", "failed", "pending", "reasons") and isinstance(value, list):
-            result[key] = [board.public_error(item, scope) if isinstance(item, str) else _public_json(item, board, scope)
-                           for item in value]
-        elif key == "exports" and isinstance(value, list):
-            result[key] = []
-            for item in value:
-                item = _public_json(item, board, scope)
-                if isinstance(item, dict) and isinstance(item.get("psd"), str):
-                    item["psd"] = os.path.basename(item["psd"].replace("\\", "/"))
-                result[key].append(item)
-        else:
-            result[key] = _public_json(value, board, scope)
-    return result
+
+    def message(value):
+        cleaned = board.public_error(value, scope)
+        return value if cleaned == value else cleaned
+
+    def items(values, *, messages=False, exports=False):
+        result = values
+        for index, value in enumerate(values):
+            cleaned = message(value) if messages and isinstance(value, str) else visit(value)
+            if exports and isinstance(cleaned, dict) and isinstance(cleaned.get("psd"), str):
+                basename = os.path.basename(cleaned["psd"].replace("\\", "/"))
+                if basename != cleaned["psd"]:
+                    cleaned = {**cleaned, "psd": basename}
+            if cleaned is not value:
+                if result is values:
+                    result = list(values)
+                result[index] = cleaned
+        return result
+
+    def visit(value):
+        if isinstance(value, list):
+            return items(value)
+        if not isinstance(value, dict):
+            return value
+        result = value
+        for key, entry in value.items():
+            if isinstance(entry, str) and (key in ("error", "warning", "start_blocked", "msg") or key.endswith(("_error", "_warning"))):
+                cleaned = message(entry)
+            elif isinstance(entry, list) and (key in ("notes", "failed", "pending", "reasons", "warnings")
+                                              or key.endswith(("_pending", "_notes", "_errors", "_warnings"))):
+                cleaned = items(entry, messages=True)
+            elif key == "exports" and isinstance(entry, list):
+                cleaned = items(entry, exports=True)
+            else:
+                cleaned = visit(entry)
+            if cleaned is not entry:
+                if result is value:
+                    result = dict(value)
+                result[key] = cleaned
+        return result
+
+    # 바뀐 부분만 복사한다. 같은 객체면 깊은 비교·재직렬화를 생략할 수 있다.
+    return visit(data)
 
 
 def _inside(path, base):
@@ -527,11 +566,13 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
             response = await handler(request)
             # 파일·그림·스트리밍은 그대로 둔다. protect 가 범위를 되돌린 뒤라 요청의 세션 범위를 넘긴다.
             if (board.server_mode() and isinstance(response, web.Response)
-                    and response.content_type == "application/json" and isinstance(response.body, bytes)):
+                    and response.content_type == "application/json" and isinstance(response.body, bytes)
+                    and any(word in response.body for word in (b"error", b"warning", b"pending", b"notes", b"failed",
+                                                              b"reasons", b"msg", b"exports", b"start_blocked"))):
                 data = json.loads(response.body.decode(response.charset or "utf-8"))
                 scope = (request.get("bmk_dp_session") or {}).get("scope")
                 cleaned = _public_json(data, board, scope)
-                if cleaned != data:
+                if cleaned is not data:
                     response.text = json.dumps(cleaned, ensure_ascii=False)
             return response
 

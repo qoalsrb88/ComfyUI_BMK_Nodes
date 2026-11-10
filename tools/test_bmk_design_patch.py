@@ -59425,6 +59425,7 @@ def forge_f3_server_unit():
     import tempfile
     from aiohttp import web
     from aiohttp.test_utils import make_mocked_request
+    from multidict import CIMultiDict
     from unittest.mock import AsyncMock, patch
     import bmk_design_patch_board as bd
     import bmk_design_patch_jobs as jobs
@@ -59468,7 +59469,13 @@ def forge_f3_server_unit():
         ("[C:/private/a.psd]", "[<서버 경로>]"),
         ("401/402/403 · 001_ab/A · 앞 / 뒤", "401/402/403 · 001_ab/A · 앞 / 뒤"),
         ("<계정 폴더>/a/b", "<계정 폴더>/a/b"),
-        ("s3://bucket/a/b · file:///srv/data/x · custom+v1://host/a/b", "s3://bucket/a/b · file:///srv/data/x · custom+v1://host/a/b"),
+        ("s3://bucket/a/b · file:///srv/data/x · custom+v1://host/a/b", "s3:<서버 경로> · <서버 경로> · custom+v1:<서버 경로>"),
+        ("//host/share/x", "<서버 경로>"), ("'//host/shared folder/a.psd'", "'<서버 경로>'"),
+        ("C://data/x", "<서버 경로>"), ("FILE:///srv/data/x", "<서버 경로>"),
+        ("file://host/share/x", "<서버 경로>"),
+        ("<계정 폴더>/srv/data/x", "<계정 폴더>/srv/data/x"),
+        ("<계정 폴더>/one file:///srv/other/x", "<계정 폴더>/one <서버 경로>"),
+        ("HTTPS://example.test/srv/data/x", "HTTPS://example.test/srv/data/x"),
     ]
     for mode in ("", "1"):
         with patch.dict(os.environ, {bd.SERVER_ENV: mode}):
@@ -59503,17 +59510,21 @@ def forge_f3_server_unit():
             ("/srv/accounts/me", "/srv/accounts/me/a", "<계정 폴더>/a"),
             ("/srv/accounts/me", "https://example.test/srv/accounts/me/a", "https://example.test/srv/accounts/me/a"),
             (r"\\server\share\account", r"\\SERVER\SHARE\account\a", r"<계정 폴더>\a"),
+            (r"\\server\share\account", "//SERVER/share/account/a", "<계정 폴더>/a"),
             ("C:/Data Home/Account", r"C:\DATA HOME\ACCOUNT\a", r"<계정 폴더>\a"),
         ):
             check(bd.public_error(path, {"home": home}) == expected_path, "F3S1 POSIX·UNC·공백 계정 홈·URL 보존")
     for mode in ("", "1"):
         with patch.dict(os.environ, {bd.SERVER_ENV: mode}), patch.object(bd.logger, "warning") as log:
-            for source in ("opaqueC:/private/a.psd", r"bad!\\server\share\x", "{/srv/private/x}"):
+            closed_paths = ["opaqueC:/private/a.psd", r"bad!\\server\share\x", "{/srv/private/x}", "bad!//host/share/x"]
+            closed_paths += [prefix + "/" + base + "/private/x" for prefix in ("<b>", "폴더", "word")
+                             for base in ("srv", "home", "var", "tmp", "mnt", "opt", "usr", "etc", "data")]
+            for source in closed_paths:
                 actual = bd.public_error(source)
-                check(actual == ("요청을 처리하지 못했습니다(서버 기록 참고)" if mode else source), "F3S1 가림 실패는 닫힌 쪽")
+                check(actual == ("요청을 처리하지 못했습니다(서버 기록 참고)" if mode else source), "F3S1 R6 가림 실패는 닫힌 쪽: " + source)
                 if mode:
                     check(log.call_args is not None and log.call_args.args[-1] == source, "F3S1 가리지 못한 원문은 서버 로그에만 기록")
-            check(log.call_count == (3 if mode else 0), "F3S1 로컬은 가림·추가 로그 없음")
+            check(log.call_count == (len(closed_paths) if mode else 0), "F3S1 로컬은 가림·추가 로그 없음")
             for error, expected_error in (
                 (FileNotFoundError(2, "파일 없음", "C:/private/a'b.psd"), "파일 없음: '<서버 경로>'"),
                 (FileExistsError(17, "이미 있음", "/srv/private/space name.psd"), "이미 있음: '<서버 경로>'"),
@@ -59615,6 +59626,17 @@ def forge_f3_server_unit():
             wording(message_of(lambda: vlm.check_vlm_effort(None, "bad")),
                     vlm._TAG + " effort 값이 잘못되었습니다: 'bad' (선택지: " + ", ".join(vlm.EFFORTS) + ")", mode)
             wording(message_of(lambda: vlm.extract_json(None)), vlm._TAG + " VLM 출력이 문자열이 아닙니다: NoneType", mode)
+            choice, effort = next((choice, effort) for choice in vlm.VLM_CHOICES if choice.startswith("openai/")
+                                  for effort in vlm.EFFORTS if effort not in vlm.MODEL_EFFORTS[choice.split("/", 1)[1]])
+            model = choice.split("/", 1)[1]
+            expected_error = f"{model} 은 effort {effort!r} 를 받지 않습니다(허용: {', '.join(vlm.MODEL_EFFORTS[model])})"
+            raw_error = message_of(lambda: vlm.check_vlm_effort(choice, effort))
+            check(raw_error == ("[DesignPatch]" if mode else vlm._TAG) + " " + expected_error,
+                  "F3S2 R4 VLM 예외 태그·로컬 원문 보존")
+            invalid_draft = dict(pl.defaults()["draft"], vlm=choice, effort=effort)
+            check(message_of(lambda: pl.validate_section("draft", invalid_draft)) == "draft: " + expected_error,
+                  "F3S2 R4 validate_section 깊은 검증은 두 모드 모두 태그 없는 원문")
+            check(vlm._TAG == "[ComfyUI_BMK_Nodes::DesignPatch]", "F3S2 R4 로그 태그는 모드와 무관하게 그대로")
             wording(message_of(lambda: pl._parse(b"[]")), "pipeline.json 최상위가 객체가 아닙니다", mode)
             settings_root = _pl_project(out / ("settings_" + (mode or "local")), "project")
             values = pl.defaults(settings_root)["export"]
@@ -59702,8 +59724,28 @@ def forge_f3_server_unit():
         ("2001:db8:1::1", "2001:db8:2::99, 2001:db8:1::2", ("2001:db8:1::/64",), "2001:db8:2::/64"),
         ("2001:db8:3::1", "198.51.100.1", ("192.0.2.0/24",), "2001:db8:3::/64"),
     ):
-        request = types.SimpleNamespace(remote=remote, headers={"X-Forwarded-For": forwarded})
+        request = types.SimpleNamespace(remote=remote, headers=CIMultiDict({"X-Forwarded-For": forwarded}))
         check(srv._client_address(request, proxies) == expected_ip, "F3S4 CIDR·오른쪽 신뢰 체인·IPv6 /64")
+    for remote, forwarded, proxies, expected_ip in (
+        ("192.0.2.1", "198.51.100.2:5123", ("192.0.2.0/24",), "198.51.100.2"),
+        ("192.0.2.1", "[2001:db8::1]:443", ("192.0.2.0/24",), "2001:db8::/64"),
+        ("192.0.2.1", "198.51.100.2:70000", ("192.0.2.0/24",), "192.0.2.1"),
+        ("192.0.2.1", "[2001:db8::1]:bad", ("192.0.2.0/24",), "192.0.2.1"),
+        ("192.0.2.1", "example.test:443", ("192.0.2.0/24",), "192.0.2.1"),
+        ("::ffff:198.51.100.7", "203.0.113.1", (), "198.51.100.7"),
+        ("::ffff:198.51.100.8", "203.0.113.1", (), "198.51.100.8"),
+        ("::ffff:192.0.2.1", "::ffff:198.51.100.7, ::ffff:192.0.2.2", ("192.0.2.0/24",), "198.51.100.7"),
+        ("192.0.2.1", "[::ffff:198.51.100.8]:443", ("192.0.2.0/24",), "198.51.100.8"),
+        (None, "198.51.100.7", ("192.0.2.0/24",), ""),
+    ):
+        request = types.SimpleNamespace(remote=remote, headers=CIMultiDict({"X-Forwarded-For": forwarded}))
+        check(srv._client_address(request, proxies) == expected_ip, "F3S4 R1·R2 포트·mapped 주소·잘못된 주소의 폴백")
+    for forged in ("203.0.113.1", "203.0.113.2"):
+        headers = CIMultiDict([("X-Forwarded-For", forged), ("x-forwarded-for", "198.51.100.2:5123, 192.0.2.2")])
+        request = types.SimpleNamespace(remote="192.0.2.1", headers=headers)
+        check(srv._client_address(request, ("192.0.2.0/24",)) == "198.51.100.2",
+              "F3S4 R1 여러 줄 XFF 는 마지막 줄부터 읽어 위조한 첫 줄을 무시")
+        check(srv._client_address(request, ()) == "192.0.2.1", "F3S4 R1 직접 접속은 여러 줄 XFF 도 무시")
     check(srv._validate_config(dataclasses.replace(config, trusted_proxies=("192.0.2.7/24", "2001:db8::1/64"))).trusted_proxies
           == ("192.0.2.0/24", "2001:db8::/64"), "F3S4 CIDR 네트워크 주소 정규화")
     failures = srv.LoginFailures(2, 10, 4, clock=lambda: now[0])
@@ -59732,6 +59774,15 @@ def forge_f3_server_unit():
     small.begin("192.0.2.2"); small.reject("192.0.2.2"); small.finish("192.0.2.2")
     check(small.begin("192.0.2.1") == 1, "F3S4 LRU 퇴출된 주소도 진행 중 요청은 기억")
     small.finish("192.0.2.1")
+    closing = srv.LoginFailures(2, 300, 10, clock=lambda: now[0])
+    closing.begin("192.0.2.1"); closing.begin("192.0.2.1")
+    closing.clear()
+    closing.finish("192.0.2.1"); closing.finish("192.0.2.1"); closing.finish("missing")
+    check(not closing._inflight and closing._pending == 0, "F3S4 R7 clear 뒤 늦은 finish·중복 finish 는 예외·음수 없음")
+    for count in (0, -1):
+        closing._inflight["192.0.2.1"] = count
+        closing.finish("192.0.2.1")
+        check(closing._pending == 0, "F3S4 R7 0 이하의 진행 중 수는 다시 내리지 않음")
 
     class Body:
         def __init__(self, raw, gate=None):
@@ -59778,13 +59829,13 @@ def forge_f3_server_unit():
 
     async def call(app, method="POST", path="/api/session", *, token="bad", remote="192.0.2.1", body=None,
                    headers=None, raw=None, payload=None):
-        hs = {"Host": "localhost:8791", "Origin": "http://localhost:8791", "X-DesignPatch-Request": "1",
-              "Content-Type": "application/json"}
+        hs = CIMultiDict({"Host": "localhost:8791", "Origin": "http://localhost:8791", "X-DesignPatch-Request": "1",
+                          "Content-Type": "application/json"})
+        for key in (headers or {}):
+            hs.popall(key, None)
         for key, value in (headers or {}).items():
-            if value is None:
-                hs.pop(key, None)
-            else:
-                hs[key] = value
+            if value is not None:
+                hs.add(key, value)
         if raw is None:
             raw = json.dumps(body if body is not None else {"token": token, "organization_id": "org-test"}).encode("utf-8")
         request = make_mocked_request(method, path, headers=hs, payload=payload or Body(raw), app=app)
@@ -59892,6 +59943,18 @@ def forge_f3_server_unit():
                 check(response.status == 429, "F3S6 위조한 첫 XFF 값으로 버킷 변경 불가")
                 response, _ = await call(app, token="ok", headers={"X-Forwarded-For": "198.51.100.3"})
                 check(response.status == (200 if proxy else 429), "F3S6 신뢰한 프록시에서만 마지막 주소별 버킷")
+        async with serving(Verifier(), login_fail_limit=1, trusted_proxies=("192.0.2.0/24",)) as app:
+            for forged, status in (("203.0.113.1", 401), ("203.0.113.2", 429)):
+                headers = CIMultiDict([("X-Forwarded-For", forged), ("X-Forwarded-For", "198.51.100.2:5123, 192.0.2.2")])
+                check((await call(app, headers=headers))[0].status == status,
+                      "F3S6 R1 여러 줄 XFF 첫 줄을 바꿔도 같은 클라이언트 한도")
+            check((await call(app, token="ok", headers={"X-Forwarded-For": "203.0.113.1"}))[0].status == 200,
+                  "F3S6 R1 위조한 첫 줄 주소의 다른 사용자는 차단되지 않음")
+        async with serving(Verifier(), login_fail_limit=1, trusted_proxies=("192.0.2.0/24",)) as app:
+            for forwarded, token, status in (("::ffff:198.51.100.7", "bad", 401),
+                                              ("::ffff:198.51.100.8", "ok", 200), ("198.51.100.7", "ok", 429)):
+                check((await call(app, remote="::ffff:192.0.2.1", headers={"X-Forwarded-For": forwarded}, token=token))[0].status == status,
+                      "F3S6 R2 mapped IPv4 는 사용자별로 나누고 일반 IPv4 표기와 한도를 공유")
 
         for kwargs, expected_status in (({"body": {"token": 1}}, 400), ({"raw": b"["}, 400),
                                          ({"raw": b"x" * (16 * 1024 + 1)}, 400),
@@ -59953,12 +60016,30 @@ def forge_f3_server_unit():
             with contextlib.suppress(asyncio.CancelledError):
                 await task
             check((await call(app, token="ok"))[0].status == 200, "F3S8 취소도 finally 에서 자리 반환·실패로 세지 않음")
+        verifier = Verifier()
+        verifier.gate = asyncio.Event()
+        async with serving(verifier, login_fail_limit=1) as app:
+            task = asyncio.create_task(call(app, token="ok"))
+            await asyncio.sleep(0)
+            state = app[srv._LOGIN_FAILURES_KEY]
+            check(state._pending == 1, "F3S8 R7 종료 정리 전 검증 중 요청 재현")
+            state.clear()
+            verifier.gate.set()
+            check((await task)[0].status == 200 and not state._inflight and state._pending == 0,
+                  "F3S8 R7 clear 뒤 요청 finally 도 KeyError 없이 완료")
 
         message = "실패: C:/data/other/x.psd"
-        payload = {"error": message, "warning": message, "start_blocked": message, "warnings": [{"msg": message}],
+        payload = {"error": message, "warning": message, "start_blocked": message, "warnings": [message, {"msg": message}],
                    "notes": [message], "failed": [message], "pending": [message, 2], "reasons": [message],
+                   "apply_pending": [message], "import_pending": [message], "spec_error": message,
+                   "render_warning": message, "draft_notes": [message], "draft_errors": [message],
+                   "draft_warnings": [message, {"file_error": message}, 3, False, None],
+                   "non_text": {"spec_error": 4, "file_warning": True, "apply_pending": {"path": "C:/data/other/x"},
+                                "import_pending": message, "notes": message},
                    "exports": [{"psd": r"C:\data\other\out.psd", "rev": 1}],
                    "settings": {"import": {"psd_path": "C:/data/other/x.psd"}},
+                   "derived": {"settings": {"import": {"psd_path": "C:/data/other/x.psd", "refs_dir": "C:/data/other/refs"}},
+                               "notes": [message]},
                    "drift": [{"manifest": "C:/data/other/old", "settings": "C:/data/other/new"}],
                    "psd": {"path": "C:/data/other/x.psd"}, "refs_dir": "C:/data/other/refs",
                    "doc_refs_dir": "C:/data/other/docrefs", "suggest_dir": "C:/data/other/suggest"}
@@ -59987,11 +60068,18 @@ def forge_f3_server_unit():
                                      ("GET", "/refs"), ("GET", "/jobs/history/j_0123456789abcdef")):
                     response, data = await call(app, method, bd.API + path, headers=auth, body={"root": "key", "rev": 0})
                     check(response.status == 200 and data["error"] == "실패: <서버 경로>"
-                          and data["warnings"] == [{"msg": "실패: <서버 경로>"}]
+                          and data["warnings"] == ["실패: <서버 경로>", {"msg": "실패: <서버 경로>"}]
                           and data["pending"] == ["실패: <서버 경로>", 2]
                           and data["exports"] == [{"psd": "out.psd", "rev": 1}], "F3S9 공용 JSON 경로 가림 " + path)
+                    check(all(data[key] == ["실패: <서버 경로>"] for key in ("apply_pending", "import_pending", "draft_notes", "draft_errors"))
+                          and data["spec_error"] == data["render_warning"] == "실패: <서버 경로>"
+                          and data["draft_warnings"] == ["실패: <서버 경로>", {"file_error": "실패: <서버 경로>"}, 3, False, None],
+                          "F3S9 R3 접미 규칙·누락된 세 칸·목록 안 객체의 안내 가림 " + path)
                     check(all(data.get(k) == payload[k] for k in ("settings", "drift", "psd", "refs_dir", "doc_refs_dir", "suggest_dir")),
                           "F3S9 저장 왕복 경로 보존 " + path)
+                    check(data["derived"]["settings"] == payload["derived"]["settings"]
+                          and data["derived"]["notes"] == ["실패: <서버 경로>"] and data["non_text"] == payload["non_text"],
+                          "F3S9 R3 derived.settings·숫자·불리언·대상 밖 값 보존 " + path)
                 with patch.object(pl, "view", side_effect=bd._PathReject(409, message, "안전한 안내", notes=[message])):
                     response, data = await call(app, "GET", bd.API + "/pipeline", headers=auth)
                     check(response.status == 409 and data == {"error": "안전한 안내", "notes": ["실패: <서버 경로>"]},
@@ -60005,6 +60093,21 @@ def forge_f3_server_unit():
             request = make_mocked_request("GET", "/test", app=app)
             response = await app.middlewares[0](request, binary)
             check(response.body == b"C:/data/private/x", "F3S9 그림 응답 바이트 보존")
+            for raw, parses in (
+                (b' { "ok": true, "settings": {"psd_path": "C:/private/x"} }\n', 0),
+                (' { "spec_error": null, "warnings": ["3/4", {"msg":"<계정 폴더>/a/b"}], "exports": [{"psd":"out.psd"}] }\n'.encode("utf-8"), 1),
+            ):
+                original_response = web.Response(body=raw, content_type="application/json")
+                async def unchanged(request):
+                    return original_response
+                with patch.object(srv.json, "loads", wraps=json.loads) as loads, \
+                        patch.object(srv.json, "dumps", side_effect=AssertionError("변경 없는 응답을 재직렬화함")):
+                    response = await app.middlewares[0](request, unchanged)
+                check(response is original_response and response.body is raw and loads.call_count == parses,
+                      "F3S9 R5 대상 낱말 없으면 파싱 생략·변경 없으면 같은 응답 객체와 바이트")
+            unchanged_payload = {"warnings": ["3/4", {"msg": "<계정 폴더>/a/b"}], "exports": [{"psd": "out.psd"}]}
+            check(srv._public_json(unchanged_payload, bd) is unchanged_payload,
+                  "F3S9 R5 바뀌지 않은 중첩 목록·객체는 원본으로 변경 여부 전달")
         parent = srv.make_dev_parent_app(dataclasses.replace(config, dev_parent_port=8790))
         response, _ = await call(parent, "GET", "/?acct=bob")
         check(all(text in response.text for text in ("background:#09090b", "color:#e4e4e7", "color:#a1a1aa", "height:56px",

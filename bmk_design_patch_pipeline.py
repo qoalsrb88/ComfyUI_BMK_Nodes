@@ -398,7 +398,7 @@ def _check_section(section: str, values: Any, *, deep: bool, draft_rounds=None) 
             try:
                 dvlm.check_widgets(out["vlm"], out["effort"], out["image_detail"], out["write_mode"])
             except ValueError as e:  # vlm 메시지의 노드 태그는 떼고 절 이름을 붙인다
-                raise ValueError(f"draft: {str(e).replace(dvlm._TAG, '').strip()}") from e
+                raise ValueError(f"draft: {str(e).replace(dvlm._error_tag(), '').strip()}") from e
         if draft_rounds is not None:
             _check_round(out["draft_round"], draft_rounds)
     elif section == "export":
