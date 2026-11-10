@@ -433,15 +433,41 @@ def _public_path(path, scope=None):
     return "<서버 경로>"
 
 
+def _public_roots(scope=None):
+    """공백으로 토큰을 자르기 전에 아는 뿌리를 먼저 맞춘다. 임시 폴더를 알아내려고 파일을 만들지는 않는다."""
+    scope = (current_scope() if scope is None else scope) or {}
+    home = scope.get("home")
+    data = scope.get("data_dir")
+    if (not isinstance(data, str) or not data) and isinstance(home, str):
+        data = os.path.dirname(os.path.dirname(home.replace("\\", "/").rstrip("/")))
+    roots = [home, data, os.path.dirname(os.path.abspath(__file__)), sys.prefix, os.path.dirname(sys.executable),
+             *(os.environ.get(key) for key in ("TMPDIR", "TEMP", "TMP"))]
+    if os.name != "nt":
+        roots.append("/tmp")
+    patterns = []
+    for path in roots:
+        if not isinstance(path, str) or not re.match(r"(?:[A-Za-z]:[\\/]|[\\/])", path):
+            continue
+        path = path.rstrip("\\/")
+        if not path or re.fullmatch(r"[A-Za-z]:", path):
+            continue
+        pattern = r"[\\/]+".join(re.escape(part) for part in re.split(r"[\\/]+", path))
+        if pattern not in patterns:
+            patterns.append(pattern)
+    return r"(?i:" + "|".join(patterns) + r''')(?=$|[\\/\s"'<>])'''
+
+
 def public_error(message: str, scope: dict | None = None) -> str:
     """후보마다 한 번만 가린다. URL·상대 경로·이미 가린 홈 꼬리는 다시 경로로 읽지 않는다."""
     if not server_mode():
         return message
     token = r'''[^\s"'<>]'''
-    tail = token + r"*(?:[ \t]+(?![A-Za-z][A-Za-z0-9+.-]*:[\\/]|[\\/])" + token + r"*[\\/]" + token + r"+)*"
+    gap = r"[ \t]+(?![A-Za-z][A-Za-z0-9+.-]*:[\\/]|[\\/])"
+    word = r'''[^\s"'<>\\/]+'''
+    tail = token + r"*(?:(?:" + gap + word + r")*?" + gap + token + r"*[\\/]" + token + r"+)*"
     keep = r'''(?i:https?)://[^\s<>"']+|<계정 폴더>''' + tail
     left = r'''(?<![^\s:'"(=\[])'''
-    root = r'''(?:[A-Za-z]:[\\/]|(?i:file):/{2,}|\\{2,}|/{2,}|(?<![A-Za-z]:)/[^/\s"'<>]+/)'''
+    root = r"(?:" + _public_roots(scope) + r'''|[A-Za-z]:[\\/]|(?i:file):/{2,}|\\{2,}|/{2,}|(?<![A-Za-z]:)/[^/\s"'<>]+/)'''
     paths = (r"(?P<keep>" + keep + r")|" + left
              + r'''(?P<quote>["'])(?P<quoted>''' + root + r'''[^\r\n]*?)(?P=quote)|'''
              + left + r"(?P<path>" + root + tail + r")")
@@ -457,7 +483,8 @@ def public_error(message: str, scope: dict | None = None) -> str:
     result = re.sub(paths, hide, message)
     # 후보 경계 밖에 붙은 경로도 원문으로 내보내지 않는다. 이 검사는 치환하지 않는다.
     remains = re.compile(r"[A-Za-z]:[\\/]|(?<![\w\\])\\{2,}|/{2,}[^\s/]+/"
-                         r"|(?<![\w./\\>])/(?:[^\s/]+/)[^\s]*|/(?:srv|home|var|tmp|mnt|opt|usr|etc|data)/[^\s/]+")
+                         r"|(?<![\w./\\>])/(?:[^\s/]+/)[^\s]*|/(?:srv|home|var|tmp|mnt|opt|usr|etc|data)/[^\s/]+"
+                         r'''|(?<![\w./\\>])/[^/\s"'<>]+(?:[ \t]+(?!·(?:\s|$))[^/\s"'<>]+)+/''')
     start = 0
     for protected in re.finditer(keep, result):
         if remains.search(result[start:protected.start()]):

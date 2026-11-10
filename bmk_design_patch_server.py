@@ -120,13 +120,27 @@ def _validate_config(config):
     try:
         if any(not isinstance(address, str) for address in config.trusted_proxies):
             raise ValueError
-        proxies = tuple(str(ipaddress.ip_network(address, strict=False) if "/" in address else ipaddress.ip_address(address))
-                        for address in config.trusted_proxies)
+        proxies = []
+        for address in config.trusted_proxies:
+            if "/" in address:
+                interface = ipaddress.ip_interface(address)
+                mapped = interface.ip.ipv4_mapped if interface.version == 6 else None
+                if mapped is not None:
+                    if interface.network.prefixlen < 96:
+                        raise ValueError
+                    proxy = ipaddress.ip_network(f"{mapped}/{interface.network.prefixlen - 96}", strict=False)
+                else:
+                    proxy = interface.network
+            else:
+                proxy = ipaddress.ip_address(address)
+                if proxy.version == 6:
+                    proxy = proxy.ipv4_mapped or proxy
+            proxies.append(str(proxy))
     except ValueError:
         raise ValueError("trusted_proxies 는 IP 주소·CIDR 목록이어야 합니다") from None
     return dataclasses.replace(config, public_origin=origin,
                                parent_origins=tuple(_origin(p) for p in config.parent_origins),
-                               allowed_hosts=tuple(_host(h) for h in config.allowed_hosts), trusted_proxies=proxies)
+                               allowed_hosts=tuple(_host(h) for h in config.allowed_hosts), trusted_proxies=tuple(proxies))
 
 
 def _client_ip(value):
@@ -178,7 +192,7 @@ class LoginFailures:
         self._pending = 0
         self._last_clock = float("-inf")
 
-    def begin(self, client):
+    def retry_after(self, client):
         now = self.clock()
         failures = self._clients.get(client, [])
         if now >= self._last_clock:
@@ -193,8 +207,12 @@ class LoginFailures:
         # 전역 한도는 토큰 거절 이력이 있는 주소만 늦춘다. 새 주소·정상 사용자까지 함께 막지 않는다.
         if failures and len(self._global) > self.global_limit:
             waits.append(max(1, math.ceil(min(self._global) + self.window - now)))
-        if waits:
-            return max(waits)
+        return max(waits, default=0)
+
+    def begin(self, client):
+        retry = self.retry_after(client)
+        if retry:
+            return retry
         self._inflight[client] = self._inflight.get(client, 0) + 1
         self._pending += 1
         return 0
@@ -569,11 +587,16 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
                     and response.content_type == "application/json" and isinstance(response.body, bytes)
                     and any(word in response.body for word in (b"error", b"warning", b"pending", b"notes", b"failed",
                                                               b"reasons", b"msg", b"exports", b"start_blocked"))):
-                data = json.loads(response.body.decode(response.charset or "utf-8"))
                 scope = (request.get("bmk_dp_session") or {}).get("scope")
-                cleaned = _public_json(data, board, scope)
-                if cleaned is not data:
-                    response.text = json.dumps(cleaned, ensure_ascii=False)
+
+                def clean_body():
+                    data = json.loads(response.body.decode(response.charset or "utf-8"))
+                    cleaned = _public_json(data, board, scope)
+                    return json.dumps(cleaned, ensure_ascii=False) if cleaned is not data else None
+
+                cleaned = await asyncio.to_thread(clean_body) if len(response.body) > 64 * 1024 else clean_body()
+                if cleaned is not None:
+                    response.text = cleaned
             return response
 
         @web.middleware
@@ -649,19 +672,29 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
 
         async def session_post(request):
             client = _client_address(request, config.trusted_proxies)
-            retry = login_failures.begin(client)  # 본문 수신의 첫 await 전에 자리부터 잡는다.
+            retry = login_failures.retry_after(client)  # 막혔으면 본문을 읽지 않는다. 수신 중에는 자리를 잡지 않는다.
             if retry:
                 response = _error("rate_limited")
                 response.headers["Retry-After"] = str(retry)
                 return response
             try:
-                data = await _body(request, 16 * 1024)
-                if isinstance(data, web.Response):
-                    return data
+                data = await asyncio.wait_for(_body(request, 16 * 1024), timeout=10)
+            except asyncio.TimeoutError:
+                return web.json_response({"error": "JSON 본문을 읽을 수 없습니다"}, status=400)
+            if isinstance(data, web.Response):
+                return data
+            reserved = False
+            try:
                 token, org = data.get("token"), data.get("organization_id")
                 try:
                     if not isinstance(token, str) or not 1 <= len(token) <= 4096 or not _valid_id(org):
                         return web.json_response({"error": "토큰·조직 형식이 잘못되었습니다"}, status=400)
+                    retry = login_failures.begin(client)  # 본문을 받는 사이 바뀐 한도를 다시 보고, await 없이 예약한다.
+                    if retry:
+                        response = _error("rate_limited")
+                        response.headers["Retry-After"] = str(retry)
+                        return response
+                    reserved = True
                     if not config.dev_handoff and token.startswith("dev:"):
                         login_failures.reject(client)
                         return _error("bad_token")
@@ -689,7 +722,8 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
                 response.set_cookie(COOKIE, sid, httponly=True, path="/", samesite=config.cookie_samesite, secure=secure)
                 return response
             finally:
-                login_failures.finish(client)
+                if reserved:
+                    login_failures.finish(client)
 
         async def logout(request):
             sessions.delete(request.cookies.get(COOKIE))
