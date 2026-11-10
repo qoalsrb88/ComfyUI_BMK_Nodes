@@ -431,7 +431,9 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
             return response
 
         async def headers(request, response):
-            response.headers["Content-Security-Policy"] = "frame-ancestors " + (" ".join(config.parent_origins) or "'none'")
+            # 브라우저는 frame-ancestors 에 IPv6 리터럴 origin(http://[::1]:p)을 받지 않고 응답마다 콘솔 오류를 낸다(Chrome 확인) — 싣지 않는다.
+            ancestors = [p for p in config.parent_origins if "[" not in p]
+            response.headers["Content-Security-Policy"] = "frame-ancestors " + (" ".join(ancestors) or "'none'")
             response.headers["X-Content-Type-Options"] = "nosniff"
             response.headers["Referrer-Policy"] = "same-origin"
             if not public(request):

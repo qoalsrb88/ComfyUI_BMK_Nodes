@@ -59,7 +59,7 @@ window.DPEnv = (() => {
     blocker.setAttribute("aria-modal", "true");
     const sheet = document.createElement("div"), p = document.createElement("p");
     sheet.className = "sheet"; p.textContent = message; sheet.appendChild(p);
-    if (error) {
+    if (error && String(error) !== message) {
       const small = document.createElement("p");
       small.className = "muted"; small.textContent = String(error); sheet.appendChild(small);
     }

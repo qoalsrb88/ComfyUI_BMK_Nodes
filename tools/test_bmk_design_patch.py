@@ -59134,8 +59134,8 @@ def forge_server_unit():
         async with TestClient(TestServer(srv.make_app(cli_configs[0], jobs_module=jobs))) as c:
             r = await c.get(api_path + "/env", headers={"Host": "[::1]:8791"})
             check(r.status == 200 and r.headers["Content-Security-Policy"] ==
-                  "frame-ancestors http://localhost:8790 http://127.0.0.1:8790 http://[::1]:8790",
-                  "FS27 T2 --host ::1·개발 부모 설정의 실제 응답 CSP 는 루프백 origin 셋 모두 허용")
+                  "frame-ancestors http://localhost:8790 http://127.0.0.1:8790",
+                  "FS27 T2 --host ::1·개발 부모 설정의 응답 CSP: 브라우저가 받지 않는 IPv6 리터럴 origin 은 싣지 않고 localhost·127.0.0.1 만")
 
         parent = srv.make_dev_parent_app(dataclasses.replace(config, dev_parent_port=8790))
         async with TestClient(TestServer(parent)) as c:
