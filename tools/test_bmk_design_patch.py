@@ -58224,7 +58224,7 @@ def _fs_jobs():
         def __init__(self, *, workers):
             self.workers, self.closed = workers, False
 
-        def close(self):
+        def close(self, timeout=0.0):
             self.closed = True
 
     def routes(runner):
@@ -58493,7 +58493,11 @@ def forge_server_unit():
         check(srv._validate_config(dataclasses.replace(config, host=host)).host == host, "FS16 R1 개발 루프백 허용 " + host)
     check(srv._validate_config(dataclasses.replace(config, dev_handoff=False, host="0.0.0.0", public_origin="https://studio.test")).host == "0.0.0.0",
           "FS16 R1 운영 모드 바인딩은 기존처럼 허용")
-    expect_raises(lambda: srv.make_app(config), "FS1 미구현 jobs 를 조용히 생략하지 않음", NotImplementedError)
+    # 실행기를 만들다 실패하면(갈래 통합 전에는 진짜 jobs 가 미구현이라 이 길을 탔다) 앱을 조용히 jobs 없이 띄우지 않고, 모드도 원복한다
+    def _broken_runner(**_kw):
+        raise NotImplementedError("jobs")
+    broken_jobs = types.SimpleNamespace(JobRunner=_broken_runner, routes=lambda runner: ())
+    expect_raises(lambda: srv.make_app(config, jobs_module=broken_jobs), "FS1 실행기를 만들지 못하면 조용히 생략하지 않음", NotImplementedError)
     check(not bd.server_mode() and os.environ.get("BMK_DP_MOCK_API") == initial_env["BMK_DP_MOCK_API"], "FS1 만들기 실패도 모드 원복")
 
     # main 이 만든 실제 설정을 받되 서비스 바인딩 전에 멈춘다.

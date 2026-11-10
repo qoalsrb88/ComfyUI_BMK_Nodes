@@ -27,6 +27,7 @@ import os
 import re
 import secrets
 import shutil
+import sys
 import threading
 import time
 import unicodedata
@@ -34,6 +35,12 @@ from urllib.parse import quote, urlencode, urlsplit
 
 from aiohttp import web
 
+if __package__ in (None, ""):
+    # `python bmk_design_patch_server.py` 로 직접 실행할 때: python_embeded(._pth 가 import 경로를 정함)는 스크립트 폴더를
+    # import 경로에 넣지 않는다 → 형제 모듈(bmk_design_patch_board 등)을 최상위 모듈로 읽게 이 폴더를 넣는다.
+    _HERE = os.path.dirname(os.path.abspath(__file__))
+    if _HERE not in sys.path:
+        sys.path.insert(0, _HERE)
 
 logger = logging.getLogger(__name__)
 COOKIE = "bmk_dp_session"
@@ -315,6 +322,7 @@ class ServerConfig:
     idle_ttl: int = 43200                      # 세션 유휴 만료(초)
     max_ttl: int = 604800                      # 세션 절대 만료(초)
     workers: int = 1                           # 실행기 동시 실행 수(F1 기본 1 — D338)
+    close_timeout: float = 30.0                # 서버를 내릴 때 실행 중인 작업을 기다리는 시간(초 — 새 호출만 멈추고 진행 중인 것은 받는다)
     dev_parent_port: int | None = None         # 개발용 가짜 부모 페이지 포트(없으면 띄우지 않음)
 
 
@@ -532,7 +540,7 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
 
         async def cleanup(app):
             try:
-                await asyncio.to_thread(runner.close)
+                await asyncio.to_thread(runner.close, config.close_timeout)
             finally:
                 sessions.clear()
                 board.set_env_provider(None)
