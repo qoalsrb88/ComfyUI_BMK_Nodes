@@ -815,7 +815,8 @@ body:not(.server) [data-server] { display: none !important; }
 #statusbar > *, #statusbar .lhead { min-width: 0; }
 #statusbar .proj, #statusbar .lhead > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #statusbar #proj, #statusbar #pipe-head { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#statusbar #pipe-head { flex-wrap: nowrap; }
+#statusbar #pipe-head { flex-wrap: nowrap; min-width: 9em; }
+#statusbar #pipe-head > button { order: -1; flex: none; }
 #statusbar .spacer { flex: 0; }
 #statusbar #layout-head, #statusbar #ref-head { flex: 0 0 auto; max-width: 100%; }
 #statusbar .status { white-space: normal; overflow-wrap: anywhere; }
@@ -826,6 +827,7 @@ body:not(.server) [data-server] { display: none !important; }
 @media (max-width: 1399px) {
   #top .brand .dim, #export-state { display: none; }
   body.server #top .brand { display: none; }
+  body.server.projects-page #top .brand { display: block; } /* 프로젝트 목록에서는 머리줄이 비지 않게 */
   #top .tabs .tab { padding: 5px 5px; }
 }
 /* 절은 직접 자식으로 남겨 단계별 가리기와 점검표 이동을 함께 쓴다. */

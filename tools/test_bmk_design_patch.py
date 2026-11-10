@@ -53076,14 +53076,19 @@ def forge_f3_frame_unit():
         tag = re.search(r'<button type="button" id="' + ident + r'"[^>]+>', bh).group()
         check('class="dp-off"' in tag and tag.index('title=') < tag.index('class='), f"F3U1 R4 {ident} 최초 HTML부터 숨김·속성 순서")
     check('#statusbar #proj, #statusbar #pipe-head { flex: 1 1 0; min-width: 0;' in block
-          and '#statusbar .spacer { flex: 0; }' in block and '#statusbar #pipe-head { flex-wrap: nowrap; }' in block
+          and '#statusbar .spacer { flex: 0; }' in block and '#statusbar #pipe-head { flex-wrap: nowrap;' in block
           and '#statusbar #layout-head, #statusbar #ref-head { flex: 0 0 auto;' in block, "F3U1 R6 상태 글 말줄임 우선·도구 단추 폭 유지")
     check('#statusbar > button {' in block and '#statusbar button {' not in block, "F3U1 R6 단추형 배지 글꼴 보존")
+    check('#statusbar #pipe-head { flex-wrap: nowrap; min-width: 9em; }' in block,
+          "F3U1 수정3 R2 상태 줄 실행 머리 최소 폭 9em")
+    check('#statusbar #pipe-head > button { order: -1; flex: none; }' in block,
+          "F3U1 수정3 R2 취소·다시 계산 단추를 앞에 표시·폭 유지")
     check('#pipe-panel:not([data-adv="1"]) .pp-adv { display: none; }' in block and '#pipe-panel .pp-tabs { display: none; }' in block,
           "F3U1 D353–354 고급·겹친 하위 탭 가리기")
     check(css.count('@media (max-width: 1399px)') == 1 and 'flex-wrap: wrap' in block and 'min-width: 0' in block
           and '#top .brand .dim, #export-state { display: none; }' in block and 'body.server #top .brand { display: none; }' in block
           and '#top .tabs .tab { padding: 5px 5px; }' in block and 'text-overflow: ellipsis' in block, "F3U1 D349 좁은 폭·줄바꿈·상태 말줄임 규칙")
+    check('body.server.projects-page #top .brand { display: block; }' in block, "F3U1 D349 서버 모드 프로젝트 목록의 머리줄이 비지 않음")
     check('id="ref-empty" class="empty dp-empty" hidden>레퍼런스 없음 — ③ 레퍼런스에서 연결' in bh,
           "F3U1 D357 레퍼런스 빈 안내")
     help_text = bh[bh.index('id="help"'):]
@@ -53203,7 +53208,8 @@ await scenario("F3U1 D352 안내만·막힌 승인",async()=>{
   complete(e);p.run.running=true;h.render();r.planRunning=!main(e)&&dock(e).textContent.includes("실행 중");p.run.running=false;
   p.draft.running=true;h.render();r.drafting=!main(e)&&dock(e).textContent.includes("실행 중");p.draft.running=false;
   h.PS.planOnly="다른 선택";h.render();r.otherPlan=!main(e)&&dock(e).textContent==="계획 계산 중…";h.PS.planOnly=ALL;
-  p.run.need=4;p.run.by_crop[e.S.crops[0].id].need=4;e.S.running=true;h.render();r.disabled=main(e)?.disabled===true&&dock(e).textContent.includes(main(e).title);e.S.running=false;
+  p.run.need=4;p.run.by_crop[e.S.crops[0].id].need=4;e.S.running=true;h.render();
+  r.disabled=!main(e)&&dock(e).textContent==="실행 중 — 끝나면 다음 단계가 나옵니다"&&e.B("생성 승인").disabled===true;e.S.running=false;
   const draft=p.draft;p.draft={error:"초안 검사 실패"};await e.pipe.showTab("prompt");r.draftError=!main(e)&&dock(e).textContent==="반영 상태를 확인하지 못했습니다 — [다시 계산]";p.draft=draft;
   p.draft.units=[];h.render();r.noDraft=!main(e)&&dock(e).dataset.main===""&&dock(e).textContent==="초안 승인할 것이 없습니다 — 다음: ⑤ 생성";
   h.clearSelection();h.render();r.noSelection=!main(e)&&dock(e).textContent.includes("왼쪽에서 크롭을 선택하세요");
@@ -53232,11 +53238,89 @@ await scenario("F3U1 R1 점검표와 같은 반영 판정",async()=>{
       for(const tab of ["prepare","prompt","generate"]) {
         await e.pipe.showTab(tab);
         r[`${server}-${cause}-${tab}`]=!main(e)&&dock(e).dataset.main===""&&dock(e).textContent==="반영 상태를 확인하지 못했습니다 — [다시 계산]"
-          &&e.pipe.steps().rows[3].state!=="done";
+          &&(cause==="retainedError"?e.pipe.steps().rows[3].state==="done":e.pipe.steps().rows[3].state!=="done");
       }
     }
     h.PS.plan=p;h.PS.planErr=null;p.draft=draft;e.S.plan_v=sig;h.PS.P=null;
     for(const tab of ["prepare","prompt","generate"]) {await e.pipe.showTab(tab);r[`${server}-loading-${tab}`]=!main(e)&&dock(e).textContent==="실행 설정을 불러오는 중…";}
+    e.stop();
+  }
+  return r;
+});
+await scenario("F3U1 수정3 R1 실행 중 안내·미반영 우선",async()=>{
+  const r={};
+  for(const server of [false,true]) {
+    const e=await fresh(server),h=e.pipe._f3,p=h.PS.plan,draft=p.draft,sig=e.S.plan_v;complete(e);
+    for(const stage of ["run","draft"]) {
+      e.S.running=stage==="run";e.S.plan_v=stage==="run"?"Run 실행 중 바뀐 서명":sig;
+      p.draft=stage==="draft"?{running:true}:draft;
+      for(const tab of ["prepare","prompt","generate"]) {
+        await e.pipe.showTab(tab);
+        r[`${server}-${stage}-${tab}`]=!main(e)&&dock(e).dataset.main===""&&dock(e).textContent==="실행 중 — 끝나면 다음 단계가 나옵니다";
+      }
+    }
+    p.draft=draft;e.S.running=true;e.S.plan_v="Run 실행 중 바뀐 서명";
+    p.apply_pending=["레이아웃 변경"];
+    for(const tab of ["prepare","prompt","generate"]) {
+      await e.pipe.showTab(tab);
+      // 다른 창·탭의 Run 중에는 F3 전처럼 [반영] 이 눌린다(꺼짐 = 이 Studio 의 실행·승인 처리 중뿐 — 단추가 가진 조건 그대로)
+      r[`${server}-pending-${tab}`]=dock(e).dataset.main==="apply"&&main(e)===e.B("반영 (무료)")&&main(e).disabled===false
+        &&dock(e).children[0].textContent==="레이아웃 변경";
+    }
+    e.S.running=false;h.render();r[`${server}-knownBeforeUnknown`]=dock(e).dataset.main==="apply"&&!main(e).disabled&&dock(e).textContent.includes("레이아웃 변경");
+    e.stop();
+  }
+  return r;
+});
+await scenario("F3U1 수정3 R3 계획 오류는 주 실행 줄에만 반영",async()=>{
+  const e=await fresh(),h=e.pipe._f3,r={},queued=[];complete(e);
+  for(const t of e.S.targets)if(!t.pick_keys.length)t.pick_keys=["test-pick"];
+  h.render();e.answer=false;
+  const snapshot=()=>({head:e.head.textContent,apply:sectionOf(e,"반영").textContent,stars:sectionOf(e,"★ 점검").textContent,
+    checklist:JSON.stringify(e.pipe.steps().rows[3])});
+  const before=snapshot(),queue=h.PS.queue;
+  h.PS.queue=async stage=>{queued.push(stage);return {};};
+  try {
+    r.before=await e.pipe.exportNow()&&queued.length===1&&queued[0]==="export"&&e.confirms.length===0;
+    h.PS.planErr="다른 계획 계산이 끝나지 않았습니다 — 다시 계산";
+    for(const tab of ["prepare","prompt","generate"]) {
+      await e.pipe.showTab(tab);
+      r[tab]=!main(e)&&dock(e).textContent==="반영 상태를 확인하지 못했습니다 — [다시 계산]";
+    }
+    const after=snapshot();
+    r.head=after.head===before.head&&e.head.all().some(x=>x.classList.contains("lh-ok")&&x.textContent==="반영됨");
+    r.apply=after.apply===before.apply&&after.apply.includes("반영됨 — 레이아웃");
+    r.stars=after.stars===before.stars&&!after.stars.includes("반영 상태를 확인하지 못함");
+    r.checklist=after.checklist===before.checklist&&e.pipe.steps().rows[3].state==="done";
+    r.export=await e.pipe.exportNow()&&queued.length===2&&queued[1]==="export"&&e.confirms.length===0&&!e.box();
+  } finally {h.PS.queue=queue;e.stop();}
+  return r;
+});
+await scenario("F3U1 수정3 R4 첫 실행 설정 읽기 실패",async()=>{
+  const r={};
+  for(const server of [false,true]) {
+    const e=await fresh(server),h=e.pipe._f3;h.PS.P=null;h.PS.err="첫 읽기 실패";
+    for(const tab of ["prepare","prompt","generate"]) {
+      await e.pipe.showTab(tab);
+      r[`${server}-${tab}`]=!main(e)&&dock(e).dataset.main===""&&dock(e).textContent==="실행 설정 확인이 먼저입니다 — ① 준비의 「실행 설정」"
+        &&sectionOf(e,"실행 설정").textContent.includes("읽기 오류: 첫 읽기 실패");
+    }
+    e.stop();
+  }
+  return r;
+});
+await scenario("F3U1 수정3 R5 calls 갈라짐의 새 유료 호출 안내",async()=>{
+  const r={};
+  for(const server of [false,true]) {
+    const e=await fresh(server),h=e.pipe._f3;complete(e);
+    h.PS.P.drift=[{section:"prepare",field:"calls_per_cell",kind:"calls",manifest:1,settings:2}];
+    for(const tab of ["prepare","prompt","generate"]) {
+      await e.pipe.showTab(tab);
+      r[`${server}-${tab}`]=dock(e).dataset.main==="apply"&&main(e)===e.B("반영 (무료)")
+        &&dock(e).children[0].textContent==="실행 설정이 마지막 반영과 다름(calls_per_cell) — 반영하면 새 유료 호출이 생김(생성 승인 필요)";
+    }
+    h.PS.P.drift.push({section:"prepare",field:"model",kind:"cell",manifest:"old",settings:"new"});h.render();
+    r[`${server}-cellFirst`]=dock(e).children[0].textContent==="실행 설정이 마지막 반영과 다름(calls_per_cell, model) — 반영하면 새 생성 조건";
     e.stop();
   }
   return r;
