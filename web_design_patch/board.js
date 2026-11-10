@@ -10,6 +10,9 @@
 "use strict";
 
 (() => {
+  const SM = () => !!(window.DPEnv && window.DPEnv.serverMode);
+  const can = (name) => window.DPEnv ? window.DPEnv.can(name) : !["jobs", "export_download"].includes(name);
+
   const API = new URL("../", location.href); // /bmk/design_patch/ (또는 /api/bmk/design_patch/)
   const COMFY = new URL(API.pathname.replace(/(?:api\/)?bmk\/design_patch\/$/, "api/"), API); // ComfyUI 공개 API /api/(SAM3 컷 큐)
   const ROOT = new URLSearchParams(location.search).get("root") || "";
@@ -76,6 +79,18 @@
   let seen = null; // Set — 본 후보 key(syncSeen 이 첫 state 에서 채움)
 
   const $ = (id) => document.getElementById(id);
+
+  // 확인 중에는 폴링이 계속된다. 동작별 대상·입력만 재확인하고 판 충돌은 서버가 판단한다.
+  async function askFree(t, same) {
+    if (askFree.pending) return false;
+    askFree.pending = true;
+    try {
+      if (!(await (window.DPDialog ? window.DPDialog.confirm(t) : Promise.resolve(window.confirm(t))))) return false;
+      if (!same || same()) return true;
+      toast("확인 중 상태가 바뀌었습니다 — 다시 확인한 뒤 시도하세요", "warn");
+      return false;
+    } finally { askFree.pending = false; }
+  }
 
   function el(tag, cls, text) {
     const e = document.createElement(tag);
@@ -398,7 +413,12 @@
     // 캔버스에서 크롭을 누름(tid 없음): 같은 크롭이면 다음 타깃, 아니면 첫 타깃. 이음매 이동은 tid·그 ★ 후보 키·구간을 준다 —
     // 마스크 모드면 그 ★ 후보가 편집 대상(적용 안 한 획 확인)·그 구간이 선택 구간 → 편집기가 거절(확인 취소·적용 중)하면 false(뷰어 N 이 제자리)
     if (!S) return;
-    if (maskOn) return candKey ? maskEd.go({ key: candKey, seam: seam || null }) : undefined;
+    if (maskOn) {
+      if (!candKey) return undefined;
+      // 뷰어의 동기 onPick 계약: 우선 제자리를 지키고, 확인 뒤 go 가 showSeam 으로 옮긴다.
+      Promise.resolve().then(() => maskEd.go({ key: candKey, seam: seam || null }));
+      return false;
+    }
     const ts = S.targets.filter((t) => t.crop_id === cropId);
     if (!ts.length) return;
     let t = tid ? ts.find((x) => x.tid === tid) : null;
@@ -504,6 +524,7 @@
   }
 
   async function reroll(fromButton, scripted) {
+    if (SM() && window.DPEnv.backend !== "mock") { toast("서버 모드 생성 백엔드가 아직 연결되지 않았습니다", "warn"); return; }
     const cell = rerollCell();
     if (!cell) {
       toast("이 타깃의 작업(jobs)이 없습니다 — Prepare 를 먼저 실행하세요", "err");
@@ -531,10 +552,13 @@
       }
       need = (need + (cell.est_usd ? cell.est_usd[1] : 0)) * 211;
     }
+    const serverState = () => JSON.stringify([S.pipeline_rev, S.layout_rev,
+      S.rerolls_pending, S.pending_preapproved, tKey, cKey]);
+    const serverBefore = SM() ? serverState() : null;
     const stillHere = () => {
       const current = rerollCell();
       const nextWay = scripted ? "" : tabWay();
-      if (current && current.cell_key === cell.cell_key && nextWay === way && (nextWay && pipe ? pipe.paidLock() : "") === lock) return true;
+      if ((!SM() || serverBefore === serverState()) && current && current.cell_key === cell.cell_key && nextWay === way && (nextWay && pipe ? pipe.paidLock() : "") === lock) return true;
       toast("상태가 바뀜 — 다시 생성 안 함: 다시 누르세요", "warn");
       return false;
     };
@@ -554,12 +578,12 @@
       const stack = pre ? `이 생성 조건 다시 생성 대기 ${pre}건(사전 승인) → ${pre + 1}건${usd(cell.est_usd ? { est_usd: cell.est_usd.map((v) => v * (pre + 1)) } : null)}\n` : "";
       const text = `${what}\n${stack}${graphPrep}\n` + (lock ? `유료 호출이 사전 승인됩니다 — 지금은 큐를 보내지 않음(${lock}): 다시 생성은 예약만 되고 `
         + "머리줄 [다시 생성 보내기]로 보내거나 다음 Run 때(선택과 무관) 함께 과금됩니다. 계속할까요?"
-        : tab ? (way === "paid" ? `${pipe.side}\n` : "") + "유료 호출이 사전 승인되고 ComfyUI 탭에 큐 요청을 보냅니다. 계속할까요?"
+        : tab ? (SM() ? "유료 호출이 사전 승인되고 서버 작업으로 실행합니다. 계속할까요?" : (way === "paid" ? `${pipe.side}\n` : "") + "유료 호출이 사전 승인되고 ComfyUI 탭에 큐 요청을 보냅니다. 계속할까요?")
           : `유료 호출이 사전 승인됩니다 — 지금 큐를 보내지 않음(${why}): 다시 생성은 예약만 되고 다음 Run 때(선택과 무관) 함께 과금됩니다. 계속할까요?`);
-      if (agent ? !(await pipe.agentConfirm(text.split("\n"), need)) : !window.confirm(text)) {
+      if (SM() ? !(await window.DPDialog.confirm(text)) : (agent ? !(await pipe.agentConfirm(text.split("\n"), need)) : !window.confirm(text))) {
         return;
       }
-      if (agent && !stillHere()) return;
+      if ((SM() || agent) && !stillHere()) return;
     } else {
       // 키보드 R 은 R R 마다 +1 — 앞 R R 이 아직 처리·실행 중이면 무장하지 않는다(rerollHold — 첫 R·둘째 R 모두). 그래서 여기서 lock 은 늘 ""
       const hold = rerollHold(cell);
@@ -575,7 +599,7 @@
         toast(`R 을 한 번 더 누르면 ${what} — 유료`
           + (tab ? "" : ` · 지금 큐를 보내지 않음(${scripted ? "스크립트 키 — 큐는 사용자 키 입력만, " : ""}예약만 — 다음 Run 때 과금)`)
           + (!tab && noReview ? ` · ${why}` : "")
-          + (way === "paid" ? " · 승인 제출이라 ComfyUI 탭 그래프의 시드 제어 등 실행마다 바뀌는 값이 한 번 진행됨(그래프는 실행 안 함)" : "")
+          + (!SM() && way === "paid" ? " · 승인 제출이라 ComfyUI 탭 그래프의 시드 제어 등 실행마다 바뀌는 값이 한 번 진행됨(그래프는 실행 안 함)" : "")
           + (way === "paid" ? " · 금액은 지금 jobs 기준(Prepare 갈라짐 — Studio 실행 설정이 마지막 Prepare 와 다르면 바뀜)"
             : " · 금액은 지금 jobs 기준(그래프 Prepare 값이 Studio 와 다르면 바뀜)"), "warn");
         return;
@@ -589,8 +613,8 @@
     if (mine) {
       const text = `이 크롭은 레이아웃이 바뀌어(미반영) 이 큐에서 생성 조건이 바뀌면 다시 생성이 실행되지 않습니다. `
         + `미반영 레이아웃 ${pend.length}건도 이 큐로 반영됩니다. 계속할까요?`;
-      if (agent ? !(await pipe.agentConfirm(text.split("\n"), need)) : !window.confirm(text)) return;
-      if (agent && !stillHere()) return;
+      if (SM() ? !(await window.DPDialog.confirm(text)) : (agent ? !(await pipe.agentConfirm(text.split("\n"), need)) : !window.confirm(text))) return;
+      if ((SM() || agent) && !stillHere()) return;
     }
     const r = await write("reroll", { cell_key: cell.cell_key, count: 1 },
       (x) => `다시 생성 +1 → ${x.variant || ""} 생성 조건 대기 ${x.cell_pending} · 전체 대기 ${x.pending_calls}`
@@ -624,7 +648,15 @@
     if (!n) { toast("다시 생성 대기 없음"); return; }
     const stale = scope === "all" ? S.rerolls_stale || 0 : 0;
     const count = `${n}건` + (stale ? `(옛 조건 ${stale}건 포함)` : "");
-    if (scope !== "cell" && !window.confirm(`다시 생성 대기 ${count}을 취소합니다. 그중 ${base}건은 아직 한 번도 만들지 않은 생성 조건이라 '생성 승인 필요'로 돌아갑니다(승인 코드가 바뀜 — 이미 큐에 넣은 [생성 승인]은 드라이런이 되어 과금 없음). 계속할까요?`)) return;
+    const cropId = selector.crop_id, cellKey = selector.cell_key;
+    const stillPending = () => {
+      if (selector.crop_id !== cropId || selector.cell_key !== cellKey) return false;
+      if (scope === "all") return !!S && S.rerolls_pending > 0;
+      const target = scope === "crop" ? (S.crops || []).find((c) => c.id === cropId)
+        : (S.targets || []).flatMap((t) => t.cells || []).find((c) => c.cell_key === cellKey);
+      return !!target && target.rerolls_pending > 0;
+    };
+    if (scope !== "cell" && !await askFree(`다시 생성 대기 ${count}을 취소합니다. 그중 ${base}건은 아직 한 번도 만들지 않은 생성 조건이라 '생성 승인 필요'로 돌아갑니다(승인 코드가 바뀜 — 이미 큐에 넣은 [생성 승인]은 드라이런이 되어 과금 없음). 계속할까요?`, stillPending)) return;
     const result = await write("reroll", { op: "cancel", scope, ...selector },
       (r) => `다시 생성 대기 ${r.cancelled}건 취소(과금 없음) · 생성 승인 필요로 돌아감 ${r.base}건 — 되돌림 = R`);
     if (result) { rerollArm = null; rerollSent = null; if (pipe) pipe.recalc(); }
@@ -657,6 +689,7 @@
   }
 
   function tabWay() {
+    if (SM()) return pipe && !pipe.paidWhy() ? "paid" : "";
     // R·머리줄 'ComfyUI 큐'가 갈 길: "paid" = 유료 승인을 받는 ComfyUI 탭(opener·채널)이고 서버가 재굴림 템플릿을 낼 수 있음(pipe.paidWhy — 탭 판정 +
     // 마지막 GET /pipeline 의 템플릿 게이트: 실행 설정 미저장·확인 필요·경로 경고·옛 서버면 늘 409·400 이라 S3a 처럼 opener 로), "opener" = opener 탭
     // (Review 부분 실행 — 옛 확장·유료 탭 길이 막힘), "" = 없음
@@ -679,7 +712,7 @@
     else if (planned && way !== planned) {
       const why = way === "paid" ? "탭이 이제 유료 승인을 받음 — 확인한 Review 부분 실행과 과금 기준이 다름"
         : [(pipe && pipe.paidWhy()), reviewMissing()].filter(Boolean).join(" · ") || "이 창을 연 ComfyUI 탭 없음";
-      toast(`다시 생성 예약됨 — R 확인 뒤 ComfyUI 탭 상태가 바뀌어 지금 보내지 않음(${why}): 머리줄 [다시 생성 보내기]로 보내거나 다음 Run 때 과금`, "warn");
+      toast(SM() ? `다시 생성 예약됨 — R 확인 뒤 서버 실행기 상태가 바뀌어 지금 보내지 않음(${why}): 머리줄 [다시 생성 보내기]로 보내거나 다음 Run 때 과금` : `다시 생성 예약됨 — R 확인 뒤 ComfyUI 탭 상태가 바뀌어 지금 보내지 않음(${why}): 머리줄 [다시 생성 보내기]로 보내거나 다음 Run 때 과금`, "warn");
     } else if (held || lock) {
       toast(`다시 생성 예약됨 — 지금 보내지 않음(${lock || "R 확인 때 '지금은 예약만'에 동의함"}): 머리줄 [다시 생성 보내기]로 보내거나 다음 Run 때 과금`, "warn");
     } else if (way === "paid") pipe.reroll();
@@ -688,11 +721,13 @@
   }
 
   function comfyConnected() {
+    if (SM()) return false;
     const op = window.opener;
     return !!op && !op.closed;
   }
 
   function queueInComfy(layout = false) {
+    if (SM()) { if (pipe && !layout) pipe.reroll(); return false; }
     // layout = 옛 서버 대체(재시작 전 — applyFree) 탭 layout 요청 — ComfyUI 탭은 Review 상류에 Import PSD 가 있을 때만 큐에 넣는다(아니면 그 탭이 알림)
     const op = window.opener;
     if (reviewMissing()) {
@@ -713,6 +748,11 @@
   }
 
   async function applyFree() {
+    if (SM()) {
+      if (pipe) await pipe.queue("apply");
+      else toast("서버 실행 화면을 읽지 못했습니다 — 창을 다시 여세요", "err");
+      return;
+    }
     // 편집기 "반영(큐)"(opts.queue) = 무료 반영(서버 apply 템플릿을 /api/prompt 로 — 탭 불필요, 재굴림은 돌지 않음). 옛 서버(재시작 전 —
     // state 에 pipeline_rev 없음·pipeline.js 없음·/pipeline/prompt 404)면 지금까지의 반영(큐)(ComfyUI 탭의 Review 부분 실행)으로 대신한다.
     // 그 길은 대기 재굴림까지 과금하므로(편집기 확인 창은 무료 반영 문구) 대기 재굴림이 있으면 다시 묻는다
@@ -747,13 +787,13 @@
       : "ComfyUI 를 재시작해야 마스크 편집(K)을 쓸 수 있습니다(서버가 옛 버전)";
   }
 
-  function setMask(on, to) {
+  async function setMask(on, to) {
     // 마스크 모드(K). to = {key, seam} — 편집 대상 ★ 후보·선택 이음매(없으면 이 창의 적용 안 한 세션 후보가 아직 ★ 면 그것, 아니면 검토에서 고른 타깃의 ★ —
     // 고른 후보가 ★·slice 면 그것. 세션 후보가 검토에서 ★ 해제·탈락되면 그 획은 적용할 수 없어(409) 새 ★ 로 — 버릴지는 편집기 확인 창. 그 타깃에 ★ 가
     // 남지 않았으면 세션으로 — 패널이 '이제 ★ 가 아님' 줄과 [버리기]를 보임: 진행 ★ 점검 줄의 'K 에서 버리기'). 선택 이음매가 없으면 검토의 N 이 가리키는
     // 이음매(그 ★ 의 것이면). 나갈 때 적용 안 한 획이 있으면 확인(세션은 이 창에 남음 — 진행(G) ★ 점검 줄). → 바꿨는가
     if (!on) {
-      if (!maskEd.leave()) return false;
+      if (!(await maskEd.leave())) return false;
       maskOn = false;
       document.body.classList.remove("mask");
       $("mask-panel").hidden = true; // onKeyDown 의 마스크 모드 판정(진행 패널과 같은 꼴)
@@ -786,7 +826,7 @@
     $("mask-panel").hidden = false;
     $("btn-mask").classList.add("on");
     const vs = !to && viewer ? viewer.curSeam() : null;
-    maskEd.enter(S, { key, seam: to ? to.seam : vs && vs.key === key ? vs : null });
+    await maskEd.enter(S, { key, seam: to ? to.seam : vs && vs.key === key ? vs : null });
     return true;
   }
 
@@ -794,21 +834,21 @@
     return maskOn ? "mask" : editing ? "edit" : refsOn ? "refs" : pipeOn ? "pipe" : null;
   }
 
-  function goMode(m) {
+  async function goMode(m) {
     // 탭: 그 모드로(null = 검토). 마스크 모드는 먼저 나감(적용 안 한 획 확인), 켜는 쪽 set* 이 다른 모드를 끈다
     if (typeof renderMode === "function") renderMode.initial = false;
     if (["prepare", "prompt", "generate"].includes(m)) {
-      if (!leaveMask()) return;
-      if (!pipeOn) setPipe(true);
+      if (!(await leaveMask())) return;
+      if (!pipeOn) await setPipe(true);
       if (pipeOn) pipe.showTab(m);
       return;
     }
     if (m === curMode()) return;
     if (m === "mask") {
-      setMask(true);
+      await setMask(true);
       return;
     }
-    if (!leaveMask()) return;
+    if (!(await leaveMask())) return;
     if (m === "edit") setEditing(true);
     else if (m === "refs") setRefs(true);
     else if (m === "pipe") setPipe(true);
@@ -819,9 +859,9 @@
     }
   }
 
-  function leaveMask() {
+  async function leaveMask() {
     // 머리줄 편집·레퍼런스·진행 단추·진행 설정 열기 앞 — 마스크 모드면 먼저 나감(적용 안 한 획 확인). → 계속해도 되는가
-    return !maskOn || setMask(false);
+    return !maskOn || await setMask(false);
   }
 
   function onUnload(e) {
@@ -848,7 +888,7 @@
     return write("pick", { crop_id: t.crop_id, tid: t.tid, key, mode: "set" }, `★ 바꿈 — ${t.crop_name || t.crop_id} · ${t.tid}`);
   }
 
-  function goMask(m, tkey) {
+  async function goMask(m, tkey) {
     // 진행(G) ★ 점검의 S4 줄 → 마스크 모드: m.key = 그 ★ 후보, m.crop = 그 크롭의 가장 나쁜 이음매(뷰어 목록은 bad 먼저·p90 큰 순)를 만든 ★ 후보와
     // 그 구간 — 이음매를 다시 받는 중(적용 직후 ≈ 2.5초)이면 그 크롭 첫 ★(구간 없이). 옛 서버·창이면 그 타깃을 검토에서
     const segs = (viewer && viewer.seams() && viewer.seams().segments) || [];
@@ -856,10 +896,10 @@
     const t0 = m.crop && !sg && S ? S.targets.find((t) => t.crop_id === m.crop && t.pick_keys.length) : null;
     const key = m.key || (sg && sg.key) || (t0 && t0.pick_keys[0]);
     if (!maskReady() || !key) {
-      goTarget(tkey);
+      await goTarget(tkey);
       return;
     }
-    setMask(true, { key, seam: sg });
+    await setMask(true, { key, seam: sg });
   }
 
   function renderMaskButton() {
@@ -881,19 +921,19 @@
       toast(notReady("크롭 편집", "layout_rev", editor), "warn");
       return;
     }
-    goMode("edit");
+    await goMode("edit");
     if (editing) await editor.proposeGrow(cropId, sides);
   }
 
-  function goTarget(key) {
+  async function goTarget(key) {
     // 진행 패널 ★ 점검의 줄 → 그 타깃을 검토 모드에서
     if (!S || !S.targets.some((t) => t.key === key)) return;
-    setPipe(false);
+    await setPipe(false);
     selectTarget(key);
   }
 
-  function drain() {
-    if (!window.confirm("새 호출 멈춤(Drain): 진행 중인 Run 이 새 호출 발사를 멈춥니다.\n진행 중인 호출은 끝까지 받아 저장합니다. 계속할까요?")) return;
+  async function drain() {
+    if (!await askFree("새 호출 멈춤(Drain): 진행 중인 Run 이 새 호출 발사를 멈춥니다.\n진행 중인 호출은 끝까지 받아 저장합니다. 계속할까요?")) return;
     write("drain", {}, (r) => (r.drain
       ? "새 호출 멈춤 요청 — 진행 중인 호출만 마저 받고 멈춥니다"
       : "진행 중인 Run 이 없습니다 (아무것도 하지 않음)"));
@@ -970,7 +1010,8 @@
     return !!pipe && !!S && "pipeline_rev" in S;
   }
 
-  function setPipe(on) {
+  async function setPipe(on) {
+    if (on && maskOn && !(await leaveMask())) return false;
     if (on && !pipeReady()) {
       toast(notReady("실행(G)", "pipeline_rev", pipe), "warn");
       return;
@@ -1027,7 +1068,7 @@
       if ((renderHeader.newNotes || []).length) b.append(el("span", "badge b-wait", renderHeader.newNotes.join(" · ")));
     } else renderHeader.newNotes = [];
     if (S.backend_mock) b.append(el("span", "badge b-mock", "MOCK 백엔드 (과금 없음)"));
-    if (S.agent_approve && S.agent_approve.on) {
+    if (can("agent_approve") && S.agent_approve && S.agent_approve.on) {
       const a = S.agent_approve;
       const until = new Date(a.expires * 1000);
       const hhmm = `${String(until.getHours()).padStart(2, "0")}:${String(until.getMinutes()).padStart(2, "0")}`;
@@ -1058,12 +1099,12 @@
     }
     if (S.rerolls_stale) b.append(el("span", "badge b-wait", `옛 조건 대기 ${S.rerolls_stale} — 다음 반영 때 정리`));
     if (S.orphan_candidates) b.append(el("span", "badge b-bad", `크롭 없는 후보 ${S.orphan_candidates}`));
-    if (tabLink) {
+    if (!SM() && tabLink) {
       const [cls, label] = TAB_BADGE[tabKey(tabLink)];
       const cn = el("span", "badge " + cls, label);
       cn.title = tabTitle(tabLink);
       b.append(cn);
-    } else {
+    } else if (!SM()) {
       const on = comfyConnected();
       const cn = el("span", "badge " + (on ? "b-run" : "b-dim"), on ? "ComfyUI 탭 연결" : "ComfyUI 탭 없음");
       cn.title = on ? "다시 생성 큐 요청을 이 창을 연 ComfyUI 탭으로 보냅니다"
@@ -1611,7 +1652,7 @@
     }
   }
 
-  function goProjects() {
+  async function goProjects() {
     if (maskEd && maskEd.pending.locked && maskEd.pending.locked()) {
       toast("적용·되돌리기·★ 바꾸기를 처리하는 중 — 끝난 뒤 나가세요", "warn");
       return;
@@ -1628,7 +1669,7 @@
     const left = !(pipe && pipe.canLeave) && maskEd && maskEd.pending();
     if (left) notes.push(`적용 안 한 마스크 획 ${left.n}개는 버려집니다 — 이동한 뒤에는 이어서 편집할 수 없습니다.`);
     const ask = typeof gate.confirm === "string" && notes.length === 1 ? notes[0] : ["프로젝트 목록으로 이동할까요?", ...notes].join("\n");
-    if (notes.length && !window.confirm(ask)) return;
+    if (notes.length && !await askFree(ask)) return;
     const move = () => {
       // 이동 전용 확인을 이미 받았으므로 마스크 beforeunload 확인을 중복으로 띄우지 않는다.
       window.removeEventListener("beforeunload", onUnload);
@@ -1661,6 +1702,7 @@
   }
 
   function newProjectForm(host, adopted, setBusy) {
+    if (adopted && !can("path_input")) return;
     const form = el("form", "projects-form");
     const title = el("h2", "", adopted ? "이 폴더로 시작" : "새 프로젝트");
     const name = el("input", "projects-new-name");
@@ -1695,7 +1737,7 @@
     form.append(title);
     field("프로젝트 이름", name);
     field(adopted ? "폴더 안 타깃 그림" : "타깃 그림 — 파일 고르기 또는 여기로 한 장 끌어 놓기", pick);
-    if (!adopted) field("또는 전체 경로", path);
+    if (!adopted && can("path_input")) field("또는 전체 경로", path);
     form.append(el("p", "projects-note", "모델 gpt-image-2.6-sunburst · 품질 max · 복잡도 high · 4장 · 변형 V1,V4 — 바꾸려면 만든 뒤 ① 준비"),
       feedback, create, close);
     let selected = null, sending = false;
@@ -1777,8 +1819,8 @@
     const formHost = el("div", "projects-form-host");
     tools.append(search, reload, newButton);
     page.append(tools, formHost, status, grid,
-      el("p", "projects-note", "Studio [새 프로젝트]에서 이름과 타깃 그림 한 장으로 시작하세요."),
-      el("p", "projects-note", "input 밖 프로젝트는 ComfyUI 재시작 뒤 해당 프로젝트 노드를 다시 실행해야 목록에 나타납니다."));
+      el("p", "projects-note", "Studio [새 프로젝트]에서 이름과 타깃 그림 한 장으로 시작하세요."));
+    if (can("path_input")) page.append(el("p", "projects-note", "input 밖 프로젝트는 ComfyUI 재시작 뒤 해당 프로젝트 노드를 다시 실행해야 목록에 나타납니다."));
     $("app").replaceChildren(page);
     let rows = [];
     let opening = false;
@@ -1807,10 +1849,10 @@
         }
         if (r.openable) card.append(picture);
         card.append(el("h2", "projects-name", r.name));
-        if (r.outside_input) card.append(el("span", "projects-chip", "input 밖"));
+        if (can("path_input") && r.outside_input) card.append(el("span", "projects-chip", "input 밖"));
         if (!r.openable) {
           card.append(el("p", "projects-note", r.error));
-          if (r.adoptable) {
+          if (can("path_input") && r.adoptable) {
             const adopt = el("button", "projects-adopt", "이 폴더로 시작");
             adopt.type = "button";
             adopt.disabled = opening || !(r.files || []).length;
@@ -1886,7 +1928,7 @@
       state: () => S, apiUrl, toast, refresh: () => refresh(true), move: (body) => post("zorder", body),
       busy: () => busy || !!(S && (S.running || S.drafting)) || !!(pipe && pipe.paidLock()) || !!(maskEd && maskEd.pending.locked && maskEd.pending.locked()),
       lock: (ids, locked) => editor.lockExternal(ids, locked),
-      remove: async (id) => { goMode("edit"); if (editing) await editor.removeExternal(id); },
+      remove: async (id) => { await goMode("edit"); if (editing) await editor.removeExternal(id); },
     });
     if (typeof viewer !== "undefined" && viewer && viewer.isolateContext) viewer.isolateContext(
       () => ({ mode: refsOn ? "refs" : editing ? "edit" : maskOn ? "mask" : pipeOn ? "pipe" : "review", crops: editing && editor.layerCrops ? editor.layerCrops() : null }),
@@ -1915,7 +1957,24 @@
     on("btn-mask", () => goMode("mask"));
     on("btn-export", () => pipe && pipe.exportNow());
     const exportMenu = $("export-menu");
-    on("btn-export-folder", () => { exportMenu.open = false; if (pipe) pipe.openFolder(); });
+    $("btn-export-folder").hidden = !can("open_folder");
+    on("btn-export-folder", () => { exportMenu.open = false; if (pipe && can("open_folder")) pipe.openFolder(); });
+    if (can("export_download")) {
+      const download = el("a", "", "PSD 내려받기");
+      download.id = "btn-export-download"; download.setAttribute("download", "");
+      download.addEventListener("click", (e) => {
+        if (!e.isTrusted || !pipe || !pipe.exportAvailable()) e.preventDefault();
+        else exportMenu.open = false;
+      });
+      $("btn-export-folder").insertAdjacentElement("afterend", download);
+      exportMenu.addEventListener("toggle", () => {
+        const ready = pipe && pipe.exportAvailable();
+        download.title = ready ? "마지막 Export PSD 내려받기" : "Export 를 먼저 하세요";
+        download.setAttribute("aria-disabled", String(!ready));
+        if (ready) download.href = apiUrl("export/file?root=" + encodeURIComponent(ROOT));
+        else download.removeAttribute("href");
+      });
+    }
     on("btn-export-settings", () => { exportMenu.open = false; if (pipe) pipe.goSection({ tab: "generate", section: "Export" }); });
     document.addEventListener("click", (e) => {
       if (exportMenu.open && !exportMenu.contains(e.target)) exportMenu.open = false;
@@ -2084,6 +2143,7 @@
   }
 
   async function main() {
+    if (window.DPEnv) await window.DPEnv.ready;
     const newNotes = consumeNewProject();
     renderHeader.newNotes = newNotes || [];
     if (!ROOT) {
@@ -2123,17 +2183,17 @@
     }
     if (window.DPPipeline) {
       // 탭 연결이 바뀌면 머리줄 배지와 진행 패널의 승인 단추를 다시 그림(첫 판정은 hello 응답을 모은 뒤 — 그때는 pipe 가 있음)
-      tabLink = window.DPPipeline.link(window, () => {
+      tabLink = SM() ? null : window.DPPipeline.link(window, () => {
         renderHeader();
         pipe.tabChanged();
       });
       pipe = window.DPPipeline.create({ list: $("pipe-list"), panel: $("pipe-panel"), head: $("pipe-head") }, {
         apiUrl, comfyUrl, root: ROOT, toast, drain, goTarget, goMask, goGrow, link: tabLink, cancelRerolls,
         newProject: newNotes !== null, newNotes,
-        goMode: (mode, cropId) => {
+        goMode: async (mode, cropId) => {
           const t = S && cropId ? S.targets.find((x) => x.crop_id === cropId) : null;
           if (t) selectTarget(t.key);
-          goMode(mode);
+          await goMode(mode);
           if (mode === "refs" && refsOn && cropId) refEd.select(cropId);
         },
         refresh: () => refresh(true),
@@ -2145,7 +2205,7 @@
           if (t) selectTarget(t.key);
         },
         seams: () => (S && S.canvas && !viewer.seams() ? null : seamsByCrop), // 이음매를 다시 재는 중이면 null(★ 점검이 옛 bad 수 대신 '재는 중')
-        enter: () => leaveMask() && setPipe(true),
+        enter: async () => (await leaveMask()) && setPipe(true),
         layoutWrote: (from, to) => editor && editor.ownWrite(from, to), // 반영 칸 [되돌리기] — 이 창 편집기의 Ctrl+Z 기록을 남김
       });
     }

@@ -183,6 +183,10 @@ logger = logging.getLogger(__name__)
 
 _TAG = "[ComfyUI_BMK_Nodes::DesignPatch]"
 
+
+def _server_mode() -> bool:
+    return os.environ.get("BMK_DP_SERVER_MODE", "") == "1"
+
 DRAFT_VERSION = "dp-draft/1"          # 프롬프트·스키마 계약(키에 포함). 문구를 바꾸면 올린다
 NORM_VERSION = "dp-draft-norm/3"      # 정규화 규칙(키 밖, _draft.normalizer 에 기록)
 PASS_PLAN = "single"
@@ -3799,6 +3803,8 @@ class OpenAIVLM:
     name = BACKEND_NAMES["openai"]
 
     def __init__(self, hidden: dict, *, root: str):
+        if _server_mode():
+            raise RuntimeError("서버 모드: 생성 백엔드가 아직 연결되지 않았습니다(mock 만)")
         h = dict(hidden or {})
         self.holder = runner._CallHidden(
             unique_id=runner._pick(h, "unique_id"),
@@ -4098,6 +4104,8 @@ class QwenVLM:
     name = BACKEND_NAMES["local_qwen"]
 
     def __init__(self, model_dir: str, *, keep_loaded: bool):
+        if _server_mode():
+            raise RuntimeError("서버 모드: 생성 백엔드가 아직 연결되지 않았습니다(mock 만)")
         self.model_dir = model_dir
         self.keep_loaded = bool(keep_loaded)
         self.libs: SimpleNamespace | None = None
@@ -4503,6 +4511,8 @@ def vlm_mock_options(root: str) -> dict:
 
 def make_vlm(family: str, root: str, hidden: dict, *, model_dir: str, keep_loaded: bool):
     """백엔드 생성. 호출자가 family 를 정한다(openai 이고 runner.mock_enabled(root) 면 "mock" — local_qwen 은 바꾸지 않음)."""
+    if _server_mode() and family != "mock":
+        raise RuntimeError("서버 모드: 생성 백엔드가 아직 연결되지 않았습니다(mock 만)")
     if family == "mock":
         return MockVLM(vlm_mock_options(root))
     if family == "openai":

@@ -387,6 +387,8 @@ LOCAL_CAPS = {"jobs": False, "export_download": False, "sam3": True, "local_qwen
               "path_input": True, "ps_mask": True, "agent_approve": True}
 _SCOPE: contextvars.ContextVar = contextvars.ContextVar("bmk_dp_scope", default=None)
 _ENV_PROVIDER: list = []           # set_env_provider — 서버 모드의 GET /env 본문을 만드는 함수(request → dict)
+_SCOPE_ROOTS: dict = {}            # 정규화한 계정 프로젝트 폴더 → (mtime_ns, {key: root}), 최근 256개
+_SCOPE_ROOTS_LOCK = threading.Lock()
 
 
 def set_server_mode(on: bool) -> None:
@@ -421,7 +423,20 @@ def _scope_dir(name: str) -> str | None:
     """범위의 폴더(name = input·output). 범위가 없으면 None — 서버 모드면 401(닫힌 쪽)."""
     scope = _SCOPE.get()
     if scope is not None:
-        return scope[name]
+        path = scope.get(name) if server_mode() else scope[name]
+        if server_mode() and (not isinstance(path, str) or not path):
+            raise _Reject(401, NO_SESSION, reason="no_session")
+        if server_mode():
+            home = scope.get("home", scope.get("input"))
+            try:
+                real_home = os.path.normcase(os.path.realpath(home))
+                inside = (real_home == os.path.normcase(os.path.abspath(home))
+                          and os.path.normcase(os.path.commonpath([os.path.realpath(path), real_home])) == real_home)
+            except (OSError, ValueError, TypeError):
+                inside = False
+            if not inside:
+                raise _Reject(401, NO_SESSION, reason="no_session")
+        return path
     if server_mode():
         raise _Reject(401, NO_SESSION, reason="no_session")
     return None
@@ -446,9 +461,14 @@ def in_scope(root: str) -> bool:
     if scope is None or not isinstance(root, str) or not root:
         return False
     try:
-        want = os.path.normcase(os.path.realpath(os.path.join(scope["input"], store.PROJECTS_DIRNAME)))
+        home = os.path.normcase(os.path.realpath(scope["input"]))
+        if home != os.path.normcase(os.path.abspath(scope["input"])):
+            return False
+        want = os.path.join(home, store.PROJECTS_DIRNAME)
+        if os.path.normcase(os.path.realpath(want)) != want:
+            return False  # 프로젝트 부모 자체가 바깥으로 이어진 정션도 거절한다.
         return os.path.normcase(os.path.dirname(os.path.realpath(root))) == want
-    except (OSError, ValueError):
+    except (OSError, ValueError, KeyError, TypeError):
         return False
 
 
@@ -2078,11 +2098,12 @@ def mask_cleanup(root: str, data: dict) -> dict:
 
 def _ps_export_paths(path, original=None, *, require_psd=True) -> tuple[str, str]:
     """output 안의 PSD·원래 Export의 사이드카만. junction·심볼릭 링크도 실제 경로로 검사."""
-    if not _OUTPUT_DIR:
+    output = output_dir()
+    if not output:
         raise _Reject(409, "ComfyUI 출력 폴더를 알 수 없습니다 — ComfyUI 재시작 필요")
     if not isinstance(path, str) or not path or os.path.splitext(path)[1].lower() != ".psd":
         raise _Reject(400, "Export PSD 경로가 필요합니다")
-    base = os.path.realpath(_OUTPUT_DIR[0])
+    base = os.path.realpath(output)
     psd = os.path.abspath(path)
     side = os.path.splitext(os.path.abspath(original) if original else psd)[0] + ".json"
     for p in (psd, side):
@@ -2129,7 +2150,7 @@ def _ps_export_match(path, exports: list[dict]) -> tuple[str, str, str, dict]:
 
 
 def mask_ps_list(root: str) -> list[dict]:
-    if not _OUTPUT_DIR:
+    if not output_dir():
         raise _Reject(409, "ComfyUI 출력 폴더를 알 수 없습니다 — ComfyUI 재시작 필요")
     exports = store.load_manifest(root).get("exports") or []
     folders = {}
@@ -3777,9 +3798,10 @@ def open_export_folder(root: str) -> dict:
     """POST /open_folder(배치 3-5a): 마지막 Export PSD 가 있으면 그것을 고른 채(기록 경로 그대로 — 그때의 하위 폴더), 없으면 다음
     Export 가 쓸 출력 폴더(output/design_patch/<실행 설정 export.subfolder — 비면 프로젝트 폴더 이름>, 배치 3-5b)를 연다.
     ComfyUI output 밖(손으로 고친 매니페스트의 다른 경로)은 열지 않는다."""
-    if not _OUTPUT_DIR:
+    output = output_dir()
+    if not output:
         raise _Reject(409, "ComfyUI 를 재시작해야 출력 폴더를 열 수 있습니다(서버가 출력 폴더를 모름)")
-    base = os.path.realpath(_OUTPUT_DIR[0])
+    base = os.path.realpath(output)
 
     def inside(p: str) -> bool:
         # 실제 경로로(junction·심볼릭이 output 밖을 가리키면 밖 — Codex 3a 3차)
@@ -4093,7 +4115,7 @@ def refs_state(root: str, since: int | None = None) -> dict:
                           and os.path.isfile(os.path.join(refs_dir, display[n]))] if ok else [],
             "refs_dir": refs_dir, "refs_dir_ok": ok, "outside_project": outside, "doc_dir_match": match,
             "doc_refs_dir": doc["refs_dir"] if doc else None, "suggest_dir": os.path.join(root, "refs").replace("\\", "/"),
-            "pending_rerolls": _pending(root, m)[1], "sam3": {"ckpts": list(_SAM3_CKPTS)}, "crops": rows,
+            "pending_rerolls": _pending(root, m)[1], "sam3": {"ckpts": [] if server_mode() else list(_SAM3_CKPTS)}, "crops": rows,
             "orphans": [{"id": cid, "name": (ln.get("fixed") or {}).get("name"), "main": ln["main"], "files": list(ln["files"])}
                         for cid, ln in doc["links"].items() if cid not in ids] if doc else [],
             "sheets": [dict(s, v=_sheet_v(root, s)) for s in doc["sheets"]] if doc else []}
@@ -4236,6 +4258,8 @@ def ref_cut(root: str, body: dict) -> dict:
     결과의 회색 점·다시 열기가 그 자리를 잃지 않게). 계산이 실패하면 오류 결과 파일을 쓰고 다시 올린다(GET 이 error 로 보임).
     sheet_v(화면이 연 시트의 서명)가 지금 서명과 다르면(바깥에서 저장 — base 다듬기도) 409 {error, sheet_changed: true}, 요청 파일 없음."""
     if body.get("method") == "sam3":
+        if server_mode():
+            raise _Reject(400, "서버 모드에서는 자동 오리기를 쓸 수 없습니다")
         if not _SAM3_CKPTS:
             raise _Reject(400, "SAM3 체크포인트가 없습니다(models/checkpoints 에 이름에 sam3 가 든 파일 — ComfyUI 재시작 뒤 보임)")
         if body.get("ckpt") is not None and body["ckpt"] not in _SAM3_CKPTS:
@@ -5134,7 +5158,7 @@ async def _pool_body(request):
         raise _Reject(413, "요청 본문이 너무 큽니다")
     try:
         data = json.loads(raw)
-    except (ValueError, UnicodeError):
+    except (ValueError, UnicodeError, RecursionError):
         raise _Reject(400, "JSON 본문을 읽을 수 없습니다") from None
     if not isinstance(data, dict):
         raise _Reject(400, "본문은 JSON 객체여야 합니다")
@@ -6144,8 +6168,36 @@ def _guard(fn):
 
 
 def _root_param(value) -> str:
+    if server_mode():
+        base_dir = project_input()  # 키 형식보다 먼저 범위를 검사한다(없으면 401).
+        if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{12}", value):
+            raise _Reject(404, _ROOT_HINT)
+        parent = os.path.normcase(os.path.abspath(os.path.join(base_dir, store.PROJECTS_DIRNAME)))
+        try:
+            stamp = os.stat(parent).st_mtime_ns
+        except OSError:
+            raise _Reject(404, _ROOT_HINT) from None
+        with _SCOPE_ROOTS_LOCK:
+            cached = _SCOPE_ROOTS.pop(parent, None)
+            if cached is not None:
+                _SCOPE_ROOTS[parent] = cached
+        if cached is None or cached[0] != stamp or value not in cached[1]:
+            # 디스크 탐색은 잠금 밖에서 한다. 같은 mtime 안에서 생긴 키도 요청당 한 번 다시 찾는다.
+            scanned = (stamp, {r["key"]: r["root"] for r in _project_roots()})
+            with _SCOPE_ROOTS_LOCK:
+                current = _SCOPE_ROOTS.pop(parent, None)
+                # 훑는 사이 다른 요청이 넣은 더 새 결과는 덮지 않는다.
+                cached = current if current is not None and current is not cached and current[0] > stamp else scanned
+                _SCOPE_ROOTS[parent] = cached
+                if len(_SCOPE_ROOTS) > 256:
+                    del _SCOPE_ROOTS[next(iter(_SCOPE_ROOTS))]
+        root = cached[1].get(value)
+        # 매니페스트·링크 변경은 부모 mtime 을 바꾸지 않을 수도 있으므로 매번 확인한다.
+        if root is None or not in_scope(root) or not os.path.isfile(os.path.join(root, store.MANIFEST_NAME)):
+            raise _Reject(404, _ROOT_HINT)
+        return root
     root = store.resolve_board_root(value)
-    if root is None:
+    if root is None or not in_scope(root):
         raise _Reject(404, _ROOT_HINT)
     return root
 
@@ -6160,7 +6212,7 @@ async def _body(request: web.Request) -> dict:
         raise _Reject(413, "요청 본문이 너무 큽니다")
     try:
         data = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
         raise _Reject(400, "JSON 본문을 읽을 수 없습니다") from None
     if not isinstance(data, dict):
         raise _Reject(400, "JSON 본문은 객체여야 합니다")
@@ -6841,7 +6893,36 @@ async def pipeline_settings_handler(request: web.Request) -> web.StreamResponse:
         if "section" in data or "values" in data:
             raise _Reject(400, "confirm_only 는 section·values 와 함께 보낼 수 없습니다")
         return _json(await asyncio.to_thread(pl.confirm_only, root, data["rev"], data["confirm_only"]))
-    return _json(await asyncio.to_thread(pl.update, root, data["rev"], data.get("section"), data.get("values")))
+    update = _server_pipeline_update if server_mode() else pl.update
+    return _json(await asyncio.to_thread(update, root, data["rev"], data.get("section"), data.get("values")))
+
+
+def _server_pipeline_update(root, rev, section, values):
+    # 지금 값과의 비교와 쓰기를 같은 프로젝트 잠금으로 묶는다. 내부 노드에는 범위 검사를 넣지 않는다.
+    with store.manifest_lock(root):
+        if isinstance(values, dict):
+            if section == "draft" and isinstance(values.get("vlm"), str) and values["vlm"].startswith("local_qwen"):
+                raise _Reject(400, "서버 모드에서는 로컬 초안 모델을 쓸 수 없습니다")
+            paths = pl._IMPORT_PATHS if section == "import" else ("path",) if section == "cand" else ()
+            if paths:
+                current = (pl.current(root)["settings"] or {}).get(section, {})
+                base = os.path.normcase(os.path.realpath(root))
+                for key in paths:
+                    if key not in values:
+                        continue  # 빠진 칸은 기존 절 검사가 거절한다.
+                    if not isinstance(values[key], str):
+                        raise _Reject(400, "경로 칸은 문자열이어야 합니다")
+                    norm = pl._norm_path if section == "import" else pl._strip_path
+                    path = norm(values[key])
+                    if not path or path == norm(current.get(key)):
+                        continue
+                    try:
+                        inside = os.path.normcase(os.path.commonpath([base, os.path.realpath(path)])) == base
+                    except (OSError, ValueError):
+                        inside = False
+                    if not inside:
+                        raise _Reject(400, "서버 모드에서는 프로젝트 안의 경로만 쓸 수 있습니다")
+        return pl.update(root, rev, section, values)
 
 
 @_guard
@@ -6964,7 +7045,33 @@ _PROJECT_MEMO: dict[str, tuple] = {}
 _PROJECT_MEMO_LOCK = threading.Lock()
 _PROJECT_THUMB_SLOTS = threading.BoundedSemaphore(1)
 _PROJECT_NEW_LOCK = threading.Lock()
+_PROJECT_NEW_LOCKS: dict[str, threading.Lock] = {}
+_PROJECT_NEW_LOCKS_GUARD = threading.Lock()
+_PROJECT_NEW_SLOTS = threading.BoundedSemaphore(2)
 _PROJECT_OLD_TRACES = ("cands", "inputs", "specs", "vlm", "layout.json", "refs.json", "pipeline.json", "board_pref.json")
+
+
+def _project_new_lock():
+    # 로컬의 단일 input 잠금은 그대로. 서버의 계정 홈은 서로 독립적으로 업로드할 수 있다.
+    if not server_mode():
+        return _PROJECT_NEW_LOCK
+    key = os.path.normcase(os.path.realpath(project_input()))
+    with _PROJECT_NEW_LOCKS_GUARD:
+        return _PROJECT_NEW_LOCKS.setdefault(key, threading.Lock())
+
+
+async def _project_new_target_limited(state, part):
+    # 슬롯 대기는 이벤트 루프에서 한다. 디코드를 시작하기 전에는 기본 executor 를 점유하지 않는다.
+    acquired = False
+    if server_mode():
+        while not _PROJECT_NEW_SLOTS.acquire(blocking=False):
+            await asyncio.sleep(0.2)
+        acquired = True
+    try:
+        return await _project_new_thread(_project_new_target, state, part)
+    finally:
+        if acquired:
+            _PROJECT_NEW_SLOTS.release()
 
 
 def _project_adoption(root: str) -> dict:
@@ -6986,20 +7093,23 @@ def _project_adoption(root: str) -> dict:
 
 
 def _project_new_begin(data: dict, upload: bool) -> dict:
+    base_dir = project_input()
+    if server_mode() and not upload and ("path" in data or "adopt" in data):
+        raise _Reject(400, "서버 모드에서는 그림 파일을 올려 주세요")
     try:
         name = store._check_project_name(data.get("name"))
     except ValueError:
         raise _Reject(400, "프로젝트 이름: 문자·숫자·_ - . 만, '..'·끝 '.'·Windows 예약 이름은 쓸 수 없습니다") from None
-    if not _PROJECT_INPUT:
+    if not base_dir:
         raise _Reject(400, "프로젝트 input 폴더가 설정되지 않았습니다")
     if "adopt" in data and type(data["adopt"]) is not bool:
         raise _Reject(400, "adopt 는 true 또는 false 여야 합니다")
     adopt = data.get("adopt", False)
     if upload and adopt:
         raise _Reject(400, "이 폴더로 시작은 폴더 안 그림을 고르세요")
-    root = store.project_root(_PROJECT_INPUT, name)
+    root = store.project_root(base_dir, name)
     parent = os.path.dirname(root)
-    tmp_parent = os.path.join(os.path.abspath(_PROJECT_INPUT), _NEW_TMP_DIRNAME)
+    tmp_parent = os.path.join(os.path.abspath(base_dir), _NEW_TMP_DIRNAME)
     for path in (parent, tmp_parent, root):
         if (_is_link(path) or os.path.normcase(os.path.realpath(path))
                 != os.path.normcase(os.path.join(os.path.realpath(os.path.dirname(path)), os.path.basename(path)))):
@@ -7168,14 +7278,14 @@ def _project_new_cleanup(state: dict, success: bool) -> None:
                 remove(path, os.rmdir)  # 기존 파일이 들어왔다면 폴더는 남긴다.
         elif state["moved"]:
             root = state["root"]
-            expected = store.project_root(_PROJECT_INPUT, state["name"])
+            expected = store.project_root(project_input(), state["name"])
             if (os.path.normcase(root) == os.path.normcase(expected) and not _is_link(root)
                     and os.path.normcase(os.path.realpath(root))
                     == os.path.normcase(os.path.join(os.path.realpath(os.path.dirname(root)), os.path.basename(root)))):
                 remove(root, shutil.rmtree)
     tmp = state["tmp"]
     if tmp and os.path.isdir(tmp):
-        parent = os.path.join(os.path.abspath(_PROJECT_INPUT), _NEW_TMP_DIRNAME)
+        parent = os.path.join(os.path.abspath(project_input()), _NEW_TMP_DIRNAME)
         if (os.path.normcase(os.path.dirname(tmp)) == os.path.normcase(parent) and not _is_link(tmp)
                 and os.path.normcase(os.path.realpath(tmp))
                 == os.path.normcase(os.path.join(os.path.realpath(os.path.dirname(tmp)), os.path.basename(tmp)))):
@@ -7203,7 +7313,7 @@ async def _project_new_request(request):
         part = None
         if not state["adopt"]:
             part = await recv_upload(request, state["tmp"]) if upload else await _project_new_thread(copy_in, state["source"], state["tmp"])
-        target = await _project_new_thread(_project_new_target, state, part)
+        target = await _project_new_target_limited(state, part)
         result = await _project_new_thread(_project_new_finish, state, target)
         success = True
         return result
@@ -7217,15 +7327,21 @@ async def _project_new_request(request):
 
 def _project_roots() -> list[dict]:
     """input 바로 아래 프로젝트와 등록 루트의 합집합. GET 에서는 등록 파일을 쓰지 않는다."""
-    rows = {r["key"]: dict(r) for r in store.known_roots()}
-    parent = os.path.join(_PROJECT_INPUT, store.PROJECTS_DIRNAME) if _PROJECT_INPUT else None
+    base_dir = project_input()
+    server = server_mode()
+    rows = {} if server else {r["key"]: dict(r) for r in store.known_roots()}
+    parent = os.path.join(base_dir, store.PROJECTS_DIRNAME) if base_dir else None
     if parent:
         try:
+            real_parent = os.path.realpath(parent)
+            # project_input 이 홈을 검사했다. 서버의 프로젝트 부모 자체도 링크가 아니어야 한다.
+            if server and os.path.normcase(real_parent) != os.path.normcase(os.path.abspath(parent)):
+                return []
             with os.scandir(parent) as entries:
                 for e in entries:
                     try:
                         # junction/symlink 로 input 밖의 미등록 폴더까지 탐색하지 않는다.
-                        if e.is_dir(follow_symlinks=False) and os.path.dirname(os.path.realpath(e.path)) == os.path.realpath(parent):
+                        if e.is_dir(follow_symlinks=False) and os.path.dirname(os.path.realpath(e.path)) == real_parent:
                             key = store.root_key(e.path)
                             rows.setdefault(key, {"key": key, "root": e.path, "project": e.name})
                     except OSError as e:
@@ -7234,7 +7350,8 @@ def _project_roots() -> list[dict]:
         except OSError as e:
             logger.warning("%s 프로젝트 폴더 스캔 실패 — 등록된 프로젝트를 표시: %s", _TAG, e)
     for r in rows.values():
-        r["outside_input"] = not parent or os.path.normcase(os.path.realpath(os.path.dirname(r["root"]))) != os.path.normcase(os.path.realpath(parent))
+        r["outside_input"] = (not server and (not parent or os.path.normcase(os.path.realpath(os.path.dirname(r["root"])))
+                                                    != os.path.normcase(os.path.realpath(parent))))
     return list(rows.values())
 
 
@@ -7323,6 +7440,9 @@ def _ensure_pref(key: str, root: str) -> None:
 
 def _project_open(key) -> dict:
     r = _project_find(key)
+    if server_mode():
+        _ensure_pref(key, r["root"])
+        return {"ok": True, "key": key}
     _project_summary(r["root"])
     if store.resolve_board_root(key) is None:
         store.register_root(r["root"])
@@ -7462,7 +7582,8 @@ async def candidates_ext_handler(request: web.Request) -> web.StreamResponse:
 # ── 배치 9 공용 자리(감독관 — _proto/STUDIO_BATCH9_SPEC.md D139). 본문은 9-A(projects/new)·9-B(refs/layers·refs/pool)가 채운다. 그 전엔 501.
 @_guard
 async def projects_new_handler(request: web.Request) -> web.StreamResponse:
-    if not _PROJECT_NEW_LOCK.acquire(blocking=False):
+    lock = _project_new_lock()
+    if not lock.acquire(blocking=False):
         raise _Reject(409, "다른 프로젝트를 만드는 중입니다 — 끝난 뒤 다시 시도하세요")
     try:
         return _json(await _project_new_request(request))
@@ -7481,7 +7602,7 @@ async def projects_new_handler(request: web.Request) -> web.StreamResponse:
         logger.exception("%s 새 프로젝트 만들기 실패", _TAG)
         raise _Reject(400, "프로젝트를 만들 수 없습니다 — 그림 형식과 폴더 접근 권한을 확인하세요") from None
     finally:
-        _PROJECT_NEW_LOCK.release()
+        lock.release()
 
 
 @_guard
@@ -7510,6 +7631,8 @@ async def refs_pool_post_handler(request: web.Request) -> web.StreamResponse:
         return _json(await _pool_upload(request))
     data = await _pool_body(request)
     root = await _pool_route(_root_param, data.get("root"))
+    if server_mode() and data.get("op") == "sheet_add" and "path" in data:
+        raise _Reject(400, "서버 모드에서는 그림 파일을 올려 주세요")
     return _json(await _pool_route(ref_pool, root, None if data.get("op") == "sheet_add" else _refs_rev(data), data.get("op"), data))
 
 

@@ -110,6 +110,10 @@ logger = logging.getLogger(__name__)
 
 _TAG = "[ComfyUI_BMK_Nodes::DesignPatch]"
 
+
+def _server_mode() -> bool:
+    return os.environ.get("BMK_DP_SERVER_MODE", "") == "1"
+
 LEDGER_SCHEMA = "bmk.design_patch.call/1"
 BACKEND_COMFY_ORG = "comfy_org"
 BACKEND_MOCK = "mock"
@@ -749,6 +753,8 @@ class ComfyOrgBackend:
     name = BACKEND_COMFY_ORG
 
     def __init__(self, hidden: dict | None):
+        if _server_mode():
+            raise RuntimeError("서버 모드: 생성 백엔드가 아직 연결되지 않았습니다(mock 만)")
         h = dict(hidden or {})
         self.holder = _CallHidden(
             unique_id=_pick(h, "unique_id"),
@@ -953,6 +959,8 @@ def _server_port() -> int | None:
 
 def agent_switch(root: str) -> dict | None:
     """8189 시험용 승인 스위치. 파일이 없으면 comfy 를 읽지 않고 꺼짐 — 매번 파일·만료를 다시 본다."""
+    if _server_mode():
+        return None
     try:
         path = os.path.join(os.path.dirname(os.path.abspath(root)), AGENT_FILE)
         with open(path, "rb") as f:
@@ -1068,7 +1076,9 @@ def make_backend(root: str, hidden: dict | None):
     if mock_enabled(root):
         opts = _mock_options(root)
         return MockBackend(delay_s=float(opts.get("delay_s", 1.5)), fail_plan=opts.get("fail_plan"),
-                           response=str(opts.get("response", "url")))
+                           response=str(opts.get("response", "b64" if _server_mode() else "url")))
+    if _server_mode():
+        raise RuntimeError("서버 모드: 생성 백엔드가 아직 연결되지 않았습니다(mock 만)")
     return ComfyOrgBackend(hidden)
 
 

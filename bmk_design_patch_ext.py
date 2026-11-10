@@ -145,9 +145,9 @@ def _clean_name(name):
 
 def save_prefixes(root):
     prefix = f"design_patch/{os.path.basename(os.path.normpath(root))}/ext_"
-    output = _board()._OUTPUT_DIR
+    output = _board().output_dir()
     return {"save_prefix": prefix,
-            "save_prefix_abs": os.path.join(output[0], *prefix.split("/")) if output else None}
+            "save_prefix_abs": os.path.join(output, *prefix.split("/")) if output else None}
 
 
 def export_folder(root, sub):

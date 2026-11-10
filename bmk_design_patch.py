@@ -240,35 +240,69 @@ from functools import lru_cache, partial
 
 import cv2
 import numpy as np
-import torch
 from PIL import Image, ImageDraw, ImageFont
 
-import comfy.model_management
-import comfy.utils
-import folder_paths
-
 try:
-    from . import bmk_design_patch_analysis as an
-    from . import bmk_design_patch_board as board
-    from . import bmk_design_patch_mask as dmask
-    from . import bmk_design_patch_prompt as dprompt
-    from . import bmk_design_patch_psd as dpsd
-    from . import bmk_design_patch_refs as refs
-    from . import bmk_design_patch_runner as runner
-    from . import bmk_design_patch_store as store
-    from . import bmk_design_patch_vlm as dvlm
-    from . import bmk_sam3_mask_layers as sam3
+    from . import bmk_design_patch_compat as compat
 except ImportError:  # 단독 실행/테스트
-    import bmk_design_patch_analysis as an
-    import bmk_design_patch_board as board
-    import bmk_design_patch_mask as dmask
-    import bmk_design_patch_prompt as dprompt
-    import bmk_design_patch_psd as dpsd
-    import bmk_design_patch_refs as refs
-    import bmk_design_patch_runner as runner
-    import bmk_design_patch_store as store
-    import bmk_design_patch_vlm as dvlm
-    import bmk_sam3_mask_layers as sam3
+    import bmk_design_patch_compat as compat
+
+_STANDALONE = compat.server_mode()
+if _STANDALONE:
+    try:
+        import torch
+    except ImportError:
+        torch = None
+    comfy, folder_paths = compat.comfy, compat.folder_paths
+    sam3 = None
+    try:
+        from . import bmk_design_patch_analysis as an
+        from . import bmk_design_patch_board as board
+        from . import bmk_design_patch_mask as dmask
+        from . import bmk_design_patch_prompt as dprompt
+        from . import bmk_design_patch_psd as dpsd
+        from . import bmk_design_patch_refs as refs
+        from . import bmk_design_patch_runner as runner
+        from . import bmk_design_patch_store as store
+        from . import bmk_design_patch_vlm as dvlm
+    except ImportError:  # 단독 실행/테스트
+        import bmk_design_patch_analysis as an
+        import bmk_design_patch_board as board
+        import bmk_design_patch_mask as dmask
+        import bmk_design_patch_prompt as dprompt
+        import bmk_design_patch_psd as dpsd
+        import bmk_design_patch_refs as refs
+        import bmk_design_patch_runner as runner
+        import bmk_design_patch_store as store
+        import bmk_design_patch_vlm as dvlm
+else:
+    import torch
+    import comfy.model_management
+    import comfy.utils
+    import folder_paths
+
+    try:
+        from . import bmk_design_patch_analysis as an
+        from . import bmk_design_patch_board as board
+        from . import bmk_design_patch_mask as dmask
+        from . import bmk_design_patch_prompt as dprompt
+        from . import bmk_design_patch_psd as dpsd
+        from . import bmk_design_patch_refs as refs
+        from . import bmk_design_patch_runner as runner
+        from . import bmk_design_patch_store as store
+        from . import bmk_design_patch_vlm as dvlm
+        from . import bmk_sam3_mask_layers as sam3
+    except ImportError:  # 단독 실행/테스트
+        import bmk_design_patch_analysis as an
+        import bmk_design_patch_board as board
+        import bmk_design_patch_mask as dmask
+        import bmk_design_patch_prompt as dprompt
+        import bmk_design_patch_psd as dpsd
+        import bmk_design_patch_refs as refs
+        import bmk_design_patch_runner as runner
+        import bmk_design_patch_store as store
+        import bmk_design_patch_vlm as dvlm
+        import bmk_sam3_mask_layers as sam3
 
 logger = logging.getLogger(__name__)
 
@@ -316,7 +350,15 @@ def _strip_path(p) -> str:
 
 
 def _project_root(project: str, base_dir: str) -> str:
-    base = _strip_path(base_dir) or folder_paths.get_input_directory()
+    base = _strip_path(base_dir)
+    if not base:
+        scope = board.current_scope()
+        if scope is not None:
+            base = scope["input"]
+        elif board.server_mode():
+            raise RuntimeError("서버 모드의 프로젝트 경로에는 계정 범위가 필요합니다")
+        else:
+            base = folder_paths.get_input_directory()
     return store.project_root(base, str(project or "").strip())
 
 
@@ -434,8 +476,15 @@ def _sync_picks(m: dict) -> None:
 # ══════════════════════════════════════════════════════════════════════
 # 공통 — 이미지
 # ══════════════════════════════════════════════════════════════════════
+def _tensor(array=None):
+    """torch 가 없을 때만 같은 모양·dtype 의 numpy 출력(빈 격자는 1×1 RGB)."""
+    if array is None:
+        return np.zeros((1, 1, 1, 3), dtype=np.float32) if torch is None else torch.zeros((1, 1, 1, 3), dtype=torch.float32)
+    return array[None] if torch is None else torch.from_numpy(array)[None]
+
+
 def _to_image(rgb: np.ndarray) -> torch.Tensor:
-    return torch.from_numpy(np.ascontiguousarray(rgb[..., :3]).astype(np.float32) / 255.0)[None]
+    return _tensor(np.ascontiguousarray(rgb[..., :3]).astype(np.float32) / 255.0)
 
 
 def _read(path: str) -> bytes:
@@ -2242,7 +2291,7 @@ class BMKDesignPatchCompose:
                 f"| rev {m['rev']} | {time.time() - t0:.1f}s")
         report = "\n".join([head] + lines + [f"  - {w}" for w in warns + conflicts])
         logger.info("%s %s", _TAG, head)
-        return (handle, _to_image(out), torch.from_numpy(1.0 - union)[None], report)
+        return (handle, _to_image(out), _tensor(1.0 - union), report)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -2277,7 +2326,14 @@ def _export_hash(m: dict, entries: dict, comp: dict, opts: dict, edits: dict | N
 
 def _output_dir(name: str) -> str:
     """output/design_patch/<name> — name = Export 하위 폴더(배치 3-5b), 비우면 프로젝트 폴더 이름."""
-    return os.path.join(folder_paths.get_output_directory(), "design_patch", name)
+    scope = board.current_scope()
+    if scope is not None:
+        base = scope["output"]
+    elif board.server_mode():
+        raise RuntimeError("서버 모드의 출력 경로에는 계정 범위가 필요합니다")
+    else:
+        base = folder_paths.get_output_directory()
+    return os.path.join(base, "design_patch", name)
 
 
 def _sidecar_hash(psd_path: str):
@@ -2599,7 +2655,7 @@ def _cand_grid(root: str, keys: list[str], limit: int = 48) -> torch.Tensor:
         img = _decode(_read(_abs(root, c["file"])))
         tiles.append(_label_tile([_fit(img, _THUMB)], [_ascii(f"{c['crop_id']} {c['tid']}"), _ascii(k)]))
     if not tiles:
-        return torch.zeros((1, 1, 1, 3), dtype=torch.float32)
+        return _tensor()
     return _to_image(_grid(tiles, min(6, len(tiles))))
 
 
@@ -3132,7 +3188,7 @@ def _draft_sheet(root: str, m: dict, ctxs: list, reqs: dict, pl: dict, drafts: d
         bad = state in ("failed", "rejected", "retry", "orphan") or (chk is not None and not chk.ok)
         tiles.append(_label_tile(cells, lines, (255, 140, 120) if bad else (220, 220, 220)))
     if not tiles:
-        return torch.zeros((1, 1, 1, 3), dtype=torch.float32)
+        return _tensor()
     return _to_image(_grid(tiles, 2))
 
 
@@ -3408,6 +3464,8 @@ class BMKDesignPatchRefCut:
     SEARCH_ALIASES = _ALIASES + ["ref cut", "reference cutout", "sam3", "레퍼런스 컷", "컷아웃"]
 
     def run(self, root, req):
+        if sam3 is None:
+            raise RuntimeError("서버 모드에서는 자동 오리기를 쓸 수 없습니다")
         path = store.resolve_board_root(root)
         if path is None:
             raise ValueError(f"{_TAG} 보드에 등록되지 않은 프로젝트 키입니다(Review 노드를 한 번 실행): {root!r}")
@@ -3474,9 +3532,13 @@ def _restore_board_prefs() -> None:
 
 _register_board_routes()
 _restore_board_prefs()
+# 서버 모드는 체크포인트가 없으며, 아래에서 Qwen 경로도 비워 local_qwen 계획부터 차단한다.
 board.set_sam3_ckpts(_sam3_ckpt_names())  # 보드는 folder_paths 를 import 하지 않는다(B0) — 재시작 전 새로 넣은 파일은 안 보임
 board.set_qwen_dir(os.path.join(folder_paths.models_dir, *_QWEN_DIR))  # Studio Draft 계획의 local_qwen 키(Spec Draft 와 같은 경로)
-board.set_output_dir(folder_paths.get_output_directory())  # Studio [출력 폴더 열기](배치 3-5a)가 이 안만 연다
+if not _STANDALONE:
+    board.set_output_dir(folder_paths.get_output_directory())  # Studio [출력 폴더 열기](배치 3-5a)가 이 안만 연다
+else:
+    board.set_qwen_dir(None)
 
 
 # ══════════════════════════════════════════════════════════════════════

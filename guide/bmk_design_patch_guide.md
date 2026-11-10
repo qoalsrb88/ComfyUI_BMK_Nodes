@@ -7,6 +7,7 @@ PS 에서 **크롭 사각형과 클린플레이트만 그려 저장**하면, 노
 
 - 모듈: `bmk_design_patch.py`(노드 10개) + 노드 없는 보조 모듈 `bmk_design_patch_store / _psd / _analysis / _prompt /
   _runner / _board / _vlm.py`, 보드 페이지 `web_design_patch/`, 짝 JS `js/bmk_design_patch.js`
+- 서버 모드(Forge 이식 F1 — ComfyUI 없이 띄우기): `bmk_design_patch_server.py`(진입점) · `_jobs.py`(실행기) · `_compat.py`(ComfyUI 대체물) — 아래 「서버 모드」 절
 - 명세: `H:\BmkNodeDesign\MultiLayerCropEdit\_proto\M1_SPEC.md`, `M2_SPEC.md`, `M3_SPEC.md`, 근거 보고서: `_proto\reports\final.md`,
   `_proto\design_m3\report_*.md`
 - 카테고리 `BMK/Image`, 노드 검색어: `design patch`, `디자인 패치`, `multi layer crop edit`
@@ -1754,6 +1755,75 @@ ii-3 의 r ≈ 0.42 를 반영해 다시 계산한 값입니다(concurrency 4, i
 - 비공개 API 결합: `sync_op_raw` 키워드·`client._get_remembered_credits_used`·runner 의 `_CallHidden`·`_request_error`·인터럽트 보조.
   ComfyUI 업데이트 뒤에는 테스트의 M3-C1·C2 와 M2 C* 를 다시 돌리세요.
 
+## 서버 모드 (Forge 이식 F1 — ComfyUI 없이 띄우기)
+
+2026-11-10 추가. Design Patch Studio 를 사내 툴 Forge 의 별도 확장 메뉴(iframe)로 넣기 위한 뼈대입니다. **로컬판(ComfyUI 판)은 그대로**이고, 같은 코드가 환경 변수 `BMK_DP_SERVER_MODE=1` 일 때만 서버 모드로 돕니다. 명세: `_proto\STUDIO_FORGE_SPEC.md`(D300–D326) · `_proto\STUDIO_FORGE_F1_SPEC.md`(D327–D344).
+
+**F1 에서 되는 것**: ComfyUI 프로세스 없이 새 프로젝트(그림 올리기) → ② 크롭 → 반영 → ⑤ 생성 → ⑥ 검토 → ⑦ 마스크 → Export → PSD 내려받기. **생성 백엔드는 mock 만**(과금 없음 — 서버가 시작 때 mock 을 강제하고, 서버 모드에서는 comfy.org·로컬 Qwen 백엔드를 만들지 못하게 막아 둠). 실제 Forge 토큰 검증·Forge 생성 연결은 F2(담당자 답 뒤).
+
+### 띄우기(개발)
+
+```
+H:\ComfyUI-Easy-Install\python_embeded\python.exe -X utf8 H:\ComfyUI-Easy-Install\ComfyUI\custom_nodes\ComfyUI_BMK_Nodes\bmk_design_patch_server.py --data H:\ComfyUI-Easy-Install\dp_forge_dev --port 8791 --dev-handoff --dev-parent-port 8790
+```
+
+- 브라우저에서 `http://localhost:8790/` — 가짜 Forge 부모 페이지(상단 56px 바 + Forge 와 같은 `sandbox` 속성의 iframe). 위 [alice]·[bob] 링크로 계정을 바꿔 엽니다. iframe 주소는 Forge 와 같은 꼴 `http://localhost:8791/?parent_origin=…#token=dev:<계정>&organization_id=org1`.
+- `--dev-handoff` = 개발용 가짜 넘겨받기(`dev:<계정 ID>` 토큰을 그대로 믿음). **루프백 주소(127.0.0.1·::1·localhost)에서만** 켤 수 있습니다. 운영에서는 쓰지 않습니다.
+- `--host ::1` 로 띄우면 부모 페이지는 `http://localhost:8790/` 로 여세요(브라우저가 `[::1]` 부모를 `frame-ancestors` 에서 받지 않습니다).
+- Claude Code 에서는 `.claude\launch.json` 의 `dp-forge-dev`(`preview_start`).
+
+| 옵션 | 뜻 |
+|---|---|
+| `--data <폴더>` | 계정 홈들이 놓이는 폴더(필수) |
+| `--host`·`--port` | 듣는 주소(기본 127.0.0.1:8791) |
+| `--public-origin <https://…>` | 서버 자기 origin. **개발 모드가 아니면 필수** — `Secure` 쿠키·Origin 대조를 이 값으로 정함(TLS 를 끝내는 프록시 뒤 대비) |
+| `--parent-origin <origin>` | iframe 부모로 허용할 origin(여러 번) — 응답의 `frame-ancestors`. 비면 `'none'` |
+| `--allowed-host <host[:port]>` | 허용 Host(여러 번). 비면 `public-origin` 의 host + 개발 모드일 때 루프백 |
+| `--dev-handoff`·`--dev-parent-port <포트>` | 개발용 가짜 넘겨받기·가짜 부모 페이지 |
+| `--cookie-samesite Lax\|Strict\|None` | 세션 쿠키 SameSite(기본 Lax — Forge 와 같은 사이트면 Lax 로 충분, `None` 은 https 에서만) |
+| `--workers <n>` | 실행기 동시 실행 수(기본 1 — 아래 '한계') |
+
+### 구조
+
+- **세션**: Forge 가 준 해시 토큰 → 화면(`env.js`)이 읽자마자 주소에서 지움 → `POST /api/session` → 세션 쿠키 `bmk_dp_session`(HttpOnly). 메모리 세션이라 서버를 다시 띄우면 Forge 에서 다시 열어야 합니다(유휴 12시간·절대 7일 만료, 계정당 20개). 토큰 검증기는 갈아 끼우는 자리(`make_app(config, verifier=…)` — `async verify(token, organization_id) → {account_id, organization_id, name} | None`).
+- **요청 검사**: 정적 파일·`GET env`·세션 라우트만 공개, 그 밖은 세션 필요(401 「Forge에서 Design Patch Studio를 다시 열어 주세요.」). GET 아닌 요청은 `X-DesignPatch-Request: 1` + `Origin` = 서버 자기 origin. 요청마다 계정 표지 `X-DesignPatch-Account` 를 대조 — 같은 브라우저의 다른 탭이 다른 계정으로 열면 먼저 열린 탭은 「다른 계정으로 바뀌었습니다」 안내로 멈춥니다.
+- **계정별 저장**: `<data>\<조직 폴더>\<계정 폴더>\bmk_design_patch\<프로젝트>\`(프로젝트 폴더 구조는 로컬판과 같음) · Export 출력 `…\<계정 폴더>\_output\design_patch\…` · 화면 설정 `…\_prefs.json` · `_account.json`(원래 ID). 폴더 이름 = `<ID 의 읽을 수 있는 앞부분>-<sha256 앞 16자>`.
+- **격리**: 보드 키(`?root=`)는 그 계정의 프로젝트 폴더 안에서만 풉니다(전역 레지스트리를 쓰지 않음). 다른 계정의 키는 모든 라우트에서 404.
+- **실행기**(`bmk_design_patch_jobs`): ComfyUI 큐 대신, 서버가 만든 같은 템플릿(승인 코드 대조까지 끝난 것)을 프로세스 안에서 차례로 실행합니다 — 노드 클래스의 메서드를 그대로 불러 로컬판과 같은 코드가 돕니다. 화면은 `POST jobs/prompt {root, stage, expect|approve·only}` 만 보내고 템플릿은 보내지 못합니다. 프로젝트당 직렬, 계정당 대기 8건, Export 는 계정당 한 번에 하나. 서버를 내릴 때는 새 유료 노드를 시작하지 않고 진행 중인 작업을 30초까지 기다립니다.
+- **화면**: `env.js`(DPEnv — 모드 판정·세션·화면 설정 서버 저장·기능 표) · `dialog.js`(DPDialog — 페이지 안 확인 상자. Forge iframe 은 `allow-modals` 가 없어 네이티브 `confirm` 이 뜨지 않습니다).
+
+### 서버 모드에서 없는 것
+
+| 없는 것 | 대신 |
+|---|---|
+| [출력 폴더 열기] | Export 뒤 `Export ▾` 메뉴·실행 패널의 **[PSD 내려받기]** |
+| 새 프로젝트의 「또는 전체 경로」·[이 폴더로 시작] · 시트 추가의 경로 칸 | 파일 고르기·끌어 놓기(올리기) |
+| 실행 설정의 경로 칸(`psd_path`·`refs_dir`·`glossary_path`·후보 등록 경로) | 서버가 프로젝트 안에 둠(프로젝트 밖 경로는 저장 거절) |
+| 「외부 엔진」 절 · 「PS 마스크 가져오기」 · 자동 오리기(SAM3) · 로컬 Qwen 초안 · Claude 승인 모드 | 1차에서는 없음(D303·D312) |
+| `ComfyUI 탭 연결` 배지·탭으로 보내는 승인 | 승인은 Studio 한 화면에서(F1 은 mock 상자) |
+
+### 로컬판에서 달라진 것
+
+- **무료 확인 창 33곳이 페이지 안 상자**로 바뀌었습니다(코드 한 벌). 떠 있는 동안 Studio 단축키는 먹지 않고 Esc = 취소, Enter·Space = 초점이 있는 단추. **유료 동의 5곳(초안·생성 승인, R 다시 생성 사전 승인 2곳, 탭 반영 대체)은 네이티브 확인 창 그대로**입니다.
+- 확인 상자가 떠 있는 동안에도 2초 폴링은 계속 돕니다 — 확인 뒤에는 '그 동작의 대상이 아직 같은가'를 다시 봅니다(바뀌었으면 「확인 중 상태가 바뀌었습니다 — 다시 확인한 뒤 시도하세요」). ② 크롭·③ 레퍼런스 편집은 확인 중 **다른 창이 레이아웃·레퍼런스를 바꿨을 때도** 같은 안내로 멈춥니다(전에는 서버 409 로 막히던 경우). Run 중 후보가 도착하는 것만으로는 멈추지 않습니다.
+- mock 확인 상자·Claude 승인 상자는 전과 같이 **클릭으로만** 승인됩니다(Enter·Space·Tab 은 먹지 않음, Esc = 취소).
+- 확인 상자가 떠 있는 동안 뗀 키(Space 화면 이동·Q 비교)는 정상으로 풀립니다.
+- `GET /bmk/design_patch/env` 라우트가 하나 늘었습니다(로컬 = `server_mode: false`). 8188 을 재시작하기 전에는 이 라우트·`env.js`·`dialog.js` 가 404 지만 화면은 로컬 모드로 그대로 돕니다(확인 창은 재시작 전까지 네이티브).
+- 깊게 중첩된 깨진 JSON 본문에 500 대신 400 을 돌려줍니다(정상 요청은 그대로).
+
+### 한계(F1)
+
+- 생성은 mock 만. 비용 표시(`$`·크레딧)는 로컬판 식 그대로 보입니다(서버 모드 표시 정리는 F2·F3).
+- 실행기 동시 실행 기본 1 — 노드·보드의 전역 자원(계획 잠금·시트 디코드 자리)이 'ComfyUI 큐는 한 번에 하나'를 전제로 짜여 있습니다. 한 계정의 무거운 작업이 다른 계정을 기다리게 합니다.
+- 계정별 저장량 한도·보존 기한 없음(D307), 로그인 속도 제한 없음.
+- 보드의 실행 중·멈춤 플래그 같은 메모리 표는 보드 키(경로 해시 48비트)로 나뉩니다 — 두 계정의 키가 겹치면 그 플래그가 섞일 수 있습니다(파일은 섞이지 않음).
+- 작업 기록·오류 문구에 그 계정 자신의 서버 경로가 실릴 수 있습니다(계정 홈 부분은 `<계정 폴더>` 로 가림).
+- 'ComfyUI 재시작' 류 문구가 드문 오류 길에 남아 있습니다(문구·색·머리줄 정리는 F3).
+
+### 시험
+
+`forge_server_unit`(세션·요청 검사·계정 격리·경로 봉쇄·설정 저장·내려받기) · `forge_jobs_unit`(대체물·실행기 — 새 프로세스에서 torch·comfy 를 막고 반영 → mock 생성 → Export) · `forge_js_unit`(DPEnv·DPDialog·서버 모드 큐·숨김·로컬 유료 동의 고정). 모두 `--quick` 에 들어 있습니다.
+
 ## 유료 스모크 테스트 (사용자가 직접, 1회 ≈ $0.03–0.05)
 
 처음 실제 호출은 **크롭 1개 · quality low · n 1 · 호출 1건**으로 확인합니다(예상: sunburst/flare low 2048² 입력 1장 $0.029–0.035,
@@ -1817,6 +1887,8 @@ python_embeded\python.exe -X utf8 -W ignore ComfyUI\custom_nodes\ComfyUI_BMK_Nod
   의 03/05 PSD 회귀 + M1 노드 통합 + M2 노드(합성 프로젝트, mock) + M3 Spec Draft 노드(N1–N19) + M2 체인(ComfyUI 로더·실행기로
   Project → … → Export, mock, 서버 포트 없음). 2026-10-13(타깃만·채택 리뷰 수정 뒤): `--quick` PASS 2253, 전체 PASS 3037 · FAIL 0(약 4분 10초).
   **유료 호출은 하지 않습니다**(mock 또는 테스트 안에서만 가짜로 바꾼 sync_op). 출력은 `_proto\m2_test_out\` 아래에만 씁니다.
+
+- 서버 모드 묶음(2026-11-10, `--quick` 포함): `forge_server_unit`·`forge_jobs_unit`·`forge_js_unit` — 「서버 모드 › 시험」.
 
 | 검사 | 내용 | 실측(2026-10-07) |
 |---|---|---|
