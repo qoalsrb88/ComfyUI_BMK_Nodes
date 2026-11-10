@@ -58336,41 +58336,112 @@ async def _fs_new_limits(bd, ascope, bscope):
         check(await bd._project_new_target_limited({}, None) == "local", "FS11 로컬 디코드에는 서버 세마포어 없음")
 
 
-def _fs_registry_collisions(bd, out):
-    """강제 키 충돌: 등록·재로딩의 서버 방어와 로컬 덮어쓰기 계약."""
+async def _fs_scoped_roots(bd, out, call, login, sessions):
+    """FS26 T1: 계정 간 강제 키 충돌·재시작 순서·폴더 mtime 캐시·로컬 조회 계약."""
     from unittest.mock import patch
-    roots = [out / "collision" / account / store.PROJECTS_DIRNAME / "project" for account in ("first", "second")]
-    for root in roots:
-        root.mkdir(parents=True)
-        store.write_json_atomic(str(root / store.MANIFEST_NAME), store.new_manifest(root.name))
-    first, second = map(str, roots)
-    key = "c" * 12
-    registry_file = roots[1].parent / store.ROOTS_FILE
-    store.write_json_atomic(str(registry_file), {"schema": store._ROOTS_SCHEMA, "roots": {}})
-    saved = registry_file.read_bytes()
-    with patch.object(store, "root_key", return_value=key), patch.object(store, "_ROOTS", {}), \
-            patch.object(store.logger, "warning") as warning:
-        check(store.register_root(first) == key, "FS18 R3 첫 루트 등록")
-        expect_raises(lambda: store.register_root(second), "FS18 R3 같은 키의 다른 살아 있는 루트 등록 거절",
-                      contains="같은 키의 다른 프로젝트가 이미 있습니다")
-        check(store.resolve_board_root(key) == first and registry_file.read_bytes() == saved,
-              "FS18 R3 첫 루트 유지·거절한 _roots.json 바이트 불변")
-        check(warning.called and all(path in warning.call_args.args for path in (first, second)), "FS18 R3 충돌 경로는 경고 로그에 기록")
-        check(store.register_root(first) == key, "FS18 R3 같은 루트 재등록 허용")
-        if os.name == "nt":
-            check(store.register_root(first.swapcase()) == key, "FS18 R3 Windows 경로 대소문자 차이는 충돌 아님")
-        store.write_json_atomic(str(registry_file), {"schema": store._ROOTS_SCHEMA,
-                                "roots": {key: {"project": roots[1].name, "time": "2026-11-10 00:00:00"}}})
-        check(store.load_root_registry(str(roots[1].parent.parent)) == 0
-              and os.path.normcase(store.resolve_board_root(key)) == os.path.normcase(first), "FS18 R3 재로딩도 살아 있는 첫 루트를 덮지 않음")
-        with patch.dict(os.environ, {bd.SERVER_ENV: "0"}):
-            store.register_root(second)
-            check(store.resolve_board_root(key) == second, "FS18 R3 로컬 등록은 기존처럼 덮어씀")
-            store.load_root_registry(str(roots[0].parent.parent))
-            check(os.path.normcase(store.resolve_board_root(key)) == os.path.normcase(first), "FS18 R3 로컬 재로딩도 기존처럼 덮어씀")
-        (roots[0] / store.MANIFEST_NAME).unlink()
-        store.register_root(second)
-        check(store.resolve_board_root(key) == second, "FS18 R3 이전 매니페스트가 사라진 키는 재사용 가능")
+    key, root_key = "c" * 12, store.root_key
+
+    def colliding_key(root):
+        return key if os.path.basename(root) in ("alice_project", "bob_project") else root_key(root)
+
+    def rejected(value, status, message):
+        try:
+            bd._root_param(value)
+        except bd._Reject as e:
+            check(e.status == status and str(e) == message, "FS26 T1 범위/키/매니페스트 거절 " + repr(value))
+        else:
+            check(False, "FS26 T1 거절해야 할 키 " + repr(value))
+
+    with patch.object(store, "root_key", side_effect=colliding_key), patch.object(store, "_ROOTS", {}), \
+            patch.object(bd, "_SCOPE_ROOTS", {}), \
+            patch.object(store, "load_root_registry", side_effect=AssertionError("계정 로그인은 전역 로딩 금지")) as load:
+        accounts = []
+        for name, shade in (("alice", 64), ("bob", 192)):
+            sid, tag = await login(name, org="collision")
+            scope = sessions.get(sid)["scope"]
+            root = Path(scope["input"], store.PROJECTS_DIRNAME, name + "_project")
+            png = png_bytes(np.full((64, 64, 3), shade, np.uint8))
+            response, data = await call("POST", bd.API + "/projects/new", sid=sid, tag=tag, data=png,
+                                        params={"name": root.name, "filename": "base.png"},
+                                        headers={"Content-Type": "application/octet-stream"})
+            check(response.status == 200 and data.get("key") == key, "FS26 T1 같은 키의 새 프로젝트도 각 계정에 생성 " + name)
+            (root / "inputs").mkdir(exist_ok=True)
+            for filename in ("shared.png", name + ".png"):
+                (root / "inputs" / filename).write_bytes(png)
+            accounts.append((sid, tag, scope, root, png))
+
+        # 재시작 직후의 전역 등록 상태를 재현한다. bob 만 먼저 등록해도 alice 로그인은 그 상태에 의존하지 않는다.
+        store._ROOTS.clear()
+        store.register_root(str(accounts[1][3]))
+        bd._SCOPE_ROOTS.clear()
+        with patch.object(store, "resolve_board_root", side_effect=AssertionError("서버는 전역 키 조회 금지")) as resolve, \
+                patch.object(store, "known_roots", side_effect=AssertionError("서버는 전역 목록 금지")) as known:
+            sid, tag = await login("alice", org="collision")
+            accounts[0] = (sid, tag, *accounts[0][2:])
+            check(store._ROOTS[key]["root"] == str(accounts[1][3]), "FS26 T1 bob 선등록 뒤 alice 로그인도 전역 상태 불변")
+            for index, (sid, tag, scope, root, png) in enumerate(accounts):
+                response, data = await call("GET", bd.API + "/state", sid=sid, params={"root": key})
+                check(response.status == 200 and data.get("project") == root.name, "FS26 T1 충돌 키 state 는 자기 프로젝트 " + root.name)
+                response, data = await call("POST", bd.API + "/projects/open", sid=sid, tag=tag, json={"key": key})
+                check(response.status == 200 and data == {"ok": True, "key": key}, "FS26 T1 충돌 키 projects/open 성공 " + root.name)
+                response, data = await call("GET", bd.API + "/projects", sid=sid)
+                check(response.status == 200 and [p["name"] for p in data["projects"]] == [root.name],
+                      "FS26 T1 목록에 다른 계정 프로젝트 없음 " + root.name)
+                response, data = await call("GET", bd.API + "/file", sid=sid, params={"root": key, "rel": "inputs/shared.png"})
+                check(response.status == 200 and data == png, "FS26 T1 동일 키·상대 경로의 파일도 자기 바이트 " + root.name)
+                other_name = "bob" if index == 0 else "alice"
+                response, _ = await call("GET", bd.API + "/file", sid=sid, params={"root": key, "rel": "inputs/" + other_name + ".png"})
+                check(response.status == 404, "FS26 T1 상대 계정에만 있는 파일은 404 " + root.name)
+
+            token = bd.set_scope(accounts[0][2])
+            try:
+                root = accounts[0][3]
+                parent = root.parent
+                bd._SCOPE_ROOTS.clear()
+                with patch.object(bd, "_project_roots", wraps=bd._project_roots) as scan:
+                    check(bd._root_param(key) == str(root) and bd._root_param(key) == str(root) and scan.call_count == 1,
+                          "FS26 T1 같은 계정·폴더 mtime 이면 스캔/해시 재사용")
+                    for invalid in (None, "../", "C" * 12, "c" * 11, "c" * 13, "d" * 12):
+                        rejected(invalid, 404, bd._ROOT_HINT)
+                    manifest = root / store.MANIFEST_NAME
+                    saved = manifest.read_bytes()
+                    manifest.unlink()
+                    rejected(key, 404, bd._ROOT_HINT)
+                    manifest.write_bytes(saved)
+                    check(bd._root_param(key) == str(root) and scan.call_count == 1,
+                          "FS26 T1 캐시가 있어도 매니페스트 삭제/복원은 매번 확인")
+                    fresh = parent / "fresh_project"
+                    fresh.mkdir()
+                    store.write_json_atomic(str(fresh / store.MANIFEST_NAME), store.new_manifest(fresh.name))
+                    stamp = parent.stat()
+                    os.utime(parent, ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 1_000_000_000))
+                    fresh_key = root_key(str(fresh))
+                    check(bd._root_param(fresh_key) == str(fresh) and scan.call_count == 2,
+                          "FS26 T1 폴더 mtime 변경 뒤 전역 미등록 새 프로젝트 발견")
+                    (fresh / store.MANIFEST_NAME).unlink()
+                    fresh.rmdir()
+                    stamp = parent.stat()
+                    os.utime(parent, ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 2_000_000_000))
+                    rejected(fresh_key, 404, bd._ROOT_HINT)
+                    check(scan.call_count == 3, "FS26 T1 프로젝트 삭제도 폴더 mtime 으로 캐시 갱신")
+                oldest = str(out / "cache_0")
+                with patch.object(bd, "_SCOPE_ROOTS", {str(out / ("cache_" + str(i))): (0, {}) for i in range(256)}):
+                    check(bd._root_param(key) == str(root) and len(bd._SCOPE_ROOTS) == 256 and oldest not in bd._SCOPE_ROOTS,
+                          "FS26 T1 캐시는 최근 256개 계정 폴더로 제한")
+            finally:
+                bd.reset_scope(token)
+            token = bd.set_scope(None)
+            try:
+                for value in (key, None):
+                    rejected(value, 401, bd.NO_SESSION)
+            finally:
+                bd.reset_scope(token)
+            check(resolve.call_count == 0 and known.call_count == 0 and load.call_count == 0,
+                  "FS26 T1 서버 조회·열기·로그인은 전역 resolve/known/load 호출 0")
+        with patch.dict(os.environ, {bd.SERVER_ENV: "0"}), \
+                patch.object(store, "resolve_board_root", wraps=store.resolve_board_root) as resolve:
+            check(bd._root_param(key) == str(accounts[1][3]) and resolve.call_args_list == [((key,), {})],
+                  "FS26 T1 로컬 _root_param 은 기존 전역 조회 결과·호출 그대로")
 
 
 def forge_server_unit():
@@ -58424,6 +58495,20 @@ def forge_server_unit():
           "FS16 R1 운영 모드 바인딩은 기존처럼 허용")
     expect_raises(lambda: srv.make_app(config), "FS1 미구현 jobs 를 조용히 생략하지 않음", NotImplementedError)
     check(not bd.server_mode() and os.environ.get("BMK_DP_MOCK_API") == initial_env["BMK_DP_MOCK_API"], "FS1 만들기 실패도 모드 원복")
+
+    # main 이 만든 실제 설정을 받되 서비스 바인딩 전에 멈춘다.
+    cli_configs = []
+
+    class ConfigCaptured(Exception):
+        pass
+
+    def capture_config(value):
+        cli_configs.append(value)
+        raise ConfigCaptured
+
+    with patch.object(srv, "make_app", side_effect=capture_config):
+        expect_raises(lambda: srv.main(["--data", str(out / "ipv6_data"), "--host", "::1", "--dev-handoff", "--dev-parent-port", "8790"]),
+                      "FS27 T2 IPv6 CLI 설정 생성·실제 서비스 시작 전 중단", ConfigCaptured)
     ids = ("Alice", "alice", "CON", "x" * 128, "한글", "h_alice", "con", "org/../../other")
     names = [srv._folder_id(value) for value in ids]
     check(len({s.casefold() for s in names}) == len(names) and all(re.fullmatch(r"[a-z0-9_]{1,24}-[0-9a-f]{16}", n) for n in names),
@@ -58585,7 +58670,7 @@ def forge_server_unit():
             aroot, broot = store.resolve_board_root(akey), store.resolve_board_root(bkey)
             ascope, bscope = sessions.get(alice)["scope"], sessions.get(bob)["scope"]
             await _fs_new_limits(bd, ascope, bscope)
-            _fs_registry_collisions(bd, out)
+            await _fs_scoped_roots(bd, out, call, login, sessions)
             # 서버의 큰 업로드는 메모리 본문 상한을 우회해 디스크까지 흘러간 뒤 형식 검사로 끝난다.
             async def large_chunks():
                 for _ in range(144):
@@ -58611,17 +58696,6 @@ def forge_server_unit():
                 response, _ = await call("POST", api_path + "/" + endpoint, sid=alice, tag=atag, params={"root": akey},
                                          data=large_chunks(), headers={"Content-Type": content_type})
                 check(response.status == 413, "FS17 R2 청크 전송의 메모리 본문도 읽는 중 8MiB 에서 거절 " + endpoint)
-
-            before_registry = Path(bscope["input"], store.PROJECTS_DIRNAME, store.ROOTS_FILE).read_bytes()
-            with patch.object(store, "root_key", return_value=akey):
-                response, data = await call("POST", api_path + "/projects/new", sid=bob, tag=btag, data=png,
-                                            params={"name": "collision", "filename": "base.png"}, headers={"Content-Type": "application/octet-stream"})
-            check(response.status == 409 and data == {"error": "다른 이름으로 다시 만들어 주세요"}
-                  and not Path(bscope["input"], store.PROJECTS_DIRNAME, "collision").exists(), "FS18 R3 새 프로젝트 충돌은 경로 없는 409·실패 폴더 정리")
-            check(Path(bscope["input"], store.PROJECTS_DIRNAME, store.ROOTS_FILE).read_bytes() == before_registry
-                  and store.resolve_board_root(akey) == aroot, "FS18 R3 충돌 업로드도 기존 레지스트리와 첫 루트 보존")
-            response, _ = await call("GET", api_path + "/state", sid=alice, params={"root": akey})
-            check(response.status == 200, "FS18 R3 충돌 시도 뒤 첫 계정은 계속 프로젝트 열기 가능")
 
             token = bd.set_scope(ascope)
             try:
@@ -58653,6 +58727,11 @@ def forge_server_unit():
                                            (b"[]", "application/json"), (b"\xff", "application/json")):
                     response, data = await call("POST", path, sid=sid, tag=tag, data=raw, headers={"Content-Type": content_type})
                     check(response.status == 400 and data.get("error"), "FS25 R10 Content-Type·깨진 JSON·배열·UTF-8 오류 JSON " + path)
+                with patch.object(srv.logger, "error") as errors:
+                    response, data = await call("POST", path, sid=sid, tag=tag, data=b"[" * 16000,
+                                                headers={"Content-Type": "application/json"})
+                    check(response.status == 400 and set(data) == {"error"} and data["error"] and not errors.called,
+                          "FS28 T3 깊게 중첩된 JSON 은 오류 로그 없이 400 JSON " + path)
             with patch.object(srv._Preferences, "apply", side_effect=RuntimeError("opaque-sensitive-payload")):
                 response, data = await call("GET", "/api/preferences", sid=alice)
                 check(response.status == 500 and set(data) == {"error"} and "서버 요청 처리 실패: RuntimeError" in log.getvalue()
@@ -58931,6 +59010,12 @@ def forge_server_unit():
             r = await c.get(api_path + "/env", headers={"Host": "only.test"})
             check(r.status == 200, "FS13 명시 Host 허용")
 
+        async with TestClient(TestServer(srv.make_app(cli_configs[0], jobs_module=jobs))) as c:
+            r = await c.get(api_path + "/env", headers={"Host": "[::1]:8791"})
+            check(r.status == 200 and r.headers["Content-Security-Policy"] ==
+                  "frame-ancestors http://localhost:8790 http://127.0.0.1:8790 http://[::1]:8790",
+                  "FS27 T2 --host ::1·개발 부모 설정의 실제 응답 CSP 는 루프백 origin 셋 모두 허용")
+
         parent = srv.make_dev_parent_app(dataclasses.replace(config, dev_parent_port=8790))
         async with TestClient(TestServer(parent)) as c:
             r = await c.get("/?acct=bob")
@@ -58957,7 +59042,7 @@ def forge_server_unit():
     try:
         # 저장소·캐시의 합성 프로젝트가 뒤따르는 로컬 묶음으로 새지 않게 대역을 둔다.
         with patch.object(store, "_ROOTS", {}), patch.object(bd, "_PREF", {}), patch.object(bd, "_PROJECT_MEMO", {}), \
-                patch.object(bd, "_PROJECT_NEW_LOCKS", {}):
+                patch.object(bd, "_PROJECT_NEW_LOCKS", {}), patch.object(bd, "_SCOPE_ROOTS", {}):
             asyncio.run(run())
     finally:
         logging.getLogger().removeHandler(capture)

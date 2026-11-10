@@ -165,7 +165,6 @@ def _account_scope(data_dir, identity, store, now):
                 raise ValueError("계정 폴더 충돌")
         for name in (store.PROJECTS_DIRNAME, "_output"):
             os.makedirs(_plain_path(os.path.join(home, name)), exist_ok=True)
-        store.load_root_registry(home)
     try:
         board._sweep_new_tmp(home)
     except Exception as e:
@@ -240,7 +239,7 @@ async def _body(request, limit):
         if not isinstance(data, dict):
             raise ValueError
         return data
-    except (UnicodeError, ValueError):
+    except (UnicodeError, ValueError, RecursionError):
         return web.json_response({"error": "JSON 본문을 읽을 수 없습니다"}, status=400)
     finally:
         raw.clear()
@@ -609,7 +608,7 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     parents = list(args.parent_origin)
     if args.dev_parent_port:
-        parents.extend(f"http://{host}:{args.dev_parent_port}" for host in ("localhost", "127.0.0.1"))
+        parents.extend(f"http://{host}:{args.dev_parent_port}" for host in ("localhost", "127.0.0.1", "[::1]"))
     config = ServerConfig(args.data, host=args.host, port=args.port, public_origin=args.public_origin,
                           parent_origins=tuple(dict.fromkeys(parents)), allowed_hosts=tuple(args.allowed_host),
                           dev_handoff=args.dev_handoff, dev_parent_port=args.dev_parent_port,

@@ -387,6 +387,8 @@ LOCAL_CAPS = {"jobs": False, "export_download": False, "sam3": True, "local_qwen
               "path_input": True, "ps_mask": True, "agent_approve": True}
 _SCOPE: contextvars.ContextVar = contextvars.ContextVar("bmk_dp_scope", default=None)
 _ENV_PROVIDER: list = []           # set_env_provider — 서버 모드의 GET /env 본문을 만드는 함수(request → dict)
+_SCOPE_ROOTS: dict = {}            # 정규화한 계정 프로젝트 폴더 → (mtime_ns, {key: root}), 최근 256개
+_SCOPE_ROOTS_LOCK = threading.Lock()
 
 
 def set_server_mode(on: bool) -> None:
@@ -6167,7 +6169,26 @@ def _guard(fn):
 
 def _root_param(value) -> str:
     if server_mode():
-        _scope_dir("input")
+        base_dir = project_input()  # 키 형식보다 먼저 범위를 검사한다(없으면 401).
+        if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{12}", value):
+            raise _Reject(404, _ROOT_HINT)
+        parent = os.path.normcase(os.path.abspath(os.path.join(base_dir, store.PROJECTS_DIRNAME)))
+        try:
+            stamp = os.stat(parent).st_mtime_ns
+        except OSError:
+            raise _Reject(404, _ROOT_HINT) from None
+        with _SCOPE_ROOTS_LOCK:
+            cached = _SCOPE_ROOTS.pop(parent, None)
+            if cached is None or cached[0] != stamp:
+                cached = (stamp, {r["key"]: r["root"] for r in _project_roots()})
+            _SCOPE_ROOTS[parent] = cached
+            if len(_SCOPE_ROOTS) > 256:
+                del _SCOPE_ROOTS[next(iter(_SCOPE_ROOTS))]
+            root = cached[1].get(value)
+        # 매니페스트·링크 변경은 부모 mtime 을 바꾸지 않을 수도 있으므로 매번 확인한다.
+        if root is None or not in_scope(root) or not os.path.isfile(os.path.join(root, store.MANIFEST_NAME)):
+            raise _Reject(404, _ROOT_HINT)
+        return root
     root = store.resolve_board_root(value)
     if root is None or not in_scope(root):
         raise _Reject(404, _ROOT_HINT)
@@ -7228,12 +7249,7 @@ def _project_new_finish(state: dict, target: str) -> dict:
         pl.confirm_only(root, rev, [s for s in pl.SECTIONS if s not in ("import", "prepare", "export")])
         if state["adopt"]:
             _project_new_file(state, os.path.join(root, store.MANIFEST_NAME), store.new_manifest(state["name"]))
-        try:
-            key = store.register_root(root)
-        except ValueError as e:
-            if server_mode() and str(e) == "같은 키의 다른 프로젝트가 이미 있습니다":
-                raise _Reject(409, "다른 이름으로 다시 만들어 주세요") from None
-            raise
+        key = store.register_root(root)
         _ensure_pref(key, root)
     return {"key": key, "name": state["name"], "notes": state["notes"]}
 
@@ -7417,11 +7433,14 @@ def _ensure_pref(key: str, root: str) -> None:
 
 def _project_open(key) -> dict:
     r = _project_find(key)
+    if server_mode():
+        _ensure_pref(key, r["root"])
+        return {"ok": True, "key": key}
     _project_summary(r["root"])
     if store.resolve_board_root(key) is None:
         store.register_root(r["root"])
         # 등록 과정에서 함께 올라온 형제도 직접 보드 URL 로 열 수 있게 설정을 복구한다.
-        for row in (_project_roots() if server_mode() else store.known_roots()):
+        for row in store.known_roots():
             _ensure_pref(row["key"], row["root"])
     else:
         _ensure_pref(key, r["root"])
