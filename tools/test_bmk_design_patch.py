@@ -49383,6 +49383,199 @@ def polish2_unit():
 def forge_f3_theme_unit():
     """Forge F3 갈래 T — 테마(CSS 정적 검사). 명세 _proto/STUDIO_FORGE_F3_SPEC.md §4.1·§5. --quick 포함."""
     section("Forge F3-T — 테마 (forge_f3_theme_unit)")
+    path = PKG / "web_design_patch" / "board.css"
+    css = path.read_text(encoding="utf-8")
+    code = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+
+    def style(selector, source=code):
+        # 같은 선택자를 나눠 쓴 기존 규칙도 모아 검사한다(브라우저 캐스케이드 검사는 아님).
+        result = {}
+        for selectors, body in re.findall(r"([^{}]+)\{([^{}]*)\}", source):
+            if selector in (s.strip() for s in selectors.split(",")):
+                result.update((k.strip(), v.strip()) for k, v in re.findall(r"([^:;]+):([^;]+);", body))
+        return result
+
+    def has_style(selector, expected, source=code):
+        actual = style(selector, source)
+        check(all(actual.get(k) == v for k, v in expected.items()), f"F3 테마 {selector}: {expected}")
+
+    # D345: 공용 변수 값·고정 기능색은 각각 독립적으로 확인한다.
+    palette = {
+        "--bg": "#09090b", "--panel": "#18181b", "--panel2": "#27272a", "--line": "#3f3f46",
+        "--line2": "#52525b", "--text": "#e4e4e7", "--dim": "#a1a1aa", "--well": "#09090b",
+        "--accent": "#dfe104", "--on-accent": "#09090b", "--accent-soft": "rgba(223, 225, 4, .10)",
+        "--info": "#4da3ff", "--warn": "#ffa24d", "--star": "#ffc940", "--slice": "#ffa24d",
+        "--wait": "#b4b4bc", "--bad": "#ff5d5d", "--ok": "#46d17e", "--mock": "#b67cff", "--reg": "#4dd6e8",
+        "--radius": "8px", "--radius-sm": "6px", "color-scheme": "dark",
+    }
+    for name, value in palette.items():
+        has_style(":root", {name: value})
+    for old in ("#22314a", "#0e0f12", "#0b0c0f", "#9ccbff", "#364b62", "#80add8", "#3b5a85", "#ffd477", "--muted"):
+        check(old not in css.lower(), f"D345 옛 테마 값 없음: {old}")
+    check(css.lower().count("#4da3ff") == 1, "D345 옛 강조 파랑은 --info 정의 한 곳뿐")
+    for selector in (".frame", ".tile .imgbox", "#viewer", "#ref-view", ".rg-frame", ".rf-bf", ".rf-ct", ".pp-prompt",
+                     "#layout-panel input", '#ref-panel input[type="text"]', '#pipe-panel input[type="text"]',
+                     '.rf-dialog-box input[type="text"]', '#mask-panel .rf-slider input[type="number"]',
+                     ".projects-search", ".projects-field input"):
+        has_style(selector, {"background": "var(--well)"})
+    for selector in (".dr-menu", ".export-menu > div"):
+        has_style(selector, {"background": "var(--panel)", "border": "1px solid var(--line2)"})
+    has_style(".dr-thumb", {"background-color": "var(--well)"})
+    has_style(".mpreview", {"border": "1px solid var(--line)"})
+    has_style("#p-cand", {"border-color": "var(--line2)"})
+    has_style("svg.marks .rpt", {"stroke": "var(--well)"})
+    has_style(".clabel", {"background": "rgba(9, 9, 11, .82)"})
+    has_style("svg.marks text", {"stroke": "rgba(9, 9, 11, .85)"})
+    has_style(".dp-env-block", {"background": "rgba(9, 9, 11, .96)"})
+    has_style(".frame.loading::after", {"border": "3px solid var(--text)"})
+    has_style(".vbusy", {"color": "var(--text)"})
+    has_style("#target-list li.crop.cur .tname", {"color": "var(--text)"})
+    has_style(".rf-deleted > summary", {"color": "var(--dim)"})
+
+    # D346 수정 1: 채움은 지정된 실행 단추에만, 절에 남은 단추·유료 승인은 보조 꼴이다.
+    has_style("button.primary", {"background": "var(--panel2)", "color": "var(--text)", "border-color": "var(--accent)"})
+    check(style("button.primary").get("background") != "var(--accent)", "D346 기본 primary 는 노랑 채움 아님")
+    primary = (
+        "button.dp-main", "#pipe-panel .pp-dock button.dp-main",
+        "#layout-panel .lp-btns button.primary", "#ref-panel .lp-btns button.primary", "#mask-panel .lp-btns button.primary",
+        ".rf-dialog .lp-btns button.primary", ".projects-home button.primary",
+        ".dp-dialog .lp-btns button:first-child:not(.danger)", ".dp-env-block button",
+    )
+    for selector in primary:
+        has_style(selector, {"background": "var(--accent)", "color": "var(--on-accent)", "border-color": "var(--accent)", "font-weight": "700"})
+        has_style(selector + ":disabled", {"background": "var(--panel2)", "color": "var(--dim)", "border-color": "var(--line)", "opacity": "1"})
+    filled = set()
+    pulse = set()
+    for selectors, body in re.findall(r"([^{}]+)\{([^{}]*)\}", code):
+        names = {s.strip() for s in selectors.split(",")}
+        if re.search(r"(?:^|;)\s*background(?:-color)?:\s*var\(--accent\)\s*;", body):
+            filled.update(s for s in names if re.search(r"\bbutton\b|\.(?:primary|dp-main)\b", s))
+        if re.search(r"(?:^|;)\s*animation(?:-name)?:[^;]*\bdp-pulse\b", body):
+            pulse.update(names)
+    check(filled == set(primary), f"D346 채움 단추 선택자는 허용 목록만(실행 절·일반 승인 상자 제외): {sorted(filled)}")
+    check(not style("button.primary:disabled"), "D346 보조 primary 전체에 채움 단추의 disabled 모양을 적용하지 않음")
+    check(code.index("#pipe-panel .pp-dock button.dp-main") > code.index("button.primary {"), "D346 실행 줄의 주 단추는 기본 primary 뒤에서 구체적으로 덮어씀")
+    has_style(".dp-main", {"width": "100%", "min-height": "40px"})
+    for selector in ("button.on", 'button[aria-pressed="true"]', "button.sel", ".keybar .kchip.held", ".vbar button.on",
+                     ".lp-targets .lt button.on", ".lp-btns button.on", "#layout-panel button.sel",
+                     '#mask-panel .mc-adjust button[aria-pressed="true"]', "#target-list li.sel", "#layout-list li.sel",
+                     "#ref-list li.sel", "#mask-list li.sel", "#pipe-list li.sel"):
+        has_style(selector, {"background": "var(--accent-soft)", "border-color": "var(--accent)", "color": "var(--text)"})
+    has_style("button:hover", {"border-color": "var(--line2)"})
+    has_style(":focus-visible", {"outline": "2px solid var(--accent)"})
+    check("outline: none" not in code, "D346 입력칸 focus 규칙이 키보드 외곽선을 가리지 않음")
+    for selector in ("input:focus", "select:focus", "textarea:focus"):
+        has_style(selector, {"border-color": "var(--accent)"})
+    has_style(".clabel.sel", {"background": "var(--accent)", "color": "var(--on-accent)"})
+    has_style("svg.marks text.lname.sel", {"fill": "var(--accent)"})
+    has_style(".pp-table tr.sel td:first-child", {"color": "var(--accent)"})
+    has_style("svg.marks .draft", {"fill": "var(--accent-soft)", "stroke": "var(--accent)"})
+    has_style("svg.marks .rpoly", {"fill": "var(--accent-soft)", "stroke": "var(--accent)"})
+    for selector in ("svg.marks .rvtx", "svg.marks .mx-outline", "svg.marks .mx-handle"):
+        has_style(selector, {"stroke": "var(--accent)"})
+    has_style("svg.marks .mx-handle", {"fill": "var(--panel)"})
+    has_style(".rf-perspective-handle", {"background": "var(--panel)"})
+    has_style('.dr-button[aria-pressed="true"]', {"color": "var(--accent)"})
+
+    # D347 수정 1: 대기는 회색 점선, 맥동은 실제 진행에만 쓴다.
+    for selector in (".b-wait", ".rg-tag", ".projects-chip"):
+        has_style(selector, {"background": "var(--panel2)", "border": "1px dashed var(--wait)", "color": "var(--text)"})
+        check(not any(k.startswith("animation") and v != "none" for k, v in style(selector).items()), f"D347 {selector} 대기 배지 애니메이션 없음")
+    for selector in (".lh-wait::before", ".clabel.wait::before", ".step-state:not(.done):not(.warn):not(.optional)::before"):
+        has_style(selector, {"content": '"◌ "', "color": "var(--wait)"})
+    check(pulse == {".b-run", ".vmsg.busy"}, f"D347 dp-pulse 는 실제 진행 선택자 두 곳만: {sorted(pulse)}")
+    check(re.search(r"@keyframes dp-pulse\s*\{\s*0%, 100%\s*\{\s*opacity: 1;\s*\}\s*50%\s*\{\s*opacity: \.6;", code) is not None,
+          "D347 진행 맥동 불투명도 1 ↔ .6")
+    reduced = re.search(r"@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{(.*?)\n\}", code, re.S)
+    check(reduced is not None, "D347 움직임 줄이기 규칙 존재")
+    normal = code[:reduced.start()] if reduced else code
+    for selector in (".b-run", ".vmsg.busy"):
+        has_style(selector, {"animation": "dp-pulse 2s ease-in-out infinite"}, normal)
+        has_style(selector, {"animation": "none"}, reduced.group(1) if reduced else "")
+    has_style("svg.marks .crop.wait", {"stroke": "var(--wait)", "stroke-dasharray": "4 3"})
+    has_style(".tile.slice", {"border-color": "var(--slice)", "border-style": "dashed"})
+    for selector in (".detail .warn", ".vmsg.warn", "#layout-panel .warn", "#ref-panel .warn", ".lp-checks li.warn",
+                     "#ref-sheets .warn", ".dp-check-row.warn .dp-check-state", ".pp-row.warn", ".chip.b-unnamed"):
+        has_style(selector, {"color": "var(--warn)"})
+    for selector in (".rg-card.warn", "#toast.warn"):
+        has_style(selector, {"border-color": "var(--warn)"})
+    has_style("svg.marks .lc.changed", {"stroke": "var(--warn)"})
+    # 수정 3: 알림은 불투명 표면으로 띄우고 아래 상태 줄·주 실행 단추를 피한다.
+    has_style("#toast", {"background": "var(--panel2)", "border": "1px solid var(--line2)", "bottom": "96px"})
+    check(re.fullmatch(r"#[0-9a-fA-F]{6}", style(":root").get("--panel2", "")) is not None, "F3 알림 바탕 변수는 알파 없는 불투명 색")
+    has_style("#toast.show", {"opacity": "1"})
+    has_style("#toast.err", {"border-color": "var(--bad)"})
+    for selector in (".step-state", ".vmsg.busy", ".clabel.wait", ".lh-wait"):
+        has_style(selector, {"color": "var(--wait)"})
+    has_style("#p-cand.mode-before figcaption", {"color": "var(--info)"})
+    has_style(".b-new", {"border-color": "var(--info)", "background": "#1d3550", "color": "#cfe3ff"})
+    has_style("svg.marks .prop", {"fill": "rgba(77, 163, 255, .08)", "stroke": "var(--info)"})
+    has_style("svg.marks text.linfo", {"fill": "var(--info)"})
+
+    # D348·D354·D356·D357: 로컬 글꼴 목록, 단추 크기, 탭, 빈 화면의 모양.
+    has_style("html", {"font": '14px/1.45 "Noto Sans KR", "Pretendard Variable", "Pretendard", "Malgun Gothic", "Apple SD Gothic Neo", system-ui, sans-serif'})
+    has_style("button", {"border-radius": "var(--radius)", "padding": "5px 12px"})
+    for selector in (".vbar button", ".lhead button", "button.inline", ".keybar .kchip", ".dr-button", "input", "select", "textarea"):
+        has_style(selector, {"border-radius": "var(--radius-sm)"})
+    has_style("*", {"scrollbar-color": "var(--line2) transparent"})
+    has_style(".ref-tabs", {"height": "38px", "min-height": "38px", "flex-wrap": "nowrap"})
+    has_style(".tabs .tab", {"background": "transparent", "border": "0", "border-radius": "0", "border-bottom": "2px solid transparent"})
+    has_style(".tabs .tab.on", {"background": "transparent", "color": "var(--accent)", "border-bottom-color": "var(--accent)"})
+    check(".pp-tabs { display: none; }" in css, "D354 실행 하위 탭 숨김")
+    has_style(".dp-empty", {"display": "flex", "align-items": "center", "justify-content": "center", "color": "var(--dim)", "text-align": "center"})
+    has_style(".dp-empty::before", {"content": '""', "width": "12px", "height": "12px", "border": "1px dashed currentColor", "border-radius": "50%"})
+
+    protected = (
+        "#top button { flex: none; white-space: nowrap; }", ".tabs .tab.on {", "body.no-keys .keybar { display: none; }",
+        ".rg-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, calc(3 * var(--rg-h) + 40px)), 1fr));",
+        ".ref-tabs { align-self: stretch;", ".rg-card.bad {", ".rg-card.warn {", "#ref-grid {", "--rg-h:",
+        "svg.marks .lc.locked { stroke-dasharray: 6 3; }", "#layout-list li { user-select: none; }", ".pp-sub .pp-hint {",
+        ".frame.loading img { visibility: hidden; }", ".ov.loading .ov-comp { visibility: hidden; }",
+        ".rf-sheet-line { display: flex;", ".rf-sheet-line > button { flex: none; }", ".rg-card { user-select: none; }",
+        '.rg-card input, .rg-card textarea, .rg-card [contenteditable="true"] { user-select: text; }',
+        "body.refs #ref-panel", "body.refs #center", "body.pipe #pipe-panel", "body.pipe #target-list, body.pipe #center",
+        "body.mask #mask-panel", "body.mask #target-list, body.mask #center", "canvas.ov-mask", ".chip.stale", ".rg-large-pics",
+        "svg.marks .mbrush.revive { stroke: #63e07a; }", "#mask-panel button.mt-erase.on { border-color: #ff6b6b; }",
+        "#mask-panel button.mt-revive.on { border-color: #63e07a; }", "svg.marks .seam.bad { stroke: #ff3b3b; }",
+        ".tile.sel { outline: 2px solid #fff; outline-offset: 1px; }",
+        ".m-white { background: #fff; }", ".m-gray { background: #808080; }",
+        ".m-check { background: repeating-conic-gradient(#bbb 0 25%, #eee 0 50%) 0 0 / 16px 16px; }",
+        ".stage.dr-isolated { background: repeating-conic-gradient(#bbb 0 25%, #eee 0 50%) 0 0 / 16px 16px; }",
+        "#toast.err { background: #4a1f22; border-color: var(--bad); }",
+    )
+    for token in protected:
+        check(token in css, f"F3 기존 CSS 계약 보존: {token}")
+    has_style(".keybar", {"flex-wrap": "wrap"})
+    has_style("#mask-panel .pp-table td.wrap", {"white-space": "normal"})
+    has_style(".overlay", {"background": "rgba(0, 0, 0, .6)", "z-index": "10"})
+    has_style(".rg-large", {"z-index": "5", "inset": "38px 0 0"})
+    # 수정 4: 크게 보기의 첫 규칙·반응형 격자·대화 상자 쌓임 순서를 보존한다.
+    first_large = re.search(r"(?m)^\.rg-large\s*\{([^}]*)\}", code)
+    check(first_large is not None and "--rg-h: max(320px, 70vh)" in first_large.group(1), "F3 첫 rg-large 블록의 그림 높이 보존")
+    has_style(".rg-large-pics", {"grid-template-columns": "repeat(auto-fit, minmax(min(100%, var(--rg-h)), 1fr))"})
+    overlay_z, large_z = style(".overlay").get("z-index", ""), style(".rg-large").get("z-index", "")
+    check(overlay_z.isdecimal() and large_z.isdecimal() and int(overlay_z) > int(large_z), "F3 overlay 는 크게 보기보다 위")
+    for forbidden in ("#btn-edit.on", "#ref-list li { user-select", "cdn"):
+        check(forbidden not in css.lower(), f"F3 CSS 주석 포함 금지 문자열 없음: {forbidden}")
+    has_style(".rf-dialog", {"inset": "38px 0 0"})
+    has_style(".rf-thumb", {"background": "#808080"})
+    batch8 = css.split("/* ── 배치 8-C", 1)[-1].split("/* Forge F1", 1)[0]
+    batch8 = re.sub(r"/\*.*?\*/", "", "/* ── 배치 8-C" + batch8, flags=re.S)
+    check(all(s.strip().startswith(("#mask-panel", "#mask-list")) for s in re.findall(r"([^{}]+)\{", batch8)),
+          "F3 배치 8-C 구간에는 마스크 규칙만")
+    markers = ("/* ── Forge F3 공용", "/* ── Forge F3-T", "/* ── Forge F3-U1", "/* ── Forge F3-U2")
+    offsets = [css.find(marker) for marker in markers]
+    check(all(css.count(marker) == 1 for marker in markers) and offsets == sorted(offsets), "F3 공용·T·U1·U2 표시 보존·순서")
+    if all(i >= 0 for i in offsets):
+        tail = re.sub(r"/\*.*?\*/", "", css[offsets[2]:], flags=re.S)
+        # 통합 후 다른 갈래의 규칙은 허용하되, T 소유 규칙이 그 블록에 들어가지는 않는다.
+        check(all(not style(s, tail) for s in (*primary, ".dp-main", ".dp-empty", ".dp-empty::before", ".pp-tabs"))
+              and "dp-pulse" not in tail, "F3 T 테마 규칙은 U1·U2 블록 밖")
+    check(not re.search(r"\.overlay[^{}]*\bbutton[^{}]*\{", code), "D346 일반 overlay 승인 단추 전용 규칙 없음")
+    urls = re.findall(r"url\(\s*['\"]?([^)'\"]+)", code, re.I)
+    check(not re.search(r"@import|https?://", code, re.I) and all(u.startswith("#") for u in urls), "F3 외부 URL·글꼴·import 없음(내부 SVG 채움만)")
+    check(not any(ord(c) >= 0x1F000 or c == "\ufe0f" for c in code), "F3 이모지 추가 없음(대기 점선 원 글리프는 허용)")
+    check(b"\r" not in path.read_bytes(), "F3 CSS 줄바꿈 LF")
 
 
 def polish3_unit():
