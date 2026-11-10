@@ -1441,7 +1441,7 @@ window.DPPipeline = (() => {
 
     function unsureWhy() {
       // 머리줄·반영 칸·★ 점검이 '미반영 없음'이라 말하지 못하는 이유("" = 말할 수 있음): 반영 판정을 모름, 또는 받은 계획이 지금 파일과 다름
-      return PS.planErr ? `계획 오류 — ${PS.planErr}` : pendingUnknown() || (planStale() ? "계획이 지금 파일 상태와 다름" : "");
+      return pendingUnknown() || (planStale() ? "계획이 지금 파일 상태와 다름" : "");
     }
 
     function applyWarn() {
@@ -2911,17 +2911,21 @@ window.DPPipeline = (() => {
       const dock = el("div", "pp-dock");
       let main = null, kind = "", note = "";
       const applyBlocked = PS.err || (P0 && (P0.error || !P0.saved || confirmGate(P0).gate.length || (P0.warnings || []).length));
-      if (!P0) {
-        note = "실행 설정을 불러오는 중…";
-      } else if (applyBlocked) {
+      const running = busyNow() || (p && (p.run.running || p.draft.running));
+      if (applyBlocked) {
         note = "실행 설정 확인이 먼저입니다 — ① 준비의 「실행 설정」";
-      } else if (unsure) {
-        note = "반영 상태를 확인하지 못했습니다 — [다시 계산]";
+      } else if (!P0) {
+        note = "실행 설정을 불러오는 중…";
       } else if (!S || !S.canvas || pend.length || prepareDrift.length) {
-        main = ab; kind = "apply";
+        main = ab; kind = "apply"; // 꺼짐은 단추가 가진 조건 그대로(이 Studio 의 실행·승인 처리 중) — 다른 창·탭의 Run 중에는 F3 전처럼 눌린다
         const summary = pend.concat(prepareDrift.length ? [`실행 설정이 마지막 반영과 다름(${prepareDrift.map((d) => d.field).join(", ")}) — `
-          + (prepareDrift.some((d) => d.kind === "cell") ? "반영하면 새 생성 조건" : "반영하면 대기 호출 조건 갱신")] : []);
+          + (prepareDrift.some((d) => d.kind === "cell") ? "반영하면 새 생성 조건"
+            : prepareDrift.some((d) => d.kind === "calls") ? "반영하면 새 유료 호출이 생김(생성 승인 필요)" : "반영하면 대기 호출 조건 갱신")] : []);
         note = summary.length ? summary.slice(0, 2).join(" · ") : "가져오기 전 — 반영을 먼저 하세요";
+      } else if (running) {
+        note = "실행 중 — 끝나면 다음 단계가 나옵니다";
+      } else if (unsure || PS.planErr) {
+        note = "반영 상태를 확인하지 못했습니다 — [다시 계산]";
       } else if (shownTab === "prepare") {
         note = "반영됨 — 바뀐 것이 없습니다. 다음: ② 크롭 · ④ 프롬프트";
       } else if (shownTab === "prompt" && draftMain && p.draft.units?.length) {
@@ -2938,12 +2942,11 @@ window.DPPipeline = (() => {
         const outside = p && p.run.filtered || 0;
         const error = PS.planErr || (p && (shownTab === "prompt" ? p.draft.error : p.run.error));
         note = !only ? "왼쪽에서 크롭을 선택하세요" : error ? `계획: ${error}`
-          : busyNow() || (p && (p.run.running || p.draft.running)) ? "실행 중 — 끝나면 다음 단계가 나옵니다"
-            : !planOk || stale ? "계획 계산 중…"
-              : shownTab === "prompt" ? "초안 승인할 것이 없습니다 — 다음: ⑤ 생성"
-                : outside ? `선택 밖 승인 필요 ${outside}건 — 왼쪽 [승인 필요만]`
-                  : pre || free ? `다시 생성 대기 ${pre}건·복구 ${free}건 — [${SM() ? "대기분 보내기" : "다시 생성 보내기"}]`
-                    : "완료 결과를 확인하세요 — 생성 단계가 끝나면 Export 가 나옵니다";
+          : !planOk || stale ? "계획 계산 중…"
+            : shownTab === "prompt" ? "초안 승인할 것이 없습니다 — 다음: ⑤ 생성"
+              : outside ? `선택 밖 승인 필요 ${outside}건 — 왼쪽 [승인 필요만]`
+                : pre || free ? `다시 생성 대기 ${pre}건·복구 ${free}건 — [${SM() ? "대기분 보내기" : "다시 생성 보내기"}]`
+                  : "완료 결과를 확인하세요 — 생성 단계가 끝나면 Export 가 나옵니다";
       }
       dock.dataset.main = kind;
       if (panel.dataset.main !== kind) { panel.dataset.main = kind; panel.dataset.mainChanged = String(Date.now()); }
