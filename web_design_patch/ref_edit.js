@@ -8,6 +8,9 @@
 "use strict";
 
 window.DPRefEdit = (() => {
+  const SM = () => !!(window.DPEnv && window.DPEnv.serverMode);
+  const can = (name) => window.DPEnv ? window.DPEnv.can(name) : !["jobs", "export_download"].includes(name);
+
   const G = window.DPLayoutGeom;
   const DESC_MAX = 24;
   const TRIM_PAD = 8; // refs.TRIM_PAD — 저장 때 알파 bbox 둘레 여백
@@ -376,6 +379,7 @@ window.DPRefEdit = (() => {
       const r = await call("refs/cut", body);
       if (seq !== cutSeq) return null;
       if (r.state === "done") return Object.assign({ req: r.req }, r.result);
+      if (SM()) throw new Error("서버 모드에서는 자동 오리기를 쓸 수 없습니다");
       const job = { req: r.req, pid: null, number: null, running: false, ahead: null, gone: 0 };
       s.job = job;
       try {
@@ -425,6 +429,18 @@ window.DPRefEdit = (() => {
 
   // ── 화면 ──
   function create(hosts, opts) {
+    // 확인 중에는 폴링이 계속된다. 동작별 대상·입력만 재확인하고 판 충돌은 서버가 판단한다.
+    async function askFree(t, same) {
+      if (askFree.pending) return false;
+      askFree.pending = true;
+      try {
+        if (!(await (window.DPDialog ? window.DPDialog.confirm(t) : Promise.resolve(window.confirm(t))))) return false;
+        if (!same || same()) return true;
+        opts.toast("확인 중 상태가 바뀌었습니다 — 다시 확인한 뒤 시도하세요", "warn");
+        return false;
+      } finally { askFree.pending = false; }
+    }
+
     const { list, panel, head, tabs: tabHost, sheets: sheetHost, view: viewHost, grid: gridHost } = hosts;
     const viewer = opts.viewer;
     const svg = window.DPViewer.svg;
@@ -660,6 +676,7 @@ window.DPRefEdit = (() => {
       if (R.before_import || (state && state.before_import)) return "가져오기 전 — 첫 반영 뒤 쓸 수 있습니다";
       if (!R.refs_dir) return state && (state.before_import || (state.crops && !state.crops.length)) ? "가져오기 전 — 첫 반영 뒤 쓸 수 있습니다"
         : "Import PSD 의 refs_dir 가 비었습니다 — <프로젝트>\\refs 를 넣고 큐에 넣으면 저장·연결을 쓸 수 있습니다(시트 보기·컷은 됨).";
+      if (!can("path_input") && (!R.refs_dir_ok || R.doc_dir_match === false)) return "레퍼런스 폴더 설정을 읽지 못했습니다 — 서버 설정을 확인하세요.";
       if (!R.refs_dir_ok) return `refs_dir 폴더가 없습니다: ${R.refs_dir} — Import PSD 의 refs_dir 를 확인하세요.`;
       if (R.error) return `refs.json 을 읽을 수 없어 저장·연결을 막았습니다(크롭은 이름 매칭으로 보임): ${R.error}`;
       if (R.doc_dir_match === false) {
@@ -1461,20 +1478,24 @@ window.DPRefEdit = (() => {
       } catch (e) {
         const ex = explicitOf(e);
         if (!ex) opts.toast(e.message, "err");
-        else if (window.confirm(explicitText(e, ex))) return save(Object.assign({}, body, { confirm: ex.map((x) => x.file) }));
+        else {
+          const selected = sel, generation = epoch, request = result && result.req;
+          if (await askFree(explicitText(e, ex), () => sel === selected && epoch === generation && (result && result.req) === request)) return save(Object.assign({}, body, { confirm: ex.map((x) => x.file) }));
+        }
       } finally {
         renderSoon();
       }
     }
 
     async function link(op, fields, ask, confirm) {
+      const selected = sel, target = fields.crop_id;
       // POST /refs/link 한 번(§4.6). ask = 먼저 띄울 확인 창(영향 줄 문구), confirm = explicit 409 뒤 확인한 이름
       const block = refsBlock();
       if (block) {
         opts.toast(block, "err");
         return;
       }
-      if (ask && !window.confirm(ask)) return;
+      if (ask && !await askFree(ask, () => sel === selected && fields.crop_id === target)) return;
       const before = S.R.crops.find((c) => c.id === fields.crop_id);
       const first = !!before && !before.files.length;
       try {
@@ -1493,7 +1514,10 @@ window.DPRefEdit = (() => {
       } catch (e) {
         const ex = explicitOf(e);
         if (!ex) opts.toast(e.message, "err");
-        else if (window.confirm(explicitText(e, ex))) return link(op, fields, null, ex.map((x) => x.file));
+        else {
+          const selected = sel;
+          if (await askFree(explicitText(e, ex), () => sel === selected && fields.crop_id === target)) return link(op, fields, null, ex.map((x) => x.file));
+        }
       } finally {
         renderSoon();
       }
@@ -1720,9 +1744,10 @@ window.DPRefEdit = (() => {
       render();
     }
 
-    function backToSheets() {
+    async function backToSheets() {
+      const generation = epoch, request = result && result.req;
       if ((inflight || (result && (result.req !== savedReq || transformSignature() !== savedTransform)))
-          && !window.confirm("저장하지 않은 컷 결과가 사라집니다. 시트 목록으로 갈까요?")) return;
+          && !await askFree("저장하지 않은 컷 결과가 사라집니다. 시트 목록으로 갈까요?", () => epoch === generation && (result && result.req) === request)) return;
       closeSheet();
       setTab("sheets");
       render();
@@ -1946,7 +1971,7 @@ window.DPRefEdit = (() => {
     });
     panel.addEventListener("focusout", () => setTimeout(flushPanel, 0));
 
-    function applyQueue() {
+    async function applyQueue() {
       if (S.busy) {
         opts.toast("저장 중입니다 — 끝난 뒤 반영하세요", "warn");
         return;
@@ -1955,7 +1980,8 @@ window.DPRefEdit = (() => {
       const lines = (opts.applyWarn ? opts.applyWarn() : [])
         .concat("반영 (무료): 무료 반영(Import → Prepare → Analyze → Review 템플릿, 탭 불필요)으로 레퍼런스 연결을 프로젝트 기록에 반영합니다.");
       if (n) lines.push(`다시 생성 대기 ${n}건(사전 승인)은 이 반영에서 돌지 않음 — R·[다시 생성 보내기]·그래프 Run 에서 과금`);
-      if (!window.confirm(lines.concat(APPLY_NOTE, "계속할까요?").join("\n"))) return;
+      const selected = sel;
+      if (!await askFree(lines.concat(APPLY_NOTE, "계속할까요?").join("\n"), () => sel === selected)) return;
       opts.queue(true);
     }
 
@@ -2329,7 +2355,8 @@ window.DPRefEdit = (() => {
       const names = items.map((r) => (r.held ? HELD_DIR + "/" : "") + r.name);
       const ask = `${items.length}개를 삭제합니다 — refs\\_삭제\\ 로 옮김(Studio 목록에서 사라짐 · 보관함 끝 「삭제한 파일」에서 되살리기). 보관함을 바꾸면 반영(무료)이 필요합니다. 계속할까요?\n`
         + names.slice(0,10).join("\n") + (items.length > 10 ? `\n외 ${items.length-10}` : "") + outsideLine();
-      if (!window.confirm(ask)) return null;
+      const selected = JSON.stringify([...poolSelected].sort());
+      if (!await askFree(ask, () => selected === JSON.stringify([...poolSelected].sort()))) return null;
       const r = await poolWrite({ op: "delete", items });
       if (r) { for (const name of names) poolSelected.delete(name); renderSoon(); }
       return r;
@@ -2521,9 +2548,11 @@ window.DPRefEdit = (() => {
       };
       input.addEventListener("change", () => upload(input.files[0]));
       (box.parentElement || box.parentNode).addEventListener("drop", (e) => { upload(e.dataTransfer.files[0]); });
-      box.append(input, path, extraButton("경로에서 추가", "원본을 프로젝트 sheets 폴더로 복사", async () => {
+      box.append(input);
+      if (can("path_input")) box.append(path, extraButton("경로에서 추가", "원본을 프로젝트 sheets 폴더로 복사", async () => {
         if (await poolWrite({ op: "sheet_add", path: path.value })) { closeOwnExtra(box); await loadSheets(); }
-      }), status);
+      }));
+      box.append(status);
     }
 
     // ── 그리드(3-4 — F22): 매칭이 끝난 레퍼런스와 고칠 크롭을 한눈에(편집은 오른쪽 패널) ──
@@ -2726,7 +2755,7 @@ window.DPRefEdit = (() => {
     function dirBlock(msg) {
       panel.append(el("p", "warn", msg));
       const R = S.R;
-      if (R.refs_dir || !R.suggest_dir) return;
+      if (!can("path_input") || R.refs_dir || !R.suggest_dir) return;
       const path = R.suggest_dir; // <project>/refs — Import PSD 의 refs_dir 에 넣을 값
       const r = row("경로", path, "dim");
       r.append(button("복사", "refs_dir 에 넣을 경로를 클립보드로", () => {
@@ -2909,9 +2938,10 @@ window.DPRefEdit = (() => {
       const mb = el("div", "lp-btns");
       for (const [m, label, title] of METHODS) {
         const b = button(label, title, () => setMethod(m), method === m ? "on" : "");
-        if (m === "sam3" && !ckpts().length) {
+        if (m === "sam3" && (!can("sam3") || !ckpts().length)) {
           b.disabled = true;
-          b.title = "SAM3 체크포인트가 없습니다 — models/checkpoints 에 이름에 sam3 가 든 파일(ComfyUI 재시작 뒤 보임)";
+          b.title = !can("sam3") ? "서버 모드에서는 자동 오리기를 쓸 수 없습니다"
+            : "SAM3 체크포인트가 없습니다 — models/checkpoints 에 이름에 sam3 가 든 파일(ComfyUI 재시작 뒤 보임)";
         }
         mb.append(b);
       }

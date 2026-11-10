@@ -15909,7 +15909,8 @@ console.log(JSON.stringify(out));
 def _layout_js_fn(src, name, indent="  "):
     """indent 만큼 들여쓴 function name(…) { … } 소스(닫는 } 앞까지 — 정적 검사용, 돌리려면 "\\n}" 를 붙임).
     board.js 는 2칸, layout_edit.js 의 create() 안은 4칸, js/bmk_design_patch.js 는 0칸."""
-    i = src.index(f"{indent}function {name}(")
+    mark = f"{indent}function {name}("
+    i = src.index(mark if mark in src else f"{indent}async function {name}(")
     return src[i:src.index(f"\n{indent}}}\n", i)]
 
 
@@ -16049,7 +16050,7 @@ def layout_js_unit():
     # J-L2(이어서)·J-L3: 쓰기 큐·되살리기·다른 창·PSD 스냅숏, 순수 판정, 편집기 화면(작은 DOM 대역 + 가짜 서버)
     ext_fns = "\n".join([re.search(r'^const IMPORT_NODE = "\w+";$', ext, re.M).group(0)]
                         + [_layout_js_fn(ext, n, "") + "\n}" for n in ("partialRunIds", "importUpstream")])
-    (out / "edit_in.json").write_text(json.dumps({"ext": ext_fns, "goProjects": _layout_js_fn(src["board.js"], "goProjects") + "\n}"},
+    (out / "edit_in.json").write_text(json.dumps({"ext": ext_fns, "goProjects": _fw_legacy_js(_layout_js_fn(src["board.js"], "goProjects") + "\n}")},
                                                ensure_ascii=False), encoding="utf-8")
     (out / "editor.mjs").write_text(_LAYOUT_EDIT_HARNESS, encoding="utf-8")
     r = subprocess.run([node, str(out / "editor.mjs"), str(web / "layout_geom.js"), str(web / "layout_edit.js"), str(out / "edit_in.json")],
@@ -21782,7 +21783,7 @@ await scenario("boardFns", async () => { // board.js typing()(F25)·cropChips(F1
   const src = fs.readFileSync(IN.boardJs, "utf8");
   const fn = (name) => {
     const m = new RegExp(`\n  function ${name}\\([^)]*\\) \\{[\\s\\S]*?\n  \\}\n`).exec(src);
-    return m ? m[0].trim() : null;
+    return m ? m[0].trim().replace(") {", ") { " + "const SM = () => !!(typeof window !== \"undefined\" && window.DPEnv && window.DPEnv.serverMode); const can = n => typeof window === \"undefined\" || !window.DPEnv ? ![\"jobs\", \"export_download\"].includes(n) : window.DPEnv.can(n); const askFree = async t => window.DPDialog ? window.DPDialog.confirm(t) : window.confirm(t);") : null;
   };
   class Element {
     constructor(tag, attrs = {}, parent = null) { Object.assign(this, { tag, attrs, parent }); }
@@ -23498,7 +23499,7 @@ await scenario("c6cRestoreAs", async () => {
 const c6cFn = (src, name) => { // board.js 의 함수 하나(2칸 들여쓰기 — boardFns 와 같은 방식, async 포함)
   const m = new RegExp(`\n  (?:async )?function ${name}\\([^)]*\\) \\{[\\s\\S]*?\n  \\}\n`).exec(src);
   if (!m) throw new Error(`board.js 에 ${name} 없음`);
-  return m[0].trim();
+  return m[0].trim().replace(") {", ") { " + "const SM = () => !!(typeof window !== \"undefined\" && window.DPEnv && window.DPEnv.serverMode); const can = n => typeof window === \"undefined\" || !window.DPEnv ? ![\"jobs\", \"export_download\"].includes(n) : window.DPEnv.can(n); const askFree = async t => window.DPDialog ? window.DPDialog.confirm(t) : window.confirm(t);");
 };
 await scenario("c6cBoardPoll", async () => {
   const src = fs.readFileSync(IN.boardJs, "utf8");
@@ -29090,7 +29091,7 @@ const P = ctx.window.DPPipeline;
 const boardSrc = fs.readFileSync(IN.boardJs, "utf8");
 const boardFn = (name) => {
   const m = new RegExp(`\n  (?:async )?function ${name}\\([^)]*\\) \\{[\\s\\S]*?\n  \\}\n`).exec(boardSrc);
-  return m ? m[0].trim() : null;
+  return m ? m[0].trim().replace(") {", ") { " + "const SM = () => !!(typeof window !== \"undefined\" && window.DPEnv && window.DPEnv.serverMode); const can = n => typeof window === \"undefined\" || !window.DPEnv ? ![\"jobs\", \"export_download\"].includes(n) : window.DPEnv.can(n); const askFree = async t => window.DPDialog ? window.DPDialog.confirm(t) : window.confirm(t);") : null;
 };
 
 function mem(init) {
@@ -31184,9 +31185,9 @@ await scenario("boardGo", async () => {  // board.js goTarget(★ 점검 줄 →
   const m = /\n {8}select: (\(id\) => \{[\s\S]*?\n {8}\}),\n/.exec(boardSrc);
   const sel = m ? vm.runInContext(`(${m[1]})`, gc) : () => {};
   const r = { found: !!m };
-  go("002_d98f99/B");
+  await go("002_d98f99/B");
   r.unknown = calls.splice(0);
-  go("002_d98f99/A");
+  await go("002_d98f99/A");
   r.known = calls.splice(0);
   sel("008_e1d4cc");
   r.select = calls.splice(0);
@@ -32858,8 +32859,8 @@ def pipeline_js_unit():
               f"r3-11 이 Studio 가 유료 요청·실행·무료 큐 중(paidLock)이면 배지 제목의 R·[다시 생성 보내기] 길 = '지금은 예약만(이유)'(queueReroll 과 같은 판정 순서 — "
               f"자기 승인을 처리하는 탭은 hello busy 라 opener 길이어도 Review 부분 실행이 아님), 채널로만 찾은 탭의 막힌 길은 그대로 {lo[2:3]} {lc[2:3]} {lbo[2:3]} "
               f"{lbc[2:3]}")
-    check("tabLink = window.DPPipeline.link(window, () => {\n        renderHeader();\n        pipe.tabChanged();\n      });" in bcode
-          and "link: tabLink," in bcode and bcode.index("tabLink = window.DPPipeline.link(") < bcode.index("pipe = window.DPPipeline.create("),
+    check("tabLink = SM() ? null : window.DPPipeline.link(window, () => {\n        renderHeader();\n        pipe.tabChanged();\n      });" in bcode
+          and "link: tabLink," in bcode and bcode.index("tabLink = SM() ? null : window.DPPipeline.link(") < bcode.index("pipe = window.DPPipeline.create("),
           "board.js: 탭 연결 상태가 바뀌면 머리줄(배지)·진행 패널(승인 단추)을 다시 그림, 진행 패널에 link(승인 메시지·wave)")
     bg = res.get("boardGo") or {}
     if "found" in bg:
@@ -37939,7 +37940,7 @@ def _paid_js_studio():
           "Claude 승인 상자: [승인]·[취소]도 사용자 클릭만, el(textContent)로 만듦")
     sp = part(pcode, "    async function sendPaid(", "    function paidResult(")
     check("approve=" not in pj and "innerHTML" not in pcode and pcode.count("freeBody(") == 2 and pcode.count('comfy("prompt"') == 1
-          and "L.send({ type: APPROVE, rootKey: opts.root, stage, hash, only, what }" in sp and "prompt" not in sp
+          and "L.send({ type: APPROVE, rootKey: opts.root, stage, hash, only, what }" in sp and "prompt" not in sp[sp.index("let id = null;"): ]
           and "const ACK_MS = 5000;" in pcode and "const END_MS = 60000;" in pcode,
           "B12″: 'approve=' 쿼리·innerHTML 없음, /api/prompt 본문은 freeBody 하나(무료), 승인 메시지는 stage·hash·only·what 만(prompt 없음 — 탭이 서버 템플릿), "
           "ack 5초·최종 60초(시험은 link 인자로 짧게)")
@@ -39272,7 +39273,7 @@ const boardSrc = fs.readFileSync(IN.boardJs, "utf8");
 const boardFn = (name) => {
   const m = new RegExp(`\n  (?:async )?function ${name}\\([^)]*\\) \\{[\\s\\S]*?\n  \\}\n`).exec(boardSrc);
   if (!m) throw new Error(`board.js 에 ${name} 없음`);
-  return m[0].trim();
+  return m[0].trim().replace(") {", ") { " + "const SM = () => !!(typeof window !== \"undefined\" && window.DPEnv && window.DPEnv.serverMode); const can = n => typeof window === \"undefined\" || !window.DPEnv ? ![\"jobs\", \"export_download\"].includes(n) : window.DPEnv.can(n); const askFree = async t => window.DPDialog ? window.DPDialog.confirm(t) : window.confirm(t);");
 };
 const boardConst = (name) => {
   const m = new RegExp(`\n  const ${name} = [^\n]*;`).exec(boardSrc);
@@ -42376,7 +42377,7 @@ def mask_js_unit():
           f"onKeyDown 순서: 레퍼런스 키 → 마스크 키(Esc·Enter·X·[ ]·Q·S·M·Ctrl+Z/Y) → Ctrl 거름 → 진행 끔 → 마스크 끔 → K 토글, 판정은 패널 hidden {idx}")
     check('"pref_v" in d && d.pref_v !== S.pref_v' in bj, "Codex 2차: board.js 폴링이 unchanged 응답의 pref_v(분석·Export 설정)가 바뀌면 since_rev 없이 다시 받음")
     check("if (window.DPMaskEdit)" in bj and '"mask_edits" in c' in _layout_js_fn(bj, "maskReady") and "if (maskOn) maskEd.stateChanged(S);" in bj
-          and bj.count("leaveMask() && set") == 1 and "if (!leaveMask()) return;" in _layout_js_fn(bj, "goMode")
+          and bj.count("(await leaveMask()) && set") == 1 and "if (!(await leaveMask())) return;" in _layout_js_fn(bj, "goMode")
           and 'on("btn-mask", () => goMode("mask"));' in bj and "goMask," in bj
           and "if (maskOn) maskEd.seamsChanged();" in bj and "pipe.setMaskLeft(maskEd.pending())" in bj
           and 'window.addEventListener("beforeunload", onUnload);' in bj,
@@ -43004,7 +43005,7 @@ await scenario("panel", async () => {
   const { srv, viewer, ed, rows, B, key, raf, puts, confirms, toasts, calls, list, panel, seams } = P;
   const r = {};
   const S = maskState();
-  ed.enter(S, { key: K15, seam: null });
+  (await ed.enter(S, { key: K15, seam: null }));
   await until(() => viewer.layer && !rows().some((t) => t.includes("불러오는 중")));
   raf();
   r.enter = { editor: !!viewer.ed, layerBox: viewer.layer && viewer.layer.box, put: puts[0], select: calls.select[0], rows: rows().slice(0, 5),
@@ -43043,8 +43044,8 @@ await scenario("panel", async () => {
   r.redoShift = ed.pending();
   // 다른 후보로 바꾸기·나가기 = 확인 창(아니오면 그대로)
   P.answer = false;
-  r.goNo = { ok: ed.go({ key: K14, seam: null }), confirm: confirms.pop(), gets: srv.count("mask") };
-  r.leaveNo = { ok: ed.leave(), confirm: confirms.pop(), editor: !!viewer.ed };
+  r.goNo = { ok: (await ed.go({ key: K14, seam: null })), confirm: confirms.pop(), gets: srv.count("mask") };
+  r.leaveNo = { ok: (await ed.leave()), confirm: confirms.pop(), editor: !!viewer.ed };
   P.answer = true;
   // 적용 — 적용 중 단추 끔 → 409(세션 남김·다시 받기) → 다시 적용 200
   let release;
@@ -43056,9 +43057,9 @@ await scenario("panel", async () => {
     disabled: ["실행 취소", "적용", "버리기", "위 가장자리 페이드", "전체 페더", "이전 버전으로"].map((l) => (B(l) ? B(l).disabled : null)),
     brush: viewer.ed.pointerdown({ cx: 600, cy: 2900, shiftKey: false }), undoKey: key("KeyZ", { ctrlKey: true }), pending: ed.pending() };
   // 적용 중 대상 바꾸기(N·목록) 거절 — 받으면 적용 성공 길이 옛 대상의 값·file 을 새 대상 세션에 씀
-  Object.assign(r.applying, { go: ed.go({ key: K14, seam: null }), goToast: toasts.at(-1), confirms: confirms.length });
+  Object.assign(r.applying, { go: (await ed.go({ key: K14, seam: null })), goToast: toasts.at(-1), confirms: confirms.length });
   // U3 3차 검증: 적용 중 나가기(K·Esc)도 거절 — 나가면 board 가 그때의 적용 안 한 획을 진행 ★ 점검에 넣는데, 적용이 끝나 세션이 비어도 그 줄이 남음
-  Object.assign(r.applying, { leave: ed.leave(), leaveToast: toasts.at(-1), leaveConfirms: confirms.length, editor: !!viewer.ed });
+  Object.assign(r.applying, { leave: (await ed.leave()), leaveToast: toasts.at(-1), leaveConfirms: confirms.length, editor: !!viewer.ed });
   release();
   srv.hold = null;
   await until(() => rows().some((t) => t.includes("다른 창에서 바뀌었습니다")));
@@ -43129,7 +43130,7 @@ await scenario("panel", async () => {
   r.again.zero = { pending: ed.pending(), behind: behindRow(), button: !!B("다시 받기"), gets: P.count("mask") - g1 };
   key("KeyY", { ctrlKey: true });
   const n1 = [P.count("mask"), P.count("mask/img", "edit")];
-  B("버리기").fire("click");
+  B("버리기").fire("click"); await Promise.resolve(); await Promise.resolve();
   raf();  // U3 3차 검증: 브라우저에선 [버리기]의 rAF 가 다시 열기보다 먼저 돎(연 판 합성) — 다시 연 뒤 겹침 전체를 서버 판으로 다시 그려야 함
   const pDisc = puts.length;
   await until(() => P.count("mask/img", "edit") > n1[1] && !behindRow().length);
@@ -43141,7 +43142,7 @@ await scenario("panel", async () => {
   // [편집 지우기] = 확인 창(이전 판 수·버릴 획) → reset → 기준 마스크로
   srv.info[K15] = i2;
   const e0 = [P.count("mask"), confirms.length, calls.refresh];
-  B("이전 버전으로").fire("click");
+  B("이전 버전으로").fire("click"); await sleep(0);
   await until(() => toasts.some((t) => t.startsWith(":이전 판으로")));
   r.undo2 = { body: srv.log.filter((x) => x.path === "mask/edit").pop().body, confirms: confirms.length - e0[1], gets: P.count("mask") - e0[0],
     refresh: calls.refresh - e0[2], toast: toasts.pop() };
@@ -43149,18 +43150,18 @@ await scenario("panel", async () => {
   viewer.ed.pointerup({});
   P.answer = false;
   const nEdit = P.count("mask/edit");
-  B("이전 버전으로").fire("click");
+  B("이전 버전으로").fire("click"); await sleep(0);
   r.undoAsk = { confirm: confirms.pop(), posts: P.count("mask/edit") - nEdit, pending: ed.pending() && ed.pending().n };
   P.answer = true;
   srv.edit.push([200, MA["POST /mask/edit"].alt.cleared]);
   srv.info[K15] = Object.assign(clone(i2), { edit: null });
-  B("편집 모두 지우기").fire("click");
+  B("편집 모두 지우기").fire("click"); await sleep(0);
   await until(() => toasts.some((t) => t.startsWith(":마스크 편집 지움")) && rows().includes("저장된 편집 없음"));
   r.reset = { confirm: confirms.pop(), body: srv.log.filter((x) => x.path === "mask/edit").pop().body, pending: ed.pending(), toast: toasts.pop(),
     rows: rows().filter((t) => t.startsWith("편집 없음") || t === "저장된 편집 없음") };
   // N·이음매 목록: 다른 ★ 의 이음매 → 그 후보를 편집 대상(획 없으면 확인 없음)으로, 그 구간을 2:1
   const n14 = confirms.length;
-  r.goSeam = { ok: ed.go({ key: K14, seam: seams.segments[2] }), confirms: confirms.length - n14, look: viewer.looks.pop() };
+  r.goSeam = { ok: (await ed.go({ key: K14, seam: seams.segments[2] })), confirms: confirms.length - n14, look: viewer.looks.pop() };
   await until(() => rows().some((t) => t.includes("c02 ★")));
   r.goSeam.rows = rows().slice(0, 4);  // 대상 · 크롭 순서 · 자동 마스크 설명(10/21 U-2) · 편집 줄
   r.goSeam.fade = B("이음매 구간 페이드") ? B("이음매 구간 페이드").disabled : null;
@@ -43173,8 +43174,8 @@ await scenario("panel", async () => {
   B("이음매 구간 페이드").fire("click");
   raf();
   r.range = { row: rows().find((t) => /^적용 안 한 획 \d+ — /.test(t)) || null, puts: puts.slice(p0) };
-  ed.go({ key: K14, seam: { crop_id: "014_0f9cc5", tid: "A", key: K14, side: "top", x0: 700, y0: 2240, x1: 800, y1: 2240, length: 100, diff_med: 20, diff_p90: 40,
-    severity: "bad" } });
+  (await ed.go({ key: K14, seam: { crop_id: "014_0f9cc5", tid: "A", key: K14, side: "top", x0: 700, y0: 2240, x1: 800, y1: 2240, length: 100, diff_med: 20, diff_p90: 40,
+    severity: "bad" } }));
   B("이음매 구간 페이드").fire("click");
   r.range.top = rows().find((t) => /^적용 안 한 획 \d+ — /.test(t)) || null;
   key("KeyZ", { ctrlKey: true });
@@ -43190,17 +43191,17 @@ await scenario("panel", async () => {
   r.alts = { rows: table.children.map((tr) => tr.children.map((td) => td.textContent)), now: rows().find((t) => t.startsWith("지금 c")) || null };
   // [이 후보를 ★] = 확인 창(아니오 = 그대로) → 보드 pick(타깃, 그 후보 — 검토의 Space) → 새 ★ 를 편집 대상으로
   P.answer = false;
-  B("이 후보를 ★").fire("click");
+  B("이 후보를 ★").fire("click"); await sleep(0);
   await sleep(5);
   r.star = { no: { confirm: confirms.pop(), pick: calls.pick.length } };
   P.answer = true;
   srv.info.r_d9b7ffb9fb7c_0_0 = Object.assign(clone(MA["GET /mask"].alt.no_edit), { key: "r_d9b7ffb9fb7c_0_0", c: 1 });
-  B("이 후보를 ★").fire("click");
+  B("이 후보를 ★").fire("click"); await sleep(0);
   await until(() => rows().some((t) => t.startsWith("014_치마원단_문양 · A · c01 ★")));
   r.star.yes = { pick: calls.pick, select: calls.select.at(-1), get: srv.log.filter((x) => x.path === "mask").pop().q.key, row: rows()[0] };
   // 나가기 — 세션이 비었으면 확인 없이, 뷰어 훅을 뗌
   const nc = confirms.length;
-  r.leave = { ok: ed.leave(), confirms: confirms.length - nc, editor: viewer.ed, layer: viewer.layer, panel: panel.children.length, pending: ed.pending() };
+  r.leave = { ok: (await ed.leave()), confirms: confirms.length - nc, editor: viewer.ed, layer: viewer.layer, panel: panel.children.length, pending: ed.pending() };
   return r;
 });
 
@@ -43212,14 +43213,14 @@ await scenario("panelR1", async () => {
   const r = {};
   const S = maskState();
   S.targets[0].candidates[1].mask_edit = { at: "2026-10-19 18:11:05", stale: true };  // K15B(c02) — 예전 ★ 일 때 남긴 편집(★ 해제돼도 기록은 남음)
-  ed.enter(S, { key: K15, seam: null });
+  (await ed.enter(S, { key: K15, seam: null }));
   await until(() => viewer.layer && !rows().some((t) => t.includes("불러오는 중")));
   raf();
   // session-r1-01: 끄는 중 N(go — 뷰어 포인터 캡처는 클릭만 막음) = 획을 끝내 확인 창에 셈(아니오 = 그대로 — 끝난 획 1, 그 뒤 끌기는 칠하지 않음)
   viewer.ed.pointerdown({ cx: 600, cy: 2900, shiftKey: false });
   viewer.ed.pointermove({ cx: 620, cy: 2900, shiftKey: false });
   P.answer = false;
-  r.midGo = { ok: ed.go({ key: K14, seam: null }), confirm: confirms.pop() || null, pending: ed.pending() && ed.pending().n };
+  r.midGo = { ok: (await ed.go({ key: K14, seam: null })), confirm: confirms.pop() || null, pending: ed.pending() && ed.pending().n };
   viewer.ed.pointermove({ cx: 660, cy: 2900, shiftKey: false });
   viewer.ed.pointerup({});
   r.midGo.after = ed.pending() && ed.pending().n;
@@ -43228,7 +43229,7 @@ await scenario("panelR1", async () => {
   B("다른 후보로").fire("click");
   await until(() => panel.all().some((e) => e.tagName === "TABLE"));
   r.alts = panel.all().find((e) => e.tagName === "TABLE").children.map((tr) => tr.children.map((td) => td.textContent));
-  for (const b of panel.all().filter((e) => e.tagName === "BUTTON" && e.textContent === "이 후보를 ★")) b.fire("click");
+  for (const b of panel.all().filter((e) => e.tagName === "BUTTON" && e.textContent === "이 후보를 ★")) { b.fire("click"); await sleep(0); }
   r.starAsk = confirms.splice(0);
   // ui-r1-02: 표를 계산한 뒤 ★ 합성이 바뀜(적용·되돌리기·다른 창 — 새 state) → 표 대신 '낡음' 줄 + [다른 후보로](다시 계산)
   const S1 = Object.assign(maskState(), { rev: 137 });
@@ -43270,17 +43271,17 @@ await scenario("panelR1", async () => {
   ed.stateChanged(S2);
   await sleep(10);
   const hint = rows().find((t) => t.startsWith("이 후보는 이제 ★ 가 아님")) || null;
-  r.gone = { hint, ok: ed.go({ key: K15B, seam: null }), confirm: confirms.pop() || null };
+  r.gone = { hint, ok: (await ed.go({ key: K15B, seam: null })), confirm: confirms.pop() || null };
   P.answer = true;
-  ed.leave();
+  (await ed.leave());
   // session-r1-05·03: 다른 대상을 여는 동안 대상 줄 = 새 대상 '불러오는 중'만(옛 대상의 c·창·z·편집을 섞지 않음), 앞 대상의 늦은 3층은 붙이지 않음
   const Q = maskPanel();
   const [gL, gB] = [gate(), gate()];
   Q.srv.wait = (path, q) => (path === "mask/img" && q.key === K15 && ["under", "patch", "over"].includes(q.kind) ? gL.p
     : path === "mask" && q.key === K14 ? gB.p : null);
-  Q.ed.enter(maskState(), { key: K15, seam: null });
+  (await Q.ed.enter(maskState(), { key: K15, seam: null }));
   await until(() => Q.rows().some((t) => t.startsWith("015_치마밑단_주름 · A · c01 ★")) && Q.count("mask/img", "over") === 1);
-  Q.ed.go({ key: K14, seam: null });
+  (await Q.ed.go({ key: K14, seam: null }));
   await sleep(5);
   r.loading = { rows: Q.rows().slice(0, 2), list: Q.list.children.filter((e) => e.classList.contains("sel")).map((e) => e.textContent) };
   gL.go();
@@ -43290,10 +43291,10 @@ await scenario("panelR1", async () => {
   await until(() => Q.viewer.layer && Q.viewer.layer.box[0] === 256);
   r.loading.layer = Q.viewer.layer.box;
   Q.srv.wait = null;
-  Q.ed.leave();
+  (await Q.ed.leave());
   // tests-r1-08: Shift 누른 채 끌기 = 부드럽게(붓 원 점선) — 고른 도구(지우기)가 아님: 균일한 곳(014 기준 255)에서는 합성이 그대로, 지우기는 바뀜
   const V = maskPanel();
-  V.ed.enter(maskState(), { key: K14, seam: null });
+  (await V.ed.enter(maskState(), { key: K14, seam: null }));
   await until(() => V.viewer.layer && !V.rows().some((t) => t.includes("불러오는 중")));
   V.raf();
   const px = () => {
@@ -43323,7 +43324,7 @@ await scenario("panelR1", async () => {
   r.clamp.hardUp = sl("경도");
   for (let i = 0; i < 14; i++) V.key("BracketLeft", { shiftKey: true });
   r.clamp.hardDown = sl("경도");
-  V.ed.leave();
+  (await V.ed.leave());
   return r;
 });
 
@@ -43340,7 +43341,7 @@ await scenario("panelStale", async () => {
   };
   const P = maskPanel();
   P.srv.info[K15] = stale();
-  P.ed.enter(maskState(), { key: K15, seam: null });
+  (await P.ed.enter(maskState(), { key: K15, seam: null }));
   await until(() => P.viewer.layer && !P.rows().some((t) => t.includes("불러오는 중")));
   P.raf();
   const r = { open: states(P) };
@@ -43354,16 +43355,16 @@ await scenario("panelStale", async () => {
   await until(() => P.calls.refresh === 1);
   const sv = P.srv.log.filter((x) => x.path === "mask/save").pop();
   r.save = { seen: sv.q.seen, wh: [sv.body.readUInt32BE(16), sv.body.readUInt32BE(20)] };
-  P.ed.leave();
+  (await P.ed.leave());
   const Q = maskPanel();
   Q.srv.info[K15] = stale();
   Q.srv.imgFail = "edit";
-  Q.ed.enter(maskState(), { key: K15, seam: null });
+  (await Q.ed.enter(maskState(), { key: K15, seam: null }));
   await until(() => Q.rows().some((t) => t.includes("마스크 편집 파일이 없습니다")) && Q.count("mask/img", "over") === 1);
   await sleep(5);
   r.lost = Object.assign(states(Q), { err: Q.rows().find((t) => t.includes("마스크 편집 파일이 없습니다")) || null });
   Q.srv.imgFail = null;
-  Q.B("다시 받기").fire("click");
+  Q.B("다시 받기").fire("click"); await sleep(0);
   await until(() => Q.viewer.layer);
   r.lost.again = { on: Q.B("위 가장자리 페이드") && !Q.B("위 가장자리 페이드").disabled, layer: Q.viewer.layer.box, err: Q.rows().some((t) => t.includes("없습니다")) };
   // 새 state(서버 판이 바뀜)의 다시 열기가 래스터를 못 받으면 옛 세션 겹침을 뗌(패널 = 오류 줄 + [다시 받기])
@@ -43375,7 +43376,7 @@ await scenario("panelStale", async () => {
   await until(() => !Q.viewer.layer && Q.rows().some((t) => t.startsWith("마스크 편집 파일이 없습니다")));
   r.lost.refail = { layer: Q.viewer.layer && Q.viewer.layer.box, err: Q.rows().find((t) => t.startsWith("마스크 편집 파일이 없습니다")) || null };
   Q.srv.imgFail = null;
-  Q.ed.leave();
+  (await Q.ed.leave());
   return r;
 });
 
@@ -43385,15 +43386,15 @@ await scenario("panelLife", async () => {
   const P = maskPanel();
   const { viewer, ed, rows, raf, puts, confirms } = P;
   const S = maskState();
-  ed.enter(S, { key: K15, seam: null });
+  (await ed.enter(S, { key: K15, seam: null }));
   await until(() => viewer.layer && !rows().some((t) => t.includes("불러오는 중")));
   raf();
   const r = {};
   viewer.ed.pointerdown({ cx: 600, cy: 2900, shiftKey: false });
   viewer.ed.pointermove({ cx: 640, cy: 2900, shiftKey: false });
-  r.midStroke = { ok: ed.leave(), confirm: confirms.pop() || null, pending: ed.pending(), layer: viewer.layer, editor: viewer.ed };
+  r.midStroke = { ok: (await ed.leave()), confirm: confirms.pop() || null, pending: ed.pending(), layer: viewer.layer, editor: viewer.ed };
   const g0 = P.count("mask");
-  ed.enter(S, { key: K15, seam: null });
+  (await ed.enter(S, { key: K15, seam: null }));
   await until(() => P.count("mask") > g0);
   await sleep(5);
   const p0 = puts.length;
@@ -43408,7 +43409,7 @@ await scenario("panelLife", async () => {
   P.key("Enter");
   await until(() => P.calls.refresh === 1);
   r.sigOnly.save = { rect: P.srv.log.filter((x) => x.path === "mask/save").pop()?.q.rect ?? null, pending: ed.pending() };
-  ed.leave();
+  (await ed.leave());
   return r;
 });
 
@@ -43481,23 +43482,23 @@ await scenario("viewerMask", async () => {
     await sleep(5);
   };
   const r = { before: snap() };
-  ed.enter(S, { key: K15, seam: null });
+  (await ed.enter(S, { key: K15, seam: null }));
   await loaded(K15);
   r.enter = snap();
   // tests-r2-08: 3층 캔버스는 marks(붓 원·편집 창·선택 이음매 — z-index 없음 = DOM 순서) 앞(불투명 합성이 붓 원을 가리지 않게)
   r.order = stage.children.map((e) => (e.classList.contains("ov-mask") ? "mask" : e.attrs.class === "marks" ? "marks" : null)).filter(Boolean);
-  ed.leave();
+  (await ed.leave());
   r.leave = snap();
   const g0 = srv.count("mask");
-  ed.enter(S, { key: K15, seam: null });
+  (await ed.enter(S, { key: K15, seam: null }));
   await until(() => srv.count("mask") > g0);
   await sleep(5);
   r.reenter = snap();
-  ed.go({ key: K14, seam: null });
+  (await ed.go({ key: K14, seam: null }));
   r.opening = snap().masks;
   await loaded(K14);
   r.opened = snap();
-  ed.leave();
+  (await ed.leave());
   r.end = snap();
   // ui-r1-06: N 을 받은 쪽(마스크 편집기 go)이 거절(onPick → false — 적용 안 한 획 확인 취소·적용 중)하면 자리·강조·메시지 그대로, 받으면 다음 이음매로
   await until(() => viewer.seams());
@@ -43549,7 +43550,7 @@ await scenario("boardKeys", async () => {
 });
 
 await scenario("boardMask", async () => {
-  const run = (o, fn) => {
+  const run = async (o, fn) => {
     const log = [];
     const spy = (name, ret) => (...a) => { log.push([name, ...a.map((x) => (x && typeof x === "object" ? clone(x) : x))]); return ret; };
     const els = {};
@@ -43566,7 +43567,7 @@ await scenario("boardMask", async () => {
       viewer: { seams: () => (o.noSeams ? null : { segments: [{ crop_id: "014_0f9cc5", key: "k14", side: "left" }, { crop_id: "015_d556f2", key: "k15", side: "top" }] }),
         curSeam: () => o.curSeam || null } });
     vm.runInContext(["maskReady", "maskWhy", "setMask", "leaveMask", "goMask", "pickCrop", "onUnload", "maskSelect"].map((n) => `${n} = ${boardFn(n)};`).join("\n"), kc);
-    const ret = fn(kc);
+    const ret = await fn(kc);
     return { ret, log: log.map((x) => x.slice(0, 3)), on: kc.maskOn, panel: els["mask-panel"] ? els["mask-panel"].hidden : null };
   };
   const t = { key: "015_d556f2/A", pick_keys: ["k15"] };
@@ -43574,58 +43575,58 @@ await scenario("boardMask", async () => {
   const tgt = (key, picked, rejected = false) => [{ key: "015_d556f2/A", crop_id: "015_d556f2", pick_keys: picked ? [key] : ["k15"],
     candidates: [{ key, picked, rejected }].concat(key === "k15" ? [] : [{ key: "k15", picked: !picked, rejected: false }]) }];
   return {
-    noStar: run({ t: { key: "x/A", pick_keys: [] } }, (k) => k.setMask(true)),
-    star: run({ t, pipe: true }, (k) => k.setMask(true)),
-    slice: run({ t, c: { key: "k15s", picked: true } }, (k) => k.setMask(true)),
-    left: run({ t, left: { key: "kL", n: 2 }, targets: tgt("kL", true) }, (k) => k.setMask(true)),
+    noStar: (await run({ t: { key: "x/A", pick_keys: [] } }, (k) => k.setMask(true))),
+    star: (await run({ t, pipe: true }, (k) => k.setMask(true))),
+    slice: (await run({ t, c: { key: "k15s", picked: true } }, (k) => k.setMask(true))),
+    left: (await run({ t, left: { key: "kL", n: 2 }, targets: tgt("kL", true) }, (k) => k.setMask(true))),
     // ui-r1-03: 세션 후보가 검토에서 ★ 해제·탈락됨 — 그 후보로 들어가지 않음(409 막다른 상태) → 검토의 ★(편집기 go 가 버릴지 확인)
-    leftGone: [tgt("kL", false), tgt("kL", true, true)].map((targets) => enterKey(run({ t, left: { key: "kL", n: 2 }, targets }, (k) => k.setMask(true)))),
+    leftGone: await Promise.all([tgt("kL", false), tgt("kL", true, true)].map(async (targets) => enterKey((await run({ t, left: { key: "kL", n: 2 }, targets }, (k) => k.setMask(true)))))),
     // ui-r1-07: 이음매를 다시 받는 중(viewer.seams() null — 적용 직후)이면 그 크롭 첫 ★ 로(구간 없이 — 검토로 가지 않음)
-    goNoSeams: run({ t, noSeams: true, targets: tgt("k15", true) }, (k) => k.goMask({ crop: "015_d556f2" }, "015_d556f2/A")),
+    goNoSeams: (await run({ t, noSeams: true, targets: tgt("k15", true) }, (k) => k.goMask({ crop: "015_d556f2" }, "015_d556f2/A"))),
     // ui-r1-08: 크롭이 없는 프로젝트(Import 전) — 서버가 옛 버전이라고 하지 않음
-    noCrops: run({ t, noCrops: true }, (k) => [k.maskReady(), k.maskWhy()]).ret,
+    noCrops: (await run({ t, noCrops: true }, (k) => [k.maskReady(), k.maskWhy()])).ret,
     // ui-r1-06: N(pickCrop)을 편집기가 거절하면 false 를 뷰어에 돌려줌(제자리)
-    pickRefused: run({ on: true, goRet: false }, (k) => k.pickCrop("015_d556f2", "A", "k15", { side: "top" })).ret,
+    pickRefused: (await run({ on: true, goRet: false }, (k) => k.pickCrop("015_d556f2", "A", "k15", { side: "top" }))).ret,
     // ui-r1-01: K 의 대상 선택이 타깃을 바꾸면 레퍼런스 번호·R 연타 대기를 처음으로(같은 타깃이면 그대로)
-    select: run({ tKey: "015_d556f2/A", targets: tgt("k15", true).concat([{ key: "014_0f9cc5/A", crop_id: "014_0f9cc5", pick_keys: ["k14"],
+    select: (await run({ tKey: "015_d556f2/A", targets: tgt("k15", true).concat([{ key: "014_0f9cc5/A", crop_id: "014_0f9cc5", pick_keys: ["k14"],
       candidates: [{ key: "k14", picked: true }] }]) }, (k) => {
       k.maskSelect("k15", false);
       const same = [k.refIdx, k.rerollArm];
       k.maskSelect("k14", true);
       return { same, other: [k.refIdx, k.rerollArm, k.tKey, k.cKey] };
-    }).ret,
-    to: run({ t, left: { key: "kL", n: 2 } }, (k) => k.setMask(true, { key: "k9", seam: null })),
-    old: run({ t, old: true }, (k) => k.setMask(true)),
-    noMod: run({ t, noMod: true }, (k) => k.setMask(true)),
-    leaveNo: run({ on: true, leave: false }, (k) => k.setMask(false)),
-    leaveYes: run({ on: true, left: { key: "kL", n: 2 } }, (k) => k.setMask(false)),
-    guardNo: run({ on: true, leave: false }, (k) => k.leaveMask()),
-    guardOff: run({}, (k) => k.leaveMask()),
-    goCrop: run({ t }, (k) => k.goMask({ crop: "015_d556f2" }, "015_d556f2/A")),
-    goKey: run({ t }, (k) => k.goMask({ key: "kS" }, "015_d556f2/A")),
-    goOld: run({ t, old: true }, (k) => k.goMask({ crop: "015_d556f2" }, "015_d556f2/A")),
-    pickN: run({ on: true }, (k) => k.pickCrop("015_d556f2", "A", "k15", { side: "top" })),
+    })).ret,
+    to: (await run({ t, left: { key: "kL", n: 2 } }, (k) => k.setMask(true, { key: "k9", seam: null }))),
+    old: (await run({ t, old: true }, (k) => k.setMask(true))),
+    noMod: (await run({ t, noMod: true }, (k) => k.setMask(true))),
+    leaveNo: (await run({ on: true, leave: false }, (k) => k.setMask(false))),
+    leaveYes: (await run({ on: true, left: { key: "kL", n: 2 } }, (k) => k.setMask(false))),
+    guardNo: (await run({ on: true, leave: false }, (k) => k.leaveMask())),
+    guardOff: (await run({}, (k) => k.leaveMask())),
+    goCrop: (await run({ t }, (k) => k.goMask({ crop: "015_d556f2" }, "015_d556f2/A"))),
+    goKey: (await run({ t }, (k) => k.goMask({ key: "kS" }, "015_d556f2/A"))),
+    goOld: (await run({ t, old: true }, (k) => k.goMask({ crop: "015_d556f2" }, "015_d556f2/A"))),
+    pickN: (await run({ on: true }, (k) => k.pickCrop("015_d556f2", "A", "k15", { side: "top" }))),
     // 새로고침·닫기(beforeunload) — 적용 안 한 마스크 획(모드 밖 포함)이 있을 때만 브라우저 확인 창(preventDefault)
-    unload: [{}, { left: { key: "kL", n: 2 } }, { left: { key: "kL", n: 2 }, on: true }, { noMod: true }].map((o) => run(o, (k) => {
+    unload: await Promise.all([{}, { left: { key: "kL", n: 2 } }, { left: { key: "kL", n: 2 }, on: true }, { noMod: true }].map(async (o) => (await run(o, (k) => {
       let n = 0;
       k.onUnload({ preventDefault: () => { n += 1; } });
       return n;
-    }).ret),
+    })).ret)),
     // 3차 tests-r3-04: 검토에서 고른 후보가 ★ 가 아니면(대안을 보다가 K) 그 후보가 아니라 타깃 첫 ★(409 not_picked 오류 화면이 아님)
-    altPick: enterKey(run({ t, c: { key: "kAlt", picked: false } }, (k) => k.setMask(true))),
+    altPick: enterKey(await run({ t, c: { key: "kAlt", picked: false } }, (k) => k.setMask(true))),
     // 3차 ui-r3-02: 세션 후보가 X·Shift+Space 로 ★ 를 잃고 그 타깃에 ★ 가 없음 — 진행 ★ 점검 줄('K 에서 버리기')이 보낸 그 타깃의 K = 세션으로(패널 [버리기]),
     // 세션이 다른 타깃이면 그대로 '★ 를 먼저'
-    goneOnly: (() => {
+    goneOnly: await (async () => {
       const targets = [{ key: "015_d556f2/A", crop_id: "015_d556f2", pick_keys: [], candidates: [{ key: "kA", picked: false, rejected: true }] },
         { key: "014_0f9cc5/A", crop_id: "014_0f9cc5", pick_keys: [], candidates: [{ key: "kB", picked: false, rejected: false }] }];
-      return targets.map((t1) => {
-        const x = run({ t: t1, c: t1.candidates[0], left: { key: "kA", n: 5 }, targets }, (k) => k.setMask(true));
+      return Promise.all(targets.map(async (t1) => {
+        const x = (await run({ t: t1, c: t1.candidates[0], left: { key: "kA", n: 5 }, targets }, (k) => k.setMask(true)));
         return [x.ret, enterKey(x), (x.log.find((y) => y[0] === "toast") || [])[1] || null];
-      });
+      }));
     })(),
     // 3차 ui-r3-03: 검토의 N 이 가리키는 이음매가 들어갈 ★ 의 것이면 K 진입 = 그 구간 선택(아니면 구간 없이, 지정 대상이면 지정 구간)
-    nSeam: [[{ key: "k15", side: "top" }], [{ key: "k14", side: "left" }], [{ key: "k15", side: "top" }, { key: "k15", seam: null }]].map(([s, to]) =>
-      (run({ t, curSeam: s }, (k) => k.setMask(true, to)).log.find((y) => y[0] === "enter") || [])[2] || null),
+    nSeam: await Promise.all([[{ key: "k15", side: "top" }], [{ key: "k14", side: "left" }], [{ key: "k15", side: "top" }, { key: "k15", seam: null }]].map(async ([s, to]) =>
+      ((await run({ t, curSeam: s }, (k) => k.setMask(true, to))).log.find((y) => y[0] === "enter") || [])[2] || null)),
     // K 모드는 검토 화면을 보이지 않음 — 새 state 의 reconcile·진행 → K 의 seeCurrent 가 편집 대상을 '본 후보'로 하지 않음(나올 때 seeCurrent)
     seen: [true, false].map((maskOn) => {
       const kc = vm.createContext({ seen: new Set(), editing: false, refsOn: false, pipeOn: false, maskOn, saveSeen() {} });
@@ -43812,7 +43813,7 @@ await scenario("panelR2", async () => {
     viewer.ed.pointerdown({ cx: x, cy: 2900, shiftKey: false });
     viewer.ed.pointerup({});
   };
-  ed.enter(S, { key: K15, seam: null });
+  (await ed.enter(S, { key: K15, seam: null }));
   await ready();
   raf();
   // tests-r2-09: 마스크 목록의 크롭 칩 '편집 기준 바뀜'
@@ -43822,15 +43823,15 @@ await scenario("panelR2", async () => {
   const g = gate();
   srv.wait = (path, q) => (path === "mask" && q.key === K14 ? g.p : null);
   const c0 = confirms.length;
-  ed.go({ key: K14, seam: null });
+  (await ed.go({ key: K14, seam: null }));
   r.loading = { pending: ed.pending(), marks: viewer.marks.map((m) => m.attrs.class) };
-  Object.assign(r.loading, { second: ed.go({ key: K15, seam: null }), left: ed.leave(), confirms: confirms.slice(c0), after: ed.pending() });
+  Object.assign(r.loading, { second: (await ed.go({ key: K15, seam: null })), left: (await ed.leave()), confirms: confirms.slice(c0), after: ed.pending() });
   srv.wait = null;
   g.go();
   await sleep(20);
   // session-r2-03: K 를 나갔다 같은 대상으로 다시 들어오기 = GET /mask 다시 · 패널 줄
   const n1 = P.count("mask");
-  ed.enter(S, { key: K15, seam: null });
+  (await ed.enter(S, { key: K15, seam: null }));
   await until(() => P.count("mask") > n1 && rows().length > 3);
   await sleep(5);
   r.reenter = { gets: P.count("mask") - n1, head: rows()[0] || null };
@@ -43855,10 +43856,10 @@ await scenario("panelR2", async () => {
   const conflictRow = () => rows().some((t) => t.includes("다른 창에서 바뀌었습니다"));
   const n3 = P.count("mask");
   P.answer = false;
-  B("다시 받기").fire("click");
+  B("다시 받기").fire("click"); await sleep(0);
   r.reload = { no: { confirm: confirms.pop() || null, pending: ed.pending() && ed.pending().n, gets: P.count("mask") - n3, conflict: conflictRow() } };
   P.answer = true;
-  B("다시 받기").fire("click");
+  B("다시 받기").fire("click"); await sleep(0);
   await until(() => P.count("mask") > n3 && !rows().some((t) => t.includes("불러오는 중")));
   await sleep(5);
   r.reload.yes = { confirm: confirms.pop() || null, pending: ed.pending(), conflict: conflictRow() };
@@ -43874,7 +43875,7 @@ await scenario("panelR2", async () => {
   const g5 = gate();
   srv.wait = (path, q) => (path === "mask" && q.key === K14 ? g5.p : null);
   const k0 = kGets(K14);
-  ed.go({ key: K14, seam: null });
+  (await ed.go({ key: K14, seam: null }));
   await sleep(5);
   ed.stateChanged(Object.assign(maskState(), { rev: 138 }));
   await sleep(5);
@@ -43889,7 +43890,7 @@ await scenario("panelR2", async () => {
   srv.wait = (path, q) => (path === "mask/alts" ? (q.key === K14 ? ga.p : gb.p) : null);
   B("다른 후보로").fire("click");
   await sleep(5);
-  ed.go({ key: K15, seam: null });
+  (await ed.go({ key: K15, seam: null }));
   await ready();
   B("다른 후보로").fire("click");
   await sleep(5);
@@ -43903,11 +43904,11 @@ await scenario("panelR2", async () => {
   // tests-r2-03: 획이 있을 때 [이 후보를 ★] 확인 문구 = 그 획을 버린다고 알림(아니오 = 그대로)
   brush(600);
   P.answer = false;
-  B("이 후보를 ★").fire("click");
+  B("이 후보를 ★").fire("click"); await sleep(0);
   await sleep(5);
   r.starStroke = { confirm: confirms.pop() || null, pick: calls.pick.length, pending: ed.pending() && ed.pending().n };
   P.answer = true;
-  B("버리기").fire("click");
+  B("버리기").fire("click"); await sleep(0);
   confirms.pop();
   // tests-r2-05: 패널 6 이음매 줄 누르기(지금 대상) = 그 구간으로 2:1·선택 구간(줄 강조·구간 페이드 켬)
   const nLook = viewer.looks.length;
@@ -43933,23 +43934,23 @@ await scenario("panelR2", async () => {
   r.deferred.apply = [duringApply, kGets(K15) - a0];
   // session-r2-03: 대상을 바꾼 뒤 3층을 받지 못함 → 나갔다 다시 들어와도 앞 대상(K15) 3층을 붙이지 않음
   srv.wait = (path, q) => (path === "mask/img" && q.key === K14 && q.kind === "under" ? Promise.reject(new Error("3층 없음")) : null);
-  ed.go({ key: K14, seam: null });
+  (await ed.go({ key: K14, seam: null }));
   await until(() => rows().some((t) => t.startsWith("미리보기 3층을 받지 못함")));
   const lay0 = viewer.layer;
-  ed.leave();
-  ed.enter(S, { key: K14, seam: null });
+  (await ed.leave());
+  (await ed.enter(S, { key: K14, seam: null }));
   const lay1 = viewer.layer && viewer.layer.box;
   await sleep(20);
   r.layerFail = { before: lay0, enter: lay1, after: viewer.layer && viewer.layer.box, row: rows().some((t) => t.startsWith("미리보기 3층을 받지 못함")) };
   srv.wait = null;
   // tests-r2-07: Esc = K 모드 나가기(board setMask(false))
   r.esc = { ret: key("Escape"), exit: calls.exit };
-  ed.leave();
+  (await ed.leave());
   // tests-r2-06: 적용 전후 — 같은 변·같은 ★ 라도 구간이 겹치는 것끼리만 짝(고친 구간이 같은 변 다른 구간의 값으로 보이지 않게)
   const Q = maskPanel();
   const seg = (o) => Object.assign(clone(MA["GET /mask"].ok.seams[1]), o);
   Q.viewer.seamsObj = { sig: "5d1f0c9a3be27741", segments: [seg({ x0: 200, x1: 300, length: 100, diff_p90: 40.0 }), seg({ x0: 900, x1: 1000, length: 100, diff_p90: 30.0 })] };
-  Q.ed.enter(maskState(), { key: K15, seam: null });
+  (await Q.ed.enter(maskState(), { key: K15, seam: null }));
   await until(() => Q.viewer.layer && !Q.rows().some((t) => t.includes("불러오는 중")));
   Q.viewer.ed.pointerdown({ cx: 600, cy: 2900, shiftKey: false });
   Q.viewer.ed.pointerup({});
@@ -43963,7 +43964,7 @@ await scenario("panelR2", async () => {
   Q.ed.seamsChanged();
   await until(() => Q.rows().some((t) => t.startsWith("적용 전후 top 900")));
   r.diffPair = Q.rows().filter((t) => t.startsWith("적용 전후"));
-  Q.ed.leave();
+  (await Q.ed.leave());
   return r;
 });
 
@@ -44063,7 +44064,7 @@ await scenario("panelR3", async () => {
   const P = maskPanel();
   const { srv, viewer, ed, rows, B, key, raf, puts, confirms, toasts, calls, panel } = P;
   const r = {};
-  ed.enter(maskState(), { key: K15, seam: null });
+  (await ed.enter(maskState(), { key: K15, seam: null }));
   await until(() => viewer.layer && !rows().some((t) => t.includes("불러오는 중")));
   raf();
   const n = () => (ed.pending() ? ed.pending().n : 0);
@@ -44073,7 +44074,7 @@ await scenario("panelR3", async () => {
   viewer.ed.pointermove({ cx: 610, cy: 2900, shiftKey: false });
   raf();
   const l0 = viewer.looks.length;
-  r.seamMid = { ok: ed.go({ key: K15, seam: top }), n: n() };
+  r.seamMid = { ok: (await ed.go({ key: K15, seam: top })), n: n() };
   const p0 = puts.length;
   viewer.ed.pointermove({ cx: 961, cy: 2600, shiftKey: false });
   viewer.ed.pointerup({});
@@ -44093,7 +44094,7 @@ await scenario("panelR3", async () => {
     raf();
     r.viewKeys.push([code, ret, ended, puts.length - p1]);
   }
-  B("버리기").fire("click");
+  B("버리기").fire("click"); await sleep(0);
   confirms.pop();
   // tests-r3-02: 보드 쓰기 실패(null — 보드가 다른 쓰기 중·409·네트워크) = 대상·세션 그대로
   srv.alts.push([200, MA["GET /mask/alts"].ok]);
@@ -44104,7 +44105,7 @@ await scenario("panelR3", async () => {
   const gets = () => srv.log.filter((x) => x.path === "mask").map((x) => x.q.key);
   const g0 = gets().length;
   P.pick = async () => null;
-  B("이 후보를 ★").fire("click");
+  B("이 후보를 ★").fire("click"); await sleep(0);
   await sleep(10);
   r.pickFail = { pick: calls.pick.length, confirms: confirms.splice(0).length, gets: gets().slice(g0), n: n(), head: rows()[0] || null,
     on: B("적용") ? !B("적용").disabled : null };
@@ -44114,18 +44115,18 @@ await scenario("panelR3", async () => {
   P.pick = () => gp.p.then(() => ({ ok: true }));
   const s0 = P.count("mask/save");
   const t0 = toasts.length;
-  if (B("이 후보를 ★")) B("이 후보를 ★").fire("click");  // 쓰기 실패에도 대상을 바꿨으면(회귀) 표가 없음 — pickFail 이 그 이유를 적음
+  if (B("이 후보를 ★")) B("이 후보를 ★").fire("click"); await sleep(0);  // 쓰기 실패에도 대상을 바꿨으면(회귀) 표가 없음 — pickFail 이 그 이유를 적음
   await sleep(5);
   const brush = viewer.ed.pointerdown({ cx: 650, cy: 2900, shiftKey: false });
   viewer.ed.pointerup({});
-  r.pickHold = { brush, enter: key("Enter"), undo: key("KeyZ", { ctrlKey: true }), go: ed.go({ key: K14, seam: null }), leave: ed.leave(), n: n(),
+  r.pickHold = { brush, enter: key("Enter"), undo: key("KeyZ", { ctrlKey: true }), go: (await ed.go({ key: K14, seam: null })), leave: (await ed.leave()), n: n(),
     off: ["적용", "버리기", "실행 취소", "이 후보를 ★"].map((l) => (B(l) ? B(l).disabled : null)) };
   await sleep(10);
   Object.assign(r.pickHold, { saves: P.count("mask/save") - s0, toasts: toasts.slice(t0), confirms: confirms.splice(0).length, editor: !!viewer.ed });
   gp.go();
   await until(() => (rows()[0] || "").startsWith("015_치마밑단_주름 · A · c02 ★ —"));
   r.pickHold.after = { n: n(), gets: gets().slice(-1), saves: P.count("mask/save") - s0, select: calls.select.at(-1) };
-  ed.leave();
+  (await ed.leave());
   return r;
 });
 
@@ -44137,22 +44138,22 @@ await scenario("panelR3b", async () => {
   const selRows = (P) => P.panel.all().filter((e) => e.classList.contains("pp-row") && e.classList.contains("sel")).map((e) => e.textContent);
   // tests-r3-03: 진행 ★ 점검 이음매 줄 → 나갔던 같은 ★ 의 다른 구간 = 그 구간 선택·2:1(앞서 고른 구간에 페이드가 들어가지 않게)
   const E = maskPanel();
-  E.ed.enter(maskState(), { key: K15, seam: null });
+  (await E.ed.enter(maskState(), { key: K15, seam: null }));
   await ready(E);
   const [left, top] = ["left", "top"].map((sd) => E.seams.segments.find((x) => x.key === K15 && x.side === sd));
-  E.ed.go({ key: K15, seam: left });
-  E.ed.leave();
+  (await E.ed.go({ key: K15, seam: left }));
+  (await E.ed.leave());
   const l0 = E.viewer.looks.length;
-  E.ed.enter(maskState(), { key: K15, seam: top });
+  (await E.ed.enter(maskState(), { key: K15, seam: top }));
   await sleep(10);
   const fb = E.B("이음매 구간 페이드");
   r.reenterSeam = { looks: E.viewer.looks.slice(l0), sel: selRows(E), fade: fb ? fb.title : null, select: E.calls.select.at(-1) };
-  E.ed.leave();
+  (await E.ed.leave());
   // tests-r3-06: 뷰어 이음매가 실패(서명 없는 {segments: [], error})·옛 서명이면 쓰지 않음 — GET /mask 의 이음매(같은 서명)나 '계산 중…'
   const V = maskPanel();
   const err = { segments: [], error: "이음매 검사 실패: HTTP 500" };
   V.viewer.seamsObj = err;
-  V.ed.enter(maskState(), { key: K14, seam: null });
+  (await V.ed.enter(maskState(), { key: K14, seam: null }));
   await ready(V);
   const seamRows = () => V.rows().filter((t) => / · p90 /.test(t) || t === "이음매 없음" || t === "계산 중…");
   r.seamsErr = { k14: seamRows() };
@@ -44160,10 +44161,10 @@ await scenario("panelR3b", async () => {
   V.ed.seamsChanged();
   r.seamsErr.oldSig = seamRows();
   V.viewer.seamsObj = err;
-  V.ed.go({ key: K15, seam: null });
+  (await V.ed.go({ key: K15, seam: null }));
   await until(() => V.rows().some((t) => t.startsWith("015_치마밑단_주름 · A · c01 ★ —")));
   r.seamsErr.k15 = seamRows();
-  V.ed.leave();
+  (await V.ed.leave());
   // tests-r3-07: ★ 둘인 크롭 = ★ 마다 하위 행(편집 칩) — 두 번째 행 = 그 ★ 편집
   const L = maskPanel();
   const KB = "r_7e8f9a0b1c2d_0_0";
@@ -44171,7 +44172,7 @@ await scenario("panelR3b", async () => {
   SL.targets.splice(1, 0, { key: "015_d556f2/B", crop_id: "015_d556f2", crop_name: "015_치마밑단_주름", tid: "B", pick_keys: [KB],
     candidates: [{ key: KB, n: 1, picked: true, slice_index: 1, rejected: false, mask_edit: { at: "2026-10-19 18:30:00", stale: true } }] });
   L.srv.info[KB] = Object.assign(maskInfo(K15), { key: KB, tid: "B", c: 1, edit: null });
-  L.ed.enter(SL, { key: K15, seam: null });
+  (await L.ed.enter(SL, { key: K15, seam: null }));
   await ready(L);
   const subEls = () => L.list.children.filter((e) => e.classList.contains("sub"));
   const subs = () => subEls().map((e) => [e.textContent, e.className]);
@@ -44180,10 +44181,10 @@ await scenario("panelR3b", async () => {
   if (subEls()[1]) subEls()[1].fire("click");
   await until(() => (L.rows()[0] || "").startsWith("015_치마밑단_주름 · B · c01 ★ —"));
   Object.assign(r.listSubs, { gets: L.srv.log.slice(nL).filter((x) => x.path === "mask").map((x) => x.q.key), head: L.rows()[0] || null, after: subs() });
-  L.ed.leave();
+  (await L.ed.leave());
   // tests-r3-08: Q 를 누른 채 창 blur = 떼기, Q·M·S 를 켠 채 나갔다 다시 들어오기 = 보기 처음으로
   const Q = maskPanel();
-  Q.ed.enter(maskState(), { key: K15, seam: null });
+  (await Q.ed.enter(maskState(), { key: K15, seam: null }));
   await ready(Q);
   const viewRow = () => Q.rows().find((t) => t.startsWith("보기")) || null;
   Q.key("KeyQ");
@@ -44194,29 +44195,29 @@ await scenario("panelR3b", async () => {
   Q.key("KeyM");
   Q.key("KeyS");
   vr.push(viewRow());
-  Q.ed.leave();
-  Q.ed.enter(maskState(), { key: K15, seam: null });
+  (await Q.ed.leave());
+  (await Q.ed.enter(maskState(), { key: K15, seam: null }));
   await sleep(10);
   vr.push(viewRow());
   r.viewReset = vr;
-  Q.ed.leave();
+  (await Q.ed.leave());
   // session-r3-03 (4)(5): [이전 판으로] 처리 중 대상 바꾸기·나가기 거절
   const Ep = maskPanel();
-  Ep.ed.enter(maskState(), { key: K15, seam: null });
+  (await Ep.ed.enter(maskState(), { key: K15, seam: null }));
   await ready(Ep);
   const ge = gate();
   Ep.srv.wait = (path) => (path === "mask/edit" ? ge.p : null);
-  Ep.B("이전 버전으로").fire("click");
+  Ep.B("이전 버전으로").fire("click"); await sleep(0);
   await sleep(5);
-  r.editHold = { go: Ep.ed.go({ key: K14, seam: null }), leave: Ep.ed.leave(), toasts: Ep.toasts.slice(), editor: !!Ep.viewer.ed,
+  r.editHold = { go: (await Ep.ed.go({ key: K14, seam: null })), leave: (await Ep.ed.leave()), toasts: Ep.toasts.slice(), editor: !!Ep.viewer.ed,
     k14: Ep.srv.log.filter((x) => x.path === "mask" && x.q.key === K14).length };
   Ep.srv.wait = null;
   ge.go();
   await until(() => Ep.toasts.some((t) => t.startsWith(":이전 판으로")));
-  Ep.ed.leave();
+  (await Ep.ed.leave());
   // session-r3-03 (8): [이전 판으로] 뒤 다시 열기가 래스터를 못 받음(세션 없음) — 3층을 다시 받는 사이 rAF 가 돌아도 합성하지 않음, 겹침은 뗌
   const F = maskPanel();
-  F.ed.enter(maskState(), { key: K15, seam: null });
+  (await F.ed.enter(maskState(), { key: K15, seam: null }));
   await ready(F);
   F.raf();
   const mv = maskInfo(K15);
@@ -44225,7 +44226,7 @@ await scenario("panelR3b", async () => {
   F.srv.imgFail = "edit";
   const gl = gate();
   F.srv.wait = (path, q) => (path === "mask/img" && ["under", "patch", "over"].includes(q.kind) ? gl.p : null);
-  F.B("이전 버전으로").fire("click");
+  F.B("이전 버전으로").fire("click"); await sleep(0);
   await until(() => F.toasts.some((t) => t.startsWith(":이전 판으로")));
   await sleep(5);
   const queued = F.rafQ.length;
@@ -44240,11 +44241,11 @@ await scenario("panelR3b", async () => {
   await until(() => !F.viewer.layer);
   r.flushLost = { queued, threw, layer: F.viewer.layer, err: F.rows().some((t) => t.startsWith("마스크 편집 파일이 없습니다")) };
   F.srv.imgFail = null;
-  F.ed.leave();
+  (await F.ed.leave());
   // ui-r3-01: 누르는 동안(문서 pointerdown capture) 새 이음매로 다시 그리기는 미룸 — 누른 단추가 그대로라 click 이 가고, 놓은 뒤 목록·패널을 그림.
   // pointerup 을 놓치면(창 밖에서 놓음) 버튼 없는 pointermove 가 놓은 것으로
   const Hp = maskPanel();
-  Hp.ed.enter(maskState(), { key: K15, seam: null });
+  (await Hp.ed.enter(maskState(), { key: K15, seam: null }));
   await ready(Hp);
   const xb = Hp.B("살리기");
   xb.fire("pointerdown", { buttons: 1 });
@@ -44262,16 +44263,16 @@ await scenario("panelR3b", async () => {
   const b2 = Hp.B("살리기");
   Hp.ed.seamsChanged();
   r.held.missedUp = Hp.panel.contains(b2);
-  Hp.ed.leave();
+  (await Hp.ed.leave());
   // 3차 통합(보드 _edit_usable 의 짝): GET /mask edit.url = base.url(_plan 이 편집 파일을 쓰지 못함 — 경고 줄) = 편집 줄을 초록으로 두지 않음
   const editOk = async (gone) => {
     const U = maskPanel();
     U.srv.info[K15] = maskInfo(K15);
     if (gone) U.srv.info[K15].edit.url = U.srv.info[K15].base.url;
-    U.ed.enter(maskState(), { key: K15, seam: null });
+    (await U.ed.enter(maskState(), { key: K15, seam: null }));
     await ready(U);
     const on = U.panel.all().filter((e) => e.classList.contains("pp-row") && /^편집 (?!없음|기준)/.test(e.textContent)).map((e) => e.classList.contains("ok"));
-    U.ed.leave();
+    (await U.ed.leave());
     return on;
   };
   r.unusable = { ok: await editOk(false), gone: await editOk(true) };
@@ -45367,7 +45368,7 @@ await scenario("adjust", async () => {
     for (const k of ["under", "patch", "over"]) info.layers[`${k}_url`] = info.layers[`${k}_url`].replace(/v=[^&]+/, `v=adjust${rev}`);
     return { ok: true, status: 200, json: async () => ({ ok: true, adjust: clone(info.adjust), rev, composite_sig: info.composite_sig }) };
   };
-  ed.enter(maskState(), { key: K15, seam: null });
+  (await ed.enter(maskState(), { key: K15, seam: null }));
   const controls = () => P.panel.all().find((e) => e.classList.contains("mc-adjust"));
   const slider = () => controls().all().find((e) => e.type === "range");
   const invert = () => controls().all().find((e) => e.type === "checkbox");
@@ -45379,10 +45380,10 @@ await scenario("adjust", async () => {
   slider().value = 2.5; slider().fire("input");
   invert().checked = true; invert().fire("change");
   result.debounce = P.count("mask/adjust") === 0;
-  result.waitLocked = ed.go({ key: K14 }) === false && ed.leave() === false && !viewer.ed.pointerdown({ cx: 600, cy: 2900 });
+  result.waitLocked = (await ed.go({ key: K14 })) === false && (await ed.leave()) === false && !viewer.ed.pointerdown({ cx: 600, cy: 2900 });
   srv.hold = new Promise((r) => { release = r; });
   await until(() => P.count("mask/adjust") === 1);
-  result.busy = !slider().disabled && !invert().disabled && ed.leave() === false;
+  result.busy = !slider().disabled && !invert().disabled && (await ed.leave()) === false;
   const body = srv.log.find((r) => r.path === "mask/adjust").body;
   result.request = body.root === KEY && body.key === K15 && body.op === "set" && body.seen === "" && body.blur === 2.5 && body.invert === true;
   const layersBefore = P.count("mask/img", "patch");
@@ -45457,7 +45458,7 @@ await scenario("adjust", async () => {
   // R2: 제품에는 노출하지 않는 시험 사본의 훅으로 null·조기 반환 조건을 주입한다.
   for (const reason of ["null", "noInfo", "wrongInfo", "noKey", "wrongKey", "stroke", "pending", "resetWait", "otherBusy"]) {
     const Q = maskPanel();
-    Q.ed.enter(maskState(), { key: K15, seam: null });
+    (await Q.ed.enter(maskState(), { key: K15, seam: null }));
     await until(() => Q.viewer.layer && Q.ed._test.M.info);
     const { M, saveAdjust } = Q.ed._test;
     const panelBefore = Q.panel.children[0];
@@ -45476,9 +45477,9 @@ await scenario("adjust", async () => {
     const released = M.busy === (reason === "otherBusy" ? "pick" : "");
     const redrawn = Q.panel.children[0] !== panelBefore;
     M.info = savedInfo; M.key = K15; M.stroke = null; M.undo = []; M.busy = "";
-    result[`R2_${reason}`] = released && redrawn && Q.count("mask/adjust") === 0 && Q.ed.go({ key: K14 });
+    result[`R2_${reason}`] = released && redrawn && Q.count("mask/adjust") === 0 && (await Q.ed.go({ key: K14 }));
     await until(() => M.info && M.info.key === K14 && !M.busy);
-    result[`R2_${reason}`] = result[`R2_${reason}`] && Q.ed.leave();
+    result[`R2_${reason}`] = result[`R2_${reason}`] && (await Q.ed.leave());
   }
   // C2·C3: 응답을 붙잡아 저장 중 실제 입력·대안 ★ 클릭을 재현한다(소켓 없는 서버 대역).
   for (const failure of [0, 409, 500]) {
@@ -45498,7 +45499,7 @@ await scenario("adjust", async () => {
       qi.composite_sig = qi.layers.sig = `queued${n + 1}`;
       return { ok: true, status: 200, json: async () => ({ ok: true, adjust: clone(qi.adjust), rev: qi.z.rev, composite_sig: qi.composite_sig }) };
     };
-    Q.ed.enter(maskState(), { key: K15, seam: null });
+    (await Q.ed.enter(maskState(), { key: K15, seam: null }));
     const adj = () => Q.panel.all().find((e) => e.classList.contains("mc-adjust"));
     const range = () => adj().all().find((e) => e.type === "range");
     const inv = () => adj().all().find((e) => e.type === "checkbox");
@@ -45565,17 +45566,17 @@ await scenario("adjust", async () => {
       await until(() => Q.toasts.some((t) => t.includes("대기 중 보정 입력을 버렸습니다")) && !M.busy);
       await new Promise((resolve) => setTimeout(resolve, 350));
       result[`C2_discard_${failure}`] = Q.count("mask/adjust") === 1 && qi.adjust === null
-        && Number(range().value) === 0 && !inv().checked && Q.ed.go({ key: K14 });
+        && Number(range().value) === 0 && !inv().checked && (await Q.ed.go({ key: K14 }));
       await until(() => M.info && M.info.key === K14 && !M.busy);
     }
-    Q.ed.leave();
+    (await Q.ed.leave());
   }
   // F1: 다른 창에서 대안을 잠깐 ★로 보정한 뒤 원래 ★로 복원 — 현재 합성·마스크 편집은 그대로.
   {
     const Q = maskPanel();
     let state = maskState();
     state.targets[0].candidates.find((c) => c.key === K15B).adjust = { blur: 2, invert: false };
-    Q.ed.enter(state, { key: K15, seam: null });
+    (await Q.ed.enter(state, { key: K15, seam: null }));
     await until(() => Q.viewer.layer && Q.ed._test.M.info);
     const stale = () => Q.rows().some((t) => t.includes("표가 낡음"));
     const table = () => Q.panel.all().find((e) => e.tagName === "TABLE");
@@ -45601,7 +45602,7 @@ await scenario("adjust", async () => {
       result[`F1_${label}_recalculated`] = await reloadTable();
     }
     result.F1_readOnly = Q.count("mask/alts") === 5 && Q.count("mask/adjust") === 0 && Q.calls.pick.length === 0;
-    Q.ed.leave();
+    (await Q.ed.leave());
   }
   return result;
 });
@@ -46189,7 +46190,7 @@ await scenario("xform", async () => {
     for (const k of ["under", "patch", "over"]) info.layers[`${k}_url`] = info.layers[`${k}_url`].replace(/v=[^&]+/, `v=xform${rev}`);
     return {ok: true, status: 200, json: async () => ({ok: true, adjust: clone(info.adjust), rev, composite_sig: info.composite_sig})};
   };
-  ed.enter(S, {key: K15, seam: null});
+  (await ed.enter(S, {key: K15, seam: null}));
   const input = k => P.panel.all().find(e => e.dataset.xform === k);
   const idle = () => !ed._test.M.busy;
   await until(() => viewer.layer && input("dx"));
@@ -46204,7 +46205,7 @@ await scenario("xform", async () => {
   result.ratio = Number(input("sx").value) === 200 && Number(input("sy").value) === 100 && B("비율 잠금").ariaPressed === "true";
   B("좌우 뒤집기").fire("click"); B("상하 뒤집기").fire("click");
   result.flipPressed = B("좌우 뒤집기").ariaPressed === "true" && B("상하 뒤집기").ariaPressed === "true";
-  result.debounce = P.count("mask/adjust") === 0 && !ed.leave();
+  result.debounce = P.count("mask/adjust") === 0 && !(await ed.leave());
   const patchBefore = P.count("mask/img", "patch"), editBefore = P.count("mask/img", "edit");
   await save();
   const body = srv.log.find(r => r.path === "mask/adjust").body;
@@ -46264,7 +46265,7 @@ await scenario("xform", async () => {
   change("dy", 6);
   result.inFlightArrows = P.key("ArrowRight") && P.key("ArrowRight", {repeat: true}) && P.key("ArrowUp", {shiftKey: true})
     && P.count("mask/adjust") === inFlightStart + 1;
-  result.inFlightLocked = !ed.go({key: K14}) && !ed.leave();
+  result.inFlightLocked = !(await ed.go({key: K14})) && !(await ed.leave());
   release(); srv.hold = null;
   await saving;
   await save();
@@ -46277,7 +46278,7 @@ await scenario("xform", async () => {
   s2.targets[0].candidates[1].adjust = {...zero, dx: 2};
   ed.stateChanged(s1); const a = ed._test.altSet();
   ed.stateChanged(s2); result.altSig = a !== ed._test.altSet();
-  ed.leave();
+  (await ed.leave());
   return result;
 });
 await scenario("xformRecovery", async () => {
@@ -46290,7 +46291,7 @@ await scenario("xformRecovery", async () => {
     srv.info[K15] = info;
     const error = {error: op === "set" ? "편집 창이 4096² 픽셀을 넘습니다" : "패치가 캔버스 밖에 있어 편집할 창이 없습니다", adjust: old};
     if (op !== "reset") srv.maskError = error;
-    ed.enter(maskState(), {key: K15});
+    (await ed.enter(maskState(), {key: K15}));
     const M = ed._test.M;
     if (op === "reset") {
       await until(() => M.m && !M.busy);
@@ -46313,7 +46314,7 @@ await scenario("xformRecovery", async () => {
     if (op === "undo") srv.rejectUndo = true;
     B(label).fire("click");
     await until(() => M.busy === "adjust");
-    result[`${op}Locked`] = !ed.leave() && !ed.go({key: K14});
+    result[`${op}Locked`] = !(await ed.leave()) && !(await ed.go({key: K14}));
     release();
     if (op === "undo") {
       await until(() => !M.busy && P.toasts.some(t => String(t).includes("되돌리면")));
@@ -46326,14 +46327,14 @@ await scenario("xformRecovery", async () => {
     result[`${op}Recovered`] = body.op === op && body.seen === old.at && P.count("mask") > beforeGet && (M.info.adjust === null) === (op === "reset");
     if (op === "set") result.pixelsKept = body.blur === 2 && body.invert && ["dx","dy","rot"].every(k => body[k] === 0)
       && body.sx === 1 && body.sy === 1 && !body.flip_h && !body.flip_v;
-    ed.leave();
+    (await ed.leave());
   }
   const P = maskPanel();
   P.srv.maskError = {error: "편집할 창 없음", adjust: null};
-  P.ed.enter(maskState(), {key: K15});
+  (await P.ed.enter(maskState(), {key: K15}));
   await until(() => !P.ed._test.M.busy && P.ed._test.M.err);
   result.noRecord = !P.B("변형 없음") && !P.B("보정 없음") && !P.B("되돌리기");
-  P.ed.leave();
+  (await P.ed.leave());
   return result;
 });
 console.log(JSON.stringify(out));
@@ -46529,7 +46530,7 @@ async function setup() {
     for (const k of ["under","patch","over"]) info.layers[`${k}_url`]=info.layers[`${k}_url`].replace(/v=[^&]+/,`v=new${rev}`);
     return {ok:true,status:200,json:async()=>({ok:true,adjust:clone(info.adjust),rev,composite_sig:info.composite_sig})};
   };
-  P.ed.enter(maskState(),{key:K15});
+  (await P.ed.enter(maskState(),{key:K15}));
   await until(()=>P.viewer.layer && !P.ed._test.M.busy);
   const M=P.ed._test.M;
   M.m.fill(1); M.base.fill(1); M.layers.over.fill(0); M.layers.patch.fill(0);
@@ -46593,12 +46594,12 @@ await scenario("interaction",async()=>{
   r.pendingSwitch=B("변형").ariaPressed==="true" && M.pending()>0 && !ed._test.drag();M.discard();
   P.down(24,20);P.move(26,20);viewer.ed.cancel();P.up();r.pointerCancel=!ed._test.draft();
   P.down(24,20);P.move(26,20);M.seq++;P.up();r.reopen=!ed._test.draft();
-  P.down(24,20);P.move(26,20);ed.go({key:K14});
+  P.down(24,20);P.move(26,20);(await ed.go({key:K14}));
   await until(()=>M.key===K14&&!M.busy);
   r.target=B("붓").ariaPressed==="true"&&!ed._test.draft();
-  B("변형").fire("click");ed.leave();ed.enter(maskState(),{key:K14});
+  B("변형").fire("click");(await ed.leave());(await ed.enter(maskState(),{key:K14}));
   await until(()=>!M.busy&&B("붓"));r.leave=B("붓").ariaPressed==="true";
-  ed.leave();return r;
+  (await ed.leave());return r;
 });
 await scenario("preview",async()=>{
   const P=await setup(),{ed,viewer,B,info}=P,M=ed._test.M,r={};
@@ -46638,7 +46639,7 @@ await scenario("preview",async()=>{
   r.mergeSaved=info.adjust.dx===9&&writes.length===3&&writes[2].body.seen===writes[1].body.seen.replace(/\d+/,v=>Number(v)+1);
   P.srv.fail=true;P.change("dx",12);P.raf();await ed._test.saveAdjust("set");P.raf();
   r.failure=!ed._test.draft()&&!ed._test.drag()&&ed._test.previewLayers()===M.layers&&P.toasts.some(t=>t.includes("보정하지 못함: 크롭 밖"));
-  ed.leave();return r;
+  (await ed.leave());return r;
 });
 await scenario("reopenDuringSave",async()=>{
   const P=await setup(),{ed,info}=P,M=ed._test.M,r={};
@@ -46659,7 +46660,7 @@ await scenario("reopenDuringSave",async()=>{
   P.move(28,20);P.up();await ed._test.saveAdjust("set");
   const b=P.srv.log.filter(x=>x.path==="mask/adjust").at(-1).body;
   r.continued=info.adjust.dx===8&&b.seen===savedAt&&!P.toasts.some(t=>t.includes("보정하지 못함"));
-  ed.leave();return r;
+  (await ed.leave());return r;
 });
 await scenario("reviewBounds",async()=>{
   const P=await setup(),{ed,info,viewer}=P,r={};
@@ -46673,7 +46674,7 @@ await scenario("reviewBounds",async()=>{
   r.precision=["dx","dy","rot","sx","sy"].every(k=>{
     const n=b[k]*(k==="sx"||k==="sy"?1000:10);return Math.abs(n-Math.round(n))<1e-8;
   });
-  ed.leave();return r;
+  (await ed.leave());return r;
 });
 await scenario("reviewSeen",async()=>{
   const r={};
@@ -46688,7 +46689,7 @@ await scenario("reviewSeen",async()=>{
     const b=P.srv.log.filter(x=>x.path==="mask/adjust").at(-1).body;
     r[initial||"noRecord"]=M.seq===seq&&b.seen===initial&&info.adjust.at==="remote-at"
       &&P.toasts.some(t=>t.includes("보정하지 못함: 다른 창에서 바뀜"));
-    ed.leave();
+    (await ed.leave());
   }
   return r;
 });
@@ -46700,7 +46701,7 @@ await scenario("reviewUndo",async()=>{
   r.consumed=[["KeyZ",{}],["KeyY",{}],["KeyZ",{shiftKey:true}]].every(([code,mods])=>P.key(code,{ctrlKey:true,...mods}));
   r.noStrokeChange=redo>0&&M.redo.length===redo&&M.undo.length===0&&near([...M.m],[...before]);
   P.up();r.keptTransform=ed._test.draft().dx===2;
-  await ed._test.saveAdjust("set");ed.leave();return r;
+  await ed._test.saveAdjust("set");(await ed.leave());return r;
 });
 await scenario("reviewBeforeLayers",async()=>{
   const P=await setup(),{ed,viewer}=P,M=ed._test.M,r={};
@@ -46714,7 +46715,7 @@ await scenario("reviewBeforeLayers",async()=>{
   let n=viewer.redraws;P.up();r.release=viewer.redraws>n&&outline().startsWith("14,10 ");
   P.down(24,20);P.move(26,20);n=viewer.redraws;P.key("Escape");
   r.cancel=viewer.redraws>n&&outline().startsWith("14,10 ")&&P.calls.exit===0;
-  release();await opening;P.srv.wait=null;await ed._test.saveAdjust("set");ed.leave();return r;
+  release();await opening;P.srv.wait=null;await ed._test.saveAdjust("set");(await ed.leave());return r;
 });
 await scenario("reviewRepaint",async()=>{
   const P=await setup(),{ed}=P,M=ed._test.M,r={};
@@ -46741,7 +46742,7 @@ await scenario("reviewRepaint",async()=>{
   P.key("Escape");P.raf();r.cancelCleared=matchesFull(true);
   const opacity=P.panel.all().find(e=>e.classList.contains("rf-slider")&&e.children[0].textContent==="패치 투명도").all().find(e=>e.type==="range");
   opacity.value=50;opacity.fire("input");P.raf();r.opacityFull=near(P.puts.at(-1),[0,0,40,40]);
-  ed.leave();return r;
+  (await ed.leave());return r;
 });
 await scenario("review2OwnSave",async()=>{
   const r={};
@@ -46753,7 +46754,7 @@ await scenario("review2OwnSave",async()=>{
       r.waitingDeferred=P.count("mask/adjust")===0&&ed._test.draft().dx===4&&ed._test.drag().seen===""&&M.busy==="adjust_wait";
       P.up();await until(()=>info.adjust?.dx===6&&!M.busy);
       r.waitingSaved=P.count("mask/adjust")===1&&info.adjust.dx===6&&P.srv.log.find(x=>x.path==="mask/adjust").body.seen==="";
-      ed.leave();continue;
+      (await ed.leave());continue;
     }
     let release;P.srv.hold=new Promise(r=>release=r);
     const saving=ed._test.saveAdjust("set");await until(()=>M.busy==="adjust");
@@ -46764,7 +46765,7 @@ await scenario("review2OwnSave",async()=>{
     P.up();await ed._test.saveAdjust("set");
     const writes=P.srv.log.filter(x=>x.path==="mask/adjust");
     r[phase+"Saved"]=writes.length===2&&writes[1].body.seen===savedAt&&info.adjust.dx===6&&!P.toasts.some(t=>t.includes("보정하지 못함"));
-    ed.leave();
+    (await ed.leave());
   }
   return r;
 });
@@ -46779,14 +46780,14 @@ await scenario("review2Poll",async()=>{
     P.srv.wait=(path,q)=>path==="mask/img"&&["under","patch","over"].includes(q.kind)?gate:null;
     const refreshing=ed._test.refreshInfo();await until(()=>M.info.adjust?.at==="remote");P.raf();
     r["waiting"+pending]=M.seq===seq&&M.layers===L&&near(P.pixel(24,20),[200,60,40])&&!near(P.pixel(20,20),[200,60,40])&&M.pending()===(pending?1:0);
-    release();await refreshing;M.undo=[];ed.leave();
+    release();await refreshing;M.undo=[];(await ed.leave());
   }
   const P=await setup(),{ed,info}=P,M=ed._test.M;
   P.key("KeyV");P.down(20,20);P.move(22,20);const seq=M.seq;
   info.rect=[11,10,31,30];info.base.sig="remote-window";
   await ed._test.refreshInfo();r.externalReopen=M.seq>seq&&!ed._test.drag()&&!ed._test.draft();
   P.down(20,20);P.move(22,20);await ed._test.open(K15,null,false);r.manualReopen=!ed._test.drag();
-  ed.leave();return r;
+  (await ed.leave());return r;
 });
 await scenario("review2SmallPatch",async()=>{
   const P=await setup(),{ed,viewer}=P,r={};P.key("KeyV");
@@ -46796,7 +46797,7 @@ await scenario("review2SmallPatch",async()=>{
       P.down(x,y);r[name+z]=ed._test.drag()?.handle===handle;P.key("Escape");
     }
   }
-  ed.leave();return r;
+  (await ed.leave());return r;
 });
 await scenario("review2ReleaseLocked",async()=>{
   const r={};
@@ -46809,7 +46810,7 @@ await scenario("review2ReleaseLocked",async()=>{
     const n=P.toasts.length;P.up();
     r[reason+"Guard"]=P.toasts.length===n+1&&P.toasts.at(-1).startsWith("warn:")&&!ed._test.drag()&&!ed._test.draft()&&P.count("mask/adjust")===0;
     r[reason+"Text"]=P.toasts.at(-1).includes(reason==="stroke"?"적용 안 한 획을 적용하거나 버린 뒤 보정하세요":"지금은 변형할 수 없습니다");
-    M.err=null;M.undo=[];ed.leave();
+    M.err=null;M.undo=[];(await ed.leave());
   }
   return r;
 });
@@ -46824,7 +46825,7 @@ await scenario("review3Timer",async()=>{
     if(end==="escape") P.key("Escape");else if(end==="cancel") P.viewer.ed.cancel();else P.up();
     await until(()=>info.adjust?.dx===4&&!M.busy);
     r[end+"Resumed"]=P.count("mask/adjust")===1&&info.adjust.dx===4&&!ed._test.drag()&&!ed._test.draft();
-    ed.leave();
+    (await ed.leave());
   }
   return r;
 });
@@ -46860,7 +46861,7 @@ await scenario("review3ReleaseLoading",async()=>{
     } else {
       await sleep(350);r[reason+"NoWrite"]=P.count("mask/adjust")===1&&!ed._test.draft();
     }
-    M.err=null;M.undo=[];ed.leave();
+    M.err=null;M.undo=[];(await ed.leave());
   }
   return r;
 });
@@ -46884,7 +46885,7 @@ await scenario("review3Recovery",async()=>{
   P.move(29,20);P.up();await ed._test.saveAdjust("set");
   const writes=P.srv.log.filter(x=>x.path==="mask/adjust");
   r.freshSave=writes.length===2&&writes[1].body.seen==="remote"&&info.adjust.dx===9;
-  ed.leave();return r;
+  (await ed.leave());return r;
 });
 await scenario("review3SeenSource",async()=>{
   const r={};
@@ -46906,7 +46907,7 @@ await scenario("review3SeenSource",async()=>{
       P.up();await ed._test.saveAdjust("set");
       r.saved=info.adjust.dx===6&&P.srv.log.filter(x=>x.path==="mask/adjust").at(-1).body.seen===savedAt;
     }
-    ed.leave();
+    (await ed.leave());
   }
   return r;
 });
@@ -46925,7 +46926,7 @@ await scenario("review3SavePreview",async()=>{
     P.down(20+dx,20);r[op+"Hit"]=ed._test.drag()?.handle==="move"&&ed._test.drag().start.dx===dx&&ed._test.drag().seen==="current";
     P.key("Escape");release();P.srv.hold=null;await saving;
     r[op+"Saved"]=P.count("mask/adjust")===1&&(info.adjust?.dx||0)===dx;
-    ed.leave();
+    (await ed.leave());
   }
   return r;
 });
@@ -46963,7 +46964,7 @@ await scenario("b7Fixes",async()=>{
   r.toast=P.toasts.length===n+1&&P.toasts.at(-1).includes("「후보 보정」 칸 [적용 (Enter)]·[버리기]");
   M.discard();B("붓").fire("click");P.raf();
   r.cleared=!buttons().some(b=>b.textContent==="적용 (Enter)")&&buttons().filter(b=>b.textContent==="버리기").length===1;
-  ed.leave();return r;
+  (await ed.leave());return r;
 });
 console.log(JSON.stringify(out));
 '''
@@ -47199,7 +47200,8 @@ def polish5_grow_unit():
     board_src = (web / "board.js").read_text(encoding="utf-8")
     board_functions = {}
     for name in ("goGrow", "goMode", "leaveMask", "onSeams"):
-        start = board_src.index(f"  {'async ' if name == 'goGrow' else ''}function {name}(")
+        mark = f"  function {name}("
+        start = board_src.index(mark if mark in board_src else f"  async function {name}(")
         board_functions[name] = board_src[start:board_src.index("\n  }\n", start) + 4]
     layout_js = _LAYOUT_EDIT_HARNESS[:_LAYOUT_EDIT_HARNESS.index('await scenario("draftEdit",')]
     layout_js += r'''
@@ -47270,35 +47272,35 @@ await scenario("grow", async () => {
   r.maskPending = env.toasts.at(-1).includes("적용 안 한 마스크 획") && !env.button(env.panel,"제안 적용");
   bc.editing = false; bc.maskOn = true; await bc.goGrow(c.id,["right"]);
   r.modeRefused = !bc.editing && !env.button(env.panel,"제안 적용");
-  env.ed.leave();
+  (await env.ed.leave());
   const locked = await open([Object.assign(C1(),{locked:true})]);
   r.locked = !await locked.ed.proposeGrow("001_aaaaaa",["right"]) && locked.toasts.at(-1).includes("잠긴")
     && locked.srv.log.length === 0 && !locked.button(locked.panel,"제안 적용");
-  locked.ed.leave();
+  (await locked.ed.leave());
   const edge = await open([C1()]);
   r.noRoom = !await edge.ed.proposeGrow("001_aaaaaa",["left"]) && edge.toasts.at(-1).includes("캔버스 끝·비율 한도");
-  edge.ed.leave();
+  (await edge.ed.leave());
   const fit = await editor([C2()]); await fit.pick("002_눈");
   fit.button(fit.panel,"상자에 크롭 맞추기").fire("click");
   r.fitLabel = !fit.panel.textContent.includes("넓히기 제안") && !!fit.button(fit.panel,"제안 적용");
   fit.key("Enter"); await sleep(30);
   r.fitNoConfirm = fit.confirms.length === 0 && fit.srv.log.length === 1;
-  fit.ed.leave();
+  (await fit.ed.leave());
   // G2 이동만 했고 state 폴링에는 아직 미반영 표시가 없어도 마지막 반영 rect 와 비교한다.
   const moved = await open([crop(c.id,c.name,[272,256,528,512])],{}, {crops:measured});
   r.G2_moved = !await moved.ed.proposeGrow(c.id,["right"]) && moved.toasts.at(-1).includes("레이아웃이 반영 전입니다")
     && !moved.button(moved.panel,"제안 적용") && moved.srv.log.length === 0 && moved.confirms.length === 0;
-  moved.ed.leave();
+  (await moved.ed.leave());
   for (const status of ["changed","removed"]) {
     const pending = await open(JSON.parse(JSON.stringify(measured)),{}, {crops:measured.map((x) => Object.assign({},x,{layout_status:status}))});
     r[`G2_pending_${status}`] = !await pending.ed.proposeGrow(c.id,["right"]) && pending.toasts.at(-1).includes("레이아웃이 반영 전입니다")
       && !pending.button(pending.panel,"제안 적용") && pending.confirms.length === 0;
-    pending.ed.leave();
+    (await pending.ed.leave());
   }
   const outside = await open([crop(c.id,c.name,[-64,256,256,512])]);
   r.G3_outside = !await outside.ed.proposeGrow(c.id,["right"]) && outside.toasts.at(-1).includes("사각형이 캔버스 밖으로 나갑니다")
     && !outside.button(outside.panel,"제안 적용") && outside.confirms.length === 0 && outside.srv.log.length === 0;
-  outside.ed.leave();
+  (await outside.ed.leave());
   // G4 상자 맞춤은 다른 저장 뒤 큐에 들어가야 한다(Enter 와 단추 모두). 넓히기만 저장 중 토스트로 거절.
   for (const via of ["Enter","button"]) {
     const queued = await editor([C2()]); await queued.pick("002_눈");
@@ -47312,7 +47314,7 @@ await scenario("grow", async () => {
     r[`G4_queued_${via}`] = queued.srv.log.length === 2 && queued.srv.log[0].note === "먼저 저장"
       && queued.srv.log[1].rev === 1 && eq(queued.srv.log[1].rect,expected) && eq(queued.srv.lay.crops[0].rect,expected)
       && queued.srv.lay.crops[0].note === "먼저 저장" && queued.confirms.length === 0;
-    queued.ed.leave();
+    (await queued.ed.leave());
   }
   const growBusy = await open(JSON.parse(JSON.stringify(measured)));
   await growBusy.ed.proposeGrow(c.id,["right"]);
@@ -47323,7 +47325,7 @@ await scenario("grow", async () => {
     && !!growBusy.button(growBusy.panel,"제안 적용") && growBusy.confirms.length === 0;
   await sleep(80);
   r.G4_growNotQueued = growBusy.srv.log.length === 1 && !growBusy.srv.log[0].rect;
-  growBusy.ed.leave();
+  (await growBusy.ed.leave());
   // H1 같은 크롭의 rect 쓰기는 두 종류 제안을 모두 버린다. 다른 크롭의 undo/redo 는 그대로 둔다.
   const editableCrop = () => crop(c.id,c.name,[256,256,512,512],{targets:[{tid:"A",text:"",box:[300,300,420,420]}]});
   const dragRight = (e, rect) => {
@@ -47348,7 +47350,7 @@ await scenario("grow", async () => {
     dragged.key("Enter"); await sleep(80); dragged.key("Enter"); await sleep(10);
     r[`H1_dragDrops_${kind}`] = dragged.srv.log.length === 1 && eq(dragged.srv.lay.crops[0].rect,[256,256,640,512])
       && !dragged.button(dragged.panel,"제안 적용") && dragged.confirms.length === 0;
-    dragged.ed.leave();
+    (await dragged.ed.leave());
     const history = await open([editableCrop()]); await history.pick(c.name);
     dragRight(history,history.srv.lay.crops[0].rect); await sleep(30); await reflect(history);
     r[`H1_undoPreview_${kind}`] = await preview(history,kind);
@@ -47362,7 +47364,7 @@ await scenario("grow", async () => {
     history.key("Enter"); await sleep(10);
     r[`H1_redoDrops_${kind}`] = history.srv.log.length === 3 && eq(history.srv.lay.crops[0].rect,[256,256,640,512])
       && !history.button(history.panel,"제안 적용") && history.confirms.length === 0;
-    history.ed.leave();
+    (await history.ed.leave());
     const other = await open([editableCrop(),C2()]); await other.pick("002_눈");
     dragRight(other,other.srv.lay.crops[1].rect); await sleep(30);
     r[`H1_otherPreview_${kind}`] = await preview(other,kind);
@@ -47375,7 +47377,7 @@ await scenario("grow", async () => {
     const want = kind === "grow" ? [128,256,512,512] : G.suggest([[300,300,420,420]],[3072,4096],true);
     r[`H1_otherStillApplies_${kind}`] = other.srv.log.length === 4 && eq(other.srv.lay.crops[0].rect,want)
       && other.srv.log[3].id === c.id && eq(other.srv.lay.crops[1].rect,[1024,0,1664,512]);
-    other.ed.leave();
+    (await other.ed.leave());
   }
   const changedBase = await open([editableCrop()]); await changedBase.ed.proposeGrow(c.id,["left"]);
   changedBase.srv.lay.crops[0].rect = [256,256,640,512]; changedBase.srv.lay.rev++;
@@ -47385,7 +47387,7 @@ await scenario("grow", async () => {
   r.H1_baseGuard = !changedBase.button(changedBase.panel,"제안 적용") && changedBase.srv.log.length === 0
     && changedBase.confirms.length === 0 && eq(changedBase.srv.lay.crops[0].rect,[256,256,640,512])
     && changedBase.toasts.at(-1).includes("크롭이 바뀌어 제안을 버렸습니다 — 다시 제안");
-  changedBase.ed.leave();
+  (await changedBase.ed.leave());
   const queuedRect = await open([editableCrop()]); await queuedRect.pick(c.name);
   queuedRect.srv.delay = 50;
   dragRight(queuedRect,queuedRect.srv.lay.crops[0].rect);
@@ -47394,13 +47396,13 @@ await scenario("grow", async () => {
   const fitRect = G.suggest([[300,300,420,420]],[3072,4096],true);
   r.H1_newProposalAfterPendingRect = queuedRect.srv.log.length === 2 && eq(queuedRect.srv.log[0].rect,[256,256,640,512])
     && eq(queuedRect.srv.lay.crops[0].rect,fitRect) && !queuedRect.button(queuedRect.panel,"제안 적용") && queuedRect.confirms.length === 0;
-  queuedRect.ed.leave();
+  (await queuedRect.ed.leave());
   const nudged = await open([editableCrop()]); await nudged.pick(c.name);
   nudged.key("ArrowDown"); nudged.button(nudged.panel,"상자에 크롭 맞추기").fire("click");
   nudged.key("Enter"); await sleep(30);
   r.H1_newProposalAfterNudge = nudged.srv.log.length === 2 && eq(nudged.srv.log[0].rect,[256,272,512,528])
     && eq(nudged.srv.lay.crops[0].rect,fitRect) && nudged.confirms.length === 0;
-  nudged.ed.leave();
+  (await nudged.ed.leave());
   // K1 제안을 만든 기준과 같은 미세 이동의 저장은 제안을 유지한다(타이머·다른 flush 경로).
   for (const via of ["timer","canvas","note","psd"]) {
     const L = via === "psd" ? {psd_diff:{token:"nudge-test",changed:[{name:c.name,fields:["targets"],
@@ -47421,7 +47423,7 @@ await scenario("grow", async () => {
     pending.key("Enter"); await sleep(30);
     r[`K1_applies_${via}`] = pending.srv.log.length === writes + 1 && eq(pending.srv.log.at(-1).rect,fitRect)
       && eq(pending.srv.lay.crops[0].rect,fitRect) && pending.confirms.length === (via === "psd" ? 1 : 0);
-    pending.ed.leave();
+    (await pending.ed.leave());
   }
   // K2 다른 창에서 다른 크롭만 바뀌어 base 는 같아도, since 가 낡았으면 확인 창 전에 폐기.
   const remote = await open([editableCrop(),C2()]); await remote.ed.proposeGrow(c.id,["left"]);
@@ -47432,7 +47434,7 @@ await scenario("grow", async () => {
   r.K2_sinceBeforeConfirm = !remote.button(remote.panel,"제안 적용") && remote.srv.log.length === 0 && remote.confirms.length === 0
     && eq(remote.srv.lay.crops[0].rect,[256,256,512,512])
     && remote.toasts.at(-1).includes("크롭이 바뀌어 제안을 버렸습니다 — 다시 제안");
-  remote.ed.leave();
+  (await remote.ed.leave());
   // K3 앞 요청 완료 뒤 큐에서 고르는 실제 undo/redo 는 메모. 누른 순간 rect 항목으로 미리 폐기하면 안 된다.
   for (const kind of ["grow","fit"]) {
     const busyUndo = await open([editableCrop()]); await busyUndo.pick(c.name);
@@ -47445,7 +47447,7 @@ await scenario("grow", async () => {
     busyUndo.srv.delay = 0; busyUndo.key("Enter"); await sleep(30);
     r[`K3_busyUndoApplies_${kind}`] = busyUndo.srv.log.length === 4
       && eq(busyUndo.srv.lay.crops[0].rect,kind === "grow" ? [128,256,640,512] : fitRect);
-    busyUndo.ed.leave();
+    (await busyUndo.ed.leave());
     const busyRedo = await open([editableCrop()]); await busyRedo.pick(c.name);
     busyRedo.type("note","되살릴 메모").fire("change"); busyRedo.doc.activeElement.blur(); await sleep(30);
     dragRight(busyRedo,busyRedo.srv.lay.crops[0].rect); await sleep(30);
@@ -47458,7 +47460,7 @@ await scenario("grow", async () => {
     busyRedo.srv.delay = 0; busyRedo.key("Enter"); await sleep(30);
     r[`K3_busyRedoApplies_${kind}`] = busyRedo.srv.log.length === 6
       && eq(busyRedo.srv.lay.crops[0].rect,kind === "grow" ? [128,256,512,512] : fitRect);
-    busyRedo.ed.leave();
+    (await busyRedo.ed.leave());
     const changedUndo = await open([editableCrop()]); await changedUndo.pick(c.name);
     dragRight(changedUndo,changedUndo.srv.lay.crops[0].rect); await sleep(30); await reflect(changedUndo);
     await preview(changedUndo,kind); changedUndo.srv.delay = 60;
@@ -47467,7 +47469,7 @@ await scenario("grow", async () => {
     changedUndo.key("Enter"); await sleep(30);
     r[`K3_busyRectDrops_${kind}`] = changedUndo.srv.log.length === 4 && eq(changedUndo.srv.lay.crops[0].rect,[256,256,512,512])
       && !changedUndo.button(changedUndo.panel,"제안 적용") && changedUndo.confirms.length === 0;
-    changedUndo.ed.leave();
+    (await changedUndo.ed.leave());
   }
   for (const kind of ["grow","fit"]) {
     const psd = await open([editableCrop()],{psd_diff:{token:"rect-test",changed:[{name:c.name,fields:["rect"],
@@ -47483,7 +47485,7 @@ await scenario("grow", async () => {
     psd.key("Enter"); await sleep(10);
     r[`H1_panelRectDrops_${kind}`] = psd.srv.log.length === 1 && psd.srv.log[0].path === "layout/psd"
       && eq(psd.srv.lay.crops[0].rect,[256,256,640,512]) && !psd.button(psd.panel,"제안 적용") && psd.confirms.length === 1;
-    psd.ed.leave();
+    (await psd.ed.leave());
   }
   return r;
 });
@@ -47512,7 +47514,7 @@ await scenario("grow", async () => {
   const r = {}, Q = maskPanel();
   const mine = Q.seams.segments.filter((s) => s.crop_id === "015_d556f2");
   mine[0].beside = null; mine[1].beside = "014_0f9cc5";
-  Q.ed.enter(maskState(), {key:K15,seam:null});
+  (await Q.ed.enter(maskState(), {key:K15,seam:null}));
   await until(() => Q.viewer.layer && Q.B("크롭 넓히기 제안"));
   r.maskButton = Q.panel.all().filter((e) => e.tagName === "BUTTON" && e.textContent === "크롭 넓히기 제안").length === 1;
   r.besideLabel = Q.rows().some((s) => s.includes("옆 크롭 014_치마원단_문양 ★ 와 맞닿음"));
@@ -47522,7 +47524,7 @@ await scenario("grow", async () => {
   r.onlyNeighbors = !Q.B("크롭 넓히기 제안") && Q.rows().includes("옆 크롭 ★ 와 맞닿은 이음매뿐 — 넓힐 곳 없음");
   mine.forEach((s) => delete s.beside); Q.ed.seamsChanged();
   r.legacy = !Q.B("크롭 넓히기 제안") && !Q.rows().includes("옆 크롭 ★ 와 맞닿은 이음매뿐 — 넓힐 곳 없음");
-  Q.ed.leave();
+  (await Q.ed.leave());
   const S = boardState(); S.crops.forEach((c) => { c.layout_status = null; });
   const cid = S.crops[0].id;
   const bc = vm.createContext({ seamsByCrop:new Map(),maskOn:false,pipeOn:false,renderTargets() {} });
@@ -48347,7 +48349,8 @@ vm.createContext(ctx);
 vm.runInContext(fs.readFileSync(process.argv[2], "utf8"), ctx);
 vm.runInContext(fs.readFileSync(process.argv[3], "utf8"), ctx);
 const D = ctx.window.DPChecklist, out = [];
-const test = (name, fn) => { try { fn(); out.push([name, true]); } catch (e) { out.push([name, false, e.message]); } };
+const tests = [];
+const test = (name, fn) => tests.push([name, fn]);
 const clone = (v) => JSON.parse(JSON.stringify(v));
 const base = () => ({ S: { crops: [{ id: "c1", refs: { n: 1 }, mask_edits: 0 }, { id: "c2", refs: { n: 1 }, mask_edits: 1 }],
   canvas: { size: [64, 64] }, targets: [{ key: "c1/A", crop_id: "c1", tid: "A", pick_keys: ["a"], candidates: [] }],
@@ -48599,7 +48602,7 @@ test("순수 판정·힌트·DOM 이동 인자·접힘 메모리·선택 단계�
   assert.equal(calls[7][0], "mask"); assert.equal(calls[7][1].key, "a"); assert.deepEqual(calls[8], ["section", {tab: "generate", section: "Export"}]);
 });
 // 실제 renderPanel 의 유일한 삽입 블록을 실행해 연결·스크롤도 확인(기존 비용/승인 UI 의 하네스와 독립).
-test("renderPanel 삽입 블록: 실제 opts·섹션 이동·설정 분기 뒤", () => {
+test("renderPanel 삽입 블록: 실제 opts·섹션 이동·설정 분기 뒤", async () => {
   const src = fs.readFileSync(process.argv[3], "utf8"), start = src.indexOf("      if (window.DPChecklist) {");
   const end = src.indexOf("      // 설정", start), block = src.slice(start, end);
   assert(start > src.indexOf("function renderPanel"));
@@ -48610,14 +48613,14 @@ test("renderPanel 삽입 블록: 실제 opts·섹션 이동·설정 분기 뒤",
     planDim: () => { throw new Error("점검표는 해시 복사 흐림 판정을 부르면 안 됨"); }, stale: false, maskLeft: null, PS: { progress: null }, el: (tag) => new E(tag),
     opts: { goMode: (...a) => calls.push(a) },
     on: true, activeTab: "prompt", showTab: (tab) => { ctx.activeTab = tab; } });
-  vm.runInContext(src.match(/    function goSection\(go\) \{[\s\S]*?\n    \}/)[0], ctx);
+  vm.runInContext(src.match(/    (?:async )?function goSection\(go\) \{[\s\S]*?\n    \}/)[0], ctx);
   vm.runInContext(block, ctx);
   const host = panel.children[0], sec = new E("div"); sec.className = "pp-sec"; sec.dataset = {tab: "prompt"};
   assert.equal(host.children[0].children[0].textContent, "작업 점검표 · 선택 기준 (6/8)");
   for (const n of [5, 6]) assert.equal(host.children[0].children[n].children[2].textContent, "설정 확인 필요");
   const heading = new E("div"); heading.textContent = "반영"; sec.append(heading); panel.append(sec);
   host.children[0].children[2].events.click(); assert.deepEqual(calls, [["edit", null]]);
-  host.children[0].children[4].events.click(); assert(sec.scrolled);
+  await host.children[0].children[4].events.click(); assert(sec.scrolled);
   ctx.P0.confirm = []; ctx.sel.delete("c2"); vm.runInContext(block, ctx);
   const partial = panel.children[2].children[0].children;
   for (const n of [5, 6]) {
@@ -48657,13 +48660,13 @@ test("renderPanel 삽입 블록: 실제 opts·섹션 이동·설정 분기 뒤",
     vm.runInContext(block, ctx);
     const row = panel.children[panel.children.length - 1].children[0].children[4];
     assert(row.className.includes("todo")); assert.equal(row.children[2].textContent, `실행 설정 확인 필요 (${reason})`);
-    row.events.click(); assert(settings.scrolled);
+    await row.events.click(); assert(settings.scrolled);
   }
   ctx.P0 = good; ctx.PS.err = null; ctx.pend = []; vm.runInContext(block, ctx);
   const restored = panel.children[panel.children.length - 1].children[0].children[4];
   assert(restored.className.includes("done")); assert.equal(restored.children[2].textContent, "미반영 없음");
 });
-test("F6 실제 보드 콜백→refs 진입→내부 선택: 첫 로드·없는 크롭·전환 실패", () => {
+test("F6 실제 보드 콜백→refs 진입→내부 선택: 첫 로드·없는 크롭·전환 실패", async () => {
   const bsrc = fs.readFileSync(process.argv[4], "utf8"), rsrc = fs.readFileSync(process.argv[5], "utf8");
   const selectStart = rsrc.indexOf("    function select(id) {"), selectEnd = rsrc.indexOf("    function syncSel()", selectStart);
   const boundary = rsrc.lastIndexOf("    return { enter, leave, onKey, stateChanged");
@@ -48677,19 +48680,20 @@ test("F6 실제 보드 콜백→refs 진입→내부 선택: 첫 로드·없는 
   const bc = { S: { targets: [{ key: "c2/A", crop_id: "c2" }] }, refsOn: false, refEd,
     selectTarget: (key) => events.push(key), goMode: (mode) => { events.push(mode); assert.equal(rc.sel, null); bc.refsOn = mode === "refs"; } };
   vm.createContext(bc);
-  const callback = bsrc.match(/goMode: (\(mode, cropId\) => \{[\s\S]*?\n        \}),\n        refresh:/)[1];
+  const callback = bsrc.match(/goMode: ((?:async )?\(mode, cropId\) => \{[\s\S]*?\n        \}),\n        refresh:/)[1];
   const goMode = vm.runInContext(`(${callback})`, bc), host = new E("div"), i = base();
   i.S.crops[1].refs.n = 0;
-  D.render(host, D.rows(i), { goMode }); host.children[0].children[3].events.click();
+  D.render(host, D.rows(i), { goMode }); await host.children[0].children[3].events.click();
   assert.equal(rc.sel, "c2"); assert.deepEqual(events, ["c2/A", "refs", "render"]);
   assert.equal(rc.desc, ""); assert.equal(rc.text, ""); assert.equal(rc.overlay, null);
   refEd.select("missing"); assert.equal(rc.sel, "c2"); assert.equal(events.length, 3);
   rc.state.crops = [{ id: "c1" }]; rc.crops = () => [{ id: "c2" }];
   refEd.select("c2"); assert.equal(events.length, 3); // 낡은 /refs 목록에만 남은 크롭도 무시
   bc.goMode = () => { bc.refsOn = false; };
-  goMode("refs", "c1"); assert.equal(rc.sel, "c2");
+  await goMode("refs", "c1"); assert.equal(rc.sel, "c2");
 });
 (async () => {
+  for (const [name, fn] of tests) { try { await fn(); out.push([name, true]); } catch (e) { out.push([name, false, e.message]); } }
   const name = "C11 실제 pollState: 옛 서버 전체→키 없는 unchanged·새 서버 상태/명시적 null";
   try {
     const src = fs.readFileSync(process.argv[4], "utf8"), start = src.indexOf("  async function pollState(force) {");
@@ -49036,9 +49040,9 @@ def polish1_unit():
           "F27 Export 칸 '★ 아닌 후보 레이어도 넣기'(제외은 늘 빠짐) = 누를 때의 Export 절 alternates(hidden_all ↔ none) 저장")
     export_now = pj[pj.index("    async function exportNow() {"):pj.index("    function exportWhy() {")]
     check('if (!S.targets.some((t) => t.pick_keys.length)) lines.push(`★ 가 하나도 없습니다' in export_now
-          and 'if (lines.length && !window.confirm(' in export_now and "넣을 후보 없음(★ 도 숨김 후보도 없음)" in pj,
+          and 'if (lines.length && !await askFree(' in export_now and "넣을 후보 없음(★ 도 숨김 후보도 없음)" in pj,
           "U-8 ★ 0 Export 는 확인 창, empty 문구")
-    eb = pj[pj.index('const eb = button("Export"'):pj.index("btns(s, eb, ob);")]
+    eb = pj[pj.index('const eb = button("Export"'):pj.index("btns(s, eb, ...(ob ? [ob] : []));")]
     check("eb.disabled = exportLocked();" in eb and "return !!paidLock() || PS.busy;" in pj
           and 'if (PS.busy) return "실행 설정을 저장하는 중";' in pj and "const why = exportWhy();" in export_now and "if (why) {" in export_now,
           "F27 체크(alternates) 저장 중에는 [Export] 끔·눌러도 내지 않음 — 옛 설정으로 큐되지 않게(Codex 2차)")
@@ -49094,7 +49098,7 @@ import vm from "node:vm";
 const IN = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
 const src = fs.readFileSync(IN.boardJs, "utf8");
 const fn = (name) => {
-  const m = new RegExp(`\n  function ${name}\\([^)]*\\) \\{[\\s\\S]*?\n  \\}\n`).exec(src);
+  const m = new RegExp(`\n  (?:async )?function ${name}\\([^)]*\\) \\{[\\s\\S]*?\n  \\}\n`).exec(src);
   if (!m) throw new Error(`board.js 에 ${name} 없음`);
   return m[0];
 };
@@ -49192,39 +49196,39 @@ function tabs() {
 function chips() {
   return ids.keybar.children.filter(c => c !== ids["mode-title"]).map((c) => c.tagName === "button" ? c.children[0].textContent : "info:" + c.textContent);
 }
-function step(m) {
+async function step(m) {
   run("log.length = 0");
-  run(`goMode(${m === null ? "null" : JSON.stringify(m)})`);
+  await run(`goMode(${m === null ? "null" : JSON.stringify(m)})`);
   run("renderMode()");
   return { log: run("log.slice()"), mode: run("curMode()"), tabs: tabs(), title: ids["mode-title"].textContent };
 }
 try {
   run("renderMode()");
   out.start = { tabs: tabs(), chips: chips(), title: ids["mode-title"].textContent };
-  out.toEdit = step("edit");
+  out.toEdit = await step("edit");
   const firstChip = ids.keybar.children[0];
-  out.editAgain = step("edit");
+  out.editAgain = await step("edit");
   out.sameChips = ids.keybar.children[0] === firstChip; // 같은 모드면 칩 줄을 다시 만들지 않음
   out.editChips = chips();
-  out.toPipe = step("pipe");
+  out.toPipe = await step("pipe");
   out.pipeChips = chips();
-  out.toMask = step("mask");
+  out.toMask = await step("mask");
   out.maskChips = chips();
   run("allowLeave = false");
-  out.maskRefuse = step("refs");
+  out.maskRefuse = await step("refs");
   run("allowLeave = true");
-  out.maskToRefs = step("refs");
+  out.maskToRefs = await step("refs");
   out.refsChips = chips();
   run('refTab = "grid"'); run("renderMode()");  // 배치 3-4: 레퍼런스 [그리드] 탭(ref_edit.js tabChanged → renderMode) = 그리드 칩 줄
   out.refsGridChips = chips();
   run('refTab = "sheets"'); run("renderMode()");
   out.refsBack = chips();
-  out.toReview = step(null);
-  out.reviewAgain = step(null);
-  run("goMode('mask')"); run("renderMode()");
-  out.maskToReview = step(null);
+  out.toReview = await step(null);
+  out.reviewAgain = await step(null);
+  await run("goMode('mask')"); run("renderMode()");
+  out.maskToReview = await step(null);
   run("maskOk = false");
-  out.maskBlocked = step("mask");
+  out.maskBlocked = await step("mask");
   run("maskOk = true");
 
   // 칩 누르기 = 그 키(target = body, 문서로 버블). 검토 칩
@@ -49247,9 +49251,9 @@ try {
   // 칩을 누른 채 모드가 바뀌면(E 키 등) 칩 줄을 다시 그리기 전에 뗌(Codex 2차 — 지운 칩은 pointerup 을 못 받아 Before 로 남았음)
   got.length = 0;
   chip("Q").dispatchEvent({ type: "pointerdown", preventDefault() {} });
-  run("goMode('edit')"); run("renderMode()");
+  await run("goMode('edit')"); run("renderMode()");
   out.qModeSwitch = got.slice();
-  run("goMode('mask')"); run("renderMode()");
+  await run("goMode('mask')"); run("renderMode()");
   out.bracket = click("[");
   out.shiftBracket = click("⇧]");
   out.undo = click("Ctrl+Z");
@@ -49467,7 +49471,7 @@ def polish3_unit():
           and "board.set_output_dir(folder_paths.get_output_directory())" in (PKG / "bmk_design_patch.py").read_text(encoding="utf-8"),
           "3-5a 라우트 POST /open_folder · 노드 모듈이 import 때 output 폴더를 넘김")
     pj = (web / "pipeline.js").read_text(encoding="utf-8")
-    check('s.openFolder = () => call("open_folder", {});' in pj and 'button("출력 폴더 열기"' in pj and "btns(s, eb, ob);" in pj,
+    check('s.openFolder = () => call("open_folder", {});' in pj and 'button("출력 폴더 열기"' in pj and "btns(s, eb, ...(ob ? [ob] : []));" in pj,
           "3-5a 「Export」 칸 [출력 폴더 열기] = POST /open_folder, 결과 토스트")
 
     section("다듬기 배치 3 — 3-6 masks/ 안 쓰는 편집 PNG 정리(기록·이전 버전이 쓰는 것·10분 안 새 파일은 남김, 잠금 안에서 다시 판정)")
@@ -49560,7 +49564,7 @@ def polish3_unit():
     mj = (web / "mask_edit.js").read_text(encoding="utf-8")
     check('s.unused = () => call("mask/unused?" + qs({}));' in mj and 's.cleanup = (files) => call("mask/cleanup", { files });' in mj
           and 'button("안 쓰는 편집 파일 정리"' in mj and "await M.cleanup(d.files.slice(i, i + 200).map((f) => f.file))" in mj
-          and "window.confirm(" in mj[mj.index("async function cleanupFiles"):],
+          and "await askFree(" in mj[mj.index("async function cleanupFiles"): ],
           "3-6 마스크 「저장된 버전」 칸 [안 쓰는 편집 파일 정리] = 목록 → 확인 창 → 200개씩 지우기(서버 본문 상한 — Codex 3a 1차) → 토스트")
 
     section("다듬기 배치 3 — 3-4 레퍼런스 그리드(T 가운데 탭 [시트]/[그리드] — 정적, 장면은 refs_js_unit '3-4')")
@@ -51129,7 +51133,7 @@ await scenario("z", async () => {
     for (const kind of ["under", "patch", "over"]) info.layers[`${kind}_url`] = info.layers[`${kind}_url`].replace(/v=[^&]+/, `v=z${info.z.rev}`);
     return { ok: true, status: 200, json: async () => ({ ok: true, rev: info.z.rev }) };
   };
-  ed.enter(maskState(), { key: K15, seam: null });
+  (await ed.enter(maskState(), { key: K15, seam: null }));
   await until(() => viewer.layer && B("위로"));
   const result = {};
   result.levels = P.panel.all().filter((e) => e.classList.contains("mz-order")).length === 3;
@@ -51144,7 +51148,7 @@ await scenario("z", async () => {
   B("위로").fire("click");
   result.busy = B("위로").disabled && B("위로").title.includes("작업 중");
   const beforeGo = P.count("mask");
-  result.locked = ed.go({ key: K14, seam: null }) === false && ed.leave() === false && P.count("mask") === beforeGo;
+  result.locked = (await ed.go({ key: K14, seam: null })) === false && (await ed.leave()) === false && P.count("mask") === beforeGo;
   let releaseInfo;
   const infoHold = new Promise((r) => { releaseInfo = r; });
   srv.wait = (path) => path === "mask" ? infoHold : null;
@@ -51191,7 +51195,7 @@ await scenario("z", async () => {
   savedInfo.z.controls = [make("crops", savedInfo.crop_id, [savedInfo.crop_id, "other"], 0)];
   saved.srv.info[K15] = savedInfo;
   saved.srv.save.push([200, Object.assign(clone(MA["POST /mask/save"].ok), { rev: 201 })]);
-  saved.ed.enter(maskState(), { key: K15, seam: null });
+  (await saved.ed.enter(maskState(), { key: K15, seam: null }));
   await until(() => saved.viewer.layer && saved.B("위로"));
   saved.viewer.ed.pointerdown({ cx: 600, cy: 2900, shiftKey: false });
   saved.viewer.ed.pointerup({});
@@ -51476,10 +51480,10 @@ function browser(root = "") {
   recovered.response({rev:1,crops:[],targets:[]});await recovered.T.refresh(true);
   test("7A-R3-1 fatal 뒤 state 성공은 새로고침",recovered.moves.join() === "reload");
   const clean=browser(key);clean.ctx.document.getElementById("pipe-panel").input=new E("select");
-  clean.T.set({canLeave:()=>({ok:true})},null,null);clean.T.goProjects();
+  clean.T.set({canLeave:()=>({ok:true})},null,null);await clean.T.goProjects();
   test("7A-R4 변경 없음·PS 마스크 select만 있으면 확인 없이 이동",clean.moves.length===1&&clean.confirms.length===0);
   clean.T.set({canLeave:()=>({ok:true,confirm:"채택 수정 입력을 버리고 이동합니다"})},null,null);
-  clean.window.confirm=s=>(clean.confirms.push(s),false);clean.T.goProjects();
+  clean.window.confirm=s=>(clean.confirms.push(s),false);await clean.T.goProjects();
   test("7A-R4 canLeave 확인 문구를 그대로 사용·취소 보존",clean.moves.length===1&&clean.confirms.length===1&&clean.confirms[0].includes("채택 수정 입력")&&!clean.confirms[0].includes("실행 설정"));
   const locked=browser(key), leaveToasts=[];
   locked.window.DPViewer={svg:()=>{}};
@@ -51491,26 +51495,26 @@ function browser(root = "") {
   const me=locked.window.DPMaskEdit.create({list:new E("div"),panel:new E("div")},{apiUrl:p=>p,root:key,viewer:{},toast:s=>leaveToasts.push(s)});
   locked.T.set(null,me,null);
   for(const [busy,saving] of [["apply",null],["edit",null],["pick",null],["zorder",null],["adjust_wait",null],["adjust",null],["load",{}]]) {
-    me.setBusy(busy,saving);locked.T.goProjects();
-    test("7A-R3-3 마스크 처리 중 프로젝트 이동 거절 "+busy,me.pending.locked()&&me.leave()===false&&locked.moves.length===0
+    me.setBusy(busy,saving);await locked.T.goProjects();
+    test("7A-R3-3 마스크 처리 중 프로젝트 이동 거절 "+busy,me.pending.locked()&&(await me.leave())===false&&locked.moves.length===0
       &&locked.confirms.length===0&&locked.els.toast.textContent===leaveToasts.at(-1));
   }
-  me.setBusy("",null);locked.T.goProjects();
+  me.setBusy("",null);await locked.T.goProjects();
   test("7A-R3-3 마스크 응답 대기 끝나면 목록 이동",!me.pending.locked()&&me.pending()===null&&locked.moves.length===1);
   const c=browser(key);
   c.T.set({canLeave:()=>({ok:false,why:"승인 응답 대기"})},null,null);
-  c.T.goProjects();
+  await c.T.goProjects();
   test("승인 대기 이동 차단", c.moves.length===0 && c.confirms.length===0 && c.els.toast.textContent==="승인 응답 대기");
   // 통합(7-A × 7-B): 실행 모듈의 canLeave 가 마스크 획까지 담아 한 문구로 돌려준다 — goProjects 는 그 문구 하나로 한 번만 묻는다
   c.T.set({canLeave:()=>({ok:true,confirm:"저장하지 않은 실행 설정 · 적용하지 않은 마스크 획이 있습니다. 프로젝트를 이동하면 저장하지 않은 내용이 사라집니다. 이동할까요?"})},{pending:()=>({n:3})},null);
-  c.window.confirm=s=>(c.confirms.push(s),false); c.T.goProjects();
+  c.window.confirm=s=>(c.confirms.push(s),false); await c.T.goProjects();
   test("이동 취소·마스크 전용 문구", c.moves.length===0 && c.confirms.length===1 && c.confirms[0].includes("마스크 획")
     && c.confirms[0].split("마스크 획").length===2 && c.confirms[0].split("이동할까요").length===2 && !c.confirms[0].includes("K 로 돌아오면"));
   const solo=browser(key);  // 실행 모듈이 없으면(옛 화면) goProjects 가 마스크 획을 직접 센다
   solo.T.set(null,{pending:()=>({n:3})},null);
-  solo.window.confirm=s=>(solo.confirms.push(s),false); solo.T.goProjects();
+  solo.window.confirm=s=>(solo.confirms.push(s),false); await solo.T.goProjects();
   test("실행 모듈 없을 때 마스크 획 문구", solo.moves.length===0 && solo.confirms[0].includes("버려집니다"));
-  c.window.confirm=s=>(c.confirms.push(s),true); c.T.goProjects();
+  c.window.confirm=s=>(c.confirms.push(s),true); await c.T.goProjects();
   test("목록 이동은 같은 창", c.moves[0]===c.ctx.location.pathname);
   c.T.set({paidWhy:()=>"막힘",paidLock:()=>""},null,{state:"ok",ext:4,via:"opener",reviewRoots:[]});
   test("Review 없는 opener 폴백은 전송 전 차단", c.T.queueInComfy()===false && c.messages.length===0 && c.els.toast.textContent.includes("Review"));
@@ -51723,7 +51727,7 @@ await scenario("panel", async () => {
   const sections = () => env.panel.children.filter(x => x.classList.contains("pp-sec"));
   r.direct = ["prepare", "prompt", "generate"].every(tab => sections().some(x => x.dataset.tab === tab));
   r.applyOne = env.panel.all().filter(x => x.tagName === "BUTTON" && x.textContent === "반영 (무료)").length === 1;
-  env.pipe.goSection({tab: "generate", section: "Export"});
+  await env.pipe.goSection({tab: "generate", section: "Export"});
   r.scroll = env.pipe.tab() === "generate" && sections().some(x => x.firstElementChild.textContent === "Export" && x.scrolled);
   env.pipe.openSettings(); r.settings = env.pipe.tab() === "prepare";
   env.B("← 실행").fire("click"); env.pipe.showTab("prompt");
@@ -51789,7 +51793,7 @@ await scenario("entry", async () => {
   }
   env.pipe.leave(); mode = null;
   const src = fs.readFileSync(IN.pipelineJs, "utf8");
-  const inner = n => src.match(new RegExp(`    function ${n}\\([^)]*\\) \\{[\\s\\S]*?\\n    \\}`))[0];
+  const inner = n => src.match(new RegExp(`    (?:async )?function ${n}\\([^)]*\\) \\{[\\s\\S]*?\\n    \\}`))[0];
   const pc = {PS: {P: {}, sending: false}, asking: false, paying: null, text: null, form: {}, opts: {}};
   vm.createContext(pc); vm.runInContext(inner("canLeave"), pc);
   r.idleLeave = pc.canLeave().ok; pc.asking = true; r.askingLeave = !pc.canLeave().ok; pc.asking = false;
@@ -52298,7 +52302,7 @@ await scenario("approval",async()=>{
     const ac=vm.createContext({S,paying:null,asked:{},PS:{plan:{draft:{backend:"vlm_mock"},run:{backend:"mock"}},P:{settings:{draft:{}}}},
       opts:{toast:m=>toasts.push(m)},copyHashes:()=>({draft:["hash","a"],run:["hash","a"]}),same:equal8,approveWhy:()=>"",render(){},
       mockAsk:async()=>{asked++;if(mutate)mutate();return true;},sendPaid:async()=>sent++});
-    vm.runInContext(IN.approve+"\nthis.go=approve;",ac);await ac.go({isTrusted:true},kind,"승인",["hash","a"]);
+    ac.SM=()=>false; vm.runInContext(IN.approve+"\nthis.go=approve;",ac);await ac.go({isTrusted:true},kind,"승인",["hash","a"]);
     r[kind]=sent===0 && asked===0 && toasts.at(-1)==="이름 미정 크롭 1개(013_미정) — ② 크롭에서 이름을 정한 뒤 승인하세요";
     S.crops[0].layout_diff={name:"013_확정"};S.crops[1].name="014_미정";
     await ac.go({isTrusted:true},kind,"승인",["hash","a"]);r[kind+"Scope"]=sent===1;
@@ -52700,7 +52704,7 @@ async function setup() {
     info.adjust={...body,at:`at${++rev}`,hist:old?[old]:[]};
     return {ok:true,status:200,json:async()=>({ok:true,adjust:clone(info.adjust),rev,composite_sig:info.composite_sig})};
   };
-  P.ed.enter(S,{key:K15}); await until(()=>P.viewer.layer&&!P.ed._test.M.busy);
+  (await P.ed.enter(S,{key:K15})); await until(()=>P.viewer.layer&&!P.ed._test.M.busy);
   P.M=P.ed._test.M; P.M.m.fill(1); P.M.base.fill(1); P.M.start.fill(1);
   P.down=(x,y)=>P.viewer.ed.pointerdown({cx:x,cy:y});
   P.move=(x,y,mods={})=>P.viewer.ed.pointermove({cx:x,cy:y,...mods});
@@ -52735,7 +52739,7 @@ await scenario("details",async()=>{
   sub[1].all().find(e=>e.classList.contains("mc-expand")).fire("click");
   const nextRow=details(P).find(e=>e.textContent.includes("11/01 09:10"));
   r.multi=nextRow.parent.parent.classList.contains("sub")&&P.list.children[0].all().every(e=>!e.classList.contains("mc-details"));
-  M.toBase(); P.answer=false; nextRow.fire("click"); r.confirmation=M.key===K15&&P.confirms.length===1; P.answer=true; M.discard();
+  M.toBase(); P.answer=false; nextRow.fire("click"); await sleep(0); r.confirmation=M.key===K15&&P.confirms.length===1; P.answer=true; M.discard();
   const nextInfo=clone(P.info); nextInfo.key=K15B; nextInfo.c=2; nextInfo.edit=null; nextInfo.adjust=null; P.srv.info[K15B]=nextInfo;
   let release; P.srv.gate={key:K15B,p:new Promise(resolve=>{release=resolve;})};
   const scrollCount=P.doc.scrolls.length;
@@ -52743,7 +52747,7 @@ await scenario("details",async()=>{
   release(); P.srv.gate=null; r.asyncNavigation=await until(()=>M.key===K15B&&!M.busy&&P.doc.scrolls.slice(scrollCount).includes("저장된 버전"));
   P.S.targets[0].pick_keys=[]; ed.stateChanged(P.S); expanders(P)[0].fire("click");
   r.noStar=P.list.textContent.includes("★ 없는 크롭")&&details(P).length===0;
-  ed.leave(); return r;
+  (await ed.leave()); return r;
 });
 await scenario("history",async()=>{
   const P=await setup(),{M}=P,r={};
@@ -52757,7 +52761,7 @@ await scenario("history",async()=>{
   r.recovery=row.all().filter(e=>e.dataset.hist).map(e=>e.textContent).join()==="되돌리기,변형 없음,보정 없음";
   M.err=null; M.recovery=null; M.info.z.controls[0].manual=true; P.render();
   r.zorder=P.B("자동으로").dataset.hist==="clear"&&P.B("자동으로").title.startsWith("크롭 겹침 순서 —");
-  P.ed.leave(); return r;
+  (await P.ed.leave()); return r;
 });
 await scenario("numbers",async()=>{
   const P=await setup(),{M}=P,r={}; P.B("변형").fire("click");
@@ -52783,7 +52787,7 @@ await scenario("numbers",async()=>{
   r.unlocked=P.slider("크기").children[2]!==input&&Number(P.slider("크기").children[2].value)===123;
   const invalid=P.slider("크기").children[2]; invalid.value="";invalid.fire("change");r.invalid=Number(invalid.value)===123;
   M.toBase(); P.render(); r.disabled=P.slider("블러").children[1].disabled&&P.slider("블러").children[2].disabled;
-  M.discard(); P.ed.leave(); return r;
+  M.discard(); (await P.ed.leave()); return r;
 });
 await scenario("rotation",async()=>{
   const P=await setup(), r={}, hit=P.ed._test.xformHit;
@@ -52791,7 +52795,7 @@ await scenario("rotation",async()=>{
   P.viewer.zoom=2; r.zoom=hit([12.5,16])==="nw"&&hit([4.5,16])==="rot"&&hit([4.49,16])===null;
   P.viewer.zoom=1; P.B("변형").fire("click"); P.move(-4,16); r.cursor=P.viewer.cursor==="grab";
   P.down(-4,16); r.rotate=P.ed._test.drag().handle==="rot"; P.key("Escape");
-  P.ed.leave(); return r;
+  (await P.ed.leave()); return r;
 });
 await scenario("fade",async()=>{
   const P=await setup(),{M}=P,r={}; P.B("페이드").fire("click");
@@ -52811,7 +52815,7 @@ await scenario("fade",async()=>{
   P.down(144,16);P.move(144,1000);P.raf();r.maximum=M.stroke.width===64;P.viewer.ed.cancel();
   r.cancel=equal(M.m,original)&&M.redo.length===redo;
   P.down(144,16);P.move(144,40);P.B("붓").fire("click");r.tool=equal(M.m,original)&&!M.stroke&&!M.pending();
-  P.B("페이드").fire("click");P.down(144,16);P.move(144,40);P.ed.leave();r.leave=equal(M.m,original)&&!M.stroke&&!M.pending();
+  P.B("페이드").fire("click");P.down(144,16);P.move(144,40);(await P.ed.leave());r.leave=equal(M.m,original)&&!M.stroke&&!M.pending();
   return r;
 });
 await scenario("fadeSession",async()=>{
@@ -52830,7 +52834,7 @@ await scenario("fadeSession",async()=>{
   r.defer=P.count("mask")===n&&M.m===old&&P.panel.children[0]===panel;
   P.key("Escape");r.restore=old.every(v=>v===1);
   await until(()=>M.sig==="changed"&&!M.busy);r.refresh=M.m!==old&&P.count("mask")>n;
-  P.ed.leave();
+  (await P.ed.leave());
   for(const phase of ["info","layers"]) {
     const Q=await setup(),N=Q.M; Q.B("페이드").fire("click");
     let release;const gate=new Promise(resolve=>{release=resolve;});
@@ -52845,7 +52849,7 @@ await scenario("fadeSession",async()=>{
     r[phase+"InFlight"]=N.m===oldMask&&N.layers===oldLayers&&N.seq===seq&&Q.panel.children[0]===oldPanel;
     Q.key("Escape");r[phase+"Restored"]=oldMask.every(v=>v===1);
     r[phase+"Drained"]=await until(()=>!N.busy&&(phase==="info"?N.sig==="inflight":N.layers.sig==="nextLayers"));
-    Q.ed.leave();
+    (await Q.ed.leave());
   }
   return r;
 });
@@ -52856,7 +52860,7 @@ await scenario("guides",async()=>{
   P.B("위 가장자리 페이드").fire("mouseleave");r.leave=guides(P).length===0;
   P.B("폭 32").fire("mouseenter");r.width=guides(P).length===4;P.render();r.redrawClear=guides(P).length===0;
   P.B("위 가장자리 페이드").fire("focus");r.buttonFocus=guides(P).length===0;
-  const sg={crop_id:P.info.crop_id,key:K15,side:"top",x0:40,x1:60,y0:16,y1:16};P.ed.go({key:K15,seam:sg});
+  const sg={crop_id:P.info.crop_id,key:K15,side:"top",x0:40,x1:60,y0:16,y1:16};(await P.ed.go({key:K15,seam:sg}));
   P.B("이음매 구간 페이드").fire("mouseenter");g=guides(P)[0];r.range=g.attrs.x==="0"&&g.attrs.width==="125"&&g.attrs.height==="80";
   P.B("선 숨기기 (O)").fire("click");P.B("위 가장자리 페이드").fire("mouseenter");r.hidden=guides(P).length===0;
   P.B("선 숨기기 (O)").fire("click");const feather=P.slider("페더 (px)").children[2];
@@ -52870,7 +52874,7 @@ await scenario("guides",async()=>{
   feather.fire("change");r.done=guides(P).length===0;
   feather.focus();feather.blur();r.blurClears=guides(P).length===0;
   const range=P.slider("페더 (px)").children[1];range.fire("pointerdown");range.fire("pointerup");r.rangeRelease=guides(P).length===0;
-  P.ed.leave();return r;
+  (await P.ed.leave());return r;
 });
 await scenario("review2Details",async()=>{
   const P=await setup(),{M}=P,r={},crop=P.S.crops[0],candidate=P.S.targets[0].candidates[0];
@@ -52897,7 +52901,7 @@ await scenario("review2Details",async()=>{
   const subs=P.list.children.filter(e=>e.classList.contains("sub"));
   r.subNoChip=subs[0].all().every(e=>!e.classList.contains("mc-details"));
   r.subOwnChip=subs[1].all().some(e=>e.classList.contains("mc-details"))&&subs[1].all().some(e=>e.classList.contains("mc-expand"));
-  M.discard();P.ed.leave();return r;
+  M.discard();(await P.ed.leave());return r;
 });
 await scenario("review2Ops",async()=>{
   const P=await setup(),{M}=P,r={};
@@ -52908,7 +52912,7 @@ await scenario("review2Ops",async()=>{
   M.info.edit.ops="붓 2획 · 변 페이드 top 32 · PS 그룹 마스크 치마·밑단.psd";P.render();
   r.delimiter=details(P).length===3&&details(P)[2].textContent===ps;
   M.info.edit.ops="붓 2획·페더 4px";P.render();r.noLooseSplit=details(P).length===1;
-  P.ed.leave();return r;
+  (await P.ed.leave());return r;
 });
 await scenario("review2Fade",async()=>{
   const P=await setup(),{M}=P,r={};P.B("페이드").fire("click");const saved=M.m;
@@ -52924,7 +52928,7 @@ await scenario("review2Fade",async()=>{
   P.S.crops[0].rect=[-40,-20,272,144];P.S.canvas.size=[240,100];P.ed.stateChanged(P.S);
   P.down(120,0);P.move(120,1000,{shiftKey:true});P.raf();r.clippedTop=M.stroke.limit===50&&M.stroke.width===50;P.key("Escape");
   P.down(0,50);P.move(1000,50,{shiftKey:true});P.raf();r.clippedLeft=M.stroke.limit===120&&M.stroke.width===120;P.key("Escape");
-  P.ed.leave();return r;
+  (await P.ed.leave());return r;
 });
 await scenario("reviewInput",async()=>{
   const P=await setup(),{M}=P,r={};
@@ -52940,7 +52944,7 @@ await scenario("reviewInput",async()=>{
   capture("pointerup",P.doc.body);
   r.blurSaved=await until(()=>P.count("mask/adjust")===1&&!M.busy);
   r.blurSaved&&=P.srv.log.find(e=>e.path==="mask/adjust").body.blur===3;
-  P.ed.leave();return r;
+  (await P.ed.leave());return r;
 });
 await scenario("reviewFade",async()=>{
   const P=await setup(),{M}=P,r={};P.B("페이드").fire("click");const before=M.m.slice();
@@ -52953,10 +52957,10 @@ await scenario("reviewFade",async()=>{
   P.down(144,21);P.move(154,21);P.up();r.offCenterStart=!M.pending()&&equal(before,M.m);
   P.key("KeyS");P.move(37,80);P.raf();r.split=P.ed._test.view.split===37&&P.puts.length>0;
   P.down(144,16);P.move(144,40);P.raf();r.splitDuringDrag=P.ed._test.view.split===37;P.key("Escape");P.key("KeyS");
-  P.move(144,16);r.hover=P.viewer.cursor==="grab";P.ed.go({key:K14});
+  P.move(144,16);r.hover=P.viewer.cursor==="grab";(await P.ed.go({key:K14}));
   r.cursorReset=P.viewer.cursor==="";
   await until(()=>!M.busy&&M.key===K14);r.brush=P.B("붓").ariaPressed==="true";
-  P.ed.leave();return r;
+  (await P.ed.leave());return r;
 });
 await scenario("reviewHistory",async()=>{
   const P=await setup(),{M}=P,r={};
@@ -52969,7 +52973,7 @@ await scenario("reviewHistory",async()=>{
   r.cleared&&=P.srv.log.find(e=>e.path==="mask/adjust").body.dx===0;
   M.info.z.controls[0].manual=true;P.render();
   r.refreshTitle=P.B("자동으로").disabled&&P.B("자동으로").title==="순서 정보를 다시 받는 중입니다";
-  P.ed.leave();return r;
+  (await P.ed.leave());return r;
 });
 await scenario("reviewFadeCost",async()=>{
   const r={samePixels:true,restoreBounds:true,multiplyBounds:true,dirtyBounds:true};
@@ -53005,7 +53009,7 @@ await scenario("reviewFadeCost",async()=>{
   P.down(144,16);P.move(144,40);P.B("붓").fire("click");const afterTool=calls;P.raf();
   r.toolFrame=calls===afterTool&&!M.pending()&&equal(before,M.m);
   P.ed._test.noRaf();P.B("페이드").fire("click");P.down(144,16);const beforeFallback=calls;P.move(144,24);
-  r.fallback=calls===beforeFallback+1&&M.stroke.width===8;P.up();P.ed.leave();return r;
+  r.fallback=calls===beforeFallback+1&&M.stroke.width===8;P.up();(await P.ed.leave());return r;
 });
 console.log(JSON.stringify(out));
 '''
@@ -53030,7 +53034,7 @@ console.log(JSON.stringify(out));
     board = (PKG / "web_design_patch" / "board.js").read_text(encoding="utf-8")
     mask_keys = board[board.index('    mask: [['):board.index('  const CHIP_KEY')]
     check('["Ctrl+Z", "실행 취소"' in mask_keys, "8-C 마스크 도움말 Ctrl+Z 실행 취소")
-    css = (PKG / "web_design_patch" / "board.css").read_text(encoding="utf-8").split('/* ── 배치 8-C')[1]
+    css = (PKG / "web_design_patch" / "board.css").read_text(encoding="utf-8").split('/* ── 배치 8-C')[1].split("/* Forge F1", 1)[0]
     check(all(x.strip().startswith(("#mask-panel", "#mask-list")) for x in css.split("*/", 1)[1].split("}") if x.strip()),
           "8-C CSS는 마스크 패널·목록에만 적용")
 
@@ -53774,11 +53778,11 @@ def batch10a_unit():
     check("preparePreview(values, P0)" in js[js.index("async function saveSection("):js.index("function typed(")]
           and "preparePreview(D.prepare, P0)" in js[js.index("async function resetDerived("):js.index("function panelBusy(")], "D152 저장·마지막 실행 값 확인 창 연결")
     script = "const assert=require('node:assert/strict'); const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);\n"
-    script += "\n".join(_layout_js_fn(js, name, "    ") + "\n}" for name in ("prepareChanged", "prepareText"))
+    script += "\n".join(_fw_legacy_js(_layout_js_fn(js, name, "    ") + "\n}") for name in ("prepareChanged", "prepareText", "hiddenPath"))
     script += "\n" + _layout_js_fn(js, "typed", "    ") + "\n}"
     for name in ("preparePreview", "switchModel", "saveSection"):
         start = js.index(f"    async function {name}(")
-        script += "\n" + js[start:js.index("\n    }\n", start)] + "\n}"
+        script += "\n" + _fw_legacy_js(js[start:js.index("\n    }\n", start)] + "\n}")
     script += "\nconst p=" + json.dumps(preview, ensure_ascii=False) + ";\n"
     script += "\nconst inexact=" + json.dumps(inexact_previews, ensure_ascii=False) + ";\n"
     script += r'''
@@ -54187,11 +54191,11 @@ def batch10b_unit():
         data.write_text(json.dumps({"pipeline": str(web / "pipeline.js"), "checklist": str(web / "checklist.js"),
             "functions": {n: fn(pj, n, "    ") for n in ["dimWhy", "planDim", "confirmOf", "confirmGate", "confirmRest", "confirmRestRow"]},
             "dimText": pj[pj.index("      const why = dimWhy();"):pj.index('      s = section("초안 승인");', pj.index("      const why = dimWhy();"))],
-            "pendingApply": fn(pj, "pendingApply", "    "), "header": fn(bj, "renderHeader", "  "),
+            "pendingApply": fn(pj, "pendingApply", "    "), "header": _fw_legacy_js(fn(bj, "renderHeader", "  ")),
             "runLine": pj[pj.index("        const rt = runText({ ...p.run,"):pj.index("        line(s, rt.line,")],
             "boardWrite": fn(bj, "write", "  "), "refresh": fn(bj, "refresh", "  "), "pollState": fn(bj, "pollState", "  "),
             "cancelButton": fn(bj, "cancelButton", "  "),
-            "cancel": fn(bj, "cancelRerolls", "  ")}), encoding="utf-8")
+            "cancel": _fw_legacy_js(fn(bj, "cancelRerolls", "  "))}), encoding="utf-8")
         js.write_text(r"""
 const fs = require('fs'), vm = require('vm'), assert = require('assert');
 const input = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
@@ -59992,11 +59996,561 @@ def forge_jobs_unit():
         check(("bmk_design_patch" in sys.modules) == before, "FJ33 노드 import 캐시 오염 없음")
 
 
+def _fw_legacy_js(source):
+    """독립 함수 하네스가 새 환경·확인 의존성도 로컬 대역으로 받게 한다."""
+    return source.replace(") {", ") { " + 'const SM = () => !!(typeof window !== "undefined" && window.DPEnv && window.DPEnv.serverMode); const can = n => typeof window === "undefined" || !window.DPEnv ? !["jobs", "export_download"].includes(n) : window.DPEnv.can(n); const askFree = async (t, same) => { const ok = await (window.DPDialog ? window.DPDialog.confirm(t) : window.confirm(t)); return ok && (!same || same()); };', 1)
+
+
 def forge_js_unit():
     """F1 갈래 W — DPEnv·DPDialog·서버 모드 큐·숨김·로컬 유료 동의 고정(node vm, --quick 포함)."""
     section("Forge F1 화면 (forge_js_unit)")
     web = PKG / "web_design_patch"
     check((web / "env.js").is_file() and (web / "dialog.js").is_file(), "FW0 env.js·dialog.js 가 있음")
+    node = shutil.which("node")
+    if not node:
+        skip("FW node 없음 — Forge 화면 VM 시험 못 돌림")
+        return
+    sources = {name: (web / name).read_text(encoding="utf-8") for name in
+               ("env.js", "dialog.js", "board.js", "pipeline.js", "ref_edit.js", "mask_edit.js", "layout_edit.js")}
+    for name, count in (("board.js", 3), ("pipeline.js", 11), ("ref_edit.js", 6), ("mask_edit.js", 7), ("layout_edit.js", 6)):
+        code = re.sub(r"//[^\n]*", "", sources[name])
+        calls = code.count("await askFree(") + code.count("(p) => askFree(")
+        check(calls == count, f"FW1 무료 확인 {name}: {calls}/{count} 비동기·취소 가드")
+        check("if (!same || same()) return true;" in code and "askFree.pending" in code, f"FW2 {name} 확인 중 재진입·대상 재확인 가드")
+    check("await ok(pv)" in sources["pipeline.js"], "FW3 채택 콜백의 약속을 기다림")
+    check('tabLink = SM() ? null : window.DPPipeline.link' in sources["board.js"], "FW4 서버에서 ComfyUI 탭 연결을 만들지 않음")
+    for cap, name in (("open_folder", "board.js"), ("external", "pipeline.js"), ("path_input", "ref_edit.js"),
+                      ("local_qwen", "pipeline.js"), ("ps_mask", "pipeline.js"), ("sam3", "ref_edit.js")):
+        check(f'can("{cap}")' in sources[name], f"FW5 기능별 숨김 {cap}")
+    # 로컬 유료 동의 식 5곳은 네이티브 그대로(주변에 서버 갈래만 더함).
+    check(sources["board.js"].count('agent ? !(await pipe.agentConfirm(text.split("\\n"), need)) : !window.confirm(text)') == 2
+          and 'if (n && !window.confirm(`${why}' in sources["board.js"]
+          and ': window.confirm(approveText(kind, p, pair[1].split(","), PS.planStyle, full).concat(again, "계속할까요?").join("\\n"));' in sources["pipeline.js"]
+          and 'return agent ? agentAsk("reroll", lines, need) : window.confirm(lines.join("\\n"));' in sources["pipeline.js"],
+          "FW6 D328 로컬 유료 동의 5곳의 네이티브 식 보존")
+    out = OUT_ROOT / "forge_js"
+    out.mkdir(parents=True, exist_ok=True)
+    data = {"source": sources, "api": _server_api()}
+    (out / "in.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    (out / "core.mjs").write_text(_fw_core_js(), encoding="utf-8")
+    result = subprocess.run([node, str(out / "core.mjs"), str(out / "in.json")], capture_output=True,
+                            text=True, encoding="utf-8", timeout=60)
+    if result.returncode or not result.stdout.strip():
+        check(False, f"FW VM 실패: {result.stderr[-4000:]}")
+        return
+    for name, ok in json.loads(result.stdout.strip().splitlines()[-1]).items():
+        check(ok is True, f"{name}: {ok}" if ok is not True else name)
+    h = _PL_JS_HARNESS
+    cut = [h[h.index(a):h.index(b, h.index(a))] for a, b in
+           (("import fs", "async function run("), ("class El {", "async function mouse("),
+            ("function boardState()", 'await scenario("panel"'), ("function quietPipeline(mod)", 'await scenario("panelDrift"'))]
+    setup = _PAID_STUDIO_JS_HARNESS.split('// ── J-P3 승인 단추:', 1)[0]
+    harness = "\n".join(cut) + setup + _fw_ui_js()
+    # VM 안에서만 관찰점을 열어 실제 전송·후속 판정까지 검사한다.
+    hook = '''.replace("return { stateChanged, enter, leave, select, queue: boardQueue", "return { _fw: { sendPaid, askFree, applyNow, saveSection, exportNow, setupQueueIdle, mockAsk, PS, form, asked }, stateChanged, enter, leave, select, queue: boardQueue")
+      .replace("paidResult(stage, d, false);", "paidResult(stage, d, false); window.__fwPaid = d;")'''
+    harness = harness.replace('fs.readFileSync(IN.pipelineJs, "utf8")', 'fs.readFileSync(IN.pipelineJs, "utf8")' + hook)
+    (out / "ui.mjs").write_text(harness, encoding="utf-8")
+    (out / "ui.json").write_text(json.dumps({"api": _pl_api(), "forge": _server_api(),
+                                             "pipelineJs": str(web / "pipeline.js"), "boardJs": str(web / "board.js")}, ensure_ascii=False), encoding="utf-8")
+    result = subprocess.run([node, str(out / "ui.mjs"), str(out / "ui.json")], capture_output=True,
+                            text=True, encoding="utf-8", timeout=90)
+    if result.returncode or not result.stdout.strip():
+        check(False, f"FW 화면 VM 실패: {result.stderr[-4000:]}")
+        return
+    for name, values in json.loads(result.stdout.strip().splitlines()[-1]).items():
+        for key, value in values.items():
+            check(value is True, f"{name} {key}" if value is True else f"{name} {key}: {value}")
+
+
+def _fw_core_js():
+    """DOM·시계·fetch 모두 메모리 대역. URL은 해석만 하며 실제 통신하지 않는다."""
+    return r'''
+import fs from "node:fs";
+import vm from "node:vm";
+const IN = JSON.parse(fs.readFileSync(process.argv[2], "utf8")), A = IN.api, out = {};
+const clone = x => JSON.parse(JSON.stringify(x));
+const settle = async () => { for (let i=0;i<20;i++) await new Promise(r => setImmediate(r)); };
+const response = (data, status=200) => new Response(JSON.stringify(data), {status, headers:{"Content-Type":"application/json"}});
+async function scenario(name, fn) { try { out[name] = await fn(); } catch(e) { out[name] = e.stack; } }
+class Element {
+  constructor(tag, doc) { this.tagName=tag.toUpperCase(); this.doc=doc; this.children=[]; this.attrs={}; this.inert=false; this.own=""; this.classList={contains:n=>String(this.className||"").split(" ").includes(n)}; }
+  appendChild(x) { this.children.push(x); x.parent=this; return x; }
+  append(...xs) { xs.forEach(x => this.appendChild(x)); }
+  remove() { if(this.parent) this.parent.children=this.parent.children.filter(x=>x!==this); this.parent=null; }
+  focus() { this.doc.activeElement=this; }
+  setAttribute(k,v) { this.attrs[k]=String(v); }
+  get textContent() { return this.own + this.children.map(x=>x.textContent).join(""); }
+  set textContent(v) { this.own=String(v); this.children=[]; }
+  get isConnected() { return !!this.parent || this===this.doc.body; }
+  all() { return [this,...this.children.flatMap(x=>x.all())]; }
+}
+function context({hash="", handler, storageLocked=false}={}) {
+  const timers=new Map(), events=new Map(), calls=[], logs=[], values=new Map(); let seq=0;
+  const doc={createElement(tag){return new Element(tag,this);},addEventListener(){}};
+  doc.body=new Element("body",doc); doc.activeElement=doc.body;
+  const old={getItem:k=>values.get(String(k))??null,setItem:(k,v)=>values.set(String(k),String(v)),removeItem:k=>values.delete(String(k))};
+  const loc={href:"https://studio.invalid/bmk/design_patch/board/?root=0123456789ab"+hash,
+    pathname:"/bmk/design_patch/board/",search:"?root=0123456789ab",hash,origin:"https://studio.invalid",reload(){loc.reloaded=true;}};
+  const ctx=vm.createContext({document:doc,location:loc,URL,URLSearchParams,Headers,Request,Response,AbortController,
+    console:{warn:m=>logs.push(m)}, history:{replaceState(a,b,url){loc.hash="";loc.href=loc.origin+url;loc.replaced=url;}},
+    setTimeout(fn,ms){timers.set(++seq,{fn,ms});return seq;},clearTimeout(id){timers.delete(id);},
+    addEventListener(type,fn,capture){const list=events.get(type)||[];list.push({fn,capture});events.set(type,list);},
+    removeEventListener(type,fn){events.set(type,(events.get(type)||[]).filter(x=>x.fn!==fn));}});
+  ctx.window=ctx; Object.defineProperty(ctx,"localStorage",{configurable:!storageLocked,value:old}); ctx.sessionStorage={original:true};
+  const original=function(...args){calls.push(args);return Promise.resolve().then(()=>handler ? handler(...args) : response({}));};
+  ctx.fetch=original;
+  const fire=async ms=>{for(const [id,t] of [...timers])if(t.ms===ms){timers.delete(id);t.fn();}await settle();};
+  const key=(type,k,trusted=true,extra={})=>{
+    const e={type,key:k,isTrusted:trusted,stopImmediatePropagation(){this.stopped=true;},stopPropagation(){},preventDefault(){this.prevented=true;},...extra};
+    for(const item of [...(events.get(type)||[])]){item.fn(e);if(e.stopped)break;}return e;
+  };
+  return {ctx,doc,calls,logs,old,loc,events,timers,original,fire,key};
+}
+const boot=async options=>{const e=context(options);vm.runInContext(IN.source["env.js"],e.ctx);e.ready=false;e.ctx.DPEnv.ready.then(()=>{e.ready=true;});await settle();return e;};
+const serverHandler=(url,opts)=>{
+  const path=new URL(typeof url==="string"||url instanceof URL?url:url.url,"https://studio.invalid").pathname;
+  if(path.endsWith("/env"))return response(A.env_server_no_session.response);
+  if(path==="/api/session")return response(A.session_post.response);
+  if(path==="/api/preferences")return response(opts?.method==="POST"?{ok:true}:A.prefs_get.response);
+  return response({ok:true});
+};
+await scenario("FW7 해시 동기 삭제·쿼리 보존·토큰은 세션만",async()=>{
+  const e=context({hash:"#token=dev%3Aalice&organization_id=org1",handler:serverHandler});
+  vm.runInContext(IN.source["env.js"],e.ctx);
+  const sync=e.loc.hash==="" && e.loc.replaced===e.loc.pathname+e.loc.search;
+  await e.ctx.DPEnv.ready;
+  const post=e.calls.find(([u,o])=>String(u).endsWith("/api/session"));
+  return sync && post[1].method==="POST" && JSON.stringify(JSON.parse(post[1].body))===JSON.stringify(A.session_post.request)
+    && new Headers(post[1].headers).get("X-DesignPatch-Request")==="1" && !JSON.stringify(e.ctx.DPEnv).includes("dev:alice")
+    && e.calls.filter(([u])=>String(u).endsWith("/env")).length===1;
+});
+for(const mode of ["404","local"] ) await scenario("FW8 로컬 판정·caps·fetch 원본 "+mode,async()=>{
+  const e=await boot({handler:()=>mode==="404"?response({},404):response(A.env_local.response)});
+  const opts={method:"POST",headers:{"Custom":"yes"},body:"x"}, req=new Request("https://studio.invalid/any");
+  await e.ctx.fetch(req,opts); const last=e.calls.at(-1);
+  return e.ready && e.ctx.DPEnv.serverMode===false && !e.ctx.DPEnv.can("jobs") && e.ctx.DPEnv.can("sam3")
+    && e.ctx.localStorage===e.old && last[0]===req && last[1]===opts;
+});
+for(const mode of ["500","network","json","shape","timeout"]) await scenario("FW9 판정 실패에서 로컬 진입 없음 "+mode,async()=>{
+  const e=await boot({handler:()=>{if(mode==="network")throw Error("offline");if(mode==="timeout")return new Promise(()=>{});
+    return mode==="json"?new Response("not json"):response(mode==="shape"?{server_mode:true}: {},mode==="shape"?200:500);}});
+  if(mode==="timeout")await e.fire(8000);
+  const button=e.doc.body.all().find(x=>x.tagName==="BUTTON");
+  return !e.ready && e.ctx.DPEnv.serverMode!==false && e.doc.body.textContent.includes("서버에 연결하지 못했습니다") && !!button && !e.loc.reloaded;
+});
+for(const code of [401,503]) await scenario("FW10 세션 실패 안내·ready 대기 "+code,async()=>{
+  const e=await boot({handler:(u,o)=>String(u).endsWith("/api/session")?response({error:"세션 없음",reason:"no_session"},code):serverHandler(u,o)});
+  return !e.ready && e.ctx.DPEnv.serverMode===true && e.doc.body.textContent.includes("Forge에서 Design Patch Studio를 다시 열어 주세요.")
+    && !e.doc.body.all().some(x=>x.tagName==="BUTTON");
+});
+await scenario("FW11 서버 저장소 채움·300ms 모음·실패 후 재시도·pagehide",async()=>{
+  let fail=false;const e=await boot({handler:(u,o)=>String(u).endsWith("/api/preferences")&&o?.method==="POST"&&fail?response({},500):serverHandler(u,o)});
+  const store=e.ctx.DPEnv.store, original=e.ctx.sessionStorage;
+  const seeded=store===e.ctx.localStorage && store.getItem("bmk-dp-studio")===A.prefs_get.response.values["bmk-dp-studio"];
+  const posts=()=>e.calls.filter(([u,o])=>String(u).endsWith("/api/preferences")&&o?.method==="POST");
+  store.setItem("bmk-dp-studio","a"); store.setItem("bmk-dp-studio","b"); store.removeItem("bmk-dp-seen:0123456789ab");
+  const sync=store.getItem("bmk-dp-studio")==="b" && posts().length===0;
+  fail=true;await e.fire(300); const first=JSON.parse(posts()[0][1].body);
+  fail=false;store.setItem("bmk-dp-next",42);await e.fire(300);const retry=JSON.parse(posts()[1][1].body);
+  store.setItem("bmk-dp-last","x");for(const x of e.events.get("pagehide"))x.fn();await settle();
+  return seeded&&sync&&first.set["bmk-dp-studio"]==="b"&&first.remove.length===1&&retry.set["bmk-dp-studio"]==="b"
+    &&retry.set["bmk-dp-next"]==="42"&&posts().at(-1)[1].keepalive===true&&e.ctx.sessionStorage===original;
+});
+await scenario("FW12 저장소 교체 불가 시 원 저장소·경고",async()=>{
+  const e=await boot({storageLocked:true,handler:serverHandler});return e.ready&&e.ctx.localStorage===e.old&&e.ctx.DPEnv.store===e.old&&e.logs.length===1;
+});
+await scenario("FW13 fetch 헤더 3꼴·Request·HEAD·다른 origin",async()=>{
+  const e=await boot({handler:serverHandler});
+  for(const headers of [{Custom:"one"},new Headers({Custom:"one"}),[["Custom","one"]]]){
+    await e.ctx.fetch(new Request("https://studio.invalid/work",{method:"POST",headers:{Base:"yes"},body:"request"}),{headers});
+    const h=new Headers(e.calls.at(-1)[1].headers);
+    if(h.get("Custom")!=="one"||h.get("Base")!=="yes"||h.get("X-DesignPatch-Request")!=="1"||h.get("X-DesignPatch-Account")!==A.session_get.response.account.tag)return false;
+  }
+  await e.ctx.fetch("/head",{method:"HEAD"}); const head=new Headers(e.calls.at(-1)[1].headers);
+  const opts={method:"POST"};await e.ctx.fetch("https://other.invalid/path",opts);
+  return !head.has("X-DesignPatch-Request")&&head.has("X-DesignPatch-Account")&&e.calls.at(-1)[1]===opts;
+});
+for(const [code,reason,text] of [[401,"no_session","Forge에서"],[409,"session_changed","다른 계정으로 바뀌었습니다"]]){
+  await scenario("FW14 응답 보존·전체 세션 안내 "+code,async()=>{
+    const e=await boot({handler:(u,o)=>String(u).endsWith("/work")?response({reason,error:"test"},code):serverHandler(u,o)});
+    const r=await e.ctx.fetch("https://studio.invalid/work");return (await r.json()).reason===reason&&e.doc.body.textContent.includes(text);
+  });
+}
+await scenario("FW15 대화 상자 줄·신뢰 클릭·초점·키 캡처·inert·중복",async()=>{
+  const e=context();const before=e.doc.createElement("button"), inert=e.doc.createElement("section");inert.inert=true;e.doc.body.append(before,inert);before.focus();
+  vm.runInContext(IN.source["dialog.js"],e.ctx);const d=e.ctx.DPDialog;
+  let done=false;const p=d.confirm("첫 줄\n\n<script>").then(x=>{done=x;return x;});
+  const overlay=e.doc.body.children.at(-1), buttons=overlay.all().filter(x=>x.tagName==="BUTTON"), ps=overlay.all().filter(x=>x.tagName==="P");
+  buttons[0].onclick({isTrusted:false});await settle();
+  const blocked=!done&&d.open&&before.inert&&await d.confirm("중복")===false&&ps.length===3&&ps[2].textContent==="<script>";
+  const up=e.key("keyup","Q"),press=e.key("keypress","w");e.key("keydown","Tab");const tab=e.doc.activeElement===buttons[1];
+  e.key("keydown","Tab",true,{shiftKey:true});const focus=e.doc.activeElement===buttons[0];buttons[0].onclick({isTrusted:true});
+  return blocked&&up.stopped&&press.stopped&&tab&&focus&&await p&&e.doc.activeElement===before&&!before.inert&&inert.inert&&!d.open;
+});
+await scenario("FW16 danger·Enter·Space·Esc·alert·native·lock 원복",async()=>{
+  const e=context();vm.runInContext(IN.source["dialog.js"],e.ctx);const d=e.ctx.DPDialog;
+  let p=d.confirm(["위험"],{danger:true});e.key("keydown","Enter");if(await p!==false)return false;
+  p=d.confirm("yes");e.key("keydown"," ");if(await p!==true)return false;
+  p=d.confirm("no");e.key("keydown","Escape");if(await p!==false)return false;
+  p=d.alert("알림");const count=e.doc.body.all().filter(x=>x.tagName==="BUTTON").length;e.key("keydown","Enter");if(await p!==undefined||count!==1)return false;
+  e.ctx.confirm=t=>t==="native";if(!d.native("native"))return false;
+  const b=e.doc.createElement("main");e.doc.body.append(b);const locked=d.lock()&&!d.lock()&&b.inert&&e.key("keydown","R").stopped;
+  d.unlock();return locked&&!b.inert&&!d.open&&(e.events.get("keydown")||[]).length===0;
+});
+await scenario("FW17 서버 무료 큐·취소·history 경로·거절",async()=>{
+  const e=context();e.ctx.DPEnv={serverMode:true};vm.runInContext(IN.source["pipeline.js"],e.ctx);
+  const log=[], fetch=async(u,o)=>{const b=o?.body?JSON.parse(o.body):null;log.push([String(u),b]);
+    if(String(u).includes("jobs/prompt"))return response(A.jobs_prompt.response);
+    if(String(u).includes("jobs/history/"))return response({});
+    return response(log.some(([,b])=>b?.delete)?{queue_running:[],queue_pending:[]}:A.jobs_queue.response);};
+  const s=e.ctx.DPPipeline.session(x=>"https://studio.invalid/api/"+x,()=>{throw Error("ComfyUI 경로 금지");},"0123456789ab",fetch,e.old);
+  await s.queue("apply","3:12");const queued=clone(log[0][1]);await s.cancel();
+  return JSON.stringify(queued)===JSON.stringify(A.jobs_prompt.request_free)&&log.every(([u])=>u.includes("/jobs/"))
+    &&log.some(([u,b])=>u.endsWith("jobs/queue")&&b.root==="0123456789ab"&&b.delete[0]===A.jobs_prompt.response.prompt_id)
+    &&log.some(([u])=>u.includes("jobs/history/")&&u.endsWith("?root=0123456789ab"));
+});
+await scenario("FW18 채택 비동기 취소 시 preview:false 쓰기 없음",async()=>{
+  const e=context();vm.runInContext(IN.source["pipeline.js"],e.ctx);const posts=[];
+  const s=e.ctx.DPPipeline.session(x=>x,x=>x,"root",async(u,o)=>{posts.push(JSON.parse(o.body));return response({});},e.old);
+  let resolve;const decision=new Promise(r=>{resolve=r;});const p=s.adopt({id:"crop",seen:"seen",crop_sig:"sig",adopt:{value:"text"}},"adopt",null,()=>decision);
+  await settle();const waiting=posts.length===1&&posts[0].preview===true;resolve(false);const result=await p;
+  return waiting&&result===null&&posts.length===1;
+});
+
+function sourceFn(file, name, indent="  ") {
+  const src=IN.source[file], match=src.match(new RegExp("\\n"+indent+"(?:async )?function "+name+"\\("));
+  if(!match)throw Error(file+":"+name);
+  const start=match.index+1,end=src.indexOf("\n"+indent+"}\n",start);
+  return src.slice(start,end)+"\n"+indent+"}";
+}
+await scenario("FW22 로컬 유료 보드 3곳은 DPDialog가 있어도 native",async()=>{
+  const e=context(), c=e.ctx;let calls=0,dialogs=0,writes=0,queued=0;
+  Object.assign(c,{S:{crops:[{id:"crop",layout_status:"changed"}],pending_preapproved:2},LAYOUT_STATUS:{changed:true},
+    rerollArm:null,rerollSent:null,REROLL_CONFIRM_MS:2500,SM:()=>false,usd:()=>"",curTarget:()=>({crop_id:"crop"}),
+    rerollCell:()=>({cell_key:"abc",variant:"V1"}),tabWay:()=>"paid",reviewMissing:()=>"",toast(){},
+    pipe:{agentOn:()=>false,paidLock:()=>"",paidWhy:()=>"",applyWarn:()=>[],side:""},
+    write:async()=>{writes++;return {};},queueReroll:()=>queued++,queueInComfy:()=>{queued++;return true;}});
+  c.DPDialog={confirm:()=>{dialogs++;return Promise.resolve(true);}};
+  c.confirm=()=>{calls++;return calls===1;};
+  vm.runInContext(sourceFn("board.js","cellPre")+"\n"+sourceFn("board.js","reroll")+"\n"+sourceFn("board.js","applyFree"),c);
+  await c.reroll(true);const reroll=calls===2&&!dialogs&&!writes;
+  c.confirm=()=>{calls++;return false;};await c.applyFree();
+  const local=reroll&&calls===3&&!dialogs&&!queued;
+  c.SM=()=>true;c.pipe=null;await c.applyFree();
+  return local&&calls===3&&!dialogs&&!queued;
+});
+for(const file of ["board.js","pipeline.js","ref_edit.js","mask_edit.js","layout_edit.js"]){
+  await scenario("FW23 확인 중 변경·중복 차단 "+file,async()=>{
+    const e=context(),c=e.ctx;let answer,n=0,warns=0;
+    const M={key:"a",seq:0,pending:()=>1,undo:[],redo:[],info:{seen:1},busy:false,stroke:null};
+    Object.assign(c,{on:true,S:{rev:1,remote:1,L:{rev:1},R:{rev:1}},PS:{P:{rev:1}},M,stateVer:s=>s.rev,
+      tKey:"a",cKey:"b",busy:false,editing:false,refsOn:false,pipeOn:false,maskOn:false,maskEd:null,pipe:null,
+      cur:"c",dv:null,text:"",form:{},sel:new Set(),psMask:null,opts:{toast:()=>warns++},toast:()=>warns++,adjustSaving:false,
+      seen:1,sheet:null,epoch:0,result:null,inflight:false,T:{},role:"main",desc:"",savedReq:null,savedTransform:null,poolSelected:new Set(),multi:[],proposal:null});
+    c.DPDialog={confirm:()=>{n++;return new Promise(r=>{answer=r;});}};
+    vm.runInContext(sourceFn(file,"askFree",file==="board.js"?"  ":"    "),c);
+    const first=c.askFree("한 번",()=>c.M.key==="a");if(await c.askFree("중복")!==false||n!==1)return false;
+    c.M.key="changed";
+    answer(true);if(await first!==false||warns!==1)return false;
+    const second=c.askFree("재확인 불필요");c.S.rev++;answer(true);return await second===true&&n===2;
+  });
+}
+await scenario("FW24 뷰어 동기 선택은 즉시 보류·확인 뒤만 이음매 이동",async()=>{
+  const e=context(),c=e.ctx;let answer;const moves=[];
+  Object.assign(c,{S:{},maskOn:true,M:{key:"old",pending:()=>1},pendingSection:null,LOCKED:[],adjustSaving:false,
+    cancelXform(){},finishFade(){},pointerup(){},candOf:()=>null,label:x=>x,render(){},open:key=>{c.M.key=key;},
+    viewer:{showSeam:s=>moves.push(s)},askFree:()=>new Promise(r=>{answer=r;})});
+  vm.runInContext(sourceFn("mask_edit.js","go","    ")+"\n"+sourceFn("board.js","pickCrop"),c);
+  c.maskEd={go:c.go};const seam={key:"new",side:"top"};
+  if(c.pickCrop("crop","A","new",seam)!==false)return false;
+  await settle();if(moves.length)return false;answer(false);await settle();if(moves.length||c.M.key!=="old")return false;
+  if(c.pickCrop("crop","A","new",seam)!==false)return false;await settle();answer(true);await settle();
+  return moves.length===1&&moves[0]===seam&&c.M.key==="new";
+});
+
+await scenario("FW26 mock·Claude 상자 공유 잠금·Esc·신뢰 클릭",async()=>{
+  const e=context(),c=e.ctx,background=e.doc.createElement("main");e.doc.body.append(background);
+  Element.prototype.querySelectorAll=function(){return this.all().filter(x=>x.tagName==="BUTTON"&&!x.disabled);};
+  Element.prototype.querySelector=function(){return this.querySelectorAll()[0]||null;};
+  const el=(tag,cls,t)=>{const n=e.doc.createElement(tag);n.className=cls;if(t!==undefined)n.textContent=t;return n;};
+  Object.assign(c,{SM:()=>false,ask:null,SIDE:"부수 효과",agentFresh:{cap:100,spent:0},el,
+    button:(label,title,click)=>{const n=el("button","",label);n.onclick=click;return n;},btns:(host,...bs)=>host.append(...bs)});
+  vm.runInContext(IN.source["dialog.js"]+"\n"+["mockAsk","agentAsk","askKeys"].map(n=>sourceFn("pipeline.js",n,"    ")).join("\n"),c);
+  const p=c.mockAsk("생성 승인 [MOCK]",false), yes=e.doc.body.children.at(-1).querySelector();
+  yes.onclick({isTrusted:false});await settle();
+  if(!c.DPDialog.open||!background.inert||await c.agentAsk("run",["승인"],1)!==false)return false;
+  e.key("keydown","Tab");if(e.doc.activeElement===yes)return false;
+  e.key("keydown","Escape");if(await p!==false||c.DPDialog.open||background.inert)return false;
+  const q=c.agentAsk("run",["승인"],1);if(!e.key("keyup","Q").stopped)return false;
+  for(const key of ["Enter"," "]){const ev=e.key("keydown",key);if(!ev.stopped||ev.prevented)return false;}
+  e.doc.body.children.at(-1).querySelector().onclick({isTrusted:true});
+  return await q===true&&!c.DPDialog.open&&!background.inert;
+});
+await scenario("FW27 서버 SAM3 응답은 ComfyUI 큐 전에 차단",async()=>{
+  const e=context();e.ctx.DPEnv={serverMode:true};vm.runInContext(IN.source["ref_edit.js"],e.ctx);let calls=0;
+  const s=e.ctx.DPRefEdit.session(x=>x,()=>{throw Error("ComfyUI 경로 금지");},"root",async()=>{calls++;return response({state:"client_queue",req:"request"});});
+  try{await s.cut({method:"sam3"});return false;}catch(err){return calls===1&&!s.job&&err.message==="서버 모드에서는 자동 오리기를 쓸 수 없습니다";}
+});
+await scenario("FW28 R1 Drain·대기 취소는 판 갱신과 독립",async()=>{
+  const e=context(),c=e.ctx,posts=[],warnings=[];let answer;
+  Object.assign(c,{S:{rev:1,running:true,rerolls_pending:3,crops:[]},busy:false,pipe:null,rerollArm:null,rerollSent:null,
+    toast:t=>warnings.push(t),write:async(path,body)=>{posts.push([path,body]);return {};},
+    DPDialog:{confirm:()=>new Promise(r=>{answer=r;})}});
+  vm.runInContext(["askFree","drain","cancelRerolls"].map(n=>sourceFn("board.js",n)).join("\n"),c);
+  const drain=c.drain();c.S.rev++;answer(true);await drain;
+  if(posts.length!==1||posts[0][0]!=="drain"||!c.S.running||warnings.length)return false;
+  c.S.running=false;const cancel=c.cancelRerolls("all");c.S.rev++;answer(true);await cancel;
+  if(posts.length!==2||posts[1][1].op!=="cancel")return false;
+  const gone=c.cancelRerolls("all");c.S.rerolls_pending=0;answer(true);await gone;
+  return posts.length===2&&warnings.some(t=>t.includes("확인 중 상태"));
+});
+for(const action of ["leave","go","reload","discard"])for(const change of ["rev","key","strokes","busy"]){
+  await scenario("FW29 R1 마스크 "+action+" / "+change,async()=>{
+    const e=context(),c=e.ctx;let answer,warnings=0,effects=0,strokes=2;
+    Object.assign(c,{M:{key:"old",seq:1,busy:"",pending:()=>strokes,discard:()=>{effects++;},behind:()=>false},
+      S:{rev:1,running:true},LOCKED:["apply"],adjustSaving:false,pendingSection:null,view:{},raf:0,seam:null,
+      cancelXform(){},finishFade(){},pointerup(){},candOf:()=>null,label:x=>x,render(){},once(){},
+      open(){effects++;},cancelAnimationFrame(){},viewer:{setEditor(){effects++;},setMaskLayer(){},showSeam(){}},
+      list:{replaceChildren(){}},panel:{replaceChildren(){}},opts:{toast:()=>warnings++},
+      DPDialog:{confirm:()=>new Promise(r=>{answer=r;})}});
+    vm.runInContext(["askFree",action].map(n=>sourceFn("mask_edit.js",n,"    ")).join("\n"),c);
+    const pending=c[action]({key:"next"},false);c.S.rev++;
+    if(change==="key")c.M.key="other";if(change==="strokes")strokes++;if(change==="busy")c.M.busy="apply";
+    answer(true);await pending;
+    return c.S.running&&(change==="rev"?effects===1&&warnings===0:effects===0&&warnings===1);
+  });
+}
+await scenario("FW30 R1 레이아웃 선택 변경 취소·원격 rev 갱신 허용",async()=>{
+  const e=context(),c=e.ctx;let answer,removed=0,warns=0;
+  Object.assign(c,{sel:"crop1",multi:null,S:{remote:1,crop:id=>({id,name:id}),remove:async()=>{removed++;return true;}},
+    flushNudge:async()=>{},lockedNow:()=>false,againText:()=>"",act:p=>p,opts:{toast:()=>warns++},
+    DPDialog:{confirm:()=>new Promise(r=>{answer=r;})}});
+  vm.runInContext(["askFree","removeSel"].map(n=>sourceFn("layout_edit.js",n,"    ")).join("\n"),c);
+  const first=c.removeSel();await settle();c.sel="crop2";answer(true);await first;
+  if(removed||warns!==1)return false;
+  const second=c.removeSel();await settle();c.S.remote++;answer(true);await second;
+  return removed===1&&warns===2;
+});
+await scenario("FW32 R2 보드 R·R R 비 mock 은 확인·예약 POST 없음",async()=>{
+  const e=context(),c=e.ctx;let dialogs=0,posts=0,warns=0;
+  Object.assign(c,{SM:()=>true,DPEnv:{serverMode:true,backend:"future"},toast:()=>warns++,
+    DPDialog:{confirm:async()=>{dialogs++;return true;}},write:async()=>{posts++;}});
+  vm.runInContext(sourceFn("board.js","reroll"),c);
+  await c.reroll(true);await c.reroll(false);await c.reroll(false);
+  if(posts!==0||dialogs!==0||warns!==3)return false;
+  let queued=0,body;Object.assign(c,{S:{rev:1,crops:[]},tKey:"t",cKey:"c",rerollArm:null,rerollSent:null,
+    rerollCell:()=>({cell_key:"cell",variant:"v",pre:0}),usd:()=>"",tabWay:()=>"paid",reviewMissing:()=>"",
+    pipe:{agentOn:()=>false,paidLock:()=>"",paidWhy:()=>"",applyWarn:()=>[],side:""},
+    write:async(path,b)=>{posts++;body=b;return {rev:2};},queueReroll:()=>queued++});
+  c.DPEnv.backend="mock";vm.runInContext(sourceFn("board.js","cellPre"),c);
+  await c.reroll(true);await e.fire(600);
+  return posts===1&&body.cell_key==="cell"&&body.count===1&&dialogs===1&&queued===1;
+});
+for(const kind of ["502","network"])await scenario("FW34 R3 무료 큐 불확실성 "+kind,async()=>{
+  const e=context();e.ctx.DPEnv={serverMode:true};vm.runInContext(IN.source["pipeline.js"],e.ctx);
+  const s=e.ctx.DPPipeline.session(x=>x,()=>{throw Error("ComfyUI 금지");},"root",async()=>{
+    if(kind==="network")throw Error("offline");return response({reason:"proxy",error:"gateway"},502);
+  },e.old);
+  try{await s.queue("export");return false;}catch(err){return err.message.includes("보냈는지 모름")&&err.message.includes("대기열을 확인")&&!s.job&&!s.sending;}
+});
+await scenario("FW35 R4 같은 페이지 env 재시도·토큰 교환·같은 ready",async()=>{
+  let envCalls=0;const e=context({hash:"#token=dev%3Aalice&organization_id=org1",handler:(u,o)=>{
+    if(String(u).endsWith("/env")&&++envCalls===1)return response({},500);return serverHandler(u,o);
+  }});
+  const before=e.doc.createElement("main"),held=e.doc.createElement("aside");held.inert=true;e.doc.body.append(before,held);
+  vm.runInContext(IN.source["env.js"],e.ctx);const ready=e.ctx.DPEnv.ready;let done=false;ready.then(()=>{done=true;});
+  await settle();if(done||!before.inert||!held.inert||e.loc.hash!==""||e.calls.some(([u])=>String(u).endsWith("/api/session")))return false;
+  e.doc.body.all().find(x=>x.tagName==="BUTTON").onclick();await settle();
+  const session=e.calls.filter(([u])=>String(u).endsWith("/api/session"));
+  return done&&ready===e.ctx.DPEnv.ready&&envCalls===2&&!before.inert&&held.inert&&!e.loc.hash&&!e.loc.reloaded
+    &&session.length===1&&session[0][1].method==="POST"&&JSON.parse(session[0][1].body).token==="dev:alice"
+    &&!e.doc.body.textContent.includes("다시 시도")&&!JSON.stringify(e.ctx.DPEnv).includes("dev:alice");
+});
+for(const mode of ["confirm","lock"])await scenario("FW36 R5 세션 차단은 상자 종료 뒤에도 inert "+mode,async()=>{
+  const e=await boot({handler:(u,o)=>String(u).endsWith("/lost")?response({reason:"session_changed",error:"changed"},409):serverHandler(u,o)});
+  const background=e.doc.createElement("main");e.doc.body.append(background);vm.runInContext(IN.source["dialog.js"],e.ctx);
+  const d=e.ctx.DPDialog;let ownerKeys=0;const pending=mode==="confirm"?d.confirm("쓰기 확인"):d.lock({keys:()=>ownerKeys++});
+  await e.ctx.fetch("https://studio.invalid/lost");
+  if(mode==="confirm"&&await pending!==false)return false;
+  if(mode==="lock"&&(!d.open||ownerKeys))return false;
+  d.unlock();e.key("keydown","Escape");
+  return background.inert&&!d.open&&!d.lock()&&e.doc.body.textContent.includes("다른 계정으로 바뀌었습니다")&&!e.doc.body.textContent.includes("쓰기 확인");
+});
+await scenario("FW37 R6 서버 R 문구·로컬 SIDE 보존",async()=>{
+  const messages=[];
+  for(const server of [true,false]){
+    const e=context(),c=e.ctx;Object.assign(c,{SM:()=>server,DPEnv:{serverMode:server,backend:"mock"},
+      S:{rev:1,crops:[]},tKey:"t",cKey:"c",rerollCell:()=>({cell_key:"cell",variant:"v",pre:0}),
+      usd:()=>"",tabWay:()=>"paid",reviewMissing:()=>"",toast(){},pipe:{agentOn:()=>false,paidLock:()=>"",paidWhy:()=>"",applyWarn:()=>[],side:"SIDE_SENTINEL"},
+      DPDialog:{confirm:async t=>{messages.push(t);return false;}},confirm:t=>{messages.push(t);return false;}});
+    vm.runInContext(sourceFn("board.js","cellPre")+"\n"+sourceFn("board.js","reroll"),c);await c.reroll(true);
+  }
+  return messages.length===2&&messages[0].includes("서버 작업으로 실행")&&!messages[0].includes("ComfyUI 탭")&&!messages[0].includes("SIDE_SENTINEL")
+    &&messages[1].includes("유료 호출이 사전 승인되고 ComfyUI 탭에 큐 요청을 보냅니다. 계속할까요?")&&messages[1].includes("SIDE_SENTINEL");
+});
+await scenario("FW39 R8 브라우저 단축키 기본 동작·Studio 전파 차단",async()=>{
+  const e=context();vm.runInContext(IN.source["dialog.js"],e.ctx);const d=e.ctx.DPDialog,p=d.confirm("키 검사");
+  for(const [key,extra] of [["F5",{}],["F12",{}],["r",{ctrlKey:true}],["I",{ctrlKey:true,shiftKey:true}],["r",{metaKey:true}],["ArrowLeft",{altKey:true}],["Enter",{ctrlKey:true}]]){
+    const ev=e.key("keydown",key,true,extra);if(!ev.stopped||ev.prevented||!d.open)return false;
+  }
+  for(const key of [" ","ArrowDown","PageDown","Home","Backspace"]){
+    const ev=e.key("keyup",key);if(!ev.stopped||!ev.prevented)return false;
+  }
+  d.cancel();return await p===false;
+});
+for(const during of [false,true])await scenario("FW40 R1 레퍼런스 explicit 재확인 시점 / "+during,async()=>{
+  const e=context(),c=e.ctx,posts=[],warnings=[];let reject,answer;
+  Object.assign(c,{sel:"A",epoch:1,result:{req:"cut-A"},role:"main",savedReq:null,savedTransform:null,
+    S:{save:body=>{posts.push(body);return posts.length===1?new Promise((resolve,no)=>{reject=no;}):Promise.resolve({file:"A.png",size:[10,10],bytes:100});}},
+    explicitOf:()=>[{file:"A.png"}],explicitText:()=>"A.png 덮어쓰기",sizeMb:()=>"100B",transformSignature:()=>"original",
+    renderSoon(){},opts:{toast:(t,k)=>{if(k==="warn")warnings.push(t);}},DPDialog:{confirm:()=>new Promise(r=>{answer=r;})}});
+  vm.runInContext(["askFree","save"].map(n=>sourceFn("ref_edit.js",n,"    ")).join("\n"),c);
+  const original={req:"cut-A",crop_id:"A",role:"main",transform:{rotate:0}},pending=c.save(original);
+  c.sel="B";reject(Error("explicit"));await settle();if(during)c.sel="C";answer(true);await pending;
+  return during?posts.length===1&&warnings.length===1:posts.length===2&&posts[1].crop_id==="A"&&posts[1].req==="cut-A"&&posts[1].confirm[0]==="A.png"&&!warnings.length;
+});
+console.log(JSON.stringify(out));
+'''
+
+
+def _fw_ui_js():
+    """기존 Studio DOM·서버 대역으로 서버 전송과 실제 패널을 실행한다."""
+    return r'''
+const F=IN.forge;
+const serverMode=()=>{ctx.window.DPEnv={serverMode:true,backend:"mock",can:n=>F.env_server.response.caps[n]===true};};
+await scenario("FW19 서버 유료 응답 5꼴",async()=>{
+  const result={};
+  for(const mode of ["ok","stale","http","unknown","httpText"]){
+    serverMode(); const e=await mkStudio();let sent=null;
+    ctx.fetch=async(u,o)=>{
+      if(String(u).includes("jobs/prompt")){
+        sent=JSON.parse(o.body);
+        if(mode==="unknown")throw Error("연결 끊김");
+        return {ok:mode==="ok",status:mode==="ok"?200:409,json:async()=>{if(mode==="httpText")throw Error("not json");return mode==="ok"?F.jobs_prompt.response:
+          mode==="stale"?F.jobs_prompt_stale.response:{error:"거절"};}};
+      }
+      return e.srv.fetch(u,o);
+    };
+    const hook=e.pipe._fw;hook.PS.track=(stage,pid)=>({stage,pid});
+    await hook.sendPaid("run","hash","crop","생성");const d=ctx.window.__fwPaid;
+    result[mode]=sent.root===KEY&&sent.stage==="run"&&sent.approve==="hash"&&sent.only==="crop"&&e.tab.got.length===0
+      &&(mode==="ok"?d.ok&&d.prompt_id===F.jobs_prompt.response.prompt_id:!d.ok&&d.reason===(mode==="stale"?"stale":"unknown"))
+      &&(mode==="stale"?d.hash===F.jobs_prompt_stale.response.hash:true)
+      &&(["unknown","http","httpText"].includes(mode)?(hook.asked.run||[]).some(a=>a.lost&&a.hash==="hash"):!(hook.asked.run||[]).length);
+    e.stop();await sleep(20);
+  }
+  return result;
+});
+await scenario("FW20 숨김·다운로드·경로값 보존",async()=>{
+  serverMode();const e=await mkStudio();await e.pipe.showTab("generate");await sleep(20);
+  const r={hidden:!e.panel.textContent.includes("외부 엔진")&&!e.panel.textContent.includes("PS 마스크 가져오기")&&!e.B("출력 폴더 열기"),
+    noCalls:!e.srv.log.some(x=>["candidates/ext","mask/ps_list","open_folder"].includes(x.path))};
+  const link=e.panel.all().find(x=>x.tagName==="A"&&x.textContent==="PSD 내려받기");
+  r.download=!!link&&link.href===A("export/file?root="+encodeURIComponent(KEY));
+  let blocked=0;link.fire("click",{isTrusted:false,preventDefault:()=>blocked++});link.fire("click",{isTrusted:true,preventDefault:()=>blocked++});
+  r.trusted=blocked===1;
+  const saved=e.pipe._fw.PS.P.exports;e.pipe._fw.PS.P.exports=[];await e.pipe.showTab("generate");
+  const disabled=e.panel.all().find(x=>x.tagName==="A"&&x.textContent==="PSD 내려받기");
+  r.noExport=disabled?.title==="Export 를 먼저 하세요"&&!disabled.href;
+  e.pipe._fw.PS.P.exports=saved;
+  e.pipe._fw.PS.last.export={state:"done",export:{outcome:"new",psd:"/private/server/output/test.psd",rev:1}};
+  await e.pipe.showTab("generate");r.noPath=!e.B("경로 복사")&&!e.panel.textContent.includes("/private/server/");
+  const hook=e.pipe._fw, paths={...hook.PS.P.settings.import};
+  hook.PS.P.drift.push({section:"import",field:"psd_path",kind:"import",manifest:"/private/server/old.psd",settings:"/private/server/new.psd"});
+  hook.PS.P.warnings.push({field:"import.psd_path",msg:"/private/server/file.psd missing"});
+  await e.pipe.showTab("prepare");r.noWarningsPath=!e.panel.textContent.includes("/private/server/");
+  await e.pipe.openSettings();r.noDriftPath=!e.panel.textContent.includes("/private/server/");
+  r.fields=!e.panel.all().some(x=>x.tagName==="OPTION"&&x.textContent.startsWith("local_qwen/"))
+    &&!e.panel.all().some(x=>x.classList.contains("k")&&["psd_path","refs_dir","glossary_path","mapping_json"].includes(x.textContent));
+  hook.form.import={psd_path:"different",refs_dir:"different",glossary_path:"different"};
+  await hook.saveSection("import");
+  const post=e.srv.log.filter(x=>x.path==="pipeline/settings"&&x.body?.section==="import").at(-1);
+  r.paths=!!post&&["psd_path","refs_dir","glossary_path"].every(k=>post.body.values[k]===paths[k]);
+  e.stop();return r;
+});
+await scenario("FW21 취소·확인 중 상태 변경이면 쓰기 없음",async()=>{
+  serverMode();const e=await mkStudio();const h=e.pipe._fw;
+  let answer;ctx.window.DPDialog={confirm:()=>new Promise(r=>{answer=r;})};
+  const pending=h.askFree("입력 검사",()=>!h.form.prepare);h.form.prepare={n:2};h.PS.P.rev++;answer(true);const changed=await pending===false;
+  ctx.window.DPDialog={confirm:async()=>false};const before=e.srv.log.filter(x=>x.method==="POST").length;
+  await h.applyNow();const after=e.srv.log.filter(x=>x.method==="POST").length;
+  const r={changed,cancel:before===after};delete ctx.window.DPDialog;e.stop();return r;
+});
+
+await scenario("FW25 로컬 승인·agentConfirm 네이티브 유지",async()=>{
+  delete ctx.window.DPEnv;let dialogs=0;ctx.window.DPDialog={confirm:()=>{dialogs++;return Promise.resolve(true);}};
+  const e=await mkStudio();e.answer=false;e.click(e.B("생성 승인"));await sleep(20);
+  const approve=e.confirms.length===1&&e.tab.got.length===0;
+  const confirmed=await e.pipe.agentConfirm(["사전 승인"],0);
+  const r={approve,native:confirmed===false&&e.confirms.length===2&&dialogs===0};
+  delete ctx.window.DPDialog;e.stop();return r;
+});
+await scenario("FW31 R1 Export 판 갱신 허용·쓰기 409 보존",async()=>{
+  serverMode();const e=await mkStudio(),h=e.pipe._fw;let answer,queued=0;
+  e.S.running=true;e.S.targets.forEach(t=>{t.pick_keys=[];});
+  ctx.window.DPDialog={confirm:()=>new Promise(r=>{answer=r;})};
+  h.PS.queue=async stage=>{if(stage==="export")queued++;return {};};
+  const exp=h.exportNow();await sleep(10);e.S.rev++;h.PS.P.manifest_rev++;answer(true);
+  const exportOk=await exp&&queued===1&&e.S.running&&!e.toasts.some(t=>t.includes("확인 중 상태"));
+  e.S.running=false;
+  const rev=h.PS.P.rev;h.form.prepare={quality:h.PS.P.settings.prepare.quality==="high"?"medium":"high"};
+  e.srv.route.settings=[409,{error:"설정 판이 다른 창에서 바뀌었습니다(시험)",reason:"stale"}];
+  answer=null;const save=h.saveSection("prepare");await until(()=>!!answer);
+  h.PS.P={...h.PS.P,rev:rev+1,manifest_rev:h.PS.P.manifest_rev+1};answer(true);await save;
+  const post=e.srv.log.filter(x=>x.path==="pipeline/settings").at(-1);
+  const r={exportOk,server409:post?.body.rev===rev&&!!e.toast("설정 판이 다른 창에서 바뀌었습니다(시험)")};
+  delete ctx.window.DPDialog;e.stop();return r;
+});
+await scenario("FW32 R2 다시 생성 보내기·직접 제출 backend 가드",async()=>{
+  serverMode();const e=await mkStudio(),h=e.pipe._fw;let posts=0;
+  const original=ctx.fetch;ctx.fetch=async(u,o)=>{if(o?.method==="POST")posts++;return original(u,o);};
+  ctx.window.DPEnv.backend="future";
+  e.pipe.reroll();await h.sendPaid("reroll","","","다시 생성");await sleep(10);
+  const r={blocked:posts===0&&e.toasts.filter(t=>t.includes("서버 모드 생성 백엔드가 아직 연결되지 않았습니다")).length===2};
+  ctx.window.DPEnv.backend="mock";h.PS.track=()=>true;
+  ctx.fetch=async(u,o)=>{if(String(u).includes("jobs/prompt")){posts++;return {ok:true,status:200,json:async()=>F.jobs_prompt.response};}return original(u,o);};
+  e.pipe.reroll();await sleep(20);r.mock=posts===1&&e.tab.got.length===0;e.stop();return r;
+});
+await scenario("FW33 R3 서버 응답 불확실·확정 거절·재계획",async()=>{
+  const result={};
+  for(const [mode,status,data] of [["502",502,{reason:"proxy",error:"gateway"}],["nonJSON",200,null],["400",400,{error:"contract"}],
+    ["stale",409,{reason:"stale",hash:"new",error:"changed"}],["queue_full",409,{reason:"queue_full",error:"대기열 한도(서버)"}],
+    ["no_backend",409,{reason:"no_backend",error:"실행기 미연결(서버)"}]]){
+    serverMode();const e=await mkStudio(),h=e.pipe._fw,plans=e.srv.count("pipeline/plan");
+    ctx.fetch=async(u,o)=>String(u).includes("jobs/prompt")?{ok:status===200,status,json:async()=>{if(data===null)throw Error("not json");return data;}}:e.srv.fetch(u,o);
+    await h.sendPaid("run","hash","crop","생성");await sleep(30);
+    const unknown=["502","nonJSON","400"].includes(mode),d=ctx.window.__fwPaid;
+    result[mode]=d.ok===false&&d.reason===(unknown?"unknown":mode)
+      &&(unknown?(h.asked.run||[]).some(a=>a.lost&&a.hash==="hash"):!(h.asked.run||[]).length)
+      &&(unknown||mode==="stale"?e.srv.count("pipeline/plan")>plans:!!e.toast(data.error));
+    e.stop();await sleep(20);
+  }
+  return result;
+});
+await scenario("FW37 R6 서버 제출·재승인 경고·mock SIDE 분기",async()=>{
+  delete ctx.window.DPDialog;
+  serverMode();const e=await mkStudio({plan:p=>{p.run.backend="mock";}}),h=e.pipe._fw;
+  h.asked.run=[{hash:h.PS.plan.run.hash,id:"lost",lost:true}];
+  e.click(e.B("생성 승인"));await until(()=>!!e.box());
+  const text=e.box()?.textContent||"";
+  const r={warning:text.includes("진행 줄(대기·실행 중 작업)")&&!text.includes("ComfyUI")&&!text.includes(e.pipe.side)};
+  if(e.box())e.click(e.B("취소",e.box()));await sleep(10);
+  h.PS.track=()=>true;ctx.fetch=async(u,o)=>String(u).includes("jobs/prompt")?{ok:true,status:200,json:async()=>F.jobs_prompt.response}:e.srv.fetch(u,o);
+  await h.sendPaid("run","hash","crop","생성");r.accepted=!!e.toast("서버가 작업을 받음")&&!e.toast("ComfyUI 탭이 승인 템플릿을 제출함");
+  delete ctx.window.DPEnv;const p=h.mockAsk("생성 승인 [MOCK]",false);r.localSide=e.box().textContent.includes(e.pipe.side);
+  e.click(e.B("취소",e.box()));await p;e.stop();return r;
+});
+await scenario("FW38 R7 첫 설정 idle 은 자기 프로젝트 작업만",async()=>{
+  serverMode();const e=await mkStudio(),h=e.pipe._fw;let queue={queue_running:[[1,"",""]],queue_pending:[[2,"",""]]};
+  ctx.fetch=async()=>({ok:true,json:async()=>queue});
+  const foreign=await h.setupQueueIdle();queue.queue_pending.push([3,"our-pid",""]);const own=await h.setupQueueIdle();
+  queue.queue_pending.pop();delete ctx.window.DPEnv;const local=await h.setupQueueIdle();
+  queue={queue_running:[],queue_pending:[]};const empty=await h.setupQueueIdle();
+  e.stop();return {foreign,own:!own,local:!local,empty};
+});
+console.log(JSON.stringify(out));process.exit(0);
+'''
 
 
 if __name__ == "__main__":
