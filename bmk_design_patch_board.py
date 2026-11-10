@@ -438,10 +438,10 @@ def public_error(message: str, scope: dict | None = None) -> str:
     if not server_mode():
         return message
     token = r'''[^\s"'<>]'''
-    tail = token + r"*(?:[ \t]+(?![A-Za-z]:[\\/]|[\\/])" + token + r"*[\\/]" + token + r"+)*"
-    keep = r'''[A-Za-z][A-Za-z0-9+.-]*://[^\s<>"']+|<계정 폴더>''' + tail
+    tail = token + r"*(?:[ \t]+(?![A-Za-z][A-Za-z0-9+.-]*:[\\/]|[\\/])" + token + r"*[\\/]" + token + r"+)*"
+    keep = r'''(?i:https?)://[^\s<>"']+|<계정 폴더>''' + tail
     left = r'''(?<![^\s:'"(=\[])'''
-    root = r'''(?:[A-Za-z]:[\\/]|\\{2,}|(?<![A-Za-z]:)/[^/\s"'<>]+/)'''
+    root = r'''(?:[A-Za-z]:[\\/]|(?i:file):/{2,}|\\{2,}|/{2,}|(?<![A-Za-z]:)/[^/\s"'<>]+/)'''
     paths = (r"(?P<keep>" + keep + r")|" + left
              + r'''(?P<quote>["'])(?P<quoted>''' + root + r'''[^\r\n]*?)(?P=quote)|'''
              + left + r"(?P<path>" + root + tail + r")")
@@ -456,7 +456,8 @@ def public_error(message: str, scope: dict | None = None) -> str:
 
     result = re.sub(paths, hide, message)
     # 후보 경계 밖에 붙은 경로도 원문으로 내보내지 않는다. 이 검사는 치환하지 않는다.
-    remains = re.compile(r"[A-Za-z]:[\\/]|(?<![\w\\])\\{2,}|(?<![\w./\\>])/(?:[^\s/]+/)[^\s]*")
+    remains = re.compile(r"[A-Za-z]:[\\/]|(?<![\w\\])\\{2,}|/{2,}[^\s/]+/"
+                         r"|(?<![\w./\\>])/(?:[^\s/]+/)[^\s]*|/(?:srv|home|var|tmp|mnt|opt|usr|etc|data)/[^\s/]+")
     start = 0
     for protected in re.finditer(keep, result):
         if remains.search(result[start:protected.start()]):
