@@ -5158,7 +5158,7 @@ async def _pool_body(request):
         raise _Reject(413, "요청 본문이 너무 큽니다")
     try:
         data = json.loads(raw)
-    except (ValueError, UnicodeError):
+    except (ValueError, UnicodeError, RecursionError):
         raise _Reject(400, "JSON 본문을 읽을 수 없습니다") from None
     if not isinstance(data, dict):
         raise _Reject(400, "본문은 JSON 객체여야 합니다")
@@ -6179,12 +6179,19 @@ def _root_param(value) -> str:
             raise _Reject(404, _ROOT_HINT) from None
         with _SCOPE_ROOTS_LOCK:
             cached = _SCOPE_ROOTS.pop(parent, None)
-            if cached is None or cached[0] != stamp:
-                cached = (stamp, {r["key"]: r["root"] for r in _project_roots()})
-            _SCOPE_ROOTS[parent] = cached
-            if len(_SCOPE_ROOTS) > 256:
-                del _SCOPE_ROOTS[next(iter(_SCOPE_ROOTS))]
-            root = cached[1].get(value)
+            if cached is not None:
+                _SCOPE_ROOTS[parent] = cached
+        if cached is None or cached[0] != stamp or value not in cached[1]:
+            # 디스크 탐색은 잠금 밖에서 한다. 같은 mtime 안에서 생긴 키도 요청당 한 번 다시 찾는다.
+            scanned = (stamp, {r["key"]: r["root"] for r in _project_roots()})
+            with _SCOPE_ROOTS_LOCK:
+                current = _SCOPE_ROOTS.pop(parent, None)
+                # 훑는 사이 다른 요청이 넣은 더 새 결과는 덮지 않는다.
+                cached = current if current is not None and current is not cached and current[0] > stamp else scanned
+                _SCOPE_ROOTS[parent] = cached
+                if len(_SCOPE_ROOTS) > 256:
+                    del _SCOPE_ROOTS[next(iter(_SCOPE_ROOTS))]
+        root = cached[1].get(value)
         # 매니페스트·링크 변경은 부모 mtime 을 바꾸지 않을 수도 있으므로 매번 확인한다.
         if root is None or not in_scope(root) or not os.path.isfile(os.path.join(root, store.MANIFEST_NAME)):
             raise _Reject(404, _ROOT_HINT)
@@ -6205,7 +6212,7 @@ async def _body(request: web.Request) -> dict:
         raise _Reject(413, "요청 본문이 너무 큽니다")
     try:
         data = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
         raise _Reject(400, "JSON 본문을 읽을 수 없습니다") from None
     if not isinstance(data, dict):
         raise _Reject(400, "JSON 본문은 객체여야 합니다")

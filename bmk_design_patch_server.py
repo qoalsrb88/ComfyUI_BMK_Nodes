@@ -593,6 +593,13 @@ def make_dev_parent_app(config):
     return app
 
 
+def _dev_parent_hint(config):
+    if config.dev_parent_port and config.host == "::1":
+        return (f"Forge 개발 부모는 http://localhost:{config.dev_parent_port}/ 로 여세요"
+                "(브라우저가 [::1] 부모를 frame-ancestors 에서 받지 않을 수 있습니다)")
+    return None
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Design Patch Studio 서버 모드")
     parser.add_argument("--data", required=True)
@@ -634,6 +641,9 @@ def main(argv=None) -> int:
                 await parent.setup()
                 await web.TCPSite(parent, config.host, config.dev_parent_port).start()
                 print(f"Forge 개발 부모: http://{config.host}:{config.dev_parent_port}/", flush=True)
+                hint = _dev_parent_hint(config)
+                if hint:
+                    print(hint, flush=True)
             await asyncio.Event().wait()
         finally:
             for runner in reversed(runners):

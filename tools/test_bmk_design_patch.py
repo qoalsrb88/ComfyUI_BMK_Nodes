@@ -58336,6 +58336,98 @@ async def _fs_new_limits(bd, ascope, bscope):
         check(await bd._project_new_target_limited({}, None) == "local", "FS11 로컬 디코드에는 서버 세마포어 없음")
 
 
+async def _fs_root_cache_races(bd, accounts, key, call):
+    """FS29 U1: 계정 간 스캔 잠금·같은 stamp 의 새 키·늦게 끝난 스캔의 덮어쓰기."""
+    import asyncio
+    from unittest.mock import patch
+    ascope, bscope = accounts[0][2], accounts[1][2]
+    aroot, broot = accounts[0][3], accounts[1][3]
+    real_scan = bd._project_roots
+
+    def lookup(scope, value):
+        token = bd.set_scope(scope)
+        try:
+            return bd._root_param(value)
+        finally:
+            bd.reset_scope(token)
+
+    entered, release = threading.Event(), threading.Event()
+
+    def slow_account():
+        if bd.current_scope()["input"] == ascope["input"]:
+            entered.set()
+            if not release.wait(10):
+                raise AssertionError("계정 스캔 시험 대기 시간 초과")
+        return real_scan()
+
+    with patch.object(bd, "_SCOPE_ROOTS", {}), patch.object(bd, "_project_roots", side_effect=slow_account):
+        pending = [asyncio.create_task(asyncio.to_thread(lookup, ascope, key))]
+        try:
+            check(await asyncio.to_thread(entered.wait, 5), "FS29 U1 alice 스캔을 잠시 멈춤")
+            pending.append(asyncio.create_task(asyncio.to_thread(lookup, bscope, key)))
+            done, _ = await asyncio.wait(pending[1:], timeout=2)
+            check(bool(done) and not release.is_set(), "FS29 U1 alice 스캔 중에도 bob 조회는 잠금에 막히지 않고 완료")
+        finally:
+            release.set()
+            results = await asyncio.gather(*pending, return_exceptions=True)
+        check(results == [str(aroot), str(broot)], "FS29 U1 병렬 조회도 같은 키를 각 계정의 root 로 풂")
+
+    with patch.object(bd, "_SCOPE_ROOTS", {}):
+        lookup(ascope, key)
+        stamp = aroot.parent.stat()
+        fresh = aroot.parent / "same_stamp_project"
+        fresh.mkdir()
+        store.write_json_atomic(str(fresh / store.MANIFEST_NAME), store.new_manifest(fresh.name))
+        os.utime(aroot.parent, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        check(aroot.parent.stat().st_mtime_ns == stamp.st_mtime_ns, "FS29 U1 새 프로젝트 생성 뒤 부모 mtime 을 같은 값으로 재현")
+        fresh_key = store.root_key(str(fresh))
+        with patch.object(bd, "_project_roots", wraps=real_scan) as scan:
+            response, data = await call("GET", bd.API + "/state", sid=accounts[0][0], params={"root": fresh_key})
+            check(response.status == 200 and data.get("project") == fresh.name and scan.call_count == 1,
+                  "FS29 U1 같은 stamp 의 캐시에 없는 새 키는 한 번 재스캔해 200")
+            for _ in range(2):
+                count = scan.call_count
+                response, data = await call("GET", bd.API + "/state", sid=accounts[0][0], params={"root": "e" * 12})
+                check(response.status == 404 and data == {"error": bd._ROOT_HINT} and scan.call_count == count + 1,
+                      "FS29 U1 없는 키는 요청당 한 번만 재스캔하고 404")
+            response, _ = await call("GET", bd.API + "/state", sid=accounts[1][0], params={"root": fresh_key})
+            check(response.status == 404, "FS29 U1 새로 발견한 키도 다른 계정에서는 404")
+
+    # 같은 계정의 오래 걸린 옛 스캔보다 새 stamp 의 스캔이 먼저 끝나는 순서를 고정한다.
+    entered, release = threading.Event(), threading.Event()
+
+    def delayed_snapshot():
+        rows = real_scan()
+        if not entered.is_set():
+            entered.set()
+            if not release.wait(10):
+                raise AssertionError("늦은 스캔 시험 대기 시간 초과")
+        return rows
+
+    with patch.object(bd, "_SCOPE_ROOTS", {}), patch.object(bd, "_project_roots", side_effect=delayed_snapshot) as scan:
+        pending = [asyncio.create_task(asyncio.to_thread(lookup, ascope, key))]
+        try:
+            check(await asyncio.to_thread(entered.wait, 5), "FS29 U1 옛 stamp 의 스캔 결과를 보류")
+            stamp = aroot.parent.stat()
+            newer = aroot.parent / "newer_stamp_project"
+            newer.mkdir()
+            store.write_json_atomic(str(newer / store.MANIFEST_NAME), store.new_manifest(newer.name))
+            os.utime(aroot.parent, ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 1_000_000_000))
+            newer_stamp, newer_key = aroot.parent.stat().st_mtime_ns, store.root_key(str(newer))
+            pending.append(asyncio.create_task(asyncio.to_thread(lookup, ascope, newer_key)))
+            done, _ = await asyncio.wait(pending[1:], timeout=2)
+            check(bool(done), "FS29 U1 새 stamp 의 같은 계정 조회도 옛 스캔 완료를 기다리지 않음")
+        finally:
+            release.set()
+            results = await asyncio.gather(*pending, return_exceptions=True)
+        parent_key = os.path.normcase(os.path.abspath(aroot.parent))
+        cached = bd._SCOPE_ROOTS.get(parent_key, (None, {}))
+        check(results == [str(aroot), str(newer)] and cached[0] == newer_stamp and cached[1].get(newer_key) == str(newer),
+              "FS29 U1 늦게 끝난 옛 스캔이 더 새 stamp 의 캐시를 덮지 않음")
+        check(lookup(ascope, newer_key) == str(newer) and scan.call_count == 2,
+              "FS29 U1 보존한 새 캐시는 추가 스캔 없이 사용")
+
+
 async def _fs_scoped_roots(bd, out, call, login, sessions):
     """FS26 T1: 계정 간 강제 키 충돌·재시작 순서·폴더 mtime 캐시·로컬 조회 계약."""
     from unittest.mock import patch
@@ -58393,6 +58485,7 @@ async def _fs_scoped_roots(bd, out, call, login, sessions):
                 response, _ = await call("GET", bd.API + "/file", sid=sid, params={"root": key, "rel": "inputs/" + other_name + ".png"})
                 check(response.status == 404, "FS26 T1 상대 계정에만 있는 파일은 404 " + root.name)
 
+            await _fs_root_cache_races(bd, accounts, key, call)
             token = bd.set_scope(accounts[0][2])
             try:
                 root = accounts[0][3]
@@ -58401,7 +58494,7 @@ async def _fs_scoped_roots(bd, out, call, login, sessions):
                 with patch.object(bd, "_project_roots", wraps=bd._project_roots) as scan:
                     check(bd._root_param(key) == str(root) and bd._root_param(key) == str(root) and scan.call_count == 1,
                           "FS26 T1 같은 계정·폴더 mtime 이면 스캔/해시 재사용")
-                    for invalid in (None, "../", "C" * 12, "c" * 11, "c" * 13, "d" * 12):
+                    for invalid in (None, "../", "C" * 12, "c" * 11, "c" * 13):
                         rejected(invalid, 404, bd._ROOT_HINT)
                     manifest = root / store.MANIFEST_NAME
                     saved = manifest.read_bytes()
@@ -58509,6 +58602,14 @@ def forge_server_unit():
     with patch.object(srv, "make_app", side_effect=capture_config):
         expect_raises(lambda: srv.main(["--data", str(out / "ipv6_data"), "--host", "::1", "--dev-handoff", "--dev-parent-port", "8790"]),
                       "FS27 T2 IPv6 CLI 설정 생성·실제 서비스 시작 전 중단", ConfigCaptured)
+    check(srv._dev_parent_hint(cli_configs[0]) ==
+          "Forge 개발 부모는 http://localhost:8790/ 로 여세요(브라우저가 [::1] 부모를 frame-ancestors 에서 받지 않을 수 있습니다)",
+          "FS31 U3 IPv6 개발 부모 시작 안내는 localhost 주소와 브라우저 CSP 제약을 표시")
+    check(srv._dev_parent_hint(dataclasses.replace(cli_configs[0], dev_parent_port=8890)).startswith("Forge 개발 부모는 http://localhost:8890/"),
+          "FS31 U3 시작 안내는 설정한 부모 포트를 사용")
+    for change in ({"host": "localhost"}, {"host": "127.0.0.1"}, {"dev_parent_port": None}):
+        check(srv._dev_parent_hint(dataclasses.replace(cli_configs[0], **change)) is None,
+              "FS31 U3 IPv6 개발 부모 조합에서만 추가 안내 " + str(change))
     ids = ("Alice", "alice", "CON", "x" * 128, "한글", "h_alice", "con", "org/../../other")
     names = [srv._folder_id(value) for value in ids]
     check(len({s.casefold() for s in names}) == len(names) and all(re.fullmatch(r"[a-z0-9_]{1,24}-[0-9a-f]{16}", n) for n in names),
@@ -58539,6 +58640,12 @@ def forge_server_unit():
         async with TestClient(TestServer(local)) as client:
             response = await client.get(api_path + "/env")
             check(await response.json() == api["env_local"]["response"], "FS3 실제 로컬 env 응답")
+            for endpoint in ("pick", "refs/pool"):
+                before_log = log.getvalue()
+                response = await client.post(api_path + "/" + endpoint, data=b"[" * 16000,
+                                             headers={"Content-Type": "application/json"})
+                check(response.status == 400 and await response.json() == {"error": "JSON 본문을 읽을 수 없습니다"}
+                      and log.getvalue() == before_log, "FS30 U2 로컬 보드도 깊은 JSON 에 오류 로그 없이 400 " + endpoint)
 
         app = srv.make_app(config, jobs_module=jobs, clock=lambda: now[0])
         check(app._client_max_size == 8 * 1024 ** 2, "FS17 R2 메모리 본문 상한 8MiB")
@@ -58732,6 +58839,12 @@ def forge_server_unit():
                                                 headers={"Content-Type": "application/json"})
                     check(response.status == 400 and set(data) == {"error"} and data["error"] and not errors.called,
                           "FS28 T3 깊게 중첩된 JSON 은 오류 로그 없이 400 JSON " + path)
+            for endpoint in ("pick", "refs/pool"):
+                before_log = log.getvalue()
+                response, data = await call("POST", api_path + "/" + endpoint, sid=alice, tag=atag, data=b"[" * 16000,
+                                            headers={"Content-Type": "application/json"})
+                check(response.status == 400 and data == {"error": "JSON 본문을 읽을 수 없습니다"} and log.getvalue() == before_log,
+                      "FS30 U2 보드의 깊게 중첩된 JSON 은 오류 로그 없이 400 JSON " + endpoint)
             with patch.object(srv._Preferences, "apply", side_effect=RuntimeError("opaque-sensitive-payload")):
                 response, data = await call("GET", "/api/preferences", sid=alice)
                 check(response.status == 500 and set(data) == {"error"} and "서버 요청 처리 실패: RuntimeError" in log.getvalue()
