@@ -380,7 +380,8 @@ body.editing .proj { min-width: 0; overflow: hidden; text-overflow: ellipsis; wh
 .lp-row .k { color: var(--dim); margin-right: 6px; }
 .lp-row.dim { color: var(--dim); }
 .lp-name { display: flex; gap: 4px; align-items: center; }
-#layout-panel input, #layout-panel select, #layout-panel textarea, #ref-panel input[type="text"], #ref-panel select {
+#layout-panel input[type="text"], #layout-panel input[type="number"], #layout-panel input:not([type]),
+#layout-panel select, #layout-panel textarea, #ref-panel input[type="text"], #ref-panel select {
   background: var(--well);
   color: var(--text);
   border: 1px solid var(--line);
@@ -389,7 +390,8 @@ body.editing .proj { min-width: 0; overflow: hidden; text-overflow: ellipsis; wh
   font: inherit;
   min-width: 0;
 }
-#layout-panel input:focus, #layout-panel textarea:focus, #ref-panel input[type="text"]:focus { border-color: var(--accent); }
+#layout-panel input[type="text"]:focus, #layout-panel input[type="number"]:focus, #layout-panel input:not([type]):focus,
+#layout-panel textarea:focus, #ref-panel input[type="text"]:focus { border-color: var(--accent); }
 #layout-panel input.bad { border-color: var(--bad); color: #ffd0d0; }
 #layout-panel input.nnn { width: 4.2em; flex: none; text-align: center; }
 #layout-panel input.part { flex: 1; }
@@ -626,7 +628,7 @@ body.pipe .proj { min-width: 0; overflow: hidden; text-overflow: ellipsis; white
   padding: 3px 6px;
   font: inherit;
 }
-#pipe-panel input:focus, #pipe-panel select:focus { border-color: var(--accent); }
+#pipe-panel input[type="text"]:focus, #pipe-panel input[type="number"]:focus, #pipe-panel select:focus { border-color: var(--accent); }
 #pipe-panel input.pp-text { width: 100%; margin-top: 6px; }
 .pp-table { border-collapse: collapse; margin: 6px 0; font-size: 12px; font-variant-numeric: tabular-nums; }
 .pp-table th, .pp-table td { padding: 1px 6px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
@@ -718,7 +720,7 @@ svg.dr-isolate { position: absolute; left: 0; top: 0; pointer-events: none; }
 .projects-form { display: flex; flex-wrap: wrap; gap: 12px; padding: 16px; margin: 12px 0; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }
 .projects-form h2, .projects-form .projects-note, .projects-form-status { flex-basis: 100%; margin: 0; overflow-wrap: anywhere; }
 .projects-field { display: flex; flex-direction: column; gap: 6px; flex: 1 1 280px; min-width: 0; }
-.projects-field input, .projects-field select { box-sizing: border-box; width: 100%; min-width: 0; color: var(--text); background: var(--well); border: 1px solid var(--line); padding: 8px; }
+.projects-field input, .projects-field select { box-sizing: border-box; width: 100%; min-width: 0; padding: 8px; }
 .projects-field input:read-only { opacity: .7; }
 .projects-form-status { min-height: 1.5em; }
 
@@ -804,17 +806,21 @@ body:not(.server) [data-server] { display: none !important; }
 * { scrollbar-color: var(--line2) transparent; }
 html { accent-color: var(--accent); }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-input, select, textarea { border-radius: var(--radius-sm); }
-input:focus, select:focus, textarea:focus { border-color: var(--accent); }
+input[type="text"], input[type="number"], input:not([type]), select, textarea { border-radius: var(--radius-sm); }
+/* 파일 선택·슬라이더·체크박스에는 텍스트 입력칸의 표면과 테두리를 씌우지 않는다. */
+.projects-field input[type="text"], .projects-field input[type="number"], .projects-field input:not([type]), .projects-field select {
+  color: var(--text); background: var(--well); border: 1px solid var(--line);
+}
+input[type="text"]:focus, input[type="number"]:focus, input:not([type]):focus, select:focus, textarea:focus { border-color: var(--accent); }
 /* 빠진 입력칸도 패널 표면을 따르되, 기존 폭·flex·간격은 각 자리의 규칙에 맡긴다. */
 #ref-panel input[type="number"], #ref-panel input:not([type]), #ref-panel textarea,
 #mask-panel input[type="number"], #mask-panel input[type="text"], #mask-panel input:not([type]), #mask-panel select, #mask-panel textarea,
-#pipe-panel input:not([type]), #pipe-panel textarea, .rg-size input {
+#pipe-panel input:not([type]), #pipe-panel textarea {
   background: var(--well); color: var(--text); border: 1px solid var(--line); border-radius: var(--radius-sm); font: inherit;
 }
 #layout-panel select:focus, #ref-panel input[type="number"]:focus, #ref-panel input:not([type]):focus, #ref-panel select:focus, #ref-panel textarea:focus,
-#mask-panel input:focus, #mask-panel select:focus, #mask-panel textarea:focus,
-#pipe-panel input:not([type]):focus, #pipe-panel textarea:focus, .rg-size input:focus,
+#mask-panel input[type="number"]:focus, #mask-panel input[type="text"]:focus, #mask-panel input:not([type]):focus,
+#mask-panel select:focus, #mask-panel textarea:focus, #pipe-panel input:not([type]):focus, #pipe-panel textarea:focus,
 .rf-dialog-box input[type="text"]:focus, .rf-dialog-box select:focus { border-color: var(--accent); }
 button.on, button[aria-pressed="true"], button.sel { background: var(--accent-soft); border-color: var(--accent); color: var(--text); }
 /* 채움은 화면의 실행 단추에만 쓴다. 절에 남은 단추와 유료 승인 상자는 기본 primary 꼴을 따른다. */
@@ -833,20 +839,21 @@ button.dp-main:disabled, #pipe-panel .pp-dock button.dp-main:disabled {
 .tabs .tab:disabled .step-state, .tabs .tab:disabled .step-state::before { color: inherit; opacity: 1; }
 .rf-perspective-handle:hover { border-color: currentColor; }
 
-/* 밝은 그림에서도 선택 선을 찾을 수 있게 어두운 가장자리를 두른다. 선 굵기·점선은 그대로다. */
+/* 채움 없는 선택 선에만 그림자를 두른다. --u 는 화면 1px 의 그림 길이이며, 연결 전에는 1로 둔다. */
 svg.marks .crop.sel, svg.marks .lc.sel, svg.marks .rsel, svg.marks .mcrop,
-svg.marks .draft, svg.marks .rpoly, svg.marks .mx-outline, .dr-selected {
-  filter: drop-shadow(0 0 1px #000) drop-shadow(0 0 1px #000);
+svg.marks .mx-outline, .dr-selected {
+  filter: drop-shadow(0 0 calc(var(--u, 1) * 1px) #000) drop-shadow(0 0 calc(var(--u, 1) * 1px) #000);
 }
 
 /* 대기는 점선으로 표시하고, 실제 진행에만 맥동을 쓴다. */
 .step-state.todo { color: var(--wait); }
 .lh-wait::before, .clabel.wait::before, .step-state.todo::before { content: "◌ "; color: var(--wait); }
-.b-run, .vmsg.busy { animation: dp-pulse 2s ease-in-out infinite; }
+.dp-live, .vmsg.busy { animation: dp-pulse 2s ease-in-out infinite; }
 @keyframes dp-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .6; } }
 @media (prefers-reduced-motion: reduce) {
-  .b-run, .vmsg.busy { animation: none; }
+  .dp-live, .vmsg.busy { animation: none; }
 }
+.chip.stale { animation: none; }
 
 .dp-empty { display: flex; align-items: center; justify-content: center; grid-column: 1 / -1; gap: 8px; color: var(--dim); text-align: center; }
 .dp-empty::before { content: ""; flex: none; width: 12px; height: 12px; border: 1px dashed currentColor; border-radius: 50%; }

@@ -49429,9 +49429,9 @@ def forge_f3_theme_unit():
         check(old not in css.lower(), f"D345 옛 테마 값 없음: {old}")
     check(css.lower().count("#4da3ff") == 1, "D345 옛 강조 파랑은 --info 정의 한 곳뿐")
     for selector in (".frame", ".tile .imgbox", "#viewer", "#ref-view", ".rg-frame", ".rf-bf", ".rf-ct", ".pp-prompt",
-                     "#layout-panel input", '#ref-panel input[type="text"]', '#pipe-panel input[type="text"]',
+                     '#layout-panel input[type="text"]', '#ref-panel input[type="text"]', '#pipe-panel input[type="text"]',
                      '.rf-dialog-box input[type="text"]', '#mask-panel .rf-slider input[type="number"]',
-                     ".projects-search", ".projects-field input"):
+                     ".projects-search", '.projects-field input[type="text"]'):
         has_style(selector, {"background": "var(--well)"})
     for selector in (".dr-menu", ".export-menu > div"):
         has_style(selector, {"background": "var(--panel)", "border": "1px solid var(--line2)"})
@@ -49473,7 +49473,10 @@ def forge_f3_theme_unit():
     for unused in (".rf-dialog .lp-btns button.primary", ".projects-home button.primary"):
         check(unused not in code, f"R6 실제 요소가 없는 채움·disabled 선택자 제거: {unused}")
     check(not style("button.primary:disabled"), "D346 보조 primary 전체에 채움 단추의 disabled 모양을 적용하지 않음")
-    check(code.index("#pipe-panel .pp-dock button.dp-main") > code.index("button.primary {"), "D346 실행 줄의 주 단추는 기본 primary 뒤에서 구체적으로 덮어씀")
+    # 수정 3차 R5: 규칙이 빠져도 묶음을 끊지 않고 해당 단정만 실패시킨다.
+    dock_rule, primary_rule = "#pipe-panel .pp-dock button.dp-main", "button.primary {"
+    check(dock_rule in code and primary_rule in code and code.index(dock_rule) > code.index(primary_rule),
+          "D346 실행 줄의 주 단추는 기본 primary 뒤에서 구체적으로 덮어씀")
     has_style(".dp-main", {"width": "100%", "min-height": "40px"})
     for selector in ("button.on", 'button[aria-pressed="true"]', "button.sel", ".keybar .kchip.held", ".vbar button.on",
                      ".lp-targets .lt button.on", ".lp-btns button.on", "#layout-panel button.sel",
@@ -49483,7 +49486,7 @@ def forge_f3_theme_unit():
     has_style("button:hover", {"border-color": "var(--line2)"})
     has_style(":focus-visible", {"outline": "2px solid var(--accent)"})
     check("outline: none" not in code, "D346 입력칸 focus 규칙이 키보드 외곽선을 가리지 않음")
-    for selector in ("input:focus", "select:focus", "textarea:focus"):
+    for selector in ('input[type="text"]:focus', 'input[type="number"]:focus', "input:not([type]):focus", "select:focus", "textarea:focus"):
         has_style(selector, {"border-color": "var(--accent)"})
     has_style(".clabel.sel", {"background": "var(--accent)", "color": "var(--on-accent)"})
     has_style("svg.marks text.lname.sel", {"fill": "var(--accent)"})
@@ -49499,10 +49502,14 @@ def forge_f3_theme_unit():
     # R1: 밝은 그림 위에서도 선택 핸들·선을 찾고, 기존 선 굵기·점선은 유지한다.
     for selector in ("svg.marks .handle", "svg.marks .rvtx"):
         has_style(selector, {"fill": "var(--on-accent)", "stroke": "var(--accent)", "stroke-width": "1.5px"})
+    # 수정 3차 R1·R2: 채움은 어둡게 덮지 않고, 선의 그림자 길이는 화면 배율로 보정한다.
+    for selector, width in (("svg.marks .draft", "2px"), ("svg.marks .rpoly", "1.5px")):
+        check("filter" not in style(selector), f"수정 3차 R1 {selector} 채움에는 그림자 필터 없음")
+        has_style(selector, {"fill": "var(--accent-soft)", "stroke-width": width})
+    shadow = "drop-shadow(0 0 calc(var(--u, 1) * 1px) #000) drop-shadow(0 0 calc(var(--u, 1) * 1px) #000)"
     for selector, width in (("svg.marks .crop.sel", "2.5px"), ("svg.marks .lc.sel", "2.5px"), ("svg.marks .rsel", "2px"),
-                            ("svg.marks .mcrop", "2px"), ("svg.marks .draft", "2px"), ("svg.marks .rpoly", "1.5px"),
-                            ("svg.marks .mx-outline", "1.5px"), (".dr-selected", "3px")):
-        has_style(selector, {"filter": "drop-shadow(0 0 1px #000) drop-shadow(0 0 1px #000)", "stroke-width": width})
+                            ("svg.marks .mcrop", "2px"), ("svg.marks .mx-outline", "1.5px"), (".dr-selected", "3px")):
+        has_style(selector, {"filter": shadow, "stroke-width": width})
     has_style("svg.marks .draft", {"stroke-dasharray": "6 3"})
     has_style("svg.marks .lc.locked", {"stroke-dasharray": "6 3"})
     # R2·R3: 꺼진 탭의 글자는 중복으로 흐리지 않고, 원근 핸들은 상태색을 지킨다.
@@ -49520,13 +49527,16 @@ def forge_f3_theme_unit():
     check(waiting_marks == {".lh-wait::before", ".clabel.wait::before", ".step-state.todo::before"},
           f"R4 대기 원은 todo 단계·대기 글자에만(모름·초기 단계 제외): {sorted(waiting_marks)}")
     has_style(".step-state", {"color": "var(--dim)"})
-    check(pulse == {".b-run", ".vmsg.busy"}, f"D347 dp-pulse 는 실제 진행 선택자 두 곳만: {sorted(pulse)}")
+    check(pulse == {".dp-live", ".vmsg.busy"}, f"D347 dp-pulse 는 실제 진행 선택자 두 곳만: {sorted(pulse)}")
+    check(not any(k.startswith("animation") and v != "none" for k, v in style(".b-run").items()),
+          "수정 3차 R3 일반 b-run 연결·과거 배지는 맥동하지 않음")
+    has_style(".chip.stale", {"animation": "none", "opacity": ".5"})
     check(re.search(r"@keyframes dp-pulse\s*\{\s*0%, 100%\s*\{\s*opacity: 1;\s*\}\s*50%\s*\{\s*opacity: \.6;", code) is not None,
           "D347 진행 맥동 불투명도 1 ↔ .6")
     reduced = re.search(r"@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{(.*?)\n\}", code, re.S)
     check(reduced is not None, "D347 움직임 줄이기 규칙 존재")
     normal = code[:reduced.start()] if reduced else code
-    for selector in (".b-run", ".vmsg.busy"):
+    for selector in (".dp-live", ".vmsg.busy"):
         has_style(selector, {"animation": "dp-pulse 2s ease-in-out infinite"}, normal)
         has_style(selector, {"animation": "none"}, reduced.group(1) if reduced else "")
     has_style("svg.marks .crop.wait", {"stroke": "var(--wait)", "stroke-dasharray": "4 3"})
@@ -49554,7 +49564,8 @@ def forge_f3_theme_unit():
     # D348·D354·D356·D357: 로컬 글꼴 목록, 단추 크기, 탭, 빈 화면의 모양.
     has_style("html", {"font": '14px/1.45 "Noto Sans KR", "Pretendard Variable", "Pretendard", "Malgun Gothic", "Apple SD Gothic Neo", system-ui, sans-serif'})
     has_style("button", {"border-radius": "var(--radius)", "padding": "5px 12px"})
-    for selector in (".vbar button", ".lhead button", "button.inline", ".keybar .kchip", ".dr-button", "input", "select", "textarea"):
+    for selector in (".vbar button", ".lhead button", "button.inline", ".keybar .kchip", ".dr-button",
+                     'input[type="text"]', 'input[type="number"]', "input:not([type])", "select", "textarea"):
         has_style(selector, {"border-radius": "var(--radius-sm)"})
     has_style("*", {"scrollbar-color": "var(--line2) transparent"})
     has_style(".ref-tabs", {"height": "38px", "min-height": "38px", "flex-wrap": "nowrap"})
@@ -49575,8 +49586,18 @@ def forge_f3_theme_unit():
             focus = style(f"{panel} {base}:focus") | style(f"{panel} {field}:focus")
             check(all(actual.get(k) == v for k, v in field_style.items()), f"R7 {panel} {field} 공통 표면")
             check(focus.get("border-color") == "var(--accent)", f"R7 {panel} {field} 강조 초점 테두리")
-    has_style(".rg-size input", dict(field_style, width="110px"))
-    for selector in (".rg-size input:focus", '.rf-dialog-box input[type="text"]:focus', ".rf-dialog-box select:focus"):
+    # 수정 3차 R4: range 는 폭만 유지하고, 네이티브 입력을 잡는 기본·focus 꾸밈은 남기지 않는다.
+    check(style(".rg-size input") == {"width": "110px"} and not style(".rg-size input:focus"),
+          "수정 3차 R4 썸네일 슬라이더는 폭만 있고 배경·테두리·focus 꾸밈 없음")
+    native_decorators = []
+    for selectors, body in re.findall(r"([^{}]+)\{([^{}]*)\}", code):
+        if re.search(r"(?:^|;)\s*(?:background(?:-color)?|border(?:-[\w-]+)?)\s*:", body):
+            for selector in (s.strip() for s in selectors.split(",")):
+                if re.search(r"(?:^|\s)input(?::(?:focus(?:-visible)?|hover|disabled|read-only))?$", selector) or re.search(
+                        r'input\[type=["\']?(?:range|checkbox|radio|file)\b', selector):
+                    native_decorators.append(selector)
+    check(not native_decorators, f"수정 3차 R4 일반 input·range·checkbox·radio·file 에 입력칸 꾸밈 없음: {native_decorators}")
+    for selector in ('.rf-dialog-box input[type="text"]:focus', ".rf-dialog-box select:focus"):
         has_style(selector, {"border-color": "var(--accent)"})
     has_style("#mask-panel .mc-xform-value input", {"width": "76px", "min-width": "0", "margin-left": "auto"})
     has_style(".rf-slider input", {"flex": "1", "min-width": "0"})
