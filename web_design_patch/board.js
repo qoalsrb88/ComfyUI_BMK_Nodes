@@ -552,7 +552,7 @@
       }
       need = (need + (cell.est_usd ? cell.est_usd[1] : 0)) * 211;
     }
-    const serverState = () => JSON.stringify([S.rev, S.pipeline_rev, S.layout_rev, S.running, S.drafting,
+    const serverState = () => JSON.stringify([S.pipeline_rev, S.layout_rev,
       S.rerolls_pending, S.pending_preapproved, tKey, cKey]);
     const serverBefore = SM() ? serverState() : null;
     const stillHere = () => {

@@ -1479,8 +1479,8 @@ window.DPRefEdit = (() => {
         const ex = explicitOf(e);
         if (!ex) opts.toast(e.message, "err");
         else {
-          const selected = sel, generation = epoch, request = result && result.req;
-          if (await askFree(explicitText(e, ex), () => sel === selected && epoch === generation && (result && result.req) === request)) return save(Object.assign({}, body, { confirm: ex.map((x) => x.file) }));
+          const rev = S.R ? S.R.rev : null, selected = sel, generation = epoch, request = result && result.req;
+          if (await askFree(explicitText(e, ex), () => (S.R ? S.R.rev : null) === rev && sel === selected && epoch === generation && (result && result.req) === request)) return save(Object.assign({}, body, { confirm: ex.map((x) => x.file) }));
         }
       } finally {
         renderSoon();
@@ -1488,14 +1488,14 @@ window.DPRefEdit = (() => {
     }
 
     async function link(op, fields, ask, confirm) {
-      const selected = sel, target = fields.crop_id;
+      const rev = S.R ? S.R.rev : null, selected = sel, target = fields.crop_id;
       // POST /refs/link 한 번(§4.6). ask = 먼저 띄울 확인 창(영향 줄 문구), confirm = explicit 409 뒤 확인한 이름
       const block = refsBlock();
       if (block) {
         opts.toast(block, "err");
         return;
       }
-      if (ask && !await askFree(ask, () => sel === selected && fields.crop_id === target)) return;
+      if (ask && !await askFree(ask, () => (S.R ? S.R.rev : null) === rev && sel === selected && fields.crop_id === target)) return;
       const before = S.R.crops.find((c) => c.id === fields.crop_id);
       const first = !!before && !before.files.length;
       try {
@@ -1515,8 +1515,8 @@ window.DPRefEdit = (() => {
         const ex = explicitOf(e);
         if (!ex) opts.toast(e.message, "err");
         else {
-          const selected = sel;
-          if (await askFree(explicitText(e, ex), () => sel === selected && fields.crop_id === target)) return link(op, fields, null, ex.map((x) => x.file));
+          const rev = S.R ? S.R.rev : null, selected = sel;
+          if (await askFree(explicitText(e, ex), () => (S.R ? S.R.rev : null) === rev && sel === selected && fields.crop_id === target)) return link(op, fields, null, ex.map((x) => x.file));
         }
       } finally {
         renderSoon();
@@ -1980,8 +1980,8 @@ window.DPRefEdit = (() => {
       const lines = (opts.applyWarn ? opts.applyWarn() : [])
         .concat("반영 (무료): 무료 반영(Import → Prepare → Analyze → Review 템플릿, 탭 불필요)으로 레퍼런스 연결을 프로젝트 기록에 반영합니다.");
       if (n) lines.push(`다시 생성 대기 ${n}건(사전 승인)은 이 반영에서 돌지 않음 — R·[다시 생성 보내기]·그래프 Run 에서 과금`);
-      const selected = sel;
-      if (!await askFree(lines.concat(APPLY_NOTE, "계속할까요?").join("\n"), () => sel === selected)) return;
+      const rev = S.R ? S.R.rev : null, selected = sel;
+      if (!await askFree(lines.concat(APPLY_NOTE, "계속할까요?").join("\n"), () => (S.R ? S.R.rev : null) === rev && sel === selected)) return;
       opts.queue(true);
     }
 
@@ -2355,8 +2355,8 @@ window.DPRefEdit = (() => {
       const names = items.map((r) => (r.held ? HELD_DIR + "/" : "") + r.name);
       const ask = `${items.length}개를 삭제합니다 — refs\\_삭제\\ 로 옮김(Studio 목록에서 사라짐 · 보관함 끝 「삭제한 파일」에서 되살리기). 보관함을 바꾸면 반영(무료)이 필요합니다. 계속할까요?\n`
         + names.slice(0,10).join("\n") + (items.length > 10 ? `\n외 ${items.length-10}` : "") + outsideLine();
-      const selected = JSON.stringify([...poolSelected].sort());
-      if (!await askFree(ask, () => selected === JSON.stringify([...poolSelected].sort()))) return null;
+      const rev = S.R ? S.R.rev : null, selected = JSON.stringify([...poolSelected].sort());
+      if (!await askFree(ask, () => (S.R ? S.R.rev : null) === rev && selected === JSON.stringify([...poolSelected].sort()))) return null;
       const r = await poolWrite({ op: "delete", items });
       if (r) { for (const name of names) poolSelected.delete(name); renderSoon(); }
       return r;

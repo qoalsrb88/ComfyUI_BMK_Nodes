@@ -60155,7 +60155,7 @@ def forge_js_unit():
         skip("FW node 없음 — Forge 화면 VM 시험 못 돌림")
         return
     sources = {name: (web / name).read_text(encoding="utf-8") for name in
-               ("env.js", "dialog.js", "board.js", "pipeline.js", "ref_edit.js", "mask_edit.js", "layout_edit.js")}
+               ("env.js", "dialog.js", "board.js", "pipeline.js", "ref_edit.js", "mask_edit.js", "layout_edit.js", "viewer.js")}
     for name, count in (("board.js", 3), ("pipeline.js", 11), ("ref_edit.js", 6), ("mask_edit.js", 7), ("layout_edit.js", 6)):
         code = re.sub(r"//[^\n]*", "", sources[name])
         calls = code.count("await askFree(") + code.count("(p) => askFree(")
@@ -60231,7 +60231,10 @@ class Element {
 }
 function context({hash="", handler, storageLocked=false}={}) {
   const timers=new Map(), events=new Map(), calls=[], logs=[], values=new Map(); let seq=0;
-  const doc={createElement(tag){return new Element(tag,this);},addEventListener(){}};
+  const docEvents=new Map();
+  const doc={createElement(tag){return new Element(tag,this);},addEventListener(type,fn){
+    const list=docEvents.get(type)||[];list.push(fn);docEvents.set(type,list);
+  }};
   doc.body=new Element("body",doc); doc.activeElement=doc.body;
   const old={getItem:k=>values.get(String(k))??null,setItem:(k,v)=>values.set(String(k),String(v)),removeItem:k=>values.delete(String(k))};
   const loc={href:"https://studio.invalid/bmk/design_patch/board/?root=0123456789ab"+hash,
@@ -60246,8 +60249,10 @@ function context({hash="", handler, storageLocked=false}={}) {
   ctx.fetch=original;
   const fire=async ms=>{for(const [id,t] of [...timers])if(t.ms===ms){timers.delete(id);t.fn();}await settle();};
   const key=(type,k,trusted=true,extra={})=>{
-    const e={type,key:k,isTrusted:trusted,stopImmediatePropagation(){this.stopped=true;},stopPropagation(){},preventDefault(){this.prevented=true;},...extra};
-    for(const item of [...(events.get(type)||[])]){item.fn(e);if(e.stopped)break;}return e;
+    const e={type,key:k,isTrusted:trusted,defaultPrevented:false,stopImmediatePropagation(){this.stopped=true;this.propagationStopped=true;},
+      stopPropagation(){this.propagationStopped=true;},preventDefault(){this.prevented=true;this.defaultPrevented=true;},...extra};
+    for(const item of [...(events.get(type)||[])]){item.fn(e);if(e.stopped)break;}
+    if(!e.propagationStopped)for(const fn of [...(docEvents.get(type)||[])]){fn(e);if(e.stopped)break;}return e;
   };
   return {ctx,doc,calls,logs,old,loc,events,timers,original,fire,key};
 }
@@ -60330,7 +60335,7 @@ await scenario("FW15 대화 상자 줄·신뢰 클릭·초점·키 캡처·inert
   const blocked=!done&&d.open&&before.inert&&await d.confirm("중복")===false&&ps.length===3&&ps[2].textContent==="<script>";
   const up=e.key("keyup","Q"),press=e.key("keypress","w");e.key("keydown","Tab");const tab=e.doc.activeElement===buttons[1];
   e.key("keydown","Tab",true,{shiftKey:true});const focus=e.doc.activeElement===buttons[0];buttons[0].onclick({isTrusted:true});
-  return blocked&&up.stopped&&press.stopped&&tab&&focus&&await p&&e.doc.activeElement===before&&!before.inert&&inert.inert&&!d.open;
+  return blocked&&!up.stopped&&press.stopped&&tab&&focus&&await p&&e.doc.activeElement===before&&!before.inert&&inert.inert&&!d.open;
 });
 await scenario("FW16 danger·Enter·Space·Esc·alert·native·lock 원복",async()=>{
   const e=context();vm.runInContext(IN.source["dialog.js"],e.ctx);const d=e.ctx.DPDialog;
@@ -60426,8 +60431,8 @@ await scenario("FW26 mock·Claude 상자 공유 잠금·Esc·신뢰 클릭",asyn
   if(!c.DPDialog.open||!background.inert||await c.agentAsk("run",["승인"],1)!==false)return false;
   e.key("keydown","Tab");if(e.doc.activeElement===yes)return false;
   e.key("keydown","Escape");if(await p!==false||c.DPDialog.open||background.inert)return false;
-  const q=c.agentAsk("run",["승인"],1);if(!e.key("keyup","Q").stopped)return false;
-  for(const key of ["Enter"," "]){const ev=e.key("keydown",key);if(!ev.stopped||ev.prevented)return false;}
+  const q=c.agentAsk("run",["승인"],1);if(e.key("keyup","Q").stopped)return false;
+  for(const key of ["Enter"," "]){const ev=e.key("keydown",key);if(!ev.stopped||!ev.prevented)return false;}
   e.doc.body.children.at(-1).querySelector().onclick({isTrusted:true});
   return await q===true&&!c.DPDialog.open&&!background.inert;
 });
@@ -60465,7 +60470,7 @@ for(const action of ["leave","go","reload","discard"])for(const change of ["rev"
     return c.S.running&&(change==="rev"?effects===1&&warnings===0:effects===0&&warnings===1);
   });
 }
-await scenario("FW30 R1 레이아웃 선택 변경 취소·원격 rev 갱신 허용",async()=>{
+await scenario("FW30 R1 레이아웃 선택 변경 취소·매니페스트 판 갱신 허용",async()=>{
   const e=context(),c=e.ctx;let answer,removed=0,warns=0;
   Object.assign(c,{sel:"crop1",multi:null,S:{remote:1,crop:id=>({id,name:id}),remove:async()=>{removed++;return true;}},
     flushNudge:async()=>{},lockedNow:()=>false,againText:()=>"",act:p=>p,opts:{toast:()=>warns++},
@@ -60473,7 +60478,7 @@ await scenario("FW30 R1 레이아웃 선택 변경 취소·원격 rev 갱신 허
   vm.runInContext(["askFree","removeSel"].map(n=>sourceFn("layout_edit.js",n,"    ")).join("\n"),c);
   const first=c.removeSel();await settle();c.sel="crop2";answer(true);await first;
   if(removed||warns!==1)return false;
-  const second=c.removeSel();await settle();c.S.remote++;answer(true);await second;
+  const second=c.removeSel();await settle();c.S.rev=2;answer(true);await second;
   return removed===1&&warns===2;
 });
 await scenario("FW32 R2 보드 R·R R 비 mock 은 확인·예약 POST 없음",async()=>{
@@ -60539,7 +60544,7 @@ await scenario("FW39 R8 브라우저 단축키 기본 동작·Studio 전파 차�
     const ev=e.key("keydown",key,true,extra);if(!ev.stopped||ev.prevented||!d.open)return false;
   }
   for(const key of [" ","ArrowDown","PageDown","Home","Backspace"]){
-    const ev=e.key("keyup",key);if(!ev.stopped||!ev.prevented)return false;
+    const ev=e.key("keyup",key);if(ev.stopped||!ev.prevented)return false;
   }
   d.cancel();return await p===false;
 });
@@ -60553,6 +60558,137 @@ for(const during of [false,true])await scenario("FW40 R1 레퍼런스 explicit �
   const original={req:"cut-A",crop_id:"A",role:"main",transform:{rotate:0}},pending=c.save(original);
   c.sel="B";reject(Error("explicit"));await settle();if(during)c.sel="C";answer(true);await pending;
   return during?posts.length===1&&warnings.length===1:posts.length===2&&posts[1].crop_id==="A"&&posts[1].req==="cut-A"&&posts[1].confirm[0]==="A.png"&&!warnings.length;
+});
+for(const server of [false,true])for(const kind of ["mock","agent"])await scenario("FW41 T1 클릭 전용 승인 / "+server+" / "+kind,async()=>{
+  const e=context(),c=e.ctx;
+  const el=(tag,cls,t)=>{const n=e.doc.createElement(tag);n.className=cls;if(t!==undefined)n.textContent=t;return n;};
+  Object.assign(c,{SM:()=>server,ask:null,SIDE:"부수 효과",agentFresh:{cap:100,spent:0},el,
+    button:(label,title,click)=>{const n=el("button","",label);n.tabIndex=-1;n.onclick=click;return n;},btns:(host,...bs)=>host.append(...bs)});
+  vm.runInContext(IN.source["dialog.js"]+"\n"+["mockAsk","agentAsk","askKeys"].map(n=>sourceFn("pipeline.js",n,"    ")).join("\n"),c);
+  for(const type of ["keydown","keypress","keyup"])e.doc.addEventListener(type,c.askKeys);
+  let releases=0;e.doc.addEventListener("keyup",()=>releases++);
+  const open=()=>kind==="mock"?c.mockAsk("생성 승인 [MOCK]",false):c.agentAsk("run",["승인"],1);
+  let done=false;const pending=open().then(value=>{done=true;return value;});
+  const buttons=e.doc.body.all().filter(n=>n.tagName==="BUTTON"),sheet=e.doc.activeElement;
+  if(buttons.includes(sheet)||sheet.attrs.tabindex!=="-1")return false;
+  e.key("keydown","Tab");if(e.doc.activeElement!==sheet)return false;
+  buttons[0].focus();
+  for(const extra of [{},{ctrlKey:true},{metaKey:true},{altKey:true}])for(const key of ["Enter"," ","Spacebar"])for(const type of ["keydown","keypress","keyup"]){
+    const ev=e.key(type,key,true,extra);if(!ev.defaultPrevented||(type==="keyup"?ev.stopped:!ev.stopped))return false;
+  }
+  buttons[0].onclick({isTrusted:false});await settle();if(done||releases!==12)return false;
+  e.key("keydown","Escape");if(await pending!==false)return false;
+  const clicked=open();e.doc.body.all().find(n=>n.tagName==="BUTTON").onclick({isTrusted:true});
+  return await clicked===true&&!c.DPDialog.open;
+});
+for(const action of ["removeSel","takePsd"])for(const change of ["remote","own","manifest"])await scenario("FW42 T2 레이아웃 판 보호 / "+action+" / "+change,async()=>{
+  const e=context(),c=e.ctx,posts=[],toasts=[];let answer,releaseOwn;
+  const L={rev:1,pending_rerolls:0,crops:[{id:"A",name:"A",rect:[0,0,10,10],targets:[],history:{candidates:1}}],
+    psd_diff:{token:"snapshot",changed:[{name:"A",fields:["rect"]}]}};
+  vm.runInContext(IN.source["layout_edit.js"],c);
+  const S=c.DPLayoutEdit.session(x=>x,"root",async(u,o)=>{
+    if(o?.method!=="POST")return response(L);
+    const body=JSON.parse(o.body);posts.push(body);
+    if(body.note==="own")await new Promise(r=>{releaseOwn=r;});
+    if(body.rev!==L.rev)return response({error:"stale"},409);
+    L.rev++;if(body.op==="delete")L.crops=[];
+    return response({ok:true,rev:L.rev,taken:[],added:[],skipped:[]});
+  });
+  await S.load();const remote=S.remote;
+  Object.assign(c,{S,sel:"A",multi:null,proposal:null,flushNudge:async()=>{},lockedNow:()=>false,againText:()=>"",act:p=>p,
+    lockedShapes:()=>new Set(),psdSplit:()=>({take:["A"],rest:[]}),partial:()=>true,fieldNames:x=>x.join(","),
+    opts:{toast:t=>toasts.push(t)},DPDialog:{confirm:()=>new Promise(r=>{answer=r;})}});
+  vm.runInContext(["askFree",action].map(n=>sourceFn("layout_edit.js",n,"    ")).join("\n"),c);
+  let own;if(change==="own"){own=S.update("A",{note:"own"});await settle();}
+  const pending=c[action](["A"]);await settle();
+  if(change==="own"){releaseOwn();await own;if(S.remote!==remote)return false;}
+  else {if(change==="remote"){L.rev++;L.crops[0].name="다른 창";}else L.pending_rerolls++;await S.load();}
+  const before=posts.length,rev=S.L.rev;answer(true);await pending;
+  return change==="remote"?posts.length===before&&before===0&&toasts.includes("확인 중 상태가 바뀌었습니다 — 다시 확인한 뒤 시도하세요")
+    :posts.length===before+1&&posts.at(-1).rev===rev&&S.remote===remote&&!toasts.some(t=>t.includes("확인 중 상태"));
+});
+for(const action of ["hold","main","remove","unfix","delete","save_explicit","link_explicit"])for(const changed of [false,true])await scenario("FW43 T2 레퍼런스 판 보호 / "+action+" / "+changed,async()=>{
+  const e=context(),c=e.ctx,posts=[],toasts=[];let answer;
+  const R={rev:1,pending_rerolls:0,crops:[{id:"A",files:[{name:"A.png"}]}]},explicit=action.endsWith("explicit");
+  vm.runInContext(IN.source["ref_edit.js"],c);
+  const S=c.DPRefEdit.session(x=>x,x=>x,"root",async(u,o)=>{
+    if(o?.method!=="POST")return response(R);
+    const body=JSON.parse(o.body);posts.push(body);
+    if(explicit&&!body.confirm)return response({error:"explicit"},409);
+    if(body.rev!==R.rev)return response({error:"stale"},409);
+    R.rev++;return response({ok:true,file:"A.png",size:[10,10],bytes:100});
+  });
+  await S.load();
+  Object.assign(c,{S,sel:"A",epoch:1,result:{req:"cut-A"},savedReq:null,savedTransform:null,
+    refsBlock:()=>null,explicitOf:err=>err.status===409?[{file:"A.png"}]:null,explicitText:()=>"덮어쓰기 확인",
+    LINK_DONE:{hold:"보류",main:"대표",remove:"끊기",unfix:"고정 풀기",add:"연결"},renderSoon(){},
+    canDelete:()=>true,HELD_DIR:"_보류",outsideLine:()=>"",poolSelected:new Set(["A.png"]),poolWrite:body=>S.pool(body),
+    sizeMb:()=>"100B",transformSignature:()=>"original",opts:{toast:t=>toasts.push(t)},
+    DPDialog:{confirm:()=>new Promise(r=>{answer=r;})}});
+  vm.runInContext(["askFree","save","link","deletePool"].map(n=>sourceFn("ref_edit.js",n,"    ")).join("\n"),c);
+  const pending=action==="delete"?c.deletePool([{name:"A.png"}]):action==="save_explicit"?
+    c.save({req:"cut-A",crop_id:"A",role:"main",transform:{rotate:0}}):c.link(action==="link_explicit"?"add":action,{crop_id:"A",name:"A.png"},explicit?null:"변경 확인");
+  await settle();const before=posts.length;
+  if(changed)R.rev++;else R.pending_rerolls++;await S.load(true);answer(true);await pending;
+  return changed?posts.length===before&&toasts.includes("확인 중 상태가 바뀌었습니다 — 다시 확인한 뒤 시도하세요")
+    :posts.length===before+1&&posts.at(-1).rev===1&&!toasts.some(t=>t.includes("확인 중 상태"));
+});
+for(const change of ["manifest","pipeline","layout","rerolls","preapproved"])await scenario("FW44 T3 서버 R 동의값 재검사 / "+change,async()=>{
+  const e=context(),c=e.ctx,posts=[],toasts=[];let answer;
+  Object.assign(c,{SM:()=>true,DPEnv:{serverMode:true,backend:"mock"},S:{rev:1,running:true,drafting:false,pipeline_rev:1,layout_rev:1,rerolls_pending:1,pending_preapproved:1,crops:[]},
+    tKey:"t",cKey:"c",rerollArm:null,rerollSent:null,rerollCell:()=>({cell_key:"cell",variant:"v",pre:1}),usd:()=>"",tabWay:()=>"paid",reviewMissing:()=>"",
+    pipe:{agentOn:()=>false,paidLock:()=>"진행 중",paidWhy:()=>"",applyWarn:()=>[],side:""},toast:t=>toasts.push(t),
+    write:async(path,body)=>{posts.push(body);return {rev:2};},DPDialog:{confirm:()=>new Promise(r=>{answer=r;})}});
+  vm.runInContext(sourceFn("board.js","cellPre")+"\n"+sourceFn("board.js","reroll"),c);
+  const pending=c.reroll(true);c.S.rev++;c.S.running=false;c.S.drafting=true;
+  if(change!=="manifest")c.S[{pipeline:"pipeline_rev",layout:"layout_rev",rerolls:"rerolls_pending",preapproved:"pending_preapproved"}[change]]++;
+  answer(true);await pending;
+  return change==="manifest"?posts.length===1&&posts[0].cell_key==="cell"&&posts[0].count===1:!posts.length&&toasts.some(t=>t.includes("상태가 바뀜 — 다시 생성 안 함"));
+});
+await scenario("FW45 T4 keyup 은 실제 뷰어·보드·마스크 해제 처리기로 전달",async()=>{
+  const e=context(),c=e.ctx;let down=0,press=0,up=0,spaceClass=true;
+  Object.assign(c,{space:true,port:{classList:{remove:()=>{spaceClass=false;}}},maskOn:true,qHeld:true,view:{base:true,orig:true},origKey:true,
+    setView:key=>{c.view[key]=false;},renderCompare(){},setViewFlags(){}});
+  vm.runInContext(sourceFn("mask_edit.js","onKeyUp","    "),c);c.maskEd={onKeyUp:c.onKeyUp};
+  vm.runInContext(sourceFn("board.js","onKeyUp"),c);e.doc.addEventListener("keyup",c.onKeyUp);
+  const viewer=IN.source["viewer.js"],start=viewer.indexOf('    document.addEventListener("keyup", (e) => {'),end=viewer.indexOf('\n    });',start);
+  vm.runInContext(viewer.slice(start,end)+'\n    });',c);
+  e.doc.addEventListener("keydown",()=>down++);e.doc.addEventListener("keypress",()=>press++);e.doc.addEventListener("keyup",()=>up++);
+  vm.runInContext(IN.source["dialog.js"],c);const pending=c.DPDialog.confirm("지우기 확인");
+  e.key("keydown","q");e.key("keypress","q");const space=e.key("keyup"," ",true,{code:"Space"});
+  e.key("keyup","q",true,{code:"KeyQ"});e.key("keyup","w",true,{code:"KeyW"});
+  c.DPDialog.cancel();await pending;
+  return !down&&!press&&up===3&&space.defaultPrevented&&!space.stopped&&!c.space&&!spaceClass&&!c.qHeld&&!c.view.base&&!c.view.orig&&!c.origKey;
+});
+await scenario("FW46 T5 세션 안내 키 차단·재시도 초점·해제",async()=>{
+  let envCalls=0;const e=await boot({handler:(u,o)=>String(u).endsWith("/env")&&++envCalls===1?response({},500):serverHandler(u,o)});
+  let down=0,press=0,up=0;e.doc.addEventListener("keydown",()=>down++);e.doc.addEventListener("keypress",()=>press++);e.doc.addEventListener("keyup",()=>up++);
+  e.key("keydown","r");e.key("keypress","r");e.key("keyup","r");
+  if(down||press||up!==1||!e.key("keydown","Enter").defaultPrevented)return false;
+  for(const [key,extra] of [["r",{ctrlKey:true}],["r",{metaKey:true}],["ArrowLeft",{altKey:true}],["F5",{}],["F12",{}]]){
+    const ev=e.key("keydown",key,true,extra);if(!ev.stopped||ev.defaultPrevented)return false;
+  }
+  const retry=e.doc.body.all().find(n=>n.tagName==="BUTTON");e.key("keydown","Tab");if(e.doc.activeElement!==retry)return false;
+  for(const key of ["Enter"," ","Spacebar"])if(e.key("keydown",key).defaultPrevented||e.key("keypress",key).defaultPrevented)return false;
+  retry.onclick();await settle();e.key("keydown","r");e.key("keypress","r");e.key("keyup","r");
+  return e.ready&&down===1&&press===1&&up===2;
+});
+await scenario("FW46 T5 같은 안내·오류 문구는 한 문단",async()=>{
+  const message="Forge에서 Design Patch Studio를 다시 열어 주세요.";
+  const e=await boot({handler:(u,o)=>String(u).endsWith("/api/session")?response({reason:"no_session",error:message},401):serverHandler(u,o)});
+  const paragraphs=e.doc.body.all().filter(n=>n.tagName==="P");return !e.ready&&paragraphs.length===1&&paragraphs[0].textContent===message;
+});
+for(const kind of ["nonJSON","empty","stale_settings","queue_full"])await scenario("FW47 T6 무료 큐 응답 판정 / "+kind,async()=>{
+  const e=context(),c=e.ctx,posts=[];c.DPEnv={serverMode:true};vm.runInContext(IN.source["pipeline.js"],c);
+  const s=c.DPPipeline.session(x=>x,()=>{throw Error("ComfyUI 경로 금지");},"root",async(u,o)=>{
+    posts.push(JSON.parse(o.body));return kind==="nonJSON"?new Response("not json"):kind==="empty"?response({}):response({reason:kind,error:"서버 거절",sig:"3:13"},409);
+  },e.old);
+  try{await s.queue("apply","3:12");return false;}catch(err){
+    const expected=kind==="stale_settings"?"큐에 넣지 않음 — 확인한 뒤 실행 설정·프로젝트 기록이 바뀜(3:12 → 3:13, 다른 창의 저장·그래프 실행): 다시 [반영 (무료)]해 새 설정으로 확인하세요":
+      kind==="queue_full"?"서버 거절":null;
+    return posts.length===1&&JSON.stringify(posts[0])===JSON.stringify({root:"root",stage:"apply",expect:"3:12"})&&!s.job&&!s.sending
+      &&(expected?err.message===expected:err.message.startsWith("보냈는지 모름 — 대기열을 확인하세요(작업이 들어갔을 수 있음): "));
+  }
 });
 console.log(JSON.stringify(out));
 '''

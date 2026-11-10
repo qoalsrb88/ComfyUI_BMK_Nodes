@@ -594,15 +594,17 @@ window.DPPipeline = (() => {
       try {
         if (SM()) {
           let d;
-          try { d = await call("jobs/prompt", expect ? { stage, expect } : { stage }); }
+          try {
+            d = await call("jobs/prompt", expect ? { stage, expect } : { stage });
+            if (typeof d.prompt_id !== "string" || !d.prompt_id) throw new Error("작업 번호를 받지 못했습니다");
+          }
           catch (e) {
-            if (!e.status || e.status >= 500) e.message = `보냈는지 모름 — 대기열을 확인하세요(작업이 들어갔을 수 있음): ${e.message}`;
+            if (!e.status || e.status >= 500 || (e.status >= 200 && e.status < 300)) e.message = `보냈는지 모름 — 대기열을 확인하세요(작업이 들어갔을 수 있음): ${e.message}`;
             else if (e.data && e.data.reason === "stale_settings") {
               e.message = `큐에 넣지 않음 — 확인한 뒤 실행 설정·프로젝트 기록이 바뀜(${expect} → ${e.data.sig}, 다른 창의 저장·그래프 실행): 다시 [반영 (무료)]해 새 설정으로 확인하세요`;
             }
             throw e;
           }
-          if (!d.prompt_id) throw new Error("작업 번호를 받지 못했습니다");
           return begin({ stage, pid: d.prompt_id, number: d.number, running: false, ahead: null, gone: 0 });
         }
         let t;
@@ -1862,7 +1864,7 @@ window.DPPipeline = (() => {
         box.append(sheet);
         document.body.append(box);
         ask = { box, close };
-        if (window.DPDialog) sheet.querySelector("button:not(:disabled)").focus();
+        if (window.DPDialog) { sheet.setAttribute("tabindex", "-1"); sheet.focus(); }
       });
     }
 
@@ -1915,7 +1917,7 @@ window.DPPipeline = (() => {
         box.append(sheet);
         document.body.append(box);
         ask = { box, close };
-        if (window.DPDialog) sheet.querySelector("button:not(:disabled)").focus();
+        if (window.DPDialog) { sheet.setAttribute("tabindex", "-1"); sheet.focus(); }
       });
     }
 
@@ -3278,19 +3280,14 @@ window.DPPipeline = (() => {
     // mock 확인 상자가 열린 동안 보드 키를 막고 Esc = 취소
     function askKeys(e) {
       if (!ask) return;
-      e.stopPropagation();
-      if (e.type === "keydown" && e.key === "Tab" && window.DPDialog) {
-        e.preventDefault();
-        const buttons = [...ask.box.querySelectorAll("button:not(:disabled)")];
-        const at = buttons.indexOf(document.activeElement);
-        buttons[(at + (e.shiftKey ? buttons.length - 1 : 1)) % buttons.length].focus();
-      }
+      if (e.type !== "keyup") e.stopPropagation();
+      if (["Tab", "Enter", " ", "Spacebar"].includes(e.key)) e.preventDefault();
       if ((!e.type || e.type === "keydown") && e.key === "Escape") {
         e.preventDefault();
         ask.close(false);
       }
     }
-    document.addEventListener("keydown", askKeys, true);
+    for (const type of ["keydown", "keypress", "keyup"]) document.addEventListener(type, askKeys, true);
     if (L) {
       L.onWave((d) => {
         // D9: 이 Studio 의 유료 Run·재굴림(실행 중이거나 방금 끝남 — 그 prompt_id)이 wave 로 멈춤 → 끝난 뒤 Run 줄 '남은 N건'(Run 은 '이어서 승인' — 클릭만)
