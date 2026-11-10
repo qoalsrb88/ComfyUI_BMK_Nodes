@@ -106,6 +106,10 @@ try:
 except ImportError:  # 단독 실행/테스트
     import bmk_design_patch_store as store
 
+def _server_text(local, server):
+    return server if os.environ.get("BMK_DP_SERVER_MODE") == "1" else local
+
+
 SCHEMA = "bmk.design_patch.pipeline/1"
 PIPELINE_NAME = "pipeline.json"
 
@@ -358,7 +362,7 @@ def _check_mapping(text: str) -> None:
 def _check_round(value: int, allowed) -> None:
     """draft.draft_round 는 유도값(·저장값) 그대로 — 다시 초안(round 올리기)은 그래프에서(§9)."""
     if value not in allowed:
-        raise ValueError(f"draft.draft_round 는 바꿀 수 없습니다(유도값 {sorted(allowed)} — 다시 초안은 그래프에서): {value!r}")
+        raise ValueError(_server_text(f"draft.draft_round 는 바꿀 수 없습니다(유도값 {sorted(allowed)} — 다시 초안은 그래프에서): {value!r}", f"draft.draft_round 는 바꿀 수 없습니다(유도값 {sorted(allowed)}): {value!r}"))
 
 
 def _check_section(section: str, values: Any, *, deep: bool, draft_rounds=None) -> dict:
@@ -387,7 +391,7 @@ def _check_section(section: str, values: Any, *, deep: bool, draft_rounds=None) 
             raise ValueError(f"prepare.variants: {e}") from e
     elif section == "draft":
         if out["write_mode"] not in _DRAFT_WRITE_MODES:
-            raise ValueError(f"draft.write_mode 는 {' · '.join(_DRAFT_WRITE_MODES)} 만 씁니다(preview·force 는 그래프): "
+            raise ValueError(_server_text(f"draft.write_mode 는 {' · '.join(_DRAFT_WRITE_MODES)} 만 씁니다(preview·force 는 그래프): ", f"draft.write_mode 는 {' · '.join(_DRAFT_WRITE_MODES)} 만 씁니다: ") +
                              f"{out['write_mode']!r}")
         if deep:  # 선택지(apply 포함)는 _value 가 봤다 — 모델별 effort 조합은 노드 VALIDATE_INPUTS·run 과 같은 함수로
             dvlm = _vlm()
@@ -430,7 +434,7 @@ def _read_raw(root: str) -> bytes | None:
         except FileNotFoundError:
             return None
         except OSError as e:
-            raise ValueError(f"{PIPELINE_NAME} 파일을 읽을 수 없습니다({e})") from e
+            raise ValueError(f"{_server_text(PIPELINE_NAME, '실행 설정')} 파일을 읽을 수 없습니다({e})") from e
 
 
 def _parse(raw: bytes) -> dict:
@@ -438,27 +442,27 @@ def _parse(raw: bytes) -> dict:
     try:
         doc = json.loads(raw.decode("utf-8-sig"))
     except (UnicodeDecodeError, json.JSONDecodeError) as e:
-        raise ValueError(f"{PIPELINE_NAME} JSON 형식이 잘못되었습니다({e})") from e
+        raise ValueError(f"{_server_text(PIPELINE_NAME, '실행 설정')} JSON 형식이 잘못되었습니다({e})") from e
     if not isinstance(doc, dict):
-        raise ValueError(f"{PIPELINE_NAME} 최상위가 객체가 아닙니다")
+        raise ValueError(f"{_server_text(PIPELINE_NAME, '실행 설정')} 최상위가 객체가 아닙니다")
     if doc.get("schema") != SCHEMA:
-        raise ValueError(f"{PIPELINE_NAME} schema 가 {SCHEMA!r} 가 아닙니다({doc.get('schema')!r})")
+        raise ValueError(f"{_server_text(PIPELINE_NAME, '실행 설정')} schema 가 {SCHEMA!r} 가 아닙니다({doc.get('schema')!r})")
     extra = sorted(str(k) for k in doc if k not in _DOC_KEYS)
     if extra:
-        raise ValueError(f"{PIPELINE_NAME} 에 모르는 키: {', '.join(extra)}")
+        raise ValueError(f"{_server_text(PIPELINE_NAME, '실행 설정')} 에 모르는 키: {', '.join(extra)}")
     rev = doc.get("rev")
     if isinstance(rev, bool) or not isinstance(rev, int) or rev < 1:
-        raise ValueError(f"{PIPELINE_NAME} rev 가 1 이상 정수가 아닙니다: {rev!r}")
+        raise ValueError(f"{_server_text(PIPELINE_NAME, '실행 설정')} rev 가 1 이상 정수가 아닙니다: {rev!r}")
     if rev > _REV_MAX:
-        raise ValueError(f"{PIPELINE_NAME} rev 가 너무 큽니다({rev} > {_REV_MAX} — 브라우저가 정확히 읽지 못함)")
+        raise ValueError(f"{_server_text(PIPELINE_NAME, '실행 설정')} rev 가 너무 큽니다({rev} > {_REV_MAX} — 브라우저가 정확히 읽지 못함)")
     conf = doc.get("confirm")
     valid = {f"{s}.{k}" for s in SECTIONS for k in section_keys(s)}
     if not isinstance(conf, list) or any(not isinstance(c, str) or c not in valid for c in conf):
-        raise ValueError(f"{PIPELINE_NAME} confirm 은 '절.키' 문자열 목록이어야 합니다: {conf!r}")
+        raise ValueError(f"{_server_text(PIPELINE_NAME, '실행 설정')} confirm 은 '절.키' 문자열 목록이어야 합니다: {conf!r}")
     out = {"schema": SCHEMA, "rev": rev, "confirm": list(conf)}
     for sec in SECTIONS:
         if sec not in doc:
-            raise ValueError(f"{PIPELINE_NAME} 에 {sec} 절이 없습니다")
+            raise ValueError(f"{_server_text(PIPELINE_NAME, '실행 설정')} 에 {sec} 절이 없습니다")
         vals = doc[sec]
         if sec == "prepare" and isinstance(vals, dict) and "complexity" not in vals:
             vals = dict(vals, complexity="high")  # 옛 파일의 optional 기본값, 확인 필요를 새로 만들지 않는다
@@ -467,7 +471,7 @@ def _parse(raw: bytes) -> dict:
         try:
             out[sec] = _check_section(sec, vals, deep=False)
         except ValueError as e:
-            raise ValueError(f"{PIPELINE_NAME} {e}") from e
+            raise ValueError(f"{_server_text(PIPELINE_NAME, '실행 설정')} {e}") from e
     return out
 
 
@@ -540,11 +544,11 @@ def update(root: str, rev: int | None, section: str, values: Any) -> dict:
             doc, broken = None, e
         if broken is not None:
             if rev is not None:
-                raise PipelineConflict(f"{PIPELINE_NAME} 이 깨져 있습니다 — 덮어쓰려면 rev 없이(null) 저장: {broken}")
+                raise PipelineConflict(f"{_server_text(PIPELINE_NAME, '실행 설정')} 이 깨져 있습니다 — 덮어쓰려면 rev 없이(null) 저장: {broken}")
             base_rev = _salvage_rev(raw)
         elif doc is None:
             if rev != 0:
-                raise PipelineConflict(f"{PIPELINE_NAME} 이 없습니다(rev 0) — 새로고침")
+                raise PipelineConflict(f"{_server_text(PIPELINE_NAME, '실행 설정')} 이 없습니다(rev 0) — 새로고침")
             base_rev = 0
         else:
             if rev != doc["rev"]:
@@ -609,7 +613,7 @@ def _derive_import(m: dict, out: dict, frm: dict, conf: set, notes: list) -> Non
     src = m.get("source") if isinstance(m.get("source"), dict) else {}
     if not src.get("psd"):
         conf.update(f"import.{k}" for k in section_keys("import"))
-        notes.append("import: 매니페스트에 Import 기록이 없음 — PSD 경로를 확인(처음 Import 는 그래프에서)")
+        notes.append(_server_text("import: 매니페스트에 Import 기록이 없음 — PSD 경로를 확인(처음 Import 는 그래프에서)", "import: 가져오기 기록이 없음 — PSD 경로를 확인하고 반영하세요"))
         return
     for key, sk in _IMPORT_SOURCE:
         v = src.get(sk)
@@ -649,7 +653,7 @@ def _derive_prepare(m: dict, out: dict, frm: dict, conf: set, notes: list) -> No
     jobs = _jobs_of(m)
     if not jobs:
         conf.update(f"prepare.{k}" for k in section_keys("prepare"))
-        notes.append("prepare: Prepare 기록(prepare_settings·jobs)이 없음 — 노드 기본값(모델·품질·n 등 확인 필요)")
+        notes.append(_server_text("prepare: Prepare 기록(prepare_settings·jobs)이 없음 — 노드 기본값(모델·품질·n 등 확인 필요)", "prepare: 준비 기록이 없음 — 기본 설정 값(모델·품질·n 등 확인 필요)"))
         return
     mixed = []
     for key, vs in _jobs_prepare(jobs).items():
@@ -707,9 +711,9 @@ def _derive_draft(root: str, m: dict, out: dict, frm: dict, conf: set, notes: li
             notes.append(f"draft: 크롭마다 초안 설정이 다름({len({json.dumps(r, sort_keys=True) for r in rows})}가지) — 가장 많은 것")
     else:
         conf.add("draft.vlm")
-        notes.append("draft: 스펙 초안 기록이 없음" + (f"(mock 초안 {n_mock}개는 세지 않음)" if n_mock else "") + " — 노드 기본 vlm")
+        notes.append("draft: 스펙 초안 기록이 없음" + (f"(mock 초안 {n_mock}개는 세지 않음)" if n_mock else "") + _server_text(" — 노드 기본 vlm", " — 기본 초안 설정 값"))
     out["credit_cap"] = _RECOMMENDED_CREDIT_CAP
-    notes.append(f"draft: credit_cap 은 기록이 없어 권장 {_RECOMMENDED_CREDIT_CAP}(노드 기본값 0 = 상한 없음)")
+    notes.append(_server_text(f"draft: credit_cap 은 기록이 없어 권장 {_RECOMMENDED_CREDIT_CAP}(노드 기본값 0 = 상한 없음)", f"draft: credit_cap 은 기록이 없어 권장 {_RECOMMENDED_CREDIT_CAP}(기본값 0 = 상한 없음)"))
     conf.add("draft.apply")  # apply 는 스펙에 기록되지 않음
 
 
@@ -733,7 +737,7 @@ def _derive_analyze(root: str, m: dict, out: dict, frm: dict, conf: set, notes: 
             latest.append({k: e["params"].get(k) for k in _ANALYZE_PARAMS})
     if not latest:
         conf.update(f"analyze.{k}" for k in section_keys("analyze"))
-        notes.append("analyze: 분석 기록이 없음 — 노드 기본값")
+        notes.append(_server_text("analyze: 분석 기록이 없음 — 노드 기본값", "analyze: 분석 기록이 없음 — 기본 설정 값"))
         return
     top, mix = _majority(latest)
     for k, v in top.items():
@@ -750,7 +754,7 @@ def _derive_export(root: str, m: dict, s: dict, frm: dict, conf: set, notes: lis
     if last is None:
         conf.update(f"compose.{k}" for k in section_keys("compose"))
         conf.update(f"export.{k}" for k in section_keys("export"))
-        notes.append("export: Export 기록이 없음 — 노드 기본값(filename_prefix = 프로젝트 폴더 이름)")
+        notes.append(_server_text("export: Export 기록이 없음 — 노드 기본값(filename_prefix = 프로젝트 폴더 이름)", "export: Export 기록이 없음 — 기본 설정 값(filename_prefix = 프로젝트 폴더 이름)"))
         return
     comp = last.get("compose") if isinstance(last.get("compose"), dict) else {}
     for k in section_keys("compose"):
@@ -791,7 +795,7 @@ def derive(root: str, m: dict, *, deep: bool = False) -> dict:
             s[sec].update({k: base[sec][k] for k in keys})
             frm.update({f"{sec}.{k}": "default" for k in keys})
             conf.update(f"{sec}.{k}" for k in keys)
-            notes.append(f"{sec}: 기록 값을 쓸 수 없음({e}) — " + ("·".join(keys) + " 은 " if sec == "draft" else "") + "노드 기본값")
+            notes.append(f"{sec}: 기록 값을 쓸 수 없음({e}) — " + ("·".join(keys) + " 은 " if sec == "draft" else "") + _server_text("노드 기본값", "기본 설정 값"))
     return {"settings": s, "from": frm, "confirm": _ordered_paths(conf), "notes": notes}
 
 
@@ -1017,7 +1021,7 @@ def _project_widgets(root: str) -> tuple[str, str]:
         raise ValueError(f"Design Patch 프로젝트 폴더(…/{store.PROJECTS_DIRNAME}/<project>)가 아닙니다: {root}")
     base = os.path.dirname(parent)
     if os.path.normcase(store.project_root(base, name)) != os.path.normcase(r):
-        raise ValueError(f"프로젝트 폴더를 Project 위젯으로 다시 만들 수 없습니다: {root}")
+        raise ValueError(_server_text(f"프로젝트 폴더를 Project 위젯으로 다시 만들 수 없습니다: {root}", f"저장된 값으로 프로젝트 폴더를 다시 만들 수 없습니다: {root}"))
     return name, base
 
 
@@ -1117,7 +1121,7 @@ def build_prompt(stage: str, settings: dict, root: str, *, approve: str = "", on
             elif role == "draft":
                 inputs.update(approve=approve, only=only, adopt="", keep_loaded=False)
         if set(inputs) != set(NODE_INPUTS[cls]):
-            raise ValueError(f"{cls} 입력이 노드 위젯과 다릅니다: {sorted(set(inputs) ^ set(NODE_INPUTS[cls]))}")
+            raise ValueError(_server_text(f"{cls} 입력이 노드 위젯과 다릅니다: {sorted(set(inputs) ^ set(NODE_INPUTS[cls]))}", f"실행 입력이 설정 값과 다릅니다: {sorted(set(inputs) ^ set(NODE_INPUTS[cls]))}"))
         prompt[NODE_KEYS[role]] = {"class_type": cls, "inputs": {k: inputs[k] for k in NODE_INPUTS[cls]}}
         prev = role
     return prompt
