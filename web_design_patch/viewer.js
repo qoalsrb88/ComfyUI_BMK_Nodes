@@ -254,6 +254,8 @@ window.DPViewer = (() => {
 
     function apply() {
       stage.style.transform = `translate(${tx}px, ${ty}px) scale(${z})`;
+      // 화면 1px 의 그림 길이 — CSS 가 선택 선 그림자 같은 '화면 고정' 길이에 쓴다(board.css var(--u))
+      if (stage.style.setProperty) stage.style.setProperty("--u", String(1 / z));
       stage.classList.toggle("px", z * dpr() >= 2);
       zoomLabel.textContent = `${Math.round(z * dpr() * 100)}%`;
       drawLabels();
