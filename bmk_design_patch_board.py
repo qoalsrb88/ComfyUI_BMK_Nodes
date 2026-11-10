@@ -427,9 +427,12 @@ def _public_path(path, scope=None):
     if isinstance(home, str) and home:
         pattern = r"[\\/]+".join(re.escape(part) for part in re.split(r"[\\/]+", home.rstrip("\\/")))
         if pattern:
-            match = re.match(pattern + r"(?=$|[\\/])", path, flags=re.IGNORECASE)
+            match = re.match(pattern + r"(?![A-Za-z0-9_-])", path, flags=re.IGNORECASE)
             if match:
-                return "<계정 폴더>" + path[match.end():]
+                tail = path[match.end():]
+                # 홈의 조사·구두점은 남기되, 이름 뒤 글자가 붙은 형제 폴더의 하위 경로는 제외한다.
+                if not tail or tail.startswith(("/", "\\")) or not re.search(r"[A-Za-z0-9_\\/]", tail):
+                    return "<계정 폴더>" + tail
     return "<서버 경로>"
 
 
@@ -454,22 +457,27 @@ def _public_roots(scope=None):
         pattern = r"[\\/]+".join(re.escape(part) for part in re.split(r"[\\/]+", path))
         if pattern not in patterns:
             patterns.append(pattern)
-    return r"(?i:" + "|".join(patterns) + r''')(?=$|[\\/\s"'<>])'''
+    # 더 긴 설치 폴더를 먼저 맞추고, 조사·구두점도 뿌리의 끝으로 인정한다.
+    return r"(?i:" + "|".join(sorted(patterns, key=len, reverse=True)) + r")(?![A-Za-z0-9_-])"
 
 
-def public_error(message: str, scope: dict | None = None) -> str:
-    """후보를 공백 너머로 잇지 않는다. URL·이미 가린 홈의 한 토큰만 보호하고 남은 경로는 닫는다."""
-    if not server_mode():
-        return message
-    tail = r'''[^\s"'<>)\]}]*'''
-    keep = r'''(?i:https?)://[^\s<>"']+|<계정 폴더>''' + tail
-    left = r'''(?<![^\s:'"(=\[])'''
-    root = r"(?:" + _public_roots(scope) + r"|[A-Za-z]:[\\/]|(?i:file):/{2,}|\\{2,}|/{2,})"
+_PUBLIC_TAIL = r'''[^\s"'<>)\]};,|:]*'''
+# URL의 쿼리는 보존하고 목록 구분자에서 끝낸다. 홈 꼬리는 콜론에서도 끝낸다.
+_PUBLIC_KEEP = r'''(?i:https?)://[^\s<>"',;|]+|<계정 폴더>''' + _PUBLIC_TAIL
+
+
+def _public_mask(message, scope=None):
+    """1단계: 아는 뿌리와 절대 경로 후보만 가린다. 공백 뒤 토큰은 이어 붙이지 않는다."""
+    known = re.compile(_public_roots(scope))
+    left = r'''(?<![^\s:'"(=\[;,|])'''
+    # 아는 뿌리·드라이브·file URI·UNC 후보는 POSIX 일반 후보보다 먼저 맞춘다.
+    root = r"(?:" + known.pattern + r"|[A-Za-z]:[\\/]|(?i:file):/{2,}|\\{2,}|/{2,})"
+    # 따옴표 안에서는 닫는 따옴표까지, 밖에서는 구분자 앞까지만 후보로 삼는다.
     quoted_root = r"(?:" + root + r'''|(?<![A-Za-z]:)/[^/\s"'<>]+/)'''
-    root = r"(?:" + root + r'''|(?<![A-Za-z]:)/[^/\s"'<>)\]}]+/)'''
-    paths = (r"(?P<keep>" + keep + r")|" + left
+    root = r"(?:" + root + r'''|(?<![A-Za-z]:)/[^/\s"'<>)\]};,|:]+/)'''
+    paths = (r"(?P<keep>" + _PUBLIC_KEEP + r")|" + left
              + r'''(?P<quote>["'])(?P<quoted>''' + quoted_root + r'''[^\r\n]*?)(?P=quote)|'''
-             + left + r"(?P<path>" + root + tail + r")")
+             + left + r"(?P<path>" + root + _PUBLIC_TAIL + r")")
 
     def hide(match):
         if match.group("keep") is not None:
@@ -477,25 +485,63 @@ def public_error(message: str, scope: dict | None = None) -> str:
         quote = match.group("quote") or ""
         path = match.group("quoted") if quote else match.group("path")
         plain = path if quote else path.rstrip(".,;)]}")
-        return quote + _public_path(plain, scope) + quote + path[len(plain):]
+        punctuation = path[len(plain):]
+        suffix = ""
+        found = known.match(plain)
+        if found:
+            rest = plain[found.end():]
+            # 뿌리 바로 뒤 조사·구두점은 경로가 아니다. 하위 경로나 형제 이름은 통째로 분류한다.
+            if rest and not re.search(r"[A-Za-z0-9_\\/]", rest):
+                plain, suffix = plain[:found.end()], rest
+        return quote + _public_path(plain, scope) + suffix + quote + punctuation
 
-    result = re.sub(paths, hide, message)
-    # 후보 경계 밖에 붙은 경로도 원문으로 내보내지 않는다. 이 검사는 치환하지 않는다.
-    remains = re.compile(r"[A-Za-z]:[\\/]|(?<![\w\\])\\{2,}|/{2,}[^\s/]+/"
-                         r"|(?<![\w./\\>])/(?:[^\s/]+/)[^\s]*|/(?:srv|home|var|tmp|mnt|opt|usr|etc|data)/[^\s/]+"
-                         r'''|(?<![\w./\\>])/[^/\s"'<>]+(?:[ \t]+(?!·(?:\s|$))[^/\s"'<>]+)+/'''
-                         # 가린 경로의 남은 역슬래시 조각도 닫는다. 절대 경로 없는 상대 경로 안내는 그대로다.
-                         + (r"|\\" if "<계정 폴더>" in result or "<서버 경로>" in result else ""))
+    return re.sub(paths, hide, message)
+
+
+def _public_leftover(result) -> bool:
+    """2단계: 보호 구간 밖의 절대 경로와 서버 경로 뒤 조각을 판정만 한다."""
+    remains = re.compile(
+        r"[A-Za-z]:[\\/]"  # (a) 드라이브 문자.
+        r"|(?<![\w.\\])\\|\\{2}[^\\\s]+\\(?!\\)"  # (b) 루트 역슬래시·낱말에 붙은 UNC, 상대 경로 제외.
+        r"|//"  # (c) 슬래시 UNC.
+        r"|(?<![\w.])/(?=[\w.~])"  # (d) 토큰 처음의 POSIX 루트, 한 단계도 포함.
+        r"|/(?:srv|home|var|tmp|mnt|opt|usr|etc|data|Users|root|app|workspace|Volumes|private|run|media)/[^\s/]+"  # (e) 낱말에 붙은 알려진 POSIX 루트.
+    )
+    parts = []
     start = 0
-    for protected in re.finditer(keep, result):
-        if remains.search(result[start:protected.start()]):
-            break
+    for protected in re.finditer(_PUBLIC_KEEP, result):
+        parts.append(result[start:protected.start()])
         start = protected.end()
-    else:
-        if not remains.search(result[start:]):
-            return result
+    parts.append(result[start:])
+    after_server = False
+    for part in parts:
+        if remains.search(part):
+            return True
+        # (f) 서버 표시 뒤의 조각만 검사한다. 다른 표시·URL·홈은 넘기고 한글·구분자에서 멈춘다.
+        for token in re.finditer(r"<서버 경로>|[^\s<]+|<", part):
+            word = token.group()
+            if word == "<서버 경로>":
+                after_server = True
+            elif after_server:
+                if word in ("/", "·") or re.search(r"[가-힣ㄱ-ㅣ\u1100-\u11ff]", word):
+                    after_server = False
+                elif "/" in word or "\\" in word:
+                    return True
+    return False
+
+
+def _public_closed(message):
+    """3단계: 가리지 못한 원문은 로그에만 남기고 응답은 고정 문구로 닫는다."""
     logger.warning("%s 서버 경로 가림 실패: %s", _TAG, message)
     return "요청을 처리하지 못했습니다(서버 기록 참고)"
+
+
+def public_error(message: str, scope: dict | None = None) -> str:
+    """서버 모드에서만 후보 가림 → 남은 것 판정 → 실패 시 고정 문구 순서로 처리한다."""
+    if not server_mode():
+        return message
+    result = _public_mask(message, scope)
+    return _public_closed(message) if _public_leftover(result) else result
 
 
 def _public_os_error(exc, scope=None):
