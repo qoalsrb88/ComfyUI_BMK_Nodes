@@ -23,6 +23,7 @@ import inspect
 import itertools
 import json
 import logging
+import math
 import os
 import re
 import secrets
@@ -212,18 +213,59 @@ def _path(path):
 
 def _error_message(exc, scope):
     try:
+        if compat.server_mode() and isinstance(exc, OSError):
+            return board._public_os_error(exc, scope)
         message = str(exc)
     except BaseException:
         message = type(exc).__name__
-    home = (scope or {}).get("home")
-    if compat.server_mode() and isinstance(home, str) and home:
-        pattern = r"[\\/]+".join(re.escape(part) for part in re.split(r"[\\/]", home.rstrip("\\/")))
-        if pattern:
-            message = re.sub(pattern + r"(?![\w.-])", "<계정 폴더>", message, flags=re.IGNORECASE)
-    return message
+    return board.public_error(message, scope)
+
+
+def _public_outputs(outputs):
+    """화면이 읽는 값만 새로 만든다. 실행 중 노드 사이에 넘기는 원본 ui 는 바꾸지 않는다."""
+    fields = {
+        "dp_export": ("outcome", "psd", "rev"),
+        "dp_run": ("approved_now", "pending", "backend", "stopped_reason", "auth_held"),
+        "dp_draft": ("approved_now", "pending", "backend", "stopped_reason", "auth_held"),
+    }
+
+    def number(value):
+        return type(value) is int or (type(value) is float and math.isfinite(value))
+
+    def safe(value):
+        return (value is None or type(value) is bool or number(value)
+                or (isinstance(value, str) and len(value) <= 256 and "/" not in value and "\\" not in value)
+                or (isinstance(value, list) and all(number(v) for v in value)))
+
+    result = {}
+    for key, ui in outputs.items():
+        result[key] = {}
+        name = "bmk_" + key
+        rows = ui.get(name) if isinstance(ui, dict) else None
+        if key not in fields or not isinstance(rows, list):
+            continue
+        kept = []
+        for row in rows:
+            if not isinstance(row, dict):
+                kept.append({})
+                continue
+            item = {}
+            for field in fields[key]:
+                if field not in row and key != "dp_export":
+                    continue
+                value = row.get(field)
+                if key == "dp_export" and field == "psd" and isinstance(value, str):
+                    value = os.path.basename(value.replace("\\", "/")) or None
+                if safe(value):
+                    item[field] = value
+            kept.append(item)
+        result[key] = {name: kept}
+    return result
 
 
 def _record(outputs, exc=None, *, interrupted=False, node=None, scope=None):
+    if compat.server_mode():
+        outputs = _public_outputs(outputs)
     info = dict(node or getattr(exc, "bmk_dp_node", None) or {"node_id": "", "node_type": ""})
     if exc is None and not interrupted:
         record = {"status": {"status_str": "success", "completed": True, "messages": []}, "outputs": outputs}

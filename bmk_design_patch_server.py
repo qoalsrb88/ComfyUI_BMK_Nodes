@@ -21,8 +21,10 @@ import dataclasses
 import hashlib
 import hmac
 import html
+import ipaddress
 import json
 import logging
+import math
 import os
 import re
 import secrets
@@ -31,6 +33,7 @@ import sys
 import threading
 import time
 import unicodedata
+from collections import OrderedDict
 from urllib.parse import quote, urlencode, urlsplit
 
 from aiohttp import web
@@ -47,6 +50,7 @@ COOKIE = "bmk_dp_session"
 _PREF_KEY = re.compile(r"bmk-dp-[\w:.-]{1,80}")
 _SESSION_KEY = web.AppKey("bmk_dp_sessions", object)
 _RUNNER_KEY = web.AppKey("bmk_dp_runner", object)
+_LOGIN_FAILURES_KEY = web.AppKey("bmk_dp_login_failures", object)
 _ACCOUNT_LOCK = threading.Lock()
 _ERRORS = {
     "bad_origin": (403, "요청 헤더·출처 검사에 걸렸습니다."),
@@ -55,6 +59,7 @@ _ERRORS = {
     "server_mode": (404, "서버 모드에서는 쓸 수 없는 기능입니다."),
     "bad_token": (401, "토큰을 확인하지 못했습니다 — Forge에서 Design Patch Studio를 다시 열어 주세요."),
     "no_verifier": (503, "토큰 검증기가 설정되지 않았습니다."),
+    "rate_limited": (429, "로그인 시도가 너무 많습니다 — 잠시 뒤 Forge에서 Design Patch Studio를 다시 열어 주세요."),
 }
 
 
@@ -105,9 +110,130 @@ def _validate_config(config):
     for port in (config.port, config.dev_parent_port):
         if port is not None and (type(port) is not int or not 1 <= port <= 65535):
             raise ValueError("포트는 1–65535 여야 합니다")
+    if (type(config.login_fail_limit) is not int or config.login_fail_limit < 1
+            or type(config.login_fail_global) is not int or config.login_fail_global < 1
+            or type(config.login_fail_window) not in (int, float)
+            or not math.isfinite(config.login_fail_window) or config.login_fail_window <= 0):
+        raise ValueError("로그인 실패 한도는 양의 정수, 시간 창은 양의 유한한 초여야 합니다")
+    if not isinstance(config.trusted_proxies, (tuple, list)):
+        raise ValueError("trusted_proxies 는 IP 주소·CIDR 목록이어야 합니다")
+    try:
+        if any(not isinstance(address, str) for address in config.trusted_proxies):
+            raise ValueError
+        proxies = tuple(str(ipaddress.ip_network(address, strict=False) if "/" in address else ipaddress.ip_address(address))
+                        for address in config.trusted_proxies)
+    except ValueError:
+        raise ValueError("trusted_proxies 는 IP 주소·CIDR 목록이어야 합니다") from None
     return dataclasses.replace(config, public_origin=origin,
                                parent_origins=tuple(_origin(p) for p in config.parent_origins),
-                               allowed_hosts=tuple(_host(h) for h in config.allowed_hosts))
+                               allowed_hosts=tuple(_host(h) for h in config.allowed_hosts), trusted_proxies=proxies)
+
+
+def _client_address(request, trusted_proxies):
+    remote = request.remote or ""
+    try:
+        address = ipaddress.ip_address(remote)
+    except ValueError:
+        return remote
+    networks = tuple(ipaddress.ip_network(proxy, strict=False) for proxy in trusted_proxies)
+
+    def trusted(value):
+        return any(value in network for network in networks)
+
+    if trusted(address):
+        for value in reversed(request.headers.get("X-Forwarded-For", "").split(",")):
+            try:
+                candidate = ipaddress.ip_address(value.strip())
+            except ValueError:
+                break  # 불완전한 체인은 접속 상대의 버킷으로 돌린다.
+            if not trusted(candidate):
+                address = candidate
+                break
+    return str(ipaddress.ip_network(f"{address}/64", strict=False)) if address.version == 6 else str(address)
+
+
+class LoginFailures:
+    """거절 시각만 기억한다. 진행 중 수는 별도로 두어 LRU 에서 밀려나도 동시 요청을 놓치지 않는다."""
+
+    def __init__(self, limit, window, global_limit, *, clock=time.time, max_clients=10000):
+        self.limit, self.window, self.global_limit = limit, window, global_limit
+        self.clock, self.max_clients = clock, max_clients
+        self._clients = OrderedDict()
+        self._global = []
+        self._inflight = {}
+        self._pending = 0
+        self._last_clock = float("-inf")
+
+    def begin(self, client):
+        now = self.clock()
+        failures = self._clients.get(client, [])
+        if now >= self._last_clock:
+            self._global[:] = [stamp for stamp in self._global if now - stamp < self.window]
+            failures[:] = [stamp for stamp in failures if now - stamp < self.window]
+            self._last_clock = now
+        if client in self._clients:
+            self._clients.move_to_end(client)
+        waits = []
+        if len(failures) + self._inflight.get(client, 0) >= self.limit:
+            waits.append(max(1, math.ceil(min(failures) + self.window - now)) if failures else 1)
+        # 전역 한도는 토큰 거절 이력이 있는 주소만 늦춘다. 새 주소·정상 사용자까지 함께 막지 않는다.
+        if failures and len(self._global) > self.global_limit:
+            waits.append(max(1, math.ceil(min(self._global) + self.window - now)))
+        if waits:
+            return max(waits)
+        self._inflight[client] = self._inflight.get(client, 0) + 1
+        self._pending += 1
+        return 0
+
+    def reject(self, client):
+        now = self.clock()
+        self._last_clock = max(self._last_clock, now)
+        self._clients.setdefault(client, []).append(now)
+        self._clients.move_to_end(client)
+        while len(self._clients) > self.max_clients:
+            self._clients.popitem(last=False)
+        self._global.append(now)
+
+    def finish(self, client):
+        remaining = self._inflight[client] - 1
+        if remaining:
+            self._inflight[client] = remaining
+        else:
+            del self._inflight[client]
+        self._pending -= 1
+
+    def clear(self):
+        self._clients.clear()
+        self._global.clear()
+        self._inflight.clear()
+        self._pending = 0
+
+
+def _public_json(data, board, scope=None):
+    """안내 글만 가린다. 설정을 저장할 때 다시 보내는 경로 값은 바꾸지 않는다."""
+    if not board.server_mode():
+        return data
+    if isinstance(data, list):
+        return [_public_json(item, board, scope) for item in data]
+    if not isinstance(data, dict):
+        return data
+    result = {}
+    for key, value in data.items():
+        if key in ("error", "warning", "start_blocked", "msg") and isinstance(value, str):
+            result[key] = board.public_error(value, scope)
+        elif key in ("notes", "failed", "pending", "reasons") and isinstance(value, list):
+            result[key] = [board.public_error(item, scope) if isinstance(item, str) else _public_json(item, board, scope)
+                           for item in value]
+        elif key == "exports" and isinstance(value, list):
+            result[key] = []
+            for item in value:
+                item = _public_json(item, board, scope)
+                if isinstance(item, dict) and isinstance(item.get("psd"), str):
+                    item["psd"] = os.path.basename(item["psd"].replace("\\", "/"))
+                result[key].append(item)
+        else:
+            result[key] = _public_json(value, board, scope)
+    return result
 
 
 def _inside(path, base):
@@ -324,6 +450,10 @@ class ServerConfig:
     workers: int = 1                           # 실행기 동시 실행 수(F1 기본 1 — D338)
     close_timeout: float = 30.0                # 서버를 내릴 때 실행 중인 작업을 기다리는 시간(초 — 새 호출만 멈추고 진행 중인 것은 받는다)
     dev_parent_port: int | None = None         # 개발용 가짜 부모 페이지 포트(없으면 띄우지 않음)
+    login_fail_limit: int = 10                 # 클라이언트별 거절 + 진행 중 상한
+    login_fail_window: float = 300             # 거절 기록의 이동 창(초)
+    login_fail_global: int = 200               # 서버 전체 거절이 넘으면 거절 이력이 있는 주소만 제한
+    trusted_proxies: tuple = ()                # 주소·CIDR. 오른쪽부터 신뢰한 프록시를 건너뛴다
 
 
 class DevVerifier:
@@ -364,6 +494,7 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
         data_dir = os.path.realpath(os.path.abspath(config.data_dir))
         secret = _server_secret(data_dir)
         sessions = SessionStore(config.idle_ttl, config.max_ttl, clock=clock)
+        login_failures = LoginFailures(config.login_fail_limit, config.login_fail_window, config.login_fail_global, clock=clock)
         prefs = _Preferences(store)
         if verifier is None and config.dev_handoff:
             verifier = DevVerifier()
@@ -390,6 +521,19 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
                 return config.dev_handoff and urlsplit("//" + host).hostname in ("localhost", "127.0.0.1", "::1")
             except ValueError:
                 return False
+
+        @web.middleware
+        async def public_json(request, handler):
+            response = await handler(request)
+            # 파일·그림·스트리밍은 그대로 둔다. protect 가 범위를 되돌린 뒤라 요청의 세션 범위를 넘긴다.
+            if (board.server_mode() and isinstance(response, web.Response)
+                    and response.content_type == "application/json" and isinstance(response.body, bytes)):
+                data = json.loads(response.body.decode(response.charset or "utf-8"))
+                scope = (request.get("bmk_dp_session") or {}).get("scope")
+                cleaned = _public_json(data, board, scope)
+                if cleaned != data:
+                    response.text = json.dumps(cleaned, ensure_ascii=False)
+            return response
 
         @web.middleware
         async def protect(request, handler):
@@ -421,7 +565,9 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
                 finally:
                     board.reset_scope(scope_token)
             except board._Reject as e:
-                response = board._json({"error": e.message, **e.extra}, status=e.status)
+                message = e.safe if isinstance(e, board._PathReject) and e.safe else e.message
+                scope = (request.get("bmk_dp_session") or {}).get("scope")
+                response = board._json({"error": board.public_error(message, scope), **e.extra}, status=e.status)
             except web.HTTPException as e:
                 response = e
             except Exception as e:
@@ -461,37 +607,48 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
             return web.json_response({"ok": True, "account": account(session)}) if session else _error("no_session")
 
         async def session_post(request):
-            data = await _body(request, 16 * 1024)
-            if isinstance(data, web.Response):
-                return data
-            token, org = data.get("token"), data.get("organization_id")
+            client = _client_address(request, config.trusted_proxies)
+            retry = login_failures.begin(client)  # 본문 수신의 첫 await 전에 자리부터 잡는다.
+            if retry:
+                response = _error("rate_limited")
+                response.headers["Retry-After"] = str(retry)
+                return response
             try:
-                if not isinstance(token, str) or not 1 <= len(token) <= 4096 or not _valid_id(org):
-                    return web.json_response({"error": "토큰·조직 형식이 잘못되었습니다"}, status=400)
-                if not config.dev_handoff and token.startswith("dev:"):
-                    return _error("bad_token")
-                if verifier is None:
-                    return _error("no_verifier")
+                data = await _body(request, 16 * 1024)
+                if isinstance(data, web.Response):
+                    return data
+                token, org = data.get("token"), data.get("organization_id")
                 try:
-                    identity = await verifier.verify(token, org)
-                except Exception:
+                    if not isinstance(token, str) or not 1 <= len(token) <= 4096 or not _valid_id(org):
+                        return web.json_response({"error": "토큰·조직 형식이 잘못되었습니다"}, status=400)
+                    if not config.dev_handoff and token.startswith("dev:"):
+                        login_failures.reject(client)
+                        return _error("bad_token")
+                    if verifier is None:
+                        return _error("no_verifier")
+                    try:
+                        identity = await verifier.verify(token, org)
+                    except Exception:
+                        return _error("bad_token")
+                finally:
+                    data.clear()
+                    token = None
+                if (not isinstance(identity, dict) or not all(_valid_id(identity.get(k)) for k in ("account_id", "organization_id", "name"))
+                        or identity["organization_id"] != org):
+                    login_failures.reject(client)
                     return _error("bad_token")
+                try:
+                    scope = await asyncio.to_thread(_account_scope, data_dir, identity, store, clock())
+                except (OSError, ValueError, TypeError):
+                    return _error("bad_token")
+                tag = hmac.new(secret, (org + "\0" + identity["account_id"]).encode("utf-8"), hashlib.sha256).hexdigest()[:16]
+                sid = sessions.create(identity, scope, tag, request.cookies.get(COOKIE))
+                response = web.json_response({"ok": True, "account": {"name": identity["name"], "tag": tag}})
+                secure = (config.public_origin or request.scheme + "://").startswith("https://")
+                response.set_cookie(COOKIE, sid, httponly=True, path="/", samesite=config.cookie_samesite, secure=secure)
+                return response
             finally:
-                data.clear()
-                token = None
-            if (not isinstance(identity, dict) or not all(_valid_id(identity.get(k)) for k in ("account_id", "organization_id", "name"))
-                    or identity["organization_id"] != org):
-                return _error("bad_token")
-            try:
-                scope = await asyncio.to_thread(_account_scope, data_dir, identity, store, clock())
-            except (OSError, ValueError, TypeError):
-                return _error("bad_token")
-            tag = hmac.new(secret, (org + "\0" + identity["account_id"]).encode("utf-8"), hashlib.sha256).hexdigest()[:16]
-            sid = sessions.create(identity, scope, tag, request.cookies.get(COOKIE))
-            response = web.json_response({"ok": True, "account": {"name": identity["name"], "tag": tag}})
-            secure = (config.public_origin or request.scheme + "://").startswith("https://")
-            response.set_cookie(COOKIE, sid, httponly=True, path="/", samesite=config.cookie_samesite, secure=secure)
-            return response
+                login_failures.finish(client)
 
         async def logout(request):
             sessions.delete(request.cookies.get(COOKIE))
@@ -526,9 +683,10 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
             return web.FileResponse(path, headers={"Content-Type": "application/octet-stream", "Cache-Control": "no-store",
                                     "Content-Disposition": "attachment; filename*=UTF-8''" + quote(os.path.basename(path), safe="")})
 
-        app = web.Application(middlewares=[protect], client_max_size=8 * 1024 ** 2,
+        app = web.Application(middlewares=[public_json, protect], client_max_size=8 * 1024 ** 2,
                               handler_args={"access_log": None})
         app[_SESSION_KEY], app[_RUNNER_KEY] = sessions, runner
+        app[_LOGIN_FAILURES_KEY] = login_failures
         app.on_response_prepare.append(headers)
         routes = web.RouteTableDef()
         board.register_routes(routes, base_dir=None)
@@ -545,6 +703,7 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
                 await asyncio.to_thread(runner.close, config.close_timeout)
             finally:
                 sessions.clear()
+                login_failures.clear()
                 board.set_env_provider(None)
                 board.set_server_mode(False)
                 if old_mock is None:
@@ -591,8 +750,8 @@ def make_dev_parent_app(config):
         source = f"http://{host}:{config.port}/?" + urlencode({"parent_origin": parent})
         source += "#" + urlencode({"token": "dev:" + acct, "organization_id": "org1"})
         page = ('<!doctype html><html lang="ko"><meta charset="utf-8"><title>Forge 개발</title>'
-                '<body style="margin:0"><header style="height:56px;display:flex;align-items:center;gap:24px">'
-                '<strong>Forge 개발</strong><a href="?acct=alice">alice</a><a href="?acct=bob">bob</a></header>'
+                '<body style="margin:0;background:#09090b;color:#e4e4e7"><header style="height:56px;display:flex;align-items:center;gap:24px">'
+                '<strong>Forge 개발</strong><a style="color:#a1a1aa" href="?acct=alice">alice</a><a style="color:#a1a1aa" href="?acct=bob">bob</a></header>'
                 '<iframe title="Design Patch Studio" style="border:0;width:100%;height:calc(100dvh - 56px)" '
                 'sandbox="allow-scripts allow-same-origin allow-downloads allow-popups allow-popups-to-escape-sandbox" '
                 'allow="clipboard-write" referrerpolicy="origin" src="' + html.escape(source, quote=True) + '"></iframe></body></html>')
@@ -618,6 +777,7 @@ def main(argv=None) -> int:
     parser.add_argument("--public-origin")
     parser.add_argument("--parent-origin", action="append", default=[])
     parser.add_argument("--allowed-host", action="append", default=[])
+    parser.add_argument("--trusted-proxy", action="append", default=[])
     parser.add_argument("--dev-handoff", action="store_true")
     parser.add_argument("--dev-parent-port", type=int)
     parser.add_argument("--cookie-samesite", default="Lax")
@@ -629,7 +789,7 @@ def main(argv=None) -> int:
     config = ServerConfig(args.data, host=args.host, port=args.port, public_origin=args.public_origin,
                           parent_origins=tuple(dict.fromkeys(parents)), allowed_hosts=tuple(args.allowed_host),
                           dev_handoff=args.dev_handoff, dev_parent_port=args.dev_parent_port,
-                          cookie_samesite=args.cookie_samesite, workers=args.workers)
+                          cookie_samesite=args.cookie_samesite, workers=args.workers, trusted_proxies=tuple(args.trusted_proxy))
     try:
         config = _validate_config(config)
     except ValueError as e:
@@ -645,6 +805,8 @@ def main(argv=None) -> int:
             await runner.setup()
             await web.TCPSite(runner, config.host, config.port).start()
             print(f"Design Patch Studio 서버 모드: http://{config.host}:{config.port}/", flush=True)
+            if config.public_origin and not config.trusted_proxies:
+                print("trusted_proxies 가 비어 있습니다 — 프록시 뒤에서는 모든 사용자가 같은 로그인 실패 한도를 공유합니다.", flush=True)
             if config.dev_parent_port:
                 parent = web.AppRunner(make_dev_parent_app(config), access_log=None)
                 runners.append(parent)

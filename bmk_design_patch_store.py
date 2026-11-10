@@ -120,6 +120,11 @@ from PIL import Image
 
 logger = logging.getLogger(__name__)
 
+
+def _server_text(local, server):
+    return server if os.environ.get("BMK_DP_SERVER_MODE") == "1" else local
+
+
 _TAG = "[ComfyUI_BMK_Nodes::DesignPatch]"
 
 SCHEMA = "bmk.design_patch/1"
@@ -673,7 +678,7 @@ def merge_layer_targets(parsed: dict, text: Any, *, crop_id: str | None = None, 
     if text is None:
         return out, []
     if not isinstance(text, str):
-        raise ValueError(f"_layer_targets 는 문자열이어야 합니다: {text!r}")
+        raise ValueError(f"{_server_text('_layer_targets', '채택 문구')} 는 문자열이어야 합니다: {text!r}")
     body = _nfc(text)
     head = _PIPE_RE.split(body, maxsplit=1)
     name = head[0].strip()
@@ -687,24 +692,24 @@ def merge_layer_targets(parsed: dict, text: Any, *, crop_id: str | None = None, 
             continue
         m = _TARGET_HEAD_RE.match(s)
         if not m:
-            raise ValueError(f"_layer_targets 에 라벨 없는 조각이 있습니다('B: …' 처럼 적을 것): {s!r}")
+            raise ValueError(f"{_server_text('_layer_targets', '채택 문구')} 에 라벨 없는 조각이 있습니다('B: …' 처럼 적을 것): {s!r}")
         entries.append((_upper_tid(m.group(1)), m.group(2).strip()))
     used = [t for t, _ in entries]
     dup = sorted({t for t in used if used.count(t) > 1})
     if dup:
-        raise ValueError(f"_layer_targets 에 같은 타깃 라벨이 두 번 있습니다({', '.join(dup)}): {text!r}")
+        raise ValueError(f"{_server_text('_layer_targets', '채택 문구')} 에 같은 타깃 라벨이 두 번 있습니다({', '.join(dup)}): {text!r}")
     warnings: list[str] = []
     by_tid = {t["tid"]: t for t in out["targets"]}
     for tid, x in entries:
         t = by_tid.get(tid)
         if not x:
-            warnings.append(f"_layer_targets {tid}: 문구가 비어 무시")
+            warnings.append(f"{_server_text('_layer_targets', '채택 문구')} {tid}: 문구가 비어 무시")
         elif t is None:
             out["targets"].append({"tid": tid, "text": x, "origin": "adopt"})
         elif not t["text"].strip():
             t.update(text=x, origin="adopt")
         elif t["text"].strip() != x:
-            warnings.append(f"_layer_targets {tid}: 레이어명 문구 {t['text']!r} 가 이김({x!r} 무시)")
+            warnings.append(f"{_server_text('_layer_targets', '채택 문구')} {tid}: 레이어명 문구 {t['text']!r} 가 이김({x!r} 무시)")
     return out, warnings
 
 
@@ -747,7 +752,7 @@ def adopt_stale(crop: dict, ov: dict) -> str:
         return f"채택 확인 못 함 — {e}"
     want = [(t["tid"], t["label"]) for t in new_targets(merged, None)]
     if want != [(t["tid"], t["label"]) for t in crop["targets"]]:
-        return "매니페스트 타깃이 레이어명 + _layer_targets 와 다름 — 다음 큐에서 Import PSD 가 반영"
+        return _server_text("매니페스트 타깃이 레이어명 + _layer_targets 와 다름 — 다음 큐에서 Import PSD 가 반영", "매니페스트 타깃이 레이어명과 채택 문구를 반영한 값과 다름 — 다음 반영 때 적용")
     return ""
 
 

@@ -58407,7 +58407,7 @@ async def _fs_root_cache_races(bd, accounts, key, call):
             for _ in range(2):
                 count = scan.call_count
                 response, data = await call("GET", bd.API + "/state", sid=accounts[0][0], params={"root": "e" * 12})
-                check(response.status == 404 and data == {"error": bd._ROOT_HINT} and scan.call_count == count + 1,
+                check(response.status == 404 and data == {"error": bd._SERVER_ROOT_HINT} and scan.call_count == count + 1,
                       "FS29 U1 없는 키는 요청당 한 번만 재스캔하고 404")
             response, _ = await call("GET", bd.API + "/state", sid=accounts[1][0], params={"root": fresh_key})
             check(response.status == 404, "FS29 U1 새로 발견한 키도 다른 계정에서는 404")
@@ -58514,11 +58514,11 @@ async def _fs_scoped_roots(bd, out, call, login, sessions):
                     check(bd._root_param(key) == str(root) and bd._root_param(key) == str(root) and scan.call_count == 1,
                           "FS26 T1 같은 계정·폴더 mtime 이면 스캔/해시 재사용")
                     for invalid in (None, "../", "C" * 12, "c" * 11, "c" * 13):
-                        rejected(invalid, 404, bd._ROOT_HINT)
+                        rejected(invalid, 404, bd._SERVER_ROOT_HINT)
                     manifest = root / store.MANIFEST_NAME
                     saved = manifest.read_bytes()
                     manifest.unlink()
-                    rejected(key, 404, bd._ROOT_HINT)
+                    rejected(key, 404, bd._SERVER_ROOT_HINT)
                     manifest.write_bytes(saved)
                     check(bd._root_param(key) == str(root) and scan.call_count == 1,
                           "FS26 T1 캐시가 있어도 매니페스트 삭제/복원은 매번 확인")
@@ -58534,7 +58534,7 @@ async def _fs_scoped_roots(bd, out, call, login, sessions):
                     fresh.rmdir()
                     stamp = parent.stat()
                     os.utime(parent, ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 2_000_000_000))
-                    rejected(fresh_key, 404, bd._ROOT_HINT)
+                    rejected(fresh_key, 404, bd._SERVER_ROOT_HINT)
                     check(scan.call_count == 3, "FS26 T1 프로젝트 삭제도 폴더 mtime 으로 캐시 갱신")
                 oldest = str(out / "cache_0")
                 with patch.object(bd, "_SCOPE_ROOTS", {str(out / ("cache_" + str(i))): (0, {}) for i in range(256)}):
@@ -59418,6 +59418,629 @@ def _fj_execute(jobs):
 def forge_f3_server_unit():
     """Forge F3 갈래 S — 작업 기록 허용 목록·오류 경로 가림·로그인 실패 속도 제한. 명세 §4.4·§5. --quick 포함."""
     section("Forge F3-S — 서버 보강 (forge_f3_server_unit)")
+    import contextlib
+    import dataclasses
+    import functools
+    import inspect
+    import tempfile
+    from aiohttp import web
+    from aiohttp.test_utils import make_mocked_request
+    from unittest.mock import AsyncMock, patch
+    import bmk_design_patch_board as bd
+    import bmk_design_patch_jobs as jobs
+    import bmk_design_patch_pipeline as pl
+    import bmk_design_patch_server as srv
+    import bmk_design_patch_vlm as vlm
+
+    api = _server_api()
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    out = Path(tempfile.mkdtemp(prefix="f3_server_", dir=OUT_ROOT.resolve()))
+    scope = _fj_scope(out / "account")
+    synthetic_home = {"home": "C:/data/account"}
+    paths = [
+        (r"C:\a\b.png", "<서버 경로>"), ("C:/a/b.png", "<서버 경로>"),
+        (r"C:\\a\\b", "<서버 경로>"), (r"\\server\share\x", "<서버 경로>"),
+        ("/srv/data/x", "<서버 경로>"), ("(--data=/srv/data/x)", "(--data=<서버 경로>)"),
+        ("실패:/tmp/work/x.png", "실패:<서버 경로>"),
+        (r"C:\Program Files\x.psd 를 못 읽음", "<서버 경로> 를 못 읽음"),
+        ('"C:/Program Files/file name.psd" 없음', '"<서버 경로>" 없음'),
+        ("'/srv/some folder/file name.psd' 없음", "'<서버 경로>' 없음"),
+        (r"'\\server\shared folder\file name.psd' 없음", "'<서버 경로>' 없음"),
+        ("경로 /srv/some folder/x.psd 를 못 읽음", "경로 <서버 경로> 를 못 읽음"),
+        (r"c:\DATA\ACCOUNT\bmk_design_patch\p\x.psd", r"<계정 폴더>\bmk_design_patch\p\x.psd"),
+        (r"C:\\data\\account\\x.psd", r"<계정 폴더>\\x.psd"),
+        ("C:/data/account/x.psd", "<계정 폴더>/x.psd"),
+        ("C:/data/account", "<계정 폴더>"),
+        ("C:/data/account_other/x.psd", "<서버 경로>"),
+        ("C:/data/account.other/x.psd", "<서버 경로>"),
+        ("C:/data/account-other/x.psd", "<서버 경로>"),
+        ("C:/data/account가/x.psd", "<서버 경로>"),
+        ("https://example.test/a/b?q=C:/temp/x", "https://example.test/a/b?q=C:/temp/x"),
+        ("http://example.test/a/b", "http://example.test/a/b"),
+        ("https://example.test/a/b?q=C:/data/account/x", "https://example.test/a/b?q=C:/data/account/x"),
+        (r"refs\\a\\b", r"refs\\a\\b"),
+        ("2026/11/10 · 3/4 · A/B/C · refs/a.png · ../a/b", "2026/11/10 · 3/4 · A/B/C · refs/a.png · ../a/b"),
+        ("/one · name/foo/bar", "/one · name/foo/bar"),
+        (r"<계정 폴더>\bmk_design_patch\p\x.psd", r"<계정 폴더>\bmk_design_patch\p\x.psd"),
+        ("https://example.test/a/b 와 /srv/data/x", "https://example.test/a/b 와 <서버 경로>"),
+        (r"C:/data/account/one / C:\other\two / /srv/data/three", r"<계정 폴더>/one / <서버 경로> / <서버 경로>"),
+        (r"C:/data/account/one C:\other\two", r"<계정 폴더>/one <서버 경로>"),
+        ("[C:/private/a.psd]", "[<서버 경로>]"),
+        ("401/402/403 · 001_ab/A · 앞 / 뒤", "401/402/403 · 001_ab/A · 앞 / 뒤"),
+        ("<계정 폴더>/a/b", "<계정 폴더>/a/b"),
+        ("s3://bucket/a/b · file:///srv/data/x · custom+v1://host/a/b", "s3://bucket/a/b · file:///srv/data/x · custom+v1://host/a/b"),
+    ]
+    for mode in ("", "1"):
+        with patch.dict(os.environ, {bd.SERVER_ENV: mode}):
+            token = bd.set_scope(synthetic_home)
+            try:
+                for source, expected in paths:
+                    expected = expected if mode else source
+                    actual = bd.public_error(source)
+                    check(actual == expected, f"F3S1 경로·경계·로컬 보존 {mode!r} {source!r}: {actual!r}")
+                    check(bd.public_error(actual) == actual, "F3S1 중복 가림은 같은 결과")
+                check(bd.public_error("C:/data/account/x", {}) == ("<서버 경로>" if mode else "C:/data/account/x"),
+                      "F3S1 명시한 빈 scope 는 현재 계정 범위를 쓰지 않음")
+                expect_raises(lambda: bd._refs_dir_for_write({}), "F3S2 빈 레퍼런스 안내", bd._Reject,
+                              contains="반영하세요" if mode else "큐하세요")
+                with patch.object(bd, "project_input", return_value=str(out)), \
+                        patch.object(store, "resolve_board_root", return_value=None):
+                    expect_raises(lambda: bd._root_param("bad"), "F3S2 프로젝트 안내 두 모드", bd._Reject,
+                                  contains=bd._SERVER_ROOT_HINT if mode else bd._ROOT_HINT)
+                expect_raises(lambda: pl._check_round(9, [0]), "F3S2 설정 round 거절", contains="유도값 [0]" + ("):" if mode else " — 다시 초안은 그래프에서):"))
+                draft = dict(pl.defaults()["draft"], write_mode="force")
+                expect_raises(lambda: pl.validate_section("draft", draft), "F3S2 설정 write_mode 거절",
+                              contains="만 씁니다:" if mode else "만 씁니다(preview·force 는 그래프):")
+                drift = [{"section": "prepare", "kind": "cell", "field": "prepare.quality", "manifest": "old", "settings": "new"}]
+                with patch.object(pl, "drift", return_value=drift):
+                    notes = bd._plan_notes(str(out), {}, {}, ())
+                check(("그래프" not in str(notes)) if mode else ("그래프와 Studio" in str(notes)), "F3S2 설정 갈라짐 안내 두 모드")
+            finally:
+                bd.reset_scope(token)
+
+    with patch.dict(os.environ, {bd.SERVER_ENV: "1"}):
+        for home, path, expected_path in (
+            ("/srv/accounts/me", "/srv/accounts/me/a", "<계정 폴더>/a"),
+            ("/srv/accounts/me", "https://example.test/srv/accounts/me/a", "https://example.test/srv/accounts/me/a"),
+            (r"\\server\share\account", r"\\SERVER\SHARE\account\a", r"<계정 폴더>\a"),
+            ("C:/Data Home/Account", r"C:\DATA HOME\ACCOUNT\a", r"<계정 폴더>\a"),
+        ):
+            check(bd.public_error(path, {"home": home}) == expected_path, "F3S1 POSIX·UNC·공백 계정 홈·URL 보존")
+    for mode in ("", "1"):
+        with patch.dict(os.environ, {bd.SERVER_ENV: mode}), patch.object(bd.logger, "warning") as log:
+            for source in ("opaqueC:/private/a.psd", r"bad!\\server\share\x", "{/srv/private/x}"):
+                actual = bd.public_error(source)
+                check(actual == ("요청을 처리하지 못했습니다(서버 기록 참고)" if mode else source), "F3S1 가림 실패는 닫힌 쪽")
+                if mode:
+                    check(log.call_args is not None and log.call_args.args[-1] == source, "F3S1 가리지 못한 원문은 서버 로그에만 기록")
+            check(log.call_count == (3 if mode else 0), "F3S1 로컬은 가림·추가 로그 없음")
+            for error, expected_error in (
+                (FileNotFoundError(2, "파일 없음", "C:/private/a'b.psd"), "파일 없음: '<서버 경로>'"),
+                (FileExistsError(17, "이미 있음", "/srv/private/space name.psd"), "이미 있음: '<서버 경로>'"),
+                (OSError(5, "옮기기 실패", "C:/data/account/a.psd", None, "/srv/private/b.psd"),
+                 "옮기기 실패: '<계정 폴더>/a.psd' -> '<서버 경로>'"),
+                (OSError(5, "실패", "refs/a.png"), "실패: 'refs/a.png'"),
+            ):
+                check(jobs._error_message(error, synthetic_home) == (expected_error if mode else str(error)),
+                      "F3S1 작업 OSError 는 strerror·filename·filename2 로 재구성")
+
+    run = {"approved_now": 1, "pending": 2, "backend": "mock", "stopped_reason": None, "auth_held": False,
+           "est_usd": 0.5, "root_key": "0123456789ab", "pending_hash": "a" * 12, "continuation_hash": "b" * 12}
+    draft = {k: v for k, v in run.items() if k != "continuation_hash"}
+    draft["est_credits"] = [1, 2.5]
+    screen = {key: run[key] for key in ("approved_now", "pending", "backend", "stopped_reason", "auth_held")}
+    raw = {"dp_export": {"text": ["Export PSD: C:/data/private/out.psd"], "bmk_dp_export": [
+               {"outcome": "new", "psd": "C:/data/private/out.psd", "rev": 12, "extra": "private"},
+               {"outcome": "same", "rev": 12}]},
+           "dp_run": {"text": ["private"], "bmk_dp_run": [dict(run, extra="private")]},
+           "dp_draft": {"text": ["private"], "bmk_dp_draft": [dict(draft, continuation_hash="private")]},
+           "dp_review": {"text": ["private"]}, "dp_import": {"path": "C:/data/private"}}
+    expected = {"dp_export": {"bmk_dp_export": [{"outcome": "new", "psd": "out.psd", "rev": 12},
+                                               {"outcome": "same", "psd": None, "rev": 12}]},
+                "dp_run": {"bmk_dp_run": [screen]}, "dp_draft": {"bmk_dp_draft": [screen]}, "dp_review": {}, "dp_import": {}}
+    original = copy.deepcopy(raw)
+    for mode in ("", "1"):
+        with patch.dict(os.environ, {bd.SERVER_ENV: mode}):
+            for exc, interrupted in ((None, False), (ValueError("C:/data/private/fail.psd"), False), (None, True)):
+                record = jobs._record(raw, exc, interrupted=interrupted, scope=synthetic_home)
+                check(record["outputs"] == (expected if mode else raw), "F3S3 성공·오류·중단 기록 허용 목록·로컬 보존")
+            check(raw == original, "F3S3 원본 ui·노드 사이 전달값 불변")
+    with patch.dict(os.environ, {bd.SERVER_ENV: "1"}):
+        shape = jobs._record({"dp_run": {"bmk_dp_run": [run, None, "bad", {}, 7]}, "dp_draft": {}, "dp_project": {"text": ["private"]}})["outputs"]
+        check(shape == {"dp_run": {"bmk_dp_run": [screen, {}, {}, {}, {}]}, "dp_draft": {}, "dp_project": {}},
+              "F3S3 금액·해시 없음·원소 수와 노드 키 보존·없는 목록은 만들지 않음")
+        for value, allowed in ((0, True), (False, True), (None, True), ("x" * 256, True), ([1, 2.5], True),
+                               ("x" * 257, False), ("a/b", False), (r"a\b", False), ({"n": 1}, False),
+                               (["text"], False), ([True], False), ([[1]], False), (float("nan"), False), (float("inf"), False)):
+            actual = jobs._record({"dp_run": {"bmk_dp_run": [{"pending": value}]}})["outputs"]["dp_run"]["bmk_dp_run"][0]
+            check(("pending" in actual) == allowed, "F3S3 허용 값·문자열 길이·목록 검사 " + repr(value)[:70])
+        example = next(iter(api["jobs_history_done"]["response"].values()))
+        check(jobs._record({"dp_export": raw["dp_export"]})["outputs"]["dp_export"]["bmk_dp_export"][0]
+              == dict(example["outputs"]["dp_export"]["bmk_dp_export"][0], psd="out.psd"), "F3S3 fixture 허용 목록 계약")
+        runner = jobs.JobRunner()
+        try:
+            with patch.object(jobs, "execute", return_value={"outputs": raw}):
+                submitted = runner.submit(scope, str(out / "project"), "export", {})
+                saved = _fj_wait(lambda: runner.history(scope, str(out / "project"), submitted["prompt_id"]), "F3 기록")
+            check(saved[submitted["prompt_id"]]["outputs"] == expected, "F3S3 실행기 기록 경로에 허용 목록 적용")
+            check("private" not in repr(runner._history), "F3S3 메모리 기록에 text·절대 경로 없음")
+        finally:
+            runner.close(timeout=1)
+
+    crop = {"id": "001_abcdef", "name": "001_part", "layer_name": "001_part | A: part", "rect": [0, 0, 16, 16],
+            "targets": [], "refs_auto": ["old.png"], "refs_main": None}
+    root = _pl_project(out / "messages", "project", crops=[crop])
+    manifest = store.load_manifest(root)
+    banned = re.compile(r"ComfyUI|그래프|노드|위젯|Open Board|메뉴 BMK|대기열|(?<![가-힣])큐(?:에|를|하|\s|$)|pipeline\.json|_layer_targets")
+
+    def message_of(fn):
+        try:
+            fn()
+        except Exception as exc:
+            return str(exc)
+        check(False, "F3S2 예상한 문구 거절이 없음")
+        return ""
+
+    def wording(actual, local, mode):
+        check(not banned.search(actual) if mode else actual == local, "F3S2 서버 금지 구절 없음·로컬 원문 보존: " + actual)
+
+    for mode in ("", "1"):
+        with patch.dict(os.environ, {bd.SERVER_ENV: mode}):
+            expected_notes = [
+                "import: 매니페스트에 Import 기록이 없음 — PSD 경로를 확인(처음 Import 는 그래프에서)",
+                "prepare: Prepare 기록(prepare_settings·jobs)이 없음 — 노드 기본값(모델·품질·n 등 확인 필요)",
+                "draft: 스펙 초안 기록이 없음 — 노드 기본 vlm",
+                "draft: credit_cap 은 기록이 없어 권장 1200(노드 기본값 0 = 상한 없음)",
+                "analyze: 분석 기록이 없음 — 노드 기본값",
+                "export: Export 기록이 없음 — 노드 기본값(filename_prefix = 프로젝트 폴더 이름)",
+            ]
+            derived = pl.view(root)["derived"]
+            check(len(derived["notes"]) == len(expected_notes), "F3S2 유도 안내 건수 유지")
+            for actual, local in zip(derived["notes"], expected_notes):
+                wording(actual, local, mode)
+            if not mode:
+                local_derived = derived
+            else:
+                check({k: v for k, v in derived.items() if k != "notes"}
+                      == {k: v for k, v in local_derived.items() if k != "notes"}, "F3S2 문구 분기가 유도값·설정 키를 바꾸지 않음")
+            wording(store.adopt_stale(crop, {}), "매니페스트 타깃이 레이어명 + _layer_targets 와 다름 — 다음 큐에서 Import PSD 가 반영", mode)
+            parsed = store.parse_crop_layer_name(crop["layer_name"])
+            for value, local in ((5, "_layer_targets 는 문자열이어야 합니다: 5"),
+                                 ("broken", "_layer_targets 에 라벨 없는 조각이 있습니다('B: …' 처럼 적을 것): 'broken'"),
+                                 ("A: one; A: two", "_layer_targets 에 같은 타깃 라벨이 두 번 있습니다(A): 'A: one; A: two'")):
+                wording(message_of(lambda v=value: store.merge_layer_targets(parsed, v)), local, mode)
+            wording(store.merge_layer_targets(parsed, "B:")[1][0], "_layer_targets B: 문구가 비어 무시", mode)
+            wording(store.merge_layer_targets(parsed, "A: changed")[1][0], "_layer_targets A: 레이어명 문구 'part' 가 이김('changed' 무시)", mode)
+            wording(vlm._kind_why("replace", "A: old", "A: new"), "노드 값 그대로 — 바꾸려면 [수정]", mode)
+            wording(message_of(lambda: vlm.check_vlm_effort(None, "bad")),
+                    vlm._TAG + " effort 값이 잘못되었습니다: 'bad' (선택지: " + ", ".join(vlm.EFFORTS) + ")", mode)
+            wording(message_of(lambda: vlm.extract_json(None)), vlm._TAG + " VLM 출력이 문자열이 아닙니다: NoneType", mode)
+            wording(message_of(lambda: pl._parse(b"[]")), "pipeline.json 최상위가 객체가 아닙니다", mode)
+            settings_root = _pl_project(out / ("settings_" + (mode or "local")), "project")
+            values = pl.defaults(settings_root)["export"]
+            wording(message_of(lambda: pl.update(settings_root, 1, "export", values)), "pipeline.json 이 없습니다(rev 0) — 새로고침", mode)
+            Path(pl._path(settings_root)).write_text("{", encoding="utf-8")
+            broken = message_of(lambda: pl._parse(b"{"))
+            wording(message_of(lambda: pl.update(settings_root, 1, "export", values)),
+                    "pipeline.json 이 깨져 있습니다 — 덮어쓰려면 rev 없이(null) 저장: " + broken, mode)
+            with patch.object(vlm, "unwritten_specs", return_value=[crop["id"]]):
+                wording(message_of(lambda: vlm.adopt_write(root, manifest, crop["id"], "adopt", value="A: part", seen="null",
+                            crop_sig=vlm.crop_signature(crop), family="mock", apply_mode="targets", preview=True)), vlm._UNWRITTEN_WHY, mode)
+            ctx = types.SimpleNamespace(crop_id=crop["id"])
+            with patch.object(vlm, "adopt_check", return_value=("A: part", "")), \
+                    patch.object(vlm, "_merge_path", return_value=(None, None, "add")):
+                with patch.object(vlm, "_arrived", return_value=True):
+                    wording(vlm.adopt_state(root, manifest, ctx, {}, family="mock", memo={})[2], vlm._UNWRITTEN_WHY, mode)
+                with patch.object(vlm, "_arrived", return_value=False), patch.object(vlm, "_yield_paths", return_value=["crop.detail"]):
+                    wording(vlm.adopt_state(root, manifest, ctx, {}, family="mock", memo={})[2],
+                            "초안 뒤 생긴 영문 이름·용어집·사람 refs·mode 로 노드 값 양보가 남음(crop.detail) — 그래프 Spec Draft 로 채택", mode)
+            effects, warns = vlm._adopt_effects(crop, crop, ctx, None, {"_accepted": True, "_layer_targets": "A: new"}, {},
+                                               glossary={}, family="mock", apply_mode="targets", arrived=True)
+            check(effects["prompt_changed"], "F3S2 도착 초안 뒤 타깃 변경 경고 조건")
+            wording(warns[-1], "원장에 도착한 초안이 아직 스펙에 안 쓰임 — 이 쓰기를 반영하면 타깃이 바뀌어 그 초안은 병합되지 않음(먼저 그래프 Spec Draft 를 한 번 큐하면 0 호출로 병합)", mode)
+            for branch, local in (
+                ("moved", "Studio 초안 설정(apply·화풍)이 이 스펙을 마지막으로 쓴 Spec Draft 와 달라 채택 외 필드가 바뀜 — 설정 확인 또는 그래프 Spec Draft 로 채택"),
+                ("render", "노드가 쓴 필드가 지금 렌더되지 않아 빼고 써야 해 채택 외 필드가 바뀜(render_fallback) — 그래프 Spec Draft 로 채택"),
+                ("record", "병합이 스펙 _draft 기록(손으로 고친 written 등)을 정리해 채택 외 필드가 바뀜 — 그래프 Spec Draft 로 채택"),
+            ):
+                def merge(cur, *args, **kwargs):
+                    kwargs["out"]["check"] = types.SimpleNamespace(ok=True, dropped=[])
+                    return types.SimpleNamespace(spec={"detail": "changed"}, render_changed=branch == "render",
+                                                 rows=[types.SimpleNamespace(path="crop.detail", kind="fill")] if branch == "moved" else [])
+                with patch.object(vlm, "build_crop_ctx", return_value=ctx), patch.object(vlm, "project_style_for", return_value=None), \
+                        patch.object(vlm, "adopt_state", return_value=("A: part", "add", "")), \
+                        patch.object(vlm, "merge_crop", side_effect=merge):
+                    wording(message_of(lambda: vlm.adopt_write(root, manifest, crop["id"], "adopt", value="A: part", seen="null",
+                                crop_sig=vlm.crop_signature(crop), family="mock", apply_mode="targets", preview=True)), local, mode)
+            rows = bd.refs_state(root)["crops"]
+            pending = [c["msg"] for row in rows for c in row["checks"] if c["code"] == "R-pending"]
+            check(pending == ["미반영 — 반영 뒤 이 레퍼런스를 씀" if mode else "미반영 — 반영(큐) 뒤 Import 가 이 레퍼런스를 씀"],
+                  "F3S2 R-pending 안내 두 모드")
+            with patch.object(vlm, "build_crop_ctx", return_value=object()), \
+                    patch.object(vlm, "render_check", return_value=types.SimpleNamespace(ok=True, dropped=["detail"])):
+                expect_raises(lambda: vlm.adopt_write(root, manifest, crop["id"], "set", "A: part", seen="null",
+                              crop_sig=vlm.crop_signature(crop), family="mock", apply_mode="targets", preview=True),
+                              "F3S2 채택 거절 안내 두 모드", vlm.AdoptRefused,
+                              contains="저장된 detail 를 빼야 렌더됨(쓰지 않음)" if mode else "노드가 쓴 detail 를 빼야 렌더됨(쓰지 않음 — 그래프 Spec Draft 로)")
+            spec_path = Path(vlm._spec_path(root, crop["id"]))
+            spec_path.parent.mkdir(parents=True, exist_ok=True)
+            spec_path.write_text("[]", encoding="utf-8")
+            try:
+                with patch.object(vlm, "build_crop_ctx", return_value=ctx):
+                    wording(message_of(lambda: vlm.adopt_write(root, manifest, crop["id"], "clear", seen="null",
+                                crop_sig=vlm.crop_signature(crop), family="mock", apply_mode="targets", preview=True)),
+                            vlm._TAG + " specs/" + crop["id"] + ".json — 최상위가 객체가 아님", mode)
+            finally:
+                spec_path.unlink()
+            cls = pl.CLASS["project"]
+            with patch.dict(pl.STAGE_NODES, {"apply": ("project",)}), patch.dict(pl.NODE_INPUTS, {cls: ("project", "base_dir", "extra")}):
+                wording(message_of(lambda: pl.build_prompt("apply", {}, root)),
+                        cls + " 입력이 노드 위젯과 다릅니다: ['extra']", mode)
+
+    now = [100.0]
+    config = srv.ServerConfig(str(out / "data"), dev_handoff=True)
+    check((config.login_fail_limit, config.login_fail_window, config.login_fail_global, config.trusted_proxies)
+          == (10, 300, 200, ()), "F3S4 로그인 제한 기본값")
+    for change in ({"login_fail_limit": 0}, {"login_fail_limit": True}, {"login_fail_limit": 1.5},
+                   {"login_fail_global": 0}, {"login_fail_global": True}, {"login_fail_window": 0},
+                   {"login_fail_window": True}, {"login_fail_window": float("nan")}, {"login_fail_window": float("inf")},
+                   {"trusted_proxies": "192.0.2.1"}, {"trusted_proxies": ("proxy.test",)}, {"trusted_proxies": (123,)},
+                   {"trusted_proxies": ("192.0.2.0/33",)}, {"trusted_proxies": ("2001:db8::/129",)}):
+        expect_raises(lambda c=change: srv._validate_config(dataclasses.replace(config, **c)), "F3S4 잘못된 제한·프록시 설정 " + str(change))
+    trusted = srv._validate_config(dataclasses.replace(config, trusted_proxies=["192.0.2.1", "2001:db8::1"]))
+    check(trusted.trusted_proxies == ("192.0.2.1", "2001:db8::1"), "F3S4 IP 목록 정규화")
+    for remote, forwarded, proxies, expected_ip in (
+        ("192.0.2.1", "198.51.100.1, 198.51.100.2", (), "192.0.2.1"),
+        ("192.0.2.1", "198.51.100.1, 198.51.100.2", trusted.trusted_proxies, "198.51.100.2"),
+        ("192.0.2.1", "198.51.100.1, bad", trusted.trusted_proxies, "192.0.2.1"),
+        ("192.0.2.1", "198.51.100.1,", trusted.trusted_proxies, "192.0.2.1"),
+        ("192.0.2.1", "", trusted.trusted_proxies, "192.0.2.1"),
+        ("2001:db8::1", "2001:db8::2", trusted.trusted_proxies, "2001:db8::/64"),
+        ("192.0.2.1", "bad, 198.51.100.1, 192.0.2.2", ("192.0.2.0/24",), "198.51.100.1"),
+        ("192.0.2.1", "198.51.100.1, bad, 192.0.2.2", ("192.0.2.0/24",), "192.0.2.1"),
+        ("192.0.2.1", "192.0.2.2, 192.0.2.3", ("192.0.2.0/24",), "192.0.2.1"),
+        ("2001:db8:1::1", "2001:db8:2::99, 2001:db8:1::2", ("2001:db8:1::/64",), "2001:db8:2::/64"),
+        ("2001:db8:3::1", "198.51.100.1", ("192.0.2.0/24",), "2001:db8:3::/64"),
+    ):
+        request = types.SimpleNamespace(remote=remote, headers={"X-Forwarded-For": forwarded})
+        check(srv._client_address(request, proxies) == expected_ip, "F3S4 CIDR·오른쪽 신뢰 체인·IPv6 /64")
+    check(srv._validate_config(dataclasses.replace(config, trusted_proxies=("192.0.2.7/24", "2001:db8::1/64"))).trusted_proxies
+          == ("192.0.2.0/24", "2001:db8::/64"), "F3S4 CIDR 네트워크 주소 정규화")
+    failures = srv.LoginFailures(2, 10, 4, clock=lambda: now[0])
+    check(failures.begin("192.0.2.1") == 0, "F3S4 첫 자리 예약")
+    failures.reject("192.0.2.1"); failures.finish("192.0.2.1")
+    now[0] = 104
+    check(failures.begin("192.0.2.1") == 0, "F3S4 두 번째 자리 예약")
+    failures.reject("192.0.2.1"); failures.finish("192.0.2.1")
+    now[0] = 105.1
+    check(failures.begin("192.0.2.1") == 5, "F3S4 가장 오래된 거절까지 올림한 Retry-After")
+    now[0] = 99
+    check(failures.begin("192.0.2.1") == 11 and len(failures._global) == 2, "F3S4 시계 역행 때 기록을 버리지 않음")
+    now[0] = 110
+    check(failures.begin("192.0.2.1") == 0 and failures._global == [104], "F3S4 이동 창 만료 경계")
+    failures.finish("192.0.2.1")
+    lru = srv.LoginFailures(2, 300, 20000, clock=lambda: now[0])
+    for i in range(10000):
+        client = f"2001:db8::{i:x}"
+        lru.begin(client); lru.reject(client); lru.finish(client)
+    lru.begin("2001:db8::0"); lru.finish("2001:db8::0")
+    lru.begin("2001:db8::ffff"); lru.reject("2001:db8::ffff"); lru.finish("2001:db8::ffff")
+    check(len(lru._clients) == 10000 and "2001:db8::1" not in lru._clients and "2001:db8::0" in lru._clients
+          and len(lru._global) == 10001, "F3S4 주소 10,000 LRU·전역 기록은 퇴출로 지워지지 않음")
+    small = srv.LoginFailures(1, 300, 10, clock=lambda: now[0], max_clients=1)
+    small.begin("192.0.2.1"); small.reject("192.0.2.1")
+    small.begin("192.0.2.2"); small.reject("192.0.2.2"); small.finish("192.0.2.2")
+    check(small.begin("192.0.2.1") == 1, "F3S4 LRU 퇴출된 주소도 진행 중 요청은 기억")
+    small.finish("192.0.2.1")
+
+    class Body:
+        def __init__(self, raw, gate=None):
+            self.raw, self.gate, self.reads = raw, gate, 0
+
+        async def iter_chunked(self, size):
+            self.reads += 1
+            if self.gate is not None:
+                await self.gate.wait()
+            for start in range(0, len(self.raw), size):
+                yield self.raw[start:start + size]
+
+    class Verifier:
+        def __init__(self):
+            self.calls, self.gate = 0, None
+
+        async def verify(self, token, organization_id):
+            self.calls += 1
+            if self.gate is not None:
+                await self.gate.wait()
+            if token == "throw-sensitive-token":
+                raise RuntimeError(token)
+            if token == "malformed":
+                return {"account_id": "a"}
+            if token == "wrong-org":
+                return {"account_id": "a", "organization_id": "another", "name": "a"}
+            if token == "bad":
+                return None
+            return {"account_id": "a", "organization_id": organization_id, "name": "a"}
+
+    @contextlib.asynccontextmanager
+    async def serving(verifier=None, jobs_module=None, **changes):
+        # 비밀 파일·실제 계정 폴더는 만들지 않고 실제 처리기와 미들웨어만 실행한다.
+        with patch.object(srv, "_server_secret", return_value=b"test" * 8), \
+                patch.object(srv, "_account_scope", return_value=scope), \
+                patch.dict(os.environ):
+            app = srv.make_app(dataclasses.replace(config, **changes), verifier=verifier,
+                               jobs_module=jobs_module or _fs_jobs(), clock=lambda: now[0])
+            try:
+                yield app
+            finally:
+                for cleanup in app.on_cleanup:
+                    await cleanup(app)
+
+    async def call(app, method="POST", path="/api/session", *, token="bad", remote="192.0.2.1", body=None,
+                   headers=None, raw=None, payload=None):
+        hs = {"Host": "localhost:8791", "Origin": "http://localhost:8791", "X-DesignPatch-Request": "1",
+              "Content-Type": "application/json"}
+        for key, value in (headers or {}).items():
+            if value is None:
+                hs.pop(key, None)
+            else:
+                hs[key] = value
+        if raw is None:
+            raw = json.dumps(body if body is not None else {"token": token, "organization_id": "org-test"}).encode("utf-8")
+        request = make_mocked_request(method, path, headers=hs, payload=payload or Body(raw), app=app)
+        request.read = AsyncMock(return_value=raw)
+        request._cache["remote"] = remote
+        request._match_info = await app.router.resolve(request)
+        handler = request.match_info.handler
+        for middleware in reversed(app.middlewares):
+            handler = functools.partial(middleware, handler=handler)
+        response = await handler(request)
+        return response, json.loads(response.text) if response.content_type == "application/json" else response
+
+    async def exercise():
+        bd._vlm()  # 실제 _conflicts 가 SpecConflict 를 포함하는 경로도 함께 검사한다.
+        for mode in ("", "1"):
+            with patch.dict(os.environ, {bd.SERVER_ENV: mode}):
+                mock = vlm.MockVLM({})
+                mock.interrupt_check = lambda: False
+                try:
+                    await mock._poll(types.SimpleNamespace(crop_id=crop["id"], key="test", attempt=1),
+                                     {"mock": {"text": "{}"}}, None, time.monotonic(), None, "poll401")
+                except vlm.runner.CallError as error:
+                    wording(str(error), "mock: Unauthorized (폴링 중) — created 유지, 다시 큐에 넣으면 무료 재폴링", mode)
+                else:
+                    check(False, "F3S2 mock 폴링 거절을 재현하지 못함")
+                for exc, status in ((bd._Reject(409, "C:/data/other/x"), 409), (ValueError("/srv/data/x"), 400),
+                                    (bd.ext.BridgeError(409, "C:/data/other/x"), 409),
+                                    (bd.dmask.MaskConflict("/srv/data/x", "changed"), 409),
+                                    (pl.PipelineConflict("C:/data/other/x"), 409),
+                                    (store.LayoutConflict("C:/data/other/x"), 409),
+                                    (bd.drefs.RefsConflict("/srv/data/x"), 409),
+                                    (vlm.SpecConflict("/srv/data/x"), 409),
+                                    (FileNotFoundError("C:/data/other/x"), 404), (FileExistsError("/tmp/a/b"), 409),
+                                    (OSError("C:/data/other/x"), 500),
+                                    (bd._PathReject(400, "C:/data/other/x", "폴더를 확인하세요"), 400)):
+                    async def fail(request):
+                        raise exc
+                    response = await bd._guard(fail)(types.SimpleNamespace(path="/test"))
+                    text = json.loads(response.text)["error"]
+                    check(response.status == status and (text.endswith(str(exc)) if not mode else
+                          text == "폴더를 확인하세요" if isinstance(exc, bd._PathReject) else "<서버 경로>" in text),
+                          "F3S5 guard 상태·safe·로컬 보존 " + type(exc).__name__)
+                for exc, status, expected in (
+                    (FileNotFoundError(2, "없음", "C:/private/a'b.psd"), 404, "없음: '<서버 경로>'"),
+                    (FileExistsError(17, "있음", "/srv/private/a.psd"), 409, "있음: '<서버 경로>'"),
+                    (OSError(5, "이동 실패", "C:/private/a.psd", None, "/srv/private/b.psd"), 500,
+                     "이동 실패: '<서버 경로>' -> '<서버 경로>'"),
+                ):
+                    async def fail(request):
+                        raise exc
+                    response = await bd._guard(fail)(types.SimpleNamespace(path="/test"))
+                    text = json.loads(response.text)["error"]
+                    check(response.status == status and (text == expected if mode else text.endswith(str(exc))),
+                          "F3S5 guard OSError 는 파일 이름을 별도로 가림")
+
+        async with serving(Verifier()) as app:
+            for _ in range(9):
+                check((await call(app))[0].status == 401, "F3S6 기본 한도: 토큰 거절 아홉 번")
+            for _ in range(12):
+                check((await call(app, body={}))[0].status == 400, "F3S6 기본 한도: 본문 오류는 누적하지 않음")
+            check((await call(app, token="ok"))[0].status == 200, "F3S6 기존 세션 시험 흐름은 기본 한도로 정상 로그인")
+            check((await call(app))[0].status == 401 and (await call(app))[0].status == 429, "F3S6 기본 열 번째 토큰 거절 뒤 제한")
+
+        verifier = Verifier()
+        now[0] = 100
+        async with serving(verifier, login_fail_limit=2, login_fail_window=10) as app:
+            for _ in range(2):
+                response, data = await call(app)
+                check(response.status == 401 and data == api["session_post_bad_token"]["response"], "F3S6 명시적 거절")
+            count = verifier.calls
+            blocked_body = Body(b"{}")
+            response, data = await call(app, payload=blocked_body)
+            check(response.status == 429 and data == api["session_post_rate_limited"]["response"]
+                  and response.headers["Retry-After"] == "10" and verifier.calls == count and blocked_body.reads == 0,
+                  "F3S6 429 fixture·검증기 미호출·본문 읽기 전 차단")
+            response, _ = await call(app, remote="192.0.2.2", token="ok")
+            check(response.status == 200, "F3S6 클라이언트별 제한 분리")
+            now[0] = 110
+            response, _ = await call(app, token="ok")
+            check(response.status == 200, "F3S6 창 만료 뒤 재로그인")
+        verifier = Verifier()
+        async with serving(verifier, login_fail_limit=2) as app:
+            await call(app)
+            await call(app, token="ok")
+            await call(app)
+            check((await call(app, token="ok"))[0].status == 429, "F3S6 성공해도 이전 거절 기록 유지")
+            check((await call(app, "GET"))[0].status == 401 and (await call(app, path="/api/session/logout"))[0].status == 200,
+                  "F3S6 GET session·logout 은 실패 한도 없음")
+        verifier = Verifier()
+        async with serving(verifier, login_fail_global=2) as app:
+            await call(app, remote="192.0.2.1"); await call(app, remote="192.0.2.2")
+            response, _ = await call(app, remote="192.0.2.1", token="ok")
+            check(response.status == 200, "F3S6 전역 거절이 한도를 넘기 전에는 허용")
+            await call(app, remote="192.0.2.3")
+            count = verifier.calls
+            response, _ = await call(app, remote="192.0.2.1")
+            check(response.status == 429 and verifier.calls == count, "F3S6 전역 한도 초과는 실패 이력이 있는 주소만 제한")
+            check((await call(app, remote="192.0.2.4", token="ok"))[0].status == 200, "F3S6 전역 한도 중에도 기록 없는 정상 주소 허용")
+            now[0] += 300
+            check((await call(app, remote="192.0.2.1", token="ok"))[0].status == 200, "F3S6 창에서 빠진 이력은 전역 차단 대상이 아님")
+        for proxy in ((), ("192.0.2.1",)):
+            async with serving(Verifier(), login_fail_limit=1, trusted_proxies=proxy) as app:
+                await call(app, headers={"X-Forwarded-For": "198.51.100.1, 198.51.100.2"})
+                response, _ = await call(app, headers={"X-Forwarded-For": "198.51.100.3, 198.51.100.2"})
+                check(response.status == 429, "F3S6 위조한 첫 XFF 값으로 버킷 변경 불가")
+                response, _ = await call(app, token="ok", headers={"X-Forwarded-For": "198.51.100.3"})
+                check(response.status == (200 if proxy else 429), "F3S6 신뢰한 프록시에서만 마지막 주소별 버킷")
+
+        for kwargs, expected_status in (({"body": {"token": 1}}, 400), ({"raw": b"["}, 400),
+                                         ({"raw": b"x" * (16 * 1024 + 1)}, 400),
+                                         ({"token": "malformed"}, 401), ({"token": "wrong-org"}, 401)):
+            async with serving(Verifier(), login_fail_limit=1) as app:
+                check((await call(app, **kwargs))[0].status == expected_status, "F3S7 명시적 거절의 원래 상태")
+                check((await call(app, token="ok"))[0].status == (200 if expected_status == 400 else 429),
+                      "F3S7 본문 모양은 세지 않고 신원 오류만 실패로 셈")
+        async with serving(Verifier(), login_fail_limit=1, login_fail_global=1) as app:
+            for i in range(20):
+                check((await call(app, remote=f"192.0.2.{i + 1}", body={}))[0].status == 400, "F3S7 여러 주소의 빈 본문")
+            check(not app[srv._LOGIN_FAILURES_KEY]._global and (await call(app, token="ok"))[0].status == 200,
+                  "F3S7 빈 본문으로 클라이언트·전역 거절 한도를 채울 수 없음")
+        async with serving(Verifier(), login_fail_limit=1) as app:
+            for _ in range(3):
+                check((await call(app, token="throw-sensitive-token"))[0].status == 401, "F3S7 검증기 장애는 실패로 세지 않음")
+            for _ in range(3):
+                with patch.object(srv, "_account_scope", side_effect=OSError("C:/private/account")):
+                    check((await call(app, token="ok"))[0].status == 401, "F3S7 계정 폴더 장애는 실패로 세지 않음")
+            for _ in range(3):
+                check((await call(app, headers={"Origin": "http://other.test"}))[0].status == 403, "F3S7 미들웨어 거절")
+            state = app[srv._LOGIN_FAILURES_KEY]
+            check(not state._global and not state._pending and not state._inflight, "F3S7 장애·403 뒤 거절·진행 중 기록 없음")
+            check((await call(app, token="ok"))[0].status == 200, "F3S7 장애 뒤 즉시 정상 로그인")
+            check("throw-sensitive-token" not in repr(vars(state)) and "org-test" not in repr(vars(state)), "F3S7 거절 기록에 토큰·조직 없음")
+        production_headers = {"Host": "studio.test", "Origin": "https://studio.test"}
+        async with serving(dev_handoff=False, public_origin="https://studio.test", login_fail_limit=1) as app:
+            for _ in range(3):
+                response, data = await call(app, token="ok", headers=production_headers)
+                check(response.status == 503 and data == api["session_post_no_verifier"]["response"], "F3S7 검증기 없음은 세지 않음")
+            check((await call(app, token="dev:a", headers=production_headers))[0].status == 401, "F3S7 운영의 개발 토큰 거절")
+            check((await call(app, token="ok", headers=production_headers))[0].status == 429, "F3S7 운영의 개발 토큰은 실패로 셈")
+
+        verifier = Verifier()
+        verifier.gate = asyncio.Event()
+        async with serving(verifier, login_fail_limit=1, login_fail_global=1) as app:
+            task = asyncio.create_task(call(app))
+            await asyncio.sleep(0)
+            response, _ = await call(app)
+            check(response.status == 429 and response.headers["Retry-After"] == "1" and verifier.calls == 1,
+                  "F3S8 검증 대기 중 같은 클라이언트 추가 요청 차단")
+            other = asyncio.create_task(call(app, remote="192.0.2.2", token="ok"))
+            await asyncio.sleep(0)
+            check(verifier.calls == 2, "F3S8 진행 중 전역 수로 새 클라이언트를 막지 않음")
+            verifier.gate.set()
+            await asyncio.gather(task, other)
+            check(app[srv._LOGIN_FAILURES_KEY]._pending == 0, "F3S8 완료 뒤 진행 중 수 복원")
+        async with serving(Verifier(), login_fail_limit=1) as app:
+            await call(app, remote="2001:db8:1::1")
+            check((await call(app, remote="2001:db8:1::99", token="ok"))[0].status == 429, "F3S8 IPv6 하위 주소를 바꿔도 같은 /64 제한")
+            check((await call(app, remote="2001:db8:2::1", token="ok"))[0].status == 200, "F3S8 다른 IPv6 /64 는 별도 제한")
+        async with serving(Verifier(), login_fail_limit=1) as app:
+            body = Body(b"{}", asyncio.Event())
+            task = asyncio.create_task(call(app, payload=body))
+            await asyncio.sleep(0)
+            response, _ = await call(app, token="ok")
+            check(response.status == 429 and body.reads == 1, "F3S8 본문 첫 await 전부터 제한")
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+            check((await call(app, token="ok"))[0].status == 200, "F3S8 취소도 finally 에서 자리 반환·실패로 세지 않음")
+
+        message = "실패: C:/data/other/x.psd"
+        payload = {"error": message, "warning": message, "start_blocked": message, "warnings": [{"msg": message}],
+                   "notes": [message], "failed": [message], "pending": [message, 2], "reasons": [message],
+                   "exports": [{"psd": r"C:\data\other\out.psd", "rev": 1}],
+                   "settings": {"import": {"psd_path": "C:/data/other/x.psd"}},
+                   "drift": [{"manifest": "C:/data/other/old", "settings": "C:/data/other/new"}],
+                   "psd": {"path": "C:/data/other/x.psd"}, "refs_dir": "C:/data/other/refs",
+                   "doc_refs_dir": "C:/data/other/docrefs", "suggest_dir": "C:/data/other/suggest"}
+        saved_payload = copy.deepcopy(payload)
+        with patch.dict(os.environ, {bd.SERVER_ENV: ""}):
+            check(srv._public_json(payload, bd) is payload, "F3S9 로컬 JSON 은 원본 그대로")
+        fake_jobs = _fs_jobs()
+        fake_jobs.JobRunner.history = lambda *args: payload
+        fake_jobs.routes = jobs.routes
+        async with serving(Verifier(), jobs_module=fake_jobs) as app:
+            response, data = await call(app, token="ok")
+            auth = {"Cookie": srv.COOKIE + "=" + response.cookies[srv.COOKIE].value,
+                    "X-DesignPatch-Account": data["account"]["tag"]}
+            for exc, expected in ((bd._Reject(409, scope["home"] + "/a/b"), "<계정 폴더>/a/b"),
+                                  (bd._PathReject(409, "C:/private/a", "안전한 안내"), "안전한 안내")):
+                async def rejected(request):
+                    raise exc
+                request = make_mocked_request("GET", bd.API + "/pipeline", headers={"Host": "localhost:8791", **auth}, app=app)
+                guarded = await app.middlewares[1](request, rejected)
+                check(guarded.status == 409 and json.loads(guarded.text) == {"error": expected},
+                      "F3S9 protect 자체의 _Reject·safe 가림과 계정 범위")
+            with patch.object(bd, "_root_param", return_value=root), patch.object(pl, "view", return_value=payload), \
+                    patch.object(bd, "layout_state", return_value=payload), patch.object(bd, "refs_state", return_value=payload), \
+                    patch.object(bd, "_server_pipeline_update", return_value=payload):
+                for method, path in (("GET", "/pipeline"), ("POST", "/pipeline/settings"), ("GET", "/layout"),
+                                     ("GET", "/refs"), ("GET", "/jobs/history/j_0123456789abcdef")):
+                    response, data = await call(app, method, bd.API + path, headers=auth, body={"root": "key", "rev": 0})
+                    check(response.status == 200 and data["error"] == "실패: <서버 경로>"
+                          and data["warnings"] == [{"msg": "실패: <서버 경로>"}]
+                          and data["pending"] == ["실패: <서버 경로>", 2]
+                          and data["exports"] == [{"psd": "out.psd", "rev": 1}], "F3S9 공용 JSON 경로 가림 " + path)
+                    check(all(data.get(k) == payload[k] for k in ("settings", "drift", "psd", "refs_dir", "doc_refs_dir", "suggest_dir")),
+                          "F3S9 저장 왕복 경로 보존 " + path)
+                with patch.object(pl, "view", side_effect=bd._PathReject(409, message, "안전한 안내", notes=[message])):
+                    response, data = await call(app, "GET", bd.API + "/pipeline", headers=auth)
+                    check(response.status == 409 and data == {"error": "안전한 안내", "notes": ["실패: <서버 경로>"]},
+                          "F3S9 오류 상태에서도 safe·목록 가림")
+                with patch.object(pl, "view", return_value={"error": scope["home"] + "/bmk_design_patch/p/x.psd"}):
+                    _, data = await call(app, "GET", bd.API + "/pipeline", headers=auth)
+                    check(data == {"error": "<계정 폴더>/bmk_design_patch/p/x.psd"}, "F3S9 미들웨어가 요청 계정 범위를 유지")
+            check(payload == saved_payload, "F3S9 응답 변환은 원본 설정·기록을 바꾸지 않음")
+            async def binary(request):
+                return web.Response(body=b"C:/data/private/x", content_type="image/png")
+            request = make_mocked_request("GET", "/test", app=app)
+            response = await app.middlewares[0](request, binary)
+            check(response.body == b"C:/data/private/x", "F3S9 그림 응답 바이트 보존")
+        parent = srv.make_dev_parent_app(dataclasses.replace(config, dev_parent_port=8790))
+        response, _ = await call(parent, "GET", "/?acct=bob")
+        check(all(text in response.text for text in ("background:#09090b", "color:#e4e4e7", "color:#a1a1aa", "height:56px",
+                                                     "calc(100dvh - 56px)")) and "<script" not in response.text,
+              "F3S10 가짜 부모의 어두운 머리·iframe 높이·스크립트 없음")
+
+    before = {k: os.environ.get(k) for k in (bd.SERVER_ENV, "BMK_DP_MOCK_API")}
+    try:
+        asyncio.run(exercise())
+        legacy = inspect.getsource(forge_server_unit)
+        check("DP_TEST_NO_NETWORK" not in legacy and "login_fail_limit=" not in legacy and "asyncio.run(run())" in legacy,
+              "F3S11 기존 HTTP 단정·기본 한도 유지, 샌드박스 우회 분기 없음")
+        with patch.object(srv, "make_app", side_effect=RuntimeError("captured")) as capture:
+            expect_raises(lambda: srv.main(["--data", str(out), "--dev-handoff", "--trusted-proxy", "192.0.2.7/24",
+                                           "--trusted-proxy", "2001:db8::/64"]), "F3S4 CLI 반복 프록시(서비스 시작 전 중단)", RuntimeError)
+            check(capture.call_args.args[0].trusted_proxies == ("192.0.2.0/24", "2001:db8::/64"), "F3S4 CLI CIDR 설정 전달")
+        for args, warning in ((["--public-origin", "https://studio.test"], True),
+                              (["--public-origin", "https://studio.test", "--trusted-proxy", "192.0.2.0/24"], False),
+                              (["--dev-handoff"], False)):
+            stdout = io.StringIO()
+            runner = types.SimpleNamespace(setup=AsyncMock(), cleanup=AsyncMock())
+            with patch.object(srv, "make_app", return_value=object()), patch.object(srv.web, "AppRunner", return_value=runner), \
+                    patch.object(srv.web, "TCPSite", return_value=types.SimpleNamespace(start=AsyncMock())), \
+                    patch.object(srv.asyncio, "Event", return_value=types.SimpleNamespace(wait=AsyncMock(side_effect=RuntimeError("stop")))), \
+                    contextlib.redirect_stdout(stdout):
+                expect_raises(lambda: srv.main(["--data", str(out), *args]), "F3S4 서비스 대역의 시작 안내 뒤 중단", RuntimeError)
+            check(stdout.getvalue().count("trusted_proxies 가 비어 있습니다") == int(warning),
+                  "F3S4 main 의 운영·프록시 미설정 시작 안내 한 줄")
+    finally:
+        for key, value in before.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        bd.set_env_provider(None)
+    check(bd.current_scope() is None and not bd.server_mode(), "F3S11 시험 종료 범위·서버 모드 복원")
 
 
 def _fj_runner(jobs, compat, out, api):
@@ -59920,7 +60543,7 @@ def _fj_close(jobs, out):
 
 
 def _fj_history_paths(jobs, out):
-    """R5: 서버 오류 문구에서 자기 계정 홈만 가리고 로컬 문구는 보존한다."""
+    """D361: 계정 홈은 표시자로, 나머지 절대 경로는 통째로 가리고 로컬 문구는 보존한다."""
     from unittest.mock import patch
     scope = _fj_scope(out / "private_home")
     root = str(out / "private_home" / "bmk_design_patch" / "p")
@@ -59937,9 +60560,10 @@ def _fj_history_paths(jobs, out):
                 sub = runner.submit(scope, root, "apply", {})
                 record = _fj_wait(lambda: runner.history(scope, root, sub["prompt_id"]), "R5 기록")[sub["prompt_id"]]
                 actual = record["status"]["messages"][0][1]["exception_message"]
-                check(actual == message if not mode else (actual.count("<계정 폴더>") == 2 and outside in actual and sibling in actual
+                check(actual == message if not mode else (actual.count("<계정 폴더>") == 2 and actual.count("<서버 경로>") == 2
+                      and outside not in actual and sibling not in actual
                       and (backslash + "\\").lower() not in actual.lower() and slash + "/" not in actual.lower()),
-                      "FJ48 서버 홈 경로는 구분자·대소문자 무관하게 가림·홈 밖과 로컬은 보존")
+                      "FJ48 서버 홈·홈 밖 절대 경로 가림·로컬 원문 보존")
             finally:
                 runner.close(timeout=1)
     filename = scope["home"].replace("/", "\\") + "\\a.psd"
