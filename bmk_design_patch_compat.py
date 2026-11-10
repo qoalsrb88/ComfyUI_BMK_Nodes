@@ -25,6 +25,7 @@ import os
 import types
 
 SERVER_ENV = "BMK_DP_SERVER_MODE"  # bmk_design_patch_board.SERVER_ENV 와 같은 이름
+_PROGRESS = contextvars.ContextVar("bmk_dp_progress", default=None)
 
 
 def server_mode() -> bool:
@@ -38,23 +39,39 @@ class InterruptProcessingException(BaseException):
 
 def set_progress_sink(fn) -> contextvars.Token:
     """지금 문맥의 진행 받개 fn(value, total) | None. 실행기가 작업 스레드에서 건다(돌려준 토큰으로 되돌림)."""
-    raise NotImplementedError
+    return _PROGRESS.set(fn)
 
 
 class ProgressBar:
     """comfy.utils.ProgressBar 자리."""
 
     def __init__(self, total, node_id=None):
-        raise NotImplementedError
+        self.total = total
+        self.current = 0
+        self.node_id = node_id
 
     def update(self, value=1):
-        raise NotImplementedError
+        self.update_absolute(self.current + value)
 
     def update_absolute(self, value, total=None, preview=None):
-        raise NotImplementedError
+        if total is not None:
+            self.total = total
+        self.current = min(value, self.total)
+        sink = _PROGRESS.get()
+        if sink is not None:
+            try:
+                sink(self.current, self.total)
+            except BaseException:  # 표시 받개의 실패로 노드 실행을 끊지 않는다
+                pass
+
+
+def _no_directory():
+    raise RuntimeError("서버 모드에는 전역 기본 폴더가 없습니다 — 계정 범위가 필요합니다")
 
 
 # 노드 모듈이 `comfy`·`folder_paths` 이름으로 쓰는 대체 객체(갈래 J 가 채운다)
 comfy = types.SimpleNamespace(utils=types.SimpleNamespace(ProgressBar=ProgressBar),
-                              model_management=types.SimpleNamespace(InterruptProcessingException=InterruptProcessingException))
-folder_paths = types.SimpleNamespace(models_dir="")
+                              model_management=types.SimpleNamespace(InterruptProcessingException=InterruptProcessingException,
+                                                                     processing_interrupted=lambda: False))
+folder_paths = types.SimpleNamespace(models_dir="", get_input_directory=_no_directory,
+                                     get_output_directory=_no_directory, get_filename_list=lambda kind: [])
