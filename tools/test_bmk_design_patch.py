@@ -59760,11 +59760,10 @@ def _batch13_values(css, code):
     has(".tile.picked", {"border-color": "var(--star)"})
     has(".tile .cap", {"font-size": "11px", "color": "var(--meta)"})
     has("#statusbar", {"min-height": "28px", "font-size": "12px", "color": "var(--dim)", "font-variant-numeric": "tabular-nums"})
-    narrow = re.search(r"@media\s*\(max-width:\s*1399px\)\s*\{(.*?)\n\}", code, re.S)
-    narrow = narrow.group(1) if narrow else ""
-    check("gap: 4px 12px; min-width: 0; min-height: 28px; padding: 0 12px;" in css
-          and "#statusbar { gap: 4px 8px; padding: 0 8px; }" in narrow and "#statusbar .lhead { gap: 8px; }" in narrow,
-          "D380 상태 줄 간격 12px, 좁은 창(1399px 이하)에서는 8px")
+    has(".lhead", {"gap": "8px"})
+    has("#statusbar .badges", {"gap": "0 8px"})
+    check("gap: 4px 8px; min-width: 0; min-height: 28px; padding: 0 8px;" in css,
+          "D380 상태 줄 간격은 모든 폭에서 8px(12px 이면 1920 폭 ⑥ 편집에서도 실행 머리 글이 전보다 더 잘렸다)")
     for selector in (".lp-btns a[download]", ".export-menu a[download]"):
         has(selector, {"min-height": "32px", "padding": "4px 12px", "border": "1px solid var(--line)", "background": "var(--panel2)",
                        "color": "var(--text)", "text-decoration": "none"})

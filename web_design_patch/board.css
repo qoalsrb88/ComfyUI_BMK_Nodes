@@ -382,7 +382,7 @@ body.editing #viewer { display: flex; }
 
 body.editing #top button { flex: none; white-space: nowrap; }
 body.editing .proj { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.lhead { flex: none; align-items: center; gap: 12px; white-space: nowrap; }
+.lhead { flex: none; align-items: center; gap: 8px; white-space: nowrap; }
 .lhead button { min-height: 24px; padding: 0 8px; border-radius: var(--radius-sm); }
 .lh-title { font-weight: 600; }
 .lh-ok { color: var(--ok); }
@@ -924,7 +924,7 @@ button:hover:not(:disabled) > .dp-ico, summary:hover > .dp-ico, button.on > .dp-
 #top #export-state { max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
 #top > button { min-height: 28px; padding: 0 12px; }
 .keybar { min-width: 0; }
-#statusbar { display: flex; flex: none; align-items: center; flex-wrap: wrap; gap: 4px 12px; min-width: 0; min-height: 28px; padding: 0 12px; font-size: 12px; color: var(--dim); font-variant-numeric: tabular-nums; background: var(--panel); border-top: 1px solid var(--line); }
+#statusbar { display: flex; flex: none; align-items: center; flex-wrap: wrap; gap: 4px 8px; min-width: 0; min-height: 28px; padding: 0 8px; font-size: 12px; color: var(--dim); font-variant-numeric: tabular-nums; background: var(--panel); border-top: 1px solid var(--line); }
 #statusbar > *, #statusbar .lhead { min-width: 0; }
 #statusbar .proj, #statusbar .lhead > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #statusbar #proj, #statusbar #pipe-head { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -937,16 +937,14 @@ button:hover:not(:disabled) > .dp-ico, summary:hover > .dp-ico, button.on > .dp-
 #statusbar .lhead { flex-wrap: wrap; }
 #statusbar > button { min-height: 24px; padding: 0 8px; font-size: 12px; line-height: 20px; }
 #statusbar .keys-toggle { margin: 0; }
+/* 상태 줄 간격은 모든 폭에서 8px — 12px 이면 1920 폭 ⑥ 편집에서도 실행 머리 글이 배치 13 전보다 더 잘렸다(D380). */
+#statusbar .badges { gap: 0 8px; }
 .dp-off { visibility: hidden !important; pointer-events: none; }
 @media (max-width: 1399px) {
   #top .brand .dim, #export-state { display: none; }
   body.server #top .brand { display: none; }
   body.server.projects-page #top .brand { display: block; } /* 프로젝트 목록에서는 머리줄이 비지 않게 */
   #top .tabs .tab { padding: 5px 5px; }
-  /* 좁은 창에서는 상태 줄 간격을 한 단 줄여 배치 13 전보다 더 잘리지 않게 한다(D380). */
-  #statusbar { gap: 4px 8px; padding: 0 8px; }
-  #statusbar .lhead { gap: 8px; }
-  #statusbar .badges { gap: 0 8px; }
 }
 /* 절은 직접 자식으로 남겨 단계별 가리기와 점검표 이동을 함께 쓴다. */
 body.pipe #pipe-panel { display: flex; flex-direction: column; min-width: 0; }
