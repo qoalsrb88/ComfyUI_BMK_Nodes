@@ -772,25 +772,14 @@ svg.dr-isolate { position: absolute; left: 0; top: 0; pointer-events: none; }
 .rf-deleted .rf-file { opacity: .85; }
 
 /* ── 배치 8-C (마스크) — 8-C 작업자는 이 표시 아래에만 덧붙인다 ── */
-#mask-panel [data-hist]::before { display: inline-block; width: 1.2em; margin-right: 3px; }
-#mask-panel [data-hist="undo"]::before { content: "↶"; }
-#mask-panel [data-hist="redo"]::before { content: "↷"; }
-#mask-panel [data-hist="clear"]::before { content: "⟲"; }
 #mask-panel .rf-slider input[type="number"] { flex: 0 0 5.4em; width: 5.4em; box-sizing: border-box; background: var(--well); color: var(--text); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 3px 4px; font: inherit; font-variant-numeric: tabular-nums; }
 #mask-panel .rf-slider input[type="number"]:focus { border-color: var(--accent); }
 #mask-panel .rf-slider .rf-val { width: 1.7em; min-width: 0; text-align: left; }
 #mask-panel .rf-slider input:disabled { opacity: .45; }
 #mask-list .mc-expand { padding: 1px 4px; font: inherit; cursor: pointer; }
-#mask-list .mc-expand::before { content: "▸"; display: inline-block; width: 1em; }
-#mask-list .mc-expand[aria-expanded="true"]::before { content: "▾"; }
 #mask-list li.sub { flex-wrap: wrap; }
 #mask-list .mc-details { flex: 1 0 100%; display: grid; gap: 3px; margin: 5px 0 3px; padding-left: 10px; border-left: 1px solid var(--line); }
 #mask-list .mc-detail { position: relative; display: block; width: 100%; text-align: left; padding: 4px 6px; overflow-wrap: anywhere; font: inherit; background: transparent; }
-#mask-list .mc-detail::before { content: "·"; display: inline-block; width: 1.3em; color: var(--dim); }
-#mask-list .mc-detail[data-detail="xform"]::before { content: "◇"; }
-#mask-list .mc-detail[data-detail="invert"]::before { content: "◐"; }
-#mask-list .mc-detail[data-detail="fade"]::before { content: "▤"; }
-#mask-list .mc-detail[data-detail="brush"]::before { content: "╱"; }
 #mask-list .mc-blur-bar { position: absolute; height: 2px; left: 0; bottom: 0; background: var(--accent); opacity: .65; pointer-events: none; }
 
 /* Forge F1 — 페이지 대화 상자·세션 안내 */
@@ -866,6 +855,12 @@ svg.marks .mx-outline, .dr-selected {
 /* ── 배치 13-A (화면 다듬기 — 값) — 기존 규칙의 값은 제자리에서 고치고, 새 규칙만 이 표시 아래(13-B 표시 앞)에 ── */
 
 /* ── 배치 13-B (아이콘) — 13-B 작업자는 이 표시 아래(F3-U1 표시 앞)에만 덧붙인다 ── */
+.dp-ico { flex: none; vertical-align: -3px; color: var(--meta); }
+button:hover:not(:disabled) > .dp-ico, summary:hover > .dp-ico, button.on > .dp-ico, button[aria-expanded="true"] > .dp-ico { color: var(--text); }
+.dr-button > .dp-ico { vertical-align: 0; color: inherit; }
+#btn-viewer > .dp-ico, #btn-keys > .dp-ico, .pp-adv-toggle > .dp-ico, #mask-panel [data-hist] > .dp-ico,
+#mask-list .mc-expand > .dp-ico, #mask-list .mc-detail > .dp-ico { margin-right: 4px; }
+[aria-expanded="true"] > .dp-ico[data-icon="chevron"] { transform: rotate(90deg); }
 
 /* ── Forge F3-U1 (머리줄·상태 줄·주 실행 단추·고급) — 갈래 U1 은 이 표시 아래에만 덧붙인다 ── */
 /* 색은 변수로만. 위쪽 기존 규칙을 덮어써야 하면 여기서 다시 선언한다. */

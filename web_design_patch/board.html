@@ -35,11 +35,11 @@
 </nav>
   <span id="export-state" class="chip"></span>
   <button type="button" id="btn-export" tabindex="-1" disabled>Export</button>
-  <details id="export-menu" class="export-menu"><summary title="Export 메뉴">▾</summary><div>
+  <details id="export-menu" class="export-menu"><summary title="Export 메뉴" aria-label="Export 메뉴"></summary><div>
     <button type="button" id="btn-export-folder">출력 폴더 열기</button>
     <button type="button" id="btn-export-settings">Export 설정</button>
   </div></details>
-  <button type="button" id="btn-viewer" tabindex="-1" title="캔버스 뷰어 보이기/숨기기 (V)">뷰어 ▣</button>
+  <button type="button" id="btn-viewer" tabindex="-1" title="캔버스 뷰어 보이기/숨기기 (V)">뷰어</button>
   <button type="button" id="btn-queue" tabindex="-1" title="다시 생성 대기 소화(확인 창 없음 — 사용자 클릭만) — 유료 승인을 받는 ComfyUI 탭이고 서버가 템플릿을 낼 수 있으면 다시 생성 템플릿(사전 승인분·복구만 과금 · 승인 제출이라 ComfyUI 탭 그래프의 시드 제어 등 실행마다 바뀌는 값이 한 번 진행됨(그래프는 실행 안 함)), 그 길이 막히면(옛 확장·탭이 큐 처리 중·실행 설정 미저장·확인 필요·경로 경고·옛 서버) Open Board 또는 메뉴 BMK → Design Patch Studio 로 연 탭의 Review 노드 부분 실행(그래프 Prepare 위젯 값으로 과금), 이 Studio 가 승인 요청·실행·반영 큐 중이면 예약만" class="dp-off">다시 생성 보내기</button>
   <button type="button" id="btn-drain" tabindex="-1" title="진행 중인 Run 이 새 호출 발사를 멈춥니다(진행 중인 호출은 끝까지 받아 저장) — Drain" class="dp-off">새 호출 멈춤</button>
   <button type="button" id="btn-help" tabindex="-1" title="단축키 (?)">?</button>
@@ -113,13 +113,13 @@
   <div class="spacer"></div>
   <div id="badges" class="badges"></div>
   <div id="status" class="status"></div>
-  <button type="button" id="btn-keys" class="keys-toggle" tabindex="-1" title="단축키 줄 접기/펴기">⌨ 단축키</button>
+  <button type="button" id="btn-keys" class="keys-toggle" tabindex="-1" title="단축키 줄 접기/펴기">단축키</button>
 </footer>
 
 <div id="help" class="overlay" hidden>
   <div class="sheet">
     <h2>단축키</h2>
-    <p class="dim">머리줄 = 작업 단계 · 아래 상태 줄 = 프로젝트·실행 상태 · 머리줄 아래 = 그 모드의 단축키 칩 — 칩을 눌러도 그 키와 같음(Q·W 는 누르고 있는 동안). [⌨ 단축키] = 칩 줄 접기/펴기.</p>
+    <p class="dim">머리줄 = 작업 단계 · 아래 상태 줄 = 프로젝트·실행 상태 · 머리줄 아래 = 그 모드의 단축키 칩 — 칩을 눌러도 그 키와 같음(Q·W 는 누르고 있는 동안). [단축키] = 칩 줄 접기/펴기.</p>
     <table>
       <tr><td><kbd>↑</kbd> <kbd>↓</kbd></td><td>타깃 이동</td></tr>
       <tr><td><kbd>←</kbd> <kbd>→</kbd></td><td>후보 이동</td></tr>

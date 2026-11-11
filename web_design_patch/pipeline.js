@@ -1082,6 +1082,11 @@ window.DPPipeline = (() => {
       return el("span", "chip " + (cls || ""), txt);
     }
 
+    function withIcon(b, name) {
+      if (window.DPRows && window.DPRows.icon) b.prepend(window.DPRows.icon(name));
+      return b;
+    }
+
     function button(label, title, fn, cls) {
       const b = el("button", cls || "", label);
       b.type = "button";
@@ -2899,10 +2904,10 @@ window.DPPipeline = (() => {
         return;
       }
       if (advancedTabs.has(shownTab)) {
-        const toggle = button(panel.dataset.adv === "1" ? "고급 ▾" : "고급 ▸", "고급 설정 접기/펴기", () => {
+        const toggle = withIcon(button("고급", "고급 설정 접기/펴기", () => {
           panel.dataset.adv = panel.dataset.adv === "1" ? "0" : "1";
           render();
-        }, "pp-adv-toggle");
+        }, "pp-adv-toggle"), "chevron");
         toggle.setAttribute("aria-expanded", String(panel.dataset.adv === "1"));
         advancedToggle = toggle;
         panel.append(toggle);
@@ -3687,7 +3692,7 @@ window.DPPipeline = (() => {
       if (sec) {
         if (sec.classList.contains("pp-adv")) {
           panel.dataset.adv = "1";
-          if (advancedToggle) { advancedToggle.textContent = "고급 ▾"; advancedToggle.setAttribute("aria-expanded", "true"); }
+          if (advancedToggle) advancedToggle.setAttribute("aria-expanded", "true");
         }
         sec.scrollIntoView({ block: "start", behavior: "smooth" });
       }

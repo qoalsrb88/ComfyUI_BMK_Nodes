@@ -585,6 +585,11 @@ window.DPRefEdit = (() => {
       return b;
     }
 
+    function withIcon(b, name) {
+      if (window.DPRows && window.DPRows.icon) b.prepend(window.DPRows.icon(name));
+      return b;
+    }
+
     function extraButton(label, title, fn, cls) {
       const b = button(label, title, fn, cls);
       b.tabIndex = 0;
@@ -2456,7 +2461,7 @@ window.DPRefEdit = (() => {
             });
             row.append(check);
             if (r.group) {
-              const toggle = extraButton(expanded.has(r.id) ? "▾" : "▸", "그룹 펼치기", () => {
+              const toggle = withIcon(extraButton("", "그룹 펼치기", () => {
                 if (expanded.has(r.id)) { expanded.delete(r.id); clearChildren(r.id); }
                 else expanded.add(r.id);
                 if (!visited.has(r.id)) {
@@ -2467,7 +2472,9 @@ window.DPRefEdit = (() => {
                 }
                 draw();
                 count();
-              });
+              }), "chevron");
+              toggle.setAttribute("aria-label", "그룹 펼치기");
+              toggle.setAttribute("aria-expanded", String(expanded.has(r.id)));
               toggle.dataset.focus = r.id + ":toggle"; controls.set(toggle.dataset.focus, toggle);
               row.append(toggle);
             }

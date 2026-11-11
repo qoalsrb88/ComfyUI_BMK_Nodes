@@ -49321,7 +49321,7 @@ def polish2_unit():
     check(all(f'id="{i}"' in head for i in ("btn-edit", "btn-refs", "btn-pipe", "btn-mask")) and 'id="mode-title"' not in head
           and 'id="mode-title"' in bh[bh.index('<div id="keybar"'):] and 'id="btn-keys"' in bh[bh.index('<footer id="statusbar"'):bh.index('</footer>')]
           and bh.index("</nav>") < bh.index('<div id="keybar"') < bh.index("<main")
-          and re.search(r'id="btn-viewer"[^>]*>뷰어 ▣</button>', head) is not None,
+          and re.search(r'id="btn-viewer"[^>]*>뷰어</button>', head) is not None,
           "머리줄 단계·뷰어, 아래 상태 줄 ⌨, 모드 설명·칩은 머리줄 아래 자기 줄")
     check(all(f'on("btn-{a}", () => goMode({b}));' in bj for a, b in (("review", "null"), ("edit", '"edit"'), ("refs", '"refs"'),
                                                                      ("pipe", '"prepare"'), ("mask", '"mask"')))
@@ -49331,7 +49331,7 @@ def polish2_unit():
           and "body.no-keys .keybar { display: none; }" in bc and ".tabs .tab.on {" in bc and "#btn-edit.on" not in bc
           and "flex-wrap: wrap" in bc[bc.index(".keybar {"):] and "#top button { flex: none; white-space: nowrap; }" in bc,
           "⌨ 칩 줄 접기는 이 브라우저에 기억, 탭 켜짐 모양은 .tab.on 하나")
-    check("document.body.dispatchEvent(new KeyboardEvent(type" in bj and "[⌨ 단축키] = 칩 줄 접기/펴기" in bh
+    check("document.body.dispatchEvent(new KeyboardEvent(type" in bj and "[단축키] = 칩 줄 접기/펴기" in bh
           and "크롭 편집 (<kbd>E</kbd>)" in bh and "실행 (<kbd>G</kbd>)" in bh,
           "칩 키 이벤트는 body 에서(viewer.js Space 처리기의 closest), 도움말 둘째 줄 설명·제목(용어표 A2·A4)")
 
@@ -53377,7 +53377,7 @@ def forge_f3_frame_unit():
     check('ComfyUI 탭이 승인 템플릿을 제출함(진행은 상태 줄)' in pl, "F3U1 D349 로컬 진행 위치 문구")
     rt_source = pl[pl.index('        const rt = runText({ ...p.run,'):pl.index('        line(s, rt.line,')]
     check(rt_source.count('const ') == 1 and rt_source.count(';') == 1, "F3U1 그 밖: runText 절단 구간에 추가 계산 없음")
-    check('[지우개]·[브러시]' in bh and '되돌리기 · 다시실행' in bh and '[⌨ 단축키] = 칩 줄 접기/펴기' in bh,
+    check('[지우개]·[브러시]' in bh and '되돌리기 · 다시실행' in bh and '[단축키] = 칩 줄 접기/펴기' in bh,
           "F3U1 D355 도움말·칩 접기 설명")
     node = shutil.which("node")
     if not node:
@@ -56951,16 +56951,18 @@ await scenario("b9groupChoice", async () => {
   await env.press(env.hosts.panel, "레이어별 컷", true);
   const host = env.doc.body.all().find((e) => e.classList.contains("rf-dialog"));
   const rows = () => host.all().filter((e) => e.classList.contains("rf-layer-row"));
-  env.button(rows()[0], "▸", true).focus();
-  await env.press(rows()[0], "▸", true);
-  const toggleFocus = env.doc.activeElement === env.button(rows()[0], "▾", true);
-  const defaults = !!env.button(host, "보관함에 저장 (2)", true);
+  const toggle = (index) => rows()[index].all().find((e) => e.tagName === "BUTTON" && e.title === "그룹 펼치기");
+  const initiallyCollapsed = toggle(0).attrs["aria-expanded"] === "false";
+  toggle(0).focus();
+  toggle(0).fire("click"); await sleep(15);
+  const toggleFocus = env.doc.activeElement === toggle(0) && toggle(0).attrs["aria-expanded"] === "true";
+  const defaults = initiallyCollapsed && !!env.button(host, "보관함에 저장 (2)", true);
   const rootCheck = rows()[0].all().find((e) => e.type === "checkbox"); rootCheck.checked = true; rootCheck.fire("change");
-  await env.press(rows()[1], "▸", true);
-  const nested = !!env.button(host, "보관함에 저장 (1)", true) && !rows()[0].all().find((e) => e.type === "checkbox").checked;
-  await env.press(rows()[0], "▾", true);
-  const collapsed = rows().length === 1 && env.button(host, "보관함에 저장 (0)", true).disabled;
-  await env.press(rows()[0], "▸", true);
+  toggle(1).fire("click"); await sleep(15);
+  const nested = toggle(1).attrs["aria-expanded"] === "true" && !!env.button(host, "보관함에 저장 (1)", true) && !rows()[0].all().find((e) => e.type === "checkbox").checked;
+  toggle(0).fire("click"); await sleep(15);
+  const collapsed = rows().length === 1 && toggle(0).attrs["aria-expanded"] === "false" && env.button(host, "보관함에 저장 (0)", true).disabled;
+  toggle(0).fire("click"); await sleep(15);
   const checkRow = (index) => { const cb = rows()[index].all().find((e) => e.type === "checkbox"); cb.checked = true; cb.fire("change"); };
   checkRow(0); checkRow(2);
   const childClearsGroup = !rows()[0].all().find((e) => e.type === "checkbox").checked;
@@ -59624,6 +59626,156 @@ def _batch13_values(css, code):
 
 def _batch13_icons(web):
     """13-B 몫 — 아이콘(D375·D376) 정적 검사. web = web_design_patch 폴더."""
+    rows = (web / "rows.js").read_text(encoding="utf-8")
+    css = (web / "board.css").read_text(encoding="utf-8")
+    code = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    bh = (web / "board.html").read_text(encoding="utf-8")
+    shapes = {
+        "locked": ["rect", "path"], "unlocked": ["rect", "path"], "trash": ["path"] * 5,
+        "grip": ["circle"] * 6, "up": ["path"], "down": ["path"], "chevron": ["path"],
+        "viewer": ["rect", "path"], "keys": ["path"] * 8 + ["rect"],
+        "undo": ["path"] * 2, "redo": ["path"] * 2, "clear": ["path"] * 2, "xform": ["path"] * 6,
+        "invert": ["circle", "path"], "fade": ["circle"] * 2, "brush": ["path"] * 3, "dot": ["circle"],
+    }
+    atlas = re.search(r"const paths = \{(.*?)\n  \};", rows, re.S)
+    check(atlas is not None and set(re.findall(r"^    (\w+):", atlas.group(1), re.M)) == set(shapes),
+          "13-B Lucide 세트 이름 17종")
+    check(re.findall(r'"stroke-width"\s*:\s*([\d.]+)', rows) == ["1.5"]
+          and re.search(r"(?<![\w.])1\.7(?![\w.])", rows) is None, "13-B 공통 선 굵기 1.5 하나")
+    check(all(not any(g in value for g in "▣⌨▾▸↶↷⟲◇◐▤╱")
+              for value in re.findall(r"\bcontent\s*:\s*([^;}]+)", code)), "13-B CSS content 글리프 없음")
+    check(not re.search(r"#mask-(?:panel|list)[^{}]*::before", code), "13-B 마스크 글리프 가상 요소 제거")
+    start, end = css.find("/* ── 배치 13-B"), css.find("/* ── Forge F3-U1")
+    check(0 <= start < end, "13-B 전용 CSS 구간")
+    block = re.sub(r"/\*.*?\*/", "", css[start:end], flags=re.S) if 0 <= start < end else ""
+    styles = {}
+    for selectors, body in re.findall(r"([^{}]+)\{([^{}]*)\}", block):
+        props = dict((k.strip(), v.strip()) for k, v in re.findall(r"([\w-]+)\s*:\s*([^;]+)", body))
+        for selector in selectors.split(","):
+            styles[" ".join(selector.split())] = props
+    rules = (
+        (".dp-ico", {"flex": "none", "vertical-align": "-3px", "color": "var(--meta)"}),
+        ('button:hover:not(:disabled) > .dp-ico, summary:hover > .dp-ico, button.on > .dp-ico, button[aria-expanded="true"] > .dp-ico',
+         {"color": "var(--text)"}),
+        (".dr-button > .dp-ico", {"vertical-align": "0", "color": "inherit"}),
+        ("#btn-viewer > .dp-ico, #btn-keys > .dp-ico, .pp-adv-toggle > .dp-ico, #mask-panel [data-hist] > .dp-ico, "
+         "#mask-list .mc-expand > .dp-ico, #mask-list .mc-detail > .dp-ico", {"margin-right": "4px"}),
+        ('[aria-expanded="true"] > .dp-ico[data-icon="chevron"]', {"transform": "rotate(90deg)"}),
+    )
+    for selectors, props in rules:
+        for selector in selectors.split(", "):
+            check(styles.get(selector) == props, f"13-B CSS {selector}")
+    for ident, label in (("btn-viewer", "뷰어"), ("btn-keys", "단축키")):
+        match = re.search(rf'<button\b[^>]*\bid="{ident}"[^>]*>(.*?)</button>', bh, re.S)
+        check(match is not None and match.group(1) == label, f"13-B {ident} 원문 라벨 {label}")
+    summary = re.search(r'<details\b[^>]*\bid="export-menu"[^>]*>\s*<summary([^>]*)>(.*?)</summary>', bh, re.S)
+    check(summary is not None and summary.group(2) == "" and 'aria-label="Export 메뉴"' in summary.group(1)
+          and 'title="Export 메뉴"' in summary.group(1), "13-B Export 메뉴 빈 라벨·접근성 이름·title 유지")
+    check("[단축키] = 칩 줄 접기/펴기" in bh and "<svg" not in bh and "xmlns" not in bh,
+          "13-B 도움말 라벨 동기화·HTML에 SVG 경로 중복 없음")
+    for name in ("pipeline.js", "ref_edit.js", "mask_edit.js"):
+        source = (web / name).read_text(encoding="utf-8")
+        check(not re.search(r'''(["'])(?:고급 )?[▸▾]\1''', source), f"13-B {name} 접기 글리프 문자열 없음")
+        check(source.count("window.DPRows && window.DPRows.icon") == 1, f"13-B {name} 공통 아이콘 가드 하나")
+        if name == "pipeline.js":
+            check("advancedToggle.textContent" not in source, "13-B goSection은 고급 아이콘 보존")
+    license_path = web / "LICENSE-lucide.txt"
+    license_text = license_path.read_text(encoding="utf-8") if license_path.is_file() else ""
+    check(all(s in license_text for s in ("Lucide 1.72.0", "ISC License", "Lucide Icons and Contributors", "Cole Bemis")),
+          "13-B Lucide·Feather 라이선스 고지")
+    check(all(s in rows[:rows.index("const paths")] for s in ("Lucide 1.72.0", "ISC License", "Feather", "MIT License", "LICENSE-lucide.txt")),
+          "13-B 아이콘 세트 바로 위 출처 고지")
+    board_tree = ast.parse((PKG / "bmk_design_patch_board.py").read_text(encoding="utf-8"))
+    static = next(n.value for n in board_tree.body if isinstance(n, ast.Assign)
+                  and any(isinstance(t, ast.Name) and t.id == "_STATIC" for t in n.targets))
+    check("LICENSE-lucide.txt" not in ast.literal_eval(static), "13-B 라이선스는 정적 제공 목록 밖")
+
+    node = shutil.which("node")
+    if not node:
+        skip("node 없음: 13-B 아이콘 DOM 하네스 미실행")
+        return
+    scene = r'''
+import fs from "node:fs";
+import path from "node:path";
+import vm from "node:vm";
+const source = fs.readFileSync(process.argv[2], "utf8"), names = process.argv[3].split(",");
+class El {
+  constructor(tag, text = "") { this.tagName = tag; this.attrs = {}; this.children = text ? [text] : []; }
+  setAttribute(k, v) { this.attrs[k] = String(v); }
+  append(...items) { this.children.push(...items); }
+  prepend(...items) { this.children.unshift(...items); }
+  querySelector(tag) { return this.children.find(e => e.tagName === tag) || null; }
+  get textContent() { return this.children.map(e => typeof e === "string" ? e : e.textContent).join(""); }
+}
+function context(selectors) {
+  const document = { createElementNS: (ns, tag) => new El(tag), addEventListener() {} };
+  if (selectors) document.querySelector = selector => selectors[selector] || null;
+  return vm.createContext({ document, window: { addEventListener() {} } });
+}
+const entries = [["#btn-viewer", "viewer", "뷰어"], ["#btn-keys", "keys", "단축키"], ["#export-menu > summary", "down", ""]];
+const hosts = Object.fromEntries(entries.map(([selector, , label]) => [selector, new El("button", label)]));
+const ctx = context(hosts);
+vm.runInContext(source, ctx);
+const icons = Object.fromEntries(names.map(name => {
+  const s = ctx.window.DPRows.icon(name);
+  return [name, { tag: s.tagName, attrs: s.attrs, children: s.children.map(e => e.tagName) }];
+}));
+const attached = entries.every(([selector, name, label]) => {
+  const b = hosts[selector];
+  return b.children[0]?.tagName === "svg" && b.children[0].attrs["data-icon"] === name && b.textContent === label;
+});
+const first = entries.map(([selector]) => hosts[selector].children[0]);
+vm.runInContext(source, ctx);
+const once = entries.every(([selector], i) => hosts[selector].children[0] === first[i]
+  && hosts[selector].children.filter(e => e.tagName === "svg").length === 1);
+const unknown = ["missing", "toString", "constructor", "__proto__"].every(name => {
+  const s = ctx.window.DPRows.icon(name);
+  return s.tagName === "svg" && s.children.length === 0;
+});
+const withoutQuery = context();
+vm.runInContext(source, withoutQuery);
+const missingHosts = context({});
+vm.runInContext(source, missingHosts);
+const helpers = {};
+for (const file of ["pipeline.js", "ref_edit.js", "mask_edit.js"]) {
+  const code = fs.readFileSync(path.join(path.dirname(process.argv[2]), file), "utf8");
+  const start = code.indexOf("    function withIcon(b, name) {");
+  const helper = code.slice(start, code.indexOf("\n    }", start) + 6);
+  const env = vm.createContext({ window: { DPRows: ctx.window.DPRows } });
+  vm.runInContext(helper, env);
+  const b = new El("button", "라벨");
+  const present = env.withIcon(b, "chevron") === b && b.children[0].attrs["data-icon"] === "chevron" && b.textContent === "라벨";
+  delete env.window.DPRows;
+  const absent = new El("button", "라벨");
+  const noRows = env.withIcon(absent, "chevron") === absent && absent.children.length === 1 && absent.textContent === "라벨";
+  env.window.DPRows = {};
+  helpers[file] = present && noRows && env.withIcon(absent, "chevron") === absent && absent.children.length === 1;
+}
+console.log(JSON.stringify({ icons, attached, once, unknown, helpers,
+  withoutQuery: withoutQuery.window.DPRows.icon("viewer").children.length === 2,
+  missingHosts: missingHosts.window.DPRows.icon("viewer").children.length === 2 }));
+'''
+    out = OUT_ROOT / "batch13_icons"
+    out.mkdir(parents=True, exist_ok=True)
+    script = out / "icons.mjs"
+    script.write_text(scene, encoding="utf-8", newline="\n")
+    result = subprocess.run([node, str(script), str(web / "rows.js"), ",".join(shapes)],
+                            capture_output=True, text=True, encoding="utf-8", timeout=30)
+    (out / "result.txt").write_text(result.stdout + result.stderr, encoding="utf-8", newline="\n")
+    check(result.returncode == 0, f"13-B 아이콘 DOM 실행 {result.stderr[:500]}")
+    if result.returncode:
+        return
+    data = json.loads(result.stdout)
+    attrs = {"viewBox": "0 0 24 24", "width": "16", "height": "16", "fill": "none", "stroke": "currentColor",
+             "stroke-width": "1.5", "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true", "class": "dp-ico"}
+    for name, tags in shapes.items():
+        icon = data["icons"].get(name, {})
+        check(icon == {"tag": "svg", "attrs": dict(attrs, **{"data-icon": name}), "children": tags},
+              f"13-B {name} SVG 속성·요소 종류·자식 수")
+    for key in ("attached", "once", "unknown", "withoutQuery", "missingHosts"):
+        check(data.get(key) is True, f"13-B DOM {key}")
+    for name in ("pipeline.js", "ref_edit.js", "mask_edit.js"):
+        check(data.get("helpers", {}).get(name) is True, f"13-B {name} 아이콘 앞붙이기·라벨 유지·DPRows 없는 하네스")
 
 
 def batch13_unit():
