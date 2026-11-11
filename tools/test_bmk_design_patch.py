@@ -49416,8 +49416,8 @@ def forge_f3_theme_unit():
 
     # D345: 공용 변수 값·고정 기능색은 각각 독립적으로 확인한다.
     palette = {
-        "--bg": "#09090b", "--panel": "#18181b", "--panel2": "#27272a", "--line": "#3f3f46",
-        "--line2": "#52525b", "--text": "#e4e4e7", "--dim": "#a1a1aa", "--well": "#09090b",
+        "--bg": "#09090b", "--panel": "#18181b", "--panel2": "#27272a", "--line": "rgba(228, 228, 231, .09)",
+        "--line2": "rgba(228, 228, 231, .16)", "--text": "#e4e4e7", "--dim": "#a1a1aa", "--well": "#09090b",
         "--accent": "#dfe104", "--on-accent": "#09090b", "--accent-soft": "rgba(223, 225, 4, .10)",
         "--info": "#4da3ff", "--warn": "#ffa24d", "--star": "#ffc940", "--slice": "#ffa24d",
         "--wait": "#b4b4bc", "--bad": "#ff5d5d", "--ok": "#46d17e", "--mock": "#b67cff", "--reg": "#4dd6e8",
@@ -49456,7 +49456,7 @@ def forge_f3_theme_unit():
         ".dp-dialog .lp-btns button:first-child:not(.danger)", ".dp-env-block button",
     )
     for selector in primary:
-        has_style(selector, {"background": "var(--accent)", "color": "var(--on-accent)", "border-color": "var(--accent)", "font-weight": "700"})
+        has_style(selector, {"background": "var(--accent)", "color": "var(--on-accent)", "border-color": "var(--accent)", "font-weight": "600"})
         has_style(selector + ":disabled", {"background": "var(--panel2)", "color": "var(--dim)", "border-color": "var(--line)", "opacity": "1"})
     filled = set()
     pulse = set()
@@ -49467,7 +49467,7 @@ def forge_f3_theme_unit():
             filled.update(s for s in names if re.search(r"\bbutton\b|\.(?:primary|dp-main)\b", s))
         if re.search(r"(?:^|;)\s*animation(?:-name)?:[^;]*\bdp-pulse\b", body):
             pulse.update(names)
-        if re.search(r'content:\s*"◌ "', body):
+        if "box-shadow: inset 0 0 0 1px currentColor" in body:
             waiting_marks.update(names)
     check(filled == set(primary), f"D346 채움 단추 선택자는 허용 목록만(실행 절·일반 승인 상자 제외): {sorted(filled)}")
     for unused in (".rf-dialog .lp-btns button.primary", ".projects-home button.primary"):
@@ -49478,11 +49478,19 @@ def forge_f3_theme_unit():
     check(dock_rule in code and primary_rule in code and code.index(dock_rule) > code.index(primary_rule),
           "D346 실행 줄의 주 단추는 기본 primary 뒤에서 구체적으로 덮어씀")
     has_style(".dp-main", {"width": "100%", "min-height": "40px"})
-    for selector in ("button.on", 'button[aria-pressed="true"]', "button.sel", ".keybar .kchip.held", ".vbar button.on",
-                     ".lp-targets .lt button.on", ".lp-btns button.on", "#layout-panel button.sel",
-                     '#mask-panel .mc-adjust button[aria-pressed="true"]', "#target-list li.sel", "#layout-list li.sel",
-                     "#ref-list li.sel", "#mask-list li.sel", "#pipe-list li.sel"):
-        has_style(selector, {"background": "var(--accent-soft)", "border-color": "var(--accent)", "color": "var(--text)"})
+    # 배치 13 D368: 켜짐·선택에서 노랑 테두리를 뺀다 — 패널 토글 = 표면 단계 + 위쪽 밝은 선, 도구 줄 = 표면 한 단,
+    # 목록 선택 행 = 노랑 10% 바탕 + 왼쪽 2px 막대, 누른 단축키 칩 = 키캡 테두리만 노랑.
+    for selector in ("button.on", 'button[aria-pressed="true"]', "button.sel", ".lp-targets .lt button.on", ".lp-btns button.on",
+                     "#layout-panel button.sel", '#mask-panel .mc-adjust button[aria-pressed="true"]'):
+        has_style(selector, {"background": "var(--on)", "border-color": "transparent", "color": "var(--text)",
+                             "box-shadow": "inset 0 1px 0 rgba(255, 255, 255, .12)"})
+    has_style(".vbar button.on", {"background": "var(--raised)", "border-color": "transparent", "color": "var(--text)"})
+    has_style(".keybar .kchip.held", {"color": "var(--text)"})
+    has_style(".keybar .kchip.held kbd", {"border-color": "var(--accent)"})
+    check(not {"background", "border-color"} & set(style(".keybar .kchip.held")), "D368 누른 단축키 칩은 상자 꾸밈 없음")
+    for selector in ("#target-list li.sel", "#layout-list li.sel", "#ref-list li.sel", "#mask-list li.sel", "#pipe-list li.sel"):
+        has_style(selector, {"background": "var(--accent-soft)", "box-shadow": "inset 2px 0 0 var(--accent)", "color": "var(--text)"})
+        check("border-color" not in style(selector), f"D368 {selector} 선택 행은 테두리 없음")
     has_style("button:hover", {"border-color": "var(--line2)"})
     has_style(":focus-visible", {"outline": "2px solid var(--accent)"})
     check("outline: none" not in code, "D346 입력칸 focus 규칙이 키보드 외곽선을 가리지 않음")
@@ -49518,14 +49526,19 @@ def forge_f3_theme_unit():
         has_style(selector, {"color": "inherit", "opacity": "1"})
     has_style(".rf-perspective-handle:hover", {"border-color": "currentColor"})
 
-    # D347 수정 1: 대기는 회색 점선, 맥동은 실제 진행에만 쓴다.
+    # D347 수정 1 + 배치 13 D370·D376: 대기는 점선 상자 대신 빈 점(글자 앞 6px 고리), 맥동은 실제 진행에만 쓴다.
     for selector in (".b-wait", ".rg-tag", ".projects-chip"):
-        has_style(selector, {"background": "var(--panel2)", "border": "1px dashed var(--wait)", "color": "var(--text)"})
+        check(not {"border", "border-color"} & set(style(selector)), f"D370 {selector} 점선 상자 없음")
         check(not any(k.startswith("animation") and v != "none" for k, v in style(selector).items()), f"D347 {selector} 대기 배지 애니메이션 없음")
-    for selector in (".lh-wait::before", ".clabel.wait::before", ".step-state.todo::before"):
-        has_style(selector, {"content": '"◌ "', "color": "var(--wait)"})
-    check(waiting_marks == {".lh-wait::before", ".clabel.wait::before", ".step-state.todo::before"},
-          f"R4 대기 원은 todo 단계·대기 글자에만(모름·초기 단계 제외): {sorted(waiting_marks)}")
+    check("background" not in style(".b-wait") and "background" not in style(".projects-chip"), "D370 대기 칩은 바탕 없이 글자 + 빈 점")
+    has_style(".projects-chip", {"color": "var(--dim)"})
+    has_style(".rg-tag", {"background": "rgba(9, 9, 11, .8)", "color": "var(--text)"})
+    hollow = (".b-wait::before", ".projects-chip::before", ".lh-wait::before", ".clabel.wait::before", ".step-state.todo::before")
+    for selector in hollow:
+        has_style(selector, {"content": '""', "width": "6px", "height": "6px", "border-radius": "50%", "background": "none",
+                             "color": "var(--wait)", "box-shadow": "inset 0 0 0 1px currentColor"})
+    check(waiting_marks == set(hollow), f"R4 대기 빈 점은 대기 칩·todo 단계·대기 글자에만(모름·초기 단계 제외): {sorted(waiting_marks)}")
+    check("◌" not in code, "D376 대기 글리프 ◌ 는 CSS 빈 점으로 바뀜")
     has_style(".step-state", {"color": "var(--dim)"})
     check(pulse == {".dp-live", ".vmsg.busy"}, f"D347 dp-pulse 는 실제 진행 선택자 두 곳만: {sorted(pulse)}")
     check(not any(k.startswith("animation") and v != "none" for k, v in style(".b-run").items()),
@@ -49556,18 +49569,18 @@ def forge_f3_theme_unit():
         has_style(selector, {"color": "var(--wait)"})
     has_style("#p-cand.mode-before figcaption", {"color": "var(--info)"})
     # R6: 정보 채움은 변수에서 파생하고, 이음매 경고는 조각 색과 구분한다.
-    has_style(".b-new", {"border-color": "var(--info)"})
+    has_style(".b-new::before", {"background": "var(--info)"})
     has_style("svg.marks .prop", {"fill": "color-mix(in srgb, var(--info) 8%, transparent)", "stroke": "var(--info)"})
     has_style("svg.marks .seam.weak", {"stroke": "var(--warn)"})
     has_style("svg.marks text.linfo", {"fill": "var(--info)"})
 
     # D348·D354·D356·D357: 로컬 글꼴 목록, 단추 크기, 탭, 빈 화면의 모양.
     has_style("html", {"font": '14px/1.45 "Noto Sans KR", "Pretendard Variable", "Pretendard", "Malgun Gothic", "Apple SD Gothic Neo", system-ui, sans-serif'})
-    has_style("button", {"border-radius": "var(--radius)", "padding": "5px 12px"})
+    has_style("button", {"border-radius": "var(--radius)", "min-height": "32px", "padding": "4px 12px"})
     for selector in (".vbar button", ".lhead button", "button.inline", ".keybar .kchip", ".dr-button",
                      'input[type="text"]', 'input[type="number"]', "input:not([type])", "select", "textarea"):
         has_style(selector, {"border-radius": "var(--radius-sm)"})
-    has_style("*", {"scrollbar-color": "var(--line2) transparent"})
+    has_style("*", {"scrollbar-color": "var(--scroll) transparent"})
     has_style(".ref-tabs", {"height": "38px", "min-height": "38px", "flex-wrap": "nowrap"})
     has_style(".tabs .tab", {"background": "transparent", "border": "0", "border-radius": "0", "border-bottom": "2px solid transparent"})
     has_style(".tabs .tab.on", {"background": "transparent", "color": "var(--accent)", "border-bottom-color": "var(--accent)"})
@@ -59620,6 +59633,148 @@ async def _fs_scoped_roots(bd, out, call, login, sessions):
 
 def _batch13_values(css, code):
     """13-A 몫 — CSS 값(D367–D374·D377–D382) 정적 검사. css = 원문, code = 주석을 뺀 글."""
+    rules = [([s.strip() for s in selectors.split(",")], [(k.strip(), v.strip()) for k, v in re.findall(r"([\w-]+)\s*:\s*([^;{}]+);", body)])
+             for selectors, body in re.findall(r"([^{}]+)\{([^{}]*)\}", code)]
+
+    def style(selector):
+        result = {}
+        for selectors, decls in rules:
+            if selector in selectors:
+                result.update(decls)
+        return result
+
+    def has(selector, expected):
+        check(all(style(selector).get(k) == v for k, v in expected.items()), f"배치 13 {selector}: {expected}")
+
+    # D367: 선은 본문 글자색의 헤어라인, 표면 단계·셋째 글자·스크롤 막대 변수.
+    root = style(":root")
+    check({k: root.get(k) for k in ("--line", "--line2", "--raised", "--on", "--meta", "--scroll")}
+          == {"--line": "rgba(228, 228, 231, .09)", "--line2": "rgba(228, 228, 231, .16)", "--raised": "#323236",
+              "--on": "#3f3f46", "--meta": "#8b8b93", "--scroll": "#52525b"}, "D367 선·표면 단계·메타 글자·스크롤 변수 값")
+    check("--muted" not in css, "D367 셋째 글자 변수 이름은 --meta(--muted 금지)")
+
+    def luminance(hex_color):
+        parts = [int(hex_color[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+        r, g, b = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in parts]
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+    for surface in ("--panel", "--well"):
+        hi, lo = sorted((luminance(root.get("--meta", "#000000")), luminance(root.get(surface, "#000000"))), reverse=True)
+        ratio = (hi + 0.05) / (lo + 0.05)
+        check(ratio >= 4.5, f"D367 --meta 글자 대비 4.5:1 이상({surface} 위 {ratio:.2f})")
+
+    # D373: 글자 크기 4단·굵기 2단.
+    sizes, weights = set(), set()
+    for _selectors, decls in rules:
+        for k, v in decls:
+            if k == "font-size":
+                sizes.add(v)
+            elif k == "font":
+                sizes.update(re.findall(r"(?<![\w.])([\d.]+(?:px|em|rem|%))(?=/|\s)", v)[:1])
+            elif k == "font-weight":
+                weights.add(v)
+    check(sizes <= {"11px", "12px", "14px", "16px"}, f"D373 글자 크기는 11·12·14·16px 뿐: {sorted(sizes)}")
+    check(weights <= {"normal", "400", "600"}, f"D373 굵기는 400·600 뿐: {sorted(weights)}")
+
+    # D372: gap·padding·margin 의 px 값은 4의 배수. 밖의 값은 아래 허용 목록(명세 §8)뿐이다.
+    allowed = {
+        (".tabs .tab", "margin-bottom", "-1px"),                    # 밑줄 탭이 머리줄 선에 겹치게
+        (".frame.loading::after", "margin", "-17px 0 0 -17px"),     # 가운데 맞춤(28px + 테두리 6px 의 절반)
+        ("#top .tabs .tab", "padding", "5px 5px"),                  # 좁은 창의 탭 — forge_f3_frame_unit 이 원문으로 본다
+        # 대화 상자·도움말·승인 상자는 배치 13 전 모양 그대로(D369)
+        (".sheet", "padding", "16px 22px"), (".sheet h3", "margin", "14px 0 6px"), (".sheet td", "padding", "2px 12px 2px 0"),
+        (".sheet ul", "padding-left", "18px"), ("kbd", "padding", "0 5px"),
+        (".overlay > .sheet > .lp-btns", "gap", "6px"), (".overlay > .sheet > .lp-btns", "margin-top", "10px"),
+        (".overlay > .sheet > .lp-btns > *", "padding", "5px 12px"),
+    }
+    off_grid = set()
+    for selectors, decls in rules:
+        for k, v in decls:
+            if re.fullmatch(r"(?:row-|column-)?gap|padding(?:-\w+)?|margin(?:-\w+)?", k):
+                if any(float(x) % 4 for x in re.findall(r"(-?\d*\.?\d+)px", v)):
+                    off_grid.update((s, k, v) for s in selectors)
+    check(off_grid <= allowed, f"D372 4px 격자 밖 간격은 허용 목록뿐: {sorted(off_grid - allowed)}")
+    has("button", {"min-height": "32px", "padding": "4px 12px", "line-height": "20px"})
+    for selector in (".vbar button", "#top > button", "#pipe-list li.pl-bar button"):
+        has(selector, {"min-height": "28px"})
+    for selector in (".dr-button", ".lhead button", "#statusbar > button", "button.inline", ".lp-targets .lt button"):
+        has(selector, {"min-height": "24px"})
+    has(".dp-main", {"min-height": "40px"})
+
+    # D374: 모서리 값의 집합.
+    radii = {v for _selectors, decls in rules for k, v in decls if k == "border-radius"}
+    check(radii <= {"var(--radius)", "var(--radius-sm)", "0", "4px", "8px", "50%", "4px 4px 0 0"}, f"D374 모서리 값: {sorted(radii)}")
+    for selector in (".export-menu > div", ".dr-menu", ".rf-dialog-box"):
+        has(selector, {"border-radius": "var(--radius)"})
+
+    # D370: 칩·배지는 상자 없는 글자 + 점. 상자가 남는 곳은 상태 줄의 두 표시와 그림 위 배지뿐이다.
+    decorated = sorted(s for selectors, decls in rules for s in selectors
+                       if re.fullmatch(r"\.(?:badge|chip|b-[a-z]+)(?:\.[\w-]+)?", s)
+                       and any(re.match(r"border|background", k) for k, _v in decls))
+    check(not decorated, f"D370 칩·배지 기본 규칙에 상자 꾸밈 없음: {decorated}")
+    has(".badge", {"padding": "0", "font-size": "12px", "line-height": "20px", "color": "var(--dim)"})
+    has("button.chip", {"border": "0", "background": "none"})
+    for name, color in (("mock", "var(--mock)"), ("agent", "var(--warn)"), ("run", "var(--ok)"), ("drain", "var(--slice)"), ("new", "var(--info)")):
+        has(f".b-{name}::before", {"content": '""', "width": "6px", "height": "6px", "border-radius": "50%", "background": color})
+    has(".b-bad::before", {"background": "currentColor"})
+    has(".b-bad", {"color": "var(--bad)"})
+    has(".b-star", {"color": "var(--star)"})
+    has(".b-rej", {"text-decoration": "line-through"})
+    for selector, edge in (("#badges .b-mock", "var(--mock)"), ("#badges .b-agent", "var(--warn)")):
+        has(selector, {"border": "1px solid", "border-color": edge, "color": "var(--text)"})
+        check("color-mix" in style(selector).get("background", ""), f"D370 {selector} 상자 바탕은 변수에서 파생")
+        has(selector + "::before", {"content": "none"})
+    has(".tile .tb .badge", {"background": "rgba(9, 9, 11, .8)", "border-radius": "4px", "font-size": "11px", "color": "var(--text)"})
+
+    # D371: :root 밖 하드코딩 색은 기능 색·시험 고정값·승인 상자 고정값뿐이다.
+    body = code.split("}", 1)[1] if "}" in code else ""
+    hexes = {h.lower() for h in re.findall(r"#[0-9a-fA-F]{3,8}\b", "".join(v for _s, v in re.findall(r"([^{}]+)\{([^{}]*)\}", body)))}
+    keep = {"#000", "#0008", "#0009", "#000a", "#fff", "#808080", "#bbb", "#eee", "#63e07a", "#ff6b6b", "#ff3b3b", "#4a1f22", "#71717a",
+            "#3f3f46", "#52525b"}
+    check(hexes <= keep, f"D371 :root 밖 하드코딩 색은 허용 목록뿐: {sorted(hexes - keep)}")
+
+    # D368 ①·D369: 도구 줄 단추는 꺼짐 = 투명, 실행 패널 절의 보조 primary 만 중립. 승인 상자는 옛 선·치수를 그대로.
+    has(".vbar button", {"border-color": "transparent", "background": "none", "color": "var(--dim)"})
+    has("#pipe-panel .pp-sec button.primary", {"border-color": "var(--line2)"})
+    has("#pipe-panel .pp-sec button.primary:disabled", {"border-color": "var(--line)"})
+    has(".overlay > .sheet", {"--line": "#3f3f46", "--line2": "#52525b"})
+    pinned = set(style(".overlay > .sheet > .lp-btns > *")) | set(style(".overlay > .sheet > .lp-btns"))
+    check(pinned == {"min-height", "padding", "line-height", "gap", "margin-top"}, f"D369 승인 상자 고정은 치수뿐(색·바탕·테두리 없음): {sorted(pinned)}")
+    mark_a, mark_b = css.find("/* ── 배치 13-A"), css.find("/* ── 배치 13-B")
+    zone = css[mark_a:mark_b] if 0 <= mark_a < mark_b else ""
+    check("#pipe-panel .pp-sec button.primary {" in zone and ".overlay > .sheet {" in zone, "D369 새 규칙은 13-A 표시 구간(F3-U1 앞)")
+
+    # D377–D381 세부.
+    has(".keybar .kchip", {"padding": "0", "border": "0", "background": "none", "color": "var(--dim)", "border-radius": "var(--radius-sm)"})
+    has(".keybar .kchip kbd", {"border-radius": "4px", "font-size": "11px"})
+    has(".panel figcaption", {"font-size": "12px", "white-space": "nowrap", "overflow": "hidden", "text-overflow": "ellipsis"})
+    has(".detail", {"font-size": "12px", "line-height": "20px", "font-variant-numeric": "tabular-nums"})
+    has(".detail .k", {"min-width": "32px", "color": "var(--meta)"})
+    board = (PKG / "web_design_patch" / "board.js").read_text(encoding="utf-8")
+    check('$("cand-caption").textContent = caption;\n    $("cand-caption").title = caption;' in board, "D378 잘린 후보 머리의 전체 글은 title")
+    has(".tile", {"border": "2px solid transparent"})
+    has(".tile.picked", {"border-color": "var(--star)"})
+    has(".tile .cap", {"font-size": "11px", "color": "var(--meta)"})
+    has("#statusbar", {"min-height": "28px", "gap": "4px 12px", "font-size": "12px", "color": "var(--dim)", "font-variant-numeric": "tabular-nums"})
+    for selector in (".lp-btns a[download]", ".export-menu a[download]"):
+        has(selector, {"min-height": "32px", "padding": "4px 12px", "border": "1px solid var(--line)", "background": "var(--panel2)",
+                       "color": "var(--text)", "text-decoration": "none"})
+
+    # D382: 전환은 색 속성(과 알림의 불투명도)만 이름으로 적는다. 움직임 줄이기면 끈다.
+    names = set()
+    for _selectors, decls in rules:
+        for k, v in decls:
+            if k.startswith("transition") and v != "none":
+                names.update(part.split()[0] for part in re.split(r",\s*(?![^()]*\))", v))
+    check(names <= {"background-color", "border-color", "color", "opacity"} and {"background-color", "border-color", "color"} <= names,
+          f"D382 전환 속성은 색뿐(all·크기 없음): {sorted(names)}")
+    button_rule = next((dict(decls) for selectors, decls in rules if selectors == ["button"] and any(k == "transition" for k, _v in decls)), {})
+    check(button_rule.get("transition", "").count(".14s cubic-bezier(.22, 1, .36, 1)") == 3, "D382 단추 전환 140ms·감속 곡선 3속성")
+    reduced = re.search(r"@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{(.*?)\n\}", code, re.S)
+    check(reduced is not None and re.search(r"\bbutton\b[^{}]*\{\s*transition:\s*none;", reduced.group(1)) is not None,
+          "D382 움직임 줄이기면 단추 전환도 끔")
+    has("button:where(:hover:not(:disabled))", {"background": "var(--raised)"})
+    check("scale(" not in code, "D382 눌림 축소 없음")
 
 
 def _batch13_icons(web):
