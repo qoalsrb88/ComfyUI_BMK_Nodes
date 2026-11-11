@@ -83,7 +83,7 @@ button:disabled { opacity: .45; cursor: default; }
 .tabs .tab:hover:not(:disabled):not(.on) { background: transparent; color: var(--text); }
 .tabs .tab.on { background: transparent; border-color: transparent; border-bottom-color: var(--accent); color: var(--accent); font-weight: 600; }
 .mode-title { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); }
-.keybar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 4px 12px; background: var(--panel); border-bottom: 1px solid var(--line); flex: none; }
+.keybar { display: flex; flex-wrap: wrap; align-items: center; gap: 0 8px; padding: 4px 12px; background: var(--panel); border-bottom: 1px solid var(--line); flex: none; }
 /* 단축키 줄(D377): 상자 안의 상자를 없애고 키캡 + 글자만. 누를 수 있다는 단서는 호버 색과 포인터. */
 .keybar .kchip { flex: none; min-height: 20px; padding: 0; border: 0; border-radius: var(--radius-sm); background: none; font-size: 12px; line-height: 20px; color: var(--dim); white-space: nowrap; }
 .keybar .kchip:hover:not(:disabled) { color: var(--text); }
@@ -251,7 +251,7 @@ button.inline { margin-left: 8px; min-height: 24px; padding: 0 8px; font-size: 1
 /* ── 캔버스 뷰어 (viewer.js) ─────────────── */
 #viewer { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--well); border-right: 1px solid var(--line); }
 body.no-viewer #viewer { display: none; }
-.vbar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 8px; background: var(--panel); border-bottom: 1px solid var(--line); flex: none; }
+.vbar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 4px 8px; background: var(--panel); border-bottom: 1px solid var(--line); flex: none; }
 /* 도구 줄 단추(D368 ①): 꺼짐 = 투명, 켜짐·호버 = 표면 한 단. 노랑은 쓰지 않는다. */
 .vbar button { min-height: 28px; padding: 0 12px; border-color: transparent; border-radius: var(--radius-sm); background: none; color: var(--dim); }
 .vbar button:hover:not(:disabled) { background: var(--raised); color: var(--text); }
@@ -916,7 +916,7 @@ button:hover:not(:disabled) > .dp-ico, summary:hover > .dp-ico, button.on > .dp-
 
 /* ── Forge F3-U1 (머리줄·상태 줄·주 실행 단추·고급) — 갈래 U1 은 이 표시 아래에만 덧붙인다 ── */
 /* 색은 변수로만. 위쪽 기존 규칙을 덮어써야 하면 여기서 다시 선언한다. */
-#top { min-height: 44px; gap: 8px; padding: 4px 12px; min-width: 0; flex-wrap: wrap; }
+#top { min-height: 44px; gap: 4px 8px; padding: 4px 12px; min-width: 0; flex-wrap: wrap; }
 #top .brand { flex: none; white-space: nowrap; }
 #top .modebar { flex: 0 1 auto; margin: 0 auto; padding: 0; gap: 0; border: 0; flex-wrap: wrap; }
 #top .tabs { flex: 0 1 auto; flex-wrap: wrap; align-self: center; min-width: 0; gap: 0; }
