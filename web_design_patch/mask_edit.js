@@ -845,6 +845,11 @@ window.DPMaskEdit = (() => {
       return el("span", "chip " + (cls || ""), txt);
     }
 
+    function withIcon(b, name) {
+      if (window.DPRows && window.DPRows.icon) b.prepend(window.DPRows.icon(name));
+      return b;
+    }
+
     function button(label, title, fn, cls) {
       const b = el("button", cls || "", label);
       b.type = "button";
@@ -866,7 +871,7 @@ window.DPMaskEdit = (() => {
     function historyButton(label, scope, kind, action, key, fn, cls) {
       const b = button(label, `${scope} — ${action}${key ? ` (${key})` : ""}`, fn, cls);
       b.dataset.hist = kind;
-      return b;
+      return withIcon(b, kind);
     }
 
     function hoverGuide(b, get) {
@@ -1699,7 +1704,7 @@ window.DPMaskEdit = (() => {
         renderList();
       }, `chip ${cls} mc-expand`);
       b.setAttribute("aria-expanded", String(keys.every((key) => expanded.has(key))));
-      return b;
+      return withIcon(b, "chevron");
     }
 
     function detailRows(parent, candidate, emptyKey) {
@@ -1720,6 +1725,7 @@ window.DPMaskEdit = (() => {
           if (!(await go({ key }, true))) pendingSection = null;
         }, "mc-detail");
         b.dataset.detail = kind;
+        withIcon(b, ["xform", "invert", "fade", "brush"].includes(kind) ? kind : "dot");
         if (blur !== undefined) {
           const bar = el("span", "mc-blur-bar");
           bar.style.width = `${Math.min(100, blur * 5)}%`;

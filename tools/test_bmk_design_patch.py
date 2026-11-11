@@ -49321,7 +49321,7 @@ def polish2_unit():
     check(all(f'id="{i}"' in head for i in ("btn-edit", "btn-refs", "btn-pipe", "btn-mask")) and 'id="mode-title"' not in head
           and 'id="mode-title"' in bh[bh.index('<div id="keybar"'):] and 'id="btn-keys"' in bh[bh.index('<footer id="statusbar"'):bh.index('</footer>')]
           and bh.index("</nav>") < bh.index('<div id="keybar"') < bh.index("<main")
-          and re.search(r'id="btn-viewer"[^>]*>뷰어 ▣</button>', head) is not None,
+          and re.search(r'id="btn-viewer"[^>]*>뷰어</button>', head) is not None,
           "머리줄 단계·뷰어, 아래 상태 줄 ⌨, 모드 설명·칩은 머리줄 아래 자기 줄")
     check(all(f'on("btn-{a}", () => goMode({b}));' in bj for a, b in (("review", "null"), ("edit", '"edit"'), ("refs", '"refs"'),
                                                                      ("pipe", '"prepare"'), ("mask", '"mask"')))
@@ -49331,7 +49331,7 @@ def polish2_unit():
           and "body.no-keys .keybar { display: none; }" in bc and ".tabs .tab.on {" in bc and "#btn-edit.on" not in bc
           and "flex-wrap: wrap" in bc[bc.index(".keybar {"):] and "#top button { flex: none; white-space: nowrap; }" in bc,
           "⌨ 칩 줄 접기는 이 브라우저에 기억, 탭 켜짐 모양은 .tab.on 하나")
-    check("document.body.dispatchEvent(new KeyboardEvent(type" in bj and "[⌨ 단축키] = 칩 줄 접기/펴기" in bh
+    check("document.body.dispatchEvent(new KeyboardEvent(type" in bj and "[단축키] = 칩 줄 접기/펴기" in bh
           and "크롭 편집 (<kbd>E</kbd>)" in bh and "실행 (<kbd>G</kbd>)" in bh,
           "칩 키 이벤트는 body 에서(viewer.js Space 처리기의 closest), 도움말 둘째 줄 설명·제목(용어표 A2·A4)")
 
@@ -49416,8 +49416,8 @@ def forge_f3_theme_unit():
 
     # D345: 공용 변수 값·고정 기능색은 각각 독립적으로 확인한다.
     palette = {
-        "--bg": "#09090b", "--panel": "#18181b", "--panel2": "#27272a", "--line": "#3f3f46",
-        "--line2": "#52525b", "--text": "#e4e4e7", "--dim": "#a1a1aa", "--well": "#09090b",
+        "--bg": "#09090b", "--panel": "#18181b", "--panel2": "#27272a", "--line": "rgba(228, 228, 231, .09)",
+        "--line2": "rgba(228, 228, 231, .16)", "--text": "#e4e4e7", "--dim": "#a1a1aa", "--well": "#09090b",
         "--accent": "#dfe104", "--on-accent": "#09090b", "--accent-soft": "rgba(223, 225, 4, .10)",
         "--info": "#4da3ff", "--warn": "#ffa24d", "--star": "#ffc940", "--slice": "#ffa24d",
         "--wait": "#b4b4bc", "--bad": "#ff5d5d", "--ok": "#46d17e", "--mock": "#b67cff", "--reg": "#4dd6e8",
@@ -49456,7 +49456,7 @@ def forge_f3_theme_unit():
         ".dp-dialog .lp-btns button:first-child:not(.danger)", ".dp-env-block button",
     )
     for selector in primary:
-        has_style(selector, {"background": "var(--accent)", "color": "var(--on-accent)", "border-color": "var(--accent)", "font-weight": "700"})
+        has_style(selector, {"background": "var(--accent)", "color": "var(--on-accent)", "border-color": "var(--accent)", "font-weight": "600"})
         has_style(selector + ":disabled", {"background": "var(--panel2)", "color": "var(--dim)", "border-color": "var(--line)", "opacity": "1"})
     filled = set()
     pulse = set()
@@ -49467,7 +49467,7 @@ def forge_f3_theme_unit():
             filled.update(s for s in names if re.search(r"\bbutton\b|\.(?:primary|dp-main)\b", s))
         if re.search(r"(?:^|;)\s*animation(?:-name)?:[^;]*\bdp-pulse\b", body):
             pulse.update(names)
-        if re.search(r'content:\s*"◌ "', body):
+        if "box-shadow: inset 0 0 0 1px currentColor" in body:
             waiting_marks.update(names)
     check(filled == set(primary), f"D346 채움 단추 선택자는 허용 목록만(실행 절·일반 승인 상자 제외): {sorted(filled)}")
     for unused in (".rf-dialog .lp-btns button.primary", ".projects-home button.primary"):
@@ -49478,11 +49478,19 @@ def forge_f3_theme_unit():
     check(dock_rule in code and primary_rule in code and code.index(dock_rule) > code.index(primary_rule),
           "D346 실행 줄의 주 단추는 기본 primary 뒤에서 구체적으로 덮어씀")
     has_style(".dp-main", {"width": "100%", "min-height": "40px"})
-    for selector in ("button.on", 'button[aria-pressed="true"]', "button.sel", ".keybar .kchip.held", ".vbar button.on",
-                     ".lp-targets .lt button.on", ".lp-btns button.on", "#layout-panel button.sel",
-                     '#mask-panel .mc-adjust button[aria-pressed="true"]', "#target-list li.sel", "#layout-list li.sel",
-                     "#ref-list li.sel", "#mask-list li.sel", "#pipe-list li.sel"):
-        has_style(selector, {"background": "var(--accent-soft)", "border-color": "var(--accent)", "color": "var(--text)"})
+    # 배치 13 D368: 켜짐·선택에서 노랑 테두리를 뺀다 — 패널 토글 = 표면 단계 + 위쪽 밝은 선, 도구 줄 = 표면 한 단,
+    # 목록 선택 행 = 노랑 10% 바탕 + 왼쪽 2px 막대, 누른 단축키 칩 = 키캡 테두리만 노랑.
+    for selector in ("button.on", 'button[aria-pressed="true"]', "button.sel", ".lp-targets .lt button.on", ".lp-btns button.on",
+                     "#layout-panel button.sel", '#mask-panel .mc-adjust button[aria-pressed="true"]'):
+        has_style(selector, {"background": "var(--on)", "border-color": "transparent", "color": "var(--text)",
+                             "box-shadow": "inset 0 1px 0 rgba(255, 255, 255, .12)"})
+    has_style(".vbar button.on", {"background": "var(--raised)", "border-color": "transparent", "color": "var(--text)"})
+    has_style(".keybar .kchip.held", {"color": "var(--text)"})
+    has_style(".keybar .kchip.held kbd", {"border-color": "var(--accent)"})
+    check(not {"background", "border-color"} & set(style(".keybar .kchip.held")), "D368 누른 단축키 칩은 상자 꾸밈 없음")
+    for selector in ("#target-list li.sel", "#layout-list li.sel", "#ref-list li.sel", "#mask-list li.sel", "#pipe-list li.sel"):
+        has_style(selector, {"background": "var(--accent-soft)", "box-shadow": "inset 2px 0 0 var(--accent)", "color": "var(--text)"})
+        check("border-color" not in style(selector), f"D368 {selector} 선택 행은 테두리 없음")
     has_style("button:hover", {"border-color": "var(--line2)"})
     has_style(":focus-visible", {"outline": "2px solid var(--accent)"})
     check("outline: none" not in code, "D346 입력칸 focus 규칙이 키보드 외곽선을 가리지 않음")
@@ -49518,14 +49526,19 @@ def forge_f3_theme_unit():
         has_style(selector, {"color": "inherit", "opacity": "1"})
     has_style(".rf-perspective-handle:hover", {"border-color": "currentColor"})
 
-    # D347 수정 1: 대기는 회색 점선, 맥동은 실제 진행에만 쓴다.
+    # D347 수정 1 + 배치 13 D370·D376: 대기는 점선 상자 대신 빈 점(글자 앞 6px 고리), 맥동은 실제 진행에만 쓴다.
     for selector in (".b-wait", ".rg-tag", ".projects-chip"):
-        has_style(selector, {"background": "var(--panel2)", "border": "1px dashed var(--wait)", "color": "var(--text)"})
+        check(not {"border", "border-color"} & set(style(selector)), f"D370 {selector} 점선 상자 없음")
         check(not any(k.startswith("animation") and v != "none" for k, v in style(selector).items()), f"D347 {selector} 대기 배지 애니메이션 없음")
-    for selector in (".lh-wait::before", ".clabel.wait::before", ".step-state.todo::before"):
-        has_style(selector, {"content": '"◌ "', "color": "var(--wait)"})
-    check(waiting_marks == {".lh-wait::before", ".clabel.wait::before", ".step-state.todo::before"},
-          f"R4 대기 원은 todo 단계·대기 글자에만(모름·초기 단계 제외): {sorted(waiting_marks)}")
+    check("background" not in style(".b-wait") and "background" not in style(".projects-chip"), "D370 대기 칩은 바탕 없이 글자 + 빈 점")
+    has_style(".projects-chip", {"color": "var(--dim)"})
+    has_style(".rg-tag", {"background": "rgba(9, 9, 11, .8)", "color": "var(--text)"})
+    hollow = (".b-wait::before", ".projects-chip::before", ".lh-wait::before", ".clabel.wait::before", ".step-state.todo::before")
+    for selector in hollow:
+        has_style(selector, {"content": '""', "width": "6px", "height": "6px", "border-radius": "50%", "background": "none",
+                             "color": "var(--wait)", "box-shadow": "inset 0 0 0 1px currentColor"})
+    check(waiting_marks == set(hollow), f"R4 대기 빈 점은 대기 칩·todo 단계·대기 글자에만(모름·초기 단계 제외): {sorted(waiting_marks)}")
+    check("◌" not in code, "D376 대기 글리프 ◌ 는 CSS 빈 점으로 바뀜")
     has_style(".step-state", {"color": "var(--dim)"})
     check(pulse == {".dp-live", ".vmsg.busy"}, f"D347 dp-pulse 는 실제 진행 선택자 두 곳만: {sorted(pulse)}")
     check(not any(k.startswith("animation") and v != "none" for k, v in style(".b-run").items()),
@@ -49556,18 +49569,18 @@ def forge_f3_theme_unit():
         has_style(selector, {"color": "var(--wait)"})
     has_style("#p-cand.mode-before figcaption", {"color": "var(--info)"})
     # R6: 정보 채움은 변수에서 파생하고, 이음매 경고는 조각 색과 구분한다.
-    has_style(".b-new", {"border-color": "var(--info)"})
+    has_style(".b-new::before", {"background": "var(--info)"})
     has_style("svg.marks .prop", {"fill": "color-mix(in srgb, var(--info) 8%, transparent)", "stroke": "var(--info)"})
     has_style("svg.marks .seam.weak", {"stroke": "var(--warn)"})
     has_style("svg.marks text.linfo", {"fill": "var(--info)"})
 
     # D348·D354·D356·D357: 로컬 글꼴 목록, 단추 크기, 탭, 빈 화면의 모양.
     has_style("html", {"font": '14px/1.45 "Noto Sans KR", "Pretendard Variable", "Pretendard", "Malgun Gothic", "Apple SD Gothic Neo", system-ui, sans-serif'})
-    has_style("button", {"border-radius": "var(--radius)", "padding": "5px 12px"})
+    has_style("button", {"border-radius": "var(--radius)", "min-height": "32px", "padding": "4px 12px"})
     for selector in (".vbar button", ".lhead button", "button.inline", ".keybar .kchip", ".dr-button",
                      'input[type="text"]', 'input[type="number"]', "input:not([type])", "select", "textarea"):
         has_style(selector, {"border-radius": "var(--radius-sm)"})
-    has_style("*", {"scrollbar-color": "var(--line2) transparent"})
+    has_style("*", {"scrollbar-color": "var(--scroll) transparent"})
     has_style(".ref-tabs", {"height": "38px", "min-height": "38px", "flex-wrap": "nowrap"})
     has_style(".tabs .tab", {"background": "transparent", "border": "0", "border-radius": "0", "border-bottom": "2px solid transparent"})
     has_style(".tabs .tab.on", {"background": "transparent", "color": "var(--accent)", "border-bottom-color": "var(--accent)"})
@@ -53377,7 +53390,7 @@ def forge_f3_frame_unit():
     check('ComfyUI 탭이 승인 템플릿을 제출함(진행은 상태 줄)' in pl, "F3U1 D349 로컬 진행 위치 문구")
     rt_source = pl[pl.index('        const rt = runText({ ...p.run,'):pl.index('        line(s, rt.line,')]
     check(rt_source.count('const ') == 1 and rt_source.count(';') == 1, "F3U1 그 밖: runText 절단 구간에 추가 계산 없음")
-    check('[지우개]·[브러시]' in bh and '되돌리기 · 다시실행' in bh and '[⌨ 단축키] = 칩 줄 접기/펴기' in bh,
+    check('[지우개]·[브러시]' in bh and '되돌리기 · 다시실행' in bh and '[단축키] = 칩 줄 접기/펴기' in bh,
           "F3U1 D355 도움말·칩 접기 설명")
     node = shutil.which("node")
     if not node:
@@ -56951,16 +56964,18 @@ await scenario("b9groupChoice", async () => {
   await env.press(env.hosts.panel, "레이어별 컷", true);
   const host = env.doc.body.all().find((e) => e.classList.contains("rf-dialog"));
   const rows = () => host.all().filter((e) => e.classList.contains("rf-layer-row"));
-  env.button(rows()[0], "▸", true).focus();
-  await env.press(rows()[0], "▸", true);
-  const toggleFocus = env.doc.activeElement === env.button(rows()[0], "▾", true);
-  const defaults = !!env.button(host, "보관함에 저장 (2)", true);
+  const toggle = (index) => rows()[index].all().find((e) => e.tagName === "BUTTON" && e.title === "그룹 펼치기");
+  const initiallyCollapsed = toggle(0).attrs["aria-expanded"] === "false";
+  toggle(0).focus();
+  toggle(0).fire("click"); await sleep(15);
+  const toggleFocus = env.doc.activeElement === toggle(0) && toggle(0).attrs["aria-expanded"] === "true";
+  const defaults = initiallyCollapsed && !!env.button(host, "보관함에 저장 (2)", true);
   const rootCheck = rows()[0].all().find((e) => e.type === "checkbox"); rootCheck.checked = true; rootCheck.fire("change");
-  await env.press(rows()[1], "▸", true);
-  const nested = !!env.button(host, "보관함에 저장 (1)", true) && !rows()[0].all().find((e) => e.type === "checkbox").checked;
-  await env.press(rows()[0], "▾", true);
-  const collapsed = rows().length === 1 && env.button(host, "보관함에 저장 (0)", true).disabled;
-  await env.press(rows()[0], "▸", true);
+  toggle(1).fire("click"); await sleep(15);
+  const nested = toggle(1).attrs["aria-expanded"] === "true" && !!env.button(host, "보관함에 저장 (1)", true) && !rows()[0].all().find((e) => e.type === "checkbox").checked;
+  toggle(0).fire("click"); await sleep(15);
+  const collapsed = rows().length === 1 && toggle(0).attrs["aria-expanded"] === "false" && env.button(host, "보관함에 저장 (0)", true).disabled;
+  toggle(0).fire("click"); await sleep(15);
   const checkRow = (index) => { const cb = rows()[index].all().find((e) => e.type === "checkbox"); cb.checked = true; cb.fire("change"); };
   checkRow(0); checkRow(2);
   const childClearsGroup = !rows()[0].all().find((e) => e.type === "checkbox").checked;
@@ -59620,10 +59635,315 @@ async def _fs_scoped_roots(bd, out, call, login, sessions):
 
 def _batch13_values(css, code):
     """13-A 몫 — CSS 값(D367–D374·D377–D382) 정적 검사. css = 원문, code = 주석을 뺀 글."""
+    rules = [([s.strip() for s in selectors.split(",")], [(k.strip(), v.strip()) for k, v in re.findall(r"([\w-]+)\s*:\s*([^;{}]+);", body)])
+             for selectors, body in re.findall(r"([^{}]+)\{([^{}]*)\}", code)]
+
+    def style(selector):
+        result = {}
+        for selectors, decls in rules:
+            if selector in selectors:
+                result.update(decls)
+        return result
+
+    def has(selector, expected):
+        check(all(style(selector).get(k) == v for k, v in expected.items()), f"배치 13 {selector}: {expected}")
+
+    # D367: 선은 본문 글자색의 헤어라인, 표면 단계·셋째 글자·스크롤 막대 변수.
+    root = style(":root")
+    check({k: root.get(k) for k in ("--line", "--line2", "--raised", "--on", "--meta", "--scroll")}
+          == {"--line": "rgba(228, 228, 231, .09)", "--line2": "rgba(228, 228, 231, .16)", "--raised": "#323236",
+              "--on": "#3f3f46", "--meta": "#8b8b93", "--scroll": "#52525b"}, "D367 선·표면 단계·메타 글자·스크롤 변수 값")
+    check("--muted" not in css, "D367 셋째 글자 변수 이름은 --meta(--muted 금지)")
+
+    def luminance(hex_color):
+        parts = [int(hex_color[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+        r, g, b = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in parts]
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+    for surface in ("--panel", "--well"):
+        hi, lo = sorted((luminance(root.get("--meta", "#000000")), luminance(root.get(surface, "#000000"))), reverse=True)
+        ratio = (hi + 0.05) / (lo + 0.05)
+        check(ratio >= 4.5, f"D367 --meta 글자 대비 4.5:1 이상({surface} 위 {ratio:.2f})")
+
+    # D373: 글자 크기 4단·굵기 2단.
+    sizes, weights = set(), set()
+    for _selectors, decls in rules:
+        for k, v in decls:
+            if k == "font-size":
+                sizes.add(v)
+            elif k == "font":
+                sizes.update(re.findall(r"(?<![\w.])([\d.]+(?:px|em|rem|%))(?=/|\s)", v)[:1])
+            elif k == "font-weight":
+                weights.add(v)
+    check(sizes <= {"11px", "12px", "14px", "16px"}, f"D373 글자 크기는 11·12·14·16px 뿐: {sorted(sizes)}")
+    check(weights <= {"normal", "400", "600"}, f"D373 굵기는 400·600 뿐: {sorted(weights)}")
+
+    # D372: gap·padding·margin 의 px 값은 4의 배수. 밖의 값은 아래 허용 목록(명세 §8)뿐이다.
+    allowed = {
+        (".tabs .tab", "margin-bottom", "-1px"),                    # 밑줄 탭이 머리줄 선에 겹치게
+        (".frame.loading::after", "margin", "-17px 0 0 -17px"),     # 가운데 맞춤(28px + 테두리 6px 의 절반)
+        ("#top .tabs .tab", "padding", "5px 5px"),                  # 좁은 창의 탭 — forge_f3_frame_unit 이 원문으로 본다
+        # 대화 상자·도움말·승인 상자는 배치 13 전 모양 그대로(D369)
+        (".sheet", "padding", "16px 22px"), (".sheet h3", "margin", "14px 0 6px"), (".sheet td", "padding", "2px 12px 2px 0"),
+        (".sheet ul", "padding-left", "18px"), ("kbd", "padding", "0 5px"),
+        (".overlay > .sheet > .lp-btns", "gap", "6px"), (".overlay > .sheet > .lp-btns", "margin-top", "10px"),
+        (".overlay > .sheet > .lp-btns > *", "padding", "5px 12px"),
+    }
+    off_grid = set()
+    for selectors, decls in rules:
+        for k, v in decls:
+            if re.fullmatch(r"(?:row-|column-)?gap|padding(?:-\w+)?|margin(?:-\w+)?", k):
+                if any(float(x) % 4 for x in re.findall(r"(-?\d*\.?\d+)px", v)):
+                    off_grid.update((s, k, v) for s in selectors)
+    check(off_grid <= allowed, f"D372 4px 격자 밖 간격은 허용 목록뿐: {sorted(off_grid - allowed)}")
+    has("button", {"min-height": "32px", "padding": "4px 12px", "line-height": "20px"})
+    for selector in (".vbar button", "#top > button", "#pipe-list li.pl-bar button"):
+        has(selector, {"min-height": "28px"})
+    for selector in (".dr-button", ".lhead button", "#statusbar > button", "button.inline", ".lp-targets .lt button"):
+        has(selector, {"min-height": "24px"})
+    has(".dp-main", {"min-height": "40px"})
+
+    # D374: 모서리 값의 집합.
+    radii = {v for _selectors, decls in rules for k, v in decls if k == "border-radius"}
+    check(radii <= {"var(--radius)", "var(--radius-sm)", "0", "4px", "8px", "50%", "4px 4px 0 0"}, f"D374 모서리 값: {sorted(radii)}")
+    for selector in (".export-menu > div", ".dr-menu", ".rf-dialog-box"):
+        has(selector, {"border-radius": "var(--radius)"})
+
+    # D370: 칩·배지는 상자 없는 글자 + 점. 상자가 남는 곳은 상태 줄의 두 표시와 그림 위 배지뿐이다.
+    decorated = sorted(s for selectors, decls in rules for s in selectors
+                       if re.fullmatch(r"\.(?:badge|chip|b-[a-z]+)(?:\.[\w-]+)?", s)
+                       and any(re.match(r"border|background", k) for k, _v in decls))
+    check(not decorated, f"D370 칩·배지 기본 규칙에 상자 꾸밈 없음: {decorated}")
+    has(".badge", {"padding": "0", "font-size": "12px", "line-height": "20px", "color": "var(--dim)"})
+    has("button.chip", {"border": "0", "background": "none"})
+    for name, color in (("mock", "var(--mock)"), ("agent", "var(--warn)"), ("run", "var(--ok)"), ("drain", "var(--slice)"), ("new", "var(--info)")):
+        has(f".b-{name}::before", {"content": '""', "width": "6px", "height": "6px", "border-radius": "50%", "background": color})
+    has(".b-bad::before", {"background": "currentColor"})
+    has(".b-bad", {"color": "var(--bad)"})
+    has(".b-star", {"color": "var(--star)"})
+    has(".b-rej", {"text-decoration": "line-through"})
+    for selector, edge in (("#badges .b-mock", "var(--mock)"), ("#badges .b-agent", "var(--warn)")):
+        has(selector, {"border": "1px solid", "border-color": edge, "color": "var(--text)"})
+        check("color-mix" in style(selector).get("background", ""), f"D370 {selector} 상자 바탕은 변수에서 파생")
+        has(selector + "::before", {"content": "none"})
+    has(".tile .tb .badge", {"background": "rgba(9, 9, 11, .8)", "border-radius": "4px", "font-size": "11px", "color": "var(--text)"})
+
+    # D371: :root 밖 하드코딩 색은 기능 색·시험 고정값·승인 상자 고정값뿐이다.
+    body = code.split("}", 1)[1] if "}" in code else ""
+    hexes = {h.lower() for h in re.findall(r"#[0-9a-fA-F]{3,8}\b", "".join(v for _s, v in re.findall(r"([^{}]+)\{([^{}]*)\}", body)))}
+    keep = {"#000", "#0008", "#0009", "#000a", "#fff", "#808080", "#bbb", "#eee", "#63e07a", "#ff6b6b", "#ff3b3b", "#4a1f22", "#71717a",
+            "#3f3f46", "#52525b"}
+    check(hexes <= keep, f"D371 :root 밖 하드코딩 색은 허용 목록뿐: {sorted(hexes - keep)}")
+
+    # D368 ①·D369: 도구 줄 단추는 꺼짐 = 투명, 실행 패널 절의 보조 primary 만 중립. 승인 상자는 옛 선·치수를 그대로.
+    has(".vbar button", {"border-color": "transparent", "background": "none", "color": "var(--dim)"})
+    has("#pipe-panel .pp-sec button.primary", {"border-color": "var(--line2)"})
+    has("#pipe-panel .pp-sec button.primary:disabled", {"border-color": "var(--line)"})
+    has(".overlay > .sheet", {"--line": "#3f3f46", "--line2": "#52525b", "--hover": "var(--panel2)"})
+    pinned = set(style(".overlay > .sheet > .lp-btns > *")) | set(style(".overlay > .sheet > .lp-btns"))
+    check(pinned == {"min-height", "padding", "line-height", "transition", "gap", "margin-top"},
+          f"D369 승인 상자 고정은 치수·전환 끔뿐(색·바탕·테두리 없음): {sorted(pinned)}")
+    has(".overlay > .sheet > .lp-btns > *", {"transition": "none"})
+    mark_a, mark_b = css.find("/* ── 배치 13-A"), css.find("/* ── 배치 13-B")
+    zone = css[mark_a:mark_b] if 0 <= mark_a < mark_b else ""
+    check("#pipe-panel .pp-sec button.primary {" in zone and ".overlay > .sheet {" in zone, "D369 새 규칙은 13-A 표시 구간(F3-U1 앞)")
+
+    # D377–D381 세부.
+    has(".keybar .kchip", {"padding": "0", "border": "0", "background": "none", "color": "var(--dim)", "border-radius": "var(--radius-sm)"})
+    has(".keybar .kchip kbd", {"border-radius": "4px", "font-size": "11px"})
+    has(".panel figcaption", {"font-size": "12px", "white-space": "nowrap", "overflow": "hidden", "text-overflow": "ellipsis"})
+    has(".detail", {"font-size": "12px", "line-height": "20px", "font-variant-numeric": "tabular-nums"})
+    has(".detail .k", {"min-width": "32px", "color": "var(--meta)"})
+    board = (PKG / "web_design_patch" / "board.js").read_text(encoding="utf-8")
+    check('$("cand-caption").textContent = caption;\n    $("cand-caption").title = caption;' in board, "D378 잘린 후보 머리의 전체 글은 title")
+    has(".tile", {"border": "2px solid transparent"})
+    has(".tile.picked", {"border-color": "var(--star)"})
+    has(".tile .cap", {"font-size": "11px", "color": "var(--meta)"})
+    has("#statusbar", {"min-height": "28px", "font-size": "12px", "color": "var(--dim)", "font-variant-numeric": "tabular-nums"})
+    narrow = re.search(r"@media\s*\(max-width:\s*1399px\)\s*\{(.*?)\n\}", code, re.S)
+    narrow = narrow.group(1) if narrow else ""
+    check("gap: 4px 12px; min-width: 0; min-height: 28px; padding: 0 12px;" in css
+          and "#statusbar { gap: 4px 8px; padding: 0 8px; }" in narrow and "#statusbar .lhead { gap: 8px; }" in narrow,
+          "D380 상태 줄 간격 12px, 좁은 창(1399px 이하)에서는 8px")
+    for selector in (".lp-btns a[download]", ".export-menu a[download]"):
+        has(selector, {"min-height": "32px", "padding": "4px 12px", "border": "1px solid var(--line)", "background": "var(--panel2)",
+                       "color": "var(--text)", "text-decoration": "none"})
+        check("transition" not in style(selector), f"D381 {selector} 전환 없음(움직임 줄이기와 어긋나지 않게)")
+        has(selector + "[href]:hover", {"background": "var(--raised)"})
+        has(selector + ":not([href])", {"opacity": ".45", "cursor": "default"})
+
+    # D382: 전환은 색 속성(과 알림의 불투명도)만 이름으로 적는다. 움직임 줄이기면 끈다.
+    names = set()
+    for _selectors, decls in rules:
+        for k, v in decls:
+            if k.startswith("transition") and v != "none":
+                names.update(part.split()[0] for part in re.split(r",\s*(?![^()]*\))", v))
+    check(names <= {"background-color", "border-color", "color", "opacity"} and {"background-color", "border-color", "color"} <= names,
+          f"D382 전환 속성은 색뿐(all·크기 없음): {sorted(names)}")
+    button_rule = next((dict(decls) for selectors, decls in rules if selectors == ["button"] and any(k == "transition" for k, _v in decls)), {})
+    check(button_rule.get("transition", "").count(".14s cubic-bezier(.22, 1, .36, 1)") == 3, "D382 단추 전환 140ms·감속 곡선 3속성")
+    reduced = re.search(r"@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{(.*?)\n\}", code, re.S)
+    check(reduced is not None and re.search(r"\bbutton\b[^{}]*\{\s*transition:\s*none;", reduced.group(1)) is not None,
+          "D382 움직임 줄이기면 단추 전환도 끔")
+    has("button:where(:hover:not(:disabled))", {"background": "var(--hover, var(--raised))"})
+    check("scale(" not in code, "D382 눌림 축소 없음")
 
 
 def _batch13_icons(web):
     """13-B 몫 — 아이콘(D375·D376) 정적 검사. web = web_design_patch 폴더."""
+    rows = (web / "rows.js").read_text(encoding="utf-8")
+    css = (web / "board.css").read_text(encoding="utf-8")
+    code = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    bh = (web / "board.html").read_text(encoding="utf-8")
+    shapes = {
+        "locked": ["rect", "path"], "unlocked": ["rect", "path"], "trash": ["path"] * 5,
+        "grip": ["circle"] * 6, "up": ["path"], "down": ["path"], "chevron": ["path"],
+        "viewer": ["rect", "path"], "keys": ["path"] * 8 + ["rect"],
+        "undo": ["path"] * 2, "redo": ["path"] * 2, "clear": ["path"] * 2, "xform": ["path"] * 6,
+        "invert": ["circle", "path"], "fade": ["circle"] * 2, "brush": ["path"] * 3, "dot": ["circle"],
+    }
+    atlas = re.search(r"const paths = \{(.*?)\n  \};", rows, re.S)
+    check(atlas is not None and set(re.findall(r"^    (\w+):", atlas.group(1), re.M)) == set(shapes),
+          "13-B Lucide 세트 이름 17종")
+    check(re.findall(r'"stroke-width"\s*:\s*([\d.]+)', rows) == ["1.5"]
+          and re.search(r"(?<![\w.])1\.7(?![\w.])", rows) is None, "13-B 공통 선 굵기 1.5 하나")
+    check(all(not any(g in value for g in "▣⌨▾▸↶↷⟲◇◐▤╱")
+              for value in re.findall(r"\bcontent\s*:\s*([^;}]+)", code)), "13-B CSS content 글리프 없음")
+    check(not re.search(r"#mask-(?:panel|list)[^{}]*::before", code), "13-B 마스크 글리프 가상 요소 제거")
+    start, end = css.find("/* ── 배치 13-B"), css.find("/* ── Forge F3-U1")
+    check(0 <= start < end, "13-B 전용 CSS 구간")
+    block = re.sub(r"/\*.*?\*/", "", css[start:end], flags=re.S) if 0 <= start < end else ""
+    styles = {}
+    for selectors, body in re.findall(r"([^{}]+)\{([^{}]*)\}", block):
+        props = dict((k.strip(), v.strip()) for k, v in re.findall(r"([\w-]+)\s*:\s*([^;]+)", body))
+        for selector in selectors.split(","):
+            styles[" ".join(selector.split())] = props
+    rules = (
+        (".dp-ico", {"flex": "none", "vertical-align": "-3px", "color": "var(--meta)"}),
+        ('button:hover:not(:disabled) > .dp-ico, summary:hover > .dp-ico, button.on > .dp-ico, button[aria-expanded="true"] > .dp-ico',
+         {"color": "var(--text)"}),
+        # 통합(cc2 리뷰 1·2): 행 끝 아이콘 단추의 아이콘은 호버에서도 단추 글자색(잠금 노랑)을 따르고, 레이어별 컷의 그룹 펼치기는 24px 칸에 맞춘다.
+        (".dr-button > .dp-ico, .dr-button:hover:not(:disabled) > .dp-ico", {"vertical-align": "0", "color": "inherit"}),
+        (".rf-layer-row > button", {"display": "inline-flex", "align-items": "center", "justify-content": "center", "min-height": "24px",
+                                    "padding": "0", "border-color": "transparent", "background": "none"}),
+        ("#btn-viewer > .dp-ico, #btn-keys > .dp-ico, .pp-adv-toggle > .dp-ico, #mask-panel [data-hist] > .dp-ico, "
+         "#mask-list .mc-expand > .dp-ico, #mask-list .mc-detail > .dp-ico", {"margin-right": "4px"}),
+        ('[aria-expanded="true"] > .dp-ico[data-icon="chevron"]', {"transform": "rotate(90deg)"}),
+    )
+    for selectors, props in rules:
+        for selector in selectors.split(", "):
+            check(styles.get(selector) == props, f"13-B CSS {selector}")
+    for ident, label in (("btn-viewer", "뷰어"), ("btn-keys", "단축키")):
+        match = re.search(rf'<button\b[^>]*\bid="{ident}"[^>]*>(.*?)</button>', bh, re.S)
+        check(match is not None and match.group(1) == label, f"13-B {ident} 원문 라벨 {label}")
+    summary = re.search(r'<details\b[^>]*\bid="export-menu"[^>]*>\s*<summary([^>]*)>(.*?)</summary>', bh, re.S)
+    check(summary is not None and summary.group(2) == "" and 'aria-label="Export 메뉴"' in summary.group(1)
+          and 'title="Export 메뉴"' in summary.group(1), "13-B Export 메뉴 빈 라벨·접근성 이름·title 유지")
+    check("[단축키] = 칩 줄 접기/펴기" in bh and "<svg" not in bh and "xmlns" not in bh,
+          "13-B 도움말 라벨 동기화·HTML에 SVG 경로 중복 없음")
+    for name in ("pipeline.js", "ref_edit.js", "mask_edit.js"):
+        source = (web / name).read_text(encoding="utf-8")
+        check(not re.search(r'''(["'])(?:고급 )?[▸▾]\1''', source), f"13-B {name} 접기 글리프 문자열 없음")
+        check(source.count("window.DPRows && window.DPRows.icon") == 1, f"13-B {name} 공통 아이콘 가드 하나")
+        if name == "pipeline.js":
+            check("advancedToggle.textContent" not in source, "13-B goSection은 고급 아이콘 보존")
+    license_path = web / "LICENSE-lucide.txt"
+    license_text = license_path.read_text(encoding="utf-8") if license_path.is_file() else ""
+    check(all(s in license_text for s in ("Lucide 1.72.0", "ISC License", "Lucide Icons and Contributors", "Cole Bemis")),
+          "13-B Lucide·Feather 라이선스 고지")
+    check(all(s in rows[:rows.index("const paths")] for s in ("Lucide 1.72.0", "ISC License", "Feather", "MIT License", "LICENSE-lucide.txt")),
+          "13-B 아이콘 세트 바로 위 출처 고지")
+    board_tree = ast.parse((PKG / "bmk_design_patch_board.py").read_text(encoding="utf-8"))
+    static = next(n.value for n in board_tree.body if isinstance(n, ast.Assign)
+                  and any(isinstance(t, ast.Name) and t.id == "_STATIC" for t in n.targets))
+    check("LICENSE-lucide.txt" not in ast.literal_eval(static), "13-B 라이선스는 정적 제공 목록 밖")
+
+    node = shutil.which("node")
+    if not node:
+        skip("node 없음: 13-B 아이콘 DOM 하네스 미실행")
+        return
+    scene = r'''
+import fs from "node:fs";
+import path from "node:path";
+import vm from "node:vm";
+const source = fs.readFileSync(process.argv[2], "utf8"), names = process.argv[3].split(",");
+class El {
+  constructor(tag, text = "") { this.tagName = tag; this.attrs = {}; this.children = text ? [text] : []; }
+  setAttribute(k, v) { this.attrs[k] = String(v); }
+  append(...items) { this.children.push(...items); }
+  prepend(...items) { this.children.unshift(...items); }
+  querySelector(tag) { return this.children.find(e => e.tagName === tag) || null; }
+  get textContent() { return this.children.map(e => typeof e === "string" ? e : e.textContent).join(""); }
+}
+function context(selectors) {
+  const document = { createElementNS: (ns, tag) => new El(tag), addEventListener() {} };
+  if (selectors) document.querySelector = selector => selectors[selector] || null;
+  return vm.createContext({ document, window: { addEventListener() {} } });
+}
+const entries = [["#btn-viewer", "viewer", "뷰어"], ["#btn-keys", "keys", "단축키"], ["#export-menu > summary", "down", ""]];
+const hosts = Object.fromEntries(entries.map(([selector, , label]) => [selector, new El("button", label)]));
+const ctx = context(hosts);
+vm.runInContext(source, ctx);
+const icons = Object.fromEntries(names.map(name => {
+  const s = ctx.window.DPRows.icon(name);
+  return [name, { tag: s.tagName, attrs: s.attrs, children: s.children.map(e => e.tagName) }];
+}));
+const attached = entries.every(([selector, name, label]) => {
+  const b = hosts[selector];
+  return b.children[0]?.tagName === "svg" && b.children[0].attrs["data-icon"] === name && b.textContent === label;
+});
+const first = entries.map(([selector]) => hosts[selector].children[0]);
+vm.runInContext(source, ctx);
+const once = entries.every(([selector], i) => hosts[selector].children[0] === first[i]
+  && hosts[selector].children.filter(e => e.tagName === "svg").length === 1);
+const unknown = ["missing", "toString", "constructor", "__proto__"].every(name => {
+  const s = ctx.window.DPRows.icon(name);
+  return s.tagName === "svg" && s.children.length === 0;
+});
+const withoutQuery = context();
+vm.runInContext(source, withoutQuery);
+const missingHosts = context({});
+vm.runInContext(source, missingHosts);
+const helpers = {};
+for (const file of ["pipeline.js", "ref_edit.js", "mask_edit.js"]) {
+  const code = fs.readFileSync(path.join(path.dirname(process.argv[2]), file), "utf8");
+  const start = code.indexOf("    function withIcon(b, name) {");
+  const helper = code.slice(start, code.indexOf("\n    }", start) + 6);
+  const env = vm.createContext({ window: { DPRows: ctx.window.DPRows } });
+  vm.runInContext(helper, env);
+  const b = new El("button", "라벨");
+  const present = env.withIcon(b, "chevron") === b && b.children[0].attrs["data-icon"] === "chevron" && b.textContent === "라벨";
+  delete env.window.DPRows;
+  const absent = new El("button", "라벨");
+  const noRows = env.withIcon(absent, "chevron") === absent && absent.children.length === 1 && absent.textContent === "라벨";
+  env.window.DPRows = {};
+  helpers[file] = present && noRows && env.withIcon(absent, "chevron") === absent && absent.children.length === 1;
+}
+console.log(JSON.stringify({ icons, attached, once, unknown, helpers,
+  withoutQuery: withoutQuery.window.DPRows.icon("viewer").children.length === 2,
+  missingHosts: missingHosts.window.DPRows.icon("viewer").children.length === 2 }));
+'''
+    out = OUT_ROOT / "batch13_icons"
+    out.mkdir(parents=True, exist_ok=True)
+    script = out / "icons.mjs"
+    script.write_text(scene, encoding="utf-8", newline="\n")
+    result = subprocess.run([node, str(script), str(web / "rows.js"), ",".join(shapes)],
+                            capture_output=True, text=True, encoding="utf-8", timeout=30)
+    (out / "result.txt").write_text(result.stdout + result.stderr, encoding="utf-8", newline="\n")
+    check(result.returncode == 0, f"13-B 아이콘 DOM 실행 {result.stderr[:500]}")
+    if result.returncode:
+        return
+    data = json.loads(result.stdout)
+    attrs = {"viewBox": "0 0 24 24", "width": "16", "height": "16", "fill": "none", "stroke": "currentColor",
+             "stroke-width": "1.5", "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true", "class": "dp-ico"}
+    for name, tags in shapes.items():
+        icon = data["icons"].get(name, {})
+        check(icon == {"tag": "svg", "attrs": dict(attrs, **{"data-icon": name}), "children": tags},
+              f"13-B {name} SVG 속성·요소 종류·자식 수")
+    for key in ("attached", "once", "unknown", "withoutQuery", "missingHosts"):
+        check(data.get(key) is True, f"13-B DOM {key}")
+    for name in ("pipeline.js", "ref_edit.js", "mask_edit.js"):
+        check(data.get("helpers", {}).get(name) is True, f"13-B {name} 아이콘 앞붙이기·라벨 유지·DPRows 없는 하네스")
 
 
 def batch13_unit():
