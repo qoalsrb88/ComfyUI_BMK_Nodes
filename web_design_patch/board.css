@@ -939,6 +939,8 @@ button:hover:not(:disabled) > .dp-ico, summary:hover > .dp-ico, button.on > .dp-
 #statusbar .keys-toggle { margin: 0; }
 /* 상태 줄 간격은 모든 폭에서 8px — 12px 이면 1920 폭 ② 크롭에서도 실행 머리 글이 배치 13 전보다 더 잘렸다(D380). */
 #statusbar .badges { gap: 0 8px; }
+/* 상태 줄 칩 글자는 배치 13 전처럼 11px — 12px 이면 1500 폭 근처 ⑥ 검토에서 실행 머리 글이 전보다 3px 모자랐다(D380). */
+#statusbar .badge { font-size: 11px; }
 .dp-off { visibility: hidden !important; pointer-events: none; }
 @media (max-width: 1399px) {
   #top .brand .dim, #export-state { display: none; }

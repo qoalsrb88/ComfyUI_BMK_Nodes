@@ -59762,6 +59762,7 @@ def _batch13_values(css, code):
     has("#statusbar", {"min-height": "28px", "font-size": "12px", "color": "var(--dim)", "font-variant-numeric": "tabular-nums"})
     has(".lhead", {"gap": "8px"})
     has("#statusbar .badges", {"gap": "0 8px"})
+    has("#statusbar .badge", {"font-size": "11px"})  # 상태 줄 칩만 배치 13 전 크기(목록·패널 칩은 12px 그대로)
     check("gap: 4px 8px; min-width: 0; min-height: 28px; padding: 0 8px;" in css,
           "D380 상태 줄 간격은 모든 폭에서 8px(12px 이면 1920 폭 ② 크롭에서도 실행 머리 글이 전보다 더 잘렸다)")
     for selector in (".lp-btns a[download]", ".export-menu a[download]"):
