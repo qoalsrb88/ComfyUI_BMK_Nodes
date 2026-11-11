@@ -56,8 +56,8 @@ button {
   transition: background-color .14s cubic-bezier(.22, 1, .36, 1), border-color .14s cubic-bezier(.22, 1, .36, 1), color .14s cubic-bezier(.22, 1, .36, 1);
 }
 button:hover { border-color: var(--line2); }
-/* 호버 = 표면 한 단. :where 로 무게를 0 에 두어 자기 바탕이 있는 단추(primary·채움·켜짐)는 그대로 둔다. */
-button:where(:hover:not(:disabled)) { background: var(--raised); }
+/* 호버 = 표면 한 단. :where 로 무게를 0 에 두어 자기 바탕이 있는 단추(primary·채움·켜짐)는 그대로 둔다. --hover 는 대화 상자 안에서만 다시 정한다. */
+button:where(:hover:not(:disabled)) { background: var(--hover, var(--raised)); }
 button:disabled { opacity: .45; cursor: default; }
 #top button { flex: none; white-space: nowrap; }
 
@@ -878,7 +878,7 @@ svg.marks .mx-outline, .dr-selected {
 @keyframes dp-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .6; } }
 @media (prefers-reduced-motion: reduce) {
   .dp-live, .vmsg.busy { animation: none; }
-  button, a[download] { transition: none; }
+  button { transition: none; }
 }
 .chip.stale { animation: none; }
 
@@ -889,16 +889,17 @@ svg.marks .mx-outline, .dr-selected {
 /* 보조 primary 의 노랑 테두리는 실행 패널 절 안에서만 중립(D369) — 채움 단추 하나만 노랑으로 남는다. */
 #pipe-panel .pp-sec button.primary { border-color: var(--line2); }
 #pipe-panel .pp-sec button.primary:disabled { border-color: var(--line); }
-/* 대화 상자·승인 상자 안은 배치 13 전의 선 값과 단추 치수를 그대로 둔다(mock·Claude 승인 상자 모양 불변). */
-.overlay > .sheet { --line: #3f3f46; --line2: #52525b; }
+/* 대화 상자·승인 상자 안은 배치 13 전의 선 값·단추 치수·호버(바탕 그대로, 전환 없음)를 그대로 둔다(mock·Claude 승인 상자 모양 불변). */
+.overlay > .sheet { --line: #3f3f46; --line2: #52525b; --hover: var(--panel2); }
 .overlay > .sheet > .lp-btns { gap: 6px; margin-top: 10px; }
-.overlay > .sheet > .lp-btns > * { min-height: 0; padding: 5px 12px; line-height: inherit; }
+.overlay > .sheet > .lp-btns > * { min-height: 0; padding: 5px 12px; line-height: inherit; transition: none; }
 /* 서버 모드의 [PSD 내려받기] 링크는 단추 꼴(D381). */
 .lp-btns a[download], .export-menu a[download] {
   display: inline-flex; align-items: center; min-height: 32px; padding: 4px 12px; border: 1px solid var(--line); border-radius: var(--radius);
-  background: var(--panel2); color: var(--text); text-decoration: none; transition: background-color .14s cubic-bezier(.22, 1, .36, 1), border-color .14s cubic-bezier(.22, 1, .36, 1);
+  background: var(--panel2); color: var(--text); text-decoration: none;
 }
-.lp-btns a[download]:hover, .export-menu a[download]:hover { background: var(--raised); border-color: var(--line2); }
+.lp-btns a[download][href]:hover, .export-menu a[download][href]:hover { background: var(--raised); border-color: var(--line2); }
+.lp-btns a[download]:not([href]), .export-menu a[download]:not([href]) { opacity: .45; cursor: default; }
 #top #btn-help { width: 28px; padding: 0; }
 #statusbar .keys-toggle { border-color: transparent; background: none; color: var(--dim); }
 #statusbar .keys-toggle:hover:not(:disabled) { background: var(--raised); color: var(--text); }
@@ -942,6 +943,10 @@ button:hover:not(:disabled) > .dp-ico, summary:hover > .dp-ico, button.on > .dp-
   body.server #top .brand { display: none; }
   body.server.projects-page #top .brand { display: block; } /* 프로젝트 목록에서는 머리줄이 비지 않게 */
   #top .tabs .tab { padding: 5px 5px; }
+  /* 좁은 창에서는 상태 줄 간격을 한 단 줄여 배치 13 전보다 더 잘리지 않게 한다(D380). */
+  #statusbar { gap: 4px 8px; padding: 0 8px; }
+  #statusbar .lhead { gap: 8px; }
+  #statusbar .badges { gap: 0 8px; }
 }
 /* 절은 직접 자식으로 남겨 단계별 가리기와 점검표 이동을 함께 쓴다. */
 body.pipe #pipe-panel { display: flex; flex-direction: column; min-width: 0; }

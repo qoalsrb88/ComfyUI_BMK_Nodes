@@ -59739,9 +59739,11 @@ def _batch13_values(css, code):
     has(".vbar button", {"border-color": "transparent", "background": "none", "color": "var(--dim)"})
     has("#pipe-panel .pp-sec button.primary", {"border-color": "var(--line2)"})
     has("#pipe-panel .pp-sec button.primary:disabled", {"border-color": "var(--line)"})
-    has(".overlay > .sheet", {"--line": "#3f3f46", "--line2": "#52525b"})
+    has(".overlay > .sheet", {"--line": "#3f3f46", "--line2": "#52525b", "--hover": "var(--panel2)"})
     pinned = set(style(".overlay > .sheet > .lp-btns > *")) | set(style(".overlay > .sheet > .lp-btns"))
-    check(pinned == {"min-height", "padding", "line-height", "gap", "margin-top"}, f"D369 승인 상자 고정은 치수뿐(색·바탕·테두리 없음): {sorted(pinned)}")
+    check(pinned == {"min-height", "padding", "line-height", "transition", "gap", "margin-top"},
+          f"D369 승인 상자 고정은 치수·전환 끔뿐(색·바탕·테두리 없음): {sorted(pinned)}")
+    has(".overlay > .sheet > .lp-btns > *", {"transition": "none"})
     mark_a, mark_b = css.find("/* ── 배치 13-A"), css.find("/* ── 배치 13-B")
     zone = css[mark_a:mark_b] if 0 <= mark_a < mark_b else ""
     check("#pipe-panel .pp-sec button.primary {" in zone and ".overlay > .sheet {" in zone, "D369 새 규칙은 13-A 표시 구간(F3-U1 앞)")
@@ -59757,10 +59759,18 @@ def _batch13_values(css, code):
     has(".tile", {"border": "2px solid transparent"})
     has(".tile.picked", {"border-color": "var(--star)"})
     has(".tile .cap", {"font-size": "11px", "color": "var(--meta)"})
-    has("#statusbar", {"min-height": "28px", "gap": "4px 12px", "font-size": "12px", "color": "var(--dim)", "font-variant-numeric": "tabular-nums"})
+    has("#statusbar", {"min-height": "28px", "font-size": "12px", "color": "var(--dim)", "font-variant-numeric": "tabular-nums"})
+    narrow = re.search(r"@media\s*\(max-width:\s*1399px\)\s*\{(.*?)\n\}", code, re.S)
+    narrow = narrow.group(1) if narrow else ""
+    check("gap: 4px 12px; min-width: 0; min-height: 28px; padding: 0 12px;" in css
+          and "#statusbar { gap: 4px 8px; padding: 0 8px; }" in narrow and "#statusbar .lhead { gap: 8px; }" in narrow,
+          "D380 상태 줄 간격 12px, 좁은 창(1399px 이하)에서는 8px")
     for selector in (".lp-btns a[download]", ".export-menu a[download]"):
         has(selector, {"min-height": "32px", "padding": "4px 12px", "border": "1px solid var(--line)", "background": "var(--panel2)",
                        "color": "var(--text)", "text-decoration": "none"})
+        check("transition" not in style(selector), f"D381 {selector} 전환 없음(움직임 줄이기와 어긋나지 않게)")
+        has(selector + "[href]:hover", {"background": "var(--raised)"})
+        has(selector + ":not([href])", {"opacity": ".45", "cursor": "default"})
 
     # D382: 전환은 색 속성(과 알림의 불투명도)만 이름으로 적는다. 움직임 줄이기면 끈다.
     names = set()
@@ -59775,7 +59785,7 @@ def _batch13_values(css, code):
     reduced = re.search(r"@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{(.*?)\n\}", code, re.S)
     check(reduced is not None and re.search(r"\bbutton\b[^{}]*\{\s*transition:\s*none;", reduced.group(1)) is not None,
           "D382 움직임 줄이기면 단추 전환도 끔")
-    has("button:where(:hover:not(:disabled))", {"background": "var(--raised)"})
+    has("button:where(:hover:not(:disabled))", {"background": "var(--hover, var(--raised))"})
     check("scale(" not in code, "D382 눌림 축소 없음")
 
 
