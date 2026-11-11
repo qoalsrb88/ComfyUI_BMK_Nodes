@@ -3,12 +3,85 @@
 
 window.DPRows = (() => {
   const NS = "http://www.w3.org/2000/svg";
+  /* 아이콘 경로: Lucide 1.72.0 (ISC License, Copyright (c) 2026 Lucide Icons and Contributors).
+     일부는 Feather(MIT License, Copyright (c) 2013-present Cole Bemis)에서 온 것.
+     전문: web_design_patch/LICENSE-lucide.txt */
   const paths = {
-    locked: "M6 10V7a6 6 0 0 1 12 0v3M4 10h16v12H4zM12 14v4",
-    unlocked: "M6 10V7a6 6 0 0 1 11-3M4 10h16v12H4zM12 14v4",
-    trash: "M3 5h18M9 5V2h6v3M6 5l1 17h10l1-17M10 9v9M14 9v9",
-    grip: "M8 4h1M15 4h1M8 9h1M15 9h1M8 14h1M15 14h1M8 19h1M15 19h1",
-    up: "M5 15l7-7 7 7", down: "M5 9l7 7 7-7",
+    locked: [
+      ["rect", { width: "18", height: "11", x: "3", y: "11", rx: "2", ry: "2" }],
+      ["path", { d: "M7 11V7a5 5 0 0 1 10 0v4" }],
+    ],
+    unlocked: [
+      ["rect", { width: "18", height: "11", x: "3", y: "11", rx: "2", ry: "2" }],
+      ["path", { d: "M7 11V7a5 5 0 0 1 9.9-1" }],
+    ],
+    trash: [
+      ["path", { d: "M10 11v6" }],
+      ["path", { d: "M14 11v6" }],
+      ["path", { d: "M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" }],
+      ["path", { d: "M3 6h18" }],
+      ["path", { d: "M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" }],
+    ],
+    grip: [
+      ["circle", { cx: "9", cy: "12", r: "1" }],
+      ["circle", { cx: "9", cy: "5", r: "1" }],
+      ["circle", { cx: "9", cy: "19", r: "1" }],
+      ["circle", { cx: "15", cy: "12", r: "1" }],
+      ["circle", { cx: "15", cy: "5", r: "1" }],
+      ["circle", { cx: "15", cy: "19", r: "1" }],
+    ],
+    up: [["path", { d: "m18 15-6-6-6 6" }]],
+    down: [["path", { d: "m6 9 6 6 6-6" }]],
+    chevron: [["path", { d: "m9 18 6-6-6-6" }]],
+    viewer: [
+      ["rect", { width: "18", height: "18", x: "3", y: "3", rx: "2" }],
+      ["path", { d: "M12 3v18" }],
+    ],
+    keys: [
+      ["path", { d: "M10 8h.01" }],
+      ["path", { d: "M12 12h.01" }],
+      ["path", { d: "M14 8h.01" }],
+      ["path", { d: "M16 12h.01" }],
+      ["path", { d: "M18 8h.01" }],
+      ["path", { d: "M6 8h.01" }],
+      ["path", { d: "M7 16h10" }],
+      ["path", { d: "M8 12h.01" }],
+      ["rect", { width: "20", height: "16", x: "2", y: "4", rx: "2" }],
+    ],
+    undo: [
+      ["path", { d: "M9 14 4 9l5-5" }],
+      ["path", { d: "M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11" }],
+    ],
+    redo: [
+      ["path", { d: "m15 14 5-5-5-5" }],
+      ["path", { d: "M20 9H9.5A5.5 5.5 0 0 0 4 14.5A5.5 5.5 0 0 0 9.5 20H13" }],
+    ],
+    clear: [
+      ["path", { d: "M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" }],
+      ["path", { d: "M3 3v5h5" }],
+    ],
+    xform: [
+      ["path", { d: "M12 2v20" }],
+      ["path", { d: "m15 19-3 3-3-3" }],
+      ["path", { d: "m19 9 3 3-3 3" }],
+      ["path", { d: "M2 12h20" }],
+      ["path", { d: "m5 9-3 3 3 3" }],
+      ["path", { d: "m9 5 3-3 3 3" }],
+    ],
+    invert: [
+      ["circle", { cx: "12", cy: "12", r: "10" }],
+      ["path", { d: "M12 18a6 6 0 0 0 0-12v12z" }],
+    ],
+    fade: [
+      ["circle", { cx: "15", cy: "9", r: "7" }],
+      ["circle", { cx: "9", cy: "15", r: "7" }],
+    ],
+    brush: [
+      ["path", { d: "m11 10 3 3" }],
+      ["path", { d: "M6.5 21A3.5 3.5 0 1 0 3 17.5a2.62 2.62 0 0 1-.708 1.792A1 1 0 0 0 3 21z" }],
+      ["path", { d: "M9.969 17.031 21.378 5.624a1 1 0 0 0-3.002-3.002L6.967 14.031" }],
+    ],
+    dot: [["circle", { cx: "12", cy: "12", r: "1" }]],
   };
   let config = {};
   let dragging = null;
@@ -27,11 +100,22 @@ window.DPRows = (() => {
 
   function icon(name) {
     const s = document.createElementNS(NS, "svg");
-    for (const [k, v] of Object.entries({ viewBox: "0 0 24 24", width: 16, height: 16, fill: "none", stroke: "currentColor", "stroke-width": 1.7, "aria-hidden": "true" })) s.setAttribute(k, v);
-    const p = document.createElementNS(NS, "path");
-    p.setAttribute("d", paths[name]);
-    s.append(p);
+    for (const [k, v] of Object.entries({ viewBox: "0 0 24 24", width: 16, height: 16, fill: "none", stroke: "currentColor",
+      "stroke-width": 1.5, "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true", class: "dp-ico", "data-icon": name })) s.setAttribute(k, v);
+    const elements = Object.prototype.hasOwnProperty.call(paths, name) ? paths[name] : [];
+    for (const [tag, attrs] of elements) {
+      const p = document.createElementNS(NS, tag);
+      for (const [k, v] of Object.entries(attrs)) p.setAttribute(k, v);
+      s.append(p);
+    }
     return s;
+  }
+
+  if (typeof document.querySelector === "function") {
+    for (const [selector, name] of [["#btn-viewer", "viewer"], ["#btn-keys", "keys"], ["#export-menu > summary", "down"]]) {
+      const b = document.querySelector(selector);
+      if (b && !b.querySelector("svg")) b.prepend(icon(name));
+    }
   }
 
   function blocked() { return !!(config.busy && config.busy()); }
