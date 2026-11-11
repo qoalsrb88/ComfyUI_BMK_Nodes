@@ -234,5 +234,5 @@ window.DPRows = (() => {
     closeMenu();
   }, true);
   window.addEventListener("blur", () => { closeMenu(); release(); });
-  return { tail, configure, order, defer, ensureZ, blocked };
+  return { tail, configure, order, defer, ensureZ, blocked, icon };
 })();

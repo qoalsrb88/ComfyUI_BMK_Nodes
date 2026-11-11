@@ -59618,6 +59618,32 @@ async def _fs_scoped_roots(bd, out, call, login, sessions):
                   "FS26 T1 로컬 _root_param 은 기존 전역 조회 결과·호출 그대로")
 
 
+def _batch13_values(css, code):
+    """13-A 몫 — CSS 값(D367–D374·D377–D382) 정적 검사. css = 원문, code = 주석을 뺀 글."""
+
+
+def _batch13_icons(web):
+    """13-B 몫 — 아이콘(D375·D376) 정적 검사. web = web_design_patch 폴더."""
+
+
+def batch13_unit():
+    """배치 13 「화면 다듬기」 — CSS 값·아이콘 정적 검사. 명세 _proto/STUDIO_BATCH13_SPEC.md §5.2. --quick 포함."""
+    section("배치 13 — 화면 다듬기 (batch13_unit)")
+    web = PKG / "web_design_patch"
+    css = (web / "board.css").read_text(encoding="utf-8")
+    code = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    root = re.search(r":root\s*\{([^}]*)\}", code)
+    names = set(re.findall(r"(--[\w-]+)\s*:", root.group(1))) if root else set()
+    check({"--raised", "--on", "--meta", "--scroll"} <= names, f"13-0 :root 새 변수 4개 {sorted(names)}")
+    marks = ("/* ── Forge F3-T", "/* ── 배치 13-A", "/* ── 배치 13-B", "/* ── Forge F3-U1")
+    offsets = [css.find(m) for m in marks]
+    check(all(css.count(m) == 1 for m in marks) and offsets == sorted(offsets), "13-0 CSS 표시: F3-T < 13-A < 13-B < F3-U1")
+    rows = (web / "rows.js").read_text(encoding="utf-8")
+    check(re.search(r"return \{[^}]*\bicon\b[^}]*\};\s*\}\)\(\);", rows) is not None, "13-0 DPRows.icon 내보내기")
+    _batch13_values(css, code)
+    _batch13_icons(web)
+
+
 def forge_server_unit():
     """F1 갈래 S — 서버 진입점·세션·요청 검사·계정 격리·경로 봉쇄·설정 저장·내려받기(aiohttp 시험 서버, torch·comfy 없음, --quick 포함)."""
     section("Forge F1 서버·세션·범위 (forge_server_unit)")
@@ -62995,6 +63021,8 @@ if __name__ == "__main__":
         batch9b_unit()
     if want("batch12_unit"):
         batch12_unit()
+    if want("batch13_unit"):
+        batch13_unit()
     if want("forge_server_unit"):
         forge_server_unit()
     if want("forge_jobs_unit"):

@@ -21,6 +21,11 @@
   --accent-soft: rgba(223, 225, 4, .10);
   --info: #4da3ff;
   --warn: #ffa24d;
+  /* 배치 13: 표면 단계(호버·켜짐) · 셋째 글자(메타·캡션) · 스크롤 막대 */
+  --raised: #323236;
+  --on: #3f3f46;
+  --meta: #8b8b93;
+  --scroll: #52525b;
   --radius: 8px;
   --radius-sm: 6px;
   color-scheme: dark;
@@ -857,6 +862,10 @@ svg.marks .mx-outline, .dr-selected {
 
 .dp-empty { display: flex; align-items: center; justify-content: center; grid-column: 1 / -1; gap: 8px; color: var(--dim); text-align: center; }
 .dp-empty::before { content: ""; flex: none; width: 12px; height: 12px; border: 1px dashed currentColor; border-radius: 50%; }
+
+/* ── 배치 13-A (화면 다듬기 — 값) — 기존 규칙의 값은 제자리에서 고치고, 새 규칙만 이 표시 아래(13-B 표시 앞)에 ── */
+
+/* ── 배치 13-B (아이콘) — 13-B 작업자는 이 표시 아래(F3-U1 표시 앞)에만 덧붙인다 ── */
 
 /* ── Forge F3-U1 (머리줄·상태 줄·주 실행 단추·고급) — 갈래 U1 은 이 표시 아래에만 덧붙인다 ── */
 /* 색은 변수로만. 위쪽 기존 규칙을 덮어써야 하면 여기서 다시 선언한다. */
