@@ -1319,6 +1319,7 @@
     }
     panel.className = "panel mode-" + mode;
     $("cand-caption").textContent = caption;
+    $("cand-caption").title = caption; // 머리는 한 줄 말줄임(배치 13 D378) — 잘린 글은 title 로
     setImg($("img-cand"), url);
     $("cand-empty").hidden = !!url;
   }
