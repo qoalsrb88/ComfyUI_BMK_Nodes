@@ -59646,6 +59646,354 @@ async def _fs_scoped_roots(bd, out, call, login, sessions):
 def forge_f2_dev_unit():
     """Forge F2 갈래 D — 개발용 가짜 Forge(fixture 모양 일치·시나리오 표지·토큰 만료·갱신 페이지). 명세 _proto/STUDIO_FORGE_F2_SPEC.md §2.4·§4. --quick 포함."""
     section("Forge F2-D — forge_f2_dev_unit")
+    import html
+    import uuid
+    import bmk_design_patch_forge_dev as dev
+    import bmk_design_patch_server as srv
+    from aiohttp import web
+    from aiohttp.test_utils import make_mocked_request
+    from unittest.mock import AsyncMock, patch
+
+    fixture = json.loads((PKG / "tools" / "fixtures" / "forge_api.json").read_text(encoding="utf-8"))
+
+    def same_shape(value, sample):
+        if isinstance(sample, dict):
+            keys = set(sample) - {"_comment"}
+            return isinstance(value, dict) and set(value) == keys and all(same_shape(value[k], sample[k]) for k in keys)
+        if isinstance(sample, list):
+            return isinstance(value, list) and (not sample or all(same_shape(v, sample[min(i, len(sample) - 1)]) for i, v in enumerate(value)))
+        return type(value) is type(sample)
+
+    picture = Image.new("RGB", (64, 40), (220, 30, 20))
+    picture.paste((20, 40, 220), (32, 0, 64, 40))
+    encoded = io.BytesIO()
+    picture.save(encoded, format="PNG")
+    png = encoded.getvalue()
+    template = copy.deepcopy(fixture["generate"]["request"])
+    template.update(size="96x64", input_images=[["data:image/png;base64," + base64.b64encode(png).decode()]], prompt="그림 시험")
+    now = [1700000000.0]
+    fake = dev.FakeForge(clock=lambda: now[0])
+
+    async def call(method, path, data=None, account="alice", instance=None, headers=None, raw=None):
+        request_headers = {"Authorization": "Bearer " + dev.issue_token(account)} if account is not None else {}
+        if headers is not None:
+            request_headers = headers
+        status, response_headers, body = await (instance or fake).handle(method, path, request_headers,
+                                                                        raw if raw is not None else json.dumps(data).encode() if data is not None else None, 3)
+        if response_headers.get("Content-Type") == "application/json":
+            body = json.loads(body)
+        return status, body
+
+    async def submit(request_id, prompt="그림 시험", instance=None, account="alice", **changes):
+        data = dict(template, request_id=request_id, prompt=prompt, **changes)
+        return await call("POST", "/api/image/generate", data, account=account, instance=instance)
+
+    async def job(job_id, **kwargs):
+        return await call("GET", "/api/image/jobs/" + job_id, **kwargs)
+
+    async def request(app, method, path, body=b"", host="localhost:8790", headers=None):
+        payload = types.SimpleNamespace(readany=AsyncMock(side_effect=[body, b""]))
+        req = make_mocked_request(method, path, headers={"Host": host, **(headers or {})}, payload=payload, app=app)
+        route = await app.router.resolve(req)
+        req._match_info = route
+        return await route.handler(req)
+
+    async def run():
+        check(dev.issue_token("alice") == "dev:alice" and dev.issue_token("alice", 5.9, clock=lambda: now[0]) == "dev:alice:1700000005",
+              "FD1 토큰: 무기한·정수 epoch")
+        for bad in ("Alice", "", "a" * 33, "a/b", "<script>", None):
+            expect_raises(lambda value=bad: dev.issue_token(value), "FD1 계정 형식 거절")
+        for ttl in (float("nan"), float("inf"), True, "5"):
+            expect_raises(lambda value=ttl: dev.issue_token("alice", value), "FD1 수명 형식 거절")
+        status, me = await call("GET", "/auth/me")
+        check(status == 200 and same_shape(me, fixture["me"]["response"]) and me == fixture["me"]["response"], "FD1 me fixture")
+        check(await call("GET", "/auth/me", account=None) == (200, {"authenticated": False}), "FD1 me 헤더 없음 200")
+        for path in ("/api/access/summary", "/api/image/history", "/api/library/assets"):
+            check((await call("GET", path, account=None))[0] == 401, "FD1 나머지 경로 헤더 없음 401")
+        for token in ("dev:alice:1700000000", "dev:alice:1699999999", "dev:Alice", "dev:", "dev:alice:bad",
+                      "dev:alice:-1", "dev:alice:1:2", "dev:alice\n", "other"):
+            status, value = await call("GET", "/auth/me", headers={"Authorization": "Bearer " + token})
+            check(status == 401 and value == fixture["errors"]["invalid_token"]["response"], "FD1 만료·잘못된 토큰 401")
+        check((await call("GET", "/auth/me", headers={"authorization": "bearer " + dev.issue_token("alice", 1, clock=lambda: now[0])}))[0] == 200,
+              "FD1 헤더·스킴 대소문자 및 만료 전 허용")
+        status, access = await call("GET", "/api/access/summary")
+        check(status == 200 and same_shape(access, fixture["access_summary"]["response"]) and access == fixture["access_summary"]["response"],
+              "FD1 access fixture 키·형식·조직")
+        check((await call("GET", "/api/access/summary", account="noaccess_a"))[1]["serviceWhitelist"]["designPatch"] is False, "FD1 noaccess")
+        check((await call("GET", "/api/access/summary", account="outsider_a"))[1]["organizations"] == [], "FD1 outsider")
+
+        status, submitted = await submit("queue-1", "그림 [[fake:delay=10]] [[fake:queue=3/7]]")
+        check(status == 200 and same_shape(submitted, fixture["generate"]["response"]) and submitted["status"] == "pending", "FD2 제출 fixture")
+        first_id = submitted["job_id"]
+        check(uuid.UUID(first_id).version == 5 and submitted["job_ids"] == [first_id], "FD2 멱등 ID는 UUID5")
+        check((await submit("queue-1", "다른 본문도 새 잡을 만들지 않음"))[1] == submitted and len(fake.jobs) == 1, "FD2 대기 중 재제출 잡 1개")
+        pending = (await job(first_id))[1]
+        check(same_shape(pending, dict(fixture["job"]["pending"], request_data=pending["request_data"]))
+              and pending["queue_position"] == 3 and pending["queue_total"] == 7, "FD2 pending fixture")
+        positions = [(await job(first_id))[1]["queue_position"] for _ in range(4)]
+        check(positions == [2, 1, 1, 1], "FD2 순번 조회마다 감소·최소 1")
+        check("input_images" not in pending["request_data"] and "data:image/" not in json.dumps(pending), "FD2 요청 요약에 그림 없음")
+        now[0] += 5
+        processing = (await job(first_id))[1]
+        check(same_shape(processing, dict(fixture["job"]["processing"], request_data=processing["request_data"]))
+              and processing["status"] == "processing" and processing["queue_position"] is None, "FD2 processing fixture·절반 경과")
+        now[0] += 5
+        completed = (await job(first_id))[1]
+        check(same_shape(completed, dict(fixture["job"]["completed"], request_data=completed["request_data"]))
+              and completed["status"] == "completed", "FD2 completed fixture·시계 진행")
+        status, again = await submit("queue-1")
+        check(status == 200 and again["job_id"] == first_id and again["status"] == "completed" and len(fake.jobs) == 1, "FD2 완료 후에도 같은 잡")
+        other = (await submit("queue-1", account="bob"))[1]
+        check(other["job_id"] != first_id and len(fake.jobs) == 2, "FD2 다른 사용자 멱등 격리")
+        for key in (first_id, "missing"):
+            status, value = await job(key, account="bob")
+            check(status == 404 and value == fixture["errors"]["job_not_found"]["response"], "FD2 남의 잡·없는 잡 404")
+        separate = dev.FakeForge(clock=lambda: now[0])
+        check((await submit("queue-1", instance=separate))[1]["job_id"] == first_id, "FD2 네임스페이스·사용자·요청 ID 결정적")
+        no_id = {k: v for k, v in template.items() if k != "request_id"}
+        random_ids = [(await call("POST", "/api/image/generate", no_id))[1]["job_id"] for _ in range(2)]
+        check(len(set(random_ids)) == 2 and all(uuid.UUID(value).version == 4 for value in random_ids), "FD2 요청 ID 없으면 UUID4")
+
+        media_urls = completed["result_data"]["images"]
+        status, first_png = await call("GET", media_urls[0], account=None)
+        with Image.open(io.BytesIO(first_png)) as result:
+            check(status == 200 and result.format == "PNG" and result.size == (96, 64), "FD3 미디어 무인증·PNG·요청 크기")
+            left, right = result.getpixel((8, 48)), result.getpixel((88, 48))
+            check(left[0] > left[2] and right[2] > right[0], "FD3 첫 입력 그림 좌우 색·구도 보존")
+        check((await call("GET", media_urls[1], account=None))[1] != first_png, "FD3 슬롯별 색조 차이")
+        next_id = (await submit("media-other"))[1]["job_id"]
+        next_job = (await job(next_id))[1]
+        check((await call("GET", next_job["result_data"]["images"][0], account=None))[1] != first_png, "FD3 잡별 색조 차이")
+        check((await call("GET", media_urls[0], account=None))[1] == first_png, "FD3 같은 그림 재조회 바이트 고정")
+        check((await call("GET", "/fake-media/missing/0.png", account=None))[0] == 404, "FD3 없는 미디어 404")
+        delayed = (await submit("delay", "[[fake:delay=8]]"))[1]["job_id"]
+        check((await job(delayed))[1]["status"] == "processing", "FD3 순번 없는 지연은 processing")
+        now[0] += 8
+        check((await job(delayed))[1]["status"] == "completed", "FD3 지연 종료")
+        for failure in ("user", "ailabs"):
+            failed_id = (await submit("fail-" + failure, "[[fake:fail=" + failure + "]]"))[1]["job_id"]
+            failed = (await job(failed_id))[1]
+            sample = dict(fixture["job"]["completed"], **fixture["job"]["failed_" + failure], request_data=failed["request_data"])
+            check(same_shape(failed, sample) and all(failed[k] == v for k, v in fixture["job"]["failed_" + failure].items()), "FD3 failed_" + failure + " fixture")
+            check((await submit("fail-" + failure))[1] == {"job_id": failed_id, "job_ids": [failed_id], "status": "failed"}, "FD3 실패 뒤 멱등 유지")
+        for marker, count in (("[[fake:partial=1]]", 1), ("[[fake:empty]]", 0)):
+            partial_id = (await submit("partial-" + str(count), marker))[1]["job_id"]
+            partial = (await job(partial_id))[1]
+            check(partial["status"] == "completed" and len(partial["result_data"]["images"]) == count
+                  and same_shape(partial["result_data"], fixture["job"]["completed_partial"]["result_data"]), "FD3 일부 성공·빈 완료 fixture")
+        changed_id = (await submit("changed", "[[fake:changed]]"))[1]["job_id"]
+        changed = (await job(changed_id))[1]["result_data"]
+        check(same_shape(changed, fixture["job"]["completed_prompt_changed"]["result_data"])
+              and changed["result_metadata"][-1]["prompt_used"] == "[[fake:changed]] (rewritten)", "FD3 changed fixture·마지막 장 재작성")
+        missing_optout = dict(template, request_id="missing-optout")
+        del missing_optout["prompt_autopilot"]
+        auto_id = (await call("POST", "/api/image/generate", missing_optout))[1]["job_id"]
+        check((await job(auto_id))[1]["result_data"]["result_metadata"][-1]["prompt_used"] == template["prompt"] + " (rewritten)", "FD3 opt-out 키 없음은 자동 재작성")
+        check(all("prompt_used" not in item for item in completed["result_data"]["result_metadata"]), "FD3 opt-out 키 있으면 원문 유지")
+        advancing = dev.FakeForge()
+        advance_id = (await submit("advance", "[[fake:delay=30]]", instance=advancing))[1]["job_id"]
+        advancing.advance(31)
+        check((await job(advance_id, instance=advancing))[1]["status"] == "completed", "FD3 기본 시계 advance")
+
+        invalids = [{k: v for k, v in template.items() if k != "checkpoint"}, {k: v for k, v in template.items() if k != "prompt"}]
+        for key, values in (("checkpoint", ["bad", [], None]), ("prompt", ["", None, {}]),
+                            ("input_images", [[template["input_images"][0][0]] * 2, [template["input_images"][0] * 17], [["bad"]], [["data:image/png;base64,not-base64"]]]),
+                            ("request_id", ["bad/id", "_prefix", "x" * 129, "bad\n", "", None]),
+                            ("num_outputs", [0, 17, True, "1"]), ("organization_id", ["other", None]), ("size", ["bad", "9999x9999", []])):
+            invalids.extend(dict(template, **{key: value}) for value in values)
+        count_before = len(fake.jobs)
+        for data in invalids:
+            status, value = await call("POST", "/api/image/generate", data)
+            check(status == 422 and same_shape(value, fixture["errors"]["validation"]["response"]), "FD4 제출 검사 422·fixture")
+        check(len(fake.jobs) == count_before, "FD4 잘못된 제출은 잡을 만들지 않음")
+        for body in (b"not-json", b"[]", b"null", b"\xff"):
+            check((await call("POST", "/api/image/generate", raw=body))[0] == 422, "FD4 JSON 아닌 본문·객체 아닌 JSON 422")
+        check(await call("GET", "/unknown", account=None) == (404, {"detail": "Not Found"}), "FD4 모르는 경로 404")
+        check((await call("GET", "/api/image/generate"))[0] == 405, "FD4 메서드 오류 405")
+        with patch.object(fake, "_history", side_effect=RuntimeError("private failure")):
+            check(await call("GET", "/api/image/history?organization_id=org1") == (500, {"detail": "Internal Server Error"}), "FD4 내부 예외 고정 500")
+        check((await fake.handle(None, None, None))[0] == 500, "FD4 예상 밖 인자도 예외 유출 없음")
+
+        history_fake = dev.FakeForge(clock=lambda: now[0])
+        history_ids = []
+        for i, count in enumerate((2, 1, 1)):
+            now[0] += 1
+            key = (await submit("history-" + str(i), "History 그림 " + str(i), instance=history_fake, num_outputs=count))[1]["job_id"]
+            history_ids.append(key)
+            await job(key, instance=history_fake)
+        foreign_id = (await submit("history-other", instance=history_fake, account="bob"))[1]["job_id"]
+        await job(foreign_id, account="bob", instance=history_fake)
+        status, history = await call("GET", "/api/image/history?organization_id=org1&limit=2", instance=history_fake)
+        check(status == 200 and set(history) == set(fixture["history"]["response"]) and history["has_more"]
+              and isinstance(history["next_cursor"], str) and isinstance(history["trace_id"], str), "FD5 history 페이지 fixture")
+        check([item["statement_id"] for item in history["items"]] == list(reversed(history_ids[1:])), "FD5 자기 완료 잡 최신순·단일 장")
+        check(all(same_shape(item, fixture["history"]["response"]["items"][0]) for item in history["items"]), "FD5 단일 장 키·형식 fixture")
+        cursor_path = "/api/image/history?" + urllib.parse.urlencode({"organization_id": "org1", "limit": 2, "cursor": history["next_cursor"]})
+        second = (await call("GET", cursor_path, instance=history_fake))[1]
+        check(second["next_cursor"] is None and not second["has_more"] and len(second["items"]) == 1
+              and same_shape(second["items"][0], fixture["history"]["response"]["items"][1]), "FD5 묶음 키·형식 fixture·마지막 페이지")
+        filtered = (await call("GET", "/api/image/history?organization_id=org1&search=hISTORY", instance=history_fake))[1]
+        check(len(filtered["items"]) == 3, "FD5 프롬프트 검색 대소문자 무관")
+        check((await call("GET", "/api/image/history?organization_id=org1&search=absent", instance=history_fake))[1]["items"] == [], "FD5 검색 결과 없음")
+        tie_id = (await submit("history-tie", instance=history_fake, num_outputs=1))[1]["job_id"]
+        latest = (await call("GET", "/api/image/history?organization_id=org1&limit=1", instance=history_fake))[1]
+        check(latest["items"][0]["statement_id"] == tie_id, "FD5 같은 시각이면 나중에 제출한 잡이 먼저")
+        for suffix in ("?organization_id=other", "?organization_id=org1"):
+            status, value = await call("GET", "/api/image/history" + suffix, account="outsider")
+            check(status == 403 and value == fixture["errors"]["org_denied"]["response"], "FD5 조직 밖 history 403 fixture")
+        for suffix in ("", "?organization_id=org1&limit=0", "?organization_id=org1&limit=101", "?organization_id=org1&cursor=bad"):
+            check((await call("GET", "/api/image/history" + suffix))[0] == 422, "FD5 history 쿼리 검사")
+
+        status, assets = await call("GET", "/api/library/assets?organization_id=org1")
+        check(status == 200 and len(assets) == 3 and all(same_shape(item, fixture["assets"]["response"][0]) for item in assets), "FD6 자료 3개·배열·fixture")
+        check(len({item["name"] for item in assets}) == 3 and len({item["folder_path"] for item in assets}) == 3, "FD6 서로 다른 이름·폴더")
+        bob_assets = (await call("GET", "/api/library/assets", account="bob"))[1]
+        check({item["id"] for item in assets}.isdisjoint(item["id"] for item in bob_assets)
+              and all(item["owner_id"] == "u_bob" for item in bob_assets), "FD6 계정별 자료 격리")
+        check((await call("GET", "/api/library/assets?limit=1&offset=1"))[1] == assets[1:2], "FD6 limit·offset")
+        check((await call("GET", "/api/library/assets?search=absent"))[1] == assets, "FD6 Forge 자료에는 검색 없음")
+        check((await call("GET", assets[0]["url"], account=None))[1].startswith(b"\x89PNG\r\n\x1a\n"), "FD6 기본 자료 PNG")
+        upload_request = dict(fixture["asset_upload"]["upload_url"]["request"], size_bytes=len(png))
+        status, uploaded = await call("POST", "/api/library/assets/upload-url", upload_request)
+        check(status == 200 and same_shape(uploaded, fixture["asset_upload"]["upload_url"]["response"]) and uploaded["file_url"] == "", "FD6 upload-url fixture")
+        complete_request = {"organization_id": "org1", "s3_key": uploaded["s3_key"]}
+        create_request = dict(fixture["asset_upload"]["create"]["request"], s3_key=uploaded["s3_key"], width=64, height=40)
+        check((await call("POST", "/api/library/assets/uploads/complete", complete_request))[0] == 422, "FD6 PUT 전 complete 거절")
+        check((await call("PUT", uploaded["upload_url"].split("?", 1)[0] + "?sig=wrong", account=None, headers={"Content-Type": "image/png"}, raw=png))[0] == 403,
+              "FD6 PUT 서명 확인")
+        check((await call("PUT", uploaded["upload_url"].split("?", 1)[0] + "?sig=%ED%95%9C", account=None, headers={"Content-Type": "image/png"}, raw=png))[0] == 403,
+              "FD6 비ASCII 서명도 403")
+        check((await call("PUT", uploaded["upload_url"], account=None, headers={"Content-Type": "image/png"}, raw=png))[0] == 200, "FD6 무인증 PUT")
+        check((await call("POST", "/api/library/assets", create_request))[0] == 422, "FD6 complete 전 등록 거절")
+        check((await call("POST", "/api/library/assets/uploads/complete", complete_request, account="bob"))[0] == 422, "FD6 남의 upload 완료 거절")
+        status, completion = await call("POST", "/api/library/assets/uploads/complete", complete_request)
+        check(status == 200 and same_shape(completion, fixture["asset_upload"]["complete"]["response"])
+              and completion == {"size_bytes": len(png), "content_type": "image/png"}, "FD6 complete fixture")
+        status, asset = await call("POST", "/api/library/assets", create_request)
+        check(status == 200 and same_shape(asset, fixture["asset_upload"]["create"]["response"]), "FD6 create fixture")
+        check(await call("POST", "/api/library/assets", create_request) == (200, asset), "FD6 동일 client_request_id 멱등")
+        listed = (await call("GET", "/api/library/assets"))[1]
+        check(len(listed) == 4 and listed[0]["id"] == asset["id"] and same_shape(listed[0], fixture["assets"]["response"][0]), "FD6 업로드 전체 절차 후 목록 1개 추가")
+        check((await call("GET", asset["url"], account=None))[1] == png, "FD6 업로드 원본 바이트 보존")
+        conflicting = dict(create_request, s3_key="other-key")
+        check(await call("POST", "/api/library/assets", conflicting) == (409, fixture["asset_upload"]["create"]["conflict"]["response"]), "FD6 다른 s3_key 충돌 409 fixture")
+        for change in ({"size_bytes": 26214401}, {"size_bytes": 0}, {"size_bytes": True}, {"content_type": "text/plain"}):
+            check((await call("POST", "/api/library/assets/upload-url", dict(upload_request, **change)))[0] == 422, "FD6 25MiB·형식 검사")
+        for path in ("/api/library/assets?organization_id=other", "/api/library/assets?organization_id=org1"):
+            check((await call("GET", path, account="outsider"))[0] == 403, "FD6 자료 조직 밖 거절")
+        check(all(isinstance(entry, tuple) and len(entry) == 2 and "?" not in entry[1] for entry in fake.calls)
+              and "dev:alice" not in repr(fake.calls) and "data:image/" not in repr(fake.calls), "FD6 호출 기록은 메서드·경로만")
+
+        config = srv.ServerConfig(str(OUT_ROOT / "forge_f2_dev_unit" / "data"), dev_handoff=True, dev_parent_port=8790, port=8791)
+        parent = srv.make_dev_parent_app(config)
+        index = await request(parent, "GET", "/")
+        check(index.status == 200 and "<script" not in index.text, "FD7 기존 / 는 스크립트 없음")
+        with patch.object(dev, "mount", return_value=None):
+            original_parent = srv.make_dev_parent_app(config)
+        original_index = await request(original_parent, "GET", "/")
+        check(index.body == original_index.body and dict(index.headers) == dict(original_index.headers), "FD7 mount 전후 기존 / 응답 바이트·헤더 동일")
+        refresh = await request(parent, "GET", "/refresh?acct=alice&ttl=120&every=60")
+        check(refresh.status == 200 and refresh.headers.get("Cache-Control") == "no-store", "FD7 refresh HTML·캐시 없음")
+        for attribute in ("sandbox", "allow", "referrerpolicy"):
+            old = re.search(attribute + r'="([^"]*)"', index.text)[1]
+            new = re.search(attribute + r'="([^"]*)"', refresh.text)[1]
+            check(old == new, "FD7 기존 iframe " + attribute + " 동일")
+        check("height:64px" in refresh.text and "calc(100dvh - 64px)" in refresh.text, "FD7 머리 64px·iframe 높이")
+        source = html.unescape(re.search(r' src="([^"]+)"', refresh.text)[1])
+        parsed = urllib.parse.urlsplit(source)
+        query, fragment = urllib.parse.parse_qs(parsed.query), urllib.parse.parse_qs(parsed.fragment)
+        check(parsed.netloc == "localhost:8791" and query == {"parent_origin": ["http://localhost:8790"]}
+              and fragment["organization_id"] == ["org1"] and fragment["token"][0].startswith("dev:alice:"), "FD7 handoff 주소·토큰은 fragment")
+        check(abs(int(fragment["token"][0].rsplit(":", 1)[1]) - int(time.time()) - 120) <= 2, "FD7 첫 토큰 수명")
+        active_script = re.search(r"<script>(.*?)</script>", refresh.text, re.S)[1]
+        silent = await request(parent, "GET", "/refresh?silent=1")
+        silent_script = re.search(r"<script>(.*?)</script>", silent.text, re.S)[1]
+        check(silent.status == 200 and all(value not in silent_script for value in ("postMessage", "addEventListener", "refresh", "design-patch-session")),
+              "FD7 silent 는 타이머·요청에 갱신을 보내지 않음")
+        check('const appOrigin = "http://localhost:8791"' in active_script and "}, appOrigin)" in active_script
+              and '"*"' not in active_script and "event.origin === appOrigin" in active_script
+              and "event.source === iframe.contentWindow" in active_script, "FD7 정확한 targetOrigin·origin/source 검사")
+        for suffix in ("?acct=%3Cscript%3E", "?acct=Alice", "?ttl=4", "?ttl=86401", "?ttl=nan", "?every=1", "?every=3601", "?silent=2", "?ttl=5&ttl=8"):
+            response = await request(parent, "GET", "/refresh" + suffix)
+            check(response.status == 400 and "<script>" not in response.text, "FD7 잘못된 쿼리·주입 400")
+        for host in ("example.com:8790", "localhost:8790@exam" + "ple.com", "localhost:bad", "localhost:8790/path", "localhost:"):
+            check((await request(parent, "GET", "/refresh", host=host)).status == 400, "FD7 비루프백·Host 형식 거절")
+        ipv6 = await request(parent, "GET", "/refresh", host="[::1]:8790")
+        check(ipv6.status == 200 and "http://[::1]:8791" in ipv6.text, "FD7 IPv6 루프백")
+        route_paths = {route.resource.canonical for route in parent.router.routes()}
+        check(all(path in route_paths for path in ("/", "/refresh", "/auth/me", "/api/access/summary", "/api/image/generate", "/api/image/jobs/{job_id}",
+                                                   "/api/image/history", "/api/library/assets", "/api/library/assets/upload-url", "/api/library/assets/uploads/complete")),
+              "FD7 mount 경로 등록")
+        check((await request(parent, "GET", "/auth/me", host="example.com:8790")).status == 400, "FD7 API 어댑터도 루프백 Host만")
+        me_response = await request(parent, "GET", "/auth/me", headers={"Authorization": "Bearer " + dev.issue_token("alice")})
+        check(me_response.status == 200 and json.loads(me_response.body) == fixture["me"]["response"], "FD7 HTTP 어댑터 직접 호출·소켓 없음")
+        padded = json.dumps(template).encode() + b" " * (1024 * 1024 + 1)
+        response = await request(parent, "POST", "/api/image/generate", body=padded, headers={"Authorization": "Bearer " + dev.issue_token("alice")})
+        check(response.status == 200, "FD7 aiohttp 기본 1MiB보다 큰 JSON 허용")
+        too_big = b"x" * (64 * 1024 * 1024 + 1)
+        response = await request(parent, "POST", "/api/image/generate", body=too_big)
+        check(response.status == 413, "FD7 어댑터 64MiB 상한")
+        del too_big
+        check((await request(parent, "GET", "/unknown")).status == 404, "FD7 HTTP 어댑터 미등록 경로")
+        check((await request(parent, "PUT", "/api/image/generate")).status == 405, "FD7 HTTP 어댑터 메서드 거절")
+
+        node = shutil.which("node") or str(Path("C:/Program Files/nodejs/node.exe"))
+        if Path(node).is_file():
+            script = r'''
+const vm = require("node:vm"), fs = require("node:fs");
+const input = JSON.parse(fs.readFileSync(0, "utf8"));
+function verify(ok, label) { if (!ok) throw Error(label); }
+function boot(script) {
+  const messages = [], timers = [], listeners = {};
+  const frame = {contentWindow: {postMessage: (message, origin) => messages.push({message, origin})}};
+  const remaining = {textContent: ""};
+  let now = 1700000000000;
+  vm.runInNewContext(script, {Date: {now: () => now}, Math,
+    document: {getElementById: name => name === "studio" ? frame : remaining},
+    window: {addEventListener: (name, fn) => { listeners[name] = fn; }},
+    setInterval: (fn, ms) => timers.push({fn, ms})});
+  return {messages, timers, listeners, frame, remaining, advance: () => { now += 70000; }};
+}
+const active = boot(input.active);
+verify(active.messages.length === 0 && typeof active.listeners.message === "function", "initial state");
+for (const event of [
+  {origin: "http://localhost:8790", source: active.frame.contentWindow, data: {type: "design-patch-session-request"}},
+  {origin: "http://localhost:8791", source: {}, data: {type: "design-patch-session-request"}},
+  {origin: "http://localhost:8791", source: active.frame.contentWindow, data: null},
+  {origin: "http://localhost:8791", source: active.frame.contentWindow, data: {type: "wrong"}}
+]) active.listeners.message(event);
+verify(active.messages.length === 0, "reject foreign origin/source/type");
+active.listeners.message({origin: "http://localhost:8791", source: active.frame.contentWindow, data: {type: "design-patch-session-request"}});
+verify(active.messages.length === 1, "request refresh");
+const first = active.messages[0];
+verify(first.origin === "http://localhost:8791" && first.message.type === "design-patch-session" && first.message.organization_id === "org1", "target and message");
+verify(first.message.token === "dev:alice:1700000120", "expiry");
+active.advance();
+active.timers.find(timer => timer.ms === 60000).fn();
+verify(active.messages.length === 2 && active.messages[1].message.token === "dev:alice:1700000190", "periodic renewal");
+verify(active.remaining.textContent.includes("120"), "countdown");
+const silent = boot(input.silent);
+silent.advance();
+silent.timers.forEach(timer => timer.fn());
+verify(silent.messages.length === 0 && !silent.listeners.message && silent.timers.length === 1, "silent no refresh");
+console.log("refresh behavior passed");
+'''
+            proc = subprocess.run([node, "-e", script], input=json.dumps({"active": active_script, "silent": silent_script}),
+                                  capture_output=True, text=True, encoding="utf-8", timeout=20)
+            check(proc.returncode == 0 and "refresh behavior passed" in proc.stdout, "FD8 JS 실제 실행: origin/source·요청·주기 갱신·silent " + proc.stderr[-400:])
+        else:
+            SKIPS.append("forge_f2_dev_unit 갱신 JavaScript 실행: node 없음")
+
+    asyncio.run(run())
+    source = (PKG / "bmk_design_patch_forge_dev.py").read_text(encoding="utf-8")
+    check(set(re.findall(r"https?://([a-zA-Z0-9.-]+)", source)) <= {"localhost", "example.com"}, "FD9 모듈 리터럴 주소는 개발용만")
+    check("bmk_design_patch_forge" not in {node.module for node in ast.walk(ast.parse(source)) if isinstance(node, ast.ImportFrom)}
+          and not any(isinstance(node, ast.Import) and any(alias.name == "bmk_design_patch_forge" for alias in node.names)
+                      for node in ast.walk(ast.parse(source))), "FD9 갈래 S 모듈 import 없음")
+    import_probe = ("import sys; sys.path.insert(0, " + repr(str(PKG)) + "); import bmk_design_patch_forge_dev; "
+                    "assert not any(k in sys.modules for k in ('torch','comfy','bmk_design_patch_forge')); print('clean')")
+    proc = subprocess.run([sys.executable, "-B", "-X", "utf8", "-c", import_probe], capture_output=True, text=True, encoding="utf-8", timeout=20)
+    check(proc.returncode == 0 and "clean" in proc.stdout, "FD9 torch·ComfyUI·ForgeClient 없이 import " + proc.stderr[-400:])
 
 
 def _batch13_values(css, code):
