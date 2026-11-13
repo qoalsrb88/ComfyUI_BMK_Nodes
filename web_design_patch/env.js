@@ -46,7 +46,7 @@ window.DPEnv = (() => {
   let sessionUrl = null, lastToken = null, refreshChain = Promise.resolve();
   const pendingTokens = new Set();
   let tokenWait = null, recovery = null, lastRequest = -Infinity, requests = 0;
-  let blocker = null, retryButton = null, changed = false;
+  let blocker = null, retryButton = null, changed = false, retryingSession = false;
   const blockedInert = new Map();
   function blockKeys(e) {
     if (!blocker) return;
@@ -92,7 +92,12 @@ window.DPEnv = (() => {
     if (retry) {
       const button = document.createElement("button");
       retryButton = button;
-      button.textContent = "다시 시도"; button.onclick = () => { clearBlock(); initialize(); }; sheet.appendChild(button);
+      button.textContent = "다시 시도";
+      button.onclick = () => {
+        if (prepared && env.account) return retrySession();
+        clearBlock(); initialize();
+      };
+      sheet.appendChild(button);
     }
     blocker.appendChild(sheet);
     for (const child of document.body.children) if (child !== blocker) {
@@ -167,7 +172,7 @@ window.DPEnv = (() => {
   }
 
   function parentTarget() {
-    if (!env.forge || changed || blocker || !window.parent || window.parent === window || !env.messages.request) return null;
+    if (!env.forge || changed || (blocker && !retryingSession) || !window.parent || window.parent === window || !env.messages.request) return null;
     const origin = new URLSearchParams(location.search).get("parent_origin");
     return origin && env.parent_origins.includes(origin) ? origin : null;
   }
@@ -180,16 +185,23 @@ window.DPEnv = (() => {
   function requestParent(exchange, detailed = false) {
     const target = parentTarget();
     if (!target || !env.account || !sessionUrl || (!exchange && !env.token_url)) return Promise.resolve(false);
-    if (tokenWait) {
-      if (exchange && !tokenWait.exchange) { tokenWait.exchange = true; lastToken = null; }
-      return detailed ? tokenWait.result : tokenWait.promise;
+    let wait = tokenWait;
+    if (wait) {
+      if (!exchange || wait.exchange) return detailed ? wait.result : wait.promise;
+      wait.exchange = true;
+      wait.received = false;
+      clearTimeout(wait.timer);
+    } else {
+      if (!exchange && (requests >= 3 || Date.now() - lastRequest < 15000)) return Promise.resolve(false);
+      wait = { exchange, tag: env.account.tag, received: false, exchanging: false };
+      wait.result = new Promise((resolve) => { wait.resolve = resolve; });
+      wait.promise = wait.result.then((result) => !!result);
+      tokenWait = wait;
     }
-    if (!exchange && (requests >= 3 || Date.now() - lastRequest < 15000)) return Promise.resolve(false);
-    const wait = { exchange, tag: env.account.tag, received: false };
-    wait.result = new Promise((resolve) => { wait.resolve = resolve; });
-    wait.promise = wait.result.then((result) => !!result);
-    tokenWait = wait;
+    wait.expired = false;
     wait.timer = setTimeout(() => {
+      wait.expired = true;
+      if (wait.exchanging) return; // 세션 POST 는 자체 15초 상한의 응답까지 기다린다.
       if (!wait.exchange && !wait.received) requests++;
       finishToken(wait, false);
     }, 15000);
@@ -203,6 +215,17 @@ window.DPEnv = (() => {
     if (!recovery) recovery = requestParent(true).finally(() => { recovery = null; });
     return recovery;
   }
+  async function retrySession() {
+    if (retryingSession || changed) return;
+    retryingSession = true;
+    if (retryButton) retryButton.disabled = true;
+    try {
+      if (await recoverSession()) clearBlock();
+    } finally {
+      retryingSession = false;
+      if (retryButton) retryButton.disabled = false;
+    }
+  }
   function reconnected() {
     const notice = document.createElement("div");
     notice.className = "dp-env-notice";
@@ -211,14 +234,15 @@ window.DPEnv = (() => {
     document.body.appendChild(notice);
     setTimeout(() => notice.remove(), 5000);
   }
-  function sessionRequest(url, body) {
+  function sessionRequest(url, body, wait = null) {
     const headers = { "Content-Type": "application/json", "X-DesignPatch-Request": "1" };
     if (env.account) headers["X-DesignPatch-Account"] = env.account.tag;
+    if (wait && wait === tokenWait) { wait.exchange = true; wait.exchanging = true; }
     // 이 두 인증 라우트는 fetch 복구를 다시 부르지 않는다.
     return read(url, { method: "POST", headers, body: JSON.stringify(body) }, 15000, true);
   }
   window.addEventListener("message", (event) => {
-    if (!env.forge || !env.account || changed || blocker || event.source !== window.parent
+    if (!env.forge || !env.account || changed || (blocker && !retryingSession) || event.source !== window.parent
         || !env.parent_origins.includes(event.origin) || !env.messages.session || !object(event.data)
         || event.data.type !== env.messages.session || typeof event.data.token !== "string"
         || typeof event.data.organization_id !== "string") return;
@@ -230,21 +254,21 @@ window.DPEnv = (() => {
     refreshChain = refreshChain.then(async () => {
       let wait = tokenWait;
       try {
-        if (changed || blocker) return;
+        if (changed || (blocker && !retryingSession)) return;
         const tag = wait ? wait.tag : env.account.tag;
         let exchange = !!(wait && wait.exchange);
         if (!exchange && !env.token_url) return;
-        let result = await sessionRequest(exchange ? sessionUrl : env.token_url, body);
+        let result = await sessionRequest(exchange ? sessionUrl : env.token_url, body, exchange ? wait : null);
         if (!wait) wait = tokenWait;
         if (!exchange && ((result.response.status === 401 && result.data && result.data.reason === "no_session")
             || (wait && wait === tokenWait && wait.exchange))) {
           exchange = true;
-          result = await sessionRequest(sessionUrl, body);
+          result = await sessionRequest(sessionUrl, body, wait);
         }
         const { response, data } = result;
         if (response.status === 409 || (response.status === 401 && data && data.reason === "bad_token")) lastToken = body.token;
         if (exchange && response.status === 503 && data && data.reason === "forge_unreachable") {
-          token = body.token; organization = body.organization_id;
+          if (!prepared) { token = body.token; organization = body.organization_id; }
           block(data.error, null, true); finishToken(wait, false); return;
         }
         if (response.status === 409 && data && data.reason === "session_changed") {
@@ -266,7 +290,13 @@ window.DPEnv = (() => {
         requests = 0;
         finishToken(wait, true, exchange);
       } catch (e) { /* 토큰과 전송 오류는 화면·로그·저장소에 남기지 않는다. */ }
-      finally { pendingTokens.delete(body.token); }
+      finally {
+        if (wait) {
+          wait.exchanging = false;
+          if (wait.expired) finishToken(wait, false);
+        }
+        pendingTokens.delete(body.token);
+      }
     });
   });
 
@@ -302,7 +332,7 @@ window.DPEnv = (() => {
     };
   }
 
-  let resolveReady, initializing = false;
+  let resolveReady, initializing = false, prepared = false;
   env.ready = new Promise((resolve) => { resolveReady = resolve; });
   window.addEventListener("pagehide", () => { token = null; organization = ""; lastToken = null; finishToken(tokenWait, false); });
   async function initialize() {
@@ -366,6 +396,7 @@ window.DPEnv = (() => {
         console.warn("화면 설정을 브라우저에만 저장합니다 — 서버 저장소를 연결하지 못했습니다.");
         env.store = local;
       }
+      prepared = true;
       resolveReady();
     } catch (e) {
       block("서버에 연결하지 못했습니다", null, true);
