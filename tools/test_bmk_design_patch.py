@@ -49398,6 +49398,397 @@ def polish2_unit():
 def forge_f2_session_unit():
     """Forge F2 갈래 S — 세션 토큰 표·갱신 라우트·재교환·권한 재확인·토큰이 디스크·로그·응답에 없음. 명세 _proto/STUDIO_FORGE_F2_SPEC.md §2.4·§4. --quick 포함."""
     section("Forge F2-S — forge_f2_session_unit")
+    import functools
+    import tempfile
+    import bmk_design_patch_forge as fg
+    import bmk_design_patch_server as srv
+    import bmk_design_patch_board as bd
+    from aiohttp import DummyCookieJar, web
+    from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
+    from unittest.mock import AsyncMock, patch
+    fixture = json.loads((PKG / "tools/fixtures/forge_api.json").read_text(encoding="utf-8"))
+    api = json.loads((PKG / "tools/fixtures/server_api.json").read_text(encoding="utf-8"))
+    now = [100.0]
+    identity = {"account_id": "alice", "organization_id": "org1", "name": "alice"}
+    scope = {"org": "org1", "account": "alice"}
+    tokens = srv.SessionStore(10, 25, clock=lambda: now[0])
+    sid1 = tokens.create(identity, scope, "tag")
+    tokens.set_token(sid1, "synthetic-first", 300)
+    now[0] = 101
+    sid2 = tokens.create(identity, scope, "tag")
+    tokens.set_token(sid2, "synthetic-second", 200)
+    check(tokens.token_for("org1", "alice") == "synthetic-first", "F2S 최신 수신보다 늦은 exp 우선")
+    check(all("synthetic" not in repr(value) for value in (tokens, tokens._tokens, tokens.get(sid1), tokens._sessions)), "F2S get·표·세션 repr 토큰 없음")
+    seen = tokens.get(sid1)["seen"]
+    now[0] = 102
+    tokens.token_for("org1", "alice")
+    check(tokens._sessions[sid1]["seen"] == seen, "F2S 작업 토큰 조회는 seen 미갱신")
+    tokens.reject_token("org1", "alice", "synthetic-first")
+    check(tokens.token_for("org1", "alice") == "synthetic-second", "F2S 401 거절 토큰 제외")
+    tokens.set_token(sid2, "synthetic-first", 400)
+    check(tokens.token_for("org1", "alice") is None, "F2S 같은 거절 토큰 재수신도 제외")
+    tokens.set_token(sid2, "synthetic-new", 500)
+    tokens.drop_token(sid2)
+    check(tokens.token_for("org1", "alice") is None and tokens.get(sid2) is not None, "F2S 토큰만 삭제")
+    tokens.set_token(sid2, "synthetic-new", 500)
+    now[0] = 112
+    check(tokens.token_for("org1", "alice") is None and not tokens._tokens and not tokens._sessions, "F2S 유휴 만료·토큰 정리")
+    now[0] = 200
+    sid1 = tokens.create(identity, scope, "tag")
+    tokens.set_token(sid1, "unknown-first", None)
+    now[0] = 201
+    sid2 = tokens.create(identity, scope, "tag")
+    tokens.set_token(sid2, "unknown-second", None)
+    check(tokens.token_for("org1", "alice") == "unknown-second", "F2S 모르는 exp는 받은 시각")
+    tokens.delete(sid2)
+    check(tokens.token_for("org1", "alice") == "unknown-first", "F2S 세션 삭제 뒤 다른 세션 토큰")
+    for stamp in (209, 218, 224):
+        now[0] = stamp
+        tokens.get(sid1)
+    now[0] = 225
+    check(tokens.token_for("org1", "alice") is None and not tokens._tokens, "F2S 절대 만료")
+    sid1 = tokens.create(identity, scope, "tag")
+    sid2 = tokens.create(identity, scope, "tag")
+    other = tokens.create({**identity, "account_id": "bob"}, {**scope, "account": "bob"}, "other")
+    for sid in (sid1, sid2, other):
+        tokens.set_token(sid, "drop-secret", 500)
+    tokens.mark_access("org1", "alice", now[0])
+    tokens.drop_account("org1", "alice")
+    check(tokens.get(sid1) is None and tokens.get(sid2) is None and tokens.get(other) is not None
+          and tokens.access_at("org1", "alice") is None, "F2S 계정 전체 삭제·다른 계정 보존")
+    tokens.clear()
+    check(not any((tokens._sessions, tokens._tokens, tokens._access, tokens._refresh, tokens._rejected)), "F2S clear 전체 비밀·제한 정리")
+    bounded = srv.SessionStore(100, 100, clock=lambda: now[0], limit=2)
+    for index in range(3):
+        now[0] += 1
+        sid = bounded.create(identity, scope, "tag")
+        bounded.set_token(sid, "bounded-" + str(index), None)
+    check(len(bounded._tokens) == 2 and len(bounded._sessions) == 2, "F2S 전역 LRU 토큰도 삭제")
+    replaced = bounded.create(identity, scope, "tag", old_sid=sid)
+    check(sid not in bounded._tokens and bounded.get(sid) is None and bounded.get(replaced), "F2S 재교환 옛 세션·토큰 삭제")
+    capped = srv.SessionStore(1000, 1000, clock=lambda: now[0])
+    for index in range(21):
+        now[0] += 1
+        sid = capped.create(identity, scope, "tag")
+        capped.set_token(sid, "capped-" + str(index), None)
+    check(len(capped._sessions) == len(capped._tokens) == 20, "F2S 계정별 세션 상한 토큰도 삭제")
+
+    async def access_cases():
+        cfg = fg.ForgeConfig("https://forge.example", access_keys=("image", "designPatch"))
+        for mode in ("fresh", "due", "missing", "unauthorized", "forbidden", "org", "key", "server"):
+            now[0] = 100
+            sessions = srv.SessionStore(10000, 20000, clock=lambda: now[0])
+            sid = sessions.create(identity, scope, "tag")
+            if mode != "missing":
+                sessions.set_token(sid, "access-secret", 5000)
+            sessions.mark_access("org1", "alice", now[0])
+            now[0] += fg.ACCESS_TTL if mode != "fresh" else fg.ACCESS_TTL - 1
+            access = {"orgs": [] if mode == "org" else ["org1"], "whitelist": {"image": True, "designPatch": mode != "key"}}
+            call = AsyncMock(return_value=access)
+            if mode in ("unauthorized", "forbidden", "server"):
+                call.side_effect = fg.ForgeError(mode, {"unauthorized": 401, "forbidden": 403, "server": 503}[mode])
+            accounts = fg.ForgeAccounts(types.SimpleNamespace(access=call), cfg, sessions, clock=lambda: now[0])
+            ctx = accounts.context(scope)
+            check(set(ctx) == {"client", "token_of", "reject_token", "organization_id", "options"}
+                  and ctx["options"] == {"prompt_autopilot": False, "concurrency": 2}, "F2S B 갈래 context 계약")
+            expected = {"missing": "unauthorized", "org": "forbidden", "key": "forbidden"}.get(mode, mode)
+            try:
+                await accounts.ensure_access(scope)
+            except fg.ForgeError as error:
+                check(error.reason == expected, "F2S 권한 재확인 실패 " + mode)
+            else:
+                check(mode in ("fresh", "due"), "F2S 권한 재확인 성공 " + mode)
+            check(call.await_count == (0 if mode in ("fresh", "missing") else 1), "F2S ACCESS_TTL 경계 호출 수")
+            if mode in ("forbidden", "org", "key"):
+                check(sessions.get(sid) is None, "F2S 권한 회수 계정 삭제")
+            if mode == "unauthorized":
+                check(ctx["token_of"]() is None and sessions.get(sid) is not None, "F2S 401 토큰만 거절")
+            if mode == "due":
+                check(sessions.access_at("org1", "alice") == now[0], "F2S 성공한 권한 확인 시각 갱신")
+                ctx["reject_token"]("access-secret")
+                check(ctx["token_of"]() is None, "F2S context 거절 클로저")
+            if mode == "server":
+                check(ctx["token_of"]() == "access-secret" and sessions.access_at("org1", "alice") == 100, "F2S 장애는 세션·확인 시각 유지")
+    asyncio.run(access_cases())
+
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    out = Path(tempfile.mkdtemp(prefix="forge_f2_session_", dir=OUT_ROOT))
+    cfg = fg.ForgeConfig("https://forge.example", media_origins=("https://forge.example",), access_keys=("image", "designPatch"))
+    base = srv.ServerConfig(str(out / "data"), public_origin="https://forge.example", parent_origins=("https://forge.example",), forge=cfg)
+    for change in ({"dev_handoff": True}, {"forge": fg.ForgeConfig("http://localhost:8790", allow_http=True)}):
+        expect_raises(lambda c=change: srv._validate_config(dataclasses.replace(base, **c)), "F2S 시작 시 개발·HTTP 조합 거절")
+    dev = srv._validate_config(dataclasses.replace(base, dev_handoff=True, forge=fg.ForgeConfig("http://localhost:8790", allow_http=True)))
+    check(dev.forge.allow_http and not srv._validate_config(dataclasses.replace(base, forge=dataclasses.replace(cfg, allow_http=True))).forge.allow_http,
+          "F2S allow_http는 dev_handoff에서만")
+
+    class Runner:
+        def __init__(self, *, workers, forge=None):
+            self.workers, self.forge, self.closed = workers, forge, False
+        def close(self, timeout=0):
+            self.closed = True
+    jobs = types.SimpleNamespace(JobRunner=Runner, routes=lambda runner: ())
+    all_tokens, calls, responses = [], [], []
+    behavior = {}
+    gate = [None, None]
+    def new_token(label, account="alice", exp=5000):
+        value = "head." + base64.urlsafe_b64encode(json.dumps({"sub": account, "exp": exp, "test": label}).encode()).decode().rstrip("=") + ".signature"
+        all_tokens.append(value)
+        behavior[value] = (account, None)
+        return value
+
+    async def transport(method, url, headers, body, timeout):
+        token = headers["Authorization"][7:]
+        calls.append((method, url, token))
+        if gate[0] is not None:
+            gate[0].set()
+            await gate[1].wait()
+        account, mode = behavior[token]
+        if mode in ("unauthorized", "forbidden", "server"):
+            return {"unauthorized": 401, "forbidden": 403, "server": 503}[mode], {}, b"{}"
+        if mode == "exception":
+            raise RuntimeError("Authorization: Bearer " + token + " https://forge.example/private")
+        value = copy.deepcopy(fixture["me" if url.endswith("/auth/me") else "access_summary"]["response"])
+        if "user" in value:
+            value["user"].update(id=account, name=account)
+        elif mode == "other_org":
+            value["organizations"].append({"id": "org2", "name": "다른 조직"})
+        return 200, {}, json.dumps(value).encode()
+
+    class Body:
+        def __init__(self, raw):
+            self.raw = raw
+        async def iter_chunked(self, size):
+            for start in range(0, len(self.raw), size):
+                yield self.raw[start:start + size]
+
+    @contextlib.asynccontextmanager
+    async def serving(http=False, forge=True, verifier=None):
+        config = base if forge else dataclasses.replace(base, forge=None, dev_handoff=True)
+        app = srv.make_app(config, verifier=verifier, jobs_module=jobs, clock=lambda: now[0], forge_transport=transport)
+        client = None
+        if http:
+            client = TestClient(TestServer(app), cookie_jar=DummyCookieJar())
+            await client.start_server()
+        else:
+            app.freeze()
+            await app.startup()
+
+        async def call(path, method="GET", data=None, sid=None, tag=None, raw=None, extra=None):
+            headers = {"Host": "forge.example", "Origin": base.public_origin, "X-DesignPatch-Request": "1"}
+            if sid:
+                headers["Cookie"] = srv.COOKIE + "=" + sid
+            if tag is not None:
+                headers["X-DesignPatch-Account"] = tag
+            if raw is None and data is not None:
+                raw = json.dumps(data).encode()
+            if raw is not None:
+                headers.update({"Content-Type": "application/json", "Content-Length": str(len(raw))})
+            headers.update(extra or {})
+            if client is not None:
+                response = await client.request(method, path, data=raw, headers=headers)
+                text = await response.text()
+            else:
+                request = make_mocked_request(method, path, headers=headers, payload=Body(raw or b""), app=app)
+                match = await app.router.resolve(request)
+                request._match_info = match
+                handler = match.handler
+                for middleware in reversed(app.middlewares):
+                    handler = functools.partial(middleware, handler=handler)
+                response = await handler(request)
+                for prepare in app.on_response_prepare:
+                    await prepare(request, response)
+                check(all(token not in repr(request.get("bmk_dp_session")) for token in all_tokens), "F2S 요청 공개 세션에 토큰 없음")
+                text = response.text
+            responses.append((text or "") + repr(dict(response.headers)) + response.cookies.output())
+            value = json.loads(text) if response.content_type == "application/json" else None
+            return response, value
+
+        try:
+            yield app, call
+        finally:
+            if client:
+                await client.close()
+            else:
+                await app.cleanup()
+            check(app[srv._RUNNER_KEY].closed and not app[srv._SESSION_KEY]._tokens, "F2S 종료 시 실행기·토큰 정리")
+
+    async def route_cases(http=False):
+        now[0] = 100
+        async with serving(http) as (app, call):
+            check(os.environ.get("BMK_DP_FORGE") == "1" and os.environ.get("BMK_DP_MOCK_API") == "off", "F2S Forge 모드는 mock 강제 없음")
+            accounts, sessions = app[srv._FORGE_KEY], app[srv._SESSION_KEY]
+            check(app[srv._RUNNER_KEY].forge is accounts, "F2S 실행기에 계정 창구 전달")
+            before = len(calls)
+            resp, value = await call("/api/session/token", "POST", {"token": "missing", "organization_id": "org1"})
+            check(resp.status == 401 and value["reason"] == "no_session" and len(calls) == before, "F2S 갱신 라우트는 세션 필수")
+            for mode, expected in (("unauthorized", 401), ("forbidden", 403), ("server", 503), ("exception", 503)):
+                token = new_token(mode)
+                behavior[token] = ("alice", mode)
+                before = len(app[srv._LOGIN_FAILURES_KEY]._global)
+                response, value = await call("/api/session", "POST", {"token": token, "organization_id": "org1"})
+                check(response.status == expected and len(app[srv._LOGIN_FAILURES_KEY]._global) - before == int(mode == "unauthorized"), "F2S 로그인 오류·집계 " + mode)
+                if expected in (403, 503):
+                    expected_value = api["session_post_no_access" if expected == 403 else "session_post_forge_unreachable"]["response"]
+                    check(value == expected_value, "F2S 로그인 오류 fixture 문구")
+            first = new_token("first")
+            response, value = await call("/api/session", "POST", {"token": first, "organization_id": "org1"})
+            sid, tag = response.cookies[srv.COOKIE].value, value["account"]["tag"]
+            check(response.status == 200 and sessions.token_for("org1", "alice") == first
+                  and sessions.access_at("org1", "alice") == now[0], "F2S 로그인 토큰 보관·권한 확인 시각")
+            response, value = await call(bd.API + "/env", sid=sid)
+            expected_env = copy.deepcopy(api["env_server_forge"]["response"])
+            expected_env["account"]["tag"] = tag
+            expected_env["parent_origins"] = list(base.parent_origins)
+            expected_env["caps"].update(forge_import=False, forge_save=False)
+            check(value == expected_env, "F2S Forge env fixture·C 라우트 없으면 caps false")
+            before = len(calls)
+            for _ in range(3):
+                response, value = await call("/api/session/token", "POST", {"token": first, "organization_id": "org1"}, sid, tag)
+                check(response.status == 200 and value == {"ok": True}, "F2S 동일 토큰 200")
+            check(len(calls) == before, "F2S 동일 토큰 Forge 미호출")
+            for data in ({}, {"token": "", "organization_id": "org1"}, {"token": first, "organization_id": 3}):
+                response, _ = await call("/api/session/token", "POST", data, sid, tag)
+                check(response.status == 400, "F2S 갱신 본문 형식 검사")
+            response, _ = await call("/api/session/token", "POST", sid=sid, tag=tag, raw=b" " * (16 * 1024 + 1))
+            check(response.status == 400, "F2S 갱신 본문 16KiB 상한")
+            response, _ = await call("/api/session/token", "POST", {"token": first, "organization_id": "org1"}, sid)
+            check(response.status == 403, "F2S 갱신 계정 헤더 필수")
+            newer = new_token("newer", exp=6000)
+            before_failures = list(app[srv._LOGIN_FAILURES_KEY]._global)
+            response, value = await call("/api/session/token", "POST", {"token": newer, "organization_id": "org1"}, sid, tag)
+            check(response.status == 200 and value == {"ok": True} and sessions.token_for("org1", "alice") == newer, "F2S 갱신 성공")
+            _, value = await call(bd.API + "/env", sid=sid)
+            check(value["token_refresh"] is True, "F2S 교체 뒤 env token_refresh")
+            older = new_token("older", exp=5500)
+            response, value = await call("/api/session/token", "POST", {"token": older, "organization_id": "org1"}, sid, tag)
+            check(response.status == 429 and value == api["session_token_rate_limited"]["response"], "F2S 최소 5초 간격·fixture")
+            now[0] += 5
+            response, _ = await call("/api/session/token", "POST", {"token": older, "organization_id": "org1"}, sid, tag)
+            check(response.status == 200 and sessions.token_for("org1", "alice") == newer, "F2S 옛 exp는 버리고 200")
+            equal = new_token("equal", exp=6000)
+            now[0] += 5
+            response, _ = await call("/api/session/token", "POST", {"token": equal, "organization_id": "org1"}, sid, tag)
+            check(response.status == 200 and sessions.token_for("org1", "alice") == equal, "F2S 같은 exp는 교체")
+            for mode, status in (("unauthorized", 401), ("server", 503), ("exception", 503)):
+                token = new_token("refresh-" + mode, exp=7000)
+                behavior[token] = ("alice", mode)
+                now[0] += 5
+                response, _ = await call("/api/session/token", "POST", {"token": token, "organization_id": "org1"}, sid, tag)
+                check(response.status == status and sessions.token_for("org1", "alice") == equal
+                      and app[srv._LOGIN_FAILURES_KEY]._global == before_failures, "F2S 갱신 실패는 로그인 집계·기존 토큰 유지 " + mode)
+            now[0] += 5
+            concurrent = new_token("concurrent", exp=8000)
+            gate[:] = [asyncio.Event(), asyncio.Event()]
+            pending = asyncio.create_task(call("/api/session/token", "POST", {"token": concurrent, "organization_id": "org1"}, sid, tag))
+            await gate[0].wait()
+            now[0] += 6
+            response, _ = await call("/api/session/token", "POST", {"token": concurrent, "organization_id": "org1"}, sid, tag)
+            check(response.status == 429, "F2S 5초가 지나도 진행 중 요청 중복 제한")
+            gate[1].set()
+            response, _ = await pending
+            gate[:] = [None, None]
+            check(response.status == 200, "F2S 진행 중 갱신 완료")
+            now[0] += 5
+            changed = new_token("different-account", account="bob", exp=9000)
+            response, value = await call("/api/session/token", "POST", {"token": changed, "organization_id": "org1"}, sid, tag)
+            check(response.status == 409 and value["reason"] == "session_changed" and sessions.token_for("org1", "alice") is None
+                  and sessions.get(sid) is not None, "F2S 계정 변경 409·해당 세션 토큰만 삭제")
+            now[0] += 5
+            response, _ = await call("/api/session/token", "POST", {"token": first, "organization_id": "org1"}, sid, tag)
+            check(response.status == 200, "F2S 동일 계정으로 다시 갱신")
+            other_org = new_token("different-org", exp=9000)
+            behavior[other_org] = ("alice", "other_org")
+            now[0] += 5
+            response, value = await call("/api/session/token", "POST", {"token": other_org, "organization_id": "org2"}, sid, tag)
+            check(response.status == 409 and value["reason"] == "session_changed" and sessions.token_for("org1", "alice") is None,
+                  "F2S 소속이 있는 다른 조직도 갱신으로 바꿀 수 없음")
+            now[0] += 5
+            await call("/api/session/token", "POST", {"token": first, "organization_id": "org1"}, sid, tag)
+            response, _ = await call("/api/session", "POST", {"token": first, "organization_id": "org1"})
+            second_sid = response.cookies[srv.COOKIE].value
+            revoked = new_token("revoked")
+            behavior[revoked] = ("alice", "forbidden")
+            now[0] += 5
+            response, value = await call("/api/session/token", "POST", {"token": revoked, "organization_id": "org1"}, sid, tag)
+            check(response.status == 403 and value == api["session_post_no_access"]["response"]
+                  and sessions.get(sid) is None and sessions.get(second_sid) is None, "F2S 권한 회수 모든 계정 세션 삭제")
+            response, value = await call("/api/session", "POST", {"token": first, "organization_id": "org1"})
+            sid, tag = response.cookies[srv.COOKIE].value, value["account"]["tag"]
+            logout_pending = new_token("logout-pending", exp=9500)
+            gate[:] = [asyncio.Event(), asyncio.Event()]
+            pending = asyncio.create_task(call("/api/session/token", "POST", {"token": logout_pending, "organization_id": "org1"}, sid, tag))
+            await gate[0].wait()
+            response, value = await call("/api/session/logout", "POST", {}, sid, tag)
+            check(response.status == 200 and sessions.get(sid) is None and sessions.token_for("org1", "alice") is None, "F2S 로그아웃 토큰 삭제")
+            gate[1].set()
+            response, value = await pending
+            gate[:] = [None, None]
+            check(response.status == 401 and value["reason"] == "no_session" and not sessions._tokens, "F2S 진행 중 갱신은 로그아웃 세션을 되살리지 않음")
+            response, value = await call("/api/session", "POST", {"token": first, "organization_id": "org1"})
+            old_sid, old_tag = response.cookies[srv.COOKIE].value, value["account"]["tag"]
+            check(all(token not in repr(obj) for token in all_tokens for obj in (sessions, sessions._tokens, accounts, accounts.client)), "F2S 서비스 객체 repr 비밀 0건")
+        async with serving(http) as (app, call):
+            response, value = await call("/api/session/token", "POST", {"token": first, "organization_id": "org1"}, old_sid, old_tag)
+            check(response.status == 401 and value["reason"] == "no_session", "F2S 재시작 뒤 갱신은 no_session")
+            response, value = await call("/api/session", "POST", {"token": first, "organization_id": "org1"}, old_sid)
+            check(response.status == 200 and value["account"]["tag"] == old_tag, "F2S 재시작 재교환·동일 계정 tag 유지")
+        async with serving(http, forge=False) as (app, call):
+            response, value = await call(bd.API + "/env")
+            legacy = {"server_mode": True, "session": False, "account": None, "session_url": "/api/session", "prefs_url": "/api/preferences",
+                      "caps": {name: name in ("jobs", "export_download") for name in bd.LOCAL_CAPS}, "backend": "mock"}
+            check(value == legacy and responses[-1].startswith(json.dumps(legacy)), "F2S Forge 없는 env 기존 바이트")
+            response, _ = await call("/api/session/token", "POST", {})
+            check(response.status == 404, "F2S Forge 없는 갱신 라우트 404")
+
+    log = io.StringIO()
+    handler = logging.StreamHandler(log)
+    root_logger = logging.getLogger()
+    old_level = root_logger.level
+    root_logger.setLevel(logging.DEBUG)
+    root_logger.addHandler(handler)
+    try:
+        with patch.dict(os.environ, {"BMK_DP_MOCK_API": "off", "BMK_DP_FORGE": "before"}):
+            asyncio.run(route_cases())
+            check(os.environ.get("BMK_DP_FORGE") == "before" and os.environ.get("BMK_DP_MOCK_API") == "off", "F2S cleanup 환경 복원")
+            asyncio.run(route_cases(http=True))  # 같은 시나리오를 실제 소켓(TestServer)으로 한 번 더
+            with patch.object(srv, "_server_secret", side_effect=RuntimeError("setup failed")):
+                expect_raises(lambda: srv.make_app(base, jobs_module=jobs), "F2S 앱 구성 실패", RuntimeError)
+            check(os.environ.get("BMK_DP_FORGE") == "before" and os.environ.get("BMK_DP_MOCK_API") == "off", "F2S 예외 경로 환경 복원")
+            async def mock_preserved():
+                with patch.dict(os.environ, {"BMK_DP_MOCK_API": "yes"}):
+                    async with serving() as (app, call):
+                        _, value = await call(bd.API + "/env")
+                        check(value["backend"] == "mock" and os.environ["BMK_DP_MOCK_API"] == "yes", "F2S 명시적 mock 유지")
+            asyncio.run(mock_preserved())
+    finally:
+        root_logger.removeHandler(handler)
+        root_logger.setLevel(old_level)
+    files = [path.read_bytes() for path in (out / "data").rglob("*") if path.is_file()]
+    check(bool(files) and all(token.encode() not in raw for token in all_tokens for raw in files), "F2S 모든 data 파일 토큰 0건")
+    check(all(token not in log.getvalue() for token in all_tokens), "F2S 모든 수준 로그 토큰 0건")
+    check(all(token not in response for token in all_tokens for response in responses), "F2S 모든 응답 본문·헤더·쿠키 토큰 0건")
+
+    cli = ["--data", str(out / "cli"), "--public-origin", "https://forge.example"]
+    with patch.object(srv, "make_app", side_effect=RuntimeError("captured")) as capture:
+        expect_raises(lambda: srv.main(cli + ["--forge-api", "https://forge.example", "--forge-media-origin", "https://forge.example",
+                      "--forge-access-key", "image", "--forge-access-key", "designPatch", "--forge-concurrency", "3",
+                      "--forge-autopilot-opt-out", '{"off":true}', "--forge-session-message", "session-test", "--forge-request-message", "request-test"]),
+                      "F2S CLI 구성 캡처(서비스 시작 없음)", RuntimeError)
+        value = capture.call_args.args[0].forge
+        check(value.access_keys == ("image", "designPatch") and value.concurrency == 3 and value.prompt_autopilot == {"off": True}
+              and value.session_message == "session-test" and value.request_message == "request-test", "F2S CLI 반복 옵션·JSON·메시지")
+        expect_raises(lambda: srv.main(cli + ["--forge-api", "https://forge.example"]), "F2S CLI 기본값 캡처", RuntimeError)
+        value = capture.call_args.args[0].forge
+        check(value.concurrency == 2 and value.prompt_autopilot is False, "F2S CLI 기본값")
+    with contextlib.redirect_stderr(io.StringIO()):
+        for option, value in (("--forge-concurrency", "2"), ("--forge-media-origin", "https://forge.example"),
+                              ("--forge-access-key", "image"), ("--forge-autopilot-opt-out", "false"),
+                              ("--forge-session-message", "session"), ("--forge-request-message", "request")):
+            expect_raises(lambda o=option, v=value: srv.main(cli + [o, v]), "F2S api 없는 부가 옵션 오류", SystemExit)
+        for options in (["--forge-api", "http://localhost:8790"], ["--forge-api", "https://forge.example", "--dev-handoff"],
+                        ["--forge-api", "https://forge.example", "--forge-concurrency", "9"],
+                        ["--forge-api", "https://forge.example", "--forge-autopilot-opt-out", "broken"]):
+            expect_raises(lambda o=options: srv.main(cli + o), "F2S CLI 잘못된 Forge 조합 거절", SystemExit)
 
 
 def forge_f3_theme_unit():
@@ -59992,6 +60383,179 @@ def batch13_unit():
 def forge_f2_client_unit():
     """Forge F2 갈래 S — ForgeClient(요청 모양·오류 분류·허용 origin·리다이렉트 거부·크기 상한) + 토큰 0건. 명세 _proto/STUDIO_FORGE_F2_SPEC.md §2.4·§4. --quick 포함."""
     section("Forge F2-S — forge_f2_client_unit")
+    import bmk_design_patch_forge as fg
+    from unittest.mock import patch
+    fixture = json.loads((PKG / "tools/fixtures/forge_api.json").read_text(encoding="utf-8"))
+    config = fg.ForgeConfig("https://FORGE.EXAMPLE.:443/", media_origins=("https://forge.example",))
+    check(config.api == "https://forge.example", "F2C origin 대소문자·끝 점·기본 포트 정규화")
+    check(fg.normalize_origin("https://예시.example") == fg.normalize_origin("https://xn--vv4b11d.example"), "F2C IDNA origin")
+    check(fg.normalize_origin("http://[::1]:8790/") == "http://[::1]:8790", "F2C IPv6 origin")
+    for value in ("/relative", "https://user@forge.example", "https://:secret@forge.example", "https://forge.example/path",
+                  "https://forge.example?q=1", "https://forge.example#part", "https://forge.example:bad", "https://forge.example:0", "https://forge.example:",
+                  "https://forge.example:65536", "https://forge.example\\other", "https://forge.example /", "ftp://forge.example"):
+        expect_raises(lambda v=value: fg.normalize_origin(v), "F2C 잘못된 origin 거절")
+    for value, allow in (("http://localhost:8790", False), ("http://forge.example", True)):
+        expect_raises(lambda v=value, a=allow: fg.ForgeConfig(v, allow_http=a), "F2C HTTP 제한")
+    for value in ("http://localhost:8790", "http://127.0.0.1:8790", "http://[::1]:8790"):
+        check(fg.ForgeConfig(value, allow_http=True).api == value, "F2C 개발 루프백 허용")
+    for value in (0, 9, True, 1.5):
+        expect_raises(lambda v=value: dataclasses.replace(config, concurrency=v), "F2C 동시 제출 범위")
+    for value in (0, -1, float("inf"), float("nan"), True):
+        expect_raises(lambda v=value: dataclasses.replace(config, timeout=v), "F2C 시간 제한 범위")
+    def jwt(value):
+        return "head." + base64.urlsafe_b64encode(json.dumps(value).encode()).decode().rstrip("=") + ".signature"
+    check(fg.token_exp(jwt({"exp": 123.5})) == 123.5 and fg.token_exp("dev:alice:456") == 456.0, "F2C JWT·개발 exp")
+    for value in (None, "bad", "dev:alice", "dev::45", "dev:alice:nan", "dev:alice:inf", "a.@@.b", "a.b.c.d",
+                  jwt([]), jwt({}), jwt({"exp": True}), jwt({"exp": "123"}), jwt({"exp": float("inf")})):
+        check(fg.token_exp(value) is None, "F2C 모르는 exp·손상된 토큰은 None")
+
+    class Transport:
+        def __init__(self):
+            self.status, self.payload, self.calls = 200, fixture["me"]["response"], []
+
+        async def __call__(self, method, url, headers, body, timeout):
+            self.calls.append((method, url, headers, body, timeout))
+            return self.status, {}, self.payload if isinstance(self.payload, bytes) else json.dumps(self.payload).encode()
+
+    async def failure(call, reason, status=None):
+        try:
+            await call
+        except fg.ForgeError as error:
+            check(error.reason == reason and error.status == status, "F2C 오류 분류 " + reason)
+            return error
+        check(False, "F2C 기대 오류 없음 " + reason)
+        return fg.ForgeError("unreachable")
+
+    async def run():
+        transport = Transport()
+        client = fg.ForgeClient(config, transport=transport)
+        token = "f2-client-synthetic-secret"
+        user = await client.me(token)
+        check(user == {k: fixture["me"]["response"]["user"][k] for k in ("id", "email", "name")}, "F2C me 정규화")
+        call = transport.calls[-1]
+        check(call == ("GET", config.api + fixture["me"]["path"], {"Authorization": "Bearer " + token}, None, config.timeout), "F2C me 요청 계약")
+        transport.payload = fixture["access_summary"]["response"]
+        access = await client.access(token)
+        check(access == {"orgs": ["org1"], "whitelist": transport.payload["serviceWhitelist"]}
+              and transport.calls[-1][1].endswith(fixture["access_summary"]["path"]), "F2C access 요청·정규화")
+        transport.payload = fixture["generate"]["response"]
+        result = await client.submit(token, fixture["generate"]["request"])
+        call = transport.calls[-1]
+        check(result == {k: transport.payload[k] for k in ("job_id", "status")}
+              and call[0:2] == ("POST", config.api + fixture["generate"]["path"])
+              and call[2] == {"Authorization": "Bearer " + token, "Content-Type": "application/json"}
+              and json.loads(call[3]) == fixture["generate"]["request"], "F2C submit 본문 전체·응답 허용 키")
+        transport.payload = {"job_ids": ["fallback"], "status": "completed", "other": "ignored"}
+        check(await client.submit(token, {}) == {"job_id": "fallback", "status": "completed"}, "F2C submit job_ids 폴백")
+        for name in ("pending", "processing", "completed", "completed_partial", "completed_prompt_changed", "failed_user", "failed_ailabs"):
+            transport.payload = copy.deepcopy(fixture["job"][name])
+            transport.payload["request_data"] = {"secret": token}
+            result = await client.job(token, "job-1")
+            source = transport.payload.get("result_data") or {}
+            check(result["status"] == transport.payload["status"] and result["images"] == source.get("images", [])
+                  and result["result_ids"] == source.get("result_ids", [])
+                  and result["metadata"] == source.get("result_metadata", []) and "request_data" not in result,
+                  "F2C job fixture " + name)
+            check(transport.calls[-1][0:2] == ("GET", config.api + "/api/image/jobs/job-1"), "F2C job 요청")
+        transport.payload = {"status": "completed", "result_data": {"images": ["image"], "result_ids": ["id", "extra"],
+                               "result_metadata": [{"seed": 1, "private": token}, None, {"prompt_used": "prompt"}]}}
+        result = await client.job(token, "job-1")
+        check(result["images"] == ["image", None, None] and result["result_ids"] == ["id", "extra", None]
+              and result["metadata"] == [{"seed": 1}, {}, {"prompt_used": "prompt"}], "F2C 슬롯 길이 불일치·허용 metadata만")
+        transport.payload = fixture["me"]["response_no_header"]
+        await failure(client.me(token), "unauthorized", 200)
+        for payload in ({"authenticated": 1}, {"authenticated": True, "user": {"id": ""}},
+                        {"authenticated": True, "user": {"id": 42}}, {"authenticated": True, "user": []}):
+            transport.payload = payload
+            await failure(client.me(token), "unauthorized" if payload.get("authenticated") is not True else "unreachable", 200)
+        for payload in (b"not json", [], None, "text"):
+            transport.payload = payload
+            await failure(client.me(token), "unreachable", 200)
+        for payload in ({}, {"organizations": {}, "serviceWhitelist": {}}, {"organizations": [{"id": 1}], "serviceWhitelist": {}}):
+            transport.payload = payload
+            await failure(client.access(token), "unreachable", 200)
+        for payload in ({}, {"status": "new"}, {"status": "completed", "result_data": []},
+                        {"status": "completed", "result_data": {"images": [1]}}):
+            transport.payload = payload
+            await failure(client.job(token, "job-1"), "unreachable", 200)
+        for status, reason in ((401, "unauthorized"), (403, "forbidden"), (404, "not_found"), (400, "invalid"),
+                               (409, "invalid"), (413, "invalid"), (422, "invalid"), (500, "server"), (503, "server"),
+                               (301, "unreachable"), (302, "unreachable"), (307, "unreachable"), (308, "unreachable"), (429, "unreachable")):
+            transport.status, transport.payload = status, {"detail": "safe"}
+            await failure(client.me(token), reason, status)
+        transport.status = 422
+        for detail in ([{"msg": token}], {"msg": token}, None):
+            transport.payload = {"detail": detail}
+            error = await failure(client.submit(token, {}), "invalid", 422)
+            check(error.detail is None, "F2C 비문자열 detail 비노출")
+        transport.payload = {"detail": token + " https://forge.example/private C:\\private\\file /srv/private " + "가" * 400}
+        error = await failure(client.submit(token, {}), "invalid", 422)
+        check(len(error.detail) <= 300 and all(word not in error.detail for word in (token, "forge.example", "private")), "F2C detail 토큰·URL·경로 제거·길이")
+        transport.status, transport.payload = 200, b"x" * (fg.JSON_LIMIT + 1)
+        await failure(client.me(token), "server")
+        transport.payload = b"png"
+        for url in ("https://forge.example/image", "https://FORGE.EXAMPLE/image", "https://forge.example:443/image",
+                    "https://forge.example./image"):
+            check(await client.fetch_media(url, 3) == b"png" and transport.calls[-1][2] == {}, "F2C 미디어 origin 일치·인증 헤더 없음")
+        for url in ("https://user@forge.example/image", "https://forge.example:444/image", "/image", "//forge.example/image",
+                    "http://forge.example/image", "https://other.forge.example/image", "https://forge.example/image#x"):
+            before = len(transport.calls)
+            await failure(client.fetch_media(url), "forbidden")
+            check(len(transport.calls) == before, "F2C origin 거절은 전송 전")
+        await failure(client.fetch_media("https://forge.example/image", 2), "server")
+        transport.status = 302
+        await failure(client.fetch_media("https://forge.example/image"), "unreachable", 302)
+        async def broken(*args):
+            raise RuntimeError("Authorization: Bearer " + token + " https://forge.example/private")
+        unsafe = fg.ForgeClient(config, transport=broken)
+        error = await failure(unsafe.me(token), "unreachable")
+        check(error.__cause__ is None and error.__context__ is None
+              and all(word not in str(error) + repr(error) + repr(unsafe) for word in (token, "forge.example")), "F2C 전송 예외 모든 노출면 비밀 0건")
+        async def slow(*args):
+            await asyncio.sleep(1)
+        await failure(fg.ForgeClient(dataclasses.replace(config, timeout=0.01), slow).me(token), "unreachable")
+        async def forged(*args):
+            raise fg.ForgeError("forbidden", 403, token)
+        await failure(fg.ForgeClient(config, forged).me(token), "unreachable")
+        for reason in fg.ForgeError.REASONS:
+            error = fg.ForgeError(reason, 500, token)
+            check(token not in str(error) + repr(error) and str(error), "F2C reason별 고정 문구")
+
+        opened, closed, chunks = [], [], []
+        class Content:
+            async def iter_chunked(self, size):
+                for part in chunks:
+                    yield part
+        class Response:
+            status, headers, content = 200, {"Content-Encoding": "gzip", "Content-Length": "1"}, Content()
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                closed.append("response")
+        class Session:
+            def __init__(self, **kwargs):
+                opened.append(kwargs)
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                closed.append("session")
+            def request(self, method, url, **kwargs):
+                check(kwargs["allow_redirects"] is False, "F2C 기본 전송 리다이렉트 차단")
+                return Response()
+        with patch.object(fg.aiohttp, "ClientSession", Session):
+            direct = fg.ForgeClient(config)
+            chunks[:] = [json.dumps(fixture["me"]["response"]).encode()]
+            await direct.me(token)
+            await direct.me(token)
+            check(len(opened) == 2 and closed.count("session") == 2, "F2C 호출마다 세션 생성·종료")
+            check(all(isinstance(options["cookie_jar"], fg.aiohttp.DummyCookieJar) and options["trust_env"] is False
+                      and options["timeout"].total == config.timeout for options in opened), "F2C 쿠키 저장 없음·환경 프록시 없음·시간 제한")
+            chunks[:] = [b"123", b"456"]
+            await failure(direct.fetch_media("https://forge.example/image", 5), "server")
+            check(closed.count("session") == 3 and closed.count("response") == 3, "F2C 압축 해제 후 스트림 상한·오류 시 닫기")
+            with patch.object(fg, "JSON_LIMIT", 5):
+                await failure(direct.me(token), "server")
+    asyncio.run(run())
 
 
 def forge_server_unit():
@@ -60856,6 +61420,75 @@ def _fj_execute(jobs):
 def forge_f2_verifier_unit():
     """Forge F2 갈래 S — ForgeVerifier(사용자·조직·접근 키·401/403/503 판정·이름 다듬기). 명세 _proto/STUDIO_FORGE_F2_SPEC.md §2.4·§4. --quick 포함."""
     section("Forge F2-S — forge_f2_verifier_unit")
+    import bmk_design_patch_forge as fg
+    fixture = json.loads((PKG / "tools/fixtures/forge_api.json").read_text(encoding="utf-8"))
+    config = fg.ForgeConfig("https://forge.example", access_keys=("image", "designPatch"), verify_timeout=0.03)
+    token = "dev:alice:5000"
+
+    async def verify(me=None, access=None, cfg=config):
+        started = set()
+        ready = asyncio.Event()
+        async def transport(method, url, headers, body, timeout):
+            which = "me" if url.endswith("/auth/me") else "access_summary"
+            started.add(which)
+            if len(started) == 2:
+                ready.set()
+            await ready.wait()
+            value = me if which == "me" else access
+            if value == "timeout":
+                await asyncio.sleep(1)
+            if isinstance(value, int):
+                return value, {}, b"{}"
+            if value == "nonjson":
+                return 200, {}, b"broken json"
+            return 200, {}, json.dumps(value if value is not None else fixture[which]["response"]).encode()
+        client = fg.ForgeClient(cfg, transport)
+        try:
+            result = await fg.ForgeVerifier(client, cfg).verify(token, "org1")
+        except fg.ForgeError as error:
+            check(started == {"me", "access_summary"}, "F2V 두 검증 동시 시작")
+            return error.reason
+        check(started == {"me", "access_summary"}, "F2V 두 검증 동시 완료")
+        return result
+
+    async def run():
+        check(await verify() == {"account_id": "u_alice", "organization_id": "org1", "name": "alice", "exp": 5000.0}, "F2V 정상 신원·exp")
+        check(await verify(401, 401) == "unauthorized", "F2V 양쪽 401")
+        for error in (503, "timeout", "nonjson"):
+            for side in (0, 1):
+                values = [None, None]
+                values[side] = error
+                before = time.monotonic()
+                check(await verify(*values) == "unreachable" and time.monotonic() - before < 0.5, "F2V 장애×200·합계 시간 제한")
+                values[1 - side] = 401
+                check(await verify(*values) == "unauthorized", "F2V 401이 장애보다 우선")
+        no_header = fixture["me"]["response_no_header"]
+        check(await verify(no_header) == "unauthorized", "F2V 헤더 없는 200")
+        check(await verify(no_header, 503) == "unreachable", "F2V HTTP 장애가 authenticated=false보다 우선")
+        access = copy.deepcopy(fixture["access_summary"]["response"])
+        access["organizations"] = []
+        check(await verify(access=access) == "forbidden", "F2V 조직 없음")
+        for key in config.access_keys:
+            for value in (False, 1, None):
+                access = copy.deepcopy(fixture["access_summary"]["response"])
+                access["serviceWhitelist"][key] = value
+                check(await verify(access=access) == "forbidden", "F2V 접근 키 전부 boolean true 필수")
+        access["serviceWhitelist"] = {}
+        check(isinstance(await verify(access=access, cfg=dataclasses.replace(config, access_keys=())), dict), "F2V 접근 키 옵션 없으면 조직만")
+        for name, email, expected in (("a\x00b\u200bc\n", "mail@example.com", "abc"), ("한" * 140, "", "한" * 128),
+                                      ("\x00\u200b  ", "mail@example.com", "mail"), (None, None, "user"), ("", 123, "user")):
+            me = copy.deepcopy(fixture["me"]["response"])
+            me["user"].update(name=name, email=email)
+            result = await verify(me)
+            check(isinstance(result, dict) and result["name"] == expected, "F2V 이름 제어·서식 제거·128자·폴백")
+        for invalid in (1, "", "x" * 129, "bad\u200b"):
+            me = copy.deepcopy(fixture["me"]["response"])
+            me["user"]["id"] = invalid
+            check(await verify(me) == "unreachable", "F2V 잘못된 account_id는 장애")
+            access = copy.deepcopy(fixture["access_summary"]["response"])
+            access["organizations"] = [{"id": invalid}]
+            check(await verify(access=access) == "unreachable", "F2V 잘못된 조직 id는 장애")
+    asyncio.run(run())
 
 
 def forge_f3_server_unit():

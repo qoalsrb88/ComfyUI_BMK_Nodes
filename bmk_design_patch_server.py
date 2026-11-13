@@ -37,6 +37,7 @@ from collections import OrderedDict
 from urllib.parse import quote, urlencode, urlsplit
 
 from aiohttp import web
+from yarl import URL
 
 if __package__ in (None, ""):
     # `python bmk_design_patch_server.py` 로 직접 실행할 때: python_embeded(._pth 가 import 경로를 정함)는 스크립트 폴더를
@@ -51,6 +52,7 @@ _PREF_KEY = re.compile(r"bmk-dp-[\w:.-]{1,80}")
 _SESSION_KEY = web.AppKey("bmk_dp_sessions", object)
 _RUNNER_KEY = web.AppKey("bmk_dp_runner", object)
 _LOGIN_FAILURES_KEY = web.AppKey("bmk_dp_login_failures", object)
+_FORGE_KEY = web.AppKey("bmk_dp_forge", object)
 _ACCOUNT_LOCK = threading.Lock()
 _ERRORS = {
     "bad_origin": (403, "요청 헤더·출처 검사에 걸렸습니다."),
@@ -60,6 +62,8 @@ _ERRORS = {
     "bad_token": (401, "토큰을 확인하지 못했습니다 — Forge에서 Design Patch Studio를 다시 열어 주세요."),
     "no_verifier": (503, "토큰 검증기가 설정되지 않았습니다."),
     "rate_limited": (429, "로그인 시도가 너무 많습니다 — 잠시 뒤 Forge에서 Design Patch Studio를 다시 열어 주세요."),
+    "no_access": (403, "Design Patch Studio 사용 권한이 없습니다. 담당자에게 문의해 주세요."),
+    "forge_unreachable": (503, "Forge 에 연결하지 못했습니다 — 잠시 뒤 다시 시도해 주세요."),
 }
 
 
@@ -138,7 +142,13 @@ def _validate_config(config):
             proxies.append(str(proxy))
     except ValueError:
         raise ValueError("trusted_proxies 는 IP 주소·CIDR 목록이어야 합니다") from None
-    return dataclasses.replace(config, public_origin=origin,
+    forge_config = config.forge
+    if forge_config is not None:
+        forge_config = dataclasses.replace(forge_config, allow_http=config.dev_handoff)
+        if config.dev_handoff and any(URL(value).host not in ("localhost", "127.0.0.1", "::1")
+                                      for value in (forge_config.api, *forge_config.media_origins)):
+            raise ValueError("개발 모드의 Forge 주소는 루프백이어야 합니다")
+    return dataclasses.replace(config, public_origin=origin, forge=forge_config,
                                parent_origins=tuple(_origin(p) for p in config.parent_origins),
                                allowed_hosts=tuple(_host(h) for h in config.allowed_hosts), trusted_proxies=tuple(proxies))
 
@@ -362,41 +372,66 @@ def _account_scope(data_dir, identity, store, now):
     return {"input": home, "output": os.path.join(home, "_output"), "home": home, "account": acct, "org": org}
 
 
+@dataclasses.dataclass(repr=False)
+class _SessionToken:
+    token: str
+    exp: float | None
+    at: float
+
+
 class SessionStore:
-    """원본 토큰 없이 계정과 범위만 보관한다. 시계를 주입해 두 만료 조건을 검증한다."""
+    """공개 세션과 토큰 전용 표를 분리한다. 작업의 토큰 조회는 유휴 시각을 늘리지 않는다."""
 
     def __init__(self, idle_ttl, max_ttl, *, clock=time.time, limit=10000):
         self.idle_ttl, self.max_ttl, self.clock, self.limit = idle_ttl, max_ttl, clock, limit
         self._sessions = {}
+        self._tokens = {}
+        self._rejected = {}
+        self._access = {}
+        self._refresh = {}
         self._lock = threading.Lock()
+
+    def _live(self, sid, now):
+        session = self._sessions.get(sid)
+        if session and (now - session["seen"] >= self.idle_ttl or now - session["created"] >= self.max_ttl):
+            self._delete(sid)
+            return None
+        return session
+
+    def _delete(self, sid):
+        session = self._sessions.pop(sid, None)
+        self._tokens.pop(sid, None)
+        self._refresh.pop(sid, None)
+        if session:
+            key = (session["organization_id"], session["account_id"])
+            if not any((s["organization_id"], s["account_id"]) == key for s in self._sessions.values()):
+                self._access.pop(key, None)
+                self._rejected.pop(key, None)
 
     def get(self, sid):
         with self._lock:
-            session = self._sessions.get(sid)
-            if session is None:
-                return None
             now = self.clock()
-            if now - session["seen"] >= self.idle_ttl or now - session["created"] >= self.max_ttl:
-                del self._sessions[sid]
+            session = self._live(sid, now)
+            if session is None:
                 return None
             session["seen"] = now
             return dict(session)
 
     def create(self, identity, scope, tag, old_sid=None):
         with self._lock:
-            self._sessions.pop(old_sid, None)
+            self._delete(old_sid)
             now = self.clock()
             for sid, session in list(self._sessions.items()):
                 if now - session["seen"] >= self.idle_ttl or now - session["created"] >= self.max_ttl:
-                    del self._sessions[sid]
+                    self._delete(sid)
             own = sorted((sid for sid, session in self._sessions.items()
                           if session["organization_id"] == identity["organization_id"]
                           and session["account_id"] == identity["account_id"]),
                          key=lambda sid: self._sessions[sid]["seen"])
             for sid in own[:max(0, len(own) - 19)]:
-                del self._sessions[sid]  # 새 세션까지 계정당 20개. 전역 LRU 는 마지막 방어선이다.
+                self._delete(sid)  # 새 세션까지 계정당 20개. 전역 LRU 는 마지막 방어선이다.
             while len(self._sessions) >= self.limit:
-                del self._sessions[min(self._sessions, key=lambda sid: self._sessions[sid]["seen"])]
+                self._delete(min(self._sessions, key=lambda sid: self._sessions[sid]["seen"]))
             sid = secrets.token_urlsafe(32)
             while sid in self._sessions or sid == old_sid:
                 sid = secrets.token_urlsafe(32)
@@ -406,11 +441,87 @@ class SessionStore:
 
     def delete(self, sid):
         with self._lock:
-            self._sessions.pop(sid, None)
+            self._delete(sid)
+
+    def set_token(self, sid, token, exp):
+        with self._lock:
+            if self._live(sid, self.clock()):
+                self._tokens[sid] = _SessionToken(token, exp, self.clock())
+
+    def token_for(self, org, acct):
+        with self._lock:
+            candidates = []
+            for sid in list(self._sessions):
+                session = self._live(sid, self.clock())
+                entry = self._tokens.get(sid)
+                if (session and entry and (session["organization_id"], session["account_id"]) == (org, acct)
+                        and hashlib.sha256(entry.token.encode("utf-8")).digest() not in self._rejected.get((org, acct), ())):
+                    candidates.append(entry)
+            return max(candidates, key=lambda entry: (entry.exp if entry.exp is not None else entry.at, entry.at)).token if candidates else None
+
+    def reject_token(self, org, acct, token):
+        with self._lock:
+            if any((s["organization_id"], s["account_id"]) == (org, acct) for s in self._sessions.values()):
+                self._rejected.setdefault((org, acct), set()).add(hashlib.sha256(token.encode("utf-8")).digest())
+
+    def drop_token(self, sid):
+        with self._lock:
+            self._tokens.pop(sid, None)
+
+    def drop_account(self, org, acct):
+        with self._lock:
+            for sid, session in list(self._sessions.items()):
+                if (session["organization_id"], session["account_id"]) == (org, acct):
+                    self._delete(sid)
+
+    def access_at(self, org, acct):
+        with self._lock:
+            return self._access.get((org, acct))
+
+    def mark_access(self, org, acct, at):
+        with self._lock:
+            if any((s["organization_id"], s["account_id"]) == (org, acct) for s in self._sessions.values()):
+                self._access[(org, acct)] = at
+
+    def begin_refresh(self, sid, token, org):
+        with self._lock:
+            now = self.clock()
+            session = self._live(sid, now)
+            if session is None:
+                return "missing"
+            entry = self._tokens.get(sid)
+            if entry and entry.token == token and session["organization_id"] == org:
+                return "same"
+            last, pending = self._refresh.get(sid, (float("-inf"), False))
+            if pending or now - last < 5:
+                return "limited"
+            self._refresh[sid] = (now, True)
+            return "verify"
+
+    def finish_refresh(self, sid):
+        with self._lock:
+            if sid in self._refresh:
+                self._refresh[sid] = (self._refresh[sid][0], False)
+
+    def replace_token(self, sid, token, exp):
+        with self._lock:
+            session = self._live(sid, self.clock())
+            if session is None:
+                return False
+            old = self._tokens.get(sid)
+            if old and old.exp is not None and (exp is None or exp < old.exp):
+                return True
+            self._tokens[sid] = _SessionToken(token, exp, self.clock())
+            session["token_refresh"] = True
+            return True
 
     def clear(self):
         with self._lock:
             self._sessions.clear()
+            self._tokens.clear()
+            self._rejected.clear()
+            self._access.clear()
+            self._refresh.clear()
 
 
 async def _body(request, limit):
@@ -527,14 +638,18 @@ class DevVerifier:
         return {"account_id": account_id, "organization_id": organization_id, "name": account_id}
 
 
-def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=time.time) -> web.Application:
+def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=time.time, forge_transport=None) -> web.Application:
     """서버 모드 앱. verifier 가 None 이고 dev_handoff 면 DevVerifier, 둘 다 없으면 POST /api/session 은 503."""
     config = _validate_config(config)
     old_mock = os.environ.get("BMK_DP_MOCK_API")
+    old_forge = os.environ.get("BMK_DP_FORGE")
     runner = None
     # main 을 통하지 않는 시험·임베딩에서도 노드의 첫 import 전에 모드를 정한다.
     os.environ["BMK_DP_SERVER_MODE"] = "1"
-    os.environ["BMK_DP_MOCK_API"] = "1"
+    if config.forge is None:
+        os.environ["BMK_DP_MOCK_API"] = "1"
+    else:
+        os.environ["BMK_DP_FORGE"] = "1"
     try:
         try:
             from . import bmk_design_patch_board as board
@@ -542,16 +657,28 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
         except ImportError:
             import bmk_design_patch_board as board
             import bmk_design_patch_store as store
+        try:
+            from . import bmk_design_patch_forge as forge
+        except ImportError:
+            import bmk_design_patch_forge as forge
         board.set_server_mode(True)
         if jobs_module is None:
             try:
                 from . import bmk_design_patch_jobs as jobs_module
             except ImportError:
                 import bmk_design_patch_jobs as jobs_module
-        runner = jobs_module.JobRunner(workers=config.workers)
+        sessions = SessionStore(config.idle_ttl, config.max_ttl, clock=clock)
+        accounts = None
+        if config.forge is not None:
+            client = forge.ForgeClient(config.forge, transport=forge_transport)
+            accounts = forge.ForgeAccounts(client, config.forge, tokens=sessions, clock=clock)
+            if verifier is None:
+                verifier = forge.ForgeVerifier(client, config.forge)
+            runner = jobs_module.JobRunner(workers=config.workers, forge=accounts)
+        else:
+            runner = jobs_module.JobRunner(workers=config.workers)
         data_dir = os.path.realpath(os.path.abspath(config.data_dir))
         secret = _server_secret(data_dir)
-        sessions = SessionStore(config.idle_ttl, config.max_ttl, clock=clock)
         login_failures = LoginFailures(config.login_fail_limit, config.login_fail_window, config.login_fail_global, clock=clock)
         prefs = _Preferences(store)
         if verifier is None and config.dev_handoff:
@@ -611,6 +738,8 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
                 if mutation and (request.headers.get("X-DesignPatch-Request") != "1"
                                  or request.headers.get("Origin") != own_origin):
                     return _error("bad_origin")
+                if config.forge is None and request.path == "/api/session/token":
+                    raise web.HTTPNotFound()
                 session = sessions.get(request.cookies.get(COOKIE))
                 request["bmk_dp_session"] = session
                 if not public(request) and session is None:
@@ -660,9 +789,16 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
 
         def env(request):
             session = request.get("bmk_dp_session")
-            return {"server_mode": True, "session": session is not None, "account": account(session),
+            result = {"server_mode": True, "session": session is not None, "account": account(session),
                     "session_url": "/api/session", "prefs_url": "/api/preferences",
                     "caps": {name: name in ("jobs", "export_download") for name in board.LOCAL_CAPS}, "backend": "mock"}
+            if accounts is not None:
+                result["backend"] = "mock" if os.environ.get("BMK_DP_MOCK_API", "").strip().lower() in ("1", "true", "yes", "on") else "forge"
+                result["caps"].update(forge_import=bool(forge_routes), forge_save=bool(forge_routes))
+                result.update(token_url="/api/session/token", token_refresh=bool(session and session.get("token_refresh")),
+                              parent_origins=list(config.parent_origins),
+                              messages={"session": config.forge.session_message, "request": config.forge.request_message})
+            return result
 
         async def index(request):
             raise web.HTTPFound(api + "/board/" + ("?" + request.query_string if request.query_string else ""))
@@ -703,11 +839,15 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
                         return _error("no_verifier")
                     try:
                         identity = await verifier.verify(token, org)
+                    except forge.ForgeError as error:
+                        if error.reason == "unauthorized":
+                            login_failures.reject(client)
+                            return _error("bad_token")
+                        return _error("no_access" if error.reason == "forbidden" else "forge_unreachable")
                     except Exception:
                         return _error("bad_token")
                 finally:
                     data.clear()
-                    token = None
                 if (not isinstance(identity, dict) or not all(_valid_id(identity.get(k)) for k in ("account_id", "organization_id", "name"))
                         or identity["organization_id"] != org):
                     login_failures.reject(client)
@@ -718,13 +858,69 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
                     return _error("bad_token")
                 tag = hmac.new(secret, (org + "\0" + identity["account_id"]).encode("utf-8"), hashlib.sha256).hexdigest()[:16]
                 sid = sessions.create(identity, scope, tag, request.cookies.get(COOKIE))
+                if accounts is not None:
+                    if "exp" in identity:
+                        sessions.set_token(sid, token, identity["exp"])
+                    sessions.mark_access(org, identity["account_id"], clock())
                 response = web.json_response({"ok": True, "account": {"name": identity["name"], "tag": tag}})
                 secure = (config.public_origin or request.scheme + "://").startswith("https://")
                 response.set_cookie(COOKIE, sid, httponly=True, path="/", samesite=config.cookie_samesite, secure=secure)
                 return response
             finally:
+                token = None
                 if reserved:
                     login_failures.finish(client)
+
+        async def session_token(request):
+            try:
+                data = await asyncio.wait_for(_body(request, 16 * 1024), timeout=10)
+            except asyncio.TimeoutError:
+                return web.json_response({"error": "JSON 본문을 읽을 수 없습니다"}, status=400)
+            if isinstance(data, web.Response):
+                return data
+            sid = request.cookies.get(COOKIE)
+            session = request.get("bmk_dp_session")
+            reserved = False
+            try:
+                token, org = data.get("token"), data.get("organization_id")
+                if not isinstance(token, str) or not 1 <= len(token) <= 4096 or not _valid_id(org):
+                    return web.json_response({"error": "토큰·조직 형식이 잘못되었습니다"}, status=400)
+                state = sessions.begin_refresh(sid, token, org)
+                if state == "missing":
+                    return _error("no_session")
+                if state == "same":
+                    return web.json_response({"ok": True})
+                if state == "limited":
+                    return web.json_response({"error": "토큰 갱신 요청이 너무 잦습니다 — 잠시 뒤 다시 시도합니다.",
+                                              "reason": "rate_limited"}, status=429, headers={"Retry-After": "5"})
+                reserved = True
+                if not config.dev_handoff and token.startswith("dev:"):
+                    return _error("bad_token")
+                try:
+                    identity = await verifier.verify(token, org)
+                except forge.ForgeError as error:
+                    if error.reason == "unauthorized":
+                        return _error("bad_token")
+                    if error.reason == "forbidden":
+                        sessions.drop_account(session["organization_id"], session["account_id"])
+                        return _error("no_access")
+                    return _error("forge_unreachable")
+                except Exception:
+                    return _error("forge_unreachable")
+                if not isinstance(identity, dict) or not all(_valid_id(identity.get(k)) for k in ("account_id", "organization_id")):
+                    return _error("forge_unreachable")
+                if identity["account_id"] != session["account_id"] or identity["organization_id"] != session["organization_id"] or org != session["organization_id"]:
+                    sessions.drop_token(sid)
+                    return _error("session_changed")
+                if not sessions.replace_token(sid, token, identity.get("exp")):
+                    return _error("no_session")
+                sessions.mark_access(org, identity["account_id"], clock())
+                return web.json_response({"ok": True})
+            finally:
+                data.clear()
+                token = None
+                if reserved:
+                    sessions.finish_refresh(sid)
 
         async def logout(request):
             sessions.delete(request.cookies.get(COOKIE))
@@ -763,6 +959,12 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
                               handler_args={"access_log": None})
         app[_SESSION_KEY], app[_RUNNER_KEY] = sessions, runner
         app[_LOGIN_FAILURES_KEY] = login_failures
+        forge_routes = forge.routes(accounts) if accounts is not None else ()
+        if accounts is not None:
+            app[_FORGE_KEY] = accounts
+            app.router.add_post("/api/session/token", session_token)
+        for method, path, handler in forge_routes:
+            app.router.add_route(method, path, handler)
         app.on_response_prepare.append(headers)
         routes = web.RouteTableDef()
         board.register_routes(routes, base_dir=None)
@@ -786,6 +988,11 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
                     os.environ.pop("BMK_DP_MOCK_API", None)
                 else:
                     os.environ["BMK_DP_MOCK_API"] = old_mock
+                if config.forge is not None:
+                    if old_forge is None:
+                        os.environ.pop("BMK_DP_FORGE", None)
+                    else:
+                        os.environ["BMK_DP_FORGE"] = old_forge
 
         app.on_cleanup.append(cleanup)
         return app
@@ -794,6 +1001,8 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
             if runner is not None:
                 runner.close()
         finally:
+            if "sessions" in locals():
+                sessions.clear()
             if "board" in locals():
                 board.set_env_provider(None)
                 board.set_server_mode(False)
@@ -802,6 +1011,11 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
                 os.environ.pop("BMK_DP_MOCK_API", None)
             else:
                 os.environ["BMK_DP_MOCK_API"] = old_mock
+            if config.forge is not None:
+                if old_forge is None:
+                    os.environ.pop("BMK_DP_FORGE", None)
+                else:
+                    os.environ["BMK_DP_FORGE"] = old_forge
         raise
 
 
@@ -863,14 +1077,42 @@ def main(argv=None) -> int:
     parser.add_argument("--dev-parent-port", type=int)
     parser.add_argument("--cookie-samesite", default="Lax")
     parser.add_argument("--workers", type=int, default=1)
+    parser.add_argument("--forge-api")
+    parser.add_argument("--forge-media-origin", action="append")
+    parser.add_argument("--forge-access-key", action="append")
+    parser.add_argument("--forge-concurrency", type=int)
+    parser.add_argument("--forge-autopilot-opt-out")
+    parser.add_argument("--forge-session-message")
+    parser.add_argument("--forge-request-message")
     args = parser.parse_args(argv)
+    forge_config = None
+    if args.forge_api is None and any(getattr(args, name) is not None for name in (
+            "forge_media_origin", "forge_access_key", "forge_concurrency", "forge_autopilot_opt_out",
+            "forge_session_message", "forge_request_message")):
+        parser.error("Forge 옵션은 --forge-api 와 함께 써야 합니다")
+    if args.forge_api is not None:
+        try:
+            try:
+                from .bmk_design_patch_forge import ForgeConfig
+            except ImportError:
+                from bmk_design_patch_forge import ForgeConfig
+            forge_config = ForgeConfig(
+                args.forge_api, media_origins=tuple(args.forge_media_origin or ()),
+                access_keys=tuple(args.forge_access_key or ()), allow_http=args.dev_handoff,
+                concurrency=args.forge_concurrency if args.forge_concurrency is not None else 2,
+                prompt_autopilot=json.loads(args.forge_autopilot_opt_out) if args.forge_autopilot_opt_out is not None else False,
+                session_message=args.forge_session_message if args.forge_session_message is not None else "design-patch-session",
+                request_message=args.forge_request_message if args.forge_request_message is not None else "design-patch-session-request")
+        except ValueError:
+            parser.error("Forge 주소·동시 제출 수(1–8)·메시지·JSON 설정을 확인하세요")
     parents = list(args.parent_origin)
     if args.dev_parent_port:
         parents.extend(f"http://{host}:{args.dev_parent_port}" for host in ("localhost", "127.0.0.1", "[::1]"))
     config = ServerConfig(args.data, host=args.host, port=args.port, public_origin=args.public_origin,
                           parent_origins=tuple(dict.fromkeys(parents)), allowed_hosts=tuple(args.allowed_host),
                           dev_handoff=args.dev_handoff, dev_parent_port=args.dev_parent_port,
-                          cookie_samesite=args.cookie_samesite, workers=args.workers, trusted_proxies=tuple(args.trusted_proxy))
+                          cookie_samesite=args.cookie_samesite, workers=args.workers, trusted_proxies=tuple(args.trusted_proxy),
+                          forge=forge_config)
     try:
         config = _validate_config(config)
     except ValueError as e:
