@@ -97,11 +97,21 @@ def build_request(job: dict, images: list[bytes], *, organization_id: str, reque
     return body
 
 
+def _read_record(path):
+    for attempt in range(3):
+        try:
+            with open(path, encoding="utf-8") as stream:
+                return json.load(stream)
+        except PermissionError:
+            if attempt == 2:
+                raise
+            time.sleep(0.05)
+
+
 def read_sidecar(root: str, cell_key: str, rep: int) -> dict:
     """파일이 없을 때만 빈 기록. 읽기 실패·손상은 제출 전에 막을 수 있게 올린다."""
     try:
-        with open(runner._lpath(root, cell_key, rep, "forge"), encoding="utf-8") as stream:
-            value = json.load(stream)
+        value = _read_record(runner._lpath(root, cell_key, rep, "forge"))
     except FileNotFoundError:
         return {"schema": SIDECAR_SCHEMA, "requests": []}
     if not isinstance(value, dict) or value.get("schema") != SIDECAR_SCHEMA or not isinstance(value.get("requests"), list):
@@ -152,8 +162,7 @@ def _nonce(root):
     with _LOCK:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         try:
-            with open(path, encoding="utf-8") as stream:
-                record = json.load(stream)
+            record = _read_record(path)
         except FileNotFoundError:
             temporary = None
             try:
@@ -167,11 +176,22 @@ def _nonce(root):
                     os.link(temporary, path)  # 완성된 파일만 배타 공개. 다른 생성자가 이겼다면 그 값을 읽는다.
                 except FileExistsError:
                     pass
+                except OSError:
+                    with open(temporary, "rb") as stream:
+                        data = stream.read()
+                    try:
+                        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                    except FileExistsError:
+                        pass
+                    else:
+                        with os.fdopen(fd, "wb") as stream:
+                            stream.write(data)
+                            stream.flush()
+                            os.fsync(stream.fileno())
             finally:
                 if temporary is not None:
                     os.unlink(temporary)
-            with open(path, encoding="utf-8") as stream:
-                record = json.load(stream)
+            record = _read_record(path)
         if (not isinstance(record, dict) or record.get("schema") != "dp-forge-project/1"
                 or not isinstance(record.get("nonce"), str) or not re.fullmatch(r"[0-9a-f]{12}", record["nonce"])):
             raise ValueError("프로젝트 식별 기록을 읽을 수 없습니다")
@@ -431,8 +451,10 @@ class ForgeBackend:
             self._save(ck, rep, side)
             runner._remove(runner._lpath(self._root, ck, rep, "resp"))
             user = result.get("status") == "failed" and result.get("error_category") == "user"
-            message = result.get("error_message")
-            raise runner.CallError(_safe_message(message, "Forge 생성 결과에 이미지가 없습니다."),
+            message = _safe_message(result.get("error_message"), "" if recovery else "Forge 생성 결과에 이미지가 없습니다.")
+            if recovery:
+                message = "원격 생성이 실패로 끝났습니다(자동 복구 대상 아님 — 실패 재시도로 다시 생성)" + (" — " + message if message else "")
+            raise runner.CallError(message,
                                    phase="download" if recovery else "response", retryable=recovery or not user,
                                    maybe_billed=recovery or not user)
         metadata = result.get("metadata") or []
@@ -446,30 +468,50 @@ class ForgeBackend:
     async def _recover_job(self, job_id):
         call_id = None
         try:
+            locations = []
             for ck in runner._ledger_cells(self._root):
                 reps = {int(match[1]) for name in os.listdir(runner._ldir(self._root, ck))
                         if (match := re.fullmatch(r"r(\d+)\.(?:forge|resp)\.json", name))}
-                for rep in sorted(reps):
-                    side = read_sidecar(self._root, ck, rep)
-                    if side.get("job_id") == job_id and side["requests"]:
-                        submitted = _timestamp(side["requests"][-1].get("time"))
-                    else:
-                        receipt = runner._read_json(runner._lpath(self._root, ck, rep, "resp")) or {}
-                        prefix = f"{URL_SCHEME}{job_id}/"
-                        if receipt.get("backend") != self.name or not any(
-                                isinstance(row, dict) and isinstance(row.get("url"), str) and row["url"].startswith(prefix)
-                                for row in receipt.get("data") or []):
-                            continue
-                        submitted = _timestamp(receipt.get("received"))
-                        side["job_id"] = job_id
-                        if side["requests"]:
-                            side["requests"][-1].update(state="submitted", job_id=job_id, time=receipt.get("received"))
-                    call_id = runner.call_id_for(ck, rep)
-                    result = await self._poll(job_id, call_id, submitted, recovery=True)
-                    req = runner._read_json(runner._lpath(self._root, ck, rep, "req")) or {}
-                    self._result(ck, rep, side, result, req.get("prompt"), recovery=True)
-                    return result["images"]
-            raise runner.CallError("Forge 결과의 제출 기록을 찾지 못했습니다.", phase="download", retryable=True, maybe_billed=True)
+                locations.extend((ck, rep) for rep in sorted(reps))
+            found = None
+            prefix = f"{URL_SCHEME}{job_id}/"
+            for ck, rep in locations:
+                receipt = runner._read_json(runner._lpath(self._root, ck, rep, "resp"))
+                if (not isinstance(receipt, dict) or "_corrupt" in receipt or receipt.get("backend") != self.name
+                        or not isinstance(receipt.get("data"), list) or not any(
+                            isinstance(row, dict) and isinstance(row.get("url"), str) and row["url"].startswith(prefix)
+                            for row in receipt["data"])):
+                    continue
+                # 영수증이 가리킨 rep은 엄격하게 읽는다. 손상된 대상 기록을 다른 셀로 대신하지 않는다.
+                side = read_sidecar(self._root, ck, rep)
+                if side.get("job_id") == job_id and side["requests"]:
+                    submitted = _timestamp(side["requests"][-1].get("time"))
+                else:
+                    submitted = _timestamp(receipt.get("received"))
+                    side["job_id"] = job_id
+                    if side["requests"]:
+                        side["requests"][-1].update(state="submitted", job_id=job_id, time=receipt.get("received"))
+                found = ck, rep, side, submitted
+                break
+            if found is None:
+                for ck, rep in locations:
+                    try:
+                        side = read_sidecar(self._root, ck, rep)
+                    except (OSError, ValueError, TypeError):
+                        continue
+                    if side.get("job_id") != job_id:
+                        continue
+                    submitted = _timestamp(side["requests"][-1].get("time")) if side["requests"] else None
+                    found = ck, rep, side, submitted
+                    break
+            if found is None:
+                raise runner.CallError("Forge 결과의 제출 기록을 찾지 못했습니다.", phase="download", retryable=True, maybe_billed=True)
+            ck, rep, side, submitted = found
+            call_id = runner.call_id_for(ck, rep)
+            result = await self._poll(job_id, call_id, submitted, recovery=True)
+            req = runner._read_json(runner._lpath(self._root, ck, rep, "req")) or {}
+            self._result(ck, rep, side, result, req.get("prompt"), recovery=True)
+            return result["images"]
         finally:
             if call_id is not None:
                 self._clear_progress(call_id)

@@ -58104,6 +58104,60 @@ def forge_f2_backend_unit():
               and len(store.load_manifest(r)["candidates"]) == 2, "R3 영수증 대체 탐색으로 새 제출 없이 복구")
         check(sidecar(r, j).get("job_id") == fixture["generate"]["response"]["job_id"], "R3 복구 결과 사이드카 보완")
 
+        r, j = project("recovery_unrelated_corrupt")
+        c = Client(Failure("unreachable"))
+        run(r, c)
+        unrelated = "0" * 24
+        bad_side = Path(rn._lpath(r, unrelated, 0, "forge"))
+        bad_side.parent.mkdir(parents=True, exist_ok=True)
+        bad_side.write_bytes(b'{"broken":')
+        original_side = bad_side.read_bytes()
+        c.states = ["completed"]
+        before = len(c.submissions)
+        with patch.object(rn, "_ledger_cells", return_value=[unrelated, j["cell_key"]]), \
+                patch.object(fb, "read_sidecar", wraps=fb.read_sidecar) as reads:
+            report = run(r, c)
+        check(report.recovered == 1 and len(c.submissions) == before and len(store.load_manifest(r)["candidates"]) == 2,
+              "수정2 R3 앞 셀의 깨진 사이드카가 다른 셀 복구를 막지 않음")
+        check(all(call.args[1:] == (j["cell_key"], 0) for call in reads.call_args_list) and bool(reads.call_count),
+              "수정2 R3 영수증으로 찾은 대상 rep의 사이드카만 읽음")
+        check(bad_side.read_bytes() == original_side, "수정2 R3 무관한 손상 기록 보존")
+
+        async def scan_recovery():
+            url = "forge-job:" + fixture["generate"]["response"]["job_id"] + "/0"
+            receipt_path = Path(rn._lpath(r, j["cell_key"], 0, "resp"))
+            original_receipt = receipt_path.read_bytes()
+            bad_receipt = Path(rn._lpath(r, unrelated, 0, "resp"))
+            bad_receipt.write_bytes(b'{"broken":')
+            # 원장 읽기의 손상 표지를 흉내 내 로그 없이 훑기 경로를 검증한다.
+            read_json = rn._read_json
+            def receipt_read(path):
+                return {"_corrupt": "fixture"} if path == str(bad_receipt) else read_json(path)
+            with patch.object(rn, "_ledger_cells", return_value=[unrelated, j["cell_key"]]), \
+                    patch.object(rn, "_read_json", side_effect=receipt_read) as receipts:
+                for missing in (False, True):
+                    if missing:
+                        receipt_path.unlink()
+                    try:
+                        data = await fb.ForgeBackend(context(r, c)).download(url)
+                        check(data == png and len(c.submissions) == before,
+                              "수정2 R3 깨진 영수증 건너뛰기·영수증 없는 사이드카 대체 탐색 " + str(missing))
+                    except rn.CallError:
+                        check(False, "수정2 R3 깨진 영수증 건너뛰기·영수증 없는 사이드카 대체 탐색 " + str(missing))
+                check(any(call.args == (str(bad_receipt),) for call in receipts.call_args_list),
+                      "수정2 R3 영수증 탐색은 기존 원장 읽기 사용")
+            receipt_path.write_bytes(original_receipt)
+            target_side = Path(rn._lpath(r, j["cell_key"], 0, "forge"))
+            target_side.write_bytes(b'{"target_broken":')
+            polls_before = len(c.polls)
+            try:
+                await fb.ForgeBackend(context(r, c)).download(url)
+                check(False, "수정2 R3 대상 사이드카 손상은 복구 실패")
+            except rn.CallError as exc:
+                check(exc.phase == "download" and exc.retryable and len(c.polls) == polls_before
+                      and len(c.submissions) == before, "수정2 R3 대상 손상은 조회·새 제출 없이 실패")
+        asyncio.run(scan_recovery())
+
         for damage in ("json", "permission", "shape", "request_shape"):
             r, j = project("sidecar_" + damage)
             path = Path(rn._lpath(r, j["cell_key"], 0, "forge"))
@@ -58161,6 +58215,52 @@ def forge_f2_backend_unit():
             check(value is not None and path.read_bytes() == original and not list(path.parent.glob("._forge-*.tmp")),
                   "R4 nonce 재사용·기존 파일 불변·임시 파일 정리")
 
+        for raced in (False, True):
+            r, j = project("nonce_no_links_" + str(raced))
+            nonce_path = Path(r) / "cands/_forge.json"
+            winner = {"schema": "dp-forge-project/1", "nonce": "012345abcdef"}
+            def no_links(*args):
+                if raced:
+                    nonce_path.write_text(json.dumps(winner), encoding="utf-8")
+                raise OSError("fixture filesystem without hard links")
+            try:
+                with patch.object(fb.os, "link", side_effect=no_links):
+                    first = fb._nonce(r)
+                    original = nonce_path.read_bytes()
+                    second = fb._nonce(r)
+                check(first == second and nonce_path.read_bytes() == original and
+                      (not raced or first == winner["nonce"]), "수정2 R2 하드 링크 대체·nonce 재사용·경합 승자 보존")
+            except OSError:
+                check(False, "수정2 R2 하드 링크 대체·nonce 재사용·경합 승자 보존")
+
+        for kind in ("sidecar", "nonce"):
+            r, j = project("read_transient_" + kind)
+            if kind == "sidecar":
+                path = Path(rn._lpath(r, j["cell_key"], 0, "forge"))
+                value = {"schema": fb.SIDECAR_SCHEMA, "requests": [{"id": "dp-fixture-transient", "attempt": 1,
+                         "state": "open", "time": rn._now()}]}
+            else:
+                path = Path(r) / "cands/_forge.json"
+                value = {"schema": "dp-forge-project/1", "nonce": "012345abcdef"}
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(value), encoding="utf-8")
+            original_open, reads = open, []
+            def temporarily_locked(file, mode="r", *args, **kwargs):
+                if os.fspath(file) == str(path) and mode == "r":
+                    reads.append(True)
+                    if len(reads) <= 2:
+                        raise PermissionError("fixture temporary read lock")
+                return original_open(file, mode, *args, **kwargs)
+            c = Client()
+            with patch("builtins.open", side_effect=temporarily_locked):
+                report = run(r, c)
+            check(report.done == 1 and len(reads) == 3 and len(c.submissions) == 1,
+                  "수정2 R2 " + kind + " 두 번 읽기 오류 뒤 정상 실행")
+            if c.submissions:
+                check((c.submissions[0]["request_id"] == "dp-fixture-transient" if kind == "sidecar" else
+                       c.submissions[0]["request_id"].startswith("dp-012345abcdef-")), "수정2 R2 읽기 재시도는 기존 식별자 보존")
+
+        recovery_failure = "원격 생성이 실패로 끝났습니다(자동 복구 대상 아님 — 실패 재시도로 다시 생성)"
         messages = ["https://forge.example/path?signature=fixture", "DATA:image/png;base64,fixture",
                     "forge.example:8790", "192.0.2.10", "[2001:db8::1]",
                     "2001:db8:aaaa:bbbb:cccc:dddd:eeee:ffff", r"C:\fixture\private\file",
@@ -58179,9 +58279,11 @@ def forge_f2_backend_unit():
                         c.states = [Failure("unreachable")]
                         run(r, c)
                     c.states = [terminal]
-                    fallback = "Forge 생성 결과에 이미지가 없습니다."
+                    fallback = recovery_failure if phase == "recover" else "Forge 생성 결과에 이미지가 없습니다."
                 report = run(r, c)
                 expected = fallback if index < len(messages) - 2 else message[:300]
+                if phase == "recover" and expected != fallback:
+                    expected = recovery_failure + " — " + expected
                 check(ledger(r, j).get("failed", {}).get("error") == expected,
                       "R5 " + phase + " 주소·경로 제거 또는 한국어·300자 유지 " + str(index))
                 if expected == fallback:
@@ -58211,6 +58313,9 @@ def forge_f2_backend_unit():
             check(rn._rep_state(record, False) == expected, "F2B 복구 실패·0장·404 나이 분류")
             if terminal:
                 failed = record.get("failed", {})
+                remote_message = (fixture["job"][outcome] if isinstance(outcome, str) else outcome).get("error_message")
+                check(failed.get("error") == recovery_failure + (" — " + remote_message if remote_message else ""),
+                      "수정2 R1 복구 확정 실패 안내와 원격 안내가 failed.json에 기록됨")
                 check("done" not in record and "resp" not in record and failed.get("phase") == "download"
                       and failed.get("retryable") is True and failed.get("maybe_billed") is True,
                       "R2 복구 중 확정 실패는 영수증 없이 과금 가능 실패")
@@ -58319,6 +58424,7 @@ def forge_f2_backend_unit():
                     accounts.ensure_access.side_effect = None
                     for stage in ("run", "reroll"):
                         check((await submit(stage))[0] == 200 and seen[-1][3]["dp_run"]["inputs"]["concurrency"] == 2, "F2B run·reroll 통과·concurrency 제한")
+                        check(len(seen[-1]) == 5 and seen[-1][4] == "forge", "수정2 R4 접수 당시 Forge 백엔드 전달")
                     for previous in (None, "mock"):
                         for stage in ("run", "reroll"):
                             def reserve(m):
@@ -58353,6 +58459,48 @@ def forge_f2_backend_unit():
         store.update_manifest(r, lambda m: m.update(rerolls={j["cell_key"]: 3}, rerolls_by="mock"))
         check(bd.reset_rerolls_backend(r) == 2 and store.load_manifest(r)["rerolls"] == {j["cell_key"]: 1}, "F2B 예약 취소는 이미 사용한 몫 보존")
         check(before == {p.name: p.read_bytes() for p in Path(rn._ldir(r, j["cell_key"])).glob("*.json")}, "F2B 예약 취소 원장 바이트 불변")
+
+        async def changed_backend_before_execution():
+            r, j = project("queued_backend_change")
+            c, account = Client(), _fj_scope(out)
+            accounts = types.SimpleNamespace(ensure_access=AsyncMock(), context=lambda scope: context(r, c))
+            service = object.__new__(jb.JobRunner)
+            service._forge, service._condition = accounts, threading.Condition()
+            service._pending, service._running, service._history = [], {}, {}
+            service._closed, service._keep, service._max_pending = False, 10, 8
+            route = jb.routes(service)[0][2]
+            request = make_mocked_request("POST", jb.API + "/jobs/prompt", headers={"Content-Type": "application/json"})
+            request.read = AsyncMock(return_value=json.dumps({"root": "unused", "stage": "run"}).encode())
+            scope_token = bd.set_scope(account)
+            try:
+                with patch.dict(os.environ, {rn.MOCK_ENV: "1"}), patch.object(bd, "_root_param", return_value=r), \
+                        patch.object(bd, "pipeline_prompt", return_value={"prompt": {}}):
+                    response = await route(request)
+                    accepted = json.loads(response.text)
+                check(response.status == 200 and len(service._pending) == 1, "수정2 R4 mock 작업 접수 후 실행 대기")
+                if response.status != 200 or not service._pending:
+                    return
+                with service._condition:
+                    queued = service._take()
+                check(queued.get("backend") == "mock", "수정2 R4 작업에 제출 당시 백엔드 저장")
+                def execute(prompt):
+                    be = rn.make_backend(r, None)
+                    asyncio.run(rn.run_calls(r, calls(r), be))
+                    return {"outputs": {}}
+                with patch.dict(os.environ, {rn.MOCK_ENV: ""}), patch.object(jb, "execute", side_effect=execute) as executed, \
+                        patch.object(fb, "ForgeBackend", wraps=fb.ForgeBackend) as created:
+                    await asyncio.to_thread(service._run, queued)
+                check(not executed.called and not created.called and not c.submissions,
+                      "수정2 R4 mock에서 Forge로 바뀐 작업은 실행·백엔드 생성·제출 0")
+                record = service.history(account, r, accepted["prompt_id"])[accepted["prompt_id"]]
+                messages = record["status"]["messages"]
+                check(record["status"]["status_str"] == "error" and any(
+                    name == "execution_error" and detail.get("exception_message") ==
+                    "생성 백엔드 설정이 바뀌었습니다 — 계획을 다시 확인해 주세요" for name, detail in messages),
+                    "수정2 R4 백엔드 변경 안내로 작업 종료")
+            finally:
+                bd.reset_scope(scope_token)
+        asyncio.run(changed_backend_before_execution())
 
         r, j = project("job_context")
         service = object.__new__(jb.JobRunner)
