@@ -409,7 +409,10 @@ class ForgeClient:
         if (parsed is None or not _allowed_scheme(parsed, self.config.allow_http)
                 or not isinstance(key, str) or not key):
             raise ForgeError("unreachable") from None
-        status, _ = await self._exchange("PUT", str(parsed), {"Content-Type": content_type}, data, JSON_LIMIT)
+        # 이 요청만 늘린다. 공유 클라이언트의 설정·Forge API 제한은 바꾸지 않는다.
+        put_timeout = min(300.0, max(self.config.timeout, len(data) / (256 * 1024)))
+        storage = ForgeClient(dataclasses.replace(self.config, timeout=put_timeout), self._transport)
+        status, _ = await storage._exchange("PUT", str(parsed), {"Content-Type": content_type}, data, JSON_LIMIT)
         if not 200 <= status < 300:
             raise ForgeError("unreachable", status)  # 저장소 오류는 Forge 인증·권한 오류가 아니다.
         try:
@@ -538,6 +541,7 @@ def routes(accounts: ForgeAccounts) -> tuple:
     account_limit, root_limit, entry_limit = 128, 128, 2000
     states = OrderedDict()
     slots = asyncio.Semaphore(8)
+    save_slots = asyncio.Semaphore(2)
     messages = {
         "forge_auth": (401, "Forge 로그인 정보를 다시 받아야 합니다 — 잠시 뒤 자동으로 다시 시도합니다."),
         "no_access": (403, "Design Patch Studio 사용 권한이 없습니다. 담당자에게 문의해 주세요."),
@@ -563,7 +567,8 @@ def routes(accounts: ForgeAccounts) -> tuple:
                     reject("busy")
                 del states[idle]
             states[key] = {"rows": OrderedDict(), "saved": OrderedDict(), "saving": set(),
-                           "heavy": asyncio.Semaphore(1), "thumb": asyncio.Semaphore(4), "active": 0}
+                           "heavy": asyncio.Semaphore(1), "thumb": asyncio.Semaphore(4),
+                           "list": asyncio.Semaphore(2), "active": 0}
         state = states[key]
         states.move_to_end(key)
         state["active"] += 1  # 슬롯 대기 중에도 같은 계정의 제한·잠금을 보존한다.
@@ -574,12 +579,15 @@ def routes(accounts: ForgeAccounts) -> tuple:
 
     @asynccontextmanager
     async def limited(state, action):
-        local = state["heavy"] if action in ("import", "save") else state["thumb"] if action == "thumb" else None
-        if local is None:
-            async with slots:
-                yield
-        else:
-            async with local:  # 계정 대기자가 서버 전체 슬롯을 차지하지 않는다.
+        local = state["heavy"] if action in ("import", "save") else state["thumb"] if action == "thumb" else state["list"]
+        async with local:  # 계정 대기자가 서버 전체 슬롯을 차지하지 않는다.
+            if action == "save":
+                if save_slots.locked():
+                    reject("busy")
+                async with save_slots:
+                    async with slots:
+                        yield
+            else:
                 async with slots:
                     yield
 
@@ -706,30 +714,39 @@ def routes(accounts: ForgeAccounts) -> tuple:
         return path, os.path.splitext(os.path.basename(path))[0], f"dp-save-{backend._nonce(root)}-r{record['rev']}"
 
     def exported(path):
-        with board._RENDER_SLOTS:
-            psd = board.dpsd.open_psd(path)
-            im = psd.topil()  # 저장된 병합 프리뷰만; 레이어를 재합성하지 않는다.
-            if im is None:
-                raise board._Reject(422, "Export 합성 그림을 읽을 수 없습니다 — Export 를 다시 실행해 주세요.")
-            try:
-                buf = io.BytesIO()
+        if os.path.getsize(path) > 512 * 1024 ** 2:
+            raise board._Reject(413, "Export 파일이 커서 서버에서 합성 그림을 만들 수 없습니다 — PSD 를 내려받아 직접 올려 주세요.",
+                                reason="too_large")
+        im = None
+        try:
+            with board._RENDER_SLOTS:
+                psd = board.dpsd.open_psd(path)
+                im = psd.topil()  # 저장된 병합 프리뷰만; 레이어를 재합성하지 않는다.
+                del psd  # PNG 인코딩 동안 레이어 데이터 전체를 붙들지 않는다.
+                if im is None:
+                    raise board._Reject(422, "Export 합성 그림을 읽을 수 없습니다 — Export 를 다시 실행해 주세요.")
+                im.load()
+            with io.BytesIO() as buf:
                 im.save(buf, "PNG")
-                raw, size = buf.getvalue(), im.size
-            finally:
+                with buf.getbuffer() as view:
+                    if view.nbytes > 25 * 1024 ** 2:
+                        reject("too_large")
+                    return bytes(view), im.size
+        finally:
+            if im is not None:
                 im.close()
-        if len(raw) > 25 * 1024 ** 2:
-            reject("too_large")
-        return raw, size
 
     async def save(root, scope, ctx, state):
         path, name, request_id = await asyncio.to_thread(export_info, root)
         cached = state["saved"]
         asset = cached.get(request_id)
+        already = asset is not None
         token = ctx["token_of"]()
         if not token:
             reject("forge_auth")
         if asset is None:
-            raw, size = await asyncio.to_thread(exported, path)
+            # 요청 취소도 디코드·인코드 스레드 종료를 기다린 뒤 저장 슬롯을 놓는다.
+            raw, size = await board._project_new_thread(exported, path)
             try:
                 token = ctx["token_of"]()
                 if not token:
@@ -753,6 +770,7 @@ def routes(accounts: ForgeAccounts) -> tuple:
                         offset = result["next"]
                     if asset is None:
                         reject("already_saved")
+                    already = True
             except ForgeError as error:
                 if error.reason == "unauthorized":
                     ctx["reject_token"](token)  # 슬롯 대기·페이지 조회 중 갱신됐으면 실제 거절된 토큰만 표시한다.
@@ -763,7 +781,10 @@ def routes(accounts: ForgeAccounts) -> tuple:
                 cached.popitem(last=False)
         cached.move_to_end(request_id)
         ident = remember(scope, {"source": "saved", "id": asset["id"]})
-        return board._json({"ok": True, "asset": {"id": ident, "name": display(asset.get("name"), token)}})
+        result = {"ok": True, "asset": {"id": ident, "name": display(asset.get("name"), token)}}
+        if already:
+            result["already"] = True
+        return board._json(result)
 
     def handler(action):
         @board._guard
@@ -790,6 +811,13 @@ def routes(accounts: ForgeAccounts) -> tuple:
                             token = ctx["token_of"]()
                             if not token:
                                 reject("forge_auth")
+                            if action in ("import", "save"):
+                                try:
+                                    await accounts.ensure_access(scope)
+                                except ForgeError as error:
+                                    # ensure_access 가 토큰 거절·계정 회수를 이미 처리한다.
+                                    reject({"unauthorized": "forge_auth", "forbidden": "no_access"}.get(
+                                        error.reason, "forge_unreachable"))
                             if is_list:
                                 return await listing(request, scope, ctx, token, "history" if action == "history" else "asset")
                             if action == "save":

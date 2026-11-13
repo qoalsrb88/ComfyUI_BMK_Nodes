@@ -10,10 +10,10 @@ window.DPForgeImport = (() => {
     if (text) node.textContent = text;
     return node;
   };
-  async function call(path, body) {
+  async function call(path, body, signal) {
     const response = await fetch(API + path, body ? {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-    } : undefined);
+    } : { signal });
     let data;
     try { data = await response.json(); } catch (_) { throw new Error("응답을 읽지 못했습니다 — 다시 시도해 주세요."); }
     if (!response.ok) throw new Error(data.error || "요청을 처리하지 못했습니다.");
@@ -26,11 +26,15 @@ window.DPForgeImport = (() => {
     const tabs = el("div", "lp-btns"), search = el("input", "dp-forge-search");
     const status = el("p", "dp-forge-status"), grid = el("div", "dp-forge-grid");
     const more = el("button", "", "더 보기"), closeButton = el("button", "", "닫기");
-    let source = "history", next = null, sequence = 0, loading = false, sending = false, timer;
+    let source = "history", next = null, sequence = 0, loading = false, sending = false, timer, listRequest;
     const alive = () => active === overlay;
+    function cancelList() {
+      if (listRequest) listRequest.abort();
+      listRequest = null;
+    }
     function close() {
       if (!alive() || sending) return;
-      clearTimeout(timer); sequence += 1;
+      clearTimeout(timer); sequence += 1; cancelList();
       overlay.remove(); active = null;
       window.removeEventListener("keydown", inputKeys, true);
       window.DPDialog.unlock();
@@ -61,7 +65,7 @@ window.DPForgeImport = (() => {
     search.type = "search"; search.placeholder = "검색"; search.setAttribute("aria-label", "Forge 자료 검색");
     async function choose(item) {
       if (sending) return;
-      sending = true; clearTimeout(timer); sequence += 1;
+      sending = true; clearTimeout(timer); sequence += 1; cancelList();
       for (const node of sheet.querySelectorAll("button, input")) node.disabled = true;
       status.textContent = "그림을 가져오는 중…";
       try {
@@ -83,12 +87,15 @@ window.DPForgeImport = (() => {
     async function load(append = false) {
       if (!alive() || sending || (append && (loading || !next))) return;
       const seq = ++sequence;
+      cancelList();
+      const request = new AbortController();
+      listRequest = request;
       loading = true; more.disabled = true; status.textContent = "목록을 불러오는 중…";
       if (!append) { next = null; grid.replaceChildren(); more.hidden = true; }
       const query = new URLSearchParams({ root, search: search.value.trim() });
       if (append) query.set(source === "history" ? "cursor" : "offset", next);
       try {
-        const data = await call((source === "history" ? "history" : "assets") + "?" + query);
+        const data = await call((source === "history" ? "history" : "assets") + "?" + query, null, request.signal);
         if (!alive() || seq !== sequence) return;
         for (const item of data.items || []) {
           const button = el("button", "dp-forge-item"), image = el("img");
@@ -102,8 +109,9 @@ window.DPForgeImport = (() => {
         status.textContent = grid.children.length ? "그림을 고르면 가져옵니다." :
           next !== null && next !== undefined ? "이 범위에는 없습니다 — [더 보기]" : "표시할 그림이 없습니다.";
       } catch (error) {
-        if (alive() && seq === sequence) status.textContent = error.message;
+        if (alive() && seq === sequence && !request.signal.aborted && error.name !== "AbortError") status.textContent = error.message;
       } finally {
+        if (listRequest === request) listRequest = null;
         if (alive() && seq === sequence) { loading = false; more.disabled = false; }
       }
     }
@@ -119,7 +127,7 @@ window.DPForgeImport = (() => {
       tabs.append(tab);
     }
     search.addEventListener("input", () => {
-      clearTimeout(timer); sequence += 1; next = null; more.hidden = true;
+      clearTimeout(timer); sequence += 1; cancelList(); next = null; more.hidden = true;
       grid.replaceChildren(); timer = setTimeout(() => load(), 300);
     });
     more.addEventListener("click", () => load(true)); closeButton.addEventListener("click", close);
@@ -140,7 +148,7 @@ window.DPForgeImport = (() => {
         if (!await askFree("합성 그림을 Forge 내 자료에 저장합니다. 계속할까요?", ready) || !ready()) return;
         button.disabled = true;
         const data = await call("save", { root });
-        toast("Forge 내 자료에 저장했습니다: " + data.asset.name);
+        toast((data.already ? "이미 저장한 그림입니다: " : "Forge 내 자료에 저장했습니다: ") + data.asset.name);
       } catch (error) { toast(error.message, "err"); }
       finally { pending = false; button.disabled = !ready(); }
     });
