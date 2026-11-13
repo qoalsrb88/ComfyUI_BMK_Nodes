@@ -59647,6 +59647,7 @@ def forge_f2_dev_unit():
     """Forge F2 갈래 D — 개발용 가짜 Forge(fixture 모양 일치·시나리오 표지·토큰 만료·갱신 페이지). 명세 _proto/STUDIO_FORGE_F2_SPEC.md §2.4·§4. --quick 포함."""
     section("Forge F2-D — forge_f2_dev_unit")
     import html
+    from collections import deque
     import uuid
     import bmk_design_patch_forge_dev as dev
     import bmk_design_patch_server as srv
@@ -59790,22 +59791,59 @@ def forge_f2_dev_unit():
         auto_id = (await call("POST", "/api/image/generate", missing_optout))[1]["job_id"]
         check((await job(auto_id))[1]["result_data"]["result_metadata"][-1]["prompt_used"] == template["prompt"] + " (rewritten)", "FD3 opt-out 키 없음은 자동 재작성")
         check(all("prompt_used" not in item for item in completed["result_data"]["result_metadata"]), "FD3 opt-out 키 있으면 원문 유지")
+        for i, autopilot in enumerate((False, True, None, 0, 12, "candidate_prompt", [], ["candidate_prompt"], {},
+                                       {"other": "candidate_prompt"}, {"candidate_prompt": "text"}, {"candidate_prompt": None})):
+            status, submitted_auto = await submit("r3-auto-" + str(i), prompt_autopilot=autopilot)
+            check(status == 200, "FD-R3 prompt_autopilot 값 형식은 거절하지 않음")
+            if status == 200:
+                result = (await job(submitted_auto["job_id"]))[1]["result_data"]["result_metadata"]
+                rewritten = isinstance(autopilot, dict) and "candidate_prompt" in autopilot
+                check(("prompt_used" in result[-1]) == rewritten, "FD-R3 candidate_prompt 키가 있는 객체만 opt-out 예외")
+        for i, marker in enumerate(("[[fake:delay=0.0000001]]", "[[fake:delay=0.0000001]] [[fake:queue=3/7]]")):
+            tiny_fake = dev.FakeForge(clock=lambda: 1700000000.0)
+            tiny_id = (await submit("r6-tiny-" + str(i), marker, instance=tiny_fake))[1]["job_id"]
+            status, tiny = await job(tiny_id, instance=tiny_fake)
+            check(status == 200 and tiny["status"] == "completed" and tiny["progress"] == 100
+                  and len(tiny["result_data"]["images"]) == 2, "FD-R6 고정 시계·아주 짧은 지연은 즉시 완료")
+            check((await submit("r6-tiny-" + str(i), instance=tiny_fake))[1]["status"] == "completed", "FD-R6 반쯤 바뀐 잡 없이 완료 멱등")
         advancing = dev.FakeForge()
         advance_id = (await submit("advance", "[[fake:delay=30]]", instance=advancing))[1]["job_id"]
         advancing.advance(31)
         check((await job(advance_id, instance=advancing))[1]["status"] == "completed", "FD3 기본 시계 advance")
 
-        invalids = [{k: v for k, v in template.items() if k != "checkpoint"}, {k: v for k, v in template.items() if k != "prompt"}]
+        invalids = [{k: v for k, v in template.items() if k != missing} for missing in ("checkpoint", "prompt", "organization_id")]
         for key, values in (("checkpoint", ["bad", [], None]), ("prompt", ["", None, {}]),
                             ("input_images", [[template["input_images"][0][0]] * 2, [template["input_images"][0] * 17], [["bad"]], [["data:image/png;base64,not-base64"]]]),
                             ("request_id", ["bad/id", "_prefix", "x" * 129, "bad\n", "", None]),
-                            ("num_outputs", [0, 17, True, "1"]), ("organization_id", ["other", None]), ("size", ["bad", "9999x9999", []])):
+                            ("num_outputs", [0, 17, True, "1"]), ("organization_id", [None, "", " ", [], {}, 1, True]), ("size", ["bad", "9999x9999", []])):
             invalids.extend(dict(template, **{key: value}) for value in values)
         count_before = len(fake.jobs)
         for data in invalids:
             status, value = await call("POST", "/api/image/generate", data)
             check(status == 422 and same_shape(value, fixture["errors"]["validation"]["response"]), "FD4 제출 검사 422·fixture")
         check(len(fake.jobs) == count_before, "FD4 잘못된 제출은 잡을 만들지 않음")
+        for account, organization in (("alice", "other"), ("outsider_a", "org1")):
+            check(await submit("r2-org", account=account, organization_id=organization)
+                  == (403, fixture["errors"]["org_denied"]["response"]), "FD-R2 제출 조직 밖은 org_denied 403")
+        check(len(fake.jobs) == count_before, "FD-R2 조직 거절도 잡을 만들지 않음")
+        image_uris = {}
+        for image_format, mime in (("PNG", "image/png"), ("JPEG", "image/jpeg"), ("WEBP", "image/webp"), ("GIF", "image/gif")):
+            buffer = io.BytesIO()
+            picture.save(buffer, format=image_format)
+            image_uris[mime] = "data:" + mime + ";base64," + base64.b64encode(buffer.getvalue()).decode()
+        valid_uris = [image_uris[mime] for mime in ("image/png", "image/jpeg", "image/webp")]
+        check((await submit("r5-valid-mixed", input_images=[valid_uris[:1], valid_uris[1:]]))[0] == 200,
+              "FD-R5 여러 묶음의 PNG·JPEG·WebP 실제 형식 허용")
+        corrupt_uri = "data:image/png;base64," + base64.b64encode(b"not an image").decode()
+        for i, groups in enumerate(([[valid_uris[0], corrupt_uri]], [[valid_uris[0]], [valid_uris[1], corrupt_uri]],
+                                    [[valid_uris[1].replace("image/jpeg", "image/png")]],
+                                    [[valid_uris[0], valid_uris[2].replace("image/webp", "image/jpeg")]],
+                                    [[valid_uris[0], image_uris["image/gif"]]],
+                                    [[valid_uris[0], image_uris["image/gif"].replace("image/gif", "image/png")]])):
+            before_invalid = len(fake.jobs)
+            status, value = await submit("r5-invalid-" + str(i), input_images=groups)
+            check(status == 422 and same_shape(value, fixture["errors"]["validation"]["response"])
+                  and len(fake.jobs) == before_invalid, "FD-R5 모든 장의 손상·MIME 불일치·미지원 형식 거절")
         for body in (b"not-json", b"[]", b"null", b"\xff"):
             check((await call("POST", "/api/image/generate", raw=body))[0] == 422, "FD4 JSON 아닌 본문·객체 아닌 JSON 422")
         check(await call("GET", "/unknown", account=None) == (404, {"detail": "Not Found"}), "FD4 모르는 경로 404")
@@ -59847,11 +59885,14 @@ def forge_f2_dev_unit():
         status, assets = await call("GET", "/api/library/assets?organization_id=org1")
         check(status == 200 and len(assets) == 3 and all(same_shape(item, fixture["assets"]["response"][0]) for item in assets), "FD6 자료 3개·배열·fixture")
         check(len({item["name"] for item in assets}) == 3 and len({item["folder_path"] for item in assets}) == 3, "FD6 서로 다른 이름·폴더")
-        bob_assets = (await call("GET", "/api/library/assets", account="bob"))[1]
+        bob_assets = (await call("GET", "/api/library/assets?organization_id=org1", account="bob"))[1]
         check({item["id"] for item in assets}.isdisjoint(item["id"] for item in bob_assets)
               and all(item["owner_id"] == "u_bob" for item in bob_assets), "FD6 계정별 자료 격리")
-        check((await call("GET", "/api/library/assets?limit=1&offset=1"))[1] == assets[1:2], "FD6 limit·offset")
-        check((await call("GET", "/api/library/assets?search=absent"))[1] == assets, "FD6 Forge 자료에는 검색 없음")
+        check((await call("GET", "/api/library/assets?organization_id=org1&limit=1&offset=1"))[1] == assets[1:2], "FD6 limit·offset")
+        check((await call("GET", "/api/library/assets?organization_id=org1&search=absent"))[1] == assets, "FD6 Forge 자료에는 검색 없음")
+        for suffix in ("", "?limit=1&offset=0", "?organization_id="):
+            status, value = await call("GET", "/api/library/assets" + suffix)
+            check(status == 422 and same_shape(value, fixture["errors"]["validation"]["response"]), "FD-R2 자료 조직 누락·빈 값은 422")
         check((await call("GET", assets[0]["url"], account=None))[1].startswith(b"\x89PNG\r\n\x1a\n"), "FD6 기본 자료 PNG")
         upload_request = dict(fixture["asset_upload"]["upload_url"]["request"], size_bytes=len(png))
         status, uploaded = await call("POST", "/api/library/assets/upload-url", upload_request)
@@ -59872,7 +59913,7 @@ def forge_f2_dev_unit():
         status, asset = await call("POST", "/api/library/assets", create_request)
         check(status == 200 and same_shape(asset, fixture["asset_upload"]["create"]["response"]), "FD6 create fixture")
         check(await call("POST", "/api/library/assets", create_request) == (200, asset), "FD6 동일 client_request_id 멱등")
-        listed = (await call("GET", "/api/library/assets"))[1]
+        listed = (await call("GET", "/api/library/assets?organization_id=org1"))[1]
         check(len(listed) == 4 and listed[0]["id"] == asset["id"] and same_shape(listed[0], fixture["assets"]["response"][0]), "FD6 업로드 전체 절차 후 목록 1개 추가")
         check((await call("GET", asset["url"], account=None))[1] == png, "FD6 업로드 원본 바이트 보존")
         conflicting = dict(create_request, s3_key="other-key")
@@ -59884,7 +59925,130 @@ def forge_f2_dev_unit():
         check(all(isinstance(entry, tuple) and len(entry) == 2 and "?" not in entry[1] for entry in fake.calls)
               and "dev:alice" not in repr(fake.calls) and "data:image/" not in repr(fake.calls), "FD6 호출 기록은 메서드·경로만")
 
-        config = srv.ServerConfig(str(OUT_ROOT / "forge_f2_dev_unit" / "data"), dev_handoff=True, dev_parent_port=8790, port=8791)
+        with patch.object(dev, "_MAX_JOBS", 3):
+            bounded = dev.FakeForge(clock=lambda: now[0])
+            oldest_id = (await submit("r4-oldest", instance=bounded))[1]["job_id"]
+            oldest_url = (await job(oldest_id, instance=bounded))[1]["result_data"]["images"][0]
+            await call("GET", oldest_url, instance=bounded, account=None)
+            retained = []
+            for i in range(3):
+                retained.append((await submit("r4-new-" + str(i), instance=bounded))[1]["job_id"])
+            check(set(bounded.jobs) == set(retained) and set(bounded._states) == set(retained), "FD-R4 잡 상한·오래된 잡과 보관 입력 제거")
+            check((await job(oldest_id, instance=bounded))[0] == 404
+                  and (await call("GET", oldest_url, instance=bounded, account=None))[0] == 404
+                  and not bounded._rendered and bounded._rendered_bytes == 0, "FD-R4 버린 잡의 PNG 캐시·주소도 제거")
+        with patch.object(dev, "_MAX_CALLS", 3):
+            bounded_calls = dev.FakeForge()
+            for i in range(5):
+                await call("GET", "/missing/" + str(i), instance=bounded_calls)
+            check(isinstance(bounded_calls.calls, deque) and bounded_calls.calls.maxlen == 3
+                  and list(bounded_calls.calls) == [("GET", "/missing/" + str(i)) for i in range(2, 5)], "FD-R4 calls deque는 최근 상한만 보관")
+        concurrent = dev.FakeForge()
+        duplicates = await asyncio.gather(*(submit("r4-concurrent", instance=concurrent) for _ in range(4)))
+        check(all(status == 200 for status, _ in duplicates) and len({value["job_id"] for _, value in duplicates}) == 1
+              and len(concurrent.jobs) == 1, "FD-R4 작업 스레드 동시 재제출도 멱등")
+
+        with patch.object(dev, "_MAX_UPLOADS", 2):
+            upload_fake = dev.FakeForge()
+            first_upload = (await call("POST", "/api/library/assets/upload-url", upload_request, instance=upload_fake))[1]
+            await call("PUT", first_upload["upload_url"], instance=upload_fake, account=None, headers={"Content-Type": "image/png"}, raw=png)
+            second_upload = (await call("POST", "/api/library/assets/upload-url", upload_request, instance=upload_fake))[1]
+            third_upload = (await call("POST", "/api/library/assets/upload-url", upload_request, instance=upload_fake))[1]
+            check(set(upload_fake._uploads) == {second_upload["s3_key"], third_upload["s3_key"]}, "FD-R4 임시 업로드 상한·오래된 본문 제거")
+            check((await call("PUT", first_upload["upload_url"], instance=upload_fake, account=None,
+                              headers={"Content-Type": "image/png"}, raw=png))[0] == 403, "FD-R4 버린 업로드 서명은 더 이상 유효하지 않음")
+            await call("PUT", third_upload["upload_url"], instance=upload_fake, account=None, headers={"Content-Type": "image/png"}, raw=png)
+            await call("POST", "/api/library/assets/uploads/complete", {"organization_id": "org1", "s3_key": third_upload["s3_key"]}, instance=upload_fake)
+            upload_asset_request = dict(create_request, s3_key=third_upload["s3_key"])
+            saved_status, saved_asset = await call("POST", "/api/library/assets", upload_asset_request, instance=upload_fake)
+            check(saved_status == 200 and set(upload_fake._uploads) == {second_upload["s3_key"]}, "FD-R4 자료 등록 후 임시 업로드 해제")
+            check(await call("POST", "/api/library/assets", upload_asset_request, instance=upload_fake) == (200, saved_asset)
+                  and (await call("GET", saved_asset["url"], instance=upload_fake, account=None))[1] == png, "FD-R4 임시 업로드 해제 뒤에도 등록 멱등·자료 유지")
+
+        with patch.object(dev, "_MAX_RENDERED", 2):
+            cache_fake = dev.FakeForge()
+            cache_id = (await submit("r4-cache", instance=cache_fake, num_outputs=3))[1]["job_id"]
+            cache_urls = (await job(cache_id, instance=cache_fake))[1]["result_data"]["images"]
+            with patch.object(dev, "_png", wraps=dev._png) as draw:
+                copies = await asyncio.gather(*(call("GET", cache_urls[0], instance=cache_fake, account=None) for _ in range(2)))
+                check(draw.call_count == 1 and copies[0] == copies[1] and copies[0][0] == 200, "FD-R4 동시 같은 슬롯 조회는 PNG 한 번만 그림")
+                await call("GET", cache_urls[1], instance=cache_fake, account=None)
+                await call("GET", cache_urls[0], instance=cache_fake, account=None)
+                await call("GET", cache_urls[2], instance=cache_fake, account=None)
+                check(draw.call_count == 3 and set(cache_fake._rendered) == {(cache_id, 0), (cache_id, 2)}, "FD-R4 PNG 개수 상한·최근 사용 캐시 유지")
+                await call("GET", cache_urls[1], instance=cache_fake, account=None)
+                check(draw.call_count == 4 and len(cache_fake._rendered) == 2
+                      and cache_fake._rendered_bytes == sum(map(len, cache_fake._rendered.values())), "FD-R4 캐시에서 빠진 슬롯만 다시 그림·바이트 집계")
+        byte_fake = dev.FakeForge()
+        byte_id = (await submit("r4-bytes", instance=byte_fake))[1]["job_id"]
+        byte_urls = (await job(byte_id, instance=byte_fake))[1]["result_data"]["images"]
+        with patch.object(dev, "_MAX_RENDERED_BYTES", 1):
+            byte_images = [(await call("GET", url, instance=byte_fake, account=None))[1] for url in byte_urls]
+            check(not byte_fake._rendered and byte_fake._rendered_bytes == 0, "FD-R4 바이트 상한보다 큰 PNG는 반환만 하고 캐시하지 않음")
+        byte_limit = max(map(len, byte_images))
+        with patch.object(dev, "_MAX_RENDERED_BYTES", byte_limit):
+            for url in byte_urls:
+                await call("GET", url, instance=byte_fake, account=None)
+            check(list(byte_fake._rendered) == [(byte_id, 1)] and byte_fake._rendered_bytes <= byte_limit, "FD-R4 PNG 총 바이트 상한도 오래된 것부터 제거")
+
+        large_buffer = io.BytesIO()
+        Image.new("RGB", (2048, 1200), (30, 40, 50)).save(large_buffer, format="PNG")
+        large_uri = "data:image/png;base64," + base64.b64encode(large_buffer.getvalue()).decode()
+        worker_fake = dev.FakeForge()
+        main_thread = threading.get_ident()
+        image_threads = []
+
+        def observe_image(name, function):
+            def observed(*args, **kwargs):
+                image_threads.append((name, threading.get_ident()))
+                return function(*args, **kwargs)
+            return observed
+
+        with patch.object(dev, "_picture", observe_image("decode", dev._picture)), \
+                patch.object(Image.Image, "thumbnail", observe_image("thumbnail", Image.Image.thumbnail)), \
+                patch.object(Image.Image, "resize", observe_image("resize", Image.Image.resize)), \
+                patch.object(Image.Image, "save", observe_image("encode", Image.Image.save)):
+            worker_id = (await submit("r4-worker", instance=worker_fake, input_images=[[large_uri]]))[1]["job_id"]
+            worker_urls = (await job(worker_id, instance=worker_fake))[1]["result_data"]["images"]
+            await call("GET", worker_urls[0], instance=worker_fake, account=None)
+            await call("GET", "/api/library/assets?organization_id=org1", instance=worker_fake)
+            worker_upload = (await call("POST", "/api/library/assets/upload-url", upload_request, instance=worker_fake))[1]
+            await call("PUT", worker_upload["upload_url"], instance=worker_fake, account=None, headers={"Content-Type": "image/png"}, raw=png)
+        check({name for name, _ in image_threads} == {"decode", "thumbnail", "resize", "encode"}
+              and all(thread_id != main_thread for _, thread_id in image_threads), "FD-R4 입력·자료·업로드·결과 이미지 작업은 이벤트 루프 밖")
+        with Image.open(io.BytesIO(worker_fake._states[worker_id]["source"])) as stored_source:
+            check(stored_source.size == (1024, 600), "FD-R4 보관 입력은 긴 변 1024 이하·종횡비 유지")
+        with Image.open(io.BytesIO((await call("GET", worker_urls[0], instance=worker_fake, account=None))[1])) as worker_result:
+            check(worker_result.size == (96, 64), "FD-R4 보관 입력 축소와 요청 출력 크기는 독립")
+        released = threading.Event()
+        responsive = []
+        original_draw = dev._png
+
+        def blocked_draw(*args, **kwargs):
+            responsive.append(released.wait(1))
+            return original_draw(*args, **kwargs)
+
+        timer = asyncio.get_running_loop().call_later(0.02, released.set)
+        try:
+            with patch.object(dev, "_png", blocked_draw):
+                drawing = await call("GET", worker_urls[1], instance=worker_fake, account=None)
+            check(drawing[0] == 200 and responsive == [True], "FD-R4 그림 처리 중에도 이벤트 루프 타이머 진행")
+        finally:
+            released.set()
+            timer.cancel()
+
+        config = srv.ServerConfig(str(OUT_ROOT / "forge_f2_dev_unit" / "data"), dev_handoff=True, dev_parent_port=8790, port=8791, forge=object())
+        no_forge = srv.make_dev_parent_app(dataclasses.replace(config, forge=None))
+        missing_forge = web.Application()
+        dev.mount(missing_forge, types.SimpleNamespace(dev_handoff=True, dev_parent_port=8790, port=8791))
+        for no_forge_app in (no_forge, missing_forge):
+            with patch.object(dev, "issue_token", side_effect=AssertionError("must not issue token")):
+                refusal = await request(no_forge_app, "GET", "/refresh")
+            check(refusal.status == 400 and refusal.text == "토큰 갱신 페이지는 서버를 --forge-api 로 띄웠을 때만 씁니다",
+                  "FD-R1 Forge 설정 없음·속성 없음은 토큰 없이 안내만")
+            me_without_forge = await request(no_forge_app, "GET", "/auth/me")
+            check(me_without_forge.status == 200 and json.loads(me_without_forge.body) == {"authenticated": False},
+                  "FD-R1 Forge 설정이 없어도 가짜 API 라우트 유지")
         parent = srv.make_dev_parent_app(config)
         index = await request(parent, "GET", "/")
         check(index.status == 200 and "<script" not in index.text, "FD7 기존 / 는 스크립트 없음")

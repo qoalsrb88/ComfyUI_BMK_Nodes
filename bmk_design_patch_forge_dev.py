@@ -11,7 +11,9 @@ FakeForge.handle 은 소켓을 쓰지 않는다 — bmk_design_patch_forge.Forge
 
 from __future__ import annotations
 
+import asyncio
 import base64
+from collections import OrderedDict, deque
 import copy
 from datetime import datetime, timezone
 import hashlib
@@ -35,6 +37,11 @@ _TOKEN = re.compile(r"dev:([a-z0-9_-]{1,32})(?::([0-9]+))?")
 _NAMESPACE = uuid.UUID("03e4c283-d946-5aa4-bd83-22dcd16574ce")
 _BODY_LIMIT = 64 * 1024 * 1024
 _IMAGE_TYPES = {"image/png": "PNG", "image/jpeg": "JPEG", "image/webp": "WEBP"}
+_MAX_JOBS = 200
+_MAX_UPLOADS = 16
+_MAX_CALLS = 1000
+_MAX_RENDERED = 32
+_MAX_RENDERED_BYTES = 64 * 1024 * 1024
 
 
 class _Validation(ValueError):
@@ -56,6 +63,33 @@ def _picture(data):
             raise ValueError
         picture.load()
         return picture.convert("RGB"), picture.format
+
+
+def _input_source(groups):
+    """모든 입력의 실제 형식을 검사하고, 첫 그림만 작은 PNG로 보관한다. 작업 스레드에서 호출한다."""
+    first = None
+    for group in groups:
+        for value in group:
+            if not isinstance(value, str):
+                raise _Validation("input_images")
+            header, separator, encoded = value.partition(",")
+            content_type = header.removeprefix("data:").removesuffix(";base64")
+            if not separator or content_type not in _IMAGE_TYPES or header != f"data:{content_type};base64":
+                raise _Validation("input_images")
+            try:
+                picture, image_format = _picture(base64.b64decode(encoded, validate=True))
+                with picture:
+                    if image_format != _IMAGE_TYPES[content_type]:
+                        raise ValueError
+                    if first is None:
+                        picture.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
+                        picture.info.clear()
+                        output = io.BytesIO()
+                        picture.save(output, format="PNG")
+                        first = output.getvalue()
+            except Exception:
+                raise _Validation("input_images") from None
+    return first
 
 
 def _png(size, label, seed, source=None):
@@ -92,13 +126,15 @@ class FakeForge:
         self._offset = 0.0
         self._lock = threading.RLock()
         self._fixture = json.loads((Path(__file__).parent / "tools" / "fixtures" / "forge_api.json").read_text(encoding="utf-8"))
-        self.calls = []
+        self.calls = deque(maxlen=_MAX_CALLS)
         self.jobs = {}
         self._states = {}
         self._assets = {}
         self._media = {}
         self._uploads = {}
         self._created = {}
+        self._rendered = OrderedDict()
+        self._rendered_bytes = 0
 
     def _now(self):
         return self._clock() + self._offset
@@ -123,6 +159,13 @@ class FakeForge:
     @staticmethod
     def _org(account, organization):
         return organization == "org1" and not account.startswith("outsider")
+
+    @staticmethod
+    def _organization(organization):
+        if (not isinstance(organization, str) or not 1 <= len(organization) <= 128
+                or any(character.isspace() or ord(character) < 32 for character in organization)):
+            raise _Validation("organization_id")
+        return organization
 
     @staticmethod
     def _integer(query, name, default, minimum, maximum):
@@ -174,8 +217,9 @@ class FakeForge:
             raise _Validation("prompt")
         if data.get("checkpoint") not in fixture["checkpoints"].values():
             raise _Validation("checkpoint")
-        if not self._org(account, data.get("organization_id")):
-            raise _Validation("organization_id")
+        organization = self._organization(data.get("organization_id"))
+        if not self._org(account, organization):
+            return self._error("org_denied")
         count = data.get("num_outputs", 1)
         if type(count) is not int or not rules["num_outputs"][0] <= count <= rules["num_outputs"][1]:
             raise _Validation("num_outputs")
@@ -186,18 +230,7 @@ class FakeForge:
         if (not isinstance(groups, list) or any(not isinstance(group, list)
                 or len(group) > rules["max_inputs_per_group"] for group in groups)):
             raise _Validation("input_images")
-        first = None
-        for group in groups:
-            for value in group:
-                if not isinstance(value, str) or re.match(r"^data:image/[A-Za-z0-9.+-]+;base64,", value) is None:
-                    raise _Validation("input_images")
-                try:
-                    decoded = base64.b64decode(value.split(",", 1)[1], validate=True)
-                    if first is None:
-                        _picture(decoded)
-                        first = decoded
-                except Exception:
-                    raise _Validation("input_images") from None
+        first = _input_source(groups)
         size = data.get("size", "1024x1024")
         if not isinstance(size, str) or re.fullmatch(r"[0-9]{1,4}x[0-9]{1,4}", size) is None:
             raise _Validation("size")
@@ -218,9 +251,18 @@ class FakeForge:
         job.update(id=job_id, user_id=user_id, created_at=_stamp(now), request_data=summary,
                    queue_position=scenario["queue"][0] if scenario["queue"] else None,
                    queue_total=scenario["queue"][1] if scenario["queue"] else None)
+        while len(self.jobs) >= _MAX_JOBS:
+            oldest = next(iter(self.jobs))
+            del self.jobs[oldest]
+            del self._states[oldest]
+            for key in list(self._rendered):
+                if key[0] == oldest:
+                    self._rendered_bytes -= len(self._rendered.pop(key))
         self.jobs[job_id] = job
+        autopilot = data.get("prompt_autopilot")
         self._states[job_id] = dict(scenario, at=now, polls=0, size=(width, height), source=first,
-                                   changed=scenario["changed"] or "prompt_autopilot" not in data)
+                                   changed=scenario["changed"] or "prompt_autopilot" not in data
+                                   or isinstance(autopilot, dict) and "candidate_prompt" in autopilot)
         return _json(200, {"job_id": job_id, "job_ids": [job_id], "status": "pending"})
 
     def _update_job(self, job_id, poll=False):
@@ -228,21 +270,23 @@ class FakeForge:
         state = self._states[job_id]
         if job["status"] in ("completed", "failed"):
             return job
-        elapsed = max(0, self._now() - state["at"])
+        now = max(state["at"], self._now())
         delay = state["delay"]
         queued = state["queue"] is not None
-        if queued and elapsed < delay / 2:
+        start = state["at"] + (delay / 2 if queued else 0)
+        end = state["at"] + delay
+        duration = end - start
+        if duration > 0 and queued and now < start:
             job["queue_position"] = max(1, state["queue"][0] - state["polls"])
             if poll:
                 state["polls"] += 1
             return job
-        start = state["at"] + (delay / 2 if queued else 0)
         job.update(status="processing", queue_position=None, queue_total=None,
                    started_at=_stamp(start), execution_deadline_at=_stamp(start + 1200))
-        if elapsed < delay:
-            job["progress"] = max(1, min(99, int(100 * (self._now() - start) / (state["at"] + delay - start))))
+        if duration > 0 and now < end:
+            job["progress"] = max(1, min(99, int(100 * (now - start) / duration)))
             return job
-        job.update(progress=100, completed_at=_stamp(state["at"] + delay))
+        job.update(progress=100, completed_at=_stamp(end))
         if state["fail"]:
             job.update(copy.deepcopy(self._fixture["job"]["failed_" + state["fail"]]))
             return job
@@ -336,6 +380,9 @@ class FakeForge:
             raise _Validation("filename")
         key = f"org1/u_{account}/asset/{uuid.uuid4().hex}"
         signature = secrets.token_urlsafe(24)
+        # 자료 등록 전까지의 임시 올리기만 보관한다. 오래된 서명·본문도 함께 버린다.
+        while len(self._uploads) >= _MAX_UPLOADS:
+            del self._uploads[next(iter(self._uploads))]
         self._uploads[key] = {"account": account, "content_type": content_type, "size_bytes": size,
                               "sig": signature, "data": None, "complete": False}
         return _json(200, {"upload_url": f"{self.media_origin}/fake-upload/{key}?" + urlencode({"sig": signature}),
@@ -405,6 +452,7 @@ class FakeForge:
                      content_hash=hashlib.sha256(upload["data"]).hexdigest(), created_at=_stamp(self._now()), updated_at=_stamp(self._now()))
         assets.insert(0, asset)
         self._created[(account, request_id)] = asset
+        del self._uploads[key]
         return self._asset_response(asset)
 
     def _asset_response(self, asset):
@@ -419,14 +467,32 @@ class FakeForge:
             job = self._update_job(match[1])
             slot = int(match[2])
             if job["status"] == "completed" and slot < len(job["result_data"]["images"]):
+                key = (match[1], slot)
+                if key in self._rendered:
+                    self._rendered.move_to_end(key)
+                    return 200, {"Content-Type": "image/png"}, self._rendered[key]
                 state = self._states[match[1]]
                 source = _picture(state["source"])[0] if state["source"] is not None else None
-                return 200, {"Content-Type": "image/png"}, _png(state["size"], "FAKE FORGE", f"{match[1]}:{slot}", source)
+                png = _png(state["size"], "FAKE FORGE", f"{match[1]}:{slot}", source)
+                if len(png) <= _MAX_RENDERED_BYTES:
+                    while self._rendered and (len(self._rendered) >= _MAX_RENDERED
+                                             or self._rendered_bytes + len(png) > _MAX_RENDERED_BYTES):
+                        self._rendered_bytes -= len(self._rendered.popitem(last=False)[1])
+                    self._rendered[key] = png
+                    self._rendered_bytes += len(png)
+                return 200, {"Content-Type": "image/png"}, png
         return _json(404, {"detail": "Not Found"})
 
     async def handle(self, method: str, url: str, headers: dict, body: bytes | None = None,
                      timeout: float | None = None) -> tuple[int, dict, bytes]:
         """ForgeClient 의 전송 함수 모양. 모르는 경로는 404 {"detail": "Not Found"}."""
+        try:
+            # 이미지 작업과 상태 잠금 대기를 모두 이벤트 루프 밖에서 수행한다.
+            return await asyncio.to_thread(self._handle, method, url, headers, body)
+        except Exception:
+            return _json(500, {"detail": "Internal Server Error"})
+
+    def _handle(self, method, url, headers, body):
         try:
             with self._lock:
                 parsed = urlsplit(url)
@@ -484,7 +550,8 @@ class FakeForge:
                 if path == "/api/image/history":
                     return self._history(account, query)
                 if path == "/api/library/assets" and method == "GET":
-                    if not self._org(account, query.get("organization_id", ["org1"])[0]):
+                    organization = self._organization(query.get("organization_id", [None])[0])
+                    if not self._org(account, organization):
                         return self._error("org_denied")
                     limit = self._integer(query, "limit", 200, 1, 200)
                     offset = self._integer(query, "offset", 0, 0, 10**12 - 1)
@@ -571,6 +638,8 @@ def mount(app, config, fake: FakeForge | None = None):
     async def refresh(request):
         try:
             authority, host = _loopback_authority(request.headers.get("Host"))
+            if getattr(config, "forge", None) is None:
+                return web.Response(status=400, text="토큰 갱신 페이지는 서버를 --forge-api 로 띄웠을 때만 씁니다")
             if any(len(request.query.getall(key)) != 1 for key in request.query):
                 raise ValueError
             page = _refresh_page(request.query, authority, host, config, fake)
