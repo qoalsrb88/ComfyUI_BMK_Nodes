@@ -2,8 +2,8 @@
   "_comment": "Design Patch Studio 서버 모드(Forge 이식 F2)가 부르는 Forge 공개 API 의 요청·응답 모양. 키 이름·값 형식이 계약이고 값 자체는 예시다. 실제 주소는 싣지 않는다 — {FORGE} = 실행 옵션 --forge-api, {MEDIA} = --forge-media-origin. 개발용 가짜 Forge(bmk_design_patch_forge_dev.py)와 forge_f2_* 시험이 이 파일을 함께 읽는다.",
   "source": {
     "checked": "2026-11-13",
-    "forge_commit": "f44a614f8",
-    "note": "게이트웨이(front_service)와 image_service 코드를 읽어 확인한 모양. 운영 값(토큰 수명·autopilot 여부·동시 제출 허용)은 담당자 답 대기 — options 절의 값은 실행 옵션으로 바꾼다."
+    "forge_commit": "1c157c233",
+    "note": "게이트웨이(front_service)와 image_service(Rust 본체) 코드를 읽어 확인한 모양. 운영 값(토큰 수명·autopilot 여부·동시 제출 허용)은 담당자 답 대기 — options 절의 값은 실행 옵션으로 바꾼다."
   },
   "options": {
     "_comment": "담당자 답에 묶인 값 — 코드에 박지 않고 실행 옵션의 기본값으로만 둔다.",

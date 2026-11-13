@@ -61379,7 +61379,9 @@ def forge_f2_dev_unit():
             released.set()
             timer.cancel()
 
-        config = srv.ServerConfig(str(OUT_ROOT / "forge_f2_dev_unit" / "data"), dev_handoff=True, dev_parent_port=8790, port=8791, forge=object())
+        config = srv.ServerConfig(str(OUT_ROOT / "forge_f2_dev_unit" / "data"), dev_handoff=True, dev_parent_port=8790, port=8791,
+                                  forge=__import__("bmk_design_patch_forge").ForgeConfig(
+                                      "http://localhost:8790", media_origins=("http://localhost:8790",), allow_http=True))
         no_forge = srv.make_dev_parent_app(dataclasses.replace(config, forge=None))
         missing_forge = web.Application()
         dev.mount(missing_forge, types.SimpleNamespace(dev_handoff=True, dev_parent_port=8790, port=8791))
