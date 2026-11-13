@@ -902,7 +902,7 @@ def switch_preview(root: str, m: dict, settings: dict, *, prepare: dict | None =
         if prepare is None and target["model"] in ("gpt-image-2.5-sunburst", "gpt-image-2.5-flare"):
             target["model"] = target["model"].replace("2.5", "2.6")
         target = validate_section("prepare", target)
-        backend = runner.BACKEND_MOCK if runner.mock_enabled(root) else runner.BACKEND_COMFY_ORG
+        backend = runner.backend_name(root)
         _src, rec = prepare_record(m)
         input_keys = ("size_rule", "variants", "ref_style")
         missing_record = any(k not in rec for k in input_keys)
