@@ -6194,9 +6194,12 @@ def m2_board_unit():
             check(not re.search(r"https?://", text) and "@import" not in text and "cdn" not in text.lower(),
                   f"{name} 외부 URL·CDN 없음")
             check(not any(ord(ch) >= 0x1F000 or ch == "\ufe0f" for ch in text), f"{name} 이모지 없음")
+        scripts = re.findall(r'<script src="([^"]+)" defer></script>', html)
+        check(scripts[:3] == ["env.js", "dialog.js", "forge_import.js"] and scripts.count("forge_import.js") == 1,
+              "S1 Forge 가져오기 스크립트는 dialog 뒤에 한 번만 배치")
         check(re.findall(r'<script src="([^"]+)" defer></script>', html)
-              == ["env.js", "dialog.js", "layout_geom.js", "viewer.js", "rows.js", "layout_edit.js", "ref_edit.js", "checklist.js", "pipeline.js", "mask_edit.js", "board.js"]
-              and not re.search(r"<script(?![^>]*\bsrc=\"(?:env|dialog|layout_geom|viewer|rows|layout_edit|ref_edit|checklist|pipeline|mask_edit|board)\.js\")", html)
+              == ["env.js", "dialog.js", "forge_import.js", "layout_geom.js", "viewer.js", "rows.js", "layout_edit.js", "ref_edit.js", "checklist.js", "pipeline.js", "mask_edit.js", "board.js"]
+              and not re.search(r"<script(?![^>]*\bsrc=\"(?:env|dialog|forge_import|layout_geom|viewer|rows|layout_edit|ref_edit|checklist|pipeline|mask_edit|board)\.js\")", html)
               and "on" + "click=" not in html.lower(),
               "html 에 인라인 스크립트·이벤트 속성 없음, layout_geom → viewer → rows → layout_edit → ref_edit → checklist → pipeline → mask_edit → board 순서")
         check('postMessage({ type: "bmk-dp-queue", rootKey: ROOT, layout }, location.origin)' in js,
@@ -49739,6 +49742,12 @@ def forge_f2_session_unit():
         await token_charset_cases(http)
         await refresh_rejection_cases(http)
         await login_rejection_cases(http)
+        with patch.object(fg, "routes", return_value=()):
+            async with serving(http) as (app, call):
+                response, _ = await call("/api/session", "POST", {"token": new_token("no-c-routes"), "organization_id": "org1"})
+                _, value = await call(bd.API + "/env", sid=response.cookies[srv.COOKIE].value)
+                check(value["caps"]["forge_import"] is False and value["caps"]["forge_save"] is False,
+                      "S2 C 라우트를 빈 튜플로 대체하면 Forge 가져오기·저장 caps false")
         now[0] = 100
         async with serving(http) as (app, call):
             check(os.environ.get("BMK_DP_FORGE") == "1" and os.environ.get("BMK_DP_MOCK_API") == "off", "F2S Forge 모드는 mock 강제 없음")
@@ -49767,8 +49776,7 @@ def forge_f2_session_unit():
             expected_env = copy.deepcopy(api["env_server_forge"]["response"])
             expected_env["account"]["tag"] = tag
             expected_env["parent_origins"] = list(base.parent_origins)
-            expected_env["caps"].update(forge_import=False, forge_save=False)
-            check(value == expected_env, "F2S Forge env fixture·C 라우트 없으면 caps false")
+            check(value == expected_env, "S2 F2S C 라우트가 있으면 Forge env fixture·caps true")
             before = len(calls)
             for _ in range(3):
                 response, value = await call("/api/session/token", "POST", {"token": first, "organization_id": "org1"}, sid, tag)
@@ -62707,11 +62715,14 @@ def forge_f2_import_unit():
                 # 메모리 결과 캐시가 없는 새 라우트에서도 기존 client_request_id 를 찾는다.
                 handlers = {p.rsplit("/", 1)[-1]: fn for _, p, fn in fg.routes(accounts)}
                 second = await request("save", {"root": root_key})
-            check(first.status == second.status == 200 and len(requests) == 1 and re.fullmatch(r"dp-save-[0-9a-f]{12}-r12", requests[0]), "F2C 같은 rev 재시작 재저장도 자료 하나·프로젝트 nonce")
+            check(first.status == second.status == 200 and len(requests) == 2 and requests[0] == requests[1]
+                  and re.fullmatch(r"dp-save-[0-9a-f]{12}-r12", requests[0]), "F2C 같은 rev 재시작 재저장도 등록 충돌 복구·프로젝트 nonce")
             assets = await client.assets("dev:alice", "org1")
             actual = next(a for a in assets["items"] if a.get("client_request_id") == requests[0])
             check(actual["id"] not in first.text and origin not in first.text and set(value(first)["asset"]) == {"id", "name"}, "F2C 저장 응답 ID 불투명·이름만")
             # 인코딩 상한은 실제 25MiB+ PNG 로 검사한다.
+            manifest["exports"][0]["rev"] = 13  # 새 Export 이므로 기존 r12 메모리 캐시를 쓰지 않는다.
+            store.write_json_atomic(Path(root, store.MANIFEST_NAME), manifest)
             huge = Image.fromarray(np.random.default_rng(3).integers(0, 256, (3000, 3000, 3), dtype=np.uint8))
             with patch.object(bd.dpsd, "open_psd", return_value=types.SimpleNamespace(topil=lambda: huge.copy())):
                 response = await request("save", {"root": root_key})
@@ -62727,16 +62738,321 @@ def forge_f2_import_unit():
                     response = await request("assets")
                 check(response.status == status, "F2C Forge 오류 매핑 " + reason)
             check(rejected == ["dev:alice"], "F2C 401 토큰 거절 표시")
-            with patch.object(tokens, "token_for", side_effect=["dev:old", "dev:new"]), \
-                    patch.object(client, "assets", side_effect=fg.ForgeError("unauthorized", 401)):
+            previous = ["dev:old"]
+            with patch.object(tokens, "token_for", side_effect=lambda *args: previous.pop() if previous else "dev:new"), \
+                    patch.object(client, "upload_asset", side_effect=fg.ForgeError("unauthorized", 401)):
                 response = await request("save", {"root": root_key})
             check(response.status == 401 and rejected == ["dev:alice", "dev:new"], "F2C 저장 중 갱신된 실제 토큰만 거절 표시")
             check((await request("assets", query={"root": "../outside"})).status == 404, "F2C 목록 root 범위 검사")
             check((await request("save", {"root": root_key}, account="bob")).status == 404, "F2C 타 계정 프로젝트 거절")
 
+    async def review_cases():
+        """FIX R1–R5: 전송 대역·이벤트로 오류 출처, 계정 경합, 조회 상한을 재현한다."""
+        import bmk_design_patch_forge_backend as backend
+        from collections import OrderedDict
+
+        class Rig:
+            def __init__(self, concurrency=1):
+                self.now = 100.0
+                self.seen, self.rejected, self.started = [], [], []
+                self.media_gate = self.upload_gate = None
+                self.upload_started = asyncio.Event()
+                self.media_status, self.api_status = {}, {}
+                self.put_status, self.create_status = 200, 200
+                self.raw = png
+                self.history_count = 1
+                self.url, self.thumb = origin + "/media/original", origin + "/media/thumb"
+                self.asset_pages = lambda offset: []
+                self.cfg = dataclasses.replace(config, concurrency=concurrency)
+                self.client = fg.ForgeClient(self.cfg, self.transport)
+                tokens = types.SimpleNamespace(token_for=lambda org, account: "dev:" + account,
+                    reject_token=lambda org, account, token: self.rejected.append((account, token)))
+                self.accounts = fg.ForgeAccounts(self.client, self.cfg, tokens, clock=lambda: self.now)
+                self.handlers = {p.rsplit("/", 1)[-1]: fn for _, p, fn in fg.routes(self.accounts)}
+
+            async def transport(self, method, url, headers, body, timeout):
+                path = urllib.parse.urlsplit(url).path
+                data = json.loads(body) if body and method == "POST" else None
+                account = bd.current_scope()["account"]
+                self.seen.append((method, path, data, url, account))
+                if (method, path) in self.api_status:
+                    return self.api_status[method, path], {}, encoded({"detail": "fixture failure"})
+                if path == "/api/image/history":
+                    return 200, {}, encoded({"items": [dict(id="remote", result_url=self.url,
+                        thumbnail_url=self.thumb, prompt="그림")] * self.history_count, "has_more": False})
+                if path == "/api/library/assets" and method == "GET":
+                    offset = int(urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)["offset"][0])
+                    return 200, {}, encoded(self.asset_pages(offset))
+                if path.endswith("/upload-url"):
+                    return 200, {}, encoded({"upload_url": origin + "/storage", "s3_key": "fixture-key"})
+                if method == "PUT":
+                    return self.put_status, {}, b""
+                if path.endswith("/uploads/complete"):
+                    return 200, {}, encoded({"ok": True})
+                if path == "/api/library/assets" and method == "POST":
+                    if self.upload_gate is not None and account == "alice":
+                        self.upload_started.set()
+                        await self.upload_gate.wait()
+                    return self.create_status, {}, encoded({"id": "remote-saved", "name": "작업", "detail": "conflict"})
+                if path.startswith("/media/"):
+                    self.started.append((account, path))
+                    if self.media_gate is not None:
+                        await self.media_gate.wait()
+                    return self.media_status.get(path, 200), {}, self.raw
+                raise AssertionError((method, path))
+
+            async def request(self, action, data=None, account="alice", query=None):
+                raw = encoded(data or {})
+                async def read():
+                    return raw
+                request = types.SimpleNamespace(query=query or {}, path=bd.API + "/forge/" + action,
+                    content_type="application/json", content_length=len(raw), read=read)
+                scope = dict(org="org1", account=account, home=str(work), input=str(work), output=str(work))
+                mark = bd.set_scope(scope)
+                try:
+                    return await self.handlers[action](request)
+                finally:
+                    bd.reset_scope(mark)
+
+            async def item(self, account="alice"):
+                response = await self.request("history", account=account)
+                return dict(source="history", id=json.loads(response.body)["items"][0]["id"])
+
+            def asset_gets(self):
+                return [int(urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)["offset"][0])
+                        for method, path, _, url, _ in self.seen if (method, path) == ("GET", "/api/library/assets")]
+
+        def value(response):
+            return json.loads(response.body)
+
+        async def settle(predicate):
+            for _ in range(60):
+                if predicate():
+                    return
+                await asyncio.sleep(.005)
+
+        path = work / "review-export.psd"
+        path.write_bytes(b"fixture: open_psd is replaced")
+        record = dict(rev=1, psd=str(path))
+        with patch.dict(os.environ, {bd.SERVER_ENV: "1"}), \
+                patch.object(bd, "_root_param", side_effect=lambda key: str(work / str(key))), \
+                patch.object(bd.store, "load_manifest", return_value={}), \
+                patch.object(bd.store, "last_export", side_effect=lambda *args: dict(record)), \
+                patch.object(bd.dpsd, "open_psd", side_effect=lambda _: types.SimpleNamespace(topil=lambda: Image.open(io.BytesIO(png)))) as opened, \
+                patch.object(backend, "_nonce", return_value="0123456789ab"), \
+                patch.object(bd, "import_received", side_effect=lambda *args: bd._json({"ok": True})):
+            for status in (401, 403, 404):
+                rig = Rig()
+                item = await rig.item()
+                rig.media_status["/media/original"] = status
+                response = await rig.request("import", dict(item, into="target", name="test"))
+                check(response.status == 404 and value(response) == api["forge_import_gone"]["response"] and not rig.rejected,
+                      f"R1 미디어 {status}는 forge_stale·인증 거절 없음")
+            rig = Rig()
+            rig.url = "https://outside.example/picture.png"
+            item = await rig.item()
+            response = await rig.request("import", dict(item, into="target", name="test"))
+            check(response.status == 404 and value(response)["reason"] == "forge_stale" and not rig.rejected,
+                  "R1 허용 origin 밖 그림은 404·Studio 차단 없음")
+            for bad_thumb in (origin + "/media/thumb", "https://outside.example/thumb.png"):
+                rig = Rig()
+                rig.thumb = bad_thumb
+                rig.media_status["/media/thumb"] = 403
+                item = await rig.item()
+                response = await rig.request("thumb", query=item)
+                check(response.status == 200 and response.body == png and rig.started.count(("alice", "/media/original")) == 1,
+                      "R1 막힌 썸네일은 원본으로 한 번 대체")
+                rig.media_status["/media/original"] = 404
+                response = await rig.request("thumb", query=item)
+                check(response.status == 404 and value(response)["reason"] == "forge_stale" and not rig.rejected,
+                      "R1 썸네일·원본 모두 실패하면 404")
+            for status in (401, 403):
+                rig = Rig()
+                rig.put_status = status
+                response = await rig.request("save", {"root": "root"})
+                check(response.status == 503 and value(response)["reason"] == "forge_unreachable" and not rig.rejected,
+                      f"R1 저장소 PUT {status}는 503·reject_token 0")
+            for method, endpoint, action in (("GET", "/api/image/history", "history"),
+                    ("GET", "/api/library/assets", "assets"), ("POST", "/api/library/assets/upload-url", "save"),
+                    ("POST", "/api/library/assets/uploads/complete", "save"), ("POST", "/api/library/assets", "save")):
+                rig = Rig()
+                rig.api_status[method, endpoint] = 403
+                response = await rig.request(action, {"root": "root"})
+                check(response.status == 403 and value(response)["reason"] == "no_access", "R1 Forge API 권한 오류 유지 " + endpoint)
+
+            rig = Rig()
+            item = await rig.item()
+            rig.raw = png_bytes(np.zeros((400, 800, 3), np.uint8))
+            response = await rig.request("thumb", query=item)
+            with Image.open(io.BytesIO(response.body)) as image:
+                check(image.size == (256, 128) and image.format == "PNG", "R2 4MiB 이하·긴 변 512 초과 썸네일도 256 PNG")
+            for action, per_account, wanted in (("import", 1, 2), ("thumb", 4, 8)):
+                rig = Rig()  # Run concurrency=1 이 이 제한에 섞이면 안 된다.
+                items = {account: await rig.item(account) for account in ("alice", "bob", "charlie")}
+                rig.media_gate = asyncio.Event()
+                jobs = []
+                try:
+                    for account in ("alice", "bob"):
+                        for _ in range(per_account + 2):
+                            jobs.append(asyncio.create_task(rig.request(action,
+                                dict(items[account], into="target", name="test"), account, items[account])))
+                    await settle(lambda: len(rig.started) >= wanted)
+                    await asyncio.sleep(.02)
+                    check(len(rig.started) == wanted and all(sum(a == account for a, _ in rig.started) == per_account
+                          for account in ("alice", "bob")), f"R2 {action} 계정별 {per_account}·다른 계정 진행·Run concurrency 분리")
+                    if action == "thumb":
+                        jobs.append(asyncio.create_task(rig.request("thumb", account="charlie", query=items["charlie"])))
+                        await asyncio.sleep(.03)
+                        check(len(rig.started) == 8, "R2 서버 전체 8개 상한")
+                finally:
+                    rig.media_gate.set()
+                    await asyncio.gather(*jobs)
+            rig = Rig(concurrency=8)
+            item = await rig.item("bob")
+            rig.upload_gate = asyncio.Event()
+            first = asyncio.create_task(rig.request("save", {"root": "one"}))
+            await settle(rig.upload_started.is_set)
+            same = asyncio.create_task(rig.request("save", {"root": "one"}))
+            other = asyncio.create_task(rig.request("save", {"root": "two"}, "bob"))
+            waiting = [asyncio.create_task(rig.request("save", {"root": "wait-" + str(i)})) for i in range(10)]
+            thumb = asyncio.create_task(rig.request("thumb", account="bob", query=item))
+            await settle(lambda: same.done() and other.done() and thumb.done())
+            check(same.done() and same.result().status == 409 and value(same.result()) == {
+                "error": "앞선 저장이 끝난 뒤 다시 눌러 주세요", "reason": "busy"}, "R2 같은 계정·root 중복 저장은 즉시 busy")
+            check(other.done() and other.result().status == 200 and thumb.done() and thumb.result().status == 200,
+                  "R2 저장 대기자는 전체 슬롯을 차지하지 않고 다른 계정 저장·썸네일 진행")
+            # 대기 중인 작업을 취소해도 계정 슬롯과 root 잠금이 남지 않는다.
+            for job in waiting:
+                job.cancel()
+            await asyncio.gather(*waiting, return_exceptions=True)
+            rig.upload_gate.set()
+            await asyncio.gather(first, same, other, thumb)
+            response = await rig.request("save", {"root": "wait-0"})
+            check(response.status == 200, "R2 취소된 저장 대기자의 root 잠금 해제")
+
+            rig = Rig(concurrency=8)
+            rig.upload_gate = asyncio.Event()
+            pending = asyncio.create_task(rig.request("save", {"root": "pinned"}))
+            await settle(rig.upload_started.is_set)
+            for i in range(140):
+                await rig.item("visitor-" + str(i))
+            duplicate = asyncio.create_task(rig.request("save", {"root": "pinned"}))
+            await settle(duplicate.done)
+            check(duplicate.done() and duplicate.result().status == 409, "R2 LRU 정리 중 진행 중인 계정 잠금 보존")
+            rig.upload_gate.set()
+            await asyncio.gather(pending, duplicate)
+
+            rig = Rig()
+            rig.upload_gate = asyncio.Event()
+            pending = asyncio.create_task(rig.request("save", {"root": "pinned"}))
+            await settle(rig.upload_started.is_set)
+            waiting = [asyncio.create_task(rig.request("save", {"root": "bounded-" + str(i)})) for i in range(128)]
+            await settle(lambda: any(job.done() for job in waiting))
+            check(sum(job.done() and job.result().status == 409 for job in waiting) == 1,
+                  "R2 계정 내 진행·대기 root 잠금도 128개 상한")
+            for job in waiting:
+                job.cancel()
+            await asyncio.gather(*waiting, return_exceptions=True)
+            rig.upload_gate.set()
+            await pending
+
+            rig = Rig()
+            before = opened.call_count
+            first = await rig.request("save", {"root": "root"})
+            trace = list(rig.seen)
+            second = await rig.request("save", {"root": "root"})
+            check(first.status == second.status == 200 and not rig.asset_gets() and rig.seen == trace
+                  and opened.call_count == before + 1, "R3 첫 저장은 조회 없이 등록·같은 키 메모리 적중은 렌더·API 생략")
+            await rig.request("save", {"root": "root"}, "bob")
+            check(sum(method == "PUT" for method, *_ in rig.seen) == 2, "R3 저장 캐시는 계정 간 격리")
+            record["rev"] = 2
+            await rig.request("save", {"root": "root"})
+            check(sum(method == "PUT" for method, *_ in rig.seen) == 3, "R3 새 Export rev는 새 등록")
+            record["rev"] = 1
+            for pending_asset in ({"media_type": "image", "url": ""}, {"media_type": "pending"}):
+                rig = Rig()
+                rig.create_status = 409
+                def pages(offset):
+                    if offset == 0:
+                        return [{"id": str(i), "media_type": "video"} for i in range(200)]
+                    return [dict(pending_asset, id="already-there", name="기존 자료", client_request_id="dp-save-0123456789ab-r1")]
+                rig.asset_pages = pages
+                response = await rig.request("save", {"root": "root"})
+                sequence = [(m, p) for m, p, *_ in rig.seen]
+                check(response.status == 200 and value(response)["asset"]["name"] == "기존 자료"
+                      and sequence[0] == ("POST", "/api/library/assets/upload-url") and rig.asset_gets() == [0, 200],
+                      "R3 등록 409 뒤에만 검색·미완성 url/매체 항목도 중복 복구")
+                trace = list(rig.seen)
+                await rig.request("save", {"root": "root"})
+                check(rig.seen == trace, "R3 충돌에서 찾은 자료도 메모리 캐시")
+            rig = Rig()
+            rig.create_status = 409
+            rig.asset_pages = lambda offset: [dict(id=str(offset + i), media_type="image", url=rig.url) for i in range(200)] if offset < 1200 else []
+            response = await rig.request("save", {"root": "root"})
+            check(response.status == 409 and value(response) == {"reason": "already_saved",
+                  "error": "이미 저장한 그림입니다 — Forge 내 자료에서 확인해 주세요"} and rig.asset_gets() == [0, 200, 400, 600, 800],
+                  "R3 등록 충돌 조회는 최신 5쪽·1000개 한도·미발견 already_saved")
+            for endpoint in ("/api/library/assets/upload-url", "/api/library/assets/uploads/complete"):
+                rig = Rig()
+                rig.api_status["POST", endpoint] = 409
+                response = await rig.request("save", {"root": "root"})
+                check(response.status == 503 and not rig.asset_gets(), "R3 자료 등록 이외의 409는 중복 조회하지 않음 " + endpoint)
+
+            scanned = []
+            class ObservedRows(OrderedDict):
+                def items(self):
+                    if self and isinstance(next(iter(self.values())), dict) and "at" in next(iter(self.values())):
+                        scanned.append(len(self))
+                    return super().items()
+            with patch("collections.OrderedDict", ObservedRows):
+                rig = Rig()
+            rig.history_count = 100
+            await rig.item()
+            scanned.clear()
+            await rig.item("bob")
+            await rig.item()
+            check(not scanned, "R4 삽입 때 현재·다른 계정의 살아 있는 항목을 전수 순회하지 않음")
+            rig = Rig()
+            oldest = await rig.item()
+            rig.now += 900
+            fresh = await rig.item()
+            rig.now += 900
+            check((await rig.request("thumb", query=oldest)).status == 404
+                  and (await rig.request("thumb", query=fresh)).status == 200, "R4 앞쪽 만료 항목만 제거·후속 항목 보존")
+            # 불투명 표·슬롯 표가 계정 수에 비례해 무한히 쌓이지 않는다(128 계정 LRU).
+            rig = Rig()
+            first = await rig.item("first")
+            keep = await rig.item("keep")
+            for i in range(126):
+                await rig.item("visitor-" + str(i))
+            await rig.request("thumb", account="keep", query=keep)
+            last = await rig.item("last")
+            check((await rig.request("thumb", account="first", query=first)).status == 404
+                  and (await rig.request("thumb", account="keep", query=keep)).status == 200
+                  and (await rig.request("thumb", account="last", query=last)).status == 200,
+                  "R4 계정 표 128 상한·최근 사용 계정 보존")
+
+            rig = Rig()
+            def pages(offset):
+                return [dict(id=str(offset + i), media_type="image", url=rig.url,
+                    name="needle" if offset == 400 and i == 0 else "other") for i in range(200)] if offset < 1400 else []
+            rig.asset_pages = pages
+            response = await rig.request("assets", query={"search": "needle"})
+            listed = value(response)
+            check(response.status == 200 and len(listed["items"]) == 1 and rig.asset_gets() == [0, 200, 400],
+                  "R5 내 자료 검색은 일치 항목이 나오는 쪽까지 계속")
+            await rig.request("assets", query={"search": "needle", "offset": listed["next"]})
+            check(rig.asset_gets() == [0, 200, 400, 600, 800, 1000, 1200, 1400], "R5 next는 확인한 마지막 쪽 다음 offset")
+            rig.seen.clear()
+            response = await rig.request("assets", query={"search": "missing"})
+            listed = value(response)
+            check(listed["items"] == [] and listed["next"] is not None and rig.asset_gets() == [0, 200, 400, 600, 800],
+                  "R5 검색은 응답당 5쪽 상한·이후 범위 next 유지")
+
     asyncio.run(clients())
     asyncio.run(routes_test())
-    # 감독관이 제한 없는 환경에서 명시적으로 켰을 때만 실제 앱 미들웨어·소켓을 확인한다.
+    asyncio.run(review_cases())
+    # 실제 앱 미들웨어·소켓도 항상 확인한다(네트워크 금지 환경은 실행하지 못한 범위를 별도 보고).
     async def http_scenario():
         import bmk_design_patch_server as srv
         import aiohttp
@@ -62766,6 +63082,11 @@ def forge_f2_import_unit():
     asyncio.run(http_scenario())  # 실제 소켓(TestServer) 시나리오
     web = PKG / "web_design_patch"
     check(bd._STATIC.get("forge_import.js") == "text/javascript", "F2C 정적 파일 등록")
+    css = (web / "board.css").read_text(encoding="utf-8").split("/* ── Forge F2-C", 1)[1]
+    for selector in (".dp-forge-item", ".dp-forge-sheet"):
+        block = re.search(re.escape(selector) + r"\s*\{([^}]*)\}", css).group(1)
+        gap = re.search(r"\bgap:\s*(\d+)px", block)
+        check(gap is not None and int(gap.group(1)) % 4 == 0, "S3 F2-C 4px 간격 " + selector)
     source = (web / "forge_import.js").read_text(encoding="utf-8")
     code = re.sub(r"//[^\n]*", "", source)
     check(not any(word in code for word in ("ComfyUI", "그래프", "큐", "comfy.org", "$", "크레딧")), "F2C 새 화면 금지어 0")
@@ -62792,6 +63113,11 @@ async function start({enabled=true,server=true,handler}={}) {
 for(const options of [{enabled:false},{server:false}]) await scenario("FC caps "+JSON.stringify(options),async()=>{
  const e=await start(options),d=e.ctx.DPForgeImport;
  return !d.open({into:"refs",root:"root"})&&d.saveButton({ready:()=>true})===null&&e.doc.body.children.length===0&&!e.calls.length;
+});
+await scenario("R5 빈 범위·다음 쪽 안내",async()=>{
+ const e=await start({handler:()=>response({items:[],next:"more-page"})});
+ e.ctx.DPForgeImport.open({into:"refs",root:"root"});await settle();await find(e,"내 자료").click();
+ return e.doc.body.textContent.includes("이 범위에는 없습니다 — [더 보기]")&&!find(e,"더 보기").hidden;
 });
 await scenario("FC 창·탭·검색·더보기·요청·닫기",async()=>{
  let done;const e=await start({handler:(url,o)=>{

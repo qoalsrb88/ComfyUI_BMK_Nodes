@@ -99,7 +99,8 @@ window.DPForgeImport = (() => {
           grid.append(button);
         }
         next = data.next; more.hidden = next === null || next === undefined;
-        status.textContent = grid.children.length ? "그림을 고르면 가져옵니다." : "표시할 그림이 없습니다.";
+        status.textContent = grid.children.length ? "그림을 고르면 가져옵니다." :
+          next !== null && next !== undefined ? "이 범위에는 없습니다 — [더 보기]" : "표시할 그림이 없습니다.";
       } catch (error) {
         if (alive() && seq === sequence) status.textContent = error.message;
       } finally {

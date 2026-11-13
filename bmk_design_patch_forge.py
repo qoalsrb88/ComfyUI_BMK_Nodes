@@ -356,8 +356,10 @@ class ForgeClient:
         return {"items": items, "next": data.get("next_cursor")
                 if data.get("has_more") is True and isinstance(data.get("next_cursor"), str) else None}
 
-    async def assets(self, token: str, organization_id: str, *, offset: int = 0, limit: int = 200) -> dict:
-        """GET /api/library/assets → {"items": [{"id", "url", "thumb", "name", "folder"}…], "next": offset | None} — 그림만."""
+    async def assets(self, token: str, organization_id: str, *, offset: int = 0, limit: int = 200,
+                     include_pending: bool = False) -> dict:
+        """GET /api/library/assets → {"items": [{"id", "url", "thumb", "name", "folder"}…], "next": offset | None}.
+        기본은 그림만, 저장 충돌 조회(include_pending)는 아직 URL·매체가 없는 등록도 포함한다."""
         if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 200:
             raise ForgeError("invalid")
         url = str(URL(self.config.api).with_path("/api/library/assets").with_query(
@@ -371,11 +373,11 @@ class ForgeClient:
             pass
         if not isinstance(data, list):
             raise ForgeError("unreachable", status)
-        return {"items": [{"id": row.get("id"), "url": row["url"], "thumb": row.get("thumbnail_url"),
+        return {"items": [{"id": row.get("id"), "url": row.get("url"), "thumb": row.get("thumbnail_url"),
                            "name": row.get("name"), "folder": row.get("folder_path"), "tags": row.get("tags", []),
                            "client_request_id": row.get("client_request_id")}
-                          for row in data if isinstance(row, dict) and row.get("media_type") == "image"
-                          and isinstance(row.get("url"), str) and row["url"]],
+                          for row in data if isinstance(row, dict) and (include_pending or (row.get("media_type") == "image"
+                          and isinstance(row.get("url"), str) and row["url"]))],
                 "next": offset + limit if len(data) == limit else None}
 
     async def upload_asset(self, token: str, organization_id: str, *, name: str, data: bytes, content_type: str,
@@ -390,9 +392,14 @@ class ForgeClient:
                 or not client_request_id or any(v is not None and (type(v) is not int or v <= 0) for v in (width, height))):
             raise ForgeError("invalid")
         base = "/api/library/assets"
-        upload = await self._json("POST", base + "/upload-url", token,
-                                  {"organization_id": organization_id, "filename": name + suffix,
-                                   "content_type": content_type, "size_bytes": len(data), "kind": "asset"})
+        try:
+            upload = await self._json("POST", base + "/upload-url", token,
+                                      {"organization_id": organization_id, "filename": name + suffix,
+                                       "content_type": content_type, "size_bytes": len(data), "kind": "asset"})
+        except ForgeError as error:
+            if error.status == 409:  # 등록 단계의 409 만 client_request_id 충돌이다.
+                raise ForgeError("unreachable", 409) from None
+            raise
         parsed = None
         try:
             parsed = _url(upload.get("upload_url"))
@@ -404,9 +411,14 @@ class ForgeClient:
             raise ForgeError("unreachable") from None
         status, _ = await self._exchange("PUT", str(parsed), {"Content-Type": content_type}, data, JSON_LIMIT)
         if not 200 <= status < 300:
-            self._status(status, b"", token)  # 저장소 본문·서명 주소는 detail 에도 남기지 않는다.
-        await self._json("POST", base + "/uploads/complete", token,
-                         {"organization_id": organization_id, "s3_key": key})
+            raise ForgeError("unreachable", status)  # 저장소 오류는 Forge 인증·권한 오류가 아니다.
+        try:
+            await self._json("POST", base + "/uploads/complete", token,
+                             {"organization_id": organization_id, "s3_key": key})
+        except ForgeError as error:
+            if error.status == 409:
+                raise ForgeError("unreachable", 409) from None
+            raise
         body = {"organization_id": organization_id, "client_request_id": client_request_id,
                 "name": name, "s3_key": key, "content_type": content_type}
         body.update({k: v for k, v in (("width", width), ("height", height)) if v is not None})
@@ -513,6 +525,7 @@ def routes(accounts: ForgeAccounts) -> tuple:
     import os
     import secrets
     from collections import OrderedDict
+    from contextlib import asynccontextmanager, contextmanager
     from aiohttp import web
     from PIL import Image
     try:
@@ -521,9 +534,10 @@ def routes(accounts: ForgeAccounts) -> tuple:
         import bmk_design_patch_board as board
         import bmk_design_patch_forge_backend as backend
 
-    tables = {}
-    slots = asyncio.Semaphore(accounts.config.concurrency)
-    saving = asyncio.Lock()
+    # Run 의 동시 제출 설정과 별개. 활동 중인 계정은 LRU 에서 밀어내지 않는다.
+    account_limit, root_limit, entry_limit = 128, 128, 2000
+    states = OrderedDict()
+    slots = asyncio.Semaphore(8)
     messages = {
         "forge_auth": (401, "Forge 로그인 정보를 다시 받아야 합니다 — 잠시 뒤 자동으로 다시 시도합니다."),
         "no_access": (403, "Design Patch Studio 사용 권한이 없습니다. 담당자에게 문의해 주세요."),
@@ -531,27 +545,61 @@ def routes(accounts: ForgeAccounts) -> tuple:
         "forge_stale": (404, "목록이 오래됐습니다 — 다시 불러온 뒤 골라 주세요."),
         "no_export": (409, "먼저 Export 를 실행해 주세요."),
         "too_large": (413, "그림이 25MB 를 넘어 Forge 자료에 올릴 수 없습니다 — 내려받아 직접 올려 주세요."),
+        "busy": (409, "앞선 저장이 끝난 뒤 다시 눌러 주세요"),
+        "already_saved": (409, "이미 저장한 그림입니다 — Forge 내 자료에서 확인해 주세요"),
     }
 
     def reject(reason):
         status, message = messages[reason]
         raise board._Reject(status, message, reason=reason)
 
+    @contextmanager
+    def account_state(scope):
+        key = (scope["org"], scope["account"])
+        if key not in states:
+            if len(states) >= account_limit:
+                idle = next((k for k, state in states.items() if not state["active"]), None)
+                if idle is None:
+                    reject("busy")
+                del states[idle]
+            states[key] = {"rows": OrderedDict(), "saved": OrderedDict(), "saving": set(),
+                           "heavy": asyncio.Semaphore(1), "thumb": asyncio.Semaphore(4), "active": 0}
+        state = states[key]
+        states.move_to_end(key)
+        state["active"] += 1  # 슬롯 대기 중에도 같은 계정의 제한·잠금을 보존한다.
+        try:
+            yield state
+        finally:
+            state["active"] -= 1
+
+    @asynccontextmanager
+    async def limited(state, action):
+        local = state["heavy"] if action in ("import", "save") else state["thumb"] if action == "thumb" else None
+        if local is None:
+            async with slots:
+                yield
+        else:
+            async with local:  # 계정 대기자가 서버 전체 슬롯을 차지하지 않는다.
+                async with slots:
+                    yield
+
     def table(scope):
+        rows = states[scope["org"], scope["account"]]["rows"]
         now = accounts.clock()
-        for key, rows in list(tables.items()):
-            for ident, row in list(rows.items()):
-                if now - row["at"] >= 1800 or now < row["at"]:
-                    del rows[ident]
-            if not rows:
-                del tables[key]
-        return tables.setdefault((scope["org"], scope["account"]), OrderedDict())
+        if rows and now < rows[next(reversed(rows))]["at"]:
+            rows.clear()  # 시계가 뒤로 갔을 때도 그 계정만 만료시킨다.
+        while rows:
+            ident = next(iter(rows))
+            if now - rows[ident]["at"] < 1800:
+                break
+            rows.popitem(last=False)
+        return rows
 
     def remember(scope, row):
         rows = table(scope)
         ident = secrets.token_urlsafe(24)
         rows[ident] = dict(row, at=accounts.clock())
-        while len(rows) > 2000:
+        while len(rows) > entry_limit:
             rows.popitem(last=False)
         return ident
 
@@ -586,7 +634,7 @@ def routes(accounts: ForgeAccounts) -> tuple:
                 if mime is None or max(im.size) > board._MAX_IMAGE_SIDE or im.width * im.height > board._MAX_IMAGE_AREA:
                     raise ValueError
                 im.load()
-                if shrink:
+                if shrink or max(im.size) > 512:
                     im.thumbnail((256, 256), Image.Resampling.LANCZOS)
                     result = io.BytesIO()
                     im.convert("RGBA" if "A" in im.getbands() else "RGB").save(result, "PNG")
@@ -621,13 +669,18 @@ def routes(accounts: ForgeAccounts) -> tuple:
                 reject("forge_stale")
             value = row["value"]
         client, org = ctx["client"], ctx["organization_id"]
-        result = (await client.history(token, org, cursor=value, search=search) if source == "history"
-                  else await client.assets(token, org, offset=value))
+        if source == "history":
+            result = await client.history(token, org, cursor=value, search=search)
+        else:
+            for _ in range(5):
+                result = await client.assets(token, org, offset=value)
+                result["items"] = [row for row in result["items"] if search.casefold() in " ".join(
+                    str(row.get(k) or "") for k in ("name", "folder", "tags")).casefold()]
+                if result["items"] or result["next"] is None:
+                    break
+                value = result["next"]
         rows = []
         for row in result["items"]:
-            if source == "asset" and search.casefold() not in " ".join(
-                    str(row.get(k) or "") for k in ("name", "folder", "tags")).casefold():
-                continue
             ident = remember(scope, dict(row, source=source))
             thumb = str(URL(board.API + "/forge/thumb").with_query(
                 root=query.get("root", ""), source=source, id=ident))
@@ -638,7 +691,7 @@ def routes(accounts: ForgeAccounts) -> tuple:
             if result["next"] is not None else None
         return board._json({"items": rows, "next": next_page})
 
-    def exported(root):
+    def export_info(root):
         record = board.store.last_export(root, board.store.load_manifest(root))
         if not record:
             reject("no_export")
@@ -650,6 +703,9 @@ def routes(accounts: ForgeAccounts) -> tuple:
                 or os.path.commonpath([os.path.realpath(path), os.path.realpath(output)]) != os.path.realpath(output)
                 or not os.path.isfile(path)):
             reject("no_export")
+        return path, os.path.splitext(os.path.basename(path))[0], f"dp-save-{backend._nonce(root)}-r{record['rev']}"
+
+    def exported(path):
         with board._RENDER_SLOTS:
             psd = board.dpsd.open_psd(path)
             im = psd.topil()  # 저장된 병합 프리뷰만; 레이어를 재합성하지 않는다.
@@ -663,36 +719,51 @@ def routes(accounts: ForgeAccounts) -> tuple:
                 im.close()
         if len(raw) > 25 * 1024 ** 2:
             reject("too_large")
-        return raw, size, os.path.splitext(os.path.basename(path))[0], f"dp-save-{backend._nonce(root)}-r{record['rev']}"
+        return raw, size
 
-    async def save(root, scope, ctx):
-        async with saving:
-            raw, size, name, request_id = await asyncio.to_thread(exported, root)
-            # 같은 키에 새 s3_key 를 제출하면 409 다. 재시작·응답 유실 뒤에도 기존 등록을 먼저 찾는다.
-            offset = 0
+    async def save(root, scope, ctx, state):
+        path, name, request_id = await asyncio.to_thread(export_info, root)
+        cached = state["saved"]
+        asset = cached.get(request_id)
+        token = ctx["token_of"]()
+        if not token:
+            reject("forge_auth")
+        if asset is None:
+            raw, size = await asyncio.to_thread(exported, path)
             try:
-                while True:
-                    token = ctx["token_of"]()
-                    if not token:
-                        reject("forge_auth")
-                    result = await ctx["client"].assets(token, ctx["organization_id"], offset=offset)
-                    asset = next((row for row in result["items"] if row.get("client_request_id") == request_id), None)
-                    if asset is not None or result["next"] is None:
-                        break
-                    offset = result["next"]
-                if asset is None:
-                    token = ctx["token_of"]()
-                    if not token:
-                        reject("forge_auth")
+                token = ctx["token_of"]()
+                if not token:
+                    reject("forge_auth")
+                try:
                     asset = await ctx["client"].upload_asset(token, ctx["organization_id"], name=name, data=raw,
                         content_type="image/png", width=size[0], height=size[1], client_request_id=request_id)
+                except ForgeError as error:
+                    if error.reason != "invalid" or error.status != 409:
+                        raise
+                    # 재시작·응답 유실로 캐시가 없을 때만 최신 5쪽 안에서 등록 결과를 복구한다.
+                    offset = 0
+                    for _ in range(5):
+                        token = ctx["token_of"]()
+                        if not token:
+                            reject("forge_auth")
+                        result = await ctx["client"].assets(token, ctx["organization_id"], offset=offset, include_pending=True)
+                        asset = next((row for row in result["items"] if row.get("client_request_id") == request_id), None)
+                        if asset is not None or result["next"] is None:
+                            break
+                        offset = result["next"]
+                    if asset is None:
+                        reject("already_saved")
             except ForgeError as error:
                 if error.reason == "unauthorized":
                     ctx["reject_token"](token)  # 슬롯 대기·페이지 조회 중 갱신됐으면 실제 거절된 토큰만 표시한다.
                     reject("forge_auth")
                 raise
-            ident = remember(scope, {"source": "saved", "id": asset["id"]})
-            return board._json({"ok": True, "asset": {"id": ident, "name": display(asset["name"], token)}})
+            cached[request_id] = {"id": asset["id"], "name": asset.get("name")}
+            while len(cached) > entry_limit:
+                cached.popitem(last=False)
+        cached.move_to_end(request_id)
+        ident = remember(scope, {"source": "saved", "id": asset["id"]})
+        return board._json({"ok": True, "asset": {"id": ident, "name": display(asset.get("name"), token)}})
 
     def handler(action):
         @board._guard
@@ -705,40 +776,60 @@ def routes(accounts: ForgeAccounts) -> tuple:
             if not token:
                 reject("forge_auth")
             try:
-                async with slots:
-                    if action in ("history", "assets"):
-                        return await listing(request, scope, ctx, token, "history" if action == "history" else "asset")
-                    data = request.query if action == "thumb" else await board._body(request)
-                    root = await root_of(data, optional=action == "thumb" or (action == "import" and data.get("into") == "target"))
+                with account_state(scope) as state:
+                    is_list = action in ("history", "assets")
+                    data = request.query if is_list or action == "thumb" else await board._body(request)
+                    root = None if is_list else await root_of(data, optional=action == "thumb" or (
+                        action == "import" and data.get("into") == "target"))
                     if action == "save":
-                        return await save(root, scope, ctx)
-                    source = data.get("source")
-                    if source not in ("history", "asset"):
-                        reject("forge_stale")
-                    row = lookup(scope, data.get("id"), source)
-                    if action == "thumb":
-                        large = False
-                        try:
-                            raw = await ctx["client"].fetch_media(row.get("thumb") or row["url"], 4 * 1024 ** 2)
-                        except ForgeError as error:
-                            if error.status != 413:
-                                raise
-                            large = True
-                            raw = await ctx["client"].fetch_media(row["url"])
-                        raw, mime = await asyncio.to_thread(picture, raw, large)
-                        return web.Response(body=raw, content_type=mime, headers={
-                            "Cache-Control": "private, max-age=600", "X-Content-Type-Options": "nosniff"})
-                    if data.get("into") not in ("target", "refs"):
-                        raise board._Reject(400, "가져올 자리를 확인하세요.")
-                    raw = await ctx["client"].fetch_media(row["url"])
-                    return await board.import_received(data, raw, filename(raw, row, token))
+                        if root in state["saving"] or len(state["saving"]) >= root_limit:
+                            reject("busy")
+                        state["saving"].add(root)  # 기다리지 않고, 계정·전체 슬롯을 잡기 전에 중복을 거절한다.
+                    try:
+                        async with limited(state, action):
+                            token = ctx["token_of"]()
+                            if not token:
+                                reject("forge_auth")
+                            if is_list:
+                                return await listing(request, scope, ctx, token, "history" if action == "history" else "asset")
+                            if action == "save":
+                                return await save(root, scope, ctx, state)
+                            source = data.get("source")
+                            if source not in ("history", "asset"):
+                                reject("forge_stale")
+                            row = lookup(scope, data.get("id"), source)
+                            if action == "thumb":
+                                large = False
+                                try:
+                                    raw = await ctx["client"].fetch_media(row.get("thumb") or row["url"], 4 * 1024 ** 2)
+                                except ForgeError as error:
+                                    large = error.status == 413
+                                    try:
+                                        raw = await ctx["client"].fetch_media(row["url"])
+                                    except ForgeError:
+                                        reject("forge_stale")
+                                raw, mime = await asyncio.to_thread(picture, raw, large)
+                                return web.Response(body=raw, content_type=mime, headers={
+                                    "Cache-Control": "private, max-age=600", "X-Content-Type-Options": "nosniff"})
+                            if data.get("into") not in ("target", "refs"):
+                                raise board._Reject(400, "가져올 자리를 확인하세요.")
+                            try:
+                                raw = await ctx["client"].fetch_media(row["url"])
+                            except ForgeError as error:
+                                if error.reason in ("forbidden", "unauthorized", "not_found") or error.status in (401, 403, 404):
+                                    reject("forge_stale")
+                                reject("forge_unreachable")
+                            return await board.import_received(data, raw, filename(raw, row, token))
+                    finally:
+                        if action == "save":
+                            state["saving"].discard(root)
             except ForgeError as error:
                 if error.reason == "unauthorized":
                     ctx["reject_token"](token)
                     reject("forge_auth")
                 if error.reason == "forbidden":
                     reject("no_access")
-                if action == "save" and error.status == 413:
+                if action == "save" and error.reason == "invalid" and error.status == 413:
                     reject("too_large")
                 reject("forge_unreachable")
         return handle
