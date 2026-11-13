@@ -42394,7 +42394,7 @@ def mask_js_unit():
           and "if (maskCv || !crop" in vj,
           "viewer.js 마스크 겹침 훅(setMaskLayer — 선택 크롭 겹침 대신)·showSeam·curSeam(3차 ui-r3-03)·N 이 onPick 에 구간을 넘김")
     check(re.findall(r'<script src="([^"]+)" defer></script>', html)
-          == ["env.js", "dialog.js", "layout_geom.js", "viewer.js", "rows.js", "layout_edit.js", "ref_edit.js", "checklist.js", "pipeline.js", "mask_edit.js", "board.js"]
+          == ["env.js", "dialog.js", "forge_import.js", "layout_geom.js", "viewer.js", "rows.js", "layout_edit.js", "ref_edit.js", "checklist.js", "pipeline.js", "mask_edit.js", "board.js"]
           and all(f'id="{i}"' in html for i in ("btn-mask", "mask-list", "mask-panel")) and re.search(r'<section id="mask-panel"[^>]*hidden>', html)
           and "마스크 (<kbd>K</kbd>)" in html,
           "board.html: mask_edit.js 가 pipeline 뒤·board 앞, 마스크 모드 요소 3개(패널은 처음 hidden)·도움말 '마스크 (K)' 표")
