@@ -664,6 +664,18 @@ body.pipe .proj { min-width: 0; overflow: hidden; text-overflow: ellipsis; white
 #pipe-panel select.pp-psmask-picker { width: 100%; max-width: 100%; margin-top: 8px; }
 .pp-table.pp-psmask { width: 100%; table-layout: fixed; }
 .pp-table.pp-psmask th, .pp-table.pp-psmask td { white-space: normal; text-align: left; overflow-wrap: anywhere; }
+/* 생성 승인 표(.pp-crops): 패널이 최대 폭보다 좁으면 가로로 넘치지 않게 좁힌다 — 머리글은 띄어쓰기에서 줄바꿈,
+   숫자 칸은 내용 폭, 크롭 이름 칸이 남는 폭을 차지하고 모자라면 …(전체 이름은 칸의 title).
+   경계 1764px = #pipe-panel 폭 clamp(380px, 34vw, 600px) 이 600px 에 닿는 창 폭(600 ÷ 0.34). 그보다 넓으면 위 기본 모양 그대로다. */
+@media (max-width: 1764px) {
+  .pp-table.pp-crops { width: 100%; }
+  .pp-table.pp-crops th, .pp-table.pp-crops td { padding: 4px 4px 4px 8px; white-space: normal; } /* 칸 사이 12px — 4px 격자(D372) 안에서 */
+  .pp-table.pp-crops th { word-break: keep-all; vertical-align: bottom; }
+  .pp-table.pp-crops td button { white-space: nowrap; }
+  .pp-table.pp-crops th:first-child, .pp-table.pp-crops td:first-child { width: 100%; max-width: 0; padding-left: 0; white-space: nowrap; }
+  .pp-table.pp-crops th:last-child, .pp-table.pp-crops td:last-child { padding-right: 0; }
+  .pp-table.pp-crops th:nth-child(7)::after { content: ""; display: block; width: 3.4em; } /* '결과 못 / 받음' — 두 줄까지만 */
+}
 
 .fatal { margin: 40px; font-size: 16px; color: var(--bad); }
 body.busy { cursor: progress; }

@@ -3020,7 +3020,7 @@ window.DPPipeline = (() => {
     }
 
     function cropTable(bc) {
-      const t = el("table", "pp-table");
+      const t = el("table", "pp-table pp-crops");
       const hr = el("tr");
       for (const h of ["크롭", "승인 필요", "다시 생성", "복구", "완료", "실패", "결과 못 받음", "진행"]) hr.append(el("th", "", h));
       t.append(hr);
@@ -3029,7 +3029,9 @@ window.DPPipeline = (() => {
         const v = bc[id];
         const c = S.crops.find((x) => x.id === id);
         const tr = el("tr", v.selected ? "sel" : "");
-        tr.append(el("td", "", id === "_stale" ? "옛 조건" : (c && c.name) || id));
+        const name = el("td", "", id === "_stale" ? "옛 조건" : (c && c.name) || id);
+        name.title = name.textContent; // 좁은 패널에서 이름이 … 로 줄어도 전체 이름을 볼 수 있게
+        tr.append(name);
         for (const k of ["need", "pre", "free", "done", "failed", "orphaned", "inflight"]) {
           const cell = el("td", "", v[k] || "");
           if (k === "pre" && v.pre && id !== "_stale") cell.append(cancelCropButton(id));
