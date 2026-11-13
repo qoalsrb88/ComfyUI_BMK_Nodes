@@ -62580,6 +62580,20 @@ def forge_f2_import_unit():
         error = await error_of(fg.ForgeClient(config, explode).upload_asset("dev:alice", "org1", **upload))
         check(error.__context__ is None and "dev:alice" not in repr(error), "F2C 전송 예외·context 비노출")
 
+        for size, default, expected in ((len(png), 30, 30), (25 * 1024 ** 2, 30, 100), (len(png), 400, 300)):
+            timeouts = []
+            async def timed(method, url, headers, body, timeout):
+                timeouts.append((method, timeout))
+                if url.endswith("/upload-url"):
+                    return 200, {}, encoded({"upload_url": origin + "/storage", "s3_key": "key"})
+                return 200, {}, encoded({"id": "asset", "name": "name"})
+            current = fg.ForgeClient(dataclasses.replace(config, timeout=default), timed)
+            await current.upload_asset("dev:alice", "org1", **dict(upload, data=b"x" * size))
+            check([timeout for method, timeout in timeouts if method == "PUT"] == [expected],
+                  f"2R5 PUT 크기별 시간 제한 {size} bytes → {expected}초")
+            check(all(timeout == default for method, timeout in timeouts if method != "PUT") and current.config.timeout == default,
+                  "2R5 Forge API·공유 클라이언트의 기본 시간 제한 유지")
+
     async def routes_test():
         now = [100.0]
         fake = dev.FakeForge(clock=lambda: now[0])
@@ -62587,6 +62601,7 @@ def forge_f2_import_unit():
         token_values = {"alice": "dev:alice", "bob": "dev:bob"}
         rejected = []
         tokens = types.SimpleNamespace(token_for=lambda org, account: token_values.get(account),
+                                      access_at=lambda org, account: now[0],
                                       reject_token=lambda org, account, token: rejected.append(token))
         accounts = fg.ForgeAccounts(client, config, tokens, clock=lambda: now[0])
         handlers = {path.rsplit("/", 1)[-1]: fn for method, path, fn in fg.routes(accounts)}
@@ -62755,7 +62770,11 @@ def forge_f2_import_unit():
             def __init__(self, concurrency=1):
                 self.now = 100.0
                 self.seen, self.rejected, self.started = [], [], []
+                self.checked, self.dropped = self.now, []
+                self.access = {"organizations": [{"id": "org1"}], "serviceWhitelist": {"studio": True}}
+                self.list_gate, self.list_started = None, []
                 self.media_gate = self.upload_gate = None
+                self.upload_accounts = {"alice"}
                 self.upload_started = asyncio.Event()
                 self.media_status, self.api_status = {}, {}
                 self.put_status, self.create_status = 200, 200
@@ -62763,9 +62782,12 @@ def forge_f2_import_unit():
                 self.history_count = 1
                 self.url, self.thumb = origin + "/media/original", origin + "/media/thumb"
                 self.asset_pages = lambda offset: []
-                self.cfg = dataclasses.replace(config, concurrency=concurrency)
+                self.cfg = dataclasses.replace(config, concurrency=concurrency, access_keys=("studio",))
                 self.client = fg.ForgeClient(self.cfg, self.transport)
                 tokens = types.SimpleNamespace(token_for=lambda org, account: "dev:" + account,
+                    access_at=lambda org, account: self.checked,
+                    mark_access=lambda org, account, at: setattr(self, "checked", at),
+                    drop_account=lambda org, account: self.dropped.append(account),
                     reject_token=lambda org, account, token: self.rejected.append((account, token)))
                 self.accounts = fg.ForgeAccounts(self.client, self.cfg, tokens, clock=lambda: self.now)
                 self.handlers = {p.rsplit("/", 1)[-1]: fn for _, p, fn in fg.routes(self.accounts)}
@@ -62777,6 +62799,12 @@ def forge_f2_import_unit():
                 self.seen.append((method, path, data, url, account))
                 if (method, path) in self.api_status:
                     return self.api_status[method, path], {}, encoded({"detail": "fixture failure"})
+                if path == "/api/access/summary":
+                    return 200, {}, encoded(self.access)
+                if method == "GET" and path in ("/api/image/history", "/api/library/assets"):
+                    self.list_started.append(account)
+                    if self.list_gate is not None:
+                        await self.list_gate.wait()
                 if path == "/api/image/history":
                     return 200, {}, encoded({"items": [dict(id="remote", result_url=self.url,
                         thumbnail_url=self.thumb, prompt="그림")] * self.history_count, "has_more": False})
@@ -62790,7 +62818,7 @@ def forge_f2_import_unit():
                 if path.endswith("/uploads/complete"):
                     return 200, {}, encoded({"ok": True})
                 if path == "/api/library/assets" and method == "POST":
-                    if self.upload_gate is not None and account == "alice":
+                    if self.upload_gate is not None and account in self.upload_accounts:
                         self.upload_started.set()
                         await self.upload_gate.wait()
                     return self.create_status, {}, encoded({"id": "remote-saved", "name": "작업", "detail": "conflict"})
@@ -63049,6 +63077,156 @@ def forge_f2_import_unit():
             check(listed["items"] == [] and listed["next"] is not None and rig.asset_gets() == [0, 200, 400, 600, 800],
                   "R5 검색은 응답당 5쪽 상한·이후 범위 next 유지")
 
+            rig = Rig()
+            rig.list_gate = asyncio.Event()
+            jobs = [asyncio.create_task(rig.request(action)) for action in ("history", "assets", "history")]
+            jobs.append(asyncio.create_task(rig.request("assets", account="bob")))
+            try:
+                await settle(lambda: len(rig.list_started) >= 3)
+                await asyncio.sleep(.02)
+                check(rig.list_started.count("alice") == 2 and rig.list_started.count("bob") == 1,
+                      "2R1 두 목록 라우트 공유 계정 상한 2·다른 계정은 진행")
+            finally:
+                rig.list_gate.set()
+                await asyncio.gather(*jobs)
+
+            for size in (512 * 1024 ** 2, 512 * 1024 ** 2 + 1):
+                rig = Rig()
+                before = opened.call_count
+                with patch.object(os.path, "getsize", return_value=size):
+                    response = await rig.request("save", {"root": "root"})
+                if size == 512 * 1024 ** 2:
+                    check(response.status == 200 and opened.call_count == before + 1, "2R2 Export PSD 512MiB 경계 허용")
+                else:
+                    check(response.status == 413 and value(response) == {"reason": "too_large",
+                        "error": "Export 파일이 커서 서버에서 합성 그림을 만들 수 없습니다 — PSD 를 내려받아 직접 올려 주세요."}
+                        and opened.call_count == before and not rig.seen, "2R2 PSD 512MiB 초과는 읽기·전송 전 413")
+
+            rig = Rig()
+            rig.upload_gate = asyncio.Event()
+            rig.upload_accounts = {"alice", "bob"}
+            uploads = [asyncio.create_task(rig.request("save", {"root": "root"}, account)) for account in ("alice", "bob")]
+            await settle(lambda: sum(m == "POST" and p == "/api/library/assets" for m, p, *_ in rig.seen) == 2)
+            before = opened.call_count
+            response = await rig.request("save", {"root": "root"}, "charlie")
+            check(response.status == 409 and value(response)["reason"] == "busy" and opened.call_count == before,
+                  "2R2 서버 저장은 2개까지·세 번째 계정은 읽기 전 busy")
+            uploads[0].cancel()
+            await asyncio.gather(uploads[0], return_exceptions=True)
+            response = await rig.request("save", {"root": "root"}, "charlie")
+            check(response.status == 200, "2R2 저장 취소 뒤 서버 저장 슬롯 반환")
+            rig.upload_gate.set()
+            await uploads[1]
+
+            rig = Rig()
+            decoding, release = [], threading.Event()
+            def slow_decode(_):
+                decoding.append(bd.current_scope()["account"])
+                release.wait(5)
+                return types.SimpleNamespace(topil=lambda: Image.open(io.BytesIO(png)))
+            with patch.object(bd.dpsd, "open_psd", side_effect=slow_decode):
+                jobs = [asyncio.create_task(rig.request("save", {"root": "root"}, account)) for account in ("alice", "bob")]
+                try:
+                    await settle(lambda: len(decoding) == 2)
+                    jobs[0].cancel()
+                    await asyncio.sleep(.02)
+                    check(not jobs[0].done(), "2R2 요청 취소도 실행 중 PSD 스레드가 끝날 때까지 저장 슬롯 보존")
+                    jobs.append(asyncio.create_task(rig.request("save", {"root": "root"}, "charlie")))
+                    await settle(jobs[2].done)
+                    check(jobs[2].done() and jobs[2].result().status == 409 and len(decoding) == 2,
+                          "2R2 취소된 디코드가 남아 있어도 세 번째 PSD를 읽지 않음")
+                finally:
+                    release.set()
+                    await asyncio.gather(*jobs, return_exceptions=True)
+
+            held, phases, copies = [False], [], []
+            class RenderSlot:
+                def __enter__(self):
+                    held[0] = True
+                def __exit__(self, *args):
+                    held[0] = False
+            original_buffer, original_save = io.BytesIO, Image.Image.save
+            main_buffer = []
+            class Buffer(original_buffer):
+                def getvalue(self):
+                    if main_buffer and self is main_buffer[0]:
+                        copies.append("getvalue")
+                    return super().getvalue()
+                def getbuffer(self):
+                    if main_buffer and self is main_buffer[0]:
+                        copies.append("getbuffer")
+                    return super().getbuffer()
+            def decode(_):
+                phases.append(("decode", held[0]))
+                def topil():
+                    phases.append(("pixels", held[0]))
+                    return Image.open(original_buffer(png))
+                return types.SimpleNamespace(topil=topil)
+            def encode(image, buffer, *args, **kwargs):
+                main_buffer[:] = [buffer]
+                phases.append(("encode", held[0]))
+                return original_save(image, buffer, *args, **kwargs)
+            rig = Rig()
+            upload = rig.client.upload_asset
+            async def upload_unlocked(*args, **kwargs):
+                phases.append(("upload", held[0]))
+                return await upload(*args, **kwargs)
+            with patch.object(bd, "_RENDER_SLOTS", RenderSlot()), patch.object(bd.dpsd, "open_psd", side_effect=decode), \
+                    patch.object(Image.Image, "save", encode), patch.object(io, "BytesIO", Buffer), \
+                    patch.object(rig.client, "upload_asset", side_effect=upload_unlocked):
+                response = await rig.request("save", {"root": "root"})
+            check(response.status == 200 and phases == [("decode", True), ("pixels", True), ("encode", False), ("upload", False)],
+                  "2R2 보드 렌더 슬롯은 PSD 디코드·픽셀 추출에만 사용")
+            check(copies == ["getbuffer"], "2R2 PNG 크기 검사는 buffer view·전송 bytes 한 번만 생성")
+
+            for action in ("import", "save"):
+                for status, reason in ((401, "forge_auth"), (403, "no_access"), (500, "forge_unreachable")):
+                    rig = Rig()
+                    item = await rig.item()
+                    rig.checked = None
+                    rig.seen.clear()
+                    rig.api_status["GET", "/api/access/summary"] = status
+                    before = opened.call_count
+                    response = await rig.request(action, dict(item, into="target", name="test", root="root"))
+                    check(response.status == (503 if status == 500 else status) and value(response).get("reason") == reason
+                          and [(m, p) for m, p, *_ in rig.seen] == [("GET", "/api/access/summary")]
+                          and opened.call_count == before, f"2R3 {action} 권한 확인 {status}는 작업 전에 {reason}")
+                    check(rig.rejected == ([("alice", "dev:alice")] if status == 401 else [])
+                          and rig.dropped == (["alice"] if status == 403 else []), "2R3 기존 ensure_access 거절 처리를 중복하지 않음")
+                rig = Rig()
+                item = await rig.item()
+                rig.seen.clear()
+                body = dict(item, into="target", name="test", root="root")
+                rig.checked = rig.now - 1799
+                await rig.request(action, body)
+                check(not any(p == "/api/access/summary" for _, p, *_ in rig.seen), "2R3 30분 미만 권한 캐시 유지 " + action)
+                rig.checked = rig.now - 1800
+                await rig.request(action, body)
+                check(sum(p == "/api/access/summary" for _, p, *_ in rig.seen) == 1 and rig.checked == rig.now,
+                      "2R3 30분 만료 권한 갱신·저장 메모리 적중도 재확인 " + action)
+                rig.checked = None
+                rig.access["serviceWhitelist"]["studio"] = False
+                response = await rig.request(action, body)
+                check(response.status == 403 and value(response)["reason"] == "no_access" and rig.dropped == ["alice"],
+                      "2R3 메뉴 권한 회수는 작업·저장 캐시보다 먼저 거절 " + action)
+            rig = Rig()
+            rig.checked = None
+            item = await rig.item()
+            await rig.request("assets")
+            await rig.request("thumb", query=item)
+            check(not any(p == "/api/access/summary" for _, p, *_ in rig.seen), "2R3 목록·썸네일에는 권한 재확인 추가하지 않음")
+
+            rig = Rig()
+            fresh = await rig.request("save", {"root": "root"})
+            cached = await rig.request("save", {"root": "root"})
+            check(value(fresh).get("already", False) is False and value(cached).get("already") is True,
+                  "2R4 새 등록과 메모리 캐시 응답을 already로 구분")
+            rig = Rig()
+            rig.create_status = 409
+            rig.asset_pages = lambda offset: [dict(id="saved", name="기존 자료", client_request_id="dp-save-0123456789ab-r1")]
+            response = await rig.request("save", {"root": "root"})
+            check(response.status == 200 and value(response).get("already") is True, "2R4 등록 409 뒤 찾은 자료도 already true")
+
     asyncio.run(clients())
     asyncio.run(routes_test())
     asyncio.run(review_cases())
@@ -63118,6 +63296,27 @@ await scenario("R5 빈 범위·다음 쪽 안내",async()=>{
  const e=await start({handler:()=>response({items:[],next:"more-page"})});
  e.ctx.DPForgeImport.open({into:"refs",root:"root"});await settle();await find(e,"내 자료").click();
  return e.doc.body.textContent.includes("이 범위에는 없습니다 — [더 보기]")&&!find(e,"더 보기").hidden;
+});
+await scenario("2R1 검색·탭·닫기에서 목록 요청 중단·오류 숨김",async()=>{
+ const requests=[];
+ const e=await start({handler:(url,options)=>new Promise((resolve,reject)=>{
+  requests.push({signal:options?.signal,resolve});
+  options?.signal?.addEventListener("abort",()=>reject(Object.assign(new Error("aborted fixture"),{name:"AbortError"})),{once:true});
+ })});
+ e.ctx.DPForgeImport.open({into:"refs",root:"root"});await settle();
+ const input=e.doc.body.all().find(n=>n.tagName==="INPUT");input.value="새 검색";input.listeners.input();await settle();
+ const searchAborted=requests[0]?.signal?.aborted,quiet=!e.doc.body.textContent.includes("aborted fixture");
+ await e.fire(300);await find(e,"내 자료").click();const tabAborted=requests[1]?.signal?.aborted;
+ await find(e,"닫기").click();const closeAborted=requests[2]?.signal?.aborted;
+ for(const request of requests)request.resolve(response({items:[],next:null}));await settle();
+ return Boolean(searchAborted&&tabAborted&&closeAborted&&quiet&&!e.ctx.DPDialog.open);
+});
+await scenario("2R4 새 저장·이미 저장 안내 구분",async()=>{
+ let already=false;const messages=[];
+ const e=await start({handler:()=>response({ok:true,already,asset:{id:"opaque",name:"작업"}})});
+ const button=e.ctx.DPForgeImport.saveButton({root:"root",ready:()=>true,askFree:async()=>true,toast:t=>messages.push(t)});
+ await button.click();already=true;await button.click();
+ return JSON.stringify(messages)===JSON.stringify(["Forge 내 자료에 저장했습니다: 작업","이미 저장한 그림입니다: 작업"]);
 });
 await scenario("FC 창·탭·검색·더보기·요청·닫기",async()=>{
  let done;const e=await start({handler:(url,o)=>{
