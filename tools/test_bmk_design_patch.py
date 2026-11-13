@@ -60565,7 +60565,7 @@ def forge_server_unit():
             r = await c.get("/?acct=bob")
             page = await r.text()
             check(r.status == 200 and 'sandbox="allow-scripts allow-same-origin allow-downloads allow-popups allow-popups-to-escape-sandbox"' in page
-                  and 'allow="clipboard-write"' in page and 'referrerpolicy="origin"' in page and "calc(100dvh - 56px)" in page
+                  and 'allow="clipboard-write"' in page and 'referrerpolicy="origin"' in page and "calc(100dvh - 64px)" in page
                   and "dev%3Abob" in page and "organization_id=org1" in page and "<script" not in page, "FS14 가짜 부모 iframe 계약·스크립트 없음")
             r = await c.get("/", params={"acct": '<script>alert(1)</script>'})
             check(r.status == 400, "FS14 부모 계정 쿼리 검증")
@@ -61760,8 +61760,8 @@ def forge_f3_server_unit():
             check(response is original_response and response.body is raw, "F3S9 3차 R4 로컬 모드는 큰 응답도 원문 그대로")
         parent = srv.make_dev_parent_app(dataclasses.replace(config, dev_parent_port=8790))
         response, _ = await call(parent, "GET", "/?acct=bob")
-        check(all(text in response.text for text in ("background:#09090b", "color:#e4e4e7", "color:#a1a1aa", "height:56px",
-                                                     "calc(100dvh - 56px)")) and "<script" not in response.text,
+        check(all(text in response.text for text in ("background:#09090b", "color:#e4e4e7", "color:#a1a1aa", "height:64px",
+                                                     "calc(100dvh - 64px)")) and "<script" not in response.text,
               "F3S10 가짜 부모의 어두운 머리·iframe 높이·스크립트 없음")
 
     before = {k: os.environ.get(k) for k in (bd.SERVER_ENV, "BMK_DP_MOCK_API")}

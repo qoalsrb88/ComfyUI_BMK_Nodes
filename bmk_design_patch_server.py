@@ -825,9 +825,9 @@ def make_dev_parent_app(config):
         source = f"http://{host}:{config.port}/?" + urlencode({"parent_origin": parent})
         source += "#" + urlencode({"token": "dev:" + acct, "organization_id": "org1"})
         page = ('<!doctype html><html lang="ko"><meta charset="utf-8"><title>Forge 개발</title>'
-                '<body style="margin:0;background:#09090b;color:#e4e4e7"><header style="height:56px;display:flex;align-items:center;gap:24px">'
+                '<body style="margin:0;background:#09090b;color:#e4e4e7"><header style="height:64px;display:flex;align-items:center;gap:24px">'
                 '<strong>Forge 개발</strong><a style="color:#a1a1aa" href="?acct=alice">alice</a><a style="color:#a1a1aa" href="?acct=bob">bob</a></header>'
-                '<iframe title="Design Patch Studio" style="border:0;width:100%;height:calc(100dvh - 56px)" '
+                '<iframe title="Design Patch Studio" style="display:block;border:0;width:100%;height:calc(100dvh - 64px)" '
                 'sandbox="allow-scripts allow-same-origin allow-downloads allow-popups allow-popups-to-escape-sandbox" '
                 'allow="clipboard-write" referrerpolicy="origin" src="' + html.escape(source, quote=True) + '"></iframe></body></html>')
         return web.Response(text=page, content_type="text/html", headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})

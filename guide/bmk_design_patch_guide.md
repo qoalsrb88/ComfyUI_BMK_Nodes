@@ -1767,7 +1767,7 @@ ii-3 의 r ≈ 0.42 를 반영해 다시 계산한 값입니다(concurrency 4, i
 H:\ComfyUI-Easy-Install\python_embeded\python.exe -X utf8 H:\ComfyUI-Easy-Install\ComfyUI\custom_nodes\ComfyUI_BMK_Nodes\bmk_design_patch_server.py --data H:\ComfyUI-Easy-Install\dp_forge_dev --port 8791 --dev-handoff --dev-parent-port 8790
 ```
 
-- 브라우저에서 `http://localhost:8790/` — 가짜 Forge 부모 페이지(상단 56px 바 + Forge 와 같은 `sandbox` 속성의 iframe). 위 [alice]·[bob] 링크로 계정을 바꿔 엽니다. iframe 주소는 Forge 와 같은 꼴 `http://localhost:8791/?parent_origin=…#token=dev:<계정>&organization_id=org1`.
+- 브라우저에서 `http://localhost:8790/` — 가짜 Forge 부모 페이지(상단 64px 바 — Forge 이미지 서비스의 상단 바 높이 + Forge 와 같은 `sandbox` 속성의 iframe). 위 [alice]·[bob] 링크로 계정을 바꿔 엽니다. iframe 주소는 Forge 와 같은 꼴 `http://localhost:8791/?parent_origin=…#token=dev:<계정>&organization_id=org1`.
 - `--dev-handoff` = 개발용 가짜 넘겨받기(`dev:<계정 ID>` 토큰을 그대로 믿음). **루프백 주소(127.0.0.1·::1·localhost)에서만** 켤 수 있습니다. 운영에서는 쓰지 않습니다.
 - `--host ::1` 로 띄우면 부모 페이지는 `http://localhost:8790/` 로 여세요(브라우저가 `[::1]` 부모를 `frame-ancestors` 에서 받지 않습니다).
 - Claude Code 에서는 `.claude\launch.json` 의 `dp-forge-dev`(`preview_start`).
