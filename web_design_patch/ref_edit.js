@@ -333,6 +333,7 @@ window.DPRefEdit = (() => {
         s.busy = false;
       }
     };
+    s.sheetImported = async () => { writes += 1; await s.load(true); };
 
     async function enqueue(req) {
       const r = await comfy("prompt", promptBody(root, req));
@@ -1803,6 +1804,12 @@ window.DPRefEdit = (() => {
       const top = el("div", "rs-head");
       top.append(el("h3", "", "시트 열기"), button("새로고침", "시트 목록 다시 읽기", loadSheets));
       top.append(button("시트 추가", "파일 업로드 또는 경로에서 시트 복사", showSheetAdd));
+      if (SM() && window.DPEnv && can("forge_import") && window.DPForgeImport) top.append(button(
+        "Forge에서 가져오기", "Forge 그림을 시트로 추가", () => {
+          if (!S.busy) window.DPForgeImport.open({ root: opts.root, into: "refs", onDone: async () => {
+            await S.sheetImported(); await afterSheetUpload();
+          } });
+        }));
       sheetHost.append(top, el("p", "dim", "프로젝트 폴더 안의 png·jpg·webp·psd·psb(파이프라인 폴더·refs 제외, 짧은 변 ≥ 256) — PSD 는 보이는 레이어 합성"));
       if (sheetList === null) {
         sheetHost.append(el("p", "dim", "불러오는 중…"));
@@ -2550,6 +2557,12 @@ window.DPRefEdit = (() => {
       } catch (e) { status.textContent = e.message; }
     }
 
+    async function afterSheetUpload(box) {
+      if (box) closeOwnExtra(box);
+      await loadSheets();
+      renderSoon();
+    }
+
     function showSheetAdd() {
       const box = extraBox("시트 추가");
       box.append(el("p", "dim", "PSD·PSB·PNG·JPG·WEBP, 짧은 변 256px 이상, 파일 2GB까지 — 파일을 고르거나 여기에 끌어 놓으세요"));
@@ -2560,7 +2573,7 @@ window.DPRefEdit = (() => {
         if (!file) return;
         input.value = "";
         status.textContent = "시트를 추가하는 중…";
-        try { await S.uploadSheet(file); closeOwnExtra(box); await loadSheets(); }
+        try { await S.uploadSheet(file); await afterSheetUpload(box); }
         catch (e) { input.value = ""; status.textContent = e.message; }
         finally { renderSoon(); }
       };

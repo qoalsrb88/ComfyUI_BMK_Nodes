@@ -980,6 +980,21 @@ svg.marks .mguide { fill: var(--accent); }
 
 /* ── Forge F2-W (토큰 안내·진행 줄·경고 칩) — 갈래 W 는 이 표시 아래에만 덧붙인다 ── */
 /* 색은 변수로만. */
+body.server .dp-prompt-changed { display: inline-block; flex: none; color: var(--warn); border: 1px solid var(--warn); margin-right: 8px; white-space: nowrap; }
+body.server #cand-caption:has(.dp-prompt-changed), body.server .tile .cap:has(.dp-prompt-changed) { display: flex; align-items: center; }
+body.server .dp-caption-text { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dp-env-notice { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 10000; padding: 12px 16px; background: var(--panel); color: var(--text); border: 1px solid var(--warn); border-radius: var(--radius); }
 
 /* ── Forge F2-C (Forge에서 가져오기·자료 저장) — 갈래 C 는 이 표시 아래에만 덧붙인다 ── */
 /* 색은 변수로만. */
+.dp-forge { z-index: 10000; }
+.dp-forge-sheet { width: min(92vw, 920px); max-width: none; height: min(82vh, 760px); box-sizing: border-box; display: flex; flex-direction: column; gap: 12px; }
+.dp-forge-sheet h2, .dp-forge-status { margin: 0; }
+.dp-forge-sheet > * { flex-shrink: 0; }
+.dp-forge-search { width: 100%; box-sizing: border-box; }
+.dp-forge-grid { flex: 1 1 auto; min-height: 0; overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); align-content: start; gap: 12px; }
+.dp-forge-item { display: flex; flex-direction: column; gap: 8px; text-align: left; white-space: normal; overflow-wrap: anywhere; }
+.dp-forge-item img { width: 100%; aspect-ratio: 1; object-fit: contain; background: var(--panel2); }
+.dp-forge-item span { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.dp-forge-status { color: var(--dim); }
+.dp-forge button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }

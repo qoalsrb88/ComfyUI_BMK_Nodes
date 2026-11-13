@@ -288,7 +288,8 @@ WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web_design_p
 _STATIC = {"board.html": "text/html", "board.js": "text/javascript", "viewer.js": "text/javascript",
            "layout_geom.js": "text/javascript", "rows.js": "text/javascript", "layout_edit.js": "text/javascript", "ref_edit.js": "text/javascript",
            "checklist.js": "text/javascript", "pipeline.js": "text/javascript", "mask_edit.js": "text/javascript", "board.css": "text/css",
-           "env.js": "text/javascript", "dialog.js": "text/javascript"}  # env·dialog = Forge 이식 F1 공용 객체(DPEnv·DPDialog)
+           "env.js": "text/javascript", "dialog.js": "text/javascript",
+           "forge_import.js": "text/javascript"}  # env·dialog = Forge 이식 F1 공용 객체(DPEnv·DPDialog)
 
 THUMB_KINDS = ("cand", "before", "ref", "delta", "context")
 THUMB_SIZES = (128, 192, 256, 384, 512, 768, 1024)
@@ -821,6 +822,23 @@ def _mock_active(root: str) -> bool:
     if runner is not None:
         return runner.mock_enabled(root)
     return os.environ.get("BMK_DP_MOCK_API") == "1" or os.path.isfile(os.path.join(os.path.dirname(root), "_MOCK_API"))
+
+
+def _forge_backend():
+    try:
+        from . import bmk_design_patch_forge_backend
+    except ImportError:
+        import bmk_design_patch_forge_backend
+    return bmk_design_patch_forge_backend
+
+
+def _forge_candidate_flags(root, info):
+    if server_mode() and info.get("backend") == "forge":
+        flags = _forge_backend().prompt_changed(root, info.get("call_id"))
+        slot = info.get("slot")
+        if type(slot) is int and 0 <= slot < len(flags) and flags[slot]:
+            return {"prompt_changed": True}
+    return {}
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -2768,6 +2786,7 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
                 adjust = store.cand_adjust(m, c["key"])
                 cands.append({
                     "key": c["key"], "n": n, "origin": c.get("origin"), "backend": info.get("backend"),
+                    **_forge_candidate_flags(root, info),
                     "mock": info.get("backend") == "mock", "src_size": c.get("src_size"),
                     "label": ext.candidate_label(c),
                     **({"external_missing": c["key"] in external_missing} if info.get("via") == "studio" else {}),
@@ -3079,7 +3098,7 @@ def apply_reroll(root: str, count: int, cell_key: str | None = None, crop_id: st
         runner = _runner()
         if runner is None:  # 배치 10 통합: 두 갈래가 합쳐진 자리 — runner 를 못 읽으면 발사 불가 판정·쓴 몫 셈 모두 못 함
             raise _Reject(409, "원장 사용량을 읽을 수 없습니다 — 새로고침", reason="plan_error")
-        why = runner.blocked_reason(job, backend=runner.BACKEND_MOCK if _mock_active(root) else runner.BACKEND_COMFY_ORG)
+        why = runner.blocked_reason(job, backend=runner.backend_name(root))
         if why:
             raise _Reject(409, f"발사 못 함 — {why}", reason="blocked")
         ck = job["cell_key"]
@@ -3089,9 +3108,30 @@ def apply_reroll(root: str, count: int, cell_key: str | None = None, crop_id: st
         if waiting + count > _MAX_CELL_PENDING:
             raise _Reject(409, f"이 생성 조건에 대기 호출이 이미 {waiting}개입니다(상한 {_MAX_CELL_PENDING}) — Run 으로 소화한 뒤 다시")
         m["rerolls"][ck] = cur + count
+        if server_mode():
+            m["rerolls_by"] = runner.backend_name(root)
         return {"cell_key": ck, "variant": job.get("variant"), "rerolls": cur + count, "est_usd": _est_usd(job)}
 
-    return store.update_manifest(root, mutate)
+    with store.manifest_lock(root):
+        reset_rerolls_backend(root)
+        return store.update_manifest(root, mutate)
+
+
+def reset_rerolls_backend(root: str) -> int:
+    """서버에서 백엔드가 달라진 미사용 예약만 기존 전체 취소 경로로 비운다(D419)."""
+    if not server_mode():
+        return 0
+    with store.manifest_lock(root):
+        runner = _runner()
+        if runner is None:
+            raise _Reject(409, "원장 사용량을 읽을 수 없습니다 — 새로고침", reason="plan_error")
+        m = store.load_manifest(root)
+        if m.get("rerolls_by") == runner.backend_name(root) or not m.get("rerolls"):
+            return 0
+        pending = runner.plan_calls(m, root)["rerolls_pending"]
+        if not any(n > 0 for n in pending.values()):
+            return 0
+        return cancel_rerolls(root, "all")["cancelled"]
 
 
 def _reroll_apply_gate(root: str, m: dict, settings=None) -> None:
@@ -5747,7 +5787,8 @@ def _run_plans(root: str, m: dict, run_cfg: dict, only: str = "", mock: bool | N
     runner = _runner()
     if runner is None:
         raise ValueError("runner 를 읽을 수 없음")
-    backend = runner.BACKEND_MOCK if (runner.mock_enabled(root) if mock is None else mock) else runner.BACKEND_COMFY_ORG
+    backend = (runner.backend_name(root) if mock is None else runner.BACKEND_MOCK if mock else
+               runner.BACKEND_FORGE if runner.forge_enabled() else runner.BACKEND_COMFY_ORG)
     plan = runner.plan_calls(m, root, retry_failed=bool(run_cfg["retry_failed"]), retry_orphans=bool(run_cfg["retry_orphans"]),
                              only=only)
     return runner, backend, plan, runner.split_approval(plan, "", backend=backend)
@@ -6212,12 +6253,15 @@ def pipeline_progress(root: str) -> dict:
         raise _Reject(500, "runner 를 읽을 수 없어 진행을 셀 수 없습니다")
     running = is_running(root)
     plan = runner.plan_calls(store.load_manifest(root), root)
-    ap = runner.split_approval(plan, "", backend=runner.BACKEND_MOCK if runner.mock_enabled(root) else runner.BACKEND_COMFY_ORG)
+    backend = runner.backend_name(root)
+    ap = runner.split_approval(plan, "", backend=backend)
     since = draft_since(root)
     return {"running": running, "drain": running and drain_requested(root),
             "run": {"done": len(plan["done"]), "inflight": len(plan["inflight"]), "failed": len(plan["failed"]),
                     "orphaned": len(plan["orphaned"]), "need": len(ap["needs_approval"]), "pre": len(ap["preapproved"])},
-            "draft": None if since is None else {**_vlm().ledger_progress(root, since - _SINCE_SLACK), "since": since}}
+            "draft": None if since is None else {**_vlm().ledger_progress(root, since - _SINCE_SLACK), "since": since},
+            **({"forge": _forge_backend().progress(root) or {"queue": None, "auth_wait": False}}
+               if backend == runner.BACKEND_FORGE else {})}
 
 
 def _adopt_crop_id(m: dict, crop_id) -> str:
@@ -7775,6 +7819,24 @@ async def refs_pool_post_handler(request: web.Request) -> web.StreamResponse:
     if server_mode() and data.get("op") == "sheet_add" and "path" in data:
         raise _Reject(400, "서버 모드에서는 그림 파일을 올려 주세요")
     return _json(await _pool_route(ref_pool, root, None if data.get("op") == "sheet_add" else _refs_rev(data), data.get("op"), data))
+
+
+async def import_received(data: dict, raw: bytes, filename: str) -> web.StreamResponse:
+    """Forge 바이트도 기존 업로드 처리기로 보낸다. 검증·잠금·임시 파일 정리·응답은 파일 업로드와 같다."""
+    from types import SimpleNamespace
+
+    class Content:
+        async def iter_chunked(self, size):
+            for start in range(0, len(raw), size):
+                yield raw[start:start + size]
+
+    target = data.get("into") == "target"
+    query = {"name": data.get("name"), "filename": filename} if target else {
+        "root": data.get("root"), "op": "sheet_add", "filename": filename}
+    request = SimpleNamespace(query=query, content=Content(), content_length=len(raw),
+                              content_type="application/octet-stream", headers={"Content-Type": "application/octet-stream"},
+                              path=API + ("/projects/new" if target else "/refs/pool"))
+    return await (projects_new_handler(request) if target else refs_pool_post_handler(request))
 
 
 _ROUTES = (
