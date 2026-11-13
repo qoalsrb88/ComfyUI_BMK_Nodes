@@ -435,7 +435,7 @@ class JobRunner:
                         self._condition.notify_all()
 
     def _run(self, job):
-        scope_token = progress_token = state_token = None
+        scope_token = progress_token = state_token = forge_token = None
         record = _record({}, RuntimeError("작업이 끝나기 전에 중단됐습니다"))
         try:
             scope_token = board.set_scope(job["scope"])
@@ -443,6 +443,9 @@ class JobRunner:
             state_token = _STATE.set(job)
             if job["closed"]:
                 raise compat.InterruptProcessingException()
+            if self._forge is not None and not backend.mock_enabled(job["raw_root"]):
+                forge_token = backend.set_forge({**self._forge.context(job["scope"]), "root": job["raw_root"],
+                                                "stop": lambda: job["closed"]})
             result = execute(job["prompt"])
             record = _record(result["outputs"], node=job["node"], scope=job["scope"])
         except BaseException as exc:
@@ -453,6 +456,8 @@ class JobRunner:
                              node=getattr(exc, "bmk_dp_node", None) or job["node"], scope=job["scope"])
         finally:
             try:
+                if forge_token is not None:
+                    backend.reset_forge(forge_token)
                 if state_token is not None:
                     state_token.var.reset(state_token)
                 if progress_token is not None:
@@ -487,10 +492,38 @@ def routes(runner: JobRunner) -> tuple:
         root = board._root_param(data.get("root"))
         account = scope()
         stage = data.get("stage")
+        forge = None
         if stage in ("run", "draft", "reroll") and not backend.mock_enabled(root):
-            raise board._Reject(409, "서버 모드 생성 백엔드가 아직 연결되지 않았습니다(mock 만).", reason="no_backend")
+            forge = getattr(runner, "_forge", None)
+            if stage not in ("run", "reroll") or not backend.forge_enabled() or forge is None:
+                raise board._Reject(409, "서버 모드 생성 백엔드가 아직 연결되지 않았습니다(mock 만).", reason="no_backend")
+            try:
+                from .bmk_design_patch_forge import ForgeError
+            except ImportError:
+                from bmk_design_patch_forge import ForgeError
+            try:
+                await forge.ensure_access(account)
+            except ForgeError as exc:
+                if exc.reason == "unauthorized":
+                    raise board._Reject(401, "Forge 로그인 정보를 다시 받아야 합니다 — 잠시 뒤 자동으로 다시 시도합니다.",
+                                        reason="forge_auth") from None
+                if exc.reason == "forbidden":
+                    raise board._Reject(403, "Design Patch Studio 사용 권한이 없습니다. 담당자에게 문의해 주세요.",
+                                        reason="no_access") from None
+                raise board._Reject(503, "Forge 에 연결하지 못했습니다 — 잠시 뒤 다시 시도해 주세요.",
+                                    reason="forge_unreachable") from None
+        if stage in ("run", "reroll") and board.server_mode():
+            cancelled = await asyncio.to_thread(board.reset_rerolls_backend, root)
+            if cancelled:
+                raise board._Reject(409, f"생성 백엔드가 바뀌어 다시 생성 대기 {cancelled}건을 취소했습니다 — 계획을 다시 확인해 주세요.",
+                                    reason="rerolls_reset", cancelled=cancelled)
         res = await asyncio.to_thread(board.pipeline_prompt, root, stage, data.get("approve"),
                                       data.get("only"), data.get("expect"))
+        if forge is not None:
+            limit = forge.context(account)["options"]["concurrency"]
+            for node in res["prompt"].values():
+                if node.get("class_type") == pl.CLASS["run"]:
+                    node["inputs"]["concurrency"] = min(node["inputs"]["concurrency"], limit)
         try:
             result = runner.submit(account, root, stage, res["prompt"])
         except QueueFull as exc:

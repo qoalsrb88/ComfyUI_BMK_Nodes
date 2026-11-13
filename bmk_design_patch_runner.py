@@ -639,7 +639,7 @@ def blocked_reason(job: dict, *, backend: str, request_model=None) -> str | None
     if model in store.COMPLEXITY_MODELS:
         if job.get("complexity") not in ("low", "medium", "high"):
             return "2.6 complexity 값이 없음/잘못됨 — Prepare 를 다시 실행하세요"
-        if backend != BACKEND_MOCK:
+        if backend == BACKEND_COMFY_ORG:
             if request_model is None:
                 try:
                     from comfy_api_nodes.apis.openai import OpenAIImageEditRequest
@@ -648,6 +648,12 @@ def blocked_reason(job: dict, *, backend: str, request_model=None) -> str | None
                     return "ComfyUI 가 2.6 complexity 를 모름(ComfyUI 업데이트)"
             if "complexity" not in getattr(request_model, "model_fields", {}):
                 return "ComfyUI 가 2.6 complexity 를 모름(ComfyUI 업데이트)"
+    if backend == BACKEND_FORGE:
+        try:
+            from . import bmk_design_patch_forge_backend as forge_backend
+        except ImportError:
+            import bmk_design_patch_forge_backend as forge_backend
+        return forge_backend.blocked_reason(job)
     return None
 
 
@@ -1109,6 +1115,12 @@ def make_backend(root: str, hidden: dict | None):
         opts = _mock_options(root)
         return MockBackend(delay_s=float(opts.get("delay_s", 1.5)), fail_plan=opts.get("fail_plan"),
                            response=str(opts.get("response", "b64" if _server_mode() else "url")))
+    if forge_enabled() and forge_context() is not None:
+        try:
+            from .bmk_design_patch_forge_backend import ForgeBackend
+        except ImportError:
+            from bmk_design_patch_forge_backend import ForgeBackend
+        return ForgeBackend(forge_context())
     if _server_mode():
         raise RuntimeError("서버 모드: 생성 백엔드가 아직 연결되지 않았습니다(mock 만)")
     return ComfyOrgBackend(hidden)
