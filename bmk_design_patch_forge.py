@@ -74,10 +74,11 @@ class ForgeError(Exception):
 
     REASONS = ("unauthorized", "forbidden", "invalid", "not_found", "unreachable", "server")
 
-    def __init__(self, reason: str, status: int | None = None, detail: str | None = None):
+    def __init__(self, reason: str, status: int | None = None, detail: str | None = None, account_id: str | None = None):
         self.reason = reason if reason in self.REASONS else "unreachable"
         self.status = status if type(status) is int else None
         self.detail = _safe_detail(detail)
+        self.account_id = account_id
         super().__init__({
             "unauthorized": "Forge 로그인 갱신이 필요합니다.",
             "forbidden": "Design Patch Studio 사용 권한이 없습니다.",
@@ -150,6 +151,9 @@ def _safe_detail(value):
     value = re.sub(r"(?i)\b[a-z][a-z0-9+.-]*://[^\s<>\"']+", "", value)
     value = re.sub(r"(?:[A-Za-z]:[\\/]|[\\/])[^\s<>\"']*", "", value)
     value = "".join(c for c in value if not unicodedata.category(c).startswith("C"))
+    if (re.search(r"(?<![\w-])[\w-]+(?:(?:\.[\w-]+)+|:\d+\b)", value)
+            or re.search(r"(?i)(?:[0-9a-f]{0,4}:){2,}[0-9a-f:.]*", value)):
+        return None  # scheme 없는 호스트·포트·IP 꼴은 일부만 가리지 않고 안내 전체를 버린다.
     return value.strip()[:300] or None
 
 
@@ -250,10 +254,10 @@ class ForgeClient:
         """GET /api/access/summary → {"orgs": [id…], "whitelist": {키: bool}}."""
         data = await self._json("GET", "/api/access/summary", token)
         orgs, whitelist = data.get("organizations"), data.get("serviceWhitelist")
-        if (not isinstance(orgs, list) or not isinstance(whitelist, dict)
-                or any(not isinstance(org, dict) or not isinstance(org.get("id"), str) for org in orgs)):
+        if not isinstance(orgs, list) or not isinstance(whitelist, dict):
             raise ForgeError("unreachable", 200)
-        return {"orgs": [org["id"] for org in orgs], "whitelist": dict(whitelist)}
+        return {"orgs": [org["id"] for org in orgs if isinstance(org, dict) and isinstance(org.get("id"), str)],
+                "whitelist": dict(whitelist)}
 
     async def submit(self, token: str, body: dict) -> dict:
         """POST /api/image/generate → {"job_id", "status"}. 4xx 는 ForgeError(reason, status, detail=가린 detail)."""
@@ -345,19 +349,21 @@ class ForgeVerifier:
             raise ForgeError("unauthorized", 401)
         if pending or any(not isinstance(err, ForgeError) or err.reason not in ("unauthorized", "forbidden") for err in errors):
             raise ForgeError("unreachable")
-        if any(isinstance(err, ForgeError) and err.reason == "forbidden" for err in errors):
-            raise ForgeError("forbidden", 403)
-        if errors:
-            raise ForgeError("unauthorized", 200)
-        user, access = values
         try:
             from .bmk_design_patch_server import _valid_id
         except ImportError:
             from bmk_design_patch_server import _valid_id
-        if not _valid_id(user.get("id")) or not _valid_id(organization_id) or any(not _valid_id(org) for org in access["orgs"]):
+        user = values[0]
+        account_id = user.get("id") if isinstance(user, dict) and _valid_id(user.get("id")) else None
+        if any(isinstance(err, ForgeError) and err.reason == "forbidden" for err in errors):
+            raise ForgeError("forbidden", 403, account_id=account_id)
+        if errors:
+            raise ForgeError("unauthorized", 200)
+        user, access = values
+        if not _valid_id(user.get("id")) or not _valid_id(organization_id):
             raise ForgeError("unreachable")
         if not _has_access(access, organization_id, self.config.access_keys):
-            raise ForgeError("forbidden", 403)
+            raise ForgeError("forbidden", 403, account_id=account_id)
         def clean(value):
             return "".join(c for c in value if not unicodedata.category(c).startswith("C")).strip()[:128] if isinstance(value, str) else ""
         email = user.get("email")

@@ -509,7 +509,9 @@ class SessionStore:
             if session is None:
                 return False
             old = self._tokens.get(sid)
-            if old and old.exp is not None and (exp is None or exp < old.exp):
+            rejected = old and hashlib.sha256(old.token.encode("utf-8")).digest() in self._rejected.get(
+                (session["organization_id"], session["account_id"]), ())
+            if old and not rejected and old.exp is not None and (exp is None or exp < old.exp):
                 return True
             self._tokens[sid] = _SessionToken(token, exp, self.clock())
             session["token_refresh"] = True
@@ -843,7 +845,15 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
                         if error.reason == "unauthorized":
                             login_failures.reject(client)
                             return _error("bad_token")
-                        return _error("no_access" if error.reason == "forbidden" else "forge_unreachable")
+                        if error.reason == "forbidden":
+                            response = _error("no_access")
+                            session = request.get("bmk_dp_session")
+                            if session and error.account_id == session["account_id"] and org == session["organization_id"]:
+                                sessions.drop_account(org, session["account_id"])
+                                response.del_cookie(COOKIE, path="/", samesite=config.cookie_samesite, httponly=True,
+                                                    secure=(config.public_origin or request.scheme + "://").startswith("https://"))
+                            return response
+                        return _error("forge_unreachable")
                     except Exception:
                         return _error("bad_token")
                 finally:
@@ -885,6 +895,9 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
                 token, org = data.get("token"), data.get("organization_id")
                 if not isinstance(token, str) or not 1 <= len(token) <= 4096 or not _valid_id(org):
                     return web.json_response({"error": "토큰·조직 형식이 잘못되었습니다"}, status=400)
+                if org != session["organization_id"]:
+                    sessions.drop_token(sid)
+                    return _error("session_changed")
                 state = sessions.begin_refresh(sid, token, org)
                 if state == "missing":
                     return _error("no_session")
@@ -902,6 +915,9 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
                     if error.reason == "unauthorized":
                         return _error("bad_token")
                     if error.reason == "forbidden":
+                        if error.account_id != session["account_id"]:
+                            sessions.drop_token(sid)
+                            return _error("session_changed")
                         sessions.drop_account(session["organization_id"], session["account_id"])
                         return _error("no_access")
                     return _error("forge_unreachable")

@@ -49543,7 +49543,9 @@ def forge_f2_session_unit():
             gate[0].set()
             await gate[1].wait()
         account, mode = behavior[token]
-        if mode in ("unauthorized", "forbidden", "server"):
+        if mode == "unknown_forbidden" or mode == "forbidden" and url.endswith("/api/access/summary"):
+            return 403, {}, b"{}"
+        if mode in ("unauthorized", "server"):
             return {"unauthorized": 401, "forbidden": 403, "server": 503}[mode], {}, b"{}"
         if mode == "exception":
             raise RuntimeError("Authorization: Bearer " + token + " https://forge.example/private")
@@ -49612,7 +49614,67 @@ def forge_f2_session_unit():
                 await app.cleanup()
             check(app[srv._RUNNER_KEY].closed and not app[srv._SESSION_KEY]._tokens, "F2S 종료 시 실행기·토큰 정리")
 
+    async def refresh_rejection_cases(http=False):
+        for mode in ("other_account", "unknown_account", "other_org", "own_account"):
+            now[0] = 100
+            async with serving(http) as (app, call):
+                sessions = app[srv._SESSION_KEY]
+                first = new_token("R1-first-" + mode)
+                sibling = new_token("R1-sibling-" + mode, exp=6000)
+                response, value = await call("/api/session", "POST", {"token": first, "organization_id": "org1"})
+                sid, tag = response.cookies[srv.COOKIE].value, value["account"]["tag"]
+                response, _ = await call("/api/session", "POST", {"token": sibling, "organization_id": "org1"})
+                sibling_sid = response.cookies[srv.COOKIE].value
+                account = "bob" if mode == "other_account" else "alice"
+                candidate = first if mode == "other_org" else new_token("R1-candidate-" + mode, account=account)
+                if mode != "other_org":
+                    behavior[candidate] = (account, "unknown_forbidden" if mode == "unknown_account" else "forbidden")
+                before = len(calls)
+                response, value = await call("/api/session/token", "POST",
+                                             {"token": candidate, "organization_id": "absent-org" if mode == "other_org" else "org1"}, sid, tag)
+                if mode == "own_account":
+                    check(response.status == 403 and value["reason"] == "no_access" and sessions.get(sid) is None
+                          and sessions.get(sibling_sid) is None, "R1 본인 권한 회수만 모든 세션 삭제")
+                else:
+                    check(response.status == 409 and value["reason"] == "session_changed", "R1 다른 사용자·조직·미확인 사용자 갱신 409 " + mode)
+                    check(sessions.get(sid) is not None and sid not in sessions._tokens
+                          and sessions.get(sibling_sid) is not None and sessions.token_for("org1", "alice") == sibling,
+                          "R1 현재 토큰만 삭제하고 다른 세션·토큰 보존 " + mode)
+                    if mode == "other_org":
+                        check(len(calls) == before, "R1 다른 조직은 Forge 호출 전에 거절")
+
+    async def login_rejection_cases(http=False):
+        for mode in ("other_account", "unknown_account", "other_org", "own_account"):
+            now[0] = 100
+            async with serving(http) as (app, call):
+                sessions = app[srv._SESSION_KEY]
+                first = new_token("R3-first-" + mode)
+                response, _ = await call("/api/session", "POST", {"token": first, "organization_id": "org1"})
+                sid = response.cookies[srv.COOKIE].value
+                response, _ = await call("/api/session", "POST", {"token": first, "organization_id": "org1"})
+                sibling_sid = response.cookies[srv.COOKIE].value
+                account = "bob" if mode == "other_account" else "alice"
+                candidate = new_token("R3-candidate-" + mode, account=account)
+                behavior[candidate] = (account, None if mode == "other_org" else
+                                       "unknown_forbidden" if mode == "unknown_account" else "forbidden")
+                response, value = await call("/api/session", "POST",
+                                             {"token": candidate, "organization_id": "absent-org" if mode == "other_org" else "org1"}, sid)
+                check(response.status == 403 and value["reason"] == "no_access"
+                      and not app[srv._LOGIN_FAILURES_KEY]._global, "R3 로그인 403은 실패 한도에 집계하지 않음")
+                if mode == "own_account":
+                    cookie = response.cookies.get(srv.COOKIE)
+                    check(sessions.get(sid) is None and sessions.get(sibling_sid) is None
+                          and sessions.token_for("org1", "alice") is None, "R3 본인 로그인 403은 옛 계정 세션·토큰 삭제")
+                    check(cookie is not None and cookie.value == "" and cookie["max-age"] == "0",
+                          "R3 본인 로그인 403은 브라우저 쿠키 삭제")
+                else:
+                    check(sessions.get(sid) is not None and sessions.get(sibling_sid) is not None
+                          and sessions.token_for("org1", "alice") == first and srv.COOKIE not in response.cookies,
+                          "R3 다른 사용자·조직·미확인 사용자 로그인 403은 옛 세션·쿠키 보존 " + mode)
+
     async def route_cases(http=False):
+        await refresh_rejection_cases(http)
+        await login_rejection_cases(http)
         now[0] = 100
         async with serving(http) as (app, call):
             check(os.environ.get("BMK_DP_FORGE") == "1" and os.environ.get("BMK_DP_MOCK_API") == "off", "F2S Forge 모드는 mock 강제 없음")
@@ -49669,6 +49731,15 @@ def forge_f2_session_unit():
             now[0] += 5
             response, _ = await call("/api/session/token", "POST", {"token": equal, "organization_id": "org1"}, sid, tag)
             check(response.status == 200 and sessions.token_for("org1", "alice") == equal, "F2S 같은 exp는 교체")
+            sessions.reject_token("org1", "alice", equal)
+            earlier = new_token("R2-earlier", exp=5500)
+            now[0] += 5
+            response, _ = await call("/api/session/token", "POST", {"token": earlier, "organization_id": "org1"}, sid, tag)
+            check(response.status == 200 and sessions.token_for("org1", "alice") == earlier,
+                  "R2 거절된 토큰은 더 이른 exp의 새 토큰으로 교체")
+            equal = new_token("R2-restored", exp=6000)
+            now[0] += 5
+            await call("/api/session/token", "POST", {"token": equal, "organization_id": "org1"}, sid, tag)
             for mode, status in (("unauthorized", 401), ("server", 503), ("exception", 503)):
                 token = new_token("refresh-" + mode, exp=7000)
                 behavior[token] = ("alice", mode)
@@ -60386,6 +60457,12 @@ def forge_f2_client_unit():
     import bmk_design_patch_forge as fg
     from unittest.mock import patch
     fixture = json.loads((PKG / "tools/fixtures/forge_api.json").read_text(encoding="utf-8"))
+    for detail in ("upstream 10.0.3.7:5432 refused", "redis.internal:6379 timeout", "see [::1]:8000",
+                   "upstream 10.0.3.7 refused", "redis.internal timeout", "see ::1", "localhost:8000 timeout"):
+        check(fg._safe_detail(detail) is None, "R5 scheme 없는 주소가 있으면 detail 전체 차단")
+    for item in (fixture["errors"]["submit_refused"], fixture["asset_upload"]["create"]["conflict"]):
+        detail = item["response"]["detail"]
+        check(fg._safe_detail(detail) == detail, "R5 한국어 fixture 안내는 그대로 유지")
     config = fg.ForgeConfig("https://FORGE.EXAMPLE.:443/", media_origins=("https://forge.example",))
     check(config.api == "https://forge.example", "F2C origin 대소문자·끝 점·기본 포트 정규화")
     check(fg.normalize_origin("https://예시.example") == fg.normalize_origin("https://xn--vv4b11d.example"), "F2C IDNA origin")
@@ -60471,9 +60548,16 @@ def forge_f2_client_unit():
         for payload in (b"not json", [], None, "text"):
             transport.payload = payload
             await failure(client.me(token), "unreachable", 200)
-        for payload in ({}, {"organizations": {}, "serviceWhitelist": {}}, {"organizations": [{"id": 1}], "serviceWhitelist": {}}):
+        for payload in ({}, {"organizations": {}, "serviceWhitelist": {}}):
             transport.payload = payload
             await failure(client.access(token), "unreachable", 200)
+        transport.payload = {"organizations": [{"id": "org1"}, {"id": 1}, None, {}, "bad", {"id": "x" * 129}, {"id": "bad\u200b"}],
+                             "serviceWhitelist": {}}
+        try:
+            filtered = await client.access(token)
+        except fg.ForgeError:
+            filtered = None
+        check(filtered == {"orgs": ["org1", "x" * 129, "bad\u200b"], "whitelist": {}}, "R4 소속 목록은 문자열 id만 추출")
         for payload in ({}, {"status": "new"}, {"status": "completed", "result_data": []},
                         {"status": "completed", "result_data": {"images": [1]}}):
             transport.payload = payload
@@ -60555,6 +60639,47 @@ def forge_f2_client_unit():
             check(closed.count("session") == 3 and closed.count("response") == 3, "F2C 압축 해제 후 스트림 상한·오류 시 닫기")
             with patch.object(fg, "JSON_LIMIT", 5):
                 await failure(direct.me(token), "server")
+
+        records = []
+        sensitive_url = "https://forge.example/private"
+        class FailingSession(Session):
+            def request(self, method, url, **kwargs):
+                raise RuntimeError(kwargs["headers"]["Authorization"] + " " + sensitive_url)
+
+        def capture_record(logger, record):
+            records.append(record)
+
+        def leaks(value, seen=None):
+            seen = set() if seen is None else seen
+            if id(value) in seen:
+                return False
+            seen.add(id(value))
+            if isinstance(value, bytes):
+                return token.encode() in value or sensitive_url.encode() in value
+            if isinstance(value, str):
+                return token in value or sensitive_url in value
+            if isinstance(value, BaseException):
+                values = (str(value), repr(value), value.args, value.__cause__, value.__context__, value.__traceback__)
+            elif isinstance(value, types.TracebackType):
+                frame = value.tb_frame
+                local_values = dict(frame.f_locals) if frame.f_code.co_filename == fg.__file__ else {}
+                values = (local_values, value.tb_next)
+            elif isinstance(value, dict):
+                values = tuple(value.keys()) + tuple(value.values())
+            elif isinstance(value, (tuple, list)):
+                values = value
+            else:
+                return False
+            return any(leaks(item, seen) for item in values)
+
+        with patch.object(fg.aiohttp, "ClientSession", FailingSession), patch.object(logging.Logger, "handle", capture_record):
+            error = await failure(fg.ForgeClient(config).me(token), "unreachable")
+        check(error.__cause__ is None and error.__context__ is None and not leaks(str(error)) and not leaks(repr(error)),
+              "R6 기본 전송 예외 문구·repr·연결 예외 비밀 0건")
+        check(leaks(error), "R6 감사기는 고정 문구의 예외도 traceback 프레임 지역 변수까지 검사")
+        check(all(not record.exc_info for record in records), "R6 기본 전송 실패를 exc_info로 로그에 남기지 않음")
+        check(all(not leaks(vars(record)) for record in records), "R6 로그 기록·예외 인자·traceback 지역 변수의 토큰 0건")
+        check(not leaks("\n".join(logging.Formatter().format(record) for record in records)), "R6 출력 로그 토큰·주소 0건")
     asyncio.run(run())
 
 
@@ -61425,7 +61550,7 @@ def forge_f2_verifier_unit():
     config = fg.ForgeConfig("https://forge.example", access_keys=("image", "designPatch"), verify_timeout=0.03)
     token = "dev:alice:5000"
 
-    async def verify(me=None, access=None, cfg=config):
+    async def verify(me=None, access=None, cfg=config, return_error=False, org="org1"):
         started = set()
         ready = asyncio.Event()
         async def transport(method, url, headers, body, timeout):
@@ -61444,15 +61569,25 @@ def forge_f2_verifier_unit():
             return 200, {}, json.dumps(value if value is not None else fixture[which]["response"]).encode()
         client = fg.ForgeClient(cfg, transport)
         try:
-            result = await fg.ForgeVerifier(client, cfg).verify(token, "org1")
+            result = await fg.ForgeVerifier(client, cfg).verify(token, org)
         except fg.ForgeError as error:
             check(started == {"me", "access_summary"}, "F2V 두 검증 동시 시작")
-            return error.reason
+            return error if return_error else error.reason
         check(started == {"me", "access_summary"}, "F2V 두 검증 동시 완료")
         return result
 
     async def run():
         check(await verify() == {"account_id": "u_alice", "organization_id": "org1", "name": "alice", "exp": 5000.0}, "F2V 정상 신원·exp")
+        bob = copy.deepcopy(fixture["me"]["response"])
+        bob["user"]["id"] = "u_bob"
+        denied = copy.deepcopy(fixture["access_summary"]["response"])
+        denied["serviceWhitelist"]["image"] = False
+        for me, access, expected in ((None, 403, "u_alice"), (bob, 403, "u_bob"),
+                                     (403, 403, None), (None, denied, "u_alice")):
+            error = await verify(me, access, return_error=True)
+            check(isinstance(error, fg.ForgeError) and error.reason == "forbidden"
+                  and getattr(error, "account_id", None) == expected, "R1 forbidden은 확인한 account_id만 전달")
+            check(expected is None or expected not in str(error) + repr(error), "R1 확인한 account_id는 예외 문구·repr에 없음")
         check(await verify(401, 401) == "unauthorized", "F2V 양쪽 401")
         for error in (503, "timeout", "nonjson"):
             for side in (0, 1):
@@ -61487,7 +61622,14 @@ def forge_f2_verifier_unit():
             check(await verify(me) == "unreachable", "F2V 잘못된 account_id는 장애")
             access = copy.deepcopy(fixture["access_summary"]["response"])
             access["organizations"] = [{"id": invalid}]
-            check(await verify(access=access) == "unreachable", "F2V 잘못된 조직 id는 장애")
+            check(await verify(access=access) == "forbidden", "R4 요청한 조직이 목록에 없으면 권한 거절")
+            access["organizations"].append({"id": "org1"})
+            result = await verify(access=access)
+            check(isinstance(result, dict) and result["organization_id"] == "org1", "R4 다른 조직의 잘못된 id가 로그인 방해하지 않음")
+            check(await verify(org=invalid) == "unreachable", "R4 요청한 organization_id 형식 검사는 유지")
+        mixed = copy.deepcopy(fixture["access_summary"]["response"])
+        mixed["organizations"].extend({"id": value} for value in ("x" * 129, "bad\x00", 123))
+        check(isinstance(await verify(access=mixed), dict), "R4 긴 문자열·제어 문자·숫자 id가 섞여도 org1 로그인 성공")
     asyncio.run(run())
 
 
