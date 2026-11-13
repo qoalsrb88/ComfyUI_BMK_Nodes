@@ -24,6 +24,7 @@ import math
 import os
 import re
 import secrets
+import tempfile
 import threading
 import time
 from datetime import datetime
@@ -52,6 +53,8 @@ AUTH_WAIT = 90.0
 SUBMIT_RETRY_DELAY = 0.25
 _CALL_ID = re.compile(r"([0-9a-f]{24})_r(\d+)")
 _JOB_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
+_REQUEST_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
+_PRIVATE_TEXT = re.compile(r"://|data:|\\|[a-z0-9_.-]+:\d+|(?:\d{1,3}\.){3}\d{1,3}|::|(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}", re.I)
 _LOCK = threading.Lock()
 _PROGRESS = {}
 
@@ -95,15 +98,29 @@ def build_request(job: dict, images: list[bytes], *, organization_id: str, reque
 
 
 def read_sidecar(root: str, cell_key: str, rep: int) -> dict:
-    """사이드카를 읽는다(없거나 깨졌으면 빈 기록)."""
+    """파일이 없을 때만 빈 기록. 읽기 실패·손상은 제출 전에 막을 수 있게 올린다."""
     try:
         with open(runner._lpath(root, cell_key, rep, "forge"), encoding="utf-8") as stream:
             value = json.load(stream)
-        if isinstance(value, dict) and value.get("schema") == SIDECAR_SCHEMA and isinstance(value.get("requests"), list):
-            return value
-    except (OSError, ValueError, TypeError):
-        pass
-    return {"schema": SIDECAR_SCHEMA, "requests": []}
+    except FileNotFoundError:
+        return {"schema": SIDECAR_SCHEMA, "requests": []}
+    if not isinstance(value, dict) or value.get("schema") != SIDECAR_SCHEMA or not isinstance(value.get("requests"), list):
+        raise ValueError("Forge 제출 기록의 형식이 잘못되었습니다.")
+    for row in value["requests"]:
+        if (not isinstance(row, dict) or not isinstance(row.get("id"), str) or not _REQUEST_ID.fullmatch(row["id"])
+                or type(row.get("attempt")) is not int or row["attempt"] < 1
+                or row.get("state") not in ("open", "submitted", "failed", "rejected")
+                or _timestamp(row.get("time")) is None
+                or (("job_id" in row or row.get("state") == "submitted") and
+                    (not isinstance(row.get("job_id"), str) or not _JOB_ID.fullmatch(row["job_id"])))):
+            raise ValueError("Forge 제출 기록의 형식이 잘못되었습니다.")
+    if ("job_id" in value and (not isinstance(value["job_id"], str) or not _JOB_ID.fullmatch(value["job_id"]))
+            or "result_ids" in value and (not isinstance(value["result_ids"], list) or
+                                         not all(isinstance(item, str) for item in value["result_ids"]))
+            or "prompt_changed" in value and (not isinstance(value["prompt_changed"], list) or
+                                             not all(type(item) is bool for item in value["prompt_changed"]))):
+        raise ValueError("Forge 결과 기록의 형식이 잘못되었습니다.")
+    return value
 
 
 def prompt_changed(root: str, call_id: str) -> list[bool]:
@@ -111,7 +128,10 @@ def prompt_changed(root: str, call_id: str) -> list[bool]:
     match = _CALL_ID.fullmatch(call_id or "")
     if match is None:
         return []
-    flags = read_sidecar(root, match[1], int(match[2])).get("prompt_changed")
+    try:
+        flags = read_sidecar(root, match[1], int(match[2])).get("prompt_changed")
+    except (OSError, ValueError, TypeError):
+        return []
     return [flag is True for flag in flags] if isinstance(flags, list) else []
 
 
@@ -132,16 +152,30 @@ def _nonce(root):
     with _LOCK:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         try:
-            with open(path, "x", encoding="utf-8", newline="\n") as stream:
-                value = secrets.token_hex(6)
-                json.dump({"schema": "dp-forge-project/1", "nonce": value}, stream)
-                return value
-        except FileExistsError:
             with open(path, encoding="utf-8") as stream:
-                value = json.load(stream)["nonce"]
-            if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{12}", value):
-                raise ValueError("프로젝트 식별 기록을 읽을 수 없습니다")
-            return value
+                record = json.load(stream)
+        except FileNotFoundError:
+            temporary = None
+            try:
+                with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="\n", delete=False,
+                                                 dir=os.path.dirname(path), prefix="._forge-", suffix=".tmp") as stream:
+                    temporary = stream.name
+                    json.dump({"schema": "dp-forge-project/1", "nonce": secrets.token_hex(6)}, stream)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                try:
+                    os.link(temporary, path)  # 완성된 파일만 배타 공개. 다른 생성자가 이겼다면 그 값을 읽는다.
+                except FileExistsError:
+                    pass
+            finally:
+                if temporary is not None:
+                    os.unlink(temporary)
+            with open(path, encoding="utf-8") as stream:
+                record = json.load(stream)
+        if (not isinstance(record, dict) or record.get("schema") != "dp-forge-project/1"
+                or not isinstance(record.get("nonce"), str) or not re.fullmatch(r"[0-9a-f]{12}", record["nonce"])):
+            raise ValueError("프로젝트 식별 기록을 읽을 수 없습니다")
+        return record["nonce"]
 
 
 def _timestamp(value):
@@ -149,6 +183,13 @@ def _timestamp(value):
         return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
     except (AttributeError, TypeError, ValueError, OverflowError):
         return None
+
+
+def _safe_message(value, fallback):
+    """원격 오류는 자르기 전에 주소·경로 꼴을 검사한다. 일반 안내는 300자까지 그대로."""
+    if not isinstance(value, str) or not value.strip() or _PRIVATE_TEXT.search(value):
+        return fallback
+    return value[:300]
 
 
 class ForgeBackend:
@@ -190,6 +231,7 @@ class ForgeBackend:
                 ck, rep = match[1], int(match[2])
                 req = runner._read_json(runner._lpath(self._root, ck, rep, "req")) or {}
                 attempt = int(req.get("attempt", 1))
+                phase = "blocked"
                 side = read_sidecar(self._root, ck, rep)
                 last = side["requests"][-1] if side["requests"] else None
                 if not last or last.get("state") not in ("open", "submitted"):
@@ -209,11 +251,17 @@ class ForgeBackend:
                 phase = "poll"
                 last.update(state="submitted", job_id=job_id, time=runner._now())
                 side["job_id"] = job_id
-                self._save(ck, rep, side)
+                side_error = None
+                try:
+                    self._save(ck, rep, side)
+                except BaseException as exc:
+                    side_error = exc
                 runner._write_json(runner._lpath(self._root, ck, rep, "resp"), {
                     "call_id": call_id, "received": runner._now(), "backend": self.name,
                     "elapsed_s": round(time.monotonic() - t0, 2), "credits": None, "usage": None,
                     "data": [{"slot": i, "kind": "url", "url": f"{URL_SCHEME}{job_id}/{i}"} for i in range(job["n"])]})
+                if side_error is not None:
+                    raise side_error
                 result = await self._poll(job_id, call_id, _timestamp(last["time"]))
                 phase = "response"
                 self._result(ck, rep, side, result, job["prompt"], recovery=False)
@@ -279,10 +327,13 @@ class ForgeBackend:
             _PROGRESS.pop((runner._rid(self._root), call_id), None)
 
     async def _submit(self, body, ck, rep, side):
+        response_lost = False
         for attempt in range(3):
             self._stop()
             token = self._ctx["token_of"]()
             if token is None:
+                if response_lost:
+                    break
                 raise runner.CallError("Forge 로그인 정보를 다시 받아야 합니다.", status=401, maybe_billed=False)
             try:
                 result = await self._ctx["client"].submit(token, body)
@@ -294,22 +345,28 @@ class ForgeBackend:
             except ForgeError as exc:
                 if exc.reason == "unauthorized" or exc.status == 401:
                     self._ctx["reject_token"](token)
+                    if response_lost:
+                        break
                     raise runner.CallError("Forge 로그인 정보를 다시 받아야 합니다.", status=401, maybe_billed=False) from None
+                if response_lost and exc.status != 422 and (exc.reason == "forbidden" or
+                        exc.status is not None and 400 <= exc.status < 500):
+                    break
                 if exc.reason == "forbidden" or exc.status == 403:
                     raise runner.CallError("Design Patch Studio 사용 권한이 없습니다. 담당자에게 문의해 주세요.",
                                            status=403, retryable=False, maybe_billed=False) from None
                 if exc.status == 422:
                     side["requests"][-1]["state"] = "rejected"
                     self._save(ck, rep, side)
-                    raise runner.CallError(exc.detail or "생성 요청이 거절되었습니다.", status=422,
+                    raise runner.CallError(_safe_message(exc.detail, "생성 요청이 거절되었습니다."), status=422,
                                            retryable=False, maybe_billed=False) from None
                 if exc.status is not None and 400 <= exc.status < 500:
-                    raise runner.CallError(exc.detail or "Forge 생성 요청을 받지 못했습니다.", status=exc.status,
+                    raise runner.CallError(_safe_message(exc.detail, "Forge 생성 요청을 받지 못했습니다."), status=exc.status,
                                            maybe_billed=False) from None
             except runner.CallError:
                 raise
             except Exception:
                 pass  # 연결·해석 실패: 예외 본문은 버리고 같은 멱등 키로 다시 제출한다.
+            response_lost = True
             if attempt < 2:
                 await asyncio.sleep(SUBMIT_RETRY_DELAY)
         raise runner.CallError("Forge 생성 요청의 응답을 받지 못했습니다.", phase="request",
@@ -369,15 +426,15 @@ class ForgeBackend:
     def _result(self, ck, rep, side, result, prompt, *, recovery):
         images = result.get("images")
         if result.get("status") == "failed" or not isinstance(images, list) or not images:
-            side["requests"][-1]["state"] = "failed"
+            if side["requests"]:
+                side["requests"][-1]["state"] = "failed"
             self._save(ck, rep, side)
-            if not recovery:
-                runner._remove(runner._lpath(self._root, ck, rep, "resp"))
+            runner._remove(runner._lpath(self._root, ck, rep, "resp"))
             user = result.get("status") == "failed" and result.get("error_category") == "user"
             message = result.get("error_message")
-            raise runner.CallError(message[:300] if isinstance(message, str) and message else "Forge 생성 결과에 이미지가 없습니다.",
-                                   phase="download" if recovery else "response", retryable=False if recovery else not user,
-                                   maybe_billed=not user)
+            raise runner.CallError(_safe_message(message, "Forge 생성 결과에 이미지가 없습니다."),
+                                   phase="download" if recovery else "response", retryable=recovery or not user,
+                                   maybe_billed=recovery or not user)
         metadata = result.get("metadata") or []
         side["prompt_changed"] = [isinstance(item, dict) and isinstance(item.get("prompt_used"), str)
                                   and item["prompt_used"] != prompt for item in
@@ -390,16 +447,24 @@ class ForgeBackend:
         call_id = None
         try:
             for ck in runner._ledger_cells(self._root):
-                for name in os.listdir(runner._ldir(self._root, ck)):
-                    match = re.fullmatch(r"r(\d+)\.forge\.json", name)
-                    if match is None:
-                        continue
-                    rep = int(match[1])
+                reps = {int(match[1]) for name in os.listdir(runner._ldir(self._root, ck))
+                        if (match := re.fullmatch(r"r(\d+)\.(?:forge|resp)\.json", name))}
+                for rep in sorted(reps):
                     side = read_sidecar(self._root, ck, rep)
-                    if side.get("job_id") != job_id or not side["requests"]:
-                        continue
+                    if side.get("job_id") == job_id and side["requests"]:
+                        submitted = _timestamp(side["requests"][-1].get("time"))
+                    else:
+                        receipt = runner._read_json(runner._lpath(self._root, ck, rep, "resp")) or {}
+                        prefix = f"{URL_SCHEME}{job_id}/"
+                        if receipt.get("backend") != self.name or not any(
+                                isinstance(row, dict) and isinstance(row.get("url"), str) and row["url"].startswith(prefix)
+                                for row in receipt.get("data") or []):
+                            continue
+                        submitted = _timestamp(receipt.get("received"))
+                        side["job_id"] = job_id
+                        if side["requests"]:
+                            side["requests"][-1].update(state="submitted", job_id=job_id, time=receipt.get("received"))
                     call_id = runner.call_id_for(ck, rep)
-                    submitted = _timestamp(side["requests"][-1].get("time"))
                     result = await self._poll(job_id, call_id, submitted, recovery=True)
                     req = runner._read_json(runner._lpath(self._root, ck, rep, "req")) or {}
                     self._result(ck, rep, side, result, req.get("prompt"), recovery=True)

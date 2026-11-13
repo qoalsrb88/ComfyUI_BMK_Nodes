@@ -57256,6 +57256,7 @@ def forge_f2_backend_unit():
         def __init__(self, *states):
             self.states = list(states or ["completed"])
             self.submissions, self.polls, self.tokens, self.downloads = [], [], [], []
+            self.job_states = []
             self.submit_errors, self.media_errors = [], {}
             self.on_job = None
 
@@ -57276,7 +57277,9 @@ def forge_f2_backend_unit():
             value = self.states.pop(0) if len(self.states) > 1 else self.states[0]
             if isinstance(value, BaseException):
                 raise value
-            return normalized(value)
+            result = normalized(value)
+            self.job_states.append(result.get("status"))
+            return result
 
         async def fetch_media(self, url, limit):
             self.downloads.append(url)
@@ -57432,6 +57435,33 @@ def forge_f2_backend_unit():
         check(len(c.submissions) == 3 and len({b["request_id"] for b in c.submissions}) == 1, "F2B 재제출 2회 같은 ID")
         check(run(r, c, retry=True).done == 1 and len({b["request_id"] for b in c.submissions}) == 1, "F2B 유실 retry_failed도 동일 ID")
         clean_disk(r)
+        for after in (401, 403, None, 429):
+            r, j = project("lost_then_" + str(after))
+            c, tokens = Client(), {"value": secret}
+            c.submit_errors = [Failure("unreachable")]
+            if after is not None:
+                c.submit_errors.append(Failure({401: "unauthorized", 403: "forbidden", 429: "invalid"}[after], after))
+            original_submit = c.submit
+            async def lose_then_reject(token, body):
+                try:
+                    return await original_submit(token, body)
+                finally:
+                    if after is None:
+                        tokens["value"] = None
+            with patch.object(c, "submit", side_effect=lose_then_reject):
+                report = run(r, c, tokens=tokens)
+            record = ledger(r, j)
+            failed = record.get("failed", {})
+            check(rn._rep_state(record, False) == "failed" and failed.get("maybe_billed") is True
+                  and failed.get("retryable") is True and failed.get("status") is None and failed.get("phase") == "request",
+                  "R1 유실 뒤 " + str(after) + " 과금 가능 실패 유지")
+            if after == 401:
+                check(tokens.get("rejected") == [secret], "R1 유실 뒤 401도 토큰 거절 표시")
+            previous = c.submissions[0]["request_id"]
+            check(sidecar(r, j)["requests"][-1]["id"] == previous, "R1 유실 뒤 사이드카 ID 보존")
+            tokens["value"] = "fixture-refreshed"
+            check(run(r, c, retry=True, tokens=tokens).done == 1 and c.submissions[-1]["request_id"] == previous,
+                  "R1 유실 뒤 retry_failed 동일 ID")
         r, j = project("submit422")
         c = Client()
         c.submit_errors = [Failure("invalid", 422, "요청 형식을 확인해 주세요.")]
@@ -57474,21 +57504,30 @@ def forge_f2_backend_unit():
             c = Client("pending")
             tokens = {"value": secret}
             stopped = {"value": False}
+            poll_clock = [float(int(time.time()))]
             if failure == "auth":
                 c.states = [Failure("unauthorized", 401)]
             elif failure == "transport":
                 c.states = [RuntimeError(secret + media)]
             elif failure == "oversize":
                 c.states = [Failure("invalid", 413), "completed"]
-            else:
-                c.on_job = lambda: stopped.update(value=True)
-            observed = []
+            elif failure == "deadline":
+                processing = copy.deepcopy(fixture["job"]["processing"])
+                processing["execution_deadline_at"] = time.strftime(
+                    "%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(poll_clock[0] + 2 - fb.DEADLINE_GRACE))
+                c.states = [processing]
+            observed_defaults = []
+            default_deadline = fb.DEADLINE_DEFAULT
             def observe():
-                observed.append(fb.progress(r))
+                observed_defaults.append(fb.DEADLINE_DEFAULT)
                 if failure == "stop":
                     stopped["value"] = True
+                elif failure == "deadline":
+                    poll_clock[0] += 1
             c.on_job = observe
-            with patch.object(fb, "AUTH_WAIT", 0), patch.object(fb, "DEADLINE_DEFAULT", -1 if failure == "deadline" else 1500):
+            clock_patch = (patch.object(fb.time, "time", side_effect=lambda: poll_clock[0])
+                           if failure == "deadline" else contextlib.nullcontext())
+            with patch.object(fb, "AUTH_WAIT", 0), clock_patch:
                 try:
                     report = run(r, c, tokens=tokens, stop=lambda: stopped["value"])
                 except rn._interrupt_types() as exc:
@@ -57497,19 +57536,131 @@ def forge_f2_backend_unit():
                 check(report.done == 1 and len(c.polls) == 2, "F2B 폴링 크기 초과 다음 주기 재조회")
                 continue
             check(rn._rep_state(ledger(r, j), False) == "recoverable", "F2B " + failure + " 영수증으로 복구 가능")
+            if failure == "deadline":
+                check(c.job_states == ["processing", "processing"], "R6 processing 유지 중 실제 폴링 반복 뒤 기한 초과")
+                check(observed_defaults and all(value == default_deadline for value in observed_defaults),
+                      "R6 기본 기한 상수를 음수로 바꾸지 않고 원격 기한 검사")
+                check(ledger(r, j)["failed"]["phase"] == "poll" and
+                      ledger(r, j)["failed"]["error"] == "Forge 생성 결과를 기다리는 시간이 지났습니다.", "R6 기한 초과 오류 경로 명시")
             if failure == "auth":
                 check(ledger(r, j)["failed"]["phase"] == "poll" and tokens["rejected"] == [secret], "F2B 폴링 401 과금 전 되돌림 없음")
                 # 원래 프롬프트가 사라진 뒤에도 옛 셀의 영수증을 찾는다.
                 store.update_manifest(r, lambda m: m.update(jobs=[]))
                 check(plan(r)["pending"][0]["stale"], "F2B 옛 셀 무료 복구 계획")
             check(fb.progress(r) is None, "F2B 실패·중단 진행 정리")
-            before = len(c.submissions)
+            before, polls_before = len(c.submissions), len(c.polls)
             c.on_job, c.states = None, ["completed"]
             check(run(r, c).recovered == 1 and len(c.submissions) == before, "F2B 무료 복구 새 제출 없음")
-            check(c.polls[-2:] != [] and len(c.downloads) == 2, "F2B 복구 두 슬롯 수신")
+            check(c.polls[polls_before:] == [fixture["generate"]["response"]["job_id"]]
+                  and c.downloads == normalized("completed")["images"], "R6 복구 조회 정확히 한 번·서로 다른 두 슬롯 수신")
             clean_disk(r)
 
-        for outcome in ("failed_user", {"status": "completed", "result_data": {"images": []}}, "completed_partial", "404new", "404old"):
+        r, j = project("submitted_sidecar_write_error")
+        c, injected = Client(), []
+        original_save = fb.ForgeBackend._save
+        def fail_submitted_once(self, ck, rep, side):
+            if not injected and side["requests"][-1]["state"] == "submitted":
+                injected.append(True)
+                raise OSError("fixture sidecar write failure")
+            return original_save(self, ck, rep, side)
+        with patch.object(fb.ForgeBackend, "_save", new=fail_submitted_once):
+            run(r, c)
+        record = ledger(r, j)
+        check(injected == [True] and "resp" in record and rn._rep_state(record, False) == "recoverable",
+              "R3 submitted 사이드카 저장 실패 뒤에도 영수증 저장")
+        check("job_id" not in sidecar(r, j) and len(c.submissions) == 1 and not c.polls,
+              "R3 영수증만 있는 복구 조건 재현")
+        before = len(c.submissions)
+        check(run(r, c).recovered == 1 and len(c.submissions) == before and len(c.polls) == 1
+              and len(store.load_manifest(r)["candidates"]) == 2, "R3 영수증 대체 탐색으로 새 제출 없이 복구")
+        check(sidecar(r, j).get("job_id") == fixture["generate"]["response"]["job_id"], "R3 복구 결과 사이드카 보완")
+
+        for damage in ("json", "permission", "shape", "request_shape"):
+            r, j = project("sidecar_" + damage)
+            path = Path(rn._lpath(r, j["cell_key"], 0, "forge"))
+            path.parent.mkdir(parents=True, exist_ok=True)
+            valid = {"schema": fb.SIDECAR_SCHEMA, "requests": [{"id": "dp-fixture-preserved", "attempt": 1,
+                      "state": "open", "time": rn._now()}]}
+            raw = (b'{"schema":' if damage == "json" else b'[]' if damage == "shape" else
+                   json.dumps(dict(valid, requests=[None]) if damage == "request_shape" else valid).encode())
+            path.write_bytes(raw)
+            original_open = open
+            def deny_sidecar(file, mode="r", *args, **kwargs):
+                if damage == "permission" and os.fspath(file) == str(path) and mode == "r":
+                    raise PermissionError("fixture sidecar read denied")
+                return original_open(file, mode, *args, **kwargs)
+            c = Client()
+            with patch("builtins.open", side_effect=deny_sidecar):
+                expect_raises(lambda: fb.read_sidecar(r, j["cell_key"], 0), "R4 손상·읽기 실패를 기록 없음으로 취급하지 않음",
+                              exc=PermissionError if damage == "permission" else ValueError)
+                check(fb.prompt_changed(r, rn.call_id_for(j["cell_key"], 0)) == [] and fb.progress(r) is None,
+                      "R4 보드 조회는 손상 기록에 빈 값")
+                run(r, c)
+            check(not c.submissions and not ledger(r, j), "R4 " + damage + " 차단·제출 0·원장 되돌림")
+            check(path.read_bytes() == raw, "R4 원본 사이드카 바이트 보존")
+
+        for raw in (b'{"schema":', b'{"schema":"wrong","nonce":"0123456789ab"}'):
+            r, j = project("nonce_corrupt_" + str(len(list(out.iterdir()))))
+            path = Path(r) / "cands/_forge.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(raw)
+            c = Client()
+            run(r, c)
+            check(not c.submissions and not ledger(r, j) and path.read_bytes() == raw, "R4 손상 nonce 차단·원장 되돌림·파일 보존")
+
+        r, j = project("nonce_partial_write")
+        path = Path(r) / "cands/_forge.json"
+        seen_publication, original_dump = [], json.dump
+        def partial_nonce(value, stream, *args, **kwargs):
+            if value.get("schema") == "dp-forge-project/1":
+                seen_publication.append(path.exists())
+                stream.write('{"schema":')
+                raise OSError("fixture interrupted nonce write")
+            return original_dump(value, stream, *args, **kwargs)
+        c = Client()
+        with patch.object(fb.json, "dump", side_effect=partial_nonce):
+            run(r, c)
+        check(seen_publication == [False] and not path.exists(), "R4 nonce는 완성 전 공개되지 않음")
+        check(not c.submissions and not ledger(r, j), "R4 nonce 쓰기 실패는 제출 전 차단")
+        check(run(r, c).done == 1, "R4 nonce 쓰기 실패 후 새 실행 가능")
+        if path.exists():
+            original = path.read_bytes()
+            try:
+                value = fb._nonce(r)
+            except Exception:
+                value = None
+            check(value is not None and path.read_bytes() == original and not list(path.parent.glob("._forge-*.tmp")),
+                  "R4 nonce 재사용·기존 파일 불변·임시 파일 정리")
+
+        messages = ["https://forge.example/path?signature=fixture", "DATA:image/png;base64,fixture",
+                    "forge.example:8790", "192.0.2.10", "[2001:db8::1]",
+                    "2001:db8:aaaa:bbbb:cccc:dddd:eeee:ffff", r"C:\fixture\private\file",
+                    "가" * 301 + " https://forge.example/late"]
+        messages += [fixture["job"]["failed_user"]["error_message"], "가" * 301]
+        for index, message in enumerate(messages):
+            for phase in ("submit422", "submit429", "response", "recover"):
+                r, j = project("message_" + str(index) + "_" + phase)
+                c = Client()
+                if phase.startswith("submit"):
+                    c.submit_errors = [Failure("invalid", int(phase[-3:]), message)]
+                    fallback = "생성 요청이 거절되었습니다." if phase == "submit422" else "Forge 생성 요청을 받지 못했습니다."
+                else:
+                    terminal = dict(fixture["job"]["failed_user"], error_message=message)
+                    if phase == "recover":
+                        c.states = [Failure("unreachable")]
+                        run(r, c)
+                    c.states = [terminal]
+                    fallback = "Forge 생성 결과에 이미지가 없습니다."
+                report = run(r, c)
+                expected = fallback if index < len(messages) - 2 else message[:300]
+                check(ledger(r, j).get("failed", {}).get("error") == expected,
+                      "R5 " + phase + " 주소·경로 제거 또는 한국어·300자 유지 " + str(index))
+                if expected == fallback:
+                    raw = b"\n".join(p.read_bytes() for p in Path(r).rglob("*.json"))
+                    encoded = json.dumps(message, ensure_ascii=False)[1:-1].encode()
+                    check(encoded not in raw and message not in repr(report.calls), "R5 원장·보고에 원격 오류 원문 없음")
+
+        for outcome in ("failed_user", "failed_ailabs", {"status": "completed", "result_data": {"images": []}}, "completed_partial", "404new", "404old"):
             r, j = project("recover_result_" + str(len(list(out.iterdir()))))
             c = Client(Failure("unreachable"))
             run(r, c)
@@ -57522,10 +57673,27 @@ def forge_f2_backend_unit():
                     rn._write_json(rn._lpath(r, j["cell_key"], 0, "forge"), side)
             else:
                 c.states = [outcome]
-            report = run(r, c)
+            with patch.object(rn, "_remove", wraps=rn._remove) as removals:
+                report = run(r, c)
             check(len(c.polls) == before + 1, "F2B 복구 슬롯마다 재조회하지 않음")
-            check("resp" in ledger(r, j), "F2B 복구 실패여도 영수증 유지")
-            check(rn._rep_state(ledger(r, j), False) == ("recoverable" if outcome == "404new" else "done"), "F2B 복구 실패·0장·404 나이 분류")
+            terminal = outcome in ("failed_user", "failed_ailabs") or isinstance(outcome, dict)
+            record = ledger(r, j)
+            expected = "failed" if terminal else "recoverable" if outcome == "404new" else "done"
+            check(rn._rep_state(record, False) == expected, "F2B 복구 실패·0장·404 나이 분류")
+            if terminal:
+                failed = record.get("failed", {})
+                check("done" not in record and "resp" not in record and failed.get("phase") == "download"
+                      and failed.get("retryable") is True and failed.get("maybe_billed") is True,
+                      "R2 복구 중 확정 실패는 영수증 없이 과금 가능 실패")
+                path = rn._lpath(r, j["cell_key"], 0, "resp")
+                check(sum(call.args == (path,) for call in removals.call_args_list) == 1, "R2 공유 Task에서 영수증 삭제 한 번")
+                check(sidecar(r, j)["requests"][-1]["state"] == "failed", "R2 복구 실패 사이드카 상태")
+                previous = c.submissions[-1]["request_id"]
+                c.states = ["completed"]
+                check(run(r, c, retry=True).done == 1 and c.submissions[-1]["request_id"] != previous,
+                      "R2 복구 실패 retry_failed는 새 request_id")
+            else:
+                check("resp" in record, "F2B 일부 결과·404 영수증 유지")
 
         r, j = project("download")
         c = Client()
