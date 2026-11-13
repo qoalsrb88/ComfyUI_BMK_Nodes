@@ -1765,6 +1765,17 @@
     form.append(title);
     field("프로젝트 이름", name);
     field(adopted ? "폴더 안 타깃 그림" : "타깃 그림 — 파일 고르기 또는 여기로 한 장 끌어 놓기", pick);
+    let forgePick = null;
+    if (!adopted && SM() && window.DPEnv && can("forge_import") && window.DPForgeImport) {
+      forgePick = el("button", "projects-forge", "Forge에서 가져오기");
+      forgePick.type = "button";
+      forgePick.addEventListener("click", () => {
+        if (!sending && !projectNameError(name.value)) window.DPForgeImport.open({
+          into: "target", name: name.value.trim(), onDone: finishProject,
+        });
+      });
+      form.append(forgePick);
+    }
     if (!adopted && can("path_input")) field("또는 전체 경로", path);
     form.append(el("p", "projects-note", "모델 gpt-image-2.6-sunburst · 품질 max · 복잡도 high · 4장 · 변형 V1,V4 — 바꾸려면 만든 뒤 ① 준비"),
       feedback, create, close);
@@ -1774,6 +1785,7 @@
       const fileError = selected && (selected.size > 2 * 1024 ** 3 ? "파일은 2GB 까지 올릴 수 있습니다"
         : !/\.(psd|psb|png|jpe?g|webp)$/i.test(selected.name) ? "PSD·PSB·PNG·JPG·WEBP 파일만 받습니다" : "");
       feedback.textContent = why || fileError || "";
+      if (forgePick) forgePick.disabled = sending || !!why;
       create.disabled = sending || !!why || !!fileError || !(adopted ? pick.value : selected || path.value.trim());
       return !create.disabled;
     }
@@ -1794,6 +1806,11 @@
       if (validate()) feedback.textContent = selected.name;
     });
     close.addEventListener("click", () => { if (!sending) host.replaceChildren(); });
+    function finishProject(result) {
+      if (!/^[0-9a-f]{12}$/.test(result.key || "")) throw new Error(result.error || "프로젝트를 만들지 못했습니다");
+      try { window.sessionStorage.setItem("bmk-dp-new:" + result.key, JSON.stringify(result.notes || [])); } catch (_) { /* 저장소 차단 */ }
+      location.assign(`?root=${encodeURIComponent(result.key)}&new=1`);
+    }
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       if (sending || !validate()) return;
@@ -1806,14 +1823,14 @@
         options.body = selected;
       } else options.body = JSON.stringify({ name: name.value.trim(), path: path.value.trim().replace(/^(["'])(.*)\1$/, "$2").trim() });
       sending = true; setBusy(true);
+      if (forgePick) forgePick.disabled = true;
       for (const input of [name, pick, path, create, close]) input.disabled = true;
       feedback.textContent = "그림을 받아 프로젝트를 만드는 중…";
       try {
         const response = await fetch(url, options);
         const result = await readJson(response);
         if (!response.ok || !/^[0-9a-f]{12}$/.test(result.key || "")) throw new Error(result.error || "프로젝트를 만들지 못했습니다");
-        try { window.sessionStorage.setItem("bmk-dp-new:" + result.key, JSON.stringify(result.notes || [])); } catch (_) { /* 저장소 차단 */ }
-        location.assign(`?root=${encodeURIComponent(result.key)}&new=1`);
+        finishProject(result);
       } catch (err) {
         sending = false; setBusy(false);
         for (const input of [name, pick, path, close]) input.disabled = false;

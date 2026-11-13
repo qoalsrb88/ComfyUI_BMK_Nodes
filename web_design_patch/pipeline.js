@@ -2940,6 +2940,10 @@ window.DPPipeline = (() => {
         + `다음 Export 위치: ComfyUI ${exportDir(P0)}([실행 설정 열기] Export 절 '출력 하위 폴더' — 비우면 프로젝트 폴더 이름)`,
         openFolder) : can("export_download") ? downloadLink() : null;
       btns(s, eb, ...(ob ? [ob] : []));
+      if (SM() && window.DPEnv && can("forge_save") && window.DPForgeImport) {
+        const save = window.DPForgeImport.saveButton({ root: opts.root, ready: exportAvailable, askFree, toast: opts.toast });
+        if (save) (ob ? ob.parentNode : s).append(save);
+      }
       psMaskPanel(s);
 
       renderAdopt();

@@ -288,7 +288,8 @@ WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web_design_p
 _STATIC = {"board.html": "text/html", "board.js": "text/javascript", "viewer.js": "text/javascript",
            "layout_geom.js": "text/javascript", "rows.js": "text/javascript", "layout_edit.js": "text/javascript", "ref_edit.js": "text/javascript",
            "checklist.js": "text/javascript", "pipeline.js": "text/javascript", "mask_edit.js": "text/javascript", "board.css": "text/css",
-           "env.js": "text/javascript", "dialog.js": "text/javascript"}  # env·dialog = Forge 이식 F1 공용 객체(DPEnv·DPDialog)
+           "env.js": "text/javascript", "dialog.js": "text/javascript",
+           "forge_import.js": "text/javascript"}  # env·dialog = Forge 이식 F1 공용 객체(DPEnv·DPDialog)
 
 THUMB_KINDS = ("cand", "before", "ref", "delta", "context")
 THUMB_SIZES = (128, 192, 256, 384, 512, 768, 1024)
@@ -7818,6 +7819,24 @@ async def refs_pool_post_handler(request: web.Request) -> web.StreamResponse:
     if server_mode() and data.get("op") == "sheet_add" and "path" in data:
         raise _Reject(400, "서버 모드에서는 그림 파일을 올려 주세요")
     return _json(await _pool_route(ref_pool, root, None if data.get("op") == "sheet_add" else _refs_rev(data), data.get("op"), data))
+
+
+async def import_received(data: dict, raw: bytes, filename: str) -> web.StreamResponse:
+    """Forge 바이트도 기존 업로드 처리기로 보낸다. 검증·잠금·임시 파일 정리·응답은 파일 업로드와 같다."""
+    from types import SimpleNamespace
+
+    class Content:
+        async def iter_chunked(self, size):
+            for start in range(0, len(raw), size):
+                yield raw[start:start + size]
+
+    target = data.get("into") == "target"
+    query = {"name": data.get("name"), "filename": filename} if target else {
+        "root": data.get("root"), "op": "sheet_add", "filename": filename}
+    request = SimpleNamespace(query=query, content=Content(), content_length=len(raw),
+                              content_type="application/octet-stream", headers={"Content-Type": "application/octet-stream"},
+                              path=API + ("/projects/new" if target else "/refs/pool"))
+    return await (projects_new_handler(request) if target else refs_pool_post_handler(request))
 
 
 _ROUTES = (
