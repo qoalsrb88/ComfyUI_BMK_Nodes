@@ -148,13 +148,18 @@ def normalize_origin(value: str) -> str:
 def _safe_detail(value):
     if not isinstance(value, str):
         return None
-    value = re.sub(r"(?i)\b[a-z][a-z0-9+.-]*://[^\s<>\"']+", "", value)
-    value = re.sub(r"(?:[A-Za-z]:[\\/]|[\\/])[^\s<>\"']*", "", value)
-    value = "".join(c for c in value if not unicodedata.category(c).startswith("C"))
-    if (re.search(r"(?<![\w-])[\w-]+(?:(?:\.[\w-]+)+|:\d+\b)", value)
+    if ("://" in value or "\\\\" in value or re.search(r"[A-Za-z]:[\\/]", value)
+            or re.search(r"(?<![\w/])/{1,2}[^/\s]+/[^/\s]+", value)
+            or re.search(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?!\w)", value)
             or re.search(r"(?i)(?:[0-9a-f]{0,4}:){2,}[0-9a-f:.]*", value)):
-        return None  # scheme 없는 호스트·포트·IP 꼴은 일부만 가리지 않고 안내 전체를 버린다.
-    return value.strip()[:300] or None
+        return None
+    for match in re.finditer(r"(?<![\w.-])([\w.-]+):\d+\b", value):
+        if re.fullmatch(r"\d+(?:\.\d+)?", match[1]) is None:  # 숫자 비율은 주소가 아니다.
+            return None
+    for match in re.finditer(r"(?<![\w.-])[\w-]+(?:\.[\w-]+)+\.?(?![\w.-])", value):
+        if re.fullmatch(r"\d+(?:\.\d+)+(?:[A-Za-z%]+)?", match[0].rstrip(".")) is None:
+            return None
+    return value[:300]
 
 
 class _BodyTooLarge(Exception):
@@ -182,6 +187,7 @@ class ForgeClient:
 
     async def _exchange(self, method, url, headers, body, limit):
         reason = None
+        failure_status = None
         try:
             if self._transport is None:
                 result = await _http(method, url, headers, body, self.config.timeout, limit)
@@ -192,14 +198,14 @@ class ForgeClient:
             if type(status) is not int or not isinstance(response_headers, dict) or not isinstance(raw, bytes):
                 reason = "unreachable"
             elif len(raw) > limit:
-                reason = "server"
+                reason, failure_status = "server", 413
         except _BodyTooLarge:
-            reason = "server" if self._transport is None else "unreachable"
+            reason, failure_status = "server", 413
         except Exception:
             reason = "unreachable"
         # except 밖에서 새 예외를 만들어 __context__ 에도 원래 헤더·주소가 남지 않게 한다.
         if reason:
-            raise ForgeError(reason) from None
+            raise ForgeError(reason, failure_status) from None
         return status, raw
 
     @staticmethod
@@ -349,6 +355,8 @@ class ForgeVerifier:
             raise ForgeError("unauthorized", 401)
         if pending or any(not isinstance(err, ForgeError) or err.reason not in ("unauthorized", "forbidden") for err in errors):
             raise ForgeError("unreachable")
+        if any(isinstance(err, ForgeError) and err.reason == "unauthorized" for err in errors):
+            raise ForgeError("unauthorized", 200)
         try:
             from .bmk_design_patch_server import _valid_id
         except ImportError:
@@ -357,8 +365,6 @@ class ForgeVerifier:
         account_id = user.get("id") if isinstance(user, dict) and _valid_id(user.get("id")) else None
         if any(isinstance(err, ForgeError) and err.reason == "forbidden" for err in errors):
             raise ForgeError("forbidden", 403, account_id=account_id)
-        if errors:
-            raise ForgeError("unauthorized", 200)
         user, access = values
         if not _valid_id(user.get("id")) or not _valid_id(organization_id):
             raise ForgeError("unreachable")
