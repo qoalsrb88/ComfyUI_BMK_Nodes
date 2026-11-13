@@ -44,6 +44,7 @@ window.DPEnv = (() => {
   const AGAIN = "Forge에서 Design Patch Studio를 다시 열어 주세요.";
   const CHANGED = "다른 계정으로 바뀌었습니다 — " + AGAIN;
   let sessionUrl = null, lastToken = null, refreshChain = Promise.resolve();
+  const pendingTokens = new Set();
   let tokenWait = null, recovery = null, lastRequest = -Infinity, requests = 0;
   let blocker = null, retryButton = null, changed = false;
   const blockedInert = new Map();
@@ -126,8 +127,10 @@ window.DPEnv = (() => {
               reconnected();
             } else if (!blocker) block(AGAIN, data.error);
           }
-          if (!retried && response.status === 401 && data.reason === "forge_auth" && env.forge && await env.requestToken()) {
-            return inspect(await send(retryInput), true);
+          if (!retried && response.status === 401 && data.reason === "forge_auth" && env.forge) {
+            const refreshed = await requestParent(false, true);
+            if (refreshed === "token") return inspect(await send(retryInput), true);
+            if (refreshed === "session") reconnected();
           }
           if (response.status === 409 && data.reason === "session_changed") block(CHANGED, data.error);
           if (env.forge && response.status === 403 && data.reason === "no_access") block(data.error);
@@ -168,29 +171,33 @@ window.DPEnv = (() => {
     const origin = new URLSearchParams(location.search).get("parent_origin");
     return origin && env.parent_origins.includes(origin) ? origin : null;
   }
-  function finishToken(wait, ok) {
+  function finishToken(wait, ok, exchange = false) {
     if (!wait || tokenWait !== wait) return;
     clearTimeout(wait.timer);
     tokenWait = null;
-    wait.resolve(ok);
+    wait.resolve(ok ? (exchange ? "session" : "token") : false);
   }
-  function requestParent(exchange) {
+  function requestParent(exchange, detailed = false) {
     const target = parentTarget();
     if (!target || !env.account || !sessionUrl || (!exchange && !env.token_url)) return Promise.resolve(false);
     if (tokenWait) {
       if (exchange && !tokenWait.exchange) { tokenWait.exchange = true; lastToken = null; }
-      return tokenWait.promise;
+      return detailed ? tokenWait.result : tokenWait.promise;
     }
-    if (requests >= 3 || Date.now() - lastRequest < 15000) return Promise.resolve(false);
-    const wait = { exchange, tag: env.account.tag };
-    wait.promise = new Promise((resolve) => { wait.resolve = resolve; });
+    if (!exchange && (requests >= 3 || Date.now() - lastRequest < 15000)) return Promise.resolve(false);
+    const wait = { exchange, tag: env.account.tag, received: false };
+    wait.result = new Promise((resolve) => { wait.resolve = resolve; });
+    wait.promise = wait.result.then((result) => !!result);
     tokenWait = wait;
-    wait.timer = setTimeout(() => finishToken(wait, false), 15000);
+    wait.timer = setTimeout(() => {
+      if (!wait.exchange && !wait.received) requests++;
+      finishToken(wait, false);
+    }, 15000);
     if (exchange) lastToken = null; // 세션만 사라졌다면 아직 유효한 같은 토큰도 다시 교환한다.
-    lastRequest = Date.now(); requests++;
+    if (!exchange) lastRequest = Date.now();
     try { window.parent.postMessage({ type: env.messages.request }, target); }
     catch (e) { finishToken(wait, false); }
-    return wait.promise;
+    return detailed ? wait.result : wait.promise;
   }
   function recoverSession() {
     if (!recovery) recovery = requestParent(true).finally(() => { recovery = null; });
@@ -214,16 +221,19 @@ window.DPEnv = (() => {
     if (!env.forge || !env.account || changed || blocker || event.source !== window.parent
         || !env.parent_origins.includes(event.origin) || !env.messages.session || !object(event.data)
         || event.data.type !== env.messages.session || typeof event.data.token !== "string"
-        || typeof event.data.organization_id !== "string" || event.data.token === lastToken) return;
+        || typeof event.data.organization_id !== "string") return;
+    if (tokenWait) tokenWait.received = true;
+    requests = 0; // 부모가 응답했으므로 연속 무응답은 끊긴다. 서버의 일시 실패와 구분한다.
+    if (event.data.token === lastToken || pendingTokens.has(event.data.token)) return;
     const body = { token: event.data.token, organization_id: event.data.organization_id };
-    lastToken = body.token;
+    pendingTokens.add(body.token);
     refreshChain = refreshChain.then(async () => {
-      if (changed || blocker) return;
       let wait = tokenWait;
-      const tag = wait ? wait.tag : env.account.tag;
-      let exchange = !!(wait && wait.exchange);
-      if (!exchange && !env.token_url) return;
       try {
+        if (changed || blocker) return;
+        const tag = wait ? wait.tag : env.account.tag;
+        let exchange = !!(wait && wait.exchange);
+        if (!exchange && !env.token_url) return;
         let result = await sessionRequest(exchange ? sessionUrl : env.token_url, body);
         if (!wait) wait = tokenWait;
         if (!exchange && ((result.response.status === 401 && result.data && result.data.reason === "no_session")
@@ -232,6 +242,7 @@ window.DPEnv = (() => {
           result = await sessionRequest(sessionUrl, body);
         }
         const { response, data } = result;
+        if (response.status === 409 || (response.status === 401 && data && data.reason === "bad_token")) lastToken = body.token;
         if (exchange && response.status === 503 && data && data.reason === "forge_unreachable") {
           token = body.token; organization = body.organization_id;
           block(data.error, null, true); finishToken(wait, false); return;
@@ -242,7 +253,7 @@ window.DPEnv = (() => {
         if (response.status === 403 && data && data.reason === "no_access") {
           block(data.error); finishToken(wait, false); return;
         }
-        if (!response.ok || !data || data.ok !== true) return; // 401·403·429·503: 다음 새 토큰을 기다린다.
+        if (!response.ok || !data || data.ok !== true) return; // 일시 실패는 같은 토큰도 다시 받을 수 있다.
         if (exchange) {
           const account = data.account;
           if (!object(account) || typeof account.name !== "string" || !account.tag) return;
@@ -251,9 +262,11 @@ window.DPEnv = (() => {
           env.account = account;
         }
         env.token_refresh = true;
+        lastToken = body.token;
         requests = 0;
-        finishToken(wait, true);
+        finishToken(wait, true, exchange);
       } catch (e) { /* 토큰과 전송 오류는 화면·로그·저장소에 남기지 않는다. */ }
+      finally { pendingTokens.delete(body.token); }
     });
   });
 

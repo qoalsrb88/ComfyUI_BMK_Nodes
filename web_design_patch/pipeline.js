@@ -327,13 +327,17 @@ window.DPPipeline = (() => {
   }
 
   function forgeProgress(progress) {
-    if (!SM() || window.DPEnv.backend !== "forge" || !progress.forge) return "";
+    if (!SM() || window.DPEnv.backend !== "forge" || !progress.forge
+        || typeof progress.forge !== "object" || Array.isArray(progress.forge)) return "";
     const forge = progress.forge;
     if (forge.auth_wait) {
-      window.DPEnv.requestToken();
+      if (progress.running) window.DPEnv.requestToken();
       return " · 로그인 갱신 대기";
     }
-    if (forge.queue) return ` · Forge 대기 ${forge.queue.position}/${forge.queue.total}`;
+    const queue = forge.queue;
+    if (queue && !Array.isArray(queue) && Number.isInteger(queue.position) && Number.isInteger(queue.total)) {
+      return ` · Forge 대기 ${queue.position}/${queue.total}`;
+    }
     return progress.running ? " · Forge 생성 중" : "";
   }
 
@@ -1849,7 +1853,7 @@ window.DPPipeline = (() => {
       return paidWhy();
     }
 
-    function forgeAsk(need, warnings = []) {
+    function forgeAsk(need, warnings = [], lines = null) {
       if (ask || !window.DPDialog || !window.DPDialog.lock({ keys: askKeys })) return Promise.resolve(false);
       return new Promise((resolve) => {
         const box = el("div", "overlay"), sheet = el("div", "sheet");
@@ -1862,7 +1866,7 @@ window.DPPipeline = (() => {
         sheet.setAttribute("role", "dialog");
         sheet.setAttribute("aria-modal", "true");
         sheet.setAttribute("aria-label", "생성 승인");
-        sheet.append(el("p", "", `Forge 로 생성 ${need}건을 요청합니다. 사내 사용량이 잡힙니다.`));
+        for (const line of lines || [`Forge 로 생성 ${need}건을 요청합니다. 사내 사용량이 잡힙니다.`]) sheet.append(el("p", "", line));
         for (const warning of warnings) sheet.append(el("p", "warn", warning));
         btns(sheet, button("승인", "생성 승인", (e) => e.isTrusted && close(true), "primary"),
           button("취소", "Esc", (e) => e.isTrusted && close(false)));
@@ -1914,10 +1918,11 @@ window.DPPipeline = (() => {
       try {
         const agent = !mock && agentOn() ? await freshAgent() : null;
         const need = agent ? (kind === "run" ? p.run.credits[1] + p.run.est_usd_pre[1] * CREDITS_PER_USD : p.draft.est_credits[1]) : 0;
-        if (SM() && window.DPEnv.backend === "forge" && kind === "run") {
+        if (SM() && window.DPEnv.backend === "forge" && kind === "run" && p.run.backend === "forge") {
           const shown = /^(?:생성 승인 (\d+)건|남은 (\d+)건 이어서 승인)$/.exec(label);
           if (p.run.pre) again.push(`다시 생성(사전 승인) ${p.run.pre}건도 함께 실행(선택과 무관) — 사내 사용량이 잡힙니다.`);
           if (shown) ok = await forgeAsk(Number(shown[1] || shown[2]), again);
+          else opts.toast("승인할 건수를 확인하지 못했습니다 — 계획을 다시 받아 주세요", "warn");
         }
         else if (SM() && !mock) opts.toast("서버 모드 생성 백엔드가 아직 연결되지 않았습니다", "warn");
         else ok = mock ? await mockAsk(label, kind === "draft" && !!p.draft.mock_forced, SM() ? again : [])
@@ -1987,7 +1992,7 @@ window.DPPipeline = (() => {
 
     async function agentConfirm(lines, need) {
       if (ask) return false;
-      if (SM()) return window.DPDialog.confirm(window.DPEnv.backend === "forge" ? lines.concat("사내 사용량이 잡힙니다.") : lines);
+      if (SM()) return window.DPEnv.backend === "forge" ? forgeAsk(0, [], lines.concat("사내 사용량이 잡힙니다.")) : window.DPDialog.confirm(lines);
       const agent = agentOn() ? await freshAgent() : null;
       return agent ? agentAsk("reroll", lines, need) : window.confirm(lines.join("\n"));
     }

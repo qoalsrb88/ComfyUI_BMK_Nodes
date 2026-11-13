@@ -580,7 +580,7 @@
         + "머리줄 [다시 생성 보내기]로 보내거나 다음 Run 때(선택과 무관) 함께 과금됩니다. 계속할까요?"
         : tab ? (SM() ? "유료 호출이 사전 승인되고 서버 작업으로 실행합니다. 계속할까요?" : (way === "paid" ? `${pipe.side}\n` : "") + "유료 호출이 사전 승인되고 ComfyUI 탭에 큐 요청을 보냅니다. 계속할까요?")
           : SM() ? `유료 호출이 사전 승인됩니다 — 지금 보내지 않음(${why}): 다시 생성은 예약만 되고 다음 생성 때 함께 과금됩니다. 계속할까요?` : `유료 호출이 사전 승인됩니다 — 지금 큐를 보내지 않음(${why}): 다시 생성은 예약만 되고 다음 Run 때(선택과 무관) 함께 과금됩니다. 계속할까요?`);
-      if (SM() ? !(await window.DPDialog.confirm(text + (window.DPEnv.backend === "forge" ? "\n사내 사용량이 잡힙니다." : ""))) : (agent ? !(await pipe.agentConfirm(text.split("\n"), need)) : !window.confirm(text))) {
+      if (SM() ? !(await (window.DPEnv.backend === "forge" ? pipe.agentConfirm(text.split("\n"), need) : window.DPDialog.confirm(text))) : (agent ? !(await pipe.agentConfirm(text.split("\n"), need)) : !window.confirm(text))) {
         return;
       }
       if ((SM() || agent) && !stillHere()) return;
@@ -597,6 +597,7 @@
         rerollArm = { cell: cell.cell_key, way, until: now + REROLL_CONFIRM_MS };
         // 유료 탭 길로 지금 보내면 승인 제출 — 버튼 R 확인 창의 부수 효과 줄(pipe.side)을 짧게
         toast(`R 을 한 번 더 누르면 ${what} — 유료`
+          + (SM() && window.DPEnv.backend === "forge" ? " · 사내 사용량이 잡힙니다" : "")
           + (tab ? "" : SM() ? " · 지금 보내지 않음(예약만 — 다음 생성 때 과금)" : ` · 지금 큐를 보내지 않음(${scripted ? "스크립트 키 — 큐는 사용자 키 입력만, " : ""}예약만 — 다음 Run 때 과금)`)
           + (!tab && noReview ? ` · ${why}` : "")
           + (!SM() && way === "paid" ? " · 승인 제출이라 ComfyUI 탭 그래프의 시드 제어 등 실행마다 바뀌는 값이 한 번 진행됨(그래프는 실행 안 함)" : "")
@@ -615,7 +616,7 @@
         + `미반영 레이아웃 ${pend.length}건도 이번 실행에 함께 반영됩니다. 계속할까요?`
         : `이 크롭은 레이아웃이 바뀌어(미반영) 이 큐에서 생성 조건이 바뀌면 다시 생성이 실행되지 않습니다. `
           + `미반영 레이아웃 ${pend.length}건도 이 큐로 반영됩니다. 계속할까요?`;
-      if (SM() ? !(await window.DPDialog.confirm(text + (window.DPEnv.backend === "forge" ? "\n사내 사용량이 잡힙니다." : ""))) : (agent ? !(await pipe.agentConfirm(text.split("\n"), need)) : !window.confirm(text))) return;
+      if (SM() ? !(await (window.DPEnv.backend === "forge" ? pipe.agentConfirm(text.split("\n"), need) : window.DPDialog.confirm(text))) : (agent ? !(await pipe.agentConfirm(text.split("\n"), need)) : !window.confirm(text))) return;
       if ((SM() || agent) && !stillHere()) return;
     }
     const r = await write("reroll", { cell_key: cell.cell_key, count: 1 },
@@ -1330,7 +1331,8 @@
     if (!SM() || !candidate || candidate.prompt_changed !== true) return;
     const warning = chip("프롬프트가 서버에서 바뀜", "dp-prompt-changed");
     warning.title = "서버가 보낸 프롬프트를 바꿔 생성한 결과입니다 — 같은 생성 조건의 다른 후보와 다를 수 있습니다";
-    parent.append(warning);
+    const text = el("span", "dp-caption-text", parent.textContent);
+    parent.replaceChildren(warning, text);
   }
 
   function row(parent, key, text, cls = "") {
