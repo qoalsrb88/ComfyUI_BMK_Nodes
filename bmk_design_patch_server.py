@@ -144,12 +144,18 @@ def _validate_config(config):
         raise ValueError("trusted_proxies 는 IP 주소·CIDR 목록이어야 합니다") from None
     forge_config = config.forge
     if forge_config is not None:
+        if not forge_config.media_origins:
+            raise ValueError("--forge-api 를 쓰려면 --forge-media-origin 이 하나 이상 필요합니다")
         forge_config = dataclasses.replace(forge_config, allow_http=config.dev_handoff)
         if config.dev_handoff and any(URL(value).host not in ("localhost", "127.0.0.1", "::1")
                                       for value in (forge_config.api, *forge_config.media_origins)):
             raise ValueError("개발 모드의 Forge 주소는 루프백이어야 합니다")
+    try:
+        from .bmk_design_patch_forge import normalize_origin
+    except ImportError:
+        from bmk_design_patch_forge import normalize_origin
     return dataclasses.replace(config, public_origin=origin, forge=forge_config,
-                               parent_origins=tuple(_origin(p) for p in config.parent_origins),
+                               parent_origins=tuple(normalize_origin(p) for p in config.parent_origins),
                                allowed_hosts=tuple(_host(h) for h in config.allowed_hosts), trusted_proxies=tuple(proxies))
 
 
@@ -834,7 +840,7 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
                         response.headers["Retry-After"] = str(retry)
                         return response
                     reserved = True
-                    if not config.dev_handoff and token.startswith("dev:"):
+                    if re.fullmatch(r"[\x21-\x7e]{1,4096}", token) is None or (not config.dev_handoff and token.startswith("dev:")):
                         login_failures.reject(client)
                         return _error("bad_token")
                     if verifier is None:
@@ -895,6 +901,8 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
                 token, org = data.get("token"), data.get("organization_id")
                 if not isinstance(token, str) or not 1 <= len(token) <= 4096 or not _valid_id(org):
                     return web.json_response({"error": "토큰·조직 형식이 잘못되었습니다"}, status=400)
+                if re.fullmatch(r"[\x21-\x7e]{1,4096}", token) is None:
+                    return _error("bad_token")
                 if org != session["organization_id"]:
                     sessions.drop_token(sid)
                     return _error("session_changed")

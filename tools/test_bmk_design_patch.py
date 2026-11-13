@@ -49515,9 +49515,34 @@ def forge_f2_session_unit():
     out = Path(tempfile.mkdtemp(prefix="forge_f2_session_", dir=OUT_ROOT))
     cfg = fg.ForgeConfig("https://forge.example", media_origins=("https://forge.example",), access_keys=("image", "designPatch"))
     base = srv.ServerConfig(str(out / "data"), public_origin="https://forge.example", parent_origins=("https://forge.example",), forge=cfg)
-    for change in ({"dev_handoff": True}, {"forge": fg.ForgeConfig("http://localhost:8790", allow_http=True)}):
+    raw_parents = ("https://FORGE.EXAMPLE.:443", "https://예시.example:443/", "http://LOCALHOST.:80",
+                   "http://localhost:8790", "https://[::1]:443")
+    normalized_parents = ("https://forge.example", "https://xn--vv4b11d.example", "http://localhost",
+                          "http://localhost:8790", "https://[::1]")
+    for configured in (base, dataclasses.replace(base, forge=None)):
+        check(srv._validate_config(dataclasses.replace(configured, parent_origins=raw_parents)).parent_origins == normalized_parents,
+              "R2-5 부모 origin은 Forge 설정 유무와 관계없이 같은 규칙으로 정규화")
+    for parent in ("/relative", "https://user@forge.example", "https://forge.example/path", "https://forge.example?q=1", "ftp://forge.example"):
+        expect_raises(lambda p=parent: srv._validate_config(dataclasses.replace(base, parent_origins=(p,))),
+                      "R2-5 정규화할 수 없는 부모 origin 거절")
+    media_error = "--forge-api 를 쓰려면 --forge-media-origin 이 하나 이상 필요합니다"
+    expect_raises(lambda: srv._validate_config(dataclasses.replace(base, forge=dataclasses.replace(cfg, media_origins=()))),
+                  "R2-2 서버 설정은 미디어 origin 필수", contains=media_error)
+    stderr = io.StringIO()
+    with patch.object(srv, "make_app", side_effect=RuntimeError("unexpected start")) as capture, contextlib.redirect_stderr(stderr):
+        try:
+            srv.main(["--data", str(out / "cli"), "--public-origin", "https://forge.example", "--forge-api", "https://forge.example"])
+        except SystemExit as error:
+            check(error.code == 2, "R2-2 미디어 origin 없는 CLI는 인자 오류")
+        except RuntimeError:
+            check(False, "R2-2 미디어 origin 없는 CLI가 앱 생성에 도달함")
+        else:
+            check(False, "R2-2 미디어 origin 없는 CLI를 거절하지 않음")
+    check(not capture.called and media_error in stderr.getvalue(), "R2-2 CLI는 앱 생성 전 지정한 오류 문구로 거절")
+    loopback = fg.ForgeConfig("http://localhost:8790", media_origins=("http://localhost:8790",), allow_http=True)
+    for change in ({"dev_handoff": True}, {"forge": loopback}):
         expect_raises(lambda c=change: srv._validate_config(dataclasses.replace(base, **c)), "F2S 시작 시 개발·HTTP 조합 거절")
-    dev = srv._validate_config(dataclasses.replace(base, dev_handoff=True, forge=fg.ForgeConfig("http://localhost:8790", allow_http=True)))
+    dev = srv._validate_config(dataclasses.replace(base, dev_handoff=True, forge=loopback))
     check(dev.forge.allow_http and not srv._validate_config(dataclasses.replace(base, forge=dataclasses.replace(cfg, allow_http=True))).forge.allow_http,
           "F2S allow_http는 dev_handoff에서만")
 
@@ -49543,6 +49568,8 @@ def forge_f2_session_unit():
             gate[0].set()
             await gate[1].wait()
         account, mode = behavior[token]
+        if mode == "not_authenticated_denied":
+            return (200, {}, b'{"authenticated": false}') if url.endswith("/auth/me") else (403, {}, b"{}")
         if mode == "unknown_forbidden" or mode == "forbidden" and url.endswith("/api/access/summary"):
             return 403, {}, b"{}"
         if mode in ("unauthorized", "server"):
@@ -49564,8 +49591,9 @@ def forge_f2_session_unit():
                 yield self.raw[start:start + size]
 
     @contextlib.asynccontextmanager
-    async def serving(http=False, forge=True, verifier=None):
+    async def serving(http=False, forge=True, verifier=None, **changes):
         config = base if forge else dataclasses.replace(base, forge=None, dev_handoff=True)
+        config = dataclasses.replace(config, **changes)
         app = srv.make_app(config, verifier=verifier, jobs_module=jobs, clock=lambda: now[0], forge_transport=transport)
         client = None
         if http:
@@ -49672,7 +49700,43 @@ def forge_f2_session_unit():
                           and sessions.token_for("org1", "alice") == first and srv.COOKIE not in response.cookies,
                           "R3 다른 사용자·조직·미확인 사용자 로그인 403은 옛 세션·쿠키 보존 " + mode)
 
+    async def token_charset_cases(http=False):
+        bad_tokens = ("a\r\nb", "a\x00b", "토큰", "a b")
+        now[0] = 100
+        async with serving(http, login_fail_limit=len(bad_tokens)) as (app, call):
+            first = new_token("R2-1-ascii")
+            response, value = await call("/api/session", "POST", {"token": first, "organization_id": "org1"})
+            sid, tag = response.cookies[srv.COOKIE].value, value["account"]["tag"]
+            for token in bad_tokens:
+                behavior[token] = ("alice", None)
+                before = len(calls)
+                response, value = await call("/api/session/token", "POST", {"token": token, "organization_id": "org1"}, sid, tag)
+                check(response.status == 401 and value["reason"] == "bad_token" and len(calls) == before,
+                      "R2-1 갱신의 비ASCII·공백·제어 문자는 전송 없이 401")
+                check(not app[srv._LOGIN_FAILURES_KEY]._global and app[srv._SESSION_KEY].token_for("org1", "alice") == first,
+                      "R2-1 잘못된 갱신 토큰은 로그인 한도·기존 토큰을 바꾸지 않음")
+                now[0] += 5
+            for index, token in enumerate(bad_tokens, 1):
+                before = len(calls)
+                response, value = await call("/api/session", "POST", {"token": token, "organization_id": "org1"})
+                check(response.status == 401 and value["reason"] == "bad_token" and len(calls) == before
+                      and len(app[srv._LOGIN_FAILURES_KEY]._global) == index,
+                      "R2-1 로그인의 비ASCII·공백·제어 문자는 전송 없이 실패 집계")
+            before = len(calls)
+            response, value = await call("/api/session", "POST", {"token": bad_tokens[0], "organization_id": "org1"})
+            check(response.status == 429 and value["reason"] == "rate_limited" and len(calls) == before,
+                  "R2-1 잘못된 토큰으로 로그인 한도에 도달하면 429")
+
+    async def parent_origin_cases(http=False):
+        async with serving(http, parent_origins=raw_parents) as (app, call):
+            response, value = await call(bd.API + "/env")
+            check(value["parent_origins"] == list(normalized_parents), "R2-5 env는 정규화된 부모 origin 사용")
+            check(response.headers["Content-Security-Policy"] == "frame-ancestors https://forge.example https://xn--vv4b11d.example http://localhost http://localhost:8790",
+                  "R2-5 CSP도 같은 origin을 쓰고 IPv6 부모 제외 규칙 유지")
+
     async def route_cases(http=False):
+        await parent_origin_cases(http)
+        await token_charset_cases(http)
         await refresh_rejection_cases(http)
         await login_rejection_cases(http)
         now[0] = 100
@@ -49683,12 +49747,14 @@ def forge_f2_session_unit():
             before = len(calls)
             resp, value = await call("/api/session/token", "POST", {"token": "missing", "organization_id": "org1"})
             check(resp.status == 401 and value["reason"] == "no_session" and len(calls) == before, "F2S 갱신 라우트는 세션 필수")
-            for mode, expected in (("unauthorized", 401), ("forbidden", 403), ("server", 503), ("exception", 503)):
+            for mode, expected in (("unauthorized", 401), ("forbidden", 403), ("server", 503), ("exception", 503),
+                                   ("not_authenticated_denied", 401)):
                 token = new_token(mode)
                 behavior[token] = ("alice", mode)
                 before = len(app[srv._LOGIN_FAILURES_KEY]._global)
                 response, value = await call("/api/session", "POST", {"token": token, "organization_id": "org1"})
-                check(response.status == expected and len(app[srv._LOGIN_FAILURES_KEY]._global) - before == int(mode == "unauthorized"), "F2S 로그인 오류·집계 " + mode)
+                check(response.status == expected and len(app[srv._LOGIN_FAILURES_KEY]._global) - before
+                      == int(mode in ("unauthorized", "not_authenticated_denied")), "F2S 로그인 오류·집계 " + mode)
                 if expected in (403, 503):
                     expected_value = api["session_post_no_access" if expected == 403 else "session_post_forge_unreachable"]["response"]
                     check(value == expected_value, "F2S 로그인 오류 fixture 문구")
@@ -49848,7 +49914,8 @@ def forge_f2_session_unit():
         value = capture.call_args.args[0].forge
         check(value.access_keys == ("image", "designPatch") and value.concurrency == 3 and value.prompt_autopilot == {"off": True}
               and value.session_message == "session-test" and value.request_message == "request-test", "F2S CLI 반복 옵션·JSON·메시지")
-        expect_raises(lambda: srv.main(cli + ["--forge-api", "https://forge.example"]), "F2S CLI 기본값 캡처", RuntimeError)
+        expect_raises(lambda: srv.main(cli + ["--forge-api", "https://forge.example", "--forge-media-origin", "https://forge.example"]),
+                      "F2S CLI 기본값 캡처", RuntimeError)
         value = capture.call_args.args[0].forge
         check(value.concurrency == 2 and value.prompt_autopilot is False, "F2S CLI 기본값")
     with contextlib.redirect_stderr(io.StringIO()):
@@ -60463,6 +60530,14 @@ def forge_f2_client_unit():
     for item in (fixture["errors"]["submit_refused"], fixture["asset_upload"]["create"]["conflict"]):
         detail = item["response"]["detail"]
         check(fg._safe_detail(detail) == detail, "R5 한국어 fixture 안내는 그대로 유지")
+    for detail in ("PNG/JPEG/WEBP 형식만 지원합니다", "1/4장", "1:1", "3:2", "1.5MB", "2.6",
+                   "  앞뒤 공백도 유지  ", fixture["errors"]["submit_refused"]["response"]["detail"],
+                   fixture["errors"]["access_unavailable"]["response"]["detail"],
+                   fixture["asset_upload"]["create"]["conflict"]["response"]["detail"], fixture["job"]["failed_user"]["error_message"]):
+        check(fg._safe_detail(detail) == detail, "R2-4 형식 목록·분수·비율·소수·한국어 안내 원문 보존")
+    for detail in ("upstream 10.0.3.7:5432 refused", "redis.internal:6379 timeout", "see /srv/app/x.py line 3",
+                   r"C:\app\x", r"see C:\app\x line 3", r"see \\host\share\x", "see https://forge.example/x", "upstream a.b.c refused"):
+        check(fg._safe_detail(detail) is None, "R2-4 주소·경로 포함 안내는 일부를 자르지 않고 전체 차단")
     config = fg.ForgeConfig("https://FORGE.EXAMPLE.:443/", media_origins=("https://forge.example",))
     check(config.api == "https://forge.example", "F2C origin 대소문자·끝 점·기본 포트 정규화")
     check(fg.normalize_origin("https://예시.example") == fg.normalize_origin("https://xn--vv4b11d.example"), "F2C IDNA origin")
@@ -60574,9 +60649,12 @@ def forge_f2_client_unit():
             check(error.detail is None, "F2C 비문자열 detail 비노출")
         transport.payload = {"detail": token + " https://forge.example/private C:\\private\\file /srv/private " + "가" * 400}
         error = await failure(client.submit(token, {}), "invalid", 422)
-        check(len(error.detail) <= 300 and all(word not in error.detail for word in (token, "forge.example", "private")), "F2C detail 토큰·URL·경로 제거·길이")
+        check(error.detail is None, "R2-4 주소·경로가 있는 HTTP detail 전체 차단")
+        transport.payload = {"detail": "가" * 400}
+        error = await failure(client.submit(token, {}), "invalid", 422)
+        check(error.detail == "가" * 300, "R2-4 안전한 HTTP detail은 300자 상한만 적용")
         transport.status, transport.payload = 200, b"x" * (fg.JSON_LIMIT + 1)
-        await failure(client.me(token), "server")
+        await failure(client.me(token), "server", 413)
         transport.payload = b"png"
         for url in ("https://forge.example/image", "https://FORGE.EXAMPLE/image", "https://forge.example:443/image",
                     "https://forge.example./image"):
@@ -60586,7 +60664,7 @@ def forge_f2_client_unit():
             before = len(transport.calls)
             await failure(client.fetch_media(url), "forbidden")
             check(len(transport.calls) == before, "F2C origin 거절은 전송 전")
-        await failure(client.fetch_media("https://forge.example/image", 2), "server")
+        await failure(client.fetch_media("https://forge.example/image", 2), "server", 413)
         transport.status = 302
         await failure(client.fetch_media("https://forge.example/image"), "unreachable", 302)
         async def broken(*args):
@@ -60601,6 +60679,10 @@ def forge_f2_client_unit():
         async def forged(*args):
             raise fg.ForgeError("forbidden", 403, token)
         await failure(fg.ForgeClient(config, forged).me(token), "unreachable")
+        async def oversized(*args):
+            raise fg._BodyTooLarge
+        await failure(fg.ForgeClient(config, oversized).me(token), "server", 413)
+        await failure(fg.ForgeClient(config, oversized).fetch_media("https://forge.example/image"), "server", 413)
         for reason in fg.ForgeError.REASONS:
             error = fg.ForgeError(reason, 500, token)
             check(token not in str(error) + repr(error) and str(error), "F2C reason별 고정 문구")
@@ -60635,10 +60717,10 @@ def forge_f2_client_unit():
             check(all(isinstance(options["cookie_jar"], fg.aiohttp.DummyCookieJar) and options["trust_env"] is False
                       and options["timeout"].total == config.timeout for options in opened), "F2C 쿠키 저장 없음·환경 프록시 없음·시간 제한")
             chunks[:] = [b"123", b"456"]
-            await failure(direct.fetch_media("https://forge.example/image", 5), "server")
+            await failure(direct.fetch_media("https://forge.example/image", 5), "server", 413)
             check(closed.count("session") == 3 and closed.count("response") == 3, "F2C 압축 해제 후 스트림 상한·오류 시 닫기")
             with patch.object(fg, "JSON_LIMIT", 5):
-                await failure(direct.me(token), "server")
+                await failure(direct.me(token), "server", 413)
 
         records = []
         sensitive_url = "https://forge.example/private"
@@ -61599,6 +61681,7 @@ def forge_f2_verifier_unit():
                 check(await verify(*values) == "unauthorized", "F2V 401이 장애보다 우선")
         no_header = fixture["me"]["response_no_header"]
         check(await verify(no_header) == "unauthorized", "F2V 헤더 없는 200")
+        check(await verify(no_header, 403) == "unauthorized", "R2-3 authenticated=false는 access 403보다 우선")
         check(await verify(no_header, 503) == "unreachable", "F2V HTTP 장애가 authenticated=false보다 우선")
         access = copy.deepcopy(fixture["access_summary"]["response"])
         access["organizations"] = []
