@@ -303,7 +303,7 @@ class JobRunner:
         for thread in self._threads:
             thread.start()
 
-    def submit(self, scope: dict, root: str, stage: str, prompt: dict) -> dict:
+    def submit(self, scope: dict, root: str, stage: str, prompt: dict, backend_name: str | None = None) -> dict:
         """작업을 줄에 넣는다 → {"prompt_id": str, "number": int}."""
         home, project = _path(scope["home"]), _path(root)
         with self._condition:
@@ -317,6 +317,8 @@ class JobRunner:
             job = {"number": number, "prompt_id": prompt_id, "stage": stage, "scope": copy.deepcopy(scope),
                    "home": home, "root": project, "raw_root": root, "prompt": copy.deepcopy(prompt), "outputs": {},
                    "node": {"node_id": "", "node_type": ""}, "closed": False, "draining": False}
+            if backend_name is not None:
+                job["backend"] = backend_name
             self._pending.append(job)
             self._condition.notify_all()
             return {"prompt_id": prompt_id, "number": number}
@@ -443,6 +445,8 @@ class JobRunner:
             state_token = _STATE.set(job)
             if job["closed"]:
                 raise compat.InterruptProcessingException()
+            if job.get("backend") is not None and job["backend"] != backend.backend_name(job["raw_root"]):
+                raise RuntimeError("생성 백엔드 설정이 바뀌었습니다 — 계획을 다시 확인해 주세요")
             if self._forge is not None and not backend.mock_enabled(job["raw_root"]):
                 forge_token = backend.set_forge({**self._forge.context(job["scope"]), "root": job["raw_root"],
                                                 "stop": lambda: job["closed"]})
@@ -492,10 +496,11 @@ def routes(runner: JobRunner) -> tuple:
         root = board._root_param(data.get("root"))
         account = scope()
         stage = data.get("stage")
+        selected_backend = backend.backend_name(root) if stage in ("run", "draft", "reroll") else None
         forge = None
-        if stage in ("run", "draft", "reroll") and not backend.mock_enabled(root):
+        if selected_backend is not None and selected_backend != backend.BACKEND_MOCK:
             forge = getattr(runner, "_forge", None)
-            if stage not in ("run", "reroll") or not backend.forge_enabled() or forge is None:
+            if stage not in ("run", "reroll") or selected_backend != backend.BACKEND_FORGE or forge is None:
                 raise board._Reject(409, "서버 모드 생성 백엔드가 아직 연결되지 않았습니다(mock 만).", reason="no_backend")
             try:
                 from .bmk_design_patch_forge import ForgeError
@@ -525,7 +530,10 @@ def routes(runner: JobRunner) -> tuple:
                 if node.get("class_type") == pl.CLASS["run"]:
                     node["inputs"]["concurrency"] = min(node["inputs"]["concurrency"], limit)
         try:
-            result = runner.submit(account, root, stage, res["prompt"])
+            if selected_backend is None:
+                result = runner.submit(account, root, stage, res["prompt"])
+            else:
+                result = runner.submit(account, root, stage, res["prompt"], selected_backend)
         except QueueFull as exc:
             raise board._Reject(409, str(exc), reason="queue_full") from None
         return board._json(result)
