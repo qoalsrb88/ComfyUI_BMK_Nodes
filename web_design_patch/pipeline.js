@@ -610,7 +610,8 @@ window.DPPipeline = (() => {
       remember(null);
       s.last[job.stage] = Object.assign({ at: new Date().toLocaleTimeString("ko-KR", { hour12: false }), pid: job.pid }, res);
       if (STAGES[job.stage].paid && h) s.last[job.stage].report = paidReport(job.stage, h);
-      s.onDone(job, res);
+      if (SM()) s.onDone(job, res, h);
+      else s.onDone(job, res);
       s.onChange();
     }
 
@@ -1848,7 +1849,7 @@ window.DPPipeline = (() => {
       return paidWhy();
     }
 
-    function forgeAsk(need) {
+    function forgeAsk(need, warnings = []) {
       if (ask || !window.DPDialog || !window.DPDialog.lock({ keys: askKeys })) return Promise.resolve(false);
       return new Promise((resolve) => {
         const box = el("div", "overlay"), sheet = el("div", "sheet");
@@ -1862,6 +1863,7 @@ window.DPPipeline = (() => {
         sheet.setAttribute("aria-modal", "true");
         sheet.setAttribute("aria-label", "생성 승인");
         sheet.append(el("p", "", `Forge 로 생성 ${need}건을 요청합니다. 사내 사용량이 잡힙니다.`));
+        for (const warning of warnings) sheet.append(el("p", "warn", warning));
         btns(sheet, button("승인", "생성 승인", (e) => e.isTrusted && close(true), "primary"),
           button("취소", "Esc", (e) => e.isTrusted && close(false)));
         box.append(sheet);
@@ -1912,7 +1914,11 @@ window.DPPipeline = (() => {
       try {
         const agent = !mock && agentOn() ? await freshAgent() : null;
         const need = agent ? (kind === "run" ? p.run.credits[1] + p.run.est_usd_pre[1] * CREDITS_PER_USD : p.draft.est_credits[1]) : 0;
-        if (SM() && window.DPEnv.backend === "forge" && kind === "run") ok = await forgeAsk(p.run.need);
+        if (SM() && window.DPEnv.backend === "forge" && kind === "run") {
+          const shown = /^(?:생성 승인 (\d+)건|남은 (\d+)건 이어서 승인)$/.exec(label);
+          if (p.run.pre) again.push(`다시 생성(사전 승인) ${p.run.pre}건도 함께 실행(선택과 무관) — 사내 사용량이 잡힙니다.`);
+          if (shown) ok = await forgeAsk(Number(shown[1] || shown[2]), again);
+        }
         else if (SM() && !mock) opts.toast("서버 모드 생성 백엔드가 아직 연결되지 않았습니다", "warn");
         else ok = mock ? await mockAsk(label, kind === "draft" && !!p.draft.mock_forced, SM() ? again : [])
           : agent ? await agentAsk(kind, approveText(kind, p, pair[1].split(","), PS.planStyle, full).concat(again, "계속할까요?"), need)
@@ -3495,11 +3501,17 @@ window.DPPipeline = (() => {
 
     PS.onChange = render;
     PS.onWrite = () => opts.refresh();
-    PS.onDone = (job, res) => {
-      const label = STAGES[job.stage].label;
+    PS.onDone = (job, res, h = null) => {
+      if (SM() && ["run", "reroll"].includes(job.stage)) {
+        const reports = h && h.outputs && h.outputs.dp_run && h.outputs.dp_run.bmk_dp_run;
+        const report = Array.isArray(reports) ? reports[0] : null;
+        if (report && report.stopped_reason === "wave") wave = { stage: job.stage, pid: job.pid, remaining: report.pending };
+      }
+      const label = SM() && wave && wave.pid === job.pid && job.stage === "run" ? "생성" : STAGES[job.stage].label;
       const o = res.export;
       const w = wave && wave.pid === job.pid
-        ? ` · 시간 상한으로 멈춤(남은 ${wave.remaining}건) — ${wave.stage === "run" ? "Run 줄에서 이어서 승인" : "머리줄 [다시 생성 보내기]로 이어서"}` : "";
+        ? SM() ? ` · 시간 상한으로 멈춤(남은 ${wave.remaining}건) — ${wave.stage === "run" ? "생성 승인에서 이어서 승인" : "아래 상태 줄 [대기분 보내기]로 이어서"}`
+          : ` · 시간 상한으로 멈춤(남은 ${wave.remaining}건) — ${wave.stage === "run" ? "Run 줄에서 이어서 승인" : "머리줄 [다시 생성 보내기]로 이어서"}` : "";
       if (res.state !== "done") opts.toast(`${label}: ${END[res.state]}${res.msg ? ` — ${res.msg}` : ""}`, res.state === "cancelled" ? "warn" : "err");
       else if (STAGES[job.stage].paid) opts.toast(`${label} 끝 — ${PS.last[job.stage].report}${w}`, w || PS.last[job.stage].report.includes(LOGIN) ? "warn" : "");
       else if (job.stage !== "export") opts.toast(`${label} 끝 — 새 상태·계획을 다시 받습니다`);

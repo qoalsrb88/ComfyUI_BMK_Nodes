@@ -39485,7 +39485,7 @@ await scenario("renderWiring", async () => {
     setTimeout: (fn) => timers.push(fn), pipeReady: () => true, syncViewer() {}, preloadAround() {}, usd: () => "", credits: () => "", rowButton() {},
     pipe: { enter() {}, leave() {}, select() {} }, chipsLog: [] });
   vm.runInContext(["VIA", "SEEN_KEY"].map(boardConst).join("\n") + ";\n" + ["curTarget", "curCand", "cropOf", "defaultCand", "reconcile", "selectTarget", "selectCand",
-    "syncSeen", "saveSeen", "markSeen", "seeCurrent", "isNew", "ranText", "oldCell", "tileBadges", "targetChips", "renderGrid", "renderCompare", "renderDetail",
+    "syncSeen", "saveSeen", "markSeen", "seeCurrent", "isNew", "ranText", "oldCell", "tileBadges", "targetChips", "promptWarning", "renderGrid", "renderCompare", "renderDetail",
     "row", "pad", "targetTitle", "setPipe"].map((n) => `${n} = ${boardFn(n)};`).join("\n")
     + "\nrenderTargets = () => { chipsLog = S.targets.map((t) => { const ch = []; targetChips({ append: (...x) => ch.push(...x) }, t); return ch.map((x) => x.textContent); }); };"
     + "\nrenderAll = () => { renderTargets(); renderCompare(); renderDetail(); renderGrid(); };", c);
@@ -60021,7 +60021,7 @@ function dialog(e) {
   };
 }
 await scenario("F2W20 Forge 실제 승인·잠금·키보드·본문",async()=>{
-  serverMode();const e=await mkStudio({plan:p=>{p.run.backend="forge";}}),h=e.pipe._f2,key=dialog(e),sent=[];
+  serverMode();const e=await mkStudio({plan:p=>{p.run.backend="forge";p.run.pre=0;}}),h=e.pipe._f2,key=dialog(e),sent=[];
   h.PS.track=()=>true;ctx.fetch=async(u,o)=>{
     if(String(u).includes("jobs/prompt")){sent.push(JSON.parse(o.body));return {ok:true,status:200,json:async()=>F.jobs_prompt.response};}return e.srv.fetch(u,o);
   };
@@ -60086,7 +60086,7 @@ await scenario("F2W24 후보 목록·크게 보기 경고 칩·다른 후보·�
   return {shown,cleared,local:!chips(nodes.grid).length&&!chips(nodes["cand-caption"]).length};
 });
 await scenario("F2W25 서버 wave 기록 뒤 새 계획 승인·자동 제출 없음",async()=>{
-  serverMode();let next=false;const e=await mkStudio({plan:p=>{p.run.backend="forge";if(next){p.run.need=2;p.run.hash="fresh-wave-approval";}}}),h=e.pipe._f2;
+  serverMode();let next=false;const e=await mkStudio({plan:p=>{p.run.backend="forge";if(next){p.run.need=2;p.run.pre=3;p.run.hash="fresh-wave-approval";}}}),h=e.pipe._f2;
   dialog(e);const sent=[];ctx.fetch=async(u,o)=>{
     if(String(u).includes("jobs/prompt")){sent.push(JSON.parse(o.body));return {ok:true,status:200,json:async()=>({prompt_id:"f2-wave"})};}
     if(String(u).includes("jobs/history/"))return {ok:true,status:200,json:async()=>e.hist["f2-wave"]?{"f2-wave":e.hist["f2-wave"]}:{}};
@@ -60094,10 +60094,19 @@ await scenario("F2W25 서버 wave 기록 뒤 새 계획 승인·자동 제출 �
     return e.srv.fetch(u,o);
   };
   e.click(e.B("생성 승인"));await until(()=>!!e.box());e.click(e.B("승인",e.box()));await until(()=>sent.length===1);
-  next=true;e.hist["f2-wave"]=RUN_H({backend:"forge",stopped_reason:"wave",pending:5,remaining:5});
+  next=true;e.hist["f2-wave"]=RUN_H({backend:"forge",stopped_reason:"wave",pending:5,remaining:91});
   await until(()=>!!h.PS.last.run,4000);e.pipe.stateChanged(e.S);await sleep(500);
   const cont=e.B("남은 2건 이어서 승인"),r={noAutomatic:sent.length===1,newPlan:h.PS.plan.run.hash==="fresh-wave-approval",continuation:!!cont};
-  if(cont){e.click(cont);await until(()=>!!e.box());e.click(e.B("승인",e.box()));await until(()=>sent.length===2);}
+  const row=e.rows("시간 상한으로 멈춤")[0]||"",notice=e.toasts.find(t=>t.includes("시간 상한으로 멈춤"))||"";
+  r.pending=row.includes("멈출 때 남은 5건")&&!row.includes("91건");
+  r.copy=!!row&&!!notice&&![row,notice].some(t=>illegal.test(t)||/\bRun\b|노드|위젯|대기열/.test(t));
+  r.confirm=false;r.preWarning=false;
+  if(cont){
+    e.click(cont);await until(()=>!!e.box());
+    r.confirm=e.box().textContent.startsWith("Forge 로 생성 2건을 요청합니다.")&&sent.length===1;
+    r.preWarning=e.box().all().some(x=>x.classList.contains("warn")&&x.textContent.includes("다시 생성(사전 승인) 3건"));
+    e.click(e.B("승인",e.box()));await until(()=>sent.length===2);
+  }
   r.newApproval=sent.length===2&&sent[1].approve==="fresh-wave-approval";e.stop();return r;
 });
 await scenario("F2W26 보드 다시 생성·멈춤 확인·머리 단추 title",async()=>{
@@ -60113,9 +60122,49 @@ await scenario("F2W26 보드 다시 생성·멈춤 확인·머리 단추 title",
   return {reroll:texts[0].includes("사내 사용량이 잡힙니다"),drain:texts[1].includes("이미 요청한 것은 끝까지 받습니다"),
     header:nodes["btn-drain"].title.includes("이미 요청한 것은 끝까지 받습니다"),copy:texts.every(t=>!illegal.test(t))};
 });
+for(const pre of [0,3])await scenario("F2W27 F1 다시 생성 대기 경고 "+pre,async()=>{
+  serverMode();const e=await mkStudio({plan:p=>{p.run.backend="forge";p.run.pre=pre;}});dialog(e);
+  const label=e.B("생성 승인").textContent,need=Number(label.match(/\d+(?=건)/)[0]);
+  e.click(e.B("생성 승인"));await until(()=>!!e.box());
+  const box=e.box(),warnings=box.all().filter(x=>x.tagName==="P"&&x.classList.contains("warn"));
+  const r={count:box.textContent.startsWith(`Forge 로 생성 ${need}건을 요청합니다.`),
+    warning:pre?warnings.some(x=>x.textContent.includes(`다시 생성(사전 승인) ${pre}건`)
+      &&x.textContent.includes("함께")&&x.textContent.includes("선택과 무관")):warnings.length===0,
+    copy:!illegal.test(box.textContent)};
+  e.click(e.B("취소",box));e.stop();return r;
+});
+await scenario("F2W28 F1 기존 재승인 경고 전달·표시된 건수 보존",async()=>{
+  serverMode();const e=await mkStudio({plan:p=>{p.run.backend="forge";p.run.pre=0;p.run.need=4;}}),h=e.pipe._f2;dialog(e);
+  const button=e.B("생성 승인"),label=button.textContent;
+  h.asked.run=[{hash:h.PS.plan.run.hash,id:"lost-f1",lost:true}];
+  // 같은 승인 식별자에서 화면에 표시한 건수를 뒤의 계획 객체 값으로 바꾸지 않는다.
+  h.PS.plan.run.need=9;e.click(button);await until(()=>!!e.box());
+  const box=e.box(),r={drawn:label==="생성 승인 4건",count:box.textContent.startsWith("Forge 로 생성 4건을 요청합니다."),
+    warning:box.all().some(x=>x.tagName==="P"&&x.classList.contains("warn")&&x.textContent.includes("결과를 모름"))};
+  e.click(e.B("취소",box));e.stop();return r;
+});
+for(const [mode,stage,reason] of [["forge","reroll","wave"],["mock","run","wave"],["forge","run","none"],
+  ["forge","apply","wave"],["forge","draft","wave"],["local","run","wave"]])
+await scenario(`F2W29 F2 기록 연결 범위 ${mode} ${stage} ${reason}`,async()=>{
+  if(mode==="local")delete ctx.window.DPEnv;else serverMode(mode);
+  const e=await mkStudio({plan:p=>{p.run.backend=mode==="local"?"comfy_org":mode;}}),h=e.pipe._f2,pid="f2-owned-job";
+  const history=RUN_H({backend:mode,stopped_reason:reason,pending:7,remaining:91});
+  ctx.fetch=async(u,o)=>String(u).includes("history/"+pid)?{ok:true,status:200,json:async()=>({[pid]:history})}:e.srv.fetch(u,o);
+  h.PS.track(stage,pid);await until(()=>!!h.PS.last[stage],4000);e.pipe.stateChanged(e.S);await sleep(500);
+  const rows=e.panel.all().filter(x=>x.classList.contains("pp-row")&&x.textContent.includes("시간 상한으로 멈춤"));
+  const notices=e.toasts.filter(t=>t.includes("시간 상한으로 멈춤"));
+  const expected=mode!=="local"&&["run","reroll"].includes(stage)&&reason==="wave",r={finished:h.PS.last[stage]?.pid===pid};
+  r.scope=expected?rows.length===1&&notices.length===1:!rows.length&&!notices.length&&!e.B("남은 ");
+  if(expected){
+    r.pending=!!rows[0]&&rows[0].textContent.includes("남은 7건")&&!rows[0].textContent.includes("91건");
+    r.copy=[...rows.map(x=>x.textContent),...notices].every(t=>!illegal.test(t)&&!/\bRun\b|노드|위젯|대기열/.test(t));
+    r.action=stage==="reroll"?!!rows[0]&&rows[0].textContent.includes("[대기분 보내기]")&&!e.B("남은 "):!!e.B("남은 ");
+  }
+  r.noAutomatic=!e.srv.log.some(x=>x.method==="POST")&&!e.tab.got.length;e.stop();return r;
+});
 console.log(JSON.stringify(out));process.exit(0);
 '''
-    hook = '.replace("return { stateChanged, enter, leave, select, queue: boardQueue", "return { _f2: { PS, forgeAsk }, stateChanged, enter, leave, select, queue: boardQueue")'
+    hook = '.replace("return { stateChanged, enter, leave, select, queue: boardQueue", "return { _f2: { PS, forgeAsk, asked }, stateChanged, enter, leave, select, queue: boardQueue")'
     ui = ui.replace('fs.readFileSync(IN.pipelineJs, "utf8")', 'fs.readFileSync(IN.pipelineJs, "utf8")' + hook)
     (out / "ui.json").write_text(json.dumps({"api": _pl_api(), "forge": _server_api(), "dialog": sources["dialog.js"],
                                              "pipelineJs": str(web / "pipeline.js"), "boardJs": str(web / "board.js")}, ensure_ascii=False), encoding="utf-8")
