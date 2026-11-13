@@ -987,3 +987,14 @@ body.server .dp-caption-text { min-width: 0; white-space: nowrap; overflow: hidd
 
 /* ── Forge F2-C (Forge에서 가져오기·자료 저장) — 갈래 C 는 이 표시 아래에만 덧붙인다 ── */
 /* 색은 변수로만. */
+.dp-forge { z-index: 10000; }
+.dp-forge-sheet { width: min(92vw, 920px); max-width: none; height: min(82vh, 760px); box-sizing: border-box; display: flex; flex-direction: column; gap: 10px; }
+.dp-forge-sheet h2, .dp-forge-status { margin: 0; }
+.dp-forge-sheet > * { flex-shrink: 0; }
+.dp-forge-search { width: 100%; box-sizing: border-box; }
+.dp-forge-grid { flex: 1 1 auto; min-height: 0; overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); align-content: start; gap: 12px; }
+.dp-forge-item { display: flex; flex-direction: column; gap: 6px; text-align: left; white-space: normal; overflow-wrap: anywhere; }
+.dp-forge-item img { width: 100%; aspect-ratio: 1; object-fit: contain; background: var(--panel2); }
+.dp-forge-item span { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.dp-forge-status { color: var(--dim); }
+.dp-forge button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }

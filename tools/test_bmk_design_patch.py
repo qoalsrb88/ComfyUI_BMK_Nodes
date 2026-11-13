@@ -15936,7 +15936,7 @@ def layout_js_unit():
           f"layout_edit.js 서버 주소 = apiUrl 상대 경로 5개뿐 {sorted(paths)}")
     check("textContent" in ed and "replaceChildren" in ed, "layout_edit.js textContent·replaceChildren")
     check(re.findall(r'<script src="([^"]+)" defer></script>', html)
-          == ["env.js", "dialog.js", "layout_geom.js", "viewer.js", "rows.js", "layout_edit.js", "ref_edit.js", "checklist.js", "pipeline.js", "mask_edit.js", "board.js"],
+          == ["env.js", "dialog.js", "forge_import.js", "layout_geom.js", "viewer.js", "rows.js", "layout_edit.js", "ref_edit.js", "checklist.js", "pipeline.js", "mask_edit.js", "board.js"],
           "board.html script 순서 layout_geom → viewer → layout_edit → ref_edit → pipeline → mask_edit → board")
     check(all(f'id="{i}"' in html for i in ("btn-edit", "layout-head", "layout-list", "layout-panel")), "board.html 크롭 편집 모드 요소 4개")
     vj = code["viewer.js"]
@@ -22697,7 +22697,7 @@ def refs_js_unit():
     check("textField(a)" in rp and '"TEXTAREA"' in rj and "renderSoon" in rj, "패널 다시 그리기 = 글자 입력칸 포커스 복원, 입력 중이면 미룸")
     # board.html·board.js·viewer.js·board.css 연결
     scripts = re.findall(r'<script src="([^"]+)" defer></script>', html)
-    check(scripts == ["env.js", "dialog.js", "layout_geom.js", "viewer.js", "rows.js", "layout_edit.js", "ref_edit.js", "checklist.js", "pipeline.js", "mask_edit.js", "board.js"],
+    check(scripts == ["env.js", "dialog.js", "forge_import.js", "layout_geom.js", "viewer.js", "rows.js", "layout_edit.js", "ref_edit.js", "checklist.js", "pipeline.js", "mask_edit.js", "board.js"],
           f"board.html script 순서 layout_geom → viewer → layout_edit → ref_edit → pipeline → mask_edit → board {scripts}")
     check(all(f'id="{i}"' in html for i in ("btn-refs", "ref-head", "ref-list", "ref-view", "ref-sheets", "ref-viewer", "ref-panel"))
           and "레퍼런스 (<kbd>T</kbd>)" in html, "board.html 레퍼런스 모드 요소 7개·도움말")
@@ -62471,6 +62471,407 @@ console.log(JSON.stringify({ icons, attached, once, unknown, helpers,
 def forge_f2_import_unit():
     """Forge F2 갈래 C — 「Forge에서 가져오기」·[Forge 자료에 저장]. 명세 _proto/STUDIO_FORGE_F2_SPEC.md §2.4·§4. --quick 포함."""
     section("Forge F2-C — forge_f2_import_unit")
+    import bmk_design_patch_forge as fg
+    import bmk_design_patch_forge_dev as dev
+    import bmk_design_patch_board as bd
+    from unittest.mock import patch
+    out = OUT_ROOT / "forge_f2_import"
+    out.mkdir(parents=True, exist_ok=True)
+    # 이전 실행을 지우지 않는다. 모든 입력·출력은 지정된 시험 폴더 안에 만든다.
+    import tempfile
+    work = Path(tempfile.mkdtemp(prefix="run-", dir=out))
+    fixture = json.loads((PKG / "tools/fixtures/forge_api.json").read_text(encoding="utf-8"))
+    api = _server_api()
+    origin = "http://localhost:8790"
+    config = fg.ForgeConfig(origin, (origin,), allow_http=True)
+    png = png_bytes(np.full((256, 320, 3), (22, 71, 181), np.uint8))
+
+    def encoded(value):
+        return json.dumps(value, ensure_ascii=False).encode("utf-8")
+
+    async def error_of(call):
+        try:
+            await call
+        except fg.ForgeError as error:
+            return error
+        check(False, "F2C ForgeError 필요")
+        return fg.ForgeError("unreachable")
+
+    async def clients():
+        calls = []
+        history = copy.deepcopy(fixture["history"]["response"])
+        history["items"][1]["items"].append({"id": "missing-image"})
+        del history["items"][1]["items"][1]["prompt"]
+        assets = [fixture["assets"]["response"][0], {"media_type": "video", "url": "skip"}]
+        async def transport(method, url, headers, body, timeout):
+            calls.append((method, url, headers, body))
+            return 200, {}, encoded(history if "/image/history" in url else assets)
+        client = fg.ForgeClient(config, transport)
+        result = await client.history("dev:alice", "org1", search="한 장 & 둘", limit=2)
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(calls[-1][1]).query)
+        check(len(result["items"]) == 3 and result["items"][2]["prompt"] == "두 장짜리 결과", "F2C 묶음 펼침·부모 표시값·URL 없는 장 제외")
+        check(query == {"organization_id": ["org1"], "limit": ["2"], "view": ["summary"], "search": ["한 장 & 둘"]}, "F2C history 쿼리·빈 cursor 생략")
+        await client.history("dev:alice", "org1", cursor=result["next"])
+        check(urllib.parse.parse_qs(urllib.parse.urlsplit(calls[-1][1]).query)["cursor"] == [history["next_cursor"]], "F2C history cursor")
+        for flag, cursor in ((False, "cursor"), (True, 5), (True, None)):
+            history.update(has_more=flag, next_cursor=cursor)
+            check((await client.history("dev:alice", "org1"))["next"] is None, "F2C next는 has_more·문자열만")
+        result = await client.assets("dev:alice", "org1", offset=3, limit=2)
+        check(len(result["items"]) == 1 and result["next"] == 5 and result["items"][0]["tags"] == ["의상"], "F2C 배열·그림만·거르기 전 개수로 next·태그 보존")
+        check("search" not in calls[-1][1] and (await client.assets("dev:alice", "org1"))["next"] is None, "F2C assets 검색 쿼리 없음·마지막 페이지")
+        for value in (None, {}, "not-json"):
+            async def broken(*args):
+                return 200, {}, encoded(value)
+            check((await error_of(fg.ForgeClient(config, broken).assets("dev:alice", "org1"))).reason == "unreachable", "F2C 잘못된 목록 응답")
+
+        fake = dev.FakeForge()
+        calls = []
+        async def traced(method, url, headers, body, timeout):
+            calls.append((method, url, headers, body))
+            return await fake.handle(method, url, headers, body, timeout)
+        client = fg.ForgeClient(config, traced)
+        upload = dict(name="프로젝트_r12", data=png, content_type="image/png", client_request_id="dp-save-test-r12", width=320, height=256)
+        result = await client.upload_asset("dev:alice", "org1", **upload)
+        check([c[0] for c in calls] == ["POST", "PUT", "POST", "POST"], "F2C 업로드 4단계")
+        check(calls[1][2] == {"Content-Type": "image/png"} and calls[1][3] == png, "F2C PUT Authorization 없음·원본 바이트")
+        first, complete, created = [json.loads(calls[i][3]) for i in (0, 2, 3)]
+        check(first == dict(organization_id="org1", filename="프로젝트_r12.png", kind="asset", content_type="image/png", size_bytes=len(png)), "F2C upload-url 본문")
+        check(complete["s3_key"] == created["s3_key"] and set(created) == {"organization_id", "client_request_id", "name", "s3_key", "content_type", "width", "height"}, "F2C complete·create 본문")
+        check(set(result) == {"id", "name"} and all(v not in repr(result) for v in ("upload_url", origin, "dev:alice", "s3_key")), "F2C 업로드 반환값 비밀 없음")
+        error = await error_of(client.upload_asset("dev:alice", "org1", **upload))
+        check(error.reason == "invalid" and error.status == 409 and error.detail == fixture["asset_upload"]["create"]["conflict"]["response"]["detail"], "F2C 같은 멱등 키·새 저장 키는 409")
+        count = len(calls)
+        error = await error_of(client.upload_asset("dev:alice", "org1", **dict(upload, data=b"x" * (25 * 1024 ** 2 + 1))))
+        check(error.status == 413 and len(calls) == count, "F2C 25MiB 초과는 전송 전 차단")
+        for address, allowed in (("https://forge.example:9443/upload?signature=test", True), ("http://localhost:8790/upload", True),
+                                 ("http://forge.example/upload", False), ("https://user@forge.example/upload", False)):
+            trace = []
+            async def storage(method, url, headers, body, timeout):
+                trace.append((method, url, headers))
+                if url.endswith("/upload-url"):
+                    return 200, {}, encoded({"upload_url": address, "s3_key": "key"})
+                if method == "PUT":
+                    return 204, {}, b""
+                return 200, {}, encoded({"id": "asset", "name": "name"})
+            current = fg.ForgeClient(config, storage)
+            if allowed:
+                await current.upload_asset("dev:alice", "org1", **upload)
+            else:
+                error = await error_of(current.upload_asset("dev:alice", "org1", **upload))
+                check(address not in repr(error) and error.__context__ is None, "F2C 잘못된 upload URL 비노출")
+            check(any(c[0] == "PUT" for c in trace) == allowed, "F2C 별도 HTTPS origin·개발 루프백만 PUT")
+        for put_status in (302, 500):
+            async def fail_put(method, url, headers, body, timeout):
+                if method == "PUT":
+                    return put_status, {"Location": "https://forge.example/private"}, b"dev:alice https://forge.example/private"
+                return 200, {}, encoded({"upload_url": "https://forge.example/private", "s3_key": "key"})
+            error = await error_of(fg.ForgeClient(config, fail_put).upload_asset("dev:alice", "org1", **upload))
+            check(error.status == put_status and error.detail is None and "dev:alice" not in repr(error), "F2C PUT 리다이렉트·오류 고정 문구")
+        async def explode(*args):
+            raise RuntimeError("dev:alice https://forge.example/private")
+        error = await error_of(fg.ForgeClient(config, explode).upload_asset("dev:alice", "org1", **upload))
+        check(error.__context__ is None and "dev:alice" not in repr(error), "F2C 전송 예외·context 비노출")
+
+    async def routes_test():
+        now = [100.0]
+        fake = dev.FakeForge(clock=lambda: now[0])
+        client = fg.ForgeClient(config, fake.handle)
+        token_values = {"alice": "dev:alice", "bob": "dev:bob"}
+        rejected = []
+        tokens = types.SimpleNamespace(token_for=lambda org, account: token_values.get(account),
+                                      reject_token=lambda org, account, token: rejected.append(token))
+        accounts = fg.ForgeAccounts(client, config, tokens, clock=lambda: now[0])
+        handlers = {path.rsplit("/", 1)[-1]: fn for method, path, fn in fg.routes(accounts)}
+        scopes = {}
+        for account in ("alice", "bob"):
+            home = work / account
+            for name in ("input", "output"):
+                (home / name).mkdir(parents=True)
+            scopes[account] = dict(org="org1", account=account, home=str(home), input=str(home / "input"), output=str(home / "output"))
+        async def request(action, data=None, *, account="alice", query=None):
+            body = encoded(data or {})
+            async def read():
+                return body
+            req = types.SimpleNamespace(query=query or {}, path=bd.API + "/forge/" + action,
+                content_type="application/json", content_length=len(body), read=read)
+            mark = bd.set_scope(scopes[account])
+            try:
+                return await handlers[action](req)
+            finally:
+                bd.reset_scope(mark)
+        def value(response):
+            return json.loads(response.body)
+        with patch.dict(os.environ, {bd.SERVER_ENV: "1"}):
+            row = {"id": "forge-private-id", "url": origin + "/fake-media/picture.png", "thumb": None,
+                   "prompt": "p" * 400, "model": "model", "created": "2026-11-13T10:00:00+00:00"}
+            pages = []
+            async def history(token, org, **kwargs):
+                pages.append(kwargs)
+                return {"items": [row], "next": "forge-private-cursor"}
+            with patch.object(client, "history", side_effect=history):
+                response = await request("history", query={"search": "dress"})
+                listed = value(response)
+                check(len(listed["items"][0]["prompt"]) == 300 and listed["items"][0]["created"] == row["created"], "F2C 프롬프트 300자·생성 시각 유지")
+                check("forge-private" not in response.text and origin not in response.text, "F2C history ID·cursor·미디어 주소 비노출")
+                cursor = listed["next"]
+                await request("history", query={"search": "dress", "cursor": cursor})
+                check(pages[-1]["cursor"] == "forge-private-cursor", "F2C 불투명 cursor 복원")
+                check((await request("history", account="bob", query={"search": "dress", "cursor": cursor})).status == 404, "F2C 타 계정 cursor 거절")
+                check((await request("history", query={"search": "changed", "cursor": cursor})).status == 404, "F2C 검색 바뀐 cursor 거절")
+            with patch.object(client, "history", return_value={"items": [row] * 2001, "next": None}):
+                rows = value(await request("history"))["items"]
+                stale = await request("thumb", query={"source": "history", "id": rows[0]["id"]})
+                check(stale.status == 404 and value(stale)["reason"] == "forge_stale", "F2C 계정당 최근 2000개 제한")
+            listing = await request("assets")
+            check(listing.status == 200 and len(value(listing)["items"]) > 0, "F2C 자료 목록·새 프로젝트 root 없음")
+            item = value(listing)["items"][0]
+            original = (await client.assets("dev:alice", "org1"))["items"][0]
+            text = listing.text
+            check(all(s not in text for s in (origin, original["id"], "s3_key", "dev:alice")) and item["thumb"].startswith(bd.API), "F2C 응답 원격 주소·ID·토큰·저장 키 없음")
+            filtered = await request("assets", query={"search": "no-match"})
+            check(value(filtered)["items"] == [], "F2C 이름·폴더·태그 부분 검색")
+            tagged = dict(original, name="sheet.png", folder="folder", tags=["Costume"])
+            offsets = []
+            async def asset_page(token, org, **kwargs):
+                offsets.append(kwargs["offset"])
+                return {"items": [tagged], "next": 200 if kwargs["offset"] == 0 else None}
+            with patch.object(client, "assets", side_effect=asset_page):
+                result = value(await request("assets", query={"search": "COST"}))
+                check(result["items"][0]["name"] == "sheet.png" and isinstance(result["next"], str), "F2C 태그 대소문자 무시·파일명 보존·offset 불투명")
+                await request("assets", query={"search": "COST", "offset": result["next"]})
+                check(offsets == [0, 200], "F2C offset 복원")
+            q = dict(source="asset", id=item["id"])
+            response = await request("thumb", query=q)
+            check(response.status == 200 and response.content_type == "image/png" and response.headers["Cache-Control"] == "private, max-age=600", "F2C 썸네일 서명 MIME·private 캐시")
+            for query, account in ((q, "bob"), (dict(q, id="unknown"), "alice"), (dict(q, source="history"), "alice")):
+                response = await request("thumb", query=query, account=account)
+                check(response.status == 404 and value(response)["reason"] == "forge_stale", "F2C 타 계정·없는 ID·다른 source 차단")
+            now[0] += 1800
+            check((await request("thumb", query=q)).status == 404, "F2C 표 30분 만료")
+            item = value(await request("assets"))["items"][0]
+            q["id"] = item["id"]
+            # 4MiB 넘는 썸네일은 원본을 받아 256px PNG 로 줄인다.
+            noise = png_bytes(np.random.default_rng(2).integers(0, 256, (1300, 1300, 3), dtype=np.uint8))
+            async def large(url, limit=fg.MEDIA_LIMIT):
+                if limit == 4 * 1024 ** 2:
+                    raise fg.ForgeError("server", 413)
+                return noise
+            with patch.object(client, "fetch_media", side_effect=large):
+                response = await request("thumb", query=q)
+                with Image.open(io.BytesIO(response.body)) as image:
+                    check(image.size == (256, 256) and image.format == "PNG", "F2C 큰 썸네일 원본 256px PNG")
+            with patch.object(client, "fetch_media", return_value=b"not an image"):
+                check((await request("thumb", query=q)).status == 422, "F2C 그림 아닌 썸네일 거절")
+            response = await request("import", dict(q, into="target", name="imported"))
+            check(response.status == 200 and set(value(response)) == {"key", "name", "notes"}, "F2C 타깃 가져오기 기존 새 프로젝트 응답")
+            root_key = value(response)["key"]
+            root = store.project_root(scopes["alice"]["input"], "imported")
+            check(Path(root, "_source").is_dir() and len(list(Path(root).glob("*.psd"))) == 1, "F2C 타깃 원본 보존·PSD 감싸기")
+            ref_body = dict(q, root=root_key, into="refs")
+            response = await request("import", ref_body)
+            check(response.status == 200 and value(response)["sheet"].startswith("sheets/"), "F2C 시트 가져오기 기존 응답")
+            saved_bytes = Path(root, value(response)["sheet"]).read_bytes()
+            check(saved_bytes == await client.fetch_media(original["url"]), "F2C 시트 원본 바이트 보존")
+            # 기존 파일 업로드와 검증 상태·문구까지 일치(현재 기존 규칙은 400).
+            for raw in (b"not an image", png_bytes(np.zeros((10, 10, 3), np.uint8))):
+                with patch.object(client, "fetch_media", return_value=raw):
+                    imported = await request("import", ref_body)
+                mark = bd.set_scope(scopes["alice"])
+                try:
+                    direct = await bd.import_received(ref_body, raw, "direct.png")
+                finally:
+                    bd.reset_scope(mark)
+                check(imported.status == direct.status == 400 and value(imported) == value(direct), "F2C 시트 형식·최소 크기 오류 기존 업로드와 동일")
+                with patch.object(client, "fetch_media", return_value=raw):
+                    imported = await request("import", dict(q, into="target", name="invalid-target"))
+                check(imported.status == 400 and not Path(scopes["alice"]["input"], store.PROJECTS_DIRNAME, "invalid-target").exists(), "F2C 타깃 오류·프로젝트 원자 정리")
+            response = await request("save", {"root": root_key})
+            check(response.status == 409 and value(response) == api["forge_save_no_export"]["response"], "F2C Export 없음 409")
+            path = Path(scopes["alice"]["output"]) / "프로젝트_r12.psd"
+            pixels = np.full((256, 320, 3), (31, 93, 178), np.uint8)
+            writer = dpsd.PSDWriter((320, 256))
+            writer.add_pixel(None, "base", pixels, 0, 0)
+            writer.save(str(path), composite=pixels, verify=True)
+            manifest = store.load_manifest(root)
+            manifest["exports"] = [dict(rev=12, psd=str(path), hash="test-export")]
+            store.write_json_atomic(Path(root, store.MANIFEST_NAME), manifest)
+            requests = []
+            original_upload = client.upload_asset
+            async def upload(token, org, **kwargs):
+                requests.append(kwargs["client_request_id"])
+                with Image.open(io.BytesIO(kwargs["data"])) as image:
+                    check(np.array_equal(np.asarray(image), pixels), "F2C 저장 PNG는 Export 병합 픽셀과 동일")
+                return await original_upload(token, org, **kwargs)
+            with patch.object(client, "upload_asset", side_effect=upload):
+                first = await request("save", {"root": root_key})
+                # 메모리 결과 캐시가 없는 새 라우트에서도 기존 client_request_id 를 찾는다.
+                handlers = {p.rsplit("/", 1)[-1]: fn for _, p, fn in fg.routes(accounts)}
+                second = await request("save", {"root": root_key})
+            check(first.status == second.status == 200 and len(requests) == 1 and re.fullmatch(r"dp-save-[0-9a-f]{12}-r12", requests[0]), "F2C 같은 rev 재시작 재저장도 자료 하나·프로젝트 nonce")
+            assets = await client.assets("dev:alice", "org1")
+            actual = next(a for a in assets["items"] if a.get("client_request_id") == requests[0])
+            check(actual["id"] not in first.text and origin not in first.text and set(value(first)["asset"]) == {"id", "name"}, "F2C 저장 응답 ID 불투명·이름만")
+            # 인코딩 상한은 실제 25MiB+ PNG 로 검사한다.
+            huge = Image.fromarray(np.random.default_rng(3).integers(0, 256, (3000, 3000, 3), dtype=np.uint8))
+            with patch.object(bd.dpsd, "open_psd", return_value=types.SimpleNamespace(topil=lambda: huge.copy())):
+                response = await request("save", {"root": root_key})
+            huge.close()
+            check(response.status == 413 and value(response) == api["forge_save_too_large"]["response"], "F2C 저장 25MiB 초과 413")
+            for action in ("assets", "history", "thumb", "import", "save"):
+                token_values["alice"] = None
+                response = await request(action, ref_body, query=q)
+                check(response.status == 401 and value(response) == api["jobs_prompt_forge_auth"]["response"], "F2C 토큰 없음 401 " + action)
+            token_values["alice"] = "dev:alice"
+            for reason, status in (("unauthorized", 401), ("forbidden", 403), ("unreachable", 503)):
+                with patch.object(client, "assets", side_effect=fg.ForgeError(reason, status)):
+                    response = await request("assets")
+                check(response.status == status, "F2C Forge 오류 매핑 " + reason)
+            check(rejected == ["dev:alice"], "F2C 401 토큰 거절 표시")
+            with patch.object(tokens, "token_for", side_effect=["dev:old", "dev:new"]), \
+                    patch.object(client, "assets", side_effect=fg.ForgeError("unauthorized", 401)):
+                response = await request("save", {"root": root_key})
+            check(response.status == 401 and rejected == ["dev:alice", "dev:new"], "F2C 저장 중 갱신된 실제 토큰만 거절 표시")
+            check((await request("assets", query={"root": "../outside"})).status == 404, "F2C 목록 root 범위 검사")
+            check((await request("save", {"root": root_key}, account="bob")).status == 404, "F2C 타 계정 프로젝트 거절")
+
+    asyncio.run(clients())
+    asyncio.run(routes_test())
+    # 감독관이 제한 없는 환경에서 명시적으로 켰을 때만 실제 앱 미들웨어·소켓을 확인한다.
+    async def http_scenario():
+        import bmk_design_patch_server as srv
+        import aiohttp
+        from aiohttp.test_utils import TestClient, TestServer
+        fake = dev.FakeForge()
+        app = srv.make_app(srv.ServerConfig(data_dir=str(work / "http"), dev_handoff=True, forge=config), forge_transport=fake.handle)
+        async with TestClient(TestServer(app), cookie_jar=aiohttp.CookieJar(unsafe=True)) as client:
+            url = bd.API + "/forge/assets"
+            response = await client.get(url)
+            check(response.status == 401, "F2C HTTP 세션 필수")
+            headers = {"Origin": str(client.make_url("/")).rstrip("/"), "X-DesignPatch-Request": "1"}
+            response = await client.post("/api/session", json={"token": "dev:alice", "organization_id": "org1"}, headers=headers)
+            account = (await response.json())["account"]
+            headers["X-DesignPatch-Account"] = account["tag"]
+            response = await client.get(bd.API + "/env", headers=headers)
+            caps = (await response.json())["caps"]
+            check(caps["forge_import"] and caps["forge_save"], "F2C HTTP Forge caps")
+            response = await client.get(url, headers=headers)
+            item = (await response.json())["items"][0]
+            body = dict(into="target", name="http-import", source="asset", id=item["id"])
+            response = await client.post(bd.API + "/forge/import", json=body)
+            check(response.status == 403, "F2C HTTP 요청 헤더·Origin 필수")
+            response = await client.get(url, headers=dict(headers, **{"X-DesignPatch-Account": "different"}))
+            check(response.status == 409, "F2C HTTP 다른 계정 표지 차단")
+            response = await client.post(bd.API + "/forge/import", json=body, headers=headers)
+            check(response.status == 200 and "key" in await response.json(), "F2C HTTP 가져오기")
+    asyncio.run(http_scenario())  # 실제 소켓(TestServer) 시나리오
+    web = PKG / "web_design_patch"
+    check(bd._STATIC.get("forge_import.js") == "text/javascript", "F2C 정적 파일 등록")
+    source = (web / "forge_import.js").read_text(encoding="utf-8")
+    code = re.sub(r"//[^\n]*", "", source)
+    check(not any(word in code for word in ("ComfyUI", "그래프", "큐", "comfy.org", "$", "크레딧")), "F2C 새 화면 금지어 0")
+    check(not any(word in code for word in ("innerHTML", "outerHTML", "https://", "http://")), "F2C 화면 textContent·로컬 주소만")
+    node = shutil.which("node")
+    if not node:
+        skip("node 없음: F2C DOM 하네스 미실행")
+        return
+    for name in ("forge_import.js", "board.js", "ref_edit.js", "pipeline.js"):
+        syntax = subprocess.run([node, "--check", str(web / name)], capture_output=True, text=True, encoding="utf-8")
+        check(syntax.returncode == 0, "F2C JS 문법 " + name)
+    # 기존 DOM 하네스 바탕을 재사용한다. 이 문자열도 이 묶음 안에만 둔다.
+    scene = _fw_core_js().split('await scenario("FW7', 1)[0] + r'''
+Element.prototype.addEventListener=function(type,fn){(this.listeners??={})[type]=fn;};
+Element.prototype.value="";
+Element.prototype.replaceChildren=function(...xs){this.children=[];this.append(...xs);};
+Element.prototype.querySelectorAll=function(){return this.all().slice(1).filter(x=>["BUTTON","INPUT"].includes(x.tagName));};
+Element.prototype.click=async function(){await this.listeners?.click?.({isTrusted:true});await settle();};
+const find=(e,label)=>e.doc.body.all().find(n=>n.tagName==="BUTTON"&&n.textContent===label);
+async function start({enabled=true,server=true,handler}={}) {
+ const e=context({handler});e.ctx.DPEnv={serverMode:server,can:()=>enabled};
+ vm.runInContext(IN.source["dialog.js"],e.ctx);vm.runInContext(IN.source["forge_import.js"],e.ctx);return e;
+}
+for(const options of [{enabled:false},{server:false}]) await scenario("FC caps "+JSON.stringify(options),async()=>{
+ const e=await start(options),d=e.ctx.DPForgeImport;
+ return !d.open({into:"refs",root:"root"})&&d.saveButton({ready:()=>true})===null&&e.doc.body.children.length===0&&!e.calls.length;
+});
+await scenario("FC 창·탭·검색·더보기·요청·닫기",async()=>{
+ let done;const e=await start({handler:(url,o)=>{
+  const path=new URL(url,"https://forge.example");
+  if(o?.method==="POST")return response({ok:true,sheet:"sheets/a.png"});
+  return response({items:[{id:"opaque",thumb:"/bmk/design_patch/forge/thumb?id=opaque",prompt:"결과",name:"시트",folder:"옷"}],next:path.searchParams.has("offset")?null:"page"});
+ }}),d=e.ctx.DPForgeImport;
+ if(!d.open({root:"root",into:"refs",onDone:r=>done=r})||d.open({into:"refs"}))return false;
+ await settle();if(!e.ctx.DPDialog.open)return false;
+ await find(e,"내 자료").click();await find(e,"더 보기").click();
+ if(!e.calls.some(([u])=>String(u).includes("offset=page")))return false;
+ const input=e.doc.body.all().find(n=>n.tagName==="INPUT");input.value="의상";input.listeners.input();
+ const before=e.calls.length;await e.fire(300);if(e.calls.length!==before+1||!String(e.calls.at(-1)[0]).includes("search=%EC%9D%98%EC%83%81"))return false;
+ const backspace=e.key("keydown","Backspace",true,{target:input});if(backspace.defaultPrevented)return false;
+ const image=e.doc.body.all().find(n=>n.tagName==="IMG");if(image.loading!=="lazy"||!image.src.startsWith("/bmk/"))return false;
+ await image.parent.click();const body=JSON.parse(e.calls.at(-1)[1].body);
+ return JSON.stringify(body)===JSON.stringify({into:"refs",source:"asset",id:"opaque",root:"root"})&&done.sheet==="sheets/a.png"&&!e.ctx.DPDialog.open;
+});
+await scenario("FC 오류 유지·Esc·target 이름",async()=>{
+ let fail=true;const e=await start({handler:(u,o)=>o?.method==="POST"?response(fail?{error:"가져오기 실패"}:{key:"project"},fail?422:200):response({items:[{id:"one",prompt:"선택"}],next:null})});
+ let done;e.ctx.DPForgeImport.open({into:"target",name:"새 프로젝트",onDone:r=>done=r});await settle();
+ await find(e,"선택").click();if(!e.doc.body.textContent.includes("가져오기 실패")||!e.ctx.DPDialog.open)return false;
+ fail=false;await find(e,"선택").click();const body=JSON.parse(e.calls.at(-1)[1].body);
+ if(body.name!=="새 프로젝트"||"root" in body||!done)return false;
+ e.ctx.DPForgeImport.open({into:"refs",root:"root"});await settle();e.key("keydown","Escape");return !e.ctx.DPDialog.open;
+});
+await scenario("FC 저장 확인·취소·성공·실패",async()=>{
+ let approved=false,ready=false,fail=false;const confirmations=[],toasts=[];
+ const e=await start({handler:()=>response(fail?{error:"저장 실패"}:{ok:true,asset:{id:"opaque",name:"작업_r12"}},fail?503:200)});
+ const button=e.ctx.DPForgeImport.saveButton({root:"root",ready:()=>ready,askFree:async t=>{confirmations.push(t);return approved;},toast:t=>toasts.push(t)});
+ if(!button.disabled)return false;ready=true;await button.click();if(e.calls.length)return false;
+ approved=true;await button.click();if(toasts[0]!=="Forge 내 자료에 저장했습니다: 작업_r12"||JSON.parse(e.calls[0][1].body).root!=="root")return false;
+ fail=true;await button.click();return confirmations.every(t=>t==="합성 그림을 Forge 내 자료에 저장합니다. 계속할까요?")&&toasts[1]==="저장 실패";
+});
+function sourceFn(file,name,indent="  ") {
+ const s=IN.source[file],match=s.match(new RegExp("\\n"+indent+"(?:async )?function "+name+"\\("));
+ const start=match.index+1,end=s.indexOf("\n"+indent+"}\n",start);return s.slice(start,end)+"\n"+indent+"}";
+}
+for(const enabled of [false,true]) await scenario("FC 프로젝트 단추 연결 "+enabled,async()=>{
+ const e=await start({enabled}),c=e.ctx;let opened;
+ const create=(tag,cls,text)=>{const n=e.doc.createElement(tag);n.className=cls;n.textContent=text||"";return n;};
+ Object.assign(c,{el:create,can:()=>enabled,SM:()=>true,projectNameError:v=>v?"":"이름 필요",apiUrl:x=>x});
+ c.DPForgeImport.open=options=>{opened=options;};c.sessionStorage={setItem(){}};c.location.assign=url=>c.location.assigned=url;
+ vm.runInContext(sourceFn("board.js","newProjectForm"),c);
+ const host=create("section");e.doc.body.append(host);c.newProjectForm(host,null,()=>{});
+ const button=find(e,"Forge에서 가져오기");if(!enabled)return !button;
+ if(!button||!button.disabled)return false;
+ const input=host.all().find(n=>n.className==="projects-new-name");input.value="작업";input.listeners.input();await button.click();
+ if(opened.into!=="target"||opened.name!=="작업")return false;
+ opened.onDone({key:"0123456789ab",notes:[]});return c.location.assigned==="?root=0123456789ab&new=1";
+});
+for(const enabled of [false,true]) await scenario("FC 시트 단추 연결 "+enabled,async()=>{
+ const e=await start({enabled}),c=e.ctx;let opened,imported=0,loaded=0;
+ const create=(tag,cls,text)=>{const n=e.doc.createElement(tag);n.className=cls;n.textContent=text||"";return n;};
+ Object.assign(c,{el:create,can:()=>enabled,SM:()=>true,tab:"sheet",gridSize:{},tabBtns:[],gridHost:create("div"),
+  sheetHost:create("div"),viewHost:create("div"),sheet:null,sheetList:null,opts:{root:"root"},
+  button:(label,title,fn)=>{const b=create("button","",label);b.addEventListener("click",fn);return b;},
+  showSheetAdd(){},loadSheets:async()=>loaded++,renderSoon(){},closeOwnExtra(){},S:{busy:false,sheetImported:async()=>imported++}});
+ c.DPForgeImport.open=options=>{opened=options;};e.doc.body.append(c.sheetHost);
+ vm.runInContext(sourceFn("ref_edit.js","renderSheets","    ")+sourceFn("ref_edit.js","afterSheetUpload","    "),c);
+ c.renderSheets();const button=find(e,"Forge에서 가져오기");if(!enabled)return !button;
+ await button.click();await opened.onDone({ok:true});return opened.root==="root"&&opened.into==="refs"&&imported===1&&loaded===1;
+});
+for(const enabled of [false,true]) await scenario("FC Export 옆 단추 연결 "+enabled,async()=>{
+ const e=await start({enabled}),c=e.ctx,container=e.doc.createElement("div"),download=e.doc.createElement("a");
+ Object.assign(c,{SM:()=>true,can:()=>enabled,opts:{root:"root",toast(){}},exportAvailable:()=>true,askFree:async()=>true,
+  ob:download,s:container});download.parentNode=container;
+ const src=IN.source["pipeline.js"],begin=src.indexOf('      if (SM() && window.DPEnv && can("forge_save")'),end=src.indexOf("\n      psMaskPanel",begin);
+ vm.runInContext(src.slice(begin,end),c);return container.children.length===(enabled?1:0)&&(!enabled||container.children[0].textContent==="Forge 자료에 저장");
+});
+console.log(JSON.stringify(out));
+'''
+    (out / "scene.mjs").write_text(scene, encoding="utf-8")
+    (out / "input.json").write_text(json.dumps({"api": api, "source": {name: (web / name).read_text(encoding="utf-8")
+        for name in ("dialog.js", "forge_import.js", "board.js", "ref_edit.js", "pipeline.js")}}, ensure_ascii=False), encoding="utf-8")
+    run = subprocess.run([node, str(out / "scene.mjs"), str(out / "input.json")], capture_output=True, text=True, encoding="utf-8", timeout=45)
+    check(run.returncode == 0, "F2C DOM 하네스 종료: " + run.stderr[:500])
+    if run.returncode == 0:
+        for name, result in json.loads(run.stdout).items():
+            check(result is True, name + ("" if result is True else ": " + str(result)))
 
 
 def batch13_unit():
