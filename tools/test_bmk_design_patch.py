@@ -39485,7 +39485,7 @@ await scenario("renderWiring", async () => {
     setTimeout: (fn) => timers.push(fn), pipeReady: () => true, syncViewer() {}, preloadAround() {}, usd: () => "", credits: () => "", rowButton() {},
     pipe: { enter() {}, leave() {}, select() {} }, chipsLog: [] });
   vm.runInContext(["VIA", "SEEN_KEY"].map(boardConst).join("\n") + ";\n" + ["curTarget", "curCand", "cropOf", "defaultCand", "reconcile", "selectTarget", "selectCand",
-    "syncSeen", "saveSeen", "markSeen", "seeCurrent", "isNew", "ranText", "oldCell", "tileBadges", "targetChips", "renderGrid", "renderCompare", "renderDetail",
+    "syncSeen", "saveSeen", "markSeen", "seeCurrent", "isNew", "ranText", "oldCell", "tileBadges", "targetChips", "promptWarning", "renderGrid", "renderCompare", "renderDetail",
     "row", "pad", "targetTitle", "setPipe"].map((n) => `${n} = ${boardFn(n)};`).join("\n")
     + "\nrenderTargets = () => { chipsLog = S.targets.map((t) => { const ch = []; targetChips({ append: (...x) => ch.push(...x) }, t); return ch.map((x) => x.textContent); }); };"
     + "\nrenderAll = () => { renderTargets(); renderCompare(); renderDetail(); renderGrid(); };", c);
@@ -61661,6 +61661,652 @@ def _batch13_values(css, code):
 def forge_f2_js_unit():
     """Forge F2 갈래 W — 화면(메시지 수신 조건·재교환·만료 안내·승인 문구·진행 줄·경고 칩). 명세 _proto/STUDIO_FORGE_F2_SPEC.md §2.4·§4. --quick 포함."""
     section("Forge F2-W — forge_f2_js_unit")
+    node = shutil.which("node")
+    if not node:
+        skip("F2W node 없음 — 화면 VM 시험 못 돌림")
+        return
+    web = PKG / "web_design_patch"
+    out = OUT_ROOT / "forge_f2_js"
+    out.mkdir(parents=True, exist_ok=True)
+    sources = {name: (web / name).read_text(encoding="utf-8") for name in ("env.js", "dialog.js", "pipeline.js", "board.js")}
+    data = {"source": sources, "api": _server_api()}
+    (out / "core.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    core = _fw_core_js().split('await scenario("FW7', 1)[0] + r'''
+const PARENT="http://localhost:8790";
+async function forgeEnv({backend="forge",parentOrigin=PARENT,env={},handler,hash=""}={}) {
+  const payload=Object.assign(clone(backend==="forge"?A.env_server_forge.response:A.env_server.response),env);
+  let clock=0;
+  const e=context({hash,handler:(u,o)=>{
+    const path=new URL(typeof u==="string"||u instanceof URL?u:u.url,"https://forge.example").pathname;
+    const custom=handler?.(path,o,u);if(custom!==undefined)return custom;
+    if(path.endsWith("/env"))return response(payload);
+    if(path==="/api/session")return response(A.session_post.response);
+    if(path==="/api/session/token")return response(A.session_token.response);
+    if(path==="/api/preferences")return response(A.prefs_get.response);
+    return response({ok:true});
+  }});
+  e.loc.search+="&parent_origin="+encodeURIComponent(parentOrigin);
+  e.loc.href=e.loc.origin+e.loc.pathname+e.loc.search+e.loc.hash;
+  e.posts=[];e.ctx.parent={postMessage:(body,origin)=>e.posts.push({body,origin})};
+  e.ctx.Date=class extends Date {static now(){return clock;}};
+  let sequence=0;
+  e.ctx.setTimeout=(fn,ms)=>{e.timers.set(++sequence,{fn,ms,at:clock+ms});return sequence;};
+  e.advance=async ms=>{
+    const end=clock+ms;
+    while(true){const next=[...e.timers].filter(([,t])=>t.at<=end).sort((a,b)=>a[1].at-b[1].at)[0];
+      if(!next)break;clock=next[1].at;e.timers.delete(next[0]);next[1].fn();await settle();}
+    clock=end;await settle();
+  };
+  e.message=async(change={})=>{
+    const event={source:e.ctx.parent,origin:PARENT,data:{type:payload.messages?.session,token:"f2-token-1",organization_id:"org1"},...change};
+    for(const x of e.events.get("message")||[])x.fn(event);await settle();
+  };
+  e.count=path=>e.calls.filter(([u])=>String(u).endsWith(path));
+  vm.runInContext(IN.source["env.js"],e.ctx);await settle();return e;
+}
+await scenario("F2W01 환경 필드·이전 서버 기본값",async()=>{
+  const e=await forgeEnv(),f=e.ctx.DPEnv;
+  const old=await forgeEnv({backend:"mock",env:{backend:undefined}});
+  return f.forge&&f.backend==="forge"&&f.token_url.endsWith("/api/session/token")&&!f.token_refresh
+    &&f.can("forge_import")&&f.can("forge_save")&&f.messages.request===A.parent_message.request.type
+    &&old.ctx.DPEnv.backend===null&&!old.ctx.DPEnv.forge&&!old.ctx.DPEnv.can("forge_import")
+    &&await old.ctx.DPEnv.requestToken()===false;
+});
+for(const bad of ["source","origin","type","token","organization"])await scenario("F2W02 메시지 거절 "+bad,async()=>{
+  const e=await forgeEnv(),data=clone(A.parent_message.session),change={};
+  if(bad==="source")change.source={};if(bad==="origin")change.origin="https://forge.example";
+  if(bad==="type")data.type="wrong";if(bad==="token")data.token=42;if(bad==="organization")data.organization_id=null;
+  await e.message({...change,data});return e.count("/api/session/token").length===0;
+});
+await scenario("F2W03 수신·중복 제거·쿼리를 신뢰하지 않음",async()=>{
+  const e=await forgeEnv({parentOrigin:"https://forge.example"});await e.message();await e.message();
+  const posts=e.count("/api/session/token"),o=posts[0]?.[1];
+  return posts.length===1&&o.method==="POST"&&JSON.parse(o.body).organization_id==="org1"
+    &&new Headers(o.headers).get("X-DesignPatch-Account")===A.session_post.response.account.tag
+    &&e.ctx.DPEnv.token_refresh&&!e.logs.length&&!JSON.stringify(e.ctx.DPEnv).includes("f2-token")
+    &&!e.count("/api/preferences").some(([,o])=>o?.method==="POST");
+});
+await scenario("F2W04 부모 요청 합침·15초·3회 상한",async()=>{
+  const e=await forgeEnv(),f=e.ctx.DPEnv,p=f.requestToken(),same=f.requestToken();
+  let resolved=false;p.then(()=>resolved=true);await e.advance(14999);
+  if(resolved||p!==same||e.posts.length!==1)return false;
+  await e.advance(1);if(await p!==false)return false;
+  for(let n=0;n<2;n++){const pending=f.requestToken();await e.advance(15000);if(await pending!==false)return false;}
+  const refused=await f.requestToken();
+  return refused===false&&e.posts.length===3&&e.posts.every(x=>x.origin===PARENT&&x.origin!=="*"
+    &&JSON.stringify(x.body)===JSON.stringify(A.parent_message.request));
+});
+await scenario("F2W05 새 토큰 성공·상한 초기화·성공 뒤에도 15초 간격",async()=>{
+  const e=await forgeEnv(),f=e.ctx.DPEnv;
+  for(let n=0;n<3;n++){const p=f.requestToken();await e.advance(15000);await p;}
+  await e.message();const p=f.requestToken();await e.message({data:{...A.parent_message.session,token:"f2-token-2"}});
+  return await p===true&&await f.requestToken()===false&&e.posts.length===4;
+});
+for(const parentOrigin of ["https://forge.example","*"])await scenario("F2W06 허용 목록 밖 부모에게 요청 안 함 "+parentOrigin,async()=>{
+  const e=await forgeEnv({parentOrigin});return await e.ctx.DPEnv.requestToken()===false&&!e.posts.length;
+});
+for(const [status,reason] of [[401,"bad_token"],[403,"forbidden"],[429,"rate_limited"],[503,"forge_unreachable"]])
+await scenario("F2W07 갱신 실패는 조용히 다음 토큰 대기 "+status,async()=>{
+  const e=await forgeEnv({handler:path=>path==="/api/session/token"?response({reason,error:"test"},status):undefined});
+  const p=e.ctx.DPEnv.requestToken();await e.message();const silent=!e.doc.body.textContent&&!e.logs.length;
+  await e.advance(15000);return silent&&await p===false;
+});
+for(const [status,reason,expected] of [[409,"session_changed","다른 계정으로 바뀌었습니다"],[403,"no_access",A.session_post_no_access.response.error]])
+await scenario("F2W08 갱신 전체 안내 "+reason,async()=>{
+  const e=await forgeEnv({handler:path=>path==="/api/session/token"?response({reason,error:expected},status):undefined});
+  const p=e.ctx.DPEnv.requestToken();await e.message();return await p===false&&e.doc.body.textContent.includes(expected)&&!e.logs.length;
+});
+for(const mode of ["GET","POST","changed","timeout","mock","outside","same-token"])
+await scenario("F2W09 no_session 재교환 "+mode,async()=>{
+  let work=0,exchanges=0;
+  const e=await forgeEnv({backend:mode==="mock"?"mock":"forge",parentOrigin:mode==="outside"?"https://forge.example":PARENT,
+    handler:(path,o)=>{
+      if(path==="/work")return ++work===1?response({reason:"no_session",error:"세션 없음"},401):response({ok:true});
+      if(path==="/api/session"&&o?.method==="POST"){
+        exchanges++;const d=clone(A.session_post.response);if(mode==="changed")d.account.tag="different";return response(d);
+      }
+    }});
+  if(mode==="same-token")await e.message();
+  const pending=e.ctx.fetch("/work",mode==="POST"?{method:"POST",body:"unchanged"}:undefined);await settle();
+  if(["mock","outside"].includes(mode))return (await pending).status===401&&!e.posts.length&&!exchanges&&e.doc.body.textContent.includes("다시 열어 주세요");
+  if(mode==="timeout")await e.advance(15000);else await e.message();
+  const result=await pending;
+  if(mode==="changed")return result.status===401&&work===1&&e.doc.body.textContent.includes("다른 계정으로 바뀌었습니다");
+  if(mode==="timeout")return result.status===401&&!exchanges&&e.doc.body.textContent.includes("다시 열어 주세요");
+  return exchanges===1&&e.count("/api/session/token").length===(mode==="same-token"?1:0)
+    &&(mode==="POST"?result.status===401&&work===1&&e.doc.body.textContent.includes("세션을 다시 연결했습니다 — 다시 시도해 주세요")
+      :result.ok&&work===2&&!e.doc.body.textContent);
+});
+await scenario("F2W10 동시 no_session 은 한 번만 재교환",async()=>{
+  let restored=false,exchanges=0;
+  const e=await forgeEnv({handler:(path,o)=>{
+    if(path==="/work")return response(restored?{ok:true}:{reason:"no_session"},restored?200:401);
+    if(path==="/api/session"&&o?.method==="POST"){restored=true;exchanges++;return response(A.session_post.response);}
+  }});
+  const a=e.ctx.fetch("/work"),b=e.ctx.fetch("/work");await settle();await e.message();
+  return (await a).ok&&(await b).ok&&exchanges===1&&e.posts.length===1&&!e.doc.body.textContent;
+});
+for(const mode of ["ok","twice","timeout","request","other401"])
+await scenario("F2W11 forge_auth 본문 그대로 최대 한 번 "+mode,async()=>{
+  const bodies=[];
+  const e=await forgeEnv({handler:(path,o,u)=>{
+    if(path!=="/paid")return undefined;
+    return (async()=>{
+      bodies.push(u instanceof Request?await u.text():o.body);
+      return response(bodies.length===1||mode==="twice"||mode==="other401"?{reason:mode==="other401"?"bad_token":"forge_auth"}:{ok:true},
+        bodies.length===1||mode==="twice"||mode==="other401"?401:200);
+    })();
+  }});
+  const body=JSON.stringify({root:"project",stage:"run",approve:"approved",only:"crop"});
+  const pending=mode==="request"?e.ctx.fetch(new Request(e.loc.origin+"/paid",{method:"POST",body}))
+    :e.ctx.fetch("/paid",{method:"POST",body});await settle();
+  if(mode==="timeout")await e.advance(15000);else if(mode!=="other401")await e.message();
+  const result=await pending;
+  return bodies.every(x=>x===body)&&bodies.length===(["timeout","other401"].includes(mode)?1:2)
+    &&result.status===(mode==="ok"||mode==="request"?200:401)&&!e.doc.body.textContent;
+});
+for(const kind of ["no_access","forge_unreachable"])
+await scenario("F2W12 최초 교환 오류 문구·다시 시도 "+kind,async()=>{
+  let attempts=0;
+  const fixture=A["session_post_"+kind];
+  const e=await forgeEnv({hash:"#token=f2-initial&organization_id=org1",handler:(path,o)=>{
+    if(path==="/api/session"&&++attempts===1)return response(fixture.response,fixture.status);
+  }});
+  const text=e.doc.body.textContent,button=e.doc.body.all().find(x=>x.tagName==="BUTTON");
+  if(kind==="no_access")return text===fixture.response.error&&!button;
+  if(!button||button.textContent!=="다시 시도"||!text.includes(fixture.response.error))return false;
+  button.onclick();await settle();const requests=e.count("/api/session");
+  return attempts===2&&requests[0][1].body===requests[1][1].body&&!!e.ctx.DPEnv.account&&!e.doc.body.textContent;
+});
+await scenario("F2W13 세션 교환 제한 15초",async()=>{
+  const e=await forgeEnv({handler:path=>path==="/api/session"?new Promise(()=>{}):undefined});
+  await e.advance(8000);if(e.doc.body.textContent)return false;await e.advance(7000);
+  return e.doc.body.textContent.includes("다시 열어 주세요");
+});
+await scenario("F2W14 갱신 라우트 no_session 은 세션 교환으로 복구",async()=>{
+  const e=await forgeEnv({handler:path=>path==="/api/session/token"?response({reason:"no_session"},401):undefined});
+  const p=e.ctx.DPEnv.requestToken();await e.message();
+  return await p===true&&e.count("/api/session/token").length===1
+    &&e.count("/api/session").filter(([,o])=>o?.method==="POST").length===1&&!e.doc.body.textContent;
+});
+for(const changed of [false,true])await scenario("F2W15 재교환 503 재시도·이전 계정 대조 "+changed,async()=>{
+  let posts=0;
+  const e=await forgeEnv({handler:(path,o)=>{
+    if(path==="/work")return response({reason:"no_session"},401);
+    if(path==="/api/session"&&o?.method==="POST"){
+      if(++posts===1)return response(A.session_post_forge_unreachable.response,503);
+      const data=clone(A.session_post.response);if(changed)data.account.tag="changed";return response(data);
+    }
+  }});
+  const p=e.ctx.fetch("/work");await settle();await e.message();await p;
+  const button=e.doc.body.all().find(x=>x.tagName==="BUTTON");if(!button||button.textContent!=="다시 시도")return false;
+  const before=e.posts.length;button.onclick();await settle();const requested=e.posts.length===before+1;await e.message();
+  return requested&&posts===2&&(changed?e.doc.body.textContent.includes("다른 계정으로 바뀌었습니다"):!e.doc.body.textContent);
+});
+await scenario("F2W16 인증 갱신 중 세션 소실은 재교환 한 번",async()=>{
+  let respond;
+  const e=await forgeEnv({handler:path=>path==="/api/session/token"?new Promise(r=>respond=r)
+    :path==="/work"?response({reason:"no_session"},401):undefined});
+  const refresh=e.ctx.DPEnv.requestToken();await e.message();
+  const work=e.ctx.fetch("/work",{method:"POST",body:"not-replayed"});await settle();
+  respond(response({ok:true}));await settle();
+  return await refresh===true&&(await work).status===401&&e.posts.length===2
+    &&e.count("/api/session").filter(([,o])=>o?.method==="POST").length===1&&e.doc.body.textContent.includes("세션을 다시 연결했습니다");
+});
+for(const failure of [429,503,"network","timeout"])await scenario("F2W17 R2 같은 토큰 일시 실패 재시도 "+failure,async()=>{
+  let attempts=0;
+  const e=await forgeEnv({handler:path=>{
+    if(path!=="/api/session/token"||++attempts!==1)return undefined;
+    if(failure==="network")return Promise.reject(Error("offline"));
+    if(failure==="timeout")return new Promise(()=>{});
+    return response({reason:failure===429?"rate_limited":"forge_unreachable"},failure);
+  }});
+  const pending=e.ctx.DPEnv.requestToken();await e.message();
+  if(failure==="timeout")await e.advance(15000);
+  await e.message();await e.advance(15000);await pending;
+  return attempts===2&&e.ctx.DPEnv.token_refresh&&!e.doc.body.textContent&&!e.logs.length;
+});
+await scenario("F2W17 R2 전송 중 중복 제거·실패 뒤 재수신",async()=>{
+  let reply,attempts=0;
+  const e=await forgeEnv({handler:path=>path==="/api/session/token"&&++attempts===1?new Promise(r=>reply=r):undefined});
+  await e.message();await e.message();const coalesced=attempts===1;
+  reply(response({reason:"forge_unreachable"},503));await settle();await e.message();
+  return coalesced&&attempts===2&&e.ctx.DPEnv.token_refresh;
+});
+for(const [status,reason] of [[401,"bad_token"],[409,"conflict"]])await scenario("F2W17 R2 확정 거절 중복 제거 "+status,async()=>{
+  const e=await forgeEnv({handler:path=>path==="/api/session/token"?response({reason},status):undefined});
+  await e.message();await e.message();return e.count("/api/session/token").length===1;
+});
+await scenario("F2W18 R2 토큰 도착한 일시 실패는 무응답 예산 제외",async()=>{
+  const e=await forgeEnv({handler:path=>path==="/api/session/token"?response({reason:"forge_unreachable"},503):undefined});
+  for(let n=0;n<3;n++){
+    const p=e.ctx.DPEnv.requestToken();await e.message({data:{...A.parent_message.session,token:"arrived-"+n}});await e.advance(15000);await p;
+  }
+  const pending=e.ctx.DPEnv.requestToken();const fourth=e.posts.length===4;await e.advance(15000);await pending;
+  return fourth&&!e.doc.body.textContent;
+});
+for(const exhausted of [false,true])await scenario("F2W19 R2 no_session 별도 요청·예산 "+exhausted,async()=>{
+  let restored=false;
+  const e=await forgeEnv({handler:(path,o)=>{
+    if(path==="/work")return response(restored?{ok:true}:{reason:"no_session"},restored?200:401);
+    if(path==="/api/session"&&o?.method==="POST"){restored=true;return response(A.session_post.response);}
+  }});
+  if(exhausted){for(let n=0;n<3;n++){const p=e.ctx.DPEnv.requestToken();await e.advance(15000);await p;}}
+  else {const p=e.ctx.DPEnv.requestToken();await e.message();await p;}
+  const before=e.posts.length,a=e.ctx.fetch("/work"),b=e.ctx.fetch("/work");await settle();
+  const waiting=!e.doc.body.textContent&&e.posts.length===before+1;
+  await e.message();return waiting&&(await a).ok&&(await b).ok
+    &&e.count("/api/session").filter(([,o])=>o?.method==="POST").length===1;
+});
+for(const mode of ["token-no-session","concurrent-no-session"])await scenario("F2W34 R3 교환이 섞이면 유료 POST 재전송 없음 "+mode,async()=>{
+  let reply,paid=0,work=0;
+  const body=JSON.stringify({root:"project",stage:"run",approve:"approved",only:"crop"});
+  const e=await forgeEnv({handler:path=>{
+    if(path==="/paid"){paid++;return response({reason:"forge_auth"},401);}
+    if(path==="/work"){work++;return response({reason:"no_session"},401);}
+    if(path==="/api/session/token")return mode==="token-no-session"?response({reason:"no_session"},401):new Promise(r=>reply=r);
+  }});
+  const pending=e.ctx.fetch("/paid",{method:"POST",body});await settle();await e.message();
+  let other;
+  if(mode==="concurrent-no-session"){
+    other=e.ctx.fetch("/work",{method:"POST",body:"never-replay"});await settle();reply(response({ok:true}));await settle();
+  }
+  const result=await pending;if(other)await other;
+  return result.status===401&&paid===1&&work===(other?1:0)&&e.posts.length===(other?2:1)
+    &&e.count("/api/session").filter(([,o])=>o?.method==="POST").length===1
+    &&e.doc.body.textContent.includes("세션을 다시 연결했습니다 — 다시 시도해 주세요");
+});
+for(const again of [false,true])await scenario("F2W35 R3 동시 유료 요청은 각 한 번만 재전송 "+again,async()=>{
+  const sent={a:[],b:[]};
+  const e=await forgeEnv({handler:(path,o)=>{
+    const id=path.match(/^\/paid\/([ab])$/)?.[1];if(!id)return undefined;
+    sent[id].push(o.body);return sent[id].length===1||again?response({reason:"forge_auth"},401):response({ok:true});
+  }});
+  const a=e.ctx.fetch("/paid/a",{method:"POST",body:"approval-a"}),b=e.ctx.fetch("/paid/b",{method:"POST",body:"approval-b"});
+  await settle();await e.message();const results=await Promise.all([a,b]);
+  return results.every(r=>r.status===(again?401:200))&&Object.entries(sent).every(([id,rows])=>rows.length===2&&rows.every(x=>x==="approval-"+id))
+    &&e.posts.length===1&&e.count("/api/session/token").length===1&&!e.doc.body.textContent;
+});
+for(const mode of ["same-token","refresh-503","join-at-14s","no-wait"])await scenario("F2W40 R1 재교환 합류 부모 재요청·새 타이머 "+mode,async()=>{
+  let restored=false;
+  const e=await forgeEnv({handler:(path,o)=>{
+    if(path==="/work")return response(restored?{ok:true}:{reason:"no_session"},restored?200:401);
+    if(path==="/api/session/token"&&mode==="refresh-503")return response({reason:"forge_unreachable"},503);
+    if(path==="/api/session"&&o?.method==="POST"){restored=true;return response(A.session_post.response);}
+  }});
+  if(mode==="same-token")await e.message();
+  const refresh=mode==="no-wait"?null:e.ctx.DPEnv.requestToken();
+  if(["same-token","refresh-503"].includes(mode))await e.message();
+  if(mode==="join-at-14s")await e.advance(14000);
+  const before=e.posts.length,a=e.ctx.fetch("/work"),b=e.ctx.fetch("/work");let done=false;
+  a.then(()=>done=true);await settle();
+  const r={requested:e.posts.length===before+1,shared:e.posts.length===(refresh?2:1)};
+  if(mode==="join-at-14s"){await e.advance(2000);r.freshTimer=!done&&!e.doc.body.textContent;}
+  // 부모는 새 요청을 받았을 때만 답한다. 무요청 상태의 임의 메시지로 결함을 가리지 않는다.
+  if(r.requested)await e.message();else await e.advance(15000);
+  r.recovered=(await a).ok&&(await b).ok&&(!refresh||await refresh===true)&&!e.doc.body.textContent;
+  r.oneExchange=e.count("/api/session").filter(([,o])=>o?.method==="POST").length===1;
+  r.origin=e.posts.every(x=>x.origin===PARENT&&JSON.stringify(x.body)===JSON.stringify(A.parent_message.request));
+  return r;
+});
+for(const mode of ["direct","after-token","timeout","pagehide"])await scenario("F2W41 R1 재교환 응답은 자체 15초 상한까지 대기 "+mode,async()=>{
+  let replyToken,replySession,restored=false;
+  const e=await forgeEnv({handler:(path,o)=>{
+    if(path==="/work")return response(restored?{ok:true}:{reason:"no_session"},restored?200:401);
+    if(path==="/api/session/token")return new Promise(r=>replyToken=r);
+    if(path==="/api/session"&&o?.method==="POST")return new Promise(r=>replySession=()=>{restored=true;r(response(A.session_post.response));});
+  }});
+  let refresh;
+  if(mode==="after-token"){refresh=e.ctx.DPEnv.requestToken();await e.message();await e.advance(1000);}
+  const work=e.ctx.fetch("/work");let done=false;work.then(()=>done=true);await settle();
+  if(mode==="after-token"){await e.advance(12000);replyToken(response({ok:true}));await settle();}
+  else {await e.advance(14000);await e.message();}
+  const r={started:typeof replySession==="function"};
+  await e.advance(4000);r.waitsForSession=!done&&!e.doc.body.textContent;
+  if(mode==="timeout"){
+    await e.advance(10999);r.boundary=!done;await e.advance(1);
+    r.timeout=(await work).status===401&&e.doc.body.textContent.includes("다시 열어 주세요");
+  }else if(mode==="pagehide"){
+    for(const x of e.events.get("pagehide")||[])x.fn();await settle();
+    r.cancelled=(await work).status===401;replySession();await settle();
+    r.noReplay=e.count("/work").length===1;
+  }else{
+    replySession();await settle();r.success=(await work).ok&&(!refresh||await refresh===true)&&!e.doc.body.textContent;
+    r.oneExchange=e.count("/api/session").filter(([,o])=>o?.method==="POST").length===1;
+  }
+  return r;
+});
+await scenario("F2W42 R2 준비 뒤 재시도는 설정 저장소·미저장 설정 보존",async()=>{
+  let sessions=0,restored=false;const saves=[];
+  const e=await forgeEnv({handler:(path,o)=>{
+    if(path==="/work")return response({reason:"no_session"},401);
+    if(path==="/api/session"&&o?.method==="POST"){
+      if(++sessions===1)return response(A.session_post_forge_unreachable.response,503);
+      restored=true;return response(A.session_post.response);
+    }
+    if(path==="/api/preferences"&&o?.method==="POST"){
+      saves.push({ok:restored,body:JSON.parse(o.body)});return response({ok:restored},restored?200:503);
+    }
+  }});
+  const f=e.ctx.DPEnv,store=f.store,ready=f.ready,hide=(e.events.get("pagehide")||[]).length;
+  const prefs=()=>e.count("/api/preferences").filter(([,o])=>o?.method!=="POST").length,reads=prefs();
+  const envReads=e.calls.filter(([u])=>String(u).endsWith("/env")).length;
+  store.setItem("pending-setting","before");await e.advance(300);
+  const work=e.ctx.fetch("/work",{method:"POST",body:"never-replay"});await settle();await e.message();await work;
+  const retry=e.doc.body.all().find(x=>x.tagName==="BUTTON"),r={failedSave:saves.length===1&&!saves[0].ok};
+  if(!retry)return {...r,retry:false};retry.onclick();await settle();
+  r.parent=e.posts.length===2;r.blockedUntilReply=e.doc.body.all().some(x=>x.classList.contains("dp-env-block"));
+  await e.message({data:{...A.parent_message.session,token:"retry-fresh-token"}});
+  r.noPreferencesRead=prefs()===reads;r.noEnvironmentRead=e.calls.filter(([u])=>String(u).endsWith("/env")).length===envReads;
+  r.sameStore=f.store===store&&e.ctx.localStorage===store&&f.ready===ready&&store.getItem("pending-setting")==="before";
+  r.oneListener=(e.events.get("pagehide")||[]).length===hide;
+  r.recovered=sessions===2&&!e.doc.body.textContent&&e.count("/work").length===1;
+  f.store.setItem("next-setting","after");await e.advance(300);
+  for(const x of e.events.get("pagehide")||[])x.fn();await settle();
+  const accepted=saves.filter(x=>x.ok);
+  r.singleSave=accepted.length===1&&accepted[0].body.set["pending-setting"]==="before"&&accepted[0].body.set["next-setting"]==="after";
+  return r;
+});
+for(const mode of ["503","timeout","no-response"])await scenario("F2W43 R2 재시도 실패 뒤 차단·저장소 유지 "+mode,async()=>{
+  let sessions=0;
+  const e=await forgeEnv({handler:(path,o)=>{
+    if(path==="/work")return response({reason:"no_session"},401);
+    if(path==="/api/session"&&o?.method==="POST"){
+      sessions++;
+      if(sessions===1||sessions===2&&mode==="503")return response(A.session_post_forge_unreachable.response,503);
+      if(sessions===2&&mode==="timeout")return new Promise(()=>{});
+      return response(A.session_post.response);
+    }
+  }});
+  const f=e.ctx.DPEnv,store=f.store,work=e.ctx.fetch("/work");await settle();await e.message();await work;
+  const first=e.doc.body.all().find(x=>x.tagName==="BUTTON");if(!first)return false;
+  first.onclick();await settle();if(mode!=="no-response")await e.message();await e.advance(15000);
+  const retry=e.doc.body.all().find(x=>x.tagName==="BUTTON");
+  const r={blocked:!!retry&&e.doc.body.all().some(x=>x.classList.contains("dp-env-block")),store:f.store===store};
+  if(retry){
+    retry.onclick();await settle();await e.message({data:{...A.parent_message.session,token:"second-retry-token"}});
+    r.again=!e.doc.body.textContent&&f.store===store;
+  }else r.again=false;
+  return r;
+});
+await scenario("F2W44 R2 준비 전 설정 조회 실패는 기존 초기화 재시도",async()=>{
+  let prefs=0;
+  const e=await forgeEnv({handler:(path,o)=>path==="/api/preferences"&&o?.method!=="POST"&&++prefs===1?response({ok:false},503):undefined});
+  const ready=e.ctx.DPEnv.ready;let resolved=false;ready.then(()=>resolved=true);await settle();
+  const before=!resolved&&!!e.ctx.DPEnv.account,retry=e.doc.body.all().find(x=>x.tagName==="BUTTON");if(!retry)return false;
+  retry.onclick();await settle();
+  return before&&resolved&&prefs===2&&e.ctx.DPEnv.ready===ready&&!e.doc.body.textContent&&!e.posts.length;
+});
+console.log(JSON.stringify(out));
+'''
+    h = _PL_JS_HARNESS
+    cut = [h[h.index(a):h.index(b, h.index(a))] for a, b in
+           (("import fs", "async function run("), ("class El {", "async function mouse("),
+            ("function boardState()", 'await scenario("panel"'), ("function quietPipeline(mod)", 'await scenario("panelDrift"'))]
+    setup = _PAID_STUDIO_JS_HARNESS.split('// ── J-P3 승인 단추:', 1)[0]
+    ui = "\n".join(cut) + setup + r'''
+const F=IN.forge,illegal=/ComfyUI|그래프|큐|comfy\.org|\$|크레딧/;
+let refreshes=0;
+function serverMode(backend="forge") {ctx.window.DPEnv={serverMode:true,backend,requestToken:()=>{refreshes++;return Promise.resolve(true);},can:n=>F.env_server_forge.response.caps[n]===true};}
+function dialog(e) {
+  const events=new Map();
+  ctx.window.addEventListener=(type,fn)=>{const a=events.get(type)||[];a.push(fn);events.set(type,a);};
+  ctx.window.removeEventListener=(type,fn)=>events.set(type,(events.get(type)||[]).filter(x=>x!==fn));
+  El.prototype.appendChild=function(x){this.append(x);return x;};
+  vm.runInContext(IN.dialog,ctx);
+  return (type,key,extra={})=>{
+    const ev={type,key,isTrusted:true,prevented:false,preventDefault(){this.prevented=true;},stopPropagation(){},stopImmediatePropagation(){},...extra};
+    for(const fn of [...events.get(type)||[]])fn(ev);return ev;
+  };
+}
+await scenario("F2W20 Forge 실제 승인·잠금·키보드·본문",async()=>{
+  serverMode();const e=await mkStudio({plan:p=>{p.run.backend="forge";p.run.pre=0;}}),h=e.pipe._f2,key=dialog(e),sent=[];
+  h.PS.track=()=>true;ctx.fetch=async(u,o)=>{
+    if(String(u).includes("jobs/prompt")){sent.push(JSON.parse(o.body));return {ok:true,status:200,json:async()=>F.jobs_prompt.response};}return e.srv.fetch(u,o);
+  };
+  const expected={root:KEY,stage:"run",approve:h.PS.plan.run.hash,only:ALL},n=h.PS.plan.run.need;
+  e.B("생성 승인").fire("click");await sleep(10);
+  const r={untrusted:!e.box()&&!sent.length,label:e.B("생성 승인").textContent===`생성 승인 ${n}건`};
+  e.click(e.B("생성 승인"));await until(()=>!!e.box());
+  const box=e.box();r.copy=box.textContent===`Forge 로 생성 ${n}건을 요청합니다. 사내 사용량이 잡힙니다.승인취소`&&!illegal.test(box.textContent)&&!box.textContent.includes("[MOCK]");
+  r.focus=e.doc.activeElement.classList.contains("sheet");
+  r.lock=await h.forgeAsk(99)===false&&ctx.window.DPDialog.open;
+  e.B("승인",box).fire("click");await sleep(10);r.fake=!sent.length&&!!e.box();
+  r.keys=true;for(const type of ["keydown","keypress","keyup"])for(const k of ["Enter"," ","Tab"])r.keys=key(type,k).prevented&&r.keys;
+  r.keys=r.keys&&!sent.length&&!!e.box();key("keydown","Escape");await sleep(10);
+  r.escape=!e.box()&&!sent.length&&!ctx.window.DPDialog.open;
+  e.click(e.B("생성 승인"));await until(()=>!!e.box());e.click(e.B("승인",e.box()));await until(()=>sent.length===1);
+  r.body=JSON.stringify(sent[0])===JSON.stringify(expected)&&!e.tab.got.length&&!e.confirms.length;
+  r.unlocked=!ctx.window.DPDialog.open&&!e.box();e.stop();return r;
+});
+await scenario("F2W21 mock·로컬 네이티브·금액 라벨 보존",async()=>{
+  serverMode("mock");let e=await mkStudio({plan:p=>{p.run.backend="mock";}});dialog(e);
+  e.click(e.B("생성 승인"));await until(()=>!!e.box());const mock=e.box().textContent.includes("[MOCK] 과금 없음")&&!e.confirms.length;
+  e.click(e.B("취소",e.box()));e.stop();delete ctx.window.DPEnv;
+  e=await mkStudio();e.answer=false;const label=e.B("생성 승인").textContent;e.click(e.B("생성 승인"));await sleep(10);
+  const r={mock,local:e.confirms.length===1&&label.includes("≈ $")&&!e.tab.got.length};e.stop();return r;
+});
+await scenario("F2W22 진행 세 꼴·키 없음·실행 안 함·멈춤 title",async()=>{
+  serverMode();const e=await mkStudio({plan:p=>{p.run.backend="forge";}}),h=e.pipe._f2,base=clone(R["GET /pipeline/progress"].alt.idle);
+  const r={};
+  for(const [name,tail] of [["queued"," · Forge 대기 3/7"],["generating"," · Forge 생성 중"],["auth_wait"," · 로그인 갱신 대기"],["absent",""]]){
+    h.PS.progress={...base,running:true,...(F.progress_forge[name]||{})};await e.pipe.showTab("generate");
+    const line=e.rows("진행 — Run")[0]||"";r[name]=line.endsWith(tail)&&!illegal.test(line)&&(name!=="absent"||!line.includes("Forge"));
+  }
+  r.request=refreshes>0;h.PS.progress={...base,running:false,...F.progress_forge.generating};await e.pipe.showTab("generate");
+  r.idle=!(e.rows("진행 — Run")[0]||"").includes("Forge 생성 중");
+  r.stop=e.B("새 호출 멈춤").title.includes("이미 요청한 것은 끝까지 받습니다");e.stop();return r;
+});
+await scenario("F2W23 인증 중지 문구·갱신 요청·다시 생성 사용량",async()=>{
+  serverMode();const e=await mkStudio({plan:p=>{p.run.backend="forge";}}),before=refreshes;
+  const text=P.paidReport("run",RUN_H({stopped_reason:"auth",backend:"forge"}));
+  const key=dialog(e),pending=e.pipe.agentConfirm(["다시 생성"],0);await until(()=>!!e.box());
+  const confirm=e.box().textContent;key("keydown","Escape");await pending;
+  const r={text:text==="Forge 로그인 갱신이 필요합니다 — 잠시 뒤 다시 눌러 주세요"&&!illegal.test(text),request:refreshes===before+1,
+    reroll:confirm.includes("사내 사용량이 잡힙니다")&&!illegal.test(confirm)};e.stop();return r;
+});
+await scenario("F2W24 후보 목록·크게 보기 경고 칩·다른 후보·로컬",async()=>{
+  serverMode();const doc=new Doc(),nodes={};const target={refs:[],candidates:[],before_url:null};let candidate=null;
+  const c=vm.createContext({window:ctx.window,document:doc,SM:()=>!!ctx.window.DPEnv?.serverMode,$:id=>nodes[id]??=doc.createElement("div"),
+    el:(tag,cls="",text="")=>{const n=doc.createElement(tag);n.className=cls;n.textContent=text;return n;},
+    chip:(text,cls)=>{const n=doc.createElement("span");n.className="chip "+cls;n.textContent=text;return n;},
+    curTarget:()=>target,curCand:()=>candidate,refIdx:0,qHeld:false,view:"cand",cKey:null,pad:n=>String(n),
+    setImg(){},oldCell:()=>false,ranText:()=>"",tileBadges:()=>doc.createElement("div"),selectCand(){},setStar(){}});
+  El.prototype.querySelector=function(){return null;};
+  for(const name of ["promptWarning","renderCompare","renderGrid"])vm.runInContext(boardFn(name),c);
+  candidate={n:1,key:"one",...F.candidate_prompt_changed.candidate};target.candidates=[candidate,{n:2,key:"two",prompt_changed:false}];
+  c.renderCompare();c.renderGrid();
+  const chips=n=>n.all().filter(x=>x.classList.contains("dp-prompt-changed"));
+  const warning=chips(nodes["cand-caption"])[0];
+  const shown=warning?.textContent==="프롬프트가 서버에서 바뀜"&&warning.title==="서버가 보낸 프롬프트를 바꿔 생성한 결과입니다 — 같은 생성 조건의 다른 후보와 다를 수 있습니다"
+    &&warning.parent===nodes["cand-caption"]&&chips(nodes.grid).length===1&&chips(nodes.grid)[0].parent.classList.contains("cap")&&!illegal.test(warning.textContent);
+  candidate=target.candidates[1];c.renderCompare();const cleared=!chips(nodes["cand-caption"]).length;
+  delete ctx.window.DPEnv;candidate=target.candidates[0];c.renderCompare();c.renderGrid();
+  return {shown,cleared,local:!chips(nodes.grid).length&&!chips(nodes["cand-caption"]).length};
+});
+await scenario("F2W25 서버 wave 기록 뒤 새 계획 승인·자동 제출 없음",async()=>{
+  serverMode();let next=false;const e=await mkStudio({plan:p=>{p.run.backend="forge";if(next){p.run.need=2;p.run.pre=3;p.run.hash="fresh-wave-approval";}}}),h=e.pipe._f2;
+  dialog(e);const sent=[];ctx.fetch=async(u,o)=>{
+    if(String(u).includes("jobs/prompt")){sent.push(JSON.parse(o.body));return {ok:true,status:200,json:async()=>({prompt_id:"f2-wave"})};}
+    if(String(u).includes("jobs/history/"))return {ok:true,status:200,json:async()=>e.hist["f2-wave"]?{"f2-wave":e.hist["f2-wave"]}:{}};
+    if(String(u).includes("jobs/queue"))return {ok:true,status:200,json:async()=>({queue_running:[[1,"f2-wave",""]],queue_pending:[]})};
+    return e.srv.fetch(u,o);
+  };
+  e.click(e.B("생성 승인"));await until(()=>!!e.box());e.click(e.B("승인",e.box()));await until(()=>sent.length===1);
+  next=true;e.hist["f2-wave"]=RUN_H({backend:"forge",stopped_reason:"wave",pending:5,remaining:91});
+  await until(()=>!!h.PS.last.run,4000);e.pipe.stateChanged(e.S);await sleep(500);
+  const cont=e.B("남은 2건 이어서 승인"),r={noAutomatic:sent.length===1,newPlan:h.PS.plan.run.hash==="fresh-wave-approval",continuation:!!cont};
+  const row=e.rows("시간 상한으로 멈춤")[0]||"",notice=e.toasts.find(t=>t.includes("시간 상한으로 멈춤"))||"";
+  r.pending=row.includes("멈출 때 남은 5건")&&!row.includes("91건");
+  r.copy=!!row&&!!notice&&![row,notice].some(t=>illegal.test(t)||/\bRun\b|노드|위젯|대기열/.test(t));
+  r.confirm=false;r.preWarning=false;
+  if(cont){
+    e.click(cont);await until(()=>!!e.box());
+    r.confirm=e.box().textContent.startsWith("Forge 로 생성 2건을 요청합니다.")&&sent.length===1;
+    r.preWarning=e.box().all().some(x=>x.classList.contains("warn")&&x.textContent.includes("다시 생성(사전 승인) 3건"));
+    e.click(e.B("승인",e.box()));await until(()=>sent.length===2);
+  }
+  r.newApproval=sent.length===2&&sent[1].approve==="fresh-wave-approval";e.stop();return r;
+});
+await scenario("F2W26 보드 다시 생성·멈춤 확인·머리 단추 title",async()=>{
+  serverMode();const e=await mkStudio({plan:p=>{p.run.backend="forge";}}),key=dialog(e),texts=[];
+  const c=vm.createContext({window:ctx.window,document:e.doc,S:{crops:[],pending_preapproved:0},
+    tKey:"target",cKey:"candidate",rerollCell:()=>({cell_key:"cell",variant:"V1"}),tabWay:()=>"paid",reviewMissing:()=>"",toast(){},
+    pipe:{agentConfirm:e.pipe.agentConfirm,agentOn:()=>false,paidLock:()=>"",paidWhy:()=>"",applyWarn:()=>[]},write:async()=>{throw Error("취소 뒤 쓰기");}});
+  for(const name of ["cellPre","reroll","drain"])vm.runInContext(boardFn(name),c);
+  const pending=c.reroll(true,false);await until(()=>!!e.box());texts.push(e.box().textContent);key("keydown","Escape");await pending;
+  ctx.window.DPDialog={confirm:async text=>{texts.push(text);return false;}};await c.drain();
+  const main=boardFn("main"),nodes={};
+  c.$=id=>nodes[id]??=c.document.createElement("div");c.consumeNewProject=()=>null;c.renderHeader=()=>{};c.ROOT="";c.showProjects=async()=>{};
+  vm.runInContext(main,c);await c.main();
+  e.stop();return {reroll:texts[0].includes("사내 사용량이 잡힙니다"),drain:texts[1].includes("이미 요청한 것은 끝까지 받습니다"),
+    header:nodes["btn-drain"].title.includes("이미 요청한 것은 끝까지 받습니다"),copy:texts.every(t=>!illegal.test(t))};
+});
+for(const pre of [0,3])await scenario("F2W27 F1 다시 생성 대기 경고 "+pre,async()=>{
+  serverMode();const e=await mkStudio({plan:p=>{p.run.backend="forge";p.run.pre=pre;}});dialog(e);
+  const label=e.B("생성 승인").textContent,need=Number(label.match(/\d+(?=건)/)[0]);
+  e.click(e.B("생성 승인"));await until(()=>!!e.box());
+  const box=e.box(),warnings=box.all().filter(x=>x.tagName==="P"&&x.classList.contains("warn"));
+  const r={count:box.textContent.startsWith(`Forge 로 생성 ${need}건을 요청합니다.`),
+    warning:pre?warnings.some(x=>x.textContent.includes(`다시 생성(사전 승인) ${pre}건`)
+      &&x.textContent.includes("함께")&&x.textContent.includes("선택과 무관")):warnings.length===0,
+    copy:!illegal.test(box.textContent)};
+  e.click(e.B("취소",box));e.stop();return r;
+});
+await scenario("F2W28 F1 기존 재승인 경고 전달·표시된 건수 보존",async()=>{
+  serverMode();const e=await mkStudio({plan:p=>{p.run.backend="forge";p.run.pre=0;p.run.need=4;}}),h=e.pipe._f2;dialog(e);
+  const button=e.B("생성 승인"),label=button.textContent;
+  h.asked.run=[{hash:h.PS.plan.run.hash,id:"lost-f1",lost:true}];
+  // 같은 승인 식별자에서 화면에 표시한 건수를 뒤의 계획 객체 값으로 바꾸지 않는다.
+  h.PS.plan.run.need=9;e.click(button);await until(()=>!!e.box());
+  const box=e.box(),r={drawn:label==="생성 승인 4건",count:box.textContent.startsWith("Forge 로 생성 4건을 요청합니다."),
+    warning:box.all().some(x=>x.tagName==="P"&&x.classList.contains("warn")&&x.textContent.includes("결과를 모름"))};
+  e.click(e.B("취소",box));e.stop();return r;
+});
+for(const [mode,stage,reason] of [["forge","reroll","wave"],["mock","run","wave"],["forge","run","none"],
+  ["forge","apply","wave"],["forge","draft","wave"],["local","run","wave"]])
+await scenario(`F2W29 F2 기록 연결 범위 ${mode} ${stage} ${reason}`,async()=>{
+  if(mode==="local")delete ctx.window.DPEnv;else serverMode(mode);
+  const e=await mkStudio({plan:p=>{p.run.backend=mode==="local"?"comfy_org":mode;}}),h=e.pipe._f2,pid="f2-owned-job";
+  const history=RUN_H({backend:mode,stopped_reason:reason,pending:7,remaining:91});
+  ctx.fetch=async(u,o)=>String(u).includes("history/"+pid)?{ok:true,status:200,json:async()=>({[pid]:history})}:e.srv.fetch(u,o);
+  h.PS.track(stage,pid);await until(()=>!!h.PS.last[stage],4000);e.pipe.stateChanged(e.S);await sleep(500);
+  const rows=e.panel.all().filter(x=>x.classList.contains("pp-row")&&x.textContent.includes("시간 상한으로 멈춤"));
+  const notices=e.toasts.filter(t=>t.includes("시간 상한으로 멈춤"));
+  const expected=mode!=="local"&&["run","reroll"].includes(stage)&&reason==="wave",r={finished:h.PS.last[stage]?.pid===pid};
+  r.scope=expected?rows.length===1&&notices.length===1:!rows.length&&!notices.length&&!e.B("남은 ");
+  if(expected){
+    r.pending=!!rows[0]&&rows[0].textContent.includes("남은 7건")&&!rows[0].textContent.includes("91건");
+    r.copy=[...rows.map(x=>x.textContent),...notices].every(t=>!illegal.test(t)&&!/\bRun\b|노드|위젯|대기열/.test(t));
+    r.action=stage==="reroll"?!!rows[0]&&rows[0].textContent.includes("[대기분 보내기]")&&!e.B("남은 "):!!e.B("남은 ");
+  }
+  r.noAutomatic=!e.srv.log.some(x=>x.method==="POST")&&!e.tab.got.length;e.stop();return r;
+});
+async function rerollBoard(backend="forge",route="button") {
+  serverMode(backend);const e=await mkStudio({plan:p=>{p.run.backend=backend;}}),key=dialog(e),writes=[],toasts=[];
+  const c=vm.createContext({window:ctx.window,document:e.doc,S:{crops:route==="layout"?[{id:"crop",layout_status:"changed"}]:[],pending_preapproved:0},
+    tKey:"target",cKey:"candidate",rerollArm:route==="layout"?{cell:"cell",way:"",until:Infinity}:null,rerollSent:null,REROLL_CONFIRM_MS:2000,
+    rerollCell:()=>({cell_key:"cell",variant:"V1"}),curTarget:()=>({crop_id:"crop"}),LAYOUT_STATUS:{changed:true},
+    tabWay:()=>"paid",reviewMissing:()=>"",rerollHold:()=>"",toast:t=>toasts.push(t),setTimeout(){},
+    pipe:{...e.pipe,agentOn:()=>false,paidLock:()=>"",paidWhy:()=>"",applyWarn:()=>[]},
+    write:async(...args)=>{writes.push(args);return null;}});
+  for(const name of ["cellPre","reroll"])vm.runInContext(boardFn(name),c);
+  const start=()=>route==="agent"?e.pipe.agentConfirm(["다시 생성 +1 호출 (V1)","계속할까요?"],0).then(ok=>{if(ok)writes.push(["reroll"]);})
+    :c.reroll(route==="button",route==="layout");
+  const click=(b,trusted)=>b.onclick?b.onclick({isTrusted:trusted}):b.fire("click",{isTrusted:trusted});
+  return {e,c,key,writes,toasts,start,click};
+}
+for(const route of ["button","layout","agent"])for(const [gesture,repeat] of [["Enter",false],[" ",false],["Enter",true],[" ",true],["Tab",false],["click",false]])
+await scenario(`F2W30 R1 다시 생성 키·스크립트 차단 ${route} ${JSON.stringify(gesture)} ${repeat}`,async()=>{
+  const {e,key,writes,start,click}=await rerollBoard("forge",route),pending=start();await until(()=>!!e.box());
+  const box=e.box(),r={focus:e.doc.activeElement.classList.contains("sheet"),usage:box.textContent.includes("사내 사용량이 잡힙니다.")};
+  r.lock=await e.pipe.agentConfirm(["겹친 동의"],0)===false&&ctx.window.DPDialog.open;
+  if(gesture==="click")click(e.B("승인",box)||e.B("확인",box),false);
+  else for(const type of ["keydown","keypress","keyup"])key(type,gesture,{repeat});
+  await sleep(10);r.blocked=writes.length===0&&e.box()===box;
+  if(e.box())key("keydown","Escape");await pending;r.cancel=writes.length===0&&!e.box()&&!ctx.window.DPDialog.open;
+  e.stop();return r;
+});
+for(const route of ["button","layout","agent"])await scenario("F2W31 R1 실제 클릭 한 번 "+route,async()=>{
+  const {e,writes,start,click}=await rerollBoard("forge",route),pending=start();await until(()=>!!e.box());
+  click(e.B("승인",e.box())||e.B("확인",e.box()),true);await pending;
+  const ok=writes.length===1&&writes[0][0]==="reroll"&&!e.box()&&!e.confirms.length;e.stop();return ok;
+});
+await scenario("F2W32 R1 mock 확인 키·Forge R R 안내",async()=>{
+  let x=await rerollBoard("mock"),pending=x.start();await until(()=>!!x.e.box());x.key("keydown","Enter");await pending;
+  const r={mock:x.writes.length===1&&!x.e.confirms.length};x.e.stop();
+  x=await rerollBoard();await x.c.reroll(false,false);
+  r.notice=x.toasts.length===1&&x.toasts[0].includes("사내 사용량이 잡힙니다")&&!x.writes.length;
+  await x.c.reroll(false,false);r.reserved=x.writes.length===1&&!x.e.box();x.e.stop();return r;
+});
+await scenario("F2W33 R2 쉬는 진행 줄은 로그인 요청 안 함",async()=>{
+  serverMode();const e=await mkStudio({plan:p=>{p.run.backend="forge";}}),h=e.pipe._f2,before=refreshes;
+  h.PS.progress={...clone(R["GET /pipeline/progress"].alt.idle),running:false,forge:{auth_wait:true,queue:null}};
+  await e.pipe.showTab("generate");await e.pipe.showTab("generate");
+  const r={idle:refreshes===before};h.PS.progress.running=true;await e.pipe.showTab("generate");
+  r.running=refreshes>before;e.stop();return r;
+});
+await scenario("F2W36 R4 Forge 환경의 mock 계획은 mock 동의",async()=>{
+  serverMode();const e=await mkStudio({plan:p=>{p.run.backend="mock";}}),key=dialog(e);
+  e.click(e.B("생성 승인"));await sleep(20);const box=e.box();
+  const r={mock:!!box&&box.textContent.includes("[MOCK] 과금 없음")&&!box.textContent.includes("사내 사용량"),
+    noSend:!e.srv.log.some(x=>x.method==="POST")&&!e.tab.got.length&&!e.confirms.length};
+  if(box)key("keydown","Escape");e.stop();return r;
+});
+for(const label of ["생성 승인 ?건","계획 없음","남은 ?건 이어서 승인"])await scenario("F2W37 R4 승인 건수 해석 실패 "+label,async()=>{
+  serverMode();const e=await mkStudio({plan:p=>{p.run.backend="forge";}}),h=e.pipe._f2;dialog(e);
+  const button=h.approveButton("run",label,h.copyHashes().run);e.doc.body.append(button);e.click(button);await sleep(20);
+  const r={warning:e.toasts.includes("warn:승인할 건수를 확인하지 못했습니다 — 계획을 다시 받아 주세요"),
+    noSend:!e.box()&&!e.srv.log.some(x=>x.method==="POST")&&!e.tab.got.length&&!e.confirms.length,
+    unlocked:!ctx.window.DPDialog.open&&!e.B("생성 승인").disabled};e.stop();return r;
+});
+await scenario("F2W38 R5 경고 칩·한 줄 말줄임·일반 캡션 보존",async()=>{
+  serverMode();const doc=new Doc(),c=vm.createContext({window:ctx.window,document:doc,
+    el:(tag,cls,text)=>{const n=doc.createElement(tag);n.className=cls;n.textContent=text;return n;},
+    chip:(text,cls)=>{const n=doc.createElement("span");n.className="chip "+cls;n.textContent=text;return n;}});
+  vm.runInContext(boardFn("promptWarning"),c);
+  const css=IN.css.split("Forge F2-W")[1].split("Forge F2-C")[0],rules=[...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)];
+  const chip=rules.find(r=>r[1].trim().endsWith("body.server .dp-prompt-changed"))?.[2]||"";
+  const text=rules.find(r=>r[1].includes(".dp-caption-text"))?.[2]||"";
+  const r={nowrap:! /white-space\s*:\s*normal/.test(css),fixed:/flex\s*:\s*none/.test(chip),
+    ellipsis:/white-space\s*:\s*nowrap/.test(text)&&/overflow\s*:\s*hidden/.test(text)&&/text-overflow\s*:\s*ellipsis/.test(text)};
+  for(const name of ["cand-caption","cap"]){
+    const cap=doc.createElement("div"),value="후보 이름 "+"긴 글 ".repeat(80);cap.className=name;cap.textContent=value;
+    c.promptWarning(cap,{prompt_changed:false});r[name+"Plain"]=cap.textContent===value&&cap.children.length===0;
+    c.promptWarning(cap,{prompt_changed:true});const warning=cap.children.find(n=>n.classList.contains("dp-prompt-changed"));
+    r[name+"Chip"]=!!warning&&warning.parent===cap;
+    r[name+"Text"]=cap.children[0]===warning&&cap.children[1]?.textContent===value&&cap.children[1]?.classList.contains("dp-caption-text");
+  }
+  return r;
+});
+await scenario("F2W39 R6 잘못된 Forge 진행 값·대기 순번",async()=>{
+  serverMode();const e=await mkStudio({plan:p=>{p.run.backend="forge";}}),h=e.pipe._f2,base=clone(R["GET /pipeline/progress"].alt.idle),r={};
+  const line=async forge=>{h.PS.progress={...base,running:true,forge};await e.pipe.showTab("generate");return e.rows("진행 — Run")[0]||"";};
+  for(const [i,value] of [null,false,true,1,"queued",[],[1]].entries()){
+    const text=await line(value);r["nonObject"+i]=!text.includes("Forge")&&!text.includes("로그인 갱신");
+  }
+  for(const [i,queue] of [null,{},true,"queued",[],{position:1},{total:2},{position:"1",total:2},
+    {position:1,total:"2"},{position:1.5,total:2},{position:1,total:2.5},{position:null,total:2},{position:1,total:NaN}].entries()){
+    const text=await line({queue});r["invalidQueue"+i]=text.endsWith(" · Forge 생성 중")&&!text.includes("Forge 대기");
+  }
+  r.valid=(await line({queue:{position:1,total:2}})).endsWith(" · Forge 대기 1/2");e.stop();return r;
+});
+console.log(JSON.stringify(out));process.exit(0);
+'''
+    hook = '.replace("return { stateChanged, enter, leave, select, queue: boardQueue", "return { _f2: { PS, forgeAsk, asked, approveButton, copyHashes }, stateChanged, enter, leave, select, queue: boardQueue")'
+    ui = ui.replace('fs.readFileSync(IN.pipelineJs, "utf8")', 'fs.readFileSync(IN.pipelineJs, "utf8")' + hook)
+    (out / "ui.json").write_text(json.dumps({"api": _pl_api(), "forge": _server_api(), "dialog": sources["dialog.js"], "css": (web / "board.css").read_text(encoding="utf-8"),
+                                             "pipelineJs": str(web / "pipeline.js"), "boardJs": str(web / "board.js")}, ensure_ascii=False), encoding="utf-8")
+    for name, harness in (("core", core), ("ui", ui)):
+        (out / f"{name}.mjs").write_text(harness, encoding="utf-8")
+        result = subprocess.run([node, str(out / f"{name}.mjs"), str(out / f"{name}.json")], capture_output=True,
+                                text=True, encoding="utf-8", timeout=60)
+        if result.returncode or not result.stdout.strip():
+            check(False, f"F2W {name} VM 실패: {result.stderr[-3000:]}")
+            continue
+        for case, values in json.loads(result.stdout.strip().splitlines()[-1]).items():
+            for key, value in (values.items() if isinstance(values, dict) else [("", values)]):
+                check(value is True, f"{case} {key}" if value is True else f"{case} {key}: {value}")
 
 
 def _batch13_icons(web):

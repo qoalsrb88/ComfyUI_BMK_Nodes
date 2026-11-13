@@ -524,7 +524,7 @@
   }
 
   async function reroll(fromButton, scripted) {
-    if (SM() && window.DPEnv.backend !== "mock") { toast("서버 모드 생성 백엔드가 아직 연결되지 않았습니다", "warn"); return; }
+    if (SM() && !["mock", "forge"].includes(window.DPEnv.backend)) { toast("서버 모드 생성 백엔드가 아직 연결되지 않았습니다", "warn"); return; }
     const cell = rerollCell();
     if (!cell) {
       toast("이 타깃의 작업(jobs)이 없습니다 — Prepare 를 먼저 실행하세요", "err");
@@ -580,7 +580,7 @@
         + "머리줄 [다시 생성 보내기]로 보내거나 다음 Run 때(선택과 무관) 함께 과금됩니다. 계속할까요?"
         : tab ? (SM() ? "유료 호출이 사전 승인되고 서버 작업으로 실행합니다. 계속할까요?" : (way === "paid" ? `${pipe.side}\n` : "") + "유료 호출이 사전 승인되고 ComfyUI 탭에 큐 요청을 보냅니다. 계속할까요?")
           : SM() ? `유료 호출이 사전 승인됩니다 — 지금 보내지 않음(${why}): 다시 생성은 예약만 되고 다음 생성 때 함께 과금됩니다. 계속할까요?` : `유료 호출이 사전 승인됩니다 — 지금 큐를 보내지 않음(${why}): 다시 생성은 예약만 되고 다음 Run 때(선택과 무관) 함께 과금됩니다. 계속할까요?`);
-      if (SM() ? !(await window.DPDialog.confirm(text)) : (agent ? !(await pipe.agentConfirm(text.split("\n"), need)) : !window.confirm(text))) {
+      if (SM() ? !(await (window.DPEnv.backend === "forge" ? pipe.agentConfirm(text.split("\n"), need) : window.DPDialog.confirm(text))) : (agent ? !(await pipe.agentConfirm(text.split("\n"), need)) : !window.confirm(text))) {
         return;
       }
       if ((SM() || agent) && !stillHere()) return;
@@ -597,6 +597,7 @@
         rerollArm = { cell: cell.cell_key, way, until: now + REROLL_CONFIRM_MS };
         // 유료 탭 길로 지금 보내면 승인 제출 — 버튼 R 확인 창의 부수 효과 줄(pipe.side)을 짧게
         toast(`R 을 한 번 더 누르면 ${what} — 유료`
+          + (SM() && window.DPEnv.backend === "forge" ? " · 사내 사용량이 잡힙니다" : "")
           + (tab ? "" : SM() ? " · 지금 보내지 않음(예약만 — 다음 생성 때 과금)" : ` · 지금 큐를 보내지 않음(${scripted ? "스크립트 키 — 큐는 사용자 키 입력만, " : ""}예약만 — 다음 Run 때 과금)`)
           + (!tab && noReview ? ` · ${why}` : "")
           + (!SM() && way === "paid" ? " · 승인 제출이라 ComfyUI 탭 그래프의 시드 제어 등 실행마다 바뀌는 값이 한 번 진행됨(그래프는 실행 안 함)" : "")
@@ -615,7 +616,7 @@
         + `미반영 레이아웃 ${pend.length}건도 이번 실행에 함께 반영됩니다. 계속할까요?`
         : `이 크롭은 레이아웃이 바뀌어(미반영) 이 큐에서 생성 조건이 바뀌면 다시 생성이 실행되지 않습니다. `
           + `미반영 레이아웃 ${pend.length}건도 이 큐로 반영됩니다. 계속할까요?`;
-      if (SM() ? !(await window.DPDialog.confirm(text)) : (agent ? !(await pipe.agentConfirm(text.split("\n"), need)) : !window.confirm(text))) return;
+      if (SM() ? !(await (window.DPEnv.backend === "forge" ? pipe.agentConfirm(text.split("\n"), need) : window.DPDialog.confirm(text))) : (agent ? !(await pipe.agentConfirm(text.split("\n"), need)) : !window.confirm(text))) return;
       if ((SM() || agent) && !stillHere()) return;
     }
     const r = await write("reroll", { cell_key: cell.cell_key, count: 1 },
@@ -937,7 +938,8 @@
   }
 
   async function drain() {
-    if (!await askFree("새 호출 멈춤(Drain): 진행 중인 Run 이 새 호출 발사를 멈춥니다.\n진행 중인 호출은 끝까지 받아 저장합니다. 계속할까요?")) return;
+    if (!await askFree(SM() && window.DPEnv.backend === "forge" ? "새 호출을 멈춥니다. 이미 요청한 것은 끝까지 받습니다. 계속할까요?"
+      : "새 호출 멈춤(Drain): 진행 중인 Run 이 새 호출 발사를 멈춥니다.\n진행 중인 호출은 끝까지 받아 저장합니다. 계속할까요?")) return;
     write("drain", {}, (r) => (r.drain
       ? "새 호출 멈춤 요청 — 진행 중인 호출만 마저 받고 멈춥니다"
       : "진행 중인 Run 이 없습니다 (아무것도 하지 않음)"));
@@ -1320,8 +1322,17 @@
     panel.className = "panel mode-" + mode;
     $("cand-caption").textContent = caption;
     $("cand-caption").title = caption; // 머리는 한 줄 말줄임(배치 13 D378) — 잘린 글은 title 로
+    if (mode !== "before") promptWarning($("cand-caption"), c);
     setImg($("img-cand"), url);
     $("cand-empty").hidden = !!url;
+  }
+
+  function promptWarning(parent, candidate) {
+    if (!SM() || !candidate || candidate.prompt_changed !== true) return;
+    const warning = chip("프롬프트가 서버에서 바뀜", "dp-prompt-changed");
+    warning.title = "서버가 보낸 프롬프트를 바꿔 생성한 결과입니다 — 같은 생성 조건의 다른 후보와 다를 수 있습니다";
+    const text = el("span", "dp-caption-text", parent.textContent);
+    parent.replaceChildren(warning, text);
   }
 
   function row(parent, key, text, cls = "") {
@@ -1466,6 +1477,7 @@
       // 원장 호출의 후보는 레이어명(셀 키) 대신 완료 시각·종류 — 레이어명은 제목·상세 줄에
       const cap = el("div", "cap", `c${pad(c.n)} · ${meta} · ${ranText(c) || c.label}`);
       cap.title = [c.label, ranText(c) && `${ranText(c)} 완료`].filter(Boolean).join(" · ");
+      promptWarning(cap, c);
       tile.append(cap);
       tile.addEventListener("click", () => selectCand(c.key));
       tile.addEventListener("dblclick", () => {
@@ -2165,6 +2177,7 @@
     $("btn-drain").classList.add("dp-off");
     if (SM()) {
       document.body.classList.add("server");
+      if (window.DPEnv.backend === "forge") $("btn-drain").title = "새 호출을 멈춥니다 — 이미 요청한 것은 끝까지 받습니다";
       $("btn-queue").classList.add("dp-off");
       $("statusbar").append($("btn-queue"), $("btn-drain"), $("btn-keys"));
     } else $("btn-queue").classList.remove("dp-off");

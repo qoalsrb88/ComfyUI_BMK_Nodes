@@ -308,6 +308,10 @@ window.DPPipeline = (() => {
     const login = e.stopped_reason === "auth" || (stage === "draft" && e.auth_held > 0);
     const agent = e.stopped_reason === "agent_cap" ? " · Claude 승인 모드 상한 도달 — 남은 호출은 과금 안 됨" : "";
     if (SM()) {
+      if (window.DPEnv.backend === "forge" && e.stopped_reason === "auth") {
+        window.DPEnv.requestToken();
+        return "Forge 로그인 갱신이 필요합니다 — 잠시 뒤 다시 눌러 주세요";
+      }
       const auth = "인증이 거부돼 남은 호출을 보내지 않음 — 프로젝트를 다시 여세요";
       if (stage === "reroll") return `${login ? `다시 생성 중지 — ${auth}. 사전 승인분은 예약된 채 남음 — 아래 상태 줄 [대기분 보내기]` : "다시 생성(사전 승인)·복구만 실행"} · 승인 필요 ${e.pending}건 남음${mock}${agent}`;
       const ran = !e.approved_now ? "승인 안 됨 — 실행 전 계획이 바뀜(승인 필요분 과금 없음)" : login ? `승인했지만 중지 — ${auth}` : "승인분 실행";
@@ -320,6 +324,21 @@ window.DPPipeline = (() => {
     const ran = !e.approved_now ? "승인 안 됨 — 승인 코드가 실행 전 계획과 달라 드라이런(승인 필요분 과금 없음)"
       : login ? `승인했지만 중지 — ${LOGIN}: ComfyUI 탭에서 로그인한 뒤 다시 승인` : "승인분 실행";
     return stage === "draft" ? `${ran} · 남은 초안 대기 ${e.pending}건${mock}${agent}` : `${ran} · 남은 승인 필요 ${e.pending}건${mock}${agent}`;
+  }
+
+  function forgeProgress(progress) {
+    if (!SM() || window.DPEnv.backend !== "forge" || !progress.forge
+        || typeof progress.forge !== "object" || Array.isArray(progress.forge)) return "";
+    const forge = progress.forge;
+    if (forge.auth_wait) {
+      if (progress.running) window.DPEnv.requestToken();
+      return " · 로그인 갱신 대기";
+    }
+    const queue = forge.queue;
+    if (queue && !Array.isArray(queue) && Number.isInteger(queue.position) && Number.isInteger(queue.total)) {
+      return ` · Forge 대기 ${queue.position}/${queue.total}`;
+    }
+    return progress.running ? " · Forge 생성 중" : "";
   }
 
   function shown(x) {
@@ -595,7 +614,8 @@ window.DPPipeline = (() => {
       remember(null);
       s.last[job.stage] = Object.assign({ at: new Date().toLocaleTimeString("ko-KR", { hour12: false }), pid: job.pid }, res);
       if (STAGES[job.stage].paid && h) s.last[job.stage].report = paidReport(job.stage, h);
-      s.onDone(job, res);
+      if (SM()) s.onDone(job, res, h);
+      else s.onDone(job, res);
       s.onChange();
     }
 
@@ -1833,6 +1853,31 @@ window.DPPipeline = (() => {
       return paidWhy();
     }
 
+    function forgeAsk(need, warnings = [], lines = null) {
+      if (ask || !window.DPDialog || !window.DPDialog.lock({ keys: askKeys })) return Promise.resolve(false);
+      return new Promise((resolve) => {
+        const box = el("div", "overlay"), sheet = el("div", "sheet");
+        const close = (ok) => {
+          ask = null;
+          box.remove();
+          window.DPDialog.unlock();
+          resolve(ok);
+        };
+        sheet.setAttribute("role", "dialog");
+        sheet.setAttribute("aria-modal", "true");
+        sheet.setAttribute("aria-label", "생성 승인");
+        for (const line of lines || [`Forge 로 생성 ${need}건을 요청합니다. 사내 사용량이 잡힙니다.`]) sheet.append(el("p", "", line));
+        for (const warning of warnings) sheet.append(el("p", "warn", warning));
+        btns(sheet, button("승인", "생성 승인", (e) => e.isTrusted && close(true), "primary"),
+          button("취소", "Esc", (e) => e.isTrusted && close(false)));
+        box.append(sheet);
+        document.body.append(box);
+        ask = { box, close };
+        sheet.setAttribute("tabindex", "-1");
+        sheet.focus();
+      });
+    }
+
     async function approve(e, kind, label, pair) {
       // 유료 승인(§4.4·계약 §5). 사용자 클릭(isTrusted)이 아니면 아무것도 안 함. 누를 때 지금 판정(해시·only·탭)이 그린 값과 다르면 보내지 않고
       // 다시 그림(r2-07 — 입력 중이라 미뤄 둔 옛 단추). 확인 = mock·Claude 승인 모드는 페이지 상자, 그 밖은 네이티브 confirm.
@@ -1873,7 +1918,13 @@ window.DPPipeline = (() => {
       try {
         const agent = !mock && agentOn() ? await freshAgent() : null;
         const need = agent ? (kind === "run" ? p.run.credits[1] + p.run.est_usd_pre[1] * CREDITS_PER_USD : p.draft.est_credits[1]) : 0;
-        if (SM() && !mock) opts.toast("서버 모드 생성 백엔드가 아직 연결되지 않았습니다", "warn");
+        if (SM() && window.DPEnv.backend === "forge" && kind === "run" && p.run.backend === "forge") {
+          const shown = /^(?:생성 승인 (\d+)건|남은 (\d+)건 이어서 승인)$/.exec(label);
+          if (p.run.pre) again.push(`다시 생성(사전 승인) ${p.run.pre}건도 함께 실행(선택과 무관) — 사내 사용량이 잡힙니다.`);
+          if (shown) ok = await forgeAsk(Number(shown[1] || shown[2]), again);
+          else opts.toast("승인할 건수를 확인하지 못했습니다 — 계획을 다시 받아 주세요", "warn");
+        }
+        else if (SM() && !mock) opts.toast("서버 모드 생성 백엔드가 아직 연결되지 않았습니다", "warn");
         else ok = mock ? await mockAsk(label, kind === "draft" && !!p.draft.mock_forced, SM() ? again : [])
           : agent ? await agentAsk(kind, approveText(kind, p, pair[1].split(","), PS.planStyle, full).concat(again, "계속할까요?"), need)
           : window.confirm(approveText(kind, p, pair[1].split(","), PS.planStyle, full).concat(again, "계속할까요?").join("\n"));
@@ -1941,7 +1992,7 @@ window.DPPipeline = (() => {
 
     async function agentConfirm(lines, need) {
       if (ask) return false;
-      if (SM()) return window.DPDialog.confirm(lines);
+      if (SM()) return window.DPEnv.backend === "forge" ? forgeAsk(0, [], lines.concat("사내 사용량이 잡힙니다.")) : window.DPDialog.confirm(lines);
       const agent = agentOn() ? await freshAgent() : null;
       return agent ? agentAsk("reroll", lines, need) : window.confirm(lines.join("\n"));
     }
@@ -1976,7 +2027,7 @@ window.DPPipeline = (() => {
     }
 
     async function sendPaid(stage, hash, only, what) {
-      if (SM() && window.DPEnv.backend !== "mock") { opts.toast("서버 모드 생성 백엔드가 아직 연결되지 않았습니다", "warn"); return; }
+      if (SM() && !["mock", "forge"].includes(window.DPEnv.backend)) { opts.toast("서버 모드 생성 백엔드가 아직 연결되지 않았습니다", "warn"); return; }
       // 승인 메시지(계약 §3 bmk-dp-approve) — 보내는 곳은 여기 하나. hash·only = 그린 계획 값(reroll 은 둘 다 ""), what = 탭 토스트용 설명
       paying = stage;
       if (stage !== "draft") wave = null;
@@ -2115,7 +2166,7 @@ window.DPPipeline = (() => {
     }
 
     function reroll() {
-      if (SM() && window.DPEnv.backend !== "mock") { opts.toast("서버 모드 생성 백엔드가 아직 연결되지 않았습니다", "warn"); return; }
+      if (SM() && !["mock", "forge"].includes(window.DPEnv.backend)) { opts.toast("서버 모드 생성 백엔드가 아직 연결되지 않았습니다", "warn"); return; }
       // board.js queueReroll(R 뒤·머리줄 'ComfyUI 큐' — 유료 가능한 탭일 때): reroll stage(approve·only 없음 — Run 은 사전 승인 재굴림·복구만 과금).
       // 확인 창 없음(R 의 확인이 동의). 이 Studio 가 유료 요청을 보내지 않는 중(paidLock)이면 보내지 않음(재굴림은 이미 사전 승인 — 머리줄 큐·다음 Run 때
       // 과금 — R 확인 문구도 이 판정으로 '지금은 예약만')
@@ -2829,13 +2880,14 @@ window.DPPipeline = (() => {
       if (pg) {
         const r = pg.run;
         line(s, `진행 — Run ${pg.running ? "실행 중" : "멈춤"}${pg.drain ? " · 새 호출 멈춤 요청됨" : ""} · 완료 ${r.done} · 진행 ${r.inflight} · 실패 ${r.failed}`
-          + ` · 결과 못 받음 ${r.orphaned} · 대기 승인분(전체) ${r.need} · 다시 생성 ${r.pre}`, pg.running ? "warn" : "dim");
+          + ` · 결과 못 받음 ${r.orphaned} · 대기 승인분(전체) ${r.need} · 다시 생성 ${r.pre}` + forgeProgress(pg), pg.running ? "warn" : "dim");
         if (pg.draft) {
           const d = pg.draft;
           line(s, `초안 진행 — 진행 ${d.inflight} · 받음 ${d.created} · 완료 ${d.done} · 실패 ${d.failed}`, "warn");
         }
       }
       const db = button("새 호출 멈춤", "진행 중인 Run 이 새 호출 발사를 멈춥니다(진행 중인 호출은 끝까지 받아 저장) — Drain", opts.drain);
+      if (SM() && window.DPEnv.backend === "forge") db.title = "새 호출을 멈춥니다 — 이미 요청한 것은 끝까지 받습니다";
       db.disabled = !(S && S.running);
       btns(s, db, recalcButton("지금 선택으로 계획을 다시 받습니다"));
 
@@ -3454,11 +3506,17 @@ window.DPPipeline = (() => {
 
     PS.onChange = render;
     PS.onWrite = () => opts.refresh();
-    PS.onDone = (job, res) => {
-      const label = STAGES[job.stage].label;
+    PS.onDone = (job, res, h = null) => {
+      if (SM() && ["run", "reroll"].includes(job.stage)) {
+        const reports = h && h.outputs && h.outputs.dp_run && h.outputs.dp_run.bmk_dp_run;
+        const report = Array.isArray(reports) ? reports[0] : null;
+        if (report && report.stopped_reason === "wave") wave = { stage: job.stage, pid: job.pid, remaining: report.pending };
+      }
+      const label = SM() && wave && wave.pid === job.pid && job.stage === "run" ? "생성" : STAGES[job.stage].label;
       const o = res.export;
       const w = wave && wave.pid === job.pid
-        ? ` · 시간 상한으로 멈춤(남은 ${wave.remaining}건) — ${wave.stage === "run" ? "Run 줄에서 이어서 승인" : "머리줄 [다시 생성 보내기]로 이어서"}` : "";
+        ? SM() ? ` · 시간 상한으로 멈춤(남은 ${wave.remaining}건) — ${wave.stage === "run" ? "생성 승인에서 이어서 승인" : "아래 상태 줄 [대기분 보내기]로 이어서"}`
+          : ` · 시간 상한으로 멈춤(남은 ${wave.remaining}건) — ${wave.stage === "run" ? "Run 줄에서 이어서 승인" : "머리줄 [다시 생성 보내기]로 이어서"}` : "";
       if (res.state !== "done") opts.toast(`${label}: ${END[res.state]}${res.msg ? ` — ${res.msg}` : ""}`, res.state === "cancelled" ? "warn" : "err");
       else if (STAGES[job.stage].paid) opts.toast(`${label} 끝 — ${PS.last[job.stage].report}${w}`, w || PS.last[job.stage].report.includes(LOGIN) ? "warn" : "");
       else if (job.stage !== "export") opts.toast(`${label} 끝 — 새 상태·계획을 다시 받습니다`);
