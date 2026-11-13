@@ -511,6 +511,7 @@ class ServerConfig:
     login_fail_window: float = 300             # 거절 기록의 이동 창(초)
     login_fail_global: int = 200               # 서버 전체 거절이 넘으면 거절 이력이 있는 주소만 제한
     trusted_proxies: tuple = ()                # 주소·CIDR. 오른쪽부터 신뢰한 프록시를 건너뛴다
+    forge: object | None = None                # bmk_design_patch_forge.ForgeConfig — 있으면 실제 검증기·Forge 생성 백엔드(F2), 없으면 F1 그대로(mock)
 
 
 class DevVerifier:
@@ -834,6 +835,11 @@ def make_dev_parent_app(config):
 
     app = web.Application(handler_args={"access_log": None})
     app.add_routes([web.get("/", index)])
+    try:
+        from . import bmk_design_patch_forge_dev as forge_dev
+    except ImportError:
+        import bmk_design_patch_forge_dev as forge_dev
+    forge_dev.mount(app, config)  # 개발용 가짜 Forge API·토큰 갱신 페이지(F2 D406·D407)
     return app
 
 

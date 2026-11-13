@@ -1,0 +1,483 @@
+{
+  "_comment": "Design Patch Studio 서버 모드(Forge 이식 F2)가 부르는 Forge 공개 API 의 요청·응답 모양. 키 이름·값 형식이 계약이고 값 자체는 예시다. 실제 주소는 싣지 않는다 — {FORGE} = 실행 옵션 --forge-api, {MEDIA} = --forge-media-origin. 개발용 가짜 Forge(bmk_design_patch_forge_dev.py)와 forge_f2_* 시험이 이 파일을 함께 읽는다.",
+  "source": {
+    "checked": "2026-11-13",
+    "forge_commit": "f44a614f8",
+    "note": "게이트웨이(front_service)와 image_service 코드를 읽어 확인한 모양. 운영 값(토큰 수명·autopilot 여부·동시 제출 허용)은 담당자 답 대기 — options 절의 값은 실행 옵션으로 바꾼다."
+  },
+  "options": {
+    "_comment": "담당자 답에 묶인 값 — 코드에 박지 않고 실행 옵션의 기본값으로만 둔다.",
+    "access_keys": [],
+    "prompt_autopilot": false,
+    "concurrency": 2,
+    "refresh_message": "design-patch-session",
+    "refresh_request_message": "design-patch-session-request"
+  },
+  "auth": {
+    "header": "Authorization",
+    "scheme": "Bearer"
+  },
+  "errors": {
+    "_comment": "4xx 는 {\"detail\": 문자열 | 배열 | 객체}. 5xx 본문은 믿지 않는다(상태만).",
+    "invalid_token": {
+      "status": 401,
+      "response": {
+        "detail": "Invalid token"
+      }
+    },
+    "org_denied": {
+      "status": 403,
+      "response": {
+        "detail": "Organization access denied"
+      }
+    },
+    "job_not_found": {
+      "status": 404,
+      "response": {
+        "detail": "Job not found"
+      }
+    },
+    "validation": {
+      "status": 422,
+      "response": {
+        "detail": [
+          {
+            "loc": [
+              "body",
+              "prompt"
+            ],
+            "msg": "Field required",
+            "type": "missing"
+          }
+        ]
+      }
+    },
+    "submit_refused": {
+      "status": 422,
+      "response": {
+        "detail": "이미지 생성 요청을 접수하지 못했습니다."
+      }
+    },
+    "access_unavailable": {
+      "status": 503,
+      "response": {
+        "detail": "접근 권한을 확인하지 못했습니다. 잠시 후 다시 시도해 주세요."
+      }
+    }
+  },
+  "me": {
+    "method": "GET",
+    "path": "/auth/me",
+    "response": {
+      "authenticated": true,
+      "user": {
+        "id": "u_alice",
+        "email": "alice@example.com",
+        "name": "alice",
+        "picture": null
+      }
+    },
+    "response_no_header": {
+      "_comment": "Authorization 헤더가 없으면 401 이 아니라 200 이다 — authenticated 가 true 인지 꼭 본다.",
+      "authenticated": false
+    }
+  },
+  "access_summary": {
+    "method": "GET",
+    "path": "/api/access/summary",
+    "response": {
+      "serviceWhitelist": {
+        "image": true,
+        "designPatch": true,
+        "costumeAlchemist": false
+      },
+      "adminStats": {
+        "allowed": false,
+        "is_supervisor": false,
+        "services": []
+      },
+      "organizations": [
+        {
+          "id": "org1",
+          "name": "개발 조직"
+        }
+      ]
+    }
+  },
+  "generate": {
+    "method": "POST",
+    "path": "/api/image/generate",
+    "request": {
+      "checkpoint": "gpt_image_26_sunburst",
+      "prompt": "프롬프트 원문 그대로",
+      "quality": "high",
+      "size": "1024x1536",
+      "background": "opaque",
+      "num_outputs": 2,
+      "complexity": "high",
+      "moderation": "low",
+      "input_images": [
+        [
+          "data:image/png;base64,iVBORw0KGgo=",
+          "data:image/png;base64,iVBORw0KGgo="
+        ]
+      ],
+      "organization_id": "org1",
+      "request_id": "dp-0a1b2c3d4e5f-0123456789abcdef01234567_r1-a1",
+      "prompt_autopilot": false
+    },
+    "request_rules": {
+      "_comment": "보내는 키는 위 목록이 전부다(2.6 이 아닌 모델은 complexity 를 뺀다). 아래 키는 보내지 않는다.",
+      "never": [
+        "mask_image",
+        "template_id",
+        "positive_prompt_prefix",
+        "positive_prompt_suffix",
+        "trigger_words",
+        "width",
+        "height",
+        "seed",
+        "aspect_ratio",
+        "input_image_references"
+      ],
+      "request_id_pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+      "request_id_max": 128,
+      "max_inputs_per_group": 16,
+      "num_outputs": [
+        1,
+        16
+      ]
+    },
+    "checkpoints": {
+      "gpt-image-2.5-sunburst": "gpt_image_25_sunburst",
+      "gpt-image-2.5-flare": "gpt_image_25_flare",
+      "gpt-image-2.6-sunburst": "gpt_image_26_sunburst",
+      "gpt-image-2.6-flare": "gpt_image_26_flare"
+    },
+    "response": {
+      "job_id": "5b2f6c1e-8a7d-5c3b-9e21-4f0a6d7c8b90",
+      "job_ids": [
+        "5b2f6c1e-8a7d-5c3b-9e21-4f0a6d7c8b90"
+      ],
+      "status": "pending"
+    },
+    "idempotency": "request_id 가 같으면(같은 사용자) 상태와 무관하게 — 완료·실패한 잡이어도 — 기존 잡의 job_id 와 지금 status 를 그대로 돌려준다. 새로 생성하려면 request_id 가 달라야 한다."
+  },
+  "job": {
+    "method": "GET",
+    "path": "/api/image/jobs/{job_id}",
+    "_comment": "남의 잡·없는 잡은 404 job_not_found. request_data 에는 보낸 프롬프트·입력 주소가 되돌아온다 — 로그·원장·응답에 옮기지 않는다.",
+    "pending": {
+      "id": "5b2f6c1e-8a7d-5c3b-9e21-4f0a6d7c8b90",
+      "user_id": "u_alice",
+      "status": "pending",
+      "job_type": "generate",
+      "progress": 0,
+      "queue_position": 3,
+      "queue_total": 7,
+      "request_data": {},
+      "result_data": null,
+      "error_message": null,
+      "error_category": null,
+      "created_at": "2026-11-13T09:00:00+00:00",
+      "started_at": null,
+      "completed_at": null,
+      "execution_deadline_at": null
+    },
+    "processing": {
+      "id": "5b2f6c1e-8a7d-5c3b-9e21-4f0a6d7c8b90",
+      "user_id": "u_alice",
+      "status": "processing",
+      "job_type": "generate",
+      "progress": 40,
+      "queue_position": null,
+      "queue_total": null,
+      "request_data": {},
+      "result_data": null,
+      "error_message": null,
+      "error_category": null,
+      "created_at": "2026-11-13T09:00:00+00:00",
+      "started_at": "2026-11-13T09:00:05+00:00",
+      "completed_at": null,
+      "execution_deadline_at": "2026-11-13T09:20:05+00:00"
+    },
+    "completed": {
+      "id": "5b2f6c1e-8a7d-5c3b-9e21-4f0a6d7c8b90",
+      "user_id": "u_alice",
+      "status": "completed",
+      "job_type": "generate",
+      "progress": 100,
+      "queue_position": null,
+      "queue_total": null,
+      "request_data": {},
+      "result_data": {
+        "images": [
+          "{MEDIA}/images/5b2f6c1e/0.png",
+          "{MEDIA}/images/5b2f6c1e/1.png"
+        ],
+        "result_ids": [
+          "5b2f6c1e-8a7d-5c3b-9e21-4f0a6d7c8b90:0",
+          "5b2f6c1e-8a7d-5c3b-9e21-4f0a6d7c8b90:1"
+        ],
+        "result_metadata": [
+          {},
+          {}
+        ],
+        "thumbnails": [
+          {},
+          {}
+        ],
+        "saved_id": "5b2f6c1e-8a7d-5c3b-9e21-4f0a6d7c8b90"
+      },
+      "error_message": null,
+      "error_category": null,
+      "created_at": "2026-11-13T09:00:00+00:00",
+      "started_at": "2026-11-13T09:00:05+00:00",
+      "completed_at": "2026-11-13T09:01:10+00:00",
+      "execution_deadline_at": "2026-11-13T09:20:05+00:00"
+    },
+    "completed_partial": {
+      "_comment": "일부 장만 성공해도 status 는 completed 이고 images 길이만 준다(D396).",
+      "status": "completed",
+      "result_data": {
+        "images": [
+          "{MEDIA}/images/5b2f6c1e/0.png"
+        ],
+        "result_ids": [
+          "5b2f6c1e-8a7d-5c3b-9e21-4f0a6d7c8b90:0"
+        ],
+        "result_metadata": [
+          {}
+        ],
+        "thumbnails": [
+          {}
+        ],
+        "saved_id": "5b2f6c1e-8a7d-5c3b-9e21-4f0a6d7c8b90",
+        "warning": "일부 이미지를 만들지 못했습니다."
+      }
+    },
+    "completed_prompt_changed": {
+      "_comment": "result_metadata[i] 에 실리는 키는 arm·call_index·seed·seed_supported·prompt_used 뿐이다. prompt_used 는 서버가 프롬프트를 다시 쓴(autopilot) 결과 행에만 실린다 — 보낸 프롬프트와 다르면 prompt_changed(D395).",
+      "status": "completed",
+      "result_data": {
+        "images": [
+          "{MEDIA}/images/5b2f6c1e/0.png",
+          "{MEDIA}/images/5b2f6c1e/1.png"
+        ],
+        "result_ids": [
+          "5b2f6c1e-8a7d-5c3b-9e21-4f0a6d7c8b90:0",
+          "5b2f6c1e-8a7d-5c3b-9e21-4f0a6d7c8b90:1"
+        ],
+        "result_metadata": [
+          {
+            "arm": "control",
+            "call_index": 0
+          },
+          {
+            "arm": "autopilot",
+            "call_index": 1,
+            "prompt_used": "서버가 다시 쓴 프롬프트"
+          }
+        ],
+        "thumbnails": [
+          {},
+          {}
+        ],
+        "saved_id": "5b2f6c1e-8a7d-5c3b-9e21-4f0a6d7c8b90"
+      }
+    },
+    "failed_user": {
+      "status": "failed",
+      "result_data": null,
+      "error_message": "안전 정책에 따라 요청이 거절되었습니다.",
+      "error_category": "user"
+    },
+    "failed_ailabs": {
+      "status": "failed",
+      "result_data": null,
+      "error_message": "이미지 생성 중 오류가 발생했습니다.",
+      "error_category": "ailabs"
+    },
+    "statuses": [
+      "pending",
+      "processing",
+      "completed",
+      "failed"
+    ],
+    "metadata_keys": [
+      "arm",
+      "call_index",
+      "seed",
+      "seed_supported",
+      "prompt_used"
+    ]
+  },
+  "media": {
+    "_comment": "결과 그림은 {MEDIA} origin 의 고정 주소(만료 없음, PNG 로 다시 인코딩된 바이트). Authorization 을 보내지 않고 받는다.",
+    "content_type": "image/png"
+  },
+  "history": {
+    "method": "GET",
+    "path": "/api/image/history",
+    "query": {
+      "organization_id": "org1",
+      "limit": 40,
+      "cursor": "",
+      "view": "summary",
+      "search": ""
+    },
+    "_comment": "organization_id 필수, limit 1–100. 결과가 한 장인 잡은 항목이 곧 그 장이고, 여러 장이면 항목이 묶음({id, prompt, num_outputs, items: [장…]})이다. next_cursor 는 has_more 일 때만 문자열.",
+    "response": {
+      "items": [
+        {
+          "id": "9c0d1e2f-0000-4000-8000-000000000001:0",
+          "result_id": "9c0d1e2f-0000-4000-8000-000000000001:0",
+          "statement_id": "9c0d1e2f-0000-4000-8000-000000000001",
+          "result_index": 0,
+          "generation_type": "generate",
+          "prompt": "한 장짜리 결과",
+          "result_url": "{MEDIA}/images/9c0d1e2f/0.png",
+          "thumbnail_url": "{MEDIA}/thumbs/9c0d1e2f/0.webp",
+          "model_used": "gpt_image_26_sunburst",
+          "parameters": {
+            "width": 1024,
+            "height": 1536
+          },
+          "created_at": "2026-11-12T03:00:00+00:00",
+          "completed_at": "2026-11-12T03:01:00+00:00",
+          "history_view": "summary"
+        },
+        {
+          "id": "9c0d1e2f-0000-4000-8000-000000000002",
+          "generation_type": "generate",
+          "prompt": "두 장짜리 결과",
+          "created_at": "2026-11-12T02:00:00+00:00",
+          "completed_at": "2026-11-12T02:01:00+00:00",
+          "num_outputs": 2,
+          "items": [
+            {
+              "id": "9c0d1e2f-0000-4000-8000-000000000002:0",
+              "prompt": "두 장짜리 결과",
+              "result_url": "{MEDIA}/images/9c0d1e2f2/0.png",
+              "thumbnail_url": "{MEDIA}/thumbs/9c0d1e2f2/0.webp",
+              "model_used": "gpt_image_26_sunburst",
+              "created_at": "2026-11-12T02:00:00+00:00"
+            },
+            {
+              "id": "9c0d1e2f-0000-4000-8000-000000000002:1",
+              "prompt": "두 장짜리 결과",
+              "result_url": "{MEDIA}/images/9c0d1e2f2/1.png",
+              "thumbnail_url": null,
+              "model_used": "gpt_image_26_sunburst",
+              "created_at": "2026-11-12T02:00:00+00:00"
+            }
+          ]
+        }
+      ],
+      "limit": 40,
+      "next_cursor": "eyJjIjoiMjAyNi0xMS0xMlQwMjowMTowMCJ9",
+      "has_more": true,
+      "trace_id": "0f1e2d3c4b5a69788796a5b4c3d2e1f0"
+    }
+  },
+  "assets": {
+    "method": "GET",
+    "path": "/api/library/assets",
+    "query": {
+      "organization_id": "org1",
+      "limit": 200,
+      "offset": 0
+    },
+    "_comment": "응답은 객체가 아니라 배열이다. limit 1–200, 검색 쿼리는 없다(이름·폴더·태그 검색은 받은 쪽에서). 받은 수가 limit 과 같으면 다음 offset 이 있다고 본다. 그림이 아닌 자료(media_type != image)는 버린다.",
+    "response": [
+      {
+        "id": "a_0001",
+        "owner_id": "u_alice",
+        "organization_id": "org1",
+        "name": "레퍼런스 시트 A",
+        "folder_path": "레퍼런스/의상",
+        "media_type": "image",
+        "content_type": "image/png",
+        "status": "ready",
+        "visibility": "private",
+        "storage_key": "org1/u_alice/asset/0001.png",
+        "url": "{MEDIA}/assets/a_0001.png",
+        "size_bytes": 482133,
+        "source": "upload",
+        "description": "",
+        "tags": [
+          "의상"
+        ],
+        "metadata": {},
+        "history_image_id": null,
+        "thumbnail_url": "{MEDIA}/assets/a_0001_t.webp",
+        "width": 2048,
+        "height": 2048,
+        "client_request_id": "web-0001",
+        "request_fingerprint": "",
+        "content_hash": "",
+        "created_at": "2026-11-10T01:00:00+00:00",
+        "updated_at": "2026-11-10T01:00:00+00:00"
+      }
+    ]
+  },
+  "asset_upload": {
+    "_comment": "[Forge 자료에 저장](D405): upload-url → 받은 주소에 PUT(Content-Type 그대로, Authorization 없이) → uploads/complete → POST /api/library/assets. 그림 자산 한도 25MiB(26214400). upload_url 은 {FORGE}·{MEDIA} 와 다른 origin 의 일회용 주소일 수 있다 — 응답·로그·오류에 싣지 않는다.",
+    "max_bytes": 26214400,
+    "upload_url": {
+      "method": "POST",
+      "path": "/api/library/assets/upload-url",
+      "request": {
+        "organization_id": "org1",
+        "filename": "프로젝트_r12.png",
+        "content_type": "image/png",
+        "size_bytes": 4194304,
+        "kind": "asset"
+      },
+      "response": {
+        "upload_url": "{UPLOAD}/org1/u_alice/asset/abcd.png?signature=…",
+        "file_url": "",
+        "s3_key": "org1/u_alice/asset/abcd.png"
+      }
+    },
+    "complete": {
+      "method": "POST",
+      "path": "/api/library/assets/uploads/complete",
+      "request": {
+        "organization_id": "org1",
+        "s3_key": "org1/u_alice/asset/abcd.png"
+      },
+      "response": {
+        "size_bytes": 4194304,
+        "content_type": "image/png"
+      }
+    },
+    "create": {
+      "method": "POST",
+      "path": "/api/library/assets",
+      "request": {
+        "organization_id": "org1",
+        "client_request_id": "dp-save-0a1b2c3d4e5f-r12",
+        "name": "프로젝트_r12",
+        "s3_key": "org1/u_alice/asset/abcd.png",
+        "content_type": "image/png",
+        "width": 2048,
+        "height": 3072
+      },
+      "response": {
+        "id": "a_0100",
+        "name": "프로젝트_r12",
+        "folder_path": "",
+        "media_type": "image",
+        "url": "{MEDIA}/assets/a_0100.png",
+        "client_request_id": "dp-save-0a1b2c3d4e5f-r12"
+      },
+      "conflict": {
+        "status": 409,
+        "response": {
+          "detail": "client_request_id가 다른 자료 등록에 이미 사용되었습니다."
+        }
+      }
+    }
+  }
+}

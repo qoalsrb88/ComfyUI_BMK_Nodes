@@ -286,7 +286,8 @@ def _record(outputs, exc=None, *, interrupted=False, node=None, scope=None):
 class JobRunner:
     """프로젝트당 직렬 작업 큐. scope = board.current_scope() 모양(작업 스레드가 그 범위를 건다)."""
 
-    def __init__(self, *, workers: int = 1, keep: int = 200, max_pending: int = 8):
+    def __init__(self, *, workers: int = 1, keep: int = 200, max_pending: int = 8, forge=None):
+        self._forge = forge  # bmk_design_patch_forge.ForgeAccounts | None — 유료 제출 전 확인과 실행 때의 Forge 문맥(F2)
         for name, value, minimum in (("workers", workers, 1), ("keep", keep, 0), ("max_pending", max_pending, 1)):
             if type(value) is not int or value < minimum:
                 raise ValueError(f"{name} 는 {minimum} 이상 정수여야 합니다")

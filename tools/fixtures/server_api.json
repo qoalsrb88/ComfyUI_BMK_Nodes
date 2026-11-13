@@ -351,5 +351,245 @@
   },
   "account_header": {
     "name": "X-DesignPatch-Account"
+  },
+  "f2_comment": "아래부터 Forge 이식 F2(_proto/STUDIO_FORGE_F2_SPEC.md §2.4·§3.1) — 서버가 Forge 설정(--forge-api)으로 떴을 때의 계약. Forge 설정이 없으면 위 F1 계약 그대로다.",
+  "env_server_forge": {
+    "method": "GET",
+    "path": "{API}/env",
+    "response": {
+      "server_mode": true,
+      "session": true,
+      "account": {
+        "name": "alice",
+        "tag": "5f2c8a1e9b7d4c03"
+      },
+      "session_url": "/api/session",
+      "prefs_url": "/api/preferences",
+      "caps": {
+        "jobs": true,
+        "export_download": true,
+        "sam3": false,
+        "local_qwen": false,
+        "external": false,
+        "open_folder": false,
+        "path_input": false,
+        "ps_mask": false,
+        "agent_approve": false,
+        "forge_import": true,
+        "forge_save": true
+      },
+      "backend": "forge",
+      "token_url": "/api/session/token",
+      "token_refresh": false,
+      "parent_origins": [
+        "http://localhost:8790"
+      ],
+      "messages": {
+        "session": "design-patch-session",
+        "request": "design-patch-session-request"
+      }
+    }
+  },
+  "session_post_no_access": {
+    "status": 403,
+    "response": {
+      "error": "Design Patch Studio 사용 권한이 없습니다. 담당자에게 문의해 주세요.",
+      "reason": "no_access"
+    }
+  },
+  "session_post_forge_unreachable": {
+    "status": 503,
+    "response": {
+      "error": "Forge 에 연결하지 못했습니다 — 잠시 뒤 다시 시도해 주세요.",
+      "reason": "forge_unreachable"
+    }
+  },
+  "session_token": {
+    "method": "POST",
+    "path": "/api/session/token",
+    "request": {
+      "token": "dev:alice:1794000000",
+      "organization_id": "org1"
+    },
+    "response": {
+      "ok": true
+    }
+  },
+  "session_token_rate_limited": {
+    "status": 429,
+    "response": {
+      "error": "토큰 갱신 요청이 너무 잦습니다 — 잠시 뒤 다시 시도합니다.",
+      "reason": "rate_limited"
+    }
+  },
+  "parent_message": {
+    "_comment": "부모 → 앱 postMessage(D387). 앱은 event.source === window.parent 이고 event.origin 이 env.parent_origins 에 들었을 때만 받는다.",
+    "session": {
+      "type": "design-patch-session",
+      "token": "dev:alice:1794000000",
+      "organization_id": "org1"
+    },
+    "request": {
+      "type": "design-patch-session-request"
+    }
+  },
+  "jobs_prompt_forge_auth": {
+    "status": 401,
+    "response": {
+      "error": "Forge 로그인 정보를 다시 받아야 합니다 — 잠시 뒤 자동으로 다시 시도합니다.",
+      "reason": "forge_auth"
+    }
+  },
+  "jobs_prompt_no_access": {
+    "status": 403,
+    "response": {
+      "error": "Design Patch Studio 사용 권한이 없습니다. 담당자에게 문의해 주세요.",
+      "reason": "no_access"
+    }
+  },
+  "jobs_prompt_forge_unreachable": {
+    "status": 503,
+    "response": {
+      "error": "Forge 에 연결하지 못했습니다 — 잠시 뒤 다시 시도해 주세요.",
+      "reason": "forge_unreachable"
+    }
+  },
+  "progress_forge": {
+    "_comment": "GET {API}/pipeline/progress 응답에 forge 백엔드일 때만 더해지는 키(D427). queue 는 진행 중 호출 가운데 가장 앞선 대기 순번(없으면 null), auth_wait 는 토큰 갱신을 기다리는 중.",
+    "queued": {
+      "forge": {
+        "queue": {
+          "position": 3,
+          "total": 7
+        },
+        "auth_wait": false
+      }
+    },
+    "generating": {
+      "forge": {
+        "queue": null,
+        "auth_wait": false
+      }
+    },
+    "auth_wait": {
+      "forge": {
+        "queue": null,
+        "auth_wait": true
+      }
+    }
+  },
+  "candidate_prompt_changed": {
+    "_comment": "서버가 프롬프트를 바꾼 결과(D395)의 후보 항목에만 prompt_changed: true 가 실린다(아니면 키 없음).",
+    "candidate": {
+      "prompt_changed": true
+    }
+  },
+  "forge_sidecar": {
+    "_comment": "cands/<cell_key>/r<rep>.forge.json(D421) — 원장 파일이 아니다. 토큰·조직 이름·Forge 주소 없음.",
+    "file": {
+      "schema": "dp-forge/1",
+      "requests": [
+        {
+          "id": "dp-0a1b2c3d4e5f-0123456789abcdef01234567_r1-a1",
+          "attempt": 1,
+          "state": "submitted",
+          "job_id": "5b2f6c1e-8a7d-5c3b-9e21-4f0a6d7c8b90",
+          "time": "2026-11-13T09:00:00"
+        }
+      ],
+      "job_id": "5b2f6c1e-8a7d-5c3b-9e21-4f0a6d7c8b90",
+      "result_ids": [
+        "5b2f6c1e-8a7d-5c3b-9e21-4f0a6d7c8b90:0",
+        "5b2f6c1e-8a7d-5c3b-9e21-4f0a6d7c8b90:1"
+      ],
+      "prompt_changed": [
+        false,
+        true
+      ]
+    },
+    "request_states": [
+      "open",
+      "submitted",
+      "failed",
+      "rejected"
+    ],
+    "ledger_url": "forge-job:5b2f6c1e-8a7d-5c3b-9e21-4f0a6d7c8b90/0"
+  },
+  "forge_history": {
+    "method": "GET",
+    "path": "{API}/forge/history?root=0123456789ab&cursor=&search=",
+    "response": {
+      "items": [
+        {
+          "id": "h_3f2a9c",
+          "thumb": "{API}/forge/thumb?root=0123456789ab&source=history&id=h_3f2a9c",
+          "prompt": "두 장짜리 결과",
+          "model": "gpt_image_26_sunburst",
+          "created": "2026-11-12T02:00:00+00:00"
+        }
+      ],
+      "next": "c_8d71"
+    }
+  },
+  "forge_assets": {
+    "method": "GET",
+    "path": "{API}/forge/assets?root=0123456789ab&offset=0&search=",
+    "response": {
+      "items": [
+        {
+          "id": "a_51be07",
+          "thumb": "{API}/forge/thumb?root=0123456789ab&source=asset&id=a_51be07",
+          "name": "레퍼런스 시트 A",
+          "folder": "레퍼런스/의상"
+        }
+      ],
+      "next": null
+    }
+  },
+  "forge_import": {
+    "method": "POST",
+    "path": "{API}/forge/import",
+    "request": {
+      "root": "0123456789ab",
+      "into": "refs",
+      "source": "asset",
+      "id": "a_51be07"
+    },
+    "_comment": "응답은 그 자리의 기존 올리기 응답과 같은 모양(into = target 은 새 프로젝트 만들기, refs 는 시트 추가)."
+  },
+  "forge_import_gone": {
+    "status": 404,
+    "response": {
+      "error": "목록이 오래됐습니다 — 다시 불러온 뒤 골라 주세요.",
+      "reason": "forge_stale"
+    }
+  },
+  "forge_save": {
+    "method": "POST",
+    "path": "{API}/forge/save",
+    "request": {
+      "root": "0123456789ab"
+    },
+    "response": {
+      "ok": true,
+      "asset": {
+        "id": "a_0100",
+        "name": "프로젝트_r12"
+      }
+    }
+  },
+  "forge_save_no_export": {
+    "status": 409,
+    "response": {
+      "error": "먼저 Export 를 실행해 주세요.",
+      "reason": "no_export"
+    }
+  },
+  "forge_save_too_large": {
+    "status": 413,
+    "response": {
+      "error": "그림이 25MB 를 넘어 Forge 자료에 올릴 수 없습니다 — 내려받아 직접 올려 주세요.",
+      "reason": "too_large"
+    }
   }
 }

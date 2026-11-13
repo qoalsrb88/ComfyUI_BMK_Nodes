@@ -49395,6 +49395,11 @@ def polish2_unit():
 
 
 
+def forge_f2_session_unit():
+    """Forge F2 갈래 S — 세션 토큰 표·갱신 라우트·재교환·권한 재확인·토큰이 디스크·로그·응답에 없음. 명세 _proto/STUDIO_FORGE_F2_SPEC.md §2.4·§4. --quick 포함."""
+    section("Forge F2-S — forge_f2_session_unit")
+
+
 def forge_f3_theme_unit():
     """Forge F3 갈래 T — 테마(CSS 정적 검사). 명세 _proto/STUDIO_FORGE_F3_SPEC.md §4.1·§5. --quick 포함."""
     section("Forge F3-T — 테마 (forge_f3_theme_unit)")
@@ -57188,6 +57193,11 @@ console.log(JSON.stringify(out));
           f"B9 통합 — refs 폴더 불일치 409 도 보관함 라우트에선 경로 없음 {getattr(out9, 'message', None)!r}")
 
 
+def forge_f2_backend_unit():
+    """Forge F2 갈래 B — ForgeBackend(매핑·영수증·사이드카·request_id 재사용·폴링·오류 분류)·실행기 연결·예약 백엔드. 명세 _proto/STUDIO_FORGE_F2_SPEC.md §2.4·§4. --quick 포함."""
+    section("Forge F2-B — forge_f2_backend_unit")
+
+
 def forge_f3_tools_unit():
     """Forge F3 갈래 U2 — 도구 문구·빈 화면·서버 모드 표시(node vm). 명세 §4.3·§5. --quick 포함."""
     section("Forge F3-U2 — 도구 문구 (forge_f3_tools_unit)")
@@ -59633,6 +59643,11 @@ async def _fs_scoped_roots(bd, out, call, login, sessions):
                   "FS26 T1 로컬 _root_param 은 기존 전역 조회 결과·호출 그대로")
 
 
+def forge_f2_dev_unit():
+    """Forge F2 갈래 D — 개발용 가짜 Forge(fixture 모양 일치·시나리오 표지·토큰 만료·갱신 페이지). 명세 _proto/STUDIO_FORGE_F2_SPEC.md §2.4·§4. --quick 포함."""
+    section("Forge F2-D — forge_f2_dev_unit")
+
+
 def _batch13_values(css, code):
     """13-A 몫 — CSS 값(D367–D374·D377–D382) 정적 검사. css = 원문, code = 주석을 뺀 글."""
     rules = [([s.strip() for s in selectors.split(",")], [(k.strip(), v.strip()) for k, v in re.findall(r"([\w-]+)\s*:\s*([^;{}]+);", body)])
@@ -59787,6 +59802,11 @@ def _batch13_values(css, code):
           "D382 움직임 줄이기면 단추 전환도 끔")
     has("button:where(:hover:not(:disabled))", {"background": "var(--hover, var(--raised))"})
     check("scale(" not in code, "D382 눌림 축소 없음")
+
+
+def forge_f2_js_unit():
+    """Forge F2 갈래 W — 화면(메시지 수신 조건·재교환·만료 안내·승인 문구·진행 줄·경고 칩). 명세 _proto/STUDIO_FORGE_F2_SPEC.md §2.4·§4. --quick 포함."""
+    section("Forge F2-W — forge_f2_js_unit")
 
 
 def _batch13_icons(web):
@@ -59946,6 +59966,11 @@ console.log(JSON.stringify({ icons, attached, once, unknown, helpers,
         check(data.get("helpers", {}).get(name) is True, f"13-B {name} 아이콘 앞붙이기·라벨 유지·DPRows 없는 하네스")
 
 
+def forge_f2_import_unit():
+    """Forge F2 갈래 C — 「Forge에서 가져오기」·[Forge 자료에 저장]. 명세 _proto/STUDIO_FORGE_F2_SPEC.md §2.4·§4. --quick 포함."""
+    section("Forge F2-C — forge_f2_import_unit")
+
+
 def batch13_unit():
     """배치 13 「화면 다듬기」 — CSS 값·아이콘 정적 검사. 명세 _proto/STUDIO_BATCH13_SPEC.md §5.2. --quick 포함."""
     section("배치 13 — 화면 다듬기 (batch13_unit)")
@@ -59962,6 +59987,11 @@ def batch13_unit():
     check(re.search(r"return \{[^}]*\bicon\b[^}]*\};\s*\}\)\(\);", rows) is not None, "13-0 DPRows.icon 내보내기")
     _batch13_values(css, code)
     _batch13_icons(web)
+
+
+def forge_f2_client_unit():
+    """Forge F2 갈래 S — ForgeClient(요청 모양·오류 분류·허용 origin·리다이렉트 거부·크기 상한) + 토큰 0건. 명세 _proto/STUDIO_FORGE_F2_SPEC.md §2.4·§4. --quick 포함."""
+    section("Forge F2-S — forge_f2_client_unit")
 
 
 def forge_server_unit():
@@ -60821,6 +60851,11 @@ def _fj_execute(jobs):
         async def in_loop():
             expect_raises(lambda: jobs.execute(prompt), "FJ8 이미 도는 루프 거절", exc=RuntimeError)
         asyncio.run(in_loop())
+
+
+def forge_f2_verifier_unit():
+    """Forge F2 갈래 S — ForgeVerifier(사용자·조직·접근 키·401/403/503 판정·이름 다듬기). 명세 _proto/STUDIO_FORGE_F2_SPEC.md §2.4·§4. --quick 포함."""
+    section("Forge F2-S — forge_f2_verifier_unit")
 
 
 def forge_f3_server_unit():
@@ -63357,6 +63392,20 @@ if __name__ == "__main__":
         forge_f3_tools_unit()
     if want("forge_f3_server_unit"):
         forge_f3_server_unit()
+    if want("forge_f2_client_unit"):
+        forge_f2_client_unit()
+    if want("forge_f2_verifier_unit"):
+        forge_f2_verifier_unit()
+    if want("forge_f2_session_unit"):
+        forge_f2_session_unit()
+    if want("forge_f2_backend_unit"):
+        forge_f2_backend_unit()
+    if want("forge_f2_dev_unit"):
+        forge_f2_dev_unit()
+    if want("forge_f2_js_unit"):
+        forge_f2_js_unit()
+    if want("forge_f2_import_unit"):
+        forge_f2_import_unit()
     print(f"\n단위 테스트 {time.time() - T0:.1f}s (PASS {PASSES} FAIL {len(FAILS)})")
     if QUICK:
         print("\n--quick: 회귀·노드 생략")

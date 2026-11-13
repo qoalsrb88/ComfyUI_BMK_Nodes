@@ -79,6 +79,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import contextvars
 import dataclasses
 import hashlib
 import io
@@ -117,6 +118,8 @@ def _server_mode() -> bool:
 LEDGER_SCHEMA = "bmk.design_patch.call/1"
 BACKEND_COMFY_ORG = "comfy_org"
 BACKEND_MOCK = "mock"
+BACKEND_FORGE = "forge"  # 서버 모드의 Forge 대리 호출(F2) — bmk_design_patch_forge_backend
+FORGE_ENV = "BMK_DP_FORGE"  # 서버 진입점이 Forge 설정을 받았을 때만 "1"
 MOCK_ENV = "BMK_DP_MOCK_API"
 MOCK_FILE = "_MOCK_API"
 EDITS_PATH = "/proxy/openai/images/edits"
@@ -934,6 +937,35 @@ def _make_interrupt(msg: str = "Task cancelled") -> BaseException:
 def _comfy_interrupt_flag() -> bool:
     mod = sys.modules.get("comfy.model_management")
     return bool(mod.processing_interrupted()) if mod is not None else False
+
+
+def forge_enabled() -> bool:
+    """서버 모드이고 Forge 연결이 설정됐는가(프로세스 표지). 로컬판(ComfyUI 안)에서는 늘 False."""
+    return _server_mode() and os.environ.get(FORGE_ENV, "") == "1"
+
+
+def backend_name(root: str) -> str:
+    """이 프로젝트의 계획·승인 코드·실행에 쓰일 백엔드 이름 — mock → 서버 모드 + Forge → comfy.org."""
+    if mock_enabled(root):
+        return BACKEND_MOCK
+    return BACKEND_FORGE if forge_enabled() else BACKEND_COMFY_ORG
+
+
+_FORGE: contextvars.ContextVar = contextvars.ContextVar("bmk_dp_forge", default=None)
+
+
+def set_forge(ctx: dict | None) -> contextvars.Token:
+    """이 실행의 Forge 문맥({"client", "token_of", "reject_token", "organization_id", "root", "stop", "options"})을 건다 —
+    서버 모드 작업 실행기가 템플릿 실행을 감싸 부른다(노드의 hidden 인자를 거치지 않는다)."""
+    return _FORGE.set(ctx)
+
+
+def reset_forge(token: contextvars.Token) -> None:
+    _FORGE.reset(token)
+
+
+def forge_context() -> dict | None:
+    return _FORGE.get()
 
 
 def mock_enabled(root: str) -> bool:

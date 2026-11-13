@@ -977,3 +977,9 @@ body.pipe #pipe-panel { display: flex; flex-direction: column; min-width: 0; }
 svg.dr-isolate .dr-check-base { fill: var(--panel); }
 svg.dr-isolate .dr-check-tile { fill: var(--panel2); }
 svg.marks .mguide { fill: var(--accent); }
+
+/* ── Forge F2-W (토큰 안내·진행 줄·경고 칩) — 갈래 W 는 이 표시 아래에만 덧붙인다 ── */
+/* 색은 변수로만. */
+
+/* ── Forge F2-C (Forge에서 가져오기·자료 저장) — 갈래 C 는 이 표시 아래에만 덧붙인다 ── */
+/* 색은 변수로만. */
