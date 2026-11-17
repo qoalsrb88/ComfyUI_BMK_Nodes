@@ -289,7 +289,10 @@ _STATIC = {"board.html": "text/html", "board.js": "text/javascript", "viewer.js"
            "layout_geom.js": "text/javascript", "rows.js": "text/javascript", "layout_edit.js": "text/javascript", "ref_edit.js": "text/javascript",
            "checklist.js": "text/javascript", "pipeline.js": "text/javascript", "mask_edit.js": "text/javascript", "board.css": "text/css",
            "env.js": "text/javascript", "dialog.js": "text/javascript",
-           "forge_import.js": "text/javascript"}  # env·dialog = Forge 이식 F1 공용 객체(DPEnv·DPDialog)
+           "forge_import.js": "text/javascript", "forge-theme.css": "text/css", "forge-fonts.css": "text/css"}  # env·dialog = Forge 이식 F1 공용 객체(DPEnv·DPDialog)
+
+_STATIC.update({name: "font/woff2" for name in os.listdir(WEB_DIR)
+                if re.fullmatch(r"forge-font-[0-9a-f]{16}\.woff2", name)})
 
 THUMB_KINDS = ("cand", "before", "ref", "delta", "context")
 THUMB_SIZES = (128, 192, 256, 384, 512, 768, 1024)
@@ -6756,7 +6759,7 @@ async def board_static(request: web.Request) -> web.StreamResponse:
     data = await asyncio.to_thread(_read_bytes, os.path.join(WEB_DIR, name))
     if data is None:
         raise _Reject(404, f"보드 파일이 없습니다: web_design_patch/{name}")
-    return web.Response(body=data, content_type=ctype, charset="utf-8",
+    return web.Response(body=data, content_type=ctype, charset=None if ctype == "font/woff2" else "utf-8",
                         headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
 
 

@@ -10,7 +10,7 @@
   "no_session": {
     "status": 401,
     "response": {
-      "error": "Forge에서 Design Patch Studio를 다시 열어 주세요.",
+      "error": "Forge에서 디자인 패치 스튜디오를 다시 열어 주세요.",
       "reason": "no_session"
     }
   },
@@ -31,7 +31,7 @@
   "session_changed": {
     "status": 409,
     "response": {
-      "error": "다른 계정으로 바뀌었습니다 — Forge에서 Design Patch Studio를 다시 열어 주세요.",
+      "error": "다른 계정으로 바뀌었습니다 — Forge에서 디자인 패치 스튜디오를 다시 열어 주세요.",
       "reason": "session_changed"
     }
   },
@@ -120,7 +120,7 @@
   "session_post_bad_token": {
     "status": 401,
     "response": {
-      "error": "토큰을 확인하지 못했습니다 — Forge에서 Design Patch Studio를 다시 열어 주세요.",
+      "error": "Forge에서 디자인 패치 스튜디오를 다시 열어 주세요.",
       "reason": "bad_token"
     }
   },
@@ -134,7 +134,7 @@
   "session_post_rate_limited": {
     "status": 429,
     "response": {
-      "error": "로그인 시도가 너무 많습니다 — 잠시 뒤 Forge에서 Design Patch Studio를 다시 열어 주세요.",
+      "error": "로그인 시도가 너무 많습니다 — 잠시 뒤 Forge에서 디자인 패치 스튜디오를 다시 열어 주세요.",
       "reason": "rate_limited"
     }
   },
@@ -393,7 +393,7 @@
   "session_post_no_access": {
     "status": 403,
     "response": {
-      "error": "Design Patch Studio 사용 권한이 없습니다. 담당자에게 문의해 주세요.",
+      "error": "디자인 패치 스튜디오 사용 권한이 없습니다. 담당자에게 문의해 주세요.",
       "reason": "no_access"
     }
   },

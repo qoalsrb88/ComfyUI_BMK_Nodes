@@ -41,7 +41,7 @@ window.DPEnv = (() => {
     },
   };
 
-  const AGAIN = "Forge에서 Design Patch Studio를 다시 열어 주세요.";
+  const AGAIN = "Forge에서 디자인 패치 스튜디오를 다시 열어 주세요.";
   const CHANGED = "다른 계정으로 바뀌었습니다 — " + AGAIN;
   let sessionUrl = null, lastToken = null, refreshChain = Promise.resolve();
   const pendingTokens = new Set();

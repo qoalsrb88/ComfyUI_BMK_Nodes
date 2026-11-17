@@ -1063,7 +1063,7 @@
 
   function renderHeader() {
     if (!S) return;
-    document.title = `${S.project} · Design Patch Studio`;
+    document.title = `${S.project} · 디자인 패치 스튜디오`;
     $("proj").textContent = `${S.project} · 크롭 ${S.crops.length} · 타깃 ${S.counts.targets} · 후보 ${S.counts.candidates} · pick ${S.counts.picks}`;
     const b = $("badges");
     b.replaceChildren();
@@ -1734,6 +1734,7 @@
     const form = el("form", "projects-form");
     const title = el("h2", "", adopted ? "이 폴더로 시작" : "새 프로젝트");
     const name = el("input", "projects-new-name");
+    name.placeholder = "예: 캐릭터_의상수정";
     name.type = "text";
     name.value = adopted ? adopted.name : "";
     name.readOnly = !!adopted;
@@ -1777,7 +1778,7 @@
       form.append(forgePick);
     }
     if (!adopted && can("path_input")) field("또는 전체 경로", path);
-    form.append(el("p", "projects-note", "모델 gpt-image-2.6-sunburst · 품질 max · 복잡도 high · 4장 · 변형 V1,V4 — 바꾸려면 만든 뒤 ① 준비"),
+    form.append(el("p", "projects-note", "기본 설정: GPT Image 2.6 Sunburst · 최고 품질 · 후보 4장. 프로젝트를 만든 뒤 준비 단계에서 변경할 수 있습니다."),
       feedback, create, close);
     let selected = null, sending = false;
     function validate() {
@@ -1864,8 +1865,10 @@
     newButton.type = "button";
     const formHost = el("div", "projects-form-host");
     tools.append(search, reload, newButton);
-    page.append(tools, formHost, status, grid,
-      el("p", "projects-note", "Studio [새 프로젝트]에서 이름과 타깃 그림 한 장으로 시작하세요."));
+    const heading = el("div", "projects-heading");
+    heading.append(el("h1", "", "프로젝트"), el("p", "", "원화를 불러와 크롭별로 편집하고, 결과를 비교해 PSD로 내보내세요."));
+    page.append(heading, tools, formHost, status, grid,
+      el("p", "projects-note", "프로젝트는 현재 계정과 조직에 저장됩니다."));
     if (can("path_input")) page.append(el("p", "projects-note", "input 밖 프로젝트는 ComfyUI 재시작 뒤 해당 프로젝트 노드를 다시 실행해야 목록에 나타납니다."));
     $("app").replaceChildren(page);
     let rows = [];
@@ -1881,7 +1884,7 @@
       grid.replaceChildren();
       const query = search.value.trim().toLocaleLowerCase();
       const shown = rows.filter((r) => r.name.toLocaleLowerCase().includes(query));
-      status.textContent = shown.length ? `${shown.length}개 프로젝트` : query ? "검색 결과가 없습니다." : "프로젝트가 없습니다 — Studio [새 프로젝트]로 시작하세요.";
+      status.textContent = shown.length ? `${shown.length}개 프로젝트` : query ? "검색 결과가 없습니다." : "아직 프로젝트가 없습니다. 새 프로젝트에서 원화를 불러오세요.";
       status.classList.toggle("dp-empty", !shown.length);
       for (const r of shown) {
         const card = el("article", `projects-card${r.openable ? "" : " projects-unavailable"}`);

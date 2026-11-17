@@ -43,6 +43,7 @@ class ForgeConfig:
     prompt_autopilot: Any = False              # 생성 요청의 prompt_autopilot 키 값(자동 재작성 대상에서 빠지는 표지)
     session_message: str = "design-patch-session"            # 부모 → 앱 토큰 갱신 메시지 type
     request_message: str = "design-patch-session-request"    # 앱 → 부모 토큰 요청 메시지 type
+    allow_private_api_http: bool = False
     allow_http: bool = False                   # 개발 모드(--dev-handoff)에서만 참
 
     def __post_init__(self):
@@ -51,7 +52,8 @@ class ForgeConfig:
             raise ValueError("Forge origin·접근 키는 목록이어야 합니다")
         media = tuple(dict.fromkeys(normalize_origin(value) for value in self.media_origins))
         for value in (api, *media):
-            if not _allowed_scheme(URL(value), self.allow_http):
+            if not _allowed_scheme(URL(value), self.allow_http) and not (
+                    value == api and self.allow_private_api_http and URL(value).scheme == "http"):
                 raise ValueError("Forge 주소는 HTTPS 또는 개발용 루프백 HTTP 여야 합니다")
         if (type(self.allow_http) is not bool or type(self.concurrency) is not int or not 1 <= self.concurrency <= 8
                 or any(type(v) not in (int, float) or not math.isfinite(v) or v <= 0

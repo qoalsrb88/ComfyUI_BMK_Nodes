@@ -55600,7 +55600,10 @@ def batch10b_unit():
         dflt = pl.defaults()["prepare"]
         # Branch A changes the model default; compare final wording on integration.
         expected_model = dflt["model"] if "gpt-image-2.6-sunburst" in pl._MODELS else "gpt-image-2.6-sunburst"
-        note = f'모델 {expected_model} · 품질 {dflt["quality"]} · 복잡도 {dflt.get("complexity", "high")} · {dflt["n"]}장 · 변형 {dflt["variants"]}'
+        # 11/17 배포판 문구: 모델·품질은 화면용 이름으로 적는다. 기본값이 바뀌면 이 표에 없어 실패한다 → 문구도 함께 고칠 것.
+        model_label = {"gpt-image-2.6-sunburst": "GPT Image 2.6 Sunburst"}.get(expected_model, expected_model)
+        quality_label = {"max": "최고 품질"}.get(dflt["quality"], f'품질 {dflt["quality"]}')
+        note = f'기본 설정: {model_label} · {quality_label} · 후보 {dflt["n"]}장.'
         check(note in bj, "B10 new project wording matches integrated defaults")
         js = out / "checks.cjs"
         data = out / "checks.json"
@@ -63261,6 +63264,20 @@ def forge_f2_import_unit():
     asyncio.run(http_scenario())  # 실제 소켓(TestServer) 시나리오
     web = PKG / "web_design_patch"
     check(bd._STATIC.get("forge_import.js") == "text/javascript", "F2C 정적 파일 등록")
+    # 11/17 배포판 반영: Forge 테마·글꼴(같은 서버가 제공 — 외부 주소 없음)
+    check(bd._STATIC.get("forge-theme.css") == "text/css" and bd._STATIC.get("forge-fonts.css") == "text/css", "DPS 테마·글꼴 CSS 정적 등록")
+    fonts = {n for n, t in bd._STATIC.items() if t == "font/woff2"}
+    fonts_css = (web / "forge-fonts.css").read_text(encoding="utf-8")
+    used = set(re.findall(r"url\('([^')]+)'\)", fonts_css))
+    check(bool(fonts) and used == fonts and all((web / n).is_file() for n in fonts), f"DPS 글꼴 CSS 가 가리키는 파일 = 등록된 woff2 ({len(used)}/{len(fonts)})")
+    check(all(re.fullmatch(r"forge-font-[0-9a-f]{16}\.woff2", n) for n in fonts), "DPS 글꼴 파일 이름 꼴")
+    check(not any(w in (fonts_css + (web / "forge-theme.css").read_text(encoding="utf-8")) for w in ("http://", "https://", "//fonts.")),
+          "DPS 테마·글꼴 CSS 외부 주소 0")
+    for lic in ("LICENSE-spacegrotesk.txt", "LICENSE-notosanskr.txt"):
+        check("SIL OPEN FONT LICENSE" in (web / lic).read_text(encoding="utf-8").upper(), "DPS 글꼴 라이선스 동봉 " + lic)
+    html = (web / "board.html").read_text(encoding="utf-8")
+    check('href="forge-fonts.css"' in html and html.index('href="board.css"') < html.index('href="forge-theme.css"'),
+          "DPS board.html 이 글꼴 → board.css → 테마 순으로 읽음")
     css = (web / "board.css").read_text(encoding="utf-8").split("/* ── Forge F2-C", 1)[1]
     for selector in (".dp-forge-item", ".dp-forge-sheet"):
         block = re.search(re.escape(selector) + r"\s*\{([^}]*)\}", css).group(1)
@@ -63333,14 +63350,20 @@ await scenario("FC 창·탭·검색·더보기·요청·닫기",async()=>{
  const before=e.calls.length;await e.fire(300);if(e.calls.length!==before+1||!String(e.calls.at(-1)[0]).includes("search=%EC%9D%98%EC%83%81"))return false;
  const backspace=e.key("keydown","Backspace",true,{target:input});if(backspace.defaultPrevented)return false;
  const image=e.doc.body.all().find(n=>n.tagName==="IMG");if(image.loading!=="lazy"||!image.src.startsWith("/bmk/"))return false;
- await image.parent.click();const body=JSON.parse(e.calls.at(-1)[1].body);
+ // 카드 = button > .dp-forge-preview > img (11/17 — 정사각 미리보기 칸), 이름은 title·aria-label 에도
+ const card=image.parent.parent;if(image.parent.className!=="dp-forge-preview"||card.tagName!=="BUTTON"||card.title!=="시트"||card.attrs["aria-label"]!=="시트 가져오기")return false;
+ if(!card.textContent.includes("옷"))return false;
+ await card.click();const body=JSON.parse(e.calls.at(-1)[1].body);
  return JSON.stringify(body)===JSON.stringify({into:"refs",source:"asset",id:"opaque",root:"root"})&&done.sheet==="sheets/a.png"&&!e.ctx.DPDialog.open;
 });
 await scenario("FC 오류 유지·Esc·target 이름",async()=>{
  let fail=true;const e=await start({handler:(u,o)=>o?.method==="POST"?response(fail?{error:"가져오기 실패"}:{key:"project"},fail?422:200):response({items:[{id:"one",prompt:"선택"}],next:null})});
  let done;e.ctx.DPForgeImport.open({into:"target",name:"새 프로젝트",onDone:r=>done=r});await settle();
- await find(e,"선택").click();if(!e.doc.body.textContent.includes("가져오기 실패")||!e.ctx.DPDialog.open)return false;
- fail=false;await find(e,"선택").click();const body=JSON.parse(e.calls.at(-1)[1].body);
+ // 썸네일 주소가 없는 항목 = 미리보기 칸에 「미리보기 없음」(11/17) — 단추는 title 로 찾는다
+ const pick=label=>e.doc.body.all().find(n=>n.tagName==="BUTTON"&&n.title===label);
+ if(!pick("선택").textContent.includes("미리보기 없음")||e.doc.body.all().some(n=>n.tagName==="IMG"))return false;
+ await pick("선택").click();if(!e.doc.body.textContent.includes("가져오기 실패")||!e.ctx.DPDialog.open)return false;
+ fail=false;await pick("선택").click();const body=JSON.parse(e.calls.at(-1)[1].body);
  if(body.name!=="새 프로젝트"||"root" in body||!done)return false;
  e.ctx.DPForgeImport.open({into:"refs",root:"root"});await settle();e.key("keydown","Escape");return !e.ctx.DPDialog.open;
 });
@@ -63450,6 +63473,17 @@ def forge_f2_client_unit():
         expect_raises(lambda v=value, a=allow: fg.ForgeConfig(v, allow_http=a), "F2C HTTP 제한")
     for value in ("http://localhost:8790", "http://127.0.0.1:8790", "http://[::1]:8790"):
         check(fg.ForgeConfig(value, allow_http=True).api == value, "F2C 개발 루프백 허용")
+    # 11/17 배포판 반영: allow_private_api_http = API origin 하나만 http 허용(같은 망 안의 Forge front). 그림 origin 은 여전히 https
+    inner = "http://forge-front.example:8000"
+    private = fg.ForgeConfig(inner, media_origins=("https://media.example",), allow_private_api_http=True)
+    check(private.api == inner and not private.allow_http, "DPS 내부망 API http 허용(표지를 켰을 때만)")
+    expect_raises(lambda: fg.ForgeConfig(inner, media_origins=("https://media.example",)), "DPS 표지 없으면 API http 거절")
+    expect_raises(lambda: fg.ForgeConfig(inner, media_origins=("http://media.example",), allow_private_api_http=True),
+                  "DPS 표지를 켜도 그림 origin http 는 거절")
+    expect_raises(lambda: fg.ForgeConfig("https://forge.example", media_origins=(inner,), allow_private_api_http=True),
+                  "DPS 표지를 켜도 API 와 다른 origin 의 http 는 거절")
+    check(dataclasses.replace(private, allow_http=False).allow_private_api_http and dataclasses.replace(private, concurrency=3).api == inner,
+          "DPS 설정을 바꿔 다시 만들어도 표지 유지")
     for value in (0, 9, True, 1.5):
         expect_raises(lambda v=value: dataclasses.replace(config, concurrency=v), "F2C 동시 제출 범위")
     for value in (0, -1, float("inf"), float("nan"), True):
@@ -65809,8 +65843,10 @@ async def _fj_routes(jobs, out, api, *, http=False):
                                                                                          **{k: v for k, v in stale.items() if k != "error"})):
                 check(await call("POST", "prompt", {"root": key, "stage": "run"}) == (409, stale), "FJ27 승인 거절 상태·본문 보존")
             with patch.object(jobs.board, "current_scope", return_value=None):
+                # 11/17 배포판 반영: 로그인 경로(server.py)의 문구만 「디자인 패치 스튜디오」로 바뀌었고 실행기·보드 경로는
+                # 옛 이름(board.NO_SESSION 등)이 남아 있다 — 배포판과 같게 두느라 그대로 둔 것. 이름 통일은 다음 동기화 때.
                 check(await call("POST", "prompt", {"root": key, "stage": "apply"}) ==
-                      (401, api["no_session"]["response"]), "FJ28 범위 없음 거절")
+                      (401, dict(api["no_session"]["response"], error=jobs.board.NO_SESSION)), "FJ28 범위 없음 거절")
     finally:
         if client is not None:
             await client.close()
@@ -66480,7 +66516,7 @@ for(const mode of ["500","network","json","shape","timeout"]) await scenario("FW
 });
 for(const code of [401,503]) await scenario("FW10 세션 실패 안내·ready 대기 "+code,async()=>{
   const e=await boot({handler:(u,o)=>String(u).endsWith("/api/session")?response({error:"세션 없음",reason:"no_session"},code):serverHandler(u,o)});
-  return !e.ready && e.ctx.DPEnv.serverMode===true && e.doc.body.textContent.includes("Forge에서 Design Patch Studio를 다시 열어 주세요.")
+  return !e.ready && e.ctx.DPEnv.serverMode===true && e.doc.body.textContent.includes("Forge에서 디자인 패치 스튜디오를 다시 열어 주세요.")
     && !e.doc.body.all().some(x=>x.tagName==="BUTTON");
 });
 await scenario("FW11 서버 저장소 채움·300ms 모음·실패 후 재시도·pagehide",async()=>{
@@ -66864,7 +66900,7 @@ await scenario("FW46 T5 세션 안내 키 차단·재시도 초점·해제",asyn
   return e.ready&&down===1&&press===1&&up===2;
 });
 await scenario("FW46 T5 같은 안내·오류 문구는 한 문단",async()=>{
-  const message="Forge에서 Design Patch Studio를 다시 열어 주세요.";
+  const message="Forge에서 디자인 패치 스튜디오를 다시 열어 주세요.";
   const e=await boot({handler:(u,o)=>String(u).endsWith("/api/session")?response({reason:"no_session",error:message},401):serverHandler(u,o)});
   const paragraphs=e.doc.body.all().filter(n=>n.tagName==="P");return !e.ready&&paragraphs.length===1&&paragraphs[0].textContent===message;
 });
