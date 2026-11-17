@@ -17,6 +17,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import dataclasses
+import hashlib
+import hmac
 import json
 import math
 import re
@@ -34,8 +36,8 @@ ACCESS_TTL = 1800.0             # 메뉴 권한을 다시 보는 간격(초)
 
 @dataclasses.dataclass(frozen=True, repr=False)
 class ForgeConfig:
-    api: str                                   # Forge API origin(https — allow_http 일 때만 루프백 http)
-    media_origins: tuple = ()                  # 결과·자료 그림을 받아도 되는 origin 들
+    api: str                                   # Forge API origin(https — 예외는 allow_http·allow_private_api_http)
+    media_origins: tuple = ()                  # 결과·자료 그림을 받아도 되는 origin 들(https — 예외는 allow_http 뿐)
     access_keys: tuple = ()                    # access/summary 의 serviceWhitelist 에서 전부 참이어야 하는 키(비면 조직 소속만)
     timeout: float = 30.0                      # 호출 하나의 시간 제한(초)
     verify_timeout: float = 8.0                # 검증(/auth/me + access/summary) 합계 상한(초)
@@ -43,7 +45,8 @@ class ForgeConfig:
     prompt_autopilot: Any = False              # 생성 요청의 prompt_autopilot 키 값(자동 재작성 대상에서 빠지는 표지)
     session_message: str = "design-patch-session"            # 부모 → 앱 토큰 갱신 메시지 type
     request_message: str = "design-patch-session-request"    # 앱 → 부모 토큰 요청 메시지 type
-    allow_private_api_http: bool = False
+    allow_private_api_http: bool = False       # 같은 망 안의 Forge 를 http 로 부를 때. API origin 에만 듣는다 — 그림 origin 은
+    #                                            API 와 같은 주소여도 https 여야 한다(fetch_media 가 http 그림을 받지 않는다)
     allow_http: bool = False                   # 개발 모드(--dev-handoff)에서만 참
 
     def __post_init__(self):
@@ -51,10 +54,15 @@ class ForgeConfig:
         if not isinstance(self.media_origins, (tuple, list)) or not isinstance(self.access_keys, (tuple, list)):
             raise ValueError("Forge origin·접근 키는 목록이어야 합니다")
         media = tuple(dict.fromkeys(normalize_origin(value) for value in self.media_origins))
-        for value in (api, *media):
-            if not _allowed_scheme(URL(value), self.allow_http) and not (
-                    value == api and self.allow_private_api_http and URL(value).scheme == "http"):
-                raise ValueError("Forge 주소는 HTTPS 또는 개발용 루프백 HTTP 여야 합니다")
+        if type(self.allow_private_api_http) is not bool:
+            raise ValueError("Forge 내부망 HTTP 설정은 참·거짓이어야 합니다")
+        if not _allowed_scheme(URL(api), self.allow_http) and not (
+                self.allow_private_api_http and URL(api).scheme == "http"):
+            raise ValueError("Forge 주소는 HTTPS 또는 개발용 루프백 HTTP 여야 합니다")
+        # 그림 origin 은 API 와 따로 본다 — API 에만 준 http 예외가 같은 주소의 그림 origin 까지 통과시키면,
+        # 설정은 받아들여지는데 결과 그림은 fetch_media 에서 모두 거절된다.
+        if any(not _allowed_scheme(URL(value), self.allow_http) for value in media):
+            raise ValueError("Forge 그림 주소는 HTTPS 또는 개발용 루프백 HTTP 여야 합니다")
         if (type(self.allow_http) is not bool or type(self.concurrency) is not int or not 1 <= self.concurrency <= 8
                 or any(type(v) not in (int, float) or not math.isfinite(v) or v <= 0
                        for v in (self.timeout, self.verify_timeout))):
@@ -83,7 +91,7 @@ class ForgeError(Exception):
         self.account_id = account_id
         super().__init__({
             "unauthorized": "Forge 로그인 갱신이 필요합니다.",
-            "forbidden": "Design Patch Studio 사용 권한이 없습니다.",
+            "forbidden": "디자인 패치 스튜디오 사용 권한이 없습니다.",
             "invalid": "Forge 가 요청을 받아들이지 못했습니다.",
             "not_found": "Forge 에서 결과를 찾지 못했습니다.",
             "unreachable": "Forge 에 연결하지 못했습니다.",
@@ -546,7 +554,7 @@ def routes(accounts: ForgeAccounts) -> tuple:
     save_slots = asyncio.Semaphore(2)
     messages = {
         "forge_auth": (401, "Forge 로그인 정보를 다시 받아야 합니다 — 잠시 뒤 자동으로 다시 시도합니다."),
-        "no_access": (403, "Design Patch Studio 사용 권한이 없습니다. 담당자에게 문의해 주세요."),
+        "no_access": (403, "디자인 패치 스튜디오 사용 권한이 없습니다. 담당자에게 문의해 주세요."),
         "forge_unreachable": (503, "Forge 에 연결하지 못했습니다 — 잠시 뒤 다시 시도해 주세요."),
         "forge_stale": (404, "목록이 오래됐습니다 — 다시 불러온 뒤 골라 주세요."),
         "no_export": (409, "먼저 Export 를 실행해 주세요."),
@@ -605,9 +613,25 @@ def routes(accounts: ForgeAccounts) -> tuple:
             rows.popitem(last=False)
         return rows
 
+    ident_key = secrets.token_bytes(32)  # 프로세스마다 새로 만든다 — 항목 ID 를 밖에서 계산할 수 없다.
+
     def remember(scope, row):
         rows = table(scope)
-        ident = secrets.token_urlsafe(24)
+        source = row.get("source")
+        if isinstance(source, str) and not source.startswith("page:"):
+            # 같은 계정의 같은 원본 항목은 늘 같은 ID 를 받는다 — 다음 쪽에 다시 내려와도 화면이 한 번만 보여 준다
+            # (forge_import.js 의 seen). 원본 id 가 있으면 주소는 쿼리(요청마다 바뀌는 서명 등)를 빼고 견준다.
+            # 표에는 가장 새 행을 맨 뒤에 남긴다(만료·개수 제한이 넣은 순서를 본다).
+            where = row.get("url")
+            if isinstance(where, str) and row.get("id") is not None:
+                where = where.split("#", 1)[0].split("?", 1)[0]
+            material = json.dumps([scope["org"], scope["account"], source, row.get("id"), where],
+                                  ensure_ascii=False, default=str)
+            ident = base64.urlsafe_b64encode(hmac.new(
+                ident_key, material.encode("utf-8", "surrogatepass"), hashlib.sha256).digest()[:24]).decode("ascii")
+            rows.pop(ident, None)
+        else:
+            ident = secrets.token_urlsafe(24)  # 쪽 이음표는 요청마다 새로
         rows[ident] = dict(row, at=accounts.clock())
         while len(rows) > entry_limit:
             rows.popitem(last=False)
@@ -793,7 +817,7 @@ def routes(accounts: ForgeAccounts) -> tuple:
         async def handle(request):
             scope = board.current_scope()
             if not board.server_mode() or not scope:
-                raise board._Reject(401, "Forge에서 Design Patch Studio를 다시 열어 주세요.", reason="no_session")
+                raise board._Reject(401, "Forge에서 디자인 패치 스튜디오를 다시 열어 주세요.", reason="no_session")
             ctx = accounts.context(scope)
             token = ctx["token_of"]()
             if not token:

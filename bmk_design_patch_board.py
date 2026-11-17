@@ -385,7 +385,7 @@ class _PathReject(_Reject):
 # to_thread 는 contextvar 를 복사하므로 스레드 안에서도 같은 범위를 본다(직접 만든 스레드는 범위를 스스로 걸어야 한다 — 실행기).
 # 서버 모드인데 범위가 없으면 닫힌 쪽으로 실패한다(401) — 범위 없이 남의 프로젝트에 닿는 길을 남기지 않는다.
 # ══════════════════════════════════════════════════════════════════════
-NO_SESSION = "Forge에서 Design Patch Studio를 다시 열어 주세요."
+NO_SESSION = "Forge에서 디자인 패치 스튜디오를 다시 열어 주세요."
 SERVER_ENV = "BMK_DP_SERVER_MODE"  # D339 — 프로세스 플래그는 이 환경 변수 하나("1" = 서버 모드). runner·vlm·노드 모듈도 이것을 읽는다
 # 로컬판이 쓸 수 있는 기능 표(GET /env 의 caps — D341). 서버 전용(jobs·export_download)은 로컬에서 false
 LOCAL_CAPS = {"jobs": False, "export_download": False, "sam3": True, "local_qwen": True, "external": True, "open_folder": True,

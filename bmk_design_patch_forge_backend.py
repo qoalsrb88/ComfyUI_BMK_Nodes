@@ -372,7 +372,7 @@ class ForgeBackend:
                         exc.status is not None and 400 <= exc.status < 500):
                     break
                 if exc.reason == "forbidden" or exc.status == 403:
-                    raise runner.CallError("Design Patch Studio 사용 권한이 없습니다. 담당자에게 문의해 주세요.",
+                    raise runner.CallError("디자인 패치 스튜디오 사용 권한이 없습니다. 담당자에게 문의해 주세요.",
                                            status=403, retryable=False, maybe_billed=False) from None
                 if exc.status == 422:
                     side["requests"][-1]["state"] = "rejected"

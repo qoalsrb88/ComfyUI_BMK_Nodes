@@ -443,7 +443,7 @@
   "jobs_prompt_no_access": {
     "status": 403,
     "response": {
-      "error": "Design Patch Studio 사용 권한이 없습니다. 담당자에게 문의해 주세요.",
+      "error": "디자인 패치 스튜디오 사용 권한이 없습니다. 담당자에게 문의해 주세요.",
       "reason": "no_access"
     }
   },
