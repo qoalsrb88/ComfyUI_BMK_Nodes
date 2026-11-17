@@ -26,6 +26,7 @@ window.DPForgeImport = (() => {
     const tabs = el("div", "lp-btns"), search = el("input", "dp-forge-search");
     const status = el("p", "dp-forge-status"), grid = el("div", "dp-forge-grid");
     const more = el("button", "", "더 보기"), closeButton = el("button", "", "닫기");
+    const seen = new Set();
     let source = "history", next = null, sequence = 0, loading = false, sending = false, timer, listRequest;
     const alive = () => active === overlay;
     function cancelList() {
@@ -62,7 +63,7 @@ window.DPForgeImport = (() => {
     sheet.setAttribute("role", "dialog"); sheet.setAttribute("aria-modal", "true");
     sheet.setAttribute("aria-label", "Forge에서 가져오기");
     status.setAttribute("role", "status");
-    search.type = "search"; search.placeholder = "검색"; search.setAttribute("aria-label", "Forge 자료 검색");
+    search.type = "search"; search.placeholder = "프롬프트 검색"; search.setAttribute("aria-label", "Forge 자료 검색");
     async function choose(item) {
       if (sending) return;
       sending = true; clearTimeout(timer); sequence += 1; cancelList();
@@ -91,17 +92,31 @@ window.DPForgeImport = (() => {
       const request = new AbortController();
       listRequest = request;
       loading = true; more.disabled = true; status.textContent = "목록을 불러오는 중…";
-      if (!append) { next = null; grid.replaceChildren(); more.hidden = true; }
+      if (!append) { next = null; seen.clear(); grid.replaceChildren(); more.hidden = true; }
       const query = new URLSearchParams({ root, search: search.value.trim() });
       if (append) query.set(source === "history" ? "cursor" : "offset", next);
       try {
         const data = await call((source === "history" ? "history" : "assets") + "?" + query, null, request.signal);
         if (!alive() || seq !== sequence) return;
         for (const item of data.items || []) {
+          if (seen.has(item.id)) continue;
+          seen.add(item.id);
           const button = el("button", "dp-forge-item"), image = el("img");
+          const preview = el("div", "dp-forge-preview");
+          const label = (source === "history" ? item.prompt : item.name) || "이름 없는 이미지";
+          button.type = "button"; button.title = label; button.setAttribute("aria-label", label + " 가져오기");
           image.loading = "lazy"; image.alt = "";
+          const unavailable = () => { image.remove(); preview.textContent = "미리보기 없음"; };
+          image.addEventListener("error", unavailable, { once: true });
+          preview.append(image);
           if (typeof item.thumb === "string" && item.thumb.startsWith(API + "thumb?")) image.src = item.thumb;
-          button.append(image, el("span", "", source === "history" ? item.prompt : [item.name, item.folder].filter(Boolean).join(" · ")));
+          else unavailable();
+          button.append(preview, el("span", "", label));
+          const date = item.created ? new Date(item.created) : null;
+          const details = source === "history"
+            ? [item.model, date && !Number.isNaN(date.getTime()) ? date.toLocaleDateString("ko-KR") : ""]
+            : [item.folder || "기본 폴더"];
+          button.append(el("small", "", details.filter(Boolean).join(" · ")));
           button.addEventListener("click", () => choose(item));
           grid.append(button);
         }
@@ -121,6 +136,7 @@ window.DPForgeImport = (() => {
       tab.addEventListener("click", () => {
         if (sending || source === key) return;
         clearTimeout(timer); source = key;
+        search.placeholder = source === "history" ? "프롬프트 검색" : "자료 이름·폴더·태그 검색";
         for (const node of tabs.children) node.setAttribute("aria-pressed", String(node === tab));
         load();
       });

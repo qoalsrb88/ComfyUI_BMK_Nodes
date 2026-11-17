@@ -56,13 +56,13 @@ _FORGE_KEY = web.AppKey("bmk_dp_forge", object)
 _ACCOUNT_LOCK = threading.Lock()
 _ERRORS = {
     "bad_origin": (403, "요청 헤더·출처 검사에 걸렸습니다."),
-    "no_session": (401, "Forge에서 Design Patch Studio를 다시 열어 주세요."),
-    "session_changed": (409, "다른 계정으로 바뀌었습니다 — Forge에서 Design Patch Studio를 다시 열어 주세요."),
+    "no_session": (401, "Forge에서 디자인 패치 스튜디오를 다시 열어 주세요."),
+    "session_changed": (409, "다른 계정으로 바뀌었습니다 — Forge에서 디자인 패치 스튜디오를 다시 열어 주세요."),
     "server_mode": (404, "서버 모드에서는 쓸 수 없는 기능입니다."),
-    "bad_token": (401, "토큰을 확인하지 못했습니다 — Forge에서 Design Patch Studio를 다시 열어 주세요."),
+    "bad_token": (401, "Forge에서 디자인 패치 스튜디오를 다시 열어 주세요."),
     "no_verifier": (503, "토큰 검증기가 설정되지 않았습니다."),
-    "rate_limited": (429, "로그인 시도가 너무 많습니다 — 잠시 뒤 Forge에서 Design Patch Studio를 다시 열어 주세요."),
-    "no_access": (403, "Design Patch Studio 사용 권한이 없습니다. 담당자에게 문의해 주세요."),
+    "rate_limited": (429, "로그인 시도가 너무 많습니다 — 잠시 뒤 Forge에서 디자인 패치 스튜디오를 다시 열어 주세요."),
+    "no_access": (403, "디자인 패치 스튜디오 사용 권한이 없습니다. 담당자에게 문의해 주세요."),
     "forge_unreachable": (503, "Forge 에 연결하지 못했습니다 — 잠시 뒤 다시 시도해 주세요."),
 }
 
