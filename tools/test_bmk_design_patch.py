@@ -31,7 +31,7 @@ r"""Design Patch 통합 테스트 (M1_SPEC §6, M2_SPEC §6, M3_SPEC §7): 보�
        new_targets 복제, force 1회, fill 키 가드, 타깃 추가 뒤 같은 큐 바이트 고정(N14), 실제 execution.PromptExecutor
        (RAM_PRESSURE·CLASSIC) 캐시 아래 재승인·재폴링·mock 끔, apply=targets 흐름(N17), 채택 adopt → Import → Prepare 가드·
        jobs·시트·Run 드라이런(N18·N19, TO-D) — JS 시나리오 J8 = adopt 1회용·J9 = 빠진 부분 실행은 남김(--quick 에서도)
-  참조 폴더 H:\BmkNodeDesign\MultiLayerCropEdit 가 있을 때:
+  참조 폴더 H:\SU_forge\BmkNodeDesign\MultiLayerCropEdit(환경 변수 DP_REF_ROOT 로 바꿈) 가 있을 때:
   R1 03 rect 22/22 · R2 크롭 소스 ≥15/19 비트 일치 · R3 05 harvest · R4 SO 배치 MAE ≤0.25 · RW 풀캔버스 SO PSD · RX 템플릿 상수
   R5 정합 기대값 · R6 자동 마스크 IoU · R7 톤 홀드아웃 · G 게이트   (05 PSD 를 psd 모듈로 읽어 입력 구성)
   N  노드: import(상대/단독)·규약·__init__ 등록, Project → Import PSD(03) → Candidate In(05) → Prepare → Analyze,
@@ -54,7 +54,7 @@ S3b 유료 승인(STUDIO_S3_SPEC §4·§7 · 계약 _proto\s3b\S3B_CONTRACT.md)
   paid_js_unit        _paid_js_tab = J-X1–X4 탭 확장(U1, --only=paid_js_tab) · _paid_js_studio = J-P3·R 재굴림·B12″ 유료(U3,
                       --only=paid_js_studio) · _paid_js_e2e = Studio ↔ 탭 왕복(U4, --only=paid_js_e2e)
   paid_node_unit      (--quick 생략) N29 유료 템플릿 실행(mock)(U4)
-출력물은 H:\BmkNodeDesign\MultiLayerCropEdit\_proto\m2_test_out\ 아래에만 쓴다(M1 회귀 결과를 읽기만 하는 곳은 m1_test_out).
+출력물은 DP_TEST_OUT(없으면 참조 폴더의 _proto\m2_test_out\) 아래에만 쓴다(M1 회귀 결과를 읽기만 하는 곳은 m1_test_out).
 """
 from __future__ import annotations
 
@@ -106,7 +106,8 @@ import bmk_design_patch_store as store  # noqa: E402
 from psd_tools import PSDImage  # noqa: E402
 from psd_tools.constants import SheetColorType, Tag  # noqa: E402
 
-REF = Path(r"H:\BmkNodeDesign\MultiLayerCropEdit")
+# DP_REF_ROOT = 참조 폴더(실데이터 PSD·크롭·레퍼런스)가 다른 곳에 있을 때
+REF = Path(os.environ.get("DP_REF_ROOT") or r"H:\SU_forge\BmkNodeDesign\MultiLayerCropEdit")
 # DP_TEST_OUT = 다른 출력 폴더(두 실행이 같은 폴더를 rmtree 하지 않게), --only=a,b = 그 묶음만(__main__ 의 이름)
 OUT_ROOT = Path(os.environ["DP_TEST_OUT"]) if os.environ.get("DP_TEST_OUT") else REF / "_proto" / "m2_test_out"
 ONLY = {s for a in sys.argv if a.startswith("--only=") for s in a[len("--only="):].split(",") if s}

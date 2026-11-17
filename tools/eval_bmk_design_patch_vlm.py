@@ -77,7 +77,7 @@ logger = logging.getLogger(__name__)
 
 _TAG = "[ComfyUI_BMK_Nodes::DesignPatch]"
 
-EVAL_DIR = Path(r"H:\BmkNodeDesign\MultiLayerCropEdit\_proto\vlm_eval")
+EVAL_DIR = Path(r"H:\SU_forge\BmkNodeDesign\MultiLayerCropEdit\_proto\vlm_eval")
 QWEN_DIR = _HERE.parents[3] / "models" / "LLM" / "Qwen-VL" / "Qwen3-VL-8B-Instruct"  # 노드와 같은 위치(local_qwen 키용)
 BUDGET_TOTAL = 10000     # 사용자 승인 상한(M3_SPEC 전제)
 GATE_LIMIT = 9700        # 누적 실측 + 1.5 × 단계 예상 ≤ 9,700

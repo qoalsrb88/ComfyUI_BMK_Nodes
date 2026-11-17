@@ -40,7 +40,7 @@ from psd_tools.constants import LinkedLayerType, Tag  # noqa: E402
 from psd_tools.psd.descriptor import DescriptorBlock  # noqa: E402
 from psd_tools.psd.tagged_blocks import PlacedLayerData, SmartObjectLayerData  # noqa: E402
 
-DEFAULT_PSD = r"H:\BmkNodeDesign\MultiLayerCropEdit\05.디자인보정 결과.psd"
+DEFAULT_PSD = r"H:\SU_forge\BmkNodeDesign\MultiLayerCropEdit\05.디자인보정 결과.psd"
 TEMPLATE_LAYER = "2026-09-11_16-59-23_edit_2"
 ZERO = dpsd._ZERO_UUID
 SOURCE_TEXT = "05 디자인보정 결과 PSD (Photoshop 2026), SO layer 2026-09-11_16-59-23_edit_2, lnk2 v8"

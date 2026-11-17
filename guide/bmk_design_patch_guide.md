@@ -8,7 +8,7 @@ PS 에서 **크롭 사각형과 클린플레이트만 그려 저장**하면, 노
 - 모듈: `bmk_design_patch.py`(노드 10개) + 노드 없는 보조 모듈 `bmk_design_patch_store / _psd / _analysis / _prompt /
   _runner / _board / _vlm.py`, 보드 페이지 `web_design_patch/`, 짝 JS `js/bmk_design_patch.js`
 - 서버 모드(Forge 이식 F1 — ComfyUI 없이 띄우기): `bmk_design_patch_server.py`(진입점) · `_jobs.py`(실행기) · `_compat.py`(ComfyUI 대체물) — 아래 「서버 모드」 절
-- 명세: `H:\BmkNodeDesign\MultiLayerCropEdit\_proto\M1_SPEC.md`, `M2_SPEC.md`, `M3_SPEC.md`, 근거 보고서: `_proto\reports\final.md`,
+- 명세: `H:\SU_forge\BmkNodeDesign\MultiLayerCropEdit\_proto\M1_SPEC.md`, `M2_SPEC.md`, `M3_SPEC.md`, 근거 보고서: `_proto\reports\final.md`,
   `_proto\design_m3\report_*.md`
 - 카테고리 `BMK/Image`, 노드 검색어: `design patch`, `디자인 패치`, `multi layer crop edit`
 
@@ -2041,7 +2041,7 @@ Studio 화면을 사내 툴 Forge 의 사용감에 맞췄습니다. **로컬판(
    - `<input>/bmk_design_patch/_MOCK_API` 파일이 없고 환경변수 `BMK_DP_MOCK_API` 가 없는지 확인.
    - ComfyUI 에 comfy.org 로그인(또는 API 키) 상태이고 크레딧이 있는지 확인. comfy.org 사용 내역 화면을 열어 둡니다.
    - 샘플 워크플로: `guide/bmk_design_patch_smoke_workflow.json` (아래 2의 그래프·위젯 값·안전장치 `max_new_calls=1`·`concurrency=1`·
-     `only=030` 과 절차 메모가 들어 있음. 03 PSD·레퍼런스 경로는 `H:\BmkNodeDesign\MultiLayerCropEdit` 기준이라 자료 위치가 다르면 고칠 것).
+     `only=030` 과 절차 메모가 들어 있음. 03 PSD·레퍼런스 경로는 `H:\SU_forge\BmkNodeDesign\MultiLayerCropEdit` 기준이라 자료 위치가 다르면 고칠 것).
 2. **그래프**: Project(`m2_smoke`) → Import PSD(03 PSD, refs_dir) → Prepare(model `gpt-image-2.5-sunburst`, quality **low**,
    size_rule `user_k`, variants **`V1`**, n **1**, ref_style `at`, calls_per_cell **1**) → Run(**only `030`**, 나머지 기본) →
    Analyze → Review → Compose → Export PSD.
@@ -2090,7 +2090,7 @@ python_embeded\python.exe -X utf8 -W ignore ComfyUI\custom_nodes\ComfyUI_BMK_Nod
 
 - `--quick`: 보조 모듈 단위 테스트(M1 + M2 store·runner(mock)·board + M3 vlm(V1–V25, mock·가짜 api·가짜 Qwen libs) + 평가 도구
   자기 시험 E0–E4 + JS 시나리오, 약 55초). comfy 를 import 하지 않습니다.
-- 전체: 위 + runner·vlm 의 comfy 묶음(CPU, 가짜 sync_op / 내장 OpenAIChatNode 요청 모양) + 참조 폴더 `H:\BmkNodeDesign\MultiLayerCropEdit`
+- 전체: 위 + runner·vlm 의 comfy 묶음(CPU, 가짜 sync_op / 내장 OpenAIChatNode 요청 모양) + 참조 폴더 `H:\SU_forge\BmkNodeDesign\MultiLayerCropEdit`
   의 03/05 PSD 회귀 + M1 노드 통합 + M2 노드(합성 프로젝트, mock) + M3 Spec Draft 노드(N1–N19) + M2 체인(ComfyUI 로더·실행기로
   Project → … → Export, mock, 서버 포트 없음). 2026-10-13(타깃만·채택 리뷰 수정 뒤): `--quick` PASS 2253, 전체 PASS 3037 · FAIL 0(약 4분 10초).
   **유료 호출은 하지 않습니다**(mock 또는 테스트 안에서만 가짜로 바꾼 sync_op). 출력은 `_proto\m2_test_out\` 아래에만 씁니다.
