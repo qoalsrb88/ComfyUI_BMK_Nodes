@@ -267,6 +267,12 @@ for _module_name in _NODE_MODULES:
 #       탐색 영역에 최소 폭을 예약하고, 넘치는 레거시 버튼 그룹(app.menu.element 직계)을
 #       오른쪽부터 ⋯ 트레이로 옮긴다(DOM 그대로 이동, 공간이 생기면 원위치). 그래도
 #       넘치면 액션바를 두 번째 줄로 내린다. 상위 수정 시 삭제.
+#   - dropped_link_restore_patch.js
+#       Autogrow 입력이 있는 노드(ByteDanceSeedreamNodeV3 등)에서 워크플로를 열 때
+#       묶음 뒤 위젯 입력(model.seed 등)의 링크가 빠지는 프론트엔드 1.59 버그
+#       (Comfy-Org/ComfyUI_frontend#10136 계열) 우회 패치. 로드 전에 저장본의 링크를
+#       입력 이름으로 적어 두고, 로드 뒤 사라진 것만 원래 id 로 다시 잇는다.
+#       BMK 외 노드에도 적용. 상위 수정 시 삭제.
 #   - bmk_sam3_mask_layers.js
 #       BMKSAM3MaskLayers용 확장. layers 입력(BMK_SAM3_LAYERS)을 행 편집기 DOM
 #       위젯으로 그린다(± 전환, prompt, threshold/grow/blur 숫자 칸, on 토글, 드래그
