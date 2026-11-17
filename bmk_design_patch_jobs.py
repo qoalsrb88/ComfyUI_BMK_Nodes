@@ -513,7 +513,7 @@ def routes(runner: JobRunner) -> tuple:
                     raise board._Reject(401, "Forge 로그인 정보를 다시 받아야 합니다 — 잠시 뒤 자동으로 다시 시도합니다.",
                                         reason="forge_auth") from None
                 if exc.reason == "forbidden":
-                    raise board._Reject(403, "Design Patch Studio 사용 권한이 없습니다. 담당자에게 문의해 주세요.",
+                    raise board._Reject(403, "디자인 패치 스튜디오 사용 권한이 없습니다. 담당자에게 문의해 주세요.",
                                         reason="no_access") from None
                 raise board._Reject(503, "Forge 에 연결하지 못했습니다 — 잠시 뒤 다시 시도해 주세요.",
                                     reason="forge_unreachable") from None

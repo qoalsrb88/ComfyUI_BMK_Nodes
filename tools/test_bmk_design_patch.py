@@ -62645,10 +62645,45 @@ def forge_f2_import_unit():
                 check(pages[-1]["cursor"] == "forge-private-cursor", "F2C 불투명 cursor 복원")
                 check((await request("history", account="bob", query={"search": "dress", "cursor": cursor})).status == 404, "F2C 타 계정 cursor 거절")
                 check((await request("history", query={"search": "changed", "cursor": cursor})).status == 404, "F2C 검색 바뀐 cursor 거절")
-            with patch.object(client, "history", return_value={"items": [row] * 2001, "next": None}):
+            # 서로 다른 항목 2001개 — 같은 항목은 한 칸만 차지한다(아래 「같은 항목 = 같은 ID」)
+            with patch.object(client, "history", return_value={"items": [dict(row, id=f"many-{i}") for i in range(2001)], "next": None}):
                 rows = value(await request("history"))["items"]
                 stale = await request("thumb", query={"source": "history", "id": rows[0]["id"]})
                 check(stale.status == 404 and value(stale)["reason"] == "forge_stale", "F2C 계정당 최근 2000개 제한")
+            with patch.object(client, "history", return_value={"items": [row] * 2001, "next": None}):
+                rows = value(await request("history"))["items"]
+                check(len(rows) == 2001 and len({r["id"] for r in rows}) == 1
+                      and value(await request("history"))["items"][0]["id"] == rows[0]["id"],
+                      "DPS 같은 항목 2001번 = ID 하나(다시 불러와도 같은 값)")
+            # 11/18: 같은 계정의 같은 원본 항목은 쪽·요청이 달라도 같은 ID — 화면의 중복 숨김(forge_import.js seen)이 이 값으로 가른다
+            second = dict(row, id="forge-private-2", url=origin + "/fake-media/second.png")
+            third = dict(row, id="forge-private-3", url=origin + "/fake-media/third.png")
+            signed = lambda item, n: dict(item, url=item["url"] + f"?sig={n}")
+            feed = [{"items": [signed(row, 1), signed(second, 1)], "next": "forge-private-cursor"},
+                    {"items": [signed(second, 2), signed(third, 2)], "next": None}]
+            async def paged(token, org, **kwargs):
+                return feed[1 if kwargs.get("cursor") else 0]
+            with patch.object(client, "history", side_effect=paged):
+                first_page = value(await request("history"))
+                next_page = value(await request("history", query={"cursor": first_page["next"]}))
+                again = value(await request("history"))
+                other = value(await request("history", account="bob"))
+                a, b = (r["id"] for r in first_page["items"])
+                b2, c = (r["id"] for r in next_page["items"])
+                check(b == b2 and len({a, b, c}) == 3 and [r["id"] for r in again["items"]] == [a, b],
+                      "DPS 같은 항목 = 같은 ID(다음 쪽·다시 불러오기·바뀐 서명 쿼리)")
+                check(first_page["next"] != again["next"] and first_page["next"] not in (a, b, c),
+                      "DPS 쪽 이음표는 요청마다 새 값")
+                check(not {a, b, c} & {r["id"] for r in other["items"]}, "DPS 다른 계정은 같은 항목도 다른 ID")
+                check(all(re.fullmatch(r"[A-Za-z0-9_-]{32}", x) for x in (a, b, c))
+                      and "forge-private" not in json.dumps([first_page, next_page, again]), "DPS 항목 ID 불투명(원본 id·주소 없음)")
+                wrong = await request("thumb", query={"source": "asset", "id": b})
+                check(wrong.status == 404 and value(wrong)["reason"] == "forge_stale", "DPS 항목 ID 도 source 가 다르면 거절")
+            loose = [dict(row, id=None, url=origin + "/fake-media/loose.png?n=1"), dict(row, id=None, url=origin + "/fake-media/loose.png?n=2"),
+                     dict(row, id=None, url=origin + "/fake-media/loose.png?n=1")]
+            with patch.object(client, "history", return_value={"items": loose, "next": None}):
+                x, y, z = (r["id"] for r in value(await request("history"))["items"])
+                check(x == z != y, "DPS 원본 id 가 없으면 주소 전체로 가름(쿼리만 다른 그림은 다른 항목)")
             listing = await request("assets")
             check(listing.status == 200 and len(value(listing)["items"]) > 0, "F2C 자료 목록·새 프로젝트 root 없음")
             item = value(listing)["items"][0]
@@ -63047,10 +63082,20 @@ def forge_f2_import_unit():
             rig = Rig()
             oldest = await rig.item()
             rig.now += 900
+            rig.url = origin + "/media/later"  # 다른 항목 — 같은 항목이면 같은 ID 로 수명이 갱신된다(바로 아래)
             fresh = await rig.item()
             rig.now += 900
-            check((await rig.request("thumb", query=oldest)).status == 404
+            check(oldest != fresh and (await rig.request("thumb", query=oldest)).status == 404
                   and (await rig.request("thumb", query=fresh)).status == 200, "R4 앞쪽 만료 항목만 제거·후속 항목 보존")
+            rig = Rig()
+            first = await rig.item()
+            rig.now += 900
+            again = await rig.item()
+            rig.now += 900
+            check(first == again and (await rig.request("thumb", query=first)).status == 200,
+                  "DPS 다시 불러온 항목은 같은 ID 로 수명이 갱신됨(30분은 마지막 목록부터)")
+            rig.now += 900
+            check((await rig.request("thumb", query=first)).status == 404, "DPS 갱신된 항목도 마지막 목록에서 30분 뒤 만료")
             # 불투명 표·슬롯 표가 계정 수에 비례해 무한히 쌓이지 않는다(128 계정 LRU).
             rig = Rig()
             first = await rig.item("first")
@@ -63278,6 +63323,18 @@ def forge_f2_import_unit():
     html = (web / "board.html").read_text(encoding="utf-8")
     check('href="forge-fonts.css"' in html and html.index('href="board.css"') < html.index('href="forge-theme.css"'),
           "DPS board.html 이 글꼴 → board.css → 테마 순으로 읽음")
+    # 11/18: 생성 승인 표를 좁히는 규칙은 창 폭 조건 밖에 있다 — 테마가 실행 패널을 최대 420px 로 잡아 어느 창 폭에서도 필요하다
+    plain = re.sub(r"/\*.*?\*/", "", (web / "board.css").read_text(encoding="utf-8"), flags=re.S)
+    narrow = ".pp-table.pp-crops { width: 100%; }"
+    at = plain.find(narrow)
+    check(plain.count(narrow) == 1 and plain[:at].count("{") == plain[:at].count("}"), "DPS 생성 승인 표 좁히기 = 창 폭 조건 없음(@media 밖)")
+    theme = re.sub(r"/\*.*?\*/", "", (web / "forge-theme.css").read_text(encoding="utf-8"), flags=re.S)
+    panel = re.search(r"#pipe-panel[^{}]*\{[^}]*\bwidth:\s*clamp\([^,]+,[^,]+,\s*(\d+)px\s*\)", theme)
+    check(panel is not None and int(panel.group(1)) <= 420, "DPS 테마의 실행 패널 최대 폭 ≤ 420px(넓히면 표 좁히기를 다시 본다)")
+    for name in ("board", "forge", "forge_backend", "jobs", "server"):
+        body = (PKG / f"bmk_design_patch_{name}.py").read_text(encoding="utf-8")
+        check("Design Patch Studio 사용 권한" not in body and "Design Patch Studio를" not in body,
+              "DPS 서버 안내 문구의 이름 = 디자인 패치 스튜디오 · " + name)
     css = (web / "board.css").read_text(encoding="utf-8").split("/* ── Forge F2-C", 1)[1]
     for selector in (".dp-forge-item", ".dp-forge-sheet"):
         block = re.search(re.escape(selector) + r"\s*\{([^}]*)\}", css).group(1)
@@ -63355,6 +63412,16 @@ await scenario("FC 창·탭·검색·더보기·요청·닫기",async()=>{
  if(!card.textContent.includes("옷"))return false;
  await card.click();const body=JSON.parse(e.calls.at(-1)[1].body);
  return JSON.stringify(body)===JSON.stringify({into:"refs",source:"asset",id:"opaque",root:"root"})&&done.sheet==="sheets/a.png"&&!e.ctx.DPDialog.open;
+});
+await scenario("DPS 다음 쪽에 다시 내려온 그림은 한 번만",async()=>{
+ const item=n=>({id:"id-"+n,thumb:"/bmk/design_patch/forge/thumb?id=id-"+n,prompt:"그림 "+n});
+ const e=await start({handler:url=>new URL(url,"https://forge.example").searchParams.has("cursor")
+  ?response({items:[item(2),item(3)],next:null}):response({items:[item(1),item(2)],next:"page"})});
+ e.ctx.DPForgeImport.open({into:"refs",root:"root"});await settle();
+ const cards=()=>JSON.stringify(e.doc.body.all().filter(n=>n.className==="dp-forge-item").map(n=>n.title));
+ if(cards()!==JSON.stringify(["그림 1","그림 2"]))return cards();
+ await find(e,"더 보기").click();
+ return cards()===JSON.stringify(["그림 1","그림 2","그림 3"])||cards();
 });
 await scenario("FC 오류 유지·Esc·target 이름",async()=>{
  let fail=true;const e=await start({handler:(u,o)=>o?.method==="POST"?response(fail?{error:"가져오기 실패"}:{key:"project"},fail?422:200):response({items:[{id:"one",prompt:"선택"}],next:null})});
@@ -63484,6 +63551,17 @@ def forge_f2_client_unit():
                   "DPS 표지를 켜도 API 와 다른 origin 의 http 는 거절")
     check(dataclasses.replace(private, allow_http=False).allow_private_api_http and dataclasses.replace(private, concurrency=3).api == inner,
           "DPS 설정을 바꿔 다시 만들어도 표지 유지")
+    # 11/18: 표지는 API origin 에만 듣는다 — 그림 origin 은 API 와 같은 주소여도 https(fetch_media 가 http 그림을 받지 않는다)
+    expect_raises(lambda: fg.ForgeConfig(inner, media_origins=(inner,), allow_private_api_http=True),
+                  "DPS 표지를 켜도 API 와 같은 주소의 그림 origin http 는 거절", contains="그림 주소")
+    expect_raises(lambda: fg.ForgeConfig(inner, media_origins=("https://media.example", inner + "/"), allow_private_api_http=True),
+                  "DPS 그림 origin 여럿 가운데 하나라도 http 면 거절", contains="그림 주소")
+    for value in (1, 0, "yes", None):
+        expect_raises(lambda v=value: fg.ForgeConfig(inner, allow_private_api_http=v), "DPS 표지는 참·거짓만", contains="참·거짓")
+    loop = "http://localhost:8790"
+    check(fg.ForgeConfig(loop, media_origins=(loop,), allow_http=True, allow_private_api_http=True).media_origins == (loop,)
+          and fg.ForgeConfig(loop, media_origins=(loop,), allow_http=True).media_origins == (loop,),
+          "DPS 개발 루프백 그림 origin 은 그대로(allow_http)")
     for value in (0, 9, True, 1.5):
         expect_raises(lambda v=value: dataclasses.replace(config, concurrency=v), "F2C 동시 제출 범위")
     for value in (0, -1, float("inf"), float("nan"), True):
@@ -65843,10 +65921,10 @@ async def _fj_routes(jobs, out, api, *, http=False):
                                                                                          **{k: v for k, v in stale.items() if k != "error"})):
                 check(await call("POST", "prompt", {"root": key, "stage": "run"}) == (409, stale), "FJ27 승인 거절 상태·본문 보존")
             with patch.object(jobs.board, "current_scope", return_value=None):
-                # 11/17 배포판 반영: 로그인 경로(server.py)의 문구만 「디자인 패치 스튜디오」로 바뀌었고 실행기·보드 경로는
-                # 옛 이름(board.NO_SESSION 등)이 남아 있다 — 배포판과 같게 두느라 그대로 둔 것. 이름 통일은 다음 동기화 때.
+                # 11/18: 실행기·보드 경로의 문구도 로그인 경로(server.py)와 같은 「디자인 패치 스튜디오」다.
                 check(await call("POST", "prompt", {"root": key, "stage": "apply"}) ==
-                      (401, dict(api["no_session"]["response"], error=jobs.board.NO_SESSION)), "FJ28 범위 없음 거절")
+                      (401, api["no_session"]["response"]), "FJ28 범위 없음 거절")
+                check(jobs.board.NO_SESSION == api["no_session"]["response"]["error"], "DPS 범위 없음 문구 = 로그인 경로 문구")
     finally:
         if client is not None:
             await client.close()
