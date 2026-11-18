@@ -63380,6 +63380,12 @@ def forge_f2_import_unit():
         block = re.search(re.escape(selector) + r"\s*\{([^}]*)\}", css).group(1)
         gap = re.search(r"\bgap:\s*(\d+)px", block)
         check(gap is not None and int(gap.group(1)) % 4 == 0, "S3 F2-C 4px 간격 " + selector)
+    # 카드는 단추(min-height 가 정해짐)라 자동 줄은 창 높이에 맞춰 그 최소 높이까지 눌린다 — 카드가 여러 줄이면 서로 겹친다(11/18 실서버).
+    # 줄 높이를 내용 높이로 고정해야 하고, 테마가 그 값을 되돌리면 안 된다
+    grid_block = re.search(r"\.dp-forge-grid\s*\{([^}]*)\}", css).group(1)
+    check(re.search(r"\bgrid-auto-rows:\s*max-content\b", grid_block) is not None, "F2-C 가져오기 격자의 줄 높이 = 카드 내용(max-content)")
+    check(not re.search(r"\.dp-forge-grid[^{}]*\{[^}]*\bgrid-(?:auto-rows|template-rows)\s*:", (web / "forge-theme.css").read_text(encoding="utf-8")),
+          "F2-C 테마가 가져오기 격자의 줄 높이를 다시 정하지 않음")
     source = (web / "forge_import.js").read_text(encoding="utf-8")
     code = re.sub(r"//[^\n]*", "", source)
     check(not any(word in code for word in ("ComfyUI", "그래프", "큐", "comfy.org", "$", "크레딧")), "F2C 새 화면 금지어 0")
