@@ -61298,6 +61298,247 @@ def forge_models_dev_unit():
     """Forge 2단계 가짜 Forge 갈래 — 모델별 요청 꼴 검사·장마다 따로 부르는 흉내·부분 성공·보낸 크기 그대로·모델 목록과 퇴역 스위치.
     명세 _proto/STUDIO_FORGE_MODELS_SPEC.md §4. --quick 포함."""
     section("Forge 모델 가짜 Forge — forge_models_dev_unit")
+    import bmk_design_patch_forge_dev as dev
+    from unittest.mock import AsyncMock, patch
+    from aiohttp import web
+    from aiohttp.test_utils import make_mocked_request
+
+    fixture = json.loads((PKG / "tools" / "fixtures" / "forge_api.json").read_text(encoding="utf-8"))
+    models = fixture["models"]
+    seedream = next(name for name, spec in models["requests"].items() if "image_size" in spec["request"])
+    ideogram = next(name for name, spec in models["requests"].items() if "ideogram" in spec["request"])
+    token = dev.issue_token("models_test")
+    headers = {"Authorization": "Bearer " + token}
+    with patch.dict(os.environ, {"BMK_DP_FAKE_RETIRED": ""}):
+        fake = dev.FakeForge(clock=lambda: 1700000000.0)
+
+    def image_uri(size, image_format="PNG", color=(210, 30, 20)):
+        output = io.BytesIO()
+        with Image.new("RGB", size, color) as picture:
+            picture.save(output, format=image_format)
+        mime = {"PNG": "image/png", "JPEG": "image/jpeg", "WEBP": "image/webp"}[image_format]
+        return "data:" + mime + ";base64," + base64.b64encode(output.getvalue()).decode()
+
+    first_size = (1123, 769)  # 1024 축소·32 배수 보정을 잘못 적용하면 드러나는 입력.
+    first_uri = image_uri(first_size)
+    second_uri = image_uri((64, 40), color=(20, 30, 210))
+    serial = 0
+
+    def payload(name, **changes):
+        nonlocal serial
+        serial += 1
+        data = copy.deepcopy(models["requests"][name]["request"])
+        data.update(request_id="models-" + str(serial), input_images=[[first_uri, second_uri]])
+        data.update(changes)
+        return data
+
+    def same_shape(value, sample):
+        if isinstance(sample, dict):
+            keys = set(sample) - {"_comment"}
+            return isinstance(value, dict) and set(value) == keys and all(same_shape(value[k], sample[k]) for k in keys)
+        if isinstance(sample, list):
+            return isinstance(value, list) and (not sample or all(same_shape(v, sample[min(i, len(sample) - 1)]) for i, v in enumerate(value)))
+        return type(value) is type(sample)
+
+    async def call(method, path, data=None, *, auth=headers, instance=fake):
+        status, response_headers, body = await instance.handle(method, path, auth, json.dumps(data).encode() if data is not None else None)
+        return status, json.loads(body) if response_headers.get("Content-Type") == "application/json" else body
+
+    async def generate(data):
+        status, submitted = await call("POST", "/api/image/generate", data)
+        check(status == 200 and same_shape(submitted, fixture["generate"]["response"]), "FMD 제출은 정본 모양으로 접수")
+        if status != 200:
+            raise AssertionError("가짜 Forge 모델 요청 접수 실패")
+        status, job = await call("GET", "/api/image/jobs/" + submitted["job_id"])
+        check(status == 200, "FMD 접수된 모델 잡 조회")
+        return job, fake.requests[-1]
+
+    async def failed(data, prefix=None):
+        job, record = await generate(data)
+        sample = models["job"]["seedream_failed_input"]
+        check(all(job[key] == sample[key] for key in ("status", "result_data", "error_category"))
+              and isinstance(job["error_message"], str) and (prefix is None or prefix in job["error_message"])
+              and record["provider_calls"] == [], "FMD 입력 오류는 공급자 호출 없는 ailabs 실패 잡")
+        check(same_shape(job, dict(fixture["job"]["completed"], **fixture["job"]["failed_ailabs"], request_data=job["request_data"])),
+              "FMD 입력 오류 응답의 전체 키·자료형은 정본과 같음")
+        return job
+
+    async def result_size(job):
+        status, png = await call("GET", job["result_data"]["images"][0], auth={})
+        with Image.open(io.BytesIO(png)) as result:
+            check(status == 200 and result.format == "PNG", "FMD 모델 결과는 무인증 PNG")
+            return result.size
+
+    async def run():
+        catalog = models["catalog"]
+        check(await call(catalog["method"], catalog["path"]) == (200, catalog["response"]), "FMD1 모델 목록은 정본 전체 응답")
+        for auth in ({}, {"Authorization": "Bearer " + dev.issue_token("models_test", 0, clock=lambda: 1700000000.0)}):
+            check(await call(catalog["method"], catalog["path"], auth=auth)
+                  == (fixture["errors"]["invalid_token"]["status"], fixture["errors"]["invalid_token"]["response"]),
+                  "FMD1 목록도 기존 인증·만료 규칙 적용")
+        check((await call("POST", catalog["path"], {}))[0] == 405, "FMD1 목록의 메서드 검사")
+
+        for name in (seedream, ideogram):
+            data = payload(name)
+            job, record = await generate(data)
+            sample = models["job"]["ideogram_completed" if name == ideogram else "seedream_partial"]
+            check(job["status"] == sample["status"] and same_shape(job["result_data"], sample["result_data"])
+                  and len(job["result_data"]["images"]) == data["num_outputs"], "FMD2 모델별 정본 요청·완료 응답 모양")
+            check(record["keys"] == sorted(models["requests"][name]["request"])
+                  and record["checkpoint"] == models["names"][name] and record["effective_checkpoint"] == record["checkpoint"]
+                  and not record["retired"], "FMD2 받은 최상위 키·checkpoint 기록")
+            expected_calls = list(range(data["num_outputs"])) if models["limits"][name]["fan_out"] else [0]
+            check(record["provider_calls"] == expected_calls, "FMD2 Seedream 장별 호출·Ideogram 한 번 호출")
+            expected_size = tuple(map(int, data["image_size"].split("x"))) if name == seedream else first_size
+            check(await result_size(job) == expected_size, "FMD2 Seedream 요청 크기·Ideogram 첫 입력 실제 크기")
+            if name == ideogram:
+                check(job["result_data"]["result_metadata"] == sample["result_data"]["result_metadata"],
+                      "FMD2 Ideogram 모든 결과의 prompt_used 원문·call_index")
+            before = len(fake.jobs)
+            status, again = await call("POST", "/api/image/generate", data)
+            check(status == 200 and again["job_id"] == job["id"] and again["status"] == "completed"
+                  and len(fake.jobs) == before and fake.requests[-1]["reused"] and fake.requests[-1]["provider_calls"] == [],
+                  "FMD2 모델별 멱등 재제출은 새 잡·공급자 호출 없음")
+
+        for name in (seedream, ideogram):
+            spec = models["requests"][name]
+            for key in spec["never"]:
+                job = await failed(payload(name, **{key: None}), spec["errors"]["input"][1 if key == "background" and name == seedream else 0 if name == seedream else 3])
+                check(key in fake.requests[-1]["keys"], "FMD3 값이 null 이어도 모든 금지 키를 검사·기록")
+                if name == seedream and key == "background":
+                    check(all(job[k] == v for k, v in models["job"]["seedream_failed_input"].items() if k != "_comment"),
+                          "FMD3 Seedream 배경 오류는 정본 실패 값과 동일")
+        lo, hi = models["limits"][seedream]["area"]
+        for size in (None, [], "auto", "0x1024", "-1x1024", "1x1", f"{math.isqrt(hi) + 1}x{math.isqrt(hi) + 1}", f"1x{lo}"):
+            await failed(payload(seedream, image_size=size), models["requests"][seedream]["errors"]["input"][0])
+        missing_size = payload(seedream)
+        del missing_size["image_size"]
+        await failed(missing_size, models["requests"][seedream]["errors"]["input"][0])
+        # Forge 자체의 창은 양의 변·면적·비율이다. 스튜디오의 min_side 를 추가로 강제하지 않는다.
+        for size in (f"{math.isqrt(lo)}x{math.isqrt(lo)}", "400x4000"):
+            job, _ = await generate(payload(seedream, image_size=size, input_images=[[second_uri]]))
+            check(job["status"] == "completed" and await result_size(job) == tuple(map(int, size.split("x"))),
+                  "FMD3 Seedream 면적 하한·짧은 변 512 미만의 유효한 Forge 크기")
+
+        limit = models["limits"][seedream]["max_inputs"]
+        overflow = [first_uri] + [second_uri] * (fixture["generate"]["request_rules"]["max_inputs_per_group"] + 1)
+        for groups in ([overflow], [overflow[:3], overflow[3:]]):
+            job, record = await generate(payload(seedream, input_images=groups))
+            check(job["status"] == "completed" and record["input_count"] == len(overflow)
+                  and record["used_input_indices"] == list(range(limit)) and "warning" not in job["result_data"],
+                  "FMD4 Seedream은 그룹 경계를 넘어 앞의 입력 상한만 사용·조용히 절삭")
+            with Image.open(io.BytesIO(fake._states[job["id"]]["source"])) as source:
+                check(source.getpixel((0, source.height - 1))[0] > source.getpixel((0, source.height - 1))[2],
+                      "FMD4 절삭 뒤에도 첫 입력 그림 유지")
+
+        partial = models["job"]["seedream_partial"]
+        count = max(item["call_index"] for item in partial["result_data"]["result_metadata"]) + 1
+        actual = len(partial["result_data"]["images"])
+        data = payload(seedream, num_outputs=count, prompt=f"[[fake:partial={actual}]]")
+        job, record = await generate(data)
+        check(job["status"] == partial["status"] and same_shape(job["result_data"], partial["result_data"])
+              and len(job["result_data"]["images"]) == actual
+              and job["result_data"]["result_metadata"] == partial["result_data"]["result_metadata"]
+              and "warning" not in job and "warning" not in job["result_data"]
+              and record["provider_calls"] == list(range(count))
+              and record["successful_calls"] == [item["call_index"] for item in partial["result_data"]["result_metadata"]],
+              "FMD4 부분 성공은 모든 장을 따로 호출하고 정본처럼 일부 인덱스만 완료·경고 없음")
+        spec = models["requests"][ideogram]
+        for groups in ([[second_uri] * (models["limits"][ideogram]["max_inputs"] + 1)],
+                       [[second_uri] * 3, [second_uri] * 3]):
+            await failed(payload(ideogram, input_images=groups), spec["errors"]["input"][1])
+        for count in (0, models["limits"][ideogram]["max_n"] + 1, fixture["generate"]["request_rules"]["num_outputs"][1] + 1):
+            await failed(payload(ideogram, num_outputs=count), spec["errors"]["input"][2])
+        for options in (None, [], dict(spec["request"]["ideogram"], extra_option=True),
+                        dict(spec["request"]["ideogram"], quality="max")):
+            await failed(payload(ideogram, ideogram=options), spec["errors"]["input"][3])
+        for prompt in ("", " " * 3, "p" * 10001):
+            await failed(payload(ideogram, prompt=prompt), spec["errors"]["input"][0])
+        await failed(payload(seedream, prompt=" "), models["requests"][seedream]["errors"]["input"][2])
+        for image_format in ("JPEG", "WEBP"):
+            data = payload(ideogram, input_images=[[image_uri(first_size, image_format)]])
+            job, _ = await generate(data)
+            check(await result_size(job) == first_size, "FMD5 Ideogram JPEG·WEBP도 원래 크기로 정밀 편집")
+        large_size = (2301, 1901)
+        job, _ = await generate(payload(ideogram, input_images=[[image_uri(large_size)]], num_outputs=models["limits"][ideogram]["max_n"]))
+        check(job["status"] == "completed" and len(job["result_data"]["images"]) == models["limits"][ideogram]["max_n"]
+              and await result_size(job) == large_size, "FMD5 Ideogram 장수 상한 허용·정밀 편집에는 전체 편집 면적 상한 미적용")
+        for quality in ("very_low", *models["limits"][ideogram]["qualities"]):
+            data = payload(ideogram, ideogram=dict(spec["request"]["ideogram"], quality=quality), input_images=[[second_uri]])
+            del data["prompt_autopilot"]
+            job, record = await generate(data)
+            check(job["status"] == "completed" and record["provider_calls"] == [0]
+                  and all(item["prompt_used"] == data["prompt"] for item in job["result_data"]["result_metadata"]),
+                  "FMD5 Ideogram 공급자 품질·autopilot 키 생략 시 한 번 호출·원문 유지")
+        data = payload(ideogram, prompt="수정 시험 [[fake:changed]]")
+        job, _ = await generate(data)
+        check(all("prompt_used" in item for item in job["result_data"]["result_metadata"])
+              and job["result_data"]["result_metadata"][-1]["prompt_used"] == data["prompt"] + " (rewritten)",
+              "FMD5 기존 changed 표지로 Ideogram 프롬프트 변경")
+
+        gpt = copy.deepcopy(fixture["generate"]["request"])
+        gpt.update(input_images=[[second_uri]], size="96x64")
+        for checkpoint in fixture["generate"]["checkpoints"].values():
+            data = dict(gpt, checkpoint=checkpoint, request_id="gpt-" + checkpoint)
+            job, record = await generate(data)
+            check(job["status"] == "completed" and job["request_data"] == {k: v for k, v in data.items() if k != "input_images"}
+                  and same_shape(job["result_data"], fixture["job"]["completed"]["result_data"])
+                  and job["result_data"]["result_metadata"] == [{} for _ in range(data["num_outputs"])]
+                  and await result_size(job) == (96, 64) and record["checkpoint"] == checkpoint,
+                  "FMD6 GPT 네 모델의 요청 요약·결과 모양·메타데이터·크기 불변")
+        job, _ = await generate(dict(gpt, request_id="gpt-partial", prompt="[[fake:partial=1]]"))
+        check(same_shape(job["result_data"], fixture["job"]["completed_partial"]["result_data"])
+              and job["result_data"]["warning"] == fixture["job"]["completed_partial"]["result_data"]["warning"],
+              "FMD6 GPT 부분 성공에는 기존 경고 유지")
+        data = dict(gpt, request_id="gpt-auto")
+        del data["prompt_autopilot"]
+        job, _ = await generate(data)
+        check(job["result_data"]["result_metadata"][-1]["prompt_used"] == data["prompt"] + " (rewritten)",
+              "FMD6 GPT autopilot 키 생략 시 기존 재작성 유지")
+
+        for name in (seedream, ideogram, next(iter(fixture["generate"]["checkpoints"]))):
+            checkpoint = models["names"][name]
+            fake.retire(checkpoint)
+            current = (await call(catalog["method"], catalog["path"]))[1]
+            check(current["models"] == [row for row in catalog["response"]["models"] if row["checkpoint"] != checkpoint]
+                  and current["count"] == catalog["response"]["count"] - 1, "FMD7 퇴역 스위치가 해당 모델만 목록에서 제거")
+            data = payload(name) if name in models["requests"] else dict(gpt, checkpoint=checkpoint, request_id="gpt-retired")
+            job, record = await generate(data)
+            check(job["status"] == "completed" and record["checkpoint"] == checkpoint and record["retired"]
+                  and record["effective_checkpoint"] != checkpoint and job["request_data"]["checkpoint"] == record["effective_checkpoint"],
+                  "FMD7 퇴역 모델도 접수·대체 모델로 실행했다고 기록")
+            fake.retire(checkpoint, False)
+            check(await call(catalog["method"], catalog["path"]) == (200, catalog["response"]), "FMD7 퇴역 스위치를 끄면 원본 목록 복구")
+        with patch.dict(os.environ, {"BMK_DP_FAKE_RETIRED": ", ".join(models["names"][name] for name in (seedream, ideogram))}):
+            env_fake = dev.FakeForge()
+        current = (await call(catalog["method"], catalog["path"], instance=env_fake))[1]
+        check(current["models"] == [row for row in catalog["response"]["models"]
+                                    if row["checkpoint"] not in [models["names"][name] for name in (seedream, ideogram)]],
+              "FMD7 환경 변수로 여러 모델을 퇴역시킬 수 있음")
+
+        data = payload(ideogram, private_value=token, ideogram={"extra_option": first_uri})
+        await failed(data)
+        snapshot = json.dumps({"calls": list(fake.calls), "requests": list(fake.requests), "jobs": fake.jobs}, ensure_ascii=False)
+        check(token not in snapshot and first_uri not in snapshot and second_uri not in snapshot and "data:image/" not in snapshot
+              and "Authorization" not in snapshot, "FMD8 실패한 옵션·받은 헤더·입력 data URI 본문은 기록·응답에 없음")
+        with patch.object(dev, "_MAX_CALLS", 2), patch.dict(os.environ, {"BMK_DP_FAKE_RETIRED": ""}):
+            bounded = dev.FakeForge()
+        for i in range(3):
+            await call("POST", "/api/image/generate", dict(gpt, request_id="bounded-" + str(i)), instance=bounded)
+        check(bounded.requests.maxlen == 2 and len(bounded.requests) == 2, "FMD8 받은 요청 기록도 최근 상한만 보관")
+
+        app = web.Application()
+        dev.mount(app, types.SimpleNamespace(dev_handoff=True, dev_parent_port=8790), fake)
+        req = make_mocked_request("GET", catalog["path"], headers={"Host": "localhost:8790", **headers},
+                                  payload=types.SimpleNamespace(readany=AsyncMock(return_value=b"")), app=app)
+        route = await app.router.resolve(req)
+        req._match_info = route
+        response = await route.handler(req)
+        check(response.status == 200 and json.loads(response.body) == catalog["response"]
+              and catalog["path"] in {route.resource.canonical for route in app.router.routes()},
+              "FMD8 부모 앱에 목록 라우트 등록·소켓 없이 HTTP 어댑터 호출")
+
+    asyncio.run(run())
 
 
 def forge_models_js_unit():
