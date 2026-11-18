@@ -67,8 +67,11 @@ _ERRORS = {
 }
 
 
-def _error(reason):
+def _error(reason, note=None):
+    """note = 실패 종류를 가리는 짧은 글(ForgeError.note — 고정 낱말·상태 코드뿐). 있으면 안내 문구 끝에 괄호로 붙인다."""
     status, message = _ERRORS[reason]
+    if isinstance(note, str) and note:
+        message = f"{message} ({note})"
     return web.json_response({"error": message, "reason": reason}, status=status)
 
 
@@ -859,7 +862,7 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
                                 response.del_cookie(COOKIE, path="/", samesite=config.cookie_samesite, httponly=True,
                                                     secure=(config.public_origin or request.scheme + "://").startswith("https://"))
                             return response
-                        return _error("forge_unreachable")
+                        return _error("forge_unreachable", error.note)
                     except Exception:
                         return _error("bad_token")
                 finally:
@@ -928,7 +931,7 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
                             return _error("session_changed")
                         sessions.drop_account(session["organization_id"], session["account_id"])
                         return _error("no_access")
-                    return _error("forge_unreachable")
+                    return _error("forge_unreachable", error.note)
                 except Exception:
                     return _error("forge_unreachable")
                 if not isinstance(identity, dict) or not all(_valid_id(identity.get(k)) for k in ("account_id", "organization_id")):

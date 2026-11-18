@@ -398,6 +398,7 @@
     }
   },
   "session_post_forge_unreachable": {
+    "_comment": "error 는 실패 종류를 알 때 끝에 괄호 꼬리가 붙는다 — ' (연결 실패)' · ' (시간 초과)' · ' (상태 코드 n)' · ' (응답 형식)'. 종류를 모르면 아래 문구 그대로. reason·status 는 같다. jobs_prompt_forge_unreachable 과 forge/* 라우트의 forge_unreachable 도 같은 규칙.",
     "status": 503,
     "response": {
       "error": "Forge 에 연결하지 못했습니다 — 잠시 뒤 다시 시도해 주세요.",

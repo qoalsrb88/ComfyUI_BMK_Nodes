@@ -1020,7 +1020,8 @@ window.DPPipeline = (() => {
 
     // opts: apiUrl·comfyUrl·root·toast, refresh(보드 state 전체 다시), select(crop_id — 뷰어 맞춤), goTarget(타깃 키 — 검토로),
     // goMask(mask, 타깃 키)(★ 점검 S4 줄 — 마스크 모드 그 자리), seams() → 크롭별 이음매, drain(), enter()(진행 모드로),
-    // link(이 창의 link — 유료 승인 메시지·wave. 없으면 유료 단추 끔)
+    // link(이 창의 link — 유료 승인 메시지·wave. 없으면 유료 단추 끔), tookSummary(crops[].took) → {short, text, title}(호출 소요
+    // 시간 — 없으면 표시 안 함)
     const { list, panel, head } = hosts;
     const L = opts.link || null;
     let store = null;
@@ -2672,7 +2673,14 @@ window.DPPipeline = (() => {
         if (r && r.pre) ch.append(chip(`다시 생성 ${r.pre}`, "b-wait"), cancelCropButton(c.id));
         if (r && r.inflight) ch.append(chip(`진행 ${r.inflight}`, "b-run" + (planStale() ? "" : " dp-live")));
         if (r && (r.failed || r.orphaned)) ch.append(chip(`실패 ${r.failed} · 결과 못 받음 ${r.orphaned}`, "b-bad"));
-        if (r && r.done) ch.append(chip(`완료 ${r.done}`, "b-cost"));
+        if (r && r.done) {
+          // 호출 소요 시간(state crops[].took — 원장에 값이 없는 옛 호출뿐이면 표시 없음). 요약 글은 board.js tookSummary
+          // 칩은 좁아 가장 최근 호출의 값만 적고(여러 건의 평균·최장은 title)
+          const took = opts.tookSummary ? opts.tookSummary(c.took) : null;
+          const done = chip(`완료 ${r.done}` + (took && took.short ? ` · ${took.short}` : ""), "b-cost");
+          if (took && took.title) done.title = took.title;
+          ch.append(done);
+        }
         if (d && d.wait.length) {
           const w = chip("초안 대기", "b-wait");
           w.title = d.wait.join("\n");
@@ -3106,6 +3114,10 @@ window.DPPipeline = (() => {
         for (const k of ["need", "pre", "free", "done", "failed", "orphaned", "inflight"]) {
           const cell = el("td", "", v[k] || "");
           if (k === "pre" && v.pre && id !== "_stale") cell.append(cancelCropButton(id));
+          if (k === "done" && v.done && c && opts.tookSummary) { // 표는 좁아 칸을 늘리지 않고 title 로만(목록의 「완료」 칩에는 글로 보임)
+            const took = opts.tookSummary(c.took);
+            if (took && took.title) cell.title = took.title;
+          }
           tr.append(cell);
         }
         t.append(tr);

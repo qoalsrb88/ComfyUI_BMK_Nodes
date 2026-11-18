@@ -503,9 +503,9 @@ def routes(runner: JobRunner) -> tuple:
             if stage not in ("run", "reroll") or selected_backend != backend.BACKEND_FORGE or forge is None:
                 raise board._Reject(409, "서버 모드 생성 백엔드가 아직 연결되지 않았습니다(mock 만).", reason="no_backend")
             try:
-                from .bmk_design_patch_forge import ForgeError
+                from .bmk_design_patch_forge import ForgeError, with_note
             except ImportError:
-                from bmk_design_patch_forge import ForgeError
+                from bmk_design_patch_forge import ForgeError, with_note
             try:
                 await forge.ensure_access(account)
             except ForgeError as exc:
@@ -515,7 +515,7 @@ def routes(runner: JobRunner) -> tuple:
                 if exc.reason == "forbidden":
                     raise board._Reject(403, "디자인 패치 스튜디오 사용 권한이 없습니다. 담당자에게 문의해 주세요.",
                                         reason="no_access") from None
-                raise board._Reject(503, "Forge 에 연결하지 못했습니다 — 잠시 뒤 다시 시도해 주세요.",
+                raise board._Reject(503, with_note("Forge 에 연결하지 못했습니다 — 잠시 뒤 다시 시도해 주세요.", exc),
                                     reason="forge_unreachable") from None
         if stage in ("run", "reroll") and board.server_mode():
             cancelled = await asyncio.to_thread(board.reset_rerolls_backend, root)

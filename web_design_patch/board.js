@@ -1388,6 +1388,7 @@
       row(d, "주의", `★ 가 옛 크롭 후보(rect 를 옮기기 전): ${crop.stale_picked.join(", ")} — 새 크롭 후보를 ★ 하세요`, "bad");
     }
     if (!c) {
+      tookRow(d, crop, null);
       row(d, "후보", "없음");
       return;
     }
@@ -1395,6 +1396,7 @@
       .filter((x) => x !== null && x !== undefined && x !== "").join(" · ");
     row(d, `c${pad(c.n)}`, `${c.label} · ${src}` + (c.src_size ? ` · ${c.src_size[0]}×${c.src_size[1]}` : "")
       + (ranText(c) ? ` · ${ranText(c)} 완료` : ""));
+    tookRow(d, crop, c);
     if (c.joint && c.joint.first && c.joint.first !== t.tid) {
       const r = row(d, "공동", `${c.joint.tids.join("·")} 를 한 번에 고친 결과 — ★ 는 ${c.joint.first} 에만 `, "warn");
       if (c.joint.first_key) rowButton(r, `${c.joint.first} 에 ★`, starOnFirst);
@@ -1427,6 +1429,40 @@
     if (!c.done) return "";
     const m = /^\d{4}-(\d\d)-(\d\d) (\d\d:\d\d)/.exec(c.done);
     return (m ? `${m[1]}/${m[2]} ${m[3]}` : c.done) + (VIA[c.via] ? ` ${VIA[c.via]}` : "");
+  }
+
+  function tookText(sec) {
+    // 호출 소요 시간(초 — state 의 took = 원장 calls elapsed_s) → "4.2초"·"42초"·"1분 5초"·"1시간 2분". 값이 없으면(옛 호출) ""
+    if (typeof sec !== "number" || !Number.isFinite(sec) || sec < 0) return "";
+    if (sec < 9.95) return `${Math.round(sec * 10) / 10}초`;
+    const s = Math.round(sec);
+    if (s < 60) return `${s}초`;
+    const m = Math.floor(s / 60);
+    if (m < 60) return `${m}분` + (s % 60 ? ` ${s % 60}초` : "");
+    return `${Math.floor(m / 60)}시간` + (m % 60 ? ` ${m % 60}분` : "");
+  }
+
+  function tookSummary(k) {
+    // 크롭의 끝난 호출 소요 시간 요약(state crops[].took {n, avg, max, last}) → {n, short, text, title}.
+    // short = 가장 최근 호출(좁은 칩용), text = 한 건이면 그 값·여러 건이면 평균·최장. 값이 없으면 n 0·빈 글
+    if (!k || !(k.n > 0) || !tookText(k.avg)) return { n: 0, short: "", text: "", title: "" };
+    const short = tookText(k.last) || tookText(k.avg);
+    const many = `평균 ${tookText(k.avg)} · 최장 ${tookText(k.max) || tookText(k.avg)}`;
+    return { n: k.n, short, text: k.n === 1 ? short : many,
+      title: `호출 소요 시간 — 끝난 호출 ${k.n}건 · ` + (k.n === 1 ? short : `가장 최근 ${short} · ${many}`)
+        + " (요청을 보낸 때부터 결과 그림을 저장할 때까지)" };
+  }
+
+  function tookRow(d, crop, c) {
+    // 상세의 「소요」 줄 — 이 후보를 만든 호출과 그 크롭의 끝난 호출들. 상세 줄은 한 줄 말줄임이라 긴 줄 끝에 붙이지 않고 따로 둔다.
+    // 원장에 값이 없으면(옛 호출) 줄을 만들지 않는다
+    const k = tookSummary(crop && crop.took);
+    const mine = c && c.done ? tookText(c.took) : "";
+    const parts = [];
+    if (mine) parts.push(`이 후보 ${mine}`);
+    if (k.n > 1 || (k.n === 1 && !mine)) parts.push(`크롭 ${k.n}건 ${k.text}`);
+    if (!parts.length) return;
+    row(d, "소요", parts.join(" · ")).title = k.title || "호출 소요 시간 (요청을 보낸 때부터 결과 그림을 저장할 때까지)";
   }
 
   function oldCell(c) {
@@ -1476,7 +1512,7 @@
         .filter(Boolean).join(" · ");
       // 원장 호출의 후보는 레이어명(셀 키) 대신 완료 시각·종류 — 레이어명은 제목·상세 줄에
       const cap = el("div", "cap", `c${pad(c.n)} · ${meta} · ${ranText(c) || c.label}`);
-      cap.title = [c.label, ranText(c) && `${ranText(c)} 완료`].filter(Boolean).join(" · ");
+      cap.title = [c.label, ranText(c) && `${ranText(c)} 완료`, ranText(c) && tookText(c.took)].filter(Boolean).join(" · ");
       promptWarning(cap, c);
       tile.append(cap);
       tile.addEventListener("click", () => selectCand(c.key));
@@ -2255,7 +2291,7 @@
         pipe.tabChanged();
       });
       pipe = window.DPPipeline.create({ list: $("pipe-list"), panel: $("pipe-panel"), head: $("pipe-head") }, {
-        apiUrl, comfyUrl, root: ROOT, toast, drain, goTarget, goMask, goGrow, link: tabLink, cancelRerolls,
+        apiUrl, comfyUrl, root: ROOT, toast, drain, goTarget, goMask, goGrow, link: tabLink, cancelRerolls, tookSummary,
         newProject: newNotes !== null, newNotes,
         goMode: async (mode, cropId) => {
           const t = S && cropId ? S.targets.find((x) => x.crop_id === cropId) : null;

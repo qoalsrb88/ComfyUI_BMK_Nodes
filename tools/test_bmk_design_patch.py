@@ -6347,6 +6347,41 @@ def m2_board_unit():
               "크레딧 미상 = 크레딧 없이 완료된 호출(조회 실패한 유료 호출 — 0 으로 세지 않음, 실패 호출은 아님)")
         check(c2["dup_picks"] == [],
               "같은 파일이라도 공동 결과가 아닌 후보(수확 SO 를 타깃마다 다른 마스크로)는 중복 ★ 아님")
+        # 11/18 호출별 소요 시간(표시 전용 — 원장 calls elapsed_s 를 그대로 읽는다)
+        check(c1["took"] is None and c2["took"] is None, "소요 시간: 원장에 값이 없는 옛 호출뿐이면 None(화면이 표시를 뺌)")
+        for value, want in ((42.129, 42.13), (0, 0.0), (7, 7.0), (None, None), ("42", None), (True, None), (-1, None),
+                            (float("nan"), None), (float("inf"), None), ([42], None), (10 ** 400, None), (1e308, None),
+                            (board._TOOK_MAX, board._TOOK_MAX), (board._TOOK_MAX + 1, None)):
+            check(board._call_took({"elapsed_s": value}) == want, f"소요 시간 값 검사 {str(value)[:24]} → {want!r}")
+        check(board._call_took(None) is None and board._call_took({}) is None and board._call_took("x") is None,
+              "소요 시간: 호출 기록 없음 → None")
+        # 리뷰 지적: 손으로 고친 원장의 아주 큰 수가 상태 응답(JSON)을 깨면 안 된다
+        huge = board._crop_summaries(
+            {"crops": [{"id": "c1", "name": "001_x", "nnn": "001", "rect": [0, 0, 8, 8]}], "candidates": []}, [],
+            [{"crop_id": "c1", "status": "done", "finished": "2026-11-18 16:47:10", "elapsed_s": 10 ** 400},
+             {"crop_id": "c1", "status": "done", "finished": "2026-11-18 16:47:11", "elapsed_s": 1e308},
+             {"crop_id": "c1", "status": "done", "finished": "2026-11-18 16:47:12", "elapsed_s": 1e308},
+             {"crop_id": "c1", "status": "done", "finished": "2026-11-18 16:47:13", "elapsed_s": 3.5}])
+        check(huge[0]["took"] == {"n": 1, "avg": 3.5, "max": 3.5, "last": 3.5}
+              and "Infinity" not in json.dumps(huge) and "NaN" not in json.dumps(huge),
+              f"아주 큰 소요 시간 값은 요약에서 빠지고 응답이 유효한 JSON {huge[0]['took']}")
+        took = board._took_summary([
+            {"status": "done", "finished": "2026-11-18 16:47:10", "elapsed_s": 40.0},
+            {"status": "done", "finished": "2026-11-18 16:49:00", "elapsed_s": 4.24},
+            {"status": "done", "finished": "2026-11-18 16:40:00", "elapsed_s": 75.76},
+            {"status": "done", "finished": "2026-11-18 16:50:00"},                       # 옛 호출(값 없음) — 세지 않음
+            {"status": "failed", "finished": "2026-11-18 16:51:00", "elapsed_s": 999.0},  # 실패 호출 — 세지 않음
+            {"status": "inflight", "elapsed_s": 5.0}])
+        check(took == {"n": 3, "avg": 40.0, "max": 75.76, "last": 4.24}, f"소요 시간 요약 = 끝난 호출만·가장 늦게 끝난 것이 last {took}")
+        check(board._took_summary([]) is None and board._took_summary([{"status": "failed", "elapsed_s": 3.0}]) is None,
+              "소요 시간 요약: 끝난 호출이 없으면 None")
+        timed = board._crop_summaries(
+            {"crops": [{"id": "c1", "name": "001_x", "nnn": "001", "rect": [0, 0, 8, 8]},
+                       {"id": "c2", "name": "002_y", "nnn": "002", "rect": [0, 0, 8, 8]}], "candidates": []}, [],
+            [{"crop_id": "c1", "status": "done", "finished": "2026-11-18 16:47:10", "elapsed_s": 42.13, "credits": None},
+             {"crop_id": "c2", "status": "done", "finished": "2026-11-18 16:47:11", "credits": None}])
+        check(timed[0]["took"] == {"n": 1, "avg": 42.13, "max": 42.13, "last": 42.13} and timed[1]["took"] is None
+              and (timed[0]["calls"], timed[0]["calls_done"]) == (1, 1), "크롭 요약에 그 크롭 호출의 소요 시간만")
 
 
     def b16_focus_race(root):
@@ -29932,7 +29967,9 @@ await scenario("panel", async () => {
   Object.assign(ctx.window, { confirm: (m) => { confirms.push(m); return answer; }, sessionStorage: mem() });
   const hosts = { list: doc.createElement("ol"), panel: doc.createElement("section"), head: doc.createElement("div") };
   doc.body.append(hosts.list, hosts.panel, hosts.head);
+  let tookFn = null;  // 11/18 호출 소요 시간 — board.js 가 주는 tookSummary 자리(기본은 표시 없음)
   const pipe = P.create(hosts, { apiUrl: A, comfyUrl: C, root: KEY, toast: (m, k) => toasts.push(`${k || ""}:${m}`),
+    tookSummary: (k) => (tookFn ? tookFn(k) : { n: 0, short: "", text: "", title: "" }),
     refresh: () => { calls.refresh += 1; }, select: (id) => calls.select.push(id), goTarget: (k) => calls.goTarget.push(k),
     seams: () => new Map([["008_e1d4cc", { n: 2, bad: 1 }]]), drain: () => { calls.drain += 1; }, enter: () => { calls.enter += 1; } });
   const B = (label, root = hosts.panel) => root.all().find((e) => e.tagName === "BUTTON" && e.textContent.startsWith(label)) || null;
@@ -29970,6 +30007,19 @@ await scenario("panel", async () => {
   r.goTarget = calls.goTarget.slice();
   r.list = { boxes: hosts.list.all().filter((e) => e.tagName === "INPUT" && e.type === "checkbox").map((e) => e.checked),
     chips: hosts.list.textContent.includes("승인 필요 2") && hosts.list.textContent.includes("채택 가능") && hosts.list.textContent.includes("레이아웃 미반영") };
+  // 11/18 호출 소요 시간: 목록의 「완료 n」 칩 글 + 「생성 승인」 표의 완료 칸 title(값이 없는 크롭은 그대로)
+  const doneChips = () => hosts.list.all().filter((e) => e.classList.contains("b-cost")).map((e) => [e.textContent, e.title || ""]);
+  const doneCells = () => hosts.panel.all().filter((e) => e.tagName === "TD" && (e.title || "").includes("끝난 호출")).map((e) => [e.textContent, e.title]);
+  r.took = { plain: [doneChips(), doneCells()] };
+  tookFn = (k) => (k ? { n: k.n, short: `${k.last}초`, text: `평균 ${k.avg}초`, title: `끝난 호출 ${k.n}건` } : { n: 0, short: "", text: "", title: "" });
+  // 새 state 객체로(다시 그리기는 state 가 바뀐 때만 — 같은 객체면 그리지 않는다)
+  pipe.stateChanged({ ...S, crops: S.crops.map((c) => (c.id === "001_38a818" ? { ...c, took: { n: 2, avg: 40, max: 55, last: 42 } } : c)) });
+  await sleep(40);
+  r.took.shown = [doneChips(), doneCells()];
+  tookFn = null;
+  pipe.stateChanged(S);
+  await sleep(40);
+  r.took.back = [doneChips(), doneCells()];
   // 채택 확인 창에서 취소 = 미리보기만(쓰기·state 재요청·토스트 없음)
   answer = false;
   const na = srv.log.length;
@@ -32909,6 +32959,10 @@ def pipeline_js_unit():
               f"★ 점검(§3.6): ★ 없음·분석 없는 ★·중복 ★·옛 크롭 ★·이음매 bad·레이아웃 미반영(크롭 줄로만 — 미반영 줄로 다시 적지 않음), "
               f"누르면 그 타깃(중복 ★ = 그 tid) {pn['checks']} {pn['goTarget']}")
         check(pn["list"]["boxes"] == [True] * 5 and pn["list"]["chips"], f"왼쪽 목록 = 선택 체크(기본 전부)·계획 칩 {pn['list']}")
+        tk = pn.get("took") or {}
+        check(tk.get("plain") == [[["완료 2", ""]], []] and tk.get("back") == tk.get("plain")
+              and tk.get("shown") == [[["완료 2 · 42초", "끝난 호출 2건"]], [["2", "끝난 호출 2건"]]],
+              f"호출 소요 시간: 값이 있으면 완료 칩에 가장 최근 값·생성 승인 표 title, 없으면 그대로 {tk}")
         ad0 = pn.get("adoptDeclined") or {}
         check(ad0.get("flags") == [True] and ad0.get("refresh") == 0 and ad0.get("toasts") == [] and "다음 반영에서 이 크롭 새 생성 조건" in (ad0.get("confirm") or ""),
               f"패널 [채택] 확인 창에서 취소 = 미리보기(preview true)만 — 쓰기(preview false)·state 재요청·토스트 없음 {ad0}")
@@ -39489,7 +39543,7 @@ await scenario("renderWiring", async () => {
     setTimeout: (fn) => timers.push(fn), pipeReady: () => true, syncViewer() {}, preloadAround() {}, usd: () => "", credits: () => "", rowButton() {},
     pipe: { enter() {}, leave() {}, select() {} }, chipsLog: [] });
   vm.runInContext(["VIA", "SEEN_KEY"].map(boardConst).join("\n") + ";\n" + ["curTarget", "curCand", "cropOf", "defaultCand", "reconcile", "selectTarget", "selectCand",
-    "syncSeen", "saveSeen", "markSeen", "seeCurrent", "isNew", "ranText", "oldCell", "tileBadges", "targetChips", "promptWarning", "renderGrid", "renderCompare", "renderDetail",
+    "syncSeen", "saveSeen", "markSeen", "seeCurrent", "isNew", "ranText", "oldCell", "tookText", "tookSummary", "tookRow", "tileBadges", "targetChips", "promptWarning", "renderGrid", "renderCompare", "renderDetail",
     "row", "pad", "targetTitle", "setPipe"].map((n) => `${n} = ${boardFn(n)};`).join("\n")
     + "\nrenderTargets = () => { chipsLog = S.targets.map((t) => { const ch = []; targetChips({ append: (...x) => ch.push(...x) }, t); return ch.map((x) => x.textContent); }); };"
     + "\nrenderAll = () => { renderTargets(); renderCompare(); renderDetail(); renderGrid(); };", c);
@@ -49580,6 +49634,15 @@ def forge_f2_session_unit():
             return {"unauthorized": 401, "forbidden": 403, "server": 503}[mode], {}, b"{}"
         if mode == "exception":
             raise RuntimeError("Authorization: Bearer " + token + " https://forge.example/private")
+        # 11/18 실패 종류 구분 — 예외 문구에 토큰·주소를 넣어 두고 로그·응답에 새지 않는지 함께 본다
+        if mode == "kind_timeout":
+            raise asyncio.TimeoutError("Bearer " + token + " https://forge.example/private")
+        if mode == "kind_connect":
+            raise ConnectionRefusedError(10061, "refused " + token + " https://forge.example/private")
+        if mode == "kind_status":
+            return 429, {}, b"{}"
+        if mode == "kind_format":
+            return 200, {}, b"<html>" + token.encode() + b"</html>"
         value = copy.deepcopy(fixture["me" if url.endswith("/auth/me") else "access_summary"]["response"])
         if "user" in value:
             value["user"].update(id=account, name=account)
@@ -49757,8 +49820,13 @@ def forge_f2_session_unit():
             before = len(calls)
             resp, value = await call("/api/session/token", "POST", {"token": "missing", "organization_id": "org1"})
             check(resp.status == 401 and value["reason"] == "no_session" and len(calls) == before, "F2S 갱신 라우트는 세션 필수")
+            # 11/18: 503 안내 끝에 실패 종류(연결 실패·시간 초과·상태 코드 n·응답 형식)가 붙는다. 종류를 모르면(전송 계층의
+            # 알 수 없는 예외) fixture 문구 그대로.
+            notes = {"server": " (상태 코드 503)", "kind_timeout": " (시간 초과)", "kind_connect": " (연결 실패)",
+                     "kind_status": " (상태 코드 429)", "kind_format": " (응답 형식)"}
             for mode, expected in (("unauthorized", 401), ("forbidden", 403), ("server", 503), ("exception", 503),
-                                   ("not_authenticated_denied", 401)):
+                                   ("not_authenticated_denied", 401), ("kind_timeout", 503), ("kind_connect", 503),
+                                   ("kind_status", 503), ("kind_format", 503)):
                 token = new_token(mode)
                 behavior[token] = ("alice", mode)
                 before = len(app[srv._LOGIN_FAILURES_KEY]._global)
@@ -49766,8 +49834,9 @@ def forge_f2_session_unit():
                 check(response.status == expected and len(app[srv._LOGIN_FAILURES_KEY]._global) - before
                       == int(mode in ("unauthorized", "not_authenticated_denied")), "F2S 로그인 오류·집계 " + mode)
                 if expected in (403, 503):
-                    expected_value = api["session_post_no_access" if expected == 403 else "session_post_forge_unreachable"]["response"]
-                    check(value == expected_value, "F2S 로그인 오류 fixture 문구")
+                    expected_value = dict(api["session_post_no_access" if expected == 403 else "session_post_forge_unreachable"]["response"])
+                    expected_value["error"] += notes.get(mode, "") if expected == 503 else ""
+                    check(value == expected_value, f"F2S 로그인 오류 fixture 문구 + 실패 종류 {mode}: {value}")
             first = new_token("first")
             response, value = await call("/api/session", "POST", {"token": first, "organization_id": "org1"})
             sid, tag = response.cookies[srv.COOKIE].value, value["account"]["tag"]
@@ -49912,6 +49981,17 @@ def forge_f2_session_unit():
     files = [path.read_bytes() for path in (out / "data").rglob("*") if path.is_file()]
     check(bool(files) and all(token.encode() not in raw for token in all_tokens for raw in files), "F2S 모든 data 파일 토큰 0건")
     check(all(token not in log.getvalue() for token in all_tokens), "F2S 모든 수준 로그 토큰 0건")
+    failure_lines = [line for line in log.getvalue().splitlines() if "Forge 호출 실패" in line]
+    check(any("call=GET /auth/me" in line and "kind=timeout" in line and "exc=TimeoutError" in line for line in failure_lines)
+          and any("kind=connect" in line and "exc=ConnectionRefusedError" in line and "errno=10061" in line for line in failure_lines)
+          and any("kind=status" in line and "status=429" in line for line in failure_lines)
+          and any("call=GET /api/access/summary" in line and "kind=format" in line for line in failure_lines)
+          and any("kind=other" in line and "exc=RuntimeError" in line for line in failure_lines)
+          and all("elapsed=" in line for line in failure_lines),
+          f"F2S 실패 종류가 서버 로그 한 줄에(호출 이름·종류·걸린 시간) {failure_lines[:6]}")
+    check(failure_lines and all(word not in line for line in failure_lines
+                                for word in ("forge.example", "://", "Bearer", "Authorization", "refused", "<html>", "private")),
+          "F2S 실패 로그 줄에 주소·헤더·예외 문구·응답 본문 0건")
     check(all(token not in response for token in all_tokens for response in responses), "F2S 모든 응답 본문·헤더·쿠키 토큰 0건")
 
     cli = ["--data", str(out / "cli"), "--public-origin", "https://forge.example"]
@@ -54426,10 +54506,36 @@ await scenario("F3U1 D350–351 머리 단추·기억값",async()=>{
   Object.assign(bctx,{curCand:()=>null,curTarget:()=>target,cropOf:()=>crop,targetTitle:()=>"시험",usd:()=>" $9.00",
     row:(parent,key,text)=>{const x=doc.createElement("div");x.textContent=key+": "+text;parent.append(x);return x;}});
   for(const name of ["renderDetail","renderGrid"]) vm.runInContext(boardSrc.match(new RegExp(`\\n  function ${name}\\(\\) \\{[\\s\\S]*?\\n  \\}`))[0],bctx);
+  vm.runInContext(boardSrc.match(/\n  function tookRow\(d, crop, c\) \{[\s\S]*?\n  \}/)[0],bctx);
+  for(const name of ["tookText","tookSummary","ranText","oldCell"]) vm.runInContext(boardSrc.match(new RegExp(`\\n  function ${name}\\(\\w+\\) \\{[\\s\\S]*?\\n  \\}`))[0],bctx);
   vm.runInContext("renderDetail(); renderGrid()",bctx);
   r.detail=!illegal.test($("detail").textContent)&&$("detail").textContent.includes("호출: 이 크롭 호출 2(완료 1) · 대기 1");
   r.emptyGrid=$("grid").firstElementChild.classList.contains("dp-empty")&&$("grid").textContent==="후보 없음 — 대기 호출 2(끝나면 여기에 나옵니다)";
+  r.noTook=!$("detail").textContent.includes("소요"); // 원장에 소요 시간이 없는 옛 호출 — 표시를 뺀다
   bctx.SM=()=>false;vm.runInContext("renderDetail()",bctx);r.localDetail=$("detail").textContent.includes("비용: 이 크롭 Run 999 cr · 호출 2(완료 1)")&&$("detail").textContent.includes("$9.00");
+  // 11/18 호출별 소요 시간(state crops[].took·candidates[].took) — 두 모드 공통. 상세에 「소요」 줄이 따로 생긴다(기존 줄은 그대로)
+  r.tookText=vm.runInContext('[0,4.24,9.96,42.13,59.6,60,65.4,3600,3725,-1,NaN,"42",null,undefined].map(tookText).join("|")',bctx)==="0초|4.2초|10초|42초|1분|1분|1분 5초|1시간|1시간 2분|||||";
+  const rowsOf=()=>$("detail").children.map(x=>[x.textContent,x.title||""]),tookRows=()=>rowsOf().filter(x=>x[0].startsWith("소요: "));
+  const note=" (요청을 보낸 때부터 결과 그림을 저장할 때까지)";
+  crop.took={n:1,avg:42.13,max:42.13,last:42.13};vm.runInContext("renderDetail()",bctx);
+  r.tookLocal=JSON.stringify(tookRows())===JSON.stringify([["소요: 크롭 1건 42초","호출 소요 시간 — 끝난 호출 1건 · 42초"+note]])&&$("detail").textContent.includes("비용: 이 크롭 Run 999 cr · 호출 2(완료 1) · 대기 1소요: ");
+  bctx.SM=()=>true;vm.runInContext("renderDetail()",bctx);
+  r.tookOne=JSON.stringify(tookRows())===JSON.stringify([["소요: 크롭 1건 42초","호출 소요 시간 — 끝난 호출 1건 · 42초"+note]])&&$("detail").textContent.includes("호출: 이 크롭 호출 2(완료 1) · 대기 1소요: ");
+  crop.took={n:3,avg:40,max:65.4,last:4.24};vm.runInContext("renderDetail()",bctx);
+  r.tookMany=JSON.stringify(tookRows())===JSON.stringify([["소요: 크롭 3건 평균 40초 · 최장 1분 5초","호출 소요 시간 — 끝난 호출 3건 · 가장 최근 4.2초 · 평균 40초 · 최장 1분 5초"+note]]);
+  const summary=vm.runInContext("tookSummary",bctx);
+  r.tookShort=summary(crop.took).short==="4.2초"&&summary(crop.took).n===3&&summary({n:1,avg:7,max:7,last:7}).text==="7초";
+  r.tookBad=["x",null,{n:0,avg:1},{n:2,avg:"3"},{n:1}].every(k=>JSON.stringify(summary(k))===JSON.stringify({n:0,short:"",text:"",title:""}));
+  const cand={n:1,label:"L",origin:"run",backend:"forge",variant:"기본",rep:0,src_size:[8,8],done:"2026-11-18 16:47:10",via:"run",took:42.13,analysis:"none"};
+  Object.assign(bctx,{curCand:()=>cand,pad:n=>String(n).padStart(2,"0"),VIA:{run:"run"},GATE_NAMES:{},rowButton:()=>{}});
+  vm.runInContext("renderDetail()",bctx);
+  r.tookCand=$("detail").textContent.includes("c01: L · run · forge · 기본 · r0 · 8×8 · 11/18 16:47 run 완료소요: 이 후보 42초 · 크롭 3건 평균 40초 · 최장 1분 5초");
+  crop.took={n:1,avg:42.13,max:42.13,last:42.13};vm.runInContext("renderDetail()",bctx);
+  r.tookCandOnly=JSON.stringify(tookRows().map(x=>x[0]))===JSON.stringify(["소요: 이 후보 42초"]);
+  cand.took=null;vm.runInContext("renderDetail()",bctx);r.tookCandOld=JSON.stringify(tookRows().map(x=>x[0]))===JSON.stringify(["소요: 크롭 1건 42초"]);
+  crop.took=undefined;vm.runInContext("renderDetail()",bctx);r.tookNone=tookRows().length===0&&$("detail").textContent.includes(" · 11/18 16:47 run 완료");
+  cand.took=42.13;cand.done=null;vm.runInContext("renderDetail()",bctx);r.tookCandNoCall=tookRows().length===0; // 원장에 호출 기록이 없는 후보
+  bctx.curCand=()=>null;crop.took=undefined;
   const messages=[];let way="paid",locked="";
   Object.assign(bctx,{SM:()=>true,tabWay:()=>way,reviewMissing:()=>"",toast:t=>messages.push(t),pipe:{paidWhy:()=>"서버 확인 중",paidLock:()=>locked,reroll:()=>{}},queueInComfy:()=>{throw Error("로컬 실행 금지");}});
   vm.runInContext(boardSrc.match(/\n  function queueReroll\(planned, held\) \{[\s\S]*?\n  \}/)[0],bctx);
@@ -57777,8 +57883,10 @@ def forge_f2_backend_unit():
 
     class Failure(fg.ForgeError):
         # S 갈래의 구현 전에도 같은 공개 예외 계약을 사용한다.
-        def __init__(self, reason, status=None, detail=None):
+        def __init__(self, reason, status=None, detail=None, kind=None):
             self.reason, self.status, self.detail = reason, status, detail
+            if kind is not None:  # 11/18 실패 종류 — 없으면 속성 자체를 두지 않는다(옛 꼴의 예외도 안내가 깨지지 않아야 한다)
+                self.kind = kind
             Exception.__init__(self, "가짜 Forge 오류")
 
     def project(label, *, n=2, reps=1):
@@ -58451,6 +58559,17 @@ def forge_f2_backend_unit():
                                         ("unreachable", "jobs_prompt_forge_unreachable"), ("invalid", "jobs_prompt_forge_unreachable")):
                         accounts.ensure_access.side_effect = Failure(reason)
                         check(await submit("run") == (api[key]["status"], api[key]["response"]), "F2B 유료 권한 오류 fixture 일치")
+                    # 11/18: 실패 종류가 있으면 연결 실패 안내 끝에 붙는다(권한·로그인 안내에는 붙지 않는다)
+                    plain = api["jobs_prompt_forge_unreachable"]["response"]
+                    for failure, note in ((Failure("unreachable", kind="timeout"), " (시간 초과)"),
+                                          (Failure("server", 502, kind="status"), " (상태 코드 502)"),
+                                          (Failure("unreachable", kind="connect"), " (연결 실패)"),
+                                          (Failure("unreachable", 200, kind="format"), " (응답 형식)")):
+                        accounts.ensure_access.side_effect = failure
+                        check(await submit("run") == (503, dict(plain, error=plain["error"] + note)), "유료 권한 확인 실패 안내 + 실패 종류" + note)
+                    for reason, key in (("unauthorized", "jobs_prompt_forge_auth"), ("forbidden", "jobs_prompt_no_access")):
+                        accounts.ensure_access.side_effect = Failure(reason, 401 if reason == "unauthorized" else 403, kind="status")
+                        check(await submit("run") == (api[key]["status"], api[key]["response"]), "로그인·권한 안내에는 실패 종류를 붙이지 않음")
                     accounts.ensure_access.side_effect = None
                     for stage in ("run", "reroll"):
                         check((await submit(stage))[0] == 200 and seen[-1][3]["dp_run"]["inputs"]["concurrency"] == 2, "F2B run·reroll 통과·concurrency 제한")
@@ -62167,7 +62286,7 @@ await scenario("F2W24 후보 목록·크게 보기 경고 칩·다른 후보·�
     curTarget:()=>target,curCand:()=>candidate,refIdx:0,qHeld:false,view:"cand",cKey:null,pad:n=>String(n),
     setImg(){},oldCell:()=>false,ranText:()=>"",tileBadges:()=>doc.createElement("div"),selectCand(){},setStar(){}});
   El.prototype.querySelector=function(){return null;};
-  for(const name of ["promptWarning","renderCompare","renderGrid"])vm.runInContext(boardFn(name),c);
+  for(const name of ["promptWarning","renderCompare","renderGrid","tookText"])vm.runInContext(boardFn(name),c);
   candidate={n:1,key:"one",...F.candidate_prompt_changed.candidate};target.candidates=[candidate,{n:2,key:"two",prompt_changed:false}];
   c.renderCompare();c.renderGrid();
   const chips=n=>n.all().filter(x=>x.classList.contains("dp-prompt-changed"));
@@ -63558,6 +63677,7 @@ def forge_f2_client_unit():
     """Forge F2 갈래 S — ForgeClient(요청 모양·오류 분류·허용 origin·리다이렉트 거부·크기 상한) + 토큰 0건. 명세 _proto/STUDIO_FORGE_F2_SPEC.md §2.4·§4. --quick 포함."""
     section("Forge F2-S — forge_f2_client_unit")
     import bmk_design_patch_forge as fg
+    import logging
     from unittest.mock import patch
     fixture = json.loads((PKG / "tools/fixtures/forge_api.json").read_text(encoding="utf-8"))
     for detail in ("upstream 10.0.3.7:5432 refused", "redis.internal:6379 timeout", "see [::1]:8000",
@@ -63744,6 +63864,135 @@ def forge_f2_client_unit():
         for reason in fg.ForgeError.REASONS:
             error = fg.ForgeError(reason, 500, token)
             check(token not in str(error) + repr(error) and str(error), "F2C reason별 고정 문구")
+
+        # ── 11/18 실패 종류(kind)와 로그 한 줄 ──
+        check(fg.ForgeError.KINDS == ("connect", "timeout", "status", "format"), "실패 종류 목록")
+        for kind, status, note in (("connect", None, "연결 실패"), ("timeout", None, "시간 초과"), ("format", 200, "응답 형식"),
+                                   ("status", 429, "상태 코드 429"), ("status", None, None), ("bogus", 500, None), (None, 500, None),
+                                   (token, 500, None), (["timeout"], None, None)):
+            error = fg.ForgeError("unreachable", status, kind=kind)
+            check(error.note == note and error.kind == (kind if note else None)
+                  and str(error) == "Forge 에 연결하지 못했습니다." and token not in repr(error), f"실패 종류 → 안내 꼬리 {kind!r} {note!r}")
+        base_text = "Forge 에 연결하지 못했습니다 — 잠시 뒤 다시 시도해 주세요."
+        relayed = fg.ForgeError("unreachable", kind="status", kind_status=503)
+        check(relayed.status is None and relayed.kind == "status" and relayed.kind_status == 503 and relayed.note == "상태 코드 503"
+              and fg.ForgeError("server", 502, kind="status").kind_status == 502
+              and fg.ForgeError("unreachable", 200, kind="format", kind_status=503).kind_status is None
+              and fg.ForgeError("unreachable", kind="status", kind_status="503").kind is None,
+              "kind_status: status 를 비운 채 안내용 상태 코드만 전달(정수만)")
+        check(fg.with_note(base_text, fg.ForgeError("unreachable", kind="timeout")) == base_text + " (시간 초과)"
+              and fg.with_note(base_text, fg.ForgeError("server", 502, kind="status")) == base_text + " (상태 코드 502)"
+              and fg.with_note(base_text, fg.ForgeError("unreachable")) == base_text
+              and fg.with_note(base_text, None) == base_text and fg.with_note(base_text, RuntimeError(token)) == base_text,
+              "with_note: 종류가 있을 때만 괄호 꼬리")
+
+        grabbed = []
+        class Grab(logging.Handler):
+            def emit(self, record):
+                grabbed.append(record)
+        grab, old_level = Grab(level=logging.DEBUG), fg.logger.level
+        fg.logger.addHandler(grab)
+        fg.logger.setLevel(logging.DEBUG)
+        secret_url = "https://forge.example/private"
+        def lines():
+            out = [(record.levelno, record.getMessage()) for record in grabbed]
+            grabbed.clear()
+            return out
+        async def kind_of(call, reason, status, kind):
+            error = await failure(call, reason, status)
+            check(error.kind == kind and error.__cause__ is None and error.__context__ is None,
+                  f"실패 종류 {reason}/{status} → {kind}: {error.kind}")
+            return lines()
+        def raising(exc):
+            async def transport(*args):
+                raise exc
+            return fg.ForgeClient(config, transport=transport)
+        try:
+            transport.status, transport.payload = 200, fixture["me"]["response"]
+            await client.me(token)
+            check(lines() == [], "성공한 호출은 로그를 남기지 않음")
+            leak = "Bearer " + token + " " + secret_url
+            for exc, kind, name in ((asyncio.TimeoutError(leak), "timeout", "TimeoutError"), (TimeoutError(leak), "timeout", "TimeoutError"),
+                                    (ConnectionRefusedError(10061, leak), "connect", "ConnectionRefusedError"),
+                                    (OSError(leak), "connect", "OSError"),
+                                    (fg.aiohttp.ClientConnectionError(leak), "connect", "ClientConnectionError"),
+                                    (fg.aiohttp.ServerDisconnectedError(leak), "connect", "ServerDisconnectedError"),
+                                    (fg.aiohttp.ClientPayloadError(leak), "format", "ClientPayloadError"),
+                                    (RuntimeError(leak), None, "RuntimeError")):
+                got = await kind_of(raising(exc).me(token), "unreachable", None, kind)
+                check(len(got) == 1 and got[0][0] == logging.WARNING
+                      and re.fullmatch(r"Forge 호출 실패 — call=GET /auth/me kind=%s elapsed=\d+\.\d\ds exc=%s( errno=10061)?"
+                                       % (kind or "other", name), got[0][1]) is not None
+                      and ("errno=10061" in got[0][1]) == isinstance(exc, ConnectionRefusedError),
+                      f"전송 예외 로그 한 줄 = 호출 이름·종류·걸린 시간·예외 클래스·errno 만 {got}")
+            async def slow_transport(*args):
+                await asyncio.sleep(1)
+            got = await kind_of(fg.ForgeClient(dataclasses.replace(config, timeout=0.01), slow_transport).access(token),
+                                "unreachable", None, "timeout")
+            check(len(got) == 1 and "call=GET /api/access/summary kind=timeout" in got[0][1], f"시간 제한 초과 로그 {got}")
+            async def odd_transport(*args):
+                return "200", {}, b"{}"
+            got = await kind_of(fg.ForgeClient(config, odd_transport).me(token), "unreachable", None, "format")
+            check(len(got) == 1 and "kind=format" in got[0][1], "전송 결과 꼴이 다르면 응답 형식")
+            for status, reason, kind, level in ((429, "unreachable", "status", logging.WARNING), (302, "unreachable", "status", logging.WARNING),
+                                                (502, "server", "status", logging.WARNING), (503, "server", "status", logging.WARNING),
+                                                (401, "unauthorized", None, logging.INFO), (403, "forbidden", None, logging.INFO),
+                                                (404, "not_found", None, logging.INFO), (422, "invalid", None, logging.INFO)):
+                transport.status, transport.payload = status, {"detail": leak}
+                got = await kind_of(client.submit(token, {"prompt": leak}), reason, status, kind)
+                check(len(got) == 1 and got[0][0] == level
+                      and re.fullmatch(r"Forge 호출 실패 — call=POST /api/image/generate kind=status status=%d elapsed=\d+\.\d\ds" % status,
+                                       got[0][1]) is not None, f"상태 코드 로그({status}) — 표에 든 4xx 는 INFO {got}")
+            transport.status = 200
+            for call, label, payload in ((lambda: client.me(token), "GET /auth/me", b"<html>" + leak.encode()),
+                                         (lambda: client.me(token), "GET /auth/me", {"authenticated": True, "user": {"id": 7}}),
+                                         (lambda: client.access(token), "GET /api/access/summary", {"organizations": leak}),
+                                         (lambda: client.submit(token, {}), "POST /api/image/generate", {"job_id": 5, "status": leak}),
+                                         (lambda: client.job(token, "job-secret-7"), "GET /api/image/jobs/{id}", {"status": leak}),
+                                         (lambda: client.job(token, "job-secret-7"), "GET /api/image/jobs/{id}",
+                                          {"status": "completed", "result_data": {"images": [5]}}),
+                                         (lambda: client.history(token, "org1"), "GET /api/image/history", {"items": leak}),
+                                         (lambda: client.assets(token, "org1"), "GET /api/library/assets", {"rows": leak})):
+                transport.payload = payload
+                error = await failure(call(), "unreachable", 200)
+                got = lines()
+                check(error.kind == "format" and error.note == "응답 형식" and len(got) == 1 and got[0][0] == logging.WARNING
+                      and got[0][1].startswith("Forge 호출 실패 — call=" + label + " kind=format elapsed=") and "job-secret-7" not in got[0][1],
+                      f"응답 형식 로그 {label} {got}")
+            transport.payload = b"x" * (fg.JSON_LIMIT + 1)
+            got = await kind_of(client.me(token), "server", 413, "format")
+            check(len(got) == 1 and "kind=format" in got[0][1] and "status=" not in got[0][1], "크기 상한 초과는 응답 형식(우리 상한 — 상태 코드로 적지 않음)")
+            transport.payload = b"png"
+            before = len(transport.calls)
+            await failure(client.fetch_media("https://outside.example/secret-path.png?sig=" + token), "forbidden")
+            got = lines()
+            check(len(transport.calls) == before and got == [(logging.WARNING, "Forge 호출 실패 — call=GET (그림 받기) kind=origin")],
+                  f"허용 목록 밖 그림 주소는 보내지 않고 종류만 남김 {got}")
+            transport.status = 500
+            got = await kind_of(client.fetch_media("https://forge.example/image?sig=" + token), "server", 500, "status")
+            check(len(got) == 1 and got[0][1].startswith("Forge 호출 실패 — call=GET (그림 받기) kind=status status=500 elapsed="), "그림 받기 상태 코드")
+            # 리뷰 지적: 올리기 단계의 409 는 다른 분류로 바뀌어 올라간다 — 같은 실패를 두 줄로 적지 않는다
+            transport.status, transport.payload = 409, {"detail": "conflict"}
+            error = await failure(client.upload_asset(token, "org1", name="a", data=b"x", content_type="image/png",
+                                                      client_request_id="r1"), "unreachable", 409)
+            got = lines()
+            check(error.kind == "status" and error.note == "상태 코드 409" and len(got) == 1 and got[0][0] == logging.WARNING
+                  and got[0][1].startswith("Forge 호출 실패 — call=POST /api/library/assets/upload-url kind=status status=409 elapsed="),
+                  f"올리기 409 는 로그 한 줄(WARNING) {got}")
+            transport.status = 200
+            everything = []
+            for exc in (RuntimeError(leak), ConnectionRefusedError(10061, leak)):
+                await failure(raising(exc).me(token), "unreachable")
+            everything += grabbed
+            text = "\n".join(logging.Formatter("%(levelname)s %(name)s %(message)s").format(record) for record in everything)
+            check(everything and all(not record.exc_info and not record.stack_info for record in everything)
+                  and all(isinstance(arg, str) for record in everything for arg in (record.args or ()))
+                  and all(word not in text for word in (token, "forge.example", "://", "Bearer", "Authorization", "private")),
+                  "실패 로그 기록에 토큰·주소·헤더·예외 객체 0건")
+            grabbed.clear()
+        finally:
+            fg.logger.removeHandler(grab)
+            fg.logger.setLevel(old_level)
 
         opened, closed, chunks = [], [], []
         class Content:
@@ -64731,6 +64980,19 @@ def forge_f2_verifier_unit():
                   and getattr(error, "account_id", None) == expected, "R1 forbidden은 확인한 account_id만 전달")
             check(expected is None or expected not in str(error) + repr(error), "R1 확인한 account_id는 예외 문구·repr에 없음")
         check(await verify(401, 401) == "unauthorized", "F2V 양쪽 401")
+        # 11/18 실패 종류(kind·note) — 분류(reason)는 그대로, 종류만 더 싣는다
+        for me, access, kind, note in ((503, None, "status", "상태 코드 503"), (None, 502, "status", "상태 코드 502"),
+                                       (429, None, "status", "상태 코드 429"), ("timeout", None, "timeout", "시간 초과"),
+                                       (None, "timeout", "timeout", "시간 초과"), ("timeout", "timeout", "timeout", "시간 초과"),
+                                       ("nonjson", None, "format", "응답 형식"), (None, "nonjson", "format", "응답 형식"),
+                                       ({"authenticated": True, "user": {"id": "x" * 129}}, None, "format", "응답 형식"),
+                                       (None, {"organizations": "broken"}, "format", "응답 형식")):
+            error = await verify(me, access, return_error=True)
+            check(isinstance(error, fg.ForgeError) and error.reason == "unreachable" and error.kind == kind and error.note == note
+                  and str(error) == "Forge 에 연결하지 못했습니다.", f"검증 실패 종류 {kind} {note}: {getattr(error, 'kind', None)}")
+            check(error.status is None, f"검증 실패의 status 는 전처럼 None(상태 코드는 kind_status 로만) {error.status}")
+        error = await verify(org="bad\u200b", return_error=True)
+        check(error.reason == "unreachable" and error.kind is None and error.note is None, "요청한 조직 형식 오류에는 실패 종류 없음")
         for error in (503, "timeout", "nonjson"):
             for side in (0, 1):
                 values = [None, None]

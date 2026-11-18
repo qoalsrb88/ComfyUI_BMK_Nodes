@@ -803,6 +803,34 @@ def _call_via(call: dict | None) -> str | None:
     return _VIA.get(str(call.get("approved_by") or "").split(":")[0])
 
 
+_TOOK_MAX = 7 * 86400.0  # 표시할 소요 시간의 상한(초) — 이보다 크면 깨진 값으로 보고 뺀다(합·평균이 넘치지 않게)
+
+
+def _call_took(call: dict | None) -> float | None:
+    """원장 calls 의 소요 시간(초 — runner 가 적는 elapsed_s: 요청을 보낸 때부터 결과 그림을 저장할 때까지, 복구로 받은
+    호출은 요청 구간만). 값이 없거나(옛 호출) 숫자가 아니거나 범위(0–_TOOK_MAX) 밖이면 None — 화면이 표시를 뺀다.
+    표시 전용이다: 손으로 고친 원장의 아주 큰 수·NaN 이 상태 응답(JSON)을 깨지 않게 여기서 거른다."""
+    v = call.get("elapsed_s") if isinstance(call, dict) else None
+    if type(v) not in (int, float):
+        return None
+    try:
+        v = float(v)  # 아주 큰 정수는 OverflowError
+    except (OverflowError, ValueError):
+        return None
+    return round(v, 2) if math.isfinite(v) and 0 <= v <= _TOOK_MAX else None
+
+
+def _took_summary(calls: list[dict]) -> dict | None:
+    """끝난 호출들의 소요 시간 요약 {n, avg, max, last}(초) — last = 가장 늦게 끝난 호출. 값이 있는 호출이 없으면 None."""
+    rows = [(str(x.get("finished") or ""), t) for x in calls if x.get("status") == "done"
+            for t in (_call_took(x),) if t is not None]
+    if not rows:
+        return None
+    took = [t for _when, t in rows]
+    return {"n": len(took), "avg": round(sum(took) / len(took), 2), "max": max(took),
+            "last": max(rows, key=lambda r: r[0])[1]}
+
+
 def _name_fold(name: str) -> str:
     """크롭 이름 비교 키(store.check_crop_name 의 중복 판정과 같은 NFC·casefold)."""
     return unicodedata.normalize("NFC", name).strip().casefold()
@@ -2799,7 +2827,7 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
                     "cell_key": ck, "call_id": call_id, "rep": rep, "variant": info.get("variant"),
                     "model": info.get("model"), "quality": info.get("quality"),
                     # 원장 calls 의 완료 시각·승인 종류(후보 캡션), 지금 jobs 에 없는 셀(설정·입력이 바뀌기 전 셀 — 옛 셀)
-                    "done": call.get("finished") if call else None, "via": _call_via(call),
+                    "done": call.get("finished") if call else None, "via": _call_via(call), "took": _call_took(call),
                     "old_cell": bool(ck and cur_cells and ck not in cur_cells),
                     "analysis": "ok" if _usable(e) else ("nosrc" if e and e.get("no_source")
                                                          else "skipped" if e and e.get("skipped") else "none"),
@@ -2957,15 +2985,16 @@ def _crop_summaries(m: dict, targets: list[dict], calls: list[dict]) -> list[dic
                     dup.append({"key": k, "tid": t["tid"], "same_as": seen[f]})
                 if k in stale_keys:
                     stale.append(k)
-        cost = _cost([x for x in calls if x.get("crop_id") == crop["id"]])
-        cells = {x["cell_key"]: x["pending"] for t in ts for x in t["cells"]}
+        crop_calls = [x for x in calls if x.get("crop_id") == crop["id"]]
+        cost = _cost(crop_calls)
+        cells ={x["cell_key"]: x["pending"] for t in ts for x in t["cells"]}
         warnings = list(crop.get("warnings") or [])
         out.append({
             "id": crop["id"], "name": crop.get("name"), "nnn": crop.get("nnn"), "rect": crop["rect"],
             "tids": [t["tid"] for t in ts], "warnings": warnings,
             "candidates": sum(len(t["candidates"]) for t in ts), "picked_targets": sum(1 for t in ts if t["pick_keys"]),
             "pending": sum(cells.values()), "credits": cost["credits"], "credits_unknown": cost["unknown"],
-            "calls": cost["calls"], "calls_done": cost["done"],
+            "calls": cost["calls"], "calls_done": cost["done"], "took": _took_summary(crop_calls),
             "dup_picks": dup, "stale_picked": stale, "problems": len(warnings) + len(dup) + len(stale),
         })
     return out

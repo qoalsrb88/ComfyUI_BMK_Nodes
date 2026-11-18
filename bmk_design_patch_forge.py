@@ -7,6 +7,9 @@ import 하지 않는다. 실제 Forge 주소는 코드·문서·fixture 어디�
 - 토큰은 인자로만 받고 어디에도 보관하지 않는다(보관은 서버의 세션 표 — bmk_design_patch_server). 토큰·Authorization·요청/응답
   본문·Forge 주소를 로그·예외 문구·repr 에 싣지 않는다. aiohttp 예외는 밖으로 내보내지 않고 고정 문구의 ForgeError 로 바꾼다
   (`raise … from None`).
+- 실패는 종류(ForgeError.kind — 연결 실패·시간 초과·상태 코드·응답 형식)를 가려 로그에 한 줄 남긴다(_log_failure). 그 줄에
+  싣는 것은 호출 이름(코드에 적힌 고정 낱말)·종류·상태 코드·걸린 시간·예외 클래스 이름·errno 뿐이다 — 예외 문구(str)는
+  주소가 들어 있을 수 있어 싣지 않는다.
 - HTTP 세션은 호출마다 열고 닫는다 — 검증기는 서버 이벤트 루프에서, 생성 백엔드는 작업 스레드의 asyncio.run(노드마다 새 루프)
   에서 부른다. 세션을 나눠 쓰지 않는다. 쿠키 저장 없음(DummyCookieJar), 환경 변수 프록시 없음(trust_env=False), 리다이렉트를
   따라가지 않는다.
@@ -20,6 +23,7 @@ import dataclasses
 import hashlib
 import hmac
 import json
+import logging
 import math
 import re
 import time
@@ -32,6 +36,8 @@ from yarl import URL
 JSON_LIMIT = 8 * 1024 ** 2      # 압축을 푼 뒤의 JSON 응답 상한
 MEDIA_LIMIT = 64 * 1024 ** 2    # 결과 그림 한 장 상한
 ACCESS_TTL = 1800.0             # 메뉴 권한을 다시 보는 간격(초)
+
+logger = logging.getLogger(__name__)
 
 
 @dataclasses.dataclass(frozen=True, repr=False)
@@ -80,15 +86,24 @@ class ForgeConfig:
 
 class ForgeError(Exception):
     """Forge 호출 실패. reason ∈ REASONS, status = HTTP 상태(없으면 None), detail = 화면에 보여도 되는 짧은 글(없으면 None).
-    str(e) 는 reason 별 고정 문구다 — 토큰·주소·본문이 들어가지 않는다."""
+    str(e) 는 reason 별 고정 문구다 — 토큰·주소·본문이 들어가지 않는다.
+    kind ∈ KINDS | None = 실패의 종류(진단용 — 분류·과금 판정은 reason·status 만 본다). kind_status = kind 가 "status" 일 때
+    안내에 적을 상태 코드(주지 않으면 status — 검증기처럼 status 를 비워 올리는 곳이 따로 준다). note = 그 종류를 안내 문구
+    끝에 붙일 짧은 글(고정 낱말 + 상태 코드 숫자뿐)."""
 
     REASONS = ("unauthorized", "forbidden", "invalid", "not_found", "unreachable", "server")
+    KINDS = ("connect", "timeout", "status", "format")
 
-    def __init__(self, reason: str, status: int | None = None, detail: str | None = None, account_id: str | None = None):
+    def __init__(self, reason: str, status: int | None = None, detail: str | None = None, account_id: str | None = None,
+                 *, kind: str | None = None, kind_status: int | None = None):
         self.reason = reason if reason in self.REASONS else "unreachable"
         self.status = status if type(status) is int else None
         self.detail = _safe_detail(detail)
         self.account_id = account_id
+        self.kind = kind if isinstance(kind, str) and kind in self.KINDS else None
+        self.kind_status = (kind_status if type(kind_status) is int else self.status) if self.kind == "status" else None
+        if self.kind == "status" and self.kind_status is None:
+            self.kind = None
         super().__init__({
             "unauthorized": "Forge 로그인 갱신이 필요합니다.",
             "forbidden": "디자인 패치 스튜디오 사용 권한이 없습니다.",
@@ -97,6 +112,43 @@ class ForgeError(Exception):
             "unreachable": "Forge 에 연결하지 못했습니다.",
             "server": "Forge 응답을 받지 못했습니다.",
         }[self.reason])
+
+    @property
+    def note(self) -> str | None:
+        kind = getattr(self, "kind", None)  # __init__ 을 거치지 않은 하위 클래스(시험용 가짜)도 안내를 깨지 않게
+        if kind == "status":
+            code = getattr(self, "kind_status", None)
+            code = code if type(code) is int else getattr(self, "status", None)
+            return f"상태 코드 {code}" if type(code) is int else None
+        return {"connect": "연결 실패", "timeout": "시간 초과", "format": "응답 형식"}.get(kind) if isinstance(kind, str) else None
+
+
+def with_note(message: str, error) -> str:
+    """안내 문구 끝에 실패 종류를 붙인다 — 「… 다시 시도해 주세요. (시간 초과)」. 종류를 모르면 문구 그대로."""
+    note = error.note if isinstance(error, ForgeError) else None
+    return f"{message} ({note})" if note else message
+
+
+def _log_failure(call: str, kind: str, started: float | None = None, *, status: int | None = None,
+                 exc_name: str | None = None, errno: int | None = None, level: int = logging.WARNING) -> None:
+    """실패 한 줄(모듈 머리말의 「지킬 것」). call = 이 모듈에 적힌 고정 낱말, 나머지는 숫자와 클래스 이름뿐이다."""
+    parts = ["call=" + call, "kind=" + kind]
+    if type(status) is int:
+        parts.append(f"status={status}")
+    if type(started) in (int, float):
+        parts.append(f"elapsed={max(0.0, time.monotonic() - started):.2f}s")
+    if isinstance(exc_name, str) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", exc_name):
+        parts.append("exc=" + exc_name)
+    if type(errno) is int:
+        parts.append(f"errno={errno}")
+    logger.log(level, "Forge 호출 실패 — %s", " ".join(parts))
+
+
+def _failure(call: str, kind: str, started: float | None = None, *, reason: str = "unreachable",
+             status: int | None = None) -> ForgeError:
+    """로그 한 줄 + 그 종류의 ForgeError(부르는 쪽이 `raise … from None`)."""
+    _log_failure(call, kind, started, status=status)
+    return ForgeError(reason, status, kind=kind)
 
 
 # 전송 함수: async (method, url, headers, body, timeout) -> (status, headers, body). 시험·개발용 가짜 Forge 가 끼운다.
@@ -195,9 +247,11 @@ class ForgeClient:
     def __init__(self, config: ForgeConfig, transport: Transport | None = None):
         self.config, self._transport = config, transport
 
-    async def _exchange(self, method, url, headers, body, limit):
+    async def _exchange(self, method, url, headers, body, limit, call="?"):
         reason = None
         failure_status = None
+        kind = exc_name = errno = None
+        started = time.monotonic()
         try:
             if self._transport is None:
                 result = await _http(method, url, headers, body, self.config.timeout, limit)
@@ -206,24 +260,42 @@ class ForgeClient:
                                                 timeout=self.config.timeout)
             status, response_headers, raw = result
             if type(status) is not int or not isinstance(response_headers, dict) or not isinstance(raw, bytes):
-                reason = "unreachable"
+                reason, kind = "unreachable", "format"
             elif len(raw) > limit:
-                reason, failure_status = "server", 413
+                reason, failure_status, kind = "server", 413, "format"
         except _BodyTooLarge:
-            reason, failure_status = "server", 413
-        except Exception:
+            reason, failure_status, kind = "server", 413, "format"
+        except Exception as exc:
             reason = "unreachable"
+            # 종류·클래스 이름·errno 만 꺼낸다 — 예외 객체와 그 문구(주소·헤더가 들어 있을 수 있다)는 여기서 버린다.
+            if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+                kind = "timeout"
+            elif isinstance(exc, (aiohttp.ClientPayloadError, aiohttp.ClientResponseError)):
+                kind = "format"
+            elif isinstance(exc, (aiohttp.ClientError, OSError)):
+                kind = "connect"
+            exc_name = type(exc).__name__
+            errno = getattr(exc, "errno", None)
+            if type(errno) is not int:
+                errno = getattr(getattr(exc, "os_error", None), "errno", None)
         # except 밖에서 새 예외를 만들어 __context__ 에도 원래 헤더·주소가 남지 않게 한다.
         if reason:
-            raise ForgeError(reason, failure_status) from None
+            # 413 은 우리가 정한 크기 상한에 걸린 것이다(Forge 가 준 상태 코드가 아니다) — 로그에는 종류만 적는다.
+            _log_failure(call, kind or "other", started, exc_name=exc_name, errno=errno)
+            raise ForgeError(reason, failure_status, kind=kind) from None
         return status, raw
 
     @staticmethod
-    def _status(status, raw, token=None):
+    def _status(status, raw, token=None, call="?", started=None, quiet=()):
         if status == 200:
             return
         reason = {401: "unauthorized", 403: "forbidden", 404: "not_found",
                   400: "invalid", 409: "invalid", 413: "invalid", 422: "invalid"}.get(status)
+        # 표에 든 4xx 는 화면이 따로 안내하는 흐름(로그인 갱신·권한·입력 오류)이라 INFO 로만 남긴다.
+        # quiet = 부르는 쪽이 다른 분류로 바꿔 직접 한 줄 남기는 상태 코드(같은 실패를 두 줄로 적지 않는다).
+        if status not in quiet:
+            _log_failure(call, "status", started, status=status, level=logging.INFO if reason else logging.WARNING)
+        kind = None if reason else "status"
         reason = reason or ("server" if 500 <= status < 600 else "unreachable")
         detail = None
         if reason == "invalid":
@@ -233,24 +305,27 @@ class ForgeClient:
                 detail = _safe_detail(value.replace(token, "") if isinstance(value, str) and token else value)
             except Exception:
                 pass
-        raise ForgeError(reason, status, detail) from None
+        raise ForgeError(reason, status, detail, kind=kind) from None
 
-    async def _json(self, method, path, token, body=None):
+    async def _json(self, method, path, token, body=None, call=None, quiet=()):
+        call = call or method + " " + path
+        started = time.monotonic()
         headers = {"Authorization": "Bearer " + token}
         encoded = None
         if body is not None:
             headers["Content-Type"] = "application/json"
             encoded = json.dumps(body, ensure_ascii=False).encode("utf-8")
         url = str(URL(self.config.api).with_path(path))
-        status, raw = await self._exchange(method, url, headers, encoded, JSON_LIMIT)
-        self._status(status, raw, token)
+        status, raw = await self._exchange(method, url, headers, encoded, JSON_LIMIT, call)
+        self._status(status, raw, token, call, started, quiet)
         data = None
         try:
             data = json.loads(raw)
         except Exception:
             pass
         if not isinstance(data, dict):
-            raise ForgeError("unreachable", status) from None
+            _log_failure(call, "format", started)
+            raise ForgeError("unreachable", status, kind="format") from None
         return data
 
     def __repr__(self) -> str:  # 설정의 주소를 싣지 않는다
@@ -258,31 +333,37 @@ class ForgeClient:
 
     async def me(self, token: str) -> dict:
         """GET /auth/me → {"id", "email", "name"}. 401·authenticated 가 참이 아님 → ForgeError("unauthorized")."""
+        started = time.monotonic()
         data = await self._json("GET", "/auth/me", token)
         if data.get("authenticated") is not True:
             raise ForgeError("unauthorized", 200)
         user = data.get("user")
         if not isinstance(user, dict) or not isinstance(user.get("id"), str) or not user["id"]:
-            raise ForgeError("unreachable", 200)
+            _log_failure("GET /auth/me", "format", started)
+            raise ForgeError("unreachable", 200, kind="format")
         return {key: user.get(key) for key in ("id", "email", "name")}
 
     async def access(self, token: str) -> dict:
         """GET /api/access/summary → {"orgs": [id…], "whitelist": {키: bool}}."""
+        started = time.monotonic()
         data = await self._json("GET", "/api/access/summary", token)
         orgs, whitelist = data.get("organizations"), data.get("serviceWhitelist")
         if not isinstance(orgs, list) or not isinstance(whitelist, dict):
-            raise ForgeError("unreachable", 200)
+            _log_failure("GET /api/access/summary", "format", started)
+            raise ForgeError("unreachable", 200, kind="format")
         return {"orgs": [org["id"] for org in orgs if isinstance(org, dict) and isinstance(org.get("id"), str)],
                 "whitelist": dict(whitelist)}
 
     async def submit(self, token: str, body: dict) -> dict:
         """POST /api/image/generate → {"job_id", "status"}. 4xx 는 ForgeError(reason, status, detail=가린 detail)."""
+        started = time.monotonic()
         data = await self._json("POST", "/api/image/generate", token, body)
         job_id = data.get("job_id")
         if job_id is None and isinstance(data.get("job_ids"), list) and data["job_ids"]:
             job_id = data["job_ids"][0]
         if not isinstance(job_id, str) or not job_id or data.get("status") not in ("pending", "processing", "completed", "failed"):
-            raise ForgeError("unreachable", 200)
+            _log_failure("POST /api/image/generate", "format", started)
+            raise ForgeError("unreachable", 200, kind="format")
         return {"job_id": job_id, "status": data["status"]}
 
     async def job(self, token: str, job_id: str) -> dict:
@@ -290,17 +371,20 @@ class ForgeClient:
         "result_ids": […], "metadata": [{…}…], "error_message", "error_category"} — request_data 는 버린다."""
         if not isinstance(job_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", job_id):
             raise ForgeError("invalid")
-        data = await self._json("GET", "/api/image/jobs/" + job_id, token)
+        call, started = "GET /api/image/jobs/{id}", time.monotonic()  # 잡 id 는 로그에 싣지 않는다
+        data = await self._json("GET", "/api/image/jobs/" + job_id, token, call=call)
         result = data.get("result_data")
         if data.get("status") not in ("pending", "processing", "completed", "failed") or (result is not None and not isinstance(result, dict)):
-            raise ForgeError("unreachable", 200)
+            _log_failure(call, "format", started)
+            raise ForgeError("unreachable", 200, kind="format")
         result = result or {}
         images, ids, metadata = (result.get(key, []) for key in ("images", "result_ids", "result_metadata"))
         if (any(not isinstance(value, list) for value in (images, ids, metadata))
                 or any(not isinstance(value, str) for value in images)
                 or any(value is not None and not isinstance(value, str) for value in ids)
                 or any(value is not None and not isinstance(value, dict) for value in metadata)):
-            raise ForgeError("unreachable", 200)
+            _log_failure(call, "format", started)
+            raise ForgeError("unreachable", 200, kind="format")
         size = max(len(images), len(ids), len(metadata))
         keys = ("arm", "call_index", "seed", "seed_supported", "prompt_used")
         normalized = {key: data.get(key) for key in ("status", "queue_position", "queue_total", "execution_deadline_at", "error_category")}
@@ -318,13 +402,15 @@ class ForgeClient:
             parsed = _url(url)
         except ValueError:
             pass
+        call, started = "GET (그림 받기)", time.monotonic()
         if (parsed is None or not _allowed_scheme(parsed, self.config.allow_http)
                 or str(parsed.origin()) not in self.config.media_origins):
+            _log_failure(call, "origin")  # 허용 목록 밖 주소 — 보내지 않았다. 주소는 적지 않는다
             raise ForgeError("forbidden") from None
         if type(limit) is not int or limit <= 0:
             raise ForgeError("invalid")
-        status, raw = await self._exchange("GET", str(parsed), {}, None, min(limit, MEDIA_LIMIT))
-        self._status(status, raw)
+        status, raw = await self._exchange("GET", str(parsed), {}, None, min(limit, MEDIA_LIMIT), call)
+        self._status(status, raw, None, call, started)
         return raw
 
     async def history(self, token: str, organization_id: str, *, cursor: str | None = None, search: str | None = None,
@@ -340,15 +426,17 @@ class ForgeClient:
                     raise ForgeError("invalid")
                 query[key] = value
         url = str(URL(self.config.api).with_path("/api/image/history").with_query(query))
-        status, raw = await self._exchange("GET", url, {"Authorization": "Bearer " + token}, None, JSON_LIMIT)
-        self._status(status, raw, token)
+        call, started = "GET /api/image/history", time.monotonic()
+        status, raw = await self._exchange("GET", url, {"Authorization": "Bearer " + token}, None, JSON_LIMIT, call)
+        self._status(status, raw, token, call, started)
         data = None
         try:
             data = json.loads(raw)
         except (ValueError, UnicodeError, RecursionError):
             pass
         if not isinstance(data, dict) or not isinstance(data.get("items"), list):
-            raise ForgeError("unreachable", status)
+            _log_failure(call, "format", started)
+            raise ForgeError("unreachable", status, kind="format")
         items = []
         for group in data["items"]:
             if not isinstance(group, dict):
@@ -374,15 +462,17 @@ class ForgeClient:
             raise ForgeError("invalid")
         url = str(URL(self.config.api).with_path("/api/library/assets").with_query(
             organization_id=organization_id, limit=limit, offset=offset))
-        status, raw = await self._exchange("GET", url, {"Authorization": "Bearer " + token}, None, JSON_LIMIT)
-        self._status(status, raw, token)
+        call, started = "GET /api/library/assets", time.monotonic()
+        status, raw = await self._exchange("GET", url, {"Authorization": "Bearer " + token}, None, JSON_LIMIT, call)
+        self._status(status, raw, token, call, started)
         data = None
         try:
             data = json.loads(raw)
         except (ValueError, UnicodeError, RecursionError):
             pass
         if not isinstance(data, list):
-            raise ForgeError("unreachable", status)
+            _log_failure(call, "format", started)
+            raise ForgeError("unreachable", status, kind="format")
         return {"items": [{"id": row.get("id"), "url": row.get("url"), "thumb": row.get("thumbnail_url"),
                            "name": row.get("name"), "folder": row.get("folder_path"), "tags": row.get("tags", []),
                            "client_request_id": row.get("client_request_id")}
@@ -402,13 +492,14 @@ class ForgeClient:
                 or not client_request_id or any(v is not None and (type(v) is not int or v <= 0) for v in (width, height))):
             raise ForgeError("invalid")
         base = "/api/library/assets"
+        started = time.monotonic()
         try:
             upload = await self._json("POST", base + "/upload-url", token,
                                       {"organization_id": organization_id, "filename": name + suffix,
-                                       "content_type": content_type, "size_bytes": len(data), "kind": "asset"})
+                                       "content_type": content_type, "size_bytes": len(data), "kind": "asset"}, quiet=(409,))
         except ForgeError as error:
             if error.status == 409:  # 등록 단계의 409 만 client_request_id 충돌이다.
-                raise ForgeError("unreachable", 409) from None
+                raise _failure("POST " + base + "/upload-url", "status", started, status=409) from None
             raise
         parsed = None
         try:
@@ -418,28 +509,31 @@ class ForgeClient:
         key = upload.get("s3_key")
         if (parsed is None or not _allowed_scheme(parsed, self.config.allow_http)
                 or not isinstance(key, str) or not key):
-            raise ForgeError("unreachable") from None
+            raise _failure("POST " + base + "/upload-url", "format", started) from None
         # 이 요청만 늘린다. 공유 클라이언트의 설정·Forge API 제한은 바꾸지 않는다.
         put_timeout = min(300.0, max(self.config.timeout, len(data) / (256 * 1024)))
         storage = ForgeClient(dataclasses.replace(self.config, timeout=put_timeout), self._transport)
-        status, _ = await storage._exchange("PUT", str(parsed), {"Content-Type": content_type}, data, JSON_LIMIT)
+        put_call, put_started = "PUT (자료 올리기)", time.monotonic()
+        status, _ = await storage._exchange("PUT", str(parsed), {"Content-Type": content_type}, data, JSON_LIMIT, put_call)
         if not 200 <= status < 300:
-            raise ForgeError("unreachable", status)  # 저장소 오류는 Forge 인증·권한 오류가 아니다.
+            raise _failure(put_call, "status", put_started, status=status)  # 저장소 오류는 Forge 인증·권한 오류가 아니다.
+        started = time.monotonic()
         try:
             await self._json("POST", base + "/uploads/complete", token,
-                             {"organization_id": organization_id, "s3_key": key})
+                             {"organization_id": organization_id, "s3_key": key}, quiet=(409,))
         except ForgeError as error:
             if error.status == 409:
-                raise ForgeError("unreachable", 409) from None
+                raise _failure("POST " + base + "/uploads/complete", "status", started, status=409) from None
             raise
         body = {"organization_id": organization_id, "client_request_id": client_request_id,
                 "name": name, "s3_key": key, "content_type": content_type}
         body.update({k: v for k, v in (("width", width), ("height", height)) if v is not None})
+        started = time.monotonic()
         result = await self._json("POST", base, token, body)
         if not isinstance(result.get("id"), str) or not isinstance(result.get("name"), str):
-            raise ForgeError("unreachable")
+            raise _failure("POST " + base, "format", started)
         if any(token and token in result[k] or upload["upload_url"] in result[k] for k in ("id", "name")):
-            raise ForgeError("unreachable")
+            raise _failure("POST " + base, "format", started)
         return {"id": result["id"], "name": result["name"]}
 
 
@@ -452,6 +546,7 @@ class ForgeVerifier:
 
     async def verify(self, token: str, organization_id: str) -> dict:
         """→ {"account_id", "organization_id", "name", "exp": float | None}."""
+        started = time.monotonic()
         tasks = [asyncio.create_task(call(token)) for call in (self.client.me, self.client.access)]
         try:
             _, pending = await asyncio.wait(tasks, timeout=min(8.0, self.config.verify_timeout))
@@ -463,7 +558,16 @@ class ForgeVerifier:
         errors = [value for value in values if isinstance(value, BaseException)]
         if any(isinstance(err, ForgeError) and err.reason == "unauthorized" and err.status != 200 for err in errors):
             raise ForgeError("unauthorized", 401)
-        if pending or any(not isinstance(err, ForgeError) or err.reason not in ("unauthorized", "forbidden") for err in errors):
+        if pending:
+            # 두 호출 가운데 답이 없는 것을 적는다 — 호출별 시간 제한(config.timeout)보다 검증 상한이 짧을 때 여기로 온다.
+            waiting = "+".join(name for name, task in zip(("me", "access"), tasks) if task in pending)
+            raise _failure("verify(" + waiting + ")", "timeout", started)
+        failed = next((err for err in errors
+                       if not isinstance(err, ForgeError) or err.reason not in ("unauthorized", "forbidden")), None)
+        if failed is not None:
+            if isinstance(failed, ForgeError):  # 호출이 이미 한 줄 남겼다 — 종류만 이어 준다(status 는 전처럼 비운다)
+                raise ForgeError("unreachable", kind=failed.kind, kind_status=failed.kind_status)
+            _log_failure("verify", "other", started, exc_name=type(failed).__name__)
             raise ForgeError("unreachable")
         if any(isinstance(err, ForgeError) and err.reason == "unauthorized" for err in errors):
             raise ForgeError("unauthorized", 200)
@@ -476,7 +580,9 @@ class ForgeVerifier:
         if any(isinstance(err, ForgeError) and err.reason == "forbidden" for err in errors):
             raise ForgeError("forbidden", 403, account_id=account_id)
         user, access = values
-        if not _valid_id(user.get("id")) or not _valid_id(organization_id):
+        if not _valid_id(user.get("id")):
+            raise _failure("GET /auth/me", "format", started)
+        if not _valid_id(organization_id):
             raise ForgeError("unreachable")
         if not _has_access(access, organization_id, self.config.access_keys):
             raise ForgeError("forbidden", 403, account_id=account_id)
@@ -563,9 +669,9 @@ def routes(accounts: ForgeAccounts) -> tuple:
         "already_saved": (409, "이미 저장한 그림입니다 — Forge 내 자료에서 확인해 주세요"),
     }
 
-    def reject(reason):
+    def reject(reason, error=None):
         status, message = messages[reason]
-        raise board._Reject(status, message, reason=reason)
+        raise board._Reject(status, with_note(message, error), reason=reason)
 
     @contextmanager
     def account_state(scope):
@@ -843,7 +949,7 @@ def routes(accounts: ForgeAccounts) -> tuple:
                                 except ForgeError as error:
                                     # ensure_access 가 토큰 거절·계정 회수를 이미 처리한다.
                                     reject({"unauthorized": "forge_auth", "forbidden": "no_access"}.get(
-                                        error.reason, "forge_unreachable"))
+                                        error.reason, "forge_unreachable"), error)
                             if is_list:
                                 return await listing(request, scope, ctx, token, "history" if action == "history" else "asset")
                             if action == "save":
@@ -872,7 +978,7 @@ def routes(accounts: ForgeAccounts) -> tuple:
                             except ForgeError as error:
                                 if error.reason in ("forbidden", "unauthorized", "not_found") or error.status in (401, 403, 404):
                                     reject("forge_stale")
-                                reject("forge_unreachable")
+                                reject("forge_unreachable", error)
                             return await board.import_received(data, raw, filename(raw, row, token))
                     finally:
                         if action == "save":
@@ -885,7 +991,7 @@ def routes(accounts: ForgeAccounts) -> tuple:
                     reject("no_access")
                 if action == "save" and error.reason == "invalid" and error.status == 413:
                     reject("too_large")
-                reject("forge_unreachable")
+                reject("forge_unreachable", error)
         return handle
 
     return tuple(("GET" if name in ("history", "assets", "thumb") else "POST",
