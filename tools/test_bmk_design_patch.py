@@ -62380,6 +62380,38 @@ await scenario("FMJ env 세션 뒤 목록 갱신 "+mode,async()=>{
     otherCaps:env.caps.sam3===initial.caps.sam3,backend:env.backend===initial.backend,
     silent:!e.doc.body.textContent&&!e.logs.length};
 });
+await scenario("U2 모델 재조회 병합·오류 회복·다른 환경 값 보존",async()=>{
+  const initial=clone(A.env_server_forge.response);initial.caps.models=clone(IN.models);initial.caps.models_error="목록을 읽지 못했습니다";
+  let reads=0,reply;const e=await boot({handler:(u,o)=>{
+    if(!String(u).endsWith("/env"))return serverHandler(u,o);
+    if(++reads<=2)return response(initial);return new Promise(r=>reply=r);
+  }}),env=e.ctx.DPEnv;
+  if(typeof env.refreshModels!=="function")return {refresh:false};
+  const a=env.refreshModels(),b=env.refreshModels();await settle();
+  const fresh=clone(initial);fresh.caps.models[0].available=false;fresh.caps.models[0].why="목록에서 빠짐";
+  fresh.caps.models_error=null;fresh.caps.sam3=!initial.caps.sam3;fresh.backend="changed";
+  reply(response(fresh));const changed=await a;await b;
+  const r={shared:a===b&&reads===3,changed:changed===true,models:JSON.stringify(env.caps.models)===JSON.stringify(fresh.caps.models),
+    error:env.caps.models_error===null,others:env.backend===initial.backend&&env.caps.sam3===initial.caps.sam3};
+  const same=env.refreshModels();await settle();reply(response(fresh));r.same=await same===false&&reads===4;return r;
+});
+for(const failure of ["network","http","session","shape","timeout"])await scenario("U2 재조회 실패 값 유지 "+failure,async()=>{
+  const initial=clone(A.env_server_forge.response);initial.caps.models=clone(IN.models);initial.caps.models_error="첫 안내";let reads=0;
+  const e=await boot({handler:(u,o)=>{
+    if(!String(u).endsWith("/env"))return serverHandler(u,o);if(++reads<=2)return response(initial);
+    if(failure==="network")return Promise.reject(Error("offline"));if(failure==="timeout")return new Promise(()=>{});
+    return failure==="shape"?response({server_mode:true,caps:{models:[]}}):response({reason:"no_session"},failure==="session"?401:503);
+  }}),env=e.ctx.DPEnv,before=JSON.stringify(env.caps);
+  if(typeof env.refreshModels!=="function")return false;
+  const pending=env.refreshModels();await settle();if(failure==="timeout")await e.fire(8000);
+  return await pending===false&&JSON.stringify(env.caps)===before&&!e.doc.body.textContent&&!e.logs.length;
+});
+for(const server of [false,true])await scenario("U2 목록 없는 환경은 재조회 요청 0 "+server,async()=>{
+  let reads=0;const data=clone(server?A.env_server.response:A.env_local.response);
+  const e=await boot({handler:(u,o)=>String(u).endsWith("/env")?(reads++,response(data)):serverHandler(u,o)});
+  const before=e.calls.length;if(typeof e.ctx.DPEnv.refreshModels!=="function")return false;
+  return await e.ctx.DPEnv.refreshModels()===false&&reads===1&&e.calls.length===before;
+});
 console.log(JSON.stringify(out));
 '''
     h = _PL_JS_HARNESS
@@ -62399,7 +62431,8 @@ function dialog(e){
 }
 async function studio({server=true,models=catalog,prepare={},backend="forge"}={}){
   mode(server,models);
-  const e=await mkStudio({P:b=>Object.assign(b.settings.prepare,{model:gpt.name,quality:gpt.default_quality,n:2},prepare),
+  const e=await mkStudio({P:b=>{Object.assign(b.settings.prepare,{model:gpt.name,quality:gpt.default_quality,n:2},prepare);
+      b.derived.settings.prepare=clone(b.settings.prepare);},
     plan:p=>{p.run.backend=backend;p.run.pre=0;}});
   dialog(e);e.h=e.pipe._models;
   e.field=k=>{const box=e.panel.querySelectorAll(".pp-sec").find(x=>x.children[0].textContent==="Prepare");
@@ -62409,6 +62442,32 @@ async function studio({server=true,models=catalog,prepare={},backend="forge"}={}
   e.change=async(k,v)=>{const input=e.input(k);input.focus();input.value=String(v);input.fire(input.tagName==="SELECT"?"change":"input");await sleep(5);};
   return e;
 }
+await scenario("U2 목록 오류 한 줄·선택 가능·같은 이유 한 번",async()=>{
+  const e=await studio(),error="Forge 의 모델 목록을 읽지 못했습니다";ctx.window.DPEnv.caps.models_error=error;await e.h.openSettings();
+  const r={error:e.field("model").children.filter(x=>x.textContent===error).length===1,enabled:e.input("model").children.every(x=>!x.disabled)};
+  ctx.window.DPEnv.caps.models_error=null;
+  for(const m of ctx.window.DPEnv.caps.models.slice(0,2)){m.available=false;m.why="지금 사용할 수 없습니다";}
+  await e.h.openSettings();r.unique=e.field("model").children.filter(x=>x.classList.contains("pp-hint")&&x.textContent.includes("지금 사용할 수 없습니다")).length===1;
+  r.unavailable=e.input("model").children.slice(0,2).every(x=>x.disabled&&x.title==="지금 사용할 수 없습니다");e.stop();return r;
+});
+await scenario("U2 설정 열기·작업 종료 재조회와 재그리기·폴링 제외",async()=>{
+  const e=await studio();let reads=0;
+  ctx.window.DPEnv.caps.models_error="첫 조회 실패";
+  ctx.window.DPEnv.refreshModels=async()=>{reads++;ctx.window.DPEnv.caps.models_error=null;ctx.window.DPEnv.caps.models[0].available=false;
+    ctx.window.DPEnv.caps.models[0].why="새 목록에서 빠짐";return true;};
+  await e.h.openSettings();await sleep(5);
+  const r={open:reads===1,redraw:e.field("model").textContent.includes("새 목록에서 빠짐")&&!e.field("model").textContent.includes("첫 조회 실패")};
+  for(const stage of ["apply","run","reroll"]){const before=reads;e.h.PS.last[stage]={report:"끝"};
+    e.h.PS.onDone({stage,pid:"test"},{state:"done"});await sleep(10);r[stage]=reads===before+1;}
+  const before=reads;e.h.PS.last.draft={report:"끝"};
+  for(const stage of ["draft","export"])e.h.PS.onDone({stage,pid:"test"},{state:"done"});
+  for(let i=0;i<3;i++)e.pipe.stateChanged(e.S);await sleep(30);r.noPolling=reads===before;e.stop();return r;
+});
+for(const server of [false,true])await scenario("U2 목록 없는 화면에서 재조회 호출 없음 "+server,async()=>{
+  const e=await studio({server,models:server?null:catalog});let calls=0;ctx.window.DPEnv.refreshModels=async()=>{calls++;return true;};
+  await e.h.openSettings();for(const stage of ["apply","run","reroll"]){e.h.PS.last[stage]={report:"끝"};e.h.PS.onDone({stage,pid:"test"},{state:"done"});}
+  await sleep(20);e.stop();return calls===0;
+});
 await scenario("FMJ 선택지·퇴역한 저장 모델·아래 안내·문자열 label",async()=>{
   const list=clone(catalog);list[0].available=false;list[0].why="이 모델은 지금 목록에 없습니다";list[0].label="<목록 모델>";
   const e=await studio({models:list,prepare:{model:list[0].name}});await e.h.openSettings();
@@ -62432,6 +62491,40 @@ await scenario("FMJ 품질·기본값·상한·복잡도 즉시 전환",async()=
   await e.change("model",catalog.find(m=>m.name.includes("2.6")).name);
   r.gpt26=!e.field("complexity").classList.contains("pp-complexity-unused");e.stop();return r;
 });
+for(const quality of [gpt.default_quality,ideo.default_quality])await scenario("U1 자동 보정 되돌림 "+quality,async()=>{
+  const model=catalog.find(m=>m.name.includes("2.6")),e=await studio({prepare:{model:model.name,quality,n:gpt.max_n}});
+  await e.h.openSettings();await e.change("model",ideo.name);await e.change("model",model.name);
+  const state=e.h.editState(),r={quality:e.input("quality").value===quality,n:Number(e.input("n").value)===gpt.max_n,
+    clean:!Object.keys(state.form.prepare||{}).length&&!Object.keys(state.edits.prepare||{}).length};e.stop();return r;
+});
+await scenario("U1 되돌리면 2.6 전환 단추 복원",async()=>{
+  const e=await studio({prepare:{n:gpt.max_n}});await e.h.openSettings();await e.change("model",ideo.name);await e.change("model",gpt.name);
+  const r=!!e.B("2.6 으로 전환")&&!e.B("2.6 으로 전환").disabled;e.stop();return r;
+});
+for(const key of ["quality","n"])await scenario("U1 직접 고친 값 보존 "+key,async()=>{
+  const e=await studio({prepare:{n:gpt.max_n}});await e.h.openSettings();await e.change("model",ideo.name);
+  await e.change(key,key==="quality"?ideo.qualities[0]:6);await e.change("model",gpt.name);
+  const r={quality:e.input("quality").value===(key==="quality"?ideo.qualities[0]:gpt.default_quality),
+    n:Number(e.input("n").value)===(key==="n"?6:gpt.max_n),direct:Object.keys(e.h.editState().form.prepare||{}).join(",")===key};
+  e.stop();return r;
+});
+await scenario("U1 직접 입력한 n도 모델 전환 전 값으로 복원",async()=>{
+  const e=await studio({prepare:{n:2}});await e.h.openSettings();await e.change("n",gpt.max_n);
+  await e.change("model",ideo.name);await e.change("model",gpt.name);
+  const r=Number(e.input("n").value)===gpt.max_n;e.stop();return r;
+});
+await scenario("U1 저장 뒤 편집 상태 초기화·새 저장값 기준",async()=>{
+  const e=await studio({prepare:{n:gpt.max_n}});await e.h.openSettings();await e.change("model",ideo.name);await e.change("quality",ideo.qualities[0]);
+  let saved=clone(e.h.PS.P);e.srv.route.settings=(q,body)=>{saved.settings[body.section]=clone(body.values);saved.rev++;return [200,saved];};
+  e.srv.route.pipeline=()=>[200,saved];e.doc.activeElement.blur();const pending=e.h.saveSection("prepare");await until(()=>!!e.box());
+  e.B("확인",e.box()).onclick({isTrusted:true});await pending;
+  let state=e.h.editState();const r={saved:!Object.keys(state.form.prepare||{}).length&&!Object.keys(state.edits.prepare||{}).length};
+  await e.change("quality",ideo.default_quality);e.doc.activeElement.blur();const again=e.h.saveSection("prepare");await until(()=>!!e.box());
+  e.B("확인",e.box()).onclick({isTrusted:true});await again;
+  await e.change("model",gpt.name);await e.change("model",ideo.name);state=e.h.editState();
+  r.clean=!Object.keys(state.form.prepare||{}).length&&!Object.keys(state.edits.prepare||{}).length;
+  r.baseline=e.input("quality").value===ideo.default_quality&&Number(e.input("n").value)===ideo.max_n;e.stop();return r;
+});
 for(const server of [false,true])await scenario("FMJ 목록 없는 화면 보존 "+server,async()=>{
   const e=await studio({server,models:server?null:catalog});await e.h.openSettings();
   const base=e.h.PS.P.widgets.prepare;
@@ -62439,6 +62532,16 @@ for(const server of [false,true])await scenario("FMJ 목록 없는 화면 보존
     labels:e.field("model").children[0].textContent==="model"&&e.field("quality").children[0].textContent==="quality",
     noNewDOM:!e.panel.all().some(x=>x.classList.contains("pp-model")),max:e.input("n").max===String(base.n.max)};
   e.stop();return r;
+});
+for(const key of ["model","quality"])await scenario("U1 저장 응답 전 되돌린 직접 편집 보존 "+key,async()=>{
+  const e=await studio();await e.h.openSettings();await e.change(key,key==="model"?ideo.name:ideo.qualities[0]);
+  e.srv.delay["pipeline/settings"]=[80];
+  const saved=clone(e.h.PS.P);e.srv.route.settings=(q,body)=>{saved.settings.prepare=clone(body.values);saved.rev++;return [200,saved];};
+  e.srv.route.pipeline=()=>[200,saved];e.doc.activeElement.blur();const pending=e.h.saveSection("prepare");await until(()=>!!e.box());
+  e.B("확인",e.box()).onclick({isTrusted:true});await until(()=>e.srv.count("pipeline/settings","POST")===1);
+  const value=key==="model"?gpt.name:gpt.default_quality;await e.change(key,value);e.doc.activeElement.blur();await pending;
+  await e.h.openSettings();const state=e.h.editState(),r={shown:e.input(key).value===value,
+    unsaved:state.form.prepare?.[key]===value,baseline:state.edits.prepare?.[key]===saved.settings.prepare[key]};e.stop();return r;
 });
 for(const change of ["model","quality","cancel"])
 await scenario("FMJ 저장은 미리 보기·페이지 확인 뒤 "+change,async()=>{
@@ -62455,6 +62558,26 @@ await scenario("FMJ 저장은 미리 보기·페이지 확인 뒤 "+change,async
   r.saved=change==="cancel"?!post:post?.body.section==="prepare"&&post.body.values.model===pr.name;
   r.noGeneration=!e.tab.got.length&&!e.srv.log.some(x=>x.path==="jobs/prompt"||x.path==="api/prompt");e.stop();return r;
 });
+for(const change of ["same","model","quality","complexity","n","no-drift","missing","default","plan","plan-mismatch"])
+await scenario("U3 진행 모델은 마지막 반영 기록만 "+change,async()=>{
+  const model=catalog.find(m=>m.name.includes("2.6")),e=await studio({prepare:{model:model.name,quality:model.default_quality,complexity:"high"}}),settings=e.h.PS.P;
+  if(["model","quality","complexity","n"].includes(change)){
+    const value={model:ideo.name,quality:ideo.qualities[0],complexity:"low",n:3}[change];
+    settings.drift=[{section:"prepare",field:change,kind:change==="n"?"cost":"cell",manifest:settings.settings.prepare[change],settings:value}];
+    settings.settings.prepare[change]=value;
+  }
+  if(change==="no-drift")settings.settings.prepare.model=ideo.name;
+  if(change==="missing")delete settings.derived.settings.prepare;
+  if(change==="default")settings.derived.from["prepare.model"]="default";
+  if(change==="plan"){
+    e.h.PS.plan.run.prepare=clone(settings.settings.prepare);
+    settings.derived.settings.prepare.model=ideo.name;
+  }
+  if(change==="plan-mismatch")e.h.PS.plan.run.prepare={...settings.settings.prepare,model:ideo.name};
+  e.h.PS.progress.running=true;await e.pipe.showTab("generate");
+  const line=e.rows("진행 — Run")[0]||"",show=["same","n","plan"].includes(change),r={line:!!line,
+    model:show?line.includes(" · 모델 "+model.label):!line.includes(" · 모델 ")};e.stop();return r;
+});
 for(const m of catalog)await scenario("FMJ 요약·진행·생성 승인 "+m.name,async()=>{
   const e=await studio({prepare:{model:m.name,quality:m.default_quality||"standard",n:3}});
   const settings=e.panel.textContent,run=P.runText({...e.h.PS.plan.run,prepare:e.h.PS.P.settings.prepare}).line;
@@ -62465,6 +62588,18 @@ for(const m of catalog)await scenario("FMJ 요약·진행·생성 승인 "+m.nam
     quality:[run,progress,text].every(t=>t.includes("품질")===!!m.qualities.length),
     complexity:[run,progress,text].every(t=>t.includes("복잡도")===m.name.includes("2.6")),cost:!/[\$]|크레딧/.test(text)};
   if(box)e.click(e.B("취소",box));await sleep(5);e.stop();return r;
+});
+for(const stage of ["run","reroll"])for(const kind of ["auth","unapproved","no-note","auth-no-note","approved"])
+await scenario("U4 발사 전 차단 사유 "+stage+" "+kind,async()=>{
+  mode();const before=refreshes,note="Forge 의 모델 목록을 읽지 못했습니다";
+  const report={backend:"forge",stopped_reason:kind.startsWith("auth")?"auth":"none",approved_now:!["unapproved","no-note"].includes(kind),
+    stop_note:kind.endsWith("no-note")?null:note};
+  const text=P.paidReport(stage,RUN_H(report));
+  const expected=kind==="auth"||kind==="unapproved"?text==="발사 못 함 — "+note
+    :kind==="auth-no-note"?text==="Forge 로그인 갱신이 필요합니다 — 잠시 뒤 다시 눌러 주세요"
+    :!text.includes("발사 못 함")&&(stage==="reroll"?text.startsWith("다시 생성(사전 승인)·복구만 실행")
+      :text.startsWith(kind==="no-note"?"승인 안 됨 — 실행 전 계획이 바뀜":"승인분 실행"));
+  return {text:expected,token:refreshes===before+(kind==="auth-no-note"?1:0)};
 });
 await scenario("FMJ 제출 전 거부는 로그인 요청 없이 표시",async()=>{
   mode();const before=refreshes,note="이 모델은 지금 목록에 없습니다";
@@ -62500,7 +62635,7 @@ await scenario("FMJ 후보 별도 모델 줄·비율·프롬프트 칩·로컬 �
 });
 console.log(JSON.stringify(out));process.exit(0);
 '''
-    hook = '.replace("return { stateChanged, enter, leave, select, queue: boardQueue", "return { _models: { PS, openSettings, saveSection, switchModel }, stateChanged, enter, leave, select, queue: boardQueue")'
+    hook = '.replace("return { stateChanged, enter, leave, select, queue: boardQueue", "return { _models: { PS, openSettings, saveSection, switchModel, editState: () => ({ form, edits }) }, stateChanged, enter, leave, select, queue: boardQueue")'
     ui = ui.replace('fs.readFileSync(IN.pipelineJs, "utf8")', 'fs.readFileSync(IN.pipelineJs, "utf8")' + hook)
     data = {"api": _pl_api(), "forge": _server_api(), "models": catalog, "dialog": sources["dialog.js"],
             "pipelineJs": str(web / "pipeline.js"), "boardJs": str(web / "board.js")}

@@ -33,6 +33,7 @@ window.DPEnv = (() => {
     parent_origins: [],
     messages: {},
     requestToken: () => requestParent(false),
+    refreshModels,
     store: local, // 화면 설정 저장소(로컬 = localStorage, 서버 모드 = 계정별 서버 저장)
     ready: null,
     can(name) {
@@ -44,6 +45,7 @@ window.DPEnv = (() => {
   const AGAIN = "Forge에서 디자인 패치 스튜디오를 다시 열어 주세요.";
   const CHANGED = "다른 계정으로 바뀌었습니다 — " + AGAIN;
   let sessionUrl = null, lastToken = null, refreshChain = Promise.resolve();
+  let modelsEnabled = null, modelsPending = null;
   const pendingTokens = new Set();
   let tokenWait = null, recovery = null, lastRequest = -Infinity, requests = 0;
   let blocker = null, retryButton = null, changed = false, retryingSession = false;
@@ -169,6 +171,25 @@ window.DPEnv = (() => {
     const url = new URL(value, location.href);
     if (url.origin !== location.origin) throw new Error("origin");
     return url.href;
+  }
+
+  function refreshModels() {
+    if (!env.serverMode || !modelsEnabled || !env.account || changed) return Promise.resolve(false);
+    if (!modelsPending) modelsPending = (async () => {
+      try {
+        const tag = env.account.tag;
+        const fresh = await read(new URL("env", API), { headers: { "X-DesignPatch-Account": tag } }, 8000, true);
+        const data = fresh.data, caps = data && data.caps;
+        if (changed || env.account.tag !== tag || fresh.response.status !== 200 || !object(data) || data.server_mode !== true
+            || !object(caps) || !Object.keys(LOCAL_CAPS).every((key) => typeof caps[key] === "boolean")
+            || !Array.isArray(caps.models) || (caps.models_error != null && typeof caps.models_error !== "string")) return false;
+        const error = caps.models_error ?? null;
+        const different = JSON.stringify([env.caps.models, env.caps.models_error ?? null]) !== JSON.stringify([caps.models, error]);
+        env.caps = { ...env.caps, models: caps.models, models_error: error };
+        return different;
+      } catch (e) { return false; } // 재조회 실패는 현재 목록·안내를 유지한다.
+    })().finally(() => { modelsPending = null; });
+    return modelsPending;
   }
 
   function parentTarget() {
@@ -351,6 +372,7 @@ window.DPEnv = (() => {
       const prefsUrl = data.server_mode ? endpoint(data.prefs_url) : null;
       env.serverMode = data.server_mode;
       env.caps = data.caps;
+      if (modelsEnabled === null) modelsEnabled = env.serverMode && Array.isArray(data.caps.models);
       if (!env.serverMode) { token = null; organization = ""; resolveReady(); return; }
       env.backend = typeof data.backend === "string" ? data.backend : null;
       env.forge = env.backend === "forge";
@@ -385,12 +407,7 @@ window.DPEnv = (() => {
       if (env.account && account.tag !== env.account.tag) { block(CHANGED); return; }
       env.account = account;
       // 모델 목록(caps.models)은 세션이 있어야 서버의 목록과 대조된다 — 목록을 주는 서버에서만 세션 뒤에 한 번 다시 읽는다.
-      if (Array.isArray(env.caps.models)) try {
-        const fresh = await read(new URL("env", API), { headers: { "X-DesignPatch-Account": account.tag } }, 8000, true);
-        if (fresh.response.status === 200 && object(fresh.data) && fresh.data.server_mode === true
-            && object(fresh.data.caps) && Object.keys(LOCAL_CAPS).every((key) => typeof fresh.data.caps[key] === "boolean")
-            && Array.isArray(fresh.data.caps.models)) env.caps = { ...env.caps, models: fresh.data.caps.models };
-      } catch (e) { /* 모델 목록을 다시 읽지 못하면 세션 전 환경 값을 유지한다. */ }
+      await refreshModels();
       const prefs = await read(prefsUrl);
       if (!prefs.response.ok || !object(prefs.data) || !object(prefs.data.values)
           || !Object.values(prefs.data.values).every((value) => typeof value === "string")) throw new Error("prefs");
