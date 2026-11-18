@@ -63673,6 +63673,16 @@ def batch13_unit():
     _batch13_icons(web)
 
 
+def forge_import1_server_unit():
+    """실서버 연동 1단계 「Forge에서 가져오기」 강화 — 서버 쪽(요청 수 단정·필터·자료 기억·썸네일 기억·여러 장·출처 사이드카)."""
+    section("Forge 가져오기 1단계 — 서버 (forge_import1_server_unit)")
+
+
+def forge_import1_js_unit():
+    """실서버 연동 1단계 「Forge에서 가져오기」 강화 — 화면 쪽(필터 줄·여러 장·크게 보기·요청 수 단정·sandbox 금지 요소)."""
+    section("Forge 가져오기 1단계 — 화면 (forge_import1_js_unit)")
+
+
 def forge_f2_client_unit():
     """Forge F2 갈래 S — ForgeClient(요청 모양·오류 분류·허용 origin·리다이렉트 거부·크기 상한) + 토큰 0건. 명세 _proto/STUDIO_FORGE_F2_SPEC.md §2.4·§4. --quick 포함."""
     section("Forge F2-S — forge_f2_client_unit")
@@ -67588,6 +67598,10 @@ if __name__ == "__main__":
         forge_f2_js_unit()
     if want("forge_f2_import_unit"):
         forge_f2_import_unit()
+    if want("forge_import1_server_unit"):
+        forge_import1_server_unit()
+    if want("forge_import1_js_unit"):
+        forge_import1_js_unit()
     print(f"\n단위 테스트 {time.time() - T0:.1f}s (PASS {PASSES} FAIL {len(FAILS)})")
     if QUICK:
         print("\n--quick: 회귀·노드 생략")
