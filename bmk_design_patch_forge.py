@@ -28,6 +28,7 @@ import math
 import re
 import time
 import unicodedata
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
 import aiohttp
@@ -414,17 +415,23 @@ class ForgeClient:
         return raw
 
     async def history(self, token: str, organization_id: str, *, cursor: str | None = None, search: str | None = None,
-                      limit: int = 40) -> dict:
+                      limit: int = 40, user_id: str | None = None, model_used: str | None = None,
+                      is_favorite: bool | None = None, date_start: str | None = None) -> dict:
         """GET /api/image/history(view=summary) → {"items": [{"id", "url", "thumb", "prompt", "model", "created"}…],
         "next": cursor | None} — 묶음 항목은 장 단위로 편다."""
         if type(limit) is not int or not 1 <= limit <= 100:
             raise ForgeError("invalid")
         query = {"organization_id": organization_id, "limit": limit, "view": "summary"}
-        for key, value in (("cursor", cursor), ("search", search)):
+        for key, value in (("cursor", cursor), ("search", search), ("user_id", user_id),
+                           ("model_used", model_used), ("date_start", date_start)):
             if value:
                 if not isinstance(value, str):
                     raise ForgeError("invalid")
-                query[key] = value
+                query[key] = re.escape(value) if key == "search" else value
+        if is_favorite is not None:
+            if type(is_favorite) is not bool:
+                raise ForgeError("invalid")
+            query["is_favorite"] = "true" if is_favorite else "false"
         url = str(URL(self.config.api).with_path("/api/image/history").with_query(query))
         call, started = "GET /api/image/history", time.monotonic()
         status, raw = await self._exchange("GET", url, {"Authorization": "Bearer " + token}, None, JSON_LIMIT, call)
@@ -444,13 +451,19 @@ class ForgeClient:
             rows = group.get("items", [group])
             if not isinstance(rows, list):
                 continue
-            for row in rows:
+            for position, row in enumerate(rows, 1):
                 if not isinstance(row, dict) or not isinstance(row.get("result_url"), str) or not row["result_url"]:
                     continue
                 items.append({"id": row.get("id"), "url": row["result_url"], "thumb": row.get("thumbnail_url"),
                               "prompt": row.get("prompt", group.get("prompt")),
                               "model": row.get("model_used", group.get("model_used")),
-                              "created": row.get("created_at", group.get("created_at"))})
+                              "created": row.get("created_at", group.get("created_at")),
+                              "created_by": row.get("created_by", group.get("created_by")),
+                              "fav": row.get("is_favorite", group.get("is_favorite")) is True,
+                              "generation_type": row.get("generation_type", group.get("generation_type")),
+                              "batch_id": row.get("batch_id", group.get("batch_id", group.get("id"))),
+                              "batch_position": row.get("batch_position", position),
+                              "num_outputs": row.get("num_outputs", group.get("num_outputs", len(rows)))})
         return {"items": items, "next": data.get("next_cursor")
                 if data.get("has_more") is True and isinstance(data.get("next_cursor"), str) else None}
 
@@ -475,6 +488,7 @@ class ForgeClient:
             raise ForgeError("unreachable", status, kind="format")
         return {"items": [{"id": row.get("id"), "url": row.get("url"), "thumb": row.get("thumbnail_url"),
                            "name": row.get("name"), "folder": row.get("folder_path"), "tags": row.get("tags", []),
+                           "created": row.get("created_at"),
                            "client_request_id": row.get("client_request_id")}
                           for row in data if isinstance(row, dict) and (include_pending or (row.get("media_type") == "image"
                           and isinstance(row.get("url"), str) and row["url"]))],
@@ -638,6 +652,24 @@ class ForgeAccounts:
         self.tokens.mark_access(org, acct, self.clock())
 
 
+def display(value, token="", size=128, *, config=None, hidden=()):
+    """목록·출처의 표시 글만 남긴다. 원격 식별자는 별도 비공개 필드에서만 쓴다."""
+    if not isinstance(value, str):
+        return ""
+    value = "".join(c for c in value if not unicodedata.category(c).startswith("C"))
+    for secret in (token, *hidden):
+        if isinstance(secret, str) and secret:
+            value = value.replace(secret, "")
+    value = re.sub(r"(?i)https?://[^\s<>]+", "", value)
+    value = re.sub(r"\bu_[A-Za-z0-9_-]+\b|\bdev:[A-Za-z0-9_:-]+", "", value)
+    if config is not None:
+        for origin in (config.api, *config.media_origins):
+            value = re.sub(re.escape(URL(origin).host), "", value, flags=re.I)
+    if re.search(r"[A-Za-z]:[\\/]|\\\\|(?:^|\s)/[^\s]+", value):
+        return ""
+    return value[:size]
+
+
 def routes(accounts: ForgeAccounts) -> tuple:
     """「Forge에서 가져오기」·[Forge 자료에 저장]. 원격 식별자·주소는 계정별 메모리에만 둔다."""
     import io
@@ -648,10 +680,11 @@ def routes(accounts: ForgeAccounts) -> tuple:
     from aiohttp import web
     from PIL import Image
     try:
-        from . import bmk_design_patch_board as board, bmk_design_patch_forge_backend as backend
+        from . import bmk_design_patch_board as board, bmk_design_patch_forge_backend as backend, bmk_design_patch_prompt as prompt
     except ImportError:
         import bmk_design_patch_board as board
         import bmk_design_patch_forge_backend as backend
+        import bmk_design_patch_prompt as prompt
 
     # Run 의 동시 제출 설정과 별개. 활동 중인 계정은 LRU 에서 밀어내지 않는다.
     account_limit, root_limit, entry_limit = 128, 128, 2000
@@ -684,7 +717,9 @@ def routes(accounts: ForgeAccounts) -> tuple:
                 del states[idle]
             states[key] = {"rows": OrderedDict(), "saved": OrderedDict(), "saving": set(),
                            "heavy": asyncio.Semaphore(1), "thumb": asyncio.Semaphore(4),
-                           "list": asyncio.Semaphore(2), "active": 0}
+                           "list": asyncio.Semaphore(2), "active": 0, "assets": None,
+                           "assets_lock": asyncio.Lock(), "thumbs": OrderedDict(), "thumb_bytes": 0,
+                           "thumb_at": accounts.clock()}
         state = states[key]
         states.move_to_end(key)
         state["active"] += 1  # 슬롯 대기 중에도 같은 계정의 제한·잠금을 보존한다.
@@ -749,24 +784,17 @@ def routes(accounts: ForgeAccounts) -> tuple:
             reject("forge_stale")
         return row
 
-    def display(value, token, size=128):
-        if not isinstance(value, str):
-            return ""
-        value = value.replace(token, "") if token else value
-        value = "".join(c for c in value if not unicodedata.category(c).startswith("C"))
-        value = re.sub(r"(?i)https?://[^\s<>]+", "", value)
-        for origin in (accounts.config.api, *accounts.config.media_origins):
-            value = re.sub(re.escape(URL(origin).host), "", value, flags=re.I)
-        if re.search(r"[A-Za-z]:[\\/]|\\\\|(?:^|\s)/[^\s]+", value):
-            return ""
-        return value[:size]
+    def clean(value, token, size=128, row=None):
+        scope = board.current_scope() or {}
+        return display(value, token, size, config=accounts.config,
+                       hidden=(scope.get("account"), scope.get("org"), (row or {}).get("created_by"), (row or {}).get("id")))
 
     async def root_of(data, optional=False):
         if optional and not data.get("root"):
             return None
         return await asyncio.to_thread(board._root_param, data.get("root"))
 
-    def picture(raw, shrink=False):
+    def picture(raw, size=256):
         # Content-Type 은 상류 헤더 대신 그림 서명과 디코드로 정한다.
         try:
             with board._RENDER_SLOTS, Image.open(io.BytesIO(raw)) as im:
@@ -774,12 +802,10 @@ def routes(accounts: ForgeAccounts) -> tuple:
                 if mime is None or max(im.size) > board._MAX_IMAGE_SIDE or im.width * im.height > board._MAX_IMAGE_AREA:
                     raise ValueError
                 im.load()
-                if shrink or max(im.size) > 512:
-                    im.thumbnail((256, 256), Image.Resampling.LANCZOS)
-                    result = io.BytesIO()
-                    im.convert("RGBA" if "A" in im.getbands() else "RGB").save(result, "PNG")
-                    return result.getvalue(), "image/png"
-                return raw, mime
+                im.thumbnail((size, size), Image.Resampling.LANCZOS)
+                result = io.BytesIO()
+                im.convert("RGBA" if "A" in im.getbands() else "RGB").save(result, "PNG")
+                return result.getvalue(), "image/png"
         except Exception:
             raise board._Reject(422, "그림 파일을 읽을 수 없습니다(깨졌거나 지원하지 않는 형식)") from None
 
@@ -787,7 +813,7 @@ def routes(accounts: ForgeAccounts) -> tuple:
         # 잘못된 그림은 기존 올리기 처리기가 같은 오류로 거절한다.
         suffix = ".png" if raw.startswith(b"\x89PNG\r\n\x1a\n") else ".jpg" if raw.startswith(b"\xff\xd8") else (
             ".webp" if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP" else ".png")
-        name = display(row.get("name") or row.get("prompt"), token)
+        name = clean(row.get("name") or row.get("prompt"), token, row=row)
         name = re.sub(r'[<>:"/\\|?*]', "_", name).strip(" .")[:120] or "Forge"
         if name.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
             name = os.path.splitext(name)[0]
@@ -796,40 +822,208 @@ def routes(accounts: ForgeAccounts) -> tuple:
         except board._Reject:
             return board.check_upload_name("Forge" + suffix)
 
-    async def listing(request, scope, ctx, token, source):
+    async def asset_list(state, ctx, refresh=False):
+        observed = state["assets"]
+        async with state["assets_lock"]:
+            cached = state["assets"]
+            if cached is not None and 0 <= accounts.clock() - cached["at"] < 300 and (
+                    not refresh or cached is not observed):
+                return cached
+            state["assets"] = None  # 오류·취소 때 옛 서명 주소나 반쪽 목록을 쓰지 않는다.
+            rows, offset = [], 0
+            for _ in range(5):
+                token = ctx["token_of"]()
+                if not token:
+                    reject("forge_auth")
+                try:
+                    page = await ctx["client"].assets(token, ctx["organization_id"], offset=offset)
+                except ForgeError as error:
+                    if error.reason == "unauthorized":
+                        ctx["reject_token"](token)
+                        reject("forge_auth", error)
+                    raise
+                rows.extend(page["items"][:1000 - len(rows)])
+                offset = page["next"]
+                if offset is None or len(rows) >= 1000:
+                    break
+            cached = {"items": rows, "at": accounts.clock(), "version": secrets.token_urlsafe(16), "more": offset is not None}
+            state["assets"] = cached
+            return cached
+
+    def allowed_media(url):
+        try:
+            parsed = _url(url)
+            return _allowed_scheme(parsed, accounts.config.allow_http) and str(parsed.origin()) in accounts.config.media_origins
+        except ValueError:
+            return False
+
+    async def media_row(scope, state, ctx, ident, source):
+        row = lookup(scope, ident, source)
+        if source == "asset":
+            cached = await asset_list(state, ctx)
+            current = next((r for r in cached["items"] if r.get("id") == row.get("id")), None)
+            if current is None:
+                reject("forge_stale")
+            row = dict(current, source=source)
+            # 목록 재조회로 서명만 바뀌었을 때도 같은 불투명 ID 를 유지한다.
+            remember(scope, row)
+        return row
+
+    async def listing(request, scope, ctx, token, source, state):
         query = request.query
         await root_of(query, optional=True)  # 새 프로젝트 창은 아직 root 가 없다.
         search = query.get("search", "")[:300]
         field = "cursor" if source == "history" else "offset"
         page = query.get(field)
         value = None if source == "history" else 0
+        if source == "history":
+            which, model, since = query.get("scope", "mine"), query.get("model", ""), query.get("since", "")
+            if which not in ("mine", "team") or len(model) > 128 or len(since) > 40:
+                raise board._Reject(400, "히스토리 필터를 확인하세요.")
+            if since:
+                try:
+                    stamp = datetime.fromisoformat(since.replace("Z", "+00:00"))
+                    if stamp.tzinfo is None:
+                        raise ValueError
+                except ValueError:
+                    raise board._Reject(400, "기간은 시간대가 있는 ISO 시각이어야 합니다.") from None
+            fav, studio = query.get("fav") == "1", query.get("studio") == "1"
+            filters = (search, which, model, since, fav, studio)
+        else:
+            folder = query.get("folder", "")
+            if len(folder) > 512:
+                raise board._Reject(400, "폴더 이름이 너무 깁니다.")
+            cached = await asset_list(state, ctx, query.get("refresh") == "1")
+            filters = (search, folder, cached["version"])
         if page not in (None, "", "0"):
             row = lookup(scope, page, "page:" + source)
-            if row["search"] != search:
+            if row["filters"] != filters:
                 reject("forge_stale")
             value = row["value"]
         client, org = ctx["client"], ctx["organization_id"]
         if source == "history":
-            result = await client.history(token, org, cursor=value, search=search)
+            result = await client.history(token, org, cursor=value, search=search,
+                user_id=scope["account"] if which == "mine" else None, model_used=model or None,
+                date_start=since or None, is_favorite=True if fav else None)
+            result["items"] = [row for row in result["items"] if row.get("generation_type") not in ("upscale", "bg_removal")
+                               and (studio or not str(row.get("prompt") or "").startswith(prompt.PROMPT_HEAD))]
         else:
-            for _ in range(5):
-                result = await client.assets(token, org, offset=value)
-                result["items"] = [row for row in result["items"] if search.casefold() in " ".join(
-                    str(row.get(k) or "") for k in ("name", "folder", "tags")).casefold()]
-                if result["items"] or result["next"] is None:
-                    break
-                value = result["next"]
+            matched = [row for row in cached["items"] if (not folder or row.get("folder") == folder)
+                       and search.casefold() in " ".join(str(row.get(k) or "") for k in ("name", "folder", "tags")).casefold()]
+            result = {"items": matched[value:value + 60], "next": value + 60 if value + 60 < len(matched) else None}
         rows = []
         for row in result["items"]:
             ident = remember(scope, dict(row, source=source))
             thumb = str(URL(board.API + "/forge/thumb").with_query(
                 root=query.get("root", ""), source=source, id=ident))
             keys = ("prompt", "model", "created") if source == "history" else ("name", "folder")
-            rows.append(dict(id=ident, thumb=thumb, **{
-                key: display(row.get(key), token, 300 if key == "prompt" else 128) for key in keys}))
-        next_page = remember(scope, {"source": "page:" + source, "value": result["next"], "search": search}) \
+            item = dict(id=ident, thumb=thumb, **{
+                key: clean(row.get(key), token, 300 if key == "prompt" else 512 if key == "folder" else 128, row) for key in keys})
+            if source == "history":
+                item.update(mine=row.get("created_by") == scope["account"], fav=row.get("fav") is True)
+                n, pos = row.get("num_outputs"), row.get("batch_position")
+                if type(n) is int and n >= 2 and type(pos) is int and 1 <= pos <= n:
+                    item["batch"] = {"n": n, "pos": pos}
+            else:
+                tags = row.get("tags")
+                item["tags"] = [clean(tag, token, row=row) for tag in tags if isinstance(tag, str)][:3] if isinstance(tags, list) else []
+                if not allowed_media(row.get("url")):
+                    item["blocked"] = True
+            rows.append(item)
+        next_page = remember(scope, {"source": "page:" + source, "value": result["next"], "filters": filters}) \
             if result["next"] is not None else None
-        return board._json({"items": rows, "next": next_page})
+        response = {"items": rows, "next": next_page}
+        if source == "asset":
+            response.update(folders=sorted({clean(row.get("folder"), token, 512, row) for row in cached["items"]} - {""}),
+                            more=cached["more"])
+        return board._json(response)
+
+    def thumb_cache(state):
+        now, cache = accounts.clock(), state["thumbs"]
+        for ident in list(cache):
+            if now < state["thumb_at"] or not 0 <= now - cache[ident][0] < 1800:
+                state["thumb_bytes"] -= len(cache.pop(ident)[1])
+        state["thumb_at"] = now
+        return cache
+
+    async def fetch_picture(ctx, row, size):
+        client = ctx["client"]
+        thumb = row.get("thumb") if size == 256 else None
+        try:
+            if thumb:
+                try:
+                    raw = await client.fetch_media(thumb, 4 * 1024 ** 2)
+                except ForgeError as error:
+                    if error.status != 413:
+                        raise
+                    raw = await client.fetch_media(row["url"])
+            else:
+                raw = await client.fetch_media(row["url"])
+        except ForgeError as error:
+            media_error(error)
+        return await asyncio.to_thread(picture, raw, size)
+
+    def media_error(error):
+        if error.reason in ("forbidden", "unauthorized", "not_found") or error.status in (401, 403, 404):
+            reject("forge_stale")  # 저장소의 서명 만료는 로그인 실패가 아니다.
+        reject("forge_unreachable", error)
+
+    async def access(scope):
+        try:
+            await accounts.ensure_access(scope)
+        except ForgeError as error:
+            reject({"unauthorized": "forge_auth", "forbidden": "no_access"}.get(error.reason, "forge_unreachable"), error)
+
+    def provenance(row, token):
+        result = {"schema": "dp-forge-source/1", "source": row["source"],
+                  "imported_at": datetime.now(timezone.utc).isoformat()}
+        keys = ("prompt", "model", "created") if row["source"] == "history" else ("name", "folder", "created")
+        for key in keys:
+            value = clean(row.get(key), token, 300 if key == "prompt" else 512 if key == "folder" else 128, row)
+            if value:
+                result[key] = value
+        ident = row.get("id")
+        if isinstance(ident, str) and re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", ident) and clean(ident, token) == ident:
+            result["id"] = ident
+        return result
+
+    async def import_one(data, ident, scope, state, ctx):
+        await access(scope)
+        token = ctx["token_of"]()
+        if not token:
+            reject("forge_auth")
+        row = await media_row(scope, state, ctx, ident, data["source"])
+        try:
+            raw = await ctx["client"].fetch_media(row["url"])
+        except ForgeError as error:
+            media_error(error)
+        return await board.import_received(data, raw, filename(raw, row, token), provenance(row, token))
+
+    async def import_many(data, scope, state, ctx):
+        done, failed = [], []
+        for index, ident in enumerate(data["ids"]):
+            try:
+                response = await import_one(data, ident, scope, state, ctx)
+                result = json.loads(response.body)
+                if response.status < 400:
+                    done.append({"id": ident, "sheet": result["sheet"]})
+                    continue
+                status, reason, message = response.status, result.get("reason"), result.get("error", "그림을 가져오지 못했습니다.")
+            except board._Reject as error:
+                status, reason, message = error.status, error.extra.get("reason"), str(error)
+            except ForgeError as error:
+                reason = {"unauthorized": "forge_auth", "forbidden": "no_access"}.get(error.reason, "forge_unreachable")
+                status, message = messages[reason]
+                message = with_note(message, error)
+            if status in (401, 403) and not done:
+                raise board._Reject(status, message, reason=reason)
+            failed.append({"id": ident, "error": clean(message, ctx["token_of"](), 500)})
+            stop = reason in ("forge_unreachable", "forge_auth", "no_access") or status >= 500 or status in (401, 403, 429)
+            if stop:
+                failed.extend({"id": rest, "error": "앞선 실패로 가져오지 않았습니다 — 잠시 뒤 다시 시도해 주세요."}
+                              for rest in data["ids"][index + 1:])
+                break
+        return board._json({"ok": True, "done": done, "failed": failed})
 
     def export_info(root):
         record = board.store.last_export(root, board.store.load_manifest(root))
@@ -913,7 +1107,7 @@ def routes(accounts: ForgeAccounts) -> tuple:
                 cached.popitem(last=False)
         cached.move_to_end(request_id)
         ident = remember(scope, {"source": "saved", "id": asset["id"]})
-        result = {"ok": True, "asset": {"id": ident, "name": display(asset.get("name"), token)}}
+        result = {"ok": True, "asset": {"id": ident, "name": clean(asset.get("name"), token)}}
         if already:
             result["already"] = True
         return board._json(result)
@@ -932,6 +1126,17 @@ def routes(accounts: ForgeAccounts) -> tuple:
                 with account_state(scope) as state:
                     is_list = action in ("history", "assets")
                     data = request.query if is_list or action == "thumb" else await board._body(request)
+                    if action == "import":
+                        if data.get("into") not in ("target", "refs"):
+                            raise board._Reject(400, "가져올 자리를 확인하세요.")
+                        if "ids" in data:
+                            ids = data["ids"]
+                            if (data["into"] != "refs" or "id" in data or not isinstance(ids, list) or not 1 <= len(ids) <= 8
+                                    or any(not isinstance(i, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", i)
+                                           or clean(i, token) != i for i in ids) or len(set(ids)) != len(ids)):
+                                raise board._Reject(400, "서로 다른 그림을 1–8장 골라 주세요.")
+                    if action == "thumb" and "size" in data and data["size"] != "large":
+                        raise board._Reject(400, "그림 크기를 확인하세요.")
                     root = None if is_list else await root_of(data, optional=action == "thumb" or (
                         action == "import" and data.get("into") == "target"))
                     if action == "save":
@@ -943,43 +1148,36 @@ def routes(accounts: ForgeAccounts) -> tuple:
                             token = ctx["token_of"]()
                             if not token:
                                 reject("forge_auth")
-                            if action in ("import", "save"):
-                                try:
-                                    await accounts.ensure_access(scope)
-                                except ForgeError as error:
-                                    # ensure_access 가 토큰 거절·계정 회수를 이미 처리한다.
-                                    reject({"unauthorized": "forge_auth", "forbidden": "no_access"}.get(
-                                        error.reason, "forge_unreachable"), error)
                             if is_list:
-                                return await listing(request, scope, ctx, token, "history" if action == "history" else "asset")
+                                return await listing(request, scope, ctx, token, "history" if action == "history" else "asset", state)
                             if action == "save":
+                                await access(scope)
                                 return await save(root, scope, ctx, state)
                             source = data.get("source")
                             if source not in ("history", "asset"):
                                 reject("forge_stale")
-                            row = lookup(scope, data.get("id"), source)
                             if action == "thumb":
-                                large = False
-                                try:
-                                    raw = await ctx["client"].fetch_media(row.get("thumb") or row["url"], 4 * 1024 ** 2)
-                                except ForgeError as error:
-                                    large = error.status == 413
-                                    try:
-                                        raw = await ctx["client"].fetch_media(row["url"])
-                                    except ForgeError:
-                                        reject("forge_stale")
-                                raw, mime = await asyncio.to_thread(picture, raw, large)
-                                return web.Response(body=raw, content_type=mime, headers={
+                                ident = data.get("id")
+                                row = await media_row(scope, state, ctx, ident, source)
+                                size = 1024 if data.get("size") == "large" else 256
+                                cache = thumb_cache(state)
+                                if size == 256 and ident in cache:
+                                    raw = cache[ident][1]
+                                    cache.move_to_end(ident)
+                                else:
+                                    raw, _ = await fetch_picture(ctx, row, size)
+                                    if size == 256 and len(raw) <= 32 * 1024 ** 2:
+                                        if ident in cache:
+                                            state["thumb_bytes"] -= len(cache.pop(ident)[1])
+                                        while cache and (len(cache) >= 500 or state["thumb_bytes"] + len(raw) > 32 * 1024 ** 2):
+                                            state["thumb_bytes"] -= len(cache.popitem(last=False)[1][1])
+                                        cache[ident] = (accounts.clock(), raw)
+                                        state["thumb_bytes"] += len(raw)
+                                return web.Response(body=raw, content_type="image/png", headers={
                                     "Cache-Control": "private, max-age=600", "X-Content-Type-Options": "nosniff"})
-                            if data.get("into") not in ("target", "refs"):
-                                raise board._Reject(400, "가져올 자리를 확인하세요.")
-                            try:
-                                raw = await ctx["client"].fetch_media(row["url"])
-                            except ForgeError as error:
-                                if error.reason in ("forbidden", "unauthorized", "not_found") or error.status in (401, 403, 404):
-                                    reject("forge_stale")
-                                reject("forge_unreachable", error)
-                            return await board.import_received(data, raw, filename(raw, row, token))
+                            if "ids" in data:
+                                return await import_many(data, scope, state, ctx)
+                            return await import_one(data, data.get("id"), scope, state, ctx)
                     finally:
                         if action == "save":
                             state["saving"].discard(root)
