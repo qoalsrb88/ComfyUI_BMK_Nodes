@@ -61819,6 +61819,238 @@ def forge_models_settings_unit():
     """Forge 2단계 설정 갈래 — 실행 설정의 모델·품질 검증(모드별)·갈라짐·전환 미리 보기·Prepare 의 모델별 크기와 작업 기록·후보의 비율 표지.
     명세 _proto/STUDIO_FORGE_MODELS_SPEC.md §2.3·§2.5·§3.4. --quick 포함."""
     section("Forge 모델 설정 — forge_models_settings_unit")
+    from tempfile import mkdtemp
+    from unittest.mock import AsyncMock, patch
+
+    dp = _dp_package()
+    st, rn, bd = dp.store, dp.runner, dp.board
+    pl = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_pipeline")
+    models = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_models")
+    fixture = json.loads((PKG / "tools/fixtures/forge_api.json").read_text(encoding="utf-8"))["models"]
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    out = Path(mkdtemp(prefix="models_settings_", dir=OUT_ROOT.resolve()))
+    pre = dp.BMKDesignPatchPrepare()
+    base = np.full((128, 192, 3), (60, 100, 140), dtype=np.uint8)
+    rects = [("001_panel", [0, 0, 96, 64]), ("002_square", [96, 32, 192, 128])]
+
+    def project(name):
+        return _fx_project(dp, out, name, rects, base)
+
+    def args(name, **kw):
+        values = dict(pl.defaults()["prepare"], model=name, quality="high", variants="V1", n=2,
+                      calls_per_cell=2, complexity="medium")
+        values.update(kw)
+        return values
+
+    def packed(m, report):
+        return json.dumps({"jobs": m["jobs"], "prepare_settings": m["prepare_settings"], "report": report},
+                          ensure_ascii=False).encode("utf-8")
+
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patch.object(dp.folder_paths, "get_output_directory", return_value=str(out / "output")))
+        stack.enter_context(patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "", rn.FORGE_ENV: "", rn.MOCK_ENV: ""}))
+        h, root = project("settings")
+        pipeline_path = Path(root, pl.PIPELINE_NAME)
+        for server_mode in (False, True):
+            with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1" if server_mode else ""}):
+                choices = pre.INPUT_TYPES()["required"]["model"][0]
+                check(list(choices) == (list(fixture["names"]) if server_mode else list(pl._MODELS)),
+                      f"FMS1 모드별 Prepare 모델 선택지 {server_mode}")
+                for name in fixture["names"]:
+                    values = args(name, quality="unused" if not models.get(name).qualities else "high")
+                    doc = {"schema": pl.SCHEMA, "rev": 1, "confirm": [], **pl.defaults(root), "prepare": values}
+                    raw = json.dumps(doc, ensure_ascii=False).encode("utf-8")
+                    pipeline_path.write_bytes(raw)
+                    check(pl.load(root)["prepare"] == values and pl.current(root)["settings"]["prepare"] == values
+                          and pipeline_path.read_bytes() == raw, f"FMS1 두 모드 읽기는 모델·위젯 값 보존 {server_mode} {name}")
+                    if not server_mode and models.is_forge_only(name):
+                        expect_raises(lambda: pl.validate_section("prepare", values), "FMS1 로컬 서버 모델 검증 거부",
+                                      contains="prepare.model: 이 모델은 Forge 서버에서만 생성합니다")
+                        expect_raises(lambda: pl.update(root, 1, "prepare", values), "FMS1 로컬 POST 거부", contains="Forge 서버")
+                        expect_raises(lambda: pl.build_prompt("apply", doc, root), "FMS1 로컬 템플릿 거부", contains="Forge 서버")
+                        check(pipeline_path.read_bytes() == raw, "FMS1 거부한 설정은 디스크 불변")
+                    else:
+                        check(pl.validate_section("prepare", values) == values, f"FMS1 저장 검증 허용 {server_mode} {name}")
+                        changed = dict(values, n=3)
+                        saved = pl.update(root, 1, "prepare", changed)
+                        check(saved["settings"]["prepare"] == changed and pl.load(root)["prepare"] == changed,
+                              f"FMS1 실제 저장 왕복 {server_mode} {name}")
+                        prompt = pl.build_prompt("apply", saved["settings"], root)
+                        check(prompt[pl.NODE_KEYS["prepare"]]["inputs"]["model"] == name, f"FMS1 템플릿 모델 전달 {name}")
+                expect_raises(lambda: pl.validate_section("prepare", args("missing-model")), "FMS1 모르는 모델 거부")
+
+        with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1"}):
+            for name in fixture["names"]:
+                lim = fixture["limits"]["gpt" if name in models.LOCAL_MODELS else name]
+                for quality in lim["qualities"] or ["max", "low", "unused"]:
+                    check(pl.validate_section("prepare", args(name, quality=quality))["quality"] == quality,
+                          f"FMS2 모델별 품질 허용 {name} {quality}")
+                if lim["qualities"]:
+                    bad = "max" if name == "ideogram-4.5" else "invalid"
+                    expect_raises(lambda: pl.validate_section("prepare", args(name, quality=bad)),
+                                  f"FMS2 모델별 품질 거부 {name}",
+                                  contains="prepare.quality 값이 선택지에 없습니다" if name in models.LOCAL_MODELS else "prepare.quality:")
+                expect_raises(lambda: pl.validate_section("prepare", args(name, quality=None)),
+                              f"FMS2 품질 문자열 타입 검사 {name}", contains="prepare.quality 는 문자열")
+            raw = Path(root, st.MANIFEST_NAME).read_bytes()
+            expect_raises(lambda: pre.run(h, **args("ideogram-4.5", quality="max")), "FMS2 Prepare 잘못된 품질 거부", contains="품질")
+            check(Path(root, st.MANIFEST_NAME).read_bytes() == raw, "FMS2 품질 거부는 프로젝트 불변")
+
+        for name in fixture["names"]:
+            settings = pl.defaults()
+            settings["prepare"] = args(name, quality="low")
+            record = {"prepare_settings": args(name, quality="high")}
+            changed = pl.drift(settings, record)
+            check([d["field"] for d in changed] == (["quality"] if models.get(name).qualities else []),
+                  f"FMS3 품질 없는 모델의 갈라짐 생략 {name}")
+        settings["prepare"] = args("seedream-5.5", quality="max")
+        check(pl.drift(settings, {"jobs": [{"model": "seedream-5.5", "quality": models.FIXED_QUALITY, "n": 2, "reps": 2}]}) == [],
+              "FMS3 옛 jobs 기록의 고정 품질도 갈라짐 없음")
+        settings["prepare"] = args("ideogram-4.5", quality="low")
+        check([d["field"] for d in pl.drift(settings, {"prepare_settings": args("seedream-5.5")})] == ["model"],
+              "FMS3 기록된 모델이 품질 없으면 모델 변경만 갈라짐")
+
+        # 기준 커밋 d1d9f3b 의 Prepare 를 같은 합성 프로젝트·고정 시각에서 실행한 바이트(키 순서 포함).
+        pinned = {
+            "gpt-image-2.6-sunburst": "1aa8273c8333bb2bb10e8cb200c4d3840d92579c0ed72680aa9044071e38f514",
+            "gpt-image-2.6-flare": "3f53b9e52ec0ee2820a4be3709ec2c1c5db655c74fcbb908b55c9294a85b03d5",
+            "gpt-image-2.5-sunburst": "d5ad02a5b4d52015a614dd887f7b991a59f6ae510e2e061a2bc2b903f022f124",
+            "gpt-image-2.5-flare": "63349cc76e8e8d4ae806a7ac473c51afd3ac5a0dd0fe2d330d2593689c19597c",
+        }
+        with patch.object(rn, "mock_enabled", return_value=True), patch.object(dp.time, "time", return_value=1000.0):
+            for name, digest in pinned.items():
+                gh, gr = project("gpt")
+                gh, _, report = pre.run(gh, **args(name))
+                gm = st.load_manifest(gr)
+                check(hashlib.sha256(packed(gm, report)).hexdigest() == digest,
+                      f"FMS4 GPT jobs·prepare_settings·보고 문자열 바이트 불변 {name}")
+
+        with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1", rn.FORGE_ENV: "1"}), \
+                patch.object(rn, "mock_enabled", return_value=False):
+            for name in models.FORGE_ONLY:
+                lim = fixture["limits"][name]
+                for rule in st.GPT_SIZE_RULES:
+                    nh, nr = project(f"{name}-{rule}")
+                    values = args(name, quality="unused" if not lim["qualities"] else lim["default_quality"], size_rule=rule)
+                    with patch.object(rn, "split_approval", wraps=rn.split_approval) as approvals:
+                        nh, _, _ = pre.run(nh, **values)
+                    nm = st.load_manifest(nr)
+                    check(approvals.call_args.kwargs["backend"] == rn.BACKEND_FORGE, "FMS5 Prepare 승인 해시는 실행 백엔드 사용")
+                    check(nm["prepare_settings"] == values and len(nm["jobs"]) == len(rects),
+                          f"FMS5 위젯 값 보존·크롭별 작업 생성 {name} {rule}")
+                    for job, (_, rect) in zip(nm["jobs"], rects):
+                        w, h0 = rect[2] - rect[0], rect[3] - rect[1]
+                        W, H, info = models.output_size(name, w, h0, rule)
+                        quality = values["quality"] if lim["qualities"] else models.FIXED_QUALITY
+                        check(job["size"] == [W, H] and job["size_info"] == info and job["size_info"]["src"] == [w, h0]
+                              and job["quality"] == quality and lim["area"][0] <= W * H <= lim["area"][1],
+                              f"FMS5 모델별 크기·품질·크기 기록 {name} {rule}")
+                        check(job["cell_key"] == st.cell_key(name, quality, [W, H], dp._BACKGROUND, job["prompt"],
+                              [i["sha"] for i in job["inputs"]], dp.dprompt.TEMPLATE_VERSION, job["variant"])
+                              and "opts" not in job and "complexity" not in job and job["background"] == dp._BACKGROUND,
+                              f"FMS5 모델별 생성 조건 키·불필요한 옵션 없음 {name}")
+                        with Image.open(st.resolve_path(nr, job["inputs"][0]["file"])) as im:
+                            check(im.size == (w, h0), "FMS5 입력은 원본 크롭 크기 유지(확대는 제출 시점)")
+                    if not lim["qualities"]:
+                        first_keys = [j["cell_key"] for j in nm["jobs"]]
+                        pre.run(nh, **dict(values, quality="low"))
+                        check(first_keys == [j["cell_key"] for j in st.load_manifest(nr)["jobs"]],
+                              "FMS5 Seedream 위젯 품질 변경은 키 불변")
+
+            lim = fixture["limits"]["seedream-5.5"]
+            wide = (lim["max_ratio"] + 1) * 8
+            wh, wr = _fx_project(dp, out, "wide", [("001_wide", [0, 0, wide, 8])], np.full((8, wide, 3), 90, np.uint8))
+            pre.run(wh, **args("seedream-5.5"))
+            wide_jobs = st.load_manifest(wr)["jobs"]
+            check(len(wide_jobs) == 1 and wide_jobs[0]["size_info"].get("problem"),
+                  "FMS5 비율 한도 밖 크롭도 작업을 만들고 size_info.problem 기록")
+
+            # 백엔드 갈래의 제출 전 판정은 대역. 미리 보기가 계획에 넘기는 작업을 실제 Prepare 산출물과 비교한다.
+            with patch.object(rn, "blocked_reason", return_value=None):
+                sh, sr = project("switch")
+                sh = pre.run(sh, **args("gpt-image-2.5-sunburst"))[0]
+                for target in ("seedream-5.5", "ideogram-4.5", "gpt-image-2.6-sunburst", "gpt-image-2.5-flare"):
+                    previous = st.load_manifest(sr)
+                    snapshot = copy.deepcopy(previous)
+                    settings = dict(pl.defaults(sr), prepare=previous["prepare_settings"])
+                    values = args(target)
+                    with patch.object(rn, "plan_calls", wraps=rn.plan_calls) as plans:
+                        preview = pl.switch_preview(sr, previous, settings, prepare=values)
+                    check(preview.get("exact") is True and preview.get("need") == len(rects) * values["calls_per_cell"]
+                          and preview.get("cells") == len(rects), f"FMS6 전환 건수 {previous['prepare_settings']['model']} → {target}")
+                    proposed = copy.deepcopy(plans.call_args.args[0]["jobs"]) if plans.called else []
+                    sh = pre.run(sh, **values)[0]
+                    actual = st.load_manifest(sr)
+                    check(proposed == actual["jobs"] and previous == snapshot,
+                          f"FMS6 미리 보기 작업·키 = 실제 Prepare, 입력 매니페스트 불변 {target}")
+                missing = copy.deepcopy(actual)
+                missing["jobs"][0]["size_info"].pop("src")
+                settings["prepare"] = actual["prepare_settings"]
+                bad_preview = pl.switch_preview(sr, missing, settings, prepare=args("seedream-5.5"))
+                check("기록이 부족" in bad_preview.get("error", ""), "FMS6 비GPT 전환은 원본 크기 기록 없으면 안내")
+                unchanged = pl.switch_preview(sr, missing, settings, prepare=args("gpt-image-2.6-flare"))
+                check(unchanged.get("exact") is True, "FMS6 GPT끼리는 원본 크기 기록 없이 기존 크기 사용")
+                default = pl.switch_preview(sr, actual, settings)
+                explicit = pl.switch_preview(sr, actual, settings, prepare=args("gpt-image-2.6-flare"))
+                check(default == explicit, "FMS6 기본 2.5 → 2.6 전환 결과 불변")
+
+        rh, rr = project("ratios")
+        with patch.object(rn, "mock_enabled", return_value=True):
+            rh = pre.run(rh, **args("gpt-image-2.5-sunburst"))[0]
+        rm = st.load_manifest(rr)
+        job = rm["jobs"][0]
+        req = dict(job, backend="forge", rep=0, call_id=rn.call_id_for(job["cell_key"], 0), size=[100, 100])
+        done = {"slots": [{"slot": i, "file": job["inputs"][0]["file"], "size": size}
+                          for i, size in enumerate(([102, 100], [100, 100], [1005, 1000], None))]}
+        rn._add_candidates(rm, req, done, [])
+        st.save_manifest(rr, rm)
+        req_path = Path(rn._lpath(rr, job["cell_key"], 0, "req"))
+        rn._write_json(str(req_path), req)
+
+        def candidates():
+            return [c for t in bd.build_state(rr)["targets"] for c in t["candidates"]]
+
+        with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1"}), \
+                patch.object(bd._forge_backend(), "prompt_changed", return_value=[True, False, False, False]):
+            rows = candidates()
+            check([c.get("ratio_changed", False) for c in rows] == [True, False, False, False]
+                  and [c.get("prompt_changed", False) for c in rows] == [True, False, False, False]
+                  and all("ratio_changed" not in c for c in rows[1:]), "FMS7 요청 원장 대 후보 크기·1% 허용·프롬프트 표지 공존")
+            for raw in (b"{", b"[]", b'{"size": null}'):
+                req_path.write_bytes(raw)
+                check(all("ratio_changed" not in c for c in candidates()), "FMS7 손상·크기 없는 원장은 비율 표지 생략")
+            req_path.unlink()
+            check(all("ratio_changed" not in c for c in candidates()), "FMS7 없는 원장은 비율 표지 생략")
+            rn._write_json(str(req_path), req)
+            with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": ""}):
+                check(all("ratio_changed" not in c and "prompt_changed" not in c for c in candidates()), "FMS7 로컬 후보 응답 불변")
+            for cand in rm["candidates"]:
+                cand["origin_info"]["backend"] = "mock"
+            st.save_manifest(rr, rm)
+            check(all("ratio_changed" not in c for c in candidates()), "FMS7 Forge 이외 후보 표지 없음")
+
+        run_node = dp.BMKDesignPatchRun()
+        with patch.object(rn, "make_backend", return_value=types.SimpleNamespace(name=rn.BACKEND_MOCK)), \
+                patch.object(dp, "_board_key", return_value=st.root_key(rr)), \
+                patch.object(rn, "reconcile_ledger", return_value={"candidates": [], "calls": [], "warnings": []}), \
+                patch.object(dp, "_cand_grid", return_value=None), \
+                patch.object(run_node, "_report", return_value="unchanged report"):
+            plan = rn.plan_calls(st.load_manifest(rr), rr)
+            ap = rn.split_approval(plan, "", backend=rn.BACKEND_MOCK)
+            why = "이 모델은 지금 Forge 에 없습니다 — 실행 설정에서 다른 모델로 바꿔 주세요."
+            reports = (None, rn.RunReport(backend=rn.BACKEND_MOCK),
+                       rn.RunReport(backend=rn.BACKEND_MOCK, errors=["그 밖의 오류"]),
+                       rn.RunReport(backend=rn.BACKEND_MOCK, stopped_reason="auth",
+                                    errors=["그 밖의 오류", f"call: 발사 못 함 — {why}", "call2: 발사 못 함 — 다음 사유"]))
+            for report in reports:
+                initial = dict(ap, to_run=[{}] if report is not None else [])
+                with patch.object(dp, "_run_plan", side_effect=[(plan, initial), (plan, ap)]), \
+                        patch.object(run_node, "_execute", new=AsyncMock(return_value=report)) as execute:
+                    result = asyncio.run(run_node.run(rh, "", 64, 1, 25, False, False, ""))
+                entry = result["ui"]["bmk_dp_run"][0]
+                check(entry["stop_note"] == (why if report is reports[-1] else None)
+                      and result["result"][1] == "unchanged report" and execute.called == (report is not None),
+                      "FMS8 실행 없음·일반 실행·다른 오류는 null, 제출 전 거부는 첫 사유만 stop_note")
 
 
 def forge_models_dev_unit():

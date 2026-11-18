@@ -2815,9 +2815,23 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
                     joint = {"tids": jt, "first": first, "first_key": by_file.get((crop["id"], c["file"], first))}
                 edit = _edit_rec(m, c["key"])
                 adjust = store.cand_adjust(m, c["key"])
+                candidate_flags = _forge_candidate_flags(root, info)
+                if server_mode() and info.get("backend") == "forge" and ck and rep is not None:
+                    try:
+                        from . import bmk_design_patch_models as models
+                    except ImportError:
+                        import bmk_design_patch_models as models
+                    runner = _runner()
+                    if runner is not None:
+                        try:
+                            req = runner._read_json(runner._lpath(root, ck, rep, "req"))
+                        except (OSError, ValueError, TypeError):
+                            req = None
+                        if isinstance(req, dict) and models.ratio_off(req.get("size"), c.get("src_size")):
+                            candidate_flags["ratio_changed"] = True
                 cands.append({
                     "key": c["key"], "n": n, "origin": c.get("origin"), "backend": info.get("backend"),
-                    **_forge_candidate_flags(root, info),
+                    **candidate_flags,
                     "mock": info.get("backend") == "mock", "src_size": c.get("src_size"),
                     "label": ext.candidate_label(c),
                     **({"external_missing": c["key"] in external_missing} if info.get("via") == "studio" else {}),

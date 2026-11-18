@@ -244,8 +244,10 @@ from PIL import Image, ImageDraw, ImageFont
 
 try:
     from . import bmk_design_patch_compat as compat
+    from . import bmk_design_patch_models as models
 except ImportError:  # 단독 실행/테스트
     import bmk_design_patch_compat as compat
+    import bmk_design_patch_models as models
 
 _STANDALONE = compat.server_mode()
 if _STANDALONE:
@@ -1907,7 +1909,8 @@ class BMKDesignPatchPrepare:
         return {
             "required": {
                 "project": (PROJECT_TYPE, {"tooltip": "BMK Design Patch Project 출력(Import PSD 이후)."}),
-                "model": (_MODELS, {"default": _MODELS[0], "tooltip": "GPT Image 모델(cell_key 에 들어감)."}),
+                "model": (list(models.names(True)) if compat.server_mode() else _MODELS,
+                          {"default": _MODELS[0], "tooltip": "GPT Image 모델(cell_key 에 들어감)."}),
                 "quality": (_QUALITIES, {"default": "max",
                                          "tooltip": "품질(cell_key 에 들어감). low·medium 은 시험용(싸고 빠름, 결과 품질 낮음)."}),
                 "size_rule": (list(store.GPT_SIZE_RULES), {
@@ -1945,6 +1948,12 @@ class BMKDesignPatchPrepare:
 
     def run(self, project, model, quality, size_rule, variants, n, ref_style, calls_per_cell=1, complexity="high"):
         t0 = time.time()
+        forge_only = models.is_forge_only(model)
+        if forge_only:
+            problem = models.quality_problem(model, quality)
+            if problem:
+                raise ValueError(f"{_TAG} {problem}")
+        job_quality = models.job_quality(model, quality)
         root, m = _open(project)
         before = _snapshot(m)
         if not m["base"]:
@@ -2025,7 +2034,10 @@ class BMKDesignPatchPrepare:
                     t["mode"] = "self_restore"
             probs = dprompt.validate_spec(spec)
             x0, y0, x1, y1 = crop["rect"]
-            W, H, sinfo = store.gpt_output_size(x1 - x0, y1 - y0, size_rule)
+            if forge_only:
+                W, H, sinfo = models.output_size(model, x1 - x0, y1 - y0, size_rule)
+            else:
+                W, H, sinfo = store.gpt_output_size(x1 - x0, y1 - y0, size_rule)
             chosen = dprompt.select_variants(dprompt.variants(spec), variants)
             crop_jobs, seen_prompts = [], {}
             for vname, v in chosen.items():
@@ -2036,8 +2048,8 @@ class BMKDesignPatchPrepare:
                     continue
                 seen_prompts[(v["prompt"], tuple(v["images"]))] = vname
                 shas = [sha_of[p] for p in v["images"]]
-                ck = store.cell_key(model, quality, [W, H], _BACKGROUND, v["prompt"], shas, dprompt.TEMPLATE_VERSION, vname,
-                                    complexity=complexity)
+                ck = store.cell_key(model, job_quality, [W, H], _BACKGROUND, v["prompt"], shas, dprompt.TEMPLATE_VERSION, vname,
+                                    complexity=complexity, opts=models.job_opts(model))
                 roles = []
                 for p in v["images"]:
                     role = ("canvas" if p == spec["canvas"] else "guide" if p == spec.get("guide")
@@ -2050,7 +2062,7 @@ class BMKDesignPatchPrepare:
                 elif str(job.get("n")) != str(int(n)):
                     reset_keys.add(ck)  # 배치 10 D161′: 장 수가 바뀐 셀의 안 쓴 다시 생성 예약은 정리(예약 때 본 비용과 달라짐)
                 job.update({"cell_key": ck, "crop_id": crop["id"], "tid": ",".join(t["id"] for t in v["targets"]),
-                            "variant": vname, "model": model, "quality": quality, "size": [W, H], "n": int(n),
+                            "variant": vname, "model": model, "quality": job_quality, "size": [W, H], "n": int(n),
                             "reps": int(calls_per_cell), "background": _BACKGROUND, "prompt": v["prompt"],
                             "inputs": roles, "template_version": dprompt.TEMPLATE_VERSION, "size_info": sinfo})
                 if model in store.COMPLEXITY_MODELS:
@@ -2085,7 +2097,7 @@ class BMKDesignPatchPrepare:
         n_pruned = pruned[0]
         plan = runner.plan_calls(m, root)
         mock = runner.mock_enabled(root)  # 해시는 백엔드에 묶인다 — Run 이 지금 쓸 백엔드와 같게
-        ap = runner.split_approval(plan, "", backend=runner.BACKEND_MOCK if mock else runner.BACKEND_COMFY_ORG)
+        ap = runner.split_approval(plan, "", backend=runner.backend_name(root))
         lines = [f"Prepare: 작업 {len(jobs)} (신규 {n_new} · 기존 {len(jobs) - n_new}) · 셀당 호출 {int(calls_per_cell)} · "
                  f"예상 후보 {len(jobs) * int(n) * int(calls_per_cell)}장 · {model} · {quality} · "
                  f"{('복잡도 ' + complexity + ' · ') if model in store.COMPLEXITY_MODELS else ''}{size_rule} · "
@@ -2755,6 +2767,8 @@ class BMKDesignPatchRun:
             entry = {"pending_hash": ap_after["pending_hash"], "pending": len(ap_after["needs_approval"]),
                      "est_usd": list(ap_after["est_usd"]), "approved_now": ap["approved_now"], "root_key": key,
                      "stopped_reason": report.stopped_reason if report is not None else "none",
+                     "stop_note": next((e.split("발사 못 함 — ", 1)[1] for e in report.errors if "발사 못 함 — " in e), None)
+                                  if report is not None else None,
                      "backend": backend.name, "continuation_hash": report.continuation_hash if report is not None else "",
                      "draft_pending": draft_pending, "draft_style": draft_style, "draft_unwritten": draft_unwritten,
                      "draft_held": draft_held, "draft_held_style": draft_held_style, "draft_mock": draft_mock}
