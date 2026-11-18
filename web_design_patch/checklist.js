@@ -69,7 +69,10 @@ window.DPChecklist = (() => {
     const runError = planError || (planOk && run && run.error);
     const draftApply = planOk && draft && !draftError && !draftUnwritten && !drafting && draftPending.length > 0;
     const runApply = planOk && run && !runError && !drafting && !running && (pending.length > 0 || prepareDrift.length > 0);
+    // 서버에 초안 백엔드가 없으면 계획이 unavailable 을 싣는다 — 이 줄은 할 일이 아니다(대상 문구는 ④ 프롬프트에서 직접)
+    const noDraft = !!(planOk && draft && draft.unavailable === true);
     const draftValue = draftError ? draftError : !planOk || !draft ? "계산 중"
+      : noDraft ? "자동 초안 없음 — 대상 문구는 직접 적음"
       : drafting ? "초안 진행 중" : draftUnwritten > 0 ? `못 쓴 스펙 ${draftUnwritten}`
         : settingsConfirm ? "설정 확인 필요" : draftApply ? "반영 뒤 다시 계산" : draftFree > 0 ? `초안 복구 대기 ${draftFree}` : draftStyle > 0 ? `화풍 초안 대기 ${draftStyle}`
           : draftNeed === null ? "계산 중" : `초안 승인 필요 ${draftNeed}${selectionNote}`;
@@ -107,10 +110,11 @@ window.DPChecklist = (() => {
         settingsBlock ? `실행 설정 확인 필요 (${settingsBlock})` : pending.concat(prepareDrift.length ? [`Prepare 설정 갈라짐 ${prepareDrift.length}`] : [],
           input.unsure ? [`확인 필요: ${input.unsure}`] : []).join(" · ") || "미반영 없음",
         "크롭·레퍼런스를 바꾼 뒤 반영(무료)을 눌러 생성 입력을 갱신하세요.", { tab: settingsBlock ? "prepare" : "prompt", section: settingsBlock ? "실행 설정" : "반영" }),
-      row(5, "초안", draftError || draftFailed || (planOk && !drafting && draftUnwritten > 0) ? "warn" : draftUnknown ? "unknown"
+      row(5, "초안", draftError || draftFailed || (planOk && !drafting && draftUnwritten > 0) ? "warn" : noDraft ? "done" : draftUnknown ? "unknown"
         : !settingsConfirm && n > 0 && allSelected && ready && draftNeed === 0 && draftFree === 0 && draftStyle === 0 && !drafting && !draftPending.length ? "done" : "todo",
-        draftFailed ? `초안 실패 ${draftFailed}` : draftUnknown ? `전체 초안 확인 필요 · ${draftValue}` : draftValue,
-        draftFree > 0 ? (SM() ? `복구 대기 ${draftFree}건 (무료)` : `복구 대기 ${draftFree}건 (무료) — 그래프 Spec Draft 를 승인 없이 한 번 큐에 넣으세요.`)
+        draftFailed ? `초안 실패 ${draftFailed}` : noDraft ? draftValue : draftUnknown ? `전체 초안 확인 필요 · ${draftValue}` : draftValue,
+        noDraft ? "이 서버에는 자동 초안이 없습니다 — ④ 프롬프트의 「채택」 칸 [수정]에서 대상 문구를 직접 적으세요."
+          : draftFree > 0 ? (SM() ? `복구 대기 ${draftFree}건 (무료)` : `복구 대기 ${draftFree}건 (무료) — 그래프 Spec Draft 를 승인 없이 한 번 큐에 넣으세요.`)
           : SM() ? "초안 승인에서 초안 계획과 호출 수를 확인한 뒤 승인하세요." : "초안 승인에서 초안 계획과 비용을 확인한 뒤 승인하세요.", { tab: "prompt", section: draftApply ? "반영" : "초안 승인" }),
       row(6, "생성", runError || (global && missing > 0 && (failed || orphaned)) ? "warn" : runUnknown ? "unknown"
         : !settingsConfirm && allSelected && ready && runNeed === 0 && runPre === 0 && runFree === 0 && complete && !running && !drafting && !prepareDrift.length && !pending.length ? "done" : "todo",

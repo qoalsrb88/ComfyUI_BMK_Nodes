@@ -2271,8 +2271,19 @@ window.DPPipeline = (() => {
       if (e.prompt_changed) out.push("다음 반영에서 이 크롭 새 생성 조건 — 생성 승인 대상(유료)");
       const b = e.draft_wait.before;
       const a = e.draft_wait.after;
-      out.push(`초안 대기: ${b.join(", ") || "없음"} → ${a.join(", ") || "없음"}` + (a.length ? " — 유료 초안 대기" : ""));
+      // 초안 백엔드가 없는 서버(계획 draft.unavailable)에서는 초안 대기 줄을 내지 않는다 — 승인할 초안이 없다
+      if (!(PS.plan && PS.plan.draft && PS.plan.draft.unavailable === true)) {
+        out.push(`초안 대기: ${b.join(", ") || "없음"} → ${a.join(", ") || "없음"}` + (a.length ? " — 유료 초안 대기" : ""));
+      }
       return out.concat(r.warnings);
+    }
+
+    // 타깃이 하나뿐인 크롭은 라벨 없는 문구에 그 타깃 글자를 붙여 서버로 보낸다("금색 무늬" → "A: 금색 무늬") — 서버는 라벨 없는
+    // 조각을 거절한다. 구분 기호(: ; | 계열)가 든 문구는 손대지 않는다(형식을 직접 쓰는 중). 입력칸의 글자는 바꾸지 않는다
+    function labeled(d, t) {
+      const s = String(t || "").trim();
+      if (!d || (d.targets || []).length > 1 || !s || /[:：;；|｜│¦]/.test(s)) return t;
+      return `${(d.targets[0] && d.targets[0].tid) || "A"}: ${s}`;
     }
 
     async function writeAdopt(op) {
@@ -2288,7 +2299,7 @@ window.DPPipeline = (() => {
         return;
       }
       try {
-        const r = await PS.adopt(d0, op, text, (p) => askFree([modeText(`${what}(${d0.name}): 스펙 _layer_targets 를 씁니다(반영은 다음 무료 반영).`, `${what}(${d0.name}): 대상 문구를 저장합니다(반영은 다음 무료 반영).`),
+        const r = await PS.adopt(d0, op, op === "set" ? labeled(d0, text) : text, (p) => askFree([modeText(`${what}(${d0.name}): 스펙 _layer_targets 를 씁니다(반영은 다음 무료 반영).`, `${what}(${d0.name}): 대상 문구를 저장합니다(반영은 다음 무료 반영).`),
           ...effectLines(p), "계속할까요?"].join("\n"), () => !!dv && dv.id === d0.id));
         if (!r) {
           render(); // 확인에서 멈춤 — 미리보기를 기다리는 사이(busy) 다시 그린 단추를 다시 켬
@@ -2338,7 +2349,7 @@ window.DPPipeline = (() => {
           return;
         }
         try {
-          const r = await PS.preview(dv, t);
+          const r = await PS.preview(dv, labeled(dv, t));
           if (seq === pvSeq) pv = { r };
         } catch (e) {
           if (seq !== pvSeq) return;
@@ -2812,7 +2823,9 @@ window.DPPipeline = (() => {
       if (planOk && !stale && p.draft.free_all > 0 && !p.draft.running && !(S && S.drafting)) {
         line(s, modeText(`복구 대기 ${p.draft.free_all}건 (무료) — 그래프 Spec Draft 를 승인 없이 한 번 큐에 넣으세요.`, `복구 대기 ${p.draft.free_all}건 (무료)`), "warn");
       }
-      if (only && P0 && P0.settings && P0.settings.draft.apply === "full") {
+      // 서버에 초안 백엔드가 없으면 계획이 unavailable 을 싣는다 — 승인 줄·단추·화풍 체크를 내지 않고 안내 한 줄만
+      const noDraft = !!(planOk && p.draft.unavailable === true);
+      if (only && P0 && P0.settings && P0.settings.draft.apply === "full" && !noDraft) {
         // 계획을 받는 중·실패해도 남김(체크를 풀 수 있게)
         const lb = el("label", "rf-check");
         const cb = el("input");
@@ -2827,7 +2840,9 @@ window.DPPipeline = (() => {
         lb.append(cb, document.createTextNode(" 화풍 단위 포함(apply = full)"));
         s.append(lb);
       }
-      if (planOk && only) {
+      if (noDraft) {
+        if (only) line(s, "자동 초안은 이 서버에 없습니다 — 대상 문구는 아래 「채택」 칸의 [수정]에서 직접 적습니다", "dim");
+      } else if (planOk && only) {
         if (stale) line(s, modeText("계획이 지금 파일 상태와 다름(다른 창·그래프의 쓰기·실행) — 다시 받기 전에는 승인 코드 복사 끔", "계획이 지금 프로젝트 상태와 다름 — 다시 계산한 뒤 승인"), "warn");
         if (dim) line(s, dimText, "warn");
         const dt = draftText(p.draft, p.draft.running || !!(S && S.drafting)); // 실행 중에는 계획을 다시 받지 않으므로 state 로 흐림(Run 줄과 같이)
@@ -3309,7 +3324,8 @@ window.DPPipeline = (() => {
         const inp = el("input", "pp-text");
         inp.type = "text";
         inp.value = text;
-        inp.placeholder = "A: …; B: …";
+        const one = dv.targets.length <= 1;
+        inp.placeholder = one ? "고칠 대상의 이름 — 예: 금색 무늬" : "A: …; B: …";
         inp.addEventListener("input", () => {
           text = inp.value;
           schedulePreview();
@@ -3324,6 +3340,8 @@ window.DPPipeline = (() => {
           }
         });
         s.append(inp);
+        line(s, "대상 문구는 고칠 대상의 이름입니다(지시문이 아님) — 프롬프트에 「이 대상을 레퍼런스처럼 고친다」로 들어갑니다. "
+          + (one ? `타깃이 하나라 글자(${(dv.targets[0] && dv.targets[0].tid) || "A"}:)는 자동으로 붙습니다.` : "타깃마다 「A: …; B: …」로 적습니다."), "dim");
         const sb = button("저장", "미리보기 → 확인 → 쓰기", () => writeAdopt("set"), "primary");
         sb.disabled = PS.busy || !!(pv && pv.err && pv.status === 400); // 문법·렌더 점검 거절만 끔(409 는 저장 경로가 다시 읽음)
         btns(s, sb, button("취소", "Esc", () => {

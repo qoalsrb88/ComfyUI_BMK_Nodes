@@ -58569,6 +58569,28 @@ def forge_f2_backend_unit():
                   "F2B 로컬 mock 원장에 Forge 파일 없음")
             check("forge" not in bd.pipeline_progress(r), "F2B 로컬 진행 응답 불변")
 
+        # 서버에는 초안 백엔드가 없다(vlm.make_vlm 이 mock 이 아닌 family 를 거절) — 계획의 초안은 승인할 단위가 없는 빈 값 + unavailable
+        # (화면이 「초안 승인」 칸·대기 칩을 내지 않는다). 로컬판 계획에는 그 표지가 없다
+        r, _j = project("nodraft")
+        m = store.load_manifest(r)
+        ids = {c["id"] for c in m["crops"]}
+        for choice in ("openai/gpt-6-sol", next(c for c in bd._vlm().VLM_CHOICES if c.startswith("local_qwen/"))):
+            d = bd._draft_free(r, m, {"draft": {"vlm": choice}}, False)
+            check(d.get("unavailable") is True and d["hash"] is None and d["backend"] is None and d["units"] == [] and d["free_all"] == 0
+                  and d["import_pending"] == [] and d["pending_style"] == 0 and d["warnings"] == {"unwritten": [], "mock_specs": 0}
+                  and d["family"] == choice.split("/")[0] and set(d["by_crop"]) == ids
+                  and all(v == {"wait": [], "refresh": False, "adopt": None} for v in d["by_crop"].values())
+                  and set(bd._DRAFT_SEL_EMPTY) <= set(d) and bd._plan_ok({"run": {}, "draft": d}),
+                  f"F2B 서버 초안 계획 = unavailable·단위 0·오류 아님({choice})")
+        # mock 초안(개발용 스위치)은 서버에서도 그대로 계산한다 — 이 표지는 초안 백엔드가 없을 때만
+        with patch.object(bd, "_draft_family", return_value="mock"), \
+                patch.object(bd, "_draft_cfg", side_effect=ValueError("fixture: 계산까지 감")):
+            check(bd._draft_free(r, m, {"draft": {"vlm": "openai/gpt-6-sol"}}, True) == {"error": "fixture: 계산까지 감", "hash": None},
+                  "F2B 서버 mock 초안은 unavailable 로 빠지지 않음")
+        with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": ""}), patch.object(bd, "_draft_cfg", side_effect=ValueError("fixture: 로컬")):
+            check(bd._draft_free(r, m, {"draft": {"vlm": "openai/gpt-6-sol"}}, False) == {"error": "fixture: 로컬", "hash": None},
+                  "F2B 로컬 초안 계획은 unavailable 로 빠지지 않음")
+
 
 def forge_f3_tools_unit():
     """Forge F3 갈래 U2 — 도구 문구·빈 화면·서버 모드 표시(node vm). 명세 §4.3·§5. --quick 포함."""
@@ -64491,7 +64513,9 @@ def _fj_probe(mode, output):
         qwen_settings["draft"]["vlm"] = "local_qwen/Qwen3-VL-8B-Instruct"
         with patch.object(dp.dvlm, "draft_plan") as draft_plan:
             qwen_plan = dp.board._draft_free(legacy, store.new_manifest("legacy_qwen"), qwen_settings)
-        assert qwen_plan["hash"] is None and "모델 경로 미설정" in qwen_plan["error"], "FJ54 옛 local_qwen 설정도 승인 해시 없음"
+        # 서버에는 초안 백엔드가 없다 — 오류가 아니라 '없음'(unavailable·단위 0)으로 알린다(오류면 계획이 기억되지 않고 화면이 승인 칸을 낸다)
+        assert qwen_plan["hash"] is None and qwen_plan.get("unavailable") is True and "error" not in qwen_plan \
+            and qwen_plan["units"] == [], "FJ54 옛 local_qwen 설정도 승인 해시 없음"
         assert draft_plan.call_count == 0, "FJ54 local_qwen 계획 계산 전에 거절"
         for fn in (lambda: dp._project_root("a", ""), lambda: dp._output_dir("a"),
                    lambda: dp.BMKDesignPatchRefCut().run("", "")):

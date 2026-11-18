@@ -5926,6 +5926,14 @@ def _draft_free(root: str, m: dict, settings: dict, mock: bool | None = None) ->
     if draft_since(root) is not None:
         return {"running": True}
     try:
+        family = _draft_family(root, settings, mock)
+        if server_mode() and family != "mock":
+            # 서버에는 초안 백엔드가 없다(vlm.make_vlm 이 서버 모드에서 mock 이 아닌 family 를 거절) — 승인할 단위가 없는 빈 계획 +
+            # unavailable 표지. hash 가 None 이라 선택 계획(_draft_sel)도 계산하지 않는다. 화면은 「초안 승인」 칸·대기 칩을 내지 않는다
+            return {**copy.deepcopy(_DRAFT_SEL_EMPTY), "hash": None, "backend": None, "family": family, "unavailable": True,
+                    "by_crop": {c["id"]: {"wait": [], "refresh": False, "adopt": None} for c in m["crops"]},
+                    "warnings": {"unwritten": [], "mock_specs": 0}, "import_pending": [],
+                    "pending_style": 0, "mock_forced": False, "free_all": 0}
         backend, cfg = _draft_cfg(root, settings, mock)
         dvlm = _vlm()
         memo = _draft_memo()
