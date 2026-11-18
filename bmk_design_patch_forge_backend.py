@@ -62,6 +62,7 @@ _PROGRESS = {}
 CATALOG_TTL = 600.0
 _CATALOG_LOCK = threading.Lock()
 _CATALOG = {}
+_CATALOG_FAILED = set()
 _CATALOG_UNREADABLE = "Forge 의 모델 목록을 읽지 못했습니다 — 잠시 뒤 다시 시도해 주세요."
 _OVERLOADED = "Forge 가 요청을 받지 못하고 있습니다 — 새 생성 요청을 멈췄습니다. 잠시 뒤 다시 실행해 주세요."
 _INPUT_ERROR = "요청 크기·옵션을 Forge 가 받지 않았습니다 — 반영을 다시 실행해 주세요."
@@ -98,9 +99,24 @@ async def read_catalog(client, token) -> dict:
 def cached_catalog(key, *, max_age=CATALOG_TTL) -> dict | None:
     with _CATALOG_LOCK:
         entry = _CATALOG.get(key)
-        if entry is None or max_age is not None and time.monotonic() - entry[0] > max_age:
+        if key in _CATALOG_FAILED or entry is None or max_age is not None and time.monotonic() - entry[0] > max_age:
             return None
         return entry[1].copy()
+
+
+def mark_catalog_failed(key):
+    with _CATALOG_LOCK:
+        _CATALOG_FAILED.add(key)
+
+
+def clear_catalog_failed(key):
+    with _CATALOG_LOCK:
+        _CATALOG_FAILED.discard(key)
+
+
+def catalog_failed(key) -> bool:
+    with _CATALOG_LOCK:
+        return key in _CATALOG_FAILED
 
 
 async def ensure_catalog(key, client, token_of, reject_token, *, max_age=CATALOG_TTL, timeout=None) -> dict | None:
@@ -122,6 +138,7 @@ async def ensure_catalog(key, client, token_of, reject_token, *, max_age=CATALOG
         return None
     with _CATALOG_LOCK:
         _CATALOG[key] = (time.monotonic(), catalog.copy())
+        _CATALOG_FAILED.discard(key)
     return catalog
 
 
@@ -129,8 +146,10 @@ def forget_catalog(key=None):
     with _CATALOG_LOCK:
         if key is None:
             _CATALOG.clear()
+            _CATALOG_FAILED.clear()
         else:
             _CATALOG.pop(key, None)
+            _CATALOG_FAILED.discard(key)
 
 
 def blocked_reason(job: dict) -> str | None:
@@ -142,10 +161,12 @@ def blocked_reason(job: dict) -> str | None:
         return "프롬프트의 @@ 표기를 지운 뒤 다시 시도해 주세요."
     ctx = runner.forge_context()
     catalog = None
+    key = None
     if ctx is not None:
         if not isinstance(ctx.get("account"), str) or not ctx["account"].strip():
             return "Forge 연결 설정을 확인해 주세요."
-        catalog = cached_catalog((ctx["organization_id"], ctx["account"]), max_age=None)
+        key = (ctx["organization_id"], ctx["account"])
+        catalog = cached_catalog(key, max_age=None)
     else:
         try:
             from . import bmk_design_patch_board as board
@@ -153,9 +174,13 @@ def blocked_reason(job: dict) -> str | None:
             import bmk_design_patch_board as board
         scope = board.current_scope() if board.server_mode() else None
         if scope is not None:
-            catalog = cached_catalog((scope["org"], scope["account"]), max_age=None)
+            key = (scope["org"], scope["account"])
+            catalog = cached_catalog(key, max_age=None)
+    if key is not None and catalog_failed(key):
+        return _CATALOG_UNREADABLE
     limit = model.max_inputs
-    if ctx is not None or catalog is not None:
+    auth_missing = (ctx is not None and catalog is None and callable(ctx.get("token_of")) and ctx["token_of"]() is None)
+    if catalog is not None or ctx is not None and not auth_missing:
         available, why, limit = models.availability(model.name, catalog)
         if not available:
             return why
@@ -393,6 +418,8 @@ class ForgeBackend:
                 catalog = await ensure_catalog((self._ctx["organization_id"], self._ctx["account"]), self._ctx["client"],
                                                self._ctx["token_of"], self._ctx["reject_token"], max_age=CATALOG_TTL)
                 if catalog is None:
+                    if self._ctx["token_of"]() is None:
+                        raise runner.CallError("Forge 로그인 정보를 다시 받아야 합니다.", status=401, maybe_billed=False)
                     raise _pressure_error(_CATALOG_UNREADABLE, phase="blocked", retryable=False, maybe_billed=False)
                 self._stop()
                 self._check_overload()

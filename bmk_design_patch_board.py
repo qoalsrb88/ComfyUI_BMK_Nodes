@@ -5820,9 +5820,12 @@ def _plan_sigs(root: str, m: dict, busy: tuple[bool, bool], refs_v: str | None, 
             import bmk_design_patch_forge_backend as forge_backend
             import bmk_design_patch_models as models
         scope = current_scope()
-        catalog = forge_backend.cached_catalog((scope["org"], scope["account"]), max_age=None) if scope else None
-        run.append(sorted(model.checkpoint for model in models.MODELS.values() if model.checkpoint in catalog)
-                   if catalog is not None else None)
+        key = (scope["org"], scope["account"]) if scope else None
+        catalog = forge_backend.cached_catalog(key, max_age=None) if key else None
+        run.append((forge_backend.catalog_failed(key),
+                    sorted((model.checkpoint, models.availability(model.name, catalog)[2])
+                           for model in models.MODELS.values() if model.checkpoint in catalog)
+                    if catalog is not None else None))
     refs = []
     for c in m["crops"]:
         for r in [x for t in c.get("targets") or [] for x in t.get("refs") or []] + list(c.get("refs_auto") or []):

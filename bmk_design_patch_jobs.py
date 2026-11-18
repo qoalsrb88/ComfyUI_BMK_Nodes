@@ -225,7 +225,7 @@ def _public_outputs(outputs):
     """화면이 읽는 값만 새로 만든다. 실행 중 노드 사이에 넘기는 원본 ui 는 바꾸지 않는다."""
     fields = {
         "dp_export": ("outcome", "psd", "rev"),
-        "dp_run": ("approved_now", "pending", "backend", "stopped_reason", "auth_held"),
+        "dp_run": ("approved_now", "pending", "backend", "stopped_reason", "auth_held", "stop_note"),
         "dp_draft": ("approved_now", "pending", "backend", "stopped_reason", "auth_held"),
     }
 
@@ -236,6 +236,14 @@ def _public_outputs(outputs):
         return (value is None or type(value) is bool or number(value)
                 or (isinstance(value, str) and len(value) <= 256 and "/" not in value and "\\" not in value)
                 or (isinstance(value, list) and all(number(v) for v in value)))
+
+    def stop_note(value):
+        if not isinstance(value, str):
+            return None
+        value = re.sub(r"[\x00-\x1f\x7f-\x9f]", "", value)
+        if re.search(r"://|\\|[a-z]:/|data:", value, re.I):
+            return None
+        return value[:300]
 
     result = {}
     for key, ui in outputs.items():
@@ -254,6 +262,9 @@ def _public_outputs(outputs):
                 if field not in row and key != "dp_export":
                     continue
                 value = row.get(field)
+                if key == "dp_run" and field == "stop_note":
+                    item[field] = stop_note(value)
+                    continue
                 if key == "dp_export" and field == "psd" and isinstance(value, str):
                     value = os.path.basename(value.replace("\\", "/")) or None
                 if safe(value):
@@ -484,7 +495,10 @@ def _refresh_catalog(ctx):
     key = (ctx["organization_id"], ctx["account"])
     catalog = asyncio.run(forge_backend.ensure_catalog(key, ctx["client"], ctx["token_of"], ctx["reject_token"], max_age=60.0))
     if catalog is None:
-        forge_backend.forget_catalog(key)
+        if ctx["token_of"]() is None:
+            forge_backend.clear_catalog_failed(key)
+        else:
+            forge_backend.mark_catalog_failed(key)
 
 
 def _forge_concurrency(root, concurrency):

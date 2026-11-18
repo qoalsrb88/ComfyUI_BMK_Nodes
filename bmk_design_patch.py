@@ -2772,7 +2772,8 @@ class BMKDesignPatchRun:
                      # 제출 전 거부의 첫 사유 — 발사 직전 판정은 report.errors 에, 요청 단계의 거부는 그 호출의 error 에 적힌다
                      "stop_note": next((t.split("발사 못 함 — ", 1)[1] for t in
                                        [*report.errors, *(str(c.get("error") or "") for c in report.calls if isinstance(c, dict))]
-                                       if "발사 못 함 — " in t), None) if report is not None else None,
+                                       if "발사 못 함 — " in t), None) if report is not None else
+                                  next((e["blocked"] for e in ap["blocked"] if e.get("blocked")), None),
                      "backend": backend.name, "continuation_hash": report.continuation_hash if report is not None else "",
                      "draft_pending": draft_pending, "draft_style": draft_style, "draft_unwritten": draft_unwritten,
                      "draft_held": draft_held, "draft_held_style": draft_held_style, "draft_mock": draft_mock}

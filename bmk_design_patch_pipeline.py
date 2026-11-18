@@ -352,6 +352,8 @@ def _value(section: str, key: str, v: Any, *, deep: bool, model=None) -> Any:
     if t == "COMBO" and isinstance(ch, str):
         ch = tuple(getattr(_vlm(), ch[4:])) if deep else None  # vlm 선택지는 deep 검사에서만(T6)
     if ch is not None and v not in ch:
+        if section == "prepare" and key == "model" and os.environ.get("BMK_DP_SERVER_MODE", "") != "1":
+            ch = _MODELS
         raise ValueError(f"{where} 값이 선택지에 없습니다: {v!r} (선택지: {', '.join(ch)})")
     return v
 
