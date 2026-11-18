@@ -1832,6 +1832,10 @@ window.DPRefEdit = (() => {
         meta.append(chip(`${it.size[0]}×${it.size[1]}`), chip(it.kind === "psd" ? "PSD" : "이미지"), chip(sizeMb(it.bytes), "b-dim"));
         if (recent.has(it.path)) meta.append(chip("최근", "b-reg"));
         li.append(meta);
+        if (it.forge && window.DPForgeImport) {
+          const source = window.DPForgeImport.sourceLine(it.forge);
+          if (source) li.append(source);
+        }
         if (it.kind === "psd") {
           const layers = button("레이어별 컷", "레이어를 골라 보관함으로", () => showLayers(it.path));
           layers.addEventListener("click", (e) => e.stopPropagation());
