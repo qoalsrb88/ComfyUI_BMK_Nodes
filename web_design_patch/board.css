@@ -987,17 +987,48 @@ body.server .dp-caption-text { min-width: 0; white-space: nowrap; overflow: hidd
 /* ── Forge F2-C (Forge에서 가져오기·자료 저장) — 갈래 C 는 이 표시 아래에만 덧붙인다 ── */
 /* 색은 변수로만. */
 .dp-forge { z-index: 10000; }
-.dp-forge-sheet { width: min(92vw, 920px); max-width: none; height: min(82vh, 760px); box-sizing: border-box; display: flex; flex-direction: column; gap: 12px; }
+.dp-forge-sheet { width: min(92vw, 920px); max-width: none; height: min(82vh, 760px); box-sizing: border-box; display: flex; flex-direction: column; gap: 12px; position: relative; overflow-x: hidden; }
 .dp-forge-sheet h2, .dp-forge-status { margin: 0; }
 .dp-forge-sheet > * { flex-shrink: 0; }
-.dp-forge-search { width: 100%; box-sizing: border-box; }
+.dp-forge-search { width: 100%; min-width: 0; flex: 1 1 180px; box-sizing: border-box; }
 /* 줄 높이 = 카드 내용 높이(max-content): 카드가 단추라 min-height 가 정해져 있어, 자동 줄은 창 높이에 맞춰 그 최소 높이까지 눌려 카드끼리 겹친다. */
-.dp-forge-grid { flex: 1 1 auto; min-height: 0; overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); grid-auto-rows: max-content; align-content: start; gap: 12px; }
-.dp-forge-item { display: flex; flex-direction: column; min-width: 0; padding: 8px; gap: 8px; text-align: left; white-space: normal; overflow-wrap: anywhere; align-self: start; }
+.dp-forge-grid { --dp-forge-gap: 12px; flex: 1 1 auto; min-height: 160px; overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(max(var(--dp-forge-min, 140px), calc((100% - (var(--dp-forge-columns, 4) - 1) * var(--dp-forge-gap)) / var(--dp-forge-columns, 4))), 1fr)); grid-auto-rows: max-content; align-content: start; gap: var(--dp-forge-gap); }
+.dp-forge-item { display: flex; flex-direction: column; min-width: 0; padding: 8px; gap: 8px; text-align: left; white-space: normal; overflow-wrap: anywhere; align-self: start; position: relative; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--panel); }
+.dp-forge-item.dp-forge-selected { border-color: var(--accent); }
+.dp-forge-pick { display: flex; flex-direction: column; width: 100%; min-width: 0; gap: 8px; padding: 0; border: 0; background: none; color: inherit; text-align: left; white-space: normal; }
 .dp-forge-preview { width: 100%; aspect-ratio: 1; flex: none; position: relative; overflow: hidden; display: grid; place-items: center; background: var(--well); border-radius: var(--radius-sm); }
 .dp-forge-preview img { position: absolute; inset: 0; }
 .dp-forge-item small { display: block; color: var(--dim); font-size: 12px; }
-.dp-forge-item img { display: block; width: 100%; height: 100%; object-fit: contain; }
-.dp-forge-item span { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.dp-forge-item img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.dp-forge-label, .dp-forge-meta { width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .dp-forge-status { color: var(--dim); }
 .dp-forge button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+.dp-forge-heading, .dp-forge-filters, .dp-forge-status-row, .dp-forge-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.dp-forge-heading { justify-content: space-between; }
+.dp-forge-size { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; color: var(--dim); }
+.dp-forge-columns { width: 100px; max-width: 100%; accent-color: var(--accent); }
+.dp-forge-filters > * { max-width: 100%; min-width: 0; }
+.dp-forge-filters select { flex: 0 1 auto; }
+.dp-forge-status-row > p { flex: 1 1 200px; overflow-wrap: anywhere; }
+.dp-forge-footer { justify-content: flex-end; }
+.dp-forge-footer > :first-child { margin-right: auto; }
+.dp-forge-sheet [hidden] { display: none; }
+.dp-forge-badges { position: absolute; left: 4px; bottom: 4px; display: flex; flex-wrap: wrap; gap: 4px; max-width: calc(100% - 8px); pointer-events: none; }
+.dp-forge-badges > span, .dp-forge-check { padding: 0 4px; line-height: 1.6; background: var(--panel); color: var(--text); font-size: 11px; border-radius: var(--radius-sm); }
+.dp-forge-check { position: absolute; top: 4px; left: 4px; background: var(--accent); color: var(--panel); }
+.dp-forge-zoom { position: absolute; top: 16px; right: 16px; padding: 4px 8px; min-height: 28px; background: var(--panel); }
+.dp-forge-item .dp-forge-error, .dp-forge-item .dp-forge-blocked { color: var(--bad); white-space: normal; }
+.dp-forge-error:empty { display: none; }
+.dp-forge-viewer { position: absolute; inset: 0; z-index: 1; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 16px; background: var(--panel); }
+.dp-forge-viewer img { display: block; flex: 1 1 auto; min-height: 0; max-width: 100%; width: 100%; object-fit: contain; }
+.dp-forge-viewer-title { margin: 0; width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.dp-forge-source { min-width: 0; margin: 8px 0; font-size: 12px; color: var(--dim); }
+.dp-forge-source-toggle { display: block; max-width: 100%; padding: 0; border: 0; background: none; color: var(--dim); text-align: left; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.dp-forge-source-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 480px) {
+  .dp-forge-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+/* 넓은 창에서는 썸네일 크기 조절의 8칸까지 그대로 — 좁은 창에서만 카드 폭 하한(140px)이 칸 수를 줄인다. */
+@media (min-width: 1000px) {
+  .dp-forge-grid { --dp-forge-min: 96px; }
+}

@@ -127,6 +127,9 @@ class FakeForge:
         self._lock = threading.RLock()
         self._fixture = json.loads((Path(__file__).parent / "tools" / "fixtures" / "forge_api.json").read_text(encoding="utf-8"))
         self.calls = deque(maxlen=_MAX_CALLS)
+        self.query_calls = deque(maxlen=_MAX_CALLS)
+        self.fault = None  # 전송 대역 전용: {path, times, status?, delay?, query?}.
+        self._history_seed = {}
         self.jobs = {}
         self._states = {}
         self._assets = {}
@@ -320,22 +323,32 @@ class FakeForge:
                     raise ValueError
             except Exception:
                 raise _Validation("cursor") from None
-        search = query.get("search", [""])[0].casefold()
+        search = query.get("search", [""])[0]
+        try:
+            pattern = re.compile(search, re.I)
+            since = datetime.fromisoformat(query["date_start"][0].replace("Z", "+00:00")) if query.get("date_start") else None
+            if since is not None and since.tzinfo is None:
+                raise ValueError
+        except (ValueError, re.error):
+            raise _Validation("search/date_start") from None
         view = query.get("view", ["summary"])[0]
-        jobs = [self._update_job(key) for key, job in reversed(self.jobs.items()) if job["user_id"] == "u_" + account]
-        jobs = [job for job in jobs if job["status"] == "completed" and job["result_data"]["images"]
-                and search in job["request_data"]["prompt"].casefold()]
+        jobs = [self._update_job(key) for key, job in reversed(self.jobs.items())
+                if self._org(job["user_id"].removeprefix("u_"), organization)]
+        jobs = [job for job in jobs if job["status"] == "completed" and job["result_data"]["images"]]
         jobs.sort(key=lambda job: (self._states[job["id"]]["at"] + self._states[job["id"]]["delay"],
                                    self._states[job["id"]]["at"]), reverse=True)
         templates = self._fixture["history"]["response"]["items"]
         items = []
-        for job in jobs[offset:offset + limit]:
+        for job in jobs:
             urls = job["result_data"]["images"]
-            common = {"prompt": job["request_data"]["prompt"], "created_at": job["created_at"]}
+            common = {"prompt": job["request_data"]["prompt"], "created_at": job["created_at"],
+                      "created_by": job["user_id"], "is_favorite": False, "generation_type": "generate",
+                      "batch_id": job["id"]}
             if len(urls) == 1:
                 item = copy.deepcopy(templates[0])
                 item.update(common, id=job["id"] + ":0", result_id=job["id"] + ":0", statement_id=job["id"],
                             result_index=0, result_url=urls[0], thumbnail_url=urls[0],
+                            batch_position=0,
                             model_used=job["request_data"]["checkpoint"], completed_at=job["completed_at"],
                             parameters=dict(zip(("width", "height"), self._states[job["id"]]["size"])), history_view=view)
             else:
@@ -343,20 +356,59 @@ class FakeForge:
                 item.update(common, id=job["id"], num_outputs=len(urls), completed_at=job["completed_at"], items=[])
                 for index, url in enumerate(urls):
                     child = copy.deepcopy(templates[1]["items"][min(index, 1)])
-                    child.update(common, id=f"{job['id']}:{index}", result_url=url,
+                    child.update(common, id=f"{job['id']}:{index}", result_url=url, batch_position=index,
                                  thumbnail_url=url if child["thumbnail_url"] is not None else None,
                                  model_used=job["request_data"]["checkpoint"])
                     item["items"].append(child)
             items.append(item)
-        more = offset + limit < len(jobs)
+        items.extend(copy.deepcopy(self._seed_history(account)))
+        def selected(item):
+            model = item.get("model_used") or (item.get("items") or [{}])[0].get("model_used")
+            return (pattern.search(item["prompt"]) is not None
+                    and (not query.get("user_id") or item.get("created_by") == query["user_id"][0])
+                    and (not query.get("model_used") or model == query["model_used"][0])
+                    and (not query.get("is_favorite") or item.get("is_favorite") is (query["is_favorite"][0] == "true"))
+                    and (since is None or datetime.fromisoformat(item["created_at"]) >= since))
+        items = [item for item in items if selected(item)]
+        items.sort(key=lambda item: item.get("completed_at") or item["created_at"], reverse=True)
+        more = offset + limit < len(items)
         next_cursor = base64.urlsafe_b64encode(json.dumps({"offset": offset + limit}).encode()).decode() if more else None
-        return _json(200, {"items": items, "limit": limit, "next_cursor": next_cursor, "has_more": more, "trace_id": uuid.uuid4().hex})
+        return _json(200, {"items": items[offset:offset + limit], "limit": limit, "next_cursor": next_cursor, "has_more": more, "trace_id": uuid.uuid4().hex})
+
+    def _seed_history(self, account):
+        if account not in self._history_seed:
+            try:
+                from .bmk_design_patch_prompt import PROMPT_HEAD
+            except ImportError:
+                from bmk_design_patch_prompt import PROMPT_HEAD
+            items = []
+            for i, kind in enumerate(("generate", "generate", "generate", "upscale", "bg_removal", "generate")):
+                ident = str(uuid.uuid5(_NAMESPACE, account + ":history:" + str(i)))
+                stamp = _stamp(self._now() - (i + 1) * 86400)
+                common = dict(created_by="u_teammate" if i == 1 else "u_" + account,
+                              is_favorite=i % 2 == 0, generation_type=kind,
+                              prompt=PROMPT_HEAD + " 개발 조각" if i == 2 else "개발 그림 [의상] " + str(i),
+                              created_at=stamp, completed_at=stamp, batch_id=ident)
+                children = []
+                for pos in range(3 if i == 0 else 1):
+                    path = f"/fake-media/seed-{ident}-{pos}.png"
+                    self._media[path] = ("image/png", _png((320, 256), "FAKE HISTORY", f"{ident}:{pos}"))
+                    child = copy.deepcopy(self._fixture["history"]["response"]["items"][0])
+                    child.update(common, id=f"{ident}:{pos}", result_id=f"{ident}:{pos}", statement_id=ident,
+                                 result_index=pos, batch_position=pos, result_url=self.media_origin + path,
+                                 thumbnail_url=self.media_origin + path,
+                                 model_used="gpt_image_26_sunburst" if i % 2 == 0 else "dev_model")
+                    children.append(child)
+                items.append(dict(common, id=ident, num_outputs=3, items=children) if len(children) > 1 else children[0])
+            self._history_seed[account] = items
+        return self._history_seed[account]
 
     def _account_assets(self, account):
         if account not in self._assets:
             assets = []
             for index, (name, folder) in enumerate((("레퍼런스 시트 A", "레퍼런스/의상"),
-                                                    ("색상 시트 B", "레퍼런스/색상"), ("구도 시트 C", "구도"))):
+                                                    ("색상 시트 B", "레퍼런스/색상"), ("구도 시트 C", "구도"),
+                                                    ("의상 시트 D", "레퍼런스/의상"), ("빈 폴더 시트 E", ""), ("외부 자료 F", "외부"))):
                 asset = copy.deepcopy(self._fixture["assets"]["response"][0])
                 asset_id = "a_" + uuid.uuid5(_NAMESPACE, f"{account}:asset:{index}").hex
                 path = f"/fake-media/{asset_id}.png"
@@ -365,7 +417,10 @@ class FakeForge:
                 asset.update(id=asset_id, owner_id="u_" + account, name=name, folder_path=folder,
                              storage_key=f"org1/u_{account}/asset/{asset_id}.png", url=self.media_origin + path,
                              thumbnail_url=self.media_origin + path, width=256, height=256, size_bytes=len(png),
-                             client_request_id=f"dev-asset-{index}", tags=[folder.split("/")[-1]])
+                             client_request_id=f"dev-asset-{index}", tags=[folder.split("/")[-1], "Costume", "개발", "시트"],
+                             created_at=_stamp(self._now() - index * 3600))
+                if index == 5:
+                    asset.update(url="https://outside.example/image.png", thumbnail_url="https://outside.example/thumb.png")
                 assets.append(asset)
             self._assets[account] = assets
         return self._assets[account]
@@ -487,6 +542,26 @@ class FakeForge:
                      timeout: float | None = None) -> tuple[int, dict, bytes]:
         """ForgeClient 의 전송 함수 모양. 모르는 경로는 404 {"detail": "Not Found"}."""
         try:
+            parsed = urlsplit(url)
+            query = parse_qs(parsed.query, keep_blank_values=True)
+            with self._lock:
+                self.calls.append((method.upper(), parsed.path))
+                allowed = {"organization_id", "limit", "offset", "view", "cursor", "search", "user_id", "model_used", "is_favorite", "date_start"}
+                bearer = next((v.removeprefix("Bearer ") for k, v in headers.items() if k.lower() == "authorization"), "")
+                self.query_calls.append((method.upper(), parsed.path, {k: [
+                    _TOKEN.sub("", v.replace(bearer, "") if bearer else v) for v in values] if k in allowed else []
+                    for k, values in query.items()}))
+                fault = self.fault
+                if (fault and fault.get("times", 0) > 0 and fault.get("path") == parsed.path
+                        and all(query.get(k) == [str(v)] for k, v in fault.get("query", {}).items())):
+                    fault["times"] -= 1
+                    fault = dict(fault)
+                else:
+                    fault = None
+            if fault:
+                await asyncio.sleep(fault.get("delay", 0))
+                if fault.get("status", 200) != 200:
+                    return _json(fault["status"], {"detail": "Development fault"})
             # 이미지 작업과 상태 잠금 대기를 모두 이벤트 루프 밖에서 수행한다.
             return await asyncio.to_thread(self._handle, method, url, headers, body)
         except Exception:
@@ -498,7 +573,6 @@ class FakeForge:
                 parsed = urlsplit(url)
                 path = parsed.path
                 method = method.upper()
-                self.calls.append((method, path))  # 쿼리(업로드 서명)·본문·Authorization 은 보관하지 않는다.
                 headers = {key.lower(): value for key, value in headers.items()}
                 query = parse_qs(parsed.query, keep_blank_values=True)
                 routes = {"/auth/me": ("GET",), "/api/access/summary": ("GET",),
@@ -555,7 +629,12 @@ class FakeForge:
                         return self._error("org_denied")
                     limit = self._integer(query, "limit", 200, 1, 200)
                     offset = self._integer(query, "offset", 0, 0, 10**12 - 1)
-                    return _json(200, self._account_assets(account)[offset:offset + limit])
+                    assets = copy.deepcopy(self._account_assets(account)[offset:offset + limit])
+                    for asset in assets:
+                        for key in ("url", "thumbnail_url"):
+                            if isinstance(asset.get(key), str) and asset[key].startswith(self.media_origin + "/"):
+                                asset[key] = asset[key].split("?", 1)[0] + "?issued=" + str(self._now())
+                    return _json(200, assets)
                 try:
                     data = json.loads(body)
                     if not isinstance(data, dict):

@@ -322,9 +322,7 @@
     "query": {
       "organization_id": "org1",
       "limit": 40,
-      "cursor": "",
-      "view": "summary",
-      "search": ""
+      "view": "summary"
     },
     "_comment": "organization_id 필수, limit 1–100. 결과가 한 장인 잡은 항목이 곧 그 장이고, 여러 장이면 항목이 묶음({id, prompt, num_outputs, items: [장…]})이다. next_cursor 는 has_more 일 때만 문자열.",
     "response": {
@@ -345,7 +343,11 @@
           },
           "created_at": "2026-11-12T03:00:00+00:00",
           "completed_at": "2026-11-12T03:01:00+00:00",
-          "history_view": "summary"
+          "history_view": "summary",
+          "created_by": "u_alice",
+          "is_favorite": true,
+          "batch_id": "9c0d1e2f-0000-4000-8000-000000000001",
+          "batch_position": 0
         },
         {
           "id": "9c0d1e2f-0000-4000-8000-000000000002",
@@ -361,7 +363,12 @@
               "result_url": "{MEDIA}/images/9c0d1e2f2/0.png",
               "thumbnail_url": "{MEDIA}/thumbs/9c0d1e2f2/0.webp",
               "model_used": "gpt_image_26_sunburst",
-              "created_at": "2026-11-12T02:00:00+00:00"
+              "created_at": "2026-11-12T02:00:00+00:00",
+              "created_by": "u_alice",
+              "is_favorite": true,
+              "generation_type": "generate",
+              "batch_id": "9c0d1e2f-0000-4000-8000-000000000002",
+              "batch_position": 0
             },
             {
               "id": "9c0d1e2f-0000-4000-8000-000000000002:1",
@@ -369,15 +376,30 @@
               "result_url": "{MEDIA}/images/9c0d1e2f2/1.png",
               "thumbnail_url": null,
               "model_used": "gpt_image_26_sunburst",
-              "created_at": "2026-11-12T02:00:00+00:00"
+              "created_at": "2026-11-12T02:00:00+00:00",
+              "created_by": "u_alice",
+              "is_favorite": true,
+              "generation_type": "generate",
+              "batch_id": "9c0d1e2f-0000-4000-8000-000000000002",
+              "batch_position": 1
             }
-          ]
+          ],
+          "created_by": "u_alice",
+          "is_favorite": true,
+          "batch_id": "9c0d1e2f-0000-4000-8000-000000000002"
         }
       ],
       "limit": 40,
       "next_cursor": "eyJjIjoiMjAyNi0xMS0xMlQwMjowMTowMCJ9",
       "has_more": true,
       "trace_id": "0f1e2d3c4b5a69788796a5b4c3d2e1f0"
+    },
+    "filter_query": {
+      "user_id": "u_alice",
+      "model_used": "gpt_image_26_sunburst",
+      "is_favorite": "true",
+      "date_start": "2026-11-01T00:00:00Z",
+      "search": "\\[의상\\]"
     }
   },
   "assets": {

@@ -61374,12 +61374,12 @@ def forge_f2_dev_unit():
             await job(key, instance=history_fake)
         foreign_id = (await submit("history-other", instance=history_fake, account="bob"))[1]["job_id"]
         await job(foreign_id, account="bob", instance=history_fake)
-        status, history = await call("GET", "/api/image/history?organization_id=org1&limit=2", instance=history_fake)
+        status, history = await call("GET", "/api/image/history?organization_id=org1&limit=2&user_id=u_alice&search=History", instance=history_fake)
         check(status == 200 and set(history) == set(fixture["history"]["response"]) and history["has_more"]
               and isinstance(history["next_cursor"], str) and isinstance(history["trace_id"], str), "FD5 history 페이지 fixture")
         check([item["statement_id"] for item in history["items"]] == list(reversed(history_ids[1:])), "FD5 자기 완료 잡 최신순·단일 장")
         check(all(same_shape(item, fixture["history"]["response"]["items"][0]) for item in history["items"]), "FD5 단일 장 키·형식 fixture")
-        cursor_path = "/api/image/history?" + urllib.parse.urlencode({"organization_id": "org1", "limit": 2, "cursor": history["next_cursor"]})
+        cursor_path = "/api/image/history?" + urllib.parse.urlencode({"organization_id": "org1", "limit": 2, "cursor": history["next_cursor"], "user_id": "u_alice", "search": "History"})
         second = (await call("GET", cursor_path, instance=history_fake))[1]
         check(second["next_cursor"] is None and not second["has_more"] and len(second["items"]) == 1
               and same_shape(second["items"][0], fixture["history"]["response"]["items"][1]), "FD5 묶음 키·형식 fixture·마지막 페이지")
@@ -61387,7 +61387,7 @@ def forge_f2_dev_unit():
         check(len(filtered["items"]) == 3, "FD5 프롬프트 검색 대소문자 무관")
         check((await call("GET", "/api/image/history?organization_id=org1&search=absent", instance=history_fake))[1]["items"] == [], "FD5 검색 결과 없음")
         tie_id = (await submit("history-tie", instance=history_fake, num_outputs=1))[1]["job_id"]
-        latest = (await call("GET", "/api/image/history?organization_id=org1&limit=1", instance=history_fake))[1]
+        latest = (await call("GET", "/api/image/history?organization_id=org1&limit=1&user_id=u_alice", instance=history_fake))[1]
         check(latest["items"][0]["statement_id"] == tie_id, "FD5 같은 시각이면 나중에 제출한 잡이 먼저")
         for suffix in ("?organization_id=other", "?organization_id=org1"):
             status, value = await call("GET", "/api/image/history" + suffix, account="outsider")
@@ -61396,8 +61396,8 @@ def forge_f2_dev_unit():
             check((await call("GET", "/api/image/history" + suffix))[0] == 422, "FD5 history 쿼리 검사")
 
         status, assets = await call("GET", "/api/library/assets?organization_id=org1")
-        check(status == 200 and len(assets) == 3 and all(same_shape(item, fixture["assets"]["response"][0]) for item in assets), "FD6 자료 3개·배열·fixture")
-        check(len({item["name"] for item in assets}) == 3 and len({item["folder_path"] for item in assets}) == 3, "FD6 서로 다른 이름·폴더")
+        check(status == 200 and len(assets) == 6 and all(same_shape(item, fixture["assets"]["response"][0]) for item in assets), "FD6 자료 6개·배열·fixture")
+        check(len({item["name"] for item in assets}) == 6 and len({item["folder_path"] for item in assets}) == 5, "FD6 서로 다른 이름·폴더")
         bob_assets = (await call("GET", "/api/library/assets?organization_id=org1", account="bob"))[1]
         check({item["id"] for item in assets}.isdisjoint(item["id"] for item in bob_assets)
               and all(item["owner_id"] == "u_bob" for item in bob_assets), "FD6 계정별 자료 격리")
@@ -61427,7 +61427,7 @@ def forge_f2_dev_unit():
         check(status == 200 and same_shape(asset, fixture["asset_upload"]["create"]["response"]), "FD6 create fixture")
         check(await call("POST", "/api/library/assets", create_request) == (200, asset), "FD6 동일 client_request_id 멱등")
         listed = (await call("GET", "/api/library/assets?organization_id=org1"))[1]
-        check(len(listed) == 4 and listed[0]["id"] == asset["id"] and same_shape(listed[0], fixture["assets"]["response"][0]), "FD6 업로드 전체 절차 후 목록 1개 추가")
+        check(len(listed) == 7 and listed[0]["id"] == asset["id"] and same_shape(listed[0], fixture["assets"]["response"][0]), "FD6 업로드 전체 절차 후 목록 1개 추가")
         check((await call("GET", asset["url"], account=None))[1] == png, "FD6 업로드 원본 바이트 보존")
         conflicting = dict(create_request, s3_key="other-key")
         check(await call("POST", "/api/library/assets", conflicting) == (409, fixture["asset_upload"]["create"]["conflict"]["response"]), "FD6 다른 s3_key 충돌 409 fixture")
@@ -61665,7 +61665,7 @@ console.log("refresh behavior passed");
 
     asyncio.run(run())
     source = (PKG / "bmk_design_patch_forge_dev.py").read_text(encoding="utf-8")
-    check(set(re.findall(r"https?://([a-zA-Z0-9.-]+)", source)) <= {"localhost", "example.com"}, "FD9 모듈 리터럴 주소는 개발용만")
+    check(set(re.findall(r"https?://([a-zA-Z0-9.-]+)", source)) <= {"localhost", "example.com", "outside.example"}, "FD9 모듈 리터럴 주소는 개발용만")
     check("bmk_design_patch_forge" not in {node.module for node in ast.walk(ast.parse(source)) if isinstance(node, ast.ImportFrom)}
           and not any(isinstance(node, ast.Import) and any(alias.name == "bmk_design_patch_forge" for alias in node.names)
                       for node in ast.walk(ast.parse(source))), "FD9 갈래 S 모듈 import 없음")
@@ -62681,7 +62681,7 @@ def forge_f2_import_unit():
         result = await client.history("dev:alice", "org1", search="한 장 & 둘", limit=2)
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(calls[-1][1]).query)
         check(len(result["items"]) == 3 and result["items"][2]["prompt"] == "두 장짜리 결과", "F2C 묶음 펼침·부모 표시값·URL 없는 장 제외")
-        check(query == {"organization_id": ["org1"], "limit": ["2"], "view": ["summary"], "search": ["한 장 & 둘"]}, "F2C history 쿼리·빈 cursor 생략")
+        check(query == {"organization_id": ["org1"], "limit": ["2"], "view": ["summary"], "search": [re.escape("한 장 & 둘")]}, "F2C history 쿼리·빈 cursor 생략")
         await client.history("dev:alice", "org1", cursor=result["next"])
         check(urllib.parse.parse_qs(urllib.parse.urlsplit(calls[-1][1]).query)["cursor"] == [history["next_cursor"]], "F2C history cursor")
         for flag, cursor in ((False, "cursor"), (True, 5), (True, None)):
@@ -62855,9 +62855,9 @@ def forge_f2_import_unit():
             offsets = []
             async def asset_page(token, org, **kwargs):
                 offsets.append(kwargs["offset"])
-                return {"items": [tagged], "next": 200 if kwargs["offset"] == 0 else None}
+                return {"items": [tagged] * (200 if kwargs["offset"] == 0 else 1), "next": 200 if kwargs["offset"] == 0 else None}
             with patch.object(client, "assets", side_effect=asset_page):
-                result = value(await request("assets", query={"search": "COST"}))
+                result = value(await request("assets", query={"search": "COST", "refresh": "1"}))
                 check(result["items"][0]["name"] == "sheet.png" and isinstance(result["next"], str), "F2C 태그 대소문자 무시·파일명 보존·offset 불투명")
                 await request("assets", query={"search": "COST", "offset": result["next"]})
                 check(offsets == [0, 200], "F2C offset 복원")
@@ -62882,7 +62882,7 @@ def forge_f2_import_unit():
                 with Image.open(io.BytesIO(response.body)) as image:
                     check(image.size == (256, 256) and image.format == "PNG", "F2C 큰 썸네일 원본 256px PNG")
             with patch.object(client, "fetch_media", return_value=b"not an image"):
-                check((await request("thumb", query=q)).status == 422, "F2C 그림 아닌 썸네일 거절")
+                check((await request("thumb", query=dict(q, size="large"))).status == 422, "F2C 그림 아닌 큰 보기 거절")
             response = await request("import", dict(q, into="target", name="imported"))
             check(response.status == 200 and set(value(response)) == {"key", "name", "notes"}, "F2C 타깃 가져오기 기존 새 프로젝트 응답")
             root_key = value(response)["key"]
@@ -62948,7 +62948,7 @@ def forge_f2_import_unit():
             token_values["alice"] = "dev:alice"
             for reason, status in (("unauthorized", 401), ("forbidden", 403), ("unreachable", 503)):
                 with patch.object(client, "assets", side_effect=fg.ForgeError(reason, status)):
-                    response = await request("assets")
+                    response = await request("assets", query={"refresh": "1"})
                 check(response.status == status, "F2C Forge 오류 매핑 " + reason)
             check(rejected == ["dev:alice"], "F2C 401 토큰 거절 표시")
             previous = ["dev:old"]
@@ -63086,12 +63086,15 @@ def forge_f2_import_unit():
                 rig.media_status["/media/thumb"] = 403
                 item = await rig.item()
                 response = await rig.request("thumb", query=item)
-                check(response.status == 200 and response.body == png and rig.started.count(("alice", "/media/original")) == 1,
-                      "R1 막힌 썸네일은 원본으로 한 번 대체")
+                check(response.status == 200 and response.content_type == "image/png"
+                      and rig.started.count(("alice", "/media/original")) == 1, "R1 origin 밖·403 썸네일은 원본 한 번으로 대체")
                 rig.media_status["/media/original"] = 404
                 response = await rig.request("thumb", query=item)
+                check(response.status == 200 and rig.started.count(("alice", "/media/original")) == 1,
+                      "R1 대체 성공한 썸네일은 기억에서 반환")
+                response = await rig.request("thumb", query=dict(item, size="large"))
                 check(response.status == 404 and value(response)["reason"] == "forge_stale" and not rig.rejected,
-                      "R1 썸네일·원본 모두 실패하면 404")
+                      "R1 캐시 밖 크게 보기에서 원본 실패하면 404")
             for status in (401, 403):
                 rig = Rig()
                 rig.put_status = status
@@ -63275,15 +63278,15 @@ def forge_f2_import_unit():
             rig.asset_pages = pages
             response = await rig.request("assets", query={"search": "needle"})
             listed = value(response)
-            check(response.status == 200 and len(listed["items"]) == 1 and rig.asset_gets() == [0, 200, 400],
-                  "R5 내 자료 검색은 일치 항목이 나오는 쪽까지 계속")
+            check(response.status == 200 and len(listed["items"]) == 1 and rig.asset_gets() == [0, 200, 400, 600, 800],
+                  "R5 내 자료 검색 전 최대 5쪽을 한 번 읽음")
             await rig.request("assets", query={"search": "needle", "offset": listed["next"]})
-            check(rig.asset_gets() == [0, 200, 400, 600, 800, 1000, 1200, 1400], "R5 next는 확인한 마지막 쪽 다음 offset")
+            check(rig.asset_gets() == [0, 200, 400, 600, 800] and listed["next"] is None and listed["more"], "R5 검색 결과의 로컬 next·상한 more")
             rig.seen.clear()
             response = await rig.request("assets", query={"search": "missing"})
             listed = value(response)
-            check(listed["items"] == [] and listed["next"] is not None and rig.asset_gets() == [0, 200, 400, 600, 800],
-                  "R5 검색은 응답당 5쪽 상한·이후 범위 next 유지")
+            check(listed["items"] == [] and listed["next"] is None and listed["more"] and rig.asset_gets() == [],
+                  "R5 재검색은 캐시만 사용·상한 more 유지")
 
             rig = Rig()
             rig.list_gate = asyncio.Event()
@@ -63520,9 +63523,11 @@ def forge_f2_import_unit():
     scene = _fw_core_js().split('await scenario("FW7', 1)[0] + r'''
 Element.prototype.addEventListener=function(type,fn){(this.listeners??={})[type]=fn;};
 Element.prototype.value="";
+Element.prototype.getAttribute=function(k){return this.attrs[k]??null;};
+Object.defineProperty(Element.prototype,"style",{get(){return this._style??={setProperty(k,v){this[k]=v;}};}});
 Element.prototype.replaceChildren=function(...xs){this.children=[];this.append(...xs);};
-Element.prototype.querySelectorAll=function(){return this.all().slice(1).filter(x=>["BUTTON","INPUT"].includes(x.tagName));};
-Element.prototype.click=async function(){await this.listeners?.click?.({isTrusted:true});await settle();};
+Element.prototype.querySelectorAll=function(){return this.all().slice(1).filter(x=>["BUTTON","INPUT","SELECT"].includes(x.tagName));};
+Element.prototype.click=async function(){await this.listeners?.click?.({isTrusted:true,stopPropagation(){}});await settle();};
 const find=(e,label)=>e.doc.body.all().find(n=>n.tagName==="BUTTON"&&n.textContent===label);
 async function start({enabled=true,server=true,handler}={}) {
  const e=context({handler});e.ctx.DPEnv={serverMode:server,can:()=>enabled};
@@ -63535,7 +63540,7 @@ for(const options of [{enabled:false},{server:false}]) await scenario("FC caps "
 await scenario("R5 빈 범위·다음 쪽 안내",async()=>{
  const e=await start({handler:()=>response({items:[],next:"more-page"})});
  e.ctx.DPForgeImport.open({into:"refs",root:"root"});await settle();await find(e,"내 자료").click();
- return e.doc.body.textContent.includes("이 범위에는 없습니다 — [더 보기]")&&!find(e,"더 보기").hidden;
+ return e.doc.body.textContent.includes("이 범위에는 없습니다 — [계속 불러오기]")&&!find(e,"계속 불러오기").hidden;
 });
 await scenario("2R1 검색·탭·닫기에서 목록 요청 중단·오류 숨김",async()=>{
  const requests=[];
@@ -63544,9 +63549,9 @@ await scenario("2R1 검색·탭·닫기에서 목록 요청 중단·오류 숨�
   options?.signal?.addEventListener("abort",()=>reject(Object.assign(new Error("aborted fixture"),{name:"AbortError"})),{once:true});
  })});
  e.ctx.DPForgeImport.open({into:"refs",root:"root"});await settle();
- const input=e.doc.body.all().find(n=>n.tagName==="INPUT");input.value="새 검색";input.listeners.input();await settle();
+ const input=e.doc.body.all().find(n=>n.tagName==="INPUT"&&n.type==="search");input.value="새 검색";input.listeners.input();await settle();
  const searchAborted=requests[0]?.signal?.aborted,quiet=!e.doc.body.textContent.includes("aborted fixture");
- await e.fire(300);await find(e,"내 자료").click();const tabAborted=requests[1]?.signal?.aborted;
+ await e.fire(500);await find(e,"내 자료").click();const tabAborted=requests[1]?.signal?.aborted;
  await find(e,"닫기").click();const closeAborted=requests[2]?.signal?.aborted;
  for(const request of requests)request.resolve(response({items:[],next:null}));await settle();
  return Boolean(searchAborted&&tabAborted&&closeAborted&&quiet&&!e.ctx.DPDialog.open);
@@ -63561,22 +63566,22 @@ await scenario("2R4 새 저장·이미 저장 안내 구분",async()=>{
 await scenario("FC 창·탭·검색·더보기·요청·닫기",async()=>{
  let done;const e=await start({handler:(url,o)=>{
   const path=new URL(url,"https://forge.example");
-  if(o?.method==="POST")return response({ok:true,sheet:"sheets/a.png"});
+  if(o?.method==="POST")return response({ok:true,done:[{id:"opaque",sheet:"sheets/a.png"}],failed:[]});
   return response({items:[{id:"opaque",thumb:"/bmk/design_patch/forge/thumb?id=opaque",prompt:"결과",name:"시트",folder:"옷"}],next:path.searchParams.has("offset")?null:"page"});
  }}),d=e.ctx.DPForgeImport;
  if(!d.open({root:"root",into:"refs",onDone:r=>done=r})||d.open({into:"refs"}))return false;
  await settle();if(!e.ctx.DPDialog.open)return false;
- await find(e,"내 자료").click();await find(e,"더 보기").click();
+ await find(e,"내 자료").click();await find(e,"계속 불러오기").click();
  if(!e.calls.some(([u])=>String(u).includes("offset=page")))return false;
- const input=e.doc.body.all().find(n=>n.tagName==="INPUT");input.value="의상";input.listeners.input();
- const before=e.calls.length;await e.fire(300);if(e.calls.length!==before+1||!String(e.calls.at(-1)[0]).includes("search=%EC%9D%98%EC%83%81"))return false;
+ const input=e.doc.body.all().find(n=>n.tagName==="INPUT"&&n.type==="search");input.value="의상";input.listeners.input();
+ const before=e.calls.length;await e.fire(500);if(e.calls.length!==before+1||!String(e.calls.at(-1)[0]).includes("search=%EC%9D%98%EC%83%81"))return false;
  const backspace=e.key("keydown","Backspace",true,{target:input});if(backspace.defaultPrevented)return false;
  const image=e.doc.body.all().find(n=>n.tagName==="IMG");if(image.loading!=="lazy"||!image.src.startsWith("/bmk/"))return false;
- // 카드 = button > .dp-forge-preview > img (11/17 — 정사각 미리보기 칸), 이름은 title·aria-label 에도
- const card=image.parent.parent;if(image.parent.className!=="dp-forge-preview"||card.tagName!=="BUTTON"||card.title!=="시트"||card.attrs["aria-label"]!=="시트 가져오기")return false;
+ // 고르기 단추와 크게 보기 단추는 같은 카드의 형제 — 단추 안에 단추를 넣지 않는다.
+ const card=image.parent.parent;if(image.parent.className!=="dp-forge-preview"||card.tagName!=="BUTTON"||card.title!=="시트"||card.attrs["aria-label"]!=="시트 선택")return false;
  if(!card.textContent.includes("옷"))return false;
- await card.click();const body=JSON.parse(e.calls.at(-1)[1].body);
- return JSON.stringify(body)===JSON.stringify({into:"refs",source:"asset",id:"opaque",root:"root"})&&done.sheet==="sheets/a.png"&&!e.ctx.DPDialog.open;
+ await card.click();await find(e,"1장 가져오기").click();const body=JSON.parse(e.calls.at(-1)[1].body);
+ return JSON.stringify(body)===JSON.stringify({into:"refs",source:"asset",ids:["opaque"],root:"root"})&&done.done[0].sheet==="sheets/a.png"&&!e.ctx.DPDialog.open;
 });
 await scenario("DPS 다음 쪽에 다시 내려온 그림은 한 번만",async()=>{
  const item=n=>({id:"id-"+n,thumb:"/bmk/design_patch/forge/thumb?id=id-"+n,prompt:"그림 "+n});
@@ -63585,7 +63590,7 @@ await scenario("DPS 다음 쪽에 다시 내려온 그림은 한 번만",async()
  e.ctx.DPForgeImport.open({into:"refs",root:"root"});await settle();
  const cards=()=>JSON.stringify(e.doc.body.all().filter(n=>n.className==="dp-forge-item").map(n=>n.title));
  if(cards()!==JSON.stringify(["그림 1","그림 2"]))return cards();
- await find(e,"더 보기").click();
+ await find(e,"계속 불러오기").click();
  return cards()===JSON.stringify(["그림 1","그림 2","그림 3"])||cards();
 });
 await scenario("FC 오류 유지·Esc·target 이름",async()=>{
@@ -63671,6 +63676,996 @@ def batch13_unit():
     check(re.search(r"return \{[^}]*\bicon\b[^}]*\};\s*\}\)\(\);", rows) is not None, "13-0 DPRows.icon 내보내기")
     _batch13_values(css, code)
     _batch13_icons(web)
+
+
+def forge_import1_server_unit():
+    """실서버 연동 1단계 「Forge에서 가져오기」 강화 — 서버 쪽(요청 수 단정·필터·자료 기억·썸네일 기억·여러 장·출처 사이드카)."""
+    section("Forge 가져오기 1단계 — 서버 (forge_import1_server_unit)")
+    import tempfile
+    from unittest.mock import patch
+    import bmk_design_patch_board as bd
+    import bmk_design_patch_forge as fg
+    import bmk_design_patch_forge_dev as dev
+
+    out = OUT_ROOT / "forge_import1_server"
+    out.mkdir(parents=True, exist_ok=True)
+    work = Path(tempfile.mkdtemp(prefix="run-", dir=out))
+    origin = "http://localhost:8790"
+
+    class Rig:
+        def __init__(self):
+            self.now = 1800000000.0
+            self.fake = dev.FakeForge(clock=lambda: self.now)
+            self.config = fg.ForgeConfig(origin, (origin,), allow_http=True, timeout=.2)
+            self.client = fg.ForgeClient(self.config, self.fake.handle)
+            self.checked, self.rejected = [], []
+            self.tokens = types.SimpleNamespace(token_for=lambda org, account: "dev:" + account.removeprefix("u_"),
+                access_at=lambda *args: self.now, reject_token=lambda *args: self.rejected.append(args))
+            self.accounts = fg.ForgeAccounts(self.client, self.config, self.tokens, clock=lambda: self.now)
+            self.handlers = {p.rsplit("/", 1)[-1]: f for _, p, f in fg.routes(self.accounts)}
+            self.scopes = {}
+            for name in ("alice", "bob"):
+                home = Path(tempfile.mkdtemp(prefix=name + "-", dir=work))
+                for folder in ("input", "output"):
+                    (home / folder).mkdir()
+                self.scopes[name] = dict(org="org1", account="u_" + name, home=str(home),
+                                        input=str(home / "input"), output=str(home / "output"))
+
+        async def request(self, action, data=None, account="alice", **query):
+            raw = json.dumps(data or {}).encode()
+            async def read():
+                return raw
+            req = types.SimpleNamespace(query=query, path=bd.API + "/forge/" + action,
+                content_type="application/json", content_length=len(raw), read=read)
+            mark = bd.set_scope(self.scopes[account])
+            try:
+                response = await self.handlers[action](req)
+                if response.content_type == "application/json":
+                    clean(response.text, "응답")
+                return response
+            finally:
+                bd.reset_scope(mark)
+
+        def count(self, path):
+            return sum(method == "GET" and (p.startswith(path) if path == "/fake-media/" else p == path)
+                       for method, p in self.fake.calls)
+
+        def states(self):
+            account_state = inspect.getclosurevars(inspect.unwrap(self.handlers["assets"])).nonlocals["account_state"]
+            return inspect.getclosurevars(inspect.unwrap(account_state)).nonlocals["states"]
+
+    def value(response):
+        return json.loads(response.body)
+
+    def clean(text, where):
+        check(all(s not in text for s in ("dev:alice", "dev:bob", origin, "localhost", "u_alice", "u_bob", "u_teammate")),
+              "I1 토큰·주소·만든 사람 id 0건: " + where)
+
+    async def wait_for_test(predicate):
+        for _ in range(200):
+            if predicate():
+                return
+            await asyncio.sleep(.001)
+        raise AssertionError("리뷰 재현 요청이 대기 상태에 도달하지 못했습니다")
+
+    async def review1():
+        rig = Rig()
+        rig.client.config = dataclasses.replace(rig.config, timeout=2)
+        item = value(await rig.request("assets"))["items"][0]
+        q = dict(source="asset", id=item["id"])
+        body = dict(q, into="target", name="review1")
+        rig.now += 300
+        state = rig.states()["org1", "u_alice"]
+        rig.fake.fault = dict(path="/api/library/assets", status=429, times=100)
+        entered, release = asyncio.Event(), asyncio.Event()
+        async def blocked(*args):
+            if urllib.parse.urlsplit(args[1]).path == "/api/library/assets":
+                entered.set()
+                await release.wait()
+            return await rig.fake.handle(*args)
+        before = rig.count("/api/library/assets")
+        with patch.object(rig.client, "_transport", side_effect=blocked):
+            first = asyncio.create_task(rig.request("assets"))
+            await entered.wait()
+            pending = [asyncio.create_task(rig.request("thumb", **q)) for _ in range(4)]
+            pending.append(asyncio.create_task(rig.request("import", body)))
+            try:
+                await wait_for_test(lambda: len(state["assets_lock"]._waiters or ()) == 5)
+            finally:
+                release.set()
+            responses = await asyncio.gather(first, *pending)
+        failure = value(responses[0])
+        check(rig.count("/api/library/assets") == before + 1, "FIX1 429 뒤 대기 썸네일 4·가져오기 1의 목록 재요청 0")
+        check(all(r.status == 503 and value(r) == failure for r in responses), "FIX1 대기 요청은 같은 reason·안내 글")
+        rig.now += 29.9
+        before = rig.count("/api/library/assets")
+        for action, data, query in (("thumb", None, q), ("thumb", None, dict(q, size="large")), ("import", body, {})):
+            response = await rig.request(action, data, **query)
+            check(response.status == 503 and value(response) == failure, "FIX1 실패 기억의 reason·안내 글 유지")
+        check(rig.count("/api/library/assets") == before, "FIX1 30초 안의 썸네일·크게 보기·가져오기 요청 0")
+        rig.now += .1
+        before = rig.count("/api/library/assets")
+        check((await rig.request("thumb", **q)).status == 503 and rig.count("/api/library/assets") == before + 1,
+              "FIX1 30초 경계 뒤에는 자료 목록 재조회")
+        rig.now -= 1
+        before = rig.count("/api/library/assets")
+        await rig.request("thumb", **q)
+        check(rig.count("/api/library/assets") == before + 1, "FIX1 시계가 뒤로 가면 실패 기억 폐기")
+        for query in ({}, {"refresh": "1"}):
+            before = rig.count("/api/library/assets")
+            await rig.request("assets", **query)
+            check(rig.count("/api/library/assets") == before + 1, "FIX1 GET assets는 실패 기억을 건너뛰고 한 번 조회")
+        rig.fake.fault = None
+        await rig.request("assets")
+        before = rig.count("/api/library/assets")
+        check((await rig.request("thumb", **q)).status == 200 and rig.count("/api/library/assets") == before,
+              "FIX1 성공하면 실패 기억 해제")
+
+        # 명시적 목록 요청끼리 기다릴 때도 같은 실패를 공유한다.
+        rig.now += 300
+        rig.fake.fault = dict(path="/api/library/assets", status=503, delay=.03, times=100)
+        before = rig.count("/api/library/assets")
+        responses = await asyncio.gather(rig.request("assets"), rig.request("assets"))
+        check(all(r.status == 503 for r in responses) and value(responses[0]) == value(responses[1])
+              and rig.count("/api/library/assets") == before + 1, "FIX1 동시 GET assets도 실패 세대 공유")
+
+        rig = Rig()
+        rig.client.config = dataclasses.replace(rig.config, timeout=2)
+        item = value(await rig.request("assets"))["items"][0]
+        rig.now += 300
+        state = rig.states()["org1", "u_alice"]
+        rig.fake.fault = dict(path="/api/library/assets", delay=.5, times=1)
+        before = rig.count("/api/library/assets")
+        first = asyncio.create_task(rig.request("assets"))
+        await wait_for_test(lambda: rig.count("/api/library/assets") == before + 1)
+        pending = asyncio.create_task(rig.request("thumb", source="asset", id=item["id"]))
+        await wait_for_test(lambda: len(state["assets_lock"]._waiters or ()) == 1)
+        first.cancel()
+        await asyncio.gather(first, return_exceptions=True)
+        check((await pending).status == 200 and rig.count("/api/library/assets") == before + 2,
+              "FIX1 취소된 읽기는 실패 기억 없이 대기자가 새로 읽음")
+
+    async def review2():
+        for active in (False, True):
+            rig = Rig()
+            item = value(await rig.request("assets"))["items"][0]
+            await rig.request("thumb", source="asset", id=item["id"])
+            alice = rig.states()["org1", "u_alice"]
+            rig.fake.fault = dict(path="/api/library/assets", status=429, times=1)
+            await rig.request("assets", account="bob")
+            bob = rig.states()["org1", "u_bob"]
+            check(bool(alice["thumbs"]) and alice["thumb_bytes"] > 0 and bob["assets_failure"] is not None,
+                  "FIX2 정리 전 그림 기억·실패 기억 있음")
+            entered, release = asyncio.Event(), asyncio.Event()
+            async def held_history(token, org, **kwargs):
+                if token == "dev:alice":
+                    entered.set()
+                    await release.wait()
+                return {"items": [], "next": None}
+            with patch.object(rig.client, "history", side_effect=held_history):
+                pending = asyncio.create_task(rig.request("history")) if active else None
+                if pending:
+                    await entered.wait()
+                try:
+                    rig.now += 31 * 60
+                    check(bool(alice["thumbs"]) and bool(alice["active"]) == active,
+                          "FIX2 bob 요청 전까지 alice 기억 유지")
+                    await rig.request("history", account="bob")
+                    check(not alice["thumbs"] and alice["thumb_bytes"] == 0,
+                          "FIX2 bob 요청만으로 alice 썸네일 만료 정리 active=" + str(active))
+                    check(alice["assets"] is None and bob["assets_failure"] is None,
+                          "FIX2 모든 계정의 지난 자료·실패 기억도 정리")
+                finally:
+                    release.set()
+                    if pending:
+                        await pending
+
+    async def review3():
+        for failure in ("origin", 403, 404, "oversize", 429, 500, "timeout", "connect"):
+            rig = Rig()
+            remote = rig.fake._seed_history("alice")[0]["items"][0]
+            original = urllib.parse.urlsplit(remote["result_url"]).path
+            thumb = "/fake-media/review3-thumb.png"
+            remote["thumbnail_url"] = "https://outside.example/thumb.png" if failure == "origin" else origin + thumb
+            rig.fake._media[thumb] = rig.fake._media[original]
+            if failure == "oversize":
+                rig.fake._media[thumb] = ("image/png", b"x" * (4 * 1024 ** 2 + 1))
+            elif failure in (403, 404, 429, 500):
+                rig.fake.fault = dict(path=thumb, status=failure, times=100)
+            elif failure == "timeout":
+                rig.fake.fault = dict(path=thumb, delay=.5, times=1)
+            if failure == "connect":
+                async def disconnected(*args):
+                    if urllib.parse.urlsplit(args[1]).path == thumb:
+                        raise OSError("synthetic connection failure")
+                    return await rig.fake.handle(*args)
+                rig.client._transport = disconnected
+            item = value(await rig.request("history"))["items"][0]
+            q = dict(source="history", id=item["id"])
+            response = await rig.request("thumb", **q)
+            if failure in ("origin", 403, 404, "oversize"):
+                check(response.status == 200 and response.content_type == "image/png" and rig.count(original) == 1,
+                      "FIX3 원본 한 번으로 대체 " + str(failure))
+                second = await rig.request("thumb", **q)
+                check(second.status == 200 and second.body == response.body and rig.count(original) == 1
+                      and rig.count(thumb) == (0 if failure == "origin" else 1), "FIX3 대체 결과 기억 " + str(failure))
+            else:
+                check(response.status == 503 and value(response)["reason"] == "forge_unreachable" and rig.count(original) == 0,
+                      "FIX3 장애에는 원본 요청 0 " + str(failure))
+
+    async def review4():
+        rig = Rig()
+        assets = rig.fake._account_assets("alice")
+        assets[0]["folder_path"] = "검증\u0001u_alice/의상"
+        assets[1]["folder_path"] = "u_alice"
+        listed = value(await rig.request("assets"))
+        shown = listed["items"][0]["folder"]
+        check(shown == "검증/의상" and shown in listed["folders"] and "" not in listed["folders"],
+              "FIX4 폴더 제어 문자·계정 id 가림과 빈 폴더 제외")
+        filtered = value(await rig.request("assets", folder=shown))
+        check([r["id"] for r in filtered["items"]] == [listed["items"][0]["id"]],
+              "FIX4 화면의 가린 폴더 값으로 같은 자료를 찾음")
+        check(listed["items"][1]["folder"] == "" and not value(await rig.request("assets", folder="u_alice"))["items"],
+              "FIX4 가림으로 빈 폴더가 된 자료는 전체에서만 보임")
+        check(rig.count("/api/library/assets") == 1, "FIX4 폴더 선택은 캐시에서만 거름")
+
+    async def review5():
+        buffer = io.BytesIO()
+        with Image.new("P", (600, 400), 0) as palette:
+            palette.putpalette([0, 0, 0, 180, 90, 40, 40, 90, 180] + [0] * 759)
+            palette.paste(1, (150, 100, 450, 300))
+            palette.paste(2, (10, 10, 50, 50))
+            palette.save(buffer, "PNG", transparency=bytes([0, 255, 128] + [255] * 253))
+        palette_png = buffer.getvalue()
+        buffer = io.BytesIO()
+        ramp = np.tile(np.linspace(0, 65535, 600, dtype=np.uint16), (400, 1))
+        with Image.fromarray(ramp) as gray:
+            gray.save(buffer, "PNG")
+        gray_png = buffer.getvalue()
+        for name, raw in (("palette", palette_png), ("gray16", gray_png)):
+            rig = Rig()
+            remote = rig.fake._seed_history("alice")[0]["items"][0]
+            path = urllib.parse.urlsplit(remote["result_url"]).path
+            rig.fake._media[path] = ("image/png", raw)
+            item = value(await rig.request("history"))["items"][0]
+            for size in (None, "large"):
+                response = await rig.request("thumb", source="history", id=item["id"], **({"size": size} if size else {}))
+                check(response.status == 200 and response.content_type == "image/png", "FIX5 미리보기 PNG 응답 " + name)
+                if response.status != 200:
+                    continue
+                with Image.open(io.BytesIO(response.body)) as image:
+                    rgba = image.convert("RGBA")
+                    if name == "palette":
+                        check(rgba.getpixel((0, 0))[3] == 0 and rgba.getpixel((image.width // 2, image.height // 2))[3] == 255
+                              and rgba.getpixel((image.width // 20, image.height * 3 // 40))[3] == 128,
+                              "FIX5 팔레트 PNG 투명·불투명 알파 유지 " + str(size))
+                    else:
+                        center = rgba.getpixel((image.width // 2, image.height // 2))[0]
+                        check(124 <= center <= 132 and rgba.getpixel((0, 0))[0] <= 2 and rgba.getpixel((image.width - 1, 0))[0] >= 253,
+                              "FIX5 16비트 회색의 중간 밝기 유지 " + str(size) + " center=" + str(center))
+                    rgba.close()
+
+    async def run():
+        await review1()
+        await review2()
+        await review3()
+        await review4()
+        await review5()
+        # 1-E: 실제 전송 대역이 받은 요청 수를 먼저 고정한다.
+        rig = Rig()
+        await rig.request("history")
+        check(rig.count("/api/image/history") == 1, "I1 history 한 번 = 원격 1건")
+        await rig.request("history", scope="team")
+        check(rig.count("/api/image/history") == 2, "I1 필터 변경 = 원격 1건")
+        assets = value(await rig.request("assets"))
+        await rig.request("assets", search="시트")
+        check(rig.count("/api/library/assets") == 1, "I1 자료 두 번 = 최초 1건")
+        item = assets["items"][0]
+        q = dict(source="asset", id=item["id"])
+        first = await rig.request("thumb", **q)
+        second = await rig.request("thumb", **q)
+        check(first.status == second.status == 200 and first.body == second.body and rig.count("/fake-media/") == 1,
+              "I1 같은 썸네일 두 번 = 원격 1건")
+        rig.now += 300
+        await rig.request("assets")
+        check(rig.count("/api/library/assets") == 2, "I1 자료 5분 경계 만료")
+        await rig.request("assets", refresh="1")
+        check(rig.count("/api/library/assets") == 3, "I1 새로고침 = 재조회")
+        rig.now += 1500
+        await rig.request("assets")  # 항목 표 수명만 갱신, 썸네일 수명은 늘리지 않는다.
+        await rig.request("thumb", **q)
+        check(rig.count("/fake-media/") == 2, "I1 썸네일 30분 경계 만료")
+        for fault in ({"status": 429}, {"status": 503}, {"delay": .5}):
+            fresh = Rig()
+            fresh.fake.fault = dict(fault, path="/api/image/history", times=1)
+            response = await fresh.request("history")
+            check(response.status == 503 and fresh.count("/api/image/history") == 1,
+                  "I1 목록 실패 뒤 자동 재요청 0 " + str(fault))
+        fresh = Rig()
+        fresh.fake.fault = dict(path="/api/library/assets", delay=.03, times=1)
+        pair = await asyncio.gather(fresh.request("assets"), fresh.request("assets"))
+        check(all(r.status == 200 for r in pair) and fresh.count("/api/library/assets") == 1,
+              "I1 동시 자료 요청은 한 번만 읽음")
+
+        rig = Rig()
+        await rig.client.history("dev:alice", "org1")
+        check(set(rig.fake.query_calls[-1][2]) == {"organization_id", "limit", "view"}, "I1 빈 필터 키 자체 생략")
+        await rig.client.history("dev:alice", "org1", search="[의상]", is_favorite=False)
+        query = rig.fake.query_calls[-1][2]
+        check(query["search"] == [re.escape("[의상]")] and query["is_favorite"] == ["false"], "I1 리터럴 검색·bool 쿼리")
+        mine = value(await rig.request("history"))
+        check(rig.fake.query_calls[-1][2]["user_id"] == ["u_alice"] and all(r["mine"] for r in mine["items"]),
+              "I1 기본 mine = 로그인 계정 id")
+        team = value(await rig.request("history", scope="team"))
+        check("user_id" not in rig.fake.query_calls[-1][2] and any(not r["mine"] for r in team["items"]), "I1 조직 범위는 user_id 없음")
+        studio = value(await rig.request("history", studio="1"))
+        check(len(studio["items"]) == len(mine["items"]) + 1 and len(team["items"]) == len(mine["items"]) + 1,
+              "I1 스튜디오 기본 숨김·토글 포함·팀 결과 포함")
+        check(len(studio["items"]) == 5 and all(r.get("batch") == {"n": 3, "pos": i + 1}
+              for i, r in enumerate(mine["items"][:3])) and "batch" not in mine["items"][-1], "I1 업스케일·배경 제거 제외·묶음 1부터")
+        fav = value(await rig.request("history", fav="1"))
+        check(len(fav["items"]) == 3 and all(r["fav"] for r in fav["items"]), "I1 좋아요 필터")
+        model = value(await rig.request("history", model="dev_model"))
+        check(len(model["items"]) == 1 and model["items"][0]["model"] == "dev_model", "I1 모델 필터")
+        since = dev._stamp(rig.now - 86400)
+        recent = value(await rig.request("history", since=since))
+        check(len(recent["items"]) == 3 and rig.fake.query_calls[-1][2]["date_start"] == [since], "I1 ISO 기간 필터")
+        literal = value(await rig.request("history", search="[의상]"))
+        check(len(literal["items"]) == 4, "I1 괄호 검색은 정규식 아닌 글자 그대로")
+        for bad in ({"scope": "all"}, {"since": "yesterday"}, {"since": "2026-11-18"}, {"model": "m" * 129}):
+            before = rig.count("/api/image/history")
+            check((await rig.request("history", **bad)).status == 400 and rig.count("/api/image/history") == before,
+                  "I1 잘못된 필터는 조회 전 400")
+        check((await rig.request("thumb", source="history", id=mine["items"][0]["id"], size="small")).status == 400,
+              "I1 잘못된 썸네일 크기 400")
+        seed = rig.fake._seed_history("alice")
+        seed[:] = [dict(seed[-1], id="page-" + str(i)) for i in range(45)]
+        page = value(await rig.request("history"))
+        for changes in ({"search": "changed"}, {"scope": "team"}, {"model": "dev_model"}, {"since": since},
+                        {"fav": "1"}, {"studio": "1"}):
+            before = rig.count("/api/image/history")
+            response = await rig.request("history", cursor=page["next"], **changes)
+            check(response.status == 404 and value(response)["reason"] == "forge_stale" and rig.count("/api/image/history") == before,
+                  "I1 이음표는 모든 필터에 묶임")
+        check(len(value(await rig.request("history", cursor=page["next"]))["items"]) == 5, "I1 같은 필터 쪽 넘김")
+        for row in seed:
+            row["prompt"] = P.PROMPT_HEAD + " hidden"
+        before = rig.count("/api/image/history")
+        empty = value(await rig.request("history"))
+        check(not empty["items"] and empty["next"] and rig.count("/api/image/history") == before + 1,
+              "I1 걸러 빈 쪽도 추가 조회 없음")
+
+        rig = Rig()
+        assets = value(await rig.request("assets"))
+        check(len(assets["items"]) == 6 and assets["folders"] == sorted(set(assets["folders"])) and "" not in assets["folders"]
+              and all(len(r["tags"]) == 3 for r in assets["items"]) and not assets["more"], "I1 폴더 고유·정렬·빈 값 제외·태그 최대 3")
+        blocked = [r for r in assets["items"] if r.get("blocked")]
+        check(len(blocked) == 1 and (await rig.request("thumb", source="asset", id=blocked[0]["id"])).status == 404,
+              "I1 허용 밖 주소는 표시하고 전송 전 거절")
+        folder = value(await rig.request("assets", folder="레퍼런스/의상"))
+        check(len(folder["items"]) == 2 and folder["folders"] == assets["folders"]
+              and not value(await rig.request("assets", folder="레퍼런스"))["items"], "I1 폴더는 정확히 일치·전체 폴더 목록 유지")
+        check(len(value(await rig.request("assets", search="costume"))["items"]) == 6 and rig.count("/api/library/assets") == 1,
+              "I1 이름·폴더·태그 검색은 캐시만 사용")
+        await rig.request("assets", account="bob")
+        check(rig.count("/api/library/assets") == 2 and
+              (await rig.request("thumb", account="bob", source="asset", id=assets["items"][0]["id"])).status == 404,
+              "I1 계정별 자료 캐시·ID 격리")
+
+        def many(rig, count):
+            template = rig.fake._account_assets("alice")[0]
+            rig.fake._assets["alice"] = [dict(template, id="asset-" + str(i), name="시트 " + str(i)) for i in range(count)]
+
+        rig = Rig()
+        many(rig, 201)
+        page = value(await rig.request("assets"))
+        check(len(page["items"]) == 60 and page["next"] and rig.count("/api/library/assets") == 2, "I1 201개는 원격 2쪽·화면 60개")
+        total = list(page["items"])
+        tail = page
+        while tail["next"]:
+            tail = value(await rig.request("assets", offset=tail["next"]))
+            total.extend(tail["items"])
+        check(len(total) == 201 and len({r["id"] for r in total}) == 201 and rig.count("/api/library/assets") == 2,
+              "I1 로컬 쪽 넘김은 중복·추가 조회 없음")
+        for changes in ({"search": "시트"}, {"folder": "레퍼런스/의상"}, {"refresh": "1"}):
+            check((await rig.request("assets", offset=page["next"], **changes)).status == 404, "I1 자료 이음표 필터·새로고침에 묶임")
+        page = value(await rig.request("assets"))
+        rig.now += 300
+        check((await rig.request("assets", offset=page["next"])).status == 404, "I1 자료 이음표 TTL 만료")
+        rig.now -= 600
+        before = rig.count("/api/library/assets")
+        await rig.request("assets")
+        check(rig.count("/api/library/assets") == before + 2, "I1 뒤로 간 시계는 자료 캐시 만료")
+        rig = Rig()
+        many(rig, 1001)
+        page = value(await rig.request("assets"))
+        total = len(page["items"])
+        while page["next"]:
+            page = value(await rig.request("assets", offset=page["next"]))
+            total += len(page["items"])
+        check(total == 1000 and page["more"] and rig.count("/api/library/assets") == 5, "I1 1000개·5쪽 상한과 more")
+        for cancel in (False, True):
+            rig = Rig()
+            many(rig, 201)
+            rig.fake.fault = dict(path="/api/library/assets", query={"offset": 200}, times=1,
+                                  **({"delay": .5} if cancel else {"status": 503}))
+            task = asyncio.create_task(rig.request("assets"))
+            if cancel:
+                for _ in range(100):
+                    if rig.count("/api/library/assets") == 2:
+                        break
+                    await asyncio.sleep(.001)
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            else:
+                check((await task).status == 503, "I1 중간 쪽 실패 전파")
+            check(rig.count("/api/library/assets") == 2, "I1 실패·취소 뒤 자동 재요청 없음")
+            rig.fake.fault = None
+            page = value(await rig.request("assets"))
+            check(len(page["items"]) == 60 and rig.count("/api/library/assets") == 4, "I1 반쪽 캐시 없음·취소 잠금 해제")
+
+        rig = Rig()
+        rows = value(await rig.request("history"))["items"]
+        remote = rig.fake._seed_history("alice")[0]["items"]
+        for fault in ({"status": 429}, {"status": 503}, {"delay": .5}):
+            path = urllib.parse.urlsplit(remote[0]["thumbnail_url"]).path
+            rig.fake.fault = dict(fault, path=path, times=1)
+            before = rig.count("/fake-media/")
+            response = await rig.request("thumb", source="history", id=rows[0]["id"])
+            check(response.status == 503 and rig.count("/fake-media/") == before + 1, "I1 썸네일 장애도 추가 요청 없음")
+        path = urllib.parse.urlsplit(remote[0]["result_url"]).path
+        rig.fake._media[path] = ("image/png", png_bytes(np.zeros((1200, 1600, 3), np.uint8)))
+        before = rig.count("/fake-media/")
+        for size, expected in (("large", (1024, 768)), (None, (256, 192))):
+            response = await rig.request("thumb", source="history", id=rows[0]["id"], **({"size": size} if size else {}))
+            with Image.open(io.BytesIO(response.body)) as image:
+                check(image.size == expected and image.format == "PNG", "I1 원본에서 큰 보기·기본 썸네일 크기")
+        check(rig.count("/fake-media/") == before + 2, "I1 큰 보기는 기본 캐시와 분리·각 1건")
+
+        # LRU 개수와 바이트 상한은 실제 그림 응답으로 검증한다.
+        for count, noise in ((501, False), (130, True)):
+            rig = Rig()
+            many(rig, count)
+            if noise:
+                path = urllib.parse.urlsplit(rig.fake._assets["alice"][0]["url"]).path
+                rig.fake._media[path] = ("image/png", png_bytes(np.random.default_rng(42).integers(0, 256, (256, 256, 4), dtype=np.uint8)))
+            rows, page = [], value(await rig.request("assets"))
+            while True:
+                rows.extend(page["items"])
+                if not page["next"]:
+                    break
+                page = value(await rig.request("assets", offset=page["next"]))
+            for index, item in enumerate(rows):
+                if not noise and index == 500:
+                    await rig.request("thumb", source="asset", id=rows[0]["id"])
+                await rig.request("thumb", source="asset", id=item["id"])
+            before = rig.count("/fake-media/")
+            await rig.request("thumb", source="asset", id=rows[-1]["id"])
+            if not noise:
+                await rig.request("thumb", source="asset", id=rows[0]["id"])
+            await rig.request("thumb", source="asset", id=rows[0 if noise else 1]["id"])
+            check(rig.count("/fake-media/") == before + 1, "I1 썸네일 최근 항목 유지·오래된 항목 제거 " + ("32MiB" if noise else "500개"))
+
+        rig = Rig()
+        rows = value(await rig.request("history"))["items"]
+        ids = [r["id"] for r in rows[:3]]
+        created = await rig.request("import", dict(into="target", source="history", id=ids[0], name="출처_시험"))
+        check(created.status == 200 and set(value(created)) == {"key", "name", "notes"}, "I1 타깃 한 장 기존 요청·응답 " + repr(value(created)))
+        key = value(created)["key"]
+        root = Path(store.project_root(rig.scopes["alice"]["input"], "출처_시험"))
+        body = dict(into="refs", source="history", root=key, ids=ids)
+        before_records = {p.name: p.read_bytes() for p in (root / store.MANIFEST_NAME, root / "pipeline.json")}
+        with patch.object(rig.accounts, "ensure_access", wraps=rig.accounts.ensure_access) as access:
+            result = value(await rig.request("import", body))
+            check(len(result["done"]) == 3 and not result["failed"] and access.call_count == 3, "I1 여러 장 순서대로 성공·장마다 권한 확인")
+        check(all(root.joinpath(p).read_bytes() == raw for p, raw in before_records.items()), "I1 출처는 매니페스트·pipeline 바이트에 영향 없음")
+        for sidecar in root.rglob("*.forge.json"):
+            text = sidecar.read_text(encoding="utf-8")
+            clean(text, "사이드카")
+            source = json.loads(text)
+            check(source["schema"] == "dp-forge-source/1" and source["source"] == "history" and source.get("id")
+                  and source.get("imported_at") and "created_by" not in source, "I1 사이드카 필드·원본 id")
+        check(len(list(root.glob("*.psd.forge.json"))) == 1 and len(list((root / "_source").glob("*.forge.json"))) == 1,
+              "I1 현재 타깃 PSD·보존한 원본 양쪽 출처")
+        mark = bd.set_scope(rig.scopes["alice"])
+        try:
+            sheets = bd.ref_sheets(str(root))
+            check(all("forge" in row for row in sheets if row["path"].startswith("sheets/"))
+                  and all(not row["path"].endswith(".forge.json") and "id" not in row.get("forge", {}) for row in sheets),
+                  "I1 시트 행 forge·id 없음·사이드카를 그림으로 세지 않음")
+            response = await bd.pipeline_handler(types.SimpleNamespace(query={"root": key}))
+            check(value(response)["target_forge"]["source"] == "history" and "id" not in value(response)["target_forge"],
+                  "I1 pipeline 최상위 target_forge")
+            with patch.object(bd, "server_mode", return_value=False):
+                check(all("forge" not in row for row in bd.ref_sheets(str(root))), "I1 로컬 시트 응답에 forge 없음")
+                response = await bd.pipeline_handler(types.SimpleNamespace(query={"root": key}))
+                check("target_forge" not in value(response), "I1 로컬 pipeline 응답 불변")
+                bd._write_forge_source(str(root), "local.png", dict(schema="dp-forge-source/1", source="asset", imported_at=dev._stamp(rig.now)))
+                check(not root.joinpath("local.png.forge.json").exists(), "I1 로컬 모드 출처 쓰기 없음")
+            source_path = root / (result["done"][0]["sheet"] + ".forge.json")
+            original_source = source_path.read_bytes()
+            for invalid in ([], {"schema": "unknown", "source": "asset"},
+                            {"schema": "dp-forge-source/1", "source": "asset", "imported_at": "invalid"}):
+                source_path.write_text(json.dumps(invalid), encoding="utf-8")
+                check(bd._read_forge_source(str(root), result["done"][0]["sheet"]) is None, "I1 잘못된 출처 형식 무시")
+            source_path.write_bytes(original_source)
+        finally:
+            bd.reset_scope(mark)
+        result = value(await rig.request("import", dict(body, ids=[ids[0], "missing", ids[2]])))
+        check([r["id"] for r in result["done"]] == [ids[0], ids[2]] and result["failed"][0]["id"] == "missing",
+              "I1 가운데 오래된 장만 실패·뒤 장 진행")
+        remote = rig.fake._seed_history("alice")[0]["items"]
+        rig.fake.fault = dict(path=urllib.parse.urlsplit(remote[1]["result_url"]).path, times=1, status=503)
+        before = rig.count("/fake-media/")
+        result = value(await rig.request("import", body))
+        check(len(result["done"]) == 1 and [r["id"] for r in result["failed"]] == ids[1:]
+              and result["failed"][-1]["error"].startswith("앞선 실패") and rig.count("/fake-media/") == before + 2,
+              "I1 가운데 5xx는 남은 장 중단·추가 요청 없음")
+        for bad in (dict(body, ids=[]), dict(body, ids=[str(i) for i in range(9)]), dict(body, ids=[ids[0]] * 2),
+                    dict(body, into="target"), dict(body, id=ids[0]), dict(body, ids=[None])):
+            check((await rig.request("import", bad)).status == 400, "I1 ids 0·9·중복·target·id 혼합·타입 검사")
+        with patch.object(rig.accounts, "ensure_access", side_effect=[None, fg.ForgeError("unauthorized", 401)]):
+            result = value(await rig.request("import", body))
+            check(len(result["done"]) == 1 and len(result["failed"]) == 2, "I1 일부 성공 뒤 권한 오류는 200·남은 장 실패")
+        with patch.object(rig.accounts, "ensure_access", side_effect=fg.ForgeError("forbidden", 403)):
+            check((await rig.request("import", body)).status == 403, "I1 성공 전 권한 오류는 기존 403")
+
+        asset = value(await rig.request("assets"))["items"][0]
+        original = rig.fake._assets["alice"][0]
+        new_path = "/fake-media/renewed.png"
+        png = png_bytes(np.full((256, 256, 3), 93, np.uint8))
+        rig.fake._media[new_path] = ("image/png", png)
+        original.update(url=origin + new_path, thumbnail_url=origin + new_path)
+        rig.now += 300
+        before = rig.count("/api/library/assets")
+        result = value(await rig.request("import", dict(into="refs", source="asset", id=asset["id"], root=key)))
+        check(root.joinpath(result["sheet"]).read_bytes() == png and rig.count("/api/library/assets") == before + 1,
+              "I1 오래된 자료 import는 목록 갱신 후 새 주소 사용")
+        source = json.loads(root.joinpath(result["sheet"] + ".forge.json").read_text(encoding="utf-8"))
+        check(source["source"] == "asset" and source["name"] == original["name"] and source["folder"] == original["folder_path"],
+              "I1 자료 출처 이름·폴더")
+        rig.fake._assets["alice"].remove(original)
+        rig.now += 300
+        check((await rig.request("thumb", source="asset", id=asset["id"], size="large")).status == 404,
+              "I1 재조회에서 사라진 자료는 오래된 URL로 받지 않음")
+
+        replace = bd.os.replace
+        def fail_sidecar(src, dst):
+            if str(dst).endswith(".forge.json"):
+                raise OSError("synthetic sidecar failure")
+            return replace(src, dst)
+        with patch.object(bd.os, "replace", side_effect=fail_sidecar):
+            response = await rig.request("import", dict(body, ids=[ids[0]]))
+        result = value(response)
+        check(response.status == 200 and len(result["done"]) == 1 and not result["failed"]
+              and not list(root.rglob(".forge-*.tmp")), "I1 사이드카 쓰기 실패도 성공·임시 파일 정리")
+
+        # 원격 표시 문자열 자체에 비밀이 섞여 있어도 새 필드·파일명·출처에 남지 않는다.
+        rig = Rig()
+        seed = rig.fake._seed_history("alice")[-1]
+        # 가릴 수 있는 것은 서버가 아는 값이다 — 토큰·Forge 주소·로그인 계정 id·그 항목을 만든 사람 id.
+        # (글 속의 다른 사람 id 꼴 글자는 값으로 알 수 없다 — 만든 사람 값이 필드로 나가지 않는지는 위에서 본다.)
+        dirty = "dev:alice " + origin + "/private localhost u_alice " + "글" * 400
+        seed.update(prompt=dirty, model_used=dirty)
+        history = value(await rig.request("history"))
+        check(all(len(r["prompt"]) <= 300 for r in history["items"]), "I1 표시 프롬프트 상한")
+        response = await rig.request("import", dict(into="target", source="history", id=history["items"][-1]["id"], name="가림_시험"))
+        check(response.status == 200, "I1 가린 프롬프트로 타깃 가져오기")
+        for sidecar in Path(rig.scopes["alice"]["input"]).rglob("*.forge.json"):
+            clean(sidecar.read_text(encoding="utf-8"), "오염된 출처")
+        check(all(s not in repr(rig.fake.query_calls) for s in ("dev:alice", "dev:bob", "Authorization")), "I1 개발 요청 기록 토큰 없음")
+        # 프롬프트 틀의 첫 줄 상수 = render() 가 실제로 내는 첫 줄(스튜디오 조각 판별이 이 상수를 쓴다).
+        check('lines = ["' + P.PROMPT_HEAD + '", *legend, ""]' in inspect.getsource(P.render),
+              "I1 PROMPT_HEAD 가 render 의 첫 줄과 같음")
+        # 가림은 개발용 계정 꼴(u_…)을 통째로 지우지 않는다 — 아는 값만 지운다.
+        check(fg.display("u_shape 치마 u_alice", hidden=("u_alice",)) == "u_shape 치마 ", "I1 가림은 아는 값만")
+
+    log = io.StringIO()
+    handler = logging.StreamHandler(log)
+    fg.logger.addHandler(handler)
+    bd.logger.addHandler(handler)
+    try:
+        with patch.dict(os.environ, {bd.SERVER_ENV: "1"}):
+            asyncio.run(run())
+        clean(log.getvalue(), "로그")
+    finally:
+        fg.logger.removeHandler(handler)
+        bd.logger.removeHandler(handler)
+
+
+def forge_import1_js_unit():
+    """실서버 연동 1단계 「Forge에서 가져오기」 강화 — 화면 쪽(필터 줄·여러 장·크게 보기·요청 수 단정·sandbox 금지 요소)."""
+    section("Forge 가져오기 1단계 — 화면 (forge_import1_js_unit)")
+    web = PKG / "web_design_patch"
+    source = {name: (web / name).read_text(encoding="utf-8")
+              for name in ("forge_import.js", "dialog.js", "ref_edit.js", "pipeline.js")}
+    js = source["forge_import.js"]
+    for word in ("<form", "submit", "alert(", "confirm(", "prompt(", "window.open", "innerHTML", "setInterval", "_blank"):
+        check(word not in js, "I1 sandbox 금지 요소 없음: " + word)
+    for name in ("board.css", "forge-theme.css"):
+        css = (web / name).read_text(encoding="utf-8")
+        grid = re.search(r"\.dp-forge-grid\s*\{([^}]+)\}", css).group(1)
+        check("var(--dp-forge-columns, 4)" in grid, "I1 칸 수 CSS 변수 공유: " + name)
+        check(re.search(r"@media\s*\(max-width:\s*480px\)\s*\{\s*\.dp-forge-grid\s*\{[^}]*repeat\(2,", css) is not None,
+              "I1 480px에서 두 칸: " + name)
+        sheet = re.search(r"\.dp-forge-sheet\s*\{([^}]+)\}", css).group(1)
+        check(not re.search(r"\boverflow(?:-y)?\s*:\s*hidden\b", sheet), "FIX4 시트 세로 스크롤 허용: " + name)
+        check(re.search(r"grid-template-columns:\s*repeat\(auto-fill,\s*minmax\(max\(var\(--dp-forge-min,\s*140px\),\s*calc\(", grid) is not None,
+              "FIX4 칸 수 자동 감소·140px 하한: " + name)
+        # 넓은 창(1000px 이상)에서만 하한을 낮춰 썸네일 크기 조절의 8칸이 그대로 나온다 — board.css 한 곳에서만 낮춘다.
+        lowered = re.findall(r"--dp-forge-min:\s*([0-9a-z]+)", css)
+        check(lowered == (["96px"] if name == "board.css" else []), "FIX4 넓은 창의 카드 폭 하한: " + name)
+        if name == "board.css":
+            check(re.search(r"@media \(min-width: 1000px\) \{\s*\.dp-forge-grid \{ --dp-forge-min: 96px; \}\s*\}", css) is not None,
+                  "FIX4 하한을 낮추는 것은 1000px 이상에서만")
+            check(re.search(r"\bmin-height:\s*160px\b", grid) is not None, "FIX4 격자 최소 높이 160px")
+            check(re.search(r"\bgrid-auto-rows:\s*max-content\b", grid) is not None, "FIX4 격자 줄 높이 유지")
+        else:
+            check(not re.search(r"\.dp-forge-grid[^{}]*\{[^}]*\bgrid-(?:auto-rows|template-rows)\s*:", css),
+                  "FIX4 테마는 격자 줄 높이를 덮어쓰지 않음")
+    css = (web / "board.css").read_text(encoding="utf-8")
+    selected = re.search(r"\.dp-forge-item\.dp-forge-selected\s*\{([^}]+)\}", css)
+    check(selected is not None and "border-color: var(--accent)" in selected.group(1), "FIX5 선택 카드 테두리 강조색")
+    mark = re.search(r"(?m)^\.dp-forge-check\s*\{([^}]+)\}", css).group(1)
+    check("background: var(--accent)" in mark and "color: var(--panel)" in mark, "FIX5 체크 표지 강조색 바탕·패널색 글자")
+    node = shutil.which("node")
+    if not node:
+        skip("node 없음: Forge 가져오기 1단계 DOM 하네스 미실행")
+        return
+    out = OUT_ROOT / "forge_import1_js"
+    out.mkdir(parents=True, exist_ok=True)
+    # 실제 통신·타이머 없이 UI 이벤트마다 요청과 그림 src 할당을 센다.
+    scene = _fw_core_js().split('await scenario("FW7', 1)[0] + r'''
+process.env.TZ="Asia/Seoul";
+const eq=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
+function expect(ok,message){if(!ok)throw Error(message);}
+Element.prototype.value="";
+Element.prototype.getAttribute=function(k){return this.attrs[k]??null;};
+Element.prototype.addEventListener=function(type,fn){(this.listeners??={})[type]=fn;};
+Element.prototype.replaceChildren=function(...xs){for(const x of this.children)x.parent=null;this.children=[];this.append(...xs);};
+Element.prototype.querySelectorAll=function(selector){const tags=selector.split(",").map(s=>s.trim().toUpperCase());return this.all().slice(1).filter(x=>tags.includes(x.tagName));};
+Object.defineProperty(Element.prototype,"style",{get(){return this._style??={setProperty(k,v){this[k]=String(v);}};}});
+Object.defineProperty(Element.prototype,"dataset",{get(){return this._dataset??={};}});
+Object.defineProperty(Element.prototype,"src",{get(){return this._src;},set(v){this._src=v;(this.doc.images??=[]).push(v);}});
+Element.prototype.emit=async function(type){
+ if(this.disabled)return;
+ const event={target:this,type,isTrusted:true,stopped:false,stopPropagation(){this.stopped=true;}};
+ for(let n=this;n;n=type==="click"&&!event.stopped?n.parent:null)await n.listeners?.[type]?.(event);
+ await settle();
+};
+Element.prototype.click=function(){return this.emit("click");};
+const nodes=e=>e.doc.body.all(), cls=(e,c)=>nodes(e).filter(n=>n.classList.contains(c));
+const B=(e,label)=>nodes(e).find(n=>n.tagName==="BUTTON"&&n.textContent===label);
+const control=(e,label)=>nodes(e).find(n=>n.attrs["aria-label"]===label);
+const search=e=>nodes(e).find(n=>n.attrs.role==="searchbox");
+const picks=e=>cls(e,"dp-forge-pick"), cards=e=>cls(e,"dp-forge-item");
+const posts=e=>e.calls.filter(([,o])=>o?.method==="POST");
+const query=e=>new URL(e.calls.at(-1)[0],"https://studio.invalid").searchParams;
+const listCalls=e=>e.calls.filter(([,o])=>o?.method!=="POST").length;
+const item=(id,extra={})=>({id,prompt:"그림 "+id,name:"자료 "+id,thumb:"/bmk/design_patch/forge/thumb?id="+id,...extra});
+const initial=()=>({items:[item("one",{model:"Model A",mine:true,fav:true,batch:{n:4,pos:2},created:"2026-11-16T01:00:00Z"}),item("two",{model:"Model B"})],next:null});
+async function start({handler=()=>response(initial()),storage,server=true,enabled=true}={}){
+ const e=context({handler});let clock=0,seq=0;const timers=new Map();
+ e.ctx.setTimeout=(fn,ms)=>{timers.set(++seq,{fn,at:clock+ms});return seq;};e.ctx.clearTimeout=id=>timers.delete(id);
+ e.tick=async ms=>{const end=clock+ms;for(;;){const t=[...timers].filter(([,v])=>v.at<=end).sort((a,b)=>a[1].at-b[1].at)[0];if(!t)break;
+  clock=t[1].at;timers.delete(t[0]);t[1].fn();await settle();}clock=end;await settle();};
+ e.ctx.Date=class extends Date{constructor(...args){super(...(args.length?args:["2026-11-18T04:45:00Z"]));}};
+ if(storage)Object.defineProperty(e.ctx,"localStorage",storage);
+ e.ctx.DPEnv={serverMode:server,can:()=>enabled};
+ vm.runInContext(IN.source["dialog.js"],e.ctx);vm.runInContext(IN.source["forge_import.js"],e.ctx);
+ e.open=async(opts={})=>{const opened=e.ctx.DPForgeImport.open({into:"refs",root:"root",...opts});await settle();return opened;};
+ return e;
+}
+async function change(e,label,value,wait=true){const n=control(e,label);n.value=value;await n.emit("change");if(wait)await e.tick(300);}
+async function type(e,text){const n=search(e);n.value=text;await n.emit("input");}
+
+await scenario("FIX1 새로고침 연타·읽는 중 클릭은 요청 1건",async()=>{
+ const requests=[];const e=await start({handler:u=>queryUrl(u).get("refresh")==="1"?new Promise(resolve=>requests.push(resolve)):response(initial())});
+ await e.open();await B(e,"내 자료").click();const refresh=B(e,"새로고침");
+ await refresh.click();await refresh.click();refresh.listeners.click();await settle();
+ expect(requests.length===1,"새로고침 연타 요청 수: "+requests.length);
+ expect(refresh.disabled,"목록을 읽는 동안 새로고침 비활성");
+ requests[0](response(initial()));await settle();expect(!refresh.disabled,"읽은 뒤 새로고침 활성");return true;
+});
+await scenario("FIX1 단추 Enter·Space 자동 반복 차단·입력 반복 유지",async()=>{
+ const e=await start();await e.open();const toggle=B(e,"스튜디오 결과 보기");
+ for(const key of ["Enter"," "]){
+  expect(e.key("keydown",key,true,{target:toggle,repeat:true}).defaultPrevented,"자동 반복 차단: "+key);
+  expect(!e.key("keydown",key,true,{target:toggle,repeat:false}).defaultPrevented,"첫 키는 유지: "+key);
+ }
+ for(const key of ["a"," "])expect(!e.key("keydown",key,true,{target:search(e),repeat:true}).defaultPrevented,"검색 입력 반복 유지");
+ return true;
+});
+await scenario("FIX2 기간 연속 변경은 마지막 값으로 300ms 뒤 1건",async()=>{
+ const e=await start();await e.open();await picks(e)[0].click();
+ await change(e,"기간","today",false);await e.tick(100);
+ await change(e,"기간","week",false);await e.tick(100);
+ await change(e,"기간","month",false);
+ expect(e.calls.length===1,"대기 중 요청 없음: "+e.calls.length);
+ expect(!cards(e).length&&B(e,"0장 가져오기").disabled&&e.doc.body.textContent.includes("필터를 적용하는 중…"),"대기 중 카드·선택 비움");
+ await e.tick(299);expect(e.calls.length===1,"마지막 변경 뒤 299ms");
+ await e.tick(1);expect(e.calls.length===2&&query(e).get("since")==="2026-10-31T15:00:00.000Z","300ms 뒤 마지막 기간 한 번");
+ return true;
+});
+await scenario("FIX2 토글 켬→끔 연타도 300ms 뒤 1건",async()=>{
+ const e=await start();await e.open();
+ for(const [label,key] of [["♥ 좋아요 한 항목","fav"],["스튜디오 결과 보기","studio"]]){
+  const n=e.calls.length;await B(e,label).click();await e.tick(100);await B(e,label).click();
+  expect(e.calls.length===n,"토글 대기 중 요청 없음: "+key);
+  await e.tick(299);expect(e.calls.length===n,"토글 마지막 변경 뒤 299ms");
+  await e.tick(1);expect(e.calls.length===n+1&&!query(e).has(key),"꺼진 최종 값으로 한 번: "+key);
+ }
+ return true;
+});
+await scenario("FIX2 서로 다른 필터도 한 타이머·탭/새로고침은 즉시",async()=>{
+ const e=await start();await e.open();
+ await change(e,"모델","Model A",false);await e.tick(150);await change(e,"범위","team",false);
+ await e.tick(299);expect(e.calls.length===1,"모델·범위 한 타이머");await e.tick(1);
+ expect(e.calls.length===2&&query(e).get("model")==="Model A"&&query(e).get("scope")==="team","마지막 필터 조합");
+ await change(e,"기간","today",false);await B(e,"내 자료").click();await e.tick(300);
+ expect(e.calls.length===3&&String(e.calls.at(-1)[0]).includes("/assets?"),"탭 즉시 요청·예약 취소");
+ await change(e,"폴더","옷",false);expect(e.calls.length===3,"폴더 대기");
+ await B(e,"새로고침").click();expect(e.calls.length===4&&query(e).get("folder")==="옷"&&query(e).get("refresh")==="1","새로고침 즉시");
+ await e.tick(300);expect(e.calls.length===4,"새로고침 뒤 예약 없음");return true;
+});
+await scenario("FIX3 검색어 앞뒤 공백만 바꾸면 두 장 선택·카드 유지·요청 0",async()=>{
+ const e=await start();await e.open();await type(e,"의상");await e.tick(500);
+ await picks(e)[0].click();await picks(e)[1].click();const before=cards(e),n=e.calls.length;
+ await type(e,"의상 ");await type(e,"  의상  ");
+ expect(B(e,"2장 가져오기")&&cards(e).every((card,i)=>card===before[i])&&cards(e).length===2,"공백 변경으로 선택·카드를 비우지 않음");
+ await e.tick(1000);expect(e.calls.length===n,"같은 검색어 요청 0");return true;
+});
+await scenario("FIX3 예약 검색 공백 변경은 기존 500ms 유지·탭 전환 뒤 기억",async()=>{
+ const e=await start();await e.open();await type(e,"의상");await e.tick(200);await type(e," 의상 ");
+ await e.tick(299);expect(e.calls.length===1,"검색 499ms");await e.tick(1);
+ expect(e.calls.length===2&&query(e).get("search")==="의상","공백 변경이 검색 타이머를 다시 걸지 않음");
+ await B(e,"내 자료").click();const before=cards(e);await type(e,"의상  ");await e.tick(1000);
+ expect(e.calls.length===3&&cards(e).length===2&&cards(e)[0]===before[0],"새 탭도 같은 검색어 유지");
+ return true;
+});
+await scenario("FIX3 공백뿐인 입력은 예약 필터 300ms를 검색 대기로 바꾸지 않음",async()=>{
+ const e=await start();await e.open();await change(e,"모델","Model A",false);await e.tick(100);await type(e," ");
+ expect(e.doc.body.textContent.includes("필터를 적용하는 중…"),"필터 대기 상태 유지");
+ await e.tick(200);expect(e.calls.length===2&&query(e).get("model")==="Model A"&&!query(e).has("search"),"필터 예약 유지");
+ return true;
+});
+await scenario("FIX4 스크롤한 시트의 크게 보기 위치·스크롤 잠금·복원",async()=>{
+ const e=await start();await e.open();const sheet=cls(e,"dp-forge-sheet")[0],zoom=cls(e,"dp-forge-zoom")[0];
+ sheet.scrollTop=240;await zoom.click();
+ expect(sheet.scrollTop===0&&sheet.style.overflowY==="hidden","크게 보기 전에 맨 위로 올리고 세로 스크롤 잠금");
+ expect(cls(e,"dp-forge-viewer").length===1,"보기 층 열기");
+ e.key("keydown","Escape");expect(sheet.scrollTop===240&&sheet.style.overflowY===""&&e.doc.activeElement===zoom,"닫으면 스크롤·초점 복원");
+ sheet.scrollTop=80;await zoom.click();await B(e,"크게 보기 닫기").click();
+ expect(sheet.scrollTop===80&&sheet.style.overflowY===""&&e.ctx.DPDialog.open,"닫기 단추도 시트 복원");return true;
+});
+await scenario("FIX5 선택·해제·부분 실패 때 카드 강조 표시 동기화",async()=>{
+ const e=await start({handler:(u,o)=>o?.method==="POST"?response({ok:true,done:[{id:"one",sheet:"sheets/one.png"}],failed:[{id:"two",error:"다시 시도"}]})
+  :response(initial())});await e.open();const card=cards(e)[0],pick=picks(e)[0],mark=cls(e,"dp-forge-check")[0];
+ await pick.click();expect(card.classList.contains("dp-forge-selected")&&pick.attrs["aria-pressed"]==="true"&&!mark.hidden,"고르면 카드 강조·체크 표시");
+ await pick.click();expect(!card.classList.contains("dp-forge-selected")&&pick.attrs["aria-pressed"]==="false"&&mark.hidden,"해제하면 강조·체크 제거");
+ await pick.click();await picks(e)[1].click();await B(e,"2장 가져오기").click();
+ expect(!cards(e)[0].classList.contains("dp-forge-selected")&&cards(e)[1].classList.contains("dp-forge-selected"),"부분 실패는 실패 장만 강조");
+ return true;
+});
+await scenario("I1 열기 1건·기본 필터·sandbox 단추·cap",async()=>{
+ const e=await start();expect(await e.open(),"열기");
+ expect(e.calls.length===1&&String(e.calls[0][0]).includes("/history?"),"열기 history 1");
+ expect(query(e).get("scope")==="mine", "기본 mine");
+ expect(["model","since","fav","studio","search"].every(k=>!query(e).has(k)),"빈 필터 키 생략");
+ expect(nodes(e).filter(n=>n.attrs.role==="searchbox").length===1,"검색칸 하나");
+ expect(nodes(e).filter(n=>n.tagName==="BUTTON").every(n=>n.type==="button"),"모든 단추 type");
+ expect(eq(cls(e,"dp-forge-filters")[0].children.filter(n=>!n.hidden).map(n=>n.attrs["aria-label"]),
+  ["프롬프트 검색...","모델","기간","♥ 좋아요 한 항목","범위","스튜디오 결과 보기"]),"필터 순서");
+ for(const opts of [{server:false},{enabled:false}]){const off=await start(opts);expect(!await off.open()&&!off.calls.length&&!off.doc.body.children.length,"cap 차단");}
+ return true;
+});
+await scenario("I1 검색 10글자 500ms 뒤 1·한 글자 0·빈 검색 1",async()=>{
+ const e=await start();await e.open();
+ for(let i=1;i<=10;i++){await type(e,"abcdefghij".slice(0,i));if(i<10)await e.tick(30);}
+ expect(e.calls.length===1,"타자 중 요청 없음");await e.tick(499);expect(e.calls.length===1,"499ms");
+ await e.tick(1);expect(e.calls.length===2&&query(e).get("search")==="abcdefghij","500ms 한 요청");
+ await type(e,"  가  ");await e.tick(2000);expect(e.calls.length===2&&e.doc.body.textContent.includes("두 글자 이상 입력하세요"),"한 글자");
+ await type(e," ");await e.tick(500);expect(e.calls.length===3&&!query(e).has("search"),"검색 해제");
+ return true;
+});
+await scenario("I1 각 필터 한 요청·선택 해제·대기 검색 합치기",async()=>{
+ const e=await start();await e.open();
+ for(const [label,value,key,want] of [["모델","Model A","model","Model A"],["범위","team","scope","team"]]){
+  await picks(e)[0].click();const n=e.calls.length;await change(e,label,value);
+  expect(e.calls.length===n+1&&query(e).get(key)===want&&B(e,"0장 가져오기").disabled,"필터 "+label);
+ }
+ for(const [label,key] of [["♥ 좋아요 한 항목","fav"],["스튜디오 결과 보기","studio"]]){
+  const n=e.calls.length;await B(e,label).click();await e.tick(300);expect(e.calls.length===n+1&&query(e).get(key)==="1","토글 "+key);
+  await B(e,label).click();await e.tick(300);expect(e.calls.length===n+2&&!query(e).has(key),"토글 해제 "+key);
+ }
+ const n=e.calls.length;await type(e,"새 검색");await change(e,"범위","mine");await e.tick(2000);
+ expect(e.calls.length===n+1&&query(e).get("search")==="새 검색","검색 대기 취소");
+ return true;
+});
+await scenario("I1 현지 자정 ISO·일요일 시작·월초·전체 기간",async()=>{
+ const e=await start();await e.open();
+ for(const [period,iso] of [["today","2026-11-17T15:00:00.000Z"],["week","2026-11-14T15:00:00.000Z"],["month","2026-10-31T15:00:00.000Z"]]){
+  const n=e.calls.length;await change(e,"기간",period);expect(e.calls.length===n+1&&query(e).get("since")===iso,period+" "+query(e).get("since"));
+ }
+ await change(e,"기간","");expect(!query(e).has("since"),"전체 기간");return true;
+});
+await scenario("I1 내 자료 1·폴더 1·refresh 1·태그 3·blocked·more",async()=>{
+ const e=await start({handler:u=>String(u).includes("assets?")?response({items:[item("asset",{folder:"옷",tags:["붉음","긴팔","겨울","네번째"]}),
+  item("blocked",{blocked:true})],folders:["옷","장식"],more:true,next:null}):response(initial())});await e.open();
+ await picks(e)[0].click();const n=e.calls.length;await B(e,"내 자료").click();
+ expect(e.calls.length===n+1&&String(e.calls.at(-1)[0]).includes("/assets?")&&!query(e).has("scope"),"탭 한 요청");
+ expect(search(e).placeholder==="자료 이름·폴더·태그 검색"&&B(e,"0장 가져오기").disabled,"탭 선택 해제");
+ expect(cards(e)[0].textContent.includes("옷 · 붉음 · 긴팔 · 겨울")&&!cards(e)[0].textContent.includes("네번째"),"태그 최대 세 개");
+ expect(cards(e)[1].textContent.includes("가져올 수 없는 주소")&&picks(e)[1].disabled&&cls(e,"dp-forge-zoom")[1].disabled,"blocked");
+ expect(!e.doc.images.some(u=>u.endsWith("id=blocked")),"blocked 그림 요청 없음");
+ expect(e.doc.body.textContent.includes("더 있음 — 검색어를 좁히세요"),"상한 안내");
+ await change(e,"폴더","옷");expect(e.calls.length===n+2&&query(e).get("folder")==="옷","폴더");
+ await B(e,"새로고침").click();expect(e.calls.length===n+3&&query(e).get("refresh")==="1"&&query(e).get("folder")==="옷","새로고침");
+ expect(eq(control(e,"폴더").children.map(n=>n.value),["","옷","장식"]),"폴더 선택지");return true;
+});
+await scenario("I1 실패 자동 재요청 0·수동 재시도 1",async()=>{
+ let fail=true;const e=await start({handler:()=>fail?response({error:"잠시 후 다시 시도"},503):response(initial())});await e.open();
+ expect(!B(e,"다시 시도").hidden&&e.doc.body.textContent.includes("잠시 후 다시 시도"),"오류 안내");
+ await e.tick(60000);expect(e.calls.length===1,"자동 재요청 없음");fail=false;await B(e,"다시 시도").click();
+ expect(e.calls.length===2&&B(e,"다시 시도").hidden&&cards(e).length===2,"수동 재시도 한 번");return true;
+});
+await scenario("I1 메타 표지·옛 응답·모델 누적·쪽 넘김 선택 유지",async()=>{
+ const e=await start({handler:u=>queryUrl(u).has("cursor")?response({items:[item("one"),item("three",{model:"Model C"})],next:null})
+  :response({...initial(),items:[...initial().items,{id:"old",prompt:"옛 응답"}],next:"page"})});await e.open();
+ await change(e,"범위","team");expect(cards(e)[0].textContent.includes("내 것")&&cards(e)[0].textContent.includes("♥ 좋아요")&&cards(e)[0].textContent.includes("묶음 4장 중 2"),"표지");
+ expect(picks(e)[2].attrs["aria-label"]==="옛 응답 선택"&&cards(e)[2].textContent.includes("미리보기 없음"),"옛 응답");
+ await picks(e)[0].click();await B(e,"계속 불러오기").click();
+ expect(query(e).get("cursor")==="page"&&query(e).get("scope")==="team"&&cards(e).length===4,"쪽·중복 제거");
+ expect(picks(e)[0].attrs["aria-pressed"]==="true"&&B(e,"1장 가져오기"),"쪽 선택 유지");
+ await change(e,"모델","Model C");expect(eq(control(e,"모델").children.map(n=>n.value),["","Model A","Model B","Model C"]),"모델 누적 유지");
+ return true;
+});
+function queryUrl(u){return new URL(u,"https://studio.invalid").searchParams;}
+await scenario("I1 빈 쪽은 직접 계속 불러오기·자동 순회 없음",async()=>{
+ const e=await start({handler:()=>response({items:[],next:"page"})});await e.open();await e.tick(60000);
+ expect(e.calls.length===1&&e.doc.body.textContent.includes("이 범위에는 없습니다 — [계속 불러오기]"),"빈 쪽");
+ await B(e,"계속 불러오기").click();expect(e.calls.length===2,"사용자 한 번");return true;
+});
+await scenario("I1 크게 보기 주소·실패 재시도·Esc 한 층·Tab·초점",async()=>{
+ const e=await start();await e.open();const zoom=cls(e,"dp-forge-zoom")[0],count=e.doc.images.length;
+ await zoom.click();let viewer=cls(e,"dp-forge-viewer")[0];const large=viewer.all().find(n=>n.tagName==="IMG");
+ expect(large.src==="/bmk/design_patch/forge/thumb?id=one&size=large"&&e.doc.images.length===count+1,"큰 그림 한 번");
+ expect(e.calls.length===1&&cards(e).length===2&&B(e,"0장 가져오기").disabled,"큰 그림은 재조회·선택 없음");
+ e.key("keydown","Tab");expect(viewer.all().includes(e.doc.activeElement),"보기 층 Tab");
+ await large.emit("error");await e.tick(10000);expect(e.doc.images.length===count+1,"그림 자동 재시도 없음");
+ const retry=viewer.all().find(n=>n.tagName==="BUTTON"&&n.textContent==="다시 시도");await retry.click();expect(e.doc.images.length===count+2,"그림 수동 재시도");
+ e.key("keydown","Escape");expect(!cls(e,"dp-forge-viewer").length&&e.ctx.DPDialog.open&&e.doc.activeElement===zoom,"Esc 보기만 닫기");
+ await zoom.click();await B(e,"크게 보기 닫기").click();expect(e.ctx.DPDialog.open&&!cls(e,"dp-forge-viewer").length,"닫기 단추 보기만");
+ e.key("keydown","Escape");expect(!e.ctx.DPDialog.open,"두 번째 Esc 창 닫기");return true;
+});
+await scenario("I1 외부 그림 주소 차단·lazy 유지·문자열 그대로",async()=>{
+ const e=await start({handler:()=>response({items:[item("safe",{prompt:"<img onerror=bad>"}),item("bad",{thumb:"https://media.invalid/a.png"})],next:null})});await e.open();
+ expect(cards(e)[0].textContent.includes("<img onerror=bad>")&&nodes(e).filter(n=>n.tagName==="IMG").every(n=>n.loading==="lazy"),"문자열과 lazy");
+ expect(!e.doc.images.some(u=>u.includes("media.invalid"))&&cls(e,"dp-forge-zoom")[1].disabled,"외부 주소 차단");return true;
+});
+await scenario("I1 크기 3–8·저장·저장소 읽기/쓰기 실패·요청 없음",async()=>{
+ const e=await start();await e.open();let slider=control(e,"썸네일 크기 조절");
+ expect(slider.min==="3"&&slider.max==="8"&&slider.value==="4","크기 범위");
+ slider.value="8";await slider.emit("input");expect(cls(e,"dp-forge-sheet")[0].style["--dp-forge-columns"]==="8"&&e.calls.length===1,"즉시 CSS만");
+ await B(e,"닫기").click();await e.open();expect(control(e,"썸네일 크기 조절").value==="8","저장 복원");
+ const denied=await start({storage:{get(){throw Error("blocked storage");}}});expect(await denied.open(),"읽기 실패 열기");
+ const write=await start({storage:{value:{getItem:()=>"6",setItem(){throw Error("blocked write");}}}});await write.open();
+ slider=control(write,"썸네일 크기 조절");expect(slider.value==="6","저장값 읽기");slider.value="3";await slider.emit("input");
+ expect(cls(write,"dp-forge-sheet")[0].style["--dp-forge-columns"]==="3"&&write.calls.length===1,"쓰기 실패도 반영");return true;
+});
+await scenario("I1 select·range·체크 단추 방향키와 Tab 순환",async()=>{
+ const e=await start();await e.open();
+ for(const n of [search(e),control(e,"모델"),control(e,"기간"),control(e,"썸네일 크기 조절"),B(e,"스튜디오 결과 보기")]){
+  n.focus();const key=e.key("keydown","ArrowRight",true,{target:n});expect(key.stopped&&!key.defaultPrevented,"기본 키 유지 "+n.tagName);
+ }
+ await B(e,"내 자료").click();const n=B(e,"닫기");n.focus();e.key("keydown","Tab");expect(!e.doc.activeElement.hidden,"Tab 숨은 필터 건너뜀");
+ const all=nodes(e).filter(n=>["BUTTON","INPUT","SELECT"].includes(n.tagName)&&!n.hidden&&!n.disabled);
+ for(let i=0;i<all.length;i++){e.key("keydown","Tab");expect(!e.doc.activeElement.hidden,"Tab 순환");}return true;
+});
+await scenario("I1 레퍼런스 체크·해제·8장 상한·필터 선택 비움",async()=>{
+ const e=await start({handler:()=>response({items:Array.from({length:9},(_,i)=>item(String(i))),next:null})});await e.open();
+ for(const pick of picks(e))await pick.click();expect(!posts(e).length&&B(e,"8장 가져오기")&&e.doc.body.textContent.includes("한 번에 8장까지 고를 수 있습니다"),"8장 상한");
+ expect(picks(e)[8].attrs["aria-pressed"]==="false","9번째 미선택");await picks(e)[0].click();expect(B(e,"7장 가져오기"),"해제");
+ await picks(e)[8].click();expect(B(e,"8장 가져오기"),"다른 장 선택");await type(e,"필터");expect(B(e,"0장 가져오기").disabled,"검색 즉시 선택 해제");return true;
+});
+await scenario("I1 레퍼런스 본문·성공 닫기·중복 클릭 1·sending 잠금",async()=>{
+ let resolve,done=[];const e=await start({handler:(u,o)=>o?.method==="POST"?new Promise(r=>resolve=r):response(initial())});await e.open({onDone:r=>done.push(r)});
+ await picks(e)[0].click();await picks(e)[1].click();const action=B(e,"2장 가져오기"),pending=action.click();await settle();await action.click();
+ expect(posts(e).length===1&&eq(JSON.parse(posts(e)[0][1].body),{into:"refs",source:"history",ids:["one","two"],root:"root"}),"여러 장 본문과 중복 방지");
+ expect(nodes(e).filter(n=>["BUTTON","INPUT","SELECT"].includes(n.tagName)).every(n=>n.disabled),"sending 전체 잠금");
+ e.key("keydown","Escape");expect(e.ctx.DPDialog.open,"sending 닫기 차단");
+ resolve(response({ok:true,done:[{id:"one",sheet:"sheets/one.png"},{id:"two",sheet:"sheets/two.png"}],failed:[]}));await pending;
+ expect(!e.ctx.DPDialog.open&&done.length===1&&done[0].done.length===2,"성공 닫기 callback 한번");return true;
+});
+for(const finish of ["close","retry"])await scenario("I1 부분 실패 성공분 보존·실패 선택·onDone 한번 "+finish,async()=>{
+ let done=[],attempt=0;const e=await start({handler:(u,o)=>o?.method==="POST"?response(++attempt===1
+  ?{ok:true,done:[{id:"one",sheet:"sheets/one.png"}],failed:[{id:"two",error:"그림을 읽을 수 없음"}]}
+  :{ok:true,done:[{id:"two",sheet:"sheets/two.png"}],failed:[]}):response(initial())});await e.open({onDone:r=>done.push(r)});
+ await picks(e)[0].click();await picks(e)[1].click();await B(e,"2장 가져오기").click();
+ expect(e.ctx.DPDialog.open&&!done.length&&e.doc.body.textContent.includes("1장 가져옴 · 1장 실패"),"부분 실패 유지");
+ expect(picks(e)[0].attrs["aria-pressed"]==="false"&&picks(e)[1].attrs["aria-pressed"]==="true"&&cards(e)[1].textContent.includes("그림을 읽을 수 없음"),"실패한 장만 선택");
+ await e.tick(60000);expect(posts(e).length===1,"부분 실패 자동 재요청 없음");
+ if(finish==="retry"){await B(e,"다시 시도").click();expect(eq(JSON.parse(posts(e)[1][1].body).ids,["two"]),"성공분 재요청 없음");}
+ else await B(e,"닫기").click();
+ e.key("keydown","Escape");expect(done.length===1&&done[0].done.length===(finish==="retry"?2:1)&&!e.ctx.DPDialog.open,"누적 성공 callback 한번");return true;
+});
+await scenario("I1 전부 실패·전송 오류 수동 재시도·성공 없는 닫기 callback 없음",async()=>{
+ let fail=true,done=0;const e=await start({handler:(u,o)=>o?.method==="POST"?(fail?response({error:"연결 실패"},503)
+  :response({ok:true,done:[],failed:[{id:"one",error:"목록이 오래됐습니다"}]})):response(initial())});await e.open({onDone:()=>done++});
+ await picks(e)[0].click();await B(e,"1장 가져오기").click();await e.tick(60000);expect(posts(e).length===1,"오류 자동 요청 없음");
+ fail=false;await B(e,"다시 시도").click();expect(posts(e).length===2&&e.doc.body.textContent.includes("0장 가져옴 · 1장 실패"),"수동 한 번");
+ await B(e,"닫기").click();expect(done===0,"성공 없는 닫기");return true;
+});
+await scenario("I1 타깃은 한 장·본문 정확·중복 요청 없음·옛 응답",async()=>{
+ let resolve,done=[];const e=await start({handler:(u,o)=>o?.method==="POST"?new Promise(r=>resolve=r):response({items:[{id:"old",prompt:"옛 그림"}],next:null})});
+ await e.open({into:"target",name:"새 프로젝트",root:"보내지 않음",onDone:r=>done.push(r)});
+ const pick=picks(e)[0];expect(pick.attrs["aria-label"]==="옛 그림 가져오기","타깃 label");const pending=cards(e)[0].click();await settle();await pick.click();
+ expect(posts(e).length===1&&eq(JSON.parse(posts(e)[0][1].body),{into:"target",source:"history",id:"old",name:"새 프로젝트"}),"타깃 본문 정확");
+ resolve(response({key:"project",notes:[]}));await pending;expect(done.length===1&&done[0].key==="project"&&!e.ctx.DPDialog.open,"옛 성공 응답");return true;
+});
+await scenario("I1 늦은 응답 버림·검색/탭/닫기 abort",async()=>{
+ const requests=[];const e=await start({handler:(u,o)=>new Promise(resolve=>requests.push({u,signal:o.signal,resolve}))});await e.open();
+ await type(e,"새 검색");expect(requests[0].signal.aborted,"검색 abort");await e.tick(500);await B(e,"내 자료").click();
+ expect(requests[1].signal.aborted&&requests.length===3,"탭 abort");
+ requests[2].resolve(response({items:[item("new")],next:null}));await settle();
+ requests[0].resolve(response({items:[item("stale")],next:"old"}));requests[1].resolve(response({error:"늦은 오류"},503));await settle();
+ expect(cards(e).length===1&&cards(e)[0].title==="자료 new"&&!e.doc.body.textContent.includes("늦은 오류"),"옛 응답 버림");
+ await B(e,"새로고침").click();await B(e,"닫기").click();expect(requests[3].signal.aborted,"닫기 abort");
+ requests[3].resolve(response(initial()));await settle();expect(!cls(e,"dp-forge").length&&!e.ctx.DPDialog.open,"닫힌 창 재생성 없음");return true;
+});
+await scenario("I1 다음 쪽 오류 재시도 cursor·선택·필터 유지",async()=>{
+ let fail=true;const e=await start({handler:u=>queryUrl(u).has("cursor")?(fail?response({error:"쪽 실패"},503):response({items:[item("three")],next:null}))
+  :response({...initial(),next:"page"})});await e.open();await change(e,"기간","today");await picks(e)[0].click();
+ await B(e,"계속 불러오기").click();expect(cards(e).length===2&&B(e,"1장 가져오기"),"오류 앞 쪽 보존");
+ fail=false;const n=e.calls.length;await B(e,"다시 시도").click();
+ expect(e.calls.length===n+1&&query(e).get("cursor")==="page"&&query(e).get("since")==="2026-11-17T15:00:00.000Z"&&cards(e).length===3&&B(e,"1장 가져오기"),"같은 쪽 수동 재시도");return true;
+});
+await scenario("R3 오래된 쪽 이음표: 다시 시도는 첫 쪽부터 1건(같은 이음표를 다시 보내지 않음)",async()=>{
+ const e=await start({handler:u=>(queryUrl(u).has("offset")||queryUrl(u).has("cursor"))?response({error:"목록이 오래됐습니다 — 다시 불러온 뒤 골라 주세요.",reason:"forge_stale"},404)
+  :response({...initial(),next:"page"})});await e.open();await B(e,"내 자료").click();
+ await B(e,"계속 불러오기").click();expect(query(e).get("offset")==="page"&&!B(e,"다시 시도").hidden,"오래된 이음표 안내·다시 시도");
+ const n=e.calls.length;await B(e,"다시 시도").click();
+ expect(e.calls.length===n+1&&!query(e).has("offset")&&!query(e).has("cursor")&&cards(e).length===2,"첫 쪽부터 다시 1건: "+e.calls.at(-1)[0]);return true;
+});
+function sourceFn(file,name,indent="  "){
+ const s=IN.source[file],m=s.match(new RegExp("\\n"+indent+"(?:async )?function "+name+"\\("));
+ const start=m.index+1,end=s.indexOf("\n"+indent+"}\n",start);return s.slice(start,end)+"\n"+indent+"}";
+}
+await scenario("I1 시트 출처 키 있을 때만·펼침·행 클릭 분리·local 동일",async()=>{
+ const e=await start(),c=e.ctx;let picked=0;
+ const el=(tag,cls,text)=>{const n=e.doc.createElement(tag);n.className=cls;n.textContent=text||"";return n;};
+ Object.assign(c,{el,can:()=>false,SM:()=>c.DPEnv.serverMode,tab:"sheets",gridSize:{},tabBtns:[],gridHost:el("div"),sheetHost:el("div"),viewHost:el("div"),sheet:null,
+  sheetList:[{path:"sheets/a.png",size:[256,256],bytes:64,kind:"image"}],S:{R:{sheets:[]}},chip:t=>el("span","",t),sizeMb:()=>"1MB",
+  button:(t,title,fn)=>{const b=el("button","",t);b.addEventListener("click",fn);return b;},loadSheets(){},showSheetAdd(){},pickSheet(){picked++;}});
+ e.doc.body.append(c.sheetHost);vm.runInContext(sourceFn("ref_edit.js","renderSheets","    "),c);c.renderSheets();
+ const li=()=>nodes(e).find(n=>n.tagName==="LI");expect(li().children.length===2&&!cls(e,"dp-forge-source").length,"키 없음 기존 행");
+ c.sheetList[0].forge={source:"history",model:"Model A",created:"2026-11-16T00:00:00Z",prompt:"<script> 프롬프트"};c.renderSheets();
+ expect(li().children.length===3&&cls(e,"dp-forge-source")[0].textContent.includes("Forge 결과 · Model A"),"출처 한 줄");
+ let toggle=cls(e,"dp-forge-source-toggle")[0],text=cls(e,"dp-forge-source-text")[0];expect(text.hidden&&toggle.attrs["aria-expanded"]==="false","접힌 프롬프트");
+ await toggle.click();expect(!text.hidden&&toggle.attrs["aria-expanded"]==="true"&&picked===0,"펼칠 때 시트 안 엶");await toggle.click();expect(text.hidden,"다시 접기");
+ c.DPEnv.serverMode=false;c.renderSheets();expect(li().children.length===2&&!cls(e,"dp-forge-source").length,"local 그대로");return true;
+});
+await scenario("I1 pipeline 최상위 타깃 출처·자료 폴더/이름·없는 키 DOM 없음",async()=>{
+ const e=await start(),c=e.ctx,src=IN.source["pipeline.js"];
+ const begin=src.indexOf("      if (P0 && P0.target_forge"),end=src.indexOf("\n      if (window.DPChecklist)",begin);
+ expect(begin>=0&&end>begin,"준비 패널 연결");
+ c.section=title=>{const n=e.doc.createElement("div");n.textContent=title;e.doc.body.append(n);return n;};
+ c.P0={};vm.runInContext(src.slice(begin,end),c);expect(!e.doc.body.children.length,"키 없으면 DOM 없음");
+ c.P0={target_forge:{source:"asset",folder:"옷",name:"파일",imported_at:"2026-11-18T04:00:00Z"}};vm.runInContext(src.slice(begin,end),c);
+ expect(e.doc.body.children[0].dataset.tab==="prepare"&&cls(e,"dp-forge-source")[0].textContent.includes("Forge 자료 · 옷")&&!cls(e,"dp-forge-source-toggle").length,"자료 출처 준비 탭");
+ e.doc.body.replaceChildren();c.P0.target_forge={source:"history",model:"Model B",prompt:"타깃 프롬프트"};vm.runInContext(src.slice(begin,end),c);
+ await cls(e,"dp-forge-source-toggle")[0].click();expect(!cls(e,"dp-forge-source-text")[0].hidden,"타깃 프롬프트 펼침");
+ const asset=c.DPForgeImport.sourceLine({source:"asset",name:"자료 이름"});expect(asset.textContent==="Forge 자료 · 자료 이름","폴더 없으면 이름");return true;
+});
+console.log(JSON.stringify(out));
+'''
+    (out / "scene.mjs").write_text(scene, encoding="utf-8")
+    (out / "input.json").write_text(json.dumps({"source": source}, ensure_ascii=False), encoding="utf-8")
+    run = subprocess.run([node, str(out / "scene.mjs"), str(out / "input.json")], capture_output=True, text=True, encoding="utf-8", timeout=45)
+    check(run.returncode == 0, "I1 DOM 하네스 종료: " + run.stderr[:500])
+    if run.returncode == 0:
+        for name, result in json.loads(run.stdout).items():
+            check(result is True, name + ("" if result is True else ": " + str(result)))
 
 
 def forge_f2_client_unit():
@@ -67588,6 +68583,10 @@ if __name__ == "__main__":
         forge_f2_js_unit()
     if want("forge_f2_import_unit"):
         forge_f2_import_unit()
+    if want("forge_import1_server_unit"):
+        forge_import1_server_unit()
+    if want("forge_import1_js_unit"):
+        forge_import1_js_unit()
     print(f"\n단위 테스트 {time.time() - T0:.1f}s (PASS {PASSES} FAIL {len(FAILS)})")
     if QUICK:
         print("\n--quick: 회귀·노드 생략")
