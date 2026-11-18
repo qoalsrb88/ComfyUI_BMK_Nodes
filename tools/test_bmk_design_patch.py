@@ -64069,9 +64069,24 @@ def forge_import1_js_unit():
     for name in ("board.css", "forge-theme.css"):
         css = (web / name).read_text(encoding="utf-8")
         grid = re.search(r"\.dp-forge-grid\s*\{([^}]+)\}", css).group(1)
-        check("repeat(var(--dp-forge-columns, 4), minmax(0, 1fr))" in grid, "I1 칸 수 CSS 변수 공유: " + name)
+        check("var(--dp-forge-columns, 4)" in grid, "I1 칸 수 CSS 변수 공유: " + name)
         check(re.search(r"@media\s*\(max-width:\s*480px\)\s*\{\s*\.dp-forge-grid\s*\{[^}]*repeat\(2,", css) is not None,
               "I1 480px에서 두 칸: " + name)
+        sheet = re.search(r"\.dp-forge-sheet\s*\{([^}]+)\}", css).group(1)
+        check(not re.search(r"\boverflow(?:-y)?\s*:\s*hidden\b", sheet), "FIX4 시트 세로 스크롤 허용: " + name)
+        check(re.search(r"grid-template-columns:\s*repeat\(auto-fill,\s*minmax\(max\(140px,\s*calc\(", grid) is not None,
+              "FIX4 칸 수 자동 감소·140px 하한: " + name)
+        if name == "board.css":
+            check(re.search(r"\bmin-height:\s*160px\b", grid) is not None, "FIX4 격자 최소 높이 160px")
+            check(re.search(r"\bgrid-auto-rows:\s*max-content\b", grid) is not None, "FIX4 격자 줄 높이 유지")
+        else:
+            check(not re.search(r"\.dp-forge-grid[^{}]*\{[^}]*\bgrid-(?:auto-rows|template-rows)\s*:", css),
+                  "FIX4 테마는 격자 줄 높이를 덮어쓰지 않음")
+    css = (web / "board.css").read_text(encoding="utf-8")
+    selected = re.search(r"\.dp-forge-item\.dp-forge-selected\s*\{([^}]+)\}", css)
+    check(selected is not None and "border-color: var(--accent)" in selected.group(1), "FIX5 선택 카드 테두리 강조색")
+    mark = re.search(r"(?m)^\.dp-forge-check\s*\{([^}]+)\}", css).group(1)
+    check("background: var(--accent)" in mark and "color: var(--panel)" in mark, "FIX5 체크 표지 강조색 바탕·패널색 글자")
     node = shutil.which("node")
     if not node:
         skip("node 없음: Forge 가져오기 1단계 DOM 하네스 미실행")
@@ -64120,9 +64135,97 @@ async function start({handler=()=>response(initial()),storage,server=true,enable
  e.open=async(opts={})=>{const opened=e.ctx.DPForgeImport.open({into:"refs",root:"root",...opts});await settle();return opened;};
  return e;
 }
-async function change(e,label,value){const n=control(e,label);n.value=value;await n.emit("change");}
+async function change(e,label,value,wait=true){const n=control(e,label);n.value=value;await n.emit("change");if(wait)await e.tick(300);}
 async function type(e,text){const n=search(e);n.value=text;await n.emit("input");}
 
+await scenario("FIX1 새로고침 연타·읽는 중 클릭은 요청 1건",async()=>{
+ const requests=[];const e=await start({handler:u=>queryUrl(u).get("refresh")==="1"?new Promise(resolve=>requests.push(resolve)):response(initial())});
+ await e.open();await B(e,"내 자료").click();const refresh=B(e,"새로고침");
+ await refresh.click();await refresh.click();refresh.listeners.click();await settle();
+ expect(requests.length===1,"새로고침 연타 요청 수: "+requests.length);
+ expect(refresh.disabled,"목록을 읽는 동안 새로고침 비활성");
+ requests[0](response(initial()));await settle();expect(!refresh.disabled,"읽은 뒤 새로고침 활성");return true;
+});
+await scenario("FIX1 단추 Enter·Space 자동 반복 차단·입력 반복 유지",async()=>{
+ const e=await start();await e.open();const toggle=B(e,"스튜디오 결과 보기");
+ for(const key of ["Enter"," "]){
+  expect(e.key("keydown",key,true,{target:toggle,repeat:true}).defaultPrevented,"자동 반복 차단: "+key);
+  expect(!e.key("keydown",key,true,{target:toggle,repeat:false}).defaultPrevented,"첫 키는 유지: "+key);
+ }
+ for(const key of ["a"," "])expect(!e.key("keydown",key,true,{target:search(e),repeat:true}).defaultPrevented,"검색 입력 반복 유지");
+ return true;
+});
+await scenario("FIX2 기간 연속 변경은 마지막 값으로 300ms 뒤 1건",async()=>{
+ const e=await start();await e.open();await picks(e)[0].click();
+ await change(e,"기간","today",false);await e.tick(100);
+ await change(e,"기간","week",false);await e.tick(100);
+ await change(e,"기간","month",false);
+ expect(e.calls.length===1,"대기 중 요청 없음: "+e.calls.length);
+ expect(!cards(e).length&&B(e,"0장 가져오기").disabled&&e.doc.body.textContent.includes("필터를 적용하는 중…"),"대기 중 카드·선택 비움");
+ await e.tick(299);expect(e.calls.length===1,"마지막 변경 뒤 299ms");
+ await e.tick(1);expect(e.calls.length===2&&query(e).get("since")==="2026-10-31T15:00:00.000Z","300ms 뒤 마지막 기간 한 번");
+ return true;
+});
+await scenario("FIX2 토글 켬→끔 연타도 300ms 뒤 1건",async()=>{
+ const e=await start();await e.open();
+ for(const [label,key] of [["♥ 좋아요 한 항목","fav"],["스튜디오 결과 보기","studio"]]){
+  const n=e.calls.length;await B(e,label).click();await e.tick(100);await B(e,label).click();
+  expect(e.calls.length===n,"토글 대기 중 요청 없음: "+key);
+  await e.tick(299);expect(e.calls.length===n,"토글 마지막 변경 뒤 299ms");
+  await e.tick(1);expect(e.calls.length===n+1&&!query(e).has(key),"꺼진 최종 값으로 한 번: "+key);
+ }
+ return true;
+});
+await scenario("FIX2 서로 다른 필터도 한 타이머·탭/새로고침은 즉시",async()=>{
+ const e=await start();await e.open();
+ await change(e,"모델","Model A",false);await e.tick(150);await change(e,"범위","team",false);
+ await e.tick(299);expect(e.calls.length===1,"모델·범위 한 타이머");await e.tick(1);
+ expect(e.calls.length===2&&query(e).get("model")==="Model A"&&query(e).get("scope")==="team","마지막 필터 조합");
+ await change(e,"기간","today",false);await B(e,"내 자료").click();await e.tick(300);
+ expect(e.calls.length===3&&String(e.calls.at(-1)[0]).includes("/assets?"),"탭 즉시 요청·예약 취소");
+ await change(e,"폴더","옷",false);expect(e.calls.length===3,"폴더 대기");
+ await B(e,"새로고침").click();expect(e.calls.length===4&&query(e).get("folder")==="옷"&&query(e).get("refresh")==="1","새로고침 즉시");
+ await e.tick(300);expect(e.calls.length===4,"새로고침 뒤 예약 없음");return true;
+});
+await scenario("FIX3 검색어 앞뒤 공백만 바꾸면 두 장 선택·카드 유지·요청 0",async()=>{
+ const e=await start();await e.open();await type(e,"의상");await e.tick(500);
+ await picks(e)[0].click();await picks(e)[1].click();const before=cards(e),n=e.calls.length;
+ await type(e,"의상 ");await type(e,"  의상  ");
+ expect(B(e,"2장 가져오기")&&cards(e).every((card,i)=>card===before[i])&&cards(e).length===2,"공백 변경으로 선택·카드를 비우지 않음");
+ await e.tick(1000);expect(e.calls.length===n,"같은 검색어 요청 0");return true;
+});
+await scenario("FIX3 예약 검색 공백 변경은 기존 500ms 유지·탭 전환 뒤 기억",async()=>{
+ const e=await start();await e.open();await type(e,"의상");await e.tick(200);await type(e," 의상 ");
+ await e.tick(299);expect(e.calls.length===1,"검색 499ms");await e.tick(1);
+ expect(e.calls.length===2&&query(e).get("search")==="의상","공백 변경이 검색 타이머를 다시 걸지 않음");
+ await B(e,"내 자료").click();const before=cards(e);await type(e,"의상  ");await e.tick(1000);
+ expect(e.calls.length===3&&cards(e).length===2&&cards(e)[0]===before[0],"새 탭도 같은 검색어 유지");
+ return true;
+});
+await scenario("FIX3 공백뿐인 입력은 예약 필터 300ms를 검색 대기로 바꾸지 않음",async()=>{
+ const e=await start();await e.open();await change(e,"모델","Model A",false);await e.tick(100);await type(e," ");
+ expect(e.doc.body.textContent.includes("필터를 적용하는 중…"),"필터 대기 상태 유지");
+ await e.tick(200);expect(e.calls.length===2&&query(e).get("model")==="Model A"&&!query(e).has("search"),"필터 예약 유지");
+ return true;
+});
+await scenario("FIX4 스크롤한 시트의 크게 보기 위치·스크롤 잠금·복원",async()=>{
+ const e=await start();await e.open();const sheet=cls(e,"dp-forge-sheet")[0],zoom=cls(e,"dp-forge-zoom")[0];
+ sheet.scrollTop=240;await zoom.click();
+ expect(sheet.scrollTop===0&&sheet.style.overflowY==="hidden","크게 보기 전에 맨 위로 올리고 세로 스크롤 잠금");
+ expect(cls(e,"dp-forge-viewer").length===1,"보기 층 열기");
+ e.key("keydown","Escape");expect(sheet.scrollTop===240&&sheet.style.overflowY===""&&e.doc.activeElement===zoom,"닫으면 스크롤·초점 복원");
+ sheet.scrollTop=80;await zoom.click();await B(e,"크게 보기 닫기").click();
+ expect(sheet.scrollTop===80&&sheet.style.overflowY===""&&e.ctx.DPDialog.open,"닫기 단추도 시트 복원");return true;
+});
+await scenario("FIX5 선택·해제·부분 실패 때 카드 강조 표시 동기화",async()=>{
+ const e=await start({handler:(u,o)=>o?.method==="POST"?response({ok:true,done:[{id:"one",sheet:"sheets/one.png"}],failed:[{id:"two",error:"다시 시도"}]})
+  :response(initial())});await e.open();const card=cards(e)[0],pick=picks(e)[0],mark=cls(e,"dp-forge-check")[0];
+ await pick.click();expect(card.classList.contains("dp-forge-selected")&&pick.attrs["aria-pressed"]==="true"&&!mark.hidden,"고르면 카드 강조·체크 표시");
+ await pick.click();expect(!card.classList.contains("dp-forge-selected")&&pick.attrs["aria-pressed"]==="false"&&mark.hidden,"해제하면 강조·체크 제거");
+ await pick.click();await picks(e)[1].click();await B(e,"2장 가져오기").click();
+ expect(!cards(e)[0].classList.contains("dp-forge-selected")&&cards(e)[1].classList.contains("dp-forge-selected"),"부분 실패는 실패 장만 강조");
+ return true;
+});
 await scenario("I1 열기 1건·기본 필터·sandbox 단추·cap",async()=>{
  const e=await start();expect(await e.open(),"열기");
  expect(e.calls.length===1&&String(e.calls[0][0]).includes("/history?"),"열기 history 1");
@@ -64151,8 +64254,8 @@ await scenario("I1 각 필터 한 요청·선택 해제·대기 검색 합치기
   expect(e.calls.length===n+1&&query(e).get(key)===want&&B(e,"0장 가져오기").disabled,"필터 "+label);
  }
  for(const [label,key] of [["♥ 좋아요 한 항목","fav"],["스튜디오 결과 보기","studio"]]){
-  const n=e.calls.length;await B(e,label).click();expect(e.calls.length===n+1&&query(e).get(key)==="1","토글 "+key);
-  await B(e,label).click();expect(e.calls.length===n+2&&!query(e).has(key),"토글 해제 "+key);
+  const n=e.calls.length;await B(e,label).click();await e.tick(300);expect(e.calls.length===n+1&&query(e).get(key)==="1","토글 "+key);
+  await B(e,label).click();await e.tick(300);expect(e.calls.length===n+2&&!query(e).has(key),"토글 해제 "+key);
  }
  const n=e.calls.length;await type(e,"새 검색");await change(e,"범위","mine");await e.tick(2000);
  expect(e.calls.length===n+1&&query(e).get("search")==="새 검색","검색 대기 취소");
