@@ -39543,7 +39543,7 @@ await scenario("renderWiring", async () => {
     setTimeout: (fn) => timers.push(fn), pipeReady: () => true, syncViewer() {}, preloadAround() {}, usd: () => "", credits: () => "", rowButton() {},
     pipe: { enter() {}, leave() {}, select() {} }, chipsLog: [] });
   vm.runInContext(["VIA", "SEEN_KEY"].map(boardConst).join("\n") + ";\n" + ["curTarget", "curCand", "cropOf", "defaultCand", "reconcile", "selectTarget", "selectCand",
-    "syncSeen", "saveSeen", "markSeen", "seeCurrent", "isNew", "ranText", "oldCell", "tileBadges", "targetChips", "promptWarning", "renderGrid", "renderCompare", "renderDetail",
+    "syncSeen", "saveSeen", "markSeen", "seeCurrent", "isNew", "ranText", "oldCell", "tookText", "tookSummary", "tookRow", "tileBadges", "targetChips", "promptWarning", "renderGrid", "renderCompare", "renderDetail",
     "row", "pad", "targetTitle", "setPipe"].map((n) => `${n} = ${boardFn(n)};`).join("\n")
     + "\nrenderTargets = () => { chipsLog = S.targets.map((t) => { const ch = []; targetChips({ append: (...x) => ch.push(...x) }, t); return ch.map((x) => x.textContent); }); };"
     + "\nrenderAll = () => { renderTargets(); renderCompare(); renderDetail(); renderGrid(); };", c);
@@ -62286,7 +62286,7 @@ await scenario("F2W24 후보 목록·크게 보기 경고 칩·다른 후보·�
     curTarget:()=>target,curCand:()=>candidate,refIdx:0,qHeld:false,view:"cand",cKey:null,pad:n=>String(n),
     setImg(){},oldCell:()=>false,ranText:()=>"",tileBadges:()=>doc.createElement("div"),selectCand(){},setStar(){}});
   El.prototype.querySelector=function(){return null;};
-  for(const name of ["promptWarning","renderCompare","renderGrid"])vm.runInContext(boardFn(name),c);
+  for(const name of ["promptWarning","renderCompare","renderGrid","tookText"])vm.runInContext(boardFn(name),c);
   candidate={n:1,key:"one",...F.candidate_prompt_changed.candidate};target.candidates=[candidate,{n:2,key:"two",prompt_changed:false}];
   c.renderCompare();c.renderGrid();
   const chips=n=>n.all().filter(x=>x.classList.contains("dp-prompt-changed"));
