@@ -336,8 +336,9 @@ window.DPPipeline = (() => {
     const login = e.stopped_reason === "auth" || (stage === "draft" && e.auth_held > 0);
     const agent = e.stopped_reason === "agent_cap" ? " · Claude 승인 모드 상한 도달 — 남은 호출은 과금 안 됨" : "";
     if (SM()) {
+      if (window.DPEnv.backend === "forge" && e.stop_note
+          && (e.stopped_reason === "auth" || (["run", "reroll"].includes(stage) && e.approved_now === false))) return `발사 못 함 — ${e.stop_note}`;
       if (window.DPEnv.backend === "forge" && e.stopped_reason === "auth") {
-        if (e.stop_note) return `발사 못 함 — ${e.stop_note}`;
         window.DPEnv.requestToken();
         return "Forge 로그인 갱신이 필요합니다 — 잠시 뒤 다시 눌러 주세요";
       }
@@ -1095,6 +1096,7 @@ window.DPPipeline = (() => {
     // 다른 창의 저장 알아보기(state pipeline_rev 로 다시 읽으면 PS.P·rev 가 새 판이 되어 저장이 409 없이 통과): edits = 손댄 키를 처음 고칠 때 화면의 값
     // {절: {키: 값}}, drawn = 설정 패널을 마지막으로 그린(또는 저장한) 절 값 {절: 값}(입력 중이면 다시 그리기가 미뤄져 화면이 옛 값)
     let edits = {};
+    let prepareDirect = {}; // 모델 전환의 자동 보정과 분리한 직접 편집값 — 전환 때마다 저장값 위에 다시 얹는다.
     let drawn = {};
     let composing = false;
     let pendingPanel = false; // 다시 그리기를 미룸(입력 중이면 패널만, 포인터가 눌린 동안이면 전부) — focusout·pointerup 뒤에 그림
@@ -2218,6 +2220,11 @@ window.DPPipeline = (() => {
       sendPaid("reroll", "", "", n ? `다시 생성(사전 승인) ${n}건` : modeText("[다시 생성 보내기](다시 생성 대기 없음 — 반영·복구만)", "[대기분 보내기](다시 생성 대기 없음 — 반영·복구만)"));
     }
 
+    async function refreshModelChoices() {
+      if (!modelCatalog() || typeof window.DPEnv.refreshModels !== "function") return;
+      if (await window.DPEnv.refreshModels()) render();
+    }
+
     async function openSettings() {
       if (!on) { await opts.enter(); if (!on) return; }
       settingsOn = true;
@@ -2225,6 +2232,7 @@ window.DPPipeline = (() => {
       setupPending = false; // 수동 설정으로 진입하면 닫은 뒤에도 자동 제안을 다시 하지 않음
       if (on) render();
       else opts.enter();
+      await refreshModelChoices();
     }
 
     function setSel(ids) {
@@ -2403,6 +2411,21 @@ window.DPPipeline = (() => {
       }, again ? 0 : PREVIEW_MS);
     }
 
+    function progressPrepare(plan, P0) {
+      if (!modelCatalog() || !P0 || (P0.drift || []).some((d) => d.section === "prepare"
+          && ["model", "quality", "complexity"].includes(d.field))) return null;
+      const planned = plan?.run?.prepare, derived = P0.derived;
+      const recorded = planned || derived?.settings?.prepare;
+      if (!recorded || !recorded.model) return null;
+      const model = modelInfo(recorded.model);
+      const keys = ["model", ...(model && !model.qualities.length ? [] : ["quality"]),
+        ...(/^gpt-image-2\.6-/.test(recorded.model) ? ["complexity"] : [])];
+      // 유도값 중 기본값은 실행 기록이 아니다. 저장값과도 대조해 저장 직후의 낡은 갈라짐 응답을 보완한다.
+      if (!planned && keys.some((key) => !["manifest", "jobs"].includes(derived?.from?.[`prepare.${key}`]))) return null;
+      if (keys.some((key) => recorded[key] == null || !same(recorded[key], P0.settings?.prepare?.[key]))) return null;
+      return recorded;
+    }
+
     function prepareChanged(base, values) {
       return ["model", "quality", "size_rule", "variants", "ref_style", "complexity"].some((k) =>
         (k !== "complexity" || /^gpt-image-2\.6-/.test(values.model)) && !same(base[k], values[k]));
@@ -2456,6 +2479,7 @@ window.DPPipeline = (() => {
       const base = PS.P.settings ? PS.P.settings[sec] : PS.P.derived.settings[sec];
       const P0 = PS.P;
       const sent = Object.assign({}, form[sec]); // 보낸 편집값 — 응답을 기다리는 사이 같은 절에 친 값은 남긴다
+      const direct = sec === "prepare" && modelCatalog() ? { ...prepareDirect } : null;
       const raw0 = Object.assign({}, base, sent);
       const raw = sec === "prepare" ? modelSettings(raw0) : raw0;
       const values = {};
@@ -2479,6 +2503,9 @@ window.DPPipeline = (() => {
         // 이 창이 저장한 값 = 서버가 쓴 절(import 경로는 정규화 — 따옴표·공백 없이 '/'). 입력 중이라 다시 그리기가 미뤄져도 다음 저장·칸 옆 표시가
         // 제 값을 '다른 창 값'으로 보지 않게: 화면 기준값(drawn)과, 응답을 기다리는 사이 같은 칸에 더 친 키의 첫 편집 기준값(edits)을 이 값으로
         const saved = r.settings[sec];
+        if (direct) for (const k of Object.keys(direct)) {
+          if (same(prepareDirect[k], direct[k])) delete prepareDirect[k];
+        }
         const f = form[sec] || {};
         for (const k of Object.keys(f)) {
           if (!(k in sent)) continue;
@@ -2486,6 +2513,13 @@ window.DPPipeline = (() => {
             delete f[k];
             delete e0[k];
           } else e0[k] = saved[k];
+        }
+        if (direct) {
+          for (const [k, v] of Object.entries(modelSettings({ ...saved, ...prepareDirect }))) {
+            if (same(v, saved[k])) { delete f[k]; delete e0[k]; }
+            else { f[k] = v; e0[k] = saved[k]; }
+          }
+          if (Object.keys(f).length) { form[sec] = f; edits[sec] = e0; }
         }
         if (!Object.keys(f).length) {
           delete form[sec];
@@ -2543,6 +2577,7 @@ window.DPPipeline = (() => {
       // 확인 창을 닫은 때의 편집값 — 리셋이 덮는 것은 이 값뿐. 저장을 기다리는 사이 칸은 켜져 있어 그 뒤에 친 값(바꾼 키·새 키)은 보내지 않은
       // 새 편집이라 남긴다(saveSection 과 같은 뜻 — 지우면 칸이 blur 뒤 저장값으로 돌아가고, 바로 누른 [저장]은 친 값 대신 저장값을 '저장 성공'으로)
       const f0 = Object.fromEntries(secs.map((sec) => [sec, Object.assign({}, form[sec])]));
+      const direct0 = modelCatalog() ? { ...prepareDirect } : null;
       // 판 = 확인 창의 판, 다음 절부터는 이 창의 앞 저장 응답 rev — 저장마다 다시 읽은 GET /pipeline 의 rev 를 쓰면 그 사이 다른 창의 저장이
       // 409 없이 확인 창 값(D)에 덮인다. 409 면 멈춘다(앞 절은 저장됨)
       let rev = P0.rev;
@@ -2553,6 +2588,9 @@ window.DPPipeline = (() => {
           rev = r.rev;
           saved.push(SECTIONS[sec]);
           const sv = r.settings[sec];
+          if (sec === "prepare" && direct0) for (const k of Object.keys(direct0)) {
+            if (same(prepareDirect[k], direct0[k])) delete prepareDirect[k];
+          }
           const f = form[sec] || {};
           const e0 = edits[sec] || (edits[sec] = {});
           for (const k of Object.keys(f)) {
@@ -2560,6 +2598,13 @@ window.DPPipeline = (() => {
               delete f[k];
               delete e0[k];
             } else e0[k] = sv[k]; // 남긴 편집의 기준값 = 이 창이 방금 저장한 값(다른 창 값으로 묻지 않게)
+          }
+          if (sec === "prepare" && direct0) {
+            for (const [k, v] of Object.entries(modelSettings({ ...sv, ...prepareDirect }))) {
+              if (same(v, sv[k])) { delete f[k]; delete e0[k]; }
+              else { f[k] = v; e0[k] = sv[k]; }
+            }
+            if (Object.keys(f).length) { form[sec] = f; edits[sec] = e0; }
           }
           if (!Object.keys(f).length) {
             delete form[sec];
@@ -2951,10 +2996,10 @@ window.DPPipeline = (() => {
       const pg = PS.progress;
       if (pg) {
         const r = pg.run;
-        const pr = p && p.run && p.run.prepare || P0 && P0.settings && P0.settings.prepare;
+        const pr = progressPrepare(p, P0);
         line(s, `진행 — Run ${pg.running ? "실행 중" : "멈춤"}${pg.drain ? " · 새 호출 멈춤 요청됨" : ""} · 완료 ${r.done} · 진행 ${r.inflight} · 실패 ${r.failed}`
           + ` · 결과 못 받음 ${r.orphaned} · 대기 승인분(전체) ${r.need} · 다시 생성 ${r.pre}`
-          + (modelCatalog() && pr ? ` · 모델 ${modelText(pr)}` : "") + forgeProgress(pg), pg.running ? "warn" : "dim");
+          + (pr ? ` · 모델 ${modelText(pr)}` : "") + forgeProgress(pg), pg.running ? "warn" : "dim");
         if (pg.draft) {
           const d = pg.draft;
           line(s, `초안 진행 — 진행 ${d.inflight} · 받음 ${d.created} · 완료 ${d.done} · 실패 ${d.failed}`, "warn");
@@ -3488,17 +3533,23 @@ window.DPPipeline = (() => {
         const e = (edits[sec] = edits[sec] || {});
         if (!(k in e)) e[k] = drawn[sec][k];
         if (model && k === "n" && Number(v) > model.max_n) { v = model.max_n; inp.value = String(v); }
-        (form[sec] = form[sec] || {})[k] = v;
-        if (sec === "prepare" && k === "model") {
-          if (models) {
-            const raw = Object.assign({}, (PS.P.settings || PS.P.derived.settings).prepare, form.prepare);
-            const next = modelSettings(raw);
-            for (const key of ["quality", "n"]) if (!same(raw[key], next[key])) {
+        if (models) {
+          const base = (PS.P.settings || PS.P.derived.settings).prepare;
+          prepareDirect[k] = typed(spec, v);
+          if (same(prepareDirect[k], base[k]) && !PS.busy) delete prepareDirect[k];
+          const next = modelSettings({ ...base, ...prepareDirect });
+          const f = form.prepare = form.prepare || {};
+          for (const key of Object.keys(next)) {
+            if (same(next[key], base[key])) { delete f[key]; delete e[key]; }
+            else {
               if (!(key in e)) e[key] = drawn[sec][key];
-              form.prepare[key] = next[key];
+              f[key] = next[key];
             }
-            inp.blur(); // 선택 중에도 모델에 딸린 칸을 즉시 다시 그린다.
           }
+          if (!Object.keys(f).length) { delete form.prepare; delete edits.prepare; }
+        } else (form[sec] = form[sec] || {})[k] = v;
+        if (sec === "prepare" && k === "model") {
+          if (models) inp.blur(); // 선택 중에도 모델에 딸린 칸을 즉시 다시 그린다.
           render();
         }
       };
@@ -3538,7 +3589,15 @@ window.DPPipeline = (() => {
       if (spec.readonly) inp.title = modeText("읽기 전용(그래프에서 바꿈)", "읽기 전용(저장된 설정 값)");
       r.append(lab, inp);
       if (models && k === "model") {
-        for (const m of models.filter((m) => m.available === false)) r.append(el("span", "warn pp-hint", `${m.label}: ${m.why || ""}`));
+        const error = window.DPEnv.caps.models_error;
+        if (typeof error === "string" && error) r.append(el("span", "warn pp-hint", error));
+        const reasons = new Map();
+        for (const m of models.filter((m) => m.available === false)) {
+          const why = m.why || "";
+          if (why === error) continue;
+          reasons.set(why, [...(reasons.get(why) || []), m.label]);
+        }
+        for (const [why, labels] of reasons) r.append(el("span", "warn pp-hint", `${labels.join(" · ")}: ${why}`));
         if (model && model.available === false) inp.title = model.why || "";
       }
       if (model && k === "quality" && !model.qualities.length) {
@@ -3641,6 +3700,7 @@ window.DPPipeline = (() => {
         + (can("export_download") && o.outcome !== "empty" ? "\n[PSD 내려받기]로 받으세요" : ""), o.outcome === "empty" ? "warn" : "");
       // 계획은 다시 받은 state 뒤에(§3.1): 반영이 지운 크롭이 아직 선택(only)에 남아 서버가 400('매니페스트에 없는 크롭')을 내지 않게
       doneReplan = true;
+      if (["apply", "run", "reroll"].includes(job.stage)) refreshModelChoices();
       opts.refresh();
       PS.load().then(pipelineLoaded);
     };
