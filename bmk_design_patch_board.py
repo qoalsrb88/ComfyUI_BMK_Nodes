@@ -5795,6 +5795,17 @@ def _plan_sigs(root: str, m: dict, busy: tuple[bool, bool], refs_v: str | None, 
     pfp = store._file_fp(os.path.join(root, pl.PIPELINE_NAME))
     run = [m.get("jobs"), m.get("rerolls"), m.get("prepare_settings"), m.get("prepare_inputs"),
            _scan(os.path.join(root, "cands"), _RUN_LEDGER_RE, 1), mock, pfp, running]
+    if server_mode() and not mock and _runner().backend_name(root) == _runner().BACKEND_FORGE:
+        try:
+            from . import bmk_design_patch_forge_backend as forge_backend
+            from . import bmk_design_patch_models as models
+        except ImportError:
+            import bmk_design_patch_forge_backend as forge_backend
+            import bmk_design_patch_models as models
+        scope = current_scope()
+        catalog = forge_backend.cached_catalog((scope["org"], scope["account"]), max_age=None) if scope else None
+        run.append(sorted(model.checkpoint for model in models.MODELS.values() if model.checkpoint in catalog)
+                   if catalog is not None else None)
     refs = []
     for c in m["crops"]:
         for r in [x for t in c.get("targets") or [] for x in t.get("refs") or []] + list(c.get("refs_auto") or []):
@@ -6806,7 +6817,9 @@ async def env_handler(request: web.Request) -> web.StreamResponse:
     로컬 = {"server_mode": false, "caps": LOCAL_CAPS}. 서버 모드 본문은 서버 진입점이 건 함수가 만든다(세션이 없어도 200 — 계정 ID·
     경로는 싣지 않음)."""
     if _ENV_PROVIDER:
-        return _json(_ENV_PROVIDER[0](request))
+        import inspect
+        result = _ENV_PROVIDER[0](request)
+        return _json(await result if inspect.isawaitable(result) else result)
     return _json({"server_mode": False, "caps": dict(LOCAL_CAPS)})
 
 

@@ -448,8 +448,11 @@ class JobRunner:
             if job.get("backend") is not None and job["backend"] != backend.backend_name(job["raw_root"]):
                 raise RuntimeError("생성 백엔드 설정이 바뀌었습니다 — 계획을 다시 확인해 주세요")
             if self._forge is not None and not backend.mock_enabled(job["raw_root"]):
-                forge_token = backend.set_forge({**self._forge.context(job["scope"]), "root": job["raw_root"],
-                                                "stop": lambda: job["closed"]})
+                ctx = {**self._forge.context(job["scope"]), "account": job["scope"]["account"],
+                       "root": job["raw_root"], "stop": lambda: job["closed"]}
+                forge_token = backend.set_forge(ctx)
+                if job.get("stage") in ("apply", "run", "reroll"):
+                    _refresh_catalog(ctx)
             result = execute(job["prompt"])
             record = _record(result["outputs"], node=job["node"], scope=job["scope"])
         except BaseException as exc:
@@ -471,6 +474,29 @@ class JobRunner:
             finally:
                 with self._condition:
                     self._finish(job, record)
+
+
+def _refresh_catalog(ctx):
+    try:
+        from . import bmk_design_patch_forge_backend as forge_backend
+    except ImportError:
+        import bmk_design_patch_forge_backend as forge_backend
+    key = (ctx["organization_id"], ctx["account"])
+    catalog = asyncio.run(forge_backend.ensure_catalog(key, ctx["client"], ctx["token_of"], ctx["reject_token"], max_age=60.0))
+    if catalog is None:
+        forge_backend.forget_catalog(key)
+
+
+def _forge_concurrency(root, concurrency):
+    try:
+        from . import bmk_design_patch_models as models
+    except ImportError:
+        import bmk_design_patch_models as models
+    try:
+        jobs = pl.store.load_manifest(root).get("jobs", [])
+        return min([concurrency] + [models.job_slots(job["model"], concurrency, job["n"]) for job in jobs])
+    except (OSError, ValueError, TypeError, KeyError):
+        return concurrency
 
 
 def routes(runner: JobRunner) -> tuple:
@@ -529,6 +555,8 @@ def routes(runner: JobRunner) -> tuple:
             for node in res["prompt"].values():
                 if node.get("class_type") == pl.CLASS["run"]:
                     node["inputs"]["concurrency"] = min(node["inputs"]["concurrency"], limit)
+                    node["inputs"]["concurrency"] = await asyncio.to_thread(
+                        _forge_concurrency, root, node["inputs"]["concurrency"])
         try:
             if selected_backend is None:
                 result = runner.submit(account, root, stage, res["prompt"])

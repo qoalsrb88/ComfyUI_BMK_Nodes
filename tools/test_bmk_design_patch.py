@@ -49846,6 +49846,10 @@ def forge_f2_session_unit():
             expected_env = copy.deepcopy(api["env_server_forge"]["response"])
             expected_env["account"]["tag"] = tag
             expected_env["parent_origins"] = list(base.parent_origins)
+            env_models = value["caps"].pop("models", None)  # 2단계: Forge 연결이 있는 서버의 env 에만 실린다(내용은 forge_models_backend_unit)
+            check(isinstance(env_models, list) and [row.get("name") for row in env_models]
+                  == list(json.loads((PKG / "tools" / "fixtures" / "forge_api.json").read_text(encoding="utf-8"))["models"]["names"]),
+                  "F2S Forge env 의 caps.models = 모델 표의 이름 순서")
             check(value == expected_env, "S2 F2S C 라우트가 있으면 Forge env fixture·caps true")
             before = len(calls)
             for _ in range(3):
@@ -57957,12 +57961,13 @@ def forge_f2_backend_unit():
             return error if error is not None else png
 
     def context(root, client, *, tokens=None, stop=lambda: False, limit=2):
+        client._json = AsyncMock(return_value=fixture["models"]["catalog"]["response"])
         tokens = tokens if tokens is not None else {"value": secret}
         def reject(value):
             tokens.setdefault("rejected", []).append(value)
             if tokens.get("value") == value:
                 tokens["value"] = tokens.get("refresh")
-        return {"root": root, "client": client, "token_of": lambda: tokens.get("value"), "reject_token": reject,
+        return {"account": "fixture", "root": root, "client": client, "token_of": lambda: tokens.get("value"), "reject_token": reject,
                 "organization_id": "org1", "stop": stop, "options": {"prompt_autopilot": False, "concurrency": limit}}
 
     def plan(root, **kw):
@@ -61286,6 +61291,528 @@ def forge_models_backend_unit():
     """Forge 2단계 서버 갈래 — 모델별 요청 조립·제출 전 차단·카탈로그 기억·응답 판정·부하 수칙·설정 검증·env 의 caps.models.
     명세 _proto/STUDIO_FORGE_MODELS_SPEC.md §2–§4. --quick 포함."""
     section("Forge 모델 서버 — forge_models_backend_unit")
+    import concurrent.futures
+    import logging
+    from tempfile import mkdtemp
+    from unittest.mock import AsyncMock, patch
+    from aiohttp.test_utils import make_mocked_request
+    import bmk_design_patch_models as models
+    import bmk_design_patch_forge_backend as fb
+    import bmk_design_patch_forge as fg
+    import bmk_design_patch_runner as rn
+    import bmk_design_patch_jobs as jb
+    import bmk_design_patch_board as bd
+    import bmk_design_patch_pipeline as pl
+    import bmk_design_patch_server as srv
+
+    fixture = json.loads((PKG / "tools/fixtures/forge_api.json").read_text(encoding="utf-8"))
+    contract = fixture["models"]
+    catalog = fb.parse_catalog(contract["catalog"]["response"])
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    out = Path(mkdtemp(prefix="models_backend_", dir=OUT_ROOT.resolve()))
+    secret, org = "synthetic-model-token", "synthetic-model-organization"
+    key = (org, "models-account")
+    media = "https://forge.example/models/"
+    png_buffer = io.BytesIO()
+    Image.new("RGB", (32, 24), (255, 0, 0)).save(png_buffer, "PNG")
+    png = png_buffer.getvalue()
+    messages = []
+
+    def normalize(value):
+        value = copy.deepcopy(value)
+        result = value.pop("result_data", None) or {}
+        value.update(images=[u.replace("{MEDIA}/", media) for u in result.get("images", [])],
+                     result_ids=result.get("result_ids", []), metadata=result.get("result_metadata", []))
+        return value
+
+    class Client:
+        def __init__(self, result=None):
+            self.catalog = copy.deepcopy(contract["catalog"]["response"])
+            self.result = result or fixture["job"]["completed"]
+            self.reads, self.submissions, self.polls = [], [], []
+            self.submit_error = None
+
+        async def _json(self, method, path, token, *, call):
+            self.reads.append((method, path, call))
+            if isinstance(self.catalog, BaseException):
+                raise self.catalog
+            return copy.deepcopy(self.catalog)
+
+        async def submit(self, token, body):
+            self.submissions.append(copy.deepcopy(body))
+            if self.submit_error:
+                raise self.submit_error
+            return {"job_id": "model-job-" + str(len(self.submissions))}
+
+        async def job(self, token, job_id):
+            self.polls.append(job_id)
+            if isinstance(self.result, BaseException):
+                raise self.result
+            return normalize(self.result)
+
+        async def fetch_media(self, url, limit):
+            return png
+
+    def context(root, client, *, account=key[1], concurrency=4):
+        return {"client": client, "token_of": lambda: secret, "reject_token": lambda token: None,
+                "organization_id": org, "account": account, "root": root, "stop": lambda: False,
+                "options": {"concurrency": concurrency, "prompt_autopilot": False}}
+
+    @contextlib.contextmanager
+    def active(ctx):
+        token = rn.set_forge(ctx)
+        try:
+            yield
+        finally:
+            rn.reset_forge(token)
+
+    def remember(value=catalog, *, age=0, account_key=key):
+        with fb._CATALOG_LOCK:
+            fb._CATALOG[account_key] = (time.monotonic() - age, copy.deepcopy(value))
+
+    def project(name="seedream-5.5", *, n=2, reps=1):
+        root = store.project_root(str(out / str(len(list(out.iterdir())))), "proj")
+        os.makedirs(root)
+        manifest = store.new_manifest("proj")
+        inputs = []
+        for color in ((255, 0, 0), (0, 255, 0)):
+            arr = np.full((24, 32, 3), color, dtype=np.uint8)
+            rel = store.save_png_ca(root, "inputs", arr)
+            inputs.append({"role": "canvas" if not inputs else "ref", "file": rel, "sha": store.pixel_sha(arr)})
+        manifest["crops"].append({"id": "001_000000", "name": "001_part", "nnn": "001", "part": "part", "rect": [0, 0, 32, 24],
+                                 "rect_source": "vector", "source": inputs[0]["file"], "source_kind": "base_crop", "alpha_frac": 0.0,
+                                 "targets": [{"tid": "A", "label": "part", "name_en": "", "mode": "ref_correct", "refs": []}],
+                                 "refs_auto": [], "warnings": []})
+        model = models.get(name)
+        job = {"model": name, "quality": model.default_quality, "size": [2048, 1536], "background": "auto",
+               "prompt": contract["requests"]["seedream-5.5"]["request"]["prompt"], "inputs": inputs, "n": n, "reps": reps,
+               "crop_id": "001_000000", "tid": "A", "variant": "V1_standard", "template_version": "dp-prompt/1"}
+        if name in store.COMPLEXITY_MODELS:
+            job["complexity"] = "medium"
+        job["cell_key"] = store.cell_key(job["model"], job["quality"], job["size"], job["background"], job["prompt"],
+                                          [item["sha"] for item in inputs], job["template_version"], job["variant"],
+                                          complexity=job.get("complexity"))
+        manifest["jobs"].append(job)
+        store.save_manifest(root, manifest)
+        return root, job, [store.resolve_path(root, item["file"]) for item in inputs]
+
+    async def run_plan(root, be, **kwargs):
+        plan = rn.plan_calls(store.load_manifest(root), root)
+        approval = rn.split_approval(plan, backend="forge")
+        calls = rn.split_approval(plan, approval["pending_hash"], backend="forge")["to_run"]
+        return await rn.run_calls(root, calls, be, **kwargs)
+
+    async def rejected(be, job, paths, *, phrase=None):
+        try:
+            await be.request(job, paths, rn.call_id_for(job["cell_key"], 0))
+        except rn.CallError as exc:
+            messages.append(str(exc))
+            check(exc.phase == "blocked" and not exc.maybe_billed and (phrase is None or phrase in str(exc)),
+                  "FMB 제출 전 거부·과금 없음 " + (phrase or ""))
+            return exc
+        check(False, "FMB 제출 전 거부가 필요함")
+
+    async def catalog_cases():
+        fb.forget_catalog()
+        client, rejected_tokens = Client(), []
+        args = (key, client, lambda: secret, rejected_tokens.append)
+        check(await fb.ensure_catalog(*args) == catalog, "FMB 목록 읽기")
+        check(client.reads == [(contract["catalog"]["method"], contract["catalog"]["path"], "GET " + contract["catalog"]["path"])],
+              "FMB 목록 경로·call 계약")
+        for age, max_age, refresh in ((59, 60, False), (61, 60, True), (599, 600, False), (601, 600, True), (9000, None, False)):
+            remember(age=age)
+            before = len(client.reads)
+            check(await fb.ensure_catalog(*args, max_age=max_age) == catalog and len(client.reads) == before + int(refresh),
+                  f"FMB 카탈로그 나이 {age}/{max_age}")
+        copied = fb.cached_catalog(key, max_age=None)
+        copied.clear()
+        check(fb.cached_catalog(key, max_age=None) == catalog and fb.cached_catalog((org, "other")) is None
+              and fb.cached_catalog(("other-org", key[1])) is None, "FMB 사본·계정 및 조직 격리")
+        for failure in (fg.ForgeError("unauthorized", 401), fg.ForgeError("unreachable", kind="timeout"), {"models": {}}, {}):
+            remember(age=601)
+            client.catalog = failure
+            check(await fb.ensure_catalog(*args) is None and fb.cached_catalog(key, max_age=None) == catalog,
+                  "FMB 갱신 실패는 옛 기억 보존")
+        check(rejected_tokens == [secret], "FMB 401 토큰 거절")
+        check(await fb.ensure_catalog(key, client, lambda: None, rejected_tokens.append) is None, "FMB 토큰 없음")
+        delayed = types.SimpleNamespace(_json=AsyncMock(side_effect=lambda *a, **k: None))
+        async def wait_forever(*args, **kwargs):
+            await asyncio.Event().wait()
+        delayed._json = wait_forever
+        check(await fb.ensure_catalog(key, delayed, lambda: secret, rejected_tokens.append, timeout=0.01) is None
+              and fb.cached_catalog(key, max_age=None) == catalog, "FMB 제한 시간·옛 기억 보존")
+        fb.forget_catalog(key)
+        check(fb.cached_catalog(key, max_age=None) is None, "FMB 계정 기억 삭제")
+        malformed = {"models": [None, [], {}, {"checkpoint": "", "id": "fallback", "max_input_images": True},
+                                {"checkpoint": "valid", "id": "unused", "max_input_images": 3},
+                                {"id": "negative", "max_input_images": -1}, {"id": "string", "max_input_images": "5"}]}
+        check(fb.parse_catalog(malformed) == {"fallback": None, "valid": 3, "negative": None, "string": None},
+              "FMB 잘못된 행·한도·checkpoint 우선")
+        for invalid in (None, [], {}, {"models": None}):
+            try:
+                fb.parse_catalog(invalid)
+                check(False, "FMB 목록 형식 오류")
+            except fg.ForgeError as exc:
+                check(exc.reason == "unreachable" and exc.kind == "format", "FMB 목록 형식 오류 분류")
+
+    def loop_cases():
+        fb.forget_catalog()
+        barrier = threading.Barrier(3)
+        class Overlap(Client):
+            async def _json(self, *args, **kwargs):
+                await asyncio.to_thread(barrier.wait, 5)
+                return self.catalog
+        def read():
+            return asyncio.run(fb.ensure_catalog(key, Overlap(), lambda: secret, lambda token: None))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+            futures = [pool.submit(read) for _ in range(3)]
+            check(all(future.result(timeout=10) == catalog for future in futures), "FMB 서로 다른 이벤트 루프의 동시 목록 읽기")
+
+    async def request_cases():
+        for name, spec in contract["requests"].items():
+            root, job, paths = project(name)
+            expected = copy.deepcopy(spec["request"])
+            images = [base64.b64decode(item.split(",", 1)[1]) for item in expected["input_images"][0]]
+            body = fb.build_request(job, images, organization_id=expected["organization_id"],
+                                    request_id=expected["request_id"], prompt_autopilot=expected["prompt_autopilot"])
+            check(body == expected and set(body) == set(expected) and not set(body).intersection(spec["never"]),
+                  "FMB 모델별 요청 정본·금지 키 " + name)
+            check(tuple(fb._INPUT_ERRORS[models.get(name).kind]) == tuple(spec["errors"]["input"]), "FMB 알려진 입력 오류 정본 " + name)
+        for name, checkpoint in fixture["generate"]["checkpoints"].items():
+            root, job, paths = project(name)
+            expected = copy.deepcopy(fixture["generate"]["request"])
+            job.update(prompt=expected["prompt"], quality=expected["quality"], size=list(map(int, expected["size"].split("x"))),
+                       background=expected["background"], n=expected["num_outputs"])
+            expected["checkpoint"] = checkpoint
+            if "2.5" in name:
+                expected.pop("complexity", None)
+            else:
+                job["complexity"] = expected["complexity"]
+                expected["complexity"] = expected.pop("complexity")  # 기존 GPT 조립은 이 키를 마지막에 덧붙인다.
+            images = [base64.b64decode(item.split(",", 1)[1]) for item in expected["input_images"][0]]
+            body = fb.build_request(job, images, organization_id=expected["organization_id"], request_id=expected["request_id"],
+                                    prompt_autopilot=expected["prompt_autopilot"])
+            check(json.dumps(body) == json.dumps(expected), "FMB GPT 요청 키 순서·바이트 불변 " + name)
+
+        root, job, paths = project()
+        client = Client()
+        ctx = context(root, client)
+        fb.forget_catalog()
+        with active(ctx):
+            check("읽지 못했습니다" in fb.blocked_reason(job), "FMB 실행 안 목록 없음 차단")
+            with active(dict(ctx, account="")):
+                check("연결 설정" in fb.blocked_reason(job), "FMB 실행 안 계정 없음 차단")
+            expect_raises(fb.ForgeBackend(dict(ctx, account="")).check, "FMB 백엔드 계정 검사", rn.CallError)
+        scope = {"org": org, "account": key[1]}
+        token = bd.set_scope(scope)
+        try:
+            check(fb.blocked_reason(job) is None, "FMB 라우트 목록 없음 대조 생략")
+            remember({})
+            check("Forge 에 없습니다" in fb.blocked_reason(job), "FMB 라우트 기억된 퇴역 차단")
+        finally:
+            bd.reset_scope(token)
+        check(fb.blocked_reason(job) is None, "FMB 실행·라우트 문맥 없는 순수 판정")
+        for backend in (rn.BACKEND_MOCK, rn.BACKEND_COMFY_ORG):
+            check(rn.blocked_reason(job, backend=backend) == "이 모델은 Forge 서버에서만 생성합니다.", "FMB 로컬·mock 차단")
+        changes = ({"model": "unknown"}, {"prompt": "@@reference"}, {"inputs": [{}] * (models.get(job["model"]).max_inputs + 1)},
+                   {"n": models.get(job["model"]).max_n + 1}, {"quality": "max"}, {"size": [64, 64]})
+        for change in changes:
+            r, j, paths = project()
+            j.update(change)
+            store.update_manifest(r, lambda m: m.update(jobs=[j]))
+            c = Client()
+            remember()
+            ctx = context(r, c)
+            with active(ctx):
+                await rejected(fb.ForgeBackend(ctx), j, paths)
+                report = await run_plan(r, fb.ForgeBackend(ctx)) if "model" not in change else None
+            check(not c.submissions and not rn.read_ledger(r, j["cell_key"])
+                  and not fb.read_sidecar(r, j["cell_key"], 0)["requests"], "FMB 여섯 차단 제출·원장·사이드카 없음")
+        for name in ("gpt-image-2.6-sunburst", "seedream-5.5"):
+            r, j, paths = project(name)
+            c = Client()
+            remember(age=601)
+            ctx = context(r, c)
+            with active(ctx):
+                check(fb.blocked_reason(j) is None, "FMB 긴 실행에서 판정은 목록 나이를 보지 않음 " + name)
+                report = await run_plan(r, fb.ForgeBackend(ctx))
+            check(report.done == 1 and len(c.reads) == 1 and len(c.submissions) == 1, "FMB 제출 직전 10분 갱신 " + name)
+            r, j, paths = project(name)
+            c = Client()
+            c.catalog["models"] = [row for row in c.catalog["models"] if row["checkpoint"] != models.get(name).checkpoint]
+            remember(age=601)
+            ctx = context(r, c)
+            with active(ctx):
+                report = await run_plan(r, fb.ForgeBackend(ctx))
+            check(report.stopped_reason == "auth" and not c.submissions and not rn.read_ledger(r, j["cell_key"])
+                  and not fb.read_sidecar(r, j["cell_key"], 0)["requests"], "FMB 갱신으로 퇴역 발견·원장 되돌림 " + name)
+        r, j, paths = project()
+        c = Client()
+        remember(dict(catalog, **{models.get(j["model"]).checkpoint: 1}))
+        with active(context(r, c)):
+            await rejected(fb.ForgeBackend(context(r, c)), j, paths, phrase="1장")
+        check(not c.submissions, "FMB 목록의 더 작은 입력 상한")
+        r, j, paths = project("ideogram-4.5")
+        remember()
+        c = Client(contract["job"]["ideogram_completed"])
+        with active(context(r, c)):
+            report = await run_plan(r, fb.ForgeBackend(context(r, c)))
+        decoded = [Image.open(io.BytesIO(base64.b64decode(data.split(",", 1)[1]))) for data in c.submissions[0]["input_images"][0]]
+        check(report.done == 1 and [im.size for im in decoded] == [tuple(j["size"]), (32, 24)]
+              and [im.mode for im in decoded] == ["RGB", "RGB"] and decoded[0].getpixel((0, 0)) == (255, 0, 0)
+              and decoded[1].getpixel((0, 0)) == (0, 255, 0), "FMB Ideogram 첫 입력만 목표 크기·RGB·순서")
+        for im in decoded:
+            im.close()
+        check(fb.prompt_changed(r, rn.call_id_for(j["cell_key"], 0)) == [False, False], "FMB Ideogram 동일 프롬프트")
+        r, j, paths = project(n=3)
+        c = Client(contract["job"]["seedream_partial"])
+        with active(context(r, c)):
+            report = await run_plan(r, fb.ForgeBackend(context(r, c)))
+        check(report.done == 1 and len(store.load_manifest(r)["candidates"]) == 2, "FMB Seedream 부분 성공은 받은 장만 후보")
+
+        for name, spec in contract["requests"].items():
+            for phrase in spec["errors"]["input"]:
+                r, j, paths = project(name)
+                terminal = dict(contract["job"]["seedream_failed_input"], error_message=phrase + " 1:16")
+                check(fg._safe_detail(terminal["error_message"]) is not None, "FMB client 가 알려진 입력 오류·비율을 보존")
+                c = Client(terminal)
+                with active(context(r, c)):
+                    report = await run_plan(r, fb.ForgeBackend(context(r, c)))
+                record = rn.read_ledger(r, j["cell_key"])[0]
+                check(report.failed == 1 and not record["failed"]["retryable"] and not record["failed"]["maybe_billed"]
+                      and record["failed"]["error"] == fb._INPUT_ERROR, "FMB 알려진 입력 오류·고정 안내·재시도 없음")
+        r, j, paths = project()
+        c = Client(fg.ForgeError("unreachable", kind="connect"))
+        ctx = context(r, c)
+        with active(ctx):
+            await run_plan(r, fb.ForgeBackend(ctx))
+            c.result = contract["job"]["seedream_failed_input"]
+            report = await run_plan(r, fb.ForgeBackend(ctx))
+        record = rn.read_ledger(r, j["cell_key"])[0]
+        check(report.failed == 1 and record["failed"]["phase"] == "download" and record["failed"]["retryable"]
+              and record["failed"]["maybe_billed"] and "done" not in record and len(c.submissions) == 1,
+              "FMB 복구 중 알려진 오류는 기존 실패 상태 유지")
+
+    async def pressure_cases():
+        for name, n, cap, expected in (("seedream-5.5", 5, 4, 1), ("seedream-5.5", 2, 4, 4),
+                                        ("gpt-image-2.6-sunburst", 5, 4, 4), ("ideogram-4.5", 2, 4, 4)):
+            root, job, paths = project(name, n=n, reps=4)
+            remember()
+            filled = asyncio.Event()
+            class Concurrent(Client):
+                active, peak = 0, 0
+                async def submit(self, token, body):
+                    self.active += 1
+                    self.peak = max(self.peak, self.active)
+                    if self.active == expected:
+                        filled.set()
+                    return await super().submit(token, body)
+                async def job(self, token, job_id):
+                    await asyncio.wait_for(filled.wait(), 5)
+                    self.active -= 1
+                    return await super().job(token, job_id)
+            client = Concurrent()
+            ctx = context(root, client, concurrency=cap)
+            with active(ctx):
+                report = await run_plan(root, fb.ForgeBackend(ctx), concurrency=4)
+            check(report.done == 4 and client.peak == expected and jb._forge_concurrency(root, cap) == expected,
+                  f"FMB 작업 실행기·백엔드 동시 수 {name}/{n}: done={report.done}, peak={client.peak}, errors={report.errors}")
+        root, job, paths = project()
+        store.update_manifest(root, lambda m: m.update(jobs=[]))
+        check(jb._forge_concurrency(root, 3) == 3 and jb._forge_concurrency(str(out / "missing"), 3) == 3,
+              "FMB 작업 없음·매니페스트 실패는 기존 상한")
+        root, job, paths = project(reps=3)
+        remember()
+        client = Client(fg.ForgeError("server", 503))
+        ctx = context(root, client)
+        with active(ctx):
+            report = await run_plan(root, fb.ForgeBackend(ctx), concurrency=1)
+        ledger = rn.read_ledger(root, job["cell_key"])
+        check(len(client.submissions) == 2 and report.stopped_reason == "auth" and set(ledger) == {0, 1}
+              and not fb.read_sidecar(root, job["cell_key"], 2)["requests"], "FMB 제출 성공·조회 실패 2회 뒤 중지·다음 원장 되돌림")
+        check(any(fb._OVERLOADED in call.get("error", "") for call in report.calls), "FMB 과부하 중지 안내는 calls 에 기록됨")
+        for failure in (fg.ForgeError("server", 503), fg.ForgeError("invalid", 429),
+                        fg.ForgeError("unreachable", kind="timeout"), fg.ForgeError("unreachable", kind="connect")):
+            root, job, paths = project(reps=3)
+            remember()
+            client = Client()
+            client.submit_error = failure
+            ctx = context(root, client)
+            with active(ctx):
+                report = await run_plan(root, fb.ForgeBackend(ctx), concurrency=1)
+            expected = 2 if failure.status == 429 else 6
+            check(len(client.submissions) == expected and report.stopped_reason == "auth"
+                  and set(rn.read_ledger(root, job["cell_key"])) == {0, 1}, "FMB 제출 과부하 종류·멱등 재제출 유지")
+        root, job, paths = project()
+        remember()
+        client = Client(fg.ForgeError("unreachable", kind="connect"))
+        ctx = context(root, client)
+        be = fb.ForgeBackend(ctx)
+        with active(ctx):
+            for rep, outcome, expected in ((0, client.result, 1), (1, fixture["job"]["completed"], 0),
+                                           (2, fg.ForgeError("server", 502), 1), (3, fixture["job"]["failed_user"], 1),
+                                           (4, fg.ForgeError("server", 503), 2)):
+                client.result = outcome
+                try:
+                    await be.request(job, paths, rn.call_id_for(job["cell_key"], rep))
+                except rn.CallError:
+                    pass
+                check(be._overload_failures == expected, "FMB 결과를 받은 호출만 실패 셈 초기화")
+            await rejected(be, job, paths, phrase="새 생성 요청을 멈췄습니다")
+        root, job, paths = project()
+        remember(age=601)
+        client = Client()
+        client.catalog = fg.ForgeError("unreachable", kind="format")
+        be = fb.ForgeBackend(context(root, client))
+        with active(be._ctx):
+            await rejected(be, job, paths, phrase="목록을 읽지 못했습니다")
+            await rejected(be, job, paths, phrase="목록을 읽지 못했습니다")
+            await rejected(be, job, paths, phrase="새 생성 요청을 멈췄습니다")
+        check(not client.submissions and len(client.reads) == 2, "FMB 목록 실패도 2회 중지")
+        root, job, paths = project()
+        remember()
+        client = Client(dict(fixture["job"]["processing"], execution_deadline_at="2000-01-01T00:00:00+00:00"))
+        be = fb.ForgeBackend(context(root, client))
+        with active(be._ctx):
+            for rep in range(2):
+                try:
+                    await be.request(job, paths, rn.call_id_for(job["cell_key"], rep))
+                except rn.CallError as exc:
+                    check(exc.phase == "poll", "FMB 폴링 마감 과부하")
+            await rejected(be, job, paths, phrase="새 생성 요청을 멈췄습니다")
+        root, job, paths = project()
+        remember()
+        client = Client()
+        be = fb.ForgeBackend(context(root, client))
+        be._semaphore = asyncio.Semaphore(0)
+        with active(be._ctx):
+            waiting = asyncio.create_task(rejected(be, job, paths, phrase="Forge 에 없습니다"))
+            await asyncio.sleep(0)
+            remember({})
+            be._semaphore.release()
+            await waiting
+        check(not client.submissions and not fb.read_sidecar(root, job["cell_key"], 0)["requests"],
+              "FMB 세마포어 대기 중 퇴역·제출 없음")
+
+    def worker_cases():
+        root, job, paths = project()
+        client = Client()
+        ctx = context(root, client)
+        remember(age=61)
+        jb._refresh_catalog(ctx)
+        check(len(client.reads) == 1, "FMB 실행 직전 60초 갱신")
+        remember(age=61)
+        client.catalog = fg.ForgeError("unreachable")
+        jb._refresh_catalog(ctx)
+        check(fb.cached_catalog(key, max_age=None) is None, "FMB 실행 직전 실패는 옛 기억 삭제")
+        service = object.__new__(jb.JobRunner)
+        service._condition = threading.Condition()
+        service._forge = types.SimpleNamespace(context=lambda scope: ctx)
+        service._finish = lambda *args: None
+        scope = dict(_fj_scope(out), org=org, account=key[1])
+        seen = []
+        def execute(prompt):
+            seen.append((rn.forge_context()["account"], fb.cached_catalog(key, max_age=None)))
+            return {"outputs": {}}
+        for stage in ("apply", "run", "reroll", "export"):
+            remember(age=61)
+            state = {"scope": scope, "raw_root": root, "prompt": {}, "closed": False, "outputs": {}, "node": {}, "stage": stage}
+            with patch.object(jb, "execute", side_effect=execute), patch.object(jb, "_refresh_catalog", wraps=jb._refresh_catalog) as refresh:
+                service._run(state)
+                check(refresh.call_count == int(stage != "export") and seen[-1][0] == key[1]
+                      and (seen[-1][1] is None if stage != "export" else seen[-1][1] == catalog),
+                      "FMB 작업 단계별 갱신·실패 뒤 실행 계속 " + stage)
+        check(srv.ServerConfig(str(out)).workers == 1, "FMB workers 기본 1")
+
+    async def env_cases():
+        jobs_module = types.SimpleNamespace(JobRunner=lambda **kwargs: types.SimpleNamespace(close=lambda *args: None),
+                                           routes=lambda runner: ())
+        for forge_mode in (True, False):
+            config = srv.ServerConfig(str(out / ("env_forge" if forge_mode else "env_mock")), dev_handoff=not forge_mode,
+                                      public_origin="https://studio.example",
+                                      parent_origins=("http://localhost:8790",),
+                                      forge=fg.ForgeConfig("https://forge.example", media_origins=("https://forge.example",)) if forge_mode else None)
+            with patch.dict(os.environ, {rn.MOCK_ENV: ""}):
+                app = srv.make_app(config, jobs_module=jobs_module, forge_transport=AsyncMock(side_effect=AssertionError("unexpected transport")))
+                try:
+                    async def env(session=None):
+                        req = make_mocked_request("GET", bd.API + "/env", app=app)
+                        req["bmk_dp_session"] = session
+                        response = await bd.env_handler(req)
+                        return json.loads(response.text)
+                    no_session = await env()
+                    if not forge_mode:
+                        check("models" not in no_session["caps"], "FMB Forge 연결 없는 서버의 env 에는 모델 목록 없음(기존 본문 그대로)")
+                        continue
+                    check([row["name"] for row in no_session["caps"]["models"]] == list(models.MODELS), "FMB env 표 순서")
+                    with patch.dict(os.environ, {rn.MOCK_ENV: "1"}):
+                        mocked = await env()
+                    check(mocked["backend"] == "mock" and all(row["available"] == (row["kind"] == "gpt") for row in mocked["caps"]["models"])
+                          and all(row["why"] == "이 모델은 Forge 서버에서만 생성합니다." for row in mocked["caps"]["models"] if row["kind"] != "gpt"),
+                          "FMB mock env 서버 전용 모델 차단")
+                    check(all(row["available"] for row in no_session["caps"]["models"]), "FMB 세션 없는 env 대조 안 함")
+                    accounts = app[srv._FORGE_KEY]
+                    scope = dict(_fj_scope(out), org=org, account=key[1])
+                    session = {"scope": scope, "name": "fixture", "tag": "fixture-tag"}
+                    c = Client()
+                    with patch.object(accounts, "context", return_value=context(str(out), c)):
+                        fb.forget_catalog()
+                        with patch.object(fb, "ensure_catalog", wraps=fb.ensure_catalog) as ensure:
+                            value = await env(session)
+                            check(ensure.call_args.kwargs["timeout"] == 5.0, "FMB env 짧은 제한 시간")
+                        check(all(row["available"] for row in value["caps"]["models"]) and len(c.reads) == 1, "FMB forge env 계정 목록")
+                        gone = dict(catalog)
+                        gone.pop(models.get("seedream-5.5").checkpoint)
+                        remember(gone, age=601)
+                        c.catalog = fg.ForgeError("unreachable")
+                        value = await env(session)
+                        check([row["name"] for row in value["caps"]["models"] if not row["available"]] == ["seedream-5.5"],
+                              "FMB env 실패 시 옛 기억")
+                        fb.forget_catalog()
+                        value = await env(session)
+                        check(all(not row["available"] and "읽지 못했습니다" in row["why"] for row in value["caps"]["models"]),
+                              "FMB env 목록 실패·기억 없음은 전부 불가")
+                finally:
+                    for cleanup in app.on_cleanup:
+                        await cleanup(app)
+        check(json.loads((await bd.env_handler(make_mocked_request("GET", bd.API + "/env"))).text)
+              == {"server_mode": False, "caps": dict(bd.LOCAL_CAPS)}, "FMB 로컬 env 본문 불변")
+
+    def signatures():
+        root, job, paths = project()
+        manifest = store.load_manifest(root)
+        scope_token = bd.set_scope(dict(_fj_scope(out), org=org, account=key[1]))
+        try:
+            for server, mock in (("1", ""), ("1", "1"), ("", "")):
+                with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": server, rn.MOCK_ENV: mock}):
+                    remember()
+                    before = bd._plan_sigs(root, manifest, (False, False), None)
+                    remember({})
+                    after = bd._plan_sigs(root, manifest, (False, False), None)
+                    check((before[0] != after[0]) == (server == "1" and not mock) and before[1] == after[1],
+                          "FMB Forge 계획만 목록 변화로 무효화")
+        finally:
+            bd.reset_scope(scope_token)
+
+    log = io.StringIO()
+    handler = logging.StreamHandler(log)
+    logging.getLogger().addHandler(handler)
+    try:
+        with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1", rn.FORGE_ENV: "1", rn.MOCK_ENV: ""}), \
+                patch.object(fb, "SUBMIT_RETRY_DELAY", 0.0):
+            asyncio.run(catalog_cases())
+            loop_cases()
+            asyncio.run(request_cases())
+            asyncio.run(pressure_cases())
+            worker_cases()
+            signatures()
+            asyncio.run(env_cases())
+        raw = b"\n".join(path.read_bytes() for path in out.rglob("*.json"))
+        emitted = raw + log.getvalue().encode() + json.dumps(messages).encode()
+        check(all(value.encode() not in emitted for value in (secret, org, media)), "FMB 새 경로 디스크·로그·예외에 비밀·주소·조직 없음")
+    finally:
+        fb.forget_catalog()
+        logging.getLogger().removeHandler(handler)
 
 
 def forge_models_settings_unit():

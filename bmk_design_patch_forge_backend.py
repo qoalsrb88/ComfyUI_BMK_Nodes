@@ -33,9 +33,11 @@ from PIL import Image
 
 try:
     from . import bmk_design_patch_runner as runner
+    from . import bmk_design_patch_models as models
     from .bmk_design_patch_forge import ForgeError, MEDIA_LIMIT
 except ImportError:
     import bmk_design_patch_runner as runner
+    import bmk_design_patch_models as models
     from bmk_design_patch_forge import ForgeError, MEDIA_LIMIT
 
 CHECKPOINTS = {
@@ -57,16 +59,118 @@ _REQUEST_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 _PRIVATE_TEXT = re.compile(r"://|data:|\\|[a-z0-9_.-]+:\d+|(?:\d{1,3}\.){3}\d{1,3}|::|(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}", re.I)
 _LOCK = threading.Lock()
 _PROGRESS = {}
+CATALOG_TTL = 600.0
+_CATALOG_LOCK = threading.Lock()
+_CATALOG = {}
+_CATALOG_UNREADABLE = "Forge 의 모델 목록을 읽지 못했습니다 — 잠시 뒤 다시 시도해 주세요."
+_OVERLOADED = "Forge 가 요청을 받지 못하고 있습니다 — 새 생성 요청을 멈췄습니다. 잠시 뒤 다시 실행해 주세요."
+_INPUT_ERROR = "요청 크기·옵션을 Forge 가 받지 않았습니다 — 반영을 다시 실행해 주세요."
+_INPUT_ERRORS = {
+    "seedream": ("Seedream 크기는", "Seedream 배경 옵션이 올바르지 않습니다",
+                 "Seedream 이미지 생성·편집에는 프롬프트를 입력해 주세요"),
+    "ideogram": ("Ideogram 프롬프트는 1~10000자여야 합니다", "Ideogram은 원본 포함 입력 최대 5장",
+                 "Ideogram 출력 수는 1~8장이어야 합니다", "Ideogram이 입력을 거절했습니다",
+                 "지원하지 않는 이미지 파일 형식입니다", "입력 이미지를 읽을 수 없습니다"),
+}
+
+
+def parse_catalog(data) -> dict:
+    if not isinstance(data, dict) or not isinstance(data.get("models"), list):
+        raise ForgeError("unreachable", kind="format")
+    result = {}
+    for row in data["models"]:
+        if not isinstance(row, dict):
+            continue
+        checkpoint = row.get("checkpoint")
+        if not isinstance(checkpoint, str) or not checkpoint.strip():
+            checkpoint = row.get("id")
+        if not isinstance(checkpoint, str) or not checkpoint.strip():
+            continue
+        limit = row.get("max_input_images")
+        result[checkpoint] = limit if type(limit) is int and limit > 0 else None
+    return result
+
+
+async def read_catalog(client, token) -> dict:
+    return parse_catalog(await client._json("GET", "/api/image/templates", token, call="GET /api/image/templates"))
+
+
+def cached_catalog(key, *, max_age=CATALOG_TTL) -> dict | None:
+    with _CATALOG_LOCK:
+        entry = _CATALOG.get(key)
+        if entry is None or max_age is not None and time.monotonic() - entry[0] > max_age:
+            return None
+        return entry[1].copy()
+
+
+async def ensure_catalog(key, client, token_of, reject_token, *, max_age=CATALOG_TTL, timeout=None) -> dict | None:
+    catalog = cached_catalog(key, max_age=max_age)
+    if catalog is not None:
+        return catalog
+    token = None
+    try:
+        token = token_of()
+        if not token:
+            return None
+        reading = read_catalog(client, token)
+        catalog = await reading if timeout is None else await asyncio.wait_for(reading, timeout)
+    except ForgeError as exc:
+        if exc.reason == "unauthorized" or exc.status == 401:
+            reject_token(token)
+        return None
+    except Exception:
+        return None
+    with _CATALOG_LOCK:
+        _CATALOG[key] = (time.monotonic(), catalog.copy())
+    return catalog
+
+
+def forget_catalog(key=None):
+    with _CATALOG_LOCK:
+        if key is None:
+            _CATALOG.clear()
+        else:
+            _CATALOG.pop(key, None)
 
 
 def blocked_reason(job: dict) -> str | None:
-    """forge 백엔드의 과금 전 판정 몫 — 매핑 표에 없는 모델 · 프롬프트의 `@@` · 입력 MAX_INPUTS 초과. 없으면 None."""
-    if job.get("model") not in CHECKPOINTS:
+    """실행 안에서는 계정의 목록이 필수다. 라우트의 미리 보기는 기억된 목록이 있을 때만 대조한다."""
+    model = models.get(job.get("model"))
+    if model is None:
         return "Forge 에서 지원하지 않는 생성 모델입니다."
     if "@@" in str(job.get("prompt") or ""):
         return "프롬프트의 @@ 표기를 지운 뒤 다시 시도해 주세요."
-    if len(job.get("inputs") or []) > MAX_INPUTS:
-        return "입력 이미지는 16장까지 보낼 수 있습니다."
+    ctx = runner.forge_context()
+    catalog = None
+    if ctx is not None:
+        if not isinstance(ctx.get("account"), str) or not ctx["account"].strip():
+            return "Forge 연결 설정을 확인해 주세요."
+        catalog = cached_catalog((ctx["organization_id"], ctx["account"]), max_age=None)
+    else:
+        try:
+            from . import bmk_design_patch_board as board
+        except ImportError:
+            import bmk_design_patch_board as board
+        scope = board.current_scope() if board.server_mode() else None
+        if scope is not None:
+            catalog = cached_catalog((scope["org"], scope["account"]), max_age=None)
+    limit = model.max_inputs
+    if ctx is not None or catalog is not None:
+        available, why, limit = models.availability(model.name, catalog)
+        if not available:
+            return why
+    if len(job.get("inputs") or []) > limit:
+        return f"입력 이미지는 {limit}장까지 보낼 수 있습니다."
+    if type(job.get("n")) is not int or not 1 <= job["n"] <= model.max_n:
+        return f"{model.label} 은(는) 한 번에 {model.max_n}장까지 생성합니다."
+    if model.kind != "gpt":
+        if not model.qualities and job.get("quality") != models.FIXED_QUALITY:
+            return "생성 품질 기록이 잘못되었습니다 — 반영을 다시 실행해 주세요."
+        why = models.quality_problem(model.name, job.get("quality"))
+        if why:
+            # 잘못된 값 자체에는 토큰·주소가 들어 있을 수 있다.
+            return f"{model.label} 의 품질 설정이 잘못되었습니다 — 반영을 다시 실행해 주세요."
+        return models.size_problem(model.name, job.get("size"))
     return None
 
 
@@ -87,6 +191,17 @@ def encode_inputs(input_paths: list[str]) -> list[bytes]:
 
 def build_request(job: dict, images: list[bytes], *, organization_id: str, request_id: str, prompt_autopilot) -> dict:
     """Forge POST /api/image/generate 본문(fixture forge_api.json 의 generate.request 모양 — 그 밖의 키를 넣지 않는다)."""
+    model = models.get(job["model"])
+    if model is not None and model.kind != "gpt":
+        body = {"checkpoint": model.checkpoint, "prompt": job["prompt"]}
+        if model.kind == "seedream":
+            body["image_size"] = f"{job['size'][0]}x{job['size'][1]}"
+        elif model.kind == "ideogram":
+            body["ideogram"] = {"operation": "auto", "quality": job["quality"], "magic_prompt": "off"}
+        body.update(num_outputs=job["n"],
+                    input_images=[["data:image/png;base64," + base64.b64encode(data).decode("ascii") for data in images]],
+                    organization_id=organization_id, request_id=request_id, prompt_autopilot=prompt_autopilot)
+        return body
     body = {"checkpoint": CHECKPOINTS[job["model"]], "prompt": job["prompt"], "quality": job["quality"],
             "size": f"{job['size'][0]}x{job['size'][1]}", "background": job["background"],
             "num_outputs": job["n"], "moderation": "low",
@@ -95,6 +210,29 @@ def build_request(job: dict, images: list[bytes], *, organization_id: str, reque
     if job.get("complexity") is not None:
         body["complexity"] = job["complexity"]
     return body
+
+
+def _encode_ideogram_inputs(input_paths, size):
+    if not input_paths:
+        return encode_inputs(input_paths)
+    with Image.open(input_paths[0]) as source:
+        target = source.convert("RGB").resize(tuple(size), Image.Resampling.LANCZOS)
+    buf = io.BytesIO()
+    target.save(buf, "PNG")
+    buf.seek(0)
+    return encode_inputs([buf, *input_paths[1:]])
+
+
+def _is_overload(exc):
+    status = getattr(exc, "status", None)
+    return (status == 429 or isinstance(status, int) and 500 <= status < 600
+            or getattr(exc, "kind", None) in ("timeout", "connect") or getattr(exc, "_forge_overload", False))
+
+
+def _pressure_error(message, *, overloaded=True, **kwargs):
+    error = runner.CallError(message, **kwargs)
+    error._forge_overload = overloaded
+    return error
 
 
 def _read_record(path):
@@ -216,34 +354,54 @@ class ForgeBackend:
     name = "forge"
 
     def __init__(self, ctx: dict):
-        """ctx = runner.forge_context() — {"client", "token_of", "reject_token", "organization_id", "root", "stop", "options"}."""
+        """ctx = runner.forge_context() — {"client", "token_of", "reject_token", "organization_id", "account", "root", "stop", "options"}."""
         self._ctx = ctx
         self._root = ctx["root"]
         self._semaphore = None
         self._recoveries = {}
+        self._overload_failures = 0
+        self._overload_stopped = False
 
     def __repr__(self) -> str:
         return "ForgeBackend()"
 
     def check(self) -> None:
-        if not callable(self._ctx.get("token_of")) or not callable(self._ctx.get("reject_token")):
+        if (not callable(self._ctx.get("token_of")) or not callable(self._ctx.get("reject_token"))
+                or not isinstance(self._ctx.get("account"), str) or not self._ctx["account"].strip()):
             raise runner.CallError("Forge 연결 설정을 확인해 주세요.", phase="blocked", retryable=False, maybe_billed=False)
 
     async def request(self, job: dict, input_paths: list[str], call_id: str) -> dict:
         """→ {"data": [{"url": "forge-job:<job_id>/<slot>", "b64": None}…], "credits": None, "usage": None, "ctx": {…}}."""
         phase, sent = "blocked", False
         try:
+            self._check_overload()
+            self.check()
             why = blocked_reason(job)
-            if why or len(input_paths) > MAX_INPUTS:
-                raise runner.CallError(why or "입력 이미지는 16장까지 보낼 수 있습니다.", phase="blocked",
+            model = models.get(job.get("model"))
+            limit = model.max_inputs if model else MAX_INPUTS
+            if why or len(input_paths) > limit:
+                raise runner.CallError(why or f"입력 이미지는 {limit}장까지 보낼 수 있습니다.", phase="blocked",
                                        retryable=False, maybe_billed=False)
             phase = "request"
             if self._ctx["token_of"]() is None:
                 raise runner.CallError("Forge 로그인 정보를 다시 받아야 합니다.", status=401, maybe_billed=False)
             if self._semaphore is None:
-                self._semaphore = asyncio.Semaphore(max(1, int(self._ctx["options"]["concurrency"])))
+                self._semaphore = asyncio.Semaphore(models.job_slots(job["model"], self._ctx["options"]["concurrency"], job["n"]))
             async with self._semaphore:
                 self._stop()
+                self._check_overload()
+                catalog = await ensure_catalog((self._ctx["organization_id"], self._ctx["account"]), self._ctx["client"],
+                                               self._ctx["token_of"], self._ctx["reject_token"], max_age=CATALOG_TTL)
+                if catalog is None:
+                    raise _pressure_error(_CATALOG_UNREADABLE, phase="blocked", retryable=False, maybe_billed=False)
+                self._stop()
+                self._check_overload()
+                why = blocked_reason(job)
+                available, unavailable, limit = models.availability(job["model"], catalog)
+                why = why or (unavailable if not available else None)
+                if why or max(len(input_paths), len(job.get("inputs") or [])) > limit:
+                    raise runner.CallError(why or f"입력 이미지는 {limit}장까지 보낼 수 있습니다.", phase="blocked",
+                                           retryable=False, maybe_billed=False)
                 match = _CALL_ID.fullmatch(call_id)
                 if match is None:
                     raise runner.CallError("생성 호출 식별자가 잘못되었습니다.", phase="blocked",
@@ -262,7 +420,8 @@ class ForgeBackend:
                         side.pop(key, None)
                 self._save(ck, rep, side)
                 phase = "encode"
-                images = await asyncio.to_thread(encode_inputs, input_paths)
+                images = (await asyncio.to_thread(_encode_ideogram_inputs, input_paths, job["size"])
+                          if model.kind == "ideogram" else await asyncio.to_thread(encode_inputs, input_paths))
                 body = build_request(job, images, organization_id=self._ctx["organization_id"], request_id=last["id"],
                                      prompt_autopilot=self._ctx["options"]["prompt_autopilot"])
                 phase, sent = "request", True
@@ -284,10 +443,17 @@ class ForgeBackend:
                     raise side_error
                 result = await self._poll(job_id, call_id, _timestamp(last["time"]))
                 phase = "response"
-                self._result(ck, rep, side, result, job["prompt"], recovery=False)
+                self._result(ck, rep, side, result, job["prompt"], recovery=False, model=job["model"])
+                self._overload_failures = 0
                 return {"data": [{"url": f"{URL_SCHEME}{job_id}/{i}", "b64": None} for i in range(len(result["images"]))],
                         "credits": None, "usage": None, "ctx": {"job_id": job_id, "images": result["images"]}}
-        except (runner.CallError, *runner._interrupt_types()):
+        except runner._interrupt_types():
+            raise
+        except runner.CallError as exc:
+            if _is_overload(exc):
+                self._overload_failures += 1
+                if self._overload_failures >= 2:
+                    self._overload_stopped = True
             raise
         except BaseException:
             raise runner.CallError("Forge 생성 요청을 처리하지 못했습니다.", phase=phase,
@@ -335,6 +501,10 @@ class ForgeBackend:
         if self._ctx["stop"]():
             raise runner._make_interrupt()
 
+    def _check_overload(self):
+        if self._overload_stopped:
+            raise runner.CallError(_OVERLOADED, phase="blocked", retryable=True, maybe_billed=False)
+
     def _save(self, ck, rep, side):
         runner._write_json(runner._lpath(self._root, ck, rep, "forge"), side)
 
@@ -348,6 +518,7 @@ class ForgeBackend:
 
     async def _submit(self, body, ck, rep, side):
         response_lost = False
+        overloaded = False
         for attempt in range(3):
             self._stop()
             token = self._ctx["token_of"]()
@@ -363,6 +534,7 @@ class ForgeBackend:
             except runner._interrupt_types():
                 raise
             except ForgeError as exc:
+                overloaded = _is_overload(exc)
                 if exc.reason == "unauthorized" or exc.status == 401:
                     self._ctx["reject_token"](token)
                     if response_lost:
@@ -389,8 +561,8 @@ class ForgeBackend:
             response_lost = True
             if attempt < 2:
                 await asyncio.sleep(SUBMIT_RETRY_DELAY)
-        raise runner.CallError("Forge 생성 요청의 응답을 받지 못했습니다.", phase="request",
-                               retryable=True, maybe_billed=True)
+        raise _pressure_error("Forge 생성 요청의 응답을 받지 못했습니다.", overloaded=overloaded, phase="request",
+                              retryable=True, maybe_billed=True)
 
     async def _fresh_token(self, call_id, rejected=None):
         started = time.monotonic()
@@ -423,9 +595,9 @@ class ForgeBackend:
                     continue
                 if exc.status != 413:
                     expired = recovery and exc.status == 404 and submitted is not None and time.time() - submitted >= 3600
-                    raise runner.CallError("Forge 생성 결과를 조회하지 못했습니다.", status=exc.status,
-                                           phase="download" if recovery else "poll", retryable=not expired,
-                                           maybe_billed=True) from None
+                    raise _pressure_error("Forge 생성 결과를 조회하지 못했습니다.", overloaded=_is_overload(exc), status=exc.status,
+                                          phase="download" if recovery else "poll", retryable=not expired,
+                                          maybe_billed=True) from None
                 result = {}  # 크기 상한 초과는 다음 주기에 재조회한다(D425).
             if not isinstance(result, dict):
                 raise runner.CallError("Forge 생성 응답을 읽지 못했습니다.", phase="poll", retryable=True, maybe_billed=True)
@@ -438,12 +610,12 @@ class ForgeBackend:
             self._set_progress(call_id, queue={"position": position, "total": total} if type(position) is int else None)
             left = deadline - time.time()
             if left <= 0:
-                raise runner.CallError("Forge 생성 결과를 기다리는 시간이 지났습니다.", phase="poll",
-                                       retryable=True, maybe_billed=True)
+                raise _pressure_error("Forge 생성 결과를 기다리는 시간이 지났습니다.", phase="poll",
+                                      retryable=True, maybe_billed=True)
             interval = POLL_SLOW if time.monotonic() - started >= POLL_SLOW_AFTER else POLL_FAST
             await asyncio.sleep(min(interval, left))
 
-    def _result(self, ck, rep, side, result, prompt, *, recovery):
+    def _result(self, ck, rep, side, result, prompt, *, recovery, model=None):
         images = result.get("images")
         if result.get("status") == "failed" or not isinstance(images, list) or not images:
             if side["requests"]:
@@ -451,7 +623,13 @@ class ForgeBackend:
             self._save(ck, rep, side)
             runner._remove(runner._lpath(self._root, ck, rep, "resp"))
             user = result.get("status") == "failed" and result.get("error_category") == "user"
-            message = _safe_message(result.get("error_message"), "" if recovery else "Forge 생성 결과에 이미지가 없습니다.")
+            entry = models.get(model)
+            remote_message = result.get("error_message")
+            known_input = (result.get("status") == "failed" and entry is not None and isinstance(remote_message, str)
+                           and any(text in remote_message for text in _INPUT_ERRORS.get(entry.kind, ())))
+            user = user or known_input
+            message = (_INPUT_ERROR if known_input else
+                       _safe_message(remote_message, "" if recovery else "Forge 생성 결과에 이미지가 없습니다."))
             if recovery:
                 message = "원격 생성이 실패로 끝났습니다(자동 복구 대상 아님 — 실패 재시도로 다시 생성)" + (" — " + message if message else "")
             raise runner.CallError(message,
@@ -510,7 +688,7 @@ class ForgeBackend:
             call_id = runner.call_id_for(ck, rep)
             result = await self._poll(job_id, call_id, submitted, recovery=True)
             req = runner._read_json(runner._lpath(self._root, ck, rep, "req")) or {}
-            self._result(ck, rep, side, result, req.get("prompt"), recovery=True)
+            self._result(ck, rep, side, result, req.get("prompt"), recovery=True, model=req.get("model"))
             return result["images"]
         finally:
             if call_id is not None:
