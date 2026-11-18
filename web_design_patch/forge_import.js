@@ -45,7 +45,11 @@ window.DPForgeImport = (() => {
     } : { signal });
     let data;
     try { data = await response.json(); } catch (_) { throw new Error("응답을 읽지 못했습니다 — 다시 시도해 주세요."); }
-    if (!response.ok) throw new Error(data.error || "요청을 처리하지 못했습니다.");
+    if (!response.ok) {
+      const error = new Error(data.error || "요청을 처리하지 못했습니다.");
+      error.reason = data.reason;
+      throw error;
+    }
     return data;
   }
   let active = null;
@@ -301,7 +305,9 @@ window.DPForgeImport = (() => {
         if (data.more) status.textContent += " 더 있음 — 검색어를 좁히세요.";
       } catch (error) {
         if (alive() && seq === sequence && !request.signal.aborted && error.name !== "AbortError") {
-          status.textContent = error.message; offerRetry(() => load(append, refreshAssets));
+          status.textContent = error.message;
+          // 쪽 이음표가 오래됐으면(서버가 목록을 다시 읽었거나 30분이 지남) 같은 쪽을 다시 보내도 같은 실패다 — 첫 쪽부터 다시 읽는다.
+          offerRetry(append && error.reason === "forge_stale" ? () => reload() : () => load(append, refreshAssets));
         }
       } finally {
         if (listRequest === request) listRequest = null;
