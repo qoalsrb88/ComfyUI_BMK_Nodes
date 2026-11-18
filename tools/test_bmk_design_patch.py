@@ -64290,9 +64290,14 @@ def forge_import1_js_unit():
               "I1 480px에서 두 칸: " + name)
         sheet = re.search(r"\.dp-forge-sheet\s*\{([^}]+)\}", css).group(1)
         check(not re.search(r"\boverflow(?:-y)?\s*:\s*hidden\b", sheet), "FIX4 시트 세로 스크롤 허용: " + name)
-        check(re.search(r"grid-template-columns:\s*repeat\(auto-fill,\s*minmax\(max\(140px,\s*calc\(", grid) is not None,
+        check(re.search(r"grid-template-columns:\s*repeat\(auto-fill,\s*minmax\(max\(var\(--dp-forge-min,\s*140px\),\s*calc\(", grid) is not None,
               "FIX4 칸 수 자동 감소·140px 하한: " + name)
+        # 넓은 창(1000px 이상)에서만 하한을 낮춰 썸네일 크기 조절의 8칸이 그대로 나온다 — board.css 한 곳에서만 낮춘다.
+        lowered = re.findall(r"--dp-forge-min:\s*([0-9a-z]+)", css)
+        check(lowered == (["96px"] if name == "board.css" else []), "FIX4 넓은 창의 카드 폭 하한: " + name)
         if name == "board.css":
+            check(re.search(r"@media \(min-width: 1000px\) \{\s*\.dp-forge-grid \{ --dp-forge-min: 96px; \}\s*\}", css) is not None,
+                  "FIX4 하한을 낮추는 것은 1000px 이상에서만")
             check(re.search(r"\bmin-height:\s*160px\b", grid) is not None, "FIX4 격자 최소 높이 160px")
             check(re.search(r"\bgrid-auto-rows:\s*max-content\b", grid) is not None, "FIX4 격자 줄 높이 유지")
         else:

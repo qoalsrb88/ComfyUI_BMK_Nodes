@@ -70,7 +70,7 @@ body.server #top .dp-off { display: none !important; }
 .dp-forge .lp-btns button { padding: 8px 16px; min-height: 36px; border-color: transparent; color: var(--dim); }
 .dp-forge .lp-btns button[aria-pressed='true'] { background: var(--accent-soft); border-color: transparent; color: var(--accent); }
 .dp-forge-search { min-height: 40px; }
-.dp-forge-grid { --dp-forge-gap: 16px; grid-template-columns: repeat(auto-fill, minmax(max(140px, calc((100% - (var(--dp-forge-columns, 4) - 1) * var(--dp-forge-gap)) / var(--dp-forge-columns, 4))), 1fr)); gap: var(--dp-forge-gap); padding: 4px; }
+.dp-forge-grid { --dp-forge-gap: 16px; grid-template-columns: repeat(auto-fill, minmax(max(var(--dp-forge-min, 140px), calc((100% - (var(--dp-forge-columns, 4) - 1) * var(--dp-forge-gap)) / var(--dp-forge-columns, 4))), 1fr)); gap: var(--dp-forge-gap); padding: 4px; }
 .dp-forge-item { background: var(--panel); border: 1px solid var(--line); border-radius: 0; padding: 12px; gap: 8px; font-weight: 400; }
 .dp-forge-item:hover:not(:disabled) { border-color: var(--accent); background: var(--panel); }
 .dp-forge-label { font-size: 13px; line-height: 1.5; }
