@@ -1375,9 +1375,11 @@
     for (const x of t.cells) if (x.rerolls_pending) work.append(cancelButton("cell", { cell_key: x.cell_key },
       t.cells.length > 1 ? `${x.variant || ""} 대기 취소` : "대기 취소"));
     if (crop && crop.calls) {
-      row(d, SM() ? "호출" : "비용", SM() ? `이 크롭 호출 ${crop.calls}(완료 ${crop.calls_done}) · 대기 ${crop.pending || 0}`
+      const took = tookSummary(crop.took);
+      const r = row(d, SM() ? "호출" : "비용", (SM() ? `이 크롭 호출 ${crop.calls}(완료 ${crop.calls_done}) · 대기 ${crop.pending || 0}`
         : `이 크롭 Run ${credits(crop.credits, crop.credits_unknown)} · 호출 ${crop.calls}(완료 ${crop.calls_done})`
-          + (crop.pending ? ` · 대기 ${crop.pending}` : ""));
+          + (crop.pending ? ` · 대기 ${crop.pending}` : "")) + (took.text ? ` · 소요 ${took.text}` : ""));
+      if (took.title) r.title = took.title;
     }
     if (crop && crop.dup_picks.length) {
       const names = crop.dup_picks.map((x) => `${x.tid}(= ${x.same_as})`).join(", ");
@@ -1394,7 +1396,7 @@
     const src = [c.origin, c.backend, c.variant, c.rep !== null && c.rep !== undefined ? `r${c.rep}` : null]
       .filter((x) => x !== null && x !== undefined && x !== "").join(" · ");
     row(d, `c${pad(c.n)}`, `${c.label} · ${src}` + (c.src_size ? ` · ${c.src_size[0]}×${c.src_size[1]}` : "")
-      + (ranText(c) ? ` · ${ranText(c)} 완료` : ""));
+      + (ranText(c) ? ` · ${ranText(c)} 완료` + (tookText(c.took) ? ` · ${tookText(c.took)}` : "") : ""));
     if (c.joint && c.joint.first && c.joint.first !== t.tid) {
       const r = row(d, "공동", `${c.joint.tids.join("·")} 를 한 번에 고친 결과 — ★ 는 ${c.joint.first} 에만 `, "warn");
       if (c.joint.first_key) rowButton(r, `${c.joint.first} 에 ★`, starOnFirst);
@@ -1427,6 +1429,25 @@
     if (!c.done) return "";
     const m = /^\d{4}-(\d\d)-(\d\d) (\d\d:\d\d)/.exec(c.done);
     return (m ? `${m[1]}/${m[2]} ${m[3]}` : c.done) + (VIA[c.via] ? ` ${VIA[c.via]}` : "");
+  }
+
+  function tookText(sec) {
+    // 호출 소요 시간(초 — state 의 took = 원장 calls elapsed_s) → "4.2초"·"42초"·"1분 5초"·"1시간 2분". 값이 없으면(옛 호출) ""
+    if (typeof sec !== "number" || !Number.isFinite(sec) || sec < 0) return "";
+    if (sec < 9.95) return `${Math.round(sec * 10) / 10}초`;
+    const s = Math.round(sec);
+    if (s < 60) return `${s}초`;
+    const m = Math.floor(s / 60);
+    if (m < 60) return `${m}분` + (s % 60 ? ` ${s % 60}초` : "");
+    return `${Math.floor(m / 60)}시간` + (m % 60 ? ` ${m % 60}분` : "");
+  }
+
+  function tookSummary(k) {
+    // 크롭의 끝난 호출 소요 시간 요약(state crops[].took {n, avg, max, last}) → {text, title}. 한 건이면 그 값, 여러 건이면 평균·최장
+    if (!k || !(k.n > 0) || !tookText(k.avg)) return { text: "", title: "" };
+    const text = k.n === 1 ? tookText(k.last) || tookText(k.avg) : `평균 ${tookText(k.avg)} · 최장 ${tookText(k.max)}`;
+    const last = k.n > 1 && tookText(k.last) ? ` · 가장 최근 ${tookText(k.last)}` : "";
+    return { text, title: `호출 소요 시간 — 끝난 호출 ${k.n}건${last} (요청을 보낸 때부터 결과 그림을 저장할 때까지)` };
   }
 
   function oldCell(c) {
@@ -1476,7 +1497,7 @@
         .filter(Boolean).join(" · ");
       // 원장 호출의 후보는 레이어명(셀 키) 대신 완료 시각·종류 — 레이어명은 제목·상세 줄에
       const cap = el("div", "cap", `c${pad(c.n)} · ${meta} · ${ranText(c) || c.label}`);
-      cap.title = [c.label, ranText(c) && `${ranText(c)} 완료`].filter(Boolean).join(" · ");
+      cap.title = [c.label, ranText(c) && `${ranText(c)} 완료`, ranText(c) && tookText(c.took)].filter(Boolean).join(" · ");
       promptWarning(cap, c);
       tile.append(cap);
       tile.addEventListener("click", () => selectCand(c.key));
@@ -2255,7 +2276,7 @@
         pipe.tabChanged();
       });
       pipe = window.DPPipeline.create({ list: $("pipe-list"), panel: $("pipe-panel"), head: $("pipe-head") }, {
-        apiUrl, comfyUrl, root: ROOT, toast, drain, goTarget, goMask, goGrow, link: tabLink, cancelRerolls,
+        apiUrl, comfyUrl, root: ROOT, toast, drain, goTarget, goMask, goGrow, link: tabLink, cancelRerolls, tookSummary,
         newProject: newNotes !== null, newNotes,
         goMode: async (mode, cropId) => {
           const t = S && cropId ? S.targets.find((x) => x.crop_id === cropId) : null;
