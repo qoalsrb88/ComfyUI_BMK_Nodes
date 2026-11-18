@@ -39543,7 +39543,7 @@ await scenario("renderWiring", async () => {
     setTimeout: (fn) => timers.push(fn), pipeReady: () => true, syncViewer() {}, preloadAround() {}, usd: () => "", credits: () => "", rowButton() {},
     pipe: { enter() {}, leave() {}, select() {} }, chipsLog: [] });
   vm.runInContext(["VIA", "SEEN_KEY"].map(boardConst).join("\n") + ";\n" + ["curTarget", "curCand", "cropOf", "defaultCand", "reconcile", "selectTarget", "selectCand",
-    "syncSeen", "saveSeen", "markSeen", "seeCurrent", "isNew", "ranText", "oldCell", "tookText", "tookSummary", "tookRow", "tileBadges", "targetChips", "promptWarning", "renderGrid", "renderCompare", "renderDetail",
+    "syncSeen", "saveSeen", "markSeen", "seeCurrent", "isNew", "ranText", "oldCell", "tookText", "tookSummary", "tookRow", "tileBadges", "targetChips", "promptWarning", "candidateModel", "renderGrid", "renderCompare", "renderDetail",
     "row", "pad", "targetTitle", "setPipe"].map((n) => `${n} = ${boardFn(n)};`).join("\n")
     + "\nrenderTargets = () => { chipsLog = S.targets.map((t) => { const ch = []; targetChips({ append: (...x) => ch.push(...x) }, t); return ch.map((x) => x.textContent); }); };"
     + "\nrenderAll = () => { renderTargets(); renderCompare(); renderDetail(); renderGrid(); };", c);
@@ -49846,6 +49846,11 @@ def forge_f2_session_unit():
             expected_env = copy.deepcopy(api["env_server_forge"]["response"])
             expected_env["account"]["tag"] = tag
             expected_env["parent_origins"] = list(base.parent_origins)
+            env_models = value["caps"].pop("models", None)  # 2단계: Forge 연결이 있는 서버의 env 에만 실린다(내용은 forge_models_backend_unit)
+            value["caps"].pop("models_error", None)
+            check(isinstance(env_models, list) and [row.get("name") for row in env_models]
+                  == list(json.loads((PKG / "tools" / "fixtures" / "forge_api.json").read_text(encoding="utf-8"))["models"]["names"]),
+                  "F2S Forge env 의 caps.models = 모델 표의 이름 순서")
             check(value == expected_env, "S2 F2S C 라우트가 있으면 Forge env fixture·caps true")
             before = len(calls)
             for _ in range(3):
@@ -54507,7 +54512,7 @@ await scenario("F3U1 D350–351 머리 단추·기억값",async()=>{
     row:(parent,key,text)=>{const x=doc.createElement("div");x.textContent=key+": "+text;parent.append(x);return x;}});
   for(const name of ["renderDetail","renderGrid"]) vm.runInContext(boardSrc.match(new RegExp(`\\n  function ${name}\\(\\) \\{[\\s\\S]*?\\n  \\}`))[0],bctx);
   vm.runInContext(boardSrc.match(/\n  function tookRow\(d, crop, c\) \{[\s\S]*?\n  \}/)[0],bctx);
-  for(const name of ["tookText","tookSummary","ranText","oldCell"]) vm.runInContext(boardSrc.match(new RegExp(`\\n  function ${name}\\(\\w+\\) \\{[\\s\\S]*?\\n  \\}`))[0],bctx);
+  for(const name of ["tookText","tookSummary","ranText","oldCell","candidateModel"]) vm.runInContext(boardSrc.match(new RegExp(`\\n  function ${name}\\(\\w+\\) \\{[\\s\\S]*?\\n  \\}`))[0],bctx);
   vm.runInContext("renderDetail(); renderGrid()",bctx);
   r.detail=!illegal.test($("detail").textContent)&&$("detail").textContent.includes("호출: 이 크롭 호출 2(완료 1) · 대기 1");
   r.emptyGrid=$("grid").firstElementChild.classList.contains("dp-empty")&&$("grid").textContent==="후보 없음 — 대기 호출 2(끝나면 여기에 나옵니다)";
@@ -55304,6 +55309,9 @@ def batch10a_unit():
     script = "const assert=require('node:assert/strict'); const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);\n"
     script += "\n".join(_fw_legacy_js(_layout_js_fn(js, name, "    ") + "\n}") for name in ("prepareChanged", "prepareText", "hiddenPath"))
     script += "\n" + _layout_js_fn(js, "typed", "    ") + "\n}"
+    # 2단계(모델 고르기): 저장·전환·문구가 부르는 모델 보조 함수(모듈 머리 — 로컬판에서는 목록이 없어 값을 그대로 돌려준다)
+    script += "\n" + "\n".join(_fw_legacy_js(_layout_js_fn(js, name, "  ") + "\n}")
+                               for name in ("modelCatalog", "modelInfo", "modelLabel", "modelText", "modelSettings"))
     for name in ("preparePreview", "switchModel", "saveSection"):
         start = js.index(f"    async function {name}(")
         script += "\n" + _fw_legacy_js(js[start:js.index("\n    }\n", start)] + "\n}")
@@ -57957,12 +57965,13 @@ def forge_f2_backend_unit():
             return error if error is not None else png
 
     def context(root, client, *, tokens=None, stop=lambda: False, limit=2):
+        client._json = AsyncMock(return_value=fixture["models"]["catalog"]["response"])
         tokens = tokens if tokens is not None else {"value": secret}
         def reject(value):
             tokens.setdefault("rejected", []).append(value)
             if tokens.get("value") == value:
                 tokens["value"] = tokens.get("refresh")
-        return {"root": root, "client": client, "token_of": lambda: tokens.get("value"), "reject_token": reject,
+        return {"account": "fixture", "root": root, "client": client, "token_of": lambda: tokens.get("value"), "reject_token": reject,
                 "organization_id": "org1", "stop": stop, "options": {"prompt_autopilot": False, "concurrency": limit}}
 
     def plan(root, **kw):
@@ -61156,6 +61165,1966 @@ async def _fs_scoped_roots(bd, out, call, login, sessions):
                   "FS26 T1 로컬 _root_param 은 기존 전역 조회 결과·호출 그대로")
 
 
+def forge_models_unit():
+    """Forge 2단계 공용 — 모델 표(bmk_design_patch_models)·생성 조건 키의 선택 재료 opts·응답 정본의 모델 절. 명세
+    _proto/STUDIO_FORGE_MODELS_SPEC.md §3.1–§3.3. --quick 포함."""
+    section("Forge 모델 표 — forge_models_unit")
+    import bmk_design_patch_models as dpm
+    import bmk_design_patch_pipeline as dpl
+    from unittest.mock import patch
+
+    fixture = json.loads((PKG / "tools" / "fixtures" / "forge_api.json").read_text(encoding="utf-8"))
+    # ── 생성 조건 키: GPT 는 opts 인자가 생기기 전과 바이트가 같다(2026-11-18 d863244 에서 뽑은 고정값) ──
+    args = dict(prompt="dp-prompt/1 test 프롬프트 @image1", input_shas=["AA" * 32, "bb" * 32],
+                template_version="dp-prompt/1", variant="V1")
+    pinned = (("gpt-image-2.5-sunburst", "max", [2048, 2048], "auto", {}, "3762d0072ac7e2f1d21f1c0e"),
+              ("gpt-image-2.5-flare", "high", "1536x1024", None, {}, "bbb15e152ebe29640536365d"),
+              ("gpt-image-2.6-sunburst", "max", (2048, 1152), "auto", {"complexity": "high"}, "05c1893ff8215d67b230ec6f"),
+              ("gpt-image-2.6-flare", "low", [1024, 1024], "opaque", {"complexity": "low"}, "33cb414d1f56ac2a983dd2c4"))
+    for model, quality, size, background, extra, want_key in pinned:
+        for label, opts in (("opts 없음", {}), ("opts=None", {"opts": None}), ("opts={}", {"opts": {}})):
+            got = store.cell_key(model, quality, size, background, **args, **extra, **opts)
+            check(got == want_key, f"FM1 GPT 생성 조건 키 불변 — {model} {label}: {got} != {want_key}")
+    check(store.CELL_KEY_VERSION == "dp-cell/1", "FM1 키 형식 버전 그대로")
+    base = store.cell_key("ideogram-4.5", "high", [2048, 1536], None, **args)
+    with_opts = store.cell_key("ideogram-4.5", "high", [2048, 1536], None, **args, opts={"b": "x", "a": 1})
+    check(with_opts != base and with_opts == store.cell_key("ideogram-4.5", "high", [2048, 1536], None, **args, opts={"a": 1, "b": "x"}),
+          "FM2 opts 는 값이 있을 때만 키를 바꾸고 이름 순서와 무관")
+    check(with_opts != store.cell_key("ideogram-4.5", "high", [2048, 1536], None, **args, opts={"a": 2, "b": "x"}),
+          "FM2 opts 값이 다르면 다른 키")
+    check(len({store.cell_key(name, "high", [2048, 1536], None, **args) for name in ("seedream-5.5", "ideogram-4.5")}
+              | {store.cell_key("gpt-image-2.5-sunburst", "high", [2048, 1536], None, **args)}) == 3, "FM2 모델이 다르면 다른 키")
+    for bad in ([("a", 1)], "a=1", {"": 1}, {"a": 1.5}, {"a": None}, {"a": [1]}, {1: "a"}):
+        expect_raises(lambda bad=bad: store.cell_key("ideogram-4.5", "high", [2048, 1536], None, **args, opts=bad),
+                      f"FM2 잘못된 opts 거절 {bad!r}")
+
+    # ── 모델 표 ↔ 정본 ──
+    spec = fixture["models"]
+    check({name: m.checkpoint for name, m in dpm.MODELS.items()} == spec["names"], "FM3 이름 → 서버 id 가 정본과 같음")
+    check(dpm.LOCAL_MODELS == tuple(dpl._MODELS) and dpm.names(False) == tuple(dpl._MODELS),
+          "FM3 로컬판 선택지 = 지금의 넷(순서 포함)")
+    check(dpm.names(True)[:4] == tuple(dpl._MODELS) and set(dpm.names(True)[4:]) == set(dpm.FORGE_ONLY) == {"seedream-5.5", "ideogram-4.5"},
+          "FM3 서버 모드 선택지 = 넷 + 서버 전용 둘")
+    check({name: fixture["generate"]["checkpoints"][name] for name in fixture["generate"]["checkpoints"]}
+          == {name: m.checkpoint for name, m in dpm.MODELS.items() if m.kind == "gpt"}, "FM3 GPT 매핑은 F2 정본 그대로")
+    for name in dpm.FORGE_ONLY:
+        m, lim = dpm.get(name), spec["limits"][name]
+        check((m.max_inputs, m.max_n, m.fan_out, list(m.qualities), list(m.area))
+              == (lim["max_inputs"], lim["max_n"], lim["fan_out"], lim["qualities"], lim["area"]), f"FM3 한도가 정본과 같음 {name}")
+        check(spec["requests"][name]["request"]["checkpoint"] == m.checkpoint, f"FM3 요청 예시의 checkpoint {name}")
+    gpt = spec["limits"]["gpt"]
+    check(all((m.max_inputs, m.max_n, m.fan_out, list(m.qualities)) == (gpt["max_inputs"], gpt["max_n"], gpt["fan_out"], gpt["qualities"])
+              for m in dpm.MODELS.values() if m.kind == "gpt"), "FM3 GPT 한도가 정본과 같음")
+    check(list(dpm.GPT_QUALITIES) == list(dpl._QUALITIES) and dpm.SIZE_RULES == tuple(store.GPT_SIZE_RULES),
+          "FM3 품질·크기 규칙 이름이 기존 표와 같음")
+
+    # ── 품질·옵션 ──
+    check(dpm.job_quality("gpt-image-2.6-sunburst", "max") == "max" and dpm.job_quality("gpt-image-2.5-flare", "low") == "low"
+          and dpm.job_quality("없는모델", "max") == "max", "FM4 GPT·모르는 모델의 품질은 받은 값 그대로")
+    check(dpm.job_quality("seedream-5.5", "max") == dpm.FIXED_QUALITY == "standard" and dpm.job_quality("ideogram-4.5", "medium") == "medium",
+          "FM4 품질 없는 모델은 고정값, Ideogram 은 고른 값")
+    check(dpm.quality_problem("ideogram-4.5", "max") and dpm.quality_problem("ideogram-4.5", "high") is None
+          and dpm.quality_problem("seedream-5.5", "max") is None and dpm.quality_problem("gpt-image-2.6-flare", "xhigh") is None
+          and dpm.quality_problem("gpt-image-2.6-flare", "ultra") and dpm.quality_problem("없는모델", "max"), "FM4 모델별 품질 검사")
+    check(all(dpm.job_opts(name, {"x": 1}) is None for name in dpm.MODELS), "FM4 옵션 없는 모델의 opts 는 None(키에 더하지 않음)")
+
+    # ── 크기 식 ──
+    for name in dpm.FORGE_ONLY:
+        m = dpm.get(name)
+        lo, hi = m.area
+        for w, h in ((512, 512), (100, 100), (640, 480), (123, 457), (1920, 1080), (3000, 2000), (4000, 250), (250, 4000),
+                     (33, 35), (5000, 5000), (1024, 768), (853, 1280), (6000, 400), (17, 200)):
+            for rule in dpm.SIZE_RULES:
+                W, H, info = dpm.output_size(name, w, h, rule)
+                inside = m.max_ratio is None or max(w, h) <= m.max_ratio * min(w, h)
+                check(W % 2 == 0 and H % 2 == 0 and info["pixels"] == W * H and info["rule"] == rule and info["src"] == [w, h]
+                      and info["model"] == name, f"FM5 크기 꼴 {name} {w}x{h} {rule} → {W}x{H}")
+                if inside:
+                    check(lo <= W * H <= hi and min(W, H) >= m.min_side and "problem" not in info
+                          and dpm.size_problem(name, [W, H]) is None, f"FM5 한도 안 크롭은 창 안 {name} {w}x{h} {rule} → {W}x{H}")
+                    if min(w, h) >= 64:
+                        check(abs(info["aspect_err"]) <= 0.005, f"FM5 비율 유지 {name} {w}x{h} {rule} → {W}x{H} {info['aspect_err']}")
+    check(dpm.output_size("seedream-5.5", 1024, 768)[:2] == (2048, 1536) and dpm.output_size("seedream-5.5", 1024, 768)[2]["method"] == "k"
+          and dpm.output_size("ideogram-4.5", 512, 512)[:2] == (2048, 2048), "FM5 기준 배율이 정수로 떨어지면 그대로")
+    W, H, info = dpm.output_size("ideogram-4.5", 2056, 8)
+    check(abs(info["aspect_err"]) <= 0.01 and "problem" not in info and W * H <= 4_194_304, f"FM5 아주 가는 크롭도 비율 오차 1% 안 {W}x{H} {info['aspect_err']}")
+    W, H, info = dpm.output_size("ideogram-4.5", 3000, 1)
+    check(W % 2 == 0 and H % 2 == 0 and (abs(info["aspect_err"]) <= 0.01 or "가늘어" in info.get("problem", "")), f"FM5 비율을 지킬 수 없으면 problem 으로 알림 {W}x{H}")
+    W, H, info = dpm.output_size("seedream-5.5", 64, 2000)
+    check("problem" in info and "1:16" in info["problem"] and dpm.size_problem("seedream-5.5", [W, H]) == info["problem"],
+          "FM5 비율 한도 밖 크롭은 problem 을 싣고 size_problem 이 같은 말을 함")
+    check(dpm.size_problem("seedream-5.5", [958, 960]) and dpm.size_problem("seedream-5.5", [960, 960]) is None
+          and dpm.size_problem("seedream-5.5", [2150, 2150]) is None and dpm.size_problem("seedream-5.5", [2152, 2150])
+          and dpm.size_problem("seedream-5.5", [8192, 510]) and dpm.size_problem("seedream-5.5", [8192, 512]) is None
+          and dpm.size_problem("seedream-5.5", [8194, 512]), "FM5 Seedream 창 경계(921,600–4,624,220 · 1:16 · 짧은 변 512)")
+    check(dpm.size_problem("ideogram-4.5", [2048, 2048]) is None and dpm.size_problem("ideogram-4.5", [2050, 2048])
+          and dpm.size_problem("ideogram-4.5", [8192, 512]) is None, "FM5 Ideogram 창 경계(4,194,304 이하)")
+    check(dpm.size_problem("gpt-image-2.6-sunburst", [1, 1]) is None and dpm.size_problem("seedream-5.5", "2048x1536")
+          and dpm.size_problem("seedream-5.5", [2048.0, 1536]) and dpm.size_problem("seedream-5.5", None), "FM5 GPT 는 보지 않고 잘못된 기록은 막음")
+    expect_raises(lambda: dpm.output_size("gpt-image-2.6-sunburst", 512, 512), "FM5 GPT 크기는 여기서 정하지 않음")
+    expect_raises(lambda: dpm.output_size("seedream-5.5", 512, 512, "nope"), "FM5 모르는 크기 규칙 거절")
+    expect_raises(lambda: dpm.output_size("seedream-5.5", 0, 512), "FM5 잘못된 크롭 크기 거절")
+
+    # ── 응답 판정·부하·카탈로그 ──
+    check(not dpm.ratio_off([2048, 1536], [2048, 1536]) and not dpm.ratio_off([2048, 1536], [1024, 768])
+          and not dpm.ratio_off([2048, 1536], [2048, 1522]) and dpm.ratio_off([2048, 1536], [2048, 1500])
+          and dpm.ratio_off([2048, 1536], [1536, 2048]) and not dpm.ratio_off(None, [1, 1]) and not dpm.ratio_off([2048, 1536], None)
+          and not dpm.ratio_off([0, 1], [1, 1]), "FM6 비율 다름 = 1% 넘게, 모르면 아님")
+    check([dpm.job_slots("seedream-5.5", 2, n) for n in (1, 2, 4, 5, 8, 10)] == [2, 2, 2, 1, 1, 1]
+          and [dpm.job_slots("seedream-5.5", 8, n) for n in (1, 2, 3, 4)] == [8, 4, 2, 2]
+          and [dpm.job_slots(name, 8, 10) for name in ("ideogram-4.5", "gpt-image-2.6-sunburst", "없는모델")] == [8, 8, 8]
+          and dpm.job_slots("seedream-5.5", 0, 1) == 1, "FM6 장마다 따로 부르는 모델만 잡 수 × 장 수 ≤ 8")
+    check(all(m.max_n <= dpm.PROVIDER_CALL_LIMIT and all(dpm.job_slots(m.name, c, n) * n <= dpm.PROVIDER_CALL_LIMIT
+                                                           for c in range(1, 9) for n in range(1, m.max_n + 1))
+              for m in dpm.MODELS.values() if m.fan_out) and dpm.get("seedream-5.5").max_n == 8,
+          "FM6 장마다 따로 부르는 모델은 고를 수 있는 어떤 장 수·동시 수에서도 잡 수 × 장 수 ≤ 8(장 수 상한 = 8)")
+    with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1"}):
+        base_prepare = dict(dpl.defaults()["prepare"], model="seedream-5.5") if hasattr(dpl, "defaults") else None
+        if base_prepare is None:
+            base_prepare = {k: dpl._spec("prepare", k)["default"] for k in dpl.section_keys("prepare")}
+            base_prepare["model"] = "seedream-5.5"
+        check(dpl.validate_section("prepare", dict(base_prepare, n=8))["n"] == 8, "FM6 Seedream 8장은 저장됨")
+        expect_raises(lambda: dpl.validate_section("prepare", dict(base_prepare, n=9)), "FM6 Seedream 9장은 저장 거절", contains="8장")
+        expect_raises(lambda: dpl.validate_section("prepare", dict(base_prepare, model="ideogram-4.5", quality="high", n=9)),
+                      "FM6 Ideogram 9장은 저장 거절", contains="8장")
+        check(dpl.validate_section("prepare", dict(base_prepare, model="gpt-image-2.6-sunburst", n=10))["n"] == 10, "FM6 GPT 10장은 그대로 저장됨")
+    catalog = {row.get("checkpoint") or row.get("id"): row.get("max_input_images") for row in spec["catalog"]["response"]["models"]}
+    check(all(dpm.availability(name, catalog)[:2] == (True, None) for name in dpm.MODELS), "FM7 정본 목록에서는 표의 모델이 모두 살아 있음")
+    check(dpm.availability("seedream-5.5", dict(catalog, seedream_5_5=4))[2] == 4 and dpm.availability("seedream-5.5", dict(catalog, seedream_5_5=99))[2] == 10
+          and dpm.availability("seedream-5.5", dict(catalog, seedream_5_5=None))[2] == 10, "FM7 입력 상한 = 표와 목록 가운데 작은 값")
+    gone = {key: value for key, value in catalog.items() if key != "seedream_5_5"}
+    ok, why, limit = dpm.availability("seedream-5.5", gone)
+    check(ok is False and "Forge 에 없습니다" in why and limit is None and dpm.availability("ideogram-4.5", gone)[0] is True,
+          "FM7 목록에서 빠진 모델만 쓸 수 없음")
+    check(dpm.availability("seedream-5.5", None)[0] is False and "읽지 못했습니다" in dpm.availability("seedream-5.5", None)[1]
+          and dpm.availability("없는모델", catalog)[0] is False, "FM7 목록을 못 읽었거나 표에 없으면 쓸 수 없음")
+    row = dpm.describe("ideogram-4.5", catalog, checked=True)
+    check(row == {"name": "ideogram-4.5", "label": "Ideogram 4.5", "kind": "ideogram", "available": True, "why": None,
+                  "qualities": ["low", "medium", "high"], "default_quality": "high", "opts": {}, "max_inputs": 5, "max_n": 8,
+                  "fan_out": False}, f"FM7 화면용 모델 한 줄 {row}")
+    row = dpm.describe("seedream-5.5", gone, checked=True)
+    check(row["available"] is False and row["why"] and row["qualities"] == [] and row["default_quality"] is None and row["fan_out"] is True
+          and dpm.describe("seedream-5.5")["available"] is True, "FM7 빠진 모델은 이유와 함께, 대조 전에는 참")
+    text = (PKG / "bmk_design_patch_models.py").read_text(encoding="utf-8")
+    check(not re.search(r"^\s*(?:from|import)\s+(?!__future__|math\b|dataclasses\b|fractions\b)", text, re.M),
+          "FM8 모델 표 모듈은 표준 라이브러리(math·dataclasses·fractions)만 쓴다")
+
+
+def forge_models_backend_unit():
+    """Forge 2단계 서버 갈래 — 모델별 요청 조립·제출 전 차단·카탈로그 기억·응답 판정·부하 수칙·설정 검증·env 의 caps.models.
+    명세 _proto/STUDIO_FORGE_MODELS_SPEC.md §2–§4. --quick 포함."""
+    section("Forge 모델 서버 — forge_models_backend_unit")
+    import concurrent.futures
+    import logging
+    from tempfile import mkdtemp
+    from unittest.mock import AsyncMock, patch
+    from aiohttp.test_utils import make_mocked_request
+    import bmk_design_patch_models as models
+    import bmk_design_patch_forge_backend as fb
+    import bmk_design_patch_forge as fg
+    import bmk_design_patch_runner as rn
+    import bmk_design_patch_jobs as jb
+    import bmk_design_patch_board as bd
+    import bmk_design_patch_pipeline as pl
+    import bmk_design_patch_server as srv
+
+    fixture = json.loads((PKG / "tools/fixtures/forge_api.json").read_text(encoding="utf-8"))
+    contract = fixture["models"]
+    catalog = fb.parse_catalog(contract["catalog"]["response"])
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    out = Path(mkdtemp(prefix="models_backend_", dir=OUT_ROOT.resolve()))
+    secret, org = "synthetic-model-token", "synthetic-model-organization"
+    key = (org, "models-account")
+    media = "https://forge.example/models/"
+    png_buffer = io.BytesIO()
+    Image.new("RGB", (32, 24), (255, 0, 0)).save(png_buffer, "PNG")
+    png = png_buffer.getvalue()
+    messages = []
+
+    def normalize(value):
+        value = copy.deepcopy(value)
+        result = value.pop("result_data", None) or {}
+        value.update(images=[u.replace("{MEDIA}/", media) for u in result.get("images", [])],
+                     result_ids=result.get("result_ids", []), metadata=result.get("result_metadata", []))
+        return value
+
+    class Client:
+        def __init__(self, result=None):
+            self.catalog = copy.deepcopy(contract["catalog"]["response"])
+            self.result = result or fixture["job"]["completed"]
+            self.reads, self.submissions, self.polls = [], [], []
+            self.submit_error = None
+
+        async def _json(self, method, path, token, *, call):
+            self.reads.append((method, path, call))
+            if isinstance(self.catalog, BaseException):
+                raise self.catalog
+            return copy.deepcopy(self.catalog)
+
+        async def submit(self, token, body):
+            self.submissions.append(copy.deepcopy(body))
+            if self.submit_error:
+                raise self.submit_error
+            return {"job_id": "model-job-" + str(len(self.submissions))}
+
+        async def job(self, token, job_id):
+            self.polls.append(job_id)
+            if isinstance(self.result, BaseException):
+                raise self.result
+            return normalize(self.result)
+
+        async def fetch_media(self, url, limit):
+            return png
+
+    def context(root, client, *, account=key[1], concurrency=4):
+        return {"client": client, "token_of": lambda: secret, "reject_token": lambda token: None,
+                "organization_id": org, "account": account, "root": root, "stop": lambda: False,
+                "options": {"concurrency": concurrency, "prompt_autopilot": False}}
+
+    @contextlib.contextmanager
+    def active(ctx):
+        token = rn.set_forge(ctx)
+        try:
+            yield
+        finally:
+            rn.reset_forge(token)
+
+    def remember(value=catalog, *, age=0, account_key=key):
+        fb.forget_catalog(account_key)
+        with fb._CATALOG_LOCK:
+            fb._CATALOG[account_key] = (time.monotonic() - age, copy.deepcopy(value))
+
+    def project(name="seedream-5.5", *, n=2, reps=1):
+        root = store.project_root(str(out / str(len(list(out.iterdir())))), "proj")
+        os.makedirs(root)
+        manifest = store.new_manifest("proj")
+        inputs = []
+        for color in ((255, 0, 0), (0, 255, 0)):
+            arr = np.full((24, 32, 3), color, dtype=np.uint8)
+            rel = store.save_png_ca(root, "inputs", arr)
+            inputs.append({"role": "canvas" if not inputs else "ref", "file": rel, "sha": store.pixel_sha(arr)})
+        manifest["crops"].append({"id": "001_000000", "name": "001_part", "nnn": "001", "part": "part", "rect": [0, 0, 32, 24],
+                                 "rect_source": "vector", "source": inputs[0]["file"], "source_kind": "base_crop", "alpha_frac": 0.0,
+                                 "targets": [{"tid": "A", "label": "part", "name_en": "", "mode": "ref_correct", "refs": []}],
+                                 "refs_auto": [], "warnings": []})
+        model = models.get(name)
+        job = {"model": name, "quality": model.default_quality, "size": [2048, 1536], "background": "auto",
+               "prompt": contract["requests"]["seedream-5.5"]["request"]["prompt"], "inputs": inputs, "n": n, "reps": reps,
+               "crop_id": "001_000000", "tid": "A", "variant": "V1_standard", "template_version": "dp-prompt/1"}
+        if name in store.COMPLEXITY_MODELS:
+            job["complexity"] = "medium"
+        job["cell_key"] = store.cell_key(job["model"], job["quality"], job["size"], job["background"], job["prompt"],
+                                          [item["sha"] for item in inputs], job["template_version"], job["variant"],
+                                          complexity=job.get("complexity"))
+        manifest["jobs"].append(job)
+        store.save_manifest(root, manifest)
+        return root, job, [store.resolve_path(root, item["file"]) for item in inputs]
+
+    async def run_plan(root, be, **kwargs):
+        plan = rn.plan_calls(store.load_manifest(root), root)
+        approval = rn.split_approval(plan, backend="forge")
+        calls = rn.split_approval(plan, approval["pending_hash"], backend="forge")["to_run"]
+        return await rn.run_calls(root, calls, be, **kwargs)
+
+    async def rejected(be, job, paths, *, phrase=None):
+        try:
+            await be.request(job, paths, rn.call_id_for(job["cell_key"], 0))
+        except rn.CallError as exc:
+            messages.append(str(exc))
+            check(exc.phase == "blocked" and not exc.maybe_billed and (phrase is None or phrase in str(exc)),
+                  "FMB 제출 전 거부·과금 없음 " + (phrase or ""))
+            return exc
+        check(False, "FMB 제출 전 거부가 필요함")
+
+    async def catalog_cases():
+        fb.forget_catalog()
+        client, rejected_tokens = Client(), []
+        args = (key, client, lambda: secret, rejected_tokens.append)
+        check(await fb.ensure_catalog(*args) == catalog, "FMB 목록 읽기")
+        check(client.reads == [(contract["catalog"]["method"], contract["catalog"]["path"], "GET " + contract["catalog"]["path"])],
+              "FMB 목록 경로·call 계약")
+        for age, max_age, refresh in ((59, 60, False), (61, 60, True), (599, 600, False), (601, 600, True), (9000, None, False)):
+            remember(age=age)
+            before = len(client.reads)
+            check(await fb.ensure_catalog(*args, max_age=max_age) == catalog and len(client.reads) == before + int(refresh),
+                  f"FMB 카탈로그 나이 {age}/{max_age}")
+        copied = fb.cached_catalog(key, max_age=None)
+        copied.clear()
+        check(fb.cached_catalog(key, max_age=None) == catalog and fb.cached_catalog((org, "other")) is None
+              and fb.cached_catalog(("other-org", key[1])) is None, "FMB 사본·계정 및 조직 격리")
+        for failure in (fg.ForgeError("unauthorized", 401), fg.ForgeError("unreachable", kind="timeout"), {"models": {}}, {}):
+            remember(age=601)
+            client.catalog = failure
+            check(await fb.ensure_catalog(*args) is None and fb.cached_catalog(key, max_age=None) == catalog,
+                  "FMB 갱신 실패는 옛 기억 보존")
+        check(rejected_tokens == [secret], "FMB 401 토큰 거절")
+        check(await fb.ensure_catalog(key, client, lambda: None, rejected_tokens.append) is None, "FMB 토큰 없음")
+        delayed = types.SimpleNamespace(_json=AsyncMock(side_effect=lambda *a, **k: None))
+        async def wait_forever(*args, **kwargs):
+            await asyncio.Event().wait()
+        delayed._json = wait_forever
+        check(await fb.ensure_catalog(key, delayed, lambda: secret, rejected_tokens.append, timeout=0.01) is None
+              and fb.cached_catalog(key, max_age=None) == catalog, "FMB 제한 시간·옛 기억 보존")
+        fb.forget_catalog(key)
+        check(fb.cached_catalog(key, max_age=None) is None, "FMB 계정 기억 삭제")
+        malformed = {"models": [None, [], {}, {"checkpoint": "", "id": "fallback", "max_input_images": True},
+                                {"checkpoint": "valid", "id": "unused", "max_input_images": 3},
+                                {"id": "negative", "max_input_images": -1}, {"id": "string", "max_input_images": "5"}]}
+        check(fb.parse_catalog(malformed) == {"fallback": None, "valid": 3, "negative": None, "string": None},
+              "FMB 잘못된 행·한도·checkpoint 우선")
+        for invalid in (None, [], {}, {"models": None}):
+            try:
+                fb.parse_catalog(invalid)
+                check(False, "FMB 목록 형식 오류")
+            except fg.ForgeError as exc:
+                check(exc.reason == "unreachable" and exc.kind == "format", "FMB 목록 형식 오류 분류")
+
+    def loop_cases():
+        fb.forget_catalog()
+        barrier = threading.Barrier(3)
+        class Overlap(Client):
+            async def _json(self, *args, **kwargs):
+                await asyncio.to_thread(barrier.wait, 5)
+                return self.catalog
+        def read():
+            return asyncio.run(fb.ensure_catalog(key, Overlap(), lambda: secret, lambda token: None))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+            futures = [pool.submit(read) for _ in range(3)]
+            check(all(future.result(timeout=10) == catalog for future in futures), "FMB 서로 다른 이벤트 루프의 동시 목록 읽기")
+
+    async def request_cases():
+        for name, spec in contract["requests"].items():
+            root, job, paths = project(name)
+            expected = copy.deepcopy(spec["request"])
+            images = [base64.b64decode(item.split(",", 1)[1]) for item in expected["input_images"][0]]
+            body = fb.build_request(job, images, organization_id=expected["organization_id"],
+                                    request_id=expected["request_id"], prompt_autopilot=expected["prompt_autopilot"])
+            check(body == expected and set(body) == set(expected) and not set(body).intersection(spec["never"]),
+                  "FMB 모델별 요청 정본·금지 키 " + name)
+            check(tuple(fb._INPUT_ERRORS[models.get(name).kind]) == tuple(spec["errors"]["input"]), "FMB 알려진 입력 오류 정본 " + name)
+        for name, checkpoint in fixture["generate"]["checkpoints"].items():
+            root, job, paths = project(name)
+            expected = copy.deepcopy(fixture["generate"]["request"])
+            job.update(prompt=expected["prompt"], quality=expected["quality"], size=list(map(int, expected["size"].split("x"))),
+                       background=expected["background"], n=expected["num_outputs"])
+            expected["checkpoint"] = checkpoint
+            if "2.5" in name:
+                expected.pop("complexity", None)
+            else:
+                job["complexity"] = expected["complexity"]
+                expected["complexity"] = expected.pop("complexity")  # 기존 GPT 조립은 이 키를 마지막에 덧붙인다.
+            images = [base64.b64decode(item.split(",", 1)[1]) for item in expected["input_images"][0]]
+            body = fb.build_request(job, images, organization_id=expected["organization_id"], request_id=expected["request_id"],
+                                    prompt_autopilot=expected["prompt_autopilot"])
+            check(json.dumps(body) == json.dumps(expected), "FMB GPT 요청 키 순서·바이트 불변 " + name)
+
+        root, job, paths = project()
+        client = Client()
+        ctx = context(root, client)
+        fb.forget_catalog()
+        with active(ctx):
+            check(fb.blocked_reason(job) is None, "FMB 실행 안 — 기억도 표지도 없으면 여기서는 대조하지 않음(제출 직전이 읽는다)")
+            fb.mark_catalog_failed(key)
+            check("읽지 못했습니다" in fb.blocked_reason(job), "FMB 실행 안 — 실행 직전 갱신 실패 표지가 있으면 차단")
+            fb.forget_catalog()
+            be0 = fb.ForgeBackend(ctx)
+            client.catalog = fg.ForgeError("server", 503)
+            try:
+                await be0.request(job, paths, rn.call_id_for(job["cell_key"], 0))
+                blocked0 = None
+            except rn.CallError as exc:
+                blocked0 = exc
+            check(blocked0 is not None and "읽지 못했습니다" in str(blocked0) and blocked0.phase == "blocked" and not blocked0.maybe_billed
+                  and not client.submissions and not rn.read_ledger(root, job["cell_key"]),
+                  "FMB 실행 안 — 기억 없이 제출까지 가면 목록을 읽고, 못 읽으면 제출 전에 차단(과금 없음)")
+            client.catalog = copy.deepcopy(contract["catalog"]["response"])
+            fb.forget_catalog()
+            with active(dict(ctx, account="")):
+                check("연결 설정" in fb.blocked_reason(job), "FMB 실행 안 계정 없음 차단")
+            expect_raises(fb.ForgeBackend(dict(ctx, account="")).check, "FMB 백엔드 계정 검사", rn.CallError)
+        scope = {"org": org, "account": key[1]}
+        token = bd.set_scope(scope)
+        try:
+            check(fb.blocked_reason(job) is None, "FMB 라우트 목록 없음 대조 생략")
+            remember({})
+            check("Forge 에 없습니다" in fb.blocked_reason(job), "FMB 라우트 기억된 퇴역 차단")
+        finally:
+            bd.reset_scope(token)
+        check(fb.blocked_reason(job) is None, "FMB 실행·라우트 문맥 없는 순수 판정")
+        for backend in (rn.BACKEND_MOCK, rn.BACKEND_COMFY_ORG):
+            check(rn.blocked_reason(job, backend=backend) == "이 모델은 Forge 서버에서만 생성합니다.", "FMB 로컬·mock 차단")
+        changes = ({"model": "unknown"}, {"prompt": "@@reference"}, {"inputs": [{}] * (models.get(job["model"]).max_inputs + 1)},
+                   {"n": models.get(job["model"]).max_n + 1}, {"quality": "max"}, {"size": [64, 64]})
+        for change in changes:
+            r, j, paths = project()
+            j.update(change)
+            store.update_manifest(r, lambda m: m.update(jobs=[j]))
+            c = Client()
+            remember()
+            ctx = context(r, c)
+            with active(ctx):
+                await rejected(fb.ForgeBackend(ctx), j, paths)
+                report = await run_plan(r, fb.ForgeBackend(ctx)) if "model" not in change else None
+            check(not c.submissions and not rn.read_ledger(r, j["cell_key"])
+                  and not fb.read_sidecar(r, j["cell_key"], 0)["requests"], "FMB 여섯 차단 제출·원장·사이드카 없음")
+        for name in ("gpt-image-2.6-sunburst", "seedream-5.5"):
+            r, j, paths = project(name)
+            c = Client()
+            remember(age=601)
+            ctx = context(r, c)
+            with active(ctx):
+                check(fb.blocked_reason(j) is None, "FMB 긴 실행에서 판정은 목록 나이를 보지 않음 " + name)
+                report = await run_plan(r, fb.ForgeBackend(ctx))
+            check(report.done == 1 and len(c.reads) == 1 and len(c.submissions) == 1, "FMB 제출 직전 10분 갱신 " + name)
+            r, j, paths = project(name)
+            c = Client()
+            c.catalog["models"] = [row for row in c.catalog["models"] if row["checkpoint"] != models.get(name).checkpoint]
+            remember(age=601)
+            ctx = context(r, c)
+            with active(ctx):
+                report = await run_plan(r, fb.ForgeBackend(ctx))
+            check(report.stopped_reason == "auth" and not c.submissions and not rn.read_ledger(r, j["cell_key"])
+                  and not fb.read_sidecar(r, j["cell_key"], 0)["requests"], "FMB 갱신으로 퇴역 발견·원장 되돌림 " + name)
+        r, j, paths = project()
+        c = Client()
+        remember(dict(catalog, **{models.get(j["model"]).checkpoint: 1}))
+        with active(context(r, c)):
+            await rejected(fb.ForgeBackend(context(r, c)), j, paths, phrase="1장")
+        check(not c.submissions, "FMB 목록의 더 작은 입력 상한")
+        r, j, paths = project("ideogram-4.5")
+        remember()
+        c = Client(contract["job"]["ideogram_completed"])
+        with active(context(r, c)):
+            report = await run_plan(r, fb.ForgeBackend(context(r, c)))
+        decoded = [Image.open(io.BytesIO(base64.b64decode(data.split(",", 1)[1]))) for data in c.submissions[0]["input_images"][0]]
+        check(report.done == 1 and [im.size for im in decoded] == [tuple(j["size"]), (32, 24)]
+              and [im.mode for im in decoded] == ["RGB", "RGB"] and decoded[0].getpixel((0, 0)) == (255, 0, 0)
+              and decoded[1].getpixel((0, 0)) == (0, 255, 0), "FMB Ideogram 첫 입력만 목표 크기·RGB·순서")
+        for im in decoded:
+            im.close()
+        check(fb.prompt_changed(r, rn.call_id_for(j["cell_key"], 0)) == [False, False], "FMB Ideogram 동일 프롬프트")
+        r, j, paths = project(n=3)
+        c = Client(contract["job"]["seedream_partial"])
+        with active(context(r, c)):
+            report = await run_plan(r, fb.ForgeBackend(context(r, c)))
+        check(report.done == 1 and len(store.load_manifest(r)["candidates"]) == 2, "FMB Seedream 부분 성공은 받은 장만 후보")
+
+        for name, spec in contract["requests"].items():
+            for phrase in spec["errors"]["input"]:
+                r, j, paths = project(name)
+                terminal = dict(contract["job"]["seedream_failed_input"], error_message=phrase + " 1:16")
+                check(fg._safe_detail(terminal["error_message"]) is not None, "FMB client 가 알려진 입력 오류·비율을 보존")
+                c = Client(terminal)
+                with active(context(r, c)):
+                    report = await run_plan(r, fb.ForgeBackend(context(r, c)))
+                record = rn.read_ledger(r, j["cell_key"])[0]
+                check(report.failed == 1 and not record["failed"]["retryable"] and not record["failed"]["maybe_billed"]
+                      and record["failed"]["error"] == fb._INPUT_ERROR, "FMB 알려진 입력 오류·고정 안내·재시도 없음")
+        r, j, paths = project()
+        c = Client(fg.ForgeError("unreachable", kind="connect"))
+        ctx = context(r, c)
+        with active(ctx):
+            await run_plan(r, fb.ForgeBackend(ctx))
+            c.result = contract["job"]["seedream_failed_input"]
+            report = await run_plan(r, fb.ForgeBackend(ctx))
+        record = rn.read_ledger(r, j["cell_key"])[0]
+        check(report.failed == 1 and record["failed"]["phase"] == "download" and record["failed"]["retryable"]
+              and record["failed"]["maybe_billed"] and "done" not in record and len(c.submissions) == 1,
+              "FMB 복구 중 알려진 오류는 기존 실패 상태 유지")
+
+    async def pressure_cases():
+        for name, n, cap, expected in (("seedream-5.5", 5, 4, 1), ("seedream-5.5", 2, 4, 4),
+                                        ("gpt-image-2.6-sunburst", 5, 4, 4), ("ideogram-4.5", 2, 4, 4)):
+            root, job, paths = project(name, n=n, reps=4)
+            remember()
+            filled = asyncio.Event()
+            class Concurrent(Client):
+                active, peak = 0, 0
+                async def submit(self, token, body):
+                    self.active += 1
+                    self.peak = max(self.peak, self.active)
+                    if self.active == expected:
+                        filled.set()
+                    return await super().submit(token, body)
+                async def job(self, token, job_id):
+                    await asyncio.wait_for(filled.wait(), 5)
+                    self.active -= 1
+                    return await super().job(token, job_id)
+            client = Concurrent()
+            ctx = context(root, client, concurrency=cap)
+            with active(ctx):
+                report = await run_plan(root, fb.ForgeBackend(ctx), concurrency=4)
+            check(report.done == 4 and client.peak == expected and jb._forge_concurrency(root, cap) == expected,
+                  f"FMB 작업 실행기·백엔드 동시 수 {name}/{n}: done={report.done}, peak={client.peak}, errors={report.errors}")
+        root, job, paths = project()
+        store.update_manifest(root, lambda m: m.update(jobs=[]))
+        check(jb._forge_concurrency(root, 3) == 3 and jb._forge_concurrency(str(out / "missing"), 3) == 3,
+              "FMB 작업 없음·매니페스트 실패는 기존 상한")
+        root, job, paths = project(reps=3)
+        remember()
+        client = Client(fg.ForgeError("server", 503))
+        ctx = context(root, client)
+        with active(ctx):
+            report = await run_plan(root, fb.ForgeBackend(ctx), concurrency=1)
+        ledger = rn.read_ledger(root, job["cell_key"])
+        check(len(client.submissions) == 2 and report.stopped_reason == "auth" and set(ledger) == {0, 1}
+              and not fb.read_sidecar(root, job["cell_key"], 2)["requests"], "FMB 제출 성공·조회 실패 2회 뒤 중지·다음 원장 되돌림")
+        check(any(fb._OVERLOADED in call.get("error", "") for call in report.calls), "FMB 과부하 중지 안내는 calls 에 기록됨")
+        for failure in (fg.ForgeError("server", 503), fg.ForgeError("invalid", 429),
+                        fg.ForgeError("unreachable", kind="timeout"), fg.ForgeError("unreachable", kind="connect")):
+            root, job, paths = project(reps=3)
+            remember()
+            client = Client()
+            client.submit_error = failure
+            ctx = context(root, client)
+            with active(ctx):
+                report = await run_plan(root, fb.ForgeBackend(ctx), concurrency=1)
+            expected = 2 if failure.status == 429 else 6
+            check(len(client.submissions) == expected and report.stopped_reason == "auth"
+                  and set(rn.read_ledger(root, job["cell_key"])) == {0, 1}, "FMB 제출 과부하 종류·멱등 재제출 유지")
+        root, job, paths = project()
+        remember()
+        client = Client(fg.ForgeError("unreachable", kind="connect"))
+        ctx = context(root, client)
+        be = fb.ForgeBackend(ctx)
+        with active(ctx):
+            for rep, outcome, expected in ((0, client.result, 1), (1, fixture["job"]["completed"], 0),
+                                           (2, fg.ForgeError("server", 502), 1), (3, fixture["job"]["failed_user"], 1),
+                                           (4, fg.ForgeError("server", 503), 2)):
+                client.result = outcome
+                try:
+                    await be.request(job, paths, rn.call_id_for(job["cell_key"], rep))
+                except rn.CallError:
+                    pass
+                check(be._overload_failures == expected, "FMB 결과를 받은 호출만 실패 셈 초기화")
+            await rejected(be, job, paths, phrase="새 생성 요청을 멈췄습니다")
+        root, job, paths = project()
+        remember(age=601)
+        client = Client()
+        client.catalog = fg.ForgeError("unreachable", kind="format")
+        be = fb.ForgeBackend(context(root, client))
+        with active(be._ctx):
+            await rejected(be, job, paths, phrase="목록을 읽지 못했습니다")
+            await rejected(be, job, paths, phrase="목록을 읽지 못했습니다")
+            await rejected(be, job, paths, phrase="새 생성 요청을 멈췄습니다")
+        check(not client.submissions and len(client.reads) == 2, "FMB 목록 실패도 2회 중지")
+        root, job, paths = project()
+        remember()
+        client = Client(dict(fixture["job"]["processing"], execution_deadline_at="2000-01-01T00:00:00+00:00"))
+        be = fb.ForgeBackend(context(root, client))
+        with active(be._ctx):
+            for rep in range(2):
+                try:
+                    await be.request(job, paths, rn.call_id_for(job["cell_key"], rep))
+                except rn.CallError as exc:
+                    check(exc.phase == "poll", "FMB 폴링 마감 과부하")
+            await rejected(be, job, paths, phrase="새 생성 요청을 멈췄습니다")
+        root, job, paths = project()
+        remember()
+        client = Client()
+        be = fb.ForgeBackend(context(root, client))
+        be._semaphore = asyncio.Semaphore(0)
+        with active(be._ctx):
+            waiting = asyncio.create_task(rejected(be, job, paths, phrase="Forge 에 없습니다"))
+            await asyncio.sleep(0)
+            remember({})
+            be._semaphore.release()
+            await waiting
+        check(not client.submissions and not fb.read_sidecar(root, job["cell_key"], 0)["requests"],
+              "FMB 세마포어 대기 중 퇴역·제출 없음")
+
+    def worker_cases():
+        root, job, paths = project()
+        client = Client()
+        ctx = context(root, client)
+        remember(age=61)
+        jb._refresh_catalog(ctx)
+        check(len(client.reads) == 1, "FMB 실행 직전 60초 갱신")
+        remember(age=61)
+        client.catalog = fg.ForgeError("unreachable")
+        jb._refresh_catalog(ctx)
+        check(fb.cached_catalog(key, max_age=None) is None, "FMB 실행 직전 실패는 옛 기억 삭제")
+        service = object.__new__(jb.JobRunner)
+        service._condition = threading.Condition()
+        service._forge = types.SimpleNamespace(context=lambda scope: ctx)
+        service._finish = lambda *args: None
+        scope = dict(_fj_scope(out), org=org, account=key[1])
+        seen = []
+        def execute(prompt):
+            seen.append((rn.forge_context()["account"], fb.cached_catalog(key, max_age=None)))
+            return {"outputs": {}}
+        for stage in ("apply", "run", "reroll", "export"):
+            remember(age=61)
+            state = {"scope": scope, "raw_root": root, "prompt": {}, "closed": False, "outputs": {}, "node": {}, "stage": stage}
+            with patch.object(jb, "execute", side_effect=execute), patch.object(jb, "_refresh_catalog", wraps=jb._refresh_catalog) as refresh:
+                service._run(state)
+                check(refresh.call_count == int(stage != "export") and seen[-1][0] == key[1]
+                      and (seen[-1][1] is None if stage != "export" else seen[-1][1] == catalog),
+                      "FMB 작업 단계별 갱신·실패 뒤 실행 계속 " + stage)
+        check(srv.ServerConfig(str(out)).workers == 1, "FMB workers 기본 1")
+
+    async def env_cases():
+        jobs_module = types.SimpleNamespace(JobRunner=lambda **kwargs: types.SimpleNamespace(close=lambda *args: None),
+                                           routes=lambda runner: ())
+        for forge_mode in (True, False):
+            config = srv.ServerConfig(str(out / ("env_forge" if forge_mode else "env_mock")), dev_handoff=not forge_mode,
+                                      public_origin="https://studio.example",
+                                      parent_origins=("http://localhost:8790",),
+                                      forge=fg.ForgeConfig("https://forge.example", media_origins=("https://forge.example",)) if forge_mode else None)
+            with patch.dict(os.environ, {rn.MOCK_ENV: ""}):
+                app = srv.make_app(config, jobs_module=jobs_module, forge_transport=AsyncMock(side_effect=AssertionError("unexpected transport")))
+                try:
+                    async def env(session=None):
+                        req = make_mocked_request("GET", bd.API + "/env", app=app)
+                        req["bmk_dp_session"] = session
+                        response = await bd.env_handler(req)
+                        return json.loads(response.text)
+                    no_session = await env()
+                    if not forge_mode:
+                        check("models" not in no_session["caps"], "FMB Forge 연결 없는 서버의 env 에는 모델 목록 없음(기존 본문 그대로)")
+                        check("models_error" not in no_session["caps"], "S6 Forge 연결 없는 env 는 models_error 도 없음")
+                        continue
+                    check([row["name"] for row in no_session["caps"]["models"]] == list(models.MODELS), "FMB env 표 순서")
+                    check("models_error" in no_session["caps"] and no_session["caps"]["models_error"] is None,
+                          "S6 세션 없는 Forge env 의 models_error 는 null")
+                    with patch.dict(os.environ, {rn.MOCK_ENV: "1"}):
+                        mocked = await env()
+                    check(mocked["backend"] == "mock" and all(row["available"] == (row["kind"] == "gpt") for row in mocked["caps"]["models"])
+                          and all(row["why"] == "이 모델은 Forge 서버에서만 생성합니다." for row in mocked["caps"]["models"] if row["kind"] != "gpt"),
+                          "FMB mock env 서버 전용 모델 차단")
+                    check("models_error" in mocked["caps"] and mocked["caps"]["models_error"] is None,
+                          "S6 mock env 의 models_error 는 null")
+                    check(all(row["available"] for row in no_session["caps"]["models"]), "FMB 세션 없는 env 대조 안 함")
+                    accounts = app[srv._FORGE_KEY]
+                    scope = dict(_fj_scope(out), org=org, account=key[1])
+                    session = {"scope": scope, "name": "fixture", "tag": "fixture-tag"}
+                    c = Client()
+                    with patch.object(accounts, "context", return_value=context(str(out), c)):
+                        fb.forget_catalog()
+                        with patch.object(fb, "ensure_catalog", wraps=fb.ensure_catalog) as ensure:
+                            value = await env(session)
+                            check(ensure.call_args.kwargs["timeout"] == 5.0, "FMB env 짧은 제한 시간")
+                        check(all(row["available"] for row in value["caps"]["models"]) and len(c.reads) == 1, "FMB forge env 계정 목록")
+                        check("models_error" in value["caps"] and value["caps"]["models_error"] is None,
+                              "S6 목록 읽기 성공의 models_error 는 null")
+                        gone = dict(catalog)
+                        gone.pop(models.get("seedream-5.5").checkpoint)
+                        remember(gone, age=601)
+                        c.catalog = fg.ForgeError("unreachable")
+                        value = await env(session)
+                        check([row["name"] for row in value["caps"]["models"] if not row["available"]] == ["seedream-5.5"],
+                              "FMB env 실패 시 옛 기억")
+                        check("models_error" in value["caps"] and value["caps"]["models_error"] is None,
+                              "S6 사용 가능한 옛 기억은 모델별 판정 유지")
+                        fb.forget_catalog()
+                        value = await env(session)
+                        check(all(row["available"] and row["why"] is None for row in value["caps"]["models"])
+                              and value["caps"].get("models_error") == fb._CATALOG_UNREADABLE,
+                              "S6 목록 실패·기억 없음은 모델별 미대조와 models_error")
+                        remember()
+                        fb.mark_catalog_failed(key)
+                        reads = len(c.reads)
+                        value = await env(session)
+                        check(all(row["available"] and row["why"] is None for row in value["caps"]["models"])
+                              and value["caps"].get("models_error") == fb._CATALOG_UNREADABLE and len(c.reads) == reads + 1,
+                              "S6 실패 표지는 옛 기억을 쓰지 않고 models_error 로 안내")
+                        for age in (0, 601):
+                            remember(gone, age=age)
+                            now = [time.monotonic()]
+                            with patch.object(fb, "time", types.SimpleNamespace(monotonic=lambda: now[0])):
+                                fb.mark_catalog_failed(key)
+                                now[0] += 61
+                                reads = len(c.reads)
+                                value = await env(session)
+                                check(value["caps"].get("models_error") is None
+                                      and [row["name"] for row in value["caps"]["models"] if not row["available"]] == ["seedream-5.5"],
+                                      "T1 env 는 61초 지난 실패 표지를 무시하고 옛 목록으로 대조")
+                                check(len(c.reads) == reads + int(age > 600) and fb.catalog_failed(key),
+                                      "T1 env 의 표지 만료는 목록 TTL·실행 안 표지에 영향 없음")
+                        c.catalog = copy.deepcopy(contract["catalog"]["response"])
+                        c.catalog["models"] = [row for row in c.catalog["models"] if row["checkpoint"] in gone]
+                        value = await env(session)
+                        check("models_error" in value["caps"] and value["caps"]["models_error"] is None
+                              and [row["name"] for row in value["caps"]["models"] if not row["available"]] == ["seedream-5.5"]
+                              and not fb.catalog_failed(key), "S6 재조회 성공은 오류 해제·퇴역 모델만 불가")
+                        fb.forget_catalog()
+                        c.catalog = {"models": []}
+                        value = await env(session)
+                        check("models_error" in value["caps"] and value["caps"]["models_error"] is None
+                              and all(not row["available"] for row in value["caps"]["models"]),
+                              "S6 읽기에 성공한 빈 목록은 모델 불가이며 통신 오류가 아님")
+                finally:
+                    for cleanup in app.on_cleanup:
+                        await cleanup(app)
+        check(json.loads((await bd.env_handler(make_mocked_request("GET", bd.API + "/env"))).text)
+              == {"server_mode": False, "caps": dict(bd.LOCAL_CAPS)}, "FMB 로컬 env 본문 불변")
+
+    def signatures():
+        root, job, paths = project()
+        manifest = store.load_manifest(root)
+        scope_token = bd.set_scope(dict(_fj_scope(out), org=org, account=key[1]))
+        try:
+            for server, mock in (("1", ""), ("1", "1"), ("", "")):
+                with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": server, rn.MOCK_ENV: mock}):
+                    remember()
+                    before = bd._plan_sigs(root, manifest, (False, False), None)
+                    remember({})
+                    after = bd._plan_sigs(root, manifest, (False, False), None)
+                    check((before[0] != after[0]) == (server == "1" and not mock) and before[1] == after[1],
+                          "FMB Forge 계획만 목록 변화로 무효화")
+        finally:
+            bd.reset_scope(scope_token)
+
+    def review_t1():
+        scope_token = bd.set_scope(dict(_fj_scope(out), org=org, account=key[1]))
+        try:
+            for name in ("gpt-image-2.6-sunburst", "seedream-5.5"):
+                root, job, paths = project(name)
+                manifest = store.load_manifest(root)
+                client = Client()
+                ctx = context(root, client)
+                for remembered in (False, True):
+                    fb.forget_catalog()
+                    if remembered:
+                        remember()
+                    now = [time.monotonic()]
+                    with patch.object(fb, "time", types.SimpleNamespace(monotonic=lambda: now[0])):
+                        fb.mark_catalog_failed(key)
+                        marked = bd._plan_sigs(root, manifest, (False, False), None)
+                        check(fb.blocked_reason(job) == fb._CATALOG_UNREADABLE, "T1 표지 직후 라우트 차단")
+                        now[0] += 60
+                        check(fb.blocked_reason(job) == fb._CATALOG_UNREADABLE
+                              and bd._plan_sigs(root, manifest, (False, False), None) == marked,
+                              "T1 정확히 60초인 표지는 라우트·서명에서 유지")
+                        now[0] += 1
+                        expired = bd._plan_sigs(root, manifest, (False, False), None)
+                        check(fb.blocked_reason(job) is None, "T1 61초 뒤 라우트는 옛 목록 대조 또는 미대조")
+                        check(expired[0] != marked[0] and expired[1] == marked[1], "T1 61초 뒤 Run 서명만 변경")
+                        with active(ctx):
+                            check(fb.blocked_reason(job) == fb._CATALOG_UNREADABLE, "T1 실행 안에서는 오래된 표지도 차단")
+                        reads = len(client.reads)
+                        restored = asyncio.run(fb.ensure_catalog(key, client, ctx["token_of"], ctx["reject_token"]))
+                        check(restored == catalog and len(client.reads) == reads + 1 and not fb.catalog_failed(key)
+                              and fb.blocked_reason(job) is None, "T1 실행 재조회 성공은 목록·표지·라우트 복구")
+                        with active(ctx):
+                            check(fb.blocked_reason(job) is None, "T1 재조회 성공 뒤 실행 안 차단도 해제")
+                gone = dict(catalog)
+                gone.pop(models.get(name).checkpoint)
+                remember(gone)
+                now = [time.monotonic()]
+                with patch.object(fb, "time", types.SimpleNamespace(monotonic=lambda: now[0])):
+                    fb.mark_catalog_failed(key)
+                    now[0] += 61
+                    check(fb.blocked_reason(job) == models.availability(name, gone)[1],
+                          "T1 표지가 만료돼도 옛 목록의 퇴역 모델 판정은 유지")
+        finally:
+            bd.reset_scope(scope_token)
+            fb.forget_catalog()
+
+    def review_t2():
+        other_key = (org, "unaffected-account")
+        for age, scenario in ((61, "available"), (300, "retired"), (599, "limit")):
+            root, job, paths = project()
+            client, rejected_tokens = Client(), []
+            tokens = {"value": secret}
+
+            def reject(token):
+                rejected_tokens.append(token)
+                tokens["value"] = None
+
+            ctx = dict(context(root, client), token_of=lambda: tokens["value"], reject_token=reject)
+            remember(age=age)
+            remember(account_key=other_key)
+            if scenario == "limit":
+                fb.mark_catalog_failed(key)
+            client.catalog = fg.ForgeError("unauthorized", 401)
+            jb._refresh_catalog(ctx)
+            check(tokens["value"] is None and rejected_tokens == [secret] and len(client.reads) == 1,
+                  "T2 실행 직전 401 은 토큰 거절")
+            check(fb.cached_catalog(key, max_age=None) is None and not fb.catalog_failed(key),
+                  "T2 인증 실패 뒤 60~600초 기억과 실패 표지 모두 제거")
+            check(fb.cached_catalog(other_key) == catalog, "T2 다른 계정의 목록 기억은 보존")
+
+            tokens["value"] = "synthetic-renewed-model-token"
+            client.catalog = copy.deepcopy(contract["catalog"]["response"])
+            checkpoint = models.get(job["model"]).checkpoint
+            if scenario == "retired":
+                client.catalog["models"] = [row for row in client.catalog["models"] if row["checkpoint"] != checkpoint]
+            elif scenario == "limit":
+                for row in client.catalog["models"]:
+                    if row["checkpoint"] == checkpoint:
+                        row["max_input_images"] = 1
+            fresh = fb.parse_catalog(client.catalog)
+            be = fb.ForgeBackend(ctx)
+            reads = len(client.reads)
+            error = None
+            with active(ctx):  # 실제 실행처럼 Forge 문맥 안에서 — 실행 안 판정이 새 토큰의 재조회를 막지 않아야 한다
+                check(fb.blocked_reason(job) is None, "T2 기억을 지운 뒤 새 토큰이 생긴 실행 안 판정은 막지 않음(제출 직전이 읽는다)")
+                try:
+                    asyncio.run(be.request(job, paths, rn.call_id_for(job["cell_key"], 0)))
+                except rn.CallError as exc:
+                    error = exc
+            check(len(client.reads) == reads + 1 and fb.cached_catalog(key) == fresh,
+                  "T2 새 토큰의 request 는 목록을 한 번 다시 읽고 새 기억 사용")
+            if scenario == "available":
+                check(error is None and len(client.submissions) == 1, "T2 새 목록에서 가능한 모델은 제출")
+            else:
+                why = models.availability(job["model"], fresh)[1] if scenario == "retired" else "입력 이미지는 1장까지 보낼 수 있습니다."
+                check(error is not None and str(error) == why and error.phase == "blocked" and not error.maybe_billed
+                      and not client.submissions and not rn.read_ledger(root, job["cell_key"]),
+                      "T2 새 목록의 퇴역·입력 상한으로 제출 전에 차단")
+        fb.forget_catalog()
+
+    async def review_t3():
+        second, third = "synthetic-second-session", "synthetic-third-session"
+        unauthorized = fg.ForgeError("unauthorized", 401)
+        unavailable = fg.ForgeError("unreachable", 503)
+        cases = (
+            ("rotated", [secret, second], [unauthorized, contract["catalog"]["response"]], 2, [secret], catalog),
+            ("both401", [secret, second, third], [unauthorized, fg.ForgeError("unreachable", 401)], 2, [secret, second], None),
+            ("same", [secret], [unauthorized], 1, [secret], None),
+            ("exhausted", [secret], [unauthorized], 1, [secret], None),
+            ("first_other", [secret, second], [unavailable], 1, [], None),
+            ("second_other", [secret, second], [unauthorized, unavailable], 2, [secret], None),
+        )
+        for scenario, tokens, responses, count, rejected, expected in cases:
+            client, read_tokens, rejected_tokens = Client(), [], []
+            original_read = client._json
+
+            async def read(method, path, token, *, call):
+                read_tokens.append(token)
+                client.catalog = responses[len(read_tokens) - 1]
+                return await original_read(method, path, token, call=call)
+
+            def reject(token):
+                rejected_tokens.append(token)
+                if scenario != "same":
+                    tokens.remove(token)
+
+            client._json = read
+            remember(age=601)
+            fb.mark_catalog_failed(key)
+            actual = await fb.ensure_catalog(key, client, lambda: tokens[0] if tokens else None, reject)
+            check(actual == expected, "T3 401 뒤 다른 토큰으로 한 번만 목록 읽기 " + scenario)
+            check(len(client.reads) == count and read_tokens == [secret, second][:count],
+                  "T3 읽기 횟수·토큰 순서 " + scenario)
+            check(rejected_tokens == rejected, "T3 401 토큰만 거절 " + scenario)
+            check((not fb.catalog_failed(key) and fb.cached_catalog(key) == catalog) if expected is not None
+                  else fb.catalog_failed(key) and fb.cached_catalog(key) is None,
+                  "T3 재시도 성공 때만 기억 갱신·실패 표지 해제 " + scenario)
+        fb.forget_catalog()
+
+    def review_t4():
+        dp = _dp_package()
+        for waiting in (2, 0):
+            root, job, paths = project("gpt-image-2.6-sunburst", reps=3)
+            manifest = store.load_manifest(root)
+            plan = dp.runner.plan_calls(manifest, root)
+            for index, entry in enumerate(plan["pending"]):
+                if index == 0:
+                    entry["job"] = dict(entry["job"], prompt="@@fixture")
+                elif not waiting:
+                    entry["job"] = dict(entry["job"], n=0)
+            ap = dp.runner.split_approval(plan, "wrong-hash", backend="forge")
+            why = next(entry["blocked"] for entry in ap["blocked"] if entry.get("blocked"))
+            check(len(ap["needs_approval"]) == waiting
+                  and sum(bool(entry.get("blocked")) for entry in ap["blocked"]) == 3 - waiting,
+                  "T4 실제 승인 판정으로 차단 1+대기 2 또는 전부 차단 구성")
+            node = dp.BMKDesignPatchRun()
+            handle = dp._handle(root, manifest, {})
+            with patch.object(dp.runner, "make_backend", return_value=types.SimpleNamespace(name="forge")), \
+                    patch.object(dp, "_board_key", return_value=store.root_key(root)), \
+                    patch.object(dp.runner, "reconcile_ledger", return_value={"candidates": [], "calls": [], "warnings": []}), \
+                    patch.object(dp, "_run_plan", return_value=(plan, ap)), \
+                    patch.object(dp, "_cand_grid", return_value=None), \
+                    patch.object(node, "_execute", new=AsyncMock()) as execute:
+                result = asyncio.run(node.run(handle, "wrong-hash", 64, 1, 25, False, False, ""))
+            entry = result["ui"]["bmk_dp_run"][0]
+            expected = None if waiting else why
+            check(entry["stop_note"] == expected, "T4 승인 대기가 남으면 stop_note 없음·모두 차단이면 첫 사유")
+            check(entry["pending"] == waiting and not entry["approved_now"] and not execute.called,
+                  "T4 잘못된 승인 해시는 실행 없이 남은 승인 대기 보존")
+            check(jb._record({"dp_run": result["ui"]})["outputs"]["dp_run"]["bmk_dp_run"][0]["stop_note"] == expected,
+                  "T4 history 도 같은 stop_note 전달")
+            if waiting:
+                pending_root, pending_handle, pending_plan, pending_ap = root, handle, plan, ap
+
+        approved = dp.runner.split_approval(pending_plan, pending_ap["pending_hash"], backend="forge")
+        report_note = "실행 보고의 차단 사유"
+        report = types.SimpleNamespace(errors=["발사 못 함 — " + report_note], calls=[], new_candidates=[],
+                                       stopped_reason="none", continuation_hash="")
+        with patch.object(dp.runner, "make_backend", return_value=types.SimpleNamespace(name="forge")), \
+                patch.object(dp, "_board_key", return_value=store.root_key(pending_root)), \
+                patch.object(dp.runner, "reconcile_ledger", return_value={"candidates": [], "calls": [], "warnings": []}), \
+                patch.object(dp, "_run_plan", side_effect=[(pending_plan, approved), (pending_plan, pending_ap)]), \
+                patch.object(dp, "_cand_grid", return_value=None), \
+                patch.object(node, "_report", return_value="execution report"), \
+                patch.object(node, "_execute", new=AsyncMock(return_value=report)) as execute:
+            result = asyncio.run(node.run(pending_handle, pending_ap["pending_hash"], 64, 1, 25, False, False, ""))
+        entry = result["ui"]["bmk_dp_run"][0]
+        check(entry["pending"] == 2 and entry["stop_note"] == report_note and execute.await_count == 1,
+              "T4 실행 보고가 있으면 승인 대기가 남아도 보고의 사유 우선")
+
+    def review_s1():
+        reason = models.availability("seedream-5.5", {})[1]
+        original = {"approved_now": True, "pending": 2, "backend": "forge", "stopped_reason": "auth", "auth_held": 0}
+        cases = ((reason, reason), ("가격표에 없는 모델 x / 품질 y", "가격표에 없는 모델 x / 품질 y"),
+                 ("앞\x00\x1f\n\t뒤\x7f\x85", "앞뒤"), ("가" * 301, "가" * 300), (None, None), (123, None),
+                 ("https://forge.example/private", None), (r"C:\private\image.png", None),
+                 ("C:/private/image.png", None), (r"folder\image.png", None),
+                 ("data:image/png;base64,fixture", None), ("DATA:image/png;base64,fixture", None),
+                 ("가" * 301 + " https://forge.example/private", None))
+        for note, expected in cases:
+            row = dict(original, stop_note=note, unknown="discard")
+            outputs = {"dp_run": {"bmk_dp_run": [row]},
+                       "dp_draft": {"bmk_dp_draft": [dict(original, stop_note=note)]}}
+            record = jb._record(outputs)
+            kept = record["outputs"]["dp_run"]["bmk_dp_run"][0]
+            check(kept == dict(original, stop_note=expected), "S1 _record 뒤 stop_note 보존·정제·기존 키 유지")
+            check(record["outputs"]["dp_draft"]["bmk_dp_draft"][0] == original and row["stop_note"] == note,
+                  "S1 다른 노드·원본 ui 는 불변")
+
+    def review_s2():
+        root, job, paths = project()
+        client = Client()
+        ctx = context(root, client)
+        scope_token = bd.set_scope(dict(_fj_scope(out), org=org, account=key[1]))
+        why = fb._CATALOG_UNREADABLE
+        try:
+            manifest = store.load_manifest(root)
+            fb.forget_catalog()
+            unknown = bd._plan_sigs(root, manifest, (False, False), None)
+            client.catalog = fg.ForgeError("unreachable")
+            jb._refresh_catalog(ctx)
+            failed = bd._plan_sigs(root, manifest, (False, False), None)
+            check(failed[0] != unknown[0] and failed[1] == unknown[1], "S2 기억 없음과 갱신 실패는 계획 서명이 다름")
+            check(fb.blocked_reason(job) == why, "S2 실행 직전 실패가 보드 라우트에서도 보임")
+            with active(ctx):
+                check(fb.blocked_reason(job) == why, "S2 실행 안에서도 갱신 실패 차단")
+                plan = rn.plan_calls(manifest, root)
+                ap = rn.split_approval(plan, backend="forge")
+            remember(age=61)
+            jb._refresh_catalog(ctx)
+            check(key in fb._CATALOG and fb.cached_catalog(key, max_age=None) is None,
+                  "S2 갱신 실패는 원래 기억을 보존하고 사용만 차단")
+            marked = bd._plan_sigs(root, manifest, (False, False), None)
+            # 표지가 남아 있는 동안 다른 읽기가 최신 기억을 남겼어도 ensure 는 다시 읽어야 한다.
+            with fb._CATALOG_LOCK:
+                fb._CATALOG[key] = (time.monotonic(), catalog.copy())
+            reads = len(client.reads)
+            client.catalog = copy.deepcopy(contract["catalog"]["response"])
+            restored = asyncio.run(fb.ensure_catalog(key, client, ctx["token_of"], ctx["reject_token"]))
+            check(restored == catalog and len(client.reads) == reads + 1 and fb.blocked_reason(job) is None,
+                  "S2 실패 표지는 나이 무관 재조회·성공 뒤 해제")
+            after = bd._plan_sigs(root, manifest, (False, False), None)
+            check(after[0] != marked[0] and after[1] == marked[1], "S2 성공 뒤 계획 서명 갱신")
+            fb.forget_catalog()
+            check(bd._plan_sigs(root, manifest, (False, False), None) == unknown and fb.blocked_reason(job) is None,
+                  "S2 forget 은 실패 표지도 지움")
+        finally:
+            bd.reset_scope(scope_token)
+
+        dp = _dp_package()
+        node = dp.BMKDesignPatchRun()
+        initial = dict(ap, blocked=[{}, {"blocked": why}, {"blocked": "다음 사유"}], to_run=[])
+        handle = dp._handle(root, store.load_manifest(root), {})
+        with patch.object(dp.runner, "make_backend", return_value=types.SimpleNamespace(name="forge")), \
+                patch.object(dp.runner, "blocked_reason", return_value=why), \
+                patch.object(dp, "_board_key", return_value=store.root_key(root)), \
+                patch.object(dp.runner, "reconcile_ledger", return_value={"candidates": [], "calls": [], "warnings": []}), \
+                patch.object(dp, "_run_plan", return_value=(plan, initial)), \
+                patch.object(dp, "_cand_grid", return_value=None), \
+                patch.object(node, "_report", return_value="unchanged report"), \
+                patch.object(node, "_execute", new=AsyncMock()) as execute:
+            result = asyncio.run(node.run(handle, "", 64, 1, 25, False, False, ""))
+        entry = result["ui"]["bmk_dp_run"][0]
+        check(entry["stop_note"] == why and not execute.called and result["result"][1] == "unchanged report",
+              "S2 실행 없이 차단된 Run 노드도 처음 판정의 첫 사유 전달")
+        check(jb._record({"dp_run": result["ui"]})["outputs"]["dp_run"]["bmk_dp_run"][0].get("stop_note") == why,
+              "S2 실행 전 차단 사유가 history 까지 전달")
+
+    def review_s3():
+        root, job, paths = project()
+        client = Client()
+        ctx = dict(context(root, client), token_of=lambda: None)
+        fb.forget_catalog()
+        with active(ctx):
+            check(fb.blocked_reason(job) is None, "S3 기억·표지·토큰 없음은 목록 차단을 건너뜀")
+            check(fb.blocked_reason(dict(job, prompt="@@ref")) is not None
+                  and fb.blocked_reason(dict(job, n=0)) is not None, "S3 로그인 없음에도 그 밖의 사전 판정 유지")
+        for marked in (False, True):
+            fb.forget_catalog()
+            if marked:
+                fb.mark_catalog_failed(key)
+            jb._refresh_catalog(ctx)
+            check(not fb.catalog_failed(key), "S3 토큰 없는 실행 직전 갱신은 실패 표지를 남기지 않음")
+
+        async def auth_cases():
+            for scenario in ("missing", "catalog401", "lost_during_read"):
+                root, job, paths = project()
+                client = Client()
+                tokens = {"value": None if scenario == "missing" else secret}
+                ctx = dict(context(root, client), token_of=lambda: tokens["value"],
+                           reject_token=lambda token: tokens.update(value=None))
+                fb.forget_catalog()
+                if scenario != "missing":
+                    remember(age=601)
+                    client.catalog = fg.ForgeError("unauthorized", 401)
+                if scenario == "lost_during_read":
+                    async def lose_token(*args, **kwargs):
+                        tokens["value"] = None
+                        raise fg.ForgeError("unreachable", kind="connect")
+                    client._json = lose_token
+                be = fb.ForgeBackend(ctx)
+                with active(ctx):
+                    try:
+                        await be.request(job, paths, rn.call_id_for(job["cell_key"], 0))
+                        check(False, "S3 로그인 오류 필요 " + scenario)
+                    except rn.CallError as exc:
+                        check(exc.phase == "request" and exc.status == 401 and not exc.maybe_billed
+                              and str(exc) == "Forge 로그인 정보를 다시 받아야 합니다.", "S3 목록 인증 실패는 로그인 오류 " + scenario)
+                    report = await run_plan(root, be, concurrency=1)
+                errors = [*report.errors, *(c.get("error", "") for c in report.calls)]
+                check(report.stopped_reason == "auth" and not any("발사 못 함 — " in e for e in errors)
+                      and be._overload_failures == 0 and not client.submissions and not rn.read_ledger(root, job["cell_key"]),
+                      "S3 stop_note 대상 사유·과부하 셈·과금 없음 " + scenario)
+        asyncio.run(auth_cases())
+        fb.forget_catalog()
+
+    def review_s4():
+        root, job, paths = project()
+        manifest = store.load_manifest(root)
+        model = models.get(job["model"])
+        scope_token = bd.set_scope(dict(_fj_scope(out), org=org, account=key[1]))
+        try:
+            for server, mock in (("1", ""), ("1", "1"), ("", "")):
+                with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": server, rn.MOCK_ENV: mock}):
+                    remember()
+                    before = bd._plan_sigs(root, manifest, (False, False), None)
+                    remember(dict(catalog, **{model.checkpoint: 1}))
+                    after = bd._plan_sigs(root, manifest, (False, False), None)
+                    check((before[0] != after[0]) == (server == "1" and not mock) and before[1] == after[1],
+                          "S4 유효 입력 상한 변경은 Forge Run 계획만 무효화")
+                    for limit in (None, model.max_inputs * 2):
+                        remember(dict(catalog, **{model.checkpoint: limit}))
+                        check(bd._plan_sigs(root, manifest, (False, False), None) == before,
+                              "S4 표 상한으로 같아지는 서버 값은 같은 서명")
+        finally:
+            bd.reset_scope(scope_token)
+            fb.forget_catalog()
+
+    def review_s5():
+        expected = ("prepare.model 값이 선택지에 없습니다: 'missing-model' (선택지: "
+                    "gpt-image-2.6-sunburst, gpt-image-2.6-flare, gpt-image-2.5-sunburst, gpt-image-2.5-flare)")
+        for server in ("", "1"):
+            with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": server}):
+                for deep in (False, True):
+                    try:
+                        pl._value("prepare", "model", "missing-model", deep=deep)
+                        check(False, "S5 모르는 모델은 거절")
+                    except ValueError as exc:
+                        check(str(exc) == expected if not server else all(name in str(exc) for name in models.MODELS),
+                              "S5 로컬 오류 문구 고정값·서버는 표 전체")
+                    check(all(pl._value("prepare", "model", name, deep=deep) == name for name in models.MODELS),
+                          "S5 모델 값의 허용 집합은 두 모드 모두 표 전체 유지")
+
+    log = io.StringIO()
+    handler = logging.StreamHandler(log)
+    logging.getLogger().addHandler(handler)
+    try:
+        with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1", rn.FORGE_ENV: "1", rn.MOCK_ENV: ""}), \
+                patch.object(fb, "SUBMIT_RETRY_DELAY", 0.0):
+            review_s1()
+            review_s2()
+            review_s3()
+            review_s4()
+            review_s5()
+            review_t1()
+            review_t2()
+            asyncio.run(review_t3())
+            review_t4()
+            asyncio.run(catalog_cases())
+            loop_cases()
+            asyncio.run(request_cases())
+            asyncio.run(pressure_cases())
+            worker_cases()
+            signatures()
+            asyncio.run(env_cases())
+        raw = b"\n".join(path.read_bytes() for path in out.rglob("*.json"))
+        emitted = raw + log.getvalue().encode() + json.dumps(messages).encode()
+        check(all(value.encode() not in emitted for value in (secret, org, media)), "FMB 새 경로 디스크·로그·예외에 비밀·주소·조직 없음")
+    finally:
+        fb.forget_catalog()
+        logging.getLogger().removeHandler(handler)
+
+
+def forge_models_settings_unit():
+    """Forge 2단계 설정 갈래 — 실행 설정의 모델·품질 검증(모드별)·갈라짐·전환 미리 보기·Prepare 의 모델별 크기와 작업 기록·후보의 비율 표지.
+    명세 _proto/STUDIO_FORGE_MODELS_SPEC.md §2.3·§2.5·§3.4. --quick 포함."""
+    section("Forge 모델 설정 — forge_models_settings_unit")
+    from tempfile import mkdtemp
+    from unittest.mock import AsyncMock, patch
+
+    dp = _dp_package()
+    st, rn, bd = dp.store, dp.runner, dp.board
+    pl = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_pipeline")
+    models = importlib.import_module("_bmk_dp_pkg.bmk_design_patch_models")
+    fixture = json.loads((PKG / "tools/fixtures/forge_api.json").read_text(encoding="utf-8"))["models"]
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    out = Path(mkdtemp(prefix="models_settings_", dir=OUT_ROOT.resolve()))
+    pre = dp.BMKDesignPatchPrepare()
+    base = np.full((128, 192, 3), (60, 100, 140), dtype=np.uint8)
+    rects = [("001_panel", [0, 0, 96, 64]), ("002_square", [96, 32, 192, 128])]
+
+    def project(name):
+        return _fx_project(dp, out, name, rects, base)
+
+    def args(name, **kw):
+        values = dict(pl.defaults()["prepare"], model=name, quality="high", variants="V1", n=2,
+                      calls_per_cell=2, complexity="medium")
+        values.update(kw)
+        return values
+
+    def packed(m, report):
+        return json.dumps({"jobs": m["jobs"], "prepare_settings": m["prepare_settings"], "report": report},
+                          ensure_ascii=False).encode("utf-8")
+
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patch.object(dp.folder_paths, "get_output_directory", return_value=str(out / "output")))
+        stack.enter_context(patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "", rn.FORGE_ENV: "", rn.MOCK_ENV: ""}))
+        h, root = project("settings")
+        pipeline_path = Path(root, pl.PIPELINE_NAME)
+        for server_mode in (False, True):
+            with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1" if server_mode else ""}):
+                choices = pre.INPUT_TYPES()["required"]["model"][0]
+                check(list(choices) == (list(fixture["names"]) if server_mode else list(pl._MODELS)),
+                      f"FMS1 모드별 Prepare 모델 선택지 {server_mode}")
+                for name in fixture["names"]:
+                    values = args(name, quality="unused" if not models.get(name).qualities else "high")
+                    doc = {"schema": pl.SCHEMA, "rev": 1, "confirm": [], **pl.defaults(root), "prepare": values}
+                    raw = json.dumps(doc, ensure_ascii=False).encode("utf-8")
+                    pipeline_path.write_bytes(raw)
+                    check(pl.load(root)["prepare"] == values and pl.current(root)["settings"]["prepare"] == values
+                          and pipeline_path.read_bytes() == raw, f"FMS1 두 모드 읽기는 모델·위젯 값 보존 {server_mode} {name}")
+                    if not server_mode and models.is_forge_only(name):
+                        expect_raises(lambda: pl.validate_section("prepare", values), "FMS1 로컬 서버 모델 검증 거부",
+                                      contains="prepare.model: 이 모델은 Forge 서버에서만 생성합니다")
+                        expect_raises(lambda: pl.update(root, 1, "prepare", values), "FMS1 로컬 POST 거부", contains="Forge 서버")
+                        expect_raises(lambda: pl.build_prompt("apply", doc, root), "FMS1 로컬 템플릿 거부", contains="Forge 서버")
+                        check(pipeline_path.read_bytes() == raw, "FMS1 거부한 설정은 디스크 불변")
+                    else:
+                        check(pl.validate_section("prepare", values) == values, f"FMS1 저장 검증 허용 {server_mode} {name}")
+                        changed = dict(values, n=3)
+                        saved = pl.update(root, 1, "prepare", changed)
+                        check(saved["settings"]["prepare"] == changed and pl.load(root)["prepare"] == changed,
+                              f"FMS1 실제 저장 왕복 {server_mode} {name}")
+                        prompt = pl.build_prompt("apply", saved["settings"], root)
+                        check(prompt[pl.NODE_KEYS["prepare"]]["inputs"]["model"] == name, f"FMS1 템플릿 모델 전달 {name}")
+                expect_raises(lambda: pl.validate_section("prepare", args("missing-model")), "FMS1 모르는 모델 거부")
+
+        with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1"}):
+            for name in fixture["names"]:
+                lim = fixture["limits"]["gpt" if name in models.LOCAL_MODELS else name]
+                for quality in lim["qualities"] or ["max", "low", "unused"]:
+                    check(pl.validate_section("prepare", args(name, quality=quality))["quality"] == quality,
+                          f"FMS2 모델별 품질 허용 {name} {quality}")
+                if lim["qualities"]:
+                    bad = "max" if name == "ideogram-4.5" else "invalid"
+                    expect_raises(lambda: pl.validate_section("prepare", args(name, quality=bad)),
+                                  f"FMS2 모델별 품질 거부 {name}",
+                                  contains="prepare.quality 값이 선택지에 없습니다" if name in models.LOCAL_MODELS else "prepare.quality:")
+                expect_raises(lambda: pl.validate_section("prepare", args(name, quality=None)),
+                              f"FMS2 품질 문자열 타입 검사 {name}", contains="prepare.quality 는 문자열")
+            raw = Path(root, st.MANIFEST_NAME).read_bytes()
+            expect_raises(lambda: pre.run(h, **args("ideogram-4.5", quality="max")), "FMS2 Prepare 잘못된 품질 거부", contains="품질")
+            check(Path(root, st.MANIFEST_NAME).read_bytes() == raw, "FMS2 품질 거부는 프로젝트 불변")
+
+        for name in fixture["names"]:
+            settings = pl.defaults()
+            settings["prepare"] = args(name, quality="low")
+            record = {"prepare_settings": args(name, quality="high")}
+            changed = pl.drift(settings, record)
+            check([d["field"] for d in changed] == (["quality"] if models.get(name).qualities else []),
+                  f"FMS3 품질 없는 모델의 갈라짐 생략 {name}")
+        settings["prepare"] = args("seedream-5.5", quality="max")
+        check(pl.drift(settings, {"jobs": [{"model": "seedream-5.5", "quality": models.FIXED_QUALITY, "n": 2, "reps": 2}]}) == [],
+              "FMS3 옛 jobs 기록의 고정 품질도 갈라짐 없음")
+        settings["prepare"] = args("ideogram-4.5", quality="low")
+        check([d["field"] for d in pl.drift(settings, {"prepare_settings": args("seedream-5.5")})] == ["model"],
+              "FMS3 기록된 모델이 품질 없으면 모델 변경만 갈라짐")
+
+        # 기준 커밋 d1d9f3b 의 Prepare 를 같은 합성 프로젝트·고정 시각에서 실행한 바이트(키 순서 포함).
+        pinned = {
+            "gpt-image-2.6-sunburst": "1aa8273c8333bb2bb10e8cb200c4d3840d92579c0ed72680aa9044071e38f514",
+            "gpt-image-2.6-flare": "3f53b9e52ec0ee2820a4be3709ec2c1c5db655c74fcbb908b55c9294a85b03d5",
+            "gpt-image-2.5-sunburst": "d5ad02a5b4d52015a614dd887f7b991a59f6ae510e2e061a2bc2b903f022f124",
+            "gpt-image-2.5-flare": "63349cc76e8e8d4ae806a7ac473c51afd3ac5a0dd0fe2d330d2593689c19597c",
+        }
+        with patch.object(rn, "mock_enabled", return_value=True), patch.object(dp.time, "time", return_value=1000.0):
+            for name, digest in pinned.items():
+                gh, gr = project("gpt")
+                gh, _, report = pre.run(gh, **args(name))
+                gm = st.load_manifest(gr)
+                check(hashlib.sha256(packed(gm, report)).hexdigest() == digest,
+                      f"FMS4 GPT jobs·prepare_settings·보고 문자열 바이트 불변 {name}")
+
+        with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1", rn.FORGE_ENV: "1"}), \
+                patch.object(rn, "mock_enabled", return_value=False):
+            for name in models.FORGE_ONLY:
+                lim = fixture["limits"][name]
+                for rule in st.GPT_SIZE_RULES:
+                    nh, nr = project(f"{name}-{rule}")
+                    values = args(name, quality="unused" if not lim["qualities"] else lim["default_quality"], size_rule=rule)
+                    with patch.object(rn, "split_approval", wraps=rn.split_approval) as approvals:
+                        nh, _, _ = pre.run(nh, **values)
+                    nm = st.load_manifest(nr)
+                    check(approvals.call_args.kwargs["backend"] == rn.BACKEND_FORGE, "FMS5 Prepare 승인 해시는 실행 백엔드 사용")
+                    check(nm["prepare_settings"] == values and len(nm["jobs"]) == len(rects),
+                          f"FMS5 위젯 값 보존·크롭별 작업 생성 {name} {rule}")
+                    for job, (_, rect) in zip(nm["jobs"], rects):
+                        w, h0 = rect[2] - rect[0], rect[3] - rect[1]
+                        W, H, info = models.output_size(name, w, h0, rule)
+                        quality = values["quality"] if lim["qualities"] else models.FIXED_QUALITY
+                        check(job["size"] == [W, H] and job["size_info"] == info and job["size_info"]["src"] == [w, h0]
+                              and job["quality"] == quality and lim["area"][0] <= W * H <= lim["area"][1],
+                              f"FMS5 모델별 크기·품질·크기 기록 {name} {rule}")
+                        check(job["cell_key"] == st.cell_key(name, quality, [W, H], dp._BACKGROUND, job["prompt"],
+                              [i["sha"] for i in job["inputs"]], dp.dprompt.TEMPLATE_VERSION, job["variant"])
+                              and "opts" not in job and "complexity" not in job and job["background"] == dp._BACKGROUND,
+                              f"FMS5 모델별 생성 조건 키·불필요한 옵션 없음 {name}")
+                        with Image.open(st.resolve_path(nr, job["inputs"][0]["file"])) as im:
+                            check(im.size == (w, h0), "FMS5 입력은 원본 크롭 크기 유지(확대는 제출 시점)")
+                    if not lim["qualities"]:
+                        first_keys = [j["cell_key"] for j in nm["jobs"]]
+                        pre.run(nh, **dict(values, quality="low"))
+                        check(first_keys == [j["cell_key"] for j in st.load_manifest(nr)["jobs"]],
+                              "FMS5 Seedream 위젯 품질 변경은 키 불변")
+
+            lim = fixture["limits"]["seedream-5.5"]
+            wide = (lim["max_ratio"] + 1) * 8
+            wh, wr = _fx_project(dp, out, "wide", [("001_wide", [0, 0, wide, 8])], np.full((8, wide, 3), 90, np.uint8))
+            pre.run(wh, **args("seedream-5.5"))
+            wide_jobs = st.load_manifest(wr)["jobs"]
+            check(len(wide_jobs) == 1 and wide_jobs[0]["size_info"].get("problem"),
+                  "FMS5 비율 한도 밖 크롭도 작업을 만들고 size_info.problem 기록")
+
+            # 백엔드 갈래의 제출 전 판정은 대역. 미리 보기가 계획에 넘기는 작업을 실제 Prepare 산출물과 비교한다.
+            with patch.object(rn, "blocked_reason", return_value=None):
+                sh, sr = project("switch")
+                sh = pre.run(sh, **args("gpt-image-2.5-sunburst"))[0]
+                for target in ("seedream-5.5", "ideogram-4.5", "gpt-image-2.6-sunburst", "gpt-image-2.5-flare"):
+                    previous = st.load_manifest(sr)
+                    snapshot = copy.deepcopy(previous)
+                    settings = dict(pl.defaults(sr), prepare=previous["prepare_settings"])
+                    values = args(target)
+                    with patch.object(rn, "plan_calls", wraps=rn.plan_calls) as plans:
+                        preview = pl.switch_preview(sr, previous, settings, prepare=values)
+                    check(preview.get("exact") is True and preview.get("need") == len(rects) * values["calls_per_cell"]
+                          and preview.get("cells") == len(rects), f"FMS6 전환 건수 {previous['prepare_settings']['model']} → {target}")
+                    proposed = copy.deepcopy(plans.call_args.args[0]["jobs"]) if plans.called else []
+                    sh = pre.run(sh, **values)[0]
+                    actual = st.load_manifest(sr)
+                    check(proposed == actual["jobs"] and previous == snapshot,
+                          f"FMS6 미리 보기 작업·키 = 실제 Prepare, 입력 매니페스트 불변 {target}")
+                missing = copy.deepcopy(actual)
+                missing["jobs"][0]["size_info"].pop("src")
+                settings["prepare"] = actual["prepare_settings"]
+                bad_preview = pl.switch_preview(sr, missing, settings, prepare=args("seedream-5.5"))
+                check("기록이 부족" in bad_preview.get("error", ""), "FMS6 비GPT 전환은 원본 크기 기록 없으면 안내")
+                unchanged = pl.switch_preview(sr, missing, settings, prepare=args("gpt-image-2.6-flare"))
+                check(unchanged.get("exact") is True, "FMS6 GPT끼리는 원본 크기 기록 없이 기존 크기 사용")
+                default = pl.switch_preview(sr, actual, settings)
+                explicit = pl.switch_preview(sr, actual, settings, prepare=args("gpt-image-2.6-flare"))
+                check(default == explicit, "FMS6 기본 2.5 → 2.6 전환 결과 불변")
+
+        rh, rr = project("ratios")
+        with patch.object(rn, "mock_enabled", return_value=True):
+            rh = pre.run(rh, **args("gpt-image-2.5-sunburst"))[0]
+        rm = st.load_manifest(rr)
+        job = rm["jobs"][0]
+        req = dict(job, backend="forge", rep=0, call_id=rn.call_id_for(job["cell_key"], 0), size=[100, 100])
+        done = {"slots": [{"slot": i, "file": job["inputs"][0]["file"], "size": size}
+                          for i, size in enumerate(([102, 100], [100, 100], [1005, 1000], None))]}
+        rn._add_candidates(rm, req, done, [])
+        st.save_manifest(rr, rm)
+        req_path = Path(rn._lpath(rr, job["cell_key"], 0, "req"))
+        rn._write_json(str(req_path), req)
+
+        def candidates():
+            return [c for t in bd.build_state(rr)["targets"] for c in t["candidates"]]
+
+        with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1"}), \
+                patch.object(bd._forge_backend(), "prompt_changed", return_value=[True, False, False, False]):
+            rows = candidates()
+            check([c.get("ratio_changed", False) for c in rows] == [True, False, False, False]
+                  and [c.get("prompt_changed", False) for c in rows] == [True, False, False, False]
+                  and all("ratio_changed" not in c for c in rows[1:]), "FMS7 요청 원장 대 후보 크기·1% 허용·프롬프트 표지 공존")
+            for raw in (b"{", b"[]", b'{"size": null}'):
+                req_path.write_bytes(raw)
+                check(all("ratio_changed" not in c for c in candidates()), "FMS7 손상·크기 없는 원장은 비율 표지 생략")
+            req_path.unlink()
+            check(all("ratio_changed" not in c for c in candidates()), "FMS7 없는 원장은 비율 표지 생략")
+            rn._write_json(str(req_path), req)
+            with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": ""}):
+                check(all("ratio_changed" not in c and "prompt_changed" not in c for c in candidates()), "FMS7 로컬 후보 응답 불변")
+            for cand in rm["candidates"]:
+                cand["origin_info"]["backend"] = "mock"
+            st.save_manifest(rr, rm)
+            check(all("ratio_changed" not in c for c in candidates()), "FMS7 Forge 이외 후보 표지 없음")
+
+        run_node = dp.BMKDesignPatchRun()
+        with patch.object(rn, "make_backend", return_value=types.SimpleNamespace(name=rn.BACKEND_MOCK)), \
+                patch.object(dp, "_board_key", return_value=st.root_key(rr)), \
+                patch.object(rn, "reconcile_ledger", return_value={"candidates": [], "calls": [], "warnings": []}), \
+                patch.object(dp, "_cand_grid", return_value=None), \
+                patch.object(run_node, "_report", return_value="unchanged report"):
+            plan = rn.plan_calls(st.load_manifest(rr), rr)
+            ap = rn.split_approval(plan, "", backend=rn.BACKEND_MOCK)
+            why = "이 모델은 지금 Forge 에 없습니다 — 실행 설정에서 다른 모델로 바꿔 주세요."
+            reports = (None, rn.RunReport(backend=rn.BACKEND_MOCK),
+                       rn.RunReport(backend=rn.BACKEND_MOCK, errors=["그 밖의 오류"]),
+                       rn.RunReport(backend=rn.BACKEND_MOCK, stopped_reason="auth",
+                                    errors=["그 밖의 오류", f"call: 발사 못 함 — {why}", "call2: 발사 못 함 — 다음 사유"]),
+                       rn.RunReport(backend=rn.BACKEND_MOCK, stopped_reason="auth", errors=["그 밖의 오류"],
+                                    calls=[{"call_id": "c0", "status": "done"}, {"call_id": "c1", "status": "pending", "error": f"발사 못 함 — {why}"}]))
+            for report in reports:
+                initial = dict(ap, to_run=[{}] if report is not None else [])
+                with patch.object(dp, "_run_plan", side_effect=[(plan, initial), (plan, ap)]), \
+                        patch.object(run_node, "_execute", new=AsyncMock(return_value=report)) as execute:
+                    result = asyncio.run(run_node.run(rh, "", 64, 1, 25, False, False, ""))
+                entry = result["ui"]["bmk_dp_run"][0]
+                check(entry["stop_note"] == (why if any(report is r for r in reports[-2:]) else None)
+                      and result["result"][1] == "unchanged report" and execute.called == (report is not None),
+                      "FMS8 실행 없음·일반 실행·다른 오류는 null, 제출 전 거부(발사 직전 판정·요청 단계 거부)는 첫 사유만 stop_note")
+
+
+def forge_models_dev_unit():
+    """Forge 2단계 가짜 Forge 갈래 — 모델별 요청 꼴 검사·장마다 따로 부르는 흉내·부분 성공·보낸 크기 그대로·모델 목록과 퇴역 스위치.
+    명세 _proto/STUDIO_FORGE_MODELS_SPEC.md §4. --quick 포함."""
+    section("Forge 모델 가짜 Forge — forge_models_dev_unit")
+    import bmk_design_patch_forge_dev as dev
+    from unittest.mock import AsyncMock, patch
+    from aiohttp import web
+    from aiohttp.test_utils import make_mocked_request
+
+    fixture = json.loads((PKG / "tools" / "fixtures" / "forge_api.json").read_text(encoding="utf-8"))
+    models = fixture["models"]
+    seedream = next(name for name, spec in models["requests"].items() if "image_size" in spec["request"])
+    ideogram = next(name for name, spec in models["requests"].items() if "ideogram" in spec["request"])
+    token = dev.issue_token("models_test")
+    headers = {"Authorization": "Bearer " + token}
+    with patch.dict(os.environ, {"BMK_DP_FAKE_RETIRED": ""}):
+        fake = dev.FakeForge(clock=lambda: 1700000000.0)
+
+    def image_uri(size, image_format="PNG", color=(210, 30, 20)):
+        output = io.BytesIO()
+        with Image.new("RGB", size, color) as picture:
+            picture.save(output, format=image_format)
+        mime = {"PNG": "image/png", "JPEG": "image/jpeg", "WEBP": "image/webp"}[image_format]
+        return "data:" + mime + ";base64," + base64.b64encode(output.getvalue()).decode()
+
+    first_size = (1123, 769)  # 1024 축소·32 배수 보정을 잘못 적용하면 드러나는 입력.
+    first_uri = image_uri(first_size)
+    second_uri = image_uri((64, 40), color=(20, 30, 210))
+    serial = 0
+
+    def payload(name, **changes):
+        nonlocal serial
+        serial += 1
+        data = copy.deepcopy(models["requests"][name]["request"])
+        data.update(request_id="models-" + str(serial), input_images=[[first_uri, second_uri]])
+        data.update(changes)
+        return data
+
+    def same_shape(value, sample):
+        if isinstance(sample, dict):
+            keys = set(sample) - {"_comment"}
+            return isinstance(value, dict) and set(value) == keys and all(same_shape(value[k], sample[k]) for k in keys)
+        if isinstance(sample, list):
+            return isinstance(value, list) and (not sample or all(same_shape(v, sample[min(i, len(sample) - 1)]) for i, v in enumerate(value)))
+        return type(value) is type(sample)
+
+    async def call(method, path, data=None, *, auth=headers, instance=fake):
+        status, response_headers, body = await instance.handle(method, path, auth, json.dumps(data).encode() if data is not None else None)
+        return status, json.loads(body) if response_headers.get("Content-Type") == "application/json" else body
+
+    async def generate(data):
+        status, submitted = await call("POST", "/api/image/generate", data)
+        check(status == 200 and same_shape(submitted, fixture["generate"]["response"]), "FMD 제출은 정본 모양으로 접수")
+        if status != 200:
+            raise AssertionError("가짜 Forge 모델 요청 접수 실패")
+        status, job = await call("GET", "/api/image/jobs/" + submitted["job_id"])
+        check(status == 200, "FMD 접수된 모델 잡 조회")
+        return job, fake.requests[-1]
+
+    async def failed(data, prefix=None):
+        job, record = await generate(data)
+        sample = models["job"]["seedream_failed_input"]
+        check(all(job[key] == sample[key] for key in ("status", "result_data", "error_category"))
+              and isinstance(job["error_message"], str) and (prefix is None or prefix in job["error_message"])
+              and record["provider_calls"] == [], "FMD 입력 오류는 공급자 호출 없는 ailabs 실패 잡")
+        check(same_shape(job, dict(fixture["job"]["completed"], **fixture["job"]["failed_ailabs"], request_data=job["request_data"])),
+              "FMD 입력 오류 응답의 전체 키·자료형은 정본과 같음")
+        return job
+
+    async def result_size(job):
+        status, png = await call("GET", job["result_data"]["images"][0], auth={})
+        with Image.open(io.BytesIO(png)) as result:
+            check(status == 200 and result.format == "PNG", "FMD 모델 결과는 무인증 PNG")
+            return result.size
+
+    async def run():
+        catalog = models["catalog"]
+        check(await call(catalog["method"], catalog["path"]) == (200, catalog["response"]), "FMD1 모델 목록은 정본 전체 응답")
+        for auth in ({}, {"Authorization": "Bearer " + dev.issue_token("models_test", 0, clock=lambda: 1700000000.0)}):
+            check(await call(catalog["method"], catalog["path"], auth=auth)
+                  == (fixture["errors"]["invalid_token"]["status"], fixture["errors"]["invalid_token"]["response"]),
+                  "FMD1 목록도 기존 인증·만료 규칙 적용")
+        check((await call("POST", catalog["path"], {}))[0] == 405, "FMD1 목록의 메서드 검사")
+
+        for name in (seedream, ideogram):
+            data = payload(name)
+            job, record = await generate(data)
+            sample = models["job"]["ideogram_completed" if name == ideogram else "seedream_partial"]
+            check(job["status"] == sample["status"] and same_shape(job["result_data"], sample["result_data"])
+                  and len(job["result_data"]["images"]) == data["num_outputs"], "FMD2 모델별 정본 요청·완료 응답 모양")
+            check(record["keys"] == sorted(models["requests"][name]["request"])
+                  and record["checkpoint"] == models["names"][name] and record["effective_checkpoint"] == record["checkpoint"]
+                  and not record["retired"], "FMD2 받은 최상위 키·checkpoint 기록")
+            expected_calls = list(range(data["num_outputs"])) if models["limits"][name]["fan_out"] else [0]
+            check(record["provider_calls"] == expected_calls, "FMD2 Seedream 장별 호출·Ideogram 한 번 호출")
+            expected_size = tuple(map(int, data["image_size"].split("x"))) if name == seedream else first_size
+            check(await result_size(job) == expected_size, "FMD2 Seedream 요청 크기·Ideogram 첫 입력 실제 크기")
+            if name == ideogram:
+                check(job["result_data"]["result_metadata"] == sample["result_data"]["result_metadata"],
+                      "FMD2 Ideogram 모든 결과의 prompt_used 원문·call_index")
+            before = len(fake.jobs)
+            status, again = await call("POST", "/api/image/generate", data)
+            check(status == 200 and again["job_id"] == job["id"] and again["status"] == "completed"
+                  and len(fake.jobs) == before and fake.requests[-1]["reused"] and fake.requests[-1]["provider_calls"] == [],
+                  "FMD2 모델별 멱등 재제출은 새 잡·공급자 호출 없음")
+
+        for name in (seedream, ideogram):
+            spec = models["requests"][name]
+            for key in spec["never"]:
+                job = await failed(payload(name, **{key: None}), spec["errors"]["input"][1 if key == "background" and name == seedream else 0 if name == seedream else 3])
+                check(key in fake.requests[-1]["keys"], "FMD3 값이 null 이어도 모든 금지 키를 검사·기록")
+                if name == seedream and key == "background":
+                    check(all(job[k] == v for k, v in models["job"]["seedream_failed_input"].items() if k != "_comment"),
+                          "FMD3 Seedream 배경 오류는 정본 실패 값과 동일")
+        lo, hi = models["limits"][seedream]["area"]
+        for size in (None, [], "auto", "0x1024", "-1x1024", "1x1", f"{math.isqrt(hi) + 1}x{math.isqrt(hi) + 1}", f"1x{lo}"):
+            await failed(payload(seedream, image_size=size), models["requests"][seedream]["errors"]["input"][0])
+        missing_size = payload(seedream)
+        del missing_size["image_size"]
+        await failed(missing_size, models["requests"][seedream]["errors"]["input"][0])
+        # Forge 자체의 창은 양의 변·면적·비율이다. 스튜디오의 min_side 를 추가로 강제하지 않는다.
+        for size in (f"{math.isqrt(lo)}x{math.isqrt(lo)}", "400x4000"):
+            job, _ = await generate(payload(seedream, image_size=size, input_images=[[second_uri]]))
+            check(job["status"] == "completed" and await result_size(job) == tuple(map(int, size.split("x"))),
+                  "FMD3 Seedream 면적 하한·짧은 변 512 미만의 유효한 Forge 크기")
+
+        limit = models["limits"][seedream]["max_inputs"]
+        overflow = [first_uri] + [second_uri] * (fixture["generate"]["request_rules"]["max_inputs_per_group"] + 1)
+        for groups in ([overflow], [overflow[:3], overflow[3:]]):
+            job, record = await generate(payload(seedream, input_images=groups))
+            check(job["status"] == "completed" and record["input_count"] == len(overflow)
+                  and record["used_input_indices"] == list(range(limit)) and "warning" not in job["result_data"],
+                  "FMD4 Seedream은 그룹 경계를 넘어 앞의 입력 상한만 사용·조용히 절삭")
+            with Image.open(io.BytesIO(fake._states[job["id"]]["source"])) as source:
+                check(source.getpixel((0, source.height - 1))[0] > source.getpixel((0, source.height - 1))[2],
+                      "FMD4 절삭 뒤에도 첫 입력 그림 유지")
+
+        partial = models["job"]["seedream_partial"]
+        count = max(item["call_index"] for item in partial["result_data"]["result_metadata"]) + 1
+        actual = len(partial["result_data"]["images"])
+        data = payload(seedream, num_outputs=count, prompt=f"[[fake:partial={actual}]]")
+        job, record = await generate(data)
+        check(job["status"] == partial["status"] and same_shape(job["result_data"], partial["result_data"])
+              and len(job["result_data"]["images"]) == actual
+              and job["result_data"]["result_metadata"] == partial["result_data"]["result_metadata"]
+              and "warning" not in job and "warning" not in job["result_data"]
+              and record["provider_calls"] == list(range(count))
+              and record["successful_calls"] == [item["call_index"] for item in partial["result_data"]["result_metadata"]],
+              "FMD4 부분 성공은 모든 장을 따로 호출하고 정본처럼 일부 인덱스만 완료·경고 없음")
+        spec = models["requests"][ideogram]
+        for groups in ([[second_uri] * (models["limits"][ideogram]["max_inputs"] + 1)],
+                       [[second_uri] * 3, [second_uri] * 3]):
+            await failed(payload(ideogram, input_images=groups), spec["errors"]["input"][1])
+        for count in (0, models["limits"][ideogram]["max_n"] + 1, fixture["generate"]["request_rules"]["num_outputs"][1] + 1):
+            await failed(payload(ideogram, num_outputs=count), spec["errors"]["input"][2])
+        for options in (None, [], dict(spec["request"]["ideogram"], extra_option=True),
+                        dict(spec["request"]["ideogram"], quality="max")):
+            await failed(payload(ideogram, ideogram=options), spec["errors"]["input"][3])
+        for prompt in ("", " " * 3, "p" * 10001):
+            await failed(payload(ideogram, prompt=prompt), spec["errors"]["input"][0])
+        await failed(payload(seedream, prompt=" "), models["requests"][seedream]["errors"]["input"][2])
+        for image_format in ("JPEG", "WEBP"):
+            data = payload(ideogram, input_images=[[image_uri(first_size, image_format)]])
+            job, _ = await generate(data)
+            check(await result_size(job) == first_size, "FMD5 Ideogram JPEG·WEBP도 원래 크기로 정밀 편집")
+        large_size = (2301, 1901)
+        job, _ = await generate(payload(ideogram, input_images=[[image_uri(large_size)]], num_outputs=models["limits"][ideogram]["max_n"]))
+        check(job["status"] == "completed" and len(job["result_data"]["images"]) == models["limits"][ideogram]["max_n"]
+              and await result_size(job) == large_size, "FMD5 Ideogram 장수 상한 허용·정밀 편집에는 전체 편집 면적 상한 미적용")
+        for quality in ("very_low", *models["limits"][ideogram]["qualities"]):
+            data = payload(ideogram, ideogram=dict(spec["request"]["ideogram"], quality=quality), input_images=[[second_uri]])
+            del data["prompt_autopilot"]
+            job, record = await generate(data)
+            check(job["status"] == "completed" and record["provider_calls"] == [0]
+                  and all(item["prompt_used"] == data["prompt"] for item in job["result_data"]["result_metadata"]),
+                  "FMD5 Ideogram 공급자 품질·autopilot 키 생략 시 한 번 호출·원문 유지")
+        data = payload(ideogram, prompt="수정 시험 [[fake:changed]]")
+        job, _ = await generate(data)
+        check(all("prompt_used" in item for item in job["result_data"]["result_metadata"])
+              and job["result_data"]["result_metadata"][-1]["prompt_used"] == data["prompt"] + " (rewritten)",
+              "FMD5 기존 changed 표지로 Ideogram 프롬프트 변경")
+
+        gpt = copy.deepcopy(fixture["generate"]["request"])
+        gpt.update(input_images=[[second_uri]], size="96x64")
+        for checkpoint in fixture["generate"]["checkpoints"].values():
+            data = dict(gpt, checkpoint=checkpoint, request_id="gpt-" + checkpoint)
+            job, record = await generate(data)
+            check(job["status"] == "completed" and job["request_data"] == {k: v for k, v in data.items() if k != "input_images"}
+                  and same_shape(job["result_data"], fixture["job"]["completed"]["result_data"])
+                  and job["result_data"]["result_metadata"] == [{} for _ in range(data["num_outputs"])]
+                  and await result_size(job) == (96, 64) and record["checkpoint"] == checkpoint,
+                  "FMD6 GPT 네 모델의 요청 요약·결과 모양·메타데이터·크기 불변")
+        job, _ = await generate(dict(gpt, request_id="gpt-partial", prompt="[[fake:partial=1]]"))
+        check(same_shape(job["result_data"], fixture["job"]["completed_partial"]["result_data"])
+              and job["result_data"]["warning"] == fixture["job"]["completed_partial"]["result_data"]["warning"],
+              "FMD6 GPT 부분 성공에는 기존 경고 유지")
+        data = dict(gpt, request_id="gpt-auto")
+        del data["prompt_autopilot"]
+        job, _ = await generate(data)
+        check(job["result_data"]["result_metadata"][-1]["prompt_used"] == data["prompt"] + " (rewritten)",
+              "FMD6 GPT autopilot 키 생략 시 기존 재작성 유지")
+
+        for name in (seedream, ideogram, next(iter(fixture["generate"]["checkpoints"]))):
+            checkpoint = models["names"][name]
+            fake.retire(checkpoint)
+            current = (await call(catalog["method"], catalog["path"]))[1]
+            check(current["models"] == [row for row in catalog["response"]["models"] if row["checkpoint"] != checkpoint]
+                  and current["count"] == catalog["response"]["count"] - 1, "FMD7 퇴역 스위치가 해당 모델만 목록에서 제거")
+            data = payload(name) if name in models["requests"] else dict(gpt, checkpoint=checkpoint, request_id="gpt-retired")
+            job, record = await generate(data)
+            check(job["status"] == "completed" and record["checkpoint"] == checkpoint and record["retired"]
+                  and record["effective_checkpoint"] != checkpoint and job["request_data"]["checkpoint"] == record["effective_checkpoint"],
+                  "FMD7 퇴역 모델도 접수·대체 모델로 실행했다고 기록")
+            fake.retire(checkpoint, False)
+            check(await call(catalog["method"], catalog["path"]) == (200, catalog["response"]), "FMD7 퇴역 스위치를 끄면 원본 목록 복구")
+        with patch.dict(os.environ, {"BMK_DP_FAKE_RETIRED": ", ".join(models["names"][name] for name in (seedream, ideogram))}):
+            env_fake = dev.FakeForge()
+        current = (await call(catalog["method"], catalog["path"], instance=env_fake))[1]
+        check(current["models"] == [row for row in catalog["response"]["models"]
+                                    if row["checkpoint"] not in [models["names"][name] for name in (seedream, ideogram)]],
+              "FMD7 환경 변수로 여러 모델을 퇴역시킬 수 있음")
+
+        data = payload(ideogram, private_value=token, ideogram={"extra_option": first_uri})
+        await failed(data)
+        snapshot = json.dumps({"calls": list(fake.calls), "requests": list(fake.requests), "jobs": fake.jobs}, ensure_ascii=False)
+        check(token not in snapshot and first_uri not in snapshot and second_uri not in snapshot and "data:image/" not in snapshot
+              and "Authorization" not in snapshot, "FMD8 실패한 옵션·받은 헤더·입력 data URI 본문은 기록·응답에 없음")
+        with patch.object(dev, "_MAX_CALLS", 2), patch.dict(os.environ, {"BMK_DP_FAKE_RETIRED": ""}):
+            bounded = dev.FakeForge()
+        for i in range(3):
+            await call("POST", "/api/image/generate", dict(gpt, request_id="bounded-" + str(i)), instance=bounded)
+        check(bounded.requests.maxlen == 2 and len(bounded.requests) == 2, "FMD8 받은 요청 기록도 최근 상한만 보관")
+
+        app = web.Application()
+        dev.mount(app, types.SimpleNamespace(dev_handoff=True, dev_parent_port=8790), fake)
+        req = make_mocked_request("GET", catalog["path"], headers={"Host": "localhost:8790", **headers},
+                                  payload=types.SimpleNamespace(readany=AsyncMock(return_value=b"")), app=app)
+        route = await app.router.resolve(req)
+        req._match_info = route
+        response = await route.handler(req)
+        check(response.status == 200 and json.loads(response.body) == catalog["response"]
+              and catalog["path"] in {route.resource.canonical for route in app.router.routes()},
+              "FMD8 부모 앱에 목록 라우트 등록·소켓 없이 HTTP 어댑터 호출")
+
+    asyncio.run(run())
+
+
+def forge_models_js_unit():
+    """Forge 2단계 화면 갈래 — 실행 설정의 모델 고르기·모델별 품질 칸·전환 미리 보기·승인 상자와 후보의 모델 표시.
+    명세 _proto/STUDIO_FORGE_MODELS_SPEC.md §2.5·§3.4. --quick 포함."""
+    section("Forge 모델 화면 — forge_models_js_unit")
+    import bmk_design_patch_models as models
+
+    node = shutil.which("node")
+    if not node:
+        skip("FMJ node 없음 — 모델 화면 VM 시험 못 돌림")
+        return
+    web = PKG / "web_design_patch"
+    out = OUT_ROOT / "forge_models_js"
+    out.mkdir(parents=True, exist_ok=True)
+    fixture = json.loads((PKG / "tools" / "fixtures" / "forge_api.json").read_text(encoding="utf-8"))["models"]
+    catalog = [models.describe(name) for name in fixture["names"]]
+    for model in catalog:
+        limits = fixture["limits"].get(model["name"], fixture["limits"]["gpt"])
+        check(all(model[key] == limits[key] for key in ("qualities", "max_n", "max_inputs", "fan_out")),
+              f"FMJ env 시험 재료 = 정본 models.limits {model['name']}")
+    sources = {name: (web / name).read_text(encoding="utf-8") for name in ("env.js", "dialog.js", "pipeline.js", "board.js")}
+    core = _fw_core_js().split('await scenario("FW7', 1)[0] + r'''
+for(const mode of ["ok","network","timeout","http","session","json","shape","missing","local","legacy"])
+await scenario("FMJ env 세션 뒤 목록 갱신 "+mode,async()=>{
+  const initial=clone(A.env_server_forge.response);initial.caps.models=clone(IN.models);
+  const fresh=clone(initial);fresh.caps.models[0].available=false;fresh.caps.models[0].why="목록에서 빠짐";
+  fresh.caps.sam3=!initial.caps.sam3;fresh.backend="changed";
+  let reads=0;
+  const e=await boot({handler:(u,o)=>{
+    const path=new URL(String(u)).pathname;
+    if(path.endsWith("/env")){
+      reads++;
+      if(mode==="legacy")return response({},404);
+      if(mode==="local")return response(A.env_local.response);
+      if(reads===1)return response(initial);
+      if(mode==="network")return Promise.reject(Error("offline"));
+      if(mode==="timeout")return new Promise(()=>{});
+      if(mode==="http")return response({},503);
+      if(mode==="session")return response({reason:"no_session"},401);
+      if(mode==="json")return new Response("not json");
+      if(mode==="shape")return response({server_mode:true,caps:{models:[]}});
+      if(mode==="missing"){delete fresh.caps.models;return response(fresh);}
+      return response(fresh);
+    }
+    return serverHandler(u,o);
+  }});
+  if(mode==="timeout"){if(e.ready)return false;await e.fire(8000);}
+  const env=e.ctx.DPEnv;
+  if(mode==="local"||mode==="legacy")return e.ready&&!env.serverMode&&reads===1&&!env.account;
+  const read=e.calls.findLast(([u])=>String(u).endsWith("/env")),headers=new Headers(read[1].headers);
+  const order=e.calls.map(([u])=>new URL(String(u)).pathname);
+  return {ready:e.ready,twice:reads===2,afterSession:order.indexOf("/api/session")<order.lastIndexOf(order[0]),
+    scoped:headers.get("X-DesignPatch-Account")===A.session_post.response.account.tag,
+    models:JSON.stringify(env.caps.models)===JSON.stringify(mode==="ok"?fresh.caps.models:initial.caps.models),
+    otherCaps:env.caps.sam3===initial.caps.sam3,backend:env.backend===initial.backend,
+    silent:!e.doc.body.textContent&&!e.logs.length};
+});
+await scenario("U2 모델 재조회 병합·오류 회복·다른 환경 값 보존",async()=>{
+  const initial=clone(A.env_server_forge.response);initial.caps.models=clone(IN.models);initial.caps.models_error="목록을 읽지 못했습니다";
+  let reads=0,reply;const e=await boot({handler:(u,o)=>{
+    if(!String(u).endsWith("/env"))return serverHandler(u,o);
+    if(++reads<=2)return response(initial);return new Promise(r=>reply=r);
+  }}),env=e.ctx.DPEnv;
+  if(typeof env.refreshModels!=="function")return {refresh:false};
+  const a=env.refreshModels(),b=env.refreshModels();await settle();
+  const fresh=clone(initial);fresh.caps.models[0].available=false;fresh.caps.models[0].why="목록에서 빠짐";
+  fresh.caps.models_error=null;fresh.caps.sam3=!initial.caps.sam3;fresh.backend="changed";
+  reply(response(fresh));const changed=await a;await b;
+  const r={shared:a===b&&reads===3,changed:changed===true,models:JSON.stringify(env.caps.models)===JSON.stringify(fresh.caps.models),
+    error:env.caps.models_error===null,others:env.backend===initial.backend&&env.caps.sam3===initial.caps.sam3};
+  const same=env.refreshModels();await settle();reply(response(fresh));r.same=await same===false&&reads===4;return r;
+});
+for(const failure of ["network","http","session","shape","timeout"])await scenario("U2 재조회 실패 값 유지 "+failure,async()=>{
+  const initial=clone(A.env_server_forge.response);initial.caps.models=clone(IN.models);initial.caps.models_error="첫 안내";let reads=0;
+  const e=await boot({handler:(u,o)=>{
+    if(!String(u).endsWith("/env"))return serverHandler(u,o);if(++reads<=2)return response(initial);
+    if(failure==="network")return Promise.reject(Error("offline"));if(failure==="timeout")return new Promise(()=>{});
+    return failure==="shape"?response({server_mode:true,caps:{models:[]}}):response({reason:"no_session"},failure==="session"?401:503);
+  }}),env=e.ctx.DPEnv,before=JSON.stringify(env.caps);
+  if(typeof env.refreshModels!=="function")return false;
+  const pending=env.refreshModels();await settle();if(failure==="timeout")await e.fire(8000);
+  return await pending===false&&JSON.stringify(env.caps)===before&&!e.doc.body.textContent&&!e.logs.length;
+});
+for(const account of ["noSession","missingSession","otherTag","missingAccount","sameTag"])await scenario("V1 재조회 응답 세션·계정 확인 "+account,async()=>{
+  const initial=clone(A.env_server_forge.response);initial.caps.models=clone(IN.models);initial.caps.models_error="첫 안내";
+  const fresh=clone(initial);fresh.caps.models[0].available=false;fresh.caps.models[0].why="목록에서 빠짐";fresh.caps.models_error=null;
+  if(account==="noSession")fresh.session=false;if(account==="missingSession")delete fresh.session;
+  if(account==="otherTag")fresh.account.tag="another-account";if(account==="missingAccount")delete fresh.account;
+  let reads=0;const e=await boot({handler:(u,o)=>String(u).endsWith("/env")?response(++reads<=2?initial:fresh):serverHandler(u,o)});
+  const env=e.ctx.DPEnv,before=JSON.stringify(env.caps),result=await env.refreshModels(),accepted=account==="sameTag";
+  return {result:result===accepted,caps:JSON.stringify(env.caps)===(accepted?JSON.stringify(fresh.caps):before),
+    account:env.account.tag===initial.account.tag&&reads===3};
+});
+for(const server of [false,true])await scenario("U2 목록 없는 환경은 재조회 요청 0 "+server,async()=>{
+  let reads=0;const data=clone(server?A.env_server.response:A.env_local.response);
+  const e=await boot({handler:(u,o)=>String(u).endsWith("/env")?(reads++,response(data)):serverHandler(u,o)});
+  const before=e.calls.length;if(typeof e.ctx.DPEnv.refreshModels!=="function")return false;
+  return await e.ctx.DPEnv.refreshModels()===false&&reads===1&&e.calls.length===before;
+});
+console.log(JSON.stringify(out));
+'''
+    h = _PL_JS_HARNESS
+    cut = [h[h.index(a):h.index(b, h.index(a))] for a, b in
+           (("import fs", "async function run("), ("class El {", "async function mouse("),
+            ("function boardState()", 'await scenario("panel"'), ("function quietPipeline(mod)", 'await scenario("panelDrift"'))]
+    ui = "\n".join(cut) + _PAID_STUDIO_JS_HARNESS.split('// ── J-P3 승인 단추:', 1)[0] + r'''
+const eq=(a,b)=>JSON.stringify(a)===JSON.stringify(b),catalog=IN.models;
+const seed=catalog.find(m=>m.kind==="seedream"),ideo=catalog.find(m=>m.kind==="ideogram"),gpt=catalog.find(m=>m.name.includes("2.5"));
+let refreshes=0;
+function mode(server=true,models=catalog){ctx.window.DPEnv={serverMode:server,backend:"forge",caps:{...IN.forge.env_server_forge.response.caps,...(models?{models:clone(models)}:{})},
+  requestToken:()=>{refreshes++;return Promise.resolve(true);},can:n=>IN.forge.env_server_forge.response.caps[n]===true};}
+function dialog(e){
+  const events=new Map();ctx.window.addEventListener=(t,f)=>events.set(t,[...events.get(t)||[],f]);
+  ctx.window.removeEventListener=(t,f)=>events.set(t,(events.get(t)||[]).filter(x=>x!==f));
+  El.prototype.appendChild=function(x){this.append(x);return x;};vm.runInContext(IN.dialog,ctx);
+}
+async function studio({server=true,models=catalog,prepare={},backend="forge"}={}){
+  mode(server,models);
+  const e=await mkStudio({P:b=>{Object.assign(b.settings.prepare,{model:gpt.name,quality:gpt.default_quality,n:2},prepare);
+      b.derived.settings.prepare=clone(b.settings.prepare);},
+    plan:p=>{p.run.backend=backend;p.run.pre=0;}});
+  dialog(e);e.h=e.pipe._models;
+  e.field=k=>{const box=e.panel.querySelectorAll(".pp-sec").find(x=>x.children[0].textContent==="Prepare");
+    const label=server&&models?({model:"모델",quality:"품질"}[k]||k):k;
+    return box?.children.find(x=>x.classList.contains("pp-field")&&x.children[0].textContent===label);};
+  e.input=k=>e.field(k)?.children.find(x=>["INPUT","SELECT"].includes(x.tagName));
+  e.change=async(k,v)=>{const input=e.input(k);input.focus();input.value=String(v);input.fire(input.tagName==="SELECT"?"change":"input");await sleep(5);};
+  return e;
+}
+await scenario("U2 목록 오류 한 줄·선택 가능·같은 이유 한 번",async()=>{
+  const e=await studio(),error="Forge 의 모델 목록을 읽지 못했습니다";ctx.window.DPEnv.caps.models_error=error;await e.h.openSettings();
+  const r={error:e.field("model").children.filter(x=>x.textContent===error).length===1,enabled:e.input("model").children.every(x=>!x.disabled)};
+  ctx.window.DPEnv.caps.models_error=null;
+  for(const m of ctx.window.DPEnv.caps.models.slice(0,2)){m.available=false;m.why="지금 사용할 수 없습니다";}
+  await e.h.openSettings();r.unique=e.field("model").children.filter(x=>x.classList.contains("pp-hint")&&x.textContent.includes("지금 사용할 수 없습니다")).length===1;
+  r.unavailable=e.input("model").children.slice(0,2).every(x=>x.disabled&&x.title==="지금 사용할 수 없습니다");e.stop();return r;
+});
+await scenario("U2 설정 열기·작업 종료 재조회와 재그리기·폴링 제외",async()=>{
+  const e=await studio();let reads=0;
+  ctx.window.DPEnv.caps.models_error="첫 조회 실패";
+  ctx.window.DPEnv.refreshModels=async()=>{reads++;ctx.window.DPEnv.caps.models_error=null;ctx.window.DPEnv.caps.models[0].available=false;
+    ctx.window.DPEnv.caps.models[0].why="새 목록에서 빠짐";return true;};
+  await e.h.openSettings();await sleep(5);
+  const r={open:reads===1,redraw:e.field("model").textContent.includes("새 목록에서 빠짐")&&!e.field("model").textContent.includes("첫 조회 실패")};
+  for(const stage of ["apply","run","reroll"]){const before=reads;e.h.PS.last[stage]={report:"끝"};
+    e.h.PS.onDone({stage,pid:"test"},{state:"done"});await sleep(10);r[stage]=reads===before+1;}
+  const before=reads;e.h.PS.last.draft={report:"끝"};
+  for(const stage of ["draft","export"])e.h.PS.onDone({stage,pid:"test"},{state:"done"});
+  for(let i=0;i<3;i++)e.pipe.stateChanged(e.S);await sleep(30);r.noPolling=reads===before;e.stop();return r;
+});
+for(const server of [false,true])await scenario("U2 목록 없는 화면에서 재조회 호출 없음 "+server,async()=>{
+  const e=await studio({server,models:server?null:catalog});let calls=0;ctx.window.DPEnv.refreshModels=async()=>{calls++;return true;};
+  await e.h.openSettings();for(const stage of ["apply","run","reroll"]){e.h.PS.last[stage]={report:"끝"};e.h.PS.onDone({stage,pid:"test"},{state:"done"});}
+  await sleep(20);e.stop();return calls===0;
+});
+await scenario("FMJ 선택지·퇴역한 저장 모델·아래 안내·문자열 label",async()=>{
+  const list=clone(catalog);list[0].available=false;list[0].why="이 모델은 지금 목록에 없습니다";list[0].label="<목록 모델>";
+  const e=await studio({models:list,prepare:{model:list[0].name}});await e.h.openSettings();
+  const input=e.input("model"),options=input.children;
+  const r={names:eq(options.map(o=>o.value),list.map(m=>m.name)),labels:eq(options.map(o=>o.textContent),list.map(m=>m.label)),
+    disabled:options[0].disabled===true&&options.slice(1).every(o=>!o.disabled),selected:input.value===list[0].name,
+    reason:options[0].title===list[0].why&&input.title===list[0].why&&e.field("model").textContent.includes(list[0].why),
+    text:options[0].children.length===0};e.stop();return r;
+});
+await scenario("FMJ 품질·기본값·상한·복잡도 즉시 전환",async()=>{
+  const e=await studio({prepare:{n:gpt.max_n}});await e.h.openSettings();
+  await e.change("model",ideo.name);
+  const r={quality:eq(e.input("quality").children.map(o=>o.value),ideo.qualities),default:e.input("quality").value===ideo.default_quality,
+    clamped:Number(e.input("n").value)===ideo.max_n&&e.input("n").max===String(ideo.max_n),
+    complexity:e.field("complexity").classList.contains("pp-complexity-unused")};
+  await e.change("n",ideo.max_n+2);r.inputClamp=Number(e.input("n").value)===ideo.max_n;
+  await e.change("quality",ideo.qualities[0]);await e.change("model",seed.name);
+  r.noQuality=e.input("quality").disabled&&e.field("quality").classList.contains("pp-complexity-unused")
+    &&e.field("quality").textContent.includes("이 모델은 품질을 선택하지 않습니다");
+  await e.change("model",gpt.name);r.keptQuality=e.input("quality").value===ideo.qualities[0]&&!e.input("quality").disabled;
+  await e.change("model",catalog.find(m=>m.name.includes("2.6")).name);
+  r.gpt26=!e.field("complexity").classList.contains("pp-complexity-unused");e.stop();return r;
+});
+for(const quality of [gpt.default_quality,ideo.default_quality])await scenario("U1 자동 보정 되돌림 "+quality,async()=>{
+  const model=catalog.find(m=>m.name.includes("2.6")),e=await studio({prepare:{model:model.name,quality,n:gpt.max_n}});
+  await e.h.openSettings();await e.change("model",ideo.name);
+  let state=e.h.editState();const r={directOnly:eq(state.form.prepare,{model:ideo.name})&&eq(Object.keys(state.edits.prepare),["model"]),
+    adjusted:e.input("quality").value===ideo.default_quality&&Number(e.input("n").value)===ideo.max_n};
+  await e.change("model",model.name);state=e.h.editState();
+  r.quality=e.input("quality").value===quality;r.n=Number(e.input("n").value)===gpt.max_n;
+  r.clean=!Object.keys(state.form.prepare||{}).length&&!Object.keys(state.edits.prepare||{}).length;e.stop();return r;
+});
+await scenario("U1 되돌리면 2.6 전환 단추 복원",async()=>{
+  const e=await studio({prepare:{n:gpt.max_n}});await e.h.openSettings();await e.change("model",ideo.name);await e.change("model",gpt.name);
+  const r=!!e.B("2.6 으로 전환")&&!e.B("2.6 으로 전환").disabled;e.stop();return r;
+});
+for(const key of ["quality","n"])await scenario("U1 직접 고친 값 보존 "+key,async()=>{
+  const e=await studio({prepare:{n:gpt.max_n}});await e.h.openSettings();await e.change("model",ideo.name);
+  await e.change(key,key==="quality"?ideo.qualities[0]:6);await e.change("model",gpt.name);
+  const r={quality:e.input("quality").value===(key==="quality"?ideo.qualities[0]:gpt.default_quality),
+    n:Number(e.input("n").value)===(key==="n"?6:gpt.max_n),direct:Object.keys(e.h.editState().form.prepare||{}).join(",")===key};
+  e.stop();return r;
+});
+await scenario("U1 직접 입력한 n도 모델 전환 전 값으로 복원",async()=>{
+  const e=await studio({prepare:{n:2}});await e.h.openSettings();await e.change("n",gpt.max_n);
+  await e.change("model",ideo.name);
+  const r={raw:e.h.editState().form.prepare.n===gpt.max_n,shown:Number(e.input("n").value)===ideo.max_n};
+  await e.change("model",gpt.name);r.restored=Number(e.input("n").value)===gpt.max_n;e.stop();return r;
+});
+await scenario("U1 다른 절 저장 중 되돌림은 숨은 편집을 남기지 않음",async()=>{
+  const e=await studio({prepare:{n:gpt.max_n}});await e.h.openSettings();e.srv.delay["pipeline/settings"]=[80];
+  const saved=clone(e.h.PS.P);e.srv.route.settings=(q,body)=>{saved.settings[body.section]=clone(body.values);saved.rev++;return [200,saved];};
+  e.srv.route.pipeline=()=>[200,saved];const pending=e.h.PS.save("run",saved.settings.run,saved.rev);
+  await e.change("model",ideo.name);await e.change("model",gpt.name);const state=e.h.editState();
+  const r={during:e.h.PS.busy&&!Object.keys(state.form.prepare||{}).length&&!Object.keys(state.edits.prepare||{}).length};
+  await pending;await e.h.openSettings();r.enabled=!e.B("2.6 으로 전환").disabled;
+  const switched=e.h.switchModel();await until(()=>!!e.box());e.B("확인",e.box()).onclick({isTrusted:true});await switched;
+  await e.h.openSettings();const model=saved.settings.prepare.model;await e.change("quality",ideo.qualities[0]);
+  r.noHiddenModel=model.includes("2.6")&&e.input("model").value===model&&!Object.hasOwn(e.h.editState().form.prepare,"model");
+  e.stop();return r;
+});
+for(const cause of ["reload","409"])await scenario("U1 새 저장값으로 자동 보정·자동값 덮어쓰기 없음 "+cause,async()=>{
+  const e=await studio({prepare:{n:gpt.max_n}});await e.h.openSettings();await e.change("model",ideo.name);e.doc.activeElement.blur();
+  const saved=clone(e.h.PS.P),update=()=>{saved.rev++;saved.settings.prepare.quality="medium";saved.settings.prepare.n=6;};
+  e.srv.route.pipeline=()=>[200,saved];
+  if(cause==="409"){
+    e.srv.route.settings=()=>{update();return [409,{error:"다른 창에서 저장했습니다"}];};
+    const pending=e.h.saveSection("prepare");await until(()=>!!e.box());e.B("확인",e.box()).onclick({isTrusted:true});await pending;
+  }else{update();await e.h.PS.load();}
+  await e.h.openSettings();const state=e.h.editState(),r={model:e.input("model").value===ideo.name,
+    quality:e.input("quality").value==="medium",n:Number(e.input("n").value)===6,
+    directOnly:eq(state.form.prepare,{model:ideo.name})&&eq(Object.keys(state.edits.prepare),["model"])};
+  const pending=e.h.saveSection("prepare");await until(()=>!!e.box());const box=e.box();
+  r.noOverwrite=!box.textContent.includes("prepare.quality:")&&!box.textContent.includes("prepare.n:");
+  r.preview=box.textContent.includes("다음 [반영] 뒤 생성 승인 필요");e.B("취소",box).onclick({isTrusted:true});await pending;
+  e.stop();return r;
+});
+for(const quality of [gpt.default_quality,ideo.default_quality])await scenario("U1 장 수 자동 보정은 전환 미리 보기 동반 "+quality,async()=>{
+  const e=await studio({prepare:{quality,n:gpt.max_n}});await e.h.openSettings();await e.change("model",ideo.name);e.doc.activeElement.blur();
+  const pending=e.h.saveSection("prepare");await until(()=>!!e.box());const box=e.box();
+  const sent=JSON.parse(e.srv.log.findLast(x=>x.path==="pipeline"&&x.q.prepare).q.prepare);
+  const r={preview:box.textContent.includes("다음 [반영] 뒤 생성 승인 필요")&&sent.n===ideo.max_n&&sent.model===ideo.name,
+    noWrite:e.srv.count("pipeline/settings","POST")===0};e.B("취소",box).onclick({isTrusted:true});await pending;e.stop();return r;
+});
+await scenario("U1 저장 뒤 편집 상태 초기화·새 저장값 기준",async()=>{
+  const e=await studio({prepare:{n:gpt.max_n}});await e.h.openSettings();await e.change("model",ideo.name);await e.change("quality",ideo.qualities[0]);
+  let saved=clone(e.h.PS.P);e.srv.route.settings=(q,body)=>{saved.settings[body.section]=clone(body.values);saved.rev++;return [200,saved];};
+  e.srv.route.pipeline=()=>[200,saved];e.doc.activeElement.blur();const pending=e.h.saveSection("prepare");await until(()=>!!e.box());
+  e.B("확인",e.box()).onclick({isTrusted:true});await pending;
+  let state=e.h.editState();const r={saved:!Object.keys(state.form.prepare||{}).length&&!Object.keys(state.edits.prepare||{}).length};
+  await e.change("quality",ideo.default_quality);e.doc.activeElement.blur();const again=e.h.saveSection("prepare");await until(()=>!!e.box());
+  e.B("확인",e.box()).onclick({isTrusted:true});await again;
+  await e.change("model",gpt.name);await e.change("model",ideo.name);state=e.h.editState();
+  r.clean=!Object.keys(state.form.prepare||{}).length&&!Object.keys(state.edits.prepare||{}).length;
+  r.baseline=e.input("quality").value===ideo.default_quality&&Number(e.input("n").value)===ideo.max_n;e.stop();return r;
+});
+for(const server of [false,true])await scenario("FMJ 목록 없는 화면 보존 "+server,async()=>{
+  const e=await studio({server,models:server?null:catalog});await e.h.openSettings();
+  const base=e.h.PS.P.widgets.prepare;
+  const r={models:eq(e.input("model").children.map(x=>x.value),base.model.choices),quality:eq(e.input("quality").children.map(x=>x.value),base.quality.choices),
+    labels:e.field("model").children[0].textContent==="model"&&e.field("quality").children[0].textContent==="quality",
+    noNewDOM:!e.panel.all().some(x=>x.classList.contains("pp-model")),max:e.input("n").max===String(base.n.max)};
+  e.stop();return r;
+});
+for(const key of ["model","quality"])await scenario("U1 저장 응답 전 되돌린 직접 편집 보존 "+key,async()=>{
+  const e=await studio({prepare:{n:gpt.max_n}});await e.h.openSettings();await e.change(key,key==="model"?ideo.name:ideo.qualities[0]);
+  e.srv.delay["pipeline/settings"]=[80];
+  const saved=clone(e.h.PS.P);e.srv.route.settings=(q,body)=>{saved.settings.prepare=clone(body.values);saved.rev++;return [200,saved];};
+  e.srv.route.pipeline=()=>[200,saved];e.doc.activeElement.blur();const pending=e.h.saveSection("prepare");await until(()=>!!e.box());
+  e.B("확인",e.box()).onclick({isTrusted:true});await until(()=>e.srv.count("pipeline/settings","POST")===1);
+  const value=key==="model"?gpt.name:gpt.default_quality;await e.change(key,value);e.doc.activeElement.blur();
+  const r={reverted:!Object.keys(e.h.editState().form.prepare||{}).length&&!Object.keys(e.h.editState().edits.prepare||{}).length};await pending;
+  await e.h.openSettings();const state=e.h.editState();r.shown=e.input(key).value===value;
+  r.unsaved=eq(state.form.prepare,{[key]:value});r.baseline=eq(state.edits.prepare,{[key]:saved.settings.prepare[key]});
+  r.newBaseline=key!=="model"||(e.input("quality").value===saved.settings.prepare.quality&&Number(e.input("n").value)===saved.settings.prepare.n);
+  e.stop();return r;
+});
+for(const change of ["model","quality","cancel"])
+await scenario("FMJ 저장은 미리 보기·페이지 확인 뒤 "+change,async()=>{
+  const e=await studio({prepare:change==="quality"?{model:ideo.name,quality:ideo.default_quality}:{}});await e.h.openSettings();
+  if(change==="quality")await e.change("quality",ideo.qualities[0]);else await e.change("model",seed.name);
+  e.doc.activeElement.blur();const pending=e.h.saveSection("prepare");await until(()=>!!e.box());
+  const before=e.srv.count("pipeline/settings","POST"),box=e.box(),pr=change==="quality"?ideo:seed;
+  const preview=e.srv.log.findLast(x=>x.path==="pipeline"&&x.q.prepare),r={page:!!box&&!e.confirms.length,
+    before:before===0,preview:!!preview&&JSON.parse(preview.q.prepare).model===pr.name,
+    copy:box.textContent.includes(pr.label)&&box.textContent.includes("다음 [반영] 뒤 생성 승인 필요")&&!/\$|크레딧/.test(box.textContent),
+    quality:change==="quality"?box.textContent.includes("품질 "+ideo.qualities[0]):!box.textContent.includes("품질")};
+  e.B(change==="cancel"?"취소":"확인",box).onclick({isTrusted:true});await pending;
+  const post=e.srv.log.findLast(x=>x.path==="pipeline/settings");
+  r.saved=change==="cancel"?!post:post?.body.section==="prepare"&&post.body.values.model===pr.name;
+  r.noGeneration=!e.tab.got.length&&!e.srv.log.some(x=>x.path==="jobs/prompt"||x.path==="api/prompt");e.stop();return r;
+});
+for(const change of ["same","model","quality","complexity","n","no-drift","missing","default","plan","plan-mismatch"])
+await scenario("U3 진행 모델은 마지막 반영 기록만 "+change,async()=>{
+  const model=catalog.find(m=>m.name.includes("2.6")),e=await studio({prepare:{model:model.name,quality:model.default_quality,complexity:"high"}}),settings=e.h.PS.P;
+  if(["model","quality","complexity","n"].includes(change)){
+    const value={model:ideo.name,quality:ideo.qualities[0],complexity:"low",n:3}[change];
+    settings.drift=[{section:"prepare",field:change,kind:change==="n"?"cost":"cell",manifest:settings.settings.prepare[change],settings:value}];
+    settings.settings.prepare[change]=value;
+  }
+  if(change==="no-drift")settings.settings.prepare.model=ideo.name;
+  if(change==="missing")delete settings.derived.settings.prepare;
+  if(change==="default")settings.derived.from["prepare.model"]="default";
+  if(change==="plan"){
+    e.h.PS.plan.run.prepare=clone(settings.settings.prepare);
+    settings.derived.settings.prepare.model=ideo.name;
+  }
+  if(change==="plan-mismatch")e.h.PS.plan.run.prepare={...settings.settings.prepare,model:ideo.name};
+  e.h.PS.progress.running=true;await e.pipe.showTab("generate");
+  const line=e.rows("진행 — Run")[0]||"",show=["same","n","plan"].includes(change),r={line:!!line,
+    model:show?line.includes(" · 모델 "+model.label):!line.includes(" · 모델 ")};e.stop();return r;
+});
+for(const m of catalog)await scenario("FMJ 요약·진행·생성 승인 "+m.name,async()=>{
+  const e=await studio({prepare:{model:m.name,quality:m.default_quality||"standard",n:3}});
+  const settings=e.panel.textContent,run=P.runText({...e.h.PS.plan.run,prepare:e.h.PS.P.settings.prepare}).line;
+  const progress=e.rows("진행 — Run")[0]||"";
+  e.click(e.B("생성 승인"));await until(()=>!!e.box());const box=e.box(),text=box?.textContent||"",need=e.h.PS.plan.run.need;
+  const r={settings:settings.includes(m.label),run:run.includes(m.label),progress:progress.includes(m.label),approval:text.includes("모델 "+m.label),
+    count:text.includes(`잡 ${need}건 · 그림 ${need*3}장`),fanOut:text.includes("이 모델은 장마다 따로 생성합니다")===m.fan_out,
+    quality:[run,progress,text].every(t=>t.includes("품질")===!!m.qualities.length),
+    complexity:[run,progress,text].every(t=>t.includes("복잡도")===m.name.includes("2.6")),cost:!/[\$]|크레딧/.test(text)};
+  if(box)e.click(e.B("취소",box));await sleep(5);e.stop();return r;
+});
+for(const stage of ["run","reroll"])for(const kind of ["auth","unapproved","no-note","auth-no-note","approved"])
+await scenario("U4 발사 전 차단 사유 "+stage+" "+kind,async()=>{
+  mode();const before=refreshes,note="Forge 의 모델 목록을 읽지 못했습니다";
+  const report={backend:"forge",stopped_reason:kind.startsWith("auth")?"auth":"none",approved_now:!["unapproved","no-note"].includes(kind),
+    stop_note:kind.endsWith("no-note")?null:note};
+  const text=P.paidReport(stage,RUN_H(report));
+  const expected=kind==="auth"||kind==="unapproved"?text==="발사 못 함 — "+note
+    :kind==="auth-no-note"?text==="Forge 로그인 갱신이 필요합니다 — 잠시 뒤 다시 눌러 주세요"
+    :!text.includes("발사 못 함")&&(stage==="reroll"?text.startsWith("다시 생성(사전 승인)·복구만 실행")
+      :text.startsWith(kind==="no-note"?"승인 안 됨 — 실행 전 계획이 바뀜":"승인분 실행"));
+  return {text:expected,token:refreshes===before+(kind==="auth-no-note"?1:0)};
+});
+await scenario("FMJ 제출 전 거부는 로그인 요청 없이 표시",async()=>{
+  mode();const before=refreshes,note="이 모델은 지금 목록에 없습니다";
+  const r={};for(const stage of ["run","reroll"])r[stage]=P.paidReport(stage,RUN_H({backend:"forge",stopped_reason:"auth",stop_note:note}))==="발사 못 함 — "+note;
+  r.noToken=refreshes===before;
+  r.auth=P.paidReport("run",RUN_H({backend:"forge",stopped_reason:"auth",stop_note:null})).startsWith("Forge 로그인 갱신")&&refreshes===before+1;
+  mode(false);r.local=P.paidReport("run",RUN_H({backend:"forge",stopped_reason:"auth",stop_note:note})).includes("comfy.org 로그인 필요")&&refreshes===before+1;
+  return r;
+});
+await scenario("FMJ 후보 별도 모델 줄·비율·프롬프트 칩·로컬 보존",async()=>{
+  mode();const doc=new Doc(),nodes={},candidate={key:"one",n:1,model:seed.name,quality:"standard",origin:"run",label:"후보",ratio_changed:true,prompt_changed:true};
+  const target={size:[512,512],focus_box:[0,0,512,512],cells:[],refs:[],candidates:[candidate]},crop={calls:0,dup_picks:[],stale_picked:[]};
+  El.prototype.querySelector=function(){return null;};
+  const c=vm.createContext({window:ctx.window,document:doc,$:id=>nodes[id]??=doc.createElement("div"),
+    el:(tag,cls="",text="")=>{const n=doc.createElement(tag);n.className=cls;n.textContent=text;return n;},
+    chip:(text,cls)=>{const n=doc.createElement("span");n.className="chip "+cls;n.textContent=text;return n;},
+    curTarget:()=>target,curCand:()=>candidate,cropOf:()=>crop,targetTitle:()=>"타깃",refIdx:0,qHeld:false,view:"cand",cKey:null,pad:String,
+    setImg(){},oldCell:()=>false,ranText:()=>"",tileBadges:()=>doc.createElement("div"),selectCand(){},setStar(){},GATE_NAMES:{}});
+  for(const name of ["promptWarning","candidateModel","row","tookText","tookSummary","tookRow","renderCompare","renderGrid","renderDetail"])vm.runInContext(boardFn(name),c);
+  const draw=()=>{c.renderCompare();c.renderGrid();c.renderDetail();};draw();
+  const chips=(n,cls)=>n.all().filter(x=>x.classList.contains(cls)),ratio=chips(nodes["cand-caption"],"dp-ratio-changed")[0];
+  const r={detail:nodes.detail.children.some(x=>x.children[0]?.textContent==="모델"&&x.textContent.includes(seed.label)&&!x.textContent.includes("품질")),
+    grid:chips(nodes.grid,"cap").some(x=>x.title.split(" · ").includes(seed.label))&&!chips(nodes.grid,"dp-candidate-model").length,
+    ratio:ratio?.textContent==="비율 다름"&&ratio.title==="받은 그림의 가로세로비가 요청과 달라 크롭에 맞추면 늘어납니다",
+    both:chips(nodes.grid,"dp-ratio-changed").length===1&&chips(nodes.grid,"dp-prompt-changed").length===1};
+  candidate.model=ideo.name;candidate.quality=ideo.default_quality;candidate.prompt_changed=false;draw();
+  r.ideogram=chips(nodes.grid,"cap").some(x=>x.title.includes(`${ideo.label} · 품질 ${ideo.default_quality}`));
+  r.ratioOnly=chips(nodes.grid,"dp-ratio-changed").length===1&&!chips(nodes.grid,"dp-prompt-changed").length;
+  candidate.ratio_changed=false;draw();r.clear=!chips(nodes.grid,"dp-ratio-changed").length&&!chips(nodes["cand-caption"],"dp-ratio-changed").length;
+  candidate.prompt_changed=true;candidate.ratio_changed=true;mode(false);draw();
+  r.local=!chips(nodes.grid,"cap").some(x=>x.title.includes(ideo.label))&&!chips(nodes.grid,"dp-ratio-changed").length&&!chips(nodes.grid,"dp-prompt-changed").length
+    &&!nodes.detail.children.some(x=>x.children[0]?.textContent==="모델");return r;
+});
+console.log(JSON.stringify(out));process.exit(0);
+'''
+    hook = '.replace("return { stateChanged, enter, leave, select, queue: boardQueue", "return { _models: { PS, openSettings, saveSection, switchModel, editState: () => ({ form, edits }) }, stateChanged, enter, leave, select, queue: boardQueue")'
+    ui = ui.replace('fs.readFileSync(IN.pipelineJs, "utf8")', 'fs.readFileSync(IN.pipelineJs, "utf8")' + hook)
+    data = {"api": _pl_api(), "forge": _server_api(), "models": catalog, "dialog": sources["dialog.js"],
+            "pipelineJs": str(web / "pipeline.js"), "boardJs": str(web / "board.js")}
+    for name, harness, payload in (("core", core, {"api": _server_api(), "source": sources, "models": catalog}), ("ui", ui, data)):
+        (out / f"{name}.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        (out / f"{name}.mjs").write_text(harness, encoding="utf-8")
+        result = subprocess.run([node, str(out / f"{name}.mjs"), str(out / f"{name}.json")], capture_output=True,
+                                text=True, encoding="utf-8", timeout=60)
+        if result.returncode or not result.stdout.strip():
+            check(False, f"FMJ {name} VM 실패: {result.stderr[-3000:]}")
+            continue
+        for case, values in json.loads(result.stdout.strip().splitlines()[-1]).items():
+            for key, value in (values.items() if isinstance(values, dict) else [("", values)]):
+                check(value is True, f"{case} {key}" if value is True else f"{case} {key}: {value}")
+
+
 def forge_f2_dev_unit():
     """Forge F2 갈래 D — 개발용 가짜 Forge(fixture 모양 일치·시나리오 표지·토큰 만료·갱신 페이지). 명세 _proto/STUDIO_FORGE_F2_SPEC.md §2.4·§4. --quick 포함."""
     section("Forge F2-D — forge_f2_dev_unit")
@@ -62286,7 +64255,7 @@ await scenario("F2W24 후보 목록·크게 보기 경고 칩·다른 후보·�
     curTarget:()=>target,curCand:()=>candidate,refIdx:0,qHeld:false,view:"cand",cKey:null,pad:n=>String(n),
     setImg(){},oldCell:()=>false,ranText:()=>"",tileBadges:()=>doc.createElement("div"),selectCand(){},setStar(){}});
   El.prototype.querySelector=function(){return null;};
-  for(const name of ["promptWarning","renderCompare","renderGrid","tookText"])vm.runInContext(boardFn(name),c);
+  for(const name of ["promptWarning","candidateModel","renderCompare","renderGrid","tookText"])vm.runInContext(boardFn(name),c);
   candidate={n:1,key:"one",...F.candidate_prompt_changed.candidate};target.candidates=[candidate,{n:2,key:"two",prompt_changed:false}];
   c.renderCompare();c.renderGrid();
   const chips=n=>n.all().filter(x=>x.classList.contains("dp-prompt-changed"));
@@ -68577,6 +70546,16 @@ if __name__ == "__main__":
         forge_f2_session_unit()
     if want("forge_f2_backend_unit"):
         forge_f2_backend_unit()
+    if want("forge_models_unit"):
+        forge_models_unit()
+    if want("forge_models_backend_unit"):
+        forge_models_backend_unit()
+    if want("forge_models_settings_unit"):
+        forge_models_settings_unit()
+    if want("forge_models_dev_unit"):
+        forge_models_dev_unit()
+    if want("forge_models_js_unit"):
+        forge_models_js_unit()
     if want("forge_f2_dev_unit"):
         forge_f2_dev_unit()
     if want("forge_f2_js_unit"):

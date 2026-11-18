@@ -1060,10 +1060,13 @@ def cell_key(
     variant: str,
     *,
     complexity: str | None = None,
+    opts: dict | None = None,
 ) -> str:
     """유료 호출 셀의 캐시 키 = sha256(정규 JSON) hex 앞 24자. **n 은 넣지 않는다**(n 4→8 이 재과금되지 않게).
     input_shas 는 업로드 순서대로(순서가 바뀌면 다른 키). size 는 [W, H] / (W, H) / 'WxH' 모두 같은 키.
-    prompt 는 바이트 그대로(정규화 없음). 키 형식 버전 CELL_KEY_VERSION 을 함께 해시한다."""
+    prompt 는 바이트 그대로(정규화 없음). 키 형식 버전 CELL_KEY_VERSION 을 함께 해시한다.
+    opts = 모델에만 있는 옵션 {이름: 값}(값은 문자열·정수·불). None·빈 dict 면 재료에 아무것도 더하지 않는다 — 옵션이 없는
+    모델(GPT Image 계열 등)의 키는 이 인자가 생기기 전과 바이트가 같다. 값이 있으면 재료에 "opts" 로 들어간다(이름 순)."""
     if isinstance(input_shas, (str, bytes)):
         raise ValueError("input_shas 는 문자열 목록이어야 합니다(문자열 하나가 아님).")
     if not isinstance(prompt, str):
@@ -1083,6 +1086,12 @@ def cell_key(
         if complexity is None:
             raise ValueError("GPT Image 2.6 cell_key 에는 complexity 가 필요합니다")
         payload["complexity"] = complexity
+    if opts is not None and not isinstance(opts, dict):
+        raise ValueError(f"opts 는 객체여야 합니다: {type(opts).__name__}")
+    if opts:
+        if any(not isinstance(k, str) or not k or type(v) not in (str, int, bool) for k, v in opts.items()):
+            raise ValueError("opts 는 이름(문자열) → 값(문자열·정수·불)이어야 합니다")
+        payload["opts"] = {k: opts[k] for k in sorted(opts)}
     blob = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(blob).hexdigest()[:24]
 

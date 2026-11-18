@@ -7,6 +7,8 @@ FakeForge.handle 은 소켓을 쓰지 않는다 — bmk_design_patch_forge.Forge
 토큰: `dev:<계정>`(만료 없음) · `dev:<계정>:<만료 epoch 초>`. 사용자 id = `u_<계정>`, 조직 = org1(이름 「개발 조직」).
 시나리오는 프롬프트 속 표지로 건다(여러 개 가능): [[fake:delay=초]] [[fake:queue=순번/전체]] [[fake:partial=장수]]
 [[fake:fail=user|ailabs]] [[fake:changed]] [[fake:empty]] — 표지가 없으면 곧바로 completed.
+퇴역 모델은 BMK_DP_FAKE_RETIRED 환경 변수에 checkpoint 를 쉼표로 나열하거나 fake.retire(checkpoint, True/False) 로 바꾼다.
+fake.requests 는 최근 요청의 키·checkpoint·입력 인덱스·공급자 호출 인덱스만 기록한다(토큰·입력 본문 없음).
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ import html
 import io
 import json
 import math
+import os
 from pathlib import Path
 import re
 import secrets
@@ -65,7 +68,7 @@ def _picture(data):
         return picture.convert("RGB"), picture.format
 
 
-def _input_source(groups):
+def _input_source(groups, *, size_out=None):
     """모든 입력의 실제 형식을 검사하고, 첫 그림만 작은 PNG로 보관한다. 작업 스레드에서 호출한다."""
     first = None
     for group in groups:
@@ -82,6 +85,8 @@ def _input_source(groups):
                     if image_format != _IMAGE_TYPES[content_type]:
                         raise ValueError
                     if first is None:
+                        if size_out is not None:
+                            size_out[:] = picture.size
                         picture.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
                         picture.info.clear()
                         output = io.BytesIO()
@@ -127,6 +132,11 @@ class FakeForge:
         self._lock = threading.RLock()
         self._fixture = json.loads((Path(__file__).parent / "tools" / "fixtures" / "forge_api.json").read_text(encoding="utf-8"))
         self.calls = deque(maxlen=_MAX_CALLS)
+        self.requests = deque(maxlen=_MAX_CALLS)
+        self._retired = set()
+        for checkpoint in os.environ.get("BMK_DP_FAKE_RETIRED", "").split(","):
+            if checkpoint.strip():
+                self.retire(checkpoint.strip())
         self.query_calls = deque(maxlen=_MAX_CALLS)
         self.fault = None  # 전송 대역 전용: {path, times, status?, delay?, query?}.
         self._history_seed = {}
@@ -152,6 +162,74 @@ class FakeForge:
     def _error(self, name):
         error = self._fixture["errors"][name]
         return _json(error["status"], error["response"])
+
+    def retire(self, checkpoint, retired=True):
+        """목록에서만 빼거나 되살린다. 퇴역 모델 제출은 대체 모델로 접수되며 requests 에 남는다."""
+        catalog = self._fixture["models"]["catalog"]["response"]
+        if type(retired) is not bool or checkpoint not in [row["checkpoint"] for row in catalog["models"]]:
+            raise ValueError("개발 퇴역 모델 설정이 잘못되었습니다")
+        with self._lock:
+            if retired:
+                self._retired.add(checkpoint)
+            else:
+                self._retired.discard(checkpoint)
+
+    def _catalog(self):
+        result = copy.deepcopy(self._fixture["models"]["catalog"]["response"])
+        result["models"] = [row for row in result["models"] if row["checkpoint"] not in self._retired]
+        result["count"] = len(result["models"])
+        return result
+
+    def _model_input(self, name, spec, data, groups):
+        """스튜디오의 요청 계약을 검사하되 입력 오류도 접수된 잡의 실패로 돌려준다."""
+        limits = self._fixture["models"]["limits"][name]
+        errors = spec["errors"]["input"]
+        kind = "ideogram" if "ideogram" in spec["request"] else "seedream"
+        inputs = [value for group in groups for value in group]
+        used = inputs[:limits["max_inputs"]] if kind == "seedream" else inputs
+        size = [1024, 1024]
+        error = None
+        forbidden = any(key in data for key in spec["never"])
+        if kind == "seedream":
+            if "background" in data:
+                error = errors[1] + "."
+            else:
+                value = data.get("image_size")
+                valid = isinstance(value, str) and re.fullmatch(r"[0-9]{1,7}x[0-9]{1,7}", value) is not None
+                if valid:
+                    size = list(map(int, value.split("x")))
+                lo, hi = limits["area"]
+                if (forbidden or not valid or min(size) <= 0 or not lo <= size[0] * size[1] <= hi
+                        or max(size) > limits["max_ratio"] * min(size)):
+                    error = errors[0] + f" WxH 형식, {lo}~{hi}화소, 긴 변은 짧은 변의 {limits['max_ratio']}배 이하여야 합니다."
+            if not data["prompt"].strip():
+                error = errors[2] + "."
+        else:
+            options = data.get("ideogram", {})
+            if (forbidden or not isinstance(options, dict) or set(options) - set(spec["ideogram_keys"])
+                    or options.get("quality", limits["default_quality"]) not in ("very_low", *limits["qualities"])):
+                error = errors[3] + " — 옵션이 올바르지 않습니다."
+            elif len(inputs) > limits["max_inputs"]:
+                error = errors[1] + "까지 보낼 수 있습니다."
+            elif not 1 <= data.get("num_outputs", 1) <= limits["max_n"]:
+                error = errors[2] + "."
+            elif not data["prompt"].strip() or len(data["prompt"]) > 10000:
+                error = errors[0] + "."
+        first = None
+        if error is None:
+            original_size = []
+            try:
+                first = _input_source([used], size_out=original_size)
+            except _Validation:
+                if kind != "ideogram":
+                    raise
+                error = errors[5] + "."
+            if kind == "ideogram" and original_size:
+                size = original_size
+        failure = None
+        if error is not None:
+            failure = dict(self._fixture["job"]["failed_ailabs"], error_message=kind + ": " + error)
+        return kind, first, tuple(size), failure, list(range(len(used))) if failure is None else []
 
     def _validate_id(self, value, field):
         rules = self._fixture["generate"]["request_rules"]
@@ -215,42 +293,77 @@ class FakeForge:
     def _submit(self, account, data):
         fixture = self._fixture["generate"]
         rules = fixture["request_rules"]
+        models = self._fixture["models"]
+        checkpoint = data.get("checkpoint")
+        model = next(((name, spec) for name, spec in models["requests"].items()
+                      if spec["request"]["checkpoint"] == checkpoint), None)
+        known = checkpoint in models["names"].values()
+        record = {"keys": sorted(key if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", key) else "<invalid>"
+                                 for key in data), "checkpoint": checkpoint if known else None, "provider_calls": []}
+        self.requests.append(record)
+        retired = known and checkpoint in self._retired
         prompt = data.get("prompt")
-        if not isinstance(prompt, str) or not prompt.strip():
+        if not isinstance(prompt, str) or (not prompt.strip() and model is None):
             raise _Validation("prompt")
-        if data.get("checkpoint") not in fixture["checkpoints"].values():
+        if not known:
             raise _Validation("checkpoint")
         organization = self._organization(data.get("organization_id"))
         if not self._org(account, organization):
             return self._error("org_denied")
         count = data.get("num_outputs", 1)
-        if type(count) is not int or not rules["num_outputs"][0] <= count <= rules["num_outputs"][1]:
+        ideogram = model is not None and "ideogram" in model[1]["request"] and not retired
+        if type(count) is not int or (not ideogram and not rules["num_outputs"][0] <= count <= rules["num_outputs"][1]):
             raise _Validation("num_outputs")
         request_id = data.get("request_id")
         if "request_id" in data:
             self._validate_id(request_id, "request_id")
         groups = data.get("input_images", [[]])
         if (not isinstance(groups, list) or any(not isinstance(group, list)
-                or len(group) > rules["max_inputs_per_group"] for group in groups)):
+                or (model is None and not retired and len(group) > rules["max_inputs_per_group"]) for group in groups)):
             raise _Validation("input_images")
-        first = _input_source(groups)
-        size = data.get("size", "1024x1024")
-        if not isinstance(size, str) or re.fullmatch(r"[0-9]{1,4}x[0-9]{1,4}", size) is None:
-            raise _Validation("size")
-        width, height = map(int, size.split("x"))
-        if not (1 <= width <= 3840 and 1 <= height <= 3840 and width * height <= 8294400):
-            raise _Validation("size")
+        kind, failure = "gpt", None
+        effective = checkpoint
+        used = list(range(sum(map(len, groups))))
+        if retired:
+            # 목록에만 있는 대체 모델을 사용한다. 실제 공급자를 부르지는 않는다.
+            effective = next(row["checkpoint"] for row in models["catalog"]["response"]["models"]
+                             if row["checkpoint"] not in models["names"].values())
+            kind = "fallback"
+            original_size = []
+            first = _input_source(groups, size_out=original_size)
+            width, height = original_size or (1024, 1024)
+            size = f"{width}x{height}"
+        elif model is not None:
+            kind, first, (width, height), failure, used = self._model_input(*model, data, groups)
+            size = f"{width}x{height}"
+        else:
+            first = _input_source(groups)
+            size = data.get("size", "1024x1024")
+            if not isinstance(size, str) or re.fullmatch(r"[0-9]{1,4}x[0-9]{1,4}", size) is None:
+                raise _Validation("size")
+            width, height = map(int, size.split("x"))
+            if not (1 <= width <= 3840 and 1 <= height <= 3840 and width * height <= 8294400):
+                raise _Validation("size")
+        record.update(effective_checkpoint=effective, retired=retired, input_count=sum(map(len, groups)), used_input_indices=used)
         scenario = self._scenario(prompt)
         user_id = "u_" + account
         job_id = str(uuid.uuid5(_NAMESPACE, json.dumps({"user_id": user_id, "request_id": request_id, "index": 0},
                                                      sort_keys=True, separators=(",", ":")))) if request_id else str(uuid.uuid4())
         if job_id in self.jobs:
             job = self._update_job(job_id)
+            record.update(job_id=job_id, reused=True, effective_checkpoint=job["request_data"]["checkpoint"])
             return _json(200, {"job_id": job_id, "job_ids": [job_id], "status": job["status"]})
         now = self._now()
         job = copy.deepcopy(self._fixture["job"]["pending"])
         summary = {key: value for key, value in data.items() if key in fixture["request"] and key != "input_images"}
         summary.update(prompt=prompt, num_outputs=count, size=size)
+        if kind != "gpt":
+            # 새 경로는 검증하지 않은 옵션 값을 되비추지 않는다. 요청 키는 requests 에 따로 남긴다.
+            summary = dict(checkpoint=effective, prompt=prompt, num_outputs=count, organization_id=organization)
+            if request_id is not None:
+                summary["request_id"] = request_id
+            if kind == "seedream" and failure is None:
+                summary["image_size"] = size
         job.update(id=job_id, user_id=user_id, created_at=_stamp(now), request_data=summary,
                    queue_position=scenario["queue"][0] if scenario["queue"] else None,
                    queue_total=scenario["queue"][1] if scenario["queue"] else None)
@@ -266,6 +379,10 @@ class FakeForge:
         self._states[job_id] = dict(scenario, at=now, polls=0, size=(width, height), source=first,
                                    changed=scenario["changed"] or "prompt_autopilot" not in data
                                    or isinstance(autopilot, dict) and "candidate_prompt" in autopilot)
+        record.update(job_id=job_id, reused=False)
+        if kind != "gpt":
+            record["provider_calls"] = list(range(count if kind == "seedream" else 1)) if failure is None else []
+            self._states[job_id].update(kind=kind, input_error=failure, changed=scenario["changed"], record=record)
         return _json(200, {"job_id": job_id, "job_ids": [job_id], "status": "pending"})
 
     def _update_job(self, job_id, poll=False):
@@ -290,19 +407,36 @@ class FakeForge:
             job["progress"] = max(1, min(99, int(100 * (now - start) / duration)))
             return job
         job.update(progress=100, completed_at=_stamp(end))
+        if state.get("input_error") is not None:
+            job.update(state["input_error"])
+            return job
         if state["fail"]:
             job.update(copy.deepcopy(self._fixture["job"]["failed_" + state["fail"]]))
+            if state.get("kind") == "seedream":
+                job["error_message"] = "seedream: " + job["error_message"]
             return job
         count = job["request_data"]["num_outputs"]
         actual = 0 if state["empty"] else min(count, state["partial"] if state["partial"] is not None else count)
         metadata = [{} for _ in range(actual)]
-        if state["changed"] and actual:
+        kind = state.get("kind")
+        if kind in ("seedream", "ideogram"):
+            indices = list(range(actual))
+            if kind == "seedream" and 1 < actual < count:
+                indices[-1] = count - 1
+            metadata = [{"call_index": index} for index in indices]
+            if kind == "ideogram":
+                for item in metadata:
+                    item["prompt_used"] = job["request_data"]["prompt"]
+            if state["changed"] and actual:
+                metadata[-1]["prompt_used"] = job["request_data"]["prompt"] + " (rewritten)"
+            state["record"]["successful_calls"] = indices if kind == "seedream" else ([0] if actual else [])
+        elif state["changed"] and actual:
             metadata = [{"arm": "control", "call_index": i} for i in range(actual)]
             metadata[-1].update(arm="autopilot", prompt_used=job["request_data"]["prompt"] + " (rewritten)")
         result = {"images": [f"{self.media_origin}/fake-media/{job_id}/{i}.png" for i in range(actual)],
                   "result_ids": [f"{job_id}:{i}" for i in range(actual)], "result_metadata": metadata,
                   "thumbnails": [{} for _ in range(actual)], "saved_id": job_id}
-        if actual < count:
+        if actual < count and kind != "seedream":
             result["warning"] = self._fixture["job"]["completed_partial"]["result_data"]["warning"]
         job.update(status="completed", result_data=result)
         return job
@@ -576,6 +710,7 @@ class FakeForge:
                 headers = {key.lower(): value for key, value in headers.items()}
                 query = parse_qs(parsed.query, keep_blank_values=True)
                 routes = {"/auth/me": ("GET",), "/api/access/summary": ("GET",),
+                          "/api/image/templates": ("GET",),
                           "/api/image/generate": ("POST",), "/api/image/history": ("GET",),
                           "/api/library/assets": ("GET", "POST"), "/api/library/assets/upload-url": ("POST",),
                           "/api/library/assets/uploads/complete": ("POST",)}
@@ -616,6 +751,8 @@ class FakeForge:
                     if account.startswith("outsider"):
                         result["organizations"] = []
                     return _json(200, result)
+                if path == "/api/image/templates":
+                    return _json(200, self._catalog())
                 if path.startswith("/api/image/jobs/"):
                     job_id = path[len("/api/image/jobs/"):]
                     if job_id not in self.jobs or self.jobs[job_id]["user_id"] != "u_" + account:
@@ -742,7 +879,7 @@ def mount(app, config, fake: FakeForge | None = None):
         return web.Response(status=status, headers=headers, body=body)
 
     app.router.add_get("/refresh", refresh)
-    for path in ("/auth/me", "/api/access/summary", "/api/image/generate", "/api/image/jobs/{job_id}",
+    for path in ("/auth/me", "/api/access/summary", "/api/image/templates", "/api/image/generate", "/api/image/jobs/{job_id}",
                  "/api/image/history", "/api/library/assets", "/api/library/assets/upload-url",
                  "/api/library/assets/uploads/complete", "/fake-media/{path:.+}", "/fake-upload/{key:.+}"):
         app.router.add_route("*", path, forward)

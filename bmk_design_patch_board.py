@@ -2815,9 +2815,23 @@ def build_state(root: str, since_rev: int | None = None) -> dict:
                     joint = {"tids": jt, "first": first, "first_key": by_file.get((crop["id"], c["file"], first))}
                 edit = _edit_rec(m, c["key"])
                 adjust = store.cand_adjust(m, c["key"])
+                candidate_flags = _forge_candidate_flags(root, info)
+                if server_mode() and info.get("backend") == "forge" and ck and rep is not None:
+                    try:
+                        from . import bmk_design_patch_models as models
+                    except ImportError:
+                        import bmk_design_patch_models as models
+                    runner = _runner()
+                    if runner is not None:
+                        try:
+                            req = runner._read_json(runner._lpath(root, ck, rep, "req"))
+                        except (OSError, ValueError, TypeError):
+                            req = None
+                        if isinstance(req, dict) and models.ratio_off(req.get("size"), c.get("src_size")):
+                            candidate_flags["ratio_changed"] = True
                 cands.append({
                     "key": c["key"], "n": n, "origin": c.get("origin"), "backend": info.get("backend"),
-                    **_forge_candidate_flags(root, info),
+                    **candidate_flags,
                     "mock": info.get("backend") == "mock", "src_size": c.get("src_size"),
                     "label": ext.candidate_label(c),
                     **({"external_missing": c["key"] in external_missing} if info.get("via") == "studio" else {}),
@@ -5798,6 +5812,20 @@ def _plan_sigs(root: str, m: dict, busy: tuple[bool, bool], refs_v: str | None, 
     pfp = store._file_fp(os.path.join(root, pl.PIPELINE_NAME))
     run = [m.get("jobs"), m.get("rerolls"), m.get("prepare_settings"), m.get("prepare_inputs"),
            _scan(os.path.join(root, "cands"), _RUN_LEDGER_RE, 1), mock, pfp, running]
+    if server_mode() and not mock and _runner().backend_name(root) == _runner().BACKEND_FORGE:
+        try:
+            from . import bmk_design_patch_forge_backend as forge_backend
+            from . import bmk_design_patch_models as models
+        except ImportError:
+            import bmk_design_patch_forge_backend as forge_backend
+            import bmk_design_patch_models as models
+        scope = current_scope()
+        key = (scope["org"], scope["account"]) if scope else None
+        catalog = forge_backend.cached_catalog(key, max_age=None, failure_max_age=forge_backend.CATALOG_PREVIEW_TTL) if key else None
+        run.append((forge_backend.catalog_failed(key, max_age=forge_backend.CATALOG_PREVIEW_TTL),
+                    sorted((model.checkpoint, models.availability(model.name, catalog)[2])
+                           for model in models.MODELS.values() if model.checkpoint in catalog)
+                    if catalog is not None else None))
     refs = []
     for c in m["crops"]:
         for r in [x for t in c.get("targets") or [] for x in t.get("refs") or []] + list(c.get("refs_auto") or []):
@@ -6809,7 +6837,9 @@ async def env_handler(request: web.Request) -> web.StreamResponse:
     로컬 = {"server_mode": false, "caps": LOCAL_CAPS}. 서버 모드 본문은 서버 진입점이 건 함수가 만든다(세션이 없어도 200 — 계정 ID·
     경로는 싣지 않음)."""
     if _ENV_PROVIDER:
-        return _json(_ENV_PROVIDER[0](request))
+        import inspect
+        result = _ENV_PROVIDER[0](request)
+        return _json(await result if inspect.isawaitable(result) else result)
     return _json({"server_mode": False, "caps": dict(LOCAL_CAPS)})
 
 
