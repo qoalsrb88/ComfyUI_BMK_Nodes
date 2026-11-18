@@ -61288,6 +61288,12 @@ def forge_models_backend_unit():
     section("Forge 모델 서버 — forge_models_backend_unit")
 
 
+def forge_models_settings_unit():
+    """Forge 2단계 설정 갈래 — 실행 설정의 모델·품질 검증(모드별)·갈라짐·전환 미리 보기·Prepare 의 모델별 크기와 작업 기록·후보의 비율 표지.
+    명세 _proto/STUDIO_FORGE_MODELS_SPEC.md §2.3·§2.5·§3.4. --quick 포함."""
+    section("Forge 모델 설정 — forge_models_settings_unit")
+
+
 def forge_models_dev_unit():
     """Forge 2단계 가짜 Forge 갈래 — 모델별 요청 꼴 검사·장마다 따로 부르는 흉내·부분 성공·보낸 크기 그대로·모델 목록과 퇴역 스위치.
     명세 _proto/STUDIO_FORGE_MODELS_SPEC.md §4. --quick 포함."""
@@ -67730,6 +67736,8 @@ if __name__ == "__main__":
         forge_models_unit()
     if want("forge_models_backend_unit"):
         forge_models_backend_unit()
+    if want("forge_models_settings_unit"):
+        forge_models_settings_unit()
     if want("forge_models_dev_unit"):
         forge_models_dev_unit()
     if want("forge_models_js_unit"):
