@@ -56649,12 +56649,14 @@ function browser(search=""){
   return {ctx,els,calls,moves,replaced,notes,T:ctx.T,response:(v,s=200)=>{response=v;status=s;}};
 }
 const find=(host,cls)=>host.all().find(e=>e.className===cls);
-const submit=host=>find(host,"projects-form").events.submit({preventDefault(){}});
+const submit=host=>find(host,"projects-create").events.click();
 (async()=>{
   const b=browser();b.response({projects:[{name:"old",openable:false,adoptable:true,files:["a.png"],error:"만들기 전"}]});
   await b.T.showProjects();test("목록 새 프로젝트·이 폴더로 시작",!!find(b.els.app,"projects-new")&&!!find(b.els.app,"projects-adopt"));
   find(b.els.app,"projects-new").events.click();
   const name=find(b.els.app,"projects-new-name"),pick=find(b.els.app,"projects-new-file"),p=find(b.els.app,"projects-new-path");
+  test("sandbox iframe: form 요소·submit 에 기대지 않음",find(b.els.app,"projects-form").tagName==="DIV"&&!find(b.els.app,"projects-form").events.submit
+    &&find(b.els.app,"projects-create").type==="button"&&typeof find(b.els.app,"projects-create").events.click==="function");
   name.value="CON";name.events.input();test("입력 중 이름 검사",find(b.els.app,"projects-create").disabled);
   name.value="새-project";name.events.input();
   pick.files=[{name:"a.png",size:2*1024**3+1}];pick.events.change();await submit(b.els.app);
@@ -56674,6 +56676,17 @@ const submit=host=>find(host,"projects-form").events.submit({preventDefault(){}}
     &&find(h,"projects-form-status").textContent==="동일 이름"&&c.moves.length===0);
   const dropped={name:"drop.webp",size:90};find(h,"projects-form").events.drop({preventDefault(){},dataTransfer:{files:[dropped]}});
   c.response({key});await submit(h);test("끌어 놓기 File 업로드",c.calls[1][1].body===dropped);
+  const k=browser(),kh=new E("div");k.T.newProjectForm(kh,null,()=>{});const kn=find(kh,"projects-new-name"),kp=find(kh,"projects-new-file");
+  kn.value="enter";kn.events.input();kp.files=[{name:"e.png",size:10}];kp.events.change();k.response({key});let stopped=0;
+  await kn.events.keydown({key:"Enter",isComposing:true,keyCode:229,preventDefault(){stopped++;}});
+  await kn.events.keydown({key:"a",preventDefault(){stopped++;}});
+  test("이름 칸: 한글 조합 Enter·다른 키는 만들지 않음",k.calls.length===0&&stopped===0);
+  kn.events.keydown({key:"Enter",preventDefault(){stopped++;}});await new Promise(r=>setImmediate(r));
+  test("이름 칸 Enter = [만들기]",k.calls.length===1&&stopped===1&&k.moves[0]==="?root="+key+"&new=1");
+  const q=browser(),qh=new E("div");q.T.newProjectForm(qh,null,()=>{});find(qh,"projects-new-name").value="bypath";
+  find(qh,"projects-new-path").value="C:\\art\\b.png";find(qh,"projects-new-path").events.input();q.response({key});
+  await find(qh,"projects-new-path").events.keydown({key:"Enter",preventDefault(){}});
+  test("경로 칸 Enter = [만들기]",q.calls.length===1&&JSON.parse(q.calls[0][1].body).path==="C:\\art\\b.png");
   const fresh=browser("?root="+key+"&new=1&mode=prepare");fresh.notes.set("bmk-dp-new:"+key,'["note"]');
   const read=fresh.T.consumeNewProject();test("new 플래그 바로 소비·새로고침 중복 없음",read[0]==="note"&&fresh.replaced[0]==="/bmk/design_patch/board/?root="+key+"&mode=prepare"
     &&fresh.T.consumeNewProject()===null&&!fresh.notes.size);
@@ -56694,6 +56707,11 @@ const submit=host=>find(host,"projects-form").events.submit({preventDefault(){}}
     check(completed.returncode == 0, "B9A JS 하네스 " + completed.stderr[-1200:])
     if completed.returncode == 0:
         for name, ok in json.loads(completed.stdout).items(): check(ok, "B9A JS " + name)
+    # 서버 모드의 화면은 sandbox iframe(allow-forms 없음) 안에서 돈다 — 폼 제출은 submit 이벤트도 없이 막히므로 화면 어디에도 폼 제출에 기대는 코드가 없어야 한다
+    form_uses = [f"{p.name}:{i}" for p in sorted((PKG / "web_design_patch").iterdir()) if p.suffix in (".js", ".html")
+                 for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1)
+                 if re.search(r'<form\b|el\("form"|createElement\("form"\)|type\s*=\s*"submit"|addEventListener\("submit"|requestSubmit|\.submit\(', line)]
+    check(not form_uses, "sandbox iframe: 화면에 폼 제출에 기대는 코드 없음 " + ", ".join(form_uses[:6]))
     pj = (PKG / "web_design_patch/pipeline.js").read_text(encoding="utf-8")
     auto = _layout_js_fn(pj, "pipelineLoaded", indent="    ") + "\n}"
     script = "let autoApply=true,S={canvas:null},PS={P:{},err:null},n=0; const opts={newNotes:[],toast(){}},render=()=>{},firstSetup=()=>{},queue=()=>{n++;};\n" + auto + "\npipelineLoaded();pipelineLoaded();console.log(n);"

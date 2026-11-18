@@ -1731,7 +1731,9 @@
 
   function newProjectForm(host, adopted, setBusy) {
     if (adopted && !can("path_input")) return;
-    const form = el("form", "projects-form");
+    // form 요소를 쓰지 않는다 — Forge 가 이 화면을 넣는 sandbox iframe 에는 allow-forms 가 없어, 폼 제출은 submit 이벤트도 없이 브라우저가 막는다
+    const form = el("div", "projects-form");
+    form.setAttribute("role", "group");
     const title = el("h2", "", adopted ? "이 폴더로 시작" : "새 프로젝트");
     const name = el("input", "projects-new-name");
     name.placeholder = "예: 캐릭터_의상수정";
@@ -1755,7 +1757,7 @@
     const feedback = el("p", "projects-form-status");
     feedback.setAttribute("role", "status");
     const create = el("button", "projects-create", "만들기");
-    create.type = "submit";
+    create.type = "button";
     const close = el("button", "projects-close", "닫기");
     close.type = "button";
     const field = (text, input) => {
@@ -1812,8 +1814,7 @@
       try { window.sessionStorage.setItem("bmk-dp-new:" + result.key, JSON.stringify(result.notes || [])); } catch (_) { /* 저장소 차단 */ }
       location.assign(`?root=${encodeURIComponent(result.key)}&new=1`);
     }
-    form.addEventListener("submit", async (e) => {
-      e.preventDefault();
+    async function send() {
       if (sending || !validate()) return;
       let url = apiUrl("projects/new");
       const options = { method: "POST", headers: { "Content-Type": "application/json" } };
@@ -1838,6 +1839,13 @@
         validate();
         feedback.textContent = err.message;
       }
+    }
+    create.addEventListener("click", send);
+    // 글 칸의 Enter = [만들기](폼의 암묵 제출을 대신한다). 한글 조합을 끝내는 Enter 는 넘긴다
+    for (const input of [name, path]) input.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" || e.isComposing || e.keyCode === 229) return;
+      e.preventDefault();
+      send();
     });
     host.replaceChildren(form);
     validate();
