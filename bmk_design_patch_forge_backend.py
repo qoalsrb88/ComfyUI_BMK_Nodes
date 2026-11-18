@@ -173,7 +173,9 @@ def forget_catalog(key=None):
 
 
 def blocked_reason(job: dict) -> str | None:
-    """실행 안에서는 계정의 목록이 필수다. 라우트의 미리 보기는 기억된 목록이 있을 때만 대조한다."""
+    """과금 전 판정(계획·승인·제출 공통). 모델 목록은 그 계정이 기억한 것으로 대조한다 — 기억이 있으면 「목록에 없는 모델」을
+    막고, 실행 직전 갱신이 실패했다는 표지가 있으면 「목록을 읽지 못했습니다」로 막는다(미리 보기는 60초 동안). 기억도 표지도
+    없으면 여기서는 대조하지 않는다 — 제출 직전(ForgeBackend.request)이 목록을 다시 읽고 이 판정을 한 번 더 한다."""
     model = models.get(job.get("model"))
     if model is None:
         return "Forge 에서 지원하지 않는 생성 모델입니다."
@@ -199,8 +201,7 @@ def blocked_reason(job: dict) -> str | None:
     if key is not None and catalog_failed(key, max_age=None if ctx is not None else CATALOG_PREVIEW_TTL):
         return _CATALOG_UNREADABLE
     limit = model.max_inputs
-    auth_missing = (ctx is not None and catalog is None and callable(ctx.get("token_of")) and ctx["token_of"]() is None)
-    if catalog is not None or ctx is not None and not auth_missing:
+    if catalog is not None:
         available, why, limit = models.availability(model.name, catalog)
         if not available:
             return why

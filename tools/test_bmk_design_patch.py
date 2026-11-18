@@ -61523,7 +61523,22 @@ def forge_models_backend_unit():
         ctx = context(root, client)
         fb.forget_catalog()
         with active(ctx):
-            check("읽지 못했습니다" in fb.blocked_reason(job), "FMB 실행 안 목록 없음 차단")
+            check(fb.blocked_reason(job) is None, "FMB 실행 안 — 기억도 표지도 없으면 여기서는 대조하지 않음(제출 직전이 읽는다)")
+            fb.mark_catalog_failed(key)
+            check("읽지 못했습니다" in fb.blocked_reason(job), "FMB 실행 안 — 실행 직전 갱신 실패 표지가 있으면 차단")
+            fb.forget_catalog()
+            be0 = fb.ForgeBackend(ctx)
+            client.catalog = fg.ForgeError("server", 503)
+            try:
+                await be0.request(job, paths, rn.call_id_for(job["cell_key"], 0))
+                blocked0 = None
+            except rn.CallError as exc:
+                blocked0 = exc
+            check(blocked0 is not None and "읽지 못했습니다" in str(blocked0) and blocked0.phase == "blocked" and not blocked0.maybe_billed
+                  and not client.submissions and not rn.read_ledger(root, job["cell_key"]),
+                  "FMB 실행 안 — 기억 없이 제출까지 가면 목록을 읽고, 못 읽으면 제출 전에 차단(과금 없음)")
+            client.catalog = copy.deepcopy(contract["catalog"]["response"])
+            fb.forget_catalog()
             with active(dict(ctx, account="")):
                 check("연결 설정" in fb.blocked_reason(job), "FMB 실행 안 계정 없음 차단")
             expect_raises(fb.ForgeBackend(dict(ctx, account="")).check, "FMB 백엔드 계정 검사", rn.CallError)
@@ -61943,10 +61958,12 @@ def forge_models_backend_unit():
             be = fb.ForgeBackend(ctx)
             reads = len(client.reads)
             error = None
-            try:
-                asyncio.run(be.request(job, paths, rn.call_id_for(job["cell_key"], 0)))
-            except rn.CallError as exc:
-                error = exc
+            with active(ctx):  # 실제 실행처럼 Forge 문맥 안에서 — 실행 안 판정이 새 토큰의 재조회를 막지 않아야 한다
+                check(fb.blocked_reason(job) is None, "T2 기억을 지운 뒤 새 토큰이 생긴 실행 안 판정은 막지 않음(제출 직전이 읽는다)")
+                try:
+                    asyncio.run(be.request(job, paths, rn.call_id_for(job["cell_key"], 0)))
+                except rn.CallError as exc:
+                    error = exc
             check(len(client.reads) == reads + 1 and fb.cached_catalog(key) == fresh,
                   "T2 새 토큰의 request 는 목록을 한 번 다시 읽고 새 기억 사용")
             if scenario == "available":
