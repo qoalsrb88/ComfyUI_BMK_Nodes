@@ -63086,12 +63086,15 @@ def forge_f2_import_unit():
                 rig.media_status["/media/thumb"] = 403
                 item = await rig.item()
                 response = await rig.request("thumb", query=item)
-                check(response.status == 404 and value(response)["reason"] == "forge_stale"
-                      and rig.started.count(("alice", "/media/original")) == 0, "R1 막힌 썸네일은 재요청 없이 거절")
+                check(response.status == 200 and response.content_type == "image/png"
+                      and rig.started.count(("alice", "/media/original")) == 1, "R1 origin 밖·403 썸네일은 원본 한 번으로 대체")
                 rig.media_status["/media/original"] = 404
                 response = await rig.request("thumb", query=item)
+                check(response.status == 200 and rig.started.count(("alice", "/media/original")) == 1,
+                      "R1 대체 성공한 썸네일은 기억에서 반환")
+                response = await rig.request("thumb", query=dict(item, size="large"))
                 check(response.status == 404 and value(response)["reason"] == "forge_stale" and not rig.rejected,
-                      "R1 썸네일·원본 모두 실패하면 404")
+                      "R1 캐시 밖 크게 보기에서 원본 실패하면 404")
             for status in (401, 403):
                 rig = Rig()
                 rig.put_status = status
@@ -63727,6 +63730,10 @@ def forge_import1_server_unit():
             return sum(method == "GET" and (p.startswith(path) if path == "/fake-media/" else p == path)
                        for method, p in self.fake.calls)
 
+        def states(self):
+            account_state = inspect.getclosurevars(inspect.unwrap(self.handlers["assets"])).nonlocals["account_state"]
+            return inspect.getclosurevars(inspect.unwrap(account_state)).nonlocals["states"]
+
     def value(response):
         return json.loads(response.body)
 
@@ -63734,7 +63741,216 @@ def forge_import1_server_unit():
         check(all(s not in text for s in ("dev:alice", "dev:bob", origin, "localhost", "u_alice", "u_bob", "u_teammate")),
               "I1 토큰·주소·만든 사람 id 0건: " + where)
 
+    async def wait_for_test(predicate):
+        for _ in range(200):
+            if predicate():
+                return
+            await asyncio.sleep(.001)
+        raise AssertionError("리뷰 재현 요청이 대기 상태에 도달하지 못했습니다")
+
+    async def review1():
+        rig = Rig()
+        rig.client.config = dataclasses.replace(rig.config, timeout=2)
+        item = value(await rig.request("assets"))["items"][0]
+        q = dict(source="asset", id=item["id"])
+        body = dict(q, into="target", name="review1")
+        rig.now += 300
+        state = rig.states()["org1", "u_alice"]
+        rig.fake.fault = dict(path="/api/library/assets", status=429, times=100)
+        entered, release = asyncio.Event(), asyncio.Event()
+        async def blocked(*args):
+            if urllib.parse.urlsplit(args[1]).path == "/api/library/assets":
+                entered.set()
+                await release.wait()
+            return await rig.fake.handle(*args)
+        before = rig.count("/api/library/assets")
+        with patch.object(rig.client, "_transport", side_effect=blocked):
+            first = asyncio.create_task(rig.request("assets"))
+            await entered.wait()
+            pending = [asyncio.create_task(rig.request("thumb", **q)) for _ in range(4)]
+            pending.append(asyncio.create_task(rig.request("import", body)))
+            try:
+                await wait_for_test(lambda: len(state["assets_lock"]._waiters or ()) == 5)
+            finally:
+                release.set()
+            responses = await asyncio.gather(first, *pending)
+        failure = value(responses[0])
+        check(rig.count("/api/library/assets") == before + 1, "FIX1 429 뒤 대기 썸네일 4·가져오기 1의 목록 재요청 0")
+        check(all(r.status == 503 and value(r) == failure for r in responses), "FIX1 대기 요청은 같은 reason·안내 글")
+        rig.now += 29.9
+        before = rig.count("/api/library/assets")
+        for action, data, query in (("thumb", None, q), ("thumb", None, dict(q, size="large")), ("import", body, {})):
+            response = await rig.request(action, data, **query)
+            check(response.status == 503 and value(response) == failure, "FIX1 실패 기억의 reason·안내 글 유지")
+        check(rig.count("/api/library/assets") == before, "FIX1 30초 안의 썸네일·크게 보기·가져오기 요청 0")
+        rig.now += .1
+        before = rig.count("/api/library/assets")
+        check((await rig.request("thumb", **q)).status == 503 and rig.count("/api/library/assets") == before + 1,
+              "FIX1 30초 경계 뒤에는 자료 목록 재조회")
+        rig.now -= 1
+        before = rig.count("/api/library/assets")
+        await rig.request("thumb", **q)
+        check(rig.count("/api/library/assets") == before + 1, "FIX1 시계가 뒤로 가면 실패 기억 폐기")
+        for query in ({}, {"refresh": "1"}):
+            before = rig.count("/api/library/assets")
+            await rig.request("assets", **query)
+            check(rig.count("/api/library/assets") == before + 1, "FIX1 GET assets는 실패 기억을 건너뛰고 한 번 조회")
+        rig.fake.fault = None
+        await rig.request("assets")
+        before = rig.count("/api/library/assets")
+        check((await rig.request("thumb", **q)).status == 200 and rig.count("/api/library/assets") == before,
+              "FIX1 성공하면 실패 기억 해제")
+
+        # 명시적 목록 요청끼리 기다릴 때도 같은 실패를 공유한다.
+        rig.now += 300
+        rig.fake.fault = dict(path="/api/library/assets", status=503, delay=.03, times=100)
+        before = rig.count("/api/library/assets")
+        responses = await asyncio.gather(rig.request("assets"), rig.request("assets"))
+        check(all(r.status == 503 for r in responses) and value(responses[0]) == value(responses[1])
+              and rig.count("/api/library/assets") == before + 1, "FIX1 동시 GET assets도 실패 세대 공유")
+
+        rig = Rig()
+        rig.client.config = dataclasses.replace(rig.config, timeout=2)
+        item = value(await rig.request("assets"))["items"][0]
+        rig.now += 300
+        state = rig.states()["org1", "u_alice"]
+        rig.fake.fault = dict(path="/api/library/assets", delay=.5, times=1)
+        before = rig.count("/api/library/assets")
+        first = asyncio.create_task(rig.request("assets"))
+        await wait_for_test(lambda: rig.count("/api/library/assets") == before + 1)
+        pending = asyncio.create_task(rig.request("thumb", source="asset", id=item["id"]))
+        await wait_for_test(lambda: len(state["assets_lock"]._waiters or ()) == 1)
+        first.cancel()
+        await asyncio.gather(first, return_exceptions=True)
+        check((await pending).status == 200 and rig.count("/api/library/assets") == before + 2,
+              "FIX1 취소된 읽기는 실패 기억 없이 대기자가 새로 읽음")
+
+    async def review2():
+        for active in (False, True):
+            rig = Rig()
+            item = value(await rig.request("assets"))["items"][0]
+            await rig.request("thumb", source="asset", id=item["id"])
+            alice = rig.states()["org1", "u_alice"]
+            rig.fake.fault = dict(path="/api/library/assets", status=429, times=1)
+            await rig.request("assets", account="bob")
+            bob = rig.states()["org1", "u_bob"]
+            check(bool(alice["thumbs"]) and alice["thumb_bytes"] > 0 and bob["assets_failure"] is not None,
+                  "FIX2 정리 전 그림 기억·실패 기억 있음")
+            entered, release = asyncio.Event(), asyncio.Event()
+            async def held_history(token, org, **kwargs):
+                if token == "dev:alice":
+                    entered.set()
+                    await release.wait()
+                return {"items": [], "next": None}
+            with patch.object(rig.client, "history", side_effect=held_history):
+                pending = asyncio.create_task(rig.request("history")) if active else None
+                if pending:
+                    await entered.wait()
+                try:
+                    rig.now += 31 * 60
+                    check(bool(alice["thumbs"]) and bool(alice["active"]) == active,
+                          "FIX2 bob 요청 전까지 alice 기억 유지")
+                    await rig.request("history", account="bob")
+                    check(not alice["thumbs"] and alice["thumb_bytes"] == 0,
+                          "FIX2 bob 요청만으로 alice 썸네일 만료 정리 active=" + str(active))
+                    check(alice["assets"] is None and bob["assets_failure"] is None,
+                          "FIX2 모든 계정의 지난 자료·실패 기억도 정리")
+                finally:
+                    release.set()
+                    if pending:
+                        await pending
+
+    async def review3():
+        for failure in ("origin", 403, 404, "oversize", 429, 500, "timeout", "connect"):
+            rig = Rig()
+            remote = rig.fake._seed_history("alice")[0]["items"][0]
+            original = urllib.parse.urlsplit(remote["result_url"]).path
+            thumb = "/fake-media/review3-thumb.png"
+            remote["thumbnail_url"] = "https://outside.example/thumb.png" if failure == "origin" else origin + thumb
+            rig.fake._media[thumb] = rig.fake._media[original]
+            if failure == "oversize":
+                rig.fake._media[thumb] = ("image/png", b"x" * (4 * 1024 ** 2 + 1))
+            elif failure in (403, 404, 429, 500):
+                rig.fake.fault = dict(path=thumb, status=failure, times=100)
+            elif failure == "timeout":
+                rig.fake.fault = dict(path=thumb, delay=.5, times=1)
+            if failure == "connect":
+                async def disconnected(*args):
+                    if urllib.parse.urlsplit(args[1]).path == thumb:
+                        raise OSError("synthetic connection failure")
+                    return await rig.fake.handle(*args)
+                rig.client._transport = disconnected
+            item = value(await rig.request("history"))["items"][0]
+            q = dict(source="history", id=item["id"])
+            response = await rig.request("thumb", **q)
+            if failure in ("origin", 403, 404, "oversize"):
+                check(response.status == 200 and response.content_type == "image/png" and rig.count(original) == 1,
+                      "FIX3 원본 한 번으로 대체 " + str(failure))
+                second = await rig.request("thumb", **q)
+                check(second.status == 200 and second.body == response.body and rig.count(original) == 1
+                      and rig.count(thumb) == (0 if failure == "origin" else 1), "FIX3 대체 결과 기억 " + str(failure))
+            else:
+                check(response.status == 503 and value(response)["reason"] == "forge_unreachable" and rig.count(original) == 0,
+                      "FIX3 장애에는 원본 요청 0 " + str(failure))
+
+    async def review4():
+        rig = Rig()
+        assets = rig.fake._account_assets("alice")
+        assets[0]["folder_path"] = "검증\u0001u_alice/의상"
+        assets[1]["folder_path"] = "u_alice"
+        listed = value(await rig.request("assets"))
+        shown = listed["items"][0]["folder"]
+        check(shown == "검증/의상" and shown in listed["folders"] and "" not in listed["folders"],
+              "FIX4 폴더 제어 문자·계정 id 가림과 빈 폴더 제외")
+        filtered = value(await rig.request("assets", folder=shown))
+        check([r["id"] for r in filtered["items"]] == [listed["items"][0]["id"]],
+              "FIX4 화면의 가린 폴더 값으로 같은 자료를 찾음")
+        check(listed["items"][1]["folder"] == "" and not value(await rig.request("assets", folder="u_alice"))["items"],
+              "FIX4 가림으로 빈 폴더가 된 자료는 전체에서만 보임")
+        check(rig.count("/api/library/assets") == 1, "FIX4 폴더 선택은 캐시에서만 거름")
+
+    async def review5():
+        buffer = io.BytesIO()
+        with Image.new("P", (600, 400), 0) as palette:
+            palette.putpalette([0, 0, 0, 180, 90, 40, 40, 90, 180] + [0] * 759)
+            palette.paste(1, (150, 100, 450, 300))
+            palette.paste(2, (10, 10, 50, 50))
+            palette.save(buffer, "PNG", transparency=bytes([0, 255, 128] + [255] * 253))
+        palette_png = buffer.getvalue()
+        buffer = io.BytesIO()
+        ramp = np.tile(np.linspace(0, 65535, 600, dtype=np.uint16), (400, 1))
+        with Image.fromarray(ramp) as gray:
+            gray.save(buffer, "PNG")
+        gray_png = buffer.getvalue()
+        for name, raw in (("palette", palette_png), ("gray16", gray_png)):
+            rig = Rig()
+            remote = rig.fake._seed_history("alice")[0]["items"][0]
+            path = urllib.parse.urlsplit(remote["result_url"]).path
+            rig.fake._media[path] = ("image/png", raw)
+            item = value(await rig.request("history"))["items"][0]
+            for size in (None, "large"):
+                response = await rig.request("thumb", source="history", id=item["id"], **({"size": size} if size else {}))
+                check(response.status == 200 and response.content_type == "image/png", "FIX5 미리보기 PNG 응답 " + name)
+                if response.status != 200:
+                    continue
+                with Image.open(io.BytesIO(response.body)) as image:
+                    rgba = image.convert("RGBA")
+                    if name == "palette":
+                        check(rgba.getpixel((0, 0))[3] == 0 and rgba.getpixel((image.width // 2, image.height // 2))[3] == 255
+                              and rgba.getpixel((image.width // 20, image.height * 3 // 40))[3] == 128,
+                              "FIX5 팔레트 PNG 투명·불투명 알파 유지 " + str(size))
+                    else:
+                        center = rgba.getpixel((image.width // 2, image.height // 2))[0]
+                        check(124 <= center <= 132 and rgba.getpixel((0, 0))[0] <= 2 and rgba.getpixel((image.width - 1, 0))[0] >= 253,
+                              "FIX5 16비트 회색의 중간 밝기 유지 " + str(size) + " center=" + str(center))
+                    rgba.close()
+
     async def run():
+        await review1()
+        await review2()
+        await review3()
+        await review4()
+        await review5()
         # 1-E: 실제 전송 대역이 받은 요청 수를 먼저 고정한다.
         rig = Rig()
         await rig.request("history")

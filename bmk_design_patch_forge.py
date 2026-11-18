@@ -689,6 +689,7 @@ def routes(accounts: ForgeAccounts) -> tuple:
     # Run 의 동시 제출 설정과 별개. 활동 중인 계정은 LRU 에서 밀어내지 않는다.
     account_limit, root_limit, entry_limit = 128, 128, 2000
     states = OrderedDict()
+    swept_at = accounts.clock()
     slots = asyncio.Semaphore(8)
     save_slots = asyncio.Semaphore(2)
     messages = {
@@ -708,6 +709,17 @@ def routes(accounts: ForgeAccounts) -> tuple:
 
     @contextmanager
     def account_state(scope):
+        nonlocal swept_at
+        now = accounts.clock()
+        backwards = now < swept_at
+        if backwards or now - swept_at >= 60:
+            swept_at = now
+            for cached_state in states.values():
+                thumb_cache(cached_state)
+                for key, ttl in (("assets", 300), ("assets_failure", 30)):
+                    cached = cached_state[key]
+                    if cached is not None and (backwards or not 0 <= now - cached["at"] < ttl):
+                        cached_state[key] = None
         key = (scope["org"], scope["account"])
         if key not in states:
             if len(states) >= account_limit:
@@ -718,6 +730,7 @@ def routes(accounts: ForgeAccounts) -> tuple:
             states[key] = {"rows": OrderedDict(), "saved": OrderedDict(), "saving": set(),
                            "heavy": asyncio.Semaphore(1), "thumb": asyncio.Semaphore(4),
                            "list": asyncio.Semaphore(2), "active": 0, "assets": None,
+                           "assets_generation": 0, "assets_failure": None,
                            "assets_lock": asyncio.Lock(), "thumbs": OrderedDict(), "thumb_bytes": 0,
                            "thumb_at": accounts.clock()}
         state = states[key]
@@ -802,9 +815,15 @@ def routes(accounts: ForgeAccounts) -> tuple:
                 if mime is None or max(im.size) > board._MAX_IMAGE_SIDE or im.width * im.height > board._MAX_IMAGE_AREA:
                     raise ValueError
                 im.load()
-                im.thumbnail((size, size), Image.Resampling.LANCZOS)
-                result = io.BytesIO()
-                im.convert("RGBA" if "A" in im.getbands() else "RGB").save(result, "PNG")
+                if im.mode in ("I;16", "I;16B", "I;16L", "I"):
+                    with im.convert("I") as gray, gray.point(lambda value: value / 257) as scaled:
+                        converted = scaled.convert("L")  # 0–65535 → 0–255, 밝은 값의 포화를 막는다.
+                else:
+                    converted = im.convert("RGBA" if "A" in im.getbands() or "transparency" in im.info else "RGB")
+                with converted:
+                    converted.thumbnail((size, size), Image.Resampling.LANCZOS)
+                    result = io.BytesIO()
+                    converted.save(result, "PNG")
                 return result.getvalue(), "image/png"
         except Exception:
             raise board._Reject(422, "그림 파일을 읽을 수 없습니다(깨졌거나 지원하지 않는 형식)") from None
@@ -822,32 +841,54 @@ def routes(accounts: ForgeAccounts) -> tuple:
         except board._Reject:
             return board.check_upload_name("Forge" + suffix)
 
-    async def asset_list(state, ctx, refresh=False):
-        observed = state["assets"]
+    def repeat_asset_failure(failure):
+        raise board._Reject(failure["status"], failure["message"], reason=failure["reason"]) from None
+
+    async def asset_list(state, ctx, refresh=False, remember_failure=False):
+        generation = state["assets_generation"]
         async with state["assets_lock"]:
             cached = state["assets"]
-            if cached is not None and 0 <= accounts.clock() - cached["at"] < 300 and (
-                    not refresh or cached is not observed):
+            failure = state["assets_failure"]
+            if generation != state["assets_generation"]:
+                if failure is not None:
+                    repeat_asset_failure(failure)
+                if cached is not None:
+                    return cached
+            if failure is not None and not 0 <= accounts.clock() - failure["at"] < 30:
+                state["assets_failure"] = failure = None
+            if remember_failure and failure is not None:
+                repeat_asset_failure(failure)
+            if cached is not None and 0 <= accounts.clock() - cached["at"] < 300 and not refresh:
                 return cached
             state["assets"] = None  # 오류·취소 때 옛 서명 주소나 반쪽 목록을 쓰지 않는다.
+            state["assets_failure"] = None
             rows, offset = [], 0
-            for _ in range(5):
-                token = ctx["token_of"]()
-                if not token:
-                    reject("forge_auth")
-                try:
-                    page = await ctx["client"].assets(token, ctx["organization_id"], offset=offset)
-                except ForgeError as error:
-                    if error.reason == "unauthorized":
-                        ctx["reject_token"](token)
-                        reject("forge_auth", error)
-                    raise
-                rows.extend(page["items"][:1000 - len(rows)])
-                offset = page["next"]
-                if offset is None or len(rows) >= 1000:
-                    break
+            try:
+                for _ in range(5):
+                    token = ctx["token_of"]()
+                    if not token:
+                        reject("forge_auth")
+                    try:
+                        page = await ctx["client"].assets(token, ctx["organization_id"], offset=offset)
+                    except ForgeError as error:
+                        if error.reason == "unauthorized":
+                            ctx["reject_token"](token)
+                        reject({"unauthorized": "forge_auth", "forbidden": "no_access"}.get(
+                            error.reason, "forge_unreachable"), error)
+                    rows.extend(page["items"][:1000 - len(rows)])
+                    offset = page["next"]
+                    if offset is None or len(rows) >= 1000:
+                        break
+            except board._Reject as error:
+                # 예외 객체·traceback 은 토큰을 붙들 수 있어 보관하지 않는다. 고정 안내와 상태만 기억한다.
+                state["assets_failure"] = {"at": accounts.clock(), "status": error.status,
+                                           "reason": error.extra["reason"], "message": error.message}
+                state["assets_generation"] += 1
+                raise
+            # CancelledError 는 위에서 잡지 않는다. 취소된 읽기는 세대를 끝내지 않아 대기자가 새로 읽는다.
             cached = {"items": rows, "at": accounts.clock(), "version": secrets.token_urlsafe(16), "more": offset is not None}
             state["assets"] = cached
+            state["assets_generation"] += 1
             return cached
 
     def allowed_media(url):
@@ -860,7 +901,7 @@ def routes(accounts: ForgeAccounts) -> tuple:
     async def media_row(scope, state, ctx, ident, source):
         row = lookup(scope, ident, source)
         if source == "asset":
-            cached = await asset_list(state, ctx)
+            cached = await asset_list(state, ctx, remember_failure=True)
             current = next((r for r in cached["items"] if r.get("id") == row.get("id")), None)
             if current is None:
                 reject("forge_stale")
@@ -908,7 +949,7 @@ def routes(accounts: ForgeAccounts) -> tuple:
             result["items"] = [row for row in result["items"] if row.get("generation_type") not in ("upscale", "bg_removal")
                                and (studio or not str(row.get("prompt") or "").startswith(prompt.PROMPT_HEAD))]
         else:
-            matched = [row for row in cached["items"] if (not folder or row.get("folder") == folder)
+            matched = [row for row in cached["items"] if (not folder or clean(row.get("folder"), token, 512, row) == folder)
                        and search.casefold() in " ".join(str(row.get(k) or "") for k in ("name", "folder", "tags")).casefold()]
             result = {"items": matched[value:value + 60], "next": value + 60 if value + 60 < len(matched) else None}
         rows = []
@@ -954,7 +995,7 @@ def routes(accounts: ForgeAccounts) -> tuple:
                 try:
                     raw = await client.fetch_media(thumb, 4 * 1024 ** 2)
                 except ForgeError as error:
-                    if error.status != 413:
+                    if error.status not in (403, 404, 413) and not (error.reason == "forbidden" and error.status is None):
                         raise
                     raw = await client.fetch_media(row["url"])
             else:
