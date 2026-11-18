@@ -1328,11 +1328,29 @@
   }
 
   function promptWarning(parent, candidate) {
-    if (!SM() || !candidate || candidate.prompt_changed !== true) return;
-    const warning = chip("프롬프트가 서버에서 바뀜", "dp-prompt-changed");
-    warning.title = "서버가 보낸 프롬프트를 바꿔 생성한 결과입니다 — 같은 생성 조건의 다른 후보와 다를 수 있습니다";
+    if (!SM() || !candidate) return;
+    const warnings = [];
+    if (candidate.prompt_changed === true) {
+      const warning = chip("프롬프트가 서버에서 바뀜", "dp-prompt-changed");
+      warning.title = "서버가 보낸 프롬프트를 바꿔 생성한 결과입니다 — 같은 생성 조건의 다른 후보와 다를 수 있습니다";
+      warnings.push(warning);
+    }
+    if (candidate.ratio_changed === true) {
+      const warning = chip("비율 다름", "dp-ratio-changed");
+      warning.title = "받은 그림의 가로세로비가 요청과 달라 크롭에 맞추면 늘어납니다";
+      warnings.push(warning);
+    }
+    if (!warnings.length) return;
     const text = el("span", "dp-caption-text", parent.textContent);
-    parent.replaceChildren(warning, text);
+    parent.replaceChildren(...warnings, text);
+  }
+
+  function candidateModel(c) {
+    if (!SM() || !c || !c.model) return "";
+    const models = window.DPEnv.caps && window.DPEnv.caps.models;
+    if (!Array.isArray(models)) return "";
+    const model = models.find((m) => m.name === c.model);
+    return (model && model.label || c.model) + (c.quality && !(model && !model.qualities.length) ? ` · 품질 ${c.quality}` : "");
   }
 
   function row(parent, key, text, cls = "") {
@@ -1396,6 +1414,8 @@
       .filter((x) => x !== null && x !== undefined && x !== "").join(" · ");
     row(d, `c${pad(c.n)}`, `${c.label} · ${src}` + (c.src_size ? ` · ${c.src_size[0]}×${c.src_size[1]}` : "")
       + (ranText(c) ? ` · ${ranText(c)} 완료` : ""));
+    const model = candidateModel(c);
+    if (model) row(d, "모델", model).title = model;
     tookRow(d, crop, c);
     if (c.joint && c.joint.first && c.joint.first !== t.tid) {
       const r = row(d, "공동", `${c.joint.tids.join("·")} 를 한 번에 고친 결과 — ★ 는 ${c.joint.first} 에만 `, "warn");
@@ -1515,6 +1535,12 @@
       cap.title = [c.label, ranText(c) && `${ranText(c)} 완료`, ranText(c) && tookText(c.took)].filter(Boolean).join(" · ");
       promptWarning(cap, c);
       tile.append(cap);
+      const model = candidateModel(c);
+      if (model) {
+        const info = el("div", "cap dp-candidate-model", model);
+        info.title = model;
+        tile.append(info);
+      }
       tile.addEventListener("click", () => selectCand(c.key));
       tile.addEventListener("dblclick", () => {
         selectCand(c.key);

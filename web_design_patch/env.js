@@ -384,6 +384,13 @@ window.DPEnv = (() => {
       }
       if (env.account && account.tag !== env.account.tag) { block(CHANGED); return; }
       env.account = account;
+      // 모델 목록(caps.models)은 세션이 있어야 서버의 목록과 대조된다 — 목록을 주는 서버에서만 세션 뒤에 한 번 다시 읽는다.
+      if (Array.isArray(env.caps.models)) try {
+        const fresh = await read(new URL("env", API), { headers: { "X-DesignPatch-Account": account.tag } }, 8000, true);
+        if (fresh.response.status === 200 && object(fresh.data) && fresh.data.server_mode === true
+            && object(fresh.data.caps) && Object.keys(LOCAL_CAPS).every((key) => typeof fresh.data.caps[key] === "boolean")
+            && Array.isArray(fresh.data.caps.models)) env.caps = { ...env.caps, models: fresh.data.caps.models };
+      } catch (e) { /* 모델 목록을 다시 읽지 못하면 세션 전 환경 값을 유지한다. */ }
       const prefs = await read(prefsUrl);
       if (!prefs.response.ok || !object(prefs.data) || !object(prefs.data.values)
           || !Object.values(prefs.data.values).every((value) => typeof value === "string")) throw new Error("prefs");

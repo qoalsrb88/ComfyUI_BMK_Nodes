@@ -39543,7 +39543,7 @@ await scenario("renderWiring", async () => {
     setTimeout: (fn) => timers.push(fn), pipeReady: () => true, syncViewer() {}, preloadAround() {}, usd: () => "", credits: () => "", rowButton() {},
     pipe: { enter() {}, leave() {}, select() {} }, chipsLog: [] });
   vm.runInContext(["VIA", "SEEN_KEY"].map(boardConst).join("\n") + ";\n" + ["curTarget", "curCand", "cropOf", "defaultCand", "reconcile", "selectTarget", "selectCand",
-    "syncSeen", "saveSeen", "markSeen", "seeCurrent", "isNew", "ranText", "oldCell", "tookText", "tookSummary", "tookRow", "tileBadges", "targetChips", "promptWarning", "renderGrid", "renderCompare", "renderDetail",
+    "syncSeen", "saveSeen", "markSeen", "seeCurrent", "isNew", "ranText", "oldCell", "tookText", "tookSummary", "tookRow", "tileBadges", "targetChips", "promptWarning", "candidateModel", "renderGrid", "renderCompare", "renderDetail",
     "row", "pad", "targetTitle", "setPipe"].map((n) => `${n} = ${boardFn(n)};`).join("\n")
     + "\nrenderTargets = () => { chipsLog = S.targets.map((t) => { const ch = []; targetChips({ append: (...x) => ch.push(...x) }, t); return ch.map((x) => x.textContent); }); };"
     + "\nrenderAll = () => { renderTargets(); renderCompare(); renderDetail(); renderGrid(); };", c);
@@ -54511,7 +54511,7 @@ await scenario("F3U1 D350–351 머리 단추·기억값",async()=>{
     row:(parent,key,text)=>{const x=doc.createElement("div");x.textContent=key+": "+text;parent.append(x);return x;}});
   for(const name of ["renderDetail","renderGrid"]) vm.runInContext(boardSrc.match(new RegExp(`\\n  function ${name}\\(\\) \\{[\\s\\S]*?\\n  \\}`))[0],bctx);
   vm.runInContext(boardSrc.match(/\n  function tookRow\(d, crop, c\) \{[\s\S]*?\n  \}/)[0],bctx);
-  for(const name of ["tookText","tookSummary","ranText","oldCell"]) vm.runInContext(boardSrc.match(new RegExp(`\\n  function ${name}\\(\\w+\\) \\{[\\s\\S]*?\\n  \\}`))[0],bctx);
+  for(const name of ["tookText","tookSummary","ranText","oldCell","candidateModel"]) vm.runInContext(boardSrc.match(new RegExp(`\\n  function ${name}\\(\\w+\\) \\{[\\s\\S]*?\\n  \\}`))[0],bctx);
   vm.runInContext("renderDetail(); renderGrid()",bctx);
   r.detail=!illegal.test($("detail").textContent)&&$("detail").textContent.includes("호출: 이 크롭 호출 2(완료 1) · 대기 1");
   r.emptyGrid=$("grid").firstElementChild.classList.contains("dp-empty")&&$("grid").textContent==="후보 없음 — 대기 호출 2(끝나면 여기에 나옵니다)";
@@ -62304,6 +62304,193 @@ def forge_models_js_unit():
     """Forge 2단계 화면 갈래 — 실행 설정의 모델 고르기·모델별 품질 칸·전환 미리 보기·승인 상자와 후보의 모델 표시.
     명세 _proto/STUDIO_FORGE_MODELS_SPEC.md §2.5·§3.4. --quick 포함."""
     section("Forge 모델 화면 — forge_models_js_unit")
+    import bmk_design_patch_models as models
+
+    node = shutil.which("node")
+    if not node:
+        skip("FMJ node 없음 — 모델 화면 VM 시험 못 돌림")
+        return
+    web = PKG / "web_design_patch"
+    out = OUT_ROOT / "forge_models_js"
+    out.mkdir(parents=True, exist_ok=True)
+    fixture = json.loads((PKG / "tools" / "fixtures" / "forge_api.json").read_text(encoding="utf-8"))["models"]
+    catalog = [models.describe(name) for name in fixture["names"]]
+    for model in catalog:
+        limits = fixture["limits"].get(model["name"], fixture["limits"]["gpt"])
+        check(all(model[key] == limits[key] for key in ("qualities", "max_n", "max_inputs", "fan_out")),
+              f"FMJ env 시험 재료 = 정본 models.limits {model['name']}")
+    sources = {name: (web / name).read_text(encoding="utf-8") for name in ("env.js", "dialog.js", "pipeline.js", "board.js")}
+    core = _fw_core_js().split('await scenario("FW7', 1)[0] + r'''
+for(const mode of ["ok","network","timeout","http","session","json","shape","missing","local","legacy"])
+await scenario("FMJ env 세션 뒤 목록 갱신 "+mode,async()=>{
+  const initial=clone(A.env_server_forge.response);initial.caps.models=clone(IN.models);
+  const fresh=clone(initial);fresh.caps.models[0].available=false;fresh.caps.models[0].why="목록에서 빠짐";
+  fresh.caps.sam3=!initial.caps.sam3;fresh.backend="changed";
+  let reads=0;
+  const e=await boot({handler:(u,o)=>{
+    const path=new URL(String(u)).pathname;
+    if(path.endsWith("/env")){
+      reads++;
+      if(mode==="legacy")return response({},404);
+      if(mode==="local")return response(A.env_local.response);
+      if(reads===1)return response(initial);
+      if(mode==="network")return Promise.reject(Error("offline"));
+      if(mode==="timeout")return new Promise(()=>{});
+      if(mode==="http")return response({},503);
+      if(mode==="session")return response({reason:"no_session"},401);
+      if(mode==="json")return new Response("not json");
+      if(mode==="shape")return response({server_mode:true,caps:{models:[]}});
+      if(mode==="missing"){delete fresh.caps.models;return response(fresh);}
+      return response(fresh);
+    }
+    return serverHandler(u,o);
+  }});
+  if(mode==="timeout"){if(e.ready)return false;await e.fire(8000);}
+  const env=e.ctx.DPEnv;
+  if(mode==="local"||mode==="legacy")return e.ready&&!env.serverMode&&reads===1&&!env.account;
+  const read=e.calls.findLast(([u])=>String(u).endsWith("/env")),headers=new Headers(read[1].headers);
+  const order=e.calls.map(([u])=>new URL(String(u)).pathname);
+  return {ready:e.ready,twice:reads===2,afterSession:order.indexOf("/api/session")<order.lastIndexOf(order[0]),
+    scoped:headers.get("X-DesignPatch-Account")===A.session_post.response.account.tag,
+    models:JSON.stringify(env.caps.models)===JSON.stringify(mode==="ok"?fresh.caps.models:initial.caps.models),
+    otherCaps:env.caps.sam3===initial.caps.sam3,backend:env.backend===initial.backend,
+    silent:!e.doc.body.textContent&&!e.logs.length};
+});
+console.log(JSON.stringify(out));
+'''
+    h = _PL_JS_HARNESS
+    cut = [h[h.index(a):h.index(b, h.index(a))] for a, b in
+           (("import fs", "async function run("), ("class El {", "async function mouse("),
+            ("function boardState()", 'await scenario("panel"'), ("function quietPipeline(mod)", 'await scenario("panelDrift"'))]
+    ui = "\n".join(cut) + _PAID_STUDIO_JS_HARNESS.split('// ── J-P3 승인 단추:', 1)[0] + r'''
+const eq=(a,b)=>JSON.stringify(a)===JSON.stringify(b),catalog=IN.models;
+const seed=catalog.find(m=>m.kind==="seedream"),ideo=catalog.find(m=>m.kind==="ideogram"),gpt=catalog.find(m=>m.name.includes("2.5"));
+let refreshes=0;
+function mode(server=true,models=catalog){ctx.window.DPEnv={serverMode:server,backend:"forge",caps:{...IN.forge.env_server_forge.response.caps,...(models?{models:clone(models)}:{})},
+  requestToken:()=>{refreshes++;return Promise.resolve(true);},can:n=>IN.forge.env_server_forge.response.caps[n]===true};}
+function dialog(e){
+  const events=new Map();ctx.window.addEventListener=(t,f)=>events.set(t,[...events.get(t)||[],f]);
+  ctx.window.removeEventListener=(t,f)=>events.set(t,(events.get(t)||[]).filter(x=>x!==f));
+  El.prototype.appendChild=function(x){this.append(x);return x;};vm.runInContext(IN.dialog,ctx);
+}
+async function studio({server=true,models=catalog,prepare={},backend="forge"}={}){
+  mode(server,models);
+  const e=await mkStudio({P:b=>Object.assign(b.settings.prepare,{model:gpt.name,quality:gpt.default_quality,n:2},prepare),
+    plan:p=>{p.run.backend=backend;p.run.pre=0;}});
+  dialog(e);e.h=e.pipe._models;
+  e.field=k=>{const box=e.panel.querySelectorAll(".pp-sec").find(x=>x.children[0].textContent==="Prepare");
+    const label=server&&models?({model:"모델",quality:"품질"}[k]||k):k;
+    return box?.children.find(x=>x.classList.contains("pp-field")&&x.children[0].textContent===label);};
+  e.input=k=>e.field(k)?.children.find(x=>["INPUT","SELECT"].includes(x.tagName));
+  e.change=async(k,v)=>{const input=e.input(k);input.focus();input.value=String(v);input.fire(input.tagName==="SELECT"?"change":"input");await sleep(5);};
+  return e;
+}
+await scenario("FMJ 선택지·퇴역한 저장 모델·아래 안내·문자열 label",async()=>{
+  const list=clone(catalog);list[0].available=false;list[0].why="이 모델은 지금 목록에 없습니다";list[0].label="<목록 모델>";
+  const e=await studio({models:list,prepare:{model:list[0].name}});await e.h.openSettings();
+  const input=e.input("model"),options=input.children;
+  const r={names:eq(options.map(o=>o.value),list.map(m=>m.name)),labels:eq(options.map(o=>o.textContent),list.map(m=>m.label)),
+    disabled:options[0].disabled===true&&options.slice(1).every(o=>!o.disabled),selected:input.value===list[0].name,
+    reason:options[0].title===list[0].why&&input.title===list[0].why&&e.field("model").textContent.includes(list[0].why),
+    text:options[0].children.length===0};e.stop();return r;
+});
+await scenario("FMJ 품질·기본값·상한·복잡도 즉시 전환",async()=>{
+  const e=await studio({prepare:{n:gpt.max_n}});await e.h.openSettings();
+  await e.change("model",ideo.name);
+  const r={quality:eq(e.input("quality").children.map(o=>o.value),ideo.qualities),default:e.input("quality").value===ideo.default_quality,
+    clamped:Number(e.input("n").value)===ideo.max_n&&e.input("n").max===String(ideo.max_n),
+    complexity:e.field("complexity").classList.contains("pp-complexity-unused")};
+  await e.change("n",ideo.max_n+2);r.inputClamp=Number(e.input("n").value)===ideo.max_n;
+  await e.change("quality",ideo.qualities[0]);await e.change("model",seed.name);
+  r.noQuality=e.input("quality").disabled&&e.field("quality").classList.contains("pp-complexity-unused")
+    &&e.field("quality").textContent.includes("이 모델은 품질을 선택하지 않습니다");
+  await e.change("model",gpt.name);r.keptQuality=e.input("quality").value===ideo.qualities[0]&&!e.input("quality").disabled;
+  await e.change("model",catalog.find(m=>m.name.includes("2.6")).name);
+  r.gpt26=!e.field("complexity").classList.contains("pp-complexity-unused");e.stop();return r;
+});
+for(const server of [false,true])await scenario("FMJ 목록 없는 화면 보존 "+server,async()=>{
+  const e=await studio({server,models:server?null:catalog});await e.h.openSettings();
+  const base=e.h.PS.P.widgets.prepare;
+  const r={models:eq(e.input("model").children.map(x=>x.value),base.model.choices),quality:eq(e.input("quality").children.map(x=>x.value),base.quality.choices),
+    labels:e.field("model").children[0].textContent==="model"&&e.field("quality").children[0].textContent==="quality",
+    noNewDOM:!e.panel.all().some(x=>x.classList.contains("pp-model")),max:e.input("n").max===String(base.n.max)};
+  e.stop();return r;
+});
+for(const change of ["model","quality","cancel"])
+await scenario("FMJ 저장은 미리 보기·페이지 확인 뒤 "+change,async()=>{
+  const e=await studio({prepare:change==="quality"?{model:ideo.name,quality:ideo.default_quality}:{}});await e.h.openSettings();
+  if(change==="quality")await e.change("quality",ideo.qualities[0]);else await e.change("model",seed.name);
+  e.doc.activeElement.blur();const pending=e.h.saveSection("prepare");await until(()=>!!e.box());
+  const before=e.srv.count("pipeline/settings","POST"),box=e.box(),pr=change==="quality"?ideo:seed;
+  const preview=e.srv.log.findLast(x=>x.path==="pipeline"&&x.q.prepare),r={page:!!box&&!e.confirms.length,
+    before:before===0,preview:!!preview&&JSON.parse(preview.q.prepare).model===pr.name,
+    copy:box.textContent.includes(pr.label)&&box.textContent.includes("다음 [반영] 뒤 생성 승인 필요")&&!/\$|크레딧/.test(box.textContent),
+    quality:change==="quality"?box.textContent.includes("품질 "+ideo.qualities[0]):!box.textContent.includes("품질")};
+  e.B(change==="cancel"?"취소":"확인",box).onclick({isTrusted:true});await pending;
+  const post=e.srv.log.findLast(x=>x.path==="pipeline/settings");
+  r.saved=change==="cancel"?!post:post?.body.section==="prepare"&&post.body.values.model===pr.name;
+  r.noGeneration=!e.tab.got.length&&!e.srv.log.some(x=>x.path==="jobs/prompt"||x.path==="api/prompt");e.stop();return r;
+});
+for(const m of catalog)await scenario("FMJ 요약·진행·생성 승인 "+m.name,async()=>{
+  const e=await studio({prepare:{model:m.name,quality:m.default_quality||"standard",n:3}});
+  const settings=e.panel.textContent,run=P.runText({...e.h.PS.plan.run,prepare:e.h.PS.P.settings.prepare}).line;
+  const progress=e.rows("진행 — Run")[0]||"";
+  e.click(e.B("생성 승인"));await until(()=>!!e.box());const box=e.box(),text=box?.textContent||"",need=e.h.PS.plan.run.need;
+  const r={settings:settings.includes(m.label),run:run.includes(m.label),progress:progress.includes(m.label),approval:text.includes("모델 "+m.label),
+    count:text.includes(`잡 ${need}건 · 그림 ${need*3}장`),fanOut:text.includes("이 모델은 장마다 따로 생성합니다")===m.fan_out,
+    quality:[run,progress,text].every(t=>t.includes("품질")===!!m.qualities.length),
+    complexity:[run,progress,text].every(t=>t.includes("복잡도")===m.name.includes("2.6")),cost:!/[\$]|크레딧/.test(text)};
+  if(box)e.click(e.B("취소",box));await sleep(5);e.stop();return r;
+});
+await scenario("FMJ 제출 전 거부는 로그인 요청 없이 표시",async()=>{
+  mode();const before=refreshes,note="이 모델은 지금 목록에 없습니다";
+  const r={};for(const stage of ["run","reroll"])r[stage]=P.paidReport(stage,RUN_H({backend:"forge",stopped_reason:"auth",stop_note:note}))==="발사 못 함 — "+note;
+  r.noToken=refreshes===before;
+  r.auth=P.paidReport("run",RUN_H({backend:"forge",stopped_reason:"auth",stop_note:null})).startsWith("Forge 로그인 갱신")&&refreshes===before+1;
+  mode(false);r.local=P.paidReport("run",RUN_H({backend:"forge",stopped_reason:"auth",stop_note:note})).includes("comfy.org 로그인 필요")&&refreshes===before+1;
+  return r;
+});
+await scenario("FMJ 후보 별도 모델 줄·비율·프롬프트 칩·로컬 보존",async()=>{
+  mode();const doc=new Doc(),nodes={},candidate={key:"one",n:1,model:seed.name,quality:"standard",origin:"run",label:"후보",ratio_changed:true,prompt_changed:true};
+  const target={size:[512,512],focus_box:[0,0,512,512],cells:[],refs:[],candidates:[candidate]},crop={calls:0,dup_picks:[],stale_picked:[]};
+  El.prototype.querySelector=function(){return null;};
+  const c=vm.createContext({window:ctx.window,document:doc,$:id=>nodes[id]??=doc.createElement("div"),
+    el:(tag,cls="",text="")=>{const n=doc.createElement(tag);n.className=cls;n.textContent=text;return n;},
+    chip:(text,cls)=>{const n=doc.createElement("span");n.className="chip "+cls;n.textContent=text;return n;},
+    curTarget:()=>target,curCand:()=>candidate,cropOf:()=>crop,targetTitle:()=>"타깃",refIdx:0,qHeld:false,view:"cand",cKey:null,pad:String,
+    setImg(){},oldCell:()=>false,ranText:()=>"",tileBadges:()=>doc.createElement("div"),selectCand(){},setStar(){},GATE_NAMES:{}});
+  for(const name of ["promptWarning","candidateModel","row","tookText","tookSummary","tookRow","renderCompare","renderGrid","renderDetail"])vm.runInContext(boardFn(name),c);
+  const draw=()=>{c.renderCompare();c.renderGrid();c.renderDetail();};draw();
+  const chips=(n,cls)=>n.all().filter(x=>x.classList.contains(cls)),ratio=chips(nodes["cand-caption"],"dp-ratio-changed")[0];
+  const r={detail:nodes.detail.children.some(x=>x.children[0]?.textContent==="모델"&&x.textContent.includes(seed.label)&&!x.textContent.includes("품질")),
+    grid:chips(nodes.grid,"dp-candidate-model")[0]?.textContent===seed.label,
+    ratio:ratio?.textContent==="비율 다름"&&ratio.title==="받은 그림의 가로세로비가 요청과 달라 크롭에 맞추면 늘어납니다",
+    both:chips(nodes.grid,"dp-ratio-changed").length===1&&chips(nodes.grid,"dp-prompt-changed").length===1};
+  candidate.model=ideo.name;candidate.quality=ideo.default_quality;candidate.prompt_changed=false;draw();
+  r.ideogram=chips(nodes.grid,"dp-candidate-model")[0]?.textContent===`${ideo.label} · 품질 ${ideo.default_quality}`;
+  r.ratioOnly=chips(nodes.grid,"dp-ratio-changed").length===1&&!chips(nodes.grid,"dp-prompt-changed").length;
+  candidate.ratio_changed=false;draw();r.clear=!chips(nodes.grid,"dp-ratio-changed").length&&!chips(nodes["cand-caption"],"dp-ratio-changed").length;
+  candidate.prompt_changed=true;candidate.ratio_changed=true;mode(false);draw();
+  r.local=!chips(nodes.grid,"dp-candidate-model").length&&!chips(nodes.grid,"dp-ratio-changed").length&&!chips(nodes.grid,"dp-prompt-changed").length
+    &&!nodes.detail.children.some(x=>x.children[0]?.textContent==="모델");return r;
+});
+console.log(JSON.stringify(out));process.exit(0);
+'''
+    hook = '.replace("return { stateChanged, enter, leave, select, queue: boardQueue", "return { _models: { PS, openSettings, saveSection, switchModel }, stateChanged, enter, leave, select, queue: boardQueue")'
+    ui = ui.replace('fs.readFileSync(IN.pipelineJs, "utf8")', 'fs.readFileSync(IN.pipelineJs, "utf8")' + hook)
+    data = {"api": _pl_api(), "forge": _server_api(), "models": catalog, "dialog": sources["dialog.js"],
+            "pipelineJs": str(web / "pipeline.js"), "boardJs": str(web / "board.js")}
+    for name, harness, payload in (("core", core, {"api": _server_api(), "source": sources, "models": catalog}), ("ui", ui, data)):
+        (out / f"{name}.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        (out / f"{name}.mjs").write_text(harness, encoding="utf-8")
+        result = subprocess.run([node, str(out / f"{name}.mjs"), str(out / f"{name}.json")], capture_output=True,
+                                text=True, encoding="utf-8", timeout=60)
+        if result.returncode or not result.stdout.strip():
+            check(False, f"FMJ {name} VM 실패: {result.stderr[-3000:]}")
+            continue
+        for case, values in json.loads(result.stdout.strip().splitlines()[-1]).items():
+            for key, value in (values.items() if isinstance(values, dict) else [("", values)]):
+                check(value is True, f"{case} {key}" if value is True else f"{case} {key}: {value}")
 
 
 def forge_f2_dev_unit():
@@ -63436,7 +63623,7 @@ await scenario("F2W24 후보 목록·크게 보기 경고 칩·다른 후보·�
     curTarget:()=>target,curCand:()=>candidate,refIdx:0,qHeld:false,view:"cand",cKey:null,pad:n=>String(n),
     setImg(){},oldCell:()=>false,ranText:()=>"",tileBadges:()=>doc.createElement("div"),selectCand(){},setStar(){}});
   El.prototype.querySelector=function(){return null;};
-  for(const name of ["promptWarning","renderCompare","renderGrid","tookText"])vm.runInContext(boardFn(name),c);
+  for(const name of ["promptWarning","candidateModel","renderCompare","renderGrid","tookText"])vm.runInContext(boardFn(name),c);
   candidate={n:1,key:"one",...F.candidate_prompt_changed.candidate};target.candidates=[candidate,{n:2,key:"two",prompt_changed:false}];
   c.renderCompare();c.renderGrid();
   const chips=n=>n.all().filter(x=>x.classList.contains("dp-prompt-changed"));
