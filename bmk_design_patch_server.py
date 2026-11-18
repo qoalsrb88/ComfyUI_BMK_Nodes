@@ -822,10 +822,11 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
             if result["backend"] == "forge" and session is not None:
                 ctx = accounts.context(session["scope"])
                 key = (ctx["organization_id"], session["scope"]["account"])
-                catalog = await forge_backend.ensure_catalog(key, ctx["client"], ctx["token_of"], ctx["reject_token"], timeout=5.0)
+                catalog = await forge_backend.ensure_catalog(key, ctx["client"], ctx["token_of"], ctx["reject_token"], timeout=5.0,
+                                                              failure_max_age=forge_backend.CATALOG_PREVIEW_TTL)
                 if catalog is None:
-                    catalog = forge_backend.cached_catalog(key, max_age=None)
-                checked = catalog is not None and not forge_backend.catalog_failed(key)
+                    catalog = forge_backend.cached_catalog(key, max_age=None, failure_max_age=forge_backend.CATALOG_PREVIEW_TTL)
+                checked = catalog is not None and not forge_backend.catalog_failed(key, max_age=forge_backend.CATALOG_PREVIEW_TTL)
                 if not checked:
                     result["caps"]["models_error"] = forge_backend._CATALOG_UNREADABLE
             result["caps"]["models"] = [models.describe(name, catalog, checked=checked) for name in models.MODELS]

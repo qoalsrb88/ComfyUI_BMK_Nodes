@@ -496,7 +496,7 @@ def _refresh_catalog(ctx):
     catalog = asyncio.run(forge_backend.ensure_catalog(key, ctx["client"], ctx["token_of"], ctx["reject_token"], max_age=60.0))
     if catalog is None:
         if ctx["token_of"]() is None:
-            forge_backend.clear_catalog_failed(key)
+            forge_backend.forget_catalog(key)
         else:
             forge_backend.mark_catalog_failed(key)
 

@@ -5821,8 +5821,8 @@ def _plan_sigs(root: str, m: dict, busy: tuple[bool, bool], refs_v: str | None, 
             import bmk_design_patch_models as models
         scope = current_scope()
         key = (scope["org"], scope["account"]) if scope else None
-        catalog = forge_backend.cached_catalog(key, max_age=None) if key else None
-        run.append((forge_backend.catalog_failed(key),
+        catalog = forge_backend.cached_catalog(key, max_age=None, failure_max_age=forge_backend.CATALOG_PREVIEW_TTL) if key else None
+        run.append((forge_backend.catalog_failed(key, max_age=forge_backend.CATALOG_PREVIEW_TTL),
                     sorted((model.checkpoint, models.availability(model.name, catalog)[2])
                            for model in models.MODELS.values() if model.checkpoint in catalog)
                     if catalog is not None else None))

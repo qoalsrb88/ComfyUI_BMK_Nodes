@@ -60,9 +60,10 @@ _PRIVATE_TEXT = re.compile(r"://|data:|\\|[a-z0-9_.-]+:\d+|(?:\d{1,3}\.){3}\d{1,
 _LOCK = threading.Lock()
 _PROGRESS = {}
 CATALOG_TTL = 600.0
+CATALOG_PREVIEW_TTL = 60.0
 _CATALOG_LOCK = threading.Lock()
 _CATALOG = {}
-_CATALOG_FAILED = set()
+_CATALOG_FAILED = {}
 _CATALOG_UNREADABLE = "Forge 의 모델 목록을 읽지 못했습니다 — 잠시 뒤 다시 시도해 주세요."
 _OVERLOADED = "Forge 가 요청을 받지 못하고 있습니다 — 새 생성 요청을 멈췄습니다. 잠시 뒤 다시 실행해 주세요."
 _INPUT_ERROR = "요청 크기·옵션을 Forge 가 받지 않았습니다 — 반영을 다시 실행해 주세요."
@@ -96,49 +97,68 @@ async def read_catalog(client, token) -> dict:
     return parse_catalog(await client._json("GET", "/api/image/templates", token, call="GET /api/image/templates"))
 
 
-def cached_catalog(key, *, max_age=CATALOG_TTL) -> dict | None:
+def cached_catalog(key, *, max_age=CATALOG_TTL, failure_max_age=None) -> dict | None:
     with _CATALOG_LOCK:
         entry = _CATALOG.get(key)
-        if key in _CATALOG_FAILED or entry is None or max_age is not None and time.monotonic() - entry[0] > max_age:
+        failed_at = _CATALOG_FAILED.get(key)
+        now = time.monotonic()
+        if (failed_at is not None and (failure_max_age is None or now - failed_at <= failure_max_age)
+                or entry is None or max_age is not None and now - entry[0] > max_age):
             return None
         return entry[1].copy()
 
 
 def mark_catalog_failed(key):
     with _CATALOG_LOCK:
-        _CATALOG_FAILED.add(key)
+        _CATALOG_FAILED[key] = time.monotonic()
 
 
 def clear_catalog_failed(key):
     with _CATALOG_LOCK:
-        _CATALOG_FAILED.discard(key)
+        _CATALOG_FAILED.pop(key, None)
 
 
-def catalog_failed(key) -> bool:
+def catalog_failed(key, *, max_age=None) -> bool:
+    """실행 안에서는 표지를 유지하고, 미리 보기만 지정한 나이 뒤에 무시한다."""
     with _CATALOG_LOCK:
-        return key in _CATALOG_FAILED
+        failed_at = _CATALOG_FAILED.get(key)
+        return failed_at is not None and (max_age is None or time.monotonic() - failed_at <= max_age)
 
 
-async def ensure_catalog(key, client, token_of, reject_token, *, max_age=CATALOG_TTL, timeout=None) -> dict | None:
-    catalog = cached_catalog(key, max_age=max_age)
+async def ensure_catalog(key, client, token_of, reject_token, *, max_age=CATALOG_TTL, timeout=None,
+                         failure_max_age=None) -> dict | None:
+    catalog = cached_catalog(key, max_age=max_age, failure_max_age=failure_max_age)
     if catalog is not None:
         return catalog
-    token = None
-    try:
+
+    async def read():
         token = token_of()
-        if not token:
-            return None
-        reading = read_catalog(client, token)
+        for attempt in range(2):
+            if not token:
+                return None
+            try:
+                return await read_catalog(client, token)
+            except ForgeError as exc:
+                if exc.reason != "unauthorized" and exc.status != 401:
+                    return None
+                reject_token(token)
+                if attempt == 0:
+                    replacement = token_of()
+                    if replacement and replacement != token:
+                        token = replacement
+                        continue
+                return None
+
+    try:
+        reading = read()
         catalog = await reading if timeout is None else await asyncio.wait_for(reading, timeout)
-    except ForgeError as exc:
-        if exc.reason == "unauthorized" or exc.status == 401:
-            reject_token(token)
-        return None
     except Exception:
+        return None
+    if catalog is None:
         return None
     with _CATALOG_LOCK:
         _CATALOG[key] = (time.monotonic(), catalog.copy())
-        _CATALOG_FAILED.discard(key)
+        _CATALOG_FAILED.pop(key, None)
     return catalog
 
 
@@ -149,7 +169,7 @@ def forget_catalog(key=None):
             _CATALOG_FAILED.clear()
         else:
             _CATALOG.pop(key, None)
-            _CATALOG_FAILED.discard(key)
+            _CATALOG_FAILED.pop(key, None)
 
 
 def blocked_reason(job: dict) -> str | None:
@@ -175,8 +195,8 @@ def blocked_reason(job: dict) -> str | None:
         scope = board.current_scope() if board.server_mode() else None
         if scope is not None:
             key = (scope["org"], scope["account"])
-            catalog = cached_catalog(key, max_age=None)
-    if key is not None and catalog_failed(key):
+            catalog = cached_catalog(key, max_age=None, failure_max_age=CATALOG_PREVIEW_TTL)
+    if key is not None and catalog_failed(key, max_age=None if ctx is not None else CATALOG_PREVIEW_TTL):
         return _CATALOG_UNREADABLE
     limit = model.max_inputs
     auth_missing = (ctx is not None and catalog is None and callable(ctx.get("token_of")) and ctx["token_of"]() is None)

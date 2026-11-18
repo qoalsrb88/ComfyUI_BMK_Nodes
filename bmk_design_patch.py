@@ -2773,7 +2773,8 @@ class BMKDesignPatchRun:
                      "stop_note": next((t.split("발사 못 함 — ", 1)[1] for t in
                                        [*report.errors, *(str(c.get("error") or "") for c in report.calls if isinstance(c, dict))]
                                        if "발사 못 함 — " in t), None) if report is not None else
-                                  next((e["blocked"] for e in ap["blocked"] if e.get("blocked")), None),
+                                  next((e["blocked"] for e in ap["blocked"] if e.get("blocked")), None)
+                                  if not ap_after["needs_approval"] else None,
                      "backend": backend.name, "continuation_hash": report.continuation_hash if report is not None else "",
                      "draft_pending": draft_pending, "draft_style": draft_style, "draft_unwritten": draft_unwritten,
                      "draft_held": draft_held, "draft_held_style": draft_held_style, "draft_mock": draft_mock}
