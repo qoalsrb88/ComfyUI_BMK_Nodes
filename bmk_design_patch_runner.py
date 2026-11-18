@@ -633,6 +633,18 @@ def estimate_seconds(count: int, concurrency: int = 4, per_call_s: float = SECON
 
 def blocked_reason(job: dict, *, backend: str, request_model=None) -> str | None:
     """과금 전 판정(계획·R·요청 공통). MOCK 도 가격표를 검사하되 ComfyUI 모듈은 필요하지 않다."""
+    try:
+        from . import bmk_design_patch_models as models
+    except ImportError:
+        import bmk_design_patch_models as models
+    if models.is_forge_only(job.get("model")):
+        if backend != BACKEND_FORGE:
+            return "이 모델은 Forge 서버에서만 생성합니다."
+        try:
+            from . import bmk_design_patch_forge_backend as forge_backend
+        except ImportError:
+            import bmk_design_patch_forge_backend as forge_backend
+        return forge_backend.blocked_reason(job)
     model, quality = job.get("model"), job.get("quality")
     if quality not in store._PRICE_RANGES.get(model, {}):
         return f"가격표에 없는 모델 {model} / 품질 {quality}(Design Patch 업데이트)"
