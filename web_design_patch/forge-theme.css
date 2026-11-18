@@ -65,12 +65,12 @@ body.server #top .dp-off { display: none !important; }
 .overlay { background: rgba(0, 0, 0, .72); }
 .overlay > .sheet, .rf-dialog-box { border: 1px solid var(--line); border-radius: 0; box-shadow: 0 24px 80px rgba(0,0,0,.5); padding: 24px; }
 .sheet h2 { font-size: 18px; font-weight: 700; letter-spacing: -.025em; }
-.dp-forge-sheet { width: min(96vw, 1100px); height: min(88vh, 860px); gap: 16px; overflow: hidden; }
+.dp-forge-sheet { width: min(96vw, 1100px); height: min(88vh, 860px); gap: 16px; }
 .dp-forge-sheet > .lp-btns { border-bottom: 1px solid var(--line); padding-bottom: 12px; margin: 0; }
 .dp-forge .lp-btns button { padding: 8px 16px; min-height: 36px; border-color: transparent; color: var(--dim); }
 .dp-forge .lp-btns button[aria-pressed='true'] { background: var(--accent-soft); border-color: transparent; color: var(--accent); }
 .dp-forge-search { min-height: 40px; }
-.dp-forge-grid { grid-template-columns: repeat(var(--dp-forge-columns, 4), minmax(0, 1fr)); gap: 16px; padding: 4px; }
+.dp-forge-grid { --dp-forge-gap: 16px; grid-template-columns: repeat(auto-fill, minmax(max(140px, calc((100% - (var(--dp-forge-columns, 4) - 1) * var(--dp-forge-gap)) / var(--dp-forge-columns, 4))), 1fr)); gap: var(--dp-forge-gap); padding: 4px; }
 .dp-forge-item { background: var(--panel); border: 1px solid var(--line); border-radius: 0; padding: 12px; gap: 8px; font-weight: 400; }
 .dp-forge-item:hover:not(:disabled) { border-color: var(--accent); background: var(--panel); }
 .dp-forge-label { font-size: 13px; line-height: 1.5; }
@@ -90,7 +90,7 @@ body.server #top .dp-off { display: none !important; }
   .projects-home { padding: 16px; }
   .projects-search { min-width: 0; flex-basis: 100%; max-width: none; }
   .overlay > .sheet { padding: 16px; }
-  .dp-forge-grid { gap: 8px; }
+  .dp-forge-grid { --dp-forge-gap: 8px; }
   .dp-forge-item { padding: 8px; }
 }
 @media (max-width: 480px) {
