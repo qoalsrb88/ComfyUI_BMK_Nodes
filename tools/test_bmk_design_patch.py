@@ -55308,6 +55308,9 @@ def batch10a_unit():
     script = "const assert=require('node:assert/strict'); const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);\n"
     script += "\n".join(_fw_legacy_js(_layout_js_fn(js, name, "    ") + "\n}") for name in ("prepareChanged", "prepareText", "hiddenPath"))
     script += "\n" + _layout_js_fn(js, "typed", "    ") + "\n}"
+    # 2단계(모델 고르기): 저장·전환·문구가 부르는 모델 보조 함수(모듈 머리 — 로컬판에서는 목록이 없어 값을 그대로 돌려준다)
+    script += "\n" + "\n".join(_fw_legacy_js(_layout_js_fn(js, name, "  ") + "\n}")
+                               for name in ("modelCatalog", "modelInfo", "modelLabel", "modelText", "modelSettings"))
     for name in ("preparePreview", "switchModel", "saveSection"):
         start = js.index(f"    async function {name}(")
         script += "\n" + _fw_legacy_js(js[start:js.index("\n    }\n", start)] + "\n}")
@@ -62041,16 +62044,18 @@ def forge_models_settings_unit():
             reports = (None, rn.RunReport(backend=rn.BACKEND_MOCK),
                        rn.RunReport(backend=rn.BACKEND_MOCK, errors=["그 밖의 오류"]),
                        rn.RunReport(backend=rn.BACKEND_MOCK, stopped_reason="auth",
-                                    errors=["그 밖의 오류", f"call: 발사 못 함 — {why}", "call2: 발사 못 함 — 다음 사유"]))
+                                    errors=["그 밖의 오류", f"call: 발사 못 함 — {why}", "call2: 발사 못 함 — 다음 사유"]),
+                       rn.RunReport(backend=rn.BACKEND_MOCK, stopped_reason="auth", errors=["그 밖의 오류"],
+                                    calls=[{"call_id": "c0", "status": "done"}, {"call_id": "c1", "status": "pending", "error": f"발사 못 함 — {why}"}]))
             for report in reports:
                 initial = dict(ap, to_run=[{}] if report is not None else [])
                 with patch.object(dp, "_run_plan", side_effect=[(plan, initial), (plan, ap)]), \
                         patch.object(run_node, "_execute", new=AsyncMock(return_value=report)) as execute:
                     result = asyncio.run(run_node.run(rh, "", 64, 1, 25, False, False, ""))
                 entry = result["ui"]["bmk_dp_run"][0]
-                check(entry["stop_note"] == (why if report is reports[-1] else None)
+                check(entry["stop_note"] == (why if any(report is r for r in reports[-2:]) else None)
                       and result["result"][1] == "unchanged report" and execute.called == (report is not None),
-                      "FMS8 실행 없음·일반 실행·다른 오류는 null, 제출 전 거부는 첫 사유만 stop_note")
+                      "FMS8 실행 없음·일반 실행·다른 오류는 null, 제출 전 거부(발사 직전 판정·요청 단계 거부)는 첫 사유만 stop_note")
 
 
 def forge_models_dev_unit():
