@@ -384,6 +384,12 @@ window.DPEnv = (() => {
       }
       if (env.account && account.tag !== env.account.tag) { block(CHANGED); return; }
       env.account = account;
+      try {
+        const fresh = await read(new URL("env", API), { headers: { "X-DesignPatch-Account": account.tag } }, 8000, true);
+        if (fresh.response.status === 200 && object(fresh.data) && fresh.data.server_mode === true
+            && object(fresh.data.caps) && Object.keys(LOCAL_CAPS).every((key) => typeof fresh.data.caps[key] === "boolean")
+            && Array.isArray(fresh.data.caps.models)) env.caps = { ...env.caps, models: fresh.data.caps.models };
+      } catch (e) { /* 모델 목록을 다시 읽지 못하면 세션 전 환경 값을 유지한다. */ }
       const prefs = await read(prefsUrl);
       if (!prefs.response.ok || !object(prefs.data) || !object(prefs.data.values)
           || !Object.values(prefs.data.values).every((value) => typeof value === "string")) throw new Error("prefs");
