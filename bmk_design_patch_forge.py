@@ -462,7 +462,8 @@ class ForgeClient:
                               "fav": row.get("is_favorite", group.get("is_favorite")) is True,
                               "generation_type": row.get("generation_type", group.get("generation_type")),
                               "batch_id": row.get("batch_id", group.get("batch_id", group.get("id"))),
-                              "batch_position": row.get("batch_position", position),
+                              # Forge 의 batch_position 은 0부터(variation_index) — 없으면 묶음 안 순서로 센다.
+                              "batch_position": row["batch_position"] + 1 if type(row.get("batch_position")) is int else position,
                               "num_outputs": row.get("num_outputs", group.get("num_outputs", len(rows)))})
         return {"items": items, "next": data.get("next_cursor")
                 if data.get("has_more") is True and isinstance(data.get("next_cursor"), str) else None}
@@ -661,7 +662,6 @@ def display(value, token="", size=128, *, config=None, hidden=()):
         if isinstance(secret, str) and secret:
             value = value.replace(secret, "")
     value = re.sub(r"(?i)https?://[^\s<>]+", "", value)
-    value = re.sub(r"\bu_[A-Za-z0-9_-]+\b|\bdev:[A-Za-z0-9_:-]+", "", value)
     if config is not None:
         for origin in (config.api, *config.media_origins):
             value = re.sub(re.escape(URL(origin).host), "", value, flags=re.I)
@@ -1017,7 +1017,7 @@ def routes(accounts: ForgeAccounts) -> tuple:
                 message = with_note(message, error)
             if status in (401, 403) and not done:
                 raise board._Reject(status, message, reason=reason)
-            failed.append({"id": ident, "error": clean(message, ctx["token_of"](), 500)})
+            failed.append({"id": ident, "error": clean(message, ctx["token_of"](), 500) or "그림을 가져오지 못했습니다."})
             stop = reason in ("forge_unreachable", "forge_auth", "no_access") or status >= 500 or status in (401, 403, 429)
             if stop:
                 failed.extend({"id": rest, "error": "앞선 실패로 가져오지 않았습니다 — 잠시 뒤 다시 시도해 주세요."}
@@ -1158,13 +1158,14 @@ def routes(accounts: ForgeAccounts) -> tuple:
                                 reject("forge_stale")
                             if action == "thumb":
                                 ident = data.get("id")
-                                row = await media_row(scope, state, ctx, ident, source)
+                                lookup(scope, ident, source)  # 이 계정의 살아 있는 항목인지 먼저 본다(원격 요청 없음).
                                 size = 1024 if data.get("size") == "large" else 256
                                 cache = thumb_cache(state)
                                 if size == 256 and ident in cache:
                                     raw = cache[ident][1]
                                     cache.move_to_end(ident)
                                 else:
+                                    row = await media_row(scope, state, ctx, ident, source)
                                     raw, _ = await fetch_picture(ctx, row, size)
                                     if size == 256 and len(raw) <= 32 * 1024 ** 2:
                                         if ident in cache:

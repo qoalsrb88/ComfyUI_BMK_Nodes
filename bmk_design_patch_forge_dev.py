@@ -348,7 +348,7 @@ class FakeForge:
                 item = copy.deepcopy(templates[0])
                 item.update(common, id=job["id"] + ":0", result_id=job["id"] + ":0", statement_id=job["id"],
                             result_index=0, result_url=urls[0], thumbnail_url=urls[0],
-                            batch_position=1,
+                            batch_position=0,
                             model_used=job["request_data"]["checkpoint"], completed_at=job["completed_at"],
                             parameters=dict(zip(("width", "height"), self._states[job["id"]]["size"])), history_view=view)
             else:
@@ -356,7 +356,7 @@ class FakeForge:
                 item.update(common, id=job["id"], num_outputs=len(urls), completed_at=job["completed_at"], items=[])
                 for index, url in enumerate(urls):
                     child = copy.deepcopy(templates[1]["items"][min(index, 1)])
-                    child.update(common, id=f"{job['id']}:{index}", result_url=url, batch_position=index + 1,
+                    child.update(common, id=f"{job['id']}:{index}", result_url=url, batch_position=index,
                                  thumbnail_url=url if child["thumbnail_url"] is not None else None,
                                  model_used=job["request_data"]["checkpoint"])
                     item["items"].append(child)
@@ -395,7 +395,7 @@ class FakeForge:
                     self._media[path] = ("image/png", _png((320, 256), "FAKE HISTORY", f"{ident}:{pos}"))
                     child = copy.deepcopy(self._fixture["history"]["response"]["items"][0])
                     child.update(common, id=f"{ident}:{pos}", result_id=f"{ident}:{pos}", statement_id=ident,
-                                 result_index=pos, batch_position=pos + 1, result_url=self.media_origin + path,
+                                 result_index=pos, batch_position=pos, result_url=self.media_origin + path,
                                  thumbnail_url=self.media_origin + path,
                                  model_used="gpt_image_26_sunburst" if i % 2 == 0 else "dev_model")
                     children.append(child)
