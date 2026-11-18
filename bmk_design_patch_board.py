@@ -803,11 +803,21 @@ def _call_via(call: dict | None) -> str | None:
     return _VIA.get(str(call.get("approved_by") or "").split(":")[0])
 
 
+_TOOK_MAX = 7 * 86400.0  # 표시할 소요 시간의 상한(초) — 이보다 크면 깨진 값으로 보고 뺀다(합·평균이 넘치지 않게)
+
+
 def _call_took(call: dict | None) -> float | None:
     """원장 calls 의 소요 시간(초 — runner 가 적는 elapsed_s: 요청을 보낸 때부터 결과 그림을 저장할 때까지, 복구로 받은
-    호출은 요청 구간만). 값이 없거나(옛 호출) 숫자가 아니면 None — 화면이 표시를 뺀다. 표시 전용이다."""
-    v = call.get("elapsed_s") if call else None
-    return round(float(v), 2) if type(v) in (int, float) and math.isfinite(v) and v >= 0 else None
+    호출은 요청 구간만). 값이 없거나(옛 호출) 숫자가 아니거나 범위(0–_TOOK_MAX) 밖이면 None — 화면이 표시를 뺀다.
+    표시 전용이다: 손으로 고친 원장의 아주 큰 수·NaN 이 상태 응답(JSON)을 깨지 않게 여기서 거른다."""
+    v = call.get("elapsed_s") if isinstance(call, dict) else None
+    if type(v) not in (int, float):
+        return None
+    try:
+        v = float(v)  # 아주 큰 정수는 OverflowError
+    except (OverflowError, ValueError):
+        return None
+    return round(v, 2) if math.isfinite(v) and 0 <= v <= _TOOK_MAX else None
 
 
 def _took_summary(calls: list[dict]) -> dict | None:
