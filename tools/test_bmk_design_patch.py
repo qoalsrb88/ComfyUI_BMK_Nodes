@@ -61813,6 +61813,19 @@ def forge_models_backend_unit():
                         check(all(row["available"] and row["why"] is None for row in value["caps"]["models"])
                               and value["caps"].get("models_error") == fb._CATALOG_UNREADABLE and len(c.reads) == reads + 1,
                               "S6 실패 표지는 옛 기억을 쓰지 않고 models_error 로 안내")
+                        for age in (0, 601):
+                            remember(gone, age=age)
+                            now = [time.monotonic()]
+                            with patch.object(fb, "time", types.SimpleNamespace(monotonic=lambda: now[0])):
+                                fb.mark_catalog_failed(key)
+                                now[0] += 61
+                                reads = len(c.reads)
+                                value = await env(session)
+                                check(value["caps"].get("models_error") is None
+                                      and [row["name"] for row in value["caps"]["models"] if not row["available"]] == ["seedream-5.5"],
+                                      "T1 env 는 61초 지난 실패 표지를 무시하고 옛 목록으로 대조")
+                                check(len(c.reads) == reads + int(age > 600) and fb.catalog_failed(key),
+                                      "T1 env 의 표지 만료는 목록 TTL·실행 안 표지에 영향 없음")
                         c.catalog = copy.deepcopy(contract["catalog"]["response"])
                         c.catalog["models"] = [row for row in c.catalog["models"] if row["checkpoint"] in gone]
                         value = await env(session)
@@ -61846,6 +61859,194 @@ def forge_models_backend_unit():
                           "FMB Forge 계획만 목록 변화로 무효화")
         finally:
             bd.reset_scope(scope_token)
+
+    def review_t1():
+        scope_token = bd.set_scope(dict(_fj_scope(out), org=org, account=key[1]))
+        try:
+            for name in ("gpt-image-2.6-sunburst", "seedream-5.5"):
+                root, job, paths = project(name)
+                manifest = store.load_manifest(root)
+                client = Client()
+                ctx = context(root, client)
+                for remembered in (False, True):
+                    fb.forget_catalog()
+                    if remembered:
+                        remember()
+                    now = [time.monotonic()]
+                    with patch.object(fb, "time", types.SimpleNamespace(monotonic=lambda: now[0])):
+                        fb.mark_catalog_failed(key)
+                        marked = bd._plan_sigs(root, manifest, (False, False), None)
+                        check(fb.blocked_reason(job) == fb._CATALOG_UNREADABLE, "T1 표지 직후 라우트 차단")
+                        now[0] += 60
+                        check(fb.blocked_reason(job) == fb._CATALOG_UNREADABLE
+                              and bd._plan_sigs(root, manifest, (False, False), None) == marked,
+                              "T1 정확히 60초인 표지는 라우트·서명에서 유지")
+                        now[0] += 1
+                        expired = bd._plan_sigs(root, manifest, (False, False), None)
+                        check(fb.blocked_reason(job) is None, "T1 61초 뒤 라우트는 옛 목록 대조 또는 미대조")
+                        check(expired[0] != marked[0] and expired[1] == marked[1], "T1 61초 뒤 Run 서명만 변경")
+                        with active(ctx):
+                            check(fb.blocked_reason(job) == fb._CATALOG_UNREADABLE, "T1 실행 안에서는 오래된 표지도 차단")
+                        reads = len(client.reads)
+                        restored = asyncio.run(fb.ensure_catalog(key, client, ctx["token_of"], ctx["reject_token"]))
+                        check(restored == catalog and len(client.reads) == reads + 1 and not fb.catalog_failed(key)
+                              and fb.blocked_reason(job) is None, "T1 실행 재조회 성공은 목록·표지·라우트 복구")
+                        with active(ctx):
+                            check(fb.blocked_reason(job) is None, "T1 재조회 성공 뒤 실행 안 차단도 해제")
+                gone = dict(catalog)
+                gone.pop(models.get(name).checkpoint)
+                remember(gone)
+                now = [time.monotonic()]
+                with patch.object(fb, "time", types.SimpleNamespace(monotonic=lambda: now[0])):
+                    fb.mark_catalog_failed(key)
+                    now[0] += 61
+                    check(fb.blocked_reason(job) == models.availability(name, gone)[1],
+                          "T1 표지가 만료돼도 옛 목록의 퇴역 모델 판정은 유지")
+        finally:
+            bd.reset_scope(scope_token)
+            fb.forget_catalog()
+
+    def review_t2():
+        other_key = (org, "unaffected-account")
+        for age, scenario in ((61, "available"), (300, "retired"), (599, "limit")):
+            root, job, paths = project()
+            client, rejected_tokens = Client(), []
+            tokens = {"value": secret}
+
+            def reject(token):
+                rejected_tokens.append(token)
+                tokens["value"] = None
+
+            ctx = dict(context(root, client), token_of=lambda: tokens["value"], reject_token=reject)
+            remember(age=age)
+            remember(account_key=other_key)
+            if scenario == "limit":
+                fb.mark_catalog_failed(key)
+            client.catalog = fg.ForgeError("unauthorized", 401)
+            jb._refresh_catalog(ctx)
+            check(tokens["value"] is None and rejected_tokens == [secret] and len(client.reads) == 1,
+                  "T2 실행 직전 401 은 토큰 거절")
+            check(fb.cached_catalog(key, max_age=None) is None and not fb.catalog_failed(key),
+                  "T2 인증 실패 뒤 60~600초 기억과 실패 표지 모두 제거")
+            check(fb.cached_catalog(other_key) == catalog, "T2 다른 계정의 목록 기억은 보존")
+
+            tokens["value"] = "synthetic-renewed-model-token"
+            client.catalog = copy.deepcopy(contract["catalog"]["response"])
+            checkpoint = models.get(job["model"]).checkpoint
+            if scenario == "retired":
+                client.catalog["models"] = [row for row in client.catalog["models"] if row["checkpoint"] != checkpoint]
+            elif scenario == "limit":
+                for row in client.catalog["models"]:
+                    if row["checkpoint"] == checkpoint:
+                        row["max_input_images"] = 1
+            fresh = fb.parse_catalog(client.catalog)
+            be = fb.ForgeBackend(ctx)
+            reads = len(client.reads)
+            error = None
+            try:
+                asyncio.run(be.request(job, paths, rn.call_id_for(job["cell_key"], 0)))
+            except rn.CallError as exc:
+                error = exc
+            check(len(client.reads) == reads + 1 and fb.cached_catalog(key) == fresh,
+                  "T2 새 토큰의 request 는 목록을 한 번 다시 읽고 새 기억 사용")
+            if scenario == "available":
+                check(error is None and len(client.submissions) == 1, "T2 새 목록에서 가능한 모델은 제출")
+            else:
+                why = models.availability(job["model"], fresh)[1] if scenario == "retired" else "입력 이미지는 1장까지 보낼 수 있습니다."
+                check(error is not None and str(error) == why and error.phase == "blocked" and not error.maybe_billed
+                      and not client.submissions and not rn.read_ledger(root, job["cell_key"]),
+                      "T2 새 목록의 퇴역·입력 상한으로 제출 전에 차단")
+        fb.forget_catalog()
+
+    async def review_t3():
+        second, third = "synthetic-second-session", "synthetic-third-session"
+        unauthorized = fg.ForgeError("unauthorized", 401)
+        unavailable = fg.ForgeError("unreachable", 503)
+        cases = (
+            ("rotated", [secret, second], [unauthorized, contract["catalog"]["response"]], 2, [secret], catalog),
+            ("both401", [secret, second, third], [unauthorized, fg.ForgeError("unreachable", 401)], 2, [secret, second], None),
+            ("same", [secret], [unauthorized], 1, [secret], None),
+            ("exhausted", [secret], [unauthorized], 1, [secret], None),
+            ("first_other", [secret, second], [unavailable], 1, [], None),
+            ("second_other", [secret, second], [unauthorized, unavailable], 2, [secret], None),
+        )
+        for scenario, tokens, responses, count, rejected, expected in cases:
+            client, read_tokens, rejected_tokens = Client(), [], []
+            original_read = client._json
+
+            async def read(method, path, token, *, call):
+                read_tokens.append(token)
+                client.catalog = responses[len(read_tokens) - 1]
+                return await original_read(method, path, token, call=call)
+
+            def reject(token):
+                rejected_tokens.append(token)
+                if scenario != "same":
+                    tokens.remove(token)
+
+            client._json = read
+            remember(age=601)
+            fb.mark_catalog_failed(key)
+            actual = await fb.ensure_catalog(key, client, lambda: tokens[0] if tokens else None, reject)
+            check(actual == expected, "T3 401 뒤 다른 토큰으로 한 번만 목록 읽기 " + scenario)
+            check(len(client.reads) == count and read_tokens == [secret, second][:count],
+                  "T3 읽기 횟수·토큰 순서 " + scenario)
+            check(rejected_tokens == rejected, "T3 401 토큰만 거절 " + scenario)
+            check((not fb.catalog_failed(key) and fb.cached_catalog(key) == catalog) if expected is not None
+                  else fb.catalog_failed(key) and fb.cached_catalog(key) is None,
+                  "T3 재시도 성공 때만 기억 갱신·실패 표지 해제 " + scenario)
+        fb.forget_catalog()
+
+    def review_t4():
+        dp = _dp_package()
+        for waiting in (2, 0):
+            root, job, paths = project("gpt-image-2.6-sunburst", reps=3)
+            manifest = store.load_manifest(root)
+            plan = dp.runner.plan_calls(manifest, root)
+            for index, entry in enumerate(plan["pending"]):
+                if index == 0:
+                    entry["job"] = dict(entry["job"], prompt="@@fixture")
+                elif not waiting:
+                    entry["job"] = dict(entry["job"], n=0)
+            ap = dp.runner.split_approval(plan, "wrong-hash", backend="forge")
+            why = next(entry["blocked"] for entry in ap["blocked"] if entry.get("blocked"))
+            check(len(ap["needs_approval"]) == waiting
+                  and sum(bool(entry.get("blocked")) for entry in ap["blocked"]) == 3 - waiting,
+                  "T4 실제 승인 판정으로 차단 1+대기 2 또는 전부 차단 구성")
+            node = dp.BMKDesignPatchRun()
+            handle = dp._handle(root, manifest, {})
+            with patch.object(dp.runner, "make_backend", return_value=types.SimpleNamespace(name="forge")), \
+                    patch.object(dp, "_board_key", return_value=store.root_key(root)), \
+                    patch.object(dp.runner, "reconcile_ledger", return_value={"candidates": [], "calls": [], "warnings": []}), \
+                    patch.object(dp, "_run_plan", return_value=(plan, ap)), \
+                    patch.object(dp, "_cand_grid", return_value=None), \
+                    patch.object(node, "_execute", new=AsyncMock()) as execute:
+                result = asyncio.run(node.run(handle, "wrong-hash", 64, 1, 25, False, False, ""))
+            entry = result["ui"]["bmk_dp_run"][0]
+            expected = None if waiting else why
+            check(entry["stop_note"] == expected, "T4 승인 대기가 남으면 stop_note 없음·모두 차단이면 첫 사유")
+            check(entry["pending"] == waiting and not entry["approved_now"] and not execute.called,
+                  "T4 잘못된 승인 해시는 실행 없이 남은 승인 대기 보존")
+            check(jb._record({"dp_run": result["ui"]})["outputs"]["dp_run"]["bmk_dp_run"][0]["stop_note"] == expected,
+                  "T4 history 도 같은 stop_note 전달")
+            if waiting:
+                pending_root, pending_handle, pending_plan, pending_ap = root, handle, plan, ap
+
+        approved = dp.runner.split_approval(pending_plan, pending_ap["pending_hash"], backend="forge")
+        report_note = "실행 보고의 차단 사유"
+        report = types.SimpleNamespace(errors=["발사 못 함 — " + report_note], calls=[], new_candidates=[],
+                                       stopped_reason="none", continuation_hash="")
+        with patch.object(dp.runner, "make_backend", return_value=types.SimpleNamespace(name="forge")), \
+                patch.object(dp, "_board_key", return_value=store.root_key(pending_root)), \
+                patch.object(dp.runner, "reconcile_ledger", return_value={"candidates": [], "calls": [], "warnings": []}), \
+                patch.object(dp, "_run_plan", side_effect=[(pending_plan, approved), (pending_plan, pending_ap)]), \
+                patch.object(dp, "_cand_grid", return_value=None), \
+                patch.object(node, "_report", return_value="execution report"), \
+                patch.object(node, "_execute", new=AsyncMock(return_value=report)) as execute:
+            result = asyncio.run(node.run(pending_handle, pending_ap["pending_hash"], 64, 1, 25, False, False, ""))
+        entry = result["ui"]["bmk_dp_run"][0]
+        check(entry["pending"] == 2 and entry["stop_note"] == report_note and execute.await_count == 1,
+              "T4 실행 보고가 있으면 승인 대기가 남아도 보고의 사유 우선")
 
     def review_s1():
         reason = models.availability("seedream-5.5", {})[1]
@@ -61911,6 +62112,7 @@ def forge_models_backend_unit():
         initial = dict(ap, blocked=[{}, {"blocked": why}, {"blocked": "다음 사유"}], to_run=[])
         handle = dp._handle(root, store.load_manifest(root), {})
         with patch.object(dp.runner, "make_backend", return_value=types.SimpleNamespace(name="forge")), \
+                patch.object(dp.runner, "blocked_reason", return_value=why), \
                 patch.object(dp, "_board_key", return_value=store.root_key(root)), \
                 patch.object(dp.runner, "reconcile_ledger", return_value={"candidates": [], "calls": [], "warnings": []}), \
                 patch.object(dp, "_run_plan", return_value=(plan, initial)), \
@@ -62020,6 +62222,10 @@ def forge_models_backend_unit():
             review_s3()
             review_s4()
             review_s5()
+            review_t1()
+            review_t2()
+            asyncio.run(review_t3())
+            review_t4()
             asyncio.run(catalog_cases())
             loop_cases()
             asyncio.run(request_cases())
