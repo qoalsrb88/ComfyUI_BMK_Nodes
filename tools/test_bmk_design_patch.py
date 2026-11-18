@@ -63520,9 +63520,11 @@ def forge_f2_import_unit():
     scene = _fw_core_js().split('await scenario("FW7', 1)[0] + r'''
 Element.prototype.addEventListener=function(type,fn){(this.listeners??={})[type]=fn;};
 Element.prototype.value="";
+Element.prototype.getAttribute=function(k){return this.attrs[k]??null;};
+Object.defineProperty(Element.prototype,"style",{get(){return this._style??={setProperty(k,v){this[k]=v;}};}});
 Element.prototype.replaceChildren=function(...xs){this.children=[];this.append(...xs);};
-Element.prototype.querySelectorAll=function(){return this.all().slice(1).filter(x=>["BUTTON","INPUT"].includes(x.tagName));};
-Element.prototype.click=async function(){await this.listeners?.click?.({isTrusted:true});await settle();};
+Element.prototype.querySelectorAll=function(){return this.all().slice(1).filter(x=>["BUTTON","INPUT","SELECT"].includes(x.tagName));};
+Element.prototype.click=async function(){await this.listeners?.click?.({isTrusted:true,stopPropagation(){}});await settle();};
 const find=(e,label)=>e.doc.body.all().find(n=>n.tagName==="BUTTON"&&n.textContent===label);
 async function start({enabled=true,server=true,handler}={}) {
  const e=context({handler});e.ctx.DPEnv={serverMode:server,can:()=>enabled};
@@ -63535,7 +63537,7 @@ for(const options of [{enabled:false},{server:false}]) await scenario("FC caps "
 await scenario("R5 빈 범위·다음 쪽 안내",async()=>{
  const e=await start({handler:()=>response({items:[],next:"more-page"})});
  e.ctx.DPForgeImport.open({into:"refs",root:"root"});await settle();await find(e,"내 자료").click();
- return e.doc.body.textContent.includes("이 범위에는 없습니다 — [더 보기]")&&!find(e,"더 보기").hidden;
+ return e.doc.body.textContent.includes("이 범위에는 없습니다 — [계속 불러오기]")&&!find(e,"계속 불러오기").hidden;
 });
 await scenario("2R1 검색·탭·닫기에서 목록 요청 중단·오류 숨김",async()=>{
  const requests=[];
@@ -63544,9 +63546,9 @@ await scenario("2R1 검색·탭·닫기에서 목록 요청 중단·오류 숨�
   options?.signal?.addEventListener("abort",()=>reject(Object.assign(new Error("aborted fixture"),{name:"AbortError"})),{once:true});
  })});
  e.ctx.DPForgeImport.open({into:"refs",root:"root"});await settle();
- const input=e.doc.body.all().find(n=>n.tagName==="INPUT");input.value="새 검색";input.listeners.input();await settle();
+ const input=e.doc.body.all().find(n=>n.tagName==="INPUT"&&n.type==="search");input.value="새 검색";input.listeners.input();await settle();
  const searchAborted=requests[0]?.signal?.aborted,quiet=!e.doc.body.textContent.includes("aborted fixture");
- await e.fire(300);await find(e,"내 자료").click();const tabAborted=requests[1]?.signal?.aborted;
+ await e.fire(500);await find(e,"내 자료").click();const tabAborted=requests[1]?.signal?.aborted;
  await find(e,"닫기").click();const closeAborted=requests[2]?.signal?.aborted;
  for(const request of requests)request.resolve(response({items:[],next:null}));await settle();
  return Boolean(searchAborted&&tabAborted&&closeAborted&&quiet&&!e.ctx.DPDialog.open);
@@ -63561,22 +63563,22 @@ await scenario("2R4 새 저장·이미 저장 안내 구분",async()=>{
 await scenario("FC 창·탭·검색·더보기·요청·닫기",async()=>{
  let done;const e=await start({handler:(url,o)=>{
   const path=new URL(url,"https://forge.example");
-  if(o?.method==="POST")return response({ok:true,sheet:"sheets/a.png"});
+  if(o?.method==="POST")return response({ok:true,done:[{id:"opaque",sheet:"sheets/a.png"}],failed:[]});
   return response({items:[{id:"opaque",thumb:"/bmk/design_patch/forge/thumb?id=opaque",prompt:"결과",name:"시트",folder:"옷"}],next:path.searchParams.has("offset")?null:"page"});
  }}),d=e.ctx.DPForgeImport;
  if(!d.open({root:"root",into:"refs",onDone:r=>done=r})||d.open({into:"refs"}))return false;
  await settle();if(!e.ctx.DPDialog.open)return false;
- await find(e,"내 자료").click();await find(e,"더 보기").click();
+ await find(e,"내 자료").click();await find(e,"계속 불러오기").click();
  if(!e.calls.some(([u])=>String(u).includes("offset=page")))return false;
- const input=e.doc.body.all().find(n=>n.tagName==="INPUT");input.value="의상";input.listeners.input();
- const before=e.calls.length;await e.fire(300);if(e.calls.length!==before+1||!String(e.calls.at(-1)[0]).includes("search=%EC%9D%98%EC%83%81"))return false;
+ const input=e.doc.body.all().find(n=>n.tagName==="INPUT"&&n.type==="search");input.value="의상";input.listeners.input();
+ const before=e.calls.length;await e.fire(500);if(e.calls.length!==before+1||!String(e.calls.at(-1)[0]).includes("search=%EC%9D%98%EC%83%81"))return false;
  const backspace=e.key("keydown","Backspace",true,{target:input});if(backspace.defaultPrevented)return false;
  const image=e.doc.body.all().find(n=>n.tagName==="IMG");if(image.loading!=="lazy"||!image.src.startsWith("/bmk/"))return false;
- // 카드 = button > .dp-forge-preview > img (11/17 — 정사각 미리보기 칸), 이름은 title·aria-label 에도
- const card=image.parent.parent;if(image.parent.className!=="dp-forge-preview"||card.tagName!=="BUTTON"||card.title!=="시트"||card.attrs["aria-label"]!=="시트 가져오기")return false;
+ // 고르기 단추와 크게 보기 단추는 같은 카드의 형제 — 단추 안에 단추를 넣지 않는다.
+ const card=image.parent.parent;if(image.parent.className!=="dp-forge-preview"||card.tagName!=="BUTTON"||card.title!=="시트"||card.attrs["aria-label"]!=="시트 선택")return false;
  if(!card.textContent.includes("옷"))return false;
- await card.click();const body=JSON.parse(e.calls.at(-1)[1].body);
- return JSON.stringify(body)===JSON.stringify({into:"refs",source:"asset",id:"opaque",root:"root"})&&done.sheet==="sheets/a.png"&&!e.ctx.DPDialog.open;
+ await card.click();await find(e,"1장 가져오기").click();const body=JSON.parse(e.calls.at(-1)[1].body);
+ return JSON.stringify(body)===JSON.stringify({into:"refs",source:"asset",ids:["opaque"],root:"root"})&&done.done[0].sheet==="sheets/a.png"&&!e.ctx.DPDialog.open;
 });
 await scenario("DPS 다음 쪽에 다시 내려온 그림은 한 번만",async()=>{
  const item=n=>({id:"id-"+n,thumb:"/bmk/design_patch/forge/thumb?id=id-"+n,prompt:"그림 "+n});
@@ -63585,7 +63587,7 @@ await scenario("DPS 다음 쪽에 다시 내려온 그림은 한 번만",async()
  e.ctx.DPForgeImport.open({into:"refs",root:"root"});await settle();
  const cards=()=>JSON.stringify(e.doc.body.all().filter(n=>n.className==="dp-forge-item").map(n=>n.title));
  if(cards()!==JSON.stringify(["그림 1","그림 2"]))return cards();
- await find(e,"더 보기").click();
+ await find(e,"계속 불러오기").click();
  return cards()===JSON.stringify(["그림 1","그림 2","그림 3"])||cards();
 });
 await scenario("FC 오류 유지·Esc·target 이름",async()=>{
@@ -64051,6 +64053,281 @@ def forge_import1_server_unit():
 def forge_import1_js_unit():
     """실서버 연동 1단계 「Forge에서 가져오기」 강화 — 화면 쪽(필터 줄·여러 장·크게 보기·요청 수 단정·sandbox 금지 요소)."""
     section("Forge 가져오기 1단계 — 화면 (forge_import1_js_unit)")
+    web = PKG / "web_design_patch"
+    source = {name: (web / name).read_text(encoding="utf-8")
+              for name in ("forge_import.js", "dialog.js", "ref_edit.js", "pipeline.js")}
+    js = source["forge_import.js"]
+    for word in ("<form", "submit", "alert(", "confirm(", "prompt(", "window.open", "innerHTML", "setInterval", "_blank"):
+        check(word not in js, "I1 sandbox 금지 요소 없음: " + word)
+    for name in ("board.css", "forge-theme.css"):
+        css = (web / name).read_text(encoding="utf-8")
+        grid = re.search(r"\.dp-forge-grid\s*\{([^}]+)\}", css).group(1)
+        check("repeat(var(--dp-forge-columns, 4), minmax(0, 1fr))" in grid, "I1 칸 수 CSS 변수 공유: " + name)
+        check(re.search(r"@media\s*\(max-width:\s*480px\)\s*\{\s*\.dp-forge-grid\s*\{[^}]*repeat\(2,", css) is not None,
+              "I1 480px에서 두 칸: " + name)
+    node = shutil.which("node")
+    if not node:
+        skip("node 없음: Forge 가져오기 1단계 DOM 하네스 미실행")
+        return
+    out = OUT_ROOT / "forge_import1_js"
+    out.mkdir(parents=True, exist_ok=True)
+    # 실제 통신·타이머 없이 UI 이벤트마다 요청과 그림 src 할당을 센다.
+    scene = _fw_core_js().split('await scenario("FW7', 1)[0] + r'''
+process.env.TZ="Asia/Seoul";
+const eq=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
+function expect(ok,message){if(!ok)throw Error(message);}
+Element.prototype.value="";
+Element.prototype.getAttribute=function(k){return this.attrs[k]??null;};
+Element.prototype.addEventListener=function(type,fn){(this.listeners??={})[type]=fn;};
+Element.prototype.replaceChildren=function(...xs){for(const x of this.children)x.parent=null;this.children=[];this.append(...xs);};
+Element.prototype.querySelectorAll=function(selector){const tags=selector.split(",").map(s=>s.trim().toUpperCase());return this.all().slice(1).filter(x=>tags.includes(x.tagName));};
+Object.defineProperty(Element.prototype,"style",{get(){return this._style??={setProperty(k,v){this[k]=String(v);}};}});
+Object.defineProperty(Element.prototype,"dataset",{get(){return this._dataset??={};}});
+Object.defineProperty(Element.prototype,"src",{get(){return this._src;},set(v){this._src=v;(this.doc.images??=[]).push(v);}});
+Element.prototype.emit=async function(type){
+ if(this.disabled)return;
+ const event={target:this,type,isTrusted:true,stopped:false,stopPropagation(){this.stopped=true;}};
+ for(let n=this;n;n=type==="click"&&!event.stopped?n.parent:null)await n.listeners?.[type]?.(event);
+ await settle();
+};
+Element.prototype.click=function(){return this.emit("click");};
+const nodes=e=>e.doc.body.all(), cls=(e,c)=>nodes(e).filter(n=>n.classList.contains(c));
+const B=(e,label)=>nodes(e).find(n=>n.tagName==="BUTTON"&&n.textContent===label);
+const control=(e,label)=>nodes(e).find(n=>n.attrs["aria-label"]===label);
+const search=e=>nodes(e).find(n=>n.attrs.role==="searchbox");
+const picks=e=>cls(e,"dp-forge-pick"), cards=e=>cls(e,"dp-forge-item");
+const posts=e=>e.calls.filter(([,o])=>o?.method==="POST");
+const query=e=>new URL(e.calls.at(-1)[0],"https://studio.invalid").searchParams;
+const listCalls=e=>e.calls.filter(([,o])=>o?.method!=="POST").length;
+const item=(id,extra={})=>({id,prompt:"그림 "+id,name:"자료 "+id,thumb:"/bmk/design_patch/forge/thumb?id="+id,...extra});
+const initial=()=>({items:[item("one",{model:"Model A",mine:true,fav:true,batch:{n:4,pos:2},created:"2026-11-16T01:00:00Z"}),item("two",{model:"Model B"})],next:null});
+async function start({handler=()=>response(initial()),storage,server=true,enabled=true}={}){
+ const e=context({handler});let clock=0,seq=0;const timers=new Map();
+ e.ctx.setTimeout=(fn,ms)=>{timers.set(++seq,{fn,at:clock+ms});return seq;};e.ctx.clearTimeout=id=>timers.delete(id);
+ e.tick=async ms=>{const end=clock+ms;for(;;){const t=[...timers].filter(([,v])=>v.at<=end).sort((a,b)=>a[1].at-b[1].at)[0];if(!t)break;
+  clock=t[1].at;timers.delete(t[0]);t[1].fn();await settle();}clock=end;await settle();};
+ e.ctx.Date=class extends Date{constructor(...args){super(...(args.length?args:["2026-11-18T04:45:00Z"]));}};
+ if(storage)Object.defineProperty(e.ctx,"localStorage",storage);
+ e.ctx.DPEnv={serverMode:server,can:()=>enabled};
+ vm.runInContext(IN.source["dialog.js"],e.ctx);vm.runInContext(IN.source["forge_import.js"],e.ctx);
+ e.open=async(opts={})=>{const opened=e.ctx.DPForgeImport.open({into:"refs",root:"root",...opts});await settle();return opened;};
+ return e;
+}
+async function change(e,label,value){const n=control(e,label);n.value=value;await n.emit("change");}
+async function type(e,text){const n=search(e);n.value=text;await n.emit("input");}
+
+await scenario("I1 열기 1건·기본 필터·sandbox 단추·cap",async()=>{
+ const e=await start();expect(await e.open(),"열기");
+ expect(e.calls.length===1&&String(e.calls[0][0]).includes("/history?"),"열기 history 1");
+ expect(query(e).get("scope")==="mine", "기본 mine");
+ expect(["model","since","fav","studio","search"].every(k=>!query(e).has(k)),"빈 필터 키 생략");
+ expect(nodes(e).filter(n=>n.attrs.role==="searchbox").length===1,"검색칸 하나");
+ expect(nodes(e).filter(n=>n.tagName==="BUTTON").every(n=>n.type==="button"),"모든 단추 type");
+ expect(eq(cls(e,"dp-forge-filters")[0].children.filter(n=>!n.hidden).map(n=>n.attrs["aria-label"]),
+  ["프롬프트 검색...","모델","기간","♥ 좋아요 한 항목","범위","스튜디오 결과 보기"]),"필터 순서");
+ for(const opts of [{server:false},{enabled:false}]){const off=await start(opts);expect(!await off.open()&&!off.calls.length&&!off.doc.body.children.length,"cap 차단");}
+ return true;
+});
+await scenario("I1 검색 10글자 500ms 뒤 1·한 글자 0·빈 검색 1",async()=>{
+ const e=await start();await e.open();
+ for(let i=1;i<=10;i++){await type(e,"abcdefghij".slice(0,i));if(i<10)await e.tick(30);}
+ expect(e.calls.length===1,"타자 중 요청 없음");await e.tick(499);expect(e.calls.length===1,"499ms");
+ await e.tick(1);expect(e.calls.length===2&&query(e).get("search")==="abcdefghij","500ms 한 요청");
+ await type(e,"  가  ");await e.tick(2000);expect(e.calls.length===2&&e.doc.body.textContent.includes("두 글자 이상 입력하세요"),"한 글자");
+ await type(e," ");await e.tick(500);expect(e.calls.length===3&&!query(e).has("search"),"검색 해제");
+ return true;
+});
+await scenario("I1 각 필터 한 요청·선택 해제·대기 검색 합치기",async()=>{
+ const e=await start();await e.open();
+ for(const [label,value,key,want] of [["모델","Model A","model","Model A"],["범위","team","scope","team"]]){
+  await picks(e)[0].click();const n=e.calls.length;await change(e,label,value);
+  expect(e.calls.length===n+1&&query(e).get(key)===want&&B(e,"0장 가져오기").disabled,"필터 "+label);
+ }
+ for(const [label,key] of [["♥ 좋아요 한 항목","fav"],["스튜디오 결과 보기","studio"]]){
+  const n=e.calls.length;await B(e,label).click();expect(e.calls.length===n+1&&query(e).get(key)==="1","토글 "+key);
+  await B(e,label).click();expect(e.calls.length===n+2&&!query(e).has(key),"토글 해제 "+key);
+ }
+ const n=e.calls.length;await type(e,"새 검색");await change(e,"범위","mine");await e.tick(2000);
+ expect(e.calls.length===n+1&&query(e).get("search")==="새 검색","검색 대기 취소");
+ return true;
+});
+await scenario("I1 현지 자정 ISO·일요일 시작·월초·전체 기간",async()=>{
+ const e=await start();await e.open();
+ for(const [period,iso] of [["today","2026-11-17T15:00:00.000Z"],["week","2026-11-14T15:00:00.000Z"],["month","2026-10-31T15:00:00.000Z"]]){
+  const n=e.calls.length;await change(e,"기간",period);expect(e.calls.length===n+1&&query(e).get("since")===iso,period+" "+query(e).get("since"));
+ }
+ await change(e,"기간","");expect(!query(e).has("since"),"전체 기간");return true;
+});
+await scenario("I1 내 자료 1·폴더 1·refresh 1·태그 3·blocked·more",async()=>{
+ const e=await start({handler:u=>String(u).includes("assets?")?response({items:[item("asset",{folder:"옷",tags:["붉음","긴팔","겨울","네번째"]}),
+  item("blocked",{blocked:true})],folders:["옷","장식"],more:true,next:null}):response(initial())});await e.open();
+ await picks(e)[0].click();const n=e.calls.length;await B(e,"내 자료").click();
+ expect(e.calls.length===n+1&&String(e.calls.at(-1)[0]).includes("/assets?")&&!query(e).has("scope"),"탭 한 요청");
+ expect(search(e).placeholder==="자료 이름·폴더·태그 검색"&&B(e,"0장 가져오기").disabled,"탭 선택 해제");
+ expect(cards(e)[0].textContent.includes("옷 · 붉음 · 긴팔 · 겨울")&&!cards(e)[0].textContent.includes("네번째"),"태그 최대 세 개");
+ expect(cards(e)[1].textContent.includes("가져올 수 없는 주소")&&picks(e)[1].disabled&&cls(e,"dp-forge-zoom")[1].disabled,"blocked");
+ expect(!e.doc.images.some(u=>u.endsWith("id=blocked")),"blocked 그림 요청 없음");
+ expect(e.doc.body.textContent.includes("더 있음 — 검색어를 좁히세요"),"상한 안내");
+ await change(e,"폴더","옷");expect(e.calls.length===n+2&&query(e).get("folder")==="옷","폴더");
+ await B(e,"새로고침").click();expect(e.calls.length===n+3&&query(e).get("refresh")==="1"&&query(e).get("folder")==="옷","새로고침");
+ expect(eq(control(e,"폴더").children.map(n=>n.value),["","옷","장식"]),"폴더 선택지");return true;
+});
+await scenario("I1 실패 자동 재요청 0·수동 재시도 1",async()=>{
+ let fail=true;const e=await start({handler:()=>fail?response({error:"잠시 후 다시 시도"},503):response(initial())});await e.open();
+ expect(!B(e,"다시 시도").hidden&&e.doc.body.textContent.includes("잠시 후 다시 시도"),"오류 안내");
+ await e.tick(60000);expect(e.calls.length===1,"자동 재요청 없음");fail=false;await B(e,"다시 시도").click();
+ expect(e.calls.length===2&&B(e,"다시 시도").hidden&&cards(e).length===2,"수동 재시도 한 번");return true;
+});
+await scenario("I1 메타 표지·옛 응답·모델 누적·쪽 넘김 선택 유지",async()=>{
+ const e=await start({handler:u=>queryUrl(u).has("cursor")?response({items:[item("one"),item("three",{model:"Model C"})],next:null})
+  :response({...initial(),items:[...initial().items,{id:"old",prompt:"옛 응답"}],next:"page"})});await e.open();
+ await change(e,"범위","team");expect(cards(e)[0].textContent.includes("내 것")&&cards(e)[0].textContent.includes("♥ 좋아요")&&cards(e)[0].textContent.includes("묶음 4장 중 2"),"표지");
+ expect(picks(e)[2].attrs["aria-label"]==="옛 응답 선택"&&cards(e)[2].textContent.includes("미리보기 없음"),"옛 응답");
+ await picks(e)[0].click();await B(e,"계속 불러오기").click();
+ expect(query(e).get("cursor")==="page"&&query(e).get("scope")==="team"&&cards(e).length===4,"쪽·중복 제거");
+ expect(picks(e)[0].attrs["aria-pressed"]==="true"&&B(e,"1장 가져오기"),"쪽 선택 유지");
+ await change(e,"모델","Model C");expect(eq(control(e,"모델").children.map(n=>n.value),["","Model A","Model B","Model C"]),"모델 누적 유지");
+ return true;
+});
+function queryUrl(u){return new URL(u,"https://studio.invalid").searchParams;}
+await scenario("I1 빈 쪽은 직접 계속 불러오기·자동 순회 없음",async()=>{
+ const e=await start({handler:()=>response({items:[],next:"page"})});await e.open();await e.tick(60000);
+ expect(e.calls.length===1&&e.doc.body.textContent.includes("이 범위에는 없습니다 — [계속 불러오기]"),"빈 쪽");
+ await B(e,"계속 불러오기").click();expect(e.calls.length===2,"사용자 한 번");return true;
+});
+await scenario("I1 크게 보기 주소·실패 재시도·Esc 한 층·Tab·초점",async()=>{
+ const e=await start();await e.open();const zoom=cls(e,"dp-forge-zoom")[0],count=e.doc.images.length;
+ await zoom.click();let viewer=cls(e,"dp-forge-viewer")[0];const large=viewer.all().find(n=>n.tagName==="IMG");
+ expect(large.src==="/bmk/design_patch/forge/thumb?id=one&size=large"&&e.doc.images.length===count+1,"큰 그림 한 번");
+ expect(e.calls.length===1&&cards(e).length===2&&B(e,"0장 가져오기").disabled,"큰 그림은 재조회·선택 없음");
+ e.key("keydown","Tab");expect(viewer.all().includes(e.doc.activeElement),"보기 층 Tab");
+ await large.emit("error");await e.tick(10000);expect(e.doc.images.length===count+1,"그림 자동 재시도 없음");
+ const retry=viewer.all().find(n=>n.tagName==="BUTTON"&&n.textContent==="다시 시도");await retry.click();expect(e.doc.images.length===count+2,"그림 수동 재시도");
+ e.key("keydown","Escape");expect(!cls(e,"dp-forge-viewer").length&&e.ctx.DPDialog.open&&e.doc.activeElement===zoom,"Esc 보기만 닫기");
+ await zoom.click();await B(e,"크게 보기 닫기").click();expect(e.ctx.DPDialog.open&&!cls(e,"dp-forge-viewer").length,"닫기 단추 보기만");
+ e.key("keydown","Escape");expect(!e.ctx.DPDialog.open,"두 번째 Esc 창 닫기");return true;
+});
+await scenario("I1 외부 그림 주소 차단·lazy 유지·문자열 그대로",async()=>{
+ const e=await start({handler:()=>response({items:[item("safe",{prompt:"<img onerror=bad>"}),item("bad",{thumb:"https://media.invalid/a.png"})],next:null})});await e.open();
+ expect(cards(e)[0].textContent.includes("<img onerror=bad>")&&nodes(e).filter(n=>n.tagName==="IMG").every(n=>n.loading==="lazy"),"문자열과 lazy");
+ expect(!e.doc.images.some(u=>u.includes("media.invalid"))&&cls(e,"dp-forge-zoom")[1].disabled,"외부 주소 차단");return true;
+});
+await scenario("I1 크기 3–8·저장·저장소 읽기/쓰기 실패·요청 없음",async()=>{
+ const e=await start();await e.open();let slider=control(e,"썸네일 크기 조절");
+ expect(slider.min==="3"&&slider.max==="8"&&slider.value==="4","크기 범위");
+ slider.value="8";await slider.emit("input");expect(cls(e,"dp-forge-sheet")[0].style["--dp-forge-columns"]==="8"&&e.calls.length===1,"즉시 CSS만");
+ await B(e,"닫기").click();await e.open();expect(control(e,"썸네일 크기 조절").value==="8","저장 복원");
+ const denied=await start({storage:{get(){throw Error("blocked storage");}}});expect(await denied.open(),"읽기 실패 열기");
+ const write=await start({storage:{value:{getItem:()=>"6",setItem(){throw Error("blocked write");}}}});await write.open();
+ slider=control(write,"썸네일 크기 조절");expect(slider.value==="6","저장값 읽기");slider.value="3";await slider.emit("input");
+ expect(cls(write,"dp-forge-sheet")[0].style["--dp-forge-columns"]==="3"&&write.calls.length===1,"쓰기 실패도 반영");return true;
+});
+await scenario("I1 select·range·체크 단추 방향키와 Tab 순환",async()=>{
+ const e=await start();await e.open();
+ for(const n of [search(e),control(e,"모델"),control(e,"기간"),control(e,"썸네일 크기 조절"),B(e,"스튜디오 결과 보기")]){
+  n.focus();const key=e.key("keydown","ArrowRight",true,{target:n});expect(key.stopped&&!key.defaultPrevented,"기본 키 유지 "+n.tagName);
+ }
+ await B(e,"내 자료").click();const n=B(e,"닫기");n.focus();e.key("keydown","Tab");expect(!e.doc.activeElement.hidden,"Tab 숨은 필터 건너뜀");
+ const all=nodes(e).filter(n=>["BUTTON","INPUT","SELECT"].includes(n.tagName)&&!n.hidden&&!n.disabled);
+ for(let i=0;i<all.length;i++){e.key("keydown","Tab");expect(!e.doc.activeElement.hidden,"Tab 순환");}return true;
+});
+await scenario("I1 레퍼런스 체크·해제·8장 상한·필터 선택 비움",async()=>{
+ const e=await start({handler:()=>response({items:Array.from({length:9},(_,i)=>item(String(i))),next:null})});await e.open();
+ for(const pick of picks(e))await pick.click();expect(!posts(e).length&&B(e,"8장 가져오기")&&e.doc.body.textContent.includes("한 번에 8장까지 고를 수 있습니다"),"8장 상한");
+ expect(picks(e)[8].attrs["aria-pressed"]==="false","9번째 미선택");await picks(e)[0].click();expect(B(e,"7장 가져오기"),"해제");
+ await picks(e)[8].click();expect(B(e,"8장 가져오기"),"다른 장 선택");await type(e,"필터");expect(B(e,"0장 가져오기").disabled,"검색 즉시 선택 해제");return true;
+});
+await scenario("I1 레퍼런스 본문·성공 닫기·중복 클릭 1·sending 잠금",async()=>{
+ let resolve,done=[];const e=await start({handler:(u,o)=>o?.method==="POST"?new Promise(r=>resolve=r):response(initial())});await e.open({onDone:r=>done.push(r)});
+ await picks(e)[0].click();await picks(e)[1].click();const action=B(e,"2장 가져오기"),pending=action.click();await settle();await action.click();
+ expect(posts(e).length===1&&eq(JSON.parse(posts(e)[0][1].body),{into:"refs",source:"history",ids:["one","two"],root:"root"}),"여러 장 본문과 중복 방지");
+ expect(nodes(e).filter(n=>["BUTTON","INPUT","SELECT"].includes(n.tagName)).every(n=>n.disabled),"sending 전체 잠금");
+ e.key("keydown","Escape");expect(e.ctx.DPDialog.open,"sending 닫기 차단");
+ resolve(response({ok:true,done:[{id:"one",sheet:"sheets/one.png"},{id:"two",sheet:"sheets/two.png"}],failed:[]}));await pending;
+ expect(!e.ctx.DPDialog.open&&done.length===1&&done[0].done.length===2,"성공 닫기 callback 한번");return true;
+});
+for(const finish of ["close","retry"])await scenario("I1 부분 실패 성공분 보존·실패 선택·onDone 한번 "+finish,async()=>{
+ let done=[],attempt=0;const e=await start({handler:(u,o)=>o?.method==="POST"?response(++attempt===1
+  ?{ok:true,done:[{id:"one",sheet:"sheets/one.png"}],failed:[{id:"two",error:"그림을 읽을 수 없음"}]}
+  :{ok:true,done:[{id:"two",sheet:"sheets/two.png"}],failed:[]}):response(initial())});await e.open({onDone:r=>done.push(r)});
+ await picks(e)[0].click();await picks(e)[1].click();await B(e,"2장 가져오기").click();
+ expect(e.ctx.DPDialog.open&&!done.length&&e.doc.body.textContent.includes("1장 가져옴 · 1장 실패"),"부분 실패 유지");
+ expect(picks(e)[0].attrs["aria-pressed"]==="false"&&picks(e)[1].attrs["aria-pressed"]==="true"&&cards(e)[1].textContent.includes("그림을 읽을 수 없음"),"실패한 장만 선택");
+ await e.tick(60000);expect(posts(e).length===1,"부분 실패 자동 재요청 없음");
+ if(finish==="retry"){await B(e,"다시 시도").click();expect(eq(JSON.parse(posts(e)[1][1].body).ids,["two"]),"성공분 재요청 없음");}
+ else await B(e,"닫기").click();
+ e.key("keydown","Escape");expect(done.length===1&&done[0].done.length===(finish==="retry"?2:1)&&!e.ctx.DPDialog.open,"누적 성공 callback 한번");return true;
+});
+await scenario("I1 전부 실패·전송 오류 수동 재시도·성공 없는 닫기 callback 없음",async()=>{
+ let fail=true,done=0;const e=await start({handler:(u,o)=>o?.method==="POST"?(fail?response({error:"연결 실패"},503)
+  :response({ok:true,done:[],failed:[{id:"one",error:"목록이 오래됐습니다"}]})):response(initial())});await e.open({onDone:()=>done++});
+ await picks(e)[0].click();await B(e,"1장 가져오기").click();await e.tick(60000);expect(posts(e).length===1,"오류 자동 요청 없음");
+ fail=false;await B(e,"다시 시도").click();expect(posts(e).length===2&&e.doc.body.textContent.includes("0장 가져옴 · 1장 실패"),"수동 한 번");
+ await B(e,"닫기").click();expect(done===0,"성공 없는 닫기");return true;
+});
+await scenario("I1 타깃은 한 장·본문 정확·중복 요청 없음·옛 응답",async()=>{
+ let resolve,done=[];const e=await start({handler:(u,o)=>o?.method==="POST"?new Promise(r=>resolve=r):response({items:[{id:"old",prompt:"옛 그림"}],next:null})});
+ await e.open({into:"target",name:"새 프로젝트",root:"보내지 않음",onDone:r=>done.push(r)});
+ const pick=picks(e)[0];expect(pick.attrs["aria-label"]==="옛 그림 가져오기","타깃 label");const pending=cards(e)[0].click();await settle();await pick.click();
+ expect(posts(e).length===1&&eq(JSON.parse(posts(e)[0][1].body),{into:"target",source:"history",id:"old",name:"새 프로젝트"}),"타깃 본문 정확");
+ resolve(response({key:"project",notes:[]}));await pending;expect(done.length===1&&done[0].key==="project"&&!e.ctx.DPDialog.open,"옛 성공 응답");return true;
+});
+await scenario("I1 늦은 응답 버림·검색/탭/닫기 abort",async()=>{
+ const requests=[];const e=await start({handler:(u,o)=>new Promise(resolve=>requests.push({u,signal:o.signal,resolve}))});await e.open();
+ await type(e,"새 검색");expect(requests[0].signal.aborted,"검색 abort");await e.tick(500);await B(e,"내 자료").click();
+ expect(requests[1].signal.aborted&&requests.length===3,"탭 abort");
+ requests[2].resolve(response({items:[item("new")],next:null}));await settle();
+ requests[0].resolve(response({items:[item("stale")],next:"old"}));requests[1].resolve(response({error:"늦은 오류"},503));await settle();
+ expect(cards(e).length===1&&cards(e)[0].title==="자료 new"&&!e.doc.body.textContent.includes("늦은 오류"),"옛 응답 버림");
+ await B(e,"새로고침").click();await B(e,"닫기").click();expect(requests[3].signal.aborted,"닫기 abort");
+ requests[3].resolve(response(initial()));await settle();expect(!cls(e,"dp-forge").length&&!e.ctx.DPDialog.open,"닫힌 창 재생성 없음");return true;
+});
+await scenario("I1 다음 쪽 오류 재시도 cursor·선택·필터 유지",async()=>{
+ let fail=true;const e=await start({handler:u=>queryUrl(u).has("cursor")?(fail?response({error:"쪽 실패"},503):response({items:[item("three")],next:null}))
+  :response({...initial(),next:"page"})});await e.open();await change(e,"기간","today");await picks(e)[0].click();
+ await B(e,"계속 불러오기").click();expect(cards(e).length===2&&B(e,"1장 가져오기"),"오류 앞 쪽 보존");
+ fail=false;const n=e.calls.length;await B(e,"다시 시도").click();
+ expect(e.calls.length===n+1&&query(e).get("cursor")==="page"&&query(e).get("since")==="2026-11-17T15:00:00.000Z"&&cards(e).length===3&&B(e,"1장 가져오기"),"같은 쪽 수동 재시도");return true;
+});
+function sourceFn(file,name,indent="  "){
+ const s=IN.source[file],m=s.match(new RegExp("\\n"+indent+"(?:async )?function "+name+"\\("));
+ const start=m.index+1,end=s.indexOf("\n"+indent+"}\n",start);return s.slice(start,end)+"\n"+indent+"}";
+}
+await scenario("I1 시트 출처 키 있을 때만·펼침·행 클릭 분리·local 동일",async()=>{
+ const e=await start(),c=e.ctx;let picked=0;
+ const el=(tag,cls,text)=>{const n=e.doc.createElement(tag);n.className=cls;n.textContent=text||"";return n;};
+ Object.assign(c,{el,can:()=>false,SM:()=>c.DPEnv.serverMode,tab:"sheets",gridSize:{},tabBtns:[],gridHost:el("div"),sheetHost:el("div"),viewHost:el("div"),sheet:null,
+  sheetList:[{path:"sheets/a.png",size:[256,256],bytes:64,kind:"image"}],S:{R:{sheets:[]}},chip:t=>el("span","",t),sizeMb:()=>"1MB",
+  button:(t,title,fn)=>{const b=el("button","",t);b.addEventListener("click",fn);return b;},loadSheets(){},showSheetAdd(){},pickSheet(){picked++;}});
+ e.doc.body.append(c.sheetHost);vm.runInContext(sourceFn("ref_edit.js","renderSheets","    "),c);c.renderSheets();
+ const li=()=>nodes(e).find(n=>n.tagName==="LI");expect(li().children.length===2&&!cls(e,"dp-forge-source").length,"키 없음 기존 행");
+ c.sheetList[0].forge={source:"history",model:"Model A",created:"2026-11-16T00:00:00Z",prompt:"<script> 프롬프트"};c.renderSheets();
+ expect(li().children.length===3&&cls(e,"dp-forge-source")[0].textContent.includes("Forge 결과 · Model A"),"출처 한 줄");
+ let toggle=cls(e,"dp-forge-source-toggle")[0],text=cls(e,"dp-forge-source-text")[0];expect(text.hidden&&toggle.attrs["aria-expanded"]==="false","접힌 프롬프트");
+ await toggle.click();expect(!text.hidden&&toggle.attrs["aria-expanded"]==="true"&&picked===0,"펼칠 때 시트 안 엶");await toggle.click();expect(text.hidden,"다시 접기");
+ c.DPEnv.serverMode=false;c.renderSheets();expect(li().children.length===2&&!cls(e,"dp-forge-source").length,"local 그대로");return true;
+});
+await scenario("I1 pipeline 최상위 타깃 출처·자료 폴더/이름·없는 키 DOM 없음",async()=>{
+ const e=await start(),c=e.ctx,src=IN.source["pipeline.js"];
+ const begin=src.indexOf("      if (P0 && P0.target_forge"),end=src.indexOf("\n      if (window.DPChecklist)",begin);
+ expect(begin>=0&&end>begin,"준비 패널 연결");
+ c.section=title=>{const n=e.doc.createElement("div");n.textContent=title;e.doc.body.append(n);return n;};
+ c.P0={};vm.runInContext(src.slice(begin,end),c);expect(!e.doc.body.children.length,"키 없으면 DOM 없음");
+ c.P0={target_forge:{source:"asset",folder:"옷",name:"파일",imported_at:"2026-11-18T04:00:00Z"}};vm.runInContext(src.slice(begin,end),c);
+ expect(e.doc.body.children[0].dataset.tab==="prepare"&&cls(e,"dp-forge-source")[0].textContent.includes("Forge 자료 · 옷")&&!cls(e,"dp-forge-source-toggle").length,"자료 출처 준비 탭");
+ e.doc.body.replaceChildren();c.P0.target_forge={source:"history",model:"Model B",prompt:"타깃 프롬프트"};vm.runInContext(src.slice(begin,end),c);
+ await cls(e,"dp-forge-source-toggle")[0].click();expect(!cls(e,"dp-forge-source-text")[0].hidden,"타깃 프롬프트 펼침");
+ const asset=c.DPForgeImport.sourceLine({source:"asset",name:"자료 이름"});expect(asset.textContent==="Forge 자료 · 자료 이름","폴더 없으면 이름");return true;
+});
+console.log(JSON.stringify(out));
+'''
+    (out / "scene.mjs").write_text(scene, encoding="utf-8")
+    (out / "input.json").write_text(json.dumps({"source": source}, ensure_ascii=False), encoding="utf-8")
+    run = subprocess.run([node, str(out / "scene.mjs"), str(out / "input.json")], capture_output=True, text=True, encoding="utf-8", timeout=45)
+    check(run.returncode == 0, "I1 DOM 하네스 종료: " + run.stderr[:500])
+    if run.returncode == 0:
+        for name, result in json.loads(run.stdout).items():
+            check(result is True, name + ("" if result is True else ": " + str(result)))
 
 
 def forge_f2_client_unit():

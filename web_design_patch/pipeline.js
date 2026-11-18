@@ -2727,6 +2727,15 @@ window.DPPipeline = (() => {
           () => goSection({ tab: "prompt", section: "반영" })), el("span", "warn", paidLock()), recalcButton("지금 선택으로 다시 계산"));
       panel.append(common);
 
+      if (P0 && P0.target_forge && window.DPForgeImport) {
+        const source = window.DPForgeImport.sourceLine(P0.target_forge);
+        if (source) {
+          const target = section("타깃 그림");
+          target.dataset.tab = "prepare";
+          target.append(source);
+        }
+      }
+
       if (window.DPChecklist) {
         const host = el("div");
         panel.append(host);
