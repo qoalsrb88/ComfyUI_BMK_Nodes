@@ -1532,15 +1532,10 @@
         .filter(Boolean).join(" · ");
       // 원장 호출의 후보는 레이어명(셀 키) 대신 완료 시각·종류 — 레이어명은 제목·상세 줄에
       const cap = el("div", "cap", `c${pad(c.n)} · ${meta} · ${ranText(c) || c.label}`);
-      cap.title = [c.label, ranText(c) && `${ranText(c)} 완료`, ranText(c) && tookText(c.took)].filter(Boolean).join(" · ");
+      // 모델 이름은 타일의 title 에만(좁은 타일에 줄을 더하면 잘린다) — 상세의 「모델」 줄이 늘 보인다
+      cap.title = [c.label, candidateModel(c), ranText(c) && `${ranText(c)} 완료`, ranText(c) && tookText(c.took)].filter(Boolean).join(" · ");
       promptWarning(cap, c);
       tile.append(cap);
-      const model = candidateModel(c);
-      if (model) {
-        const info = el("div", "cap dp-candidate-model", model);
-        info.title = model;
-        tile.append(info);
-      }
       tile.addEventListener("click", () => selectCand(c.key));
       tile.addEventListener("dblclick", () => {
         selectCand(c.key);

@@ -62468,15 +62468,15 @@ await scenario("FMJ 후보 별도 모델 줄·비율·프롬프트 칩·로컬 �
   const draw=()=>{c.renderCompare();c.renderGrid();c.renderDetail();};draw();
   const chips=(n,cls)=>n.all().filter(x=>x.classList.contains(cls)),ratio=chips(nodes["cand-caption"],"dp-ratio-changed")[0];
   const r={detail:nodes.detail.children.some(x=>x.children[0]?.textContent==="모델"&&x.textContent.includes(seed.label)&&!x.textContent.includes("품질")),
-    grid:chips(nodes.grid,"dp-candidate-model")[0]?.textContent===seed.label,
+    grid:chips(nodes.grid,"cap").some(x=>x.title.split(" · ").includes(seed.label))&&!chips(nodes.grid,"dp-candidate-model").length,
     ratio:ratio?.textContent==="비율 다름"&&ratio.title==="받은 그림의 가로세로비가 요청과 달라 크롭에 맞추면 늘어납니다",
     both:chips(nodes.grid,"dp-ratio-changed").length===1&&chips(nodes.grid,"dp-prompt-changed").length===1};
   candidate.model=ideo.name;candidate.quality=ideo.default_quality;candidate.prompt_changed=false;draw();
-  r.ideogram=chips(nodes.grid,"dp-candidate-model")[0]?.textContent===`${ideo.label} · 품질 ${ideo.default_quality}`;
+  r.ideogram=chips(nodes.grid,"cap").some(x=>x.title.includes(`${ideo.label} · 품질 ${ideo.default_quality}`));
   r.ratioOnly=chips(nodes.grid,"dp-ratio-changed").length===1&&!chips(nodes.grid,"dp-prompt-changed").length;
   candidate.ratio_changed=false;draw();r.clear=!chips(nodes.grid,"dp-ratio-changed").length&&!chips(nodes["cand-caption"],"dp-ratio-changed").length;
   candidate.prompt_changed=true;candidate.ratio_changed=true;mode(false);draw();
-  r.local=!chips(nodes.grid,"dp-candidate-model").length&&!chips(nodes.grid,"dp-ratio-changed").length&&!chips(nodes.grid,"dp-prompt-changed").length
+  r.local=!chips(nodes.grid,"cap").some(x=>x.title.includes(ideo.label))&&!chips(nodes.grid,"dp-ratio-changed").length&&!chips(nodes.grid,"dp-prompt-changed").length
     &&!nodes.detail.children.some(x=>x.children[0]?.textContent==="모델");return r;
 });
 console.log(JSON.stringify(out));process.exit(0);

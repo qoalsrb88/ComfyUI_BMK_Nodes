@@ -986,7 +986,6 @@ body.server .dp-caption-text { min-width: 0; white-space: nowrap; overflow: hidd
 body.server .pp-field.pp-model { flex-wrap: wrap; row-gap: 4px; }
 body.server .pp-model .pp-hint { flex-basis: 100%; overflow-wrap: anywhere; }
 body.server .pp-model option:disabled { color: var(--dim); }
-body.server .tile .dp-candidate-model { padding-top: 0; }
 .dp-env-notice { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 10000; padding: 12px 16px; background: var(--panel); color: var(--text); border: 1px solid var(--warn); border-radius: var(--radius); }
 
 /* ── Forge F2-C (Forge에서 가져오기·자료 저장) — 갈래 C 는 이 표시 아래에만 덧붙인다 ── */
