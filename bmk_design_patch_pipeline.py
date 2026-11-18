@@ -94,6 +94,7 @@ v1 (2026-10)
 from __future__ import annotations
 
 import copy
+import importlib
 import json
 import math
 import os
@@ -108,6 +109,12 @@ except ImportError:  # 단독 실행/테스트
 
 def _server_text(local, server):
     return server if os.environ.get("BMK_DP_SERVER_MODE") == "1" else local
+
+
+def _models():
+    """순수 모델 표를 필요할 때 읽는다 — pipeline 의 최상위 import 경계는 표준 라이브러리·store 그대로."""
+    name = f"{__package__}.bmk_design_patch_models" if __package__ else "bmk_design_patch_models"
+    return importlib.import_module(name)
 
 
 SCHEMA = "bmk.design_patch.pipeline/1"
@@ -316,7 +323,7 @@ def _norm_path(p) -> str:
     return _strip_path(p).replace("\\", "/")
 
 
-def _value(section: str, key: str, v: Any, *, deep: bool) -> Any:
+def _value(section: str, key: str, v: Any, *, deep: bool, model=None) -> Any:
     """위젯 값 하나의 타입·선택지·범위 검사(JSON 타입 엄격). FLOAT 는 float 로 바꿔 돌려준다."""
     sp = _spec(section, key)
     t, where = sp["type"], f"{section}.{key}"
@@ -336,6 +343,12 @@ def _value(section: str, key: str, v: Any, *, deep: bool) -> Any:
     if not isinstance(v, str):
         raise ValueError(f"{where} 는 문자열이어야 합니다: {v!r}")
     ch = sp.get("choices")
+    if section == "prepare":
+        models = _models()
+        if key == "model":
+            ch = tuple(models.MODELS)
+        elif key == "quality" and models.is_forge_only(model):
+            ch = None  # 모델별 품질 검사는 절의 깊은 검사에서 한다(읽기는 위젯 값을 보존).
     if t == "COMBO" and isinstance(ch, str):
         ch = tuple(getattr(_vlm(), ch[4:])) if deep else None  # vlm 선택지는 deep 검사에서만(T6)
     if ch is not None and v not in ch:
@@ -376,7 +389,7 @@ def _check_section(section: str, values: Any, *, deep: bool, draft_rounds=None) 
         raise ValueError(f"{section} 절에 모르는 키: {', '.join(extra)} (키: {', '.join(keys)})")
     if missing:
         raise ValueError(f"{section} 절의 키를 모두 보내야 합니다 — 빠짐: {', '.join(missing)}")
-    out = {k: _value(section, k, values[k], deep=deep) for k in keys}
+    out = {k: _value(section, k, values[k], deep=deep, model=values.get("model")) for k in keys}
     if section == "import":
         for k in _IMPORT_PATHS:
             out[k] = _norm_path(out[k])
@@ -385,6 +398,13 @@ def _check_section(section: str, values: Any, *, deep: bool, draft_rounds=None) 
             raise ValueError("cand.enabled 를 켜려면 cand.path(PSD 또는 폴더 경로)가 있어야 합니다")
         _check_mapping(out["mapping_json"])
     elif section == "prepare":
+        models = _models()
+        if deep and models.is_forge_only(out["model"]):
+            if os.environ.get("BMK_DP_SERVER_MODE") != "1":
+                raise ValueError("prepare.model: 이 모델은 Forge 서버에서만 생성합니다.")
+            problem = models.quality_problem(out["model"], out["quality"])
+            if problem:
+                raise ValueError(f"prepare.quality: {problem}")
         try:
             _prompt().select_variants({}, out["variants"])  # 노드 Prepare 의 형식 검사와 같음
         except ValueError as e:
@@ -841,10 +861,13 @@ def drift(settings: dict, m: dict) -> list[dict]:
                 out.append({"section": "import", "field": key, "manifest": mv, "settings": imp.get(key), "kind": "import"})
     _src, rec = prepare_record(m)
     pre = (settings or {}).get("prepare") or {}
+    recorded_model = _models().get(rec.get("model"))
     for key in section_keys("prepare"):
         if key not in rec:
             continue
         if key == "complexity" and pre.get("model") not in store.COMPLEXITY_MODELS:
+            continue
+        if key == "quality" and recorded_model is not None and not recorded_model.qualities:
             continue
         mv, sv = rec[key], pre.get(key)
         if (_variant_tokens(mv) == _variant_tokens(sv)) if key == "variants" else mv == sv:
@@ -893,6 +916,7 @@ def switch_preview(root: str, m: dict, settings: dict, *, prepare: dict | None =
     """읽기 전용 생성 조건 변경 추정. 현재 입력·프롬프트를 재사용하므로 미반영 입력/변형 변화는 반영 뒤 달라질 수 있다."""
     target = prepare
     try:
+        models = _models()
         try:
             from . import bmk_design_patch_runner as runner
         except ImportError:
@@ -917,14 +941,25 @@ def switch_preview(root: str, m: dict, settings: dict, *, prepare: dict | None =
         for job in mm.get("jobs") or []:
             if not all(k in job for k in ("prompt", "template_version", "variant", "size")):
                 return {"prepare": target, "error": "작업에 생성 조건 기록이 부족합니다 — 먼저 Prepare 를 반영하세요", "uncertain": True}
-            job.update(model=target["model"], quality=target["quality"], n=target["n"], reps=target["calls_per_cell"])
+            if models.is_forge_only(job.get("model")) or models.is_forge_only(target["model"]):
+                info = job.get("size_info")
+                src = info.get("src") if isinstance(info, dict) else None
+                if not isinstance(src, (list, tuple)) or len(src) != 2 or any(type(v) is not int or v < 1 for v in src):
+                    return {"prepare": target, "error": "작업에 생성 조건 기록이 부족합니다 — 먼저 Prepare 를 반영하세요", "uncertain": True}
+                if models.is_forge_only(target["model"]):
+                    W, H, info = models.output_size(target["model"], *src, target["size_rule"])
+                else:
+                    W, H, info = store.gpt_output_size(*src, target["size_rule"])
+                job.update(size=[W, H], size_info=info)
+            job.update(model=target["model"], quality=models.job_quality(target["model"], target["quality"]),
+                       n=target["n"], reps=target["calls_per_cell"])
             if job["model"] in store.COMPLEXITY_MODELS:
                 job["complexity"] = target["complexity"]
             else:
                 job.pop("complexity", None)
             ck = store.cell_key(job["model"], job["quality"], job["size"], job.get("background"), job["prompt"],
                                 [i["sha"] for i in job.get("inputs") or []], job["template_version"], job["variant"],
-                                complexity=target["complexity"])
+                                complexity=target["complexity"], opts=models.job_opts(job["model"]))
             job["cell_key"] = ck
             if ck in old_jobs and str(old_jobs[ck].get("n")) != str(target["n"]):
                 reset.add(ck)
