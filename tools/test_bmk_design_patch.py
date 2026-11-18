@@ -64027,6 +64027,13 @@ await scenario("I1 다음 쪽 오류 재시도 cursor·선택·필터 유지",as
  fail=false;const n=e.calls.length;await B(e,"다시 시도").click();
  expect(e.calls.length===n+1&&query(e).get("cursor")==="page"&&query(e).get("since")==="2026-11-17T15:00:00.000Z"&&cards(e).length===3&&B(e,"1장 가져오기"),"같은 쪽 수동 재시도");return true;
 });
+await scenario("R3 오래된 쪽 이음표: 다시 시도는 첫 쪽부터 1건(같은 이음표를 다시 보내지 않음)",async()=>{
+ const e=await start({handler:u=>(queryUrl(u).has("offset")||queryUrl(u).has("cursor"))?response({error:"목록이 오래됐습니다 — 다시 불러온 뒤 골라 주세요.",reason:"forge_stale"},404)
+  :response({...initial(),next:"page"})});await e.open();await B(e,"내 자료").click();
+ await B(e,"계속 불러오기").click();expect(query(e).get("offset")==="page"&&!B(e,"다시 시도").hidden,"오래된 이음표 안내·다시 시도");
+ const n=e.calls.length;await B(e,"다시 시도").click();
+ expect(e.calls.length===n+1&&!query(e).has("offset")&&!query(e).has("cursor")&&cards(e).length===2,"첫 쪽부터 다시 1건: "+e.calls.at(-1)[0]);return true;
+});
 function sourceFn(file,name,indent="  "){
  const s=IN.source[file],m=s.match(new RegExp("\\n"+indent+"(?:async )?function "+name+"\\("));
  const start=m.index+1,end=s.indexOf("\n"+indent+"}\n",start);return s.slice(start,end)+"\n"+indent+"}";
