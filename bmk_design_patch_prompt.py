@@ -112,6 +112,7 @@ logger = logging.getLogger(__name__)
 _TAG = "[ComfyUI_BMK_Nodes::DesignPatch]"
 
 TEMPLATE_VERSION = "dp-prompt/1"
+PROMPT_HEAD = "Input images, in upload order:"  # render() 가 내는 프롬프트의 첫 줄(시험이 같은지 본다) — 가져오기 창이 스튜디오가 만든 조각을 가릴 때 쓴다
 
 MODES = ("ref_correct", "self_restore", "sketch_guide", "paste_harmonize")
 ACTIONS = ("fix", "add", "relocate", "replace")
