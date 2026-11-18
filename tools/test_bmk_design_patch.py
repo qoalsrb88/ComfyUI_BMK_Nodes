@@ -61156,6 +61156,150 @@ async def _fs_scoped_roots(bd, out, call, login, sessions):
                   "FS26 T1 로컬 _root_param 은 기존 전역 조회 결과·호출 그대로")
 
 
+def forge_models_unit():
+    """Forge 2단계 공용 — 모델 표(bmk_design_patch_models)·생성 조건 키의 선택 재료 opts·응답 정본의 모델 절. 명세
+    _proto/STUDIO_FORGE_MODELS_SPEC.md §3.1–§3.3. --quick 포함."""
+    section("Forge 모델 표 — forge_models_unit")
+    import bmk_design_patch_models as dpm
+    import bmk_design_patch_pipeline as dpl
+
+    fixture = json.loads((PKG / "tools" / "fixtures" / "forge_api.json").read_text(encoding="utf-8"))
+    # ── 생성 조건 키: GPT 는 opts 인자가 생기기 전과 바이트가 같다(2026-11-18 d863244 에서 뽑은 고정값) ──
+    args = dict(prompt="dp-prompt/1 test 프롬프트 @image1", input_shas=["AA" * 32, "bb" * 32],
+                template_version="dp-prompt/1", variant="V1")
+    pinned = (("gpt-image-2.5-sunburst", "max", [2048, 2048], "auto", {}, "3762d0072ac7e2f1d21f1c0e"),
+              ("gpt-image-2.5-flare", "high", "1536x1024", None, {}, "bbb15e152ebe29640536365d"),
+              ("gpt-image-2.6-sunburst", "max", (2048, 1152), "auto", {"complexity": "high"}, "05c1893ff8215d67b230ec6f"),
+              ("gpt-image-2.6-flare", "low", [1024, 1024], "opaque", {"complexity": "low"}, "33cb414d1f56ac2a983dd2c4"))
+    for model, quality, size, background, extra, want_key in pinned:
+        for label, opts in (("opts 없음", {}), ("opts=None", {"opts": None}), ("opts={}", {"opts": {}})):
+            got = store.cell_key(model, quality, size, background, **args, **extra, **opts)
+            check(got == want_key, f"FM1 GPT 생성 조건 키 불변 — {model} {label}: {got} != {want_key}")
+    check(store.CELL_KEY_VERSION == "dp-cell/1", "FM1 키 형식 버전 그대로")
+    base = store.cell_key("ideogram-4.5", "high", [2048, 1536], None, **args)
+    with_opts = store.cell_key("ideogram-4.5", "high", [2048, 1536], None, **args, opts={"b": "x", "a": 1})
+    check(with_opts != base and with_opts == store.cell_key("ideogram-4.5", "high", [2048, 1536], None, **args, opts={"a": 1, "b": "x"}),
+          "FM2 opts 는 값이 있을 때만 키를 바꾸고 이름 순서와 무관")
+    check(with_opts != store.cell_key("ideogram-4.5", "high", [2048, 1536], None, **args, opts={"a": 2, "b": "x"}),
+          "FM2 opts 값이 다르면 다른 키")
+    check(len({store.cell_key(name, "high", [2048, 1536], None, **args) for name in ("seedream-5.5", "ideogram-4.5")}
+              | {store.cell_key("gpt-image-2.5-sunburst", "high", [2048, 1536], None, **args)}) == 3, "FM2 모델이 다르면 다른 키")
+    for bad in ([("a", 1)], "a=1", {"": 1}, {"a": 1.5}, {"a": None}, {"a": [1]}, {1: "a"}):
+        expect_raises(lambda bad=bad: store.cell_key("ideogram-4.5", "high", [2048, 1536], None, **args, opts=bad),
+                      f"FM2 잘못된 opts 거절 {bad!r}")
+
+    # ── 모델 표 ↔ 정본 ──
+    spec = fixture["models"]
+    check({name: m.checkpoint for name, m in dpm.MODELS.items()} == spec["names"], "FM3 이름 → 서버 id 가 정본과 같음")
+    check(dpm.LOCAL_MODELS == tuple(dpl._MODELS) and dpm.names(False) == tuple(dpl._MODELS),
+          "FM3 로컬판 선택지 = 지금의 넷(순서 포함)")
+    check(dpm.names(True)[:4] == tuple(dpl._MODELS) and set(dpm.names(True)[4:]) == set(dpm.FORGE_ONLY) == {"seedream-5.5", "ideogram-4.5"},
+          "FM3 서버 모드 선택지 = 넷 + 서버 전용 둘")
+    check({name: fixture["generate"]["checkpoints"][name] for name in fixture["generate"]["checkpoints"]}
+          == {name: m.checkpoint for name, m in dpm.MODELS.items() if m.kind == "gpt"}, "FM3 GPT 매핑은 F2 정본 그대로")
+    for name in dpm.FORGE_ONLY:
+        m, lim = dpm.get(name), spec["limits"][name]
+        check((m.max_inputs, m.max_n, m.fan_out, list(m.qualities), list(m.area))
+              == (lim["max_inputs"], lim["max_n"], lim["fan_out"], lim["qualities"], lim["area"]), f"FM3 한도가 정본과 같음 {name}")
+        check(spec["requests"][name]["request"]["checkpoint"] == m.checkpoint, f"FM3 요청 예시의 checkpoint {name}")
+    gpt = spec["limits"]["gpt"]
+    check(all((m.max_inputs, m.max_n, m.fan_out, list(m.qualities)) == (gpt["max_inputs"], gpt["max_n"], gpt["fan_out"], gpt["qualities"])
+              for m in dpm.MODELS.values() if m.kind == "gpt"), "FM3 GPT 한도가 정본과 같음")
+    check(list(dpm.GPT_QUALITIES) == list(dpl._QUALITIES) and dpm.SIZE_RULES == tuple(store.GPT_SIZE_RULES),
+          "FM3 품질·크기 규칙 이름이 기존 표와 같음")
+
+    # ── 품질·옵션 ──
+    check(dpm.job_quality("gpt-image-2.6-sunburst", "max") == "max" and dpm.job_quality("gpt-image-2.5-flare", "low") == "low"
+          and dpm.job_quality("없는모델", "max") == "max", "FM4 GPT·모르는 모델의 품질은 받은 값 그대로")
+    check(dpm.job_quality("seedream-5.5", "max") == dpm.FIXED_QUALITY == "standard" and dpm.job_quality("ideogram-4.5", "medium") == "medium",
+          "FM4 품질 없는 모델은 고정값, Ideogram 은 고른 값")
+    check(dpm.quality_problem("ideogram-4.5", "max") and dpm.quality_problem("ideogram-4.5", "high") is None
+          and dpm.quality_problem("seedream-5.5", "max") is None and dpm.quality_problem("gpt-image-2.6-flare", "xhigh") is None
+          and dpm.quality_problem("gpt-image-2.6-flare", "ultra") and dpm.quality_problem("없는모델", "max"), "FM4 모델별 품질 검사")
+    check(all(dpm.job_opts(name, {"x": 1}) is None for name in dpm.MODELS), "FM4 옵션 없는 모델의 opts 는 None(키에 더하지 않음)")
+
+    # ── 크기 식 ──
+    for name in dpm.FORGE_ONLY:
+        m = dpm.get(name)
+        lo, hi = m.area
+        for w, h in ((512, 512), (100, 100), (640, 480), (123, 457), (1920, 1080), (3000, 2000), (4000, 250), (250, 4000),
+                     (33, 35), (5000, 5000), (1024, 768), (853, 1280), (6000, 400), (17, 200)):
+            for rule in dpm.SIZE_RULES:
+                W, H, info = dpm.output_size(name, w, h, rule)
+                inside = m.max_ratio is None or max(w, h) <= m.max_ratio * min(w, h)
+                check(W % 2 == 0 and H % 2 == 0 and info["pixels"] == W * H and info["rule"] == rule and info["src"] == [w, h]
+                      and info["model"] == name, f"FM5 크기 꼴 {name} {w}x{h} {rule} → {W}x{H}")
+                if inside:
+                    check(lo <= W * H <= hi and min(W, H) >= m.min_side and "problem" not in info
+                          and dpm.size_problem(name, [W, H]) is None, f"FM5 한도 안 크롭은 창 안 {name} {w}x{h} {rule} → {W}x{H}")
+                    if min(w, h) >= 64:
+                        check(abs(info["aspect_err"]) <= 0.005, f"FM5 비율 유지 {name} {w}x{h} {rule} → {W}x{H} {info['aspect_err']}")
+    check(dpm.output_size("seedream-5.5", 1024, 768)[:2] == (2048, 1536) and dpm.output_size("seedream-5.5", 1024, 768)[2]["method"] == "k"
+          and dpm.output_size("ideogram-4.5", 512, 512)[:2] == (2048, 2048), "FM5 기준 배율이 정수로 떨어지면 그대로")
+    W, H, info = dpm.output_size("seedream-5.5", 64, 2000)
+    check("problem" in info and "1:16" in info["problem"] and dpm.size_problem("seedream-5.5", [W, H]) == info["problem"],
+          "FM5 비율 한도 밖 크롭은 problem 을 싣고 size_problem 이 같은 말을 함")
+    check(dpm.size_problem("seedream-5.5", [958, 960]) and dpm.size_problem("seedream-5.5", [960, 960]) is None
+          and dpm.size_problem("seedream-5.5", [2150, 2150]) is None and dpm.size_problem("seedream-5.5", [2152, 2150])
+          and dpm.size_problem("seedream-5.5", [8192, 510]) and dpm.size_problem("seedream-5.5", [8192, 512]) is None
+          and dpm.size_problem("seedream-5.5", [8194, 512]), "FM5 Seedream 창 경계(921,600–4,624,220 · 1:16 · 짧은 변 512)")
+    check(dpm.size_problem("ideogram-4.5", [2048, 2048]) is None and dpm.size_problem("ideogram-4.5", [2050, 2048])
+          and dpm.size_problem("ideogram-4.5", [8192, 512]) is None, "FM5 Ideogram 창 경계(4,194,304 이하)")
+    check(dpm.size_problem("gpt-image-2.6-sunburst", [1, 1]) is None and dpm.size_problem("seedream-5.5", "2048x1536")
+          and dpm.size_problem("seedream-5.5", [2048.0, 1536]) and dpm.size_problem("seedream-5.5", None), "FM5 GPT 는 보지 않고 잘못된 기록은 막음")
+    expect_raises(lambda: dpm.output_size("gpt-image-2.6-sunburst", 512, 512), "FM5 GPT 크기는 여기서 정하지 않음")
+    expect_raises(lambda: dpm.output_size("seedream-5.5", 512, 512, "nope"), "FM5 모르는 크기 규칙 거절")
+    expect_raises(lambda: dpm.output_size("seedream-5.5", 0, 512), "FM5 잘못된 크롭 크기 거절")
+
+    # ── 응답 판정·부하·카탈로그 ──
+    check(not dpm.ratio_off([2048, 1536], [2048, 1536]) and not dpm.ratio_off([2048, 1536], [1024, 768])
+          and not dpm.ratio_off([2048, 1536], [2048, 1522]) and dpm.ratio_off([2048, 1536], [2048, 1500])
+          and dpm.ratio_off([2048, 1536], [1536, 2048]) and not dpm.ratio_off(None, [1, 1]) and not dpm.ratio_off([2048, 1536], None)
+          and not dpm.ratio_off([0, 1], [1, 1]), "FM6 비율 다름 = 1% 넘게, 모르면 아님")
+    check([dpm.job_slots("seedream-5.5", 2, n) for n in (1, 2, 4, 5, 8, 10)] == [2, 2, 2, 1, 1, 1]
+          and [dpm.job_slots("seedream-5.5", 8, n) for n in (1, 2, 3, 4)] == [8, 4, 2, 2]
+          and [dpm.job_slots(name, 8, 10) for name in ("ideogram-4.5", "gpt-image-2.6-sunburst", "없는모델")] == [8, 8, 8]
+          and dpm.job_slots("seedream-5.5", 0, 1) == 1, "FM6 장마다 따로 부르는 모델만 잡 수 × 장 수 ≤ 8")
+    catalog = {row.get("checkpoint") or row.get("id"): row.get("max_input_images") for row in spec["catalog"]["response"]["models"]}
+    check(all(dpm.availability(name, catalog)[:2] == (True, None) for name in dpm.MODELS), "FM7 정본 목록에서는 표의 모델이 모두 살아 있음")
+    check(dpm.availability("seedream-5.5", dict(catalog, seedream_5_5=4))[2] == 4 and dpm.availability("seedream-5.5", dict(catalog, seedream_5_5=99))[2] == 10
+          and dpm.availability("seedream-5.5", dict(catalog, seedream_5_5=None))[2] == 10, "FM7 입력 상한 = 표와 목록 가운데 작은 값")
+    gone = {key: value for key, value in catalog.items() if key != "seedream_5_5"}
+    ok, why, limit = dpm.availability("seedream-5.5", gone)
+    check(ok is False and "Forge 에 없습니다" in why and limit is None and dpm.availability("ideogram-4.5", gone)[0] is True,
+          "FM7 목록에서 빠진 모델만 쓸 수 없음")
+    check(dpm.availability("seedream-5.5", None)[0] is False and "읽지 못했습니다" in dpm.availability("seedream-5.5", None)[1]
+          and dpm.availability("없는모델", catalog)[0] is False, "FM7 목록을 못 읽었거나 표에 없으면 쓸 수 없음")
+    row = dpm.describe("ideogram-4.5", catalog, checked=True)
+    check(row == {"name": "ideogram-4.5", "label": "Ideogram 4.5", "kind": "ideogram", "available": True, "why": None,
+                  "qualities": ["low", "medium", "high"], "default_quality": "high", "opts": {}, "max_inputs": 5, "max_n": 8,
+                  "fan_out": False}, f"FM7 화면용 모델 한 줄 {row}")
+    row = dpm.describe("seedream-5.5", gone, checked=True)
+    check(row["available"] is False and row["why"] and row["qualities"] == [] and row["default_quality"] is None and row["fan_out"] is True
+          and dpm.describe("seedream-5.5")["available"] is True, "FM7 빠진 모델은 이유와 함께, 대조 전에는 참")
+    text = (PKG / "bmk_design_patch_models.py").read_text(encoding="utf-8")
+    check(not re.search(r"^\s*(?:from|import)\s+(?!__future__|math\b|dataclasses\b|fractions\b)", text, re.M),
+          "FM8 모델 표 모듈은 표준 라이브러리(math·dataclasses·fractions)만 쓴다")
+
+
+def forge_models_backend_unit():
+    """Forge 2단계 서버 갈래 — 모델별 요청 조립·제출 전 차단·카탈로그 기억·응답 판정·부하 수칙·설정 검증·env 의 caps.models.
+    명세 _proto/STUDIO_FORGE_MODELS_SPEC.md §2–§4. --quick 포함."""
+    section("Forge 모델 서버 — forge_models_backend_unit")
+
+
+def forge_models_dev_unit():
+    """Forge 2단계 가짜 Forge 갈래 — 모델별 요청 꼴 검사·장마다 따로 부르는 흉내·부분 성공·보낸 크기 그대로·모델 목록과 퇴역 스위치.
+    명세 _proto/STUDIO_FORGE_MODELS_SPEC.md §4. --quick 포함."""
+    section("Forge 모델 가짜 Forge — forge_models_dev_unit")
+
+
+def forge_models_js_unit():
+    """Forge 2단계 화면 갈래 — 실행 설정의 모델 고르기·모델별 품질 칸·전환 미리 보기·승인 상자와 후보의 모델 표시.
+    명세 _proto/STUDIO_FORGE_MODELS_SPEC.md §2.5·§3.4. --quick 포함."""
+    section("Forge 모델 화면 — forge_models_js_unit")
+
+
 def forge_f2_dev_unit():
     """Forge F2 갈래 D — 개발용 가짜 Forge(fixture 모양 일치·시나리오 표지·토큰 만료·갱신 페이지). 명세 _proto/STUDIO_FORGE_F2_SPEC.md §2.4·§4. --quick 포함."""
     section("Forge F2-D — forge_f2_dev_unit")
@@ -67582,6 +67726,14 @@ if __name__ == "__main__":
         forge_f2_session_unit()
     if want("forge_f2_backend_unit"):
         forge_f2_backend_unit()
+    if want("forge_models_unit"):
+        forge_models_unit()
+    if want("forge_models_backend_unit"):
+        forge_models_backend_unit()
+    if want("forge_models_dev_unit"):
+        forge_models_dev_unit()
+    if want("forge_models_js_unit"):
+        forge_models_js_unit()
     if want("forge_f2_dev_unit"):
         forge_f2_dev_unit()
     if want("forge_f2_js_unit"):

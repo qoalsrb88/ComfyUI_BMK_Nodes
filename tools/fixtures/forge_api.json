@@ -479,5 +479,335 @@
         }
       }
     }
+  },
+  "models": {
+    "_comment": "모델 표(2단계). 스튜디오 이름 → 서버 id 는 names, 모델별 생성 요청은 requests(보내는 키는 request 의 키가 전부이고 never 의 키는 보내지 않는다 — GPT 계열은 generate.request 그대로), 서버 모델 목록은 catalog.",
+    "names": {
+      "gpt-image-2.6-sunburst": "gpt_image_26_sunburst",
+      "gpt-image-2.6-flare": "gpt_image_26_flare",
+      "gpt-image-2.5-sunburst": "gpt_image_25_sunburst",
+      "gpt-image-2.5-flare": "gpt_image_25_flare",
+      "seedream-5.5": "seedream_5_5",
+      "ideogram-4.5": "ideogram_4_5"
+    },
+    "limits": {
+      "_comment": "max_inputs = 입력 그림 상한(타깃 포함 — 서버 목록의 max_input_images 와 이 값 가운데 작은 쪽), max_n = 장 수 상한, fan_out = 서버가 장마다 공급자를 따로 부름, area = 요청 크기의 화소 수 창, max_ratio = 긴 변/짧은 변 상한.",
+      "seedream-5.5": {
+        "max_inputs": 10,
+        "max_n": 10,
+        "fan_out": true,
+        "qualities": [],
+        "area": [
+          921600,
+          4624220
+        ],
+        "max_ratio": 16,
+        "min_side": 512
+      },
+      "ideogram-4.5": {
+        "max_inputs": 5,
+        "max_n": 8,
+        "fan_out": false,
+        "qualities": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "default_quality": "high",
+        "area": [
+          1,
+          4194304
+        ]
+      },
+      "gpt": {
+        "max_inputs": 16,
+        "max_n": 10,
+        "fan_out": false,
+        "qualities": [
+          "max",
+          "xhigh",
+          "high",
+          "medium",
+          "low"
+        ]
+      }
+    },
+    "requests": {
+      "seedream-5.5": {
+        "_comment": "크기는 image_size 로 준다. quality·background·moderation·complexity·size 를 보내지 않는다(background 에 opaque·transparent 가 아닌 값이 오면 서버가 실패시킨다). 입력이 10장을 넘으면 서버가 말없이 앞의 10장만 쓴다 — 넘으면 제출하지 않는다. 서버는 num_outputs 만큼 공급자를 따로 부르고, 일부만 성공해도 completed 다.",
+        "request": {
+          "checkpoint": "seedream_5_5",
+          "prompt": "프롬프트 원문 그대로",
+          "image_size": "2048x1536",
+          "num_outputs": 2,
+          "input_images": [
+            [
+              "data:image/png;base64,iVBORw0KGgo=",
+              "data:image/png;base64,iVBORw0KGgo="
+            ]
+          ],
+          "organization_id": "org1",
+          "request_id": "dp-0a1b2c3d4e5f-0123456789abcdef01234567_r1-a1",
+          "prompt_autopilot": false
+        },
+        "never": [
+          "mask_image",
+          "template_id",
+          "positive_prompt_prefix",
+          "positive_prompt_suffix",
+          "trigger_words",
+          "width",
+          "height",
+          "seed",
+          "aspect_ratio",
+          "input_image_references",
+          "quality",
+          "background",
+          "moderation",
+          "complexity",
+          "size",
+          "ideogram",
+          "watermark",
+          "guidance_scale",
+          "sequential_image_generation",
+          "max_images"
+        ],
+        "errors": {
+          "_comment": "서버가 재시도 가능한 실패(error_category 가 user 가 아님)로 돌려주지만 같은 요청을 다시 보내도 같은 결과인 문구 — 재시도하지 않는 실패로 본다.",
+          "input": [
+            "Seedream 크기는",
+            "Seedream 배경 옵션이 올바르지 않습니다",
+            "Seedream 이미지 생성·편집에는 프롬프트를 입력해 주세요"
+          ]
+        }
+      },
+      "ideogram-4.5": {
+        "_comment": "크기 키를 보내지 않는다 — 입력이 있으면 정밀 편집이고 첫 입력(타깃 크롭)의 크기 그대로 돌아온다. 그래서 타깃 크롭을 요청 크기(작업의 size)로 키운 그림을 첫 입력으로 보낸다. 옵션은 중첩 ideogram 객체에만 둔다. 입력은 원본 포함 5장까지(넘으면 서버가 실패), 장 수는 8까지. result_metadata[i].prompt_used 가 늘 온다.",
+        "request": {
+          "checkpoint": "ideogram_4_5",
+          "prompt": "프롬프트 원문 그대로",
+          "ideogram": {
+            "operation": "auto",
+            "quality": "high",
+            "magic_prompt": "off"
+          },
+          "num_outputs": 2,
+          "input_images": [
+            [
+              "data:image/png;base64,iVBORw0KGgo=",
+              "data:image/png;base64,iVBORw0KGgo="
+            ]
+          ],
+          "organization_id": "org1",
+          "request_id": "dp-0a1b2c3d4e5f-0123456789abcdef01234567_r1-a1",
+          "prompt_autopilot": false
+        },
+        "ideogram_keys": [
+          "operation",
+          "quality",
+          "magic_prompt"
+        ],
+        "never": [
+          "mask_image",
+          "template_id",
+          "positive_prompt_prefix",
+          "positive_prompt_suffix",
+          "trigger_words",
+          "width",
+          "height",
+          "seed",
+          "aspect_ratio",
+          "input_image_references",
+          "quality",
+          "background",
+          "moderation",
+          "complexity",
+          "size",
+          "image_size",
+          "watermark"
+        ],
+        "errors": {
+          "_comment": "재시도하지 않는 실패로 보는 문구(위 Seedream 과 같은 뜻).",
+          "input": [
+            "Ideogram 프롬프트는 1~10000자여야 합니다",
+            "Ideogram은 원본 포함 입력 최대 5장",
+            "Ideogram 출력 수는 1~8장이어야 합니다",
+            "Ideogram이 입력을 거절했습니다",
+            "지원하지 않는 이미지 파일 형식입니다",
+            "입력 이미지를 읽을 수 없습니다"
+          ]
+        }
+      }
+    },
+    "catalog": {
+      "method": "GET",
+      "path": "/api/image/templates",
+      "_comment": "계정이 쓸 수 있는 모델 목록. 응답은 크다(모델·템플릿·LoRA) — 스튜디오는 models[] 의 checkpoint(없으면 id)와 max_input_images 만 읽고 나머지는 버린다. 목록에 없는 id 로 생성을 요청하면 서버가 다른 모델로 바꿔 부를 수 있다 — 목록에 없으면 제출하지 않는다.",
+      "response": {
+        "version": "1.0",
+        "thumbnail_base_url": "",
+        "templates": [],
+        "workflow_templates": [],
+        "comfy_modules": [],
+        "categories": [],
+        "models": [
+          {
+            "id": "gpt_image_26_sunburst",
+            "name": "GPT Image 2.6 Sunburst",
+            "architecture": "openai_image",
+            "backend": "openai_image",
+            "checkpoint": "gpt_image_26_sunburst",
+            "max_input_images": 16,
+            "supported_modes": [
+              "generation",
+              "editing"
+            ]
+          },
+          {
+            "id": "gpt_image_26_flare",
+            "name": "GPT Image 2.6 Flare",
+            "architecture": "openai_image",
+            "backend": "openai_image",
+            "checkpoint": "gpt_image_26_flare",
+            "max_input_images": 16,
+            "supported_modes": [
+              "generation",
+              "editing"
+            ]
+          },
+          {
+            "id": "gpt_image_25_sunburst",
+            "name": "GPT Image 2.5 Sunburst",
+            "architecture": "openai_image",
+            "backend": "openai_image",
+            "checkpoint": "gpt_image_25_sunburst",
+            "max_input_images": 16,
+            "supported_modes": [
+              "generation",
+              "editing"
+            ]
+          },
+          {
+            "id": "gpt_image_25_flare",
+            "name": "GPT Image 2.5 Flare",
+            "architecture": "openai_image",
+            "backend": "openai_image",
+            "checkpoint": "gpt_image_25_flare",
+            "max_input_images": 16,
+            "supported_modes": [
+              "generation",
+              "editing"
+            ]
+          },
+          {
+            "id": "seedream_5_5",
+            "name": "Seedream 5.5",
+            "architecture": "seedream",
+            "backend": "seedream",
+            "checkpoint": "seedream_5_5",
+            "max_input_images": 10,
+            "supported_modes": [
+              "generation",
+              "editing"
+            ]
+          },
+          {
+            "id": "ideogram_4_5",
+            "name": "Ideogram 4.5",
+            "architecture": "ideogram_api",
+            "backend": "ideogram_api",
+            "checkpoint": "ideogram_4_5",
+            "max_input_images": 5,
+            "supported_modes": [
+              "generation",
+              "editing"
+            ]
+          },
+          {
+            "id": "other_model",
+            "name": "표에 없는 모델",
+            "architecture": "other",
+            "backend": "other",
+            "checkpoint": "other_model",
+            "max_input_images": 1,
+            "supported_modes": [
+              "generation",
+              "editing"
+            ]
+          }
+        ],
+        "loras": [],
+        "architecture_groups": [],
+        "default_negative_prompt": "",
+        "default_positive_prompt": "",
+        "count": 7
+      }
+    },
+    "job": {
+      "_comment": "모델별 완료 응답의 차이. 나머지 키는 job.completed 와 같다.",
+      "ideogram_completed": {
+        "_comment": "prompt_used 가 장마다 온다 — 보낸 프롬프트와 같으면 바뀌지 않은 것이다.",
+        "status": "completed",
+        "result_data": {
+          "images": [
+            "{MEDIA}/images/5b2f6c1e/0.png",
+            "{MEDIA}/images/5b2f6c1e/1.png"
+          ],
+          "result_ids": [
+            "5b2f6c1e-8a7d-5c3b-9e21-4f0a6d7c8b90:0",
+            "5b2f6c1e-8a7d-5c3b-9e21-4f0a6d7c8b90:1"
+          ],
+          "result_metadata": [
+            {
+              "call_index": 0,
+              "prompt_used": "프롬프트 원문 그대로"
+            },
+            {
+              "call_index": 1,
+              "prompt_used": "프롬프트 원문 그대로"
+            }
+          ],
+          "thumbnails": [
+            {},
+            {}
+          ],
+          "saved_id": "5b2f6c1e-8a7d-5c3b-9e21-4f0a6d7c8b90"
+        }
+      },
+      "seedream_partial": {
+        "_comment": "num_outputs 3 가운데 2장만 성공 — status 는 completed, 알림 문구(warning)는 없다. 받은 장 수로만 안다.",
+        "status": "completed",
+        "result_data": {
+          "images": [
+            "{MEDIA}/images/5b2f6c1e/0.png",
+            "{MEDIA}/images/5b2f6c1e/1.png"
+          ],
+          "result_ids": [
+            "5b2f6c1e-8a7d-5c3b-9e21-4f0a6d7c8b90:0",
+            "5b2f6c1e-8a7d-5c3b-9e21-4f0a6d7c8b90:1"
+          ],
+          "result_metadata": [
+            {
+              "call_index": 0
+            },
+            {
+              "call_index": 2
+            }
+          ],
+          "thumbnails": [
+            {},
+            {}
+          ],
+          "saved_id": "5b2f6c1e-8a7d-5c3b-9e21-4f0a6d7c8b90"
+        }
+      },
+      "seedream_failed_input": {
+        "_comment": "입력 오류인데 error_category 는 user 가 아니다 — 문구(requests.*.errors.input)로 재시도하지 않는 실패로 본다.",
+        "status": "failed",
+        "result_data": null,
+        "error_message": "seedream: Seedream 배경 옵션이 올바르지 않습니다.",
+        "error_category": "ailabs"
+      }
+    }
   }
 }
