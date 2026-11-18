@@ -491,10 +491,10 @@
       "ideogram-4.5": "ideogram_4_5"
     },
     "limits": {
-      "_comment": "max_inputs = 입력 그림 상한(타깃 포함 — 서버 목록의 max_input_images 와 이 값 가운데 작은 쪽), max_n = 장 수 상한, fan_out = 서버가 장마다 공급자를 따로 부름, area = 요청 크기의 화소 수 창, max_ratio = 긴 변/짧은 변 상한.",
+      "_comment": "max_inputs = 입력 그림 상한(타깃 포함 — 서버 목록의 max_input_images 와 이 값 가운데 작은 쪽), max_n = 장 수 상한, fan_out = 서버가 장마다 공급자를 따로 부름, area = 요청 크기의 화소 수 창, max_ratio = 긴 변/짧은 변 상한. 장마다 따로 부르는 모델의 max_n 은 동시 호출 상한(8)을 넘지 않는다 — 서버 자체는 16장까지 받는다.",
       "seedream-5.5": {
         "max_inputs": 10,
-        "max_n": 10,
+        "max_n": 8,
         "fan_out": true,
         "qualities": [],
         "area": [

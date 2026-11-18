@@ -3469,7 +3469,8 @@ window.DPPipeline = (() => {
       if (model && k === "n") spec = { ...spec, max: model.max_n };
       const r = el("div", "lp-row pp-field" + (sub ? " pp-sub" : "") + (models && k === "model" ? " pp-model" : "") + (confirm ? " bad" : moved ? " warn" : ""));
       const from = PS.P.derived.from[`${sec}.${k}`];
-      const lab = el("span", "k", (sub ? "출력 하위 폴더" : models && k === "model" ? "모델" : models && k === "quality" ? "품질" : k) + (confirm ? " (확인 필요)" : ""));
+      const lab = el("span", "k", (sub ? "출력 하위 폴더" : k) + (confirm ? " (확인 필요)" : ""));
+      if (models && (k === "model" || k === "quality")) lab.textContent = (k === "model" ? "모델" : "품질") + (confirm ? " (확인 필요)" : "");
       if (from) lab.title = `처음 값 출처: ${from}`;
       if (sub) lab.title = modeText(`Export 노드 subfolder${from ? ` · 처음 값 출처: ${from}` : ""}`, `출력 하위 폴더${from ? ` · 처음 값 출처: ${from}` : ""}`);
       const cur0 = prepare ? prepare[k] : mine ? form[sec][k] : value;

@@ -61170,6 +61170,7 @@ def forge_models_unit():
     section("Forge 모델 표 — forge_models_unit")
     import bmk_design_patch_models as dpm
     import bmk_design_patch_pipeline as dpl
+    from unittest.mock import patch
 
     fixture = json.loads((PKG / "tools" / "fixtures" / "forge_api.json").read_text(encoding="utf-8"))
     # ── 생성 조건 키: GPT 는 opts 인자가 생기기 전과 바이트가 같다(2026-11-18 d863244 에서 뽑은 고정값) ──
@@ -61244,6 +61245,10 @@ def forge_models_unit():
                         check(abs(info["aspect_err"]) <= 0.005, f"FM5 비율 유지 {name} {w}x{h} {rule} → {W}x{H} {info['aspect_err']}")
     check(dpm.output_size("seedream-5.5", 1024, 768)[:2] == (2048, 1536) and dpm.output_size("seedream-5.5", 1024, 768)[2]["method"] == "k"
           and dpm.output_size("ideogram-4.5", 512, 512)[:2] == (2048, 2048), "FM5 기준 배율이 정수로 떨어지면 그대로")
+    W, H, info = dpm.output_size("ideogram-4.5", 2056, 8)
+    check(abs(info["aspect_err"]) <= 0.01 and "problem" not in info and W * H <= 4_194_304, f"FM5 아주 가는 크롭도 비율 오차 1% 안 {W}x{H} {info['aspect_err']}")
+    W, H, info = dpm.output_size("ideogram-4.5", 3000, 1)
+    check(W % 2 == 0 and H % 2 == 0 and (abs(info["aspect_err"]) <= 0.01 or "가늘어" in info.get("problem", "")), f"FM5 비율을 지킬 수 없으면 problem 으로 알림 {W}x{H}")
     W, H, info = dpm.output_size("seedream-5.5", 64, 2000)
     check("problem" in info and "1:16" in info["problem"] and dpm.size_problem("seedream-5.5", [W, H]) == info["problem"],
           "FM5 비율 한도 밖 크롭은 problem 을 싣고 size_problem 이 같은 말을 함")
@@ -61268,6 +61273,20 @@ def forge_models_unit():
           and [dpm.job_slots("seedream-5.5", 8, n) for n in (1, 2, 3, 4)] == [8, 4, 2, 2]
           and [dpm.job_slots(name, 8, 10) for name in ("ideogram-4.5", "gpt-image-2.6-sunburst", "없는모델")] == [8, 8, 8]
           and dpm.job_slots("seedream-5.5", 0, 1) == 1, "FM6 장마다 따로 부르는 모델만 잡 수 × 장 수 ≤ 8")
+    check(all(m.max_n <= dpm.PROVIDER_CALL_LIMIT and all(dpm.job_slots(m.name, c, n) * n <= dpm.PROVIDER_CALL_LIMIT
+                                                           for c in range(1, 9) for n in range(1, m.max_n + 1))
+              for m in dpm.MODELS.values() if m.fan_out) and dpm.get("seedream-5.5").max_n == 8,
+          "FM6 장마다 따로 부르는 모델은 고를 수 있는 어떤 장 수·동시 수에서도 잡 수 × 장 수 ≤ 8(장 수 상한 = 8)")
+    with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1"}):
+        base_prepare = dict(dpl.defaults()["prepare"], model="seedream-5.5") if hasattr(dpl, "defaults") else None
+        if base_prepare is None:
+            base_prepare = {k: dpl._spec("prepare", k)["default"] for k in dpl.section_keys("prepare")}
+            base_prepare["model"] = "seedream-5.5"
+        check(dpl.validate_section("prepare", dict(base_prepare, n=8))["n"] == 8, "FM6 Seedream 8장은 저장됨")
+        expect_raises(lambda: dpl.validate_section("prepare", dict(base_prepare, n=9)), "FM6 Seedream 9장은 저장 거절", contains="8장")
+        expect_raises(lambda: dpl.validate_section("prepare", dict(base_prepare, model="ideogram-4.5", quality="high", n=9)),
+                      "FM6 Ideogram 9장은 저장 거절", contains="8장")
+        check(dpl.validate_section("prepare", dict(base_prepare, model="gpt-image-2.6-sunburst", n=10))["n"] == 10, "FM6 GPT 10장은 그대로 저장됨")
     catalog = {row.get("checkpoint") or row.get("id"): row.get("max_input_images") for row in spec["catalog"]["response"]["models"]}
     check(all(dpm.availability(name, catalog)[:2] == (True, None) for name in dpm.MODELS), "FM7 정본 목록에서는 표의 모델이 모두 살아 있음")
     check(dpm.availability("seedream-5.5", dict(catalog, seedream_5_5=4))[2] == 4 and dpm.availability("seedream-5.5", dict(catalog, seedream_5_5=99))[2] == 10

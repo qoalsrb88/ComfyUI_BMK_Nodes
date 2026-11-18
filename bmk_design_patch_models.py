@@ -6,7 +6,7 @@
   kind        요청을 조립하는 방식. "gpt" = 지금까지의 GPT Image(로컬판도 생성) · "seedream" · "ideogram"(서버 모드 전용)
   checkpoint  생성 서버의 모델 목록에 있는 id — 목록에 그 id 가 없으면 제출하지 않는다(다른 모델로 바뀌어 불리는 것을 막는다)
   max_inputs  한 요청의 입력 그림 상한(타깃 크롭 포함). 실제 상한은 서버 목록의 값과 이 값 가운데 작은 쪽이다
-  max_n       한 요청의 장 수 상한
+  max_n       한 요청의 장 수 상한(장마다 따로 부르는 모델은 PROVIDER_CALL_LIMIT 를 넘지 않는다 — 잡 하나가 그만큼의 호출이다)
   qualities   품질 선택지. 비어 있으면 품질을 고르지 않는 모델이고 작업의 quality 자리에는 FIXED_QUALITY 가 들어간다
   fan_out     서버가 장마다 공급자를 따로 부른다(잡 하나 = n 번 호출) — 동시 제출 수를 줄이는 근거
   prompt_used 서버가 실제 쓰인 프롬프트를 돌려준다(「프롬프트가 서버에서 바뀜」 판정을 이 모델에서만 한다)
@@ -58,8 +58,8 @@ MODELS: dict[str, Model] = {m.name: m for m in (
     _gpt("gpt-image-2.6-flare", "gpt_image_26_flare"),
     _gpt("gpt-image-2.5-sunburst", "gpt_image_25_sunburst"),
     _gpt("gpt-image-2.5-flare", "gpt_image_25_flare"),
-    Model(name="seedream-5.5", label="Seedream 5.5", checkpoint="seedream_5_5", kind="seedream", max_inputs=10, max_n=10,
-          fan_out=True, area=(921_600, 4_624_220), max_ratio=16, min_side=512),
+    Model(name="seedream-5.5", label="Seedream 5.5", checkpoint="seedream_5_5", kind="seedream", max_inputs=10,
+          max_n=PROVIDER_CALL_LIMIT, fan_out=True, area=(921_600, 4_624_220), max_ratio=16, min_side=512),
     Model(name="ideogram-4.5", label="Ideogram 4.5", checkpoint="ideogram_4_5", kind="ideogram", max_inputs=5, max_n=8,
           qualities=("low", "medium", "high"), default_quality="high", prompt_used=True, area=(1, 4_194_304)),
 )}
@@ -129,8 +129,10 @@ def output_size(name: str, w: int, h: int, rule: str = "user_k") -> tuple[int, i
     """크롭 w×h → 그 모델에 요청할 출력 크기 (W, H, info). GPT 계열은 다루지 않는다(store.gpt_output_size 를 쓴다).
 
     기준 배율(base_scale)을 곱한 뒤 모델의 화소 수 창 안으로 같은 비율로 줄이거나 키우고, 짧은 변 하한을 맞추고, 짝수로 맞춘다.
+    짝수로 맞출 때는 창 안에 드는 후보(변마다 내림·올림, 한 변을 정하고 다른 변을 비율로 다시 구한 것) 가운데 비율 오차가 가장 작은 것을 고른다.
     크롭의 비율이 모델의 한도를 넘으면 창을 맞출 수 없다 — 그때도 가장 가까운 크기를 돌려주고 info["problem"] 에 이유를 적는다
-    (작업은 만들어지고, 생성 직전 판정(size_problem)이 「발사 못 함」으로 막는다).
+    (작업은 만들어지고, 생성 직전 판정(size_problem)이 「발사 못 함」으로 막는다). 아주 가는 크롭이라 비율이 RATIO_TOLERANCE 넘게
+    달라질 때도 info["problem"] 에 적는다(이때는 막히지 않는다 — 반영 보고의 경고로만 보인다).
     info: rule · src · method("k" | "fit") · k · k_str · scale[x, y] · aspect_err · pixels · model · problem(있을 때만)."""
     m = get(name)
     if m is None or m.kind == "gpt" or m.area is None:
@@ -150,25 +152,33 @@ def output_size(name: str, w: int, h: int, rule: str = "user_k") -> tuple[int, i
     if exact:
         W, H = int(w * k), int(h * k)
     else:
-        W, H = _even(w * scale, up=False), _even(h * scale, up=False)
-        if W * H < lo or min(W, H) < m.min_side:  # 내림이 하한 밑으로 갔으면 올림으로
-            W, H = _even(w * scale, up=True), _even(h * scale, up=True)
-        while W * H > hi and min(W, H) > 2:  # 올림이 상한을 넘겼으면 긴 변부터 한 칸씩 내린다
-            if W >= H:
-                W -= 2
-            else:
-                H -= 2
-        if m.max_ratio is not None and max(w, h) <= m.max_ratio * min(w, h):  # 한도 안의 크롭이 반올림으로 한도를 넘지 않게
-            if W > m.max_ratio * H:
-                W = m.max_ratio * H
-            elif H > m.max_ratio * W:
-                H = m.max_ratio * W
+        ws = {_even(w * scale, up=False), _even(w * scale, up=True)}
+        hs = {_even(h * scale, up=False), _even(h * scale, up=True)}
+        pairs = {(a, b) for a in ws for b in hs}
+        for a in ws:  # 가로를 정하고 세로를 비율로(화소 상한을 넘으면 상한 안의 가장 큰 짝수로)
+            pairs |= {(a, min(_even(a * h / w, up=up), _even(hi / a, up=False))) for up in (False, True)}
+        for b in hs:
+            pairs |= {(min(_even(b * w / h, up=up), _even(hi / b, up=False)), b) for up in (False, True)}
+        fits = [(abs((a / b) / (w / h) - 1.0), -a * b, a, b) for a, b in pairs if size_problem(name, [a, b]) is None]
+        if fits:  # 비율 오차가 가장 작은 것, 같으면 화소가 많은 것
+            W, H = min(fits)[2:]
+        else:  # 창을 맞출 수 없는 비율 — 가장 가까운 크기(아래에서 problem 이 붙는다)
+            W, H = _even(w * scale, up=False), _even(h * scale, up=False)
+            if W * H < lo or min(W, H) < m.min_side:
+                W, H = _even(w * scale, up=True), _even(h * scale, up=True)
+            while W * H > hi and min(W, H) > 2:
+                if W >= H:
+                    W -= 2
+                else:
+                    H -= 2
     aspect_err = (W / H) / (w / h) - 1.0
     info = {"rule": rule, "src": [w, h], "method": "k" if exact else "fit", "k": round(float(k), 6),
             "k_str": f"{k.numerator}/{k.denominator}" if k.denominator != 1 else str(k.numerator),
             "scale": [round(W / w, 6), round(H / h, 6)],
             "aspect_err": round(aspect_err, 6) if abs(aspect_err) > 1e-12 else 0.0, "pixels": W * H, "model": name}
     problem = size_problem(name, [W, H])
+    if problem is None and abs(aspect_err) > RATIO_TOLERANCE:
+        problem = f"크롭이 너무 가늘어 {m.label} 의 크기로는 가로세로비가 {abs(aspect_err) * 100:.1f}% 달라집니다."
     if problem:
         info["problem"] = problem
     return W, H, info

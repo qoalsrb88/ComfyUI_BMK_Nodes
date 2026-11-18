@@ -405,6 +405,9 @@ def _check_section(section: str, values: Any, *, deep: bool, draft_rounds=None) 
             problem = models.quality_problem(out["model"], out["quality"])
             if problem:
                 raise ValueError(f"prepare.quality: {problem}")
+            table = models.get(out["model"])
+            if out["n"] > table.max_n:
+                raise ValueError(f"prepare.n: {table.label} 은(는) 한 번에 {table.max_n}장까지 생성합니다: {out['n']!r}")
         try:
             _prompt().select_variants({}, out["variants"])  # 노드 Prepare 의 형식 검사와 같음
         except ValueError as e:

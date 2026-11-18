@@ -2036,6 +2036,8 @@ class BMKDesignPatchPrepare:
             x0, y0, x1, y1 = crop["rect"]
             if forge_only:
                 W, H, sinfo = models.output_size(model, x1 - x0, y1 - y0, size_rule)
+                if sinfo.get("problem"):
+                    spec["warnings"].append(f"출력 크기 {W}x{H}: {sinfo['problem']}")
             else:
                 W, H, sinfo = store.gpt_output_size(x1 - x0, y1 - y0, size_rule)
             chosen = dprompt.select_variants(dprompt.variants(spec), variants)
