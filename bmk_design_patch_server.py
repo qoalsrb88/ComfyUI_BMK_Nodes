@@ -818,13 +818,16 @@ def make_app(config: ServerConfig, *, verifier=None, jobs_module=None, clock=tim
             if accounts is None:  # Forge 연결이 없는 서버(F1 구성)의 env 는 그대로 — 모델 목록을 싣지 않는다
                 return result
             catalog, checked = None, False
+            result["caps"]["models_error"] = None
             if result["backend"] == "forge" and session is not None:
                 ctx = accounts.context(session["scope"])
                 key = (ctx["organization_id"], session["scope"]["account"])
                 catalog = await forge_backend.ensure_catalog(key, ctx["client"], ctx["token_of"], ctx["reject_token"], timeout=5.0)
                 if catalog is None:
                     catalog = forge_backend.cached_catalog(key, max_age=None)
-                checked = True
+                checked = catalog is not None and not forge_backend.catalog_failed(key)
+                if not checked:
+                    result["caps"]["models_error"] = forge_backend._CATALOG_UNREADABLE
             result["caps"]["models"] = [models.describe(name, catalog, checked=checked) for name in models.MODELS]
             if result["backend"] == "mock":
                 for row in result["caps"]["models"]:

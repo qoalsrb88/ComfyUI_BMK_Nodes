@@ -49847,6 +49847,7 @@ def forge_f2_session_unit():
             expected_env["account"]["tag"] = tag
             expected_env["parent_origins"] = list(base.parent_origins)
             env_models = value["caps"].pop("models", None)  # 2단계: Forge 연결이 있는 서버의 env 에만 실린다(내용은 forge_models_backend_unit)
+            value["caps"].pop("models_error", None)
             check(isinstance(env_models, list) and [row.get("name") for row in env_models]
                   == list(json.loads((PKG / "tools" / "fixtures" / "forge_api.json").read_text(encoding="utf-8"))["models"]["names"]),
                   "F2S Forge env 의 caps.models = 모델 표의 이름 순서")
@@ -61389,6 +61390,7 @@ def forge_models_backend_unit():
             rn.reset_forge(token)
 
     def remember(value=catalog, *, age=0, account_key=key):
+        fb.forget_catalog(account_key)
         with fb._CATALOG_LOCK:
             fb._CATALOG[account_key] = (time.monotonic() - age, copy.deepcopy(value))
 
@@ -61765,13 +61767,18 @@ def forge_models_backend_unit():
                     no_session = await env()
                     if not forge_mode:
                         check("models" not in no_session["caps"], "FMB Forge 연결 없는 서버의 env 에는 모델 목록 없음(기존 본문 그대로)")
+                        check("models_error" not in no_session["caps"], "S6 Forge 연결 없는 env 는 models_error 도 없음")
                         continue
                     check([row["name"] for row in no_session["caps"]["models"]] == list(models.MODELS), "FMB env 표 순서")
+                    check("models_error" in no_session["caps"] and no_session["caps"]["models_error"] is None,
+                          "S6 세션 없는 Forge env 의 models_error 는 null")
                     with patch.dict(os.environ, {rn.MOCK_ENV: "1"}):
                         mocked = await env()
                     check(mocked["backend"] == "mock" and all(row["available"] == (row["kind"] == "gpt") for row in mocked["caps"]["models"])
                           and all(row["why"] == "이 모델은 Forge 서버에서만 생성합니다." for row in mocked["caps"]["models"] if row["kind"] != "gpt"),
                           "FMB mock env 서버 전용 모델 차단")
+                    check("models_error" in mocked["caps"] and mocked["caps"]["models_error"] is None,
+                          "S6 mock env 의 models_error 는 null")
                     check(all(row["available"] for row in no_session["caps"]["models"]), "FMB 세션 없는 env 대조 안 함")
                     accounts = app[srv._FORGE_KEY]
                     scope = dict(_fj_scope(out), org=org, account=key[1])
@@ -61783,6 +61790,8 @@ def forge_models_backend_unit():
                             value = await env(session)
                             check(ensure.call_args.kwargs["timeout"] == 5.0, "FMB env 짧은 제한 시간")
                         check(all(row["available"] for row in value["caps"]["models"]) and len(c.reads) == 1, "FMB forge env 계정 목록")
+                        check("models_error" in value["caps"] and value["caps"]["models_error"] is None,
+                              "S6 목록 읽기 성공의 models_error 는 null")
                         gone = dict(catalog)
                         gone.pop(models.get("seedream-5.5").checkpoint)
                         remember(gone, age=601)
@@ -61790,10 +61799,32 @@ def forge_models_backend_unit():
                         value = await env(session)
                         check([row["name"] for row in value["caps"]["models"] if not row["available"]] == ["seedream-5.5"],
                               "FMB env 실패 시 옛 기억")
+                        check("models_error" in value["caps"] and value["caps"]["models_error"] is None,
+                              "S6 사용 가능한 옛 기억은 모델별 판정 유지")
                         fb.forget_catalog()
                         value = await env(session)
-                        check(all(not row["available"] and "읽지 못했습니다" in row["why"] for row in value["caps"]["models"]),
-                              "FMB env 목록 실패·기억 없음은 전부 불가")
+                        check(all(row["available"] and row["why"] is None for row in value["caps"]["models"])
+                              and value["caps"].get("models_error") == fb._CATALOG_UNREADABLE,
+                              "S6 목록 실패·기억 없음은 모델별 미대조와 models_error")
+                        remember()
+                        fb.mark_catalog_failed(key)
+                        reads = len(c.reads)
+                        value = await env(session)
+                        check(all(row["available"] and row["why"] is None for row in value["caps"]["models"])
+                              and value["caps"].get("models_error") == fb._CATALOG_UNREADABLE and len(c.reads) == reads + 1,
+                              "S6 실패 표지는 옛 기억을 쓰지 않고 models_error 로 안내")
+                        c.catalog = copy.deepcopy(contract["catalog"]["response"])
+                        c.catalog["models"] = [row for row in c.catalog["models"] if row["checkpoint"] in gone]
+                        value = await env(session)
+                        check("models_error" in value["caps"] and value["caps"]["models_error"] is None
+                              and [row["name"] for row in value["caps"]["models"] if not row["available"]] == ["seedream-5.5"]
+                              and not fb.catalog_failed(key), "S6 재조회 성공은 오류 해제·퇴역 모델만 불가")
+                        fb.forget_catalog()
+                        c.catalog = {"models": []}
+                        value = await env(session)
+                        check("models_error" in value["caps"] and value["caps"]["models_error"] is None
+                              and all(not row["available"] for row in value["caps"]["models"]),
+                              "S6 읽기에 성공한 빈 목록은 모델 불가이며 통신 오류가 아님")
                 finally:
                     for cleanup in app.on_cleanup:
                         await cleanup(app)
@@ -61816,12 +61847,179 @@ def forge_models_backend_unit():
         finally:
             bd.reset_scope(scope_token)
 
+    def review_s1():
+        reason = models.availability("seedream-5.5", {})[1]
+        original = {"approved_now": True, "pending": 2, "backend": "forge", "stopped_reason": "auth", "auth_held": 0}
+        cases = ((reason, reason), ("가격표에 없는 모델 x / 품질 y", "가격표에 없는 모델 x / 품질 y"),
+                 ("앞\x00\x1f\n\t뒤\x7f\x85", "앞뒤"), ("가" * 301, "가" * 300), (None, None), (123, None),
+                 ("https://forge.example/private", None), (r"C:\private\image.png", None),
+                 ("C:/private/image.png", None), (r"folder\image.png", None),
+                 ("data:image/png;base64,fixture", None), ("DATA:image/png;base64,fixture", None),
+                 ("가" * 301 + " https://forge.example/private", None))
+        for note, expected in cases:
+            row = dict(original, stop_note=note, unknown="discard")
+            outputs = {"dp_run": {"bmk_dp_run": [row]},
+                       "dp_draft": {"bmk_dp_draft": [dict(original, stop_note=note)]}}
+            record = jb._record(outputs)
+            kept = record["outputs"]["dp_run"]["bmk_dp_run"][0]
+            check(kept == dict(original, stop_note=expected), "S1 _record 뒤 stop_note 보존·정제·기존 키 유지")
+            check(record["outputs"]["dp_draft"]["bmk_dp_draft"][0] == original and row["stop_note"] == note,
+                  "S1 다른 노드·원본 ui 는 불변")
+
+    def review_s2():
+        root, job, paths = project()
+        client = Client()
+        ctx = context(root, client)
+        scope_token = bd.set_scope(dict(_fj_scope(out), org=org, account=key[1]))
+        why = fb._CATALOG_UNREADABLE
+        try:
+            manifest = store.load_manifest(root)
+            fb.forget_catalog()
+            unknown = bd._plan_sigs(root, manifest, (False, False), None)
+            client.catalog = fg.ForgeError("unreachable")
+            jb._refresh_catalog(ctx)
+            failed = bd._plan_sigs(root, manifest, (False, False), None)
+            check(failed[0] != unknown[0] and failed[1] == unknown[1], "S2 기억 없음과 갱신 실패는 계획 서명이 다름")
+            check(fb.blocked_reason(job) == why, "S2 실행 직전 실패가 보드 라우트에서도 보임")
+            with active(ctx):
+                check(fb.blocked_reason(job) == why, "S2 실행 안에서도 갱신 실패 차단")
+                plan = rn.plan_calls(manifest, root)
+                ap = rn.split_approval(plan, backend="forge")
+            remember(age=61)
+            jb._refresh_catalog(ctx)
+            check(key in fb._CATALOG and fb.cached_catalog(key, max_age=None) is None,
+                  "S2 갱신 실패는 원래 기억을 보존하고 사용만 차단")
+            marked = bd._plan_sigs(root, manifest, (False, False), None)
+            # 표지가 남아 있는 동안 다른 읽기가 최신 기억을 남겼어도 ensure 는 다시 읽어야 한다.
+            with fb._CATALOG_LOCK:
+                fb._CATALOG[key] = (time.monotonic(), catalog.copy())
+            reads = len(client.reads)
+            client.catalog = copy.deepcopy(contract["catalog"]["response"])
+            restored = asyncio.run(fb.ensure_catalog(key, client, ctx["token_of"], ctx["reject_token"]))
+            check(restored == catalog and len(client.reads) == reads + 1 and fb.blocked_reason(job) is None,
+                  "S2 실패 표지는 나이 무관 재조회·성공 뒤 해제")
+            after = bd._plan_sigs(root, manifest, (False, False), None)
+            check(after[0] != marked[0] and after[1] == marked[1], "S2 성공 뒤 계획 서명 갱신")
+            fb.forget_catalog()
+            check(bd._plan_sigs(root, manifest, (False, False), None) == unknown and fb.blocked_reason(job) is None,
+                  "S2 forget 은 실패 표지도 지움")
+        finally:
+            bd.reset_scope(scope_token)
+
+        dp = _dp_package()
+        node = dp.BMKDesignPatchRun()
+        initial = dict(ap, blocked=[{}, {"blocked": why}, {"blocked": "다음 사유"}], to_run=[])
+        handle = dp._handle(root, store.load_manifest(root), {})
+        with patch.object(dp.runner, "make_backend", return_value=types.SimpleNamespace(name="forge")), \
+                patch.object(dp, "_board_key", return_value=store.root_key(root)), \
+                patch.object(dp.runner, "reconcile_ledger", return_value={"candidates": [], "calls": [], "warnings": []}), \
+                patch.object(dp, "_run_plan", return_value=(plan, initial)), \
+                patch.object(dp, "_cand_grid", return_value=None), \
+                patch.object(node, "_report", return_value="unchanged report"), \
+                patch.object(node, "_execute", new=AsyncMock()) as execute:
+            result = asyncio.run(node.run(handle, "", 64, 1, 25, False, False, ""))
+        entry = result["ui"]["bmk_dp_run"][0]
+        check(entry["stop_note"] == why and not execute.called and result["result"][1] == "unchanged report",
+              "S2 실행 없이 차단된 Run 노드도 처음 판정의 첫 사유 전달")
+        check(jb._record({"dp_run": result["ui"]})["outputs"]["dp_run"]["bmk_dp_run"][0].get("stop_note") == why,
+              "S2 실행 전 차단 사유가 history 까지 전달")
+
+    def review_s3():
+        root, job, paths = project()
+        client = Client()
+        ctx = dict(context(root, client), token_of=lambda: None)
+        fb.forget_catalog()
+        with active(ctx):
+            check(fb.blocked_reason(job) is None, "S3 기억·표지·토큰 없음은 목록 차단을 건너뜀")
+            check(fb.blocked_reason(dict(job, prompt="@@ref")) is not None
+                  and fb.blocked_reason(dict(job, n=0)) is not None, "S3 로그인 없음에도 그 밖의 사전 판정 유지")
+        for marked in (False, True):
+            fb.forget_catalog()
+            if marked:
+                fb.mark_catalog_failed(key)
+            jb._refresh_catalog(ctx)
+            check(not fb.catalog_failed(key), "S3 토큰 없는 실행 직전 갱신은 실패 표지를 남기지 않음")
+
+        async def auth_cases():
+            for scenario in ("missing", "catalog401", "lost_during_read"):
+                root, job, paths = project()
+                client = Client()
+                tokens = {"value": None if scenario == "missing" else secret}
+                ctx = dict(context(root, client), token_of=lambda: tokens["value"],
+                           reject_token=lambda token: tokens.update(value=None))
+                fb.forget_catalog()
+                if scenario != "missing":
+                    remember(age=601)
+                    client.catalog = fg.ForgeError("unauthorized", 401)
+                if scenario == "lost_during_read":
+                    async def lose_token(*args, **kwargs):
+                        tokens["value"] = None
+                        raise fg.ForgeError("unreachable", kind="connect")
+                    client._json = lose_token
+                be = fb.ForgeBackend(ctx)
+                with active(ctx):
+                    try:
+                        await be.request(job, paths, rn.call_id_for(job["cell_key"], 0))
+                        check(False, "S3 로그인 오류 필요 " + scenario)
+                    except rn.CallError as exc:
+                        check(exc.phase == "request" and exc.status == 401 and not exc.maybe_billed
+                              and str(exc) == "Forge 로그인 정보를 다시 받아야 합니다.", "S3 목록 인증 실패는 로그인 오류 " + scenario)
+                    report = await run_plan(root, be, concurrency=1)
+                errors = [*report.errors, *(c.get("error", "") for c in report.calls)]
+                check(report.stopped_reason == "auth" and not any("발사 못 함 — " in e for e in errors)
+                      and be._overload_failures == 0 and not client.submissions and not rn.read_ledger(root, job["cell_key"]),
+                      "S3 stop_note 대상 사유·과부하 셈·과금 없음 " + scenario)
+        asyncio.run(auth_cases())
+        fb.forget_catalog()
+
+    def review_s4():
+        root, job, paths = project()
+        manifest = store.load_manifest(root)
+        model = models.get(job["model"])
+        scope_token = bd.set_scope(dict(_fj_scope(out), org=org, account=key[1]))
+        try:
+            for server, mock in (("1", ""), ("1", "1"), ("", "")):
+                with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": server, rn.MOCK_ENV: mock}):
+                    remember()
+                    before = bd._plan_sigs(root, manifest, (False, False), None)
+                    remember(dict(catalog, **{model.checkpoint: 1}))
+                    after = bd._plan_sigs(root, manifest, (False, False), None)
+                    check((before[0] != after[0]) == (server == "1" and not mock) and before[1] == after[1],
+                          "S4 유효 입력 상한 변경은 Forge Run 계획만 무효화")
+                    for limit in (None, model.max_inputs * 2):
+                        remember(dict(catalog, **{model.checkpoint: limit}))
+                        check(bd._plan_sigs(root, manifest, (False, False), None) == before,
+                              "S4 표 상한으로 같아지는 서버 값은 같은 서명")
+        finally:
+            bd.reset_scope(scope_token)
+            fb.forget_catalog()
+
+    def review_s5():
+        expected = ("prepare.model 값이 선택지에 없습니다: 'missing-model' (선택지: "
+                    "gpt-image-2.6-sunburst, gpt-image-2.6-flare, gpt-image-2.5-sunburst, gpt-image-2.5-flare)")
+        for server in ("", "1"):
+            with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": server}):
+                for deep in (False, True):
+                    try:
+                        pl._value("prepare", "model", "missing-model", deep=deep)
+                        check(False, "S5 모르는 모델은 거절")
+                    except ValueError as exc:
+                        check(str(exc) == expected if not server else all(name in str(exc) for name in models.MODELS),
+                              "S5 로컬 오류 문구 고정값·서버는 표 전체")
+                    check(all(pl._value("prepare", "model", name, deep=deep) == name for name in models.MODELS),
+                          "S5 모델 값의 허용 집합은 두 모드 모두 표 전체 유지")
+
     log = io.StringIO()
     handler = logging.StreamHandler(log)
     logging.getLogger().addHandler(handler)
     try:
         with patch.dict(os.environ, {"BMK_DP_SERVER_MODE": "1", rn.FORGE_ENV: "1", rn.MOCK_ENV: ""}), \
                 patch.object(fb, "SUBMIT_RETRY_DELAY", 0.0):
+            review_s1()
+            review_s2()
+            review_s3()
+            review_s4()
+            review_s5()
             asyncio.run(catalog_cases())
             loop_cases()
             asyncio.run(request_cases())
